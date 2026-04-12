@@ -1,0 +1,23 @@
+{
+  "_comment": "代币解锁信息配置文件",
+  "_description": "在此文件中配置新币的解锁计划，用于基本面评分",
+  "_example": {
+    "NEWUSDT": {
+      "unlocks": [
+        {
+          "date": "2026-04-15",
+          "percentage": 15.5,
+          "target": "team",
+          "description": "团队解锁"
+        }
+      ]
+    }
+  },
+  "targets": {
+    "team": "团队/创始人",
+    "investor": "早期投资者/机构",
+    "ecosystem": "生态基金",
+    "mining": "挖矿释放"
+  },
+  "note": "请手动维护此文件，定期更新解锁信息。数据来源：TokenUnlocks、CryptoRank、项目白皮书"
+}

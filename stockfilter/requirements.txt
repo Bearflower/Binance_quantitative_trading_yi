@@ -1,0 +1,30 @@
+# 核心依赖
+adata>=1.0.0          # 股票列表数据源（主要）
+baostock>=0.8.8       # 股票列表数据源（备用）
+akshare>=1.17.0       # K 线数据获取（主要）
+pandas>=2.0.0
+numpy>=1.24.0
+python-dotenv>=1.0.0
+PyYAML>=6.0.0
+psycopg2-binary>=2.9.0  # PostgreSQL 数据库驱动
+
+# 回测框架
+backtrader>=1.9.76
+
+# 图表绘制
+matplotlib>=3.7.0
+plotly>=5.14.0
+
+# 通知推送
+requests>=2.28.0
+
+# 定时任务
+APScheduler>=3.9.0
+schedule>=1.1.0
+
+# 日志
+loguru>=0.6.0
+
+# 测试
+pytest>=7.0.0
+pytest-cov>=4.0.0

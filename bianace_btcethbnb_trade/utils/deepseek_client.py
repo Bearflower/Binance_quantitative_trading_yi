@@ -1,249 +1,247 @@
+#!/usr/bin/env python3
+"""
+DeepSeek API client for analyzing Binance data
+"""
+
+import os
+import base64
 import requests
 import json
 from config.settings import DEEPSEEK_API_KEY, DEEPSEEK_API_BASE, DEEPSEEK_MODEL
-import base64
-import os
-import time
-from typing import Optional
+import logging
 
+logger = logging.getLogger('deepseek_client')
 
-def encode_image_to_base64(image_path):
+def encode_image(image_path):
     """
-    Encode image to base64 string
+    Encode image to base64 (for backward compatibility)
+    """
+    try:
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
+    except Exception as e:
+        logger.error(f"Error encoding image: {str(e)}")
+        return None
+
+def send_multiple_screenshots_to_deepseek(screenshot_paths, document_content, currency="COMPREHENSIVE", prompt=None, api_data=None):
+    """
+    Send Binance data to DeepSeek API for analysis
     
     Args:
-        image_path (str): Path to the image file
-    
-    Returns:
-        str: Base64 encoded image
+        screenshot_paths: 截图路径列表（兼容用，实际使用 api_data）
+        document_content: 500U 交易规则文档内容（config/traderule.txt）
+        currency: 币种标识
+        prompt: 分析提示词
+        api_data: API 数据字典
     """
-    with open(image_path, "rb") as image_file:
-        return base64.b64encode(image_file.read()).decode('utf-8')
+    if not DEEPSEEK_API_KEY:
+        logger.error("DeepSeek API key not found")
+        return "Error: DeepSeek API key not configured"
+    
+    # Prepare messages
+    messages = []
+    
+    # Add system prompt with 500U account information
+    system_prompt = """You are a professional cryptocurrency trading analyst specializing in 500U micro-account trading.
 
+**Current Account Status (500U Phase 1)**:
+- Total Capital: 500U
+- Single Position Margin: Fixed 30U (6% of total capital)
+- Maximum Concurrent Positions: 2
+- Reserve Capital: ≥400U (80%)
+- Allowed Signal Grades: S + A only (No B grade)
 
-def send_to_deepseek(screenshot_path, document_content, prompt=None, max_retries=3):
-    """
-    Send screenshot and document content to DeepSeek API with retry mechanism
+**Analysis Requirements**:
+- Strictly follow the provided 500Utrade_rule_v3.0.md rules
+- All trading recommendations must comply with 500U phase 1 specifications
+- Calculate position sizes, stop-loss, and take-profit based on 30U margin per position
+- Use 7-8x leverage for S-grade signals, 5-6x for A-grade signals
+
+Analyze the provided Binance data and provide detailed trading insights following the 500U rules."""
+    messages.append({"role": "system", "content": system_prompt})
     
-    Args:
-        screenshot_path (str): Path to the screenshot image
-        document_content (str): Content of the trade rules document
-        prompt (str): Custom prompt to send with the request
-        max_retries (int): Maximum number of retries for failed requests
+    # Add document content (500U trading rules)
+    if document_content:
+        messages.append({
+            "role": "user", 
+            "content": f"【500U 交易规则 - 必须严格遵守】\n{document_content}"
+        })
+        logger.info(f"Added config/traderule.txt (500U rules) content, length: {len(document_content)} characters")
     
-    Returns:
-        dict: Response from DeepSeek API
-    """
-    if not prompt:
-        prompt = "Based on the trading rules document and the Binance futures contract screenshot, please analyze and provide insights."
+    # Add API data (preferred method)
+    if api_data:
+        # 进一步简化 API 数据，只发送最核心的关键信息
+        simplified_data = {}
+        for symbol, data in api_data.items():
+            # 极度简化指标数据，只保留最核心的值
+            simplified_indicators = {}
+            indicators = data.get('indicators', {})
+            
+            # 只保留时间戳
+            if 'timestamp' in indicators:
+                simplified_indicators['timestamp'] = indicators['timestamp']
+            
+            # 保留所有重要的时间周期和指标
+            for timeframe in ['1d', '4h', '1h', '15m']:  # 保留日线、4 小时、1 小时和 15 分钟线
+                if timeframe in indicators:
+                    tf_data = indicators[timeframe]
+                    simplified_tf = {}
+                    
+                    # 保留核心价格指标
+                    if 'prices' in tf_data and len(tf_data['prices']) > 0:
+                        simplified_tf['price'] = tf_data['prices'][-1]
+                    if 'ema21' in tf_data and len(tf_data['ema21']) > 0:
+                        simplified_tf['ema21'] = tf_data['ema21'][-1]
+                    if 'atr14' in tf_data and len(tf_data['atr14']) > 0:
+                        simplified_tf['atr14'] = tf_data['atr14'][-1]
+                    if 'rsi' in tf_data and len(tf_data['rsi']) > 0:
+                        simplified_tf['rsi'] = tf_data['rsi'][-1]
+                    
+                    simplified_indicators[timeframe] = simplified_tf
+            
+            # 只保留资金费率
+            if 'funding_rate' in indicators:
+                simplified_indicators['funding_rate'] = indicators['funding_rate']
+            
+            simplified_data[symbol] = {
+                "lastPrice": data.get('lastPrice'),
+                "priceChangePercent": data.get('priceChangePercent'),
+                "indicators": simplified_indicators
+            }
+        
+        api_data_str = json.dumps(simplified_data, indent=2, ensure_ascii=False)
+        logger.info(f"Simplified API data length: {len(api_data_str)} characters")
+        
+        # 将提示词放在开头，强调格式要求
+        if prompt:
+            # 提示词在前，API 数据在后，确保 DeepSeek 首先看到格式要求
+            content = f"{prompt}\n\n---\n\n以下是 Binance API 实时数据，请基于上述要求进行分析：\n\n{api_data_str}"
+        else:
+            # 使用默认提示词作为备选
+            default_prompt = "请分析 BTCUSDT、ETHUSDT、BNBUSDT 三个交易对，并提供详细的交易建议，包括：开仓方向、推荐度 (0-100)、强平价、止损价、分批止盈价及对应仓位比例、开仓占用总资金比例。请确保报告完整，不要截断。"
+            content = f"{default_prompt}\n\n---\n\nBinance API data for {currency}:\n{api_data_str}"
+        logger.info(f"Final content length: {len(content)} characters")
+        
+        messages.append({"role": "user", "content": content})
+    elif screenshot_paths:
+        # Fallback to screenshot method (for backward compatibility)
+        image_contents = []
+        
+        for path in screenshot_paths:
+            if os.path.exists(path):
+                if path.endswith('.json'):
+                    # Handle JSON data files
+                    try:
+                        with open(path, 'r') as f:
+                            data = json.load(f)
+                        data_str = json.dumps(data, indent=2, ensure_ascii=False)
+                        image_contents.append(f"Data file {os.path.basename(path)}:\n{data_str}")
+                    except Exception as e:
+                        logger.error(f"Error reading JSON file: {str(e)}")
+                else:
+                    # Handle image files - just add a placeholder since we can't send actual images
+                    image_contents.append(f"[Image file: {os.path.basename(path)}]\n")
+        
+        if image_contents:
+            content = f"Binance trading data for {currency}:\n"
+            for item in image_contents:
+                content += f"{item}\n\n"
+            
+            content += f"\n{prompt or 'Please analyze these screenshots and provide trading insights.'}"
+            messages.append({"role": "user", "content": content})
+        else:
+            logger.error("No valid files found for analysis")
+            return "Error: No valid files for analysis"
+    else:
+        logger.error("No data provided for analysis")
+        return "Error: No data provided for analysis"
     
-    # Check if we're in test mode (no API key)
-    if DEEPSEEK_API_KEY == "your_api_key_here" or not DEEPSEEK_API_KEY or DEEPSEEK_API_KEY.strip() == "":
-        # Return mock response for testing
-        return {
-            "choices": [{
-                "message": {
-                    "content": f"[Mock Response] Analysis of the Binance futures contract with the provided trading rules would go here. In actual implementation, this would be processed by DeepSeek AI.\n\nDocument Content Preview:\n{document_content[:500]}..."
-                }
-            }]
-        }
-    
-    # For DeepSeek, we'll send only the text content since it doesn't support image inputs
-    # We'll describe the image content instead
-    image_description = f"Screenshot of Binance futures contract page saved at: {screenshot_path}"
-    
+    # Prepare API request
     headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {DEEPSEEK_API_KEY}"
     }
     
     payload = {
         "model": DEEPSEEK_MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": f"{prompt}\n\n{image_description}\n\nTrading Rules Document:\n{document_content}"
-            }
-        ],
-        "max_tokens": 2048
+        "messages": messages,
+        "temperature": 0.7,
+        "max_tokens": 8000,  # DeepSeek API max_tokens range: [1, 8192]
+        "timeout": 300
     }
     
-    # Retry mechanism
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(f"{DEEPSEEK_API_BASE}/chat/completions", headers=headers, json=payload)
-            
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 429:  # Rate limit
-                wait_time = 2 ** attempt  # Exponential backoff
-                print(f"Rate limit hit, waiting {wait_time} seconds before retry...")
-                time.sleep(wait_time)
-                continue
-            elif response.status_code == 401:  # Unauthorized
-                raise Exception("Invalid API key")
-            elif response.status_code == 402:  # Insufficient balance
-                raise Exception("Insufficient balance")
-            elif response.status_code == 404:  # Not found
-                raise Exception("Model not found")
-            else:
-                error_msg = f"API request failed with status code {response.status_code}: {response.text}"
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    print(f"Error: {error_msg}, retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    raise Exception(error_msg)
+    # 记录完整的请求内容
+    logger.info(f"Sending request to DeepSeek API with payload:")
+    logger.info(f"Model: {DEEPSEEK_MODEL}")
+    logger.info(f"Messages count: {len(messages)}")
+    for i, msg in enumerate(messages):
+        logger.info(f"Message {i+1} - Role: {msg.get('role', 'unknown')}")
+        content_preview = str(msg.get('content', ''))[:200] + "..." if len(str(msg.get('content', ''))) > 200 else str(msg.get('content', ''))
+        logger.info(f"Message {i+1} - Content preview: {content_preview}")
+    
+    try:
+        logger.info("Sending request to DeepSeek API...")
+        response = requests.post(
+            f"{DEEPSEEK_API_BASE}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=240
+        )
         
-        except requests.exceptions.RequestException as e:
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                print(f"Network error: {str(e)}, retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-                continue
-            else:
-                raise Exception(f"Network error after {max_retries} attempts: {str(e)}")
-    
-    # This should never be reached due to the retry logic
-    raise Exception("Unexpected error")
-
-
-def send_multiple_screenshots_to_deepseek(screenshot_paths, document_content, currency, prompt=None, max_retries=3):
-    """
-    Send multiple screenshots and document content to DeepSeek API with retry mechanism
-    
-    Args:
-        screenshot_paths (list): List of paths to the screenshot images
-        document_content (str): Content of the trade rules document
-        currency (str): Currency pair being analyzed
-        prompt (str): Custom prompt to send with the request
-        max_retries (int): Maximum number of retries for failed requests
-    
-    Returns:
-        dict: Response from DeepSeek API
-    """
-    if not prompt:
-        prompt = f"Based on the trading rules document and multiple Binance futures contract screenshots for {currency}, please analyze and provide comprehensive insights."
-    
-    # Check if we're in test mode (no API key)
-    if DEEPSEEK_API_KEY == "your_api_key_here" or not DEEPSEEK_API_KEY or DEEPSEEK_API_KEY.strip() == "":
-        # Return mock response for testing
-        return {
-            "choices": [{
-                "message": {
-                    "content": f"[Mock Response] Comprehensive analysis of {len(screenshot_paths)} Binance futures contract screenshots for {currency} with the provided trading rules would go here. In actual implementation, this would be processed by DeepSeek AI.\n\nDocument Content Preview:\n{document_content[:500]}...\n\nScreenshots processed: {screenshot_paths}"
-                }
-            }]
-        }
-    
-    # Prepare both image encodings and text descriptions for future multi-modal support
-    encoded_images = []
-    screenshots_description = f"Multiple screenshots of Binance futures contract pages for {currency}:\n"
-    
-    for i, path in enumerate(screenshot_paths, 1):
-        try:
-            # Encode image to base64
-            encoded_image = encode_image_to_base64(path)
-            encoded_images.append({
-                'index': i,
-                'path': path,
-                'encoded': encoded_image,
-                'mime_type': 'image/png'  # Assuming PNG format, adjust as needed
-            })
-            screenshots_description += f"  - Screenshot {i}: {path}\n"
-        except Exception as e:
-            print(f"Warning: Could not encode image {path}: {str(e)}")
-            screenshots_description += f"  - Screenshot {i}: {path} [Could not encode]\n"
-    
-    headers = {
-        "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    
-    # Build message content - currently using text description since DeepSeek doesn't support image inputs
-    # But we're structuring it to be ready for multi-modal support in the future
-    content_text = f"{prompt}\n\n{screenshots_description}\n\nTrading Rules Document:\n{document_content}"
-    
-    # Note: When DeepSeek adds image support, we can modify this to include base64-encoded images
-    # Example format for future use:
-    # content = [
-    #     {"type": "text", "text": prompt},
-    #     * [{"type": "image_url", "image_url": {"url": f"data:{img['mime_type']};base64,{img['encoded']}"} for img in encoded_images],
-    #     {"type": "text", "text": f"Trading Rules Document:\n{document_content}"}
-    # ]
-    
-    payload = {
-        "model": DEEPSEEK_MODEL,
-        "messages": [
-            {
-                "role": "user",
-                "content": content_text
-            }
-        ],
-        "max_tokens": 4096  # Increase tokens for multiple screenshots analysis
-    }
-    
-    # Retry mechanism
-    for attempt in range(max_retries):
-        try:
-            response = requests.post(f"{DEEPSEEK_API_BASE}/chat/completions", headers=headers, json=payload)
+        if response.status_code == 200:
+            result = response.json()
+            logger.info(f"API response received, choices count: {len(result.get('choices', []))}")
             
-            if response.status_code == 200:
-                return response.json()
-            elif response.status_code == 429:  # Rate limit
-                wait_time = 2 ** attempt  # Exponential backoff
-                print(f"Rate limit hit, waiting {wait_time} seconds before retry...")
-                time.sleep(wait_time)
-                continue
-            elif response.status_code == 401:  # Unauthorized
-                raise Exception("Invalid API key")
-            elif response.status_code == 402:  # Insufficient balance
-                raise Exception("Insufficient balance")
-            elif response.status_code == 404:  # Not found
-                raise Exception("Model not found")
+            # 不再保存原始响应为 json 文件，只保留 txt 报告
+            
+            if 'choices' in result and len(result['choices']) > 0:
+                content = result['choices'][0]['message']['content']
+                logger.info(f"Response content length: {len(content)} characters")
+                logger.info(f"Response content preview: {content[:500]}...")
+                
+                # 检查响应是否被截断
+                if len(content) < 1000:
+                    logger.warning("Response content is unusually short, may be truncated")
+                
+                # 检查响应是否包含截断标记
+                truncation_markers = ['...', 'truncated', 'cut off', 'incomplete']
+                if any(marker in content.lower() for marker in truncation_markers):
+                    logger.warning("Response may be truncated, contains truncation markers")
+                
+                # 检查是否所有交易对都有完整分析
+                required_pairs = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
+                missing_pairs = []
+                for pair in required_pairs:
+                    if pair not in content:
+                        missing_pairs.append(pair)
+                
+                if missing_pairs:
+                    logger.warning(f"Response may be incomplete, missing analysis for: {', '.join(missing_pairs)}")
+                
+                return content
             else:
-                error_msg = f"API request failed with status code {response.status_code}: {response.text}"
-                if attempt < max_retries - 1:
-                    wait_time = 2 ** attempt
-                    print(f"Error: {error_msg}, retrying in {wait_time} seconds...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    raise Exception(error_msg)
+                logger.error(f"Invalid response from DeepSeek API: {result}")
+                return f"Error: Invalid response from API: {result}"
+        else:
+            logger.error(f"DeepSeek API error: {response.status_code} - {response.text}")
+            return f"Error: API request failed with status {response.status_code}"
+            
+    except Exception as e:
+        logger.error(f"Error calling DeepSeek API: {str(e)}", exc_info=True)
+        return f"Error: {str(e)}"
+
+def save_response(response, filepath):
+    """
+    Save the analysis response to a file
+    """
+    try:
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
         
-        except requests.exceptions.RequestException as e:
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt
-                print(f"Network error: {str(e)}, retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-                continue
-            else:
-                raise Exception(f"Network error after {max_retries} attempts: {str(e)}")
-    
-    # This should never be reached due to the retry logic
-    raise Exception("Unexpected error")
-
-
-def save_response(response, output_path):
-    """
-    Save DeepSeek response to a text file
-    
-    Args:
-        response (dict): Response from DeepSeek API
-        output_path (str): Path to save the response
-    
-    Returns:
-        str: Path to the saved file
-    """
-    # Extract text content from response
-    content = response['choices'][0]['message']['content']
-    
-    # Ensure output directory exists
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    
-    # Write content to file
-    with open(output_path, 'w', encoding='utf-8') as f:
-        f.write(content)
-    
-    return output_path
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(response)
+        
+        return filepath
+    except Exception as e:
+        logger.error(f"Error saving response: {str(e)}")
+        return None

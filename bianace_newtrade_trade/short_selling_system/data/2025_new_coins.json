@@ -1,0 +1,2662 @@
+[
+  {
+    "symbol": "PRLUSDT",
+    "baseAsset": "PRL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1775039400000,
+    "listTime": 0,
+    "listDate": "2026-04-01",
+    "daysOnline": 1,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BASEDUSDT",
+    "baseAsset": "BASED",
+    "quoteAsset": "USDT",
+    "onboardDate": 1774864800000,
+    "listTime": 0,
+    "listDate": "2026-03-30",
+    "daysOnline": 3,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "XAUTUSDT",
+    "baseAsset": "XAUT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1774533600000,
+    "listTime": 0,
+    "listDate": "2026-03-26",
+    "daysOnline": 7,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BSBUSDT",
+    "baseAsset": "BSB",
+    "quoteAsset": "USDT",
+    "onboardDate": 1774439100000,
+    "listTime": 0,
+    "listDate": "2026-03-25",
+    "daysOnline": 8,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "EDGEUSDT",
+    "baseAsset": "EDGE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1773928800000,
+    "listTime": 0,
+    "listDate": "2026-03-19",
+    "daysOnline": 14,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CFGUSDT",
+    "baseAsset": "CFG",
+    "quoteAsset": "USDT",
+    "onboardDate": 1773666000000,
+    "listTime": 0,
+    "listDate": "2026-03-16",
+    "daysOnline": 17,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "龙虾USDT",
+    "baseAsset": "龙虾",
+    "quoteAsset": "USDT",
+    "onboardDate": 1773228600000,
+    "listTime": 0,
+    "listDate": "2026-03-11",
+    "daysOnline": 22,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MANTRAUSDT",
+    "baseAsset": "MANTRA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1772611200000,
+    "listTime": 0,
+    "listDate": "2026-03-04",
+    "daysOnline": 29,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "KATUSDT",
+    "baseAsset": "KAT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1772427600000,
+    "listTime": 0,
+    "listDate": "2026-03-02",
+    "daysOnline": 31,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ROBOUSDT",
+    "baseAsset": "ROBO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1772181900000,
+    "listTime": 0,
+    "listDate": "2026-02-27",
+    "daysOnline": 34,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "OPNUSDT",
+    "baseAsset": "OPN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1771686000000,
+    "listTime": 0,
+    "listDate": "2026-02-21",
+    "daysOnline": 39,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AZTECUSDT",
+    "baseAsset": "AZTEC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1770784200000,
+    "listTime": 0,
+    "listDate": "2026-02-11",
+    "daysOnline": 50,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ESPUSDT",
+    "baseAsset": "ESP",
+    "quoteAsset": "USDT",
+    "onboardDate": 1770711000000,
+    "listTime": 0,
+    "listDate": "2026-02-10",
+    "daysOnline": 51,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TRIAUSDT",
+    "baseAsset": "TRIA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1770380100000,
+    "listTime": 0,
+    "listDate": "2026-02-06",
+    "daysOnline": 55,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "INXUSDT",
+    "baseAsset": "INX",
+    "quoteAsset": "USDT",
+    "onboardDate": 1769799600000,
+    "listTime": 0,
+    "listDate": "2026-01-31",
+    "daysOnline": 61,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MEGAUSDT",
+    "baseAsset": "MEGA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1769775300000,
+    "listTime": 0,
+    "listDate": "2026-01-30",
+    "daysOnline": 62,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "GWEIUSDT",
+    "baseAsset": "GWEI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1769664600000,
+    "listTime": 0,
+    "listDate": "2026-01-29",
+    "daysOnline": 63,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BIRBUSDT",
+    "baseAsset": "BIRB",
+    "quoteAsset": "USDT",
+    "onboardDate": 1769663700000,
+    "listTime": 0,
+    "listDate": "2026-01-29",
+    "daysOnline": 63,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FIGHTUSDT",
+    "baseAsset": "FIGHT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1769170500000,
+    "listTime": 0,
+    "listDate": "2026-01-23",
+    "daysOnline": 69,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SPACEUSDT",
+    "baseAsset": "SPACE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1769168700000,
+    "listTime": 0,
+    "listDate": "2026-01-23",
+    "daysOnline": 69,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SKRUSDT",
+    "baseAsset": "SKR",
+    "quoteAsset": "USDT",
+    "onboardDate": 1769078700000,
+    "listTime": 0,
+    "listDate": "2026-01-22",
+    "daysOnline": 70,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ELSAUSDT",
+    "baseAsset": "ELSA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1769066700000,
+    "listTime": 0,
+    "listDate": "2026-01-22",
+    "daysOnline": 70,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "我踏马来了USDT",
+    "baseAsset": "我踏马来了",
+    "quoteAsset": "USDT",
+    "onboardDate": 1769005800000,
+    "listTime": 0,
+    "listDate": "2026-01-21",
+    "daysOnline": 70,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ACUUSDT",
+    "baseAsset": "ACU",
+    "quoteAsset": "USDT",
+    "onboardDate": 1768999500000,
+    "listTime": 0,
+    "listDate": "2026-01-21",
+    "daysOnline": 71,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AIAUSDT",
+    "baseAsset": "AIA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1768907700000,
+    "listTime": 0,
+    "listDate": "2026-01-20",
+    "daysOnline": 72,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SPORTFUNUSDT",
+    "baseAsset": "SPORTFUN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1768571100000,
+    "listTime": 0,
+    "listDate": "2026-01-16",
+    "daysOnline": 76,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FRAXUSDT",
+    "baseAsset": "FRAX",
+    "quoteAsset": "USDT",
+    "onboardDate": 1768464000000,
+    "listTime": 0,
+    "listDate": "2026-01-15",
+    "daysOnline": 77,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FOGOUSDT",
+    "baseAsset": "FOGO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1768053600000,
+    "listTime": 0,
+    "listDate": "2026-01-10",
+    "daysOnline": 82,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ZAMAUSDT",
+    "baseAsset": "ZAMA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1767949200000,
+    "listTime": 0,
+    "listDate": "2026-01-09",
+    "daysOnline": 83,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MAGMAUSDT",
+    "baseAsset": "MAGMA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1767187800000,
+    "listTime": 0,
+    "listDate": "2025-12-31",
+    "daysOnline": 92,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "COLLECTUSDT",
+    "baseAsset": "COLLECT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1767186900000,
+    "listTime": 0,
+    "listDate": "2025-12-31",
+    "daysOnline": 92,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BREVUSDT",
+    "baseAsset": "BREV",
+    "quoteAsset": "USDT",
+    "onboardDate": 1767091500000,
+    "listTime": 0,
+    "listDate": "2025-12-30",
+    "daysOnline": 93,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "LITUSDT",
+    "baseAsset": "LIT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1766511000000,
+    "listTime": 0,
+    "listDate": "2025-12-24",
+    "daysOnline": 99,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "IRUSDT",
+    "baseAsset": "IR",
+    "quoteAsset": "USDT",
+    "onboardDate": 1766313000000,
+    "listTime": 0,
+    "listDate": "2025-12-21",
+    "daysOnline": 102,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "GUAUSDT",
+    "baseAsset": "GUA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1766312100000,
+    "listTime": 0,
+    "listDate": "2025-12-21",
+    "daysOnline": 102,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ZKPUSDT",
+    "baseAsset": "ZKP",
+    "quoteAsset": "USDT",
+    "onboardDate": 1766311200000,
+    "listTime": 0,
+    "listDate": "2025-12-21",
+    "daysOnline": 102,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "RAVEUSDT",
+    "baseAsset": "RAVE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1765726200000,
+    "listTime": 0,
+    "listDate": "2025-12-14",
+    "daysOnline": 108,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CYSUSDT",
+    "baseAsset": "CYS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1765537200000,
+    "listTime": 0,
+    "listDate": "2025-12-12",
+    "daysOnline": 111,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "USUSDT",
+    "baseAsset": "US",
+    "quoteAsset": "USDT",
+    "onboardDate": 1765536300000,
+    "listTime": 0,
+    "listDate": "2025-12-12",
+    "daysOnline": 111,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "NIGHTUSDT",
+    "baseAsset": "NIGHT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1765364400000,
+    "listTime": 0,
+    "listDate": "2025-12-10",
+    "daysOnline": 113,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "WETUSDT",
+    "baseAsset": "WET",
+    "quoteAsset": "USDT",
+    "onboardDate": 1765350000000,
+    "listTime": 0,
+    "listDate": "2025-12-10",
+    "daysOnline": 113,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "POWERUSDT",
+    "baseAsset": "POWER",
+    "quoteAsset": "USDT",
+    "onboardDate": 1765011600000,
+    "listTime": 0,
+    "listDate": "2025-12-06",
+    "daysOnline": 117,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "RLSUSDT",
+    "baseAsset": "RLS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1764669600000,
+    "listTime": 0,
+    "listDate": "2025-12-02",
+    "daysOnline": 121,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "IRYSUSDT",
+    "baseAsset": "IRYS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1764172800000,
+    "listTime": 0,
+    "listDate": "2025-11-27",
+    "daysOnline": 126,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BOBUSDT",
+    "baseAsset": "BOB",
+    "quoteAsset": "USDT",
+    "onboardDate": 1763721900000,
+    "listTime": 0,
+    "listDate": "2025-11-21",
+    "daysOnline": 132,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ZECUSDC",
+    "baseAsset": "ZEC",
+    "quoteAsset": "USDC",
+    "onboardDate": 1763548200000,
+    "listTime": 0,
+    "listDate": "2025-11-19",
+    "daysOnline": 134,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SENTUSDT",
+    "baseAsset": "SENT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1763124300000,
+    "listTime": 0,
+    "listDate": "2025-11-14",
+    "daysOnline": 139,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PIEVERSEUSDT",
+    "baseAsset": "PIEVERSE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1763119800000,
+    "listTime": 0,
+    "listDate": "2025-11-14",
+    "daysOnline": 139,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BEATUSDT",
+    "baseAsset": "BEAT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1762949700000,
+    "listTime": 0,
+    "listDate": "2025-11-12",
+    "daysOnline": 141,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CLANKERUSDT",
+    "baseAsset": "CLANKER",
+    "quoteAsset": "USDT",
+    "onboardDate": 1762948800000,
+    "listTime": 0,
+    "listDate": "2025-11-12",
+    "daysOnline": 141,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ALLOUSDT",
+    "baseAsset": "ALLO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1762869600000,
+    "listTime": 0,
+    "listDate": "2025-11-11",
+    "daysOnline": 142,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "JCTUSDT",
+    "baseAsset": "JCT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1762770600000,
+    "listTime": 0,
+    "listDate": "2025-11-10",
+    "daysOnline": 143,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FOLKSUSDT",
+    "baseAsset": "FOLKS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1762432200000,
+    "listTime": 0,
+    "listDate": "2025-11-06",
+    "daysOnline": 147,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "STABLEUSDT",
+    "baseAsset": "STABLE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1762430400000,
+    "listTime": 0,
+    "listDate": "2025-11-06",
+    "daysOnline": 147,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "UAIUSDT",
+    "baseAsset": "UAI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1762428600000,
+    "listTime": 0,
+    "listDate": "2025-11-06",
+    "daysOnline": 147,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TRUSTUSDT",
+    "baseAsset": "TRUST",
+    "quoteAsset": "USDT",
+    "onboardDate": 1762335000000,
+    "listTime": 0,
+    "listDate": "2025-11-05",
+    "daysOnline": 148,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MMTUSDT",
+    "baseAsset": "MMT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1762257600000,
+    "listTime": 0,
+    "listDate": "2025-11-04",
+    "daysOnline": 149,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CCUSDT",
+    "baseAsset": "CC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1761912000000,
+    "listTime": 0,
+    "listDate": "2025-10-31",
+    "daysOnline": 153,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ATUSDT",
+    "baseAsset": "AT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1761737400000,
+    "listTime": 0,
+    "listDate": "2025-10-29",
+    "daysOnline": 155,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "KITEUSDT",
+    "baseAsset": "KITE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1761733800000,
+    "listTime": 0,
+    "listDate": "2025-10-29",
+    "daysOnline": 155,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ONUSDT",
+    "baseAsset": "ON",
+    "quoteAsset": "USDT",
+    "onboardDate": 1761294600000,
+    "listTime": 0,
+    "listDate": "2025-10-24",
+    "daysOnline": 160,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "APRUSDT",
+    "baseAsset": "APR",
+    "quoteAsset": "USDT",
+    "onboardDate": 1761215400000,
+    "listTime": 0,
+    "listDate": "2025-10-23",
+    "daysOnline": 161,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TURTLEUSDT",
+    "baseAsset": "TURTLE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1761145200000,
+    "listTime": 0,
+    "listDate": "2025-10-22",
+    "daysOnline": 161,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BLUAIUSDT",
+    "baseAsset": "BLUAI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1761046200000,
+    "listTime": 0,
+    "listDate": "2025-10-21",
+    "daysOnline": 163,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "币安人生USDT",
+    "baseAsset": "币安人生",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760958000000,
+    "listTime": 0,
+    "listDate": "2025-10-20",
+    "daysOnline": 164,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "RIVERUSDT",
+    "baseAsset": "RIVER",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760712300000,
+    "listTime": 0,
+    "listDate": "2025-10-17",
+    "daysOnline": 166,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "LABUSDT",
+    "baseAsset": "LAB",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760711400000,
+    "listTime": 0,
+    "listDate": "2025-10-17",
+    "daysOnline": 166,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ZBTUSDT",
+    "baseAsset": "ZBT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760700600000,
+    "listTime": 0,
+    "listDate": "2025-10-17",
+    "daysOnline": 167,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "RECALLUSDT",
+    "baseAsset": "RECALL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760531400000,
+    "listTime": 0,
+    "listDate": "2025-10-15",
+    "daysOnline": 169,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CLOUSDT",
+    "baseAsset": "CLO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760441400000,
+    "listTime": 0,
+    "listDate": "2025-10-14",
+    "daysOnline": 170,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ENSOUSDT",
+    "baseAsset": "ENSO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760432400000,
+    "listTime": 0,
+    "listDate": "2025-10-14",
+    "daysOnline": 170,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "EULUSDT",
+    "baseAsset": "EUL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760365800000,
+    "listTime": 0,
+    "listDate": "2025-10-13",
+    "daysOnline": 170,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "METUSDT",
+    "baseAsset": "MET",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760185800000,
+    "listTime": 0,
+    "listDate": "2025-10-11",
+    "daysOnline": 173,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "YBUSDT",
+    "baseAsset": "YB",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760107500000,
+    "listTime": 0,
+    "listDate": "2025-10-10",
+    "daysOnline": 173,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MONUSDT",
+    "baseAsset": "MON",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760080500000,
+    "listTime": 0,
+    "listDate": "2025-10-10",
+    "daysOnline": 174,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "GIGGLEUSDT",
+    "baseAsset": "GIGGLE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1760003100000,
+    "listTime": 0,
+    "listDate": "2025-10-09",
+    "daysOnline": 175,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "4USDT",
+    "baseAsset": "4",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759923000000,
+    "listTime": 0,
+    "listDate": "2025-10-08",
+    "daysOnline": 176,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "KGENUSDT",
+    "baseAsset": "KGEN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759847400000,
+    "listTime": 0,
+    "listDate": "2025-10-07",
+    "daysOnline": 176,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "LYNUSDT",
+    "baseAsset": "LYN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759735800000,
+    "listTime": 0,
+    "listDate": "2025-10-06",
+    "daysOnline": 178,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "EVAAUSDT",
+    "baseAsset": "EVAA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759487400000,
+    "listTime": 0,
+    "listDate": "2025-10-03",
+    "daysOnline": 181,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "2ZUSDT",
+    "baseAsset": "2Z",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759408200000,
+    "listTime": 0,
+    "listDate": "2025-10-02",
+    "daysOnline": 182,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TRUTHUSDT",
+    "baseAsset": "TRUTH",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759321800000,
+    "listTime": 0,
+    "listDate": "2025-10-01",
+    "daysOnline": 183,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "NOMUSDT",
+    "baseAsset": "NOM",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759305600000,
+    "listTime": 0,
+    "listDate": "2025-10-01",
+    "daysOnline": 183,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "EDENUSDT",
+    "baseAsset": "EDEN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759230000000,
+    "listTime": 0,
+    "listDate": "2025-09-30",
+    "daysOnline": 184,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FFUSDT",
+    "baseAsset": "FF",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759150800000,
+    "listTime": 0,
+    "listDate": "2025-09-29",
+    "daysOnline": 185,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "XANUSDT",
+    "baseAsset": "XAN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1759141800000,
+    "listTime": 0,
+    "listDate": "2025-09-29",
+    "daysOnline": 185,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "LIGHTUSDT",
+    "baseAsset": "LIGHT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758972600000,
+    "listTime": 0,
+    "listDate": "2025-09-27",
+    "daysOnline": 187,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ORDERUSDT",
+    "baseAsset": "ORDER",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758890700000,
+    "listTime": 0,
+    "listDate": "2025-09-26",
+    "daysOnline": 188,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AKEUSDT",
+    "baseAsset": "AKE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758889800000,
+    "listTime": 0,
+    "listDate": "2025-09-26",
+    "daysOnline": 188,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MIRAUSDT",
+    "baseAsset": "MIRA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758888000000,
+    "listTime": 0,
+    "listDate": "2025-09-26",
+    "daysOnline": 188,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HANAUSDT",
+    "baseAsset": "HANA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758886200000,
+    "listTime": 0,
+    "listDate": "2025-09-26",
+    "daysOnline": 188,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "COAIUSDT",
+    "baseAsset": "COAI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758785400000,
+    "listTime": 0,
+    "listDate": "2025-09-25",
+    "daysOnline": 189,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FLUIDUSDT",
+    "baseAsset": "FLUID",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758708900000,
+    "listTime": 0,
+    "listDate": "2025-09-24",
+    "daysOnline": 190,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BLESSUSDT",
+    "baseAsset": "BLESS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758619800000,
+    "listTime": 0,
+    "listDate": "2025-09-23",
+    "daysOnline": 191,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TRADOORUSDT",
+    "baseAsset": "TRADOOR",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758285000000,
+    "listTime": 0,
+    "listDate": "2025-09-19",
+    "daysOnline": 195,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ASTERUSDT",
+    "baseAsset": "ASTER",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758283200000,
+    "listTime": 0,
+    "listDate": "2025-09-19",
+    "daysOnline": 195,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BARDUSDT",
+    "baseAsset": "BARD",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758193200000,
+    "listTime": 0,
+    "listDate": "2025-09-18",
+    "daysOnline": 196,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "0GUSDT",
+    "baseAsset": "0G",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758123900000,
+    "listTime": 0,
+    "listDate": "2025-09-17",
+    "daysOnline": 196,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "STBLUSDT",
+    "baseAsset": "STBL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758087900000,
+    "listTime": 0,
+    "listDate": "2025-09-17",
+    "daysOnline": 197,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TOSHIUSDT",
+    "baseAsset": "TOSHI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1758087000000,
+    "listTime": 0,
+    "listDate": "2025-09-17",
+    "daysOnline": 197,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ZKCUSDT",
+    "baseAsset": "ZKC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1757944800000,
+    "listTime": 0,
+    "listDate": "2025-09-15",
+    "daysOnline": 199,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "UBUSDT",
+    "baseAsset": "UB",
+    "quoteAsset": "USDT",
+    "onboardDate": 1757673000000,
+    "listTime": 0,
+    "listDate": "2025-09-12",
+    "daysOnline": 202,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "XPINUSDT",
+    "baseAsset": "XPIN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1757664000000,
+    "listTime": 0,
+    "listDate": "2025-09-12",
+    "daysOnline": 202,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HOLOUSDT",
+    "baseAsset": "HOLO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1757592000000,
+    "listTime": 0,
+    "listDate": "2025-09-11",
+    "daysOnline": 203,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AVNTUSDT",
+    "baseAsset": "AVNT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1757430000000,
+    "listTime": 0,
+    "listDate": "2025-09-09",
+    "daysOnline": 204,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SKYUSDT",
+    "baseAsset": "SKY",
+    "quoteAsset": "USDT",
+    "onboardDate": 1757401200000,
+    "listTime": 0,
+    "listDate": "2025-09-09",
+    "daysOnline": 205,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FLOCKUSDT",
+    "baseAsset": "FLOCK",
+    "quoteAsset": "USDT",
+    "onboardDate": 1757400300000,
+    "listTime": 0,
+    "listDate": "2025-09-09",
+    "daysOnline": 205,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "OPENUSDT",
+    "baseAsset": "OPEN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1757336400000,
+    "listTime": 0,
+    "listDate": "2025-09-08",
+    "daysOnline": 206,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "WLFIUSDC",
+    "baseAsset": "WLFI",
+    "quoteAsset": "USDC",
+    "onboardDate": 1757320200000,
+    "listTime": 0,
+    "listDate": "2025-09-08",
+    "daysOnline": 206,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PTBUSDT",
+    "baseAsset": "PTB",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756902600000,
+    "listTime": 0,
+    "listDate": "2025-09-03",
+    "daysOnline": 211,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TAKEUSDT",
+    "baseAsset": "TAKE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756898100000,
+    "listTime": 0,
+    "listDate": "2025-09-03",
+    "daysOnline": 211,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ARIAUSDT",
+    "baseAsset": "ARIA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756897200000,
+    "listTime": 0,
+    "listDate": "2025-09-03",
+    "daysOnline": 211,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "QUSDT",
+    "baseAsset": "Q",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756798200000,
+    "listTime": 0,
+    "listDate": "2025-09-02",
+    "daysOnline": 212,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "LINEAUSDT",
+    "baseAsset": "LINEA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756715400000,
+    "listTime": 0,
+    "listDate": "2025-09-01",
+    "daysOnline": 213,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HEMIUSDT",
+    "baseAsset": "HEMI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756441800000,
+    "listTime": 0,
+    "listDate": "2025-08-29",
+    "daysOnline": 216,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MITOUSDT",
+    "baseAsset": "MITO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756391400000,
+    "listTime": 0,
+    "listDate": "2025-08-28",
+    "daysOnline": 216,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BTRUSDT",
+    "baseAsset": "BTR",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756290600000,
+    "listTime": 0,
+    "listDate": "2025-08-27",
+    "daysOnline": 218,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BASUSDT",
+    "baseAsset": "BAS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756215000000,
+    "listTime": 0,
+    "listDate": "2025-08-26",
+    "daysOnline": 219,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SOMIUSDT",
+    "baseAsset": "SOMI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1756114200000,
+    "listTime": 0,
+    "listDate": "2025-08-25",
+    "daysOnline": 220,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BIOUSDC",
+    "baseAsset": "BIO",
+    "quoteAsset": "USDC",
+    "onboardDate": 1756106100000,
+    "listTime": 0,
+    "listDate": "2025-08-25",
+    "daysOnline": 220,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "WLFIUSDT",
+    "baseAsset": "WLFI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1755937800000,
+    "listTime": 0,
+    "listDate": "2025-08-23",
+    "daysOnline": 222,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "XPLUSDT",
+    "baseAsset": "XPL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1755855000000,
+    "listTime": 0,
+    "listDate": "2025-08-22",
+    "daysOnline": 223,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SAPIENUSDT",
+    "baseAsset": "SAPIEN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1755711000000,
+    "listTime": 0,
+    "listDate": "2025-08-21",
+    "daysOnline": 224,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "DAMUSDT",
+    "baseAsset": "DAM",
+    "quoteAsset": "USDT",
+    "onboardDate": 1755520200000,
+    "listTime": 0,
+    "listDate": "2025-08-18",
+    "daysOnline": 227,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "USELESSUSDT",
+    "baseAsset": "USELESS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1755260100000,
+    "listTime": 0,
+    "listDate": "2025-08-15",
+    "daysOnline": 230,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "XNYUSDT",
+    "baseAsset": "XNY",
+    "quoteAsset": "USDT",
+    "onboardDate": 1755085500000,
+    "listTime": 0,
+    "listDate": "2025-08-13",
+    "daysOnline": 232,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AIOUSDT",
+    "baseAsset": "AIO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1755084600000,
+    "listTime": 0,
+    "listDate": "2025-08-13",
+    "daysOnline": 232,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CARVUSDT",
+    "baseAsset": "CARV",
+    "quoteAsset": "USDT",
+    "onboardDate": 1754585100000,
+    "listTime": 0,
+    "listDate": "2025-08-08",
+    "daysOnline": 237,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "INUSDT",
+    "baseAsset": "IN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1754562600000,
+    "listTime": 0,
+    "listDate": "2025-08-07",
+    "daysOnline": 238,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ALLUSDT",
+    "baseAsset": "ALL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1754470800000,
+    "listTime": 0,
+    "listDate": "2025-08-06",
+    "daysOnline": 239,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PROVEUSDT",
+    "baseAsset": "PROVE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1754413200000,
+    "listTime": 0,
+    "listDate": "2025-08-06",
+    "daysOnline": 239,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TOWNSUSDT",
+    "baseAsset": "TOWNS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1754404200000,
+    "listTime": 0,
+    "listDate": "2025-08-05",
+    "daysOnline": 239,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "NAORISUSDT",
+    "baseAsset": "NAORIS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1753965000000,
+    "listTime": 0,
+    "listDate": "2025-07-31",
+    "daysOnline": 245,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PLAYUSDT",
+    "baseAsset": "PLAY",
+    "quoteAsset": "USDT",
+    "onboardDate": 1753954200000,
+    "listTime": 0,
+    "listDate": "2025-07-31",
+    "daysOnline": 245,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TREEUSDT",
+    "baseAsset": "TREE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1753797600000,
+    "listTime": 0,
+    "listDate": "2025-07-29",
+    "daysOnline": 247,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ESPORTSUSDT",
+    "baseAsset": "ESPORTS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1753783200000,
+    "listTime": 0,
+    "listDate": "2025-07-29",
+    "daysOnline": 247,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TAGUSDT",
+    "baseAsset": "TAG",
+    "quoteAsset": "USDT",
+    "onboardDate": 1753442100000,
+    "listTime": 0,
+    "listDate": "2025-07-25",
+    "daysOnline": 251,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ZORAUSDT",
+    "baseAsset": "ZORA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1753441200000,
+    "listTime": 0,
+    "listDate": "2025-07-25",
+    "daysOnline": 251,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SLPUSDT",
+    "baseAsset": "SLP",
+    "quoteAsset": "USDT",
+    "onboardDate": 1753271100000,
+    "listTime": 0,
+    "listDate": "2025-07-23",
+    "daysOnline": 253,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CVXUSDT",
+    "baseAsset": "CVX",
+    "quoteAsset": "USDT",
+    "onboardDate": 1753270200000,
+    "listTime": 0,
+    "listDate": "2025-07-23",
+    "daysOnline": 253,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PENGUUSDC",
+    "baseAsset": "PENGU",
+    "quoteAsset": "USDC",
+    "onboardDate": 1753255800000,
+    "listTime": 0,
+    "listDate": "2025-07-23",
+    "daysOnline": 253,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TAUSDT",
+    "baseAsset": "TA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1753083000000,
+    "listTime": 0,
+    "listDate": "2025-07-21",
+    "daysOnline": 255,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ERAUSDT",
+    "baseAsset": "ERA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1752759000000,
+    "listTime": 0,
+    "listDate": "2025-07-17",
+    "daysOnline": 259,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TACUSDT",
+    "baseAsset": "TAC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1752575400000,
+    "listTime": 0,
+    "listDate": "2025-07-15",
+    "daysOnline": 261,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "VELVETUSDT",
+    "baseAsset": "VELVET",
+    "quoteAsset": "USDT",
+    "onboardDate": 1752570900000,
+    "listTime": 0,
+    "listDate": "2025-07-15",
+    "daysOnline": 261,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CUSDT",
+    "baseAsset": "C",
+    "quoteAsset": "USDT",
+    "onboardDate": 1752570000000,
+    "listTime": 0,
+    "listDate": "2025-07-15",
+    "daysOnline": 261,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AINUSDT",
+    "baseAsset": "AIN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1752144300000,
+    "listTime": 0,
+    "listDate": "2025-07-10",
+    "daysOnline": 266,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CROSSUSDT",
+    "baseAsset": "CROSS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1752143400000,
+    "listTime": 0,
+    "listDate": "2025-07-10",
+    "daysOnline": 266,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PUMPUSDT",
+    "baseAsset": "PUMP",
+    "quoteAsset": "USDT",
+    "onboardDate": 1752132600000,
+    "listTime": 0,
+    "listDate": "2025-07-10",
+    "daysOnline": 266,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MUSDT",
+    "baseAsset": "M",
+    "quoteAsset": "USDT",
+    "onboardDate": 1751880600000,
+    "listTime": 0,
+    "listDate": "2025-07-07",
+    "daysOnline": 269,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "IDOLUSDT",
+    "baseAsset": "IDOL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1751620500000,
+    "listTime": 0,
+    "listDate": "2025-07-04",
+    "daysOnline": 272,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BULLAUSDT",
+    "baseAsset": "BULLA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1751619600000,
+    "listTime": 0,
+    "listDate": "2025-07-04",
+    "daysOnline": 272,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ICNTUSDT",
+    "baseAsset": "ICNT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1751547600000,
+    "listTime": 0,
+    "listDate": "2025-07-03",
+    "daysOnline": 273,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SAHARAUSDT",
+    "baseAsset": "SAHARA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1750939200000,
+    "listTime": 0,
+    "listDate": "2025-06-26",
+    "daysOnline": 280,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "OLUSDT",
+    "baseAsset": "OL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1750851000000,
+    "listTime": 0,
+    "listDate": "2025-06-25",
+    "daysOnline": 281,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HUSDT",
+    "baseAsset": "H",
+    "quoteAsset": "USDT",
+    "onboardDate": 1750843800000,
+    "listTime": 0,
+    "listDate": "2025-06-25",
+    "daysOnline": 281,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "NEWTUSDT",
+    "baseAsset": "NEWT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1750343400000,
+    "listTime": 0,
+    "listDate": "2025-06-19",
+    "daysOnline": 286,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FUSDT",
+    "baseAsset": "F",
+    "quoteAsset": "USDT",
+    "onboardDate": 1750250700000,
+    "listTime": 0,
+    "listDate": "2025-06-18",
+    "daysOnline": 288,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MYXUSDT",
+    "baseAsset": "MYX",
+    "quoteAsset": "USDT",
+    "onboardDate": 1750249800000,
+    "listTime": 0,
+    "listDate": "2025-06-18",
+    "daysOnline": 288,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SPKUSDT",
+    "baseAsset": "SPK",
+    "quoteAsset": "USDT",
+    "onboardDate": 1750150800000,
+    "listTime": 0,
+    "listDate": "2025-06-17",
+    "daysOnline": 289,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "UNIUSDC",
+    "baseAsset": "UNI",
+    "quoteAsset": "USDC",
+    "onboardDate": 1750063500000,
+    "listTime": 0,
+    "listDate": "2025-06-16",
+    "daysOnline": 290,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AAVEUSDC",
+    "baseAsset": "AAVE",
+    "quoteAsset": "USDC",
+    "onboardDate": 1750062600000,
+    "listTime": 0,
+    "listDate": "2025-06-16",
+    "daysOnline": 290,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PUMPBTCUSDT",
+    "baseAsset": "PUMPBTC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1749808800000,
+    "listTime": 0,
+    "listDate": "2025-06-13",
+    "daysOnline": 293,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SQDUSDT",
+    "baseAsset": "SQD",
+    "quoteAsset": "USDT",
+    "onboardDate": 1749645900000,
+    "listTime": 0,
+    "listDate": "2025-06-11",
+    "daysOnline": 295,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TAIKOUSDT",
+    "baseAsset": "TAIKO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1749645000000,
+    "listTime": 0,
+    "listDate": "2025-06-11",
+    "daysOnline": 295,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "RESOLVUSDT",
+    "baseAsset": "RESOLV",
+    "quoteAsset": "USDT",
+    "onboardDate": 1749562200000,
+    "listTime": 0,
+    "listDate": "2025-06-10",
+    "daysOnline": 296,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HOMEUSDT",
+    "baseAsset": "HOME",
+    "quoteAsset": "USDT",
+    "onboardDate": 1749555000000,
+    "listTime": 0,
+    "listDate": "2025-06-10",
+    "daysOnline": 296,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "LAUSDT",
+    "baseAsset": "LA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1749114000000,
+    "listTime": 0,
+    "listDate": "2025-06-05",
+    "daysOnline": 301,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "1000000BOBUSDT",
+    "baseAsset": "1000000BOB",
+    "quoteAsset": "USDT",
+    "onboardDate": 1749112200000,
+    "listTime": 0,
+    "listDate": "2025-06-05",
+    "daysOnline": 301,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PUFFERUSDT",
+    "baseAsset": "PUFFER",
+    "quoteAsset": "USDT",
+    "onboardDate": 1749025800000,
+    "listTime": 0,
+    "listDate": "2025-06-04",
+    "daysOnline": 302,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HYPEUSDT",
+    "baseAsset": "HYPE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1748601000000,
+    "listTime": 0,
+    "listDate": "2025-05-30",
+    "daysOnline": 307,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MERLUSDT",
+    "baseAsset": "MERL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1748507400000,
+    "listTime": 0,
+    "listDate": "2025-05-29",
+    "daysOnline": 308,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SOPHUSDT",
+    "baseAsset": "SOPH",
+    "quoteAsset": "USDT",
+    "onboardDate": 1748437200000,
+    "listTime": 0,
+    "listDate": "2025-05-28",
+    "daysOnline": 309,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AUSDT",
+    "baseAsset": "A",
+    "quoteAsset": "USDT",
+    "onboardDate": 1748419200000,
+    "listTime": 0,
+    "listDate": "2025-05-28",
+    "daysOnline": 309,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HUMAUSDT",
+    "baseAsset": "HUMA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1748264400000,
+    "listTime": 0,
+    "listDate": "2025-05-26",
+    "daysOnline": 311,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SOONUSDT",
+    "baseAsset": "SOON",
+    "quoteAsset": "USDT",
+    "onboardDate": 1747989000000,
+    "listTime": 0,
+    "listDate": "2025-05-23",
+    "daysOnline": 314,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BUSDT",
+    "baseAsset": "B",
+    "quoteAsset": "USDT",
+    "onboardDate": 1747931400000,
+    "listTime": 0,
+    "listDate": "2025-05-23",
+    "daysOnline": 314,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AWEUSDT",
+    "baseAsset": "AWE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1747814400000,
+    "listTime": 0,
+    "listDate": "2025-05-21",
+    "daysOnline": 316,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AGTUSDT",
+    "baseAsset": "AGT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1747737000000,
+    "listTime": 0,
+    "listDate": "2025-05-20",
+    "daysOnline": 317,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CVCUSDT",
+    "baseAsset": "CVC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1747384200000,
+    "listTime": 0,
+    "listDate": "2025-05-16",
+    "daysOnline": 321,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "NXPCUSDT",
+    "baseAsset": "NXPC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1747290600000,
+    "listTime": 0,
+    "listDate": "2025-05-15",
+    "daysOnline": 322,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SKYAIUSDT",
+    "baseAsset": "SKYAI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1747129500000,
+    "listTime": 0,
+    "listDate": "2025-05-13",
+    "daysOnline": 324,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ZKJUSDT",
+    "baseAsset": "ZKJ",
+    "quoteAsset": "USDT",
+    "onboardDate": 1747128600000,
+    "listTime": 0,
+    "listDate": "2025-05-13",
+    "daysOnline": 324,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "OGUSDT",
+    "baseAsset": "OG",
+    "quoteAsset": "USDT",
+    "onboardDate": 1747040400000,
+    "listTime": 0,
+    "listDate": "2025-05-12",
+    "daysOnline": 325,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "DOODUSDT",
+    "baseAsset": "DOOD",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746797400000,
+    "listTime": 0,
+    "listDate": "2025-05-09",
+    "daysOnline": 328,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SYRUPUSDT",
+    "baseAsset": "SYRUP",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746606600000,
+    "listTime": 0,
+    "listDate": "2025-05-07",
+    "daysOnline": 330,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "B2USDT",
+    "baseAsset": "B2",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746538200000,
+    "listTime": 0,
+    "listDate": "2025-05-06",
+    "daysOnline": 331,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ALPINEUSDT",
+    "baseAsset": "ALPINE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746524700000,
+    "listTime": 0,
+    "listDate": "2025-05-06",
+    "daysOnline": 331,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ASRUSDT",
+    "baseAsset": "ASR",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746523800000,
+    "listTime": 0,
+    "listDate": "2025-05-06",
+    "daysOnline": 331,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SXTUSDT",
+    "baseAsset": "SXT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746174600000,
+    "listTime": 0,
+    "listDate": "2025-05-02",
+    "daysOnline": 335,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HAEDALUSDT",
+    "baseAsset": "HAEDAL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746069300000,
+    "listTime": 0,
+    "listDate": "2025-05-01",
+    "daysOnline": 336,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "DOLOUSDT",
+    "baseAsset": "DOLO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746068400000,
+    "listTime": 0,
+    "listDate": "2025-05-01",
+    "daysOnline": 336,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AIOTUSDT",
+    "baseAsset": "AIOT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746016200000,
+    "listTime": 0,
+    "listDate": "2025-04-30",
+    "daysOnline": 337,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "CTKUSDT",
+    "baseAsset": "CTK",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746008100000,
+    "listTime": 0,
+    "listDate": "2025-04-30",
+    "daysOnline": 337,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PUNDIXUSDT",
+    "baseAsset": "PUNDIX",
+    "quoteAsset": "USDT",
+    "onboardDate": 1746007200000,
+    "listTime": 0,
+    "listDate": "2025-04-30",
+    "daysOnline": 337,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SIGNUSDT",
+    "baseAsset": "SIGN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1745838000000,
+    "listTime": 0,
+    "listDate": "2025-04-28",
+    "daysOnline": 339,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "JSTUSDT",
+    "baseAsset": "JST",
+    "quoteAsset": "USDT",
+    "onboardDate": 1745832600000,
+    "listTime": 0,
+    "listDate": "2025-04-28",
+    "daysOnline": 339,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HYPERUSDT",
+    "baseAsset": "HYPER",
+    "quoteAsset": "USDT",
+    "onboardDate": 1745326800000,
+    "listTime": 0,
+    "listDate": "2025-04-22",
+    "daysOnline": 345,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "DEEPUSDT",
+    "baseAsset": "DEEP",
+    "quoteAsset": "USDT",
+    "onboardDate": 1745310600000,
+    "listTime": 0,
+    "listDate": "2025-04-22",
+    "daysOnline": 345,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BANKUSDT",
+    "baseAsset": "BANK",
+    "quoteAsset": "USDT",
+    "onboardDate": 1745001000000,
+    "listTime": 0,
+    "listDate": "2025-04-19",
+    "daysOnline": 348,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AERGOUSDT",
+    "baseAsset": "AERGO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1744801200000,
+    "listTime": 0,
+    "listDate": "2025-04-16",
+    "daysOnline": 351,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "INITUSDT",
+    "baseAsset": "INIT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1744785000000,
+    "listTime": 0,
+    "listDate": "2025-04-16",
+    "daysOnline": 351,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "WCTUSDT",
+    "baseAsset": "WCT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1744714800000,
+    "listTime": 0,
+    "listDate": "2025-04-15",
+    "daysOnline": 352,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "KERNELUSDT",
+    "baseAsset": "KERNEL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1744632000000,
+    "listTime": 0,
+    "listDate": "2025-04-14",
+    "daysOnline": 353,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FHEUSDT",
+    "baseAsset": "FHE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1744470000000,
+    "listTime": 0,
+    "listDate": "2025-04-12",
+    "daysOnline": 354,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "STOUSDT",
+    "baseAsset": "STO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1744469100000,
+    "listTime": 0,
+    "listDate": "2025-04-12",
+    "daysOnline": 354,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PROMPTUSDT",
+    "baseAsset": "PROMPT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1744353000000,
+    "listTime": 0,
+    "listDate": "2025-04-11",
+    "daysOnline": 356,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BABYUSDT",
+    "baseAsset": "BABY",
+    "quoteAsset": "USDT",
+    "onboardDate": 1743859800000,
+    "listTime": 0,
+    "listDate": "2025-04-05",
+    "daysOnline": 362,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ATHUSDT",
+    "baseAsset": "ATH",
+    "quoteAsset": "USDT",
+    "onboardDate": 1743608700000,
+    "listTime": 0,
+    "listDate": "2025-04-02",
+    "daysOnline": 364,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "GUNUSDT",
+    "baseAsset": "GUN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1743426000000,
+    "listTime": 0,
+    "listDate": "2025-03-31",
+    "daysOnline": 367,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MLNUSDT",
+    "baseAsset": "MLN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1743410700000,
+    "listTime": 0,
+    "listDate": "2025-03-31",
+    "daysOnline": 367,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FUNUSDT",
+    "baseAsset": "FUN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1743409800000,
+    "listTime": 0,
+    "listDate": "2025-03-31",
+    "daysOnline": 367,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "WALUSDT",
+    "baseAsset": "WAL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1743089400000,
+    "listTime": 0,
+    "listDate": "2025-03-27",
+    "daysOnline": 370,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PAXGUSDT",
+    "baseAsset": "PAXG",
+    "quoteAsset": "USDT",
+    "onboardDate": 1743071400000,
+    "listTime": 0,
+    "listDate": "2025-03-27",
+    "daysOnline": 371,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MAVIAUSDT",
+    "baseAsset": "MAVIA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1743005700000,
+    "listTime": 0,
+    "listDate": "2025-03-27",
+    "daysOnline": 371,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "JELLYJELLYUSDT",
+    "baseAsset": "JELLYJELLY",
+    "quoteAsset": "USDT",
+    "onboardDate": 1743004800000,
+    "listTime": 0,
+    "listDate": "2025-03-27",
+    "daysOnline": 371,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PARTIUSDT",
+    "baseAsset": "PARTI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742907600000,
+    "listTime": 0,
+    "listDate": "2025-03-25",
+    "daysOnline": 373,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "NILUSDT",
+    "baseAsset": "NIL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742821200000,
+    "listTime": 0,
+    "listDate": "2025-03-24",
+    "daysOnline": 374,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BANANAS31USDT",
+    "baseAsset": "BANANAS31",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742634900000,
+    "listTime": 0,
+    "listDate": "2025-03-22",
+    "daysOnline": 376,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SIRENUSDT",
+    "baseAsset": "SIREN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742634000000,
+    "listTime": 0,
+    "listDate": "2025-03-22",
+    "daysOnline": 376,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PLUMEUSDT",
+    "baseAsset": "PLUME",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742562000000,
+    "listTime": 0,
+    "listDate": "2025-03-21",
+    "daysOnline": 377,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BRUSDT",
+    "baseAsset": "BR",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742561100000,
+    "listTime": 0,
+    "listDate": "2025-03-21",
+    "daysOnline": 377,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BROCCOLIF3BUSDT",
+    "baseAsset": "BROCCOLIF3B",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742548500000,
+    "listTime": 0,
+    "listDate": "2025-03-21",
+    "daysOnline": 377,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BROCCOLI714USDT",
+    "baseAsset": "BROCCOLI714",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742547600000,
+    "listTime": 0,
+    "listDate": "2025-03-21",
+    "daysOnline": 377,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TUTUSDT",
+    "baseAsset": "TUT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742461200000,
+    "listTime": 0,
+    "listDate": "2025-03-20",
+    "daysOnline": 378,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "FORMUSDT",
+    "baseAsset": "FORM",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742371200000,
+    "listTime": 0,
+    "listDate": "2025-03-19",
+    "daysOnline": 379,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MUBARAKUSDT",
+    "baseAsset": "MUBARAK",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742219100000,
+    "listTime": 0,
+    "listDate": "2025-03-17",
+    "daysOnline": 381,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BMTUSDT",
+    "baseAsset": "BMT",
+    "quoteAsset": "USDT",
+    "onboardDate": 1742218200000,
+    "listTime": 0,
+    "listDate": "2025-03-17",
+    "daysOnline": 381,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "EPICUSDT",
+    "baseAsset": "EPIC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1741852800000,
+    "listTime": 0,
+    "listDate": "2025-03-13",
+    "daysOnline": 385,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "VICUSDT",
+    "baseAsset": "VIC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1741798800000,
+    "listTime": 0,
+    "listDate": "2025-03-13",
+    "daysOnline": 385,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HBARUSDC",
+    "baseAsset": "HBAR",
+    "quoteAsset": "USDC",
+    "onboardDate": 1741342500000,
+    "listTime": 0,
+    "listDate": "2025-03-07",
+    "daysOnline": 391,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PNUTUSDC",
+    "baseAsset": "PNUT",
+    "quoteAsset": "USDC",
+    "onboardDate": 1741341600000,
+    "listTime": 0,
+    "listDate": "2025-03-07",
+    "daysOnline": 391,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "REDUSDT",
+    "baseAsset": "RED",
+    "quoteAsset": "USDT",
+    "onboardDate": 1741276800000,
+    "listTime": 0,
+    "listDate": "2025-03-07",
+    "daysOnline": 391,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ADAUSDC",
+    "baseAsset": "ADA",
+    "quoteAsset": "USDC",
+    "onboardDate": 1741256100000,
+    "listTime": 0,
+    "listDate": "2025-03-06",
+    "daysOnline": 392,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TRUMPUSDC",
+    "baseAsset": "TRUMP",
+    "quoteAsset": "USDC",
+    "onboardDate": 1741255200000,
+    "listTime": 0,
+    "listDate": "2025-03-06",
+    "daysOnline": 392,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "IPUSDC",
+    "baseAsset": "IP",
+    "quoteAsset": "USDC",
+    "onboardDate": 1741169700000,
+    "listTime": 0,
+    "listDate": "2025-03-05",
+    "daysOnline": 393,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "KAITOUSDC",
+    "baseAsset": "KAITO",
+    "quoteAsset": "USDC",
+    "onboardDate": 1741168800000,
+    "listTime": 0,
+    "listDate": "2025-03-05",
+    "daysOnline": 393,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "KAITOUSDT",
+    "baseAsset": "KAITO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1740056400000,
+    "listTime": 0,
+    "listDate": "2025-02-20",
+    "daysOnline": 406,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SHELLUSDT",
+    "baseAsset": "SHELL",
+    "quoteAsset": "USDT",
+    "onboardDate": 1739812500000,
+    "listTime": 0,
+    "listDate": "2025-02-18",
+    "daysOnline": 408,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "GPSUSDT",
+    "baseAsset": "GPS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1739811600000,
+    "listTime": 0,
+    "listDate": "2025-02-18",
+    "daysOnline": 408,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "IPUSDT",
+    "baseAsset": "IP",
+    "quoteAsset": "USDT",
+    "onboardDate": 1739466000000,
+    "listTime": 0,
+    "listDate": "2025-02-14",
+    "daysOnline": 412,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "B3USDT",
+    "baseAsset": "B3",
+    "quoteAsset": "USDT",
+    "onboardDate": 1739446200000,
+    "listTime": 0,
+    "listDate": "2025-02-13",
+    "daysOnline": 413,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "HEIUSDT",
+    "baseAsset": "HEI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1739437200000,
+    "listTime": 0,
+    "listDate": "2025-02-13",
+    "daysOnline": 413,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "LAYERUSDT",
+    "baseAsset": "LAYER",
+    "quoteAsset": "USDT",
+    "onboardDate": 1739288700000,
+    "listTime": 0,
+    "listDate": "2025-02-11",
+    "daysOnline": 414,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TSTUSDT",
+    "baseAsset": "TST",
+    "quoteAsset": "USDT",
+    "onboardDate": 1739106000000,
+    "listTime": 0,
+    "listDate": "2025-02-09",
+    "daysOnline": 417,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BERAUSDT",
+    "baseAsset": "BERA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1738854000000,
+    "listTime": 0,
+    "listDate": "2025-02-06",
+    "daysOnline": 419,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "VVVUSDT",
+    "baseAsset": "VVV",
+    "quoteAsset": "USDT",
+    "onboardDate": 1738138500000,
+    "listTime": 0,
+    "listDate": "2025-01-29",
+    "daysOnline": 428,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PIPPINUSDT",
+    "baseAsset": "PIPPIN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737713700000,
+    "listTime": 0,
+    "listDate": "2025-01-24",
+    "daysOnline": 433,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "VINEUSDT",
+    "baseAsset": "VINE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737712800000,
+    "listTime": 0,
+    "listDate": "2025-01-24",
+    "daysOnline": 433,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ANIMEUSDT",
+    "baseAsset": "ANIME",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737651600000,
+    "listTime": 0,
+    "listDate": "2025-01-24",
+    "daysOnline": 433,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "VTHOUSDT",
+    "baseAsset": "VTHO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737538200000,
+    "listTime": 0,
+    "listDate": "2025-01-22",
+    "daysOnline": 435,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "MELANIAUSDT",
+    "baseAsset": "MELANIA",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737365400000,
+    "listTime": 0,
+    "listDate": "2025-01-20",
+    "daysOnline": 437,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "TRUMPUSDT",
+    "baseAsset": "TRUMP",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737205200000,
+    "listTime": 0,
+    "listDate": "2025-01-18",
+    "daysOnline": 439,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "AVAAIUSDT",
+    "baseAsset": "AVAAI",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737119700000,
+    "listTime": 0,
+    "listDate": "2025-01-17",
+    "daysOnline": 440,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ARCUSDT",
+    "baseAsset": "ARC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737118800000,
+    "listTime": 0,
+    "listDate": "2025-01-17",
+    "daysOnline": 440,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SOLVUSDT",
+    "baseAsset": "SOLV",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737116100000,
+    "listTime": 0,
+    "listDate": "2025-01-17",
+    "daysOnline": 440,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SUSDT",
+    "baseAsset": "S",
+    "quoteAsset": "USDT",
+    "onboardDate": 1737021600000,
+    "listTime": 0,
+    "listDate": "2025-01-16",
+    "daysOnline": 441,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "PROMUSDT",
+    "baseAsset": "PROM",
+    "quoteAsset": "USDT",
+    "onboardDate": 1736944200000,
+    "listTime": 0,
+    "listDate": "2025-01-15",
+    "daysOnline": 442,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "DUSDT",
+    "baseAsset": "D",
+    "quoteAsset": "USDT",
+    "onboardDate": 1736416800000,
+    "listTime": 0,
+    "listDate": "2025-01-09",
+    "daysOnline": 448,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SONICUSDT",
+    "baseAsset": "SONIC",
+    "quoteAsset": "USDT",
+    "onboardDate": 1736319600000,
+    "listTime": 0,
+    "listDate": "2025-01-08",
+    "daysOnline": 449,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "SWARMSUSDT",
+    "baseAsset": "SWARMS",
+    "quoteAsset": "USDT",
+    "onboardDate": 1736252100000,
+    "listTime": 0,
+    "listDate": "2025-01-07",
+    "daysOnline": 450,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ALCHUSDT",
+    "baseAsset": "ALCH",
+    "quoteAsset": "USDT",
+    "onboardDate": 1736250300000,
+    "listTime": 0,
+    "listDate": "2025-01-07",
+    "daysOnline": 450,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "COOKIEUSDT",
+    "baseAsset": "COOKIE",
+    "quoteAsset": "USDT",
+    "onboardDate": 1736249400000,
+    "listTime": 0,
+    "listDate": "2025-01-07",
+    "daysOnline": 450,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "BIOUSDT",
+    "baseAsset": "BIO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1735906500000,
+    "listTime": 0,
+    "listDate": "2025-01-03",
+    "daysOnline": 454,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "ZEREBROUSDT",
+    "baseAsset": "ZEREBRO",
+    "quoteAsset": "USDT",
+    "onboardDate": 1735826400000,
+    "listTime": 0,
+    "listDate": "2025-01-02",
+    "daysOnline": 455,
+    "status": "TRADING"
+  },
+  {
+    "symbol": "GRIFFAINUSDT",
+    "baseAsset": "GRIFFAIN",
+    "quoteAsset": "USDT",
+    "onboardDate": 1735824600000,
+    "listTime": 0,
+    "listDate": "2025-01-02",
+    "daysOnline": 455,
+    "status": "TRADING"
+  }
+]

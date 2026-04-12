@@ -1,0 +1,12 @@
+# 服务器配置
+SERVER_IP="43.156.242.184"
+SERVER_USER="root"
+SERVER_PROJECT_PATH="/root/ai-editorial-system"
+
+# Docker 配置
+DOCKER_CONTAINER_NAME="ai-editorial-system"
+DOCKER_IMAGE_NAME="ai-editorial-system:latest"
+
+# 项目配置
+PROJECT_NAME="ai-editorial-system"
+DEPLOY_PACKAGE_NAME="deployment_package.tar.gz"

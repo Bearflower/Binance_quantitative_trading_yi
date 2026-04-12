@@ -1,0 +1,59 @@
+{
+  "backtest": {
+    "initial_capital": 500,
+    "position_size": 4,
+    "leverage": 5,
+    "fee_rate": 0.0004,
+    "slippage": 0.001,
+    "max_rescore_attempts": 3,
+    "rescore_interval_minutes": 30
+  },
+  "scoring": {
+    "weights": {
+      "contract": 0.35,
+      "fundamental": 0.30,
+      "technical": 0.25,
+      "sentiment": 0.10
+    },
+    "new_coin_weights": {
+      "contract": 0.40,
+      "fundamental": 0.20,
+      "technical": 0.35,
+      "sentiment": 0.05
+    },
+    "veto_rules": {
+      "oi_market_cap_ratio_max": 1.0,
+      "listing_hours_max": 168
+    },
+    "signal_threshold": 3.5
+  },
+  "signal": {
+    "stop_loss_atr": 2.5,
+    "tp1_atr": 4.0,
+    "tp2_atr": 6.0,
+    "tp1_percentage": 0.20,
+    "tp2_percentage": 0.30,
+    "time_stop_hours": 24,
+    "stop_loss_percentage": 0.04,
+    "sar_af_start": 0.02,
+    "sar_af_max": 0.2
+  },
+  "data": {
+    "target_symbols": [
+      "PRLUSDT",
+      "NATGASUSDT",
+      "BAUSDT",
+      "BZUSDT",
+      "CLUSDT",
+      "BASEUSDT",
+      "GOOGLUSDT",
+      "NVDAUSDT",
+      "METAUSDT",
+      "XAUTUSDT",
+      "BSBUSDT",
+      "PAYPUSDT"
+    ],
+    "default_days": 180,
+    "timeframes": ["1d", "4h", "1h"]
+  }
+}

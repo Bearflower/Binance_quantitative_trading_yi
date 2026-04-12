@@ -1,0 +1,19 @@
+# 服务器自动化巡检脚本定时任务
+# 每天07:30执行
+30 7 * * * cd /Users/yl/vscode/bianace_newtrade_notice && ./server_check.sh >> /Users/yl/vscode/bianace_newtrade_notice/logs/server_check.log 2>&1
+
+# 说明：
+# 1. 30 7 * * * 表示每天7点30分执行
+# 2. cd 到脚本所在目录
+# 3. 执行巡检脚本
+# 4. 将输出重定向到日志文件
+
+# 安装方法：
+# 1. 查看当前crontab配置：crontab -l
+# 2. 编辑crontab配置：crontab -e
+# 3. 将上面的定时任务添加到文件末尾
+# 4. 保存退出
+# 5. 验证配置：crontab -l
+
+# 日志查看：
+# tail -f /Users/yl/vscode/bianace_newtrade_notice/logs/server_check.log

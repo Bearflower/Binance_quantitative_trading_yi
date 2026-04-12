@@ -1,0 +1,13 @@
+[Unit]
+Description=K 线数据同步监控定时器
+Documentation=file:///Users/yl/vscode/stockfilter/docs/monitoring/同步监控方案.md
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=1min
+Persistent=true
+Unit=sync-monitor.service
+
+[Install]
+WantedBy=timers.target

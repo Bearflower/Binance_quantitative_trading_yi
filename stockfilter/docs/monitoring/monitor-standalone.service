@@ -1,0 +1,30 @@
+[Unit]
+Description=K 线数据同步监控服务（独立部署）
+Documentation=file:///Users/yl/vscode/stockfilter/docs/monitoring/README.md
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/stockfilter
+ExecStart=/bin/bash /root/stockfilter/monitor_standalone.sh
+Restart=always
+RestartSec=30
+StandardOutput=append:/var/log/stockfilter/monitor.out.log
+StandardError=append:/var/log/stockfilter/monitor.err.log
+
+# 环境变量
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# 资源限制
+MemoryLimit=256M
+CPUQuota=5%
+
+# 安全设置
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/root/stockfilter/logs
+
+[Install]
+WantedBy=multi-user.target

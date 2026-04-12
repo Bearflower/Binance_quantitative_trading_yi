@@ -1,0 +1,12 @@
+# 服务器配置
+SERVER_IP="43.156.242.184"
+SERVER_USER="root"
+SERVER_PROJECT_PATH="/root/binance-trade-analyzer"
+
+# Docker 配置
+DOCKER_CONTAINER_NAME="binance-trade-analyzer"
+DOCKER_IMAGE_NAME="bianace_btcethbnb_trade-binance-trade-analyzer:latest"
+
+# 项目配置
+PROJECT_NAME="binance-trade-analyzer"
+DEPLOY_PACKAGE_NAME="deployment_package.tar.gz"

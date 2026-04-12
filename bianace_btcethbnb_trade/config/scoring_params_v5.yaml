@@ -1,0 +1,100 @@
+# v5 稳健盈利版配置参数
+
+scoring:
+  # 6 维度权重配置（v5 优化）
+  dimensions:
+    trend_strength:
+      weight: 0.15
+      max_score: 15
+      description: "趋势强度（降低权重）"
+    
+    trend_consistency:
+      weight: 0.15
+      max_score: 15
+      description: "趋势一致性（三时间框架共振）"
+    
+    pattern_quality:
+      weight: 0.30
+      max_score: 30
+      description: "形态质量（提高权重至 30 分）"
+    
+    volume_confirmation:
+      weight: 0.10
+      max_score: 10
+      description: "成交量确认（降低权重）"
+    
+    momentum_divergence:
+      weight: 0.20
+      max_score: 20
+      description: "动量背离（提高权重至 20 分）"
+    
+    risk_premium:
+      weight: 0.10
+      max_score: 10
+      description: "风险溢价（降低权重）"
+  
+  # 等级阈值（v5 提高）
+  grade_thresholds:
+    S: 80  # S 级≥80 分
+    A: 70  # A 级≥70 分
+    B: 60
+    C: 50
+  
+  # 市场状态过滤（v5 硬性条件）
+  market_filter:
+    min_adx: 25               # ADX>25（硬性）
+    min_volume_ratio: 2.0     # 成交量≥2.0 倍
+    min_atr_pct: 0.02         # ATR≥2%
+    max_atr_pct: 0.045        # ATR≤4.5%
+  
+  # 一票否决
+  veto:
+    max_funding_rate: 0.0008
+    min_atr_pct: 0.02
+    max_atr_pct: 0.06
+
+# 交易参数（v5 严格）
+trading:
+  # 频率控制
+  frequency:
+    max_trades_per_day: 2     # 每日最多 2 笔（v5 降低）
+    cooldown_hours: 48        # 同币种冷却 48 小时（v5 延长）
+  
+  # 仓位管理（v5 浮动）
+  position:
+    base_ratio_s: 0.40        # S 级 40%
+    base_ratio_a: 0.25        # A 级 25%
+    base_ratio_b: 0.15        # B 级 15%
+    max_ratio: 0.40           # 最大 40%
+    
+    # 浮动仓位调整
+    float_adjust:
+      win_streak_reduce: 3    # 连续 3 笔盈利后减半
+      loss_streak_reduce: 2   # 连续 2 笔亏损后减半
+      reduce_ratio: 0.5       # 减半系数
+  
+  # 止盈止损（v5 阶梯式）
+  exit_strategy:
+    stop_atr: 1.5             # 止损 1.5x ATR
+    target1_atr: 1.5          # 止盈 1: 1.5x ATR（平仓 20%）
+    target2_atr: 3.0          # 止盈 2: 3.0x ATR（平仓 30%）
+    target3_atr: 5.0          # 止盈 3: 5.0x ATR（平仓 50%）
+    move_stop_to_cost: true   # 达到止盈 1 后移至成本价
+  
+  # 熔断机制（v5 新增）
+  circuit_breaker:
+    max_daily_drawdown: 0.05    # 单日回撤>5% 暂停
+    max_total_drawdown: 0.15    # 总回撤>15% 暂停 1 天
+    max_monthly_drawdown: 0.25  # 单月回撤>25% 停止交易
+  
+  # 手续费
+  fee:
+    maker: 0.0002
+    taker: 0.0004
+    assumed_maker_ratio: 0.5    # 综合费率 0.03%
+
+# 二次确认（v5 新增）
+confirmation:
+  enabled: true                 # 启用二次确认
+  confirmation_periods: 1       # 等待 1 根 1h K 线确认
+  min_confirm_ratio: 0.6        # 确认 K 线收盘价支持原方向≥60%

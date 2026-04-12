@@ -1,0 +1,93 @@
+{
+  "backtest_date": "2026-04-12T21:05:14.326293",
+  "initial_capital": 500.0,
+  "result": {
+    "strategy": "V6.13.1 优化版（量化评分 + 优化止盈止损 + 动态仓位）",
+    "initial_capital": 500.0,
+    "final_capital": 503.2474,
+    "total_trades": 3,
+    "winning_trades": 3,
+    "losing_trades": 0,
+    "win_rate": 1.0,
+    "total_pnl": 3.25,
+    "total_fees": 0.0026,
+    "total_return": 0.0064948,
+    "max_drawdown": 0.0,
+    "adjusted_trades": 0,
+    "skipped_trades": 0,
+    "avg_hold_time_hours": 48.0,
+    "tp1_hit_count": 1,
+    "tp2_hit_count": 1,
+    "time_stop_count": 0,
+    "chandelier_exit_count": 1,
+    "grade_statistics": {
+      "C": {
+        "trades": 3,
+        "wins": 3,
+        "win_rate": 1.0,
+        "pnl": 3.25
+      }
+    },
+    "trade_details": [
+      {
+        "entry_time": "2025-12-01T08:00:00",
+        "exit_time": "2026-01-31T08:00:00",
+        "symbol": "BNBUSDT",
+        "direction": "空",
+        "grade": "C",
+        "score": 51,
+        "entry_price": 826.47,
+        "exit_price": 781.33,
+        "margin": 25.0,
+        "pnl": 1.5,
+        "fee": 0.0012,
+        "balance": 501.4988,
+        "adjusted": false,
+        "exit_reason": "TP2",
+        "hold_time_hours": 48
+      },
+      {
+        "entry_time": "2026-02-01T08:00:00",
+        "exit_time": "2026-02-02T08:00:00",
+        "symbol": "BNBUSDT",
+        "direction": "空",
+        "grade": "C",
+        "score": 52,
+        "entry_price": 758.69,
+        "exit_price": 774.22,
+        "margin": 25.0,
+        "pnl": 0.75,
+        "fee": 0.0006,
+        "balance": 502.2482,
+        "adjusted": false,
+        "exit_reason": "吊灯止损",
+        "hold_time_hours": 72
+      },
+      {
+        "entry_time": "2026-02-03T08:00:00",
+        "exit_time": "2026-02-04T08:00:00",
+        "symbol": "BNBUSDT",
+        "direction": "空",
+        "grade": "C",
+        "score": 52,
+        "entry_price": 755.16,
+        "exit_price": 697.49,
+        "margin": 25.0,
+        "pnl": 1.0,
+        "fee": 0.0008,
+        "balance": 503.2474,
+        "adjusted": false,
+        "exit_reason": "TP1",
+        "hold_time_hours": 24
+      }
+    ],
+    "parameters": {
+      "tp1_atr_mult": 2.5,
+      "tp2_atr_mult": 4.0,
+      "chandelier_start_atr": 1.8,
+      "chandelier_pullback_atr": 1.2,
+      "time_stop_hours": 72,
+      "stop_loss_atr": 1.5
+    }
+  }
+}

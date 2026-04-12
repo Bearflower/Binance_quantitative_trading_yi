@@ -1,0 +1,105 @@
+{
+  "version": "1.0.0",
+  "description": "500U 阶段一策略参数配置（基于 traderule.txt v4.1）",
+  "account": {
+    "total_capital": "500",
+    "single_position_margin": "15",
+    "max_positions": 2,
+    "reserve_capital_ratio": "0.8",
+    "max_total_margin_ratio": "0.3"
+  },
+  "prohibited_conditions": {
+    "max_24h_price_change": "0.25",
+    "max_24h_price_drop": "0.20",
+    "max_funding_rate": "0.0008",
+    "max_spread_ratio": "0.003",
+    "news_blackout_window": 3600
+  },
+  "signal_grades": {
+    "S": {
+      "min_profit_loss_ratio": "4.0",
+      "max_leverage": 5,
+      "min_recommendation_score": 85,
+      "require_multi_timeframe": "true"
+    },
+    "A": {
+      "min_profit_loss_ratio": "3.0",
+      "max_leverage": 4,
+      "min_recommendation_score": 70,
+      "require_multi_timeframe": "true"
+    },
+    "B": {
+      "min_profit_loss_ratio": "2.5",
+      "max_leverage": 3,
+      "min_recommendation_score": 50,
+      "require_multi_timeframe": "false"
+    }
+  },
+  "allowed_signal_grades": ["S", "A"],
+  "trend_filter": {
+    "ema21_period": 21,
+    "trend_slope_threshold": "0.01",
+    "support_resistance_tolerance": "0.01",
+    "high_low_distance_threshold": "0.03"
+  },
+  "position_sizing": {
+    "risk_amount": "10",
+    "min_stop_loss_pct": "0.03",
+    "max_stop_loss_pct": "0.07",
+    "max_position_notional": "1500",
+    "max_total_notional": "4000"
+  },
+  "risk_management": {
+    "stop_loss_multiplier": "1.0",
+    "take_profit_levels": {
+      "tp1_ratio": "0.3",
+      "tp1_multiplier": "1.5",
+      "tp2_ratio": "0.3",
+      "tp2_multiplier": "2.5",
+      "tp3_ratio": "0.4"
+    },
+    "margin_ratio_warning": "1.5",
+    "margin_ratio_emergency": "1.2",
+    "max_margin_usage": "0.6",
+    "max_float_loss": "20"
+  },
+  "trailing_stop": {
+    "enable_after_tp1": "true",
+    "enable_after_tp2": "true",
+    "use_sar_or_ema": "EMA7"
+  },
+  "emergency_handling": {
+    "extreme_price_drop": "0.05",
+    "emergency_close_ratio": "0.5",
+    "emergency_stop_loss": "0.015",
+    "consecutive_losses_limit": 2,
+    "consecutive_losses_pause_days": 3,
+    "weekly_loss_limit": "0.15",
+    "weekly_loss_pause_days": 3
+  },
+  "strategy_optimization": {
+    "min_trades_for_optimization": 30,
+    "optimization_sample_size": 10,
+    "adjustable_params": [
+      "position_sizing.min_stop_loss_pct",
+      "position_sizing.max_stop_loss_pct",
+      "risk_management.take_profit_levels.tp1_multiplier",
+      "risk_management.take_profit_levels.tp2_multiplier",
+      "account.single_position_margin"
+    ],
+    "forbidden_adjustments": [
+      "position_sizing.risk_amount",
+      "risk_management.margin_ratio_warning",
+      "risk_management.margin_ratio_emergency"
+    ]
+  },
+  "performance_metrics": {
+    "min_win_rate": "0.45",
+    "good_win_rate": "0.55",
+    "min_profit_loss_ratio": "1.8",
+    "good_profit_loss_ratio": "2.5",
+    "min_leverage_efficiency": "0.5",
+    "max_bankruptcy_rate": "0.15",
+    "max_drawdown": "0.25"
+  }
+}

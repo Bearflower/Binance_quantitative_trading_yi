@@ -1,0 +1,35 @@
+[Unit]
+Description=Binance New Coin Short Selling System
+Documentation=https://github.com/your-repo/short-selling-system
+After=network.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/root/short-selling-system
+
+# 启动命令
+ExecStart=/usr/bin/docker start short-selling-system
+
+# 停止命令
+ExecStop=/usr/bin/docker stop short-selling-system
+
+# 重启命令
+ExecReload=/usr/bin/docker restart short-selling-system
+
+# 日志配置
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=short-selling-system
+
+# 资源限制
+MemoryLimit=512M
+CPUQuota=50%
+
+# 重启策略（可选，如果使用 Type=simple）
+# Restart=always
+# RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

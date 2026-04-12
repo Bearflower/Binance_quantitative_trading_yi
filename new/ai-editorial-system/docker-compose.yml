@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    container_name: ai-editorial-system
+    ports:
+    - "8888:8888"
+    volumes:
+      - .:/app
+    environment:
+      - FEISHU_WEBHOOK_URL=${FEISHU_WEBHOOK_URL}
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+    restart: unless-stopped

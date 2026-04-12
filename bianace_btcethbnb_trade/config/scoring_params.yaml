@@ -1,0 +1,89 @@
+# 评分系统配置 (v5.5)
+# 用于交易信号量化评分系统的参数配置
+
+scoring:
+  # ========== 权重配置 ==========
+  weights:
+    trend: 30       # 趋势强度权重
+    pattern: 30     # 技术形态权重
+    momentum: 20    # 动量指标权重
+    risk: 20        # 风险控制权重
+  
+  # ========== 信号等级阈值 ==========
+  grade_thresholds:
+    S: 75           # S 级信号最低分数
+    A: 60           # A 级信号最低分数
+    # <60 分过滤，不开仓
+  
+  # ========== 仓位系数配置 ==========
+  position_ratio:
+    base: 0.3           # 基础仓位系数 30%
+    max: 0.6            # 最大仓位系数 60%
+    coefficient: 0.3    # 仓位系数计算系数
+  
+  # ========== 一票否决阈值 ==========
+  veto:
+    max_funding_rate: 0.0008    # 资金费率 > 0.08% 禁止
+    max_volatility: 0.06        # 波动率 > 6% 禁止
+    max_price_increase: 0.25    # 24 小时涨幅 > 25% 禁止
+    max_price_drop: 0.20        # 24 小时跌幅 > 20% 禁止
+  
+  # ========== 评分参数 ==========
+  parameters:
+    # EMA 斜率参数
+    ema_slope:
+      periods: 5              # 使用最近 5 根 K 线
+      strong_threshold: 0.0008  # 0.08%/日（强趋势）
+      medium_threshold: 0.0004  # 0.04%/日（中等趋势）
+    
+    # 支撑阻力突破参数
+    breakthrough:
+      lookback_periods: 20      # 最近 20 根 4 小时 K 线
+      volume_ratio_threshold: 1.3  # 成交量放大倍数阈值
+    
+    # RSI 参数
+    rsi:
+      healthy_min: 30         # 健康区间下限
+      healthy_max: 70         # 健康区间上限
+      extreme_min: 20         # 超卖阈值
+      extreme_max: 80         # 超买阈值
+    
+    # MACD 参数
+    macd:
+      golden_cross_score: 6   # 金叉/死叉得分
+      zero_cross_score: 2     # 零轴穿越得分
+      expanding_score: 2      # 柱状图放大得分
+      accelerating_score: 2   # 趋势加速得分
+
+# ========== 币种特定配置 ==========
+symbols:
+  BTCUSDT:
+    high_volatility_threshold: 0.04   # 高波动阈值 4%
+    break_through_pct: 0.015          # 突破阈值 1.5%
+  
+  ETHUSDT:
+    high_volatility_threshold: 0.045  # 高波动阈值 4.5%
+    break_through_pct: 0.015          # 突破阈值 1.5%
+  
+  BNBUSDT:
+    high_volatility_threshold: 0.07   # 高波动阈值 7%
+    break_through_pct: 0.025          # 突破阈值 2.5%
+
+# ========== 数据完整性要求 ==========
+data_requirements:
+  min_klines:
+    1d: 55    # 日线最少需要 55 根 K 线
+    4h: 20    # 4 小时线最少需要 20 根
+    1h: 20    # 1 小时线最少需要 20 根
+  min_volume_periods: 20  # 成交量均值计算周期
+
+# ========== 性能优化配置 ==========
+performance:
+  enable_cache: true          # 启用评分缓存
+  cache_ttl_seconds: 5      # 缓存有效期（秒）
+  max_scoring_time_ms: 50   # 单次评分最大耗时（毫秒）
+
+# ========== 日志配置 ==========
+logging:
+  enable_detail: true         # 启用详细得分日志
+  log_level: INFO           # 日志级别

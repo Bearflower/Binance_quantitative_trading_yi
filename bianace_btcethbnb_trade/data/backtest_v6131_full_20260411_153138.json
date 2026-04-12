@@ -1,0 +1,34 @@
+{
+  "backtest_date": "2026-04-11T15:31:38.479561",
+  "initial_capital": 500.0,
+  "result": {
+    "strategy": "V6.13.1 优化版（量化评分 + 优化止盈止损 + 动态仓位）",
+    "initial_capital": 500.0,
+    "final_capital": 500.0,
+    "total_trades": 0,
+    "winning_trades": 0,
+    "losing_trades": 0,
+    "win_rate": 0,
+    "total_pnl": 0.0,
+    "total_fees": 0.0,
+    "total_return": 0.0,
+    "max_drawdown": 0.0,
+    "adjusted_trades": 0,
+    "skipped_trades": 0,
+    "avg_hold_time_hours": 0.0,
+    "tp1_hit_count": 0,
+    "tp2_hit_count": 0,
+    "time_stop_count": 0,
+    "chandelier_exit_count": 0,
+    "grade_statistics": {},
+    "trade_details": [],
+    "parameters": {
+      "tp1_atr_mult": 2.5,
+      "tp2_atr_mult": 4.0,
+      "chandelier_start_atr": 1.8,
+      "chandelier_pullback_atr": 1.2,
+      "time_stop_hours": 72,
+      "stop_loss_atr": 1.5
+    }
+  }
+}

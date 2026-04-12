@@ -1,0 +1,65 @@
+{
+  "_comment": "代币解锁配置 - 示例",
+  "_note": "这是一个示例配置文件，请根据实际情况修改或删除",
+  
+  "PEOPLEUSDT": {
+    "unlocks": [
+      {
+        "date": "2026-04-15",
+        "percentage": 12.5,
+        "target": "team",
+        "description": "团队代币解锁"
+      }
+    ]
+  },
+  
+  "ROSEUSDT": {
+    "unlocks": [
+      {
+        "date": "2026-05-01",
+        "percentage": 8.0,
+        "target": "investor",
+        "description": "机构投资者解锁"
+      },
+      {
+        "date": "2026-06-15",
+        "percentage": 5.5,
+        "target": "ecosystem",
+        "description": "生态基金解锁"
+      }
+    ]
+  },
+  
+  "APTUSDT": {
+    "unlocks": [
+      {
+        "date": "2026-04-20",
+        "percentage": 22.0,
+        "target": "investor",
+        "description": "A16z 等机构大额解锁"
+      }
+    ]
+  },
+  
+  "OPUSDT": {
+    "unlocks": [
+      {
+        "date": "2026-07-01",
+        "percentage": 15.0,
+        "target": "team",
+        "description": "团队和顾问解锁"
+      }
+    ]
+  },
+  
+  "LDOUSDT": {
+    "unlocks": [
+      {
+        "date": "2026-04-25",
+        "percentage": 6.5,
+        "target": "ecosystem",
+        "description": "DAO 国库解锁"
+      }
+    ]
+  }
+}

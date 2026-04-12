@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  short-selling-system:
+    build: .
+    image: short-selling-system:latest
+    container_name: short-selling-system
+    restart: unless-stopped
+    
+    # 环境变量
+    env_file:
+      - .env
+    
+    # 挂载卷
+    volumes:
+      - ./logs:/app/logs
+      - ./data:/app/data
+    
+    # 时区设置
+    environment:
+      - TZ=Asia/Shanghai
+    
+    # 网络配置
+    networks:
+      - short-selling-network
+    
+    # 资源限制
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+    
+    # 健康检查
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+# 网络配置
+networks:
+  short-selling-network:
+    driver: bridge

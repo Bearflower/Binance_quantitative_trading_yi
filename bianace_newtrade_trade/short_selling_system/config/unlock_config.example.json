@@ -1,0 +1,41 @@
+{
+  "_comment": "代币解锁配置说明",
+  "_instructions": {
+    "step1": "在 symbols 对象中添加币种，键为币种符号（如 'NEWUSDT'）",
+    "step2": "每个币种配置 unlocks 数组，包含以下字段：",
+    "fields": {
+      "date": "解锁日期，格式：YYYY-MM-DD",
+      "percentage": "解锁比例（%），如 15.5 表示 15.5%",
+      "target": "解锁对象类型：team(团队), investor(投资者), ecosystem(生态), mining(挖矿)",
+      "description": "解锁描述（可选）"
+    },
+    "step3": "评分规则：",
+    "scoring": {
+      ">20%": "10 分（大额解锁，高风险）",
+      "10%-20%": "7 分（中等解锁）",
+      "5%-10%": "3 分（小额解锁）",
+      "<5%": "0 分（无影响）"
+    }
+  },
+  
+  "_example": "示例配置（请删除此部分）：",
+  "EXAMPLEUSDT": {
+    "unlocks": [
+      {
+        "date": "2026-04-15",
+        "percentage": 15.5,
+        "target": "team",
+        "description": "团队解锁"
+      },
+      {
+        "date": "2026-05-01",
+        "percentage": 8.0,
+        "target": "investor",
+        "description": "早期投资者解锁"
+      }
+    ]
+  },
+  
+  "_note": "实际配置请从 EXAMPLEUSDT 开始，删除示例部分",
+  "symbols": {}
+}

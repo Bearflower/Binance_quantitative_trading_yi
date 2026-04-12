@@ -14,9 +14,15 @@ class LarkNotifier:
         初始化飞书通知器
         
         Args:
-            webhook_url (str): 飞书机器人的webhook URL
+            webhook_url (str): 飞书机器人的 webhook URL
         """
         self.webhook_url = webhook_url or os.getenv('LARK_WEBHOOK_URL')
+        
+        # 验证 webhook URL 格式
+        if self.webhook_url and not self._is_valid_url(self.webhook_url):
+            logger = logging.getLogger('lark_notifier')
+            logger.error(f"无效的飞书 webhook URL 格式：{self.webhook_url}，应以 https:// 开头")
+            self.webhook_url = None
         
     def send_text_message(self, content):
         """
@@ -26,11 +32,17 @@ class LarkNotifier:
             content (str): 消息内容
             
         Returns:
-            dict: API响应结果
+            dict: API 响应结果
         """
         if not self.webhook_url:
-            print("警告: 未配置飞书webhook URL，跳过消息发送")
+            print("警告：未配置飞书 webhook URL，跳过消息发送")
             return {"status": "skipped", "reason": "webhook_url not configured"}
+        
+        # 验证 URL 格式
+        if not self._is_valid_url(self.webhook_url):
+            error_msg = f"无效的 webhook URL 格式：'{self.webhook_url}'，应以 https:// 或 http:// 开头"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
             
         headers = {'Content-Type': 'application/json'}
         payload = {
@@ -41,10 +53,21 @@ class LarkNotifier:
         }
         
         try:
-            response = requests.post(self.webhook_url, headers=headers, data=json.dumps(payload))
-            return response.json()
+            response = requests.post(self.webhook_url, headers=headers, data=json.dumps(payload), timeout=10)
+            response.raise_for_status()
+            result = response.json()
+            print(f"飞书消息发送成功：{result}")
+            return result
+        except requests.exceptions.Timeout:
+            error_msg = "发送飞书消息超时"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
+        except requests.exceptions.RequestException as e:
+            error_msg = f"发送飞书消息网络异常：{str(e)}"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
         except Exception as e:
-            error_msg = f"发送飞书消息失败: {str(e)}"
+            error_msg = f"发送飞书消息失败：{str(e)}"
             print(error_msg)
             return {"status": "error", "message": error_msg}
     
@@ -87,6 +110,314 @@ class LarkNotifier:
 请检查系统状态和日志文件。
         """
         return self.send_text_message(message)
+    
+    def send_scheduler_startup_notification(self, next_run_time, timezone):
+        """
+        发送调度器启动通知
+        
+        Args:
+            next_run_time (str): 下次执行时间
+            timezone (str): 时区
+        """
+        message = f"🚀 币安期货分析调度器已启动，下次执行时间: {next_run_time} ({timezone})"
+        return self.send_text_message(message)
+    
+    def send_scheduler_shutdown_notification(self, timezone):
+        """
+        发送调度器关闭通知
+        
+        Args:
+            timezone (str): 时区
+        """
+        message = f"🛑 币安期货分析调度器已停止，当前时间: {self._get_current_time()} ({timezone})"
+        return self.send_text_message(message)
+    
+    def send_scheduler_completion_notification(self, next_run_time, timezone):
+        """
+        发送定时任务完成通知
+        
+        Args:
+            next_run_time (str): 下次执行时间
+            timezone (str): 时区
+        """
+        message = f"✅ 定时任务已执行完成，下次执行时间: {next_run_time} ({timezone})"
+        return self.send_text_message(message)
+    
+    def send_scheduler_before_run_notification(self, currencies, timezone):
+        """
+        发送任务即将执行的通知
+        
+        Args:
+            currencies (list): 交易对列表
+            timezone (str): 时区
+        """
+        message = f"🔄 币安期货分析任务即将开始，交易对: {', '.join(currencies)}，当前时间: {self._get_current_time()} ({timezone})"
+        return self.send_text_message(message)
+    
+    def send_analysis_result_notification(self, currencies, report_content):
+        """
+        发送分析结果通知，包括分析币种、分析结论和决策
+        优先提取第四章"交易操作总结"的内容进行推送
+        
+        Args:
+            currencies (list): 交易对列表
+            report_content (str): 分析报告内容
+        """
+        # 提取分析时间
+        analysis_time = self._get_current_time()
+        lines = report_content.split('\n')
+        
+        # 尝试从报告中提取分析时间
+        for line in lines:
+            if '分析时间' in line or '时间' in line:
+                parts = line.split('：')
+                if len(parts) > 1:
+                    analysis_time = parts[1].strip()
+                    break
+        
+        # 提取分析币种
+        analysis_currencies = ', '.join(currencies)
+        for line in lines:
+            if '分析币种' in line or '币种' in line:
+                parts = line.split('：')
+                if len(parts) > 1:
+                    analysis_currencies = parts[1].strip()
+                    break
+        
+        # 优先提取核心分析内容
+        trading_summary = self._extract_trading_summary(report_content)
+        
+        # 如果找到了核心分析内容，使用新格式；否则使用旧格式
+        if trading_summary:
+            message = f"""
+✅ 交易分析核心结论（500U 阶段一）
+
+**当前账户（500U 阶段一）**：
+- 总资金：500U
+- 单仓保证金：30U
+- 最大持仓：2 个
+- 备用金：≥400U
+
+**分析币种:** {analysis_currencies}
+**分析时间:** {analysis_time}
+
+{trading_summary}
+
+详细报告已生成，请查看完整分析内容。
+            """
+        else:
+            # 备用方案：提取第三章节："三、最终开仓建议与风险管理"的结论部分
+            analysis_summary = ""
+            in_section = False
+            for i, line in enumerate(lines):
+                if '三、最终开仓建议与风险管理' in line or '最终开仓建议与风险管理' in line or '### 第三章' in line:
+                    in_section = True
+                    continue
+                if in_section:
+                    if line.strip().startswith('第四章') or line.strip().startswith('四、') or line.strip().startswith('4.'):
+                        break
+                    analysis_summary += line + '\n'
+            
+            if not analysis_summary:
+                analysis_summary = "分析已完成，请查看详细报告获取具体结论和决策建议。"
+            
+            message = f"""
+📊 交易分析结果
+
+**分析币种:** {analysis_currencies}
+**分析时间:** {analysis_time}
+
+**分析结论与决策:**
+{analysis_summary}
+
+详细报告已生成，请查看完整分析内容。
+            """
+        
+        return self.send_text_message(message)
+    
+    def _extract_trading_summary(self, report_content):
+        """
+        提取核心交易观点用于飞书推送
+        
+        按优先级提取以下内容：
+        1. "最终交易建议汇总与交易日志"部分
+        2. "最终决策"部分
+        3. 4.1"核心观点提炼"章节
+        4. 第四章"交易操作总结"
+        5. 第三章"最终开仓建议与风险管理"
+        
+        Args:
+            report_content (str): 分析报告内容
+            
+        Returns:
+            str: 提取的核心观点内容，如果未找到则返回 None
+        """
+        lines = report_content.split('\n')
+        
+        # 首先尝试查找最终建议/决策/总结部分（最高优先级）
+        # 支持的标题格式：
+        # - 最终交易建议汇总与交易日志
+        # - 最终交易决策与日志生成
+        # - 最终开仓建议与交易日志
+        # - 综合结论与交易日志
+        summary_lines = []
+        in_final_summary = False
+        found_final_summary = False
+        
+        for i, line in enumerate(lines):
+            # 检查是否是最终建议/决策/开仓建议/综合结论的标题
+            if ('最终交易建议汇总' in line or 
+                '最终交易决策' in line or 
+                '最终开仓建议' in line or
+                '综合结论与交易日志' in line) and ('**' in line or '###' in line):
+                in_final_summary = True
+                found_final_summary = True
+                continue
+            
+            # 如果已经在最终建议部分内
+            if in_final_summary:
+                # 检查是否进入 JSON 部分（遇到 ```json）
+                if line.strip().startswith('```json') or line.strip() == '```':
+                    break
+                
+                # 收集最终建议的内容
+                if line.strip():
+                    summary_lines.append(line)
+        
+        # 如果找到了最终建议，返回提取的内容
+        if found_final_summary and summary_lines:
+            # 移除末尾的多余空行
+            while summary_lines and not summary_lines[-1].strip():
+                summary_lines.pop()
+            return '\n'.join(summary_lines)
+        
+        # 其次尝试查找"最终决策"部分（AI 实际生成的格式）
+        summary_lines = []
+        in_final_decision = False
+        found_final_decision = False
+        
+        for i, line in enumerate(lines):
+            # 检查是否是"最终决策"的标题
+            if '最终决策' in line and ('**' in line or '###' in line):
+                in_final_decision = True
+                found_final_decision = True
+                continue
+            
+            # 如果已经在最终决策部分内
+            if in_final_decision:
+                # 检查是否进入下一节（遇到新的加粗标题或###标题）
+                if (line.strip().startswith('**') and '**:' in line) or line.strip().startswith('###'):
+                    break
+                
+                # 收集最终决策的内容
+                if line.strip():
+                    summary_lines.append(line)
+        
+        # 如果找到了最终决策，返回提取的内容
+        if found_final_decision and summary_lines:
+            # 移除末尾的多余空行
+            while summary_lines and not summary_lines[-1].strip():
+                summary_lines.pop()
+            return '\n'.join(summary_lines)
+        
+        # 如果未找到"最终决策"，则尝试查找 4.1"核心观点提炼"
+        summary_lines = []
+        in_section_4_1 = False
+        found_section_4_1 = False
+        
+        for i, line in enumerate(lines):
+            # 检查是否是 4.1 的标题（支持多种格式）
+            if ('4.1' in line or '4.1.' in line) and '核心观点' in line:
+                in_section_4_1 = True
+                found_section_4_1 = True
+                continue
+            
+            # 如果已经在 4.1 部分内
+            if in_section_4_1:
+                # 检查是否进入下一节（遇到 4.2 或其他小标题）
+                if line.strip().startswith('4.2') or (line.strip().startswith('####') and line.strip() != ''):
+                    break
+                
+                # 收集 4.1 的内容（保留非空行）
+                if line.strip():
+                    summary_lines.append(line)
+        
+        # 如果找到了 4.1，返回提取的内容
+        if found_section_4_1 and summary_lines:
+            # 移除末尾的多余空行
+            while summary_lines and not summary_lines[-1].strip():
+                summary_lines.pop()
+            return '\n'.join(summary_lines)
+        
+        # 如果仍未找到，则尝试查找第四章"交易操作总结"
+        summary_lines = []
+        in_chapter4 = False
+        found_chapter4_header = False
+        
+        for i, line in enumerate(lines):
+            # 检查是否是第四章的标题
+            if ('第四章' in line or '4. 交易操作总结' in line or '四、交易操作总结' in line) and '交易操作总结' in line:
+                in_chapter4 = True
+                found_chapter4_header = True
+                continue
+            
+            # 如果已经在第四章内
+            if in_chapter4:
+                # 检查是否进入下一章
+                if line.strip().startswith('第五章') or line.strip().startswith('五、') or line.strip().startswith('5.'):
+                    break
+                
+                # 收集第四章的内容
+                if line.strip():  # 跳过空行
+                    summary_lines.append(line)
+        
+        # 如果找到了第四章，返回提取的内容
+        if found_chapter4_header and summary_lines:
+            return '\n'.join(summary_lines)
+        
+        # 如果仍未找到，则尝试查找第三章"最终开仓建议与风险管理"
+        summary_lines = []
+        in_chapter3 = False
+        found_chapter3_header = False
+        
+        for i, line in enumerate(lines):
+            # 检查是否是第三章的标题
+            if ('第三章' in line or '3.' in line or '三、' in line) and ('最终开仓建议' in line or '开仓建议' in line or '风险管理' in line):
+                in_chapter3 = True
+                found_chapter3_header = True
+                continue
+            
+            # 如果已经在第三章内
+            if in_chapter3:
+                # 检查是否进入下一章
+                if line.strip().startswith('第四章') or line.strip().startswith('四、') or line.strip().startswith('4.'):
+                    break
+                
+                # 收集第三章的内容（跳过空行）
+                if line.strip():
+                    summary_lines.append(line)
+        
+        # 如果找到了第三章，返回提取的内容
+        if found_chapter3_header and summary_lines:
+            return '\n'.join(summary_lines)
+        
+        return None
+    
+    def _is_valid_url(self, url: str) -> bool:
+        """
+        验证 URL 格式是否有效
+        
+        Args:
+            url (str): 要验证的 URL
+            
+        Returns:
+            bool: URL 是否有效
+        """
+        if not url or not isinstance(url, str):
+            return False
+        
+        # 检查 URL 是否以 http:// 或 https:// 开头
+        return url.startswith('http://') or url.startswith('https://')
     
     def _get_current_time(self):
         """

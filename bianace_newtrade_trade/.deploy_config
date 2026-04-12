@@ -1,0 +1,15 @@
+# 服务器配置
+SERVER_IP="43.156.242.184"
+SERVER_USER="root"
+# ⚠️ 如果留空，将使用 SSH 密钥认证（推荐）
+# 如果必须使用密码，请在此填写
+SERVER_PASSWORD=""
+SERVER_PROJECT_PATH="/root/short_selling_system"
+
+# Docker 配置
+DOCKER_CONTAINER_NAME="short-selling-system"
+DOCKER_IMAGE_NAME="short-selling-system:latest"
+
+# 项目配置
+PROJECT_NAME="short_selling_system"
+DEPLOY_PACKAGE_NAME="deployment_package.tar.gz"

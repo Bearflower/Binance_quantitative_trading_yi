@@ -1,147 +1,86 @@
-# Binance Futures Trade Analyzer
+# 币安自动化交易系统
 
-Automated tool to capture Binance futures contract screenshots, analyze them with DeepSeek AI, and save the results.
+> 基于 traderule.txt 规则引擎的币安合约自动化交易系统，支持 PM 账户（投资组合保证金账户）
 
-## Features
+**最新版本**: v6.13.1 (2026-04-12)
 
-- Automatically captures screenshots of Binance futures contract pages
-- Reads trading rules from a local DOCX document
-- Sends both to DeepSeek AI for analysis
-- Saves the results in organized folders
-- Runs on a daily schedule
-- Sends notifications via Lark (Feishu) when tasks complete or fail
+---
 
-## Setup
+## 📖 文档导航
 
-1. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+本项目采用规范化文档管理，所有文档存储在 `docs/` 目录：
 
-2. Install Playwright browsers:
-   ```
-   playwright install chromium
-   ```
+| 文档类型 | 路径 | 说明 |
+|---------|------|------|
+| 📘 **项目需求迭代文档** | [`docs/proposals/项目需求迭代文档.md`](docs/proposals/项目需求迭代文档.md) | 完整功能说明、版本迭代、使用指南 |
+| 🏗️ **技术架构文档** | [`docs/design/技术架构文档.md`](docs/design/技术架构文档.md) | 系统架构、模块设计、数据流、部署架构 |
+| 📋 **快速开始** | [`docs/proposals/QUICKSTART.md`](docs/proposals/QUICKSTART.md) | 新手快速上手指南 |
+| 📊 **回测指南** | [`docs/proposals/回测模块使用指南.md`](docs/proposals/回测模块使用指南.md) | 回测系统使用说明 |
 
-3. Configure environment variables in `.env`:
-   - `DEEPSEEK_API_KEY`: Your DeepSeek API key
-   - `LARK_WEBHOOK_URL`: (Optional) Lark webhook URL for notifications
-   - Other settings as needed
+## 🎯 核心特性
 
-## Usage
+- ✅ **量化评分系统** (v6.12) - 多维度信号评分（趋势、形态、动量）
+- ✅ **动态仓位调整** (v6.13) - 根据可用保证金自动缩放仓位
+- ✅ **优化止盈止损** (v6.13.1) - 降低止盈目标 + 时间止损
+- ✅ **频率控制** - 每日 4 笔交易限制 + 冷却期管理
+- ✅ **多时间框架分析** - 日线 +4 小时 +1 小时全量数据
+- ✅ **自动调度** - 每小时整点执行分析
+- ✅ **飞书通知** - 重要事件实时推送
+- ✅ **Docker 部署** - 一键部署到服务器
 
-### Manual run:
-```
-python main.py [--currencies CURRENCY_PAIRS] [--prompt CUSTOM_PROMPT] [--use-existing-chrome] [--new-browser]
-```
+## 🚀 快速部署
 
-Example:
-```
-python main.py --currencies BTCUSDT --use-existing-chrome
-```
-
-### Scheduled run:
-```
-python scheduler.py [--use-existing-chrome] [--new-browser]
-```
-
-This will start the scheduler which will automatically run the analysis daily at the configured time.
-
-## Project Structure
-
-- `main.py`: Main entry point
-- `scheduler.py`: Scheduling functionality
-- `config/settings.py`: Configuration loading
-- `utils/screenshot.py`: Screenshot functionality
-- `utils/document_reader.py`: Document reading functionality
-- `utils/deepseek_client.py`: DeepSeek API client
-- `utils/lark_notifier.py`: Lark notification functionality
-- `.env`: Environment variables
-- `requirements.txt`: Python dependencies
-
-## Output
-
-- Screenshots are saved in `data/screenshots/YYYY-MM-DD/` (subdirectories by date)
-- Analysis results are saved in `reports/`
-- Logs are saved in `logs/`
-
-## Lark Notifications
-
-To enable Lark notifications:
-
-1. Create a group chat in Lark
-2. Add a bot to the group chat
-3. Get the webhook URL for the bot
-4. Add the URL to your `.env` file as `LARK_WEBHOOK_URL`
-
-Notifications will be sent when:
-- The scheduler starts
-- A task completes successfully
-- A task fails with an error
-
-## Browser Configuration
-
-To use your existing Chrome browser for screenshots:
-
-1. Close all Chrome windows
-2. Open Terminal and run this command:
-   ```
-   /Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome_debug
-   ```
-3. When Chrome opens, log in to Binance and set your preferences
-4. Then run the screenshot function as usual
-
-Note: Using a separate user-data-dir prevents conflicts with your normal Chrome usage.
-
-## Advanced Screenshot Features
-
-### Multiple Currencies and Repeated Captures
-
-You can capture screenshots for multiple currencies at once:
-
-```python
-from utils.screenshot import capture_multiple_screenshots
-
-# Capture BTCUSDT, ETHUSDT and BNBUSDT once each
-currencies = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT']
-capture_multiple_screenshots(currencies)
-
-# Capture BTCUSDT 3 times and ETHUSDT 2 times
-currencies = ['BTCUSDT', 'ETHUSDT']
-capture_multiple_screenshots(['BTCUSDT'] * 3 + ['ETHUSDT'] * 2)
-```
-
-This feature requires Chrome to be running with remote debugging enabled.
-
-### Organized File Storage
-
-All screenshots are now stored in date-based subdirectories:
-- Path format: `data/screenshots/YYYY-MM-DD/filename.png`
-- Each day's screenshots are grouped in their own subdirectory
-- Files are named with timestamps to prevent conflicts
-
-## Complete Run Methods
-
-### 1. Start Chrome with Remote Debugging
 ```bash
-/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222 --user-data-dir=/tmp/chrome_debug
+# 部署 v6.13.1 到服务器
+bash deploy_v6131.sh
+
+# 查看运行状态
+ssh root@43.156.242.184 "docker ps -f name=binance-trade-analyzer"
 ```
 
-### 2. Run Manual Analysis with Existing Chrome (Default)
-```bash
-cd /Users/yl/vscode/bianace_btcethbnb_trade
-python3 main.py --currencies BTCUSDT ETHUSDT BNBUSDT
+## 📁 项目结构
+
+```
+bianace_btcethbnb_trade/
+├── core/                      # 核心模块（信号检测、仓位计算、风险管理）
+├── services/                  # 服务模块（频率控制、仓位调整）
+├── backtesting/               # 回测模块
+├── scripts/                   # 脚本模块（数据获取、回测执行）
+├── config/                    # 配置文件（策略参数、评分参数）
+├── docs/                      # 📚 所有文档
+│   ├── design/                # 设计文档（技术架构、模块设计）
+│   ├── proposals/             # 方案文档（使用指南、需求迭代）
+│   ├── reports/               # 报告文档（版本报告、回测报告）
+│   └── deployment/            # 部署文档
+├── scheduler_new.py           # 主调度器
+└── Dockerfile                 # Docker 配置
 ```
 
-### 3. Run Scheduled Analysis with Existing Chrome (Default)
-```bash
-python3 scheduler.py
-```
+## 📊 最新版本 v6.13.1
 
-### 4. Run with New Browser Instance (Optional)
-```bash
-python3 main.py --currencies BTCUSDT --new-browser
-python3 scheduler.py --new-browser
-```
+**核心优化** (2026-04-12):
+- 降低止盈目标：TP1 从 4.0×ATR 降至 2.5×ATR
+- 优化吊灯止损：启动从 2.5×ATR 降至 1.8×ATR
+- 新增时间止损：72 小时未达 TP1 自动平仓 50%
 
-The default behavior now uses your existing Chrome instance for better consistency with your configured settings.
+**回测结果** (6 个月，109 笔交易):
+- 胜率：100%（所有交易都盈利）
+- 总盈亏：+639U
+- 最大回撤：0.0%
+- 夏普比率：22.56
+
+详细数据请查看：[`docs/reports/v613_vs_v6131 对比报告.md`](docs/reports/v613_vs_v6131 对比报告.md)
+
+## ⚠️ 风险提示
+
+1. 加密货币市场波动大，存在亏损风险
+2. 回测结果不代表未来表现
+3. 建议使用小资金测试，确认稳定后再增加投入
+
+---
+
+**完整文档**请查看 [`docs/`](docs/) 目录
+
+**技术架构**详见 [`docs/design/技术架构文档.md`](docs/design/技术架构文档.md)
+
+**需求迭代**详见 [`docs/proposals/项目需求迭代文档.md`](docs/proposals/项目需求迭代文档.md)
