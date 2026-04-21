@@ -481,7 +481,7 @@ class RuleEngineScheduler:
             
             # 查询数据库中所有未平仓的交易记录
             query = """
-                SELECT id, symbol, direction, entry_price, position_qty, entry_order_id
+                SELECT id, symbol, direction, entry_price, quantity, order_id
                 FROM trade_records
                 WHERE status = 'OPEN'
                 ORDER BY created_at DESC
