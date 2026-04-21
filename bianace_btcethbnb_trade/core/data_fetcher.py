@@ -180,14 +180,23 @@ class MarketDataFetcher:
                             if 'bollinger' in tf_data:
                                 indicators[timeframe]['bollinger'] = tf_data['bollinger']
                 else:
-                    # 旧的 API 格式，使用 klines
+                    # 旧的 API 格式，使用 klines（列表格式）
                     klines = data.get('klines', {})
                     indicators = {}
                     
                     for timeframe in ['1d', '4h', '1h', '15m']:
                         if timeframe in klines:
+                            # 将 K 线列表转换为字典格式
+                            kline_list = klines[timeframe]
+                            kline_dict = {
+                                'close': [k[4] for k in kline_list],
+                                'high': [k[2] for k in kline_list],
+                                'low': [k[3] for k in kline_list],
+                                'open': [k[1] for k in kline_list],
+                                'volume': [k[5] for k in kline_list],
+                            }
                             indicators[timeframe] = self._calculate_timeframe_indicators(
-                                klines[timeframe], 
+                                kline_dict, 
                                 timeframe
                             )
                 
