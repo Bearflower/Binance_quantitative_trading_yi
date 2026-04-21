@@ -3,13 +3,13 @@
 行情数据获取模块
 
 功能：
-1. 每小时从币安 API 获取行情数据
+1. 每小时从通用 K 线服务获取行情数据
 2. 支持多时间框架（日线、4 小时、1 小时、15 分钟）
 3. 计算技术指标（EMA、ATR、RSI 等）
 4. 数据缓存和去重
 
 数据流：
-币安 API → 数据获取 → 指标计算 → 缓存 → 提供给信号检测模块
+通用 K 线服务 → 数据获取 → 指标计算 → 缓存 → 提供给信号检测模块
 """
 
 import logging
@@ -17,7 +17,6 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Dict, Any, List, Optional
 from utils.technical_indicators import calculate_ema, calculate_atr, calculate_rsi
-from utils.binance_api import get_multiple_symbols_data
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +48,11 @@ class MarketDataFetcher:
             logger.info("使用缓存的行情数据")
             return self.cache
         
-        logger.info(f"从币安 API 获取行情数据：{symbols}")
+        logger.info(f"从通用 K 线服务获取行情数据：{symbols}")
         
         try:
-            # 调用现有 API 获取数据
-            api_data = get_multiple_symbols_data(symbols)
+            # 从通用 K 线服务获取数据
+            api_data = self._fetch_from_kline_service(symbols)
             
             # 处理数据并计算技术指标
             processed_data = self._process_api_data(api_data)
@@ -72,6 +71,77 @@ class MarketDataFetcher:
                 logger.warning("使用旧的缓存数据")
                 return self.cache
             raise
+    
+    def _fetch_from_kline_service(self, symbols: List[str]) -> Dict[str, Any]:
+        """
+        从通用 K 线服务获取数据
+        
+        Args:
+            symbols: 交易对列表
+        
+        Returns:
+            API 数据字典
+        """
+        result = {}
+        for symbol in symbols:
+            try:
+                # 获取多个时间框架的 K 线数据
+                klines_data = {}
+                for interval in ['1d', '4h', '1h', '15m']:
+                    limit = 100 if interval in ['1d', '4h'] else 100
+                    klines = self._get_klines_from_service(symbol, interval, limit=limit)
+                    if klines:
+                        klines_data[interval] = klines
+                
+                if klines_data:
+                    result[symbol] = {
+                        'klines': klines_data,
+                        'symbol': symbol
+                    }
+                else:
+                    logger.warning(f"无法获取 {symbol} 的 K 线数据")
+            except Exception as e:
+                logger.error(f"获取 {symbol} 数据失败：{e}")
+        
+        return result
+    
+    def _get_klines_from_service(self, symbol: str, interval: str, limit: int = 100) -> Optional[Dict]:
+        """
+        从通用 K 线服务获取 K 线数据
+        
+        Args:
+            symbol: 交易对
+            interval: 时间间隔
+            limit: 获取数量
+        
+        Returns:
+            K 线数据字典
+        """
+        try:
+            import requests
+            url = f"http://43.156.242.184:8765/api/v1/klines/latest"
+            params = {
+                "symbol": symbol,
+                "interval": interval,
+                "limit": limit
+            }
+            
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 0:
+                    return result['data']
+                else:
+                    logger.error(f"K 线服务返回错误：{result.get('message')}")
+                    return None
+            else:
+                logger.error(f"K 线服务 HTTP 错误：{response.status_code}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"获取 K 线数据异常：{e}")
+            return None
     
     def _process_api_data(self, api_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
         """
