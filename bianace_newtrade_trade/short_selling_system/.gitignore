@@ -56,3 +56,7 @@ htmlcov/
 # OS
 .DS_Store
 Thumbs.db
+
+# 大数据文件
+data/*.json
+*.tar.gz
