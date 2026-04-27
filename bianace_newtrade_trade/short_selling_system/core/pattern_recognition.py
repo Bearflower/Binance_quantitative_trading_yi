@@ -1,238 +1,223 @@
 """
-K 线形态识别模块
+形态识别模块
 
-负责识别：
-- 长上影线
-- 放量滞涨
-- 三次冲顶失败
-- 高点逐次下移
+包含：
+1. 三次冲顶检测
+2. 长上影线检测
+3. 放量滞涨检测
 """
 
-from typing import List, Dict, Any, Optional, Tuple
-from utils.logger import logger
+from typing import List, Dict, Any, Tuple, Optional
+from decimal import Decimal
 
 
-class CandlestickPatternRecognizer:
-    """K 线形态识别器"""
-    
+class PatternRecognition:
+    """形态识别器"""
+
     def __init__(self):
         """初始化形态识别器"""
-        # 形态识别参数
-        self.long_shadow_ratio = 2.0  # 长上影线比例 (上影线/实体)
-        self.volume_increase_ratio = 0.5  # 放量比例 (50%)
-        self.price_stagnation_ratio = 0.02  # 滞涨比例 (2%)
-        
-        logger.info("✅ K 线形态识别器初始化完成")
-    
+        self.three_tops_threshold = Decimal('0.002')  # 0.2%
+        self.long_shadow_ratio = Decimal('2.0')  # 上影线/实体 >= 2
+        self.volume_ratio_threshold = Decimal('1.5')  # 成交量倍数
+        self.min_klines = 5  # 最少K线数量
+
+        print("✅ 形态识别器初始化完成")
+
+    def detect_three_tops(
+        self,
+        klines: List[Dict[str, Any]],
+        lookback: int = 5
+    ) -> Tuple[bool, float, Optional[Decimal]]:
+        """
+        检测三次冲顶形态
+
+        Args:
+            klines: K线数据
+            lookback: 回看K线数量
+
+        Returns:
+            (是否检测到, 得分, 阻力位) 元组
+        """
+        if len(klines) < self.min_klines:
+            return False, 0.0, None
+
+        recent_klines = klines[-lookback:]
+        highs = [Decimal(str(k['high'])) for k in recent_klines]
+
+        if len(highs) < 3:
+            return False, 0.0, None
+
+        max_high = max(highs)
+        min_high = min(highs)
+
+        if max_high == 0:
+            return False, 0.0, None
+
+        high_range_ratio = (max_high - min_high) / max_high
+
+        if high_range_ratio < self.three_tops_threshold:
+            resistance_level = max_high
+            score = 4.0
+            return True, score, resistance_level
+
+        descending_count = 0
+        for i in range(1, len(highs)):
+            if highs[i] < highs[i-1]:
+                descending_count += 1
+
+        if descending_count >= 2:
+            resistance_level = highs[0]
+            score = 4.0
+            return True, score, resistance_level
+
+        same_level_count = 0
+        for i in range(1, len(highs)):
+            high_diff_ratio = abs(highs[i] - highs[i-1]) / highs[i-1]
+            if high_diff_ratio < self.three_tops_threshold:
+                same_level_count += 1
+
+        if same_level_count >= 2:
+            resistance_level = max_high
+            score = 2.0
+            return True, score, resistance_level
+
+        return False, 0.0, None
+
     def detect_long_upper_shadow(
         self,
-        kline: Dict[str, Any],
-        ratio: float = None
-    ) -> bool:
+        kline: Dict[str, Any]
+    ) -> Tuple[bool, float]:
         """
         检测长上影线
-        
+
         Args:
-            kline: K 线数据字典
-            ratio: 上影线/实体比例阈值 (默认 2.0)
-            
+            kline: 单根K线数据
+
         Returns:
-            是否为长上影线
-            
-        判断标准:
-            上影线长度 > 实体长度 × ratio
+            (是否检测到, 得分) 元组
         """
-        ratio = ratio or self.long_shadow_ratio
-        
-        open_price = kline['open']
-        close_price = kline['close']
-        high_price = kline['high']
-        low_price = kline['low']
-        
-        # 计算实体长度
-        body = abs(close_price - open_price)
-        
-        # 计算上影线长度
-        upper_shadow = high_price - max(open_price, close_price)
-        
-        # 避免除零
+        high = Decimal(str(kline['high']))
+        low = Decimal(str(kline['low']))
+        open_price = Decimal(str(kline['open']))
+        close = Decimal(str(kline['close']))
+
+        upper_shadow = high - max(open_price, close)
+
+        body = abs(close - open_price)
+
+        is_doji = body / close < Decimal('0.001')
+
+        if is_doji:
+            if upper_shadow > close * Decimal('0.005'):
+                return True, 3.0
+            return False, 0.0
+
         if body == 0:
-            return False
-        
-        # 判断
-        is_long_shadow = upper_shadow > (body * ratio)
-        
-        if is_long_shadow:
-            logger.debug(
-                f"📊 检测到长上影线：上影线={upper_shadow:.4f}, "
-                f"实体={body:.4f}, 比例={upper_shadow/body:.2f}"
-            )
-        
-        return is_long_shadow
-    
-    def detect_volume_stagnation(
-        self,
-        current_kline: Dict[str, Any],
-        prev_kline: Dict[str, Any],
-        volume_ratio: float = None,
-        price_ratio: float = None
-    ) -> bool:
-        """
-        检测放量滞涨
-        
-        Args:
-            current_kline: 当前 K 线
-            prev_kline: 前一根 K 线
-            volume_ratio: 成交量放大比例 (默认 0.5 = 50%)
-            price_ratio: 价格滞涨比例 (默认 0.02 = 2%)
-            
-        Returns:
-            是否为放量滞涨
-            
-        判断标准:
-            成交量放大 > 50% 且 价格涨幅 < 2%
-        """
-        volume_ratio = volume_ratio or self.volume_increase_ratio
-        price_ratio = price_ratio or self.price_stagnation_ratio
-        
-        current_volume = current_kline['volume']
-        prev_volume = prev_kline['volume']
-        
-        current_close = current_kline['close']
-        prev_close = prev_kline['close']
-        
-        # 计算成交量变化
-        volume_change = (current_volume - prev_volume) / prev_volume
-        
-        # 计算价格变化
-        price_change = (current_close - prev_close) / prev_close
-        
-        # 判断
-        is_stagnation = (
-            volume_change > volume_ratio and
-            abs(price_change) < price_ratio
-        )
-        
-        if is_stagnation:
-            logger.debug(
-                f"📊 检测到放量滞涨：成交量变化={volume_change:.2%}, "
-                f"价格变化={price_change:.2%}"
-            )
-        
-        return is_stagnation
-    
-    def detect_triple_top(
-        self,
-        klines: List[Dict[str, Any]],
-        tolerance: float = 0.02
-    ) -> bool:
-        """
-        检测三次冲顶失败
-        
-        Args:
-            klines: K 线数据列表 (至少 3 条)
-            tolerance: 价格容差 (默认 2%)
-            
-        Returns:
-            是否为三次冲顶
-            
-        判断标准:
-            三次冲击同一高点，价格无法突破 (容差范围内)
-        """
-        if len(klines) < 3:
-            return False
-        
-        # 获取最近 3 个高点
-        highs = [kline['high'] for kline in klines[-3:]]
-        
-        # 找到最高价
-        max_high = max(highs)
-        
-        # 检查是否三次都接近最高价
-        count = 0
-        for high in highs:
-            if high >= max_high * (1 - tolerance):
-                count += 1
-        
-        is_triple_top = (count == 3)
-        
-        if is_triple_top:
-            logger.debug(
-                f"📊 检测到三次冲顶：高点={highs}, "
-                f"最高={max_high:.4f}"
-            )
-        
-        return is_triple_top
-    
-    def detect_lower_highs(
-        self,
-        klines: List[Dict[str, Any]],
-        count: int = 3
-    ) -> bool:
-        """
-        检测高点逐次下移
-        
-        Args:
-            klines: K 线数据列表
-            count: 需要检测的高点数量 (默认 3)
-            
-        Returns:
-            是否高点逐次下移
-        """
-        if len(klines) < count:
-            return False
-        
-        # 获取最近 count 个高点
-        highs = [kline['high'] for kline in klines[-count:]]
-        
-        # 检查是否逐次下降
-        is_declining = all(
-            highs[i] > highs[i + 1] for i in range(len(highs) - 1)
-        )
-        
-        if is_declining:
-            logger.debug(f"📊 检测到高点下移：高点={highs}")
-        
-        return is_declining
-    
-    def detect_patterns(
+            return False, 0.0
+
+        shadow_body_ratio = upper_shadow / body
+
+        is_bearish = close < open_price
+
+        if shadow_body_ratio >= self.long_shadow_ratio and (is_bearish or is_doji):
+            return True, 3.0
+
+        if shadow_body_ratio >= Decimal('1.5') and is_bearish:
+            return True, 2.0
+
+        return False, 0.0
+
+    def detect_volume_divergence(
         self,
         klines: List[Dict[str, Any]]
-    ) -> Dict[str, bool]:
+    ) -> Tuple[bool, float, Optional[str]]:
         """
-        综合检测所有形态
-        
+        检测放量滞涨
+
         Args:
-            klines: K 线数据列表
-            
+            klines: K线数据
+
         Returns:
-            形态检测结果字典
+            (是否检测到, 得分, 原因) 元组
         """
-        if not klines or len(klines) < 2:
-            logger.warning("⚠️ K 线数据不足，无法检测形态")
+        if len(klines) < 6:
+            return False, 0.0, None
+
+        current_kline = klines[-1]
+        prev_klines = klines[-6:-1]
+
+        current_volume = Decimal(str(current_kline['volume']))
+        avg_volume = sum(Decimal(str(k['volume'])) for k in prev_klines) / Decimal(len(prev_klines))
+
+        if avg_volume == 0:
+            return False, 0.0, None
+
+        volume_ratio = current_volume / avg_volume
+
+        current_close = Decimal(str(current_kline['close']))
+        prev_high = max(Decimal(str(k['high'])) for k in prev_klines)
+
+        price_not_new_high = current_close < prev_high
+
+        if volume_ratio >= self.volume_ratio_threshold and price_not_new_high:
+            reason = f"放量滞涨：成交量倍数={volume_ratio:.2f}，价格未创新高"
+            return True, 3.0, reason
+
+        if volume_ratio >= Decimal('1.3') and price_not_new_high:
+            reason = f"轻微放量滞涨：成交量倍数={volume_ratio:.2f}"
+            return True, 2.0, reason
+
+        return False, 0.0, None
+
+    def analyze_patterns(
+        self,
+        klines: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """
+        综合分析形态
+
+        Args:
+            klines: K线数据
+
+        Returns:
+            分析结果字典
+        """
+        if len(klines) < self.min_klines:
             return {
-                'long_upper_shadow': False,
-                'volume_stagnation': False,
-                'triple_top': False,
-                'lower_highs': False,
+                'three_tops': {'detected': False, 'score': 0.0, 'resistance_level': None},
+                'long_upper_shadow': {'detected': False, 'score': 0.0},
+                'volume_divergence': {'detected': False, 'score': 0.0, 'reason': None},
+                'total_score': 0.0,
+                'data_insufficient': True
             }
-        
-        # 检测各种形态
-        results = {
-            'long_upper_shadow': self.detect_long_upper_shadow(klines[-1]),
-            'volume_stagnation': self.detect_volume_stagnation(
-                klines[-1], klines[-2]
-            ),
-            'triple_top': self.detect_triple_top(klines) if len(klines) >= 3 else False,
-            'lower_highs': self.detect_lower_highs(klines),
+
+        three_tops_detected, three_tops_score, resistance_level = self.detect_three_tops(klines)
+
+        current_kline = klines[-1]
+        long_upper_shadow, long_upper_shadow_score = self.detect_long_upper_shadow(current_kline)
+
+        volume_divergence, volume_divergence_score, volume_reason = self.detect_volume_divergence(klines)
+
+        total_score = three_tops_score + long_upper_shadow_score + volume_divergence_score
+
+        return {
+            'three_tops': {
+                'detected': three_tops_detected,
+                'score': three_tops_score,
+                'resistance_level': float(resistance_level) if resistance_level else None
+            },
+            'long_upper_shadow': {
+                'detected': long_upper_shadow,
+                'score': long_upper_shadow_score
+            },
+            'volume_divergence': {
+                'detected': volume_divergence,
+                'score': volume_divergence_score,
+                'reason': volume_reason
+            },
+            'total_score': total_score,
+            'data_insufficient': False
         }
-        
-        # 统计检测到的形态数量
-        pattern_count = sum(results.values())
-        logger.debug(f"📊 检测到 {pattern_count}/4 个看跌形态")
-        
-        return results
 
 
-# 全局识别器实例
-pattern_recognizer = CandlestickPatternRecognizer()
+pattern_recognition = PatternRecognition()

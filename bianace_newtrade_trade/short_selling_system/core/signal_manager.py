@@ -15,7 +15,7 @@ from enum import Enum
 from pathlib import Path
 import json
 
-from .scoring_engine_v41 import ScoringResultV41, scoring_engine_v41
+from .scoring_engine import ScoringResult, scoring_engine
 from utils.logger import logger
 
 
@@ -34,7 +34,7 @@ class Signal:
     def __init__(
         self,
         symbol: str,
-        scoring_result: ScoringResultV41,
+        scoring_result: ScoringResult,
         current_price: float,
         entry_min: float,
         entry_max: float,
@@ -98,7 +98,7 @@ class Signal:
         """从字典创建"""
         signal = cls(
             symbol=data['symbol'],
-            scoring_result=ScoringResultV41.from_dict(data['scoring_result']),
+            scoring_result=ScoringResult.from_dict(data['scoring_result']),
             current_price=data['current_price'],
             entry_min=data['entry_min'],
             entry_max=data['entry_max'],
@@ -228,7 +228,7 @@ class SignalManager:
     def generate_signal(
         self,
         symbol: str,
-        scoring_result: ScoringResultV41,
+        scoring_result: ScoringResult,
         current_price: float,
         klines: Optional[List[Dict[str, Any]]] = None,
         stop_loss_percent: float = 0.05,

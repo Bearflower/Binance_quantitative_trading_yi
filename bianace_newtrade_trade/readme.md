@@ -19,18 +19,28 @@
 
 ```
 bianace_newtrade_trade/
-├── docs/                      # 文档目录
-│   ├── reports/              # 报告类文档
-│   ├── deployment/           # 部署类文档
-│   ├── plans/                # 方案类文档
-│   └── designs/              # 设计类文档
 ├── short_selling_system/     # 做空系统核心代码
-│   ├── core/                 # 核心模块
+│   ├── core/                 # 核心模块（评分引擎、形态识别等）
 │   ├── backtesting/          # 回测模块
+│   ├── scripts/              # 工具脚本（分类整理）
+│   │   ├── backtest/         # 回测脚本
+│   │   ├── check/            # 检查脚本
+│   │   ├── debug/            # 调试脚本
+│   │   └── fetch/            # 数据获取脚本
+│   ├── tests/                # 测试文件
 │   ├── config/               # 配置文件
-│   ├── scripts/              # 脚本工具
-│   └── tests/                # 测试文件
-└── readme.md                 # 项目说明文档
+│   ├── utils/                # 工具函数
+│   └── main.py               # 主入口
+├── archive/                  # 历史版本归档
+│   ├── code/                 # 历史代码（v1.0, v3.1, v4.0）
+│   └── docs/                 # 历史文档
+├── docs/                     # 项目文档
+│   ├── designs/              # 设计文档
+│   ├── deployment/           # 部署文档
+│   ├── plans/                # 方案文档
+│   ├── reports/              # 报告文档
+│   └── archive/              # 历史文档归档
+└── README.md                 # 项目说明文档
 ```
 
 ## 快速开始
@@ -41,7 +51,9 @@ bianace_newtrade_trade/
 
 ### 2. 策略详情
 
-完整的策略文档请查看：[docs/designs/做空系统需求文档.md](docs/designs/做空系统需求文档.md)
+当前策略文档：[docs/新币做空策略V4.1.md](docs/新币做空策略V4.1.md)
+
+完整需求文档：[docs/designs/做空系统需求文档.md](docs/designs/做空系统需求文档.md)
 
 ### 3. 测试报告
 
@@ -59,18 +71,15 @@ bianace_newtrade_trade/
 
 ## 文档说明
 
-本项目采用规范的文档管理结构，所有 Markdown 文档已整理到 `docs/` 目录：
+本项目采用规范的文档管理结构，所有文档已整理到 `docs/` 目录：
 
-- **docs/reports/** (11 个文件) - 存放测试报告、错误修复报告等
-  - PM 账户测试报告、服务器测试报告、回测报告等
-- **docs/deployment/** (9 个文件) - 存放部署指南、部署报告、配置说明等
-  - DEPLOYMENT_GUIDE.md、快速启动指南、Docker 部署技能等
-- **docs/plans/** (5 个文件) - 存放策略方案、优化计划等
-  - 新币做空策略 V2.0、优化计划、策略调整记录等
-- **docs/designs/** (7 个文件) - 存放设计文档、需求文档、API 说明等
-  - 做空系统需求文档、币安 API 配置、精度处理方案等
+- **docs/designs/** - 设计文档（技术架构、需求文档、API 说明等）
+- **docs/deployment/** - 部署文档（部署指南、快速启动、配置说明等）
+- **docs/plans/** - 方案文档（策略方案、优化计划、迭代记录等）
+- **docs/reports/** - 报告文档（测试报告、错误记录、分析结果等）
+- **docs/archive/** - 历史文档归档（按版本分类）
 
-**根目录仅保留 `readme.md` 一个文档文件**，其他所有 md 文档均已分类存储到 docs 目录。
+文档索引：[docs/文档索引.md](docs/文档索引.md)
 
 ## 注意事项
 
@@ -88,9 +97,10 @@ bianace_newtrade_trade/
 
 ## 更新日志
 
+- 2026-04-27: 项目重构，代码和文档整理
 - 2026-04-02: 策略调整优化
 - 2026-03-09: 自动化部署技能集成
-- 更多历史记录请查看 docs/reports/ 目录
+- 更多历史记录请查看 docs/archive/ 目录
 
 ## 许可证
 

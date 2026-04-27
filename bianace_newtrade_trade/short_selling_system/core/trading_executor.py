@@ -16,7 +16,7 @@ from datetime import datetime, timedelta
 
 from utils.logger import logger
 from config.settings import settings
-from short_selling_system.core.binance_trading_api import binance_trading_api
+from .binance_trading_api import binance_trading_api
 
 
 class TradingExecutor:

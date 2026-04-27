@@ -50,7 +50,7 @@ def filter_stock_list(df: pd.DataFrame, config: Optional[Dict] = None) -> pd.Dat
         logger.info(f"剔除 ST 股票后：{len(df)} 只")
     
     if config.get('exclude_beijing', True):
-        df = df[~df['code'].str.startswith('8')]
+        df = df[~df['code'].str.match('^(8|920|83|87)')]
         logger.info(f"剔除北交所后：{len(df)} 只")
     
     if config.get('exclude_delisting', True):

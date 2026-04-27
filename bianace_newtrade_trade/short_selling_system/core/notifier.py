@@ -1,5 +1,5 @@
 """
-飞书通知推送模块
+飞书通知推送模块（已改造为使用通用通知服务）
 
 负责：
 - 推送交易信号通知
@@ -8,6 +8,7 @@
 - 支持分级推送
 """
 
+import os
 import requests
 from typing import Optional, Dict, Any
 from datetime import datetime
@@ -16,101 +17,84 @@ from .signal_manager import Signal
 from utils.logger import logger
 from config.settings import settings
 
+# 通用通知服务配置
+NOTIFICATION_SERVICE_URL = os.getenv('NOTIFICATION_SERVICE_URL', 'http://43.156.242.184:8766/api/v1')
+NOTIFICATION_PROJECT = 'new_coin'
+
 
 class FeishuNotifier:
-    """飞书通知推送器"""
+    """飞书通知推送器（使用通用通知服务）"""
     
     def __init__(self, webhook_url: Optional[str] = None):
         """
         初始化飞书推送器
         
         Args:
-            webhook_url: 飞书机器人 Webhook URL
+            webhook_url: 飞书机器人 Webhook URL（已废弃，仅用于兼容）
         """
-        # 优先使用传入的 URL，否则使用配置
+        self.notification_url = f"{NOTIFICATION_SERVICE_URL}/send"
+        
+        # 兼容旧配置
         if webhook_url:
-            self.webhook_url = webhook_url
-        else:
-            # 从配置获取
-            self.webhook_url = getattr(settings, 'feishu_webhook', None)
+            logger.warning("⚠️ webhook_url 参数已废弃，将使用通用通知服务")
         
-        # 验证 URL 格式
-        if self.webhook_url and not self._is_valid_url(self.webhook_url):
-            logger.error(f"❌ 无效的飞书 webhook URL 格式：{self.webhook_url}")
-            self.webhook_url = None
-        
-        if not self.webhook_url:
-            logger.warning("⚠️ 未配置飞书 Webhook URL，通知功能将不可用")
-        else:
-            logger.info("✅ 飞书通知推送器初始化完成")
+        logger.info(f"✅ 飞书通知推送器初始化完成（通用服务：{NOTIFICATION_SERVICE_URL}）")
     
-    def _is_valid_url(self, url: str) -> bool:
+    def send_notification(self, message: str, level: str = "info") -> bool:
         """
-        验证 URL 格式是否有效
+        发送通知到通用服务
         
         Args:
-            url: 待验证的 URL
+            message: 消息内容
+            level: 通知级别 (info, warning, error)
             
         Returns:
-            是否有效
+            是否发送成功
         """
-        if not url or not isinstance(url, str):
+        try:
+            data = {
+                "project": NOTIFICATION_PROJECT,
+                "message": message,
+                "type": "text",
+                "level": level
+            }
+            
+            response = requests.post(
+                self.notification_url,
+                json=data,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 0:
+                    logger.info(f"✅ 通知发送成功：{message[:50]}...")
+                    return True
+                else:
+                    logger.error(f"❌ 通知发送失败：{result}")
+                    return False
+            else:
+                logger.error(f"❌ 通知服务 HTTP 错误：{response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ 通知发送异常：{e}")
             return False
-        return url.startswith('http://') or url.startswith('https://')
     
     def send_message(self, message: str, title: str = "币安做空系统") -> bool:
         """
-        发送飞书消息
+        发送消息（兼容旧接口）
         
         Args:
-            message: 消息内容 (Markdown 格式)
+            message: 消息内容
             title: 消息标题
             
         Returns:
             是否发送成功
         """
-        if not self.webhook_url:
-            logger.warning("⚠️ 飞书 Webhook 未配置，跳过消息发送")
-            return False
-        
-        # 构建飞书消息体
-        payload = {
-            "msg_type": "interactive",
-            "card": {
-                "header": {
-                    "title": {
-                        "tag": "plain_text",
-                        "content": title
-                    },
-                    "template": "blue"
-                },
-                "elements": [
-                    {
-                        "tag": "markdown",
-                        "content": message
-                    }
-                ]
-            }
-        }
-        
-        try:
-            response = requests.post(
-                self.webhook_url,
-                json=payload,
-                timeout=10
-            )
-            
-            if response.status_code == 200:
-                logger.info("✅ 飞书消息发送成功")
-                return True
-            else:
-                logger.error(f"❌ 飞书消息发送失败：{response.status_code}")
-                logger.error(f"响应内容：{response.text}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"❌ 飞书消息发送异常：{e}")
-            return False
+        # 将标题添加到消息内容中
+        full_message = f"**{title}**\n\n{message}"
+        return self.send_notification(full_message, level="info")
     
     def send_signal_notification(self, signal: Signal) -> bool:
         """
@@ -127,22 +111,15 @@ class FeishuNotifier:
         # 构建消息内容
         message = self._build_signal_message(signal)
         
-        # 根据评分设置颜色
+        # 根据评分设置通知级别
         if result.total_score >= 9.0:
-            title = "🎯 强烈推荐信号"
-            template = "red"
+            level = "error"  # 强烈推荐，使用 error 级别引起注意
         elif result.total_score >= 8.0:
-            title = "📈 推荐信号"
-            template = "orange"
-        elif result.total_score >= 7.0:
-            title = "📊 建议关注信号"
-            template = "blue"
+            level = "warning"  # 推荐
         else:
-            title = "ℹ️ 观察信号"
-            template = "blue"
+            level = "info"  # 普通
         
-        # 发送消息
-        return self.send_message(message, title)
+        return self.send_notification(message, level=level)
     
     def _build_signal_message(self, signal: Signal) -> str:
         """
@@ -152,7 +129,7 @@ class FeishuNotifier:
             signal: 交易信号对象
             
         Returns:
-            Markdown 格式的消息内容
+            格式化的消息内容
         """
         result = signal.scoring_result
         
@@ -230,7 +207,7 @@ class FeishuNotifier:
             f"请及时关注并处理！"
         )
         
-        return self.send_message(message, "⚠️ 风险警告")
+        return self.send_notification(message, level="warning")
     
     def send_daily_report(self, signals: list, trades: list) -> bool:
         """
@@ -268,7 +245,7 @@ class FeishuNotifier:
             f"祝您投资顺利！💰"
         )
         
-        return self.send_message(message, "📊 每日汇总")
+        return self.send_notification(message, level="info")
     
     def send_new_listing_notification(
         self,
@@ -307,7 +284,7 @@ class FeishuNotifier:
             f"系统将自动进行评分监控，请关注后续通知。"
         )
         
-        return self.send_message(message, "🆕 新永续合约上线")
+        return self.send_notification(message, level="info")
     
     def send_scoring_complete_notification(
         self,
@@ -375,17 +352,17 @@ class FeishuNotifier:
         message += "\n---\n"
         message += "系统自动评分，仅供参考。"
         
-        # 根据结果设置标题
+        # 根据结果设置通知级别
         if veto:
-            title = "❌ 评分完成 - 已否决"
+            level = "warning"
         elif signal_generated and order_placed:
-            title = "🎯 评分完成 - 已下单"
+            level = "error"  # 已下单，使用 error 级别
         elif signal_generated:
-            title = "✅ 评分完成 - 已生成信号"
+            level = "warning"
         else:
-            title = "📊 评分完成 - 未达标"
+            level = "info"
         
-        return self.send_message(message, title)
+        return self.send_notification(message, level=level)
     
     def send_coin_summary_report(
         self,
@@ -401,11 +378,7 @@ class FeishuNotifier:
         Args:
             symbol: 币种符号
             listing_time: 上线时间
-            scoring_history: 评分历史列表，每项包含：
-                - attempt: 第几次评分
-                - timestamp: 评分时间
-                - score: 综合评分
-                - signal_generated: 是否生成信号
+            scoring_history: 评分历史列表
             final_score: 最终综合评分
             signal_generated: 是否生成了信号
             
@@ -460,17 +433,15 @@ class FeishuNotifier:
             f"系统自动监控，如有变化将另行通知。"
         )
         
-        # 根据最终评分设置标题颜色
+        # 根据最终评分设置通知级别
         if final_score >= 8.0:
-            title = "🎯 新币种强烈推荐"
+            level = "error"
         elif final_score >= 7.0:
-            title = "📈 新币种推荐"
-        elif final_score >= 6.0:
-            title = "📊 新币种关注"
+            level = "warning"
         else:
-            title = "ℹ️ 新币种评分"
+            level = "info"
         
-        return self.send_message(message, title)
+        return self.send_notification(message, level=level)
 
 
 # 全局推送器实例

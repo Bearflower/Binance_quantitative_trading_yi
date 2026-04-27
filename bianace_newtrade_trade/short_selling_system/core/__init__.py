@@ -14,8 +14,8 @@ from .calculator import (
 )
 from .unlock_manager import UnlockDataManager, unlock_manager
 from .pattern_recognition import (
-    CandlestickPatternRecognizer,
-    pattern_recognizer
+    PatternRecognition,
+    pattern_recognition
 )
 from .listing_detector import NewListingDetector, listing_detector
 from .cache import DataCache, data_cache, cached
@@ -39,7 +39,7 @@ __all__ = [
     'UnlockDataManager', 'unlock_manager',
     
     # 形态识别
-    'CandlestickPatternRecognizer', 'pattern_recognizer',
+    'PatternRecognition', 'pattern_recognition',
     
     # 新币检测
     'NewListingDetector', 'listing_detector',
