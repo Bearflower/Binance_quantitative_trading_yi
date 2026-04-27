@@ -17,7 +17,7 @@
 
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional, Callable
+from typing import Dict, Any, List, Optional, Callable, Tuple
 from enum import Enum
 from collections import defaultdict
 import threading
@@ -417,27 +417,48 @@ class AlertManager(BaseService):
 
         # 检查每条规则
         for rule in self._rules.values():
+            if not rule.enabled:
+                continue
+
             if rule.metric in metric_values:
                 value = metric_values[rule.metric]
 
-                # 检查是否应该触发（包含冷却期检查）
-                if rule.should_trigger(value):
+                # 检查阈值
+                should_trigger_by_threshold = False
+                if rule.comparison == 'greater':
+                    should_trigger_by_threshold = value > rule.threshold
+                elif rule.comparison == 'less':
+                    should_trigger_by_threshold = value < rule.threshold
+                elif rule.comparison == 'equal':
+                    should_trigger_by_threshold = abs(value - rule.threshold) < 0.0001
+
+                if not should_trigger_by_threshold:
+                    continue
+
+                # 检查是否在冷却期内
+                if self._is_in_alert_cooldown(rule.name):
+                    # 在冷却期内，记录但不发送通知
+                    alert = {
+                        'rule_name': rule.name,
+                        'metric': rule.metric,
+                        'value': value,
+                        'threshold': rule.threshold,
+                        'level': rule.level.value,
+                        'message': rule.message_template.format(value=value),
+                        'triggered_at': datetime.now().isoformat()
+                    }
+                    self._record_suppressed_alert(alert, rule.cooldown_minutes)
+                    suppressed_alerts.append(alert)
+                    self.log_debug(f"告警 {rule.name} 在冷却期内，不发送通知")
+                else:
+                    # 不在冷却期，触发告警
                     alert = rule.trigger(value)
+                    triggered_alerts.append(alert)
+                    self._record_alert(alert)
 
-                    # 检查是否在冷却期内
-                    if self._is_in_alert_cooldown(rule.name):
-                        # 在冷却期内，记录但不发送通知
-                        self._record_suppressed_alert(alert, rule.cooldown_minutes)
-                        suppressed_alerts.append(alert)
-                        self.log_debug(f"告警 {rule.name} 在冷却期内，不发送通知")
-                    else:
-                        # 不在冷却期，正常处理
-                        triggered_alerts.append(alert)
-                        self._record_alert(alert)
-
-                        # 发送通知
-                        if self.enable_notification:
-                            self._send_notification(alert)
+                    # 发送通知
+                    if self.enable_notification:
+                        self._send_notification(alert)
 
         return triggered_alerts, suppressed_alerts
 

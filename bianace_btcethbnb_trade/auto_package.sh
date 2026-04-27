@@ -35,7 +35,7 @@ rsync -av \
     --exclude='__pycache__' \
     --exclude='.git' \
     --exclude='logs/*' \
-    --exclude='data/*' \
+    --exclude='/data/*' \
     --exclude='reports/*' \
     --exclude='*.tar.gz' \
     --exclude='.DS_Store' \

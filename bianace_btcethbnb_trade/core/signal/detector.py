@@ -17,8 +17,8 @@ from typing import Dict, Any, List, Optional, Tuple
 from config.strategy_params import StrategyParams, get_params
 from core.data import MarketDataFetcher, get_data_fetcher
 from core.scoring import get_scoring_engine
-from core.signal.validator import SignalValidator
-from core.signal.filter import SignalFilter
+from .validator import SignalValidator
+from .filter import SignalFilter
 
 logger = logging.getLogger(__name__)
 

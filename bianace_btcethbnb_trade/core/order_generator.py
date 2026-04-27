@@ -415,6 +415,11 @@ class OrderGenerator:
         """
         计算止盈价格（第六章止盈策略）
         
+        V6.13.1 止盈参数：
+        - TP1 = 2.5×R，平仓 25%
+        - TP2 = 4.0×R，平仓 25%
+        - TP3 = 剩余 50%，移动止损跟踪
+        
         Args:
             entry_price: 开仓价
             direction: 方向
@@ -429,11 +434,12 @@ class OrderGenerator:
         if tp_config is None:
             tp_config = {}
         
-        tp1_mult = tp_config.get('tp1_multiplier', Decimal('1.5'))
-        tp2_mult = tp_config.get('tp2_multiplier', Decimal('2.5'))
-        tp1_ratio = tp_config.get('tp1_ratio', Decimal('0.3'))
-        tp2_ratio = tp_config.get('tp2_ratio', Decimal('0.3'))
-        tp3_ratio = tp_config.get('tp3_ratio', Decimal('0.4'))
+        # V6.13.1 默认值
+        tp1_mult = tp_config.get('tp1_multiplier', Decimal('2.5'))  # V6.13.1: 2.5×R
+        tp2_mult = tp_config.get('tp2_multiplier', Decimal('4.0'))  # V6.13.1: 4.0×R
+        tp1_ratio = tp_config.get('tp1_ratio', Decimal('0.25'))     # V6.13.1: 25%
+        tp2_ratio = tp_config.get('tp2_ratio', Decimal('0.25'))     # V6.13.1: 25%
+        tp3_ratio = tp_config.get('tp3_ratio', Decimal('0.50'))     # V6.13.1: 50%
         
         tp_levels = []
         

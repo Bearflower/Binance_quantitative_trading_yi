@@ -24,8 +24,8 @@ from typing import Dict, Any, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 
-from core.data.cache import DataCache
-from core.data.indicators import IndicatorCalculator
+from .cache import DataCache
+from .indicators import IndicatorCalculator
 
 logger = logging.getLogger(__name__)
 

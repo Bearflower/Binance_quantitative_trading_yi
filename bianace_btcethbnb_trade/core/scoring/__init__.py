@@ -5,9 +5,9 @@
 提供统一的评分引擎接口和版本管理
 """
 
-from core.scoring.base import ScoringEngineBase
-from core.scoring.v612 import ScoringEngineV612
-from core.scoring.factory import (
+from .base import ScoringEngineBase
+from .v612 import ScoringEngineV612
+from .factory import (
     get_scoring_engine,
     get_scoring_engine_v612,
     create_scoring_engine,

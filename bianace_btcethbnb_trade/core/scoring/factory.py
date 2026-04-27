@@ -6,8 +6,8 @@
 """
 
 from typing import Optional
-from core.scoring.base import ScoringEngineBase
-from core.scoring.v612 import ScoringEngineV612
+from .base import ScoringEngineBase
+from .v612 import ScoringEngineV612
 
 
 # 支持的版本映射

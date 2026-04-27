@@ -82,8 +82,10 @@ class RiskManager:
         """
         计算基于 ATR 的动态止损价（第五章 v5.3 规范）
         
-        止损距离 = max(关键位距离，2.0×ATR14)
+        止损距离 = max(关键位距离，1.5×ATR14)
         最大止损幅度 ≤ 开仓价的 7%
+        
+        V6.12/V6.13/V6.13.1 统一使用 1.5×ATR
         
         Args:
             entry_price: 开仓价
@@ -95,8 +97,8 @@ class RiskManager:
         Returns:
             (止损价，止损距离)
         """
-        # v5.3 规范：2.0×ATR14
-        atr_multiplier = Decimal('2.0')
+        # V6.12/V6.13/V6.13.1 统一使用 1.5×ATR14
+        atr_multiplier = Decimal('1.5')  # V6.12/V6.13/V6.13.1 统一使用 1.5×ATR
         atr_distance = atr14 * atr_multiplier
         
         # 如果有技术位距离，取较大者
@@ -411,31 +413,78 @@ class RiskManager:
         
         return False
     
+    def check_chandelier_stop_activation(
+        self,
+        current_price: Decimal,
+        entry_price: Decimal,
+        atr14: Decimal,
+        direction: int
+    ) -> bool:
+        """
+        检查是否达到吊灯止损启动条件（V6.13.1 新增）
+        
+        V6.13.1: 价格突破 1.8×ATR 后启动
+        V6.12/V6.13: 价格突破 2.5×ATR 后启动
+        
+        Args:
+            current_price: 当前价格
+            entry_price: 开仓价
+            atr14: ATR14 值
+            direction: 方向 (1=多, -1=空)
+        
+        Returns:
+            True 表示已启动吊灯止损
+        """
+        # V6.13.1: 1.8×ATR 启动阈值
+        activation_threshold = atr14 * Decimal('1.8')
+        
+        if direction == 1:  # 多头
+            profit = current_price - entry_price
+            if profit >= activation_threshold:
+                logger.info(f"吊灯止损启动: 当前价 {current_price:.2f} - 开仓价 {entry_price:.2f} = {profit:.2f} >= {activation_threshold:.2f}")
+                return True
+        else:  # 空头
+            profit = entry_price - current_price
+            if profit >= activation_threshold:
+                logger.info(f"吊灯止损启动: 开仓价 {entry_price:.2f} - 当前价 {current_price:.2f} = {profit:.2f} >= {activation_threshold:.2f}")
+                return True
+        
+        return False
+    
     def check_trailing_stop_drawdown(
         self,
         current_price: Decimal,
         highest_price: Decimal,
         lowest_price: Decimal,
         atr14: Decimal,
-        direction: int
+        direction: int,
+        chandelier_activated: bool = False
     ) -> bool:
         """
         检查是否触发最大回撤止损（V6.13.1 辅助保护）
         
         V6.13: 从最高点（多头）或最低点（空头）回撤 2.5×ATR 立即平仓
-        V6.13.1: 从最高点（多头）或最低点（空头）回撤 1.8×ATR 立即平仓
+        V6.13.1: 从最高点（多头）或最低点（空头）回撤 1.2×ATR 立即平仓
+        
+        注意: 必须先通过 check_chandelier_stop_activation() 检查启动条件
         
         Args:
             current_price: 当前价格
             highest_price: 持仓期间最高价（多头）或最低价（空头）
             atr14: 1 小时级别 ATR14 值
             direction: 方向（1=多，-1=空）
+            chandelier_activated: 吊灯止损是否已启动（默认 False）
         
         Returns:
             True 表示触发止损，需要平仓
         """
-        # V6.13.1 规范：1.8×ATR 回撤保护（优化版）
-        drawdown_threshold = atr14 * Decimal('1.8')
+        # 如果吊灯止损未启动，不检查回撤
+        if not chandelier_activated:
+            logger.debug("吊灯止损未启动，跳过回撤检查")
+            return False
+        
+        # V6.13.1 规范：1.2×ATR 回撤保护（优化版）
+        drawdown_threshold = atr14 * Decimal('1.2')  # V6.13.1: 1.2×ATR
         
         if direction == 1:  # 多头
             # 从最高点回撤

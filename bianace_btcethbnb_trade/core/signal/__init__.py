@@ -14,9 +14,9 @@
 - validator.py: 验证器（一票否决项）
 """
 
-from core.signal.detector import SignalDetector, get_signal_detector
-from core.signal.filter import SignalFilter
-from core.signal.validator import SignalValidator
+from .detector import SignalDetector, get_signal_detector
+from .filter import SignalFilter
+from .validator import SignalValidator
 
 __all__ = [
     'SignalDetector',

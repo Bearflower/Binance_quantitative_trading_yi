@@ -14,7 +14,7 @@ Version: 6.12.0
 
 import logging
 from typing import Dict, Any, Optional, Tuple
-from core.scoring.base import ScoringEngineBase
+from .base import ScoringEngineBase
 
 logger = logging.getLogger(__name__)
 

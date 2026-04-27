@@ -32,6 +32,11 @@
 
 ## 已完成的任务
 
+### [完成时间:2026-04-27] 任务4.4: 优化通知冷却期机制
+**状态**: 已完成
+**说明**: 优化了AlertManager和NotificationManager的冷却期机制，在冷却期内不发送飞书通知，集成了FrequencyController，添加了被抑制通知的记录和查询功能
+**详细报告**: [.trae/nemorics/2026-04/27/通知冷却期优化完成报告.md](file:///Users/yl/vscode/bianace_btcethbnb_trade/.trae/nemorics/2026-04/27/通知冷却期优化完成报告.md)
+
 ### [完成时间:2026-04-27] 任务3.2: 优化数据库操作
 **状态**: 已完成
 **说明**: 创建了数据仓库模式（BaseRepository基类），实现了TradeRepository、FrequencyRepository、PerformanceRepository三个具体数据仓库，优化了数据库查询性能，添加了单元测试

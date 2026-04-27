@@ -15,7 +15,7 @@ from decimal import Decimal
 from typing import Dict, Any, List, Optional
 from core.data import get_data_fetcher
 from core.binance_data_fetcher import get_binance_data_fetcher
-from core.signal_detector import get_signal_detector
+from core.signal.detector import get_signal_detector
 from core.position_calculator import get_position_calculator
 from core.risk_manager import get_risk_manager
 from core.order_generator import get_order_generator, generate_all_orders

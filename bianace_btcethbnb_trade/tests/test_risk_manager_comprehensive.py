@@ -89,12 +89,12 @@ class TestRiskManagerStopLoss(unittest.TestCase):
             entry_price, direction, atr14
         )
 
-        # 止损距离 = 2.0 × ATR14 = 1000
-        expected_distance = Decimal('1000')
+        # 止损距离 = 1.5 × ATR14 = 750 (V6.12/V6.13/V6.13.1 统一使用 1.5×ATR)
+        expected_distance = Decimal('750')
         self.assertEqual(stop_distance, expected_distance)
 
         # 多头止损价 = 开仓价 - 止损距离
-        expected_stop = Decimal('49000')
+        expected_stop = Decimal('49250')
         self.assertEqual(stop_loss, expected_stop)
 
     def test_calculate_atr_based_stop_loss_short(self):
@@ -107,12 +107,12 @@ class TestRiskManagerStopLoss(unittest.TestCase):
             entry_price, direction, atr14
         )
 
-        # 止损距离 = 2.0 × ATR14 = 1000
-        expected_distance = Decimal('1000')
+        # 止损距离 = 1.5 × ATR14 = 750 (V6.12/V6.13/V6.13.1 统一使用 1.5×ATR)
+        expected_distance = Decimal('750')
         self.assertEqual(stop_distance, expected_distance)
 
         # 空头止损价 = 开仓价 + 止损距离
-        expected_stop = Decimal('51000')
+        expected_stop = Decimal('50750')
         self.assertEqual(stop_loss, expected_stop)
 
     def test_calculate_atr_based_stop_loss_with_key_level(self):
