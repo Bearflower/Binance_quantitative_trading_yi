@@ -45,6 +45,12 @@ class Settings(BaseSettings):
     default_take_profit_percent_2: float = 0.30
     max_holding_hours: int = 24
     
+    # V4.1.1 ATR 止损止盈配置
+    use_atr_sl_tp: bool = True  # 是否使用 ATR 止损止盈
+    stop_loss_atr_multiplier: float = 2.0  # 止损：2.0 ATR
+    take_profit_atr_multiplier: float = 2.5  # 止盈：2.5 ATR
+    atr_period: int = 14  # ATR 计算周期
+    
     # 评分配置
     min_signal_score: float = 7.0
     signal_expire_hours: int = 1

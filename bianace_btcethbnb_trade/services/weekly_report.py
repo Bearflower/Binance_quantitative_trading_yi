@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional
 
 import requests
 
-from models.database import DatabaseManager, get_db_manager
+from models.database import DatabaseManager, get_db_manager, get_db_connection
 from services.trade_statistics import TradeStatistics, get_stats_calculator
 
 logger = logging.getLogger(__name__)
@@ -81,12 +81,12 @@ class WeeklyReportGenerator:
     
     def _count_triggers(self, start_time: datetime) -> int:
         """统计触发次数"""
-        with self.db._get_db_connection(self.db.db_path) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT COUNT(*) as trigger_count
                 FROM tp_sl_triggers
-                WHERE trigger_time >= ?
+                WHERE trigger_time >= %s
             """, (int(start_time.timestamp() * 1000),))
             
             row = cursor.fetchone()

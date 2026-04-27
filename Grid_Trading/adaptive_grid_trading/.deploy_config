@@ -2,6 +2,7 @@
 SERVER_IP="43.156.242.184"
 SERVER_USER="root"
 SERVER_PROJECT_PATH="/root/grid-trading"
+SSH_KEY_FILE="/Users/yl/vscode/inspection_automation/docs/only.pem"
 
 # Docker 配置
 DOCKER_CONTAINER_NAME="grid-trading"

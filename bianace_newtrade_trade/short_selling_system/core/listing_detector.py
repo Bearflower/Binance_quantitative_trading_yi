@@ -19,6 +19,44 @@ from config.settings import settings
 from utils.logger import logger
 
 
+def auto_register_kline_service(symbol: str) -> bool:
+    """
+    自动注册新币到 K 线服务
+    
+    Args:
+        symbol: 交易对符号
+        
+    Returns:
+        是否注册成功
+    """
+    try:
+        # 定义采集周期（根据新币特点，采集更频繁的周期）
+        intervals = ["1m", "5m", "15m", "1h", "4h"]
+        
+        # 注册 10 天（新币波动大，需要更密集的监控）
+        duration_days = 10
+        
+        logger.info(f"📝 自动注册新币 {symbol} 到 K 线服务...")
+        
+        success = binance_client.register_new_symbol(
+            symbol=symbol,
+            intervals=intervals,
+            duration_days=duration_days,
+            priority="high"  # 新币优先级设为 high
+        )
+        
+        if success:
+            logger.info(f"✅ 新币 {symbol} 自动注册成功，将采集周期：{intervals}")
+        else:
+            logger.warning(f"⚠️ 新币 {symbol} 自动注册失败")
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"❌ 自动注册新币 {symbol} 失败：{e}")
+        return False
+
+
 class NewListingDetector:
     """新币检测器（支持二次评分）"""
     
@@ -380,6 +418,9 @@ class NewListingDetector:
                     f"上线时间：{listing_datetime}, "
                     f"距今：{hours_since:.1f}小时"
                 )
+                
+                # 自动注册到 K 线服务
+                auto_register_kline_service(symbol)
                 
                 new_listings.append({
                     'symbol': symbol,

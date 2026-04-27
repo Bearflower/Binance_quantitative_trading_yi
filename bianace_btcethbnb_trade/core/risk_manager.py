@@ -574,10 +574,23 @@ def calculate_stop_loss(
 def calculate_take_profit_levels(
     entry_price: Decimal,
     direction: int,
-    r_value: Decimal
+    r_value: Decimal,
+    signal_grade: str = 'A'
 ) -> List[Dict[str, Any]]:
-    """计算止盈水平的便捷函数"""
-    return get_risk_manager().calculate_take_profit_levels(entry_price, direction, r_value)
+    """计算止盈水平的便捷函数
+    
+    Args:
+        entry_price: 开仓价
+        direction: 方向（1=多，-1=空）
+        r_value: R值（等同于ATR14值）
+        signal_grade: 信号等级（默认A）
+    
+    Returns:
+        止盈水平列表
+    """
+    return get_risk_manager().calculate_take_profit_levels(
+        entry_price, direction, r_value, signal_grade
+    )
 
 
 def check_margin_ratio(

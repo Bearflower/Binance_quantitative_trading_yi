@@ -70,11 +70,11 @@ echo "用户：$SERVER_USER"
 echo ""
 
 # 检查 SSH 密钥
-if [ -f ~/.ssh/id_ed25519.pub ]; then
-    echo "✅ SSH 密钥文件存在 (~/.ssh/id_ed25519.pub)"
+if [ -f /Users/yl/vscode/inspection_automation/docs/only.pem.pub ]; then
+    echo "✅ SSH 密钥文件存在 (/Users/yl/vscode/inspection_automation/docs/only.pem.pub)"
     ((PASS++))
 else
-    echo "⚠️  未找到 SSH 密钥文件 (~/.ssh/id_ed25519.pub)"
+    echo "⚠️  未找到 SSH 密钥文件 (/Users/yl/vscode/inspection_automation/docs/only.pem.pub)"
     echo "   请执行：ssh-keygen -t ed25519 -C 'your_email@example.com'"
     ((FAIL++))
 fi
@@ -90,7 +90,7 @@ else
     echo ""
     echo "   请执行以下步骤配置免密登录："
     echo "   1. ssh-keygen -t ed25519 -C 'your_email@example.com'"
-    echo "   2. ssh-copy-id -i ~/.ssh/id_ed25519.pub $SERVER_USER@$SERVER_IP"
+    echo "   2. ssh-copy-id -i /Users/yl/vscode/inspection_automation/docs/only.pem.pub $SERVER_USER@$SERVER_IP"
     echo "   3. ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP 'echo 成功'"
     ((FAIL++))
 fi

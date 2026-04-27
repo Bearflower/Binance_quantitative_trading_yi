@@ -4,7 +4,7 @@
 # 服务器部署脚本 - 简化版
 # ============================================
 
-SSH_KEY="$HOME/.ssh/stockfilter_key"
+SSH_KEY="/Users/yl/vscode/inspection_automation/docs/only.pem"
 SERVER="root@43.156.242.184"
 PROJECT_DIR="/root/stockfilter"
 

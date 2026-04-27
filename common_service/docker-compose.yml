@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  # PostgreSQL 数据库
+  postgres:
+    image: postgres:14-alpine
+    container_name: common_service_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-binance}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-secure_password_here}
+      POSTGRES_DB: ${POSTGRES_DB:-binance_data}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./docker/init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - common_network
+    restart: always
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-binance}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis 消息队列
+  redis:
+    image: redis:7-alpine
+    container_name: common_service_redis
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    networks:
+      - common_network
+    restart: always
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # K 线数据服务
+  kline_service:
+    build:
+      context: .
+      dockerfile: kline_data_service/Dockerfile
+    container_name: common_service_kline
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-binance}:${DB_PASSWORD:-secure_password_here}@postgres:5432/${POSTGRES_DB:-binance_data}
+      REDIS_URL: redis://redis:6379
+      BINANCE_API_URL: https://fapi.binance.com
+      SYMBOLS: ${SYMBOLS:-BTCUSDT,ETHUSDT,BNBUSDT}
+      COLLECT_INTERVALS: ${COLLECT_INTERVALS:-15m,1h,4h,1d}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - common_network
+    ports:
+      - "8765:8000"
+    restart: always
+
+  # 通知服务
+  notification_service:
+    build:
+      context: .
+      dockerfile: notification_service/Dockerfile
+    container_name: common_service_notification
+    environment:
+      REDIS_URL: redis://redis:6379
+      BTC_ETH_WEBHOOK: ${BTC_ETH_WEBHOOK:-}
+      NEW_COIN_WEBHOOK: ${NEW_COIN_WEBHOOK:-}
+      GRID_WEBHOOK: ${GRID_WEBHOOK:-}
+      INSPECTION_WEBHOOK: ${INSPECTION_WEBHOOK:-}
+      STOCK_WEBHOOK: ${STOCK_WEBHOOK:-}
+      WORKER_COUNT: ${WORKER_COUNT:-3}
+      RATE_LIMIT_PER_MINUTE: ${RATE_LIMIT_PER_MINUTE:-60}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - common_network
+    ports:
+      - "8766:8000"
+    restart: always
+
+  # Nginx 反向代理（可选）
+  nginx:
+    image: nginx:alpine
+    container_name: common_service_nginx
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - kline_service
+      - notification_service
+    networks:
+      - common_network
+    ports:
+      - "80:80"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  common_network:
+    driver: bridge

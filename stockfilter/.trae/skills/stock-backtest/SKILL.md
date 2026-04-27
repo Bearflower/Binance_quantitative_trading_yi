@@ -64,7 +64,7 @@ pip install pandas numpy akshare psycopg2-binary pyyaml
 ```python
 server_ip = "43.156.242.184"      # 服务器 IP
 server_user = "root"              # SSH 用户
-ssh_key = "~/.ssh/stockfilter_key" # SSH 密钥路径
+ssh_key = "/Users/yl/vscode/inspection_automation/docs/only.pem" # SSH 密钥路径
 
 # 数据库配置（在 Docker 容器内）
 os.environ['DB_HOST'] = '10.3.0.12'
@@ -104,7 +104,7 @@ def export_via_base64(code='603529', days=300):
     """
     server_ip = "43.156.242.184"
     server_user = "root"
-    ssh_key = "~/.ssh/stockfilter_key"
+    ssh_key = "/Users/yl/vscode/inspection_automation/docs/only.pem"
     
     print(f"从服务器导出 {code} 的 {days} 天 K 线数据...")
     
@@ -467,7 +467,7 @@ pattern:
 ```python
 server_ip = "43.156.242.184"      # 服务器 IP
 server_user = "root"              # SSH 用户
-ssh_key = "~/.ssh/stockfilter_key" # SSH 密钥
+ssh_key = "/Users/yl/vscode/inspection_automation/docs/only.pem" # SSH 密钥
 ```
 
 ---

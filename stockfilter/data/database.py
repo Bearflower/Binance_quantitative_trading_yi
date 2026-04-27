@@ -187,20 +187,6 @@ class DatabaseManager:
         cursor = self.conn.cursor()
         
         for _, row in df.iterrows():
-            # 显式处理 list_date，确保 NaT 转换为 None
-            list_date_val = row.get('list_date')
-            # 检查是否为 NaT（pandas 的 Not a Time）
-            if list_date_val is None:
-                list_date = None
-            elif str(type(list_date_val).__name__) == 'NaTType':
-                list_date = None
-            elif isinstance(list_date_val, str) and list_date_val == 'NaT':
-                list_date = None
-            else:
-                list_date = list_date_val
-            
-            sector = row.get('sector')
-            
             cursor.execute("""
                 INSERT INTO stocks (code, name, symbol, list_date, sector)
                 VALUES (%s, %s, %s, %s, %s)
@@ -210,7 +196,8 @@ class DatabaseManager:
                     list_date = EXCLUDED.list_date,
                     sector = EXCLUDED.sector,
                     updated_at = CURRENT_TIMESTAMP
-            """, (row['code'], row['name'], row['symbol'], list_date, sector))
+            """, (row['code'], row['name'], row['symbol'], 
+                  row.get('list_date'), row.get('sector')))
         
         self.conn.commit()
         cursor.close()
@@ -233,46 +220,8 @@ class DatabaseManager:
         df.reset_index(drop=True, inplace=True)
         return df
 
-    def save_kline_history(self, code: str, df: pd.DataFrame):
-        """保存 K 线历史数据"""
-        if df is None or df.empty:
-            return
-        
-        cursor = self.conn.cursor()
-        
-        try:
-            for _, row in df.iterrows():
-                cursor.execute("""
-                    INSERT INTO klines (code, date, open, high, low, close, volume, amount)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (code, date) DO UPDATE SET
-                        open = EXCLUDED.open,
-                        high = EXCLUDED.high,
-                        low = EXCLUDED.low,
-                        close = EXCLUDED.close,
-                        volume = EXCLUDED.volume,
-                        amount = EXCLUDED.amount
-                """, (code, row['date'].strftime('%Y-%m-%d'), row['open'], row['high'], 
-                      row['low'], row['close'], row['volume'], row.get('amount', 0)))
-            
-            self.conn.commit()
-            logger.debug(f"{code} 保存 {len(df)} 条 K 线数据")
-        except Exception as e:
-            self.conn.rollback()  # 回滚事务
-            raise e
-        finally:
-            cursor.close()
-    
-    def get_latest_kline_date(self, code: str) -> Optional[datetime]:
-        """
-        获取某只股票的最新 K 线日期
-        
-        Args:
-            code: 股票代码
-        
-        Returns:
-            datetime: 最新日期，如果没有数据则返回 None
-        """
+    def get_latest_kline_date(self, code: str) -> Optional[str]:
+        """获取指定股票最新 K 线数据的日期"""
         query = """
             SELECT MAX(date) as latest_date
             FROM klines
@@ -284,8 +233,53 @@ class DatabaseManager:
         cursor.close()
         
         if result and result[0]:
-            return result[0]
+            return result[0].strftime('%Y-%m-%d') if hasattr(result[0], 'strftime') else str(result[0])
         return None
+
+    def save_kline_history(self, code: str, df: pd.DataFrame):
+        """保存 K 线历史数据"""
+        if df is None or df.empty:
+            return
+        
+        cursor = self.conn.cursor()
+        
+        for _, row in df.iterrows():
+            # 处理 volume 字段：转换为整数，处理 NaN 和超大值
+            volume = row['volume']
+            if pd.isna(volume):
+                volume = 0
+            else:
+                try:
+                    volume = int(volume)
+                    # 检查是否超出 bigint 范围 (-9223372036854775808 到 9223372036854775807)
+                    if volume > 9223372036854775807:
+                        volume = 9223372036854775807
+                    elif volume < -9223372036854775808:
+                        volume = -9223372036854775808
+                except (ValueError, OverflowError):
+                    volume = 0
+            
+            # 处理 amount 字段
+            amount = row.get('amount', 0)
+            if pd.isna(amount):
+                amount = 0
+            
+            cursor.execute("""
+                INSERT INTO klines (code, date, open, high, low, close, volume, amount)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (code, date) DO UPDATE SET
+                    open = EXCLUDED.open,
+                    high = EXCLUDED.high,
+                    low = EXCLUDED.low,
+                    close = EXCLUDED.close,
+                    volume = EXCLUDED.volume,
+                    amount = EXCLUDED.amount
+            """, (code, row['date'].strftime('%Y-%m-%d'), row['open'], row['high'], 
+                  row['low'], row['close'], volume, amount))
+        
+        self.conn.commit()
+        cursor.close()
+        logger.debug(f"{code} 保存 {len(df)} 条 K 线数据")
 
     def save_scan_result(self, scan_date: str, results: List[Dict]):
         """保存扫描结果"""

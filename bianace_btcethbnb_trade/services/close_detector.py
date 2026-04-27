@@ -10,7 +10,7 @@ from decimal import Decimal
 from typing import Dict, Any, Optional, List
 
 from utils.binance_trade_api import BinanceTradeAPI, get_trade_api
-from models.database import DatabaseManager, get_db_manager
+from models.database import DatabaseManager, get_db_manager, get_db_connection
 
 logger = logging.getLogger(__name__)
 
@@ -98,7 +98,7 @@ class PositionCloseDetector:
             logger.error(f"获取已完成交易失败：{e}")
             
             # 降级方案：从数据库查询
-            with self.db._get_db_connection(self.db.db_path) as conn:
+            with get_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT * FROM trades 
@@ -131,10 +131,10 @@ class PositionCloseDetector:
     
     def _is_already_recorded(self, order_id: int) -> bool:
         """检查订单是否已记录平仓"""
-        with self.db._get_db_connection(self.db.db_path) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(
-                "SELECT id FROM closed_positions WHERE order_id = ?",
+                "SELECT id FROM closed_positions WHERE order_id = %s",
                 (order_id,)
             )
             return cursor.fetchone() is not None
@@ -260,14 +260,14 @@ class PositionCloseDetector:
     
     def _find_opening_trade(self, close_trade: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         """查找对应的开仓记录"""
-        with self.db._get_db_connection(self.db.db_path) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
             
             # 查找同一交易对、同方向、未平仓的记录
             cursor.execute("""
                 SELECT * FROM trades 
-                WHERE symbol = ? 
-                AND position_side = ?
+                WHERE symbol = %s 
+                AND position_side = %s
                 AND reduce_only = 0
                 AND status = 'FILLED'
                 ORDER BY create_time DESC 
@@ -279,14 +279,14 @@ class PositionCloseDetector:
     
     def _get_max_pnl_from_logs(self, symbol: str, order_id: int) -> Dict[str, Optional[Decimal]]:
         """从监控日志中获取最大浮盈和最小浮亏"""
-        with self.db._get_db_connection(self.db.db_path) as conn:
+        with get_db_connection() as conn:
             cursor = conn.cursor()
             
             cursor.execute("""
                 SELECT MAX(unrealized_profit) as max_profit,
                        MIN(unrealized_profit) as min_profit
                 FROM monitoring_logs
-                WHERE symbol = ?
+                WHERE symbol = %s
             """, (symbol,))
             
             row = cursor.fetchone()

@@ -32,10 +32,10 @@ ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
 
 ```bash
 # 方法 1：使用 ssh-copy-id（推荐）
-ssh-copy-id -i ~/.ssh/id_ed25519.pub root@43.156.242.184
+ssh-copy-id -i /Users/yl/vscode/inspection_automation/docs/only.pem.pub root@43.156.242.184
 
 # 方法 2：手动复制（如果 ssh-copy-id 不可用）
-cat ~/.ssh/id_ed25519.pub | ssh root@43.156.242.184 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+cat /Users/yl/vscode/inspection_automation/docs/only.pem.pub | ssh root@43.156.242.184 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
 ```
 
 ### 步骤 3：测试免密登录
@@ -58,7 +58,7 @@ cat >> ~/.ssh/config << 'EOF'
 Host production
     HostName 43.156.242.184
     User root
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
     IdentitiesOnly yes
     AddKeysToAgent yes
     ServerAliveInterval 60
@@ -67,7 +67,7 @@ Host production
 Host prod
     HostName 43.156.242.184
     User root
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
     IdentitiesOnly yes
 EOF
 ```

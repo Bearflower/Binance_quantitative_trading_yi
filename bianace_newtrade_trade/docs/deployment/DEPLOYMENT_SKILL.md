@@ -211,7 +211,7 @@ if [ ! -f "$DEPLOY_PACKAGE_NAME" ]; then
 fi
 
 # 方法 1：直接使用 scp（适用于已配置 SSH 密钥的情况）
-if [ -f ~/.ssh/id_rsa.pub ]; then
+if [ -f /Users/yl/vscode/inspection_automation/docs/only.pem.pub ]; then
     echo "🔑 使用 SSH 密钥认证..."
     scp -o StrictHostKeyChecking=no \
         -o UserKnownHostsFile=/dev/null \
@@ -639,17 +639,17 @@ ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
 **提示**：直接回车，不需要设置密码短语（passphrase）
 
 **生成的文件**：
-- 私钥：`~/.ssh/id_ed25519`（保密，不要给别人）
-- 公钥：`~/.ssh/id_ed25519.pub`（复制到服务器）
+- 私钥：`/Users/yl/vscode/inspection_automation/docs/only.pem`（保密，不要给别人）
+- 公钥：`/Users/yl/vscode/inspection_automation/docs/only.pem.pub`（复制到服务器）
 
 #### 步骤 2：复制公钥到服务器
 
 ```bash
 # 方法 1：使用 ssh-copy-id（推荐）
-ssh-copy-id -i ~/.ssh/id_ed25519.pub -o StrictHostKeyChecking=no root@43.156.242.184
+ssh-copy-id -i /Users/yl/vscode/inspection_automation/docs/only.pem.pub -o StrictHostKeyChecking=no root@43.156.242.184
 
 # 方法 2：手动复制（如果 ssh-copy-id 不可用）
-cat ~/.ssh/id_ed25519.pub | ssh -o StrictHostKeyChecking=no root@43.156.242.184 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+cat /Users/yl/vscode/inspection_automation/docs/only.pem.pub | ssh -o StrictHostKeyChecking=no root@43.156.242.184 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
 ```
 
 #### 步骤 3：测试免密登录
@@ -672,7 +672,7 @@ cat >> ~/.ssh/config << 'EOF'
 Host production
     HostName 43.156.242.184
     User root
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
     IdentitiesOnly yes
     AddKeysToAgent yes
     ServerAliveInterval 60
@@ -682,7 +682,7 @@ Host production
 Host prod
     HostName 43.156.242.184
     User root
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
     IdentitiesOnly yes
 EOF
 ```

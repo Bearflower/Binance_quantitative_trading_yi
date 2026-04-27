@@ -46,7 +46,7 @@ Number of key(s) added: 1
 Host production
     HostName 43.156.242.184
     User root
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
     IdentitiesOnly yes
     AddKeysToAgent yes
     ServerAliveInterval 60
@@ -55,7 +55,7 @@ Host production
 Host prod
     HostName 43.156.242.184
     User root
-    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
     IdentitiesOnly yes
 ```
 
@@ -66,7 +66,7 @@ Host prod
 ### 测试 1：使用 IP 地址登录
 
 ```bash
-ssh -i ~/.ssh/id_ed25519 root@43.156.242.184 "echo 成功"
+ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@43.156.242.184 "echo 成功"
 ```
 
 **结果**: ✅ 成功（无需密码）
@@ -125,7 +125,7 @@ ssh prod
 ssh production
 
 # 方法 3：直接使用 IP（仍然需要指定密钥）
-ssh -i ~/.ssh/id_ed25519 root@43.156.242.184
+ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@43.156.242.184
 ```
 
 ### 执行远程命令
@@ -281,7 +281,7 @@ ssh prod
 1. **备份私钥**（重要）:
    ```bash
    # 备份到安全位置
-   cp ~/.ssh/id_ed25519 ~/backup/ssh_key_backup_$(date +%Y%m%d)
+   cp /Users/yl/vscode/inspection_automation/docs/only.pem ~/backup/ssh_key_backup_$(date +%Y%m%d)
    ```
 
 2. **定期更换密钥**（推荐）:

@@ -171,7 +171,7 @@ class OrderGenerator:
         formatted_order: Dict[str, Any] = None
     ) -> Dict[str, Any]:
         """
-        生成市价单参数（用于开仓）
+        生成市价单参数（用于开仓）- V6.13.1 及之前版本
         
         Args:
             order_template: 订单模板
@@ -183,17 +183,76 @@ class OrderGenerator:
         order = formatted_order or order_template
         
         # PM 账户必须使用 BOTH
-        position_side = 'BOTH'
+        position_share = 'BOTH'
         
         params = {
             'symbol': order['symbol'],
             'side': 'BUY' if order['direction'] == 'LONG' else 'SELL',
-            'position_side': position_side,
+            'position_share': position_share,
             'type': 'MARKET',
             'quantity': order['quantity']
         }
         
         logger.info(f"市价单参数生成：{params}")
+        return params
+    
+    def generate_limit_order_params(
+        self,
+        order_template: Dict[str, Any],
+        formatted_order: Dict[str, Any] = None,
+        current_price: Decimal = None,
+        orderbook_data: Dict = None
+    ) -> Dict[str, Any]:
+        """
+        生成限价单参数（用于开仓）- v6.13.2 优化版
+        
+        核心优化：
+        1. 改用限价单开仓，降低手续费（taker 0.05% → maker 0.02%）
+        2. 做多：按买一价（bid price）下单
+        3. 做空：按卖一价（ask price）下单
+        4. 币安会立即撮合最优价格，保证快速成交
+        
+        Args:
+            order_template: 订单模板
+            formatted_order: 格式化后的订单（可选）
+            current_price: 当前价格
+            orderbook_data: 订单簿数据（用于获取买一/卖一价）
+        
+        Returns:
+            限价单参数字典
+        """
+        order = formatted_order or order_template
+        
+        # PM 账户必须使用 BOTH
+        position_share = 'BOTH'
+        
+        # 获取订单簿价格
+        if orderbook_data:
+            if order['direction'] == 'LONG':
+                # 做多：使用买一价
+                limit_price = Decimal(str(orderbook_data.get('bids', [{}])[0].get('price', current_price)))
+                logger.info(f"限价单 - 做多，使用买一价：{limit_price}")
+            else:
+                # 做空：使用卖一价
+                limit_price = Decimal(str(orderbook_data.get('asks', [{}])[0].get('price', current_price)))
+                logger.info(f"限价单 - 做空，使用卖一价：{limit_price}")
+        else:
+            # 没有订单簿数据，使用格式化后的入场价格
+            limit_price = order.get('entry_price', current_price)
+            logger.info(f"限价单 - 无订单簿数据，使用入场价格：{limit_price}")
+        
+        params = {
+            'symbol': order['symbol'],
+            'side': 'BUY' if order['direction'] == 'LONG' else 'SELL',
+            'position_share': position_share,
+            'type': 'LIMIT',
+            'quantity': order['quantity'],
+            'price': str(limit_price),  # 限价单需要指定价格
+            'timeInForce': 'GTC'  # Good Till Cancel，直到取消为止
+        }
+        
+        logger.info(f"限价单参数生成：{params}")
+        logger.info(f"  方向：{order['direction']}, 价格：{limit_price}")
         return params
     
     def generate_stop_loss_order_params(
@@ -279,7 +338,10 @@ class OrderGenerator:
         self,
         order_template: Dict[str, Any],
         formatted_order: Dict[str, Any] = None,
-        position_qty: Decimal = None
+        position_qty: Decimal = None,
+        use_limit_order: bool = True,
+        current_price: Decimal = None,
+        orderbook_data: Dict = None
     ) -> Dict[str, Any]:
         """
         生成所有订单参数（开仓 + 止损 + 止盈）
@@ -288,19 +350,42 @@ class OrderGenerator:
             order_template: 订单模板
             formatted_order: 格式化后的订单
             position_qty: 持仓数量
+            use_limit_order: 是否使用限价单（v6.13.2 优化）
+            current_price: 当前价格（限价单需要）
+            orderbook_data: 订单簿数据（限价单需要）
         
         Returns:
             包含所有订单的字典
         """
-        orders = {
-            'entry': self.generate_market_order_params(order_template, formatted_order),
-            'stop_loss': self.generate_stop_loss_order_params(
-                order_template, 
-                formatted_order, 
-                position_qty
-            ),
-            'take_profits': []
-        }
+        # v6.13.2: 默认使用限价单，降低手续费
+        if use_limit_order:
+            orders = {
+                'entry': self.generate_limit_order_params(
+                    order_template, 
+                    formatted_order, 
+                    current_price,
+                    orderbook_data
+                ),
+                'stop_loss': self.generate_stop_loss_order_params(
+                    order_template, 
+                    formatted_order, 
+                    position_qty
+                ),
+                'take_profits': []
+            }
+            logger.info(f"✅ 限价单模式：maker 0.02% (原市价单 taker 0.05%)")
+        else:
+            # 市价单模式（向后兼容）
+            orders = {
+                'entry': self.generate_market_order_params(order_template, formatted_order),
+                'stop_loss': self.generate_stop_loss_order_params(
+                    order_template, 
+                    formatted_order, 
+                    position_qty
+                ),
+                'take_profits': []
+            }
+            logger.info(f"⚠️ 市价单模式：taker 0.05%")
         
         # 生成所有止盈单
         tp_levels = order_template.get('take_profit_levels', [])
@@ -328,7 +413,7 @@ class OrderGenerator:
         r_value: Decimal
     ) -> List[Dict[str, Any]]:
         """
-        计算止盈价格水平
+        计算止盈价格（第六章止盈策略）
         
         Args:
             entry_price: 开仓价
@@ -339,6 +424,10 @@ class OrderGenerator:
             止盈价格列表
         """
         tp_config = self.params.get('risk_management.take_profit_levels', {})
+        
+        # 确保 tp_config 不为 None
+        if tp_config is None:
+            tp_config = {}
         
         tp1_mult = tp_config.get('tp1_multiplier', Decimal('1.5'))
         tp2_mult = tp_config.get('tp2_multiplier', Decimal('2.5'))
@@ -392,6 +481,10 @@ class OrderGenerator:
             杠杆倍数
         """
         leverage_config = self.params.get('position_sizing.leverage_by_grade', {})
+        
+        # 确保 leverage_config 不为 None
+        if leverage_config is None:
+            leverage_config = {}
         
         grade_map = {
             'S': leverage_config.get('S', 5),
@@ -500,9 +593,17 @@ def generate_order_template(
 def generate_all_orders(
     order_template: Dict[str, Any],
     formatted_order: Dict[str, Any] = None,
-    position_qty: Decimal = None
+    position_qty: Decimal = None,
+    use_limit_order: bool = True,
+    current_price: Decimal = None,
+    orderbook_data: Dict = None
 ) -> Dict[str, Any]:
-    """生成所有订单的便捷函数"""
+    """生成所有订单的便捷函数（v6.13.2 支持限价单）"""
     return get_order_generator().generate_all_orders(
-        order_template, formatted_order, position_qty
+        order_template, 
+        formatted_order, 
+        position_qty,
+        use_limit_order=use_limit_order,
+        current_price=current_price,
+        orderbook_data=orderbook_data
     )

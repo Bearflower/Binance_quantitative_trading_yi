@@ -108,21 +108,17 @@ class BinanceTradeAPI:
         
         return response.json()
     
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1000, max=10000),
-        retry=retry_if_exception_type(requests.exceptions.RequestException)
-    )
     def _make_request(self, method: str, endpoint: str, params: Dict[str, Any] = None, 
-                     signed: bool = False) -> Dict[str, Any]:
+                     signed: bool = False, max_retries: int = 3) -> Dict[str, Any]:
         """
-        发送 API 请求
+        发送 API 请求（带重试机制，专门处理 -1015 限流错误）
         
         Args:
             method: HTTP 方法 (GET/POST)
             endpoint: API 端点
             params: 请求参数
             signed: 是否需要签名
+            max_retries: 最大重试次数（默认 3 次）
         
         Returns:
             API 响应数据
@@ -133,32 +129,57 @@ class BinanceTradeAPI:
         else:
             url = f"{self.base_url}{endpoint}"
         
-        # 根据是否需要签名设置 headers
-        if signed:
-            headers = self._get_headers()
-        else:
-            # 不需要签名的公共接口不需要 API Key
-            headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+        last_exception = None
         
-        if signed:
-            params = self._sign_request(params or {})
-        
-        try:
-            if method == 'GET':
-                response = requests.get(url, params=params, headers=headers, timeout=10)
-            elif method == 'POST':
-                response = requests.post(url, data=params, headers=headers, timeout=10)
-            else:
-                raise ValueError(f"不支持的 HTTP 方法：{method}")
+        for attempt in range(max_retries):
+            try:
+                # 根据是否需要签名设置 headers
+                if signed:
+                    headers = self._get_headers()
+                    request_params = self._sign_request(params or {})
+                else:
+                    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+                    request_params = params
+                
+                if method == 'GET':
+                    response = requests.get(url, params=request_params, headers=headers, timeout=10)
+                elif method == 'POST':
+                    response = requests.post(url, data=request_params, headers=headers, timeout=10)
+                else:
+                    raise ValueError(f"不支持的 HTTP 方法：{method}")
+                
+                return self._handle_response(response)
             
-            return self._handle_response(response)
+            except BinanceAPIError as e:
+                if e.code == -1015:  # Too many new orders
+                    last_exception = e
+                    wait_time = 5 * (attempt + 1)  # 递增等待时间：5秒、10秒、15秒
+                    logger.warning(f"⚠️  API 限流错误 -1015，第 {attempt + 1}/{max_retries} 次重试，等待 {wait_time} 秒...")
+                    time.sleep(wait_time)
+                else:
+                    raise  # 其他错误直接抛出
+            except requests.exceptions.Timeout as e:
+                last_exception = e
+                logger.error(f"请求超时：{url}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"⚠️  请求超时，第 {attempt + 1}/{max_retries} 次重试，等待 {wait_time} 秒...")
+                    time.sleep(wait_time)
+                else:
+                    raise
+            except requests.exceptions.RequestException as e:
+                last_exception = e
+                logger.error(f"请求失败：{str(e)}")
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt
+                    logger.warning(f"⚠️  请求失败，第 {attempt + 1}/{max_retries} 次重试，等待 {wait_time} 秒...")
+                    time.sleep(wait_time)
+                else:
+                    raise
         
-        except requests.exceptions.Timeout:
-            logger.error(f"请求超时：{url}")
-            raise
-        except requests.exceptions.RequestException as e:
-            logger.error(f"请求失败：{str(e)}")
-            raise
+        # 所有重试都失败了
+        if last_exception:
+            raise last_exception
     
     # ==================== 公共接口 (无需签名) ====================
     
@@ -499,6 +520,51 @@ class BinanceTradeAPI:
             # 返回默认值
             return Decimal('0.1'), Decimal('0.001')
     
+    def get_orderbook(self, symbol: str, limit: int = 5) -> Dict[str, Any]:
+        """
+        获取订单簿数据（用于限价单价格优化）
+        
+        Args:
+            symbol: 交易对，如 BTCUSDT
+            limit: 返回的订单数量，默认 5
+        
+        Returns:
+            订单簿数据：
+            {
+                'bids': [{'price': '77973.80', 'qty': '0.5'}, ...],  # 买单
+                'asks': [{'price': '77974.00', 'qty': '0.3'}, ...]   # 卖单
+            }
+        """
+        try:
+            url = 'https://fapi.binance.com/fapi/v1/depth'
+            params = {
+                'symbol': symbol,
+                'limit': limit
+            }
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            # 格式化订单簿数据
+            orderbook = {
+                'bids': [
+                    {'price': Decimal(bid[0]), 'qty': Decimal(bid[1])}
+                    for bid in data.get('bids', [])
+                ],
+                'asks': [
+                    {'price': Decimal(ask[0]), 'qty': Decimal(ask[1])}
+                    for ask in data.get('asks', [])
+                ]
+            }
+            
+            logger.info(f"{symbol} 订单簿获取成功：买一价={orderbook['bids'][0]['price'] if orderbook['bids'] else 'N/A'}, 卖一价={orderbook['asks'][0]['price'] if orderbook['asks'] else 'N/A'}")
+            return orderbook
+            
+        except Exception as e:
+            logger.error(f"获取 {symbol} 订单簿失败：{str(e)}")
+            return {'bids': [], 'asks': []}
+
+    
     def _format_price(self, symbol: str, price: Decimal, tick_size: Decimal) -> str:
         """
         格式化价格到正确的精度
@@ -634,11 +700,14 @@ class BinanceTradeAPI:
         params = {
             'symbol': symbol,
             'side': side,
-            'positionSide': position_side,
             'type': order_type,
             'quantity': str(quantity),
             'newOrderRespType': new_order_resp_type
         }
+        
+        # PM 账户必须指定 positionSide，且只能为 BOTH
+        if position_side:
+            params['positionSide'] = position_side
         
         if order_type == 'LIMIT' or (order_type in ['STOP_MARKET', 'TAKE_PROFIT_MARKET'] and price):
             params['price'] = str(price)

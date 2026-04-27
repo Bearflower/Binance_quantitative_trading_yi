@@ -1,0 +1,21 @@
+# ============================================
+# 部署配置文件
+# ============================================
+# 说明：复制此文件为 .deploy_config 并修改实际值
+# ============================================
+
+# 服务器配置
+SERVER_IP="43.156.242.184"           # 服务器 IP 地址
+SERVER_USER="root"                    # 服务器用户
+SERVER_PROJECT_PATH="/root/common_service"  # 服务器项目路径
+
+# Docker 配置
+DOCKER_CONTAINER_NAME="common_service-app"  # Docker 容器名称
+DOCKER_IMAGE_NAME="common_service:latest"   # Docker 镜像名称
+
+# 项目配置
+PROJECT_NAME="common_service"         # 项目名称
+DEPLOY_PACKAGE_NAME="deployment_package.tar.gz"  # 部署包名称
+
+# 数据库配置（用于本地开发）
+DB_PASSWORD="your_secure_password"    # 数据库密码

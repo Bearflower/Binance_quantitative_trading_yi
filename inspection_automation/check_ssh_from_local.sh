@@ -6,7 +6,7 @@
 # 配置
 SSH_HOST="43.156.242.184"
 SSH_USER="root"
-SSH_IDENTITY_FILE="$HOME/.ssh/id_ed25519"
+SSH_IDENTITY_FILE="/Users/yl/vscode/inspection_automation/docs/only.pem"
 
 echo "======================================"
 echo "SSH 免密登录状态检查"
@@ -97,8 +97,8 @@ else
     echo "4. SSH 服务配置变更"
     echo ""
     echo "故障排查步骤："
-    echo "1. 检查本地密钥：ls -la ~/.ssh/id_ed25519"
-    echo "2. 手动测试连接：ssh -i ~/.ssh/id_ed25519 root@$SSH_HOST"
+    echo "1. 检查本地密钥：ls -la /Users/yl/vscode/inspection_automation/docs/only.pem"
+    echo "2. 手动测试连接：ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@$SSH_HOST"
     echo "3. 检查服务器权限：ssh root@$SSH_HOST 'stat -c \"%a %U:%G\" /root ~/.ssh'"
     echo "4. 检查 authorized_keys: ssh root@$SSH_HOST 'cat ~/.ssh/authorized_keys'"
     echo ""

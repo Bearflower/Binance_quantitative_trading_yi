@@ -1,0 +1,167 @@
+{
+  "analysis_date": "2026-04-21T21:32:21.571292",
+  "total_trades": 768,
+  "initial_capital": 1000.0,
+  "pnl_statistics": {
+    "total_trades": 768,
+    "winning_trades": 555,
+    "losing_trades": 213,
+    "win_rate": 0.72265625,
+    "total_pnl_pct": 11.840796248133625,
+    "avg_pnl_pct": 0.015417703448090658,
+    "avg_win_pct": 0.029107334536250466,
+    "avg_loss_pct": -0.020252462063311685,
+    "profit_loss_ratio": 1.4372244937557401,
+    "pnl_distribution": {
+      "5%+": 0,
+      "3-5%": 254,
+      "1-3%": 301,
+      "0-1%": 0,
+      "-1-0%": 0,
+      "-3--1%": 213,
+      "-5--3%": 0,
+      "-5%以下": 0
+    }
+  },
+  "score_statistics": {
+    "-2分": {
+      "trades": 213,
+      "avg_pnl": -0.020252462063311685,
+      "win_rate": 0.0
+    },
+    "2分": {
+      "trades": 301,
+      "avg_pnl": 0.020319199283762218,
+      "win_rate": 1.0
+    },
+    "4分": {
+      "trades": 254,
+      "avg_pnl": 0.039521620800025914,
+      "win_rate": 1.0
+    }
+  },
+  "top_symbols": [
+    {
+      "symbol": "ZKJUSDT",
+      "trades": 24,
+      "avg_score": 8.625
+    },
+    {
+      "symbol": "XMRUSDT",
+      "trades": 24,
+      "avg_score": 9.708333333333334
+    },
+    {
+      "symbol": "DYDXUSDT",
+      "trades": 24,
+      "avg_score": 8.916666666666666
+    },
+    {
+      "symbol": "MANTAUSDT",
+      "trades": 24,
+      "avg_score": 8.166666666666666
+    },
+    {
+      "symbol": "ASRUSDT",
+      "trades": 24,
+      "avg_score": 9.291666666666666
+    },
+    {
+      "symbol": "XLMUSDT",
+      "trades": 24,
+      "avg_score": 9.208333333333334
+    },
+    {
+      "symbol": "FLUIDUSDT",
+      "trades": 24,
+      "avg_score": 9.458333333333334
+    },
+    {
+      "symbol": "TAGUSDT",
+      "trades": 24,
+      "avg_score": 9.875
+    },
+    {
+      "symbol": "VTHOUSDT",
+      "trades": 24,
+      "avg_score": 8.833333333333334
+    },
+    {
+      "symbol": "币安人生USDT",
+      "trades": 24,
+      "avg_score": 7.75
+    },
+    {
+      "symbol": "FILUSDT",
+      "trades": 24,
+      "avg_score": 8.583333333333334
+    },
+    {
+      "symbol": "SQDUSDT",
+      "trades": 24,
+      "avg_score": 9.208333333333334
+    },
+    {
+      "symbol": "1000CHEEMSUSDT",
+      "trades": 24,
+      "avg_score": 7.833333333333333
+    },
+    {
+      "symbol": "SFPUSDT",
+      "trades": 24,
+      "avg_score": 9.291666666666666
+    },
+    {
+      "symbol": "PIXELUSDT",
+      "trades": 24,
+      "avg_score": 6.708333333333333
+    },
+    {
+      "symbol": "SOPHUSDT",
+      "trades": 24,
+      "avg_score": 8.75
+    },
+    {
+      "symbol": "DOGEUSDT",
+      "trades": 24,
+      "avg_score": 8.708333333333334
+    },
+    {
+      "symbol": "MAGICUSDT",
+      "trades": 24,
+      "avg_score": 8.75
+    },
+    {
+      "symbol": "HIGHUSDT",
+      "trades": 24,
+      "avg_score": 9.291666666666666
+    },
+    {
+      "symbol": "THEUSDT",
+      "trades": 24,
+      "avg_score": 8.333333333333334
+    }
+  ],
+  "daily_trades": {
+    "2026-04-01": 48,
+    "2026-04-02": 72,
+    "2026-04-03": 70,
+    "2026-04-04": 45,
+    "2026-04-05": 12,
+    "2026-04-06": 14,
+    "2026-04-07": 36,
+    "2026-04-08": 47,
+    "2026-04-09": 35,
+    "2026-04-10": 25,
+    "2026-04-11": 34,
+    "2026-04-12": 22,
+    "2026-04-13": 15,
+    "2026-04-14": 60,
+    "2026-04-15": 58,
+    "2026-04-16": 37,
+    "2026-04-17": 47,
+    "2026-04-18": 47,
+    "2026-04-19": 33,
+    "2026-04-20": 11
+  }
+}

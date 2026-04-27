@@ -32,7 +32,7 @@ import sys
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from core.scoring_engine_v611 import get_scoring_engine_v611
+from core.scoring import get_scoring_engine_v612
 
 logging.basicConfig(
     level=logging.INFO,
@@ -47,7 +47,7 @@ class RealDataBacktesterV6:
     def __init__(self, data_file: str = 'data/multi_timeframe_data.json'):
         self.data_file = Path(__file__).parent.parent / data_file
         self.data = None
-        self.scoring_engine = get_scoring_engine_v611()
+        self.scoring_engine = get_scoring_engine_v612()
         
         # v6 交易参数
         self.fee_rate = 0.0003  # 综合手续费 0.03%

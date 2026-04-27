@@ -93,7 +93,7 @@ for code in stocks:
 ```python
 server_ip = "43.156.242.184"      # 服务器 IP
 server_user = "root"              # SSH 用户
-ssh_key = "~/.ssh/stockfilter_key" # SSH 密钥路径
+ssh_key = "/Users/yl/vscode/inspection_automation/docs/only.pem" # SSH 密钥路径
 
 # 数据库配置
 os.environ['DB_HOST'] = '10.3.0.12'
@@ -162,7 +162,7 @@ if is_match:
 
 1. **SSH 密钥权限**
    ```bash
-   chmod 600 ~/.ssh/stockfilter_key
+   chmod 600 /Users/yl/vscode/inspection_automation/docs/only.pem
    ```
 
 2. **Docker 容器状态**

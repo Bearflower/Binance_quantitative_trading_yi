@@ -62,8 +62,8 @@ def get_stock_daily_kline(symbol: str, end_date: Optional[str] = None,
 
 
 def _get_from_akshare_with_retry(symbol: str, end_date: Optional[str] = None,
-                                  days: int = 120, max_retries: int = 5,
-                                  base_retry_delay: float = 3.0) -> Optional[pd.DataFrame]:
+                                  days: int = 120, max_retries: int = 2,
+                                  base_retry_delay: float = 2.0) -> Optional[pd.DataFrame]:
     """
     从 AKShare 获取 K 线数据（带重试机制，使用指数退避）
     

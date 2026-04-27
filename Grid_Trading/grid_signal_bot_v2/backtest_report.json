@@ -1,0 +1,1474 @@
+{
+  "symbol": "BTCUSDT",
+  "period": {
+    "start": "2026-04-20",
+    "end": "2026-04-23",
+    "days": 2.0833333333333335
+  },
+  "statistics": {
+    "total_hours": 50,
+    "signal_count": 50,
+    "signal_frequency": 24.0,
+    "strong_trend_count": 0,
+    "state_distribution": {
+      "ranging": 50,
+      "uptrend": 0,
+      "downtrend": 0,
+      "strong_trend": 0
+    }
+  },
+  "signals": [
+    {
+      "time": "2026-04-20 07:00",
+      "price": 73801.79,
+      "state": "ranging",
+      "adx": 30.837105006095786,
+      "atr": 479.3785714285706,
+      "grid_params": {
+        "upper_price": 74760.54714285713,
+        "lower_price": 72843.03285714285,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 75719.30428571427,
+        "terminate_lower_price": 71884.27571428572,
+        "grid_spacing": 383.50285714285565,
+        "profit_rate": 0.005196389642349537
+      },
+      "reason": "首次运行"
+    },
+    {
+      "time": "2026-04-20 08:00",
+      "price": 74280.01,
+      "state": "ranging",
+      "adx": 27.48417589549126,
+      "atr": 502.73357142856963,
+      "grid_params": {
+        "upper_price": 75285.47714285714,
+        "lower_price": 73274.54285714285,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76290.94428571429,
+        "terminate_lower_price": 72269.0757142857,
+        "grid_spacing": 402.18685714285823,
+        "profit_rate": 0.005414469614945639
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 09:00",
+      "price": 74595.13,
+      "state": "ranging",
+      "adx": 27.06757212604296,
+      "atr": 510.39285714285506,
+      "grid_params": {
+        "upper_price": 75615.91571428571,
+        "lower_price": 73574.3442857143,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76636.70142857142,
+        "terminate_lower_price": 72553.55857142858,
+        "grid_spacing": 408.31428571428404,
+        "profit_rate": 0.005473739179947592
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 10:00",
+      "price": 74410.01,
+      "state": "ranging",
+      "adx": 26.90805362418589,
+      "atr": 514.3371428571419,
+      "grid_params": {
+        "upper_price": 75438.68428571428,
+        "lower_price": 73381.33571428571,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76467.35857142856,
+        "terminate_lower_price": 72352.66142857143,
+        "grid_spacing": 411.4697142857127,
+        "profit_rate": 0.0055297629214901695
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 11:00",
+      "price": 74634.0,
+      "state": "ranging",
+      "adx": 26.434121125969813,
+      "atr": 485.29357142857043,
+      "grid_params": {
+        "upper_price": 75604.58714285714,
+        "lower_price": 73663.41285714286,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76575.17428571428,
+        "terminate_lower_price": 72692.82571428572,
+        "grid_spacing": 388.23485714285636,
+        "profit_rate": 0.0052018497888744585
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 12:00",
+      "price": 74567.64,
+      "state": "ranging",
+      "adx": 26.38709414406286,
+      "atr": 465.9921428571418,
+      "grid_params": {
+        "upper_price": 75499.62428571428,
+        "lower_price": 73635.65571428572,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76431.60857142856,
+        "terminate_lower_price": 72703.67142857144,
+        "grid_spacing": 372.79371428571176,
+        "profit_rate": 0.004999403417966718
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 13:00",
+      "price": 74264.15,
+      "state": "ranging",
+      "adx": 26.92944904976591,
+      "atr": 445.8921428571422,
+      "grid_params": {
+        "upper_price": 75155.93428571428,
+        "lower_price": 73372.36571428571,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76047.71857142856,
+        "terminate_lower_price": 72480.58142857143,
+        "grid_spacing": 356.7137142857129,
+        "profit_rate": 0.004803309730007183
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 14:00",
+      "price": 74786.59,
+      "state": "ranging",
+      "adx": 27.488907788752975,
+      "atr": 453.1749999999998,
+      "grid_params": {
+        "upper_price": 75692.94,
+        "lower_price": 73880.23999999999,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76599.29000000001,
+        "terminate_lower_price": 72973.88999999998,
+        "grid_spacing": 362.54000000000235,
+        "profit_rate": 0.0048476605230964856
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 15:00",
+      "price": 74837.17,
+      "state": "ranging",
+      "adx": 26.44566731597461,
+      "atr": 464.35928571428565,
+      "grid_params": {
+        "upper_price": 75765.88857142857,
+        "lower_price": 73908.45142857142,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76694.60714285714,
+        "terminate_lower_price": 72979.73285714285,
+        "grid_spacing": 371.48742857142935,
+        "profit_rate": 0.004963942764957966
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 16:00",
+      "price": 74728.91,
+      "state": "ranging",
+      "adx": 24.872075658250747,
+      "atr": 469.98785714285725,
+      "grid_params": {
+        "upper_price": 75668.88571428572,
+        "lower_price": 73788.93428571429,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76608.86142857143,
+        "terminate_lower_price": 72848.95857142858,
+        "grid_spacing": 375.990285714285,
+        "profit_rate": 0.005031389936161051
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 17:00",
+      "price": 75062.77,
+      "state": "ranging",
+      "adx": 24.675140196602367,
+      "atr": 486.0328571428576,
+      "grid_params": {
+        "upper_price": 76034.83571428571,
+        "lower_price": 74090.7042857143,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77006.90142857142,
+        "terminate_lower_price": 73118.63857142859,
+        "grid_spacing": 388.8262857142836,
+        "profit_rate": 0.0051800151488452075
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 18:00",
+      "price": 75027.26,
+      "state": "ranging",
+      "adx": 23.96329203969479,
+      "atr": 476.25142857142885,
+      "grid_params": {
+        "upper_price": 75979.76285714285,
+        "lower_price": 74074.75714285714,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76932.2657142857,
+        "terminate_lower_price": 73122.25428571428,
+        "grid_spacing": 381.00114285714227,
+        "profit_rate": 0.00507816949275693
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 19:00",
+      "price": 75192.71,
+      "state": "ranging",
+      "adx": 22.681748172905703,
+      "atr": 468.3207142857157,
+      "grid_params": {
+        "upper_price": 76129.35142857143,
+        "lower_price": 74256.06857142858,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77065.99285714286,
+        "terminate_lower_price": 73319.42714285715,
+        "grid_spacing": 374.6565714285709,
+        "profit_rate": 0.004982618280795716
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 20:00",
+      "price": 75289.9,
+      "state": "ranging",
+      "adx": 21.224389123254213,
+      "atr": 464.31214285714356,
+      "grid_params": {
+        "upper_price": 76218.52428571429,
+        "lower_price": 74361.2757142857,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77147.14857142858,
+        "terminate_lower_price": 73432.65142857141,
+        "grid_spacing": 371.44971428571733,
+        "profit_rate": 0.004933592876145637
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 21:00",
+      "price": 75269.38,
+      "state": "ranging",
+      "adx": 19.328220356370913,
+      "atr": 486.5321428571437,
+      "grid_params": {
+        "upper_price": 76242.44428571429,
+        "lower_price": 74296.31571428572,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77215.50857142857,
+        "terminate_lower_price": 73323.25142857144,
+        "grid_spacing": 389.22571428571246,
+        "profit_rate": 0.005171102967577419
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 22:00",
+      "price": 75034.79,
+      "state": "ranging",
+      "adx": 19.337490703452797,
+      "atr": 501.47500000000167,
+      "grid_params": {
+        "upper_price": 76037.73999999999,
+        "lower_price": 74031.84,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77040.68999999999,
+        "terminate_lower_price": 73028.89,
+        "grid_spacing": 401.1799999999988,
+        "profit_rate": 0.005346586563379452
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-20 23:00",
+      "price": 75716.77,
+      "state": "ranging",
+      "adx": 20.17269845957497,
+      "atr": 539.9364285714307,
+      "grid_params": {
+        "upper_price": 76796.64285714287,
+        "lower_price": 74636.89714285714,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77876.51571428574,
+        "terminate_lower_price": 73557.02428571427,
+        "grid_spacing": 431.9491428571462,
+        "profit_rate": 0.005704801497173562
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 00:00",
+      "price": 75338.74,
+      "state": "ranging",
+      "adx": 20.738515541542196,
+      "atr": 547.1921428571451,
+      "grid_params": {
+        "upper_price": 76433.1242857143,
+        "lower_price": 74244.35571428572,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77527.50857142858,
+        "terminate_lower_price": 73149.97142857143,
+        "grid_spacing": 437.75371428571526,
+        "profit_rate": 0.005810472995509551
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 01:00",
+      "price": 75898.14,
+      "state": "ranging",
+      "adx": 22.421638989465407,
+      "atr": 577.1878571428596,
+      "grid_params": {
+        "upper_price": 77052.51571428572,
+        "lower_price": 74743.76428571428,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 78206.89142857144,
+        "terminate_lower_price": 73589.38857142856,
+        "grid_spacing": 461.75028571428845,
+        "profit_rate": 0.006083815568000592
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 02:00",
+      "price": 76423.69,
+      "state": "ranging",
+      "adx": 25.789850205589907,
+      "atr": 602.3885714285747,
+      "grid_params": {
+        "upper_price": 77628.46714285715,
+        "lower_price": 75218.91285714286,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 78833.24428571429,
+        "terminate_lower_price": 74014.13571428572,
+        "grid_spacing": 481.91085714285725,
+        "profit_rate": 0.006305778445699982
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 03:00",
+      "price": 76296.96,
+      "state": "ranging",
+      "adx": 27.33772375971978,
+      "atr": 592.3685714285738,
+      "grid_params": {
+        "upper_price": 77481.69714285716,
+        "lower_price": 75112.22285714286,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 78666.4342857143,
+        "terminate_lower_price": 73927.4857142857,
+        "grid_spacing": 473.89485714285985,
+        "profit_rate": 0.006211189241915534
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 04:00",
+      "price": 76276.17,
+      "state": "ranging",
+      "adx": 30.88420842611652,
+      "atr": 578.1857142857158,
+      "grid_params": {
+        "upper_price": 77432.54142857144,
+        "lower_price": 75119.79857142856,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 78588.91285714287,
+        "terminate_lower_price": 73963.42714285712,
+        "grid_spacing": 462.5485714285751,
+        "profit_rate": 0.006064129484065274
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 05:00",
+      "price": 75954.71,
+      "state": "ranging",
+      "adx": 31.45204699453645,
+      "atr": 554.7578571428583,
+      "grid_params": {
+        "upper_price": 77064.22571428573,
+        "lower_price": 74845.19428571429,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 78173.74142857145,
+        "terminate_lower_price": 73735.67857142857,
+        "grid_spacing": 443.80628571428826,
+        "profit_rate": 0.005843038380559787
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 06:00",
+      "price": 75974.24,
+      "state": "ranging",
+      "adx": 31.0155675780678,
+      "atr": 544.750714285716,
+      "grid_params": {
+        "upper_price": 77063.74142857143,
+        "lower_price": 74884.73857142858,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 78153.24285714286,
+        "terminate_lower_price": 73795.23714285715,
+        "grid_spacing": 435.8005714285711,
+        "profit_rate": 0.005736162302229954
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 07:00",
+      "price": 75840.97,
+      "state": "ranging",
+      "adx": 30.217634790763007,
+      "atr": 532.6442857142871,
+      "grid_params": {
+        "upper_price": 76906.25857142858,
+        "lower_price": 74775.68142857142,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77971.54714285716,
+        "terminate_lower_price": 73710.39285714284,
+        "grid_spacing": 426.1154285714321,
+        "profit_rate": 0.005618538747215814
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 08:00",
+      "price": 76092.45,
+      "state": "ranging",
+      "adx": 27.87214619407933,
+      "atr": 532.5150000000015,
+      "grid_params": {
+        "upper_price": 77157.48,
+        "lower_price": 75027.42,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 78222.51,
+        "terminate_lower_price": 73962.39,
+        "grid_spacing": 426.01199999999955,
+        "profit_rate": 0.005598610637454827
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 09:00",
+      "price": 75927.59,
+      "state": "ranging",
+      "adx": 27.948999117217703,
+      "atr": 537.3021428571436,
+      "grid_params": {
+        "upper_price": 77002.19428571429,
+        "lower_price": 74852.9857142857,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 78076.79857142858,
+        "terminate_lower_price": 73778.38142857142,
+        "grid_spacing": 429.84171428571574,
+        "profit_rate": 0.0056612058184082464
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 10:00",
+      "price": 75739.88,
+      "state": "ranging",
+      "adx": 28.210195848654763,
+      "atr": 510.65000000000043,
+      "grid_params": {
+        "upper_price": 76761.18000000001,
+        "lower_price": 74718.58,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77782.48000000001,
+        "terminate_lower_price": 73697.28,
+        "grid_spacing": 408.5200000000012,
+        "profit_rate": 0.005393723887600577
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 11:00",
+      "price": 75614.42,
+      "state": "ranging",
+      "adx": 27.267619540808344,
+      "atr": 488.49357142857167,
+      "grid_params": {
+        "upper_price": 76591.40714285715,
+        "lower_price": 74637.43285714285,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77568.3942857143,
+        "terminate_lower_price": 73660.4457142857,
+        "grid_spacing": 390.7948571428598,
+        "profit_rate": 0.005168258344676317
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 12:00",
+      "price": 75813.81,
+      "state": "ranging",
+      "adx": 29.59044835061157,
+      "atr": 444.077142857143,
+      "grid_params": {
+        "upper_price": 76701.96428571429,
+        "lower_price": 74925.6557142857,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77590.11857142858,
+        "terminate_lower_price": 74037.50142857141,
+        "grid_spacing": 355.2617142857169,
+        "profit_rate": 0.0046859762658771125
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 13:00",
+      "price": 75802.0,
+      "state": "ranging",
+      "adx": 28.97045057848438,
+      "atr": 381.76500000000044,
+      "grid_params": {
+        "upper_price": 76565.53,
+        "lower_price": 75038.47,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77329.06,
+        "terminate_lower_price": 74274.94,
+        "grid_spacing": 305.4119999999995,
+        "profit_rate": 0.0040290757499802056
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 14:00",
+      "price": 75754.27,
+      "state": "ranging",
+      "adx": 27.500780825771194,
+      "atr": 357.3835714285711,
+      "grid_params": {
+        "upper_price": 76469.03714285715,
+        "lower_price": 75039.50285714286,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77183.8042857143,
+        "terminate_lower_price": 74324.7357142857,
+        "grid_spacing": 285.9068571428594,
+        "profit_rate": 0.003774135202449438
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 15:00",
+      "price": 75888.93,
+      "state": "ranging",
+      "adx": 28.648863878228866,
+      "atr": 323.54857142857094,
+      "grid_params": {
+        "upper_price": 76536.02714285713,
+        "lower_price": 75241.83285714286,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77183.12428571426,
+        "terminate_lower_price": 74594.73571428572,
+        "grid_spacing": 258.83885714285424,
+        "profit_rate": 0.0034107590809733944
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 16:00",
+      "price": 76507.21,
+      "state": "ranging",
+      "adx": 28.875482988050955,
+      "atr": 358.09071428571457,
+      "grid_params": {
+        "upper_price": 77223.39142857144,
+        "lower_price": 75791.02857142857,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77939.57285714288,
+        "terminate_lower_price": 75074.84714285714,
+        "grid_spacing": 286.47257142857416,
+        "profit_rate": 0.003744386593480198
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 17:00",
+      "price": 76411.64,
+      "state": "ranging",
+      "adx": 32.244745922036266,
+      "atr": 348.8285714285729,
+      "grid_params": {
+        "upper_price": 77109.29714285715,
+        "lower_price": 75713.98285714285,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77806.9542857143,
+        "terminate_lower_price": 75016.3257142857,
+        "grid_spacing": 279.0628571428591,
+        "profit_rate": 0.0036520987789669104
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 18:00",
+      "price": 76746.41,
+      "state": "ranging",
+      "adx": 31.763473874815325,
+      "atr": 353.9292857142885,
+      "grid_params": {
+        "upper_price": 77454.26857142858,
+        "lower_price": 76038.55142857143,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 78162.12714285715,
+        "terminate_lower_price": 75330.69285714286,
+        "grid_spacing": 283.1434285714291,
+        "profit_rate": 0.0036893377627882414
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 19:00",
+      "price": 76452.94,
+      "state": "ranging",
+      "adx": 31.675362009892265,
+      "atr": 342.18142857143124,
+      "grid_params": {
+        "upper_price": 77137.30285714286,
+        "lower_price": 75768.57714285715,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77821.66571428571,
+        "terminate_lower_price": 75084.21428571429,
+        "grid_spacing": 273.74514285714247,
+        "profit_rate": 0.0035805705164136587
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 20:00",
+      "price": 76009.46,
+      "state": "ranging",
+      "adx": 29.053788772466113,
+      "atr": 383.59285714285943,
+      "grid_params": {
+        "upper_price": 76776.64571428573,
+        "lower_price": 75242.27428571429,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77543.83142857144,
+        "terminate_lower_price": 74475.08857142857,
+        "grid_spacing": 306.87428571428757,
+        "profit_rate": 0.00403731700914975
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 21:00",
+      "price": 75899.98,
+      "state": "ranging",
+      "adx": 29.211079750901536,
+      "atr": 389.7914285714308,
+      "grid_params": {
+        "upper_price": 76679.56285714285,
+        "lower_price": 75120.39714285714,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77459.14571428571,
+        "terminate_lower_price": 74340.81428571428,
+        "grid_spacing": 311.83314285714295,
+        "profit_rate": 0.0041084746380320915
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 22:00",
+      "price": 75841.4,
+      "state": "ranging",
+      "adx": 28.765925848140682,
+      "atr": 377.94714285714457,
+      "grid_params": {
+        "upper_price": 76597.29428571428,
+        "lower_price": 75085.50571428571,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77353.18857142856,
+        "terminate_lower_price": 74329.61142857143,
+        "grid_spacing": 302.35771428571314,
+        "profit_rate": 0.003986710613012328
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-21 23:00",
+      "price": 75676.3,
+      "state": "ranging",
+      "adx": 27.301495819027615,
+      "atr": 378.9035714285731,
+      "grid_params": {
+        "upper_price": 76434.10714285714,
+        "lower_price": 74918.49285714286,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77191.91428571429,
+        "terminate_lower_price": 74160.68571428572,
+        "grid_spacing": 303.1228571428568,
+        "profit_rate": 0.00400551899528461
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-22 02:00",
+      "price": 75571.38,
+      "state": "ranging",
+      "adx": 28.615154325525072,
+      "atr": 373.424285714288,
+      "grid_params": {
+        "upper_price": 76318.22857142858,
+        "lower_price": 74824.53142857143,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 77065.07714285716,
+        "terminate_lower_price": 74077.68285714285,
+        "grid_spacing": 298.7394285714312,
+        "profit_rate": 0.003953076264737142
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-22 06:00",
+      "price": 75534.85,
+      "state": "ranging",
+      "adx": 27.42077540352297,
+      "atr": 360.48785714285935,
+      "grid_params": {
+        "upper_price": 76255.82571428572,
+        "lower_price": 74813.8742857143,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 76976.80142857143,
+        "terminate_lower_price": 74092.89857142858,
+        "grid_spacing": 288.39028571428497,
+        "profit_rate": 0.0038179765461146074
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-22 11:00",
+      "price": 77604.42,
+      "state": "ranging",
+      "adx": 28.031933488954586,
+      "atr": 497.654285714287,
+      "grid_params": {
+        "upper_price": 78599.72857142857,
+        "lower_price": 76609.11142857143,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 79595.03714285714,
+        "terminate_lower_price": 75613.80285714286,
+        "grid_spacing": 398.12342857142795,
+        "profit_rate": 0.0051301643459409655
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-22 14:00",
+      "price": 77959.84,
+      "state": "ranging",
+      "adx": 31.025659864378355,
+      "atr": 512.268571428572,
+      "grid_params": {
+        "upper_price": 78984.37714285713,
+        "lower_price": 76935.30285714286,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 80008.91428571427,
+        "terminate_lower_price": 75910.76571428572,
+        "grid_spacing": 409.8148571428552,
+        "profit_rate": 0.0052567431788322705
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-22 15:00",
+      "price": 77997.86,
+      "state": "ranging",
+      "adx": 33.160698628692046,
+      "atr": 511.0357142857153,
+      "grid_params": {
+        "upper_price": 79019.93142857144,
+        "lower_price": 76975.78857142857,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 80042.00285714287,
+        "terminate_lower_price": 75953.71714285713,
+        "grid_spacing": 408.8285714285739,
+        "profit_rate": 0.005241535747629152
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-22 23:00",
+      "price": 78916.0,
+      "state": "ranging",
+      "adx": 36.03207091911306,
+      "atr": 572.9750000000006,
+      "grid_params": {
+        "upper_price": 80061.95,
+        "lower_price": 77770.05,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 81207.9,
+        "terminate_lower_price": 76624.1,
+        "grid_spacing": 458.37999999999886,
+        "profit_rate": 0.0058084545592782056
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-23 01:00",
+      "price": 78883.96,
+      "state": "ranging",
+      "adx": 37.253376392722274,
+      "atr": 511.10142857142847,
+      "grid_params": {
+        "upper_price": 79906.16285714286,
+        "lower_price": 77861.75714285715,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 80928.36571428571,
+        "terminate_lower_price": 76839.5542857143,
+        "grid_spacing": 408.88114285714107,
+        "profit_rate": 0.00518332425067328
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-23 10:00",
+      "price": 78252.01,
+      "state": "ranging",
+      "adx": 36.22553469832635,
+      "atr": 541.9028571428571,
+      "grid_params": {
+        "upper_price": 79335.81571428571,
+        "lower_price": 77168.20428571428,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 80419.62142857142,
+        "terminate_lower_price": 76084.39857142857,
+        "grid_spacing": 433.52228571428566,
+        "profit_rate": 0.005540078596246738
+      },
+      "reason": "参数显著变化"
+    },
+    {
+      "time": "2026-04-23 11:00",
+      "price": 77973.87,
+      "state": "ranging",
+      "adx": 35.78335715028295,
+      "atr": 530.1199999999995,
+      "grid_params": {
+        "upper_price": 79034.11,
+        "lower_price": 76913.62999999999,
+        "grid_count": 5,
+        "grid_type": "arithmetic",
+        "grid_direction": "NEUTRAL",
+        "leverage": 10,
+        "total_investment": 500,
+        "stop_upper_price": null,
+        "stop_lower_price": null,
+        "terminate_upper_price": 80094.35,
+        "terminate_lower_price": 75853.38999999998,
+        "grid_spacing": 424.0960000000021,
+        "profit_rate": 0.0054389502534631425
+      },
+      "reason": "参数显著变化"
+    }
+  ],
+  "market_states": [
+    {
+      "time": "2026-04-20 07:00",
+      "state": "ranging",
+      "adx": 30.837105006095786,
+      "trend_strength": 0.19457016686985953
+    },
+    {
+      "time": "2026-04-20 08:00",
+      "state": "ranging",
+      "adx": 27.48417589549126,
+      "trend_strength": 0.08280586318304195
+    },
+    {
+      "time": "2026-04-20 09:00",
+      "state": "ranging",
+      "adx": 27.06757212604296,
+      "trend_strength": 0.0689190708680987
+    },
+    {
+      "time": "2026-04-20 10:00",
+      "state": "ranging",
+      "adx": 26.90805362418589,
+      "trend_strength": 0.06360178747286298
+    },
+    {
+      "time": "2026-04-20 11:00",
+      "state": "ranging",
+      "adx": 26.434121125969813,
+      "trend_strength": 0.047804037532327114
+    },
+    {
+      "time": "2026-04-20 12:00",
+      "state": "ranging",
+      "adx": 26.38709414406286,
+      "trend_strength": 0.046236471468762017
+    },
+    {
+      "time": "2026-04-20 13:00",
+      "state": "ranging",
+      "adx": 26.92944904976591,
+      "trend_strength": 0.06431496832553035
+    },
+    {
+      "time": "2026-04-20 14:00",
+      "state": "ranging",
+      "adx": 27.488907788752975,
+      "trend_strength": 0.0829635929584325
+    },
+    {
+      "time": "2026-04-20 15:00",
+      "state": "ranging",
+      "adx": 26.44566731597461,
+      "trend_strength": 0.04818891053248701
+    },
+    {
+      "time": "2026-04-20 16:00",
+      "state": "ranging",
+      "adx": 24.872075658250747,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-20 17:00",
+      "state": "ranging",
+      "adx": 24.675140196602367,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-20 18:00",
+      "state": "ranging",
+      "adx": 23.96329203969479,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-20 19:00",
+      "state": "ranging",
+      "adx": 22.681748172905703,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-20 20:00",
+      "state": "ranging",
+      "adx": 21.224389123254213,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-20 21:00",
+      "state": "ranging",
+      "adx": 19.328220356370913,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-20 22:00",
+      "state": "ranging",
+      "adx": 19.337490703452797,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-20 23:00",
+      "state": "ranging",
+      "adx": 20.17269845957497,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-21 00:00",
+      "state": "ranging",
+      "adx": 20.738515541542196,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-21 01:00",
+      "state": "ranging",
+      "adx": 22.421638989465407,
+      "trend_strength": 0.0
+    },
+    {
+      "time": "2026-04-21 02:00",
+      "state": "ranging",
+      "adx": 25.789850205589907,
+      "trend_strength": 0.02632834018633024
+    },
+    {
+      "time": "2026-04-21 03:00",
+      "state": "ranging",
+      "adx": 27.33772375971978,
+      "trend_strength": 0.07792412532399264
+    },
+    {
+      "time": "2026-04-21 04:00",
+      "state": "ranging",
+      "adx": 30.88420842611652,
+      "trend_strength": 0.19614028087055063
+    },
+    {
+      "time": "2026-04-21 05:00",
+      "state": "ranging",
+      "adx": 31.45204699453645,
+      "trend_strength": 0.21506823315121495
+    },
+    {
+      "time": "2026-04-21 06:00",
+      "state": "ranging",
+      "adx": 31.0155675780678,
+      "trend_strength": 0.20051891926892662
+    },
+    {
+      "time": "2026-04-21 07:00",
+      "state": "ranging",
+      "adx": 30.217634790763007,
+      "trend_strength": 0.17392115969210026
+    },
+    {
+      "time": "2026-04-21 08:00",
+      "state": "ranging",
+      "adx": 27.87214619407933,
+      "trend_strength": 0.09573820646931104
+    },
+    {
+      "time": "2026-04-21 09:00",
+      "state": "ranging",
+      "adx": 27.948999117217703,
+      "trend_strength": 0.09829997057392342
+    },
+    {
+      "time": "2026-04-21 10:00",
+      "state": "ranging",
+      "adx": 28.210195848654763,
+      "trend_strength": 0.1070065282884921
+    },
+    {
+      "time": "2026-04-21 11:00",
+      "state": "ranging",
+      "adx": 27.267619540808344,
+      "trend_strength": 0.0755873180269448
+    },
+    {
+      "time": "2026-04-21 12:00",
+      "state": "ranging",
+      "adx": 29.59044835061157,
+      "trend_strength": 0.15301494502038568
+    },
+    {
+      "time": "2026-04-21 13:00",
+      "state": "ranging",
+      "adx": 28.97045057848438,
+      "trend_strength": 0.13234835261614605
+    },
+    {
+      "time": "2026-04-21 14:00",
+      "state": "ranging",
+      "adx": 27.500780825771194,
+      "trend_strength": 0.0833593608590398
+    },
+    {
+      "time": "2026-04-21 15:00",
+      "state": "ranging",
+      "adx": 28.648863878228866,
+      "trend_strength": 0.1216287959409622
+    },
+    {
+      "time": "2026-04-21 16:00",
+      "state": "ranging",
+      "adx": 28.875482988050955,
+      "trend_strength": 0.12918276626836517
+    },
+    {
+      "time": "2026-04-21 17:00",
+      "state": "ranging",
+      "adx": 32.244745922036266,
+      "trend_strength": 0.2414915307345422
+    },
+    {
+      "time": "2026-04-21 18:00",
+      "state": "ranging",
+      "adx": 31.763473874815325,
+      "trend_strength": 0.22544912916051085
+    },
+    {
+      "time": "2026-04-21 19:00",
+      "state": "ranging",
+      "adx": 31.675362009892265,
+      "trend_strength": 0.22251206699640882
+    },
+    {
+      "time": "2026-04-21 20:00",
+      "state": "ranging",
+      "adx": 29.053788772466113,
+      "trend_strength": 0.1351262924155371
+    },
+    {
+      "time": "2026-04-21 21:00",
+      "state": "ranging",
+      "adx": 29.211079750901536,
+      "trend_strength": 0.1403693250300512
+    },
+    {
+      "time": "2026-04-21 22:00",
+      "state": "ranging",
+      "adx": 28.765925848140682,
+      "trend_strength": 0.1255308616046894
+    },
+    {
+      "time": "2026-04-21 23:00",
+      "state": "ranging",
+      "adx": 27.301495819027615,
+      "trend_strength": 0.07671652730092049
+    },
+    {
+      "time": "2026-04-22 02:00",
+      "state": "ranging",
+      "adx": 28.615154325525072,
+      "trend_strength": 0.12050514418416908
+    },
+    {
+      "time": "2026-04-22 06:00",
+      "state": "ranging",
+      "adx": 27.42077540352297,
+      "trend_strength": 0.08069251345076568
+    },
+    {
+      "time": "2026-04-22 11:00",
+      "state": "ranging",
+      "adx": 28.031933488954586,
+      "trend_strength": 0.10106444963181953
+    },
+    {
+      "time": "2026-04-22 14:00",
+      "state": "ranging",
+      "adx": 31.025659864378355,
+      "trend_strength": 0.20085532881261184
+    },
+    {
+      "time": "2026-04-22 15:00",
+      "state": "ranging",
+      "adx": 33.160698628692046,
+      "trend_strength": 0.2720232876230682
+    },
+    {
+      "time": "2026-04-22 23:00",
+      "state": "ranging",
+      "adx": 36.03207091911306,
+      "trend_strength": 0.3677356973037687
+    },
+    {
+      "time": "2026-04-23 01:00",
+      "state": "ranging",
+      "adx": 37.253376392722274,
+      "trend_strength": 0.40844587975740915
+    },
+    {
+      "time": "2026-04-23 10:00",
+      "state": "ranging",
+      "adx": 36.22553469832635,
+      "trend_strength": 0.37418448994421166
+    },
+    {
+      "time": "2026-04-23 11:00",
+      "state": "ranging",
+      "adx": 35.78335715028295,
+      "trend_strength": 0.3594452383427651
+    }
+  ]
+}

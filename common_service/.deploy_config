@@ -1,0 +1,18 @@
+# 通用服务部署配置
+
+# 服务器配置
+SERVER_IP="43.156.242.184"
+SERVER_USER="root"
+SERVER_PROJECT_PATH="/root/common_service"
+
+# Docker 配置
+DOCKER_CONTAINER_NAME="common-service"
+DOCKER_IMAGE_NAME="common-service:latest"
+
+# 项目配置
+PROJECT_NAME="common_service"
+DEPLOY_PACKAGE_NAME="deployment_package.tar.gz"
+
+# 服务端口
+NOTIFICATION_SERVICE_PORT="8766"
+KLINE_DATA_SERVICE_PORT="8000"

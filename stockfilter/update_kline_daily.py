@@ -100,7 +100,16 @@ class DailyKlineUpdater:
             # 如果最新日期在最近 N 天内，跳过
             if latest_data:
                 # 确保类型一致（datetime.date 或 datetime.datetime）
-                if hasattr(latest_data, 'date'):
+                from datetime import datetime as dt
+                if isinstance(latest_data, dt):
+                    latest_data_date = latest_data.date()
+                elif isinstance(latest_data, str):
+                    # 如果是字符串，转换为 datetime
+                    try:
+                        latest_data_date = dt.strptime(latest_data[:10], '%Y-%m-%d').date()
+                    except (ValueError, TypeError):
+                        latest_data_date = today.date()
+                elif hasattr(latest_data, 'date'):
                     latest_data_date = latest_data.date()
                 else:
                     latest_data_date = latest_data
@@ -122,14 +131,28 @@ class DailyKlineUpdater:
                 if kline_df is not None and len(kline_df) > 0:
                     # 过滤掉已有数据
                     if latest_data:
-                        # 类型转换：确保可以比较
                         from datetime import datetime as dt
                         if isinstance(latest_data, dt):
                             latest_date = latest_data
+                        elif isinstance(latest_data, str):
+                            try:
+                                latest_date = dt.strptime(latest_data[:10], '%Y-%m-%d')
+                            except (ValueError, TypeError):
+                                latest_date = dt.combine(today.date(), dt.min.time())
                         elif hasattr(latest_data, 'date'):
                             latest_date = dt.combine(latest_data.date(), dt.min.time())
                         else:
-                            latest_date = dt.combine(latest_data, dt.min.time())
+                            # latest_data 是字符串或其他类型，需要转换
+                            try:
+                                if isinstance(latest_data, str):
+                                    # 字符串转换为 date 对象
+                                    date_obj = dt.strptime(latest_data[:10], '%Y-%m-%d').date()
+                                    latest_date = dt.combine(date_obj, dt.min.time())
+                                else:
+                                    # 尝试直接使用
+                                    latest_date = dt.combine(latest_data, dt.min.time())
+                            except (TypeError, ValueError, AttributeError):
+                                latest_date = dt.combine(today.date(), dt.min.time())
                         
                         # 过滤 kline_df 中日期大于 latest_date 的行
                         kline_df = kline_df[pd.to_datetime(kline_df['date']) > latest_date]
@@ -197,8 +220,8 @@ class DailyKlineUpdater:
         df_today = pd.read_sql_query("""
             SELECT COUNT(DISTINCT code) as count
             FROM klines
-            WHERE date = :today
-        """, self.db.conn, params={'today': today})
+            WHERE date = %s
+        """, self.db.conn, params=[today])
         
         count = df_today['count'].iloc[0]
         if count > 0:

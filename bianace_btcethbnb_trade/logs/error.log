@@ -1,0 +1,104 @@
+2026-04-27 09:24:24,367 - test_module - ERROR - 这是一条 ERROR 日志
+2026-04-27 09:24:24,387 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 09:24:24,387 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 09:29:34,980 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 09:29:34,990 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 09:29:34,990 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 09:30:27,494 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 09:30:27,505 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 09:30:27,505 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 09:30:47,953 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 09:30:47,969 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 09:30:47,969 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 09:31:44,434 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 09:31:44,446 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 09:31:44,446 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 10:46:33,380 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 10:46:33,393 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 10:46:33,393 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 10:47:00,310 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 10:47:00,322 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 10:47:00,322 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 10:47:11,169 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 11:13:01,668 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 11:13:01,679 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 11:13:01,679 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 11:13:03,217 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 11:13:26,066 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 11:13:26,086 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 11:13:26,086 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 11:13:27,794 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 11:16:24,804 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 11:16:24,822 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 11:16:24,822 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 11:16:26,460 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 11:18:08,227 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 11:18:08,244 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 11:18:08,244 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 11:18:09,862 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 11:26:58,225 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 11:26:58,236 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 11:26:58,236 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 11:26:59,717 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 11:45:22,837 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 11:45:22,847 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 11:45:22,847 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 11:45:33,256 - core.data.fetcher - ERROR - 获取K线数据异常：HTTPConnectionPool(host='127.0.0.1', port=7890): Read timed out. (read timeout=10)
+2026-04-27 11:45:33,257 - core.data.fetcher - ERROR - 获取K线数据异常：HTTPConnectionPool(host='127.0.0.1', port=7890): Read timed out. (read timeout=10)
+2026-04-27 11:45:34,266 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 11:45:50,457 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 11:45:50,475 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 11:45:50,475 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 11:45:52,118 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 11:50:09,307 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 11:50:09,324 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 11:50:09,324 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 11:50:10,895 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 12:26:56,178 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 12:26:56,189 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 12:26:56,189 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 12:27:06,250 - core.data.fetcher - ERROR - 获取K线数据异常：HTTPConnectionPool(host='127.0.0.1', port=7890): Read timed out. (read timeout=10)
+2026-04-27 12:27:07,604 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 12:27:07,646 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:27:07,646 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'total_pnl' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'operation': 'get_daily_pnl'}
+2026-04-27 12:27:07,694 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:27:07,706 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:27:07,820 - utils.error_handler - ERROR - [OperationalError] [SYSTEM_ERROR] could not translate host name "postgres-db" to address: nodename nor servname provided, or not known
+ | 上下文: {'service': 'TradeExecutor', 'state': 'error', 'phase': 'initialization'}
+2026-04-27 12:27:07,838 - utils.error_handler - ERROR - [OperationalError] [SYSTEM_ERROR] could not translate host name "postgres-db" to address: nodename nor servname provided, or not known
+ | 上下文: {'service': 'TradeExecutor', 'state': 'error', 'phase': 'initialization'}
+2026-04-27 12:27:07,856 - utils.error_handler - ERROR - [OperationalError] [SYSTEM_ERROR] could not translate host name "postgres-db" to address: nodename nor servname provided, or not known
+ | 上下文: {'service': 'TradeExecutor', 'state': 'error', 'phase': 'initialization'}
+2026-04-27 12:27:07,874 - utils.error_handler - ERROR - [OperationalError] [SYSTEM_ERROR] could not translate host name "postgres-db" to address: nodename nor servname provided, or not known
+ | 上下文: {'service': 'TradeExecutor', 'state': 'error', 'phase': 'initialization'}
+2026-04-27 12:27:07,901 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:27:07,901 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'total_pnl' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'operation': 'get_daily_pnl'}
+2026-04-27 12:35:16,166 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 12:35:16,178 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 12:35:16,178 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 12:35:26,260 - core.data.fetcher - ERROR - 获取K线数据异常：HTTPConnectionPool(host='127.0.0.1', port=7890): Read timed out. (read timeout=10)
+2026-04-27 12:35:27,795 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 12:35:27,831 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:35:27,831 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'total_pnl' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'operation': 'get_daily_pnl'}
+2026-04-27 12:35:27,883 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:35:27,897 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:35:28,011 - utils.error_handler - ERROR - [OperationalError] [SYSTEM_ERROR] could not translate host name "postgres-db" to address: nodename nor servname provided, or not known
+ | 上下文: {'service': 'TradeExecutor', 'state': 'error', 'phase': 'initialization'}
+2026-04-27 12:35:28,031 - utils.error_handler - ERROR - [OperationalError] [SYSTEM_ERROR] could not translate host name "postgres-db" to address: nodename nor servname provided, or not known
+ | 上下文: {'service': 'TradeExecutor', 'state': 'error', 'phase': 'initialization'}
+2026-04-27 12:35:28,062 - utils.error_handler - ERROR - [OperationalError] [SYSTEM_ERROR] could not translate host name "postgres-db" to address: nodename nor servname provided, or not known
+ | 上下文: {'service': 'TradeExecutor', 'state': 'error', 'phase': 'initialization'}
+2026-04-27 12:35:28,082 - utils.error_handler - ERROR - [OperationalError] [SYSTEM_ERROR] could not translate host name "postgres-db" to address: nodename nor servname provided, or not known
+ | 上下文: {'service': 'TradeExecutor', 'state': 'error', 'phase': 'initialization'}
+2026-04-27 12:35:28,111 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:35:28,112 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'total_pnl' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'operation': 'get_daily_pnl'}
+2026-04-27 12:47:45,889 - test_log_levels - ERROR - 这是一条 ERROR 日志
+2026-04-27 12:47:45,902 - utils.error_handler - ERROR - [OrderExecutionError] [TRADING_ERROR_BTCUSDT] 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败 | 详情: {'order_type': 'LIMIT', 'reason': '测试订单执行失败'} | 上下文: {'test_scenario': 'integration'}
+2026-04-27 12:47:45,902 - integration_test - ERROR - 集成测试捕获异常: 订单执行失败：BTCUSDT LIMIT - 测试订单执行失败
+2026-04-27 12:47:47,411 - utils.error_handler - ERROR - [ValueError] [SYSTEM_ERROR] 测试错误 | 上下文: {'service': 'TestService', 'state': 'ready', 'operation': '测试错误方法'}
+2026-04-27 12:47:47,445 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:47:47,445 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'total_pnl' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'operation': 'get_daily_pnl'}
+2026-04-27 12:47:47,500 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:47:47,516 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:47:47,719 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'open_time' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'symbol': 'BTCUSDT', 'operation': 'check_cooldown'}
+2026-04-27 12:47:47,719 - utils.error_handler - ERROR - [KeyError] [SYSTEM_ERROR] 'total_pnl' | 上下文: {'service': 'FrequencyController', 'state': 'ready', 'operation': 'get_daily_pnl'}

@@ -6,7 +6,7 @@
 
 set -e
 
-SSH_KEY="$HOME/.ssh/stockfilter_key"
+SSH_KEY="/Users/yl/vscode/inspection_automation/docs/only.pem"
 SERVER="root@43.156.242.184"
 SSH_CMD="ssh -o StrictHostKeyChecking=no -o ServerAliveInterval=30 -i $SSH_KEY"
 PROJECT_DIR="/root/stockfilter"

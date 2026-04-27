@@ -1,12 +1,13 @@
 # 服务器配置
 SERVER_IP="43.156.242.184"
 SERVER_USER="root"
-SERVER_PROJECT_PATH="/root/binance-trade-analyzer"
+SERVER_PROJECT_PATH="/root/trading_system"
+SSH_KEY_FILE="/Users/yl/vscode/inspection_automation/docs/only.pem"
 
 # Docker 配置
 DOCKER_CONTAINER_NAME="binance-trade-analyzer"
-DOCKER_IMAGE_NAME="bianace_btcethbnb_trade-binance-trade-analyzer:latest"
+DOCKER_IMAGE_NAME="binance-trade-analyzer-binance-trade-analyzer:latest"
 
 # 项目配置
-PROJECT_NAME="binance-trade-analyzer"
+PROJECT_NAME="trading_system"
 DEPLOY_PACKAGE_NAME="deployment_package.tar.gz"

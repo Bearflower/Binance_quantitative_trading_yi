@@ -192,15 +192,20 @@ class HistorySync:
         
         # 找出失败的股票（数据少于 100 天的）
         failed_stocks = []
-        stocks_df = self.db.get_stock_list()
+        
+        # 使用固定股票列表，避免包含北交所等非主板股票
+        stocks_file = '/app/main_board_stocks.csv'
+        if os.path.exists(stocks_file):
+            logger.info(f"重跑使用固定股票列表：{stocks_file}")
+            stocks_df = pd.read_csv(stocks_file, dtype={'code': str})
+        else:
+            # 如果固定列表不存在，使用数据库列表并过滤
+            stocks_df = self.db.get_stock_list()
+            logger.warning(f"固定股票列表不存在，使用数据库列表（{len(stocks_df)} 只）")
         
         for idx, row in stocks_df.iterrows():
             code = row['code']
             symbol = row['symbol']
-            
-            # 跳过非主板股票
-            if not (code.startswith(('000', '001', '002', '600', '601', '603', '605'))):
-                continue
             
             # 检查已有数据
             existing = self.db.get_kline_history(code, days=self.days)

@@ -148,25 +148,7 @@ class DataSourceManager:
                         lambda x: f"{x}.SH" if x.startswith('6') or x.startswith('5') else f"{x}.SZ"
                     )
                     
-                    # AKShare 返回的列：code, name, symbol, 可能还有 list_date, sector 等
-                    # 检查并添加 list_date 字段
-                    if 'list_date' in stock_df.columns:
-                        result_df['list_date'] = pd.to_datetime(stock_df['list_date'], errors='coerce')
-                    
-                    # 检查并添加 sector 字段
-                    if 'sector' in stock_df.columns:
-                        result_df['sector'] = stock_df['sector']
-                    elif 'industry' in stock_df.columns:
-                        result_df['sector'] = stock_df['industry']
-                    
-                    # 返回所有可用列
-                    return_cols = ['code', 'name', 'symbol']
-                    if 'list_date' in result_df.columns:
-                        return_cols.append('list_date')
-                    if 'sector' in result_df.columns:
-                        return_cols.append('sector')
-                    
-                    return result_df[return_cols]
+                    return result_df[['code', 'name', 'symbol']]
                     
                 except (TimeoutError, ConnectionError, Exception) as e:
                     if attempt < max_retries - 1:
@@ -222,7 +204,7 @@ class DataSourceManager:
                     logger.info(f"AData 获取到 {len(stock_df)} 只股票，列名：{stock_df.columns.tolist()}")
                     
                     # 处理不同的列名情况
-                    # AData 可能返回：code/name/list_date, 或 ts_code/name/list_date, 或 stock_code/short_name/list_date2
+                    # AData 可能返回：code/name, 或 ts_code/name, 或 stock_code/short_name
                     result_df = pd.DataFrame()
                     
                     if 'code' in stock_df.columns:
@@ -261,28 +243,7 @@ class DataSourceManager:
                             lambda x: f"{x}.SH" if x.startswith('6') or x.startswith('5') else f"{x}.SZ"
                         )
                     
-                    # 处理 list_date 字段（上市日期）
-                    # AData 可能返回 list_date 或 list_date2
-                    if 'list_date' in stock_df.columns:
-                        result_df['list_date'] = pd.to_datetime(stock_df['list_date'], errors='coerce')
-                    elif 'list_date2' in stock_df.columns:
-                        result_df['list_date'] = pd.to_datetime(stock_df['list_date2'], errors='coerce')
-                    # 如果没有 list_date 字段，则保持为 NULL
-                    
-                    # 处理 sector 字段（行业/板块）
-                    if 'sector' in stock_df.columns:
-                        result_df['sector'] = stock_df['sector']
-                    elif 'industry' in stock_df.columns:
-                        result_df['sector'] = stock_df['industry']
-                    
-                    # 返回所有可用列
-                    return_cols = ['code', 'name', 'symbol']
-                    if 'list_date' in result_df.columns:
-                        return_cols.append('list_date')
-                    if 'sector' in result_df.columns:
-                        return_cols.append('sector')
-                    
-                    return result_df[return_cols]
+                    return result_df[['code', 'name', 'symbol']]
                     
                 except (TimeoutError, ConnectionError, Exception) as e:
                     if attempt < max_retries - 1:
@@ -368,29 +329,13 @@ class DataSourceManager:
                 lambda x: f"{x}.SH" if x.startswith('6') or x.startswith('5') else f"{x}.SZ"
             )
             
-            # Baostock 返回的列：code, code_name, ipoDate, outDate, stockType, status
-            # 处理 list_date 字段（使用 ipoDate）
-            if 'ipoDate' in stock_df.columns:
-                result_df['list_date'] = pd.to_datetime(stock_df['ipoDate'], errors='coerce')
-            
-            # 处理 sector 字段（使用 stockType）
-            if 'stockType' in stock_df.columns:
-                result_df['sector'] = stock_df['stockType']
-            
             # 统计市场分布
             sh_count = len(result_df[result_df['code'].str.startswith('6')])
             sz_main_count = len(result_df[result_df['code'].str.startswith('00')])
             sz_chi_count = len(result_df[result_df['code'].str.startswith('30')])
             logger.info(f"市场分布：沪市{sh_count}只，深市主板{sz_main_count}只，创业板{sz_chi_count}只")
             
-            # 返回所有可用列
-            return_cols = ['code', 'name', 'symbol']
-            if 'list_date' in result_df.columns:
-                return_cols.append('list_date')
-            if 'sector' in result_df.columns:
-                return_cols.append('sector')
-            
-            return result_df[return_cols]
+            return result_df[['code', 'name', 'symbol']]
             
         except ImportError:
             logger.warning("未安装 baostock 库，跳过 Baostock 数据源")

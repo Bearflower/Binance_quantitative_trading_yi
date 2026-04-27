@@ -39,14 +39,14 @@ cd /Users/yl/vscode/stockfilter
 
 ```bash
 # 查看有 K 线数据的股票数量
-ssh -i ~/.ssh/stockfilter_key root@43.156.242.184 "docker exec -i stockfilter-app python3 -c \"from data.database import DatabaseManager; db = DatabaseManager(); import pandas as pd; df = pd.read_sql('SELECT COUNT(DISTINCT code) as cnt FROM klines', db.conn); print(f'当前有 K 线数据的股票数量：{df.iloc[0,0]}'); db.close()\""
+ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@43.156.242.184 "docker exec -i stockfilter-app python3 -c \"from data.database import DatabaseManager; db = DatabaseManager(); import pandas as pd; df = pd.read_sql('SELECT COUNT(DISTINCT code) as cnt FROM klines', db.conn); print(f'当前有 K 线数据的股票数量：{df.iloc[0,0]}'); db.close()\""
 ```
 
 ### 方法 3：查看后台进程
 
 ```bash
 # 查看脚本是否还在运行
-ssh -i ~/.ssh/stockfilter_key root@43.156.242.184 "ps aux | grep python | grep -v grep"
+ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@43.156.242.184 "ps aux | grep python | grep -v grep"
 ```
 
 ---
@@ -107,7 +107,7 @@ python3 batch_backtest.py
 
 **重启脚本：**
 ```bash
-ssh -i ~/.ssh/stockfilter_key root@43.156.242.184 "docker exec -i stockfilter-app python3 << 'EOF' &
+ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@43.156.242.184 "docker exec -i stockfilter-app python3 << 'EOF' &
 from data.database import DatabaseManager
 from data.fetcher import get_stock_daily_kline
 import time
@@ -150,7 +150,7 @@ EOF
 
 **检查数据库中有哪些股票：**
 ```bash
-ssh -i ~/.ssh/stockfilter_key root@43.156.242.184 "docker exec -i stockfilter-app python3 -c \"from data.database import DatabaseManager; db = DatabaseManager(); import pandas as pd; df = pd.read_sql('SELECT code, COUNT(*) as cnt FROM klines GROUP BY code ORDER BY cnt DESC', db.conn); print(df.to_string(index=False)); db.close()\""
+ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@43.156.242.184 "docker exec -i stockfilter-app python3 -c \"from data.database import DatabaseManager; db = DatabaseManager(); import pandas as pd; df = pd.read_sql('SELECT code, COUNT(*) as cnt FROM klines GROUP BY code ORDER BY cnt DESC', db.conn); print(df.to_string(index=False)); db.close()\""
 ```
 
 ---

@@ -26,11 +26,11 @@ def fetch_data_from_server(
         username: SSH 用户名
         remote_path: 服务器上的文件路径
         local_path: 本地保存路径
-        key_path: SSH 私钥路径（默认 ~/.ssh/id_rsa）
+        key_path: SSH 私钥路径（默认 /Users/yl/vscode/inspection_automation/docs/only.pem）
     """
     
     if key_path is None:
-        key_path = str(Path.home() / '.ssh' / 'id_rsa')
+        key_path = '/Users/yl/vscode/inspection_automation/docs/only.pem'
     
     print("=" * 80)
     print("从服务器获取回测数据")

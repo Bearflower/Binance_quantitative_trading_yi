@@ -11,6 +11,7 @@ services:
       - ./logs:/app/logs
       - ./reports:/app/reports
       - ./database:/app/database
+      - ./core:/app/core
     env_file:
       - .env
     environment:

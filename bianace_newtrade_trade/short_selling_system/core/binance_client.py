@@ -1,11 +1,7 @@
 """
-币安 API 数据采集客户端
+币安 API 客户端
 
-负责从币安期货 API 获取：
-- 持仓量 (OI) 数据
-- 资金费率
-- K 线数据
-- 交易对信息
+修改：使用通用 K 线服务获取 K 线数据
 """
 
 import time
@@ -14,6 +10,10 @@ from typing import Optional, Dict, Any, List
 from datetime import datetime
 
 from utils.logger import logger
+
+# 通用 K 线服务配置
+KLINE_SERVICE_URL = "http://43.156.242.184:8765/api/v1"
+KLINE_REGISTER_URL = f"{KLINE_SERVICE_URL}/register"
 
 
 class BinanceDataClient:
@@ -262,12 +262,12 @@ class BinanceDataClient:
         limit: int = 100
     ) -> Optional[List[Dict[str, Any]]]:
         """
-        获取 K 线数据
+        获取 K 线数据（使用通用 K 线服务）
         
         Args:
             symbol: 交易对符号
             interval: K 线周期 (1m/5m/15m/1h/4h 等)
-            limit: 返回数量 (最多 1500)
+            limit: 返回数量 (最多 100)
             
         Returns:
             K 线数据列表，每项包含：
@@ -279,7 +279,57 @@ class BinanceDataClient:
             - volume: 成交量
             - close_time: 收盘时间
         """
-        logger.debug(f"📈 获取 {symbol} K 线数据 (周期：{interval})...")
+        logger.debug(f"📈 从通用服务获取 {symbol} K 线数据 (周期：{interval})...")
+        
+        # 使用通用 K 线服务 API
+        url = f"{KLINE_SERVICE_URL}/klines/latest"
+        params = {
+            "symbol": symbol,
+            "interval": interval,
+            "limit": min(limit, 100)  # K 线服务限制每次最多 100 条
+        }
+        
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 0:
+                    klines = result.get('data', [])
+                    logger.debug(f"✅ 从通用服务获取 {symbol} K 线数据成功，共 {len(klines)} 条")
+                    return klines
+                else:
+                    logger.warning(f"⚠️ 通用服务返回失败：{result.get('message')}")
+                    # 降级到直接调用币安 API
+                    return self._get_klines_from_binance(symbol, interval, limit)
+            else:
+                logger.error(f"❌ 通用服务 HTTP 错误：{response.status_code}")
+                # 降级到直接调用币安 API
+                return self._get_klines_from_binance(symbol, interval, limit)
+                
+        except Exception as e:
+            logger.error(f"❌ 从通用服务获取 K 线数据失败：{e}")
+            # 降级到直接调用币安 API
+            return self._get_klines_from_binance(symbol, interval, limit)
+    
+    def _get_klines_from_binance(
+        self,
+        symbol: str,
+        interval: str,
+        limit: int = 100,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """
+        直接从币安 API 获取 K 线数据（降级方案）
+        
+        Args:
+            symbol: 交易对符号
+            interval: 时间间隔
+            limit: 返回数量
+            
+        Returns:
+            K 线数据列表
+        """
+        logger.debug(f"📈 从币安 API 获取 {symbol} K 线数据 (周期：{interval})...")
         url = f"{self.futures_base_url}/fapi/v1/klines"
         
         params = {
@@ -306,13 +356,139 @@ class BinanceDataClient:
                 }
                 klines.append(kline)
             
-            logger.debug(f"✅ 获取 {symbol} K 线数据成功，共 {len(klines)} 条")
+            logger.debug(f"✅ 从币安 API 获取 {symbol} K 线数据成功，共 {len(klines)} 条")
             return klines
         else:
-            logger.error(f"❌ 获取 {symbol} K 线数据失败")
+            logger.error(f"❌ 从币安 API 获取 {symbol} K 线数据失败")
             return None
     
-    def get_symbol_info(self, symbol: str) -> Optional[Dict[str, Any]]:
+    def register_new_symbol(
+        self,
+        symbol: str,
+        intervals: List[str],
+        duration_days: int = 10,
+        priority: str = "normal"
+    ) -> bool:
+        """
+        注册新币到 K 线服务，开始自动采集
+        
+        Args:
+            symbol: 交易对符号，如 "NEWCOINUSDT"
+            intervals: 需要采集的周期列表，如 ["1m", "5m", "15m", "1h"]
+            duration_days: 采集持续天数（1-30 天）
+            priority: 优先级（high, normal, low）
+            
+        Returns:
+            是否注册成功
+        """
+        logger.info(f"📝 注册新币 {symbol} 到 K 线服务...")
+        
+        try:
+            data = {
+                "symbol": symbol,
+                "intervals": intervals,
+                "duration_days": duration_days,
+                "priority": priority
+            }
+            
+            response = requests.post(
+                KLINE_REGISTER_URL,
+                json=data,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 0:
+                    expires_at = result.get('data', {}).get('expires_at', 'unknown')
+                    logger.info(f"✅ 新币 {symbol} 注册成功，过期时间：{expires_at}")
+                    return True
+                else:
+                    logger.error(f"❌ 注册失败：{result.get('message')}")
+                    return False
+            else:
+                logger.error(f"❌ 注册服务 HTTP 错误：{response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ 注册新币失败：{e}")
+            return False
+    
+    def unregister_symbol(self, symbol: str) -> bool:
+        """
+        取消标的注册，停止采集
+        
+        Args:
+            symbol: 交易对符号
+            
+        Returns:
+            是否取消成功
+        """
+        logger.info(f"📝 取消注册 {symbol}...")
+        
+        try:
+            response = requests.delete(
+                f"{KLINE_REGISTER_URL}?symbol={symbol}",
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 0:
+                    logger.info(f"✅ {symbol} 已取消注册")
+                    return True
+                else:
+                    logger.error(f"❌ 取消失败：{result.get('message')}")
+                    return False
+            else:
+                logger.error(f"❌ 取消服务 HTTP 错误：{response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ 取消注册失败：{e}")
+            return False
+    
+    def renew_symbol(self, symbol: str, additional_days: int) -> bool:
+        """
+        续期已注册的标的
+        
+        Args:
+            symbol: 交易对符号
+            additional_days: 续期天数
+            
+        Returns:
+            是否续期成功
+        """
+        logger.info(f"📝 续期 {symbol}，增加 {additional_days} 天...")
+        
+        try:
+            data = {
+                "symbol": symbol,
+                "additional_days": additional_days
+            }
+            
+            response = requests.put(
+                f"{KLINE_REGISTER_URL}/renew",
+                json=data,
+                timeout=10
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                if result.get('code') == 0:
+                    expires_at = result.get('data', {}).get('expires_at', 'unknown')
+                    logger.info(f"✅ {symbol} 续期成功，新过期时间：{expires_at}")
+                    return True
+                else:
+                    logger.error(f"❌ 续期失败：{result.get('message')}")
+                    return False
+            else:
+                logger.error(f"❌ 续期服务 HTTP 错误：{response.status_code}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ 续期失败：{e}")
+            return False
         """
         获取特定交易对信息
         

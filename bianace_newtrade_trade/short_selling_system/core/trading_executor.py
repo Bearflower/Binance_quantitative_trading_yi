@@ -40,6 +40,96 @@ class TradingExecutor:
         
         logger.info("✅ 交易执行器初始化完成")
     
+    def calculate_atr(self, klines: List[Dict[str, Any]], period: Optional[int] = None) -> float:
+        """
+        计算 ATR（Average True Range）
+        
+        Args:
+            klines: K线数据列表，需包含 high, low, close 字段
+            period: ATR 计算周期（默认使用配置值）
+            
+        Returns:
+            ATR 值，失败返回 0
+        """
+        atr_period = period or settings.atr_period
+        
+        if not klines or len(klines) < atr_period + 1:
+            logger.warning(f"K线数据不足，无法计算 ATR（需要 {atr_period + 1} 条，实际 {len(klines) if klines else 0} 条）")
+            return 0.0
+        
+        try:
+            # 计算 True Range
+            true_ranges = []
+            for i in range(1, len(klines)):
+                high = float(klines[i].get('high', 0))
+                low = float(klines[i].get('low', 0))
+                prev_close = float(klines[i-1].get('close', 0))
+                
+                tr = max(
+                    high - low,
+                    abs(high - prev_close),
+                    abs(low - prev_close)
+                )
+                true_ranges.append(tr)
+            
+            # 计算 ATR（简单移动平均）
+            if len(true_ranges) < atr_period:
+                return 0.0
+            
+            # 使用最近 period 个 TR 值计算 ATR
+            recent_trs = true_ranges[-atr_period:]
+            atr = sum(recent_trs) / atr_period
+            
+            logger.debug(f"📊 ATR 计算：周期={atr_period}, ATR={atr:.4f}")
+            return atr
+        except Exception as e:
+            logger.error(f"ATR 计算失败：{e}")
+            return 0.0
+    
+    def calculate_atr_stop_loss(self, entry_price: float, atr: float) -> float:
+        """
+        计算 ATR 止损价（V4.1.1）
+        
+        Args:
+            entry_price: 入场价格
+            atr: ATR 值
+            
+        Returns:
+            止损价格（做空：入场价 + ATR 倍数）
+        """
+        stop_distance = atr * settings.stop_loss_atr_multiplier
+        stop_loss = entry_price + stop_distance
+        
+        logger.info(
+            f"📊 V4.1.1 ATR 止损：入场={entry_price:.4f}, "
+            f"ATR={atr:.4f}, 倍数={settings.stop_loss_atr_multiplier}, "
+            f"止损价={stop_loss:.4f}"
+        )
+        
+        return stop_loss
+    
+    def calculate_atr_take_profit(self, entry_price: float, atr: float) -> float:
+        """
+        计算 ATR 止盈价（V4.1.1）
+        
+        Args:
+            entry_price: 入场价格
+            atr: ATR 值
+            
+        Returns:
+            止盈价格（做空：入场价 - ATR 倍数）
+        """
+        tp_distance = atr * settings.take_profit_atr_multiplier
+        take_profit = entry_price - tp_distance
+        
+        logger.info(
+            f"📊 V4.1.1 ATR 止盈：入场={entry_price:.4f}, "
+            f"ATR={atr:.4f}, 倍数={settings.take_profit_atr_multiplier}, "
+            f"止盈价={take_profit:.4f}"
+        )
+        
+        return take_profit
+    
     def calculate_stop_loss(
         self,
         entry_price: float,
@@ -123,7 +213,8 @@ class TradingExecutor:
         take_profit_2: Optional[float] = None,
         quantity: Optional[float] = None,
         leverage: Optional[int] = None,
-        reason: str = ""
+        reason: str = "",
+        klines: Optional[List[Dict[str, Any]]] = None
     ) -> Optional[str]:
         """
         执行做空交易（使用币安交易 API）
@@ -137,6 +228,7 @@ class TradingExecutor:
             quantity: 开仓数量（可选，自动计算）
             leverage: 杠杆倍数（可选，默认 5 倍）
             reason: 开仓原因
+            klines: K线数据（可选，用于 ATR 计算）
             
         Returns:
             订单 ID，失败返回 None
@@ -152,7 +244,22 @@ class TradingExecutor:
             # 使用默认值
             leverage = leverage or self.default_leverage
             
-            # 计算止损止盈（如果未提供）
+            # V4.1.1: 优先使用 ATR 止损止盈
+            if settings.use_atr_sl_tp and klines:
+                atr = self.calculate_atr(klines)
+                if atr > 0:
+                    # 使用 ATR 计算止损止盈
+                    if not stop_loss:
+                        stop_loss = self.calculate_atr_stop_loss(entry_price, atr)
+                    
+                    if not take_profit_1 or not take_profit_2:
+                        tp = self.calculate_atr_take_profit(entry_price, atr)
+                        take_profit_1 = take_profit_1 or tp
+                        take_profit_2 = take_profit_2 or tp
+                else:
+                    logger.warning(f"ATR 计算失败，使用传统百分比止损止盈")
+            
+            # 如果未提供或 ATR 计算失败，使用传统百分比计算
             if not stop_loss:
                 stop_loss = self.calculate_stop_loss(entry_price)
             

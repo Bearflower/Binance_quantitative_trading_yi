@@ -13,7 +13,7 @@
 import unittest
 from decimal import Decimal
 from datetime import datetime
-from core.signal_detector import SignalDetector, get_signal_detector
+from core.signal import SignalDetector, get_signal_detector
 from core.position_calculator import PositionCalculator, calculate_position
 from core.risk_manager import RiskManager, calculate_stop_loss, calculate_take_profit_levels
 from core.order_generator import OrderGenerator, generate_order_template
@@ -59,7 +59,7 @@ class TestPositionCalculator(unittest.TestCase):
         )
         
         # 验证计算结果
-        self.assertIn('notional_value', position)
+        self.assertIn('actual_notional_value', position)
         self.assertIn('quantity', position)
         self.assertIn('margin', position)
         self.assertIn('leverage', position)
@@ -77,8 +77,8 @@ class TestPositionCalculator(unittest.TestCase):
             signal_grade='B'
         )
         
-        self.assertIn('notional_value', position)
-        self.assertGreater(position['notional_value'], Decimal('0'))
+        self.assertIn('actual_notional_value', position)
+        self.assertGreater(position['actual_notional_value'], Decimal('0'))
 
 
 class TestRiskManager(unittest.TestCase):
@@ -111,26 +111,84 @@ class TestRiskManager(unittest.TestCase):
     
     def test_calculate_take_profit_levels(self):
         """测试止盈水平计算"""
-        r_value = Decimal('100')
+        r_value = Decimal('100')  # R值等同于ATR14
         tp_levels = calculate_take_profit_levels(
             entry_price=Decimal('1000'),
             direction=1,
-            r_value=r_value
+            r_value=r_value,
+            signal_grade='A'
         )
         
         # 验证返回 3 个止盈水平
         self.assertEqual(len(tp_levels), 3)
         
-        # 验证 TP1 = 开仓价 + 1.5R
-        tp1_expected = Decimal('1000') + r_value * Decimal('1.5')
+        # 验证 TP1 = 开仓价 + 2.5×ATR14（V6.13.1规范）
+        tp1_expected = Decimal('1000') + r_value * Decimal('2.5')
         self.assertEqual(tp_levels[0]['price'], tp1_expected)
         
-        # 验证 TP2 = 开仓价 + 2.5R
-        tp2_expected = Decimal('1000') + r_value * Decimal('2.5')
+        # 验证 TP2 = 开仓价 + 4.0×ATR14（V6.13.1规范）
+        tp2_expected = Decimal('1000') + r_value * Decimal('4.0')
         self.assertEqual(tp_levels[1]['price'], tp2_expected)
         
         # 验证 TP3 无固定价格
         self.assertIsNone(tp_levels[2]['price'])
+    
+    def test_check_margin_ratio_safe(self):
+        """测试保证金率检查 - 安全状态"""
+        from core.risk_manager import check_margin_ratio
+        
+        margin_ratio, risk_level, need_intervention = check_margin_ratio(
+            account_equity=Decimal('500'),
+            used_margin=Decimal('100')
+        )
+        
+        # 保证金率 = 500/100 = 5.0，应该安全
+        self.assertGreater(margin_ratio, Decimal('1.5'))
+        self.assertEqual(risk_level, 'SAFE')
+        self.assertFalse(need_intervention)
+    
+    def test_check_margin_ratio_warning(self):
+        """测试保证金率检查 - 预警状态"""
+        from core.risk_manager import RiskManager
+        
+        manager = RiskManager()
+        margin_ratio, risk_level, need_intervention = manager.check_margin_ratio(
+            account_equity=Decimal('140'),
+            used_margin=Decimal('100')
+        )
+        
+        # 保证金率 = 140/100 = 1.4，应该预警
+        self.assertLessEqual(margin_ratio, Decimal('1.5'))
+        self.assertEqual(risk_level, 'WARNING')
+        self.assertTrue(need_intervention)
+    
+    def test_check_margin_usage(self):
+        """测试保证金使用率检查"""
+        from core.risk_manager import RiskManager
+        
+        manager = RiskManager()
+        margin_usage, exceeded = manager.check_margin_usage(
+            total_capital=Decimal('500'),
+            used_margin=Decimal('350')
+        )
+        
+        # 使用率 = 350/500 = 70%，超过60%预警线
+        self.assertGreater(margin_usage, Decimal('0.6'))
+        self.assertTrue(exceeded)
+    
+    def test_calculate_r_value(self):
+        """测试R值计算"""
+        from core.risk_manager import RiskManager
+        
+        manager = RiskManager()
+        r_value = manager.calculate_r_value(
+            entry_price=Decimal('95000'),
+            stop_loss_price=Decimal('93000'),
+            direction=1
+        )
+        
+        # R值 = |95000 - 93000| = 2000
+        self.assertEqual(r_value, Decimal('2000'))
 
 
 class TestOrderGenerator(unittest.TestCase):

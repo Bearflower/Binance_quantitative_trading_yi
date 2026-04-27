@@ -1,0 +1,1610 @@
+{
+  "metadata": {
+    "version": "V4.1.1",
+    "backtest_time": "2026-04-24T13:22:36.311699"
+  },
+  "summary": {
+    "version": "V4.1.1",
+    "config": {
+      "stop_loss_atr": 2.0,
+      "take_profit_atr": 2.5,
+      "risk_reward_ratio": 1.25
+    },
+    "total_trades": 158,
+    "winning_trades": 80,
+    "losing_trades": 78,
+    "win_rate": 50.63291139240506,
+    "total_pnl": 1.269724970801342,
+    "avg_pnl": 0.008036233992413558,
+    "avg_win": 0.17240776577489914,
+    "avg_loss": -0.16054995245116147,
+    "profit_factor": 1.1013922770960374,
+    "exit_reasons": {
+      "止损": 76,
+      "止盈": 79,
+      "时间止损": 3
+    }
+  },
+  "trades": [
+    {
+      "symbol": "XAUTUSDT",
+      "entry_time": "2026-03-27T18:00:00",
+      "entry_price": 4407.47,
+      "exit_time": "2026-03-27T22:00:00",
+      "exit_price": 4456.574285714286,
+      "pnl_usd": -0.04456460120140185,
+      "exit_reason": "止损",
+      "holding_hours": 4.0
+    },
+    {
+      "symbol": "BSBUSDT",
+      "entry_time": "2026-03-26T17:00:00",
+      "entry_price": 0.16162,
+      "exit_time": "2026-03-27T01:00:00",
+      "exit_price": 0.18421142857142858,
+      "pnl_usd": -0.5591245779341311,
+      "exit_reason": "止损",
+      "holding_hours": 8.0
+    },
+    {
+      "symbol": "EDGEUSDT",
+      "entry_time": "2026-03-20T19:00:00",
+      "entry_price": 0.6387,
+      "exit_time": "2026-03-21T06:00:00",
+      "exit_price": 0.7398571428571429,
+      "pnl_usd": -0.6335189782817775,
+      "exit_reason": "止损",
+      "holding_hours": 11.0
+    },
+    {
+      "symbol": "KATUSDT",
+      "entry_time": "2026-03-03T10:00:00",
+      "entry_price": 0.0246,
+      "exit_time": "2026-03-04T04:00:00",
+      "exit_price": 0.021658928571428572,
+      "pnl_usd": 0.4782229965156794,
+      "exit_reason": "止盈",
+      "holding_hours": 18.0
+    },
+    {
+      "symbol": "TRIAUSDT",
+      "entry_time": "2026-02-21T15:00:00",
+      "entry_price": 0.01619,
+      "exit_time": "2026-02-21T20:00:00",
+      "exit_price": 0.017,
+      "pnl_usd": -0.20012353304508998,
+      "exit_reason": "止损",
+      "holding_hours": 5.0
+    },
+    {
+      "symbol": "MEGAUSDT",
+      "entry_time": "2026-02-21T07:00:00",
+      "entry_price": 0.13127,
+      "exit_time": "2026-02-22T04:00:00",
+      "exit_price": 0.13364285714285715,
+      "pnl_usd": -0.07230462841036486,
+      "exit_reason": "止损",
+      "holding_hours": 21.0
+    },
+    {
+      "symbol": "GWEIUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.027601,
+      "exit_time": "2026-02-21T00:00:00",
+      "exit_price": 0.02825657142857143,
+      "pnl_usd": -0.09500690968753726,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "FIGHTUSDT",
+      "entry_time": "2026-02-21T19:00:00",
+      "entry_price": 0.007177,
+      "exit_time": "2026-02-22T00:00:00",
+      "exit_price": 0.007570285714285714,
+      "pnl_usd": -0.21919226099245592,
+      "exit_reason": "止损",
+      "holding_hours": 5.0
+    },
+    {
+      "symbol": "ELSAUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.0771,
+      "exit_time": "2026-02-22T21:00:00",
+      "exit_price": 0.07270357142857142,
+      "pnl_usd": 0.22808967945154754,
+      "exit_reason": "止盈",
+      "holding_hours": 47.0
+    },
+    {
+      "symbol": "AIAUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.10398,
+      "exit_time": "2026-02-21T01:00:00",
+      "exit_price": 0.10772714285714285,
+      "pnl_usd": -0.14414860000549534,
+      "exit_reason": "止损",
+      "holding_hours": 3.0
+    },
+    {
+      "symbol": "ZAMAUSDT",
+      "entry_time": "2026-02-21T08:00:00",
+      "entry_price": 0.02221,
+      "exit_time": "2026-02-21T14:00:00",
+      "exit_price": 0.02429142857142857,
+      "pnl_usd": -0.37486331768186776,
+      "exit_reason": "止损",
+      "holding_hours": 6.0
+    },
+    {
+      "symbol": "MAGMAUSDT",
+      "entry_time": "2026-02-21T08:00:00",
+      "entry_price": 0.10766,
+      "exit_time": "2026-02-21T15:00:00",
+      "exit_price": 0.11092,
+      "pnl_usd": -0.12112205090098453,
+      "exit_reason": "止损",
+      "holding_hours": 7.0
+    },
+    {
+      "symbol": "COLLECTUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.0556,
+      "exit_time": "2026-02-21T17:00:00",
+      "exit_price": 0.04978571428571428,
+      "pnl_usd": 0.418293936279548,
+      "exit_reason": "止盈",
+      "holding_hours": 19.0
+    },
+    {
+      "symbol": "LITUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 1.447,
+      "exit_time": "2026-02-20T23:00:00",
+      "exit_price": 1.492857142857143,
+      "pnl_usd": -0.12676473491953846,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "IRUSDT",
+      "entry_time": "2026-02-21T15:00:00",
+      "entry_price": 0.09449,
+      "exit_time": "2026-02-23T09:00:00",
+      "exit_price": 0.08739357142857143,
+      "pnl_usd": 0.30040971833754143,
+      "exit_reason": "止盈",
+      "holding_hours": 42.0
+    },
+    {
+      "symbol": "GUAUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.15429,
+      "exit_time": "2026-02-21T10:00:00",
+      "exit_price": 0.1568142857142857,
+      "pnl_usd": -0.06544262659370538,
+      "exit_reason": "止损",
+      "holding_hours": 12.0
+    },
+    {
+      "symbol": "ZKPUSDT",
+      "entry_time": "2026-02-21T21:00:00",
+      "entry_price": 0.09255,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.08994821428571428,
+      "pnl_usd": 0.11244886933703768,
+      "exit_reason": "止盈",
+      "holding_hours": 11.0
+    },
+    {
+      "symbol": "RAVEUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.5114,
+      "exit_time": "2026-02-21T02:00:00",
+      "exit_price": 0.5765414285714285,
+      "pnl_usd": -0.509514498016649,
+      "exit_reason": "止损",
+      "holding_hours": 4.0
+    },
+    {
+      "symbol": "CYSUSDT",
+      "entry_time": "2026-02-21T00:00:00",
+      "entry_price": 0.3994,
+      "exit_time": "2026-02-21T09:00:00",
+      "exit_price": 0.4289428571428571,
+      "pnl_usd": -0.29587237999856936,
+      "exit_reason": "止损",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "NIGHTUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.06093,
+      "exit_time": "2026-02-21T23:00:00",
+      "exit_price": 0.05841392857142857,
+      "pnl_usd": 0.1651778387376616,
+      "exit_reason": "止盈",
+      "holding_hours": 24.0
+    },
+    {
+      "symbol": "POWERUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.38508,
+      "exit_time": "2026-02-21T14:00:00",
+      "exit_price": 0.40399857142857143,
+      "pnl_usd": -0.19651575182893374,
+      "exit_reason": "止损",
+      "holding_hours": 16.0
+    },
+    {
+      "symbol": "IRYSUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.02446,
+      "exit_time": "2026-02-21T07:00:00",
+      "exit_price": 0.025317142857142858,
+      "pnl_usd": -0.14017054082467023,
+      "exit_reason": "止损",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "ZECUSDC",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 263.05,
+      "exit_time": "2026-02-22T11:00:00",
+      "exit_price": 252.9357142857143,
+      "pnl_usd": 0.15380020093952784,
+      "exit_reason": "止盈",
+      "holding_hours": 36.0
+    },
+    {
+      "symbol": "SENTUSDT",
+      "entry_time": "2026-02-21T01:00:00",
+      "entry_price": 0.02353,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.021846071428571427,
+      "pnl_usd": 0.2862607006253417,
+      "exit_reason": "止盈",
+      "holding_hours": 31.0
+    },
+    {
+      "symbol": "PIEVERSEUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.4114,
+      "exit_time": "2026-02-21T00:00:00",
+      "exit_price": 0.422,
+      "pnl_usd": -0.10306271268838113,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "BEATUSDT",
+      "entry_time": "2026-02-21T06:00:00",
+      "entry_price": 0.2635,
+      "exit_time": "2026-02-21T23:00:00",
+      "exit_price": 0.24107142857142858,
+      "pnl_usd": 0.34047167253998384,
+      "exit_reason": "止盈",
+      "holding_hours": 17.0
+    },
+    {
+      "symbol": "JCTUSDT",
+      "entry_time": "2026-02-22T01:00:00",
+      "entry_price": 0.001728,
+      "exit_time": "2026-02-22T09:00:00",
+      "exit_price": 0.0017917142857142858,
+      "pnl_usd": -0.14748677248677286,
+      "exit_reason": "止损",
+      "holding_hours": 8.0
+    },
+    {
+      "symbol": "FOLKSUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 1.385,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 1.302857142857143,
+      "pnl_usd": 0.23723568849922622,
+      "exit_reason": "止盈",
+      "holding_hours": 34.0
+    },
+    {
+      "symbol": "STABLEUSDT",
+      "entry_time": "2026-02-21T03:00:00",
+      "entry_price": 0.029906,
+      "exit_time": "2026-02-23T23:00:00",
+      "exit_price": 0.02775135714285714,
+      "pnl_usd": 0.2881887055631457,
+      "exit_reason": "止盈",
+      "holding_hours": 68.0
+    },
+    {
+      "symbol": "UAIUSDT",
+      "entry_time": "2026-02-21T13:00:00",
+      "entry_price": 0.2445,
+      "exit_time": "2026-02-23T12:00:00",
+      "exit_price": 0.2350714285714286,
+      "pnl_usd": 0.15425065731814147,
+      "exit_reason": "止盈",
+      "holding_hours": 47.0
+    },
+    {
+      "symbol": "CCUSDT",
+      "entry_time": "2026-02-21T07:00:00",
+      "entry_price": 0.15844,
+      "exit_time": "2026-02-24T07:00:00",
+      "exit_price": 0.1623,
+      "pnl_usd": -0.09745013885382485,
+      "exit_reason": "时间止损",
+      "holding_hours": 72.0
+    },
+    {
+      "symbol": "ATUSDT",
+      "entry_time": "2026-02-21T00:00:00",
+      "entry_price": 0.16098,
+      "exit_time": "2026-02-22T01:00:00",
+      "exit_price": 0.15869607142857145,
+      "pnl_usd": 0.05675061675807085,
+      "exit_reason": "止盈",
+      "holding_hours": 25.0
+    },
+    {
+      "symbol": "KITEUSDT",
+      "entry_time": "2026-02-21T05:00:00",
+      "entry_price": 0.27101,
+      "exit_time": "2026-02-21T10:00:00",
+      "exit_price": 0.25094571428571427,
+      "pnl_usd": 0.29614089095289037,
+      "exit_reason": "止盈",
+      "holding_hours": 5.0
+    },
+    {
+      "symbol": "ONUSDT",
+      "entry_time": "2026-02-21T21:00:00",
+      "entry_price": 0.10132,
+      "exit_time": "2026-02-22T05:00:00",
+      "exit_price": 0.09584499999999999,
+      "pnl_usd": 0.21614686142913572,
+      "exit_reason": "止盈",
+      "holding_hours": 8.0
+    },
+    {
+      "symbol": "APRUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.09652,
+      "exit_time": "2026-02-22T07:00:00",
+      "exit_price": 0.10211428571428571,
+      "pnl_usd": -0.23183944112249144,
+      "exit_reason": "止损",
+      "holding_hours": 32.0
+    },
+    {
+      "symbol": "BLUAIUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.005113,
+      "exit_time": "2026-02-22T02:00:00",
+      "exit_price": 0.0049465714285714295,
+      "pnl_usd": 0.1302003296918215,
+      "exit_reason": "止盈",
+      "holding_hours": 27.0
+    },
+    {
+      "symbol": "币安人生USDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.08859,
+      "exit_time": "2026-02-22T04:00:00",
+      "exit_price": 0.08330785714285714,
+      "pnl_usd": 0.23849837937206728,
+      "exit_reason": "止盈",
+      "holding_hours": 29.0
+    },
+    {
+      "symbol": "RIVERUSDT",
+      "entry_time": "2026-02-21T08:00:00",
+      "entry_price": 7.843,
+      "exit_time": "2026-02-21T13:00:00",
+      "exit_price": 8.374428571428572,
+      "pnl_usd": -0.2710333145115757,
+      "exit_reason": "止损",
+      "holding_hours": 5.0
+    },
+    {
+      "symbol": "LABUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.15022,
+      "exit_time": "2026-02-22T11:00:00",
+      "exit_price": 0.13765392857142858,
+      "pnl_usd": 0.33460448485078986,
+      "exit_reason": "止盈",
+      "holding_hours": 37.0
+    },
+    {
+      "symbol": "ZBTUSDT",
+      "entry_time": "2026-02-21T03:00:00",
+      "entry_price": 0.07158,
+      "exit_time": "2026-02-21T10:00:00",
+      "exit_price": 0.07360857142857144,
+      "pnl_usd": -0.11335967748373484,
+      "exit_reason": "止损",
+      "holding_hours": 7.0
+    },
+    {
+      "symbol": "CLOUSDT",
+      "entry_time": "2026-02-21T19:00:00",
+      "entry_price": 0.08728,
+      "exit_time": "2026-02-21T23:00:00",
+      "exit_price": 0.09124428571428571,
+      "pnl_usd": -0.18168128846405646,
+      "exit_reason": "止损",
+      "holding_hours": 4.0
+    },
+    {
+      "symbol": "EULUSDT",
+      "entry_time": "2026-02-21T11:00:00",
+      "entry_price": 1.046,
+      "exit_time": "2026-02-21T15:00:00",
+      "exit_price": 1.1177142857142857,
+      "pnl_usd": -0.2742420103796773,
+      "exit_reason": "止损",
+      "holding_hours": 4.0
+    },
+    {
+      "symbol": "METUSDT",
+      "entry_time": "2026-02-21T07:00:00",
+      "entry_price": 0.2127,
+      "exit_time": "2026-02-22T11:00:00",
+      "exit_price": 0.20689642857142856,
+      "pnl_usd": 0.10914097655987655,
+      "exit_reason": "止盈",
+      "holding_hours": 28.0
+    },
+    {
+      "symbol": "MONUSDT",
+      "entry_time": "2026-02-21T04:00:00",
+      "entry_price": 0.02085,
+      "exit_time": "2026-02-22T21:00:00",
+      "exit_price": 0.0196875,
+      "pnl_usd": 0.223021582733813,
+      "exit_reason": "止盈",
+      "holding_hours": 41.0
+    },
+    {
+      "symbol": "GIGGLEUSDT",
+      "entry_time": "2026-02-21T04:00:00",
+      "entry_price": 29.39,
+      "exit_time": "2026-02-22T11:00:00",
+      "exit_price": 28.132857142857144,
+      "pnl_usd": 0.1710980411218586,
+      "exit_reason": "止盈",
+      "holding_hours": 31.0
+    },
+    {
+      "symbol": "NOMUSDT",
+      "entry_time": "2026-02-21T14:00:00",
+      "entry_price": 0.005522,
+      "exit_time": "2026-02-22T14:00:00",
+      "exit_price": 0.005085392857142858,
+      "pnl_usd": 0.31626739794070424,
+      "exit_reason": "止盈",
+      "holding_hours": 24.0
+    },
+    {
+      "symbol": "FFUSDT",
+      "entry_time": "2026-02-21T21:00:00",
+      "entry_price": 0.0796,
+      "exit_time": "2026-02-23T00:00:00",
+      "exit_price": 0.07767142857142859,
+      "pnl_usd": 0.09691313711414162,
+      "exit_reason": "止盈",
+      "holding_hours": 27.0
+    },
+    {
+      "symbol": "AKEUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.0002652,
+      "exit_time": "2026-02-21T06:00:00",
+      "exit_price": 0.0002746571428571429,
+      "pnl_usd": -0.14264167205343709,
+      "exit_reason": "止损",
+      "holding_hours": 8.0
+    },
+    {
+      "symbol": "HANAUSDT",
+      "entry_time": "2026-02-21T04:00:00",
+      "entry_price": 0.03485,
+      "exit_time": "2026-02-21T20:00:00",
+      "exit_price": 0.03673571428571429,
+      "pnl_usd": -0.21643779463004753,
+      "exit_reason": "止损",
+      "holding_hours": 16.0
+    },
+    {
+      "symbol": "COAIUSDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.3349,
+      "exit_time": "2026-02-22T00:00:00",
+      "exit_price": 0.3244714285714285,
+      "pnl_usd": 0.12455743718807351,
+      "exit_reason": "止盈",
+      "holding_hours": 7.0
+    },
+    {
+      "symbol": "BLESSUSDT",
+      "entry_time": "2026-02-21T00:00:00",
+      "entry_price": 0.005465,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.005206785714285714,
+      "pnl_usd": 0.18899490262710783,
+      "exit_reason": "止盈",
+      "holding_hours": 32.0
+    },
+    {
+      "symbol": "TRADOORUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 1.398,
+      "exit_time": "2026-02-22T03:00:00",
+      "exit_price": 1.4465714285714284,
+      "pnl_usd": -0.13897404455344348,
+      "exit_reason": "止损",
+      "holding_hours": 29.0
+    },
+    {
+      "symbol": "ASTERUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.7122,
+      "exit_time": "2026-02-21T06:00:00",
+      "exit_price": 0.7278000000000001,
+      "pnl_usd": -0.08761583824768356,
+      "exit_reason": "止损",
+      "holding_hours": 7.0
+    },
+    {
+      "symbol": "BARDUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.7554,
+      "exit_time": "2026-02-20T23:00:00",
+      "exit_price": 0.7616142857142857,
+      "pnl_usd": -0.03290593441506872,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "0GUSDT",
+      "entry_time": "2026-02-21T01:00:00",
+      "entry_price": 0.6554,
+      "exit_time": "2026-02-21T10:00:00",
+      "exit_price": 0.6921857142857143,
+      "pnl_usd": -0.2245084790095472,
+      "exit_reason": "止损",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "TOSHIUSDT",
+      "entry_time": "2026-02-21T08:00:00",
+      "entry_price": 0.0002132,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.00021940000000000002,
+      "pnl_usd": -0.11632270168855563,
+      "exit_reason": "止损",
+      "holding_hours": 24.0
+    },
+    {
+      "symbol": "UBUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.04067,
+      "exit_time": "2026-02-21T23:00:00",
+      "exit_price": 0.03693071428571429,
+      "pnl_usd": 0.3677684498928654,
+      "exit_reason": "止盈",
+      "holding_hours": 25.0
+    },
+    {
+      "symbol": "XPINUSDT",
+      "entry_time": "2026-02-21T01:00:00",
+      "entry_price": 0.001735,
+      "exit_time": "2026-02-21T04:00:00",
+      "exit_price": 0.0016439285714285714,
+      "pnl_usd": 0.20996294771510926,
+      "exit_reason": "止盈",
+      "holding_hours": 3.0
+    },
+    {
+      "symbol": "AVNTUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.1909,
+      "exit_time": "2026-02-21T09:00:00",
+      "exit_price": 0.19614285714285712,
+      "pnl_usd": -0.10985557135373772,
+      "exit_reason": "止损",
+      "holding_hours": 10.0
+    },
+    {
+      "symbol": "SKYUSDT",
+      "entry_time": "2026-02-21T09:00:00",
+      "entry_price": 0.06478,
+      "exit_time": "2026-02-23T09:00:00",
+      "exit_price": 0.06322821428571429,
+      "pnl_usd": 0.09581881533101042,
+      "exit_reason": "止盈",
+      "holding_hours": 48.0
+    },
+    {
+      "symbol": "OPENUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.1561,
+      "exit_time": "2026-02-22T01:00:00",
+      "exit_price": 0.15108214285714283,
+      "pnl_usd": 0.1285805802141488,
+      "exit_reason": "止盈",
+      "holding_hours": 26.0
+    },
+    {
+      "symbol": "WLFIUSDC",
+      "entry_time": "2026-02-22T01:00:00",
+      "entry_price": 0.1194,
+      "exit_time": "2026-02-22T02:00:00",
+      "exit_price": 0.1228,
+      "pnl_usd": -0.11390284757118928,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "PTBUSDT",
+      "entry_time": "2026-02-21T09:00:00",
+      "entry_price": 0.001371,
+      "exit_time": "2026-02-21T18:00:00",
+      "exit_price": 0.0014301428571428573,
+      "pnl_usd": -0.17255392310096926,
+      "exit_reason": "止损",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "TAKEUSDT",
+      "entry_time": "2026-02-22T01:00:00",
+      "entry_price": 0.0239,
+      "exit_time": "2026-02-22T13:00:00",
+      "exit_price": 0.025012857142857146,
+      "pnl_usd": -0.1862522414823673,
+      "exit_reason": "止损",
+      "holding_hours": 12.0
+    },
+    {
+      "symbol": "ARIAUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.06903,
+      "exit_time": "2026-02-21T08:00:00",
+      "exit_price": 0.07135999999999999,
+      "pnl_usd": -0.13501376213240615,
+      "exit_reason": "止损",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "QUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.0205,
+      "exit_time": "2026-02-21T13:00:00",
+      "exit_price": 0.021629857142857145,
+      "pnl_usd": -0.22045993031358913,
+      "exit_reason": "止损",
+      "holding_hours": 15.0
+    },
+    {
+      "symbol": "LINEAUSDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.003507,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.0033886071428571433,
+      "pnl_usd": 0.13503605034828267,
+      "exit_reason": "止盈",
+      "holding_hours": 15.0
+    },
+    {
+      "symbol": "HEMIUSDT",
+      "entry_time": "2026-02-21T14:00:00",
+      "entry_price": 0.01,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.00975,
+      "pnl_usd": 0.10000000000000009,
+      "exit_reason": "止盈",
+      "holding_hours": 18.0
+    },
+    {
+      "symbol": "BTRUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.18075,
+      "exit_time": "2026-02-21T18:00:00",
+      "exit_price": 0.1945442857142857,
+      "pnl_usd": -0.3052677336494762,
+      "exit_reason": "止损",
+      "holding_hours": 19.0
+    },
+    {
+      "symbol": "BASUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.006159,
+      "exit_time": "2026-02-21T07:00:00",
+      "exit_price": 0.005549892857142857,
+      "pnl_usd": 0.3955883376243825,
+      "exit_reason": "止盈",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "SOMIUSDT",
+      "entry_time": "2026-02-21T23:00:00",
+      "entry_price": 0.2087,
+      "exit_time": "2026-02-22T12:00:00",
+      "exit_price": 0.20109285714285713,
+      "pnl_usd": 0.14580053391744835,
+      "exit_reason": "止盈",
+      "holding_hours": 13.0
+    },
+    {
+      "symbol": "WLFIUSDT",
+      "entry_time": "2026-02-21T11:00:00",
+      "entry_price": 0.1235,
+      "exit_time": "2026-02-22T15:00:00",
+      "exit_price": 0.11750000000000001,
+      "pnl_usd": 0.19433198380566774,
+      "exit_reason": "止盈",
+      "holding_hours": 28.0
+    },
+    {
+      "symbol": "XPLUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.0927,
+      "exit_time": "2026-02-20T23:00:00",
+      "exit_price": 0.09532857142857143,
+      "pnl_usd": -0.11342271536446276,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "DAMUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.01789,
+      "exit_time": "2026-02-21T06:00:00",
+      "exit_price": 0.01873,
+      "pnl_usd": -0.18781442146450542,
+      "exit_reason": "止损",
+      "holding_hours": 7.0
+    },
+    {
+      "symbol": "XNYUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.005239,
+      "exit_time": "2026-02-21T12:00:00",
+      "exit_price": 0.004611321428571428,
+      "pnl_usd": 0.47923540479371757,
+      "exit_reason": "止盈",
+      "holding_hours": 14.0
+    },
+    {
+      "symbol": "AIOUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.07748,
+      "exit_time": "2026-02-22T00:00:00",
+      "exit_price": 0.08051714285714286,
+      "pnl_usd": -0.1567962239103182,
+      "exit_reason": "止损",
+      "holding_hours": 2.0
+    },
+    {
+      "symbol": "INUSDT",
+      "entry_time": "2026-02-21T23:00:00",
+      "entry_price": 0.06141,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.06021,
+      "pnl_usd": 0.07816316560820712,
+      "exit_reason": "止盈",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "PROVEUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.3066,
+      "exit_time": "2026-02-22T02:00:00",
+      "exit_price": 0.3011357142857143,
+      "pnl_usd": 0.07128878948839791,
+      "exit_reason": "止盈",
+      "holding_hours": 4.0
+    },
+    {
+      "symbol": "TOWNSUSDT",
+      "entry_time": "2026-02-21T08:00:00",
+      "entry_price": 0.003698,
+      "exit_time": "2026-02-22T23:00:00",
+      "exit_price": 0.0035290714285714283,
+      "pnl_usd": 0.18272425249169455,
+      "exit_reason": "止盈",
+      "holding_hours": 39.0
+    },
+    {
+      "symbol": "NAORISUSDT",
+      "entry_time": "2026-02-21T04:00:00",
+      "entry_price": 0.04666,
+      "exit_time": "2026-02-22T21:00:00",
+      "exit_price": 0.05141857142857143,
+      "pnl_usd": -0.4079358275672037,
+      "exit_reason": "止损",
+      "holding_hours": 41.0
+    },
+    {
+      "symbol": "PLAYUSDT",
+      "entry_time": "2026-02-21T00:00:00",
+      "entry_price": 0.02132,
+      "exit_time": "2026-02-22T13:00:00",
+      "exit_price": 0.022959999999999998,
+      "pnl_usd": -0.30769230769230754,
+      "exit_reason": "止损",
+      "holding_hours": 37.0
+    },
+    {
+      "symbol": "ESPORTSUSDT",
+      "entry_time": "2026-02-21T04:00:00",
+      "entry_price": 0.32327,
+      "exit_time": "2026-02-21T09:00:00",
+      "exit_price": 0.3021967857142857,
+      "pnl_usd": 0.26075063304005064,
+      "exit_reason": "止盈",
+      "holding_hours": 5.0
+    },
+    {
+      "symbol": "TAGUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.0003712,
+      "exit_time": "2026-02-21T01:00:00",
+      "exit_price": 0.00035546785714285717,
+      "pnl_usd": 0.16952740147783246,
+      "exit_reason": "止盈",
+      "holding_hours": 3.0
+    },
+    {
+      "symbol": "SLPUSDT",
+      "entry_time": "2026-02-21T07:00:00",
+      "entry_price": 0.0006502,
+      "exit_time": "2026-02-22T04:00:00",
+      "exit_price": 0.0006641714285714285,
+      "pnl_usd": -0.0859515753394559,
+      "exit_reason": "止损",
+      "holding_hours": 21.0
+    },
+    {
+      "symbol": "TAUSDT",
+      "entry_time": "2026-02-21T09:00:00",
+      "entry_price": 0.03893,
+      "exit_time": "2026-02-23T00:00:00",
+      "exit_price": 0.04014285714285714,
+      "pnl_usd": -0.12461928002642081,
+      "exit_reason": "止损",
+      "holding_hours": 39.0
+    },
+    {
+      "symbol": "TACUSDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.004153,
+      "exit_time": "2026-02-21T20:00:00",
+      "exit_price": 0.004077999999999999,
+      "pnl_usd": 0.07223693715386509,
+      "exit_reason": "止盈",
+      "holding_hours": 3.0
+    },
+    {
+      "symbol": "CUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.05555,
+      "exit_time": "2026-02-22T01:00:00",
+      "exit_price": 0.05431250000000001,
+      "pnl_usd": 0.08910891089108879,
+      "exit_reason": "止盈",
+      "holding_hours": 3.0
+    },
+    {
+      "symbol": "AINUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.03229,
+      "exit_time": "2026-02-21T02:00:00",
+      "exit_price": 0.03325714285714286,
+      "pnl_usd": -0.11980710525151575,
+      "exit_reason": "止损",
+      "holding_hours": 4.0
+    },
+    {
+      "symbol": "PUMPUSDT",
+      "entry_time": "2026-02-21T00:00:00",
+      "entry_price": 0.002114,
+      "exit_time": "2026-02-22T23:00:00",
+      "exit_price": 0.0020332857142857145,
+      "pnl_usd": 0.15272334099202559,
+      "exit_reason": "止盈",
+      "holding_hours": 47.0
+    },
+    {
+      "symbol": "MUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 1.3581,
+      "exit_time": "2026-02-23T09:00:00",
+      "exit_price": 1.419457142857143,
+      "pnl_usd": -0.18071465387568775,
+      "exit_reason": "止损",
+      "holding_hours": 58.0
+    },
+    {
+      "symbol": "IDOLUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.02164,
+      "exit_time": "2026-02-21T00:00:00",
+      "exit_price": 0.02213142857142857,
+      "pnl_usd": -0.09083707420121437,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "BULLAUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.02469,
+      "exit_time": "2026-02-21T04:00:00",
+      "exit_price": 0.025741428571428575,
+      "pnl_usd": -0.17034079731528143,
+      "exit_reason": "止损",
+      "holding_hours": 6.0
+    },
+    {
+      "symbol": "ICNTUSDT",
+      "entry_time": "2026-02-21T16:00:00",
+      "entry_price": 0.41,
+      "exit_time": "2026-02-21T20:00:00",
+      "exit_price": 0.3936071428571428,
+      "pnl_usd": 0.1599303135888503,
+      "exit_reason": "止盈",
+      "holding_hours": 4.0
+    },
+    {
+      "symbol": "SAHARAUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.01547,
+      "exit_time": "2026-02-21T17:00:00",
+      "exit_price": 0.015907142857142856,
+      "pnl_usd": -0.11302982731554143,
+      "exit_reason": "止损",
+      "holding_hours": 18.0
+    },
+    {
+      "symbol": "HUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.16369,
+      "exit_time": "2026-02-23T22:00:00",
+      "exit_price": 0.15683,
+      "pnl_usd": 0.167633942207832,
+      "exit_reason": "时间止损",
+      "holding_hours": 72.0
+    },
+    {
+      "symbol": "FUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.005971,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.005863321428571428,
+      "pnl_usd": 0.07213436371031448,
+      "exit_reason": "止盈",
+      "holding_hours": 10.0
+    },
+    {
+      "symbol": "SPKUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.02089,
+      "exit_time": "2026-02-20T23:00:00",
+      "exit_price": 0.021448571428571428,
+      "pnl_usd": -0.10695479723722913,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "SQDUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.04097,
+      "exit_time": "2026-02-22T10:00:00",
+      "exit_price": 0.039944999999999994,
+      "pnl_usd": 0.10007322431047157,
+      "exit_reason": "止盈",
+      "holding_hours": 12.0
+    },
+    {
+      "symbol": "HOMEUSDT",
+      "entry_time": "2026-02-21T10:00:00",
+      "entry_price": 0.027951,
+      "exit_time": "2026-02-21T14:00:00",
+      "exit_price": 0.028463714285714287,
+      "pnl_usd": -0.07337330123634739,
+      "exit_reason": "止损",
+      "holding_hours": 4.0
+    },
+    {
+      "symbol": "1000000BOBUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.01281,
+      "exit_time": "2026-02-21T01:00:00",
+      "exit_price": 0.013045714285714285,
+      "pnl_usd": -0.07360321177651374,
+      "exit_reason": "止损",
+      "holding_hours": 3.0
+    },
+    {
+      "symbol": "HYPEUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 28.888,
+      "exit_time": "2026-02-20T23:00:00",
+      "exit_price": 29.60114285714286,
+      "pnl_usd": -0.09874589547810292,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "MERLUSDT",
+      "entry_time": "2026-02-21T19:00:00",
+      "entry_price": 0.05213,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.05026571428571429,
+      "pnl_usd": 0.1430489709791455,
+      "exit_reason": "止盈",
+      "holding_hours": 13.0
+    },
+    {
+      "symbol": "SOPHUSDT",
+      "entry_time": "2026-02-21T23:00:00",
+      "entry_price": 0.009296,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.009094035714285714,
+      "pnl_usd": 0.0869037373985741,
+      "exit_reason": "止盈",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "AUSDT",
+      "entry_time": "2026-02-21T15:00:00",
+      "entry_price": 0.0815,
+      "exit_time": "2026-02-21T16:00:00",
+      "exit_price": 0.0826,
+      "pnl_usd": -0.053987730061349874,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "HUMAUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.012084,
+      "exit_time": "2026-02-21T06:00:00",
+      "exit_price": 0.012519999999999998,
+      "pnl_usd": -0.14432307183051934,
+      "exit_reason": "止损",
+      "holding_hours": 8.0
+    },
+    {
+      "symbol": "SOONUSDT",
+      "entry_time": "2026-02-21T04:00:00",
+      "entry_price": 0.171,
+      "exit_time": "2026-02-23T08:00:00",
+      "exit_price": 0.16239285714285717,
+      "pnl_usd": 0.20133667502088515,
+      "exit_reason": "止盈",
+      "holding_hours": 52.0
+    },
+    {
+      "symbol": "BUSDT",
+      "entry_time": "2026-02-21T14:00:00",
+      "entry_price": 0.1322,
+      "exit_time": "2026-02-22T18:00:00",
+      "exit_price": 0.13474285714285716,
+      "pnl_usd": -0.07693970175059461,
+      "exit_reason": "止损",
+      "holding_hours": 28.0
+    },
+    {
+      "symbol": "AGTUSDT",
+      "entry_time": "2026-02-21T20:00:00",
+      "entry_price": 0.005359,
+      "exit_time": "2026-02-22T16:00:00",
+      "exit_price": 0.005711714285714286,
+      "pnl_usd": -0.2632687335057183,
+      "exit_reason": "止损",
+      "holding_hours": 20.0
+    },
+    {
+      "symbol": "CVCUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.03351,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.033015357142857145,
+      "pnl_usd": 0.05904420855181776,
+      "exit_reason": "止盈",
+      "holding_hours": 10.0
+    },
+    {
+      "symbol": "NXPCUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.2702,
+      "exit_time": "2026-02-21T07:00:00",
+      "exit_price": 0.27754285714285715,
+      "pnl_usd": -0.10870254837686381,
+      "exit_reason": "止损",
+      "holding_hours": 8.0
+    },
+    {
+      "symbol": "SKYAIUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.03784,
+      "exit_time": "2026-02-21T09:00:00",
+      "exit_price": 0.03879,
+      "pnl_usd": -0.10042283298097246,
+      "exit_reason": "止损",
+      "holding_hours": 11.0
+    },
+    {
+      "symbol": "OGUSDT",
+      "entry_time": "2026-02-21T11:00:00",
+      "entry_price": 3.357,
+      "exit_time": "2026-02-21T20:00:00",
+      "exit_price": 3.3028928571428575,
+      "pnl_usd": 0.06447082854589536,
+      "exit_reason": "止盈",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "SYRUPUSDT",
+      "entry_time": "2026-02-21T10:00:00",
+      "entry_price": 0.22747,
+      "exit_time": "2026-02-22T01:00:00",
+      "exit_price": 0.23527285714285714,
+      "pnl_usd": -0.13721118640448654,
+      "exit_reason": "止损",
+      "holding_hours": 15.0
+    },
+    {
+      "symbol": "B2USDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.7233,
+      "exit_time": "2026-02-23T15:00:00",
+      "exit_price": 0.7426714285714286,
+      "pnl_usd": -0.10712804408366428,
+      "exit_reason": "止损",
+      "holding_hours": 65.0
+    },
+    {
+      "symbol": "SXTUSDT",
+      "entry_time": "2026-02-21T23:00:00",
+      "entry_price": 0.02222,
+      "exit_time": "2026-02-22T10:00:00",
+      "exit_price": 0.021761071428571428,
+      "pnl_usd": 0.0826154043975827,
+      "exit_reason": "止盈",
+      "holding_hours": 11.0
+    },
+    {
+      "symbol": "AIOTUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.02847,
+      "exit_time": "2026-02-21T11:00:00",
+      "exit_price": 0.029471428571428572,
+      "pnl_usd": -0.14069948316523684,
+      "exit_reason": "止损",
+      "holding_hours": 12.0
+    },
+    {
+      "symbol": "SIGNUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.02449,
+      "exit_time": "2026-02-21T00:00:00",
+      "exit_price": 0.02498142857142857,
+      "pnl_usd": -0.08026599778335153,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "JSTUSDT",
+      "entry_time": "2026-02-21T07:00:00",
+      "entry_price": 0.043463,
+      "exit_time": "2026-02-22T15:00:00",
+      "exit_price": 0.04248353571428572,
+      "pnl_usd": 0.09014235425205668,
+      "exit_reason": "止盈",
+      "holding_hours": 32.0
+    },
+    {
+      "symbol": "HYPERUSDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.0985,
+      "exit_time": "2026-02-22T00:00:00",
+      "exit_price": 0.09667857142857143,
+      "pnl_usd": 0.07396664249456125,
+      "exit_reason": "止盈",
+      "holding_hours": 7.0
+    },
+    {
+      "symbol": "DEEPUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.02867,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.02795214285714286,
+      "pnl_usd": 0.10015446708854435,
+      "exit_reason": "止盈",
+      "holding_hours": 10.0
+    },
+    {
+      "symbol": "BANKUSDT",
+      "entry_time": "2026-02-21T21:00:00",
+      "entry_price": 0.03903,
+      "exit_time": "2026-02-23T09:00:00",
+      "exit_price": 0.03759964285714286,
+      "pnl_usd": 0.14659053475348632,
+      "exit_reason": "止盈",
+      "holding_hours": 36.0
+    },
+    {
+      "symbol": "FHEUSDT",
+      "entry_time": "2026-02-21T13:00:00",
+      "entry_price": 0.04029,
+      "exit_time": "2026-02-22T22:00:00",
+      "exit_price": 0.03815607142857143,
+      "pnl_usd": 0.21185689465659682,
+      "exit_reason": "止盈",
+      "holding_hours": 33.0
+    },
+    {
+      "symbol": "STOUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.05471,
+      "exit_time": "2026-02-21T12:00:00",
+      "exit_price": 0.05637857142857143,
+      "pnl_usd": -0.12199388986082463,
+      "exit_reason": "止损",
+      "holding_hours": 14.0
+    },
+    {
+      "symbol": "PROMPTUSDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.04479,
+      "exit_time": "2026-02-21T23:00:00",
+      "exit_price": 0.04379357142857143,
+      "pnl_usd": 0.08898669983733616,
+      "exit_reason": "止盈",
+      "holding_hours": 6.0
+    },
+    {
+      "symbol": "BABYUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.01295,
+      "exit_time": "2026-02-21T00:00:00",
+      "exit_price": 0.0132,
+      "pnl_usd": -0.07722007722007729,
+      "exit_reason": "止损",
+      "holding_hours": 2.0
+    },
+    {
+      "symbol": "GUNUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.02817,
+      "exit_time": "2026-02-23T22:00:00",
+      "exit_price": 0.02824,
+      "pnl_usd": -0.009939652112176161,
+      "exit_reason": "时间止损",
+      "holding_hours": 72.0
+    },
+    {
+      "symbol": "MLNUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 3.684,
+      "exit_time": "2026-02-22T07:00:00",
+      "exit_price": 3.615964285714286,
+      "pnl_usd": 0.07387156817124234,
+      "exit_reason": "止盈",
+      "holding_hours": 9.0
+    },
+    {
+      "symbol": "JELLYJELLYUSDT",
+      "entry_time": "2026-02-21T20:00:00",
+      "entry_price": 0.06666,
+      "exit_time": "2026-02-22T12:00:00",
+      "exit_price": 0.0645475,
+      "pnl_usd": 0.12676267626762697,
+      "exit_reason": "止盈",
+      "holding_hours": 16.0
+    },
+    {
+      "symbol": "BANANAS31USDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.004476,
+      "exit_time": "2026-02-21T04:00:00",
+      "exit_price": 0.004580428571428571,
+      "pnl_usd": -0.09332312013277148,
+      "exit_reason": "止损",
+      "holding_hours": 5.0
+    },
+    {
+      "symbol": "SIRENUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.21887,
+      "exit_time": "2026-02-21T05:00:00",
+      "exit_price": 0.22814571428571429,
+      "pnl_usd": -0.169520067358967,
+      "exit_reason": "止损",
+      "holding_hours": 6.0
+    },
+    {
+      "symbol": "PLUMEUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.01032,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.00991642857142857,
+      "pnl_usd": 0.15642303433001106,
+      "exit_reason": "止盈",
+      "holding_hours": 33.0
+    },
+    {
+      "symbol": "BROCCOLIF3BUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.00363,
+      "exit_time": "2026-02-21T06:00:00",
+      "exit_price": 0.0036999999999999997,
+      "pnl_usd": -0.07713498622589504,
+      "exit_reason": "止损",
+      "holding_hours": 8.0
+    },
+    {
+      "symbol": "BROCCOLI714USDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.014,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.013696428571428571,
+      "pnl_usd": 0.08673469387755117,
+      "exit_reason": "止盈",
+      "holding_hours": 15.0
+    },
+    {
+      "symbol": "TUTUSDT",
+      "entry_time": "2026-02-21T15:00:00",
+      "entry_price": 0.01113,
+      "exit_time": "2026-02-21T17:00:00",
+      "exit_price": 0.011307142857142856,
+      "pnl_usd": -0.06366320112950823,
+      "exit_reason": "止损",
+      "holding_hours": 2.0
+    },
+    {
+      "symbol": "FORMUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.2074,
+      "exit_time": "2026-02-20T23:00:00",
+      "exit_price": 0.21172857142857143,
+      "pnl_usd": -0.08348257335721179,
+      "exit_reason": "止损",
+      "holding_hours": 1.0
+    },
+    {
+      "symbol": "EPICUSDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.2948,
+      "exit_time": "2026-02-22T03:00:00",
+      "exit_price": 0.28819285714285714,
+      "pnl_usd": 0.08964915681333605,
+      "exit_reason": "止盈",
+      "holding_hours": 10.0
+    },
+    {
+      "symbol": "REDUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.1744,
+      "exit_time": "2026-02-21T19:00:00",
+      "exit_price": 0.17855714285714286,
+      "pnl_usd": -0.09534731323722154,
+      "exit_reason": "止损",
+      "holding_hours": 20.0
+    },
+    {
+      "symbol": "ADAUSDC",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.2825,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.2775892857142857,
+      "pnl_usd": 0.06953223767383035,
+      "exit_reason": "止盈",
+      "holding_hours": 10.0
+    },
+    {
+      "symbol": "TRUMPUSDC",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 3.514,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 3.4397142857142855,
+      "pnl_usd": 0.08455972030246363,
+      "exit_reason": "止盈",
+      "holding_hours": 15.0
+    },
+    {
+      "symbol": "KAITOUSDT",
+      "entry_time": "2026-02-21T14:00:00",
+      "entry_price": 0.3046,
+      "exit_time": "2026-02-21T17:00:00",
+      "exit_price": 0.3106428571428571,
+      "pnl_usd": -0.07935465716161691,
+      "exit_reason": "止损",
+      "holding_hours": 3.0
+    },
+    {
+      "symbol": "SHELLUSDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.0312,
+      "exit_time": "2026-02-22T00:00:00",
+      "exit_price": 0.030528571428571426,
+      "pnl_usd": 0.08608058608058626,
+      "exit_reason": "止盈",
+      "holding_hours": 7.0
+    },
+    {
+      "symbol": "GPSUSDT",
+      "entry_time": "2026-02-22T00:00:00",
+      "entry_price": 0.012957,
+      "exit_time": "2026-02-22T02:00:00",
+      "exit_price": 0.013260571428571429,
+      "pnl_usd": -0.09371657901410176,
+      "exit_reason": "止损",
+      "holding_hours": 2.0
+    },
+    {
+      "symbol": "IPUSDT",
+      "entry_time": "2026-02-21T15:00:00",
+      "entry_price": 1.103,
+      "exit_time": "2026-02-22T15:00:00",
+      "exit_price": 1.0772857142857144,
+      "pnl_usd": 0.09325216940810727,
+      "exit_reason": "止盈",
+      "holding_hours": 24.0
+    },
+    {
+      "symbol": "B3USDT",
+      "entry_time": "2026-02-21T08:00:00",
+      "entry_price": 0.0004343,
+      "exit_time": "2026-02-22T05:00:00",
+      "exit_price": 0.0004163357142857143,
+      "pnl_usd": 0.16545508371435141,
+      "exit_reason": "止盈",
+      "holding_hours": 21.0
+    },
+    {
+      "symbol": "LAYERUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.0895,
+      "exit_time": "2026-02-22T10:00:00",
+      "exit_price": 0.08560714285714285,
+      "pnl_usd": 0.1739824421388667,
+      "exit_reason": "止盈",
+      "holding_hours": 12.0
+    },
+    {
+      "symbol": "BERAUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.596,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.5671428571428572,
+      "pnl_usd": 0.19367209971236782,
+      "exit_reason": "止盈",
+      "holding_hours": 34.0
+    },
+    {
+      "symbol": "VVVUSDT",
+      "entry_time": "2026-02-21T03:00:00",
+      "entry_price": 4.418,
+      "exit_time": "2026-02-23T06:00:00",
+      "exit_price": 3.8519285714285716,
+      "pnl_usd": 0.512513742482054,
+      "exit_reason": "止盈",
+      "holding_hours": 51.0
+    },
+    {
+      "symbol": "PIPPINUSDT",
+      "entry_time": "2026-02-20T23:00:00",
+      "entry_price": 0.4977,
+      "exit_time": "2026-02-22T15:00:00",
+      "exit_price": 0.5237871428571429,
+      "pnl_usd": -0.20966158615344924,
+      "exit_reason": "止损",
+      "holding_hours": 40.0
+    },
+    {
+      "symbol": "ANIMEUSDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.005066,
+      "exit_time": "2026-02-22T08:00:00",
+      "exit_price": 0.0049617142857142854,
+      "pnl_usd": 0.08234166149681385,
+      "exit_reason": "止盈",
+      "holding_hours": 15.0
+    },
+    {
+      "symbol": "VTHOUSDT",
+      "entry_time": "2026-02-21T22:00:00",
+      "entry_price": 0.0006032,
+      "exit_time": "2026-02-22T04:00:00",
+      "exit_price": 0.0005932535714285714,
+      "pnl_usd": 0.06595774914740454,
+      "exit_reason": "止盈",
+      "holding_hours": 6.0
+    },
+    {
+      "symbol": "TRUMPUSDT",
+      "entry_time": "2026-02-21T08:00:00",
+      "entry_price": 3.509,
+      "exit_time": "2026-02-23T08:00:00",
+      "exit_price": 3.343107142857143,
+      "pnl_usd": 0.18910556528111377,
+      "exit_reason": "止盈",
+      "holding_hours": 48.0
+    },
+    {
+      "symbol": "ARCUSDT",
+      "entry_time": "2026-02-20T22:00:00",
+      "entry_price": 0.07292,
+      "exit_time": "2026-02-21T08:00:00",
+      "exit_price": 0.07577428571428571,
+      "pnl_usd": -0.15657080166131168,
+      "exit_reason": "止损",
+      "holding_hours": 10.0
+    },
+    {
+      "symbol": "SUSDT",
+      "entry_time": "2026-02-21T00:00:00",
+      "entry_price": 0.04364,
+      "exit_time": "2026-02-21T18:00:00",
+      "exit_price": 0.04523571428571428,
+      "pnl_usd": -0.14626162105538806,
+      "exit_reason": "止损",
+      "holding_hours": 18.0
+    },
+    {
+      "symbol": "PROMUSDT",
+      "entry_time": "2026-02-21T05:00:00",
+      "entry_price": 1.347,
+      "exit_time": "2026-02-22T00:00:00",
+      "exit_price": 1.2887857142857142,
+      "pnl_usd": 0.17287093010923765,
+      "exit_reason": "止盈",
+      "holding_hours": 19.0
+    },
+    {
+      "symbol": "SWARMSUSDT",
+      "entry_time": "2026-02-21T05:00:00",
+      "entry_price": 0.00714,
+      "exit_time": "2026-02-23T03:00:00",
+      "exit_price": 0.006806071428571429,
+      "pnl_usd": 0.18707482993197252,
+      "exit_reason": "止盈",
+      "holding_hours": 46.0
+    },
+    {
+      "symbol": "ALCHUSDT",
+      "entry_time": "2026-02-21T03:00:00",
+      "entry_price": 0.0816,
+      "exit_time": "2026-02-22T16:00:00",
+      "exit_price": 0.07927500000000001,
+      "pnl_usd": 0.1139705882352938,
+      "exit_reason": "止盈",
+      "holding_hours": 37.0
+    },
+    {
+      "symbol": "ZEREBROUSDT",
+      "entry_time": "2026-02-21T17:00:00",
+      "entry_price": 0.00798,
+      "exit_time": "2026-02-22T00:00:00",
+      "exit_price": 0.007753214285714284,
+      "pnl_usd": 0.11367704976727568,
+      "exit_reason": "止盈",
+      "holding_hours": 7.0
+    },
+    {
+      "symbol": "GRIFFAINUSDT",
+      "entry_time": "2026-02-21T14:00:00",
+      "entry_price": 0.00915,
+      "exit_time": "2026-02-22T03:00:00",
+      "exit_price": 0.008892857142857143,
+      "pnl_usd": 0.11241217798594834,
+      "exit_reason": "止盈",
+      "holding_hours": 13.0
+    }
+  ]
+}

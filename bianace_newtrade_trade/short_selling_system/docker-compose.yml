@@ -1,48 +1,80 @@
 version: '3.8'
 
 services:
-  short-selling-system:
-    build: .
-    image: short-selling-system:latest
-    container_name: short-selling-system
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: short_selling_system_v41
     restart: unless-stopped
-    
-    # 环境变量
-    env_file:
-      - .env
-    
-    # 挂载卷
     volumes:
       - ./logs:/app/logs
+      - ./reports:/app/reports
       - ./data:/app/data
-    
-    # 时区设置
+    env_file:
+      - .env
     environment:
       - TZ=Asia/Shanghai
-    
-    # 网络配置
     networks:
-      - short-selling-network
-    
-    # 资源限制
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          cpus: '0.5'
-          memory: 256M
-    
-    # 健康检查
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+      - short_selling_network
+    depends_on:
+      - kline_service
+      - notification_service
 
-# 网络配置
+  # K 线服务（如果需要本地运行）
+  kline_service:
+    image: common_service-kline_service
+    container_name: kline_service
+    restart: unless-stopped
+    networks:
+      - short_selling_network
+    ports:
+      - "8765:8000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/kline_service
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - postgres
+      - redis
+
+  # 通知服务（如果需要本地运行）
+  notification_service:
+    image: common_service-notification_service
+    container_name: notification_service
+    restart: unless-stopped
+    networks:
+      - short_selling_network
+    ports:
+      - "8766:8000"
+
+  # PostgreSQL（K 线服务依赖）
+  postgres:
+    image: postgres:14-alpine
+    container_name: short_selling_postgres
+    restart: unless-stopped
+    networks:
+      - short_selling_network
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=kline_service
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # Redis（K 线服务依赖）
+  redis:
+    image: redis:7-alpine
+    container_name: short_selling_redis
+    restart: unless-stopped
+    networks:
+      - short_selling_network
+    volumes:
+      - redis_data:/data
+
 networks:
-  short-selling-network:
+  short_selling_network:
     driver: bridge
+
+volumes:
+  postgres_data:
+  redis_data:

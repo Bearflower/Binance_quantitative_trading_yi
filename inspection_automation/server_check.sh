@@ -22,7 +22,7 @@ DOCKER_CLEANUP_TYPE="builder_only"  # 清理类型：builder_only(仅缓存) | b
 SSH_CHECK_ENABLED=true  # 是否启用 SSH 免密登录检查
 SSH_HOST="43.156.242.184"
 SSH_USER="root"
-SSH_IDENTITY_FILE="$HOME/.ssh/id_ed25519"
+SSH_IDENTITY_FILE="/Users/yl/vscode/inspection_automation/docs/only.pem"
 
 # 初始化巡检结果变量
 CHECK_RESULT=""

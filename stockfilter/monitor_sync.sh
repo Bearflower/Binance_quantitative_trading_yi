@@ -125,27 +125,39 @@ db.close()
     
     log "当前有 K 线数据的股票：$CURRENT_COUNT 只"
     
-    # 获取最新日志
-    LATEST_LOG=$(docker logs $CONTAINER_NAME --since 5m 2>&1 | tail -10)
+    # 获取最新日志（检查容器日志和后台同步日志）
+    CONTAINER_LOG=$(docker logs $CONTAINER_NAME --since 5m 2>&1 | tail -20)
+    SYNC_LOG=$(tail -500 /root/stockfilter/logs/sync_background.log 2>/dev/null || echo "")
+    COMBINED_LOG="$CONTAINER_LOG $SYNC_LOG"
     
     # 检查是否有进度日志（同步成功、批次完成、同步完成等都表示任务在运行）
-    if echo "$LATEST_LOG" | grep -qE "同步成功 | 批次完成 | 同步完成 | 处理批次"; then
+    if echo "$COMBINED_LOG" | grep -qE "同步成功 | 批次完成 | 同步完成 | 处理批次"; then
         log "✅ 同步任务正常运行"
     else
-        log "⚠️  警告：最近 5 分钟没有成功记录"
-        send_feishu_alert "同步任务可能已停止（最近 5 分钟无成功记录）\n\n当前有数据的股票：$CURRENT_COUNT 只" "WARNING"
+        # 检查是否有同步进程在运行
+        SYNC_PROCESS=$(ps aux | grep "sync_kline_history.py" | grep -v grep | wc -l)
+        if [ "$SYNC_PROCESS" -gt 0 ]; then
+            log "✅ 同步任务进程运行中（PID 数量：$SYNC_PROCESS）"
+        else
+            log "⚠️  警告：最近 5 分钟没有成功记录"
+            send_feishu_alert "同步任务可能已停止（最近 5 分钟无成功记录）\n\n当前有数据的股票：$CURRENT_COUNT 只" "WARNING"
+        fi
     fi
     
     # 检查错误率
     RECENT_ERRORS=$(docker logs $CONTAINER_NAME --since 30m 2>&1 | grep -c '同步失败' || echo "0")
     RECENT_SUCCESS=$(docker logs $CONTAINER_NAME --since 30m 2>&1 | grep -c '同步成功' || echo "0")
     
-    if [ "$RECENT_SUCCESS" -gt 0 ]; then
+    # 确保变量是整数（去除换行符和空格）
+    RECENT_ERRORS=$(echo "$RECENT_ERRORS" | tr -d '\n' | tr -d ' ')
+    RECENT_SUCCESS=$(echo "$RECENT_SUCCESS" | tr -d '\n' | tr -d ' ')
+    
+    if [ "$RECENT_SUCCESS" -gt 0 ] 2>/dev/null; then
         TOTAL=$((RECENT_ERRORS + RECENT_SUCCESS))
         ERROR_RATE=$((RECENT_ERRORS * 100 / TOTAL))
         log "最近 30 分钟：成功 $RECENT_SUCCESS 只，失败 $RECENT_ERRORS 只，失败率 ${ERROR_RATE}%"
         
-        if [ "$ERROR_RATE" -gt 10 ]; then
+        if [ "$ERROR_RATE" -gt 10 ] 2>/dev/null; then
             send_feishu_alert "失败率过高：${ERROR_RATE}%（阈值：10%）\n\n成功：$RECENT_SUCCESS 只\n失败：$RECENT_ERRORS 只" "WARNING"
         fi
     fi

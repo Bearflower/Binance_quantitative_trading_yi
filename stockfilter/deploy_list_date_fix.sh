@@ -9,7 +9,7 @@ echo "股票列表 list_date 字段修复部署"
 echo "============================================================"
 
 # 配置
-SSH_KEY="${HOME}/.ssh/stockfilter_key"
+SSH_KEY="/Users/yl/vscode/inspection_automation/docs/only.pem"
 SERVER_USER="root"
 SERVER_HOST="47.118.53.81"
 CONTAINER_NAME="stockfilter-app"

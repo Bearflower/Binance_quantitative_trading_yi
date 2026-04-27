@@ -162,82 +162,176 @@ ssh root@43.156.242.184 "mkdir -p /root/backup"
 
 **这是部署的前提条件，必须先完成！**
 
-#### 1.1 生成 SSH 密钥
+#### 方式一：使用云平台创建的 SSH 密钥（推荐）⭐⭐⭐
+
+**适用场景：** 在腾讯云、阿里云等云平台创建的 SSH 密钥
+
+**步骤：**
+
+1. **下载密钥文件**
+   - 在云平台控制台创建 SSH 密钥对
+   - 下载私钥文件（通常是 `.pem` 格式）
+   - 将密钥文件保存到安全位置，例如：`/Users/yl/vscode/inspection_automation/docs/only.pem`
+
+2. **设置密钥文件权限（必须）**
+   ```bash
+   # 设置密钥文件权限为 600（只有所有者可读写）
+   chmod 600 /Users/yl/vscode/inspection_automation/docs/only.pem
+   
+   # 验证权限
+   ls -la /Users/yl/vscode/inspection_automation/docs/only.pem
+   # 应该显示：-rw------- 1 yl staff ... only.pem
+   ```
+
+3. **测试密钥登录**
+   ```bash
+   # 测试登录（不需要输入密码）
+   ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem \
+       -o StrictHostKeyChecking=no \
+       -o UserKnownHostsFile=/dev/null \
+       root@43.156.242.184 "echo 'SSH 密钥登录成功！'"
+   
+   # 如果成功，会直接返回"SSH 密钥登录成功！"，不需要输入密码
+   ```
+
+4. **配置 SSH 别名（推荐，简化后续操作）**
+   
+   编辑 `~/.ssh/config` 文件：
+   
+   ```bash
+   cat >> ~/.ssh/config << 'EOF'
+   
+   # 生产服务器 - 使用云平台密钥
+   Host production
+       HostName 43.156.242.184
+       User root
+       IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
+       IdentitiesOnly yes
+       StrictHostKeyChecking no
+       UserKnownHostsFile=/dev/null
+       AddKeysToAgent yes
+       ServerAliveInterval 60
+       ServerAliveCountMax 3
+   
+   # 简短别名
+   Host prod
+       HostName 43.156.242.184
+       User root
+       IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
+       IdentitiesOnly yes
+       StrictHostKeyChecking no
+       UserKnownHostsFile=/dev/null
+   EOF
+   ```
+   
+   **使用别名登录：**
+   ```bash
+   ssh prod          # 使用简短别名
+   ssh production    # 使用完整别名
+   ```
+
+5. **验证配置成功**
+   ```bash
+   # 检查是否已配置 SSH 密钥
+   ssh -o StrictHostKeyChecking=no root@43.156.242.184 "echo 成功"
+   
+   # 如果不需要输入密码就返回"成功"，说明已配置成功
+   ```
+
+**重要提示：**
+- ⚠️ 云平台密钥文件路径较长，建议配置 SSH 别名简化操作
+- ⚠️ 密钥文件权限必须是 600，否则 SSH 会拒绝使用
+- ⚠️ 不要将密钥文件提交到 Git 仓库
+- ⚠️ 定期更换密钥以提高安全性
+
+#### ~~方式二：本地生成 SSH 密钥~~（已废弃，不再使用）
+
+**⚠️ 注意：此方式已废弃，请使用"方式一：云平台密钥"**
+
+**适用场景：** 没有云平台密钥，需要本地生成（不推荐）
+
+#### ~~1.1 生成 SSH 密钥~~
 
 ```bash
+# ❌ 已废弃 - 请使用云平台密钥
 # 生成 ED25519 密钥（推荐，更安全）
-ssh-keygen -t ed25519 -C "your_email@example.com"
+# ssh-keygen -t ed25519 -C "your_email@example.com"
 
 # 或者使用 RSA 密钥（兼容性更好）
-ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
+# ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
 ```
 
 **重要提示：**
-- 直接回车，**不需要设置密码短语（passphrase）**
-- 生成的私钥：`~/.ssh/id_ed25519`（保密，不要给别人）
-- 生成的公钥：`~/.ssh/id_ed25519.pub`（复制到服务器）
+- ~~直接回车，**不需要设置密码短语（passphrase）**~~
+- ~~生成的私钥：`/Users/yl/vscode/inspection_automation/docs/only.pem`（保密，不要给别人）~~
+- ~~生成的公钥：`/Users/yl/vscode/inspection_automation/docs/only.pem.pub`（复制到服务器）~~
 
-#### 1.2 复制公钥到服务器
+#### ~~1.2 复制公钥到服务器~~
 
 ```bash
+# ❌ 已废弃 - 请使用云平台密钥
 # 方法 1：使用 ssh-copy-id（推荐）
-ssh-copy-id -i ~/.ssh/id_ed25519.pub -o StrictHostKeyChecking=no root@43.156.242.184
+# ssh-copy-id -i /Users/yl/vscode/inspection_automation/docs/only.pem.pub -o StrictHostKeyChecking=no root@43.156.242.184
 
 # 方法 2：手动复制（如果 ssh-copy-id 不可用）
-cat ~/.ssh/id_ed25519.pub | ssh -o StrictHostKeyChecking=no root@43.156.242.184 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+# cat /Users/yl/vscode/inspection_automation/docs/only.pem.pub | ssh -o StrictHostKeyChecking=no root@43.156.242.184 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
 ```
 
-#### 1.3 测试免密登录
+#### ~~1.3 测试免密登录~~
 
 ```bash
+# ❌ 已废弃 - 请使用云平台密钥
 # 测试登录（不需要输入密码）
-ssh -o StrictHostKeyChecking=no root@43.156.242.184 "echo 成功"
+# ssh -o StrictHostKeyChecking=no root@43.156.242.184 "echo 成功"
 
 # 如果成功，会直接返回"成功"，不需要输入密码
 ```
 
-#### 1.4 配置 SSH 别名（推荐，简化后续操作）
-
-编辑 `~/.ssh/config` 文件：
+#### ~~1.4 配置 SSH 别名（推荐，简化后续操作）~~
 
 ```bash
-cat >> ~/.ssh/config << 'EOF'
+# ❌ 已废弃 - 请使用云平台密钥
+# 编辑 `~/.ssh/config` 文件：
 
-# 生产服务器 - 免密登录
-Host production
-    HostName 43.156.242.184
-    User root
-    IdentityFile ~/.ssh/id_ed25519
-    IdentitiesOnly yes
-    AddKeysToAgent yes
-    ServerAliveInterval 60
-    ServerAliveCountMax 3
-
-# 简短别名
-Host prod
-    HostName 43.156.242.184
-    User root
-    IdentityFile ~/.ssh/id_ed25519
-    IdentitiesOnly yes
-EOF
+# cat >> ~/.ssh/config << 'EOF'
+# 
+# # 生产服务器 - 免密登录
+# Host production
+#     HostName 43.156.242.184
+#     User root
+#     IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
+#     IdentitiesOnly yes
+#     AddKeysToAgent yes
+#     ServerAliveInterval 60
+#     ServerAliveCountMax 3
+# 
+# # 简短别名
+# Host prod
+#     HostName 43.156.242.184
+#     User root
+#     IdentityFile /Users/yl/vscode/inspection_automation/docs/only.pem
+#     IdentitiesOnly yes
+# EOF
 ```
 
-**使用别名登录：**
+**~~使用别名登录：~~**
 ```bash
-ssh prod          # 使用简短别名
-ssh production    # 使用完整别名
+# ❌ 已废弃
+# ssh prod          # 使用简短别名
+# ssh production    # 使用完整别名
 ```
 
-#### 1.5 验证配置成功
+#### ~~1.5 验证配置成功~~
 
 ```bash
+# ❌ 已废弃 - 请使用云平台密钥
 # 检查是否已配置 SSH 密钥
-ssh -o StrictHostKeyChecking=no root@43.156.242.184 "echo 成功"
+# ssh -o StrictHostKeyChecking=no root@43.156.242.184 "echo 成功"
 
 # 如果不需要输入密码就返回"成功"，说明已配置成功
 ```
 
-**如果失败，查看故障排查章节。**
+**~~如果失败，查看故障排查章节。~~**
 
 ---
 
@@ -317,7 +411,7 @@ pip install asyncpg
 
 ---
 
-### 第四步：创建自动打包脚本
+### 第四步：创建自动打包脚本（增强版 - 防止文件遗漏）
 
 在项目根目录创建 `auto_package.sh`：
 
@@ -325,7 +419,7 @@ pip install asyncpg
 #!/bin/bash
 
 # ============================================
-# 自动化打包脚本
+# 自动化打包脚本（增强版 - 防止文件遗漏）
 # ============================================
 
 set -e  # 遇到错误立即退出
@@ -354,10 +448,12 @@ mkdir -p "$TEMP_DIR"
 
 # 复制项目文件（排除不需要的文件）
 echo "📋 复制项目文件..."
-rsync -av \
+rsync -av --delete \
     --exclude='*.pyc' \
     --exclude='__pycache__' \
+    --exclude='*.pyo' \
     --exclude='.git' \
+    --exclude='.gitignore' \
     --exclude='logs/*' \
     --exclude='data/*' \
     --exclude='reports/*' \
@@ -367,6 +463,12 @@ rsync -av \
     --exclude='node_modules/*' \
     --exclude='.env.local' \
     --exclude='.trae/*' \
+    --exclude='*.log' \
+    --exclude='tmp/*' \
+    --exclude='.pytest_cache' \
+    --exclude='.mypy_cache' \
+    --exclude='.coverage' \
+    --exclude='htmlcov/*' \
     ./ "$TEMP_DIR/"
 
 # 创建压缩包
@@ -385,6 +487,90 @@ echo "✅ 打包完成！"
 echo "📦 压缩包：$DEPLOY_PACKAGE_NAME"
 echo "📊 大小：$PACKAGE_SIZE"
 echo "============================================="
+
+# 新增：文件完整性检查 ⭐⭐⭐
+echo ""
+echo "🔍 执行文件完整性检查..."
+
+# 统计本地文件数量（排除相同规则）
+LOCAL_FILE_COUNT=$(find . -type f \
+    ! -path './.git/*' \
+    ! -path './logs/*' \
+    ! -path './data/*' \
+    ! -path './reports/*' \
+    ! -path './node_modules/*' \
+    ! -path './.pytest_cache/*' \
+    ! -path './.mypy_cache/*' \
+    ! -path './htmlcov/*' \
+    ! -path './tmp/*' \
+    ! -name '*.pyc' \
+    ! -name '*.pyo' \
+    ! -name '*.tar.gz' \
+    ! -name '*.log' \
+    ! -name '.DS_Store' \
+    ! -name '._*' \
+    ! -name '.env.local' \
+    ! -path './.trae/*' \
+    | wc -l)
+
+# 解压压缩包并统计文件数量
+VERIFY_DIR="/tmp/${PROJECT_NAME}_verify_$$"
+mkdir -p "$VERIFY_DIR"
+tar -xzf "$DEPLOY_PACKAGE_NAME" -C "$VERIFY_DIR"
+
+PACKAGE_FILE_COUNT=$(find "$VERIFY_DIR" -type f | wc -l)
+rm -rf "$VERIFY_DIR"
+
+echo "📊 本地文件数量：$LOCAL_FILE_COUNT"
+echo "📦 压缩包文件数量：$PACKAGE_FILE_COUNT"
+
+# 计算差异（允许一定误差，因为 find 和 rsync 的统计方式可能略有不同）
+DIFF=$((LOCAL_FILE_COUNT - PACKAGE_FILE_COUNT))
+if [ $DIFF -lt 0 ]; then
+    DIFF=$((-DIFF))
+fi
+
+# 如果差异超过 5 个文件，发出警告
+if [ $DIFF -gt 5 ]; then
+    echo "⚠️  警告：文件数量差异较大（差异：$DIFF 个文件）"
+    echo "   可能遗漏了文件，请检查排除规则！"
+    echo ""
+    echo "   本地文件列表（前 20 个）："
+    find . -type f \
+        ! -path './.git/*' \
+        ! -path './logs/*' \
+        ! -path './data/*' \
+        ! -path './reports/*' \
+        ! -path './node_modules/*' \
+        ! -path './.pytest_cache/*' \
+        ! -path './.mypy_cache/*' \
+        ! -path './htmlcov/*' \
+        ! -path './tmp/*' \
+        ! -name '*.pyc' \
+        ! -name '*.pyo' \
+        ! -name '*.tar.gz' \
+        ! -name '*.log' \
+        ! -name '.DS_Store' \
+        ! -name '._*' \
+        ! -name '.env.local' \
+        ! -path './.trae/*' \
+        | head -20
+    echo ""
+    echo "   请确认是否有重要文件被排除规则过滤！"
+    read -p "是否继续？(y/N): " confirm
+    if [ "$confirm" != "y" ] && [ "$confirm" != "Y" ]; then
+        echo "❌ 打包已取消"
+        exit 1
+    fi
+else
+    echo "✅ 文件数量检查通过（差异：$DIFF 个文件，在允许范围内）"
+fi
+
+echo ""
+echo "============================================="
+echo "🎉 打包完成并通过完整性检查！"
+echo "============================================="
+```
 ```
 
 **执行打包：**
@@ -438,9 +624,9 @@ else
     echo "❌ 错误：SSH 密钥不可用，请先配置免密登录"
     echo ""
     echo "请执行以下步骤："
-    echo "1. 生成 SSH 密钥：ssh-keygen -t ed25519 -C 'your_email@example.com'"
-    echo "2. 复制公钥到服务器：ssh-copy-id -i ~/.ssh/id_ed25519.pub root@$SERVER_IP"
-    echo "3. 测试免密登录：ssh root@$SERVER_IP 'echo 成功'"
+    echo "1. 确保云平台密钥文件存在：/Users/yl/vscode/inspection_automation/docs/only.pem"
+    echo "2. 设置密钥权限：chmod 600 /Users/yl/vscode/inspection_automation/docs/only.pem"
+    echo "3. 测试密钥登录：ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@$SERVER_IP 'echo 成功'"
     exit 1
 fi
 
@@ -455,7 +641,7 @@ chmod +x upload_to_server.sh
 
 ---
 
-### 第六步：创建一键部署脚本
+### 第六步：创建一键部署脚本（增强版 - 确保容器更新）
 
 创建 `one_click_deploy.sh`：
 
@@ -463,7 +649,7 @@ chmod +x upload_to_server.sh
 #!/bin/bash
 
 # ============================================
-# 一键部署脚本 - 打包 + 上传 + 部署
+# 一键部署脚本（增强版 - 确保容器更新到最新版本）
 # ============================================
 
 set -e
@@ -477,15 +663,15 @@ echo "目标服务器：$SERVER_IP"
 echo "============================================="
 
 # 步骤 1：打包
-echo "📦 步骤 1/4: 打包项目..."
+echo "📦 步骤 1/5: 打包项目..."
 ./auto_package.sh
 
 # 步骤 2：上传
-echo "📤 步骤 2/4: 上传到服务器..."
+echo "📤 步骤 2/5: 上传到服务器..."
 ./upload_to_server.sh
 
 # 步骤 3：远程部署
-echo "🚀 步骤 3/4: 远程部署..."
+echo "🚀 步骤 3/5: 远程部署..."
 
 # 使用 SSH 执行远程部署命令（使用密钥认证）
 ssh -o StrictHostKeyChecking=no \
@@ -495,40 +681,91 @@ ssh -o StrictHostKeyChecking=no \
 # 在服务器上执行的命令
 set -e
 
-# 加载配置（需要从本地上传）
-cd /root/$PROJECT_NAME
+echo "============================================="
+echo "远程部署开始"
+echo "============================================="
 
-# 停止并删除旧容器
-docker stop $DOCKER_CONTAINER_NAME 2>/dev/null || true
-docker rm $DOCKER_CONTAINER_NAME 2>/dev/null || true
+# 1. 停止并删除旧容器
+echo "🛑 停止旧容器..."
+if docker ps -q -f name=$DOCKER_CONTAINER_NAME | grep -q .; then
+    docker stop $DOCKER_CONTAINER_NAME
+    echo "✅ 容器已停止"
+else
+    echo "⚠️  容器未运行，跳过停止"
+fi
 
-# 解压新包
+echo "🗑️  删除旧容器..."
+if docker ps -aq -f name=$DOCKER_CONTAINER_NAME | grep -q .; then
+    docker rm $DOCKER_CONTAINER_NAME
+    echo "✅ 容器已删除"
+else
+    echo "⚠️  容器不存在，跳过删除"
+fi
+
+# 2. 删除旧镜像（关键步骤，防止使用缓存）⭐⭐⭐
+echo "🗑️  删除旧镜像（防止使用缓存）..."
+if docker images -q $DOCKER_IMAGE_NAME | grep -q .; then
+    docker rmi $DOCKER_IMAGE_NAME --force 2>/dev/null || true
+    echo "✅ 旧镜像已删除"
+else
+    echo "⚠️  旧镜像不存在，跳过删除"
+fi
+
+# 3. 解压新包
+echo "📦 解压新代码包..."
 cd /root
 tar -xzf $DEPLOY_PACKAGE_NAME -C $PROJECT_NAME
-cd $PROJECT_NAME
+echo "✅ 代码包已解压"
 
-# 设置权限
+# 4. 设置权限
+cd $PROJECT_NAME
 chmod +x deploy.sh 2>/dev/null || true
 chmod 600 .env 2>/dev/null || true
+echo "✅ 权限已设置"
 
-# 构建并启动
+# 5. 清理 Docker 缓存（可选，如果磁盘空间紧张）
+echo "🧹 清理 Docker 悬空镜像..."
+docker image prune -f --filter "until=24h" 2>/dev/null || true
+
+# 6. 构建并启动（不使用缓存）
+echo "🏗️  构建 Docker 镜像（不使用缓存）..."
 docker-compose build --no-cache
+if [ $? -ne 0 ]; then
+    echo "❌ Docker 构建失败！"
+    exit 1
+fi
+echo "✅ Docker 镜像构建成功"
+
+echo "🚀 启动 Docker 容器..."
 docker-compose up -d
+if [ $? -ne 0 ]; then
+    echo "❌ Docker 容器启动失败！"
+    exit 1
+fi
+echo "✅ Docker 容器启动成功"
 
-# 等待启动
-sleep 3
+# 7. 等待容器启动
+echo "⏳ 等待容器启动..."
+sleep 5
 
-# 显示状态
+# 8. 显示状态
 echo "============================================="
 echo "容器状态:"
 docker ps -f name=$DOCKER_CONTAINER_NAME
 echo "============================================="
 echo "最近日志:"
 docker logs --tail 30 $DOCKER_CONTAINER_NAME
+echo "============================================="
 ENDSSH
 
+# 检查远程部署是否成功
+if [ $? -ne 0 ]; then
+    echo "❌ 远程部署失败！"
+    exit 1
+fi
+
 # 步骤 4：验证部署（关键步骤，确保容器更新到最新版本）⭐⭐⭐
-echo "✅ 步骤 4/4: 验证部署（关键步骤，确保容器更新到最新版本）..."
+echo "✅ 步骤 4/5: 验证部署（关键步骤，确保容器更新到最新版本）..."
 
 # 创建验证脚本并上传
 cat > /tmp/verify_deployment.sh << 'VERIFYEOF'
@@ -568,9 +805,24 @@ echo "   本地镜像创建时间：$LOCAL_IMAGE_CREATED"
 if [ "$IMAGE_CREATED" = "$LOCAL_IMAGE_CREATED" ]; then
     echo "✅ 容器使用的是最新镜像版本"
 else
-    echo "⚠️  警告：容器可能未使用最新镜像！"
-    echo "   容器镜像创建时间：$IMAGE_CREATED"
-    echo "   最新镜像创建时间：$LOCAL_IMAGE_CREATED"
+    # 检查时间差（300 秒 = 5 分钟）
+    IMAGE_TIMESTAMP=$(date -d "$IMAGE_CREATED" +%s 2>/dev/null || echo "0")
+    LOCAL_TIMESTAMP=$(date -d "$LOCAL_IMAGE_CREATED" +%s 2>/dev/null || echo "0")
+    TIME_DIFF=$((LOCAL_TIMESTAMP - IMAGE_TIMESTAMP))
+    
+    if [ $TIME_DIFF -lt 0 ]; then
+        TIME_DIFF=$((-TIME_DIFF))
+    fi
+    
+    if [ $TIME_DIFF -le 300 ]; then
+        echo "✅ 容器使用的是最新镜像版本（时间差：${TIME_DIFF}秒）"
+    else
+        echo "⚠️  警告：容器可能未使用最新镜像！"
+        echo "   容器镜像创建时间：$IMAGE_CREATED"
+        echo "   最新镜像创建时间：$LOCAL_IMAGE_CREATED"
+        echo "   时间差：${TIME_DIFF}秒"
+        exit 1
+    fi
 fi
 
 # 3. 验证容器健康状态
@@ -601,6 +853,7 @@ ERROR_COUNT=$(docker logs --tail 100 $DOCKER_CONTAINER_NAME 2>&1 | grep -i "erro
 if [ "$ERROR_COUNT" -gt 0 ]; then
     echo "⚠️  发现 $ERROR_COUNT 个错误日志，请检查："
     docker logs --tail 20 $DOCKER_CONTAINER_NAME
+    exit 1
 else
     echo "✅ 未发现明显错误日志"
 fi
@@ -654,8 +907,34 @@ else
     echo "============================================="
     echo "⚠️  部署完成但验证失败！请检查上述错误！"
     echo "============================================="
+    echo ""
+    echo "🔧 建议执行以下命令重新部署："
+    echo ""
+    echo "ssh root@$SERVER_IP << 'EOF'"
+    echo "cd /root/$PROJECT_NAME"
+    echo "docker-compose down"
+    echo "docker rmi $DOCKER_IMAGE_NAME --force"
+    echo "docker-compose build --no-cache"
+    echo "docker-compose up -d"
+    echo "EOF"
+    echo ""
     exit 1
 fi
+
+# 步骤 5：清理临时文件
+echo ""
+echo "📤 步骤 5/5: 清理临时文件..."
+rm -f /tmp/verify_deployment.sh
+ssh -o StrictHostKeyChecking=no \
+    -o UserKnownHostsFile=/dev/null \
+    "$SERVER_USER@$SERVER_IP" \
+    "rm -f /tmp/verify_deployment.sh /root/$DEPLOY_PACKAGE_NAME"
+echo "✅ 临时文件已清理"
+
+echo ""
+echo "============================================="
+echo "🎉 部署全部完成！"
+echo "============================================="
 ```
 
 **执行一键部署：**
@@ -1017,8 +1296,8 @@ ssh root@SERVER_IP "cat ~/.ssh/authorized_keys"
 #### 3. 验证公钥指纹匹配
 
 ```bash
-# 检查本地公钥指纹
-ssh-keygen -lf ~/.ssh/id_ed25519.pub
+# 检查云平台密钥公钥指纹
+ssh-keygen -lf /Users/yl/vscode/inspection_automation/docs/only.pem
 
 # 检查服务器上的公钥指纹
 ssh root@SERVER_IP "ssh-keygen -lf ~/.ssh/authorized_keys"
@@ -1030,7 +1309,7 @@ ssh root@SERVER_IP "ssh-keygen -lf ~/.ssh/authorized_keys"
 
 ```bash
 # 使用 -vvv 查看详细调试信息
-ssh -vvv -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i ~/.ssh/id_ed25519 root@SERVER_IP "echo test"
+ssh -vvv -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i /Users/yl/vscode/inspection_automation/docs/only.pem root@SERVER_IP "echo test"
 
 # 查看关键信息：
 # - "Offering public key" - 确认正在提供正确的密钥
@@ -1052,22 +1331,278 @@ ssh root@SERVER_IP "sudo journalctl -u sshd --since '5 minutes ago' --no-pager |
 
 #### 6. 重新配置 SSH 密钥（如果以上都失败）
 
+**注意：云平台密钥需要在云平台控制台重新绑定到服务器，不能使用 ssh-copy-id**
+
 ```bash
-# 清空服务器上的 authorized_keys
-ssh root@SERVER_IP "> ~/.ssh/authorized_keys"
+# 1. 在云平台控制台确认密钥已绑定到服务器
+# 2. 检查密钥文件权限
+chmod 600 /Users/yl/vscode/inspection_automation/docs/only.pem
 
-# 重新复制公钥
-ssh-copy-id -i ~/.ssh/id_ed25519.pub -o StrictHostKeyChecking=no -o PreferredAuthentications=password root@SERVER_IP
-
-# 测试免密登录
-ssh -o StrictHostKeyChecking=no -o BatchMode=yes root@SERVER_IP "echo SSH 免密登录成功！"
+# 3. 测试密钥登录
+ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@SERVER_IP "echo SSH 密钥登录成功！"
 ```
 
 ---
 
-### 问题 2：SCP 上传失败
+### 问题 2：文件打包遗漏 ⭐⭐⭐ 重要
 
-### 问题 2：SCP 上传失败
+**症状：** 部署后发现某些文件未上传到服务器
+
+**常见原因：**
+1. 文件被排除规则过滤
+2. 文件权限问题导致无法读取
+3. 符号链接未正确处理
+4. 隐藏文件被忽略
+5. 文件名包含特殊字符
+
+**解决方案：**
+
+#### 1. 检查排除规则
+
+```bash
+# 查看 auto_package.sh 中的排除规则
+cat auto_package.sh | grep exclude
+
+# 常见被误排除的文件：
+# - .env (应该保留)
+# - .gitignore (应该排除)
+# - *.env (可能被误排除)
+```
+
+**建议：** 在打包前，先运行以下命令查看会被排除的文件：
+
+```bash
+# 模拟 rsync 的排除规则
+find . -type f \
+    ! -path './.git/*' \
+    ! -path './logs/*' \
+    ! -path './data/*' \
+    ! -path './reports/*' \
+    ! -path './node_modules/*' \
+    ! -path './.pytest_cache/*' \
+    ! -path './.mypy_cache/*' \
+    ! -path './htmlcov/*' \
+    ! -path './tmp/*' \
+    ! -name '*.pyc' \
+    ! -name '*.pyo' \
+    ! -name '*.tar.gz' \
+    ! -name '*.log' \
+    ! -name '.DS_Store' \
+    ! -name '._*' \
+    ! -name '.env.local' \
+    ! -path './.trae/*' \
+    | sort > /tmp/local_files.txt
+
+# 查看文件列表
+cat /tmp/local_files.txt
+
+# 检查是否有重要文件被排除
+grep -E '\.(py|yml|yaml|json|env|sh|md)$' /tmp/local_files.txt
+```
+
+#### 2. 验证压缩包完整性
+
+```bash
+# 解压压缩包到临时目录
+mkdir -p /tmp/verify_package
+tar -xzf deployment_package.tar.gz -C /tmp/verify_package
+
+# 统计文件数量
+echo "本地文件数量："
+find . -type f \
+    ! -path './.git/*' \
+    ! -path './logs/*' \
+    ! -path './data/*' \
+    ! -path './reports/*' \
+    ! -path './node_modules/*' \
+    ! -path './.pytest_cache/*' \
+    ! -path './.mypy_cache/*' \
+    ! -path './htmlcov/*' \
+    ! -path './tmp/*' \
+    ! -name '*.pyc' \
+    ! -name '*.pyo' \
+    ! -name '*.tar.gz' \
+    ! -name '*.log' \
+    ! -name '.DS_Store' \
+    ! -name '._*' \
+    ! -name '.env.local' \
+    ! -path './.trae/*' \
+    | wc -l
+
+echo "压缩包文件数量："
+find /tmp/verify_package -type f | wc -l
+
+# 对比差异
+diff -r <(find . -type f | grep -v '.git' | sort) \
+         <(find /tmp/verify_package -type f | sed 's|/tmp/verify_package/||' | sort) \
+    || true
+
+# 清理
+rm -rf /tmp/verify_package
+```
+
+#### 3. 检查符号链接
+
+```bash
+# 查找项目中的符号链接
+find . -type l
+
+# 如果有符号链接，需要在 rsync 中添加 -L 参数
+# 或者将符号链接指向的文件包含到压缩包中
+```
+
+#### 4. 检查文件权限
+
+```bash
+# 查找无法读取的文件
+find . -type f ! -readable
+
+# 修复文件权限
+chmod -R u+r .
+
+# 查找特殊权限的文件
+find . -type f -perm /7000
+```
+
+#### 5. 手动添加被遗漏的文件
+
+如果确认某些文件被遗漏，可以：
+
+```bash
+# 方法 1：修改排除规则
+# 编辑 auto_package.sh，移除对应该文件的排除规则
+
+# 方法 2：手动上传遗漏的文件
+scp path/to/missing/file root@SERVER_IP:/root/project/path/to/missing/file
+
+# 方法 3：创建补充包
+tar -czf missing_files.tar.gz path/to/missing/file
+scp missing_files.tar.gz root@SERVER_IP:/root/
+ssh root@SERVER_IP "cd /root/project && tar -xzf ../missing_files.tar.gz"
+rm missing_files.tar.gz
+```
+
+---
+
+### 问题 3：容器未使用最新代码 ⭐⭐⭐ 重要
+
+**症状：** 部署完成后，容器内运行的还是旧代码
+
+**常见原因：**
+1. 旧镜像未删除，Docker 使用了缓存
+2. docker-compose build 失败但未被检测
+3. 容器启动失败，旧容器仍在运行
+4. 多个容器同时运行
+5. 镜像标签未更新
+
+**解决方案：**
+
+#### 1. 检查镜像版本
+
+```bash
+# 查看容器使用的镜像
+ssh root@SERVER_IP "docker inspect -f '{{.Config.Image}}' CONTAINER_NAME"
+
+# 查看服务器上的镜像列表
+ssh root@SERVER_IP "docker images | grep PROJECT_NAME"
+
+# 查看镜像创建时间
+ssh root@SERVER_IP "docker inspect -f '{{.Created}}' CONTAINER_NAME"
+ssh root@SERVER_IP "docker inspect -f '{{.Created}}' IMAGE_ID"
+
+# 如果时间不一致，说明容器未使用最新镜像
+```
+
+#### 2. 强制重新部署
+
+```bash
+# 完全清理并重新部署
+ssh root@SERVER_IP << 'EOF'
+cd /root/PROJECT_NAME
+
+# 停止并删除容器
+docker-compose down
+
+# 删除所有相关镜像
+docker images | grep PROJECT_NAME | awk '{print $3}' | xargs docker rmi --force
+
+# 清理构建缓存
+docker builder prune -f
+
+# 重新构建（不使用缓存）
+docker-compose build --no-cache
+
+# 启动新容器
+docker-compose up -d
+
+# 验证
+docker ps -f name=CONTAINER_NAME
+EOF
+```
+
+#### 3. 检查构建日志
+
+```bash
+# 查看构建过程
+ssh root@SERVER_IP "cd /root/PROJECT_NAME && docker-compose build --no-cache"
+
+# 检查是否有构建错误
+ssh root@SERVER_IP "docker images | grep PROJECT_NAME"
+
+# 如果镜像不存在，说明构建失败
+```
+
+#### 4. 检查容器状态
+
+```bash
+# 查看所有容器（包括已停止的）
+ssh root@SERVER_IP "docker ps -a -f name=CONTAINER_NAME"
+
+# 如果有多个容器，删除旧的
+ssh root@SERVER_IP "docker ps -aq -f name=CONTAINER_NAME | tail -n +2 | xargs docker rm -f"
+
+# 确保只有一个容器在运行
+ssh root@SERVER_IP "docker ps -f name=CONTAINER_NAME"
+```
+
+#### 5. 使用镜像标签
+
+在 `.deploy_config` 中添加镜像标签：
+
+```bash
+DOCKER_IMAGE_NAME="project-name:latest"
+# 或者使用时间戳标签
+DOCKER_IMAGE_NAME="project-name:$(date +%Y%m%d%H%M%S)"
+```
+
+在 `docker-compose.yml` 中使用标签：
+
+```yaml
+services:
+  app:
+    image: ${DOCKER_IMAGE_NAME}
+    build:
+      context: .
+      cache_from:
+        - ${DOCKER_IMAGE_NAME}
+```
+
+#### 6. 验证容器内代码
+
+```bash
+# 进入容器查看代码
+ssh root@SERVER_IP "docker exec CONTAINER_NAME ls -la /app"
+
+# 查看关键文件的修改时间
+ssh root@SERVER_IP "docker exec CONTAINER_NAME stat /app/main.py"
+
+# 对比本地和容器内的文件
+diff local_file.py <(ssh root@SERVER_IP "docker exec CONTAINER_NAME cat /app/local_file.py")
+```
+
+---
+
+### 问题 4：SCP 上传失败
 
 **症状：** `scp: Connection closed` 或 `Permission denied`
 
@@ -1083,7 +1618,9 @@ ssh root@43.156.242.184 "df -h"
 ssh root@43.156.242.184 "ls -la /root/"
 ```
 
-### 问题 3：Docker 构建失败
+---
+
+### 问题 5：Docker 构建失败
 
 **症状：** `docker-compose build` 报错
 
@@ -1099,7 +1636,9 @@ ssh root@43.156.242.184 "systemctl status docker"
 ssh root@43.156.242.184 "docker-compose build --progress=plain"
 ```
 
-### 问题 4：容器无法启动
+---
+
+### 问题 6：容器无法启动
 
 **症状：** 容器启动后立即退出
 
@@ -1326,7 +1865,562 @@ ssh root@SERVER_IP "docker exec -it postgres-db psql -U trading_user -d trading_
 
 ---
 
+---
+
+## 📚 使用场景速查 ⭐⭐⭐
+
+### 场景 1：首次部署新项目
+
+```bash
+# 1. 确认云平台密钥文件存在并设置权限
+ls -la /Users/yl/vscode/inspection_automation/docs/only.pem
+chmod 600 /Users/yl/vscode/inspection_automation/docs/only.pem
+
+# 2. 测试密钥登录
+ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@$SERVER_IP "echo 成功"
+
+# 3. 创建项目配置文件
+cat > .deploy_config << 'EOF'
+SERVER_IP="43.156.242.184"
+SERVER_USER="root"
+SERVER_PROJECT_PATH="/root/my-project"
+DOCKER_CONTAINER_NAME="my-project-app"
+DOCKER_IMAGE_NAME="my-project:latest"
+PROJECT_NAME="my-project"
+DEPLOY_PACKAGE_NAME="deployment_package.tar.gz"
+EOF
+
+# 3. 检查项目文件
+ls -la
+cat .env
+cat Dockerfile
+cat docker-compose.yml
+
+# 4. 查看会被打包的文件
+find . -type f \
+    ! -path './.git/*' \
+    ! -path './logs/*' \
+    ! -path './data/*' \
+    ! -path './reports/*' \
+    ! -path './node_modules/*' \
+    ! -path './.pytest_cache/*' \
+    ! -path './.mypy_cache/*' \
+    ! -path './htmlcov/*' \
+    ! -path './tmp/*' \
+    ! -name '*.pyc' \
+    ! -name '*.pyo' \
+    ! -name '*.tar.gz' \
+    ! -name '*.log' \
+    ! -name '.DS_Store' \
+    ! -name '._*' \
+    ! -name '.env.local' \
+    ! -path './.trae/*' \
+    | sort | head -50
+
+# 5. 执行部署
+./one_click_deploy.sh
+
+# 6. 验证部署
+ssh root@$SERVER_IP "docker ps -f name=$DOCKER_CONTAINER_NAME"
+ssh root@$SERVER_IP "docker logs --tail 30 $DOCKER_CONTAINER_NAME"
+```
+
+### 场景 2：日常代码更新
+
+```bash
+# 1. 确认代码已修改并保存
+git status  # 如果有 Git 仓库
+
+# 2. 快速检查（可选）
+find . -name "*.py" -newer deployment_package.tar.gz 2>/dev/null | head -10
+
+# 3. 执行部署
+./one_click_deploy.sh
+
+# 4. 快速验证
+ssh root@$SERVER_IP "docker ps -f name=$DOCKER_CONTAINER_NAME"
+ssh root@$SERVER_IP "docker logs --tail 10 $DOCKER_CONTAINER_NAME"
+
+# 5. 测试功能
+curl http://$SERVER_IP:$PORT/api/health
+```
+
+### 场景 3：部署后验证失败
+
+```bash
+# 1. 查看验证失败的具体原因
+# one_click_deploy.sh 会输出详细的错误信息
+
+# 2. 如果是因为镜像未更新，脚本会给出重新部署命令
+# 直接复制并执行即可
+
+# 3. 手动验证部署
+ssh root@$SERVER_IP << 'EOF'
+cd /root/PROJECT_NAME
+echo "=== 容器状态 ==="
+docker ps -f name=CONTAINER_NAME
+
+echo "=== 镜像信息 ==="
+docker inspect -f '{{.Config.Image}}' CONTAINER_NAME
+docker inspect -f '{{.Created}}' CONTAINER_NAME
+
+echo "=== 最新镜像 ==="
+docker images | grep PROJECT_NAME
+
+echo "=== 最近日志 ==="
+docker logs --tail 50 CONTAINER_NAME
+EOF
+
+# 4. 强制重新部署
+ssh root@$SERVER_IP << 'EOF'
+cd /root/PROJECT_NAME
+docker-compose down
+docker images | grep PROJECT_NAME | awk '{print $3}' | xargs docker rmi --force
+docker-compose build --no-cache
+docker-compose up -d
+sleep 5
+docker ps -f name=CONTAINER_NAME
+EOF
+
+# 5. 再次验证
+./verify_deployment.sh
+```
+
+### 场景 4：发现文件被遗漏
+
+```bash
+# 1. 确认文件确实被遗漏
+ls -la path/to/missing/file.py
+
+# 2. 检查是否在压缩包中
+tar -tzf deployment_package.tar.gz | grep "missing_file" || echo "文件不在压缩包中"
+
+# 3. 检查排除规则
+cat auto_package.sh | grep exclude
+
+# 4. 临时解决方案：手动上传
+scp path/to/missing/file.py root@$SERVER_IP:/root/PROJECT_NAME/path/to/missing/file.py
+ssh root@$SERVER_IP "docker restart CONTAINER_NAME"
+
+# 5. 永久解决方案：修改 auto_package.sh
+# 编辑 auto_package.sh，移除或修改相关的排除规则
+
+# 6. 重新部署
+./one_click_deploy.sh
+```
+
+### 场景 5：容器运行的是旧代码
+
+```bash
+# 1. 确认问题
+ssh root@$SERVER_IP << 'EOF'
+echo "=== 容器镜像 ==="
+docker inspect -f '{{.Config.Image}}' CONTAINER_NAME
+docker inspect -f '{{.Created}}' CONTAINER_NAME
+
+echo "=== 服务器镜像 ==="
+docker images | grep PROJECT_NAME
+EOF
+
+# 2. 如果镜像时间不一致，说明容器未使用最新镜像
+
+# 3. 强制重新部署
+ssh root@$SERVER_IP << 'EOF'
+cd /root/PROJECT_NAME
+docker-compose down
+docker images | grep PROJECT_NAME | awk '{print $3}' | xargs docker rmi --force
+docker builder prune -f
+docker-compose build --no-cache
+docker-compose up -d
+sleep 5
+docker ps -f name=CONTAINER_NAME
+EOF
+
+# 4. 验证容器内代码
+ssh root@$SERVER_IP "docker exec CONTAINER_NAME ls -la /app"
+ssh root@$SERVER_IP "docker exec CONTAINER_NAME stat /app/main.py"
+
+# 5. 重新运行部署脚本（确保使用最新代码）
+./one_click_deploy.sh
+```
+
+### 场景 6：紧急回滚
+
+```bash
+# 1. 停止当前容器
+ssh root@$SERVER_IP "docker stop CONTAINER_NAME"
+
+# 2. 如果有备份，恢复备份
+ssh root@$SERVER_IP << 'EOF'
+cd /root/PROJECT_NAME
+tar -xzf /root/backup/PROJECT_NAME_backup_YYYYMMDD.tar.gz -C /root/PROJECT_NAME
+EOF
+
+# 3. 重新构建并启动
+ssh root@$SERVER_IP << 'EOF'
+cd /root/PROJECT_NAME
+docker-compose down
+docker-compose build --no-cache
+docker-compose up -d
+EOF
+
+# 4. 验证
+ssh root@$SERVER_IP "docker ps -f name=CONTAINER_NAME"
+ssh root@$SERVER_IP "docker logs --tail 30 CONTAINER_NAME"
+```
+
+### 场景 7：多环境部署（开发/生产）
+
+```bash
+# 1. 创建多个配置文件
+cat > .deploy_config.dev << 'EOF'
+SERVER_IP="dev.example.com"
+PROJECT_NAME="my-project-dev"
+DOCKER_CONTAINER_NAME="my-project-dev-app"
+DOCKER_IMAGE_NAME="my-project:dev"
+EOF
+
+cat > .deploy_config.prod << 'EOF'
+SERVER_IP="prod.example.com"
+PROJECT_NAME="my-project-prod"
+DOCKER_CONTAINER_NAME="my-project-prod-app"
+DOCKER_IMAGE_NAME="my-project:prod"
+EOF
+
+# 2. 部署到开发环境
+cp .deploy_config.dev .deploy_config
+./one_click_deploy.sh
+
+# 3. 部署到生产环境
+cp .deploy_config.prod .deploy_config
+./one_click_deploy.sh
+
+# 4. 或者使用环境变量
+SERVER_IP="prod.example.com" ./one_click_deploy.sh
+```
+
+---
+
+## 🎯 最佳实践建议 ⭐⭐⭐
+
+### 部署前
+
+1. ✅ **检查代码变更**
+   ```bash
+   git status
+   git diff
+   ```
+
+2. ✅ **检查配置文件**
+   ```bash
+   cat .env
+   cat .deploy_config
+   ```
+
+3. ✅ **查看会被打包的文件**
+   ```bash
+   find . -type f \
+       ! -path './.git/*' \
+       ! -path './logs/*' \
+       ... | sort | head -50
+   ```
+
+4. ✅ **测试 SSH 连接**
+   ```bash
+   ssh -o BatchMode=yes root@$SERVER_IP "echo 连接正常"
+   ```
+
+### 部署中
+
+1. ✅ **使用一键部署脚本**
+   ```bash
+   ./one_click_deploy.sh
+   ```
+
+2. ✅ **注意输出信息**
+   - 关注文件完整性检查
+   - 关注构建日志
+   - 关注验证结果
+
+3. ✅ **如果验证失败**
+   - 仔细阅读错误信息
+   - 按照提示执行重新部署命令
+
+### 部署后
+
+1. ✅ **验证容器状态**
+   ```bash
+   ssh root@$SERVER_IP "docker ps -f name=CONTAINER_NAME"
+   ```
+
+2. ✅ **检查容器日志**
+   ```bash
+   ssh root@$SERVER_IP "docker logs --tail 50 CONTAINER_NAME"
+   ```
+
+3. ✅ **测试应用功能**
+   ```bash
+   curl http://$SERVER_IP:$PORT/api/health
+   ```
+
+4. ✅ **检查错误日志**
+   ```bash
+   ssh root@$SERVER_IP "docker logs --tail 100 CONTAINER_NAME | grep -i error"
+   ```
+
+### 日常维护
+
+1. ✅ **定期检查容器状态**
+   ```bash
+   ssh root@$SERVER_IP "docker ps -f name=CONTAINER_NAME"
+   ```
+
+2. ✅ **定期清理磁盘空间**
+   ```bash
+   ssh root@$SERVER_IP "docker system prune -f"
+   ```
+
+3. ✅ **定期备份数据**
+   ```bash
+   ssh root@$SERVER_IP "cd /root/PROJECT_NAME && tar -czf /root/backup/PROJECT_NAME_$(date +%Y%m%d).tar.gz ."
+   ```
+
+4. ✅ **监控资源使用**
+   ```bash
+   ssh root@$SERVER_IP "docker stats CONTAINER_NAME"
+   ```
+
+---
+
 ## 🎯 快速参考卡片
+
+### 标准部署流程 ⭐⭐⭐
+
+**完整的部署流程应该包含以下步骤：**
+
+```bash
+# 步骤 1：查看会被打包的文件（部署前检查）
+echo "=== 查看会被打包的文件列表 ==="
+find . -type f \
+    ! -path './.git/*' \
+    ! -path './logs/*' \
+    ! -path './data/*' \
+    ! -path './reports/*' \
+    ! -path './node_modules/*' \
+    ! -path './.pytest_cache/*' \
+    ! -path './.mypy_cache/*' \
+    ! -path './htmlcov/*' \
+    ! -path './tmp/*' \
+    ! -name '*.pyc' \
+    ! -name '*.pyo' \
+    ! -name '*.tar.gz' \
+    ! -name '*.log' \
+    ! -name '.DS_Store' \
+    ! -name '._*' \
+    ! -name '.env.local' \
+    ! -path './.trae/*' \
+    | sort | head -50
+
+# 步骤 2：统计文件数量（可选，用于对比）
+echo "=== 统计文件数量 ==="
+echo "本地文件数量："
+find . -type f \
+    ! -path './.git/*' \
+    ! -path './logs/*' \
+    ! -path './data/*' \
+    ! -path './reports/*' \
+    ! -path './node_modules/*' \
+    ! -path './.pytest_cache/*' \
+    ! -path './.mypy_cache/*' \
+    ! -path './htmlcov/*' \
+    ! -path './tmp/*' \
+    ! -name '*.pyc' \
+    ! -name '*.pyo' \
+    ! -name '*.tar.gz' \
+    ! -name '*.log' \
+    ! -name '.DS_Store' \
+    ! -name '._*' \
+    ! -name '.env.local' \
+    ! -path './.trae/*' \
+    | wc -l
+
+# 步骤 3：执行一键部署
+echo "=== 执行一键部署 ==="
+./one_click_deploy.sh
+
+# 步骤 4：如果验证失败，按照提示执行重新部署命令
+# 脚本会自动给出类似以下的命令：
+# ssh root@SERVER_IP << 'EOF'
+# cd /root/PROJECT_NAME
+# docker-compose down
+# docker rmi IMAGE_NAME:latest --force
+# docker-compose build --no-cache
+# docker-compose up -d
+# EOF
+```
+
+### 部署前检查清单 ⭐⭐⭐
+
+**在运行 `./one_click_deploy.sh` 之前，建议先检查：**
+
+```bash
+# ✅ 1. 检查是否有未提交的代码变更
+git status  # 如果有 Git 仓库
+
+# ✅ 2. 检查配置文件是否正确
+cat .env
+cat .deploy_config
+
+# ✅ 3. 查看会被打包的文件
+find . -type f \
+    ! -path './.git/*' \
+    ! -path './logs/*' \
+    ! -path './data/*' \
+    ! -path './reports/*' \
+    ! -path './node_modules/*' \
+    ! -path './.pytest_cache/*' \
+    ! -path './.mypy_cache/*' \
+    ! -path './htmlcov/*' \
+    ! -path './tmp/*' \
+    ! -name '*.pyc' \
+    ! -name '*.pyo' \
+    ! -name '*.tar.gz' \
+    ! -name '*.log' \
+    ! -name '.DS_Store' \
+    ! -name '._*' \
+    ! -name '.env.local' \
+    ! -path './.trae/*' \
+    | sort
+
+# ✅ 4. 检查 SSH 连接
+ssh -o StrictHostKeyChecking=no -o BatchMode=yes root@$SERVER_IP "echo SSH 连接正常"
+
+# ✅ 5. 检查服务器磁盘空间
+ssh root@$SERVER_IP "df -h"
+```
+
+### 部署后验证清单 ⭐⭐⭐
+
+**部署完成后，应该验证以下项目：**
+
+```bash
+# ✅ 1. 检查容器运行状态
+ssh root@$SERVER_IP "docker ps -f name=$DOCKER_CONTAINER_NAME"
+
+# ✅ 2. 检查镜像版本（确保是最新）
+ssh root@$SERVER_IP "docker inspect -f '{{.Created}}' $DOCKER_CONTAINER_NAME"
+ssh root@$SERVER_IP "docker images | grep $PROJECT_NAME"
+
+# ✅ 3. 检查容器日志
+ssh root@$SERVER_IP "docker logs --tail 50 $DOCKER_CONTAINER_NAME"
+
+# ✅ 4. 检查错误日志
+ssh root@$SERVER_IP "docker logs --tail 100 $DOCKER_CONTAINER_NAME | grep -i error"
+
+# ✅ 5. 检查端口映射
+ssh root@$SERVER_IP "docker port $DOCKER_CONTAINER_NAME"
+
+# ✅ 6. 测试应用功能
+curl http://$SERVER_IP:$PORT/health  # 根据实际接口调整
+```
+
+### 文件遗漏排查流程 ⭐⭐⭐
+
+**如果怀疑文件被遗漏，按以下步骤排查：**
+
+```bash
+# 步骤 1：检查压缩包内容
+echo "=== 压缩包文件列表（前 50 个）==="
+tar -tzf deployment_package.tar.gz | head -50
+
+# 步骤 2：解压压缩包到临时目录
+mkdir -p /tmp/verify_package
+tar -xzf deployment_package.tar.gz -C /tmp/verify_package
+
+# 步骤 3：统计文件数量
+echo "=== 文件数量对比 ==="
+echo "本地文件数量："
+find . -type f \
+    ! -path './.git/*' \
+    ! -path './logs/*' \
+    ! -path './data/*' \
+    ! -path './reports/*' \
+    ! -path './node_modules/*' \
+    ! -path './.pytest_cache/*' \
+    ! -path './.mypy_cache/*' \
+    ! -path './htmlcov/*' \
+    ! -path './tmp/*' \
+    ! -name '*.pyc' \
+    ! -name '*.pyo' \
+    ! -name '*.tar.gz' \
+    ! -name '*.log' \
+    ! -name '.DS_Store' \
+    ! -name '._*' \
+    ! -name '.env.local' \
+    ! -path './.trae/*' \
+    | wc -l
+
+echo "压缩包文件数量："
+find /tmp/verify_package -type f | wc -l
+
+# 步骤 4：对比差异
+echo "=== 文件差异对比 ==="
+diff -r <(find . -type f | grep -v '.git' | sort) \
+         <(find /tmp/verify_package -type f | sed 's|/tmp/verify_package/||' | sort) \
+    | head -20
+
+# 步骤 5：检查特定文件是否存在
+echo "=== 检查特定文件 ==="
+echo "本地文件："
+ls -la path/to/important/file.py
+
+echo "压缩包内文件："
+tar -tzf deployment_package.tar.gz | grep "path/to/important/file.py" || echo "文件不在压缩包中"
+
+# 步骤 6：清理临时文件
+rm -rf /tmp/verify_package
+
+# 步骤 7：如果确认文件被遗漏，修改 auto_package.sh 的排除规则后重新打包
+```
+
+### 容器未更新排查流程 ⭐⭐⭐
+
+**如果发现容器运行的不是最新代码，按以下步骤排查：**
+
+```bash
+# 步骤 1：检查容器状态
+ssh root@$SERVER_IP "docker ps -a -f name=$DOCKER_CONTAINER_NAME"
+
+# 步骤 2：检查容器使用的镜像
+ssh root@$SERVER_IP "docker inspect -f '{{.Config.Image}}' $DOCKER_CONTAINER_NAME"
+
+# 步骤 3：检查镜像创建时间
+echo "=== 镜像创建时间对比 ==="
+echo "容器镜像创建时间："
+ssh root@$SERVER_IP "docker inspect -f '{{.Created}}' $DOCKER_CONTAINER_NAME"
+
+echo "服务器最新镜像创建时间："
+ssh root@$SERVER_IP "docker images --format '{{.Repository}}:{{.Tag}}\t{{.CreatedAt}}' | grep $PROJECT_NAME"
+
+# 步骤 4：检查是否有多个容器
+ssh root@$SERVER_IP "docker ps -aq -f name=$DOCKER_CONTAINER_NAME | wc -l"
+
+# 步骤 5：检查构建日志
+ssh root@$SERVER_IP "cd /root/$PROJECT_NAME && docker-compose build --no-cache"
+
+# 步骤 6：强制重新部署
+ssh root@$SERVER_IP << 'EOF'
+cd /root/$PROJECT_NAME
+docker-compose down
+docker images | grep $PROJECT_NAME | awk '{print $3}' | xargs docker rmi --force
+docker-compose build --no-cache
+docker-compose up -d
+EOF
+
+# 步骤 7：验证容器内代码
+ssh root@$SERVER_IP "docker exec $DOCKER_CONTAINER_NAME ls -la /app"
+ssh root@$SERVER_IP "docker exec $DOCKER_CONTAINER_NAME stat /app/main.py"
+```
 
 ### 一键部署命令
 
@@ -1415,19 +2509,18 @@ EOF
 2. 本地已安装 `rsync`
 3. 知道服务器的 IP、用户名
 
-### 第一步：配置 SSH 免密登录（3 分钟）
+### 第一步：确认云平台密钥（1 分钟）
 
 ```bash
-# 1. 生成 SSH 密钥
-ssh-keygen -t ed25519 -C "your_email@example.com"
-# 直接回车，不设置密码
+# 1. 确认密钥文件存在
+ls -la /Users/yl/vscode/inspection_automation/docs/only.pem
 
-# 2. 复制公钥到服务器
-ssh-copy-id -i ~/.ssh/id_ed25519.pub root@43.156.242.184
+# 2. 设置密钥权限
+chmod 600 /Users/yl/vscode/inspection_automation/docs/only.pem
 
-# 3. 测试免密登录
-ssh root@43.156.242.184 "echo 成功"
-# 如果直接返回"成功"，说明配置成功
+# 3. 测试密钥登录
+ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@43.156.242.184 "echo 成功"
+# 如果直接返回"成功"，说明密钥配置正确
 ```
 
 ### 第二步：创建配置文件（1 分钟）
@@ -1554,7 +2647,103 @@ docker rm trading_system-app-old
 
 ---
 
-**文档版本：** v4.0（增强验证版）  
-**最后更新：** 2026-04-12  
-**技能类型：** 服务器部署自动化 + 规范管理 + 自动验证  
-**核心增强：** 部署后自动验证机制，确保容器更新到最新版本 ⭐⭐⭐
+**文档版本：** v6.0（云平台密钥支持 + 文件完整性 + 容器更新增强版）  
+**最后更新：** 2026-04-23  
+**技能类型：** 服务器部署自动化 + 规范管理 + 自动验证 + 文件完整性检查  
+**核心增强：** 
+- ⭐⭐⭐ 支持云平台创建的 SSH 密钥（腾讯云、阿里云等）
+- ⭐⭐⭐ 打包时自动进行文件完整性检查（防止文件遗漏）
+- ⭐⭐⭐ 部署时强制删除旧镜像（防止使用缓存）
+- ⭐⭐⭐ 验证时检查镜像创建时间差（确保容器更新）
+- ⭐⭐⭐ 详细的故障排查指南（文件遗漏 + 容器未更新）
+
+---
+
+## 📖 重要使用说明 ⭐⭐⭐
+
+### 关于部署流程的规范化
+
+**本技能文档已经包含了完整的部署流程规范，包括：**
+
+1. **标准部署流程** - 见"📚 使用场景速查"章节
+   - ✅ 场景 1：首次部署新项目
+   - ✅ 场景 2：日常代码更新
+   - ✅ 场景 3：部署后验证失败
+   - ✅ 场景 4：发现文件被遗漏
+   - ✅ 场景 5：容器运行的是旧代码
+   - ✅ 场景 6：紧急回滚
+   - ✅ 场景 7：多环境部署（开发/生产）
+
+2. **部署前检查清单** - 见"🎯 快速参考卡片"章节
+   - ✅ 检查会被打包的文件
+   - ✅ 统计文件数量
+   - ✅ 检查 SSH 连接
+   - ✅ 检查服务器磁盘空间
+
+3. **部署后验证清单** - 见"🎯 快速参考卡片"章节
+   - ✅ 检查容器运行状态
+   - ✅ 检查镜像版本
+   - ✅ 检查容器日志
+   - ✅ 检查错误日志
+   - ✅ 检查端口映射
+   - ✅ 测试应用功能
+
+4. **故障排查流程** - 见"🔍 故障排查"章节
+   - ✅ 问题 2：文件打包遗漏（详细排查步骤）
+   - ✅ 问题 3：容器未使用最新代码（详细排查步骤）
+
+### 关键命令速查
+
+**部署前查看会被打包的文件：**
+```bash
+find . -type f \
+    ! -path './.git/*' \
+    ! -path './logs/*' \
+    ! -path './data/*' \
+    ! -path './reports/*' \
+    ! -path './node_modules/*' \
+    ! -path './.pytest_cache/*' \
+    ! -path './.mypy_cache/*' \
+    ! -path './htmlcov/*' \
+    ! -path './tmp/*' \
+    ! -name '*.pyc' \
+    ! -name '*.pyo' \
+    ! -name '*.tar.gz' \
+    ! -name '*.log' \
+    ! -name '.DS_Store' \
+    ! -name '._*' \
+    ! -name '.env.local' \
+    ! -path './.trae/*' \
+    | sort | head -50
+```
+
+**执行一键部署：**
+```bash
+./one_click_deploy.sh
+```
+
+**如果验证失败，按照脚本提示执行重新部署命令**
+
+**如果怀疑文件遗漏：**
+```bash
+# 检查压缩包
+tar -tzf deployment_package.tar.gz | head -50
+
+# 对比本地和服务器文件
+ssh root@SERVER_IP "ls -la /root/project/"
+```
+
+### 最佳实践
+
+**每次部署都应该遵循以下流程：**
+
+1. **部署前** - 检查代码、配置文件、会被打包的文件
+2. **部署中** - 使用一键部署脚本，关注输出信息
+3. **部署后** - 验证容器状态、日志、功能
+
+**详细内容请参见：**
+- "📚 使用场景速查" - 7 个常见使用场景
+- "🎯 最佳实践建议" - 部署前/中/后的检查清单
+- "🔍 故障排查" - 文件遗漏和容器未更新的详细排查方法
+
+---

@@ -33,7 +33,13 @@ rsync -av \
     --exclude='venv/*' \
     --exclude='data/backtest/*' \
     --exclude='!data/backtest/.gitkeep' \
+    --delete \
     ./ "$TEMP_DIR/"
+
+# 清理 macOS 资源文件
+echo "🧹 清理 macOS 资源文件..."
+find "$TEMP_DIR" -name '._*' -delete
+find "$TEMP_DIR" -name '.DS_Store' -delete
 
 # 创建压缩包
 echo "📦 创建压缩包..."

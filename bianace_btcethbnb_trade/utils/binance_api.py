@@ -6,9 +6,12 @@ Binance API 数据获取模块
 
 import requests
 import json
-from datetime import datetime
 import os
+from datetime import datetime
 from .technical_indicators import get_technical_indicators
+
+# 通用 K 线服务配置
+KLINE_SERVICE_URL = os.getenv('KLINE_SERVICE_URL', 'http://43.156.242.184:8765/api/v1')
 
 def get_binance_futures_data(symbol="BTCUSDT"):
     """
@@ -30,11 +33,48 @@ def get_binance_futures_data(symbol="BTCUSDT"):
         if response.status_code == 200:
             return response.json()
         else:
-            print(f"API 请求失败: {response.status_code}")
+            print(f"API 请求失败：{response.status_code}")
             return None
             
     except Exception as e:
-        print(f"API 请求错误: {str(e)}")
+        print(f"API 请求错误：{str(e)}")
+        return None
+
+def get_orderbook_data(symbol="BTCUSDT", limit=5):
+    """
+    获取订单簿数据（用于 V6.13.2 限价单优化）
+    
+    Args:
+        symbol (str): 交易对符号，如 BTCUSDT
+        limit (int): 深度层级，默认 5（买一~买五，卖一~卖五）
+        
+    Returns:
+        dict: 订单簿数据，包含 bids（买单）和 asks（卖单）
+        示例：
+        {
+            "bids": [{"price": "95000.00", "qty": "0.5"}, ...],
+            "asks": [{"price": "95000.50", "qty": "0.3"}, ...]
+        }
+    """
+    url = f"https://fapi.binance.com/fapi/v1/depth?symbol={symbol}&limit={limit}"
+    
+    try:
+        response = requests.get(url, timeout=5)
+        
+        if response.status_code == 200:
+            data = response.json()
+            # 格式化订单簿数据
+            orderbook = {
+                'bids': [{'price': bid[0], 'qty': bid[1]} for bid in data.get('bids', [])],
+                'asks': [{'price': ask[0], 'qty': ask[1]} for ask in data.get('asks', [])]
+            }
+            return orderbook
+        else:
+            print(f"订单簿 API 请求失败：{response.status_code}")
+            return None
+            
+    except Exception as e:
+        print(f"订单簿 API 请求错误：{str(e)}")
         return None
 
 def get_multiple_symbols_data(symbols=["BTCUSDT", "ETHUSDT", "BNBUSDT"]):

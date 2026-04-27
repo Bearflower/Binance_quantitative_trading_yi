@@ -1,0 +1,19 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: short_selling_system_v31
+    restart: unless-stopped
+    volumes:
+      - ./logs:/app/logs
+      - ./reports:/app/reports
+      - ./data:/app/data
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+    # 使用 host 网络模式，方便访问服务器上的其他服务
+    network_mode: host

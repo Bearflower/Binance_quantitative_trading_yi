@@ -208,11 +208,11 @@ results = optimizer.grid_search(data, start_date, end_date)
 ```python
 server_ip = "43.156.242.184"
 server_user = "root"
-ssh_key = "~/.ssh/stockfilter_key"
+ssh_key = "/Users/yl/vscode/inspection_automation/docs/only.pem"
 ```
 
 **注意**:
-- 确保 SSH 密钥权限正确：`chmod 600 ~/.ssh/stockfilter_key`
+- 确保 SSH 密钥权限正确：`chmod 600 /Users/yl/vscode/inspection_automation/docs/only.pem`
 - 确保服务器可访问
 - 确保 Docker 容器正常运行
 

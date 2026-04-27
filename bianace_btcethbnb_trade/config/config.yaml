@@ -1,0 +1,331 @@
+# 币安自动化交易系统 - 统一配置文件
+# 版本: v6.13.2
+# 最后更新: 2026-04-27
+# 说明: 本文件整合了所有非敏感配置，敏感信息请使用 .env 文件
+
+# ==================== 系统配置 ====================
+system:
+  name: "Binance Trading System"
+  version: "6.13.2"
+  environment: "production"  # production / development
+  timezone: "Asia/Shanghai"
+  
+# ==================== 账户配置 ====================
+account:
+  total_capital: 500  # 总资金（U）
+  single_position_margin: 15  # 单仓保证金（U）
+  max_positions: 2  # 最大同时持仓数
+  reserve_capital_ratio: 0.8  # 备用金比例（80%）
+  max_total_margin_ratio: 0.3  # 最大总保证金占用比例（30%）
+
+# ==================== 禁止交易情形 ====================
+prohibited_conditions:
+  max_24h_price_change: 0.25  # 24小时涨幅 > 25% 禁止
+  max_24h_price_drop: 0.20  # 24小时跌幅 > 20% 禁止
+  max_funding_rate: 0.0008  # |资金费率| > 0.08% 禁止
+  max_spread_ratio: 0.003  # 买卖价差 > 0.3% 禁止
+  news_blackout_window: 3600  # 重大消息前后 1 小时（秒）
+
+# ==================== 信号等级定义 ====================
+signal_grades:
+  S:
+    min_profit_loss_ratio: 4.0  # 盈亏比 ≥ 1:4
+    max_leverage: 5  # 杠杆上限 5 倍
+    min_recommendation_score: 85  # 推荐度 ≥ 85 分
+    require_multi_timeframe: true  # 需要多时间框架共振
+  A:
+    min_profit_loss_ratio: 3.0  # 盈亏比 ≥ 1:3
+    max_leverage: 4  # 杠杆上限 4 倍
+    min_recommendation_score: 70  # 推荐度 ≥ 70 分
+    require_multi_timeframe: true  # 需要多时间框架确认
+  B:
+    min_profit_loss_ratio: 2.5  # 盈亏比 ≥ 1:2.5
+    max_leverage: 3  # 杠杆上限 3 倍
+    min_recommendation_score: 50  # 推荐度 ≥ 50 分
+    require_multi_timeframe: false  # 仅 1 小时信号
+
+# 允许交易的信号等级（500U 阶段一仅允许 S/A 级）
+allowed_signal_grades:
+  - S
+  - A
+
+# ==================== 趋势过滤器参数 ====================
+trend_filter:
+  ema21_period: 21  # EMA 周期
+  trend_slope_threshold: 0.01  # 趋势斜率阈值（1%）
+  support_resistance_tolerance: 0.01  # 支撑/阻力容忍度（1%）
+  high_low_distance_threshold: 0.03  # 距离前高/前低 < 3% 禁止入场
+
+# ==================== 仓位管理 ====================
+position_sizing:
+  risk_amount: 10  # 单笔风险金额（总资金的 2% = 10U）
+  min_stop_loss_pct: 0.02  # v6.13.3: 最小止损幅度 2%
+  max_stop_loss_pct: 0.04  # v6.13.3: 最大止损幅度 4%
+  max_position_notional: 1500  # 单品种最大名义价值（3 倍总资金）
+  max_total_notional: 4000  # 所有持仓最大名义价值（8 倍总资金）
+  
+  # v5.3 仓位系数机制（核心）
+  position_coefficient:
+    S: 0.5  # S 级：50%（高确信度，半仓）
+    A: 0.3  # A 级：30%（中等确信度，轻仓）
+    B: 0.2  # B 级：20%（试仓，极轻仓）
+
+# ==================== 风险管理 ====================
+risk_management:
+  stop_loss_multiplier: 1.0  # 止损倍数（100% 执行）
+  
+  # v5.3 止盈配置（基于 ATR 倍数）
+  take_profit_levels:
+    tp1_ratio: 0.3  # TP1 平仓 30%（A/B 级），S 级在代码中特殊处理为 20%
+    tp1_multiplier: 4.0  # v5.3: TP1 = 4.0×ATR
+    tp2_ratio: 0.3  # TP2 平仓 30%
+    tp2_multiplier: 6.0  # v5.3: TP2 = 6.0×ATR
+    tp3_ratio: 0.4  # TP3 平仓 40%（A/B 级），S 级在代码中特殊处理为 50%
+  
+  margin_ratio_warning: 1.5  # 保证金率预警线（≤1.5 减仓）
+  margin_ratio_emergency: 1.2  # 保证金率紧急线（≤1.2 全平）
+  max_margin_usage: 0.6  # 保证金使用率 > 60% 减仓
+  max_float_loss: 20  # 单笔浮亏 > 20U 强制止损
+
+# ==================== 移动止损参数 ====================
+trailing_stop:
+  enable_after_tp1: true  # TP1 后移至保本
+  enable_after_tp2: true  # TP2 后移至 TP1
+  use_sar_or_ema: "EMA21"  # v5.3: TP3 后用 EMA21 跟踪
+
+# ==================== 应急处理 ====================
+emergency_handling:
+  extreme_price_drop: 0.05  # 价格瞬间反向波动 5%
+  emergency_close_ratio: 0.5  # 极端行情平仓 50%
+  emergency_stop_loss: 0.015  # 剩余仓位止损收紧至 1.5%
+  consecutive_losses_limit: 2  # 连续 2 笔亏损停止交易
+  consecutive_losses_pause_days: 3  # 停止交易 3 天
+  weekly_loss_limit: 0.15  # 单周亏损 > 15% 停止交易
+  weekly_loss_pause_days: 3  # 停止交易 3 天
+
+# ==================== 策略优化 ====================
+strategy_optimization:
+  min_trades_for_optimization: 30  # 累计 30 笔交易后可优化参数
+  optimization_sample_size: 10  # 每次观察后续 10 笔交易
+  adjustable_params:
+    - position_sizing.min_stop_loss_pct
+    - position_sizing.max_stop_loss_pct
+    - risk_management.take_profit_levels.tp1_multiplier
+    - risk_management.take_profit_levels.tp2_multiplier
+    - account.single_position_margin
+  forbidden_adjustments:
+    - position_sizing.risk_amount
+    - risk_management.margin_ratio_warning
+    - risk_management.margin_ratio_emergency
+
+# ==================== 绩效评估标准 ====================
+performance_metrics:
+  min_win_rate: 0.45  # 胜率 > 45% 可接受
+  good_win_rate: 0.55  # 胜率 > 55% 优秀
+  min_profit_loss_ratio: 1.8  # 盈亏比 > 1.8 可接受
+  good_profit_loss_ratio: 2.5  # 盈亏比 > 2.5 优秀
+  min_leverage_efficiency: 0.5  # 杠杆效率 > 0.5
+  max_bankruptcy_rate: 0.15  # 爆仓率 < 15%
+  max_drawdown: 0.25  # 最大回撤 < 25%
+
+# ==================== 评分系统配置 ====================
+scoring:
+  # 权重配置
+  weights:
+    trend: 30  # 趋势强度权重
+    pattern: 30  # 技术形态权重
+    momentum: 20  # 动量指标权重
+    risk: 20  # 风险控制权重
+  
+  # 信号等级阈值
+  grade_thresholds:
+    S: 75  # S 级信号最低分数
+    A: 60  # A 级信号最低分数
+    # <60 分过滤，不开仓
+  
+  # 仓位系数配置
+  position_ratio:
+    base: 0.3  # 基础仓位系数 30%
+    max: 0.6  # 最大仓位系数 60%
+    coefficient: 0.3  # 仓位系数计算系数
+  
+  # 一票否决阈值
+  veto:
+    max_funding_rate: 0.0008  # 资金费率 > 0.08% 禁止
+    max_volatility: 0.06  # 波动率 > 6% 禁止
+    max_price_increase: 0.25  # 24 小时涨幅 > 25% 禁止
+    max_price_drop: 0.20  # 24 小时跌幅 > 20% 禁止
+  
+  # 评分参数
+  parameters:
+    # EMA 斜率参数
+    ema_slope:
+      periods: 5  # 使用最近 5 根 K 线
+      strong_threshold: 0.0008  # 0.08%/日（强趋势）
+      medium_threshold: 0.0004  # 0.04%/日（中等趋势）
+    
+    # 支撑阻力突破参数
+    breakthrough:
+      lookback_periods: 20  # 最近 20 根 4 小时 K 线
+      volume_ratio_threshold: 1.3  # 成交量放大倍数阈值
+    
+    # RSI 参数
+    rsi:
+      healthy_min: 30  # 健康区间下限
+      healthy_max: 70  # 健康区间上限
+      extreme_min: 20  # 超卖阈值
+      extreme_max: 80  # 超买阈值
+    
+    # MACD 参数
+    macd:
+      golden_cross_score: 6  # 金叉/死叉得分
+      zero_cross_score: 2  # 零轴穿越得分
+      expanding_score: 2  # 柱状图放大得分
+      accelerating_score: 2  # 趋势加速得分
+
+# ==================== 币种特定配置 ====================
+symbols:
+  BTCUSDT:
+    high_volatility_threshold: 0.04  # 高波动阈值 4%
+    break_through_pct: 0.015  # 突破阈值 1.5%
+  
+  ETHUSDT:
+    high_volatility_threshold: 0.045  # 高波动阈值 4.5%
+    break_through_pct: 0.015  # 突破阈值 1.5%
+  
+  BNBUSDT:
+    high_volatility_threshold: 0.07  # 高波动阈值 7%
+    break_through_pct: 0.025  # 突破阈值 2.5%
+
+# ==================== 数据完整性要求 ====================
+data_requirements:
+  min_klines:
+    1d: 55  # 日线最少需要 55 根 K 线
+    4h: 20  # 4 小时线最少需要 20 根
+    1h: 20  # 1 小时线最少需要 20 根
+  min_volume_periods: 20  # 成交量均值计算周期
+
+# ==================== 调度器配置 ====================
+scheduler:
+  # 单数据源分析任务配置（只使用 K 线服务）
+  # K 线服务数据源 - 每小时 25 分执行
+  kline_service_analysis:
+    minute: 25
+  
+  # 每日报告发送时间配置
+  daily_report:
+    hour: 9
+    minute: 5
+
+# ==================== 监控配置 ====================
+monitoring:
+  interval_minutes: 15  # 监控间隔（分钟）
+  profit_take_threshold: 0.02  # 止盈阈值（2%）
+  stop_loss_threshold: 0.01  # 止损阈值（1%）
+  liquidation_warning_level: 0.1  # 强平警告线（10%）
+  
+  # 健康检查配置
+  health_check:
+    enabled: true  # 是否启用健康检查
+    interval_minutes: 5  # 健康检查间隔（分钟）
+    timeout: 10  # 健康检查超时时间（秒）
+  
+  # 告警配置
+  alert:
+    enabled: true  # 是否启用告警
+    enable_notification: true  # 是否发送通知
+    max_history_size: 1000  # 告警历史最大记录数
+    
+    # 告警抑制配置
+    suppression:
+      enabled: true  # 是否启用告警抑制
+      default_cooldown_minutes: 30  # 默认冷却时间（分钟）
+  
+  # 告警阈值配置
+  alert_thresholds:
+    # 系统告警阈值
+    cpu_usage: 80  # CPU使用率告警阈值（%）
+    memory_usage: 80  # 内存使用率告警阈值（%）
+    disk_usage: 90  # 磁盘使用率告警阈值（%）
+    
+    # 应用告警阈值
+    api_success_rate: 95  # API成功率告警阈值（%）
+    response_time: 5.0  # 响应时间告警阈值（秒）
+    error_rate: 5  # 错误率告警阈值（%）
+    cache_hit_rate: 70  # 缓存命中率告警阈值（%）
+    
+    # 业务告警阈值
+    trade_success_rate: 90  # 交易成功率告警阈值（%）
+    consecutive_losses: 5  # 连续亏损次数告警阈值
+    capital_usage: 80  # 资金使用率告警阈值（%）
+    position_duration: 72  # 持仓时间告警阈值（小时）
+  
+  # 指标收集配置
+  metrics:
+    enabled: true  # 是否启用指标收集
+    collection_interval: 60  # 指标收集间隔（秒）
+    history_size: 1000  # 指标历史记录大小
+    enable_persistence: true  # 是否持久化指标数据
+
+# ==================== 性能优化配置 ====================
+performance:
+  enable_cache: true  # 启用评分缓存
+  cache_ttl_seconds: 5  # 缓存有效期（秒）
+  max_scoring_time_ms: 50  # 单次评分最大耗时（毫秒）
+
+# ==================== 日志配置 ====================
+logging:
+  level: "INFO"  # 日志级别: DEBUG / INFO / WARNING / ERROR / CRITICAL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  max_bytes: 10485760  # 日志文件最大大小（10MB）
+  backup_count: 5  # 保留的日志文件数量
+  enable_detail: true  # 启用详细得分日志
+
+# ==================== API 配置 ====================
+api:
+  binance:
+    base_url: "https://papi.binance.com"  # PM 账户 API 基础 URL
+    testnet: false  # 是否使用测试网
+    rate_limit:
+      requests_per_second: 50  # 每秒请求数限制
+      orders_per_second: 50  # 每秒订单数限制
+  
+  deepseek:
+    model: "deepseek-reasoner"  # DeepSeek 模型
+    api_base: "https://api.deepseek.com/v1"  # API 基础 URL
+  
+  # 通用服务配置
+  services:
+    notification_url: "http://43.156.242.184:8766/api/v1"  # 通知服务 URL
+    kline_url: "http://43.156.242.184:8765/api/v1"  # K 线服务 URL
+    notification_project: "btc_eth"  # 通知项目名称
+
+# ==================== 交易配置 ====================
+trading:
+  enable_auto_trade: true  # 是否启用自动交易
+  leverage: 20  # 默认杠杆倍数
+  max_single_trade_amount: 100  # 单笔最大交易金额（U）
+  max_daily_trades: 10  # 每日最大交易次数
+  supported_currencies:  # 支持的交易对
+    - BTCUSDT
+    - ETHUSDT
+    - BNBUSDT
+
+# ==================== 风险控制配置 ====================
+risk_control:
+  risk_level_low: 0.2  # 低风险等级
+  risk_level_medium: 0.5  # 中风险等级
+  risk_level_high: 0.8  # 高风险等级
+
+# ==================== JWT 配置 ====================
+jwt:
+  algorithm: "HS256"  # JWT 算法
+  access_token_expire_minutes: 30  # 访问令牌过期时间（分钟）
+
+# ==================== 文件路径配置 ====================
+paths:
+  trade_rule_docx: "./trade_rule.docx"  # 交易规则文档路径
+  trade_rule_500u: "./500Utrade_rule_v3.0.md"  # 500U 交易规则路径
+  screenshot_output: "./data/screenshots"  # 截图输出目录
+  report_output: "./reports"  # 报告输出目录
+  log_dir: "./logs"  # 日志目录

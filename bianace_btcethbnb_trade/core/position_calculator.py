@@ -244,20 +244,20 @@ class PositionCalculator:
         # 总资金
         total_capital = self.params.get('account.total_capital', Decimal('500'))
         
-        # 最大总保证金占用比例（30%）
-        max_margin_ratio = self.params.get('account.max_total_margin_ratio', Decimal('0.3'))
-        max_allowed_margin = total_capital * max_margin_ratio
-        
-        if total_margin > max_allowed_margin:
-            reason = f"总保证金 {total_margin:.2f}U 超过上限 {max_allowed_margin:.2f}U（{max_margin_ratio:.0%}总资金）"
-            return False, reason
-        
         # 检查保证金使用率预警线（60%）
         margin_usage_ratio = total_margin / total_capital
         max_usage = self.params.get('risk_management.max_margin_usage', Decimal('0.6'))
         
         if margin_usage_ratio > max_usage:
             reason = f"保证金使用率 {margin_usage_ratio:.0%} 超过预警线 {max_usage:.0%}"
+            return False, reason
+        
+        # 最大总保证金占用比例（30%）
+        max_margin_ratio = self.params.get('account.max_total_margin_ratio', Decimal('0.3'))
+        max_allowed_margin = total_capital * max_margin_ratio
+        
+        if total_margin > max_allowed_margin:
+            reason = f"总保证金 {total_margin:.2f}U 超过上限 {max_allowed_margin:.2f}U（{max_margin_ratio:.0%}总资金）"
             return False, reason
         
         return True, "保证金使用率在安全范围内"

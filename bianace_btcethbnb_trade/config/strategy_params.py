@@ -106,8 +106,8 @@ class StrategyParams:
             # ========== 第四章：仓位管理 ==========
             'position_sizing': {
                 'risk_amount': Decimal('10'),  # 单笔风险金额（总资金的 2% = 10U）
-                'min_stop_loss_pct': Decimal('0.03'),  # 最小止损幅度 3%
-                'max_stop_loss_pct': Decimal('0.07'),  # 最大止损幅度 7%
+                'min_stop_loss_pct': Decimal('0.02'),  # v6.13.3: 最小止损幅度 2%（从 3% 下调）
+                'max_stop_loss_pct': Decimal('0.04'),  # v6.13.3: 最大止损幅度 4%（从 7% 下调）
                 'max_position_notional': Decimal('1500'),  # 单品种最大名义价值（3 倍总资金）
                 'max_total_notional': Decimal('4000'),  # 所有持仓最大名义价值（8 倍总资金）
                 # v5.3 仓位系数机制（核心）

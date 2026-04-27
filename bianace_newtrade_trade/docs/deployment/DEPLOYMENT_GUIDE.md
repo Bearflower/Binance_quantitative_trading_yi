@@ -17,7 +17,7 @@
 
 ```bash
 # 检查是否已有 SSH 密钥
-ls -la ~/.ssh/id_rsa.pub
+ls -la /Users/yl/vscode/inspection_automation/docs/only.pem.pub
 
 # 如果没有，生成新的 SSH 密钥
 ssh-keygen -t rsa -b 4096 -C "your_email@example.com"
@@ -32,7 +32,7 @@ ssh-copy-id -o StrictHostKeyChecking=no root@43.156.242.184
 # 输入服务器密码
 
 # 方法 2：手动复制
-cat ~/.ssh/id_rsa.pub | ssh root@43.156.242.184 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
+cat /Users/yl/vscode/inspection_automation/docs/only.pem.pub | ssh root@43.156.242.184 "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
 ```
 
 #### 步骤 3: 测试 SSH 连接
@@ -175,7 +175,7 @@ python3 test_all_stages_v2.py
 **解决方案**:
 ```bash
 # 检查 SSH 密钥
-ls -la ~/.ssh/id_rsa.pub
+ls -la /Users/yl/vscode/inspection_automation/docs/only.pem.pub
 
 # 重新配置 SSH 密钥
 ssh-copy-id root@43.156.242.184

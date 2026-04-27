@@ -456,6 +456,19 @@ class DatabaseManager:
         self._execute_query(query, params)
         logger.debug(f"监控日志已保存：{symbol}")
     
+    def save_time_close_log(self, symbol: str, position_side: str,
+                           reason: str, order_id: int, close_time: datetime):
+        """v6.13.3: 保存时间平仓日志"""
+        query = """
+            INSERT INTO time_close_logs 
+            (symbol, position_side, reason, order_id, close_time, created_at)
+            VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        """
+        
+        params = (symbol, position_side, reason, order_id, close_time)
+        self._execute_query(query, params)
+        logger.info(f"时间平仓日志已保存：{symbol}")
+    
     def get_monitoring_logs(self, symbol: str = None, 
                            start_time: datetime = None,
                            limit: int = 100) -> List[Dict[str, Any]]:

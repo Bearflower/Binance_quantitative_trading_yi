@@ -37,7 +37,7 @@ else
     echo ""
     echo "请执行以下步骤："
     echo "1. 生成 SSH 密钥：ssh-keygen -t ed25519 -C 'your_email@example.com'"
-    echo "2. 复制公钥到服务器：ssh-copy-id -i ~/.ssh/id_ed25519.pub root@$SERVER_IP"
+    echo "2. 复制公钥到服务器：ssh-copy-id -i /Users/yl/vscode/inspection_automation/docs/only.pem.pub root@$SERVER_IP"
     echo "3. 测试免密登录：ssh root@$SERVER_IP 'echo 成功'"
     exit 1
 fi

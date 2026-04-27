@@ -1,0 +1,11 @@
+# 调度器配置文件
+
+# 单数据源分析任务配置（只使用 K 线服务）
+# K 线服务数据源 - 每小时 25 分执行
+kline_service_analysis:
+  minute: 25
+
+# 每日报告发送时间配置
+daily_report:
+  hour: 9
+  minute: 5

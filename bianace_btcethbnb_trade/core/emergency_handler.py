@@ -42,6 +42,7 @@ class EmergencyHandler:
         # 停止交易状态
         self.trading_halt_until: Optional[datetime] = None
         self.trading_halt_reason: str = ""
+        self.trading_halt_indefinite: bool = False  # 是否无限期停止交易
     
     def check_extreme_market(
         self,
@@ -167,6 +168,7 @@ class EmergencyHandler:
             # 设置停止交易状态（无限期，直到手动恢复）
             self.trading_halt_until = None  # None 表示无限期停止
             self.trading_halt_reason = f"总资金回撤{drawdown_ratio:.1%}"
+            self.trading_halt_indefinite = True  # 标记为无限期停止
             
             return True
         else:
@@ -180,6 +182,10 @@ class EmergencyHandler:
         Returns:
             (是否允许交易，原因)
         """
+        # 检查是否无限期停止交易
+        if self.trading_halt_indefinite:
+            return False, f"停止交易中：{self.trading_halt_reason}（需手动恢复）"
+        
         # 检查是否有停止交易状态
         if self.trading_halt_until is None:
             # 没有停止交易，允许交易
@@ -203,6 +209,7 @@ class EmergencyHandler:
         logger.info(f"手动恢复交易：{self.trading_halt_reason}")
         self.trading_halt_until = None
         self.trading_halt_reason = ""
+        self.trading_halt_indefinite = False
     
     def get_emergency_status(self) -> Dict[str, Any]:
         """

@@ -10,12 +10,12 @@
 
 import uuid
 from datetime import datetime, timedelta
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, Any, List, Tuple
 from enum import Enum
 from pathlib import Path
 import json
 
-from .scoring_engine import ScoringResult, scoring_engine
+from .scoring_engine_v41 import ScoringResultV41, scoring_engine_v41
 from utils.logger import logger
 
 
@@ -34,7 +34,7 @@ class Signal:
     def __init__(
         self,
         symbol: str,
-        scoring_result: ScoringResult,
+        scoring_result: ScoringResultV41,
         current_price: float,
         entry_min: float,
         entry_max: float,
@@ -98,7 +98,7 @@ class Signal:
         """从字典创建"""
         signal = cls(
             symbol=data['symbol'],
-            scoring_result=ScoringResult.from_dict(data['scoring_result']),
+            scoring_result=ScoringResultV41.from_dict(data['scoring_result']),
             current_price=data['current_price'],
             entry_min=data['entry_min'],
             entry_max=data['entry_max'],
@@ -164,7 +164,7 @@ class Signal:
 
 
 class SignalManager:
-    """信号管理器"""
+    """信号管理器 v3.1（增加冷却机制）"""
     
     def __init__(self, state_file: str = "data/signals.json"):
         """
@@ -176,10 +176,13 @@ class SignalManager:
         self.state_file = Path(state_file)
         self.signals: Dict[str, Signal] = {}
         
+        # 冷却记录：symbol -> 最后开仓时间
+        self.cooldown_records: Dict[str, datetime] = {}
+        
         # 加载状态
         self.load_state()
         
-        logger.info("✅ 信号管理器初始化完成")
+        logger.info("✅ 信号管理器 v3.1 初始化完成（带冷却机制）")
     
     def load_state(self) -> bool:
         """加载信号状态"""
@@ -225,8 +228,9 @@ class SignalManager:
     def generate_signal(
         self,
         symbol: str,
-        scoring_result: ScoringResult,
+        scoring_result: ScoringResultV41,
         current_price: float,
+        klines: Optional[List[Dict[str, Any]]] = None,
         stop_loss_percent: float = 0.05,
         take_profit_1_percent: float = 0.20,
         take_profit_2_percent: float = 0.30,
@@ -240,6 +244,7 @@ class SignalManager:
             symbol: 币种符号
             scoring_result: 评分结果
             current_price: 当前价格
+            klines: K线数据（可选，用于 ATR 计算）
             stop_loss_percent: 止损比例 (默认 5%)
             take_profit_1_percent: 第一止盈比例 (默认 20%)
             take_profit_2_percent: 第二止盈比例 (默认 30%)
@@ -249,17 +254,48 @@ class SignalManager:
         Returns:
             交易信号对象，不符合条件返回 None
         """
-        # 检查是否应该开仓
-        if not scoring_engine.should_entry(scoring_result):
+        # 检查是否应该开仓（V4.1 标准：总分 >= 6.5）
+        if scoring_result.total_score < 6.5:
             logger.info(f"ℹ️ {symbol} 不符合开仓条件，不生成信号")
             return None
+        
+        # V4.1.1: 如果启用 ATR 且有 K 线数据，使用 ATR 计算止损止盈
+        stop_loss = current_price * (1 + stop_loss_percent)
+        take_profit_1 = current_price * (1 - take_profit_1_percent)
+        take_profit_2 = current_price * (1 - take_profit_2_percent)
+        
+        if klines and len(klines) > 15:
+            try:
+                # 计算 ATR
+                atr_period = 14
+                true_ranges = []
+                for i in range(1, len(klines)):
+                    high = float(klines[i].get('high', 0))
+                    low = float(klines[i].get('low', 0))
+                    prev_close = float(klines[i-1].get('close', 0))
+                    tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+                    true_ranges.append(tr)
+                
+                if len(true_ranges) >= atr_period:
+                    atr = sum(true_ranges[-atr_period:]) / atr_period
+                    
+                    if atr > 0:
+                        from config.settings import settings
+                        if settings.use_atr_sl_tp:
+                            stop_loss = current_price + atr * settings.stop_loss_atr_multiplier
+                            take_profit_1 = current_price - atr * settings.take_profit_atr_multiplier
+                            take_profit_2 = take_profit_1  # V4.1.1 使用单一止盈位
+                            
+                            logger.info(
+                                f"📊 V4.1.1 ATR 止损止盈：ATR={atr:.4f}, "
+                                f"止损={stop_loss:.4f}, 止盈={take_profit_1:.4f}"
+                            )
+            except Exception as e:
+                logger.warning(f"ATR 计算失败，使用传统百分比：{e}")
         
         # 计算关键价位
         entry_min = current_price * (1 - entry_range_percent / 2)
         entry_max = current_price * (1 + entry_range_percent / 2)
-        stop_loss = current_price * (1 + stop_loss_percent)
-        take_profit_1 = current_price * (1 - take_profit_1_percent)
-        take_profit_2 = current_price * (1 - take_profit_2_percent)
         
         # 创建信号
         signal = Signal(
@@ -377,7 +413,63 @@ class SignalManager:
             logger.info(f"🧹 清理 {count} 个过期信号")
         
         return count
+    
+    def is_in_cooldown(self, symbol: str, cooldown_hours: int = 2) -> bool:
+        """
+        检查币种是否在冷却期内
+        
+        Args:
+            symbol: 币种符号
+            cooldown_hours: 冷却时间（小时，默认 2 小时）
+            
+        Returns:
+            是否在冷却期内
+        """
+        if symbol not in self.cooldown_records:
+            return False
+        
+        last_trade_time = self.cooldown_records[symbol]
+        hours_since_trade = (datetime.now() - last_trade_time).total_seconds() / 3600
+        
+        if hours_since_trade < cooldown_hours:
+            remaining = cooldown_hours - hours_since_trade
+            logger.debug(f"⏰ {symbol} 仍在冷却期内，剩余 {remaining:.1f} 小时")
+            return True
+        
+        logger.debug(f"✅ {symbol} 已出冷却期")
+        return False
+    
+    def mark_as_traded(self, symbol: str):
+        """
+        标记币种为已交易（开始冷却）
+        
+        Args:
+            symbol: 币种符号
+        """
+        self.cooldown_records[symbol] = datetime.now()
+        logger.info(f"🔒 {symbol} 已标记为已交易，开始 {2} 小时冷却")
+    
+    def can_generate_signal(self, symbol: str, listing_hours: float) -> Tuple[bool, str]:
+        """
+        判断是否可以生成信号（v3.1 新规则）
+        
+        Args:
+            symbol: 币种符号
+            listing_hours: 上线时间（小时）
+            
+        Returns:
+            (是否允许，原因)
+        """
+        # 检查时间窗口：新币上线 48 小时内
+        if listing_hours > 48:
+            return False, f"上线时间过长 ({listing_hours:.1f}小时 > 48 小时)"
+        
+        # 检查冷却期
+        if self.is_in_cooldown(symbol, cooldown_hours=2):
+            return False, "信号冷却期内（2 小时）"
+        
+        return True, "符合开仓条件"
 
 
-# 全局信号管理器实例
+# 全局信号管理器实例 v3.1
 signal_manager = SignalManager()

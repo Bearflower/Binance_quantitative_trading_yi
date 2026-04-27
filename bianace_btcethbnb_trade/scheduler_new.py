@@ -154,12 +154,8 @@ class RuleEngineScheduler:
                 if check_extreme_market(symbol, price_change):
                     logger.warning(f"⚠️ {symbol} 极端行情，跳过该交易对")
             
-            # 步骤 3: 检查已平仓订单并更新胜率统计
-            logger.info("步骤 3: 检查已平仓订单并更新胜率统计...")
-            self._check_closed_positions_and_update_stats()
-            
-            # 步骤 4: 检测交易信号
-            logger.info("步骤 4: 检测交易信号...")
+            # 步骤 3: 检测交易信号
+            logger.info("步骤 3: 检测交易信号...")
             signals = self.signal_detector.detect_signals(SUPPORTED_CURRENCIES)
             result['signals'] = signals
             
@@ -431,124 +427,6 @@ class RuleEngineScheduler:
         content += f"\n时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
         
         self.lark_notifier.send_text_message(content)
-    
-    def _update_trade_statistics(self, symbol: str, pnl: Decimal, trade_date: datetime.date):
-        """
-        更新交易统计（盈亏）
-        
-        Args:
-            symbol: 交易对
-            pnl: 盈亏金额（正数=盈利，负数=亏损）
-            trade_date: 交易日期
-        """
-        try:
-            # 判断盈亏
-            is_win = pnl > 0
-            
-            # 更新 daily_execution_stats
-            if is_win:
-                update_query = """
-                    UPDATE daily_execution_stats
-                    SET win_count = win_count + 1,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE stat_date = %s
-                """
-            else:
-                update_query = """
-                    UPDATE daily_execution_stats
-                    SET loss_count = loss_count + 1,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE stat_date = %s
-                """
-            
-            self.db._execute_query(update_query, (trade_date,))
-            
-            result = '盈利' if is_win else '亏损'
-            logger.info(f"📊 交易统计已更新：{symbol} {result} {abs(pnl):.2f} USDT")
-            
-        except Exception as e:
-            logger.error(f"更新交易统计失败：{str(e)}")
-    
-    def _check_closed_positions_and_update_stats(self):
-        """
-        检查已平仓订单并更新胜率统计
-        
-        通过查询持仓风险来检测是否有仓位已被平掉，
-        如果有则计算盈亏并更新统计
-        """
-        try:
-            logger.info("检查已平仓订单...")
-            
-            # 查询数据库中所有未平仓的交易记录
-            query = """
-                SELECT id, symbol, direction, entry_price, quantity, order_id
-                FROM trade_records
-                WHERE status = 'OPEN'
-                ORDER BY created_at DESC
-            """
-            open_positions = self.db._execute_query(query)
-            
-            if not open_positions:
-                logger.info("无未平仓记录")
-                return
-            
-            # 检查每个持仓
-            for position in open_positions:
-                symbol = position['symbol']
-                try:
-                    # 获取当前持仓风险
-                    positions = self.trade_api.get_position_risk(symbol)
-                    
-                    # 如果持仓为 0 或空仓，说明已平仓
-                    current_qty = abs(Decimal(positions[0]['positionAmt'])) if positions else Decimal('0')
-                    entry_qty = position['position_qty']
-                    
-                    if current_qty < entry_qty or not positions:
-                        logger.info(f"检测到 {symbol} 已平仓 (持仓：{current_qty}, 开仓：{entry_qty})")
-                        
-                        # 获取平仓价格（通过账户余额变化或订单历史）
-                        # 简化处理：使用当前价格估算
-                        ticker = self.trade_api.get_ticker(symbol)
-                        close_price = Decimal(ticker['lastPrice'])
-                        entry_price = position['entry_price']
-                        direction = position['direction']
-                        
-                        # 计算盈亏
-                        if direction == '多':
-                            pnl = (close_price - entry_price) * current_qty
-                        else:
-                            pnl = (entry_price - close_price) * current_qty
-                        
-                        # 更新统计
-                        trade_date = datetime.now().date()
-                        self._update_trade_statistics(symbol, pnl, trade_date)
-                        
-                        # 更新交易记录状态
-                        update_query = """
-                            UPDATE trade_records
-                            SET status = 'CLOSED',
-                                close_price = %s,
-                                close_time = %s,
-                                pnl = %s,
-                                updated_at = %s
-                            WHERE id = %s
-                        """
-                        self.db._execute_query(update_query, (
-                            close_price,
-                            datetime.now(),
-                            pnl,
-                            datetime.now(),
-                            position['id']
-                        ))
-                        
-                        logger.info(f"✅ {symbol} 平仓统计完成：{'盈利' if pnl > 0 else '亏损'} {abs(pnl):.2f} USDT")
-                    
-                except Exception as e:
-                    logger.error(f"检查 {symbol} 持仓状态失败：{str(e)}")
-                    continue
-            
-        except Exception as e:
-            logger.error(f"检查已平仓订单失败：{str(e)}")
     
     def _record_daily_stats(self, signals_count: int, executed_count: int):
         """

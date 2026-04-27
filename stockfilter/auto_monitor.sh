@@ -14,7 +14,7 @@ while true; do
     echo "[$CURRENT_TIME] 检查进度..."
     
     # 查询当前进度
-    RESULT=$(ssh -i ~/.ssh/stockfilter_key root@43.156.242.184 "docker exec -i stockfilter-app python3 -c \"from data.database import DatabaseManager; db = DatabaseManager(); import pandas as pd; df = pd.read_sql('SELECT COUNT(DISTINCT code) as cnt FROM klines', db.conn); print(df.iloc[0,0]); db.close()\" 2>/dev/null")
+    RESULT=$(ssh -i /Users/yl/vscode/inspection_automation/docs/only.pem root@43.156.242.184 "docker exec -i stockfilter-app python3 -c \"from data.database import DatabaseManager; db = DatabaseManager(); import pandas as pd; df = pd.read_sql('SELECT COUNT(DISTINCT code) as cnt FROM klines', db.conn); print(df.iloc[0,0]); db.close()\" 2>/dev/null")
     
     if [ -n "$RESULT" ]; then
         echo "  已获取：$RESULT 只股票（目标：$TARGET_COUNT 只）"
