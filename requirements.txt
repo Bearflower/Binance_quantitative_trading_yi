@@ -1,0 +1,28 @@
+# 核心依赖
+python-binance==1.0.19
+aiohttp==3.9.1
+asyncpg==0.29.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+PyYAML==6.0.1
+python-dotenv==1.0.0
+
+# Web框架
+fastapi==0.109.0
+uvicorn[standard]==0.24.0
+
+# 技术指标
+pandas==2.2.1
+numpy==1.26.4
+# TA-Lib==0.4.28  # 需要先安装系统依赖: brew install ta-lib
+
+# 任务调度
+APScheduler==3.10.4
+
+# 日志
+structlog==24.1.0
+
+# 测试
+pytest==8.0.0
+pytest-asyncio==0.23.3
+pytest-cov==4.1.0

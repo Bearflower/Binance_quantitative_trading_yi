@@ -1,0 +1,22 @@
+# Dashboard 后端依赖
+
+# FastAPI 框架
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# 数据验证
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# 数据库
+asyncpg==0.29.0
+
+# 日志
+structlog==23.2.0
+
+# 配置文件
+pyyaml==6.0.1
+python-dotenv==1.0.0
+
+# HTTP 客户端（用于 Binance API）
+httpx==0.25.2

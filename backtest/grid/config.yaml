@@ -1,0 +1,140 @@
+# ETHUSDT网格交易策略回测配置
+
+# 回测基本信息
+backtest:
+  name: grid_ethusdt_backtest
+  version: "1.0.0"
+  description: "ETHUSDT网格交易策略回测"
+
+  # 回测时间范围
+  start_date: "2025-11-09"
+  end_date: "2026-05-09"
+
+  # 初始资金
+  initial_balance: 10000  # USDT
+
+  # 交易费用
+  commission_rate: 0.0004  # 0.04% (币安永续合约maker费率)
+  slippage_rate: 0.0001    # 0.01% 滑点
+
+  # 数据路径
+  data_dir: "/Users/yl/vscode/Binance_quantitative_trading/data/klines"
+
+  # 报告输出路径
+  report_dir: "/Users/yl/vscode/Binance_quantitative_trading/backtest/grid/reports"
+
+# 交易对配置
+symbol: ETHUSDT
+
+# K线配置
+kline:
+  # 主周期
+  interval: "1h"
+
+  # 多时间框架配置
+  timeframes:
+    - "15m"  # 边界突破检测
+    - "1h"   # 主判断周期
+    - "4h"   # 趋势过滤器
+
+  # K线数量限制
+  limit: 500
+
+# 网格策略参数(从strategies/grid/config.yaml继承)
+strategy:
+  # 市场状态检测配置
+  market:
+    adx_oscillation: 20
+    adx_trend: 25
+    adx_strong: 40
+    ema_fast: 20
+    ema_slow: 50
+    atr_period: 14
+    atr_baseline_period: 90
+    check_interval: 24  # 市场状态检测间隔（1h K线根数）
+
+    # ATR倍数配置
+    atr_multipliers:
+      oscillation: 4  # ETHUSDT专版：震荡宽度 P±4×ATR
+      uptrend_lower: 1.5
+      uptrend_upper: 4
+      downtrend_lower: 4
+      downtrend_upper: 1.5
+
+  # 网格配置（优化后参数）
+  grid:
+    type: dynamic
+    count: 20  # ETHUSDT专版：默认网格数量
+    min_grid_count: 8   # ETHUSDT专版：最小网格数量
+    max_grid_count: 30  # ETHUSDT专版：最大网格数量
+    base_grid_count: 20  # ETHUSDT专版：基础网格数量
+    spacing: 100  # 网格间距（实际应根据ATR的2.5倍动态计算）
+    spacing_ratio: 1.01
+    base_quantity: 0.001
+    stop_loss_buffer: 2
+    min_profit_rate: 0.01
+    amplitude_threshold: 0.3
+    
+    # 网格间距倍数配置
+    grid_spacing_atr_multiplier: 2.5  # 网格间距为ATR的2.5倍
+
+  # 交易配置
+  trading:
+    leverage: 10
+    margin: 500
+    min_quantity: 1
+
+  # 风险控制配置（优化后参数）
+  risk:
+    max_drawdown: 0.15  # 最大回撤15%（优化后）
+    max_position_ratio: 0.3  # 仓位上限30%（优化后）
+    daily_loss_limit: 0.03  # 日亏损限制3%（优化后）
+    stop_loss_percent: 0.1
+    grid_reset_threshold: 0.15
+    hard_stop_loss: -0.15  # 硬止损-15%（优化后）
+    
+    # 仓位上限（占总资金）
+    position_limit: 0.8     # 新增：仓位上限80%，防止过度持仓
+
+  # 移动止盈配置
+  trailing_stop:
+    enabled: true
+    profit_trigger: 0.15
+    trailing_percent: 0.05
+
+# 回测引擎配置
+engine:
+  # 订单执行模式: strict(严格), relaxed(宽松)
+  execution_mode: "strict"
+
+  # 进度日志输出间隔（K线根数）
+  progress_log_interval: 500
+
+  # 是否启用日志
+  enable_logging: true
+
+  # 日志级别: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
+
+  # 是否保存交易记录
+  save_trades: true
+
+  # 是否保存资金曲线
+  save_equity_curve: true
+
+# 性能分析配置
+analysis:
+  # 是否计算夏普比率
+  calculate_sharpe_ratio: true
+
+  # 无风险利率(年化)
+  risk_free_rate: 0.02
+
+  # 是否计算最大回撤
+  calculate_max_drawdown: true
+
+  # 是否计算胜率
+  calculate_win_rate: true
+
+  # 是否计算盈亏比
+  calculate_profit_loss_ratio: true

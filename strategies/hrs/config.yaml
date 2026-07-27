@@ -1,0 +1,420 @@
+# 混合反转策略 HRS V2.3 配置（动态阈值版）
+
+# 策略基本信息
+strategy:
+  name: hrs
+  version: "2.3.0"
+  description: "混合反转策略 V2.3 - 双轨并行 + 半EMM + 全市场动态阈值"
+
+# 评分系统配置
+scoring:
+  # 权重（不得超过100%）
+  weights:
+    contract: 0.25      # 合约数据（OI/市值比）权重
+    technical: 0.45     # 技术面（形态）权重
+    sentiment: 0.30     # 情绪面（资金费率）权重
+
+  # 开仓总分阈值
+  entry_threshold: 6.0
+
+  # 技术面硬性要求
+  technical:
+    min_total_score: 4.0        # 技术总分最低要求
+    min_primary_pattern_score: 1.0  # 基础形态最低评分（含替代形态）
+
+  # V2.0 新增：极端行情加分
+  extreme_bonus:
+    enabled: true                # 是否启用极端行情加分
+    bonus_score: 1.5             # 加分值
+    technical_score_cap: 10      # 技术评分封顶值
+    short:
+      threshold: 0.15            # 做空：24h涨幅 ≥ 15%（小数形式）
+    long:
+      threshold: -0.15           # 做多：24h跌幅 ≤ -15%（小数形式，负值表示下跌）
+
+  # 合约数据评分配置（OI/市值比）
+  contract:
+    oi_market_cap_ratio:
+      thresholds:
+        extreme_high: 0.25    # >0.25: 极度拥挤
+        high: 0.20            # 0.20~0.25: 拥挤
+        mid_high: 0.15        # 0.15~0.20: 中等偏拥挤
+        mid: 0.10             # 0.10~0.15: 中性
+        low: 0.05             # 0.05~0.10: 冷清
+      scores:
+        short:
+          extreme_high: 10
+          high: 8
+          mid_high: 6
+          mid: 4
+          low: 2
+          extreme_low: 0
+        long:
+          extreme_high: 0
+          high: 1
+          mid_high: 3
+          mid: 5
+          low: 7
+          extreme_low: 10
+      # 市值获取失败时的兜底分数
+      fallback:
+        short: 0
+        long: 5
+
+  # 情绪面评分配置（资金费率年化%）
+  sentiment:
+    thresholds:
+      extreme_high: 150      # >150%
+      high: 100              # 100%~150%
+      mid: 50                # 50%~100%
+      low: 0                 # 0%~50%
+      low_negative: -20      # -20%~0%
+    scores:
+      short:
+        extreme_high: 10
+        high: 8
+        mid: 6
+        low: 3
+        negative: 1
+        extreme_negative: 0
+      long:
+        extreme_high: 0
+        high: 2
+        mid: 4
+        low: 6
+        negative: 8
+        extreme_negative: 10
+
+# ============================================================
+# V2.3 极端市场模块（EMM）配置（动态分位数版）
+# ============================================================
+emm:
+  enabled: true                       # 是否启用EMM模块
+  # 动态阈值分位数（由candidate_pool计算后注入，此处为固定回退值）
+  dynamic:
+    funding_rate_percentile_long: 0.10    # 做多EMM：费率取BOTTOM 10%
+    funding_rate_percentile_short: 0.90   # 做空EMM：费率取TOP 10%
+    oi_market_cap_percentile: 0.90        # EMM：OI/市值比取TOP 10%
+
+  # 做多EMM触发条件（固定回退值，动态启用时使用分位数）
+  long:
+    price_change_24h: -15             # 24h涨跌幅 ≤ -15%（固定，不参与动态）
+    funding_rate_annual: -30           # 资金费率年化 ≤ -30%（固定回退值）
+    oi_market_cap_ratio: 0.10          # OI/市值比 ≥ 0.10（固定回退值）
+
+  # 做空EMM触发条件（固定回退值，动态启用时使用分位数）
+  short:
+    price_change_24h: 15              # 24h涨跌幅 ≥ +15%（固定，不参与动态）
+    funding_rate_annual: 100           # 资金费率年化 ≥ +100%（固定回退值）
+    oi_market_cap_ratio: 0.20          # OI/市值比 ≥ 0.20（固定回退值）
+
+  # EMM模式评分参数
+  scoring:
+    technical_score: 5.0               # 固定技术分
+    entry_threshold: 6.0               # 入场门槛（总分 ≥ 6.0）
+
+# ============================================================
+# 思路3：半EMM配置（2/3条件满足时跳过形态门槛）
+# ============================================================
+semi_emm:
+  enabled: true                       # 是否启用半EMM
+  min_conditions: 2                   # 最少满足条件数（2/3）
+  emm_tech_floor: 5.0                 # 半EMM触发时技术分地板值（与完整EMM对齐）
+  entry_threshold: 5.0                # F+G：半EMM总分阈值（低于标准6.0）
+  contract_floor: 3.0                 # G：半EMM触发时合约分地板值
+
+# 候选池配置
+candidate_pool:
+  # 每日筛选时间列表（UTC+8），每天扫描多次
+  scan_times: ["08:05", "20:05"]
+  # 向后兼容：单次扫描时间（当 scan_times 不存在时使用）
+  scan_time: "08:05"
+  # 价格变化来源：'daily_kline' 使用日K线开盘价计算，'ticker' 使用24hr ticker的 priceChangePercent
+  price_change_source: "daily_kline"
+  # 扫描时间窗口容差（分钟），避免整点检查遗漏
+  scan_window_minutes: 5
+  # 并发API请求数限制（日K线获取等并行操作）
+  api_concurrency_limit: 20
+  # 候选池为空时休眠配置
+  sleep_on_empty:
+    enabled: true                      # 是否启用候选池为空时休眠
+  # OI估算系数（当无法获取实时OI时，用成交额×此系数估算）
+  oi_estimation_ratio: 0.3
+  # V2.3 动态阈值配置（基于全市场分位数自适应）
+  dynamic_thresholds:
+    enabled: true                      # 是否启用动态阈值
+    min_sample_size: 10                # 最小样本数（不足时回退到固定阈值）
+    # 做空：取市场 TOP 20%（80分位数）
+    funding_rate_percentile_short: 0.80
+    oi_market_cap_percentile_short: 0.80
+    ema20_deviation_percentile_short: 0.70
+    # 做多：取市场 BOTTOM 20%（20分位数）
+    funding_rate_percentile_long: 0.20
+    oi_market_cap_percentile_long: 0.20
+    ema20_deviation_percentile_long: 0.30
+    # EMM：取市场极端分位数（10%/90%）
+    funding_rate_percentile_emm_long: 0.10   # 做多EMM：费率取BOTTOM 10%
+    funding_rate_percentile_emm_short: 0.90  # 做空EMM：费率取TOP 10%
+    oi_market_cap_percentile_emm: 0.90       # EMM：OI/市值比取TOP 10%
+
+  # 做空候选条件（固定阈值，动态阈值启用时作为回退）
+  short:
+    price_change_24h: 0.08        # 24h涨跌幅 ≥ 8%（固定，不参与动态计算）
+    funding_rate_annual: 0.80     # 资金费率年化 ≥ 80%（固定回退值）
+    ema20_deviation: 0.08         # 价格偏离EMA20(4h) ≥ 8%（固定回退值）
+    oi_market_cap_min: 0.10       # OI/市值比 ≥ 0.10（固定回退值）
+  # 做多候选条件（固定阈值，动态阈值启用时作为回退）
+  long:
+    price_change_24h: -0.06       # 24h涨跌幅 ≤ -6%（固定，不参与动态计算）
+    funding_rate_annual: -0.20    # 资金费率年化 ≤ -20%（固定回退值）
+    ema20_deviation: -0.06        # 价格偏离EMA20(4h) ≤ -6%（固定回退值）
+    oi_market_cap_max: 0.05       # OI/市值比 ≤ 0.05（固定回退值）
+
+  # 流动性门槛
+  liquidity:
+    min_volume_24h: 50000000      # 24h成交额 ≥ 5000万 USDT
+    min_oi_usd: 10000000          # 当前持仓量 OI ≥ 1000万 USDT
+
+  # 排除币种
+  exclude:
+    stablecoins:                  # 稳定币
+      - USDT
+      - USDC
+      - BUSD
+      - DAI
+      - TUSD
+      - USDP
+    # 杠杆代币关键词
+    leverage_tokens:
+      - BULL
+      - BEAR
+      - UP
+      - DOWN
+    # 排除的完整交易对（MCTPS 策略交易币种）
+    symbols:
+      - BTCUSDT
+      - ETHUSDT
+      - BNBUSDT
+      - SOLUSDT
+      - XRPUSDT
+      - TRXUSDT
+
+  # 新币策略冲突屏蔽
+  new_coin_conflict:
+    hours: 72                    # 3天内新币策略开仓过则排除
+
+# 形态识别配置
+pattern:
+  # 检测窗口（固定5根K线）
+  window_size: 5
+
+  # 做空形态
+  short:
+    three_tops:
+      min_deviation: 0.002       # 每相邻高点差 ≥ 0.2%
+      score_full: 4.0            # 三次冲顶满分
+      score_partial: 2.0         # 同一水平受阻3次
+      resistance_count: 3        # 同一水平受阻次数阈值
+    long_upper_shadow:
+      ratio_threshold: 2.0       # 上影线 ≥ 实体 × 2
+      score_full: 3.0
+      score_partial: 2.0
+    volume_stagnation:
+      volume_ratio: 1.5          # 成交量 ≥ 前5根均量 × 1.5
+      score_full: 3.0
+      score_partial: 2.0
+    # 思路2：替代形态（三次冲顶未触发时检测）
+    double_top:
+      score: 2.0                 # 双顶形态得分
+      tolerance: 0.02            # 两点差值容忍度（2%）
+      min_gap: 2                 # 两高点最小K线间隔
+    v_reversal:
+      score: 2.0                 # V型反转得分
+      consecutive_up: 2          # 连续阳线数
+      body_multiplier: 1.5       # 反转K线实体放大倍数
+
+  # 做多形态（与做空镜像对称）
+  long:
+    three_bottoms:
+      min_deviation: 0.002       # 每相邻低点差 ≥ 0.2%
+      score_full: 4.0
+      score_partial: 2.0
+      support_count: 3           # 同一支撑位触及次数阈值
+    long_lower_shadow:
+      ratio_threshold: 2.0       # 下影线 ≥ 实体 × 2
+      score_full: 3.0
+      score_partial: 2.0
+    volume_reversal:
+      volume_ratio: 1.5          # 成交量 ≥ 前5根均量 × 1.5
+      score_full: 3.0
+      score_partial: 2.0
+    # 思路2：替代形态（三次探底未触发时检测）
+    double_bottom:
+      score: 2.0                 # 双底形态得分
+      tolerance: 0.02            # 两点差值容忍度（2%）
+      min_gap: 2                 # 两低点最小K线间隔
+    v_reversal:
+      score: 2.0                 # V型反转得分
+      consecutive_down: 2        # 连续阴线数
+      body_multiplier: 1.5       # 反转K线实体放大倍数
+
+# 交易配置
+trading:
+  leverage: 2                    # 杠杆倍数（≤2倍，固定）
+  max_loss_percent: 0.02         # 每笔最大亏损：账户总资金2%
+  max_daily_positions: 3         # 单日最多开仓（总）
+  max_daily_same_direction: 2    # 同一方向单日最多开仓
+  fee_rate: 0.0004               # 手续费率 0.04%（taker fee）
+
+  # 价格精度配置
+  price:
+    quantize_precision: 1        # 数量化精度（1=整数）
+    quantize_rounding: "ROUND_HALF_UP"  # 舍入模式
+
+  # 止损配置
+  stop_loss:
+    atr_multiplier: 2.5          # ATR硬止损倍数
+    emergency_percent: 0.015     # 紧急止损：开仓价×1.015（做空）/ ×0.985（做多）
+    min_absolute_percent: 0.05   # 最小绝对止损：开仓价×1.05（做空）/ ×0.95（做多）
+
+  # 分批止盈配置
+  batch_take_profit:
+    target1_atr_multiplier: 1.5  # 第一目标：盈利 ≥ 1.5×ATR
+    target1_close_percent: 0.30  # 平仓30%
+    target2_atr_multiplier: 3.5  # 第二目标：盈利 ≥ 3.5×ATR
+    target2_close_percent: 0.40  # 平仓40%
+    trailing_stop_atr_multiplier: 1.5  # 移动止盈：从最佳价格回撤1.5×ATR
+
+  # 时间止损
+  time_stop:
+    max_holding_hours: 72        # 持仓超过72小时且未达第一目标，平仓100%
+
+  # 开仓延迟
+  entry_timeout:
+    minutes: 15                  # 15分钟内未完全成交则放弃
+    check_interval_seconds: 10   # 订单状态检查间隔（秒）
+
+  # 放弃条件
+  abandon:
+    extreme_lookback: 20         # 反向突破极值：最近20根1h K线
+    timeout_bars: 6              # 信号超时K线数：信号触发后超过N根K线未入场则放弃
+    funding_rate_reversal_threshold: 0  # 资金费率逆转阈值：做空时费率<0放弃，做多时费率>0放弃
+
+  # 移动止盈配置
+  trailing:
+    atr_multiplier: 1.5          # 移动止盈：从最佳价格回撤1.5×ATR
+
+  # 连续亏损暂停
+  consecutive_loss:
+    max_count: 3                 # 连续3笔亏损
+    pause_days: 2                # 暂停2天
+
+  # 最大回撤熔断
+  max_drawdown:
+    threshold: 0.15              # 累计亏损≥15%
+    pause_days: 7                # 暂停一周
+
+  # 黑名单配置
+  blacklist:
+    check_hours: 24              # 止损后监控24小时
+    reverse_surge_percent: 0.05  # 反向波动超过止损价5%，永久禁止
+
+  # 加仓配置（P2-3）
+  add_position:
+    enabled: true                # 是否启用加仓
+    profit_threshold: 0.05       # 持仓盈利超过5%后允许加仓
+    size_ratio: 0.5              # 加仓仓位不超过初始仓位的50%
+    max_times: 1                 # 最大加仓次数
+
+  # 订单类型配置（全部使用限价单）
+  order_type:
+    entry: "LIMIT"                # 开仓限价单
+    close: "LIMIT"                # 平仓限价单
+    stop_loss: "STOP"             # 止损限价单
+    take_profit: "TAKE_PROFIT"    # 止盈限价单
+    stop_loss_offset: 0.002       # 止损限价偏移（0.2%），限价 = 触发价 × (1 + 偏移)
+    take_profit_offset: 0.0015    # 止盈限价偏移（0.15%），限价 = 触发价 × (1 + 偏移)
+
+  # 持仓检测配置
+  position_detection:
+    qty_tolerance_ratio: 0.01    # 数量容差比例
+    qty_tolerance_absolute: 0.0001  # 数量容差绝对值
+
+# K线配置
+kline:
+  interval: '1h'                 # 1小时K线
+  min_klines_for_analysis: 24    # 至少24根K线才激活
+  keep_count: 168                # 保留168根1h K线
+  # 4h EMA20 由1h K线合成，不单独注册4h
+  synthetic_4h_count: 50         # 4h合成K线保留50根
+  synthetic_4h_interval: 4       # 4h K线合成间隔（小时）
+  ema_period: 20                 # EMA计算周期
+  # 单次API拉取限制
+  max_api_limit: 100             # 单次最多100根K线
+  # 启动时K线预热等待配置
+  warmup:
+    min_bars: 24                 # 每个交易对至少需要24根1h K线
+    max_wait_seconds: 300        # 最多等待300秒（5分钟）
+    check_interval_seconds: 30   # 每30秒检查一次
+
+# 运行周期配置
+cycle:
+  check_interval_seconds: 3600   # 主循环检查间隔（1小时）
+  align_minute: 21               # 对齐到每小时第N分钟
+  retry_delay_seconds: 60        # 异常重试延迟
+  rescan_interval_seconds: 86400 # 候选池重新扫描间隔（24小时）
+  orphan_cleanup_interval_seconds: 3600  # 残留订单清理间隔（1小时）
+  klines_trim_interval_seconds: 3600    # K线缓存裁剪间隔（1小时）
+
+# 资金费率配置
+funding_rate:
+  # 必须使用历史费率快照（从/fapi/v1/fundingRate获取）
+  use_historical: true
+  # 费率缓存存活时间（秒），8小时=28800
+  cache_ttl_seconds: 28800
+  # 结算间隔（小时），默认8小时
+  settlement_interval_hours: 8
+  # 年化费率计算参数
+  settlements_per_day: 3         # 每日结算次数
+  days_per_year: 365             # 年化天数
+  # 费率结算周期（UTC+8）
+  settlement_times:
+    - "00:00"
+    - "08:00"
+    - "16:00"
+  # 结算后跳过评分时长（仅备选方案，默认使用历史费率）
+  skip_minutes_after_settlement: 5
+
+# ATR配置
+atr:
+  period: 14                     # ATR计算周期
+
+# 通知配置
+notification:
+  project: hrs                   # 项目名称
+  enabled: true                  # 是否启用通知
+  # 通知事件开关（P2-4）
+  events:
+    open_position: true          # 开仓通知
+    add_position: true           # 加仓通知
+    close_position: true         # 平仓通知
+    stop_loss: true              # 止损通知
+    take_profit: true            # 止盈通知
+    anomaly_alert: true          # 异常告警
+    pause_notification: true     # 暂停通知
+    cycle_summary: true          # 周期汇总
+
+# 极端行情熔断配置（P2-6）
+circuit_breaker:
+  enabled: true                  # 是否启用熔断
+  price_change_threshold: 0.30   # 1小时内涨跌超过30%触发熔断
+  duration_minutes: 60           # 熔断持续时间（分钟）
+
+# 数据库配置
+database:
+  schema: hrs                    # 独立schema
+
+# 日志配置
+logging:
+  level: INFO
+  format: json

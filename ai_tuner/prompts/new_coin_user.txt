@@ -1,0 +1,19 @@
+请对 {{ strategy_name }} 进行周度调优分析。
+
+## 当前策略配置
+
+```json
+{{ current_params }}
+```
+
+## 本周体检报告
+
+```json
+{{ report }}
+```
+
+## 历史调优记忆
+
+{{ memory_history }}
+
+请基于以上数据，给出本周的参数调优建议。严格按照 JSON 格式输出。

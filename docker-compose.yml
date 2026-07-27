@@ -1,0 +1,285 @@
+version: '3.8'
+
+# ============================================
+# 统一交易系统 Docker Compose 配置
+# 包含 PostgreSQL 数据库和三个交易策略
+# ============================================
+
+services:
+  # ============================================
+  # PostgreSQL 数据库服务
+  # ============================================
+  postgres:
+    image: postgres:15-alpine
+    container_name: trading_system-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: trading_platform
+      POSTGRES_USER: trading_user
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD:-trading_password_2024}
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=en_US.UTF-8"
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./database/postgres/init-scripts:/docker-entrypoint-initdb.d
+      - ./database/postgres/backups:/backups
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_platform"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ============================================
+  # HRS 混合反转策略服务
+  # ============================================
+  hrs-strategy:
+    build:
+      context: .
+      dockerfile: strategies/hrs/Dockerfile
+    container_name: trading_system-hrs
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_NAME=hrs
+      - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=hrs
+      - FEISHU_WEBHOOK_HRS=https://open.feishu.cn/open-apis/bot/v2/hook/e628ca79-2f0c-4e59-97b3-6c2054ccddb7
+    volumes:
+      - ./logs/hrs:/app/logs
+      - ./data/hrs:/app/data
+      - ./strategies/hrs/config.yaml:/app/strategies/hrs/config.yaml:rw
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================
+  # BTC/ETH 策略服务
+  # ============================================
+  btc-eth-strategy:
+    build:
+      context: .
+      dockerfile: strategies/btc_eth/Dockerfile
+    container_name: trading_system-btc_eth
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_NAME=btc_eth
+      - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=btc_eth
+    volumes:
+      - ./logs/btc_eth:/app/logs
+      - ./data/btc_eth:/app/data
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================
+  # 新币做空策略服务
+  # ============================================
+  new-coin-strategy:
+    build:
+      context: .
+      dockerfile: strategies/new_coin/Dockerfile
+    container_name: trading_system-new_coin
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_NAME=new_coin
+      - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=new_coin
+    volumes:
+      - ./logs/new_coin:/app/logs
+      - ./data/new_coin:/app/data
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================
+  # 网格交易策略服务
+  # ============================================
+  grid-strategy:
+    build:
+      context: .
+      dockerfile: strategies/grid/Dockerfile
+    container_name: trading_system-grid
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_NAME=grid
+      - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=grid
+    volumes:
+      - ./logs/grid:/app/logs
+      - ./data/grid:/app/data
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================
+  # StratTuneAI 多策略AI调优系统
+  # ============================================
+  ai-tuner:
+    build:
+      context: .
+      dockerfile: ai_tuner/Dockerfile
+    container_name: ai-tuner
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Shanghai
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME}
+      - DB_USER=${DB_USER}
+      - DB_PASSWORD=${DB_PASSWORD}
+      - FEISHU_WEBHOOK_TUNER=${FEISHU_WEBHOOK_TUNER}
+      - KLINE_SERVICE_URL=${KLINE_SERVICE_URL}
+    volumes:
+      - ./strategies:/app/strategies:rw
+      - ./logs/ai_tuner:/app/logs
+    ports:
+      - "127.0.0.1:8777:8777"
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8777/api/v1/health')\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+
+# ============================================
+  # K 线数据服务（从 common_service 迁移）
+  # ============================================
+  kline_service:
+    build:
+      context: .
+      dockerfile: services/kline_service/Dockerfile
+    container_name: trading_system-kline
+    restart: unless-stopped
+    environment:
+      - DATABASE_URL=postgresql://binance:test_password_123456@common_service_postgres:5432/binance_data
+      - REDIS_URL=redis://common_service_redis:6379
+      - BINANCE_API_URL=https://fapi.binance.com
+      - SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,TRXUSDT
+      - COLLECT_INTERVALS=15m,1h,4h,1d
+      - LOG_LEVEL=INFO
+    ports:
+      - "8765:8000"
+    networks:
+      - trading-network
+      - common_network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import requests; requests.get('http://localhost:8000/api/v1/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 512M
+        reservations:
+          memory: 256M
+
+# ============================================
+# 数据卷配置
+# ============================================
+volumes:
+  postgres-data:
+    driver: local
+
+# ============================================
+# 网络配置
+# ============================================
+networks:
+  trading-network:
+    driver: bridge
+    name: trading-network-v2
+  common_network:
+    external: true
+    name: common_service_common_network

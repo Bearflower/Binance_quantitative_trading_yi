@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Binance 量化交易数据看板">
+  <title>QuantView · 量化交易看板</title>
+
+  <!-- 字体 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- 样式 -->
+  <link rel="stylesheet" href="css/style.css">
+
+  <!-- ECharts -->
+  <script src="js/vendor/echarts.min.js"></script>
+  <script>
+  if (typeof echarts === 'undefined') {
+      var s = document.createElement('script');
+      s.src = 'https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js';
+      s.onerror = function() {
+          var s2 = document.createElement('script');
+          s2.src = 'https://cdn.bootcdn.net/ajax/libs/echarts/5.5.0/echarts.min.js';
+          document.head.appendChild(s2);
+      };
+      document.head.appendChild(s);
+  }
+  </script>
+
+  <!-- 配置 -->
+  <script src="js/config.js"></script>
+</head>
+<body>
+
+  <div class="app-container">
+
+    <!-- ===== 导航栏 ===== -->
+    <header class="navbar">
+      <div class="navbar-brand">
+        <div class="brand-icon">B</div>
+        <span class="brand-text">QuantView</span>
+        <span class="brand-badge">v2.0</span>
+      </div>
+      <div class="navbar-actions">
+        <div class="toggle-group" role="radiogroup" aria-label="时间范围">
+          <button class="toggle-btn active" role="radio" aria-checked="true" data-range="daily">日</button>
+          <button class="toggle-btn" role="radio" aria-checked="false" data-range="weekly">周</button>
+          <button class="toggle-btn" role="radio" aria-checked="false" data-range="monthly">月</button>
+        </div>
+        <div class="update-time" aria-live="polite">
+          <span class="dot"></span>
+          <span>最后更新</span>
+          <span class="value">--</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ===== 页面标题 ===== -->
+    <div class="page-header">
+      <div>
+        <h1>数据看板</h1>
+        <p class="subtitle">实时监控 · 策略表现一览</p>
+      </div>
+    </div>
+
+    <!-- ===== 总览统计 ===== -->
+    <div class="overview-grid">
+      <div class="stat-card pnl animate-in">
+        <div class="stat-icon">💰</div>
+        <div class="stat-label">总盈亏</div>
+        <div class="stat-value positive" id="total-pnl">+0.00</div>
+        <div class="stat-sub">USDT</div>
+      </div>
+      <div class="stat-card winrate animate-in">
+        <div class="stat-icon">🎯</div>
+        <div class="stat-label">总胜率</div>
+        <div class="stat-value gold" id="win-rate">0.0%</div>
+        <div class="stat-sub" id="win-rate-sub">--</div>
+      </div>
+      <div class="stat-card closed animate-in">
+        <div class="stat-icon">📊</div>
+        <div class="stat-label">总平仓数</div>
+        <div class="stat-value blue" id="closed-count">0</div>
+        <div class="stat-sub" id="closed-sub">--</div>
+      </div>
+      <div class="stat-card orders animate-in">
+        <div class="stat-icon">📋</div>
+        <div class="stat-label">总委托数</div>
+        <div class="stat-value purple" id="order-count">0</div>
+        <div class="stat-sub" id="order-sub">--</div>
+      </div>
+      <div class="stat-card commission animate-in">
+        <div class="stat-icon">💸</div>
+        <div class="stat-label">总佣金</div>
+        <div class="stat-value red" id="total-commission">0.00</div>
+        <div class="stat-sub" id="commission-sub">USDT（手续费支出）</div>
+      </div>
+    </div>
+
+    <!-- ===== 策略概览 ===== -->
+    <div class="section-header">
+      <h2>策略概览</h2>
+    </div>
+
+    <div class="strategies-grid">
+      <!-- MTPCS 策略 -->
+      <div class="strategy-card animate-in" data-strategy="btc_eth" tabindex="0">
+        <div class="strategy-card-header">
+          <div class="strategy-info">
+            <div class="strategy-icon">📈</div>
+            <div>
+              <div class="strategy-name">MTPCS 策略</div>
+            </div>
+          </div>
+          <span class="strategy-status">● 运行中</span>
+        </div>
+        <div class="strategy-metrics">
+          <div class="strategy-metric" data-metric="pnl">
+            <div class="label">盈亏</div>
+            <div class="value positive">+0.00</div>
+          </div>
+          <div class="strategy-metric" data-metric="win_rate">
+            <div class="label">胜率</div>
+            <div class="value">0.0%</div>
+          </div>
+          <div class="strategy-metric" data-metric="order_count">
+            <div class="label">委托数</div>
+            <div class="value">0</div>
+          </div>
+        </div>
+        <div class="strategy-footer">
+          <a href="detail.html?strategy=btc_eth" class="strategy-detail-link">
+            查看详情 <span class="arrow">→</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- 新币做空策略 -->
+      <div class="strategy-card animate-in" data-strategy="new_coin" tabindex="0">
+        <div class="strategy-card-header">
+          <div class="strategy-info">
+            <div class="strategy-icon">📉</div>
+            <div>
+              <div class="strategy-name">新币做空策略</div>
+            </div>
+          </div>
+          <span class="strategy-status">● 运行中</span>
+        </div>
+        <div class="strategy-metrics">
+          <div class="strategy-metric" data-metric="pnl">
+            <div class="label">盈亏</div>
+            <div class="value positive">+0.00</div>
+          </div>
+          <div class="strategy-metric" data-metric="win_rate">
+            <div class="label">胜率</div>
+            <div class="value">0.0%</div>
+          </div>
+          <div class="strategy-metric" data-metric="order_count">
+            <div class="label">委托数</div>
+            <div class="value">0</div>
+          </div>
+        </div>
+        <div class="strategy-footer">
+          <a href="detail.html?strategy=new_coin" class="strategy-detail-link">
+            查看详情 <span class="arrow">→</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- HRS 策略 -->
+      <div class="strategy-card animate-in" data-strategy="hrs" tabindex="0">
+        <div class="strategy-card-header">
+          <div class="strategy-info">
+            <div class="strategy-icon">🔄</div>
+            <div>
+              <div class="strategy-name">HRS 混合反转策略</div>
+            </div>
+          </div>
+          <span class="strategy-status">● 运行中</span>
+        </div>
+        <div class="strategy-metrics">
+          <div class="strategy-metric" data-metric="pnl">
+            <div class="label">盈亏</div>
+            <div class="value positive">+0.00</div>
+          </div>
+          <div class="strategy-metric" data-metric="win_rate">
+            <div class="label">胜率</div>
+            <div class="value">0.0%</div>
+          </div>
+          <div class="strategy-metric" data-metric="order_count">
+            <div class="label">委托数</div>
+            <div class="value">0</div>
+          </div>
+        </div>
+        <div class="strategy-footer">
+          <a href="detail.html?strategy=hrs" class="strategy-detail-link">
+            查看详情 <span class="arrow">→</span>
+          </a>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 收益趋势图 ===== -->
+    <div class="chart-section animate-in">
+      <div class="chart-header">
+        <h2 class="chart-title">收益趋势</h2>
+        <div class="chart-legend">
+          <div class="legend-item">
+            <span class="legend-dot green"></span>
+            累计盈亏
+          </div>
+          <div class="legend-item">
+            <span class="legend-dot gold"></span>
+            日均收益
+          </div>
+        </div>
+      </div>
+      <div class="trend-chart-container">
+        <div id="trend-chart" class="trend-chart" role="img" aria-label="收益趋势图"></div>
+      </div>
+    </div>
+
+    <!-- ===== 页脚 ===== -->
+    <footer class="footer">
+      <p>© 2026 Binance 量化交易系统 · 数据实时更新</p>
+    </footer>
+
+  </div>
+
+  <!-- 脚本 -->
+  <script src="js/api.js"></script>
+  <script src="js/charts.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

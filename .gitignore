@@ -1,0 +1,36 @@
+# 环境变量与配置
+.env
+.deploy_config
+
+# 部署包
+*.tar.gz
+deployment_package*.tar.gz
+dashboard-deploy.tar.gz
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# macOS
+.DS_Store
+
+# 日志
+logs/
+*.log
+deployment_*.log
+
+# 数据文件
+data/
+tmp/
+
+# 自动生成
+VERSION
+
+# IDE
+.idea/
+*.swp
+*.swo
+*~

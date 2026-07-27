@@ -1,0 +1,31 @@
+version: '3.8'
+
+services:
+  dashboard-api:
+    build:
+      context: ../..
+      dockerfile: dashboard/backend/Dockerfile
+    container_name: dashboard-api
+    restart: unless-stopped
+    ports:
+      - "8767:8767"
+    environment:
+      - DB_HOST=trading_system-postgres
+      - DB_PORT=5432
+      - POSTGRES_USER=trading_user
+      - DB_PASSWORD=trading_password_2024
+      - POSTGRES_DB=trading_platform
+    env_file:
+      - ../../.env
+    networks:
+      - trading-network-v2
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8767/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+networks:
+  trading-network-v2:
+    external: true

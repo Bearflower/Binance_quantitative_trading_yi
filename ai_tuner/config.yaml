@@ -1,0 +1,362 @@
+# StratTuneAI 多策略AI调优系统配置
+# 所有参数从环境变量或此配置文件读取，禁止硬编码
+
+# ============================================================
+# 已注册策略列表
+# 新增策略只需在此列表中添加一项即可
+# ============================================================
+strategies:
+  - strategy_id: "btc_eth"
+    name: "MTPCS策略"
+    adapter_class: "ai_tuner.adapters.mtpcs_adapter.MTPCSAdapter"
+    config_path: "strategies/btc_eth/config.yaml"
+    param_whitelist:
+      - "scoring.min_score"
+      - "scoring.weights.trend_strength"
+      - "scoring.weights.pattern_quality"
+      - "scoring.weights.momentum_divergence"
+      - "risk.stop_loss_atr_multiplier"
+      - "risk.partial_take_profit.tp1_atr_multiplier"
+      - "risk.partial_take_profit.tp2_atr_multiplier"
+      - "risk.partial_take_profit.tp1_close_ratio"
+      - "risk.partial_take_profit.tp2_close_ratio"
+      - "risk.chandelier_stop.activation_atr"
+      - "risk.chandelier_stop.trailing_atr"
+      - "risk.time_stop.max_holding_hours"
+      - "risk.frequency_control.max_daily_total_trades"
+      - "risk.frequency_control.max_daily_symbol_trades"
+      - "risk.frequency_control.symbol_cooldown_hours"
+      - "risk.frequency_control.consecutive_loss_pause"
+      - "risk.frequency_control.pause_duration_hours"
+      - "risk.frequency_control.max_daily_loss_usdt"
+      - "binance.leverage.S"
+      - "binance.leverage.A"
+      - "binance.leverage.B"
+      - "binance.leverage.C"
+      - "binance.position_ratio.S"
+      - "binance.position_ratio.A"
+      - "binance.position_ratio.B"
+      - "binance.position_ratio.C"
+
+    # AI 可调参数的有效范围（用于 validate_params 校验）
+    param_ranges:
+      scoring.min_score: [60, 95]
+      scoring.weights.trend_strength: [0.20, 0.60]
+      scoring.weights.pattern_quality: [0.20, 0.50]
+      scoring.weights.momentum_divergence: [0.10, 0.40]
+      risk.stop_loss_atr_multiplier: [1.5, 3.0]
+      risk.partial_take_profit.tp1_atr_multiplier: [1.5, 4.0]
+      risk.partial_take_profit.tp2_atr_multiplier: [2.5, 6.0]
+      risk.partial_take_profit.tp1_close_ratio: [0.15, 0.40]
+      risk.partial_take_profit.tp2_close_ratio: [0.15, 0.40]
+      risk.chandelier_stop.activation_atr: [1.2, 2.5]
+      risk.chandelier_stop.trailing_atr: [0.8, 2.0]
+      risk.time_stop.max_holding_hours: [24, 120]
+      risk.frequency_control.max_daily_total_trades: [2, 8]
+      risk.frequency_control.max_daily_symbol_trades: [1, 4]
+      risk.frequency_control.symbol_cooldown_hours: [4, 24]
+      risk.frequency_control.consecutive_loss_pause: [3, 8]
+      risk.frequency_control.pause_duration_hours: [6, 48]
+      risk.frequency_control.max_daily_loss_usdt: [15, 50]
+      binance.leverage.S: [3, 10]
+      binance.leverage.A: [2, 8]
+      binance.leverage.B: [2, 6]
+      binance.leverage.C: [1, 4]
+      binance.position_ratio.S: [0.30, 0.70]
+      binance.position_ratio.A: [0.15, 0.50]
+      binance.position_ratio.B: [0.05, 0.30]
+      binance.position_ratio.C: [0.01, 0.15]
+
+  - strategy_id: "new_coin"
+    name: "新币做空策略"
+    adapter_class: "ai_tuner.adapters.new_coin_adapter.NewCoinAdapter"
+    config_path: "strategies/new_coin/config.yaml"
+    param_whitelist:
+      - "scoring.entry_threshold"
+      - "scoring.weights.contract"
+      - "scoring.weights.oi_volume_ratio"
+      - "scoring.weights.oi_rank"
+      - "scoring.weights.technical"
+      - "scoring.weights.sentiment"
+      - "scoring.oi_volume_ratio.thresholds.veto"
+      - "scoring.oi_volume_ratio.thresholds.danger"
+      - "scoring.oi_volume_ratio.thresholds.caution"
+      - "scoring.oi_volume_ratio.thresholds.good"
+      - "scoring.technical.min_total_score"
+      - "scoring.technical.min_three_tops_score"
+      - "trading.leverage"
+      - "trading.max_positions"
+      - "trading.single_position_margin"
+      - "trading.stop_loss_percent"
+      - "trading.take_profit_percent"
+      - "trading.batch_take_profit.target1_atr_multiplier"
+      - "trading.batch_take_profit.target2_atr_multiplier"
+      - "trading.consecutive_loss.max_consecutive_losses"
+      - "trading.consecutive_loss.pause_hours"
+      - "trading.max_drawdown.threshold"
+      - "trading.max_drawdown.pause_days"
+      - "trading.emergency_stop.trigger_percent"
+      - "trading.risk_control.max_loss_percent"
+      - "pattern.three_tops.max_deviation"
+
+    # AI 可调参数的有效范围（用于 validate_params 校验）
+    param_ranges:
+      scoring.entry_threshold: [3.0, 8.0]
+      scoring.weights.contract: [0.30, 0.60]
+      scoring.weights.oi_volume_ratio: [0.15, 0.45]
+      scoring.weights.oi_rank: [0.05, 0.25]
+      scoring.weights.technical: [0.20, 0.50]
+      scoring.weights.sentiment: [0.10, 0.35]
+      scoring.oi_volume_ratio.thresholds.veto: [0.4, 0.7]
+      scoring.oi_volume_ratio.thresholds.danger: [0.3, 0.6]
+      scoring.oi_volume_ratio.thresholds.caution: [0.2, 0.5]
+      scoring.oi_volume_ratio.thresholds.good: [0.1, 0.3]
+      scoring.technical.min_total_score: [4.0, 8.0]
+      scoring.technical.min_three_tops_score: [1.0, 4.0]
+      trading.leverage: [1, 3]
+      trading.max_positions: [2, 5]
+      trading.single_position_margin: [25, 100]
+      trading.stop_loss_percent: [0.03, 0.08]
+      trading.take_profit_percent: [0.05, 0.15]
+      trading.batch_take_profit.target1_atr_multiplier: [1.0, 3.0]
+      trading.batch_take_profit.target2_atr_multiplier: [2.0, 5.0]
+      trading.consecutive_loss.max_consecutive_losses: [2, 5]
+      trading.consecutive_loss.pause_hours: [24, 96]
+      trading.max_drawdown.threshold: [0.10, 0.25]
+      trading.max_drawdown.pause_days: [3, 14]
+      trading.emergency_stop.trigger_percent: [0.01, 0.03]
+      trading.risk_control.max_loss_percent: [0.01, 0.05]
+      pattern.three_tops.max_deviation: [0.01, 0.05]
+
+  - strategy_id: "hrs"
+    name: "HRS混合反转策略"
+    enabled: true
+    adapter_class: "ai_tuner.adapters.hrs_adapter.HRSAdapter"
+    config_path: "strategies/hrs/config.yaml"
+    param_whitelist:
+      - "scoring.entry_threshold"
+      - "scoring.weights.contract"
+      - "scoring.weights.technical"
+      - "scoring.weights.sentiment"
+      - "scoring.technical.min_total_score"
+      - "scoring.technical.min_base_pattern_score"
+      - "scoring.oi_market_cap.extreme_crowded"
+      - "scoring.oi_market_cap.crowded"
+      - "scoring.oi_market_cap.medium"
+      - "scoring.oi_market_cap.neutral"
+      - "scoring.sentiment.funding_rate.extreme_high"
+      - "scoring.sentiment.funding_rate.high"
+      - "scoring.sentiment.funding_rate.medium"
+      - "risk.stop_loss.atr_hard_stop"
+      - "risk.stop_loss.emergency_stop_percent"
+      - "risk.stop_loss.min_absolute_stop_percent"
+      - "risk.batch_take_profit.tp1_atr_multiplier"
+      - "risk.batch_take_profit.tp2_atr_multiplier"
+      - "risk.batch_take_profit.trailing_stop_atr_multiplier"
+      - "risk.consecutive_loss.max_consecutive_losses"
+      - "risk.consecutive_loss.pause_days"
+      - "risk.max_drawdown.pause_days"
+      - "candidate.short_24h_gain_threshold"
+      - "candidate.long_24h_loss_threshold"
+      - "candidate.volume_24h_min"
+      - "candidate.oi_min"
+
+    # AI 可调参数的有效范围（用于 validate_params 校验）
+    # 参考 btc_eth 策略的范围定义方式，数值区间基于 HRS 策略特性设定
+    param_ranges:
+      scoring.entry_threshold: [3.0, 8.0]
+      scoring.weights.contract: [0.30, 0.60]
+      scoring.weights.technical: [0.20, 0.50]
+      scoring.weights.sentiment: [0.10, 0.35]
+      scoring.technical.min_total_score: [4.0, 8.0]
+      scoring.technical.min_base_pattern_score: [1.0, 4.0]
+      scoring.oi_market_cap.extreme_crowded: [0.6, 0.9]
+      scoring.oi_market_cap.crowded: [0.4, 0.7]
+      scoring.oi_market_cap.medium: [0.2, 0.5]
+      scoring.oi_market_cap.neutral: [0.1, 0.3]
+      scoring.sentiment.funding_rate.extreme_high: [0.002, 0.010]
+      scoring.sentiment.funding_rate.high: [0.001, 0.005]
+      scoring.sentiment.funding_rate.medium: [0.0005, 0.003]
+      risk.stop_loss.atr_hard_stop: [1.5, 3.0]
+      risk.stop_loss.emergency_stop_percent: [0.03, 0.10]
+      risk.stop_loss.min_absolute_stop_percent: [0.01, 0.05]
+      risk.batch_take_profit.tp1_atr_multiplier: [1.0, 3.0]
+      risk.batch_take_profit.tp2_atr_multiplier: [2.0, 5.0]
+      risk.batch_take_profit.trailing_stop_atr_multiplier: [0.5, 2.0]
+      risk.consecutive_loss.max_consecutive_losses: [2, 5]
+      risk.consecutive_loss.pause_days: [3, 14]
+      risk.max_drawdown.pause_days: [3, 14]
+      candidate.short_24h_gain_threshold: [0.05, 0.20]
+      candidate.long_24h_loss_threshold: [0.05, 0.20]
+      candidate.volume_24h_min: [1000000, 50000000]
+      candidate.oi_min: [500000, 20000000]
+
+  - strategy_id: "grid"
+    name: "网格交易策略"
+    adapter_class: "ai_tuner.adapters.grid_adapter.GridAdapter"
+    config_path: "strategies/grid/config.yaml"
+    param_whitelist:
+      - "grid.base_grid_count"
+      - "grid.min_grid_count"
+      - "grid.max_grid_count"
+      - "grid.grid_spacing_atr_multiplier"
+      - "atr_multipliers.oscillation"
+      - "atr_multipliers.weak_trend"
+      - "trading.leverage"
+      - "trading.margin"
+      - "trading.max_positions"
+      - "trading.single_position_margin"
+      - "risk.max_drawdown"
+      - "risk.stop_loss_percent"
+      - "risk.hard_stop_loss"
+
+    # AI 可调参数的有效范围（用于 validate_params 校验）
+    param_ranges:
+      grid.base_grid_count: [4, 12]
+      grid.min_grid_count: [3, 8]
+      grid.max_grid_count: [5, 15]
+      grid.grid_spacing_atr_multiplier: [1.5, 4.0]
+      atr_multipliers.oscillation: [4.0, 8.0]
+      atr_multipliers.weak_trend: [4.0, 8.0]
+      trading.leverage: [3, 20]
+      trading.margin: [200, 1000]
+      trading.max_positions: [1, 5]
+      trading.single_position_margin: [50, 300]
+      risk.max_drawdown: [0.08, 0.25]
+      risk.stop_loss_percent: [0.05, 0.20]
+      risk.hard_stop_loss: [0.10, 0.30]
+
+# ============================================================
+# DeepSeek API 配置
+# ============================================================
+deepseek:
+  api_key: "${DEEPSEEK_API_KEY}"          # 从环境变量读取
+  base_url: "https://api.deepseek.com"
+  model: "deepseek-v4-pro"
+  thinking_enabled: true                  # 开启思考模式，让AI展示推理过程
+  reasoning_effort: "high"                # 推理强度：high（普通推理）/ max（极限推理）
+  temperature: 0.3                        # 非思考模式下使用（思考模式下被忽略但不报错）
+  max_tokens: 2048
+  max_retries: 3
+  # Token 定价（美元/百万Token，DeepSeek deepseek-v4-pro 模型实际定价）
+  pricing:
+    input_per_million: 1.74               # 输入：$1.74/百万Token（缓存未命中）
+    input_cache_hit: 0.174                # 输入（缓存命中）：$0.174/百万Token
+    output_per_million: 3.48              # 输出：$3.48/百万Token
+
+# ============================================================
+# 调度器配置
+# ============================================================
+scheduler:
+  cron_expression: "55 23 * * 6"          # APScheduler: 6=周日 23:55（周度调优）
+  monthly_cron_expression: "30 9 * * *"      # 每天 09:30 执行，代码内判断是否为月末最后一天
+  timezone: "Asia/Shanghai"
+  catch_up_days: 7                        # 启动时补偿检查：上次调优距今超过此天数则立即执行
+
+# ============================================================
+# 审批配置
+# ============================================================
+approval:
+  timeout_hours: 48                        # 审批超时时间（小时）
+  feishu_webhook_env: "FEISHU_WEBHOOK_TUNER"  # 飞书调优专用 Webhook 环境变量名
+
+# ============================================================
+# 回滚配置
+# ============================================================
+rollback:
+  auto_trigger_enabled: true               # 是否启用自动回滚
+  consecutive_loss_threshold: 3            # 连续亏损触发阈值
+  loss_percent_threshold: 0.02             # 亏损百分比触发阈值（2%）
+  monitor_hours: 24                        # 监控时间窗口（小时）
+
+# ============================================================
+# 记忆库配置
+# ============================================================
+memory:
+  context_window_size: 3                   # 上下文窗口大小（最近N条记忆）
+  archive_months: 3                        # 归档月数（超过此时间的记忆归档）
+
+# ============================================================
+# 数据库配置
+# ============================================================
+database:
+  host: "${DB_HOST}"                       # 从环境变量读取
+  port: "${DB_PORT:5432}"                  # 从环境变量读取，默认5432
+  database: "${DB_NAME}"                   # 从环境变量读取
+  user: "${DB_USER}"                       # 从环境变量读取
+  password: "${DB_PASSWORD}"               # 从环境变量读取
+  schema: "trading"                        # 数据库 schema
+
+# ============================================================
+# 异常检测配置
+# 各策略适配器统一使用的异常检测阈值
+# ============================================================
+anomaly_detection:
+  stop_loss_ratio_threshold: 0.5        # 止损触发比例过高阈值（超过此比例则告警）
+  low_win_rate_threshold: 0.3           # 胜率过低阈值
+  min_trades_for_anomaly: 5             # 触发异常检测的最少交易笔数
+  max_consecutive_loss_threshold: 4     # 最大连续亏损告警阈值
+  large_loss_threshold_mtpcs: -50       # MTPCS 总亏损告警阈值（USDT）
+  large_loss_threshold_new_coin: -30    # 新币做空总亏损告警阈值（USDT）
+  large_loss_threshold_grid: -30        # 网格策略总亏损告警阈值（USDT）
+  default_initial_capital_mtpcs: 500.0       # MTPCS 默认初始资金（USDT），当策略配置缺少 initial_capital_usdt 时使用
+  default_initial_capital_new_coin: 150.0     # 新币做空默认初始资金（USDT），当策略配置缺少保证金/持仓数时使用
+  signal_distribution:                        # 信号分布异常检测阈值
+    high_score: 8                             # 高分信号阈值（>=此值为高分）
+    medium_score: 6                           # 中等信号阈值（>=此值为中分）
+
+# ============================================================
+# K线服务配置
+# 用于网格策略等半自动策略的模拟推演
+# ============================================================
+kline_service:
+  url: "${KLINE_SERVICE_URL}"                # K线服务URL，从环境变量读取
+
+# ============================================================
+# 日志配置
+# ============================================================
+logging:
+  level: "INFO"
+  format: "json"                           # json 或 console
+
+# ============================================================
+# 利润提取提醒配置
+# ============================================================
+profit_extraction:
+  enabled: true                              # 是否启用利润提取提醒
+  extract_ratio: 0.50                        # 建议提取比例（盈利的50%）
+  min_extract_usdt: 10                       # 最小提取金额（低于此值不提醒）
+  initial_capital_usdt: 500                  # 初始资金（USDT），用于计算盈利
+
+# ============================================================
+# 月度资金分配配置
+# ============================================================
+capital_allocation:
+  enabled: true                            # 是否启用月度资金分配
+  total_capital: 1000.0                    # 总资金池（USDT）
+  reserve_ratio: 0.10                      # 风险备用金比例（10%）
+  rank_ratios: [0.40, 0.30, 0.20]         # 排名分配比例（按收益率从高到低）
+  participating_strategies:                # 参与资金分配的策略列表
+    - "btc_eth"
+    - "new_coin"
+    - "hrs"
+  fallback:                                # 首月默认分配（无历史收益数据时使用）
+    ratios:                                # 默认分配比例
+      btc_eth: 0.30
+      new_coin: 0.40
+      hrs: 0.20
+    capitals:                              # 默认分配金额（USDT）
+      btc_eth: 300.0
+      new_coin: 400.0
+      hrs: 200.0
+  database:                                # 数据库配置
+    schema: "public"
+    table: "capital_allocation"
+
+# ============================================================
+# 孤儿条件单清理配置
+# ============================================================
+orphan_cleanup:
+  enabled: true                    # 是否启用孤儿条件单清理
+  interval_minutes: 30             # 检查间隔（分钟）
+  stale_hours_threshold: 2         # 策略状态超时阈值（小时），超过此时间未更新则视为策略异常，自动取消条件单

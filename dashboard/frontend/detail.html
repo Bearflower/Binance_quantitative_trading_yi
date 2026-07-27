@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="策略详情 - Binance 量化交易数据看板">
+  <title>策略详情 · QuantView</title>
+
+  <!-- 字体 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <!-- 样式 -->
+  <link rel="stylesheet" href="css/style.css">
+
+  <style>
+    /* 详情页补充样式 */
+    .detail-overview {
+      margin-bottom: 28px;
+    }
+
+    .back-link {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: color 0.2s ease;
+    }
+
+    .back-link:hover {
+      color: var(--gold);
+    }
+
+    .detail-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 24px;
+    }
+
+    .detail-header-left {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+
+    .detail-strategy-icon {
+      width: 44px;
+      height: 44px;
+      border-radius: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+
+    .detail-strategy-name {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .detail-strategy-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    .detail-metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 16px;
+    }
+
+    .detail-metric-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-lg);
+      padding: 20px 24px;
+      backdrop-filter: blur(12px);
+      transition: all 0.25s ease;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .detail-metric-card::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 2px;
+      opacity: 0;
+      transition: opacity 0.25s ease;
+    }
+
+    .detail-metric-card:hover {
+      border-color: var(--border-active);
+      transform: translateY(-2px);
+      box-shadow: var(--shadow-card);
+    }
+
+    .detail-metric-card:hover::before { opacity: 1; }
+
+    .detail-metric-card.pnl::before { background: linear-gradient(90deg, var(--green), #00E5BF); }
+    .detail-metric-card.winrate::before { background: linear-gradient(90deg, var(--gold), #FFD700); }
+    .detail-metric-card.closed::before { background: linear-gradient(90deg, var(--blue), #6BA3FF); }
+    .detail-metric-card.orders::before { background: linear-gradient(90deg, var(--purple), #A78BFA); }
+    .detail-metric-card.commission::before { background: linear-gradient(90deg, var(--red), #FF6B6B); }
+
+    .detail-metric-label {
+      font-size: 12px;
+      font-weight: 500;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 6px;
+    }
+
+    .detail-metric-value {
+      font-family: var(--font-mono);
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      line-height: 1.1;
+    }
+
+    .detail-metric-value.positive { color: var(--green); }
+    .detail-metric-value.negative { color: var(--red); }
+
+    .detail-metric-unit {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-left: 4px;
+      font-weight: 400;
+    }
+
+    /* 表格样式 */
+    .detail-table-section {
+      margin-top: 28px;
+    }
+
+    .table-container {
+      background: var(--bg-card);
+      border: 1px solid var(--border-glass);
+      border-radius: var(--radius-lg);
+      padding: 4px;
+      backdrop-filter: blur(12px);
+      overflow-x: auto;
+    }
+
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 14px;
+    }
+
+    .data-table thead th {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 16px 20px;
+      text-align: left;
+      border-bottom: 1px solid var(--border-glass);
+      white-space: nowrap;
+    }
+
+    .data-table tbody td {
+      padding: 14px 20px;
+      border-bottom: 1px solid rgba(255,255,255,0.03);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .data-table tbody tr:last-child td {
+      border-bottom: none;
+    }
+
+    .data-table tbody tr:hover {
+      background: var(--bg-glass);
+    }
+
+    .cell-symbol {
+      font-weight: 600;
+      color: var(--text-primary) !important;
+    }
+
+    .cell-number {
+      text-align: right;
+      font-family: var(--font-mono);
+    }
+
+    .cell-number.positive { color: var(--green); }
+    .cell-number.negative { color: var(--red); }
+
+    .data-table tbody td:first-child,
+    .data-table thead th:first-child {
+      padding-left: 24px;
+    }
+
+    .data-table tbody td:last-child,
+    .data-table thead th:last-child {
+      padding-right: 24px;
+    }
+
+    .no-data {
+      text-align: center !important;
+      padding: 40px 20px !important;
+      color: var(--text-muted) !important;
+      font-size: 14px !important;
+      font-family: var(--font-sans) !important;
+    }
+
+    @media (max-width: 768px) {
+      .detail-metrics-grid {
+        grid-template-columns: 1fr 1fr;
+      }
+      .detail-header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 16px;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <div class="app-container">
+
+    <!-- ===== 导航栏 ===== -->
+    <header class="navbar">
+      <div class="navbar-brand">
+        <a href="index.html" class="back-link">
+          <span>←</span>
+          <span>返回</span>
+        </a>
+      </div>
+      <div class="navbar-actions">
+        <div class="toggle-group" role="radiogroup" aria-label="时间范围">
+          <button class="toggle-btn active" role="radio" aria-checked="true" data-range="daily">日</button>
+          <button class="toggle-btn" role="radio" aria-checked="false" data-range="weekly">周</button>
+          <button class="toggle-btn" role="radio" aria-checked="false" data-range="monthly">月</button>
+        </div>
+      </div>
+    </header>
+
+    <!-- ===== 策略详情头部 ===== -->
+    <div class="detail-header animate-in">
+      <div class="detail-header-left">
+        <div class="detail-strategy-icon" id="detail-icon">📈</div>
+        <div>
+          <div class="detail-strategy-name" id="detail-name">策略详情</div>
+          <div class="detail-strategy-sub" id="detail-sub">实时监控 · 币种表现</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 策略概览指标 ===== -->
+    <section class="detail-overview" aria-labelledby="detail-overview-title">
+      <h2 id="detail-overview-title" class="sr-only">策略概览</h2>
+
+      <div class="detail-metrics-grid">
+        <div class="detail-metric-card pnl animate-in">
+          <div class="detail-metric-label">总盈亏（净）</div>
+          <div>
+            <span class="detail-metric-value positive" id="detail-pnl">+0.00</span>
+            <span class="detail-metric-unit">USDT</span>
+          </div>
+        </div>
+
+        <div class="detail-metric-card winrate animate-in">
+          <div class="detail-metric-label">胜率</div>
+          <span class="detail-metric-value" id="detail-winrate">0.0%</span>
+        </div>
+
+        <div class="detail-metric-card closed animate-in">
+          <div class="detail-metric-label">平仓数</div>
+          <span class="detail-metric-value" id="detail-closed">0</span>
+        </div>
+
+        <div class="detail-metric-card orders animate-in">
+          <div class="detail-metric-label">委托数</div>
+          <span class="detail-metric-value" id="detail-orders">0</span>
+        </div>
+
+        <div class="detail-metric-card commission animate-in">
+          <div class="detail-metric-label">佣金支出</div>
+          <span class="detail-metric-value negative" id="detail-commission">0.00</span>
+          <span class="detail-metric-unit">USDT</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== 币种明细表格 ===== -->
+    <section class="detail-table-section animate-in">
+      <div class="section-header">
+        <h2>币种明细</h2>
+      </div>
+
+      <div class="table-container">
+        <table class="data-table" role="grid">
+          <thead>
+            <tr>
+              <th scope="col">交易对</th>
+              <th scope="col">委托</th>
+              <th scope="col">成交</th>
+              <th scope="col">平仓</th>
+              <th scope="col" style="text-align: right">盈亏（净）</th>
+              <th scope="col" style="text-align: right">佣金</th>
+              <th scope="col" style="text-align: right">胜率</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td class="no-data" colspan="7">暂无数据</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ===== 页脚 ===== -->
+    <footer class="footer">
+      <p>© 2026 Binance 量化交易系统 · 数据实时更新</p>
+    </footer>
+
+  </div>
+
+  <!-- 脚本 -->
+  <script src="js/config.js"></script>
+  <script src="js/api.js"></script>
+  <script src="js/charts.js"></script>
+  <script>
+    let detailType = 'daily';
+
+    // 策略图标映射
+    const strategyMeta = {
+      btc_eth: { icon: '📈', name: 'MTPCS 策略', sub: '趋势跟踪 · 多币种' },
+      new_coin: { icon: '📉', name: '新币做空策略', sub: '新币做空 · 高胜率' },
+      hrs: { icon: '🔄', name: 'HRS 混合反转策略', sub: '资金费率套利 · 反转交易' }
+    };
+
+    async function loadDetail() {
+        const params = new URLSearchParams(window.location.search);
+        const strategyId = params.get('strategy') || 'btc_eth';
+        const activeBtn = document.querySelector('.toggle-btn.active');
+        const type = activeBtn ? activeBtn.dataset.range : detailType;
+
+        // 设置策略图标和名称
+        const meta = strategyMeta[strategyId] || { icon: '📊', name: '策略', sub: '详情' };
+        document.getElementById('detail-icon').textContent = meta.icon;
+        document.getElementById('detail-name').textContent = `${meta.name}`;
+        document.getElementById('detail-sub').textContent = meta.sub;
+
+        // 设置图标背景色
+        const iconEl = document.getElementById('detail-icon');
+        iconEl.className = 'detail-strategy-icon';
+        if (strategyId === 'btc_eth') iconEl.style.background = 'var(--green-bg)';
+        else if (strategyId === 'new_coin') iconEl.style.background = 'var(--red-bg)';
+        else if (strategyId === 'hrs') iconEl.style.background = 'var(--blue-bg)';
+
+        try {
+            const detail = await api.getStrategyDetail(strategyId, type);
+
+            document.getElementById('detail-pnl').textContent = formatNumber(parseFloat(detail.total_pnl));
+            document.getElementById('detail-pnl').className =
+                `detail-metric-value ${parseFloat(detail.total_pnl) >= 0 ? 'positive' : 'negative'}`;
+
+            document.getElementById('detail-winrate').textContent = formatPercent(detail.win_rate);
+            document.getElementById('detail-closed').textContent = detail.closed_count.toLocaleString();
+            document.getElementById('detail-orders').textContent = detail.order_count.toLocaleString();
+
+            const commissionEl = document.getElementById('detail-commission');
+            if (commissionEl) {
+                const commVal = parseFloat(detail.commission);
+                commissionEl.textContent = formatNumber(commVal);
+                commissionEl.className = 'detail-metric-value ' + (commVal < 0 ? 'negative' : 'positive');
+            }
+
+            const tbody = document.querySelector('.data-table tbody');
+            if (detail.symbols && detail.symbols.length > 0) {
+                tbody.innerHTML = detail.symbols.map(sym => {
+                    const pnl = parseFloat(sym.total_pnl);
+                    const comm = parseFloat(sym.commission);
+                    const closedCount = (sym.wins || 0) + (sym.losses || 0);
+                    return `
+                        <tr>
+                            <td class="cell-symbol">${sym.symbol}</td>
+                            <td class="cell-number">${sym.order_count}</td>
+                            <td class="cell-number">${sym.fill_count}</td>
+                            <td class="cell-number">${closedCount}</td>
+                            <td class="cell-number ${pnl >= 0 ? 'positive' : 'negative'}">${formatNumber(pnl)}</td>
+                            <td class="cell-number ${comm < 0 ? 'negative' : ''}">${formatNumber(comm)}</td>
+                            <td class="cell-number">${formatPercent(sym.win_rate)}</td>
+                        </tr>
+                    `;
+                }).join('');
+            } else {
+                tbody.innerHTML = '<tr><td class="no-data" colspan="7">暂无数据</td></tr>';
+            }
+
+        } catch (error) {
+            console.error('加载详情失败:', error);
+            document.querySelector('.data-table tbody').innerHTML =
+                '<tr><td class="no-data" colspan="6">加载失败，请重试</td></tr>';
+        }
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+        loadDetail();
+
+        document.querySelectorAll('.toggle-btn').forEach(btn => {
+            btn.addEventListener('click', async () => {
+                document.querySelectorAll('.toggle-btn').forEach(b => {
+                    b.classList.remove('active');
+                    b.setAttribute('aria-checked', 'false');
+                });
+                btn.classList.add('active');
+                btn.setAttribute('aria-checked', 'true');
+                detailType = btn.dataset.range;
+                const params = new URLSearchParams(window.location.search);
+                params.set('type', detailType);
+                window.history.replaceState({}, '', `${location.pathname}?${params}`);
+                await loadDetail();
+            });
+        });
+    });
+  </script>
+</body>
+</html>

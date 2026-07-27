@@ -1,0 +1,259 @@
+# 新币做空策略配置
+
+# 策略基本信息
+strategy:
+  name: new_coin
+  version: "1.1.0"
+  description: "新币做空策略 - 利用新币上市后的价格下跌趋势获利（V4.1 信号质量优化版）"
+
+# 评分引擎配置
+scoring:
+  weights:
+    contract: 0.45      # 合约数据权重
+    oi_volume_ratio: 0.30  # OI/总交易量比率权重
+    oi_rank: 0.15       # OI排名权重
+    technical: 0.35     # 技术面权重
+    sentiment: 0.20     # 情绪面权重
+
+  entry_threshold: 5.0  # 入场评分阈值（V4.2验证：保持5.0不变，评分分布显示大部分信号在5.0~5.3区间）
+
+  veto_thresholds:
+    listing_hours: 48   # 上线时间阈值（小时）
+
+  # OI/总交易量比率评分配置
+  oi_volume_ratio:
+    thresholds:
+      veto: 0.45         # 一票否决阈值（V4.2调优：从0.5收紧到0.45）
+      danger: 0.4        # 极危险阈值：比率超过此值风险极高
+      caution: 0.3       # 偏高阈值：比率超过此值风险偏高
+      good: 0.2          # 良好阈值：比率低于此值风险较低
+    scores:
+      veto: -1.0         # 一票否决评分：直接拒绝交易
+      danger: 0.0        # 极危险评分：不建议交易
+      caution: 3.0       # 偏高评分：谨慎交易
+      good: 7.0          # 良好评分：可以交易
+      excellent: 10.0    # 优秀评分：强烈推荐交易
+
+  # 情绪面评分配置（双因子：资金费率 + OI变化率，各5分，总分10分）
+  sentiment:
+    # 资金费率子因子（年化%，0~5分）
+    funding_rate:
+      thresholds:
+        extreme: 100       # >100%: 5分
+        greed: 50          # 50%~100%: 3分（V4.1：年化费率<50%不计分，避免中等费率虚高情绪分）
+      scores:
+        extreme: 5.0
+        greed: 3.0
+        neutral: 0.0       # <50% 或负费率: 0分（V4.1：门槛从30%提高到50%）
+
+    # OI变化率子因子（3小时%，0~5分）
+    oi_change:
+      thresholds:
+        extreme: 50        # >=50%: 5分
+        greed: 30          # 30%~50%: 3分
+        mild: 10           # 10%~30%: 1分
+      scores:
+        extreme: 5.0
+        greed: 3.0
+        mild: 1.0
+        neutral: 0.0       # <10% 或负增长: 0分
+      lookback_hours: 3    # OI回溯时长（小时）
+
+    # 降级模式配置（C方案）
+    degraded_mode:
+      enabled: true               # 是否启用降级模式
+      listing_hours_threshold: 3  # 上线时间低于此值（小时）时使用降级模式
+      funding_rate_multiplier: 2  # 降级模式下资金费率分数的乘数（5分→10分）
+      # V4.1新增：降级模式额外约束（比完整模式更严格，提升信号质量）
+      min_technical_score: 7.0    # 降级模式下技术分必须≥7才能开仓（比完整模式更严格）
+      max_sentiment_score: 6.0    # 降级模式下情绪分最高6分（避免资金费率中等时情绪分虚高）
+
+  # 技术评分配置
+  technical:
+    min_total_score: 7.0      # 技术总分最低要求（V4.1：从6.0提高到7.0，强化技术面硬性要求）
+    min_three_tops_score: 3.0 # 三次冲顶最低评分（V4.1：从2.0提高到3.0，要求形态更清晰）
+
+  # 反弹放弃配置
+  rebound_check:
+    enabled: true           # 是否启用反弹放弃检查
+    lookback_klines: 5      # 检查最近N根K线的最高价
+
+# 交易配置
+trading:
+  leverage: 2           # 杠杆倍数（文档要求≤2倍）
+  max_positions: 3      # 最大持仓数量
+  daily_trade_limit: 2         # 单日最多开仓币种数
+  single_position_margin: 50  # 单笔保证金（USDT）
+  stop_loss_percent: 0.05      # 止损百分比（5%）
+  take_profit_percent: 0.10    # 止盈百分比（10%）
+  # 限价单滑点容忍（V4.1新增：市价→限价）
+  # 限价相对于触发价的偏移量，确保限价单能成交
+  # 做空止损/平仓是买入：限价 = 触发价 × (1 + slippage)，限价略高确保成交
+  # 做空止盈是买入：限价 = 触发价 × (1 + slippage)，限价略高确保成交（修复：原为1-slippage方向错误）
+  limit_order_slippage: 0.001  # 0.1%，限价相对于触发价的偏移量
+  
+  # 分批止盈配置（基于ATR）
+  batch_take_profit:
+    enabled: true       # 是否启用分批止盈
+    target1_atr_multiplier: 1.5   # 第一目标：开仓价 - 1.5×ATR
+    target1_close_percent: 0.30   # 第一目标平仓比例：30%
+    target2_atr_multiplier: 3.5   # 第二目标：开仓价 - 3.5×ATR
+    target2_close_percent: 0.40   # 第二目标平仓比例：40%
+    trailing_stop_atr_multiplier: 1.5  # 移动止盈：从最低点反弹1.5×ATR
+  
+  # 时间止损配置
+  time_stop:
+    enabled: true       # 是否启用时间止损
+    max_holding_hours: 72   # 最大持仓时间（小时）
+  
+  # 连续亏损暂停配置
+  consecutive_loss:
+    enabled: true       # 是否启用连续亏损暂停
+    max_consecutive_losses: 3  # 最大连续亏损次数
+    pause_hours: 48     # 暂停时长（小时）
+  
+  # 黑名单配置
+  blacklist:
+    enabled: true       # 是否启用黑名单
+    check_hours: 24     # 止损后监控时长（小时）
+    reverse_surge_percent: 0.05  # 反向暴涨阈值（5%）
+
+  # 紧急止损配置
+  emergency_stop:
+    enabled: true       # 是否启用紧急止损
+    check_minutes: 15   # 紧急止损检查时长（分钟）：监控最近15分钟的价格变化
+    trigger_percent: 0.015  # 紧急止损触发阈值（1.5%）：价格反向波动超过1.5%立即止损
+
+  # ATR止损配置
+  atr_stop:
+    multiplier: 2.5    # ATR止损倍数：止损价 = 开仓价 + 2.5×ATR
+
+  # 动态利润保护（移动止损）
+  # 源自 btc_eth risk_config.dynamic_trailing，适配 new_coin 做空策略
+  dynamic_trailing:
+    enabled: true
+    activation:
+      min_profit_pct: 1.5    # 浮盈计算阈值百分比（用于阶梯计算，不作为激活条件）
+      also_on_tp1: false      # TP1 触发不激活（new_coin：仅 TP2 激活）
+      also_on_tp2: true       # TP2 触发激活（new_coin 特有）
+    regression_tiers:
+      - profit_ceiling: 1.5
+        retrace_ratio: 0.0
+      - profit_ceiling: 4.0
+        retrace_ratio: 0.5
+      - profit_ceiling: 8.0
+        retrace_ratio: 0.35
+      - profit_ceiling: 999.0
+        retrace_ratio: 0.25
+    volatility_adjustment:
+      enabled: true
+      atr_lookback_days: 30
+      atr_period: 14
+      cache_ttl_seconds: 3600
+      min_vol_adj: 0.5       # 波动率调节因子下限
+      max_vol_adj: 2.0       # 波动率调节因子上限
+    # 止损限价单偏移（触发价向不利方向偏移，确保成交）
+    # 做空（BUY）时：限价 = 止损价 * (1 + offset_pct)
+    stop_limit_order:
+      offset_pct: 0.002       # 0.2%
+    # 条件单取消时静默忽略的错误码
+    # -2022: 订单已取消/已成交
+    # -2011: 订单未找到
+    cleanup_silent_error_codes: [-2022, -2011]
+
+  # 风险控制配置
+  risk_control:
+    max_loss_percent: 0.02  # 单笔最大亏损比例（2%）：单笔交易最大允许亏损2%
+
+  # 最大回撤熔断配置
+  max_drawdown:
+    threshold: 0.15     # 最大回撤阈值（15%）：账户回撤超过15%触发熔断
+    pause_days: 7       # 熔断暂停时长（天）：触发熔断后暂停交易7天
+
+  # 默认精度（API获取失败时的兜底值）
+  default_precision:
+    tick_size: 0.01     # 默认价格精度
+    step_size: 0.001    # 默认数量精度
+
+  # 平仓重试配置
+  close_position:
+    max_retries: 3          # 限价单平仓最大重试次数
+    retry_interval: 2       # 重试间隔（秒）
+    poll_interval: 2        # 限价单成交轮询间隔（秒）
+    timeout: 10             # 单次限价单超时（秒）
+    close_percent: 1.0      # 全仓平仓比例（1.0 = 100%）
+
+# 形态识别配置
+pattern:
+  three_tops:
+    max_deviation: 0.02      # 三次冲顶最大偏差（2%）
+    score_high: 4.0          # 标准清晰(高点明显逐次降低或同一水平精确受阻三次)
+    score_medium: 2.0        # 较为模糊(高点降低不明显，或只有两次半受阻)
+
+  long_upper_shadow:
+    ratio_threshold: 2.0     # 长上影线比率阈值
+    score_high: 3.0          # 高分
+    score_medium: 2.0        # 中分
+
+  volume_divergence:
+    volume_ratio_threshold: 1.5    # 成交量比率阈值
+    price_change_threshold: 0.02   # 价格变化阈值（2%）
+    score_high: 3.0                # 高分
+    score_medium: 2.0              # 中分
+
+  # 自适应形态检测配置（根据可用K线数量动态调整检测参数）
+  adaptive:
+    min_klines_for_detection: 2    # 最少K线数才启动检测
+    peak_window:
+      threshold_high: 30           # K线>=30时使用大窗口
+      window_high: 5
+      threshold_mid: 20            # K线>=20时使用中窗口
+      window_mid: 3
+      window_low: 2                # 默认小窗口
+    peak_extra_margin: 3           # 峰值检测额外边距（2*window+N）
+    volume_divergence:
+      tier_high_min: 25            # K线>=25时完整检测
+      tier_high_recent_n: 5
+      tier_mid_min: 18             # K线>=18时中等检测
+      tier_mid_recent_n: 3
+      tier_low_min: 10             # K线>=10时简化检测
+      tier_low_recent_n: 2
+    score_tier:
+      three_tops_high_deviation: 0.01     # 偏差<1%→高分(4分)
+      long_shadow_high_ratio: 3.0         # 上影/实体>3→高分
+      volume_divergence_high_ratio: 2.0   # 量比>2→高分
+
+# 新币检测配置
+detector:
+  check_interval: 3600          # 检测间隔（秒），对齐1小时K线周期
+  min_listing_hours: 1         # 最小上线时长（小时）
+  max_listing_hours: 48        # 最大上线时长（小时）
+  oi_cache_ttl_seconds: 300    # OI排名缓存有效期（秒）
+  oi_rank_limit: 10            # OI排名返回数量上限
+  # 符号过滤规则（v1.1.1 新增）：过滤非永续合约
+  exclude_patterns:             # 排除的符号模式列表
+    - "_"                       # 过滤季度/次季合约（如 ETHUSDT_261225）
+
+# K线配置（V4.1：形态检测自适应适配18根K线，提升形态识别可靠性）
+kline:
+  interval: '1h'               # K线周期（1小时K线）
+  limit: 18                    # K线数量（V4.1：从14提高到18，提供更多形态检测样本）
+  min_klines_for_analysis: 15  # 分析阶段最少K线数（= atr_period + 1，确保ATR计算有足够数据）
+  data_delay_seconds: 90       # K线数据延迟缓冲（秒），整点后等K线服务写入完成再查询
+  atr_period: 14               # ATR计算周期（用于分批止盈和ATR止损）
+
+# 通知配置
+notification:
+  project: new_coin            # 项目名称
+  enabled: true                # 是否启用通知
+  channels:
+    - feishu                   # 通知渠道
+
+# 数据库配置
+database:
+  schema: trading              # 数据库schema
+
+# 日志配置
+logging:
+  level: INFO                  # 日志级别
+  format: json                 # 日志格式
