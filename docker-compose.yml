@@ -165,6 +165,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      kline-service:
+        condition: service_healthy
     logging:
       driver: "json-file"
       options:
@@ -176,6 +178,80 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  # ============================================
+  # 日报服务
+  # ============================================
+  daily-report:
+    build:
+      context: .
+      dockerfile: strategies/daily_report/Dockerfile
+    container_name: trading_system-daily_report
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_NAME=daily_report
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=trading_platform
+      - DATABASE_USER=trading_user
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-trading_password_2024}
+    volumes:
+      - ./logs/daily_report:/app/logs
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================
+  # 周报服务
+  # ============================================
+  weekly-report:
+    build:
+      context: .
+      dockerfile: strategies/weekly_report/Dockerfile
+    container_name: trading_system-weekly_report
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_NAME=weekly_report
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=trading_platform
+      - DATABASE_USER=trading_user
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-trading_password_2024}
+    volumes:
+      - ./logs/weekly_report:/app/logs
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   # ============================================
   # StratTuneAI 多策略AI调优系统
@@ -195,6 +271,8 @@ services:
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       - FEISHU_WEBHOOK_TUNER=${FEISHU_WEBHOOK_TUNER}
+      - BINANCE_API_KEY=${BINANCE_API_KEY}
+      - BINANCE_API_SECRET=${BINANCE_API_SECRET}
       - KLINE_SERVICE_URL=${KLINE_SERVICE_URL}
     volumes:
       - ./strategies:/app/strategies:rw
@@ -227,26 +305,31 @@ services:
           memory: 256M
 
 # ============================================
-  # K 线数据服务（从 common_service 迁移）
+  # K 线数据服务
   # ============================================
-  kline_service:
+  kline-service:
     build:
       context: .
       dockerfile: services/kline_service/Dockerfile
     container_name: trading_system-kline
     restart: unless-stopped
+    env_file:
+      - .env
     environment:
-      - DATABASE_URL=postgresql://binance:test_password_123456@common_service_postgres:5432/binance_data
-      - REDIS_URL=redis://common_service_redis:6379
+      - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform
       - BINANCE_API_URL=https://fapi.binance.com
-      - SYMBOLS=BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,TRXUSDT
-      - COLLECT_INTERVALS=15m,1h,4h,1d
-      - LOG_LEVEL=INFO
+      - SYMBOLS=${SYMBOLS:-BTCUSDT,ETHUSDT,BNBUSDT}
+      - COLLECT_INTERVALS=${COLLECT_INTERVALS:-15m,1h,4h,1d}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
     ports:
       - "8765:8000"
+    volumes:
+      - ./logs/kline:/app/logs
     networks:
       - trading-network
-      - common_network
+    depends_on:
+      postgres:
+        condition: service_healthy
     logging:
       driver: "json-file"
       options:
@@ -258,19 +341,52 @@ services:
       timeout: 10s
       retries: 3
       start_period: 30s
-    deploy:
-      resources:
-        limits:
-          cpus: '1.0'
-          memory: 512M
-        reservations:
-          memory: 256M
+
+  # ============================================
+  # K 线服务健康监控（自动检测故障并发送飞书告警）
+  # ============================================
+  kline-monitor:
+    build:
+      context: .
+      dockerfile: services/kline_monitor/Dockerfile
+    container_name: trading_system-kline-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - KLINE_SERVICE_URL=http://kline-service:8000
+      - CHECK_INTERVAL_SECONDS=300
+      - CONSECUTIVE_FAILURES_THRESHOLD=3
+      - FEISHU_WEBHOOK_KLINE_MONITOR=${FEISHU_WEBHOOK_KLINE_MONITOR:-${FEISHU_WEBHOOK:-}}
+      - MONITOR_SERVICE_NAME=K 线数据服务
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./logs/kline_monitor:/app/logs
+      - kline-monitor-data:/app/data
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import os; os.kill(os.getppid(), 0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
 # ============================================
 # 数据卷配置
 # ============================================
 volumes:
   postgres-data:
+    driver: local
+  kline-monitor-data:
     driver: local
 
 # ============================================
@@ -280,6 +396,3 @@ networks:
   trading-network:
     driver: bridge
     name: trading-network-v2
-  common_network:
-    external: true
-    name: common_service_common_network

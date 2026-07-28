@@ -222,54 +222,189 @@ class TradeLogger:
         self,
         order_id: str,
         realized_pnl: Decimal,
-        strategy: Optional[str] = None
+        strategy: Optional[str] = None,
+        symbol: Optional[str] = None,
+        side: Optional[str] = None,
+        executed_at: Optional[datetime] = None,
+        time_window: int = 300
     ) -> bool:
         """
         回写平仓盈亏到交易记录
 
         平仓后由策略层调用，将本笔平仓订单的已实现盈亏写入 trade_records.realized_pnl。
+        支持两种匹配模式：
+        - 模式一（order_id 精确匹配）：优先使用 order_id 精确匹配 trade_records 记录
+        - 模式二（降级匹配）：当模式一失败或 order_id 为空时，按 (strategy, symbol, side, executed_at 范围) 匹配
         写入失败不影响主流程（异常被内部捕获）。
 
         Args:
-            order_id: 币安订单ID（必填，对应 trade_records.order_id）
+            order_id: 币安订单ID（对应 trade_records.order_id），为空时直接尝试降级匹配
             realized_pnl: 已实现盈亏（USDT），盈利为正、亏损为负
             strategy: 策略名称，默认使用初始化时设置的策略名称
+            symbol: 交易对（如 "BTCUSDT"），降级匹配时必填
+            side: 平仓方向（BUY/SELL），降级匹配时必填，用于精确匹配平仓记录
+            executed_at: 平仓成交时间，用于确定降级匹配的时间窗口
+            time_window: 降级匹配的时间窗口（秒），默认前后各 300 秒（5 分钟）
 
         Returns:
             True 表示回写成功，False 表示未回写（订单不存在或失败）
         """
         try:
-            if not order_id:
-                logger.warning("回写平仓盈亏失败：order_id 为空")
-                return False
-
             strategy_name = strategy or self.strategy_name
-            result = await self.db.execute(
-                "UPDATE trading.trade_records "
-                "SET realized_pnl = $1 "
-                "WHERE order_id = $2 AND strategy = $3 AND side = 'BUY'",
-                str(realized_pnl),
-                order_id,
-                strategy_name
-            )
+            pnl_str = str(realized_pnl)
 
-            logger.info(
-                "回写平仓盈亏成功",
-                order_id=order_id,
-                realized_pnl=str(realized_pnl),
-                strategy=strategy_name
-            )
-            return True
+            # ---------- 模式一：order_id 精确匹配 ----------
+            if order_id:
+                # 模式一使用传入的 side，若未传入则默认 'BUY'（兼容旧调用方）
+                match_side = side or 'BUY'
+                result = await self.db.execute(
+                    "UPDATE trading.trade_records "
+                    "SET realized_pnl = $1 "
+                    "WHERE order_id = $2 AND strategy = $3 AND side = $4",
+                    pnl_str,
+                    order_id,
+                    strategy_name,
+                    match_side
+                )
+                # 解析 "UPDATE N" 结果，判断是否更新成功
+                rows_affected = self._parse_update_count(result)
+                if rows_affected > 0:
+                    logger.info(
+                        "回写平仓盈亏成功",
+                        match_mode="order_id",
+                        order_id=order_id,
+                        realized_pnl=pnl_str,
+                        strategy=strategy_name,
+                        side=match_side
+                    )
+                    return True
+
+                logger.info(
+                    "模式一（order_id匹配）未命中，准备降级匹配",
+                    order_id=order_id,
+                    strategy=strategy_name,
+                    side=match_side
+                )
+
+            # ---------- 模式二：降级匹配（按 strategy + symbol + side + 时间范围） ----------
+            if symbol and executed_at:
+                start_time = executed_at - timedelta(seconds=time_window)
+                end_time = executed_at + timedelta(seconds=time_window)
+
+                # 降级匹配使用传入的 side，若未传入则默认 'BUY'（兼容旧调用方）
+                match_side = side or 'BUY'
+
+                result = await self.db.execute(
+                    "UPDATE trading.trade_records "
+                    "SET realized_pnl = $1 "
+                    "WHERE id = ("
+                    "    SELECT id FROM trading.trade_records"
+                    "    WHERE strategy = $2 AND symbol = $3 AND side = $4"
+                    "    AND executed_at BETWEEN $5 AND $6"
+                    "    AND order_id IS NULL"
+                    "    AND realized_pnl IS NULL"
+                    "    AND order_type NOT LIKE 'STOP%'"
+                    "    ORDER BY executed_at DESC"
+                    "    LIMIT 1"
+                    ")",
+                    pnl_str,
+                    strategy_name,
+                    symbol,
+                    match_side,
+                    start_time,
+                    end_time
+                )
+                rows_affected = self._parse_update_count(result)
+                if rows_affected > 0:
+                    logger.info(
+                        "回写平仓盈亏成功",
+                        match_mode="fallback",
+                        symbol=symbol,
+                        side=match_side,
+                        executed_at=executed_at.isoformat(),
+                        time_window=time_window,
+                        realized_pnl=pnl_str,
+                        strategy=strategy_name
+                    )
+                    return True
+
+                logger.warning(
+                    "降级匹配未命中，无法回写平仓盈亏",
+                    match_mode="fallback",
+                    symbol=symbol,
+                    side=match_side,
+                    executed_at=executed_at.isoformat() if executed_at else None,
+                    realized_pnl=pnl_str,
+                    strategy=strategy_name
+                )
+            else:
+                logger.warning(
+                    "降级匹配参数不足，无法执行降级匹配",
+                    symbol=symbol,
+                    executed_at=executed_at.isoformat() if executed_at else None,
+                    strategy=strategy_name
+                )
+
+            return False
 
         except Exception as e:
             logger.error(
-                "回写平仓盈亏失败",
+                "回写平仓盈亏异常",
                 order_id=order_id,
-                strategy=strategy_name,
+                strategy=strategy or self.strategy_name,
+                realized_pnl=str(realized_pnl),
                 error=str(e),
                 exc_info=True
             )
             return False
+
+    @staticmethod
+    def _parse_update_count(result: str) -> int:
+        """
+        解析 asyncpg execute 返回的 "UPDATE N" 字符串，提取影响行数
+
+        Args:
+            result: asyncpg 返回的命令标签字符串（如 "UPDATE 1", "UPDATE 0"）
+
+        Returns:
+            影响的行数，解析失败返回 0
+        """
+        if not isinstance(result, str):
+            return 0
+        try:
+            # asyncpg execute 返回格式为 "TAG N"，如 "UPDATE 1"
+            parts = result.split()
+            if len(parts) == 2:
+                return int(parts[1])
+            return 0
+        except (ValueError, IndexError):
+            return 0
+
+    @staticmethod
+    def calculate_pnl(
+        direction: str,
+        entry_price: Decimal,
+        exit_price: Decimal,
+        quantity: Decimal
+    ) -> Decimal:
+        """
+        计算平仓盈亏（集中管理，避免各策略重复实现）
+
+        Args:
+            direction: 持仓方向（LONG/SHORT）
+            entry_price: 入场价格
+            exit_price: 出场价格
+            quantity: 平仓数量
+
+        Returns:
+            已实现盈亏（USDT），盈利为正，亏损为负
+        """
+        if direction == 'LONG':
+            return (exit_price - entry_price) * quantity
+        elif direction == 'SHORT':
+            return (entry_price - exit_price) * quantity
+        else:
+            raise ValueError(f"不支持的持仓方向: {direction}")
 
     async def get_daily_stats(
         self,

@@ -5,7 +5,7 @@ BTC/ETH策略逻辑
 import asyncio
 from typing import Dict, Optional, Tuple
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import pandas as pd
 import numpy as np
 import structlog
@@ -16,6 +16,7 @@ from shared.notification import NotificationClient
 from shared.indicators import TechnicalIndicators
 from shared.dynamic_atr_filter import DynamicATRFilter
 from shared.condition_orders import record_condition_order, get_open_orders
+from shared.trade_logger import TradeLogger
 from strategies.btc_eth.market_state import (
     get_market_state,
     get_market_state_behavior,
@@ -2694,6 +2695,40 @@ class BTCEthStrategy:
             
             # 更新持仓数量
             position.current_quantity -= actual_close_quantity
+            
+            # 计算平仓盈亏并回写 trade_records.realized_pnl
+            # 注意：回写失败不影响平仓主流程，异常被内部捕获仅记日志
+            try:
+                # 从 order_result 获取成交均价，可能为 "0"（限价单刚成交时 API 不返回）
+                exit_price = Decimal(str(order_result.get('avgPrice', '0')))
+                if exit_price <= 0:
+                    exit_price = current_price or Decimal('0')
+
+                if exit_price > 0 and position.entry_price and position.entry_price > 0:
+                    # 使用集中管理的公式计算平仓盈亏
+                    pnl = TradeLogger.calculate_pnl(
+                        direction=position.direction,
+                        entry_price=position.entry_price,
+                        exit_price=exit_price,
+                        quantity=actual_close_quantity
+                    )
+
+                    # 通过 getattr 获取 trade_logger 实例，避免直接依赖
+                    trade_logger = getattr(self.binance, 'trade_logger', None)
+                    if trade_logger:
+                        await trade_logger.update_realized_pnl(
+                            order_id=str(order_result.get('orderId', '')),
+                            realized_pnl=pnl,
+                            side=close_side,
+                            symbol=symbol,
+                            executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
+                        )
+            except Exception as pnl_error:
+                logger.warning(
+                    f"{symbol} 回写平仓盈亏失败，不影响平仓流程",
+                    error=str(pnl_error),
+                    exc_info=True
+                )
             
             # 发送平仓通知
             try:

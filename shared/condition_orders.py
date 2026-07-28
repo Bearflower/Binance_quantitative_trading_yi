@@ -44,13 +44,13 @@ CREATE INDEX IF NOT EXISTS idx_co_strategy ON condition_orders(strategy_name)
 """
 
 # 唯一约束：避免同一策略重复记录同一条件单
-# 覆盖所有状态（OPEN/CANCELED/EXECUTED），避免 mark_order_executed 全表扫描
+# 仅对 OPEN 状态的条件单做唯一约束，CANCELED/EXECUTED 允许重复
 _CREATE_UNIQUE_ALGO_DDL = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_co_algo_unique ON condition_orders(strategy_name, algo_id) WHERE algo_id IS NOT NULL
+CREATE UNIQUE INDEX IF NOT EXISTS idx_co_algo_unique ON condition_orders(strategy_name, algo_id) WHERE algo_id IS NOT NULL AND status = 'OPEN'
 """
 
 _CREATE_UNIQUE_ORDER_DDL = """
-CREATE UNIQUE INDEX IF NOT EXISTS idx_co_order_unique ON condition_orders(strategy_name, order_id) WHERE order_id IS NOT NULL
+CREATE UNIQUE INDEX IF NOT EXISTS idx_co_order_unique ON condition_orders(strategy_name, order_id) WHERE order_id IS NOT NULL AND status = 'OPEN'
 """
 
 
@@ -90,7 +90,7 @@ async def record_condition_order(db, strategy_name, symbol, algo_id=None, order_
                 """
                 INSERT INTO condition_orders (strategy_name, symbol, algo_id, order_type, status)
                 VALUES ($1, $2, $3, $4, 'OPEN')
-                ON CONFLICT (strategy_name, algo_id) WHERE algo_id IS NOT NULL DO NOTHING
+                ON CONFLICT (strategy_name, algo_id) WHERE algo_id IS NOT NULL AND status = 'OPEN' DO NOTHING
                 """,
                 strategy_name, symbol, algo_id, order_type
             )
@@ -101,7 +101,7 @@ async def record_condition_order(db, strategy_name, symbol, algo_id=None, order_
                 """
                 INSERT INTO condition_orders (strategy_name, symbol, order_id, order_type, status)
                 VALUES ($1, $2, $3, $4, 'OPEN')
-                ON CONFLICT (strategy_name, order_id) WHERE order_id IS NOT NULL DO NOTHING
+                ON CONFLICT (strategy_name, order_id) WHERE order_id IS NOT NULL AND status = 'OPEN' DO NOTHING
                 """,
                 strategy_name, symbol, order_id, order_type
             )

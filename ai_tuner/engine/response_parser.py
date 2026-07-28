@@ -74,8 +74,18 @@ class ResponseParser:
         try:
             data = json.loads(json_text)
         except json.JSONDecodeError as e:
-            logger.error("JSON解析失败", error=str(e), json_preview=json_text[:200])
-            return {"error": f"JSON 解析失败: {str(e)}"}
+            # 尝试修复常见 JSON 格式问题后重试解析
+            fixed_json = self._fix_json(json_text)
+            if fixed_json != json_text:
+                try:
+                    data = json.loads(fixed_json)
+                    logger.info("JSON修复后解析成功", original_preview=json_text[:100])
+                except json.JSONDecodeError:
+                    logger.error("JSON解析失败（修复后仍失败）", error=str(e), json_preview=json_text[:200])
+                    return {"error": f"JSON 解析失败: {str(e)}"}
+            else:
+                logger.error("JSON解析失败", error=str(e), json_preview=json_text[:200])
+                return {"error": f"JSON 解析失败: {str(e)}"}
 
         if not isinstance(data, dict):
             logger.error("解析结果不是字典", type=str(type(data)))
@@ -204,3 +214,40 @@ class ResponseParser:
 
         # 如果花括号未闭合，返回从 { 到末尾
         return text[brace_start:]
+
+    @staticmethod
+    def _fix_json(text: str) -> str:
+        """
+        尝试修复常见 JSON 格式问题
+
+        修复策略：
+        1. 未闭合的字符串（末尾的字符串缺少闭合引号）→ 补全引号
+        2. 未闭合的花括号 → 补全花括号
+
+        Args:
+            text: 原始 JSON 文本
+
+        Returns:
+            修复后的 JSON 文本，如无法修复返回原文本
+        """
+        text = text.strip()
+        if not text:
+            return text
+
+        fixed = text
+
+        # 1. 检查并修复未闭合的字符串
+        in_string = False
+        for i, ch in enumerate(fixed):
+            if ch == '"' and (i == 0 or fixed[i - 1] != '\\'):
+                in_string = not in_string
+        if in_string:
+            # 字符串未闭合，在末尾添加闭合引号
+            fixed += '"'
+
+        # 2. 补全未闭合的花括号
+        open_braces = fixed.count('{') - fixed.count('}')
+        if open_braces > 0:
+            fixed += '}' * open_braces
+
+        return fixed if fixed != text else text

@@ -9,6 +9,7 @@ from decimal import Decimal
 import structlog
 
 from shared.base_strategy import BaseStrategy
+from shared.trade_logger import TradeLogger
 from shared.binance_api import BinanceClient
 from shared.kline_service import KLineService
 from shared.notification import NotificationClient
@@ -991,19 +992,23 @@ class NewCoinStrategy(BaseStrategy):
                                 entry_time_obj = None
 
                         if entry_time_obj:
+                            # 使用 entry_time 后 24 小时作为时间窗口上限，避免跨交易匹配
+                            upper_time = entry_time_obj + timedelta(hours=24)
                             # 查询本笔平仓订单的 order_id（做空平仓是 BUY 单）
                             close_order = await self.db.fetch_one(
                                 """
                                 SELECT order_id
                                 FROM trading.trade_records
                                 WHERE strategy = $1 AND symbol = $2 AND side = 'BUY'
-                                AND executed_at >= $3
+                                AND executed_at BETWEEN $3 AND $4
+                                AND order_id IS NOT NULL
                                 ORDER BY executed_at DESC
                                 LIMIT 1
                                 """,
                                 self.config.get('strategy', {}).get('db_strategy_name', '新币做空策略'),
                                 symbol,
-                                entry_time_obj
+                                entry_time_obj,
+                                upper_time
                             )
 
                             if close_order and close_order.get('order_id'):
@@ -1011,7 +1016,10 @@ class NewCoinStrategy(BaseStrategy):
                                 if trade_logger:
                                     await trade_logger.update_realized_pnl(
                                         order_id=close_order['order_id'],
-                                        realized_pnl=Decimal(str(pnl))
+                                        realized_pnl=pnl if isinstance(pnl, Decimal) else Decimal(str(pnl)),
+                                        side='BUY',  # 做空平仓方向为 BUY
+                                        symbol=symbol,
+                                        executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
                                     )
                             else:
                                 logger.warning(
@@ -1663,23 +1671,29 @@ class NewCoinStrategy(BaseStrategy):
                 """
                 SELECT quantity, price, side
                 FROM orders
-                WHERE symbol = $1 AND strategy = 'new_coin' AND side = 'BUY'
+                WHERE symbol = $1 AND strategy = $2 AND side = 'BUY'
                 ORDER BY created_at DESC
                 LIMIT 1
                 """,
-                symbol
+                symbol,
+                self.strategy_name
             )
 
             if not order:
                 logger.warning(f"未找到平仓记录: {symbol}")
                 return None
 
-            # 计算盈亏
-            quantity = float(order.get('quantity', 0))
-            exit_price = float(order.get('price', 0))
+            # 计算盈亏（使用集中管理的公式）
+            quantity = Decimal(str(order.get('quantity', 0)))
+            exit_price = Decimal(str(order.get('price', 0)))
+            entry_price_dec = Decimal(str(entry_price))
 
-            # 做空盈亏 = (入场价 - 出场价) * 数量
-            pnl = (entry_price - exit_price) * quantity
+            pnl = TradeLogger.calculate_pnl(
+                direction='SHORT',
+                entry_price=entry_price_dec,
+                exit_price=exit_price,
+                quantity=quantity
+            )
 
             logger.debug(
                 f"计算盈亏: {symbol}",

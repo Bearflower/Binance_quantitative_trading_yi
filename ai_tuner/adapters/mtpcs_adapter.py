@@ -134,7 +134,7 @@ class MTPCSAdapter(BaseAdapter):
         pnl_values = []
         for t in trades:
             pnl = t.get("realized_pnl", 0) or 0
-            pnl_values.append(pnl)
+            pnl_values.append(float(pnl))  # 立即转为 float，避免 Decimal 运算错误
 
         metrics.total_pnl = sum(pnl_values)
         win_trades = [p for p in pnl_values if p > 0]
@@ -178,7 +178,7 @@ class MTPCSAdapter(BaseAdapter):
         current_streak = 0
         max_streak = 0
         for t in trades:
-            pnl = t.get("realized_pnl", 0) or 0
+            pnl = float(t.get("realized_pnl", 0) or 0)
             if pnl < 0:
                 current_streak += 1
                 max_streak = max(max_streak, current_streak)
@@ -187,11 +187,11 @@ class MTPCSAdapter(BaseAdapter):
         metrics.max_consecutive_losses = max_streak
 
         # 计算累计回撤
-        cumulative_pnl = 0
-        peak_pnl = 0
-        max_drawdown = 0
+        cumulative_pnl = 0.0
+        peak_pnl = 0.0
+        max_drawdown = 0.0
         for t in trades:
-            pnl = t.get("realized_pnl", 0) or 0
+            pnl = float(t.get("realized_pnl", 0) or 0)
             cumulative_pnl += pnl
             peak_pnl = max(peak_pnl, cumulative_pnl)
             drawdown = peak_pnl - cumulative_pnl

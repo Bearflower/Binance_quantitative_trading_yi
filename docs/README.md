@@ -90,6 +90,7 @@
 - [动态利润保护需求文档](plans/new_coin动态利润保护需求文档.md) - 动态利润保护功能需求（复用 btc_eth 动态利润保护）
 - [动态利润保护架构设计](plans/new_coin动态利润保护架构设计.md) - 动态利润保护架构设计方案
 - [shared/dynamic_trailing.py](../shared/dynamic_trailing.py) - 动态利润保护核心计算模块（两策略共用，含阶梯回撤、波动率调节、硬止损兜底、单向移动保护）
+- [PRD-realized_pnl回写修复.md](plans/PRD-realized_pnl回写修复.md) — trade_records.realized_pnl 回写修复
 
 ### HRS 混合反转策略
 
