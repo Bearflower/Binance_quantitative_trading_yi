@@ -2882,3 +2882,10 @@ cd /Users/yl/vscode/Binance_quantitative_trading
 4. **定期检查** - 每次部署前执行代码同步检查
 
 ---
+
+## 🎯 项目特定配置参考
+
+> 本技能是通用部署流程。**项目特定问题（如容器命名冲突、服务遗漏等）请参见对应项目的部署规则文件。**
+>
+> - 【Binance quantitative trading】→ `.trae/rules/deployment.md`（九、常见问题处理）
+> - 其他项目 → 各项目 `.trae/rules/deployment.md`

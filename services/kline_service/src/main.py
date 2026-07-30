@@ -40,6 +40,82 @@ ALLOWED_ORIGINS = [
     "https://your-production-domain.com",
 ]
 
+# ============================================
+# 根本性防冲突机制 ⭐⭐⭐
+# ============================================
+
+# 启动互斥锁 ID（使用 "KLINE" 的 32 位哈希值，确保唯一性）
+_STARTUP_LOCK_ID = 0x4B4C494E
+
+
+async def _acquire_startup_lock():
+    """
+    获取启动互斥锁（PostgreSQL advisory lock）
+    
+    使用 pg_try_advisory_lock 确保同一时刻只有一个 kline 服务实例在运行。
+    如果锁已被其他实例持有，则启动失败，避免多个实例同时写入同一数据库。
+    
+    注意：session 级 advisory lock 在数据库连接断开时自动释放，
+    因此 kline 服务崩溃或正常关闭后锁会自动释放，不会产生死锁。
+    """
+    async with db_manager.get_connection() as conn:
+        acquired = await conn.fetch_val(
+            "SELECT pg_try_advisory_lock(:lock_id)",
+            {"lock_id": _STARTUP_LOCK_ID}
+        )
+        if not acquired:
+            raise RuntimeError(
+                "启动互斥锁获取失败：另一个 kline 服务实例已在运行中。\n"
+                "可能原因：\n"
+                "  1. 旧容器未被清理，仍在运行中\n"
+                "  2. 多个 kline 服务实例连接到了同一数据库\n"
+                "解决方案：\n"
+                "  1. 检查并杀死旧容器：docker ps | grep kline\n"
+                "  2. 确认数据库连接配置是否正确\n"
+            )
+        logger.info("✅ 启动互斥锁已获取")
+
+
+async def _verify_database_identity():
+    """
+    验证数据库身份
+    
+    确认当前连接的数据库是预期中的 trading_system-postgres，
+    而不是误连到了 common_service_postgres 或其他数据库。
+    通过检查预期的基础表是否存在来验证。
+    """
+    async with db_manager.get_connection() as conn:
+        # 1. 记录当前数据库名
+        db_name = await conn.fetch_val("SELECT current_database()")
+        logger.info(f"数据库身份验证：当前数据库 = {db_name}")
+
+        # 2. 检查是否包含预期的核心表
+        expected_tables = ["kline_btcusdt_1h", "kline_btcusdt_15m", "kline_ethusdt_1h"]
+        found_tables = []
+        missing_tables = []
+
+        for table_name in expected_tables:
+            exists = await conn.fetch_val("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_name = :table_name AND table_schema = 'public'
+                )
+            """, {"table_name": table_name})
+            if exists:
+                found_tables.append(table_name)
+            else:
+                missing_tables.append(table_name)
+
+        if found_tables:
+            logger.info(f"数据库身份验证通过：找到 {len(found_tables)} 个预期核心表")
+        else:
+            logger.warning(
+                f"数据库身份验证：在 {db_name} 中未找到任何预期核心表 "
+                f"({', '.join(expected_tables)})。\n"
+                "如果这是首次部署或新数据库，可忽略此警告。\n"
+                "否则，请确认 kline 服务连接的是正确的数据库（trading_system-postgres）"
+            )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -56,6 +132,23 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"数据库连接失败: {e}", exc_info=True)
         raise
+
+    # 获取启动互斥锁，防止同一数据库被多个 kline 实例写入 ⭐⭐⭐
+    try:
+        await _acquire_startup_lock()
+        logger.info("启动互斥锁已获取，确认无其他 kline 实例在运行")
+    except RuntimeError as e:
+        logger.error(f"启动互斥锁获取失败: {e}")
+        raise
+    except Exception as e:
+        logger.error(f"启动互斥锁异常: {e}", exc_info=True)
+        raise
+
+    # 验证数据库身份，确认连接的是预期的 trading_system-postgres ⭐⭐⭐
+    try:
+        await _verify_database_identity()
+    except Exception as e:
+        logger.warning(f"数据库身份验证异常（不阻塞启动）：{e}", exc_info=True)
 
     # 初始化标的注册管理器
     try:
@@ -88,6 +181,16 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"K 线采集器初始化失败: {e}", exc_info=True)
         raise
+
+    # 启动时清理无效注册标的
+    try:
+        cleaned = await collector.validate_registered_symbols()
+        if cleaned > 0:
+            logger.info(f"🧹 启动时清理了 {cleaned} 个无效的注册标的（已在币安下架）")
+        else:
+            logger.debug("启动时注册标验证通过，无需清理")
+    except Exception as e:
+        logger.warning(f"启动时注册标验证失败（不影响后续启动）：{e}", exc_info=True)
 
     # 初始化调度器
     try:

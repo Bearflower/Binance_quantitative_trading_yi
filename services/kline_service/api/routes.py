@@ -36,6 +36,17 @@ async def health_check():
     return {"status": "healthy", "timestamp": datetime.now()}
 
 
+async def _table_exists(conn, table_name: str) -> bool:
+    """检查表是否存在（避免查询不存在的表触发 PostgreSQL 错误日志）"""
+    query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_name = :table_name AND table_schema = 'public'
+        )
+    """
+    return await conn.fetch_val(query, {"table_name": table_name})
+
+
 @router.get("/klines/latest")
 async def get_latest_klines(
     symbol: str = Query(..., description="交易对，如 BTCUSDT"),
@@ -60,6 +71,20 @@ async def get_latest_klines(
         table_name = f"kline_{symbol.lower()}_{interval}"
 
         async with db.get_connection() as conn:
+            # 先检查表是否存在，避免触发 PostgreSQL relation does not exist 错误日志
+            if not await _table_exists(conn, table_name):
+                logger.info(f"K 线表 {table_name} 不存在，尝试自动创建")
+                # 自动创建 K 线表（兜底机制），确保后续查询可用
+                if collector:
+                    try:
+                        await collector.ensure_table(symbol, interval)
+                        logger.info(f"K 线表自动创建成功: {table_name}")
+                    except Exception as e:
+                        logger.warning(f"K 线表自动创建失败: {table_name} - {e}")
+                else:
+                    logger.debug(f"K 线表 {table_name} 不存在且采集器未初始化，返回空数据")
+                    return {"code": 0, "message": "无数据", "data": []}
+
             query = f"""
                 SELECT * FROM {table_name}
                 ORDER BY open_time DESC
@@ -106,9 +131,9 @@ async def get_latest_klines(
 
     except Exception as e:
         error_msg = str(e)
-        # 表不存在时返回空数据，而不是 500 错误
+        # 防御性处理：表存在检查有竞态条件时兜底
         if "does not exist" in error_msg:
-            logger.warning(f"K 线表 {table_name} 不存在，返回空数据")
+            logger.warning(f"K 线表 {table_name} 不存在（竞态），返回空数据")
             return {"code": 0, "message": "无数据", "data": []}
         logger.error(f"获取 K 线数据失败：{e}")
         raise HTTPException(status_code=500, detail=error_msg)
@@ -139,6 +164,20 @@ async def get_indicators(
         table_name = f"kline_{symbol.lower()}_{interval}"
 
         async with db.get_connection() as conn:
+            # 先检查表是否存在，避免触发 PostgreSQL relation does not exist 错误日志
+            if not await _table_exists(conn, table_name):
+                logger.info(f"K 线表 {table_name} 不存在，尝试自动创建")
+                # 自动创建 K 线表（兜底机制），确保后续查询可用
+                if collector:
+                    try:
+                        await collector.ensure_table(symbol, interval)
+                        logger.info(f"K 线表自动创建成功: {table_name}")
+                    except Exception as e:
+                        logger.warning(f"K 线表自动创建失败: {table_name} - {e}")
+                else:
+                    logger.debug(f"K 线表 {table_name} 不存在且采集器未初始化，返回空数据")
+                    return {"code": 0, "message": "无数据", "data": None}
+
             query = f"""
                 SELECT * FROM {table_name}
                 ORDER BY open_time DESC
@@ -185,8 +224,9 @@ async def get_indicators(
 
     except Exception as e:
         error_msg = str(e)
+        # 防御性处理：表存在检查有竞态条件时兜底
         if "does not exist" in error_msg:
-            logger.warning(f"K 线表不存在，返回空数据")
+            logger.warning(f"K 线表不存在（竞态），返回空数据")
             return {"code": 0, "message": "无数据", "data": None}
         logger.error(f"计算技术指标失败：{e}")
         raise HTTPException(status_code=500, detail=error_msg)

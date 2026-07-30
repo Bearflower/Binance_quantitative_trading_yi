@@ -242,8 +242,9 @@ class BinanceClient:
             
             # 检查响应体中的错误码
             # 部分 Binance 端点（如 PM 条件单取消）在 HTTP 200 中返回错误码
+            # 注意：有些端点（如 DELETE /papi/v1/um/algo/allOpenOrders）返回 code=200 表示成功
             code = data.get('code', 0) if isinstance(data, dict) else 0
-            if code != 0:
+            if code not in (0, 200):
                 message = data.get('msg', response.reason) if isinstance(data, dict) else response.reason
                 raise BinanceAPIError(code, message)
 
@@ -377,6 +378,31 @@ class BinanceClient:
             raise ValueError(f"响应数据格式错误: 期望列表，实际为 {type(data).__name__}")
         
         return data
+    
+    async def get_order(self, symbol: str, order_id: int) -> Optional[Dict]:
+        """
+        查询单个订单状态
+        
+        Args:
+            symbol: 交易对名称
+            order_id: 订单ID
+        
+        Returns:
+            订单详情字典，包含 symbol, orderId, status, executedQty, origQty 等字段
+        """
+        if not symbol or not symbol.strip():
+            raise ValueError("交易对不能为空")
+        
+        if not order_id:
+            raise ValueError("必须提供 orderId")
+        
+        params = {
+            "symbol": symbol.strip().upper(),
+            "orderId": order_id
+        }
+        
+        endpoint = "/papi/v1/um/order" if self.use_unified_account else "/fapi/v1/order"
+        return await self._request("GET", endpoint, params, signed=True)
     
     async def get_open_algo_orders(self, symbol: Optional[str] = None) -> List[Dict]:
         """

@@ -1386,7 +1386,8 @@ class TradingExecutor:
             
             short_position = None
             for pos in positions:
-                if pos.get('positionSide') == 'SHORT':
+                # 单方向模式下 positionSide='BOTH'，用 positionAmt<0 判断
+                if float(pos.get('positionAmt', 0)) < 0:
                     short_position = pos
                     break
             
@@ -1722,15 +1723,15 @@ class TradingExecutor:
 
     async def replenish_conditional_orders(self, symbol: str, entry_price: Decimal) -> bool:
         """
-        为现有持仓补全缺失的 TP2 条件单（第二目标止盈）
+        为现有持仓补全缺失的条件单（止损 SL、TP1、TP2）
         
-        策略重启后调用，仅补全已知缺失的 TP2 止盈单。
-        不创建 TP1 和 SL，避免与交易所已有的条件单重复。
+        策略重启后调用，补全所有缺失的条件单：
+        - SL：止损条件单（closePosition，全仓止损）
+        - TP1：第一目标止盈（reduce_only，30%）
+        - TP2：第二目标止盈（reduce_only，40%）
         
-        设计依据：
-        - 用户确认 SL 和 TP1 已存在且正常
-        - 仅 TP2 因旧版精度问题未被创建
-        - 币安条件单查询 API 已废弃，无法判断哪些条件单活跃
+        由于币安条件单查询 API 已废弃，无法判断哪些条件单活跃，
+        因此采用"幂等创建"策略：如果订单已存在，币安会返回错误码，我们忽略即可。
         
         Args:
             symbol: 交易对
@@ -1748,11 +1749,11 @@ class TradingExecutor:
 
             # 如果该币种已补全过，跳过
             if symbol in self._replenished_symbols:
-                logger.debug(f"TP2 已补全过，跳过: {symbol}")
+                logger.debug(f"条件单已补全过，跳过: {symbol}")
                 return True
 
             logger.info(
-                f"开始补全 TP2 条件单: {symbol}",
+                f"开始补全条件单: {symbol}",
                 entry_price=float(entry_price)
             )
 
@@ -1768,7 +1769,7 @@ class TradingExecutor:
             
             if not short_position:
                 logger.warning(
-                    f"未找到做空持仓，跳过补全 TP2: {symbol}"
+                    f"未找到做空持仓，跳过补全条件单: {symbol}"
                 )
                 return False
             
@@ -1778,9 +1779,12 @@ class TradingExecutor:
             atr = await self._calculate_atr(symbol)
             if atr <= 0:
                 logger.warning(
-                    f"ATR计算失败，跳过补全 TP2: {symbol}"
+                    f"ATR计算失败，跳过补全条件单: {symbol}"
                 )
                 return False
+            
+            # 3. 获取精度
+            tick_size, step_size = await self._get_symbol_precision(symbol)
             
             # 4. 初始化持仓跟踪（如果不存在）
             if symbol not in self.position_tracking:
@@ -1790,9 +1794,16 @@ class TradingExecutor:
                     'entry_quantity': float(current_quantity),
                     'atr': float(atr),
                     'lowest_price': float(entry_price),
+                    'highest_price': float(entry_price),
                     'target1_reached': False,
                     'target2_reached': False,
-                    'remaining_quantity': float(current_quantity)
+                    'remaining_quantity': float(current_quantity),
+                    'algo_ids': {},
+                    'direction': 'SHORT',
+                    'trailing_activated': False,
+                    'trailing_stop_price': None,
+                    'pending_profit_pct': None,
+                    'current_tier_index': -1,
                 }
             
             # 5. 获取当前价格
@@ -1803,28 +1814,105 @@ class TradingExecutor:
             )
             current_price = Decimal(str(ticker.get('price', 0)))
             
-            # 6. 计算 TP2 目标价格
+            # 用于记录整体是否全部成功
+            all_success = True
+            # 订单已存在时忽略的错误码（幂等创建）
+            ignore_error_codes = {'-4164', '-2011', '-2021'}
+            slippage = self.limit_order_slippage
+
+            # === 6. 补全止损条件单（SL）===
+            # 计算最终止损价 = MAX(ATR止损, 紧急止损, 最小绝对止损)
+            min_stop_price = entry_price * (Decimal('1') + self.stop_loss_percent)
+            emergency_stop_price = entry_price * (Decimal('1') + self.emergency_stop_trigger_percent)
+            atr_stop_price = entry_price + (atr * self.atr_stop_multiplier)
+            final_stop_price = max(min_stop_price, emergency_stop_price, atr_stop_price)
+            stop_loss_price = self._format_price(final_stop_price, tick_size)
+            stop_limit_price = self._format_price(stop_loss_price * (Decimal('1') + slippage), tick_size)
+
+            try:
+                sl_result = await self.binance_api.place_conditional_order(
+                    symbol=symbol, side='BUY',
+                    order_type='STOP',
+                    stop_price=stop_loss_price,
+                    price=stop_limit_price,
+                    quantity=current_quantity,
+                    closePosition=True
+                )
+                if sl_result and 'algoId' in sl_result and symbol in self.position_tracking:
+                    self.position_tracking[symbol]['algo_ids']['sl'] = sl_result['algoId']
+                    await record_condition_order(
+                        self.db, "new_coin", symbol,
+                        algo_id=sl_result['algoId'],
+                        order_type="STOP_LOSS"
+                    )
+                logger.info(
+                    f"补全止损条件单成功: {symbol}",
+                    stop_loss=float(stop_loss_price),
+                    algo_id=sl_result.get('algoId', 'N/A')
+                )
+            except Exception as e:
+                error_str = str(e)
+                if any(code in error_str for code in ignore_error_codes):
+                    logger.info(f"止损条件单已存在，跳过: {symbol}")
+                else:
+                    logger.warning(f"补全止损条件单失败: {symbol}", error=error_str)
+                    all_success = False
+
+            # === 7. 补全 TP1 条件单 ===
+            target1_price = entry_price - (atr * self.target1_atr_multiplier)
+            target1_price = self._format_price(target1_price, tick_size)
+            target1_quantity = current_quantity * self.target1_close_percent
+            target1_quantity = self._format_quantity(target1_quantity, step_size)
+            tp1_limit_price = self._format_price(target1_price * (Decimal('1') + slippage), tick_size)
+
+            if target1_quantity > 0 and target1_price > 0:
+                try:
+                    tp1_result = await self.binance_api.place_conditional_order(
+                        symbol=symbol, side='BUY',
+                        order_type='TAKE_PROFIT',
+                        stop_price=target1_price,
+                        price=tp1_limit_price,
+                        quantity=target1_quantity,
+                        reduce_only=True
+                    )
+                    if tp1_result and 'algoId' in tp1_result and symbol in self.position_tracking:
+                        self.position_tracking[symbol]['algo_ids']['tp1'] = tp1_result['algoId']
+                        await record_condition_order(
+                            self.db, "new_coin", symbol,
+                            algo_id=tp1_result['algoId'],
+                            order_type="TAKE_PROFIT"
+                        )
+                    logger.info(
+                        f"补全 TP1 止盈条件单成功: {symbol}",
+                        target_price=float(target1_price),
+                        quantity=float(target1_quantity),
+                        algo_id=tp1_result.get('algoId', 'N/A')
+                    )
+                except Exception as e:
+                    error_str = str(e)
+                    if any(code in error_str for code in ignore_error_codes):
+                        logger.info(f"TP1 止盈条件单已存在，跳过: {symbol}")
+                    else:
+                        logger.warning(f"补全 TP1 止盈条件单失败: {symbol}", error=error_str)
+                        all_success = False
+
+            # === 8. 补全 TP2 条件单 ===
             target2_price = entry_price - (atr * self.target2_atr_multiplier)
-            
-            # 7. 检查 TP2 有效性
+
             if target2_price <= 0:
                 logger.info(
                     f"TP2 价格无效（<=0），跳过补全",
                     symbol=symbol,
                     target2_price=float(target2_price)
                 )
-                return False
-            
-            if current_price <= target2_price:
+            elif current_price <= target2_price:
                 logger.info(
                     f"当前价格已低于 TP2 目标价，TP2 应已触发，直接市价平仓 TP2 部分",
                     symbol=symbol,
                     current_price=float(current_price),
                     target2_price=float(target2_price)
                 )
-                # 直接用市价单平掉 TP2 部分（价格已过目标位，相当于 TP2 已触发）
                 try:
-                    tick_size, step_size = await self._get_symbol_precision(symbol)
                     tp2_quantity = current_quantity * self.target2_close_percent
                     tp2_quantity = self._format_quantity(tp2_quantity, step_size)
                     if tp2_quantity > 0:
@@ -1847,62 +1935,64 @@ class TradingExecutor:
                         f"市价平仓 TP2 部分失败: {symbol}",
                         error=str(e)
                     )
+            else:
+                # 创建 TP2 条件单
+                tp2_quantity = current_quantity * self.target2_close_percent
+                tp2_quantity = self._format_quantity(tp2_quantity, step_size)
+                tp2_price = self._format_price(target2_price, tick_size)
+                tp2_limit_price = self._format_price(tp2_price * (Decimal('1') + slippage), tick_size)
+
+                try:
+                    tp2_result = await self.binance_api.place_conditional_order(
+                        symbol=symbol, side='BUY',
+                        order_type='TAKE_PROFIT',
+                        stop_price=tp2_price,
+                        price=tp2_limit_price,
+                        quantity=tp2_quantity,
+                        reduce_only=True
+                    )
+                    if tp2_result and 'algoId' in tp2_result and symbol in self.position_tracking:
+                        self.position_tracking[symbol]['algo_ids']['tp2'] = tp2_result['algoId']
+                        await record_condition_order(
+                            self.db, "new_coin", symbol,
+                            algo_id=tp2_result['algoId'],
+                            order_type="TAKE_PROFIT"
+                        )
+                    logger.info(
+                        f"补全 TP2 止盈条件单成功: {symbol}",
+                        target_price=float(tp2_price),
+                        quantity=float(tp2_quantity),
+                        algo_id=tp2_result.get('algoId', 'N/A')
+                    )
+                except Exception as e:
+                    error_str = str(e)
+                    if any(code in error_str for code in ignore_error_codes):
+                        logger.info(f"TP2 止盈条件单已存在，跳过: {symbol}")
+                    else:
+                        logger.warning(f"补全 TP2 止盈条件单失败: {symbol}", error=error_str)
+                        all_success = False
+
+            # 标记补全完成
+            if all_success:
                 self._replenished_symbols.add(symbol)
-                return True
-            
-            # 8. 获取精度并创建 TP2 条件单
-            tick_size, step_size = await self._get_symbol_precision(symbol)
-            tp2_quantity = current_quantity * self.target2_close_percent
-            tp2_quantity = self._format_quantity(tp2_quantity, step_size)
-            tp2_price = self._format_price(target2_price, tick_size)
-            
-            # 计算 TP2 限价（限价略高于止盈价，确保触发后立即成交）
-            tp2_limit_price = self._format_price(tp2_price * (Decimal('1') + self.limit_order_slippage), tick_size)
+                logger.info(f"条件单全部补全完成: {symbol}")
+            else:
+                logger.warning(f"条件单补全部分失败: {symbol}")
 
-            tp2_result = await self.binance_api.place_conditional_order(
-                symbol=symbol, side='BUY',
-                order_type='TAKE_PROFIT',
-                stop_price=tp2_price,
-                price=tp2_limit_price,
-                quantity=tp2_quantity,
-                reduce_only=True
-            )
+            return all_success
 
-            # 保存 TP2 止盈单 algoId
-            if tp2_result and 'algoId' in tp2_result and symbol in self.position_tracking:
-                if 'algo_ids' not in self.position_tracking[symbol]:
-                    self.position_tracking[symbol]['algo_ids'] = {}
-                self.position_tracking[symbol]['algo_ids']['tp2'] = tp2_result['algoId']
-                # 记录 TP2 止盈条件单到数据库（用于孤儿单清理）
-                await record_condition_order(
-                    self.db, "new_coin", symbol,
-                    algo_id=tp2_result['algoId'],
-                    order_type="TAKE_PROFIT"
-                )
-            
-            logger.info(
-                f"补全第二目标止盈成功: {symbol}",
-                target_price=float(tp2_price),
-                quantity=float(tp2_quantity),
-                algo_id=tp2_result.get('algoId', 'N/A')
-            )
-            
-            self._replenished_symbols.add(symbol)
-            logger.info(f"TP2 条件单补全完成: {symbol}")
-            return True
-            
         except Exception as e:
             error_str = str(e)
-            # 如果是因为名义价值不足或订单已存在等原因失败，标记为已处理避免无限重试
+            # 如果是因为订单已存在等原因失败，标记为已处理避免无限重试
             if any(code in error_str for code in self._TP2_IGNORE_ERROR_CODES):
                 logger.warning(
-                    f"TP2 创建失败（订单可能已存在或仓位已变化），标记为已处理: {symbol}",
+                    f"条件单创建失败（订单可能已存在或仓位已变化），标记为已处理: {symbol}",
                     error=error_str
                 )
                 self._replenished_symbols.add(symbol)
                 return True
             logger.error(
-                f"补全 TP2 条件单失败: {symbol}",
+                f"补全条件单失败: {symbol}",
                 error=error_str,
                 exc_info=True
             )

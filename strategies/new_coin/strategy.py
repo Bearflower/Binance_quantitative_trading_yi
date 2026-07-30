@@ -606,11 +606,17 @@ class NewCoinStrategy(BaseStrategy):
             except (ConnectionError, TimeoutError, Exception) as e:
                 logger.error(f"K线服务注册异常: {symbol}: {e}")
 
-        # 3. 分析每个新币
+        # 3. 分析每个新币（只分析注册成功的币种）
         cycle_results: list = []  # 记录本周期所有币种的评分结果
         for coin in new_coins:
             try:
                 symbol = coin['symbol']
+
+                # 跳过未注册成功的币种，避免查询不存在的 K 线表
+                if symbol not in self._registered_symbols:
+                    logger.debug(f"跳过未注册币种: {symbol}，等待下次周期注册")
+                    continue
+
                 logger.info(f"分析新币: {symbol}")
 
                 # 分析市场
@@ -937,14 +943,14 @@ class NewCoinStrategy(BaseStrategy):
                 # 获取当前持仓状态
                 positions = await self.binance_client.get_position(symbol)
 
-                # 查找做空持仓
+                # 查找做空持仓（单方向模式下 positionSide='BOTH'，用 positionAmt<0 判断）
                 short_position = None
                 for pos in positions:
-                    if pos.get('positionSide') == 'SHORT':
+                    if float(pos.get('positionAmt', 0)) < 0:
                         short_position = pos
                         break
 
-                if not short_position or float(short_position.get('positionAmt', 0)) == 0:
+                if not short_position:
                     # 持仓已平仓
                     logger.info(f"持仓已平仓: {symbol}")
                     

@@ -123,9 +123,27 @@ if [ "$DEPLOY_POSTGRES" = true ]; then
     if docker ps -q -f name=$POSTGRES_CONTAINER_NAME | grep -q .; then
         echo "✅ PostgreSQL 容器已在运行"
     else
+        # 清理残留的旧容器（防止 docker-compose 命名冲突）
+        # 根因：docker-compose 项目名变更时会产生带前缀的残留容器，
+        # 如 b62539d01e8b_trading_system-postgres，导致 docker-compose up 失败
+        echo "🧹 清理残留的 PostgreSQL 容器..."
+        for stale in \$(docker ps -aq -f name=postgres 2>/dev/null); do
+            docker rm -f \$stale 2>/dev/null || true
+        done
+
         echo "🚀 启动 PostgreSQL 容器..."
         cd $SERVER_PROJECT_PATH
-        docker-compose up -d postgres
+        docker-compose up -d postgres || {
+            echo "⚠️  docker-compose 启动 postgres 失败，尝试直接创建..."
+            docker run -d \
+                --name $POSTGRES_CONTAINER_NAME \
+                --network trading-network-v2 \
+                -e POSTGRES_DB=trading_platform \
+                -e POSTGRES_USER=trading_user \
+                -e POSTGRES_PASSWORD=\${DATABASE_PASSWORD:-trading_password_2024} \
+                -v postgres-data:/var/lib/postgresql/data \
+                postgres:15-alpine
+        }
 
         # 等待 PostgreSQL 启动
         echo "⏳ 等待 PostgreSQL 启动..."
@@ -142,6 +160,13 @@ if [ "$DEPLOY_POSTGRES" = true ]; then
         done
     fi
 fi
+
+# 8.1 提前启动辅助服务（在构建策略之前启动，防止后续构建失败导致遗漏）
+# 根因：主服务构建失败时 set -e 会退出脚本，导致后续辅助服务被跳过
+echo "🔍 启动辅助服务（kline-monitor 等）..."
+cd $SERVER_PROJECT_PATH
+docker-compose up -d kline-monitor 2>/dev/null || true
+echo "✅ 辅助服务已启动"
 
 # 9. 构建并启动策略容器（不使用缓存）
 if [ "$DEPLOY_BTC_ETH" = true ]; then
@@ -242,7 +267,7 @@ fi
 if [ "$DEPLOY_KLINE" = true ]; then
     echo "🏗️  构建 K 线数据服务镜像（不使用缓存）..."
     cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache kline_service
+    docker-compose build --no-cache kline-service
     if [ \$? -ne 0 ]; then
         echo "❌ K 线数据服务镜像构建失败！"
         exit 1
@@ -250,7 +275,7 @@ if [ "$DEPLOY_KLINE" = true ]; then
     echo "✅ K 线数据服务镜像构建成功"
 
     echo "🚀 启动 K 线数据服务容器..."
-    docker-compose up -d kline_service
+    docker-compose up -d kline-service
     if [ \$? -ne 0 ]; then
         echo "❌ K 线数据服务容器启动失败！"
         exit 1

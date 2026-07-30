@@ -163,10 +163,13 @@ class KlineCollector:
         """
         try:
             async with self.db.get_connection() as conn:
-                # 检查表是否存在，不存在则创建
-                await self._create_table_if_not_exists(
-                    conn, table_name, data_list[0] if data_list else {}
-                )
+                # 建表（幂等，如果失败继续尝试插入）
+                try:
+                    await self._create_table_if_not_exists(
+                        conn, table_name, data_list[0] if data_list else {}
+                    )
+                except Exception as create_err:
+                    logger.warning(f"建表检查异常（{create_err}），继续尝试插入")
 
                 # 逐条插入（使用命名参数）
                 inserted = 0
@@ -214,7 +217,7 @@ class KlineCollector:
         check_query = """
             SELECT EXISTS (
                 SELECT FROM information_schema.tables 
-                WHERE table_name = :table_name
+                WHERE table_name = :table_name AND table_schema = 'public'
             )
         """
         exists = await conn.fetch_val(check_query, {"table_name": table_name})
@@ -222,7 +225,7 @@ class KlineCollector:
         if not exists:
             logger.info(f"创建表：{table_name}")
             create_query = f"""
-                CREATE TABLE {table_name} (
+                CREATE TABLE IF NOT EXISTS {table_name} (
                     id SERIAL PRIMARY KEY,
                     open_time TIMESTAMP NOT NULL UNIQUE,
                     open_price DECIMAL(20, 8) NOT NULL,
@@ -240,12 +243,12 @@ class KlineCollector:
             """
             await conn.execute(create_query)
 
-            # 创建索引
+            # 创建索引（使用 IF NOT EXISTS 避免竞态条件）
             await conn.execute(
-                f"CREATE INDEX idx_{table_name}_open_time ON {table_name} (open_time)"
+                f"CREATE INDEX IF NOT EXISTS idx_{table_name}_open_time ON {table_name} (open_time)"
             )
             await conn.execute(
-                f"CREATE INDEX idx_{table_name}_close_time ON {table_name} (close_time)"
+                f"CREATE INDEX IF NOT EXISTS idx_{table_name}_close_time ON {table_name} (close_time)"
             )
 
     async def collect_all(self) -> int:
@@ -284,7 +287,7 @@ class KlineCollector:
                 check_query = """
                     SELECT EXISTS (
                         SELECT FROM information_schema.tables 
-                        WHERE table_name = :table_name
+                        WHERE table_name = :table_name AND table_schema = 'public'
                     )
                 """
                 exists = await conn.fetch_val(check_query, {"table_name": table_name})
