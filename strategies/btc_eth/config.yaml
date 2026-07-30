@@ -1,6 +1,6 @@
 strategy:
   name: btc_eth_trend
-  version: "2.5.0"  # v6.20 震荡市生存版
+  version: "2.6.0"  # v6.21 BNB参数放宽+差异化冷却+移除TRX
 
   # 交易对配置
   symbols:
@@ -9,7 +9,6 @@ strategy:
     - BNBUSDT
     - SOLUSDT
     - XRPUSDT
-    - TRXUSDT
 
   # 持仓同步配置
   position_sync:
@@ -114,14 +113,17 @@ strategy:
       max_daily_trades: 1
       position_ratio_s: 0.50
     BNBUSDT:
-      adx_min: 35                     # 25 → 35
-      vol_ratio_base: {S: 1.8, A: 0, B: 0, C: 0}
-      atr_abs_min: 0.006
+      adx_min: 28                     # 35→28（放宽趋势市门槛）
+      vol_ratio_base: {S: 1.4, A: 0, B: 0, C: 0}  # 1.8→1.4（等于默认值）
+      atr_abs_min: 0.004              # 0.006→0.004 (0.4%，捕捉横盘启动前入场)
       atr_percentile: 50
       atr_factor_strong: 0.8
-      s_min_score: 86                 # 84 → 86
+      s_min_score: 82                 # 86→82（略降低评分要求）
       max_daily_trades: 1
       position_ratio_s: 0.50
+      ranging_adx_min: 32             # v6.21：震荡市下强制要求较强趋势
+      ranging_max_daily_trades: 1     # v6.21：震荡市每天最多1笔
+      ranging_cooldown_hours: 48      # v6.21：震荡市冷却期48h
     XRPUSDT:
       adx_min: 35                     # 25 → 35
       vol_ratio_base: {S: 1.8, A: 0, B: 0, C: 0}
@@ -129,15 +131,6 @@ strategy:
       atr_percentile: 50
       atr_factor_strong: 0.8
       s_min_score: 86                 # 84 → 86
-      max_daily_trades: 1
-      position_ratio_s: 0.50
-    TRXUSDT:
-      adx_min: 35                     # 25 → 35
-      vol_ratio_base: {S: 1.8, A: 0, B: 0, C: 0}
-      atr_abs_min: 0.006
-      atr_percentile: 50
-      atr_factor_strong: 0.8
-      s_min_score: 84                 # 82 → 84
       max_daily_trades: 1
       position_ratio_s: 0.50
 

@@ -681,7 +681,11 @@ class BTCEthStrategy:
             
             # 3.6 v6.21：市场状态特定频率控制检查
             market_state_name = market_state.value if market_state else 'RANGING'
+            symbol_cfg = self.symbol_config.get(symbol, {})
             market_max_trades = market_behavior.get('max_daily_trades', 999)
+            # v6.21：per-symbol 震荡市每日交易数限制
+            if market_state_name == 'RANGING' and 'ranging_max_daily_trades' in symbol_cfg:
+                market_max_trades = min(market_max_trades, symbol_cfg['ranging_max_daily_trades'])
             today_str = current_time.date().isoformat()
             if today_str not in self.frequency_controller.daily_trades:
                 self.frequency_controller.daily_trades[today_str] = 0
@@ -696,6 +700,9 @@ class BTCEthStrategy:
             # 趋势市冷却期: 72h，震荡市冷却期: 3h
             if symbol in self.frequency_controller.symbol_last_trade_time:
                 cooldown_hours = market_behavior.get('ranging_symbol_cooldown_hours', 72)
+                # v6.21：per-symbol 震荡市冷却期覆盖
+                if market_state_name == 'RANGING' and 'ranging_cooldown_hours' in symbol_cfg:
+                    cooldown_hours = symbol_cfg['ranging_cooldown_hours']
                 last_trade_time = self.frequency_controller.symbol_last_trade_time[symbol]
                 
                 # 处理时区问题
@@ -713,6 +720,17 @@ class BTCEthStrategy:
                         f"{symbol} 冷却期中({market_state_name}市,冷却{cooldown_hours}h)，剩余{remaining_hours}小时"
                     )
                     analysis_result['reason'] = f"冷却期: {symbol}冷却期中({market_state_name}市)，剩余{remaining_hours}小时"
+                    return analysis_result
+            
+            # 3.8 v6.21：per-symbol 震荡市 ADX 下限检查
+            # 在 RANGING 模式下，对特定币种额外要求最低 ADX 值
+            if market_state_name == 'RANGING' and 'ranging_adx_min' in symbol_cfg:
+                adx_4h = indicators.get('4h', {}).get('ADX', pd.Series([0])).iloc[-1]
+                if pd.notna(adx_4h) and adx_4h < symbol_cfg['ranging_adx_min']:
+                    logger.info(
+                        f"{symbol} 震荡市ADX={float(adx_4h):.1f} < {symbol_cfg['ranging_adx_min']}，跳过"
+                    )
+                    analysis_result['reason'] = f"震荡市ADX不足: {float(adx_4h):.1f} < {symbol_cfg['ranging_adx_min']}"
                     return analysis_result
             
             # 4. 入场检查（v6.22：根据市场状态分流）
