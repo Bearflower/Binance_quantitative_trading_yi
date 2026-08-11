@@ -12,7 +12,6 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 import structlog
-import yaml
 
 from ai_tuner.adapters.base_adapter import (
     BaseAdapter,
@@ -33,21 +32,29 @@ class NewCoinAdapter(BaseAdapter):
     strategy_name = "新币做空策略"
     config_path = "strategies/new_coin/config.yaml"
 
-    async def collect(self) -> StrategyReport:
+    async def collect(self, week_offset: int = 0) -> StrategyReport:
         """
-        采集本周新币做空策略表现数据
+        采集新币做空策略表现数据
 
-        从数据库查询本周交易记录，计算各项指标，生成标准化报告。
+        从数据库查询交易记录，计算各项指标，生成标准化报告。
+        支持 week_offset 参数，用于查询历史周数据（EffectTracker 回填使用）。
+
+        Args:
+            week_offset: 周偏移量
+                - 0（默认）: 当前周
+                - -1: 上一周（EffectTracker 回填使用）
 
         Returns:
             StrategyReport: 标准化策略周度体检报告
         """
-        # 计算上一个完整周的时间范围（周一~周日）
+        # 计算时间范围（周一~周日），支持周偏移
         now = datetime.now()
         this_monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
         # 周日定时调度时，本周已基本结束，取本周一（刚结束的周期）
         # 其他天（含周一手动触发）都取上周一
-        week_start = this_monday if now.weekday() == 6 else this_monday - timedelta(days=7)
+        base_week_start = this_monday if now.weekday() == 6 else this_monday - timedelta(days=7)
+        # 应用 week_offset：偏移量 * 7 天
+        week_start = base_week_start + timedelta(days=week_offset * 7)
         week_end = week_start + timedelta(days=7)
 
         report = StrategyReport()
@@ -446,24 +453,29 @@ class NewCoinAdapter(BaseAdapter):
 
     def _read_config(self) -> Dict[str, Any]:
         """
-        读取策略配置文件
+        读取策略配置（合并基础配置 + AI 调优覆盖层）
+
+        通过 shared/config_loader.py 的 load_strategy_config() 加载，
+        自动合并 config.yaml 基础配置和 tuning_overrides 覆盖层。
 
         Returns:
-            配置字典
+            合并后的配置字典
         """
+        # 解析策略配置文件的绝对路径
         config_full_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             self.config_path,
         )
-        # 如果相对路径不存在，尝试从项目根目录读取
         if not os.path.exists(config_full_path):
             config_full_path = os.path.join(
                 os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                 self.config_path,
             )
 
-        with open(config_full_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        # 使用统一配置加载器（合并基础配置 + AI 调优覆盖层）
+        strategy_dir = os.path.dirname(config_full_path)
+        from shared.config_loader import load_strategy_config
+        return load_strategy_config(strategy_dir)
 
     @staticmethod
     def _get_nested_value(config: Dict[str, Any], key_path: str) -> Any:

@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>StratTuneAI 反馈闭环架构图</title>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" integrity="sha384-ZZ1pncU3bQe8y31yfZdMFdSpttDoPmOZg2wguVK9almUodir1PghgT0eY7Mrty8H" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.2/dist/jspdf.umd.min.js" integrity="sha384-en/ztfPSRkGfME4KIm05joYXynqzUgbsG5nMrj/xEFAHXkeZfO3yMK8QQ+mP7p1/" crossorigin="anonymous"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0f172a; font-family: 'JetBrains Mono', monospace; color: #e2e8f0; display: flex; justify-content: center; padding: 20px; }
+    .container { max-width: 1200px; width: 100%; background: #020617; border-radius: 16px; padding: 32px; position: relative; }
+    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; }
+    .header-left { display: flex; align-items: center; gap: 12px; }
+    .pulse-dot { width: 10px; height: 10px; background: #34d399; border-radius: 50%; animation: pulse 2s infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+    .header h1 { font-size: 18px; font-weight: 700; color: #f8fafc; letter-spacing: 0.5px; }
+    .header .subtitle { font-size: 11px; color: #64748b; margin-top: 2px; }
+    .toolbar { display: flex; align-items: center; gap: 8px; }
+    .toolbar-toggle { background: none; border: 1px solid #334155; color: #94a3b8; border-radius: 6px; padding: 4px 10px; cursor: pointer; font-size: 16px; line-height: 1; }
+    .toolbar-toggle:hover { background: #1e293b; }
+    .toolbar-actions { display: none; gap: 4px; }
+    .toolbar-actions.show { display: flex; }
+    .toolbar-actions button { background: #1e293b; border: 1px solid #334155; color: #94a3b8; border-radius: 6px; padding: 4px 8px; cursor: pointer; font-size: 12px; font-family: 'JetBrains Mono', monospace; }
+    .toolbar-actions button:hover { background: #334155; color: #e2e8f0; }
+    .diagram-card { background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; padding: 24px; margin-bottom: 24px; }
+    .diagram-card svg { display: block; width: 100%; height: auto; }
+    .summary-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 20px; }
+    .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 16px; }
+    .card-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+    .card-dot { width: 8px; height: 8px; border-radius: 50%; }
+    .card-dot.emerald { background: #34d399; }
+    .card-dot.violet { background: #a78bfa; }
+    .card-dot.cyan { background: #22d3ee; }
+    .card h3 { font-size: 13px; font-weight: 600; color: #f8fafc; }
+    .card ul { list-style: none; }
+    .card ul li { font-size: 11px; color: #94a3b8; padding: 2px 0; line-height: 1.6; }
+    .footer { text-align: center; font-size: 10px; color: #475569; padding-top: 12px; border-top: 1px solid #1e293b; }
+    @media print { .toolbar { display: none !important; } body { background: white; } .container { box-shadow: none; } }
+  </style>
+</head>
+<body>
+  <div class="container" id="report-container">
+    <div class="header">
+      <div class="header-left">
+        <div class="pulse-dot"></div>
+        <div>
+          <h1>StratTuneAI 反馈闭环系统架构图</h1>
+          <div class="subtitle">EffectTracker · ContextEnhancer · LearningSignal 模块依赖与数据流</div>
+        </div>
+      </div>
+      <div class="toolbar">
+        <div class="toolbar-actions" id="toolbarActions">
+          <button onclick="copyAsImage()">📋 复制</button>
+          <button onclick="downloadPNG()">🖼️ PNG</button>
+          <button onclick="downloadPDF()">📄 PDF</button>
+        </div>
+        <button class="toolbar-toggle" onclick="toggleToolbar()">⋯</button>
+      </div>
+    </div>
+
+    <div class="diagram-card">
+      <svg viewBox="0 0 1100 880" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+            <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#1e293b" stroke-width="0.5"/>
+          </pattern>
+          <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#64748b"/>
+          </marker>
+          <marker id="arrowhead-green" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#34d399"/>
+          </marker>
+          <marker id="arrowhead-cyan" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#22d3ee"/>
+          </marker>
+          <marker id="arrowhead-violet" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#a78bfa"/>
+          </marker>
+          <marker id="arrowhead-orange" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+            <polygon points="0 0, 10 3.5, 0 7" fill="#fb923c"/>
+          </marker>
+        </defs>
+
+        <rect width="1100" height="880" fill="url(#grid)"/>
+
+        <!-- ============================================ -->
+        <!-- 区域边界：现有系统 -->
+        <!-- ============================================ -->
+        <rect x="20" y="40" width="360" height="820" rx="12" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.5"/>
+        <text x="200" y="58" fill="#fbbf24" font-size="9" font-weight="600" text-anchor="middle" opacity="0.7">现有系统（已有模块）</text>
+
+        <rect x="410" y="40" width="320" height="820" rx="12" fill="none" stroke="#34d399" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.6"/>
+        <text x="570" y="58" fill="#34d399" font-size="9" font-weight="600" text-anchor="middle" opacity="0.8">反馈闭环模块（新增）</text>
+
+        <rect x="760" y="40" width="320" height="820" rx="12" fill="none" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="8,4" opacity="0.5"/>
+        <text x="920" y="58" fill="#a78bfa" font-size="9" font-weight="600" text-anchor="middle" opacity="0.7">外部依赖 / 数据存储</text>
+
+        <!-- ============================================ -->
+        <!-- 现有系统模块 -->
+        <!-- ============================================ -->
+
+        <!-- 采集层 -->
+        <rect x="45" y="80" width="150" height="60" rx="6" fill="#0f172a"/>
+        <rect x="45" y="80" width="150" height="60" rx="6" fill="rgba(22, 163, 74, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="120" y="104" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">采集层</text>
+        <text x="120" y="120" fill="#94a3b8" font-size="8" text-anchor="middle">BaseAdapter / MTPCSAdapter</text>
+        <text x="120" y="132" fill="#94a3b8" font-size="8" text-anchor="middle">collect() 采集本周绩效</text>
+
+        <!-- 适配器提示：week_offset 参数 -->
+        <rect x="220" y="88" width="140" height="44" rx="4" fill="rgba(251, 146, 60, 0.15)" stroke="#fb923c" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="290" y="106" fill="#fb923c" font-size="8" text-anchor="middle">[设计变更]</text>
+        <text x="290" y="120" fill="#fb923c" font-size="8" text-anchor="middle">collect(week_offset) 支持</text>
+
+        <!-- 记忆层 -->
+        <rect x="45" y="180" width="150" height="60" rx="6" fill="#0f172a"/>
+        <rect x="45" y="180" width="150" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="120" y="204" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">记忆层</text>
+        <text x="120" y="220" fill="#94a3b8" font-size="8" text-anchor="middle">MemoryDBHandler</text>
+        <text x="120" y="232" fill="#94a3b8" font-size="8" text-anchor="middle">strategy_memory 表 CRUD</text>
+
+        <!-- 上下文构建器 -->
+        <rect x="45" y="280" width="150" height="60" rx="6" fill="#0f172a"/>
+        <rect x="45" y="280" width="150" height="60" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="120" y="304" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">上下文构建器</text>
+        <text x="120" y="320" fill="#94a3b8" font-size="8" text-anchor="middle">ContextBuilder</text>
+        <text x="120" y="332" fill="#94a3b8" font-size="8" text-anchor="middle">build_context()</text>
+
+        <!-- 调度器 -->
+        <rect x="45" y="380" width="150" height="60" rx="6" fill="#0f172a"/>
+        <rect x="45" y="380" width="150" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="120" y="404" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">调度器</text>
+        <text x="120" y="420" fill="#94a3b8" font-size="8" text-anchor="middle">WeeklyTuningJob</text>
+        <text x="120" y="432" fill="#94a3b8" font-size="8" text-anchor="middle">_tune_single_strategy()</text>
+
+        <!-- LLM 引擎 -->
+        <rect x="45" y="480" width="150" height="60" rx="6" fill="#0f172a"/>
+        <rect x="45" y="480" width="150" height="60" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="120" y="504" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">LLM 引擎</text>
+        <text x="120" y="520" fill="#94a3b8" font-size="8" text-anchor="middle">LLMClient / ResponseParser</text>
+        <text x="120" y="532" fill="#94a3b8" font-size="8" text-anchor="middle">call_llm() / parse_response()</text>
+
+        <!-- Prompt 模板 -->
+        <rect x="45" y="580" width="150" height="60" rx="6" fill="#0f172a"/>
+        <rect x="45" y="580" width="150" height="60" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="120" y="604" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">Prompt 模板</text>
+        <text x="120" y="620" fill="#94a3b8" font-size="8" text-anchor="middle">common_rules.txt</text>
+        <text x="120" y="632" fill="#94a3b8" font-size="8" text-anchor="middle">btc_eth_user.txt</text>
+
+        <!-- 审批层 -->
+        <rect x="45" y="680" width="150" height="60" rx="6" fill="#0f172a"/>
+        <rect x="45" y="680" width="150" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="120" y="704" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">审批层</text>
+        <text x="120" y="720" fill="#94a3b8" font-size="8" text-anchor="middle">飞书卡片通知</text>
+        <text x="120" y="732" fill="#94a3b8" font-size="8" text-anchor="middle">人工审批确认</text>
+
+        <!-- 执行层 -->
+        <rect x="45" y="780" width="150" height="60" rx="6" fill="#0f172a"/>
+        <rect x="45" y="780" width="150" height="60" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="120" y="804" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">执行层</text>
+        <text x="120" y="820" fill="#94a3b8" font-size="8" text-anchor="middle">写入 tuning_overrides</text>
+        <text x="120" y="832" fill="#94a3b8" font-size="8" text-anchor="middle">更新 .active 版本文件</text>
+
+        <!-- ============================================ -->
+        <!-- 反馈闭环模块（新增） -->
+        <!-- ============================================ -->
+
+        <!-- EffectTracker -->
+        <rect x="435" y="80" width="270" height="80" rx="6" fill="#0f172a"/>
+        <rect x="435" y="80" width="270" height="80" rx="6" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="570" y="104" fill="#fff" font-size="12" font-weight="600" text-anchor="middle">EffectTracker（效果追踪器）</text>
+        <text x="570" y="120" fill="#94a3b8" font-size="8" text-anchor="middle">track_and_fill() → 回填上周效果</text>
+        <text x="570" y="134" fill="#94a3b8" font-size="8" text-anchor="middle">复用 adapter.collect(week_offset=-1) 计算绩效</text>
+        <text x="570" y="148" fill="#94a3b8" font-size="8" text-anchor="middle">回填 post_win_rate / post_total_pnl / effect_notes</text>
+
+        <!-- ContextEnhancer -->
+        <rect x="435" y="200" width="270" height="80" rx="6" fill="#0f172a"/>
+        <rect x="435" y="200" width="270" height="80" rx="6" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="570" y="224" fill="#fff" font-size="12" font-weight="600" text-anchor="middle">ContextEnhancer（上下文增强器）</text>
+        <text x="570" y="240" fill="#94a3b8" font-size="8" text-anchor="middle">build_feedback_context() → 格式化反馈</text>
+        <text x="570" y="254" fill="#94a3b8" font-size="8" text-anchor="middle">生成 Markdown 对比表格（调优前 vs 调优后）</text>
+        <text x="570" y="268" fill="#94a3b8" font-size="8" text-anchor="middle">生成定性评价（良好/一般/较差/数据不足）</text>
+
+        <!-- LearningSignal -->
+        <rect x="435" y="320" width="270" height="80" rx="6" fill="#0f172a"/>
+        <rect x="435" y="320" width="270" height="80" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="570" y="344" fill="#fff" font-size="12" font-weight="600" text-anchor="middle">LearningSignal（学习信号生成器）</text>
+        <text x="570" y="360" fill="#94a3b8" font-size="8" text-anchor="middle">build_learning_instructions() → 生成学习指令</text>
+        <text x="570" y="374" fill="#94a3b8" font-size="8" text-anchor="middle">L1: 效果驱动方向 / L2: 避免过度优化</text>
+        <text x="570" y="388" fill="#94a3b8" font-size="8" text-anchor="middle">L3: 零交易处理 / L4: 连续不变触发</text>
+
+        <!-- ============================================ -->
+        <!-- 外部依赖 / 数据存储 -->
+        <!-- ============================================ -->
+
+        <!-- strategy_memory 表 -->
+        <rect x="785" y="80" width="270" height="80" rx="6" fill="#0f172a"/>
+        <rect x="785" y="80" width="270" height="80" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="920" y="104" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">strategy_memory 表</text>
+        <text x="920" y="120" fill="#94a3b8" font-size="8" text-anchor="middle">[新增字段] active_version VARCHAR(20)</text>
+        <text x="920" y="134" fill="#94a3b8" font-size="8" text-anchor="middle">post_win_rate / post_total_pnl / effect_notes</text>
+        <text x="920" y="148" fill="#94a3b8" font-size="8" text-anchor="middle">[新增索引] idx_memory_active_version</text>
+
+        <!-- tuning_overrides -->
+        <rect x="785" y="200" width="270" height="60" rx="6" fill="#0f172a"/>
+        <rect x="785" y="200" width="270" height="60" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="920" y="224" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">tuning_overrides/</text>
+        <text x="920" y="240" fill="#94a3b8" font-size="8" text-anchor="middle">.active 版本指针文件</text>
+
+        <!-- trade_records 表 -->
+        <rect x="785" y="300" width="270" height="60" rx="6" fill="#0f172a"/>
+        <rect x="785" y="300" width="270" height="60" rx="6" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="920" y="324" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">trade_records 表</text>
+        <text x="920" y="340" fill="#94a3b8" font-size="8" text-anchor="middle">策略交易记录（绩效数据源）</text>
+
+        <!-- config.yaml -->
+        <rect x="785" y="400" width="270" height="60" rx="6" fill="#0f172a"/>
+        <rect x="785" y="400" width="270" height="60" rx="6" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="920" y="424" fill="#fff" font-size="11" font-weight="600" text-anchor="middle">ai_tuner/config.yaml</text>
+        <text x="920" y="440" fill="#94a3b8" font-size="8" text-anchor="middle">[新增] feedback 配置段（评级阈值/学习信号）</text>
+
+        <!-- ============================================ -->
+        <!-- 箭头连接 -->
+        <!-- ============================================ -->
+
+        <!-- 采集层 → 记忆层 -->
+        <line x1="120" y1="140" x2="120" y2="175" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- 记忆层 → 上下文构建器 -->
+        <line x1="120" y1="240" x2="120" y2="275" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- 上下文构建器 → 调度器 -->
+        <line x1="120" y1="340" x2="120" y2="375" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- 调度器 → LLM 引擎 -->
+        <line x1="120" y1="440" x2="120" y2="475" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- LLM 引擎 → Prompt 模板 -->
+        <line x1="120" y1="540" x2="120" y2="575" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- Prompt 模板 → 审批层 -->
+        <line x1="120" y1="640" x2="120" y2="675" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- 审批层 → 执行层 -->
+        <line x1="120" y1="740" x2="120" y2="775" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+
+        <!-- 执行层 → 反馈闭环（回馈箭头） -->
+        <path d="M 195 810 L 410 810 L 410 120 L 430 120" fill="none" stroke="#34d399" stroke-width="2" stroke-dasharray="6,3" marker-end="url(#arrowhead-green)"/>
+        <text x="302" y="800" fill="#34d399" font-size="8" text-anchor="middle">下周调优前触发：读取 .active 版本号</text>
+
+        <!-- EffectTracker → strategy_memory -->
+        <line x1="705" y1="100" x2="780" y2="100" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead-violet)"/>
+        <text x="742" y="94" fill="#a78bfa" font-size="7" text-anchor="middle">查找/回填</text>
+
+        <!-- EffectTracker → tuning_overrides -->
+        <line x1="705" y1="140" x2="780" y2="225" stroke="#fb923c" stroke-width="1.5" marker-end="url(#arrowhead-orange)"/>
+        <text x="760" y="170" fill="#fb923c" font-size="7" text-anchor="middle">读取 .active</text>
+
+        <!-- EffectTracker → trade_records -->
+        <line x1="705" y1="150" x2="780" y2="325" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="4,3" marker-end="url(#arrowhead-violet)"/>
+        <text x="760" y="210" fill="#a78bfa" font-size="7" text-anchor="middle">collect(week_offset=-1)</text>
+
+        <!-- EffectTracker → ContextEnhancer -->
+        <line x1="570" y1="160" x2="570" y2="195" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead-cyan)"/>
+        <text x="590" y="180" fill="#22d3ee" font-size="7" text-anchor="start">EffectSummary</text>
+
+        <!-- ContextEnhancer → LearningSignal -->
+        <line x1="570" y1="280" x2="570" y2="315" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead-violet)"/>
+        <text x="590" y="300" fill="#a78bfa" font-size="7" text-anchor="start">EffectSummary</text>
+
+        <!-- ContextEnhancer → config.yaml -->
+        <line x1="705" y1="240" x2="780" y2="430" fill="none" stroke="#fb923c" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrowhead-orange)"/>
+        <text x="760" y="380" fill="#fb923c" font-size="7" text-anchor="middle">读取评级阈值</text>
+
+        <!-- LearningSignal → config.yaml -->
+        <line x1="705" y1="360" x2="780" y2="440" fill="none" stroke="#fb923c" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrowhead-orange)"/>
+        <text x="760" y="410" fill="#fb923c" font-size="7" text-anchor="middle">读取学习规则</text>
+
+        <!-- LearningSignal → strategy_memory -->
+        <line x1="705" y1="380" x2="920" y2="165" fill="none" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrowhead-violet)"/>
+        <text x="820" y="280" fill="#a78bfa" font-size="7" text-anchor="middle">查询连续不变历史</text>
+
+        <!-- 反馈闭环 → 调度器（集成） -->
+        <path d="M 435 450 L 300 450 L 300 410 L 200 410" fill="none" stroke="#34d399" stroke-width="2" marker-end="url(#arrowhead-green)"/>
+        <text x="310" y="442" fill="#34d399" font-size="8" text-anchor="start">集成到 _tune_single_strategy()</text>
+
+        <!-- 反馈闭环 → Prompt 模板 -->
+        <path d="M 435 590 L 300 590 L 300 610 L 200 610" fill="none" stroke="#22d3ee" stroke-width="1.5" marker-end="url(#arrowhead-cyan)"/>
+        <text x="310" y="582" fill="#22d3ee" font-size="8" text-anchor="start">feedback_context 注入</text>
+
+        <path d="M 435 620 L 300 620 L 300 630 L 200 630" fill="none" stroke="#a78bfa" stroke-width="1.5" marker-end="url(#arrowhead-violet)"/>
+        <text x="310" y="614" fill="#a78bfa" font-size="8" text-anchor="start">learning_instructions 注入</text>
+
+        <!-- ============================================ -->
+        <!-- 图例 -->
+        <!-- ============================================ -->
+        <rect x="40" y="448" width="330" height="130" rx="8" fill="#0f172a" stroke="#1e293b" stroke-width="1"/>
+        <text x="55" y="466" fill="#f8fafc" font-size="10" font-weight="600">图例</text>
+
+        <rect x="55" y="476" width="12" height="12" rx="2" fill="rgba(6, 78, 59, 0.4)" stroke="#34d399" stroke-width="1.5"/>
+        <text x="72" y="486" fill="#94a3b8" font-size="8">现有模块 / 后端模块</text>
+
+        <rect x="55" y="496" width="12" height="12" rx="2" fill="rgba(8, 51, 68, 0.4)" stroke="#22d3ee" stroke-width="1.5"/>
+        <text x="72" y="506" fill="#94a3b8" font-size="8">上下文 / 引擎模块</text>
+
+        <rect x="55" y="516" width="12" height="12" rx="2" fill="rgba(76, 29, 149, 0.4)" stroke="#a78bfa" stroke-width="1.5"/>
+        <text x="72" y="526" fill="#94a3b8" font-size="8">数据存储 / 数据库表</text>
+
+        <rect x="55" y="536" width="12" height="12" rx="2" fill="rgba(251, 146, 60, 0.3)" stroke="#fb923c" stroke-width="1.5"/>
+        <text x="72" y="546" fill="#94a3b8" font-size="8">配置 / 外部文件</text>
+
+        <line x1="55" y1="562" x2="70" y2="562" stroke="#34d399" stroke-width="2" stroke-dasharray="6,3"/>
+        <text x="72" y="566" fill="#94a3b8" font-size="8">反馈闭环数据流</text>
+
+        <line x1="195" y1="476" x2="210" y2="476" stroke="#64748b" stroke-width="1.5" marker-end="url(#arrowhead)"/>
+        <text x="215" y="480" fill="#94a3b8" font-size="8">顺序调用</text>
+
+        <line x1="195" y1="496" x2="210" y2="496" stroke="#a78bfa" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrowhead-violet)"/>
+        <text x="215" y="500" fill="#94a3b8" font-size="8">读数据依赖</text>
+
+        <line x1="195" y1="516" x2="210" y2="516" stroke="#fb923c" stroke-width="1" stroke-dasharray="3,3" marker-end="url(#arrowhead-orange)"/>
+        <text x="215" y="520" fill="#94a3b8" font-size="8">配置读取</text>
+
+        <line x1="195" y1="536" x2="210" y2="536" stroke="#34d399" stroke-width="2" stroke-dasharray="6,3"/>
+        <text x="215" y="540" fill="#94a3b8" font-size="8">闭环反馈流</text>
+      </svg>
+    </div>
+
+    <div class="summary-grid">
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot emerald"></div>
+          <h3>EffectTracker</h3>
+        </div>
+        <ul>
+          <li>• 读取 .active 版本文件 → 查找上上周已生效记录</li>
+          <li>• 复用 adapter.collect(week_offset=-1) 计算上周绩效</li>
+          <li>• 幂等性校验：post_* 已填充则跳过</li>
+          <li>• 回填 post_win_rate / post_total_pnl / effect_notes</li>
+          <li>• 异常降级：任何异常不阻断主流程</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot cyan"></div>
+          <h3>ContextEnhancer</h3>
+        </div>
+        <ul>
+          <li>• 接收 EffectSummary → 生成 Markdown 对比表格</li>
+          <li>• 展示调优前 vs 调优后指标对比</li>
+          <li>• 生成定性评价（良好/一般/较差/数据不足）</li>
+          <li>• 注入到 User Prompt 的 feedback_context 插值</li>
+          <li>• 与现有 ContextBuilder 合并输出</li>
+        </ul>
+      </div>
+      <div class="card">
+        <div class="card-header">
+          <div class="card-dot violet"></div>
+          <h3>LearningSignal</h3>
+        </div>
+        <ul>
+          <li>• L1: 效果驱动的决策方向（评级→指令）</li>
+          <li>• L2: 避免过度优化（连续方向检测）</li>
+          <li>• L3: 零交易处理（<3笔不参考）</li>
+          <li>• L4: 连续不变触发（3次后强制调整）</li>
+          <li>• 注入到 System Prompt 的 learning_instructions 插值</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer">
+      StratTuneAI Feedback Loop Architecture · v1.0 · 2026-08-11 · 反馈闭环系统设计
+    </div>
+  </div>
+
+  <script>
+    function toggleToolbar() {
+      document.getElementById('toolbarActions').classList.toggle('show');
+    }
+    function captureRect() {
+      const container = document.getElementById('report-container');
+      const rect = container.getBoundingClientRect();
+      const padding = 32;
+      return { x: rect.x - padding, y: rect.y - padding, width: rect.width + padding * 2, height: rect.height + padding * 2 };
+    }
+    function copyAsImage() {
+      const r = captureRect();
+      html2canvas(document.body, { x: r.x, y: r.y, width: r.width, height: r.height, scale: 2, ignoreElements: (el) => el.classList.contains('toolbar') }).then(canvas => {
+        canvas.toBlob(blob => navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]));
+      });
+    }
+    function downloadPNG() {
+      const r = captureRect();
+      html2canvas(document.body, { x: r.x, y: r.y, width: r.width, height: r.height, scale: 2, ignoreElements: (el) => el.classList.contains('toolbar') }).then(canvas => {
+        const a = document.createElement('a');
+        a.download = 'StratTuneAI-反馈闭环架构图.png';
+        a.href = canvas.toDataURL();
+        a.click();
+      });
+    }
+    function downloadPDF() {
+      const r = captureRect();
+      html2canvas(document.body, { x: r.x, y: r.y, width: r.width, height: r.height, scale: 2, ignoreElements: (el) => el.classList.contains('toolbar') }).then(canvas => {
+        const imgData = canvas.toDataURL('image/png');
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ orientation: 'landscape', unit: 'px', format: [r.width * 0.75, r.height * 0.75] });
+        pdf.addImage(imgData, 'PNG', 0, 0, r.width * 0.75, r.height * 0.75);
+        pdf.save('StratTuneAI-反馈闭环架构图.pdf');
+      });
+    }
+  </script>
+</body>
+</html>

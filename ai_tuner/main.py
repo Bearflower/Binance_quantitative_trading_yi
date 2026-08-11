@@ -658,8 +658,9 @@ class StratTuneAI:
                                    config_path=config_path, error=str(e))
                 diff_text = diff_gen.generate_diff(strategy_name, adjustments, current_params)
 
-                # 先应用配置变更，成功后再标记数据库状态（保证一致性）
-                success = await self.config_operator.apply_changes(config_path, adjustments)
+                # 先应用配置变更到覆盖层，成功后再标记数据库状态（保证一致性）
+                # 使用 apply_overrides 写入 tuning_overrides 目录，不修改 config.yaml
+                success = await self.config_operator.apply_overrides(config_path, adjustments)
                 if not success:
                     return web.json_response({
                         "status": "error",

@@ -1,6 +1,6 @@
 # StratTuneAI 多策略AI调优系统 -- 架构设计文档
 
-**文档版本**: v1.0
+**文档版本**: v2.0
 **创建日期**: 2026-06-21
 **作者**: 后端架构师
 **关联文档**: [PRD-多策略AI调优系统](../requirements/StratTuneAI/PRD-多策略AI调优系统.md) | [多策略AI调优系统技术路线](../requirements/StratTuneAI/多策略AI调优系统技术路线.md)
@@ -12,6 +12,7 @@
 | 版本 | 日期 | 修改人 | 修改内容 |
 |------|------|--------|----------|
 | v1.0 | 2026-06-21 | 后端架构师 | 初始版本，完整架构设计 |
+| v2.0 | 2026-08-11 | 代码图书馆长 | 引入 AI 调优覆盖层（tuning_overrides）机制，新增 shared/config_loader.py，更新 ConfigOperator 和回滚流程 |
 
 ---
 
@@ -92,7 +93,7 @@ graph TD
 | 代码层面 | 独立模块 | `ai_tuner/` 在项目根目录，通过 `sys.path` 引用 `shared/` |
 | 数据库 | 共享 Schema | 使用 `trading` schema，新建 `strategy_memory` 表 |
 | 通知 | 复用服务 | 复用 `shared/notification.py`，新增调优专用 Webhook 环境变量 |
-| 配置 | 读写分离 | 读取策略 `config.yaml`（只读），ai_tuner 自身配置独立 |
+| 配置 | 覆盖层机制 | 策略 `config.yaml` 只读（基础设计参数），AI 调优参数写入 `tuning_overrides/` 覆盖层目录，通过 `shared/config_loader.py` 自动合并 |
 | 部署 | 独立容器 | 在 `docker-compose.yml` 中新增 `ai-tuner` 服务 |
 | 运行时 | 完全解耦 | 策略容器无需感知 ai_tuner 的存在 |
 
@@ -562,16 +563,19 @@ class BaseAdapter(ABC):
 
     async def get_current_config(self) -> Dict:
         """
-        读取当前策略的 config.yaml（默认实现）
+        读取当前策略的合并配置（基础配置 + AI 调优覆盖层）
+
+        使用 shared/config_loader.py 的 load_strategy_config() 加载，
+        自动合并 config.yaml 基础配置和 tuning_overrides 覆盖层。
 
         子类可以覆盖以支持不同的配置格式或读取方式。
 
         Returns:
-            Dict: 当前配置的嵌套字典
+            Dict: 当前配置的嵌套字典（合并后的完整配置）
         """
-        import yaml
-        with open(self.config_path, 'r', encoding='utf-8') as f:
-            return yaml.safe_load(f)
+        from shared.config_loader import load_strategy_config
+        strategy_dir = os.path.dirname(self.config_path)
+        return load_strategy_config(strategy_dir)
 
     def get_prompt_templates(self) -> Dict[str, str]:
         """
@@ -1170,18 +1174,21 @@ class ConfigOperator:
     """
     配置操作器
 
-    负责安全地读写策略 config.yaml 文件。
-    核心原则: 原子性写入 + 写入前备份 + 写入后验证
+    提供两种写入模式:
+    1. apply_changes() — 直接写入 config.yaml（用于资金分配等非 AI 调优写入）
+    2. apply_overrides() — 写入 tuning_overrides 覆盖层（用于 AI 调优参数变更）
+
+    核心原则: 覆盖层写入原子性 + 写入前备份 + 写入后验证
     """
 
-    def __init__(self, max_backups: int = 10):
+    def __init__(self, rollback_manager=None):
         """
         Args:
-            max_backups: 最多保留备份数
+            rollback_manager: RollbackManager 实例，用于备份管理
         """
         ...
 
-    async def read(self, config_path: str) -> Dict:
+    def read_config(self, config_path: str) -> Dict:
         """
         读取配置（YAML → 嵌套字典）
 
@@ -1193,62 +1200,66 @@ class ConfigOperator:
         """
         ...
 
-    async def backup(self, config_path: str) -> str:
-        """
-        备份当前配置
-
-        生成备份文件: config.yaml.backup.20260621235800
-
-        Args:
-            config_path: 配置文件路径
-
-        Returns:
-            str: 备份文件路径
-        """
-        ...
-
-    async def apply(
+    def apply_changes(
         self,
         config_path: str,
-        adjustments: Dict[str, Dict[str, float]]
-    ) -> ApplyResult:
+        adjustments: Dict[str, Any],
+    ) -> bool:
         """
-        应用配置变更（原子性写入）
+        应用参数变更到配置文件（直接写入 config.yaml）
+
+        用于非 AI 调优写入（如资金分配 capital_limits 更新）。
+        AI 调优参数变更请使用 apply_overrides()。
 
         流程:
-        1. 读取当前配置
-        2. 生成备份
-        3. 在内存中修改参数值
-        4. 写入临时文件 config.yaml.tmp
-        5. 原子性重命名 config.yaml.tmp → config.yaml
-        6. 重新读取验证参数已生效
+        1. 备份当前配置（通过 rollback_manager）
+        2. 读取当前配置
+        3. 应用变更
+        4. 原子写入（临时文件 → rename）
 
         Args:
             config_path: 配置文件路径
-            adjustments: 调整映射 {param_path: {from: 旧值, to: 新值}}
+            adjustments: 参数调整，格式为 {param_path: new_value}
+                        或 {param_path: {"to": new_value}}
 
         Returns:
-            ApplyResult: 应用结果
-
-        Raises:
-            写入失败时自动从备份恢复，不抛出异常（通过 ApplyResult 返回错误）
+            bool: 是否成功
         """
         ...
 
-    async def rollback(self, config_path: str, backup_path: Optional[str] = None) -> bool:
+    def apply_overrides(
+        self,
+        config_path: str,
+        adjustments: Dict[str, Any],
+    ) -> bool:
         """
-        回滚配置到指定备份
+        应用 AI 调优参数到 tuning_overrides 覆盖层
+
+        不修改 config.yaml 基础配置，而是写入独立的覆盖层文件。
+        策略运行时通过 shared/config_loader.py 自动合并基础配置 + 覆盖层。
+
+        流程:
+        1. 生成版本号 V{YYYYMMDD}（同一天多次调用追加后缀）
+        2. 从 config_path 推导策略目录和覆盖层目录
+        3. 将扁平参数路径转为嵌套字典结构
+        4. 原子写入 tuning_overrides/V{version}.yaml
+        5. 原子写入 .active 指向新版本
+
+        回滚机制:
+        - 写入覆盖层文件失败 → 不修改 .active，状态不变
+        - 写入 .active 失败 → 删除已创建的覆盖层文件，回滚到前状态
+        - 回滚通过修改 .active 指向旧版本即可，无需删除覆盖层文件
 
         Args:
-            config_path: 配置文件路径
-            backup_path: 备份文件路径（可选，默认使用最新备份）
+            config_path: 策略 config.yaml 路径（用于推导目录）
+            adjustments: 参数调整，格式为 {param_path: new_value}
 
         Returns:
-            bool: 是否回滚成功
+            bool: 是否成功
         """
         ...
 
-    def _set_nested_value(self, config: Dict, param_path: str, value: float) -> Dict:
+    def set_nested_value(self, config: Dict, param_path: str, value: float) -> bool:
         """
         设置嵌套字典中的值
 
@@ -1260,33 +1271,33 @@ class ConfigOperator:
             value: 新值
 
         Returns:
-            Dict: 修改后的配置字典
+            bool: 是否设置成功
         """
         ...
 
-    def _write_yaml_atomic(self, config_path: str, config: Dict) -> bool:
+    def _atomic_write(self, config_path: str, config: Dict) -> None:
         """
         原子性写入 YAML 文件
 
-        保持原有 YAML 格式和注释（使用 ruamel.yaml）。
+        先写入临时文件，再用 os.rename 原子替换，防止写入中断损坏配置。
         """
         ...
 
-    async def list_backups(self, config_path: str) -> List[str]:
+    def _generate_version(self, override_dir: str) -> str:
         """
-        列出所有备份文件，按时间倒序
+        生成覆盖层版本号
 
-        Returns:
-            List[str]: 备份文件路径列表
+        格式: V{YYYYMMDD}
+        同一天多次调用自动追加后缀: V{YYYYMMDD}_02, V{YYYYMMDD}_03, ...
         """
         ...
 
-    async def cleanup_old_backups(self, config_path: str) -> int:
+    def _flat_to_nested(self, adjustments: Dict[str, Any]) -> Dict:
         """
-        清理旧备份，保留最近 N 个
+        将扁平参数路径转为嵌套字典结构
 
-        Returns:
-            int: 清理数量
+        例如: {"scoring.min_score": 75}
+        转为: {"scoring": {"min_score": 75}}
         """
         ...
 
@@ -1364,99 +1375,156 @@ class RollbackManager:
     """
     回滚管理器
 
-    在配置生效后监控策略表现，触发自动回滚条件时执行回滚。
+    配置文件的备份、恢复和清理。
+    每次应用变更前自动创建备份（用于 apply_changes 直接写入 config.yaml 的场景）。
+    AI 调优覆盖层（tuning_overrides）的回滚通过修改 .active 指向旧版本实现，
+    无需恢复备份文件。
     """
 
-    def __init__(
-        self,
-        config_operator: ConfigOperator,
-        db_handler: MemoryDBHandler,
-        rollback_config: RollbackConfig
-    ):
+    def __init__(self, max_backups: int = 10):
+        """
+        Args:
+            max_backups: 每个配置文件保留的最大备份数
+        """
         ...
 
-    async def start_monitoring(
-        self,
-        strategy_id: str,
-        record_id: int,
-        config_path: str,
-        backup_path: str
-    ) -> None:
+    def create_backup(self, config_path: str) -> str:
         """
-        启动回滚监控
+        创建配置文件备份
 
-        在后台异步监控策略表现，持续 monitor_hours 小时。
+        备份文件命名格式: config.yaml.backup.{timestamp}
 
         Args:
-            strategy_id: 策略标识
-            record_id: 记忆记录 ID
             config_path: 配置文件路径
-            backup_path: 备份文件路径
-        """
-        ...
-
-    async def _monitor_loop(
-        self,
-        strategy_id: str,
-        record_id: int,
-        config_path: str,
-        backup_path: str,
-        until: datetime
-    ) -> None:
-        """
-        监控循环
-
-        每 5 分钟检查一次:
-        1. 连续亏损笔数 >= max_consecutive_losses
-        2. 累计亏损 > 初始资金的 max_loss_percent%
-
-        任一条件触发 → 立即回滚
-        """
-        ...
-
-    async def trigger_rollback(
-        self,
-        strategy_id: str,
-        record_id: int,
-        config_path: str,
-        backup_path: str,
-        reason: str
-    ) -> bool:
-        """
-        触发回滚
-
-        1. 恢复备份配置
-        2. 更新 memory 表状态
-        3. 发送紧急回滚通知
-
-        Args:
-            strategy_id: 策略标识
-            record_id: 记忆记录 ID
-            config_path: 配置文件路径
-            backup_path: 备份文件路径
-            reason: 回滚原因
 
         Returns:
-            bool: 是否回滚成功
+            str: 备份文件路径，备份失败返回空字符串
         """
         ...
 
-    async def manual_rollback(
-        self,
-        strategy_id: str,
-        backup_path: Optional[str] = None
-    ) -> bool:
+    def rollback(self, config_path: str, backup_path: str) -> bool:
         """
-        手动回滚（通过 API 触发）
+        从备份恢复配置
 
         Args:
-            strategy_id: 策略标识
-            backup_path: 备份文件路径（可选，默认最新）
+            config_path: 目标配置文件路径
+            backup_path: 备份文件路径
 
         Returns:
-            bool: 是否回滚成功
+            bool: 是否成功
         """
         ...
+
+    def list_backups(self, config_path: str) -> List[str]:
+        """
+        列出所有备份文件
+
+        Returns:
+            List[str]: 备份文件路径列表（按时间倒序）
+        """
+        ...
+
+    def cleanup_old_backups(self, config_path: str, keep_count: int = None) -> int:
+        """
+        清理旧备份文件
+
+        Args:
+            config_path: 配置文件路径
+            keep_count: 保留数量，默认使用实例配置
+
+        Returns:
+            int: 删除的备份文件数量
+        """
+        ...
+```
+
+#### 3.5.4 统一配置加载器（shared/config_loader.py）
+
+```python
+# shared/config_loader.py
+
+def load_strategy_config(strategy_dir: str) -> Dict[str, Any]:
+    """
+    加载策略的合并配置（基础配置 + AI 调优覆盖层）
+
+    流程:
+    1. 读取 config.yaml 作为基础配置
+    2. 读取 tuning_overrides/.active 获取当前生效版本
+    3. 读取对应的覆盖层 YAML 文件
+    4. deep_merge 合并（覆盖层参数优先）
+
+    降级策略（任一条件满足，只加载基础配置，不报错，仅记录 warning）:
+    - tuning_overrides/ 目录不存在
+    - .active 文件不存在
+    - .active 内容为空
+    - .active 指向的版本文件不存在
+    - 覆盖层 YAML 解析失败
+
+    Args:
+        strategy_dir: 策略目录路径（绝对路径或相对于项目根目录）
+                      例如 "strategies/btc_eth" 或 "/app/strategies/btc_eth"
+
+    Returns:
+        合并后的配置字典。基础配置也不存在时返回空字典。
+    """
+    ...
+
+
+def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    深度合并两个配置字典
+
+    规则:
+    1. 递归合并嵌套字典
+    2. 覆盖层参数优先于基础配置
+    3. 覆盖层不存在的参数，保留基础配置值
+    4. 覆盖层值为 None 的参数，保留基础配置值（不删除）
+    5. 列表类型直接替换（不合并）
+    6. 标量类型直接覆盖
+    7. 不修改原始字典（返回新字典）
+
+    Args:
+        base: 基础配置字典
+        override: 覆盖层配置字典
+
+    Returns:
+        合并后的新字典
+    """
+    ...
+```
+
+**目录结构**:
+
+```
+strategies/{strategy_id}/
+├── config.yaml                    # 基础设计参数（AI 永不修改）
+└── tuning_overrides/              # AI 调优覆盖层目录
+    ├── .active                    # 内容: "V20260811"（指向当前生效版本）
+    ├── V20260811.yaml             # 本周调优后生成
+    ├── V20260804.yaml             # 上周
+    └── V20260728.yaml             # 上上周
+```
+
+**使用方式**:
+
+所有策略的 `main.py` 和适配器的 `_read_config()` 方法改为调用 `load_strategy_config()`:
+
+```python
+from shared.config_loader import load_strategy_config
+
+# 策略配置加载
+strategy_dir = os.path.dirname(config_path)
+config = load_strategy_config(strategy_dir)
+# config 已经是合并后的配置（基础配置 + AI 调优覆盖层）
+```
+
+**回滚机制**:
+
+回滚通过修改 `.active` 文件指向旧版本即可，无需恢复备份文件:
+
+```bash
+# 回滚到 V20260804 版本
+echo "V20260804" > strategies/btc_eth/tuning_overrides/.active
 ```
 
 ### 3.6 通知模块接口
@@ -1800,9 +1868,10 @@ class WeeklyTuningJob:
 │ 9. WeeklyTuningJob.handle_approval()                              │
 │    ├─ 幂等检查                                                   │
 │    ├─ 更新状态 confirmed                                         │
-│    ├─ ConfigOperator.apply() → 备份+原子写入+验证                │
+│    ├─ ConfigOperator.apply_overrides() → 写入 tuning_overrides/  │
+│    │  + 生成版本号 V{YYYYMMDD}.yaml + 更新 .active 指向新版本    │
 │    ├─ 更新状态 applied                                           │
-│    ├─ RollbackManager.start_monitoring() → 24h 监控              │
+│    ├─ RollbackManager (通过修改 .active 指向旧版本实现回滚)      │
 │    └─ TunerMessenger.send_applied_notification() → 生效通知      │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -2202,10 +2271,19 @@ python-dotenv>=1.0.0,<2.0.0
 │  │              宿主机文件系统                                     │  │
 │  │                                                                │  │
 │  │  strategies/                                                   │  │
-│  │  ├── btc_eth/config.yaml    ← ai_tuner 读写                   │  │
-│  │  ├── new_coin/config.yaml   ← ai_tuner 读写                   │  │
-│  │  ├── grid/config.yaml       ← (第二期接入)                     │  │
-│  │  └── hrs/config.yaml        ← (第二期接入)                     │  │
+│  │  ├── btc_eth/                                                   │  │
+│  │  │   ├── config.yaml          ← 只读（基础设计参数）            │  │
+│  │  │   └── tuning_overrides/    ← ai_tuner 读写（覆盖层）        │  │
+│  │  │       ├── .active          ← 内容: "V20260811"              │  │
+│  │  │       ├── V20260811.yaml   ← 本周调优后生成                 │  │
+│  │  │       └── V20260804.yaml   ← 上周                           │  │
+│  │  ├── new_coin/                                                   │  │
+│  │  │   ├── config.yaml          ← 只读                           │  │
+│  │  │   └── tuning_overrides/    ← ai_tuner 读写                  │  │
+│  │  │       ├── .active                                            │  │
+│  │  │       └── V20260811.yaml                                     │  │
+│  │  ├── grid/config.yaml        ← (第二期接入)                     │  │
+│  │  └── hrs/config.yaml         ← (第二期接入)                     │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 
@@ -2221,7 +2299,8 @@ python-dotenv>=1.0.0,<2.0.0
 | 通信方向 | 方式 | 说明 |
 |----------|------|------|
 | ai_tuner → PostgreSQL | asyncpg 直连 | 读写 strategy_memory 表，查询 trade_records 表 |
-| ai_tuner → 策略 config.yaml | 文件系统读写 | 通过 Docker volume 挂载，读写宿主机文件 |
+| ai_tuner → 策略 config.yaml | 文件系统只读 | 通过 Docker volume 挂载，只读基础配置（config.yaml） |
+| ai_tuner → 策略 tuning_overrides/ | 文件系统读写 | 写入覆盖层文件（V{version}.yaml + .active），不修改 config.yaml |
 | ai_tuner → DeepSeek API | HTTPS | OpenAI SDK 调用 |
 | ai_tuner → 飞书 | HTTPS Webhook | 复用 shared/notification.py 逻辑 |
 | 飞书 → ai_tuner | HTTP POST | 审批回调 API（端口 8777） |
@@ -2365,31 +2444,46 @@ MTPCS_REDLINE = [
 
 #### 8.4.2 回滚执行流程
 
+**AI 调优覆盖层回滚**（通过修改 `.active` 指向旧版本）:
+
 ```
 触发回滚
     │
     ▼
 ┌──────────────────────────────────────────────────────┐
-│ 1. 获取最近一次备份文件路径                            │
-│    config.yaml.backup.{timestamp}                     │
+│ 1. 读取当前 .active 获取版本号                         │
+│    cat tuning_overrides/.active → "V20260811"         │
 │                                                        │
-│ 2. 验证备份文件存在且可读                              │
-│    ├─ 存在 → 继续                                     │
-│    └─ 不存在 → 发送严重告警，需人工介入                │
+│ 2. 从历史版本文件中选择目标版本                        │
+│    ls tuning_overrides/V*.yaml                        │
+│    ├─ V20260811.yaml (当前)                            │
+│    ├─ V20260804.yaml (目标)                            │
+│    └─ V20260728.yaml                                  │
 │                                                        │
-│ 3. 原子性恢复                                         │
-│    cp config.yaml.backup.{ts} config.yaml.tmp          │
-│    mv config.yaml.tmp config.yaml                     │
+│ 3. 修改 .active 指向旧版本（原子写入）                  │
+│    echo "V20260804" > tuning_overrides/.active.tmp     │
+│    mv .active.tmp .active                              │
 │                                                        │
-│ 4. 验证恢复                                           │
-│    重新读取 config.yaml 确认参数已恢复                 │
-│                                                        │
-│ 5. 更新 memory 表                                     │
+│ 4. 更新 memory 表                                     │
 │    is_rolled_back = true, rolled_back_at = NOW()      │
 │                                                        │
-│ 6. 发送通知                                           │
-│    "紧急回滚: btc_eth 策略参数已恢复到 ... 版本"       │
+│ 5. 发送通知                                           │
+│    "紧急回滚: btc_eth 策略参数已恢复到 V20260804 版本" │
+│                                                        │
+│ 注: 无需恢复备份文件，覆盖层版本文件保留在目录中       │
+│     后续可随时通过修改 .active 重新指向任意版本        │
 └──────────────────────────────────────────────────────┘
+```
+
+**非 AI 调优回滚**（用于 `apply_changes()` 直接写入 config.yaml 的场景）:
+
+```
+1. 获取最近一次备份文件路径 config.yaml.backup.{timestamp}
+2. 验证备份文件存在且可读
+3. 原子性恢复: cp config.yaml.backup.{ts} config.yaml
+4. 验证恢复: 重新读取 config.yaml 确认参数已恢复
+5. 更新 memory 表
+6. 发送通知
 ```
 
 #### 8.4.3 手动回滚
@@ -2902,9 +2996,9 @@ logger.error(
 │
 ├── deploy/                           # 配置生效与回滚
 │   ├── __init__.py
-│   ├── config_operator.py            # 读写各策略 config.yaml
+│   ├── config_operator.py            # 两种写入模式: apply_changes() 直接写 config.yaml, apply_overrides() 写 tuning_overrides/
 │   ├── diff_generator.py             # 生成人类可读变更清单
-│   └── rollback_manager.py           # 备份与回滚
+│   └── rollback_manager.py           # 备份管理与回滚（覆盖层回滚通过修改 .active 指向旧版本）
 │
 ├── notifier/                         # 通知模块
 │   ├── __init__.py
@@ -2938,7 +3032,9 @@ graph TD
         PG[PostgreSQL]
         DS[DeepSeek API]
         FS[飞书 Webhook]
-        CFG[策略 config.yaml]
+        CFG[策略 config.yaml<br/>只读基础配置]
+        OVR[策略 tuning_overrides/<br/>读写覆盖层]
+        SCL[shared/config_loader.py<br/>统一配置加载器]
     end
 
     subgraph "ai_tuner 模块"
@@ -2977,12 +3073,21 @@ graph TD
     ENG_L --> DS
     ENG_L --> ENG_C
     ENG_P --> ADA
-    DEP_O --> CFG
-    DEP_R --> CFG
+    DEP_O -->|apply_overrides| OVR
+    DEP_O -->|apply_changes| CFG
     DEP_R --> MEM_D
     NOT --> FS
     API --> SCH
     API --> DEP_R
+
+    subgraph "策略容器 (运行时)"
+        STRAT[策略 main.py]
+        ADPT[策略适配器 _read_config]
+    end
+    STRAT --> SCL
+    ADPT --> SCL
+    SCL --> CFG
+    SCL --> OVR
 ```
 
 ---

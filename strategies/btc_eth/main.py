@@ -7,7 +7,6 @@
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
-import yaml
 import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -18,6 +17,7 @@ from shared.kline_service import KLineService
 from shared.notification import NotificationClient
 from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
+from shared.config_loader import load_strategy_config
 from shared.strategy_state import save_strategy_state
 from shared import condition_orders
 from strategies.btc_eth.strategy import BTCEthStrategy
@@ -50,16 +50,9 @@ async def initialize():
     
     logger.info("初始化MTPCS策略（主流币种趋势回调确认策略）...")
     
-    # 加载配置
-    config_path = os.path.join(
-        os.path.dirname(__file__),
-        "config.yaml"
-    )
-    
-    with open(config_path, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    
-    logger.info("配置加载成功", config_path=config_path)
+    # 加载配置（合并基础配置 + AI 调优覆盖层）
+    config = load_strategy_config(os.path.dirname(__file__))
+    logger.info("配置加载成功（含覆盖层合并）", strategy_dir=os.path.dirname(__file__))
     
     # 验证必要的环境变量
     required_env_vars = [

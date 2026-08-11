@@ -17,7 +17,6 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 import structlog
-import yaml
 
 from ai_tuner.adapters.base_adapter import (
     BaseAdapter,
@@ -31,8 +30,8 @@ from ai_tuner.adapters.base_adapter import (
 
 logger = structlog.get_logger()
 
-# 模拟推演置信度：基于历史回测标定，纯价格穿越模拟的准确率约为 0.6
-_FILL_EFFICIENCY_FACTOR = 0.6
+# 模拟推演置信度：从配置读取，提供默认值兜底
+# 配置路径：ai_tuner/config.yaml -> simulation.fill_efficiency_factor
 
 
 class GridAdapter(BaseAdapter):
@@ -42,14 +41,20 @@ class GridAdapter(BaseAdapter):
     strategy_name = "网格交易策略"
     config_path = "strategies/grid/config.yaml"
 
-    async def collect(self) -> StrategyReport:
+    async def collect(self, week_offset: int = 0) -> StrategyReport:
         """
-        采集本周网格策略表现数据
+        采集网格策略表现数据
 
         数据来源：
         1. grid.grid_trades 表：真实成交记录
         2. K线服务：本周1h K线，用于模拟推演
         3. strategies/grid/config.yaml：策略配置
+        支持 week_offset 参数，用于查询历史周数据（EffectTracker 回填使用）。
+
+        Args:
+            week_offset: 周偏移量
+                - 0（默认）: 当前周
+                - -1: 上一周（EffectTracker 回填使用）
 
         Returns:
             StrategyReport: 标准化策略周度体检报告（含 simulation 字段）
@@ -58,7 +63,9 @@ class GridAdapter(BaseAdapter):
         this_monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
         # 周日定时调度时，本周已基本结束，取本周一（刚结束的周期）
         # 其他天（含周一手动触发）都取上周一
-        week_start = this_monday if now.weekday() == 6 else this_monday - timedelta(days=7)
+        base_week_start = this_monday if now.weekday() == 6 else this_monday - timedelta(days=7)
+        # 应用 week_offset：偏移量 * 7 天
+        week_start = base_week_start + timedelta(days=week_offset * 7)
         week_end = week_start + timedelta(days=7)
 
         report = StrategyReport()
@@ -663,21 +670,28 @@ class GridAdapter(BaseAdapter):
         # 网格间距 = ATR × spacing_multiplier
         grid_spacing = atr * spacing_mult
         if grid_spacing <= 0:
-            grid_spacing = current_price * 0.005  # 兜底：0.5%价格间距
+            simulation_cfg = self._system_config.get("simulation", {})
+            fallback_spacing_pct = simulation_cfg.get("fallback_spacing_pct", 0.005)
+            grid_spacing = current_price * fallback_spacing_pct
 
         # 价格区间
         half_range = grid_spacing * grid_count / 2
         price_range_low = current_price - half_range
         price_range_high = current_price + half_range
 
-        # 每格利润率
-        profit_rate = grid_spacing / current_price if current_price > 0 else 0
+        # 从配置读取模拟推演参数
+        simulation_cfg = self._system_config.get("simulation", {})
+        fill_efficiency = simulation_cfg.get("fill_efficiency_factor", 0.6)
+        confidence_upper = simulation_cfg.get("confidence_upper_limit", 0.8)
+
+        # 每格利润率（用于记录，暂未使用）
+        # profit_rate = grid_spacing / current_price if current_price > 0 else 0
 
         # 每格名义价值（基于总保证金/网格数 × 杠杆）
         nominal_per_grid = (margin / grid_count) * leverage
 
         # 预估填充数：总价格摆动 / 网格间距 × 效率因子
-        estimated_fills = int(total_price_swing / grid_spacing * _FILL_EFFICIENCY_FACTOR)
+        estimated_fills = int(total_price_swing / grid_spacing * fill_efficiency)
         if estimated_fills < 0:
             estimated_fills = 0
 
@@ -688,7 +702,7 @@ class GridAdapter(BaseAdapter):
         estimated_profit = estimated_fills * profit_per_fill
 
         # 置信度：数据越充分，置信度越高
-        confidence = min(0.8, _FILL_EFFICIENCY_FACTOR + 0.1)
+        confidence = min(confidence_upper, fill_efficiency + 0.1)
         if total_price_swing <= 0:
             confidence = 0.1
 
@@ -810,7 +824,13 @@ class GridAdapter(BaseAdapter):
         }
 
     def _read_config(self) -> Dict[str, Any]:
-        """读取网格策略配置文件"""
+        """
+        读取策略配置（合并基础配置 + AI 调优覆盖层）
+
+        通过 shared/config_loader.py 的 load_strategy_config() 加载，
+        自动合并 config.yaml 基础配置和 tuning_overrides 覆盖层。
+        """
+        # 解析策略配置文件的绝对路径
         config_full_path = os.path.join(
             os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
             self.config_path,
@@ -825,8 +845,10 @@ class GridAdapter(BaseAdapter):
                 self.config_path,
             )
 
-        with open(config_full_path, "r", encoding="utf-8") as f:
-            return yaml.safe_load(f) or {}
+        # 使用统一配置加载器（合并基础配置 + AI 调优覆盖层）
+        strategy_dir = os.path.dirname(config_full_path)
+        from shared.config_loader import load_strategy_config
+        return load_strategy_config(strategy_dir)
 
     @staticmethod
     def _get_nested_value(config: Dict[str, Any], key_path: str) -> Any:

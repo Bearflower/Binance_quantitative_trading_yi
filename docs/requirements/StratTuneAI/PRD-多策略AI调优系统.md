@@ -6,18 +6,18 @@
 
 | 字段 | 内容 |
 |------|------|
-| 文档版本 | v1.2 |
+| 文档版本 | v1.3 |
 | 创建日期 | 2026-06-21 |
 | 作者 | 需求文档专家 |
 | 审核人 | 用户确认 |
-| 最后更新 | 2026-06-23 |
+| 最后更新 | 2026-08-11 |
 | 关联文档 | [多策略AI调优系统技术路线](./多策略AI调优系统技术路线.md) |
 
 ### 修改记录
 
 | 日期 | 版本 | 修改人 | 修改内容 |
 |------|------|--------|----------|
-| 2026-06-23 | v1.2 | 代码审查修正 | 修正定价、max_tokens、数据采集方式、审批方案、参数计数等不一致 |
+| 2026-08-11 | v1.3 | 代码图书馆长 | 引入 AI 调优覆盖层（tuning_overrides）机制，ConfigOperator 拆分 apply_changes/apply_overrides，更新回滚流程 |
 | 2026-06-22 | v1.1 | 用户确认 | 完成 9 项关键决策澄清，新增决策记录章节 |
 | 2026-06-21 | v1.0 | 需求文档专家 | 初始版本，完整 PRD 编写 |
 
@@ -682,11 +682,20 @@ AI 原始输出 → 提取 JSON → Pydantic 校验 → 参数白名单校验 �
 | 功能 | 说明 |
 |------|------|
 | 读取配置 | 读取策略 config.yaml，解析为嵌套字典 |
-| 写入配置 | 将修改后的配置写回 config.yaml，保持 YAML 格式和注释 |
-| 备份配置 | 应用前备份为 `config.yaml.backup.{timestamp}` |
+| 写入配置（非 AI 调优） | `apply_changes()` 直接写入 config.yaml，用于资金分配等非 AI 调优场景 |
+| 写入覆盖层（AI 调优） | `apply_overrides()` 写入 `tuning_overrides/` 目录，不修改 config.yaml |
+| 备份配置 | 应用前备份为 `config.yaml.backup.{timestamp}`（仅 apply_changes 场景） |
 | 差异生成 | 对比新旧配置，生成人类可读的变更清单 |
 
-**原子性写入流程**：
+**AI 调优覆盖层写入流程（apply_overrides）**：
+
+1. 生成版本号 `V{YYYYMMDD}`（同一天多次调用追加后缀）
+2. 从 config_path 推导策略目录和覆盖层目录
+3. 将扁平参数路径转为嵌套字典结构
+4. 原子写入 `tuning_overrides/V{version}.yaml`
+5. 原子写入 `.active` 指向新版本
+
+**非 AI 调优写入流程（apply_changes）**：
 
 1. 读取当前 config.yaml
 2. 生成备份文件 `config.yaml.backup.{timestamp}`
@@ -722,7 +731,17 @@ risk.chandelier_stop.activation_atr   1.8      2.0      +11.1%
 | 连续亏损 | >= 3 笔 | 连续 3 笔交易亏损 |
 | 累计亏损 | > 初始资金的 2% | 24h 内总亏损超过 2% |
 
-**回滚流程**：
+**回滚流程（AI 调优覆盖层）**：
+
+AI 调优参数写入 `tuning_overrides/` 覆盖层，回滚通过修改 `.active` 文件指向旧版本实现，无需恢复备份文件：
+
+1. 读取当前 `.active` 获取版本号
+2. 从历史版本文件中选择目标版本
+3. 原子写入 `.active` 指向旧版本
+4. 更新 memory 表状态
+5. 发送"回滚完成"通知
+
+**回滚流程（非 AI 调优，直接写入 config.yaml 的场景）**：
 
 1. 检测到触发条件 → 发送"紧急回滚"告警
 2. 恢复最近一次备份 `config.yaml.backup.{timestamp}` → `config.yaml`
@@ -1333,9 +1352,9 @@ Response:
 │   ├── response_parser.py           # 响应解析与校验
 │   └── cost_tracker.py              # Token 成本追踪
 ├── deploy/
-│   ├── config_operator.py           # 配置读写
+│   ├── config_operator.py           # 两种写入模式: apply_changes() 写 config.yaml, apply_overrides() 写 tuning_overrides/
 │   ├── diff_generator.py            # 差异生成
-│   └── rollback_manager.py          # 回滚管理
+│   └── rollback_manager.py          # 回滚管理（覆盖层回滚通过修改 .active 指向旧版本）
 ├── notifier/
 │   └── messenger.py                 # 飞书通知
 └── scheduler/
@@ -1419,9 +1438,9 @@ Response:
 
 | 决策项 | 结论 |
 |--------|------|
-| 挂载模式 | 策略 `config.yaml` 挂载为 **读写（rw）** |
-| 安全措施 | 写入前自动备份，写入使用原子 rename，最多保留 10 个备份 |
-| 风险控制 | 仅允许经过白名单校验的参数写入，防止意外修改 |
+| 挂载模式 | 策略 `config.yaml` 挂载为 **只读（ro）**，`tuning_overrides/` 目录挂载为 **读写（rw）** |
+| 安全措施 | AI 调优参数写入 `tuning_overrides/` 覆盖层，不修改 config.yaml；写入前自动生成版本号，原子写入 |
+| 风险控制 | 覆盖层写入失败时通过原子操作保证状态一致性，.active 写入失败时自动回滚已创建的覆盖层文件 |
 
 ### 12.8 HRS 策略预留
 

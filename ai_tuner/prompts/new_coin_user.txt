@@ -16,4 +16,8 @@
 
 {{ memory_history }}
 
+## 上次调优效果追踪
+
+{{ feedback_context }}
+
 请基于以上数据，给出本周的参数调优建议。严格按照 JSON 格式输出。

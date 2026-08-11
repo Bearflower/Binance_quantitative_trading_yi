@@ -5,10 +5,10 @@
 import asyncio
 import os
 from datetime import datetime
-import yaml
 import structlog
 
 from shared.binance_api import BinanceClient
+from shared.config_loader import load_strategy_config
 from shared.database import DatabaseManager
 from shared.kline_service import KLineService
 from shared.notification import NotificationClient
@@ -34,16 +34,9 @@ async def main():
     logger.info("新币做空策略启动", timestamp=datetime.now().isoformat())
 
     try:
-        # 加载配置
-        config_path = os.path.join(
-            os.path.dirname(__file__),
-            "config.yaml"
-        )
-
-        with open(config_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f)
-
-        logger.info("配置加载成功", config_path=config_path)
+        # 加载配置（合并基础配置 + AI 调优覆盖层）
+        config = load_strategy_config(os.path.dirname(__file__))
+        logger.info("配置加载成功（含覆盖层合并）", strategy_dir=os.path.dirname(__file__))
 
         # 验证必要的环境变量
         required_env_vars = [

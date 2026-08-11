@@ -127,9 +127,16 @@ class BaseAdapter(ABC):
         self.db_manager = db_manager
 
     @abstractmethod
-    async def collect(self) -> StrategyReport:
+    async def collect(self, week_offset: int = 0) -> StrategyReport:
         """
-        采集本周策略表现数据，生成标准化报告
+        采集策略表现数据，生成标准化报告
+
+        Args:
+            week_offset: 周偏移量
+                - 0（默认）: 当前周（常规调度使用）
+                - -1: 上一周（EffectTracker 回填使用）
+                - -2: 上上周
+                ...
 
         Returns:
             StrategyReport: 标准化策略报告

@@ -6,7 +6,7 @@
 """
 
 from datetime import datetime, timedelta
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import structlog
 
@@ -78,7 +78,27 @@ class MemoryDBHandler:
         try:
             await self.db_manager.execute_ddl(index_ddl)
         except Exception as e:
-            logger.debug("索引创建跳过（可能已存在）: %s", str(e))
+            logger.debug("索引创建跳过", error=str(e))
+
+        # 迁移：新增 active_version 字段（兼容已有表）
+        migrate_ddl = f"""
+            ALTER TABLE {self._schema}.strategy_memory
+            ADD COLUMN IF NOT EXISTS active_version VARCHAR(20) DEFAULT ''
+        """
+        try:
+            await self.db_manager.execute_ddl(migrate_ddl)
+        except Exception as e:
+            logger.debug("active_version 字段迁移跳过", error=str(e))
+
+        # 创建 active_version 索引（加速 EffectTracker 按版本号查找）
+        index_active_ddl = f"""
+            CREATE INDEX IF NOT EXISTS idx_memory_active_version
+                ON {self._schema}.strategy_memory (strategy_id, active_version)
+        """
+        try:
+            await self.db_manager.execute_ddl(index_active_ddl)
+        except Exception as e:
+            logger.debug("active_version 索引创建跳过", error=str(e))
 
         logger.info("策略记忆表已就绪", schema=self._schema)
 
@@ -89,6 +109,7 @@ class MemoryDBHandler:
         report: Dict[str, Any],
         ai_suggestions: Dict[str, Any],
         summary: str = "",
+        active_version: str = "",
     ) -> int:
         """
         保存一条新的调优记忆记录
@@ -99,6 +120,7 @@ class MemoryDBHandler:
             report: 完整的 StrategyReport 字典
             ai_suggestions: AI 输出的调优建议字典
             summary: AI 生成的摘要
+            active_version: 生效的覆盖层版本号（如 "V20260804"）
 
         Returns:
             新记录的 ID
@@ -109,8 +131,9 @@ class MemoryDBHandler:
         query = f"""
             INSERT INTO {self._schema}.strategy_memory
                 (strategy_id, strategy_name, version, week_start, week_end,
-                 summary, full_report, ai_suggestions, created_at, updated_at)
-            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, NOW(), NOW())
+                 summary, full_report, ai_suggestions, active_version,
+                 created_at, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, NOW(), NOW())
             RETURNING id
         """
         row = await self.db_manager.fetch_one(
@@ -123,10 +146,11 @@ class MemoryDBHandler:
             summary,
             json.dumps(report, ensure_ascii=False, default=str),
             json.dumps(ai_suggestions, ensure_ascii=False, default=str),
+            active_version,
         )
 
         memory_id = row["id"] if row else 0
-        logger.info("保存策略记忆", strategy_id=strategy_id, memory_id=memory_id)
+        logger.info("保存策略记忆", strategy_id=strategy_id, memory_id=memory_id, active_version=active_version)
         return memory_id
 
     async def get_recent_memories(
@@ -152,6 +176,80 @@ class MemoryDBHandler:
             LIMIT $2
         """
         return await self.db_manager.fetch_all(query, strategy_id, limit)
+
+    async def find_memory_by_version(
+        self,
+        strategy_id: str,
+        active_version: str,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        根据策略 ID 和版本号查找已生效的记忆记录
+
+        EffectTracker 使用此方法查找"上上周已生效"的记录。
+
+        Args:
+            strategy_id: 策略唯一标识
+            active_version: 版本号（如 "V20260804"）
+
+        Returns:
+            匹配的记忆记录字典，未找到返回 None
+        """
+        query = f"""
+            SELECT id, strategy_id, active_version, post_win_rate, post_total_pnl,
+                   effect_notes, full_report, ai_suggestions, created_at
+            FROM {self._schema}.strategy_memory
+            WHERE strategy_id = $1
+              AND is_applied = TRUE
+              AND active_version = $2
+            ORDER BY created_at DESC
+            LIMIT 1
+        """
+        try:
+            return await self.db_manager.fetch_one(query, strategy_id, active_version)
+        except Exception as e:
+            logger.error(
+                "按版本查找记忆记录异常",
+                strategy_id=strategy_id,
+                active_version=active_version,
+                error=str(e),
+            )
+            return None
+
+    async def get_recent_applied_memories(
+        self,
+        strategy_id: str,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        """
+        获取最近 N 条已生效的记忆（用于学习信号规则引擎）
+
+        LearningSignalGenerator 使用此方法实现 L2/L4 规则。
+
+        Args:
+            strategy_id: 策略唯一标识
+            limit: 返回条数
+
+        Returns:
+            记忆记录列表（含 ai_suggestions 和 created_at）
+        """
+        query = f"""
+            SELECT id, strategy_id, ai_suggestions, created_at
+            FROM {self._schema}.strategy_memory
+            WHERE strategy_id = $1
+              AND is_applied = TRUE
+            ORDER BY created_at DESC
+            LIMIT $2
+        """
+        try:
+            return await self.db_manager.fetch_all(query, strategy_id, limit)
+        except Exception as e:
+            logger.error(
+                "获取最近已生效记忆异常",
+                strategy_id=strategy_id,
+                limit=limit,
+                error=str(e),
+            )
+            return []
 
     async def mark_applied(self, memory_id: int, approved_by: str = "") -> bool:
         """
@@ -265,9 +363,13 @@ class MemoryDBHandler:
                 updated_at = NOW()
             WHERE id = $1
         """
-        await self.db_manager.execute(query, memory_id, post_win_rate, post_total_pnl, notes)
-        logger.info("效果追踪已更新", memory_id=memory_id)
-        return True
+        try:
+            await self.db_manager.execute(query, memory_id, post_win_rate, post_total_pnl, notes)
+            logger.info("效果追踪已更新", memory_id=memory_id)
+            return True
+        except Exception as e:
+            logger.error("效果追踪更新异常", memory_id=memory_id, error=str(e))
+            return False
 
     async def get_pending_approvals(self) -> List[Dict[str, Any]]:
         """

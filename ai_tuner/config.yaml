@@ -227,6 +227,33 @@ strategies:
       risk.hard_stop_loss: [0.10, 0.30]
 
 # ============================================================
+# 反馈闭环配置
+# 效果追踪、上下文增强、学习信号生成等相关参数
+# ============================================================
+feedback:
+  # 效果评级阈值（用于 EffectTracker._calc_rating）
+  rating:
+    good_win_rate_increase: 0.03          # 胜率提升 >= 3% 视为"良好"
+    good_pnl_increase_usdt: 5.0           # 收益提升 >= 5 USDT 视为"良好"
+    bad_win_rate_decrease: 0.03           # 胜率下降 >= 3% 视为"较差"
+    bad_pnl_decrease_usdt: 5.0           # 收益下降 >= 5 USDT 视为"较差"
+    min_trades_for_valid: 3               # 最小有效交易笔数（低于此值视为"数据不足"）
+
+  # 学习信号规则配置（用于 LearningSignalGenerator）
+  learning:
+    consecutive_same_direction: 2         # L2：连续同方向调整次数阈值
+    stale_unchanged_count: 3              # L4：连续"维持不变"次数阈值
+    stale_adjustment_ratio: 0.5           # L4：触发后调整幅度占正常范围的比率
+
+  # 指令模板（用于 LearningSignalGenerator._apply_l1_direction）
+  # 对应评级：良好/一般/较差/数据不足
+  instructions:
+    l1_good: "上次调优效果良好，建议延续上次参数调整方向，可在此基础上进一步微调（调整幅度不超过上次的 50%）"
+    l1_fair: "上次调优效果一般，建议谨慎评估当前参数，如有必要可小幅调整或维持不变"
+    l1_poor: "上次调优效果较差，建议回撤上次调整，或朝相反方向调整（如上次上调了某参数，本次应考虑下调）"
+    l1_insufficient: "上周交易数据不足，建议以更长时间维度的数据为准，不做基于噪音数据的调整"
+
+# ============================================================
 # DeepSeek API 配置
 # ============================================================
 deepseek:
@@ -352,6 +379,14 @@ capital_allocation:
   database:                                # 数据库配置
     schema: "public"
     table: "capital_allocation"
+
+# ============================================================
+# 模拟推演配置
+# ============================================================
+simulation:
+  fill_efficiency_factor: 0.6              # 填充效率因子：基于历史回测标定，纯价格穿越模拟的准确率
+  confidence_upper_limit: 0.8              # 置信度上限
+  fallback_spacing_pct: 0.005              # 网格间距计算为0时的兜底百分比（当前价格的0.5%）
 
 # ============================================================
 # 孤儿条件单清理配置

@@ -1,0 +1,17 @@
+# AI 调优覆盖层 - btc_eth 策略
+# 生成时间: 2026-08-11
+# 对应建议: 2026-08-10 周度调优
+# 调优摘要: 整体胜率过低，降低各等级杠杆和仓位20%，压低风险暴露等待反转信号。
+# 调优来源: strategy_memory.id=latest(btc_eth)
+
+binance:
+  leverage:
+    S: 4
+    A: 3.2
+    B: 2.4
+    C: 1.6
+  position_ratio:
+    S: 0.4
+    A: 0.24
+    B: 0.12
+    C: 0.04

@@ -1,0 +1,13 @@
+# AI 调优覆盖层 - new_coin 策略
+# 生成时间: 2026-08-11
+# 对应建议: 2026-08-10 周度调优
+# 调优摘要: 提高入场门槛与技术形态要求，并适度放宽第一止盈目标，过滤低质信号并改善盈亏比。
+# 调优来源: strategy_memory.id=latest(new_coin)
+
+scoring:
+  entry_threshold: 6.0
+  technical:
+    min_total_score: 8.0
+trading:
+  batch_take_profit:
+    target1_atr_multiplier: 1.8

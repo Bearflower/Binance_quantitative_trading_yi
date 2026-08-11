@@ -15,10 +15,14 @@ from typing import Any, Dict
 import structlog
 from jinja2 import Template
 
+from ai_tuner.deploy.diff_generator import DiffGenerator
+from ai_tuner.deploy.version_manager import VersionManager
 from ai_tuner.engine.cost_tracker import CostTracker
 from ai_tuner.engine.llm_client import LLMClient
 from ai_tuner.engine.response_parser import ResponseParser
-from ai_tuner.deploy.diff_generator import DiffGenerator
+from ai_tuner.feedback.context_enhancer import ContextEnhancer
+from ai_tuner.feedback.effect_tracker import EffectTracker
+from ai_tuner.feedback.learning_signal import LearningSignalGenerator
 from ai_tuner.memory.context_builder import ContextBuilder
 
 logger = structlog.get_logger()
@@ -76,6 +80,12 @@ class WeeklyTuningJob:
         self.context_builder = ContextBuilder(
             context_window_size=config.get("memory", {}).get("context_window_size", 3)
         )
+
+        # [新增] 反馈闭环模块
+        self.version_manager = VersionManager(config)
+        self.effect_tracker = EffectTracker(config, version_manager=self.version_manager)
+        self.context_enhancer = ContextEnhancer(config)
+        self.learning_signal_generator = LearningSignalGenerator(config)
 
         # 项目根目录
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -182,21 +192,47 @@ class WeeklyTuningJob:
             logger.info("策略本周无交易，跳过调优", strategy_id=strategy_id)
             return "skip"
 
-        # 步骤3：构建历史上下文
+        # [新增] 步骤2.5：效果追踪与回填（反馈闭环第一步）
+        effect_summary = await self.effect_tracker.track_and_fill(
+            strategy_id=strategy_id,
+            adapter=adapter,
+            db_handler=self.db_handler,
+        )
+
+        # [新增] 步骤2.6：构建反馈上下文（反馈闭环第二步）
         report_dict = report.model_dump()
+        feedback_context = self.context_enhancer.build_feedback_context(
+            effect_summary=effect_summary,
+            current_report=report_dict,
+        )
+
+        # [新增] 步骤2.7：构建学习指令（反馈闭环第三步）
+        learning_instructions = await self.learning_signal_generator.build_learning_instructions(
+            strategy_id=strategy_id,
+            effect_summary=effect_summary,
+            db_handler=self.db_handler,
+            current_report=report_dict,
+        )
+
+        # [新增] 生成新版本号（用于 save_memory 的 active_version）
+        new_version = self.version_manager.generate_new_version(config_path)
+
+        # 步骤3：构建历史上下文
         context = await self.context_builder.build_context(
             strategy_id=strategy_id,
             db_handler=self.db_handler,
             current_report=report_dict,
         )
 
-        # 步骤4：加载并渲染 Prompt 模板
+        # 步骤4：加载并渲染 Prompt 模板（传递反馈上下文学学习指令）
         system_prompt, user_prompt = self._build_prompts(
             strategy_id=strategy_id,
             strategy_name=strategy_name,
             adapter=adapter,
             report_dict=report_dict,
             context=context,
+            feedback_context=feedback_context,
+            learning_instructions=learning_instructions,
         )
 
         if not system_prompt or not user_prompt:
@@ -253,6 +289,7 @@ class WeeklyTuningJob:
             report=report_dict,
             ai_suggestions=ai_suggestions,
             summary=summary,
+            active_version=new_version,
         )
 
         # 步骤9：如果 AI 建议"维持不变"，跳过推送
@@ -332,6 +369,8 @@ class WeeklyTuningJob:
         adapter,
         report_dict: Dict[str, Any],
         context: str,
+        feedback_context: str = "",
+        learning_instructions: str = "",
     ) -> tuple:
         """
         加载 Prompt 模板并渲染
@@ -342,6 +381,8 @@ class WeeklyTuningJob:
             adapter: 适配器实例
             report_dict: 策略报告字典
             context: 历史上下文文本
+            feedback_context: 反馈上下文文本（新增）
+            learning_instructions: 学习指令文本（新增）
 
         Returns:
             (system_prompt, user_prompt) 元组
@@ -362,18 +403,29 @@ class WeeklyTuningJob:
                 os.path.join(prompts_dir, f"{strategy_id}_user.txt")
             )
 
-            # 组装系统提示词
-            system_prompt = f"{common_rules}\n\n{strategy_system}"
+            # 组装系统提示词（含学习指令插值）
+            combined_system = f"{common_rules}\n\n{strategy_system}"
+            system_prompt = Template(combined_system).render(
+                learning_instructions=learning_instructions,
+            )
 
-            # 渲染用户提示词
+            # 渲染用户提示词（含反馈上下文插值）
             current_params = adapter.get_current_params()
             import json
+
+            # 从 report 中提取本周起止时间（用于 hrs 等旧模板的 week_start/week_end 变量）
+            report_meta = report_dict.get("meta", {})
+            week_start = report_meta.get("week_start", "")
+            week_end = report_meta.get("week_end", "")
 
             user_prompt = Template(strategy_user_template).render(
                 strategy_name=strategy_name,
                 current_params=json.dumps(current_params, ensure_ascii=False, indent=2),
                 report=json.dumps(report_dict, ensure_ascii=False, indent=2, default=str),
                 memory_history=context,
+                feedback_context=feedback_context,
+                week_start=week_start,
+                week_end=week_end,
             )
 
             return system_prompt, user_prompt
