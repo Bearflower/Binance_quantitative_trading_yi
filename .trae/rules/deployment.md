@@ -248,10 +248,10 @@ done
 
 ```bash
 echo "=== 5. 功能验证 ==="
-ERROR_COUNT=$(ssh root@SERVER_IP "docker logs --tail 200 CONTAINER_NAME 2>&1 | grep -ci 'error\|exception\|fatal'")
+ERROR_COUNT=$(ssh root@SERVER_IP "docker logs --tail 200 CONTAINER_NAME 2>&1 | grep -cE "(ERROR|Exception|FATAL|CRITICAL|Traceback)"")
 if [ "$ERROR_COUNT" -gt 0 ]; then
     echo "⚠️  发现 $ERROR_COUNT 个错误日志，请检查："
-    ssh root@SERVER_IP "docker logs --tail 50 CONTAINER_NAME 2>&1 | grep -i 'error\|exception\|fatal'"
+    ssh root@SERVER_IP "docker logs --tail 50 CONTAINER_NAME 2>&1 | grep -E '(ERROR|Exception|FATAL|CRITICAL|Traceback)'"
 fi
 ```
 

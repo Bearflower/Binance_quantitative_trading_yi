@@ -159,13 +159,16 @@ class MarketCapService:
                     logger.warning("获取市值失败", symbol=symbol, status=resp.status)
                     return None
                 data = await resp.json()
+                if data is None:
+                    logger.warning("获取市值返回空数据", symbol=symbol, coin_id=coin_id)
+                    return None
                 market_cap = data.get("market_data", {}).get("market_cap", {}).get("usd")
                 if market_cap is not None:
                     logger.info("市值获取成功", symbol=symbol, market_cap=market_cap)
                     return float(market_cap)
                 return None
         except Exception as e:
-            logger.warning("获取市值异常", symbol=symbol, error=str(e))
+            logger.warning("获取市值异常", symbol=symbol, error=str(e) or type(e).__name__)
             return None
 
     async def get_market_cap_with_fallback(

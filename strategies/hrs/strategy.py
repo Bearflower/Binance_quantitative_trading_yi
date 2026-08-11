@@ -4,6 +4,7 @@
 """
 import asyncio
 import json
+import os
 
 from typing import Dict, Any, Optional, List, Set, Tuple
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,8 @@ from shared.base_strategy import BaseStrategy
 from shared.notification import NotificationClient
 from shared.database import DatabaseManager
 from shared.strategy_state import save_strategy_state
+from shared.capital_manager import CapitalManager
+from shared.trade_logger import TradeLogger
 
 from .candidate_pool import CandidatePool
 from .scoring_engine import ScoringEngine, ScoringResult
@@ -140,6 +143,10 @@ class HRSStrategy(BaseStrategy):
 
         # P2-5: 策略启停控制
         self._paused: bool = False
+
+        # 资金分配管理器（读取 capital_limits.monthly_limit 限制仓位）
+        config_dir = os.path.dirname(os.path.abspath(__file__))
+        self.capital_mgr = CapitalManager(os.path.join(config_dir, "config.yaml"))
 
         # 候选池为空时休眠配置
         pool_config = config.get("candidate_pool", {})
@@ -345,6 +352,17 @@ class HRSStrategy(BaseStrategy):
             score = signal.get("score", 0)
             current_price = signal.get("current_price", 0)
             klines = signal.get("klines", [])
+            # V2.4: 获取入场模式
+            entry_mode = signal.get("entry_mode", "standard")
+
+            # 刷新当前价格：使用实时 ticker 价格替代 K线收盘价，避免限价单因价格过时无法成交
+            try:
+                ticker = await self.binance_client.get_ticker(symbol)
+                live_price = float(ticker.get("lastPrice", 0))
+                if live_price > 0:
+                    current_price = live_price
+            except Exception as e:
+                logger.warning("获取实时价格失败，使用K线收盘价", symbol=symbol, error=str(e))
 
             if not symbol or not direction:
                 return False
@@ -401,6 +419,23 @@ class HRSStrategy(BaseStrategy):
                 balance, stop_loss_percent, self.trading_executor.leverage, current_price
             )
 
+            # 开仓前检查：总仓位不超过分配上限
+            current_positions_value = 0.0
+            for _, pos_data in self.position_manager.get_all_positions().items():
+                pos_qty = pos_data.get("entry_quantity", 0) or pos_data.get("quantity", 0)
+                pos_price = pos_data.get("entry_price", 0)
+                current_positions_value += float(pos_qty) * float(pos_price)
+            new_position_value = float(quantity) * float(current_price)
+            if not self.capital_mgr.can_open_position(current_positions_value, new_position_value):
+                logger.warning(
+                    "总仓位超限，跳过开仓",
+                    symbol=symbol,
+                    current=current_positions_value,
+                    new=new_position_value,
+                    limit=self.capital_mgr.get_allocated_capital(),
+                )
+                return False
+
             # 执行开仓
             order = None
             if direction == "short":
@@ -410,6 +445,7 @@ class HRSStrategy(BaseStrategy):
                     atr=atr,
                     quantity=Decimal(str(quantity)),
                     score=score,
+                    entry_mode=entry_mode,
                 )
             else:
                 order = await self.trading_executor.execute_long(
@@ -418,6 +454,7 @@ class HRSStrategy(BaseStrategy):
                     atr=atr,
                     quantity=Decimal(str(quantity)),
                     score=score,
+                    entry_mode=entry_mode,
                 )
 
             if order:
@@ -463,13 +500,12 @@ class HRSStrategy(BaseStrategy):
                         await asyncio.sleep(self.check_interval)
                         continue
 
-                    # 候选池为空时休眠：不评分，仅维护持仓
+                    # V2.5: 候选池为空时，仅跳过标准模式/EMM，LV-RM 继续运行
                     if self._is_sleep_on_empty():
-                        logger.debug("候选池为空，策略进入休眠状态，仅维护持仓监控")
+                        logger.debug("候选池为空，仅执行 LV-RM 检查")
+                        await self._run_lv_rm_only_cycle()
                         await self._monitor_positions()
-                        # 休眠到下一次候选池扫描时间，确保醒来后候选池可能已更新
-                        sleep_seconds = await self._calculate_sleep_until_next_scan()
-                        await asyncio.sleep(sleep_seconds)
+                        await asyncio.sleep(self.check_interval)
                         continue
 
                     await self._execute_cycle()
@@ -658,7 +694,8 @@ class HRSStrategy(BaseStrategy):
         # 获取活跃候选币种
         active_symbols = self.candidate_pool.get_active_symbols()
         if not active_symbols:
-            logger.debug("无活跃候选币种")
+            logger.debug("无活跃候选币种，仅执行 LV-RM 检查")
+            await self._run_lv_rm_only_cycle()
             await self._monitor_positions()
             return
 
@@ -698,17 +735,21 @@ class HRSStrategy(BaseStrategy):
                 # 处理做空信号
                 short_data = analysis.get("short")
                 if short_data and short_data.get("should_entry"):
-                    # P1-1: 记录信号首次触发时间
-                    self._record_signal_timestamp(symbol, "short")
-                    short_signals.append({
-                        "symbol": symbol,
-                        "direction": "short",
-                        "score": short_data["score_result"]["total_score"],
-                        "technical_score": short_data["score_result"].get("technical_score", 0),
-                        "sentiment_score": short_data["score_result"].get("sentiment_score", 0),
-                        "current_price": short_data["current_price"],
-                        "klines": self._klines_cache.get(symbol, []),
-                    })
+                    # P2-6: 已有持仓时不产生新信号（不加仓）
+                    if self.position_manager.has_position(symbol):
+                        logger.debug("该币种已有持仓，跳过做空信号", symbol=symbol)
+                    else:
+                        # P1-1: 记录信号首次触发时间
+                        self._record_signal_timestamp(symbol, "short")
+                        short_signals.append({
+                            "symbol": symbol,
+                            "direction": "short",
+                            "score": short_data["score_result"]["total_score"],
+                            "technical_score": short_data["score_result"].get("technical_score", 0),
+                            "sentiment_score": short_data["score_result"].get("sentiment_score", 0),
+                            "current_price": short_data["current_price"],
+                            "klines": self._klines_cache.get(symbol, []),
+                        })
                 else:
                     # 信号消失，清理时间戳
                     self._clear_signal_timestamp(symbol, "short")
@@ -716,17 +757,21 @@ class HRSStrategy(BaseStrategy):
                 # 处理做多信号
                 long_data = analysis.get("long")
                 if long_data and long_data.get("should_entry"):
-                    # P1-1: 记录信号首次触发时间
-                    self._record_signal_timestamp(symbol, "long")
-                    long_signals.append({
-                        "symbol": symbol,
-                        "direction": "long",
-                        "score": long_data["score_result"]["total_score"],
-                        "technical_score": long_data["score_result"].get("technical_score", 0),
-                        "sentiment_score": long_data["score_result"].get("sentiment_score", 0),
-                        "current_price": long_data["current_price"],
-                        "klines": self._klines_cache.get(symbol, []),
-                    })
+                    # P2-6: 已有持仓时不产生新信号（不加仓）
+                    if self.position_manager.has_position(symbol):
+                        logger.debug("该币种已有持仓，跳过做多信号", symbol=symbol)
+                    else:
+                        # P1-1: 记录信号首次触发时间
+                        self._record_signal_timestamp(symbol, "long")
+                        long_signals.append({
+                            "symbol": symbol,
+                            "direction": "long",
+                            "score": long_data["score_result"]["total_score"],
+                            "technical_score": long_data["score_result"].get("technical_score", 0),
+                            "sentiment_score": long_data["score_result"].get("sentiment_score", 0),
+                            "current_price": long_data["current_price"],
+                            "klines": self._klines_cache.get(symbol, []),
+                        })
                 else:
                     # 信号消失，清理时间戳
                     self._clear_signal_timestamp(symbol, "long")
@@ -741,6 +786,17 @@ class HRSStrategy(BaseStrategy):
         # P2-1: 记录信号日志到独立表
         for sig in short_signals + long_signals:
             await self._log_signal_to_db(sig["symbol"], sig["direction"], sig)
+
+        # ===== V2.4: LV-RM 低波动反转模块检查 =====
+        lv_rm_config = self.config.get("lv_rm", {})
+        if lv_rm_config.get("enabled", True):
+            try:
+                # 获取低波动候选币种
+                low_vol_symbols = await self.candidate_pool.get_low_volatility_candidates()
+                if low_vol_symbols:
+                    await self._check_lv_rm_entries(low_vol_symbols, short_signals, long_signals)
+            except Exception as e:
+                logger.error("LV-RM检查失败", error=str(e))
 
         # 处理双向冲突
         await self._resolve_conflicts(short_signals, long_signals)
@@ -1175,6 +1231,326 @@ class HRSStrategy(BaseStrategy):
             if success:
                 await self._update_signal_resolution(signal["symbol"], signal["direction"], "executed")
 
+    async def _writeback_pnl(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        exit_price: float,
+        quantity: float,
+        close_order: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """
+        回写平仓盈亏到 trade_records
+
+        计算平仓盈亏并调用 TradeLogger.update_realized_pnl 写入数据库。
+        写入失败不影响主流程。
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            entry_price: 入场价格
+            exit_price: 出场价格（用于 PnL 计算）
+            quantity: 平仓数量
+            close_order: 平仓订单结果（含 orderId），用于精确匹配
+        """
+        try:
+            if entry_price <= 0 or exit_price <= 0 or quantity <= 0:
+                logger.warning("PnL回写参数无效，跳过", symbol=symbol, entry_price=entry_price, exit_price=exit_price, quantity=quantity)
+                return
+
+            # 计算 PnL
+            direction_upper = "LONG" if direction == "long" else "SHORT"
+            close_side = "SELL" if direction == "long" else "BUY"
+
+            pnl = TradeLogger.calculate_pnl(
+                direction=direction_upper,
+                entry_price=Decimal(str(entry_price)),
+                exit_price=Decimal(str(exit_price)),
+                quantity=Decimal(str(quantity)),
+            )
+
+            # 获取 trade_logger 实例
+            trade_logger = getattr(self.binance_client, 'trade_logger', None)
+            if not trade_logger:
+                logger.warning("trade_logger 未设置，跳过PnL回写", symbol=symbol)
+                return
+
+            order_id = str(close_order.get("orderId", "")) if close_order else ""
+
+            await trade_logger.update_realized_pnl(
+                order_id=order_id,
+                realized_pnl=pnl,
+                side=close_side,
+                symbol=symbol,
+                executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None),
+            )
+
+            logger.info(
+                "PnL回写成功",
+                symbol=symbol,
+                direction=direction,
+                pnl=float(pnl),
+                quantity=quantity,
+                order_id=order_id or "fallback",
+            )
+
+        except Exception as e:
+            logger.warning("PnL回写失败，不影响主流程", symbol=symbol, error=str(e))
+
+    async def _get_actual_pnl_from_binance(
+        self,
+        symbol: str,
+        entry_time: datetime,
+    ) -> Optional[Decimal]:
+        """
+        从币安API获取该持仓的实际已实现盈亏
+
+        查询该 symbol 从入场时间到当前时间的全部 REALIZED_PNL 记录，
+        汇总得到实际 PnL。
+
+        Args:
+            symbol: 交易对
+            entry_time: 入场时间（UTC datetime）
+
+        Returns:
+            实际 PnL 总和（USDT），API 失败或未找到记录返回 None
+        """
+        try:
+            # 将 entry_time 转换为毫秒时间戳
+            start_ms = int(entry_time.timestamp() * 1000)
+            end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+
+            income_records = await self.binance_client.get_income_history(
+                start_time=start_ms,
+                end_time=end_ms,
+                income_type="REALIZED_PNL",
+                limit=1000,
+            )
+
+            # 过滤出该 symbol 的收入记录并求和
+            total_pnl = Decimal("0")
+            match_count = 0
+            for record in income_records:
+                if record.get("symbol") == symbol:
+                    income_str = record.get("income", "0")
+                    total_pnl += Decimal(str(income_str))
+                    match_count += 1
+
+            if match_count == 0:
+                logger.warning("未找到该symbol的实际PnL记录", symbol=symbol)
+                return None
+
+            logger.info(
+                "从币安获取实际PnL成功",
+                symbol=symbol,
+                total_pnl=float(total_pnl),
+                match_count=match_count,
+            )
+            return total_pnl
+
+        except Exception as e:
+            logger.warning(
+                "从币安获取实际PnL失败，将降级到理论计算",
+                symbol=symbol,
+                error=str(e),
+            )
+            return None
+
+    async def _calculate_theoretical_total_pnl(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        entry_quantity: float,
+        atr: float,
+        current_price: float,
+        pos: Dict[str, Any],
+    ) -> Optional[Decimal]:
+        """
+        计算理论总 PnL（TP1、TP2、剩余部分合计）
+
+        当无法从币安API获取实际 PnL 时，使用理论计算作为降级方案。
+        合并 TP1、TP2、剩余部分为 1 个总值，只写入 1 次。
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            entry_price: 入场价格
+            entry_quantity: 初始入场数量
+            atr: ATR 值
+            current_price: 当前价格（用于剩余部分的出场价估算）
+            pos: 持仓数据字典
+
+        Returns:
+            理论总 PnL（USDT），计算失败返回 None
+        """
+        try:
+            if entry_price <= 0 or entry_quantity <= 0:
+                return None
+
+            target1_reached = pos.get("target1_reached", False)
+            target2_reached = pos.get("target2_reached", False)
+            direction_upper = "LONG" if direction == "long" else "SHORT"
+
+            # 从 position_manager 获取 target 配置（已在初始化时从 config.yaml 读取）
+            t1_pct = self.position_manager.target1_close_percent
+            t2_pct = self.position_manager.target2_close_percent
+            t1_mult = self.position_manager.target1_atr_multiplier
+            t2_mult = self.position_manager.target2_atr_multiplier
+
+            total_pnl = Decimal("0")
+            remaining_qty = entry_quantity
+
+            # TP1 部分
+            if target1_reached:
+                tp1_qty = entry_quantity * t1_pct
+                if direction == "short":
+                    tp1_price = entry_price - atr * t1_mult
+                else:
+                    tp1_price = entry_price + atr * t1_mult
+                if tp1_price > 0 and tp1_qty > 0:
+                    pnl = TradeLogger.calculate_pnl(
+                        direction=direction_upper,
+                        entry_price=Decimal(str(entry_price)),
+                        exit_price=Decimal(str(tp1_price)),
+                        quantity=Decimal(str(tp1_qty)),
+                    )
+                    total_pnl += pnl
+                    remaining_qty -= tp1_qty
+
+            # TP2 部分
+            if target2_reached:
+                tp2_qty = entry_quantity * t2_pct
+                if direction == "short":
+                    tp2_price = entry_price - atr * t2_mult
+                else:
+                    tp2_price = entry_price + atr * t2_mult
+                if tp2_price > 0 and tp2_qty > 0:
+                    pnl = TradeLogger.calculate_pnl(
+                        direction=direction_upper,
+                        entry_price=Decimal(str(entry_price)),
+                        exit_price=Decimal(str(tp2_price)),
+                        quantity=Decimal(str(tp2_qty)),
+                    )
+                    total_pnl += pnl
+                    remaining_qty -= tp2_qty
+
+            # 剩余部分（止损或手动平仓）
+            qty_tolerance = getattr(self.position_manager, 'qty_tolerance_absolute', 0.0001)
+            if remaining_qty > qty_tolerance and current_price > 0:
+                pnl = TradeLogger.calculate_pnl(
+                    direction=direction_upper,
+                    entry_price=Decimal(str(entry_price)),
+                    exit_price=Decimal(str(current_price)),
+                    quantity=Decimal(str(remaining_qty)),
+                )
+                total_pnl += pnl
+
+            logger.info(
+                "理论PnL计算完成",
+                symbol=symbol,
+                direction=direction,
+                total_pnl=float(total_pnl),
+                target1_reached=target1_reached,
+                target2_reached=target2_reached,
+                remaining_qty=remaining_qty,
+            )
+            return total_pnl
+
+        except Exception as e:
+            logger.warning("理论PnL计算失败", symbol=symbol, error=str(e))
+            return None
+
+    async def _writeback_pnl_for_full_close(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        entry_quantity: float,
+        atr: float,
+        current_price: float,
+        pos: Dict[str, Any],
+    ) -> None:
+        """
+        全部平仓时回写完整 PnL（优先从币安API获取实际值，降级到理论计算）
+
+        当 detect_take_profit_fills 检测到全部平仓（tp_result == 0）时，
+        优先从币安API获取该持仓的实际已实现盈亏，写入 trade_records。
+        API 失败时降级到理论计算（合并 TP1+TP2+剩余为 1 个总值，只写入 1 次）。
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            entry_price: 入场价格
+            entry_quantity: 初始入场数量
+            atr: ATR 值
+            current_price: 当前价格（用于剩余部分的出场价估算）
+            pos: 持仓数据字典
+        """
+        try:
+            if entry_price <= 0 or entry_quantity <= 0:
+                return
+
+            trade_logger = getattr(self.binance_client, 'trade_logger', None)
+            if not trade_logger:
+                return
+
+            pnl_value: Optional[Decimal] = None
+            pnl_source = "theoretical"
+
+            # 1. 优先从币安 API 获取实际 PnL
+            entry_time = pos.get("entry_time")
+            if isinstance(entry_time, datetime):
+                pnl_value = await self._get_actual_pnl_from_binance(symbol, entry_time)
+                if pnl_value is not None:
+                    pnl_source = "binance_api"
+
+            # 2. 实际 PnL 获取失败，降级到理论计算
+            if pnl_value is None:
+                pnl_value = await self._calculate_theoretical_total_pnl(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry_price,
+                    entry_quantity=entry_quantity,
+                    atr=atr,
+                    current_price=current_price,
+                    pos=pos,
+                )
+
+            if pnl_value is None:
+                logger.warning("PnL计算失败，无法回写", symbol=symbol)
+                return
+
+            # 3. 直接插入一条 PnL 汇总记录（条件单成交无 trade_records 可 UPDATE）
+            close_side = "SELL" if direction == "long" else "BUY"
+            success = await trade_logger.insert_pnl_summary(
+                realized_pnl=pnl_value,
+                symbol=symbol,
+                side=close_side,
+                executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None),
+            )
+
+            if success:
+                logger.info(
+                    "全部平仓PnL回写成功",
+                    symbol=symbol,
+                    direction=direction,
+                    pnl=float(pnl_value),
+                    source=pnl_source,
+                )
+            else:
+                logger.warning(
+                    "全部平仓PnL回写失败",
+                    symbol=symbol,
+                    direction=direction,
+                    pnl=float(pnl_value),
+                    source=pnl_source,
+                )
+
+        except Exception as e:
+            logger.warning("全部平仓PnL回写失败，不影响主流程", symbol=symbol, error=str(e))
+
     async def _monitor_positions(self) -> None:
         """监控持仓：移动止盈、时间止损"""
         positions = self.position_manager.get_all_positions()
@@ -1185,6 +1561,8 @@ class HRSStrategy(BaseStrategy):
             try:
                 direction = pos.get("direction")
                 entry_price = pos.get("entry_price", 0)
+                entry_quantity = pos.get("entry_quantity", 0)
+                atr = pos.get("atr", 0)
 
                 # 获取当前价格（使用公开API）
                 ticker = await self.binance_client.get_ticker(symbol)
@@ -1206,7 +1584,16 @@ class HRSStrategy(BaseStrategy):
                     tp_result = self.position_manager.detect_take_profit_fills(symbol, pos_amt)
 
                     if tp_result == 0:
-                        # 全部平仓
+                        # 全部平仓——计算 TP1、TP2 和剩余部分的 PnL 并回写
+                        await self._writeback_pnl_for_full_close(
+                            symbol=symbol,
+                            direction=direction,
+                            entry_price=entry_price,
+                            entry_quantity=entry_quantity,
+                            atr=atr,
+                            current_price=current_price,
+                            pos=pos,
+                        )
                         await self.position_manager.cancel_all_orders(symbol)
                         self.position_manager.remove_position(symbol)
                         self.risk_manager.record_profit()
@@ -1222,17 +1609,34 @@ class HRSStrategy(BaseStrategy):
 
                 # 检查时间止损
                 if self.position_manager.check_time_stop(symbol):
-                    await self.trading_executor.close_position(
+                    order_result = await self.trading_executor.close_position(
                         symbol=symbol,
                         direction=direction,
                         close_percent=1.0,
                         reason="时间止损",
                     )
+                    # 回写平仓盈亏
+                    close_qty = entry_quantity  # 全仓平仓
+                    await self._writeback_pnl(
+                        symbol=symbol,
+                        direction=direction,
+                        entry_price=entry_price,
+                        exit_price=current_price,
+                        quantity=close_qty,
+                        close_order=order_result,
+                    )
                     # 取消条件单
                     await self.position_manager.cancel_all_orders(symbol)
                     self.position_manager.remove_position(symbol)
                     await self.risk_manager.record_loss(symbol, entry_price, current_price)
-                    self._total_pnl -= (entry_price - current_price) * pos.get("entry_quantity", 0)  # 更新累计盈亏
+                    # 使用 calculate_pnl 统一计算盈亏（支持做多/做空方向）
+                    pnl = TradeLogger.calculate_pnl(
+                        direction="LONG" if direction == "long" else "SHORT",
+                        entry_price=Decimal(str(entry_price)),
+                        exit_price=Decimal(str(current_price)),
+                        quantity=Decimal(str(entry_quantity)),
+                    )
+                    self._total_pnl += float(pnl)
                     await self._save_state()
 
                     # P2-4: 发送止损通知
@@ -1249,11 +1653,20 @@ class HRSStrategy(BaseStrategy):
                 if self.position_manager.check_trailing_stop(symbol, current_price):
                     remaining_qty = pos.get("remaining_quantity", 0)
                     if remaining_qty > 0:
-                        await self.trading_executor.close_position(
+                        order_result = await self.trading_executor.close_position(
                             symbol=symbol,
                             direction=direction,
                             close_percent=1.0,
                             reason="移动止盈",
+                        )
+                        # 回写平仓盈亏（仅剩余部分）
+                        await self._writeback_pnl(
+                            symbol=symbol,
+                            direction=direction,
+                            entry_price=entry_price,
+                            exit_price=current_price,
+                            quantity=remaining_qty,
+                            close_order=order_result,
                         )
                         await self.position_manager.cancel_all_orders(symbol)
                         self.position_manager.remove_position(symbol)
@@ -1321,6 +1734,167 @@ class HRSStrategy(BaseStrategy):
             )
         except Exception as e:
             logger.warning("发送周期汇总失败", error=str(e))
+
+    # ==================== V2.4: LV-RM 低波动反转模块 ====================
+
+    # ==================== V2.5: LV-RM 独立运行 ====================
+
+    async def _run_lv_rm_only_cycle(self) -> None:
+        """
+        V2.5: 候选池为空时的轻量级循环
+
+        仅执行 LV-RM 扫描，跳过标准模式/EMM 评分。
+        确保候选池为空时 LV-RM 仍然可以正常工作。
+        """
+        logger.info("候选池为空，运行 LV-RM 独立检查")
+        lv_rm_config = self.config.get("lv_rm", {})
+        if not lv_rm_config.get("enabled", True):
+            logger.debug("LV-RM 未启用，跳过")
+            return
+
+        try:
+            low_vol_symbols = await self.candidate_pool.get_lv_rm_scan_range()
+            if low_vol_symbols:
+                await self._check_lv_rm_entries(low_vol_symbols, [], [])
+            else:
+                logger.debug("LV-RM 无低波动候选币种")
+        except Exception as e:
+            logger.error("LV-RM 独立检查失败", error=str(e))
+
+    async def _check_lv_rm_entries(
+        self,
+        low_vol_symbols: List[str],
+        short_signals: List[Dict],
+        long_signals: List[Dict],
+    ) -> None:
+        """
+        V2.4: 检查LV-RM低波动反转信号
+
+        对低波动候选币种执行LV-RM评分，检查入场条件。
+
+        Args:
+            low_vol_symbols: 低波动币种列表
+            short_signals: 做空信号列表（标准模式，将被追加）
+            long_signals: 做多信号列表（标准模式，将被追加）
+        """
+        lv_rm_config = self.config.get("lv_rm", {})
+        scan_config = lv_rm_config.get("scan", {})
+        concurrency_limit = scan_config.get("api_concurrency_limit", 10)
+
+        logger.info(
+            "开始LV-RM低波动反转检查",
+            symbol_count=len(low_vol_symbols),
+            concurrency_limit=concurrency_limit,
+        )
+
+        # 并发检查所有低波动币种
+        semaphore = asyncio.Semaphore(concurrency_limit)
+
+        async def check_symbol(symbol: str):
+            async with semaphore:
+                try:
+                    # 已在标准模式中检查过的币种跳过
+                    if symbol in self.candidate_pool.get_short_candidates() or \
+                       symbol in self.candidate_pool.get_long_candidates():
+                        return
+
+                    # 检查熔断
+                    if self.risk_manager.is_circuit_breaker_active(symbol):
+                        return
+
+                    # 获取K线
+                    klines = self._klines_cache.get(symbol, [])
+                    if len(klines) < self.min_klines:
+                        klines = await self._warmup_klines(symbol)
+                        if len(klines) < self.min_klines:
+                            return
+                        self._klines_cache[symbol] = klines
+
+                    # 合成4h K线
+                    klines_4h = self._klines_4h_cache.get(symbol, [])
+
+                    current_close = float(klines[-1].get("close", 0))
+                    current_open_time = klines[-1].get("open_time", 0)
+                    current_close_time = current_open_time + KLINE_INTERVAL_MS.get(self.kline_interval, 3600000)
+
+                    # 获取OI和资金费率
+                    oi_usd = await self.market_data.get_oi_usd(symbol)
+                    funding_rate = await self.market_data.get_funding_rate(symbol, at_time=current_close_time)
+                    volume_24h = await self.market_data.get_24h_volume(symbol)
+                    market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
+                    has_market_cap = market_cap > 0
+                    oi_market_cap_ratio = oi_usd / market_cap if has_market_cap else 0.0
+
+                    # LV-RM 评分（做空）
+                    score = await self.scoring_engine.score_lv_rm(
+                        symbol=symbol,
+                        direction="short",
+                        oi_market_cap_ratio=oi_market_cap_ratio,
+                        funding_rate=funding_rate,
+                        has_market_cap=has_market_cap,
+                        klines_1h=klines,
+                        klines_4h=klines_4h,
+                    )
+                    should_entry_short = self.scoring_engine.should_entry(score)
+
+                    # LV-RM 评分（做多）
+                    score_long = await self.scoring_engine.score_lv_rm(
+                        symbol=symbol,
+                        direction="long",
+                        oi_market_cap_ratio=oi_market_cap_ratio,
+                        funding_rate=funding_rate,
+                        has_market_cap=has_market_cap,
+                        klines_1h=klines,
+                        klines_4h=klines_4h,
+                    )
+                    should_entry_long = self.scoring_engine.should_entry(score_long)
+
+                    if should_entry_short:
+                        # P2-6: 已有持仓时不产生新信号（不加仓）
+                        if self.position_manager.has_position(symbol):
+                            logger.debug("LV-RM: 该币种已有持仓，跳过做空信号", symbol=symbol)
+                        else:
+                            self._record_signal_timestamp(symbol, "short")
+                            short_signals.append({
+                                "symbol": symbol,
+                                "direction": "short",
+                                "score": score.total_score,
+                                "technical_score": score.technical_score,
+                                "sentiment_score": score.sentiment_score,
+                                "current_price": current_close,
+                                "klines": klines,
+                                "entry_mode": "lv_rm",
+                                "bb_position": score.bb_position,
+                                "rsi_value": score.rsi_value,
+                            })
+                    else:
+                        self._clear_signal_timestamp(symbol, "short")
+
+                    if should_entry_long:
+                        # P2-6: 已有持仓时不产生新信号（不加仓）
+                        if self.position_manager.has_position(symbol):
+                            logger.debug("LV-RM: 该币种已有持仓，跳过做多信号", symbol=symbol)
+                        else:
+                            self._record_signal_timestamp(symbol, "long")
+                            long_signals.append({
+                                "symbol": symbol,
+                                "direction": "long",
+                                "score": score_long.total_score,
+                                "technical_score": score_long.technical_score,
+                                "sentiment_score": score_long.sentiment_score,
+                                "current_price": current_close,
+                                "klines": klines,
+                                "entry_mode": "lv_rm",
+                                "bb_position": score_long.bb_position,
+                                "rsi_value": score_long.rsi_value,
+                            })
+                    else:
+                        self._clear_signal_timestamp(symbol, "long")
+
+                except Exception as e:
+                    logger.error("LV-RM分析失败", symbol=symbol, error=str(e))
+
+        await asyncio.gather(*[check_symbol(s) for s in low_vol_symbols])
 
     async def _align_to_hour(self) -> None:
         """对齐到每小时第N分钟（从配置读取）"""
@@ -1449,6 +2023,16 @@ class HRSStrategy(BaseStrategy):
             await self.db.execute_ddl("""
                 CREATE INDEX IF NOT EXISTS idx_hrs_signals_status
                 ON hrs.hrs_signals (status)
+            """)
+
+            # V2.4: LV-RM 字段
+            await self.db.execute_ddl("""
+                ALTER TABLE hrs.hrs_signals
+                ADD COLUMN IF NOT EXISTS bb_position DOUBLE PRECISION
+            """)
+            await self.db.execute_ddl("""
+                ALTER TABLE hrs.hrs_signals
+                ADD COLUMN IF NOT EXISTS rsi_value DOUBLE PRECISION
             """)
 
             logger.info("数据库Schema初始化完成")
@@ -2055,6 +2639,9 @@ class HRSStrategy(BaseStrategy):
             technical_score = signal.get("technical_score", 0)
             sentiment_score = signal.get("sentiment_score", 0)
             current_price = signal.get("current_price", 0)
+            # V2.4: LV-RM 字段
+            bb_position = signal.get("bb_position")
+            rsi_value = signal.get("rsi_value")
 
             # 合约数据评分从 total_score 反推（近似）
             scoring_config = self.config.get("scoring", {})
@@ -2075,8 +2662,9 @@ class HRSStrategy(BaseStrategy):
                 """
                 INSERT INTO hrs.hrs_signals
                     (symbol, direction, total_score, technical_score, sentiment_score,
-                     contract_score, current_price, status, resolution)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, 'triggered', $8)
+                     contract_score, current_price, status, resolution,
+                     bb_position, rsi_value)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, 'triggered', $8, $9, $10)
                 """,
                 symbol,
                 direction,
@@ -2086,6 +2674,8 @@ class HRSStrategy(BaseStrategy):
                 round(contract_score, 2),
                 round(current_price, 6),
                 resolution,
+                bb_position,
+                rsi_value,
             )
             logger.debug("信号已记录到数据库", symbol=symbol, direction=direction, score=total_score)
         except Exception as e:

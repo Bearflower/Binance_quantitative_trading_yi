@@ -3,7 +3,7 @@
 计算 HRS 策略的综合评分，支持做空和做多两个方向
 评分维度：合约数据（25%）、技术面（45%）、情绪面（30%）
 """
-from typing import Dict, Any, Tuple, Optional, TYPE_CHECKING
+from typing import Dict, Any, Tuple, Optional, List, TYPE_CHECKING
 from dataclasses import dataclass, field
 import structlog
 
@@ -30,6 +30,8 @@ class ScoringResult:
     extreme_bonus_applied: bool = False
     extreme_bonus_reason: Optional[str] = None
     entry_mode: str = "standard"          # V2.0-C 新增: "standard" 或 "emm"
+    bb_position: Optional[float] = None   # V2.4 LV-RM: 入场时价格在布林带中的位置
+    rsi_value: Optional[float] = None     # V2.4 LV-RM: 入场时的 RSI 值
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -50,6 +52,8 @@ class ScoringResult:
             "extreme_bonus_applied": self.extreme_bonus_applied,
             "extreme_bonus_reason": self.extreme_bonus_reason,
             "entry_mode": self.entry_mode,
+            "bb_position": self.bb_position,
+            "rsi_value": self.rsi_value,
             "details": self.details,
         }
 
@@ -550,6 +554,370 @@ class ScoringEngine:
 
         return is_semi_emm, conditions_met, details
 
+    # ==================== V2.4: LV-RM 低波动反转评分方法 ====================
+
+    async def score_lv_rm(
+        self,
+        symbol: str,
+        direction: str,
+        oi_market_cap_ratio: float,
+        funding_rate: float,
+        has_market_cap: bool,
+        klines_1h: List[Dict],
+        klines_4h: List[Dict],
+    ) -> ScoringResult:
+        """
+        V2.4: LV-RM 低波动反转评分
+
+        与标准评分区别：
+        - 技术分仅包含布林带触轨和RSI，不包含形态检测
+        - 增加4h趋势过滤（一票否决）
+        - 独立评分门槛
+
+        Args:
+            symbol: 交易对
+            direction: 'short' 或 'long'
+            oi_market_cap_ratio: OI/市值比
+            funding_rate: 年化资金费率
+            has_market_cap: 是否有市值数据
+            klines_1h: 1h K线数据（用于计算布林带和RSI）
+            klines_4h: 4h K线数据（用于趋势过滤）
+
+        Returns:
+            ScoringResult 对象
+        """
+        lv_rm_config = self.config.get("lv_rm", {})
+        entry_config = lv_rm_config.get("entry", {})
+        scoring_config = lv_rm_config.get("scoring", {})
+        tech_config = scoring_config.get("technical", {})
+        bb_config = tech_config.get("bollinger_breakout", {})
+        rsi_config = tech_config.get("rsi", {})
+
+        # 1. 合约分（与标准模式共用）
+        contract_score = self._calc_contract_score(direction, oi_market_cap_ratio, has_market_cap)
+
+        # 2. 计算布林带
+        bb_period = entry_config.get("bollinger_period", 20)
+        bb_std = entry_config.get("bollinger_std", 2.0)
+        upper, middle, lower = self._calc_bollinger_bands(klines_1h, bb_period, bb_std)
+        current_close = float(klines_1h[-1].get("close", 0))
+        bb_width = upper - lower if upper - lower > 0 else 1e-10
+
+        # 3. 计算 RSI
+        rsi_period = entry_config.get("rsi_period", 14)
+        rsi = self._calc_rsi(klines_1h, rsi_period)
+
+        # 4. 计算 4h EMA20
+        ema_period = entry_config.get("trend_filter", {}).get("ema_period", 20)
+        ema_4h = self._calc_ema(klines_4h, ema_period)
+        current_close_4h = float(klines_4h[-1].get("close", 0)) if klines_4h else current_close
+
+        # 5. 执行4h趋势过滤（一票否决）
+        trend_filter_config = entry_config.get("trend_filter", {})
+        trend_ok, trend_reason = self._check_lv_rm_trend_filter(
+            direction=direction,
+            current_price_4h=current_close_4h,
+            ema_4h=ema_4h,
+            config=trend_filter_config,
+        )
+        if not trend_ok:
+            return ScoringResult(
+                symbol=symbol,
+                direction=direction,
+                total_score=0.0,
+                contract_score=contract_score,
+                technical_score=0.0,
+                sentiment_score=0.0,
+                veto=True,
+                veto_reason=trend_reason,
+                entry_mode="lv_rm",
+                details={"trend_filter": trend_reason},
+            )
+
+        # 6. 检查入场条件（1h级别）
+        # 做空：RSI≥70，做多：RSI≤30
+        rsi_oversold = rsi_config.get("score_for_oversold", 30)
+        rsi_overbought = rsi_config.get("score_for_overbought", 70)
+        rsi_ok = (direction == "short" and rsi >= rsi_overbought) or \
+                 (direction == "long" and rsi <= rsi_oversold)
+        if not rsi_ok:
+            return ScoringResult(
+                symbol=symbol,
+                direction=direction,
+                total_score=0.0,
+                contract_score=contract_score,
+                technical_score=0.0,
+                sentiment_score=0.0,
+                veto=True,
+                veto_reason=f"RSI({rsi:.1f})未达标",
+                entry_mode="lv_rm",
+                details={"rsi": rsi},
+            )
+
+        # 价格位置检查
+        if direction == "short":
+            price_ok = current_close >= upper  # 价格 ≥ 布林上轨
+            bb_breakout = (current_close - upper) / bb_width if bb_width > 0 else 0
+        else:
+            price_ok = current_close <= lower  # 价格 ≤ 布林下轨
+            bb_breakout = (lower - current_close) / bb_width if bb_width > 0 else 0
+        if not price_ok:
+            return ScoringResult(
+                symbol=symbol,
+                direction=direction,
+                total_score=0.0,
+                contract_score=contract_score,
+                technical_score=0.0,
+                sentiment_score=0.0,
+                veto=True,
+                veto_reason="价格未触及布林带轨道",
+                entry_mode="lv_rm",
+                details={"current_close": current_close, "upper": upper, "lower": lower},
+            )
+
+        # K线确认（止跌/滞涨）
+        kline_confirm_ok = self._check_lv_rm_kline_confirm(direction, klines_1h)
+        if not kline_confirm_ok:
+            return ScoringResult(
+                symbol=symbol,
+                direction=direction,
+                total_score=0.0,
+                contract_score=contract_score,
+                technical_score=0.0,
+                sentiment_score=0.0,
+                veto=True,
+                veto_reason="K线确认失败",
+                entry_mode="lv_rm",
+                details={},
+            )
+
+        # 7. 计算 LV 技术分
+        bb_base_score = bb_config.get("base_score", 2.0)
+        bb_cap_score = bb_config.get("cap_score", 4.0)
+        bb_multiplier = bb_config.get("multiplier", 2.0)
+        bollinger_score = min(bb_base_score + min(bb_breakout * bb_multiplier, bb_cap_score - bb_base_score), bb_cap_score)
+
+        rsi_score = rsi_config.get("score", 3.0) if rsi_ok else 0.0
+
+        # 技术封顶分从配置读取
+        lv_technical_cap = tech_config.get("cap_score", 7.0)
+        lv_technical_score = min(bollinger_score + rsi_score, lv_technical_cap)
+
+        # 8. 情绪分（与标准模式共用）
+        sentiment_score = self._calc_sentiment_score(direction, funding_rate * 100)  # 转换为百分比
+
+        # 9. 总分
+        total_score = (
+            contract_score * self.contract_weight
+            + lv_technical_score * self.technical_weight
+            + sentiment_score * self.sentiment_weight
+        )
+
+        lv_entry_threshold = scoring_config.get("entry_threshold", 6.0)
+        lv_min_technical = tech_config.get("min_total_score", 4.0)
+
+        should_entry = total_score >= lv_entry_threshold and lv_technical_score >= lv_min_technical
+
+        return ScoringResult(
+            symbol=symbol,
+            direction=direction,
+            total_score=total_score,
+            contract_score=contract_score,
+            technical_score=lv_technical_score,
+            sentiment_score=sentiment_score,
+            veto=not should_entry,
+            veto_reason="" if should_entry else f"LV总分({total_score:.2f})或技术分({lv_technical_score:.1f})不达标",
+            entry_mode="lv_rm",
+            bb_position=bb_breakout,
+            rsi_value=rsi,
+            details={
+                "bollinger_score": bollinger_score,
+                "rsi_score": rsi_score,
+                "rsi": rsi,
+                "bb_breakout": bb_breakout,
+                "trend_ok": trend_ok,
+            },
+        )
+
+    def _calc_contract_score(self, direction: str, oi_market_cap_ratio: float, has_market_cap: bool) -> float:
+        """
+        V2.4: 计算合约分（简化版，与 calculate_contract_score 逻辑一致）
+
+        Args:
+            direction: 方向
+            oi_market_cap_ratio: OI/市值比
+            has_market_cap: 是否有市值数据
+
+        Returns:
+            合约评分
+        """
+        score, _ = self.calculate_contract_score(oi_market_cap_ratio, direction, has_market_cap)
+        return score
+
+    def _calc_sentiment_score(self, direction: str, funding_rate: float) -> float:
+        """
+        V2.4: 计算情绪分（简化版，与 calculate_sentiment_score 逻辑一致）
+
+        Args:
+            direction: 方向
+            funding_rate: 年化资金费率（百分比）
+
+        Returns:
+            情绪评分
+        """
+        score, _ = self.calculate_sentiment_score(funding_rate / 100.0, direction)
+        return score
+
+    def _calc_bollinger_bands(self, klines: List[Dict], period: int = 20, std: float = 2.0) -> Tuple[float, float, float]:
+        """
+        V2.4: 计算布林带（上轨、中轨、下轨）
+
+        Args:
+            klines: K线数据列表
+            period: 周期
+            std: 标准差倍数
+
+        Returns:
+            (upper, middle, lower) 三元组
+        """
+        if len(klines) < period:
+            return 0.0, 0.0, 0.0
+
+        closes = [float(k.get("close", 0)) for k in klines[-period:]]
+        middle = sum(closes) / len(closes)
+        variance = sum((c - middle) ** 2 for c in closes) / len(closes)
+        std_dev = variance ** 0.5
+        upper = middle + std * std_dev
+        lower = middle - std * std_dev
+        return upper, middle, lower
+
+    def _calc_rsi(self, klines: List[Dict], period: int = 14) -> float:
+        """
+        V2.4: 计算 RSI
+
+        Args:
+            klines: K线数据列表
+            period: 周期
+
+        Returns:
+            RSI 值（0-100）
+        """
+        if len(klines) < period + 1:
+            return 50.0
+
+        closes = [float(k.get("close", 0)) for k in klines[-(period + 1):]]
+        gains = []
+        losses = []
+        for i in range(1, len(closes)):
+            diff = closes[i] - closes[i - 1]
+            gains.append(max(diff, 0))
+            losses.append(max(-diff, 0))
+
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    def _calc_ema(self, klines: List[Dict], period: int = 20) -> float:
+        """
+        V2.4: 计算 EMA
+
+        Args:
+            klines: K线数据列表
+            period: 周期
+
+        Returns:
+            EMA 值
+        """
+        if len(klines) < period:
+            return float(klines[-1].get("close", 0)) if klines else 0.0
+
+        closes = [float(k.get("close", 0)) for k in klines[-period * 2:]]  # 多取一些数据保证收敛
+        multiplier = 2.0 / (period + 1)
+        ema = sum(closes[:period]) / period  # SMA 初始值
+        for price in closes[period:]:
+            ema = (price - ema) * multiplier + ema
+        return ema
+
+    def _check_lv_rm_trend_filter(
+        self,
+        direction: str,
+        current_price_4h: float,
+        ema_4h: float,
+        config: Dict[str, Any],
+    ) -> Tuple[bool, str]:
+        """
+        V2.4: 检查 LV-RM 4h趋势过滤
+
+        - 做多：价格 > EMA20 且 价格 ≥ EMA20 × 0.97
+        - 做空：价格 < EMA20 且 价格 ≤ EMA20 × 1.03
+
+        Args:
+            direction: 'short' 或 'long'
+            current_price_4h: 4h级别当前价格
+            ema_4h: 4h EMA20 值
+            config: 趋势过滤配置字典
+
+        Returns:
+            (是否通过, 失败原因)
+        """
+        if not config.get("enabled", True):
+            return True, "趋势过滤未启用"
+
+        if ema_4h <= 0:
+            return True, "EMA20数据不足，跳过趋势过滤"
+
+        if direction == "long":
+            long_config = config.get("long", {})
+            min_price_ratio = long_config.get("min_price", 1.0)
+            max_deviation = long_config.get("max_deviation", 0.97)
+            # 做多：价格 > EMA20（多头排列）
+            if current_price_4h <= ema_4h * min_price_ratio:
+                return False, f"4h趋势过滤：价格({current_price_4h:.4f})未超过EMA20({ema_4h:.4f})，不做多"
+            # 做多：偏离不超过 -3%
+            if current_price_4h < ema_4h * max_deviation:
+                return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过-3%，禁止抄底"
+        else:  # short
+            short_config = config.get("short", {})
+            max_price_ratio = short_config.get("max_price", 1.0)
+            max_deviation = short_config.get("max_deviation", 1.03)
+            # 做空：价格 < EMA20（空头排列）
+            if current_price_4h >= ema_4h * max_price_ratio:
+                return False, f"4h趋势过滤：价格({current_price_4h:.4f})未低于EMA20({ema_4h:.4f})，不做空"
+            # 做空：偏离不超过 +3%
+            if current_price_4h > ema_4h * max_deviation:
+                return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过+3%，禁止摸顶"
+
+        return True, ""
+
+    def _check_lv_rm_kline_confirm(self, direction: str, klines: List[Dict]) -> bool:
+        """
+        V2.4: 检查 LV-RM K线确认
+
+        - 做多：收盘价 > 前一根K线最低价（止跌确认）
+        - 做空：收盘价 < 前一根K线最高价（滞涨确认）
+
+        Args:
+            direction: 'short' 或 'long'
+            klines: 1h K线数据
+
+        Returns:
+            True: 确认通过；False: 确认失败
+        """
+        if len(klines) < 2:
+            return False
+
+        current_close = float(klines[-1].get("close", 0))
+        prev_high = float(klines[-2].get("high", 0))
+        prev_low = float(klines[-2].get("low", 0))
+
+        if direction == "long":
+            return current_close > prev_low  # 止跌
+        else:  # short
+            return current_close < prev_high  # 滞涨
+
     def score(
         self,
         symbol: str,
@@ -777,6 +1145,17 @@ class ScoringEngine:
                 )
                 return True
             return False
+
+        # V2.4: LV-RM 模式跳过形态门槛，使用独立评分逻辑
+        if score_result.entry_mode == "lv_rm":
+            logger.info(
+                "LV-RM模式满足入场条件",
+                symbol=score_result.symbol,
+                direction=score_result.direction,
+                total_score=score_result.total_score,
+                technical_score=score_result.technical_score,
+            )
+            return True
 
         # 检查基础形态评分
         tech_details = score_result.details.get("technical", {})

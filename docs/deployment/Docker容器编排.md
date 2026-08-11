@@ -936,7 +936,7 @@ WEBHOOK_URL="http://notification-service:8766/api/v1/send"
 logs=$(docker logs --since 10m $CONTAINER 2>&1)
 
 # 检查是否有错误
-error_count=$(echo "$logs" | grep -i "error\|exception\|fatal" | wc -l)
+error_count=$(echo "$logs" | grep -cE "(ERROR|Exception|FATAL|CRITICAL|Traceback)")
 
 if [ $error_count -gt 0 ]; then
     echo "发现 $error_count 个错误，发送告警..."

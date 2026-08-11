@@ -4,6 +4,7 @@
 """
 from typing import Dict, Any, Optional
 import asyncio
+import os
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 import structlog
@@ -18,6 +19,7 @@ from shared.dynamic_trailing import (
     get_volatility_adjustment,
     TrailingStopResult,
 )
+from shared.capital_manager import CapitalManager
 
 
 logger = structlog.get_logger()
@@ -39,6 +41,8 @@ class TradingExecutor:
     _ORDER_NOT_FOUND_CODE = -2011
     # 交易对精度缓存，减少频繁调用 exchangeInfo 的开销
     _precision_cache: Dict[str, tuple] = {}
+    # 币安最小名义价值（USDT），低于此值的订单会被币安拒绝
+    _MIN_NOTIONAL = Decimal('5')
 
     def __init__(
         self,
@@ -46,7 +50,8 @@ class TradingExecutor:
         db: DatabaseManager,
         notification: NotificationClient,
         config: Dict[str, Any],
-        kline_service: Optional[KLineService] = None
+        kline_service: Optional[KLineService] = None,
+        config_path: Optional[str] = None,
     ):
         """
         初始化交易执行器
@@ -57,12 +62,21 @@ class TradingExecutor:
             notification: 通知客户端
             config: 配置字典
             kline_service: K线服务（用于ATR计算）
+            config_path: 配置文件路径（用于资金分配限制）
         """
         self.binance_api = binance_api
         self.db = db
         self.notification = notification
         self.config = config
         self.kline_service = kline_service
+
+        # 资金分配管理器（读取 capital_limits.monthly_limit 限制仓位）
+        if config_path:
+            self.capital_mgr = CapitalManager(config_path)
+        else:
+            # 未传入 config_path 时，使用默认路径
+            config_dir = os.path.dirname(os.path.abspath(__file__))
+            self.capital_mgr = CapitalManager(os.path.join(config_dir, "config.yaml"))
 
         # 交易配置
         trading_config = config.get('trading', {})
@@ -175,12 +189,45 @@ class TradingExecutor:
             # 5. 设置杠杆
             await self._set_leverage(symbol, self.leverage)
 
+            # 5.5 开仓前检查：总仓位不超过分配上限
+            current_positions_value = 0.0
+            for _, track in self.position_tracking.items():
+                pos_qty = track.get("entry_quantity", 0)
+                pos_price = track.get("entry_price", 0)
+                current_positions_value += float(pos_qty) * float(pos_price)
+            new_position_value = float(quantity) * float(current_price)
+            if not self.capital_mgr.can_open_position(current_positions_value, new_position_value):
+                logger.warning(
+                    "总仓位超限，跳过开仓",
+                    symbol=symbol,
+                    current=current_positions_value,
+                    new=new_position_value,
+                    limit=self.capital_mgr.get_allocated_capital(),
+                )
+                return None
+
             # 6. 开空仓（传入当前价格作为限价）
             order = await self._place_short_order(symbol, quantity, Decimal(str(current_price)))
 
             if not order:
                 logger.error("开空仓失败")
                 return None
+
+            # 6.5 等待限价单成交（超时从配置读取）
+            entry_timeout = self.config.get('trading', {}).get('entry_order_timeout_seconds', 60)
+            entry_order_id = order.get('orderId')
+            filled_order = await self._wait_for_order_fill(
+                symbol, entry_order_id, timeout_seconds=entry_timeout
+            )
+            if not filled_order:
+                # 超时未成交，取消限价单，避免后续价格到达时突然成交
+                logger.warning(f"{symbol} 限价单超时未成交，取消订单")
+                try:
+                    await self.binance_api.cancel_order(symbol, str(entry_order_id))
+                except Exception as cancel_e:
+                    logger.warning(f"{symbol} 取消限价单失败", error=str(cancel_e))
+                return None
+            order = filled_order
 
             # 7. 保存订单到数据库
             await self._save_order(order, score_result)
@@ -575,6 +622,64 @@ class TradingExecutor:
         normalized = tick_size.normalize()
         return (price / normalized).quantize(Decimal('1'), rounding='ROUND_HALF_UP') * normalized
 
+    async def _wait_for_order_fill(
+        self,
+        symbol: str,
+        order_id: int,
+        timeout_seconds: int = 60,
+        check_interval: float = 2.0,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        等待限价单成交，超时返回 None
+
+        Args:
+            symbol: 交易对
+            order_id: 订单 ID
+            timeout_seconds: 超时秒数
+            check_interval: 检查间隔（秒）
+
+        Returns:
+            成交后的订单信息，超时返回 None
+        """
+        try:
+            deadline = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
+            while datetime.now(timezone.utc) < deadline:
+                order = await self.binance_api.get_order(symbol, order_id)
+                status = order.get("status", "")
+
+                if status == "FILLED":
+                    logger.info(
+                        f"{symbol} 限价单已成交",
+                        order_id=order_id,
+                        executed_qty=order.get("executedQty"),
+                        cummulative_quote=order.get("cummulativeQuoteQty"),
+                    )
+                    return order
+
+                if status in ("CANCELED", "EXPIRED", "REJECTED"):
+                    logger.warning(
+                        f"{symbol} 限价单已取消/过期/拒绝",
+                        order_id=order_id,
+                        status=status,
+                    )
+                    return None
+
+                await asyncio.sleep(check_interval)
+
+            logger.warning(
+                f"{symbol} 限价单超时未成交",
+                order_id=order_id,
+                timeout_seconds=timeout_seconds,
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                f"{symbol} 检查限价单成交状态异常",
+                order_id=order_id,
+                error=str(e),
+            )
+            return None
+
     async def _send_notification(
         self,
         symbol: str,
@@ -758,35 +863,43 @@ class TradingExecutor:
             # 计算 TP1 限价（限价略高于止盈价，确保触发后立即成交）
             tp1_limit_price = self._format_price(target1_price * (Decimal('1') + slippage), tick_size)
 
-            tp1_result = await self.binance_api.place_conditional_order(
-                symbol=symbol,
-                side='BUY',
-                order_type='TAKE_PROFIT',
-                stop_price=target1_price,
-                price=tp1_limit_price,
-                quantity=target1_quantity,
-                reduce_only=True
-            )
-
-            # 保存 TP1 止盈单 algoId
-            if tp1_result and 'algoId' in tp1_result and symbol in self.position_tracking:
-                self.position_tracking[symbol]['algo_ids']['tp1'] = tp1_result['algoId']
-                # 记录 TP1 止盈条件单到数据库（用于孤儿单清理）
-                await record_condition_order(
-                    self.db, "new_coin", symbol,
-                    algo_id=tp1_result['algoId'],
-                    order_type="TAKE_PROFIT"
+            # 检查最小名义价值，避免 -4164 错误
+            tp1_notional = target1_quantity * target1_price
+            if target1_quantity > 0 and target1_price > 0 and tp1_notional < self._MIN_NOTIONAL:
+                logger.info(
+                    f"TP1 名义价值 {float(tp1_notional)} USDT < 最小值 {float(self._MIN_NOTIONAL)} USDT，跳过设置",
+                    symbol=symbol
+                )
+            else:
+                tp1_result = await self.binance_api.place_conditional_order(
+                    symbol=symbol,
+                    side='BUY',
+                    order_type='TAKE_PROFIT',
+                    stop_price=target1_price,
+                    price=tp1_limit_price,
+                    quantity=target1_quantity,
+                    reduce_only=True
                 )
 
-            logger.info(
-                f"设置第一目标止盈: {symbol}",
-                target_price=float(target1_price),
-                tp_limit=float(tp1_limit_price),
-                quantity=float(target1_quantity),
-                close_percent=float(self.target1_close_percent),
-                order_type='TAKE_PROFIT',
-                algo_id=tp1_result.get('algoId', 'N/A')
-            )
+                # 保存 TP1 止盈单 algoId
+                if tp1_result and 'algoId' in tp1_result and symbol in self.position_tracking:
+                    self.position_tracking[symbol]['algo_ids']['tp1'] = tp1_result['algoId']
+                    # 记录 TP1 止盈条件单到数据库（用于孤儿单清理）
+                    await record_condition_order(
+                        self.db, "new_coin", symbol,
+                        algo_id=tp1_result['algoId'],
+                        order_type="TAKE_PROFIT"
+                    )
+
+                logger.info(
+                    f"设置第一目标止盈: {symbol}",
+                    target_price=float(target1_price),
+                    tp_limit=float(tp1_limit_price),
+                    quantity=float(target1_quantity),
+                    close_percent=float(self.target1_close_percent),
+                    order_type='TAKE_PROFIT',
+                    algo_id=tp1_result.get('algoId', 'N/A')
+                )
 
             # 3. 设置第二目标止盈（开仓价 - 3.5×ATR，平仓40%）
             target2_price = entry_price - (atr * self.target2_atr_multiplier)
@@ -818,35 +931,43 @@ class TradingExecutor:
                 # 计算 TP2 限价（限价略高于止盈价，确保触发后立即成交）
                 tp2_limit_price = self._format_price(target2_price * (Decimal('1') + slippage), tick_size)
 
-                tp2_result = await self.binance_api.place_conditional_order(
-                    symbol=symbol,
-                    side='BUY',
-                    order_type='TAKE_PROFIT',
-                    stop_price=target2_price,
-                    price=tp2_limit_price,
-                    quantity=target2_quantity,
-                    reduce_only=True
-                )
-
-                # 保存 TP2 止盈单 algoId
-                if tp2_result and 'algoId' in tp2_result and symbol in self.position_tracking:
-                    self.position_tracking[symbol]['algo_ids']['tp2'] = tp2_result['algoId']
-                    # 记录 TP2 止盈条件单到数据库（用于孤儿单清理）
-                    await record_condition_order(
-                        self.db, "new_coin", symbol,
-                        algo_id=tp2_result['algoId'],
-                        order_type="TAKE_PROFIT"
+                # 检查最小名义价值，避免 -4164 错误
+                tp2_notional = target2_quantity * target2_price
+                if target2_quantity > 0 and target2_price > 0 and tp2_notional < self._MIN_NOTIONAL:
+                    logger.info(
+                        f"TP2 名义价值 {float(tp2_notional)} USDT < 最小值 {float(self._MIN_NOTIONAL)} USDT，跳过设置",
+                        symbol=symbol
                     )
-                
-                logger.info(
-                    f"设置第二目标止盈: {symbol}",
-                    target_price=float(target2_price),
-                    tp_limit=float(tp2_limit_price),
-                    quantity=float(target2_quantity),
-                    close_percent=float(self.target2_close_percent),
-                    order_type='TAKE_PROFIT',
-                    algo_id=tp2_result.get('algoId', 'N/A')
-                )
+                else:
+                    tp2_result = await self.binance_api.place_conditional_order(
+                        symbol=symbol,
+                        side='BUY',
+                        order_type='TAKE_PROFIT',
+                        stop_price=target2_price,
+                        price=tp2_limit_price,
+                        quantity=target2_quantity,
+                        reduce_only=True
+                    )
+
+                    # 保存 TP2 止盈单 algoId
+                    if tp2_result and 'algoId' in tp2_result and symbol in self.position_tracking:
+                        self.position_tracking[symbol]['algo_ids']['tp2'] = tp2_result['algoId']
+                        # 记录 TP2 止盈条件单到数据库（用于孤儿单清理）
+                        await record_condition_order(
+                            self.db, "new_coin", symbol,
+                            algo_id=tp2_result['algoId'],
+                            order_type="TAKE_PROFIT"
+                        )
+                    
+                    logger.info(
+                        f"设置第二目标止盈: {symbol}",
+                        target_price=float(target2_price),
+                        tp_limit=float(tp2_limit_price),
+                        quantity=float(target2_quantity),
+                        close_percent=float(self.target2_close_percent),
+                        order_type='TAKE_PROFIT',
+                        algo_id=tp2_result.get('algoId', 'N/A')
+                    )
             
             # 4. 剩余30%使用移动止盈（在监控中实现）
             # 记录目标价格到持仓跟踪
@@ -1865,7 +1986,16 @@ class TradingExecutor:
             target1_quantity = self._format_quantity(target1_quantity, step_size)
             tp1_limit_price = self._format_price(target1_price * (Decimal('1') + slippage), tick_size)
 
-            if target1_quantity > 0 and target1_price > 0:
+            # 检查最小名义价值，避免 -4164 错误
+            tp1_notional = target1_quantity * target1_price
+            if target1_quantity > 0 and target1_price > 0 and tp1_notional < self._MIN_NOTIONAL:
+                logger.info(
+                    f"TP1 名义价值 {float(tp1_notional)} USDT < 最小值 {float(self._MIN_NOTIONAL)} USDT，跳过补全",
+                    symbol=symbol,
+                    quantity=float(target1_quantity),
+                    price=float(target1_price)
+                )
+            elif target1_quantity > 0 and target1_price > 0:
                 try:
                     tp1_result = await self.binance_api.place_conditional_order(
                         symbol=symbol, side='BUY',
@@ -1942,35 +2072,45 @@ class TradingExecutor:
                 tp2_price = self._format_price(target2_price, tick_size)
                 tp2_limit_price = self._format_price(tp2_price * (Decimal('1') + slippage), tick_size)
 
-                try:
-                    tp2_result = await self.binance_api.place_conditional_order(
-                        symbol=symbol, side='BUY',
-                        order_type='TAKE_PROFIT',
-                        stop_price=tp2_price,
-                        price=tp2_limit_price,
-                        quantity=tp2_quantity,
-                        reduce_only=True
-                    )
-                    if tp2_result and 'algoId' in tp2_result and symbol in self.position_tracking:
-                        self.position_tracking[symbol]['algo_ids']['tp2'] = tp2_result['algoId']
-                        await record_condition_order(
-                            self.db, "new_coin", symbol,
-                            algo_id=tp2_result['algoId'],
-                            order_type="TAKE_PROFIT"
-                        )
+                # 检查最小名义价值，避免 -4164 错误
+                tp2_notional = tp2_quantity * tp2_price
+                if tp2_quantity > 0 and tp2_price > 0 and tp2_notional < self._MIN_NOTIONAL:
                     logger.info(
-                        f"补全 TP2 止盈条件单成功: {symbol}",
-                        target_price=float(tp2_price),
+                        f"TP2 名义价值 {float(tp2_notional)} USDT < 最小值 {float(self._MIN_NOTIONAL)} USDT，跳过补全",
+                        symbol=symbol,
                         quantity=float(tp2_quantity),
-                        algo_id=tp2_result.get('algoId', 'N/A')
+                        price=float(tp2_price)
                     )
-                except Exception as e:
-                    error_str = str(e)
-                    if any(code in error_str for code in ignore_error_codes):
-                        logger.info(f"TP2 止盈条件单已存在，跳过: {symbol}")
-                    else:
-                        logger.warning(f"补全 TP2 止盈条件单失败: {symbol}", error=error_str)
-                        all_success = False
+                else:
+                    try:
+                        tp2_result = await self.binance_api.place_conditional_order(
+                            symbol=symbol, side='BUY',
+                            order_type='TAKE_PROFIT',
+                            stop_price=tp2_price,
+                            price=tp2_limit_price,
+                            quantity=tp2_quantity,
+                            reduce_only=True
+                        )
+                        if tp2_result and 'algoId' in tp2_result and symbol in self.position_tracking:
+                            self.position_tracking[symbol]['algo_ids']['tp2'] = tp2_result['algoId']
+                            await record_condition_order(
+                                self.db, "new_coin", symbol,
+                                algo_id=tp2_result['algoId'],
+                                order_type="TAKE_PROFIT"
+                            )
+                        logger.info(
+                            f"补全 TP2 止盈条件单成功: {symbol}",
+                            target_price=float(tp2_price),
+                            quantity=float(tp2_quantity),
+                            algo_id=tp2_result.get('algoId', 'N/A')
+                        )
+                    except Exception as e:
+                        error_str = str(e)
+                        if any(code in error_str for code in ignore_error_codes):
+                            logger.info(f"TP2 止盈条件单已存在，跳过: {symbol}")
+                        else:
+                            logger.warning(f"补全 TP2 止盈条件单失败: {symbol}", error=error_str)
+                            all_success = False
 
             # 标记补全完成
             if all_success:

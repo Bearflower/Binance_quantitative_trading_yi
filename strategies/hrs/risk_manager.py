@@ -353,6 +353,7 @@ class RiskManager:
         计算仓位大小
 
         公式：开仓价值 = 账户总资金 × 2% / 止损幅度
+        V2.5.2: 最终单笔保证金 = min(风险预算, 硬上限, 账户比例上限)
 
         Args:
             account_balance: 账户总资金
@@ -369,7 +370,24 @@ class RiskManager:
             return 0.0
         position_value = max_loss / stop_loss_percent
         margin = position_value / leverage
-        quantity = position_value / current_price if current_price > 0 else 0
+
+        # V2.5.2: 单笔仓位上限（硬上限 + 账户比例上限）
+        sizing_config = self.config.get("position_sizing", {}).get("single", {})
+        hard_cap = sizing_config.get("hard_cap_usdt", 50)
+        ratio_cap = account_balance * sizing_config.get("account_ratio_cap", 0.05)
+        capped_margin = min(margin, hard_cap, ratio_cap)
+        capped_position_value = capped_margin * leverage
+
+        if capped_margin < margin:
+            logger.info(
+                "单笔保证金受限于仓位上限",
+                original_margin=round(margin, 2),
+                hard_cap=hard_cap,
+                ratio_cap=round(ratio_cap, 2),
+                capped_margin=round(capped_margin, 2),
+            )
+
+        quantity = capped_position_value / current_price if current_price > 0 else 0
 
         logger.info(
             "仓位计算",
@@ -377,6 +395,7 @@ class RiskManager:
             max_loss=max_loss,
             position_value=position_value,
             margin=margin,
+            capped_margin=capped_margin,
             quantity=quantity,
         )
 

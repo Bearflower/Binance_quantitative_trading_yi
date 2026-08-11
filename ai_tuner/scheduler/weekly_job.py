@@ -148,7 +148,7 @@ class WeeklyTuningJob:
             success=total_success,
             skip=total_skip,
             error=total_error,
-            total_cost_rmb=cost_summary.get("total_cost_rmb", 0),
+            total_cost_usd=cost_summary.get("total_cost_usd", 0),
         )
 
     async def _tune_single_strategy(

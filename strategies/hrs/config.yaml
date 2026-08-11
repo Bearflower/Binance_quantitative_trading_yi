@@ -1,10 +1,10 @@
-# 混合反转策略 HRS V2.3 配置（动态阈值版）
+# 混合反转策略 HRS V2.5 配置（OR-2 + LV-RM 独立化）
 
 # 策略基本信息
 strategy:
   name: hrs
-  version: "2.3.0"
-  description: "混合反转策略 V2.3 - 双轨并行 + 半EMM + 全市场动态阈值"
+  version: "2.5.0"
+  description: "混合反转策略 V2.5 - 候选池扩容（OR-2 + 50分位）+ LV-RM 独立化"
 
 # 评分系统配置
 scoring:
@@ -135,23 +135,31 @@ candidate_pool:
   scan_window_minutes: 5
   # 并发API请求数限制（日K线获取等并行操作）
   api_concurrency_limit: 20
+  # V2.5: 候选池逻辑模式
+  logic: "or_any_2"                    # V2.5: or_any_2 = 满足任意2条件入池
+  # 候选池为空时退避配置（V2.5 新增）
+  empty_backoff:
+    max_consecutive_empty: 3           # 连续空池次数触发退避
+    base_delay_hours: 2                # 基础延迟（小时）
+    max_delay_hours: 8                 # 最大延迟（小时）
+    recover_after_nonempty: 1          # 候选池非空后恢复
   # 候选池为空时休眠配置
   sleep_on_empty:
-    enabled: true                      # 是否启用候选池为空时休眠
+    enabled: false                     # V2.5: 不再因候选池为空而休眠（LV-RM 独立运行）
   # OI估算系数（当无法获取实时OI时，用成交额×此系数估算）
   oi_estimation_ratio: 0.3
   # V2.3 动态阈值配置（基于全市场分位数自适应）
   dynamic_thresholds:
     enabled: true                      # 是否启用动态阈值
     min_sample_size: 10                # 最小样本数（不足时回退到固定阈值）
-    # 做空：取市场 TOP 20%（80分位数）
-    funding_rate_percentile_short: 0.80
-    oi_market_cap_percentile_short: 0.80
-    ema20_deviation_percentile_short: 0.70
-    # 做多：取市场 BOTTOM 20%（20分位数）
-    funding_rate_percentile_long: 0.20
-    oi_market_cap_percentile_long: 0.20
-    ema20_deviation_percentile_long: 0.30
+    # V2.5: 做空/做多统一使用 50 分位（中位数）
+    funding_rate_percentile_short: 0.50
+    oi_market_cap_percentile_short: 0.50
+    ema20_deviation_percentile_short: 0.50
+    # V2.5: 做空/做多统一使用 50 分位（中位数）
+    funding_rate_percentile_long: 0.50
+    oi_market_cap_percentile_long: 0.50
+    ema20_deviation_percentile_long: 0.50
     # EMM：取市场极端分位数（10%/90%）
     funding_rate_percentile_emm_long: 0.10   # 做多EMM：费率取BOTTOM 10%
     funding_rate_percentile_emm_short: 0.90  # 做空EMM：费率取TOP 10%
@@ -165,7 +173,7 @@ candidate_pool:
     oi_market_cap_min: 0.10       # OI/市值比 ≥ 0.10（固定回退值）
   # 做多候选条件（固定阈值，动态阈值启用时作为回退）
   long:
-    price_change_24h: -0.06       # 24h涨跌幅 ≤ -6%（固定，不参与动态计算）
+    price_change_24h: -0.08       # V2.5: 对称统一为 -8%（V2.4 为 -6%）
     funding_rate_annual: -0.20    # 资金费率年化 ≤ -20%（固定回退值）
     ema20_deviation: -0.06        # 价格偏离EMA20(4h) ≤ -6%（固定回退值）
     oi_market_cap_max: 0.05       # OI/市值比 ≤ 0.05（固定回退值）
@@ -190,7 +198,7 @@ candidate_pool:
       - BEAR
       - UP
       - DOWN
-    # 排除的完整交易对（MCTPS 策略交易币种）
+    # 排除的完整交易对（MCTPS 策略交易币种 + 杠杆ETF）
     symbols:
       - BTCUSDT
       - ETHUSDT
@@ -198,6 +206,8 @@ candidate_pool:
       - SOLUSDT
       - XRPUSDT
       - TRXUSDT
+      - SOXLUSDT
+      - HFTUSDT
 
   # 新币策略冲突屏蔽
   new_coin_conflict:
@@ -340,6 +350,20 @@ trading:
     qty_tolerance_ratio: 0.01    # 数量容差比例
     qty_tolerance_absolute: 0.0001  # 数量容差绝对值
 
+# ============================================================
+# V2.5.2 仓位管理与资金分配
+# ============================================================
+position_sizing:
+  # 单笔最大保证金（硬限制 + 比例限制）
+  # 最终单笔保证金 = min(风险预算, 硬上限, 账户比例上限)
+  single:
+    hard_cap_usdt: 50            # 硬上限（固定值，单位 USDT）
+    account_ratio_cap: 0.05      # 账户比例上限（5%）
+  # 总持仓保证金上限
+  # 总保证金 = 账户余额 × 比例上限
+  total:
+    account_ratio_cap: 0.30      # 账户比例上限（30%）
+
 # K线配置
 kline:
   interval: '1h'                 # 1小时K线
@@ -413,6 +437,70 @@ circuit_breaker:
 # 数据库配置
 database:
   schema: hrs                    # 独立schema
+
+# ============================================================
+# V2.4 低波动反转模块（LV-RM）配置
+# ============================================================
+lv_rm:
+  enabled: true                       # 是否启用 LV-RM 模块
+  # V2.5: 扫描范围为全市场流动性币种（独立于候选池）
+  scan:
+    scan_source: "all_liquid"         # V2.5: 扫描来源（all_liquid = 全市场流动性币种）
+    max_price_change_24h: 0.08        # V2.5: 放宽至 8%（V2.4 为 5%）
+    api_concurrency_limit: 10         # LV-RM 检查并发数限制
+  # 入场条件配置
+  entry:
+    # 布林带配置（1h K线）
+    bollinger_period: 20              # 布林带周期
+    bollinger_std: 2.0                # 布林带标准差倍数
+    # RSI 配置（1h K线）
+    rsi_period: 14                    # RSI 周期
+    rsi_overbought: 70                # 超买阈值
+    rsi_oversold: 30                  # 超卖阈值
+    # 资金费率阈值
+    funding_rate_short: 0.30          # 做空：费率 ≥ 30% 年化
+    funding_rate_long: -0.10          # 做多：费率 ≤ -10% 年化
+    # 4h EMA20 趋势过滤（一票否决）
+    trend_filter:
+      enabled: true                   # 是否启用趋势过滤
+      ema_period: 20                  # 4h EMA 周期
+      long:
+        min_price: 1.0                # 做多：价格 ≥ EMA20 × 1.0（必须 > EMA20）
+        max_deviation: 0.97           # 做多：价格 ≥ EMA20 × 0.97（偏离不超过 -3%）
+      short:
+        max_price: 1.0                # 做空：价格 ≤ EMA20 × 1.0（必须 < EMA20）
+        max_deviation: 1.03           # 做空：价格 ≤ EMA20 × 1.03（偏离不超过 +3%）
+  # 评分配置
+  scoring:
+    # 权重：contract=0.25, technical=0.45, sentiment=0.30
+    entry_threshold: 6.0              # LV总分 ≥ 6.0
+    technical:
+      min_total_score: 4.0            # LV技术分 ≥ 4.0
+      cap_score: 7.0                  # 技术总分封顶
+      # 布林带触轨评分
+      bollinger_breakout:
+        base_score: 2.0               # 触轨基础分
+        cap_score: 4.0                # 封顶分
+        multiplier: 2.0               # 突破幅度系数
+      # RSI 评分
+      rsi:
+        score: 3.0                    # RSI达标即满分
+  # 止损止盈配置（独立，均值回归风格）
+  stop_loss:
+    atr_multiplier: 1.5               # ATR 止损倍数
+    emergency_percent: 0.01           # 紧急止损 1%
+    min_absolute_percent: 0.03        # 最小绝对止损 3%
+  take_profit:
+    target1_atr_multiplier: 1.0       # 第一目标 1.0×ATR
+    target1_close_percent: 0.30       # 平30%
+    target2_atr_multiplier: 2.0       # 第二目标 2.0×ATR
+    target2_close_percent: 0.40       # 平40%
+    trailing_stop_atr_multiplier: 1.0 # 移动止盈回撤 1.0×ATR
+  time_stop:
+    max_holding_hours: 48             # 时间止损 48小时
+  # 单日开仓限制（独立）
+  daily_limit:
+    max_positions: 2                  # 每日最多2个币种
 
 # 日志配置
 logging:

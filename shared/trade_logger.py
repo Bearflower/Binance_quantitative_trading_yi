@@ -303,7 +303,6 @@ class TradeLogger:
                     "    AND executed_at BETWEEN $5 AND $6"
                     "    AND order_id IS NULL"
                     "    AND realized_pnl IS NULL"
-                    "    AND order_type NOT LIKE 'STOP%'"
                     "    ORDER BY executed_at DESC"
                     "    LIMIT 1"
                     ")",
@@ -355,6 +354,66 @@ class TradeLogger:
                 realized_pnl=str(realized_pnl),
                 error=str(e),
                 exc_info=True
+            )
+            return False
+
+    async def insert_pnl_summary(
+        self,
+        realized_pnl: Decimal,
+        symbol: str,
+        side: str,
+        strategy: Optional[str] = None,
+        executed_at: Optional[datetime] = None,
+    ) -> bool:
+        """
+        插入一条 PnL 汇总记录（用于全部平仓场景）
+
+        当条件单（TP1/TP2/止损）全部成交时，没有对应的 trade_records 可 UPDATE，
+        直接 INSERT 一条汇总记录，不会触发模式二的降级匹配。
+
+        Args:
+            realized_pnl: 已实现盈亏（USDT），盈利为正、亏损为负
+            symbol: 交易对（如 "BTCUSDT"）
+            side: 平仓方向（BUY/SELL）
+            strategy: 策略名称，默认使用初始化时设置的策略名称
+            executed_at: 平仓成交时间，默认当前时间
+
+        Returns:
+            True 表示插入成功，False 表示插入失败
+        """
+        try:
+            strategy_name = strategy or self.strategy_name
+            pnl_str = str(realized_pnl)
+            exec_time = executed_at or datetime.now(BEIJING_TZ).replace(tzinfo=None)
+
+            await self.db.execute(
+                "INSERT INTO trading.trade_records "
+                "(strategy, symbol, order_id, side, order_type, quantity, price, "
+                " commission, status, executed_at, realized_pnl) "
+                "VALUES ($1, $2, '', $3, 'PNL_SUMMARY', 0, 0, 0, 'FILLED', $4, $5)",
+                strategy_name,
+                symbol,
+                side,
+                exec_time,
+                pnl_str,
+            )
+
+            logger.info(
+                "PnL汇总记录插入成功",
+                strategy=strategy_name,
+                symbol=symbol,
+                side=side,
+                realized_pnl=pnl_str,
+            )
+            return True
+
+        except Exception as e:
+            logger.warning(
+                "PnL汇总记录插入失败",
+                strategy=strategy or self.strategy_name,
+                symbol=symbol,
+                realized_pnl=str(realized_pnl),
+                error=str(e),
             )
             return False
 

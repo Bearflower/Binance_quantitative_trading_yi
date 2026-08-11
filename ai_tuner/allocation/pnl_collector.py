@@ -31,9 +31,8 @@ class PnLCollector:
         SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
         FROM trading.trade_records
         WHERE strategy = $1
-          AND close_time >= $2
-          AND close_time < $3
-          AND status = 'CLOSED'
+          AND executed_at >= $2
+          AND executed_at < $3
     """
 
     # 查询上月分配记录的 SQL 模板

@@ -111,6 +111,7 @@ class MTPCSAdapter(BaseAdapter):
             WHERE strategy = $1
               AND executed_at >= $2
               AND executed_at < $3
+              AND realized_pnl IS NOT NULL
             ORDER BY executed_at ASC
         """
         return await self.db_manager.fetch_all(query, self.strategy_name, week_start, week_end)

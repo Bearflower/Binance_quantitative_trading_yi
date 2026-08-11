@@ -97,6 +97,27 @@ class TradingExecutor:
         self.stop_loss_offset = order_type_config.get("stop_loss_offset", 0.002)
         self.take_profit_offset = order_type_config.get("take_profit_offset", 0.0015)
 
+        # 移动止盈和时间止损配置（标准模式）
+        trailing_config = trading_config.get("trailing", {})
+        self.trailing_atr_multiplier = trailing_config.get("atr_multiplier", 1.5)
+        time_stop_config = trading_config.get("time_stop", {})
+        self.max_holding_hours = time_stop_config.get("max_holding_hours", 72)
+
+        # V2.4: LV-RM 独立止损止盈配置
+        lv_rm_config = config.get("lv_rm", {})
+        lv_sl_config = lv_rm_config.get("stop_loss", {})
+        lv_tp_config = lv_rm_config.get("take_profit", {})
+        lv_time_config = lv_rm_config.get("time_stop", {})
+        self.lv_rm_atr_multiplier = lv_sl_config.get("atr_multiplier", 1.5)
+        self.lv_rm_emergency_percent = lv_sl_config.get("emergency_percent", 0.01)
+        self.lv_rm_min_absolute_percent = lv_sl_config.get("min_absolute_percent", 0.03)
+        self.lv_rm_target1_atr_multiplier = lv_tp_config.get("target1_atr_multiplier", 1.0)
+        self.lv_rm_target1_close_percent = lv_tp_config.get("target1_close_percent", 0.30)
+        self.lv_rm_target2_atr_multiplier = lv_tp_config.get("target2_atr_multiplier", 2.0)
+        self.lv_rm_target2_close_percent = lv_tp_config.get("target2_close_percent", 0.40)
+        self.lv_rm_trailing_atr_multiplier = lv_tp_config.get("trailing_stop_atr_multiplier", 1.0)
+        self.lv_rm_max_holding_hours = lv_time_config.get("max_holding_hours", 48)
+
         logger.info(
             "交易执行器初始化完成",
             leverage=self.leverage,
@@ -144,6 +165,42 @@ class TradingExecutor:
             logger.error("ATR计算失败", symbol=symbol, error=str(e))
             return 0.0
 
+    def _get_lv_rm_params(self, entry_mode: str) -> Dict[str, Any]:
+        """
+        V2.4: 根据入场模式获取止损止盈参数
+
+        LV-RM 使用独立参数（均值回归风格），其他模式使用标准参数。
+
+        Args:
+            entry_mode: 入场模式 ("standard", "emm", "semi_emm", "lv_rm")
+
+        Returns:
+            包含止损止盈参数的字典
+        """
+        if entry_mode == "lv_rm":
+            return {
+                "atr_multiplier": self.lv_rm_atr_multiplier,
+                "emergency_percent": self.lv_rm_emergency_percent,
+                "min_absolute_percent": self.lv_rm_min_absolute_percent,
+                "target1_atr_multiplier": self.lv_rm_target1_atr_multiplier,
+                "target1_close_percent": self.lv_rm_target1_close_percent,
+                "target2_atr_multiplier": self.lv_rm_target2_atr_multiplier,
+                "target2_close_percent": self.lv_rm_target2_close_percent,
+                "trailing_atr_multiplier": self.lv_rm_trailing_atr_multiplier,
+                "max_holding_hours": self.lv_rm_max_holding_hours,
+            }
+        return {
+            "atr_multiplier": self.atr_multiplier,
+            "emergency_percent": self.emergency_percent,
+            "min_absolute_percent": self.min_absolute_percent,
+            "target1_atr_multiplier": self.target1_atr_multiplier,
+            "target1_close_percent": self.target1_close_percent,
+            "target2_atr_multiplier": self.target2_atr_multiplier,
+            "target2_close_percent": self.target2_close_percent,
+            "trailing_atr_multiplier": self.trailing_atr_multiplier,
+            "max_holding_hours": self.max_holding_hours,
+        }
+
     async def execute_short(
         self,
         symbol: str,
@@ -151,9 +208,12 @@ class TradingExecutor:
         atr: float,
         quantity: Decimal,
         score: float,
+        entry_mode: str = "standard",
     ) -> Optional[Dict[str, Any]]:
         """
         执行做空交易
+
+        V2.4: 新增 entry_mode 参数，LV-RM 模式使用独立止损止盈参数。
 
         Args:
             symbol: 交易对
@@ -161,12 +221,13 @@ class TradingExecutor:
             atr: ATR值
             quantity: 数量
             score: 评分
+            entry_mode: 入场模式 ("standard", "emm", "semi_emm", "lv_rm")
 
         Returns:
             订单信息
         """
         try:
-            logger.info("准备做空", symbol=symbol, price=entry_price, quantity=float(quantity))
+            logger.info("准备做空", symbol=symbol, price=entry_price, quantity=float(quantity), entry_mode=entry_mode)
             tick_size, step_size = await self._get_symbol_precision(symbol)
             quantity = self._format_quantity(quantity, step_size)
 
@@ -194,8 +255,16 @@ class TradingExecutor:
                 logger.warning("做空开仓超时，信号已放弃", symbol=symbol)
                 return None
 
+            # 根据入场模式获取止损止盈参数
+            params = self._get_lv_rm_params(entry_mode)
+
             # 计算止损价格（做空：取三者最大值）
-            stop_loss_price = self.calculate_short_stop_loss(entry_price, atr, tick_size)
+            stop_loss_price = self.calculate_short_stop_loss(
+                entry_price, atr, tick_size,
+                atr_multiplier=params["atr_multiplier"],
+                emergency_percent=params["emergency_percent"],
+                min_absolute_percent=params["min_absolute_percent"],
+            )
 
             # 设置止损限价单（做空止损=买入平仓，限价=触发价×(1+偏移)）
             stop_loss_limit_price = Decimal(str(stop_loss_price * (1 + self.stop_loss_offset)))
@@ -213,10 +282,10 @@ class TradingExecutor:
 
             # 设置分批止盈
             target1_price = self._format_price(
-                Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(self.target1_atr_multiplier))),
+                Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(params["target1_atr_multiplier"]))),
                 tick_size,
             )
-            target1_qty = self._format_quantity(quantity * Decimal(str(self.target1_close_percent)), step_size)
+            target1_qty = self._format_quantity(quantity * Decimal(str(params["target1_close_percent"])), step_size)
 
             if float(target1_qty) > 0:
                 # 止盈限价单（做空止盈=买入平仓，限价=触发价×(1+偏移)）
@@ -233,10 +302,10 @@ class TradingExecutor:
                     self.position_manager.add_algo_id(symbol, "tp1", tp1_order["algoId"])
 
             target2_price = self._format_price(
-                Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(self.target2_atr_multiplier))),
+                Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(params["target2_atr_multiplier"]))),
                 tick_size,
             )
-            target2_qty = self._format_quantity(quantity * Decimal(str(self.target2_close_percent)), step_size)
+            target2_qty = self._format_quantity(quantity * Decimal(str(params["target2_close_percent"])), step_size)
 
             if float(target2_qty) > 0:
                 # 止盈限价单（做空止盈=买入平仓，限价=触发价×(1+偏移)）
@@ -278,9 +347,12 @@ class TradingExecutor:
         atr: float,
         quantity: Decimal,
         score: float,
+        entry_mode: str = "standard",
     ) -> Optional[Dict[str, Any]]:
         """
         执行做多交易
+
+        V2.4: 新增 entry_mode 参数，LV-RM 模式使用独立止损止盈参数。
 
         Args:
             symbol: 交易对
@@ -288,12 +360,13 @@ class TradingExecutor:
             atr: ATR值
             quantity: 数量
             score: 评分
+            entry_mode: 入场模式 ("standard", "emm", "semi_emm", "lv_rm")
 
         Returns:
             订单信息
         """
         try:
-            logger.info("准备做多", symbol=symbol, price=entry_price, quantity=float(quantity))
+            logger.info("准备做多", symbol=symbol, price=entry_price, quantity=float(quantity), entry_mode=entry_mode)
             tick_size, step_size = await self._get_symbol_precision(symbol)
             quantity = self._format_quantity(quantity, step_size)
 
@@ -321,8 +394,16 @@ class TradingExecutor:
                 logger.warning("做多开仓超时，信号已放弃", symbol=symbol)
                 return None
 
+            # 根据入场模式获取止损止盈参数
+            params = self._get_lv_rm_params(entry_mode)
+
             # 计算止损价格（做多：取三者最小值）
-            stop_loss_price = self.calculate_long_stop_loss(entry_price, atr, tick_size)
+            stop_loss_price = self.calculate_long_stop_loss(
+                entry_price, atr, tick_size,
+                atr_multiplier=params["atr_multiplier"],
+                emergency_percent=params["emergency_percent"],
+                min_absolute_percent=params["min_absolute_percent"],
+            )
 
             # 设置止损限价单（做多止损=卖出平仓，限价=触发价×(1-偏移)）
             stop_loss_limit_price = Decimal(str(stop_loss_price * (1 - self.stop_loss_offset)))
@@ -340,10 +421,10 @@ class TradingExecutor:
 
             # 设置分批止盈
             target1_price = self._format_price(
-                Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(self.target1_atr_multiplier))),
+                Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(params["target1_atr_multiplier"]))),
                 tick_size,
             )
-            target1_qty = self._format_quantity(quantity * Decimal(str(self.target1_close_percent)), step_size)
+            target1_qty = self._format_quantity(quantity * Decimal(str(params["target1_close_percent"])), step_size)
 
             if float(target1_qty) > 0:
                 # 止盈限价单（做多止盈=卖出平仓，限价=触发价×(1-偏移)）
@@ -360,10 +441,10 @@ class TradingExecutor:
                     self.position_manager.add_algo_id(symbol, "tp1", tp1_order["algoId"])
 
             target2_price = self._format_price(
-                Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(self.target2_atr_multiplier))),
+                Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(params["target2_atr_multiplier"]))),
                 tick_size,
             )
-            target2_qty = self._format_quantity(quantity * Decimal(str(self.target2_close_percent)), step_size)
+            target2_qty = self._format_quantity(quantity * Decimal(str(params["target2_close_percent"])), step_size)
 
             if float(target2_qty) > 0:
                 # 止盈限价单（做多止盈=卖出平仓，限价=触发价×(1-偏移)）
@@ -398,7 +479,15 @@ class TradingExecutor:
             logger.error("做多执行失败", symbol=symbol, error=str(e))
             return None
 
-    def calculate_short_stop_loss(self, entry_price: float, atr: float, tick_size: Decimal) -> float:
+    def calculate_short_stop_loss(
+        self,
+        entry_price: float,
+        atr: float,
+        tick_size: Decimal,
+        atr_multiplier: Optional[float] = None,
+        emergency_percent: Optional[float] = None,
+        min_absolute_percent: Optional[float] = None,
+    ) -> float:
         """
         计算做空止损价
 
@@ -407,17 +496,26 @@ class TradingExecutor:
         2. 紧急止损：开仓价 × (1 + emergency_percent)
         3. 最小绝对止损：开仓价 × (1 + min_absolute_percent)
 
+        V2.4: 支持参数覆盖，用于 LV-RM 独立止损配置。
+
         Args:
             entry_price: 开仓价
             atr: ATR值
             tick_size: 价格精度
+            atr_multiplier: ATR止损倍数，None则使用 self.atr_multiplier
+            emergency_percent: 紧急止损比例，None则使用 self.emergency_percent
+            min_absolute_percent: 最小绝对止损比例，None则使用 self.min_absolute_percent
 
         Returns:
             止损价
         """
-        atr_stop = entry_price + self.atr_multiplier * atr
-        emergency_stop = entry_price * (1 + self.emergency_percent)
-        min_absolute_stop = entry_price * (1 + self.min_absolute_percent)
+        atr_mul = atr_multiplier if atr_multiplier is not None else self.atr_multiplier
+        emerg_pct = emergency_percent if emergency_percent is not None else self.emergency_percent
+        min_abs_pct = min_absolute_percent if min_absolute_percent is not None else self.min_absolute_percent
+
+        atr_stop = entry_price + atr_mul * atr
+        emergency_stop = entry_price * (1 + emerg_pct)
+        min_absolute_stop = entry_price * (1 + min_abs_pct)
 
         stop_loss = max(atr_stop, emergency_stop, min_absolute_stop)
 
@@ -432,7 +530,15 @@ class TradingExecutor:
 
         return float(self._format_price(Decimal(str(stop_loss)), tick_size))
 
-    def calculate_long_stop_loss(self, entry_price: float, atr: float, tick_size: Decimal) -> float:
+    def calculate_long_stop_loss(
+        self,
+        entry_price: float,
+        atr: float,
+        tick_size: Decimal,
+        atr_multiplier: Optional[float] = None,
+        emergency_percent: Optional[float] = None,
+        min_absolute_percent: Optional[float] = None,
+    ) -> float:
         """
         计算做多止损价
 
@@ -441,17 +547,26 @@ class TradingExecutor:
         2. 紧急止损：开仓价 × (1 - emergency_percent)
         3. 最小绝对止损：开仓价 × (1 - min_absolute_percent)
 
+        V2.4: 支持参数覆盖，用于 LV-RM 独立止损配置。
+
         Args:
             entry_price: 开仓价
             atr: ATR值
             tick_size: 价格精度
+            atr_multiplier: ATR止损倍数，None则使用 self.atr_multiplier
+            emergency_percent: 紧急止损比例，None则使用 self.emergency_percent
+            min_absolute_percent: 最小绝对止损比例，None则使用 self.min_absolute_percent
 
         Returns:
             止损价
         """
-        atr_stop = entry_price - self.atr_multiplier * atr
-        emergency_stop = entry_price * (1 - self.emergency_percent)
-        min_absolute_stop = entry_price * (1 - self.min_absolute_percent)
+        atr_mul = atr_multiplier if atr_multiplier is not None else self.atr_multiplier
+        emerg_pct = emergency_percent if emergency_percent is not None else self.emergency_percent
+        min_abs_pct = min_absolute_percent if min_absolute_percent is not None else self.min_absolute_percent
+
+        atr_stop = entry_price - atr_mul * atr
+        emergency_stop = entry_price * (1 - emerg_pct)
+        min_absolute_stop = entry_price * (1 - min_abs_pct)
 
         stop_loss = min(atr_stop, emergency_stop, min_absolute_stop)
 
@@ -472,7 +587,7 @@ class TradingExecutor:
         direction: str,
         close_percent: float = 1.0,
         reason: str = "",
-    ) -> bool:
+    ) -> Optional[Dict[str, Any]]:
         """
         平仓
 
@@ -483,7 +598,7 @@ class TradingExecutor:
             reason: 平仓原因
 
         Returns:
-            是否成功
+            成功返回订单结果字典（含 orderId），失败返回 None
         """
         try:
             positions = await self.binance_api.get_position(symbol)
@@ -499,7 +614,7 @@ class TradingExecutor:
 
             if not position:
                 logger.warning("未找到持仓", symbol=symbol, direction=direction)
-                return False
+                return None
 
             position_amt = abs(float(position.get("positionAmt", 0)))
             close_quantity = position_amt * close_percent
@@ -531,13 +646,13 @@ class TradingExecutor:
 
             if order:
                 logger.info("平仓成功", symbol=symbol, direction=direction, reason=reason, quantity=float(close_quantity_decimal))
-                return True
+                return order
 
-            return False
+            return None
 
         except Exception as e:
             logger.error("平仓失败", symbol=symbol, error=str(e))
-            return False
+            return None
 
     async def replenish_position_orders(
         self,

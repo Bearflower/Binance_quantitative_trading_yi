@@ -3,7 +3,8 @@ BTC/ETH策略逻辑
 基于评分引擎的趋势跟踪策略
 """
 import asyncio
-from typing import Dict, Optional, Tuple
+import os
+from typing import Dict, Optional, Tuple, Any
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -17,6 +18,7 @@ from shared.indicators import TechnicalIndicators
 from shared.dynamic_atr_filter import DynamicATRFilter
 from shared.condition_orders import record_condition_order, get_open_orders
 from shared.trade_logger import TradeLogger
+from shared.capital_manager import CapitalManager
 from strategies.btc_eth.market_state import (
     get_market_state,
     get_market_state_behavior,
@@ -547,6 +549,10 @@ class BTCEthStrategy:
         
         # 条件单取消操作锁（v6.23.1：防止异步路径和主循环路径并发修改）
         self._cancel_lock = asyncio.Lock()
+
+        # 资金分配管理器（读取 capital_limits.monthly_limit 限制仓位）
+        config_dir = os.path.dirname(os.path.abspath(__file__))
+        self.capital_mgr = CapitalManager(os.path.join(config_dir, "config.yaml"))
         
         # 最小持仓量阈值（v6.23.1：从配置读取，禁止硬编码）
         self.min_position_amt = float(
@@ -683,10 +689,8 @@ class BTCEthStrategy:
             market_state_name = market_state.value if market_state else 'RANGING'
             symbol_cfg = self.symbol_config.get(symbol, {})
             market_max_trades = market_behavior.get('max_daily_trades', 999)
-            # v6.21：per-symbol 震荡市每日交易数限制
-            if market_state_name == 'RANGING' and 'ranging_max_daily_trades' in symbol_cfg:
-                market_max_trades = min(market_max_trades, symbol_cfg['ranging_max_daily_trades'])
             today_str = current_time.date().isoformat()
+            # 全局每日交易数检查（使用全局计数器）
             if today_str not in self.frequency_controller.daily_trades:
                 self.frequency_controller.daily_trades[today_str] = 0
             if self.frequency_controller.daily_trades[today_str] >= market_max_trades:
@@ -695,6 +699,18 @@ class BTCEthStrategy:
                 )
                 analysis_result['reason'] = f"频率限制: {market_state_name}已达每日最大交易数{market_max_trades}笔"
                 return analysis_result
+            # v6.21：per-symbol 震荡市每日交易数限制（使用 per-symbol 计数器，不阻塞其他币种）
+            if market_state_name == 'RANGING' and 'ranging_max_daily_trades' in symbol_cfg:
+                symbol_max_trades = symbol_cfg['ranging_max_daily_trades']
+                symbol_daily = self.frequency_controller.symbol_daily_trades.setdefault(symbol, {})
+                if today_str not in symbol_daily:
+                    symbol_daily[today_str] = 0
+                if symbol_daily[today_str] >= symbol_max_trades:
+                    logger.info(
+                        f"{symbol} 震荡市已达每日最大交易数{symbol_max_trades}笔"
+                    )
+                    analysis_result['reason'] = f"频率限制: {symbol}震荡市已达每日最大交易数{symbol_max_trades}笔"
+                    return analysis_result
             
             # 3.7 v6.22.1：市场状态特定冷却期检查（从 can_trade() 移至此处）
             # 趋势市冷却期: 72h，震荡市冷却期: 3h
@@ -2034,11 +2050,26 @@ class BTCEthStrategy:
             # 1. 设置杠杆倍数
             logger.info(f"{symbol} 设置杠杆倍数: {signal['leverage']}")
             await self.binance.set_leverage(symbol, signal['leverage'])
-            
-            # 2. 确定开仓方向
+
+            # 2. 开仓前检查：总仓位不超过分配上限
+            current_positions_value = 0.0
+            for _, pos in self.positions.items():
+                current_positions_value += float(pos.current_quantity) * float(pos.entry_price)
+            new_position_value = float(signal['quantity']) * float(signal['entry_price'])
+            if not self.capital_mgr.can_open_position(current_positions_value, new_position_value):
+                logger.warning(
+                    "总仓位超限，跳过开仓",
+                    symbol=symbol,
+                    current=current_positions_value,
+                    new=new_position_value,
+                    limit=self.capital_mgr.get_allocated_capital(),
+                )
+                return False
+
+            # 3. 确定开仓方向
             entry_side = "BUY" if signal['direction'] == "LONG" else "SELL"
             
-            # 3. 下限价单开仓
+            # 4. 下限价单开仓
             logger.info(
                 f"{symbol} 下限价单开仓",
                 side=entry_side,
@@ -2060,8 +2091,22 @@ class BTCEthStrategy:
                 order_id=entry_order_id,
                 status=entry_order.get('status')
             )
-            
-            # 4. 下止损单（使用止损限价单 STOP）
+
+            # 4.5 等待限价单成交（超时时间从配置读取）
+            entry_timeout = self.risk_config.get('position_sizing', {}).get('entry_order_timeout_seconds', 60)
+            entry_order = await self._wait_for_order_fill(
+                symbol, entry_order_id, entry_timeout
+            )
+            if not entry_order:
+                # 超时未成交，取消限价单，避免后续价格到达时突然成交
+                logger.warning(f"{symbol} 限价单超时未成交，取消订单")
+                try:
+                    await self.binance.cancel_order(symbol, entry_order_id)
+                except Exception as cancel_e:
+                    logger.warning(f"{symbol} 取消限价单失败", error=str(cancel_e))
+                return False
+
+            # 5. 下止损单（使用止损限价单 STOP）
             stop_side = "SELL" if signal['direction'] == "LONG" else "BUY"
             
             # 计算止损限价：触发价向不利方向偏移，确保成交
@@ -3734,6 +3779,64 @@ class BTCEthStrategy:
             )
         except Exception as e:
             logger.warning(f"发送取消超时告警失败", error=str(e))
+
+    async def _wait_for_order_fill(
+        self,
+        symbol: str,
+        order_id: int,
+        timeout_seconds: int = 60,
+        check_interval: float = 2.0,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        等待限价单成交，超时返回 None
+
+        Args:
+            symbol: 交易对
+            order_id: 订单 ID
+            timeout_seconds: 超时秒数
+            check_interval: 检查间隔（秒）
+
+        Returns:
+            成交后的订单信息，超时返回 None
+        """
+        try:
+            deadline = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
+            while datetime.now(timezone.utc) < deadline:
+                order = await self.binance.get_order(symbol, order_id)
+                status = order.get("status", "")
+
+                if status == "FILLED":
+                    logger.info(
+                        f"{symbol} 限价单已成交",
+                        order_id=order_id,
+                        executed_qty=order.get("executedQty"),
+                        cummulative_quote=order.get("cummulativeQuoteQty"),
+                    )
+                    return order
+
+                if status in ("CANCELED", "EXPIRED", "REJECTED"):
+                    logger.warning(
+                        f"{symbol} 限价单已取消/过期/拒绝",
+                        order_id=order_id,
+                        status=status,
+                    )
+                    return None
+
+                await asyncio.sleep(check_interval)
+
+            logger.warning(
+                f"{symbol} 限价单超时未成交",
+                order_id=order_id,
+                timeout_seconds=timeout_seconds,
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                f"{symbol} 检查限价单成交状态异常",
+                order_id=order_id,
+                error=str(e),
+            )
+            return None
 
     async def cleanup_orphan_algo_orders(self):
         """

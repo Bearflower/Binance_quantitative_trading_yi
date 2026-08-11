@@ -210,7 +210,7 @@ echo ""
 echo "5️⃣  验证容器日志（检查启动错误）..."
 
 if [ "$DEPLOY_BTC_ETH" = true ]; then
-    BTC_ETH_ERROR_COUNT=\$(docker logs --tail 100 $BTC_ETH_CONTAINER_NAME 2>&1 | grep -i "error\|exception\|fatal" | wc -l)
+    BTC_ETH_ERROR_COUNT=\$(docker logs --tail 100 $BTC_ETH_CONTAINER_NAME 2>&1 | grep -E "(ERROR|Exception|FATAL|CRITICAL|Traceback)" | wc -l)
     if [ "\$BTC_ETH_ERROR_COUNT" -gt 0 ]; then
         echo "   ⚠️  BTC/ETH 策略发现 \$BTC_ETH_ERROR_COUNT 个错误日志"
     else
@@ -219,7 +219,7 @@ if [ "$DEPLOY_BTC_ETH" = true ]; then
 fi
 
 if [ "$DEPLOY_NEW_COIN" = true ]; then
-    NEW_COIN_ERROR_COUNT=\$(docker logs --tail 100 $NEW_COIN_CONTAINER_NAME 2>&1 | grep -i "error\|exception\|fatal" | wc -l)
+    NEW_COIN_ERROR_COUNT=\$(docker logs --tail 100 $NEW_COIN_CONTAINER_NAME 2>&1 | grep -E "(ERROR|Exception|FATAL|CRITICAL|Traceback)" | wc -l)
     if [ "\$NEW_COIN_ERROR_COUNT" -gt 0 ]; then
         echo "   ⚠️  新币做空策略发现 \$NEW_COIN_ERROR_COUNT 个错误日志"
     else
@@ -228,7 +228,7 @@ if [ "$DEPLOY_NEW_COIN" = true ]; then
 fi
 
 if [ "$DEPLOY_GRID" = true ]; then
-    GRID_ERROR_COUNT=\$(docker logs --tail 100 $GRID_CONTAINER_NAME 2>&1 | grep -i "error\|exception\|fatal" | wc -l)
+    GRID_ERROR_COUNT=\$(docker logs --tail 100 $GRID_CONTAINER_NAME 2>&1 | grep -E "(ERROR|Exception|FATAL|CRITICAL|Traceback)" | wc -l)
     if [ "\$GRID_ERROR_COUNT" -gt 0 ]; then
         echo "   ⚠️  网格交易策略发现 \$GRID_ERROR_COUNT 个错误日志"
     else
@@ -237,7 +237,7 @@ if [ "$DEPLOY_GRID" = true ]; then
 fi
 
 if [ "$DEPLOY_KLINE" = true ]; then
-    KLINE_ERROR_COUNT=\$(docker logs --tail 100 $KLINE_CONTAINER_NAME 2>&1 | grep -i "error\|exception\|fatal" | wc -l)
+    KLINE_ERROR_COUNT=\$(docker logs --tail 100 $KLINE_CONTAINER_NAME 2>&1 | grep -E "(ERROR|Exception|FATAL|CRITICAL|Traceback)" | wc -l)
     if [ "\$KLINE_ERROR_COUNT" -gt 0 ]; then
         echo "   ⚠️  K 线数据服务发现 \$KLINE_ERROR_COUNT 个错误日志"
     else

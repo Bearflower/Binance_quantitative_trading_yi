@@ -1,11 +1,11 @@
 """
 候选池模块
 管理 HRS 策略的币种候选池，负责每日动态筛选和 K 线预热
-V2.3：新增动态阈值计算，基于全市场分位数自适应筛选
+V2.5：OR-2 逻辑 + 空池退避 + LV-RM 独立扫描范围
 """
 import asyncio
 from typing import Dict, List, Set, Optional, Any, Tuple
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import structlog
 
 from .market_data import MarketDataProvider
@@ -67,6 +67,12 @@ class CandidatePool:
     """
     候选池管理器
 
+    V2.5 变更：
+    - OR-2 逻辑：满足 4 个条件中任意 2 个即可入池
+    - 新增空池退避机制
+    - 新增 get_lv_rm_scan_range() 独立扫描方法
+    - _validate_* 重构为 _count_*，返回条件计数（0-4）
+
     功能：
     - 每日 8:05 扫描币种，更新候选池
     - 做空/做多双向筛选
@@ -101,17 +107,19 @@ class CandidatePool:
         dynamic_config = pool_config.get("dynamic_thresholds", {})
         self.dynamic_enabled = dynamic_config.get("enabled", False)
         self.dynamic_min_sample_size = dynamic_config.get("min_sample_size", 10)
-        self.dynamic_rate_percentile_short = dynamic_config.get("funding_rate_percentile_short", 0.80)
-        self.dynamic_rate_percentile_long = dynamic_config.get("funding_rate_percentile_long", 0.20)
-        self.dynamic_oi_percentile_short = dynamic_config.get("oi_market_cap_percentile_short", 0.80)
-        self.dynamic_oi_percentile_long = dynamic_config.get("oi_market_cap_percentile_long", 0.20)
-        self.dynamic_ema_percentile_short = dynamic_config.get("ema20_deviation_percentile_short", 0.70)
-        self.dynamic_ema_percentile_long = dynamic_config.get("ema20_deviation_percentile_long", 0.30)
+        # V2.5: 统一使用 50 分位（中位数）作为回退默认值
+        self.dynamic_rate_percentile_short = dynamic_config.get("funding_rate_percentile_short", 0.50)
+        self.dynamic_rate_percentile_long = dynamic_config.get("funding_rate_percentile_long", 0.50)
+        self.dynamic_oi_percentile_short = dynamic_config.get("oi_market_cap_percentile_short", 0.50)
+        self.dynamic_oi_percentile_long = dynamic_config.get("oi_market_cap_percentile_long", 0.50)
+        self.dynamic_ema_percentile_short = dynamic_config.get("ema20_deviation_percentile_short", 0.50)
+        self.dynamic_ema_percentile_long = dynamic_config.get("ema20_deviation_percentile_long", 0.50)
         self.dynamic_rate_emm_long = dynamic_config.get("funding_rate_percentile_emm_long", 0.10)
         self.dynamic_rate_emm_short = dynamic_config.get("funding_rate_percentile_emm_short", 0.90)
         self.dynamic_oi_emm = dynamic_config.get("oi_market_cap_percentile_emm", 0.90)
 
         # 价格变化来源配置：'daily_kline' 使用日K线开盘价计算，'ticker' 使用24hr ticker的priceChangePercent
+        # V2.5: 保持向后兼容，scan_and_update 中不再使用此配置（_count_* 直接使用 ticker）
         self.price_change_source = pool_config.get("price_change_source", "daily_kline")
         self.api_concurrency_limit = pool_config.get("api_concurrency_limit", 20)
 
@@ -120,14 +128,14 @@ class CandidatePool:
 
         # 做空候选条件
         short_config = pool_config.get("short", {})
-        self.short_price_change = short_config.get("price_change_24h", 0.12)
+        self.short_price_change = short_config.get("price_change_24h", 0.08)
         self.short_funding_rate = short_config.get("funding_rate_annual", 0.80)
         self.short_ema20_deviation = short_config.get("ema20_deviation", 0.08)
         self.short_oi_market_cap_min = short_config.get("oi_market_cap_min", 0.10)
 
         # 做多候选条件
         long_config = pool_config.get("long", {})
-        self.long_price_change = long_config.get("price_change_24h", -0.10)
+        self.long_price_change = long_config.get("price_change_24h", -0.08)
         self.long_funding_rate = long_config.get("funding_rate_annual", -0.20)
         self.long_ema20_deviation = long_config.get("ema20_deviation", -0.06)
         self.long_oi_market_cap_max = long_config.get("oi_market_cap_max", 0.05)
@@ -157,10 +165,30 @@ class CandidatePool:
         self.min_klines = kline_config.get("min_klines_for_analysis", 24)
         self.keep_count = kline_config.get("keep_count", 168)
 
+        # V2.5: 空池退避配置
+        backoff_config = pool_config.get("empty_backoff", {})
+        self.backoff_max_consecutive_empty = backoff_config.get("max_consecutive_empty", 3)
+        self.backoff_base_delay_hours = backoff_config.get("base_delay_hours", 2)
+        self.backoff_max_delay_hours = backoff_config.get("max_delay_hours", 8)
+        self.backoff_recover_after_nonempty = backoff_config.get("recover_after_nonempty", 1)
+
+        # V2.5: OR-2 逻辑配置，从 "or_any_2" 解析出 2
+        logic_mode = pool_config.get("logic", "or_any_2")
+        if logic_mode.startswith("or_any_"):
+            self._min_conditions = int(logic_mode.split("_")[-1])
+        else:
+            self._min_conditions = 2  # 默认回退
+
         # 候选池状态
         self.short_candidates: Set[str] = set()
         self.long_candidates: Set[str] = set()
         self._active_symbols: Set[str] = set()
+
+        # V2.4: 落选币种缓存（通过流动性门槛但未满足候选池条件的币种，用于LV-RM扫描）
+        self._eliminated_symbols: List[str] = []
+
+        # V2.4: ticker 数据缓存（用于 LV-RM 低波动筛选）
+        self._ticker_data: Dict[str, Dict[str, Any]] = {}
 
         # 新币策略冲突黑名单
         self._new_coin_conflict_blacklist: Dict[str, datetime] = {}
@@ -173,6 +201,9 @@ class CandidatePool:
 
         # P0-5: 4h K线缓存引用（由 strategy 维护，避免重复合成）
         self._klines_4h_cache: Optional[Dict[str, List[Dict]]] = None
+
+        # V2.5: 连续空池计数器
+        self.consecutive_empty: int = 0
 
         logger.info(
             "候选池管理器初始化完成",
@@ -187,6 +218,11 @@ class CandidatePool:
                 "funding_rate": self.long_funding_rate,
                 "ema20_deviation": self.long_ema20_deviation,
                 "oi_market_cap_max": self.long_oi_market_cap_max,
+            },
+            empty_backoff={
+                "max_consecutive_empty": self.backoff_max_consecutive_empty,
+                "base_delay_hours": self.backoff_base_delay_hours,
+                "max_delay_hours": self.backoff_max_delay_hours,
             },
         )
 
@@ -489,13 +525,59 @@ class CandidatePool:
             return self._dynamic_thresholds
         return None
 
+    def _check_empty_backoff(self) -> bool:
+        """
+        V2.5: 检查是否需要跳过扫描（空池退避）
+
+        当连续空池次数达到阈值时，逐步指数延长扫描间隔。
+        候选池非空后自动恢复。
+
+        Returns:
+            True: 应跳过本次扫描；False: 正常扫描
+        """
+        if self.consecutive_empty < self.backoff_max_consecutive_empty:
+            return False
+
+        if self._last_scan_time is None:
+            return False
+
+        # 计算退避延迟：指数增长，上限 max_delay_hours
+        # 首次退避：excess_empty=1 → base_delay_hours * 2^0 = base_delay_hours
+        # 第二次退避：excess_empty=2 → base_delay_hours * 2^1 = 2*base_delay_hours
+        excess_empty = self.consecutive_empty - self.backoff_max_consecutive_empty + 1
+        delay_hours = min(
+            self.backoff_base_delay_hours * (2 ** (excess_empty - 1)),
+            self.backoff_max_delay_hours,
+        )
+
+        elapsed = (datetime.now(timezone.utc) - self._last_scan_time).total_seconds() / 3600
+        should_skip = elapsed < delay_hours
+
+        if should_skip:
+            logger.info(
+                "空池退避生效，跳过本次扫描",
+                consecutive_empty=self.consecutive_empty,
+                delay_hours=delay_hours,
+                elapsed_hours=round(elapsed, 2),
+            )
+
+        return should_skip
+
     async def scan_and_update(self) -> Dict[str, List[str]]:
         """
         每日扫描并更新候选池
 
+        V2.5: OR-2 逻辑，满足任意 2 个条件即可入池。
+        遍历所有流动性币种，对每个币种分别评估做空/做多 4 个维度。
+
         Returns:
             {"short": [symbols], "long": [symbols]}
         """
+        # V2.5: 空池退避检查
+        if self._check_empty_backoff():
+            logger.info("空池退避中，跳过候选池扫描")
+            return {"short": [], "long": []}
+
         logger.info("开始每日候选池扫描")
 
         try:
@@ -507,12 +589,10 @@ class CandidatePool:
                 logger.error("获取行情数据失败，候选池扫描中止")
                 return {"short": [], "long": []}
 
-            short_candidates = []
-            long_candidates = []
-            # 构建 symbol -> ticker 映射，避免循环后变量引用错误
+            # V2.5: OR-2 逻辑，不再按涨跌幅初筛
+            # 构建 symbol -> ticker 映射，同时收集所有流动性币种
             symbol_ticker_map: Dict[str, Dict[str, Any]] = {}
-            # 所有通过初筛的币种（用于后续获取日K线）
-            preliminary_symbols: List[str] = []
+            liquid_symbols: List[str] = []
 
             for ticker in tickers:
                 symbol = ticker.get("symbol", "")
@@ -526,44 +606,9 @@ class CandidatePool:
                     continue
 
                 symbol_ticker_map[symbol] = ticker
-                preliminary_symbols.append(symbol)
+                liquid_symbols.append(symbol)
 
-            # 初筛：根据价格变化来源计算涨跌幅
-            if self.price_change_source == "daily_kline" and preliminary_symbols:
-                # 使用日K线开盘价计算涨跌幅
-                daily_changes = await self._get_daily_klines(preliminary_symbols, symbol_ticker_map)
-                for symbol in preliminary_symbols:
-                    # 日K线获取失败时回退到 ticker
-                    if symbol in daily_changes:
-                        price_change = daily_changes[symbol]
-                    else:
-                        # 回退：使用 ticker 的 priceChangePercent
-                        ticker = symbol_ticker_map.get(symbol, {})
-                        price_change = float(ticker.get("priceChangePercent", 0)) / 100.0
-                        logger.debug("日K线获取失败，回退到ticker", symbol=symbol, price_change=price_change)
-
-                    # 做空候选检查
-                    if price_change >= self.short_price_change:
-                        short_candidates.append(symbol)
-
-                    # 做多候选检查
-                    if price_change <= self.long_price_change:
-                        long_candidates.append(symbol)
-            else:
-                # 使用24hr ticker 的 priceChangePercent（默认行为）
-                for symbol in preliminary_symbols:
-                    ticker = symbol_ticker_map.get(symbol, {})
-                    price_change = float(ticker.get("priceChangePercent", 0)) / 100.0
-
-                    # 做空候选检查
-                    if price_change >= self.short_price_change:
-                        short_candidates.append(symbol)
-
-                    # 做多候选检查
-                    if price_change <= self.long_price_change:
-                        long_candidates.append(symbol)
-
-            # V2.3 计算动态阈值（基于所有通过初筛的币种）
+            # V2.3 计算动态阈值（基于所有流动性币种）
             if self.dynamic_enabled:
                 self._dynamic_thresholds = await self._compute_dynamic_thresholds(symbol_ticker_map)
                 if self._dynamic_thresholds.is_valid():
@@ -574,88 +619,128 @@ class CandidatePool:
                 else:
                     logger.warning("动态阈值计算失败，回退到固定阈值")
 
-            # 对候选币种进行进一步过滤（OI、资金费率、EMA20偏离）
-            filtered_short = []
-            for symbol in short_candidates:
-                ticker = symbol_ticker_map.get(symbol, {})
-                if await self._validate_short_candidate(symbol, ticker):
-                    filtered_short.append(symbol)
+            # V2.5: OR-2 逻辑，遍历每个流动性币种评估 4 个维度
+            short_candidates = []
+            long_candidates = []
 
-            filtered_long = []
-            for symbol in long_candidates:
+            for symbol in liquid_symbols:
                 ticker = symbol_ticker_map.get(symbol, {})
-                if await self._validate_long_candidate(symbol, ticker):
-                    filtered_long.append(symbol)
+
+                # 计算做空条件数
+                short_count = await self._count_short_conditions(symbol, ticker)
+                if short_count >= self._min_conditions:
+                    short_candidates.append(symbol)
+
+                # 计算做多条件数
+                long_count = await self._count_long_conditions(symbol, ticker)
+                if long_count >= self._min_conditions:
+                    long_candidates.append(symbol)
+
+            # 保存 ticker 数据（用于 LV-RM 低波动筛选）
+            self._ticker_data = {}
+            for symbol in liquid_symbols:
+                ticker = symbol_ticker_map.get(symbol, {})
+                price_change_pct = float(ticker.get("priceChangePercent", 0))
+                self._ticker_data[symbol] = {
+                    "price_change_percent": price_change_pct,
+                    "last_price": float(ticker.get("lastPrice", 0)),
+                    "volume_24h": float(ticker.get("quoteVolume", 0)),
+                }
+
+            # V2.4: 记录落选币种（通过流动性但未通过候选条件的币种，用于LV-RM扫描）
+            final_candidates = set(short_candidates + long_candidates)
+            self._eliminated_symbols = [
+                s for s in liquid_symbols
+                if s not in final_candidates
+            ]
 
             # 更新候选池
-            self.short_candidates = set(filtered_short)
-            self.long_candidates = set(filtered_long)
+            self.short_candidates = set(short_candidates)
+            self.long_candidates = set(long_candidates)
             self._active_symbols = self.short_candidates | self.long_candidates
             self._last_scan_time = datetime.now(timezone.utc)
 
-            logger.info(
-                "候选池扫描完成",
-                short_candidates=len(filtered_short),
-                long_candidates=len(filtered_long),
-                total=len(self._active_symbols),
-            )
+            # V2.5: 空池计数
+            if not self._active_symbols:
+                self.consecutive_empty += 1
+                logger.info(
+                    "候选池扫描完成，池为空",
+                    consecutive_empty=self.consecutive_empty,
+                )
+            else:
+                # 候选池非空，重置连续空池计数
+                self.consecutive_empty = 0
+                logger.info(
+                    "候选池扫描完成",
+                    short_candidates=len(short_candidates),
+                    long_candidates=len(long_candidates),
+                    total=len(self._active_symbols),
+                )
 
-            return {"short": filtered_short, "long": filtered_long}
+            return {"short": short_candidates, "long": long_candidates}
 
         except Exception as e:
             logger.error("候选池扫描失败", error=str(e))
             return {"short": [], "long": []}
 
-    async def _validate_short_candidate(self, symbol: str, ticker: Dict[str, Any]) -> bool:
+    async def _count_short_conditions(self, symbol: str, ticker: Dict[str, Any]) -> int:
         """
-        验证做空候选币种
+        V2.5: 计算做空条件达标数（0-4）
 
-        V2.3：动态阈值启用时，根据相对阈值判断；否则使用固定阈值。
+        评估 4 个维度：涨跌幅、资金费率、OI/市值比、EMA20 偏离。
+        返回满足条件的数量，>= 2 表示可入池。
 
         Args:
             symbol: 交易对
             ticker: 24h行情数据
 
         Returns:
-            是否合格
+            条件达标数（0-4）
         """
         try:
             use_dynamic = self.dynamic_enabled and self._dynamic_thresholds.is_valid()
             dt = self._dynamic_thresholds if use_dynamic else None
+            conditions_met = 0
 
-            # 检查 OI
+            # 硬性前置检查：OI 必须 >= 最小要求
             oi_usd = await self.market_data.get_oi_usd(symbol)
             if oi_usd < self.min_oi_usd:
-                return False
+                return 0
 
-            # 检查资金费率
+            # 条件1: 涨跌幅（使用 ticker 的 priceChangePercent，已是百分比数值如 3.5 表示 3.5%）
+            price_change = float(ticker.get("priceChangePercent", 0))
+            if price_change >= self.short_price_change * 100:
+                conditions_met += 1
+
+            # 条件2: 资金费率
             funding_rate = await self.market_data.get_funding_rate(symbol)
             annual_rate = funding_rate * self.settlements_per_day * self.days_per_year * 100
 
             if use_dynamic:
-                # V2.3：动态阈值，费率需 ≥ 市场80分位数 且 > 0
-                if annual_rate < dt.funding_rate_short or annual_rate <= 0:
-                    return False
+                # V2.5: 动态阈值（50分位），费率 >= 中位数 且 > 0
+                if annual_rate >= dt.funding_rate_short and annual_rate > 0:
+                    conditions_met += 1
             else:
-                if annual_rate < self.short_funding_rate * 100:
-                    return False
+                if annual_rate >= self.short_funding_rate * 100:
+                    conditions_met += 1
 
-            # 检查市值
+            # 条件3: OI/市值比
             volume_24h = float(ticker.get("quoteVolume", 0))
             market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
-            # P1-9: 市值获取失败时，做空方向跳过 OI/市值比检查（与 scoring_engine 保持一致的兜底行为）
             if market_cap > 0:
                 oi_market_cap_ratio = oi_usd / market_cap
                 if use_dynamic:
-                    if oi_market_cap_ratio < dt.oi_market_cap_short:
-                        return False
+                    # V2.5: 动态阈值（50分位）
+                    if oi_market_cap_ratio >= dt.oi_market_cap_short:
+                        conditions_met += 1
                 else:
-                    if oi_market_cap_ratio < self.short_oi_market_cap_min:
-                        return False
+                    if oi_market_cap_ratio >= self.short_oi_market_cap_min:
+                        conditions_met += 1
             else:
-                logger.debug("市值获取失败，做空候选跳过OI/市值比检查", symbol=symbol)
+                # P1-9: 市值获取失败时，跳过此条件（不计入达标也不计入未达标）
+                logger.debug("市值获取失败，做空跳过OI/市值比条件", symbol=symbol)
 
-            # 检查EMA20偏离（做空：价格需向上偏离EMA20(4h)）
+            # 条件4: EMA20 偏离（做空：价格需向上偏离 EMA20(4h)）
             try:
                 # P0-5: 优先使用 strategy 维护的统一4h缓存，避免重复合成
                 if self._klines_4h_cache and symbol in self._klines_4h_cache:
@@ -672,69 +757,78 @@ class CandidatePool:
                     current_price = float(ticker.get("lastPrice", 0))
                     deviation = (current_price - ema20_4h) / ema20_4h
                     if use_dynamic:
-                        if deviation < dt.ema20_short:
-                            return False
+                        # V2.5: 动态阈值（50分位）
+                        if deviation >= dt.ema20_short:
+                            conditions_met += 1
                     else:
-                        if deviation < self.short_ema20_deviation:
-                            return False
+                        if deviation >= self.short_ema20_deviation:
+                            conditions_met += 1
             except Exception:
-                pass  # 获取失败时不做EMA20过滤
+                pass  # 获取失败时跳过 EMA20 条件
 
-            return True
+            return conditions_met
         except Exception as e:
-            logger.warning("验证做空候选失败", symbol=symbol, error=str(e))
-            return False
+            logger.warning("计算做空条件数失败", symbol=symbol, error=str(e))
+            return 0
 
-    async def _validate_long_candidate(self, symbol: str, ticker: Dict[str, Any]) -> bool:
+    async def _count_long_conditions(self, symbol: str, ticker: Dict[str, Any]) -> int:
         """
-        验证做多候选币种
+        V2.5: 计算做多条件达标数（0-4）
 
-        V2.3：动态阈值启用时，根据相对阈值判断；否则使用固定阈值。
+        与 _count_short_conditions 对称，做多方向。
+        评估 4 个维度：涨跌幅、资金费率、OI/市值比、EMA20 偏离。
 
         Args:
             symbol: 交易对
             ticker: 24h行情数据
 
         Returns:
-            是否合格
+            条件达标数（0-4）
         """
         try:
             use_dynamic = self.dynamic_enabled and self._dynamic_thresholds.is_valid()
             dt = self._dynamic_thresholds if use_dynamic else None
+            conditions_met = 0
 
-            # 检查 OI
+            # 硬性前置检查：OI 必须 >= 最小要求
             oi_usd = await self.market_data.get_oi_usd(symbol)
             if oi_usd < self.min_oi_usd:
-                return False
+                return 0
 
-            # 检查资金费率
+            # 条件1: 涨跌幅（使用 ticker 的 priceChangePercent，已是百分比数值如 3.5 表示 3.5%）
+            price_change = float(ticker.get("priceChangePercent", 0))
+            if price_change <= self.long_price_change * 100:
+                conditions_met += 1
+
+            # 条件2: 资金费率
             funding_rate = await self.market_data.get_funding_rate(symbol)
             annual_rate = funding_rate * self.settlements_per_day * self.days_per_year * 100
 
             if use_dynamic:
-                # V2.3：动态阈值，费率需 ≤ 市场20分位数 且 < 0
-                if annual_rate > dt.funding_rate_long or annual_rate >= 0:
-                    return False
+                # V2.5: 动态阈值（50分位），费率 <= 中位数 且 < 0
+                if annual_rate <= dt.funding_rate_long and annual_rate < 0:
+                    conditions_met += 1
             else:
-                if annual_rate > self.long_funding_rate * 100:
-                    return False
+                if annual_rate <= self.long_funding_rate * 100:
+                    conditions_met += 1
 
-            # 检查 OI/市值比
+            # 条件3: OI/市值比
             volume_24h = float(ticker.get("quoteVolume", 0))
             market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
-            # P1-9: 市值获取失败时，做多方向跳过 OI/市值比检查（与 scoring_engine 保持一致的兜底行为）
             if market_cap > 0:
                 oi_market_cap_ratio = oi_usd / market_cap
                 if use_dynamic:
-                    if oi_market_cap_ratio > dt.oi_market_cap_long:
-                        return False
+                    # V2.5: 动态阈值（50分位）
+                    if oi_market_cap_ratio <= dt.oi_market_cap_long:
+                        conditions_met += 1
                 else:
-                    if oi_market_cap_ratio > self.long_oi_market_cap_max:
-                        return False
+                    if oi_market_cap_ratio <= self.long_oi_market_cap_max:
+                        conditions_met += 1
             else:
-                logger.debug("市值获取失败，做多候选跳过OI/市值比检查", symbol=symbol)
+                # P1-9: 市值获取失败时，跳过此条件
+                logger.debug("市值获取失败，做多跳过OI/市值比条件", symbol=symbol)
 
-            # 检查EMA20偏离（做多：价格需向下偏离EMA20(4h)）
+            # 条件4: EMA20 偏离（做多：价格需向下偏离 EMA20(4h)）
             try:
                 # P0-5: 优先使用 strategy 维护的统一4h缓存，避免重复合成
                 if self._klines_4h_cache and symbol in self._klines_4h_cache:
@@ -751,18 +845,19 @@ class CandidatePool:
                     current_price = float(ticker.get("lastPrice", 0))
                     deviation = (current_price - ema20_4h) / ema20_4h
                     if use_dynamic:
-                        if deviation > dt.ema20_long:
-                            return False
+                        # V2.5: 动态阈值（50分位）
+                        if deviation <= dt.ema20_long:
+                            conditions_met += 1
                     else:
-                        if deviation > self.long_ema20_deviation:
-                            return False
+                        if deviation <= self.long_ema20_deviation:
+                            conditions_met += 1
             except Exception:
-                pass  # 获取失败时不做EMA20过滤
+                pass  # 获取失败时跳过 EMA20 条件
 
-            return True
+            return conditions_met
         except Exception as e:
-            logger.warning("验证做多候选失败", symbol=symbol, error=str(e))
-            return False
+            logger.warning("计算做多条件数失败", symbol=symbol, error=str(e))
+            return 0
 
     def get_active_symbols(self) -> Set[str]:
         """获取所有活跃候选币种"""
@@ -775,6 +870,75 @@ class CandidatePool:
     def get_long_candidates(self) -> Set[str]:
         """获取做多候选币种"""
         return self.long_candidates.copy()
+
+    # ==================== V2.4: LV-RM 落选币种跟踪 ====================
+
+    def get_eliminated_symbols(self) -> List[str]:
+        """
+        V2.4: 获取落选币种列表
+
+        返回通过流动性门槛但未进入候选池的所有币种。
+        """
+        return self._eliminated_symbols.copy()
+
+    async def get_lv_rm_scan_range(self) -> List[str]:
+        """
+        V2.5: 获取 LV-RM 独立扫描范围
+
+        从全市场流动性币种中筛选 |涨跌幅| < max_price_change_24h 的币种，
+        独立于候选池的入池逻辑，用于 LV-RM 模块独立扫描。
+
+        Returns:
+            低波动币种列表
+        """
+        lv_rm_config = self.config.get("lv_rm", {})
+        scan_config = lv_rm_config.get("scan", {})
+        max_price_change = scan_config.get("max_price_change_24h", 0.08)
+        # priceChangePercent 返回的是百分比数值（如 3.5 表示 3.5%），需乘以 100 比较
+        max_price_change_pct = max_price_change * 100
+
+        try:
+            tickers = await self.market_data.get_all_tickers()
+            if not tickers:
+                logger.error("获取行情数据失败，LV-RM 扫描范围获取中止")
+                return []
+
+            scan_range = []
+            for ticker in tickers:
+                symbol = ticker.get("symbol", "")
+                if not symbol.endswith("USDT"):
+                    continue
+                if self._should_exclude(symbol):
+                    continue
+                if not self._check_liquidity(ticker):
+                    continue
+
+                price_change = float(ticker.get("priceChangePercent", 0))
+                if abs(price_change) < max_price_change_pct:
+                    scan_range.append(symbol)
+
+            logger.info(
+                "LV-RM 扫描范围获取完成",
+                scan_range=len(scan_range),
+                max_price_change_pct=max_price_change_pct,
+            )
+            return scan_range
+
+        except Exception as e:
+            logger.error("LV-RM 扫描范围获取失败", error=str(e))
+            return []
+
+    async def get_low_volatility_candidates(self) -> List[str]:
+        """
+        V2.5: 获取低波动候选币种（向后兼容）
+
+        改为调用 get_lv_rm_scan_range() 获取全市场低波动币种列表，
+        保持返回类型 List[str] 不变。
+
+        Returns:
+            低波动币种列表
+        """
+        return await self.get_lv_rm_scan_range()
 
     def has_candidates(self) -> bool:
         """

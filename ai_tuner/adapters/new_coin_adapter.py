@@ -105,15 +105,57 @@ class NewCoinAdapter(BaseAdapter):
         Returns:
             交易记录列表
         """
+        # 查询 trade_records 中已回写 PnL 的成交记录（实际已平仓的交易）
         query = """
             SELECT *
             FROM trading.trade_records
             WHERE strategy = $1
               AND executed_at >= $2
               AND executed_at < $3
+              AND realized_pnl IS NOT NULL
             ORDER BY executed_at ASC
         """
-        return await self.db_manager.fetch_all(query, self.strategy_name, week_start, week_end)
+        trades = await self.db_manager.fetch_all(query, self.strategy_name, week_start, week_end)
+
+        # 补充查询 new_coin.orders 中已成交但 PnL 未回写的记录（本周新数据）
+        query2 = """
+            SELECT
+                order_id,
+                symbol,
+                side,
+                type AS order_type,
+                quantity,
+                price,
+                score,
+                created_at AS executed_at
+            FROM new_coin.orders
+            WHERE status = 'FILLED'
+              AND created_at >= $1
+              AND created_at < $2
+            ORDER BY created_at ASC
+        """
+        filled_orders = await self.db_manager.fetch_all(query2, week_start, week_end)
+
+        # 合并：trade_records 中已有的 PnL 记录优先，补充 orders 中的成交记录
+        existing_order_ids = {t.get("order_id") for t in trades if t.get("order_id")}
+        for order in filled_orders:
+            oid = str(order.get("order_id", ""))
+            if oid not in existing_order_ids:
+                trades.append({
+                    "strategy": self.strategy_name,
+                    "symbol": order.get("symbol"),
+                    "order_id": oid,
+                    "side": order.get("side"),
+                    "order_type": order.get("order_type", "LIMIT"),
+                    "quantity": order.get("quantity", 0),
+                    "price": order.get("price", 0),
+                    "commission": 0,
+                    "status": "FILLED",
+                    "executed_at": order.get("executed_at"),
+                    "realized_pnl": None,  # PnL 未回写，但计入交易笔数
+                })
+
+        return trades
 
     def _calc_performance(self, trades: List[Dict[str, Any]]) -> PerformanceMetrics:
         """

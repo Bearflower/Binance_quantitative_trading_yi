@@ -4,6 +4,7 @@
 """
 from typing import Dict, Any, Optional, List, Tuple
 import asyncio
+import os
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import structlog
@@ -79,6 +80,11 @@ class NewCoinStrategy(BaseStrategy):
         self.daily_trade_count = 0
         self.last_trade_date = None  # UTC日期
 
+        # 配置文件路径（用于资金分配限制）
+        self._config_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "config.yaml"
+        )
+
         # 最大回撤熔断
         self.cumulative_pnl = Decimal('0')
         self.peak_pnl = None  # 历史最高累计盈亏（基于cumulative_pnl序列）
@@ -147,7 +153,8 @@ class NewCoinStrategy(BaseStrategy):
             db=self.db,
             notification=self.notification_client,
             config=self.config,
-            kline_service=self.kline_service
+            kline_service=self.kline_service,
+            config_path=self._config_path,
         )
         logger.info("交易执行器初始化完成")
 
@@ -951,6 +958,22 @@ class NewCoinStrategy(BaseStrategy):
                         break
 
                 if not short_position:
+                    # 检查是否刚入场（60秒内），避免因币安API传播延迟误判为平仓
+                    entry_time_str = position.get('entry_time')
+                    if entry_time_str:
+                        try:
+                            entry_dt = datetime.fromisoformat(entry_time_str)
+                            now = datetime.now()
+                            if (now - entry_dt).total_seconds() < 60:
+                                logger.info(
+                                    f"刚入场不足60秒，跳过平仓检测（避免API传播延迟误判）: {symbol}",
+                                    entry_time=entry_time_str,
+                                    seconds_since_entry=(now - entry_dt).total_seconds()
+                                )
+                                continue
+                        except (ValueError, TypeError):
+                            pass
+
                     # 持仓已平仓
                     logger.info(f"持仓已平仓: {symbol}")
                     

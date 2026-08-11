@@ -49,6 +49,20 @@ class MonthlyAllocationJob:
         SELECT COUNT(*) as cnt FROM public.capital_allocation
     """
 
+    # 建表 DDL（幂等，确保表存在）
+    _CAPITAL_ALLOCATION_DDL = """
+        CREATE TABLE IF NOT EXISTS public.capital_allocation (
+            id              SERIAL PRIMARY KEY,
+            month           DATE NOT NULL UNIQUE,
+            total_capital   DECIMAL(20, 8) NOT NULL,
+            strategy_count  INTEGER NOT NULL,
+            is_first_month  BOOLEAN NOT NULL DEFAULT FALSE,
+            entries         JSONB NOT NULL,
+            status          VARCHAR(20) NOT NULL DEFAULT 'active',
+            created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """
+
     def __init__(
         self,
         config: Dict[str, Any],
@@ -105,17 +119,25 @@ class MonthlyAllocationJob:
                 participating.append(s)
         return participating
 
+    async def _ensure_table(self) -> None:
+        """确保 public.capital_allocation 表存在（幂等）"""
+        try:
+            await self.db_manager.execute(self._CAPITAL_ALLOCATION_DDL)
+        except Exception as e:
+            logger.warning("capital_allocation 建表异常（可能已存在）", error=str(e))
+
     async def run_monthly_allocation(self) -> Optional[Dict[str, Any]]:
         """
         执行月度资金分配主流程
 
         流程：
-        1. 幂等性检查
-        2. 计算时间范围
-        3. 盈亏采集
-        4. 分配计算
-        5. 写入存储
-        6. 飞书通知
+        1. 确保表存在
+        2. 幂等性检查
+        3. 计算时间范围
+        4. 盈亏采集
+        5. 分配计算
+        6. 写入存储
+        7. 飞书通知
 
         Returns:
             分配结果字典，如果跳过或失败返回 None
@@ -123,6 +145,9 @@ class MonthlyAllocationJob:
         logger.info("月度资金分配开始")
 
         try:
+            # 0. 确保表存在（幂等）
+            await self._ensure_table()
+
             # 检查是否启用
             if not self.allocation_cfg.get("enabled", False):
                 logger.info("月度资金分配未启用，跳过")

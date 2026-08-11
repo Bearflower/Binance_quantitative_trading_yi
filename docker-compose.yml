@@ -63,6 +63,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      kline-service:
+        condition: service_healthy
     logging:
       driver: "json-file"
       options:
@@ -97,6 +99,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      kline-service:
+        condition: service_healthy
     logging:
       driver: "json-file"
       options:
@@ -130,6 +134,8 @@ services:
       - trading-network
     depends_on:
       postgres:
+        condition: service_healthy
+      kline-service:
         condition: service_healthy
     logging:
       driver: "json-file"
@@ -367,6 +373,8 @@ services:
       - trading-network
     depends_on:
       postgres:
+        condition: service_healthy
+      kline-service:
         condition: service_healthy
     logging:
       driver: "json-file"

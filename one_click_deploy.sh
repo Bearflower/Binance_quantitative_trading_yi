@@ -52,9 +52,12 @@ echo "🛑 停止旧容器..."
 cd $SERVER_PROJECT_PATH
 
 # 停止所有策略容器
+# 注意：docker ps -f name= 是前缀匹配，如 trading_system-kline 会匹配到
+# trading_system-kline-monitor，在精确容器不存在时 docker stop 会失败
+# 因此使用 || true 防止 set -e 退出
 for container in $BTC_ETH_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINER_NAME $HRS_CONTAINER_NAME $AI_TUNER_CONTAINER_NAME $KLINE_CONTAINER_NAME $KLINE_MONITOR_CONTAINER_NAME; do
     if docker ps -q -f name=\$container | grep -q .; then
-        docker stop \$container
+        docker stop \$container || true
         echo "✅ 容器 \$container 已停止"
     else
         echo "⚠️  容器 \$container 未运行，跳过停止"
@@ -71,7 +74,7 @@ fi
 echo "🗑️  删除旧容器..."
 for container in $BTC_ETH_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINER_NAME $HRS_CONTAINER_NAME $AI_TUNER_CONTAINER_NAME $KLINE_CONTAINER_NAME $KLINE_MONITOR_CONTAINER_NAME; do
     if docker ps -aq -f name=\$container | grep -q .; then
-        docker rm \$container
+        docker rm \$container || true
         echo "✅ 容器 \$container 已删除"
     else
         echo "⚠️  容器 \$container 不存在，跳过删除"

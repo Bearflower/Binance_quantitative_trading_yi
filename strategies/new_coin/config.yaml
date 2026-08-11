@@ -84,6 +84,7 @@ trading:
   max_positions: 3      # 最大持仓数量
   daily_trade_limit: 2         # 单日最多开仓币种数
   single_position_margin: 50  # 单笔保证金（USDT）
+  entry_order_timeout_seconds: 60  # 限价单入场超时等待（秒）
   stop_loss_percent: 0.05      # 止损百分比（5%）
   take_profit_percent: 0.10    # 止盈百分比（10%）
   # 限价单滑点容忍（V4.1新增：市价→限价）
