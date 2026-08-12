@@ -328,6 +328,8 @@ scheduler:
 approval:
   timeout_hours: 48                        # 审批超时时间（小时）
   feishu_webhook_env: "FEISHU_WEBHOOK_TUNER"  # 飞书调优专用 Webhook 环境变量名
+  auto_apply:
+    enabled: true                          # 是否启用自动应用（LLM 建议直接写入覆盖层，无需人工审批）
 
 # ============================================================
 # 回滚配置

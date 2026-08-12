@@ -124,6 +124,44 @@ class Messenger:
             logger.error("发送已生效通知失败", error=str(e))
             return False
 
+    async def send_auto_applied_notification(
+        self,
+        strategy_name: str,
+        strategy_id: str,
+        diff_text: str,
+    ) -> bool:
+        """
+        发送自动应用通知
+
+        LLM 调优建议已由系统自动写入覆盖层，无需人工审批。
+        此通知告知用户变更已自动生效。
+
+        Args:
+            strategy_name: 策略显示名称
+            strategy_id: 策略唯一标识
+            diff_text: 变更清单文本
+
+        Returns:
+            是否发送成功
+        """
+        message = (
+            f"【调优已自动应用】\n"
+            f"策略：{strategy_name}\n"
+            f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+            f"{diff_text}\n\n"
+            f"以上参数变更已由 AI 自动生效。（如需回滚，请使用回滚接口）"
+        )
+
+        try:
+            return await self.notification_client.send(
+                message=message,
+                level="info",
+                project=self.tuner_project,
+            )
+        except Exception as e:
+            logger.error("发送自动应用通知失败", error=str(e))
+            return False
+
     async def send_rejected_notification(
         self,
         strategy_name: str,

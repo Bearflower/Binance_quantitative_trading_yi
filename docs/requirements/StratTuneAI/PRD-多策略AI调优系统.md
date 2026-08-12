@@ -40,7 +40,7 @@ StratTuneAI 是一个 AI 驱动的多策略参数自动调优系统，核心目�
 
 1. **自动化分析**：每周自动采集各策略的周度表现数据，生成标准化健康报告
 2. **AI 辅助决策**：利用 DeepSeek-v4-pro 大模型分析报告，结合历史调优记忆，生成参数调整建议
-3. **人工审批在环**：所有 AI 建议必须经人工确认后方可生效，杜绝 AI 幻觉导致的灾难性参数
+3. **人工审批在环**：AI 建议默认经人工确认后方可生效，同时支持自动审批模式（auto-apply），可在 `config.yaml` 的 `approval.auto_apply.enabled` 配置项中开启
 4. **知识沉淀**：每次调优过程结构化记录，形成可追溯的策略进化日志
 5. **安全兜底**：自动回滚机制保护策略在极端情况下的安全
 
@@ -59,7 +59,7 @@ StratTuneAI 是一个 AI 驱动的多策略参数自动调优系统，核心目�
 | 系统可用性 | >= 99.5% | 每周日定时任务执行成功率 |
 | AI 建议采纳率 | >= 60% | 审批通过次数 / 总建议次数 |
 | 调优后胜率变化 | 正收益概率 > 50% | 调优周 vs 前一周的胜率差值 |
-| 审批响应率 | >= 80% | 48h 内完成审批的比例 |
+| 审批响应率（仅人工审批模式） | >= 80% | 48h 内完成审批的比例 |
 | Token 成本 | 单次调优 < 5000 tokens | API 调用日志统计 |
 
 ### 1.5 第一期范围
@@ -564,7 +564,11 @@ AI 原始输出 → 提取 JSON → Pydantic 校验 → 参数白名单校验 �
 
 #### 3.6.1 功能描述
 
-通过飞书卡片消息推送 AI 调优建议，支持人工通过回复关键词进行审批。审批通过后触发配置生效流程，审批拒绝后仅记录不生效。
+通过飞书卡片消息推送 AI 调优建议，支持人工通过回复关键词进行审批，也支持自动生效模式。
+
+**人工审批模式**（默认）：审批通过后触发配置生效流程，审批拒绝后仅记录不生效。
+
+**自动审批模式（auto-apply）**：在 `config.yaml` 中将 `approval.auto_apply.enabled` 设置为 `true` 后，AI 调优建议在推送飞书通知的同时自动写入覆盖层并生效，无需人工介入。此模式为 opt-in 模式，默认关闭。
 
 #### 3.6.2 飞书卡片消息格式
 
@@ -641,12 +645,15 @@ AI 原始输出 → 提取 JSON → Pydantic 校验 → 参数白名单校验 �
 | APV-003 | 超时后发送提醒通知："调优建议已过期，下周将重新生成" |
 | APV-004 | 同一条建议不可重复确认（幂等性保障） |
 
-#### 3.6.5 通知渠道配置
+#### 3.6.5 通知与审批配置
 
-| 环境变量 | 说明 |
-|----------|------|
-| `FEISHU_WEBHOOK_TUNER` | StratTuneAI 调优专用 Webhook URL |
-| `FEISHU_TUNER_VERIFY_TOKEN` | 飞书事件订阅的 Verification Token（如启用） |
+| 配置项 | 类型 | 说明 |
+|--------|------|------|
+| `FEISHU_WEBHOOK_TUNER` | 环境变量 | StratTuneAI 调优专用 Webhook URL |
+| `FEISHU_TUNER_VERIFY_TOKEN` | 环境变量 | 飞书事件订阅的 Verification Token（如启用） |
+| `approval.timeout_hours` | config.yaml | 审批超时时间（小时），默认 48 |
+| `approval.feishu_webhook_env` | config.yaml | 飞书调优专用 Webhook 环境变量名 |
+| `approval.auto_apply.enabled` | config.yaml | 是否启用自动应用模式，默认 `false`（opt-in 模式，需显式设置为 `true` 才启用） |
 
 #### 3.6.6 业务规则
 
@@ -657,6 +664,7 @@ AI 原始输出 → 提取 JSON → Pydantic 校验 → 参数白名单校验 �
 | NTF-003 | 审批确认后，同步更新 memory 表的 is_applied、approved_by、approved_at 字段 |
 | NTF-004 | 审批拒绝后，记录 is_applied=false，不修改配置 |
 | NTF-005 | 配置生效后，发送"已生效"通知到对应策略的飞书群 |
+| NTF-006 | 自动应用模式（auto-apply）下，配置写入覆盖层成功后发送"调优已自动应用"通知；写入失败时发送错误通知，不阻塞后续策略调优 |
 
 #### 3.6.7 验收标准
 
@@ -666,6 +674,9 @@ AI 原始输出 → 提取 JSON → Pydantic 校验 → 参数白名单校验 �
 - [ ] 拒绝后仅记录不生效
 - [ ] 超时 48h 后自动过期
 - [ ] 重复确认被幂等拦截
+- [ ] auto-apply 启用时（`approval.auto_apply.enabled=true`），调优建议自动写入覆盖层并发送"调优已自动应用"通知
+- [ ] auto-apply 写入覆盖层失败时，发送错误通知但不中断整体流程
+- [ ] auto-apply 禁用时（`approval.auto_apply.enabled=false`），走标准人工审批流程
 
 ---
 

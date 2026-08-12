@@ -305,7 +305,7 @@ class WeeklyTuningJob:
             current_params=current_params,
         )
 
-        # 步骤11：推送飞书审批
+        # 步骤11：推送飞书通知（调优建议通知卡片，不再需要人工审批）
         await self.messenger.send_tuning_card(
             strategy_name=strategy_name,
             strategy_id=strategy_id,
@@ -314,6 +314,32 @@ class WeeklyTuningJob:
             expected_impact=parsed.get("expected_impact", ""),
             memory_id=memory_id,
         )
+
+        # 步骤12：自动应用配置（如果启用）
+        auto_apply_cfg = self.config.get("approval", {}).get("auto_apply", {})
+        if auto_apply_cfg.get("enabled", False):
+            if config_path:
+                # 调用 ConfigOperator 写入覆盖层（同步方法，不用 await）
+                success = self.config_operator.apply_overrides(config_path, adjustments)
+                if success:
+                    # 标记数据库为已应用
+                    await self.db_handler.mark_applied(memory_id, approved_by="auto_apply")
+                    # 发送自动应用通知
+                    await self.messenger.send_auto_applied_notification(
+                        strategy_name=strategy_name,
+                        strategy_id=strategy_id,
+                        diff_text=diff_text,
+                    )
+                    logger.info("调优建议已自动应用", strategy_id=strategy_id, memory_id=memory_id)
+                else:
+                    logger.error("自动应用配置失败", strategy_id=strategy_id, memory_id=memory_id)
+                    await self.messenger.send_error_notification(
+                        strategy_name=strategy_name,
+                        strategy_id=strategy_id,
+                        error_message="自动应用配置失败，请查看日志",
+                    )
+            else:
+                logger.warning("策略缺少 config_path，无法自动应用", strategy_id=strategy_id)
 
         logger.info("策略调优完成", strategy_id=strategy_id, memory_id=memory_id)
         return "success"

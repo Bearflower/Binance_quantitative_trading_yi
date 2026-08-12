@@ -708,7 +708,7 @@ class StratTuneAI:
 
                 # 先应用配置变更到覆盖层，成功后再标记数据库状态（保证一致性）
                 # 使用 apply_overrides 写入 tuning_overrides 目录，不修改 config.yaml
-                success = await self.config_operator.apply_overrides(config_path, adjustments)
+                success = self.config_operator.apply_overrides(config_path, adjustments)
                 if not success:
                     return web.json_response({
                         "status": "error",

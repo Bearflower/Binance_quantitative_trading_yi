@@ -1707,12 +1707,17 @@ class WeeklyTuningJob:
 
         完整流程:
         1. adapter.collect() → StrategyReport
-        2. context_builder.build() → 上下文文本
-        3. llm_client.get_tuning_suggestion() → AI 原始响应
-        4. parser.parse() → AITuningSuggestion
-        5. db_handler.insert() → 写入记忆（pending）
-        6. diff_generator.generate() → 变更清单
-        7. messenger.send_tuning_card() → 推送飞书卡片
+        2. [反馈闭环] effect_tracker.track_and_fill() → 效果追踪与回填
+        3. [反馈闭环] context_enhancer.build_feedback_context() → 构建反馈上下文
+        4. [反馈闭环] learning_signal_generator.build_learning_instructions() → 构建学习指令
+        5. context_builder.build_context() → 构建历史上下文
+        6. llm_client.get_tuning_suggestion() → AI 原始响应
+        7. parser.parse() → AITuningSuggestion（含白名单校验）
+        8. db_handler.insert() → 写入记忆库（pending）
+        9. [跳过推送] AI 建议"维持不变"时跳过后续步骤
+        10. diff_generator.generate() → 变更清单
+        11. messenger.send_tuning_card() → 推送飞书通知卡片
+        12. [auto-apply] 若 approval.auto_apply.enabled=true，自动写入覆盖层并标记已应用
 
         Args:
             strategy_id: 策略标识
@@ -1807,18 +1812,32 @@ class WeeklyTuningJob:
 └──────────┬───────────────┘     └──────────┬───────────────┘
            │                                 │
            ▼                                 ▼
+┌──────────────────────────────────────────────────────────────────┐
+│ 4. 反馈闭环流程（效果追踪 → 反馈上下文 → 学习信号）                │
+│                                                                    │
+│ 4a. EffectTracker.track_and_fill()                                 │
+│     → 回填上周调优效果 post_* 字段                                 │
+│ 4b. ContextEnhancer.build_feedback_context()                       │
+│     → 生成效果对比 Markdown 表格                                   │
+│ 4c. LearningSignalGenerator.build_learning_instructions()          │
+│     → L1~L4 规则引擎判断，生成学习指令                             │
+└──────────────────────────┬────────────────────────────────────────┘
+           │                                 │
+           ▼                                 ▼
 ┌──────────────────────────┐     ┌──────────────────────────┐
-│ 4a. ContextBuilder       │     │ 4b. ContextBuilder       │
-│ .build()                 │     │ .build()                 │
+│ 5a. ContextBuilder       │     │ 5b. ContextBuilder       │
+│ .build_context()         │     │ .build_context()         │
 │   ├─ 查询记忆库(最近3条) │     │   ├─ 查询记忆库(最近3条) │
 │   ├─ 拼接当前配置        │     │   ├─ 拼接当前配置        │
 │   ├─ 拼接本周报告        │     │   ├─ 拼接本周报告        │
+│   ├─ 拼接反馈上下文      │     │   ├─ 拼接反馈上下文      │
+│   └─ 拼接学习指令        │     │   └─ 拼接学习指令        │
 │   └─ 返回上下文文本      │     │   └─ 返回上下文文本      │
 └──────────┬───────────────┘     └──────────┬───────────────┘
            │                                 │
            ▼                                 ▼
 ┌──────────────────────────┐     ┌──────────────────────────┐
-│ 5a. LLMClient            │     │ 5b. LLMClient            │
+│ 6a. LLMClient            │     │ 6b. LLMClient            │
 │ .get_tuning_suggestion() │     │ .get_tuning_suggestion() │
 │   ├─ 加载 mtpcs_system   │     │   ├─ 加载 new_coin_system│
 │   ├─ 加载 mtpcs_user     │     │   ├─ 加载 new_coin_user  │
@@ -1828,7 +1847,7 @@ class WeeklyTuningJob:
            │                                 │
            ▼                                 ▼
 ┌──────────────────────────┐     ┌──────────────────────────┐
-│ 6a. ResponseParser       │     │ 6b. ResponseParser       │
+│ 7a. ResponseParser       │     │ 7b. ResponseParser       │
 │ .parse()                 │     │ .parse()                 │
 │   ├─ 提取 JSON           │     │   ├─ 提取 JSON           │
 │   ├─ Pydantic 校验       │     │   ├─ Pydantic 校验       │
@@ -1840,7 +1859,7 @@ class WeeklyTuningJob:
            │                                 │
            ▼                                 ▼
 ┌──────────────────────────┐     ┌──────────────────────────┐
-│ 7a. MemoryDBHandler      │     │ 7b. MemoryDBHandler      │
+│ 8a. MemoryDBHandler      │     │ 8b. MemoryDBHandler      │
 │ .insert()                │     │ .insert()                │
 │   └─ 写入 strategy_memory│     │   └─ 写入 strategy_memory│
 │      (is_applied=false)  │     │      (is_applied=false)  │
@@ -1848,32 +1867,53 @@ class WeeklyTuningJob:
            │                                 │
            ▼                                 ▼
 ┌──────────────────────────┐     ┌──────────────────────────┐
-│ 8a. DiffGenerator +      │     │ 8b. DiffGenerator +      │
-│     TunerMessenger       │     │     TunerMessenger       │
+│ 9a. DiffGenerator +      │     │ 9b. DiffGenerator +      │
+│     Messenger            │     │     Messenger            │
 │ .generate() → .send()    │     │ .generate() → .send()    │
 │   └─ 推送飞书调优卡片    │     │   └─ 推送飞书调优卡片    │
 └──────────┬───────────────┘     └──────────┬───────────────┘
            │                                 │
            └────────────────┬────────────────┘
                             │
-                    ┌───────┴───────┐
-                    ▼               ▼
-            ┌────────────┐  ┌────────────┐
-            │ /confirm    │  │ /reject /  │
-            │ 人工确认    │  │ 超时过期    │
-            └──────┬─────┘  └────────────┘
-                   │
-                   ▼
-┌──────────────────────────────────────────────────────────────────┐
-│ 9. WeeklyTuningJob.handle_approval()                              │
-│    ├─ 幂等检查                                                   │
-│    ├─ 更新状态 confirmed                                         │
-│    ├─ ConfigOperator.apply_overrides() → 写入 tuning_overrides/  │
-│    │  + 生成版本号 V{YYYYMMDD}.yaml + 更新 .active 指向新版本    │
-│    ├─ 更新状态 applied                                           │
-│    ├─ RollbackManager (通过修改 .active 指向旧版本实现回滚)      │
-│    └─ TunerMessenger.send_applied_notification() → 生效通知      │
-└──────────────────────────────────────────────────────────────────┘
+                   ┌────────┴────────┐
+                   ▼                 ▼
+           ┌──────────────┐  ┌──────────────┐
+           │ auto-apply   │  │ auto-apply   │
+           │ enabled=true │  │ enabled=false │
+           │              │  │ (默认)        │
+           └──────┬───────┘  └──────┬───────┘
+                  │                 │
+                  ▼                 ▼
+          ┌─────────────────┐  ┌────────────┐  ┌────────────┐
+          │ 10a. 自动应用    │  │ /confirm    │  │ /reject /  │
+          │ ConfigOperator  │  │ 人工确认    │  │ 超时过期    │
+          │ .apply_overrides│  └──────┬─────┘  └────────────┘
+          │                 │         │
+          │  ├─ 写入覆盖层  │         │
+          │  ├─ mark_applied│         ▼
+          │  │  (approved_by│ ┌────────────────────────────────────┐
+          │  │   ="auto_    │ │ 10b. WeeklyTuningJob.handle_      │
+          │  │    apply")   │ │      approval()                    │
+          │  └─ 发送自动    │ │    ├─ 幂等检查                     │
+          │      应用通知   │ │    ├─ 更新状态 confirmed           │
+          └────────┬───────┘ │    ├─ ConfigOperator.apply_        │
+                   │         │    │  overrides() → 写入            │
+                   │         │    │  tuning_overrides/             │
+                   │         │    │  + 生成版本号 V{YYYYMMDD}.yaml │
+                   │         │    │  + 更新 .active 指向新版本     │
+                   │         │    ├─ 更新状态 applied              │
+                   │         │    ├─ RollbackManager               │
+                   │         │    └─ Messenger.send_applied_       │
+                   │         │       notification() → 生效通知     │
+                   │         └──────────┬─────────────────────────┘
+                   │                    │
+                   └────────┬───────────┘
+                            │
+                            ▼
+                   ┌────────────────────┐
+                   │ 11. 调优完成        │
+                   │ 日志记录完成状态    │
+                   └────────────────────┘
 ```
 
 ### 4.2 异常处理分支
