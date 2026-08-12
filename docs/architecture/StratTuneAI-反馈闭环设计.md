@@ -1363,4 +1363,64 @@ async def _tune_single_strategy(self, strategy_cfg, force=False) -> str:
 
 ---
 
+## 8. P0 安全网加固（v6.24.0）
+
+### 8.1 红线参数防护
+
+在 `ai_tuner/config.yaml` 中为每个策略定义 `redline_params`，AI 建议涉及红线参数时直接拒绝（不截断）。
+
+| 策略 | 红线参数 |
+|------|---------|
+| **btc_eth** | `binance.leverage.S/A/B/C`, `binance.position_ratio.S/A/B/C`, `risk.stop_loss_atr_multiplier`, `risk.chandelier_stop.activation_atr`, `risk.chandelier_stop.trailing_atr` |
+| **new_coin** | `trading.leverage`, `trading.single_position_margin`, `trading.stop_loss_percent`, `trading.take_profit_percent`, `trading.emergency_stop.trigger_percent`, `trading.risk_control.max_loss_percent` |
+| **hrs** | `risk.stop_loss.atr_hard_stop`, `risk.stop_loss.emergency_stop_percent`, `risk.stop_loss.min_absolute_stop_percent` |
+| **grid** | `trading.leverage`, `trading.margin`, `trading.single_position_margin`, `risk.stop_loss_percent`, `risk.hard_stop_loss` |
+
+### 8.2 大变化率告警
+
+每个策略配置 `change_rate_threshold: 2.0`（200%），当 AI 建议的单参数变化率超过此阈值时，记录警告（不阻断流程，但会在审批卡片中突出显示）。
+
+### 8.3 validate_params 统一实现
+
+`BaseAdapter` 提供统一的 `validate_params()` 实现，4 层校验：
+
+```
+1. 白名单检查 → 不在白名单中的参数直接拒绝
+2. 红线参数检查 → 红线参数直接拒绝（不截断）
+3. 数值范围检查 → 超出范围的参数截断到边界值（记录为警告）
+4. 大变化率检查 → 变化率超过阈值时记录警告（不阻断）
+```
+
+返回格式：`{"valid": bool, "errors": list, "warnings": list, "validated": dict}`
+
+各策略适配器删除重复的 `validate_params` 实现，统一继承基类。
+
+### 8.4 每日健康检查
+
+新增 `ai_tuner/monitor/daily_health_check.py`，每天 10:00 执行：
+
+| 检查项 | 阈值（从配置读取） | 说明 |
+|--------|-------------------|------|
+| 总亏损 | `large_loss_threshold_*` | 策略专用阈值，默认 -50 USDT |
+| 连续亏损 | `max_consecutive_loss_threshold: 4` | 超过 4 笔连续亏损告警 |
+| 胜率过低 | `low_win_rate_threshold: 0.3` | 24h 胜率低于 30% 告警 |
+
+异常时通过飞书推送告警，推送方式复用 Messenger 的 `send_alert()` 方法。
+
+### 8.5 受影响文件
+
+| 文件 | 变更类型 | 说明 |
+|------|---------|------|
+| `ai_tuner/config.yaml` | 修改 | 新增 `redline_params`、`change_rate_threshold`、`health_check_cron`、`default_large_loss_threshold`、`large_loss_threshold_hrs` |
+| `ai_tuner/adapters/base_adapter.py` | 修改 | 统一 `validate_params` 实现（4层校验），新增 `get_change_rate_threshold()` |
+| `ai_tuner/adapters/mtpcs_adapter.py` | 修改 | 删除重复的 `validate_params` |
+| `ai_tuner/adapters/new_coin_adapter.py` | 修改 | 同上 |
+| `ai_tuner/adapters/grid_adapter.py` | 修改 | 同上，修复 `profit_rate` 变量未定义问题 |
+| `ai_tuner/adapters/hrs_adapter.py` | 修改 | 同上 |
+| `ai_tuner/monitor/daily_health_check.py` | 新增 | 每日健康检查模块 |
+| `ai_tuner/notifier/messenger.py` | 修改 | 新增 `send_alert()` 方法 |
+| `ai_tuner/main.py` | 修改 | 注册每日健康检查定时任务 |
+
+---
+
 **文档结束**

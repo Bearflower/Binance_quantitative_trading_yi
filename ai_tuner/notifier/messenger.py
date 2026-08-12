@@ -191,6 +191,35 @@ class Messenger:
             logger.error("发送回滚通知失败", error=str(e))
             return False
 
+    async def send_alert(
+        self,
+        title: str,
+        content: str,
+        level: str = "error",
+    ) -> bool:
+        """
+        发送通用告警消息
+
+        Args:
+            title: 告警标题
+            content: 告警内容
+            level: 告警级别（info/warning/error）
+
+        Returns:
+            是否发送成功
+        """
+        message = f"{title}\n\n{content}"
+
+        try:
+            return await self.notification_client.send(
+                message=message,
+                level=level,
+                project=self.tuner_project,
+            )
+        except Exception as e:
+            logger.error("发送告警消息失败", title=title, error=str(e))
+            return False
+
     async def send_error_notification(
         self,
         strategy_name: str,

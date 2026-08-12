@@ -397,60 +397,6 @@ class NewCoinAdapter(BaseAdapter):
                 result[param_path] = value
         return result
 
-    def validate_params(self, adjustments: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        校验 AI 建议的参数调整是否合法
-
-        Args:
-            adjustments: AI 建议的参数调整，格式为 {param_path: {"from": old, "to": new}}
-
-        Returns:
-            校验结果 {"valid": bool, "errors": list, "validated": dict}
-        """
-        errors = []
-        validated = {}
-        whitelist = self.get_param_whitelist()
-
-        # 从系统配置（ai_tuner/config.yaml）读取参数有效范围，禁止硬编码
-        ranges = self._strategy_cfg.get("param_ranges", {})
-        if not ranges:
-            logger.warning("策略配置缺少 param_ranges，参数校验将跳过范围检查",
-                           strategy_id=self.strategy_id)
-
-        for param_path, adjustment in adjustments.items():
-            # 检查是否在白名单中
-            if param_path not in whitelist:
-                errors.append(f"参数 {param_path} 不在白名单中，已拒绝")
-                continue
-
-            # 提取新值
-            if isinstance(adjustment, dict):
-                new_value = adjustment.get("to")
-            else:
-                new_value = adjustment
-
-            if new_value is None:
-                errors.append(f"参数 {param_path} 缺少目标值")
-                continue
-
-            # 范围校验
-            if param_path in ranges:
-                min_val, max_val = ranges[param_path]
-                if new_value < min_val:
-                    errors.append(f"参数 {param_path} 值 {new_value} 低于最小值 {min_val}，已截断")
-                    new_value = min_val
-                elif new_value > max_val:
-                    errors.append(f"参数 {param_path} 值 {new_value} 高于最大值 {max_val}，已截断")
-                    new_value = max_val
-
-            validated[param_path] = new_value
-
-        return {
-            "valid": len(errors) == 0,
-            "errors": errors,
-            "validated": validated,
-        }
-
     def _read_config(self) -> Dict[str, Any]:
         """
         读取策略配置（合并基础配置 + AI 调优覆盖层）

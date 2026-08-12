@@ -2,8 +2,8 @@
 策略数据适配器抽象基类
 定义所有策略适配器必须实现的统一接口
 
-所有策略适配器继承此基类，实现 collect()、get_current_params()、validate_params()
-三个抽象方法，即可被 StratTuneAI 调度引擎自动调用。
+所有策略适配器继承此基类，实现 collect() 和 get_current_params() 两个抽象方法，
+即可被 StratTuneAI 调度引擎自动调用。validate_params() 由基类提供统一实现。
 """
 
 import os
@@ -11,8 +11,11 @@ from abc import ABC, abstractmethod
 from functools import cached_property
 from typing import Any, Dict, List
 
+import structlog
 import yaml
 from pydantic import BaseModel, Field
+
+logger = structlog.get_logger()
 
 
 # ============================================================
@@ -99,10 +102,12 @@ class BaseAdapter(ABC):
     """
     策略数据适配器基类
 
-    所有策略适配器必须继承此类并实现三个抽象方法：
+    所有策略适配器必须继承此类并实现两个抽象方法：
     - collect(): 采集本周策略表现数据
     - get_current_params(): 获取当前可调参数值
-    - validate_params(): 校验 AI 建议的参数是否合法
+
+    validate_params() 由基类提供统一实现，包含白名单检查、红线参数检查、
+    数值范围检查和大变化率告警。
 
     类属性（子类必须覆盖）：
     - strategy_id: 策略唯一标识
@@ -153,22 +158,6 @@ class BaseAdapter(ABC):
         """
         ...
 
-    @abstractmethod
-    def validate_params(self, adjustments: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        校验 AI 建议的参数调整是否合法
-
-        Args:
-            adjustments: AI 建议的参数调整，格式为 {param_path: {"from": old, "to": new}}
-
-        Returns:
-            校验结果字典，包含：
-            - valid: bool，是否全部通过校验
-            - errors: list，错误信息列表
-            - validated: dict，校验后的参数（可能被截断到边界值）
-        """
-        ...
-
     @cached_property
     def _system_config(self) -> Dict[str, Any]:
         """
@@ -216,6 +205,109 @@ class BaseAdapter(ABC):
     def get_param_ranges(self) -> Dict[str, List[float]]:
         """返回该策略的参数范围定义（从 config.yaml 读取）"""
         return self._strategy_cfg.get("param_ranges", {})
+
+    def get_change_rate_threshold(self) -> float:
+        """
+        返回该策略的变化率告警阈值（从 config.yaml 读取）
+        
+        变化率 = abs(new - old) / abs(old)，超过此阈值时触发告警。
+        返回 0 表示不检查变化率。
+        
+        Returns:
+            变化率阈值（如 2.0 表示 200%）
+        """
+        return float(self._strategy_cfg.get("change_rate_threshold", 0))
+
+    def validate_params(self, adjustments: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        校验 AI 建议的参数调整是否合法（统一实现）
+
+        校验规则：
+        1. 白名单检查：不在白名单中的参数直接拒绝
+        2. 红线参数检查：属于红线参数的参数直接拒绝（不截断）
+        3. 数值范围检查：超出范围的参数截断到边界值
+        4. 大变化率检查：变化率超过阈值时记录警告（不阻断）
+
+        Args:
+            adjustments: AI 建议的参数调整，格式为 {param_path: {"from": old, "to": new}}
+
+        Returns:
+            校验结果字典：
+            - valid: bool，是否全部通过校验（无错误）
+            - errors: list，错误信息列表（红线参数、白名单、缺值等）
+            - warnings: list，警告信息列表（大变化率等）
+            - validated: dict，校验后的参数（红线参数和白名单外的不包含在内）
+        """
+        errors: list = []
+        warnings: list = []
+        validated: dict = {}
+        whitelist = self.get_param_whitelist()
+        redline = self.get_redline_params()
+        change_rate_threshold = self.get_change_rate_threshold()
+        ranges = self.get_param_ranges()
+
+        if not ranges:
+            logger.warning("策略配置缺少 param_ranges，参数校验将跳过范围检查",
+                           strategy_id=self.strategy_id)
+
+        for param_path, adjustment in adjustments.items():
+            # 1. 白名单检查
+            if param_path not in whitelist:
+                errors.append(f"参数 {param_path} 不在白名单中，已拒绝")
+                continue
+
+            # 2. 红线参数检查（直接拒绝，不截断）
+            if param_path in redline:
+                errors.append(f"参数 {param_path} 属于红线参数，禁止修改，已拒绝")
+                continue
+
+            # 提取新旧值
+            if isinstance(adjustment, dict):
+                old_value = adjustment.get("from")
+                new_value = adjustment.get("to")
+            else:
+                old_value = None
+                new_value = adjustment
+
+            if new_value is None:
+                errors.append(f"参数 {param_path} 缺少目标值")
+                continue
+
+            # 3. 数值范围检查（截断到边界，记录为警告而非错误）
+            if param_path in ranges:
+                min_val, max_val = ranges[param_path]
+                if new_value < min_val:
+                    warnings.append(f"参数 {param_path} 值 {new_value} 低于最小值 {min_val}，已截断为 {min_val}")
+                    new_value = min_val
+                elif new_value > max_val:
+                    warnings.append(f"参数 {param_path} 值 {new_value} 高于最大值 {max_val}，已截断为 {max_val}")
+                    new_value = max_val
+
+            # 4. 大变化率检查
+            if old_value is not None and change_rate_threshold > 0:
+                try:
+                    old_val = float(old_value) if old_value is not None else 0
+                    new_val = float(new_value)
+                    if old_val != 0:
+                        change_rate = abs(new_val - old_val) / abs(old_val)
+                        if change_rate > change_rate_threshold:
+                            warnings.append(
+                                f"参数 {param_path} 变化率 {change_rate:.1%} "
+                                f"超过阈值 {change_rate_threshold:.0%}，"
+                                f"从 {old_value} 变为 {new_value}"
+                            )
+                except (ValueError, TypeError):
+                    # 非数值类型跳过变化率检查
+                    pass
+
+            validated[param_path] = new_value
+
+        return {
+            "valid": len(errors) == 0,
+            "errors": errors,
+            "warnings": warnings,
+            "validated": validated,
+        }
 
     def to_dict(self) -> Dict[str, Any]:
         """

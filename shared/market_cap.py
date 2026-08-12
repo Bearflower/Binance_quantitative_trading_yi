@@ -162,7 +162,11 @@ class MarketCapService:
                 if data is None:
                     logger.warning("获取市值返回空数据", symbol=symbol, coin_id=coin_id)
                     return None
-                market_cap = data.get("market_data", {}).get("market_cap", {}).get("usd")
+                market_data = data.get("market_data")
+                if market_data is None:
+                    logger.warning("获取市值返回空 market_data", symbol=symbol, coin_id=coin_id)
+                    return None
+                market_cap = market_data.get("market_cap", {}).get("usd")
                 if market_cap is not None:
                     logger.info("市值获取成功", symbol=symbol, market_cap=market_cap)
                     return float(market_cap)

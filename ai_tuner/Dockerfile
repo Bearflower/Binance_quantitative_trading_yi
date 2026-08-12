@@ -23,6 +23,9 @@ RUN pip install --no-cache-dir -r /app/ai_tuner/requirements.txt
 COPY ai_tuner/ /app/ai_tuner/
 COPY shared/ /app/shared/
 
+# 复制 VERSION 文件（部署时生成，用于版本验证）
+COPY VERSION /app/VERSION
+
 # 复制策略配置文件（适配器运行需要读取配置）
 COPY strategies/btc_eth/config.yaml /app/strategies/btc_eth/config.yaml
 COPY strategies/new_coin/config.yaml /app/strategies/new_coin/config.yaml

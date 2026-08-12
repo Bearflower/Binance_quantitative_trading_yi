@@ -684,8 +684,8 @@ class GridAdapter(BaseAdapter):
         fill_efficiency = simulation_cfg.get("fill_efficiency_factor", 0.6)
         confidence_upper = simulation_cfg.get("confidence_upper_limit", 0.8)
 
-        # 每格利润率（用于记录，暂未使用）
-        # profit_rate = grid_spacing / current_price if current_price > 0 else 0
+        # 每格利润率
+        profit_rate = grid_spacing / current_price if current_price > 0 else 0
 
         # 每格名义价值（基于总保证金/网格数 × 杠杆）
         nominal_per_grid = (margin / grid_count) * leverage
@@ -774,54 +774,6 @@ class GridAdapter(BaseAdapter):
             if value is not None:
                 result[param_path] = value
         return result
-
-    def validate_params(self, adjustments: Dict[str, Any]) -> Dict[str, Any]:
-        """校验 AI 建议的参数调整是否合法"""
-        errors = []
-        validated = {}
-        whitelist = self.get_param_whitelist()
-        ranges = self._strategy_cfg.get("param_ranges", {})
-
-        if not ranges:
-            logger.warning(
-                "网格策略配置缺少 param_ranges，参数校验将跳过范围检查",
-                strategy_id=self.strategy_id,
-            )
-
-        for param_path, adjustment in adjustments.items():
-            if param_path not in whitelist:
-                errors.append(f"参数 {param_path} 不在白名单中，已拒绝")
-                continue
-
-            if isinstance(adjustment, dict):
-                new_value = adjustment.get("to")
-            else:
-                new_value = adjustment
-
-            if new_value is None:
-                errors.append(f"参数 {param_path} 缺少目标值")
-                continue
-
-            if param_path in ranges:
-                min_val, max_val = ranges[param_path]
-                if new_value < min_val:
-                    errors.append(
-                        f"参数 {param_path} 值 {new_value} 低于最小值 {min_val}，已截断"
-                    )
-                    new_value = min_val
-                elif new_value > max_val:
-                    errors.append(
-                        f"参数 {param_path} 值 {new_value} 高于最大值 {max_val}，已截断"
-                    )
-                    new_value = max_val
-
-            validated[param_path] = new_value
-
-        return {
-            "valid": len(errors) == 0,
-            "errors": errors,
-            "validated": validated,
-        }
 
     def _read_config(self) -> Dict[str, Any]:
         """

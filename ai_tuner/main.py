@@ -49,6 +49,7 @@ from ai_tuner.scheduler.weekly_job import WeeklyTuningJob  # noqa: E402
 from ai_tuner.allocation.monthly_job import MonthlyAllocationJob  # noqa: E402
 from ai_tuner.allocation.profit_extraction_job import ProfitExtractionJob  # noqa: E402
 from ai_tuner.cleanup.orphan_cleanup import OrphanCleanupJob  # noqa: E402
+from ai_tuner.monitor.daily_health_check import DailyHealthCheck  # noqa: E402
 from shared.binance_api import BinanceClient  # noqa: E402
 
 # 配置 structlog
@@ -96,6 +97,7 @@ class StratTuneAI:
         self.monthly_job: MonthlyAllocationJob = None
         self.profit_extraction_job: ProfitExtractionJob = None
         self.orphan_cleanup_job: OrphanCleanupJob = None
+        self.health_checker: DailyHealthCheck = None
         self._running = False
         self.app: web.Application = None
         self.runner: web.AppRunner = None
@@ -221,6 +223,14 @@ class StratTuneAI:
 
         # 8. 初始化消息发送器
         self.messenger = Messenger(self.notification_client)
+
+        # 8.5. 初始化每日健康检查
+        self.health_checker = DailyHealthCheck(
+            config=self.config,
+            db_manager=self.db_manager,
+            messenger=self.messenger,
+        )
+        logger.info("每日健康检查已初始化")
 
         # 9. 初始化周度调优任务
         self.weekly_job = WeeklyTuningJob(
@@ -381,6 +391,38 @@ class StratTuneAI:
             )
             logger.info("孤儿条件单清理任务已注册", interval_minutes=cleanup_interval)
 
+        # 10.5. 注册每日健康检查
+        health_check_cron = scheduler_cfg.get("health_check_cron", "0 10 * * *")
+        try:
+            health_parts = health_check_cron.strip().split()
+            if len(health_parts) != 5:
+                raise ValueError(
+                    f"健康检查 cron 表达式格式错误，需要5个字段（分 时 日 月 周），"
+                    f"当前为 {len(health_parts)} 个: {health_check_cron!r}"
+                )
+            for i, (value, field_name) in enumerate(zip(
+                health_parts, ["minute", "hour", "day", "month", "day_of_week"]
+            )):
+                BaseField(field_name, value)
+        except Exception as e:
+            raise ValueError(
+                f"健康检查 cron 表达式解析失败: {health_check_cron!r}，错误: {e}"
+            ) from e
+
+        self.scheduler.add_job(
+            self._scheduled_health_check,
+            "cron",
+            minute=health_parts[0],
+            hour=health_parts[1],
+            day=health_parts[2],
+            month=health_parts[3],
+            day_of_week=health_parts[4],
+            id="daily_health_check",
+            name="每日健康检查",
+            replace_existing=True,
+        )
+        logger.info("每日健康检查任务已注册", cron_expression=health_check_cron)
+
         # 11. 初始化 HTTP 服务器（飞书审批回调 + 管理 API）
         self._setup_http_server()
 
@@ -465,6 +507,12 @@ class StratTuneAI:
         if self.orphan_cleanup_job:
             logger.info("触发孤儿条件单清理检查")
             await self.orphan_cleanup_job.execute()
+
+    async def _scheduled_health_check(self) -> None:
+        """调度器触发的每日健康检查（每天 10:00 CST）"""
+        if self.health_checker:
+            logger.info("触发每日健康检查")
+            await self.health_checker.run_check()
 
     async def _check_catch_up(self) -> None:
         """

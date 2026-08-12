@@ -10,6 +10,21 @@ strategies:
     name: "MTPCS策略"
     adapter_class: "ai_tuner.adapters.mtpcs_adapter.MTPCSAdapter"
     config_path: "strategies/btc_eth/config.yaml"
+    # 红线参数：AI 调优时禁止修改这些参数（直接拒绝）
+    redline_params:
+      - "binance.leverage.S"
+      - "binance.leverage.A"
+      - "binance.leverage.B"
+      - "binance.leverage.C"
+      - "binance.position_ratio.S"
+      - "binance.position_ratio.A"
+      - "binance.position_ratio.B"
+      - "binance.position_ratio.C"
+      - "risk.stop_loss_atr_multiplier"
+      - "risk.chandelier_stop.activation_atr"
+      - "risk.chandelier_stop.trailing_atr"
+    # 变化率告警阈值：超过此变化率（200%）触发告警
+    change_rate_threshold: 2.0
     param_whitelist:
       - "scoring.min_score"
       - "scoring.weights.trend_strength"
@@ -71,6 +86,16 @@ strategies:
     name: "新币做空策略"
     adapter_class: "ai_tuner.adapters.new_coin_adapter.NewCoinAdapter"
     config_path: "strategies/new_coin/config.yaml"
+    # 红线参数：AI 调优时禁止修改这些参数（直接拒绝）
+    redline_params:
+      - "trading.leverage"
+      - "trading.single_position_margin"
+      - "trading.stop_loss_percent"
+      - "trading.take_profit_percent"
+      - "trading.emergency_stop.trigger_percent"
+      - "trading.risk_control.max_loss_percent"
+    # 变化率告警阈值：超过此变化率（200%）触发告警
+    change_rate_threshold: 2.0
     param_whitelist:
       - "scoring.entry_threshold"
       - "scoring.weights.contract"
@@ -133,6 +158,13 @@ strategies:
     enabled: true
     adapter_class: "ai_tuner.adapters.hrs_adapter.HRSAdapter"
     config_path: "strategies/hrs/config.yaml"
+    # 红线参数：AI 调优时禁止修改这些参数（直接拒绝）
+    redline_params:
+      - "risk.stop_loss.atr_hard_stop"
+      - "risk.stop_loss.emergency_stop_percent"
+      - "risk.stop_loss.min_absolute_stop_percent"
+    # 变化率告警阈值：超过此变化率（200%）触发告警
+    change_rate_threshold: 2.0
     param_whitelist:
       - "scoring.entry_threshold"
       - "scoring.weights.contract"
@@ -195,6 +227,15 @@ strategies:
     name: "网格交易策略"
     adapter_class: "ai_tuner.adapters.grid_adapter.GridAdapter"
     config_path: "strategies/grid/config.yaml"
+    # 红线参数：AI 调优时禁止修改这些参数（直接拒绝）
+    redline_params:
+      - "trading.leverage"
+      - "trading.margin"
+      - "trading.single_position_margin"
+      - "risk.stop_loss_percent"
+      - "risk.hard_stop_loss"
+    # 变化率告警阈值：超过此变化率（200%）触发告警
+    change_rate_threshold: 2.0
     param_whitelist:
       - "grid.base_grid_count"
       - "grid.min_grid_count"
@@ -276,6 +317,7 @@ deepseek:
 # ============================================================
 scheduler:
   cron_expression: "55 23 * * 6"          # APScheduler: 6=周日 23:55（周度调优）
+  health_check_cron: "0 10 * * *"         # 每天 10:00 健康检查
   monthly_cron_expression: "30 9 * * *"      # 每天 09:30 执行，代码内判断是否为月末最后一天
   timezone: "Asia/Shanghai"
   catch_up_days: 7                        # 启动时补偿检查：上次调优距今超过此天数则立即执行
@@ -323,9 +365,11 @@ anomaly_detection:
   low_win_rate_threshold: 0.3           # 胜率过低阈值
   min_trades_for_anomaly: 5             # 触发异常检测的最少交易笔数
   max_consecutive_loss_threshold: 4     # 最大连续亏损告警阈值
+  default_large_loss_threshold: -50     # 每日健康检查默认总亏损告警阈值（USDT）
   large_loss_threshold_mtpcs: -50       # MTPCS 总亏损告警阈值（USDT）
   large_loss_threshold_new_coin: -30    # 新币做空总亏损告警阈值（USDT）
   large_loss_threshold_grid: -30        # 网格策略总亏损告警阈值（USDT）
+  large_loss_threshold_hrs: -30         # HRS 策略总亏损告警阈值（USDT）
   default_initial_capital_mtpcs: 500.0       # MTPCS 默认初始资金（USDT），当策略配置缺少 initial_capital_usdt 时使用
   default_initial_capital_new_coin: 150.0     # 新币做空默认初始资金（USDT），当策略配置缺少保证金/持仓数时使用
   signal_distribution:                        # 信号分布异常检测阈值

@@ -208,6 +208,8 @@ candidate_pool:
       - TRXUSDT
       - SOXLUSDT
       - HFTUSDT
+      - SOXSUSDT
+      - CRCLUSDT
 
   # 新币策略冲突屏蔽
   new_coin_conflict:
