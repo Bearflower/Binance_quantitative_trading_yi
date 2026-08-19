@@ -172,7 +172,7 @@ class HRSAdapter(BaseAdapter):
 
         # 如果当前连续亏损达到熔断阈值，标记熔断
         config = self._strategy_config_cache
-        max_consecutive = config.get("trading", {}).get("consecutive_loss", {}).get("max_consecutive_losses", 3)
+        max_consecutive = config.get("trading", {}).get("consecutive_loss", {}).get("max_count", 3)
         if current_streak >= max_consecutive:
             metrics.is_circuit_breaker_active = True
 
@@ -189,7 +189,7 @@ class HRSAdapter(BaseAdapter):
 
         # 回撤百分比（从策略配置读取保证金和持仓数）
         strategy_config = self._strategy_config_cache
-        single_position_margin = strategy_config.get("trading", {}).get("single_position_margin")
+        single_position_margin = strategy_config.get("position_sizing", {}).get("single", {}).get("hard_cap_usdt")
         max_positions = strategy_config.get("trading", {}).get("max_positions")
         if not single_position_margin or not max_positions:
             # 策略配置缺少关键参数，从系统配置读取默认值（复用 new_coin 的默认值）

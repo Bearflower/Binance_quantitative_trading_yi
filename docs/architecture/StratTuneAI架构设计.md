@@ -1818,7 +1818,7 @@ class WeeklyTuningJob:
                                │
                                ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ 2. 遍历已注册策略 [btc_eth, new_coin]，串行执行                     │
+│ 2. 遍历已注册策略 [btc_eth, new_coin, hrs]，串行执行                  │
 └──────────────────────────────┬───────────────────────────────────┘
                                │
               ┌────────────────┴────────────────┐
@@ -2070,12 +2070,12 @@ strategies:
     enabled: true
     display_name: "新币做空策略"
 
-  # 后续扩展示例:
-  # - strategy_id: "hrs"
-  #   adapter_class: "adapters.hrs_adapter.HRSAdapter"
-  #   config_path: "strategies/hrs/config.yaml"
-  #   enabled: false
-  #   display_name: "混合反转策略(HRS)"
+  # 已注册策略:
+  - strategy_id: "hrs"
+    adapter_class: "adapters.hrs_adapter.HRSAdapter"
+    config_path: "strategies/hrs/config.yaml"
+    enabled: true
+    display_name: "混合反转策略(HRS)"
 
   # - strategy_id: "grid"
   #   adapter_class: "adapters.grid_adapter.GridAdapter"
@@ -2343,8 +2343,12 @@ python-dotenv>=1.0.0,<2.0.0
 │  │  │   └── tuning_overrides/    ← ai_tuner 读写                  │  │
 │  │  │       ├── .active                                            │  │
 │  │  │       └── V20260811.yaml                                     │  │
+│  │  ├── hrs/                                                       │  │
+│  │  │   ├── config.yaml          ← 只读                           │  │
+│  │  │   └── tuning_overrides/    ← ai_tuner 读写                  │  │
+│  │  │       ├── .active                                            │  │
+│  │  │       └── V20260819.yaml                                     │  │
 │  │  ├── grid/config.yaml        ← (第二期接入)                     │  │
-│  │  └── hrs/config.yaml         ← (第二期接入)                     │  │
 │  └──────────────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
 

@@ -141,19 +141,13 @@ strategies:
       - "scoring.oi_volume_ratio.thresholds.good"
       - "scoring.technical.min_total_score"
       - "scoring.technical.min_three_tops_score"
-      - "trading.leverage"
       - "trading.max_positions"
-      - "trading.single_position_margin"
-      - "trading.stop_loss_percent"
-      - "trading.take_profit_percent"
       - "trading.batch_take_profit.target1_atr_multiplier"
       - "trading.batch_take_profit.target2_atr_multiplier"
       - "trading.consecutive_loss.max_consecutive_losses"
       - "trading.consecutive_loss.pause_hours"
       - "trading.max_drawdown.threshold"
       - "trading.max_drawdown.pause_days"
-      - "trading.emergency_stop.trigger_percent"
-      - "trading.risk_control.max_loss_percent"
       - "pattern.three_tops.max_deviation"
 
     # AI 可调参数的有效范围（用于 validate_params 校验）
@@ -170,19 +164,13 @@ strategies:
       scoring.oi_volume_ratio.thresholds.good: [0.1, 0.3]
       scoring.technical.min_total_score: [4.0, 8.0]
       scoring.technical.min_three_tops_score: [1.0, 4.0]
-      trading.leverage: [1, 3]
       trading.max_positions: [2, 5]
-      trading.single_position_margin: [25, 100]
-      trading.stop_loss_percent: [0.03, 0.08]
-      trading.take_profit_percent: [0.05, 0.15]
       trading.batch_take_profit.target1_atr_multiplier: [1.0, 3.0]
       trading.batch_take_profit.target2_atr_multiplier: [2.0, 5.0]
       trading.consecutive_loss.max_consecutive_losses: [2, 5]
       trading.consecutive_loss.pause_hours: [24, 96]
       trading.max_drawdown.threshold: [0.10, 0.25]
       trading.max_drawdown.pause_days: [3, 14]
-      trading.emergency_stop.trigger_percent: [0.01, 0.03]
-      trading.risk_control.max_loss_percent: [0.01, 0.05]
       pattern.three_tops.max_deviation: [0.01, 0.05]
 
   - strategy_id: "hrs"
@@ -192,68 +180,109 @@ strategies:
     config_path: "strategies/hrs/config.yaml"
     # 红线参数：AI 调优时禁止修改这些参数（直接拒绝）
     redline_params:
-      - "risk.stop_loss.atr_hard_stop"
-      - "risk.stop_loss.emergency_stop_percent"
-      - "risk.stop_loss.min_absolute_stop_percent"
+      - "trading.stop_loss.atr_multiplier"
+      - "trading.stop_loss.emergency_percent"
+      - "trading.stop_loss.min_absolute_percent"
     # 变化率告警阈值：超过此变化率（200%）触发告警
     change_rate_threshold: 2.0
     param_whitelist:
+      # 评分参数
       - "scoring.entry_threshold"
       - "scoring.weights.contract"
       - "scoring.weights.technical"
       - "scoring.weights.sentiment"
       - "scoring.technical.min_total_score"
-      - "scoring.technical.min_base_pattern_score"
-      - "scoring.oi_market_cap.extreme_crowded"
-      - "scoring.oi_market_cap.crowded"
-      - "scoring.oi_market_cap.medium"
-      - "scoring.oi_market_cap.neutral"
-      - "scoring.sentiment.funding_rate.extreme_high"
-      - "scoring.sentiment.funding_rate.high"
-      - "scoring.sentiment.funding_rate.medium"
-      - "risk.stop_loss.atr_hard_stop"
-      - "risk.stop_loss.emergency_stop_percent"
-      - "risk.stop_loss.min_absolute_stop_percent"
-      - "risk.batch_take_profit.tp1_atr_multiplier"
-      - "risk.batch_take_profit.tp2_atr_multiplier"
-      - "risk.batch_take_profit.trailing_stop_atr_multiplier"
-      - "risk.consecutive_loss.max_consecutive_losses"
-      - "risk.consecutive_loss.pause_days"
-      - "risk.max_drawdown.pause_days"
-      - "candidate.short_24h_gain_threshold"
-      - "candidate.long_24h_loss_threshold"
-      - "candidate.volume_24h_min"
-      - "candidate.oi_min"
+      - "scoring.technical.min_primary_pattern_score"
+      # 合约数据（OI/市值比）阈值
+      - "scoring.contract.oi_market_cap_ratio.thresholds.extreme_high"
+      - "scoring.contract.oi_market_cap_ratio.thresholds.high"
+      - "scoring.contract.oi_market_cap_ratio.thresholds.mid_high"
+      - "scoring.contract.oi_market_cap_ratio.thresholds.mid"
+      # 情绪面阈值
+      - "scoring.sentiment.thresholds.extreme_high"
+      - "scoring.sentiment.thresholds.high"
+      - "scoring.sentiment.thresholds.mid"
+      # 极端行情加分
+      - "scoring.extreme_bonus.bonus_score"
+      - "scoring.extreme_bonus.short.threshold"
+      - "scoring.extreme_bonus.long.threshold"
+      # 半EMM配置
+      - "semi_emm.entry_threshold"
+      - "semi_emm.contract_floor"
+      # 交易参数（止损参数已在 redline_params 中保护，不在此处开放）
+      - "trading.batch_take_profit.target1_atr_multiplier"
+      - "trading.batch_take_profit.target1_close_percent"
+      - "trading.batch_take_profit.target2_atr_multiplier"
+      - "trading.batch_take_profit.target2_close_percent"
+      - "trading.batch_take_profit.trailing_stop_atr_multiplier"
+      - "trading.consecutive_loss.max_count"
+      - "trading.consecutive_loss.pause_days"
+      - "trading.max_drawdown.pause_days"
+      # 候选池参数
+      - "candidate_pool.short.price_change_24h"
+      - "candidate_pool.short.oi_market_cap_min"
+      - "candidate_pool.short.funding_rate_annual"
+      - "candidate_pool.long.price_change_24h"
+      - "candidate_pool.long.funding_rate_annual"
+      - "candidate_pool.long.oi_market_cap_max"
+      - "candidate_pool.liquidity.min_volume_24h"
+      - "candidate_pool.liquidity.min_oi_usd"
+      # LV-RM 模块参数
+      - "lv_rm.scoring.entry_threshold"
+      - "lv_rm.scoring.technical.min_total_score"
+      - "lv_rm.scoring.technical.cap_score"
+      - "lv_rm.take_profit.target1_atr_multiplier"
+      - "lv_rm.take_profit.target2_atr_multiplier"
+      - "lv_rm.take_profit.trailing_stop_atr_multiplier"
+      - "lv_rm.entry.funding_rate_short"
+      - "lv_rm.entry.funding_rate_long"
 
     # AI 可调参数的有效范围（用于 validate_params 校验）
-    # 参考 btc_eth 策略的范围定义方式，数值区间基于 HRS 策略特性设定
+    # 数值区间基于 HRS V2.5 策略实际配置设定
     param_ranges:
-      scoring.entry_threshold: [3.0, 8.0]
-      scoring.weights.contract: [0.30, 0.60]
-      scoring.weights.technical: [0.20, 0.50]
-      scoring.weights.sentiment: [0.10, 0.35]
-      scoring.technical.min_total_score: [4.0, 8.0]
-      scoring.technical.min_base_pattern_score: [1.0, 4.0]
-      scoring.oi_market_cap.extreme_crowded: [0.6, 0.9]
-      scoring.oi_market_cap.crowded: [0.4, 0.7]
-      scoring.oi_market_cap.medium: [0.2, 0.5]
-      scoring.oi_market_cap.neutral: [0.1, 0.3]
-      scoring.sentiment.funding_rate.extreme_high: [0.002, 0.010]
-      scoring.sentiment.funding_rate.high: [0.001, 0.005]
-      scoring.sentiment.funding_rate.medium: [0.0005, 0.003]
-      risk.stop_loss.atr_hard_stop: [1.5, 3.0]
-      risk.stop_loss.emergency_stop_percent: [0.03, 0.10]
-      risk.stop_loss.min_absolute_stop_percent: [0.01, 0.05]
-      risk.batch_take_profit.tp1_atr_multiplier: [1.0, 3.0]
-      risk.batch_take_profit.tp2_atr_multiplier: [2.0, 5.0]
-      risk.batch_take_profit.trailing_stop_atr_multiplier: [0.5, 2.0]
-      risk.consecutive_loss.max_consecutive_losses: [2, 5]
-      risk.consecutive_loss.pause_days: [3, 14]
-      risk.max_drawdown.pause_days: [3, 14]
-      candidate.short_24h_gain_threshold: [0.05, 0.20]
-      candidate.long_24h_loss_threshold: [0.05, 0.20]
-      candidate.volume_24h_min: [1000000, 50000000]
-      candidate.oi_min: [500000, 20000000]
+      scoring.entry_threshold: [4.0, 8.0]
+      scoring.weights.contract: [0.15, 0.40]
+      scoring.weights.technical: [0.30, 0.60]
+      scoring.weights.sentiment: [0.15, 0.40]
+      scoring.technical.min_total_score: [3.0, 6.0]
+      scoring.technical.min_primary_pattern_score: [0.5, 3.0]
+      scoring.contract.oi_market_cap_ratio.thresholds.extreme_high: [0.20, 0.35]
+      scoring.contract.oi_market_cap_ratio.thresholds.high: [0.15, 0.30]
+      scoring.contract.oi_market_cap_ratio.thresholds.mid_high: [0.10, 0.25]
+      scoring.contract.oi_market_cap_ratio.thresholds.mid: [0.05, 0.20]
+      scoring.sentiment.thresholds.extreme_high: [100, 200]
+      scoring.sentiment.thresholds.high: [80, 150]
+      scoring.sentiment.thresholds.mid: [30, 80]
+      scoring.extreme_bonus.bonus_score: [0.5, 3.0]
+      scoring.extreme_bonus.short.threshold: [0.10, 0.25]
+      scoring.extreme_bonus.long.threshold: [-0.25, -0.10]
+      semi_emm.entry_threshold: [4.0, 7.0]
+      semi_emm.contract_floor: [2.0, 5.0]
+      # 止损参数范围已由 redline_params 保护，无需在此声明
+      trading.batch_take_profit.target1_atr_multiplier: [1.0, 3.0]
+      trading.batch_take_profit.target1_close_percent: [0.15, 0.50]
+      trading.batch_take_profit.target2_atr_multiplier: [2.0, 5.0]
+      trading.batch_take_profit.target2_close_percent: [0.20, 0.60]
+      trading.batch_take_profit.trailing_stop_atr_multiplier: [0.8, 2.5]
+      trading.consecutive_loss.max_count: [2, 5]
+      trading.consecutive_loss.pause_days: [1, 7]
+      trading.max_drawdown.pause_days: [3, 14]
+      candidate_pool.short.price_change_24h: [0.05, 0.15]
+      candidate_pool.short.oi_market_cap_min: [0.05, 0.20]
+      candidate_pool.short.funding_rate_annual: [0.50, 1.50]
+      candidate_pool.long.price_change_24h: [-0.15, -0.05]
+      candidate_pool.long.funding_rate_annual: [-0.50, -0.10]
+      candidate_pool.long.oi_market_cap_max: [0.03, 0.10]
+      candidate_pool.liquidity.min_volume_24h: [10000000, 100000000]
+      candidate_pool.liquidity.min_oi_usd: [5000000, 50000000]
+      lv_rm.scoring.entry_threshold: [4.0, 8.0]
+      lv_rm.scoring.technical.min_total_score: [3.0, 6.0]
+      lv_rm.scoring.technical.cap_score: [5.0, 9.0]
+      lv_rm.take_profit.target1_atr_multiplier: [0.5, 2.0]
+      lv_rm.take_profit.target2_atr_multiplier: [1.0, 3.5]
+      lv_rm.take_profit.trailing_stop_atr_multiplier: [0.5, 2.0]
+      lv_rm.entry.funding_rate_short: [0.15, 0.50]
+      lv_rm.entry.funding_rate_long: [-0.30, -0.05]
 
   - strategy_id: "grid"
     name: "网格交易策略"

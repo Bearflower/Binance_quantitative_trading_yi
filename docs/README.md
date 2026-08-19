@@ -226,12 +226,13 @@ StratTuneAI 引入 AI 调优覆盖层（tuning_overrides）机制，实现基础
 - **版本化文件**：每次调优生成 `V{YYYYMMDD}.yaml` 版本文件，`.active` 文件指向当前生效版本
 - **轻量回滚**：回滚仅需修改 `.active` 指向旧版本，无需恢复备份文件
 
-### 第一期覆盖策略
+### 当前覆盖策略
 
 | 策略 | 策略ID | 适配器 |
 |------|--------|--------|
 | MTPCS趋势策略 | btc_eth | mtpcs_adapter |
 | 新币做空策略 | new_coin | new_coin_adapter |
+| HRS混合反转策略 | hrs | hrs_adapter |
 
 ### 技术栈
 
