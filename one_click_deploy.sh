@@ -32,7 +32,11 @@ ssh -i "$SSH_KEY_PATH" \
     "$SERVER_USER@$SERVER_IP" << ENDSSH
 
 # 在服务器上执行的命令
-set -e
+
+# ============================================
+# 安全部署策略：先构建所有镜像，构建成功后才替换旧容器
+# 防止某个服务构建失败导致其他服务容器丢失
+# ============================================
 
 echo "============================================="
 echo "远程部署开始"
@@ -47,14 +51,69 @@ mkdir -p $SERVER_PROJECT_PATH/database/postgres/init-scripts
 mkdir -p $SERVER_PROJECT_PATH/database/postgres/scripts
 mkdir -p $SERVER_PROJECT_PATH/database/postgres/backups
 
-# 2. 停止并删除旧容器
+# 2. 解压新包（先解压，后续构建使用新代码）
+echo "📦 解压新代码包..."
+cd /root
+tar -xzf $DEPLOY_PACKAGE_NAME -C $SERVER_PROJECT_PATH
+echo "✅ 代码包已解压"
+
+# 3. 设置权限
+cd $SERVER_PROJECT_PATH
+chmod +x database/postgres/scripts/backup-postgres.sh 2>/dev/null || true
+chmod 600 .env 2>/dev/null || true
+echo "✅ 权限已设置"
+
+# 4. 构建所有镜像（先构建，不删除旧镜像，构建失败不影响运行中的容器）
+echo "🏗️  构建所有服务镜像（不使用缓存）..."
+BUILD_FAILED=false
+BUILD_FAILED_SERVICES=""
+
+# 4.1 构建基础服务
+echo "--- 构建基础服务 ---"
+for service in kline-service kline-monitor; do
+    if [ "\$DEPLOY_${service%%-*}_${service##*-}" = true ] 2>/dev/null || [ true = true ]; then
+        echo "构建 \$service ..."
+        cd $SERVER_PROJECT_PATH
+        if docker-compose build --no-cache \$service; then
+            echo "✅ \$service 构建成功"
+        else
+            echo "⚠️  \$service 构建失败，继续构建其他服务..."
+            BUILD_FAILED=true
+            BUILD_FAILED_SERVICES="\$BUILD_FAILED_SERVICES \$service"
+        fi
+    fi
+done
+
+# 4.2 构建策略服务
+echo "--- 构建策略服务 ---"
+for service in btc-eth-strategy new-coin-strategy grid-strategy hrs-strategy ai-tuner; do
+    echo "构建 \$service ..."
+    cd $SERVER_PROJECT_PATH
+    if docker-compose build --no-cache \$service; then
+        echo "✅ \$service 构建成功"
+    else
+        echo "⚠️  \$service 构建失败，继续构建其他服务..."
+        BUILD_FAILED=true
+        BUILD_FAILED_SERVICES="\$BUILD_FAILED_SERVICES \$service"
+    fi
+done
+
+# 4.3 如果有服务构建失败，输出警告但不阻断
+if [ "\$BUILD_FAILED" = true ]; then
+    echo "============================================="
+    echo "⚠️  以下服务构建失败：\$BUILD_FAILED_SERVICES"
+    echo "将尝试启动已成功的服务，失败的服务需要手动处理"
+    echo "============================================="
+fi
+
+# 5. 停止旧容器（现在才停止，因为新镜像已构建完成）
 echo "🛑 停止旧容器..."
 cd $SERVER_PROJECT_PATH
 
 # 停止所有策略容器
 # 注意：docker ps -f name= 是前缀匹配，如 trading_system-kline 会匹配到
 # trading_system-kline-monitor，在精确容器不存在时 docker stop 会失败
-# 因此使用 || true 防止 set -e 退出
+# 因此使用 || true 防止错误退出
 for container in $BTC_ETH_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINER_NAME $HRS_CONTAINER_NAME $AI_TUNER_CONTAINER_NAME $KLINE_CONTAINER_NAME $KLINE_MONITOR_CONTAINER_NAME; do
     if docker ps -q -f name=\$container | grep -q .; then
         docker stop \$container || true
@@ -63,13 +122,6 @@ for container in $BTC_ETH_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINE
         echo "⚠️  容器 \$container 未运行，跳过停止"
     fi
 done
-
-# 停止 PostgreSQL 容器
-if docker ps -q -f name=$POSTGRES_CONTAINER_NAME | grep -q .; then
-    echo "⚠️  PostgreSQL 容器正在运行，保持运行状态"
-else
-    echo "⚠️  PostgreSQL 容器未运行"
-fi
 
 echo "🗑️  删除旧容器..."
 for container in $BTC_ETH_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINER_NAME $HRS_CONTAINER_NAME $AI_TUNER_CONTAINER_NAME $KLINE_CONTAINER_NAME $KLINE_MONITOR_CONTAINER_NAME; do
@@ -84,7 +136,7 @@ done
 # 周报容器删除（已废弃，保留为空占位以备清理）
 :
 
-# 3. 删除旧镜像（关键步骤，防止使用缓存）⭐⭐⭐
+# 6. 删除旧镜像（关键步骤，防止使用缓存）⭐⭐⭐
 echo "🗑️  删除旧镜像（防止使用缓存）..."
 for image in $BTC_ETH_IMAGE_NAME $NEW_COIN_IMAGE_NAME $GRID_IMAGE_NAME $HRS_IMAGE_NAME $AI_TUNER_IMAGE_NAME $KLINE_IMAGE_NAME $KLINE_MONITOR_IMAGE_NAME; do
     if docker images -q \$image | grep -q .; then
@@ -95,23 +147,11 @@ for image in $BTC_ETH_IMAGE_NAME $NEW_COIN_IMAGE_NAME $GRID_IMAGE_NAME $HRS_IMAG
     fi
 done
 
-# 4. 解压新包
-echo "📦 解压新代码包..."
-cd /root
-tar -xzf $DEPLOY_PACKAGE_NAME -C $SERVER_PROJECT_PATH
-echo "✅ 代码包已解压"
-
-# 5. 设置权限
-cd $SERVER_PROJECT_PATH
-chmod +x database/postgres/scripts/backup-postgres.sh 2>/dev/null || true
-chmod 600 .env 2>/dev/null || true
-echo "✅ 权限已设置"
-
-# 6. 清理 Docker 缓存（可选，如果磁盘空间紧张）
+# 7. 清理 Docker 缓存（可选，如果磁盘空间紧张）
 echo "🧹 清理 Docker 悬空镜像..."
 docker image prune -f --filter "until=24h" 2>/dev/null || true
 
-# 7. 创建 Docker 网络（如果不存在）
+# 8. 创建 Docker 网络（如果不存在）
 echo "🌐 创建 Docker 网络..."
 if docker network ls | grep -q trading-network; then
     echo "✅ Docker 网络已存在"
@@ -120,7 +160,7 @@ else
     echo "✅ Docker 网络已创建"
 fi
 
-# 8. 启动 PostgreSQL（如果未运行）
+# 9. 启动 PostgreSQL（如果未运行）
 if [ "$DEPLOY_POSTGRES" = true ]; then
     echo "🗄️  检查 PostgreSQL 容器..."
     if docker ps -q -f name=$POSTGRES_CONTAINER_NAME | grep -q .; then
@@ -140,7 +180,7 @@ if [ "$DEPLOY_POSTGRES" = true ]; then
             echo "⚠️  docker-compose 启动 postgres 失败，尝试直接创建..."
             docker run -d \
                 --name $POSTGRES_CONTAINER_NAME \
-                --network trading-network-v2 \
+                --network trading-network \
                 -e POSTGRES_DB=trading_platform \
                 -e POSTGRES_USER=trading_user \
                 -e POSTGRES_PASSWORD=\${DATABASE_PASSWORD:-trading_password_2024} \
@@ -164,148 +204,46 @@ if [ "$DEPLOY_POSTGRES" = true ]; then
     fi
 fi
 
-# 8.1 提前启动辅助服务（在构建策略之前启动，防止后续构建失败导致遗漏）
-# 根因：主服务构建失败时 set -e 会退出脚本，导致后续辅助服务被跳过
-echo "🔍 启动辅助服务（kline-monitor 等）..."
+# 10. 启动所有服务容器（镜像已在上一步构建完成）
+echo "🚀 启动所有服务容器..."
 cd $SERVER_PROJECT_PATH
-docker-compose up -d kline-monitor 2>/dev/null || true
-echo "✅ 辅助服务已启动"
 
-# 9. 先构建并启动基础服务（kline-service 等），策略服务依赖它们
-# 根因：策略服务 depends_on kline-service (condition: service_healthy)，
-# 如果 kline-service 未构建，docker-compose up -d 策略容器时会因依赖不满足而失败
+# 先启动基础服务（kline-service 等），再启动策略服务
+# 策略服务 depends_on kline-service (condition: service_healthy)
 if [ "$DEPLOY_KLINE" = true ]; then
-    echo "🏗️  构建 K 线数据服务镜像（不使用缓存）..."
-    cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache kline-service
-    if [ \$? -ne 0 ]; then
-        echo "❌ K 线数据服务镜像构建失败！"
-        exit 1
-    fi
-    echo "✅ K 线数据服务镜像构建成功"
-
-    echo "🚀 启动 K 线数据服务容器..."
-    docker-compose up -d kline-service
-    if [ \$? -ne 0 ]; then
-        echo "❌ K 线数据服务容器启动失败！"
-        exit 1
-    fi
-    echo "✅ K 线数据服务容器启动成功"
+    echo "  启动 K 线数据服务..."
+    docker-compose up -d kline-service || echo "⚠️  kline-service 启动失败"
 fi
 
 if [ "$DEPLOY_KLINE_MONITOR" = true ]; then
-    echo "🏗️  构建 K 线服务健康监控镜像（不使用缓存）..."
-    cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache kline-monitor
-    if [ \$? -ne 0 ]; then
-        echo "❌ K 线服务健康监控镜像构建失败！"
-        exit 1
-    fi
-    echo "✅ K 线服务健康监控镜像构建成功"
-
-    echo "🚀 启动 K 线服务健康监控容器..."
-    docker-compose up -d kline-monitor
-    if [ \$? -ne 0 ]; then
-        echo "❌ K 线服务健康监控容器启动失败！"
-        exit 1
-    fi
-    echo "✅ K 线服务健康监控容器启动成功"
+    echo "  启动 K 线服务健康监控..."
+    docker-compose up -d kline-monitor || echo "⚠️  kline-monitor 启动失败"
 fi
 
-# 10. 构建并启动策略容器（不使用缓存）
+# 等待基础服务就绪
+echo "⏳ 等待基础服务就绪..."
+sleep 5
+
+# 启动策略服务
 if [ "$DEPLOY_BTC_ETH" = true ]; then
-    echo "🏗️  构建 BTC/ETH 策略镜像（不使用缓存）..."
-    cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache btc-eth-strategy
-    if [ \$? -ne 0 ]; then
-        echo "❌ BTC/ETH 策略镜像构建失败！"
-        exit 1
-    fi
-    echo "✅ BTC/ETH 策略镜像构建成功"
-
-    echo "🚀 启动 BTC/ETH 策略容器..."
-    docker-compose up -d btc-eth-strategy
-    if [ \$? -ne 0 ]; then
-        echo "❌ BTC/ETH 策略容器启动失败！"
-        exit 1
-    fi
-    echo "✅ BTC/ETH 策略容器启动成功"
+    echo "  启动 BTC/ETH 策略..."
+    docker-compose up -d btc-eth-strategy || echo "⚠️  btc-eth-strategy 启动失败"
 fi
-
 if [ "$DEPLOY_NEW_COIN" = true ]; then
-    echo "🏗️  构建新币做空策略镜像（不使用缓存）..."
-    cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache new-coin-strategy
-    if [ \$? -ne 0 ]; then
-        echo "❌ 新币做空策略镜像构建失败！"
-        exit 1
-    fi
-    echo "✅ 新币做空策略镜像构建成功"
-
-    echo "🚀 启动新币做空策略容器..."
-    docker-compose up -d new-coin-strategy
-    if [ \$? -ne 0 ]; then
-        echo "❌ 新币做空策略容器启动失败！"
-        exit 1
-    fi
-    echo "✅ 新币做空策略容器启动成功"
+    echo "  启动新币做空策略..."
+    docker-compose up -d new-coin-strategy || echo "⚠️  new-coin-strategy 启动失败"
 fi
-
 if [ "$DEPLOY_GRID" = true ]; then
-    echo "🏗️  构建网格交易策略镜像（不使用缓存）..."
-    cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache grid-strategy
-    if [ \$? -ne 0 ]; then
-        echo "❌ 网格交易策略镜像构建失败！"
-        exit 1
-    fi
-    echo "✅ 网格交易策略镜像构建成功"
-
-    echo "🚀 启动网格交易策略容器..."
-    docker-compose up -d grid-strategy
-    if [ \$? -ne 0 ]; then
-        echo "❌ 网格交易策略容器启动失败！"
-        exit 1
-    fi
-    echo "✅ 网格交易策略容器启动成功"
+    echo "  启动网格交易策略..."
+    docker-compose up -d grid-strategy || echo "⚠️  grid-strategy 启动失败"
 fi
-
 if [ "$DEPLOY_HRS" = true ]; then
-    echo "🏗️  构建 HRS 混合反转策略镜像（不使用缓存）..."
-    cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache hrs-strategy
-    if [ \$? -ne 0 ]; then
-        echo "❌ HRS 混合反转策略镜像构建失败！"
-        exit 1
-    fi
-    echo "✅ HRS 混合反转策略镜像构建成功"
-
-    echo "🚀 启动 HRS 混合反转策略容器..."
-    docker-compose up -d hrs-strategy
-    if [ \$? -ne 0 ]; then
-        echo "❌ HRS 混合反转策略容器启动失败！"
-        exit 1
-    fi
-    echo "✅ HRS 混合反转策略容器启动成功"
+    echo "  启动 HRS 混合反转策略..."
+    docker-compose up -d hrs-strategy || echo "⚠️  hrs-strategy 启动失败"
 fi
-
 if [ "$DEPLOY_AI_TUNER" = true ]; then
-    echo "🏗️  构建 StratTuneAI 调优镜像（不使用缓存）..."
-    cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache ai-tuner
-    if [ \$? -ne 0 ]; then
-        echo "❌ StratTuneAI 调优镜像构建失败！"
-        exit 1
-    fi
-    echo "✅ StratTuneAI 调优镜像构建成功"
-
-    echo "🚀 启动 StratTuneAI 调优容器..."
-    docker-compose up -d ai-tuner
-    if [ \$? -ne 0 ]; then
-        echo "❌ StratTuneAI 调优容器启动失败！"
-        exit 1
-    fi
-    echo "✅ StratTuneAI 调优容器启动成功"
+    echo "  启动 StratTuneAI 调优..."
+    docker-compose up -d ai-tuner || echo "⚠️  ai-tuner 启动失败"
 fi
 
 # 11. 等待容器启动

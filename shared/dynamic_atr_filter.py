@@ -153,6 +153,18 @@ class DynamicATRFilter:
         """设置缓存"""
         self._percentile_cache[symbol] = (value, datetime.now())
     
+    def _get_symbol_percentile(self, symbol: str) -> float:
+        """获取币种特定的分位数（symbol_overrides 覆盖）"""
+        if symbol in self.symbol_overrides:
+            return self.symbol_overrides[symbol].get('percentile', self.low_percentile)
+        return self.low_percentile
+
+    def _get_symbol_strong_coefficient(self, symbol: str) -> float:
+        """获取币种特定的强趋势系数（symbol_overrides 覆盖）"""
+        if symbol in self.symbol_overrides:
+            return self.symbol_overrides[symbol].get('strong_coefficient', self.strong_coefficient)
+        return self.strong_coefficient
+
     def get_base_threshold(self, symbol: str) -> Tuple[float, str]:
         """
         获取基础低波动阈值（历史ATR%的分位数）
@@ -168,27 +180,31 @@ class DynamicATRFilter:
             return fallback, f"数据不足({len(self._atr_history.get(symbol, []))}<{self.min_history_count})，使用默认值{fallback}%"
         
         cached = self._get_cached_percentile(symbol)
+        effective_percentile = self._get_symbol_percentile(symbol)
         if cached is not None:
-            return cached, f"缓存值（历史{len(self._atr_history[symbol])}条数据的{self.low_percentile*100:.0f}%分位数）"
+            return cached, f"缓存值（历史{len(self._atr_history[symbol])}条数据的{effective_percentile*100:.0f}%分位数）"
         
         atr_percents = list(self._atr_history[symbol])
-        base_threshold = float(np.percentile(atr_percents, self.low_percentile * 100))
+        base_threshold = float(np.percentile(atr_percents, effective_percentile * 100))
         
         self._set_cache(symbol, base_threshold)
         
-        return base_threshold, f"历史{len(atr_percents)}条数据的{self.low_percentile*100:.0f}%分位数"
+        return base_threshold, f"历史{len(atr_percents)}条数据的{effective_percentile*100:.0f}%分位数"
     
-    def _get_adx_coefficient(self, adx: float) -> float:
+    def _get_adx_coefficient(self, adx: float, symbol: str = "") -> float:
         """
-        根据ADX获取调整系数
+        根据ADX获取调整系数（支持币种特定的强趋势系数覆盖）
         
         Args:
             adx: ADX值
+            symbol: 交易对（用于获取币种特定系数）
         
         Returns:
             调整系数
         """
         if adx > self.strong_trend_threshold:
+            if symbol:
+                return self._get_symbol_strong_coefficient(symbol)
             return self.strong_coefficient
         elif adx > self.medium_trend_threshold:
             return self.medium_coefficient
@@ -223,7 +239,7 @@ class DynamicATRFilter:
         
         base_threshold, base_reason = self.get_base_threshold(symbol)
         
-        coefficient = self._get_adx_coefficient(adx)
+        coefficient = self._get_adx_coefficient(adx, symbol)
         
         adjusted = base_threshold * coefficient
         

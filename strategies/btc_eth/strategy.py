@@ -533,7 +533,26 @@ class BTCEthStrategy:
         )
         
         # 初始化动态ATR过滤器（v6.16.10）
-        atr_config = self.risk_config.get('dynamic_atr', {})
+        atr_config = self.risk_config.get('dynamic_atr', {}).copy()
+        # 从 symbol_config 构建 per-symbol ATR 参数覆盖（修复幽灵参数 bug）
+        # 映射关系：
+        #   atr_abs_min (decimal, 0.009=0.9%) → absolute_min_atr_percent (percentage, 0.9)
+        #   atr_percentile (0-100, 50) → percentile (0-1, 0.5)
+        #   atr_factor_strong → strong_coefficient
+        if self.symbol_config:
+            symbol_overrides = {}
+            for sym, cfg in self.symbol_config.items():
+                override = {}
+                if 'atr_abs_min' in cfg:
+                    override['absolute_min_atr_percent'] = cfg['atr_abs_min'] * 100
+                if 'atr_percentile' in cfg:
+                    override['percentile'] = cfg['atr_percentile'] / 100.0
+                if 'atr_factor_strong' in cfg:
+                    override['strong_coefficient'] = cfg['atr_factor_strong']
+                if override:
+                    symbol_overrides[sym] = override
+            if symbol_overrides:
+                atr_config['symbol_overrides'] = symbol_overrides
         if atr_config.get('enabled', True):
             self.atr_filter = DynamicATRFilter(atr_config)
         else:
