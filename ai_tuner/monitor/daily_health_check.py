@@ -3,7 +3,7 @@
 在两次周度调优之间，检查各策略是否出现异常
 """
 
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta
 from typing import Any, Dict, List
 
 import structlog
@@ -65,7 +65,7 @@ class DailyHealthCheck:
         Returns:
             包含最近24小时交易表现的字典
         """
-        since = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        since = datetime.utcnow() - timedelta(hours=24)
 
         # 查询 trade_records 汇总统计
         query = """
@@ -85,6 +85,7 @@ class DailyHealthCheck:
             SELECT COUNT(*) as consecutive_losses
             FROM (
                 SELECT realized_pnl,
+                       executed_at,
                        SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END)
                            OVER (ORDER BY executed_at DESC
                                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as grp
