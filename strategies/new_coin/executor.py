@@ -1878,6 +1878,12 @@ class TradingExecutor:
                 entry_price=float(entry_price)
             )
 
+            # 在补单前，先取消所有旧条件单，避免重复累积
+            try:
+                await self.cancel_all_algo_orders(symbol)
+            except Exception as e:
+                logger.warning("取消旧条件单失败", symbol=symbol, error=str(e))
+
             # 1. 获取当前持仓数量
             positions = await self.binance_api._request(
                 "GET", "/papi/v1/um/positionRisk", signed=True

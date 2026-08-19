@@ -136,43 +136,134 @@ strategy:
 
   # 风险控制（v6.19）
   risk:
+    # 按信号等级(S/A/B/C)独立配置的止盈止损参数（v6.25）
+    signal_levels:
+      S:
+        stop_loss_atr_multiplier: 2.5
+        partial_take_profit:
+          tp1_atr_multiplier: 6.0
+          tp1_close_ratio: 0.15
+          tp2_atr_multiplier: 9.0
+          tp2_close_ratio: 0.35
+          remaining_ratio: 0.50
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 3.0
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.5
+              retrace_ratio: 0.0
+            - profit_ceiling: 4.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 8.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 96
+          close_ratio: 0.50
+
+      A:
+        stop_loss_atr_multiplier: 1.5
+        partial_take_profit:
+          tp1_atr_multiplier: 4.0
+          tp1_close_ratio: 0.25
+          tp2_atr_multiplier: 6.0
+          tp2_close_ratio: 0.25
+          remaining_ratio: 0.50
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 1.5
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.5
+              retrace_ratio: 0.0
+            - profit_ceiling: 4.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 8.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 72
+          close_ratio: 0.50
+
+      B:
+        stop_loss_atr_multiplier: 1.2
+        partial_take_profit:
+          tp1_atr_multiplier: 3.0
+          tp1_close_ratio: 0.30
+          tp2_atr_multiplier: 5.0
+          tp2_close_ratio: 0.30
+          remaining_ratio: 0.40
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 1.0
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.5
+              retrace_ratio: 0.0
+            - profit_ceiling: 3.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 6.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 48
+          close_ratio: 0.60
+
+      C:
+        stop_loss_atr_multiplier: 1.0
+        partial_take_profit:
+          tp1_atr_multiplier: 2.0
+          tp1_close_ratio: 0.40
+          tp2_atr_multiplier: 3.5
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.20
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 0.5
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.0
+              retrace_ratio: 0.0
+            - profit_ceiling: 2.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 4.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 24
+          close_ratio: 0.80
+
+    # 全局参数（不按信号等级拆解）
     max_position_size: 0.1
-    # 止损回到 1.5×ATR（v6.19）
-    stop_loss_atr_multiplier: 1.5
-
-    # 分批止盈止损配置
-    partial_take_profit:
-      tp1_atr_multiplier: 4.0
-      tp1_close_ratio: 0.25
-      tp2_atr_multiplier: 6.0
-      tp2_close_ratio: 0.25
-      remaining_ratio: 0.50
-
-    # 动态利润保护（替代吊灯止损，v6.21）
-    dynamic_trailing:
-      enabled: true
-      activation:
-        min_profit_pct: 1.5  # 浮盈 >= 1.5% 激活
-        also_on_tp1: true     # TP1触发也激活
-      regression_tiers:
-        - profit_ceiling: 1.5    # 浮盈 < 1.5% → 保本
-          retrace_ratio: 0.0
-        - profit_ceiling: 4.0    # 1.5% ~ 4%
-          retrace_ratio: 0.5
-        - profit_ceiling: 8.0    # 4% ~ 8%
-          retrace_ratio: 0.35
-        - profit_ceiling: 999.0  # > 8%
-          retrace_ratio: 0.25
-      volatility_adjustment:
-        enabled: true
-        atr_lookback_days: 30
-        atr_period: 14
-        cache_ttl_seconds: 3600
-
-    # 时间止损配置
-    time_stop:
-      max_holding_hours: 72
-      close_ratio: 0.50
 
     # 平仓限价单配置（v6.20.3：全部平仓使用限价单，不再降级为市价单）
     close_limit_order:

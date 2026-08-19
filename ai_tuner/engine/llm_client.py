@@ -7,10 +7,13 @@ DeepSeek API 封装
 """
 
 import asyncio
+import random
 from typing import Any, Callable, Dict, Optional
 
 import structlog
 from openai import AsyncOpenAI
+
+from shared.utils import resolve_env_var
 
 logger = structlog.get_logger()
 
@@ -33,7 +36,7 @@ class LLMClient:
                     temperature, max_tokens, max_retries,
                     thinking_mode（是否开启思考模式）, reasoning_effort（推理强度）
         """
-        api_key = self._resolve_env_var(config.get("api_key", ""))
+        api_key = resolve_env_var(config.get("api_key", ""))
         self.base_url = config.get("base_url", "https://api.deepseek.com")
         self.model = config.get("model", "deepseek-v4-pro")
         self.temperature = float(config.get("temperature", 0.3))
@@ -65,7 +68,7 @@ class LLMClient:
         设置 Token 用量回调函数
 
         Args:
-            callback: 回调函数，签名为 callback(model, prompt_tokens, completion_tokens, total_tokens)
+            callback: 回调函数，签名为 callback(model, prompt_tokens, completion_tokens, total_tokens, strategy_id)
         """
         self._usage_callback = callback
 
@@ -75,6 +78,7 @@ class LLMClient:
         user_prompt: str,
         max_retries: Optional[int] = None,
         reasoning_effort: Optional[str] = None,
+        strategy_id: str = "",
     ) -> str:
         """
         调用 DeepSeek API 获取 AI 响应
@@ -88,6 +92,7 @@ class LLMClient:
             user_prompt: 用户提示词
             max_retries: 最大重试次数，默认使用配置值
             reasoning_effort: 推理强度（high/max），覆盖配置默认值
+            strategy_id: 关联的策略ID，用于成本追踪
 
         Returns:
             AI 响应的文本内容（含 reasoning_content 和 content），异常时返回空字符串
@@ -136,6 +141,7 @@ class LLMClient:
                         prompt_tokens=usage.prompt_tokens,
                         completion_tokens=usage.completion_tokens,
                         total_tokens=usage.total_tokens,
+                        strategy_id=strategy_id,
                     )
 
                 logger.info(
@@ -157,7 +163,9 @@ class LLMClient:
                 return content
 
             except Exception as e:
-                wait_time = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                base_wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
+                jitter = random.uniform(0, 0.5)  # 0~0.5s 随机抖动
+                wait_time = base_wait + jitter
                 logger.error(
                     "LLM调用失败",
                     attempt=attempt + 1,
@@ -173,27 +181,3 @@ class LLMClient:
                     return ""
 
         return ""
-
-    @staticmethod
-    def _resolve_env_var(value: str) -> str:
-        """
-        解析环境变量占位符 ${VAR_NAME}
-
-        Args:
-            value: 可能包含环境变量占位符的字符串
-
-        Returns:
-            解析后的值
-        """
-        import os
-        import re
-
-        def replace_env(match):
-            var_expr = match.group(1)
-            # 支持 ${VAR:default} 格式
-            if ":" in var_expr:
-                var_name, default = var_expr.split(":", 1)
-                return os.getenv(var_name, default)
-            return os.getenv(var_expr, "")
-
-        return re.sub(r"\$\{([^}]+)\}", replace_env, value)

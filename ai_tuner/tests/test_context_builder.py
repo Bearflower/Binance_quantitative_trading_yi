@@ -77,7 +77,6 @@ class TestBuildContextWithReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
         )
 
         # 验证标题
@@ -114,7 +113,7 @@ class TestBuildContextWithReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert "应用后胜率: 65.0%" in context
@@ -140,7 +139,7 @@ class TestBuildContextWithReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert "应用后胜率" not in context
@@ -172,7 +171,7 @@ class TestBuildContextWithReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert "第1次调优" in context
@@ -208,7 +207,7 @@ class TestBuildContextWithoutReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert "推理要点:" not in context
@@ -231,7 +230,7 @@ class TestBuildContextWithoutReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert "推理要点:" not in context
@@ -253,7 +252,7 @@ class TestBuildContextWithoutReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert "推理要点:" not in context
@@ -275,7 +274,7 @@ class TestBuildContextWithoutReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert "推理要点:" not in context
@@ -297,7 +296,7 @@ class TestBuildContextWithoutReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert "推理要点:" not in context
@@ -319,7 +318,7 @@ class TestBuildContextWithoutReasoning:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert "应用后胜率" not in context
@@ -343,7 +342,7 @@ class TestBuildContextNoHistory:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert context == "暂无历史调优记录，这是首次调优。"
@@ -356,7 +355,7 @@ class TestBuildContextNoHistory:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert context == "暂无历史调优记录，这是首次调优。"
@@ -388,7 +387,7 @@ class TestBuildContextReasoningTruncation:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         # 恰好 200 字，不截断，因此不应有 "..."
@@ -414,7 +413,7 @@ class TestBuildContextReasoningTruncation:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         # 验证截断后的内容（200 个"调" + "..."）
@@ -446,7 +445,7 @@ class TestBuildContextReasoningTruncation:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         # 201 > 200，应被截断
@@ -470,7 +469,7 @@ class TestBuildContextExceptionHandling:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert context == "历史调优记忆获取失败，请仅基于当前数据进行判断。"
@@ -483,7 +482,7 @@ class TestBuildContextExceptionHandling:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert context == "历史调优记忆获取失败，请仅基于当前数据进行判断。"
@@ -496,7 +495,7 @@ class TestBuildContextExceptionHandling:
         context = await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
+            
         )
 
         assert context == "历史调优记忆获取失败，请仅基于当前数据进行判断。"
@@ -511,7 +510,7 @@ class TestBuildContextWindowSize:
     """测试窗口大小参数传递"""
 
     @pytest.mark.asyncio
-    async def test_window_size_passed_correctly(self, sample_current_report):
+    async def test_window_size_passed_correctly(self):
         """验证 context_window_size 正确传递给 get_recent_memories"""
         builder = ContextBuilder(context_window_size=3)
         mock_db_handler = MagicMock()
@@ -530,7 +529,6 @@ class TestBuildContextWindowSize:
         await builder.build_context(
             strategy_id="btc_eth_grid_v1",
             db_handler=mock_db_handler,
-            current_report=sample_current_report,
         )
 
         mock_db_handler.get_recent_memories.assert_awaited_once_with(

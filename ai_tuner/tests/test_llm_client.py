@@ -193,6 +193,7 @@ class TestRetryLogic:
             prompt_tokens=200,
             completion_tokens=100,
             total_tokens=300,
+            strategy_id="",
         )
 
 
@@ -223,24 +224,28 @@ class TestEnvVarResolution:
 
     def test_resolve_env_var_basic(self):
         """应解析 ${VAR_NAME} 格式"""
+        from shared.utils import resolve_env_var
         with patch("ai_tuner.engine.llm_client.AsyncOpenAI") as mock_openai, \
              patch.dict("os.environ", {"DEEPSEEK_API_KEY": "my-key"}, clear=True):
             client = LLMClient({"api_key": "${DEEPSEEK_API_KEY}"})
             # 检查 AsyncOpenAI 是否用正确的 api_key 初始化
-            actual_api_key = client._resolve_env_var("${DEEPSEEK_API_KEY}")
+            actual_api_key = resolve_env_var("${DEEPSEEK_API_KEY}")
             assert actual_api_key == "my-key"
 
     def test_resolve_env_var_with_default(self):
         """应解析 ${VAR:default} 格式"""
-        result = LLMClient._resolve_env_var("${NOT_EXIST:default_val}")
+        from shared.utils import resolve_env_var
+        result = resolve_env_var("${NOT_EXIST:default_val}")
         assert result == "default_val"
 
     def test_resolve_env_var_not_found(self):
         """环境变量不存在且无默认值时返回空"""
-        result = LLMClient._resolve_env_var("${NOT_EXIST}")
+        from shared.utils import resolve_env_var
+        result = resolve_env_var("${NOT_EXIST}")
         assert result == ""
 
     def test_resolve_no_placeholder(self):
         """没有占位符时直接返回原值"""
-        result = LLMClient._resolve_env_var("plain-value")
+        from shared.utils import resolve_env_var
+        result = resolve_env_var("plain-value")
         assert result == "plain-value"

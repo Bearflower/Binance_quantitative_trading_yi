@@ -629,6 +629,22 @@ class BinanceClient:
         
         # 自动调整触发价格精度
         adjusted_stop_price = self._adjust_price_precision(stop_price, tick_size)
+
+        # 价格合理性校验：防止 stop_price 距离当前价格太近导致 -2021 错误 ⭐
+        # 场景：止损单已触发但限价未成交，重新补单时当前价格已越过 stop_price
+        if order_type in ("STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET"):
+            try:
+                ticker = await self.get_ticker(symbol)
+                current_price = Decimal(str(ticker.get("lastPrice", "0")))
+                if current_price > 0:
+                    # 最小安全距离：至少 5 个 tick_size 或 0.1%，取较大值
+                    min_safe_distance = max(tick_size * 5, current_price * Decimal("0.001"))
+                    adjusted_stop_price = self._validate_stop_price(
+                        adjusted_stop_price, current_price, side, order_type, min_safe_distance, tick_size, symbol
+                    )
+            except Exception as e:
+                logger.warning("价格校验失败，跳过（不影响订单执行）", symbol=symbol, error=str(e))
+
         logger.debug(
             f"{symbol} 触发价格精度调整",
             original_stop_price=float(stop_price),
@@ -720,6 +736,91 @@ class BinanceClient:
                 logger.warning("条件单交易记录失败", error=str(e))
 
         return result
+
+    def _validate_stop_price(
+        self,
+        stop_price: Decimal,
+        current_price: Decimal,
+        side: str,
+        order_type: str,
+        min_safe_distance: Decimal,
+        tick_size: Decimal,
+        symbol: str,
+    ) -> Decimal:
+        """
+        校验并调整 stop_price，防止因距离当前价格太近导致 -2021 错误
+        
+        Binance 规则：
+        - STOP BUY (short 止损): stop_price > current_price，否则立即触发
+        - STOP SELL (long 止损): stop_price < current_price，否则立即触发
+        - TAKE_PROFIT BUY (short 止盈): stop_price < current_price，否则立即触发
+        - TAKE_PROFIT SELL (long 止盈): stop_price > current_price，否则立即触发
+        
+        Args:
+            stop_price: 原始触发价
+            current_price: 当前最新价
+            side: BUY/SELL
+            order_type: STOP/STOP_MARKET/TAKE_PROFIT/TAKE_PROFIT_MARKET
+            min_safe_distance: 最小安全距离
+            tick_size: 价格精度
+            symbol: 交易对（仅用于日志）
+        
+        Returns:
+            调整后的触发价
+        """
+        is_stop = order_type in ("STOP", "STOP_MARKET")
+        adjusted = stop_price
+
+        if is_stop:
+            # STOP 订单：BUY = 做空止损, SELL = 做多止损
+            if side == "BUY" and stop_price <= current_price:
+                # 做空止损价低于当前价 → 调整为当前价 + 安全距离
+                adjusted = current_price + min_safe_distance
+                logger.warning(
+                    "做空止损价低于当前价，自动调整",
+                    symbol=symbol,
+                    original=float(stop_price),
+                    adjusted=float(adjusted),
+                    current_price=float(current_price),
+                )
+            elif side == "SELL" and stop_price >= current_price:
+                # 做多止损价高于当前价 → 调整为当前价 - 安全距离
+                adjusted = current_price - min_safe_distance
+                logger.warning(
+                    "做多止损价高于当前价，自动调整",
+                    symbol=symbol,
+                    original=float(stop_price),
+                    adjusted=float(adjusted),
+                    current_price=float(current_price),
+                )
+        else:
+            # TAKE_PROFIT 订单：BUY = 做空止盈, SELL = 做多止盈
+            if side == "BUY" and stop_price >= current_price:
+                # 做空止盈价高于当前价 → 调整为当前价 - 安全距离
+                adjusted = current_price - min_safe_distance
+                logger.warning(
+                    "做空止盈价高于当前价，自动调整",
+                    symbol=symbol,
+                    original=float(stop_price),
+                    adjusted=float(adjusted),
+                    current_price=float(current_price),
+                )
+            elif side == "SELL" and stop_price <= current_price:
+                # 做多止盈价低于当前价 → 调整为当前价 + 安全距离
+                adjusted = current_price + min_safe_distance
+                logger.warning(
+                    "做多止盈价低于当前价，自动调整",
+                    symbol=symbol,
+                    original=float(stop_price),
+                    adjusted=float(adjusted),
+                    current_price=float(current_price),
+                )
+
+        # 确保调整后的价格至少为 1 个 tick_size
+        if adjusted <= 0:
+            adjusted = tick_size
+
+        return self._adjust_price_precision(adjusted, tick_size)
 
     async def get_position(self, symbol: Optional[str] = None) -> List[Dict]:
         """查询持仓"""

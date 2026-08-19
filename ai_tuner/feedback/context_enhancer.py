@@ -43,14 +43,12 @@ class ContextEnhancer:
     def build_feedback_context(
         self,
         effect_summary: EffectSummary,
-        current_report: Dict[str, Any],
     ) -> str:
         """
         构建反馈上下文文本
 
         Args:
             effect_summary: EffectTracker 输出的效果摘要
-            current_report: 当前的策略报告字典（用于获取本周的 BTC 表现等）
 
         Returns:
             Markdown 格式的反馈上下文文本

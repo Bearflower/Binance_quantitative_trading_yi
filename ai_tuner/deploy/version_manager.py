@@ -134,9 +134,11 @@ class VersionManager:
 
             max_version = 0
             for item in os.listdir(overrides_dir):
-                if item.startswith("V") and len(item) == 9:
+                # 去掉 .yaml 扩展名，适配文件格式（如 V20260801.yaml → V20260801）
+                basename = item[:-5] if item.endswith(".yaml") else item
+                if basename.startswith("V") and len(basename) == 9:
                     try:
-                        num = int(item[1:])
+                        num = int(basename[1:])
                         max_version = max(max_version, num)
                     except ValueError:
                         continue
@@ -156,7 +158,8 @@ class VersionManager:
         生成新版本号
 
         格式为 V{YYYYMMDD}，如 "V20260811"。
-        如果当天已存在版本号，则追加后缀 "V20260811-1"。
+        如果当天已存在版本号，则追加后缀 "V20260811_01"。
+        兼容旧格式 "V20260811-1"（使用 - 分隔符的旧版本）。
 
         Args:
             strategy_config_path: 策略配置文件路径
@@ -175,11 +178,12 @@ class VersionManager:
                 suffix = 0
                 for item in os.listdir(overrides_dir):
                     if item.startswith(base_version):
-                        # 提取后缀数字
-                        rest = item[len(base_version):]
+                        # 去掉 .yaml 扩展名（如 V20260811_01.yaml → V20260811_01）
+                        basename = item[:-5] if item.endswith(".yaml") else item
+                        rest = basename[len(base_version):]
                         if rest == "":
                             suffix = max(suffix, 1)
-                        elif rest.startswith("-"):
+                        elif rest.startswith("_") or rest.startswith("-"):
                             try:
                                 num = int(rest[1:])
                                 suffix = max(suffix, num + 1)
@@ -187,7 +191,7 @@ class VersionManager:
                                 continue
 
                 if suffix > 0:
-                    new_version = f"{base_version}-{suffix}"
+                    new_version = f"{base_version}_{suffix:02d}"
                 else:
                     new_version = base_version
             else:

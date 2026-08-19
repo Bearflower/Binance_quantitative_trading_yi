@@ -1,10 +1,13 @@
 """
 工具函数
-提供重试、日志等通用功能
+提供重试、日志、环境变量解析、字典嵌套值读取等通用功能
 """
 import asyncio
 import functools
-from typing import Callable, Any
+import os
+import re
+from typing import Any, Callable, Dict, Optional
+
 import structlog
 
 
@@ -65,9 +68,10 @@ def retry_on_failure(
                     # 不可重试的错误码，立即抛出不重试
                     if non_retryable_codes and hasattr(e, 'code') and getattr(e, 'code') in non_retryable_codes:
                         code = getattr(e, 'code')
-                        # -9999 是废弃API端点（已知预期行为），-2011 是订单已成交/已取消（正常竞态）
-                        # 两者均为已知预期行为，降级为 debug 避免监控噪音
-                        log_func = logger.debug if code in (-9999, -2011) else logger.warning
+                        # -9999 是废弃API端点（已知预期行为），-2011 是订单已成交/已取消（正常竞态），
+                        # -4108 是交割/结算/预上市中的币种（正常预期行为）
+                        # 以上均为已知预期行为，降级为 debug 避免监控噪音
+                        log_func = logger.debug if code in (-9999, -2011, -4108) else logger.warning
                         log_func(
                             "遇到不可重试的错误，立即抛出",
                             function=func.__name__,
@@ -155,3 +159,49 @@ def setup_logging(level: str = "INFO", format: str = "json"):
         stream=sys.stdout,
         level=getattr(logging, level_upper)
     )
+
+
+def resolve_env_var(value: str) -> Optional[str]:
+    """
+    解析字符串中的 ${VAR_NAME} 或 ${VAR_NAME:default} 占位符
+
+    Args:
+        value: 可能包含环境变量占位符的字符串
+
+    Returns:
+        解析后的字符串，如果字符串中不含占位符返回原值
+    """
+    pattern = r'\$\{([^}]+)\}'
+    match = re.search(pattern, value)
+    if not match:
+        return value
+
+    def replace_env(match):
+        var_expr = match.group(1)
+        if ":" in var_expr:
+            var_name, default = var_expr.split(":", 1)
+            return os.getenv(var_name, default)
+        return os.getenv(var_expr, "")
+
+    return re.sub(pattern, replace_env, value)
+
+
+def get_nested_value(config: Dict[str, Any], key_path: str) -> Any:
+    """
+    按点分隔路径读取嵌套字典值
+
+    Args:
+        config: 配置字典
+        key_path: 点分隔的键路径，如 "scoring.min_score"
+
+    Returns:
+        配置值，如果路径不存在返回 None
+    """
+    keys = key_path.split(".")
+    current = config
+    for key in keys:
+        if isinstance(current, dict) and key in current:
+            current = current[key]
+        else:
+            return None
+    return current

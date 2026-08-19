@@ -20,6 +20,8 @@ from typing import Any, Dict
 import structlog
 import yaml
 
+from shared.utils import get_nested_value
+
 logger = structlog.get_logger()
 
 
@@ -239,14 +241,7 @@ class ConfigOperator:
         Returns:
             配置值，如果路径不存在返回 None
         """
-        keys = key_path.split(".")
-        current = config
-        for key in keys:
-            if isinstance(current, dict) and key in current:
-                current = current[key]
-            else:
-                return None
-        return current
+        return get_nested_value(config, key_path)
 
     def set_nested_value(self, config: Dict[str, Any], key_path: str, value: Any) -> bool:
         """

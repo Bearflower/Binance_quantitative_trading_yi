@@ -356,7 +356,6 @@ class EffectTracker:
 │ │ + __init__(config: Dict[str, Any])                          │  │
 │ │ + build_feedback_context(                                   │  │
 │ │     effect_summary: EffectSummary,                          │  │
-│ │     current_report: Dict[str, Any],                         │  │
 │ │   ) -> str                                                  │  │
 │ │                                                             │  │
 │ │ # 私有方法                                                   │  │
@@ -371,7 +370,7 @@ class EffectTracker:
 #### 2.2.2 核心流程
 
 ```
-ContextEnhancer.build_feedback_context(effect_summary, current_report):
+ContextEnhancer.build_feedback_context(effect_summary):
   1. 检查 effect_summary.has_data:
      - False → 返回 "暂无历史调优效果数据，这是首次反馈追踪。"
 
@@ -420,14 +419,12 @@ class ContextEnhancer:
     def build_feedback_context(
         self,
         effect_summary: EffectSummary,
-        current_report: Dict[str, Any],
     ) -> str:
         """
         构建反馈上下文文本
 
         Args:
             effect_summary: EffectTracker 输出的效果摘要
-            current_report: 当前的策略报告字典（用于获取本周的 BTC 表现等）
 
         Returns:
             Markdown 格式的反馈上下文文本
@@ -1340,7 +1337,6 @@ async def _tune_single_strategy(self, strategy_cfg, force=False) -> str:
     # [新增] Step 2.6: 构建反馈上下文
     feedback_context = self.context_enhancer.build_feedback_context(
         effect_summary=effect_summary,
-        current_report=report.model_dump(),
     )
 
     # [新增] Step 2.7: 构建学习指令

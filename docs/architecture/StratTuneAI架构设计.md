@@ -588,6 +588,32 @@ class BaseAdapter(ABC):
             "system": f"prompts/{self.strategy_id}_system.txt",
             "user": f"prompts/{self.strategy_id}_user.txt",
         }
+
+    def clear_cache(self) -> None:
+        """
+        清除 cached_property 缓存
+
+        在配置更新后调用，确保下一次读取配置时重新加载。
+        当前清除 _system_config 和 _strategy_cfg 两个缓存属性。
+        """
+        ...
+
+    @staticmethod
+    def _get_nested_value(config: Dict[str, Any], key_path: str) -> Any:
+        """
+        按点分隔路径读取嵌套字典值
+
+        委托给 shared/utils.py 的 get_nested_value() 实现。
+        作为适配器接口的一部分，子类可通过 self._get_nested_value() 调用。
+
+        Args:
+            config: 嵌套字典配置
+            key_path: 点分隔的路径，如 "risk.stop_loss_atr_multiplier"
+
+        Returns:
+            key_path 对应的值，路径不存在时返回 None
+        """
+        ...
 ```
 
 #### 3.2.2 MTPCS 适配器设计
@@ -871,25 +897,20 @@ class ContextBuilder:
         """
         ...
 
-    async def build(
+    async def build_context(
         self,
         strategy_id: str,
-        current_report: StrategyReport,
-        current_config: Dict
+        db_handler: MemoryDBHandler,
     ) -> str:
         """
-        构建完整的 AI 调用上下文
+        构建历史调优上下文
 
         Args:
             strategy_id: 策略标识
-            current_report: 本周策略报告
-            current_config: 当前策略配置
+            db_handler: 记忆库处理器
 
         Returns:
-            str: 格式化的上下文文本，包含:
-                 - 当前策略配置
-                 - 本周体检报告
-                 - 历史调优记忆（最近 N 条摘要）
+            str: 格式化的上下文文本，包含历史调优记忆（最近 N 条摘要）
         """
         ...
 

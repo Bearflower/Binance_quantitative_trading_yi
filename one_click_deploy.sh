@@ -171,7 +171,48 @@ cd $SERVER_PROJECT_PATH
 docker-compose up -d kline-monitor 2>/dev/null || true
 echo "✅ 辅助服务已启动"
 
-# 9. 构建并启动策略容器（不使用缓存）
+# 9. 先构建并启动基础服务（kline-service 等），策略服务依赖它们
+# 根因：策略服务 depends_on kline-service (condition: service_healthy)，
+# 如果 kline-service 未构建，docker-compose up -d 策略容器时会因依赖不满足而失败
+if [ "$DEPLOY_KLINE" = true ]; then
+    echo "🏗️  构建 K 线数据服务镜像（不使用缓存）..."
+    cd $SERVER_PROJECT_PATH
+    docker-compose build --no-cache kline-service
+    if [ \$? -ne 0 ]; then
+        echo "❌ K 线数据服务镜像构建失败！"
+        exit 1
+    fi
+    echo "✅ K 线数据服务镜像构建成功"
+
+    echo "🚀 启动 K 线数据服务容器..."
+    docker-compose up -d kline-service
+    if [ \$? -ne 0 ]; then
+        echo "❌ K 线数据服务容器启动失败！"
+        exit 1
+    fi
+    echo "✅ K 线数据服务容器启动成功"
+fi
+
+if [ "$DEPLOY_KLINE_MONITOR" = true ]; then
+    echo "🏗️  构建 K 线服务健康监控镜像（不使用缓存）..."
+    cd $SERVER_PROJECT_PATH
+    docker-compose build --no-cache kline-monitor
+    if [ \$? -ne 0 ]; then
+        echo "❌ K 线服务健康监控镜像构建失败！"
+        exit 1
+    fi
+    echo "✅ K 线服务健康监控镜像构建成功"
+
+    echo "🚀 启动 K 线服务健康监控容器..."
+    docker-compose up -d kline-monitor
+    if [ \$? -ne 0 ]; then
+        echo "❌ K 线服务健康监控容器启动失败！"
+        exit 1
+    fi
+    echo "✅ K 线服务健康监控容器启动成功"
+fi
+
+# 10. 构建并启动策略容器（不使用缓存）
 if [ "$DEPLOY_BTC_ETH" = true ]; then
     echo "🏗️  构建 BTC/ETH 策略镜像（不使用缓存）..."
     cd $SERVER_PROJECT_PATH
@@ -267,45 +308,7 @@ if [ "$DEPLOY_AI_TUNER" = true ]; then
     echo "✅ StratTuneAI 调优容器启动成功"
 fi
 
-if [ "$DEPLOY_KLINE" = true ]; then
-    echo "🏗️  构建 K 线数据服务镜像（不使用缓存）..."
-    cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache kline-service
-    if [ \$? -ne 0 ]; then
-        echo "❌ K 线数据服务镜像构建失败！"
-        exit 1
-    fi
-    echo "✅ K 线数据服务镜像构建成功"
-
-    echo "🚀 启动 K 线数据服务容器..."
-    docker-compose up -d kline-service
-    if [ \$? -ne 0 ]; then
-        echo "❌ K 线数据服务容器启动失败！"
-        exit 1
-    fi
-    echo "✅ K 线数据服务容器启动成功"
-fi
-
-if [ "$DEPLOY_KLINE_MONITOR" = true ]; then
-    echo "🏗️  构建 K 线服务健康监控镜像（不使用缓存）..."
-    cd $SERVER_PROJECT_PATH
-    docker-compose build --no-cache kline-monitor
-    if [ \$? -ne 0 ]; then
-        echo "❌ K 线服务健康监控镜像构建失败！"
-        exit 1
-    fi
-    echo "✅ K 线服务健康监控镜像构建成功"
-
-    echo "🚀 启动 K 线服务健康监控容器..."
-    docker-compose up -d kline-monitor
-    if [ \$? -ne 0 ]; then
-        echo "❌ K 线服务健康监控容器启动失败！"
-        exit 1
-    fi
-    echo "✅ K 线服务健康监控容器启动成功"
-fi
-
-# 10. 等待容器启动
+# 11. 等待容器启动
 echo "⏳ 等待容器启动..."
 sleep 5
 

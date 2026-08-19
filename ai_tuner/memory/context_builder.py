@@ -23,20 +23,21 @@ class ContextBuilder:
     支持提取历史 AI 的思考链要点，形成推理连续性。
     """
 
-    def __init__(self, context_window_size: int):
+    def __init__(self, context_window_size: int, reasoning_max_length: int = 200):
         """
         初始化上下文构建器
 
         Args:
             context_window_size: 滑动窗口大小（保留最近 N 条记忆），从配置读取
+            reasoning_max_length: 推理链截断最大长度，从配置读取
         """
         self.context_window_size = context_window_size
+        self.reasoning_max_length = reasoning_max_length
 
     async def build_context(
         self,
         strategy_id: str,
         db_handler: MemoryDBHandler,
-        current_report: Dict[str, Any],
     ) -> str:
         """
         构建历史调优上下文
@@ -48,7 +49,6 @@ class ContextBuilder:
         Args:
             strategy_id: 策略唯一标识
             db_handler: 记忆库数据库处理器
-            current_report: 当前的策略报告字典
 
         Returns:
             格式化的上下文文本段落
@@ -84,9 +84,9 @@ class ContextBuilder:
                 if effect_line:
                     lines.append(f"  效果: {effect_line}")
                 if reasoning:
-                    # 只取推理链前 200 字作为要点
-                    reasoning_short = reasoning[:200]
-                    if len(reasoning) > 200:
+                    # 只取推理链前 N 字作为要点（N 从配置读取）
+                    reasoning_short = reasoning[:self.reasoning_max_length]
+                    if len(reasoning) > self.reasoning_max_length:
                         reasoning_short += "..."
                     lines.append(f"  推理要点: {reasoning_short}")
                 lines.append("")

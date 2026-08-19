@@ -27,6 +27,7 @@ from ai_tuner.adapters.base_adapter import (
     StrategyMeta,
     StrategyReport,
 )
+from shared.utils import resolve_env_var
 
 logger = structlog.get_logger()
 
@@ -404,7 +405,7 @@ class GridAdapter(BaseAdapter):
         url = kline_cfg.get("url", "")
         if url:
             # 解析 ${ENV_VAR} 语法
-            resolved = self._resolve_env_var(url)
+            resolved = resolve_env_var(url)
             if resolved:
                 return resolved
 
@@ -414,31 +415,6 @@ class GridAdapter(BaseAdapter):
             return url
 
         return None
-
-    @staticmethod
-    def _resolve_env_var(value: str) -> Optional[str]:
-        """
-        解析字符串中的 ${ENV_VAR} 占位符
-
-        Args:
-            value: 可能包含 ${ENV_VAR} 的字符串
-
-        Returns:
-            解析后的字符串，解析失败返回 None
-        """
-        import re
-        pattern = r'\$\{([^}]+)\}'
-        match = re.search(pattern, value)
-        if not match:
-            return value
-
-        env_var = match.group(1)
-        env_value = os.getenv(env_var)
-        if env_value is None:
-            logger.warning("环境变量未设置", var=env_var)
-            return None
-
-        return re.sub(pattern, env_value, value)
 
     async def _fetch_klines(
         self, base_url: str, symbol: str, week_start: datetime, week_end: datetime
@@ -802,14 +778,4 @@ class GridAdapter(BaseAdapter):
         from shared.config_loader import load_strategy_config
         return load_strategy_config(strategy_dir)
 
-    @staticmethod
-    def _get_nested_value(config: Dict[str, Any], key_path: str) -> Any:
-        """按点分隔路径读取嵌套字典值"""
-        keys = key_path.split(".")
-        current = config
-        for key in keys:
-            if isinstance(current, dict) and key in current:
-                current = current[key]
-            else:
-                return None
-        return current
+    

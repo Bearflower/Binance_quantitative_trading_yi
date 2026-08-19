@@ -423,23 +423,4 @@ class NewCoinAdapter(BaseAdapter):
         from shared.config_loader import load_strategy_config
         return load_strategy_config(strategy_dir)
 
-    @staticmethod
-    def _get_nested_value(config: Dict[str, Any], key_path: str) -> Any:
-        """
-        按点分隔路径读取嵌套字典值
-
-        Args:
-            config: 配置字典
-            key_path: 点分隔的键路径
-
-        Returns:
-            配置值，如果路径不存在返回 None
-        """
-        keys = key_path.split(".")
-        current = config
-        for key in keys:
-            if isinstance(current, dict) and key in current:
-                current = current[key]
-            else:
-                return None
-        return current
+    

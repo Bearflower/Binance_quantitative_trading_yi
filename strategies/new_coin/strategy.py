@@ -587,6 +587,10 @@ class NewCoinStrategy(BaseStrategy):
                 logger.info("回撤熔断期已结束，恢复交易")
                 self.drawdown_pause_until = None
 
+        # 1.5 同步持仓：从交易所获取实际持仓，清理 self.positions 中的脏数据
+        # 避免因重启后状态恢复导致已平仓的脏数据阻塞新入场
+        await self._sync_positions_from_exchange()
+
         # 2. 检测新币
         new_coins = await self.listing_detector.detect_new_listings()
 
@@ -926,6 +930,40 @@ class NewCoinStrategy(BaseStrategy):
 
         except Exception as e:
             logger.error(f"周报复盘失败: {e}")
+
+    async def _sync_positions_from_exchange(self) -> None:
+        """
+        从交易所同步实际持仓，清理 self.positions 中的脏数据
+        
+        每个周期在分析新币前执行，避免因重启后状态恢复导致已平仓的脏数据阻塞新入场。
+        """
+        try:
+            exchange_positions = await self.binance_client._request(
+                "GET", "/papi/v1/um/positionRisk", signed=True
+            )
+            # 获取交易所实际做空持仓（positionAmt < 0）
+            actual_short_symbols = set()
+            for p in exchange_positions:
+                if float(p.get('positionAmt', 0)) < 0:
+                    actual_short_symbols.add(p['symbol'])
+
+            # 清理 self.positions 中已不存在的持仓
+            stale_symbols = [s for s in self.positions if s not in actual_short_symbols]
+            if stale_symbols:
+                logger.info(
+                    f"清理 {len(stale_symbols)} 个脏持仓记录",
+                    symbols=stale_symbols
+                )
+                for s in stale_symbols:
+                    del self.positions[s]
+
+            logger.debug(
+                f"持仓同步完成",
+                actual_count=len(actual_short_symbols),
+                tracked_count=len(self.positions)
+            )
+        except Exception as e:
+            logger.warning(f"从交易所同步持仓失败（不影响后续流程）: {e}")
 
     async def _monitor_positions(self) -> None:
         """

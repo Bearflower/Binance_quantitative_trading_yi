@@ -45,6 +45,59 @@ python backtest/run.py --data ./data/btc_klines.csv
 
 原因：回测消耗大量 CPU/内存，会与生产交易程序抢占资源，可能导致交易延迟或服务中断。
 
+## 代码质量一致性（强制）🚫
+
+### 禁止重复代码
+
+**严禁复制粘贴代码。** 相同或高度相似的逻辑必须提取为公共函数/模块，不得出现两段以上逻辑相同的代码。
+
+```python
+# ❌ 禁止：重复代码
+def calculate_sma_5m(prices):
+    return sum(prices[-5:]) / 5
+
+def calculate_sma_15m(prices):
+    return sum(prices[-15:]) / 15
+
+# ✅ 正确：提取通用函数
+def calculate_sma(prices, period):
+    return sum(prices[-period:]) / period
+```
+
+检测标准：
+- 连续 5 行以上相同的代码块视为重复代码
+- 逻辑结构相同、仅变量名不同的代码视为重复代码
+- 代码检测员必须检查此项，发现重复代码需标记为"违规"并退回重构
+
+### 禁止幽灵参数
+
+**每个已定义的参数必须被使用。** 存在已定义但未使用的参数（幽灵参数）会误导后续维护者，增加理解成本。
+
+```python
+# ❌ 禁止：幽灵参数
+def calculate_score(data, debug=False, threshold=0.5):  # debug 从未使用
+    return data * threshold
+
+# ✅ 正确：删除未使用参数，或用 _ 前缀标记
+def calculate_score(data, threshold=0.5):
+    return data * threshold
+
+# ✅ 或：用 _ 前缀明确表示"本函数未使用，为兼容接口保留"
+def calculate_score(data, threshold=0.5, _debug=None):
+    return data * threshold
+```
+
+检测标准：
+- 函数定义中所有参数必须在函数体内被引用至少一次
+- 回调函数、接口兼容场景可用 `_` 前缀标记未使用参数
+- 代码检测员必须检查此项
+
+### 代码可读性
+
+- 单个函数不超过 50 行（超过需拆分为子函数）
+- 单行不超过 120 个字符
+- 同一文件内代码风格保持一致（命名风格、缩进、空行）
+
 ## 框架与依赖
 
 - 优先使用项目已有依赖，新增依赖需在 `requirements.txt` 或 `pyproject.toml` 中声明

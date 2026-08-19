@@ -66,6 +66,7 @@ class PositionState:
         self.cancel_retry_count: Dict[str, int] = {}  # 条件单取消重试计数（v6.23）
         self.last_retry_cycle: int = 0  # 上次重试时的主循环计数（v6.23.1）
         self.first_retry_time: Optional[datetime] = None  # 首次重试时间（v6.23.1，用于强制清理超时）
+        self.grade: str = ""  # 信号等级，用于动态读取对应的风险参数
 
 
 class FrequencyController:
@@ -887,7 +888,8 @@ class BTCEthStrategy:
                 ranging_risk = self.risk_config.get('ranging_strategy', {}).get('risk', {})
                 sl_atr_mult = ranging_risk.get('stop_loss_atr', 2.0)
             else:
-                sl_atr_mult = self.risk_config['stop_loss_atr_multiplier']
+                grade_risk = self._get_grade_risk(grade)
+                sl_atr_mult = grade_risk['stop_loss_atr_multiplier']
             
             if direction == 'LONG':
                 initial_stop_loss = current_price - atr * Decimal(str(sl_atr_mult))
@@ -917,8 +919,8 @@ class BTCEthStrategy:
                 'position_ratio': self.binance_config['position_ratio'][grade],
                 'timestamp': current_time,
                 'market_state': market_state_name,  # v6.21：记录市场状态用于频率控制
-                'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1),
-                'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2),
+                'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1, grade),
+                'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2, grade),
             }
             
             logger.info(
@@ -1582,6 +1584,20 @@ class BTCEthStrategy:
         else:
             return 'C'
     
+    def _get_grade_risk(self, grade: str) -> Dict:
+        """根据信号等级获取对应的风险参数
+        
+        Args:
+            grade: 信号等级 (S/A/B/C)
+        
+        Returns:
+            该等级的风险参数字典，若 signal_levels 不存在则返回全局 risk 配置
+        """
+        signal_levels = self.risk_config.get('signal_levels')
+        if not signal_levels:
+            return self.risk_config  # 向后兼容
+        return signal_levels.get(grade, signal_levels.get('A', self.risk_config))
+    
     def _determine_direction(self, indicators: Dict) -> str:
         """
         确定交易方向
@@ -1909,7 +1925,8 @@ class BTCEthStrategy:
         entry_price: Decimal,
         atr: Decimal,
         direction: str,
-        tp_level: int
+        tp_level: int,
+        grade: str = 'A'
     ) -> Decimal:
         """
         计算止盈价格
@@ -1919,11 +1936,13 @@ class BTCEthStrategy:
             atr: ATR值
             direction: 方向
             tp_level: 止盈级别（1或2）
+            grade: 信号等级（S/A/B/C），用于动态读取对应的止盈参数
         
         Returns:
             止盈价格
         """
-        partial_config = self.risk_config['partial_take_profit']
+        grade_risk = self._get_grade_risk(grade)
+        partial_config = grade_risk['partial_take_profit']
         
         if tp_level == 1:
             atr_multiplier = Decimal(str(partial_config['tp1_atr_multiplier']))
@@ -2048,8 +2067,11 @@ class BTCEthStrategy:
             )
             
             # 1. 设置杠杆倍数
-            logger.info(f"{symbol} 设置杠杆倍数: {signal['leverage']}")
-            await self.binance.set_leverage(symbol, signal['leverage'])
+            try:
+                logger.info(f"{symbol} 设置杠杆倍数: {signal['leverage']}")
+                await self.binance.set_leverage(symbol, signal['leverage'])
+            except Exception as e:
+                logger.warning(f"{symbol} 设置杠杆失败: {e}")
 
             # 2. 开仓前检查：总仓位不超过分配上限
             current_positions_value = 0.0
@@ -2217,6 +2239,7 @@ class BTCEthStrategy:
             position.initial_quantity = signal['quantity']
             position.current_quantity = signal['quantity']
             position.atr = signal['atr']
+            position.grade = signal.get('grade', 'A')
             
             # 记录订单ID
             position.entry_order_id = entry_order_id
@@ -2259,14 +2282,8 @@ class BTCEthStrategy:
             try:
                 await self.notification.send_error_notification(
                     strategy="btc_eth",
-                    error_type="SIGNAL_EXECUTION_FAILED",
                     error_message=f"{symbol} 信号执行失败: {str(e)}",
-                    context={
-                        'symbol': symbol,
-                        'direction': signal.get('direction'),
-                        'grade': signal.get('grade'),
-                        'score': signal.get('score')
-                    }
+                    symbol=symbol
                 )
             except Exception as notify_error:
                 logger.error(
@@ -2872,7 +2889,8 @@ class BTCEthStrategy:
             position: 持仓状态
             current_price: 当前价格
         """
-        partial_config = self.risk_config['partial_take_profit']
+        grade_risk = self._get_grade_risk(position.grade)
+        partial_config = grade_risk['partial_take_profit']
         
         # 检查TP1
         if not position.tp1_hit:
@@ -2880,7 +2898,8 @@ class BTCEthStrategy:
                 position.entry_price,
                 position.atr,
                 position.direction,
-                1
+                1,
+                position.grade
             )
             
             hit = (
@@ -2926,7 +2945,8 @@ class BTCEthStrategy:
                 position.entry_price,
                 position.atr,
                 position.direction,
-                2
+                2,
+                position.grade
             )
             
             hit = (
@@ -3435,7 +3455,8 @@ class BTCEthStrategy:
         if position.tp1_hit or position.current_quantity <= 0:
             return
         
-        time_stop_config = self.risk_config['time_stop']
+        grade_risk = self._get_grade_risk(position.grade)
+        time_stop_config = grade_risk['time_stop']
         max_holding_hours = time_stop_config['max_holding_hours']
         close_ratio = Decimal(str(time_stop_config['close_ratio']))
         

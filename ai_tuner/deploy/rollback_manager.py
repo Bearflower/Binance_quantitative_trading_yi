@@ -124,8 +124,8 @@ class RollbackManager:
                 full_path = os.path.join(dir_name, f)
                 backups.append(full_path)
 
-        # 按修改时间倒序
-        backups.sort(key=lambda p: os.path.getmtime(p), reverse=True)
+        # 按文件名倒序（文件名含时间戳 YYYYMMDD_HHMMSS，排序即时间顺序）
+        backups.sort(reverse=True)
         return backups
 
     def cleanup_old_backups(self, config_path: str, keep_count: int = None) -> int:

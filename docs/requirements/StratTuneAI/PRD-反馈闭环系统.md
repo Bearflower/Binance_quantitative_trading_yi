@@ -293,7 +293,7 @@ ContextEnhancer 把 EffectTracker 输出的效果摘要，格式化为 LLM 可�
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ ContextEnhancer.build_feedback_context(effect_summary, current_report)  │
+│ ContextEnhancer.build_feedback_context(effect_summary)                  │
 │                                                                         │
 │ 1. 接收 EffectTracker 输出的 EffectSummary 对象                          │
 │                                                                         │
@@ -338,14 +338,12 @@ class ContextEnhancer:
     def build_feedback_context(
         self,
         effect_summary: EffectSummary,
-        current_report: Dict[str, Any],
     ) -> str:
         """
         构建反馈上下文文本
 
         Args:
             effect_summary: EffectTracker 输出的效果摘要
-            current_report: 当前的策略报告字典（用于获取本周的 BTC 表现等）
 
         Returns:
             Markdown 格式的反馈上下文文本
@@ -716,7 +714,6 @@ async def _tune_single_strategy(self, strategy_cfg, force=False) -> str:
     # [新增] Step 2.6: 构建反馈上下文
     feedback_context = self.context_enhancer.build_feedback_context(
         effect_summary=effect_summary,
-        current_report=report.model_dump(),
     )
 
     # [新增] Step 2.7: 构建学习指令

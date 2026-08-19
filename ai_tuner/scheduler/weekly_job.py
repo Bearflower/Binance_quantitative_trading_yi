@@ -78,7 +78,8 @@ class WeeklyTuningJob:
         self.response_parser = ResponseParser()
         self.diff_generator = DiffGenerator()
         self.context_builder = ContextBuilder(
-            context_window_size=config.get("memory", {}).get("context_window_size", 3)
+            context_window_size=config.get("memory", {}).get("context_window_size", 3),
+            reasoning_max_length=config.get("memory", {}).get("reasoning_max_length", 200),
         )
 
         # [新增] 反馈闭环模块
@@ -203,7 +204,6 @@ class WeeklyTuningJob:
         report_dict = report.model_dump()
         feedback_context = self.context_enhancer.build_feedback_context(
             effect_summary=effect_summary,
-            current_report=report_dict,
         )
 
         # [新增] 步骤2.7：构建学习指令（反馈闭环第三步）
@@ -221,7 +221,6 @@ class WeeklyTuningJob:
         context = await self.context_builder.build_context(
             strategy_id=strategy_id,
             db_handler=self.db_handler,
-            current_report=report_dict,
         )
 
         # 步骤4：加载并渲染 Prompt 模板（传递反馈上下文学学习指令）
@@ -243,6 +242,7 @@ class WeeklyTuningJob:
         raw_response = await self.llm_client.call_llm(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            strategy_id=strategy_id,
         )
 
         if not raw_response:

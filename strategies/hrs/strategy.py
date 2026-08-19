@@ -2938,6 +2938,12 @@ class HRSStrategy(BaseStrategy):
                     if atr > 0:
                         pos["atr"] = atr
 
+            # 在补单前，先取消该币种所有已跟踪的条件单，避免重复累积
+            try:
+                await self.position_manager.cancel_all_orders(symbol)
+            except Exception as e:
+                logger.warning("取消旧条件单失败", symbol=symbol, error=str(e))
+
             result = await self.trading_executor.replenish_position_orders(
                 symbol=symbol,
                 direction=direction,

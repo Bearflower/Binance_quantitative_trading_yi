@@ -51,6 +51,7 @@ from ai_tuner.allocation.profit_extraction_job import ProfitExtractionJob  # noq
 from ai_tuner.cleanup.orphan_cleanup import OrphanCleanupJob  # noqa: E402
 from ai_tuner.monitor.daily_health_check import DailyHealthCheck  # noqa: E402
 from shared.binance_api import BinanceClient  # noqa: E402
+from shared.utils import resolve_env_var  # noqa: E402
 
 # 配置 structlog
 import logging
@@ -134,20 +135,12 @@ class StratTuneAI:
         Returns:
             解析后的配置对象
         """
-        import re
-
         if isinstance(obj, dict):
             return {k: self._resolve_env_vars(v) for k, v in obj.items()}
         elif isinstance(obj, list):
             return [self._resolve_env_vars(item) for item in obj]
         elif isinstance(obj, str):
-            def replace_env(match):
-                var_expr = match.group(1)
-                if ":" in var_expr:
-                    var_name, default = var_expr.split(":", 1)
-                    return os.getenv(var_name, default)
-                return os.getenv(var_expr, "")
-            return re.sub(r"\$\{([^}]+)\}", replace_env, obj)
+            return resolve_env_var(obj) or obj
         else:
             return obj
 
@@ -555,7 +548,7 @@ class StratTuneAI:
         except Exception as e:
             logger.error("补偿检查异常", error=str(e))
 
-    def _on_llm_usage(self, model: str, prompt_tokens: int, completion_tokens: int, total_tokens: int) -> None:
+    def _on_llm_usage(self, model: str, prompt_tokens: int, completion_tokens: int, total_tokens: int, strategy_id: str = "") -> None:
         """
         LLM Token 用量回调
 
@@ -564,12 +557,14 @@ class StratTuneAI:
             prompt_tokens: 输入 Token 数
             completion_tokens: 输出 Token 数
             total_tokens: 总 Token 数
+            strategy_id: 关联的策略ID
         """
         self.cost_tracker.record_usage(
             model=model,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
+            strategy_id=strategy_id,
         )
 
     # ================================================================
@@ -696,7 +691,6 @@ class StratTuneAI:
                 # 读取当前配置值，用于 diff 中显示旧值
                 current_params = {}
                 try:
-                    import yaml
                     with open(config_path, "r") as f:
                         strategy_config = yaml.safe_load(f)
                     # 展平 YAML 为嵌套点号路径
@@ -843,14 +837,14 @@ class StratTuneAI:
                     backup_path=backup_path,
                 )
             else:
-                # 使用最新备份
+                # 使用最新备份（列表按时间倒序，backups[0] 即最新）
                 backups = self.rollback_manager.list_backups(config_path)
                 if not backups:
                     return web.json_response(
                         {"status": "error", "message": f"未找到 {strategy_id} 的备份文件"},
                         status=404,
                     )
-                backup_path = backups[-1]
+                backup_path = backups[0]
 
             success = self.rollback_manager.rollback(config_path, backup_path)
             if success:

@@ -210,6 +210,7 @@ candidate_pool:
       - HFTUSDT
       - SOXSUSDT
       - CRCLUSDT
+      - TSLAUSDT
 
   # 新币策略冲突屏蔽
   new_coin_conflict:

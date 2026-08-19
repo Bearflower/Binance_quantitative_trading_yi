@@ -15,6 +15,8 @@ import structlog
 import yaml
 from pydantic import BaseModel, Field
 
+from shared.utils import get_nested_value
+
 logger = structlog.get_logger()
 
 
@@ -308,6 +310,22 @@ class BaseAdapter(ABC):
             "warnings": warnings,
             "validated": validated,
         }
+
+    @staticmethod
+    def _get_nested_value(config: Dict[str, Any], key_path: str) -> Any:
+        """按点分隔路径读取嵌套字典值"""
+        return get_nested_value(config, key_path)
+
+    def clear_cache(self) -> None:
+        """
+        清除 cached_property 缓存
+
+        当 config.yaml 可能被外部修改时，调用此方法强制重新读取配置。
+        """
+        for attr in ("_system_config", "_strategy_cfg"):
+            if attr in self.__dict__:
+                del self.__dict__[attr]
+        logger.debug("策略适配器缓存已清除", strategy_id=self.strategy_id)
 
     def to_dict(self) -> Dict[str, Any]:
         """

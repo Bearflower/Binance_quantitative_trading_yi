@@ -29,6 +29,9 @@ logger = structlog.get_logger()
 class OrphanCleanupJob:
     """孤儿条件单清理任务"""
 
+    # 验证间隔（秒）：批量取消后等待多久再验证
+    _VERIFY_INTERVAL_SECONDS = 1
+
     def __init__(
         self,
         db,
@@ -140,7 +143,7 @@ class OrphanCleanupJob:
                 # 验证：再次取消同一订单，确认是否真的已取消
                 # 如果第二次返回 -2011（订单不存在），说明第一次取消成功
                 # 如果第二次也返回成功，说明 API 可能返回了虚假成功，订单未实际取消
-                await asyncio.sleep(1)  # 等待 1 秒确保处理完成
+                await asyncio.sleep(self._VERIFY_INTERVAL_SECONDS)  # 等待后验证
                 try:
                     await self.binance.cancel_algo_order(symbol, int(algo_id))
                     # 第二次调用也返回成功（无异常）—— 异常情况！
@@ -226,8 +229,46 @@ class OrphanCleanupJob:
             await self.binance.cancel_all_algo_orders(symbol)
             logger.info("批量取消条件单成功", symbol=symbol, scenario=scenario, db_order_count=len(orders))
 
-            # 标记数据库中该币种的所有 OPEN 订单为已取消
+            # 验证：逐个确认条件单是否真的已取消
+            # 先收集验证通过的订单，再统一处理，避免验证失败时回滚 canceled 列表
+            verified_canceled = []
             for order in orders:
+                algo_id = order.get('algo_id')
+                order_id = order.get('order_id')
+                if algo_id is not None:
+                    await asyncio.sleep(self._VERIFY_INTERVAL_SECONDS)  # 等待后验证
+                    try:
+                        await self.binance.cancel_algo_order(symbol, int(algo_id))
+                        # 第二次调用也返回成功（无异常）—— 异常情况！
+                        # 说明批量取消可能未实际生效，该订单仍存在
+                        logger.warning(
+                            "批量取消后订单仍存在，标记为未取消",
+                            symbol=symbol, algo_id=algo_id, type=order.get('order_type', '')
+                        )
+                        # 标记为验证失败，加入 failed 列表，不加入 verified_canceled
+                        failed.append(
+                            f"{order['strategy_name']} | {symbol} | {order['order_type']} "
+                            f"(algoId:{algo_id}) | {scenario}失败: 批量取消未实际生效"
+                        )
+                    except BinanceAPIError as v:
+                        if v.code == -2011:
+                            # -2011 表示订单已不存在，确认取消成功
+                            logger.debug("验证通过：订单已取消", symbol=symbol, algo_id=algo_id)
+                            verified_canceled.append(order)
+                        else:
+                            # 其他错误，标记为失败
+                            logger.warning("验证异常", symbol=symbol, algo_id=algo_id,
+                                           error_code=v.code, error=v.message)
+                            failed.append(
+                                f"{order['strategy_name']} | {symbol} | {order['order_type']} "
+                                f"(algoId:{algo_id}) | {scenario}失败: [{v.code}] {v.message}"
+                            )
+                else:
+                    # 没有 algo_id 的订单（普通订单），无法用此方式验证，直接视为成功
+                    verified_canceled.append(order)
+
+            # 统一处理验证通过的订单：标记数据库状态 + 加入 canceled 列表
+            for order in verified_canceled:
                 sn = order['strategy_name']
                 algo_id = order.get('algo_id')
                 order_id = order.get('order_id')
@@ -237,6 +278,7 @@ class OrphanCleanupJob:
                     f"(algoId:{algo_id or order_id}) | {scenario}"
                 )
 
+            # 验证失败的订单，不回滚数据库状态，留待下次清理周期发现并处理
             # 额外记录：即使数据库中没有该币种的订单，批量取消也清理了交易所上的残留订单
             if not orders:
                 canceled.append(f"(无DB记录) | {symbol} | 批量清理 | {scenario}")

@@ -26,24 +26,56 @@ strategies:
     # 变化率告警阈值：超过此变化率（200%）触发告警
     change_rate_threshold: 2.0
     param_whitelist:
+      # 评分参数
       - "scoring.min_score"
       - "scoring.weights.trend_strength"
       - "scoring.weights.pattern_quality"
       - "scoring.weights.momentum_divergence"
-      - "risk.stop_loss_atr_multiplier"
-      - "risk.partial_take_profit.tp1_atr_multiplier"
-      - "risk.partial_take_profit.tp2_atr_multiplier"
-      - "risk.partial_take_profit.tp1_close_ratio"
-      - "risk.partial_take_profit.tp2_close_ratio"
-      - "risk.chandelier_stop.activation_atr"
-      - "risk.chandelier_stop.trailing_atr"
-      - "risk.time_stop.max_holding_hours"
+      # 信号等级止盈止损参数（v6.24+）
+      - "risk.signal_levels.S.stop_loss_atr_multiplier"
+      - "risk.signal_levels.A.stop_loss_atr_multiplier"
+      - "risk.signal_levels.B.stop_loss_atr_multiplier"
+      - "risk.signal_levels.C.stop_loss_atr_multiplier"
+      - "risk.signal_levels.S.partial_take_profit.tp1_atr_multiplier"
+      - "risk.signal_levels.A.partial_take_profit.tp1_atr_multiplier"
+      - "risk.signal_levels.B.partial_take_profit.tp1_atr_multiplier"
+      - "risk.signal_levels.C.partial_take_profit.tp1_atr_multiplier"
+      - "risk.signal_levels.S.partial_take_profit.tp2_atr_multiplier"
+      - "risk.signal_levels.A.partial_take_profit.tp2_atr_multiplier"
+      - "risk.signal_levels.B.partial_take_profit.tp2_atr_multiplier"
+      - "risk.signal_levels.C.partial_take_profit.tp2_atr_multiplier"
+      - "risk.signal_levels.S.partial_take_profit.tp1_close_ratio"
+      - "risk.signal_levels.A.partial_take_profit.tp1_close_ratio"
+      - "risk.signal_levels.B.partial_take_profit.tp1_close_ratio"
+      - "risk.signal_levels.C.partial_take_profit.tp1_close_ratio"
+      - "risk.signal_levels.S.partial_take_profit.tp2_close_ratio"
+      - "risk.signal_levels.A.partial_take_profit.tp2_close_ratio"
+      - "risk.signal_levels.B.partial_take_profit.tp2_close_ratio"
+      - "risk.signal_levels.C.partial_take_profit.tp2_close_ratio"
+      - "risk.signal_levels.S.partial_take_profit.remaining_ratio"
+      - "risk.signal_levels.A.partial_take_profit.remaining_ratio"
+      - "risk.signal_levels.B.partial_take_profit.remaining_ratio"
+      - "risk.signal_levels.C.partial_take_profit.remaining_ratio"
+      - "risk.signal_levels.S.dynamic_trailing.activation.min_profit_pct"
+      - "risk.signal_levels.A.dynamic_trailing.activation.min_profit_pct"
+      - "risk.signal_levels.B.dynamic_trailing.activation.min_profit_pct"
+      - "risk.signal_levels.C.dynamic_trailing.activation.min_profit_pct"
+      - "risk.signal_levels.S.time_stop.max_holding_hours"
+      - "risk.signal_levels.A.time_stop.max_holding_hours"
+      - "risk.signal_levels.B.time_stop.max_holding_hours"
+      - "risk.signal_levels.C.time_stop.max_holding_hours"
+      - "risk.signal_levels.S.time_stop.close_ratio"
+      - "risk.signal_levels.A.time_stop.close_ratio"
+      - "risk.signal_levels.B.time_stop.close_ratio"
+      - "risk.signal_levels.C.time_stop.close_ratio"
+      # 频率控制参数
       - "risk.frequency_control.max_daily_total_trades"
       - "risk.frequency_control.max_daily_symbol_trades"
       - "risk.frequency_control.symbol_cooldown_hours"
       - "risk.frequency_control.consecutive_loss_pause"
       - "risk.frequency_control.pause_duration_hours"
       - "risk.frequency_control.max_daily_loss_usdt"
+      # 仓位与杠杆参数
       - "binance.leverage.S"
       - "binance.leverage.A"
       - "binance.leverage.B"
@@ -345,6 +377,7 @@ rollback:
 # ============================================================
 memory:
   context_window_size: 3                   # 上下文窗口大小（最近N条记忆）
+  reasoning_max_length: 200                 # 推理链截断最大长度（字符数）
   archive_months: 3                        # 归档月数（超过此时间的记忆归档）
 
 # ============================================================
