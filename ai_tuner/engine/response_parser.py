@@ -67,6 +67,12 @@ class ResponseParser:
         # 尝试提取 JSON（处理 markdown 代码块包裹）
         json_text = self._extract_json(text_to_parse)
 
+        # 【回退方案】如果 __CONTENT__ 部分没有 JSON，尝试在全文（含 reasoning）中搜索
+        # 根因：思考模式下 LLM 可能未在 content 字段输出 JSON，JSON 可能混在 reasoning 中
+        if not json_text:
+            logger.info("__CONTENT__部分无JSON，回退到全文搜索", raw_preview=raw_text[:100])
+            json_text = self._extract_json(raw_text)
+
         if not json_text:
             logger.error("无法从LLM响应中提取JSON", raw_preview=raw_text[:200])
             return {"error": "无法从响应中提取 JSON"}
