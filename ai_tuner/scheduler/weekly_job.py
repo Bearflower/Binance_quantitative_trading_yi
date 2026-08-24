@@ -190,8 +190,15 @@ class WeeklyTuningJob:
         # 步骤2：采集数据
         report = await adapter.collect()
         if report.performance.total_trades == 0:
-            logger.info("策略本周无交易，跳过调优", strategy_id=strategy_id)
-            return "skip"
+            # 方案D：检查适配器是否允许无交易调优
+            if getattr(adapter, "allow_tuning_without_trades", False):
+                logger.info(
+                    "策略本周无真实成交，但允许基于回测数据继续调优",
+                    strategy_id=strategy_id,
+                )
+            else:
+                logger.info("策略本周无交易，跳过调优", strategy_id=strategy_id)
+                return "skip"
 
         # [新增] 步骤2.5：效果追踪与回填（反馈闭环第一步）
         effect_summary = await self.effect_tracker.track_and_fill(
@@ -257,7 +264,23 @@ class WeeklyTuningJob:
         # 步骤6：解析 JSON 响应
         parsed = self.response_parser.parse_response(raw_response)
         if "error" in parsed:
-            logger.error("AI响应解析失败", strategy_id=strategy_id, error=parsed["error"])
+            # 【语义重试】首次解析失败时，追加强调JSON格式的提示词重试一次
+            logger.warning("AI响应解析失败，准备重试", strategy_id=strategy_id, error=parsed["error"])
+            retry_instruction = (
+                "\n\n【重要】请严格只输出 JSON 格式，不要包含任何其他文字。"
+                "不要用 markdown 代码块包裹。不要有 __REASONING__ 前缀。"
+                "输出必须包含以下字段：reasons, summary, adjustments, expected_impact, confidence。"
+            )
+            raw_response = await self.llm_client.call_llm(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt + retry_instruction,
+                strategy_id=strategy_id,
+            )
+            if raw_response:
+                parsed = self.response_parser.parse_response(raw_response)
+
+        if "error" in parsed:
+            logger.error("AI响应解析失败（重试后）", strategy_id=strategy_id, error=parsed["error"])
             await self.messenger.send_error_notification(
                 strategy_name=strategy_name,
                 strategy_id=strategy_id,
