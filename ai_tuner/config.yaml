@@ -302,15 +302,10 @@ strategies:
       - "grid.min_grid_count"
       - "grid.max_grid_count"
       - "grid.grid_spacing_atr_multiplier"
-      - "atr_multipliers.oscillation"
-      - "atr_multipliers.weak_trend"
-      - "trading.leverage"
-      - "trading.margin"
+      - "market.atr_multipliers.oscillation"
+      - "market.atr_multipliers.weak_trend"
       - "trading.max_positions"
-      - "trading.single_position_margin"
       - "risk.max_drawdown"
-      - "risk.stop_loss_percent"
-      - "risk.hard_stop_loss"
 
     # AI 可调参数的有效范围（用于 validate_params 校验）
     param_ranges:
@@ -318,15 +313,10 @@ strategies:
       grid.min_grid_count: [3, 8]
       grid.max_grid_count: [5, 15]
       grid.grid_spacing_atr_multiplier: [1.5, 4.0]
-      atr_multipliers.oscillation: [4.0, 8.0]
-      atr_multipliers.weak_trend: [4.0, 8.0]
-      trading.leverage: [3, 20]
-      trading.margin: [200, 1000]
+      market.atr_multipliers.oscillation: [4.0, 8.0]
+      market.atr_multipliers.weak_trend: [4.0, 8.0]
       trading.max_positions: [1, 5]
-      trading.single_position_margin: [50, 300]
       risk.max_drawdown: [0.08, 0.25]
-      risk.stop_loss_percent: [0.05, 0.20]
-      risk.hard_stop_loss: [0.10, 0.30]
 
 # ============================================================
 # 反馈闭环配置
@@ -365,7 +355,7 @@ deepseek:
   thinking_enabled: true                  # 开启思考模式，让AI展示推理过程
   reasoning_effort: "high"                # 推理强度：high（普通推理）/ max（极限推理）
   temperature: 0.3                        # 非思考模式下使用（思考模式下被忽略但不报错）
-  max_tokens: 2048
+  max_tokens: 4096
   max_retries: 3
   # Token 定价（美元/百万Token，DeepSeek deepseek-v4-pro 模型实际定价）
   pricing:
@@ -497,9 +487,62 @@ simulation:
   fallback_spacing_pct: 0.005              # 网格间距计算为0时的兜底百分比（当前价格的0.5%）
 
 # ============================================================
+# 网格回测配置（方案D 新增）
+# ============================================================
+backtest:
+  # 费率配置
+  fee:
+    maker: 0.0004               # Maker手续费 0.04%
+    taker: 0.0006               # Taker手续费 0.06%
+    slippage: 0.0001            # 滑点 0.01%
+
+  # 综合评分权重
+  scoring:
+    return_weight: 0.40         # 收益率权重
+    drawdown_weight: 0.30       # 最大回撤权重
+    sharpe_weight: 0.30         # 夏普比率权重
+
+  # 性能限制
+  max_execution_time: 10        # 单次回测最大执行时间（秒）
+  min_kline_count: 24           # 最少K线数量，低于此值跳过回测
+
+  # 市况分段参数
+  market_regime:
+    trend_threshold: 0.02       # 趋势判定阈值：累计涨跌幅 >= 2% 视为趋势段
+    min_segment_length: 8       # 每段最少K线数（不足则合并到相邻段）
+
+  # 网格间距兜底参数
+  fallback_spacing_pct: 0.005   # 当ATR计算出的间距为0时，使用当前价格的0.5%作为最小间距
+
+  # 评分计算参数
+  return_score_scale: 10        # 收益率 × 10 = 得分（10%收益率 = 100分）
+  drawdown_cap: 0.20            # 回撤上限：20%回撤 = 0分
+  sharpe_score_scale: 50        # 夏普 × 50 = 得分（2.0夏普 = 100分）
+
+# ============================================================
 # 孤儿条件单清理配置
 # ============================================================
 orphan_cleanup:
   enabled: true                    # 是否启用孤儿条件单清理
   interval_minutes: 30             # 检查间隔（分钟）
   stale_hours_threshold: 2         # 策略状态超时阈值（小时），超过此时间未更新则视为策略异常，自动取消条件单
+
+# ============================================================
+# 统一 PnL 校准器配置
+# 从 Binance income API 拉取 REALIZED_PNL 权威盈亏，兜底补齐
+# trade_records 中缺失的 realized_pnl，供 AI 优化建议可信使用
+# ============================================================
+reconciler:
+  enabled: true                        # 是否启用定时校准
+  interval_minutes: 30                 # 调度间隔（分钟），用于注册 interval 定时任务
+  lookback_days: 7                     # 无校准进度时的默认回看窗口（天）
+  chunk_days: 7                        # Binance 收入查询按天分片的窗口大小（天）
+  batch_size: 1000                     # 单次收入查询返回条数上限（币安上限 1000）
+  match_window_ms: 604800000           # 匹配时间窗口（毫秒，7天）
+  exit_priority_bonus_ms: 1000         # 出口单匹配优先级加成（毫秒），让出口单优先于入口单
+  schema: "trading"                    # trade_records 所在 schema
+  table: "trade_records"               # 交易记录表名
+  state_schema: "public"               # 校准进度表所在 schema
+  state_table: "pnl_reconcile_state"   # 校准进度表名（记录 last_reconciled_ts）
+  excluded_strategies:                 # 不参与校准的策略名称（grid 数据在独立表）
+    - "网格交易策略"
