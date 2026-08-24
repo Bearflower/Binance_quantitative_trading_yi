@@ -4,15 +4,16 @@
 
 MTPCS 策略是基于趋势跟踪+回调确认的多时间框架策略，交易 BTC/ETH/BNB/SOL/XRP/TRX 等主流币种，按信号等级（S/A/B/C）分配不同的杠杆和仓位。
 
-## 核心参数说明
+## 可调参数说明
 
-1. **评分阈值**：scoring.min_score 控制最低入场门槛，越高越保守；grade_thresholds 控制各等级门槛
-2. **止损参数**：stop_loss_atr_multiplier 控制初始止损幅度，越大越宽松
-3. **分批止盈**：tp1/tp2_atr_multiplier 控制止盈目标，越大越不容易触发
-4. **吊灯止损**：activation_atr 控制启动条件，trailing_atr 控制跟踪紧度
-5. **时间止损**：max_holding_hours 控制最大持仓时间
-6. **频率控制**：max_daily_total_trades/max_daily_symbol_trades 控制交易频率
-7. **杠杆和仓位**：按信号等级分配，S级最高杠杆和仓位
+可调参数仅为 `current_params` 中列出的参数，不要引入不在其中的参数。
+
+1. **评分阈值**：scoring.min_score 控制最低入场门槛，越高越保守；scoring.weights.* 控制各维度权重
+2. **止损参数**：risk.signal_levels.*.stop_loss_atr_multiplier 控制初始止损幅度
+3. **分批止盈**：risk.signal_levels.*.partial_take_profit.* 控制止盈目标和平仓比例
+4. **吊灯止损**：risk.signal_levels.*.dynamic_trailing.* 控制启动条件
+5. **时间止损**：risk.signal_levels.*.time_stop.* 控制最大持仓时间
+6. **频率控制**：trading.max_daily_total_trades / trading.symbol_cooldown_hours
 
 ## 调优策略建议
 
