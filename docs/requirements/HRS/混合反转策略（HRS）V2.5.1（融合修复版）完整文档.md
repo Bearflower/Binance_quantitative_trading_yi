@@ -175,6 +175,13 @@ CONFIG = {
 | 0.05 – 0.10 | 2 | 7 |
 | < 0.05 | 0 | 10 |
 
+> **市值数据来源（CoinGecko 服务）**：OI/市值比中的“市值”通过共享模块 `shared/market_cap.py` 的 `MarketCapService` 从 CoinGecko 免费 API 获取。为保证 OI/市值比评分流程稳定，内置以下容错机制（参数全部由 `market_cap` 配置段驱动，禁止硬编码）：
+>
+> - **降级兜底**：CoinGecko 不可用或查询失败时，使用 OI × 20 作为粗略市值估算（`get_market_cap_with_fallback`），确保评分流程不中断
+> - **重试机制**：网络/超时类异常（`asyncio.TimeoutError` / `aiohttp.ClientError`）自动重试 `retry_count` 次，每次重试前休眠 `retry_interval` 秒；HTTP 429 限流不重试，避免加剧限流
+> - **市值 TTL 缓存**：查询成功的市值写入缓存，存活 `cache_ttl_seconds` 秒，减少 CoinGecko API 调用
+> - **币种列表加载失败冷却**：CoinGecko 币种 ID 列表（`/coins/list`）加载失败后进入冷却期 `coin_list_cool_down_seconds` 秒，冷却期内跳过加载，避免频繁重拉大响应
+
 ### 3.2 情绪面（权重 30%）—— 资金费率
 
 | 年化费率 | 做空得分 | 做多得分 |
@@ -197,7 +204,13 @@ CONFIG = {
 | **极端行情加分** | +1.5 | 做多：跌幅≥15%；做空：涨幅≥15% |
 | **标准技术总分** | 0–10 | 三项相加 + 加分，封顶10分 |
 
-**入场条件**：标准总分 ≥ 6.0，且技术分 ≥ 4.0，三次形态基础分 ≥ 1.0。
+**入场条件**（V2.6 新增趋势过滤）：
+1. 标准总分 ≥ 6.0
+2. 技术分 ≥ 4.0，三次形态基础分 ≥ 1.0
+3. **趋势过滤通过**（V2.6 新增）：基于 4h EMA20 检查趋势方向
+   - 做多：要求价格 > EMA20（多头排列），且价格 ≥ EMA20 × 0.97（允许最大偏离 -3%）
+   - 做空：要求价格 < EMA20（空头排列），且价格 ≤ EMA20 × 1.03（允许最大偏离 +3%）
+   - 趋势过滤不通过则一票否决，禁止入场，防止"逆势回调陷阱"
 
 
 ### 3.4 轨道 B：极端市场模块 EMM（权重 45%）
@@ -238,10 +251,16 @@ LV-RM **不再依赖候选池落选币种**，直接从全市场流动性币种�
 
 ## 4. 进场逻辑与执行（四步决策流）
 
+**V2.6 新增：趋势过滤前置检查**
+对于标准模式和半EMM模式，在评分完成后、入场决策前，会基于 4h EMA20 执行趋势过滤：
+- 顺势方向允许入场：上涨趋势中做多，下跌趋势中做空
+- 逆势方向一票否决：上涨趋势中做空（逆势摸顶）、下跌趋势中做多（逆势抄底）均被阻断
+- 目的：避免在强势趋势中捕捉反转时掉入"回调陷阱"，提高反转信号质量
+
 ```
 1. 检查完整 EMM（3/3 条件）→ 入场 ✅
-2. 检查半 EMM（2/3 条件）→ 入场 ✅
-3. 检查标准模式（轨道 A）→ 入场 ✅
+2. 检查半 EMM（2/3 条件）→ 入场 ✅（V2.6 新增趋势过滤）
+3. 检查标准模式（轨道 A）→ 入场 ✅（V2.6 新增趋势过滤）
 4. 检查 LV-RM（轨道 C，全市场独立扫描）→ 入场 ✅
 5. 均不满足 → 放弃 ❌
 ```
@@ -306,6 +325,11 @@ ADD COLUMN consecutive_empty INTEGER DEFAULT 0;  -- 连续空池计数
 
 ALTER TABLE hrs_meta 
 ADD COLUMN backoff_until INTEGER DEFAULT 0;      -- 休眠结束时间戳
+
+-- 6. 持仓表：新增 algoIds 持久化（2026-08-20 保护单管理修复 FR-06）
+--    条件单 algoId 映射 {role: algoId}，重启不丢失；IF NOT EXISTS 保证存量库幂等升级
+ALTER TABLE hrs.hrs_positions 
+ADD COLUMN IF NOT EXISTS algo_ids JSONB;
 ```
 
 
@@ -313,6 +337,14 @@ ADD COLUMN backoff_until INTEGER DEFAULT 0;      -- 休眠结束时间戳
 
 ```yaml
 # config.yaml V2.5.1
+
+# 市值查询配置（CoinGecko 容错增强）
+market_cap:
+  timeout: 10                 # 请求超时（秒）
+  retry_count: 2              # 网络/超时异常重试次数
+  retry_interval: 1.0         # 每次重试前休眠间隔（秒）
+  cache_ttl_seconds: 3600     # 市值缓存存活时间（秒）
+  coin_list_cool_down_seconds: 60.0   # 币种列表加载失败后的冷却时长（秒）
 
 # 候选池配置（核心变更）
 candidate_pool:
@@ -338,6 +370,35 @@ lv_rm:
   scan_mode: "full_market"    # 全市场独立扫描
   max_abs_change_pct: 0.08    # |涨跌幅| < 8%（从配置读取，禁止硬编码）
   # ... 其他 LV-RM 参数
+
+# ============================================================
+# 2026-08-20 保护单管理修复新增配置（FR-03/04/08 等）
+# ============================================================
+trading:
+  entry_timeout:
+    fill_tolerance: 0.9999           # 订单完全成交判定容差（已成交/委托 ≥ 该比例视为完全成交）
+  position_detection:
+    zero_qty_threshold: 0.0001       # 持仓数量低于该值视为全部平仓/零持仓
+    tp1_filled_ratio: 0.9            # 交易所持仓量 < 初始开仓量 × 该比例 视为 TP1 已成交
+  entry:
+    reject_on_exchange_position: true  # FR-03 开仓前核对交易所实际持仓；反向或查询失败禁止开仓
+  # FR-04（2026-08-20 二次修订）：HRS 与其他策略共用账户，对非本策略持仓仅告警、不接管。
+  # 无接管配置项（硬性规定，代码中不保留任何接管路径）。
+
+# V2.6: 标准模式趋势过滤（4h EMA20）
+# 防止"逆势回调陷阱"：在强上涨趋势中阻断做空，在强下跌趋势中阻断做多
+trend_filter:
+  enabled: true                # 是否启用趋势过滤
+  ema_period: 20               # 4h EMA 周期
+  long:
+    min_price: 1.0             # 做多：价格 > EMA20（必须多头排列）
+    max_deviation: 0.97        # 做多：价格 ≥ EMA20 × 0.97（允许偏离不超过 -3%）
+  short:
+    max_price: 1.0             # 做空：价格 < EMA20（必须空头排列）
+    max_deviation: 1.03        # 做空：价格 ≤ EMA20 × 1.03（允许偏离不超过 +3%）
+
+atr:
+  min_recalc_klines: 15              # ATR 重新计算所需最少 K 线数
 ```
 
 
@@ -349,6 +410,8 @@ lv_rm:
 | V2.4 | 2026-07-30 | 新增 LV-RM 模块 |
 | V2.5 | 2026-07-31 | 候选池扩容（OR 逻辑、50 分位、8%阈值、LV-RM 独立） |
 | **V2.5.1** | **2026-08-01** | **问题修复与完整性增强**：① 修复 `abs(price_change)<8.0` 硬编码，改为配置读取；② 修正 V2.4 旧值 12%/10% → 8%/6%；③ 统一预期候选池数量为 6-10/5-8；④ 新增风险分析（§10）；⑤ 新增回退方案（§11）；⑥ 新增代码变更清单（§12）；⑦ 新增候选池为空休眠处理（§2.2 步骤4）；⑧ 完善数据库变更清单（§7） |
+| **V2.5.1-P1** | **2026-08-20** | **保护单管理缺陷修复**：① FR-01 开仓后保护单原子性创建与失败补偿；② FR-03 开仓前核对交易所实际持仓，禁止反向开仓；③ FR-04 启动对账对交易所非本策略持仓仅告警、不接管（二次修订：彻底移除接管路径与配置项，防止共用账户误接管其他策略持仓）；④ FR-06 algoIds JSONB 持久化（§7 条目 6 幂等迁移，重启不丢失）；⑤ FR-07 取消旧保护单优先使用交易所批量取消接口；⑥ FR-08 加仓重下保护单取消失败即阻断 |
+| **V2.6** | **2026-08-25** | **标准模式趋势过滤**：① `scoring_engine.py` 新增 `_check_standard_trend_filter` 方法，复用 LV-RM 的趋势过滤逻辑；② `score()` 新增 `klines_4h` 参数，对标准/半EMM模式执行 4h EMA20 趋势过滤；③ `should_entry()` 增加趋势过滤检查，不通过则一票否决；④ `config.yaml` 新增 `scoring.trend_filter` 配置段；⑤ 目的：防止"逆势回调陷阱"，在强上涨趋势中阻断逆势做空，在强下跌趋势中阻断逆势做多 |
 
 
 ## 10. 风险分析
@@ -388,6 +451,13 @@ lv_rm:
 
 ### 配置文件（config.yaml）
 ```diff
++ market_cap:                              # 新增：CoinGecko 市值查询容错配置
++   timeout: 10                            # 请求超时（秒）
++   retry_count: 2                         # 网络/超时异常重试次数
++   retry_interval: 1.0                    # 每次重试前休眠间隔（秒）
++   cache_ttl_seconds: 3600                # 市值缓存存活时间（秒）
++   coin_list_cool_down_seconds: 60.0      # 币种列表加载失败后的冷却时长（秒）
+
   candidate_pool:
 +   logic: "or_any_2"                     # 新增
 +   condition_count: 2                    # 新增
@@ -440,6 +510,98 @@ lv_rm:
 +     max_change = config.get("max_abs_change_pct", 0.08)
 +     return [s for s in eligible if abs(s.change) < max_change]
 ```
+
+### V2.6: 标准模式趋势过滤（新增）
+
+#### 配置文件（config.yaml）
+```diff
++ trend_filter:                            # 新增：标准模式趋势过滤配置
++   enabled: true                          # 是否启用趋势过滤
++   ema_period: 20                         # 4h EMA 周期
++   long:
++     min_price: 1.0                       # 做多：价格 > EMA20（必须多头排列）
++     max_deviation: 0.97                  # 做多：价格 ≥ EMA20 × 0.97（允许偏离不超过 -3%）
++   short:
++     max_price: 1.0                       # 做空：价格 < EMA20（必须空头排列）
++     max_deviation: 1.03                  # 做空：价格 ≤ EMA20 × 1.03（允许偏离不超过 +3%）
+```
+
+#### 评分引擎（scoring_engine.py）
+```diff
+@dataclass
+class ScoringResult:
++   trend_filter_passed: bool = True      # V2.6: 标准模式趋势过滤结果
++   trend_filter_reason: str = ""         # V2.6: 趋势过滤阻断原因
+
+class ScoringEngine:
+    def __init__(self, config):
+        # ...
++       # V2.6: 标准模式趋势过滤配置
++       trend_filter_config = scoring_config.get("trend_filter", {})
++       self.trend_filter_enabled = trend_filter_config.get("enabled", False)
++       self.trend_filter_ema_period = trend_filter_config.get("ema_period", 20)
++       self.trend_filter_long = trend_filter_config.get("long", {})
++       self.trend_filter_short = trend_filter_config.get("short", {})
+
+    def score(self, ..., klines_4h: Optional[List[Dict]] = None):
+        # ... 评分计算不变 ...
++       # V2.6: 标准模式趋势过滤（仅对标准/半EMM模式生效）
++       if klines_4h and result.entry_mode in ("standard", "semi_emm"):
++           current_close_4h = float(klines_4h[-1].get("close", 0))
++           ema_4h = self._calc_ema(klines_4h, self.trend_filter_ema_period)
++           trend_ok, trend_reason = self._check_standard_trend_filter(
++               direction=direction,
++               current_price_4h=current_close_4h,
++               ema_4h=ema_4h,
++           )
++           result.trend_filter_passed = trend_ok
++           result.trend_filter_reason = trend_reason
+
++   def _check_standard_trend_filter(
++       self, direction: str, current_price_4h: float, ema_4h: float
++   ) -> Tuple[bool, str]:
++       """V2.6: 标准模式趋势过滤（复用 LV-RM 的过滤逻辑）"""
++       if not self.trend_filter_enabled:
++           return True, "趋势过滤未启用"
++       return self._check_lv_rm_trend_filter(
++           direction=direction,
++           current_price_4h=current_price_4h,
++           ema_4h=ema_4h,
++           config={"enabled": True, "long": self.trend_filter_long, "short": self.trend_filter_short},
++       )
+
+    def should_entry(self, score_result: ScoringResult) -> bool:
+        if score_result.veto:
+            return False
++       # V2.6: 趋势过滤检查（标准/半EMM模式）
++       if score_result.entry_mode in ("standard", "semi_emm"):
++           if not score_result.trend_filter_passed:
++               return False
+        # ... 其余检查不变 ...
+```
+
+#### 策略层（strategy.py）
+```diff
+  def _score_symbol(self, symbol, direction, ...):
++     # V2.6: 传入 4h K 线数据用于趋势过滤
++     klines_4h = self._klines_4h_cache.get(symbol, [])
+      short_score = self.scoring_engine.score(
+          ...
++         klines_4h=klines_4h,
+      )
+```
+
+### 设计理念说明
+
+**问题**：在强势趋势运行中，价格经常出现回调（上涨趋势中的回调下跌、下跌趋势中的反弹上涨），这些回调会触发出场反转形态，但随后往往会延续原趋势，导致逆势开仓亏损。
+
+**解决方案**：通过 4h EMA20 判断大趋势方向，只允许顺势方向的反转开仓：
+- 上涨趋势（价格 > EMA20）：只允许做多，禁止做空（做空摸顶属于逆势）
+- 下跌趋势（价格 < EMA20）：只允许做空，禁止做多（做多抄底属于逆势）
+
+**生效范围**：标准模式和半EMM模式。LV-RM 模块已有相同逻辑，不受影响。
+
+**效果**：过滤掉逆势方向的"回调陷阱"信号，提高整体胜率，保留顺势方向的反转机会。
 
 
 ## 13. 附录：V2.5.1 与 V2.5 对照速查

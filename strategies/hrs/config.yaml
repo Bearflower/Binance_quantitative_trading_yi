@@ -6,6 +6,14 @@ strategy:
   version: "2.5.0"
   description: "混合反转策略 V2.5 - 候选池扩容（OR-2 + 50分位）+ LV-RM 独立化"
 
+# 市值查询配置（CoinGecko）
+market_cap:
+  timeout: 10                 # 请求超时（秒）
+  retry_count: 2              # 网络/超时异常重试次数
+  retry_interval: 1.0         # 每次重试前休眠间隔（秒）
+  cache_ttl_seconds: 3600     # 市值缓存存活时间（秒）
+  coin_list_cool_down_seconds: 60.0   # 币种列表加载失败后的冷却时长（秒）
+
 # 评分系统配置
 scoring:
   # 权重（不得超过100%）
@@ -31,6 +39,18 @@ scoring:
       threshold: 0.15            # 做空：24h涨幅 ≥ 15%（小数形式）
     long:
       threshold: -0.15           # 做多：24h跌幅 ≤ -15%（小数形式，负值表示下跌）
+
+  # V2.6: 标准模式趋势过滤（4h EMA20）
+  # 防止"逆势回调陷阱"：在强上涨趋势中阻断做空，在强下跌趋势中阻断做多
+  trend_filter:
+    enabled: true                # 是否启用趋势过滤
+    ema_period: 20               # 4h EMA 周期
+    long:
+      min_price: 1.0             # 做多：价格 > EMA20（必须多头排列）
+      max_deviation: 0.97        # 做多：价格 ≥ EMA20 × 0.97（允许偏离不超过 -3%）
+    short:
+      max_price: 1.0             # 做空：价格 < EMA20（必须空头排列）
+      max_deviation: 1.03        # 做空：价格 ≤ EMA20 × 1.03（允许偏离不超过 +3%）
 
   # 合约数据评分配置（OI/市值比）
   contract:
@@ -211,6 +231,7 @@ candidate_pool:
       - SOXSUSDT
       - CRCLUSDT
       - TSLAUSDT
+      - AAPLUSDT      # 股票代币，CoinGecko 不支持
 
   # 新币策略冲突屏蔽
   new_coin_conflict:
@@ -306,6 +327,7 @@ trading:
   entry_timeout:
     minutes: 15                  # 15分钟内未完全成交则放弃
     check_interval_seconds: 10   # 订单状态检查间隔（秒）
+    fill_tolerance: 0.9999       # 订单完全成交判定容差（已成交/委托 ≥ 该比例视为完全成交）
 
   # 放弃条件
   abandon:
@@ -352,6 +374,13 @@ trading:
   position_detection:
     qty_tolerance_ratio: 0.01    # 数量容差比例
     qty_tolerance_absolute: 0.0001  # 数量容差绝对值
+    zero_qty_threshold: 0.0001   # 持仓数量低于该值视为全部平仓/零持仓
+    tp1_filled_ratio: 0.9        # 交易所持仓量 < 初始开仓量 × 该比例 视为 TP1 已成交
+
+  # FR-03/FR-04: 保护单管理开关
+  entry:
+    reject_on_exchange_position: true    # FR-03 开仓前核对交易所实际持仓；反向或查询失败禁止开仓
+  # FR-04: HRS 与其他策略共用账户，对非本策略持仓仅告警、不接管（硬性规定，无配置开关）
 
 # ============================================================
 # V2.5.2 仓位管理与资金分配
@@ -415,6 +444,7 @@ funding_rate:
 # ATR配置
 atr:
   period: 14                     # ATR计算周期
+  min_recalc_klines: 15          # ATR重新计算所需最少K线数
 
 # 通知配置
 notification:

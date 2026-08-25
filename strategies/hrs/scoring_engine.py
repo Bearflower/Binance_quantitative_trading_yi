@@ -32,6 +32,8 @@ class ScoringResult:
     entry_mode: str = "standard"          # V2.0-C 新增: "standard" 或 "emm"
     bb_position: Optional[float] = None   # V2.4 LV-RM: 入场时价格在布林带中的位置
     rsi_value: Optional[float] = None     # V2.4 LV-RM: 入场时的 RSI 值
+    trend_filter_passed: bool = True      # V2.6: 标准模式趋势过滤结果
+    trend_filter_reason: str = ""         # V2.6: 趋势过滤阻断原因
     details: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -54,6 +56,8 @@ class ScoringResult:
             "entry_mode": self.entry_mode,
             "bb_position": self.bb_position,
             "rsi_value": self.rsi_value,
+            "trend_filter_passed": self.trend_filter_passed,
+            "trend_filter_reason": self.trend_filter_reason,
             "details": self.details,
         }
 
@@ -91,6 +95,13 @@ class ScoringEngine:
         tech_config = scoring_config.get("technical", {})
         self.min_technical_score = tech_config.get("min_total_score", 4.0)
         self.min_primary_pattern_score = tech_config.get("min_primary_pattern_score", 1.0)
+
+        # V2.6: 标准模式趋势过滤配置
+        trend_filter_config = scoring_config.get("trend_filter", {})
+        self.trend_filter_enabled = trend_filter_config.get("enabled", False)
+        self.trend_filter_ema_period = trend_filter_config.get("ema_period", 20)
+        self.trend_filter_long = trend_filter_config.get("long", {})
+        self.trend_filter_short = trend_filter_config.get("short", {})
 
         # V2.0 新增：极端行情加分配置
         eb_config = scoring_config.get("extreme_bonus", {})
@@ -892,6 +903,41 @@ class ScoringEngine:
 
         return True, ""
 
+    def _check_standard_trend_filter(
+        self,
+        direction: str,
+        current_price_4h: float,
+        ema_4h: float,
+    ) -> Tuple[bool, str]:
+        """
+        V2.6: 标准模式趋势过滤（复用 LV-RM 的过滤逻辑）
+
+        在标准模式入场前，检查当前价格相对于 4h EMA20 的位置：
+        - 做空：要求价格 < EMA20（空头排列），且偏离不超过配置阈值
+        - 做多：要求价格 > EMA20（多头排列），且偏离不超过配置阈值
+
+        Args:
+            direction: 'short' 或 'long'
+            current_price_4h: 4h级别当前价格
+            ema_4h: 4h EMA20 值
+
+        Returns:
+            (是否通过, 失败原因)
+        """
+        if not self.trend_filter_enabled:
+            return True, "趋势过滤未启用"
+
+        return self._check_lv_rm_trend_filter(
+            direction=direction,
+            current_price_4h=current_price_4h,
+            ema_4h=ema_4h,
+            config={
+                "enabled": True,
+                "long": self.trend_filter_long,
+                "short": self.trend_filter_short,
+            },
+        )
+
     def _check_lv_rm_kline_confirm(self, direction: str, klines: List[Dict]) -> bool:
         """
         V2.4: 检查 LV-RM K线确认
@@ -927,6 +973,7 @@ class ScoringEngine:
         funding_rate: float,
         has_market_cap: bool = True,
         price_change_24h: Optional[float] = None,
+        klines_4h: Optional[List[Dict]] = None,
     ) -> ScoringResult:
         """
         执行完整评分（V2.0-C：双轨并行 - 标准模式 + EMM模式）
@@ -940,6 +987,7 @@ class ScoringEngine:
             has_market_cap: 是否成功获取市值
             price_change_24h: 24小时价格涨跌幅百分比值（如 -25.0 表示跌25%），
                               用于EMM判断和极端行情加分
+            klines_4h: 4h K线数据（可选），用于标准模式趋势过滤
 
         Returns:
             评分结果
@@ -1065,6 +1113,25 @@ class ScoringEngine:
             details=details,
         )
 
+        # V2.6: 标准模式趋势过滤（仅对非EMM/非LV-RM模式生效）
+        if klines_4h and result.entry_mode in ("standard", "semi_emm"):
+            current_close_4h = float(klines_4h[-1].get("close", 0))
+            ema_4h = self._calc_ema(klines_4h, self.trend_filter_ema_period)
+            trend_ok, trend_reason = self._check_standard_trend_filter(
+                direction=direction,
+                current_price_4h=current_close_4h,
+                ema_4h=ema_4h,
+            )
+            result.trend_filter_passed = trend_ok
+            result.trend_filter_reason = trend_reason
+            if not trend_ok:
+                logger.info(
+                    "趋势过滤阻断",
+                    symbol=symbol,
+                    direction=direction,
+                    reason=trend_reason,
+                )
+
         logger.info(
             "评分完成",
             symbol=symbol,
@@ -1074,6 +1141,7 @@ class ScoringEngine:
             technical_score=result.technical_score,
             sentiment_score=result.sentiment_score,
             entry_mode=result.entry_mode,
+            trend_filter_passed=result.trend_filter_passed,
         )
 
         return result
@@ -1085,7 +1153,8 @@ class ScoringEngine:
         入场条件（必须同时满足）：
         1. 总分 ≥ 6.0
         2. 无一票否决
-        3. 标准模式：技术总分 ≥ 4.0 且 基础形态分 ≥ 1.0
+        3. V2.6: 趋势过滤通过（标准/半EMM模式）
+        4. 标准模式：技术总分 ≥ 4.0 且 基础形态分 ≥ 1.0
            EMM模式：跳过技术面硬性门槛
 
         Args:
@@ -1097,6 +1166,17 @@ class ScoringEngine:
         if score_result.veto:
             logger.info("一票否决，不入场", symbol=score_result.symbol)
             return False
+
+        # V2.6: 趋势过滤检查（标准/半EMM模式）
+        # LV-RM 模式已经在评分阶段做了趋势过滤，此处不再重复
+        if score_result.entry_mode in ("standard", "semi_emm"):
+            if not score_result.trend_filter_passed:
+                logger.info(
+                    "趋势过滤阻断，不入场",
+                    symbol=score_result.symbol,
+                    reason=score_result.trend_filter_reason,
+                )
+                return False
 
         # V2.2：EMM/半EMM/标准模式使用各自入场阈值
         if score_result.entry_mode == "emm":
