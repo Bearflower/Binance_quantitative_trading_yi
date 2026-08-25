@@ -330,7 +330,7 @@ strategy:
       min_margin_usdt: 100
       max_single_position_usdt: 500
       min_close_notional_usdt: 20
-      entry_order_timeout_seconds: 60  # 限价单入场超时等待（秒）
+      entry_order_timeout_seconds: 300  # 限价单入场超时等待（秒），60→300 低波动行情下给更多时间成交
 
     # 趋势过滤器
     trend_filter:

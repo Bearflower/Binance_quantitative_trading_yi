@@ -682,8 +682,13 @@ class BTCEthStrategy:
             if market_state_config.get('enabled', True) and '4h' in klines:
                 # 提取4h收盘价用于计算价格变化
                 close_4h = pd.Series([float(k['close']) for k in klines['4h']])
+                # 补传日线指标：日线EMA21斜率判断强趋势市的必要条件，
+                # 漏传会导致 daily_slope 恒为0，强趋势市永远无法识别（v6.21.1 修复）
                 market_state, state_desc = get_market_state(
-                    indicators['4h'], close_prices=close_4h, config=market_state_config
+                    indicators['4h'],
+                    close_prices=close_4h,
+                    indicators_1d=indicators.get('1d'),
+                    config=market_state_config
                 )
                 market_behavior = get_market_state_behavior(market_state, market_state_config)
                 
@@ -2085,12 +2090,14 @@ class BTCEthStrategy:
                 signal['timestamp']
             )
             
-            # 1. 设置杠杆倍数
+            # 1. 设置杠杆倍数（必须为整数，覆盖层可能产生浮点数）
+            leverage = int(signal['leverage']) if signal['leverage'] > 0 else 1
             try:
-                logger.info(f"{symbol} 设置杠杆倍数: {signal['leverage']}")
-                await self.binance.set_leverage(symbol, signal['leverage'])
+                logger.info(f"{symbol} 设置杠杆倍数: {signal['leverage']} → {leverage}")
+                await self.binance.set_leverage(symbol, leverage)
             except Exception as e:
-                logger.warning(f"{symbol} 设置杠杆失败: {e}")
+                logger.error(f"{symbol} 设置杠杆失败: {e}，终止交易")
+                return False
 
             # 2. 开仓前检查：总仓位不超过分配上限
             current_positions_value = 0.0
@@ -2360,7 +2367,7 @@ class BTCEthStrategy:
                 stop_limit_price = new_stop * (Decimal('1') + stop_offset_pct)
             new_stop_order = await self.binance.place_conditional_order(
                 symbol, 'SELL' if position.direction == 'LONG' else 'BUY',
-                new_stop, position.current_quantity, 'STOP', price=stop_limit_price,
+                new_stop, position.current_quantity, order_type='STOP', price=stop_limit_price,
                 reduce_only=True
             )
             position.stop_loss_order_id = new_stop_order.get('algoId') or new_stop_order.get('orderId')
@@ -2770,7 +2777,37 @@ class BTCEthStrategy:
                         error=str(e),
                         close_reason=close_reason
                     )
-                    if retry_attempt < max_retries:
+                    
+                    # [-2022] ReduceOnly 被拒：检查持仓是否已在交易所关闭
+                    if isinstance(e, BinanceAPIError) and e.code == -2022:
+                        logger.warning(
+                            f"{symbol} ReduceOnly 被拒，检查实际持仓状态",
+                            close_reason=close_reason
+                        )
+                        try:
+                            exchange_positions = await self.binance.get_position(symbol)
+                            for pos in exchange_positions:
+                                if pos.get('symbol') == symbol:
+                                    pos_amt = float(pos.get('positionAmt', 0))
+                                    if abs(pos_amt) < 0.0001:
+                                        # 交易所已无持仓，同步本地状态
+                                        logger.info(
+                                            f"{symbol} 交易所已无持仓，同步本地状态",
+                                            close_reason=close_reason,
+                                            previous_quantity=float(position.current_quantity)
+                                        )
+                                        position.current_quantity = Decimal('0')
+                                        filled = True
+                                        break
+                            if filled:
+                                break
+                        except Exception as check_err:
+                            logger.warning(
+                                f"{symbol} 检查实际持仓失败",
+                                error=str(check_err)
+                            )
+                    
+                    if retry_attempt < max_retries and not filled:
                         await asyncio.sleep(retry_interval)
 
             if not filled:
@@ -3111,12 +3148,16 @@ class BTCEthStrategy:
         Returns:
             Decimal: 最终止损价（如果激活），None（未激活时）
         """
-        dt_config = self.risk_config.get('dynamic_trailing', {})
+        # 从信号等级的风险配置中获取动态止损参数（v6.16.10: 按等级独立配置）
+        # 修复：之前错误地从 risk.dynamic_trailing 读取，实际配置在 risk.signal_levels.{grade}.dynamic_trailing
+        grade = getattr(position, 'grade', 'A')
+        grade_risk = self._get_grade_risk(grade)
+        dt_config = grade_risk.get('dynamic_trailing', {})
         if not dt_config.get('enabled', True):
             return None
         
-        activation_config = dt_config['activation']
-        tiers = dt_config['regression_tiers']
+        activation_config = dt_config.get('activation', {})
+        tiers = dt_config.get('regression_tiers', [])
         
         # 基于最高/最低价计算浮盈百分比（而非当前价）
         # 设计依据：用峰值计算允许回撤，才能在价格回落时锁住利润
