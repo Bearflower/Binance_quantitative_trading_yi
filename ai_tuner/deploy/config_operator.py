@@ -177,6 +177,11 @@ class ConfigOperator:
 
             # 创建覆盖层目录（如果不存在）
             os.makedirs(override_dir, exist_ok=True)
+            # 确保目录可写（volume 挂载可能导致权限问题）
+            try:
+                os.chmod(override_dir, 0o777)
+            except Exception:
+                pass
 
             # 生成版本号
             version = self._generate_version(override_dir)
