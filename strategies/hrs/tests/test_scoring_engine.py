@@ -23,9 +23,9 @@ class TestScoringEngineInit:
         assert engine.contract_weight == 0.25
         assert engine.technical_weight == 0.45
         assert engine.sentiment_weight == 0.30
-        assert engine.entry_threshold == 6.5
-        assert engine.min_technical_score == 6.0
-        assert engine.min_primary_pattern_score == 2.0
+        assert engine.entry_threshold == 6.0
+        assert engine.min_technical_score == 4.0
+        assert engine.min_primary_pattern_score == 1.0
 
     def test_年化费率参数正确加载(self):
         """验证年化费率参数从配置正确加载"""
@@ -39,7 +39,7 @@ class TestScoringEngineInit:
         assert engine.contract_weight == 0.25
         assert engine.technical_weight == 0.45
         assert engine.sentiment_weight == 0.30
-        assert engine.entry_threshold == 6.5
+        assert engine.entry_threshold == 6.0
 
 
 class TestContractScore:
@@ -371,39 +371,38 @@ class TestEntryDecision:
         assert engine.should_entry(result) is False
 
     def test_技术总分不足不应入场(self, engine):
-        """技术总分低于6.0，不应入场"""
+        """技术总分低于4.0，不应入场"""
         result = engine.score(
             symbol="DOGEUSDT",
             direction="short",
             oi_market_cap_ratio=0.30,
             patterns={
-                "three_tops": (True, 4.0),
+                "three_tops": (True, 2.0),
                 "long_upper_shadow": (False, 0.0),
                 "volume_stagnation": (False, 0.0),
             },
             funding_rate=0.002,
         )
-        # 合约分: 10, 技术分: 4, 情绪分: 10
-        # 总分: 10*0.25 + 4*0.45 + 10*0.30 = 7.3
-        # 但技术总分 4 < 6.0
-        assert result.technical_score < 6.0
+        # 合约分: 10, 技术分: 2, 情绪分: 10
+        # 但技术总分 2 < 4.0
+        assert result.technical_score < 4.0
         assert engine.should_entry(result) is False
 
     def test_基础形态评分不足不应入场(self, engine):
-        """基础形态评分低于2.0，不应入场"""
+        """基础形态评分低于1.0，不应入场"""
         result = engine.score(
             symbol="DOGEUSDT",
             direction="short",
             oi_market_cap_ratio=0.30,
             patterns={
-                "three_tops": (True, 1.0),  # 基础形态评分1.0 < 2.0
+                "three_tops": (True, 0.5),  # 基础形态评分0.5 < 1.0
                 "long_upper_shadow": (True, 3.0),
                 "volume_stagnation": (True, 3.0),
             },
             funding_rate=0.002,
         )
-        # 技术总分: 7.0 >= 6.0, 但基础形态评分只有1.0 < 2.0
-        assert result.technical_score >= 6.0
+        # 技术总分: 6.5 >= 4.0, 但基础形态评分只有0.5 < 1.0
+        assert result.technical_score >= 4.0
         assert engine.should_entry(result) is False
 
     def test_一票否决不应入场(self, engine):

@@ -5,11 +5,26 @@
 import asyncio
 import json
 import os
-
-from typing import Dict, Any, Optional, List, Set, Tuple
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Dict, Any, Optional, List, Set, Tuple
+
 import structlog
+
+from shared.base_strategy import BaseStrategy
+from shared.capital_manager import CapitalManager
+from shared.database import DatabaseManager
+from shared.notification import NotificationClient
+from shared.strategy_state import save_strategy_state
+from shared.trade_logger import TradeLogger
+
+from .candidate_pool import CandidatePool
+from .executor import TradingExecutor, OpenResult
+from .market_data import MarketDataProvider
+from .pattern import PatternRecognizer
+from .position_manager import PositionManager
+from .risk_manager import RiskManager
+from .scoring_engine import ScoringEngine, ScoringResult
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -19,21 +34,6 @@ class DecimalEncoder(json.JSONEncoder):
         if isinstance(obj, Decimal):
             return float(obj)
         return super().default(obj)
-
-from shared.base_strategy import BaseStrategy
-from shared.notification import NotificationClient
-from shared.database import DatabaseManager
-from shared.strategy_state import save_strategy_state
-from shared.capital_manager import CapitalManager
-from shared.trade_logger import TradeLogger
-
-from .candidate_pool import CandidatePool
-from .scoring_engine import ScoringEngine, ScoringResult
-from .pattern import PatternRecognizer
-from .market_data import MarketDataProvider
-from .executor import TradingExecutor
-from .position_manager import PositionManager
-from .risk_manager import RiskManager
 
 
 logger = structlog.get_logger()
@@ -141,6 +141,22 @@ class HRSStrategy(BaseStrategy):
         self._notif_events = notif_config.get("events", {})
         self._notif_enabled = notif_config.get("enabled", True)
 
+        # FR-03/FR-04: 保护单管理相关开关（从配置读取，禁止硬编码）
+        hrs_trading_config = config.get("trading", {})
+        entry_switch_config = hrs_trading_config.get("entry", {})
+        self._reject_on_exchange_position = entry_switch_config.get(
+            "reject_on_exchange_position", True
+        )
+        # 2026-08-20：HRS 与其他策略共用账户，对非本策略持仓一律仅告警、不接管（无配置开关）
+
+        # 持仓检测阈值（从配置读取，禁止硬编码）
+        position_detection_config = hrs_trading_config.get("position_detection", {})
+        self._zero_qty_threshold = position_detection_config.get("zero_qty_threshold", 0.0001)
+        self._tp1_filled_ratio = position_detection_config.get("tp1_filled_ratio", 0.9)
+
+        # ATR 配置：重新计算所需最少 K 线数（从配置读取，禁止硬编码）
+        self._atr_min_recalc_klines = config.get("atr", {}).get("min_recalc_klines", 15)
+
         # P2-5: 策略启停控制
         self._paused: bool = False
 
@@ -232,6 +248,7 @@ class HRSStrategy(BaseStrategy):
         try:
             # 获取K线数据
             klines = self._klines_cache.get(symbol, [])
+            klines_4h = self._klines_4h_cache.get(symbol, [])
             if len(klines) < self.min_klines:
                 # 尝试预热K线
                 klines = await self._warmup_klines(symbol)
@@ -244,7 +261,9 @@ class HRSStrategy(BaseStrategy):
             current_close = float(klines[-1].get("close", 0))
             # P0-4: 资金费率时间对齐，使用K线收盘时间（open_time + 1h）而非开盘时间
             current_open_time = klines[-1].get("open_time", 0)
-            current_close_time = current_open_time + KLINE_INTERVAL_MS.get(self.kline_interval, 3600000)  # K线收盘时间（毫秒）
+            # K线收盘时间（毫秒）
+            kline_interval_ms = KLINE_INTERVAL_MS.get(self.kline_interval, 3600000)
+            current_close_time = current_open_time + kline_interval_ms
 
             # 获取OI和资金费率
             oi_usd = await self.market_data.get_oi_usd(symbol)
@@ -280,6 +299,7 @@ class HRSStrategy(BaseStrategy):
                         patterns=short_patterns,
                         funding_rate=funding_rate,
                         has_market_cap=has_market_cap,
+                        klines_4h=klines_4h,
                     )
                     result["short"] = {
                         "score_result": short_score.to_dict(),
@@ -314,6 +334,7 @@ class HRSStrategy(BaseStrategy):
                         patterns=long_patterns,
                         funding_rate=funding_rate,
                         has_market_cap=has_market_cap,
+                        klines_4h=klines_4h,
                     )
                     result["long"] = {
                         "score_result": long_score.to_dict(),
@@ -386,6 +407,12 @@ class HRSStrategy(BaseStrategy):
                 logger.info("该币种已有持仓，跳过", symbol=symbol)
                 return False
 
+            # FR-03: 开仓前核对交易所实际持仓（受 reject_on_exchange_position 开关控制）
+            if self._reject_on_exchange_position and not await self._check_exchange_position_allows_entry(
+                symbol, direction
+            ):
+                return False
+
             # P1-2: 进场前OI二次确认（流动性降级放弃）
             if not await self._check_oi_before_entry(symbol, direction):
                 return False
@@ -436,10 +463,10 @@ class HRSStrategy(BaseStrategy):
                 )
                 return False
 
-            # 执行开仓
-            order = None
+            # 执行开仓（FR-01: 返回 OpenResult，分离「成交」与「保护单完整性」信号）
+            result: Optional[OpenResult] = None
             if direction == "short":
-                order = await self.trading_executor.execute_short(
+                result = await self.trading_executor.execute_short(
                     symbol=symbol,
                     entry_price=current_price,
                     atr=atr,
@@ -448,7 +475,7 @@ class HRSStrategy(BaseStrategy):
                     entry_mode=entry_mode,
                 )
             else:
-                order = await self.trading_executor.execute_long(
+                result = await self.trading_executor.execute_long(
                     symbol=symbol,
                     entry_price=current_price,
                     atr=atr,
@@ -457,7 +484,7 @@ class HRSStrategy(BaseStrategy):
                     entry_mode=entry_mode,
                 )
 
-            if order:
+            if result.order_filled:
                 # 记录持仓
                 self.position_manager.add_position(
                     symbol=symbol,
@@ -472,6 +499,13 @@ class HRSStrategy(BaseStrategy):
 
                 # 保存状态
                 await self._save_state()
+
+                # FR-01: 保护单不完整 → 立即补单并异常告警
+                if not result.protection_complete:
+                    await self._replenish_single_position(symbol)
+                    await self._send_anomaly_alert(
+                        f"HRS开仓保护单不完整：{symbol} {direction} 失败角色={result.failed_roles}"
+                    )
 
                 logger.info("开仓成功", symbol=symbol, direction=direction)
                 return True
@@ -1256,7 +1290,13 @@ class HRSStrategy(BaseStrategy):
         """
         try:
             if entry_price <= 0 or exit_price <= 0 or quantity <= 0:
-                logger.warning("PnL回写参数无效，跳过", symbol=symbol, entry_price=entry_price, exit_price=exit_price, quantity=quantity)
+                logger.warning(
+                    "PnL回写参数无效，跳过",
+                    symbol=symbol,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    quantity=quantity,
+                )
                 return
 
             # 计算 PnL
@@ -1437,7 +1477,8 @@ class HRSStrategy(BaseStrategy):
                     remaining_qty -= tp2_qty
 
             # 剩余部分（止损或手动平仓）
-            qty_tolerance = getattr(self.position_manager, 'qty_tolerance_absolute', 0.0001)
+            # PositionManager.__init__ 始终初始化 qty_tolerance_absolute，直接访问消除硬编码
+            qty_tolerance = self.position_manager.qty_tolerance_absolute
             if remaining_qty > qty_tolerance and current_price > 0:
                 pnl = TradeLogger.calculate_pnl(
                     direction=direction_upper,
@@ -1928,8 +1969,14 @@ class HRSStrategy(BaseStrategy):
                     entry_price DOUBLE PRECISION,
                     quantity DOUBLE PRECISION,
                     entry_time BIGINT,
+                    algo_ids JSONB,            -- FR-06: 条件单 algoId 映射 {role: algoId}
                     PRIMARY KEY (symbol, direction)
                 )
+            """)
+
+            # FR-06: 幂等迁移（存量库升级关键：为 hrs_positions 补齐 algo_ids 列）
+            await self.db.execute_ddl("""
+                ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS algo_ids JSONB
             """)
 
             await self.db.execute_ddl("""
@@ -2056,7 +2103,7 @@ class HRSStrategy(BaseStrategy):
 
             # 尝试从独立表恢复
             positions_rows = await self.db.fetch_all(
-                "SELECT symbol, direction, entry_price, quantity, entry_time FROM hrs.hrs_positions"
+                "SELECT symbol, direction, entry_price, quantity, entry_time, algo_ids FROM hrs.hrs_positions"
             )
             blacklist_rows = await self.db.fetch_all(
                 "SELECT symbol, reason FROM hrs.hrs_blacklist"
@@ -2084,6 +2131,13 @@ class HRSStrategy(BaseStrategy):
                         et = row["entry_time"]
                         if isinstance(et, int) and et > 0:
                             pos["entry_time"] = datetime.fromtimestamp(et / 1000, tz=timezone.utc)
+
+                    # FR-06: 恢复 algo_ids 映射（兼容 dict 或 str 存储）
+                    if pos and row.get("algo_ids"):
+                        algo_ids = row["algo_ids"]
+                        if isinstance(algo_ids, str):
+                            algo_ids = json.loads(algo_ids)
+                        pos["algo_ids"] = algo_ids or {}
 
                 # 恢复黑名单
                 blacklist_symbols = set()
@@ -2277,7 +2331,7 @@ class HRSStrategy(BaseStrategy):
         P0-1: 启动时与交易所持仓对账
 
         对比交易所实际持仓与本地恢复的持仓状态：
-        - 以交易所为准，交易所有持仓而本地无 → 重建本地记录
+        - 交易所有持仓而本地无 → 仅告警、不接管（共用账户，避免误接管其他策略持仓）
         - 本地有而交易所无 → 清理本地记录
         - 差异记录告警日志
         """
@@ -2292,7 +2346,7 @@ class HRSStrategy(BaseStrategy):
             exchange_pos_map: Dict[str, Dict[str, Any]] = {}
             for pos in exchange_positions:
                 pos_amt = abs(float(pos.get("positionAmt", 0)))
-                if pos_amt < 0.0001:
+                if pos_amt < self._zero_qty_threshold:
                     continue  # 忽略零持仓
                 symbol = pos.get("symbol", "")
                 amt = float(pos.get("positionAmt", 0))
@@ -2306,18 +2360,19 @@ class HRSStrategy(BaseStrategy):
             # 获取本地持仓
             local_positions = self.position_manager.get_all_positions()
 
-            # 交易所有而本地无 → 仅记录告警，不自动接管
+            # 交易所有而本地无 → 仅告警、不接管（2026-08-20 硬性规定）
+            # HRS 与 btc_eth/new_coin/grid 共用同一币安账户，get_position() 返回所有策略
+            # 持仓。接管会把其他策略仓位误认为 HRS 持仓并追加保护单，造成跨策略干扰
+            # （XRPUSDT 曾下 12 单、CXMTUSDT 被误跟踪），因此一律不接管，只提示人工处理。
             for symbol, exch_pos in exchange_pos_map.items():
                 if symbol not in local_positions:
                     logger.warning(
-                        "发现非本策略持仓，不自动接管（请手动确认后处理）",
+                        "发现非本策略持仓，不接管，请手动处理",
                         symbol=symbol,
                         direction=exch_pos["direction"],
                         position_amt=exch_pos["position_amt"],
                         entry_price=exch_pos["entry_price"],
-                        hint="如需接管，请重启策略或手动添加持仓记录",
                     )
-                    # 不再调用 add_position() 和 _register_and_warmup()
 
             # 本地有而交易所无 → 清理本地记录
             for symbol in list(local_positions.keys()):
@@ -2513,18 +2568,21 @@ class HRSStrategy(BaseStrategy):
                     entry_time_ts = int(datetime.fromisoformat(entry_time).timestamp() * 1000)
                 else:
                     entry_time_ts = now_ts
+                # FR-06: 持久化 algo_ids 映射（JSONB）
+                algo_ids_json = json.dumps(pos.get("algo_ids", {}), ensure_ascii=False)
                 await self.db.execute(
                     """
-                    INSERT INTO hrs.hrs_positions (symbol, direction, entry_price, quantity, entry_time)
-                    VALUES ($1, $2, $3, $4, $5)
+                    INSERT INTO hrs.hrs_positions (symbol, direction, entry_price, quantity, entry_time, algo_ids)
+                    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
                     ON CONFLICT (symbol, direction) DO UPDATE
-                    SET entry_price = $3, quantity = $4, entry_time = $5
+                    SET entry_price = $3, quantity = $4, entry_time = $5, algo_ids = $6::jsonb
                     """,
                     symbol,
                     pos.get("direction", ""),
                     pos.get("entry_price", 0),
                     pos.get("entry_quantity", 0),
                     entry_time_ts,
+                    algo_ids_json,
                 )
 
             # 4. 保存活跃币种到 hrs_active_symbols
@@ -2917,7 +2975,7 @@ class HRSStrategy(BaseStrategy):
                     exchange_qty = abs(float(pos_data.get("positionAmt", 0)))
                     if exchange_qty > 0:
                         # 如果交易所持仓量明显小于初始开仓量(>10%差异)，说明 TP1 已部分成交
-                        if exchange_qty < entry_quantity * 0.9:
+                        if exchange_qty < entry_quantity * self._tp1_filled_ratio:
                             target1_reached = True
                             pos["target1_reached"] = True
                             logger.info(
@@ -2933,17 +2991,12 @@ class HRSStrategy(BaseStrategy):
             # ATR为0时尝试重新计算
             if atr <= 0:
                 klines = self._klines_cache.get(symbol, [])
-                if len(klines) >= 15:
+                if len(klines) >= self._atr_min_recalc_klines:
                     atr = await self.trading_executor.calculate_atr(symbol, klines)
                     if atr > 0:
                         pos["atr"] = atr
 
-            # 在补单前，先取消该币种所有已跟踪的条件单，避免重复累积
-            try:
-                await self.position_manager.cancel_all_orders(symbol)
-            except Exception as e:
-                logger.warning("取消旧条件单失败", symbol=symbol, error=str(e))
-
+            # 补单清场由 replenish_position_orders 内部统一执行（FR-09），此处不重复取消
             result = await self.trading_executor.replenish_position_orders(
                 symbol=symbol,
                 direction=direction,
@@ -2954,8 +3007,8 @@ class HRSStrategy(BaseStrategy):
                 target2_reached=target2_reached,
             )
 
-            # 价格已过TP2目标，标记target2_reached以激活移动止盈
-            if result == "price_past_tp2":
+            # 价格已过TP2目标，标记target2_reached以激活移动止盈（FR-09: 适配 ReplenishResult.note）
+            if getattr(result, "note", "") == "price_past_tp2":
                 pos["target2_reached"] = True
                 logger.info("价格已过TP2目标，已标记target2_reached，激活移动止盈", symbol=symbol)
 
@@ -3071,6 +3124,78 @@ class HRSStrategy(BaseStrategy):
             return True
 
         return False
+
+    # ==================== FR-01/03/04: 保护单管理辅助 ====================
+
+    async def _get_exchange_position_status(self, symbol: str, direction: str) -> str:
+        """
+        查询交易所实际持仓状态（FR-03）
+
+        Args:
+            symbol: 交易对
+            direction: 计划开仓方向 ('short'/'long')
+
+        Returns:
+            "none"=无持仓 / "opposite"=反向持仓 / "same"=同向持仓 / "error"=查询失败
+        """
+        try:
+            positions = await self.binance_client.get_position(symbol)
+            for pos in positions:
+                pos_amt = float(pos.get("positionAmt", 0))
+                if pos_amt == 0:
+                    continue
+                if direction == "short":
+                    return "same" if pos_amt < 0 else "opposite"
+                return "same" if pos_amt > 0 else "opposite"
+            return "none"
+        except Exception as e:
+            logger.warning("查询交易所持仓失败", symbol=symbol, error=str(e))
+            return "error"
+
+    async def _check_exchange_position_allows_entry(self, symbol: str, direction: str) -> bool:
+        """
+        开仓前核对交易所实际持仓（FR-03）
+
+        - 反向持仓或查询失败 → 拒绝（False，保守原则）
+        - 无持仓 → 放行（True）
+        - 同向残留持仓（本地状态丢失场景）→ 保守拒绝新开仓，交由对账接管流程处理
+
+        Args:
+            symbol: 交易对
+            direction: 计划开仓方向 ('short'/'long')
+
+        Returns:
+            True: 允许开仓；False: 拒绝开仓
+        """
+        status = await self._get_exchange_position_status(symbol, direction)
+        if status == "error":
+            logger.warning("查询交易所持仓失败，保守拒绝开仓", symbol=symbol, direction=direction)
+            return False
+        if status == "opposite":
+            logger.warning("交易所存在反向持仓，拒绝开仓", symbol=symbol, direction=direction)
+            return False
+        if status == "same":
+            logger.warning(
+                "交易所存在同向持仓但本地无记录，保守跳过开仓",
+                symbol=symbol,
+                direction=direction,
+            )
+            return False
+        return True
+
+    async def _send_anomaly_alert(self, message: str) -> None:
+        """
+        发送异常告警（FR-01/04 共用，复用 anomaly_alert 事件开关）
+
+        Args:
+            message: 告警内容
+        """
+        if not self._should_notify("anomaly_alert"):
+            return
+        try:
+            await self.notification_client.send(message=message, level="warning", project="hrs")
+        except Exception as e:
+            logger.warning("发送异常告警失败", error=str(e))
 
     # ==================== P2-4: 通知事件 ====================
 
@@ -3276,7 +3401,11 @@ class HRSStrategy(BaseStrategy):
                 # 检查是否在结算后 skip_minutes 分钟内
                 if st_hour == current_hour:
                     if st_minute <= current_minute < st_minute + skip_minutes:
-                        logger.debug("资金费率结算窗口，跳过评分", settlement_time=st, current_time=f"{current_hour:02d}:{current_minute:02d}")
+                        logger.debug(
+                            "资金费率结算窗口，跳过评分",
+                            settlement_time=st,
+                            current_time=f"{current_hour:02d}:{current_minute:02d}",
+                        )
                         return True
             except (ValueError, IndexError):
                 continue
