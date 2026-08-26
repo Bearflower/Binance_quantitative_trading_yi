@@ -6,6 +6,10 @@
 {{ current_params }}
 ```
 
+**【重要】** 只有以上 `current_params` 中列出的参数可以调整。**严禁引入以下红线参数（禁止调整）：**
+- `binance.leverage.*`（各等级杠杆）
+- `binance.position_ratio.*`（各等级仓位比例）
+
 ## 本周体检报告
 
 ```json
