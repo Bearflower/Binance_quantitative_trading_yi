@@ -177,11 +177,24 @@ class ConfigOperator:
 
             # 创建覆盖层目录（如果不存在）
             os.makedirs(override_dir, exist_ok=True)
-            # 确保目录可写（volume 挂载可能导致权限问题）
+            # 确保目录可写（volume 挂载可能导致权限问题，如宿主 UID 501 vs 容器 UID 1000）
             try:
-                os.chmod(override_dir, 0o777)
-            except Exception:
-                pass
+                # 先尝试 chmod 目录本身
+                st = os.stat(override_dir)
+                current_mode = st.st_mode & 0o777
+                if current_mode != 0o777:
+                    os.chmod(override_dir, 0o777)
+                    logger.info("覆盖层目录权限已修复", override_dir=override_dir, mode=oct(current_mode))
+            except PermissionError:
+                logger.warning(
+                    "无法修改覆盖层目录权限（容器用户非目录所有者），"
+                    "请确保部署时使用 chmod 777 预置目录权限",
+                    override_dir=override_dir,
+                    owner_uid=os.stat(override_dir).st_uid,
+                    container_uid=os.getuid(),
+                )
+            except Exception as e:
+                logger.warning("修改覆盖层目录权限异常", override_dir=override_dir, error=str(e))
 
             # 生成版本号
             version = self._generate_version(override_dir)
