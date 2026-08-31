@@ -61,6 +61,13 @@ echo "✅ 代码包已解压"
 cd $SERVER_PROJECT_PATH
 chmod +x database/postgres/scripts/backup-postgres.sh 2>/dev/null || true
 chmod 600 .env 2>/dev/null || true
+# 确保 AI 调优覆盖层目录容器内可写（容器内 tuner 用户 UID 1000 vs 宿主 UID 501）
+for strategy_dir in strategies/*/tuning_overrides; do
+    if [ -d "$strategy_dir" ]; then
+        chmod -R 777 "$strategy_dir"
+        echo "✅ 已设置覆盖层目录权限: $strategy_dir"
+    fi
+done
 echo "✅ 权限已设置"
 
 # 4. 构建所有镜像（先构建，不删除旧镜像，构建失败不影响运行中的容器）
