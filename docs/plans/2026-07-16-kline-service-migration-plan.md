@@ -1,6 +1,8 @@
 # K 线服务迁移计划
 
 > **目标：** 将 `common_service/kline_data_service` 迁移到 `Binance_quantitative_trading` 项目中，实现币安项目一站式维护
+>
+> **状态：** ✅ 已完成 (2026-07-20) — K 线服务已迁移至 `services/kline_service/` 并部署到服务器，`common_service` 中的旧 K 线服务已移除
 
 **架构：** 将 K 线服务代码从 `common_service` 完整复制到 `Binance_quantitative_trading/services/kline_service/`，保留 `common_service_postgres` 作为共享数据库，通过 Docker 网络通信，迁移后 `common_service` 移除 `kline_service` 容器。
 
