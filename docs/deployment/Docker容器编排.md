@@ -1,17 +1,17 @@
 # Docker容器编排文档
 
-**文档版本**: v1.0
-**最后更新**: 2026-05-05
-**作者**: 需求文档专家
-**审核人**: 待定
+**文档版本**: v2.0
+**最后更新**: 2026-09-02
+**作者**: 开发团队
 
 ---
 
 ## 文档修订历史
 
-| 版本 | 日期 | 修改人 | 修改内容 | 审核人 |
-|------|------|--------|----------|--------|
-| v1.0 | 2026-05-05 | 需求文档专家 | 初始版本创建 | 待定 |
+| 版本 | 日期 | 修改人 | 修改内容 |
+|------|------|--------|----------|
+| v1.0 | 2026-05-05 | 需求文档专家 | 初始版本创建 |
+| v2.0 | 2026-09-02 | 开发团队 | 更新容器架构图、容器规划表、docker-compose 配置，反映所有服务（HRS、日报/周报、AI调优、K线监控等）
 
 ---
 
@@ -20,50 +20,62 @@
 ### 1.1 容器架构图
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     Docker 容器集群                              │
-│                                                                   │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │              策略容器层 (Strategy Containers)             │  │
-│  │                                                            │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐               │  │
-│  │  │ BTC/ETH  │  │   Grid   │  │ New Coin │               │  │
-│  │  │  容器    │  │   容器   │  │   容器   │               │  │
-│  │  │          │  │          │  │          │               │  │
-│  │  │ Python   │  │ Python   │  │ Python   │               │  │
-│  │  │ 3.10     │  │ 3.10     │  │ 3.10     │               │  │
-│  │  └──────────┘  └──────────┘  └──────────┘               │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                                                                   │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │              基础设施容器层 (Infrastructure)              │  │
-│  │                                                            │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐               │  │
-│  │  │PostgreSQL│  │  K线服务 │  │ 通知服务 │               │  │
-│  │  │  容器    │  │   容器   │  │   容器   │               │  │
-│  │  │          │  │          │  │          │               │  │
-│  │  │PostgreSQL│  │  Python  │  │  Python  │               │  │
-│  │  │   14     │  │  3.10    │  │  3.10    │               │  │
-│  │  └──────────┘  └──────────┘  └──────────┘               │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                                                                   │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │              Docker网络 (trading-network)                │  │
-│  └──────────────────────────────────────────────────────────┘  │
-│                                                                   │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Docker 容器集群                                  │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │                    策略容器层 (Strategy Containers)               │  │
+│  │                                                                  │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │  │
+│  │  │ BTC/ETH  │  │   Grid   │  │ New Coin │  │   HRS    │       │  │
+│  │  │  容器    │  │   容器   │  │   容器   │  │   容器   │       │  │
+│  │  │          │  │          │  │          │  │          │       │  │
+│  │  │ Python   │  │ Python   │  │ Python   │  │ Python   │       │  │
+│  │  │ 3.10     │  │ 3.10     │  │ 3.10     │  │ 3.10     │       │  │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │  │
+│  │                                                                  │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐                      │  │
+│  │  │ 日报服务  │  │ 周报服务  │  │AI调优系统│                      │  │
+│  │  │   容器    │  │   容器    │  │   容器   │                      │  │
+│  │  │          │  │          │  │          │                      │  │
+│  │  │ Python   │  │ Python   │  │ Python   │                      │  │
+│  │  │ 3.10     │  │ 3.10     │  │ 3.10     │                      │  │
+│  │  └──────────┘  └──────────┘  └──────────┘                      │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │                  基础设施容器层 (Infrastructure)                  │  │
+│  │                                                                  │  │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐       │  │
+│  │  │PostgreSQL│  │  K线服务 │  │K线监控   │  │  Dashboard│       │  │
+│  │  │   容器   │  │   容器   │  │   容器   │  │   容器   │       │  │
+│  │  │          │  │          │  │          │  │          │       │  │
+│  │  │PostgreSQL│  │  Python  │  │  Python  │  │  Python  │       │  │
+│  │  │ 15-alpine│  │  3.10    │  │  3.10    │  │  3.10    │       │  │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────┘       │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │              Docker网络 (trading-network-v2)                     │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### 1.2 容器规划
 
 | 容器名称 | 镜像 | 用途 | 资源配置 | 端口映射 |
 |---------|------|------|----------|----------|
-| btc-eth-strategy | trading-btc-eth:latest | 主流币种趋势回调确认策略(MTPCS) | 1核/1GB | 无 |
-| grid-strategy | trading-grid:latest | 网格策略 | 1核/512MB | 无 |
-| new-coin-strategy | trading-new-coin:latest | 新币策略 | 1核/512MB | 无 |
-| postgres-db | postgres:14 | 数据库 | 2核/4GB | 5432 |
-| kline-service | kline-service:latest | K线服务 | 1核/1GB | 8765 |
-| notification-service | notification-service:latest | 通知服务 | 1核/512MB | 8766 |
+| btc-eth-strategy | trading_system-btc_eth:latest | 主流币种趋势回调确认策略(MTPCS) | 1核/1GB | 无 |
+| grid-strategy | trading_system-grid:latest | 网格策略（ETHUSDT） | 1核/512MB | 无 |
+| new-coin-strategy | trading_system-new_coin:latest | 新币做空策略 | 1核/512MB | 无 |
+| hrs-strategy | trading_system-hrs:latest | HRS 混合反转策略 | 1核/512MB | 无 |
+| postgres-db | postgres:15-alpine | PostgreSQL 数据库 | 2核/4GB | 5433:5432 |
+| kline-service | trading_system-kline:latest | K线数据采集服务 | 1核/1GB | 8765:8000 |
+| kline-monitor | trading_system-kline-monitor:latest | K线服务健康监控 | 1核/256MB | 无 |
+| ai-tuner | ai-tuner:latest | StratTuneAI 多策略AI调优系统 | 0.5核/512MB | 8777:8777 |
+| daily-report | trading_system-daily_report:latest | 日报服务 | 0.5核/256MB | 无 |
+| weekly-report | trading_system-weekly_report:latest | 周报服务 | 0.5核/256MB | 无 |
 
 ### 1.3 网络设计
 
@@ -78,10 +90,12 @@ networks:
         - subnet: 172.20.0.0/16
 ```
 
+> **注意：** 实际部署使用 `trading-network-v2` 网络（见 docker-compose.yml），与旧版 `trading-network` 隔离，避免容器名冲突。
+
 **网络特点**:
 - 所有容器在同一网络中,可以通过容器名互相访问
 - 外部无法直接访问策略容器
-- 只有基础设施容器暴露端口
+- 只有基础设施容器暴露端口（postgres 5433, kline 8765, ai-tuner 8777）
 
 ---
 
@@ -329,294 +343,90 @@ node_modules
 
 ---
 
-## 3. docker-compose.yml配置
+## 3. docker-compose.yml 配置
 
-### 3.1 完整配置文件
+### 3.1 配置文件位置
 
-创建项目根目录下的 `docker-compose.yml`:
+`docker-compose.yml` 位于项目根目录 `/Users/yl/vscode/Binance_quantitative_trading/docker-compose.yml`，是实际运行中的配置文件。
 
-```yaml
-# ============================================
-# 统一交易系统 Docker Compose 配置
-# ============================================
+### 3.2 服务架构
 
-version: '3.8'
+当前 docker-compose.yml 包含以下服务：
 
-# 服务配置
-services:
-  # ==================== 策略容器 ====================
+| 服务名 | 容器名 | 说明 |
+|--------|--------|------|
+| `postgres` | `trading_system-postgres` | PostgreSQL 15-alpine 数据库，端口 5433:5432 |
+| `hrs-strategy` | `trading_system-hrs` | HRS 混合反转策略，依赖 postgres + kline-service |
+| `btc-eth-strategy` | `trading_system-btc_eth` | BTC/ETH 趋势策略，依赖 postgres + kline-service |
+| `new-coin-strategy` | `trading_system-new_coin` | 新币做空策略，依赖 postgres + kline-service |
+| `grid-strategy` | `trading_system-grid` | 网格交易策略，只依赖 postgres（不依赖 kline-service，避免重启连锁) |
+| `daily-report` | `trading_system-daily_report` | 日报服务，依赖 postgres |
+| `weekly-report` | `trading_system-weekly_report` | 周报服务，依赖 postgres |
+| `ai-tuner` | `ai-tuner` | StratTuneAI 调优系统，依赖 postgres，端口 8777:8777 |
+| `kline-service` | `trading_system-kline` | K线数据服务，依赖 postgres，端口 8765:8000 |
+| `kline-monitor` | `trading_system-kline-monitor` | K线监控告警服务，依赖 postgres + kline-service |
 
-  # BTC/ETH 策略
-  btc-eth-strategy:
-    build:
-      context: .
-      dockerfile: strategies/btc_eth/Dockerfile
-    image: trading-btc-eth:latest
-    container_name: btc-eth-strategy
-    restart: unless-stopped
-    environment:
-      - STRATEGY_NAME=btc_eth
-      - BINANCE_API_KEY=${BINANCE_API_KEY}
-      - BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
-      - DATABASE_URL=postgresql://trading_user:your_password@postgres-db:5432/trading_platform
-      - KLINE_SERVICE_URL=http://kline-service:8765/api/v1
-      - NOTIFICATION_SERVICE_URL=http://notification-service:8766/api/v1
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-    volumes:
-      - ./logs/btc_eth:/app/logs
-      - ./data/btc_eth:/app/data
-    depends_on:
-      postgres-db:
-        condition: service_healthy
-      kline-service:
-        condition: service_healthy
-      notification-service:
-        condition: service_healthy
-    networks:
-      - trading-network
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+### 3.3 关键配置说明
 
-  # Grid 策略
-  grid-strategy:
-    build:
-      context: .
-      dockerfile: strategies/grid/Dockerfile
-    image: trading-grid:latest
-    container_name: grid-strategy
-    restart: unless-stopped
-    environment:
-      - STRATEGY_NAME=grid
-      - BINANCE_API_KEY=${BINANCE_API_KEY}
-      - BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
-      - DATABASE_URL=postgresql://trading_user:your_password@postgres-db:5432/trading_platform
-      - KLINE_SERVICE_URL=http://kline-service:8765/api/v1
-      - NOTIFICATION_SERVICE_URL=http://notification-service:8766/api/v1
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-    volumes:
-      - ./logs/grid:/app/logs
-      - ./data/grid:/app/data
-    depends_on:
-      postgres-db:
-        condition: service_healthy
-      kline-service:
-        condition: service_healthy
-      notification-service:
-        condition: service_healthy
-    networks:
-      - trading-network
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+#### 服务依赖
 
-  # New Coin 策略
-  new-coin-strategy:
-    build:
-      context: .
-      dockerfile: strategies/new_coin/Dockerfile
-    image: trading-new-coin:latest
-    container_name: new-coin-strategy
-    restart: unless-stopped
-    environment:
-      - STRATEGY_NAME=new_coin
-      - BINANCE_API_KEY=${BINANCE_API_KEY}
-      - BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY}
-      - DATABASE_URL=postgresql://trading_user:your_password@postgres-db:5432/trading_platform
-      - KLINE_SERVICE_URL=http://kline-service:8765/api/v1
-      - NOTIFICATION_SERVICE_URL=http://notification-service:8766/api/v1
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-    volumes:
-      - ./logs/new_coin:/app/logs
-      - ./data/new_coin:/app/data
-    depends_on:
-      postgres-db:
-        condition: service_healthy
-      kline-service:
-        condition: service_healthy
-      notification-service:
-        condition: service_healthy
-    networks:
-      - trading-network
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 512M
-        reservations:
-          cpus: '0.25'
-          memory: 256M
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 60s
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # ==================== 基础设施容器 ====================
-
-  # PostgreSQL 数据库(已有服务,这里仅作参考)
-  # postgres-db:
-  #   image: postgres:14
-  #   container_name: postgres-db
-  #   restart: unless-stopped
-  #   environment:
-  #     - POSTGRES_USER=trading_user
-  #     - POSTGRES_PASSWORD=your_password
-  #     - POSTGRES_DB=trading_platform
-  #   volumes:
-  #     - postgres-data:/var/lib/postgresql/data
-  #     - ./init-scripts:/docker-entrypoint-initdb.d
-  #   ports:
-  #     - "5432:5432"
-  #   networks:
-  #     - trading-network
-  #   healthcheck:
-  #     test: ["CMD-SHELL", "pg_isready -U trading_user -d trading_platform"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
-
-  # K线服务(已有服务,这里仅作参考)
-  # kline-service:
-  #   image: kline-service:latest
-  #   container_name: kline-service
-  #   restart: unless-stopped
-  #   environment:
-  #     - DATABASE_URL=postgresql://trading_user:your_password@postgres-db:5432/trading_platform
-  #   ports:
-  #     - "8765:8765"
-  #   networks:
-  #     - trading-network
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:8765/api/v1/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-
-  # 通知服务(已有服务,这里仅作参考)
-  # notification-service:
-  #   image: notification-service:latest
-  #   container_name: notification-service
-  #   restart: unless-stopped
-  #   environment:
-  #     - DATABASE_URL=postgresql://trading_user:your_password@postgres-db:5432/trading_platform
-  #   ports:
-  #     - "8766:8766"
-  #   networks:
-  #     - trading-network
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:8766/api/v1/health"]
-  #     interval: 30s
-  #     timeout: 10s
-  #     retries: 3
-
-# 网络配置
-networks:
-  trading-network:
-    driver: bridge
-    name: trading-network
-    ipam:
-      config:
-        - subnet: 172.20.0.0/16
-
-# 数据卷配置
-volumes:
-  postgres-data:
-    driver: local
-```
-
-### 3.2 配置说明
-
-#### 3.2.1 服务依赖
-
-使用 `depends_on` 和 `condition` 确保服务启动顺序:
+策略容器依赖 `postgres` 和 `kline-service` 健康检查通过后才启动：
 
 ```yaml
 depends_on:
-  postgres-db:
-    condition: service_healthy  # 等待数据库健康检查通过
+  postgres:
+    condition: service_healthy
   kline-service:
-    condition: service_healthy  # 等待K线服务健康检查通过
-  notification-service:
-    condition: service_healthy  # 等待通知服务健康检查通过
+    condition: service_healthy
 ```
 
-#### 3.2.2 资源限制
+> **注意：** `grid-strategy` 不依赖 `kline-service`，避免 K 线服务重启时网格策略跟随重启。网格策略通过 `shared/kline_service.py` 客户端按需访问 K 线服务。
 
-使用 `deploy.resources` 限制容器资源使用:
+#### 资源限制
 
 ```yaml
 deploy:
   resources:
     limits:
-      cpus: '1'        # 最多使用1个CPU核心
-      memory: 1G       # 最多使用1GB内存
+      cpus: '0.5'
+      memory: 512M
     reservations:
-      cpus: '0.5'      # 保留0.5个CPU核心
-      memory: 512M     # 保留512MB内存
+      cpus: '0.1'
+      memory: 256M
 ```
 
-#### 3.2.3 健康检查
+> **注意：** 资源限制仅对 `ai-tuner` 和 `postgres` 以外的服务通过 docker-compose 配置生效。deploy 配置在非 swarm 模式下仅作为限制建议，实际运行时通过 docker run 参数或 docker-compose 的 `mem_limit` / `cpus` 字段控制。
 
-使用 `healthcheck` 监控容器健康状态:
+#### 数据卷挂载
 
 ```yaml
-healthcheck:
-  test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-  interval: 30s        # 每30秒检查一次
-  timeout: 10s         # 超时时间10秒
-  retries: 3           # 连续失败3次才认为不健康
-  start_period: 60s    # 容器启动后60秒才开始健康检查
+volumes:
+  - ./logs/btc_eth:/app/logs       # 日志持久化
+  - ./data/btc_eth:/app/data       # 数据持久化
+  - ./strategies/hrs/config.yaml:/app/strategies/hrs/config.yaml:rw  # 配置文件读写挂载
 ```
 
-#### 3.2.4 日志配置
+> **注意：** AI 调优覆盖层（tuning_overrides）通过 `ai-tuner` 容器的 `./strategies:/app/strategies:rw` 读写挂载，实现参数写入。
 
-使用 `logging` 配置日志轮转:
+#### 网络配置
 
 ```yaml
-logging:
-  driver: "json-file"
-  options:
-    max-size: "10m"    # 单个日志文件最大10MB
-    max-file: "3"      # 最多保留3个日志文件
+networks:
+  trading-network:
+    driver: bridge
+    name: trading-network-v2
+```
+
+> 使用 `trading-network-v2` 网络名，与旧版 `trading-network` 隔离。
+
+#### 数据卷
+
+```yaml
+volumes:
+  postgres-data:
+    driver: local
+  kline-monitor-data:
+    driver: local
 ```
 
 ---
@@ -857,7 +667,7 @@ docker ps --format "table {{.Names}}\t{{.Status}}"
 # 容器健康检查监控脚本
 # ============================================
 
-CONTAINERS=("btc-eth-strategy" "grid-strategy" "new-coin-strategy")
+CONTAINERS=("trading_system-btc_eth" "trading_system-grid" "trading_system-new_coin" "trading_system-hrs" "trading_system-kline" "trading_system-kline-monitor" "ai-tuner" "trading_system-daily_report" "trading_system-weekly_report")
 
 echo "============================================="
 echo "容器健康状态监控"
@@ -894,7 +704,7 @@ echo "============================================="
 # 容器日志监控脚本
 # ============================================
 
-CONTAINER="btc-eth-strategy"
+CONTAINER="trading_system-btc_eth"
 ERROR_KEYWORDS=("error" "exception" "fatal" "failed")
 
 echo "============================================="
@@ -929,8 +739,8 @@ echo "============================================="
 # 日志错误告警脚本
 # ============================================
 
-CONTAINER="btc-eth-strategy"
-WEBHOOK_URL="http://notification-service:8766/api/v1/send"
+CONTAINER="trading_system-btc_eth"
+WEBHOOK_URL="https://open.feishu.cn/open-apis/bot/v2/hook/your_webhook_id"
 
 # 获取最近10分钟日志
 logs=$(docker logs --since 10m $CONTAINER 2>&1)
@@ -966,10 +776,8 @@ fi
 # 容器性能指标收集脚本
 # ============================================
 
-CONTAINERS=("btc-eth-strategy" "grid-strategy" "new-coin-strategy")
+CONTAINERS=("trading_system-btc_eth" "trading_system-grid" "trading_system-new_coin" "trading_system-hrs" "trading_system-kline" "trading_system-kline-monitor" "ai-tuner" "trading_system-daily_report" "trading_system-weekly_report")
 OUTPUT_FILE="/tmp/container_metrics_$(date +%Y%m%d_%H%M%S).csv"
-
-echo "timestamp,container,cpu_percent,mem_usage,mem_limit,mem_percent,net_rx,net_tx" > $OUTPUT_FILE
 
 for container in "${CONTAINERS[@]}"; do
     # 获取性能数据
@@ -1037,16 +845,16 @@ echo "============================================="
 docker-compose logs btc-eth-strategy
 
 # 2. 查看容器退出码
-docker inspect btc-eth-strategy --format='{{.State.ExitCode}}'
+docker inspect trading_system-btc_eth --format='{{.State.ExitCode}}'
 
 # 3. 查看容器状态
-docker inspect btc-eth-strategy
+docker inspect trading_system-btc_eth
 
 # 4. 手动启动容器调试
 docker run -it --rm \
     -e BINANCE_API_KEY=${BINANCE_API_KEY} \
     -e BINANCE_SECRET_KEY=${BINANCE_SECRET_KEY} \
-    trading-btc-eth:latest \
+    trading_system-btc_eth:latest \
     /bin/bash
 ```
 
@@ -1058,13 +866,13 @@ docker run -it --rm \
 
 ```bash
 # 1. 查看容器资源使用
-docker stats btc-eth-strategy
+docker stats trading_system-btc_eth
 
 # 2. 查看容器内存限制
-docker inspect btc-eth-strategy --format='{{.HostConfig.Memory}}'
+docker inspect trading_system-btc_eth --format='{{.HostConfig.Memory}}'
 
 # 3. 查看OOM事件
-docker events --filter 'container=btc-eth-strategy' --filter 'event=oom'
+docker events --filter 'container=trading_system-btc_eth' --filter 'event=oom'
 
 # 4. 增加内存限制
 # 修改docker-compose.yml中的memory配置
@@ -1083,18 +891,18 @@ docker events --filter 'container=btc-eth-strategy' --filter 'event=oom'
 ```bash
 # 1. 检查网络连接
 docker network ls
-docker network inspect trading-network
+docker network inspect trading-network-v2
 
 # 2. 进入容器测试网络
-docker-compose exec btc-eth-strategy ping postgres-db
-docker-compose exec btc-eth-strategy curl http://kline-service:8765/api/v1/health
+docker-compose exec btc-eth-strategy ping postgres
+docker-compose exec btc-eth-strategy curl http://kline-service:8000/api/v1/health
 
 # 3. 检查DNS解析
-docker-compose exec btc-eth-strategy nslookup postgres-db
+docker-compose exec btc-eth-strategy nslookup postgres
 
 # 4. 重建网络
 docker-compose down
-docker network rm trading-network
+docker network rm trading-network-v2
 docker-compose up -d
 ```
 
