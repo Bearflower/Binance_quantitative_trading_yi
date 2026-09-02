@@ -124,6 +124,7 @@ class WeeklyTuningJob:
         total_success = 0
         total_skip = 0
         total_error = 0
+        strategy_details = []
 
         for strategy_cfg in strategies:
             strategy_id = strategy_cfg.get("strategy_id", "")
@@ -133,12 +134,16 @@ class WeeklyTuningJob:
                 result = await self._tune_single_strategy(strategy_cfg, force=force)
                 if result == "success":
                     total_success += 1
+                    strategy_details.append(f"✅ {strategy_name}：已调整")
                 elif result == "skip":
                     total_skip += 1
+                    strategy_details.append(f"⏸️ {strategy_name}：无需调整")
                 else:
                     total_error += 1
+                    strategy_details.append(f"❌ {strategy_name}：异常")
             except Exception as e:
                 total_error += 1
+                strategy_details.append(f"❌ {strategy_name}：异常 ({str(e)})")
                 logger.error(
                     "策略调优异常",
                     strategy_id=strategy_id,
@@ -160,6 +165,16 @@ class WeeklyTuningJob:
             skip=total_skip,
             error=total_error,
             total_cost_usd=cost_summary.get("total_cost_usd", 0),
+        )
+
+        # 发送周度调优汇总通知
+        details_text = "\n".join(strategy_details)
+        await self.messenger.send_weekly_summary(
+            total_strategies=len(strategies),
+            success=total_success,
+            skip=total_skip,
+            error=total_error,
+            details=details_text,
         )
 
     async def _tune_single_strategy(
@@ -315,9 +330,15 @@ class WeeklyTuningJob:
             active_version=new_version,
         )
 
-        # 步骤9：如果 AI 建议"维持不变"，跳过推送
+        # 步骤9：如果 AI 建议"维持不变"，发送通知告知用户
         if not adjustments:
-            logger.info("AI建议维持不变，记录到记忆库但不推送审批", strategy_id=strategy_id)
+            no_change_reason = parsed.get("reasons", "当前参数配置经过评估无需调整，已维持现有配置不变。")
+            await self.messenger.send_no_changes_notification(
+                strategy_name=strategy_name,
+                strategy_id=strategy_id,
+                reason=no_change_reason,
+            )
+            logger.info("AI建议维持不变，已发送通知", strategy_id=strategy_id)
             return "skip"
 
         # 步骤10：生成变更清单

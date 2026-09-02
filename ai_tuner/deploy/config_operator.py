@@ -103,8 +103,11 @@ class ConfigOperator:
             changes_applied = 0
             for param_path, adjustment in adjustments.items():
                 # 提取新值
-                if isinstance(adjustment, dict):
-                    new_value = adjustment.get("to")
+                # 支持两种格式：
+                #   1. {"param_path": {"to": value}} — 显式 to 格式
+                #   2. {"param_path": value} — 直接值格式（value 可以是 dict/list/str/int/float/bool）
+                if isinstance(adjustment, dict) and "to" in adjustment:
+                    new_value = adjustment["to"]
                 else:
                     new_value = adjustment
 
@@ -299,8 +302,14 @@ class ConfigOperator:
             )
             return True
         else:
-            logger.error("配置路径最后一层不存在", key_path=key_path, missing_key=last_key)
-            return False
+            # 键不存在时创建新键（支持资金分配 capital_limits 等动态新增字段）
+            current[last_key] = value
+            logger.debug(
+                "嵌套值已创建（新键）",
+                key_path=key_path,
+                new_value=value,
+            )
+            return True
 
     def _atomic_write(self, config_path: str, config: Dict[str, Any]) -> None:
         """

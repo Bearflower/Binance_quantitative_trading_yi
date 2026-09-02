@@ -2,9 +2,10 @@
 持仓管理模块
 负责 HRS 策略的持仓跟踪、止损止盈监控、平仓回调等
 """
-from typing import Dict, Any, Optional, List
-from datetime import datetime, timezone
 import asyncio
+from datetime import datetime, timezone
+from typing import Dict, Any, Optional, List
+
 import structlog
 
 from shared.binance_api import BinanceClient
@@ -65,6 +66,8 @@ class PositionManager:
         detection_config = trading_config.get("position_detection", {})
         self.qty_tolerance_ratio = detection_config.get("qty_tolerance_ratio", 0.01)
         self.qty_tolerance_absolute = detection_config.get("qty_tolerance_absolute", 0.0001)
+        # 持仓数量低于该值视为全部平仓/零持仓
+        self.zero_qty_threshold = detection_config.get("zero_qty_threshold", 0.0001)
 
         # 持仓跟踪
         # {symbol: {"direction": "short"/"long", "entry_price": float, "entry_time": datetime,
@@ -75,6 +78,10 @@ class PositionManager:
         # P1-6: 上次检测到的交易所持仓数量，用于检测止盈单成交
         # {symbol: float}
         self._last_tracked_qty: Dict[str, float] = {}
+
+        # FR-01: 持仓未建立时的条件单 algoId 缓冲（symbol -> {role: algoId}）
+        # 开仓保护单创建在 add_position 之前，需暂存避免丢失
+        self._pending_algo_ids: Dict[str, Dict[str, int]] = {}
 
         logger.info(
             "持仓管理器初始化完成",
@@ -111,7 +118,8 @@ class PositionManager:
             "target2_reached": False,
             "best_price": entry_price,  # 做空记录最低价，做多记录最高价
             "remaining_quantity": quantity,
-            "algo_ids": {},  # role -> algoId, role: "sl"/"tp1"/"tp2"
+            # FR-01: 合并开仓阶段暂存的 pending algoId（保护单创建早于 add_position）
+            "algo_ids": self._pending_algo_ids.pop(symbol, {}),  # role -> algoId, role: "sl"/"tp1"/"tp2"
         }
         # P1-6: 初始化跟踪数量
         self._last_tracked_qty[symbol] = quantity
@@ -250,6 +258,21 @@ class PositionManager:
         holding_hours = (datetime.now(timezone.utc) - pos["entry_time"]).total_seconds() / 3600
         return holding_hours >= self.max_holding_hours
 
+    def reset_time_stop(self, symbol: str) -> None:
+        """
+        重置时间止损计时器（将 entry_time 设为当前时间）
+
+        当时间止损触发但重新分析后认为仍值得持有，调用此方法
+        延长持仓时间，避免立即平仓。
+
+        Args:
+            symbol: 交易对
+        """
+        pos = self._positions.get(symbol)
+        if pos:
+            pos["entry_time"] = datetime.now(timezone.utc)
+            logger.info("时间止损已重置", symbol=symbol)
+
     def mark_target_reached(self, symbol: str, target: int) -> None:
         """
         标记止盈目标达成
@@ -273,7 +296,11 @@ class PositionManager:
 
     def add_algo_id(self, symbol: str, role: str, algo_id: int) -> None:
         """
-        记录条件单algoId
+        记录条件单algoId（FR-01 修复）
+
+        持仓已建立 → 写入 pos["algo_ids"]；
+        持仓未建立（开仓保护单早于 add_position）→ 写入 pending 缓冲，
+        add_position 时合并，避免 algoId 静默丢失。
 
         Args:
             symbol: 交易对
@@ -282,9 +309,9 @@ class PositionManager:
         """
         pos = self._positions.get(symbol)
         if pos is not None:
-            if "algo_ids" not in pos:
-                pos["algo_ids"] = {}
-            pos["algo_ids"][role] = algo_id
+            pos.setdefault("algo_ids", {})[role] = algo_id
+        else:
+            self._pending_algo_ids.setdefault(symbol, {})[role] = algo_id
 
         # 异步记录到 condition_orders 表
         if self.db is not None:
@@ -338,9 +365,64 @@ class PositionManager:
             return False
         return role in pos.get("algo_ids", {})
 
+    def clear_algo_ids(self, symbol: str) -> None:
+        """
+        清空本地 algo_ids 记录（FR-05/07）
+
+        批量取消成功后调用，避免本地记录与交易所事实不一致；
+        后续补单/重建会通过 add_algo_id 重新写入。
+
+        Args:
+            symbol: 交易对
+        """
+        pos = self._positions.get(symbol)
+        if pos:
+            pos["algo_ids"] = {}
+
     async def cancel_all_orders(self, symbol: str) -> Dict[str, Any]:
         """
-        平仓后取消所有未触发条件单（通过已存储的algoId）
+        取消该交易对所有 OPEN 条件单（FR-07）
+
+        - 优先调用 binance_api.cancel_all_algo_orders(symbol)（批量，仅统一账户）
+        - 批量不可用/失败 → 回退按本地 algo_ids 逐个取消，记录 warning
+        - 任一方式成功 → 清空本地 algo_ids
+
+        Args:
+            symbol: 交易对
+
+        Returns:
+            取消结果统计 {"total": int, "cancelled": int, "failed": int, "method": "batch"|"individual"}
+        """
+        # 1. 优先批量取消（仅统一账户）
+        if getattr(self.binance_api, "use_unified_account", False):
+            try:
+                batch_result = await self.binance_api.cancel_all_algo_orders(symbol)
+                if batch_result.get("code") == 200:
+                    self.clear_algo_ids(symbol)
+                    return {
+                        "total": batch_result.get("total", 0),
+                        "cancelled": batch_result.get("cancelled", 0),
+                        "failed": batch_result.get("failed", 0),
+                        "method": "batch",
+                    }
+                logger.warning(
+                    "批量取消条件单返回异常状态码",
+                    symbol=symbol,
+                    result=batch_result,
+                )
+            except Exception as e:
+                logger.warning(
+                    "批量取消条件单失败，回退到逐个取消",
+                    symbol=symbol,
+                    error=str(e),
+                )
+
+        # 2. 回退：按本地 algo_ids 逐个取消
+        return await self._cancel_individual_orders(symbol)
+
+    async def _cancel_individual_orders(self, symbol: str) -> Dict[str, Any]:
+        """
+        按本地 algo_ids 逐个取消条件单（批量接口不可用/失败时的回退路径，FR-07）
 
         Args:
             symbol: 交易对
@@ -348,31 +430,33 @@ class PositionManager:
         Returns:
             取消结果统计
         """
-        result = {"total": 0, "cancelled": 0, "failed": 0}
-        try:
-            algo_ids = self.get_algo_ids(symbol)
-            if not algo_ids:
-                return result
+        result = {"total": 0, "cancelled": 0, "failed": 0, "method": "individual"}
+        algo_ids = self.get_algo_ids(symbol)
+        result["total"] = len(algo_ids)
+        for algo_id in algo_ids:
+            try:
+                await self.binance_api.cancel_algo_order(symbol, algo_id)
+                result["cancelled"] += 1
+            except Exception as cancel_err:
+                result["failed"] += 1
+                logger.debug(
+                    "取消单个条件单失败",
+                    symbol=symbol,
+                    algo_id=algo_id,
+                    error=str(cancel_err),
+                )
 
-            result["total"] = len(algo_ids)
-            for algo_id in algo_ids:
-                try:
-                    await self.binance_api.cancel_algo_order(symbol, algo_id)
-                    result["cancelled"] += 1
-                except Exception as cancel_err:
-                    result["failed"] += 1
-                    logger.debug("取消单个条件单失败", symbol=symbol, algo_id=algo_id, error=str(cancel_err))
+        # 全部取消成功才清空本地（部分失败则保留记录，下一轮补单重试仍可取消，FR-07）
+        if algo_ids and result["failed"] == 0:
+            self.clear_algo_ids(symbol)
 
-            logger.info(
-                "取消条件单完成",
-                symbol=symbol,
-                total=result["total"],
-                cancelled=result["cancelled"],
-                failed=result["failed"],
-            )
-        except Exception as e:
-            logger.warning("取消条件单失败", symbol=symbol, error=str(e))
-
+        logger.info(
+            "取消条件单完成",
+            symbol=symbol,
+            total=result["total"],
+            cancelled=result["cancelled"],
+            failed=result["failed"],
+        )
         return result
 
     def detect_take_profit_fills(
@@ -408,37 +492,58 @@ class PositionManager:
         # 允许微小误差（从配置读取）
         qty_tolerance = max(last_qty * self.qty_tolerance_ratio, self.qty_tolerance_absolute)
 
-        if exchange_qty < 0.0001:
+        if exchange_qty < self.zero_qty_threshold:
             # 全部平仓
             self._last_tracked_qty[symbol] = exchange_qty
             logger.info("持仓全部平仓", symbol=symbol, last_qty=last_qty)
             return 0
 
         if exchange_qty < last_qty - qty_tolerance:
-            # 持仓减少，检测止盈目标
+            # 持仓减少，检测止盈目标（子函数：_detect_target_filled）
             self._last_tracked_qty[symbol] = exchange_qty
+            return self._detect_target_filled(symbol, pos, last_qty, exchange_qty)
 
-            if not pos["target1_reached"]:
-                # 第一目标达成
-                self.mark_target_reached(symbol, 1)
-                logger.info(
-                    "检测到第一目标止盈成交",
-                    symbol=symbol,
-                    last_qty=last_qty,
-                    current_qty=exchange_qty,
-                )
-                return 1
-            elif not pos["target2_reached"]:
-                # 第二目标达成
-                self.mark_target_reached(symbol, 2)
-                logger.info(
-                    "检测到第二目标止盈成交，激活移动止损",
-                    symbol=symbol,
-                    last_qty=last_qty,
-                    current_qty=exchange_qty,
-                )
-                return 2
+        return None
 
+    def _detect_target_filled(
+        self,
+        symbol: str,
+        pos: Dict[str, Any],
+        last_qty: float,
+        current_qty: float,
+    ) -> Optional[int]:
+        """
+        检测持仓减少对应的止盈目标级别（子函数，供 detect_take_profit_fills 调用）
+
+        Args:
+            symbol: 交易对
+            pos: 持仓记录
+            last_qty: 上次跟踪数量
+            current_qty: 当前交易所持仓数量
+
+        Returns:
+            达成的目标级别（1/2），无目标达成返回 None
+        """
+        if not pos["target1_reached"]:
+            # 第一目标达成
+            self.mark_target_reached(symbol, 1)
+            logger.info(
+                "检测到第一目标止盈成交",
+                symbol=symbol,
+                last_qty=last_qty,
+                current_qty=current_qty,
+            )
+            return 1
+        if not pos["target2_reached"]:
+            # 第二目标达成
+            self.mark_target_reached(symbol, 2)
+            logger.info(
+                "检测到第二目标止盈成交，激活移动止损",
+                symbol=symbol,
+                last_qty=last_qty,
+                current_qty=current_qty,
+            )
+            return 2
         return None
 
     def to_dict(self) -> Dict[str, Any]:

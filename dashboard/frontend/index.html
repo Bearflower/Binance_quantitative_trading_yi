@@ -65,38 +65,73 @@
       </div>
     </div>
 
-    <!-- ===== 总览统计 ===== -->
+    <!-- ===== 总览统计区 · 净资产生卡跨左列，右侧统计卡 ×6 ===== -->
     <div class="overview-grid">
+
+      <!-- 合约账户净资产（主卡 · 跨整列突出） -->
+      <div class="equity-card animate-in">
+        <div class="equity-top">
+          <div class="stat-icon">◆</div>
+        </div>
+        <div class="equity-info">
+          <div class="stat-label">合约账户净资产</div>
+          <div class="equity-value" id="account-equity">--</div>
+          <div class="equity-sub">USDT</div>
+          <div class="equity-meta">
+            <span class="meta-item" id="account-equity-avail">可用 --</span>
+          </div>
+          <div class="equity-sub" id="account-equity-time">--</div>
+        </div>
+      </div>
+
+      <!-- 总盈亏 -->
       <div class="stat-card pnl animate-in">
-        <div class="stat-icon">💰</div>
+        <div class="stat-icon">◆</div>
         <div class="stat-label">总盈亏</div>
         <div class="stat-value positive" id="total-pnl">+0.00</div>
         <div class="stat-sub">USDT</div>
       </div>
+
+      <!-- 总胜率 -->
       <div class="stat-card winrate animate-in">
-        <div class="stat-icon">🎯</div>
+        <div class="stat-icon">✚</div>
         <div class="stat-label">总胜率</div>
         <div class="stat-value gold" id="win-rate">0.0%</div>
         <div class="stat-sub" id="win-rate-sub">--</div>
       </div>
+
+      <!-- 总平仓数 -->
       <div class="stat-card closed animate-in">
-        <div class="stat-icon">📊</div>
+        <div class="stat-icon">▨</div>
         <div class="stat-label">总平仓数</div>
         <div class="stat-value blue" id="closed-count">0</div>
         <div class="stat-sub" id="closed-sub">--</div>
       </div>
+
+      <!-- 总委托数 -->
       <div class="stat-card orders animate-in">
-        <div class="stat-icon">📋</div>
+        <div class="stat-icon">▤</div>
         <div class="stat-label">总委托数</div>
-        <div class="stat-value purple" id="order-count">0</div>
+        <div class="stat-value gold" id="order-count">0</div>
         <div class="stat-sub" id="order-sub">--</div>
       </div>
+
+      <!-- 总佣金 -->
       <div class="stat-card commission animate-in">
-        <div class="stat-icon">💸</div>
+        <div class="stat-icon">§</div>
         <div class="stat-label">总佣金</div>
         <div class="stat-value red" id="total-commission">0.00</div>
         <div class="stat-sub" id="commission-sub">USDT（手续费支出）</div>
       </div>
+
+      <!-- 当前持仓 -->
+      <div class="stat-card positions animate-in">
+        <div class="stat-icon">▣</div>
+        <div class="stat-label">当前持仓</div>
+        <div class="stat-value blue" id="current-positions">0</div>
+        <div class="stat-sub">非零仓位数量</div>
+      </div>
+
     </div>
 
     <!-- ===== 策略概览 ===== -->

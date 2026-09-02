@@ -28,7 +28,7 @@ scoring:
   # 技术面硬性要求
   technical:
     min_total_score: 4.0        # 技术总分最低要求
-    min_primary_pattern_score: 1.0  # 基础形态最低评分（含替代形态）
+    min_primary_pattern_score: 2.5  # V2.8: 基础形态最低评分（含替代形态），从 1.0 提高至 2.5
 
   # V2.0 新增：极端行情加分
   extreme_bonus:
@@ -39,18 +39,6 @@ scoring:
       threshold: 0.15            # 做空：24h涨幅 ≥ 15%（小数形式）
     long:
       threshold: -0.15           # 做多：24h跌幅 ≤ -15%（小数形式，负值表示下跌）
-
-  # V2.6: 标准模式趋势过滤（4h EMA20）
-  # 防止"逆势回调陷阱"：在强上涨趋势中阻断做空，在强下跌趋势中阻断做多
-  trend_filter:
-    enabled: true                # 是否启用趋势过滤
-    ema_period: 20               # 4h EMA 周期
-    long:
-      min_price: 1.0             # 做多：价格 > EMA20（必须多头排列）
-      max_deviation: 0.97        # 做多：价格 ≥ EMA20 × 0.97（允许偏离不超过 -3%）
-    short:
-      max_price: 1.0             # 做空：价格 < EMA20（必须空头排列）
-      max_deviation: 1.03        # 做空：价格 ≤ EMA20 × 1.03（允许偏离不超过 +3%）
 
   # 合约数据评分配置（OI/市值比）
   contract:
@@ -104,6 +92,24 @@ scoring:
         low: 6
         negative: 8
         extreme_negative: 10
+
+  # V2.6: 标准模式趋势过滤（4h EMA20 价格偏离过滤）
+  # V2.8: 收紧偏离度阈值 + 新增 EMA 斜率检查
+  trend_filter:
+    enabled: true
+    ema_period: 20
+    long:
+      min_price: 1.0                # 做多：价格 >= EMA20（必须 > EMA20）
+      max_deviation: 0.99            # V2.8: 收紧从 0.97 至 0.99（偏离不超过 -1%）
+    short:
+      max_price: 1.0                # 做空：价格 <= EMA20（必须 < EMA20）
+      max_deviation: 1.01            # V2.8: 收紧从 1.03 至 1.01（偏离不超过 +1%）
+    # V2.8: EMA 斜率检查（基于最近 3 根 4h K 线的 EMA20 平均变化率）
+    ema_slope:
+      enabled: true
+      period: 3                     # 计算最近 3 根 4h K 线的平均斜率
+      min_slope_for_long: -0.0005   # 做多：EMA20 斜率 >= -0.05%（允许轻微下行）
+      max_slope_for_short: 0.0005   # 做空：EMA20 斜率 <= 0.05%（允许轻微上行）
 
 # ============================================================
 # V2.3 极端市场模块（EMM）配置（动态分位数版）
@@ -322,6 +328,10 @@ trading:
   # 时间止损
   time_stop:
     max_holding_hours: 72        # 持仓超过72小时且未达第一目标，平仓100%
+    reanalyze:
+      enabled: true              # 时间止损触发时，重新分析该币种是否仍值得持有
+      hold_threshold: 4.0        # 总分 >= 此值则继续持仓（低于入场阈值6.0，降低门槛）
+      extend_hours: 24           # 继续持仓后，延长的时间（小时）
 
   # 开仓延迟
   entry_timeout:
@@ -365,7 +375,7 @@ trading:
   order_type:
     entry: "LIMIT"                # 开仓限价单
     close: "LIMIT"                # 平仓限价单
-    stop_loss: "STOP"             # 止损限价单
+    stop_loss: "STOP_MARKET"      # 止损市价单（统一账户 closePosition=true 不支持 STOP 限价单，见 -4136 错误）
     take_profit: "TAKE_PROFIT"    # 止盈限价单
     stop_loss_offset: 0.002       # 止损限价偏移（0.2%），限价 = 触发价 × (1 + 偏移)
     take_profit_offset: 0.0015    # 止盈限价偏移（0.15%），限价 = 触发价 × (1 + 偏移)

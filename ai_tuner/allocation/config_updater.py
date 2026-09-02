@@ -126,7 +126,7 @@ class AllocationConfigUpdater:
                 ensure_ascii=False,
             )
 
-            created_at = datetime.now(CST).isoformat()
+            created_at = datetime.now(CST).replace(tzinfo=None)
 
             query = """
                 INSERT INTO public.capital_allocation

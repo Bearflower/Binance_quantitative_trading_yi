@@ -35,4 +35,4 @@ VERSION
 .idea/
 *.swp
 *.swo
-*~
+*~.superpowers/

@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     cache_ttl_weekly: int = 180       # 周报缓存 3 分钟
     cache_ttl_monthly: int = 300      # 月报缓存 5 分钟
     cache_ttl_metadata: int = 86400   # 元数据缓存 24 小时
+    cache_ttl_account: int = 30       # 账户净资产缓存 30 秒（实时快照）
 
     class Config:
         """Pydantic 配置"""
@@ -243,6 +244,8 @@ def init_settings_from_config():
             settings.cache_ttl_monthly = cache_config["ttl_monthly"]
         if "ttl_metadata" in cache_config and not os.getenv("CACHE_TTL_METADATA"):
             settings.cache_ttl_metadata = cache_config["ttl_metadata"]
+        if "ttl_account" in cache_config and not os.getenv("CACHE_TTL_ACCOUNT"):
+            settings.cache_ttl_account = cache_config["ttl_account"]
     
     # Binance 配置
     if "binance" in config:

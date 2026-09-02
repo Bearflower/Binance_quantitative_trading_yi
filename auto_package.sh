@@ -23,6 +23,20 @@ echo "============================================="
 echo "开始打包项目：$PROJECT_NAME"
 echo "============================================="
 
+# 生成 VERSION 文件（用于部署后代码版本验证，如果已存在则跳过）
+if [ ! -f "VERSION" ]; then
+    echo "🏷️  生成 VERSION 文件..."
+    printf "DEPLOY_TIME=%s\n" "$(date '+%Y-%m-%d %H:%M:%S')" > VERSION
+    printf "GIT_COMMIT=%s\n" "$(git log --oneline -1 2>/dev/null || echo "no-git")" >> VERSION
+    printf "DEPLOY_ID=%s\n" "$(uuidgen | cut -d- -f1)" >> VERSION
+    printf "FILE_MD5=%s\n" "$(md5sum strategies/btc_eth/main.py | cut -d' ' -f1)" >> VERSION
+    cat VERSION
+    echo "✅ VERSION 文件已生成"
+else
+    echo "✅ VERSION 文件已存在，跳过生成"
+    cat VERSION
+fi
+
 # 创建临时目录
 TEMP_DIR="/tmp/${PROJECT_NAME}_deploy_$$"
 echo "📁 创建临时目录：$TEMP_DIR"

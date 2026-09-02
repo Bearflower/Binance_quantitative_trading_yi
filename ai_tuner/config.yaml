@@ -470,10 +470,6 @@ capital_allocation:
       btc_eth: 0.30
       new_coin: 0.40
       hrs: 0.20
-    capitals:                              # 默认分配金额（USDT）
-      btc_eth: 300.0
-      new_coin: 400.0
-      hrs: 200.0
   database:                                # 数据库配置
     schema: "public"
     table: "capital_allocation"

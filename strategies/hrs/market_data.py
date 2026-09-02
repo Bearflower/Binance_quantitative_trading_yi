@@ -43,7 +43,17 @@ class MarketDataProvider:
         self.binance_api = binance_api
         self.kline_service = kline_service
         self.config = config
-        self.market_cap_service = MarketCapService()
+
+        # 从配置读取市值服务参数（带默认值兜底）
+        market_cap_config = config.get("market_cap", {})
+        self.market_cap_service = MarketCapService(
+            timeout=market_cap_config.get("timeout", 10),
+            retry_count=market_cap_config.get("retry_count", 2),
+            retry_interval=market_cap_config.get("retry_interval", 1.0),
+            cache_ttl_seconds=market_cap_config.get("cache_ttl_seconds", 3600),
+            coin_list_cool_down_seconds=market_cap_config.get("coin_list_cool_down_seconds", 60.0),
+            request_interval=market_cap_config.get("request_interval", 2.0),
+        )
 
         # 从配置读取API限制
         kline_config = config.get("kline", {})

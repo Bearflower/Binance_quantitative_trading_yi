@@ -9,7 +9,7 @@
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Union
 
 import structlog
 import yaml
@@ -86,6 +86,44 @@ class SimulationMetrics(BaseModel):
     confidence: float = Field(default=0.0, description="模拟置信度 0-1")
 
 
+class BacktestResult(BaseModel):
+    """网格回测结果（方案D新增数据模型）
+
+    包含逐笔K线回测后的完整绩效数据，用于：
+    - AI调优的输入数据（替代方案C的简单估算）
+    - 参数验证（Step 6：新参数回测验证）
+    - 飞书通知展示
+    """
+
+    # === 基础信息 ===
+    scenario_name: str = Field(default="", description="场景名称")
+    symbol: str = Field(default="ETHUSDT", description="交易对")
+    kline_count: int = Field(default=0, description="回测使用的K线数量")
+
+    # === 收益类 ===
+    total_return_pct: float = Field(default=0.0, description="总收益率（%）")
+    annualized_return_pct: float = Field(default=0.0, description="年化收益率（%）")
+    total_pnl: float = Field(default=0.0, description="总盈亏（USDT）")
+
+    # === 风险类 ===
+    max_drawdown_pct: float = Field(default=0.0, description="最大回撤（%）")
+    sharpe_ratio: float = Field(default=0.0, description="夏普比率（周度）")
+
+    # === 网格专属 ===
+    fill_count: int = Field(default=0, description="成交次数")
+    avg_profit_per_fill: float = Field(default=0.0, description="单次成交平均利润（USDT）")
+    fee_ratio: float = Field(default=0.0, description="手续费占利润比（%）")
+    capital_utilization: float = Field(default=0.0, description="资金利用率（%）")
+
+    # === 市况细分 ===
+    uptrend_return_pct: float = Field(default=0.0, description="上涨市况收益率（%）")
+    downtrend_return_pct: float = Field(default=0.0, description="下跌市况收益率（%）")
+    sideways_return_pct: float = Field(default=0.0, description="横盘市况收益率（%）")
+
+    # === 综合评分 ===
+    composite_score: float = Field(default=0.0, description="综合评分（0-100）")
+
+
 class StrategyReport(BaseModel):
     """策略周度体检报告（统一 Schema）"""
     meta: StrategyMeta = Field(default_factory=StrategyMeta, description="策略元信息")
@@ -93,6 +131,7 @@ class StrategyReport(BaseModel):
     risk: RiskMetrics = Field(default_factory=RiskMetrics, description="风险指标")
     distribution: DistributionMetrics = Field(default_factory=DistributionMetrics, description="分布指标")
     simulation: List[SimulationMetrics] = Field(default_factory=list, description="模拟推演结果（半自动策略使用）")
+    backtest: Any = Field(default=None, description="回测结果（方案D，网格策略使用）")
     anomalies: List[str] = Field(default_factory=list, description="异常事件列表")
 
 
@@ -123,6 +162,9 @@ class BaseAdapter(ABC):
     strategy_name: str = ""
     config_path: str = ""
     param_whitelist: List[str] = []
+
+    # 方案D：无交易时是否允许继续调优（网格策略设置为 True）
+    allow_tuning_without_trades: bool = False
 
     def __init__(self, db_manager):
         """

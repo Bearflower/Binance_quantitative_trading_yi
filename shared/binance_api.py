@@ -21,7 +21,7 @@ logger = structlog.get_logger()
 
 # 不可重试的币安API错误码（API常量，非业务参数）
 # 这些错误无论重试多少次都不会自动恢复
-_NON_RETRYABLE_ERROR_CODES = {-2011, -2019, -2021, -2022, -4108, -9999}  # -4108=交割/结算中, -9999=废弃API端点
+_NON_RETRYABLE_ERROR_CODES = {-2011, -2019, -2021, -2022, -4108, -4136, -9999}  # -4108=交割/结算中, -4136=无效策略参数组合（如STOP+closePosition不兼容PM账户）, -9999=废弃API端点
 
 
 class BinanceAPIError(Exception):
@@ -515,9 +515,6 @@ class BinanceClient:
             "type": order_type,
         }
         
-        if adjusted_quantity is not None:
-            params["quantity"] = str(adjusted_quantity)
-        
         if order_type == "LIMIT":
             params["price"] = str(adjusted_price)
             params["timeInForce"] = kwargs.get("timeInForce", "GTC")
@@ -527,8 +524,11 @@ class BinanceClient:
                 params[key] = str(value)
 
         # 平仓单需要显式传递 closePosition 参数
+        # closePosition=true 时不需要 quantity，Binance 自动平全仓
         if close_position:
             params["closePosition"] = "true"
+        elif adjusted_quantity is not None:
+            params["quantity"] = str(adjusted_quantity)
 
         # reduce-only 订单
         if kwargs.get("reduce_only"):
@@ -697,9 +697,12 @@ class BinanceClient:
             endpoint = "/papi/v1/um/algo/order"
 
             if close_position:
+                # PM账户（统一账户）条件单参数：
+                #   - TAKE_PROFIT/TAKE_PROFIT_MARKET: 支持 closePosition=true
+                #   - STOP/STOP_MARKET: 旧版不支持 closePosition=true（返回 -4136），
+                #     但新版 API 已拒绝 reduceOnly（-1106），改为统一使用 closePosition=true
+                #     若仍返回 -4136，则由上游重试逻辑处理
                 params["closePosition"] = "true"
-                if adjusted_quantity is not None:
-                    params["quantity"] = str(adjusted_quantity)
             elif adjusted_quantity is not None:
                 params["quantity"] = str(adjusted_quantity)
         else:

@@ -20,6 +20,7 @@ cache:
   ttl_weekly: 180       # 周报缓存 3 分钟
   ttl_monthly: 300      # 月报缓存 5 分钟
   ttl_metadata: 86400   # 元数据缓存 24 小时
+  ttl_account: 30       # 账户净资产缓存 30 秒（实时快照）
 
 # 数据库配置（从环境变量读取）
 database:

@@ -92,6 +92,13 @@ class DashboardAPI {
     async getTrend(type = 'daily', days = 7) {
         return this.request(`/trend?type=${type}&days=${days}`);
     }
+
+    /**
+     * 获取合约账户净资产（实时快照，不随日/周/月切换）
+     */
+    async getAccountEquity() {
+        return this.request('/account/equity');
+    }
 }
 
 // 导出单例

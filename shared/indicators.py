@@ -2,7 +2,7 @@
 技术指标计算
 提供常用的技术指标计算方法
 """
-from typing import List
+from typing import List, Optional
 import pandas as pd
 import numpy as np
 import structlog
@@ -294,12 +294,14 @@ class TechnicalIndicators:
         return data['volume'].rolling(window=int(period)).mean()
     
     @staticmethod
-    def calculate_all(data: pd.DataFrame) -> dict:
+    def calculate_all(data: pd.DataFrame, atr_long_period: Optional[int] = None) -> dict:
         """
         计算所有常用指标
         
         Args:
             data: K线数据
+            atr_long_period: 长周期ATR周期（CP-4 新增 ATR_long 字段）。生产与回测应显式
+                            传入配置值；未传入时使用接口兼容缺省周期，保持历史行为。
         
         Returns:
             指标字典
@@ -309,13 +311,19 @@ class TechnicalIndicators:
         """
         # 参数验证
         TechnicalIndicators._validate_dataframe(data, ['high', 'low', 'close'])
-        
+
+        # 长周期ATR周期：生产/回测应显式传配置值；未传入时回退到接口兼容缺省周期50
+        if atr_long_period is None:
+            atr_long_period = 50
+
         indicators = {}
         
         for period in [7, 21, 55]:
             indicators[f'MA{period}'] = TechnicalIndicators.calculate_ma(data, period)
         
-        for period in [12, 26, 55]:  # 添加55周期EMA，用于日线趋势过滤
+        # 新增21周期EMA（CP-1）：方向对齐与乖离率统一使用 EMA21/EMA55，
+        # 修复历史遗留的「MA21(SMA) 与 EMA55 混用」口径不一致问题
+        for period in [12, 21, 26, 55]:
             indicators[f'EMA{period}'] = TechnicalIndicators.calculate_ema(data, period)
         
         indicators['RSI'] = TechnicalIndicators.calculate_rsi(data)
@@ -325,7 +333,9 @@ class TechnicalIndicators:
         indicators['MACD_Signal'] = signal
         indicators['MACD_Hist'] = hist
         
+        # 短周期ATR(14)复用现有字段；长周期ATR（CP-4 新增）周期可配
         indicators['ATR'] = TechnicalIndicators.calculate_atr(data)
+        indicators['ATR_long'] = TechnicalIndicators.calculate_atr(data, atr_long_period)
         
         indicators['ADX'] = TechnicalIndicators.calculate_adx(data)
         

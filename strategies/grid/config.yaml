@@ -284,6 +284,10 @@ signal_bot:
   # 巡检间隔（分钟）
   check_interval_minutes: 60
 
+  # 固定执行分钟节点（与K线收盘时间对齐）
+  # 每小时的第几分钟执行，默认 :05（1h K线在 :00 收盘，等5分钟确保数据完整）
+  run_at_minute: 5
+
   # 推送冷却时间（V2.3三档冷却）
   push_cooldown_hours_alert: 1       # 紧急/趋势加速/极端强趋势（1小时，高频提醒）
   push_cooldown_hours_normal: 6      # 普通强趋势/波动率异常（6小时，中频提醒）

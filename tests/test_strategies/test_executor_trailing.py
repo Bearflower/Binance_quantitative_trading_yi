@@ -703,5 +703,109 @@ class TestCancelTrailingStopOrder:
         assert tracking['algo_ids']['trailing_stop'] is None
 
 
+# ============================================================================
+# _place_short_order 测试（市价单 vs 优化限价单）
+# ============================================================================
+
+class TestPlaceShortOrder:
+    """_place_short_order() 测试：评分决定市价单/优化限价单"""
+
+    @pytest.mark.asyncio
+    async def test_market_order_when_high_score(self):
+        """高分（评分≥阈值）时使用市价单"""
+        executor = create_executor()
+        executor.setup_position_tracking = setup_position_tracking  # noqa
+
+        # Mock 市价单返回
+        executor.binance_api.place_order.return_value = {
+            'orderId': 1, 'symbol': 'BTCUSDT', 'status': 'FILLED'
+        }
+
+        order = await executor._place_short_order(
+            'BTCUSDT', Decimal('1.0'), Decimal('100'), use_market_order=True
+        )
+
+        assert order is not None
+        # 应调用市价单
+        executor.binance_api.place_order.assert_called_once()
+        call_kwargs = executor.binance_api.place_order.call_args
+        assert call_kwargs[1]['order_type'] == 'MARKET'
+        assert call_kwargs[1]['side'] == 'SELL'
+
+    @pytest.mark.asyncio
+    async def test_limit_order_when_low_score(self):
+        """低分（评分<阈值）时使用实时市价+滑点偏移的限价单"""
+        executor = create_executor()
+        executor.setup_position_tracking = setup_position_tracking  # noqa
+
+        # Mock 实时市价和限价单
+        executor.binance_api.get_ticker_price = AsyncMock(return_value=Decimal('100'))
+        executor.binance_api.place_order.return_value = {
+            'orderId': 2, 'symbol': 'BTCUSDT', 'status': 'NEW'
+        }
+
+        order = await executor._place_short_order(
+            'BTCUSDT', Decimal('1.0'), Decimal('100'), use_market_order=False
+        )
+
+        assert order is not None
+        executor.binance_api.place_order.assert_called_once()
+        call_kwargs = executor.binance_api.place_order.call_args
+        assert call_kwargs[1]['order_type'] == 'LIMIT'
+        assert call_kwargs[1]['side'] == 'SELL'
+        # 限价 = 实时市价 × (1 + slippage) = 100 × 1.001 = 100.1
+        self._assert_limit_price(call_kwargs[1]['price'], Decimal('100') * Decimal('1.001'))
+        # 应获取了实时市价
+        executor.binance_api.get_ticker_price.assert_called_once_with('BTCUSDT')
+
+    @pytest.mark.asyncio
+    async def test_execute_short_market_when_high_score(self):
+        """execute_short 评分≥阈值时走市价单分支"""
+        executor = create_executor()
+        executor.setup_position_tracking = setup_position_tracking  # noqa
+
+        # Mock execute_short 所需的外部服务
+        executor._get_account_balance = AsyncMock(return_value=Decimal('1000'))
+        executor._calculate_position_size = lambda balance, price: Decimal('50')
+        executor._format_quantity = lambda q, s: q
+        executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
+        executor._set_leverage = AsyncMock()
+        executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
+        executor._wait_for_order_fill = AsyncMock(return_value={'orderId': 1, 'status': 'FILLED'})
+        executor._save_order = AsyncMock()
+        executor._calculate_atr = AsyncMock(return_value=2.0)
+        executor._set_batch_take_profit = AsyncMock()
+        executor._send_notification = AsyncMock()
+
+        # Mock capital_mgr
+        executor.capital_mgr = MagicMock()
+        executor.capital_mgr.can_open_position = MagicMock(return_value=True)
+        executor.capital_mgr.get_allocated_capital = MagicMock(return_value=Decimal('1000'))
+
+        # === 情况1：评分≥阈值（如7.4）→ 市价单 ===
+        executor.binance_api.place_order.reset_mock()
+        executor.binance_api.place_order.return_value = {'orderId': 1, 'status': 'FILLED'}
+        score_result = {'total_score': 7.4}
+        await executor.execute_short('BTCUSDT', score_result, 100.0)
+        # 应调用市价单
+        called_kwargs = executor.binance_api.place_order.call_args
+        assert called_kwargs[1]['order_type'] == 'MARKET'
+
+        # === 情况2：评分<阈值（如6.5）→ 限价单 ===
+        executor.binance_api.get_ticker_price = AsyncMock(return_value=Decimal('100'))
+        executor.binance_api.place_order.reset_mock()
+        executor.binance_api.place_order.return_value = {'orderId': 2, 'status': 'FILLED'}
+        score_result_low = {'total_score': 6.5}
+        await executor.execute_short('BTCUSDT', score_result_low, 100.0)
+        called_kwargs = executor.binance_api.place_order.call_args
+        assert called_kwargs[1]['order_type'] == 'LIMIT'
+
+    def _assert_limit_price(self, actual, expected):
+        """断言限价价格近似相等（Decimal 比较）"""
+        assert abs(actual - expected) < Decimal('0.001'), (
+            f"限价 {actual} 不等于预期 {expected}"
+        )
+
+
 if __name__ == '__main__':
     pytest.main([__file__, '-v', '--tb=short', '-s'])

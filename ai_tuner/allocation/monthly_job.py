@@ -13,6 +13,7 @@
 """
 
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
@@ -71,6 +72,7 @@ class MonthlyAllocationJob:
         messenger,
         config_operator,
         rollback_manager,
+        binance_client=None,
     ):
         """
         初始化月度分配任务
@@ -82,6 +84,7 @@ class MonthlyAllocationJob:
             messenger: Messenger 实例
             config_operator: ConfigOperator 实例
             rollback_manager: RollbackManager 实例
+            binance_client: BinanceClient 实例（可选），用于获取合约账户实际可用余额
         """
         self.config = config
         self.db_manager = db_manager
@@ -89,6 +92,7 @@ class MonthlyAllocationJob:
         self.messenger = messenger
         self.config_operator = config_operator
         self.rollback_manager = rollback_manager
+        self.binance_client = binance_client
 
         # 从配置中读取资金分配参数
         self.allocation_cfg = config.get("capital_allocation", {})
@@ -122,9 +126,37 @@ class MonthlyAllocationJob:
     async def _ensure_table(self) -> None:
         """确保 public.capital_allocation 表存在（幂等）"""
         try:
-            await self.db_manager.execute(self._CAPITAL_ALLOCATION_DDL)
+            await self.db_manager.execute_ddl(self._CAPITAL_ALLOCATION_DDL)
         except Exception as e:
             logger.warning("capital_allocation 建表异常（可能已存在）", error=str(e))
+
+    async def _get_actual_balance(self) -> Optional[float]:
+        """
+        从交易所获取合约账户实际可用余额（USDT）
+
+        优先级：
+        1. 有 binance_client 且查询成功 → 返回实际可用余额
+        2. 查询失败或没有 binance_client → 返回 None（使用配置值兜底）
+
+        Returns:
+            可用余额（USDT），失败返回 None
+        """
+        if self.binance_client is None:
+            logger.info("无币安客户端，使用配置的 total_capital")
+            return None
+
+        try:
+            balance = await self.binance_client.get_account_balance()
+            usdt_available = balance.get("USDT", Decimal("0"))
+            amount = float(usdt_available)
+            logger.info(
+                "获取合约账户可用余额",
+                usdt_available=amount,
+            )
+            return amount
+        except Exception as e:
+            logger.warning("获取合约账户余额失败，使用配置值兜底", error=str(e))
+            return None
 
     async def run_monthly_allocation(self) -> Optional[Dict[str, Any]]:
         """
@@ -135,9 +167,10 @@ class MonthlyAllocationJob:
         2. 幂等性检查
         3. 计算时间范围
         4. 盈亏采集
-        5. 分配计算
-        6. 写入存储
-        7. 飞书通知
+        5. 获取实际余额（有 binance_client 时从交易所查询）
+        6. 分配计算
+        7. 写入存储
+        8. 飞书通知
 
         Returns:
             分配结果字典，如果跳过或失败返回 None
@@ -178,8 +211,21 @@ class MonthlyAllocationJob:
                 logger.warning("没有采集到任何策略盈亏数据，跳过分配")
                 return None
 
-            # 6. 分配计算
-            total_capital = float(self.allocation_cfg["total_capital"])
+            # 6. 获取实际可用余额（优先从交易所查询，兜底使用配置值）
+            actual_balance = await self._get_actual_balance()
+            if actual_balance is not None and actual_balance > 0:
+                total_capital = actual_balance
+                logger.info(
+                    "使用交易所实际可用余额",
+                    total_capital=total_capital,
+                    config_value=self.allocation_cfg.get("total_capital"),
+                )
+            else:
+                total_capital = float(self.allocation_cfg["total_capital"])
+                logger.info(
+                    "使用配置值作为总资金",
+                    total_capital=total_capital,
+                )
             reserve_ratio = float(self.allocation_cfg["reserve_ratio"])
             rank_ratios = self.allocation_cfg["rank_ratios"]
             fallback_ratios = self.allocation_cfg.get("fallback", {}).get("ratios", {})

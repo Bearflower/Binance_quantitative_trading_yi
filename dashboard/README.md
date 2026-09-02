@@ -1,7 +1,7 @@
 # Dashboard - 交易数据可视化看板
 
-> **版本**: v1.1
-> **更新日期**: 2026-06-03
+> **版本**: v1.2
+> **更新日期**: 2026-08-21
 > **作者**: Python 工程师
 
 ---
@@ -275,6 +275,7 @@ server {
 | `/api/strategies/{id}` | GET | 策略详情 |
 | `/api/strategies/{id}/symbols` | GET | 币种明细 |
 | `/api/trend` | GET | 趋势数据 |
+| `/api/account/equity` | GET | 合约账户净资产（实时快照，含未实现盈亏） |
 
 ### 示例请求
 
@@ -284,6 +285,9 @@ curl http://localhost:8000/api/overview?type=daily
 
 # 获取策略详情
 curl http://localhost:8000/api/strategies/btc_eth?type=weekly
+
+# 获取合约账户净资产
+curl http://localhost:8000/api/account/equity
 ```
 
 ---
@@ -474,4 +478,4 @@ A: 检查缓存配置和采集器是否正常运行。
 
 ---
 
-**最后更新**: 2026-06-03
+**最后更新**: 2026-08-21

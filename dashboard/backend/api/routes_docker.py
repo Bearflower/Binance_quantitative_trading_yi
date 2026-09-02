@@ -19,6 +19,8 @@ from models.schemas import (
     StrategyDetail,
     SymbolsResponse,
     TrendResponse,
+    EquityResponse,
+    EquityData,
     ErrorResponse
 )
 from services.data_service_docker import DataService
@@ -341,6 +343,47 @@ async def get_strategy_symbols(
         code=0,
         message="获取币种明细成功",
         data=response_data
+    )
+
+
+# ========================================
+# 合约账户净资产接口
+# ========================================
+
+@router.get(
+    "/account/equity",
+    response_model=EquityResponse,
+    summary="获取合约账户净资产",
+    description="获取合约账户净资产（含未实现盈亏），实时快照，不随日/周/月切换变化"
+)
+async def get_account_equity(
+    data_service: DataService = Depends(get_data_service),
+    cache: CacheService = Depends(get_cache_service)
+):
+    """
+    获取合约账户净资产
+
+    使用 Binance PM 账户的 accountEquity（账户权益，含未实现盈亏），
+    作为合约账户净资产实时快照展示。缓存时间短（30秒），保证近似实时。
+    """
+    cache_key = "account:equity"
+
+    cached_data = cache.get(cache_key)
+    if cached_data:
+        return EquityResponse(
+            code=0,
+            message="获取合约账户净资产成功（缓存）",
+            data=EquityData(**cached_data)
+        )
+
+    equity_data = await data_service.get_account_equity()
+
+    cache.set(cache_key, equity_data, ttl_seconds=settings.cache_ttl_account)
+
+    return EquityResponse(
+        code=0,
+        message="获取合约账户净资产成功",
+        data=EquityData(**equity_data)
     )
 
 

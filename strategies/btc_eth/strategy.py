@@ -29,6 +29,33 @@ from strategies.btc_eth.market_state import (
 logger = structlog.get_logger()
 
 
+def _safe_last(indicators: Dict, timeframe: str, field: str) -> Optional[float]:
+    """
+    安全读取某时间框架某指标的最新有效值（v6.26 新增）
+
+    统一兜底：字段缺失、时间框架缺失、Series 为空、值为 NaN 时返回 None，
+    禁止调用方裸用 iloc[-1] 读取指标导致主循环中断。
+
+    Args:
+        indicators: 多时间框架指标字典，形如 {timeframe: {field: pd.Series}}
+        timeframe: 时间框架（如 '1h' / '4h' / '1d'）
+        field: 指标字段名（如 'EMA21' / 'RSI' / 'ATR' / 'BB_Middle' / 'Volume_MA'）
+
+    Returns:
+        最新有效值（float）；缺失 / 空 / NaN 返回 None
+    """
+    timeframe_indicators = indicators.get(timeframe)
+    if not isinstance(timeframe_indicators, dict):
+        return None
+    series = timeframe_indicators.get(field)
+    if series is None or len(series) == 0:
+        return None
+    value = series.iloc[-1]
+    if pd.isna(value):
+        return None
+    return float(value)
+
+
 class PositionState:
     """持仓状态管理类
     
@@ -67,6 +94,8 @@ class PositionState:
         self.last_retry_cycle: int = 0  # 上次重试时的主循环计数（v6.23.1）
         self.first_retry_time: Optional[datetime] = None  # 首次重试时间（v6.23.1，用于强制清理超时）
         self.grade: str = ""  # 信号等级，用于动态读取对应的风险参数
+        # v6.27 时间平仓复核制：复核是否已完成（防重复平仓；不复用 tp1_hit，避免误激活动态止盈 also_on_tp1）
+        self.time_stop_review_done: bool = False
 
 
 class FrequencyController:
@@ -492,6 +521,10 @@ class BTCEthStrategy:
     
     # 信号等级排序映射（v6.17：用于市场状态等级过滤）
     GRADE_ORDER = {'S': 0, 'A': 1, 'B': 2, 'C': 3}
+
+    # 信号等级降级阶梯（v6.26：机制②轻度过热降级，从高到低）
+    # C 为最低档，再降即返回 None（禁开）
+    _GRADE_LADDER = ['S', 'A', 'B', 'C']
     
     def __init__(
         self,
@@ -566,6 +599,10 @@ class BTCEthStrategy:
         
         # 主循环计数（v6.23.1：用于条件单重试间隔控制）
         self._cycle_count: int = 0
+
+        # 震荡反转极端期暂停截止时间（per-symbol，机制③，CP-7，v6.26 新增）
+        # 结构：{symbol: datetime}，跨 analyze 调度周期保持，进程内有效
+        self.symbol_extreme_pause_until: Dict[str, datetime] = {}
         
         # 条件单取消操作锁（v6.23.1：防止异步路径和主循环路径并发修改）
         self._cancel_lock = asyncio.Lock()
@@ -665,16 +702,7 @@ class BTCEthStrategy:
                     return analysis_result
             
             # 3. 计算技术指标
-            indicators = {}
-            for timeframe, data in klines.items():
-                df = pd.DataFrame(data)
-                df['open'] = pd.to_numeric(df['open'], errors='coerce')
-                df['high'] = pd.to_numeric(df['high'], errors='coerce')
-                df['low'] = pd.to_numeric(df['low'], errors='coerce')
-                df['close'] = pd.to_numeric(df['close'], errors='coerce')
-                df['volume'] = pd.to_numeric(df['volume'], errors='coerce')
-                
-                indicators[timeframe] = TechnicalIndicators.calculate_all(df)
+            indicators = self._build_indicators(klines)
             
             # 3.5 市场状态识别（v6.18 激进收紧版）
             market_state_config = self.risk_config.get('market_state', {})
@@ -840,6 +868,18 @@ class BTCEthStrategy:
             
             # 8. 确定信号等级（v6.16.10：币种差异化S级阈值）
             grade = self._determine_grade(score, symbol)
+
+            # 8.0 v6.26：机制②轻度过热降级（仅震荡市路径，min_grade 过滤之前）
+            if strategy_mode == 'ranging':
+                grade = self._apply_overheat_downgrade(
+                    grade, direction, indicators, klines,
+                    self.risk_config.get('ranging_strategy', {})
+                )
+                if grade is None:
+                    # 降档后低于最低允许等级（C 再降即禁开）
+                    analysis_result['reason'] = "过热降级后低于最低允许等级，禁开"
+                    return analysis_result
+
             analysis_result['grade'] = grade
             
             # 8.1 市场状态等级过滤（v6.17）
@@ -1450,131 +1490,352 @@ class BTCEthStrategy:
         
         return True, direction
     
+    @staticmethod
+    def _bb_touch_votes(df_4h: pd.DataFrame, indicators: Dict,
+                        entry_conditions: Dict) -> Tuple[int, int, list, float, float]:
+        """BB触轨投票：触下轨投多、触上轨投空（沿用原判定，仅迁移不复算）。
+
+        返回 (多票增量, 空票增量, 命中描述列表, 距下轨比例, 距上轨比例)。
+        禁用或数据缺失时返回 0 票，诊断比例取默认 1.0。
+        """
+        if not entry_conditions.get('bb_touch', True):
+            return 0, 0, [], 1.0, 1.0
+        if df_4h.empty or 'close' not in df_4h.columns:
+            return 0, 0, [], 1.0, 1.0
+        close_4h_raw = df_4h['close'].iloc[-1]
+        if pd.isna(close_4h_raw):
+            return 0, 0, [], 1.0, 1.0
+        close_4h = float(close_4h_raw)
+        bb_upper = _safe_last(indicators, '4h', 'BB_Upper')
+        bb_lower = _safe_last(indicators, '4h', 'BB_Lower')
+        if bb_upper is None or bb_lower is None:
+            return 0, 0, [], 1.0, 1.0
+        bb_range = bb_upper - bb_lower
+        if bb_range <= 0:
+            return 0, 0, [], 1.0, 1.0
+        threshold = entry_conditions.get('bb_touch_threshold', 0.05)
+        dist_to_lower = (close_4h - bb_lower) / bb_range
+        dist_to_upper = (bb_upper - close_4h) / bb_range
+        long_delta = 0
+        short_delta = 0
+        conds = []
+        if dist_to_lower <= threshold:
+            long_delta += 1
+            conds.append(f"BB下轨触轨({dist_to_lower*100:.1f}%)")
+        if dist_to_upper <= threshold:
+            short_delta += 1
+            conds.append(f"BB上轨触轨({dist_to_upper*100:.1f}%)")
+        return long_delta, short_delta, conds, dist_to_lower, dist_to_upper
+
+    @staticmethod
+    def _rsi_extreme_votes(indicators: Dict,
+                           entry_conditions: Dict) -> Tuple[int, int, list, float]:
+        """RSI极端投票：超卖投多、超买投空（沿用原判定，仅迁移不复算）。
+
+        返回 (多票增量, 空票增量, 命中描述列表, RSI 诊断值)。
+        禁用或数据缺失时返回 0 票，诊断值取默认 0.0。
+        """
+        if not entry_conditions.get('rsi_extreme', True):
+            return 0, 0, [], 0.0
+        rsi = _safe_last(indicators, '4h', 'RSI')
+        if rsi is None:
+            return 0, 0, [], 0.0
+        oversold = entry_conditions.get('rsi_oversold', 20)
+        overbought = entry_conditions.get('rsi_overbought', 80)
+        long_delta = 0
+        short_delta = 0
+        conds = []
+        if rsi < oversold:
+            long_delta += 1
+            conds.append(f"RSI超卖({rsi:.1f}<{oversold})")
+        if rsi > overbought:
+            short_delta += 1
+            conds.append(f"RSI超买({rsi:.1f}>{overbought})")
+        return long_delta, short_delta, conds, rsi
+
+    @staticmethod
+    def _reversal_pattern_votes(df_4h: pd.DataFrame,
+                                entry_conditions: Dict) -> Tuple[int, int, list]:
+        """反转K线形态投票：看涨吞没投多、看跌吞没投空（沿用原判定，仅迁移）。"""
+        if not entry_conditions.get('reversal_pattern', True):
+            return 0, 0, []
+        if len(df_4h) < 2:
+            return 0, 0, []
+        prev_open_raw = df_4h['open'].iloc[-2]
+        prev_close_raw = df_4h['close'].iloc[-2]
+        curr_open_raw = df_4h['open'].iloc[-1]
+        curr_close_raw = df_4h['close'].iloc[-1]
+        if any(pd.isna(v) for v in (prev_open_raw, prev_close_raw, curr_open_raw, curr_close_raw)):
+            return 0, 0, []
+        prev_open = float(prev_open_raw)
+        prev_close = float(prev_close_raw)
+        curr_open = float(curr_open_raw)
+        curr_close = float(curr_close_raw)
+        long_delta = 0
+        short_delta = 0
+        conds = []
+        # 看涨吞没：前阴后阳，后实体包住前实体
+        if (prev_close < prev_open and curr_close > curr_open and
+                curr_open <= prev_close and curr_close >= prev_open):
+            long_delta += 1
+            conds.append("看涨吞没")
+        # 看跌吞没：前阳后阴，后实体包住前实体
+        if (prev_close > prev_open and curr_close < curr_open and
+                curr_open >= prev_close and curr_close <= prev_open):
+            short_delta += 1
+            conds.append("看跌吞没")
+        return long_delta, short_delta, conds
+
+    def _vote_ranging_direction(self, indicators: Dict, klines: Dict,
+                                entry_conditions: Dict) -> Tuple[Optional[str], str, list]:
+        """三条件投票得出震荡反转候选方向（沿用原判定，仅迁移不改逻辑）。
+
+        依次汇总 BB 触轨、RSI 极端、反转 K 线形态三项投票，多数方向获胜；
+        无票或平票返回 None。
+        """
+        df_4h = pd.DataFrame(klines['4h'])
+        long_votes = 0
+        short_votes = 0
+        conditions_met = []
+
+        ld, sd, conds, dist_to_lower, dist_to_upper = self._bb_touch_votes(
+            df_4h, indicators, entry_conditions)
+        long_votes += ld
+        short_votes += sd
+        conditions_met.extend(conds)
+
+        ld, sd, conds, rsi = self._rsi_extreme_votes(indicators, entry_conditions)
+        long_votes += ld
+        short_votes += sd
+        conditions_met.extend(conds)
+
+        ld, sd, conds = self._reversal_pattern_votes(df_4h, entry_conditions)
+        long_votes += ld
+        short_votes += sd
+        conditions_met.extend(conds)
+
+        if long_votes == 0 and short_votes == 0:
+            bb_info = (
+                f"BB距下轨{dist_to_lower*100:.1f}%/距上轨{dist_to_upper*100:.1f}%"
+                if entry_conditions.get('bb_touch', True) else "BB=禁用"
+            )
+            rsi_info = (
+                f"RSI={rsi:.1f}"
+                if entry_conditions.get('rsi_extreme', True) else "RSI=禁用"
+            )
+            return None, f"无震荡入场条件满足({bb_info}, {rsi_info})", conditions_met
+
+        if long_votes > short_votes:
+            direction = 'LONG'
+        elif short_votes > long_votes:
+            direction = 'SHORT'
+        else:
+            return None, f"方向不一致(long={long_votes}, short={short_votes})", conditions_met
+
+        return direction, "", conditions_met
+
+    @staticmethod
+    def _check_direction_alignment(direction: str, indicators: Dict,
+                                   ranging_config: Dict) -> Tuple[bool, str]:
+        """机制①：方向一致性对齐。
+
+        校验日线均线排列与候选方向是否一致：多头排列禁止做空、空头排列禁止做多；
+        均线缺失/NaN/粘合按 CP-2 保守拒绝（fallback_on_missing=false）。
+        """
+        config = ranging_config.get('direction_alignment', {})
+        if not config.get('enabled', True):
+            return True, ""
+        fast = _safe_last(indicators, '1d', config.get('fast_ma', 'EMA21'))
+        slow = _safe_last(indicators, '1d', config.get('slow_ma', 'EMA55'))
+        if fast is None or slow is None or slow == 0:
+            if config.get('fallback_on_missing', False):
+                logger.warning("均线数据缺失，放行方向护栏")
+                return True, ""
+            return False, "方向一致性拒绝：日线均线数据缺失"
+        stick_threshold = config.get('stick_threshold_pct', 0.3)
+        if abs(fast - slow) / slow * 100 <= stick_threshold:
+            return False, "方向一致性拒绝：日线均线粘合"
+        if fast > slow and direction == 'SHORT':
+            return False, "方向一致性拒绝：多头排列禁止做空"
+        if fast < slow and direction == 'LONG':
+            return False, "方向一致性拒绝：空头排列禁止做多"
+        return True, ""
+
+    @staticmethod
+    def _evaluate_overheat(direction: str, indicators: Dict, klines: Dict, cfg: Dict) -> str:
+        """机制②过热档位评估（供禁开与降级复用），返回 'ban'/'downgrade'/'ok'。"""
+        if not cfg:
+            return 'ok'
+        klines_1d = klines.get('1d')
+        if not klines_1d:
+            return 'ok'
+        df_1d = pd.DataFrame(klines_1d)
+        if df_1d.empty or 'close' not in df_1d.columns:
+            return 'ok'
+        close_1d_raw = df_1d['close'].iloc[-1]
+        if pd.isna(close_1d_raw):
+            return 'ok'
+        close_1d = float(close_1d_raw)
+
+        fast = _safe_last(indicators, '1d', 'EMA21')
+        slow = _safe_last(indicators, '1d', 'EMA55')
+        rsi_4h = _safe_last(indicators, '4h', 'RSI')
+        if fast is None or slow is None or fast == 0 or slow == 0 or rsi_4h is None:
+            return 'ok'
+
+        bias_fast = (close_1d - fast) / fast * 100
+        bias_slow = (close_1d - slow) / slow * 100
+        downgrade_enabled = cfg.get('downgrade_enabled', True)
+
+        if direction == 'LONG':
+            rsi_ban = cfg['rsi_extreme_long']
+            rsi_warn = cfg['rsi_warn_long']
+            over_fast_ban = bias_fast >= cfg['bias_fast_ban_pct']
+            over_slow_ban = bias_slow >= cfg['bias_slow_ban_pct']
+            over_fast_down = bias_fast >= cfg['bias_fast_downgrade_pct']
+            over_slow_down = bias_slow >= cfg['bias_slow_downgrade_pct']
+            rsi_ban_cond = rsi_4h > rsi_ban
+            rsi_down_cond = rsi_warn < rsi_4h <= rsi_ban
+        else:  # direction == 'SHORT'
+            rsi_ban = cfg['rsi_extreme_short']
+            rsi_warn = cfg['rsi_warn_short']
+            over_fast_ban = bias_fast <= -cfg['bias_fast_ban_pct']
+            over_slow_ban = bias_slow <= -cfg['bias_slow_ban_pct']
+            over_fast_down = bias_fast <= -cfg['bias_fast_downgrade_pct']
+            over_slow_down = bias_slow <= -cfg['bias_slow_downgrade_pct']
+            rsi_ban_cond = rsi_4h < rsi_ban
+            rsi_down_cond = rsi_ban <= rsi_4h < rsi_warn
+
+        if over_fast_ban or over_slow_ban or rsi_ban_cond:
+            return 'ban'
+        if over_fast_down or over_slow_down or rsi_down_cond:
+            return 'ban' if not downgrade_enabled else 'downgrade'
+        return 'ok'
+
+    def _check_overheat_ban(self, direction: str, indicators: Dict, klines: Dict,
+                            ranging_config: Dict) -> Tuple[bool, str]:
+        """机制②：重度过热禁开。乖离率或 RSI 进入极值区时拒绝入场。"""
+        cfg = ranging_config.get('overheat_protection', {})
+        if not cfg.get('enabled', True):
+            return True, ""
+        if self._evaluate_overheat(direction, indicators, klines, cfg) == 'ban':
+            return False, "过热禁开：乖离率或RSI进入极值区"
+        return True, ""
+
+    def _apply_overheat_downgrade(self, grade: str, direction: str, indicators: Dict,
+                                  klines: Dict, ranging_config: Dict) -> Optional[str]:
+        """机制②：轻度过热降级一档（S→A→B→C，C 再降即返回 None 禁开）。"""
+        cfg = ranging_config.get('overheat_protection', {})
+        if not cfg.get('enabled', True):
+            return grade
+        if self._evaluate_overheat(direction, indicators, klines, cfg) != 'downgrade':
+            return grade
+        idx = self._GRADE_LADDER.index(grade) if grade in self._GRADE_LADDER else None
+        if idx is None or idx + 1 >= len(self._GRADE_LADDER):
+            return None
+        new_grade = self._GRADE_LADDER[idx + 1]
+        logger.info("轻度过热，信号降一档", before=grade, after=new_grade, direction=direction)
+        return new_grade
+
+    @staticmethod
+    def _check_volume_confirm(direction: str, indicators: Dict, klines: Dict,
+                              ranging_config: Dict) -> Tuple[bool, str]:
+        """机制③a：量价确认（价格穿越布林中轨 + 缩量），数据缺失保守拒绝。"""
+        cfg = ranging_config.get('volume_confirm', {})
+        if not cfg.get('enabled', True):
+            return True, ""
+        df_4h = pd.DataFrame(klines['4h'])
+        if df_4h.empty or 'close' not in df_4h.columns or 'volume' not in df_4h.columns:
+            return False, "量价确认拒绝：量价数据缺失"
+        close_4h_raw = df_4h['close'].iloc[-1]
+        volume_raw = df_4h['volume'].iloc[-1]
+        if pd.isna(close_4h_raw):
+            return False, "量价确认拒绝：量价数据缺失"
+        close_4h = float(close_4h_raw)
+        volume = float(volume_raw) if pd.notna(volume_raw) else None
+        bb_middle = _safe_last(indicators, '4h', 'BB_Middle')
+        vol_ma = _safe_last(indicators, '4h', 'Volume_MA')
+        if volume is None or bb_middle is None or vol_ma is None:
+            return False, "量价确认拒绝：量价数据缺失"
+
+        shrink_ratio = cfg.get('shrink_ratio', 1.0)
+        if direction == 'SHORT' and not close_4h < bb_middle:
+            return False, "量价确认拒绝：收盘价未跌破布林中轨"
+        if direction == 'LONG' and not close_4h > bb_middle:
+            return False, "量价确认拒绝：收盘价未站上布林中轨"
+        if not volume < shrink_ratio * vol_ma:
+            return False, "量价确认拒绝：成交量未缩量"
+        return True, ""
+
+    def _check_volatility_regime(self, symbol: str, indicators: Dict,
+                                 ranging_config: Dict) -> Tuple[bool, str]:
+        """机制③b：波动突变 / 极端期检测（per-symbol 暂停，跨调度周期保持）。"""
+        cfg = ranging_config.get('volatility_regime', {})
+        if not cfg.get('enabled', True):
+            return True, ""
+
+        now = datetime.now()
+        pause_until = self.symbol_extreme_pause_until.get(symbol)
+        if pause_until is not None and now < pause_until:
+            return False, f"极端期：{symbol}震荡反转暂停至{pause_until}"
+
+        atr_short = _safe_last(indicators, '4h', 'ATR')
+        atr_long = _safe_last(indicators, '4h', 'ATR_long')
+        if atr_short is None or atr_long is None or atr_long == 0:
+            logger.warning(f"{symbol} 波动数据缺失，跳过极端期检测")
+            return True, ""
+
+        spike_ratio = cfg.get('spike_ratio', 2.0)
+        if atr_short / atr_long > spike_ratio:
+            pause_bars = cfg.get('pause_bars', 12)
+            bar_hours = cfg.get('pause_interval_hours', 4)
+            pause_until = now + timedelta(hours=pause_bars * bar_hours)
+            self.symbol_extreme_pause_until[symbol] = pause_until
+            ratio = atr_short / atr_long
+            logger.warning(
+                f"{symbol} 标记极端期，暂停震荡反转",
+                atr_short=atr_short, atr_long=atr_long, ratio=ratio,
+                spike_ratio=spike_ratio, pause_until=str(pause_until)
+            )
+            return False, f"极端期：ATR短长比={ratio:.2f} 超阈值，暂停震荡反转"
+        return True, ""
+
     def _check_ranging_entry(
         self,
         symbol: str,
         indicators: Dict,
         klines: Dict
     ) -> Tuple[bool, str]:
-        """
-        震荡市入场条件检查（v6.22 新增）
-        
-        震荡市使用反转信号入场，至少满足以下条件之一：
-        1. BB触轨：价格触及布林带上轨（做空）或下轨（做多）
-        2. RSI极端：RSI超买做空（>80），超卖做多（<20）
-        3. 反转K线形态：吞没形态
-        
-        取多数条件一致的方向入场，若方向不一致则拒绝。
-        
-        Args:
-            symbol: 交易对
-            indicators: 技术指标字典
-            klines: K线数据字典
-        
-        Returns:
-            (是否通过, 方向或失败原因)
-        """
+        """震荡市入场检查（v6.26 编排）：投票定方向后依序执行四机制，任一拒绝即短路。"""
         ranging_config = self.risk_config.get('ranging_strategy', {})
         if not ranging_config.get('enabled', True):
             return False, "震荡市策略未启用"
-        
         try:
-            entry_conditions = ranging_config.get('entry_conditions', {})
             if '4h' not in indicators or '4h' not in klines:
                 return False, "4h数据缺失"
-            
-            df_4h = pd.DataFrame(klines['4h'])
-            close_4h = float(df_4h['close'].iloc[-1])
-            long_votes = 0
-            short_votes = 0
-            conditions_met = []
-            
-            # === 条件1: BB触轨 ===
-            dist_to_lower = 1.0
-            dist_to_upper = 1.0
-            rsi = 0
-            if entry_conditions.get('bb_touch', True):
-                bb_upper = float(indicators['4h']['BB_Upper'].iloc[-1])
-                bb_lower = float(indicators['4h']['BB_Lower'].iloc[-1])
-                bb_range = bb_upper - bb_lower
-                if bb_range > 0:
-                    threshold = entry_conditions.get('bb_touch_threshold', 0.05)
-                    dist_to_lower = (close_4h - bb_lower) / bb_range
-                    dist_to_upper = (bb_upper - close_4h) / bb_range
-                    
-                    if dist_to_lower <= threshold:
-                        long_votes += 1
-                        conditions_met.append(f"BB下轨触轨({dist_to_lower*100:.1f}%)")
-                    if dist_to_upper <= threshold:
-                        short_votes += 1
-                        conditions_met.append(f"BB上轨触轨({dist_to_upper*100:.1f}%)")
-            
-            # === 条件2: RSI极端 ===
-            if entry_conditions.get('rsi_extreme', True):
-                rsi = float(indicators['4h']['RSI'].iloc[-1])
-                if pd.notna(rsi):
-                    oversold = entry_conditions.get('rsi_oversold', 20)
-                    overbought = entry_conditions.get('rsi_overbought', 80)
-                    if rsi < oversold:
-                        long_votes += 1
-                        conditions_met.append(f"RSI超卖({rsi:.1f}<{oversold})")
-                    if rsi > overbought:
-                        short_votes += 1
-                        conditions_met.append(f"RSI超买({rsi:.1f}>{overbought})")
-            
-            # === 条件3: 反转K线形态 ===
-            if entry_conditions.get('reversal_pattern', True):
-                if len(df_4h) >= 2:
-                    prev_open = float(df_4h['open'].iloc[-2])
-                    prev_close = float(df_4h['close'].iloc[-2])
-                    curr_open = float(df_4h['open'].iloc[-1])
-                    curr_close = float(df_4h['close'].iloc[-1])
-                    
-                    # 看涨吞没：前阴后阳，后实体包住前实体
-                    if (prev_close < prev_open and
-                        curr_close > curr_open and
-                        curr_open <= prev_close and
-                        curr_close >= prev_open):
-                        long_votes += 1
-                        conditions_met.append("看涨吞没")
-                    
-                    # 看跌吞没：前阳后阴，后实体包住前实体
-                    if (prev_close > prev_open and
-                        curr_close < curr_open and
-                        curr_open >= prev_close and
-                        curr_close <= prev_open):
-                        short_votes += 1
-                        conditions_met.append("看跌吞没")
-            
-            # === 判定方向 ===
-            if long_votes == 0 and short_votes == 0:
-                # 构建条件禁用/实际值的友好提示
-                bb_info = (
-                    f"BB距下轨{dist_to_lower*100:.1f}%/距上轨{dist_to_upper*100:.1f}%"
-                    if entry_conditions.get('bb_touch', True)
-                    else "BB=禁用"
-                )
-                rsi_info = (
-                    f"RSI={rsi:.1f}"
-                    if entry_conditions.get('rsi_extreme', True)
-                    else "RSI=禁用"
-                )
-                return False, f"无震荡入场条件满足({bb_info}, {rsi_info})"
-            
-            if long_votes > short_votes:
-                direction = 'LONG'
-            elif short_votes > long_votes:
-                direction = 'SHORT'
-            else:
-                return False, f"方向不一致(long={long_votes}, short={short_votes})"
-            
-            logger.info(
-                f"{symbol} 震荡入场通过",
-                direction=direction,
-                conditions=conditions_met,
-                long_votes=long_votes,
-                short_votes=short_votes
-            )
+            entry_conditions = ranging_config.get('entry_conditions', {})
+            # (0) 三条件投票得到候选方向
+            direction, vote_reason, conditions_met = self._vote_ranging_direction(
+                indicators, klines, entry_conditions)
+            if direction is None:
+                return False, vote_reason
+            # (1) 波动突变：极端期暂停
+            ok, reason = self._check_volatility_regime(symbol, indicators, ranging_config)
+            if not ok:
+                return False, reason
+            # (2) 方向一致性
+            ok, reason = self._check_direction_alignment(direction, indicators, ranging_config)
+            if not ok:
+                return False, reason
+            # (3) 量价确认
+            ok, reason = self._check_volume_confirm(direction, indicators, klines, ranging_config)
+            if not ok:
+                return False, reason
+            # (4) 重度过热禁开
+            ok, reason = self._check_overheat_ban(direction, indicators, klines, ranging_config)
+            if not ok:
+                return False, reason
+            logger.info(f"{symbol} 震荡入场通过", direction=direction, conditions=conditions_met)
             return True, direction
         except Exception as e:
             logger.error(f"{symbol} 震荡入场检查异常", error=str(e), exc_info=True)
@@ -2778,7 +3039,7 @@ class BTCEthStrategy:
                         close_reason=close_reason
                     )
                     
-                    # [-2022] ReduceOnly 被拒：检查持仓是否已在交易所关闭
+                    # [-2022] ReduceOnly 被拒：检查持仓是否已在交易所关闭或部分平仓
                     if isinstance(e, BinanceAPIError) and e.code == -2022:
                         logger.warning(
                             f"{symbol} ReduceOnly 被拒，检查实际持仓状态",
@@ -2788,19 +3049,30 @@ class BTCEthStrategy:
                             exchange_positions = await self.binance.get_position(symbol)
                             for pos in exchange_positions:
                                 if pos.get('symbol') == symbol:
-                                    pos_amt = float(pos.get('positionAmt', 0))
-                                    if abs(pos_amt) < 0.0001:
+                                    pos_amt = abs(float(pos.get('positionAmt', 0)))
+                                    prev_quantity = float(position.current_quantity)
+                                    if pos_amt < 0.0001:
                                         # 交易所已无持仓，同步本地状态
                                         logger.info(
                                             f"{symbol} 交易所已无持仓，同步本地状态",
                                             close_reason=close_reason,
-                                            previous_quantity=float(position.current_quantity)
+                                            previous_quantity=prev_quantity
                                         )
                                         position.current_quantity = Decimal('0')
                                         filled = True
-                                        break
-                            if filled:
-                                break
+                                    elif pos_amt < prev_quantity:
+                                        # 持仓已被部分平仓（如止损单已成交部分），更新本地数量
+                                        logger.info(
+                                            f"{symbol} 持仓已部分平仓，同步本地数量",
+                                            close_reason=close_reason,
+                                            previous_quantity=prev_quantity,
+                                            actual_quantity=pos_amt
+                                        )
+                                        position.current_quantity = Decimal(str(pos_amt))
+                                    break
+                            # 无论持仓是否完全关闭，都跳出重试循环（避免持续用错误量重试）
+                            # 下个 update_positions 周期会自动使用正确的持仓量
+                            break
                         except Exception as check_err:
                             logger.warning(
                                 f"{symbol} 检查实际持仓失败",
@@ -3503,51 +3775,184 @@ class BTCEthStrategy:
                 exc_info=True
             )
     
-    async def _check_time_stop(self, symbol: str, position: PositionState):
+    async def _should_keep_position(self, symbol: str, position: PositionState,
+                                    indicators: Dict, klines: Dict) -> Tuple[bool, str]:
+        """v6.27 时间平仓复核编排：数据预检 + 依序复用三机制。
+
+        返回: (True, "")=该持有；(False, reason)=任一机制判定不该持有。
+        注：仅编排不重写三机制；_check_volatility_regime 首参为 symbol。
         """
-        检查并执行时间止损
-        
+        ranging_config = self.risk_config.get('ranging_strategy', {})
+        try:
+            # 步骤1：数据可用性预检（任一关键指标缺失 → 保守不该持有）
+            required = [('1d', 'EMA21'), ('1d', 'EMA55'), ('4h', 'RSI'),
+                        ('4h', 'ATR'), ('4h', 'ATR_long')]
+            for timeframe, field in required:
+                if _safe_last(indicators, timeframe, field) is None:
+                    return False, f"复核数据缺失：{timeframe}.{field}，无法评估风险，保守平仓"
+            if not klines.get('1d') or not klines.get('4h'):
+                return False, "复核K线数据为空，无法评估风险，保守平仓"
+
+            # 步骤2：机制① 方向一致性对齐（持仓方向与日线排列是否仍一致）
+            ok, reason = self._check_direction_alignment(position.direction, indicators, ranging_config)
+            logger.info(f"{symbol} 时间平仓复核·机制①方向一致性", ok=ok, reason=reason,
+                        ema21=_safe_last(indicators, '1d', 'EMA21'),
+                        ema55=_safe_last(indicators, '1d', 'EMA55'))
+            if not ok:
+                return False, reason
+
+            # 步骤3：机制② 重度过热
+            ok, reason = self._check_overheat_ban(position.direction, indicators, klines, ranging_config)
+            logger.info(f"{symbol} 时间平仓复核·机制②重度过热", ok=ok, reason=reason,
+                        rsi_4h=_safe_last(indicators, '4h', 'RSI'))
+            if not ok:
+                return False, reason
+
+            # 步骤4：机制③ 波动熔断（首参 symbol，会写 symbol_extreme_pause_until，属预期）
+            ok, reason = self._check_volatility_regime(symbol, indicators, ranging_config)
+            logger.info(f"{symbol} 时间平仓复核·机制③波动熔断", ok=ok, reason=reason,
+                        atr=_safe_last(indicators, '4h', 'ATR'),
+                        atr_long=_safe_last(indicators, '4h', 'ATR_long'))
+            if not ok:
+                return False, reason
+
+            return True, ""
+        except Exception as e:
+            # 编排层兜底：任何异常 → 保守「不该持有」，不允许中断主循环
+            logger.error(f"{symbol} 时间平仓复核异常，保守平仓", error=str(e))
+            return False, f"复核异常：{e}"
+
+    async def _do_time_stop_close(self, symbol: str, position: PositionState,
+                                  close_ratio: Decimal, reason: str,
+                                  trigger_reason: str = "",
+                                  review_exhausted: bool = False,
+                                  set_tp1_hit: bool = False) -> None:
+        """执行时间平仓（原逻辑 / 复核 / 兜底共用，v6.27 消除重复平仓代码）。
+
+        成功：置位防重复标记（复核与兜底置 time_stop_review_done；
+        review_enabled=false 原逻辑额外置 tp1_hit 保持现状）。
+        失败：保持持仓状态与复核状态，下周期幂等重试。
+        """
+        close_quantity = position.current_quantity * close_ratio
+        log_fields = {
+            "holding_hours": (datetime.now() - position.entry_time).total_seconds() / 3600,
+            "close_quantity": float(close_quantity),
+            "reason": reason,
+        }
+        if trigger_reason:
+            log_fields["trigger"] = trigger_reason
+        if review_exhausted:
+            log_fields["note"] = "复核期耗尽"
+        logger.info(f"{symbol} 触发时间平仓", **log_fields)
+
+        success = await self._close_position(
+            symbol=symbol,
+            position=position,
+            close_quantity=close_quantity,
+            close_reason=reason,
+            current_price=None,
+        )
+        if success:
+            # v6.27 独立防重复标记（不置 tp1_hit，避免误激活动态止盈 also_on_tp1）
+            position.time_stop_review_done = True
+            if set_tp1_hit:
+                position.tp1_hit = True  # 仅 review_enabled=false 路径保持原逻辑（D6）
+        else:
+            logger.error(f"{symbol} 时间平仓失败，保持持仓状态", reason=reason)
+
+    def _build_indicators(self, klines: Dict) -> Dict:
+        """由多时间框架 K 线构建技术指标（v6.27 提取公共逻辑，消除 analyze 与复核路径重复代码）。
+
+        从 risk_config 读取长周期 ATR 周期（默认 50），遍历各时间框架将原始 K 线
+        转为 DataFrame 并逐列强制数值化后，统一调用 TechnicalIndicators.calculate_all，
+        保证生产 analyze 与时间平仓复核路径的指标口径完全一致。
+
         Args:
-            symbol: 交易对
-            position: 持仓状态
+            klines: 多时间框架 K 线数据 {timeframe: [K线记录]}
+
+        Returns:
+            各时间框架技术指标字典 {timeframe: indicators}
         """
-        # 只在未触发TP1且仍有持仓时检查时间止损
-        if position.tp1_hit or position.current_quantity <= 0:
+        # v6.26：长周期ATR周期从配置读取（CP-4），生产与回测统一口径
+        atr_long_period = self.risk_config.get('ranging_strategy', {}).get(
+            'volatility_regime', {}).get('atr_long_period', 50)
+        indicators = {}
+        for timeframe, data in klines.items():
+            df = pd.DataFrame(data)
+            for col in ('open', 'high', 'low', 'close', 'volume'):
+                df[col] = pd.to_numeric(df[col], errors='coerce')
+            indicators[timeframe] = TechnicalIndicators.calculate_all(
+                df, atr_long_period=atr_long_period)
+        return indicators
+
+    async def _get_review_market_data(self, symbol: str) -> Tuple[Optional[Dict], Optional[Dict]]:
+        """复核期按需拉取多周期 K 线并计算指标（v6.27，口径与 analyze 一致）。
+
+        返回 (indicators, klines)；任一失败返回 (None, None)，由调用方保守平仓。
+        """
+        try:
+            klines = await self.kline_service.get_multi_timeframe_data(
+                symbol=symbol, intervals=self.timeframes)
+            if not klines or not klines.get('4h') or not klines.get('1d'):
+                logger.warning(f"{symbol} 复核K线数据不完整")
+                return None, None
+
+            indicators = self._build_indicators(klines)
+            return indicators, klines
+        except Exception as e:
+            logger.error(f"{symbol} 复核数据获取失败", error=str(e))
+            return None, None
+
+    async def _check_time_stop(self, symbol: str, position: PositionState):
+        """检查并执行时间止损（v6.27 时间平仓复核制）。
+
+        流程：未到期→return；review_enabled=false→原逻辑平仓；复核期耗尽→兜底平仓；
+        未完成复核→按需拉数据+三机制复核。
+        """
+        # 守卫（维持现状 + v6.27 复核已完成标记）：TP1已触发/无持仓/复核已完成 → 不检查
+        if position.tp1_hit or position.current_quantity <= 0 or position.time_stop_review_done:
             return
-        
         grade_risk = self._get_grade_risk(position.grade)
         time_stop_config = grade_risk['time_stop']
         max_holding_hours = time_stop_config['max_holding_hours']
         close_ratio = Decimal(str(time_stop_config['close_ratio']))
-        
-        # 计算持仓时间
-        holding_time = datetime.now() - position.entry_time
-        holding_hours = holding_time.total_seconds() / 3600
-        
-        if holding_hours >= max_holding_hours:
-            # 平仓50%
-            close_quantity = position.current_quantity * close_ratio
-            
-            logger.info(
-                f"{symbol} 触发时间止损",
-                holding_hours=holding_hours,
-                close_quantity=float(close_quantity)
-            )
-            
-            # 执行平仓
-            success = await self._close_position(
-                symbol=symbol,
-                position=position,
-                close_quantity=close_quantity,
-                close_reason="TIME_STOP",
-                current_price=None
-            )
-            
-            if success:
-                # 标记为已处理，避免重复触发
-                position.tp1_hit = True  # 使用tp1_hit标记避免重复触发
-            else:
-                logger.error(f"{symbol} 时间止损平仓失败，保持持仓状态")
+        # v6.27 复核制开关与复核期上限（配置缺失默认 False/0，保证向后兼容）
+        review_enabled = time_stop_config.get('review_enabled', False)
+        max_review_hours = time_stop_config.get('max_review_hours', 0)
+        holding_hours = (datetime.now() - position.entry_time).total_seconds() / 3600
+        if holding_hours < max_holding_hours:
+            return  # 未到时间平仓阈值
+        # 兜底（最高优先级）：复核期耗尽，无条件强制平仓（reason 与 review_enabled=false 统一）
+        if review_enabled and holding_hours >= max_holding_hours + max_review_hours:
+            await self._do_time_stop_close(symbol, position, close_ratio,
+                                           reason="TIME_STOP", review_exhausted=True)
+            return
+
+        # review_enabled=false：完全恢复原逻辑（无条件到点平仓，置 tp1_hit 防重复）
+        if not review_enabled:
+            await self._do_time_stop_close(symbol, position, close_ratio,
+                                           reason="TIME_STOP", set_tp1_hit=True)
+            return
+
+        # 进入复核期：按需拉取数据（仅复核期持仓触发，其余持仓零开销）
+        indicators, klines = await self._get_review_market_data(symbol)
+        if indicators is None or klines is None:
+            await self._do_time_stop_close(symbol, position, close_ratio,
+                                           reason="TIME_STOP_REVIEW",
+                                           trigger_reason="复核数据获取失败")
+            return
+
+        keep, reason = await self._should_keep_position(symbol, position, indicators, klines)
+        if keep:
+            logger.info(f"{symbol} 时间平仓复核：该持有，继续持有",
+                        holding_hours=holding_hours,
+                        max_holding_hours=max_holding_hours,
+                        review_enabled=review_enabled)
+            return
+
+        # 不该持有 → 平 close_ratio
+        await self._do_time_stop_close(symbol, position, close_ratio,
+                                       reason="TIME_STOP_REVIEW", trigger_reason=reason)
     
     async def _cleanup_position_orders(self, symbol: str, position: PositionState):
         """

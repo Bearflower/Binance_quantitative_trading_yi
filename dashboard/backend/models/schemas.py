@@ -185,6 +185,25 @@ class SymbolsResponse(BaseResponse):
 
 
 # ========================================
+# 账户净资产模型
+# ========================================
+
+class EquityData(BaseModel):
+    """合约账户净资产数据"""
+
+    total_equity: str = Field(..., description="合约账户净资产（含未实现盈亏）")
+    available_balance: str = Field("0", description="可用余额")
+    open_positions: int = Field(0, description="当前持仓数（非零持仓）")
+    updated_at: str = Field(..., description="数据更新时间")
+
+
+class EquityResponse(BaseResponse):
+    """净资产响应"""
+
+    data: EquityData = Field(..., description="净资产数据")
+
+
+# ========================================
 # 趋势相关模型
 # ========================================
 

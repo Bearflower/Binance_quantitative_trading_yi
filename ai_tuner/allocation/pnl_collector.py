@@ -137,11 +137,15 @@ class PnLCollector:
         Returns:
             已实现盈亏总额（USDT）
         """
+        # 数据库 TIMESTAMP 字段无时区，需转为 naive datetime
+        naive_start = month_start.replace(tzinfo=None) if month_start.tzinfo else month_start
+        naive_end = month_end.replace(tzinfo=None) if month_end.tzinfo else month_end
+
         row = await self.db_manager.fetch_one(
             self._PNL_QUERY_TEMPLATE,
             strategy_id,
-            month_start,
-            month_end,
+            naive_start,
+            naive_end,
         )
         if row and row.get("total_pnl") is not None:
             return float(row["total_pnl"])

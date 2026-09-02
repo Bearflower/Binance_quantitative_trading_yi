@@ -208,8 +208,9 @@ CONFIG = {
 1. 标准总分 ≥ 6.0
 2. 技术分 ≥ 4.0，三次形态基础分 ≥ 1.0
 3. **趋势过滤通过**（V2.6 新增）：基于 4h EMA20 检查趋势方向
-   - 做多：要求价格 > EMA20（多头排列），且价格 ≥ EMA20 × 0.97（允许最大偏离 -3%）
-   - 做空：要求价格 < EMA20（空头排列），且价格 ≤ EMA20 × 1.03（允许最大偏离 +3%）
+   - 做多：要求价格 > EMA20（多头排列），且价格 ≥ EMA20 × 0.99（允许最大偏离 -1%）
+   - 做空：要求价格 < EMA20（空头排列），且价格 ≤ EMA20 × 1.01（允许最大偏离 +1%）
+   - V2.8 新增 EMA 斜率检查：基于最近 3 根 4h K 线的 EMA20 平均变化率，做多要求斜率 ≥ -0.0005，做空要求斜率 ≤ 0.0005，进一步过滤趋势力度不足的入场信号
    - 趋势过滤不通过则一票否决，禁止入场，防止"逆势回调陷阱"
 
 
@@ -237,7 +238,7 @@ LV-RM **不再依赖候选池落选币种**，直接从全市场流动性币种�
 | ② | **RSI(14)** | 1h | ≤ 30 | ≥ 70 |
 | ③ | **资金费率** | 实时 | ≤ -10% | ≥ 30% |
 | ④ | **K线确认** | 1h | 收盘价 > 前低 | 收盘价 < 前高 |
-| ⑤ | **趋势过滤** | 4h | 价格>EMA20且≥EMA20×0.97 | 价格<EMA20且≤EMA20×1.03 |
+| ⑤ | **趋势过滤** | 4h | 价格>EMA20且≥EMA20×0.99 | 价格<EMA20且≤EMA20×1.01 |
 
 #### 3.5.3 LV 技术评分
 | 条件 | 分值 | 量化标准 |
@@ -255,6 +256,7 @@ LV-RM **不再依赖候选池落选币种**，直接从全市场流动性币种�
 对于标准模式和半EMM模式，在评分完成后、入场决策前，会基于 4h EMA20 执行趋势过滤：
 - 顺势方向允许入场：上涨趋势中做多，下跌趋势中做空
 - 逆势方向一票否决：上涨趋势中做空（逆势摸顶）、下跌趋势中做多（逆势抄底）均被阻断
+- V2.8 新增 EMA 斜率检查：基于最近 3 根 4h K 线的 EMA20 平均变化率，做多要求斜率 ≥ -0.0005，做空要求斜率 ≤ 0.0005，确保趋势方向有足够力度
 - 目的：避免在强势趋势中捕捉反转时掉入"回调陷阱"，提高反转信号质量
 
 ```
@@ -385,17 +387,24 @@ trading:
   # FR-04（2026-08-20 二次修订）：HRS 与其他策略共用账户，对非本策略持仓仅告警、不接管。
   # 无接管配置项（硬性规定，代码中不保留任何接管路径）。
 
-# V2.6: 标准模式趋势过滤（4h EMA20）
+# V2.6: 标准模式趋势过滤（4h EMA20 价格偏离过滤）
+# V2.8: 收紧偏离度阈值 + 新增 EMA 斜率检查
 # 防止"逆势回调陷阱"：在强上涨趋势中阻断做空，在强下跌趋势中阻断做多
 trend_filter:
   enabled: true                # 是否启用趋势过滤
   ema_period: 20               # 4h EMA 周期
   long:
     min_price: 1.0             # 做多：价格 > EMA20（必须多头排列）
-    max_deviation: 0.97        # 做多：价格 ≥ EMA20 × 0.97（允许偏离不超过 -3%）
+    max_deviation: 0.99        # V2.8: 收紧从 0.97 至 0.99（允许偏离不超过 -1%）
   short:
     max_price: 1.0             # 做空：价格 < EMA20（必须空头排列）
-    max_deviation: 1.03        # 做空：价格 ≤ EMA20 × 1.03（允许偏离不超过 +3%）
+    max_deviation: 1.01        # V2.8: 收紧从 1.03 至 1.01（允许偏离不超过 +1%）
+  # V2.8: EMA 斜率检查（基于最近 3 根 4h K 线的 EMA20 平均变化率）
+  ema_slope:
+    enabled: true
+    period: 3                  # 计算最近 3 根 4h K 线的平均斜率
+    min_slope_for_long: -0.0005  # 做多：EMA20 斜率 >= -0.05%（允许轻微下行）
+    max_slope_for_short: 0.0005  # 做空：EMA20 斜率 <= 0.05%（允许轻微上行）
 
 atr:
   min_recalc_klines: 15              # ATR 重新计算所需最少 K 线数
@@ -412,6 +421,7 @@ atr:
 | **V2.5.1** | **2026-08-01** | **问题修复与完整性增强**：① 修复 `abs(price_change)<8.0` 硬编码，改为配置读取；② 修正 V2.4 旧值 12%/10% → 8%/6%；③ 统一预期候选池数量为 6-10/5-8；④ 新增风险分析（§10）；⑤ 新增回退方案（§11）；⑥ 新增代码变更清单（§12）；⑦ 新增候选池为空休眠处理（§2.2 步骤4）；⑧ 完善数据库变更清单（§7） |
 | **V2.5.1-P1** | **2026-08-20** | **保护单管理缺陷修复**：① FR-01 开仓后保护单原子性创建与失败补偿；② FR-03 开仓前核对交易所实际持仓，禁止反向开仓；③ FR-04 启动对账对交易所非本策略持仓仅告警、不接管（二次修订：彻底移除接管路径与配置项，防止共用账户误接管其他策略持仓）；④ FR-06 algoIds JSONB 持久化（§7 条目 6 幂等迁移，重启不丢失）；⑤ FR-07 取消旧保护单优先使用交易所批量取消接口；⑥ FR-08 加仓重下保护单取消失败即阻断 |
 | **V2.6** | **2026-08-25** | **标准模式趋势过滤**：① `scoring_engine.py` 新增 `_check_standard_trend_filter` 方法，复用 LV-RM 的趋势过滤逻辑；② `score()` 新增 `klines_4h` 参数，对标准/半EMM模式执行 4h EMA20 趋势过滤；③ `should_entry()` 增加趋势过滤检查，不通过则一票否决；④ `config.yaml` 新增 `scoring.trend_filter` 配置段；⑤ 目的：防止"逆势回调陷阱"，在强上涨趋势中阻断逆势做空，在强下跌趋势中阻断逆势做多 |
+| **V2.8** | **2026-09-01** | **趋势过滤增强**：① 收紧偏离度阈值：`long.max_deviation` 0.97→0.99，`short.max_deviation` 1.03→1.01；② 新增 `ema_slope` 配置段和 `_calc_ema_slope()`/`_check_ema_slope()` 方法，基于最近 3 根 4h K 线的 EMA20 斜率检查；③ `_check_standard_trend_filter` 升级为两步过滤（价格偏离 + EMA 斜率）；④ `min_primary_pattern_score` 从 1.0 提高至 2.5；⑤ `analyze()` 和 `_should_hold_on_time_stop()` 新增 `klines_4h` 参数 |
 
 
 ## 10. 风险分析
@@ -520,10 +530,16 @@ atr:
 +   ema_period: 20                         # 4h EMA 周期
 +   long:
 +     min_price: 1.0                       # 做多：价格 > EMA20（必须多头排列）
-+     max_deviation: 0.97                  # 做多：价格 ≥ EMA20 × 0.97（允许偏离不超过 -3%）
++     max_deviation: 0.99                  # V2.8: 收紧从 0.97 至 0.99（允许偏离不超过 -1%）
 +   short:
 +     max_price: 1.0                       # 做空：价格 < EMA20（必须空头排列）
-+     max_deviation: 1.03                  # 做空：价格 ≤ EMA20 × 1.03（允许偏离不超过 +3%）
++     max_deviation: 1.01                  # V2.8: 收紧从 1.03 至 1.01（允许偏离不超过 +1%）
++   # V2.8: EMA 斜率检查（基于最近 3 根 4h K 线的 EMA20 平均变化率）
++   ema_slope:
++     enabled: true
++     period: 3
++     min_slope_for_long: -0.0005
++     max_slope_for_short: 0.0005
 ```
 
 #### 评分引擎（scoring_engine.py）
@@ -542,6 +558,12 @@ class ScoringEngine:
 +       self.trend_filter_ema_period = trend_filter_config.get("ema_period", 20)
 +       self.trend_filter_long = trend_filter_config.get("long", {})
 +       self.trend_filter_short = trend_filter_config.get("short", {})
++       # V2.8: EMA 斜率检查配置
++       ema_slope_config = trend_filter_config.get("ema_slope", {})
++       self._ema_slope_enabled = ema_slope_config.get("enabled", True)
++       self._ema_slope_period = ema_slope_config.get("period", 3)
++       self._ema_slope_min_for_long = ema_slope_config.get("min_slope_for_long", -0.0005)
++       self._ema_slope_max_for_short = ema_slope_config.get("max_slope_for_short", 0.0005)
 
     def score(self, ..., klines_4h: Optional[List[Dict]] = None):
         # ... 评分计算不变 ...
@@ -553,22 +575,35 @@ class ScoringEngine:
 +               direction=direction,
 +               current_price_4h=current_close_4h,
 +               ema_4h=ema_4h,
++               klines_4h=klines_4h,         # V2.8: 传入 4h K 线用于 EMA 斜率检查
 +           )
 +           result.trend_filter_passed = trend_ok
 +           result.trend_filter_reason = trend_reason
 
 +   def _check_standard_trend_filter(
-+       self, direction: str, current_price_4h: float, ema_4h: float
++       self, direction: str, current_price_4h: float, ema_4h: float,
++       klines_4h: Optional[List[Dict]] = None,
 +   ) -> Tuple[bool, str]:
-+       """V2.6: 标准模式趋势过滤（复用 LV-RM 的过滤逻辑）"""
++       """V2.6: 标准模式趋势过滤（复用 LV-RM 的过滤逻辑 + V2.8 EMA 斜率检查）
++
++       V2.8: 两步过滤：第一步价格偏离检查，第二步 EMA 斜率检查
++       """
 +       if not self.trend_filter_enabled:
 +           return True, "趋势过滤未启用"
-+       return self._check_lv_rm_trend_filter(
++       # 第一步：价格偏离过滤（复用 LV-RM 的过滤逻辑）
++       trend_ok, trend_reason = self._check_lv_rm_trend_filter(
 +           direction=direction,
 +           current_price_4h=current_price_4h,
 +           ema_4h=ema_4h,
 +           config={"enabled": True, "long": self.trend_filter_long, "short": self.trend_filter_short},
 +       )
++       if not trend_ok:
++           return trend_ok, trend_reason
++       # V2.8: 第二步：EMA 斜率检查
++       ema_ok, ema_reason = self._check_ema_slope(direction, klines_4h, self.trend_filter_ema_period)
++       if not ema_ok:
++           return False, ema_reason
++       return True, ""
 
     def should_entry(self, score_result: ScoringResult) -> bool:
         if score_result.veto:
@@ -589,6 +624,123 @@ class ScoringEngine:
           ...
 +         klines_4h=klines_4h,
       )
+```
+
+### V2.8: 趋势过滤增强（EMA 斜率检查 + 偏离度阈值收紧）
+
+#### 配置文件（config.yaml）
+```yaml
+# V2.8: 收紧偏离度阈值 + 新增 EMA 斜率检查
+trend_filter:
+  enabled: true
+  ema_period: 20
+  long:
+    min_price: 1.0
+    max_deviation: 0.99                # 收紧：0.97 → 0.99（偏离不超过 -1%）
+  short:
+    max_price: 1.0
+    max_deviation: 1.01                # 收紧：1.03 → 1.01（偏离不超过 +1%）
+  # V2.8: EMA 斜率检查（基于最近 3 根 4h K 线的 EMA20 平均变化率）
+  ema_slope:
+    enabled: true
+    period: 3                          # 计算最近 3 根 4h K 线的平均斜率
+    min_slope_for_long: -0.0005        # 做多：EMA20 斜率 >= -0.05%（允许轻微下行）
+    max_slope_for_short: 0.0005        # 做空：EMA20 斜率 <= 0.05%（允许轻微上行）
+```
+
+#### 评分引擎（scoring_engine.py）新增方法
+
+```python
+def _calc_ema_slope(self, klines: List[Dict], period: int = 20, slope_period: int = 3) -> float:
+    """
+    V2.8: 计算 EMA 斜率（最近 slope_period 根 K 线的 EMA 平均变化率）
+
+    斜率 = (EMA_last - EMA_first) / (slope_period * EMA_first)
+    正值表示 EMA 上行，负值表示 EMA 下行。
+
+    Args:
+        klines: 4h K线数据
+        period: EMA 计算周期（默认 20）
+        slope_period: 计算斜率的 K 线根数（默认 3）
+
+    Returns:
+        EMA 斜率（变化率），正数=上行，负数=下行
+    """
+    if len(klines) < period + slope_period:
+        return 0.0
+
+    # 计算最近 slope_period 根 K 线的 EMA 值
+    ema_values = []
+    for i in range(len(klines) - slope_period, len(klines)):
+        subset = klines[:i + 1]
+        ema_val = self._calc_ema(subset, period)
+        ema_values.append(ema_val)
+
+    if len(ema_values) < 2 or ema_values[0] <= 0:
+        return 0.0
+
+    slope = (ema_values[-1] - ema_values[0]) / (slope_period * ema_values[0])
+    return round(slope, 6)
+
+
+def _check_ema_slope(
+    self,
+    direction: str,
+    klines_4h: Optional[List[Dict]],
+    ema_period: int,
+) -> Tuple[bool, str]:
+    """
+    V2.8: 检查 EMA 斜率是否支持开仓方向
+
+    做多要求 EMA20 不下行太快（斜率 >= min_slope_for_long）
+    做空要求 EMA20 不上行太快（斜率 <= max_slope_for_short）
+
+    Args:
+        direction: 'short' 或 'long'
+        klines_4h: 4h K线数据
+        ema_period: EMA 计算周期
+
+    Returns:
+        (是否通过, 失败原因)
+    """
+    if not self._ema_slope_enabled or not klines_4h:
+        return True, ""
+
+    slope = self._calc_ema_slope(klines_4h, ema_period, self._ema_slope_period)
+
+    if direction == "long" and slope < self._ema_slope_min_for_long:
+        return False, (
+            f"EMA斜率检查：EMA20斜率({slope:.6f})低于做多阈值"
+            f"({self._ema_slope_min_for_long})，趋势不支持做多"
+        )
+    if direction == "short" and slope > self._ema_slope_max_for_short:
+        return False, (
+            f"EMA斜率检查：EMA20斜率({slope:.6f})高于做空阈值"
+            f"({self._ema_slope_max_for_short})，趋势不支持做空"
+        )
+
+    return True, ""
+```
+
+#### 配置变更说明
+
+| 参数 | V2.6 旧值 | V2.8 新值 | 说明 |
+|------|-----------|-----------|------|
+| `scoring.technical.min_primary_pattern_score` | 1.0 | **2.5** | 基础形态最低评分从 1.0 提高至 2.5，要求更强的形态确认 |
+| `scoring.trend_filter.long.max_deviation` | 0.97 | **0.99** | 做多偏离度从 -3% 收紧至 -1%，更严格的价格位置要求 |
+| `scoring.trend_filter.short.max_deviation` | 1.03 | **1.01** | 做空偏离度从 +3% 收紧至 +1%，更严格的价格位置要求 |
+| `scoring.trend_filter.ema_slope`（新增） | — | 新增配置段 | 基于 EMA20 最近 3 根 4h K 线的斜率检查，过滤趋势力度不足的入场信号 |
+
+#### 策略层（strategy.py）调用变更
+
+```python
+def analyze(self, ..., klines_4h: Optional[List[Dict]] = None):
+    """V2.8: 需要传入 klines_4h 参数用于 EMA 斜率检查"""
+    ...
+
+def _should_hold_on_time_stop(self, symbol: str, klines_4h: Optional[List[Dict]] = None):
+    """V2.8: 需要传入 klines_4h 参数用于 EMA 斜率检查"""
+    ...
 ```
 
 ### 设计理念说明

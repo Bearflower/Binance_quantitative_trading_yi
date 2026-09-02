@@ -179,6 +179,13 @@ class HRSStrategy(BaseStrategy):
         # K线缓存清理间隔（秒），默认3600（1小时）
         self._klines_trim_interval_seconds = config.get("cycle", {}).get("klines_trim_interval_seconds", 3600)
 
+        # 时间止损重新分析配置（V2.8）
+        time_stop_config = config.get("trading", {}).get("time_stop", {})
+        reanalyze_config = time_stop_config.get("reanalyze", {})
+        self._time_stop_reanalyze_enabled = reanalyze_config.get("enabled", True)
+        self._time_stop_hold_threshold = reanalyze_config.get("hold_threshold", 4.0)
+        self._time_stop_extend_hours = reanalyze_config.get("extend_hours", 24)
+
         logger.info(
             "HRS策略初始化",
             strategy_name=self.strategy_name,
@@ -248,7 +255,6 @@ class HRSStrategy(BaseStrategy):
         try:
             # 获取K线数据
             klines = self._klines_cache.get(symbol, [])
-            klines_4h = self._klines_4h_cache.get(symbol, [])
             if len(klines) < self.min_klines:
                 # 尝试预热K线
                 klines = await self._warmup_klines(symbol)
@@ -257,6 +263,9 @@ class HRSStrategy(BaseStrategy):
                     result["reason"] = f"K线数据不足 ({len(klines)} < {self.min_klines})"
                     return result
                 self._klines_cache[symbol] = klines
+
+            # V2.8: 获取 4h K 线数据用于趋势过滤（EMA 斜率检查）
+            klines_4h = self._klines_4h_cache.get(symbol, [])
 
             current_close = float(klines[-1].get("close", 0))
             # P0-4: 资金费率时间对齐，使用K线收盘时间（open_time + 1h）而非开盘时间
@@ -1592,6 +1601,79 @@ class HRSStrategy(BaseStrategy):
         except Exception as e:
             logger.warning("全部平仓PnL回写失败，不影响主流程", symbol=symbol, error=str(e))
 
+    async def _should_hold_on_time_stop(self, symbol: str, direction: str) -> bool:
+        """
+        时间止损触发时，重新分析该币种是否仍值得持仓
+
+        获取实时市场数据，调用评分引擎重新评分，若总分 >= hold_threshold
+        则继续持仓（重置计时器），否则平仓。
+
+        Args:
+            symbol: 交易对
+            direction: 持仓方向 ('short' 或 'long')
+
+        Returns:
+            True=继续持仓，False=平仓
+        """
+        try:
+            # 1. 获取K线数据
+            klines = self._klines_cache.get(symbol, [])
+            if len(klines) < self.min_klines:
+                klines = await self._warmup_klines(symbol)
+                if len(klines) < self.min_klines:
+                    logger.info("重新分析：K线数据不足，执行平仓", symbol=symbol)
+                    return False
+                self._klines_cache[symbol] = klines
+
+            # V2.8: 获取 4h K 线数据用于趋势过滤（EMA 斜率检查）
+            klines_4h = self._klines_4h_cache.get(symbol, [])
+
+            # 2. 获取市场数据（OI、资金费率、市值）
+            oi_usd = await self.market_data.get_oi_usd(symbol)
+            funding_rate = await self.market_data.get_funding_rate(symbol)
+            volume_24h = await self.market_data.get_24h_volume(symbol)
+            market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
+            has_market_cap = market_cap > 0
+            oi_market_cap_ratio = oi_usd / market_cap if has_market_cap else 0.0
+
+            # 3. 获取形态识别结果
+            if direction == "short":
+                patterns = self.pattern_recognizer.detect_short_patterns(klines)
+            else:
+                patterns = self.pattern_recognizer.detect_long_patterns(klines)
+
+            # 4. 执行评分
+            score_result = self.scoring_engine.score(
+                symbol=symbol,
+                direction=direction,
+                oi_market_cap_ratio=oi_market_cap_ratio,
+                patterns=patterns,
+                funding_rate=funding_rate,
+                has_market_cap=has_market_cap,
+                klines_4h=klines_4h,
+            )
+
+            # 5. 判断是否继续持仓（总分 >= hold_threshold，降低门槛）
+            should_hold = score_result.total_score >= self._time_stop_hold_threshold
+            logger.info(
+                "时间止损重新分析完成",
+                symbol=symbol,
+                direction=direction,
+                total_score=score_result.total_score,
+                hold_threshold=self._time_stop_hold_threshold,
+                should_hold=should_hold,
+            )
+            return should_hold
+
+        except Exception as e:
+            logger.error(
+                "时间止损重新分析异常，执行平仓",
+                symbol=symbol,
+                direction=direction,
+                error=str(e),
+            )
+            return False
+
     async def _monitor_positions(self) -> None:
         """监控持仓：移动止盈、时间止损"""
         positions = self.position_manager.get_all_positions()
@@ -1645,11 +1727,22 @@ class HRSStrategy(BaseStrategy):
                     elif tp_result == 1:
                         # P1-6: TP1成交后，补充TP2订单（重启后可能丢失）
                         await self._replenish_single_position(symbol)
+                    elif tp_result == 2:
+                        # V2.7: TP2成交后，补充剩余持仓移动止盈保护单
+                        await self._replenish_single_position(symbol)
                 except Exception as e:
                     logger.debug("获取持仓变化失败", symbol=symbol, error=str(e))
 
                 # 检查时间止损
                 if self.position_manager.check_time_stop(symbol):
+                    # V2.8: 时间止损时重新分析，判断是否继续持仓
+                    if self._time_stop_reanalyze_enabled:
+                        should_hold = await self._should_hold_on_time_stop(symbol, direction)
+                        if should_hold:
+                            self.position_manager.reset_time_stop(symbol)
+                            logger.info("时间止损重新分析：继续持仓", symbol=symbol)
+                            continue
+
                     order_result = await self.trading_executor.close_position(
                         symbol=symbol,
                         direction=direction,
@@ -2997,6 +3090,7 @@ class HRSStrategy(BaseStrategy):
                         pos["atr"] = atr
 
             # 补单清场由 replenish_position_orders 内部统一执行（FR-09），此处不重复取消
+            best_price = pos.get("best_price", 0)
             result = await self.trading_executor.replenish_position_orders(
                 symbol=symbol,
                 direction=direction,
@@ -3005,6 +3099,7 @@ class HRSStrategy(BaseStrategy):
                 atr=atr,
                 target1_reached=target1_reached,
                 target2_reached=target2_reached,
+                best_price=best_price,
             )
 
             # 价格已过TP2目标，标记target2_reached以激活移动止盈（FR-09: 适配 ReplenishResult.note）

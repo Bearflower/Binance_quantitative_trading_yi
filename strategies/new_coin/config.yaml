@@ -85,6 +85,7 @@ trading:
   daily_trade_limit: 2         # 单日最多开仓币种数
   single_position_margin: 50  # 单笔保证金（USDT）
   entry_order_timeout_seconds: 60  # 限价单入场超时等待（秒）
+  market_order_score_threshold: 7.0  # 市价单评分阈值：评分≥此值直接市价单抢单；<此值走实时市价+滑点限价单
   stop_loss_percent: 0.05      # 止损百分比（5%）
   take_profit_percent: 0.10    # 止盈百分比（10%）
   # 限价单滑点容忍（V4.1新增：市价→限价）

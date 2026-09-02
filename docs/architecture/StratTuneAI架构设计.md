@@ -2070,18 +2070,19 @@ strategies:
     enabled: true
     display_name: "新币做空策略"
 
-  # 已注册策略:
+  # 混合反转策略(HRS)
   - strategy_id: "hrs"
     adapter_class: "adapters.hrs_adapter.HRSAdapter"
     config_path: "strategies/hrs/config.yaml"
     enabled: true
     display_name: "混合反转策略(HRS)"
 
-  # - strategy_id: "grid"
-  #   adapter_class: "adapters.grid_adapter.GridAdapter"
-  #   config_path: "strategies/grid/config.yaml"
-  #   enabled: false
-  #   display_name: "网格交易策略"
+  # 网格交易策略（方案D：回测驱动 AI 调优）
+  - strategy_id: "grid"
+    adapter_class: "adapters.grid_adapter.GridAdapter"
+    config_path: "ai_tuner/config.yaml"
+    enabled: true
+    display_name: "网格交易策略"
 
 # ---------- DeepSeek API 配置 ----------
 deepseek:

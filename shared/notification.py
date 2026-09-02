@@ -70,6 +70,9 @@ class NotificationClient:
         if webhook := os.getenv("FEISHU_WEBHOOK_HRS", "https://open.feishu.cn/open-apis/bot/v2/hook/e628ca79-2f0c-4e59-97b3-6c2054ccddb7"):
             mapping["hrs"] = webhook
         
+        if webhook := os.getenv("FEISHU_WEBHOOK_TUNER"):
+            mapping["tuner"] = webhook
+        
         if webhook := os.getenv("FEISHU_WEBHOOK"):
             mapping["default"] = webhook
         

@@ -36,11 +36,14 @@ logger = structlog.get_logger()
 
 
 class GridAdapter(BaseAdapter):
-    """网格交易策略数据适配器（方案C：混合模式）"""
+    """网格交易策略数据适配器（方案D：真实回测引擎）"""
 
     strategy_id = "grid"
     strategy_name = "网格交易策略"
     config_path = "strategies/grid/config.yaml"
+
+    # 方案D：网格策略即使无真实成交也执行调优（基于回测数据）
+    allow_tuning_without_trades = True
 
     async def collect(self, week_offset: int = 0) -> StrategyReport:
         """
@@ -280,20 +283,22 @@ class GridAdapter(BaseAdapter):
         return anomalies
 
     # ============================================================
-    # 模拟推演（方案C核心）
+    # 回测模拟（方案D核心）
     # ============================================================
 
     async def _simulate(
         self, week_start: datetime, week_end: datetime, symbols: List[str]
     ) -> List[SimulationMetrics]:
         """
-        模拟推演不同参数组合下的网格预期表现
+        使用回测引擎模拟网格策略表现（方案D）
 
         流程：
-        1. 获取本周 1h K线数据
-        2. 计算市场统计指标（ATR、波动率、价格摆动总量）
-        3. 构建 3 个参数场景（当前配置、更密集、更稀疏）
-        4. 对每个场景计算网格参数和预期收益
+        1. 获取K线数据（PG优先 + API降级）
+        2. 计算ATR和市场统计
+        3. 提取当前网格参数
+        4. 构建多场景参数组合
+        5. 对每个场景执行回测
+        6. 转换为 SimulationMetrics 列表
 
         Args:
             week_start: 本周起始时间
@@ -305,396 +310,377 @@ class GridAdapter(BaseAdapter):
         """
         results: List[SimulationMetrics] = []
 
-        # 获取K线服务URL
-        kline_url = self._get_kline_service_url()
-        if not kline_url:
-            logger.warning("K线服务未配置，跳过模拟推演", strategy_id=self.strategy_id)
-            return results
+        try:
+            # 1. 获取K线数据
+            klines = await self._fetch_klines_for_backtest(week_start, week_end, symbols)
+            if not klines:
+                logger.warning("无法获取K线数据，回测跳过", strategy_id=self.strategy_id)
+                return results
 
-        for symbol in symbols:
-            try:
-                # 获取本周1h K线
-                klines = await self._fetch_klines(kline_url, symbol, week_start, week_end)
-                if not klines or len(klines) < 24:
+            # 2. 计算市场统计指标
+            market_stats = self._calc_market_stats(klines)
+
+            # 3. 提取当前网格参数
+            current_params = self._extract_grid_params(market_stats)
+
+            # 4. 构建多场景参数组合
+            scenarios = self._build_scenarios(current_params)
+
+            # 5. 初始化回测引擎
+            from ai_tuner.backtest.grid_backtest import GridBacktestEngine
+            engine = GridBacktestEngine(self._system_config)
+
+            # 6. 对每个场景执行回测
+            for scenario in scenarios:
+                try:
+                    result = engine.run(klines, scenario["params"])
+                    sim = self._backtest_result_to_simulation(
+                        result, scenario["name"], market_stats
+                    )
+                    results.append(sim)
+                except Exception as e:
                     logger.warning(
-                        "K线数据不足，跳过模拟推演",
-                        symbol=symbol,
-                        kline_count=len(klines) if klines else 0,
+                        "场景回测失败",
+                        scenario=scenario["name"],
+                        error=str(e),
                     )
                     continue
 
-                # 计算市场统计指标
-                market_stats = self._calc_market_stats(klines)
-                current_price = market_stats["current_price"]
-                atr = market_stats["atr"]
-                total_price_swing = market_stats["total_price_swing"]
-                market_state = market_stats["market_state"]
+            logger.info(
+                "回测模拟完成",
+                strategy_id=self.strategy_id,
+                kline_count=len(klines),
+                scenario_count=len(results),
+            )
 
-                # 读取当前参数
-                current_params = self._read_config()
-                grid_cfg = current_params.get("grid", {})
-                trading_cfg = current_params.get("trading", {})
-
-                base_grid_count = int(grid_cfg.get("base_grid_count", 8))
-                min_grid_count = int(grid_cfg.get("min_grid_count", 5))
-                max_grid_count = int(grid_cfg.get("max_grid_count", 12))
-                spacing_multiplier = float(
-                    grid_cfg.get("grid_spacing_atr_multiplier", 2.0)
-                )
-                leverage = int(trading_cfg.get("leverage", 10))
-                margin = float(trading_cfg.get("margin", 500))
-                single_margin = float(trading_cfg.get("single_position_margin", 100))
-
-                # 构建3个参数场景
-                scenarios = [
-                    {
-                        "name": "当前配置",
-                        "grid_count": base_grid_count,
-                        "spacing_mult": spacing_multiplier,
-                    },
-                    {
-                        "name": "更密集网格",
-                        "grid_count": min(base_grid_count + 2, max_grid_count),
-                        "spacing_mult": spacing_multiplier * 0.85,
-                    },
-                    {
-                        "name": "更稀疏网格",
-                        "grid_count": max(base_grid_count - 2, min_grid_count),
-                        "spacing_mult": spacing_multiplier * 1.15,
-                    },
-                ]
-
-                for scenario in scenarios:
-                    sim = self._simulate_scenario(
-                        scenario=scenario,
-                        symbol=symbol,
-                        market_state=market_state,
-                        current_price=current_price,
-                        atr=atr,
-                        total_price_swing=total_price_swing,
-                        leverage=leverage,
-                        margin=margin,
-                        single_margin=single_margin,
-                    )
-                    results.append(sim)
-
-            except Exception as e:
-                logger.warning(
-                    "模拟推演出错",
-                    symbol=symbol,
-                    error=str(e),
-                )
-                continue
+        except Exception as e:
+            logger.warning(
+                "回测模拟异常",
+                strategy_id=self.strategy_id,
+                error=str(e),
+            )
 
         return results
 
-    def _get_kline_service_url(self) -> Optional[str]:
+    # ============================================================
+    # 方案D新增方法
+    # ============================================================
+
+    def _extract_grid_params(self, market_stats: Dict[str, Any]) -> "GridParams":
         """
-        获取K线服务URL
-
-        优先级：
-        1. 系统配置 kline_service.url（支持 ${ENV_VAR} 语法自动解析环境变量）
-        2. 环境变量 KLINE_SERVICE_URL
-
-        Returns:
-            K线服务URL，未配置时返回 None
-        """
-        # 从系统配置读取
-        system_config = self._system_config
-        kline_cfg = system_config.get("kline_service", {})
-        url = kline_cfg.get("url", "")
-        if url:
-            # 解析 ${ENV_VAR} 语法
-            resolved = resolve_env_var(url)
-            if resolved:
-                return resolved
-
-        # 从环境变量读取
-        url = os.getenv("KLINE_SERVICE_URL", "")
-        if url:
-            return url
-
-        return None
-
-    async def _fetch_klines(
-        self, base_url: str, symbol: str, week_start: datetime, week_end: datetime
-    ) -> List[Dict[str, Any]]:
-        """
-        从K线服务获取本周1h K线数据
+        从策略配置中提取回测所需的网格参数
 
         Args:
-            base_url: K线服务基础URL
-            symbol: 交易对
+            market_stats: 市场统计指标（含 ATR、当前价格）
+
+        Returns:
+            GridParams 实例
+        """
+        from ai_tuner.backtest.models import GridParams
+
+        config = self._read_config()
+        grid_cfg = config.get("grid", {})
+        trading_cfg = config.get("trading", {})
+        risk_cfg = config.get("risk", {})
+
+        return GridParams(
+            base_grid_count=int(grid_cfg.get("base_grid_count", 6)),
+            grid_spacing_atr_multiplier=float(
+                grid_cfg.get("grid_spacing_atr_multiplier", 2.5)
+            ),
+            stop_loss_buffer=int(grid_cfg.get("stop_loss_buffer", 2)),
+            leverage=int(trading_cfg.get("leverage", 10)),
+            margin=float(trading_cfg.get("margin", 500)),
+            single_position_margin=float(trading_cfg.get("single_position_margin", 100)),
+            stop_loss_percent=float(risk_cfg.get("stop_loss_percent", 0.10)),
+            hard_stop_loss=float(risk_cfg.get("hard_stop_loss", -0.15)),
+            atr=market_stats.get("atr", 0.0),
+            current_price=market_stats.get("current_price", 0.0),
+        )
+
+    def _build_scenarios(
+        self, current_params: "GridParams"
+    ) -> List[Dict[str, Any]]:
+        """
+        构建多场景参数组合
+
+        生成3个场景：
+        1. 当前配置：使用现有参数
+        2. 更密集网格：grid_count + 2，spacing × 0.85
+        3. 更稀疏网格：grid_count - 2，spacing × 1.15
+
+        Args:
+            current_params: 当前网格参数
+
+        Returns:
+            [{"name": "场景名", "params": GridParams}, ...]
+        """
+        from ai_tuner.backtest.models import GridParams
+        from copy import deepcopy
+
+        scenarios = []
+
+        # 场景1：当前配置
+        scenarios.append({
+            "name": "当前配置",
+            "params": deepcopy(current_params),
+        })
+
+        # 场景2：更密集网格
+        dense_params = deepcopy(current_params)
+        dense_params.base_grid_count = min(
+            current_params.base_grid_count + 2,
+            self._get_max_grid_count(current_params.base_grid_count),
+        )
+        dense_params.grid_spacing_atr_multiplier *= 0.85
+        scenarios.append({
+            "name": "更密集网格",
+            "params": dense_params,
+        })
+
+        # 场景3：更稀疏网格
+        sparse_params = deepcopy(current_params)
+        sparse_params.base_grid_count = max(
+            current_params.base_grid_count - 2,
+            self._get_min_grid_count(current_params.base_grid_count),
+        )
+        sparse_params.grid_spacing_atr_multiplier *= 1.15
+        scenarios.append({
+            "name": "更稀疏网格",
+            "params": sparse_params,
+        })
+
+        return scenarios
+
+    @staticmethod
+    def _get_min_grid_count(base: int) -> int:
+        """获取最小网格数"""
+        return max(base - 2, 3)
+
+    @staticmethod
+    def _get_max_grid_count(base: int) -> int:
+        """获取最大网格数"""
+        return min(base + 2, 15)
+
+    def _backtest_result_to_simulation(
+        self,
+        result: Dict[str, Any],
+        scenario_name: str,
+        market_stats: Dict[str, Any],
+    ) -> SimulationMetrics:
+        """
+        将回测结果字典转换为 SimulationMetrics（保持接口兼容）
+
+        Args:
+            result: 回测引擎返回的结果字典
+            scenario_name: 场景名称
+            market_stats: 市场统计指标
+
+        Returns:
+            SimulationMetrics 实例
+        """
+        config = self._read_config()
+        grid_cfg = config.get("grid", {})
+        trading_cfg = config.get("trading", {})
+
+        base_grid_count = int(grid_cfg.get("base_grid_count", 6))
+        spacing_multiplier = float(grid_cfg.get("grid_spacing_atr_multiplier", 2.5))
+        atr = market_stats.get("atr", 0.0)
+        current_price = market_stats.get("current_price", 0.0)
+        margin = float(trading_cfg.get("margin", 500))
+
+        grid_spacing = atr * spacing_multiplier
+        half_range = grid_spacing * base_grid_count / 2
+        price_range_low = current_price - half_range
+        price_range_high = current_price + half_range
+
+        profit_rate = grid_spacing / current_price if current_price > 0 else 0
+
+        return SimulationMetrics(
+            scenario_name=scenario_name,
+            symbol=result.get("symbol", "ETHUSDT"),
+            market_state=market_stats.get("market_state", ""),
+            grid_count=base_grid_count,
+            grid_spacing=round(grid_spacing, 4),
+            price_range_low=round(price_range_low, 2),
+            price_range_high=round(price_range_high, 2),
+            profit_rate_per_fill=round(profit_rate * 100, 2),
+            estimated_fills_weekly=result.get("fill_count", 0),
+            estimated_profit_weekly=round(result.get("total_pnl", 0.0), 2),
+            confidence=0.85,  # 回测模式置信度较高
+        )
+
+    # ============================================================
+    # K线数据获取（方案D：PG优先 + API降级）
+    # ============================================================
+
+    async def _fetch_klines_for_backtest(
+        self, week_start: datetime, week_end: datetime, symbols: List[str]
+    ) -> List[Dict[str, Any]]:
+        """
+        获取回测所需的K线数据（PG优先 + API降级）
+
+        优先级：
+        1. PostgreSQL 直查 kline_ethusdt_1h 表
+        2. K线服务 HTTP API 降级
+        3. 都失败则返回空列表
+
+        Args:
+            week_start: 本周起始时间
+            week_end: 本周结束时间
+            symbols: 交易对列表
+
+        Returns:
+            K线数据列表，长度应在 24-168 之间
+        """
+        # 尝试从 PostgreSQL 读取
+        klines = await self._fetch_klines_from_pg(week_start, week_end)
+        min_kline_count = self._system_config.get("backtest", {}).get("min_kline_count", 24)
+        if klines and len(klines) >= min_kline_count:
+            logger.info(
+                "从PostgreSQL获取K线数据",
+                count=len(klines),
+                strategy_id=self.strategy_id,
+            )
+            return klines
+
+        # 降级到 K线服务 API
+        logger.warning(
+            "PostgreSQL K线数据不足，降级到K线服务API",
+            pg_count=len(klines) if klines else 0,
+            strategy_id=self.strategy_id,
+        )
+
+        kline_url = self._get_kline_service_url()
+        if not kline_url:
+            logger.error(
+                "K线数据源不可用：PostgreSQL和K线服务均不可用",
+                strategy_id=self.strategy_id,
+            )
+            return []
+
+        for symbol in symbols:
+            try:
+                api_klines = await self._fetch_klines(kline_url, symbol, week_start, week_end)
+                if api_klines and len(api_klines) >= min_kline_count:
+                    logger.info(
+                        "从K线服务API获取K线数据",
+                        symbol=symbol,
+                        count=len(api_klines),
+                    )
+                    return api_klines
+            except Exception as e:
+                logger.warning(
+                    "K线服务API请求失败",
+                    symbol=symbol,
+                    error=str(e),
+                )
+
+        logger.error("所有K线数据源均不可用，无法执行回测")
+        return []
+
+    async def _fetch_klines_from_pg(
+        self, week_start: datetime, week_end: datetime
+    ) -> List[Dict[str, Any]]:
+        """
+        从 PostgreSQL 直接查询 K线数据
+
+        使用已有的 db_manager 连接，不从零创建连接。
+
+        Args:
             week_start: 起始时间
             week_end: 结束时间
 
         Returns:
-            K线数据列表，每项包含 open/high/low/close 等字段
+            K线数据列表
         """
-        import aiohttp
+        try:
+            query = """
+                SELECT open_time, open_price, high_price, low_price, close_price, volume
+                FROM kline_ethusdt_1h
+                WHERE open_time >= $1
+                  AND open_time < $2
+                ORDER BY open_time ASC
+            """
+            rows = await self.db_manager.fetch_all(query, week_start, week_end)
+            if not rows:
+                logger.warning(
+                    "PostgreSQL K线表无数据",
+                    table="kline_ethusdt_1h",
+                    week_start=week_start,
+                    week_end=week_end,
+                )
+                return []
 
-        # 计算需要的小时数
-        hours_needed = int((week_end - week_start).total_seconds() / 3600) + 24
-        limit = min(hours_needed, 200)
+            return self._convert_kline_rows(rows)
 
-        url = f"{base_url.rstrip('/')}/klines/latest"
-        params = {
-            "symbol": symbol.upper(),
-            "interval": "1h",
-            "limit": limit,
-        }
+        except Exception as e:
+            logger.warning(
+                "PostgreSQL K线查询失败",
+                error=str(e),
+                strategy_id=self.strategy_id,
+            )
+            return []
 
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get(url, params=params) as response:
-                data = await response.json()
-                if response.status != 200 or data.get("code") != 0:
-                    logger.warning(
-                        "K线服务请求失败",
-                        symbol=symbol,
-                        status=response.status,
-                        message=data.get("message", ""),
-                    )
-                    return []
-
-                klines_data = data.get("data", [])
-                if not isinstance(klines_data, list):
-                    return []
-
-                klines = []
-                for k in klines_data:
-                    klines.append({
-                        "open_time": k.get("open_time"),
-                        "open": float(k.get("open_price", 0)),
-                        "high": float(k.get("high_price", 0)),
-                        "low": float(k.get("low_price", 0)),
-                        "close": float(k.get("close_price", 0)),
-                        "volume": float(k.get("volume", 0)),
-                    })
-
-                return klines
-
-    def _calc_market_stats(self, klines: List[Dict[str, Any]]) -> Dict[str, Any]:
+    async def _validate_new_params(
+        self,
+        old_params: "GridParams",
+        new_params: "GridParams",
+        klines: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
         """
-        从K线数据计算市场统计指标
+        验证新参数是否优于旧参数（Step 6：参数验证）
 
         Args:
-            klines: K线数据列表
+            old_params: 当前参数
+            new_params: LLM建议的新参数
+            klines: 上周K线数据
 
         Returns:
             {
-                "current_price": float,       # 最新价格
-                "atr": float,                 # 14周期ATR
-                "total_price_swing": float,   # 总价格摆动（sum|high-low|）
-                "market_state": str,          # 市场状态估计
-                "avg_volume": float,          # 平均成交量
+                "passed": bool,
+                "reason": str,
+                "old_score": float,
+                "new_score": float,
             }
         """
-        if not klines:
-            return {
-                "current_price": 0,
-                "atr": 0,
-                "total_price_swing": 0,
-                "market_state": "unknown",
-                "avg_volume": 0,
-            }
+        from ai_tuner.backtest.grid_backtest import GridBacktestEngine
 
-        current_price = float(klines[-1]["close"])
-        total_price_swing = sum(float(k["high"]) - float(k["low"]) for k in klines)
-        avg_volume = sum(float(k.get("volume", 0)) for k in klines) / len(klines)
+        engine = GridBacktestEngine(self._system_config)
 
-        # 简化ATR计算（不需要pandas）
-        atr = self._calc_simple_atr(klines, period=14)
+        try:
+            old_result = engine.run(klines, old_params)
+            new_result = engine.run(klines, new_params)
 
-        # 市场状态估计
-        market_state = self._estimate_market_state(klines, atr, current_price)
+            old_score = old_result.get("composite_score", 0)
+            new_score = new_result.get("composite_score", 0)
 
-        return {
-            "current_price": current_price,
-            "atr": atr,
-            "total_price_swing": total_price_swing,
-            "market_state": market_state,
-            "avg_volume": avg_volume,
-        }
-
-    @staticmethod
-    def _calc_simple_atr(klines: List[Dict[str, Any]], period: int = 14) -> float:
-        """
-        简化ATR计算（无需pandas）
-
-        计算最近 period 个K线的平均真实波幅。
-
-        Args:
-            klines: K线数据列表
-            period: ATR周期
-
-        Returns:
-            ATR值
-        """
-        if len(klines) < period + 1:
-            return 0.0
-
-        tr_values = []
-        for i in range(1, len(klines)):
-            high = float(klines[i]["high"])
-            low = float(klines[i]["low"])
-            prev_close = float(klines[i - 1]["close"])
-            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
-            tr_values.append(tr)
-
-        if len(tr_values) < period:
-            return sum(tr_values) / len(tr_values) if tr_values else 0.0
-
-        # Wilder's 平滑方法
-        atr = sum(tr_values[:period]) / period
-        for i in range(period, len(tr_values)):
-            atr = (atr * (period - 1) + tr_values[i]) / period
-
-        return atr
-
-    @staticmethod
-    def _estimate_market_state(
-        klines: List[Dict[str, Any]], atr: float, current_price: float
-    ) -> str:
-        """
-        简化市场状态估计
-
-        基于最近24小时的价格走势一致性和波动率判断。
-
-        Returns:
-            市场状态："强趋势" / "弱趋势" / "高波动震荡" / "震荡市场"
-        """
-        recent = klines[-24:] if len(klines) >= 24 else klines
-        if len(recent) < 6:
-            return "震荡市场"
-
-        # 计算连续同向收盘次数
-        up_streak = 0
-        down_streak = 0
-        max_up = 0
-        max_down = 0
-        for i in range(1, len(recent)):
-            diff = float(recent[i]["close"]) - float(recent[i - 1]["close"])
-            if diff > 0:
-                up_streak += 1
-                down_streak = 0
-                max_up = max(max_up, up_streak)
+            if new_score > old_score:
+                return {
+                    "passed": True,
+                    "reason": (
+                        f"新参数综合评分({new_score}) > 旧参数({old_score})，采纳建议"
+                    ),
+                    "old_score": old_score,
+                    "new_score": new_score,
+                }
             else:
-                down_streak += 1
-                up_streak = 0
-                max_down = max(max_down, down_streak)
-
-        max_consistency = max(max_up, max_down)
-        consistency_ratio = max_consistency / len(recent) if len(recent) > 0 else 0
-
-        # 价格变化幅度
-        first_close = float(recent[0]["close"])
-        last_close = float(recent[-1]["close"])
-        price_change_pct = (
-            abs(last_close - first_close) / first_close if first_close > 0 else 0
-        )
-
-        # ATR占比
-        atr_pct = atr / current_price if current_price > 0 else 0
-
-        if consistency_ratio > 0.5 and price_change_pct > 0.05:
-            return "强趋势"
-        elif consistency_ratio > 0.35 and price_change_pct > 0.02:
-            return "弱趋势"
-        elif atr_pct > 0.03:
-            return "高波动震荡"
-        else:
-            return "震荡市场"
-
-    def _simulate_scenario(
-        self,
-        scenario: Dict[str, Any],
-        symbol: str,
-        market_state: str,
-        current_price: float,
-        atr: float,
-        total_price_swing: float,
-        leverage: int,
-        margin: float,
-        single_margin: float,
-    ) -> SimulationMetrics:
-        """
-        模拟单个参数场景的网格表现
-
-        核心逻辑：
-        1. 网格间距 = ATR × spacing_multiplier
-        2. 价格区间 = [当前价 - 间距×网格数/2, 当前价 + 间距×网格数/2]
-        3. 预估填充数 = 总价格摆动 / 网格间距 × 填充效率因子
-        4. 预估利润 = 填充数 × 间距 × 单格数量
-
-        Args:
-            scenario: 场景配置（name, grid_count, spacing_mult）
-            symbol: 交易对
-            market_state: 市场状态
-            current_price: 当前价格
-            atr: ATR值
-            total_price_swing: 总价格摆动
-            leverage: 杠杆
-            margin: 总保证金
-            single_margin: 单笔保证金
-
-        Returns:
-            SimulationMetrics 模拟结果
-        """
-        grid_count = scenario["grid_count"]
-        spacing_mult = scenario["spacing_mult"]
-
-        # 网格间距 = ATR × spacing_multiplier
-        grid_spacing = atr * spacing_mult
-        if grid_spacing <= 0:
-            simulation_cfg = self._system_config.get("simulation", {})
-            fallback_spacing_pct = simulation_cfg.get("fallback_spacing_pct", 0.005)
-            grid_spacing = current_price * fallback_spacing_pct
-
-        # 价格区间
-        half_range = grid_spacing * grid_count / 2
-        price_range_low = current_price - half_range
-        price_range_high = current_price + half_range
-
-        # 从配置读取模拟推演参数
-        simulation_cfg = self._system_config.get("simulation", {})
-        fill_efficiency = simulation_cfg.get("fill_efficiency_factor", 0.6)
-        confidence_upper = simulation_cfg.get("confidence_upper_limit", 0.8)
-
-        # 每格利润率
-        profit_rate = grid_spacing / current_price if current_price > 0 else 0
-
-        # 每格名义价值（基于总保证金/网格数 × 杠杆）
-        nominal_per_grid = (margin / grid_count) * leverage
-
-        # 预估填充数：总价格摆动 / 网格间距 × 效率因子
-        estimated_fills = int(total_price_swing / grid_spacing * fill_efficiency)
-        if estimated_fills < 0:
-            estimated_fills = 0
-
-        # 预估利润：填充数 × 间距 × 单格数量
-        # 单格数量 = nominal_per_grid / current_price
-        qty_per_grid = nominal_per_grid / current_price if current_price > 0 else 0
-        profit_per_fill = grid_spacing * qty_per_grid
-        estimated_profit = estimated_fills * profit_per_fill
-
-        # 置信度：数据越充分，置信度越高
-        confidence = min(confidence_upper, fill_efficiency + 0.1)
-        if total_price_swing <= 0:
-            confidence = 0.1
-
-        return SimulationMetrics(
-            scenario_name=scenario["name"],
-            symbol=symbol,
-            market_state=market_state,
-            grid_count=grid_count,
-            grid_spacing=round(grid_spacing, 4),
-            price_range_low=round(price_range_low, 2),
-            price_range_high=round(price_range_high, 2),
-            profit_rate_per_fill=round(profit_rate * 100, 2),  # 转百分比
-            estimated_fills_weekly=estimated_fills,
-            estimated_profit_weekly=round(estimated_profit, 2),
-            confidence=round(confidence, 2),
-        )
+                return {
+                    "passed": False,
+                    "reason": (
+                        f"新参数综合评分({new_score}) <= 旧参数({old_score})，拒绝采纳"
+                    ),
+                    "old_score": old_score,
+                    "new_score": new_score,
+                }
+        except Exception as e:
+            logger.error("参数验证回测异常", error=str(e))
+            return {
+                "passed": False,
+                "reason": f"参数验证回测异常: {str(e)}",
+                "old_score": 0,
+                "new_score": 0,
+            }
 
     def _check_simulation_anomalies(self, report: StrategyReport) -> None:
         """
@@ -736,6 +722,216 @@ class GridAdapter(BaseAdapter):
                     f"本周网格亏损({report.performance.total_pnl:.2f} USDT)，"
                     f"建议检查网格参数是否适应市场状态({current_scenario.market_state})"
                 )
+
+    # ============================================================
+    # 工具方法（方案C保留，方案D也使用）
+    # ============================================================
+
+    def _get_kline_service_url(self) -> Optional[str]:
+        """
+        获取K线服务URL
+
+        优先级：
+        1. 系统配置 kline_service.url（支持 ${ENV_VAR} 语法自动解析环境变量）
+        2. 环境变量 KLINE_SERVICE_URL
+
+        Returns:
+            K线服务URL，未配置时返回 None
+        """
+        system_config = self._system_config
+        kline_cfg = system_config.get("kline_service", {})
+        url = kline_cfg.get("url", "")
+        if url:
+            resolved = resolve_env_var(url)
+            if resolved:
+                return resolved
+
+        url = os.getenv("KLINE_SERVICE_URL", "")
+        if url:
+            return url
+
+        return None
+
+    async def _fetch_klines(
+        self, base_url: str, symbol: str, week_start: datetime, week_end: datetime
+    ) -> List[Dict[str, Any]]:
+        """
+        从K线服务获取本周1h K线数据
+
+        Args:
+            base_url: K线服务基础URL
+            symbol: 交易对
+            week_start: 起始时间
+            week_end: 结束时间
+
+        Returns:
+            K线数据列表，每项包含 open/high/low/close 等字段
+        """
+        import aiohttp
+
+        hours_needed = int((week_end - week_start).total_seconds() / 3600) + 24
+        limit = min(hours_needed, 200)
+
+        url = f"{base_url.rstrip('/')}/klines/latest"
+        params = {
+            "symbol": symbol.upper(),
+            "interval": "1h",
+            "limit": limit,
+        }
+
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url, params=params) as response:
+                data = await response.json()
+                if response.status != 200 or data.get("code") != 0:
+                    logger.warning(
+                        "K线服务请求失败",
+                        symbol=symbol,
+                        status=response.status,
+                        message=data.get("message", ""),
+                    )
+                    return []
+
+                klines_data = data.get("data", [])
+                if not isinstance(klines_data, list):
+                    return []
+
+                return self._convert_kline_rows(klines_data)
+
+    @staticmethod
+    def _convert_kline_rows(rows: List[Any]) -> List[Dict[str, Any]]:
+        """将数据库行或API响应转换为统一的K线字典格式"""
+        klines = []
+        for row in rows:
+            klines.append({
+                "open_time": row.get("open_time") if isinstance(row, dict) else getattr(row, "open_time", None),
+                "open": float(row.get("open_price", 0) if isinstance(row, dict) else getattr(row, "open_price", 0)),
+                "high": float(row.get("high_price", 0) if isinstance(row, dict) else getattr(row, "high_price", 0)),
+                "low": float(row.get("low_price", 0) if isinstance(row, dict) else getattr(row, "low_price", 0)),
+                "close": float(row.get("close_price", 0) if isinstance(row, dict) else getattr(row, "close_price", 0)),
+                "volume": float(row.get("volume", 0) if isinstance(row, dict) else getattr(row, "volume", 0)),
+            })
+        return klines
+
+    def _calc_market_stats(self, klines: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        从K线数据计算市场统计指标
+
+        Args:
+            klines: K线数据列表
+
+        Returns:
+            {
+                "current_price": float,       # 最新价格
+                "atr": float,                 # 14周期ATR
+                "total_price_swing": float,   # 总价格摆动
+                "market_state": str,          # 市场状态估计
+                "avg_volume": float,          # 平均成交量
+            }
+        """
+        if not klines:
+            return {
+                "current_price": 0,
+                "atr": 0,
+                "total_price_swing": 0,
+                "market_state": "unknown",
+                "avg_volume": 0,
+            }
+
+        current_price = float(klines[-1]["close"])
+        total_price_swing = sum(float(k["high"]) - float(k["low"]) for k in klines)
+        avg_volume = sum(float(k.get("volume", 0)) for k in klines) / len(klines)
+
+        atr = self._calc_simple_atr(klines, period=14)
+        market_state = self._estimate_market_state(klines, atr, current_price)
+
+        return {
+            "current_price": current_price,
+            "atr": atr,
+            "total_price_swing": total_price_swing,
+            "market_state": market_state,
+            "avg_volume": avg_volume,
+        }
+
+    @staticmethod
+    def _calc_simple_atr(klines: List[Dict[str, Any]], period: int = 14) -> float:
+        """
+        简化ATR计算（无需pandas）
+
+        Args:
+            klines: K线数据列表
+            period: ATR周期
+
+        Returns:
+            ATR值
+        """
+        if len(klines) < period + 1:
+            return 0.0
+
+        tr_values = []
+        for i in range(1, len(klines)):
+            high = float(klines[i]["high"])
+            low = float(klines[i]["low"])
+            prev_close = float(klines[i - 1]["close"])
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            tr_values.append(tr)
+
+        if len(tr_values) < period:
+            return sum(tr_values) / len(tr_values) if tr_values else 0.0
+
+        atr = sum(tr_values[:period]) / period
+        for i in range(period, len(tr_values)):
+            atr = (atr * (period - 1) + tr_values[i]) / period
+
+        return atr
+
+    @staticmethod
+    def _estimate_market_state(
+        klines: List[Dict[str, Any]], atr: float, current_price: float
+    ) -> str:
+        """
+        简化市场状态估计
+
+        Returns:
+            "强趋势" / "弱趋势" / "高波动震荡" / "震荡市场"
+        """
+        recent = klines[-24:] if len(klines) >= 24 else klines
+        if len(recent) < 6:
+            return "震荡市场"
+
+        up_streak = 0
+        down_streak = 0
+        max_up = 0
+        max_down = 0
+        for i in range(1, len(recent)):
+            diff = float(recent[i]["close"]) - float(recent[i - 1]["close"])
+            if diff > 0:
+                up_streak += 1
+                down_streak = 0
+                max_up = max(max_up, up_streak)
+            else:
+                down_streak += 1
+                up_streak = 0
+                max_down = max(max_down, down_streak)
+
+        max_consistency = max(max_up, max_down)
+        consistency_ratio = max_consistency / len(recent) if len(recent) > 0 else 0
+
+        first_close = float(recent[0]["close"])
+        last_close = float(recent[-1]["close"])
+        price_change_pct = (
+            abs(last_close - first_close) / first_close if first_close > 0 else 0
+        )
+
+        atr_pct = atr / current_price if current_price > 0 else 0
+
+        if consistency_ratio > 0.5 and price_change_pct > 0.05:
+            return "强趋势"
+        elif consistency_ratio > 0.35 and price_change_pct > 0.02:
+            return "弱趋势"
+        elif atr_pct > 0.03:
+            return "高波动震荡"
+        else:
+            return "震荡市场"
 
     # ============================================================
     # 参数管理

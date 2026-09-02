@@ -406,7 +406,7 @@ class NewCoinStrategy(BaseStrategy):
                 logger.info(f"交易信号执行成功: {symbol}")
                 return True, ""
             else:
-                logger.error(f"交易信号执行失败: {symbol}")
+                logger.info(f"交易信号执行失败(限价单未成交): {symbol}")
                 return False, "做空限价单未成交或失败"
 
         except Exception as e:
@@ -956,8 +956,13 @@ class NewCoinStrategy(BaseStrategy):
                 )
                 for s in stale_symbols:
                     del self.positions[s]
+                    # 同步清理交易执行器中的持仓跟踪记录，避免残留
+                    if s in self.trading_executor.position_tracking:
+                        del self.trading_executor.position_tracking[s]
+                # 持久化清理结果到数据库，避免容器重启后脏数据再次出现
+                await self._save_state()
 
-            logger.debug(
+            logger.info(
                 f"持仓同步完成",
                 actual_count=len(actual_short_symbols),
                 tracked_count=len(self.positions)

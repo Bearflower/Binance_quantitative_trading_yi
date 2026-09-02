@@ -1,8 +1,8 @@
 # Dashboard 架构设计文档
 
-> **版本**：v1.1
+> **版本**：v1.2
 > **创建日期**：2026-06-02
-> **最后更新**：2026-06-03
+> **最后更新**：2026-09-02
 > **作者**：后端架构师
 
 ---
@@ -195,6 +195,7 @@ dashboard/
 | `/api/strategies/{strategy_id}` | GET | 单个策略详情 | 60秒 |
 | `/api/strategies/{strategy_id}/symbols` | GET | 币种明细 | 60秒 |
 | `/api/trend` | GET | 趋势数据（支持daily/weekly/monthly） | 按类型分流 |
+| `/api/account/equity` | GET | 合约账户净资产（实时快照，不随日/周/月切换） | 30秒 |
 
 ### 4.2 接口详细定义
 
@@ -471,6 +472,44 @@ GET /api/trend?type=daily&days=7
 }
 ```
 
+#### 4.2.8 账户净资产
+
+实时快照接口，获取 Binance PM 合约账户的净资产（含未实现盈亏）。该接口返回的是账户实时状态，**不随日报/周报/月报的时间切换而改变**。
+
+**数据来源**：
+
+- Binance PM 账户 `accountEquity` / `totalMarginBalance`（含未实现盈亏）
+- 可用余额来自 `availableBalance`
+- 当前非零持仓数经持仓风险接口 `get_position`（`positionAmt` 绝对值大于阈值）统计
+
+**请求**：
+```http
+GET /api/account/equity
+```
+
+**响应（EquityResponse）**：
+```json
+{
+  "data": {
+    "total_equity": "630.75",
+    "available_balance": "420.10",
+    "open_positions": 3,
+    "updated_at": "2026-08-21T12:34:00+08:00"
+  }
+}
+```
+
+**响应字段说明**：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `total_equity` | string | 合约账户净资产（含未实现盈亏） |
+| `available_balance` | string | 可用余额 |
+| `open_positions` | int | 当前持仓数（非零持仓） |
+| `updated_at` | string | 更新时间 |
+
+> **提示**：该接口数据来自 Binance PM 账户实时快照，缓存约 30 秒（`cache_ttl_account`），实际展示时可使用 `updated_at` 计算"截止时间"。
+
 ### 4.3 错误响应格式
 
 所有接口错误时返回统一格式：
@@ -556,6 +595,7 @@ HTTP响应
 | 月报数据 | 2小时 | `monthly` | 实时刷新 |
 | 元数据 | 24小时 | `metadata` | 策略配置变更 |
 | 趋势数据 | 按类型分流 | `trend:{type}:{days}` | 实时刷新 |
+| 账户净资产 | 30秒 | `account:equity` | 实时刷新 |
 
 **缓存实现**：
 ```python
@@ -655,8 +695,10 @@ class CacheService:
 
 #### 6.2.1 ECharts配置示例
 
+> **注**：当前图表已注册**亮色金融科技主题**（柔和亮色系），完整配比与主题注册见 [dashboard_ui_design.md](./dashboard_ui_design.md)。以下为早期深色主题示例，仅作图表结构演示。
+
 ```javascript
-// 深色主题配置
+// 深色主题配置（历史参考，当前已改用亮色主题）
 const darkTheme = {
   backgroundColor: '#1a1a2e',
   textStyle: {
@@ -784,11 +826,13 @@ class DashboardAPI {
 
 ### 6.3 样式设计
 
-#### 6.3.1 深色主题配色
+> **注**：当前仪表盘已统一为**柔和亮色主题**（浅灰蓝亮底 `#EFF3FA`、半透明白玻璃卡片），完整配色、变量定义与响应式断点见 [dashboard_ui_design.md](./dashboard_ui_design.md)。以下为早期深色主题，仅作历史参考。
+
+#### 6.3.1 深色主题配色（历史参考）
 
 | 元素 | 颜色代码 | 说明 |
 |------|---------|------|
-| **背景色** | `#1a1a2e` | 主背景 |
+| **背景色** | `#1a1a2e` | 主背景（历史） |
 | **卡片背景** | `#16213e` | 卡片背景 |
 | **文字颜色** | `#e0e0e0` | 主文字 |
 | **强调色** | `#00d4aa` | 盈利色 |
@@ -1908,6 +1952,6 @@ python -m http.server 8080
 
 ---
 
-**文档版本**：v1.1
-**最后更新**：2026-06-03
+**文档版本**：v1.2
+**最后更新**：2026-09-02
 **维护者**：后端架构师

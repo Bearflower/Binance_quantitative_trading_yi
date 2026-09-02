@@ -3,73 +3,73 @@
  * ECharts 配置和初始化
  */
 
-// 金融科技深色主题
-const fintechDarkTheme = {
+// 金融科技亮色主题
+const fintechLightTheme = {
     backgroundColor: 'transparent',
 
     textStyle: {
-        fontFamily: 'Inter, -apple-system, sans-serif',
+        fontFamily: 'DM Sans, -apple-system, sans-serif',
         fontSize: 14,
-        color: '#94A3B8'
+        color: '#5B6B82'
     },
 
     title: {
         textStyle: {
-            fontFamily: 'Inter, -apple-system, sans-serif',
+            fontFamily: 'DM Sans, -apple-system, sans-serif',
             fontSize: 18,
             fontWeight: 600,
-            color: '#F8FAFC'
+            color: '#1A2333'
         },
         subtextStyle: {
             fontSize: 14,
-            color: '#94A3B8'
+            color: '#93A1B4'
         }
     },
 
     legend: {
         textStyle: {
-            fontFamily: 'Inter, -apple-system, sans-serif',
+            fontFamily: 'DM Sans, -apple-system, sans-serif',
             fontSize: 14,
-            color: '#94A3B8'
+            color: '#5B6B82'
         },
         pageTextStyle: {
-            color: '#94A3B8'
+            color: '#5B6B82'
         },
-        pageIconColor: '#F59E0B',
-        pageIconInactiveColor: '#64748B'
+        pageIconColor: '#D97706',
+        pageIconInactiveColor: '#94A3B8'
     },
 
     tooltip: {
-        backgroundColor: '#1E293B',
-        borderColor: '#334155',
+        backgroundColor: '#ffffff',
+        borderColor: 'rgba(15, 23, 42, 0.08)',
         borderWidth: 1,
         textStyle: {
-            fontFamily: 'Inter, -apple-system, sans-serif',
+            fontFamily: 'DM Sans, -apple-system, sans-serif',
             fontSize: 14,
-            color: '#F8FAFC'
+            color: '#1A2333'
         },
-        extraCssText: 'border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);'
+        extraCssText: 'border-radius: 10px; box-shadow: 0 10px 30px rgba(20, 33, 61, 0.08);'
     },
 
     categoryAxis: {
         axisLine: {
             lineStyle: {
-                color: '#334155'
+                color: 'rgba(15, 23, 42, 0.10)'
             }
         },
         axisTick: {
             lineStyle: {
-                color: '#334155'
+                color: 'rgba(15, 23, 42, 0.10)'
             }
         },
         axisLabel: {
-            fontFamily: 'Inter, -apple-system, sans-serif',
+            fontFamily: 'DM Sans, -apple-system, sans-serif',
             fontSize: 12,
-            color: '#94A3B8'
+            color: '#93A1B4'
         },
         splitLine: {
             lineStyle: {
-                color: '#272F42',
+                color: 'rgba(15, 23, 42, 0.05)',
                 type: 'dashed'
             }
         }
@@ -78,22 +78,22 @@ const fintechDarkTheme = {
     valueAxis: {
         axisLine: {
             lineStyle: {
-                color: '#334155'
+                color: 'rgba(15, 23, 42, 0.10)'
             }
         },
         axisTick: {
             lineStyle: {
-                color: '#334155'
+                color: 'rgba(15, 23, 42, 0.10)'
             }
         },
         axisLabel: {
-            fontFamily: 'Fira Code, monospace',
+            fontFamily: 'JetBrains Mono, monospace',
             fontSize: 12,
-            color: '#94A3B8'
+            color: '#93A1B4'
         },
         splitLine: {
             lineStyle: {
-                color: '#272F42',
+                color: 'rgba(15, 23, 42, 0.06)',
                 type: 'dashed'
             }
         }
@@ -113,7 +113,7 @@ const fintechDarkTheme = {
             itemStyle: {
                 borderWidth: 3,
                 shadowBlur: 10,
-                shadowColor: 'rgba(245, 158, 11, 0.3)'
+                shadowColor: 'rgba(15, 164, 127, 0.3)'
             }
         }
     },
@@ -123,7 +123,7 @@ const fintechDarkTheme = {
 
 // 注册主题
 if (typeof echarts !== 'undefined') {
-    echarts.registerTheme('fintech-dark', fintechDarkTheme);
+    echarts.registerTheme('fintech-light', fintechLightTheme);
 }
 
 /**
@@ -132,7 +132,7 @@ if (typeof echarts !== 'undefined') {
 function createTrendChart(containerId, data) {
     const chart = echarts.init(
         document.getElementById(containerId),
-        'fintech-dark'
+        'fintech-light'
     );
 
     // 兼容新旧数据格式
@@ -156,8 +156,8 @@ function createTrendChart(containerId, data) {
             },
             areaStyle: {
                 color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-                    { offset: 0, color: 'rgba(245, 158, 11, 0.25)' },
-                    { offset: 1, color: 'rgba(245, 158, 11, 0.02)' }
+                    { offset: 0, color: 'rgba(15, 164, 127, 0.16)' },
+                    { offset: 1, color: 'rgba(15, 164, 127, 0.01)' }
                 ])
             }
         }];
@@ -186,7 +186,7 @@ function createTrendChart(containerId, data) {
             axisPointer: {
                 type: 'cross',
                 crossStyle: {
-                    color: '#64748B'
+                    color: '#94A3B8'
                 }
             }
         },
@@ -210,7 +210,7 @@ function createTrendChart(containerId, data) {
             name: '盈亏 (USDT)',
             nameTextStyle: {
                 fontSize: 12,
-                color: '#94A3B8',
+                color: '#5B6B82',
                 padding: [0, 0, 0, -40]
             },
             axisLabel: {

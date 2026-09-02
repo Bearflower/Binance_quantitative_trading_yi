@@ -160,6 +160,48 @@ class DataService:
         """
         return await self._get_income_data(start_ms, end_ms, income_type="COMMISSION")
 
+    async def get_account_equity(self) -> dict:
+        """获取合约账户净资产（实时快照）
+
+        使用 Binance PM 账户的 accountEquity（账户权益，含未实现盈亏），
+        作为"合约账户净资产"展示在首页。该值为当前实时快照，不随日/周/月切换变化。
+        同时获取可用余额与当前非零持仓数，用于净资产卡的补充信息展示。
+
+        Returns:
+            dict: {
+                "total_equity": str,
+                "available_balance": str,
+                "open_positions": int,
+                "updated_at": str
+            }
+        """
+        await self._ensure_initialized()
+        try:
+            account_info = await self._binance_client.get_account_info()
+            eq = float(account_info.get("totalMarginBalance", account_info.get("totalWalletBalance", 0)))
+            avail = float(account_info.get("availableBalance", 0))
+        except Exception as e:
+            logger.warning("获取账户净资产失败", error=str(e)[:80])
+            eq = 0.0
+            avail = 0.0
+
+        # 当前非零持仓数（通过持仓风险接口统计）
+        open_positions = 0
+        try:
+            positions = await self._binance_client.get_position()
+            open_positions = sum(
+                1 for p in positions if abs(float(p.get("positionAmt", 0.0))) > 1e-8
+            )
+        except Exception as e:
+            logger.warning("获取当前持仓数失败", error=str(e)[:80])
+
+        return {
+            "total_equity": f"{eq:.2f}",
+            "available_balance": f"{avail:.2f}",
+            "open_positions": open_positions,
+            "updated_at": datetime.now(BEIJING_TZ).isoformat(),
+        }
+
     async def _get_hrs_symbols(self) -> set:
         """从DB获取HRS策略交易过的币种（排除条件单）"""
         try:
@@ -178,6 +220,8 @@ class DataService:
 
         REALIZED_PNL 是毛利润（不含佣金），COMMISSION 是交易手续费支出（负值）。
         净盈亏 = REALIZED_PNL + COMMISSION。
+
+        策略级盈亏 = 该策略各币种盈亏之和，与 get_strategy_symbols 使用完全相同的币种归属逻辑。
 
         Returns:
             dict: {strategy_key: {wins, losses, total_pnl, total_commission, net_pnl}}
@@ -198,43 +242,73 @@ class DataService:
             self._get_commission_data(start_ms, end_ms),
         )
 
-        # 获取HRS策略币种列表，用于区分HRS和新币做空策略
-        hrs_symbols = await self._get_hrs_symbols()
-
-        def _map_strategy(symbol: str) -> str:
-            """将 symbol 映射到策略 key"""
-            for key, symbols in self._STRATEGY_SYMBOLS.items():
-                if symbol.upper() in symbols:
-                    return key
-            if symbol in hrs_symbols:
-                return "hrs"
-            return "new_coin"
-
-        # 处理毛利润（REALIZED_PNL）
+        # 按 symbol 聚合 income 数据（与 get_strategy_symbols 完全一致）
+        pnl_by_symbol: Dict[str, Dict] = {}
         for entry in income_list:
-            symbol = entry.get("symbol", "")
-            income_str = entry.get("income", "0")
+            sym = entry.get("symbol", "")
             try:
-                income = float(income_str)
+                income = float(entry.get("income", 0))
             except (ValueError, TypeError):
                 continue
-            strategy_key = _map_strategy(symbol)
+            if sym not in pnl_by_symbol:
+                pnl_by_symbol[sym] = {"pnl": 0.0, "commission": 0.0, "wins": 0, "losses": 0}
+            pnl_by_symbol[sym]["pnl"] += income
             if income > 0:
-                result[strategy_key]["wins"] += 1
+                pnl_by_symbol[sym]["wins"] += 1
             elif income < 0:
-                result[strategy_key]["losses"] += 1
-            result[strategy_key]["total_pnl"] += income
+                pnl_by_symbol[sym]["losses"] += 1
 
-        # 处理佣金（COMMISSION）
         for entry in commission_list:
-            symbol = entry.get("symbol", "")
-            income_str = entry.get("income", "0")
+            sym = entry.get("symbol", "")
             try:
-                commission = float(income_str)
+                comm = float(entry.get("income", 0))
             except (ValueError, TypeError):
                 continue
-            strategy_key = _map_strategy(symbol)
-            result[strategy_key]["total_commission"] += commission
+            if sym not in pnl_by_symbol:
+                pnl_by_symbol[sym] = {"pnl": 0.0, "commission": 0.0, "wins": 0, "losses": 0}
+            pnl_by_symbol[sym]["commission"] += comm
+
+        # 获取HRS历史币种（与 get_strategy_symbols 一致）
+        hrs_symbols_all = await self._get_hrs_symbols()
+
+        # 对每个策略，使用与 get_strategy_symbols 完全相同的逻辑确定币种归属
+        for strategy_name, strategy_key in self._STRATEGY_KEY_MAP.items():
+            try:
+                rows = await self._db_manager.fetch_all(
+                    "SELECT DISTINCT symbol FROM trading.trade_records "
+                    "WHERE strategy = $1 AND executed_at >= $2 AND executed_at <= $3",
+                    strategy_name, start_time, end_time
+                )
+                db_symbols = {row["symbol"] for row in rows}
+            except Exception as e:
+                logger.warning("策略币种查询失败", strategy=strategy_name, error=str(e)[:80])
+                db_symbols = set()
+
+            # 确定该策略的币种集合（与 get_strategy_symbols 逻辑一致）
+            # 1. 从DB记录开始
+            strategy_symbols = set(db_symbols)
+            # 2. 补充 income 数据中属于该策略的币种
+            for sym, pnl_data in pnl_by_symbol.items():
+                sym_strategy = None
+                for key, symbols in self._STRATEGY_SYMBOLS.items():
+                    if sym.upper() in symbols:
+                        sym_strategy = key
+                        break
+                if sym_strategy is None:
+                    if sym in hrs_symbols_all:
+                        sym_strategy = "hrs"
+                    else:
+                        sym_strategy = "new_coin"
+                if sym_strategy == strategy_key:
+                    strategy_symbols.add(sym)
+
+            # 汇总该策略下所有币种的盈亏
+            for sym in strategy_symbols:
+                data = pnl_by_symbol.get(sym, {"pnl": 0.0, "commission": 0.0, "wins": 0, "losses": 0})
+                result[strategy_key]["total_pnl"] += data["pnl"]
+                result[strategy_key]["total_commission"] += data["commission"]
+                result[strategy_key]["wins"] += data["wins"]
+                result[strategy_key]["losses"] += data["losses"]
 
         # 计算净盈亏 = 毛利润 + 佣金（佣金为负值，自动扣减）
         for key in strategy_keys:

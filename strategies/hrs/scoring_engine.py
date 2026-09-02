@@ -103,6 +103,13 @@ class ScoringEngine:
         self.trend_filter_long = trend_filter_config.get("long", {})
         self.trend_filter_short = trend_filter_config.get("short", {})
 
+        # V2.8: EMA 斜率检查配置
+        ema_slope_config = trend_filter_config.get("ema_slope", {})
+        self._ema_slope_enabled = ema_slope_config.get("enabled", True)
+        self._ema_slope_period = ema_slope_config.get("period", 3)
+        self._ema_slope_min_for_long = ema_slope_config.get("min_slope_for_long", -0.0005)
+        self._ema_slope_max_for_short = ema_slope_config.get("max_slope_for_short", 0.0005)
+
         # V2.0 新增：极端行情加分配置
         eb_config = scoring_config.get("extreme_bonus", {})
         self.extreme_bonus_enabled = eb_config.get("enabled", True)
@@ -631,6 +638,14 @@ class ScoringEngine:
             ema_4h=ema_4h,
             config=trend_filter_config,
         )
+
+        # V2.8: EMA 斜率检查（LV-RM 模式，合并到趋势过滤结果中）
+        if trend_ok:
+            ema_ok, ema_reason = self._check_ema_slope(direction, klines_4h, ema_period)
+            if not ema_ok:
+                trend_ok = False
+                trend_reason = ema_reason
+
         if not trend_ok:
             return ScoringResult(
                 symbol=symbol,
@@ -852,6 +867,75 @@ class ScoringEngine:
             ema = (price - ema) * multiplier + ema
         return ema
 
+    def _calc_ema_slope(self, klines: List[Dict], period: int = 20, slope_period: int = 3) -> float:
+        """
+        V2.8: 计算 EMA 斜率（最近 slope_period 根 K 线的 EMA 平均变化率）
+
+        斜率 = (EMA_last - EMA_first) / (slope_period * EMA_first)
+        正值表示 EMA 上行，负值表示 EMA 下行。
+
+        Args:
+            klines: 4h K线数据
+            period: EMA 计算周期（默认 20）
+            slope_period: 计算斜率的 K 线根数（默认 3）
+
+        Returns:
+            EMA 斜率（变化率），正数=上行，负数=下行
+        """
+        if len(klines) < period + slope_period:
+            return 0.0
+
+        # 计算最近 slope_period 根 K 线的 EMA 值
+        ema_values = []
+        for i in range(len(klines) - slope_period, len(klines)):
+            subset = klines[:i + 1]
+            ema_val = self._calc_ema(subset, period)
+            ema_values.append(ema_val)
+
+        if len(ema_values) < 2 or ema_values[0] <= 0:
+            return 0.0
+
+        slope = (ema_values[-1] - ema_values[0]) / (slope_period * ema_values[0])
+        return round(slope, 6)
+
+    def _check_ema_slope(
+        self,
+        direction: str,
+        klines_4h: Optional[List[Dict]],
+        ema_period: int,
+    ) -> Tuple[bool, str]:
+        """
+        V2.8: 检查 EMA 斜率是否支持开仓方向
+
+        做多要求 EMA20 不下行太快（斜率 >= min_slope_for_long）
+        做空要求 EMA20 不上行太快（斜率 <= max_slope_for_short）
+
+        Args:
+            direction: 'short' 或 'long'
+            klines_4h: 4h K线数据
+            ema_period: EMA 计算周期
+
+        Returns:
+            (是否通过, 失败原因)
+        """
+        if not self._ema_slope_enabled or not klines_4h:
+            return True, ""
+
+        slope = self._calc_ema_slope(klines_4h, ema_period, self._ema_slope_period)
+
+        if direction == "long" and slope < self._ema_slope_min_for_long:
+            return False, (
+                f"EMA斜率检查：EMA20斜率({slope:.6f})低于做多阈值"
+                f"({self._ema_slope_min_for_long})，趋势不支持做多"
+            )
+        if direction == "short" and slope > self._ema_slope_max_for_short:
+            return False, (
+                f"EMA斜率检查：EMA20斜率({slope:.6f})高于做空阈值"
+                f"({self._ema_slope_max_for_short})，趋势不支持做空"
+            )
+
+        return True, ""
+
     def _check_lv_rm_trend_filter(
         self,
         direction: str,
@@ -887,9 +971,10 @@ class ScoringEngine:
             # 做多：价格 > EMA20（多头排列）
             if current_price_4h <= ema_4h * min_price_ratio:
                 return False, f"4h趋势过滤：价格({current_price_4h:.4f})未超过EMA20({ema_4h:.4f})，不做多"
-            # 做多：偏离不超过 -3%
+            # 做多：偏离不超过配置阈值
+            deviation_pct = (1 - long_config.get("max_deviation", 0.97)) * 100
             if current_price_4h < ema_4h * max_deviation:
-                return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过-3%，禁止抄底"
+                return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过-{deviation_pct:.0f}%，禁止抄底"
         else:  # short
             short_config = config.get("short", {})
             max_price_ratio = short_config.get("max_price", 1.0)
@@ -897,9 +982,10 @@ class ScoringEngine:
             # 做空：价格 < EMA20（空头排列）
             if current_price_4h >= ema_4h * max_price_ratio:
                 return False, f"4h趋势过滤：价格({current_price_4h:.4f})未低于EMA20({ema_4h:.4f})，不做空"
-            # 做空：偏离不超过 +3%
+            # 做空：偏离不超过配置阈值
+            deviation_pct = (short_config.get("max_deviation", 1.03) - 1) * 100
             if current_price_4h > ema_4h * max_deviation:
-                return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过+3%，禁止摸顶"
+                return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过+{deviation_pct:.0f}%，禁止摸顶"
 
         return True, ""
 
@@ -908,18 +994,22 @@ class ScoringEngine:
         direction: str,
         current_price_4h: float,
         ema_4h: float,
+        klines_4h: Optional[List[Dict]] = None,
     ) -> Tuple[bool, str]:
         """
-        V2.6: 标准模式趋势过滤（复用 LV-RM 的过滤逻辑）
+        V2.6: 标准模式趋势过滤（复用 LV-RM 的过滤逻辑 + V2.8 EMA 斜率检查）
 
         在标准模式入场前，检查当前价格相对于 4h EMA20 的位置：
         - 做空：要求价格 < EMA20（空头排列），且偏离不超过配置阈值
         - 做多：要求价格 > EMA20（多头排列），且偏离不超过配置阈值
 
+        V2.8: 新增 EMA 斜率检查，确保趋势方向与开仓方向一致
+
         Args:
             direction: 'short' 或 'long'
             current_price_4h: 4h级别当前价格
             ema_4h: 4h EMA20 值
+            klines_4h: 4h K线数据（可选），用于 EMA 斜率计算
 
         Returns:
             (是否通过, 失败原因)
@@ -927,7 +1017,8 @@ class ScoringEngine:
         if not self.trend_filter_enabled:
             return True, "趋势过滤未启用"
 
-        return self._check_lv_rm_trend_filter(
+        # 第一步：价格偏离过滤（复用 LV-RM 的过滤逻辑）
+        trend_ok, trend_reason = self._check_lv_rm_trend_filter(
             direction=direction,
             current_price_4h=current_price_4h,
             ema_4h=ema_4h,
@@ -937,6 +1028,17 @@ class ScoringEngine:
                 "short": self.trend_filter_short,
             },
         )
+        if not trend_ok:
+            return trend_ok, trend_reason
+
+        # V2.8: 第二步：EMA 斜率检查
+        ema_ok, ema_reason = self._check_ema_slope(
+            direction, klines_4h, self.trend_filter_ema_period
+        )
+        if not ema_ok:
+            return False, ema_reason
+
+        return True, ""
 
     def _check_lv_rm_kline_confirm(self, direction: str, klines: List[Dict]) -> bool:
         """
@@ -1121,6 +1223,7 @@ class ScoringEngine:
                 direction=direction,
                 current_price_4h=current_close_4h,
                 ema_4h=ema_4h,
+                klines_4h=klines_4h,  # V2.8: 传入 K 线数据用于 EMA 斜率计算
             )
             result.trend_filter_passed = trend_ok
             result.trend_filter_reason = trend_reason

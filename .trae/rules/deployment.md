@@ -451,6 +451,20 @@ EOF
 2. 如果缺少某个服务，单独启动：`docker-compose up -d kline-monitor`
 3. 长期方案：将部署脚本中的 `set -e` 改为对非关键服务不阻断，或使用 `|| true` 降级
 
+### 问题7：【Binance quantitative trading】`docker-compose down` 后只启动单个服务导致其他服务缺失
+
+**症状：** `docker-compose down --remove-orphans` 停掉所有容器后，手动执行 `docker-compose up -d <单个服务名>` 只启动了该服务，其他所有策略容器（new_coin、grid、hrs、ai-tuner、kline-monitor 等）均未运行。
+
+**根因：** `docker-compose down --remove-orphans` 会停止所有容器，但 `docker-compose up -d <service>` 只会启动**指定的服务及其依赖**，不会启动项目中所有服务。
+
+**发生场景：** 手动部署时跳过 `one_click_deploy.sh`，直接执行单条 SSH 命令。
+
+**解决方案：**
+1. **优先使用 `one_click_deploy.sh` 一键部署脚本**，它已经逐项启动所有服务
+2. 如果必须手动部署，`docker-compose down` 后必须执行 `docker-compose up -d`（不带服务名）启动所有服务
+3. 更安全的做法：先用 `docker-compose build --no-cache <service>` 构建单个镜像，构建成功后再用 `docker-compose up -d`（不带服务名）启动全部
+4. 部署完成后，务必执行 `docker ps | grep trading_system-` 确认所有容器都在运行
+
 ---
 
 ## 十、部署命令速查

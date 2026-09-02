@@ -16,15 +16,15 @@ const DashboardConfig = {
         maxDays: 30       // 最大显示天数
     },
     
-    // 图表主题颜色
+    // 图表主题颜色（对齐新版亮色 UI：明朗青绿主色 + 紫罗兰强调）
     chartColors: [
-        '#F59E0B', // Primary 金色
-        '#8B5CF6', // Accent 紫色
-        '#10B981', // Success 绿色
-        '#3B82F6', // Info 蓝色
-        '#EF4444', // Destructive 红色
-        '#FBBF24', // Secondary 亮金色
+        '#0FA47F', // Primary 青绿（盈亏主线）
+        '#7C6BF0', // Accent 紫罗兰
+        '#2563EB', // Info 天蓝
+        '#E5484D', // Destructive 珊瑚红
+        '#D97706', // Secondary 琥珀金
         '#06B6D4', // Cyan
+        '#8B5CF6', // Indigo
         '#EC4899'  // Pink
     ],
     

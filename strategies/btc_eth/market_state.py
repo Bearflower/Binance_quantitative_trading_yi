@@ -20,6 +20,36 @@ class MarketState(Enum):
     RANGING = "RANGING"             # 震荡市 - 完全禁止开仓
 
 
+def _pct_change(current: Optional[float], previous: Optional[float]) -> Optional[float]:
+    """
+    带符号百分比变化（通用，v6.26 修复方向盲）
+
+    保留方向：正值为上升、负值为下降。数据无效（None/NaN/非正基数）返回 None。
+
+    Args:
+        current: 当前值
+        previous: 前一基准值
+
+    Returns:
+        带符号百分比变化；数据无效返回 None
+    """
+    if current is None or previous is None:
+        return None
+    if pd.isna(current) or pd.isna(previous) or previous <= 0:
+        return None
+    return (current / previous - 1) * 100
+
+
+def _signed_price_change(close_now: Optional[float], close_ago: Optional[float]) -> Optional[float]:
+    """带符号价格变化百分比（v6.26 修复方向盲），薄封装通用函数 _pct_change。"""
+    return _pct_change(close_now, close_ago)
+
+
+def _signed_daily_slope(ma_now: Optional[float], ma_prev: Optional[float]) -> Optional[float]:
+    """带符号日线 EMA21 斜率百分比（v6.26 修复方向盲），薄封装通用函数 _pct_change。"""
+    return _pct_change(ma_now, ma_prev)
+
+
 def _check_consecutive_ema21(df_4h: pd.DataFrame, n: int = 3) -> bool:
     """
     检查最近n根4h K线收盘价是否连续在EMA21同侧
@@ -112,27 +142,23 @@ def get_market_state(
     if bb_width <= bb_width_threshold:
         return MarketState.RANGING, f"BB宽度={bb_width:.3f} ≤ {bb_width_threshold}，震荡市"
 
-    # === 条件3：价格变化 ===
-    price_change = 0
+    # === 条件3：价格变化（v6.26 修复方向盲：带符号计算，强度判定仍取绝对值） ===
+    price_change = 0.0
     if close_prices is not None and len(close_prices) >= 10:
-        close_now = close_prices.iloc[-1]
-        close_10ago = close_prices.iloc[-10]
-        if pd.notna(close_now) and pd.notna(close_10ago) and close_10ago > 0:
-            price_change = abs((close_now / close_10ago - 1) * 100)
-    if price_change <= price_change_threshold:
-        return MarketState.RANGING, f"价格变化={price_change:.1f}% ≤ {price_change_threshold}%，震荡市"
+        signed = _signed_price_change(close_prices.iloc[-1], close_prices.iloc[-10])
+        price_change = signed if signed is not None else 0.0
+    if abs(price_change) <= price_change_threshold:
+        return MarketState.RANGING, f"价格变化={price_change:+.1f}% ≤ {price_change_threshold}%，震荡市"
 
-    # === 条件4：日线EMA21斜率 ===
-    daily_slope = 0
+    # === 条件4：日线EMA21斜率（v6.26 修复方向盲：带符号计算，强度判定仍取绝对值） ===
+    daily_slope = 0.0
     if indicators_1d is not None and 'MA21' in indicators_1d:
         ma21_1d = indicators_1d['MA21']
         if len(ma21_1d) >= 2:
-            ma21_now = ma21_1d.iloc[-1]
-            ma21_prev = ma21_1d.iloc[-2]
-            if pd.notna(ma21_now) and pd.notna(ma21_prev) and ma21_prev > 0:
-                daily_slope = abs((ma21_now / ma21_prev - 1) * 100)
-    if daily_slope <= daily_slope_threshold:
-        return MarketState.RANGING, f"日线EMA21斜率={daily_slope:.3f}% ≤ {daily_slope_threshold}%，震荡市"
+            signed = _signed_daily_slope(ma21_1d.iloc[-1], ma21_1d.iloc[-2])
+            daily_slope = signed if signed is not None else 0.0
+    if abs(daily_slope) <= daily_slope_threshold:
+        return MarketState.RANGING, f"日线EMA21斜率={daily_slope:+.3f}% ≤ {daily_slope_threshold}%，震荡市"
 
     # === 条件5：连续3根4h K线在EMA21同侧 ===
     # 需要构造4h DataFrame用于检查
@@ -148,7 +174,7 @@ def get_market_state(
 
     # 全部5个条件满足！
     return MarketState.STRONG_TREND, \
-        f"强趋势市 (ADX={adx:.1f}, BB={bb_width:.3f}, 价格变化={price_change:.1f}%, 日线斜率={daily_slope:.3f}%, 连续确认)"
+        f"强趋势市 (ADX={adx:.1f}, BB={bb_width:.3f}, 价格变化={price_change:+.1f}%, 日线斜率={daily_slope:+.3f}%, 连续确认)"
 
 
 def get_market_state_behavior(
@@ -246,15 +272,15 @@ def get_market_state_simple(
     if bb_width <= bb_width_threshold:
         return MarketState.RANGING
 
-    # 条件3: 价格变化
-    price_change = abs((df_4h['close'].iloc[-1] / df_4h['close'].iloc[-10] - 1) * 100)
-    if price_change <= price_change_threshold:
+    # 条件3: 价格变化（v6.26 修复方向盲：带符号计算，强度判定仍取绝对值）
+    price_change = _signed_price_change(df_4h['close'].iloc[-1], df_4h['close'].iloc[-10])
+    if price_change is None or abs(price_change) <= price_change_threshold:
         return MarketState.RANGING
 
-    # 条件4: 日线EMA21斜率
+    # 条件4: 日线EMA21斜率（v6.26 修复方向盲：带符号计算，强度判定仍取绝对值）
     if df_1d is not None and 'MA21' in df_1d.columns and len(df_1d) >= 2:
-        daily_slope = abs((df_1d['MA21'].iloc[-1] / df_1d['MA21'].iloc[-2] - 1) * 100)
-        if daily_slope <= daily_slope_threshold:
+        daily_slope = _signed_daily_slope(df_1d['MA21'].iloc[-1], df_1d['MA21'].iloc[-2])
+        if daily_slope is None or abs(daily_slope) <= daily_slope_threshold:
             return MarketState.RANGING
     else:
         return MarketState.RANGING

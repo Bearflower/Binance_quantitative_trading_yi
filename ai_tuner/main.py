@@ -50,6 +50,7 @@ from ai_tuner.allocation.monthly_job import MonthlyAllocationJob  # noqa: E402
 from ai_tuner.allocation.profit_extraction_job import ProfitExtractionJob  # noqa: E402
 from ai_tuner.cleanup.orphan_cleanup import OrphanCleanupJob  # noqa: E402
 from ai_tuner.monitor.daily_health_check import DailyHealthCheck  # noqa: E402
+from ai_tuner.reconciler.income_reconciler import IncomeReconciler  # noqa: E402
 from shared.binance_api import BinanceClient  # noqa: E402
 from shared.utils import resolve_env_var  # noqa: E402
 
@@ -99,6 +100,7 @@ class StratTuneAI:
         self.profit_extraction_job: ProfitExtractionJob = None
         self.orphan_cleanup_job: OrphanCleanupJob = None
         self.health_checker: DailyHealthCheck = None
+        self.reconciler: IncomeReconciler = None
         self._running = False
         self.app: web.Application = None
         self.runner: web.AppRunner = None
@@ -238,17 +240,7 @@ class StratTuneAI:
             rollback_manager=self.rollback_manager,
         )
 
-        # 9.5. 初始化月度分配任务
-        self.monthly_job = MonthlyAllocationJob(
-            config=self.config,
-            db_manager=self.db_manager,
-            notification_client=self.notification_client,
-            messenger=self.messenger,
-            config_operator=self.config_operator,
-            rollback_manager=self.rollback_manager,
-        )
-
-        # 9.6. 初始化利润提取任务
+        # 9.5. 初始化币安客户端（用于利润提取、月度分配、孤儿清理等任务）
         binance_api_key = os.getenv("BINANCE_API_KEY", "")
         binance_api_secret = os.getenv("BINANCE_API_SECRET", "")
         binance_testnet = os.getenv("BINANCE_TESTNET", "false").lower() == "true"
@@ -260,6 +252,23 @@ class StratTuneAI:
                 testnet=binance_testnet,
                 use_unified_account=True,
             )
+            logger.info("币安客户端已初始化")
+        else:
+            logger.warning("BINANCE_API_KEY 未配置，部分依赖交易所的功能将受限")
+
+        # 9.6. 初始化月度分配任务（传入 binance_client 以获取实际可用余额）
+        self.monthly_job = MonthlyAllocationJob(
+            config=self.config,
+            db_manager=self.db_manager,
+            notification_client=self.notification_client,
+            messenger=self.messenger,
+            config_operator=self.config_operator,
+            rollback_manager=self.rollback_manager,
+            binance_client=binance_client,
+        )
+
+        # 9.7. 初始化利润提取任务
+        if binance_client:
             self.profit_extraction_job = ProfitExtractionJob(
                 db_manager=self.db_manager,
                 notification_client=self.notification_client,
@@ -270,7 +279,7 @@ class StratTuneAI:
         else:
             logger.warning("BINANCE_API_KEY 未配置，利润提取任务将跳过")
 
-        # 9.7. 初始化孤儿条件单清理任务（阶段二）
+        # 9.8. 初始化孤儿条件单清理任务（阶段二）
         cleanup_cfg = self.config.get("orphan_cleanup", {})
         if cleanup_cfg.get("enabled", True):
             if binance_client:
@@ -285,6 +294,21 @@ class StratTuneAI:
                 logger.warning("BINANCE_API_KEY 未配置，孤儿条件单清理任务将跳过（无法取消订单）")
         else:
             logger.info("孤儿条件单清理任务已禁用")
+
+        # 9.8. 初始化统一 PnL 校准器
+        reconciler_cfg = self.config.get("reconciler", {})
+        if reconciler_cfg.get("enabled", True):
+            if binance_client:
+                self.reconciler = IncomeReconciler(
+                    db_manager=self.db_manager,
+                    binance_client=binance_client,
+                    config=self.config,
+                )
+                logger.info("统一 PnL 校准器已初始化")
+            else:
+                logger.warning("BINANCE_API_KEY 未配置，PnL 校准器将跳过")
+        else:
+            logger.info("PnL 校准器已禁用")
 
         # 10. 初始化调度器
         scheduler_cfg = self.config.get("scheduler", {})
@@ -383,6 +407,21 @@ class StratTuneAI:
                 misfire_grace_time=60,
             )
             logger.info("孤儿条件单清理任务已注册", interval_minutes=cleanup_interval)
+
+        # PnL 校准调度（interval，间隔从 config.reconciler.interval_minutes 读取）
+        if self.reconciler:
+            reconciler_interval = reconciler_cfg.get("interval_minutes", 30)
+            self.scheduler.add_job(
+                self._scheduled_pnl_reconcile,
+                "interval",
+                minutes=reconciler_interval,
+                id="pnl_reconciler",
+                name="统一 PnL 校准",
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=60,
+            )
+            logger.info("PnL 校准任务已注册", interval_minutes=reconciler_interval)
 
         # 10.5. 注册每日健康检查
         health_check_cron = scheduler_cfg.get("health_check_cron", "0 10 * * *")
@@ -506,6 +545,12 @@ class StratTuneAI:
         if self.health_checker:
             logger.info("触发每日健康检查")
             await self.health_checker.run_check()
+
+    async def _scheduled_pnl_reconcile(self) -> None:
+        """调度器触发的统一 PnL 校准（interval 根据 config 间隔执行）"""
+        if self.reconciler:
+            logger.info("触发统一 PnL 校准")
+            await self.reconciler.run_once()
 
     async def _check_catch_up(self) -> None:
         """
@@ -702,7 +747,15 @@ class StratTuneAI:
 
                 # 先应用配置变更到覆盖层，成功后再标记数据库状态（保证一致性）
                 # 使用 apply_overrides 写入 tuning_overrides 目录，不修改 config.yaml
-                success = self.config_operator.apply_overrides(config_path, adjustments)
+                # 注意：adjustments 来自 AI 响应，格式为 {param_path: {"from": old, "to": new}}
+                # 需要提取 to 值，避免写入 {from: old, to: new} 结构破坏 YAML 标量类型
+                clean_adjustments = {}
+                for param_path, adj in adjustments.items():
+                    if isinstance(adj, dict) and "to" in adj:
+                        clean_adjustments[param_path] = adj["to"]
+                    else:
+                        clean_adjustments[param_path] = adj
+                success = self.config_operator.apply_overrides(config_path, clean_adjustments)
                 if not success:
                     return web.json_response({
                         "status": "error",

@@ -80,6 +80,9 @@ async function loadData() {
             api.getTrend(currentType, DashboardConfig.trend.defaultDays)
         ]);
 
+        // 更新合约账户净资产（实时快照，不随日/周/月切换）
+        loadAccountEquity();
+
         // 更新总览
         updateOverview(overview);
 
@@ -102,6 +105,58 @@ async function loadData() {
         console.error('数据加载失败:', error);
         showError(error.message);
     }
+}
+
+/**
+ * 加载并展示合约账户净资产
+ * 实时快照（缓存由后端配置 cache_ttl_account 控制），不随日/周/月切换变化。
+ */
+async function loadAccountEquity() {
+    const equityEl = document.querySelector('#account-equity');
+    const timeEl = document.querySelector('#account-equity-time');
+    const availEl = document.querySelector('#account-equity-avail');
+    const posEl = document.querySelector('#current-positions');
+    if (!equityEl) return;
+
+    try {
+        const data = await api.getAccountEquity();
+        const value = parseFloat(data.total_equity);
+        equityEl.textContent = value.toLocaleString('zh-CN', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2
+        });
+        equityEl.className = 'equity-value ' + (value >= 0 ? 'positive' : 'negative');
+        if (timeEl) {
+            timeEl.textContent = `截止 ${formatEquityTime(data.updated_at)}`;
+        }
+        if (availEl) {
+            const avail = parseFloat(data.available_balance);
+            availEl.textContent = `可用 ${avail.toLocaleString('zh-CN', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            })}`;
+        }
+        if (posEl) {
+            posEl.textContent = (data.open_positions ?? 0).toLocaleString();
+        }
+    } catch (error) {
+        console.warn('账户净资产加载失败:', error);
+        equityEl.textContent = '--';
+        equityEl.className = 'equity-value';
+        if (timeEl) timeEl.textContent = '--';
+        if (availEl) availEl.textContent = '可用 --';
+        if (posEl) posEl.textContent = '--';
+    }
+}
+
+/**
+ * 格式化净资产更新时间，如 "08/21 12:34"
+ */
+function formatEquityTime(isoStr) {
+    const date = new Date(isoStr);
+    if (isNaN(date.getTime())) return isoStr;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 /**

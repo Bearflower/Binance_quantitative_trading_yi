@@ -168,6 +168,8 @@ strategy:
         time_stop:
           max_holding_hours: 96
           close_ratio: 0.50
+          review_enabled: false      # 时间平仓复核制开关（v6.27 新增，false=保持无条件到点平）
+          max_review_hours: 24       # 复核期上限（到期后最多再复核持有小时数）
 
       A:
         stop_loss_atr_multiplier: 1.5
@@ -199,6 +201,8 @@ strategy:
         time_stop:
           max_holding_hours: 72
           close_ratio: 0.50
+          review_enabled: false      # 时间平仓复核制开关（v6.27 新增，false=保持无条件到点平）
+          max_review_hours: 24       # 复核期上限（到期后最多再复核持有小时数）
 
       B:
         stop_loss_atr_multiplier: 1.2
@@ -230,6 +234,8 @@ strategy:
         time_stop:
           max_holding_hours: 48
           close_ratio: 0.60
+          review_enabled: false      # 时间平仓复核制开关（v6.27 新增，false=保持无条件到点平）
+          max_review_hours: 24       # 复核期上限（到期后最多再复核持有小时数）
 
       C:
         stop_loss_atr_multiplier: 1.0
@@ -261,6 +267,8 @@ strategy:
         time_stop:
           max_holding_hours: 24
           close_ratio: 0.80
+          review_enabled: false      # 时间平仓复核制开关（v6.27 新增，false=保持无条件到点平）
+          max_review_hours: 24       # 复核期上限（到期后最多再复核持有小时数）
 
     # 全局参数（不按信号等级拆解）
     max_position_size: 0.1
@@ -462,6 +470,41 @@ strategy:
       # 仅在强趋势时拒绝反向信号，平缓趋势允许双向交易
       trend_filter:
         strong_slope_atr_mult: 0.8  # 斜率 > 0.8×ATR 视为强趋势，拒绝反向信号
+
+      # ===== 震荡反转风控三机制（v6.26 新增）=====
+      # 机制①：方向一致性对齐（CP-1/CP-2）
+      direction_alignment:
+        enabled: true
+        fast_ma: "EMA21"            # 快线字段名（CP-1 新增的真正 EMA21）
+        slow_ma: "EMA55"            # 慢线字段名（现有字段）
+        fallback_on_missing: false  # 均线缺失/NaN 时是否放行（true=放行+告警，false=保守拒绝）
+        stick_threshold_pct: 0.3    # 均线粘合阈值（%）：|EMA21-EMA55|/EMA55 ≤ 该值视为粘合，保守拒绝
+
+      # 机制②：乖离率 / 过热保护（CP-3/CP-6）
+      overheat_protection:
+        enabled: true
+        downgrade_enabled: true         # 是否启用「降级一档」（false 时预警区也直接禁开）
+        bias_fast_downgrade_pct: 4.0    # 快线乖离率降级阈值（%，方向敏感）
+        bias_fast_ban_pct: 6.0          # 快线乖离率禁开阈值（%）
+        bias_slow_downgrade_pct: 6.0    # 慢线乖离率降级阈值（%）
+        bias_slow_ban_pct: 9.0          # 慢线乖离率禁开阈值（%）
+        rsi_extreme_long: 85            # RSI 极值区上限（禁开做多）
+        rsi_extreme_short: 15           # RSI 极值区下限（禁开做空）
+        rsi_warn_long: 75               # RSI 预警区上限（降级做多）
+        rsi_warn_short: 25              # RSI 预警区下限（降级做空）
+
+      # 机制③a：量价确认
+      volume_confirm:
+        enabled: true
+        shrink_ratio: 1.0            # 缩量判定：当前 4h 成交量 < shrink_ratio × Volume_MA(20)
+
+      # 机制③b：波动突变 / 极端期（CP-4/CP-7）
+      volatility_regime:
+        enabled: true
+        atr_long_period: 50          # 长周期 ATR 周期（CP-4 新增 ATR_long 字段）
+        spike_ratio: 2.0             # ATR_short/ATR_long > 该值触发极端期
+        pause_bars: 12               # 极端期暂停震荡反转的 4h K 线数
+        pause_interval_hours: 4      # 每根 K 线对应小时数（用于暂停时长换算，避免硬编码）
 
     # 经济日历
     economic_calendar:

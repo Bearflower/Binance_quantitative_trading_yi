@@ -111,6 +111,9 @@ class TradingExecutor:
         # 限价单滑点参数（限价相对于触发价的偏移量，默认 0.1%）
         self.limit_order_slippage = Decimal(str(trading_config.get("limit_order_slippage", 0.001)))
 
+        # 市价单评分阈值：评分 ≥ 此值时直接用市价单抢单，低于此值走优化限价单
+        self.market_order_score_threshold = float(trading_config.get('market_order_score_threshold', 7.0))
+
         # 默认精度（API获取失败时的兜底值）
         default_precision = trading_config.get('default_precision', {})
         self.default_tick_size = Decimal(str(default_precision.get('tick_size', '0.01')))
@@ -206,8 +209,18 @@ class TradingExecutor:
                 )
                 return None
 
-            # 6. 开空仓（传入当前价格作为限价）
-            order = await self._place_short_order(symbol, quantity, Decimal(str(current_price)))
+            # 6. 开空仓（根据评分决定下单方式）
+            #    评分 ≥ market_order_score_threshold：用市价单抢单，确保成交
+            #    评分 < 阈值：用实时市价+滑点偏移的限价单，提高成交率
+            score = float(score_result.get('total_score', 0) or 0)
+            use_market_order = score >= self.market_order_score_threshold
+            logger.info(
+                f"{symbol} 开仓方式判定",
+                score=score,
+                threshold=self.market_order_score_threshold,
+                use_market_order=use_market_order,
+            )
+            order = await self._place_short_order(symbol, quantity, Decimal(str(current_price)), use_market_order=use_market_order)
 
             if not order:
                 logger.error("开空仓失败")
@@ -445,34 +458,57 @@ class TradingExecutor:
         self,
         symbol: str,
         quantity: Decimal,
-        current_price: Decimal
+        current_price: Decimal,
+        use_market_order: bool = False
     ) -> Optional[Dict[str, Any]]:
         """
-        开空仓（使用限价单）
+        开空仓（支持市价单或优化限价单）
 
         Args:
             symbol: 交易对
             quantity: 数量
-            current_price: 当前价格（用于限价单）
+            current_price: 参考价格（K线收盘价，用于日志）
+            use_market_order: 是否用市价单（高分抢单）
 
         Returns:
             订单信息
         """
         try:
+            if use_market_order:
+                # 高分：直接用市价单，确保成交
+                order = await self.binance_api.place_order(
+                    symbol=symbol,
+                    side='SELL',
+                    quantity=quantity,
+                    order_type='MARKET'
+                )
+                logger.info(
+                    f"开空仓成功(市价单): {symbol}",
+                    order_id=order.get('orderId'),
+                    quantity=float(quantity),
+                    order_type='MARKET'
+                )
+                return order
+
+            # 低分：用实时市价 + 滑点偏移作为限价，提高成交率
+            # 做空开仓是 SELL，限价略高于实时市价，等待轻微反弹即可成交
+            market_price = await self.binance_api.get_ticker_price(symbol)
+            limit_price = market_price * (Decimal('1') + self.limit_order_slippage)
             order = await self.binance_api.place_order(
                 symbol=symbol,
                 side='SELL',
                 order_type='LIMIT',
                 quantity=quantity,
-                price=current_price,
+                price=limit_price,
                 timeInForce='GTC'
             )
 
             logger.info(
-                f"开空仓成功: {symbol}",
+                f"开空仓成功(限价单): {symbol}",
                 order_id=order.get('orderId'),
                 quantity=float(quantity),
-                price=float(current_price),
+                price=float(limit_price),
+                market_price=float(market_price),
                 order_type='LIMIT'
             )
 
@@ -549,7 +585,7 @@ class TradingExecutor:
             # 做空方向止盈是买入（BUY），限价应略高于触发价
             tp_limit_price = self._format_price(take_profit_price * (Decimal('1') + slippage), tick_size)
 
-            # 设置止损单（限价条件单）
+            # 设置止损单（限价条件单，reduce_only 全仓止损，传入 quantity 替代 closePosition 以兼容 PM 账户）
             sl_result = await self.binance_api.place_conditional_order(
                 symbol=symbol,
                 side='BUY',
@@ -557,7 +593,7 @@ class TradingExecutor:
                 stop_price=stop_loss_price,
                 price=stop_limit_price,
                 quantity=quantity,
-                closePosition=True
+                reduce_only=True
             )
 
             # 保存止损单 algoId
@@ -579,14 +615,13 @@ class TradingExecutor:
                 algo_id=sl_result.get('algoId', 'N/A')
             )
 
-            # 设置止盈单（限价条件单）
+            # 设置止盈单（限价条件单，closePosition 全仓止盈，无需 quantity）
             tp_result = await self.binance_api.place_conditional_order(
                 symbol=symbol,
                 side='BUY',
                 order_type='TAKE_PROFIT',
                 stop_price=take_profit_price,
                 price=tp_limit_price,
-                quantity=quantity,
                 closePosition=True
             )
 
@@ -829,7 +864,7 @@ class TradingExecutor:
                 stop_price=stop_loss_price,
                 price=stop_limit_price,
                 quantity=total_quantity,
-                closePosition=True
+                reduce_only=True
             )
 
             # 保存止损单 algoId
@@ -1944,7 +1979,7 @@ class TradingExecutor:
             # 用于记录整体是否全部成功
             all_success = True
             # 订单已存在时忽略的错误码（幂等创建）
-            ignore_error_codes = {'-4164', '-2011', '-2021'}
+            ignore_error_codes = {'-4164', '-2011', '-2021', '-4136'}
             slippage = self.limit_order_slippage
 
             # === 6. 补全止损条件单（SL）===
@@ -1963,7 +1998,7 @@ class TradingExecutor:
                     stop_price=stop_loss_price,
                     price=stop_limit_price,
                     quantity=current_quantity,
-                    closePosition=True
+                    reduce_only=True
                 )
                 if sl_result and 'algoId' in sl_result and symbol in self.position_tracking:
                     self.position_tracking[symbol]['algo_ids']['sl'] = sl_result['algoId']

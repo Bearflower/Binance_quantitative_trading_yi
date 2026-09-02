@@ -3,20 +3,43 @@
 负责 HRS 策略的订单执行：开仓、止损、止盈、平仓、开仓延迟处理
 """
 import asyncio
-from typing import Dict, Any, Optional, List, Callable
-from decimal import Decimal
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
+from typing import Dict, Any, Optional, List, Callable, Tuple
+
+import pandas as pd
 import structlog
 
 from shared.binance_api import BinanceClient
 from shared.database import DatabaseManager
-from shared.notification import NotificationClient
 from shared.indicators import TechnicalIndicators
+from shared.notification import NotificationClient
+
 from .position_manager import PositionManager
-import pandas as pd
 
 
 logger = structlog.get_logger()
+
+
+@dataclass
+class OpenResult:
+    """开仓执行结果：分离「开仓成交」与「保护单完整性」两个独立信号（FR-01）"""
+
+    order_filled: bool             # 开仓是否成交（决定是否记录持仓）
+    protection_complete: bool      # 三类保护单是否完整创建
+    failed_roles: List[str]        # 创建失败的保护单角色（"sl"/"tp1"/"tp2"）
+    order: Optional[Dict[str, Any]] = None  # 开仓订单信息
+
+
+@dataclass
+class ReplenishResult:
+    """补单执行结果：区分「已存在跳过」与「下单失败」（FR-02）"""
+
+    success: bool                  # 整体是否成功（任一角色失败则为 False）
+    failed_roles: List[str]        # 下单失败的角色
+    placed: int = 0                # 成功下单数量
+    note: str = ""                 # 特殊状态（沿用 "price_past_tp2" 语义）
 
 
 class TradingExecutor:
@@ -87,6 +110,8 @@ class TradingExecutor:
         self.entry_timeout_minutes = timeout_config.get("minutes", 15)
         # 开仓超时检查间隔（秒），从配置读取
         self.entry_timeout_check_interval_seconds = timeout_config.get("check_interval_seconds", 10)
+        # 订单完全成交判定容差（已成交/委托 ≥ 该比例视为完全成交）
+        self.fill_tolerance = timeout_config.get("fill_tolerance", 0.9999)
 
         # 订单类型配置（全部使用限价单）
         order_type_config = trading_config.get("order_type", {})
@@ -209,11 +234,12 @@ class TradingExecutor:
         quantity: Decimal,
         score: float,
         entry_mode: str = "standard",
-    ) -> Optional[Dict[str, Any]]:
+    ) -> OpenResult:
         """
         执行做空交易
 
         V2.4: 新增 entry_mode 参数，LV-RM 模式使用独立止损止盈参数。
+        FR-01: 返回 OpenResult，分离「开仓成交」与「保护单完整性」两个信号。
 
         Args:
             symbol: 交易对
@@ -224,10 +250,16 @@ class TradingExecutor:
             entry_mode: 入场模式 ("standard", "emm", "semi_emm", "lv_rm")
 
         Returns:
-            订单信息
+            开仓执行结果（OpenResult）
         """
         try:
-            logger.info("准备做空", symbol=symbol, price=entry_price, quantity=float(quantity), entry_mode=entry_mode)
+            logger.info(
+                "准备做空",
+                symbol=symbol,
+                price=entry_price,
+                quantity=float(quantity),
+                entry_mode=entry_mode,
+            )
             tick_size, step_size = await self._get_symbol_precision(symbol)
             quantity = self._format_quantity(quantity, step_size)
 
@@ -245,81 +277,25 @@ class TradingExecutor:
 
             if not order:
                 logger.error("做空下单失败", symbol=symbol)
-                return None
+                return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
             # 开仓延迟检查：15分钟内未完全成交则取消并反向平仓
             order = await self._check_order_fill_with_timeout(
-                symbol, order, "short", quantity, tick_size, step_size
+                symbol, order, "short", quantity, step_size
             )
             if not order:
                 logger.warning("做空开仓超时，信号已放弃", symbol=symbol)
-                return None
+                return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
             # 根据入场模式获取止损止盈参数
             params = self._get_lv_rm_params(entry_mode)
+            # 计算止损价格（做空：取三者最大值），用于通知与日志
+            stop_loss_price = self._calc_sl_price("short", entry_price, atr, tick_size, params)
 
-            # 计算止损价格（做空：取三者最大值）
-            stop_loss_price = self.calculate_short_stop_loss(
-                entry_price, atr, tick_size,
-                atr_multiplier=params["atr_multiplier"],
-                emergency_percent=params["emergency_percent"],
-                min_absolute_percent=params["min_absolute_percent"],
+            # FR-01: 统一入口创建 SL/TP1/TP2 三类保护单，收集失败角色
+            failed_roles = await self._create_protection_orders(
+                symbol, "short", entry_price, atr, quantity, tick_size, step_size, params
             )
-
-            # 设置止损限价单（做空止损=买入平仓，限价=触发价×(1+偏移)）
-            stop_loss_limit_price = Decimal(str(stop_loss_price * (1 + self.stop_loss_offset)))
-            sl_order = await self.binance_api.place_conditional_order(
-                symbol=symbol,
-                side="BUY",
-                order_type=self.order_type_stop_loss,
-                stop_price=Decimal(str(stop_loss_price)),
-                price=stop_loss_limit_price,
-                quantity=quantity,
-                closePosition=True,
-            )
-            if sl_order and sl_order.get("algoId") is not None:
-                self.position_manager.add_algo_id(symbol, "sl", sl_order["algoId"])
-
-            # 设置分批止盈
-            target1_price = self._format_price(
-                Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(params["target1_atr_multiplier"]))),
-                tick_size,
-            )
-            target1_qty = self._format_quantity(quantity * Decimal(str(params["target1_close_percent"])), step_size)
-
-            if float(target1_qty) > 0:
-                # 止盈限价单（做空止盈=买入平仓，限价=触发价×(1+偏移)）
-                tp1_limit_price = Decimal(str(float(target1_price) * (1 + self.take_profit_offset)))
-                tp1_order = await self.binance_api.place_conditional_order(
-                    symbol=symbol,
-                    side="BUY",
-                    order_type=self.order_type_take_profit,
-                    stop_price=target1_price,
-                    price=tp1_limit_price,
-                    quantity=target1_qty,
-                )
-                if tp1_order and tp1_order.get("algoId") is not None:
-                    self.position_manager.add_algo_id(symbol, "tp1", tp1_order["algoId"])
-
-            target2_price = self._format_price(
-                Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(params["target2_atr_multiplier"]))),
-                tick_size,
-            )
-            target2_qty = self._format_quantity(quantity * Decimal(str(params["target2_close_percent"])), step_size)
-
-            if float(target2_qty) > 0:
-                # 止盈限价单（做空止盈=买入平仓，限价=触发价×(1+偏移)）
-                tp2_limit_price = Decimal(str(float(target2_price) * (1 + self.take_profit_offset)))
-                tp2_order = await self.binance_api.place_conditional_order(
-                    symbol=symbol,
-                    side="BUY",
-                    order_type=self.order_type_take_profit,
-                    stop_price=target2_price,
-                    price=tp2_limit_price,
-                    quantity=target2_qty,
-                )
-                if tp2_order and tp2_order.get("algoId") is not None:
-                    self.position_manager.add_algo_id(symbol, "tp2", tp2_order["algoId"])
 
             # 发送通知
             await self._send_notification(symbol, "做空", entry_price, float(quantity), score, stop_loss_price)
@@ -330,15 +306,19 @@ class TradingExecutor:
                 entry_price=entry_price,
                 quantity=float(quantity),
                 stop_loss=stop_loss_price,
-                target1=float(target1_price) if float(target1_qty) > 0 else None,
-                target2=float(target2_price) if float(target2_qty) > 0 else None,
+                failed_roles=failed_roles,
             )
 
-            return order
+            return OpenResult(
+                order_filled=True,
+                protection_complete=not failed_roles,
+                failed_roles=failed_roles,
+                order=order,
+            )
 
         except Exception as e:
             logger.error("做空执行失败", symbol=symbol, error=str(e))
-            return None
+            return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
     async def execute_long(
         self,
@@ -348,11 +328,12 @@ class TradingExecutor:
         quantity: Decimal,
         score: float,
         entry_mode: str = "standard",
-    ) -> Optional[Dict[str, Any]]:
+    ) -> OpenResult:
         """
         执行做多交易
 
         V2.4: 新增 entry_mode 参数，LV-RM 模式使用独立止损止盈参数。
+        FR-01: 返回 OpenResult，分离「开仓成交」与「保护单完整性」两个信号。
 
         Args:
             symbol: 交易对
@@ -363,10 +344,16 @@ class TradingExecutor:
             entry_mode: 入场模式 ("standard", "emm", "semi_emm", "lv_rm")
 
         Returns:
-            订单信息
+            开仓执行结果（OpenResult）
         """
         try:
-            logger.info("准备做多", symbol=symbol, price=entry_price, quantity=float(quantity), entry_mode=entry_mode)
+            logger.info(
+                "准备做多",
+                symbol=symbol,
+                price=entry_price,
+                quantity=float(quantity),
+                entry_mode=entry_mode,
+            )
             tick_size, step_size = await self._get_symbol_precision(symbol)
             quantity = self._format_quantity(quantity, step_size)
 
@@ -384,81 +371,25 @@ class TradingExecutor:
 
             if not order:
                 logger.error("做多下单失败", symbol=symbol)
-                return None
+                return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
             # 开仓延迟检查：15分钟内未完全成交则取消并反向平仓
             order = await self._check_order_fill_with_timeout(
-                symbol, order, "long", quantity, tick_size, step_size
+                symbol, order, "long", quantity, step_size
             )
             if not order:
                 logger.warning("做多开仓超时，信号已放弃", symbol=symbol)
-                return None
+                return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
             # 根据入场模式获取止损止盈参数
             params = self._get_lv_rm_params(entry_mode)
+            # 计算止损价格（做多：取三者最小值），用于通知与日志
+            stop_loss_price = self._calc_sl_price("long", entry_price, atr, tick_size, params)
 
-            # 计算止损价格（做多：取三者最小值）
-            stop_loss_price = self.calculate_long_stop_loss(
-                entry_price, atr, tick_size,
-                atr_multiplier=params["atr_multiplier"],
-                emergency_percent=params["emergency_percent"],
-                min_absolute_percent=params["min_absolute_percent"],
+            # FR-01: 统一入口创建 SL/TP1/TP2 三类保护单，收集失败角色
+            failed_roles = await self._create_protection_orders(
+                symbol, "long", entry_price, atr, quantity, tick_size, step_size, params
             )
-
-            # 设置止损限价单（做多止损=卖出平仓，限价=触发价×(1-偏移)）
-            stop_loss_limit_price = Decimal(str(stop_loss_price * (1 - self.stop_loss_offset)))
-            sl_order = await self.binance_api.place_conditional_order(
-                symbol=symbol,
-                side="SELL",
-                order_type=self.order_type_stop_loss,
-                stop_price=Decimal(str(stop_loss_price)),
-                price=stop_loss_limit_price,
-                quantity=quantity,
-                closePosition=True,
-            )
-            if sl_order and sl_order.get("algoId") is not None:
-                self.position_manager.add_algo_id(symbol, "sl", sl_order["algoId"])
-
-            # 设置分批止盈
-            target1_price = self._format_price(
-                Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(params["target1_atr_multiplier"]))),
-                tick_size,
-            )
-            target1_qty = self._format_quantity(quantity * Decimal(str(params["target1_close_percent"])), step_size)
-
-            if float(target1_qty) > 0:
-                # 止盈限价单（做多止盈=卖出平仓，限价=触发价×(1-偏移)）
-                tp1_limit_price = Decimal(str(float(target1_price) * (1 - self.take_profit_offset)))
-                tp1_order = await self.binance_api.place_conditional_order(
-                    symbol=symbol,
-                    side="SELL",
-                    order_type=self.order_type_take_profit,
-                    stop_price=target1_price,
-                    price=tp1_limit_price,
-                    quantity=target1_qty,
-                )
-                if tp1_order and tp1_order.get("algoId") is not None:
-                    self.position_manager.add_algo_id(symbol, "tp1", tp1_order["algoId"])
-
-            target2_price = self._format_price(
-                Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(params["target2_atr_multiplier"]))),
-                tick_size,
-            )
-            target2_qty = self._format_quantity(quantity * Decimal(str(params["target2_close_percent"])), step_size)
-
-            if float(target2_qty) > 0:
-                # 止盈限价单（做多止盈=卖出平仓，限价=触发价×(1-偏移)）
-                tp2_limit_price = Decimal(str(float(target2_price) * (1 - self.take_profit_offset)))
-                tp2_order = await self.binance_api.place_conditional_order(
-                    symbol=symbol,
-                    side="SELL",
-                    order_type=self.order_type_take_profit,
-                    stop_price=target2_price,
-                    price=tp2_limit_price,
-                    quantity=target2_qty,
-                )
-                if tp2_order and tp2_order.get("algoId") is not None:
-                    self.position_manager.add_algo_id(symbol, "tp2", tp2_order["algoId"])
 
             # 发送通知
             await self._send_notification(symbol, "做多", entry_price, float(quantity), score, stop_loss_price)
@@ -469,15 +400,19 @@ class TradingExecutor:
                 entry_price=entry_price,
                 quantity=float(quantity),
                 stop_loss=stop_loss_price,
-                target1=float(target1_price) if float(target1_qty) > 0 else None,
-                target2=float(target2_price) if float(target2_qty) > 0 else None,
+                failed_roles=failed_roles,
             )
 
-            return order
+            return OpenResult(
+                order_filled=True,
+                protection_complete=not failed_roles,
+                failed_roles=failed_roles,
+                order=order,
+            )
 
         except Exception as e:
             logger.error("做多执行失败", symbol=symbol, error=str(e))
-            return None
+            return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
     def calculate_short_stop_loss(
         self,
@@ -581,6 +516,323 @@ class TradingExecutor:
 
         return float(self._format_price(Decimal(str(stop_loss)), tick_size))
 
+    def _calc_sl_price(
+        self,
+        direction: str,
+        entry_price: float,
+        atr: float,
+        tick_size: Decimal,
+        params: Dict[str, Any],
+    ) -> float:
+        """
+        计算止损价格（纯函数，供开仓/补单/加仓共用，避免重复逻辑）
+
+        Args:
+            direction: 方向 ('short'/'long')
+            entry_price: 开仓价
+            atr: ATR值
+            tick_size: 价格精度
+            params: 止损止盈参数（含 atr_multiplier/emergency_percent/min_absolute_percent）
+
+        Returns:
+            止损价
+        """
+        if direction == "short":
+            return self.calculate_short_stop_loss(
+                entry_price, atr, tick_size,
+                atr_multiplier=params["atr_multiplier"],
+                emergency_percent=params["emergency_percent"],
+                min_absolute_percent=params["min_absolute_percent"],
+            )
+        return self.calculate_long_stop_loss(
+            entry_price, atr, tick_size,
+            atr_multiplier=params["atr_multiplier"],
+            emergency_percent=params["emergency_percent"],
+            min_absolute_percent=params["min_absolute_percent"],
+        )
+
+    def _calc_tp_price(
+        self,
+        direction: str,
+        target: str,
+        entry_price: float,
+        atr: float,
+        tick_size: Decimal,
+        params: Dict[str, Any],
+    ) -> Decimal:
+        """
+        计算止盈触发价（纯函数）
+
+        Args:
+            direction: 方向 ('short'/'long')
+            target: 止盈目标 ("tp1"/"tp2")
+            entry_price: 开仓价
+            atr: ATR值
+            tick_size: 价格精度
+            params: 止损止盈参数（含 target1/2_atr_multiplier）
+
+        Returns:
+            止盈触发价
+        """
+        key = {"tp1": "target1_atr_multiplier", "tp2": "target2_atr_multiplier"}[target]
+        multiplier = Decimal(str(params[key]))
+        if direction == "short":
+            return self._format_price(Decimal(str(entry_price)) - (Decimal(str(atr)) * multiplier), tick_size)
+        return self._format_price(Decimal(str(entry_price)) + (Decimal(str(atr)) * multiplier), tick_size)
+
+    def _calc_tp_qty(self, quantity: Decimal, close_percent: float, step_size: Decimal) -> Decimal:
+        """
+        计算止盈数量（纯函数）
+
+        Args:
+            quantity: 当前持仓数量
+            close_percent: 止盈平仓比例
+            step_size: 数量精度
+
+        Returns:
+            止盈数量
+        """
+        return self._format_quantity(quantity * Decimal(str(close_percent)), step_size)
+
+    @staticmethod
+    def _get_close_side(direction: str) -> str:
+        """
+        获取平仓方向（纯函数）
+
+        做空需买入回补，做多需卖出平仓。
+
+        Args:
+            direction: 持仓方向 ('short'/'long')
+
+        Returns:
+            平仓方向 ('BUY'/'SELL')
+        """
+        return "BUY" if direction == "short" else "SELL"
+
+    def _calc_limit_price(self, direction: str, trigger_price: float, offset: float) -> Decimal:
+        """
+        计算限价偏移价（纯函数）
+
+        做空限价高于触发价（1 + 偏移），做多限价低于触发价（1 - 偏移）。
+
+        Args:
+            direction: 持仓方向 ('short'/'long')
+            trigger_price: 触发价（止损价/止盈价）
+            offset: 偏移比例（如 stop_loss_offset / take_profit_offset）
+
+        Returns:
+            限价
+        """
+        factor = 1 + offset if direction == "short" else 1 - offset
+        return Decimal(str(trigger_price * factor))
+
+    async def _place_protection_order(
+        self,
+        symbol: str,
+        role: str,
+        side: str,
+        order_type: str,
+        stop_price: Decimal,
+        limit_price: Decimal,
+        quantity: Decimal,
+        close_position: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        创建单个保护单（幂等入口，FR-05）
+
+        - 数量 <= 0 时视为「跳过」（非失败）
+        - 下单成功且返回 algoId → 写入本地记录
+        - 下单失败 → 返回 error，不抛异常（由调用方收集 failed_roles）
+
+        Returns:
+            {"success": bool, "skipped": bool, "algo_id": int|None, "error": str|None}
+        """
+        if quantity is not None and float(quantity) <= 0:
+            logger.info("保护单数量为零，跳过", symbol=symbol, role=role)
+            return {"success": True, "skipped": True, "algo_id": None, "error": None}
+
+        try:
+            order, algo_id = await self._submit_conditional_order(
+                symbol=symbol, side=side, order_type=order_type,
+                stop_price=stop_price, limit_price=limit_price,
+                quantity=quantity, close_position=close_position,
+            )
+        except Exception as e:
+            logger.error("保护单下单失败", symbol=symbol, role=role, error=str(e))
+            return {"success": False, "skipped": False, "algo_id": None, "error": str(e)}
+
+        if algo_id is None:
+            # 下单成功但未返回 algoId → 视为失败（FR-05）
+            reason = "下单成功但未返回algoId" if order else "下单失败"
+            logger.error("保护单下单异常", symbol=symbol, role=role, reason=reason)
+            return {"success": False, "skipped": False, "algo_id": None, "error": reason}
+
+        self.position_manager.add_algo_id(symbol, role, algo_id)
+        return {"success": True, "skipped": False, "algo_id": algo_id, "error": None}
+
+    async def _submit_conditional_order(
+        self,
+        symbol: str,
+        side: str,
+        order_type: str,
+        stop_price: Decimal,
+        limit_price: Decimal,
+        quantity: Decimal,
+        close_position: bool,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[int]]:
+        """
+        提交条件单并提取 algoId（子函数，供 _place_protection_order 调用）
+
+        Args:
+            symbol: 交易对
+            side: 买卖方向 (BUY/SELL)
+            order_type: 订单类型 (STOP/TAKE_PROFIT)
+            stop_price: 触发价
+            limit_price: 限价
+            quantity: 数量
+            close_position: 是否平仓单（仅止损单）
+
+        Returns:
+            (订单信息, algoId)；无 algoId 时 algoId 为 None
+        """
+        kwargs = {"closePosition": True} if close_position else {}
+        order = await self.binance_api.place_conditional_order(
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            stop_price=stop_price,
+            price=limit_price,
+            quantity=quantity,
+            **kwargs,
+        )
+        return order, (order.get("algoId") if order else None)
+
+    async def _create_protection_orders(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        atr: float,
+        quantity: Decimal,
+        tick_size: Decimal,
+        step_size: Decimal,
+        params: Dict[str, Any],
+    ) -> List[str]:
+        """
+        创建 SL/TP1/TP2 三类保护单并收集结果（FR-01 收敛入口）
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            entry_price: 开仓价
+            atr: ATR值
+            quantity: 开仓数量
+            tick_size: 价格精度
+            step_size: 数量精度
+            params: 止损止盈参数
+
+        Returns:
+            失败角色列表（空列表 = 保护单完整）
+        """
+        failed_roles: List[str] = []
+
+        # 1. 止损单（closePosition 平仓单）
+        if not await self._place_sl_order(symbol, direction, entry_price, atr, quantity, tick_size, params):
+            failed_roles.append("sl")
+
+        # 2/3. 止盈单（TP1/TP2 共用子函数，消除重复）
+        for target in ("tp1", "tp2"):
+            if not await self._place_tp_order(
+                symbol, direction, target, entry_price, atr,
+                quantity, tick_size, step_size, params,
+            ):
+                failed_roles.append(target)
+
+        if failed_roles:
+            logger.warning(
+                "保护单创建不完整",
+                symbol=symbol,
+                direction=direction,
+                failed_roles=failed_roles,
+            )
+        return failed_roles
+
+    async def _place_sl_order(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        atr: float,
+        quantity: Decimal,
+        tick_size: Decimal,
+        params: Dict[str, Any],
+    ) -> bool:
+        """
+        创建止损保护单（closePosition 平仓单）
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            entry_price: 开仓价
+            atr: ATR值
+            quantity: 持仓数量
+            tick_size: 价格精度
+            params: 止损止盈参数
+
+        Returns:
+            是否下单成功
+        """
+        sl_price = self._calc_sl_price(direction, entry_price, atr, tick_size, params)
+        sl_limit = self._calc_limit_price(direction, sl_price, self.stop_loss_offset)
+        result = await self._place_protection_order(
+            symbol=symbol, role="sl", side=self._get_close_side(direction),
+            order_type=self.order_type_stop_loss,
+            stop_price=Decimal(str(sl_price)), limit_price=sl_limit,
+            quantity=quantity, close_position=True,
+        )
+        return result["success"]
+
+    async def _place_tp_order(
+        self,
+        symbol: str,
+        direction: str,
+        target: str,
+        entry_price: float,
+        atr: float,
+        quantity: Decimal,
+        tick_size: Decimal,
+        step_size: Decimal,
+        params: Dict[str, Any],
+    ) -> bool:
+        """
+        创建单个止盈保护单（TP1/TP2 共用，消除重复代码）
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            target: 止盈目标 ("tp1"/"tp2")
+            entry_price: 开仓价
+            atr: ATR值
+            quantity: 持仓数量
+            tick_size: 价格精度
+            step_size: 数量精度
+            params: 止损止盈参数（含 target{n}_close_percent）
+
+        Returns:
+            是否下单成功
+        """
+        tp_price = self._calc_tp_price(direction, target, entry_price, atr, tick_size, params)
+        tp_qty = self._calc_tp_qty(
+            quantity, params[f"target{target[-1]}_close_percent"], step_size
+        )
+        tp_limit = self._calc_limit_price(direction, float(tp_price), self.take_profit_offset)
+        result = await self._place_protection_order(
+            symbol=symbol, role=target, side=self._get_close_side(direction),
+            order_type=self.order_type_take_profit,
+            stop_price=tp_price, limit_price=tp_limit, quantity=tp_qty,
+        )
+        return result["success"]
+
     async def close_position(
         self,
         symbol: str,
@@ -622,7 +874,7 @@ class TradingExecutor:
             _, step_size = await self._get_symbol_precision(symbol)
             close_quantity_decimal = self._format_quantity(Decimal(str(close_quantity)), step_size)
 
-            side = "BUY" if direction == "short" else "SELL"
+            side = self._get_close_side(direction)
             # 获取当前价格用于限价平仓
             ticker = await self.binance_api.get_ticker(symbol)
             close_price = float(ticker.get("lastPrice", 0))
@@ -645,7 +897,13 @@ class TradingExecutor:
                 )
 
             if order:
-                logger.info("平仓成功", symbol=symbol, direction=direction, reason=reason, quantity=float(close_quantity_decimal))
+                logger.info(
+                    "平仓成功",
+                    symbol=symbol,
+                    direction=direction,
+                    reason=reason,
+                    quantity=float(close_quantity_decimal),
+                )
                 return order
 
             return None
@@ -663,10 +921,13 @@ class TradingExecutor:
         atr: float,
         target1_reached: bool = False,
         target2_reached: bool = False,
-    ) -> bool:
+        best_price: float = 0,
+    ) -> ReplenishResult:
         """
         补充持仓缺失的止损止盈条件单
-        用于策略重启后恢复保护，以及TP1成交后确保TP2存在
+
+        用于策略重启后恢复保护，以及TP1成交后确保TP2存在。
+        FR-02/FR-09: 入口先批量取消清场，随后 SL/TP1/TP2 全量重建；下单失败不再静默忽略。
 
         Args:
             symbol: 交易对
@@ -676,147 +937,350 @@ class TradingExecutor:
             atr: ATR值
             target1_reached: 第一目标是否已成交
             target2_reached: 第二目标是否已成交
+            best_price: 最佳价格（用于TP2成交后计算移动止盈价）
 
         Returns:
-            是否执行成功
+            补单执行结果（ReplenishResult）
         """
-        try:
-            if atr <= 0:
-                logger.warning("ATR无效，跳过补单", symbol=symbol, atr=atr)
-                return False
+        if atr <= 0:
+            logger.warning("ATR无效，跳过补单", symbol=symbol, atr=atr)
+            return ReplenishResult(success=False, failed_roles=[], note="invalid_atr")
 
-            tick_size, step_size = await self._get_symbol_precision(symbol)
-            placed = 0
+        tick_size, step_size = await self._get_symbol_precision(symbol)
+        params = self._get_lv_rm_params("standard")
 
-            # 1. 止损单（始终需要，除非两个止盈都已成交）
-            if not (target1_reached and target2_reached):
-                if direction == "short":
-                    stop_price = self.calculate_short_stop_loss(entry_price, atr, tick_size)
-                    sl_limit = Decimal(str(stop_price * (1 + self.stop_loss_offset)))
-                else:
-                    stop_price = self.calculate_long_stop_loss(entry_price, atr, tick_size)
-                    sl_limit = Decimal(str(stop_price * (1 - self.stop_loss_offset)))
+        # FR-07/FR-09: 补单前先批量取消清场，随后全量重建
+        await self._cancel_old_orders_for_replenish(symbol)
 
-                if self.position_manager.has_algo_id(symbol, "sl"):
-                    logger.info("止损单已存在，跳过补单", symbol=symbol)
-                else:
-                    try:
-                        sl_order = await self.binance_api.place_conditional_order(
-                            symbol=symbol,
-                            side="BUY" if direction == "short" else "SELL",
-                            order_type=self.order_type_stop_loss,
-                            stop_price=Decimal(str(stop_price)),
-                            price=sl_limit,
-                            quantity=Decimal(str(entry_quantity)),
-                            closePosition=True,
-                        )
-                        if sl_order and sl_order.get("algoId") is not None:
-                            self.position_manager.add_algo_id(symbol, "sl", sl_order["algoId"])
-                        placed += 1
-                        logger.info("止损单已补充", symbol=symbol, stop_price=stop_price)
-                    except Exception as e:
-                        logger.debug("止损单补充跳过（可能已存在）", symbol=symbol, error=str(e))
+        # 依次补充 SL/TP1/TP2 并汇总结果
+        return await self._replenish_all_roles(
+            symbol, direction, entry_price, entry_quantity, atr,
+            tick_size, step_size, params, target1_reached, target2_reached,
+            best_price,
+        )
 
-            # 2. 止盈单
-            tp_type = self.order_type_take_profit
+    async def _cancel_old_orders_for_replenish(self, symbol: str) -> None:
+        """
+        补单前批量取消旧条件单（子函数，供 replenish_position_orders 调用）
 
-            if not target1_reached:
-                # TP1 未成交 → 补充 TP1
-                target1_price = self._format_price(
-                    Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(self.target1_atr_multiplier))),
-                    tick_size,
-                ) if direction == "short" else self._format_price(
-                    Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(self.target1_atr_multiplier))),
-                    tick_size,
-                )
-                target1_qty = self._format_quantity(
-                    Decimal(str(entry_quantity)) * Decimal(str(self.target1_close_percent)),
-                    step_size,
-                )
-                if float(target1_qty) > 0:
-                    tp1_limit = Decimal(str(float(target1_price) * (1 + self.take_profit_offset))) if direction == "short" \
-                        else Decimal(str(float(target1_price) * (1 - self.take_profit_offset)))
-                    if self.position_manager.has_algo_id(symbol, "tp1"):
-                        logger.info("止盈1单已存在，跳过补单", symbol=symbol)
-                    else:
-                        try:
-                            tp1_order = await self.binance_api.place_conditional_order(
-                                symbol=symbol,
-                                side="BUY" if direction == "short" else "SELL",
-                                order_type=tp_type,
-                                stop_price=target1_price,
-                                price=tp1_limit,
-                                quantity=target1_qty,
-                            )
-                            if tp1_order and tp1_order.get("algoId") is not None:
-                                self.position_manager.add_algo_id(symbol, "tp1", tp1_order["algoId"])
-                            placed += 1
-                            logger.info("止盈1单已补充", symbol=symbol, price=float(target1_price), qty=float(target1_qty))
-                        except Exception as e:
-                            logger.debug("止盈1单补充跳过（可能已存在）", symbol=symbol, error=str(e))
-
-            if not target2_reached:
-                # TP2 未成交 → 补充 TP2
-                target2_price = self._format_price(
-                    Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(self.target2_atr_multiplier))),
-                    tick_size,
-                ) if direction == "short" else self._format_price(
-                    Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(self.target2_atr_multiplier))),
-                    tick_size,
-                )
-                target2_qty = self._format_quantity(
-                    Decimal(str(entry_quantity)) * Decimal(str(self.target2_close_percent)),
-                    step_size,
-                )
-                if float(target2_qty) > 0:
-                    # 检查当前价格是否已过 TP2 目标价
-                    ticker = await self.binance_api.get_ticker(symbol)
-                    current_price = float(ticker.get("lastPrice", 0))
-                    price_past_tp2 = (
-                        current_price < float(target2_price) if direction == "short"
-                        else current_price > float(target2_price)
-                    )
-                    if price_past_tp2:
-                        logger.info(
-                            "当前价格已过TP2目标，跳过补单，激活移动止盈",
-                            symbol=symbol,
-                            current_price=current_price,
-                            target2_price=float(target2_price),
-                            direction=direction,
-                        )
-                        return "price_past_tp2"
-                    tp2_limit = Decimal(str(float(target2_price) * (1 + self.take_profit_offset))) if direction == "short" \
-                        else Decimal(str(float(target2_price) * (1 - self.take_profit_offset)))
-                    if self.position_manager.has_algo_id(symbol, "tp2"):
-                        logger.info("止盈2单已存在，跳过补单", symbol=symbol)
-                    else:
-                        try:
-                            tp2_order = await self.binance_api.place_conditional_order(
-                                symbol=symbol,
-                                side="BUY" if direction == "short" else "SELL",
-                                order_type=tp_type,
-                                stop_price=target2_price,
-                                price=tp2_limit,
-                                quantity=target2_qty,
-                            )
-                            if tp2_order and tp2_order.get("algoId") is not None:
-                                self.position_manager.add_algo_id(symbol, "tp2", tp2_order["algoId"])
-                            placed += 1
-                            logger.info("止盈2单已补充", symbol=symbol, price=float(target2_price), qty=float(target2_qty))
-                        except Exception as e:
-                            logger.debug("止盈2单补充跳过（可能已存在）", symbol=symbol, error=str(e))
-
-            logger.info(
-                "持仓保护订单补充完成",
+        FR-07/FR-09: 取消失败仅告警不阻断，等待下一轮补单兜底恢复。
+        """
+        cancel_result = await self.position_manager.cancel_all_orders(symbol)
+        if cancel_result["failed"] > 0:
+            logger.warning(
+                "补单前取消旧条件单部分失败，仍继续重建",
                 symbol=symbol,
-                direction=direction,
-                placed=placed,
+                result=cancel_result,
             )
-            return True
 
-        except Exception as e:
-            logger.error("补充持仓保护订单失败", symbol=symbol, error=str(e))
-            return False
+    async def _replenish_all_roles(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        entry_quantity: float,
+        atr: float,
+        tick_size: Decimal,
+        step_size: Decimal,
+        params: Dict[str, Any],
+        target1_reached: bool,
+        target2_reached: bool,
+        best_price: float = 0,
+    ) -> ReplenishResult:
+        """
+        依次补充 SL/TP1/TP2 并汇总结果（子函数，供 replenish_position_orders 调用）
+
+        Returns:
+            补单执行结果（ReplenishResult）
+        """
+        placed = 0
+        failed_roles: List[str] = []
+        note = ""
+
+        # 止损单（closePosition 平仓单）
+        sl_placed, sl_failed = await self._replenish_sl_role(
+            symbol, direction, entry_price, entry_quantity, atr, tick_size,
+            params, target1_reached, target2_reached,
+        )
+        placed += sl_placed
+        failed_roles.extend(sl_failed)
+
+        # 止盈单 TP1/TP2 共用子函数循环补充（消除重复）
+        for target, reached, check_past in (
+            ("tp1", target1_reached, False),
+            ("tp2", target2_reached, True),
+        ):
+            tp_placed, tp_failed, tp_note = await self._replenish_tp_role(
+                symbol, direction, target, entry_price, entry_quantity, atr,
+                tick_size, step_size, params, reached, check_price_past=check_past,
+                best_price=best_price,
+            )
+            placed += tp_placed
+            failed_roles.extend(tp_failed)
+            if tp_note == "price_past_tp2":
+                note = "price_past_tp2"
+
+        return await self._summarize_replenish(
+            symbol, direction, placed, failed_roles, note
+        )
+
+    async def _summarize_replenish(
+        self,
+        symbol: str,
+        direction: str,
+        placed: int,
+        failed_roles: List[str],
+        note: str,
+    ) -> ReplenishResult:
+        """
+        汇总补单结果并返回（子函数，供 _replenish_all_roles 调用）
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            placed: 成功下单数量
+            failed_roles: 下单失败的角色列表
+            note: 特殊状态（沿用 "price_past_tp2" 语义）
+
+        Returns:
+            补单执行结果（ReplenishResult）
+        """
+        logger.info(
+            "持仓保护订单补充完成",
+            symbol=symbol,
+            direction=direction,
+            placed=placed,
+            failed_roles=failed_roles,
+            note=note,
+        )
+        return ReplenishResult(
+            success=not failed_roles,
+            failed_roles=failed_roles,
+            placed=placed,
+            note=note,
+        )
+
+    async def _replenish_sl_role(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        entry_quantity: float,
+        atr: float,
+        tick_size: Decimal,
+        params: Dict[str, Any],
+        target1_reached: bool,
+        target2_reached: bool,
+    ) -> Tuple[int, List[str]]:
+        """
+        补充止损单（FR-02），返回 (成功下单数, 失败角色列表)
+
+        两个止盈均已成交时不再补充止损单。
+        """
+        if target1_reached and target2_reached:
+            return 0, []
+
+        sl_price = self._calc_sl_price(direction, entry_price, atr, tick_size, params)
+        sl_limit = self._calc_limit_price(direction, sl_price, self.stop_loss_offset)
+
+        result = await self._place_protection_order(
+            symbol=symbol, role="sl", side=self._get_close_side(direction),
+            order_type=self.order_type_stop_loss,
+            stop_price=Decimal(str(sl_price)), limit_price=sl_limit,
+            quantity=Decimal(str(entry_quantity)), close_position=True,
+        )
+        if result["success"]:
+            if result["skipped"]:
+                return 0, []
+            logger.info("止损单已补充", symbol=symbol, stop_price=sl_price)
+            return 1, []
+        logger.error("止损单补充失败", symbol=symbol, error=result["error"])
+        return 0, ["sl"]
+
+    async def _replenish_tp_role(
+        self,
+        symbol: str,
+        direction: str,
+        target: str,
+        entry_price: float,
+        entry_quantity: float,
+        atr: float,
+        tick_size: Decimal,
+        step_size: Decimal,
+        params: Dict[str, Any],
+        target_reached: bool,
+        check_price_past: bool,
+        best_price: float = 0,
+    ) -> Tuple[int, List[str], Optional[str]]:
+        """
+        补充单个止盈单（FR-02），返回 (成功下单数, 失败角色列表, note)
+
+        - target_reached 为 True 时跳过
+        - TP2 需检查当前价格是否已过目标价（price_past_tp2）
+        - V2.7: TP2 已成交时（target_reached=True & target="tp2"），使用 best_price 下移动止盈单
+        """
+        # V2.7: TP2 已成交 → 下移动止盈 STOP_LOSS 单保护剩余仓位
+        if target_reached and target == "tp2" and best_price > 0 and atr > 0:
+            return await self._place_trailing_stop_order(
+                symbol, direction, target, entry_price, entry_quantity,
+                atr, tick_size, params, best_price,
+            )
+
+        if target_reached:
+            return 0, [], None
+
+        tp_price = self._calc_tp_price(direction, target, entry_price, atr, tick_size, params)
+        tp_qty = self._calc_tp_qty(
+            Decimal(str(entry_quantity)), params[f"target{target[-1]}_close_percent"], step_size
+        )
+        if float(tp_qty) <= 0:
+            return 0, [], None
+
+        # 当前价格已过 TP2 目标价 → 激活移动止盈（沿用 price_past_tp2 语义）
+        if check_price_past and target == "tp2" and await self._check_tp_price_past(symbol, direction, tp_price):
+            logger.info(
+                "当前价格已过TP2目标，激活移动止盈",
+                symbol=symbol,
+                target2_price=float(tp_price),
+                direction=direction,
+            )
+            # V2.7: 价格已过 TP2 也要下移动止盈 STOP_LOSS 单保护剩余仓位
+            if best_price > 0 and atr > 0:
+                return await self._place_trailing_stop_order(
+                    symbol, direction, target, entry_price, entry_quantity,
+                    atr, tick_size, params, best_price,
+                )
+            return 0, [], "price_past_tp2"
+
+        tp_limit = self._calc_limit_price(direction, float(tp_price), self.take_profit_offset)
+
+        return await self._submit_tp_role_order(
+            symbol, direction, target, tp_price, tp_limit, tp_qty
+        )
+
+    async def _place_trailing_stop_order(
+        self,
+        symbol: str,
+        direction: str,
+        target: str,
+        entry_price: float,
+        entry_quantity: float,
+        atr: float,
+        tick_size: Decimal,
+        params: Dict[str, Any],
+        best_price: float,
+    ) -> Tuple[int, List[str], Optional[str]]:
+        """
+        V2.7: TP2已成交后，使用 best_price 计算移动止盈价并下 STOP_LOSS 保护单
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            target: 角色 ("tp2")
+            entry_price: 开仓价
+            entry_quantity: 开仓数量
+            atr: ATR值
+            tick_size: 价格精度
+            params: 参数（含 trailing_atr_multiplier）
+            best_price: 最佳价格（做多=最高价，做空=最低价）
+
+        Returns:
+            (成功下单数, 失败角色列表, note)
+        """
+        trailing_multiplier = params.get("trailing_atr_multiplier", 1.0)
+        if direction == "short":
+            trailing_stop_price = best_price + atr * trailing_multiplier
+        else:
+            trailing_stop_price = best_price - atr * trailing_multiplier
+
+        trailing_stop_price = max(trailing_stop_price, 0.01)  # 防止负值
+        trailing_stop_price = float(self._format_price(Decimal(str(trailing_stop_price)), tick_size))
+
+        trailing_limit = self._calc_limit_price(direction, trailing_stop_price, self.stop_loss_offset)
+
+        logger.info(
+            "TP2已成交，下移动止盈保护单",
+            symbol=symbol, role=target, direction=direction,
+            best_price=best_price, atr=atr,
+            trailing_stop_price=trailing_stop_price,
+        )
+
+        result = await self._place_protection_order(
+            symbol=symbol, role=f"{target}_trailing", side=self._get_close_side(direction),
+            order_type=self.order_type_stop_loss,
+            stop_price=Decimal(str(trailing_stop_price)), limit_price=trailing_limit,
+            quantity=Decimal(str(entry_quantity)), close_position=True,
+        )
+
+        if result["success"]:
+            if result["skipped"]:
+                return 0, [], None
+            logger.info(
+                "移动止盈保护单已补充",
+                symbol=symbol, role=target,
+                stop_price=trailing_stop_price,
+            )
+            return 1, [], None
+        logger.error("移动止盈保护单补充失败", symbol=symbol, role=target, error=result["error"])
+        return 0, [f"{target}_trailing"], None
+
+    async def _submit_tp_role_order(
+        self,
+        symbol: str,
+        direction: str,
+        target: str,
+        tp_price: Decimal,
+        tp_limit: Decimal,
+        tp_qty: Decimal,
+    ) -> Tuple[int, List[str], Optional[str]]:
+        """
+        提交止盈补单单并处理结果，返回 (成功下单数, 失败角色列表, note)
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            target: 止盈目标 ("tp1"/"tp2")
+            tp_price: 止盈触发价
+            tp_limit: 止盈限价
+            tp_qty: 止盈数量
+
+        Returns:
+            (成功下单数, 失败角色列表, note)
+        """
+        result = await self._place_protection_order(
+            symbol=symbol, role=target, side=self._get_close_side(direction),
+            order_type=self.order_type_take_profit,
+            stop_price=tp_price, limit_price=tp_limit, quantity=tp_qty,
+        )
+        if result["success"]:
+            if result["skipped"]:
+                return 0, [], None
+            logger.info(
+                "止盈单已补充", symbol=symbol, role=target,
+                price=float(tp_price), qty=float(tp_qty),
+            )
+            return 1, [], None
+        logger.error("止盈单补充失败", symbol=symbol, role=target, error=result["error"])
+        return 0, [target], None
+
+    async def _check_tp_price_past(self, symbol: str, direction: str, tp_price: Decimal) -> bool:
+        """
+        检查当前价格是否已过止盈目标价（子函数，供补单复用）
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            tp_price: 止盈目标价
+
+        Returns:
+            True: 当前价格已过目标价
+        """
+        ticker = await self.binance_api.get_ticker(symbol)
+        current_price = float(ticker.get("lastPrice", 0))
+        return (
+            current_price < float(tp_price) if direction == "short"
+            else current_price > float(tp_price)
+        )
 
     async def add_to_position(
         self,
@@ -858,7 +1322,21 @@ class TradingExecutor:
                 logger.warning("加仓数量为零，跳过", symbol=symbol)
                 return None
 
-            # 限价加仓
+            # FR-08: 获取加仓所需参数与止损价（用于通知与日志）
+            params = self._get_lv_rm_params("standard")
+            stop_loss_price = self._calc_sl_price(direction, entry_price, atr, tick_size, params)
+
+            # FR-08: 先批量取消旧条件单，取消失败则阻断加仓（保持旧仓位保护单不变）
+            cancel_result = await self.position_manager.cancel_all_orders(symbol)
+            if cancel_result["failed"] > 0:
+                logger.error(
+                    "加仓取消旧条件单失败，中止加仓",
+                    symbol=symbol,
+                    result=cancel_result,
+                )
+                return None
+
+            # 限价加仓（旧单已取消，加仓成交后保护单基于新总量重建）
             side = "SELL" if direction == "short" else "BUY"
             order = await self.binance_api.place_order(
                 symbol=symbol,
@@ -870,29 +1348,10 @@ class TradingExecutor:
             )
 
             if not order:
-                logger.error("加仓下单失败", symbol=symbol)
+                logger.error("加仓下单失败（旧条件单已取消，等待补单兜底）", symbol=symbol)
                 return None
 
-            # 重新计算止损价格
-            if direction == "short":
-                stop_loss_price = self.calculate_short_stop_loss(entry_price, atr, tick_size)
-            else:
-                stop_loss_price = self.calculate_long_stop_loss(entry_price, atr, tick_size)
-
-            # 取消所有现有条件单（通过已存储的algoId）
-            try:
-                algo_ids = self.position_manager.get_algo_ids(symbol)
-                for algo_id in algo_ids:
-                    try:
-                        await self.binance_api.cancel_algo_order(symbol, algo_id)
-                    except Exception as cancel_err:
-                        logger.debug("取消单个条件单失败", symbol=symbol, algo_id=algo_id, error=str(cancel_err))
-                if algo_ids:
-                    logger.info("已取消旧条件单，准备重新设置", symbol=symbol, count=len(algo_ids))
-            except Exception as e:
-                logger.warning("取消旧条件单失败", symbol=symbol, error=str(e))
-
-            # 获取交易所最新持仓总数量
+            # 获取交易所最新持仓总数量（保护单基于加仓后总量计算）
             positions = await self.binance_api.get_position(symbol)
             total_qty = Decimal("0")
             for pos in positions:
@@ -900,84 +1359,20 @@ class TradingExecutor:
                 if pos_amt > 0:
                     total_qty = Decimal(str(pos_amt))
                     break
-
             if total_qty <= 0:
                 total_qty = quantity
 
-            # 重新设置止损限价单
-            side_close = "BUY" if direction == "short" else "SELL"
-            # 做空止损=买入，限价=触发价×(1+偏移)；做多止损=卖出，限价=触发价×(1-偏移)
-            if direction == "short":
-                sl_limit_price = Decimal(str(stop_loss_price * (1 + self.stop_loss_offset)))
-            else:
-                sl_limit_price = Decimal(str(stop_loss_price * (1 - self.stop_loss_offset)))
-            sl_order = await self.binance_api.place_conditional_order(
-                symbol=symbol,
-                side=side_close,
-                order_type=self.order_type_stop_loss,
-                stop_price=Decimal(str(stop_loss_price)),
-                price=sl_limit_price,
-                quantity=total_qty,
-                closePosition=True,
+            # FR-08: 复用统一入口重下 SL/TP1/TP2（quantity 用交易所最新持仓总量）
+            failed_roles = await self._create_protection_orders(
+                symbol, direction, entry_price, atr, total_qty, tick_size, step_size, params
             )
-            if sl_order and sl_order.get("algoId") is not None:
-                self.position_manager.add_algo_id(symbol, "sl", sl_order["algoId"])
-
-            # 重新设置分批止盈
-            if direction == "short":
-                target1_price = self._format_price(
-                    Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(self.target1_atr_multiplier))),
-                    tick_size,
-                )
-                target2_price = self._format_price(
-                    Decimal(str(entry_price)) - (Decimal(str(atr)) * Decimal(str(self.target2_atr_multiplier))),
-                    tick_size,
-                )
-            else:
-                target1_price = self._format_price(
-                    Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(self.target1_atr_multiplier))),
-                    tick_size,
-                )
-                target2_price = self._format_price(
-                    Decimal(str(entry_price)) + (Decimal(str(atr)) * Decimal(str(self.target2_atr_multiplier))),
-                    tick_size,
-                )
-
-            target1_qty = self._format_quantity(total_qty * Decimal(str(self.target1_close_percent)), step_size)
-            if float(target1_qty) > 0:
-                # 做空止盈=买入，限价=触发价×(1+偏移)；做多止盈=卖出，限价=触发价×(1-偏移)
-                if direction == "short":
-                    tp1_limit_price = Decimal(str(float(target1_price) * (1 + self.take_profit_offset)))
-                else:
-                    tp1_limit_price = Decimal(str(float(target1_price) * (1 - self.take_profit_offset)))
-                tp1_order = await self.binance_api.place_conditional_order(
+            if failed_roles:
+                logger.warning(
+                    "加仓保护单重建不完整",
                     symbol=symbol,
-                    side=side_close,
-                    order_type=self.order_type_take_profit,
-                    stop_price=target1_price,
-                    price=tp1_limit_price,
-                    quantity=target1_qty,
+                    direction=direction,
+                    failed_roles=failed_roles,
                 )
-                if tp1_order and tp1_order.get("algoId") is not None:
-                    self.position_manager.add_algo_id(symbol, "tp1", tp1_order["algoId"])
-
-            target2_qty = self._format_quantity(total_qty * Decimal(str(self.target2_close_percent)), step_size)
-            if float(target2_qty) > 0:
-                # 做空止盈=买入，限价=触发价×(1+偏移)；做多止盈=卖出，限价=触发价×(1-偏移)
-                if direction == "short":
-                    tp2_limit_price = Decimal(str(float(target2_price) * (1 + self.take_profit_offset)))
-                else:
-                    tp2_limit_price = Decimal(str(float(target2_price) * (1 - self.take_profit_offset)))
-                tp2_order = await self.binance_api.place_conditional_order(
-                    symbol=symbol,
-                    side=side_close,
-                    order_type=self.order_type_take_profit,
-                    stop_price=target2_price,
-                    price=tp2_limit_price,
-                    quantity=target2_qty,
-                )
-                if tp2_order and tp2_order.get("algoId") is not None:
-                    self.position_manager.add_algo_id(symbol, "tp2", tp2_order["algoId"])
 
             # 发送加仓通知
             await self._send_add_position_notification(
@@ -1035,7 +1430,6 @@ class TradingExecutor:
         order: Dict[str, Any],
         direction: str,
         original_quantity: Decimal,
-        tick_size: Decimal,
         step_size: Decimal,
     ) -> Optional[Dict[str, Any]]:
         """
@@ -1051,7 +1445,6 @@ class TradingExecutor:
             order: 订单信息
             direction: 方向 ('short' 或 'long')
             original_quantity: 原始下单数量
-            tick_size: 价格精度
             step_size: 数量精度
 
         Returns:
@@ -1068,7 +1461,7 @@ class TradingExecutor:
         if orig_qty <= 0:
             orig_qty = float(original_quantity)
 
-        if executed_qty >= orig_qty * 0.9999:
+        if executed_qty >= orig_qty * self.fill_tolerance:
             # 已完全成交，直接返回
             logger.info("订单已完全成交", symbol=symbol, executed_qty=executed_qty, orig_qty=orig_qty)
             return order
@@ -1093,7 +1486,7 @@ class TradingExecutor:
                     executed_qty = float(order_status.get("executedQty", 0))
                     status = order_status.get("status", "")
 
-                    if status == "FILLED" or executed_qty >= orig_qty * 0.9999:
+                    if status == "FILLED" or executed_qty >= orig_qty * self.fill_tolerance:
                         logger.info("订单在超时前完全成交", symbol=symbol, executed_qty=executed_qty)
                         return order_status
 
@@ -1112,7 +1505,7 @@ class TradingExecutor:
                 logger.warning("查询订单状态失败", symbol=symbol, order_id=order_id, error=str(e))
 
         # 超时或订单异常，处理取消和反向平仓
-        await self._handle_entry_timeout(symbol, order_id, direction, executed_qty, tick_size, step_size)
+        await self._handle_entry_timeout(symbol, order_id, direction, executed_qty, step_size)
         return None
 
     async def _handle_entry_timeout(
@@ -1121,7 +1514,6 @@ class TradingExecutor:
         order_id: int,
         direction: str,
         executed_qty: float,
-        tick_size: Decimal,
         step_size: Decimal,
     ) -> None:
         """
@@ -1134,7 +1526,6 @@ class TradingExecutor:
             order_id: 订单ID
             direction: 方向
             executed_qty: 已成交数量
-            tick_size: 价格精度
             step_size: 数量精度
         """
         logger.warning(
@@ -1160,10 +1551,14 @@ class TradingExecutor:
             # 使用更大的容差阈值，确保足够覆盖滑点导致的价格变动
             close_qty = self._format_quantity(Decimal(str(executed_qty)), step_size)
             if float(close_qty) <= 0:
-                logger.warning("部分成交数量过小，无法反向平仓", symbol=symbol, executed_qty=executed_qty)
+                logger.warning(
+                    "部分成交数量过小，无法反向平仓",
+                    symbol=symbol,
+                    executed_qty=executed_qty,
+                )
                 return
 
-            close_side = "BUY" if direction == "short" else "SELL"
+            close_side = self._get_close_side(direction)
             try:
                 # 获取当前价格用于限价反向平仓
                 ticker = await self.binance_api.get_ticker(symbol)

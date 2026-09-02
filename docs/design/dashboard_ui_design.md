@@ -1,7 +1,7 @@
 # 金融科技数据看板 UI 设计文档
 
-> **版本**: v1.0  
-> **更新日期**: 2026-06-02  
+> **版本**: v1.2  
+> **更新日期**: 2026-09-02  
 > **设计师**: UI 设计师  
 > **项目**: Binance 量化交易数据看板
 
@@ -26,9 +26,9 @@
 
 **核心原则**: 专业、精确、高端、可信赖
 
-- **深色主题**: 降低视觉疲劳，突出数据信息
-- **金色主色调**: 传达财富、信任、专业的品牌形象
-- **高对比度**: 确保 WCAG AAA 标准，提升可读性
+- **柔和亮色主题**: 浅灰蓝亮底（晨雾蓝灰 × 青绿强调），界面明亮通透，降低长期盯盘的视觉疲劳
+- **语义主色调**: 以明朗青绿（盈利/积极）、珊瑚红（亏损/消极）、琥珀金（强调）、天蓝（信息）、紫罗兰（主强调）区分各类数据
+- **扁平轻玻璃质感**: 半透明白玻璃卡片、扁平弱边框、大圆角、柔和淡阴影
 - **数据优先**: 清晰的信息层级，快速传达关键指标
 
 ### 1.2 配色方案
@@ -38,33 +38,31 @@
 ```css
 :root {
   /* 品牌色 */
-  --color-primary: #F59E0B;          /* 金色 - 代表财富和信任 */
-  --color-on-primary: #0F172A;       /* 金色上的文字 */
-  --color-secondary: #FBBF24;        /* 亮金色 - 次要强调 */
-  --color-accent: #8B5CF6;           /* 紫色 - 科技感、CTA按钮 */
+  --color-primary: #7C6BF0;          /* 紫罗兰 - 主强调色 */
+  --color-accent: #2563EB;           /* 天蓝 - 信息强调/CTA */
   
-  /* 背景色 */
-  --color-background: #0F172A;       /* 深蓝黑背景 */
-  --color-surface: #1E293B;          /* 卡片背景 */
-  --color-muted: #272F42;            /* 次要背景、禁用状态 */
+  /* 背景与卡片：柔和亮色玻璃系 */
+  --color-background: #EFF3FA;       /* 浅灰蓝亮底 */
+  --color-surface: rgba(255, 255, 255, 0.72); /* 半透明白玻璃卡片 */
+  --color-muted: rgba(15, 23, 42, 0.04);      /* 淡玻璃底色 */
   
   /* 文字色 */
-  --color-foreground: #F8FAFC;       /* 主要文字 */
-  --color-text-secondary: #94A3B8;   /* 次要文字 */
-  --color-text-muted: #64748B;       /* 辅助文字 */
+  --color-foreground: #1A2333;       /* 主要文字（深色） */
+  --color-text-secondary: #5B6B82;   /* 次要文字 */
+  --color-text-muted: #93A1B4;       /* 辅助文字 */
   
-  /* 边框与分割线 */
-  --color-border: #334155;           /* 默认边框 */
-  --color-border-hover: #475569;     /* 悬停边框 */
+  /* 边框与分割线：弱化扁平 */
+  --color-border: rgba(15, 23, 42, 0.06);      /* 默认弱边框 */
+  --color-border-hover: rgba(15, 23, 42, 0.14);/* 悬停边框 */
   
-  /* 语义色 */
-  --color-success: #10B981;          /* 盈利绿色 */
-  --color-destructive: #EF4444;      /* 亏损红色 */
-  --color-warning: #F59E0B;          /* 警告金色 */
-  --color-info: #3B82F6;             /* 信息蓝色 */
+  /* 语义色（明朗亮色） */
+  --color-success: #0FA47F;          /* 青绿 - 盈利 */
+  --color-destructive: #E5484D;      /* 珊瑚红 - 亏损 */
+  --color-warning: #D97706;          /* 琥珀金 - 警告 */
+  --color-info: #2563EB;             /* 天蓝 - 信息 */
   
   /* 焦点环 */
-  --color-ring: #F59E0B;             /* 焦点环颜色 */
+  --color-ring: #7C6BF0;             /* 焦点环颜色 */
   --ring-width: 3px;                 /* 焦点环宽度 */
 }
 ```
@@ -289,44 +287,73 @@
   
   <!-- 主要内容区 -->
   <main id="main-content" class="main-content">
-    <!-- 总览卡片区域 -->
+    <!-- 总览统计区：净资产主卡跨左列整列，右侧 6 张统计卡成 2 列 × 3 行 -->
     <section class="overview-section" aria-labelledby="overview-title">
       <h2 id="overview-title" class="section-title sr-only">总览</h2>
-      
-      <div class="overview-card">
-        <div class="overview-card-header">
-          <h3 class="overview-card-title">总账户收益</h3>
-          <span class="overview-card-badge" aria-label="实时更新">实时</span>
-        </div>
-        
-        <div class="overview-card-body">
-          <!-- 总盈亏（核心指标） -->
-          <div class="metric-primary">
-            <span class="metric-label">总盈亏</span>
-            <div class="metric-value-group">
-              <span class="metric-value positive" data-value="125680.50">
-                +125,680.50
-              </span>
-              <span class="metric-unit">USDT</span>
-            </div>
+
+      <div class="overview-grid">
+
+        <!-- 合约账户净资产（主卡 · 跨左列整列，grid-row: span 3） -->
+        <div class="equity-card">
+          <div class="equity-top">
+            <div class="stat-icon">◆</div>
           </div>
-          
-          <!-- 次要指标 -->
-          <div class="metrics-grid">
-            <div class="metric-item">
-              <span class="metric-label">总胜率</span>
-              <span class="metric-value">68.5%</span>
+          <div class="equity-info">
+            <div class="stat-label">合约账户净资产</div>
+            <div class="equity-value" id="account-equity">--</div>
+            <div class="equity-sub">USDT</div>
+            <!-- 可用余额展示 -->
+            <div class="equity-meta">
+              <span class="meta-item" id="account-equity-avail">可用 --</span>
             </div>
-            <div class="metric-item">
-              <span class="metric-label">总平仓数</span>
-              <span class="metric-value">1,245</span>
-            </div>
-            <div class="metric-item">
-              <span class="metric-label">总委托数</span>
-              <span class="metric-value">2,890</span>
-            </div>
+            <div class="equity-sub" id="account-equity-time">--</div>
           </div>
         </div>
+
+        <!-- 右侧统计卡 ×6：2 列 × 3 行 -->
+        <div class="stat-card pnl">
+          <div class="stat-icon">◆</div>
+          <div class="stat-label">总盈亏</div>
+          <div class="stat-value positive" id="total-pnl">+0.00</div>
+          <div class="stat-sub">USDT</div>
+        </div>
+
+        <div class="stat-card winrate">
+          <div class="stat-icon">✚</div>
+          <div class="stat-label">总胜率</div>
+          <div class="stat-value gold" id="win-rate">0.0%</div>
+          <div class="stat-sub" id="win-rate-sub">--</div>
+        </div>
+
+        <div class="stat-card closed">
+          <div class="stat-icon">▨</div>
+          <div class="stat-label">总平仓数</div>
+          <div class="stat-value blue" id="closed-count">0</div>
+          <div class="stat-sub" id="closed-sub">--</div>
+        </div>
+
+        <div class="stat-card orders">
+          <div class="stat-icon">▤</div>
+          <div class="stat-label">总委托数</div>
+          <div class="stat-value gold" id="order-count">0</div>
+          <div class="stat-sub" id="order-sub">--</div>
+        </div>
+
+        <div class="stat-card commission">
+          <div class="stat-icon">§</div>
+          <div class="stat-label">总佣金</div>
+          <div class="stat-value red" id="total-commission">0.00</div>
+          <div class="stat-sub">USDT（手续费支出）</div>
+        </div>
+
+        <!-- 当前持仓（新增卡片） -->
+        <div class="stat-card positions">
+          <div class="stat-icon">▣</div>
+          <div class="stat-label">当前持仓</div>
+          <div class="stat-value blue" id="current-positions">0</div>
+          <div class="stat-sub">非零仓位数量</div>
+        </div>
+
       </div>
     </section>
     
@@ -1806,79 +1833,79 @@ class Modal {
 ### 5.1 主题配置
 
 ```javascript
-// 金融科技深色主题
-const fintechDarkTheme = {
+// 金融科技亮色主题
+const fintechLightTheme = {
   // 背景色
   backgroundColor: 'transparent',
   
   // 文字样式
   textStyle: {
-    fontFamily: 'Inter, -apple-system, sans-serif',
+    fontFamily: 'DM Sans, -apple-system, sans-serif',
     fontSize: 14,
-    color: '#94A3B8' // --color-text-secondary
+    color: '#5B6B82' // --color-text-secondary
   },
   
   // 标题
   title: {
     textStyle: {
-      fontFamily: 'Inter, -apple-system, sans-serif',
+      fontFamily: 'DM Sans, -apple-system, sans-serif',
       fontSize: 18,
       fontWeight: 600,
-      color: '#F8FAFC' // --color-foreground
+      color: '#1A2333' // --color-foreground
     },
     subtextStyle: {
       fontSize: 14,
-      color: '#94A3B8'
+      color: '#93A1B4'
     }
   },
   
   // 图例
   legend: {
     textStyle: {
-      fontFamily: 'Inter, -apple-system, sans-serif',
+      fontFamily: 'DM Sans, -apple-system, sans-serif',
       fontSize: 14,
-      color: '#94A3B8'
+      color: '#5B6B82'
     },
     pageTextStyle: {
-      color: '#94A3B8'
+      color: '#5B6B82'
     },
-    pageIconColor: '#F59E0B',
-    pageIconInactiveColor: '#64748B'
+    pageIconColor: '#D97706',
+    pageIconInactiveColor: '#94A3B8'
   },
   
   // 提示框
   tooltip: {
-    backgroundColor: '#1E293B', // --color-surface
-    borderColor: '#334155', // --color-border
+    backgroundColor: '#ffffff',
+    borderColor: 'rgba(15, 23, 42, 0.08)',
     borderWidth: 1,
     textStyle: {
-      fontFamily: 'Inter, -apple-system, sans-serif',
+      fontFamily: 'DM Sans, -apple-system, sans-serif',
       fontSize: 14,
-      color: '#F8FAFC'
+      color: '#1A2333'
     },
-    extraCssText: 'border-radius: 8px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1);'
+    extraCssText: 'border-radius: 10px; box-shadow: 0 10px 30px rgba(20, 33, 61, 0.08);'
   },
   
   // 坐标轴
   categoryAxis: {
     axisLine: {
       lineStyle: {
-        color: '#334155'
+        color: 'rgba(15, 23, 42, 0.10)'
       }
     },
     axisTick: {
       lineStyle: {
-        color: '#334155'
+        color: 'rgba(15, 23, 42, 0.10)'
       }
     },
     axisLabel: {
-      fontFamily: 'Inter, -apple-system, sans-serif',
+      fontFamily: 'DM Sans, -apple-system, sans-serif',
       fontSize: 12,
-      color: '#94A3B8'
+      color: '#93A1B4'
     },
     splitLine: {
       lineStyle: {
-        color: '#272F42', // --color-muted
+        color: 'rgba(15, 23, 42, 0.05)',
         type: 'dashed'
       }
     }
@@ -1887,22 +1914,22 @@ const fintechDarkTheme = {
   valueAxis: {
     axisLine: {
       lineStyle: {
-        color: '#334155'
+        color: 'rgba(15, 23, 42, 0.10)'
       }
     },
     axisTick: {
       lineStyle: {
-        color: '#334155'
+        color: 'rgba(15, 23, 42, 0.10)'
       }
     },
     axisLabel: {
-      fontFamily: 'Fira Code, monospace',
+      fontFamily: 'JetBrains Mono, monospace',
       fontSize: 12,
-      color: '#94A3B8'
+      color: '#93A1B4'
     },
     splitLine: {
       lineStyle: {
-        color: '#272F42',
+        color: 'rgba(15, 23, 42, 0.06)',
         type: 'dashed'
       }
     }
@@ -1923,26 +1950,17 @@ const fintechDarkTheme = {
       itemStyle: {
         borderWidth: 3,
         shadowBlur: 10,
-        shadowColor: 'rgba(245, 158, 11, 0.3)'
+        shadowColor: 'rgba(15, 164, 127, 0.3)'
       }
     }
   },
   
-  // 颜色
-  color: [
-    '#F59E0B', // Primary 金色
-    '#8B5CF6', // Accent 紫色
-    '#10B981', // Success 绿色
-    '#3B82F6', // Info 蓝色
-    '#EF4444', // Destructive 红色
-    '#FBBF24', // Secondary 亮金色
-    '#06B6D4', // Cyan
-    '#EC4899'  // Pink
-  ]
+  // 颜色（亮色协调 8 色，主色为青绿）
+  color: DashboardConfig.chartColors
 };
 
 // 注册主题
-echarts.registerTheme('fintech-dark', fintechDarkTheme);
+echarts.registerTheme('fintech-light', fintechLightTheme);
 ```
 
 ### 5.2 收益趋势图配置
@@ -1951,7 +1969,7 @@ echarts.registerTheme('fintech-dark', fintechDarkTheme);
 function createTrendChart(containerId, data) {
   const chart = echarts.init(
     document.getElementById(containerId),
-    'fintech-dark'
+    'fintech-light'
   );
   
   const option = {
@@ -2143,82 +2161,74 @@ function createSparkline(canvasId, data, color = '#F59E0B') {
 ┌─────────────────────────────────────────────────────────────┐
 │  导航栏 (sticky)                                              │
 │  ┌───────────────────────────────────────────────────────┐  │
-│  │ Logo  量化交易看板          [日|周]  最后更新: ...     │  │
+│  │ Logo  量化交易看板          [日|周|月]  最后更新: ...    │  │
 │  └───────────────────────────────────────────────────────┘  │
 ├─────────────────────────────────────────────────────────────┤
-│  总览卡片区域                                                 │
-│  ┌───────────────────────────────────────────────────────┐  │
-│  │ 总账户收益                              [实时]         │  │
-│  │                                                         │  │
-│  │ 总盈亏                                                  │  │
-│  │ +125,680.50 USDT  ← 大数字，绿色                        │  │
-│  │                                                         │  │
-│  │ 总胜率        总平仓数      总委托数                    │  │
-│  │ 68.5%         1,245         2,890                       │  │
-│  └───────────────────────────────────────────────────────┘  │
+│  总览统计区（柔和亮色 · 净资产主卡跨左列整列 + 右侧 6 卡）    │
+│  ┌────────────────┐ ┌───────────┐ ┌───────────┐            │
+│  │ ◆合约账户净资产 │ │ ◆总盈亏   │ │ ✚总胜率   │            │
+│  │ 630.75 ←36px   │ │ +125,680.5│ │ 68.5%    │            │
+│  │ USDT           │ │ USDT      │ │ --       │            │
+│  │ ┌───────────┐  │ └───────────┘ └───────────┘            │
+│  │ │可用 420.10│  │ ┌───────────┐ ┌───────────┐            │
+│  │ └───────────┘  │ │ ▨总平仓数 │ │ ▤总委托数 │            │
+│  │ 截止 09/02 12:34│ │ 1,245    │ │ 2,890    │            │
+│  │ (跨3行，浅紫蓝   │ └───────────┘ └───────────┘            │
+│  │  渐变光晕)      │ ┌───────────┐ ┌───────────┐            │
+│  │                │ │ §总佣金   │ │ ▣当前持仓 │            │
+│  └────────────────┘ │ -12.30    │ │ 3        │            │
+│                     │ USDT      │ │ 非零仓位量│            │
+│                     └───────────┘ └───────────┘            │
 ├─────────────────────────────────────────────────────────────┤
 │  策略概览                                                     │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐           │
-│  │ BTC_ETH     │ │ NEW_COIN    │ │ HRS         │           │
-│  │             │ │             │ │             │           │
-│  │ 当日盈亏    │ │ 当日盈亏    │ │ 当日盈亏    │           │
-│  │ +45,230.80  │ │ -12,450.30  │ │ +8,920.50   │           │
-│  │             │ │             │ │             │           │
-│  │ 胜率 平仓 委托│ │ 胜率 平仓 委托│ │ 胜率 平仓 委托│           │
-│  │ 72%  456 890│ │ 58% 234 567│ │ 65% 345 678│           │
-│  │             │ │             │ │             │           │
-│  │ [趋势图]    │ │ [趋势图]    │ │ [趋势图]    │           │
-│  │             │ │             │ │             │           │
-│  │ [查看详情]  │ │ [查看详情]  │ │ [查看详情]  │           │
-│  └─────────────┘ └─────────────┘ └─────────────┘           │
+│  ...（策略卡片区 3 张，右上角"运行中"状态徽标，结构同旧版）     │
 ├─────────────────────────────────────────────────────────────┤
 │  收益趋势                                                     │
 │  ┌───────────────────────────────────────────────────────┐  │
 │  │ 收益趋势                    [近7天] [近4周] [近3月]    │  │
-│  │                                                         │  │
-│  │ [ECharts 折线图]                                        │  │
-│  │                                                         │  │
+│  │ [ECharts 折线图 · 亮色主题]                            │  │
 │  └───────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 #### 视觉层次
 
-1. **第一层级（最重要）**: 总盈亏数字
-   - 字号: 48px
+1. **第一层级（最重要）**: 合约账户净资产数字
+   - 字号: 36px（净资产主卡大数字）
    - 字重: 700 (Bold)
-   - 颜色: 盈利绿色 / 亏损红色
-   - 位置: 总览卡片中心
+   - 颜色: 盈利青绿 / 亏损珊瑚红
+   - 位置: 净资产主卡，跨左列整列突出
+   - 补充: 数字下方显示 USDT 单位；卡内 meta 区展示"可用余额"
 
-2. **第二层级**: 策略卡片盈亏数字
-   - 字号: 30px
+2. **第二层级**: 右侧统计卡数值（总盈亏、总胜率等 6 项）
+   - 字号: 24px
    - 字重: 700 (Bold)
-   - 颜色: 盈利绿色 / 亏损红色
-   - 位置: 各策略卡片顶部
+   - 颜色: 依卡片语义（青绿/琥珀金/天蓝/珊瑚红等）
+   - 位置: 净资产主卡右侧，2 列 × 3 行排列
 
-3. **第三层级**: 次要指标（胜率、平仓数等）
-   - 字号: 24px (总览) / 18px (策略卡片)
-   - 字重: 500 (Medium)
-   - 颜色: 主要文字色
+3. **第三层级**: 卡片辅助文字（单位、统计说明等）
+   - 字号: 12px
+   - 字重: 400 (Normal)
+   - 颜色: 辅助灰色
 
 4. **第四层级**: 标签、提示文字
-   - 字号: 14px
-   - 字重: 400 (Normal)
-   - 颜色: 次要文字色
-   - 大写 + 字间距
+   - 字号: 11px
+   - 字重: 600 (Semibold)
+   - 颜色: 辅助文字色
+   - 大写字母 + 字间距
 
 #### 色彩应用
 
 | 元素 | 颜色 | 说明 |
 |------|------|------|
-| 背景 | `#0F172A` | 深蓝黑，降低视觉疲劳 |
-| 卡片背景 | `#1E293B` | 比背景稍亮，层次分明 |
-| 盈利数字 | `#10B981` | 绿色，传达积极信号 |
-| 亏损数字 | `#EF4444` | 红色，传达警示信号 |
-| 主要文字 | `#F8FAFC` | 浅色，高对比度 |
-| 次要文字 | `#94A3B8` | 中灰，不抢眼 |
-| 边框 | `#334155` | 低对比度，不干扰 |
-| CTA按钮 | `#8B5CF6` | 紫色，科技感 |
+| 背景 | `#EFF3FA` | 浅灰蓝亮底，明亮通透 |
+| 卡片背景 | `rgba(255,255,255,0.72)` | 半透明白玻璃，弱阴影 |
+| 盈利数字 | `#0FA47F` | 青绿，传达积极信号 |
+| 亏损数字 | `#E5484D` | 珊瑚红，传达警示信号 |
+| 主要文字 | `#1A2333` | 深色，高可读性 |
+| 次要文字 | `#5B6B82` | 中灰，不抢眼 |
+| 边框 | `rgba(15,23,42,0.06)` | 扁平弱边框，不干扰 |
+| 净资产主卡 | `#7C6BF0` 渐变 | 浅紫蓝渐变光晕，视觉重心 |
 
 ### 6.2 详情页视觉设计
 
@@ -2299,30 +2309,30 @@ function createSparkline(canvasId, data, color = '#F59E0B') {
 
 | 断点 | 宽度范围 | 设备类型 |
 |------|---------|---------|
-| `sm` | < 768px | 手机 |
-| `md` | 768px - 1023px | 平板 |
-| `lg` | ≥ 1024px | 桌面 |
+| `sm` | ≤ 620px | 手机 |
+| `md` | 621px - 980px | 平板 |
+| `lg` | ≥ 981px | 桌面 |
 
 ### 7.2 布局变化
 
-#### 桌面 (≥ 1024px)
+#### 桌面 (≥ 981px)
 
 - 策略卡片: 3列网格
-- 总览指标: 3列网格
+- 总览统计区: 净资产主卡跨左列整列（3 行），右侧 6 卡按 2 列 × 3 行排布
 - 详情指标: 4列网格
 - 表格: 完整显示
 
-#### 平板 (768px - 1023px)
+#### 平板 (621px - 980px)
 
 - 策略卡片: 2列网格
-- 总览指标: 3列网格（保持）
+- 总览统计区: 降为 2 列；净资产主卡取消跨行（grid-row: auto），与统计卡等宽排列
 - 详情指标: 2列网格
 - 表格: 完整显示
 
-#### 手机 (< 768px)
+#### 手机 (≤ 620px)
 
 - 策略卡片: 1列网格
-- 总览指标: 1列网格
+- 总览统计区: 1 列纵向排列，净资产卡取消跨行
 - 详情指标: 1列网格
 - 表格: 横向滚动
 - 导航栏: 换行布局
@@ -2332,10 +2342,11 @@ function createSparkline(canvasId, data, color = '#F59E0B') {
 
 | 元素 | 桌面 | 平板 | 手机 |
 |------|------|------|------|
-| 大数字 | 48px | 42px | 36px |
-| 策略盈亏 | 30px | 26px | 24px |
-| 页面标题 | 30px | 26px | 24px |
-| 卡片标题 | 20px | 18px | 18px |
+| 净资产大数字 | 36px | 36px | 26px |
+| 统计卡数值 | 24px | 24px | 21px |
+| 策略盈亏 | 24px | 24px | 21px |
+| 页面标题 | 26px | 24px | 24px |
+| 卡片标题 | 18px | 18px | 18px |
 | 正文 | 16px | 16px | 16px |
 
 ---
@@ -2418,6 +2429,6 @@ dashboard/frontend/
 
 ---
 
-**文档版本**: v1.0  
-**最后更新**: 2026-06-02  
+**文档版本**: v1.1  
+**最后更新**: 2026-08-21  
 **设计师**: UI 设计师

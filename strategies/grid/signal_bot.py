@@ -157,6 +157,7 @@ class GridSignalBot:
 
         # 巡检配置（从信号灯专用配置读取，单位：分钟）
         self.check_interval_minutes = config.get('signal_bot', {}).get('check_interval_minutes', 60)
+        self.run_at_minute = config.get('signal_bot', {}).get('run_at_minute', 5)  # 固定在每小时的第几分钟执行
 
         # 推送冷却时间（V2.3三档冷却，从配置文件读取）
         self.push_cooldown_hours_alert = config.get('signal_bot', {}).get('push_cooldown_hours_alert', 1)  # 紧急/趋势加速/极端强趋势
@@ -325,9 +326,40 @@ class GridSignalBot:
             )
             raise
 
+    async def _wait_until_next_run(self) -> None:
+        """
+        等待到下一个固定的执行分钟节点
+
+        例如 run_at_minute=5，则等待到每小时 :05 执行。
+        如果当前时间已经过了 :05，则等待到下一个小时的 :05。
+        """
+        now = datetime.now()
+        current_minute = now.minute
+        current_second = now.second
+        current_microsecond = now.microsecond
+
+        if current_minute < self.run_at_minute:
+            # 当前小时还没到目标分钟，等本小时的 :05
+            wait_seconds = (self.run_at_minute - current_minute) * 60 - current_second - current_microsecond / 1_000_000
+        else:
+            # 已过目标分钟，等下一个小时的 :05
+            wait_seconds = (60 - current_minute + self.run_at_minute) * 60 - current_second - current_microsecond / 1_000_000
+
+        if wait_seconds > 0:
+            logger.info(
+                "等待到下一个执行节点",
+                run_at_minute=self.run_at_minute,
+                current_time=f"{now.hour:02d}:{now.minute:02d}:{now.second:02d}",
+                wait_seconds=int(wait_seconds)
+            )
+            await asyncio.sleep(wait_seconds)
+
     async def run_loop(self, interval_minutes: int = None) -> None:
         """
         持续运行信号检测循环
+
+        每次执行固定在每小时第 run_at_minute 分钟（如 :05），
+        与 K 线收盘时间对齐，确保数据完整。
 
         Args:
             interval_minutes: 巡检间隔（分钟），默认从配置读取
@@ -340,8 +372,12 @@ class GridSignalBot:
 
         logger.info(
             "开始运行信号检测循环",
-            interval_minutes=interval_minutes
+            interval_minutes=interval_minutes,
+            run_at_minute=self.run_at_minute
         )
+
+        # 首次执行：等待到下一个固定分钟节点
+        await self._wait_until_next_run()
 
         while True:
             try:
@@ -362,8 +398,8 @@ class GridSignalBot:
                             exc_info=True
                         )
 
-                # 等待下一次巡检
-                await asyncio.sleep(interval_minutes * 60)
+                # 等待到下一个固定分钟节点（保持对齐）
+                await self._wait_until_next_run()
 
             except Exception as e:
                 logger.error(
@@ -474,7 +510,7 @@ class GridSignalBot:
 
         if hasattr(last, 'timestamp') and last.timestamp:
             hours_since = (datetime.now() - last.timestamp).total_seconds() / 3600
-            if hours_since < cooldown_hours:
+            if hours_since < cooldown_hours - 0.01:  # 0.01小时≈36秒宽容度，避免浮点临界值问题
                 logger.info(f"{symbol} 冷却中，跳过推送",
                             state=state.value,
                             hours_since=round(hours_since, 1),

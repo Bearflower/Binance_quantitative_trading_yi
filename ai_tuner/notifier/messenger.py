@@ -229,6 +229,89 @@ class Messenger:
             logger.error("发送回滚通知失败", error=str(e))
             return False
 
+    async def send_no_changes_notification(
+        self,
+        strategy_name: str,
+        strategy_id: str,
+        reason: str = "",
+    ) -> bool:
+        """
+        发送"无需调整"通知
+
+        AI 调优评估后认为当前参数无需调整，推送此通知告知用户。
+
+        Args:
+            strategy_name: 策略显示名称
+            strategy_id: 策略唯一标识
+            reason: 无需调整的原因
+
+        Returns:
+            是否发送成功
+        """
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        message = (
+            f"StratTuneAI 周度调优\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"策略：{strategy_name}\n"
+            f"时间：{now}\n\n"
+            f"结论：无需调整，当前参数维持不变\n\n"
+            f"AI 分析：{reason}"
+        )
+
+        try:
+            return await self.notification_client.send(
+                message=message,
+                level="info",
+                project=self.tuner_project,
+            )
+        except Exception as e:
+            logger.error("发送无需调整通知失败", error=str(e))
+            return False
+
+    async def send_weekly_summary(
+        self,
+        total_strategies: int,
+        success: int,
+        skip: int,
+        error: int,
+        details: str,
+    ) -> bool:
+        """
+        发送周度调优汇总通知
+
+        Args:
+            total_strategies: 总策略数
+            success: 成功应用数
+            skip: 跳过数（无需调整）
+            error: 错误数
+            details: 各策略详情
+
+        Returns:
+            是否发送成功
+        """
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        message = (
+            f"StratTuneAI 周度调优汇总\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"执行时间：{now}\n\n"
+            f"总策略数：{total_strategies}\n"
+            f"✅ 已调整：{success}\n"
+            f"⏸️ 无需调整：{skip}\n"
+            f"❌ 异常：{error}\n\n"
+            f"各策略详情：\n"
+            f"{details}"
+        )
+
+        try:
+            return await self.notification_client.send(
+                message=message,
+                level="info",
+                project=self.tuner_project,
+            )
+        except Exception as e:
+            logger.error("发送周度调优汇总通知失败", error=str(e))
+            return False
+
     async def send_alert(
         self,
         title: str,

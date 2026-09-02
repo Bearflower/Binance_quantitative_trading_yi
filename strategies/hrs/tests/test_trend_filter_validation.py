@@ -281,3 +281,197 @@ class TestTrendFilterConcept:
         should_final = engine.should_entry(score_result) and ok
         assert should_final is True, \
             "最终判断：趋势过滤通过后，应允许入场"
+
+
+# ==========================================
+# V2.8: EMA 斜率检查测试
+# ==========================================
+
+
+def make_klines_with_ema_slope(slope: float, base_price: float = 100.0, count: int = 30) -> list:
+    """
+    构造具有特定 EMA20 斜率的 4h K 线数据
+
+    EMA20 的斜率由价格增长速率决定。
+    大致关系：若每根 K 线涨幅为 r，则 EMA20 斜率 ≈ r
+
+    Args:
+        slope: 目标 EMA20 斜率（正数=上行，负数=下行）
+        base_price: 起始价格
+        count: K 线数量
+
+    Returns:
+        K 线列表
+    """
+    klines = []
+    price = base_price
+    # 每根 K 线的价格变化率
+    price_change_per_kline = slope * 1.5  # 略放大以补偿 EMA 平滑效应
+    for i in range(count):
+        if i > 0:
+            price = price * (1 + price_change_per_kline)
+        close = price
+        open_p = price * (1 - price_change_per_kline * 0.5)
+        high = max(open_p, close) * 1.005
+        low = min(open_p, close) * 0.995
+        volume = 1000 + i * 10
+        klines.append(make_kline(open_p, high, low, close, volume))
+    return klines
+
+
+class TestEmaSlopeCheck:
+    """V2.8: EMA 斜率检查功能测试"""
+
+    @pytest.fixture
+    def engine(self):
+        return ScoringEngine(CONFIG)
+
+    def test_计算EMA斜率_上行趋势(self, engine):
+        """验证上行趋势中 EMA 斜率为正"""
+        klines = make_klines_with_ema_slope(0.002, base_price=100.0, count=30)
+        slope = engine._calc_ema_slope(klines, period=20, slope_period=3)
+        assert slope > 0.0001, f"上行趋势斜率应为正，实际: {slope}"
+
+    def test_计算EMA斜率_下行趋势(self, engine):
+        """验证下行趋势中 EMA 斜率为负"""
+        klines = make_klines_with_ema_slope(-0.002, base_price=100.0, count=30)
+        slope = engine._calc_ema_slope(klines, period=20, slope_period=3)
+        assert slope < -0.0001, f"下行趋势斜率应为负，实际: {slope}"
+
+    def test_计算EMA斜率_数据不足返回0(self, engine):
+        """验证 K 线数据不足时返回 0.0"""
+        klines = make_klines_with_ema_slope(0.001, base_price=100.0, count=5)  # 远少于 period + slope_period
+        slope = engine._calc_ema_slope(klines, period=20, slope_period=3)
+        assert slope == 0.0, f"数据不足时应返回 0.0，实际: {slope}"
+
+    def test_斜率检查_做多阻断_EMA下行(self, engine):
+        """
+        验证：EMA 斜率下行（负值）且低于做多阈值时，做多应被阻断
+
+        模拟场景：EMA20 显著下行，做多应被阻断
+        """
+        klines = make_klines_with_ema_slope(-0.003, base_price=100.0, count=30)
+
+        ok, reason = engine._check_ema_slope(
+            direction="long",
+            klines_4h=klines,
+            ema_period=20,
+        )
+
+        # 斜率应 < min_slope_for_long (-0.0005)，做多应被阻断
+        assert ok is False, "EMA 下行趋势中做多应被阻断"
+        assert "趋势不支持做多" in reason, f"阻断原因错误: {reason}"
+
+    def test_斜率检查_做空阻断_EMA上行(self, engine):
+        """
+        验证：EMA 斜率上行（正值）且高于做空阈值时，做空应被阻断
+
+        模拟场景：EMA20 显著上行，做空应被阻断
+        """
+        klines = make_klines_with_ema_slope(0.003, base_price=100.0, count=30)
+
+        ok, reason = engine._check_ema_slope(
+            direction="short",
+            klines_4h=klines,
+            ema_period=20,
+        )
+
+        # 斜率应 > max_slope_for_short (0.0005)，做空应被阻断
+        assert ok is False, "EMA 上行趋势中做空应被阻断"
+        assert "趋势不支持做空" in reason, f"阻断原因错误: {reason}"
+
+    def test_斜率检查_做多通过_EMA走平(self, engine):
+        """
+        验证：EMA 斜率接近 0（走平/轻微上下）时，做多应通过
+        """
+        klines = make_klines_with_ema_slope(0.0001, base_price=100.0, count=30)
+
+        ok, reason = engine._check_ema_slope(
+            direction="long",
+            klines_4h=klines,
+            ema_period=20,
+        )
+
+        assert ok is True, f"EMA 走平时做多应通过，被阻断: {reason}"
+
+    def test_斜率检查_做空通过_EMA走平(self, engine):
+        """
+        验证：EMA 斜率接近 0（走平/轻微上下）时，做空应通过
+        """
+        klines = make_klines_with_ema_slope(-0.0001, base_price=100.0, count=30)
+
+        ok, reason = engine._check_ema_slope(
+            direction="short",
+            klines_4h=klines,
+            ema_period=20,
+        )
+
+        assert ok is True, f"EMA 走平时做空应通过，被阻断: {reason}"
+
+    def test_斜率检查_功能关闭时放行(self, engine):
+        """验证 _ema_slope_enabled=False 时跳过检查"""
+        engine._ema_slope_enabled = False
+        ok, reason = engine._check_ema_slope(
+            direction="long",
+            klines_4h=None,
+            ema_period=20,
+        )
+        assert ok is True, "功能关闭时应放行"
+
+    def test_斜率检查_数据为None时放行(self, engine):
+        """验证 klines_4h 为 None 时跳过检查"""
+        ok, reason = engine._check_ema_slope(
+            direction="long",
+            klines_4h=None,
+            ema_period=20,
+        )
+        assert ok is True, "数据为 None 时应放行"
+
+    def test_标准模式_EMA斜率阻断做多(self, engine):
+        """
+        集成测试：标准模式中，EMA 斜率下行应阻断做多
+
+        验证 _check_standard_trend_filter 中 EMA 斜率检查与价格偏离检查的协作。
+        场景：价格高于 EMA20（价格偏离通过），但 EMA20 斜率下行（斜率检查阻断）。
+        数据构造：先拉升后大幅回落，使价格仍高于 EMA20 但 EMA 斜率已转负。
+        """
+        # 构造：15根平盘(100) → 5根拉升(100→116) → 5根回落(116→95)
+        klines = []
+        price = 100.0
+        for i in range(15):
+            klines.append(make_kline(price, price * 1.005, price * 0.995, price, 1000))
+        # 5根拉升：每次 +3%
+        for i in range(5):
+            price = price * 1.03
+            klines.append(make_kline(price * 0.99, price * 1.005, price * 0.99, price, 2000))
+        # 5根回落：每次 -4%（从高位快速回落）
+        peak = price
+        for i in range(5):
+            price = max(peak * (1 - 0.04 * (i + 1)), 95.0)
+            klines.append(make_kline(price * 0.99, price * 1.005, price * 0.99, price, 1500))
+
+        current_close = float(klines[-1]["close"])
+        ema_4h = engine._calc_ema(klines, 20)
+        slope = engine._calc_ema_slope(klines, period=20, slope_period=3)
+
+        # 如果价格高于 EMA20 但斜率不支持做多，验证阻断
+        if current_close > ema_4h * 0.99 and slope < engine._ema_slope_min_for_long:
+            ok, reason = engine._check_standard_trend_filter(
+                direction="long",
+                current_price_4h=current_close,
+                ema_4h=ema_4h,
+                klines_4h=klines,
+            )
+            assert ok is False, "EMA 下行趋势中做多应被阻断"
+            assert "斜率" in reason, f"阻断原因应为 EMA 斜率检查，实际: {reason}"
+        else:
+            # 如果价格低于 EMA20（第一层过滤阻断），验证阻断原因包含趋势信息
+            ok, reason = engine._check_standard_trend_filter(
+                direction="long",
+                current_price_4h=current_close,
+                ema_4h=ema_4h,
+                klines_4h=klines,
+            )
+            assert ok is False, "下行趋势中做多应被阻断"
+            # 至少验证 EMA 斜率计算正确
+            assert slope < 0, f"EMA 斜率应为负，实际: {slope}"
