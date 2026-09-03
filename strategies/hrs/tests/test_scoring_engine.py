@@ -25,7 +25,7 @@ class TestScoringEngineInit:
         assert engine.sentiment_weight == 0.30
         assert engine.entry_threshold == 6.0
         assert engine.min_technical_score == 4.0
-        assert engine.min_primary_pattern_score == 2.5  # V2.8: 从 1.0 提高至 2.5
+        assert engine.min_primary_pattern_score == 2.0  # V2.8-FIX: 从 2.5 降至 2.0
 
     def test_年化费率参数正确加载(self):
         """验证年化费率参数从配置正确加载"""

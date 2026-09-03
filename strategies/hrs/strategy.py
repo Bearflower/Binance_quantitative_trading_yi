@@ -472,6 +472,31 @@ class HRSStrategy(BaseStrategy):
                 )
                 return False
 
+            # V2.8-FIX3: 总持仓保证金比例上限检查（position_sizing.total.account_ratio_cap）
+            total_sizing_config = self.config.get("position_sizing", {}).get("total", {})
+            total_ratio_cap = total_sizing_config.get("account_ratio_cap")
+            if total_ratio_cap is not None:
+                max_total_margin = balance * total_ratio_cap
+                # 新仓位保证金 = 仓位价值 / 杠杆
+                new_margin = (float(quantity) * float(current_price)) / self.trading_executor.leverage
+                # 当前持仓总保证金
+                current_total_margin = 0.0
+                for _, pos_data in self.position_manager.get_all_positions().items():
+                    pos_qty = abs(float(pos_data.get("entry_quantity", 0) or pos_data.get("quantity", 0)))
+                    pos_price = float(pos_data.get("entry_price", 0))
+                    current_total_margin += (pos_qty * pos_price) / self.trading_executor.leverage
+                if current_total_margin + new_margin > max_total_margin + 0.001:  # 浮点容差
+                    logger.warning(
+                        "总持仓保证金超限，跳过开仓",
+                        symbol=symbol,
+                        current_margin=round(current_total_margin, 2),
+                        new_margin=round(new_margin, 2),
+                        total_margin=round(current_total_margin + new_margin, 2),
+                        max_total_margin=round(max_total_margin, 2),
+                        ratio=total_ratio_cap,
+                    )
+                    return False
+
             # 执行开仓（FR-01: 返回 OpenResult，分离「成交」与「保护单完整性」信号）
             result: Optional[OpenResult] = None
             if direction == "short":

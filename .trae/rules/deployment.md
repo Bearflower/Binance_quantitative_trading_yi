@@ -30,7 +30,7 @@
 ## 二、防幻觉机制总览
 
 ```
-部署前快照 → 版本标记 → 上传验证 → 构建验证 → 容器验证 → 代码验证 → 部署确认报告
+变更范围分析 → 部署前快照 → 版本标记 → 上传验证 → 按需构建验证 → 容器验证 → 代码验证 → 部署确认报告
 ```
 
 每个阶段都有明确的验证点，任一阶段失败必须阻断后续流程。
@@ -94,9 +94,95 @@ EOF
 
 ---
 
-## 四、部署中防幻觉机制（强制）⭐⭐⭐
+## 四、变更范围分析（强制）⭐⭐⭐
 
-### 4.1 上传完整性验证
+**部署前必须分析本次代码变更影响哪些容器，仅对受影响的目标容器进行重建，不触碰无关容器。**
+
+### 4.1 变更与容器映射表
+
+根据本项目的 Dockerfile 配置，代码变更与受影响容器的映射关系如下：
+
+| 代码修改路径 | 受影响容器 | 影响性质 | 是否需要重建 |
+|--------------|-----------|---------|------------|
+| `shared/*.py` | btc-eth-strategy, new-coin-strategy, grid-strategy, hrs-strategy, ai-tuner | 直接 COPY 共享代码，所有容器共享同一份业务逻辑 | 必重建 |
+| `strategies/btc_eth/*` | **btc-eth-strategy** | 策略专属代码，仅影响该策略容器 | 必重建 |
+| `strategies/new_coin/*` | **new-coin-strategy** | 策略专属代码，仅影响该策略容器 | 必重建 |
+| `strategies/grid/*` | **grid-strategy** | 策略专属代码，仅影响该策略容器 | 必重建 |
+| `strategies/hrs/*` | **hrs-strategy**（⚠️ `hrs` 的 Dockerfile 使用 `COPY . /app/` 复制整个项目） | 策略专属代码，但构建时会复制整个项目目录 | 必重建 |
+| `ai_tuner/*` | **ai-tuner** | AI 调优器代码 | 必重建 |
+| `services/kline_service/*` | **kline-service** | K 线数据服务 | 必重建 |
+| `services/kline_monitor/*` | **kline-monitor** | K 线健康监控服务 | 必重建 |
+| `strategies/*/config.yaml` | ai-tuner + 对应策略容器 | 配置文件通过 volume 挂载，但构建时也会 COPY | 按需重建 |
+| `requirements.txt` | btc-eth-strategy, new-coin-strategy, grid-strategy | 根目录依赖变更 | 必重建 |
+| `.env` | **所有容器** | 环境变量通过 `env_file` 注入，修改后重启容器即可生效，**无需重建镜像** | 重启即可 |
+| `database/postgres/init-scripts/*` | **postgres** | 初始化脚本通过 volume 挂载，重启即可 | 重启即可 |
+| 任何文件 | **hrs-strategy**（`COPY . /app/`） | 该项目目录下任何文件变更都会影响 hrs 容器构建 | 必重建 |
+
+### 4.2 确定受影响容器
+
+部署前，根据 `git diff` 的结果，对照上表确定受影响容器清单：
+
+```bash
+# 1. 查看本次修改了哪些文件
+CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD)
+
+# 2. 根据修改文件确定受影响容器
+AFFECTED_SERVICES=()
+
+if echo "$CHANGED_FILES" | grep -q "^shared/"; then
+    AFFECTED_SERVICES+=(btc-eth-strategy new-coin-strategy grid-strategy hrs-strategy ai-tuner)
+fi
+if echo "$CHANGED_FILES" | grep -q "^strategies/btc_eth/"; then
+    AFFECTED_SERVICES+=(btc-eth-strategy)
+fi
+if echo "$CHANGED_FILES" | grep -q "^strategies/new_coin/"; then
+    AFFECTED_SERVICES+=(new-coin-strategy)
+fi
+if echo "$CHANGED_FILES" | grep -q "^strategies/grid/"; then
+    AFFECTED_SERVICES+=(grid-strategy)
+fi
+if echo "$CHANGED_FILES" | grep -q "^strategies/hrs/"; then
+    AFFECTED_SERVICES+=(hrs-strategy)
+fi
+if echo "$CHANGED_FILES" | grep -q "^ai_tuner/"; then
+    AFFECTED_SERVICES+=(ai-tuner)
+fi
+if echo "$CHANGED_FILES" | grep -q "^services/kline_service/"; then
+    AFFECTED_SERVICES+=(kline-service)
+fi
+if echo "$CHANGED_FILES" | grep -q "^services/kline_monitor/"; then
+    AFFECTED_SERVICES+=(kline-monitor)
+fi
+# hrs 的特殊性：任何非 shared/ 目录变更都会影响 hrs
+if echo "$CHANGED_FILES" | grep -qv "^shared/\|^backtest/\|^docs/\|^.trae/\|^.git"; then
+    AFFECTED_SERVICES+=(hrs-strategy)
+fi
+
+# 3. 去重并输出受影响容器列表
+echo "受影响容器（需重建）:"
+printf '%s\n' "${AFFECTED_SERVICES[@]}" | sort -u
+```
+
+### 4.3 部署策略选择
+
+根据受影响容器范围，选择对应的部署策略：
+
+| 容器范围 | 部署策略 | 执行方式 |
+|----------|---------|---------|
+| **仅 1-2 个策略容器** | 按需重建 | `docker-compose build --no-cache <service>` → `docker-compose up -d <service>` |
+| **共享模块变更（shared/）** | 重建所有依赖 shared 的容器 | 逐个 `build --no-cache` 并 `up -d` |
+| **hrs 策略变更** | 因其 `COPY . /app/`，需重建 hrs 容器 | 单独重建 hrs |
+| **仅 postgres 相关** | 无需构建镜像，重启即可 | `docker-compose restart postgres` |
+| **仅 .env 变更** | 无需构建，重启容器即可 | `docker-compose restart <service>` |
+| **首次部署 / 全量部署** | 全量重建 | `docker-compose down --remove-orphans` → 全量 `build --no-cache` → `docker-compose up -d` |
+
+**核心原则：** 能按需重建就不全量重建，能重启就不重建。任一项验证失败只需修复对应的容器，不影响其他运行中的服务。
+
+---
+
+## 五、部署中防幻觉机制（强制）⭐⭐⭐
+
+### 5.1 上传完整性验证
 
 ```bash
 LOCAL_MD5=$(md5sum deployment_package.tar.gz | cut -d' ' -f1)
@@ -109,17 +195,70 @@ fi
 echo "✅ 文件上传完整性验证通过"
 ```
 
-### 4.2 强制删除旧镜像和缓存
+### 5.2 按需重建容器（替代全量重建）
 
-**这是防止"部署幻觉"最关键的一步：**
+**根据第四节的变更范围分析结果，仅对受影响容器执行重建，不触碰无关容器。**
+
+#### 5.2.1 按需重建（推荐，仅重建受影响容器）
 
 ```bash
 ssh root@SERVER_IP << 'EOF'
-set -e  # 任何错误立即退出
+set -e
 
 cd /root/PROJECT_NAME
 
-# 1. 停止并删除旧容器
+# 解压新代码包
+tar -xzf /root/deployment_package.tar.gz -C /root/PROJECT_NAME
+
+# 验证 VERSION 文件已正确解压
+if [ ! -f "VERSION" ]; then
+    echo "❌ VERSION 文件不存在，部署包可能损坏"
+    exit 1
+fi
+cat VERSION
+
+# 根据变更范围分析结果，逐个重建受影响容器
+# 请替换为实际受影响的容器列表
+AFFECTED_SERVICES=("btc-eth-strategy")
+
+for SERVICE in "${AFFECTED_SERVICES[@]}"; do
+    echo "=== 开始重建 $SERVICE ==="
+    
+    # 1. 删除该服务的旧镜像
+    docker images | grep "$SERVICE" | awk '{print $3}' | xargs -r docker rmi --force
+    
+    # 2. 构建（不使用缓存）
+    docker-compose build --no-cache "$SERVICE"
+    
+    # 3. 重新启动该服务（不影响其他运行中的容器）
+    docker-compose up -d "$SERVICE"
+    
+    # 4. 等待容器就绪
+    sleep 5
+    
+    # 5. 确认该容器正在运行
+    if ! docker ps -q -f name="$SERVICE" | grep -q .; then
+        echo "❌ $SERVICE 启动失败"
+        docker logs --tail 50 "$SERVICE"
+        exit 1
+    fi
+    echo "✅ $SERVICE 重建完成"
+done
+
+# 清理构建缓存（可选，节省磁盘空间）
+docker builder prune -f
+EOF
+```
+
+#### 5.2.2 全量重建（仅首次部署或清理积压旧镜像时使用）
+
+```bash
+ssh root@SERVER_IP << 'EOF'
+set -e
+
+cd /root/PROJECT_NAME
+
+# 1. 停止并删除所有容器
 docker-compose down --remove-orphans
 
 # 2. 删除所有相关镜像（强制）
@@ -131,46 +270,69 @@ docker builder prune -f -a
 # 4. 解压新代码包
 tar -xzf /root/deployment_package.tar.gz -C /root/PROJECT_NAME
 
-# 5. 验证 VERSION 文件已正确解压
+# 5. 验证 VERSION 文件
 if [ ! -f "VERSION" ]; then
     echo "❌ VERSION 文件不存在，部署包可能损坏"
     exit 1
 fi
 cat VERSION
 
-# 6. 构建（不使用缓存）
+# 6. 全量构建
 docker-compose build --no-cache
 
-# 7. 启动
+# 7. 全量启动
 docker-compose up -d
 
-# 8. 等待容器就绪
-sleep 5
+# 8. 等待所有容器就绪
+sleep 10
 
-# 9. 确认容器正在运行
-if ! docker ps -q -f name=CONTAINER_NAME | grep -q .; then
-    echo "❌ 容器启动失败"
-    docker logs --tail 50 CONTAINER_NAME
-    exit 1
-fi
+# 9. 确认所有容器都在运行
+docker ps --format 'table {{.Names}}\t{{.Status}}'
 EOF
 ```
 
-### 4.3 构建日志错误检测
+#### 5.2.3 仅重启容器（无需重建的场景）
+
+对于 `.env`、配置文件（volume 挂载）等变更，无需重建镜像，重启容器即可：
 
 ```bash
-BUILD_LOG=$(ssh root@SERVER_IP "cd /root/PROJECT_NAME && docker-compose build --no-cache --progress=plain 2>&1")
+# 重启单个容器
+docker-compose restart btc-eth-strategy
 
-if echo "$BUILD_LOG" | grep -qi "error\|exception\|failed\|exit code"; then
-    echo "❌ 构建过程中发现错误！"
-    echo "$BUILD_LOG" | grep -i "error\|exception\|failed\|exit code"
-    exit 1
-fi
+# 重启多个容器
+docker-compose restart btc-eth-strategy kline-service
+
+# 确认重启后容器状态
+docker ps -f name=btc-eth-strategy --format '{{.Names}} {{.Status}}'
+```
+
+#### 5.2.4 策略选择指南
+
+| 场景 | 使用方式 | 原因 |
+|------|---------|------|
+| 代码变更（shared/、strategies/、services/ 等） | 按需重建 5.2.1 | 仅重建受影响容器，其他服务不受影响 |
+| 首次部署或清理积压旧镜像 | 全量重建 5.2.2 | 全新环境，需要完整初始化 |
+| 仅 .env 或配置文件变更 | 仅重启 5.2.3 | 无需构建镜像，最快生效 |
+| 仅 postgres 初始化脚本变更 | 仅重启 5.2.3 | postgres 使用预构建镜像，无需重建 |
+
+### 5.3 构建日志错误检测
+
+```bash
+# 对每个受影响服务的构建日志进行检测
+for SERVICE in "${AFFECTED_SERVICES[@]}"; do
+    BUILD_LOG=$(ssh root@SERVER_IP "cd /root/PROJECT_NAME && docker-compose build --no-cache --progress=plain $SERVICE 2>&1")
+    if echo "$BUILD_LOG" | grep -qi "error\|exception\|failed\|exit code"; then
+        echo "❌ $SERVICE 构建过程中发现错误！"
+        echo "$BUILD_LOG" | grep -i "error\|exception\|failed\|exit code"
+        exit 1
+    fi
+    echo "✅ $SERVICE 构建通过"
+done
 ```
 
 ---
 
-## 五、部署后代码级验证（强制）⭐⭐⭐
+## 六、部署后代码级验证（强制）⭐⭐⭐
 
 **这是验证新版本代码是否真正在线上运行的核心步骤。**
 
@@ -257,7 +419,7 @@ fi
 
 ---
 
-## 六、部署确认报告（强制）⭐⭐⭐
+## 七、部署确认报告（强制）⭐⭐⭐
 
 所有验证通过后，必须生成部署确认报告：
 
@@ -338,24 +500,25 @@ echo "报告已保存到: $REPORT_FILE"
 
 ---
 
-## 七、反幻觉检查清单
+## 八、反幻觉检查清单
 
 部署完成后，必须逐项检查：
 
 ```
-□ 1. 容器状态确认: docker ps 显示所有容器运行中（包括 kline-monitor）
-□ 2. 镜像 ID 对比: 容器镜像 ID == 最新构建镜像 ID
-□ 3. VERSION 文件: 容器内 DEPLOY_ID == 本地 DEPLOY_ID
-□ 4. 关键文件 MD5: 容器内文件 MD5 == 本地文件 MD5
-□ 5. 日志无错误: 容器日志中无 error/exception/fatal
-□ 6. 部署确认报告: 已生成并保存
-□ 7. 无遗漏服务: docker ps | grep 确认所有服务（含 kline-monitor）都在运行
+□ 1. 变更范围分析: 仅重建了受影响容器，无关容器未受影响
+□ 2. 容器状态确认: docker ps 显示所有目标容器运行中
+□ 3. 镜像 ID 对比: 容器镜像 ID == 最新构建镜像 ID
+□ 4. VERSION 文件: 容器内 DEPLOY_ID == 本地 DEPLOY_ID
+□ 5. 关键文件 MD5: 容器内文件 MD5 == 本地文件 MD5
+□ 6. 日志无错误: 容器日志中无 error/exception/fatal
+□ 7. 部署确认报告: 已生成并保存
+□ 8. 无遗漏服务: 未重建的容器仍正常运行（docker ps 确认）
 
 **任一检查项失败，视为部署失败，必须修复后重新部署。**
 
 ---
 
-## 八、代码同步规则
+## 九、代码同步规则
 
 ### 回测代码 vs 生产代码
 
@@ -373,7 +536,7 @@ echo "报告已保存到: $REPORT_FILE"
 
 ---
 
-## 九、常见问题处理
+## 十、常见问题处理
 
 ### 问题1：VERSION 文件不匹配
 
@@ -403,18 +566,21 @@ EOF
 2. 检查 .dockerignore 是否过滤了必要文件
 3. 重新执行部署（带 --no-cache）
 
-### 问题3：容器未更新
+### 问题3：容器未更新（按需重建场景）
 
-**症状：** 部署后容器运行的还是旧代码
+**症状：** 按需重建后，某容器运行的仍是旧代码
 
 **解决方案：**
 ```bash
+# 1. 先确认该容器是否在受影响列表内
+# 2. 如果不在，说明变更范围分析有误，补充容器名
+# 3. 单独重建该容器
 ssh root@SERVER_IP << 'EOF'
 cd /root/PROJECT_NAME
-docker-compose down
-docker rmi IMAGE_NAME:latest --force
-docker-compose build --no-cache
-docker-compose up -d
+docker-compose down SERVICE_NAME
+docker images | grep SERVICE_NAME | awk '{print $3}' | xargs -r docker rmi --force
+docker-compose build --no-cache SERVICE_NAME
+docker-compose up -d SERVICE_NAME
 EOF
 ```
 
@@ -451,27 +617,30 @@ EOF
 2. 如果缺少某个服务，单独启动：`docker-compose up -d kline-monitor`
 3. 长期方案：将部署脚本中的 `set -e` 改为对非关键服务不阻断，或使用 `|| true` 降级
 
-### 问题7：【Binance quantitative trading】`docker-compose down` 后只启动单个服务导致其他服务缺失
+### 问题7：【Binance quantitative trading】按需重建后依赖服务未启动
 
-**症状：** `docker-compose down --remove-orphans` 停掉所有容器后，手动执行 `docker-compose up -d <单个服务名>` 只启动了该服务，其他所有策略容器（new_coin、grid、hrs、ai-tuner、kline-monitor 等）均未运行。
+**症状：** 按需重建某个策略容器（如 `btc-eth-strategy`）后，该容器正常启动，但依赖它的其他服务（如 `ai-tuner` 读取策略数据）功能异常。
 
-**根因：** `docker-compose down --remove-orphans` 会停止所有容器，但 `docker-compose up -d <service>` 只会启动**指定的服务及其依赖**，不会启动项目中所有服务。
+**根因：** 按需重建时，`docker-compose up -d <service>` 会启动该服务及其 `depends_on` 依赖，但**不会启动依赖该服务的其他服务**。如果被重建的服务有版本兼容性变化，依赖它的上游服务可能因为 API 不兼容而出错。
 
-**发生场景：** 手动部署时跳过 `one_click_deploy.sh`，直接执行单条 SSH 命令。
+**发生场景：** 策略代码变更（如数据库 schema 变更、API 接口签名变更），但依赖该策略的其他服务未同步重建。
 
 **解决方案：**
-1. **优先使用 `one_click_deploy.sh` 一键部署脚本**，它已经逐项启动所有服务
-2. 如果必须手动部署，`docker-compose down` 后必须执行 `docker-compose up -d`（不带服务名）启动所有服务
-3. 更安全的做法：先用 `docker-compose build --no-cache <service>` 构建单个镜像，构建成功后再用 `docker-compose up -d`（不带服务名）启动全部
-4. 部署完成后，务必执行 `docker ps | grep trading_system-` 确认所有容器都在运行
+1. 变更范围分析时，不仅要考虑哪个容器直接受代码变更影响，还要考虑**间接依赖关系**
+2. 如果变更涉及接口/协议/数据库 schema 变化，应同时重建所有依赖该服务的上游容器
+3. 部署完成后，不仅要检查被重建的容器，还要检查依赖它的上游容器日志无错误
+4. 不确定时，优先使用全量重建（5.2.2）
 
 ---
 
-## 十、部署命令速查
+## 十一、部署命令速查
 
 ```bash
 # 代码同步检查
 bash scripts/check_code_sync.sh
+
+# 变更范围分析（确定受影响容器）
+git diff --name-only HEAD~1 HEAD | grep -oP '^[^/]+/[^/]+' | sort -u
 
 # 生成版本标记
 cat > VERSION << EOF
@@ -481,7 +650,10 @@ DEPLOY_ID=$(uuidgen | cut -d- -f1)
 FILE_MD5=$(md5sum strategies/btc_eth/main.py | cut -d' ' -f1)
 EOF
 
-# 一键部署
+# 按需部署（仅重建受影响容器）
+ssh root@SERVER_IP "cd /root/PROJECT_NAME && docker-compose build --no-cache btc-eth-strategy && docker-compose up -d btc-eth-strategy"
+
+# 全量部署
 ./one_click_deploy.sh
 
 # 验证部署（五层验证）
@@ -493,16 +665,16 @@ EOF
 # 查看所有容器状态（确认无遗漏）
 ssh root@SERVER_IP "docker ps --format 'table {{.Names}}\t{{.Status}}'"
 
-# 单独检查 kline-monitor 是否存在
-ssh root@SERVER_IP "docker ps -f name=kline-monitor --format '{{.Names}} {{.Status}}' || echo '❌ kline-monitor 未运行'"
+# 单独检查某个服务状态
+ssh root@SERVER_IP "docker ps -f name=btc-eth-strategy --format '{{.Names}} {{.Status}}' || echo '❌ 未运行'"
 
-# 启动缺失的服务（kline-monitor 等）
-ssh root@SERVER_IP "cd /root/trading_system && docker-compose up -d kline-monitor"
+# 仅重启容器（无需重建）
+ssh root@SERVER_IP "cd /root/PROJECT_NAME && docker-compose restart btc-eth-strategy"
 
 # 查看容器日志
 ssh root@SERVER_IP "docker logs --tail 50 CONTAINER_NAME"
 
-# 容器内代码校验
+# 容器内代码校验（按需重建后验证）
 ssh root@SERVER_IP "docker exec CONTAINER_NAME cat /app/VERSION"
 ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/main.py"
 ```
@@ -516,4 +688,4 @@ ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/main.py"
 
 ---
 
-**最后更新：** 2026-06-01
+**最后更新：** 2026-09-03

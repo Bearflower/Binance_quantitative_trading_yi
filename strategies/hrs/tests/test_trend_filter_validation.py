@@ -475,3 +475,156 @@ class TestEmaSlopeCheck:
             assert ok is False, "下行趋势中做多应被阻断"
             # 至少验证 EMA 斜率计算正确
             assert slope < 0, f"EMA 斜率应为负，实际: {slope}"
+
+
+class TestTrendFilterReversalMode:
+    """V2.8-FIX: 反转模式趋势过滤测试"""
+
+    @pytest.fixture
+    def engine(self):
+        return ScoringEngine(CONFIG)
+
+    def test_反转模式做多_价格低于EMA20_允许(self, engine):
+        """反转模式：价格低于 EMA20 时允许做多"""
+        config = {
+            "enabled": True,
+            "long": {"min_price": 1.02, "max_deviation": 0.96},
+            "short": {"max_price": 0.98, "max_deviation": 1.04},
+        }
+        ema_4h = 100.0
+        current_price = 99.0  # 低于 EMA20，反转做多区域
+        ok, reason = engine._check_lv_rm_trend_filter(
+            direction="long",
+            current_price_4h=current_price,
+            ema_4h=ema_4h,
+            config=config,
+            reversal_mode=True,
+        )
+        assert ok is True, f"反转模式：价格低于 EMA20 应允许做多，被阻断: {reason}"
+
+    def test_反转模式做多_价格过高_阻断(self, engine):
+        """反转模式：价格高于 EMA20*1.02 时阻断做多"""
+        config = {
+            "enabled": True,
+            "long": {"min_price": 1.02, "max_deviation": 0.96},
+        }
+        ema_4h = 100.0
+        current_price = 103.0  # 高于 EMA20*1.02，太高了
+        ok, reason = engine._check_lv_rm_trend_filter(
+            direction="long",
+            current_price_4h=current_price,
+            ema_4h=ema_4h,
+            config=config,
+            reversal_mode=True,
+        )
+        assert ok is False, "反转模式：价格过高应阻断做多"
+
+    def test_反转模式做空_价格高于EMA20_允许(self, engine):
+        """反转模式：价格高于 EMA20 时允许做空"""
+        config = {
+            "enabled": True,
+            "short": {"max_price": 0.98, "max_deviation": 1.04},
+        }
+        ema_4h = 100.0
+        current_price = 101.0  # 高于 EMA20，反转做空区域
+        ok, reason = engine._check_lv_rm_trend_filter(
+            direction="short",
+            current_price_4h=current_price,
+            ema_4h=ema_4h,
+            config=config,
+            reversal_mode=True,
+        )
+        assert ok is True, f"反转模式：价格高于 EMA20 应允许做空，被阻断: {reason}"
+
+    def test_反转模式做空_价格过低_阻断(self, engine):
+        """反转模式：价格低于 EMA20*0.98 时阻断做空"""
+        config = {
+            "enabled": True,
+            "short": {"max_price": 0.98, "max_deviation": 1.04},
+        }
+        ema_4h = 100.0
+        current_price = 97.0  # 低于 EMA20*0.98，太低了
+        ok, reason = engine._check_lv_rm_trend_filter(
+            direction="short",
+            current_price_4h=current_price,
+            ema_4h=ema_4h,
+            config=config,
+            reversal_mode=True,
+        )
+        assert ok is False, "反转模式：价格过低应阻断做空"
+
+    # ==========================================
+    # V2.8-FIX2: 反转模式跳过 EMA 斜率检查
+    # ==========================================
+
+    def test_反转模式_EMA斜率检查_做多跳过(self, engine):
+        """
+        V2.8-FIX2: 反转模式下 EMA 斜率检查应被跳过
+
+        验证：反转模式做多，价格在反转做多范围内（0.97~1.01倍EMA20），
+        即使EMA斜率显著下行，趋势过滤也应通过。
+
+        注：current_price_4h 和 ema_4h 由测试直接指定（价格偏离检查用），
+        klines_4h 仅用于 EMA 斜率计算。构造强下行趋势的K线数据，
+        验证反转模式下斜率检查被跳过。
+        """
+        ema_4h = 100.0
+        current_price = 99.5  # 在反转做多范围内 (0.995倍EMA20)
+
+        # 构造强下行趋势的K线（EMA斜率应显著为负）
+        klines = make_klines_with_ema_slope(-0.003, base_price=100.0, count=30)
+
+        # 验证：反转模式下，即使EMA斜率显著下行，趋势过滤也应通过
+        ok, reason = engine._check_standard_trend_filter(
+            direction="long",
+            current_price_4h=current_price,
+            ema_4h=ema_4h,
+            klines_4h=klines,
+        )
+
+        assert ok is True, f"反转模式：做多应跳过 EMA 斜率检查，被阻断: {reason}"
+
+    def test_反转模式_EMA斜率检查_做空跳过(self, engine):
+        """
+        V2.8-FIX2: 反转模式下 EMA 斜率检查应被跳过
+
+        验证：反转模式做空，价格在反转做空范围内（0.99~1.03倍EMA20），
+        即使EMA斜率显著上行，趋势过滤也应通过。
+        """
+        ema_4h = 100.0
+        current_price = 101.0  # 在反转做空范围内 (1.01倍EMA20)
+
+        # 构造强上行趋势的K线（EMA斜率应显著为正）
+        klines = make_klines_with_ema_slope(0.003, base_price=100.0, count=30)
+
+        ok, reason = engine._check_standard_trend_filter(
+            direction="short",
+            current_price_4h=current_price,
+            ema_4h=ema_4h,
+            klines_4h=klines,
+        )
+
+        assert ok is True, f"反转模式：做空应跳过 EMA 斜率检查，被阻断: {reason}"
+
+    def test_标准模式_EMA斜率检查_仍然生效(self, engine):
+        """
+        V2.8-FIX2: 标准模式（非反转）下 EMA 斜率检查仍然生效
+
+        验证：当 reversal_mode=False 时，EMA 斜率检查正常工作。
+        """
+        # 临时关闭反转模式
+        engine.trend_filter_reversal_mode = False
+
+        # 构造下行趋势的 4h K 线数据
+        klines = make_klines_with_ema_slope(-0.003, base_price=100.0, count=30)
+        slope = engine._calc_ema_slope(klines, period=20, slope_period=3)
+
+        # 做多：EMA 斜率显著下行，应被阻断
+        ok, reason = engine._check_ema_slope(
+            direction="long",
+            klines_4h=klines,
+            ema_period=20,
+        )
+
+        assert ok is False, "标准模式：EMA 下行应阻断做多"
+        assert "趋势不支持做多" in reason, f"阻断原因错误: {reason}"

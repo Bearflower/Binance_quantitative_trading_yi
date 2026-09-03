@@ -102,6 +102,8 @@ class ScoringEngine:
         self.trend_filter_ema_period = trend_filter_config.get("ema_period", 20)
         self.trend_filter_long = trend_filter_config.get("long", {})
         self.trend_filter_short = trend_filter_config.get("short", {})
+        # V2.8-FIX: 反转模式（标准模式使用，LV-RM 不受影响）
+        self.trend_filter_reversal_mode = trend_filter_config.get("reversal_mode", False)
 
         # V2.8: EMA 斜率检查配置
         ema_slope_config = trend_filter_config.get("ema_slope", {})
@@ -942,6 +944,7 @@ class ScoringEngine:
         current_price_4h: float,
         ema_4h: float,
         config: Dict[str, Any],
+        reversal_mode: bool = False,
     ) -> Tuple[bool, str]:
         """
         V2.4: 检查 LV-RM 4h趋势过滤
@@ -949,11 +952,16 @@ class ScoringEngine:
         - 做多：价格 > EMA20 且 价格 ≥ EMA20 × 0.97
         - 做空：价格 < EMA20 且 价格 ≤ EMA20 × 1.03
 
+        V2.8-FIX: 新增 reversal_mode 参数
+        - 反转模式做多：价格 < EMA20 × min_price（上限）且 价格 ≥ EMA20 × max_deviation（下限）
+        - 反转模式做空：价格 > EMA20 × max_price（下限）且 价格 ≤ EMA20 × max_deviation（上限）
+
         Args:
             direction: 'short' 或 'long'
             current_price_4h: 4h级别当前价格
             ema_4h: 4h EMA20 值
             config: 趋势过滤配置字典
+            reversal_mode: 是否启用反转模式（标准模式使用，LV-RM 不使用）
 
         Returns:
             (是否通过, 失败原因)
@@ -966,26 +974,52 @@ class ScoringEngine:
 
         if direction == "long":
             long_config = config.get("long", {})
-            min_price_ratio = long_config.get("min_price", 1.0)
-            max_deviation = long_config.get("max_deviation", 0.97)
-            # 做多：价格 > EMA20（多头排列）
-            if current_price_4h <= ema_4h * min_price_ratio:
-                return False, f"4h趋势过滤：价格({current_price_4h:.4f})未超过EMA20({ema_4h:.4f})，不做多"
-            # 做多：偏离不超过配置阈值
-            deviation_pct = (1 - long_config.get("max_deviation", 0.97)) * 100
-            if current_price_4h < ema_4h * max_deviation:
-                return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过-{deviation_pct:.0f}%，禁止抄底"
+            if reversal_mode:
+                # V2.8-FIX: 反转模式做多 — 价格在 EMA20 附近或下方
+                # min_price 作为上限：价格不能高于 EMA20 * min_price
+                price_upper = long_config.get("min_price", 1.01)
+                if current_price_4h >= ema_4h * price_upper:
+                    return False, f"4h趋势过滤(反转)：价格({current_price_4h:.4f})高于EMA20上限({ema_4h * price_upper:.4f})，不做多"
+                # max_deviation 作为下限：价格不能低于 EMA20 * max_deviation
+                max_deviation = long_config.get("max_deviation", 0.97)
+                if current_price_4h < ema_4h * max_deviation:
+                    deviation_pct = (1 - max_deviation) * 100
+                    return False, f"4h趋势过滤(反转)：价格({current_price_4h:.4f})低于EMA20下限({ema_4h * max_deviation:.4f})超过-{deviation_pct:.0f}%，不做多"
+            else:
+                # 原有逻辑（LV-RM 模式使用）
+                min_price_ratio = long_config.get("min_price", 1.0)
+                max_deviation = long_config.get("max_deviation", 0.97)
+                # 做多：价格 > EMA20（多头排列）
+                if current_price_4h <= ema_4h * min_price_ratio:
+                    return False, f"4h趋势过滤：价格({current_price_4h:.4f})未超过EMA20({ema_4h:.4f})，不做多"
+                # 做多：偏离不超过配置阈值
+                deviation_pct = (1 - long_config.get("max_deviation", 0.97)) * 100
+                if current_price_4h < ema_4h * max_deviation:
+                    return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过-{deviation_pct:.0f}%，禁止抄底"
         else:  # short
             short_config = config.get("short", {})
-            max_price_ratio = short_config.get("max_price", 1.0)
-            max_deviation = short_config.get("max_deviation", 1.03)
-            # 做空：价格 < EMA20（空头排列）
-            if current_price_4h >= ema_4h * max_price_ratio:
-                return False, f"4h趋势过滤：价格({current_price_4h:.4f})未低于EMA20({ema_4h:.4f})，不做空"
-            # 做空：偏离不超过配置阈值
-            deviation_pct = (short_config.get("max_deviation", 1.03) - 1) * 100
-            if current_price_4h > ema_4h * max_deviation:
-                return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过+{deviation_pct:.0f}%，禁止摸顶"
+            if reversal_mode:
+                # V2.8-FIX: 反转模式做空 — 价格在 EMA20 附近或上方
+                # max_price 作为下限：价格不能低于 EMA20 * max_price
+                price_lower = short_config.get("max_price", 0.99)
+                if current_price_4h <= ema_4h * price_lower:
+                    return False, f"4h趋势过滤(反转)：价格({current_price_4h:.4f})低于EMA20下限({ema_4h * price_lower:.4f})，不做空"
+                # max_deviation 作为上限：价格不能高于 EMA20 * max_deviation
+                max_deviation = short_config.get("max_deviation", 1.03)
+                if current_price_4h > ema_4h * max_deviation:
+                    deviation_pct = (max_deviation - 1) * 100
+                    return False, f"4h趋势过滤(反转)：价格({current_price_4h:.4f})高于EMA20上限({ema_4h * max_deviation:.4f})超过+{deviation_pct:.0f}%，不做空"
+            else:
+                # 原有逻辑（LV-RM 模式使用）
+                max_price_ratio = short_config.get("max_price", 1.0)
+                max_deviation = short_config.get("max_deviation", 1.03)
+                # 做空：价格 < EMA20（空头排列）
+                if current_price_4h >= ema_4h * max_price_ratio:
+                    return False, f"4h趋势过滤：价格({current_price_4h:.4f})未低于EMA20({ema_4h:.4f})，不做空"
+                # 做空：偏离不超过配置阈值
+                deviation_pct = (short_config.get("max_deviation", 1.03) - 1) * 100
+                if current_price_4h > ema_4h * max_deviation:
+                    return False, f"4h趋势过滤：价格({current_price_4h:.4f})偏离EMA20({ema_4h:.4f})超过+{deviation_pct:.0f}%，禁止摸顶"
 
         return True, ""
 
@@ -1017,7 +1051,7 @@ class ScoringEngine:
         if not self.trend_filter_enabled:
             return True, "趋势过滤未启用"
 
-        # 第一步：价格偏离过滤（复用 LV-RM 的过滤逻辑）
+        # 第一步：价格偏离过滤（复用 LV-RM 的过滤逻辑，V2.8-FIX 传入反转模式）
         trend_ok, trend_reason = self._check_lv_rm_trend_filter(
             direction=direction,
             current_price_4h=current_price_4h,
@@ -1027,16 +1061,19 @@ class ScoringEngine:
                 "long": self.trend_filter_long,
                 "short": self.trend_filter_short,
             },
+            reversal_mode=self.trend_filter_reversal_mode,
         )
         if not trend_ok:
             return trend_ok, trend_reason
 
         # V2.8: 第二步：EMA 斜率检查
-        ema_ok, ema_reason = self._check_ema_slope(
-            direction, klines_4h, self.trend_filter_ema_period
-        )
-        if not ema_ok:
-            return False, ema_reason
+        # V2.8-FIX2: 反转模式下跳过EMA斜率检查（斜率检查是趋势跟踪机制，与反转策略冲突）
+        if not self.trend_filter_reversal_mode:
+            ema_ok, ema_reason = self._check_ema_slope(
+                direction, klines_4h, self.trend_filter_ema_period
+            )
+            if not ema_ok:
+                return False, ema_reason
 
         return True, ""
 

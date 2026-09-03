@@ -28,7 +28,7 @@ scoring:
   # 技术面硬性要求
   technical:
     min_total_score: 4.0        # 技术总分最低要求
-    min_primary_pattern_score: 2.5  # V2.8: 基础形态最低评分（含替代形态），从 1.0 提高至 2.5
+    min_primary_pattern_score: 2.0  # V2.8-FIX: 从 2.5 降至 2.0，允许偏弱形态通过
 
   # V2.0 新增：极端行情加分
   extreme_bonus:
@@ -95,21 +95,23 @@ scoring:
 
   # V2.6: 标准模式趋势过滤（4h EMA20 价格偏离过滤）
   # V2.8: 收紧偏离度阈值 + 新增 EMA 斜率检查
+  # V2.8-FIX: 新增反转模式（reversal_mode），趋势过滤方向与反转策略一致
   trend_filter:
     enabled: true
+    reversal_mode: true               # V2.8-FIX: 启用反转模式
     ema_period: 20
     long:
-      min_price: 1.0                # 做多：价格 >= EMA20（必须 > EMA20）
-      max_deviation: 0.99            # V2.8: 收紧从 0.97 至 0.99（偏离不超过 -1%）
+      min_price: 1.01                 # 反转做多：价格必须低于 EMA20*1.01（允许略高于 EMA20）
+      max_deviation: 0.97             # 反转做多：价格必须不低于 EMA20*0.97（允许最多 3% 低于 EMA20）
     short:
-      max_price: 1.0                # 做空：价格 <= EMA20（必须 < EMA20）
-      max_deviation: 1.01            # V2.8: 收紧从 1.03 至 1.01（偏离不超过 +1%）
+      max_price: 0.99                 # 反转做空：价格必须高于 EMA20*0.99（允许略低于 EMA20）
+      max_deviation: 1.03             # 反转做空：价格必须不高于 EMA20*1.03（允许最多 3% 高于 EMA20）
     # V2.8: EMA 斜率检查（基于最近 3 根 4h K 线的 EMA20 平均变化率）
     ema_slope:
       enabled: true
-      period: 3                     # 计算最近 3 根 4h K 线的平均斜率
-      min_slope_for_long: -0.0005   # 做多：EMA20 斜率 >= -0.05%（允许轻微下行）
-      max_slope_for_short: 0.0005   # 做空：EMA20 斜率 <= 0.05%（允许轻微上行）
+      period: 3                       # 计算最近 3 根 4h K 线的平均斜率
+      min_slope_for_long: -0.0005     # 做多：EMA20 斜率 >= -0.05%（允许轻微下行）
+      max_slope_for_short: 0.0005     # 做空：EMA20 斜率 <= 0.05%（允许轻微上行）
 
 # ============================================================
 # V2.3 极端市场模块（EMM）配置（动态分位数版）
@@ -404,7 +406,7 @@ position_sizing:
   # 总持仓保证金上限
   # 总保证金 = 账户余额 × 比例上限
   total:
-    account_ratio_cap: 0.30      # 账户比例上限（30%）
+    account_ratio_cap: 0.20      # 账户比例上限（20%）
 
 # K线配置
 kline:

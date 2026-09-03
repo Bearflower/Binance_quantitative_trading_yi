@@ -323,7 +323,7 @@ ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/shared/*.py"
 
 ### 7.4 部署确认报告
 
-五层验证全部通过后，必须生成部署确认报告（详见 `deployment.md` 第六节），作为"新版本代码已确认在线上运行"的证据。
+五层验证全部通过后，必须生成部署确认报告（详见 `deployment.md` 第七节），作为"新版本代码已确认在线上运行"的证据。
 
 ### 7.5 不涉及部署的场景
 
