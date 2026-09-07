@@ -58,24 +58,52 @@ class CapitalManager:
             float: 分配资金 USDT 金额
             None: 未配置 capital_limits，调用方应使用全账户余额
         """
-        try:
-            config = self._read_config()
-            capital_limits = config.get("capital_limits")
-            if not capital_limits or not isinstance(capital_limits, dict):
-                return None
+        return self._get_nested_float(
+            "capital_limits", "monthly_limit",
+            log_msg="读取分配资金失败，将使用全账户余额",
+        )
 
-            monthly_limit = capital_limits.get("monthly_limit")
-            if monthly_limit is None:
-                return None
+    def get_account_ratio_cap(self) -> Optional[float]:
+        """
+        动态读取总持仓保证金占账户权益的比例阈值
 
-            return float(monthly_limit)
-        except Exception as e:
-            logger.warning(
-                "读取分配资金失败，将使用全账户余额",
-                config_path=self.config_path,
-                error=str(e),
-            )
-            return None
+        读取根级 position_sizing.total.account_ratio_cap（每月由 AI 资金分配自动更新），
+        每次调用重新读取配置文件，确保获取最新值（禁止调用方硬编码）。
+
+        Returns:
+            float: 比例阈值（如 0.3 表示总持仓保证金 ≤ 账户权益 30%）
+            None: 未配置 position_sizing.total.account_ratio_cap，调用方不做限制
+        """
+        return self._get_nested_float(
+            "position_sizing", "total", "account_ratio_cap",
+            log_msg="读取总持仓保证金比例阈值失败，调用方不做限制",
+        )
+
+    def get_total_margin_limit(self) -> Optional[float]:
+        """
+        动态读取总持仓保证金上限
+
+        优先取「月度资金分配」金额 capital_limits.monthly_limit（每月由 AI 更新，动态变化）；
+        未配置时回退到静态兜底 trading.total_position_margin_limit。
+        每次调用都重新读取配置文件，确保获取最新值（禁止调用方硬编码）。
+
+        Returns:
+            float: 总持仓保证金上限（USDT）
+            None: 未配置任何来源，调用方不做限制
+        """
+        # 1) 优先：月度分配金额（动态，随 AI 月度资金分配更新）
+        monthly = self._get_nested_float(
+            "capital_limits", "monthly_limit",
+            log_msg="读取总持仓保证金上限失败",
+        )
+        if monthly is not None:
+            return monthly
+
+        # 2) 回退：静态兜底阈值（未开展月度分配时使用）
+        return self._get_nested_float(
+            "trading", "total_position_margin_limit",
+            log_msg="读取总持仓保证金上限失败",
+        )
 
     def get_allocated_ratio(self) -> Optional[float]:
         """
@@ -85,24 +113,10 @@ class CapitalManager:
             float: 分配比例（如 0.36）
             None: 未配置 capital_limits
         """
-        try:
-            config = self._read_config()
-            capital_limits = config.get("capital_limits")
-            if not capital_limits or not isinstance(capital_limits, dict):
-                return None
-
-            ratio = capital_limits.get("allocated_ratio")
-            if ratio is None:
-                return None
-
-            return float(ratio)
-        except Exception as e:
-            logger.warning(
-                "读取分配比例失败",
-                config_path=self.config_path,
-                error=str(e),
-            )
-            return None
+        return self._get_nested_float(
+            "capital_limits", "allocated_ratio",
+            log_msg="读取分配比例失败",
+        )
 
     def can_open_position(self, current_positions_value: float, new_position_value: float) -> bool:
         """
@@ -144,6 +158,33 @@ class CapitalManager:
             bool: True 表示已配置，False 表示未配置
         """
         return self.get_allocated_capital() is not None
+
+    def _get_nested_float(self, *keys: str, log_msg: str) -> Optional[float]:
+        """
+        按嵌套路径读取配置中的浮点值（任一节点缺失返回 None）
+
+        供各读取方法复用，避免重复 try/except 与节点遍历模板。
+
+        Args:
+            keys: 配置嵌套键路径，如 ("strategy", "risk", "total_margin_ratio_limit")
+            log_msg: 读取失败时的日志消息（中文）
+
+        Returns:
+            float: 读取到的数值；未配置或读取异常返回 None
+        """
+        try:
+            config = self._read_config()
+            node = config
+            for key in keys:
+                if not isinstance(node, dict) or key not in node:
+                    return None
+                node = node[key]
+            if node is None:
+                return None
+            return float(node)
+        except Exception as e:
+            logger.warning(log_msg, config_path=self.config_path, error=str(e))
+            return None
 
     def _read_config(self) -> dict:
         """

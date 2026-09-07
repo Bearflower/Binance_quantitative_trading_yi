@@ -81,9 +81,9 @@ scoring:
 # 交易配置
 trading:
   leverage: 2           # 杠杆倍数（文档要求≤2倍）
-  max_positions: 3      # 最大持仓数量
   daily_trade_limit: 2         # 单日最多开仓币种数
   single_position_margin: 50  # 单笔保证金（USDT）
+  total_position_margin_limit: 150  # 总持仓保证金上限（USDT），各合约保证金之和不得超过此值；动态读取（优先 capital_limits.monthly_limit 月度分配）
   entry_order_timeout_seconds: 60  # 限价单入场超时等待（秒）
   market_order_score_threshold: 7.0  # 市价单评分阈值：评分≥此值直接市价单抢单；<此值走实时市价+滑点限价单
   stop_loss_percent: 0.05      # 止损百分比（5%）
@@ -107,6 +107,34 @@ trading:
   time_stop:
     enabled: true       # 是否启用时间止损
     max_holding_hours: 72   # 最大持仓时间（小时）
+
+  # 时间止损前置复核（2026-09-07 新增：多因素综合评分，判断空头逻辑是否仍成立）
+  time_stop_review:
+    enabled: true               # 是否启用复核（持有满72h未达第一目标时先复核再决定）
+    hold_threshold: 5.0         # 复核总分≥此值继续持有；<此值才止损
+    exempt_progress: 0.7        # 距第一目标跌幅达此比例则豁免时间止损，继续持有到目标
+    bias_hold: true             # 无法确定/数据缺失时偏向继续持有（不给止损）
+    # 维度权重（四维综合，归一化求和，总分0~10）
+    weights:
+      trend: 0.40               # 空头趋势维度
+      price_action: 0.30        # 反转形态维度
+      volume: 0.20              # 量能维度
+      sentiment: 0.10           # 情绪维度
+    # 趋势维度参数
+    trend:
+      drop_reference: 0.10      # 相对开仓价回撤达此比例视为趋势充分成立（对应趋势维满分）
+    # 反转形态维度参数
+    reversal:
+      lookback: 5               # 检测最近N根K线
+      rebound_ratio: 0.01       # 较近期低点反弹达此比例视为反转
+      breakout_ratio: 0.01      # 突破近期高点达此比例视为破位
+    # 量能维度参数
+    volume:
+      lookback: 5               # 检测最近N根K线
+      volume_surge: 1.5         # 反弹期量能较基线放大倍数（≥此值判为放量上攻）
+    # 情绪维度参数（预留：当前情绪维度暂未接入实时费率，恒取中性分5.0）
+    sentiment:
+      funding_positive: 0.0001  # 预留：资金费率≥此值（原始费率，做多拥挤）视为利于空头
   
   # 连续亏损暂停配置
   consecutive_loss:

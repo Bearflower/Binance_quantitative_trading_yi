@@ -29,6 +29,11 @@ from strategies.btc_eth.market_state import (
 logger = structlog.get_logger()
 
 
+# 保证金计算防除零兜底（杠杆缺失/无效时的保守默认，非业务阈值）
+_DEFAULT_LEVERAGE = 2
+_MIN_LEVERAGE = 1
+
+
 def _safe_last(indicators: Dict, timeframe: str, field: str) -> Optional[float]:
     """
     安全读取某时间框架某指标的最新有效值（v6.26 新增）
@@ -2325,6 +2330,98 @@ class BTCEthStrategy:
         
         return adjusted
     
+    async def _get_account_equity(self, symbol: str) -> Optional[float]:
+        """获取账户权益（USDT），获取失败或权益无效返回 None（调用方降级不限制）
+
+        Args:
+            symbol: 交易对（仅用于日志定位）
+
+        Returns:
+            float: 账户权益（USDT）；获取失败或权益无效返回 None
+        """
+        try:
+            account_info = await self.binance.get_account_info()
+        except Exception as e:
+            logger.warning(
+                "获取账户信息失败，跳过总持仓保证金检查",
+                symbol=symbol,
+                error=str(e),
+            )
+            return None
+        equity = float(account_info.get('totalMarginBalance', 0) or 0)
+        if equity <= 0:
+            logger.warning(
+                "账户权益无效，跳过总持仓保证金检查",
+                symbol=symbol,
+                account_equity=equity,
+            )
+            return None
+        return equity
+
+    async def _check_total_margin_ratio(self, signal: Dict) -> bool:
+        """检查总持仓保证金是否超过账户权益比例阈值（动态读取配置）
+
+        Args:
+            signal: 交易信号（含 quantity、entry_price、leverage）
+
+        Returns:
+            bool: True 可开仓；False 超限拒绝开仓
+        """
+        # 1. 动态读取阈值（每次重新读取，保证配置更新立即生效）
+        ratio_limit = self.capital_mgr.get_account_ratio_cap()
+        if ratio_limit is None or ratio_limit <= 0:
+            return True
+
+        # 2. 获取账户权益（失败或无效时降级不限制）
+        account_equity = await self._get_account_equity(signal['symbol'])
+        if account_equity is None:
+            return True
+
+        # 3. 当前持仓保证金 + 新开仓保证金
+        current_total_margin = self._calc_current_total_margin()
+        new_margin = (
+            float(signal['quantity']) * float(signal['entry_price'])
+            / max(float(signal['leverage']), _MIN_LEVERAGE)
+        )
+
+        # 4. 超限判断
+        total_margin = current_total_margin + new_margin
+        if total_margin / account_equity > ratio_limit:
+            logger.warning(
+                "总持仓保证金超限，拒绝开仓",
+                symbol=signal['symbol'],
+                current_margin=round(current_total_margin, 2),
+                new_margin=round(new_margin, 2),
+                margin_ratio=round(total_margin / account_equity, 4),
+                ratio_limit=ratio_limit,
+            )
+            return False
+
+        return True
+
+    def _calc_current_total_margin(self) -> float:
+        """统计 MTPCS 策略当前全部持仓的保证金总和
+
+        单仓保证金 = 名义价值 / 杠杆 = (数量 × 入场价) / 杠杆。
+        grade 未知或无效时取配置中最小杠杆保守高估保证金。
+
+        Returns:
+            float: 当前总持仓保证金（USDT）
+        """
+        leverage_config = self.binance_config['leverage']
+        total_margin = 0.0
+        for _, pos in self.positions.items():
+            quantity, entry_price = pos.current_quantity, pos.entry_price
+            if quantity is None or quantity <= 0 or entry_price is None or entry_price <= 0:
+                continue
+            if pos.grade and pos.grade in leverage_config:
+                leverage = leverage_config[pos.grade]
+            else:
+                # grade 未知或无效：取配置中最小杠杆保守高估保证金（防除零兜底）
+                leverage = min(leverage_config.values()) if leverage_config else _DEFAULT_LEVERAGE
+            total_margin += float(quantity) * float(entry_price) / float(leverage)
+        return total_margin
+
     async def execute_signal(self, signal: Dict) -> bool:
         """
         执行交易信号
@@ -2372,6 +2469,16 @@ class BTCEthStrategy:
                     current=current_positions_value,
                     new=new_position_value,
                     limit=self.capital_mgr.get_allocated_capital(),
+                )
+                return False
+
+            # 2.1 开仓前检查：总持仓保证金不超过账户权益比例阈值（动态读取配置）
+            if not await self._check_total_margin_ratio(signal):
+                logger.warning(
+                    "总持仓保证金比例超限，已拒绝开仓",
+                    symbol=symbol,
+                    grade=signal.get('grade'),
+                    direction=signal.get('direction'),
                 )
                 return False
 

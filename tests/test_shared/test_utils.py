@@ -2,21 +2,22 @@
 测试工具函数
 """
 import pytest
-import asyncio
 from shared.utils import retry_on_failure, setup_logging
 
 
 class TestRetryOnFailure:
     """测试重试装饰器"""
     
-    def test_valid_parameters(self):
+    @pytest.mark.asyncio
+    async def test_valid_parameters(self):
         """测试有效参数"""
-        # 不应该抛出异常
+        # 不应该抛出异常（用 pytest-asyncio 管理的循环，
+        # 避免 asyncio.run 清空线程事件循环污染后续测试）
         @retry_on_failure(max_retries=3, delay=1.0, backoff=2.0)
         async def test_func():
             return "success"
         
-        assert asyncio.run(test_func()) == "success"
+        assert await test_func() == "success"
     
     def test_invalid_max_retries_type(self):
         """测试无效的最大重试次数类型"""

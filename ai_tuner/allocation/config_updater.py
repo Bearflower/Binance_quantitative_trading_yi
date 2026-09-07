@@ -6,7 +6,9 @@
 写入目标：
     1. public.capital_allocation 表：持久化分配记录
     2. ai_tuner/config.yaml：更新 capital_limits 字段
-    3. 各策略 config.yaml：更新 capital_limits 字段
+    3. 各策略 config.yaml：
+       - 更新 capital_limits 字段（月度限额）
+       - 同步更新 position_sizing.total.account_ratio_cap（总保证金比例上限，与分配比例一致）
 """
 
 import json
@@ -255,17 +257,20 @@ class AllocationConfigUpdater:
         config_operator,
     ) -> bool:
         """
-        更新各策略 config.yaml 的 capital_limits 字段
+        更新各策略 config.yaml 的 capital_limits 字段和 position_sizing.total.account_ratio_cap
 
         使用 ConfigOperator.apply_changes 原子写入。
 
-        格式：
+        写入内容：
         ```yaml
         capital_limits:
           monthly_limit: 360.0
           allocated_ratio: 0.36
           allocation_month: "2026-07"
           updated_at: "2026-07-31T23:55:00+08:00"
+        position_sizing:
+          total:
+            account_ratio_cap: 0.36    # 同步更新，与分配比例一致
         ```
 
         Args:
@@ -314,20 +319,29 @@ class AllocationConfigUpdater:
                         "updated_at": updated_at,
                     }
 
+                    # 同步更新 position_sizing.total.account_ratio_cap
+                    # 使总持仓保证金比例上限与分配比例保持一致（动态更新）
+                    allocated_ratio = round(entry.allocated_ratio, 4)
+
                     # 使用 ConfigOperator.apply_changes 原子写入
                     # apply_changes 内部会：备份 → 读取 → 更新 → 原子写入
+                    # 同时更新 capital_limits 和 position_sizing.total.account_ratio_cap
                     success = config_operator.apply_changes(
                         config_path=config_path,
-                        adjustments={"capital_limits": capital_limits},
+                        adjustments={
+                            "capital_limits": capital_limits,
+                            "position_sizing.total.account_ratio_cap": allocated_ratio,
+                        },
                     )
 
                     if success:
                         logger.info(
-                            "策略配置 capital_limits 已更新",
+                            "策略配置已更新",
                             strategy_id=entry.strategy_id,
                             config_path=config_path,
                             monthly_limit=entry.allocated_amount,
-                            allocated_ratio=round(entry.allocated_ratio, 4),
+                            allocated_ratio=allocated_ratio,
+                            account_ratio_cap=allocated_ratio,
                         )
                     else:
                         logger.error(

@@ -2,7 +2,7 @@
 交易执行模块
 执行做空交易、设置止损止盈
 """
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 import asyncio
 import os
 from decimal import Decimal
@@ -81,7 +81,6 @@ class TradingExecutor:
         # 交易配置
         trading_config = config.get('trading', {})
         self.leverage = trading_config.get('leverage', 2)
-        self.max_positions = trading_config.get('max_positions', 3)
         self.single_position_margin = Decimal(str(trading_config.get('single_position_margin', 50)))
         self.stop_loss_percent = Decimal(str(trading_config.get('stop_loss_percent', 0.05)))
         self.take_profit_percent = Decimal(str(trading_config.get('take_profit_percent', 0.10)))
@@ -99,6 +98,26 @@ class TradingExecutor:
         time_stop_config = trading_config.get('time_stop', {})
         self.time_stop_enabled = time_stop_config.get('enabled', True)
         self.max_holding_hours = time_stop_config.get('max_holding_hours', 72)
+
+        # 时间止损前置复核配置（多因素综合评分）
+        review_config = trading_config.get('time_stop_review', {})
+        self.time_stop_review_enabled = review_config.get('enabled', False)
+        self.review_hold_threshold = float(review_config.get('hold_threshold', 5.0))
+        self.review_exempt_progress = float(review_config.get('exempt_progress', 0.7))
+        self.review_bias_hold = review_config.get('bias_hold', True)
+        review_weights = review_config.get('weights', {})
+        self.review_weights = {
+            'trend': float(review_weights.get('trend', 0.40)),
+            'price_action': float(review_weights.get('price_action', 0.30)),
+            'volume': float(review_weights.get('volume', 0.20)),
+            'sentiment': float(review_weights.get('sentiment', 0.10)),
+        }
+        self.review_drop_reference = float(review_config.get('trend', {}).get('drop_reference', 0.10))
+        self.review_rebound_ratio = float(review_config.get('reversal', {}).get('rebound_ratio', 0.01))
+        self.review_breakout_ratio = float(review_config.get('reversal', {}).get('breakout_ratio', 0.01))
+        self.review_reversal_lookback = int(review_config.get('reversal', {}).get('lookback', 5))
+        self.review_volume_lookback = int(review_config.get('volume', {}).get('lookback', 5))
+        self.review_volume_surge = float(review_config.get('volume', {}).get('volume_surge', 1.5))
         
         # 紧急止损配置
         self.emergency_stop_enabled = trading_config.get('emergency_stop', {}).get('enabled', True)
@@ -135,15 +154,10 @@ class TradingExecutor:
         logger.info(
             "交易执行器初始化完成",
             leverage=self.leverage,
-            max_positions=self.get_max_positions(),
             single_position_margin=float(self.single_position_margin),
             batch_take_profit_enabled=self.batch_take_profit_enabled,
             time_stop_enabled=self.time_stop_enabled
         )
-
-    def get_max_positions(self) -> int:
-        """获取最大持仓数量"""
-        return self.max_positions
 
     async def execute_short(
         self,
@@ -208,6 +222,24 @@ class TradingExecutor:
                     limit=self.capital_mgr.get_allocated_capital(),
                 )
                 return None
+
+            # 5.5.1 总持仓保证金上限检查（与 capital_limits 并存，取更严格）
+            # 阈值通过 capital_mgr 动态读取配置文件 trading.total_position_margin_limit，禁止硬编码
+            total_limit = self.capital_mgr.get_total_margin_limit()
+            if total_limit is not None:
+                current_total_margin = current_positions_value / self.leverage
+                new_margin = new_position_value / self.leverage
+                total_margin_after = current_total_margin + new_margin
+                if total_margin_after > total_limit:
+                    logger.warning(
+                        "总持仓保证金超限，跳过开仓",
+                        symbol=symbol,
+                        current_margin=current_total_margin,
+                        new_margin=new_margin,
+                        total_margin=total_margin_after,
+                        limit=total_limit,
+                    )
+                    return None
 
             # 6. 开空仓（根据评分决定下单方式）
             #    评分 ≥ market_order_score_threshold：用市价单抢单，确保成交
@@ -1134,11 +1166,13 @@ class TradingExecutor:
     async def _check_time_stop(self, symbol: str, entry_time: datetime) -> None:
         """
         检查时间止损
-        
+
         逻辑：
-        - 持仓超过72小时且未达第一目标
-        - 自动平仓100%
-        
+        - 持仓超过 max_holding_hours（默认72小时）且未达第一目标
+        - 若启用前置复核（time_stop_review.enabled）：先做多因素综合评分判断空头逻辑是否仍成立；
+          成立则继续持有，不成立才平仓100%
+        - 未启用复核则保持原逻辑：直接平仓100%
+
         Args:
             symbol: 交易对
             entry_time: 入场时间
@@ -1151,10 +1185,25 @@ class TradingExecutor:
                 # 检查是否达到第一目标
                 tracking = self.position_tracking.get(symbol, {})
                 if not tracking.get('target1_reached'):
+                    # 前置复核：先判断空头逻辑是否仍成立，再决定是否止损
+                    should_stop, reason = True, ""
+                    if self.time_stop_review_enabled:
+                        should_stop, reason = await self._time_stop_review(symbol, tracking)
+
+                    if not should_stop:
+                        logger.info(
+                            f"时间止损复核：空头逻辑仍成立，继续持有", 
+                            symbol=symbol,
+                            holding_hours=holding_hours,
+                            reason=reason
+                        )
+                        return
+
                     logger.warning(
                         f"触发时间止损: {symbol}",
                         holding_hours=holding_hours,
-                        max_holding_hours=self.max_holding_hours
+                        max_holding_hours=self.max_holding_hours,
+                        review_reason=reason
                     )
                     
                     # 平仓100%
@@ -1166,13 +1215,185 @@ class TradingExecutor:
                     
                     # 发送通知
                     await self.notification.send(
-                        message=f"【时间止损触发】\n交易对: {symbol}\n持仓时长: {holding_hours:.1f}小时\n已平仓100%",
+                        message=f"【时间止损触发】\n交易对: {symbol}\n持仓时长: {holding_hours:.1f}小时\n已平仓100%\n复核原因: {reason}",
                         level="warning",
                         project="new_coin"
                     )
             
         except Exception as e:
             logger.error(f"检查时间止损失败: {symbol}, 错误: {e}")
+    
+    async def _time_stop_review(self, symbol: str, tracking: Dict[str, Any]) -> Tuple[bool, str]:
+        """
+        时间止损前置复核（多因素综合评分）
+
+        判断"空头逻辑是否仍成立"：
+        - 距第一目标较近（豁免规则）→ 判定继续持有
+        - 综合 趋势 + 反转形态 + 量能 + 情绪 四维评分，总分 ≥ hold_threshold 继续持有，< 则止损
+        - 数据异常/无法确定时按 bias_hold 偏向继续持有
+
+        Args:
+            symbol: 交易对
+            tracking: 持仓跟踪数据（含 entry_price/atr 等）
+
+        Returns:
+            (should_stop, reason): 是否应立即止损平仓，及判定原因
+        """
+        try:
+            entry_price = float(tracking.get('entry_price', 0))
+            atr = float(tracking.get('atr', 0) or 0)
+
+            if entry_price <= 0:
+                return (not self.review_bias_hold), "入场价异常（按bias_hold配置决策）"
+
+            # 获取当前价格
+            ticker = await self.binance_api._request(
+                "GET", "/fapi/v1/ticker/price",
+                params={'symbol': symbol}, signed=False
+            )
+            current_price = float(ticker.get('price', 0))
+            if current_price <= 0:
+                return (not self.review_bias_hold), "当前价格异常（按bias_hold配置决策）"
+
+            # 豁免规则：距第一目标较近则继续持有到目标
+            if atr > 0:
+                target1_price = entry_price - float(self.target1_atr_multiplier) * atr
+                total_drop = entry_price - target1_price
+                if total_drop > 0:
+                    progress = (entry_price - current_price) / total_drop
+                    if progress >= self.review_exempt_progress:
+                        return False, f"距第一目标较近(达成{progress*100:.0f}%)，豁免时间止损"
+
+            # 获取K线
+            klines = await self.kline_service.get_klines(symbol, "1h", limit=30)
+            if not klines:
+                return (not self.review_bias_hold), "K线数据缺失（按bias_hold配置决策）"
+
+            # 计算四维评分
+            score = self._compute_review_score(entry_price, current_price, atr, klines)
+
+            should_stop = score < self.review_hold_threshold
+            if not should_stop:
+                return False, f"综合评分{score:.1f}(≥{self.review_hold_threshold})，空头逻辑仍成立，继续持有"
+            return True, f"综合评分{score:.1f}(<{self.review_hold_threshold})，空头逻辑被破坏，止损"
+
+        except Exception as e:
+            logger.error(f"时间止损复核失败: {symbol}, 错误: {e}")
+            # 复核异常时按 bias_hold 决策，避免因数据问题误平仓
+            return (not self.review_bias_hold, "复核异常（按bias_hold配置决策）")
+
+    def _compute_review_score(
+        self,
+        entry_price: float,
+        current_price: float,
+        atr: float,
+        klines: List[Dict[str, Any]]
+    ) -> float:
+        """
+        计算多因素综合评分（0~10，越高表示空头逻辑越成立）
+
+        四维：
+        - trend：空头趋势（现价较开仓价回撤深度）
+        - price_action：反转形态（近期是否出现反弹/破位，削弱空头）
+        - volume：量能（反弹是否放量上攻）
+        - sentiment：情绪（资金费率是否仍利于空头）
+
+        Args:
+            entry_price: 开仓价
+            current_price: 当前价
+            atr: ATR值
+            klines: 1小时K线列表
+
+        Returns:
+            float: 综合评分
+        """
+        # 1. 趋势维度（0~10）
+        drop_ratio = (entry_price - current_price) / entry_price if entry_price else 0
+        trend_score = min(10.0, max(0.0, drop_ratio / self.review_drop_reference) * 10.0)
+
+        # 2. 反转形态维度（0~10）
+        price_action_score = self._score_price_action(klines, current_price)
+
+        # 3. 量能维度（0~10）
+        volume_score = self._score_volume(klines)
+
+        # 4. 情绪维度（0~10）
+        # 当前保持中性分（5.0），避免增加实时资金费率API依赖；如需接入可扩展 _score_sentiment
+        sentiment_score = self._score_sentiment()
+
+        w = self.review_weights
+        total = (
+            trend_score * w['trend']
+            + price_action_score * w['price_action']
+            + volume_score * w['volume']
+            + sentiment_score * w['sentiment']
+        )
+        return total
+
+    def _score_price_action(self, klines: List[Dict[str, Any]], current_price: float) -> float:
+        """
+        反转形态维度评分：越高表示空头越成立（无反转），越低表示出现反转削弱空头
+
+        判定依据：
+        - 现价较近期低点反弹达到阈值 → 反弹信号（削弱空头）
+        - 现价已回到/突破近期高点 → 破位信号（削弱空头）
+        - 现价突破前期高点 → 强反转信号（大幅削弱空头）
+        """
+        if not klines:
+            return 5.0
+        recent = klines[-self.review_reversal_lookback:]
+        prior = klines[:-self.review_reversal_lookback] if len(klines) > self.review_reversal_lookback else []
+
+        recent_high = max(float(k.get('high', 0)) for k in recent)
+        recent_low = min(float(k.get('low', 0)) for k in recent)
+
+        # 反弹信号：现价较近期低点反弹超过阈值
+        rebound_ratio = (current_price - recent_low) / recent_low if recent_low else 0.0
+        # 破位信号：现价突破前期高点
+        prior_high = max(float(k.get('high', 0)) for k in prior) if prior else recent_high
+        breakout_ratio = (current_price - prior_high) / prior_high if prior_high else 0.0
+
+        penalty = 0.0
+        if rebound_ratio >= self.review_rebound_ratio:
+            penalty += 4.0
+        if current_price >= recent_high:
+            penalty += 3.0
+        if breakout_ratio >= self.review_breakout_ratio:
+            penalty += 3.0
+
+        return max(0.0, 10.0 - penalty)
+
+    def _score_volume(self, klines: List[Dict[str, Any]]) -> float:
+        """
+        量能维度评分：越高表示空头越成立（反弹缩量/无放量上攻）
+        """
+        if not klines or len(klines) < 2 * self.review_volume_lookback:
+            return 5.0
+        recent = klines[-self.review_volume_lookback:]
+        baseline = klines[-2 * self.review_volume_lookback:-self.review_volume_lookback]
+
+        recent_vol = sum(float(k.get('volume', 0)) for k in recent) / len(recent)
+        base_vol = sum(float(k.get('volume', 0)) for k in baseline) / len(baseline)
+
+        if base_vol <= 0:
+            return 5.0
+
+        vol_ratio = recent_vol / base_vol
+        # 放量上攻 = 空头受威胁，扣分
+        recent_up = sum(1 for k in recent if float(k.get('close', 0)) >= float(k.get('open', 0)))
+        up_ratio = recent_up / len(recent)
+
+        if vol_ratio >= self.review_volume_surge and up_ratio >= 0.6:
+            return 2.0  # 放量上攻，削弱空头
+        return 8.0  # 未放量上攻，空头仍健康
+
+    def _score_sentiment(self) -> float:
+        """
+        情绪维度评分：当前保持中性分（5.0），避免增加实时资金费率API依赖。
+
+        （如需接入资金费率，可在后续迭代中重写此方法，从 binance_api 读取当前费率）
+        """
+        return 5.0
     
     async def _check_trailing_stop(self, symbol: str) -> None:
         """

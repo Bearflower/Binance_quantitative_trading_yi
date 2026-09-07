@@ -498,6 +498,9 @@ backtest:
     drawdown_weight: 0.30       # 最大回撤权重
     sharpe_weight: 0.30         # 夏普比率权重
 
+  # 回测模式置信度：基于回测引擎模拟的 SimulationMetrics.confidence 值
+  confidence: 0.85
+
   # 性能限制
   max_execution_time: 10        # 单次回测最大执行时间（秒）
   min_kline_count: 24           # 最少K线数量，低于此值跳过回测

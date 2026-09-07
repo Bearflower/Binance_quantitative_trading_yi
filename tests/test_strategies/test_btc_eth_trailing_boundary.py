@@ -43,13 +43,17 @@ def create_base_strategy(config, mock_binance, mock_kline_service, mock_notifica
 def setup_dynamic_trailing_config(strategy, tiers=None, vol_adj_enabled=False, mock_vol_adj=True):
     """注入动态利润保护配置
     
+    v6.16.10：动态止盈配置已迁移到 risk.signal_levels.{grade}.dynamic_trailing，
+    需注入到 signal_levels.A（测试持仓默认 grade='A'）。
+    _get_volatility_adjustment 仍从顶层 risk.dynamic_trailing.volatility_adjustment 读取。
+
     Args:
         strategy: 策略实例
         tiers: 回撤阶梯配置
         vol_adj_enabled: 是否启用波动率调节
         mock_vol_adj: 是否mock _get_volatility_adjustment（性能测试需要真实方法）
     """
-    strategy.risk_config['dynamic_trailing'] = {
+    dt_config = {
         'enabled': True,
         'activation': {'min_profit_pct': 1.5, 'also_on_tp1': True},
         'regression_tiers': tiers if tiers is not None else [
@@ -60,6 +64,13 @@ def setup_dynamic_trailing_config(strategy, tiers=None, vol_adj_enabled=False, m
         ],
         'volatility_adjustment': {'enabled': vol_adj_enabled}
     }
+    # 注入到 signal_levels.A（_calculate_dynamic_trailing_stop 从该路径读取）
+    strategy.risk_config.setdefault('signal_levels', {})
+    strategy.risk_config['signal_levels'].setdefault('A', {})
+    strategy.risk_config['signal_levels']['A']['dynamic_trailing'] = dt_config
+    # _get_volatility_adjustment 仍从顶层 risk.dynamic_trailing 读取
+    strategy.risk_config.setdefault('dynamic_trailing', {})
+    strategy.risk_config['dynamic_trailing']['volatility_adjustment'] = {'enabled': vol_adj_enabled}
     strategy.risk_config['stop_loss_atr_multiplier'] = 1.5
     if mock_vol_adj:
         strategy._get_volatility_adjustment = AsyncMock(return_value=1.0)
@@ -442,7 +453,7 @@ class TestBoundaryConditions:
         预期：无论浮盈多少，都返回 None
         """
         setup_dynamic_trailing_config(strategy)
-        strategy.risk_config['dynamic_trailing']['enabled'] = False
+        strategy.risk_config['signal_levels']['A']['dynamic_trailing']['enabled'] = False
         position_long.highest_price = Decimal('66000')
         result = await strategy._calculate_dynamic_trailing_stop(
             "BTCUSDT", position_long, Decimal('66000')

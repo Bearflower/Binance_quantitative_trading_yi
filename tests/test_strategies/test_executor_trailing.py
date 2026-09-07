@@ -781,6 +781,8 @@ class TestPlaceShortOrder:
         executor.capital_mgr = MagicMock()
         executor.capital_mgr.can_open_position = MagicMock(return_value=True)
         executor.capital_mgr.get_allocated_capital = MagicMock(return_value=Decimal('1000'))
+        # 总持仓保证金上限检查：mock 返回 None（未配置，跳过检查），聚焦测试市价单分支
+        executor.capital_mgr.get_total_margin_limit = MagicMock(return_value=None)
 
         # === 情况1：评分≥阈值（如7.4）→ 市价单 ===
         executor.binance_api.place_order.reset_mock()
@@ -799,6 +801,35 @@ class TestPlaceShortOrder:
         await executor.execute_short('BTCUSDT', score_result_low, 100.0)
         called_kwargs = executor.binance_api.place_order.call_args
         assert called_kwargs[1]['order_type'] == 'LIMIT'
+
+    @pytest.mark.asyncio
+    async def test_execute_short_skipped_when_total_margin_exceeded(self):
+        """总持仓保证金超过配置上限时跳过开仓（5.5.1 分支）"""
+        executor = create_executor()
+
+        # Mock execute_short 所需的外部服务
+        executor._get_account_balance = AsyncMock(return_value=Decimal('1000'))
+        executor._calculate_position_size = lambda balance, price: Decimal('50')
+        executor._format_quantity = lambda q, s: q
+        executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
+        executor._set_leverage = AsyncMock()
+
+        # 现有持仓：1 笔，保证金用满上限（leverage=2，margin=仓位价值/2）
+        executor.position_tracking = {
+            "BTCUSDT": {"entry_quantity": 50.0, "entry_price": 50.0},
+        }
+        score_result = {'total_score': 7.4}
+        executor.market_order_score_threshold = 7.0
+
+        # capital_mgr：分配上限检查放行（未配置），但总持仓保证金上限很小 → 触发拒绝
+        executor.capital_mgr = MagicMock()
+        executor.capital_mgr.can_open_position = MagicMock(return_value=True)
+        executor.capital_mgr.get_total_margin_limit = MagicMock(return_value=20.0)
+
+        result = await executor.execute_short('ETHUSDT', score_result, 100.0)
+        assert result is None
+        # 未调用下单
+        executor.binance_api.place_order.assert_not_called()
 
     def _assert_limit_price(self, actual, expected):
         """断言限价价格近似相等（Decimal 比较）"""

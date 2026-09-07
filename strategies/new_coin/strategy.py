@@ -352,14 +352,7 @@ class NewCoinStrategy(BaseStrategy):
                 logger.warning(f"币种在永久黑名单中: {symbol}")
                 return False, "币种在永久黑名单中"
 
-            # 4. 检查持仓数量限制
-            if len(self.positions) >= self.trading_executor.get_max_positions():
-                logger.info(
-                    f"持仓数量已达上限: {len(self.positions)} >= {self.trading_executor.get_max_positions()}"
-                )
-                return False, f"持仓数量已达上限({len(self.positions)}/{self.trading_executor.get_max_positions()})"
-
-            # 5. 检查单日开仓限制
+            # 4. 检查单日开仓限制
             daily_limit = self.config.get('trading', {}).get('daily_trade_limit', 2)
             today = datetime.now(timezone.utc).date()
             if self.last_trade_date != today:

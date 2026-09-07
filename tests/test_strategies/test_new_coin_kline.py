@@ -637,8 +637,8 @@ class TestUnregisterSymbol:
         # 模拟scoring_engine.should_entry返回True（入场）
         strategy.scoring_engine.should_entry = Mock(return_value=True)
 
-        # 模拟execute_signal返回True
-        strategy.execute_signal = AsyncMock(return_value=True)
+        # 模拟execute_signal返回成功（_execute_cycle 中按二元组解包 entry_success, fail_reason）
+        strategy.execute_signal = AsyncMock(return_value=(True, None))
 
         await strategy._execute_cycle()
 
@@ -841,8 +841,12 @@ class TestInvalidSymbolsCache:
         assert 'BADCOINUSDT' in strategy._invalid_symbols
 
     @pytest.mark.asyncio
-    async def test_cache_cleared_at_cycle_start(self, strategy, mock_binance_client):
-        """缓存在_execute_cycle开始时被清理"""
+    async def test_cache_preserved_at_cycle_start(self, strategy, mock_binance_client):
+        """无效币种缓存在_execute_cycle中保留（与生产设计一致）
+
+        生产代码刻意保留无效币种缓存（-4108/结算中 与 -9999/未知币种 均为永久状态），
+        不清空以避免每周期重复查询产生警告日志。见 strategy.py _execute_cycle 注释。
+        """
         strategy._invalid_symbols = {'STALEUSDT'}
         strategy.listing_detector.detect_new_listings = AsyncMock(return_value=[])
         strategy._check_blacklist_monitor = AsyncMock()
@@ -853,5 +857,5 @@ class TestInvalidSymbolsCache:
 
         await strategy._execute_cycle()
 
-        # 缓存应在_execute_cycle开始时被清空
-        assert len(strategy._invalid_symbols) == 0
+        # 缓存应在_execute_cycle中保留（不清空）
+        assert 'STALEUSDT' in strategy._invalid_symbols

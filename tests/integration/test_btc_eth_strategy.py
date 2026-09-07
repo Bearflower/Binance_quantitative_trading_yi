@@ -224,7 +224,11 @@ def mock_binance_client():
     client.get_funding_rate = AsyncMock(return_value=0.0001)  # 正常资金费率
     client.get_ticker = AsyncMock(return_value={'lastPrice': '50000', 'priceChangePercent': '1.5'})
     client.get_orderbook = AsyncMock(return_value={'bids': [['49999', '1']], 'asks': [['50001', '1']]})
-    client.get_account_info = AsyncMock(return_value={'availableBalance': '500', 'positions': []})
+    client.get_account_info = AsyncMock(return_value={
+        'availableBalance': '500',
+        'totalMarginBalance': '500',
+        'positions': [],
+    })
     client.get_ticker_price = AsyncMock(return_value='50000')
     client.get_symbol_info = AsyncMock(return_value={
         'quantityPrecision': 3,
@@ -232,6 +236,18 @@ def mock_binance_client():
         'stepSize': '0.001',
         'tickSize': '0.01'
     })
+    # 交易方法 mock：开仓 / 查单 / 撤单 / 条件单
+    client.place_order = AsyncMock(return_value={
+        'orderId': 12345, 'status': 'FILLED',
+        'executedQty': '0.002', 'cummulativeQuoteQty': '100.00'
+    })
+    client.get_order = AsyncMock(return_value={
+        'orderId': 12345, 'status': 'FILLED',
+        'executedQty': '0.002', 'cummulativeQuoteQty': '100.00'
+    })
+    client.cancel_order = AsyncMock(return_value={})
+    client.place_conditional_order = AsyncMock(return_value={'algoId': 67890, 'orderId': 67890})
+    client.cancel_algo_order = AsyncMock(return_value={})
     return client
 
 

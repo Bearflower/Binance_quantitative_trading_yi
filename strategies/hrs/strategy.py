@@ -472,11 +472,19 @@ class HRSStrategy(BaseStrategy):
                 )
                 return False
 
-            # V2.8-FIX3: 总持仓保证金比例上限检查（position_sizing.total.account_ratio_cap）
-            total_sizing_config = self.config.get("position_sizing", {}).get("total", {})
-            total_ratio_cap = total_sizing_config.get("account_ratio_cap")
-            if total_ratio_cap is not None:
-                max_total_margin = balance * total_ratio_cap
+            # V2.8-FIX3: 总持仓保证金比例上限检查（从文件动态读取，支持月度资金分配自动更新）
+            # 直接从 config.yaml 读取最新值，确保每月分配更新后立即生效
+            _total_ratio_cap = None
+            try:
+                _config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
+                import yaml
+                with open(_config_path, "r") as _f:
+                    _file_config = yaml.safe_load(_f)
+                _total_ratio_cap = _file_config.get("position_sizing", {}).get("total", {}).get("account_ratio_cap")
+            except Exception:
+                _total_ratio_cap = self.config.get("position_sizing", {}).get("total", {}).get("account_ratio_cap")
+            if _total_ratio_cap is not None:
+                max_total_margin = balance * _total_ratio_cap
                 # 新仓位保证金 = 仓位价值 / 杠杆
                 new_margin = (float(quantity) * float(current_price)) / self.trading_executor.leverage
                 # 当前持仓总保证金
@@ -493,7 +501,7 @@ class HRSStrategy(BaseStrategy):
                         new_margin=round(new_margin, 2),
                         total_margin=round(current_total_margin + new_margin, 2),
                         max_total_margin=round(max_total_margin, 2),
-                        ratio=total_ratio_cap,
+                        ratio=_total_ratio_cap,
                     )
                     return False
 

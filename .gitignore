@@ -35,4 +35,6 @@ VERSION
 .idea/
 *.swp
 *.swo
-*~.superpowers/
+
+# 工具临时目录
+.superpowers/

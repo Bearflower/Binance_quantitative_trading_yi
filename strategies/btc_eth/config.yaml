@@ -443,10 +443,10 @@ strategy:
       # 入场条件（至少满足1个即可）
       entry_conditions:
         bb_touch: true              # 价格触及布林带轨（上轨做空/下轨做多）
-        bb_touch_threshold: 0.05    # 触及阈值：价格距布林带轨5%以内视为触及（v6.20.2）
-        rsi_extreme: true           # RSI超买超卖（>80做空/<20做多）
+        bb_touch_threshold: 0.08    # 触及阈值：价格距布林带轨8%以内视为触及（v6.20.2 → v6.27 放宽 0.05→0.08）
+        rsi_extreme: true           # RSI超买超卖（>75做空/<20做多）
         rsi_oversold: 20            # RSI超卖阈值（进一步放宽）
-        rsi_overbought: 80          # RSI超买阈值（进一步放宽）
+        rsi_overbought: 75          # RSI超买阈值（v6.27 放宽 80→75）
         reversal_pattern: true      # 反转K线形态（吞没形态）
       # 退出条件
       exit_conditions:
@@ -652,6 +652,14 @@ strategy:
         - date: "2026-06-17"
           time: "18:00"
           name: "FOMC 利率决议"
+
+# 总持仓保证金控制（v6.28）
+# MTPCS 策略全部持仓保证金 + 拟开新仓保证金 ≤ 账户权益 × account_ratio_cap，超限拒绝开仓
+# 该值每月由 AI 资金分配（ai_tuner/allocation/config_updater.py）自动更新为分配比例，
+# 未运行资金分配时使用下方初始值兜底；每次开仓检查动态读取，配置更新后立即生效
+position_sizing:
+  total:
+    account_ratio_cap: 0.3     # 总持仓保证金占账户权益的比例上限
 
 # 币安配置
 binance:

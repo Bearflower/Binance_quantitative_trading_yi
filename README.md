@@ -6,12 +6,12 @@
 
 | 策略 | 策略ID | 版本 | 状态 | 说明 |
 |------|--------|:----:|:----:|------|
-| **MTPCS 趋势策略** | btc_eth | v2.5.0 | 🟢 运行中 | BTC/ETH 永续合约趋势跟踪，动态ATR过滤+自适应仓位 |
-| **网格交易策略** | grid | v2.5.0 | 🟢 运行中 | ETHUSDT 三层预警架构 + K线服务对接 + 定时执行节点固定 |
-| **新币做空策略** | new_coin | v1.1.0 | 🟢 运行中 | 新上线币种 V4.1 信号质量优化版，开仓按评分分档（总分 ≥7.0 市价单抢单 / <7.0 实时市价+滑点限价单）+ 止损止盈平仓限价单改造 |
-| **HRS 混合反转策略** | hrs | v2.8.0 | 🟢 运行中 | 全市场动态阈值，三轨并行信号机制，V2.8 趋势过滤增强（EMA 斜率 + 价格偏离收紧） |
-| **StratTuneAI 调优系统** | — | v1.0 | 🟢 运行中 | AI 驱动多策略参数自动调优（覆盖 MTPCS + 新币做空 + HRS） |
-| **数据看板 Dashboard** | — | v1.0 | 🟢 运行中 | 交易数据可视化，策略分析、趋势图表 |
+| **MTPCS 趋势策略** | btc_eth | v6.27 | 🟢 运行中 | BTC/ETH/BNB/SOL/XRP 永续合约趋势 + 震荡双模式，动态ATR过滤+自适应仓位，V6.26 震荡反转风控三机制 + V6.27 时间平仓复核制 |
+| **网格交易策略** | grid | V2.5 | 🟢 运行中 | ETHUSDT 三层预警架构 + 紧急极端趋势检测 + K线服务对接 + 定时执行节点固定 |
+| **新币做空策略** | new_coin | V4.1 | 🟢 运行中 | 新上线币种做空，按评分分档开仓（总分 ≥7.0 市价单抢单 / <7.0 实时市价+滑点限价单），止损止盈平仓限价单改造，动态利润保护 |
+| **HRS 混合反转策略** | hrs | V2.8.3 | 🟢 运行中 | 全市场动态阈值，三轨并行信号机制（标准模式+EMM+LV-RM），V2.8 趋势过滤增强（EMA 斜率 + 价格偏离收紧），总持仓保证金比例上限控制 |
+| **StratTuneAI 调优系统** | — | v1.0 | 🟢 运行中 | AI 驱动多策略参数自动调优（覆盖 MTPCS + 新币做空 + HRS + 网格），覆盖层+auto-apply审批流程 |
+| **数据看板 Dashboard** | — | v1.0 | 🟢 运行中 | 交易数据可视化，总览/策略详情/币种明细/趋势图表，合约账户净资产实时展示 |
 
 **部署状态**：✅ 已部署（4 个策略容器 + AI 调优容器 + 数据看板 + K线服务）
 **服务器**：43.156.242.184
@@ -20,7 +20,7 @@
 
 ```
 ├── strategies/           # 策略模块
-│   ├── btc_eth/          # MTPCS 趋势策略（BTC/ETH）
+│   ├── btc_eth/          # MTPCS 趋势策略（BTC/ETH/BNB/SOL/XRP）
 │   ├── grid/             # 网格交易策略（ETHUSDT）
 │   ├── new_coin/         # 新币做空策略
 │   └── hrs/              # HRS 混合反转策略
@@ -96,12 +96,14 @@ StratTuneAI 是一个 AI 驱动的多策略参数自动调优系统，以独立 
 - **安全兜底**：自动回滚机制保护策略在极端情况下的安全（24h 连续亏损/累计亏损触发回滚）
 - **知识沉淀**：每次调优过程结构化记录到 `trading.strategy_memory` 表，形成可追溯的策略进化日志
 
-### 第一期覆盖策略
+### 覆盖策略
 
-| 策略 | 策略ID | 状态 |
-|------|--------|:----:|
-| MTPCS 趋势策略 | btc_eth | 第一期 |
-| 新币做空策略 | new_coin | 第一期 |
+| 策略 | 策略ID | 适配器 |
+|------|--------|--------|
+| MTPCS 趋势策略 | btc_eth | mtpcs_adapter |
+| 新币做空策略 | new_coin | new_coin_adapter |
+| HRS 混合反转策略 | hrs | hrs_adapter |
+| 网格交易策略 | grid | grid_adapter |
 
 ### 技术栈
 
@@ -115,12 +117,14 @@ StratTuneAI 是一个 AI 驱动的多策略参数自动调优系统，以独立 
 
 ## 文档
 
-- [文档索引](docs/README.md) - 完整文档目录
+- [文档索引](docs/README.md) - 完整文档目录（v6.28.0）
 - [系统架构设计](docs/architecture/系统架构设计.md)
 - [数据库设计](docs/architecture/数据库设计.md)
 - [StratTuneAI 架构设计](docs/architecture/StratTuneAI架构设计.md)
+- [网格回测引擎架构设计](docs/architecture/网格回测引擎-架构设计.md)
 - [Dashboard 架构设计](docs/design/dashboard_architecture.md)
 - [Dashboard UI 设计](docs/design/dashboard_ui_design.md)
 - [部署指南](docs/deployment/统一交易系统部署指南.md)
+- [项目需求迭代文档](docs/plans/项目需求迭代文档.md) - 全策略版本迭代记录（含 HRS V2.8 等跨策略变更）
 - [迁移方案](docs/migration/README.md)
 - [版本更新日志](CHANGELOG.md)

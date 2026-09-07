@@ -100,29 +100,29 @@ class TestConsecutiveLoss:
     def rm(self):
         return RiskManager(CONFIG)
 
-    def test_连续亏损3次触发暂停(self, rm):
+    async def test_连续亏损3次触发暂停(self, rm):
         """连续3次亏损后触发暂停"""
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
         assert rm.consecutive_losses == 3
         assert rm.pause_until is not None
         # 暂停中不能开仓
         assert rm.can_open_position("short") is False
 
-    def test_盈利后重置连续亏损计数(self, rm):
+    async def test_盈利后重置连续亏损计数(self, rm):
         """盈利后重置连续亏损计数"""
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
         assert rm.consecutive_losses == 2
         rm.record_profit()
         assert rm.consecutive_losses == 0
 
-    def test_暂停结束后可恢复开仓(self, rm):
+    async def test_暂停结束后可恢复开仓(self, rm):
         """暂停结束后可恢复开仓"""
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
         # 手动设置暂停已过期
         rm.pause_until = datetime.now(timezone.utc) - timedelta(hours=1)
         assert rm.can_open_position("short") is True
@@ -137,32 +137,32 @@ class TestDrawdown:
     def rm(self):
         return RiskManager(CONFIG)
 
-    def test_回撤未达阈值正常(self, rm):
+    async def test_回撤未达阈值正常(self, rm):
         """回撤10%未达15%阈值，正常"""
-        result = rm.check_drawdown(-100, 1000)  # 亏损100，回撤10%
+        result = await rm.check_drawdown(-100, 1000)  # 亏损100，回撤10%
         assert result is True
         assert rm.drawdown_pause_until is None
 
-    def test_回撤达阈值触发熔断(self, rm):
+    async def test_回撤达阈值触发熔断(self, rm):
         """回撤15%触发熔断"""
-        result = rm.check_drawdown(-150, 1000)  # 亏损150，回撤15%
+        result = await rm.check_drawdown(-150, 1000)  # 亏损150，回撤15%
         assert result is False
         assert rm.drawdown_pause_until is not None
 
-    def test_盈利不触发熔断(self, rm):
+    async def test_盈利不触发熔断(self, rm):
         """盈利不触发熔断"""
-        result = rm.check_drawdown(100, 1000)
+        result = await rm.check_drawdown(100, 1000)
         assert result is True
         assert rm.drawdown_pause_until is None
 
-    def test_账户余额为0不触发异常(self, rm):
+    async def test_账户余额为0不触发异常(self, rm):
         """账户余额为0时，返回True（安全处理）"""
-        result = rm.check_drawdown(-100, 0)
+        result = await rm.check_drawdown(-100, 0)
         assert result is True
 
-    def test_熔断结束后可恢复(self, rm):
+    async def test_熔断结束后可恢复(self, rm):
         """熔断结束后可恢复"""
-        rm.check_drawdown(-150, 1000)
+        await rm.check_drawdown(-150, 1000)
         rm.drawdown_pause_until = datetime.now(timezone.utc) - timedelta(hours=1)
         assert rm.can_open_position("short") is True
         assert rm.drawdown_pause_until is None
@@ -194,18 +194,18 @@ class TestBlacklistMonitor:
     def rm(self):
         return RiskManager(CONFIG)
 
-    def test_止损后反向波动触发黑名单(self, rm):
+    async def test_止损后反向波动触发黑名单(self, rm):
         """止损后在监控期内反向波动超过5%"""
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
         assert "DOGEUSDT" in rm._stop_loss_monitor
         # 当前价格 1.06，从入场价 1.0 涨了 6%
         result = rm.check_blacklist_monitor("DOGEUSDT", 1.06)
         assert result is False
         assert rm.is_blacklisted("DOGEUSDT") is True
 
-    def test_止损后反向波动未达阈值正常(self, rm):
+    async def test_止损后反向波动未达阈值正常(self, rm):
         """止损后反向波动3%，未达5%阈值"""
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
         result = rm.check_blacklist_monitor("DOGEUSDT", 1.03)
         assert result is True
         assert rm.is_blacklisted("DOGEUSDT") is False
@@ -215,9 +215,9 @@ class TestBlacklistMonitor:
         result = rm.check_blacklist_monitor("BTCUSDT", 50000)
         assert result is True
 
-    def test_监控过期自动移除(self, rm):
+    async def test_监控过期自动移除(self, rm):
         """监控过期后自动从监控列表移除"""
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
         # 手动设置监控已过期
         rm._stop_loss_monitor["DOGEUSDT"]["monitor_until"] = (
             datetime.now(timezone.utc) - timedelta(hours=1)
@@ -235,7 +235,8 @@ class TestPositionSize:
         return RiskManager(CONFIG)
 
     def test_仓位计算正确(self, rm):
-        """公式：开仓价值 = 账户总资金 × 2% / 止损幅度"""
+        """公式：开仓价值 = 账户总资金 × 2% / 止损幅度
+        V2.5.2: 单笔保证金受 hard_cap_usdt=50 限制"""
         quantity = rm.calculate_position_size(
             account_balance=10000,
             stop_loss_percent=0.05,
@@ -244,8 +245,11 @@ class TestPositionSize:
         )
         # max_loss = 10000 * 0.02 = 200
         # position_value = 200 / 0.05 = 4000
-        # quantity = 4000 / 100 = 40
-        assert quantity == pytest.approx(40.0, rel=0.01)
+        # margin = 4000 / 2 = 2000
+        # capped_margin = min(2000, 50, 500) = 50 (hard_cap_usdt)
+        # capped_position_value = 50 * 2 = 100
+        # quantity = 100 / 100 = 1.0
+        assert quantity == pytest.approx(1.0, rel=0.01)
 
     def test_价格为0的防护(self, rm):
         """价格为0时返回0，防止除零"""
@@ -258,11 +262,13 @@ class TestPositionSize:
         assert quantity == 0.0
 
     def test_不同杠杆仓位不同(self, rm):
-        """杠杆越高，所需保证金越少，但仓位数量不变"""
+        """V2.5.2: 硬上限50USDT对保证金进行限制，杠杆越高同保证金下开仓价值越大"""
         q1 = rm.calculate_position_size(10000, 0.05, 2, 100)
         q2 = rm.calculate_position_size(10000, 0.05, 5, 100)
-        # 仓位数量（quantity）与杠杆无关，只与开仓价值/价格有关
-        assert q1 == pytest.approx(q2, rel=0.01)
+        # 2x杠杆: capped_margin=50 → capped_position_value=100 → qty=1.0
+        # 5x杠杆: capped_margin=50 → capped_position_value=250 → qty=2.5
+        assert q1 == pytest.approx(1.0, rel=0.01)
+        assert q2 == pytest.approx(2.5, rel=0.01)
 
 
 class TestStateSerialization:
@@ -272,9 +278,9 @@ class TestStateSerialization:
     def rm(self):
         return RiskManager(CONFIG)
 
-    def test_to_dict_from_dict_往返(self, rm):
+    async def test_to_dict_from_dict_往返(self, rm):
         """to_dict 和 from_dict 应该往返一致"""
-        rm.record_loss("DOGEUSDT", 1.0, 0.95)
+        await rm.record_loss("DOGEUSDT", 1.0, 0.95)
         rm.add_to_blacklist("XRPUSDT", "测试")
         rm.record_open("short")
         rm.record_open("short")

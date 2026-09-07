@@ -335,7 +335,7 @@ class GridAdapter(BaseAdapter):
                 try:
                     result = engine.run(klines, scenario["params"])
                     sim = self._backtest_result_to_simulation(
-                        result, scenario["name"], market_stats
+                        result, scenario["name"], market_stats, scenario["params"]
                     )
                     results.append(sim)
                 except Exception as e:
@@ -467,27 +467,29 @@ class GridAdapter(BaseAdapter):
         result: Dict[str, Any],
         scenario_name: str,
         market_stats: Dict[str, Any],
+        scenario_params: "GridParams",
     ) -> SimulationMetrics:
         """
         将回测结果字典转换为 SimulationMetrics（保持接口兼容）
 
+        网格数与间距倍数取自 scenario_params（各场景不同），确保 AI 报告中
+        grid_count/grid_spacing/price_range/profit_rate 反映场景真实参数，
+        而非统一回读配置文件导致三场景数值一致的矛盾数据。
+
         Args:
             result: 回测引擎返回的结果字典
             scenario_name: 场景名称
-            market_stats: 市场统计指标
+            market_stats: 市场统计指标（含 ATR、当前价格、市场状态）
+            scenario_params: 该场景对应的网格参数（GridParams）
 
         Returns:
             SimulationMetrics 实例
         """
-        config = self._read_config()
-        grid_cfg = config.get("grid", {})
-        trading_cfg = config.get("trading", {})
-
-        base_grid_count = int(grid_cfg.get("base_grid_count", 6))
-        spacing_multiplier = float(grid_cfg.get("grid_spacing_atr_multiplier", 2.5))
+        # 网格数与间距倍数取场景参数，而非配置文件，保证各场景数值不同
+        base_grid_count = scenario_params.base_grid_count
+        spacing_multiplier = scenario_params.grid_spacing_atr_multiplier
         atr = market_stats.get("atr", 0.0)
         current_price = market_stats.get("current_price", 0.0)
-        margin = float(trading_cfg.get("margin", 500))
 
         grid_spacing = atr * spacing_multiplier
         half_range = grid_spacing * base_grid_count / 2
@@ -495,6 +497,10 @@ class GridAdapter(BaseAdapter):
         price_range_high = current_price + half_range
 
         profit_rate = grid_spacing / current_price if current_price > 0 else 0
+
+        # 从配置读取回测模式置信度，避免硬编码
+        backtest_cfg = self._system_config.get("backtest", {})
+        confidence = float(backtest_cfg.get("confidence", 0.85))
 
         return SimulationMetrics(
             scenario_name=scenario_name,
@@ -507,7 +513,7 @@ class GridAdapter(BaseAdapter):
             profit_rate_per_fill=round(profit_rate * 100, 2),
             estimated_fills_weekly=result.get("fill_count", 0),
             estimated_profit_weekly=round(result.get("total_pnl", 0.0), 2),
-            confidence=0.85,  # 回测模式置信度较高
+            confidence=confidence,
         )
 
     # ============================================================
