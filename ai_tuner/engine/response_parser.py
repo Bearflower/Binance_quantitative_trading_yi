@@ -11,7 +11,7 @@ JSON 响应解析与校验
 
 import json
 import re
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import structlog
 
@@ -80,18 +80,25 @@ class ResponseParser:
         try:
             data = json.loads(json_text)
         except json.JSONDecodeError as e:
-            # 尝试修复常见 JSON 格式问题后重试解析
-            fixed_json = self._fix_json(json_text)
-            if fixed_json != json_text:
-                try:
-                    data = json.loads(fixed_json)
-                    logger.info("JSON修复后解析成功", original_preview=json_text[:100])
-                except json.JSONDecodeError:
-                    logger.error("JSON解析失败（修复后仍失败）", error=str(e), json_preview=json_text[:200])
+            # 先尝试 raw_decode：容忍 JSON 对象后尾随的多余内容（Extra data 场景）
+            data = self._try_raw_decode(json_text)
+            if data is None:
+                # 尝试修复常见 JSON 格式问题后重试解析
+                fixed_json = self._fix_json(json_text)
+                if fixed_json != json_text:
+                    try:
+                        data = json.loads(fixed_json)
+                        logger.info("JSON修复后解析成功", original_preview=json_text[:100])
+                    except json.JSONDecodeError:
+                        logger.error(
+                            "JSON解析失败（修复后仍失败）",
+                            error=str(e),
+                            json_preview=json_text[:200],
+                        )
+                        return {"error": f"JSON 解析失败: {str(e)}"}
+                else:
+                    logger.error("JSON解析失败", error=str(e), json_preview=json_text[:200])
                     return {"error": f"JSON 解析失败: {str(e)}"}
-            else:
-                logger.error("JSON解析失败", error=str(e), json_preview=json_text[:200])
-                return {"error": f"JSON 解析失败: {str(e)}"}
 
         if not isinstance(data, dict):
             logger.error("解析结果不是字典", type=str(type(data)))
@@ -180,46 +187,101 @@ class ResponseParser:
             return {"valid": False, "errors": [f"校验异常: {str(e)}"], "validated": {}}
 
     @staticmethod
-    def _extract_json(text: str) -> str:
+    def _extract_first_json_object(text: str) -> str:
         """
-        从文本中提取 JSON 内容
+        提取文本中第一个完整 JSON 对象（字符串感知）
 
-        处理常见的 markdown 代码块包裹格式：
-        ```json
-        {...}
-        ```
+        正确处理字符串转义，跳过字符串值内部的花括号，避免
+        深度匹配被字符串内容干扰导致截断错误。
+        无完整 JSON 对象时返回空字符串（不返回残缺文本）。
 
         Args:
             text: 原始文本
 
         Returns:
-            提取的 JSON 字符串，如果无法提取返回空字符串
+            第一个完整 JSON 对象字符串（含外层花括号），无则返回空字符串
         """
         text = text.strip()
-
-        # 尝试匹配 markdown 代码块 ```json ... ```
-        pattern = r"```(?:json)?\s*\n?(.*?)\n?```"
-        match = re.search(pattern, text, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-
-        # 尝试匹配花括号包裹的 JSON
         brace_start = text.find("{")
         if brace_start == -1:
             return ""
-
-        # 从第一个 { 开始，找到匹配的 }
         depth = 0
+        in_string = False
+        escaped = False
         for i in range(brace_start, len(text)):
-            if text[i] == "{":
+            ch = text[i]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif ch == "\\":
+                    escaped = True
+                elif ch == '"':
+                    in_string = False
+                continue
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
                 depth += 1
-            elif text[i] == "}":
+            elif ch == "}":
                 depth -= 1
                 if depth == 0:
                     return text[brace_start : i + 1]
+        return ""
 
-        # 如果花括号未闭合，返回从 { 到末尾
-        return text[brace_start:]
+    @staticmethod
+    def _extract_json(text: str) -> str:
+        """
+        从文本中提取 JSON 内容
+
+        遍历所有 markdown 代码块，仅接受内容 strip 后以 `{` 开头
+        且能提取出完整 JSON 对象的代码块；若代码块内是参数片段
+        （非 `{` 开头）则跳过继续找下一个。最后回退到全文使用
+        字符串感知的完整对象提取。
+
+        Args:
+            text: 原始文本
+
+        Returns:
+            提取的 JSON 字符串（仅含完整 JSON 对象），如果无法提取返回空字符串
+        """
+        text = text.strip()
+
+        # 遍历所有 markdown 代码块，仅接受以 { 开头的完整 JSON 对象
+        pattern = r"```(?:json)?\s*\n?(.*?)\n?```"
+        for match in re.finditer(pattern, text, re.DOTALL):
+            block = match.group(1).strip()
+            if block.startswith("{"):
+                json_obj = ResponseParser._extract_first_json_object(block)
+                if json_obj:
+                    return json_obj
+
+        # 回退：全文搜索第一个完整 JSON 对象（字符串感知）
+        return ResponseParser._extract_first_json_object(text)
+
+    @staticmethod
+    def _try_raw_decode(json_text: str) -> Optional[Dict[str, Any]]:
+        """
+        尝试用 raw_decode 容忍 JSON 对象后的尾随多余内容（Extra data 场景）
+
+        仅接受解析结果为字典的情况，其余（字符串/数组/数值）返回 None。
+
+        Args:
+            json_text: 待解析的 JSON 文本
+
+        Returns:
+            解析出的字典；解析失败或结果非字典返回 None
+        """
+        try:
+            decoded, _ = json.JSONDecoder().raw_decode(json_text.strip())
+        except json.JSONDecodeError:
+            return None
+        if isinstance(decoded, dict):
+            logger.info(
+                "JSON经raw_decode容忍尾随内容后解析成功",
+                original_preview=json_text[:100],
+            )
+            return decoded
+        return None
 
     @staticmethod
     def _fix_json(text: str) -> str:

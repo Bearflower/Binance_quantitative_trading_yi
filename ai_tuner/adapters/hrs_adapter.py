@@ -197,7 +197,7 @@ class HRSAdapter(BaseAdapter):
             initial_capital = float(
                 system_config.get("anomaly_detection", {}).get("default_initial_capital_new_coin", 150.0)
             )
-            logger.warning("HRS策略配置缺少 trading.single_position_margin 或 trading.max_positions，"
+            logger.warning("HRS策略配置缺少 position_sizing.single.hard_cap_usdt 或 trading.max_positions，"
                            "使用系统默认值", default=initial_capital)
         else:
             initial_capital = float(single_position_margin) * float(max_positions)

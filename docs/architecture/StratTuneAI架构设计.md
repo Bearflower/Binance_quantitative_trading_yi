@@ -1045,7 +1045,7 @@ class ResponseParser:
         解析 AI 原始响应
 
         处理流程:
-        1. 正则提取 JSON（兼容 AI 在 JSON 前后加说明文字）
+        1. 字符串感知提取完整 JSON 对象（正确处理转义序列与字符串内花括号，兼容 AI 在 JSON 前后加说明文字；遍历代码块只接受内容以 `{` 开头的完整 JSON 对象，raw_decode 兜底容忍尾随内容）
         2. Pydantic 校验（AITuningSuggestion 模型）
         3. 白名单校验（每个 adjustment 的 param_path 必须在白名单中）
         4. 范围校验（新值必须在 [min, max] 范围内）

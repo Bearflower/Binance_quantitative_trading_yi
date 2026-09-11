@@ -22,13 +22,18 @@ scoring:
     technical: 0.45     # 技术面（形态）权重
     sentiment: 0.30     # 情绪面（资金费率）权重
 
-  # 开仓总分阈值
-  entry_threshold: 6.0
+  # 开仓总分阈值（V2.10: 多空分离，做空因形态少而独立降低门槛）
+  entry_threshold: 6.0          # 做多阈值（保持不变）
+  # V2.10: 做空独立阈值
+  short_entry_threshold: 5.5
 
-  # 技术面硬性要求
+  # 技术面硬性要求（V2.10: 多空分离）
   technical:
-    min_total_score: 4.0        # 技术总分最低要求
+    min_total_score: 4.0        # 做多技术总分最低要求
     min_primary_pattern_score: 2.0  # V2.8-FIX: 从 2.5 降至 2.0，允许偏弱形态通过
+    # V2.10: 做空独立技术面门槛（做空形态触发率低，放宽）
+    short_min_total_score: 2.0
+    short_min_primary_pattern_score: 1.0
 
   # V2.0 新增：极端行情加分
   extreme_bonus:
@@ -51,12 +56,12 @@ scoring:
         low: 0.05             # 0.05~0.10: 冷清
       scores:
         short:
-          extreme_high: 10
-          high: 8
-          mid_high: 6
-          mid: 4
-          low: 2
-          extreme_low: 0
+          extreme_high: 10    # >0.25: 极度拥挤
+          high: 10            # 0.20~0.25: 拥挤（原8→10）
+          mid_high: 8         # 0.15~0.20: 中等偏拥挤（原6→8，>0.15即高分）
+          mid: 6              # 0.10~0.15: 中性（原4→6）
+          low: 4              # 0.05~0.10: 冷清（原2→4）
+          extreme_low: 0      # <0.05: 极度冷清
         long:
           extreme_high: 0
           high: 1
@@ -79,12 +84,12 @@ scoring:
       low_negative: -20      # -20%~0%
     scores:
       short:
-        extreme_high: 10
-        high: 8
-        mid: 6
-        low: 3
-        negative: 1
-        extreme_negative: 0
+        extreme_high: 10    # ≥150%: 极高
+        high: 10            # 100~150%（原8→10）
+        mid: 8              # 50~100%（原6→8，50%即高分）
+        low: 6              # 0~50%（原3→6）
+        negative: 3         # -20~0%（原1→3）
+        extreme_negative: 1 # < -20%（原0→1）
       long:
         extreme_high: 0
         high: 2
@@ -96,16 +101,24 @@ scoring:
   # V2.6: 标准模式趋势过滤（4h EMA20 价格偏离过滤）
   # V2.8: 收紧偏离度阈值 + 新增 EMA 斜率检查
   # V2.8-FIX: 新增反转模式（reversal_mode），趋势过滤方向与反转策略一致
+  # V2.9: 放宽反转模式区间 + 高分豁免趋势过滤
   trend_filter:
     enabled: true
     reversal_mode: true               # V2.8-FIX: 启用反转模式
     ema_period: 20
+    # V2.9: 放宽反转模式区间（从3%扩大至5%）
     long:
-      min_price: 1.01                 # 反转做多：价格必须低于 EMA20*1.01（允许略高于 EMA20）
-      max_deviation: 0.97             # 反转做多：价格必须不低于 EMA20*0.97（允许最多 3% 低于 EMA20）
+      min_price: 1.03                 # 反转做多：价格必须低于 EMA20*1.03（原1.01→1.03，扩大至3%上方）
+      max_deviation: 0.95             # 反转做多：价格必须不低于 EMA20*0.95（原0.97→0.95，扩大至5%下方）
     short:
-      max_price: 0.99                 # 反转做空：价格必须高于 EMA20*0.99（允许略低于 EMA20）
-      max_deviation: 1.03             # 反转做空：价格必须不高于 EMA20*1.03（允许最多 3% 高于 EMA20）
+      max_price: 0.97                 # 反转做空：价格必须高于 EMA20*0.97（原0.99→0.97，扩大至3%下方）
+      max_deviation: 1.05             # 反转做空：价格必须不高于 EMA20*1.05（原1.03→1.05，扩大至5%上方）
+    # V2.9: 高分豁免趋势过滤（总分≥threshold 时跳过趋势过滤，避免错失强信号）
+    # V2.10: 多空分离门槛（做空形态少，豁免门槛降低）
+    score_exemption:
+      enabled: true
+      threshold: 7.0                  # 做多：总分≥7.0 跳过趋势过滤
+      short_threshold: 5.5            # 做空：总分≥5.5 跳过趋势过滤（做空难到高分，降低豁免门槛）
     # V2.8: EMA 斜率检查（基于最近 3 根 4h K 线的 EMA20 平均变化率）
     ema_slope:
       enabled: true
@@ -133,7 +146,7 @@ emm:
   # 做空EMM触发条件（固定回退值，动态启用时使用分位数）
   short:
     price_change_24h: 15              # 24h涨跌幅 ≥ +15%（固定，不参与动态）
-    funding_rate_annual: 100           # 资金费率年化 ≥ +100%（固定回退值）
+    funding_rate_annual: 50           # 资金费率年化 ≥ +50%（原100→50，放宽做空EMM条件）
     oi_market_cap_ratio: 0.20          # OI/市值比 ≥ 0.20（固定回退值）
 
   # EMM模式评分参数
@@ -250,19 +263,19 @@ pattern:
   # 检测窗口（固定5根K线）
   window_size: 5
 
-  # 做空形态
+  # 做空形态（V2.10: 放宽检测阈值，解决上涨行情中形态触发率低问题）
   short:
     three_tops:
-      min_deviation: 0.002       # 每相邻高点差 ≥ 0.2%
+      min_deviation: 0.001       # V2.10: 从 0.002 降至 0.001，降低形态检测严格度
       score_full: 4.0            # 三次冲顶满分
       score_partial: 2.0         # 同一水平受阻3次
       resistance_count: 3        # 同一水平受阻次数阈值
     long_upper_shadow:
-      ratio_threshold: 2.0       # 上影线 ≥ 实体 × 2
+      ratio_threshold: 1.5       # V2.10: 从 2.0 降至 1.5，放宽上影线长度要求
       score_full: 3.0
       score_partial: 2.0
     volume_stagnation:
-      volume_ratio: 1.5          # 成交量 ≥ 前5根均量 × 1.5
+      volume_ratio: 1.2          # V2.10: 从 1.5 降至 1.2，放宽滞涨量能要求
       score_full: 3.0
       score_partial: 2.0
     # 思路2：替代形态（三次冲顶未触发时检测）
@@ -306,6 +319,7 @@ trading:
   max_loss_percent: 0.02         # 每笔最大亏损：账户总资金2%
   max_daily_positions: 3         # 单日最多开仓（总）
   max_daily_same_direction: 2    # 同一方向单日最多开仓
+  max_positions: 3                # 最大同时持仓数（单笔保证金×持仓数=总保证金口径，50×3=150 USDT）
   fee_rate: 0.0004               # 手续费率 0.04%（taker fee）
 
   # 价格精度配置

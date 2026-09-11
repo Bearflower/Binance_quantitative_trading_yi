@@ -429,11 +429,14 @@ class TestEmptyAndInvalidInput:
         assert "无法提取 JSON" in result["error"] or "无法从响应中提取" in result["error"]
 
     def test_invalid_json_syntax(self, parser: ResponseParser):
-        """包含花括号但不是合法 JSON"""
+        """
+        包含花括号但不是合法 JSON
+        未闭合字符串无法构成完整 JSON 对象，应报提取失败而非静默修复
+        """
         raw = '{"reasons": "未闭合的字符串'
         result = parser.parse_response(raw)
         assert "error" in result
-        assert "JSON 解析失败" in result["error"]
+        assert "无法" in result["error"] or "提取" in result["error"]
 
     def test_json_is_array_not_object_invalid(self, parser: ResponseParser):
         """解析结果是数组而非字典（因为 _extract_json 只找 {}，数组无法被提取）"""
@@ -556,3 +559,97 @@ class TestEdgeCases:
 
         assert "error" not in result
         assert "{old}" in result["summary"]
+
+    def test_code_block_with_param_fragment(self, parser: ResponseParser):
+        """
+        ```json 代码块内是参数片段（非 { 开头）且全文无完整 JSON 对象
+        应跳过该代码块并最终报提取失败，而非报 Extra data 解析错误
+        """
+        raw = (
+            "```json\n"
+            '"trading.batch_take_profit.target1_atr_multiplier": 1.5,\n'
+            '"trading.batch_take_profit.target1_close_percent": 0.3\n'
+            "```\n"
+            "以上是参数列表片段，不含完整 JSON 对象。"
+        )
+        result = parser.parse_response(raw)
+
+        assert "error" in result
+        assert "Extra data" not in result["error"]
+        assert "无法从响应中提取 JSON" in result["error"]
+
+    def test_code_block_fragment_then_valid_json(self, parser: ResponseParser):
+        """
+        第一个代码块是参数片段（非 { 开头），第二个代码块是完整 JSON
+        应跳过第一个代码块，成功解析第二个代码块
+        """
+        body = _valid_response_body()
+        raw = (
+            "```json\n"
+            '"trading.batch_take_profit.target1_atr_multiplier": 1.5,\n'
+            '"trading.batch_take_profit.target1_close_percent": 0.3\n'
+            "```\n"
+            "```json\n" + json.dumps(body, ensure_ascii=False) + "\n```"
+        )
+        result = parser.parse_response(raw)
+
+        assert "error" not in result, f"不应返回错误: {result.get('error')}"
+        assert result["summary"] == body["summary"]
+
+    def test_brace_in_string_unbalanced(self, parser: ResponseParser):
+        """
+        字符串值内含未配对的 {（如 "从 {old 到 new"）时
+        字符串感知提取应跳过，不干扰花括号深度匹配
+        """
+        body = _valid_response_body()
+        body["summary"] = "从 {old 到 new"
+        raw = json.dumps(body, ensure_ascii=False)
+        result = parser.parse_response(raw)
+
+        assert "error" not in result, f"不应返回错误: {result.get('error')}"
+        assert result["summary"] == "从 {old 到 new"
+
+    def test_brace_in_string_premature_close(self, parser: ResponseParser):
+        """
+        字符串值内含 }（如 "结果} 完毕"）时不应提前截断 JSON
+        字符串感知提取应保证 summary 完整
+        """
+        body = _valid_response_body()
+        body["summary"] = "结果} 完毕"
+        raw = json.dumps(body, ensure_ascii=False)
+        result = parser.parse_response(raw)
+
+        assert "error" not in result, f"不应返回错误: {result.get('error')}"
+        assert result["summary"] == "结果} 完毕"
+
+    def test_code_block_json_with_trailing_text(self, parser: ResponseParser):
+        """
+        ```json 代码块内 JSON 对象后还有说明文字
+        应只提取 JSON 对象部分，忽略说明文字
+        """
+        body = _valid_response_body()
+        raw = (
+            "```json\n" + json.dumps(body, ensure_ascii=False)
+            + "\n以上是参数调整建议。\n```"
+        )
+        result = parser.parse_response(raw)
+
+        assert "error" not in result, f"不应返回错误: {result.get('error')}"
+        assert result["summary"] == body["summary"]
+
+    def test_extra_data_raw_decode_fallback(self, parser: ResponseParser):
+        """
+        JSON 对象后尾随多余内容（Extra data 场景）
+        raw_decode 兜底应容忍尾随内容并成功解析，且必需字段齐全
+        """
+        json_text = (
+            '{"summary": "x", "adjustments": {}, '
+            '"reasons": [], "expected_impact": "y"} 多余内容'
+        )
+        result = parser.parse_response("__CONTENT__\n" + json_text)
+
+        assert "error" not in result, f"不应返回错误: {result.get('error')}"
+        assert result["summary"] == "x"
+        assert result["adjustments"] == {}
+        assert result["reasons"] == []
+        assert result["expected_impact"] == "y"
