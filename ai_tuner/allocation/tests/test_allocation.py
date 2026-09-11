@@ -12,9 +12,11 @@
   - config.yaml 配置完整性
 """
 
+import asyncio
 import os
 import sys
 import unittest
+from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -30,6 +32,7 @@ from ai_tuner.allocation.allocation_calculator import (
     AllocationEntry,
     AllocationResult,
 )
+from ai_tuner.allocation.monthly_job import MonthlyAllocationJob
 
 
 class TestAllocationCalculator(unittest.TestCase):
@@ -42,6 +45,18 @@ class TestAllocationCalculator(unittest.TestCase):
     def setUp(self):
         """每个测试用例执行前的初始化"""
         self.calc = AllocationCalculator()
+
+    def _make_job(self, binance_client=None) -> MonthlyAllocationJob:
+        """构造测试用 MonthlyAllocationJob 实例"""
+        return MonthlyAllocationJob(
+            config={"capital_allocation": {}, "strategies": []},
+            db_manager=None,
+            notification_client=None,
+            messenger=None,
+            config_operator=None,
+            rollback_manager=None,
+            binance_client=binance_client,
+        )
 
     def _make_result(
         self,
@@ -481,9 +496,15 @@ class TestAllocationCalculator(unittest.TestCase):
         self.assertIsInstance(ca["participating_strategies"], list)
         self.assertGreater(len(ca["participating_strategies"]), 0)
 
-        # 验证 fallback 配置块存在且包含 ratios 和 capitals
+        # 验证 fallback 配置块存在且包含 ratios（capitals 可选，缺失时按比例计算）
         self.assertIn("ratios", ca["fallback"], "fallback 缺少 ratios")
-        self.assertIn("capitals", ca["fallback"], "fallback 缺少 capitals")
+        if "capitals" in ca["fallback"]:
+            for strategy_id in ca["participating_strategies"]:
+                self.assertIn(
+                    strategy_id,
+                    ca["fallback"]["capitals"],
+                    f"策略 {strategy_id} 在 fallback.capitals 中缺少配置",
+                )
 
         # 验证 participating_strategies 中的策略在 fallback.ratios 中都有对应的配置
         for strategy_id in ca["participating_strategies"]:
@@ -492,6 +513,67 @@ class TestAllocationCalculator(unittest.TestCase):
                 ca["fallback"]["ratios"],
                 f"策略 {strategy_id} 在 fallback.ratios 中缺少配置",
             )
+
+
+    # ============================================================
+    # 测试用例 9：_get_actual_balance 使用合约账户净资产
+    # ============================================================
+
+    def test_get_actual_balance_uses_net_asset(self):
+        """
+        验证 _get_actual_balance 使用 get_account_info().totalMarginBalance
+        作为净资产（accountEquity），而非可用余额（availableBalance）。
+        """
+        class FakeBinanceClient:
+            """伪造币安客户端：记录调用，返回净资产"""
+
+            def __init__(self):
+                self.get_account_balance_called = False
+                self.get_account_info_called = False
+
+            async def get_account_balance(self):
+                # 标记：不应被调用
+                self.get_account_balance_called = True
+                return {"USDT": Decimal("800")}  # 可用余额（不应被使用）
+
+            async def get_account_info(self):
+                self.get_account_info_called = True
+                # 净资产 = 可用 + 持仓保证金 + 未实现盈亏
+                return {
+                    "totalMarginBalance": Decimal("1200"),  # accountEquity 净资产
+                    "availableBalance": Decimal("800"),      # 可用余额
+                }
+
+        fake_client = FakeBinanceClient()
+        job = self._make_job(binance_client=fake_client)
+
+        amount = asyncio.run(job._get_actual_balance())
+
+        # 应使用净资产 totalMarginBalance，而非可用余额
+        self.assertEqual(amount, 1200.0)
+        self.assertTrue(fake_client.get_account_info_called)
+        self.assertFalse(
+            fake_client.get_account_balance_called,
+            "不应调用 get_account_balance（可用余额口径）",
+        )
+
+    def test_get_actual_balance_fallback_when_no_client(self):
+        """无 binance_client 时返回 None，使用配置值兜底"""
+        job = self._make_job(binance_client=None)
+
+        self.assertIsNone(asyncio.run(job._get_actual_balance()))
+
+    def test_get_actual_balance_missing_total_margin(self):
+        """账户信息缺少 totalMarginBalance 字段时返回 None（语义与失败一致）"""
+        class FakeBinanceClientMissingField:
+            """伪造币安客户端：账户信息缺少 totalMarginBalance"""
+
+            async def get_account_info(self):
+                return {"availableBalance": Decimal("800")}
+
+        job = self._make_job(binance_client=FakeBinanceClientMissingField())
+
+        self.assertIsNone(asyncio.run(job._get_actual_balance()))
 
 
 if __name__ == "__main__":

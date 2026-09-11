@@ -132,30 +132,40 @@ class MonthlyAllocationJob:
 
     async def _get_actual_balance(self) -> Optional[float]:
         """
-        从交易所获取合约账户实际可用余额（USDT）
+        从交易所获取合约账户净资产（USDT）
+
+        净资产 = 账户总权益（accountEquity / totalMarginBalance），
+        包含可用余额 + 持仓保证金 + 未实现盈亏，用于计算资金分配
+        的百分比与对应资金；不使用可用余额（availableBalance），
+        否则会低估可分配资金、误判各策略占比。
 
         优先级：
-        1. 有 binance_client 且查询成功 → 返回实际可用余额
+        1. 有 binance_client 且查询成功 → 返回净资产
         2. 查询失败或没有 binance_client → 返回 None（使用配置值兜底）
 
         Returns:
-            可用余额（USDT），失败返回 None
+            净资产（USDT），失败返回 None
         """
         if self.binance_client is None:
             logger.info("无币安客户端，使用配置的 total_capital")
             return None
 
         try:
-            balance = await self.binance_client.get_account_balance()
-            usdt_available = balance.get("USDT", Decimal("0"))
-            amount = float(usdt_available)
+            account_info = await self.binance_client.get_account_info()
+            # totalMarginBalance 在 PM 账户下即 accountEquity（账户总权益/净资产）
+            total_margin_balance = account_info.get("totalMarginBalance")
+            if total_margin_balance is None:
+                logger.warning("账户信息缺少 totalMarginBalance，使用配置值兜底")
+                return None
+            amount = float(total_margin_balance)
             logger.info(
-                "获取合约账户可用余额",
-                usdt_available=amount,
+                "获取合约账户净资产",
+                net_asset=amount,
+                available_balance=float(account_info.get("availableBalance", Decimal("0"))),
             )
             return amount
         except Exception as e:
-            logger.warning("获取合约账户余额失败，使用配置值兜底", error=str(e))
+            logger.warning("获取合约账户净资产失败，使用配置值兜底", error=str(e))
             return None
 
     async def run_monthly_allocation(self) -> Optional[Dict[str, Any]]:

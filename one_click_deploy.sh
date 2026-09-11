@@ -61,11 +61,20 @@ echo "✅ 代码包已解压"
 cd $SERVER_PROJECT_PATH
 chmod +x database/postgres/scripts/backup-postgres.sh 2>/dev/null || true
 chmod 600 .env 2>/dev/null || true
-# 确保 AI 调优覆盖层目录容器内可写（容器内 tuner 用户 UID 1000 vs 宿主 UID 501）
-for strategy_dir in strategies/*/tuning_overrides; do
+# 确保 AI 调优可写目录/文件（容器内 tuner 用户 UID 1000 vs 宿主 UID 501）
+# 调优写 tuning_overrides 覆盖层；资金分配写各策略 config.yaml 的 capital_limits
+for strategy_dir in strategies/*/; do
     if [ -d "$strategy_dir" ]; then
-        chmod -R 777 "$strategy_dir"
-        echo "✅ 已设置覆盖层目录权限: $strategy_dir"
+        # 1) tuning_overrides 覆盖层目录递归可写
+        if [ -d "${strategy_dir}tuning_overrides" ]; then
+            chmod -R 777 "${strategy_dir}tuning_overrides"
+            echo "✅ 已设置覆盖层目录权限: ${strategy_dir}tuning_overrides"
+        fi
+        # 2) 策略 config.yaml 需容器内可写（资金分配写入 capital_limits）
+        if [ -f "${strategy_dir}config.yaml" ]; then
+            chmod 666 "${strategy_dir}config.yaml"
+            echo "✅ 已设置策略配置写权限: ${strategy_dir}config.yaml"
+        fi
     fi
 done
 echo "✅ 权限已设置"
@@ -93,7 +102,7 @@ done
 
 # 4.2 构建策略服务
 echo "--- 构建策略服务 ---"
-for service in btc-eth-strategy new-coin-strategy grid-strategy hrs-strategy ai-tuner; do
+for service in btc-eth-strategy btc-eth-aggressive-strategy new-coin-strategy grid-strategy hrs-strategy ai-tuner; do
     echo "构建 \$service ..."
     cd $SERVER_PROJECT_PATH
     if docker-compose build --no-cache \$service; then
@@ -121,7 +130,7 @@ cd $SERVER_PROJECT_PATH
 # 注意：docker ps -f name= 是前缀匹配，如 trading_system-kline 会匹配到
 # trading_system-kline-monitor，在精确容器不存在时 docker stop 会失败
 # 因此使用 || true 防止错误退出
-for container in $BTC_ETH_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINER_NAME $HRS_CONTAINER_NAME $AI_TUNER_CONTAINER_NAME $KLINE_CONTAINER_NAME $KLINE_MONITOR_CONTAINER_NAME; do
+for container in $BTC_ETH_CONTAINER_NAME $BTC_ETH_AGGRESSIVE_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINER_NAME $HRS_CONTAINER_NAME $AI_TUNER_CONTAINER_NAME $KLINE_CONTAINER_NAME $KLINE_MONITOR_CONTAINER_NAME; do
     if docker ps -q -f name=\$container | grep -q .; then
         docker stop \$container || true
         echo "✅ 容器 \$container 已停止"
@@ -131,7 +140,7 @@ for container in $BTC_ETH_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINE
 done
 
 echo "🗑️  删除旧容器..."
-for container in $BTC_ETH_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINER_NAME $HRS_CONTAINER_NAME $AI_TUNER_CONTAINER_NAME $KLINE_CONTAINER_NAME $KLINE_MONITOR_CONTAINER_NAME; do
+for container in $BTC_ETH_CONTAINER_NAME $BTC_ETH_AGGRESSIVE_CONTAINER_NAME $NEW_COIN_CONTAINER_NAME $GRID_CONTAINER_NAME $HRS_CONTAINER_NAME $AI_TUNER_CONTAINER_NAME $KLINE_CONTAINER_NAME $KLINE_MONITOR_CONTAINER_NAME; do
     if docker ps -aq -f name=\$container | grep -q .; then
         docker rm \$container || true
         echo "✅ 容器 \$container 已删除"
@@ -145,7 +154,7 @@ done
 
 # 6. 删除旧镜像（关键步骤，防止使用缓存）⭐⭐⭐
 echo "🗑️  删除旧镜像（防止使用缓存）..."
-for image in $BTC_ETH_IMAGE_NAME $NEW_COIN_IMAGE_NAME $GRID_IMAGE_NAME $HRS_IMAGE_NAME $AI_TUNER_IMAGE_NAME $KLINE_IMAGE_NAME $KLINE_MONITOR_IMAGE_NAME; do
+for image in $BTC_ETH_IMAGE_NAME $BTC_ETH_AGGRESSIVE_IMAGE_NAME $NEW_COIN_IMAGE_NAME $GRID_IMAGE_NAME $HRS_IMAGE_NAME $AI_TUNER_IMAGE_NAME $KLINE_IMAGE_NAME $KLINE_MONITOR_IMAGE_NAME; do
     if docker images -q \$image | grep -q .; then
         docker rmi \$image --force 2>/dev/null || true
         echo "✅ 旧镜像 \$image 已删除"
@@ -236,6 +245,10 @@ if [ "$DEPLOY_BTC_ETH" = true ]; then
     echo "  启动 BTC/ETH 策略..."
     docker-compose up -d btc-eth-strategy || echo "⚠️  btc-eth-strategy 启动失败"
 fi
+if [ "$DEPLOY_BTC_ETH_AGGRESSIVE" = true ]; then
+    echo "  启动 BTC/ETH 激进版策略..."
+    docker-compose up -d btc-eth-aggressive-strategy || echo "⚠️  btc-eth-aggressive-strategy 启动失败"
+fi
 if [ "$DEPLOY_NEW_COIN" = true ]; then
     echo "  启动新币做空策略..."
     docker-compose up -d new-coin-strategy || echo "⚠️  new-coin-strategy 启动失败"
@@ -316,6 +329,7 @@ echo ""
 echo "📊 部署摘要："
 echo "  - PostgreSQL: $POSTGRES_CONTAINER_NAME"
 echo "  - BTC/ETH 策略: $BTC_ETH_CONTAINER_NAME"
+echo "  - BTC/ETH 激进版策略: $BTC_ETH_AGGRESSIVE_CONTAINER_NAME"
 echo "  - 新币做空策略: $NEW_COIN_CONTAINER_NAME"
 echo "  - 网格交易策略: $GRID_CONTAINER_NAME"
 echo "  - HRS 混合反转策略: $HRS_CONTAINER_NAME"
