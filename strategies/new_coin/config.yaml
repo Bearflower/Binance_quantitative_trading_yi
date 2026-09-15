@@ -103,6 +103,13 @@ trading:
     target2_atr_multiplier: 3.5   # 第二目标：开仓价 - 3.5×ATR
     target2_close_percent: 0.40   # 第二目标平仓比例：40%
     trailing_stop_atr_multiplier: 1.5  # 移动止盈：从最低点反弹1.5×ATR
+
+  # 止盈成交检测配置（持仓数量对比，检测 TP1/TP2 条件单成交并激活移动止损）
+  position_detection:
+    enabled: true
+    qty_tolerance_ratio: 0.01      # 数量容差比例（相对上次跟踪数量）
+    qty_tolerance_absolute: 0.0001 # 数量容差绝对值（币数量）
+    zero_qty_threshold: 0.0001     # 持仓数量低于该值视为全部平仓/零持仓
   
   # 时间止损配置
   time_stop:

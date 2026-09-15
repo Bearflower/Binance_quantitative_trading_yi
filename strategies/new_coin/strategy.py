@@ -16,6 +16,7 @@ from shared.kline_service import KLineService
 from shared.notification import NotificationClient
 from shared.database import DatabaseManager
 from shared.condition_orders import get_open_orders
+from shared.strategy_state import sync_open_positions
 
 from .scoring_engine import ScoringEngine, ScoringResult
 from .pattern import PatternRecognizer
@@ -950,8 +951,7 @@ class NewCoinStrategy(BaseStrategy):
                 for s in stale_symbols:
                     del self.positions[s]
                     # 同步清理交易执行器中的持仓跟踪记录，避免残留
-                    if s in self.trading_executor.position_tracking:
-                        del self.trading_executor.position_tracking[s]
+                    self.trading_executor.clear_position_tracking(s)
                 # 持久化清理结果到数据库，避免容器重启后脏数据再次出现
                 await self._save_state()
 
@@ -1023,8 +1023,7 @@ class NewCoinStrategy(BaseStrategy):
                         )
                     
                     # 清理持仓跟踪（幂等）
-                    if symbol in self.trading_executor.position_tracking:
-                        del self.trading_executor.position_tracking[symbol]
+                    self.trading_executor.clear_position_tracking(symbol)
                     
                     # 计算盈亏
                     entry_price = position.get('entry_price', 0)
@@ -1035,12 +1034,49 @@ class NewCoinStrategy(BaseStrategy):
 
                     # 查不到平仓记录时跳过回撤检查与连续亏损计数，避免污染统计
                     if pnl is None:
-                        logger.warning(
-                            "未获取到平仓盈亏，跳过回撤检查与连续亏损计数",
-                            symbol=symbol,
-                            entry_price=entry_price
-                        )
-                        # 删除持仓记录
+                        # 尝试从 trade_records 定位本笔平仓单（做空平仓为 BUY），
+                        # 取真实已实现盈亏判定止损，确保条件单自动平仓的亏损也能打标（问题3）
+                        close_rec = None
+                        entry_time_obj = None
+                        if entry_time:
+                            try:
+                                entry_time_obj = datetime.fromisoformat(entry_time)
+                            except (ValueError, TypeError):
+                                entry_time_obj = None
+                        if entry_time_obj:
+                            upper_time = entry_time_obj + timedelta(hours=24)
+                            close_rec = await self.db.fetch_one(
+                                """
+                                SELECT order_id, realized_pnl
+                                FROM trading.trade_records
+                                WHERE strategy = $1 AND symbol = $2 AND side = 'BUY'
+                                AND executed_at BETWEEN $3 AND $4
+                                ORDER BY executed_at DESC
+                                LIMIT 1
+                                """,
+                                self.config.get('strategy', {}).get('db_strategy_name', '新币做空策略'),
+                                symbol,
+                                entry_time_obj,
+                                upper_time
+                            )
+                        if close_rec and close_rec.get('realized_pnl') is not None:
+                            try:
+                                real_pnl = Decimal(str(close_rec['realized_pnl']))
+                            except (TypeError, ValueError):
+                                real_pnl = None
+                            if real_pnl is not None and real_pnl < 0:
+                                await self.mark_stop_loss(
+                                    symbol=symbol,
+                                    side="BUY",        # 做空平仓方向为 BUY
+                                    realized_pnl=real_pnl,
+                                )
+                                self.consecutive_losses += 1
+                                logger.warning(
+                                    f"条件单平仓判定为亏损，已补正止损打标: {symbol}",
+                                    symbol=symbol,
+                                    realized_pnl=real_pnl
+                                )
+                        # 未获取到平仓单据或无法判定，仅清理持仓，不污染统计
                         del self.positions[symbol]
                         await self._save_state()
                         continue
@@ -1124,6 +1160,13 @@ class NewCoinStrategy(BaseStrategy):
                             symbol=symbol,
                             entry_price=entry_price,
                             entry_time=entry_time
+                        )
+
+                        # 止损打标：记录本次止损，供风控看板"最近止损次数"统计
+                        await self.mark_stop_loss(
+                            symbol=symbol,
+                            side="BUY",        # 做空平仓方向为 BUY
+                            realized_pnl=pnl,  # 真实的已实现亏损
                         )
                     else:
                         # 盈利则重置连续亏损计数
@@ -1570,10 +1613,53 @@ class NewCoinStrategy(BaseStrategy):
                 datetime.now()
             )
 
+            # 同步当前持仓到看板聚合表
+            # 口径说明：
+            # - margin：新币做空每仓为固定保证金，直接取配置 trading.single_position_margin
+            # - quantity：self.positions 未存数量，从交易所做空持仓 positionAmt 实时获取
+            #   （获取失败时该仓 quantity 记为 0，margin 仍正常上报）
+            await self._sync_open_positions_to_db()
+
             logger.debug("策略状态已保存")
 
         except Exception as e:
             logger.error(f"保存策略状态失败: {e}")
+
+    async def _sync_open_positions_to_db(self) -> None:
+        """
+        将新币做空策略当前持仓同步到 trading.strategy_open_positions 表
+
+        持仓来源：self.positions（本地跟踪的做空持仓）。
+        保证金：每仓固定 = 配置 trading.single_position_margin，不随价格波动。
+        数量：从交易所做空持仓 positionAmt 绝对值获取，实时反映真实仓位。
+        如数量查询失败，数量记为 0，保证金仍由 sync_open_positions 内部容错正常上报。
+        """
+        trading_config = self.config.get('trading', {})
+        single_margin = float(trading_config.get('single_position_margin', 0) or 0)
+
+        margin_dict = {}
+        qty_dict = {}
+        for symbol in self.positions:
+            margin_dict[symbol] = single_margin
+            qty_dict[symbol] = 0.0
+
+        # 从交易所查询做空持仓真实数量（positionAmt < 0，数量取其绝对值）
+        try:
+            exchange_positions = await self.binance_client._request(
+                "GET", "/papi/v1/um/positionRisk", signed=True
+            )
+            for p in exchange_positions:
+                symbol = p.get('symbol')
+                amt = float(p.get('positionAmt', 0) or 0)
+                if symbol in qty_dict and amt < 0:
+                    qty_dict[symbol] = abs(amt)
+        except Exception as e:
+            logger.warning(
+                "从交易所同步做空持仓数量失败，数量记为0（保证金仍上报）",
+                error=str(e),
+            )
+
+        await sync_open_positions(self.db, 'new_coin', margin_dict, qty_dict)
     
     async def _check_pause_status(self) -> bool:
         """

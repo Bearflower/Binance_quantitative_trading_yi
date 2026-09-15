@@ -211,6 +211,17 @@ check_position_management(symbol):
 
 **向后兼容：** 方法签名不变，调用方 `_check_dynamic_trailing()` 无需修改。
 
+#### F8: 激活条件适配 new_coin 做空策略（2026-09-15 更新）
+
+**P0**：仅 TP2 到达后激活，不从浮盈百分比激活。
+
+**修复说明**：原实现中移动止损代码虽已存在，但 `target2_reached` 从未被正确标记，导致动态利润保护实际上从未激活（退化为纯固定止盈）。现改为**止盈成交检测驱动**：
+
+- `check_position_management` 每周期先调用新增的 `detect_take_profit_fills()`，对比交易所实际持仓数量与上次跟踪数量（`_last_tracked_qty`）检测 TP 条件单成交
+- 持仓 100% → 70%：标记 `target1_reached`；70% → 30%：标记 `target2_reached` 并激活移动止损；持仓归零：视为全部平仓
+- 新增方法：`detect_take_profit_fills`、`_get_exchange_position_qty`、`clear_position_tracking`
+- TP2 成交激活后，同时生效 `_check_dynamic_trailing()`（动态利润保护）与 `_check_trailing_stop()`（HRS 风格 1.5×ATR 反弹平剩余仓）
+
 ---
 
 ## 三、接口定义（shared 层函数签名）
@@ -476,6 +487,25 @@ trading:
 | `volatility_adjustment.cache_ttl_seconds` | int | 3600 | 波动率缓存有效期（秒） |
 | `stop_limit_order.offset_pct` | float | 0.002 | 止损限价偏移比例 |
 | `cleanup_silent_error_codes` | list | [-2022, -2011] | 条件单取消时静默忽略的错误码 |
+
+### 5.3 止盈成交检测新增配置（2026-09-15 新增）
+
+激活依赖止盈成交检测，新增 `trading.position_detection` 配置节：
+
+```yaml
+position_detection:
+  enabled: true
+  qty_tolerance_ratio: 0.01      # 数量容差比例（相对上次跟踪数量）
+  qty_tolerance_absolute: 0.0001 # 数量容差绝对值（币数量）
+  zero_qty_threshold: 0.0001     # 持仓数量低于该值视为全部平仓/零持仓
+```
+
+| 配置项 | 类型 | 默认值 | 说明 |
+|--------|------|--------|------|
+| `enabled` | bool | true | 止盈成交检测开关 |
+| `qty_tolerance_ratio` | float | 0.01 | 数量容差比例（相对上次跟踪数量） |
+| `qty_tolerance_absolute` | float | 0.0001 | 数量容差绝对值（币数量） |
+| `zero_qty_threshold` | float | 0.0001 | 持仓数量低于该值视为全部平仓/零持仓 |
 
 ---
 

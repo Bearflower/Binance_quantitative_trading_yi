@@ -126,6 +126,13 @@ class TradingExecutor:
         
         # ATR止损配置
         self.atr_stop_multiplier = Decimal(str(trading_config.get('atr_stop', {}).get('multiplier', 2.5)))
+
+        # 止盈成交检测配置（持仓数量对比，检测 TP1/TP2 条件单成交）
+        pd_config = trading_config.get('position_detection', {})
+        self.position_detection_enabled = pd_config.get('enabled', True)
+        self.qty_tolerance_ratio = float(pd_config.get('qty_tolerance_ratio', 0.01))
+        self.qty_tolerance_absolute = float(pd_config.get('qty_tolerance_absolute', 0.0001))
+        self.zero_qty_threshold = float(pd_config.get('zero_qty_threshold', 0.0001))
         
         # 限价单滑点参数（限价相对于触发价的偏移量，默认 0.1%）
         self.limit_order_slippage = Decimal(str(trading_config.get("limit_order_slippage", 0.001)))
@@ -150,6 +157,9 @@ class TradingExecutor:
 
         # 波动率计算缓存（用于动态利润保护）
         self._volatility_cache: Dict[str, Any] = {}
+
+        # 上次跟踪的持仓数量（用于止盈成交检测，对比交易所实际数量变化）
+        self._last_tracked_qty: Dict[str, float] = {}
 
         logger.info(
             "交易执行器初始化完成",
@@ -299,6 +309,9 @@ class TradingExecutor:
                 'pending_profit_pct': None,
                 'current_tier_index': -1,
             }
+
+            # 记录初始持仓数量（用于止盈成交检测）
+            self._last_tracked_qty[symbol] = float(quantity)
 
             # 10. 设置止损止盈（根据配置选择策略）
             if self.batch_take_profit_enabled and atr > 0:
@@ -1065,6 +1078,14 @@ class TradingExecutor:
             tracking = self.position_tracking[symbol]
             entry_time = tracking.get('entry_time')
 
+            # 0. 检测止盈目标成交（持仓数量对比，激活移动止损）
+            exchange_qty = await self._get_exchange_position_qty(symbol)
+            if exchange_qty is not None:
+                fill_level = self.detect_take_profit_fills(symbol, exchange_qty)
+                if fill_level == 0:
+                    # 全部平仓：交由 _monitor_positions 完成清理
+                    return
+
             # 1. 检查时间止损
             if self.time_stop_enabled:
                 await self._check_time_stop(symbol, entry_time)
@@ -1149,9 +1170,8 @@ class TradingExecutor:
                 # 取消该合约剩余条件单
                 await self.cancel_all_algo_orders(symbol)
                 
-                # 清理持仓跟踪
-                if symbol in self.position_tracking:
-                    del self.position_tracking[symbol]
+                # 清理持仓跟踪（幂等）
+                self.clear_position_tracking(symbol)
                 
                 # 发送通知
                 await self.notification.send(
@@ -1209,9 +1229,8 @@ class TradingExecutor:
                     # 平仓100%
                     await self._close_position(symbol, self.close_percent, "时间止损")
                     
-                    # 清除持仓跟踪
-                    if symbol in self.position_tracking:
-                        del self.position_tracking[symbol]
+                    # 清除持仓跟踪（幂等）
+                    self.clear_position_tracking(symbol)
                     
                     # 发送通知
                     await self.notification.send(
@@ -1448,9 +1467,8 @@ class TradingExecutor:
                 if remaining_quantity > 0:
                     await self._close_position(symbol, self.close_percent, "移动止盈")
                 
-                # 清除持仓跟踪
-                if symbol in self.position_tracking:
-                    del self.position_tracking[symbol]
+                # 清除持仓跟踪（幂等）
+                self.clear_position_tracking(symbol)
                 
                 # 发送通知
                 await self.notification.send(
@@ -2074,29 +2092,113 @@ class TradingExecutor:
 
         return result
     
-    def update_target_status(self, symbol: str, target_level: int) -> None:
+    async def _get_exchange_position_qty(self, symbol: str) -> Optional[float]:
+        """
+        获取交易所实际做空持仓数量
+
+        币安 positionRisk 接口对零持仓返回空列表，返回 0.0 表示无做空持仓。
+
+        Args:
+            symbol: 交易对
+
+        Returns:
+            做空持仓数量（绝对值）；查询失败返回 None
+        """
+        try:
+            positions = await self.binance_api._request(
+                "GET", "/papi/v1/um/positionRisk",
+                params={'symbol': symbol}, signed=True
+            )
+            for pos in positions:
+                if float(pos.get('positionAmt', 0)) < 0:
+                    return abs(float(pos['positionAmt']))
+            return 0.0
+        except Exception as e:
+            logger.warning(f"获取持仓数量失败: {symbol}", error=str(e))
+            return None
+
+    def detect_take_profit_fills(self, symbol: str, exchange_qty: float) -> Optional[int]:
+        """
+        通过对比持仓数量变化检测止盈单成交
+
+        对比交易所实际持仓数量与上次跟踪数量：
+        - 100% -> 70%：target1 成交，标记 target1_reached
+        - 70% -> 30%：target2 成交，标记 target2_reached 并激活移动止损
+        - 0%：全部平仓
+
+        Args:
+            symbol: 交易对
+            exchange_qty: 交易所当前做空持仓数量（绝对值）
+
+        Returns:
+            达成的目标级别（1/2），0 表示全部平仓，None 表示无变化或未启用
+        """
+        if not self.position_detection_enabled:
+            return None
+        last_qty = self._last_tracked_qty.get(symbol)
+        if last_qty is None:
+            # 首次跟踪，记录当前数量
+            self._last_tracked_qty[symbol] = exchange_qty
+            return None
+        if exchange_qty < self.zero_qty_threshold:
+            # 全部平仓
+            self._last_tracked_qty[symbol] = exchange_qty
+            return 0
+        # 允许微小误差（精度截断/手续费）
+        qty_tolerance = max(last_qty * self.qty_tolerance_ratio, self.qty_tolerance_absolute)
+        if exchange_qty >= last_qty - qty_tolerance:
+            return None
+        # 持仓减少，检测止盈目标
+        self._last_tracked_qty[symbol] = exchange_qty
+        tracking = self.position_tracking.get(symbol)
+        if not tracking:
+            return None
+        if not tracking.get('target1_reached'):
+            self.update_target_status(symbol, 1, exchange_qty=exchange_qty)
+            logger.info("检测到第一目标止盈成交", symbol=symbol, last_qty=last_qty, current_qty=exchange_qty)
+            return 1
+        if not tracking.get('target2_reached'):
+            self.update_target_status(symbol, 2, exchange_qty=exchange_qty)
+            logger.info("检测到第二目标止盈成交，激活移动止损", symbol=symbol, last_qty=last_qty, current_qty=exchange_qty)
+            return 2
+        return None
+
+    def clear_position_tracking(self, symbol: str) -> None:
+        """清理持仓跟踪与上次跟踪数量（幂等）"""
+        self.position_tracking.pop(symbol, None)
+        self._last_tracked_qty.pop(symbol, None)
+
+    def update_target_status(self, symbol: str, target_level: int, exchange_qty: Optional[float] = None) -> None:
         """
         更新目标达成状态
-        
-        当止盈单成交后，由外部调用此方法更新状态
-        
+
+        当止盈单成交后，由持仓数量检测（detect_take_profit_fills）调用此方法更新状态。
+        remaining_quantity 优先使用交易所实际剩余数量（exchange_qty），缺失时按比例估算。
+
         Args:
             symbol: 交易对
             target_level: 目标级别（1或2）
+            exchange_qty: 交易所实际剩余持仓数量（可选，优先使用）
         """
         if symbol not in self.position_tracking:
             return
-        
+
         tracking = self.position_tracking[symbol]
-        
+
         if target_level == 1:
             tracking['target1_reached'] = True
-            tracking['remaining_quantity'] *= (1 - float(self.target1_close_percent))
             logger.info(f"第一目标已达成: {symbol}")
         elif target_level == 2:
             tracking['target2_reached'] = True
-            tracking['remaining_quantity'] *= (1 - float(self.target2_close_percent))
             logger.info(f"第二目标已达成: {symbol}")
+
+        # 剩余数量：优先使用交易所实际数量，缺失时按比例估算
+        if exchange_qty is not None:
+            tracking['remaining_quantity'] = float(exchange_qty)
+        elif target_level == 1:
+            tracking['remaining_quantity'] *= (1 - float(self.target1_close_percent))
+        elif target_level == 2:
+            tracking['remaining_quantity'] *= (1 - float(self.target2_close_percent))
 
     async def replenish_conditional_orders(self, symbol: str, entry_price: Decimal) -> bool:
         """
@@ -2188,6 +2290,8 @@ class TradingExecutor:
                     'pending_profit_pct': None,
                     'current_tier_index': -1,
                 }
+                # 记录初始持仓数量（用于止盈成交检测）
+                self._last_tracked_qty[symbol] = float(current_quantity)
             
             # 5. 获取当前价格
             ticker = await self.binance_api._request(
@@ -2200,7 +2304,7 @@ class TradingExecutor:
             # 用于记录整体是否全部成功
             all_success = True
             # 订单已存在时忽略的错误码（幂等创建）
-            ignore_error_codes = {'-4164', '-2011', '-2021', '-4136'}
+            ignore_error_codes = {'-4164', '-2011', '-2021', '-4136', '-4507'}
             slippage = self.limit_order_slippage
 
             # === 6. 补全止损条件单（SL）===
@@ -2246,47 +2350,80 @@ class TradingExecutor:
             target1_price = self._format_price(target1_price, tick_size)
             target1_quantity = current_quantity * self.target1_close_percent
             target1_quantity = self._format_quantity(target1_quantity, step_size)
-            tp1_limit_price = self._format_price(target1_price * (Decimal('1') + slippage), tick_size)
 
-            # 检查最小名义价值，避免 -4164 错误
-            tp1_notional = target1_quantity * target1_price
-            if target1_quantity > 0 and target1_price > 0 and tp1_notional < self._MIN_NOTIONAL:
+            # 做空 TP1：BUY 方向，triggerPrice < current_price 才能挂单
+            # 如果当前价已 <= 原始 TP1 目标价，说明 TP1 早已应触发，直接市价平仓 TP1 部分
+            if current_price <= target1_price:
                 logger.info(
-                    f"TP1 名义价值 {float(tp1_notional)} USDT < 最小值 {float(self._MIN_NOTIONAL)} USDT，跳过补全",
+                    f"当前价格已低于 TP1 目标价，TP1 应已触发，直接市价平仓 TP1 部分",
                     symbol=symbol,
-                    quantity=float(target1_quantity),
-                    price=float(target1_price)
+                    current_price=float(current_price),
+                    target1_price=float(target1_price)
                 )
-            elif target1_quantity > 0 and target1_price > 0:
                 try:
-                    tp1_result = await self.binance_api.place_conditional_order(
-                        symbol=symbol, side='BUY',
-                        order_type='TAKE_PROFIT',
-                        stop_price=target1_price,
-                        price=tp1_limit_price,
-                        quantity=target1_quantity,
-                        reduce_only=True
-                    )
-                    if tp1_result and 'algoId' in tp1_result and symbol in self.position_tracking:
-                        self.position_tracking[symbol]['algo_ids']['tp1'] = tp1_result['algoId']
-                        await record_condition_order(
-                            self.db, "new_coin", symbol,
-                            algo_id=tp1_result['algoId'],
-                            order_type="TAKE_PROFIT"
+                    if target1_quantity > 0:
+                        await self.binance_api.place_order(
+                            symbol=symbol, side='BUY',
+                            order_type='MARKET',
+                            quantity=target1_quantity,
+                            reduce_only=True
                         )
-                    logger.info(
-                        f"补全 TP1 止盈条件单成功: {symbol}",
-                        target_price=float(target1_price),
-                        quantity=float(target1_quantity),
-                        algo_id=tp1_result.get('algoId', 'N/A')
-                    )
+                        logger.info(
+                            f"市价平仓 TP1 部分成功: {symbol}",
+                            quantity=float(target1_quantity)
+                        )
+                        if symbol in self.position_tracking:
+                            remaining = self.position_tracking[symbol]['remaining_quantity'] - float(target1_quantity)
+                            self.position_tracking[symbol]['remaining_quantity'] = max(0, remaining)
+                            self.position_tracking[symbol]['target1_reached'] = True
+                            # 同步上次跟踪数量（用于止盈成交检测）
+                            self._last_tracked_qty[symbol] = self.position_tracking[symbol]['remaining_quantity']
                 except Exception as e:
-                    error_str = str(e)
-                    if any(code in error_str for code in ignore_error_codes):
-                        logger.info(f"TP1 止盈条件单已存在，跳过: {symbol}")
-                    else:
-                        logger.warning(f"补全 TP1 止盈条件单失败: {symbol}", error=error_str)
-                        all_success = False
+                    logger.warning(
+                        f"市价平仓 TP1 部分失败: {symbol}",
+                        error=str(e)
+                    )
+            else:
+                # 检查最小名义价值，避免 -4164 错误
+                tp1_limit_price = self._format_price(target1_price * (Decimal('1') + slippage), tick_size)
+                tp1_notional = target1_quantity * target1_price
+                if target1_quantity > 0 and target1_price > 0 and tp1_notional < self._MIN_NOTIONAL:
+                    logger.info(
+                        f"TP1 名义价值 {float(tp1_notional)} USDT < 最小值 {float(self._MIN_NOTIONAL)} USDT，跳过补全",
+                        symbol=symbol,
+                        quantity=float(target1_quantity),
+                        price=float(target1_price)
+                    )
+                elif target1_quantity > 0 and target1_price > 0:
+                    try:
+                        tp1_result = await self.binance_api.place_conditional_order(
+                            symbol=symbol, side='BUY',
+                            order_type='TAKE_PROFIT',
+                            stop_price=target1_price,
+                            price=tp1_limit_price,
+                            quantity=target1_quantity,
+                            reduce_only=True
+                        )
+                        if tp1_result and 'algoId' in tp1_result and symbol in self.position_tracking:
+                            self.position_tracking[symbol]['algo_ids']['tp1'] = tp1_result['algoId']
+                            await record_condition_order(
+                                self.db, "new_coin", symbol,
+                                algo_id=tp1_result['algoId'],
+                                order_type="TAKE_PROFIT"
+                            )
+                        logger.info(
+                            f"补全 TP1 止盈条件单成功: {symbol}",
+                            target_price=float(target1_price),
+                            quantity=float(target1_quantity),
+                            algo_id=tp1_result.get('algoId', 'N/A')
+                        )
+                    except Exception as e:
+                        error_str = str(e)
+                        if any(code in error_str for code in ignore_error_codes):
+                            logger.info(f"TP1 止盈条件单已存在，跳过: {symbol}")
+                        else:
+                            logger.warning(f"补全 TP1 止盈条件单失败: {symbol}", error=error_str)
+                            all_success = False
 
             # === 8. 补全 TP2 条件单 ===
             target2_price = entry_price - (atr * self.target2_atr_multiplier)
@@ -2322,6 +2459,8 @@ class TradingExecutor:
                             remaining = self.position_tracking[symbol]['remaining_quantity'] - float(tp2_quantity)
                             self.position_tracking[symbol]['remaining_quantity'] = max(0, remaining)
                             self.position_tracking[symbol]['target2_reached'] = True
+                            # 同步上次跟踪数量（用于止盈成交检测）
+                            self._last_tracked_qty[symbol] = self.position_tracking[symbol]['remaining_quantity']
                 except Exception as e:
                     logger.warning(
                         f"市价平仓 TP2 部分失败: {symbol}",

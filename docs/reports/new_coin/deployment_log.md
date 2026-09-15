@@ -1,5 +1,38 @@
 # 部署确认报告
 
+---
+## 2026-09-15 追加部署（激活移动止损：止盈成交检测）
+
+### 变更内容
+- **修复移动止损从未生效的 bug**：原代码中移动止损已存在（MTPCS/HRS 同源）但 `target2_reached` 从未被标记，导致移动止损永不激活，实际退化为纯固定止盈
+- 新增「止盈成交检测」机制：通过对比交易所实际持仓数量与上次跟踪数量，检测 TP1/TP2 条件单成交（100%→70% 标记 target1_reached；70%→30% 标记 target2_reached 并激活移动止损；→0 全部平仓）
+- 激活后启用已有双机制移动止损：回撤阶梯动态止损（shared/dynamic_trailing.py，MTPCS 同源）+ 最低价反弹 1.5×ATR（HRS 风格），锁住更多利润
+- 新增 `trading.position_detection` 配置块（enabled / qty_tolerance_ratio / qty_tolerance_absolute / zero_qty_threshold）
+- 改动文件：`strategies/new_coin/executor.py`（新增 `_get_exchange_position_qty`/`detect_take_profit_fills`/`clear_position_tracking`）、`strategies/new_coin/strategy.py`、`strategies/new_coin/config.yaml`
+
+### 验证结果（五层验证）
+| 层级 | 内容 | 结果 |
+|------|------|------|
+| 1 容器状态 | Up (healthy) | ✅ |
+| 2 镜像ID | 容器 fc6ea8 == 本次构建 `trading_system-new-coin-strategy:latest` | ✅ |
+| 4 文件MD5 | 三方一致（本地=服务器=容器内） | ✅ |
+| 5 日志错误 | 启动后 200 行无 error/exception | ✅ |
+
+### MD5（本地=服务器=容器内）
+| 文件 | MD5 |
+|------|-----|
+| executor.py | d7b4527f099fd909ca79cc6221183d25 |
+| strategy.py | 8a629c71fe160f4c7d11a573fd3bfd91 |
+| config.yaml | e1bc92708defc0359e9f7f023460dd04 |
+
+### 测试
+- ✅ 新增 `tests/test_strategies/test_take_profit_fill_detect.py`（14 用例）
+- ✅ 全量回归 272 passed
+- ✅ 部署方式：按需重建（仅 new-coin-strategy，未触碰其他容器），`--no-cache` 防部署幻觉
+- 部署 ID: `9D2DB354`
+
+---
+
 ## 基本信息
 - 部署时间: 2026-09-03 12:53 (Asia/Shanghai)
 - 目标服务器: 43.156.242.184
