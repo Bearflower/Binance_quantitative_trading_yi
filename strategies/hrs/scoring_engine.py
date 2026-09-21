@@ -88,13 +88,21 @@ class ScoringEngine:
         self.technical_weight = weights.get("technical", 0.45)
         self.sentiment_weight = weights.get("sentiment", 0.30)
 
-        # 入场阈值
+        # 入场阈值（V2.10: 多空分离）
         self.entry_threshold = scoring_config.get("entry_threshold", 6.0)
+        self.short_entry_threshold = scoring_config.get("short_entry_threshold", self.entry_threshold)
 
-        # 技术面硬性要求
+        # 技术面硬性要求（V2.10: 多空分离）
         tech_config = scoring_config.get("technical", {})
         self.min_technical_score = tech_config.get("min_total_score", 4.0)
         self.min_primary_pattern_score = tech_config.get("min_primary_pattern_score", 1.0)
+        # V2.10: 做空独立技术面门槛
+        self.short_min_technical_score = tech_config.get(
+            "short_min_total_score", self.min_technical_score
+        )
+        self.short_min_primary_pattern_score = tech_config.get(
+            "short_min_primary_pattern_score", self.min_primary_pattern_score
+        )
 
         # V2.6: 标准模式趋势过滤配置
         trend_filter_config = scoring_config.get("trend_filter", {})
@@ -111,6 +119,14 @@ class ScoringEngine:
         self._ema_slope_period = ema_slope_config.get("period", 3)
         self._ema_slope_min_for_long = ema_slope_config.get("min_slope_for_long", -0.0005)
         self._ema_slope_max_for_short = ema_slope_config.get("max_slope_for_short", 0.0005)
+
+        # V2.9: 高分豁免趋势过滤配置（V2.10: 多空分离）
+        score_exemption_config = trend_filter_config.get("score_exemption", {})
+        self._score_exemption_enabled = score_exemption_config.get("enabled", False)
+        self._score_exemption_threshold = score_exemption_config.get("threshold", 7.0)
+        self._score_exemption_short_threshold = score_exemption_config.get(
+            "short_threshold", self._score_exemption_threshold
+        )
 
         # V2.0 新增：极端行情加分配置
         eb_config = scoring_config.get("extreme_bonus", {})
@@ -741,8 +757,13 @@ class ScoringEngine:
             + sentiment_score * self.sentiment_weight
         )
 
-        lv_entry_threshold = scoring_config.get("entry_threshold", 6.0)
-        lv_min_technical = tech_config.get("min_total_score", 4.0)
+        # V2.10: LV-RM 模式也使用多空独立阈值
+        if direction == "short":
+            lv_entry_threshold = scoring_config.get("short_entry_threshold", 5.5)
+            lv_min_technical = tech_config.get("short_min_total_score", 2.0)
+        else:
+            lv_entry_threshold = scoring_config.get("entry_threshold", 6.0)
+            lv_min_technical = tech_config.get("min_total_score", 4.0)
 
         should_entry = total_score >= lv_entry_threshold and lv_technical_score >= lv_min_technical
 
@@ -1262,6 +1283,27 @@ class ScoringEngine:
                 ema_4h=ema_4h,
                 klines_4h=klines_4h,  # V2.8: 传入 K 线数据用于 EMA 斜率计算
             )
+            # V2.9: 高分豁免趋势过滤（V2.10: 多空分离门槛）
+            if not trend_ok and self._score_exemption_enabled:
+                # 根据方向选择豁免阈值
+                exemption_threshold = (
+                    self._score_exemption_short_threshold
+                    if direction == "short"
+                    else self._score_exemption_threshold
+                )
+                if total_score >= exemption_threshold:
+                    trend_ok = True
+                    trend_reason = (
+                        f"高分豁免(总分{total_score}≥{exemption_threshold})，跳过趋势过滤"
+                    )
+                    logger.info(
+                        "高分豁免趋势过滤",
+                        symbol=symbol,
+                        direction=direction,
+                        total_score=total_score,
+                        threshold=exemption_threshold,
+                        original_reason=trend_reason,
+                    )
             result.trend_filter_passed = trend_ok
             result.trend_filter_reason = trend_reason
             if not trend_ok:
@@ -1319,16 +1361,24 @@ class ScoringEngine:
                 return False
 
         # V2.2：EMM/半EMM/标准模式使用各自入场阈值
+        # V2.10: 标准模式同时支持多空独立阈值
+        direction = score_result.direction
         if score_result.entry_mode == "emm":
             threshold = self.emm_entry_threshold
         elif score_result.entry_mode == "semi_emm":
             threshold = self.semi_emm_entry_threshold
         else:
-            threshold = self.entry_threshold
+            # V2.10: 标准模式做空使用独立门槛
+            threshold = (
+                self.short_entry_threshold
+                if direction == "short"
+                else self.entry_threshold
+            )
         if score_result.total_score < threshold:
             logger.info(
                 "总分未达阈值",
                 symbol=score_result.symbol,
+                direction=direction,
                 total_score=score_result.total_score,
                 threshold=threshold,
             )
@@ -1339,27 +1389,34 @@ class ScoringEngine:
             logger.info(
                 "EMM模式满足入场条件",
                 symbol=score_result.symbol,
-                direction=score_result.direction,
+                direction=direction,
                 total_score=score_result.total_score,
             )
             return True
 
-        if score_result.technical_score < self.min_technical_score:
+        # V2.10: 技术面硬性门槛多空分离
+        tech_required = (
+            self.short_min_technical_score
+            if direction == "short"
+            else self.min_technical_score
+        )
+        if score_result.technical_score < tech_required:
             logger.info(
                 "技术总分未达要求",
                 symbol=score_result.symbol,
+                direction=direction,
                 technical_score=score_result.technical_score,
-                required=self.min_technical_score,
+                required=tech_required,
             )
             return False
 
         # 思路3：半EMM模式跳过形态门槛，但仍需满足技术总分
         if score_result.entry_mode == "semi_emm":
-            if score_result.technical_score >= self.min_technical_score:
+            if score_result.technical_score >= tech_required:
                 logger.info(
                     "半EMM模式满足入场条件（跳过形态门槛）",
                     symbol=score_result.symbol,
-                    direction=score_result.direction,
+                    direction=direction,
                     total_score=score_result.total_score,
                     technical_score=score_result.technical_score,
                 )
@@ -1377,15 +1434,21 @@ class ScoringEngine:
             )
             return True
 
-        # 检查基础形态评分
+        # 检查基础形态评分（V2.10: 多空分离门槛）
         tech_details = score_result.details.get("technical", {})
         primary_pattern_score = tech_details.get("primary_pattern_score", 0)
-        if primary_pattern_score < self.min_primary_pattern_score:
+        primary_required = (
+            self.short_min_primary_pattern_score
+            if direction == "short"
+            else self.min_primary_pattern_score
+        )
+        if primary_pattern_score < primary_required:
             logger.info(
                 "基础形态评分不足",
                 symbol=score_result.symbol,
+                direction=direction,
                 primary_pattern_score=primary_pattern_score,
-                required=self.min_primary_pattern_score,
+                required=primary_required,
             )
             return False
 

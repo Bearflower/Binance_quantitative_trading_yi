@@ -6,6 +6,9 @@
 -- 创建 btc_eth 策略 Schema
 CREATE SCHEMA IF NOT EXISTS btc_eth;
 
+-- 创建 btc_eth 激进版策略 Schema（独立隔离，共用 trading.trade_records 以 strategy 字段区分）
+CREATE SCHEMA IF NOT EXISTS btc_eth_aggressive;
+
 -- 创建 new_coin 策略 Schema
 CREATE SCHEMA IF NOT EXISTS new_coin;
 
@@ -17,15 +20,16 @@ CREATE SCHEMA IF NOT EXISTS trading;
 
 -- 授权 trading_user 访问所有 Schema
 GRANT ALL PRIVILEGES ON SCHEMA btc_eth TO trading_user;
+GRANT ALL PRIVILEGES ON SCHEMA btc_eth_aggressive TO trading_user;
 GRANT ALL PRIVILEGES ON SCHEMA new_coin TO trading_user;
 GRANT ALL PRIVILEGES ON SCHEMA grid TO trading_user;
 GRANT ALL PRIVILEGES ON SCHEMA trading TO trading_user;
 
 -- 设置默认搜索路径
-ALTER USER trading_user SET search_path TO btc_eth, new_coin, grid, trading, public;
+ALTER USER trading_user SET search_path TO btc_eth, btc_eth_aggressive, new_coin, grid, trading, public;
 
 -- 输出创建结果
 DO $$
 BEGIN
-    RAISE NOTICE 'Schema 创建完成: btc_eth, new_coin, grid, trading';
+    RAISE NOTICE 'Schema 创建完成: btc_eth, btc_eth_aggressive, new_coin, grid, trading';
 END $$;

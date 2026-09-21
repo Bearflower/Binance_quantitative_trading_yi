@@ -5,7 +5,8 @@
 from typing import Dict, Any, Optional, List, Tuple
 import asyncio
 import os
-from decimal import Decimal
+import time
+from decimal import Decimal, InvalidOperation
 from datetime import datetime, timezone, timedelta
 import structlog
 
@@ -20,6 +21,11 @@ from shared.dynamic_trailing import (
     TrailingStopResult,
 )
 from shared.capital_manager import CapitalManager
+from shared.position_baseline import (
+    build_contract_size_map,
+    calc_occupied_margin,
+    calc_position_margin,
+)
 
 
 logger = structlog.get_logger()
@@ -70,17 +76,20 @@ class TradingExecutor:
         self.config = config
         self.kline_service = kline_service
 
-        # 资金分配管理器（读取 capital_limits.monthly_limit 限制仓位）
-        if config_path:
-            self.capital_mgr = CapitalManager(config_path)
-        else:
-            # 未传入 config_path 时，使用默认路径
-            config_dir = os.path.dirname(os.path.abspath(__file__))
-            self.capital_mgr = CapitalManager(os.path.join(config_dir, "config.yaml"))
+        # 资金分配管理器（方案 D：DB 主来源 + config 兜底，保证金口径）
+        resolved_config_path = config_path or os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "config.yaml"
+        )
+        self.capital_mgr = CapitalManager(
+            resolved_config_path,
+            db=db,
+            strategy_id=config.get('strategy', {}).get('name', 'new_coin'),
+        )
 
         # 交易配置
         trading_config = config.get('trading', {})
-        self.leverage = trading_config.get('leverage', 2)
+        # 杠杆严格从配置读取（R3）：缺失或 ≤ 0 视为配置错误，禁止用 1 或 2 猜测默认值
+        self.leverage = self._resolve_leverage(trading_config.get('leverage'))
         self.single_position_margin = Decimal(str(trading_config.get('single_position_margin', 50)))
         self.stop_loss_percent = Decimal(str(trading_config.get('stop_loss_percent', 0.05)))
         self.take_profit_percent = Decimal(str(trading_config.get('take_profit_percent', 0.10)))
@@ -149,8 +158,26 @@ class TradingExecutor:
         close_pos_config = trading_config.get('close_position', {})
         self.close_percent = Decimal(str(close_pos_config.get('close_percent', 1.0)))
 
+        # 最小开仓保证金（缩仓后低于此值则拒开，决策 D3；从配置读取，禁止硬编码）
+        min_margin = trading_config.get('min_position_margin')
+        self.min_position_margin = float(min_margin) if min_margin is not None else None
+
+        # 同币种重复开仓通知降频窗口（秒，避免刷屏）
+        self.duplicate_notify_window_seconds = int(
+            trading_config.get('duplicate_symbol_notify_window_seconds', 3600)
+        )
+        # {symbol: 上次通知时间戳（monotonic）}
+        self._duplicate_notify_ts: Dict[str, float] = {}
+
         # 持仓跟踪（用于移动止盈和时间止损）
         self.position_tracking: Dict[str, Dict[str, Any]] = {}
+
+        # 持仓基线就绪标志（R4）：策略启动时先置 False，基线重建完成后置 True，
+        # 未就绪期间禁止开新仓（仅允许减仓），避免用不完整基线做限额判断
+        self.baseline_ready: bool = False
+
+        # contractSize 缓存（{symbol: 合约面值}，用于统一保证金口径）
+        self._contract_size_cache: Optional[Dict[str, float]] = None
 
         # 已补全TP2的币种集合（避免重复补全）
         self._replenished_symbols: set = set()
@@ -169,12 +196,37 @@ class TradingExecutor:
             time_stop_enabled=self.time_stop_enabled
         )
 
+    def _resolve_leverage(self, raw_leverage: Any) -> Decimal:
+        """
+        严格解析杠杆配置（R3：缺失或 ≤ 0 视为配置错误，禁止默认猜测）
+
+        Args:
+            raw_leverage: config.trading.leverage 原始值（可能缺失 / 非数值）
+
+        Returns:
+            Decimal: 合法杠杆；非法时返回 Decimal('0') 并把 self._leverage_valid 置 False，
+                     由 execute_short 的开仓守卫拦截，杜绝「占用算 0 就放行」的新漏洞
+        """
+        try:
+            leverage = Decimal(str(raw_leverage))
+        except (InvalidOperation, TypeError, ValueError):
+            leverage = Decimal('0')
+        self._leverage_valid = leverage > 0
+        if not self._leverage_valid:
+            logger.error(
+                "杠杆配置缺失或非法（必须为正数），禁止开仓",
+                raw_leverage=raw_leverage,
+                config_path=self.capital_mgr.config_path,
+            )
+            return Decimal('0')
+        return leverage
+
     async def execute_short(
         self,
         symbol: str,
         score_result: Dict[str, Any],
         current_price: float
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
         """
         执行做空交易
 
@@ -184,7 +236,11 @@ class TradingExecutor:
             current_price: 当前价格
 
         Returns:
-            订单信息字典，失败返回 None
+            (订单信息字典, 失败原因) 元组：
+            - 成功：返回 (order, "")，order 为成交后的订单信息
+            - 失败：返回 (None, "<具体失败原因>")，
+              失败原因包含账户余额不足/仓位大小计算失败/总仓位超限/总持仓保证金超限/
+              开空仓下单失败/市价单未成交/限价单超时未成交/执行异常等
         """
         try:
             logger.info(
@@ -198,60 +254,39 @@ class TradingExecutor:
 
             if balance <= 0:
                 logger.error("账户余额不足")
-                return None
+                return None, "账户余额不足"
 
-            # 2. 计算仓位大小
-            position_size = self._calculate_position_size(balance, current_price)
+            # 2. 基线就绪校验（R4：基线重建完成前禁止开新仓，仅允许减仓）
+            if not self.baseline_ready:
+                logger.warning("持仓基线尚未重建完成，禁止开新仓", symbol=symbol)
+                return None, "持仓基线未就绪，暂禁止开仓"
 
-            if position_size <= 0:
-                logger.error("仓位大小计算失败")
-                return None
+            # 杠杆配置校验（R3：缺失或 ≤ 0 属配置错误，禁止开仓并告警，不得猜测默认值）
+            if not self._leverage_valid:
+                logger.error("杠杆配置缺失或非法，禁止开仓", symbol=symbol)
+                return None, "杠杆配置缺失或非法，禁止开仓"
 
-            # 3. 获取交易对精度
+            # 3. 同币种重复开仓判重（R6：交易所真实持仓 ∪ 本地记录 并集判定）
+            if await self._is_symbol_occupied(symbol):
+                return None, "该币种已有持仓，禁止重复开仓"
+
+            # 4. 额度核算：占用统计 → 限额读取 → 缩仓 → 门槛判定 → 限额校验（决策 D3）
+            position_size, reject_reason = await self._resolve_open_margin_budget(
+                symbol, current_price
+            )
+            if position_size is None:
+                return None, reject_reason
+
+            # 5. 获取交易对精度
             tick_size, step_size = await self._get_symbol_precision(symbol)
 
-            # 4. 格式化数量
+            # 6. 格式化数量
             quantity = self._format_quantity(position_size, step_size)
 
-            # 5. 设置杠杆
+            # 7. 设置杠杆
             await self._set_leverage(symbol, self.leverage)
 
-            # 5.5 开仓前检查：总仓位不超过分配上限
-            current_positions_value = 0.0
-            for _, track in self.position_tracking.items():
-                pos_qty = track.get("entry_quantity", 0)
-                pos_price = track.get("entry_price", 0)
-                current_positions_value += float(pos_qty) * float(pos_price)
-            new_position_value = float(quantity) * float(current_price)
-            if not self.capital_mgr.can_open_position(current_positions_value, new_position_value):
-                logger.warning(
-                    "总仓位超限，跳过开仓",
-                    symbol=symbol,
-                    current=current_positions_value,
-                    new=new_position_value,
-                    limit=self.capital_mgr.get_allocated_capital(),
-                )
-                return None
-
-            # 5.5.1 总持仓保证金上限检查（与 capital_limits 并存，取更严格）
-            # 阈值通过 capital_mgr 动态读取配置文件 trading.total_position_margin_limit，禁止硬编码
-            total_limit = self.capital_mgr.get_total_margin_limit()
-            if total_limit is not None:
-                current_total_margin = current_positions_value / self.leverage
-                new_margin = new_position_value / self.leverage
-                total_margin_after = current_total_margin + new_margin
-                if total_margin_after > total_limit:
-                    logger.warning(
-                        "总持仓保证金超限，跳过开仓",
-                        symbol=symbol,
-                        current_margin=current_total_margin,
-                        new_margin=new_margin,
-                        total_margin=total_margin_after,
-                        limit=total_limit,
-                    )
-                    return None
-
-            # 6. 开空仓（根据评分决定下单方式）
+            # 8. 开空仓（根据评分决定下单方式）
             #    评分 ≥ market_order_score_threshold：用市价单抢单，确保成交
             #    评分 < 阈值：用实时市价+滑点偏移的限价单，提高成交率
             score = float(score_result.get('total_score', 0) or 0)
@@ -266,31 +301,45 @@ class TradingExecutor:
 
             if not order:
                 logger.error("开空仓失败")
-                return None
+                return None, "开空仓下单失败"
 
-            # 6.5 等待限价单成交（超时从配置读取）
+            # 9. 等待订单成交（超时从配置读取）
             entry_timeout = self.config.get('trading', {}).get('entry_order_timeout_seconds', 60)
             entry_order_id = order.get('orderId')
             filled_order = await self._wait_for_order_fill(
                 symbol, entry_order_id, timeout_seconds=entry_timeout
             )
             if not filled_order:
-                # 超时未成交，取消限价单，避免后续价格到达时突然成交
-                logger.warning(f"{symbol} 限价单超时未成交，取消订单")
+                # 超时未成交，按实际下单方式区分文案（市价单无「超时」概念，仅提示未成交）
+                order_type_desc = "市价单" if use_market_order else "限价单"
+                # 取消未成交订单，避免后续价格到达时突然成交
+                logger.warning(f"{symbol} {order_type_desc}超时未成交，取消订单")
                 try:
                     await self.binance_api.cancel_order(symbol, str(entry_order_id))
+                except BinanceAPIError as cancel_e:
+                    # -2011/-2013 表示订单已不存在（在超时边界刚好成交或已被撤销），
+                    # 取消目标已达成，属正常竞态，降级为 info
+                    if cancel_e.code in (-2011, -2013):
+                        logger.info(
+                            f"{symbol} {order_type_desc}已不存在（超时边界成交/已撤销），无需取消",
+                            order_id=entry_order_id,
+                            error_code=cancel_e.code,
+                        )
+                    else:
+                        logger.warning(f"{symbol} 取消{order_type_desc}失败", error=str(cancel_e))
                 except Exception as cancel_e:
-                    logger.warning(f"{symbol} 取消限价单失败", error=str(cancel_e))
-                return None
+                    logger.warning(f"{symbol} 取消{order_type_desc}失败", error=str(cancel_e))
+                fail_reason = "市价单未成交" if use_market_order else "限价单超时未成交"
+                return None, fail_reason
             order = filled_order
 
-            # 7. 保存订单到数据库
+            # 10. 保存订单到数据库
             await self._save_order(order, score_result)
 
-            # 8. 计算ATR（用于分批止盈）
+            # 11. 计算ATR（用于分批止盈）
             atr = await self._calculate_atr(symbol)
-            
-            # 9. 初始化持仓跟踪（必须在创建条件单之前，确保 record_condition_order 能正常执行）
+
+            # 12. 初始化持仓跟踪（必须在创建条件单之前，确保 record_condition_order 能正常执行）
             self.position_tracking[symbol] = {
                 'entry_price': current_price,
                 'entry_time': datetime.now(timezone.utc),  # 使用带时区的时间
@@ -313,7 +362,14 @@ class TradingExecutor:
             # 记录初始持仓数量（用于止盈成交检测）
             self._last_tracked_qty[symbol] = float(quantity)
 
-            # 10. 设置止损止盈（根据配置选择策略）
+            # 13. 写入 short_positions 表（B1 修复：确保重启恢复时能识别自己的持仓）
+            await self._insert_short_position(
+                symbol=symbol,
+                quantity=quantity,
+                entry_price=Decimal(str(current_price)),
+            )
+
+            # 14. 设置止损止盈（根据配置选择策略）
             if self.batch_take_profit_enabled and atr > 0:
                 # 使用分批止盈策略
                 await self._set_batch_take_profit(
@@ -333,7 +389,7 @@ class TradingExecutor:
                     tick_size
                 )
 
-            # 11. 发送通知
+            # 15. 发送通知
             await self._send_notification(symbol, order, current_price, score_result)
 
             logger.info(
@@ -343,7 +399,7 @@ class TradingExecutor:
                 atr=float(atr)
             )
 
-            return order
+            return order, ""
 
         except Exception as e:
             logger.error(
@@ -351,7 +407,183 @@ class TradingExecutor:
                 error=str(e),
                 exc_info=True
             )
+            return None, f"执行异常: {str(e)}"
+
+    async def _resolve_open_margin_budget(
+        self,
+        symbol: str,
+        current_price: float,
+    ) -> Tuple[Optional[Decimal], str]:
+        """
+        开仓额度核算：占用统计 → 限额读取 → 缩仓 → 门槛判定 → 限额校验（决策 D3）
+
+        严格保持原 execute_short 的判定顺序与行为：
+        ① 统计当前总占用保证金；② 读取生效限额并算可用额度；③ 按额度缩仓；
+        ④ 缩仓后低于最小保证金门槛则拒开；⑤ 统一限额校验（唯一入口）。
+
+        Args:
+            symbol: 交易对
+            current_price: 当前价格
+
+        Returns:
+            (position_size, reject_reason) 元组：
+            - 通过：返回 (仓位数量, "")
+            - 拒绝：返回 (None, "<具体失败原因>")
+        """
+        # ① 统计当前总占用保证金；② 读取生效限额并计算可用额度（统一保证金口径）
+        occupied_margin, limit, limit_source, avail = await self._read_available_budget(symbol)
+
+        # ③ 计算仓位大小（剩余额度不足一笔标准仓位时按可用额度缩仓，决策 D3）
+        position_size, new_margin = await self._shrink_position_and_margin(
+            symbol, current_price, avail
+        )
+
+        # ④ 缩仓后保证金门槛判定（额度耗尽时 new_margin=0，给出「可用额度不足」而非含糊的计算失败）
+        reject = self._reject_if_below_min_margin(
+            symbol, new_margin, occupied_margin, limit, limit_source, avail
+        )
+        if reject:
+            return None, reject
+        if position_size <= 0:
+            logger.error("仓位大小计算失败", symbol=symbol, price=current_price)
+            return None, "仓位大小计算失败"
+
+        # ⑤ 统一限额校验（唯一入口，保证金口径；替代原两处口径混用检查）
+        reject_reason = await self._enforce_limit_check(
+            symbol, occupied_margin, new_margin, limit, limit_source
+        )
+        if reject_reason:
+            return None, reject_reason
+
+        return position_size, ""
+
+    async def _read_available_budget(
+        self,
+        symbol: str,
+    ) -> Tuple[float, Optional[float], str, Optional[float]]:
+        """
+        步骤①②：统计当前占用保证金 → 读取生效限额 → 计算剩余可用额度
+
+        Args:
+            symbol: 交易对（仅用于日志上下文）
+
+        Returns:
+            (占用保证金, 生效限额, 限额来源, 可用额度)；
+            限额为 None 表示三级来源均不可用（fail-open），此时可用额度也为 None
+        """
+        occupied_margin = await self.calc_current_occupied_margin()
+        limit, limit_source = await self.capital_mgr.get_effective_margin_limit()
+        avail = None if limit is None else max(limit - occupied_margin, 0.0)
+        logger.info(
+            f"{symbol} 开仓额度核算",
+            occupied_margin=round(occupied_margin, 4),
+            limit=limit,
+            limit_source=limit_source,
+            available=avail,
+        )
+        return occupied_margin, limit, limit_source, avail
+
+    async def _shrink_position_and_margin(
+        self,
+        symbol: str,
+        current_price: float,
+        avail: Optional[float],
+    ) -> Tuple[Decimal, float]:
+        """
+        步骤③：按剩余可用额度缩仓，并计算缩仓后实际占用保证金
+
+        缩仓后保证金按统一口径计算：数量 × 价格 × contractSize / 杠杆。
+
+        Args:
+            symbol: 交易对
+            current_price: 当前价格
+            avail: 剩余可用额度（USDT）；None 表示 fail-open 不缩仓
+
+        Returns:
+            (缩仓后仓位数量, 缩仓后占用保证金)
+        """
+        position_size = self._calculate_position_size(current_price, max_margin=avail)
+        contract_sizes = await self.get_contract_size_map()
+        new_margin = calc_position_margin(
+            position_size, current_price, contract_sizes.get(symbol), self.leverage
+        )
+        return position_size, new_margin
+
+    def _reject_if_below_min_margin(
+        self,
+        symbol: str,
+        new_margin: float,
+        occupied_margin: float,
+        limit: Optional[float],
+        limit_source: str,
+        avail: Optional[float],
+    ) -> Optional[str]:
+        """
+        步骤④：缩仓后保证金低于最小开仓门槛则拒开（低于 trading.min_position_margin）
+
+        Args:
+            symbol: 交易对
+            new_margin: 缩仓后占用保证金
+            occupied_margin: 当前总占用保证金
+            limit: 生效限额（None 表示 fail-open）
+            limit_source: 限额来源标签
+            avail: 剩余可用额度
+
+        Returns:
+            Optional[str]: 拒绝原因；None 表示通过门槛判定
+        """
+        if self.min_position_margin is None or new_margin >= self.min_position_margin:
             return None
+        logger.warning(
+            "缩仓后保证金低于最小开仓门槛，拒绝开仓",
+            strategy_id=self.capital_mgr.strategy_id,
+            symbol=symbol,
+            occupied_margin=round(occupied_margin, 4),
+            new_margin=round(new_margin, 4),
+            limit=limit,
+            limit_source=limit_source,
+            min_position_margin=self.min_position_margin,
+            available=avail,
+        )
+        return f"可用额度不足(缩仓后保证金{new_margin:.2f} < 门槛{self.min_position_margin:.2f})"
+
+    async def _enforce_limit_check(
+        self,
+        symbol: str,
+        occupied_margin: float,
+        new_margin: float,
+        limit: Optional[float],
+        limit_source: str,
+    ) -> Optional[str]:
+        """
+        步骤⑤：统一限额校验（保证金口径唯一入口）
+
+        Args:
+            symbol: 交易对
+            occupied_margin: 当前总占用保证金
+            new_margin: 缩仓后新增保证金
+            limit: 生效限额（None 表示 fail-open 放行）
+            limit_source: 限额来源标签
+
+        Returns:
+            Optional[str]: 拒绝原因；None 表示校验通过
+        """
+        allowed, reject_reason = await self.capital_mgr.can_open_within_limit(
+            occupied_margin, new_margin
+        )
+        if allowed:
+            return None
+        logger.warning(
+            "开仓被限额拦截",
+            strategy_id=self.capital_mgr.strategy_id,
+            symbol=symbol,
+            occupied_margin=round(occupied_margin, 4),
+            new_margin=round(new_margin, 4),
+            limit=limit,
+            limit_source=limit_source,
+            reason=reject_reason,
+        )
+        return reject_reason
 
     async def _get_account_balance(self) -> Decimal:
         """获取账户可用余额"""
@@ -366,21 +598,24 @@ class TradingExecutor:
 
     def _calculate_position_size(
         self,
-        balance: Decimal,
-        current_price: float
+        current_price: float,
+        max_margin: Optional[float] = None,
     ) -> Decimal:
         """
-        计算仓位大小
+        计算仓位大小（剩余额度不足一笔标准仓位时按额度缩仓，决策 D3）
 
         Args:
-            balance: 账户余额
             current_price: 当前价格
+            max_margin: 本次开仓允许占用的最大保证金（USDT）；
+                        None 表示不做缩仓限制，使用配置的单笔保证金
 
         Returns:
-            仓位大小（数量）
+            仓位大小（数量）；价格非法返回 0
         """
-        # 使用配置的单笔保证金
+        # 使用配置的单笔保证金；max_margin 更小时按额度缩仓
         margin = self.single_position_margin
+        if max_margin is not None:
+            margin = min(margin, Decimal(str(max_margin)))
 
         # 考虑杠杆
         position_value = margin * self.leverage
@@ -393,11 +628,326 @@ class TradingExecutor:
                 margin=float(margin),
                 leverage=self.leverage,
                 position_value=float(position_value),
-                quantity=float(quantity)
+                quantity=float(quantity),
+                shrunk=max_margin is not None and margin < self.single_position_margin,
             )
             return quantity
 
         return Decimal('0')
+
+    async def calc_current_occupied_margin(self, own_symbols: Optional[set] = None) -> float:
+        """
+        计算策略自身当前总占用保证金（R3/R7 共用，统一保证金口径）
+
+        数据源优先级：
+        1. 交易所 positionRisk（数量取真实值），仅统计策略自有币种；
+        2. 交易所不可用时降级为本地 position_tracking 估算（并告警）。
+
+        Args:
+            own_symbols: 策略自有币种集合；None 时取 position_tracking 的 key 集合
+
+        Returns:
+            float: 总占用保证金（USDT）
+        """
+        symbols = set(own_symbols) if own_symbols is not None else set(self.position_tracking.keys())
+        if not symbols:
+            return 0.0
+
+        sizes = await self.get_contract_size_map()
+        exchange_positions = await self._fetch_short_position_risk()
+
+        if exchange_positions is None:
+            # 交易所不可用：降级为本地跟踪估算（保守，不丢已有持仓）
+            logger.warning("交易所持仓不可用，占用保证金改用本地跟踪估算", symbols=list(symbols))
+            local_records = self._build_local_position_records(symbols, sizes)
+            return calc_occupied_margin(local_records, self.leverage)
+
+        owned = [
+            self._with_contract_size(pos, sizes)
+            for pos in exchange_positions
+            if isinstance(pos, dict) and pos.get("symbol") in symbols
+        ]
+        return calc_occupied_margin(owned, self.leverage)
+
+    async def _is_symbol_occupied(self, symbol: str) -> bool:
+        """
+        同币种重复开仓判重（R6：交易所真实持仓 ∪ 本地记录 并集）
+
+        命中任一来源即视为「已持仓」：
+        - 交易所 positionRisk 中该币种 positionAmt < 0
+        - 本地 position_tracking 含该币种
+        - DB new_coin.short_positions 中存在 open 记录
+
+        边界：交易所接口失败且本地也无记录时按保守策略拒绝（宁可漏开不可重开）。
+
+        Args:
+            symbol: 待开仓币种
+
+        Returns:
+            bool: True 表示已持仓，应拒开
+        """
+        sources, exchange_qty, exchange_available = await self._collect_occupancy_sources(symbol)
+
+        if not sources:
+            if exchange_available:
+                return False
+            # 交易所不可用 + 本地无记录：保守拒绝
+            logger.warning(
+                "交易所持仓不可用且本地无记录，保守拒绝该币种开仓",
+                symbol=symbol,
+            )
+            await self._notify_duplicate_symbol(symbol, None, ["exchange_unavailable"])
+            return True
+
+        logger.warning(
+            "该币种已有持仓，禁止重复开仓",
+            symbol=symbol,
+            exchange_quantity=exchange_qty,
+            sources=sources,
+        )
+        await self._notify_duplicate_symbol(symbol, exchange_qty, sources)
+        return True
+
+    async def _collect_occupancy_sources(
+        self,
+        symbol: str,
+    ) -> Tuple[List[str], Optional[float], bool]:
+        """
+        收集该币种的持仓命中来源（R6：交易所 ∪ 本地跟踪 ∪ DB 记录 并集）
+
+        Args:
+            symbol: 待开仓币种
+
+        Returns:
+            (命中来源列表, 交易所持仓数量, 交易所是否可用)
+        """
+        sources: List[str] = []
+        if symbol in self.position_tracking:
+            sources.append("position_tracking")
+
+        exchange_qty: Optional[float] = None
+        exchange_available = True
+        positions = await self._fetch_short_position_risk()
+        if positions is None:
+            exchange_available = False
+        else:
+            exchange_qty = self._match_exchange_short_qty(symbol, positions)
+            if exchange_qty is not None:
+                sources.append("exchange")
+
+        if await self._has_open_short_position(symbol):
+            sources.append("short_positions")
+
+        return sources, exchange_qty, exchange_available
+
+    @staticmethod
+    def _match_exchange_short_qty(
+        symbol: str,
+        positions: List[Dict[str, Any]],
+    ) -> Optional[float]:
+        """
+        从交易所持仓记录中提取该币种的空头数量（positionAmt < 0 视为空头）
+
+        Args:
+            symbol: 待开仓币种
+            positions: positionRisk 返回的持仓列表
+
+        Returns:
+            Optional[float]: 空头数量绝对值；未命中返回 None
+        """
+        for pos in positions:
+            if not isinstance(pos, dict) or pos.get("symbol") != symbol:
+                continue
+            amt = float(pos.get("positionAmt", 0) or 0)
+            if amt < 0:
+                return abs(amt)
+        return None
+
+    async def _has_open_short_position(self, symbol: str) -> bool:
+        """
+        查询 DB new_coin.short_positions 是否存在该币种的未平仓记录
+
+        Args:
+            symbol: 交易对
+
+        Returns:
+            bool: True 表示存在 open 记录；查询异常返回 False（不阻断主流程）
+        """
+        try:
+            row = await self.db.fetch_one(
+                """
+                SELECT 1 FROM new_coin.short_positions
+                WHERE symbol = $1 AND status = 'open'
+                LIMIT 1
+                """,
+                symbol,
+            )
+            return row is not None
+        except Exception as e:
+            logger.warning("查询 short_positions 未平仓记录失败", symbol=symbol, error=str(e))
+            return False
+
+    async def _notify_duplicate_symbol(
+        self,
+        symbol: str,
+        exchange_qty: Optional[float],
+        sources: List[str],
+    ) -> None:
+        """
+        发送同币种重复开仓告警（按配置窗口降频，避免刷屏）
+
+        Args:
+            symbol: 交易对
+            exchange_qty: 交易所持仓数量（不可用时为 None）
+            sources: 命中来源列表
+        """
+        now = time.monotonic()
+        # 用「是否已记录」判定，而非与 0.0 比较：monotonic 基准在容器/机器重启后归零，
+        # 若以 0.0 为哨兵会把「首次告警」误判为窗口内而静默丢弃
+        last_ts = self._duplicate_notify_ts.get(symbol)
+        if last_ts is not None and now - last_ts < self.duplicate_notify_window_seconds:
+            return
+        self._duplicate_notify_ts[symbol] = now
+
+        project = self.config.get('notification', {}).get('project', 'new_coin')
+        qty_desc = f"{exchange_qty:.6f}" if exchange_qty is not None else "未知"
+        message = (
+            f"【新币做空策略】同币种重复开仓已拦截\n"
+            f"币种: {symbol}\n"
+            f"交易所持仓数量: {qty_desc}\n"
+            f"命中来源: {', '.join(sources)}\n"
+            f"原因: 该币种已有持仓，禁止重复开仓"
+        )
+        try:
+            await self.notification.send(message=message, level="warning", project=project)
+        except Exception as e:
+            logger.warning("发送同币种重复开仓通知失败", symbol=symbol, error=str(e))
+
+    async def get_contract_size_map(self) -> Dict[str, float]:
+        """
+        获取 {symbol: contractSize} 映射（带进程内缓存）
+
+        对外公开：供策略侧上报占用（R7）与基线重建复用同一份口径数据源。
+
+        Returns:
+            Dict[str, float]: 合约面值映射；接口异常返回空字典（后续按 1 估算）
+        """
+        if self._contract_size_cache is not None:
+            return self._contract_size_cache
+        try:
+            exchange_info = await self.binance_api.get_exchange_info()
+            self._contract_size_cache = build_contract_size_map(exchange_info)
+        except Exception as e:
+            logger.warning("获取 exchangeInfo 失败，contractSize 将按 1 估算", error=str(e))
+            self._contract_size_cache = {}
+        return self._contract_size_cache
+
+    async def build_occupancy_report(
+        self,
+        symbols: Optional[set] = None,
+    ) -> Optional[Tuple[Dict[str, float], Dict[str, float]]]:
+        """
+        构建统一口径的持仓占用上报数据（R7：看板口径与限额口径一致）
+
+        口径：margin = |positionAmt| × markPrice × contractSize / leverage，quantity = |positionAmt|。
+
+        Args:
+            symbols: 需要上报的币种集合；None 时取 position_tracking 的 key 集合
+
+        Returns:
+            (margin_dict, qty_dict)；
+            None 表示交易所持仓不可用，调用方应保留上一次上报值（禁止用固定单笔保证金填充，避免占用被低估）
+        """
+        own = set(symbols) if symbols is not None else set(self.position_tracking.keys())
+        if not own:
+            return {}, {}
+
+        sizes = await self.get_contract_size_map()
+        positions = await self._fetch_short_position_risk()
+        if positions is None:
+            return None
+
+        margin_dict: Dict[str, float] = {}
+        qty_dict: Dict[str, float] = {}
+        for pos in positions:
+            if not isinstance(pos, dict) or pos.get("symbol") not in own:
+                continue
+            symbol = pos["symbol"]
+            amt = abs(float(pos.get("positionAmt", 0) or 0))
+            if amt <= 0:
+                continue
+            margin = calc_position_margin(
+                amt, pos.get("markPrice"), sizes.get(symbol), self.leverage
+            )
+            if margin <= 0:
+                # 保证金算不出（标记价缺失等）：跳过该币种，避免上报 0 导致占用被低估
+                logger.warning(
+                    "持仓保证金计算为 0，跳过上报以免低估占用",
+                    symbol=symbol,
+                    mark_price=pos.get("markPrice"),
+                )
+                continue
+            qty_dict[symbol] = amt
+            margin_dict[symbol] = margin
+        return margin_dict, qty_dict
+
+    async def _fetch_short_position_risk(self) -> Optional[List[Dict[str, Any]]]:
+        """
+        查询交易所持仓（positionRisk）
+
+        Returns:
+            list: 持仓列表（PM 账户零持仓返回空列表）；
+                  None 表示接口失败，调用方需降级处理
+        """
+        try:
+            return await self.binance_api.get_position()
+        except Exception as e:
+            logger.warning("查询交易所持仓失败", error=str(e))
+            return None
+
+    @staticmethod
+    def _with_contract_size(position: Dict[str, Any], sizes: Dict[str, float]) -> Dict[str, Any]:
+        """
+        为持仓记录补充 contractSize 字段（供统一口径函数使用）
+
+        Args:
+            position: 交易所持仓记录
+            sizes: {symbol: contractSize} 映射
+
+        Returns:
+            Dict: 补充 contractSize 后的持仓记录（不修改原对象）
+        """
+        item = dict(position)
+        item["contractSize"] = sizes.get(position.get("symbol"))
+        return item
+
+    def _build_local_position_records(
+        self,
+        symbols: set,
+        sizes: Dict[str, float],
+    ) -> List[Dict[str, Any]]:
+        """
+        依据本地 position_tracking 构建统一口径所需的持仓记录
+
+        Args:
+            symbols: 需要统计的币种集合
+            sizes: {symbol: contractSize} 映射
+
+        Returns:
+            List[Dict]: 持仓记录列表（positionAmt 为负表示做空）
+        """
+        records: List[Dict[str, Any]] = []
+        for symbol in symbols:
+            track = self.position_tracking.get(symbol, {}) or {}
+            qty = float(track.get("entry_quantity", 0) or 0)
+            price = float(track.get("entry_price", 0) or 0)
+            records.append({
+                "symbol": symbol,
+                "positionAmt": -qty,
+                "markPrice": price,
+                "contractSize": sizes.get(symbol),
+            })
+        return records
 
     async def _get_symbol_precision(self, symbol: str) -> tuple:
         """
@@ -593,6 +1143,96 @@ class TradingExecutor:
 
         except Exception as e:
             logger.error(f"保存订单失败: {e}")
+
+    async def _insert_short_position(
+        self,
+        symbol: str,
+        quantity: Decimal,
+        entry_price: Decimal,
+        position_id: Optional[str] = None,
+    ) -> None:
+        """
+        开仓成功后，往 new_coin.short_positions 表插入一条记录。
+
+        这是 B1 修复的核心：确保 new_coin 策略自己的持仓有明确的数据库记录，
+        重启恢复时优先从数据库恢复自己的持仓，而非扫全账户 positionRisk 把其他
+        策略的仓位也当成自己的。
+
+        Args:
+            symbol: 交易对
+            quantity: 开仓数量（正数）
+            entry_price: 入场价格
+            position_id: 可选手工指定的 position_id，默认使用 symbol + 时间戳生成
+        """
+        try:
+            # opened_at 列为 TIMESTAMP（无时区），必须绑定 naive datetime
+            # 容器时区为 UTC，datetime.now() 即为 naive UTC（与项目其他落库代码一致）
+            now = datetime.now()
+            pid = position_id or f"{symbol}_{int(now.timestamp())}"
+            await self.db.execute(
+                """
+                INSERT INTO new_coin.short_positions (
+                    symbol, position_id, quantity, entry_price, status, opened_at
+                ) VALUES ($1, $2, $3, $4, 'open', $5)
+                ON CONFLICT (position_id) DO NOTHING
+                """,
+                symbol,
+                pid,
+                str(quantity),
+                str(entry_price),
+                now,
+            )
+            logger.info(
+                "short_positions 持仓记录已写入",
+                symbol=symbol,
+                quantity=float(quantity),
+                entry_price=float(entry_price),
+                position_id=pid,
+            )
+        except Exception as e:
+            logger.warning(
+                "short_positions 持仓记录写入失败（不影响交易主流程）",
+                symbol=symbol,
+                error=str(e),
+            )
+
+    async def _update_short_position_closed(
+        self,
+        symbol: str,
+        close_type: str = 'closed',
+    ) -> None:
+        """
+        平仓成功后，将 new_coin.short_positions 表中该 symbol 的记录标记为已关闭。
+
+        Args:
+            symbol: 交易对
+            close_type: 关闭类型，'closed'（正常平仓）或 'liquidated'（强平）
+        """
+        try:
+            if close_type not in ('closed', 'liquidated'):
+                close_type = 'closed'
+            await self.db.execute(
+                """
+                UPDATE new_coin.short_positions
+                SET status = $1, closed_at = $2
+                WHERE symbol = $3 AND status = 'open'
+                """,
+                close_type,
+                # closed_at 列为 TIMESTAMP（无时区），必须绑定 naive datetime
+                datetime.now(),
+                symbol,
+            )
+            logger.info(
+                "short_positions 持仓记录已更新为关闭",
+                symbol=symbol,
+                close_type=close_type,
+            )
+        except Exception as e:
+            logger.warning(
+                "short_positions 持仓记录更新失败（不影响交易主流程）",
+                symbol=symbol,
+                error=str(e),
+            )
 
     async def _set_stop_loss_take_profit(
         self,
@@ -1942,6 +2582,8 @@ class TradingExecutor:
                     quantity=float(close_quantity),
                     order_id=order.get('orderId')
                 )
+                # B1 修复：平仓成功后更新 short_positions 表为关闭状态
+                await self._update_short_position_closed(symbol=symbol)
                 return True
             else:
                 logger.error(f"平仓失败: {symbol}")

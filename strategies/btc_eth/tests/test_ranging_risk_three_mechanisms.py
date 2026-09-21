@@ -43,7 +43,6 @@ def make_ranging_config() -> Dict:
         'enabled': True,
         'entry_conditions': {
             'bb_touch': True,
-            'bb_touch_threshold': 0.05,
             'rsi_extreme': True,
             'rsi_oversold': 20,
             'rsi_overbought': 80,
@@ -554,42 +553,42 @@ class TestVolumeConfirm:
             ranging_config = make_ranging_config()
         return BTCEthStrategy._check_volume_confirm(direction, indicators, klines, ranging_config)
 
-    def test_short_not_broken_middle_rejects(self):
-        """AC-3.1：做空未跌破中轨 → 拒绝。"""
-        klines = make_klines(close_4h=105.0)  # 105 >= 100
+    def test_short_not_upper_half_zone_rejects(self):
+        """AC-3.1：做空价格未处于布林带上半区 → 拒绝（v6.28 半区校验语义）。"""
+        klines = make_klines(close_4h=95.0)  # 95 < 100（下半区）
         ok, reason = self._check('SHORT', klines=klines)
         assert ok is False
-        assert '跌破' in reason
+        assert '上半区' in reason
 
     def test_short_not_shrink_rejects(self):
-        """AC-3.2：做空已跌破中轨但未缩量 → 拒绝。"""
-        klines = make_klines(close_4h=95.0, volume=2000.0)  # volume >= 1000
+        """AC-3.2：做空已在上半区但未缩量 → 拒绝。"""
+        klines = make_klines(close_4h=105.0, volume=2000.0)  # volume >= 1000
         ok, reason = self._check('SHORT', klines=klines)
         assert ok is False
         assert '缩量' in reason
 
     def test_short_pass(self):
-        """AC-3.3：同时满足跌破中轨 + 缩量 → 通过。"""
-        klines = make_klines(close_4h=95.0, volume=500.0)
+        """AC-3.3：同时满足上半区 + 缩量 → 通过。"""
+        klines = make_klines(close_4h=105.0, volume=500.0)
         ok, _ = self._check('SHORT', klines=klines)
         assert ok is True
 
     def test_long_pass(self):
-        """AC-3.4：做多对称，站上中轨 + 缩量 → 通过。"""
-        klines = make_klines(close_4h=105.0, volume=500.0)
+        """AC-3.4：做多对称，下半区 + 缩量 → 通过。"""
+        klines = make_klines(close_4h=95.0, volume=500.0)
         ok, _ = self._check('LONG', klines=klines)
         assert ok is True
 
-    def test_long_not_above_middle_rejects(self):
-        """AC-3.4：做多未站上中轨 → 拒绝。"""
-        klines = make_klines(close_4h=95.0, volume=500.0)
+    def test_long_not_lower_half_zone_rejects(self):
+        """AC-3.4：做多价格未处于布林带下半区 → 拒绝。"""
+        klines = make_klines(close_4h=105.0, volume=500.0)
         ok, reason = self._check('LONG', klines=klines)
         assert ok is False
-        assert '站上' in reason
+        assert '下半区' in reason
 
     def test_long_not_shrink_rejects(self):
-        """AC-3.4：做多已站上中轨但未缩量 → 拒绝。"""
-        klines = make_klines(close_4h=105.0, volume=2000.0)
+        """AC-3.4：做多已在下半区但未缩量 → 拒绝。"""
+        klines = make_klines(close_4h=95.0, volume=2000.0)
         ok, reason = self._check('LONG', klines=klines)
         assert ok is False
         assert '缩量' in reason
@@ -642,7 +641,7 @@ class TestVolumeConfirm:
         """AC-5.1：shrink_ratio 来自配置。"""
         cfg = make_ranging_config()
         cfg['volume_confirm']['shrink_ratio'] = 0.5
-        klines = make_klines(close_4h=95.0, volume=600.0)  # 600 < 1000 但 600 >= 500
+        klines = make_klines(close_4h=105.0, volume=600.0)  # 600 < 1000 但 600 >= 500
         ok, reason = self._check('SHORT', klines=klines, ranging_config=cfg)
         assert ok is False
         assert '缩量' in reason
@@ -753,7 +752,7 @@ class TestVolatilityRegime:
 # ============================================================
 
 class TestBBTouchVotes:
-    """测试 BB 触轨投票。"""
+    """测试 BB 半区投票（v6.29 由触轨判定改为半区判定）。"""
 
     def test_disabled_returns_no_votes(self):
         ec = make_ranging_config()['entry_conditions'].copy()
@@ -762,25 +761,25 @@ class TestBBTouchVotes:
         result = BTCEthStrategy._bb_touch_votes(df, make_indicators(), ec)
         assert result == (0, 0, [], 1.0, 1.0)
 
-    def test_touch_lower_gives_long_vote(self):
+    def test_lower_half_zone_gives_long_vote(self):
         df = pd.DataFrame({'close': [91.0]})
         indicators = make_indicators(bb_upper=110.0, bb_lower=90.0)
         ld, sd, conds, _, _ = BTCEthStrategy._bb_touch_votes(
             df, indicators, make_ranging_config()['entry_conditions'])
         assert ld == 1
         assert sd == 0
-        assert any('下轨' in c for c in conds)
+        assert any('下半区' in c for c in conds)
 
-    def test_touch_upper_gives_short_vote(self):
+    def test_upper_half_zone_gives_short_vote(self):
         df = pd.DataFrame({'close': [109.0]})
         indicators = make_indicators(bb_upper=110.0, bb_lower=90.0)
         ld, sd, conds, _, _ = BTCEthStrategy._bb_touch_votes(
             df, indicators, make_ranging_config()['entry_conditions'])
         assert ld == 0
         assert sd == 1
-        assert any('上轨' in c for c in conds)
+        assert any('上半区' in c for c in conds)
 
-    def test_no_touch_returns_no_votes(self):
+    def test_exact_middle_returns_no_votes(self):
         df = pd.DataFrame({'close': [100.0]})
         indicators = make_indicators()
         ld, sd, conds, _, _ = BTCEthStrategy._bb_touch_votes(
@@ -792,7 +791,7 @@ class TestBBTouchVotes:
     def test_missing_bb_returns_no_votes(self):
         df = pd.DataFrame({'close': [95.0]})
         indicators = make_indicators()
-        del indicators['4h']['BB_Upper']
+        del indicators['4h']['BB_Middle']
         ld, sd, conds, _, _ = BTCEthStrategy._bb_touch_votes(
             df, indicators, make_ranging_config()['entry_conditions'])
         assert (ld, sd, conds) == (0, 0, [])
@@ -915,9 +914,9 @@ class TestVoteRangingDirection:
 
     def test_tie_returns_none(self):
         strategy = make_strategy()
-        # 放宽布林带，避免 close=85 触下轨产生多余的多票，保证 RSI 超卖(多1) 与看跌吞没(空1) 平票
-        indicators = make_indicators(rsi_4h=10.0, bb_upper=120.0, bb_lower=80.0)
-        klines = make_klines(prev_open=90.0, prev_close=100.0, curr_open=105.0, close_4h=85.0)  # 看跌吞没 → 空1
+        # 半区判定：close=105 在上半区投空1；RSI=10 超卖投多1 → 平票（无吞没形态干扰）
+        indicators = make_indicators(rsi_4h=10.0)
+        klines = make_klines(prev_open=100.0, prev_close=90.0, curr_open=100.0, close_4h=105.0)
         direction, reason, _ = strategy._vote_ranging_direction(
             indicators, klines, make_ranging_config()['entry_conditions'])
         assert direction is None
@@ -938,7 +937,7 @@ class TestCheckRangingEntry:
         indicators = make_indicators(ema21_1d=101.0, ema55_1d=100.0, rsi_4h=10.0)
         klines = make_klines(
             close_1d=100.0,
-            prev_open=100.0, prev_close=90.0, curr_open=85.0, close_4h=105.0, volume=500.0,
+            prev_open=100.0, prev_close=90.0, curr_open=85.0, close_4h=95.0, volume=500.0,
         )
         ok, direction = strategy._check_ranging_entry('BTCUSDT', indicators, klines)
         assert ok is True

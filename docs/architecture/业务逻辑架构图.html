@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>统一交易系统 · 业务逻辑架构图</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+  :root {
+    --bg: #0f1419; --card: #1a2230; --border: #2a3547;
+    --text: #e6e9ef; --muted: #8b94a7; --accent: #f0b90b;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+         line-height: 1.6; }
+  header { padding: 32px 40px 16px; border-bottom: 1px solid var(--border); }
+  header h1 { margin: 0 0 8px; font-size: 26px; }
+  header h1 span { color: var(--accent); }
+  header p { margin: 0; color: var(--muted); font-size: 14px; }
+  main { max-width: 1280px; margin: 0 auto; padding: 24px 40px 64px; }
+  section { background: var(--card); border: 1px solid var(--border);
+            border-radius: 12px; padding: 24px 28px; margin: 24px 0; }
+  h2 { margin: 0 0 4px; font-size: 20px; }
+  h2 .tag { display: inline-block; font-size: 12px; font-weight: normal;
+            color: var(--accent); border: 1px solid var(--accent);
+            border-radius: 4px; padding: 1px 8px; margin-left: 10px;
+            vertical-align: middle; }
+  .desc { color: var(--muted); font-size: 14px; margin: 0 0 16px; }
+  .mermaid { background: #fff; border-radius: 8px; padding: 20px;
+             overflow-x: auto; text-align: center; }
+  nav { position: sticky; top: 0; background: var(--bg); z-index: 10;
+        padding: 10px 40px; border-bottom: 1px solid var(--border);
+        font-size: 13px; display: flex; flex-wrap: wrap; gap: 14px; }
+  nav a { color: var(--muted); text-decoration: none; }
+  nav a:hover { color: var(--accent); }
+  footer { text-align: center; color: var(--muted); font-size: 12px;
+           padding: 24px; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1><span>Binance</span> 统一交易系统 · 业务逻辑架构图</h1>
+  <p>多策略量化交易平台 —— MTPCS 趋势 / 网格 / 新币做空 / HRS 反转 + StratTuneAI 调优 + 数据看板 ｜ 生成时间：2026-09-11</p>
+</header>
+
+<nav>
+  <a href="#overview">① 总体架构</a>
+  <a href="#dataloop">② 通用策略循环</a>
+  <a href="#mtpcs">③ MTPCS 趋势</a>
+  <a href="#grid">④ 网格</a>
+  <a href="#newcoin">⑤ 新币做空</a>
+  <a href="#hrs">⑥ HRS 反转</a>
+  <a href="#aituner">⑦ StratTuneAI 闭环</a>
+</nav>
+
+<main>
+
+<section id="overview">
+  <h2>① 系统总体架构（容器部署视图）<span class="tag">部署</span></h2>
+  <p class="desc">所有服务以独立 Docker 容器运行于生产服务器 43.156.242.184，通过 trading-network 互联；PostgreSQL 按 Schema 隔离各策略数据。</p>
+  <div class="mermaid">
+flowchart TB
+    subgraph EXT["🌐 外部系统"]
+        BN["币安交易所 API<br/>行情 / 下单 / 账户"]
+        DS["DeepSeek 大模型<br/>deepseek-chat"]
+        FS["飞书群<br/>每策略独立 Webhook"]
+        USER["👤 用户浏览器"]
+    end
+
+    subgraph SRV["🖥️ 生产服务器 43.156.242.184（Docker · trading-network）"]
+        subgraph DATAL["数据层"]
+            KS["kline-service<br/>K线数据采集服务"]
+            KM["kline-monitor<br/>K线健康监控"]
+            PG[("PostgreSQL 15<br/>trading_platform<br/>Schema 隔离: btc_eth / grid / new_coin / hrs / trading")]
+        end
+        subgraph STRAT["策略层（4+1 个策略容器）"]
+            BTC["trading_system-btc_eth<br/>MTPCS 趋势 v6.27"]
+            BTCA["trading_system-btc_eth_aggressive<br/>趋势激进版"]
+            GRID["trading_system-grid<br/>网格 V2.5"]
+            NC["trading_system-new_coin<br/>新币做空 V4.1"]
+            HRS["trading_system-hrs<br/>HRS 反转 V2.8.3"]
+        end
+        subgraph AIL["调优层"]
+            AT["ai-tuner<br/>StratTuneAI v1.0"]
+        end
+        subgraph VIEW["展示与报告层"]
+            DBD["dashboard<br/>数据看板（独立部署 :80）"]
+            DR["daily-report 日报"]
+            WR["weekly-report 周报"]
+        end
+    end
+
+    BN <-->|"K线/行情"| KS
+    KS -->|"K线入库"| PG
+    KS <-->|"HTTP 提供K线"| STRAT
+    STRAT <-->|"下单/撤单/持仓"| BN
+    STRAT -->|"TradeLogger 自动记录成交<br/>→ trading.trade_records"| PG
+    STRAT -->|"开仓/平仓/预警通知"| FS
+    KM -->|"K线缺失/延迟告警"| FS
+    KM -.->|"监控"| KS
+    PG --> AT
+    AT <-->|"分析报告→调参建议"| DS
+    AT <-->|"审批卡片（人工在环）"| FS
+    AT -->|"审批通过→覆盖层写回<br/>strategies/*/config.yaml"| STRAT
+    PG --> DBD
+    PG --> DR & WR
+    DR & WR -->|"定时推送"| FS
+    USER <-->|"HTTP"| DBD
+  </div>
+</section>
+
+<section id="dataloop">
+  <h2>② 策略通用运行循环（BaseStrategy 骨架）<span class="tag">共性</span></h2>
+  <p class="desc">四个策略共享同一套骨架：状态恢复 → 分析 → 评分 → 执行 → 监控 → 持久化；成交记录由 TradeLogger 在 BinanceClient 层自动落库，策略零额外代码。</p>
+  <div class="mermaid">
+flowchart TD
+    START(["容器启动"]) --> INIT["initialize()<br/>加载 config.yaml + 环境变量"]
+    INIT --> RESTORE["restore_state()<br/>从 PostgreSQL 恢复持仓/网格/状态"]
+    RESTORE --> LOOP{{"主循环 run()"}}
+    LOOP --> ANALYZE["analyze(symbol)<br/>拉取K线 → 计算指标 → 生成信号"]
+    ANALYZE --> SCORE{"信号评分<br/>达到阈值?"}
+    SCORE -->|"否"| MONITOR
+    SCORE -->|"是"| RISK{"风控检查<br/>频率/仓位/回撤/保证金"}
+    RISK -->|"拦截"| MONITOR
+    RISK -->|"通过"| EXEC["execute_signal()<br/>下单 + 挂条件单（止损/止盈）"]
+    EXEC --> NOTIFY["飞书通知专属群"]
+    EXEC --> MONITOR["monitor_positions()<br/>持仓监控 / 移动止盈 / 利润保护"]
+    MONITOR --> SAVE["save_state()<br/>状态持久化到 PG"]
+    SAVE --> SLEEP["sleep 到下一执行节点"] --> LOOP
+
+    EXEC -.->|"BinanceClient 层自动拦截"| TL["TradeLogger<br/>写入 trading.trade_records"]
+  </div>
+</section>
+
+<section id="mtpcs">
+  <h2>③ MTPCS 趋势策略（btc_eth · v6.27）<span class="tag">趋势+震荡双模式</span></h2>
+  <p class="desc">BTC/ETH/BNB/SOL/XRP 永续合约；动态 ATR 过滤 + 自适应仓位，V6.26 震荡反转风控三机制 + V6.27 时间平仓复核制。</p>
+  <div class="mermaid">
+flowchart TD
+    K["K线数据（kline-service）"] --> MS{"市场状态判断<br/>market_state"}
+    MS -->|"强趋势"| TREND["趋势模式<br/>趋势强度评分"]
+    MS -->|"震荡"| OSC["震荡模式<br/>V6.26 反转风控三机制"]
+    TREND --> ATRF["动态ATR过滤器<br/>历史波动率分布 + ADX 调整阈值"]
+    OSC --> ATRF
+    ATRF --> SCORE["综合评分<br/>趋势强度 + 形态质量（吞没/突破回踩）<br/>+ 动量背离"]
+    SCORE --> FREQ{"FrequencyController<br/>频率控制 + 周亏损检查"}
+    FREQ -->|"拦截"| WAIT["等待下一周期"]
+    FREQ -->|"通过"| OPEN["开仓（自适应仓位）"]
+    OPEN --> CO["挂条件单<br/>止损 / 止盈"]
+    CO --> REVIEW["V6.27 时间平仓复核制<br/>持仓超时复核"]
+    REVIEW --> TRAIL["动态追踪止盈<br/>dynamic_trailing"]
+  </div>
+</section>
+
+<section id="grid">
+  <h2>④ 网格交易策略（grid · V2.5 · ETHUSDT）<span class="tag">震荡收割</span></h2>
+  <p class="desc">三层预警架构 + 紧急极端趋势检测 + K线服务对接 + 定时执行节点固定。</p>
+  <div class="mermaid">
+flowchart TD
+    INITG["初始化网格<br/>grid_calculator 计算网格档位"] --> PLACE["批量挂限价单<br/>买单在下 / 卖单在上"]
+    PLACE --> WATCH{"_check_all_orders<br/>定时轮询订单"}
+    WATCH -->|"买单成交"| SELL["在上一档挂卖单"]
+    WATCH -->|"卖单成交"| BUY["在下一档挂买单"]
+    SELL --> PNL["计算网格利润<br/>_calculate_trade_pnl"]
+    BUY --> PNL
+    PNL --> RISKC{"_check_all_risks<br/>三层预警架构"}
+    RISKC -->|"L1 预警"| N1["飞书提醒"]
+    RISKC -->|"L2 预警"| N2["减仓/暂停新开"]
+    RISKC -->|"L3 紧急<br/>极端趋势检测"| RESET["_reset_grid<br/>撤单并重置网格"]
+    N1 & N2 & RESET --> VOL["波动率监测<br/>_calculate_volatility"]
+    VOL --> WATCH
+  </div>
+</section>
+
+<section id="newcoin">
+  <h2>⑤ 新币做空策略（new_coin · V4.1）<span class="tag">事件驱动</span></h2>
+  <p class="desc">监控币安新上线合约，按评分分档开仓做空，止损止盈限价单改造 + 动态利润保护。</p>
+  <div class="mermaid">
+flowchart TD
+    DET["detector<br/>监测新上线合约"] --> INFO["信息收集<br/>持仓量 / 成交量 / 资金费率<br/>（含3小时前持仓量对比）"]
+    INFO --> SCORE["scoring_engine<br/>综合评分"]
+    SCORE --> TIER{"评分分档"}
+    TIER -->|"总分 ≥ 7.0"| MKT["市价单抢单做空"]
+    TIER -->|"总分 < 7.0"| LMT["实时市价 + 滑点限价单"]
+    MKT & LMT --> TPSL["止损/止盈限价单"]
+    TPSL --> PROT["动态利润保护<br/>_monitor_positions"]
+    PROT --> GUARD{"风险闸门"}
+    GUARD -->|"连亏触发"| PAUSE1["_check_consecutive_loss_pause<br/>连亏暂停"]
+    GUARD -->|"回撤触发"| PAUSE2["_check_max_drawdown<br/>最大回撤暂停"]
+    GUARD -->|"正常"| WEEK["周度复盘<br/>_weekly_review"]
+    PAUSE1 & PAUSE2 --> RESUME["等待恢复条件"]
+  </div>
+</section>
+
+<section id="hrs">
+  <h2>⑥ HRS 混合反转策略（hrs · V2.8.3）<span class="tag">全市场扫描</span></h2>
+  <p class="desc">全市场动态阈值，三轨并行信号（标准模式 + EMM + LV-RM），V2.8 趋势过滤增强（EMA 斜率 + 价格偏离收紧），总持仓保证金比例上限控制。</p>
+  <div class="mermaid">
+flowchart TD
+    SCAN["候选池定时扫描<br/>_perform_candidate_scan<br/>（固定时间点）"] --> POOL["candidate_pool<br/>全市场候选币种池"]
+    POOL --> REG["注册 + K线预热<br/>_register_and_warmup"]
+    REG --> PAT["pattern<br/>反转形态识别"]
+    PAT --> TRACK{"三轨并行信号"}
+    TRACK --> STD["标准模式"]
+    TRACK --> EMM["EMM 轨道"]
+    TRACK --> LVRM["LV-RM 轨道"]
+    STD & EMM & LVRM --> TF["V2.8 趋势过滤<br/>EMA 斜率 + 价格偏离收紧"]
+    TF --> SC["scoring_engine 评分<br/>（全市场动态阈值）"]
+    SC --> CAP{"总持仓保证金<br/>比例上限检查"}
+    CAP -->|"超限"| SKIP["跳过开仓"]
+    CAP -->|"通过"| EXEC2["executor 执行开仓"]
+    EXEC2 --> EXPIRE["形态过期检查<br/>_check_pattern_expiry"]
+    EXPIRE --> UNREG{"_should_unregister?"}
+    UNREG -->|"是"| OUT["移出候选池"]
+  </div>
+</section>
+
+<section id="aituner">
+  <h2>⑦ StratTuneAI 调优闭环（ai-tuner · v1.0）<span class="tag">AI 调参</span></h2>
+  <p class="desc">每周日 23:55 自动采集各策略周度表现，DeepSeek 生成调参建议，飞书卡片人工审批后经覆盖层生效；安全兜底自动回滚。调参建议不入库改码，只改 config 覆盖层（tuning_overrides）。</p>
+  <div class="mermaid">
+flowchart LR
+    SCH["APScheduler<br/>每周日 23:55"] --> COLLECT["pnl_collector<br/>采集各策略周度表现"]
+    COLLECT --> REPORT["生成标准化健康报告"]
+    REPORT --> MEM["读取历史调优记忆<br/>trading.strategy_memory"]
+    MEM --> LLM["DeepSeek 分析<br/>生成参数调整建议"]
+    LLM --> CARD["飞书审批卡片<br/>（人工在环，必须确认）"]
+    CARD -->|"批准"| APPLY["覆盖层应用到<br/>strategies/*/tuning_overrides<br/>+ config_updater"]
+    CARD -->|"拒绝/超时"| DROP["作废并记录"]
+    APPLY --> RECORD["结构化记录到<br/>strategy_memory 表"]
+    RECORD --> GUARD{"安全兜底"}
+    GUARD -->|"24h连续亏损 /<br/>累计亏损触发"| ROLLBACK["rollback_manager<br/>自动回滚到上一版参数"]
+    GUARD -->|"正常"| OK["继续运行"]
+
+    subgraph OTHER["其他定时任务"]
+      ALLOC["月度资金分配<br/>monthly_job"]
+      PROFIT["利润提取"]
+      ORPHAN["孤儿单清理<br/>orphan_cleanup"]
+      HEALTH["健康检查"]
+      RECON["PnL 对账<br/>pnl_reconcile"]
+    end
+  </div>
+</section>
+
+</main>
+
+<footer>由 Claude 根据 Binance_quantitative_trading 源码（strategies/ · ai_tuner/ · docker-compose.yml）整理 ｜ 对应文档：docs/architecture/系统架构设计.md</footer>
+
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: "default", flowchart: { curve: "basis", htmlLabels: true } });
+</script>
+</body>
+</html>

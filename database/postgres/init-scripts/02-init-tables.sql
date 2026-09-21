@@ -61,6 +61,64 @@ CREATE INDEX idx_btc_eth_trades_symbol ON btc_eth.trades(symbol);
 CREATE INDEX idx_btc_eth_trades_executed ON btc_eth.trades(executed_at);
 
 -- ============================================
+-- BTC/ETH 激进版策略表（独立 schema）
+-- 与 btc_eth 结构一致，独立存储激进版专属记录
+-- ============================================
+
+-- 交易信号表
+CREATE TABLE IF NOT EXISTS btc_eth_aggressive.trade_signals (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    direction VARCHAR(10) NOT NULL CHECK (direction IN ('LONG', 'SHORT')),
+    grade CHAR(1) NOT NULL CHECK (grade IN ('S', 'A', 'B', 'C')),
+    score DECIMAL(5, 2) NOT NULL,
+    entry_price DECIMAL(20, 8) NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'executed', 'cancelled')),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    executed_at TIMESTAMP,
+    metadata JSONB
+);
+
+-- 持仓记录表
+CREATE TABLE IF NOT EXISTS btc_eth_aggressive.positions (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    position_id VARCHAR(100) UNIQUE,
+    direction VARCHAR(10) NOT NULL,
+    quantity DECIMAL(20, 8) NOT NULL,
+    entry_price DECIMAL(20, 8) NOT NULL,
+    current_price DECIMAL(20, 8),
+    unrealized_pnl DECIMAL(20, 8),
+    status VARCHAR(20) DEFAULT 'open' CHECK (status IN ('open', 'closed')),
+    opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    closed_at TIMESTAMP,
+    metadata JSONB
+);
+
+-- 交易记录表
+CREATE TABLE IF NOT EXISTS btc_eth_aggressive.trades (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    order_id VARCHAR(100) UNIQUE,
+    position_id INTEGER REFERENCES btc_eth_aggressive.positions(id),
+    direction VARCHAR(10) NOT NULL,
+    order_type VARCHAR(20) NOT NULL,
+    quantity DECIMAL(20, 8) NOT NULL,
+    price DECIMAL(20, 8) NOT NULL,
+    commission DECIMAL(20, 8),
+    executed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB
+);
+
+-- 创建索引
+CREATE INDEX idx_btc_eth_agg_signals_symbol ON btc_eth_aggressive.trade_signals(symbol);
+CREATE INDEX idx_btc_eth_agg_signals_created ON btc_eth_aggressive.trade_signals(created_at);
+CREATE INDEX idx_btc_eth_agg_positions_symbol ON btc_eth_aggressive.positions(symbol);
+CREATE INDEX idx_btc_eth_agg_positions_status ON btc_eth_aggressive.positions(status);
+CREATE INDEX idx_btc_eth_agg_trades_symbol ON btc_eth_aggressive.trades(symbol);
+CREATE INDEX idx_btc_eth_agg_trades_executed ON btc_eth_aggressive.trades(executed_at);
+
+-- ============================================
 -- 新币做空策略表
 -- ============================================
 
@@ -230,6 +288,7 @@ CREATE TABLE IF NOT EXISTS public.system_config (
 -- 插入初始策略状态
 INSERT INTO public.strategy_status (strategy_name, status) VALUES
     ('btc_eth', 'stopped'),
+    ('btc_eth_aggressive', 'stopped'),
     ('new_coin', 'stopped'),
     ('grid', 'stopped')
 ON CONFLICT (strategy_name) DO NOTHING;

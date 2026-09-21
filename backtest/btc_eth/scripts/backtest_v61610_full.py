@@ -662,20 +662,20 @@ class V620BacktestEngine:
         
         return True
     
-    def _check_bb_touch_backtest(self, indicators_4h_slice, klines_4h_slice, config: Dict) -> Optional[str]:
-        """回测版布林带触轨检查（使用时间对齐的4h切片）"""
-        bb_upper = indicators_4h_slice['BB_Upper'].iloc[-1] if 'BB_Upper' in indicators_4h_slice else None
-        bb_lower = indicators_4h_slice['BB_Lower'].iloc[-1] if 'BB_Lower' in indicators_4h_slice else None
+    def _check_bb_touch_backtest(self, indicators_4h_slice, klines_4h_slice, _config: Dict) -> Optional[str]:
+        """回测版布林带半区判定（v6.29 与生产一致：价格低于中轨做多、高于中轨做空）"""
+        bb_middle = indicators_4h_slice['BB_Middle'].iloc[-1] if 'BB_Middle' in indicators_4h_slice else None
         
-        if bb_upper is None or bb_lower is None:
+        if bb_middle is None or pd.isna(bb_middle):
             return None
         
         current_price = klines_4h_slice['close'].iloc[-1]
-        threshold = config.get('bb_touch_threshold', 0.02)
+        if pd.isna(current_price):
+            return None
         
-        if current_price <= bb_lower * (1 + threshold):
+        if current_price < bb_middle:
             return 'LONG'
-        if current_price >= bb_upper * (1 - threshold):
+        if current_price > bb_middle:
             return 'SHORT'
         
         return None

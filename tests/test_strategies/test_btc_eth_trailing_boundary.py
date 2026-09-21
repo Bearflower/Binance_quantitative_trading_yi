@@ -671,6 +671,8 @@ class TestExchangeOrderSync:
         pos.trailing_activated = True
         pos.trailing_stop_price = Decimal('60600')
         pos.trailing_stop_order_id = None
+        pos.initial_quantity = Decimal('0.1')  # 初始数量：移动止损尾仓按此 * 30% 计算
+        pos.grade = 'A'  # 信号等级：用于 _get_grade_risk 读取 remaining_ratio
         return pos
 
     @pytest.fixture
@@ -712,21 +714,21 @@ class TestExchangeOrderSync:
         return strategy
 
     @pytest.mark.asyncio
-    async def test_sync_first_activation_cancels_hard_stop(self, strategy_with_mocks, position_long):
-        """首次激活：取消硬止损单，创建移动止损条件单"""
+    async def test_sync_first_activation_keeps_hard_stop(self, strategy_with_mocks, position_long):
+        """首次激活：硬止损全仓单保留不取消，仅创建尾仓移动止损条件单"""
         strategy = strategy_with_mocks
         position_long.trailing_stop_order_id = None
-        position_long.stop_loss_order_id = 99999  # 模拟有硬止损单
+        position_long.stop_loss_order_id = 99999  # 模拟硬止损全仓单
 
         # 手动调用 _sync_trailing_stop_order
         trailing_stop = Decimal('60600')
         await strategy._sync_trailing_stop_order("BTCUSDT", position_long, trailing_stop)
 
-        # 验证：取消硬止损单
-        strategy.binance.cancel_algo_order.assert_any_call("BTCUSDT", 99999)
-        assert position_long.stop_loss_order_id is None
+        # 验证：硬止损单保留，不取消（首次激活无旧移动止损单可取消，硬止损全仓单不动）
+        strategy.binance.cancel_algo_order.assert_not_called()
+        assert position_long.stop_loss_order_id == 99999
 
-        # 验证：创建新移动止损条件单
+        # 验证：创建尾仓移动止损条件单（数量 = initial_quantity * 30%）
         strategy.binance.place_conditional_order.assert_called_once()
         args, kwargs = strategy.binance.place_conditional_order.call_args
         assert kwargs['symbol'] == 'BTCUSDT'
@@ -734,8 +736,9 @@ class TestExchangeOrderSync:
         assert kwargs['stop_price'] == trailing_stop
         assert kwargs['order_type'] == 'STOP'
         assert kwargs['reduce_only'] is True
+        assert kwargs['quantity'] == Decimal('0.03')  # 0.1 * 0.30 = 0.03
 
-        # 验证：记录新订单ID
+        # 验证：记录新移动止损订单ID
         assert position_long.trailing_stop_order_id == 12345
 
     @pytest.mark.asyncio

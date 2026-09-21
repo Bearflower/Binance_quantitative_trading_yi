@@ -1,6 +1,74 @@
 # 部署确认报告
 
 ---
+## 2026-09-20 追加部署（修复开仓失败原因被吞掉：真实原因透传）
+
+### 变更内容
+- **修复通知误报「入场失败: 做空限价单未成交或失败」**：HUTUSDT 总分 7.45 实际是被「总持仓保证金超限(199.27/150)」风控拦截（已持 3 仓 = `trading.max_positions` 上限），**未下任何单**，但通知却显示与实际不符的「限价单未成交」（7.45 分按规则应走市价单，文案自相矛盾）
+- 根因：`executor.py` 的 `execute_short()` 有 6 条业务失败路径均返回裸 `None`，唯一调用方 `strategy.py` 无论哪条路径都硬编码上报同一文案，真实原因被吞掉
+- 修复：`execute_short()` 返回契约改为 `Tuple[Optional[Dict[str, Any]], str]`，透传真实失败原因（账户余额不足 / 仓位大小计算失败 / 总仓位超限 / 总持仓保证金超限 / 开空仓下单失败 / 市价单未成交 / 限价单超时未成交 / 执行异常）；未成交分支按 `use_market_order` 区分「市价单 / 限价单」文案
+- 风控判定条件与阈值来源**未改动**（阈值仍来自 `capital_mgr.get_total_margin_limit()` 读配置，无硬编码）
+- 改动文件：`strategies/new_coin/executor.py`、`strategies/new_coin/strategy.py`（+ 测试 `tests/test_strategies/test_executor_trailing.py`）
+
+### 验证结果（五层验证）
+| 层级 | 内容 | 结果 |
+|------|------|------|
+| 1 容器状态 | trading_system-new_coin Up (healthy) | ✅ |
+| 2 镜像ID | 容器镜像 == 最新构建 `sha256:4b193e12e665957fe3ab295fef82a7e9108d091f2718b273a5ac6e44ca53c2be` | ✅ |
+| 3 VERSION 文件 | N/A（该 Dockerfile 未 COPY VERSION），以第四层关键文件 MD5 为主证 | ⚠️ N/A |
+| 4 文件MD5 | 容器内 executor.py / strategy.py 与本地完全一致 | ✅ |
+| 5 日志错误 | 部署后 200 行内错误数 0，启动初始化正常并对齐整点周期 | ✅ |
+
+### MD5（本地 = 服务器 = 容器内）
+| 文件 | MD5 |
+|------|-----|
+| strategies/new_coin/executor.py | ee775c65be059ad8c72682b26bca1fe5 |
+| strategies/new_coin/strategy.py | 41e0815894169d0b5faf11bc6913dd3a |
+
+### 测试
+- ✅ `tests/test_strategies/` **303 passed / 0 failed**；新增 9 用例覆盖 6 条业务失败路径 + 异常路径 + 透传 + 空原因兜底
+- ✅ 覆盖率核对：`execute_short` 改动的 8 处 return 行（205/212/238/256/273/302/371/379）全部命中
+- ✅ 部署方式：按需重建，**仅 `new-coin-strategy`**（未触碰其他容器）；服务器旧文件已备份至 `executor.py.bak_20260920_165611`、`strategy.py.bak_20260920_165611`
+- 📌 已知局限：该容器 Dockerfile 未 `COPY VERSION`，第三层校验不可用；建议后续补充 `COPY VERSION /app/VERSION` 以恢复该层校验
+
+---
+
+## 2026-09-20 追加部署（修复 -2013 重试噪音 + short_positions 时区写入失败）
+
+### 变更内容
+- **修复 `-2013 Order does not exist` 重试噪音**：`-2013` 表示订单已成交/已撤销（正常竞态），重试无意义
+  - `shared/binance_api.py`：`-2013` 加入 `_NON_RETRYABLE_ERROR_CODES`
+  - `shared/utils.py`：`-2013` 归入 debug 降级列表（原为 warning）
+  - `strategies/new_coin/executor.py`：限价单超时取消时 `-2011/-2013` 视为"取消目标已达成"，降级为 info
+- **修复 `short_positions 持仓记录写入失败`（时区错误）**：`_insert_short_position`/`_update_short_position_closed` 传入 `datetime.now(timezone.utc)`（带时区），而 `opened_at`/`closed_at` 列为 `TIMESTAMP`（无时区），asyncpg 拒绝绑定。改用 `datetime.now()`（naive UTC，与项目其他落库代码一致）
+- **数据回填**：`new_coin.short_positions` 表此前因该 bug 从未写入成功（0 行），回填当前两个在持持仓
+  - AMCUSDT：37.09 @ 2.69816554，opened_at 2026-09-19 19:03:42
+  - APLDUSDT：3.57 @ 27.86000000，opened_at 2026-09-19 17:03:32
+  - 回填后恢复两处依赖该表的能力：HRS 候选池排除同币种开仓（candidate_pool.py）、new_coin 重启兜底恢复（strategy.py）
+
+### 验证结果（五层验证）
+| 层级 | 内容 | 结果 |
+|------|------|------|
+| 1 容器状态 | 6 个受影响容器全部 Up (healthy) | ✅ |
+| 2 镜像ID | 均以 `--no-cache` 重建并 Recreate | ✅ |
+| 3 上传完整性 | 3 个文件本地/服务器 MD5 一致 | ✅ |
+| 4 文件MD5 | 6 个容器内 shared 文件全部一致 | ✅ |
+| 5 日志错误 | 部署后 5 分钟各容器错误数均为 0 | ✅ |
+
+### MD5（本地=服务器=容器内）
+| 文件 | MD5 |
+|------|-----|
+| shared/binance_api.py | 589639bf3069d96ac260c55eb8475f05 |
+| shared/utils.py | c37b44536015d3f7cc442e1efc7e06d1 |
+| strategies/new_coin/executor.py | 7b6c4aed1a77e9ba73ecc9e68c01c1f3 |
+
+### 测试
+- ✅ 单元测试：`-2013` 不重试（调用 1 次即抛）；可重试码 `-1003` 正常重试 3 次
+- ✅ 运行时复现：容器内旧写法（aware）精确复现 `invalid input for query argument $5 ... can't subtract offset-naive and offset-aware datetimes`；新写法（naive）写入成功；测试数据已回滚
+- ✅ 部署方式：`shared/` 变更 → 按需重建 btc-eth-strategy、btc-eth-aggressive-strategy、grid-strategy、new-coin-strategy、hrs-strategy、ai-tuner（未触碰 postgres/kline/kline-monitor）
+
+---
+
 ## 2026-09-15 追加部署（激活移动止损：止盈成交检测）
 
 ### 变更内容

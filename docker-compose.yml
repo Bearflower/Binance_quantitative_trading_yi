@@ -114,6 +114,42 @@ services:
       start_period: 40s
 
   # ============================================
+  # BTC/ETH 策略激进版服务（独立 schema，共用资金）
+  # ============================================
+  btc-eth-aggressive-strategy:
+    build:
+      context: .
+      dockerfile: strategies/btc_eth_aggressive/Dockerfile
+    container_name: trading_system-btc_eth_aggressive
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_NAME=btc_eth_aggressive
+      - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=btc_eth_aggressive
+    volumes:
+      - ./logs/btc_eth_aggressive:/app/logs
+      - ./data/btc_eth_aggressive:/app/data
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kline-service:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================
   # 新币做空策略服务
   # ============================================
   new-coin-strategy:
@@ -183,79 +219,9 @@ services:
       retries: 3
       start_period: 40s
 
-  # ============================================
-  # 日报服务
-  # ============================================
-  daily-report:
-    build:
-      context: .
-      dockerfile: strategies/daily_report/Dockerfile
-    container_name: trading_system-daily_report
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      - STRATEGY_NAME=daily_report
-      - DATABASE_HOST=postgres
-      - DATABASE_PORT=5432
-      - DATABASE_NAME=trading_platform
-      - DATABASE_USER=trading_user
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-trading_password_2024}
-    volumes:
-      - ./logs/daily_report:/app/logs
-    networks:
-      - trading-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-
-  # ============================================
-  # 周报服务
-  # ============================================
-  weekly-report:
-    build:
-      context: .
-      dockerfile: strategies/weekly_report/Dockerfile
-    container_name: trading_system-weekly_report
-    restart: unless-stopped
-    env_file:
-      - .env
-    environment:
-      - STRATEGY_NAME=weekly_report
-      - DATABASE_HOST=postgres
-      - DATABASE_PORT=5432
-      - DATABASE_NAME=trading_platform
-      - DATABASE_USER=trading_user
-      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-trading_password_2024}
-    volumes:
-      - ./logs/weekly_report:/app/logs
-    networks:
-      - trading-network
-    depends_on:
-      postgres:
-        condition: service_healthy
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
-    healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
-      interval: 60s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
+  # daily-report / weekly-report 已废弃（无 Dockerfile + 目录为空，2026-09-16 注释）
+  # 原 docker-compose 块引用不存在的 strategies/daily_report/Dockerfile 和
+  # strategies/weekly_report/Dockerfile，build 失败。如需恢复请先补 Dockerfile。
 
   # ============================================
   # StratTuneAI 多策略AI调优系统
@@ -266,6 +232,7 @@ services:
       dockerfile: ai_tuner/Dockerfile
     container_name: ai-tuner
     restart: unless-stopped
+    user: "0:0"   # 使用 root，与其他策略容器一致，解决 bind mount UID 不匹配
     environment:
       - TZ=Asia/Shanghai
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}

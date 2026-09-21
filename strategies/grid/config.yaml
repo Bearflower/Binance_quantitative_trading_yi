@@ -3,8 +3,8 @@
 # 策略基本信息
 strategy:
   name: grid_trading
-  version: "2.4.0"
-  description: "网格交易策略 V2.4 - 三层预警架构，解决ADX滞后问题"
+  version: "2.5.0"
+  description: "网格交易策略 V2.5 - 三层预警架构 + K线服务对接 + 定时执行节点固定"
 
 # 交易对配置
 symbols:
@@ -302,4 +302,75 @@ signal_bot:
     
   # 信号模式
   mode: semi
+
+# V2.5 多因子保证金智能引导配置
+margin_guide:
+  # 状态系数（按 MarketState 枚举映射，与市场状态判定口径一致）
+  state_coeff:
+    PRICE_EMERGENCY: 0.0       # 价格行为紧急触发
+    EARLY_WARNING_15M: 0.0     # 15m ADX 早期预警（危险态，保守）
+    TREND_CONFIRMED_1H: 0.0    # 1h ADX 趋势确认（危险态，保守）
+    TREND_ACCELERATING: 0.0    # 趋势急剧增强（危险态，保守）
+    EXTREME_STRONG_TREND: 0.0  # 极端强趋势
+    NORMAL_STRONG_TREND: 0.3   # 普通强趋势
+    VOLATILITY_ABNORMAL: 0.0   # 波动率异常（危险态，保守）
+    WEAK_TREND: 0.6            # 弱趋势
+    OSCILLATION: 1.0           # 震荡
+  # 震荡态细分：ADX < 此阈值时按强震荡（加码）系数，否则按 OSCILLATION 系数
+  strong_oscillation:
+    coeff: 1.2
+    adx_threshold: 18
+
+  # 趋势强度系数（公式常数 100/50/40 不入配置）
+  trend_strength:
+    adx_soft_max: 20           # ADX<20: 1.0+(20-ADX)/100
+    adx_hard_max: 30           # 20≤ADX<30: 1.0-(ADX-20)/50；ADX≥30: max(0, 0.5-(ADX-30)/40)
+    min_value: 0.0
+
+  # 波动率系数：clamp(基准ATR/当前ATR, min_coeff, max_coeff)
+  volatility:
+    min_coeff: 0.5
+    max_coeff: 1.5
+    degrade: 1.0
+
+  # BTC 一致性系数
+  btc_consistency:
+    btc_symbol: "BTCUSDT"
+    oscillation_coeff: 0.7     # BTC 震荡
+    same_trend_coeff: 1.0      # BTC 与 ETH 同向
+    reverse_trend_coeff: 0.4   # BTC 与 ETH 反向
+    eth_oscillation_coeff: 1.0 # ETH 震荡时跳过 BTC 检测
+    degrade: 1.0               # BTC 检测异常降级
+
+  # 资金费率系数（缓存 8h）
+  funding_rate:
+    high_threshold: 0.0005     # r>0.0005 -> 0.7（偏高）
+    low_threshold: -0.0005     # r<-0.0005 -> 1.2（偏低）
+    high_coeff: 0.7
+    neutral_coeff: 1.0
+    low_coeff: 1.2
+    cache_hours: 8
+    degrade: 1.0
+
+  # 调整触发
+  trigger:
+    increase_ratio: 1.2        # 建议/当前 > 1.2 -> 加码
+    decrease_ratio: 0.8        # 建议/当前 < 0.8 -> 减码
+
+  # 单次调整幅度
+  adjustment:
+    max_step: 150              # 单次最大调整量（USDT）
+    max_step_ratio: 0.3        # 限幅比例（相对基础保证金，仅用于"限幅30%"文案）
+
+  # 冷却
+  cooldown:
+    same_direction_hours: 4    # 同方向距上次 < 4h 拦截；清仓与减码视为不同方向
+
+  # BTC 背离检测
+  divergence:
+    kline_count: 24
+    interval: "1h"
+
+  # 建议保证金取整位数
+  rounding: 0
 

@@ -1,0 +1,62 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "核心交易业务流程（策略主循环）",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "main", "label": "主循环", "focus": ["cron_hourly", "init_runtime", "manage_positions", "fetch_klines", "analyze_market", "gen_signal", "risk_control", "place_order", "record_trade", "notify"], "note": "整点触发 → 行情分析 → 风控 → 下单 → 持久化与通知。" },
+      { "id": "risk", "label": "风控与执行", "focus": ["gen_signal", "risk_control", "place_order", "record_trade"], "note": "信号必须通过风控校验后才允许下单。" },
+      { "id": "exception", "label": "异常路径", "focus": ["analyze_market", "error_alert", "notify"], "note": "单币种分析失败不阻断整个主循环。" }
+    ]
+  },
+  "lanes": [
+    { "id": "scheduler", "label": "调度与初始化" },
+    { "id": "market", "label": "行情与持仓" },
+    { "id": "decision", "label": "信号与风控" },
+    { "id": "execution", "label": "下单与记录" },
+    { "id": "monitor", "label": "监控与通知", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "prep", "label": "准备", "fromCol": 0, "toCol": 1 },
+    { "id": "analyze", "label": "分析", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "act", "label": "执行", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "signal_gate", "label": "信号 → 风控 → 下单", "lane": "decision", "fromCol": 3, "toCol": 4, "variant": "emphasis" },
+    { "id": "exception_path", "label": "异常告警路径", "lane": "monitor", "fromCol": 2, "toCol": 5, "variant": "security" }
+  ],
+  "mainPath": ["cron_hourly", "init_runtime", "manage_positions", "fetch_klines", "analyze_market", "gen_signal", "risk_control", "place_order", "record_trade", "notify"],
+  "nodes": [
+    { "id": "cron_hourly", "lane": "scheduler", "col": 0, "type": "backend", "label": "整点触发", "sublabel": "每小时 Cron", "tag": "定时调度", "width": 108 },
+    { "id": "init_runtime", "lane": "scheduler", "col": 1, "type": "backend", "label": "初始化运行时", "sublabel": "配置合并/客户端/持仓保护", "width": 108 },
+    { "id": "manage_positions", "lane": "market", "col": 1, "type": "backend", "label": "持仓管理", "sublabel": "止盈止损 + 交易所持仓同步", "tag": "清僵尸持仓", "width": 108 },
+    { "id": "fetch_klines", "lane": "market", "col": 2, "type": "messagebus", "label": "拉取 K 线", "sublabel": "kline-service REST", "width": 108 },
+    { "id": "analyze_market", "lane": "market", "col": 3, "type": "backend", "label": "市场状态识别", "sublabel": "趋势 / 震荡双模式", "width": 108 },
+    { "id": "gen_signal", "lane": "decision", "col": 3, "type": "backend", "label": "信号生成", "sublabel": "评分 / 投票入场", "width": 108 },
+    { "id": "risk_control", "lane": "decision", "col": 4, "type": "security", "label": "风控校验", "sublabel": "仓位 / 红线上限", "tag": "不通过则放弃", "width": 108 },
+    { "id": "place_order", "lane": "execution", "col": 4, "type": "messagebus", "label": "下单 / 条件单", "sublabel": "限价 + 止损止盈", "tag": "Binance API", "width": 108 },
+    { "id": "record_trade", "lane": "execution", "col": 5, "type": "database", "label": "记录成交", "sublabel": "trading.trade_records", "width": 108 },
+    { "id": "notify", "lane": "monitor", "col": 5, "type": "external", "label": "飞书通知", "sublabel": "信号 / 告警推送", "width": 108 },
+    { "id": "error_alert", "lane": "monitor", "col": 2, "type": "security", "label": "异常告警", "sublabel": "单币种失败不阻断", "width": 108 }
+  ],
+  "edges": [
+    { "id": "e1", "from": "cron_hourly", "to": "init_runtime", "label": "触发" },
+    { "id": "e2", "from": "init_runtime", "to": "manage_positions" },
+    { "id": "e3", "from": "manage_positions", "to": "fetch_klines" },
+    { "id": "e4", "from": "fetch_klines", "to": "analyze_market" },
+    { "id": "e5", "from": "analyze_market", "to": "gen_signal", "label": "决策数据", "variant": "emphasis" },
+    { "id": "e6", "from": "gen_signal", "to": "risk_control", "label": "信号", "variant": "emphasis" },
+    { "id": "e7", "from": "risk_control", "to": "place_order", "label": "通过", "variant": "emphasis" },
+    { "id": "e8", "from": "place_order", "to": "record_trade" },
+    { "id": "e9", "from": "record_trade", "to": "notify" },
+    { "id": "e10", "from": "analyze_market", "to": "error_alert", "label": "异常", "variant": "security", "role": "error" },
+    { "id": "e11", "from": "place_order", "to": "error_alert", "label": "失败", "variant": "security", "role": "error" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "一条主链路", "items": ["整点触发 → 加载配置（合并 AI 覆盖层）→ 初始化运行时", "行情 → 市场状态识别 → 信号生成 → 风控校验 → 下单", "所有成交统一写入 trade_records，供日报/周报汇总"] },
+    { "dot": "rose", "title": "安全与异常", "items": ["信号必须通过仓位与红线上限风控才可下单", "单币种分析失败仅告警，不阻断整个主循环", "条件单本地 algoId 管理，孤儿单启动时自动清理"] },
+    { "dot": "cyan", "title": "运行时准备", "items": ["初始化时校验环境变量、创建条件单表、持仓保护补单", "每个周期先执行止盈止损，再同步交易所持仓清僵尸"] }
+  ]
+}

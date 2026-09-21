@@ -35,6 +35,9 @@
 | 6 | 代码审查与文档对照 | code-specification-inspector + code-document-curator | ⏳ 待执行 |
 | 7 | 文档更新 | code-document-curator | ⏳ 待执行 |
 | 8 | 部署与代码级验证 | `服务器自动化部署` 技能 + 代码对比 | ⏳ 待执行 |
+| 9 | 上下文交接存档 | `context-handoff` skill | ⏳ 待执行 |
+
+> 说明：第 9 行"上下文交接存档"是**会话级交接**，非代码开发环节；触发时机为上下文使用率偏高（约 70%+）、完成关键里程碑、或用户手动触发（详见"七・五、上下文交接存档"）。若本次任务未产生新状态，可标注"跳过"。
 
 是否确认开始执行？
 ```
@@ -72,7 +75,7 @@
 | **需求分析** | `需求分析vide-coding`、`brainstorming`、`writing-plans` | 先调用技能梳理需求，再调智能体 |
 | **架构设计** | `architecture-diagram`、`mermaid-diagrams` | 用技能生成架构图，辅助设计 |
 | **编码实现** | `服务器自动化部署`、`通用模块调用指南`、`binance-api-client` | 查阅技能文档，了解项目特定实现 |
-| **前端开发** | `web-dev`、`frontend-design`、`ui-ux-pro-max` | 调用技能生成前端代码 |
+| **前端开发** | `frontend-design`、`ui-ux-pro-max`、`taste-skill`、`impeccable`、`shadcn`、`design-md`、`awesome-design-md`、`frontend-skill` | 前端界面生成、设计系统、taste 把控、代码美化、组件库使用 |
 | **文档编写** | `docx`、`powerpoint`、`mermaid-diagrams` | 用技能生成文档和图表 |
 | **代码审查** | `TRAE-code-review`、`TRAE-security-review` | 调用技能进行审查 |
 | **数据处理** | `processing-excel-files` | 处理 Excel 文件 |
@@ -335,6 +338,28 @@ ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/shared/*.py"
 
 ---
 
+## 七・五、上下文交接存档（主动触发，强制）⭐⭐⭐
+
+**防止超长对话被系统后台压缩导致中间内容丢失。** 本规则声明并强制 `context-handoff` skill 的主动调用。
+
+### 触发时机（以下任一，必须主动调用 `context-handoff` skill）
+
+1. **上下文使用率偏高**：当模型可感知到对话上下文使用率明显升高（约 70% 及以上）、或对话较长/变卡时，**主动执行**交接存档，不得等待用户提醒。
+2. **完成重要子任务**：每完成一次重构、一个需求落地、一次部署验证等**关键里程碑**，主动生成/追加交接记录（增量追加，见 skill）。
+3. **用户手动触发**：用户说"执行交接存档" / "记录 handoff" / "记录交接" / "上下文太长了"。
+
+### 明确边界（重要）
+
+- **不依赖精确百分比做"到点强制"**：模型难以量化到 80%±5% 这种精确门槛，且压缩在后台静默发生。因此策略是**偏早触发 + 里程碑增量**，确保任何时刻压缩前内容已落盘。
+- **交接文件不入 git**：`docs/handoffs/` 已在 `.gitignore`，不被 `/git` 提交、不被部署影响范围分析误判为代码变更。
+- **不与全局记忆重复**：本 skill 只写任务级快照，不写 `project_memory.md` / `topics.md`。
+
+### 相关 skill
+
+- `context-handoff`——上下文交接存档（执行细则见 skill 本体：.trae/skill/context-handoff/SKILL.md）
+
+---
+
 ## 八、违规发现与恢复
 
 **如果你意识到自己跳过了前置关卡或某个必要环节，必须立即执行以下恢复流程：**
@@ -355,4 +380,4 @@ ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/shared/*.py"
 
 ---
 
-**最后更新：** 2026-06-01
+**最后更新：** 2026-09-08

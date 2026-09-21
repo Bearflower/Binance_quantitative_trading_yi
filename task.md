@@ -6,6 +6,17 @@
 
 ## 已完成的任务
 
+### [最后更新:2026-09-11 10:38] HRS 调优失败修复（JSON 解析 + 配置缺失）
+- **状态**: 已完成
+- **创建时间**: 2026-09-11
+- **完成时间**: 2026-09-11 10:38
+- **涉及容器**: ai-tuner、trading_system-hrs、trading_system-new_coin
+- **问题**: HRS LLM 调优 JSON 解析失败（`Extra data: line 1 column 51`）+ 配置缺 `trading.max_positions`
+- **修复**: response_parser 三层加固（字符串感知提取 + raw_decode 兜底）、HRS/new_coin config 补 `trading.max_positions: 3`
+- **测试**: 修正断言 + 新增 6 个测试用例
+- **部署**: 按需重建 ai-tuner/new_coin，重启 hrs，MD5 验证一致
+- **过程记录**: `.trae/memories/2026-09/11/1038-ea7c2f1a.md`
+
 ### [最后更新:2026-07-16 10:30] 限价单与孤儿单修复 + 部署
 - **状态**: 已完成
 - **创建时间**: 2026-07-16

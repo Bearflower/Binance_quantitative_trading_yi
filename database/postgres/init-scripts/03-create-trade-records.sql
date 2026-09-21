@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS trading.trade_records (
     price DECIMAL(20,8) NOT NULL DEFAULT 0,
     commission DECIMAL(20,8) NOT NULL DEFAULT 0,
     status VARCHAR(20) NOT NULL DEFAULT 'NEW',
-    executed_at TIMESTAMP NOT NULL DEFAULT NOW()
+    executed_at TIMESTAMP NOT NULL DEFAULT NOW(),
+    realized_pnl DECIMAL(20,8),
+    close_reason VARCHAR(20)
 );
 
 -- 策略+日期联合索引（日报按策略按日期查询）

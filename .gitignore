@@ -28,6 +28,9 @@ deployment_*.log
 data/
 tmp/
 
+# 回测行情数据（体积大，仅本地使用，不入库）
+backtest/cash_carry/data_2y/
+
 # 自动生成
 VERSION
 
@@ -38,3 +41,6 @@ VERSION
 
 # 工具临时目录
 .superpowers/
+
+# 会话交接存档（本地交接用，不入库）
+docs/handoffs/

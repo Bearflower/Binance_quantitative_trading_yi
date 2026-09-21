@@ -321,6 +321,10 @@ trading:
   max_daily_same_direction: 2    # 同一方向单日最多开仓
   max_positions: 3                # 最大同时持仓数（单笔保证金×持仓数=总保证金口径，50×3=150 USDT）
   fee_rate: 0.0004               # 手续费率 0.04%（taker fee）
+  # 总持仓保证金静态兜底（USDT，保证金口径）
+  # 用途：DB 取不到当月月度分配额时，作为限额兜底（参考 2026-09 DB 月度分配额 104.22 上浮）
+  # 月度额可用时优先生效，本值不参与 min 压制
+  total_position_margin_limit: 110
 
   # 价格精度配置
   price:
@@ -421,6 +425,13 @@ position_sizing:
   # 总保证金 = 账户余额 × 比例上限
   total:
     account_ratio_cap: 0.20      # 账户比例上限（20%）
+
+# 资金限额配置（方案 D：运行时读 DB 为主来源，config 为兜底）
+# 说明：monthly_limit / allocated_ratio 由 AI 月度资金分配流程写入；
+#       db_cache_ttl_seconds / db_query_timeout_seconds 为 DB 读取的缓存与超时保护。
+capital_limits:
+  db_cache_ttl_seconds: 300       # DB 分配额缓存有效期（秒），避免每笔开仓都查库
+  db_query_timeout_seconds: 3.0   # DB 查询超时（秒），超时后沿用最近一次成功值或降级
 
 # K线配置
 kline:

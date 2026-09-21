@@ -21,7 +21,7 @@ logger = structlog.get_logger()
 
 # 不可重试的币安API错误码（API常量，非业务参数）
 # 这些错误无论重试多少次都不会自动恢复
-_NON_RETRYABLE_ERROR_CODES = {-2011, -2019, -2021, -2022, -4108, -4136, -9999}  # -4108=交割/结算中, -4136=无效策略参数组合（如STOP+closePosition不兼容PM账户）, -9999=废弃API端点
+_NON_RETRYABLE_ERROR_CODES = {-2011, -2013, -2019, -2021, -2022, -4108, -4136, -4507, -9999}  # -2011/-2013=订单不存在（已成交或已撤销）, -4108=交割/结算中, -4136=PM账户不支持STOP+closePosition, -4507=限价超出触发价倍数上限, -9999=废弃API端点
 
 
 class BinanceAPIError(Exception):
@@ -550,7 +550,7 @@ class BinanceClient:
                 logger.warning("交易记录失败", error=str(e))
 
         return result
-    
+
     async def place_conditional_order(
         self,
         symbol: str,
@@ -619,8 +619,10 @@ class BinanceClient:
         if not close_position and quantity is not None and quantity <= 0:
             raise ValueError(f"数量必须大于0: {quantity}")
         
-        if price is not None and price <= 0:
-            raise ValueError(f"价格必须大于0: {price}")
+        # 市价条件单（STOP_MARKET/TAKE_PROFIT_MARKET/TRAILING_STOP_MARKET）不需要限价 price，
+        # 跳过 price > 0 验证；仅限价条件单（STOP/TAKE_PROFIT）需要有效 price
+        if order_type in ("STOP", "TAKE_PROFIT") and price is not None and price <= 0:
+            raise ValueError(f"限价条件单价格必须大于0: {price}")
         
         # 获取交易对精度信息
         precision_info = await self.get_symbol_info(symbol)
@@ -1289,6 +1291,49 @@ class BinanceClient:
             params["endTime"] = end_time
 
         data = await self._request("GET", "/papi/v1/um/allOrders", params, signed=True)
+
+        if not isinstance(data, list):
+            return []
+
+        return data
+
+    async def get_user_trades(
+        self,
+        symbol: str,
+        order_id: Optional[str] = None,
+        start_time: Optional[int] = None,
+    ) -> List[Dict]:
+        """
+        查询成交明细（userTrades）
+
+        用于事后核对真实成交与手续费（佣金只在 userTrades 中返回，下单结果不含）。
+        支持按指定订单号精准拉取该订单全部分笔成交，以及按时间范围拉取某币种成交。
+
+        Args:
+            symbol: 交易对（如 "BTCUSDT"）
+            order_id: 订单ID（可选，提供时只返回该订单的成交明细）
+            start_time: 起始时间戳（毫秒，可选）
+
+        Returns:
+            userTrades 成交明细列表，每条包含 orderId, commission,
+            commissionAsset, symbol, qty 等字段；非列表响应回退为空列表
+        """
+        if not symbol or not symbol.strip():
+            raise ValueError("交易对不能为空")
+
+        params = {"symbol": symbol.strip().upper()}
+        if order_id is not None:
+            params["orderId"] = order_id
+        if start_time is not None:
+            params["startTime"] = start_time
+
+        # PM 账户走 /papi/v1/um/userTrades，普通合约账户走 /fapi/v1/userTrades
+        endpoint = (
+            "/papi/v1/um/userTrades"
+            if self.use_unified_account
+            else "/fapi/v1/userTrades"
+        )
+        data = await self._request("GET", endpoint, params, signed=True)
 
         if not isinstance(data, list):
             return []

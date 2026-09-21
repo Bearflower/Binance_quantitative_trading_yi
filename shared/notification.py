@@ -63,6 +63,10 @@ class NotificationClient:
         
         if webhook := os.getenv("FEISHU_WEBHOOK_BTC_ETH"):
             mapping["btc_eth"] = webhook
+
+        # 激进版与原版共用同一 webhook（PCI：后续可独立配置）
+        if webhook := os.getenv("FEISHU_WEBHOOK_BTC_ETH_AGGRESSIVE"):
+            mapping["btc_eth_aggressive"] = webhook
         
         if webhook := os.getenv("FEISHU_WEBHOOK_NEW_COIN"):
             mapping["new_coin"] = webhook

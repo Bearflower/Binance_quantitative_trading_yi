@@ -30,6 +30,7 @@ if [ ! -f "VERSION" ]; then
     printf "GIT_COMMIT=%s\n" "$(git log --oneline -1 2>/dev/null || echo "no-git")" >> VERSION
     printf "DEPLOY_ID=%s\n" "$(uuidgen | cut -d- -f1)" >> VERSION
     printf "FILE_MD5=%s\n" "$(md5sum strategies/btc_eth/main.py | cut -d' ' -f1)" >> VERSION
+    printf "FILE_MD5_AGGRESSIVE=%s\n" "$(md5sum strategies/btc_eth_aggressive/main.py | cut -d' ' -f1)" >> VERSION
     cat VERSION
     echo "✅ VERSION 文件已生成"
 else
@@ -70,6 +71,16 @@ rsync -av --delete \
     --exclude='env' \
     --exclude='.env' \
     ./ "$TEMP_DIR/"
+
+# 预设置容器内可写目录权限（打包进 tar，解压后自动恢复 777）
+# 防止 rsync 保留本地 UID 501 权限导致容器 UID 1000 无法写入
+echo "🔧 预设容器可写目录权限..."
+for override_dir in "$TEMP_DIR"/strategies/*/tuning_overrides; do
+    if [ -d "$override_dir" ]; then
+        chmod -R 777 "$override_dir"
+        echo "  ✅ $override_dir -> 777"
+    fi
+done
 
 # 创建压缩包
 echo "📦 创建压缩包..."

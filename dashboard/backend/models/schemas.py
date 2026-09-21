@@ -54,6 +54,8 @@ class StrategySummary(BaseModel):
     id: str = Field(..., description="策略ID")
     name: str = Field(..., description="策略名称")
     emoji: str = Field("", description="策略图标")
+    open_position_count: int = Field(0, description="当前持仓数量")
+    open_margin: str = Field("0", description="当前持仓保证金")
     order_count: int = Field(0, description="订单数")
     fill_count: int = Field(0, description="成交数")
     closed_count: int = Field(0, description="平仓数")
@@ -88,6 +90,8 @@ class StrategyDetailData(BaseModel):
     id: str = Field(..., description="策略ID")
     name: str = Field(..., description="策略名称")
     emoji: str = Field("", description="策略图标")
+    open_position_count: int = Field(0, description="当前持仓数量")
+    open_margin: str = Field("0", description="当前持仓保证金")
     order_count: int = Field(0, description="订单数")
     fill_count: int = Field(0, description="成交数")
     closed_count: int = Field(0, description="平仓数")
@@ -260,3 +264,142 @@ class MetadataResponse(BaseResponse):
     """元数据响应"""
 
     data: MetadataData = Field(..., description="元数据")
+
+
+# ========================================
+# 收益率（基于净资产快照）
+# ========================================
+
+class ReturnsData(BaseModel):
+    """账户收益率数据"""
+
+    period: str = Field(..., description="周期：daily/weekly/monthly")
+    equity: str = Field("0", description="当前净资产")
+    # yield 为 Python 保留字，用 alias 保持 API 字段名一致（service 返回 dict 键为 "yield"）
+    yield_: Optional[float] = Field(None, alias="yield", description="收益率（%）")
+    yield_text: str = Field("--", description="收益率展示文本")
+    yield_unavailable: bool = Field(False, description="收益率是否不可用")
+    period_start_equity: Optional[str] = Field(None, description="期初净资产")
+    period_pnl: Optional[str] = Field(None, description="期初至今盈亏")
+    snapshot_date: str = Field(..., description="快照日期")
+
+    model_config = {"populate_by_name": True}
+
+
+class ReturnsResponse(BaseResponse):
+    """收益率响应"""
+
+    data: ReturnsData = Field(..., description="收益率数据")
+
+
+# ========================================
+# AI 监控（调优执行 + 月度分配 + 最近建议）
+# ========================================
+
+class AiTuningRun(BaseModel):
+    """AI 调优执行记录"""
+
+    strategy_id: Optional[str] = Field(None, description="策略ID")
+    strategy_name: Optional[str] = Field(None, description="策略名称")
+    status: Optional[str] = Field(None, description="状态：success/skip/error")
+    run_key: Optional[str] = Field(None, description="批次标识（周日日期）")
+    executed_at: Optional[str] = Field(None, description="执行时间")
+
+
+class AllocationEntry(BaseModel):
+    """月度资金分配条目"""
+
+    strategy_id: Optional[str] = Field(None, description="策略ID")
+    strategy_name: Optional[str] = Field(None, description="策略名称")
+    allocated_amount: Optional[float] = Field(None, description="分配金额（USDT）")
+    allocated_ratio: Optional[float] = Field(None, description="分配比例")
+    occupied_amount: Optional[float] = Field(None, description="占用金额（家庭级持仓保证金合计）")
+    occupied_ratio: Optional[float] = Field(None, description="占用比（持仓保证金/分配金额）")
+    rank: Optional[int] = Field(None, description="排名")
+
+
+class CapitalAllocationItem(BaseModel):
+    """月度资金分配"""
+
+    month: Optional[str] = Field(None, description="分配月份")
+    total_capital: Optional[str] = Field(None, description="总资金")
+    strategy_count: int = Field(0, description="策略数量")
+    entries: List[AllocationEntry] = Field(default_factory=list, description="分配条目")
+    status: Optional[str] = Field(None, description="状态")
+
+
+class SuggestionItem(BaseModel):
+    """最近 AI 建议"""
+
+    strategy_id: Optional[str] = Field(None, description="策略ID")
+    strategy_name: Optional[str] = Field(None, description="策略名称")
+    created_at: Optional[str] = Field(None, description="创建时间")
+    status: Optional[str] = Field(None, description="周度调优状态：success=已调整 / skip=无需调整 / error=异常")
+    adjustments: List[str] = Field(default_factory=list, description="调整建议")
+    is_applied: bool = Field(False, description="是否已应用")
+    is_rejected: bool = Field(False, description="是否已拒绝")
+
+
+class AiMonitorData(BaseModel):
+    """AI 监控数据"""
+
+    tuning_runs: List[AiTuningRun] = Field(default_factory=list, description="调优执行记录")
+    capital_allocation: Optional[CapitalAllocationItem] = Field(
+        None, description="月度资金分配"
+    )
+    recent_suggestions: List[SuggestionItem] = Field(
+        default_factory=list, description="最近优化建议"
+    )
+    refresh_info: Optional[Dict[str, Any]] = Field(
+        None, description="持仓数据刷新信息（refresh_interval/refresh_in）"
+    )
+
+
+class AiMonitorResponse(BaseResponse):
+    """AI 监控响应"""
+
+    data: AiMonitorData = Field(..., description="AI 监控数据")
+
+
+# ========================================
+# 风控模块
+# ========================================
+
+class StopTrendItem(BaseModel):
+    """止损趋势点"""
+
+    date: str = Field(..., description="日期（MM-DD）")
+    count: int = Field(0, description="止损单笔数")
+
+
+class RiskData(BaseModel):
+    """风控指标数据"""
+
+    total_position_margin: str = Field("0", description="当前总持仓保证金")
+    margin_limit: Optional[str] = Field(None, description="持仓上限（月度分配总额）")
+    limit_occupancy: Optional[float] = Field(None, description="占用率（%）")
+    account_ratio_caps: Dict[str, float] = Field(
+        default_factory=dict, description="各策略真实 cap 对账"
+    )
+    equity_ratio_occupancy: Optional[float] = Field(None, description="净资产占用率（%）")
+    available_margin: Optional[str] = Field(None, description="可用保证金")
+    approaching_threshold: bool = Field(False, description="是否逼近阈值")
+    threshold_exceeded: bool = Field(False, description="是否超限")
+    recent_stop_count: int = Field(0, description="近 N 天止损单笔数")
+    recent_stop_trend: List[StopTrendItem] = Field(
+        default_factory=list, description="止损每日分布"
+    )
+    consecutive_loss_days: int = Field(0, description="连续亏损天数")
+    max_drawdown_period: Optional[str] = Field(None, description="最大回撤发生日期")
+    drawdown_pct: Optional[float] = Field(None, description="最大单日回撤（%）")
+    daily_drawdown_pct: Optional[float] = Field(None, description="单日回撤阈值（%）")
+    updated_at: str = Field(..., description="更新时间")
+    refresh_info: Optional[Dict[str, Any]] = Field(
+        None, description="持仓数据刷新信息（refresh_interval/refresh_in）"
+    )
+
+
+class RiskResponse(BaseResponse):
+    """风控响应"""
+
+    data: RiskData = Field(..., description="风控指标数据")

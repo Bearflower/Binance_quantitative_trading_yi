@@ -908,10 +908,10 @@ def test_f7_config_completeness():
 
     config = _load_config()
 
-    # --- F7.1: 版本号为 2.4.0 ---
-    t = suite.test("F7.1-版本号为2.4.0")
+    # --- F7.1: 版本号为 2.5.0 ---
+    t = suite.test("F7.1-版本号为2.5.0")
     version = config.get('strategy', {}).get('version', '')
-    suite.assert_equal(version, '2.4.0', f"版本号应为2.4.0，实际={version}")
+    suite.assert_equal(version, '2.5.0', f"版本号应为2.5.0，实际={version}")
     suite.print_result(t)
 
     # --- F7.2: market 配置包含 V2.4 新增参数 ---

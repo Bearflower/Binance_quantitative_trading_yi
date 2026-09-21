@@ -15,6 +15,9 @@ COPY shared/ /app/shared/
 # 复制策略代码
 COPY strategies/grid/ /app/strategies/grid/
 
+# 复制版本标记（部署验证用）
+COPY VERSION /app/VERSION
+
 # 安装Python依赖
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

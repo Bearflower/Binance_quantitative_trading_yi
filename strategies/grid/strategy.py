@@ -14,6 +14,7 @@ from shared.binance_api import BinanceClient
 from shared.kline_service import KLineService
 from shared.notification import NotificationClient
 from shared.database import DatabaseManager
+from shared.strategy_state import sync_open_positions
 from .grid_calculator import GridCalculator, GridLevel
 from .order_manager import OrderManager
 from .position_manager import PositionManager
@@ -808,6 +809,12 @@ class GridStrategy(BaseStrategy):
             }
             # await self.db.save_strategy_state(self.strategy_name, 'main', state_data)
 
+            # 同步当前持仓到看板聚合表
+            # 口径说明：margin = 持仓数量 × 平均成本 / 杠杆（杠杆从配置 trading.leverage 读取）
+            # 网格持仓以 position_manager.positions 为准；quantity=0 表示无持仓，
+            # 其 margin 计算结果为 0，由 sync_open_positions 跳过并触发 DELETE 清除
+            await self._sync_open_positions_to_db()
+
             logger.debug("策略状态已保存")
 
         except Exception as e:
@@ -816,3 +823,31 @@ class GridStrategy(BaseStrategy):
                 error=str(e),
                 exc_info=True
             )
+
+    async def _sync_open_positions_to_db(self) -> None:
+        """
+        将网格策略当前持仓同步到 trading.strategy_open_positions 表
+
+        持仓来源：position_manager.positions（运行内存中跟踪的网格持仓）。
+        保证金口径：名义价值 = 持仓数量 × 平均成本，除以配置 trading.leverage 得保证金。
+
+        注意：网格持仓未持久化，容器重启后 position_manager.positions 为空，
+        本策略将上报无持仓（看板显示 grid 无持仓），与现状（未上报持仓）保持一致。
+        """
+        margin_dict = {}
+        qty_dict = {}
+        leverage = float(self.config.get('trading', {}).get('leverage', 1) or 1)
+
+        positions = {}
+        if self.position_manager:
+            # position_manager.positions 的 quantity/avg_price 为 Decimal
+            positions = getattr(self.position_manager, 'positions', {}) or {}
+
+        for symbol, pos in positions.items():
+            qty = float(pos.get('quantity', 0) or 0)
+            avg_price = float(pos.get('avg_price', 0) or 0)
+            qty_dict[symbol] = qty
+            if qty > 0 and avg_price > 0 and leverage > 0:
+                margin_dict[symbol] = qty * avg_price / leverage
+
+        await sync_open_positions(self.db, 'grid', margin_dict, qty_dict)

@@ -179,6 +179,102 @@ def get_strategy_config(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
     return strategies
 
 
+# ========================================
+# 风控阈值配置中心
+# ========================================
+
+# 风控阈值默认值与 key 路径（缺失字段时回退默认并记 warning）
+_RISK_DEFAULTS = {
+    ("risk", "occupancy_warning_ratio"): 0.8,
+    ("risk", "consecutive_loss_days"): 3,
+    ("risk", "daily_drawdown_pct"): 5.0,
+    ("risk", "stop_loss_days_window"): 7,
+    ("risk", "account_ratio_caps"): {},          # 各策略 cap 对账，缺失则空 dict
+}
+
+
+def load_risk_config() -> Dict[str, Any]:
+    """
+    加载 Dashboard 风控阈值配置（唯一权威源）
+
+    从 dashboard/backend/config/risk.yaml 读取风控阈值：
+      - 文件缺失或任一关键阈值缺失 → 回退默认值并打印警告日志（强校验但优雅降级）。
+      - 返回结构：{ "risk": { occupancy_warning_ratio, consecutive_loss_days,
+              daily_drawdown_pct, stop_loss_days_window, account_ratio_caps } }
+
+    Returns:
+        dict: 风控配置字典；即使读不到文件也保证关键阈值存在（带默认值）。
+    """
+    risk_config_path = Path(__file__).parent.parent / "config" / "risk.yaml"
+    if not risk_config_path.exists():
+        logger.warning(
+            "风控配置文件缺失，使用默认风控阈值",
+            risk_config_path=str(risk_config_path),
+        )
+        config_data = {}
+    else:
+        try:
+            with open(risk_config_path, "r", encoding="utf-8") as f:
+                config_data = yaml.safe_load(f) or {}
+        except Exception as e:
+            logger.warning(
+                "风控配置文件读取异常，使用默认风控阈值",
+                risk_config_path=str(risk_config_path),
+                error=str(e),
+            )
+            config_data = {}
+
+    # 递归读取嵌套节点，缺失字段回退默认值并记录警告
+    def _read_nested(path: tuple):
+        node = config_data
+        for key in path:
+            if isinstance(node, dict) and key in node:
+                node = node[key]
+            else:
+                node = None
+                break
+        return node
+
+    risk = config_data.get("risk", {})
+    if not isinstance(risk, dict):
+        risk = {}
+        logger.warning("风控配置中 risk 节点缺失或非法，使用空 dict")
+
+    for path, default in _RISK_DEFAULTS.items():
+        value = _read_nested(path)
+        if value is None:
+            logger.warning(
+                "风控阈值缺失，使用默认值",
+                field=".".join(path),
+                default=default,
+            )
+            _set_nested(risk, path[1:], default)
+
+    resolved = {"risk": risk}
+    logger.info(
+        "风控阈值配置加载完成",
+        occupancy_warning_ratio=risk.get("occupancy_warning_ratio"),
+        consecutive_loss_days=risk.get("consecutive_loss_days"),
+        daily_drawdown_pct=risk.get("daily_drawdown_pct"),
+        stop_loss_days_window=risk.get("stop_loss_days_window"),
+        account_ratio_caps=risk.get("account_ratio_caps"),
+    )
+    return resolved
+
+
+def _set_nested(node: Dict[str, Any], keys: tuple, value: Any) -> None:
+    """按嵌套路径设置配置值（用于填充默认值）"""
+    for key in keys[:-1]:
+        if not isinstance(node.get(key), dict):
+            node[key] = {}
+        node = node[key]
+    node[keys[-1]] = value
+
+
+# 全局风控阈值实例（模块加载时初始化，供所有新接口读取）
+risk_settings = load_risk_config()
+
+
 # 全局配置实例
 settings = Settings()
 

@@ -1,7 +1,8 @@
 /* ========================================
    Dashboard 样式文件
-   主题：柔和亮色 · 晨雾蓝灰 × 青绿强调
-   扁平轻盈卡片 · 玻璃质感 · 柔和光晕
+   主题：晨雾亮色 · 暖白微米基底 × 青绿盈利 × 玫红亏损
+   现代 SaaS / 金融科技日间质感（Stripe / Linear / Vercel 风）
+   白描边卡片 · 大圆角 · 细腻柔和投影 · 低饱和彩色光晕
    ======================================== */
 
 /* ========================================
@@ -9,54 +10,67 @@
    detail.html 依赖的变量均在此定义，不受影响）
    ======================================== */
 :root {
-  /* 背景：浅蓝灰渐变基底 */
-  --bg-deep: #EFF3FA;
-  --bg-surface: #F7F9FD;
-  --bg-card: rgba(255, 255, 255, 0.72);
-  --bg-card-hover: rgba(255, 255, 255, 0.92);
-  --bg-glass: rgba(15, 23, 42, 0.04);
-  --border-glass: rgba(15, 23, 42, 0.06);
-  --border-active: rgba(15, 23, 42, 0.14);
+  /* 背景：暖白微米基底，带极轻的奶灰倾向，避免发灰发蓝的陈旧感 */
+  --bg-deep: #F7F6F2;
+  --bg-surface: #FFFFFF;
+  --bg-card: #FFFFFF;
+  --bg-card-hover: #FBFBF8;
+  --bg-glass: rgba(116, 112, 128, 0.08);
+  --border-glass: rgba(134, 130, 148, 0.16);
+  --border-active: rgba(109, 94, 242, 0.38);
 
-  /* 语义色彩：明朗青绿（涨/积极）、珊瑚红（跌/消极）、琥珀金（强调）、天蓝（信息）、紫罗兰（主强调） */
-  --green: #0FA47F;
-  --green-bg: rgba(15, 164, 127, 0.10);
-  --red: #E5484D;
-  --red-bg: rgba(229, 72, 77, 0.10);
-  --gold: #D97706;
-  --gold-bg: rgba(217, 119, 6, 0.10);
-  --blue: #2563EB;
-  --blue-bg: rgba(37, 99, 235, 0.10);
-  --purple: #7C6BF0;
-  --purple-bg: rgba(124, 107, 240, 0.10);
+  /* 语义色彩：青绿（涨/积极）、玫红（跌/消极）、琥珀金（强调）、天蓝（信息）、紫罗兰（主强调） */
+  --green: #0EAE7C;
+  --green-bg: rgba(14, 174, 124, 0.10);
+  --red: #E5456B;
+  --red-bg: rgba(229, 69, 107, 0.10);
+  --gold: #DE9B0B;
+  --gold-bg: rgba(222, 155, 11, 0.12);
+  --blue: #2E6BE0;
+  --blue-bg: rgba(46, 107, 224, 0.10);
+  --purple: #6D5EF2;
+  --purple-bg: rgba(109, 94, 242, 0.10);
 
-  /* 文字三档：全部使用深色系 */
-  --text-primary: #1A2333;
-  --text-secondary: #5B6B82;
-  --text-muted: #93A1B4;
+  /* 文字三档：亮底上用高对比的深色系，带微妙紫调，柔和耐看 */
+  --text-primary: #1C1B24;
+  --text-secondary: #565562;
+  --text-muted: #8C8B97;
 
   --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
 
-  /* 圆角：卡片偏大圆润（14-18px），小元素保持克制 */
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 18px;
-  --radius-2xl: 22px;
+  /* 圆角：卡片大圆润（18-28px），小元素保持克制 */
+  --radius-sm: 10px;
+  --radius-md: 14px;
+  --radius-lg: 18px;
+  --radius-xl: 22px;
+  --radius-2xl: 28px;
 
-  /* 阴影：大而淡的柔和羽化，几乎无重阴影 */
-  --shadow-card: 0 1px 2px rgba(20, 33, 61, 0.03), 0 10px 30px rgba(20, 33, 61, 0.05);
-  --shadow-glow-green: 0 10px 30px rgba(15, 164, 127, 0.12);
-  --shadow-glow-gold: 0 10px 30px rgba(217, 119, 6, 0.12);
-  --shadow-glow-red: 0 10px 30px rgba(229, 72, 77, 0.12);
-  --shadow-glow-purple: 0 18px 40px rgba(124, 107, 240, 0.18);
+  /* 阴影：亮色下用柔和暖灰投影 + 极细内描边，替代深底重投影，扁平面精致 */
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.6) inset, 0 8px 24px rgba(40, 36, 60, 0.06);
+  --shadow-glow-green: 0 12px 32px rgba(14, 174, 124, 0.18);
+  --shadow-glow-gold: 0 12px 32px rgba(222, 155, 11, 0.20);
+  --shadow-glow-red: 0 12px 32px rgba(229, 69, 107, 0.18);
+  --shadow-glow-purple: 0 18px 44px rgba(109, 94, 242, 0.22);
 }
 
 /* ========================================
    全局重置
    ======================================== */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+/* 仅屏幕阅读器可见（视觉隐藏），供无障碍标题使用如 detail.html 的 sr-only */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
 
 html {
   font-size: 16px;
@@ -67,10 +81,11 @@ html {
 body {
   font-family: var(--font-sans);
   background:
-    radial-gradient(1100px 700px at 100% -10%, rgba(124, 107, 240, 0.08), transparent 55%),
-    radial-gradient(920px 620px at -8% 112%, rgba(37, 99, 235, 0.07), transparent 56%),
-    radial-gradient(780px 540px at 55% 0%, rgba(15, 164, 127, 0.05), transparent 55%),
-    linear-gradient(180deg, #F6F8FC 0%, #EEF2F8 100%);
+    radial-gradient(1200px 760px at 100% -12%, rgba(109, 94, 242, 0.10), transparent 56%),
+    radial-gradient(960px 680px at -10% 114%, rgba(46, 107, 224, 0.08), transparent 56%),
+    radial-gradient(820px 560px at 52% 0%, rgba(14, 174, 124, 0.06), transparent 56%),
+    radial-gradient(600px 420px at 80% 40%, rgba(222, 155, 11, 0.05), transparent 60%),
+    linear-gradient(180deg, #FFFFFF 0%, var(--bg-deep) 100%);
   background-color: var(--bg-deep);
   color: var(--text-primary);
   min-height: 100vh;
@@ -78,19 +93,19 @@ body {
   background-attachment: fixed;
 }
 
-/* 细腻噪点（胶片颗粒，避免纯平廉价感） */
+/* 细腻噪点（极低透明度，为纯白基底降低平面感，保留一丝手工质感） */
 body::before {
   content: '';
   position: fixed;
   inset: 0;
-  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.05'/%3E%3C/svg%3E");
   background-size: 180px 180px;
   pointer-events: none;
   z-index: 0;
-  opacity: 0.4;
+  opacity: 0.20;
 }
 
-/* 顶部柔和光晕（细弱，不刺眼） */
+/* 顶部柔和光晕（晨光呼吸感，克制不抢眼） */
 body::after {
   content: '';
   position: fixed;
@@ -99,15 +114,15 @@ body::after {
   transform: translateX(-50%);
   width: 900px;
   height: 640px;
-  background: radial-gradient(ellipse, rgba(124, 107, 240, 0.05) 0%, transparent 68%);
+  background: radial-gradient(ellipse, rgba(109, 94, 242, 0.08) 0%, transparent 68%);
   pointer-events: none;
   z-index: 0;
   animation: aurora-breathe 9s ease-in-out infinite;
 }
 
 @keyframes aurora-breathe {
-  0%, 100% { opacity: 0.6; transform: translateX(-50%) scale(1); }
-  50%      { opacity: 1;   transform: translateX(-49%) scale(1.04); }
+  0%, 100% { opacity: 0.55; transform: translateX(-50%) scale(1); }
+  50%      { opacity: 1;     transform: translateX(-49%) scale(1.04); }
 }
 
 /* ========================================
@@ -150,7 +165,7 @@ body::after {
   font-size: 16px;
   font-weight: 700;
   color: #fff;
-  box-shadow: 0 6px 16px rgba(124, 107, 240, 0.28);
+  box-shadow: 0 6px 18px rgba(109, 94, 242, 0.28);
 }
 
 .brand-text {
@@ -179,11 +194,11 @@ body::after {
 
 .toggle-group {
   display: flex;
-  background: rgba(255, 255, 255, 0.55);
+  background: #FFFFFF;
   border: 1px solid var(--border-glass);
   border-radius: 11px;
   padding: 4px;
-  backdrop-filter: blur(10px);
+  box-shadow: 0 1px 2px rgba(40, 36, 60, 0.04);
 }
 
 .toggle-btn {
@@ -205,9 +220,9 @@ body::after {
 
 .toggle-btn.active {
   color: var(--purple);
-  background: #fff;
+  background: var(--purple-bg);
   font-weight: 600;
-  box-shadow: 0 4px 14px rgba(124, 107, 240, 0.16);
+  box-shadow: 0 4px 16px rgba(109, 94, 242, 0.15) inset, 0 0 0 1px rgba(109, 94, 242, 0.22);
 }
 
 /* 更新时间 */
@@ -224,7 +239,7 @@ body::after {
   height: 6px;
   border-radius: 50%;
   background: var(--green);
-  box-shadow: 0 0 8px rgba(15, 164, 127, 0.55);
+  box-shadow: 0 0 10px rgba(14, 174, 124, 0.55);
   animation: pulse-dot 2s ease-in-out infinite;
 }
 
@@ -237,6 +252,19 @@ body::after {
   font-family: var(--font-mono);
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.refresh-countdown {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border-glass);
+  background: #FFFFFF;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
 }
 
 /* ========================================
@@ -276,21 +304,37 @@ body::after {
   align-items: stretch;
 }
 
-/* 轻盈柔和的数据卡：扁平接近无边框 + 极淡阴影 + 半透明白玻璃 */
+/* 亮色数据卡：纯白卡片 + 暖灰描边 + 大圆角 + 柔和投影 */
 .stat-card {
   background: var(--bg-card);
   border: 1px solid var(--border-glass);
   border-radius: var(--radius-xl);
-  padding: 18px;
-  backdrop-filter: blur(14px) saturate(130%);
-  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  padding: 14px 16px;
   transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease, background 0.24s ease;
   position: relative;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 12px;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: var(--shadow-card);
+}
+
+/* 卡片头部：图标 + 小标题 + 描述文字同一行（压缩整体高度） */
+.stat-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.stat-head .stat-sub {
+  margin-left: auto;
+  margin-top: 0;
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* 顶部细高亮切割线（hover 时浮现，克制） */
@@ -308,12 +352,12 @@ body::after {
   transition: opacity 0.24s ease, transform 0.24s ease;
 }
 
-/* 细腻悬停光晕（柔和不刺眼） */
+/* 细腻悬停光晕（低饱和，柔和） */
 .stat-card::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(420px 240px at 100% 0%, var(--glow, rgba(124,107,240,0.06)), transparent 62%);
+  background: radial-gradient(420px 240px at 100% 0%, var(--glow, rgba(109,94,242,0.06)), transparent 62%);
   opacity: 0;
   transition: opacity 0.24s ease;
   pointer-events: none;
@@ -333,13 +377,13 @@ body::after {
 
 .stat-card:hover::after { opacity: 1; }
 
-/* 各卡片强调色（经 CSS 变量注入，亮色淡透） */
-.stat-card.pnl         { --accent: var(--green);  --glow: rgba(15,164,127,0.10); --icon-bg: var(--green-bg);  --glow-sd: 0 12px 30px rgba(15,164,127,0.10); }
-.stat-card.winrate     { --accent: var(--gold);   --glow: rgba(217,119,6,0.08);  --icon-bg: var(--gold-bg);   --glow-sd: 0 12px 30px rgba(217,119,6,0.10); }
-.stat-card.closed      { --accent: var(--blue);   --glow: rgba(37,99,235,0.10);  --icon-bg: var(--blue-bg);   --glow-sd: 0 12px 30px rgba(37,99,235,0.10); }
-.stat-card.orders      { --accent: var(--purple); --glow: rgba(124,107,240,0.10); --icon-bg: var(--purple-bg); --glow-sd: 0 12px 30px rgba(124,107,240,0.12); }
-.stat-card.commission  { --accent: var(--red);    --glow: rgba(229,72,77,0.08);  --icon-bg: var(--red-bg);    --glow-sd: 0 12px 30px rgba(229,72,77,0.10); }
-.stat-card.positions   { --accent: var(--blue);   --glow: rgba(37,99,235,0.10);  --icon-bg: var(--blue-bg);   --glow-sd: 0 12px 30px rgba(37,99,235,0.10); }
+/* 各卡片强调色（经 CSS 变量注入，低饱和浅色光晕） */
+.stat-card.pnl         { --accent: var(--green);  --glow: rgba(14,174,124,0.08);  --icon-bg: var(--green-bg);  --glow-sd: 0 14px 30px rgba(14,174,124,0.12); }
+.stat-card.winrate     { --accent: var(--gold);   --glow: rgba(222,155,11,0.07); --icon-bg: var(--gold-bg);   --glow-sd: 0 14px 30px rgba(222,155,11,0.12); }
+.stat-card.closed      { --accent: var(--blue);   --glow: rgba(46,107,224,0.08); --icon-bg: var(--blue-bg);   --glow-sd: 0 14px 30px rgba(46,107,224,0.12); }
+.stat-card.orders      { --accent: var(--purple); --glow: rgba(109,94,242,0.08); --icon-bg: var(--purple-bg); --glow-sd: 0 14px 30px rgba(109,94,242,0.14); }
+.stat-card.commission  { --accent: var(--red);    --glow: rgba(229,69,107,0.07); --icon-bg: var(--red-bg);    --glow-sd: 0 14px 30px rgba(229,69,107,0.12); }
+.stat-card.positions   { --accent: var(--blue);   --glow: rgba(46,107,224,0.08); --icon-bg: var(--blue-bg);   --glow-sd: 0 14px 30px rgba(46,107,224,0.12); }
 
 .stat-label {
   font-size: 11px;
@@ -382,30 +426,31 @@ body::after {
   font-size: 13px;
   color: var(--accent, var(--purple));
   background: var(--icon-bg, var(--purple-bg));
+  box-shadow: 0 0 0 1px var(--border-glass) inset;
 }
 
 /* ========================================
    合约账户净资产 · 英雄卡
-   浅品牌色渐变光晕做视觉重心，不厚重实心
+   品牌色渐变光晕 + 高亮描边 + 紫罗兰外晕做视觉重心，最突出的主卡
    ======================================== */
 .equity-card {
   grid-row: span 3;   /* 跨整列突出，与右侧 3 行统计卡等高 */
   background:
-    radial-gradient(130% 150% at 106% -12%, rgba(124, 107, 240, 0.16), transparent 54%),
-    radial-gradient(130% 150% at -8% 114%, rgba(37, 99, 235, 0.12), transparent 56%),
+    radial-gradient(130% 150% at 106% -12%, rgba(109, 94, 242, 0.10), transparent 54%),
+    radial-gradient(130% 150% at -8% 114%, rgba(46, 107, 224, 0.08), transparent 56%),
+    radial-gradient(90% 60% at 20% 110%, rgba(14, 174, 124, 0.06), transparent 60%),
     var(--bg-card);
-  border: 1px solid rgba(124, 107, 240, 0.16);
+  border: 1px solid rgba(109, 94, 242, 0.20);
   border-radius: var(--radius-2xl);
-  padding: 20px 22px 22px;
-  backdrop-filter: blur(14px) saturate(140%);
-  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  padding: 18px 22px;
   display: flex;
   flex-direction: column;
-  justify-content: space-between;
-  gap: 18px;
+  justify-content: flex-start;
+  gap: 8px;
   position: relative;
   overflow: hidden;
   transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease;
+  box-shadow: var(--shadow-glow-purple), var(--shadow-card);
 }
 
 .equity-card::before {
@@ -414,16 +459,17 @@ body::after {
   top: 0;
   left: 0;
   right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, var(--purple), var(--blue), transparent);
-  opacity: 0.6;
+  height: 3px;
+  background: linear-gradient(90deg, var(--purple), var(--blue), var(--green));
+  border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+  opacity: 1;
 }
 
 .equity-card::after {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(520px 300px at 100% 0%, rgba(124, 107, 240, 0.08), transparent 62%);
+  background: radial-gradient(520px 300px at 100% 0%, rgba(109, 94, 242, 0.07), transparent 62%);
   opacity: 0;
   transition: opacity 0.24s ease;
   pointer-events: none;
@@ -431,7 +477,7 @@ body::after {
 
 .equity-card:hover {
   transform: translateY(-3px);
-  border-color: rgba(124, 107, 240, 0.26);
+  border-color: rgba(109, 94, 242, 0.34);
   box-shadow: var(--shadow-glow-purple), var(--shadow-card);
 }
 
@@ -455,7 +501,7 @@ body::after {
   font-size: 14px;
   color: var(--purple);
   background: var(--purple-bg);
-  box-shadow: 0 6px 16px rgba(124, 107, 240, 0.14);
+  box-shadow: 0 6px 18px rgba(109, 94, 242, 0.18);
 }
 
 .equity-value {
@@ -481,9 +527,9 @@ body::after {
 
 /* 净资产卡内的补充信息（可用余额等） */
 .equity-meta {
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px dashed rgba(124, 107, 240, 0.18);
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(109, 94, 242, 0.22);
   display: flex;
   align-items: center;
 }
@@ -524,19 +570,18 @@ body::after {
   border: 1px solid var(--border-glass);
   border-radius: var(--radius-xl);
   padding: 18px;
-  backdrop-filter: blur(14px) saturate(130%);
-  -webkit-backdrop-filter: blur(14px) saturate(130%);
   transition: all 0.24s ease;
   cursor: pointer;
   position: relative;
   overflow: hidden;
+  box-shadow: var(--shadow-card);
 }
 
 .strategy-card::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(480px 260px at 100% 0%, rgba(37, 99, 235, 0.06), transparent 62%);
+  background: radial-gradient(480px 260px at 100% 0%, rgba(46, 107, 224, 0.05), transparent 62%);
   opacity: 0;
   transition: opacity 0.24s ease;
   pointer-events: none;
@@ -573,9 +618,10 @@ body::after {
   font-size: 16px;
 }
 
-.strategy-card[data-strategy="btc_eth"] .strategy-icon { background: var(--green-bg); }
-.strategy-card[data-strategy="new_coin"] .strategy-icon { background: var(--red-bg); }
-.strategy-card[data-strategy="hrs"] .strategy-icon { background: var(--blue-bg); }
+.strategy-card[data-strategy="btc_eth"] .strategy-icon { background: var(--green-bg); box-shadow: 0 0 0 1px var(--border-glass) inset; }
+.strategy-card[data-strategy="btc_eth_aggressive"] .strategy-icon { background: var(--green-bg); box-shadow: 0 0 0 1px var(--border-glass) inset; }
+.strategy-card[data-strategy="new_coin"] .strategy-icon { background: var(--red-bg); box-shadow: 0 0 0 1px var(--border-glass) inset; }
+.strategy-card[data-strategy="hrs"] .strategy-icon { background: var(--blue-bg); box-shadow: 0 0 0 1px var(--border-glass) inset; }
 
 .strategy-name {
   font-size: 15px;
@@ -609,7 +655,7 @@ body::after {
 }
 
 .strategy-card:hover .strategy-metric {
-  background: rgba(255, 255, 255, 0.5);
+  background: rgba(116, 112, 128, 0.05);
   border-color: var(--border-glass);
 }
 
@@ -670,8 +716,7 @@ body::after {
   border: 1px solid var(--border-glass);
   border-radius: var(--radius-xl);
   padding: 20px;
-  backdrop-filter: blur(14px) saturate(130%);
-  -webkit-backdrop-filter: blur(14px) saturate(130%);
+  box-shadow: var(--shadow-card);
 }
 
 .chart-header {
@@ -706,8 +751,8 @@ body::after {
   border-radius: 50%;
 }
 
-.legend-dot.green { background: var(--green); }
-.legend-dot.gold  { background: var(--gold); }
+.legend-dot.green { background: var(--green); box-shadow: 0 0 8px rgba(14,174,124,0.45); }
+.legend-dot.gold  { background: var(--gold); box-shadow: 0 0 8px rgba(222,155,11,0.45); }
 
 .trend-chart-container {
   height: 320px;
@@ -807,3 +852,360 @@ body::after {
     font-size: 26px;
   }
 }
+
+/* ========================================
+   收益模块（净资产卡内）
+   ======================================== */
+.equity-returns {
+  padding-top: 10px;
+  margin-top: 2px;
+  border-top: 1px dashed rgba(109, 94, 242, 0.22);
+}
+
+.returns-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.returns-title {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.yield-toggle-group {
+  display: flex;
+  background: #FFFFFF;
+  border: 1px solid var(--border-glass);
+  border-radius: 9px;
+  padding: 3px;
+  box-shadow: 0 1px 2px rgba(40, 36, 60, 0.04);
+}
+
+.yield-toggle-btn {
+  padding: 4px 12px;
+  font-family: var(--font-sans);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 7px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.yield-toggle-btn:hover { color: var(--text-primary); }
+
+.yield-toggle-btn.active {
+  color: var(--purple);
+  background: var(--purple-bg);
+  font-weight: 600;
+  box-shadow: 0 3px 12px rgba(109, 94, 242, 0.12) inset, 0 0 0 1px rgba(109, 94, 242, 0.22);
+}
+
+.returns-value {
+  font-family: var(--font-mono);
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  margin-bottom: 8px;
+}
+
+.returns-value.positive { color: var(--green); }
+.returns-value.negative { color: var(--red); }
+
+.returns-meta {
+  display: flex;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.returns-meta-item {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.returns-meta-item b {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+
+.returns-hint {
+  font-size: 11px;
+  color: var(--gold);
+}
+
+/* ========================================
+   Tooltip 问号提示（亮色下用深色浮层更醒目，反色于卡片）
+   ======================================== */
+.tooltip {
+  position: relative;
+  cursor: help;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.tooltip::after {
+  content: attr(data-tip);
+  position: absolute;
+  bottom: 150%;
+  left: 50%;
+  transform: translateX(-50%) translateY(4px);
+  background: #1C1B24;
+  color: #F7F6F2;
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 6px 10px;
+  border-radius: 8px;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  z-index: 30;
+  box-shadow: 0 10px 26px rgba(40, 36, 60, 0.22);
+}
+
+.tooltip:hover::after {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+/* ========================================
+   AI 监控面板
+   ======================================== */
+.ai-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);   /* 最近优化建议与月度资金分配并排等分 */
+  gap: 18px;
+  margin-bottom: 24px;
+}
+
+/* 占用比趋势卡：独立成行，横向铺满 */
+.ai-monitor-grid .ai-card-wide {
+  grid-column: 1 / -1;
+}
+
+/* 占用比趋势图容器 */
+.position-util-trend-chart {
+  width: 100%;
+  height: 240px;
+}
+
+.ai-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-xl);
+  padding: 18px;
+  transition: border-color 0.24s ease, box-shadow 0.24s ease;
+  display: flex;
+  flex-direction: column;
+  box-shadow: var(--shadow-card);
+}
+
+.ai-card:hover {
+  border-color: var(--border-active);
+  box-shadow: var(--shadow-card);
+}
+
+.ai-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.ai-card-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.ai-card-body {
+  flex: 1;
+  max-height: 340px;
+  overflow-y: auto;
+  font-size: 13px;
+}
+
+.ai-card-body::-webkit-scrollbar { width: 8px; }
+.ai-card-body::-webkit-scrollbar-thumb { background: var(--bg-glass); border-radius: 8px; }
+
+.ai-empty {
+  color: var(--text-muted);
+  font-size: 13px;
+  padding: 18px 0;
+  text-align: center;
+}
+
+/* 月度资金分配 */
+.allocation-head {
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 4px 4px 10px;
+  border-bottom: 1px dashed var(--border-glass);
+  font-family: var(--font-mono);
+}
+
+.allocation-row {
+  display: grid;
+  grid-template-columns: 1.6fr 0.5fr 0.8fr 1fr 1fr 0.9fr;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 4px;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.allocation-row:last-child { border-bottom: none; }
+
+.allocation-thead {
+  display: grid;
+  grid-template-columns: 1.6fr 0.5fr 0.8fr 1fr 1fr 0.9fr;
+  gap: 8px;
+  align-items: center;
+  padding: 6px 4px;
+  border-bottom: 1px solid var(--border-glass);
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-family: var(--font-mono);
+}
+
+.allocation-name { font-weight: 600; color: var(--text-primary); }
+.allocation-rank { font-size: 11px; color: var(--text-muted); }
+
+.allocation-ratio { font-size: 12px; color: var(--text-secondary); }
+.allocation-amount { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+.allocation-occupied { font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+
+.allocation-return { font-size: 12px; font-weight: 600; }
+.allocation-return.positive { color: var(--green); }
+.allocation-return.negative { color: var(--red); }
+
+/* 最近优化建议 */
+.suggestion-row {
+  padding: 10px 4px;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.suggestion-row:last-child { border-bottom: none; }
+
+.suggestion-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 4px;
+}
+
+.suggestion-name { font-weight: 600; color: var(--text-primary); }
+.suggestion-time { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+
+.suggestion-adjustments {
+  font-size: 12px;
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  margin-bottom: 6px;
+}
+
+.suggestion-foot { text-align: right; }
+
+.tag {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+}
+
+.tag-applied  { color: var(--green); background: var(--green-bg); }
+.tag-pending  { color: var(--gold); background: var(--gold-bg); }
+.tag-rejected { color: var(--red); background: var(--red-bg); }
+.tag-skip     { color: var(--blue); background: var(--blue-bg); }
+
+/* ========================================
+   风控监控
+   ======================================== */
+.risk-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 18px;
+  margin-bottom: 14px;
+}
+
+.risk-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-glass);
+  border-radius: var(--radius-xl);
+  padding: 18px;
+  transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  box-shadow: var(--shadow-card);
+}
+
+.risk-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--border-active);
+  box-shadow: var(--shadow-card);
+}
+
+.risk-value {
+  font-family: var(--font-mono);
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.1;
+  color: var(--text-primary);
+}
+
+.risk-value.positive { color: var(--green); }
+.risk-value.negative { color: var(--red); }
+
+/* 占用率进度条 */
+.progress-track {
+  height: 8px;
+  background: var(--bg-glass);
+  border: 1px solid var(--border-glass);
+  border-radius: 20px;
+  overflow: hidden;
+}
+
+.progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: 20px;
+  transition: width 0.4s ease, background 0.3s ease;
+}
+
+.progress-bar.bar-normal { background: linear-gradient(90deg, var(--green), #0B8A63); }
+.progress-bar.bar-warn   { background: linear-gradient(90deg, var(--gold), #B97807); }
+.progress-bar.bar-danger { background: linear-gradient(90deg, var(--red), #C33052); }
+
+/* 风控预警区 */
+.risk-warnings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.warn-item {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 7px 14px;
+  border-radius: 10px;
+}
+
+.warn-danger { color: var(--red); background: var(--red-bg); }
+.warn-warn   { color: var(--gold); background: var(--gold-bg); }

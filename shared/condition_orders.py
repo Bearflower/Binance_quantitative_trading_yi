@@ -43,6 +43,11 @@ _CREATE_INDEX_STRATEGY_DDL = """
 CREATE INDEX IF NOT EXISTS idx_co_strategy ON condition_orders(strategy_name)
 """
 
+# B5 修复：联合索引，孤儿单清理高频查询 (strategy_name, status) 组合
+_CREATE_INDEX_STRATEGY_STATUS_DDL = """
+CREATE INDEX IF NOT EXISTS idx_co_strategy_status ON condition_orders(strategy_name, status)
+"""
+
 # 唯一约束：避免同一策略重复记录同一条件单
 # 仅对 OPEN 状态的条件单做唯一约束，CANCELED/EXECUTED 允许重复
 _CREATE_UNIQUE_ALGO_DDL = """
@@ -60,6 +65,8 @@ async def ensure_table(db):
         await db.execute_ddl(_CREATE_TABLE_DDL)
         await db.execute_ddl(_CREATE_INDEX_STATUS_DDL)
         await db.execute_ddl(_CREATE_INDEX_STRATEGY_DDL)
+        # B5 修复：高频查询联合索引
+        await db.execute_ddl(_CREATE_INDEX_STRATEGY_STATUS_DDL)
         await db.execute_ddl(_CREATE_UNIQUE_ALGO_DDL)
         await db.execute_ddl(_CREATE_UNIQUE_ORDER_DDL)
         logger.info("condition_orders 表已确保存在")

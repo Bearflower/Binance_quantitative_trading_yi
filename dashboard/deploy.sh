@@ -21,6 +21,15 @@ echo "============================================="
 # 步骤 1：打包
 echo "📦 步骤 1/5: 打包Dashboard..."
 
+# 生成风控配置（策略 config 为源 → 自动汇总 account_ratio_caps 到 risk.yaml）
+# 权威源：各策略 config.yaml；生成物：dashboard/backend/config/risk.yaml，看板只读生成物
+echo "  生成风控配置（自动从各策略 config 汇总）..."
+if python3 "$SCRIPT_DIR/backend/scripts/generate_risk_config.py" "$PROJECT_ROOT"; then
+    echo "  ✅ 风控配置已生成"
+else
+    echo "  ⚠️  风控配置生成失败，将继续使用现有 risk.yaml"
+fi
+
 # 创建临时目录
 TEMP_DIR="/tmp/dashboard_deploy_$$"
 mkdir -p "$TEMP_DIR"

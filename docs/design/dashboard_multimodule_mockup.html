@@ -1,0 +1,919 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Binance 量化交易数据看板 · 多模块概念设计稿（自包含静态预览）">
+  <title>QuantView · 多模块看板设计稿</title>
+
+  <!-- 字体：与生产一致，无网络时自动回退到系统字体 -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <style>
+  /* ========================================
+     设计稿 CSS 变量（与本项目亮色主题对齐）
+     柔和亮色 · 晨雾蓝灰 × 青绿强调 · 玻璃扁平
+     ======================================== */
+  :root {
+    --bg-deep: #EFF3FA;
+    --bg-card: rgba(255, 255, 255, 0.72);
+    --bg-card-hover: rgba(255, 255, 255, 0.92);
+    --bg-glass: rgba(15, 23, 42, 0.04);
+    --border-glass: rgba(15, 23, 42, 0.06);
+    --border-active: rgba(15, 23, 42, 0.14);
+
+    --green: #0FA47F;    --green-bg: rgba(15,164,127,0.10);
+    --red: #E5484D;      --red-bg: rgba(229,72,77,0.10);
+    --gold: #D97706;     --gold-bg: rgba(217,119,6,0.10);
+    --blue: #2563EB;     --blue-bg: rgba(37,99,235,0.10);
+    --purple: #7C6BF0;   --purple-bg: rgba(124,107,240,0.10);
+
+    --text-primary: #1A2333;
+    --text-secondary: #5B6B82;
+    --text-muted: #93A1B4;
+
+    --font-sans: 'DM Sans', -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+
+    --radius-sm: 8px;
+    --radius-md: 12px;
+    --radius-xl: 18px;
+    --radius-2xl: 22px;
+
+    --shadow-card: 0 1px 2px rgba(20,33,61,0.03), 0 10px 30px rgba(20,33,61,0.05);
+  }
+
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html { font-size: 16px; -webkit-font-smoothing: antialiased; }
+  body {
+    font-family: var(--font-sans);
+    background:
+      radial-gradient(1100px 700px at 100% -10%, rgba(124,107,240,0.08), transparent 55%),
+      radial-gradient(920px 620px at -8% 112%, rgba(37,99,235,0.07), transparent 56%),
+      radial-gradient(780px 540px at 55% 0%, rgba(15,164,127,0.05), transparent 55%),
+      linear-gradient(180deg, #F6F8FC 0%, #EEF2F8 100%);
+    background-color: var(--bg-deep);
+    background-attachment: fixed;
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.04'/%3E%3C/svg%3E");
+    background-size: 180px 180px; pointer-events: none; z-index: 0; opacity: 0.4;
+  }
+
+  .page {
+    position: relative; z-index: 1;
+    max-width: 1400px; margin: 0 auto; padding: 0 24px 40px;
+  }
+
+  /* ---- 顶部导航 ---- */
+  .navbar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 0; border-bottom: 1px solid var(--border-glass); margin-bottom: 26px;
+  }
+  .navbar-brand { display: flex; align-items: center; gap: 12px; }
+  .brand-icon {
+    width: 34px; height: 34px; border-radius: 10px;
+    background: linear-gradient(135deg, var(--purple), var(--blue));
+    display: flex; align-items: center; justify-content: center;
+    color: #fff; font-weight: 700; font-size: 16px;
+    box-shadow: 0 6px 16px rgba(124,107,240,0.28);
+  }
+  .brand-text { font-size: 19px; font-weight: 600; letter-spacing: -0.02em; }
+  .brand-badge {
+    font-size: 11px; font-weight: 500; color: var(--text-muted);
+    background: var(--bg-glass); border: 1px solid var(--border-glass);
+    padding: 2px 10px; border-radius: 20px; margin-left: 6px;
+  }
+  .navbar-actions { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .toggle-group {
+    display: flex; gap: 2px; padding: 4px;
+    background: rgba(255,255,255,0.55); border: 1px solid var(--border-glass);
+    border-radius: 11px; backdrop-filter: blur(10px);
+  }
+  .toggle-btn {
+    padding: 7px 16px; font-family: var(--font-sans); font-size: 13px; font-weight: 500;
+    color: var(--text-secondary); background: transparent; border: none;
+    border-radius: 8px; cursor: pointer; transition: all .2s ease;
+  }
+  .toggle-btn:hover { color: var(--text-primary); }
+  .toggle-btn.active {
+    color: var(--purple); background: #fff; font-weight: 600;
+    box-shadow: 0 4px 14px rgba(124,107,240,0.16);
+  }
+  .toggle-btn.sm { padding: 5px 12px; font-size: 12px; }
+  .update-time { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text-muted); }
+  .update-time .dot {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--green);
+    box-shadow: 0 0 8px rgba(15,164,127,0.55); animation: pulse-dot 2s ease-in-out infinite;
+  }
+  @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .3; } }
+  .update-time .value { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); }
+
+  /* ---- 区块标题 ---- */
+  .section-header { display: flex; align-items: center; justify-content: space-between; margin: 26px 0 14px; }
+  .section-header h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.02em; }
+  .section-header .tag {
+    font-size: 11px; font-weight: 500; color: var(--purple);
+    background: var(--purple-bg); border: 1px solid rgba(124,107,240,0.16);
+    padding: 2px 9px; border-radius: 20px;
+  }
+  .section-header .sub { font-size: 12px; color: var(--text-muted); }
+
+  /* ---- 玻璃数据卡（通用） ---- */
+  .glass-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-xl);
+    padding: 18px;
+    backdrop-filter: blur(14px) saturate(130%);
+    -webkit-backdrop-filter: blur(14px) saturate(130%);
+    transition: transform .24s ease, border-color .24s ease, box-shadow .24s ease, background .24s ease;
+    position: relative; overflow: hidden;
+  }
+  .glass-card:hover {
+    transform: translateY(-3px); border-color: var(--border-active);
+    background: var(--bg-card-hover); box-shadow: var(--shadow-card);
+  }
+  .stat-icon {
+    width: 32px; height: 32px; border-radius: 9px; font-size: 13px;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--accent, var(--purple)); background: var(--icon-bg, var(--purple-bg));
+  }
+  .stat-label { font-size: 11px; font-weight: 600; color: var(--text-muted); text-transform: uppercase; letter-spacing: .08em; }
+  .stat-value { font-family: var(--font-mono); font-size: 24px; font-weight: 700; letter-spacing: -.02em; line-height: 1.08; }
+  .stat-value.positive { color: var(--green); }
+  .stat-value.negative { color: var(--red); }
+  .stat-value.red { color: var(--red); }
+  .stat-value.gold { color: var(--gold); }
+  .stat-value.blue { color: var(--blue); }
+  .stat-value.purple { color: var(--purple); }
+  .stat-sub { font-size: 12px; color: var(--text-muted); margin-top: 4px; font-family: var(--font-mono); }
+
+  /* 强调色注入 */
+  .tone-green { --accent: var(--green);  --icon-bg: var(--green-bg); }
+  .tone-gold  { --accent: var(--gold);   --icon-bg: var(--gold-bg); }
+  .tone-blue  { --accent: var(--blue);   --icon-bg: var(--blue-bg); }
+  .tone-purple{ --accent: var(--purple); --icon-bg: var(--purple-bg); }
+  .tone-red   { --accent: var(--red);    --icon-bg: var(--red-bg); }
+
+  /* ========================================
+     模块 2 · 收益模块
+     ======================================== */
+  .earnings-grid {
+    display: grid; grid-template-columns: 1.35fr 2.15fr; gap: 18px;
+  }
+  /* 账户总资产 · 英雄卡 */
+  .equity-card {
+    background:
+      radial-gradient(130% 150% at 106% -12%, rgba(124,107,240,0.16), transparent 54%),
+      radial-gradient(130% 150% at -8% 114%, rgba(37,99,235,0.12), transparent 56%),
+      var(--bg-card);
+    border: 1px solid rgba(124,107,240,0.16);
+    border-radius: var(--radius-2xl);
+    padding: 20px 22px 22px;
+    backdrop-filter: blur(14px) saturate(140%);
+    display: flex; flex-direction: column; justify-content: space-between; gap: 16px;
+    position: relative; overflow: hidden;
+  }
+  .equity-card::before {
+    content: ''; position: absolute; top:0; left:0; right:0; height:2px;
+    background: linear-gradient(90deg, var(--purple), var(--blue), transparent);
+    opacity: .6;
+  }
+  .equity-top { display: flex; align-items: center; justify-content: space-between; }
+  .equity-card .stat-icon { width: 36px; height: 36px; font-size: 14px; color: var(--purple); background: var(--purple-bg); }
+  .equity-value { font-family: var(--font-mono); font-size: 40px; font-weight: 700; letter-spacing: -.02em; line-height: 1.06; margin-top: 6px; }
+  .equity-sub { font-size: 12px; color: var(--text-muted); margin-top: 3px; font-family: var(--font-mono); }
+  .equity-meta {
+    margin-top: 16px; padding-top: 14px; border-top: 1px dashed rgba(124,107,240,0.18);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .meta-item { font-size: 13px; color: var(--text-secondary); font-weight: 600; font-family: var(--font-mono); }
+  .snapshot-tag {
+    font-size: 10px; color: var(--blue); background: var(--blue-bg);
+    border: 1px solid rgba(37,99,235,0.14); padding: 2px 8px; border-radius: 20px; font-weight: 600;
+  }
+
+  /* 右侧 6 张统计卡 */
+  .earnings-stats {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px;
+  }
+  .earnings-stats .stat-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-xl);
+    padding: 18px;
+    backdrop-filter: blur(14px) saturate(130%);
+    display: flex; flex-direction: column; gap: 12px; justify-content: space-between;
+    position: relative; overflow: hidden;
+    transition: transform .24s ease, border-color .24s ease, box-shadow .24s ease, background .24s ease;
+  }
+  .earnings-stats .stat-card:hover {
+    transform: translateY(-3px); border-color: var(--border-active);
+    background: var(--bg-card-hover); box-shadow: var(--shadow-card);
+  }
+  /* 收益率卡：顶部小切换 */
+  .rate-card .rate-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .rate-line { display: flex; align-items: baseline; gap: 8px; margin-top: 4px; }
+  .rate-line .stat-value { font-size: 28px; }
+  .rate-meta { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border-glass); display: flex; flex-direction: column; gap: 4px; }
+  .rate-meta .rm { display: flex; justify-content: space-between; font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+  .rate-meta .rm b { color: var(--text-secondary); font-weight: 600; }
+
+  .fmt-green { color: var(--green); }
+  .fmt-red { color: var(--red); }
+
+  /* ========================================
+     模块 3 · 策略概览（增强 5 指标）
+     ======================================== */
+  .strategies-grid {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 18px;
+  }
+  .strategy-card {
+    background: var(--bg-card);
+    border: 1px solid var(--border-glass);
+    border-radius: var(--radius-xl);
+    padding: 18px;
+    backdrop-filter: blur(14px) saturate(130%);
+    position: relative; overflow: hidden; cursor: pointer;
+    transition: all .24s ease;
+  }
+  .strategy-card:hover { border-color: var(--border-active); transform: translateY(-3px); box-shadow: var(--shadow-card); }
+  .strategy-card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  .strategy-info { display: flex; align-items: center; gap: 10px; }
+  .strategy-icon { width: 36px; height: 36px; border-radius: 10px; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+  .sc-btc    .strategy-icon { background: var(--green-bg); }
+  .sc-newcoin.strategy-icon { background: var(--red-bg); }
+  .sc-hrs    .strategy-icon { background: var(--blue-bg); }
+  .sc-grid   .strategy-icon { background: var(--gold-bg); }
+  .strategy-name { font-size: 15px; font-weight: 600; }
+  .strategy-status { font-size: 11px; color: var(--green); background: var(--green-bg); padding: 3px 10px; border-radius: 20px; font-weight: 500; }
+  .strategy-status.paused { color: var(--text-secondary); background: var(--bg-glass); }
+  /* 5 指标 grid */
+  .strategy-metrics {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; margin-bottom: 12px;
+  }
+  .strategy-metric {
+    text-align: center; padding: 9px 2px;
+    background: var(--bg-glass); border: 1px solid transparent; border-radius: var(--radius-sm);
+  }
+  .strategy-card:hover .strategy-metric { background: rgba(255,255,255,0.5); border-color: var(--border-glass); }
+  .strategy-metric .label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .03em; margin-bottom: 3px; white-space: nowrap; }
+  .strategy-metric .value { font-family: var(--font-mono); font-size: 14px; font-weight: 600; }
+  .strategy-metric .value.positive { color: var(--green); }
+  .strategy-metric .value.negative { color: var(--red); }
+  .strategy-footer { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; border-top: 1px solid var(--border-glass); }
+  .strategy-detail-link { font-size: 13px; font-weight: 500; color: var(--text-secondary); text-decoration: none; display: flex; align-items: center; gap: 6px; }
+  .strategy-detail-link:hover { color: var(--purple); }
+  .strategy-detail-link .arrow { transition: transform .2s ease; }
+  .strategy-detail-link:hover .arrow { transform: translateX(4px); }
+
+  /* ========================================
+     模块 4 · AI 监控（三栏）
+     ======================================== */
+  .ai-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 18px; }
+  .ai-panel { display: flex; flex-direction: column; }
+  .ai-panel-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .ai-panel-title .p-icon { width: 24px; height: 24px; border-radius: 7px; display: flex; align-items: center; justify-content: center; font-size: 12px; color: var(--purple); background: var(--purple-bg); }
+  .ai-panel-body { display: flex; flex-direction: column; gap: 8px; flex: 1; }
+
+  .mini-row {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--bg-glass); border: 1px solid transparent; border-radius: var(--radius-md);
+    padding: 10px 12px;
+  }
+  .mini-row .row-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+  .mini-row .row-title { font-size: 13px; font-weight: 600; }
+  .mini-row .row-sub { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+  .mini-row .row-side { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+  .chip {
+    font-size: 11px; font-weight: 500; padding: 3px 9px; border-radius: 20px; white-space: nowrap;
+  }
+  .chip.green { color: var(--green); background: var(--green-bg); }
+  .chip.gold  { color: var(--gold);  background: var(--gold-bg); }
+  .chip.red   { color: var(--red);   background: var(--red-bg); }
+  .chip.gray  { color: var(--text-secondary); background: var(--bg-glass); }
+  .chip.blue  { color: var(--blue);  background: var(--blue-bg); }
+
+  .param-diff { font-family: var(--font-mono); font-size: 12px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center; }
+  .param-diff .arrow { color: var(--text-muted); }
+  .param-diff .up { color: var(--gold); font-weight: 600; }
+  .param-diff .down { color: var(--blue); font-weight: 600; }
+  .param-up { color: var(--green); }
+
+  /* 月度资金分配 · 横向比例条 */
+  .alloc-bar { height: 6px; border-radius: 6px; background: var(--bg-glass); overflow: hidden; margin-top: 5px; }
+  .alloc-bar > i { display: block; height: 100%; border-radius: 6px; }
+  .alloc-head { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+  .alloc-rank { width: 20px; height: 20px; border-radius: 6px; background: var(--bg-glass); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; color: var(--text-secondary); font-family: var(--font-mono); }
+  .alloc-rank.rank1 { background: var(--gold); color: #fff; }
+  .alloc-rank.rank2 { background: var(--blue); color: #fff; }
+
+  /* 月度资金分配条样式 */
+  .alloc-bar { height: 4px; border-radius: 4px; background: var(--bg-glass); overflow: hidden; margin-top: 10px; }
+  .alloc-bar > i { display: block; height: 100%; border-radius: 4px; }
+  .alloc-head { display: flex; align-items: center; justify-content: space-between; margin-top: 6px; font-size: 11px; font-family: var(--font-mono); color: var(--text-secondary); }
+
+  /* ========================================
+     模块 5 · 风控
+     ======================================== */
+  .risk-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px; margin-bottom: 18px; }
+  .risk-num { display: flex; flex-direction: column; gap: 12px; justify-content: space-between; }
+  .risk-num .stat-value { font-size: 26px; }
+  .risk-bars { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; margin-bottom: 18px; }
+  .bar-card { display: flex; flex-direction: column; gap: 12px; }
+
+  /* 数据归口 · 问号提示 */
+  .label-row { display: flex; align-items: center; gap: 6px; }
+  .hint-tip { position: relative; cursor: help; }
+  .hint-tip .q { display: inline-flex; width: 15px; height: 15px; border-radius: 50%; background: var(--bg-glass); border: 1px solid rgba(91,107,130,0.35); color: var(--text-muted); font-size: 10px; font-weight: 700; align-items: center; justify-content: center; line-height: 1; }
+  .hint-tip .tip {
+    display: none; position: absolute; left: 0; top: calc(100% + 8px); z-index: 20;
+    min-width: 210px; max-width: 260px; background: #1B2333; color: #EAF2FA;
+    border: 1px solid rgba(140,160,190,0.18); border-radius: 10px; padding: 10px 12px;
+    font-size: 11px; line-height: 1.55; font-weight: 400; white-space: normal;
+    box-shadow: 0 12px 32px rgba(15,23,42,0.28);
+  }
+  .hint-tip:hover .tip, .hint-tip:focus .tip { display: block; }
+  .rin-note { margin-top: 10px; padding-top: 10px; border-top: 1px dashed rgba(91,107,130,0.22); font-size: 11px; color: var(--text-muted); line-height: 1.6; font-family: var(--font-mono); }
+  .ai-panel-foot { margin-top: 10px; padding-top: 10px; border-top: 1px dashed rgba(91,107,130,0.18); font-size: 11px; color: var(--text-muted); line-height: 1.5; }
+
+  .bar-head { display: flex; align-items: center; justify-content: space-between; font-size: 12px; color: var(--text-secondary); }
+  .bar-head .pct { font-family: var(--font-mono); font-size: 20px; font-weight: 700; }
+  .pct.green { color: var(--green); }
+  .pct.gold  { color: var(--gold); }
+  .pct.red   { color: var(--red); }
+  .progress { height: 10px; border-radius: 10px; background: var(--bg-glass); overflow: hidden; position: relative; }
+  .progress > i { display: block; height: 100%; border-radius: 10px; transition: width .5s ease; }
+  .progress-green > i { background: linear-gradient(90deg, #0FA47F, #37C29B); }
+  .progress-gold  > i { background: linear-gradient(90deg, #D97706, #F59E0B); }
+  .progress-red   > i { background: linear-gradient(90deg, #E5484D, #F0656A); }
+  .progress .threshold { position: absolute; top: -2px; bottom: -2px; width: 2px; background: var(--red); opacity: .8; }
+  .bar-foot { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); }
+  .bar-foot .cap { color: var(--red); font-weight: 600; }
+
+  /* 提醒区 */
+  .risk-alert {
+    display: flex; align-items: flex-start; gap: 12px;
+    border-radius: var(--radius-xl); padding: 14px 16px;
+    font-size: 13px; border: 1px solid;
+    margin-bottom: 10px;
+  }
+  .risk-alert .a-ico { font-size: 15px; flex-shrink: 0; }
+  .risk-alert .a-body { display: flex; flex-direction: column; gap: 2px; }
+  .risk-alert .a-title { font-weight: 600; }
+  .risk-alert .a-desc { color: var(--text-secondary); font-size: 12px; }
+  .risk-alert.warn  { color: var(--gold); background: var(--gold-bg); border-color: rgba(217,119,6,0.22); }
+  .risk-alert.crit { color: var(--red); background: var(--red-bg); border-color: rgba(229,72,77,0.24); }
+  .risk-alert.ok   { color: var(--green); background: var(--green-bg); border-color: rgba(15,164,127,0.20); }
+
+  /* ========================================
+     模块 6 · 收益趋势图 + 页脚
+     ======================================== */
+  .chart-section { margin-bottom: 18px; }
+  .chart-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+  .chart-title { font-size: 16px; font-weight: 600; }
+  .chart-legend { display: flex; gap: 16px; }
+  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-secondary); }
+  .legend-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .legend-dot.green { background: var(--green); }
+  .legend-dot.gold { background: var(--gold); }
+  /* 概念占位折线（纯 CSS 示意，非真实图表） */
+  .chart-svg { width: 100%; height: 320px; display: block; }
+
+  .footer { text-align: center; padding: 26px 0 14px; border-top: 1px solid var(--border-glass); margin-top: 26px; }
+  .footer p { font-size: 12px; color: var(--text-muted); }
+  .footer .design-note { font-size: 11px; color: var(--text-muted); margin-top: 4px; opacity: .8; }
+
+  /* ========================================
+     响应式：980 → 2 列，620 → 1 列
+     ======================================== */
+  @media (max-width: 980px) {
+    .earnings-grid { grid-template-columns: 1fr; }
+    .risk-grid { grid-template-columns: repeat(2, 1fr); }
+    .risk-bars { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 620px) {
+    .earnings-stats { grid-template-columns: 1fr 1fr; }
+    .risk-grid { grid-template-columns: 1fr; }
+    .strategy-metrics { grid-template-columns: repeat(2, 1fr); }
+    .stat-value { font-size: 21px; }
+    .equity-value { font-size: 30px; }
+    .navbar-actions { flex-wrap: wrap; }
+    .rate-line .stat-value { font-size: 24px; }
+  }
+
+  /* 入场动画 */
+  .animate-in { opacity: 0; transform: translateY(10px); animation: fade-up .4s cubic-bezier(.22,.61,.36,1) forwards; }
+  .animate-in:nth-child(1) { animation-delay: .03s; }
+  .animate-in:nth-child(2) { animation-delay: .07s; }
+  .animate-in:nth-child(3) { animation-delay: .11s; }
+  .animate-in:nth-child(4) { animation-delay: .15s; }
+  @keyframes fade-up { to { opacity: 1; transform: translateY(0); } }
+  @media (prefers-reduced-motion: reduce) {
+    .animate-in { animation: none; opacity: 1; transform: none; }
+    .update-time .dot { animation: none; }
+  }
+  </style>
+</head>
+<body>
+  <div class="page">
+
+    <!-- ===== 顶部导航 ===== -->
+    <header class="navbar">
+      <div class="navbar-brand">
+        <div class="brand-icon">Q</div>
+        <span class="brand-text">QuantView</span>
+        <span class="brand-badge">v2.1 · 设计稿</span>
+      </div>
+      <div class="navbar-actions">
+        <div class="toggle-group">
+          <button class="toggle-btn active">日</button>
+          <button class="toggle-btn">周</button>
+          <button class="toggle-btn">月</button>
+        </div>
+        <div class="update-time">
+          <span class="dot"></span>
+          <span>最后更新</span>
+          <span class="value">10s 前</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- ===== 模块 2 · 收益模块 ===== -->
+    <div class="section-header" style="margin-top: 6px;">
+      <h2>收益概览</h2>
+      <span class="sub">保证金账户 · 统一币种核算</span>
+    </div>
+
+    <div class="earnings-grid">
+      <!-- 账户总资产 · 英雄卡 -->
+      <div class="equity-card animate-in">
+        <div class="equity-top">
+          <div class="stat-icon">◆</div>
+          <span class="snapshot-tag">实时快照</span>
+        </div>
+        <div class="equity-info">
+          <div class="stat-label">账户总资产</div>
+          <div class="equity-value">525.37</div>
+          <div class="equity-sub">USDT</div>
+        </div>
+        <div class="equity-meta">
+          <span class="meta-item">可用余额 448.40 USDT</span>
+          <span class="equity-sub">更新于 15:32:08</span>
+        </div>
+      </div>
+
+      <!-- 右侧统计卡：收益率 / 总盈亏 / 胜率 / 平仓 / 委托 / 佣金 -->
+      <div class="earnings-stats">
+        <!-- 收益率（可交互切换日/周/月） -->
+        <div class="stat-card rate-card tone-green animate-in">
+          <div class="rate-row">
+            <div class="stat-icon">↗</div>
+            <div class="toggle-group" id="rate-toggle">
+              <button class="toggle-btn sm active" data-rate="day">日</button>
+              <button class="toggle-btn sm" data-rate="week">周</button>
+              <button class="toggle-btn sm" data-rate="month">月</button>
+            </div>
+          </div>
+          <div>
+            <div class="stat-label">收益率</div>
+            <div class="rate-line">
+              <span class="stat-value positive" id="rate-value">+0.68%</span>
+            </div>
+          </div>
+          <div class="rate-meta">
+            <div class="rm"><span>期初净资产</span><b id="rate-initial">624.64</b></div>
+            <div class="rm"><span>本期净盈亏</span><b class="fmt-green" id="rate-npnl">+4.24</b></div>
+          </div>
+        </div>
+
+        <div class="stat-card tone-green animate-in">
+          <div class="stat-icon">◆</div>
+          <div class="stat-label">总盈亏</div>
+          <div class="stat-value positive">+46.52</div>
+          <div class="stat-sub">USDT</div>
+        </div>
+
+        <div class="stat-card tone-gold animate-in">
+          <div class="stat-icon">✚</div>
+          <div class="stat-label">总胜率</div>
+          <div class="stat-value gold">61.3%</div>
+          <div class="stat-sub">近 30 日有效</div>
+        </div>
+
+        <div class="stat-card tone-blue animate-in">
+          <div class="stat-icon">▨</div>
+          <div class="stat-label">总平仓数</div>
+          <div class="stat-value blue">128</div>
+          <div class="stat-sub">累计平仓</div>
+        </div>
+
+        <div class="stat-card tone-purple animate-in">
+          <div class="stat-icon">▤</div>
+          <div class="stat-label">总委托数</div>
+          <div class="stat-value purple">364</div>
+          <div class="stat-sub">含未成交</div>
+        </div>
+
+        <div class="stat-card tone-red animate-in">
+          <div class="stat-icon">§</div>
+          <div class="stat-label">总佣金</div>
+          <div class="stat-value red">-18.40</div>
+          <div class="stat-sub">USDT（手续费支出）</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 模块 3 · 策略概览（4 策略 × 5 指标） ===== -->
+    <div class="section-header">
+      <h2>策略概览</h2>
+      <span class="sub">持仓量 / 保证金为当前实时值</span>
+    </div>
+
+    <div class="strategies-grid">
+      <!-- MTPCS 策略 -->
+      <div class="strategy-card sc-btc animate-in">
+        <div class="strategy-card-header">
+          <div class="strategy-info">
+            <div class="strategy-icon">📈</div>
+            <div><div class="strategy-name">MTPCS 策略</div></div>
+          </div>
+          <span class="strategy-status">● 运行中</span>
+        </div>
+        <div class="strategy-metrics">
+          <div class="strategy-metric"><div class="label">盈亏</div><div class="value positive">+32.10</div></div>
+          <div class="strategy-metric"><div class="label">胜率</div><div class="value">64.2%</div></div>
+          <div class="strategy-metric"><div class="label">委托数</div><div class="value">152</div></div>
+          <div class="strategy-metric"><div class="label">持仓量</div><div class="value">3 单</div></div>
+          <div class="strategy-metric"><div class="label">保证金</div><div class="value">129.60</div></div>
+        </div>
+        <div class="strategy-footer">
+          <a href="#" class="strategy-detail-link">查看详情 <span class="arrow">→</span></a>
+        </div>
+      </div>
+
+      <!-- 新币做空 -->
+      <div class="strategy-card sc-newcoin animate-in">
+        <div class="strategy-card-header">
+          <div class="strategy-info">
+            <div class="strategy-icon">📉</div>
+            <div><div class="strategy-name">新币做空</div></div>
+          </div>
+          <span class="strategy-status">● 运行中</span>
+        </div>
+        <div class="strategy-metrics">
+          <div class="strategy-metric"><div class="label">盈亏</div><div class="value positive">+6.84</div></div>
+          <div class="strategy-metric"><div class="label">胜率</div><div class="value">55.6%</div></div>
+          <div class="strategy-metric"><div class="label">委托数</div><div class="value">96</div></div>
+          <div class="strategy-metric"><div class="label">持仓量</div><div class="value">2 单</div></div>
+          <div class="strategy-metric"><div class="label">保证金</div><div class="value">60.20</div></div>
+        </div>
+        <div class="strategy-footer">
+          <a href="#" class="strategy-detail-link">查看详情 <span class="arrow">→</span></a>
+        </div>
+      </div>
+
+      <!-- HRS 混合反转 -->
+      <div class="strategy-card sc-hrs animate-in">
+        <div class="strategy-card-header">
+          <div class="strategy-info">
+            <div class="strategy-icon">🔄</div>
+            <div><div class="strategy-name">HRS 混合反转</div></div>
+          </div>
+          <span class="strategy-status">● 运行中</span>
+        </div>
+        <div class="strategy-metrics">
+          <div class="strategy-metric"><div class="label">盈亏</div><div class="value negative">-3.46</div></div>
+          <div class="strategy-metric"><div class="label">胜率</div><div class="value">48.9%</div></div>
+          <div class="strategy-metric"><div class="label">委托数</div><div class="value">77</div></div>
+          <div class="strategy-metric"><div class="label">持仓量</div><div class="value">2 单</div></div>
+          <div class="strategy-metric"><div class="label">保证金</div><div class="value">50.70</div></div>
+        </div>
+        <div class="strategy-footer">
+          <a href="#" class="strategy-detail-link">查看详情 <span class="arrow">→</span></a>
+        </div>
+      </div>
+
+      <!-- 网格交易 -->
+      <div class="strategy-card sc-grid animate-in">
+        <div class="strategy-card-header">
+          <div class="strategy-info">
+            <div class="strategy-icon">📊</div>
+            <div><div class="strategy-name">网格交易</div></div>
+          </div>
+          <span class="strategy-status paused">○ 已暂停</span>
+        </div>
+        <div class="strategy-metrics">
+          <div class="strategy-metric"><div class="label">盈亏</div><div class="value positive">+11.04</div></div>
+          <div class="strategy-metric"><div class="label">胜率</div><div class="value">70.0%</div></div>
+          <div class="strategy-metric"><div class="label">委托数</div><div class="value">39</div></div>
+          <div class="strategy-metric"><div class="label">持仓量</div><div class="value">0 单</div></div>
+          <div class="strategy-metric"><div class="label">保证金</div><div class="value">0.00</div></div>
+        </div>
+        <div class="strategy-footer">
+          <a href="#" class="strategy-detail-link">查看详情 <span class="arrow">→</span></a>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 模块 4 · AI 监控（新增板块） ===== -->
+    <div class="section-header">
+      <h2>AI 监控</h2>
+      <span class="tag">AI监控</span>
+    </div>
+
+    <div class="ai-grid">
+      <!-- ① 周度调优执行 -->
+      <div class="glass-card ai-panel animate-in">
+        <div class="ai-panel-title"><span class="p-icon">⟳</span>周度调优执行</div>
+        <div class="ai-panel-body">
+          <div class="mini-row">
+            <div class="row-main">
+              <div class="row-title">MTPCS 策略 · 第 6 期</div>
+              <div class="row-sub">2026-09-07 02:00 · AI tuner</div>
+            </div>
+            <div class="row-side"><span class="chip green">成功</span></div>
+          </div>
+          <div class="mini-row">
+            <div class="row-main">
+              <div class="row-title">新币做空 · 第 6 期</div>
+              <div class="row-sub">2026-09-07 02:15 · AI tuner</div>
+            </div>
+            <div class="row-side"><span class="chip green">成功</span></div>
+          </div>
+          <div class="mini-row">
+            <div class="row-main">
+              <div class="row-title">HRS 混合反转 · 第 6 期</div>
+              <div class="row-sub">2026-09-07 02:30 · AI tuner</div>
+            </div>
+            <div class="row-side"><span class="chip gray">跳过</span></div>
+          </div>
+          <div class="mini-row">
+            <div class="row-main">
+              <div class="row-title">网格交易 · 数据不足</div>
+              <div class="row-sub">2026-09-07 02:45 · AI tuner</div>
+            </div>
+            <div class="row-side"><span class="chip red">失败</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ② 月度资金分配 -->
+      <div class="glass-card ai-panel animate-in">
+        <div class="ai-panel-title"><span class="p-icon">▦</span>月度资金分配 · 2026-08 <span class="chip green" style="margin-left:8px;">总额 324.30 USDT</span></div>
+        <div class="ai-panel-body">
+          <div class="mini-row" style="display:block;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <div class="row-main" style="flex-direction:row;gap:10px;align-items:center;">
+                <span class="alloc-rank rank1">1</span>
+                <div class="row-title">MTPCS 策略</div>
+              </div>
+              <div class="row-side"><span class="chip blue">持仓上限</span></div>
+            </div>
+            <div class="alloc-bar"><i style="width:27%;background:linear-gradient(90deg,#D97706,#F59E0B)"></i></div>
+            <div class="alloc-head"><span>分配 87.56 USDT</span><span>比例 27.0%</span></div>
+          </div>
+          <div class="mini-row" style="display:block;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <div class="row-main" style="flex-direction:row;gap:10px;align-items:center;">
+                <span class="alloc-rank rank2">2</span>
+                <div class="row-title">新币做空</div>
+              </div>
+              <div class="row-side"><span class="chip blue">持仓上限</span></div>
+            </div>
+            <div class="alloc-bar"><i style="width:36%;background:linear-gradient(90deg,#2563EB,#4F80F5)"></i></div>
+            <div class="alloc-head"><span>分配 116.75 USDT</span><span>比例 36.0%</span></div>
+          </div>
+          <div class="mini-row" style="display:block;">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;">
+              <div class="row-main" style="flex-direction:row;gap:10px;align-items:center;">
+                <span class="alloc-rank">3</span>
+                <div class="row-title">HRS 混合反转</div>
+              </div>
+              <div class="row-side"><span class="chip blue">持仓上限</span></div>
+            </div>
+            <div class="alloc-bar"><i style="width:18%;background:linear-gradient(90deg,#7C6BF0,#A796F5)"></i></div>
+            <div class="alloc-head"><span>分配 58.37 USDT</span><span>比例 18.0%</span></div>
+          </div>
+          <div class="ai-panel-foot"><span>注：分配金额即各策略当月持仓保证金上限，月度由 AI 资金分配自动更新</span></div>
+        </div>
+      </div>
+
+      <!-- ③ 最近优化建议 -->
+      <div class="glass-card ai-panel animate-in">
+        <div class="ai-panel-title"><span class="p-icon">✦</span>最近优化建议</div>
+        <div class="ai-panel-body">
+          <div class="mini-row">
+            <div class="row-main">
+              <div class="row-title">新币做空 · v1.1.0</div>
+              <div class="param-diff">
+                <span class="param-up">调优建议</span>
+                <span class="row-sub" style="margin-left:8px;">2026-08-31 → 2026-09-07</span>
+              </div>
+              <div class="row-sub">2026-09-06 15:56</div>
+            </div>
+            <div class="row-side"><span class="chip green">已应用</span></div>
+          </div>
+          <div class="mini-row">
+            <div class="row-main">
+              <div class="row-title">HRS 混合反转 · v2.5.0</div>
+              <div class="param-diff">
+                <span class="row-sub">2026-08-31 → 2026-09-07</span>
+              </div>
+              <div class="row-sub">2026-09-06 15:56</div>
+            </div>
+            <div class="row-side"><span class="chip gold">待审批</span></div>
+          </div>
+          <div class="mini-row">
+            <div class="row-main">
+              <div class="row-title">网格交易 · v2.4.0</div>
+              <div class="param-diff">
+                <span class="row-sub">2026-08-31 → 2026-09-07</span>
+              </div>
+              <div class="row-sub">2026-09-06 15:57</div>
+            </div>
+            <div class="row-side"><span class="chip gold">待审批</span></div>
+          </div>
+          <div class="mini-row">
+            <div class="row-main">
+              <div class="row-title">MTPCS · v2.6.0</div>
+              <div class="param-diff">
+                <span class="row-sub">2026-08-24 → 2026-08-31</span>
+              </div>
+              <div class="row-sub">2026-08-30 15:55</div>
+            </div>
+            <div class="row-side"><span class="chip gold">待审批</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 模块 5 · 风控 ===== -->
+    <div class="section-header">
+      <h2>风控</h2>
+      <span class="sub">持仓上限 = 本月各策略月度资金分配之和</span>
+    </div>
+
+    <!-- 数字卡 -->
+    <div class="risk-grid">
+      <div class="glass-card risk-num tone-blue animate-in">
+        <div>
+          <div class="label-row"><span class="stat-label">当前持仓总保证金</span><span class="hint-tip"><span class="q">?</span><span class="tip">归口：净资产 − 可用余额（币安 PM 账户实时实测）。当前 525.70 − 449.14 = 76.56 USDT</span></span></div>
+          <div class="stat-value blue">76.56</div>
+          <div class="stat-sub">USDT</div>
+          <div class="rin-note">归口：净资产 − 可用余额，币安实时</div>
+        </div>
+      </div>
+      <div class="glass-card risk-num tone-purple animate-in">
+        <div>
+          <div class="label-row"><span class="stat-label">持仓上限</span><span class="hint-tip"><span class="q">?</span><span class="tip">归口：本月各策略「月度资金分配」金额之和（capital_limits.monthly_limit 汇总）。2026-08 分配总额 = 324.30 USDT</span></span></div>
+          <div class="stat-value purple">324.30</div>
+          <div class="stat-sub">USDT（月度分配总额）</div>
+          <div class="rin-note">归口：本月各策略分配金额之和 324.30</div>
+        </div>
+      </div>
+      <div class="glass-card risk-num tone-green animate-in">
+        <div>
+          <div class="label-row"><span class="stat-label">可用开仓额度</span><span class="hint-tip"><span class="q">?</span><span class="tip">归口：持仓上限 − 当前持仓保证金 = 324.30 − 76.56 = 247.74</span></span></div>
+          <div class="stat-value positive">247.74</div>
+          <div class="stat-sub">USDT</div>
+          <div class="rin-note">归口：持仓上限 − 当前持仓保证金</div>
+        </div>
+      </div>
+      <div class="glass-card risk-num tone-gold animate-in">
+        <div>
+          <div class="label-row"><span class="stat-label">最近止损次数</span><span class="hint-tip"><span class="q">?</span><span class="tip">归口：近 7 天 trade_records 中 `close_reason='STOP_LOSS'` 的平仓记录（各策略在真实止损平仓点由 log_stop_loss() 打标；grid 不计入；TP/止盈类不打标）。当前已触发 0 次</span></span></div>
+          <div class="stat-value gold">0</div>
+          <div class="stat-sub">近 7 天</div>
+          <div class="rin-note">归口：trade_records 近7天 close_reason='STOP_LOSS'（各策略止损打标；grid 不计入）</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 进度条卡 -->
+    <div class="risk-bars">
+      <div class="glass-card bar-card animate-in">
+        <div>
+          <div class="label-row"><span class="stat-label">持仓保证金使用率</span><span class="hint-tip"><span class="q">?</span><span class="tip">归口：当前持仓保证金 ÷ 月度分配总额 = 76.56 ÷ 324.30。此卡为使用占比例，无独立臆造阈值；是否越限由各策略 account_ratio_cap 决定（见下卡）</span></span></div>
+          <div class="bar-head"><span class="stat-sub">当前 76.56 / 分配总额 324.30 USDT</span><span class="pct green">23.6%</span></div>
+        </div>
+        <div class="progress progress-green">
+          <i style="width:23.6%"></i>
+        </div>
+        <div class="bar-foot"><span>使用分配额度比例（无独立阈值）</span><span>正常</span></div>
+        <div class="rin-note">归口：持仓保证金 ÷ 月度分配总额，仅展示比例</div>
+      </div>
+
+      <div class="glass-card bar-card animate-in">
+        <div>
+          <div class="label-row"><span class="stat-label">权益占用率（对账各策略 cap）</span><span class="hint-tip"><span class="q">?</span><span class="tip">归口：持仓保证金 ÷ 账户净资产。阈值对账各策略真实 account_ratio_cap：MTPCS 30%、HRS 20%；新币做空为绝对额 150 USDT。此卡展示策略中最严格口径下的占用</span></span></div>
+          <div class="bar-head"><span class="stat-sub">总保证金 76.56 / 净资产 525.70</span><span class="pct green">14.6%</span></div>
+        </div>
+        <div class="progress progress-green">
+          <i style="width:14.6%"></i>
+          <span class="threshold" style="left:20%;"></span>
+        </div>
+        <div class="bar-foot"><span>最严 cap：HRS 20%</span><span>正常</span></div>
+        <div class="rin-note">归口：持仓保证金 ÷ 净资产，阈值取最严策略 cap</div>
+      </div>
+    </div>
+
+    <!-- 提醒区：接真实触发逻辑渲染。以下两条为规则说明；仅当真实风控指标触发时显示。当前实时数据正常（使用率23.6%、权益占用14.6%），均未触发 -->
+    <div class="risk-alert warn animate-in">
+      <span class="a-ico">⚠</span>
+      <div class="a-body">
+        <div class="a-title">【触发规则 · 设计预留】接近风控阈值</div>
+        <div class="a-desc">当任策略权益占用达到其 account_ratio_cap 的 80%（如 MTPCS 30%×80%=24%）或接近新币做空 150 USDT 绝对上限时提醒。当前所有策略未接近，不触发。</div>
+      </div>
+    </div>
+    <div class="risk-alert crit animate-in">
+      <span class="a-ico">⛔</span>
+      <div class="a-body">
+        <div class="a-title">【触发规则 · 设计预留】风控越限</div>
+        <div class="a-desc">当某策略权益占用超过其 account_ratio_cap、或近 3 日连续亏损 / 单日回撤超配置阈值时触发，提示复核或暂停开仓。当前未触发。</div>
+      </div>
+    </div>
+
+    <!-- ===== 模块 6 · 收益趋势图（示意） ===== -->
+    <div class="glass-card chart-section animate-in">
+      <div class="chart-header">
+        <h2 class="chart-title">收益趋势</h2>
+        <div class="chart-legend">
+          <div class="legend-item"><span class="legend-dot green"></span>累计盈亏</div>
+          <div class="legend-item"><span class="legend-dot gold"></span>日均收益</div>
+        </div>
+      </div>
+      <!-- 概念占位折线，示意即可 -->
+      <svg class="chart-svg" viewBox="0 0 900 320" preserveAspectRatio="none" aria-label="收益趋势图占位示意">
+        <defs>
+          <linearGradient id="areaGreen" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="#0FA47F" stop-opacity="0.18"/>
+            <stop offset="100%" stop-color="#0FA47F" stop-opacity="0"/>
+          </linearGradient>
+        </defs>
+        <g fill="none" stroke="rgba(15,23,42,0.06)">
+          <line x1="0" y1="40" x2="900" y2="40"/>
+          <line x1="0" y1="110" x2="900" y2="110"/>
+          <line x1="0" y1="180" x2="900" y2="180"/>
+          <line x1="0" y1="250" x2="900" y2="250"/>
+        </g>
+        <path d="M0,250 C120,235 180,210 260,214 C340,218 380,170 460,168 C540,166 600,190 680,150 C760,112 830,120 900,90 L900,320 L0,320 Z"
+              fill="url(#areaGreen)"/>
+        <path d="M0,250 C120,235 180,210 260,214 C340,218 380,170 460,168 C540,166 600,190 680,150 C760,112 830,120 900,90"
+              fill="none" stroke="#0FA47F" stroke-width="2.5" stroke-linecap="round"/>
+        <path d="M0,300 C150,292 260,280 400,278 C540,276 640,286 900,272"
+              fill="none" stroke="#D97706" stroke-width="2" stroke-linecap="round" stroke-dasharray="2 6"/>
+      </svg>
+    </div>
+
+    <!-- ===== 页脚 ===== -->
+    <footer class="footer">
+      <p>© 2026 Binance 量化交易系统 · 数据实时更新（本页为设计稿，全部为示意假数据）</p>
+      <p class="design-note">design mockup · 用于确认布局与视觉，非生产页面</p>
+    </footer>
+  </div>
+
+  <!-- 极少量 JS：演示收益率 日/周/月 切换 -->
+  <script>
+    (function () {
+      // 收益率卡片联动数据（假数据）
+      var RATES = {
+        day:   { value: '+0.68%', positive: true,  initial: '624.64', npnl: '+4.24', npnlPos: true },
+        week:  { value: '+1.82%', positive: true,  initial: '617.64', npnl: '+11.24', npnlPos: true },
+        month: { value: '+4.05%', positive: true,  initial: '604.40', npnl: '+24.48', npnlPos: true }
+      };
+
+      var toggle = document.getElementById('rate-toggle');
+      if (!toggle) return;
+
+      var btns = toggle.querySelectorAll('.toggle-btn');
+      var valueEl = document.getElementById('rate-value');
+      var initialEl = document.getElementById('rate-initial');
+      var npnlEl = document.getElementById('rate-npnl');
+
+      btns.forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          btns.forEach(function (b) { b.classList.remove('active'); b.setAttribute('aria-checked', 'false'); });
+          btn.classList.add('active');
+          btn.setAttribute('aria-checked', 'true');
+
+          var r = RATES[btn.getAttribute('data-rate')] || RATES.day;
+          valueEl.textContent = r.value;
+          valueEl.className = 'stat-value ' + (r.positive ? 'positive' : 'negative');
+          initialEl.textContent = r.initial;
+          npnlEl.textContent = r.npnl;
+          npnlEl.className = 'fmt-' + (r.npnlPos ? 'green' : 'red');
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

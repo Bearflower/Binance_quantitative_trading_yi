@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Binance 量化交易系统架构",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1390, 1020],
+    "views": [
+      { "id": "main", "label": "核心交易链路", "focus": ["binance", "kline-service", "btc-eth", "new-coin", "grid", "hrs", "postgres"], "note": "行情 → 策略决策 → 下单 → 持久化。" },
+      { "id": "ai-tuning", "label": "AI 调优", "focus": ["ai-tuner", "llm", "btc-eth", "postgres"], "note": "LLM 读取策略配置并写回调优参数。" },
+      { "id": "ops", "label": "数据运维", "focus": ["kline-service", "kline-monitor", "feishu"], "note": "K线健康监控自动告警。" }
+    ]
+  },
+  "components": [
+    { "id": "binance", "type": "external", "label": "Binance API", "sublabel": "行情/账户/下单", "tag": "fapi.binance.com", "pos": [30, 40], "size": [310, 80] },
+    { "id": "llm", "type": "external", "label": "DeepSeek LLM", "sublabel": "AI 策略评估", "pos": [1140, 10], "size": [220, 58] },
+    { "id": "feishu", "type": "external", "label": "飞书通知", "sublabel": "信号/告警推送", "pos": [1120, 940], "size": [210, 72] },
+    { "id": "kline-service", "type": "backend", "label": "K线数据服务", "sublabel": "REST :8000", "tag": "行情采集入库", "pos": [30, 240], "size": [300, 620] },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL", "sublabel": "trading_platform", "tag": "各策略独立 schema", "pos": [1000, 850], "size": [250, 80] },
+    { "id": "btc-eth", "type": "backend", "label": "BTC/ETH 策略", "pos": [520, 290], "size": [290, 72] },
+    { "id": "new-coin", "type": "backend", "label": "新币做空策略", "pos": [520, 450], "size": [290, 72] },
+    { "id": "grid", "type": "backend", "label": "网格交易策略", "pos": [520, 610], "size": [290, 72] },
+    { "id": "hrs", "type": "backend", "label": "HRS 混合反转策略", "pos": [520, 770], "size": [290, 72] },
+    { "id": "ai-tuner", "type": "backend", "label": "StratTuneAI", "sublabel": "周度调优+月度分配", "tag": "读写策略配置", "pos": [850, 110], "size": [310, 92] },
+    { "id": "kline-monitor", "type": "backend", "label": "K线健康监控", "sublabel": "300s 轮询告警", "pos": [30, 920], "size": [300, 78] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "策略容器", "wraps": ["btc-eth", "new-coin", "grid", "hrs"] }
+  ],
+  "connections": [
+    { "id": "c1", "from": "binance", "to": "kline-service", "label": "拉取K线入库", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelAt": [185, 180] },
+    { "id": "c2", "from": "kline-service", "to": "btc-eth", "label": "K线", "labelAt": [472, 326] },
+    { "id": "c3", "from": "kline-service", "to": "new-coin", "label": "K线", "labelAt": [472, 486] },
+    { "id": "c4", "from": "kline-service", "to": "grid", "label": "K线", "labelAt": [472, 646] },
+    { "id": "c5", "from": "kline-service", "to": "hrs", "label": "K线", "labelAt": [472, 806] },
+    { "id": "c6", "from": "postgres", "to": "btc-eth", "label": "读写", "labelAt": [857, 326] },
+    { "id": "c7", "from": "postgres", "to": "new-coin", "label": "读写", "labelAt": [857, 486] },
+    { "id": "c8", "from": "postgres", "to": "grid", "label": "读写", "labelAt": [857, 646] },
+    { "id": "c9", "from": "postgres", "to": "hrs", "label": "读写", "labelAt": [857, 806] },
+    { "id": "c10", "from": "ai-tuner", "to": "btc-eth", "label": "写回参数", "variant": "dashed", "labelAt": [760, 190] },
+    { "id": "c11", "from": "ai-tuner", "to": "postgres", "label": "调优结果/分配", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [1130, 520] },
+    { "id": "c12", "from": "ai-tuner", "to": "llm", "label": "调用LLM评估", "fromSide": "top", "toSide": "bottom", "labelAt": [1160, 90] },
+    { "id": "c13", "from": "kline-monitor", "to": "kline-service", "label": "健康检查", "fromSide": "top", "toSide": "bottom", "labelAt": [180, 880] },
+    { "id": "c14", "from": "kline-monitor", "to": "feishu", "label": "故障告警", "labelAt": [800, 970] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "核心交易链路", "items": ["Binance → K线服务行情入库 → 各策略读取并决策", "下单/风控经共享模块 shared/binance_api 直连 Binance", "仓位、持仓、成交记录写入数据库（各策略独立 schema）"] },
+    { "dot": "emerald", "title": "AI 调优", "items": ["StratTuneAI 每周调优 + 每月资金分配，经挂载的 strategies/ 目录读写参数", "调用 DeepSeek LLM 评估，结果写入数据库，受白名单与红线上限约束"] },
+    { "dot": "amber", "title": "数据运维", "items": ["kline-monitor 每 300s 轮询 K线服务健康，连续 3 次失败触发飞书告警", "日报 / 周报服务从数据库汇总交易数据"] }
+  ]
+}

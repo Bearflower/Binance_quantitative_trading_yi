@@ -3,6 +3,7 @@
 定义交易策略的基本接口和通用功能
 """
 from abc import ABC, abstractmethod
+from decimal import Decimal
 from typing import Dict, Any, Optional
 import structlog
 
@@ -209,6 +210,41 @@ class BaseStrategy(ABC):
         
         self.db = db
         logger.info("数据库管理器已设置")
+
+    async def mark_stop_loss(
+        self,
+        symbol: str,
+        side: str,
+        realized_pnl: Optional[Decimal] = None,
+    ) -> None:
+        """
+        止损打标（供风控看板"最近止损次数"统计）
+
+        止损触发并平仓时调用 TradeLogger.log_stop_loss 写入 close_reason='STOP_LOSS' 标记
+        （见 shared/trade_logger.py）。通过 getattr 探测 trade_logger，缺失或调用异常时静默
+        跳过，不影响平仓主流程。子类止损平仓处应调用本方法代替重复的探测代码。
+
+        Args:
+            symbol: 交易对
+            side: 平仓方向（做多平仓为 SELL，做空平仓为 BUY）
+            realized_pnl: 已实现盈亏（可选）
+        """
+        trade_logger = getattr(self.binance_client, 'trade_logger', None)
+        if trade_logger is None or not hasattr(trade_logger, 'log_stop_loss'):
+            return
+        try:
+            await trade_logger.log_stop_loss(
+                symbol=symbol,
+                side=side,
+                realized_pnl=realized_pnl,
+            )
+        except Exception as e:
+            logger.warning(
+                "止损打标失败",
+                symbol=symbol,
+                side=side,
+                error=str(e)[:120],
+            )
     
     async def cleanup(self) -> None:
         """

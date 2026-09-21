@@ -18,7 +18,7 @@ from shared.notification import NotificationClient
 from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
 from shared.config_loader import load_strategy_config
-from shared.strategy_state import save_strategy_state
+from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared import condition_orders
 from strategies.btc_eth.strategy import BTCEthStrategy
 
@@ -175,23 +175,15 @@ async def run_strategy():
                                 grade=result['grade'],
                                 score=result['score']
                             )
-                            # 开仓成功后立即保存 strategy_states（全部持仓）
+                            # 开仓成功后立即保存 strategy_states（全部持仓）和持仓上报
                             # 必须保存全部持仓，避免覆盖原有持仓记录导致孤儿单清理任务误判
-                            positions = {}
-                            for sym, pos in strategy.positions.items():
-                                positions[sym] = {
-                                    "direction": pos.direction,
-                                    "entry_price": float(pos.entry_price) if pos.entry_price else None,
-                                    "quantity": float(pos.initial_quantity) if pos.initial_quantity else 0,
-                                    "current_quantity": float(pos.current_quantity) if pos.current_quantity else 0,
-                                    "entry_time": str(pos.entry_time) if pos.entry_time else "",
-                                    "entry_order_id": pos.entry_order_id,
-                                    "stop_loss_order_id": pos.stop_loss_order_id,
-                                    "tp1_order_id": pos.tp1_order_id,
-                                    "tp2_order_id": pos.tp2_order_id,
-                                }
+                            positions, margin_dict, qty_dict = strategy.build_positions_report()
                             if positions:
                                 await save_strategy_state(strategy.db_manager, "btc_eth", positions)
+                                # 同步当前持仓到看板聚合表（口径由策略侧计算，工具内部容错）
+                                await sync_open_positions(
+                                    strategy.db_manager, "btc_eth", margin_dict, qty_dict
+                                )
                         else:
                             logger.error(
                                 f"{symbol} 交易信号执行失败",
@@ -289,21 +281,10 @@ async def run_strategy():
                     else:
                         logger.error("通知发送失败", error=str(e))
 
-            # 保存策略状态到 strategy_states（用于 orphan_cleanup 统一检测）
-            positions = {}
-            for symbol, pos in strategy.positions.items():
-                positions[symbol] = {
-                    "direction": pos.direction,
-                    "entry_price": float(pos.entry_price) if pos.entry_price else None,
-                    "quantity": float(pos.initial_quantity) if pos.initial_quantity else 0,
-                    "current_quantity": float(pos.current_quantity) if pos.current_quantity else 0,
-                    "entry_time": str(pos.entry_time) if pos.entry_time else "",
-                    "entry_order_id": pos.entry_order_id,
-                    "stop_loss_order_id": pos.stop_loss_order_id,
-                    "tp1_order_id": pos.tp1_order_id,
-                    "tp2_order_id": pos.tp2_order_id,
-                }
+            # 保存策略状态到 strategy_states（用于 orphan_cleanup 统一检测）并同步持仓上报
+            positions, margin_dict, qty_dict = strategy.build_positions_report()
             await save_strategy_state(strategy.db_manager, "btc_eth", positions)
+            await sync_open_positions(strategy.db_manager, "btc_eth", margin_dict, qty_dict)
 
     except Exception as e:
         logger.error(

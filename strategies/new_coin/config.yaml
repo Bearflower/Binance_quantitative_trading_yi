@@ -82,8 +82,9 @@ scoring:
 trading:
   leverage: 2           # 杠杆倍数（文档要求≤2倍）
   daily_trade_limit: 2         # 单日最多开仓币种数
-  max_positions: 3                # 最大同时持仓数（= total_position_margin_limit/single_position_margin = 150/50）
   single_position_margin: 50  # 单笔保证金（USDT）
+  min_position_margin: 25.0   # 最小可开仓保证金（USDT）：剩余额度缩仓后低于此值则拒绝开仓（决策 D3）
+  duplicate_symbol_notify_window_seconds: 3600  # 同币种重复开仓告警降频窗口（秒）
   total_position_margin_limit: 150  # 总持仓保证金上限（USDT），各合约保证金之和不得超过此值；动态读取（优先 capital_limits.monthly_limit 月度分配）
   entry_order_timeout_seconds: 60  # 限价单入场超时等待（秒）
   market_order_score_threshold: 7.0  # 市价单评分阈值：评分≥此值直接市价单抢单；<此值走实时市价+滑点限价单
@@ -220,6 +221,13 @@ trading:
     poll_interval: 2        # 限价单成交轮询间隔（秒）
     timeout: 10             # 单次限价单超时（秒）
     close_percent: 1.0      # 全仓平仓比例（1.0 = 100%）
+
+# 资金限额配置（方案 D：运行时读 DB 为主来源，config 为兜底）
+# 说明：monthly_limit / allocated_ratio 由 AI 月度资金分配流程写入；
+#       db_cache_ttl_seconds / db_query_timeout_seconds 为 DB 读取的缓存与超时保护。
+capital_limits:
+  db_cache_ttl_seconds: 300       # DB 分配额缓存有效期（秒），避免每笔开仓都查库
+  db_query_timeout_seconds: 3.0   # DB 查询超时（秒），超时后沿用最近一次成功值或降级
 
 # 形态识别配置
 pattern:

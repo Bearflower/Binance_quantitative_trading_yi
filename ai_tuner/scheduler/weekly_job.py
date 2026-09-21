@@ -10,6 +10,7 @@
 
 import importlib
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 import structlog
@@ -26,6 +27,9 @@ from ai_tuner.feedback.learning_signal import LearningSignalGenerator
 from ai_tuner.memory.context_builder import ContextBuilder
 
 logger = structlog.get_logger()
+
+# 北京时区（UTC+8）
+BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 # 动态导入白名单：只允许 ai_tuner.adapters 命名空间下的模块
@@ -126,6 +130,9 @@ class WeeklyTuningJob:
         total_error = 0
         strategy_details = []
 
+        # 本次调优批次标识（北京当前日期，作为 ai_tuner_runs.run_key）
+        run_key = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+
         for strategy_cfg in strategies:
             strategy_id = strategy_cfg.get("strategy_id", "")
             strategy_name = strategy_cfg.get("name", "")
@@ -135,12 +142,15 @@ class WeeklyTuningJob:
                 if result == "success":
                     total_success += 1
                     strategy_details.append(f"✅ {strategy_name}：已调整")
+                    await self._record_run(run_key, strategy_id, strategy_cfg, "success", result)
                 elif result == "skip":
                     total_skip += 1
                     strategy_details.append(f"⏸️ {strategy_name}：无需调整")
+                    await self._record_run(run_key, strategy_id, strategy_cfg, "skip", result)
                 else:
                     total_error += 1
                     strategy_details.append(f"❌ {strategy_name}：异常")
+                    await self._record_run(run_key, strategy_id, strategy_cfg, "error", result)
             except Exception as e:
                 total_error += 1
                 strategy_details.append(f"❌ {strategy_name}：异常 ({str(e)})")
@@ -150,6 +160,7 @@ class WeeklyTuningJob:
                     strategy_name=strategy_name,
                     error=str(e),
                 )
+                await self._record_run(run_key, strategy_id, strategy_cfg, "error", str(e))
                 await self.messenger.send_error_notification(
                     strategy_name=strategy_name,
                     strategy_id=strategy_id,
@@ -176,6 +187,55 @@ class WeeklyTuningJob:
             error=total_error,
             details=details_text,
         )
+
+    async def _record_run(
+        self,
+        run_key: str,
+        strategy_id: str,
+        strategy_cfg: Dict[str, Any],
+        status: str,
+        result: Any,
+    ) -> None:
+        """
+        将单个策略的调优执行结果落库到 public.ai_tuner_runs
+
+        每次周度调优对每个策略（success/skip/error）写入一条执行记录，
+        供看板 AI 监控模块读取调优时间线。失败不阻断主流程（内部捕获并记日志）。
+
+        Args:
+            run_key: 批次标识（本次执行日期，如 2026-09-10）
+            strategy_id: 策略ID
+            strategy_cfg: 策略配置字典（取 strategy_name）
+            status: 执行状态，success / skip / error
+            result: 执行结果（用于日志记录）
+        """
+        strategy_name = strategy_cfg.get("name", "")
+        executed_at = datetime.now(BEIJING_TZ).replace(tzinfo=None)
+        try:
+            await self.db_manager.execute(
+                "INSERT INTO public.ai_tuner_runs "
+                "(run_key, strategy_id, strategy_name, status, executed_at) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                run_key,
+                strategy_id,
+                strategy_name,
+                status,
+                executed_at,
+            )
+            logger.info(
+                "调优执行记录已落库",
+                strategy_id=strategy_id,
+                strategy_name=strategy_name,
+                status=status,
+                result=result,
+            )
+        except Exception as e:
+            logger.error(
+                "调优执行记录落库失败",
+                strategy_id=strategy_id,
+                status=status,
+                error=str(e),
+            )
 
     async def _tune_single_strategy(
         self, strategy_cfg: Dict[str, Any], force: bool = False

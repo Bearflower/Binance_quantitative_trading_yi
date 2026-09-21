@@ -65,7 +65,6 @@ def create_base_config() -> dict:
     return {
         'trading': {
             'leverage': 2,
-            'max_positions': 3,
             'single_position_margin': 50,
             'stop_loss_percent': 0.05,
             'take_profit_percent': 0.10,
@@ -766,7 +765,7 @@ class TestPlaceShortOrder:
 
         # Mock execute_short 所需的外部服务
         executor._get_account_balance = AsyncMock(return_value=Decimal('1000'))
-        executor._calculate_position_size = lambda balance, price: Decimal('50')
+        executor._calculate_position_size = MagicMock(return_value=Decimal('50'))
         executor._format_quantity = lambda q, s: q
         executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
         executor._set_leverage = AsyncMock()
@@ -777,18 +776,22 @@ class TestPlaceShortOrder:
         executor._set_batch_take_profit = AsyncMock()
         executor._send_notification = AsyncMock()
 
-        # Mock capital_mgr
-        executor.capital_mgr = MagicMock()
-        executor.capital_mgr.can_open_position = MagicMock(return_value=True)
-        executor.capital_mgr.get_allocated_capital = MagicMock(return_value=Decimal('1000'))
-        # 总持仓保证金上限检查：mock 返回 None（未配置，跳过检查），聚焦测试市价单分支
-        executor.capital_mgr.get_total_margin_limit = MagicMock(return_value=None)
+        # Mock 开仓前置检查：基线就绪、无同币种持仓、占用为 0
+        executor.baseline_ready = True
+        executor._is_symbol_occupied = AsyncMock(return_value=False)
+        executor.calc_current_occupied_margin = AsyncMock(return_value=0.0)
+
+        # 限额链路：限额定为不可用（fail-open 放行），聚焦测试市价单/限价单分支
+        executor.capital_mgr.get_effective_margin_limit = AsyncMock(return_value=(None, "none"))
 
         # === 情况1：评分≥阈值（如7.4）→ 市价单 ===
         executor.binance_api.place_order.reset_mock()
         executor.binance_api.place_order.return_value = {'orderId': 1, 'status': 'FILLED'}
         score_result = {'total_score': 7.4}
-        await executor.execute_short('BTCUSDT', score_result, 100.0)
+        order, reason = await executor.execute_short('BTCUSDT', score_result, 100.0)
+        # 成功路径：返回订单且失败原因为空
+        assert order is not None
+        assert reason == ""
         # 应调用市价单
         called_kwargs = executor.binance_api.place_order.call_args
         assert called_kwargs[1]['order_type'] == 'MARKET'
@@ -798,36 +801,30 @@ class TestPlaceShortOrder:
         executor.binance_api.place_order.reset_mock()
         executor.binance_api.place_order.return_value = {'orderId': 2, 'status': 'FILLED'}
         score_result_low = {'total_score': 6.5}
-        await executor.execute_short('BTCUSDT', score_result_low, 100.0)
+        order, reason = await executor.execute_short('BTCUSDT', score_result_low, 100.0)
+        # 成功路径：返回订单且失败原因为空
+        assert order is not None
+        assert reason == ""
         called_kwargs = executor.binance_api.place_order.call_args
         assert called_kwargs[1]['order_type'] == 'LIMIT'
 
     @pytest.mark.asyncio
     async def test_execute_short_skipped_when_total_margin_exceeded(self):
-        """总持仓保证金超过配置上限时跳过开仓（5.5.1 分支）"""
+        """总持仓保证金超过生效限额时拒绝开仓，失败原因含真实数值（can_open_within_limit 拒绝分支）"""
         executor = create_executor()
+        setup_execute_short_ready(executor)
 
-        # Mock execute_short 所需的外部服务
-        executor._get_account_balance = AsyncMock(return_value=Decimal('1000'))
-        executor._calculate_position_size = lambda balance, price: Decimal('50')
-        executor._format_quantity = lambda q, s: q
-        executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
-        executor._set_leverage = AsyncMock()
+        # 现有持仓占用 1250（50 张 × 50 价 / 2 倍杠杆），新仓保证金 50 × 100 / 2 = 2500
+        executor.calc_current_occupied_margin = AsyncMock(return_value=1250.0)
+        # 生效限额 20 USDT（低于已有占用），走真实 can_open_within_limit 判定与文案
+        executor.capital_mgr.get_effective_margin_limit = AsyncMock(return_value=(20.0, "static"))
 
-        # 现有持仓：1 笔，保证金用满上限（leverage=2，margin=仓位价值/2）
-        executor.position_tracking = {
-            "BTCUSDT": {"entry_quantity": 50.0, "entry_price": 50.0},
-        }
-        score_result = {'total_score': 7.4}
-        executor.market_order_score_threshold = 7.0
-
-        # capital_mgr：分配上限检查放行（未配置），但总持仓保证金上限很小 → 触发拒绝
-        executor.capital_mgr = MagicMock()
-        executor.capital_mgr.can_open_position = MagicMock(return_value=True)
-        executor.capital_mgr.get_total_margin_limit = MagicMock(return_value=20.0)
-
-        result = await executor.execute_short('ETHUSDT', score_result, 100.0)
+        result, reason = await executor.execute_short('ETHUSDT', score_result={'total_score': 7.4}, current_price=100.0)
         assert result is None
+        # 合计 1250 + 2500 = 3750 > 20.00
+        assert "总持仓保证金超限" in reason
+        assert "3750.00" in reason
+        assert "20.00" in reason
         # 未调用下单
         executor.binance_api.place_order.assert_not_called()
 
@@ -836,6 +833,191 @@ class TestPlaceShortOrder:
         assert abs(actual - expected) < Decimal('0.001'), (
             f"限价 {actual} 不等于预期 {expected}"
         )
+
+
+# ============================================================================
+# execute_short 各失败路径的失败原因透传测试
+# ============================================================================
+
+def setup_execute_short_ready(executor) -> None:
+    """将 execute_short 的外部依赖 mock 到「已通过风控、可进入下单」状态
+
+    仅提供默认放行值，各用例按需覆盖其关注的那一项依赖，避免重复代码。
+    说明：默认生效限额为「不可用」（fail-open），can_open_within_limit 使用真实实现，
+    以便用例通过覆盖 get_effective_margin_limit 验证真实的限额判定逻辑。
+    """
+    executor._get_account_balance = AsyncMock(return_value=Decimal('1000'))
+    executor._calculate_position_size = MagicMock(return_value=Decimal('50'))
+    executor._format_quantity = MagicMock(return_value=Decimal('50'))
+    executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
+    executor._set_leverage = AsyncMock()
+    # 开仓前置校验：基线已就绪、无同币种持仓、当前占用为 0
+    executor.baseline_ready = True
+    executor._is_symbol_occupied = AsyncMock(return_value=False)
+    executor.calc_current_occupied_margin = AsyncMock(return_value=0.0)
+    # 限额链路：默认三级均不可用（fail-open 放行）
+    executor.capital_mgr.get_effective_margin_limit = AsyncMock(return_value=(None, "none"))
+
+
+class TestExecuteShortFailureReason:
+    """execute_short() 失败原因透传测试
+
+    验证 6 条业务失败路径 + 1 条异常路径均返回 (None, "<具体原因>")，而非旧实现的裸 None，
+    避免调用方（execute_signal）吞掉真实失败原因。
+    """
+
+    @pytest.mark.asyncio
+    async def test_insufficient_balance_returns_reason(self):
+        """账户余额不足 → (None, '账户余额不足')"""
+        executor = create_executor()
+        executor._get_account_balance = AsyncMock(return_value=Decimal('0'))
+
+        order, reason = await executor.execute_short('BTCUSDT', {'total_score': 7.4}, 100.0)
+
+        assert order is None
+        assert reason == "账户余额不足"
+
+    @pytest.mark.asyncio
+    async def test_position_size_zero_returns_reason(self):
+        """仓位大小计算失败 → (None, '仓位大小计算失败')"""
+        executor = create_executor()
+        setup_execute_short_ready(executor)
+        executor._calculate_position_size = MagicMock(return_value=Decimal('0'))
+
+        order, reason = await executor.execute_short('BTCUSDT', {'total_score': 7.4}, 100.0)
+
+        assert order is None
+        assert reason == "仓位大小计算失败"
+
+    @pytest.mark.asyncio
+    async def test_shrunk_margin_below_threshold_returns_reason(self):
+        """缩仓后保证金低于 min_position_margin 门槛 → 拒绝开仓（决策 D3 门槛分支）
+
+        走真实 _calculate_position_size：可用额度 = 150 - 140 = 10 USDT，
+        缩仓后保证金 = min(50, 10) = 10 → 仓位价值 = 10 × 2 = 20 → 数量 = 0.2 张，
+        新仓保证金 = 0.2 × 100 / 2 = 10 USDT < 门槛 100 → 拒开。
+        """
+        executor = create_executor()
+        setup_execute_short_ready(executor)
+        # 移除 setup 中的仓位计算桩，改用真实实现，验证「按剩余额度缩仓 → 低于门槛拒开」链路
+        del executor._calculate_position_size
+        executor.min_position_margin = 100.0
+        executor.calc_current_occupied_margin = AsyncMock(return_value=140.0)
+        executor.capital_mgr.get_effective_margin_limit = AsyncMock(return_value=(150.0, "static"))
+
+        order, reason = await executor.execute_short('ETHUSDT', {'total_score': 7.4}, 100.0)
+
+        assert order is None
+        assert "可用额度不足" in reason
+        assert "10.00" in reason
+        assert "100.00" in reason
+        executor.binance_api.place_order.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_place_short_order_failed_returns_reason(self):
+        """开空仓下单失败（_place_short_order 返回 None）→ (None, '开空仓下单失败')"""
+        executor = create_executor()
+        setup_execute_short_ready(executor)
+        executor._place_short_order = AsyncMock(return_value=None)
+
+        order, reason = await executor.execute_short('BTCUSDT', {'total_score': 7.4}, 100.0)
+
+        assert order is None
+        assert reason == "开空仓下单失败"
+
+    @pytest.mark.asyncio
+    async def test_market_order_not_filled_returns_reason(self):
+        """市价单未成交（高分）→ (None, '市价单未成交')，并取消未成交订单"""
+        executor = create_executor()
+        setup_execute_short_ready(executor)
+        executor.market_order_score_threshold = 7.0
+        executor._place_short_order = AsyncMock(return_value={'orderId': 1, 'status': 'NEW'})
+        executor._wait_for_order_fill = AsyncMock(return_value=None)
+
+        order, reason = await executor.execute_short('BTCUSDT', {'total_score': 7.4}, 100.0)
+
+        assert order is None
+        assert reason == "市价单未成交"
+        executor.binance_api.cancel_order.assert_awaited_once_with('BTCUSDT', '1')
+
+    @pytest.mark.asyncio
+    async def test_limit_order_not_filled_returns_reason(self):
+        """限价单超时未成交（低分）→ (None, '限价单超时未成交')"""
+        executor = create_executor()
+        setup_execute_short_ready(executor)
+        executor.market_order_score_threshold = 7.0
+        executor._place_short_order = AsyncMock(return_value={'orderId': 2, 'status': 'NEW'})
+        executor._wait_for_order_fill = AsyncMock(return_value=None)
+
+        order, reason = await executor.execute_short('BTCUSDT', {'total_score': 6.5}, 100.0)
+
+        assert order is None
+        assert reason == "限价单超时未成交"
+        executor.binance_api.cancel_order.assert_awaited_once_with('BTCUSDT', '2')
+
+    @pytest.mark.asyncio
+    async def test_execute_exception_returns_reason(self):
+        """执行异常 → (None, '执行异常: ...')"""
+        executor = create_executor()
+        executor._get_account_balance = AsyncMock(side_effect=Exception("网络超时"))
+
+        order, reason = await executor.execute_short('BTCUSDT', {'total_score': 7.4}, 100.0)
+
+        assert order is None
+        assert reason.startswith("执行异常: ")
+        assert "网络超时" in reason
+
+
+class TestExecuteSignalFailReasonPassthrough:
+    """execute_signal() 失败原因透传测试（调用方不再硬编码旧文案）"""
+
+    @pytest.mark.asyncio
+    async def test_fail_reason_passed_through(self):
+        """executor 返回的失败原因应原样透传给 execute_signal 的返回值"""
+        from strategies.new_coin.strategy import NewCoinStrategy
+
+        strategy = NewCoinStrategy({
+            'strategy': {'name': 'new_coin'},
+            'trading': {'daily_trade_limit': 2},
+        })
+        strategy.trading_executor = MagicMock()
+        strategy.trading_executor.execute_short = AsyncMock(
+            return_value=(None, "总持仓保证金超限(199.27/150.00)")
+        )
+
+        signal = {
+            'symbol': 'HUTUSDT',
+            'score_result': {'total_score': 7.5},
+            'action': 'SHORT',
+            'market_data': {'current_price': 100.0},
+        }
+        success, reason = await strategy.execute_signal(signal)
+
+        assert success is False
+        assert reason == "总持仓保证金超限(199.27/150.00)"
+
+    @pytest.mark.asyncio
+    async def test_empty_fail_reason_uses_default(self):
+        """executor 未返回原因时，使用默认文案「做空开仓失败」兜底"""
+        from strategies.new_coin.strategy import NewCoinStrategy
+
+        strategy = NewCoinStrategy({
+            'strategy': {'name': 'new_coin'},
+            'trading': {'daily_trade_limit': 2},
+        })
+        strategy.trading_executor = MagicMock()
+        strategy.trading_executor.execute_short = AsyncMock(return_value=(None, ""))
+
+        signal = {
+            'symbol': 'HUTUSDT',
+            'score_result': {'total_score': 7.5},
+            'action': 'SHORT',
+            'market_data': {'current_price': 100.0},
+        }
+        success, reason = await strategy.execute_signal(signal)
+
+        assert success is False
+        assert reason == "做空开仓失败"
 
 
 if __name__ == '__main__':

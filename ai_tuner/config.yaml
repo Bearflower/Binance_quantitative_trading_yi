@@ -249,7 +249,6 @@ strategies:
       - "scoring.oi_volume_ratio.thresholds.good"
       - "scoring.technical.min_total_score"
       - "scoring.technical.min_three_tops_score"
-      - "trading.max_positions"
       - "trading.batch_take_profit.target1_atr_multiplier"
       - "trading.batch_take_profit.target2_atr_multiplier"
       - "trading.consecutive_loss.max_consecutive_losses"
@@ -272,7 +271,6 @@ strategies:
       scoring.oi_volume_ratio.thresholds.good: [0.1, 0.3]
       scoring.technical.min_total_score: [4.0, 8.0]
       scoring.technical.min_three_tops_score: [1.0, 4.0]
-      trading.max_positions: [2, 5]
       trading.batch_take_profit.target1_atr_multiplier: [1.0, 3.0]
       trading.batch_take_profit.target2_atr_multiplier: [2.0, 5.0]
       trading.consecutive_loss.max_consecutive_losses: [2, 5]

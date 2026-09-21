@@ -125,6 +125,35 @@ def calculate_score(data, threshold=0.5, _debug=None):
 - 优先使用项目已有依赖，新增依赖需在 `requirements.txt` 或 `pyproject.toml` 中声明
 - 禁止使用已废弃的 API 或库版本
 
+## 前端设计规范（设计场景必查）🎨
+
+涉及前端界面、UI 组件、设计系统时，**必须先调用相关 skill** 再开始编码。以下 skill 已全局安装，可直接使用：
+
+| 设计场景 | 推荐 Skill | 用途 |
+|---------|-----------|------|
+| **界面 taste 把控** | `leonxlnx/taste-skill@design-taste-frontend` | 提升前端设计品味、生成高质量 UI |
+| **视觉审查/打磨** | `pbakaus/impeccable@impeccable` | 视觉打磨、设计审查、代码美化 |
+| **组件库使用** | `shadcn/ui@shadcn` | shadcn/ui 组件生成与集成 |
+| **设计系统参考** | `google-labs-code/stitch-skills@design-md`、`awesome-design-md` | 60+ 顶级产品的 DESIGN.md 模板 |
+| **通用 UI/UX** | `ui-ux-pro-max`、`frontend-design`、`frontend-skill` | UI 组件、交互设计、页面生成 |
+
+### 设计环节执行顺序
+
+```
+1. 调用 design-md / awesome-design-md 获取设计规范
+2. 调用 taste-skill 把控设计品味
+3. 调用 shadcn 生成组件（如适用）
+4. 编码实现
+5. 调用 impeccable 进行视觉审查和打磨
+```
+
+### 设计 MCP
+
+如果本地已连接 Figma MCP server（`mcp_Figma_AI_Bridge`），可使用它：
+- 获取 Figma 设计稿上下文、截图、变量、素材
+- 将 Figma 节点转换为生产代码
+- 先在 Figma MCP 中 `get_figma_data`，再在 skill 中执行代码生成
+
 ---
 
-**最后更新：** 2026-06-01
+**最后更新：** 2026-09-14

@@ -77,13 +77,50 @@ class ScoringEngine:
         }
 
         # 入场阈值（V4.1：保持5.0，通过min_total_score和降级模式约束提升质量）
-        self.entry_threshold = scoring_config.get('entry_threshold', 5.0)
+        # 防御性校验：AI 调优覆盖层可能误写为 dict（如 from/to 格式），需降级为默认值
+        self.entry_threshold = self._safe_get_float(
+            scoring_config, 'entry_threshold', 5.0
+        )
 
         logger.info(
             "评分引擎初始化完成",
             weights=self.weights,
             entry_threshold=self.entry_threshold
         )
+
+    @staticmethod
+    def _safe_get_float(config: Dict[str, Any], key: str, default: float) -> float:
+        """
+        安全获取数值配置项
+
+        AI 调优覆盖层可能将数值误写为 dict（如 {'from': 6.5, 'to': 6.8}），
+        导致后续数值比较时抛出 TypeError。此方法在类型不符时降级为默认值并记录警告。
+
+        Args:
+            config: 配置字典
+            key: 配置键名
+            default: 默认值
+
+        Returns:
+            数值类型的配置值
+        """
+        value = config.get(key, default)
+        if isinstance(value, (int, float)):
+            return float(value)
+        # 如果是 dict，尝试提取 'to' 字段（AI 调优变化记录格式）
+        if isinstance(value, dict) and 'to' in value:
+            to_value = value.get('to')
+            if isinstance(to_value, (int, float)):
+                logger.warning(
+                    f"配置项 {key} 为 dict 格式，已提取 'to' 字段值: {to_value}",
+                    key=key, raw_value=value
+                )
+                return float(to_value)
+        logger.warning(
+            f"配置项 {key} 类型异常（{type(value).__name__}），降级为默认值: {default}",
+            key=key, raw_value=value, default=default
+        )
+        return default
 
     def _calc_annualized_rate(self, funding_rate: float) -> float:
         """
@@ -637,8 +674,8 @@ class ScoringEngine:
         # 检查技术面硬性要求（必须同时满足）
         # 从配置文件读取技术面评分阈值（V4.1：默认值对齐配置项 min_total_score=7.0、min_three_tops_score=3.0）
         technical_config = self.config.get('scoring', {}).get('technical', {})
-        min_total_score = technical_config.get('min_total_score', 7.0)
-        min_three_tops_score = technical_config.get('min_three_tops_score', 3.0)
+        min_total_score = self._safe_get_float(technical_config, 'min_total_score', 7.0)
+        min_three_tops_score = self._safe_get_float(technical_config, 'min_three_tops_score', 3.0)
 
         if not (total_technical_score >= min_total_score and three_tops_score >= min_three_tops_score):
             logger.info(
@@ -654,7 +691,7 @@ class ScoringEngine:
         # 因为降级模式缺乏OI变化率数据，需要用更严格的技术面要求补偿信号质量
         if sentiment_degraded:
             degraded_config = self.config.get('scoring', {}).get('sentiment', {}).get('degraded_mode', {})
-            degraded_min_technical = degraded_config.get('min_technical_score', 7.0)
+            degraded_min_technical = self._safe_get_float(degraded_config, 'min_technical_score', 7.0)
             if total_technical_score < degraded_min_technical:
                 logger.info(
                     "降级模式技术分约束不满足，不入场",

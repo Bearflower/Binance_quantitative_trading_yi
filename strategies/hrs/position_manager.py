@@ -349,6 +349,34 @@ class PositionManager:
             return []
         return list(pos.get("algo_ids", {}).values())
 
+    def get_algo_id(self, symbol: str, role: str) -> Optional[int]:
+        """
+        获取指定角色的条件单 algoId
+
+        Args:
+            symbol: 交易对
+            role: 角色 ("sl"/"tp1"/"tp2"/"tp2_trailing")
+
+        Returns:
+            algoId 或 None
+        """
+        pos = self._positions.get(symbol)
+        if pos is None:
+            return None
+        return pos.get("algo_ids", {}).get(role)
+
+    def remove_algo_id(self, symbol: str, role: str) -> None:
+        """
+        移除指定角色的 algoId 记录（取消订单后调用）
+
+        Args:
+            symbol: 交易对
+            role: 角色
+        """
+        pos = self._positions.get(symbol)
+        if pos:
+            pos.get("algo_ids", {}).pop(role, None)
+
     def has_algo_id(self, symbol: str, role: str) -> bool:
         """
         检查某个角色的条件单是否已有 algoId 记录
@@ -394,11 +422,25 @@ class PositionManager:
             取消结果统计 {"total": int, "cancelled": int, "failed": int, "method": "batch"|"individual"}
         """
         # 1. 优先批量取消（仅统一账户）
+        # F1 修复：Binance 批量成功返回 {"complete": true}（无 code 字段），
+        # 之前判断 batch_result.get("code") == 200 永远是 None != 200，
+        # 导致批量取消每次都被当作失败跳过 → 旧单累积成孤儿
         if getattr(self.binance_api, "use_unified_account", False):
             try:
                 batch_result = await self.binance_api.cancel_all_algo_orders(symbol)
-                if batch_result.get("code") == 200:
+                # 兼容两种格式：Binance 成功返回 {"complete": true}，
+                # 错误返回 {"code": -xxxx, "msg": "..."}
+                is_batch_success = (
+                    batch_result.get("complete") is True
+                    or batch_result.get("code") == 200
+                )
+                if is_batch_success:
                     self.clear_algo_ids(symbol)
+                    logger.info(
+                        "批量取消条件单成功",
+                        symbol=symbol,
+                        result=batch_result,
+                    )
                     return {
                         "total": batch_result.get("total", 0),
                         "cancelled": batch_result.get("cancelled", 0),
@@ -406,7 +448,7 @@ class PositionManager:
                         "method": "batch",
                     }
                 logger.warning(
-                    "批量取消条件单返回异常状态码",
+                    "批量取消条件单返回异常结果",
                     symbol=symbol,
                     result=batch_result,
                 )
@@ -424,30 +466,88 @@ class PositionManager:
         """
         按本地 algo_ids 逐个取消条件单（批量接口不可用/失败时的回退路径，FR-07）
 
-        Args:
-            symbol: 交易对
-
-        Returns:
-            取消结果统计
+        F2 修复：先按本地 algo_ids 取消，再从 DB condition_orders 查
+        strategy_name='hrs' AND symbol=X AND status='OPEN' 的所有 algo_id
+        逐个取消。这样即使批量 API 再次失败，也能清理所有孤儿单
+        （比如 V2.11 每次 replenish 新增一个旧单但批量 API 又返回失败）。
         """
         result = {"total": 0, "cancelled": 0, "failed": 0, "method": "individual"}
-        algo_ids = self.get_algo_ids(symbol)
-        result["total"] = len(algo_ids)
-        for algo_id in algo_ids:
+
+        # Step 1: 先按本地 algo_ids 取消
+        local_algo_ids = self.get_algo_ids(symbol)
+        already_cancelled: set = set()
+        for algo_id in local_algo_ids:
+            result["total"] += 1
             try:
                 await self.binance_api.cancel_algo_order(symbol, algo_id)
                 result["cancelled"] += 1
+                already_cancelled.add(algo_id)
             except Exception as cancel_err:
                 result["failed"] += 1
                 logger.debug(
-                    "取消单个条件单失败",
+                    "取消本地记录条件单失败",
                     symbol=symbol,
                     algo_id=algo_id,
                     error=str(cancel_err),
                 )
 
+        # Step 2: DB 兜底 — 查 condition_orders 所有 OPEN 单
+        # 过滤条件：strategy_name='hrs'（不碰其他策略）+ symbol 精确匹配
+        if getattr(self, "db", None) is not None:
+            try:
+                db_rows = await self.db.fetch_all(
+                    """
+                    SELECT DISTINCT algo_id
+                    FROM btc_eth.condition_orders
+                    WHERE strategy_name = 'hrs'
+                      AND symbol = $1
+                      AND status = 'OPEN'
+                      AND algo_id IS NOT NULL
+                    """,
+                    symbol,
+                )
+                orphan_ids = [
+                    r["algo_id"] for r in db_rows
+                    if int(r["algo_id"]) not in already_cancelled
+                ]
+                if orphan_ids:
+                    logger.info(
+                        "DB 兜底发现孤儿条件单，逐个取消",
+                        symbol=symbol,
+                        orphan_count=len(orphan_ids),
+                    )
+                    for algo_id in orphan_ids:
+                        result["total"] += 1
+                        try:
+                            await self.binance_api.cancel_algo_order(symbol, int(algo_id))
+                            result["cancelled"] += 1
+                            # 同步更新 DB 状态为 CANCELED
+                            await self.db.execute(
+                                """
+                                UPDATE btc_eth.condition_orders
+                                SET status = 'CANCELED', updated_at = NOW()
+                                WHERE algo_id = $1 AND symbol = $2
+                                """,
+                                int(algo_id), symbol,
+                            )
+                            already_cancelled.add(int(algo_id))
+                        except Exception as db_cancel_err:
+                            result["failed"] += 1
+                            logger.debug(
+                                "取消 DB 记录条件单失败",
+                                symbol=symbol,
+                                algo_id=algo_id,
+                                error=str(db_cancel_err),
+                            )
+            except Exception as db_err:
+                logger.warning(
+                    "DB 兜底查询/取消失败（不阻断主流程）",
+                    symbol=symbol,
+                    error=str(db_err),
+                )
+
         # 全部取消成功才清空本地（部分失败则保留记录，下一轮补单重试仍可取消，FR-07）
-        if algo_ids and result["failed"] == 0:
+        if local_algo_ids and result["failed"] == 0:
             self.clear_algo_ids(symbol)
 
         logger.info(
@@ -456,6 +556,7 @@ class PositionManager:
             total=result["total"],
             cancelled=result["cancelled"],
             failed=result["failed"],
+            method=result["method"],
         )
         return result
 

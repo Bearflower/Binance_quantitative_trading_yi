@@ -24,11 +24,13 @@ from ai_tuner.adapters.base_adapter import (
     StrategyReport,
 )
 from ai_tuner.adapters.mtpcs_adapter import MTPCSAdapter
+from ai_tuner.adapters.mtpcs_aggressive_adapter import MTPCSAggressiveAdapter
 from ai_tuner.adapters.new_coin_adapter import NewCoinAdapter
 
 __all__ = [
     "BaseAdapter",
     "MTPCSAdapter",
+    "MTPCSAggressiveAdapter",
     "NewCoinAdapter",
     "StrategyMeta",
     "PerformanceMetrics",

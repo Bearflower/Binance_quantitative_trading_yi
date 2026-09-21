@@ -17,6 +17,7 @@ from shared.notification import NotificationClient
 from shared.database import DatabaseManager
 from shared.condition_orders import get_open_orders
 from shared.strategy_state import sync_open_positions
+from shared.position_baseline import rebuild_from_exchange
 
 from .scoring_engine import ScoringEngine, ScoringResult
 from .pattern import PatternRecognizer
@@ -371,8 +372,8 @@ class NewCoinStrategy(BaseStrategy):
                 logger.error(f"当前价格无效: {current_price}")
                 return False, "当前价格无效"
 
-            # 执行做空
-            order = await self.trading_executor.execute_short(
+            # 执行做空（execute_short 返回 (order, fail_reason) 元组，透传真实失败原因）
+            order, fail_reason = await self.trading_executor.execute_short(
                 symbol=symbol,
                 score_result=score_result_dict,
                 current_price=current_price
@@ -400,8 +401,10 @@ class NewCoinStrategy(BaseStrategy):
                 logger.info(f"交易信号执行成功: {symbol}")
                 return True, ""
             else:
-                logger.info(f"交易信号执行失败(限价单未成交): {symbol}")
-                return False, "做空限价单未成交或失败"
+                # 使用执行器返回的真实失败原因，避免吞掉真实原因（如保证金超限/仓位已满）
+                reason = fail_reason or "做空开仓失败"
+                logger.info(f"交易信号执行失败: {symbol}", reason=reason)
+                return False, reason
 
         except Exception as e:
             logger.error(
@@ -482,38 +485,43 @@ class NewCoinStrategy(BaseStrategy):
 
         # 重启后首次执行：为现有持仓补全条件单（止损止盈）
         if not self._replenish_done:
-            # 优先从数据库状态获取持仓，如为空则从交易所同步
+            # 优先从数据库状态获取持仓，如为空则从 new_coin.short_positions 表恢复
+            # B1 修复：彻底移除全账户 positionRisk 兜底 —— 那会把其他策略（btc_eth/hrs/grid）
+            # 的 short 仓位也当成 new_coin 自己的，导致误纳他策略仓位
             positions_to_replenish = dict(self.positions) if self.positions else None
             sync_failed = False
             
             if not positions_to_replenish:
-                # 从交易所查询实际持仓
-                logger.info("数据库状态无持仓，尝试从交易所同步持仓...")
+                # 从 new_coin.short_positions 表恢复自己的持仓（B1 修复：精确过滤）
+                logger.info("内存状态无持仓，从 new_coin.short_positions 表恢复自己的持仓...")
                 try:
-                    exchange_positions = await self.binance_client._request(
-                        "GET", "/papi/v1/um/positionRisk", signed=True
+                    db_positions = await self.db.fetch_all(
+                        """
+                        SELECT symbol, entry_price, opened_at
+                        FROM new_coin.short_positions
+                        WHERE status = 'open'
+                        ORDER BY opened_at ASC
+                        """
                     )
-                    short_positions = [
-                        p for p in exchange_positions
-                        if float(p.get('positionAmt', 0)) < 0
-                    ]
-                    if short_positions:
+                    if db_positions:
                         positions_to_replenish = {}
-                        for p in short_positions:
-                            symbol = p['symbol']
-                            entry_price = float(p.get('entryPrice', 0))
+                        for row in db_positions:
+                            symbol = row['symbol']
+                            entry_price = float(row.get('entry_price', 0) or 0)
+                            opened_at = row.get('opened_at')
+                            opened_at_iso = opened_at.isoformat() if opened_at else datetime.now(timezone.utc).isoformat()
                             positions_to_replenish[symbol] = {
                                 'entry_price': entry_price,
-                                'entry_time': datetime.now(timezone.utc).isoformat()
+                                'entry_time': opened_at_iso,
                             }
                         logger.info(
-                            f"从交易所同步到 {len(short_positions)} 个持仓",
+                            f"从 new_coin.short_positions 表恢复到 {len(db_positions)} 个自有持仓",
                             symbols=list(positions_to_replenish.keys())
                         )
                     else:
-                        logger.info("交易所无做空持仓")
+                        logger.info("new_coin.short_positions 表无 open 状态持仓（本策略当前无持仓）")
                 except Exception as e:
-                    logger.error(f"从交易所同步持仓失败: {e}")
+                    logger.error(f"从 new_coin.short_positions 表恢复持仓失败: {e}")
                     sync_failed = True
             
             if positions_to_replenish:
@@ -584,6 +592,10 @@ class NewCoinStrategy(BaseStrategy):
         # 1.5 同步持仓：从交易所获取实际持仓，清理 self.positions 中的脏数据
         # 避免因重启后状态恢复导致已平仓的脏数据阻塞新入场
         await self._sync_positions_from_exchange()
+
+        # 1.6 基线未就绪时重试重建（启动时交易所不可用会导致禁止开仓）
+        if self.trading_executor and not self.trading_executor.baseline_ready:
+            await self._rebuild_position_baseline()
 
         # 2. 检测新币
         new_coins = await self.listing_detector.detect_new_listings()
@@ -1012,6 +1024,10 @@ class NewCoinStrategy(BaseStrategy):
 
                     # 持仓已平仓
                     logger.info(f"持仓已平仓: {symbol}")
+
+                    # B1 修复：条件单自动平仓也需要更新 short_positions 表
+                    # （executor._close_position 只处理主动平仓，条件单自动平仓不会走那里）
+                    await self.trading_executor._update_short_position_closed(symbol=symbol)
                     
                     # 取消孤儿条件单（止盈止损单），防止后续价格波动触发非预期交易
                     cancel_result = await self.trading_executor.cancel_all_algo_orders(symbol)
@@ -1565,6 +1581,126 @@ class NewCoinStrategy(BaseStrategy):
             self.peak_pnl = None
             self.drawdown_pause_until = None
 
+        # 基线重建（R4）：与交易所对账后重建持仓基线，完成前禁止开新仓
+        await self._rebuild_position_baseline()
+
+    async def _rebuild_position_baseline(self) -> None:
+        """
+        启动持仓基线重建（R4）
+
+        从交易所 positionRisk 重建做空持仓基线，并与本地状态对账：
+        - 交易所空列表 ⇒ 本策略零持仓（PM 账户已知坑），清空本地残留记录
+        - 数量以交易所为准；入场价优先保留本地记录，本地缺失时用交易所 entryPrice
+        - 交易所已无持仓的币种：清理本地记录与持仓跟踪
+        - 重建成功前 trading_executor.baseline_ready 保持 False（禁止开新仓，仅允许减仓）
+        - 交易所接口异常时不改动本地记录，保持基线未就绪，由后续周期重试
+        """
+        executor = self.trading_executor
+        if executor is None:
+            return
+
+        executor.baseline_ready = False
+        contract_sizes = await executor.get_contract_size_map()
+        result = await rebuild_from_exchange(
+            self.binance_client, executor.leverage, contract_sizes
+        )
+        if not result.success:
+            logger.error(
+                "持仓基线重建失败：交易所持仓不可用，暂禁止开新仓，后续周期重试"
+            )
+            return
+
+        rebuilt = self._merge_rebuilt_positions(result.positions)
+        self._prune_missing_positions(executor, rebuilt)
+
+        self.positions = rebuilt
+        self._sync_baseline_to_tracking(executor, rebuilt)
+        executor.baseline_ready = True
+        logger.info(
+            "持仓基线重建完成",
+            position_count=len(rebuilt),
+            total_margin=round(result.total_margin, 4),
+            symbols=list(rebuilt.keys()),
+        )
+
+    def _sync_baseline_to_tracking(
+        self,
+        executor: Any,
+        rebuilt: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """
+        将重建后的持仓基线同步写入 executor.position_tracking（R4 / AC-3）
+
+        重启后若交易所已有持仓而 position_tracking 为空，占用保证金会被记为 0，
+        导致在已有占用之上继续按满额度开仓；故必须把数量与入场价同步到跟踪表。
+        已存在的 algo_ids（条件单恢复）与 atr 字段必须保留，不得覆盖丢失。
+
+        Args:
+            executor: 交易执行器（提供 position_tracking）
+            rebuilt: 重建后的持仓记录（key 为交易对）
+        """
+        tracking = executor.position_tracking
+        for symbol, pos in rebuilt.items():
+            entry = tracking.get(symbol) or {}
+            entry.setdefault('algo_ids', {})
+            entry['entry_price'] = pos['entry_price']
+            entry['entry_quantity'] = pos['quantity']
+            entry['entry_time'] = pos['entry_time']
+            tracking[symbol] = entry
+        if rebuilt:
+            logger.info("持仓基线已同步到 position_tracking", symbols=list(rebuilt.keys()))
+
+    def _merge_rebuilt_positions(
+        self, rebuilt_positions: Dict[str, Any]
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        合并交易所基线到本地记录（数量/保证金以交易所为准，入场价本地优先）
+
+        Args:
+            rebuilt_positions: {symbol: RebuiltPosition}（rebuild_from_exchange 结果）
+
+        Returns:
+            Dict[str, Dict[str, Any]]: 重建后的本地持仓记录（key 为交易对）
+        """
+        merged: Dict[str, Dict[str, Any]] = {}
+        for symbol, pos in rebuilt_positions.items():
+            local = self.positions.get(symbol) or {}
+            local_entry = float(local.get('entry_price', 0) or 0)
+            if pos.estimated_entry_price:
+                logger.warning(
+                    "交易所入场价缺失，使用标记价估算",
+                    symbol=symbol,
+                    entry_price=pos.entry_price,
+                )
+            merged[symbol] = {
+                'order_id': local.get('order_id'),
+                'entry_price': local_entry if local_entry > 0 else pos.entry_price,
+                'entry_time': local.get('entry_time') or datetime.now(timezone.utc).isoformat(),
+                'score': local.get('score'),
+                # 数量与占用保证金以交易所为准（统一保证金口径）
+                'quantity': pos.quantity,
+                'margin': pos.margin,
+            }
+        return merged
+
+    def _prune_missing_positions(
+        self,
+        executor: Any,
+        rebuilt: Dict[str, Dict[str, Any]],
+    ) -> None:
+        """
+        清理交易所已无持仓的本地记录与持仓跟踪
+
+        Args:
+            executor: 交易执行器（提供 clear_position_tracking）
+            rebuilt: 重建后的持仓记录（key 为仍在持仓的币种）
+        """
+        removed = [s for s in self.positions if s not in rebuilt]
+        for symbol in removed:
+            executor.clear_position_tracking(symbol)
+        if removed:
+            logger.warning("基线重建：清理交易所已无持仓的本地记录", symbols=removed)
+
     async def _save_state(self) -> None:
         """
         保存策略状态
@@ -1613,11 +1749,7 @@ class NewCoinStrategy(BaseStrategy):
                 datetime.now()
             )
 
-            # 同步当前持仓到看板聚合表
-            # 口径说明：
-            # - margin：新币做空每仓为固定保证金，直接取配置 trading.single_position_margin
-            # - quantity：self.positions 未存数量，从交易所做空持仓 positionAmt 实时获取
-            #   （获取失败时该仓 quantity 记为 0，margin 仍正常上报）
+            # 同步当前持仓到看板聚合表（口径：统一保证金口径，见 _sync_open_positions_to_db）
             await self._sync_open_positions_to_db()
 
             logger.debug("策略状态已保存")
@@ -1629,37 +1761,30 @@ class NewCoinStrategy(BaseStrategy):
         """
         将新币做空策略当前持仓同步到 trading.strategy_open_positions 表
 
-        持仓来源：self.positions（本地跟踪的做空持仓）。
-        保证金：每仓固定 = 配置 trading.single_position_margin，不随价格波动。
-        数量：从交易所做空持仓 positionAmt 绝对值获取，实时反映真实仓位。
-        如数量查询失败，数量记为 0，保证金仍由 sync_open_positions 内部容错正常上报。
+        口径（R7：与限额口径统一，禁止用固定单笔保证金填充）：
+        - 持仓来源：交易所 positionRisk 中本策略自有币种（self.positions 过滤）
+        - quantity：|positionAmt|
+        - margin：|positionAmt| × markPrice × contractSize / leverage
+        交易所持仓不可用时保留上一次上报值并告警，避免占用被低估导致看板失真。
         """
-        trading_config = self.config.get('trading', {})
-        single_margin = float(trading_config.get('single_position_margin', 0) or 0)
+        executor = self.trading_executor
+        if executor is None:
+            return
 
-        margin_dict = {}
-        qty_dict = {}
-        for symbol in self.positions:
-            margin_dict[symbol] = single_margin
-            qty_dict[symbol] = 0.0
+        symbols = set(self.positions.keys())
+        if not symbols:
+            await sync_open_positions(self.db, self.strategy_name, {}, {})
+            return
 
-        # 从交易所查询做空持仓真实数量（positionAmt < 0，数量取其绝对值）
-        try:
-            exchange_positions = await self.binance_client._request(
-                "GET", "/papi/v1/um/positionRisk", signed=True
-            )
-            for p in exchange_positions:
-                symbol = p.get('symbol')
-                amt = float(p.get('positionAmt', 0) or 0)
-                if symbol in qty_dict and amt < 0:
-                    qty_dict[symbol] = abs(amt)
-        except Exception as e:
+        report = await executor.build_occupancy_report(symbols)
+        if report is None:
             logger.warning(
-                "从交易所同步做空持仓数量失败，数量记为0（保证金仍上报）",
-                error=str(e),
+                "交易所持仓不可用，本次跳过持仓上报（保留上次值），避免占用被低估"
             )
+            return
 
-        await sync_open_positions(self.db, 'new_coin', margin_dict, qty_dict)
+        margin_dict, qty_dict = report
+        await sync_open_positions(self.db, self.strategy_name, margin_dict, qty_dict)
     
     async def _check_pause_status(self) -> bool:
         """

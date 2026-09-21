@@ -14,6 +14,7 @@ from shared.notification import NotificationClient
 from shared.binance_api import BinanceClient
 from .market_state import MarketStateDetector, MarketState, MarketAnalysis
 from .grid_calculator import GridCalculator, DynamicGridParams
+from .margin_advisor import MarginAdvisor, MarginAdvice, DANGEROUS_STATES
 
 
 logger = structlog.get_logger()
@@ -98,49 +99,63 @@ class GridSignalBot:
         self.grid_calculator = grid_calculator
         self.config = config
 
-        # 初始化市场状态检测器
-        self.market_detector = MarketStateDetector(
-            kline_service=kline_service,
-            adx_extreme_strong=config.get('market', {}).get('adx_extreme_strong', 40),
-            adx_extreme_strong_4h=config.get('market', {}).get('adx_extreme_strong_4h', 30),
-            adx_normal_strong=config.get('market', {}).get('adx_normal_strong', 30),
-            adx_normal_strong_4h=config.get('market', {}).get('adx_normal_strong_4h', 25),
-            weak_trend_adx_lower=config.get('market', {}).get('weak_trend_adx_lower', 25),
-            weak_trend_adx_upper=config.get('market', {}).get('weak_trend_adx_upper', 30),
-            volatility_ratio_threshold=Decimal(str(config.get('market', {}).get('volatility_ratio_threshold', 1.2))),
-            volatility_consecutive_count=config.get('market', {}).get('volatility_consecutive_count', 2),
-            volatility_recovery_ratio=Decimal(str(config.get('market', {}).get('volatility_recovery_ratio', 1.2))),
-            recovery_adx_strong_1h=config.get('market', {}).get('recovery_adx_strong_1h', 30),
-            recovery_adx_strong_4h=config.get('market', {}).get('recovery_adx_strong_4h', 30),
-            recovery_adx_weak_1h=config.get('market', {}).get('recovery_adx_weak_1h', 25),
-            recovery_adx_weak_4h=config.get('market', {}).get('recovery_adx_weak_4h', 25),
-            trend_strength_divisor=config.get('market', {}).get('trend_strength_divisor', 30),
-            atr_history_size=config.get('market', {}).get('atr_history_size', 5),
-            ema_fast_period=config.get('market', {}).get('ema_fast', 20),
-            ema_slow_period=config.get('market', {}).get('ema_slow', 50),
-            atr_period=config.get('market', {}).get('atr_period', 14),
+        # 市场状态检测器构造参数（ETH 与 BTC 共享同一份，保证检测口径一致）
+        market_cfg = config.get('market', {})
+        confidence_cfg = market_cfg.get('confidence', {})
+        detector_kwargs = {
+            'adx_extreme_strong': market_cfg.get('adx_extreme_strong', 40),
+            'adx_extreme_strong_4h': market_cfg.get('adx_extreme_strong_4h', 30),
+            'adx_normal_strong': market_cfg.get('adx_normal_strong', 30),
+            'adx_normal_strong_4h': market_cfg.get('adx_normal_strong_4h', 25),
+            'weak_trend_adx_lower': market_cfg.get('weak_trend_adx_lower', 25),
+            'weak_trend_adx_upper': market_cfg.get('weak_trend_adx_upper', 30),
+            'volatility_ratio_threshold': Decimal(str(market_cfg.get('volatility_ratio_threshold', 1.2))),
+            'volatility_consecutive_count': market_cfg.get('volatility_consecutive_count', 2),
+            'volatility_recovery_ratio': Decimal(str(market_cfg.get('volatility_recovery_ratio', 1.2))),
+            'recovery_adx_strong_1h': market_cfg.get('recovery_adx_strong_1h', 30),
+            'recovery_adx_strong_4h': market_cfg.get('recovery_adx_strong_4h', 30),
+            'recovery_adx_weak_1h': market_cfg.get('recovery_adx_weak_1h', 25),
+            'recovery_adx_weak_4h': market_cfg.get('recovery_adx_weak_4h', 25),
+            'trend_strength_divisor': market_cfg.get('trend_strength_divisor', 30),
+            'atr_history_size': market_cfg.get('atr_history_size', 5),
+            'ema_fast_period': market_cfg.get('ema_fast', 20),
+            'ema_slow_period': market_cfg.get('ema_slow', 50),
+            'atr_period': market_cfg.get('atr_period', 14),
             # V2.3 新增参数
-            emergency_adx_threshold=config.get('market', {}).get('emergency_adx_threshold', 55),
-            trend_acceleration_threshold=config.get('market', {}).get('trend_acceleration_threshold', 8),
-            adx_history_size=config.get('market', {}).get('adx_history_size', 3),
+            'emergency_adx_threshold': market_cfg.get('emergency_adx_threshold', 55),
+            'trend_acceleration_threshold': market_cfg.get('trend_acceleration_threshold', 8),
+            'adx_history_size': market_cfg.get('adx_history_size', 3),
             # V2.4 三层预警架构新增参数
-            adx_period=config.get('market', {}).get('adx_period', 10),
-            price_emergency_1h=Decimal(str(config.get('market', {}).get('price_emergency_1h', 0.03))),
-            price_emergency_15m=Decimal(str(config.get('market', {}).get('price_emergency_15m', 0.015))),
-            adx_early_warning_15m=config.get('market', {}).get('adx_early_warning_15m', 50),
-            price_early_warning_1h=Decimal(str(config.get('market', {}).get('price_early_warning_1h', 0.01))),
+            'adx_period': market_cfg.get('adx_period', 10),
+            'price_emergency_1h': Decimal(str(market_cfg.get('price_emergency_1h', 0.03))),
+            'price_emergency_15m': Decimal(str(market_cfg.get('price_emergency_15m', 0.015))),
+            'adx_early_warning_15m': market_cfg.get('adx_early_warning_15m', 50),
+            'price_early_warning_1h': Decimal(str(market_cfg.get('price_early_warning_1h', 0.01))),
             # 置信度参数（V2.3从配置读取）
-            confidence_emergency=Decimal(str(config.get('market', {}).get('confidence', {}).get('emergency_extreme_trend', 0.99))),
-            confidence_trend_accelerating=Decimal(str(config.get('market', {}).get('confidence', {}).get('trend_accelerating', 0.9))),
-            confidence_extreme_strong=Decimal(str(config.get('market', {}).get('confidence', {}).get('extreme_strong_trend', 0.95))),
-            confidence_volatility_abnormal=Decimal(str(config.get('market', {}).get('confidence', {}).get('volatility_abnormal', 0.85))),
-            confidence_normal_strong=Decimal(str(config.get('market', {}).get('confidence', {}).get('normal_strong_trend', 0.8))),
-            confidence_weak_trend=Decimal(str(config.get('market', {}).get('confidence', {}).get('weak_trend', 0.7))),
-            confidence_oscillation=Decimal(str(config.get('market', {}).get('confidence', {}).get('oscillation', 0.5))),
+            'confidence_emergency': Decimal(str(confidence_cfg.get('emergency_extreme_trend', 0.99))),
+            'confidence_trend_accelerating': Decimal(str(confidence_cfg.get('trend_accelerating', 0.9))),
+            'confidence_extreme_strong': Decimal(str(confidence_cfg.get('extreme_strong_trend', 0.95))),
+            'confidence_volatility_abnormal': Decimal(str(confidence_cfg.get('volatility_abnormal', 0.85))),
+            'confidence_normal_strong': Decimal(str(confidence_cfg.get('normal_strong_trend', 0.8))),
+            'confidence_weak_trend': Decimal(str(confidence_cfg.get('weak_trend', 0.7))),
+            'confidence_oscillation': Decimal(str(confidence_cfg.get('oscillation', 0.5))),
             # V2.4 新增置信度
-            confidence_price_emergency=Decimal(str(config.get('market', {}).get('confidence', {}).get('price_emergency', 1.0))),
-            confidence_early_warning_15m=Decimal(str(config.get('market', {}).get('confidence', {}).get('early_warning_15m', 0.92))),
-            confidence_trend_confirmed_1h=Decimal(str(config.get('market', {}).get('confidence', {}).get('trend_confirmed_1h', 0.95)))
+            'confidence_price_emergency': Decimal(str(confidence_cfg.get('price_emergency', 1.0))),
+            'confidence_early_warning_15m': Decimal(str(confidence_cfg.get('early_warning_15m', 0.92))),
+            'confidence_trend_confirmed_1h': Decimal(str(confidence_cfg.get('trend_confirmed_1h', 0.95)))
+        }
+
+        # 初始化市场状态检测器（ETH 主检测）
+        self.market_detector = MarketStateDetector(kline_service=kline_service, **detector_kwargs)
+
+        # V2.5 保证金引导：BTC 独立检测器（与 ETH 同参数，实例状态独立不污染）
+        self.btc_market_detector = MarketStateDetector(kline_service=kline_service, **detector_kwargs)
+        self.margin_advisor = MarginAdvisor(
+            config=config,
+            binance_client=binance_client,
+            kline_service=kline_service,
+            btc_detector=self.btc_market_detector,
+            grid_calculator=grid_calculator
         )
 
         # 交易对配置
@@ -151,6 +166,9 @@ class GridSignalBot:
         # 杠杆和保证金配置
         self.default_leverage = config.get('trading', {}).get('leverage', 10)
         self.default_margin = Decimal(str(config.get('trading', {}).get('margin', 500)))
+
+        # K线数量（基准 ATR 取数）
+        self._kline_limit = int(config.get('kline', {}).get('limit', 100))
 
         # 网格数量上下限（用于仓位建议）
         self.min_grid_count = config.get('grid', {}).get('min_grid_count', 5)
@@ -208,7 +226,18 @@ class GridSignalBot:
             # 1. 检测市场状态
             market_analysis = await self.market_detector.detect_market_state(symbol)
 
-            # 2. 根据市场状态分发
+            # 2. V2.5 保证金智能引导（所有状态均计算；失败不阻断主流程）
+            advice = None
+            try:
+                advice = await self.margin_advisor.compute_advice(symbol, market_analysis)
+            except Exception as e:
+                logger.warning(
+                    f"{symbol} 保证金引导计算失败，本次跳过",
+                    error=str(e),
+                    exc_info=True
+                )
+
+            # 3. 根据市场状态分发
             grid_params = None
             position_valid = None  # 非网格状态为 None，表示不适用
             position_message = ""
@@ -216,15 +245,7 @@ class GridSignalBot:
             state = market_analysis.state
 
             # V2.4: 检测是否从危险状态恢复到可交易状态
-            dangerous_states = {
-                MarketState.PRICE_EMERGENCY,
-                MarketState.EARLY_WARNING_15M,
-                MarketState.TREND_CONFIRMED_1H,
-                MarketState.TREND_ACCELERATING,
-                MarketState.EXTREME_STRONG_TREND,
-                MarketState.NORMAL_STRONG_TREND,
-                MarketState.VOLATILITY_ABNORMAL,
-            }
+            dangerous_states = DANGEROUS_STATES
             tradable_states = {MarketState.WEAK_TREND, MarketState.OSCILLATION}
 
             is_recovery = False
@@ -252,15 +273,15 @@ class GridSignalBot:
 
             # 1h ADX(10) 趋势确认（第3层，V2.4新增，ADX周期从14缩短为10）
             elif state == MarketState.TREND_CONFIRMED_1H:
-                message = self._generate_trend_confirmed_1h_message(symbol, market_analysis)
+                message = self._generate_trend_confirmed_1h_message(symbol, market_analysis, advice=advice)
 
             # 趋势急剧增强：不计算网格参数，推送"暂停或单向挂单"（V2.3新增）
             elif state == MarketState.TREND_ACCELERATING:
-                message = self._generate_trend_accelerating_message(symbol, market_analysis)
+                message = self._generate_trend_accelerating_message(symbol, market_analysis, advice=advice)
 
             # 极端强趋势：不计算网格参数，推送"必须立即终止"
             elif state == MarketState.EXTREME_STRONG_TREND:
-                message = self._generate_extreme_strong_message(symbol, market_analysis)
+                message = self._generate_extreme_strong_message(symbol, market_analysis, advice=advice)
 
             # 波动率异常：不计算网格参数，推送"暂停挂单"
             elif state == MarketState.VOLATILITY_ABNORMAL:
@@ -268,11 +289,15 @@ class GridSignalBot:
 
             # 普通强趋势：不计算网格参数，推送"建议终止"
             elif state == MarketState.NORMAL_STRONG_TREND:
-                message = self._generate_normal_strong_message(symbol, market_analysis)
+                message = self._generate_normal_strong_message(symbol, market_analysis, advice=advice)
 
             # 弱趋势或震荡：计算网格参数，推送网格建议
             elif state in [MarketState.WEAK_TREND, MarketState.OSCILLATION]:
-                grid_params = await self._calculate_grid_params(symbol, market_analysis)
+                grid_params = await self._calculate_grid_params(
+                    symbol,
+                    market_analysis,
+                    atr_baseline=self.margin_advisor.last_baseline_atr
+                )
                 position_valid, position_message, _ = self.grid_calculator.validate_position_size(
                     price=market_analysis.current_price,
                     grid_count=grid_params.grid_count,
@@ -284,22 +309,28 @@ class GridSignalBot:
                     market_analysis=market_analysis,
                     grid_params=grid_params,
                     position_valid=position_valid,
-                    position_message=position_message
+                    position_message=position_message,
+                    advice=advice
                 )
 
             else:
                 # 未知状态，默认震荡处理
                 logger.warning(f"{symbol} 未知市场状态: {state}，默认按震荡处理")
-                grid_params = await self._calculate_grid_params(symbol, market_analysis)
+                grid_params = await self._calculate_grid_params(
+                    symbol,
+                    market_analysis,
+                    atr_baseline=self.margin_advisor.last_baseline_atr
+                )
                 message = self._generate_signal_message(
                     symbol=symbol,
                     market_analysis=market_analysis,
                     grid_params=grid_params,
                     position_valid=True,
-                    position_message=""
+                    position_message="",
+                    advice=advice
                 )
 
-            # 3. 构建信号
+            # 4. 构建信号
             signal = GridSignal(
                 symbol=symbol,
                 market_analysis=market_analysis,
@@ -412,7 +443,8 @@ class GridSignalBot:
     async def _calculate_grid_params(
         self,
         symbol: str,
-        market_analysis: MarketAnalysis
+        market_analysis: MarketAnalysis,
+        atr_baseline: Optional[Decimal] = None
     ) -> DynamicGridParams:
         """
         计算动态网格参数
@@ -420,6 +452,7 @@ class GridSignalBot:
         Args:
             symbol: 交易对
             market_analysis: 市场分析结果
+            atr_baseline: 基准ATR（V2.5 由保证金引导复用传入，避免重复拉取 K 线）
 
         Returns:
             动态网格参数
@@ -427,15 +460,14 @@ class GridSignalBot:
         Raises:
             ValueError: 参数验证失败
         """
-        # 获取历史K线数据（用于计算基准ATR）
-        klines = await self.kline_service.get_klines(
-            symbol=symbol,
-            interval='1d',
-            limit=100
-        )
-
-        # 计算基准ATR
-        atr_baseline = self.grid_calculator.calculate_baseline_atr(klines)
+        # V2.5：未传入时获取历史K线数据（用于计算基准ATR）
+        if atr_baseline is None:
+            klines = await self.kline_service.get_klines(
+                symbol=symbol,
+                interval='1d',
+                limit=self._kline_limit
+            )
+            atr_baseline = self.grid_calculator.calculate_baseline_atr(klines)
 
         # 计算动态网格参数
         params = self.grid_calculator.calculate_dynamic_grid_params(
@@ -563,7 +595,8 @@ class GridSignalBot:
         market_analysis: MarketAnalysis,
         grid_params: DynamicGridParams,
         position_valid: bool,
-        position_message: str
+        position_message: str,
+        advice: Optional[MarginAdvice] = None
     ) -> str:
         """
         生成网格信号推送消息
@@ -574,6 +607,7 @@ class GridSignalBot:
             grid_params: 动态网格参数
             position_valid: 仓位是否可行
             position_message: 仓位提示信息
+            advice: 保证金引导建议（V2.5，skipped 时不拼装板块）
 
         Returns:
             推送消息
@@ -651,20 +685,42 @@ class GridSignalBot:
 6. 确认创建前请检查每格下单数量≥1张。
 """
 
-        # 组合消息
-        message = f"""
-{title}
-{market_data}
-{grid_params_text}
-{stop_loss_text}
-{move_text}
-{funding_text}
-{operation_text}
-"""
+        # V2.5 保证金引导板块（插入在资金配置与操作指令之间；skipped 时不拼装）
+        margin_section = ""
+        if advice is not None and not advice.skipped:
+            margin_section = self.margin_advisor.format_section(advice)
+
+        # 组合消息（保证金板块仅在非空时插入）
+        parts = [
+            title, market_data, grid_params_text, stop_loss_text,
+            move_text, funding_text, margin_section, operation_text
+        ]
+        message = "\n\n".join(part.strip() for part in parts if part.strip())
 
         return message.strip()
 
-    def _generate_trend_accelerating_message(self, symbol: str, market_analysis: MarketAnalysis) -> str:
+    @staticmethod
+    def _append_divergence(message: str, advice: Optional[MarginAdvice]) -> str:
+        """
+        追加 BTC 背离提示行到警报末尾（V2.5，仅非空时追加）
+
+        Args:
+            message: 原始警报消息
+            advice: 保证金引导建议（可为 None）
+
+        Returns:
+            追加后的消息
+        """
+        if advice is not None and advice.divergence_line:
+            return f"{message}\n\n⚠️ 背离: {advice.divergence_line}"
+        return message
+
+    def _generate_trend_accelerating_message(
+        self,
+        symbol: str,
+        market_analysis: MarketAnalysis,
+        advice: Optional[MarginAdvice] = None
+    ) -> str:
         """
         生成趋势急剧增强警报消息（V2.3新增）
 
@@ -673,6 +729,7 @@ class GridSignalBot:
         Args:
             symbol: 交易对
             market_analysis: 市场分析结果
+            advice: 保证金引导建议（V2.5，末尾追加 BTC 背离提示）
 
         Returns:
             推送消息
@@ -680,7 +737,7 @@ class GridSignalBot:
         adx_current = float(market_analysis.adx_1h)
         adx_prev = float(market_analysis.adx_prev_1h)
         acceleration = adx_current - adx_prev if adx_prev > 0 else 0
-        return f"""
+        message = f"""
 ⚠️ 【网格信号灯】趋势急剧增强
 
 📊 ADX 在 2 小时内从 {adx_prev:.1f} 升至 {adx_current:.1f} (+{acceleration:.1f})
@@ -690,20 +747,27 @@ class GridSignalBot:
 
 💡 操作：考虑终止网格或取消所有逆势挂单。
 """.strip()
+        return self._append_divergence(message, advice)
 
-    def _generate_extreme_strong_message(self, symbol: str, market_analysis: MarketAnalysis) -> str:
+    def _generate_extreme_strong_message(
+        self,
+        symbol: str,
+        market_analysis: MarketAnalysis,
+        advice: Optional[MarginAdvice] = None
+    ) -> str:
         """
         生成极端强趋势警报消息
 
         Args:
             symbol: 交易对
             market_analysis: 市场分析结果
+            advice: 保证金引导建议（V2.5，末尾追加 BTC 背离提示）
 
         Returns:
             推送消息
         """
         direction = "上升" if market_analysis.ema20_1h > market_analysis.ema50_1h else "下降"
-        return f"""
+        message = f"""
 🚨 【网格信号灯】极端强趋势警报 - 必须立即终止
 
 📊 市场状态
@@ -720,20 +784,27 @@ ADX 超过 {self.market_detector.adx_extreme_strong}，市场处于极端单边�
 请立即终止当前 {symbol} 网格，不要犹豫。
 等待 1h ADX 回落到 {self.market_detector.recovery_adx_strong_1h} 以下，且 4h ADX < {self.market_detector.recovery_adx_strong_4h} 时再考虑重建。
 """.strip()
+        return self._append_divergence(message, advice)
 
-    def _generate_normal_strong_message(self, symbol: str, market_analysis: MarketAnalysis) -> str:
+    def _generate_normal_strong_message(
+        self,
+        symbol: str,
+        market_analysis: MarketAnalysis,
+        advice: Optional[MarginAdvice] = None
+    ) -> str:
         """
         生成普通强趋势警报消息
 
         Args:
             symbol: 交易对
             market_analysis: 市场分析结果
+            advice: 保证金引导建议（V2.5，末尾追加 BTC 背离提示）
 
         Returns:
             推送消息
         """
         direction = "上升" if market_analysis.ema20_1h > market_analysis.ema50_1h else "下降"
-        return f"""
+        message = f"""
 ⚠️ 【网格信号灯】强趋势警报 - 建议终止网格
 
 📊 市场状态
@@ -749,6 +820,7 @@ ADX 超过 {self.market_detector.adx_extreme_strong}，市场处于极端单边�
 💡 操作指令：
 建议立即终止当前 {symbol} 网格。等待后续 ADX 回落到 {self.market_detector.recovery_adx_strong_1h} 以下再重建。
 """.strip()
+        return self._append_divergence(message, advice)
 
     def _generate_volatility_abnormal_message(self, symbol: str, market_analysis: MarketAnalysis) -> str:
         """
@@ -856,7 +928,12 @@ ATR 在 2 小时内飙升 {change_pct:.1f}%，市场可能出现剧烈单边行�
 3. 密切关注后续1h ADX是否确认趋势
 """.strip()
 
-    def _generate_trend_confirmed_1h_message(self, symbol: str, market_analysis: MarketAnalysis) -> str:
+    def _generate_trend_confirmed_1h_message(
+        self,
+        symbol: str,
+        market_analysis: MarketAnalysis,
+        advice: Optional[MarginAdvice] = None
+    ) -> str:
         """
         生成1h ADX(10)趋势确认消息（V2.4新增，第3层预警）
 
@@ -865,12 +942,13 @@ ATR 在 2 小时内飙升 {change_pct:.1f}%，市场可能出现剧烈单边行�
         Args:
             symbol: 交易对
             market_analysis: 市场分析结果
+            advice: 保证金引导建议（V2.5，末尾追加 BTC 背离提示）
 
         Returns:
             推送消息
         """
         direction = "上升" if market_analysis.ema20_1h > market_analysis.ema50_1h else "下降"
-        return f"""
+        message = f"""
 🚨 【网格信号灯】1h ADX(10) 趋势确认 - 必须立即终止网格 🚨
 
 📊 市场数据
@@ -890,6 +968,7 @@ ATR 在 2 小时内飙升 {change_pct:.1f}%，市场可能出现剧烈单边行�
 
 🔄 恢复条件：
 等待 1h ADX 回落到 {self.market_detector.recovery_adx_strong_1h} 以下再考虑重建。""".strip()
+        return self._append_divergence(message, advice)
 
     def _generate_recovery_message(self, symbol: str, market_analysis: MarketAnalysis) -> str:
         """

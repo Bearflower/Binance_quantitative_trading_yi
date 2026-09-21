@@ -636,6 +636,7 @@ class TradingExecutor:
         limit_price: Decimal,
         quantity: Decimal,
         close_position: bool = False,
+        reduce_only: bool = False,
     ) -> Dict[str, Any]:
         """
         创建单个保护单（幂等入口，FR-05）
@@ -656,6 +657,7 @@ class TradingExecutor:
                 symbol=symbol, side=side, order_type=order_type,
                 stop_price=stop_price, limit_price=limit_price,
                 quantity=quantity, close_position=close_position,
+                reduce_only=reduce_only,
             )
         except Exception as e:
             logger.error("保护单下单失败", symbol=symbol, role=role, error=str(e))
@@ -679,6 +681,7 @@ class TradingExecutor:
         limit_price: Decimal,
         quantity: Decimal,
         close_position: bool,
+        reduce_only: bool = False,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[int]]:
         """
         提交条件单并提取 algoId（子函数，供 _place_protection_order 调用）
@@ -690,12 +693,19 @@ class TradingExecutor:
             stop_price: 触发价
             limit_price: 限价
             quantity: 数量
-            close_position: 是否平仓单（仅止损单）
+            close_position: 是否平仓单（仅止损单，PM账户 closePosition=true 每方向仅限一单）
+            reduce_only: 是否 reduceOnly 模式（notional<20 止盈兜底：用 reduceOnly+quantity 替代 closePosition）
 
         Returns:
             (订单信息, algoId)；无 algoId 时 algoId 为 None
         """
-        kwargs = {"closePosition": True} if close_position else {}
+        # PM 账户约束：同方向只能有一个 closePosition 条件单（SL 已占用），
+        # notional<20 的 TP 兜底改用 reduceOnly+quantity，避免 -4130 冲突
+        kwargs = {}
+        if close_position:
+            kwargs["closePosition"] = "true"
+        if reduce_only:
+            kwargs["reduceOnly"] = "true"
         order = await self.binance_api.place_conditional_order(
             symbol=symbol,
             side=side,
@@ -1136,6 +1146,24 @@ class TradingExecutor:
         if float(tp_qty) <= 0:
             return 0, [], None
 
+        # 名义价值 < 20 USDT（Binance 限价单最低要求）→ 改用 TAKE_PROFIT_MARKET + reduceOnly
+        # PM 账户约束：同方向只能有一个 closePosition 条件单（SL 已占用），
+        # 所以 notional<20 兜底不能再用 closePosition=true，改用 reduceOnly+quantity 避免 -4130 冲突
+        # Binance -4164 错误信息明确写了 "notional must be greater than 20 (unless you choose reduce only)"
+        notional = float(tp_qty) * float(tp_price)
+        if notional < 20:
+            logger.info(
+                "止盈单名义价值低于20USDT，转为市价止盈reduceOnly模式",
+                symbol=symbol, role=target, notional=round(notional, 4),
+                tp_qty=float(tp_qty), tp_price=float(tp_price),
+                entry_quantity=entry_quantity,
+            )
+            return await self._submit_tp_role_order(
+                symbol, direction, target, tp_price, Decimal("0"),
+                tp_qty,  # 传真实 TP 数量，reduceOnly 模式需要
+                reduce_only=True, order_type_override="TAKE_PROFIT_MARKET",
+            )
+
         # 当前价格已过 TP2 目标价 → 激活移动止盈（沿用 price_past_tp2 语义）
         if check_price_past and target == "tp2" and await self._check_tp_price_past(symbol, direction, tp_price):
             logger.info(
@@ -1198,6 +1226,24 @@ class TradingExecutor:
 
         trailing_limit = self._calc_limit_price(direction, trailing_stop_price, self.stop_loss_offset)
 
+        # TP2 已成交后，原止损单（role="sl"）不再需要，需先取消再下移动止盈单
+        # 否则 Binance 会因同方向已存在 closePosition 条件单返回 -4130 错误
+        for cancel_role in ("sl", f"{target}_trailing"):
+            existing_algo_id = self.position_manager.get_algo_id(symbol, cancel_role)
+            if existing_algo_id is not None:
+                try:
+                    await self.binance_api.cancel_algo_order(symbol, existing_algo_id)
+                    self.position_manager.remove_algo_id(symbol, cancel_role)
+                    logger.info(
+                        "下移动止盈前取消同方向条件单",
+                        symbol=symbol, role=cancel_role, algo_id=existing_algo_id,
+                    )
+                except Exception as cancel_err:
+                    logger.warning(
+                        "取消同方向条件单失败",
+                        symbol=symbol, role=cancel_role, algo_id=existing_algo_id, error=str(cancel_err),
+                    )
+
         logger.info(
             "TP2已成交，下移动止盈保护单",
             symbol=symbol, role=target, direction=direction,
@@ -1232,6 +1278,9 @@ class TradingExecutor:
         tp_price: Decimal,
         tp_limit: Decimal,
         tp_qty: Decimal,
+        use_close_position: bool = False,
+        reduce_only: bool = False,
+        order_type_override: Optional[str] = None,
     ) -> Tuple[int, List[str], Optional[str]]:
         """
         提交止盈补单单并处理结果，返回 (成功下单数, 失败角色列表, note)
@@ -1241,16 +1290,21 @@ class TradingExecutor:
             direction: 方向 ('short'/'long')
             target: 止盈目标 ("tp1"/"tp2")
             tp_price: 止盈触发价
-            tp_limit: 止盈限价
+            tp_limit: 止盈限价（市价止盈时传 Decimal("0")）
             tp_qty: 止盈数量
+            use_close_position: 是否使用 closePosition 模式（PM账户中同方向仅限一单，SL 已占用时勿用）
+            reduce_only: 是否 reduceOnly 模式（notional<20 兜底：TAKE_PROFIT_MARKET+reduceOnly+tp_qty）
+            order_type_override: 覆盖默认订单类型（notional 不足时用 TAKE_PROFIT_MARKET）
 
         Returns:
             (成功下单数, 失败角色列表, note)
         """
+        order_type = order_type_override or self.order_type_take_profit
         result = await self._place_protection_order(
             symbol=symbol, role=target, side=self._get_close_side(direction),
-            order_type=self.order_type_take_profit,
+            order_type=order_type,
             stop_price=tp_price, limit_price=tp_limit, quantity=tp_qty,
+            close_position=use_close_position, reduce_only=reduce_only,
         )
         if result["success"]:
             if result["skipped"]:
@@ -1258,6 +1312,8 @@ class TradingExecutor:
             logger.info(
                 "止盈单已补充", symbol=symbol, role=target,
                 price=float(tp_price), qty=float(tp_qty),
+                close_position=use_close_position, reduce_only=reduce_only,
+                order_type=order_type,
             )
             return 1, [], None
         logger.error("止盈单补充失败", symbol=symbol, role=target, error=result["error"])

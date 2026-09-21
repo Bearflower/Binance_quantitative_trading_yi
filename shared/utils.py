@@ -68,10 +68,10 @@ def retry_on_failure(
                     # 不可重试的错误码，立即抛出不重试
                     if non_retryable_codes and hasattr(e, 'code') and getattr(e, 'code') in non_retryable_codes:
                         code = getattr(e, 'code')
-                        # -9999 是废弃API端点（已知预期行为），-2011 是订单已成交/已取消（正常竞态），
+                        # -9999 是废弃API端点（已知预期行为），-2011/-2013 是订单已成交/已取消（正常竞态），
                         # -4108 是交割/结算/预上市中的币种（正常预期行为）
                         # 以上均为已知预期行为，降级为 debug 避免监控噪音
-                        log_func = logger.debug if code in (-9999, -2011, -4108) else logger.warning
+                        log_func = logger.debug if code in (-9999, -2011, -2013, -4108) else logger.warning
                         log_func(
                             "遇到不可重试的错误，立即抛出",
                             function=func.__name__,

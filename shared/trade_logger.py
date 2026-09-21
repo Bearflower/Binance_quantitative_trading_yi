@@ -6,6 +6,7 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from os import environ
 from typing import Optional, Dict, List
 import structlog
 
@@ -64,6 +65,20 @@ class TradeLogger:
         client.set_trade_logger(trade_logger)
     """
 
+    # 平仓原因常量：止损触发（看板据此统计止损次数）
+    CLOSE_REASON_STOP_LOSS = "STOP_LOSS"
+
+    # 订单类型常量：条件单创建（用于区分真实成交记录与条件单创建记录）
+    # B3 修复：条件单返回 algoId 而非 orderId，用此标记避免污染真实成交统计
+    ORDER_TYPE_CONDITIONAL = "CONDITIONAL_ORDER"
+
+    # 止损打标匹配真实平仓记录的窗口（单位：秒，可通过环境变量 STOP_LOSS_MATCH_WINDOW_SECONDS 覆盖）
+    # 止损平仓后本地与交易所记录落库存在延迟，向前后各 10 分钟匹配刚发生的平仓记录，
+    # 避免误匹配到历史其他平仓；为全局统一口径的参数（同仓同侧同窗口多笔场景已在 SQL 中以 LIMIT 1 兜住）。
+    STOP_LOSS_MATCH_WINDOW_SECONDS = int(
+        environ.get("STOP_LOSS_MATCH_WINDOW_SECONDS", "600")
+    )
+
     # 建表 DDL
     _CREATE_TABLE_DDL = """
     CREATE TABLE IF NOT EXISTS trading.trade_records (
@@ -98,6 +113,35 @@ class TradeLogger:
         ADD COLUMN IF NOT EXISTS realized_pnl DECIMAL(20,8)
     """
 
+    # 增量添加 close_reason 列（标识平仓原因，用于看板统计止损次数）
+    _ALTER_ADD_CLOSE_REASON_DDL = """
+    ALTER TABLE trading.trade_records 
+        ADD COLUMN IF NOT EXISTS close_reason VARCHAR(20)
+    """
+
+    # 增量添加 algo_id 列（条件单 algoId，PM 账户条件单返回 algoId 而非 orderId）
+    # B3 修复：让条件单创建记录不再是 order_id=NULL, price=0, qty=0 的脏数据
+    _ALTER_ADD_ALGO_ID_DDL = """
+    ALTER TABLE trading.trade_records 
+        ADD COLUMN IF NOT EXISTS algo_id VARCHAR(100)
+    """
+
+    # 佣金回填：待回填订单查询 SQL
+    # 最近 N 小时、commission=0、order_id 非空，(symbol, order_id) 去重
+    _PENDING_RECORDS_SQL = """
+    SELECT DISTINCT symbol, order_id
+    FROM trading.trade_records
+    WHERE executed_at >= $1 AND commission = 0 AND order_id IS NOT NULL
+    """
+
+    # 佣金回填：仅更新仍为 0 的行，天然幂等
+    # （已回填非 0 的行不再命中待回填，不会重复覆盖）
+    _UPDATE_COMMISSION_SQL = """
+    UPDATE trading.trade_records
+    SET commission = $1
+    WHERE symbol = $2 AND order_id = $3 AND commission = 0
+    """
+
     def __init__(self, db_manager: DatabaseManager, strategy_name: str):
         """
         初始化交易记录器
@@ -128,6 +172,10 @@ class TradeLogger:
             await self.db.execute_ddl(self._CREATE_TABLE_DDL)
             # 增量为已存在的生产表补齐 realized_pnl 列
             await self.db.execute_ddl(self._ALTER_ADD_REALIZED_PNL_DDL)
+            # 增量补齐 close_reason 列（止损打标，看板统计止损次数用）
+            await self.db.execute_ddl(self._ALTER_ADD_CLOSE_REASON_DDL)
+            # B3 修复：增量补齐 algo_id 列（PM 条件单返回 algoId 而非 orderId）
+            await self.db.execute_ddl(self._ALTER_ADD_ALGO_ID_DDL)
             await self.db.execute_ddl(self._CREATE_INDEX_1_DDL)
             await self.db.execute_ddl(self._CREATE_INDEX_2_DDL)
             logger.info(
@@ -154,9 +202,15 @@ class TradeLogger:
         记录下单结果（记录所有状态订单，不限 FILLED）
         写入失败不影响正常交易流程（异常被内部捕获）。
 
+        B3 修复：PM 账户条件单返回 algoId 而非 orderId，
+        正确识别并写入 algo_id 字段，标记为 CONDITIONAL_ORDER 类型，
+        不再写 order_id=NULL, price=0, qty=0 的脏数据。
+
         Args:
             order_result: 币安API返回的订单结果字典。
-                          示例字段: orderId, avgPrice, executedQty, commission, status
+                          示例字段:
+                            真实成交单: orderId, avgPrice, executedQty, commission, status
+                            PM 条件单: algoId（无 orderId/executedQty/price）
             symbol: 交易对（如 "BTCUSDT"）
             side: 买卖方向（BUY/SELL）
             order_type: 订单类型（MARKET/LIMIT/STOP_MARKET 等）
@@ -167,8 +221,42 @@ class TradeLogger:
         try:
             status = order_result.get("status", "NEW")
 
-            # 提取字段并转换类型
-            order_id = str(order_result.get("orderId", "")) if order_result.get("orderId") else None
+            # B3 修复：区分条件单（有 algoId 无 orderId）和真实成交单
+            algo_id_raw = order_result.get("algoId")
+            order_id_raw = order_result.get("orderId")
+
+            is_conditional = bool(algo_id_raw) and not bool(order_id_raw)
+
+            if is_conditional:
+                # 条件单创建：写入 algo_id，标记为 CONDITIONAL_ORDER，quantity/price 保持 0
+                # 条件单还未成交，没有真实成交数量和价格，不应写假数据
+                algo_id = str(algo_id_raw)
+                executed_at = datetime.now(BEIJING_TZ).replace(tzinfo=None)
+                await self.db.execute(
+                    "INSERT INTO trading.trade_records "
+                    "(strategy, symbol, order_id, algo_id, side, order_type, "
+                    " quantity, price, commission, status, executed_at) "
+                    "VALUES ($1, $2, NULL, $3, $4, $5, 0, 0, 0, $6, $7)",
+                    self.strategy_name,
+                    symbol,
+                    algo_id,
+                    side,
+                    self.ORDER_TYPE_CONDITIONAL,
+                    "CREATED",
+                    executed_at,
+                )
+                logger.info(
+                    "条件单创建记录已写入（B3 修复）",
+                    strategy=self.strategy_name,
+                    symbol=symbol,
+                    algo_id=algo_id,
+                    original_order_type=order_type,
+                    side=side,
+                )
+                return True
+
+            # 真实成交单：正常处理
+            order_id = str(order_id_raw) if order_id_raw else None
             avg_price = Decimal(str(order_result.get("avgPrice", "0")))
             executed_qty = Decimal(str(order_result.get("executedQty", "0")))
 
@@ -364,6 +452,7 @@ class TradeLogger:
         side: str,
         strategy: Optional[str] = None,
         executed_at: Optional[datetime] = None,
+        close_reason: Optional[str] = None,
     ) -> bool:
         """
         插入一条 PnL 汇总记录（用于全部平仓场景）
@@ -377,9 +466,8 @@ class TradeLogger:
             side: 平仓方向（BUY/SELL）
             strategy: 策略名称，默认使用初始化时设置的策略名称
             executed_at: 平仓成交时间，默认当前时间
-
-        Returns:
-            True 表示插入成功，False 表示插入失败
+            close_reason: 平仓原因标记（如 STOP_LOSS/TAKE_PROFIT），
+                          看板据此统计止损/止盈次数；None 表示未知/手动。
         """
         try:
             strategy_name = strategy or self.strategy_name
@@ -389,13 +477,14 @@ class TradeLogger:
             await self.db.execute(
                 "INSERT INTO trading.trade_records "
                 "(strategy, symbol, order_id, side, order_type, quantity, price, "
-                " commission, status, executed_at, realized_pnl) "
-                "VALUES ($1, $2, '', $3, 'PNL_SUMMARY', 0, 0, 0, 'FILLED', $4, $5)",
+                " commission, status, executed_at, realized_pnl, close_reason) "
+                "VALUES ($1, $2, '', $3, 'PNL_SUMMARY', 0, 0, 0, 'FILLED', $4, $5, $6)",
                 strategy_name,
                 symbol,
                 side,
                 exec_time,
                 pnl_str,
+                close_reason,
             )
 
             logger.info(
@@ -403,6 +492,7 @@ class TradeLogger:
                 strategy=strategy_name,
                 symbol=symbol,
                 side=side,
+                close_reason=close_reason,
                 realized_pnl=pnl_str,
             )
             return True
@@ -416,6 +506,118 @@ class TradeLogger:
                 error=str(e),
             )
             return False
+
+    async def log_stop_loss(
+        self,
+        symbol: str,
+        side: str,
+        realized_pnl: Optional[Decimal] = None,
+        strategy: Optional[str] = None,
+        executed_at: Optional[datetime] = None,
+    ) -> bool:
+        """
+        记录一次止损触发（打标 close_reason='STOP_LOSS'）。
+
+        跨策略止损平仓的统一点：策略识别到"止损触发并平仓"时调用，
+        仅落一条带止损标记的 PnL 记录，供看板统计近N天止损次数。
+        （止损次数统计与止盈分开，便于风控查看近期止损频率。）
+
+        Args:
+            symbol: 交易对（如 "BTCUSDT"）
+            side: 平仓方向（BUY/SELL）
+            realized_pnl: 可选，该笔止损平仓的已实现盈亏；未知时传 None
+            strategy: 策略名称，默认使用初始化时设置的策略名称
+            executed_at: 平仓成交时间，默认当前时间
+
+        Returns:
+            True 表示写入成功，False 表示写入失败
+        """
+        # 优先给最近一条真实平仓记录打标记，避免与真实平仓记录重复计数
+        # （止损平仓通常已有一条由 BinanceClient 记录 + update_realized_pnl 回写的记录）
+        strategy_name = strategy or self.strategy_name
+
+        if await self._mark_existing_close_record(
+            strategy_name=strategy_name,
+            symbol=symbol,
+            side=side,
+            realized_pnl=realized_pnl,
+            executed_at=executed_at,
+        ):
+            return True
+
+        # 兜底：无真实平仓记录可标记时，插入一条带标记的 PnL 汇总记录
+        return await self.insert_pnl_summary(
+            realized_pnl=realized_pnl if realized_pnl is not None else Decimal("0"),
+            symbol=symbol,
+            side=side,
+            strategy=strategy,
+            executed_at=executed_at,
+            close_reason=self.CLOSE_REASON_STOP_LOSS,
+        )
+
+    async def _mark_existing_close_record(
+        self,
+        strategy_name: str,
+        symbol: str,
+        side: str,
+        realized_pnl: Optional[Decimal],
+        executed_at: Optional[datetime],
+    ) -> bool:
+        """给最近一条真实平仓记录打上 STOP_LOSS 标记。
+
+        匹配规则：同策略同 symbol 同侧、非 PNL_SUMMARY 汇总记录、±10 分钟窗口内、
+        close_reason 尚未标记；执行失败或未命中返回 False，由调用方降级为插入汇总记录。
+
+        Args:
+            strategy_name: 策略名称
+            symbol: 交易对
+            side: 平仓方向（BUY/SELL）
+            realized_pnl: 该笔止损平仓的已实现盈亏；None 表示不覆盖原有盈亏
+            executed_at: 平仓成交时间，默认当前时间
+
+        Returns:
+            True 表示成功给真实平仓记录打标
+        """
+        exec_time = executed_at or datetime.now(BEIJING_TZ).replace(tzinfo=None)
+        window = self.STOP_LOSS_MATCH_WINDOW_SECONDS
+        try:
+            result = await self.db.execute(
+                "UPDATE trading.trade_records "
+                "SET close_reason = $1"
+                + (", realized_pnl = $2" if realized_pnl is not None else "")
+                + " WHERE id = ("
+                "    SELECT id FROM trading.trade_records"
+                "    WHERE strategy = $3 AND symbol = $4 AND side = $5"
+                "    AND order_type <> 'PNL_SUMMARY'"
+                "    AND executed_at BETWEEN $6 AND $7"
+                "    AND (close_reason IS NULL OR close_reason = '')"
+                "    ORDER BY executed_at DESC"
+                "    LIMIT 1"
+                ")",
+                self.CLOSE_REASON_STOP_LOSS,
+                *( (str(realized_pnl),) if realized_pnl is not None else () ),
+                strategy_name,
+                symbol,
+                side,
+                exec_time - timedelta(seconds=window),
+                exec_time + timedelta(seconds=window),
+            )
+            if self._parse_update_count(result) > 0:
+                logger.info(
+                    "止损打标成功（回写至真实平仓记录）",
+                    strategy=strategy_name,
+                    symbol=symbol,
+                    side=side,
+                )
+                return True
+        except Exception as e:
+            logger.warning(
+                "止损打标（UPDATE）执行异常，降级为插入标记记录",
+                strategy=strategy_name,
+                symbol=symbol,
+                error=str(e)[:120],
+            )
+        return False
 
     @staticmethod
     def _parse_update_count(result: str) -> int:
@@ -567,3 +769,100 @@ class TradeLogger:
             strategy_count=len(result)
         )
         return result
+
+    async def reconcile_commissions(
+        self,
+        binance_client,
+        lookback_hours: int = 24
+    ) -> Dict:
+        """事后回填 trade_records 的真实手续费（commission）
+
+        背景：币安合约/PM 账户下单返回结果不含 commission 字段（佣金只在
+        userTrades 成交明细中返回），因此 trade_records.commission 落库恒为 0。
+        本方法定时查询 userTrades，把真实佣金写回，供任何宿主复用。
+
+        流程：
+          1) 挑出最近 lookback_hours 内 commission=0 且 order_id 非空的记录，
+             按 (symbol, order_id) 去重；
+          2) 逐个 order 调 binance_client.get_user_trades 拉取该订单的全部分笔成交，
+             累加真实佣金；
+          3) 汇总 UPDATE 回填（仅更新仍为 0 的行，幂等）。
+        任一步骤失败仅记日志，不抛出异常，保证不影响调度主流程。
+
+        Args:
+            binance_client: BinanceClient 实例（需具备 get_user_trades 方法）
+            lookback_hours: 回填时间窗口（小时），仅处理最近 N 小时的待回填记录
+
+        Returns:
+            dict: {"queried_orders": n, "matched_orders": n, "total_commission": Decimal}
+        """
+        summary = {
+            "queried_orders": 0,
+            "matched_orders": 0,
+            "total_commission": Decimal("0"),
+        }
+        try:
+            pending = await self._fetch_pending_trade_keys(lookback_hours)
+            summary["queried_orders"] = len(pending)
+            for symbol, order_id in pending:
+                if not order_id:
+                    continue
+                try:
+                    matched, commission = await self._query_order_commission(
+                        binance_client, symbol, order_id
+                    )
+                    if not matched:
+                        continue  # 零佣金或未成交，不做无意义的 0 值覆盖
+                    await self.db.execute(
+                        self._UPDATE_COMMISSION_SQL, str(commission), symbol, order_id
+                    )
+                    summary["matched_orders"] += 1
+                    summary["total_commission"] += commission
+                except Exception as e:
+                    logger.warning(
+                        "佣金回填查询失败", symbol=symbol, order_id=order_id, error=str(e)
+                    )
+            logger.info(
+                "佣金回填完成",
+                queried_orders=summary["queried_orders"],
+                matched_orders=summary["matched_orders"],
+                total_commission=str(summary["total_commission"]),
+            )
+        except Exception as e:
+            logger.error("佣金回填异常", error=str(e))
+        return summary
+
+    async def _fetch_pending_trade_keys(self, lookback_hours: int) -> List:
+        """查询待回填的 (symbol, order_id) 去重组合
+
+        Args:
+            lookback_hours: 回看时间窗口（小时）
+
+        Returns:
+            [(symbol, order_id), ...]；无记录返回空列表
+        """
+        start_time = datetime.now(BEIJING_TZ).replace(tzinfo=None) - timedelta(
+            hours=lookback_hours
+        )
+        rows = await self.db.fetch_all(self._PENDING_RECORDS_SQL, start_time)
+        return [(r["symbol"], r["order_id"]) for r in rows]
+
+    async def _query_order_commission(self, binance_client, symbol: str, order_id: str):
+        """查询单个订单在 userTrades 中的真实佣金并累加
+
+        Args:
+            binance_client: BinanceClient 实例
+            symbol: 交易对
+            order_id: 订单ID
+
+        Returns:
+            (matched, commission)：matched 表示佣金>0；commission 为累计 Decimal
+        """
+        trades = await binance_client.get_user_trades(symbol, order_id=order_id)
+        total = Decimal("0")
+        for trade in trades or []:
+            raw = trade.get("commission")
+            if raw is None or raw == "":
+                continue
+            total += Decimal(str(raw))
+        return (total > 0), total

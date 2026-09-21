@@ -237,6 +237,51 @@ function createTrendChart(containerId, data) {
 }
 
 /**
+ * 创建 各策略占用比历史趋势图（按天聚合，细线）
+ * 数据格式: { dates: ["2026-08-20", ...], strategies: { id: { name, series: [float,...] } } }
+ */
+function createPositionUtilTrendChart(containerId, data) {
+    const el = document.getElementById(containerId);
+    if (!el) return null;
+    const chart = echarts.init(el, 'fintech-light');
+
+    const dates = (data && Array.isArray(data.dates)) ? data.dates : [];
+    const strategies = (data && data.strategies) ? data.strategies : {};
+
+    const series = Object.entries(strategies).map(([sid, info], idx) => ({
+        name: info.name || sid,
+        type: 'line',
+        smooth: true,
+        data: (info.series || []).map(v => parseFloat(v) || 0),
+        emphasis: { focus: 'series' },
+        lineStyle: { width: 2, color: DashboardConfig.chartColors[idx % DashboardConfig.chartColors.length] },
+        itemStyle: { color: DashboardConfig.chartColors[idx % DashboardConfig.chartColors.length] },
+        symbolSize: (val) => (Math.abs(val) > 1e-9 ? 4 : 0)  // 无持仓当天不画点，避免 0 值密集误读
+    }));
+
+    chart.setOption({
+        grid: { top: 40, right: 40, bottom: 40, left: 55, containLabel: true },
+        tooltip: {
+            trigger: 'axis',
+            valueFormatter: (val) => (parseFloat(val) || 0).toFixed(1) + '%',
+            axisPointer: { type: 'line' }
+        },
+        legend: { data: series.map(s => s.name), top: 0, right: 0, itemWidth: 16, itemHeight: 8, itemGap: 16 },
+        xAxis: { type: 'category', data: dates, boundaryGap: false, axisLine: { lineStyle: { color: '#C9D4E3' } } },
+        yAxis: {
+            type: 'value',
+            name: '占用比',
+            axisLabel: { formatter: (v) => (parseFloat(v) * 100).toFixed(0) + '%' },
+            splitLine: { lineStyle: { color: '#EDF1F7' } }
+        },
+        series: series
+    });
+
+    window.addEventListener('resize', () => { chart.resize(); });
+    return chart;
+}
+
+/**
  * 格式化数字
  */
 function formatNumber(value, decimals = 2) {

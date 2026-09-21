@@ -16,7 +16,7 @@
 
 import asyncio
 import structlog
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Set, Optional
 
 from shared.condition_orders import get_open_orders, mark_order_canceled, mark_order_executed, ensure_table
@@ -38,6 +38,7 @@ class OrphanCleanupJob:
         binance_client: BinanceClient,
         notification_client: NotificationClient,
         stale_hours_threshold: float = 2.0,
+        position_lookback_days: float = 7.0,
     ):
         """
         初始化孤儿条件单清理任务
@@ -47,11 +48,14 @@ class OrphanCleanupJob:
             binance_client: Binance API 客户端，用于取消订单
             notification_client: 通知客户端实例
             stale_hours_threshold: 策略状态超时阈值（小时），超过此时间则视为策略异常
+            position_lookback_days: _strategy_has_position 查询 trade_records 的回顾窗口（天），
+                                    默认 7 天，越长越保守（越不容易误杀活条件单）
         """
         self.db = db
         self.binance = binance_client
         self.notification_client = notification_client
         self.stale_hours_threshold = stale_hours_threshold
+        self.position_lookback_days = position_lookback_days
 
     async def _ensure_table(self):
         """确保 condition_orders 表存在"""
@@ -101,10 +105,16 @@ class OrphanCleanupJob:
         for row in rows:
             sn = row['strategy_name']
             state_data = row.get('state_data', {})
-            # 调试：检查 state_data 的类型和内容
-            state_data_type = type(state_data).__name__
+            # jsonb 列可能返回 dict（asyncpg 默认）或 str（json.dumps 写入的场景）
+            if isinstance(state_data, str):
+                try:
+                    import json
+                    state_data = json.loads(state_data)
+                except (json.JSONDecodeError, TypeError):
+                    logger.warning("策略状态 JSON 解析失败", strategy=sn, value=state_data[:200])
+                    state_data = {}
             if not isinstance(state_data, dict):
-                logger.warning("策略状态数据异常", strategy=sn, type=state_data_type, value=str(state_data)[:200])
+                logger.warning("策略状态数据异常", strategy=sn, type=type(state_data).__name__, value=str(state_data)[:200])
                 state_data = {}
             positions = state_data.get('positions', {})
             if not isinstance(positions, dict):
@@ -116,6 +126,74 @@ class OrphanCleanupJob:
                 "updated_at": row['updated_at'],
             }
         return result
+
+    async def _strategy_has_position(self, strategy_name: str, symbol: str) -> bool:
+        """
+        判断某策略在某 symbol 上是否有活交易记录（应有条件单保护的持仓，或准备开仓的 ENTRY 单）。
+
+        B2 修复核心辅助方法：在场景B（交易所无该 symbol 持仓）中，用于逐个订单确认
+        该条件单是否真的是孤儿，避免批量 API 误杀其他策略的活条件单（如 ENTRY 类型
+        准备开仓但尚未成交的条件单）。
+
+        判断依据（满足任一即认为"有活交易"，应跳过清理）：
+        1. trade_records 中该策略在该 symbol 上有最近（7天内）开仓记录但未找到对应平仓记录
+        2. condition_orders 中该策略在该 symbol 上有 ENTRY 类型 OPEN 记录（准备开仓）
+
+        Args:
+            strategy_name: 策略名称
+            symbol: 交易对
+
+        Returns:
+            True 表示该策略在该 symbol 上应有条件单保护，场景B应跳过；
+            False 表示该策略在该 symbol 上确实无活交易，条件单是孤儿。
+        """
+        try:
+            # 依据2：查 ENTRY 类型条件单（准备开仓，即使交易所暂无持仓也应保留）
+            entry_rows = await self.db.fetch_all(
+                """
+                SELECT id FROM condition_orders
+                WHERE strategy_name = $1 AND symbol = $2 AND order_type = 'ENTRY' AND status = 'OPEN'
+                LIMIT 1
+                """,
+                strategy_name, symbol,
+            )
+            if entry_rows:
+                logger.debug(
+                    "策略在该 symbol 有 ENTRY 类型条件单，跳过清理",
+                    strategy=strategy_name, symbol=symbol,
+                )
+                return True
+
+            # 依据1：查 trade_records 最近 N 天开仓但未平仓（简单近似：查是否有最近开仓侧的记录）
+            # 取配置窗口，查该策略在该 symbol 上是否有开仓方向的成交记录
+            # 使用 naive datetime（与项目其他代码一致，asyncpg 绑定 timestamptz 需要 naive UTC）
+            window_start = datetime.utcnow() - timedelta(days=self.position_lookback_days)
+            open_pos_rows = await self.db.fetch_all(
+                """
+                SELECT id FROM trading.trade_records
+                WHERE strategy = $1 AND symbol = $2
+                AND executed_at >= $3
+                AND realized_pnl IS NULL
+                AND order_type <> 'PNL_SUMMARY'
+                LIMIT 1
+                """,
+                strategy_name, symbol, window_start,
+            )
+            if open_pos_rows:
+                logger.debug(
+                    "策略在该 symbol 有未平仓的交易记录，跳过清理",
+                    strategy=strategy_name, symbol=symbol,
+                )
+                return True
+
+            return False
+        except Exception as e:
+            # 查询异常时保守处理：返回 True 跳过清理，避免误杀
+            logger.warning(
+                "_strategy_has_position 查询异常，保守跳过清理",
+                strategy=strategy_name, symbol=symbol, error=str(e),
+            )
+            return True
 
     async def _cancel_order(self, order):
         """
@@ -313,7 +391,7 @@ class OrphanCleanupJob:
 
             # 4. 查询各策略当前持仓状态
             strategy_states = await self._query_strategy_states()
-            now = datetime.now(timezone.utc)
+            now = datetime.utcnow()
 
             canceled = []   # 成功取消的列表
             failed = []     # 取消失败的列表
@@ -326,7 +404,7 @@ class OrphanCleanupJob:
 
             # 5. 按币种分组订单，区分场景A和场景B
             # 场景A：策略崩溃/无状态 → 逐个取消（仅取消该策略的订单）
-            # 场景B：交易所无持仓 → 批量取消（取消该币种的所有订单，含未记录订单）
+            # 场景B：交易所无持仓 + 策略无活交易记录 → 逐个取消（B2 修复：不再批量 API）
             stale_orders = []       # 场景A：策略长时间未更新的订单
             no_position_symbols = set()  # 场景B：交易所无持仓的币种
 
@@ -343,8 +421,10 @@ class OrphanCleanupJob:
                 # 场景A: 策略超过阈值未更新
                 updated_at = state.get('updated_at')
                 if updated_at:
-                    if updated_at.tzinfo is None:
-                        updated_at = updated_at.replace(tzinfo=timezone.utc)
+                    # 统一为 naive datetime（asyncpg 从 timestamptz 返回 aware，
+                    # 需要 strip tzinfo 才能与 naive utcnow() 做减法）
+                    if updated_at.tzinfo is not None:
+                        updated_at = updated_at.replace(tzinfo=None)
                     hours_since = (now - updated_at).total_seconds() / 3600
                     if hours_since > self.stale_hours_threshold:
                         # 如果交易所确认有持仓，跳过
@@ -371,18 +451,37 @@ class OrphanCleanupJob:
                 else:
                     failed.append(f"{sn} | {symbol} | {order['order_type']} (algoId:{order.get('algo_id') or order.get('order_id')}) | 场景A失败: {err}")
 
-            # 7. 处理场景B：批量取消交易所无持仓币种的所有条件单
-            #    使用 DELETE /papi/v1/um/algo/allOpenOrders 一次性清理，
-            #    同时也能清理数据库中未记录的条件单（彻底解决孤儿单问题）
+            # 7. 处理场景B：逐个取消交易所无持仓币种的孤儿条件单（B2 修复）
+            #    不再用 DELETE /papi/v1/um/algo/allOpenOrders 批量 API（会一把梭干掉
+            #    同一 symbol 上所有策略的条件单，包括其他策略的 ENTRY 活条件单）。
+            #    改为：对每个 OPEN 订单逐个调用 _cancel_order，同时用 _strategy_has_position
+            #    做策略归属检查，确认该策略在该 symbol 上无活交易才取消。
             for symbol in no_position_symbols:
                 symbol_orders = [o for o in open_orders if o['symbol'] == symbol]
-                await self._bulk_cancel_orders(
-                    symbol=symbol,
-                    orders=symbol_orders,
-                    canceled=canceled,
-                    failed=failed,
-                    scenario="场景B: 交易所无持仓（批量取消）",
-                )
+                for order in symbol_orders:
+                    sn = order['strategy_name']
+                    # B2 修复：逐个订单检查策略归属，避免误杀其他策略的活条件单
+                    has_pos = await self._strategy_has_position(sn, symbol)
+                    if has_pos:
+                        skipped.append(
+                            f"{sn} | {symbol} | {order['order_type']} | "
+                            f"场景B跳过: 策略有活交易记录"
+                        )
+                        continue
+                    # 确认无活交易，逐个取消
+                    ok, err = await self._cancel_order(order)
+                    if ok:
+                        canceled.append(
+                            f"{sn} | {symbol} | {order['order_type']} "
+                            f"(algoId:{order.get('algo_id') or order.get('order_id')}) | "
+                            f"场景B: 交易所无持仓+无活交易记录"
+                        )
+                    else:
+                        failed.append(
+                            f"{sn} | {symbol} | {order['order_type']} "
+                            f"(algoId:{order.get('algo_id') or order.get('order_id')}) | "
+                            f"场景B失败: {err}"
+                        )
 
             # 8. 发送飞书通知
             if canceled or failed:

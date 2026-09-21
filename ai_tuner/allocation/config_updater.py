@@ -25,6 +25,12 @@ logger = structlog.get_logger()
 # 中国标准时间时区 (UTC+8)
 CST = timezone(timedelta(hours=8))
 
+# 共享资金分配结果的镜像策略映射：主策略 -> 共用同一份分配结果的镜像策略列表
+# 激进版(btc_eth_aggressive)不单独参加月度分配（participating_strategies 中不含它），
+# 但也运行生产，因此与 MTPCS 原版(btc_eth)共用同一 account_ratio_cap / capital_limits。
+# 当向主策略(btc_eth)写入分配结果时，将相同键值镜像写入镜像策略的 config.yaml。
+_SHARED_FUND_MIRROR = {"btc_eth": ["btc_eth_aggressive"]}
+
 
 class AllocationConfigUpdater:
     """
@@ -343,6 +349,16 @@ class AllocationConfigUpdater:
                             allocated_ratio=allocated_ratio,
                             account_ratio_cap=allocated_ratio,
                         )
+                        # 将相同分配结果镜像写入共用同一份资金的策略（如激进版）
+                        if not self._apply_fund_mirror(
+                            entry,
+                            result,
+                            strategy_paths,
+                            config_operator,
+                            allocated_ratio,
+                            updated_at,
+                        ):
+                            all_success = False
                     else:
                         logger.error(
                             "策略配置 capital_limits 更新失败",
@@ -365,3 +381,79 @@ class AllocationConfigUpdater:
         except Exception as e:
             logger.error("更新策略配置异常", error=str(e), exc_info=True)
             return False
+
+    def _apply_fund_mirror(
+        self,
+        entry: Any,
+        result: AllocationResult,
+        strategy_paths: Dict[str, str],
+        config_operator: Any,
+        allocated_ratio: float,
+        updated_at: str,
+    ) -> bool:
+        """
+        将主策略的资金分配结果镜像写入共用同一份资金的镜像策略配置文件
+
+        _SHARED_FUND_MIRROR 定义主策略 -> 镜像策略列表的映射。
+        当前激进版(btc_eth_aggressive)与 MTPCS 原版(btc_eth)共用同一分配结果，
+        因此在为主策略写入分配结果后，将相同键值写入镜像策略的 config.yaml。
+
+        Args:
+            entry: 分配结果条目（主策略）
+            result: 分配计算结果
+            strategy_paths: strategy_id -> config_path 映射
+            config_operator: ConfigOperator 实例
+            allocated_ratio: 已四舍五入的分配比例
+            updated_at: 更新时间字符串
+
+        Returns:
+            是否所有镜像策略写入成功
+        """
+        mirror_ids = _SHARED_FUND_MIRROR.get(entry.strategy_id)
+        if not mirror_ids:
+            return True
+
+        # 构建与主策略一致的 capital_limits 配置
+        capital_limits = {
+            "monthly_limit": entry.allocated_amount,
+            "allocated_ratio": round(entry.allocated_ratio, 4),
+            "allocation_month": result.month,
+            "updated_at": updated_at,
+        }
+
+        all_ok = True
+        for mirror_id in mirror_ids:
+            mirror_path = strategy_paths.get(mirror_id, "")
+            if not mirror_path or not os.path.exists(mirror_path):
+                logger.warning(
+                    "共享资金镜像策略配置路径无效，跳过",
+                    strategy_id=mirror_id,
+                    config_path=mirror_path,
+                )
+                all_ok = False
+                continue
+
+            # 使用 ConfigOperator.apply_changes 原子写入相同键值
+            mirror_ok = config_operator.apply_changes(
+                config_path=mirror_path,
+                adjustments={
+                    "capital_limits": capital_limits,
+                    "position_sizing.total.account_ratio_cap": allocated_ratio,
+                },
+            )
+            if mirror_ok:
+                logger.info(
+                    "共享资金分配结果已镜像写入",
+                    strategy_id=mirror_id,
+                    config_path=mirror_path,
+                    monthly_limit=entry.allocated_amount,
+                    account_ratio_cap=allocated_ratio,
+                )
+            else:
+                logger.error(
+                    "共享资金镜像写入失败",
+                    strategy_id=mirror_id,
+                    config_path=mirror_path,
+                )
+                all_ok = False
+        return all_ok

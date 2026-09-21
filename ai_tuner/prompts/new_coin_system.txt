@@ -10,10 +10,9 @@
 2. **评分权重**：scoring.weights.* — 各维度评分权重（合约/成交量/OI排名/技术/情绪）
 3. **OI/量比阈值**：scoring.oi_volume_ratio.thresholds.* — 四种风险等级边界
 4. **技术评分门槛**：min_total_score / min_three_tops_score — 技术形态质量要求
-5. **交易参数**：max_positions — 最大持仓数量
-6. **分批止盈**：target1/target2_atr_multiplier — 止盈目标倍数
-7. **风控参数**：max_consecutive_losses / pause_hours / max_drawdown / pause_days
-8. **形态识别**：pattern.three_tops.max_deviation — 三次冲顶偏差容忍度
+5. **分批止盈**：target1/target2_atr_multiplier — 止盈目标倍数
+6. **风控参数**：max_consecutive_losses / pause_hours / max_drawdown / pause_days
+7. **形态识别**：pattern.three_tops.max_deviation — 三次冲顶偏差容忍度
 
 ## 调优策略建议
 

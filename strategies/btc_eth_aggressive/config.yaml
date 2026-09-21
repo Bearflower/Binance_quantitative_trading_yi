@@ -1,0 +1,712 @@
+strategy:
+  name: btc_eth_aggressive
+  version: "2.6.0-aggressive-1"  # 激进版（复制自原版 v6.21 配置基线）
+
+  # 交易对配置
+  symbols:
+    - BTCUSDT
+    - ETHUSDT
+    - BNBUSDT
+    - SOLUSDT
+    - XRPUSDT
+
+  # 持仓同步配置
+  position_sync:
+    min_position_amt: 0.00001  # 最小持仓量阈值，低于此值的视为微尘持仓
+
+  # 时间框架配置
+  timeframes:
+    - 1h
+    - 4h
+    - 1d
+
+  # 调度配置
+  # 激进版与原版错峰运行：原版在每小时5分分析发单，激进版在每小时10分分析发单，避免同一时间并发竞争K线资源
+  # 为避免与原版对同一币种重复发单，激进版会跳过本小时内原版已发单的币种（见 main.py 的 skip 逻辑）
+  schedule:
+    cron: "10 * * * *"
+    # 原版策略名称（用于查询本小时原版已开仓币种，激进版跳过，避免重复开仓）
+    original_strategy_name: "MTPCS策略"
+
+  # 评分系统配置（v6.19：保持 v6.18 权重 25/50/25）
+  scoring:
+    min_score: 60               # 激进版 70→60（中度下调，恢复更宽松开仓）
+    grade_thresholds:
+      S: 78                       # 激进版 85→78
+      A: 68                       # 激进版 70→68（中度下调，保持 A>B>65 分级递减）
+      B: 65
+      C: 55
+
+    # 评分维度权重
+    weights:
+      trend_strength: 0.25
+      pattern_quality: 0.50
+      momentum_divergence: 0.25
+
+    # A级额外加分
+    a_level_bonus:
+      rsi_low: 35
+      rsi_high: 65
+      bonus: 2
+
+    # 趋势强度评分参数
+    trend_strength:
+      base_score: 50
+      consistency_bonus: 15
+      dual_uptrend_bonus: 10
+      macd_positive_bonus: 10
+      macd_negative_penalty: -10
+      adx_strong_threshold: 25
+      adx_strong_bonus: 15
+      adx_medium_threshold: 20
+      adx_medium_bonus: 8
+
+    # 形态质量评分参数
+    pattern_quality:
+      base_score: 50
+      bullish_engulfing_bonus: 20
+      bearish_engulfing_bonus: 20
+      breakout_pullback_bonus: 25
+      divergence_bonus: 30
+
+    # 突破回踩检测参数
+    breakout_pullback:
+      proximity_pct: 0.01
+
+    # 动量背离评分参数
+    momentum_divergence:
+      base_score: 60
+      rsi_oversold: 30
+      rsi_overbought: 70
+      rsi_normal_bonus: 5
+      rsi_oversold_bonus: 20
+      rsi_overbought_penalty: -20
+      macd_hist_positive_bonus: 10
+      macd_hist_negative_penalty: -10
+      divergence_bonus: 15
+
+  # 币种差异化配置（v6.19：极致收紧，SOL ADX 40）
+  symbol_config:
+    SOLUSDT:
+      adx_min: 34                     # 激进版 40→34
+      vol_ratio_base: {S: 2.5, A: 0, B: 0, C: 0}  # 2.2 → 2.5
+      atr_abs_min: 0.008              # 激进版 0.009→0.008
+      atr_percentile: 50              # 45 → 50
+      atr_factor_strong: 0.9
+      s_min_score: 86                 # 激进版 92→86
+      max_daily_trades: 0.5           # 1 → 0.5（2天1笔）
+      position_ratio_s: 0.25
+      ranging_position_mult: 0.12     # v6.20.2：震荡市仓位乘数（SOL震荡市胜率低）
+    BTCUSDT:
+      adx_min: 30                     # 激进版 35→30
+      vol_ratio_base: {S: 1.8, A: 0, B: 0, C: 0}
+      atr_abs_min: 0.006              # 激进版 0.007→0.006
+      atr_percentile: 50
+      atr_factor_strong: 0.8
+      s_min_score: 82                 # 激进版 88→82
+      max_daily_trades: 1
+      position_ratio_s: 0.50
+      ranging_position_mult: 0.12     # v6.20.2：震荡市仓位乘数（BTC震荡市胜率低）
+    ETHUSDT:
+      adx_min: 30                     # 激进版 35→30
+      vol_ratio_base: {S: 1.8, A: 0, B: 0, C: 0}
+      atr_abs_min: 0.006              # 激进版 0.007→0.006
+      atr_percentile: 50
+      atr_factor_strong: 0.8
+      s_min_score: 82                 # 激进版 88→82
+      max_daily_trades: 1
+      position_ratio_s: 0.50
+    BNBUSDT:
+      adx_min: 25                     # 激进版 28→25
+      vol_ratio_base: {S: 1.4, A: 0, B: 0, C: 0}
+      atr_abs_min: 0.0035             # 激进版 0.004→0.0035
+      atr_percentile: 50
+      atr_factor_strong: 0.8
+      s_min_score: 78                 # 激进版 82→78
+      max_daily_trades: 1
+      position_ratio_s: 0.50
+      ranging_adx_min: 20             # v6.29：32→20（当前 ADX 20-23 被硬拦截，放宽进入投票流程）
+      ranging_max_daily_trades: 1     # v6.21：震荡市每天最多1笔
+      ranging_cooldown_hours: 48      # v6.21：震荡市冷却期48h
+    XRPUSDT:
+      adx_min: 30                     # 激进版 35→30
+      vol_ratio_base: {S: 1.8, A: 0, B: 0, C: 0}
+      atr_abs_min: 0.005              # 激进版 0.006→0.005
+      atr_percentile: 50
+      atr_factor_strong: 0.8
+      s_min_score: 80                 # 激进版 86→80
+      max_daily_trades: 1
+      position_ratio_s: 0.50
+
+  # 风险控制（v6.19）
+  risk:
+    # 按信号等级(S/A/B/C)独立配置的止盈止损参数（v6.25）
+    signal_levels:
+      S:
+        stop_loss_atr_multiplier: 3.0
+        partial_take_profit:
+          tp1_atr_multiplier: 6.0
+          tp1_close_ratio: 0.30
+          tp2_atr_multiplier: 9.0
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 3.0
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.5
+              retrace_ratio: 0.0
+            - profit_ceiling: 4.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 8.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 120
+          close_ratio: 0.50
+          review_enabled: false      # 时间平仓复核制开关（v6.27 新增，false=保持无条件到点平）
+          max_review_hours: 24       # 复核期上限（到期后最多再复核持有小时数）
+
+      A:
+        stop_loss_atr_multiplier: 1.8
+        partial_take_profit:
+          tp1_atr_multiplier: 4.0
+          tp1_close_ratio: 0.30
+          tp2_atr_multiplier: 6.0
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 1.5
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.5
+              retrace_ratio: 0.0
+            - profit_ceiling: 4.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 8.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 96
+          close_ratio: 0.50
+          review_enabled: false      # 时间平仓复核制开关（v6.27 新增，false=保持无条件到点平）
+          max_review_hours: 24       # 复核期上限（到期后最多再复核持有小时数）
+
+      B:
+        stop_loss_atr_multiplier: 1.3
+        partial_take_profit:
+          tp1_atr_multiplier: 3.0
+          tp1_close_ratio: 0.30
+          tp2_atr_multiplier: 5.0
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 1.0
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.5
+              retrace_ratio: 0.0
+            - profit_ceiling: 3.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 6.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 72
+          close_ratio: 0.60
+          review_enabled: false      # 时间平仓复核制开关（v6.27 新增，false=保持无条件到点平）
+          max_review_hours: 24       # 复核期上限（到期后最多再复核持有小时数）
+
+      C:
+        stop_loss_atr_multiplier: 1.1
+        partial_take_profit:
+          tp1_atr_multiplier: 2.0
+          tp1_close_ratio: 0.30
+          tp2_atr_multiplier: 3.5
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 0.5
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.0
+              retrace_ratio: 0.0
+            - profit_ceiling: 2.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 4.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 36
+          close_ratio: 0.80
+          review_enabled: false      # 时间平仓复核制开关（v6.27 新增，false=保持无条件到点平）
+          max_review_hours: 24       # 复核期上限（到期后最多再复核持有小时数）
+
+    # 全局参数（不按信号等级拆解）
+    max_position_size: 0.15
+    quantity_inference_eps_ratio: 0.005  # 数量推断容差比例（防双重平仓时判定TP触发级别的步长误差）
+
+    # 平仓限价单配置（v6.20.3：全部平仓使用限价单，不再降级为市价单）
+    close_limit_order:
+      enabled: true
+      timeout_seconds: 10           # 首次等待成交超时（秒）
+      poll_interval_seconds: 2      # 轮询间隔（秒）
+      max_retries: 3                # 超时后最大重试次数（v6.20.3 新增）
+      retry_interval_seconds: 2     # 重试间隔（秒，v6.20.3 新增）
+      applicable_reasons:           # 扩展为所有平仓原因（v6.20.3）
+        - TP1
+        - TP2
+        - TRAILING_STOP
+        - TIME_STOP
+        - STOP_LOSS
+        - EXTREME
+        - LIQUIDATION
+        - LIQUIDATION_REDUCE
+
+      # 微持仓平仓配置（v6.20.4 新增）
+      # 当持仓名义价值低于最小要求且精度调整后数量为0时，
+      # 使用 closePosition=true 的 STOP_MARKET 条件单平仓全部剩余
+      micro_close:
+        trigger_multiplier_long: 2.0    # 做多平仓触发价倍数（触发价 = 当前价 * 倍数，确保立即触发）
+        trigger_multiplier_short: 0.5   # 做空平仓触发价倍数（触发价 = 当前价 * 倍数，确保立即触发）
+
+    # 止损限价单偏移配置（v6.20.3 新增）
+    # 止损触发后，限价在触发价基础上向不利方向偏移，确保成交
+    stop_limit_order:
+      offset_pct: 0.002             # 偏移比例 0.2%（做多向下偏移，做空向上偏移）
+
+    # 止盈限价单偏移配置（v6.20.3 新增）
+    # 止盈触发后，限价在触发价基础上向不利方向偏移，确保成交
+    tp_limit_order:
+      offset_pct: 0.0015            # 偏移比例 0.15%（做多向下偏移，做空向上偏移）
+
+    # 条件单清理静默错误码
+    cleanup_silent_error_codes: [-2022, -2011]
+
+    # 条件单取消重试配置（v6.23）
+    cancel_retry:
+      max_retries: 10              # 最大重试次数
+      retry_interval_cycles: 1     # 重试间隔（主循环周期数）
+      notify_on_timeout: true      # 超时后发送告警
+      max_cleanup_hours: 48        # 强制清理超时（小时）
+      cleanup_timeout_seconds: 30  # 启动时孤儿条件单清理超时（秒）
+      trade_lookup_window_minutes: 5  # 查询 trade_records 的时间窗口（分钟）
+
+    # 频率控制（v6.19：极致低频）
+    frequency_control:
+      max_daily_symbol_trades: 2
+      symbol_cooldown_hours: 48       # 激进版 72→48
+      consecutive_loss_pause: 3       # 激进版 2→3
+      pause_duration_hours: 24
+      max_daily_loss_usdt: 40
+      max_daily_loss_ratio: 0.05
+      initial_capital_usdt: 500
+      weekly_loss_pause_enabled: true
+      weekly_loss_max_ratio: 0.15
+      weekly_loss_pause_days: 3
+
+    # 动态仓位调整
+    position_sizing:
+      safety_margin_ratio: 0.10
+      min_margin_usdt: 100
+      max_single_position_usdt: 500
+      min_close_notional_usdt: 20
+      entry_order_timeout_seconds: 300  # 限价单入场超时等待（秒），60→300 低波动行情下给更多时间成交
+
+    # 趋势过滤器
+    trend_filter:
+      enabled: true
+      ema_slope_min: 0.0005
+      ema_slope_flat: 0.0003
+      ema_slope_window: 5
+      ema21_proximity_atr_mult: 1.5
+
+    # 禁止入场条件
+    prohibition:
+      atr_price_max: 0.045
+      atr_price_min: 0.010
+      kline_spike_6h_pct: 0.05
+      funding_rate_max_abs: 0.0005
+      daily_change_long_max: 0.25
+      daily_change_short_max: -0.20
+      spread_max: 0.003
+
+    # 动态ATR过滤器
+    dynamic_atr:
+      enabled: true
+      lookback_hours: 720
+      min_samples: 30
+      cache_ttl_seconds: 3600
+
+    # 动态成交量过滤器
+    dynamic_volume:
+      enabled: true
+      lookback_hours: 20
+      adx_strong_threshold: 25
+      adx_coefficient: 0.8
+      near_threshold_coefficient: 0.8
+      default_vol_ratio_base:
+        S: 1.4
+        A: 1.2
+        B: 0.0
+        C: 0.0
+
+    # 极端行情
+    extreme_market:
+      reverse_pct: 0.05
+      close_ratio: 0.50
+      tighten_stop_atr: 1.0
+
+    # 强平预警
+    liquidation_warning:
+      margin_ratio_reduce: 1.5
+      margin_ratio_close: 1.2
+      reduce_ratio: 0.50
+
+    # 仓位管理
+    position_management:
+      max_concurrent_positions: 3
+      volatility_target_risk: 200     # 150 → 200（v6.20.2）
+      volatility_target_min: 10
+      volatility_target_max: 1000      # 300 → 500 → 600 → 800（v6.20.2）
+
+    # 市场状态识别（v6.20 震荡市生存版）
+    # 仅二态：STRONG_TREND / RANGING
+    # STRONG_TREND 需同时满足5个条件，RANGING 由震荡策略接管
+    market_state:
+      enabled: true
+      # 市场状态未启用时的默认行为（v6.21）
+      fallback:
+        can_trade: true
+        min_grade: C
+        vol_boost: 0.0
+        position_ratio_mult: 1.0
+        stop_loss_atr: 0
+      # 强趋势市5条件阈值
+      strong_trend_adx: 35             # ADX > 35
+      strong_trend_bb_width: 0.07      # BB宽度 > 7%
+      strong_trend_price_change: 5.0   # 10根4h K线价格变化 > 5%
+      strong_trend_daily_slope: 0.15   # 日线EMA21斜率 > 0.15%
+      # 条件5: 连续3根4h K线在EMA21同侧（硬编码，无需配置）
+      # 各状态行为配置（v6.20 新增，可配置化）
+      behaviors:
+        STRONG_TREND:
+          can_trade: true
+          strategy_mode: trend
+          min_grade: S
+          vol_boost: 0.0
+          position_ratio_mult: 0.5
+          stop_loss_atr: 1.5
+          max_daily_trades: 3          # 激进版 趋势市 2→3
+          ranging_symbol_cooldown_hours: 72  # 趋势市的冷却期=全局冷却期72h
+        RANGING:
+          can_trade: true
+          strategy_mode: ranging
+          min_grade: B
+          vol_boost: 0.0
+          position_ratio_mult: 2.0     # 1.5 → 1.8 → 2.0（v6.20.2）
+          max_daily_trades: 4          # 激进版 震荡市 3→4
+          ranging_symbol_cooldown_hours: 2   # 激进版 震荡冷却 3→2
+          # stop_loss_atr 从 ranging_strategy.risk.stop_loss_atr 读取
+
+    # 震荡市策略配置（v6.20 新增）
+    # 震荡市使用反转信号入场，快进快出
+    ranging_strategy:
+      enabled: true
+      # 开仓侧三机制总开关（激进版关闭以恢复 v6.25 宽松开仓；时间平仓复核仍用各机制自身 enabled）
+      entry_filters:
+        enabled: false
+      # 入场条件（至少满足1个即可）
+      entry_conditions:
+        bb_touch: true              # BB半区判定（v6.29）：价格在下半区投多/上半区投空（替代原触轨判定）
+        rsi_extreme: true           # RSI超买超卖（>70做空/<25做多）
+        rsi_oversold: 30            # 激进版 25→30
+        rsi_overbought: 65          # 激进版 70→65
+        reversal_pattern: true      # 反转K线形态（吞没形态）
+      # 退出条件
+      exit_conditions:
+        bb_mid_touch: true          # 触及布林带中轨平仓
+        bb_mid_min_distance_atr: 0.2  # 激进版 0.3→0.2
+        rsi_neutral_long: 57        # 激进版 55→57
+        rsi_neutral_short: 43       # 激进版 45→43
+        time_stop_hours: 36         # 激进版 24→36
+      # 风险参数
+      risk:
+        stop_loss_atr: 2.5          # 激进版 2.0→2.5
+        take_profit_atr: 4.0        # 止盈4.0×ATR（提高盈亏比到2:1）
+      # 允许的信号等级
+      allowed_grades: ['S', 'A', 'B']
+      # 震荡市评分权重（复用评分系统但调整权重）
+      scoring_weights:
+        trend_strength: 0.15        # 趋势权重降低（震荡市趋势不重要）
+        pattern_quality: 0.60       # 形态权重提高（反转形态是关键）
+        momentum_divergence: 0.25   # 动量背离权重
+      # 短线趋势过滤（v6.20.2 新增）
+      # 仅在强趋势时拒绝反向信号，平缓趋势允许双向交易
+      trend_filter:
+        strong_slope_atr_mult: 0.8  # 斜率 > 0.8×ATR 视为强趋势，拒绝反向信号
+
+      # ===== 震荡反转风控三机制（v6.26 新增）=====
+      # 机制①：方向一致性对齐（CP-1/CP-2）
+      direction_alignment:
+        enabled: true
+        fast_ma: "EMA21"            # 快线字段名（CP-1 新增的真正 EMA21）
+        slow_ma: "EMA55"            # 慢线字段名（现有字段）
+        fallback_on_missing: false  # 均线缺失/NaN 时是否放行（true=放行+告警，false=保守拒绝）
+        stick_threshold_pct: 0.5    # 激进版 0.3→0.5
+
+      # 机制②：乖离率 / 过热保护（CP-3/CP-6）
+      overheat_protection:
+        enabled: true
+        downgrade_enabled: true         # 是否启用「降级一档」（false 时预警区也直接禁开）
+        bias_fast_downgrade_pct: 5.0    # 激进版 4.0→5.0
+        bias_fast_ban_pct: 8.0          # 激进版 6.0→8.0
+        bias_slow_downgrade_pct: 7.0    # 激进版 6.0→7.0
+        bias_slow_ban_pct: 11.0         # 激进版 9.0→11.0
+        rsi_extreme_long: 88            # 激进版 85→88
+        rsi_extreme_short: 12           # 激进版 15→12
+        rsi_warn_long: 80               # 激进版 75→80
+        rsi_warn_short: 20              # 激进版 25→20
+
+      # 机制③a：量价确认
+      volume_confirm:
+        enabled: true
+        shrink_ratio: 1.3            # 激进版 1.1→1.3
+                                     # （v6.28 放宽 1.0→1.1，略微容忍放量）
+
+      # 机制③b：波动突变 / 极端期（CP-4/CP-7）
+      volatility_regime:
+        enabled: true
+        atr_long_period: 50          # 长周期 ATR 周期（CP-4 新增 ATR_long 字段）
+        spike_ratio: 2.0             # ATR_short/ATR_long > 该值触发极端期
+        pause_bars: 12               # 极端期暂停震荡反转的 4h K 线数
+        pause_interval_hours: 4      # 每根 K 线对应小时数（用于暂停时长换算，避免硬编码）
+
+    # 经济日历
+    economic_calendar:
+      enabled: true
+      ban_window_minutes: 60
+      events:
+        - date: "2025-01-15"
+          time: "13:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-01-29"
+          time: "19:00"
+          name: "FOMC 利率决议"
+        - date: "2025-02-07"
+          time: "13:30"
+          name: "非农就业 NFP"
+        - date: "2025-02-12"
+          time: "13:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-03-07"
+          time: "13:30"
+          name: "非农就业 NFP"
+        - date: "2025-03-12"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-03-19"
+          time: "18:00"
+          name: "FOMC 利率决议"
+        - date: "2025-04-04"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2025-04-10"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-05-02"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2025-05-07"
+          time: "18:00"
+          name: "FOMC 利率决议"
+        - date: "2025-05-13"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-06-06"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2025-06-11"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-06-18"
+          time: "18:00"
+          name: "FOMC 利率决议"
+        - date: "2025-07-03"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2025-07-10"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-07-30"
+          time: "18:00"
+          name: "FOMC 利率决议"
+        - date: "2025-08-01"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2025-08-13"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-09-05"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2025-09-10"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-09-17"
+          time: "18:00"
+          name: "FOMC 利率决议"
+        - date: "2025-10-03"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2025-10-15"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-11-05"
+          time: "18:00"
+          name: "FOMC 利率决议"
+        - date: "2025-11-07"
+          time: "13:30"
+          name: "非农就业 NFP"
+        - date: "2025-11-13"
+          time: "13:30"
+          name: "CPI 消费者物价指数"
+        - date: "2025-12-05"
+          time: "13:30"
+          name: "非农就业 NFP"
+        - date: "2025-12-10"
+          time: "18:00"
+          name: "FOMC 利率决议"
+        - date: "2025-12-11"
+          time: "13:30"
+          name: "CPI 消费者物价指数"
+        - date: "2026-01-09"
+          time: "13:30"
+          name: "非农就业 NFP"
+        - date: "2026-01-15"
+          time: "13:30"
+          name: "CPI 消费者物价指数"
+        - date: "2026-01-28"
+          time: "19:00"
+          name: "FOMC 利率决议"
+        - date: "2026-02-06"
+          time: "13:30"
+          name: "非农就业 NFP"
+        - date: "2026-02-12"
+          time: "13:30"
+          name: "CPI 消费者物价指数"
+        - date: "2026-03-06"
+          time: "13:30"
+          name: "非农就业 NFP"
+        - date: "2026-03-11"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2026-03-18"
+          time: "18:00"
+          name: "FOMC 利率决议"
+        - date: "2026-04-03"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2026-04-14"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2026-05-06"
+          time: "18:00"
+          name: "FOMC 利率决议"
+        - date: "2026-05-08"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2026-05-13"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2026-06-05"
+          time: "12:30"
+          name: "非农就业 NFP"
+        - date: "2026-06-10"
+          time: "12:30"
+          name: "CPI 消费者物价指数"
+        - date: "2026-06-17"
+          time: "18:00"
+          name: "FOMC 利率决议"
+
+# 总持仓保证金控制（v6.28）
+# MTPCS 策略全部持仓保证金 + 拟开新仓保证金 ≤ 账户权益 × account_ratio_cap，超限拒绝开仓
+# 该值每月由 AI 资金分配（ai_tuner/allocation/config_updater.py）自动更新为分配比例，
+# 未运行资金分配时使用下方初始值兜底；每次开仓检查动态读取，配置更新后立即生效
+position_sizing:
+  total:
+    account_ratio_cap: 0.3     # 总持仓保证金占账户权益的比例上限
+
+# 交易配置
+trading:
+  # 总持仓保证金静态兜底（USDT，保证金口径）
+  # 用途：DB 取不到当月月度分配额时，作为限额兜底；本策略与 btc_eth 共用同一份月度额，
+  #       故兜底值保持一致（参考 2026-09 DB 月度分配额 208.44 上浮）
+  # 月度额可用时优先生效，本值不参与 min 压制
+  total_position_margin_limit: 210
+
+# 资金限额配置（方案 D：运行时读 DB 为主来源，config 为兜底）
+# 说明：本策略与 btc_eth 原版共用同一份月度分配（strategy_id=btc_eth）；
+#       db_cache_ttl_seconds / db_query_timeout_seconds 为 DB 读取的缓存与超时保护。
+capital_limits:
+  db_cache_ttl_seconds: 300       # DB 分配额缓存有效期（秒），避免每笔开仓都查库
+  db_query_timeout_seconds: 3.0   # DB 查询超时（秒），超时后沿用最近一次成功值或降级
+
+# 币安配置
+binance:
+  leverage:
+    S: 5
+    A: 4
+    B: 3
+    C: 2
+
+  position_ratio:
+    S: 0.55
+    A: 0.35
+    B: 0.20
+    C: 0.05
+
+  order_optimization:
+    use_limit_order: true
+    use_buy_one_price: true
+    use_sell_one_price: true
+
+# 通知配置
+notification:
+  enabled: true
+  levels:
+    - info
+    - warning
+    - error

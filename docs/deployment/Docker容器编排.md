@@ -408,6 +408,21 @@ volumes:
 
 > **注意：** AI 调优覆盖层（tuning_overrides）通过 `ai-tuner` 容器的 `./strategies:/app/strategies:rw` 读写挂载，实现参数写入。
 
+> **重要（2026-09-21 补充）：config.yaml 挂载事实** ⭐
+>
+> 各策略容器对 `strategies/*/config.yaml` 的挂载情况**并不一致**：
+>
+> | 容器 | 是否挂载 config.yaml | 影响 |
+> |------|--------------------|------|
+> | `hrs-strategy` | ✅ 已挂载 `./strategies/hrs/config.yaml:/app/strategies/hrs/config.yaml:rw` | 宿主机改配置即时生效 |
+> | `btc-eth-strategy` | ❌ **无挂载** | config 打进镜像，宿主机修改后**需重建镜像**才生效 |
+> | `btc-eth-aggressive-strategy` | ❌ **无挂载** | 同上 |
+> | `new-coin-strategy` | ❌ **无挂载** | 同上 |
+>
+> **后果：** AI 月度资金分配直接写宿主机 `strategies/{btc_eth,btc_eth_aggressive,new_coin}/config.yaml` 时，这三个容器的运行态**不会自动读到新值**。因此限额的运行时权威来源必须是 **DB `public.capital_allocation`**（策略运行时读 DB），config 仅作兜底。详见 [策略资金限额强制执行需求文档](../requirements/capital_allocation/策略资金限额强制执行需求文档.md)。
+>
+> **部署提示：** 若需让宿主机 config 改动对上述三容器生效，须按变更范围分析**重建对应容器**；仅重启无效。
+
 #### 网络配置
 
 ```yaml

@@ -251,20 +251,20 @@ class NewCoinAdapter(BaseAdapter):
             drawdown = peak_pnl - cumulative_pnl
             max_drawdown = max(max_drawdown, drawdown)
 
-        # 回撤百分比（从缓存策略配置读取保证金和持仓数，计算初始资金）
+        # 回撤百分比（从缓存策略配置读取总持仓保证金上限，作为初始资金基数；
+        # 已废弃 trading.max_positions，改用 trading.total_position_margin_limit）
         strategy_config = self._strategy_config_cache
-        single_position_margin = strategy_config.get("trading", {}).get("single_position_margin")
-        max_positions = strategy_config.get("trading", {}).get("max_positions")
-        if not single_position_margin or not max_positions:
+        total_position_margin_limit = strategy_config.get("trading", {}).get("total_position_margin_limit")
+        if not total_position_margin_limit:
             # 策略配置缺少关键参数，从系统配置读取默认值
             system_config = self._system_config
             initial_capital = float(
                 system_config.get("anomaly_detection", {}).get("default_initial_capital_new_coin", 150.0)
             )
-            logger.warning("策略配置缺少 trading.single_position_margin 或 trading.max_positions，"
-                           "使用系统默认值", default=initial_capital)
+            logger.warning("策略配置缺少 trading.total_position_margin_limit，使用系统默认值",
+                           default=initial_capital)
         else:
-            initial_capital = float(single_position_margin) * float(max_positions)
+            initial_capital = float(total_position_margin_limit)
         metrics.max_drawdown_pct = max_drawdown / initial_capital if initial_capital > 0 else 0
         metrics.current_drawdown_pct = (peak_pnl - cumulative_pnl) / initial_capital if initial_capital > 0 else 0
 

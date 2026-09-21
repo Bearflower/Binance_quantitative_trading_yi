@@ -12,7 +12,7 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500;9..40,600;9..40,700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
 
   <!-- 样式 -->
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=20260914">
 
   <!-- ECharts -->
   <script src="js/vendor/echarts.min.js"></script>
@@ -30,7 +30,7 @@
   </script>
 
   <!-- 配置 -->
-  <script src="js/config.js"></script>
+  <script src="js/config.js?v=20260913"></script>
 </head>
 <body>
 
@@ -48,12 +48,14 @@
           <button class="toggle-btn active" role="radio" aria-checked="true" data-range="daily">日</button>
           <button class="toggle-btn" role="radio" aria-checked="false" data-range="weekly">周</button>
           <button class="toggle-btn" role="radio" aria-checked="false" data-range="monthly">月</button>
+          <button class="toggle-btn" role="radio" aria-checked="false" data-range="yearly">年</button>
         </div>
         <div class="update-time" aria-live="polite">
           <span class="dot"></span>
           <span>最后更新</span>
           <span class="value">--</span>
         </div>
+        <div class="refresh-countdown" id="position-refresh-countdown" title="持仓数据刷新倒计时">持仓 · -- 后更新</div>
       </div>
     </header>
 
@@ -82,54 +84,78 @@
           </div>
           <div class="equity-sub" id="account-equity-time">--</div>
         </div>
+        <!-- 收益模块：日/周/月收益率切换器 + 期初净资产 + 本期净盈亏 -->
+        <div class="equity-returns">
+          <div class="returns-header">
+            <span class="returns-title">收益率</span>
+          </div>
+          <div class="returns-value positive" id="returns-yield">--</div>
+          <div class="returns-meta">
+            <span class="returns-meta-item">期初净资产 <b id="returns-start">--</b></span>
+            <span class="returns-meta-item">本期净盈亏 <span class="tooltip" data-tip="本期净盈亏 = 期初净资产快照到当前的净资产增量，含浮动盈亏">ⓘ</span> <b id="returns-pnl">--</b></span>
+          </div>
+          <div class="returns-hint" id="returns-hint"></div>
+        </div>
       </div>
 
       <!-- 总盈亏 -->
       <div class="stat-card pnl animate-in">
-        <div class="stat-icon">◆</div>
-        <div class="stat-label">总盈亏</div>
+        <div class="stat-head">
+          <div class="stat-icon">◆</div>
+          <div class="stat-label">总盈亏 <span class="tooltip" data-tip="总盈亏 = 历史已实现净盈亏累计（已扣佣金），不含浮动盈亏">ⓘ</span></div>
+          <div class="stat-sub">USDT</div>
+        </div>
         <div class="stat-value positive" id="total-pnl">+0.00</div>
-        <div class="stat-sub">USDT</div>
       </div>
 
       <!-- 总胜率 -->
       <div class="stat-card winrate animate-in">
-        <div class="stat-icon">✚</div>
-        <div class="stat-label">总胜率</div>
+        <div class="stat-head">
+          <div class="stat-icon">✚</div>
+          <div class="stat-label">总胜率</div>
+          <div class="stat-sub" id="win-rate-sub">--</div>
+        </div>
         <div class="stat-value gold" id="win-rate">0.0%</div>
-        <div class="stat-sub" id="win-rate-sub">--</div>
       </div>
 
       <!-- 总平仓数 -->
       <div class="stat-card closed animate-in">
-        <div class="stat-icon">▨</div>
-        <div class="stat-label">总平仓数</div>
+        <div class="stat-head">
+          <div class="stat-icon">▨</div>
+          <div class="stat-label">总平仓数</div>
+          <div class="stat-sub" id="closed-sub">--</div>
+        </div>
         <div class="stat-value blue" id="closed-count">0</div>
-        <div class="stat-sub" id="closed-sub">--</div>
       </div>
 
       <!-- 总委托数 -->
       <div class="stat-card orders animate-in">
-        <div class="stat-icon">▤</div>
-        <div class="stat-label">总委托数</div>
+        <div class="stat-head">
+          <div class="stat-icon">▤</div>
+          <div class="stat-label">总委托数</div>
+          <div class="stat-sub" id="order-sub">--</div>
+        </div>
         <div class="stat-value gold" id="order-count">0</div>
-        <div class="stat-sub" id="order-sub">--</div>
       </div>
 
       <!-- 总佣金 -->
       <div class="stat-card commission animate-in">
-        <div class="stat-icon">§</div>
-        <div class="stat-label">总佣金</div>
+        <div class="stat-head">
+          <div class="stat-icon">§</div>
+          <div class="stat-label">总佣金</div>
+          <div class="stat-sub" id="commission-sub">USDT（手续费支出）</div>
+        </div>
         <div class="stat-value red" id="total-commission">0.00</div>
-        <div class="stat-sub" id="commission-sub">USDT（手续费支出）</div>
       </div>
 
       <!-- 当前持仓 -->
       <div class="stat-card positions animate-in">
-        <div class="stat-icon">▣</div>
-        <div class="stat-label">当前持仓</div>
+        <div class="stat-head">
+          <div class="stat-icon">▣</div>
+          <div class="stat-label">当前持仓</div>
+          <div class="stat-sub">非零仓位数量</div>
+        </div>
         <div class="stat-value blue" id="current-positions">0</div>
-        <div class="stat-sub">非零仓位数量</div>
       </div>
 
     </div>
@@ -164,9 +190,57 @@
             <div class="label">委托数</div>
             <div class="value">0</div>
           </div>
+          <div class="strategy-metric" data-metric="open_position_count">
+            <div class="label">持仓量</div>
+            <div class="value">0</div>
+          </div>
+          <div class="strategy-metric" data-metric="open_margin">
+            <div class="label">持仓保证金</div>
+            <div class="value">0.00</div>
+          </div>
         </div>
         <div class="strategy-footer">
           <a href="detail.html?strategy=btc_eth" class="strategy-detail-link">
+            查看详情 <span class="arrow">→</span>
+          </a>
+        </div>
+      </div>
+
+      <!-- MTPCS 激进版 -->
+      <div class="strategy-card animate-in" data-strategy="btc_eth_aggressive" tabindex="0">
+        <div class="strategy-card-header">
+          <div class="strategy-info">
+            <div class="strategy-icon">⚡</div>
+            <div>
+              <div class="strategy-name">MTPCS 激进版</div>
+            </div>
+          </div>
+          <span class="strategy-status">● 运行中</span>
+        </div>
+        <div class="strategy-metrics">
+          <div class="strategy-metric" data-metric="pnl">
+            <div class="label">盈亏</div>
+            <div class="value positive">+0.00</div>
+          </div>
+          <div class="strategy-metric" data-metric="win_rate">
+            <div class="label">胜率</div>
+            <div class="value">0.0%</div>
+          </div>
+          <div class="strategy-metric" data-metric="order_count">
+            <div class="label">委托数</div>
+            <div class="value">0</div>
+          </div>
+          <div class="strategy-metric" data-metric="open_position_count">
+            <div class="label">持仓量</div>
+            <div class="value">0</div>
+          </div>
+          <div class="strategy-metric" data-metric="open_margin">
+            <div class="label">持仓保证金</div>
+            <div class="value">0.00</div>
+          </div>
+        </div>
+        <div class="strategy-footer">
+          <a href="detail.html?strategy=btc_eth_aggressive" class="strategy-detail-link">
             查看详情 <span class="arrow">→</span>
           </a>
         </div>
@@ -195,6 +269,14 @@
           <div class="strategy-metric" data-metric="order_count">
             <div class="label">委托数</div>
             <div class="value">0</div>
+          </div>
+          <div class="strategy-metric" data-metric="open_position_count">
+            <div class="label">持仓量</div>
+            <div class="value">0</div>
+          </div>
+          <div class="strategy-metric" data-metric="open_margin">
+            <div class="label">持仓保证金</div>
+            <div class="value">0.00</div>
           </div>
         </div>
         <div class="strategy-footer">
@@ -228,6 +310,14 @@
             <div class="label">委托数</div>
             <div class="value">0</div>
           </div>
+          <div class="strategy-metric" data-metric="open_position_count">
+            <div class="label">持仓量</div>
+            <div class="value">0</div>
+          </div>
+          <div class="strategy-metric" data-metric="open_margin">
+            <div class="label">持仓保证金</div>
+            <div class="value">0.00</div>
+          </div>
         </div>
         <div class="strategy-footer">
           <a href="detail.html?strategy=hrs" class="strategy-detail-link">
@@ -236,6 +326,87 @@
         </div>
       </div>
     </div>
+
+    <!-- ===== AI 监控 ===== -->
+    <div class="section-header">
+      <h2>AI 监控</h2>
+    </div>
+
+    <div class="ai-monitor-grid">
+      <!-- 最近优化建议 -->
+      <div class="ai-card animate-in">
+        <div class="ai-card-header">
+          <h3 class="ai-card-title">最近优化建议</h3>
+          <span class="tooltip" data-tip="最近一次调优产出的优化建议列表">ⓘ</span>
+        </div>
+        <div class="ai-card-body">
+          <div id="recommendations" class="ai-card-section">--</div>
+        </div>
+      </div>
+
+      <!-- 月度资金分配 -->
+      <div class="ai-card animate-in">
+        <div class="ai-card-header">
+          <h3 class="ai-card-title">月度资金分配</h3>
+          <span class="tooltip" data-tip="本期 active 各策略保证金分配与占用比">ⓘ</span>
+        </div>
+        <div id="capital-allocation" class="ai-card-body">--</div>
+      </div>
+
+      <!-- 占用比趋势（持仓保证金/分配金额，近30天按天聚合） -->
+      <div class="ai-card animate-in ai-card-wide">
+        <div class="ai-card-header">
+          <h3 class="ai-card-title">占用比趋势</h3>
+          <span class="tooltip" data-tip="近30天各策略占用比（持仓保证金/分配金额），按天聚合：每天取当日最后一个小时的占用比">ⓘ</span>
+        </div>
+        <div class="ai-card-body">
+          <div id="position-utilization-trend-chart" class="position-util-trend-chart" role="img" aria-label="各策略占用比趋势图"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ===== 风控监控 ===== -->
+    <div class="section-header">
+      <h2>风控监控</h2>
+    </div>
+
+    <div class="risk-grid">
+      <div class="risk-card animate-in">
+        <div class="stat-label">当前持仓总保证金</div>
+        <div class="risk-value" id="risk-total-margin">--</div>
+        <div class="stat-sub">USDT</div>
+      </div>
+      <div class="risk-card animate-in">
+        <div class="stat-label">持仓上限</div>
+        <div class="risk-value" id="risk-margin-limit">--</div>
+        <div class="stat-sub" id="risk-margin-limit-sub">USDT</div>
+      </div>
+      <div class="risk-card animate-in">
+        <div class="stat-label">上限占用率</div>
+        <div class="risk-value" id="risk-limit-occupancy">--</div>
+        <div class="progress-track">
+          <div class="progress-bar" id="risk-limit-bar"></div>
+        </div>
+      </div>
+      <div class="risk-card animate-in">
+        <div class="stat-label">权益比例占用率 <span class="tooltip" data-tip="权益比例占用率 = 当前总持仓保证金 / 账户净资产，即持仓保证金占净资产的比率">ⓘ</span></div>
+        <div class="risk-value" id="risk-equity-occupancy">--</div>
+        <div class="progress-track">
+          <div class="progress-bar" id="risk-equity-bar"></div>
+        </div>
+      </div>
+      <div class="risk-card animate-in">
+        <div class="stat-label">可用开仓额度</div>
+        <div class="risk-value" id="risk-available-margin">--</div>
+        <div class="stat-sub">USDT</div>
+      </div>
+      <div class="risk-card animate-in">
+        <div class="stat-label">最近止损次数</div>
+        <div class="risk-value" id="risk-stop-count">0</div>
+        <div class="stat-sub">近7天</div>
+      </div>
+    </div>
+    <div id="risk-warnings" class="risk-warnings"></div>
 
     <!-- ===== 收益趋势图 ===== -->
     <div class="chart-section animate-in">
@@ -265,8 +436,8 @@
   </div>
 
   <!-- 脚本 -->
-  <script src="js/api.js"></script>
-  <script src="js/charts.js"></script>
-  <script src="js/main.js"></script>
+  <script src="js/api.js?v=20260913"></script>
+  <script src="js/charts.js?v=20260913"></script>
+  <script src="js/main.js?v=20260915c"></script>
 </body>
 </html>

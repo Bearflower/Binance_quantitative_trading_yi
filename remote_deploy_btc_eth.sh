@@ -84,3 +84,42 @@ echo "============================================="
 echo "查看最近日志:"
 docker logs --tail 30 $BTC_ETH_CONTAINER_NAME 2>&1 || true
 echo "============================================="
+
+# =============================================
+# 部署 BTC/ETH 激进版策略（共用资金，独立 schema）
+# =============================================
+echo ""
+echo "部署激进版策略..."
+
+# 可选：如需独立部署激进版，取消下方注释
+# 激进版使用单独的 Docker Compose 服务 btc-eth-aggressive-strategy
+# 通过 DATABASE_URL?schema=btc_eth_aggressive 实现订单隔离，
+# 资金分配结果由 ai_tuner 资金镜像逻辑（_SHARED_FUND_MIRROR）从原版同步。
+if [ "$DEPLOY_BTC_ETH_AGGRESSIVE" = "true" ]; then
+    echo "构建 BTC/ETH 激进版镜像（--no-cache）..."
+    cd $SERVER_PROJECT_PATH
+    docker-compose build --no-cache btc-eth-aggressive-strategy
+    echo "激进版镜像构建成功"
+
+    echo "启动激进版策略容器..."
+    docker-compose up -d btc-eth-aggressive-strategy
+    echo "激进版容器启动成功"
+
+    echo "等待容器启动..."
+    sleep 10
+
+    echo "============================================="
+    echo "激进版容器状态:"
+    docker ps -f name=$BTC_ETH_AGGRESSIVE_CONTAINER_NAME
+    echo "============================================="
+
+    echo "验证激进版代码版本:"
+    docker exec $BTC_ETH_AGGRESSIVE_CONTAINER_NAME cat /app/VERSION 2>/dev/null | grep -E 'DEPLOY_ID|FILE_MD5_AGGRESSIVE' || echo "VERSION 文件不存在"
+    echo "============================================="
+
+    echo "查看激进版最近日志:"
+    docker logs --tail 30 $BTC_ETH_AGGRESSIVE_CONTAINER_NAME 2>&1 || true
+    echo "============================================="
+else
+    echo "跳过激进版部署（DEPLOY_BTC_ETH_AGGRESSIVE 未开启）"
+fi

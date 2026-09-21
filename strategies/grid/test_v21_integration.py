@@ -436,22 +436,28 @@ def test_4_signal_bot_state_dispatch():
     # 直接通过实例化后调用方法验证
     # 由于初始化需要外部依赖，这里检查方法签名即可
 
-    # 验证 _generate_extreme_strong_message 只接受 (self, symbol, market_analysis)
+    # 验证 _generate_extreme_strong_message 接受 (self, symbol, market_analysis[, advice])
     sig = inspect.signature(GridSignalBot._generate_extreme_strong_message)
     params = list(sig.parameters.keys())
-    assert params == ['self', 'symbol', 'market_analysis'], \
+    assert params[:3] == ['self', 'symbol', 'market_analysis'], \
+        f"_generate_extreme_strong_message 基础参数不符: {params}"
+    assert len(params) == 3 or (len(params) == 4 and params[3] == 'advice'), \
         f"_generate_extreme_strong_message 签名不符: {params}"
     print("  [PASS] _generate_extreme_strong_message 方法签名正确")
 
     sig = inspect.signature(GridSignalBot._generate_normal_strong_message)
     params = list(sig.parameters.keys())
-    assert params == ['self', 'symbol', 'market_analysis'], \
+    assert params[:3] == ['self', 'symbol', 'market_analysis'], \
+        f"_generate_normal_strong_message 基础参数不符: {params}"
+    assert len(params) == 3 or (len(params) == 4 and params[3] == 'advice'), \
         f"_generate_normal_strong_message 签名不符: {params}"
     print("  [PASS] _generate_normal_strong_message 方法签名正确")
 
     sig = inspect.signature(GridSignalBot._generate_volatility_abnormal_message)
     params = list(sig.parameters.keys())
-    assert params == ['self', 'symbol', 'market_analysis'], \
+    assert params[:3] == ['self', 'symbol', 'market_analysis'], \
+        f"_generate_volatility_abnormal_message 基础参数不符: {params}"
+    assert len(params) == 3 or (len(params) == 4 and params[3] == 'advice'), \
         f"_generate_volatility_abnormal_message 签名不符: {params}"
     print("  [PASS] _generate_volatility_abnormal_message 方法签名正确")
 

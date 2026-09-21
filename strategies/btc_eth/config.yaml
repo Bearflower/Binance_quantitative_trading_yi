@@ -121,7 +121,7 @@ strategy:
       s_min_score: 82                 # 86→82（略降低评分要求）
       max_daily_trades: 1
       position_ratio_s: 0.50
-      ranging_adx_min: 32             # v6.21：震荡市下强制要求较强趋势
+      ranging_adx_min: 20             # v6.29：32→20（当前 ADX 20-23 被硬拦截，放宽进入投票流程）
       ranging_max_daily_trades: 1     # v6.21：震荡市每天最多1笔
       ranging_cooldown_hours: 48      # v6.21：震荡市冷却期48h
     XRPUSDT:
@@ -142,10 +142,10 @@ strategy:
         stop_loss_atr_multiplier: 2.5
         partial_take_profit:
           tp1_atr_multiplier: 6.0
-          tp1_close_ratio: 0.15
+          tp1_close_ratio: 0.30
           tp2_atr_multiplier: 9.0
-          tp2_close_ratio: 0.35
-          remaining_ratio: 0.50
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
         dynamic_trailing:
           enabled: true
           activation:
@@ -175,10 +175,10 @@ strategy:
         stop_loss_atr_multiplier: 1.5
         partial_take_profit:
           tp1_atr_multiplier: 4.0
-          tp1_close_ratio: 0.25
+          tp1_close_ratio: 0.30
           tp2_atr_multiplier: 6.0
-          tp2_close_ratio: 0.25
-          remaining_ratio: 0.50
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
         dynamic_trailing:
           enabled: true
           activation:
@@ -210,8 +210,8 @@ strategy:
           tp1_atr_multiplier: 3.0
           tp1_close_ratio: 0.30
           tp2_atr_multiplier: 5.0
-          tp2_close_ratio: 0.30
-          remaining_ratio: 0.40
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
         dynamic_trailing:
           enabled: true
           activation:
@@ -241,10 +241,10 @@ strategy:
         stop_loss_atr_multiplier: 1.0
         partial_take_profit:
           tp1_atr_multiplier: 2.0
-          tp1_close_ratio: 0.40
+          tp1_close_ratio: 0.30
           tp2_atr_multiplier: 3.5
           tp2_close_ratio: 0.40
-          remaining_ratio: 0.20
+          remaining_ratio: 0.30
         dynamic_trailing:
           enabled: true
           activation:
@@ -272,6 +272,7 @@ strategy:
 
     # 全局参数（不按信号等级拆解）
     max_position_size: 0.1
+    quantity_inference_eps_ratio: 0.005  # 数量推断容差比例（防双重平仓时判定TP触发级别的步长误差）
 
     # 平仓限价单配置（v6.20.3：全部平仓使用限价单，不再降级为市价单）
     close_limit_order:
@@ -442,11 +443,10 @@ strategy:
       enabled: true
       # 入场条件（至少满足1个即可）
       entry_conditions:
-        bb_touch: true              # 价格触及布林带轨（上轨做空/下轨做多）
-        bb_touch_threshold: 0.08    # 触及阈值：价格距布林带轨8%以内视为触及（v6.20.2 → v6.27 放宽 0.05→0.08）
-        rsi_extreme: true           # RSI超买超卖（>75做空/<20做多）
-        rsi_oversold: 20            # RSI超卖阈值（进一步放宽）
-        rsi_overbought: 75          # RSI超买阈值（v6.27 放宽 80→75）
+        bb_touch: true              # BB半区判定（v6.29）：价格在下半区投多/上半区投空（替代原触轨判定）
+        rsi_extreme: true           # RSI超买超卖（>70做空/<25做多）
+        rsi_oversold: 25            # RSI超卖阈值（v6.28 放宽 20→25）
+        rsi_overbought: 70          # RSI超买阈值（v6.27 放宽 80→75 → v6.28 放宽 75→70）
         reversal_pattern: true      # 反转K线形态（吞没形态）
       # 退出条件
       exit_conditions:
@@ -496,7 +496,8 @@ strategy:
       # 机制③a：量价确认
       volume_confirm:
         enabled: true
-        shrink_ratio: 1.0            # 缩量判定：当前 4h 成交量 < shrink_ratio × Volume_MA(20)
+        shrink_ratio: 1.1            # 缩量判定：当前 4h 成交量 < shrink_ratio × Volume_MA(20)
+                                     # （v6.28 放宽 1.0→1.1，略微容忍放量）
 
       # 机制③b：波动突变 / 极端期（CP-4/CP-7）
       volatility_regime:
@@ -660,6 +661,20 @@ strategy:
 position_sizing:
   total:
     account_ratio_cap: 0.3     # 总持仓保证金占账户权益的比例上限
+
+# 交易配置
+trading:
+  # 总持仓保证金静态兜底（USDT，保证金口径）
+  # 用途：DB 取不到当月月度分配额时，作为限额兜底（参考 2026-09 DB 月度分配额 208.44 上浮）
+  # 月度额可用时优先生效，本值不参与 min 压制
+  total_position_margin_limit: 210
+
+# 资金限额配置（方案 D：运行时读 DB 为主来源，config 为兜底）
+# 说明：monthly_limit / allocated_ratio 由 AI 月度资金分配流程写入；
+#       db_cache_ttl_seconds / db_query_timeout_seconds 为 DB 读取的缓存与超时保护。
+capital_limits:
+  db_cache_ttl_seconds: 300       # DB 分配额缓存有效期（秒），避免每笔开仓都查库
+  db_query_timeout_seconds: 3.0   # DB 查询超时（秒），超时后沿用最近一次成功值或降级
 
 # 币安配置
 binance:

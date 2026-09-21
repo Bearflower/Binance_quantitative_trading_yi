@@ -15,8 +15,9 @@ from shared.base_strategy import BaseStrategy
 from shared.capital_manager import CapitalManager
 from shared.database import DatabaseManager
 from shared.notification import NotificationClient
-from shared.strategy_state import save_strategy_state
+from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared.trade_logger import TradeLogger
+from shared.position_baseline import calc_occupied_margin, calc_position_margin
 
 from .candidate_pool import CandidatePool
 from .executor import TradingExecutor, OpenResult
@@ -160,9 +161,14 @@ class HRSStrategy(BaseStrategy):
         # P2-5: 策略启停控制
         self._paused: bool = False
 
-        # 资金分配管理器（读取 capital_limits.monthly_limit 限制仓位）
+        # 资金分配管理器（方案 D：运行时读 DB 为主来源，config 为兜底；保证金口径）
+        # 注意：self.db 由 set_database 在 __init__ 之后注入，故此处仅传 strategy_id，
+        # DB 在 initialize() 中通过 bind_database 延迟绑定
         config_dir = os.path.dirname(os.path.abspath(__file__))
-        self.capital_mgr = CapitalManager(os.path.join(config_dir, "config.yaml"))
+        self.capital_mgr = CapitalManager(
+            os.path.join(config_dir, "config.yaml"),
+            strategy_id=self.strategy_name,
+        )
 
         # 候选池为空时休眠配置
         pool_config = config.get("candidate_pool", {})
@@ -204,6 +210,9 @@ class HRSStrategy(BaseStrategy):
             raise ValueError("通知客户端未设置")
         if not self.db:
             raise ValueError("数据库管理器未设置")
+
+        # 延迟绑定 DB 到资金分配管理器（方案 D：DB 为月度分配额主来源）
+        self.capital_mgr.bind_database(self.db, self.strategy_name)
 
         # 初始化各模块
         self.market_data = MarketDataProvider(self.binance_client, self.kline_service, self.config)
@@ -362,6 +371,28 @@ class HRSStrategy(BaseStrategy):
             result["error"] = str(e)
             return result
 
+    def _calc_current_total_margin(self) -> float:
+        """
+        统计 HRS 策略当前全部持仓的占用保证金（统一保证金口径，R3）
+
+        单仓保证金 = |数量| × 入场价 × contractSize / 杠杆（杠杆从 executor 配置读取，禁止硬编码）。
+        USDT 本位永续合约 contractSize=1；多空仓位统一取绝对值，避免多空相互抵消导致占用被低估。
+        口径由 shared.position_baseline.calc_occupied_margin 唯一实现。
+
+        Returns:
+            float: 当前总占用保证金（USDT）
+        """
+        leverage = self.trading_executor.leverage
+        records = []
+        for _, pos_data in self.position_manager.get_all_positions().items():
+            pos_qty = abs(float(pos_data.get("entry_quantity", 0) or pos_data.get("quantity", 0) or 0))
+            pos_price = float(pos_data.get("entry_price", 0) or 0)
+            if pos_qty <= 0 or pos_price <= 0:
+                continue
+            # contractSize=1：USDT 本位永续合约
+            records.append({"positionAmt": pos_qty, "markPrice": pos_price, "contractSize": 1.0})
+        return calc_occupied_margin(records, leverage)
+
     async def execute_signal(self, signal: Dict[str, Any]) -> bool:
         """
         执行交易信号
@@ -455,20 +486,24 @@ class HRSStrategy(BaseStrategy):
                 balance, stop_loss_percent, self.trading_executor.leverage, current_price
             )
 
-            # 开仓前检查：总仓位不超过分配上限
-            current_positions_value = 0.0
-            for _, pos_data in self.position_manager.get_all_positions().items():
-                pos_qty = pos_data.get("entry_quantity", 0) or pos_data.get("quantity", 0)
-                pos_price = pos_data.get("entry_price", 0)
-                current_positions_value += float(pos_qty) * float(pos_price)
-            new_position_value = float(quantity) * float(current_price)
-            if not self.capital_mgr.can_open_position(current_positions_value, new_position_value):
+            # 开仓前检查：总持仓保证金不超过生效限额
+            # 口径统一为保证金（R3）：允许开仓 ⟺ 当前占用 + 新开仓保证金 ≤ 生效限额
+            # 生效限额由 CapitalManager 统一解析（DB 月度分配额 → config → 静态兜底）
+            # contractSize=1：USDT 本位永续合约，统一走 calc_position_margin
+            new_margin = calc_position_margin(
+                quantity, current_price, 1.0, self.trading_executor.leverage
+            )
+            current_total_margin = self._calc_current_total_margin()
+            allowed, reject_reason = await self.capital_mgr.can_open_within_limit(
+                current_total_margin, new_margin
+            )
+            if not allowed:
                 logger.warning(
-                    "总仓位超限，跳过开仓",
+                    "总持仓保证金超限，跳过开仓",
                     symbol=symbol,
-                    current=current_positions_value,
-                    new=new_position_value,
-                    limit=self.capital_mgr.get_allocated_capital(),
+                    current_margin=round(current_total_margin, 2),
+                    new_margin=round(new_margin, 2),
+                    reason=reject_reason,
                 )
                 return False
 
@@ -485,14 +520,6 @@ class HRSStrategy(BaseStrategy):
                 _total_ratio_cap = self.config.get("position_sizing", {}).get("total", {}).get("account_ratio_cap")
             if _total_ratio_cap is not None:
                 max_total_margin = balance * _total_ratio_cap
-                # 新仓位保证金 = 仓位价值 / 杠杆
-                new_margin = (float(quantity) * float(current_price)) / self.trading_executor.leverage
-                # 当前持仓总保证金
-                current_total_margin = 0.0
-                for _, pos_data in self.position_manager.get_all_positions().items():
-                    pos_qty = abs(float(pos_data.get("entry_quantity", 0) or pos_data.get("quantity", 0)))
-                    pos_price = float(pos_data.get("entry_price", 0))
-                    current_total_margin += (pos_qty * pos_price) / self.trading_executor.leverage
                 if current_total_margin + new_margin > max_total_margin + 0.001:  # 浮点容差
                     logger.warning(
                         "总持仓保证金超限，跳过开仓",
@@ -573,6 +600,7 @@ class HRSStrategy(BaseStrategy):
                     if self._paused:
                         logger.debug("策略暂停中，仅维护K线数据和持仓监控")
                         await self._monitor_positions()
+                        await self._report_positions_to_dashboard()
                         await asyncio.sleep(self.check_interval)
                         continue
 
@@ -581,6 +609,7 @@ class HRSStrategy(BaseStrategy):
                         logger.debug("候选池为空，仅执行 LV-RM 检查")
                         await self._run_lv_rm_only_cycle()
                         await self._monitor_positions()
+                        await self._report_positions_to_dashboard()
                         await asyncio.sleep(self.check_interval)
                         continue
 
@@ -893,8 +922,23 @@ class HRSStrategy(BaseStrategy):
         # 监控持仓
         await self._monitor_positions()
 
-        # 保存策略状态到 strategy_states（用于 orphan_cleanup 统一检测）
+        # 上报当前持仓到看板聚合表（封装：候选池空/暂停时主循环也会调用，保证持续更新）
+        await self._report_positions_to_dashboard()
+
+    async def _report_positions_to_dashboard(self) -> None:
+        """上报当前持仓与策略状态到看板聚合表（strategy_states / strategy_open_positions）
+
+        原逻辑仅位于 _execute_cycle 正常分支末尾；当 HRS 候选池为空进入空休眠
+        （sleep_on_empty）时，主循环只跑 _run_lv_rm_only_cycle + _monitor_positions，
+        从不执行 _execute_cycle，导致 strategy_open_positions 永久停更。故封装为独立
+        方法，供主循环各分支（正常 / 暂停 / 候选池空休眠）统一调用，保证持仓持续上报。
+
+        口径：margin = 剩余数量 × 入场价 / 杠杆（杠杆自配置 trading.leverage 读取）。
+        """
         positions = {}
+        margin_dict = {}
+        qty_dict = {}
+        leverage = float(self.config.get('trading', {}).get('leverage', 1) or 1)
         for symbol, pos in self.position_manager.get_all_positions().items():
             positions[symbol] = {
                 "direction": pos.get("direction"),
@@ -904,7 +948,15 @@ class HRSStrategy(BaseStrategy):
                 "entry_time": str(pos.get("entry_time", "")),
                 "algo_ids": pos.get("algo_ids", {}),
             }
+            entry_qty = float(pos.get("entry_quantity", 0) or 0)
+            remain_qty = float(pos.get("remaining_quantity", entry_qty) or 0)
+            entry_price = float(pos.get("entry_price", 0) or 0)
+            qty_dict[symbol] = remain_qty
+            if remain_qty > 0 and entry_price > 0 and leverage > 0:
+                margin_dict[symbol] = remain_qty * entry_price / leverage
         await save_strategy_state(self.db, "hrs", positions)
+        # 同步当前持仓到看板聚合表（口径由策略侧计算，工具内部容错）
+        await sync_open_positions(self.db, "hrs", margin_dict, qty_dict)
 
     async def _check_candidate_update(self, now: datetime) -> None:
         """
@@ -1622,6 +1674,14 @@ class HRSStrategy(BaseStrategy):
                     pnl=float(pnl_value),
                     source=pnl_source,
                 )
+                # 全部平仓若为亏损，判定为条件单止损自动平仓，打 STOP_LOSS 标记
+                # 供风控看板"最近止损次数"统计（问题3）
+                if pnl_value < 0:
+                    await self.mark_stop_loss(
+                        symbol=symbol,
+                        side=close_side,
+                        realized_pnl=pnl_value,
+                    )
             else:
                 logger.warning(
                     "全部平仓PnL回写失败",
@@ -1766,6 +1826,22 @@ class HRSStrategy(BaseStrategy):
                 except Exception as e:
                     logger.debug("获取持仓变化失败", symbol=symbol, error=str(e))
 
+                # V2.11: 移动止损定期更新（tp2_reached后每次监控循环重建）
+                # 根因：update_best_price() 每次循环都更新内存中的 best_price，
+                # 但 Binance 上的 trailing stop 条件单只在 TP2 首次成交时创建一次，
+                # 之后不再更新，导致移动止损"挂在高位不动"。
+                # 修复：target2_reached=True 时每次 monitor 都重建，
+                # best_price 已在 line 1761 更新过，所以重建出的止损价是最新的。
+                if pos.get("target2_reached", False):
+                    try:
+                        await self._replenish_single_position(symbol)
+                    except Exception as replenish_err:
+                        logger.warning(
+                            "移动止损重建失败（下次循环重试）",
+                            symbol=symbol,
+                            error=str(replenish_err),
+                        )
+
                 # 检查时间止损
                 if self.position_manager.check_time_stop(symbol):
                     # V2.8: 时间止损时重新分析，判断是否继续持仓
@@ -1809,6 +1885,12 @@ class HRSStrategy(BaseStrategy):
                     # P2-4: 发送止损通知
                     await self._send_position_close_notification(
                         symbol, direction, "时间止损", current_price, entry_price
+                    )
+
+                    # 止损打标：记录本次时间止损，供看板"最近止损次数"统计
+                    await self.mark_stop_loss(
+                        symbol=symbol,
+                        side="SELL" if direction == "long" else "BUY",
                     )
 
                     # 平仓后检查是否需要注销K线服务

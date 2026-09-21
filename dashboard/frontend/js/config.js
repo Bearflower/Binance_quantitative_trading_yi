@@ -15,6 +15,17 @@ const DashboardConfig = {
         defaultDays: 7,   // 默认显示天数
         maxDays: 30       // 最大显示天数
     },
+
+    // AI 监控配置
+    aiMonitor: {
+        weeks: 8,    // 月度资金分配/最近优化建议回溯周数
+        limit: 10    // 最近优化建议返回条数上限
+    },
+
+    // 风控监控配置
+    risk: {
+        days: 7      // 止损统计 / 连续亏损统计天数
+    },
     
     // 图表主题颜色（对齐新版亮色 UI：明朗青绿主色 + 紫罗兰强调）
     chartColors: [
@@ -45,6 +56,8 @@ const DashboardConfig = {
 Object.freeze(DashboardConfig);
 Object.freeze(DashboardConfig.api);
 Object.freeze(DashboardConfig.trend);
+Object.freeze(DashboardConfig.aiMonitor);
+Object.freeze(DashboardConfig.risk);
 Object.freeze(DashboardConfig.chartColors);
 Object.freeze(DashboardConfig.cdn);
 Object.freeze(DashboardConfig.ui);

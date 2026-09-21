@@ -1,0 +1,18 @@
+risk:
+  occupancy_warning_ratio: 0.8
+  consecutive_loss_days: 3
+  daily_drawdown_pct: 5.0
+  stop_loss_days_window: 7
+  account_ratio_caps:
+    btc_eth: 0.3
+    btc_eth_aggressive: 0.3
+    hrs: 0.2
+    new_coin: 150
+  generated_at: 2026-09-21T09:52:45+0800
+  source_configs:
+    btc_eth: strategies/btc_eth/config.yaml
+    btc_eth_aggressive: strategies/btc_eth_aggressive/config.yaml
+    hrs: strategies/hrs/config.yaml
+    new_coin: strategies/new_coin/config.yaml
+note: 本文件 account_ratio_caps 由 generate_risk_config.py 自动生成，权威源为各策略 config.yaml，请勿手改
+  account_ratio_caps。

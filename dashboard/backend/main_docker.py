@@ -4,6 +4,8 @@ FastAPI 应用入口
 """
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+import asyncio
+import os
 import random
 
 from fastapi import FastAPI, Request
@@ -15,6 +17,13 @@ import structlog
 from api.routes_docker import router as api_router
 from core.config import settings
 from core.cache import cache_service
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
+from services.data_service_docker import DataService
+from services.equity_snapshot_job import run_snapshot
+from services.metric_precompute_job import run_precompute
+from services.commission_reconcile_job import run_reconcile
 
 
 logger = structlog.get_logger()
@@ -168,15 +177,129 @@ data_service = MockDataService()
 async def lifespan(app: FastAPI):
     """
     应用生命周期管理
+
+    启动时：
+      - 创建 APScheduler AsyncIOScheduler（北京时间）
+      - 注册每日 23:30 的净资产快照任务
+    关闭时：
+      - 关闭调度器
+    说明：生产实际数据走 routes_docker 的 DataService；此处仅注入快照调度，
+    MockDataService 仅本机演示，不改其 data_service 逻辑。
     """
     logger.info(
         "Dashboard API 启动中",
         version="1.0.0",
         environment="production"
     )
-    
+
+    # 每日净资产快照调度器（北京时间 23:30）
+    snapshot_scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+    snapshot_scheduler.add_job(
+        run_snapshot,
+        CronTrigger(hour=23, minute=30, timezone="Asia/Shanghai"),
+        args=[DataService()],
+        id="equity_daily_snapshot",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=3600,
+    )
+    snapshot_scheduler.start()
+    logger.info("净资产快照调度器已启动", schedule="每天 23:30 北京时间")
+
+    # 指标预计算调度器（默认每 60 秒，走环境变量注入，禁止硬编码）
+    precompute_service = DataService()
+    precompute_interval = int(os.getenv("PRECOMPUTE_INTERVAL_SECONDS", "60"))
+    # 启动期等待依赖（DB/网络）就绪的延迟：避免启动瞬间对未就绪依赖产生 DNS 等噪音告警
+    startup_ready_delay = timedelta(seconds=int(os.getenv("STARTUP_READY_DELAY_SECONDS", "30")))
+    precompute_scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+    precompute_scheduler.add_job(
+        run_precompute,
+        IntervalTrigger(
+            seconds=precompute_interval,
+            start_date=(
+                datetime.now() + startup_ready_delay
+                if startup_ready_delay.total_seconds() > 0
+                else None
+            ),
+        ),
+        args=[precompute_service],
+        id="metric_precompute",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=120,
+    )
+    precompute_scheduler.start()
+    logger.info("指标预计算调度器已启动", schedule=f"每 {precompute_interval} 秒")
+
+    # 启动时预热一次（延迟至依赖就绪，既避免重启后首屏读库无数据，也不产生启动噪音）
+    async def _run_after_ready(coro):
+        if startup_ready_delay.total_seconds() > 0:
+            await asyncio.sleep(startup_ready_delay.total_seconds())
+        await coro
+
+    asyncio.create_task(_run_after_ready(run_precompute(precompute_service)))
+
+    # 持仓对账调度器（默认每 5 分钟，走环境变量注入，禁止硬编码），
+    # 推导各策略持仓/保证金/占用比并落库 strategy_position_snapshot。
+    # 注意：间隔必须小于持仓快照新鲜度超时(POSITION_FRESHNESS_TIMEOUT)，否则快照会中途判失效回退读残留表。
+    position_service = DataService()
+    position_interval = int(os.getenv("POSITION_RECONCILE_INTERVAL_SECONDS", "300"))
+    position_scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+    position_scheduler.add_job(
+        position_service.compute_and_store_positions,
+        IntervalTrigger(
+            seconds=position_interval,
+            start_date=(
+                datetime.now() + startup_ready_delay
+                if startup_ready_delay.total_seconds() > 0
+                else None
+            ),
+        ),
+        id="position_reconcile",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=300,
+    )
+    position_scheduler.start()
+    logger.info("持仓对账调度器已启动", schedule=f"每 {position_interval} 秒")
+
+    # 启动时执行一次（延迟至依赖就绪，避免重启后持仓快照为空且无启动噪音）
+    asyncio.create_task(_run_after_ready(position_service.compute_and_store_positions()))
+
+    # 佣金回填调度器（默认每 1 小时，走环境变量注入，禁止硬编码），
+    # 事后把 Binance userTrades 真实佣金回填 trade_records.commission
+    commission_service = DataService()
+    commission_interval = int(os.getenv("COMMISSION_RECONCILE_INTERVAL_SECONDS", "3600"))
+    commission_scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
+    commission_scheduler.add_job(
+        run_reconcile,
+        IntervalTrigger(
+            seconds=commission_interval,
+            start_date=(
+                datetime.now() + startup_ready_delay
+                if startup_ready_delay.total_seconds() > 0
+                else None
+            ),
+        ),
+        args=[commission_service],
+        id="commission_reconcile",
+        max_instances=1,
+        coalesce=True,
+        misfire_grace_time=600,
+    )
+    commission_scheduler.start()
+    logger.info("佣金回填调度器已启动", schedule=f"每 {commission_interval} 秒")
+
     yield
-    
+
+    if snapshot_scheduler.running:
+        snapshot_scheduler.shutdown(wait=False)
+    if precompute_scheduler.running:
+        precompute_scheduler.shutdown(wait=False)
+    if position_scheduler.running:
+        position_scheduler.shutdown(wait=False)
+    if commission_scheduler.running:
+        commission_scheduler.shutdown(wait=False)
     logger.info("Dashboard API 关闭中")
 
 

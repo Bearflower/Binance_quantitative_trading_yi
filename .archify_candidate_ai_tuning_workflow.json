@@ -1,0 +1,60 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "StratTuneAI 周度调优流水线",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "views": [
+      { "id": "main", "label": "调优主链路", "focus": ["weekly_trigger", "iterate_strategies", "collect_weekly", "llm_eval", "validate_params", "write_overrides", "push_approval", "apply_changes", "weekly_summary"], "note": "周度触发 → AI 评估 → 白名单校验 → 覆盖层写入 → 人工审批。" },
+      { "id": "approval", "label": "审批在环", "focus": ["push_approval", "apply_changes", "write_overrides"], "note": "AI 建议默认经人工确认后生效，支持 auto-apply。" },
+      { "id": "exception", "label": "异常路径", "focus": ["collect_weekly", "llm_eval", "error_alert"], "note": "单策略失败不阻断其他策略调优。" }
+    ]
+  },
+  "lanes": [
+    { "id": "scheduler", "label": "调度" },
+    { "id": "engine", "label": "数据采集与 AI 引擎" },
+    { "id": "parameter", "label": "参数管理" },
+    { "id": "approval", "label": "审批" },
+    { "id": "notify", "label": "通知", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "collect", "label": "采集与评估", "fromCol": 0, "toCol": 2 },
+    { "id": "verify", "label": "校验与写入", "fromCol": 3, "toCol": 4, "variant": "emphasis" },
+    { "id": "apply", "label": "审批生效", "fromCol": 5, "toCol": 5, "variant": "dashed" }
+  ],
+  "groups": [
+    { "id": "override_write", "label": "覆盖层写入", "lane": "parameter", "fromCol": 3, "toCol": 4, "variant": "emphasis" },
+    { "id": "exception_path", "label": "异常告警路径", "lane": "notify", "fromCol": 2, "toCol": 5, "variant": "security" }
+  ],
+  "mainPath": ["weekly_trigger", "iterate_strategies", "collect_weekly", "llm_eval", "validate_params", "write_overrides", "push_approval", "apply_changes", "weekly_summary"],
+  "nodes": [
+    { "id": "weekly_trigger", "lane": "scheduler", "col": 0, "type": "backend", "label": "周度触发", "sublabel": "每周日 23:55", "tag": "APScheduler", "width": 132 },
+    { "id": "iterate_strategies", "lane": "scheduler", "col": 1, "type": "backend", "label": "遍历已注册策略", "sublabel": "btc_eth / grid / new_coin / hrs", "width": 132 },
+    { "id": "collect_weekly", "lane": "engine", "col": 1, "type": "backend", "label": "采集周度表现", "sublabel": "PnL/健康/记忆/反馈", "width": 132 },
+    { "id": "llm_eval", "lane": "engine", "col": 2, "type": "external", "label": "DeepSeek LLM 评估", "sublabel": "思考模式 + JSON 解析", "tag": "deepseek-v4-pro", "width": 132 },
+    { "id": "validate_params", "lane": "parameter", "col": 3, "type": "security", "label": "白名单校验", "sublabel": "参数白名单 + 红线上限", "tag": "越界拒绝", "width": 132 },
+    { "id": "write_overrides", "lane": "parameter", "col": 4, "type": "database", "label": "写入覆盖层", "sublabel": "版本文件 + .active + 保存记忆", "tag": "tuning_overrides/", "width": 132 },
+    { "id": "push_approval", "lane": "approval", "col": 4, "type": "security", "label": "推送人工审批", "sublabel": "飞书审批卡片", "tag": "人工在环", "width": 132 },
+    { "id": "apply_changes", "lane": "approval", "col": 5, "type": "backend", "label": "审批生效", "sublabel": "批准应用 / auto-apply", "tag": "策略下次加载生效", "width": 132 },
+    { "id": "weekly_summary", "lane": "notify", "col": 5, "type": "external", "label": "周度汇总通知", "sublabel": "成功 / 跳过 / 异常", "width": 132 },
+    { "id": "error_alert", "lane": "notify", "col": 4, "type": "security", "label": "异常告警", "sublabel": "单策略失败继续下一策略", "width": 132 }
+  ],
+  "edges": [
+    { "id": "a1", "from": "weekly_trigger", "to": "iterate_strategies" },
+    { "id": "a2", "from": "iterate_strategies", "to": "collect_weekly", "label": "逐策略" },
+    { "id": "a3", "from": "collect_weekly", "to": "llm_eval", "label": "Prompt", "variant": "emphasis" },
+    { "id": "a4", "from": "llm_eval", "to": "validate_params", "label": "建议参数", "variant": "emphasis" },
+    { "id": "a5", "from": "validate_params", "to": "write_overrides", "label": "通过", "variant": "emphasis" },
+    { "id": "a6", "from": "write_overrides", "to": "push_approval" },
+    { "id": "a7", "from": "push_approval", "to": "apply_changes", "label": "批准", "variant": "emphasis" },
+    { "id": "a8", "from": "apply_changes", "to": "weekly_summary" },
+    { "id": "a9", "from": "llm_eval", "to": "error_alert", "label": "异常", "variant": "security", "role": "error" },
+    { "id": "a10", "from": "validate_params", "to": "error_alert", "label": "越界", "variant": "security", "role": "error" }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "闭环调优", "items": ["每周自动采集各策略周度表现，生成健康报告", "DeepSeek LLM 结合历史调优记忆生成参数建议", "结果写入 tuning_overrides 覆盖层，基础配置只读隔离"] },
+    { "dot": "rose", "title": "安全兜底", "items": ["参数白名单 + 红线上限双重校验，越界建议被拒绝", "AI 建议默认人工审批在环，支持 auto-apply", "版本化文件 + .active 指向，支持轻量回滚"] },
+    { "dot": "cyan", "title": "持久化与通知", "items": ["每次调优结构化记录到 strategy_memory，形成策略进化日志", "执行状态落库 ai_tuner_runs，供看板监控时间线", "周度汇总与单策略异常均推送飞书"] }
+  ]
+}

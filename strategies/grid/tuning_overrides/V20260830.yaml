@@ -1,0 +1,3 @@
+grid:
+  base_grid_count: 7
+  grid_spacing_atr_multiplier: 2.25

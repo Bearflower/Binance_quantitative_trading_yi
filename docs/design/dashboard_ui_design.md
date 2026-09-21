@@ -411,6 +411,11 @@
           </div>
         </article>
         
+        <!-- MTPCS 激进版策略卡片（结构同上，data-strategy="btc_eth_aggressive"，图标 ⚡） -->
+        <article class="strategy-card" data-strategy="btc_eth_aggressive">
+          <!-- 结构同上 -->
+        </article>
+
         <!-- NEW_COIN 策略卡片 -->
         <article class="strategy-card" data-strategy="new_coin">
           <!-- 结构同上 -->

@@ -55,25 +55,25 @@ class TestContractScore:
         assert score == 10
         assert "极度拥挤" in details["reason"]
 
-    def test_做空拥挤8分(self, engine):
-        """做空方向：0.22 OI/市值比，拥挤，8分"""
+    def test_做空拥挤10分(self, engine):
+        """做空方向：0.22 OI/市值比，拥挤，10分（V2.8.4: 原8→10）"""
         score, details = engine.calculate_contract_score(0.22, "short")
+        assert score == 10
+
+    def test_做空中等偏拥挤8分(self, engine):
+        """做空方向：0.17 OI/市值比，中等偏拥挤，8分（V2.8.4: 原6→8）"""
+        score, details = engine.calculate_contract_score(0.17, "short")
         assert score == 8
 
-    def test_做空中等偏拥挤6分(self, engine):
-        """做空方向：0.17 OI/市值比，中等偏拥挤，6分"""
-        score, details = engine.calculate_contract_score(0.17, "short")
+    def test_做空中性6分(self, engine):
+        """做空方向：0.12 OI/市值比，中性，6分（V2.8.4: 原4→6）"""
+        score, details = engine.calculate_contract_score(0.12, "short")
         assert score == 6
 
-    def test_做空中性4分(self, engine):
-        """做空方向：0.12 OI/市值比，中性，4分"""
-        score, details = engine.calculate_contract_score(0.12, "short")
-        assert score == 4
-
-    def test_做空冷清2分(self, engine):
-        """做空方向：0.07 OI/市值比，冷清，2分"""
+    def test_做空冷清4分(self, engine):
+        """做空方向：0.07 OI/市值比，冷清，4分（V2.8.4: 原2→4）"""
         score, details = engine.calculate_contract_score(0.07, "short")
-        assert score == 2
+        assert score == 4
 
     def test_做空极度冷清0分(self, engine):
         """做空方向：0.02 OI/市值比，极度冷清，0分"""
@@ -109,13 +109,13 @@ class TestContractScore:
     def test_边界值极端高阈值(self, engine):
         """边界值：刚好等于 0.25 极端高阈值"""
         score, _ = engine.calculate_contract_score(0.25, "short")
-        # 0.25 >= extreme_high(0.25) is True
-        assert score == 8  # high threshold 0.20, 0.25 >= 0.20 but 0.25 > 0.25 is False
+        # 0.25 >= extreme_high(0.25) is True → extreme_high 10分
+        assert score == 10
 
     def test_边界值高阈值(self, engine):
         """边界值：刚好等于 0.20 高阈值"""
         score, _ = engine.calculate_contract_score(0.20, "short")
-        assert score == 8  # 0.20 >= high(0.20)
+        assert score == 10  # 0.20 >= high(0.20) → high 10分
 
 
 class TestTechnicalScore:
@@ -192,31 +192,31 @@ class TestSentimentScore:
         assert score == 10
         assert details["annualized_rate"] > 150
 
-    def test_做空高费率8分(self, engine):
-        """做空：资金费率 0.001，年化 ~109.5%，高，8分"""
+    def test_做空高费率10分(self, engine):
+        """做空：资金费率 0.001，年化 ~109.5%，高，10分（V2.8.4: 原8→10）"""
         score, details = engine.calculate_sentiment_score(0.001, "short")
-        assert score == 8
+        assert score == 10
         assert 100 <= details["annualized_rate"] < 150
 
-    def test_做空中等费率6分(self, engine):
-        """做空：资金费率 0.0006，年化 ~65.7%，中等，6分"""
+    def test_做空中等费率8分(self, engine):
+        """做空：资金费率 0.0006，年化 ~65.7%，中等，8分（V2.8.4: 原6→8）"""
         score, details = engine.calculate_sentiment_score(0.0006, "short")
+        assert score == 8
+
+    def test_做空低费率6分(self, engine):
+        """做空：资金费率 0.0001，年化 ~10.95%，低，6分（V2.8.4: 原3→6）"""
+        score, details = engine.calculate_sentiment_score(0.0001, "short")
         assert score == 6
 
-    def test_做空低费率3分(self, engine):
-        """做空：资金费率 0.0001，年化 ~10.95%，低，3分"""
-        score, details = engine.calculate_sentiment_score(0.0001, "short")
+    def test_做空负费率3分(self, engine):
+        """做空：资金费率 -0.0001，年化 ~-10.95%，负，3分（V2.8.4: 原1→3）"""
+        score, details = engine.calculate_sentiment_score(-0.0001, "short")
         assert score == 3
 
-    def test_做空负费率1分(self, engine):
-        """做空：资金费率 -0.0001，年化 ~-10.95%，负，1分"""
-        score, details = engine.calculate_sentiment_score(-0.0001, "short")
-        assert score == 1
-
-    def test_做空极端负费率0分(self, engine):
-        """做空：资金费率 -0.0003，年化 ~-32.85%，极端负，0分"""
+    def test_做空极端负费率1分(self, engine):
+        """做空：资金费率 -0.0003，年化 ~-32.85%，极端负，1分（V2.8.4: 原0→1）"""
         score, details = engine.calculate_sentiment_score(-0.0003, "short")
-        assert score == 0
+        assert score == 1
 
     def test_做多负费率满分(self, engine):
         """做多：资金费率 -0.0003，年化 -32.85%，极端负，10分"""
@@ -281,7 +281,7 @@ class TestFullScoring:
         assert result.total_score < 3.0
         assert result.contract_score == 0
         assert result.technical_score == 0
-        assert result.sentiment_score == 0
+        assert result.sentiment_score == 1  # V2.8.4: 极端负费率做空1分（原0→1）
         assert result.veto is False
 
     def test_做多高评分场景(self, engine):
