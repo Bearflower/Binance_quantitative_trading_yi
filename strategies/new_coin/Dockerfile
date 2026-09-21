@@ -14,6 +14,9 @@ COPY shared/ /app/shared/
 # 复制策略代码
 COPY strategies/new_coin/ /app/strategies/new_coin/
 
+# 复制版本标记文件
+COPY VERSION /app/VERSION
+
 # 安装Python依赖
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

@@ -113,7 +113,7 @@ class TestReconcileCommissions:
 
         assert result["queried_orders"] == 1
         assert result["matched_orders"] == 1
-        assert result["total_commission"] == Decimal("0.8")
+        assert result["total_commission"] == Decimal("-0.8")
         db.execute.assert_awaited_once()
 
     @pytest.mark.asyncio

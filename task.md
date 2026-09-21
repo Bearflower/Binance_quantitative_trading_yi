@@ -6,6 +6,46 @@
 
 ## 已完成的任务
 
+### [最后更新:2026-09-21 11:45] 数据后台独立容器（调度宿主解耦）
+- **状态**: 已完成
+- **创建时间**: 2026-09-21
+- **完成时间**: 2026-09-21 11:42
+- **涉及容器**: 新建 data-backend、重建 dashboard-api
+- **问题**: 4 个数据维护定时任务（净资产快照/指标预计算/持仓对账/佣金回填）的 APScheduler 全挂在 dashboard，dashboard 被撤改则数据连续性受损
+- **实现**: 新建 shared/scheduler 工具箱 + services/data_backend 容器（单 DataService + 单 AsyncIOScheduler + 4 job + 预热 + SIGTERM 优雅关闭）；dashboard 删除全部调度器（-132 行）退化为纯 API
+- **部署**: 先 data_backend 后 dashboard（关闭双写窗口）；两容器五层验证全通过
+- **解耦证据**: dashboard 近 5 分钟任务日志 = 0；data-backend 每分钟 `03:3x:16 指标预计算完成`，与 DB `metric_snapshot.updated_at=03:39:16` 完全对齐
+- **遗留**: 首轮任务双跑（幂等无害）、data_backend/deploy.sh MD5 标签错误、equity_snapshot 今日行需 23:30 后复核
+- **过程记录**: `.trae/memories/2026-09/21/1145-data-backend-decoupling.md`
+- **交接快照**: `docs/handoffs/commissions_backfill_2026-09-21.md`
+
+### [最后更新:2026-09-21 11:45] new_coin 持仓基线归属过滤（P0 热修）
+- **状态**: 已完成
+- **创建时间**: 2026-09-21
+- **完成时间**: 2026-09-21 11:10
+- **涉及容器**: trading_system-new_coin（按需重建）
+- **问题**: 基线重建出 8 个币种 total_margin=348.85，仅 3 个属 new_coin → ①占用虚增致永久停止开仓 ②为他策略币种建 tracking 条目致越权管理他策略仓位
+- **根因**: PM 账户 positionRisk 返回账户内全部空头，无策略隔离
+- **修复**: executor 新增 get_open_short_symbols（DB short_positions 为权威来源）；strategy 新增 _filter_own_positions 过滤后再合并；新增 4 单测
+- **止血**: 10:52 停 new_coin 容器阻断 03:00 UTC 周期（周期未执行，无越权）；PATHUSDT 减仓 21.99 → 7.33 张
+- **部署**: 五层验证全通过；生效证据 position_count=3 / total_margin=154.217 ≤ 156.33
+- **过程记录**: `.trae/memories/2026-09/21/1145-new-coin-baseline-ownership-filter.md`
+- **交接快照**: `docs/handoffs/capital_limit_enforcement_2026-09-21.md`
+
+### [最后更新:2026-09-21 10:35] 佣金回填功能实现 + 部署
+- **状态**: 已完成
+- **创建时间**: 2026-09-21
+- **完成时间**: 2026-09-21 10:35
+- **涉及容器**: dashboard-api（仅重建）、策略容器（不重启）
+- **问题**: dashboard 看板总佣金恒为 0。共因：币安下单返回不含 commission 字段（佣金只在 userTrades 成交明细返回）
+- **方案**: 事后回填。公共逻辑放 shared/trade_logger.py，调度宿主复用 dashboard APScheduler
+- **实现**: reconcile_commissions + get_user_trades + commission_reconcile_job + main_docker 调度器；配置走 env（周期3600s/窗口24h）
+- **佣金符号修复**: userTrades commission 为无符号正数，需按项目"佣金=负值支出"口径取负落库
+- **部署**: 仅重建 dashboard-api，五层验证通过，落库佣金均为负值（HRS -0.0277 / MTPCS激进 -0.1005 / 新币 -0.1196）
+- **遗留**: git 未提交、调度宿主耦合 dashboard 隐患、条件单平仓佣金无法归集、单测未补跑
+- **过程记录**: `.trae/memories/2026-09/21/1035-commission-backfill.md`
+- **交接快照**: `docs/handoffs/commissions_backfill_2026-09-21.md`
+
 ### [最后更新:2026-09-11 10:38] HRS 调优失败修复（JSON 解析 + 配置缺失）
 - **状态**: 已完成
 - **创建时间**: 2026-09-11

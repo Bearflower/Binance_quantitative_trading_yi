@@ -1594,6 +1594,7 @@ class NewCoinStrategy(BaseStrategy):
         - 交易所已无持仓的币种：清理本地记录与持仓跟踪
         - 重建成功前 trading_executor.baseline_ready 保持 False（禁止开新仓，仅允许减仓）
         - 交易所接口异常时不改动本地记录，保持基线未就绪，由后续周期重试
+        - 仅保留本策略自有币种（PM 账户 positionRisk 返回全账户空头，必须过滤归属）
         """
         executor = self.trading_executor
         if executor is None:
@@ -1610,7 +1611,8 @@ class NewCoinStrategy(BaseStrategy):
             )
             return
 
-        rebuilt = self._merge_rebuilt_positions(result.positions)
+        filtered_positions = await self._filter_own_positions(executor, result.positions)
+        rebuilt = self._merge_rebuilt_positions(filtered_positions)
         self._prune_missing_positions(executor, rebuilt)
 
         self.positions = rebuilt
@@ -1619,9 +1621,47 @@ class NewCoinStrategy(BaseStrategy):
         logger.info(
             "持仓基线重建完成",
             position_count=len(rebuilt),
-            total_margin=round(result.total_margin, 4),
+            total_margin=round(sum(p['margin'] for p in rebuilt.values()), 4),
             symbols=list(rebuilt.keys()),
         )
+
+    async def _filter_own_positions(
+        self, executor: Any, positions: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """
+        过滤交易所持仓，仅保留本策略自有币种（R4 策略归属过滤）
+
+        PM 账户 positionRisk 返回账户内全部空头（含其他策略持仓），若不区分归属：
+        - 占用保证金被虚增，导致本策略误判超限而停止开仓；
+        - position_tracking 会为他策略币种建立跟踪条目，使
+          check_position_management 的守卫失效，进而越权管理并取消他策略条件单。
+
+        Args:
+            executor: 交易执行器（提供 get_open_short_symbols / position_tracking）
+            positions: rebuild_from_exchange 返回的交易所持仓
+
+        Returns:
+            Dict[str, Any]: 仅含自有币种的持仓记录；无法判定归属时原样返回
+        """
+        own_symbols = await executor.get_open_short_symbols()
+        if own_symbols is None:
+            local_symbols = set(self.positions.keys()) | set(executor.position_tracking.keys())
+            if not local_symbols:
+                logger.warning("自有币种无法判定（DB 不可用且本地无记录），跳过策略归属过滤")
+                return positions
+            logger.warning(
+                "自有币种降级为本地记录（DB 不可用）", symbols=sorted(local_symbols)
+            )
+            own_symbols = local_symbols
+
+        skipped = [s for s in positions if s not in own_symbols]
+        if skipped:
+            logger.warning(
+                "基线重建：跳过非本策略持仓（PM 账户 positionRisk 含全账户空头）",
+                symbols=skipped,
+                own_symbols=sorted(own_symbols),
+            )
+        return {symbol: pos for symbol, pos in positions.items() if symbol in own_symbols}
 
     def _sync_baseline_to_tracking(
         self,

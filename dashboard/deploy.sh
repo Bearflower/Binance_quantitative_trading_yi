@@ -94,7 +94,8 @@ echo "📤 步骤 2/5: 上传到服务器..."
 # 测试SSH密钥
 if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -o BatchMode=yes "$SERVER_USER@$SERVER_IP" "echo 密钥可用" 2>/dev/null; then
     echo "  使用SSH密钥认证..."
-    scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no "$DEPLOY_PACKAGE_NAME" "$SERVER_USER@$SERVER_IP:/root/"
+    scp -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=no -o BatchMode=yes \
+        -o ConnectTimeout=15 "$DEPLOY_PACKAGE_NAME" "$SERVER_USER@$SERVER_IP:/root/"
     echo "✅ 上传成功"
 else
     echo "❌ SSH密钥不可用，请检查密钥路径：$SSH_KEY_PATH"

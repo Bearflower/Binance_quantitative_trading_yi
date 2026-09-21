@@ -66,6 +66,7 @@ rsync -av --delete \
     --exclude='.mypy_cache' \
     --exclude='.coverage' \
     --exclude='htmlcov/*' \
+    --exclude='backtest/*/data_2y/*' \
     --exclude='venv' \
     --exclude='.venv' \
     --exclude='env' \

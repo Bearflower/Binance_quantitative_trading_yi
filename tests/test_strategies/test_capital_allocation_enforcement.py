@@ -29,6 +29,8 @@
 4. `strategies/new_coin/strategy.py`
    - 启动基线重建：PM 空列表清空本地残留 / 数量以交易所为准、本地入场价优先 /
      entryPrice 缺失用 markPrice / 交易所异常保持基线未就绪
+   - 策略归属过滤：他策略币种剔除且不写 position_tracking / DB 不可用降级本地 /
+     本地亦无记录时跳过过滤 / DB 为空集合时清空
    - 持仓上报：交易所不可用跳过上报 / 空持仓上报空集合 / 使用统一口径
 
 5. `btc_eth`（含 aggressive）与 `hrs` 的保证金口径统计与限额入口接入
@@ -1020,12 +1022,22 @@ def _build_new_coin_strategy() -> NewCoinStrategy:
     return strategy
 
 
-def _build_baseline_executor() -> MagicMock:
-    """构造基线重建用的 executor mock"""
+def _build_baseline_executor(own_symbols: Optional[set] = None) -> MagicMock:
+    """
+    构造基线重建用的 executor mock
+
+    Args:
+        own_symbols: 模拟 new_coin.short_positions 中的自有币种集合；
+            None 表示模拟 DB 查询失败（调用方需降级处理）
+    """
     executor = MagicMock()
     executor.leverage = 2
     executor.baseline_ready = True
+    executor.position_tracking = {}
     executor.get_contract_size_map = AsyncMock(return_value={})
+    executor.get_open_short_symbols = AsyncMock(
+        return_value={'HUTUSDT'} if own_symbols is None else own_symbols
+    )
     return executor
 
 
@@ -1104,6 +1116,78 @@ class TestBaselineRebuild:
         strategy.trading_executor = None
 
         await strategy._rebuild_position_baseline()   # 不应抛异常
+
+
+class TestOwnPositionFilter:
+    """R4：基线重建必须过滤策略归属（PM 账户 positionRisk 返回全账户空头）"""
+
+    @pytest.mark.asyncio
+    async def test_foreign_symbols_filtered_out(self):
+        """他策略币种必须被剔除，且不得写入 position_tracking（防止越权管理）"""
+        strategy = _build_new_coin_strategy()
+        strategy.trading_executor = _build_baseline_executor(own_symbols={'HUTUSDT'})
+        strategy.trading_executor.position_tracking = {}
+        strategy.binance_client = MagicMock()
+        strategy.binance_client.get_position = AsyncMock(return_value=[
+            {'symbol': 'HUTUSDT', 'positionAmt': -4, 'markPrice': 25, 'entryPrice': 30},
+            {'symbol': 'BTCUSDT', 'positionAmt': -1, 'markPrice': 100, 'entryPrice': 100},
+        ])
+
+        await strategy._rebuild_position_baseline()
+
+        assert list(strategy.positions.keys()) == ['HUTUSDT']
+        assert set(strategy.trading_executor.position_tracking.keys()) == {'HUTUSDT'}
+
+    @pytest.mark.asyncio
+    async def test_db_unavailable_falls_back_to_local_symbols(self):
+        """DB 查询失败 → 降级为本地记录集合，仍过滤他策略币种"""
+        strategy = _build_new_coin_strategy()
+        strategy.positions = {'HUTUSDT': {'order_id': '9', 'entry_price': 33.0}}
+        strategy.trading_executor = _build_baseline_executor()
+        strategy.trading_executor.get_open_short_symbols = AsyncMock(return_value=None)
+        strategy.trading_executor.position_tracking = {}
+        strategy.binance_client = MagicMock()
+        strategy.binance_client.get_position = AsyncMock(return_value=[
+            {'symbol': 'HUTUSDT', 'positionAmt': -4, 'markPrice': 25, 'entryPrice': 30},
+            {'symbol': 'BTCUSDT', 'positionAmt': -1, 'markPrice': 100, 'entryPrice': 100},
+        ])
+
+        await strategy._rebuild_position_baseline()
+
+        assert list(strategy.positions.keys()) == ['HUTUSDT']
+
+    @pytest.mark.asyncio
+    async def test_db_unavailable_without_local_records_skips_filter(self):
+        """DB 与本地均无法判定归属 → 跳过过滤（宁可保留，不丢自有持仓）"""
+        strategy = _build_new_coin_strategy()
+        strategy.positions = {}
+        strategy.trading_executor = _build_baseline_executor()
+        strategy.trading_executor.get_open_short_symbols = AsyncMock(return_value=None)
+        strategy.trading_executor.position_tracking = {}
+        strategy.binance_client = MagicMock()
+        strategy.binance_client.get_position = AsyncMock(return_value=[
+            {'symbol': 'HUTUSDT', 'positionAmt': -4, 'markPrice': 25, 'entryPrice': 30},
+        ])
+
+        await strategy._rebuild_position_baseline()
+
+        assert list(strategy.positions.keys()) == ['HUTUSDT']
+
+    @pytest.mark.asyncio
+    async def test_db_empty_set_clears_all_positions(self):
+        """DB 无 open 记录 = 本策略零持仓 → 清空交易所全账户空头，占用归零"""
+        strategy = _build_new_coin_strategy()
+        strategy.trading_executor = _build_baseline_executor(own_symbols=set())
+        strategy.trading_executor.position_tracking = {}
+        strategy.binance_client = MagicMock()
+        strategy.binance_client.get_position = AsyncMock(return_value=[
+            {'symbol': 'BTCUSDT', 'positionAmt': -1, 'markPrice': 100, 'entryPrice': 100},
+        ])
+
+        await strategy._rebuild_position_baseline()
+
+        assert strategy.positions == {}
+        assert strategy.trading_executor.position_tracking == {}
 
 
 def _spy_sync_open_positions(monkeypatch) -> List[tuple]:

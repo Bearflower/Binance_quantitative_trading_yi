@@ -787,6 +787,28 @@ class TradingExecutor:
             logger.warning("查询 short_positions 未平仓记录失败", symbol=symbol, error=str(e))
             return False
 
+    async def get_open_short_symbols(self) -> Optional[set]:
+        """
+        查询 DB new_coin.short_positions 中本策略未平仓的币种集合
+
+        PM 账户 positionRisk 返回账户内全部空头（含其他策略持仓），无法区分归属，
+        故以 short_positions 表作为「本策略自有币种」的权威来源。
+
+        Returns:
+            Optional[set]: 自有未平仓币种集合；查询异常返回 None（调用方需降级处理）
+        """
+        try:
+            rows = await self.db.fetch_all(
+                """
+                SELECT DISTINCT symbol FROM new_coin.short_positions
+                WHERE status = 'open'
+                """
+            )
+            return {row['symbol'] for row in rows if row.get('symbol')}
+        except Exception as e:
+            logger.warning("查询 short_positions 未平仓币种集合失败", error=str(e))
+            return None
+
     async def _notify_duplicate_symbol(
         self,
         symbol: str,
