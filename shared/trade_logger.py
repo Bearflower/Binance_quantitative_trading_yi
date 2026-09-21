@@ -813,11 +813,13 @@ class TradeLogger:
                     )
                     if not matched:
                         continue  # 零佣金或未成交，不做无意义的 0 值覆盖
+                    # 佣金统一按负值（支出）落库，与看板聚合口径一致（net = realized_pnl + commission）
+                    expense = -commission
                     await self.db.execute(
-                        self._UPDATE_COMMISSION_SQL, str(commission), symbol, order_id
+                        self._UPDATE_COMMISSION_SQL, str(expense), symbol, order_id
                     )
                     summary["matched_orders"] += 1
-                    summary["total_commission"] += commission
+                    summary["total_commission"] += expense
                 except Exception as e:
                     logger.warning(
                         "佣金回填查询失败", symbol=symbol, order_id=order_id, error=str(e)
