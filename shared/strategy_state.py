@@ -28,6 +28,7 @@ async def save_strategy_state(
     strategy_name: str,
     positions: Dict[str, Dict[str, Any]],
     extra_data: Optional[Dict[str, Any]] = None,
+    state_key: str = "main",
 ) -> None:
     """
     保存策略状态到 strategy_states 表
@@ -40,6 +41,7 @@ async def save_strategy_state(
         positions: 当前持仓字典
             {symbol: {"direction": str, "entry_price": float, "quantity": float, ...}}
         extra_data: 额外数据（可选，会合并到 state_data 中）
+        state_key: 状态键（默认 'main'；扩展状态如候选池快照传 'candidate_pool'）
     """
     try:
         state_data = {
@@ -52,17 +54,19 @@ async def save_strategy_state(
         await db.execute(
             """
             INSERT INTO strategy_states (strategy_name, state_key, state_data, updated_at)
-            VALUES ($1, 'main', $2, NOW())
+            VALUES ($1, $2, $3, NOW())
             ON CONFLICT (strategy_name, state_key)
-            DO UPDATE SET state_data = $2, updated_at = NOW()
+            DO UPDATE SET state_data = $3, updated_at = NOW()
             """,
             strategy_name,
+            state_key,
             json.dumps(state_data, default=str),
         )
 
         logger.debug(
             "策略状态已保存",
             strategy=strategy_name,
+            state_key=state_key,
             position_count=len(positions),
         )
 
@@ -70,6 +74,7 @@ async def save_strategy_state(
         logger.warning(
             "保存策略状态失败",
             strategy=strategy_name,
+            state_key=state_key,
             error=str(e),
         )
 

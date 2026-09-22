@@ -27,9 +27,36 @@ import yaml
 
 logger = structlog.get_logger()
 
+# shared 包所在目录（用于定位共享配置文件，如 circuit_breaker_config.yaml）
+_SHARED_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ============================================================
 # 公开 API
 # ============================================================
+
+
+def load_shared_config(yaml_name: str) -> Dict[str, Any]:
+    """加载 shared 包内的共享配置文件
+
+    跨策略共享配置（如组合级熔断 shared/circuit_breaker_config.yaml）统一存放于
+    shared 目录，经本函数按文件名加载，避免各调用方重复实现读取逻辑。
+
+    Args:
+        yaml_name: shared 目录下的 YAML 文件名（如 "circuit_breaker_config.yaml"）
+
+    Returns:
+        配置字典；文件不存在、为空或解析失败时返回空字典（降级，不抛异常）。
+    """
+    config_path = os.path.join(_SHARED_DIR, yaml_name)
+    data = _read_yaml(config_path)
+    if not data:
+        logger.warning(
+            "共享配置文件不存在或为空，返回空配置",
+            yaml_name=yaml_name,
+            config_path=config_path,
+        )
+        return {}
+    return data
 
 
 def load_strategy_config(strategy_dir: str) -> Dict[str, Any]:

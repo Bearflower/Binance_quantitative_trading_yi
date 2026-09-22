@@ -12,6 +12,12 @@ import numpy as np
 import structlog
 
 from shared.binance_api import BinanceClient, BinanceAPIError
+from shared.circuit_breaker import (
+    CircuitBreaker,
+    compute_1h_return,
+    floor_index_hour,
+    load_circuit_breaker_config,
+)
 from shared.kline_service import KLineService
 from shared.notification import NotificationClient
 from shared.indicators import TechnicalIndicators
@@ -631,7 +637,7 @@ class BTCEthStrategy:
         self._cancel_lock = asyncio.Lock()
 
         # 资金分配管理器（方案 D：运行时读 DB 为主来源，config 为兜底；保证金口径）
-        # strategy_id 固定为 btc_eth：与 btc_eth_aggressive 共用同一份月度分配
+        # strategy_id=btc_eth：MTPCS 原版独立参与月度资金分配（激进版 btc_eth_aggressive 独立分配）
         config_dir = os.path.dirname(os.path.abspath(__file__))
         self.capital_mgr = CapitalManager(
             os.path.join(config_dir, "config.yaml"),
@@ -643,7 +649,14 @@ class BTCEthStrategy:
         self.min_position_amt = float(
             config.get('strategy', {}).get('position_sync', {}).get('min_position_amt', 0.00001)
         )
-        
+
+        # 组合级熔断器（池=mtpcs 固定池；enabled=false 时置 None，不拦截任何开仓）
+        cb_cfg = load_circuit_breaker_config()
+        if cb_cfg.get("enabled"):
+            self.circuit_breaker = CircuitBreaker(cb_cfg, self.db_manager, pool="mtpcs")
+        else:
+            self.circuit_breaker = None
+
         logger.info(
             "BTC/ETH策略初始化",
             symbols=self.symbols,
@@ -1002,6 +1015,7 @@ class BTCEthStrategy:
                 'position_ratio': self.binance_config['position_ratio'][grade],
                 'timestamp': current_time,
                 'market_state': market_state_name,  # v6.21：记录市场状态用于频率控制
+                'price_change_1h': compute_1h_return(klines['1h']),  # 组合级熔断单币轨：目标币自身 1h 涨幅
                 'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1, grade),
                 'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2, grade),
             }
@@ -2513,6 +2527,25 @@ class BTCEthStrategy:
             是否执行成功
         """
         symbol = signal['symbol']
+
+        # 组合级熔断闸门：任何开仓/加仓决策前统一否决性拦截（覆盖新开仓与浮盈加仓路径）
+        # 组合级独立生效（与单币涨幅无关）；单币涨幅缺失时仅单币级 fail-open（guard 内处理）
+        if self.circuit_breaker is not None:
+            index_hour = floor_index_hour()
+            pool_index = await self.circuit_breaker.load_index(index_hour)
+            allow, level = self.circuit_breaker.guard(
+                signal["direction"], symbol, signal.get("price_change_1h"), pool_index
+            )
+            if not allow:
+                logger.info(
+                    "组合级熔断拦截开仓",
+                    symbol=symbol,
+                    direction=signal["direction"],
+                    level=level,
+                    pool_index=pool_index,
+                )
+                return False
+
         pos = self.positions.get(symbol)
 
         # ① 无持仓（或已清仓）→ 新开仓路径（原 execute_signal 逻辑主体拆分）

@@ -33,7 +33,9 @@ from shared.scheduler import (
 from services.commission_reconcile_job import run_reconcile
 from services.data_service_docker import DataService
 from services.equity_snapshot_job import run_snapshot
+from services.market_circuit_breaker_job import run_breaker_index
 from services.metric_precompute_job import run_precompute
+from shared.circuit_breaker import load_circuit_breaker_config, parse_cron
 
 logger = structlog.get_logger()
 
@@ -46,6 +48,7 @@ _JOBS = [
     "metric_precompute",
     "position_reconcile",
     "commission_reconcile",
+    "market_breaker_index",
 ]
 
 
@@ -88,6 +91,21 @@ def _register_jobs(scheduler, data_service: DataService) -> None:
         args=[data_service],
         misfire_grace=600,
     )
+    # 组合级熔断指数计算（每小时 03 分，与策略执行高峰错开；enabled=false 时不注册）
+    cb_cfg = load_circuit_breaker_config()
+    if cb_cfg.get("enabled"):
+        index_hour_cron, index_minute_cron = parse_cron(cb_cfg["index_cron"])
+        add_cron_job(
+            scheduler,
+            run_breaker_index,
+            "market_breaker_index",
+            env_hour="BREAKER_INDEX_HOUR",
+            env_minute="BREAKER_INDEX_MINUTE",
+            default_hour=index_hour_cron,
+            default_minute=index_minute_cron,
+            args=[data_service],
+            misfire_grace=3600,
+        )
 
 
 def _schedule_startup_warmup(loop, data_service: DataService) -> None:
@@ -95,6 +113,9 @@ def _schedule_startup_warmup(loop, data_service: DataService) -> None:
     schedule_startup_run(loop, lambda: run_precompute(data_service))
     schedule_startup_run(loop, lambda: data_service.compute_and_store_positions())
     schedule_startup_run(loop, lambda: run_reconcile(data_service))
+    # 熔断开关开启时预热一次指数，保证首小时策略开仓即可读到指数
+    if load_circuit_breaker_config().get("enabled"):
+        schedule_startup_run(loop, lambda: run_breaker_index(data_service))
 
 
 async def main() -> None:

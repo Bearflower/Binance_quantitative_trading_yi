@@ -1,0 +1,38 @@
+# ============================================
+# 组合级单边行情熔断共享配置（唯一事实源）
+# 供三策略（MTPCS 原版/激进版/HRS）与指数计算器（data_backend）共同读取。
+# 严禁在代码中硬编码以下任一数值；修改阈值只需改本文件。
+# 文档依据：docs/requirements/market_circuit_breaker/单边行情空头熔断需求文档.md（v1.1，判定唯一依据 4.6 节）
+# ============================================
+market_circuit_breaker:
+  # 总开关：false 时策略侧不初始化熔断器、指数计算器不注册定时任务
+  enabled: true
+
+  # —— 组合级：池等权指数阈值（分池平权，双向对称）——
+  trigger_short: 0.02        # 池等权 1h 涨幅 > 此值 → 拦该策略新增空单（轧空保护，回测确定 2%）
+  release_short: 0.01        # 池涨幅回落至 < 此值 → 解除空头熔断（滞回，仅审计参考）
+  trigger_long: 0.02         # 池等权 1h 跌幅 > 此值（指数 < -0.02）→ 拦该策略新增多单（轧多保护）
+  release_long: 0.01         # 池跌幅收窄至 > -0.01 → 解除多头熔断（滞回，仅审计参考）
+
+  # —— 单币级：双轨第二轨（双向对称）——
+  single_coin_short: 0.03    # 目标币自身 1h 涨幅 > 此值 → 拦该币新空（回测确定 3%）
+  single_coin_long: 0.03     # 目标币自身 1h 跌幅 > 此值 → 拦该币新多
+  single_coin_cooldown_hours: 4  # 单币熔断冷却时长（小时，按币记、不分方向）
+  per_symbol_ret_cap: 0.10   # 单币 1h 涨跌幅 cap（±10%），取均值前截断，防极端值污染指数
+  min_symbols: 3             # 有效标的数下限：参与均值的标的不足该值时池指数视为不可用
+
+  # 指数计算器执行时间（每小时 03 分；第一段=分钟、第二段=小时，与项目 cron 约定一致）
+  index_cron: "3 * * * *"
+
+  # MTPCS 固定池（分池口径下的 MTPCS 指数池）
+  fixed_pool:
+    - BTCUSDT
+    - ETHUSDT
+    - BNBUSDT
+    - SOLUSDT
+    - XRPUSDT
+
+  # 是否计算 HRS 池指数（分池口径下的第二指数）
+  include_hrs_pool: true
+  # HRS 池刷新周期（与 HRS config.yaml 的 rescan_interval_seconds=86400 对齐，仅审计参考）
+  hrs_pool_refresh_hours: 24

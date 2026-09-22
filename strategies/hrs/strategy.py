@@ -13,6 +13,11 @@ import structlog
 
 from shared.base_strategy import BaseStrategy
 from shared.capital_manager import CapitalManager
+from shared.circuit_breaker import (
+    CircuitBreaker,
+    floor_index_hour,
+    load_circuit_breaker_config,
+)
 from shared.database import DatabaseManager
 from shared.notification import NotificationClient
 from shared.strategy_state import save_strategy_state, sync_open_positions
@@ -213,6 +218,13 @@ class HRSStrategy(BaseStrategy):
 
         # 延迟绑定 DB 到资金分配管理器（方案 D：DB 为月度分配额主来源）
         self.capital_mgr.bind_database(self.db, self.strategy_name)
+
+        # 组合级熔断器（池=hrs 候选池；enabled=false 时置 None，不拦截任何开仓）
+        cb_cfg = load_circuit_breaker_config()
+        if cb_cfg.get("enabled"):
+            self.circuit_breaker = CircuitBreaker(cb_cfg, self.db, pool="hrs")
+        else:
+            self.circuit_breaker = None
 
         # 初始化各模块
         self.market_data = MarketDataProvider(self.binance_client, self.kline_service, self.config)
@@ -427,6 +439,25 @@ class HRSStrategy(BaseStrategy):
 
             if not symbol or not direction:
                 return False
+
+            # 组合级熔断闸门：开仓决策前统一否决性拦截（含 LV-RM 等所有信号来源）
+            # 组合级独立生效（与单币涨幅无关）；单币涨幅缺失时仅单币级 fail-open（guard 内处理）
+            # HRS 整点执行时 T 时刻指数尚未生成（03 分才写），与预过滤一致读 T-1 指数
+            if self.circuit_breaker is not None:
+                index_hour = floor_index_hour() - timedelta(hours=1)
+                pool_index = await self.circuit_breaker.load_index(index_hour)
+                allow, level = self.circuit_breaker.guard(
+                    direction, symbol, signal.get("price_change_1h"), pool_index
+                )
+                if not allow:
+                    logger.info(
+                        "组合级熔断拦截开仓",
+                        symbol=symbol,
+                        direction=direction,
+                        level=level,
+                        pool_index=pool_index,
+                    )
+                    return False
 
             # 风控检查
             if not self.risk_manager.can_open_position(direction):
@@ -824,6 +855,8 @@ class HRSStrategy(BaseStrategy):
 
                 # P2-6: 计算1小时价格变化并检查熔断
                 klines = self._klines_cache.get(symbol, [])
+                # 组合级熔断单币轨：目标币自身 1h 涨幅（K线不足时按缺失处理，fail-open）
+                price_change_1h = None
                 if len(klines) >= 2:
                     price_1h_ago = float(klines[-2].get("close", 0))
                     current_price_for_cb = float(klines[-1].get("close", 0))
@@ -853,6 +886,7 @@ class HRSStrategy(BaseStrategy):
                             "technical_score": short_data["score_result"].get("technical_score", 0),
                             "sentiment_score": short_data["score_result"].get("sentiment_score", 0),
                             "current_price": short_data["current_price"],
+                            "price_change_1h": price_change_1h,  # 组合级熔断单币轨
                             "klines": self._klines_cache.get(symbol, []),
                         })
                 else:
@@ -875,6 +909,7 @@ class HRSStrategy(BaseStrategy):
                             "technical_score": long_data["score_result"].get("technical_score", 0),
                             "sentiment_score": long_data["score_result"].get("sentiment_score", 0),
                             "current_price": long_data["current_price"],
+                            "price_change_1h": price_change_1h,  # 组合级熔断单币轨
                             "klines": self._klines_cache.get(symbol, []),
                         })
                 else:
@@ -902,6 +937,21 @@ class HRSStrategy(BaseStrategy):
                     await self._check_lv_rm_entries(low_vol_symbols, short_signals, long_signals)
             except Exception as e:
                 logger.error("LV-RM检查失败", error=str(e))
+
+        # ===== 组合级熔断：信号级组合预过滤（读 HRS 池 T-1 指数）=====
+        # 覆盖标准 + EMM + LV-RM 全部信号来源；单币级判定由 execute_signal 闸门兜底
+        if self.circuit_breaker is not None:
+            index_hour = floor_index_hour() - timedelta(hours=1)  # HRS 整点执行，读上一整点（T-1）指数
+            pool_index = await self.circuit_breaker.load_index(index_hour)
+            if pool_index is not None:
+                short_signals = [
+                    s for s in short_signals
+                    if not self.circuit_breaker.combined_blocked("short", pool_index)
+                ]
+                long_signals = [
+                    s for s in long_signals
+                    if not self.circuit_breaker.combined_blocked("long", pool_index)
+                ]
 
         # 处理双向冲突
         await self._resolve_conflicts(short_signals, long_signals)
@@ -1006,6 +1056,20 @@ class HRSStrategy(BaseStrategy):
         """
         logger.info("触发每日候选池更新", scan_time=scan_time_str)
         result = await self.candidate_pool.scan_and_update()
+
+        # 组合级熔断：候选池更新后落库快照（strategy_states, state_key='candidate_pool'），
+        # 供 data_backend 指数计算器按 HRS 池读取（快照缺失/为空时跳过 HRS 池指数）
+        pool_symbols = sorted(self.candidate_pool.get_active_symbols())
+        await save_strategy_state(
+            self.db,
+            "hrs",
+            {},
+            extra_data={
+                "symbols": pool_symbols,
+                "scanned_at": datetime.now(timezone.utc).isoformat(),
+            },
+            state_key="candidate_pool",
+        )
 
         # P0-5: 候选池更新后，注入 strategy 维护的统一4h K线缓存
         self.candidate_pool.set_klines_4h_cache(self._klines_4h_cache)

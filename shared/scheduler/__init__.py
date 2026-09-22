@@ -17,7 +17,7 @@
 import asyncio
 import os
 from datetime import datetime, timedelta
-from typing import Awaitable, Callable, Optional, Sequence
+from typing import Awaitable, Callable, Optional, Sequence, Union
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -62,8 +62,8 @@ def add_interval_job(
     """注册间隔触发任务
 
     间隔秒数从环境变量 env_key 读取（默认 default_seconds），
-    首个执行时间延迟 STARTUP_READY_DELAY_SECONDS，避免容器启动瞬间
-    依赖（DB/网络）未就绪时产生噪音告警。
+    首次周期触发延迟到"启动就绪延迟 + 一个完整周期"之后——首次执行由
+    启动预热承担，调度器只负责后续周期，避免首轮任务双跑。
 
     Args:
         scheduler: 目标调度器
@@ -81,7 +81,9 @@ def add_interval_job(
     """
     interval = int(os.getenv(env_key, str(default_seconds)))
     delay = _startup_ready_delay()
-    start_date = datetime.now() + timedelta(seconds=delay) if delay > 0 else None
+    # 职责分离：启动预热（schedule_startup_run，延迟 delay 秒）负责重启后的首次执行；
+    # 调度器从"延迟 + 一个完整周期"起按周期触发，避免与预热重叠导致首轮任务双跑。
+    start_date = datetime.now() + timedelta(seconds=delay + interval)
     scheduler.add_job(
         func,
         IntervalTrigger(seconds=interval, start_date=start_date),
@@ -100,8 +102,8 @@ def add_cron_job(
     job_id: str,
     env_hour: str,
     env_minute: str,
-    default_hour: int,
-    default_minute: int,
+    default_hour: Union[int, str],
+    default_minute: Union[int, str],
     args: Optional[Sequence] = None,
     misfire_grace: int = 3600,
 ) -> tuple:
@@ -115,16 +117,19 @@ def add_cron_job(
         job_id: 任务唯一 ID
         env_hour: 小时的环境变量名
         env_minute: 分钟的环境变量名
-        default_hour: 环境变量缺失时的默认小时
-        default_minute: 环境变量缺失时的默认分钟
+        default_hour: 环境变量缺失时的默认小时（int 或 "*" 通配）
+        default_minute: 环境变量缺失时的默认分钟（int 或 "*" 通配）
         args: 传给 func 的位置参数
         misfire_grace: 允许任务延迟执行的宽限时间（秒）
 
     Returns:
-        (hour, minute) 实际生效的执行时间
+        (hour, minute) 实际生效的执行时间（"*" 表示通配该字段）
     """
-    hour = int(os.getenv(env_hour, str(default_hour)))
-    minute = int(os.getenv(env_minute, str(default_minute)))
+    hour_raw = os.getenv(env_hour, str(default_hour))
+    minute_raw = os.getenv(env_minute, str(default_minute))
+    # "*" 通配保留字符串（如每小时 03 分 = hour="*"），其余转 int，兼容既有 int 调用
+    hour = hour_raw if hour_raw == "*" else int(hour_raw)
+    minute = minute_raw if minute_raw == "*" else int(minute_raw)
     scheduler.add_job(
         func,
         CronTrigger(hour=hour, minute=minute),
