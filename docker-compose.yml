@@ -43,9 +43,7 @@ services:
   # HRS 混合反转策略服务
   # ============================================
   hrs-strategy:
-    build:
-      context: .
-      dockerfile: strategies/hrs/Dockerfile
+    image: ghcr.io/bearflower/trading-hrs:latest
     container_name: trading_system-hrs
     restart: unless-stopped
     env_file:
@@ -81,9 +79,7 @@ services:
   # BTC/ETH 策略服务
   # ============================================
   btc-eth-strategy:
-    build:
-      context: .
-      dockerfile: strategies/btc_eth/Dockerfile
+    image: ghcr.io/bearflower/trading-btc-eth:latest
     container_name: trading_system-btc_eth
     restart: unless-stopped
     env_file:
@@ -117,9 +113,7 @@ services:
   # BTC/ETH 策略激进版服务（独立 schema，共用资金）
   # ============================================
   btc-eth-aggressive-strategy:
-    build:
-      context: .
-      dockerfile: strategies/btc_eth_aggressive/Dockerfile
+    image: ghcr.io/bearflower/trading-btc-eth-aggr:latest
     container_name: trading_system-btc_eth_aggressive
     restart: unless-stopped
     env_file:
@@ -153,9 +147,7 @@ services:
   # 新币做空策略服务
   # ============================================
   new-coin-strategy:
-    build:
-      context: .
-      dockerfile: strategies/new_coin/Dockerfile
+    image: ghcr.io/bearflower/trading-new-coin:latest
     container_name: trading_system-new_coin
     restart: unless-stopped
     env_file:
@@ -189,9 +181,7 @@ services:
   # 网格交易策略服务
   # ============================================
   grid-strategy:
-    build:
-      context: .
-      dockerfile: strategies/grid/Dockerfile
+    image: ghcr.io/bearflower/trading-grid:latest
     container_name: trading_system-grid
     restart: unless-stopped
     env_file:
@@ -227,9 +217,7 @@ services:
   # StratTuneAI 多策略AI调优系统
   # ============================================
   ai-tuner:
-    build:
-      context: .
-      dockerfile: ai_tuner/Dockerfile
+    image: ghcr.io/bearflower/trading-ai-tuner:latest
     container_name: ai-tuner
     restart: unless-stopped
     user: "0:0"   # 使用 root，与其他策略容器一致，解决 bind mount UID 不匹配
@@ -279,9 +267,7 @@ services:
   # K 线数据服务
   # ============================================
   kline-service:
-    build:
-      context: .
-      dockerfile: services/kline_service/Dockerfile
+    image: ghcr.io/bearflower/trading-kline-service:latest
     container_name: trading_system-kline
     restart: unless-stopped
     env_file:
@@ -317,9 +303,7 @@ services:
   # K 线服务健康监控（自动检测故障并发送飞书告警）
   # ============================================
   kline-monitor:
-    build:
-      context: .
-      dockerfile: services/kline_monitor/Dockerfile
+    image: ghcr.io/bearflower/trading-kline-monitor:latest
     container_name: trading_system-kline-monitor
     restart: unless-stopped
     env_file:

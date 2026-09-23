@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ARG PIP_INDEX_URL=
+
 WORKDIR /app
 
 # 安装系统依赖
@@ -12,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY services/kline_service/requirements.txt .
 
 # 安装 Python 依赖
-RUN pip install --no-cache-dir -r requirements.txt databases
+RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r requirements.txt databases
 
 # 复制共享模块（K 线服务自有共享模块，而非项目根目录 shared）
 COPY services/kline_service/shared/ ./shared/

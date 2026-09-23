@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ARG PIP_INDEX_URL=
+
 # 设置工作目录
 WORKDIR /app
 
@@ -19,7 +21,7 @@ COPY VERSION /app/VERSION
 
 # 安装Python依赖
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r requirements.txt
 
 # 设置环境变量
 ENV STRATEGY_NAME=new_coin

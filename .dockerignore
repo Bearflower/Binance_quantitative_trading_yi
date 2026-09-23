@@ -1,0 +1,70 @@
+# ============================================
+# Docker 构建忽略文件 —— 安全 + 加速
+# ============================================
+
+# 版本控制
+.git/
+.gitignore
+.github/
+.trae/
+.agents/
+.archify_candidate*.json
+.claude/
+.superpowers/
+
+# 敏感文件（严禁进入镜像）
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# 本地手动脚本（硬编码 API Key，已改为 os.environ 但防止 COPY）
+check_orders.py
+manual_trade_local.py
+set_sl.py
+set_sl_v2.py
+set_tp_sl.py
+set_tp_sl_v2.py
+
+# 回测代码（仅本地执行，不部署到服务器）
+backtest/
+
+# 测试代码
+tests/
+
+# 文档
+docs/
+*.md
+README.md
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# 日志和数据（运行时 volume 挂载）
+logs/
+data/
+coverage*
+tmp_*.py
+
+# 部署脚本（服务器自己有）
+*.sh
+deploy/
+
+# 杂项
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

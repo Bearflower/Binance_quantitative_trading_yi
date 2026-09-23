@@ -1,10 +1,12 @@
 FROM python:3.11-slim
 
+ARG PIP_INDEX_URL=
+
 WORKDIR /app
 
 # 安装依赖
 COPY services/kline_monitor/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r requirements.txt
 
 # 复制监控脚本
 COPY services/kline_monitor/src/ ./src/

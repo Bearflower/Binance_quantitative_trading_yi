@@ -1,6 +1,8 @@
 # StratTuneAI 多策略AI调优系统 Dockerfile
 FROM python:3.10-slim
 
+ARG PIP_INDEX_URL=
+
 # 时区与 Python 环境变量
 ENV TZ=Asia/Shanghai \
     PYTHONPATH="/app:/app/ai_tuner" \
@@ -17,7 +19,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # 安装 Python 依赖
 COPY ai_tuner/requirements.txt /app/ai_tuner/
-RUN pip install --no-cache-dir -r /app/ai_tuner/requirements.txt
+RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r /app/ai_tuner/requirements.txt
 
 # 复制应用代码
 COPY ai_tuner/ /app/ai_tuner/

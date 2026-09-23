@@ -14,8 +14,9 @@ import structlog
 
 logger = structlog.get_logger()
 
-API_KEY = "dfeqPklQBFqdgOYHjCQEnPPwPxm1GVHVDd1VFmMMxh3pUHOIJ3UwSdRoDYuDWjL0"
-API_SECRET = "K7X64Pdbawu15ACZzpZxyOokbULpNlPDbMPvhrAUC2z1n0CVc3zlC9r5PaaudDX5"
+# 从环境变量读取 API 密钥，通过 .env 文件注入或命令行 export 设置
+API_KEY = os.environ.get("BINANCE_API_KEY", "")
+API_SECRET = os.environ.get("BINANCE_API_SECRET", "")
 BASE_URL = "https://papi.binance.com"
 
 

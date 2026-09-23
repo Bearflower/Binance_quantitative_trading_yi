@@ -1,5 +1,7 @@
 FROM python:3.11-slim
 
+ARG PIP_INDEX_URL=
+
 WORKDIR /app
 
 # 安装系统依赖
@@ -11,7 +13,7 @@ RUN apt-get update && apt-get install -y \
 
 # 复制项目依赖
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r requirements.txt
 
 # 复制整个项目
 COPY . .
