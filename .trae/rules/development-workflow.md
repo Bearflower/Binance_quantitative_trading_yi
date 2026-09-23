@@ -3,7 +3,7 @@
 ## 完整开发流程
 
 ```
-前置关卡 → 需求分析 → 架构设计 → 编码实现 → 代码检测 → 强制测试 → 代码审查与文档对照 → 文档更新 → 部署与代码级验证 → 部署与代码级验证
+前置关卡 → 需求分析 → 架构设计 → 编码实现 → 代码检测 → 强制测试 → 代码审查与文档对照 → 文档更新
 ```
 
 ---
@@ -17,7 +17,7 @@
 用 TodoWrite 创建任务清单，包含完整的开发环节，全部标记为 `pending`：
 
 ```
-需求分析 → 架构设计 → 编码实现 → 代码检测 → 强制测试 → 代码审查与文档对照 → 文档更新 → 部署与代码级验证
+需求分析 → 架构设计 → 编码实现 → 代码检测 → 强制测试 → 代码审查与文档对照 → 文档更新
 ```
 
 ### 1.2 展示给用户确认
@@ -34,10 +34,11 @@
 | 5 | 强制测试（幻觉测试 + 功能测试 + 覆盖率验证） | 调度者逐项检查 + api-test-pro | ⏳ 待执行 |
 | 6 | 代码审查与文档对照 | code-specification-inspector + code-document-curator | ⏳ 待执行 |
 | 7 | 文档更新 | code-document-curator | ⏳ 待执行 |
-| 8 | 部署与代码级验证 | `服务器自动化部署` 技能 + 代码对比 | ⏳ 待执行 |
-| 9 | 上下文交接存档 | `context-handoff` skill | ⏳ 待执行 |
+| 8 | 上下文交接存档 | `context-handoff` skill | ⏳ 待执行 |
 
-> 说明：第 9 行"上下文交接存档"是**会话级交接**，非代码开发环节；触发时机为上下文使用率偏高（约 70%+）、完成关键里程碑、或用户手动触发（详见"七・五、上下文交接存档"）。若本次任务未产生新状态，可标注"跳过"。
+> 说明：第 8 行"上下文交接存档"是**会话级交接**，非代码开发环节；触发时机为上下文使用率偏高（约 70%+）、完成关键里程碑、或用户手动触发（详见"七・五、上下文交接存档"）。若本次任务未产生新状态，可标注"跳过"。
+>
+> ⚙️ **部署已自动化**：push main 后 GitHub Actions 自动云端构建镜像 → push GHCR → SSH 服务器 pull+up → 写部署日志。**无需 AI 干预部署流程。** 开发完成告知用户"已 push，Actions 自动部署中"即可。
 
 是否确认开始执行？
 ```
@@ -108,8 +109,9 @@
 | 强制测试 | 调度者 + `api-test-pro` | 先做幻觉测试（10 项清单），再做功能测试，最后验证测试覆盖率 |
 | 代码审查与文档对照 | `code-specification-inspector` + `code-document-curator` | 深度审查代码质量，对照检查文档 |
 | 文档更新 | `code-document-curator` | 执行文档更新 |
-| 部署与代码级验证 | `服务器自动化部署` 技能 | 部署到服务器后，对比本地代码与线上代码是否一致（详见 deployment.md） |
 | 性能优化 | `performance-expert` | 性能分析与优化建议 |
+
+> ⚙️ **部署已自动化**：push main 后 GitHub Actions 自动云端构建、push GHCR、SSH 服务器部署。详见 `deployment.md`。
 
 ### 3.2 智能体调用触发条件
 
@@ -141,11 +143,12 @@
 
 ### 3.4 执行顺序规则
 
-1. 技能检查 → 需求分析 → 架构设计 → 编码实现 → 代码检测 → 测试 → 审查 → 文档 → 部署与代码级验证
+1. 技能检查 → 需求分析 → 架构设计 → 编码实现 → 代码检测 → 测试 → 审查 → 文档
 2. 每个智能体完成任务后，将结果返回，根据结果更新任务计划
 3. 涉及代码编写时，调用 `backend-architect` 和 `python-engineer`，让其先熟读开发规范文档后再开发
 4. 代码编写完成后，先调 `code-specification-inspector` 做快速规范检查，通过后进入幻觉测试（逐项验证 10 项检查清单），再进入功能测试阶段
 5. 代码审查时，先调 `code-specification-inspector` 智能体，再调 `TRAE-code-review` 技能
+6. 测试通过 → 文档更新 → **告知用户开发结果**（push main 后 Actions 自动部署，无需 AI 手动部署）
 
 ---
 
@@ -286,55 +289,52 @@
 
 ---
 
-## 七、部署与代码级验证（强制）⭐⭐⭐
+## 七、部署已自动化（无需 AI 干预）⭐⭐⭐
 
-**如果本次开发涉及服务器部署，文档更新完成后，必须执行部署与代码级验证，不可跳过。**
+**部署由 GitHub Actions 全自动完成，AI 不需要也不应该手动执行部署流程。**
 
-### 7.1 为什么必须做代码级验证
+### 7.1 部署触发
 
-部署完成后，仅检查"容器是否在运行"是不够的。"部署幻觉"问题表明：容器运行中 ≠ 运行的是新代码。必须通过**代码对比**来确认线上代码与本地代码完全一致。
+开发完成后，用户（或 AI 辅助）执行 `git push origin main` 即触发部署：
 
-### 7.2 验证流程
-
-部署与代码级验证遵循 `deployment.md` 中的五层验证机制：
-
-| 层级 | 验证内容 | 验证方式 |
-|------|---------|---------|
-| 第一层 | 容器运行状态 | `docker ps` 确认容器在运行 |
-| 第二层 | 镜像 ID 一致性 | 容器镜像 ID == 最新构建镜像 ID |
-| 第三层 | VERSION 文件匹配 | 容器内 DEPLOY_ID == 本地 DEPLOY_ID |
-| **第四层** | **关键文件 MD5 对比** | **容器内文件 MD5 == 本地文件 MD5** |
-| 第五层 | 功能无错误 | 容器日志无 error/exception/fatal |
-
-### 7.3 代码级对比（核心步骤）⭐⭐⭐
-
-**第四层"关键文件 MD5 对比"是整个验证的核心。** 必须逐个对比以下关键文件：
-
-```bash
-# 本地计算关键文件 MD5
-md5sum strategies/btc_eth/main.py
-md5sum strategies/btc_eth/config.yaml
-md5sum shared/*.py
-
-# 线上容器内计算对应文件 MD5
-ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/strategies/btc_eth/main.py"
-ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/strategies/btc_eth/config.yaml"
-ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/shared/*.py"
+```
+push main → GitHub Actions 自动触发 → 云端构建镜像 → push GHCR → SSH 服务器 pull+up → 写部署日志
 ```
 
-**本地与线上 MD5 必须完全一致，否则视为部署失败。**
+### 7.2 AI 在部署环节的职责
 
-### 7.4 部署确认报告
+| 场景 | AI 要做的 | AI 不要做的 |
+|------|----------|-----------|
+| 开发完成告知用户 | 说"已 push，Actions 自动部署中" | 不要手动跑 `docker-compose build` |
+| Actions 成功 | 告知用户 Actions Run #N 全绿 | 不要自己 SSH 服务器验证 |
+| Actions 失败 | 告知用户失败原因（读 Actions log） | 不要自己手动部署掩盖问题 |
+| 服务器运维 | 用户明确要求时才 SSH | 不要主动 SSH 生产服务器 |
 
-五层验证全部通过后，必须生成部署确认报告（详见 `deployment.md` 第七节），作为"新版本代码已确认在线上运行"的证据。
+### 7.3 部署状态查询方式
 
-### 7.5 不涉及部署的场景
+| 查什么 | 去哪查 |
+|--------|--------|
+| Actions 运行状态 | https://github.com/Bearflower/Binance_quantitative_trading_yi/actions |
+| GHCR 镜像 | https://github.com/orgs/bearflower/packages?repo_name=Binance_quantitative_trading_yi |
+| 服务器部署日志 | SSH 服务器 → `/root/trading_system/deploy_logs/YYYYMMDD.log` |
+| 容器状态 | `ssh root@43.156.242.184 "docker ps"` |
 
-如果本次开发仅修改本地代码（如回测脚本、配置文件），无需部署到服务器，则本环节标注"跳过"并说明原因。
+### 7.4 什么时候需要手动干预部署
 
-### 7.6 技能调用
+只有以下场景需要 AI 或用户手动 SSH 服务器：
 
-执行部署时，必须先调用 `服务器自动化部署` 技能了解项目特定的部署配置和脚本，然后按 `deployment.md` 的流程执行。
+| 场景 | 原因 | 操作 |
+|------|------|------|
+| Actions 挂了（网络问题/权限问题） | GitHub Runner 偶发故障 | SSH 手动 `docker pull && docker compose up -d` |
+| 紧急回滚 | 新代码有 bug | SSH 服务器 `docker compose down && docker compose up -d`（回退到上一个镜像） |
+| 服务器磁盘满了 | Docker 构建缓存 | `docker system prune -f` |
+| 服务器重启后 | 容器可能没自动起来 | `docker compose up -d` |
+
+> 以上操作属于**运维**，不属于"开发流程"。开发流程到此结束。
+
+### 7.5 详细部署技术文档
+
+详见 `deployment.md`（已同步更新为 GitHub Actions + GHCR 方案）。
 
 ---
 
