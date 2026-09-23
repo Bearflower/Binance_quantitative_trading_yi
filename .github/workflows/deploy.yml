@@ -1,24 +1,11 @@
 name: CI/CD — 构建镜像并自动部署
 
 # ============================================
-# Binance 量化交易系统 CI/CD 流水线（智能增量构建版）
+# Binance 量化交易系统 CI/CD 流水线（智能增量构建版 v2）
 #
-# 核心优化：
-#   push main → 检测哪些服务真的变了 → 只构建那几个 → GHCR → SSH 服务器 pull+up
-#
-# 路径映射规则（改什么 → 重建什么）：
-#   shared/**                    → 全部 10 个镜像（每个都 COPY shared/）
-#   strategies/btc_eth/**        → 只重建 trading-btc-eth
-#   strategies/btc_eth_aggressive/** → 只重建 trading-btc-eth-aggr
-#   strategies/grid/**           → 只重建 trading-grid
-#   strategies/hrs/**            → 只重建 trading-hrs
-#   strategies/new_coin/**       → 只重建 trading-new-coin
-#   services/kline_service/**    → 只重建 trading-kline-service
-#   services/kline_monitor/**    → 只重建 trading-kline-monitor
-#   services/data_backend/**     → 只重建 trading-data-backend
-#   ai_tuner/**                  → 只重建 trading-ai-tuner
-#   dashboard/backend/**         → 只重建 trading-dashboard-api
-#   docker-compose.yml / VERSION → 全部 10 个（强制全量）
+# 改动 → detect job 输出哪些服务变了（JSON 数组）
+# 静态矩阵 10 个 job → 每个 job 开头检查自己该不该构建 → 该构建就 build，不该构建就 skip
+# 服务器 deploy → docker compose pull/up 本身就是增量的
 # ============================================
 
 on:
@@ -40,107 +27,128 @@ env:
   REGISTRY: ghcr.io
   IMAGE_OWNER: bearflower
 
+# 静态服务清单 — 按字母序
+# detect job 会输出 "BTC_ETH_CHANGED=true" 这样的变量
+SERVICES: &ALL_SERVICES
+  - { name: "btc-eth",        key: "BTC_ETH",        dockerfile: "strategies/btc_eth/Dockerfile" }
+  - { name: "btc-eth-aggr",   key: "BTC_ETH_AGGR",   dockerfile: "strategies/btc_eth_aggressive/Dockerfile" }
+  - { name: "new-coin",       key: "NEW_COIN",       dockerfile: "strategies/new_coin/Dockerfile" }
+  - { name: "grid",           key: "GRID",           dockerfile: "strategies/grid/Dockerfile" }
+  - { name: "hrs",            key: "HRS",            dockerfile: "strategies/hrs/Dockerfile" }
+  - { name: "kline-service",  key: "KLINE_SERVICE",  dockerfile: "services/kline_service/Dockerfile" }
+  - { name: "kline-monitor",  key: "KLINE_MONITOR",  dockerfile: "services/kline_monitor/Dockerfile" }
+  - { name: "ai-tuner",       key: "AI_TUNER",       dockerfile: "ai_tuner/Dockerfile" }
+  - { name: "data-backend",   key: "DATA_BACKEND",   dockerfile: "services/data_backend/Dockerfile" }
+  - { name: "dashboard-api",  key: "DASHBOARD_API",  dockerfile: "dashboard/backend/Dockerfile" }
+
 jobs:
   # ============================================
-  # Job 0: 智能检测哪些服务需要重建
-  # shared/ 改了 → 全部重建
-  # 只改某个策略目录 → 只构建那个
+  # Job 0: 检测哪些路径变了 → 输出需要构建的服务列表
   # ============================================
   detect:
-    name: 🔍 检测变更服务
+    name: 🔍 检测变更
     runs-on: ubuntu-latest
     outputs:
-      services: ${{ steps.filter.outputs.services }}
-      needs_rebuild: ${{ steps.filter.outputs.needs_rebuild }}
+      # 输出 "true"/"false" 变量供各 build job 检查
+      services_json: ${{ steps.decide.outputs.services_json }}
+      all_triggered: ${{ steps.decide.outputs.all_triggered }}
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2   # 需要上一次 commit 做 diff
+          fetch-depth: 2
 
-      - name: 🔍 检测变更
-        id: filter
+      - name: 🔍 路径过滤
+        id: paths
         uses: dorny/paths-filter@v3
         with:
           filters: |
-            # 共享模块 —— 任何共享代码改动都需要全部重建
             shared:
               - 'shared/**'
               - 'docker-compose.yml'
               - 'VERSION'
-            # 各服务独立目录
-            btc-eth:
+            BTC_ETH:
               - 'strategies/btc_eth/**'
-            btc-eth-aggr:
+            BTC_ETH_AGGR:
               - 'strategies/btc_eth_aggressive/**'
-            new-coin:
+            NEW_COIN:
               - 'strategies/new_coin/**'
-            grid:
+            GRID:
               - 'strategies/grid/**'
-            hrs:
+            HRS:
               - 'strategies/hrs/**'
-            kline-service:
+            KLINE_SERVICE:
               - 'services/kline_service/**'
-            kline-monitor:
+            KLINE_MONITOR:
               - 'services/kline_monitor/**'
-            ai-tuner:
+            AI_TUNER:
               - 'ai_tuner/**'
-            data-backend:
+            DATA_BACKEND:
               - 'services/data_backend/**'
-            dashboard-api:
+            DASHBOARD_API:
               - 'dashboard/backend/**'
 
-      - name: 📋 输出构建计划
-        run: |
-          echo "=== 本次 commit 改动检测 ==="
-          echo "触发事件: ${{ github.event_name }}"
-          echo "Commit:   ${{ github.event.head_commit.message }}"
-          echo ""
-          echo "=== 检测结果 ==="
-          echo "shared 变化: ${{ steps.filter.outputs.shared }}"
-          echo "btc-eth:         ${{ steps.filter.outputs.btc-eth }}"
-          echo "btc-eth-aggr:    ${{ steps.filter.outputs.btc-eth-aggr }}"
-          echo "new-coin:        ${{ steps.filter.outputs.new-coin }}"
-          echo "grid:            ${{ steps.filter.outputs.grid }}"
-          echo "hrs:             ${{ steps.filter.outputs.hrs }}"
-          echo "kline-service:   ${{ steps.filter.outputs.kline-service }}"
-          echo "kline-monitor:   ${{ steps.filter.outputs.kline-monitor }}"
-          echo "ai-tuner:        ${{ steps.filter.outputs.ai-tuner }}"
-          echo "data-backend:    ${{ steps.filter.outputs.data-backend }}"
-          echo "dashboard-api:   ${{ steps.filter.outputs.dashboard-api }}"
-
-      - name: 🏗️ 动态决定需要构建的镜像列表
+      - name: 🏗️ 决定构建列表
         id: decide
         run: |
-          # 如果 shared 变了 → 全部 10 个
-          if [ "${{ steps.filter.outputs.shared }}" = "true" ]; then
-            echo "shared 发生变化 → 全部 10 个镜像需要重建"
-            echo 'services=[{"name":"btc-eth","dockerfile":"strategies/btc_eth/Dockerfile"},{"name":"btc-eth-aggr","dockerfile":"strategies/btc_eth_aggressive/Dockerfile"},{"name":"new-coin","dockerfile":"strategies/new_coin/Dockerfile"},{"name":"grid","dockerfile":"strategies/grid/Dockerfile"},{"name":"hrs","dockerfile":"strategies/hrs/Dockerfile"},{"name":"kline-service","dockerfile":"services/kline_service/Dockerfile"},{"name":"kline-monitor","dockerfile":"services/kline_monitor/Dockerfile"},{"name":"ai-tuner","dockerfile":"ai_tuner/Dockerfile"},{"name":"data-backend","dockerfile":"services/data_backend/Dockerfile"},{"name":"dashboard-api","dockerfile":"dashboard/backend/Dockerfile"}]' >> "$GITHUB_OUTPUT"
+          echo "=== 本次 commit ==="
+          echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
+          echo "触发: ${{ github.event_name }}"
+          echo ""
+
+          # shared 或核心文件变了 → 全部 10 个
+          if [ "${{ steps.paths.outputs.shared }}" = "true" ]; then
+            echo "✅ shared/ 或 docker-compose.yml 有改动 → 全部 10 个镜像需要重建"
+            echo "all_triggered=true" >> "$GITHUB_OUTPUT"
           else
-            # 否则只构建检测到变化的
-            echo "shared 未变化 → 只构建有改动的服务"
-            SERVICES="["
-            [ "${{ steps.filter.outputs.btc-eth }}" = "true" ]        && SERVICES+='{"name":"btc-eth","dockerfile":"strategies/btc_eth/Dockerfile"},'
-            [ "${{ steps.filter.outputs.btc-eth-aggr }}" = "true" ]   && SERVICES+='{"name":"btc-eth-aggr","dockerfile":"strategies/btc_eth_aggressive/Dockerfile"},'
-            [ "${{ steps.filter.outputs.new-coin }}" = "true" ]       && SERVICES+='{"name":"new-coin","dockerfile":"strategies/new_coin/Dockerfile"},'
-            [ "${{ steps.filter.outputs.grid }}" = "true" ]           && SERVICES+='{"name":"grid","dockerfile":"strategies/grid/Dockerfile"},'
-            [ "${{ steps.filter.outputs.hrs }}" = "true" ]            && SERVICES+='{"name":"hrs","dockerfile":"strategies/hrs/Dockerfile"},'
-            [ "${{ steps.filter.outputs.kline-service }}" = "true" ] && SERVICES+='{"name":"kline-service","dockerfile":"services/kline_service/Dockerfile"},'
-            [ "${{ steps.filter.outputs.kline-monitor }}" = "true" ] && SERVICES+='{"name":"kline-monitor","dockerfile":"services/kline_monitor/Dockerfile"},'
-            [ "${{ steps.filter.outputs.ai-tuner }}" = "true" ]       && SERVICES+='{"name":"ai-tuner","dockerfile":"ai_tuner/Dockerfile"},'
-            [ "${{ steps.filter.outputs.data-backend }}" = "true" ]   && SERVICES+='{"name":"data-backend","dockerfile":"services/data_backend/Dockerfile"},'
-            [ "${{ steps.filter.outputs.dashboard-api }}" = "true" ] && SERVICES+='{"name":"dashboard-api","dockerfile":"dashboard/backend/Dockerfile"},'
-            SERVICES="${SERVICES%,}]"
-            echo "最终构建列表: $SERVICES"
-            echo "services=$SERVICES" >> "$GITHUB_OUTPUT"
+            echo "✅ 仅以下服务有改动："
+            echo "all_triggered=false" >> "$GITHUB_OUTPUT"
           fi
 
+          echo ""
+          echo "路径检测结果："
+          echo "  shared:       ${{ steps.paths.outputs.shared }}"
+          echo "  BTC_ETH:      ${{ steps.paths.outputs.BTC_ETH }}"
+          echo "  BTC_ETH_AGGR: ${{ steps.paths.outputs.BTC_ETH_AGGR }}"
+          echo "  NEW_COIN:     ${{ steps.paths.outputs.NEW_COIN }}"
+          echo "  GRID:         ${{ steps.paths.outputs.GRID }}"
+          echo "  HRS:          ${{ steps.paths.outputs.HRS }}"
+          echo "  KLINE_SERVICE:${{ steps.paths.outputs.KLINE_SERVICE }}"
+          echo "  KLINE_MONITOR:${{ steps.paths.outputs.KLINE_MONITOR }}"
+          echo "  AI_TUNER:     ${{ steps.paths.outputs.AI_TUNER }}"
+          echo "  DATA_BACKEND: ${{ steps.paths.outputs.DATA_BACKEND }}"
+          echo "  DASHBOARD_API:${{ steps.paths.outputs.DASHBOARD_API }}"
+
+          # 构建 JSON 列表供 deploy 用（即使 build 全 skip 了 deploy 也知道谁变了）
+          SERVICES_JSON="["
+          ALL_TRIGGERED="${{ steps.paths.outputs.shared }}"
+          if [ "$ALL_TRIGGERED" = "true" ]; then
+            SERVICES_JSON='[{"name":"btc-eth"},{"name":"btc-eth-aggr"},{"name":"new-coin"},{"name":"grid"},{"name":"hrs"},{"name":"kline-service"},{"name":"kline-monitor"},{"name":"ai-tuner"},{"name":"data-backend"},{"name":"dashboard-api"}]'
+          else
+            [ "${{ steps.paths.outputs.BTC_ETH }}" = "true" ]         && SERVICES_JSON+='{"name":"btc-eth"},'
+            [ "${{ steps.paths.outputs.BTC_ETH_AGGR }}" = "true" ]    && SERVICES_JSON+='{"name":"btc-eth-aggr"},'
+            [ "${{ steps.paths.outputs.NEW_COIN }}" = "true" ]        && SERVICES_JSON+='{"name":"new-coin"},'
+            [ "${{ steps.paths.outputs.GRID }}" = "true" ]            && SERVICES_JSON+='{"name":"grid"},'
+            [ "${{ steps.paths.outputs.HRS }}" = "true" ]             && SERVICES_JSON+='{"name":"hrs"},'
+            [ "${{ steps.paths.outputs.KLINE_SERVICE }}" = "true" ]   && SERVICES_JSON+='{"name":"kline-service"},'
+            [ "${{ steps.paths.outputs.KLINE_MONITOR }}" = "true" ]   && SERVICES_JSON+='{"name":"kline-monitor"},'
+            [ "${{ steps.paths.outputs.AI_TUNER }}" = "true" ]        && SERVICES_JSON+='{"name":"ai-tuner"},'
+            [ "${{ steps.paths.outputs.DATA_BACKEND }}" = "true" ]    && SERVICES_JSON+='{"name":"data-backend"},'
+            [ "${{ steps.paths.outputs.DASHBOARD_API }}" = "true" ]   && SERVICES_JSON+='{"name":"dashboard-api"},'
+            SERVICES_JSON="${SERVICES_JSON%,}]"
+          fi
+
+          echo "services_json=$SERVICES_JSON" >> "$GITHUB_OUTPUT"
+          echo ""
+          echo "最终需要构建: $SERVICES_JSON"
+
   # ============================================
-  # Job 1: 矩阵并行构建（只有 detect 输出的那些）
+  # Job 1: 静态矩阵 10 个并行
+  # 每个 job 开头判断：shared 变了 OR 自己对应的路径变了 → 才构建
+  # 否则 echo skip && exit 0（秒级完成）
   # ============================================
   build-all:
-    name: 🛠️ 构建 ${{ matrix.service.name }}
+    name: 🛠️ ${{ matrix.service.name }}
     needs: detect
-    if: needs.detect.outputs.services != '[]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -148,23 +156,76 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        service: ${{ fromJson(needs.detect.outputs.services) }}
+        service:
+          - { name: "btc-eth",        key: "BTC_ETH",        dockerfile: "strategies/btc_eth/Dockerfile" }
+          - { name: "btc-eth-aggr",   key: "BTC_ETH_AGGR",   dockerfile: "strategies/btc_eth_aggressive/Dockerfile" }
+          - { name: "new-coin",       key: "NEW_COIN",       dockerfile: "strategies/new_coin/Dockerfile" }
+          - { name: "grid",           key: "GRID",           dockerfile: "strategies/grid/Dockerfile" }
+          - { name: "hrs",            key: "HRS",            dockerfile: "strategies/hrs/Dockerfile" }
+          - { name: "kline-service",  key: "KLINE_SERVICE",  dockerfile: "services/kline_service/Dockerfile" }
+          - { name: "kline-monitor",  key: "KLINE_MONITOR",  dockerfile: "services/kline_monitor/Dockerfile" }
+          - { name: "ai-tuner",       key: "AI_TUNER",       dockerfile: "ai_tuner/Dockerfile" }
+          - { name: "data-backend",   key: "DATA_BACKEND",   dockerfile: "services/data_backend/Dockerfile" }
+          - { name: "dashboard-api",  key: "DASHBOARD_API",  dockerfile: "dashboard/backend/Dockerfile" }
 
     steps:
-      - name: 📥 Checkout 代码
-        uses: actions/checkout@v4
+      - name: 🚫 跳过判断
+        id: should_build
+        run: |
+          # 直接把 needs.detect.outputs 作为 env 传进来不方便
+          # 这里重新查一次 paths-filter 结果 → 但更简单：用 all_triggered 或 matrix key 判断
+          # 最稳的方式：fetch 上次 commit 然后 diff 判断
+          echo "needs.detect.outputs.all_triggered = ${{ needs.detect.outputs.all_triggered }}"
+          echo "matrix key = ${{ matrix.service.key }}"
 
-      - name: 🐳 安装 Buildx
-        uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v4
 
-      - name: 🔐 登录 GHCR
-        uses: docker/login-action@v3
+      - name: 🧩 复用路径检测结果
+        id: paths
+        uses: dorny/paths-filter@v3
         with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+          filters: |
+            shared:
+              - 'shared/**'
+              - 'docker-compose.yml'
+              - 'VERSION'
+            BTC_ETH:
+              - 'strategies/btc_eth/**'
+            BTC_ETH_AGGR:
+              - 'strategies/btc_eth_aggressive/**'
+            NEW_COIN:
+              - 'strategies/new_coin/**'
+            GRID:
+              - 'strategies/grid/**'
+            HRS:
+              - 'strategies/hrs/**'
+            KLINE_SERVICE:
+              - 'services/kline_service/**'
+            KLINE_MONITOR:
+              - 'services/kline_monitor/**'
+            AI_TUNER:
+              - 'ai_tuner/**'
+            DATA_BACKEND:
+              - 'services/data_backend/**'
+            DASHBOARD_API:
+              - 'dashboard/backend/**'
 
-      - name: 🛠️ 构建并推送 trading-${{ matrix.service.name }}
+      - name: ⏭️ 决定是否跳过
+        id: decide
+        run: |
+          ALL_TRIGGERED="${{ steps.paths.outputs.shared }}"
+          SELF_TRIGGERED="${{ steps.paths.outputs.${{ matrix.service.key }} }}"
+
+          if [ "$ALL_TRIGGERED" = "true" ] || [ "$SELF_TRIGGERED" = "true" ]; then
+            echo "✅ shared=${ALL_TRIGGERED} self(${{ matrix.service.key }})=${SELF_TRIGGERED} → 需要构建"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "⏭️ 本服务无改动 → 跳过"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 🐳 Build + Push
+        if: steps.decide.outputs.should_build == 'true'
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -177,16 +238,15 @@ jobs:
           cache-to: type=gha,mode=max
 
   # ============================================
-  # Job 2: SSH 到服务器执行部署
-  # docker compose pull 会自动只拉有新版本的镜像
-  # docker compose up -d 会自动只更新镜像变了的容器
+  # Job 2: SSH 部署
+  # 不管 build 有没有构建成功（可能全 skip），都跑 deploy
+  # docker compose pull → 只拉有新版本的 tag
+  # docker compose up -d → 只 recreate 镜像变了的容器
   # ============================================
   deploy:
     name: 🚀 SSH 服务器部署
     needs: [detect, build-all]
-    if: |
-      needs.detect.outputs.services != '[]' ||
-      needs.build-all.result == 'skipped'
+    if: always() && needs.detect.result == 'success' && (needs.build-all.result == 'success' || needs.build-all.result == 'skipped' || needs.build-all.result == 'cancelled')
     runs-on: ubuntu-latest
 
     steps:
