@@ -94,37 +94,58 @@ jobs:
           echo "${{ secrets.SERVER_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H 43.156.242.184 >> ~/.ssh/known_hosts
-          apt-get update && apt-get install -y rsync
 
-      - name: 📤 上传 docker-compose.yml
-        run: rsync -avz docker-compose.yml root@43.156.242.184:/root/trading_system/
+      - name: 📤 上传 docker-compose.yml（scp）
+        run: scp -i ~/.ssh/id_rsa docker-compose.yml root@43.156.242.184:/root/trading_system/docker-compose.yml
 
-      - name: 🚀 远程执行 pull + up + 写日志
+      - name: 🚀 生成并上传远程部署脚本
         run: |
-          ssh -i ~/.ssh/id_rsa -o StrictHostKeyChecking=no root@43.156.242.184 "set -e; cd /root/trading_system; \
-          echo '========================================'; \
-          echo 'CI/CD 自动部署'; \
-          echo \"时间: \$(date '+%Y-%m-%d %H:%M:%S')\"; \
-          echo '========================================'; \
-          \
-          if ! docker image inspect ghcr.io/bearflower/trading-btc-eth:latest >/dev/null 2>&1; then \
-            echo '🔐 首次登录 GHCR...'; \
-            echo '${{ secrets.GHCR_PULL_TOKEN }}' | docker login ghcr.io -u bearflower --password-stdin; \
-          fi; \
-          \
-          echo '📥 docker compose pull...'; \
-          docker compose pull 2>&1 | tail -5; \
-          \
-          echo '🔄 docker compose up -d...'; \
-          docker compose up -d --remove-orphans; \
-          \
-          echo '⏳ 等 15s...'; sleep 15; \
-          \
-          echo ''; echo '✅ 容器状态:'; \
-          docker ps --format 'table {{.Names}}\t{{.Status}}' | grep -E 'trading_system|ai-tuner'; \
-          \
-          mkdir -p deploy_logs; \
-          DEPLOY_TIME=\$(date '+%Y-%m-%d %H:%M:%S'); \
-          echo \"[\$DEPLOY_TIME] DEPLOY_SUCCESS commit=${{ github.sha }} triggered_by=${{ github.actor }}\" >> \"deploy_logs/\$(date '+%Y%m%d').log\"; \
-          \
-          echo ''; echo '🎉 CI/CD 部署完成！'"
+          cat > /tmp/deploy.sh << 'REMOTE_SCRIPT'
+            set -e
+            cd /root/trading_system
+
+            echo "========================================"
+            echo "CI/CD 自动部署"
+            echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
+            echo "========================================"
+
+            # 1. 服务器 GHCR 认证（首次）
+            if ! docker image inspect ghcr.io/bearflower/trading-btc-eth:latest >/dev/null 2>&1; then
+              echo "🔐 首次登录 GHCR..."
+              echo "__GHCR_TOKEN__" | docker login ghcr.io -u bearflower --password-stdin
+            fi
+
+            # 2. 拉取所有新镜像
+            echo "📥 docker compose pull..."
+            docker compose pull
+
+            # 3. 滚动更新
+            echo "🔄 docker compose up -d..."
+            docker compose up -d --remove-orphans
+
+            # 4. 等容器就绪
+            echo "⏳ 等待 15s..."
+            sleep 15
+
+            # 5. 状态检查
+            echo ""
+            echo "✅ 当前容器状态："
+            docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "trading_system|ai-tuner" || echo "⚠️ 未找到 trading 相关容器"
+
+            # 6. 写部署日志
+            mkdir -p deploy_logs
+            DEPLOY_TIME=$(date "+%Y-%m-%d %H:%M:%S")
+            COMMIT_SHA="__COMMIT_SHA__"
+            echo "[${DEPLOY_TIME}] DEPLOY_SUCCESS commit=${COMMIT_SHA}" >> "deploy_logs/$(date '+%Y%m%d').log"
+
+            echo ""
+            echo "========================================"
+            echo "🎉 CI/CD 部署完成！"
+            echo "========================================"
+          REMOTE_SCRIPT
+          sed -i "s|__GHCR_TOKEN__|${{ secrets.GHCR_PULL_TOKEN }}|g" /tmp/deploy.sh
+          sed -i "s|__COMMIT_SHA__|${{ github.sha }}|g" /tmp/deploy.sh
+          scp -i ~/.ssh/id_rsa /tmp/deploy.sh root@43.156.242.184:/tmp/deploy.sh
+
+      - name: ▶️ 执行远程部署脚本
+        run: ssh -i ~/.ssh/id_rsa root@43.156.242.184 "bash /tmp/deploy.sh && rm /tmp/deploy.sh"
