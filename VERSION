@@ -1,0 +1,4 @@
+DEPLOY_TIME=2026-09-23 15:22:18
+GIT_COMMIT=9aa9b62 fix: deploy.yml — 去掉嵌套 heredoc 解决 YAML 语法错误
+GIT_SHA=9aa9b62
+DEPLOY_ID=2C5243DD

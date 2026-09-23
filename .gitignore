@@ -31,8 +31,7 @@ tmp/
 # 回测行情数据（体积大，仅本地使用，不入库）
 backtest/cash_carry/data_2y/
 
-# 自动生成
-VERSION
+# VERSION — 部署标记文件，需要 commit 让 CI/CD 构建时可 COPY 到镜像中
 
 # IDE
 .idea/
