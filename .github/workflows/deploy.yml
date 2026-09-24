@@ -61,9 +61,12 @@ jobs:
               - '!*.md'
 
       - name: 📋 输出变更文件清单
+        # 提交信息用户可控：走 env 传值，避免单引号逃逸引发 shell 二次解析
+        env:
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           echo "=== 本次 commit (${{ github.sha }}) 改动 ==="
-          echo "Commit message: $(printf '%s' '${{ github.event.head_commit.message }}' | tr '\n' ' ')"
+          echo "Commit message: $(printf '%s' "$COMMIT_MESSAGE" | tr '\n' ' ')"
           echo ""
           echo "检测到变更（自动过滤 docs/backtest/tests/.trae/*.md）"
 

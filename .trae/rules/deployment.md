@@ -112,6 +112,7 @@ postgres 用公共镜像 `postgres:15-alpine`，不动。
 | 服务器资源紧张导致构建失败没感知 | **Runner 2核/7G 内存，构建失败直接 exit code 非零** |
 | 多容器混淆 | **compose up -d 只 recreate 镜像变了的容器** |
 | 脚本提前退出 | **部署脚本 set -e + deploy job 失败即报红** |
+| 提交信息含引号致 detect 失败、deploy 被整体跳过 | **提交信息走 env 传值，避免 shell 二次解析** |
 | AI 手动部署掩盖问题 | **push → Actions → 自动部署，全链路可追溯** |
 
 **核心改变：** 构建和部署解耦了。构建在云端（干净环境、充足资源），部署在服务器（只 pull + up，零构建）。服务器永远不会因为构建污染而出现"部署幻觉"。
@@ -300,4 +301,4 @@ docker system prune -f
 
 ---
 
-**最后更新：** 2026-09-24（v3.1 — deploy job SSH 加固：超时参数 + 仅连接失败重试 3 次）
+**最后更新：** 2026-09-24（v3.1 — deploy job SSH 加固：超时参数 + 仅连接失败重试 3 次；detect job 提交信息插值改为 env 传值，防止引号导致 detect 失败、deploy 被整体跳过）
