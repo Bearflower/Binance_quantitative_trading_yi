@@ -1,6 +1,47 @@
 # 部署确认报告
 
 ---
+## 2026-09-22 追加部署（修复 entry_time 类型不一致导致止损失效 + 重复代码重构）
+
+### 变更内容
+- **修复 `unsupported operand type(s) for -: 'datetime.datetime' and 'str'`（75 个错误）**：APLDUSDT 的紧急止损/时间止损自 9-21 起每小时报错跳过，**资金保护实际未生效**
+  - 根因：`entry_time` 类型约定不一致。`self.positions[symbol]['entry_time']` 是 ISO 字符串（持久化格式），而 `executor.position_tracking` 约定为 aware datetime
+  - 链路：`strategy.py::rebuild_from_exchange` → `_merge_rebuilt_positions` → `self.positions = rebuilt` → `_sync_baseline_to_tracking`（原样写入字符串）→ executor 两个止损方法做减法时 TypeError。**该链路仅在重启后执行**，9-20 部署重启后触发
+  - `shared/utils.py`：新增 `to_aware_utc(value, default=None)`，作为时间规范化的唯一实现（ISO 字符串 / naive datetime / aware datetime → aware UTC）
+  - `strategies/new_coin/strategy.py`：`_sync_baseline_to_tracking` 写入 `position_tracking` 前转换类型（失败时以 `datetime.now(timezone.utc)` 兜底）
+  - `strategies/new_coin/executor.py`：新增 `_normalize_entry_time(symbol, entry_time, check_name)` 公共方法，两个止损检查入口统一规范化；无法解析时告警并跳过检查，避免静默失效
+- **规范重构**：初版在两处各写了约 10 行相同的"规范化→判空→告警→return"守卫块，违反项目"禁止重复代码"规则（连续 5 行以上相同逻辑即违规），已提取为公共方法 `_normalize_entry_time`
+
+### 验证结果（五层验证）
+| 层级 | 内容 | 结果 |
+|------|------|------|
+| 1 容器状态 | 6 个受影响容器 Up (healthy)，kline-monitor 亦正常 | ✅ |
+| 2 镜像ID | 均以 `--no-cache` 重建并 Recreate | ✅ |
+| 3 上传完整性 | 本地 = 服务器宿主机 MD5 一致 | ✅ |
+| 4 文件MD5 | 6 个容器内 `shared/utils.py` 全部一致；new_coin/hrs/ai-tuner 三文件全部一致 | ✅ |
+| 5 日志错误 | 部署后各容器 `error=0`、`unsupported_operand=0` | ✅ |
+
+### MD5（本地=服务器=容器内）
+| 文件 | MD5 |
+|------|-----|
+| shared/utils.py | ab9b079637df8392ddb21dfa2598eea2 |
+| strategies/new_coin/strategy.py | e964fe2109f0af8d7507ed54fa6927bc |
+| strategies/new_coin/executor.py | ce72e54adde01b1d767f6a034b32c3d3 |
+
+### 测试
+- ✅ 本地 22 项独立验证全部 PASS（含 AST 抽取真实函数体执行）
+- ✅ 容器内运行时验证：直接执行容器内 `to_aware_utc` 与方法体 —— ISO 字符串/naive/aware 均返回 aware UTC 且相减成功；None/非法字符串返回 None 并告警
+- ✅ 容器内端到端验证：以字符串 `entry_time` 调用真实的 `_check_emergency_stop`、`_check_time_stop`，`logger.error` 调用数 = 0（修复前会在此抛 TypeError）
+- ✅ 启动路径验证：容器重启后 `_sync_baseline_to_tracking` 正常执行（日志"持仓基线已同步到 position_tracking"），无错误
+- ⏳ 待确认：下一整点周期（02:02 UTC）APLDUSDT 不再出现 `unsupported operand`（修复前每小时 2 次）
+- ✅ 部署方式：`shared/` 变更 → 重建 btc-eth-strategy、btc-eth-aggressive-strategy、grid-strategy、new-coin-strategy、hrs-strategy、ai-tuner
+
+### 部署过程异常记录（重要）
+- 部署中途发现 **new_coin 容器被外部进程 SIGTERM→SIGKILL 终止且未重建**（`Exited (137)`；docker events 显示 `container kill signal=15` 后 `signal=9`）。根因是此前用 `StopCommand` 中断本地 SSH 命令后，服务器端 `docker-compose` 进程成为孤儿并继续执行到"停止旧容器"阶段后被终止，留下「容器已停但未重建」的中间状态
+- 处置：执行 `docker-compose up -d`（不带服务名）恢复全部服务，随后复验容器内 MD5 与运行时验证均通过
+- 教训：**中断 SSH 部署命令后，必须检查服务器端是否残留 compose 进程**（`pgrep -fa docker-compose`），并逐项确认所有容器处于 Up 状态（对应 deployment.md 问题 5/6/7）
+
+---
 ## 2026-09-20 追加部署（修复开仓失败原因被吞掉：真实原因透传）
 
 ### 变更内容
