@@ -44,7 +44,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # 全量历史：判定需要 before..sha 整段推送范围的 diff
+          fetch-depth: 0
 
       - name: 🔍 路径过滤
         id: filter
@@ -68,8 +69,9 @@ jobs:
 
   # ============================================
   # Job 1: 静态 10 个矩阵并行
-  # 每个 job 用 git diff HEAD~1 HEAD 判断：
-  #   shared/** 改了 → 构建
+  # 每个 job 用整段推送范围（github.event.before..sha）判断：
+  #   shared/** 或 VERSION / docker-compose.yml 改了 → 全部构建
+  #   变更全部落在 .github/** → 全部构建（无法判断历史构建状态，避免死循环）
   #   自己的目录改了 → 构建
   #   否则 → skip（秒级 exit 0）
   # ============================================
@@ -98,24 +100,49 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          # 全量历史：判定需要 before..sha 整段推送范围的 diff
+          fetch-depth: 0
 
       - name: ⏭️ 判断是否需要构建
         id: decide
         run: |
           echo "=== 构建判断: ${{ matrix.service.name }} ==="
 
-          # 获取所有变更文件
-          CHANGED_FILES=$(git diff HEAD~1 HEAD --name-only 2>/dev/null || echo "")
+          # 1) 取本次推送范围 before..HEAD
+          #    before 为全 0（首次推送/新建分支）时无从比对，回退到 HEAD~1
+          BASE="${{ github.event.before }}"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+          fi
 
-          # 1. shared/ 或核心文件变了 → 全部重建
+          # 2) 范围不可用（浅克隆/孤儿提交/before 提交本地不可达）→ fail-safe：宁可多建，不可静默不建
+          if [ -z "$BASE" ] || ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            echo "⚠️ 无法确定推送范围 → fail-safe 全量重建"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 3) 取整段推送范围的变更文件（而非仅最后一个提交）
+          CHANGED_FILES=$(git diff "$BASE" HEAD --name-only)
+          echo "推送范围: ${BASE}..HEAD"
+          echo "$CHANGED_FILES"
+
+          # 4) shared/ 或 docker-compose.yml / VERSION 变了 → 全部重建
           if echo "$CHANGED_FILES" | grep -qE '^(shared/|docker-compose\.yml$|VERSION$)'; then
             echo "✅ shared/ 或 docker-compose.yml / VERSION 有改动 → 全部重建"
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
-          # 2. 自己的目录变了 → 构建
+          # 5) 变更全部落在 .github/（工作流自身变更）→ 无法判断历史镜像是否已构建 → 全量重建
+          #    否则会形成死循环：CI 修复提交只改 deploy.yml → 10 个 job 全 skip → 修复代码永远不上线
+          if [ -n "$CHANGED_FILES" ] && [ -z "$(echo "$CHANGED_FILES" | grep -v '^\.github/')" ]; then
+            echo "✅ 仅 .github/ 有改动 → 无法判断历史构建状态 → 全量重建"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 6) 自己的目录变了 → 构建
           DIR="${{ matrix.service.dir }}"
           if echo "$CHANGED_FILES" | grep -q "^${DIR}/"; then
             echo "✅ $DIR 下有改动 → 需要构建"
@@ -123,14 +150,7 @@ jobs:
             exit 0
           fi
 
-          # 3. docker-compose.yml 改了（影响所有服务的 image tag 可能？）→ 安全起见全部重建
-          if echo "$CHANGED_FILES" | grep -q "^docker-compose\.yml$"; then
-            echo "✅ docker-compose.yml 有改动 → 全部重建"
-            echo "should_build=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          # 4. deploy.yml 改了（不影响镜像）→ skip
+          # 7) 其他改动（不影响本服务镜像）→ skip
           echo "⏭️ ${{ matrix.service.name }} 无改动 → 跳过构建"
           echo "should_build=false" >> "$GITHUB_OUTPUT"
 
