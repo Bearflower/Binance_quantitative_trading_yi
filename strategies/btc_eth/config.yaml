@@ -2,6 +2,9 @@ strategy:
   name: btc_eth_trend
   version: "2.6.0"  # v6.21 BNB参数放宽+差异化冷却+移除TRX
 
+  # 持仓归属隔离（方案C）：归属名写入 trading.trade_records 的策略字段，用于账户持仓归属判定
+  record_name: "MTPCS策略"
+
   # 交易对配置
   symbols:
     - BTCUSDT
@@ -668,6 +671,9 @@ trading:
   # 用途：DB 取不到当月月度分配额时，作为限额兜底（参考 2026-09 DB 月度分配额 208.44 上浮）
   # 月度额可用时优先生效，本值不参与 min 压制
   total_position_margin_limit: 210
+  # 最小可开仓保证金（USDT，保证金口径）：usable_balance 低于此值拒开。
+  # 替代原 position_sizing.min_margin_usdt=100 门槛，避免分配额较小的策略被误拦。
+  min_position_margin: 25
 
 # 资金限额配置（方案 D：运行时读 DB 为主来源，config 为兜底）
 # 说明：monthly_limit / allocated_ratio 由 AI 月度资金分配流程写入；
@@ -702,3 +708,9 @@ notification:
     - info
     - warning
     - error
+
+# 持仓归属隔离（方案C）· 对家策略名
+# 与激进版共享同一币安账户；持仓期互斥限定与列表内的对家策略互斥，防止同币双开互挂保护单
+ownership:
+  competing_record_names:
+    - "MTPCS激进策略"

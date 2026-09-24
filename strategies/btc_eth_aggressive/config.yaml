@@ -2,6 +2,9 @@ strategy:
   name: btc_eth_aggressive
   version: "2.6.0-aggressive-1"  # 激进版（复制自原版 v6.21 配置基线）
 
+  # 持仓归属隔离（方案C）：归属名写入 trading.trade_records 的策略字段，用于账户持仓归属判定
+  record_name: "MTPCS激进策略"
+
   # 交易对配置
   symbols:
     - BTCUSDT
@@ -22,11 +25,9 @@ strategy:
 
   # 调度配置
   # 激进版与原版错峰运行：原版在每小时5分分析发单，激进版在每小时10分分析发单，避免同一时间并发竞争K线资源
-  # 为避免与原版对同一币种重复发单，激进版会跳过本小时内原版已发单的币种（见 main.py 的 skip 逻辑）
+  # 同币互斥由 ownership 方案C（competing_record_names）+ 策略内归属判定处理，不再依赖时间窗口跳过
   schedule:
     cron: "10 * * * *"
-    # 原版策略名称（用于查询本小时原版已开仓币种，激进版跳过，避免重复开仓）
-    original_strategy_name: "MTPCS策略"
 
   # 评分系统配置（v6.19：保持 v6.18 权重 25/50/25）
   scoring:
@@ -672,13 +673,17 @@ position_sizing:
 # 交易配置
 trading:
   # 总持仓保证金静态兜底（USDT，保证金口径）
-  # 用途：DB 取不到当月月度分配额时，作为限额兜底；本策略与 btc_eth 共用同一份月度额，
-  #       故兜底值保持一致（参考 2026-09 DB 月度分配额 208.44 上浮）
+  # 用途：DB 取不到当月月度分配额时，作为限额兜底；激进版已独立参与月度资金分配
+  #       （strategy_id=btc_eth_aggressive），月度额独立计算，兜底值为参考上浮的静态值。
   # 月度额可用时优先生效，本值不参与 min 压制
   total_position_margin_limit: 210
+  # 最小可开仓保证金（USDT，保证金口径）：usable_balance 低于此值拒开。
+  # 替代原 position_sizing.min_margin_usdt=100 门槛，避免分配额较小的策略被误拦；
+  # 激进版分配额约 106U，usable_balance=分配额×0.9≈95U>25 可正常开仓。
+  min_position_margin: 25
 
 # 资金限额配置（方案 D：运行时读 DB 为主来源，config 为兜底）
-# 说明：本策略与 btc_eth 原版共用同一份月度分配（strategy_id=btc_eth）；
+# 说明：激进版独立参与月度资金分配（strategy_id=btc_eth_aggressive），不再与原版共用；
 #       db_cache_ttl_seconds / db_query_timeout_seconds 为 DB 读取的缓存与超时保护。
 capital_limits:
   db_cache_ttl_seconds: 300       # DB 分配额缓存有效期（秒），避免每笔开仓都查库
@@ -710,3 +715,9 @@ notification:
     - info
     - warning
     - error
+
+# 持仓归属隔离（方案C）· 对家策略名
+# 与原版共享同一币安账户；持仓期互斥限定与列表内的对家策略互斥，防止同币双开互挂保护单
+ownership:
+  competing_record_names:
+    - "MTPCS策略"

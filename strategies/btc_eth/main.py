@@ -21,6 +21,7 @@ from shared.config_loader import load_strategy_config
 from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared import condition_orders
 from strategies.btc_eth.strategy import BTCEthStrategy
+from shared.position_ownership import load_ownership_config, filter_owned_positions
 
 # 北京时区（从环境变量读取偏移量，默认 UTC+8）
 _timezone_offset_hours = int(os.getenv("TIMEZONE_OFFSET_HOURS", "8"))
@@ -84,10 +85,11 @@ async def initialize():
     )
     await db_manager.connect()
     
-    trade_logger = TradeLogger(db_manager, "MTPCS策略")
+    _own = load_ownership_config(config)
+    trade_logger = TradeLogger(db_manager, _own['my_record_name'])
     await trade_logger.ensure_table_exists()
     binance_client.set_trade_logger(trade_logger)
-    logger.info("交易记录器初始化完成", strategy="MTPCS策略")
+    logger.info("交易记录器初始化完成", strategy=_own['my_record_name'])
     
     kline_service = KLineService(
         service_url=os.getenv("KLINE_SERVICE_URL"),
@@ -133,6 +135,8 @@ async def run_strategy():
     global binance_client, kline_service, notification_client, strategy
     
     logger.info("MTPCS策略启动", timestamp=get_beijing_time().isoformat())
+    # 读取归属配置（方案C）：用于上报前过滤非本策略持仓，防看板归属失真
+    _owc = load_ownership_config(config)
     
     try:
         # 执行策略
@@ -167,6 +171,8 @@ async def run_strategy():
                         
                         # 执行交易信号
                         success = await strategy.execute_signal(result)
+                        # 记录成交结果，供汇总推送区分「已开仓」与「被拦截/失败」
+                        result['trade_success'] = success
                         
                         if success:
                             logger.info(
@@ -178,6 +184,10 @@ async def run_strategy():
                             # 开仓成功后立即保存 strategy_states（全部持仓）和持仓上报
                             # 必须保存全部持仓，避免覆盖原有持仓记录导致孤儿单清理任务误判
                             positions, margin_dict, qty_dict = strategy.build_positions_report()
+                            # 上报前按归属过滤：剔除被共享账户对家策略开出的持仓（方案C）
+                            margin_dict, qty_dict = await filter_owned_positions(
+                                strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
+                            )
                             if positions:
                                 await save_strategy_state(strategy.db_manager, "btc_eth", positions)
                                 # 同步当前持仓到看板聚合表（口径由策略侧计算，工具内部容错）
@@ -236,10 +246,21 @@ async def run_strategy():
                     tp1_price = result.get('tp1_price', 0)
                     tp2_price = result.get('tp2_price', 0)
                     
-                    summary_message += f"{symbol}: 评分 {score} ({grade}级) - {direction} ✅\n"
-                    summary_message += f"  入场价: {float(entry_price):.4f}\n"
-                    summary_message += f"  止损: {float(stop_loss):.4f}\n"
-                    summary_message += f"  止盈: {float(tp1_price):.4f}\n"
+                    # 根据实际成交结果区分展示：✅已开仓 ⛔被拦截(原因) / 其他失败
+                    trade_success = result.get('trade_success', False)
+                    reject_reason = result.get('reject_reason', '')
+                    if trade_success:
+                        status_label = "✅已开仓"
+                    elif reject_reason:
+                        status_label = f"⛔被拦截({reject_reason})"
+                    else:
+                        status_label = "⏳未开仓"
+
+                    summary_message += f"{symbol}: 评分 {score} ({grade}级) - {direction} {status_label}\n"
+                    if trade_success:
+                        summary_message += f"  入场价: {float(entry_price):.4f}\n"
+                        summary_message += f"  止损: {float(stop_loss):.4f}\n"
+                        summary_message += f"  止盈: {float(tp1_price):.4f}\n"
                 else:
                     # 未生成信号的情况
                     if '数据不完整' in reason or '数据获取失败' in reason:
@@ -283,6 +304,10 @@ async def run_strategy():
 
             # 保存策略状态到 strategy_states（用于 orphan_cleanup 统一检测）并同步持仓上报
             positions, margin_dict, qty_dict = strategy.build_positions_report()
+            # 上报前按归属过滤：剔除被共享账户对家策略开出的持仓（方案C）
+            margin_dict, qty_dict = await filter_owned_positions(
+                strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
+            )
             await save_strategy_state(strategy.db_manager, "btc_eth", positions)
             await sync_open_positions(strategy.db_manager, "btc_eth", margin_dict, qty_dict)
 

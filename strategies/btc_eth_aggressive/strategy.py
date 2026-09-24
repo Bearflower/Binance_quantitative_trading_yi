@@ -25,6 +25,11 @@ from shared.dynamic_atr_filter import DynamicATRFilter
 from shared.condition_orders import record_condition_order, get_open_orders
 from shared.trade_logger import TradeLogger
 from shared.capital_manager import CapitalManager
+from shared.position_ownership import (
+    load_ownership_config,
+    resolve_position_owner,
+    is_symbol_owned_by_other,
+)
 from shared.position_baseline import (
     DEFAULT_CONTRACT_SIZE,
     calc_graded_positions_margin,
@@ -658,6 +663,11 @@ class BTCEthStrategy:
         else:
             self.circuit_breaker = None
 
+        # 持仓归属隔离（方案C）：本策略归属名 + 共享账户对家策略列表
+        _owc = load_ownership_config(config)
+        self.my_record_name = _owc['my_record_name']
+        self._competing_record_names = _owc['competing_record_names']
+
         logger.info(
             "BTC/ETH策略初始化",
             symbols=self.symbols,
@@ -941,12 +951,9 @@ class BTCEthStrategy:
                 analysis_result['reason'] = f"仓位计算失败: {fail_reason}"
                 return analysis_result
             
-            # 10.0 应用市场状态仓位乘数（v6.17）
-            position_ratio_mult = Decimal(str(market_behavior.get('position_ratio_mult', 1.0)))
-            if position_ratio_mult != Decimal('1'):
-                position_size_usdt = position_size_usdt * position_ratio_mult
-                logger.info(f"{symbol} 市场状态仓位调整: ×{float(position_ratio_mult)}")
-            
+            # 10.0 用户决定：去掉市场状态仓位乘数（position_ratio_mult）对仓位大小的放大，
+            # 仓位大小仅由「分配额 × 等级比例」决定（见 _calculate_position_size）。
+
             # 10.1 获取交易对精度信息
             precision_info = await self._get_symbol_precision(symbol)
             step_size = precision_info.get('stepSize', '0.001')
@@ -2114,15 +2121,23 @@ class BTCEthStrategy:
             (仓位大小 USDT 或 None, 失败原因或空字符串)
         """
         try:
-            # 获取账户余额
-            account_info = await self.binance.get_account_info()
-            available_balance = Decimal(str(account_info['availableBalance']))
+            # 用户决定：开仓基数由「账户可用资金」
+            # 改为「策略当月分配额 × 该信号等级百分比」。
+            # 分配额通过 capital_mgr.get_effective_margin_limit()
+            # 动态读取（DB 为主来源，config 兜底）。
+            allocated_limit, _limit_src = await self.capital_mgr.get_effective_margin_limit()
+            if allocated_limit is None:
+                # 分配额取不到（fail-open / 三级均不可用）时，
+                # 回退使用 config 的 trading.total_position_margin_limit（静态兜底）作为基数
+                allocated_limit = Decimal(str(
+                    self.config['trading']['total_position_margin_limit']
+                ))
+            else:
+                allocated_limit = Decimal(str(allocated_limit))
             
             # 获取配置
             position_sizing_config = self.risk_config['position_sizing']
             safety_margin_ratio = Decimal(str(position_sizing_config['safety_margin_ratio']))
-            min_margin = Decimal(str(position_sizing_config['min_margin_usdt']))
-            max_position = Decimal(str(position_sizing_config['max_single_position_usdt']))
             
             # 同时持仓检查（v6.16.10）
             pm_config = self.risk_config.get('position_management', {})
@@ -2135,13 +2150,15 @@ class BTCEthStrategy:
                 logger.warning(reason, active_positions=active_positions)
                 return None, reason
             
-            # 计算可用资金（扣除安全垫）
-            usable_balance = available_balance * (Decimal('1') - safety_margin_ratio)
-            
-            # 检查最小保证金
-            if usable_balance < min_margin:
+            # 计算可用基数（分配额扣除安全垫，转译为「分配额 × (1 - safety_margin_ratio)」）
+            usable_balance = allocated_limit * (Decimal('1') - safety_margin_ratio)
+
+            # 检查最小可开仓保证金（min_position_margin，替代原 min_margin_usdt=100 门槛，
+            # 避免分配额较小的策略被误拦；未配置则跳过门槛）
+            min_margin = self.capital_mgr.get_min_position_margin()
+            if min_margin is not None and usable_balance < Decimal(str(min_margin)):
                 reason = f"可用资金不足({float(usable_balance):.2f}U < {float(min_margin)}U)"
-                logger.warning(reason, available_balance=available_balance)
+                logger.warning(reason, usable_balance=float(usable_balance))
                 return None, reason
             
             # 获取币种差异化仓位比例（v6.16.10）
@@ -2157,11 +2174,9 @@ class BTCEthStrategy:
             else:
                 position_ratio = Decimal(str(self.binance_config['position_ratio'][grade]))
             
-            # 计算仓位大小
+            # 计算仓位大小（用户决定放开 max 钳制，改为「分配额 × 等级比例」，
+            # 仅按等级基数计算，不再被 max_single_position_usdt 压缩）
             position_size = usable_balance * position_ratio
-            
-            # 限制最大仓位
-            position_size = min(position_size, max_position)
             
             # 波动率目标仓位调整（v6.16.10）
             # 单笔风险 = 10U × (历史中位ATR% / 当前ATR%)，限制 [5U, 15U]
@@ -2195,7 +2210,7 @@ class BTCEthStrategy:
             
             logger.info(
                 "仓位计算完成",
-                available_balance=float(available_balance),
+                allocated_limit=float(allocated_limit),
                 usable_balance=float(usable_balance),
                 position_ratio=float(position_ratio),
                 position_size=float(position_size)
@@ -2619,6 +2634,27 @@ class BTCEthStrategy:
                 score=signal['score']
             )
 
+            # 开仓互斥（方案C）：同名币已由对家策略持有未平开仓单则跳过，防互留保护单
+            if await is_symbol_owned_by_other(
+                self.db_manager,
+                symbol,
+                self.my_record_name,
+                self._competing_record_names,
+            ):
+                logger.info(
+                    f"{symbol} 已被其他策略持有未平开仓单，跳过开仓（归属互斥）",
+                    competing=self._competing_record_names,
+                )
+                try:
+                    await self.notification.send(
+                        message=f"{symbol} 开仓被归属互斥拦截（其他策略已持有该币开仓单），跳过",
+                        level="warning",
+                        project="btc_eth_aggressive",
+                    )
+                except Exception as _e:
+                    logger.warning("发送归属互斥告警失败", error=str(_e))
+                return False
+
             # 记录交易（频率控制）
             await self.frequency_controller.record_trade(symbol, signal['timestamp'])
 
@@ -2770,6 +2806,8 @@ class BTCEthStrategy:
         #    口径统一为保证金（R3）：允许开仓 ⟺ 当前占用 + 新开仓保证金 ≤ 生效限额
         #    判定逻辑由 shared.position_baseline.check_entry_within_limit 唯一实现（两策略共用）
         if not await check_entry_within_limit(self, symbol, signal, _MIN_LEVERAGE):
+            # 被可用资金分配额拦截：回写拦截原因供 main.py 飞书推送区分展示
+            signal['reject_reason'] = "可用资金分配额超限拦截"
             return False
 
         # 2.1 总持仓保证金不超过账户权益比例阈值（动态读取配置）
@@ -2780,6 +2818,8 @@ class BTCEthStrategy:
                 grade=signal.get('grade'),
                 direction=signal.get('direction'),
             )
+            # 被保证金比例拦截：回写拦截原因供 main.py 飞书推送区分展示
+            signal['reject_reason'] = "总持仓保证金比例超限拦截"
             return False
         return True
 
@@ -5379,7 +5419,27 @@ class BTCEthStrategy:
                 return
             
             # 4. 按 symbol 分组，尝试批量取消（v6.23.1：失败时降级兜底）
+            #    归属守卫（方案C）：跳过归属其他策略的 symbol，不清理他人仓
             orphan_symbols = set(o['symbol'] for o in orphan_orders)
+            _my_name = getattr(self, 'my_record_name', None)
+            _guard_kept = set()
+            for _symbol in orphan_symbols:
+                try:
+                    _owner = await resolve_position_owner(self.db_manager, _symbol)
+                except Exception as _e:
+                    _owner = None
+                if _owner is not None and _owner != _my_name:
+                    logger.warning(
+                        "孤儿条件单归属其他策略，跳过清理",
+                        symbol=_symbol,
+                        owner=_owner,
+                    )
+                    continue
+                _guard_kept.add(_symbol)
+            orphan_symbols = _guard_kept
+            if not orphan_symbols:
+                logger.info("孤儿条件单清理：全部被归属守卫过滤，跳过")
+                return
             cancel_success = 0
             cancel_fail = 0
             
@@ -5531,6 +5591,25 @@ class BTCEthStrategy:
             symbol, existing_pos, existing_open_orders)
         if has_stop and has_tp1 and has_tp2:
             self._log_full_protection_present(symbol, existing_pos, existing_open_orders)
+            return
+
+        # 持仓归属校验（方案C）：不为对家策略开的仓位补挂保护单
+        owner = await resolve_position_owner(self.db_manager, symbol)
+        if owner is None or owner != self.my_record_name:
+            reason = "无法判定归属" if owner is None else f"归属{owner}"
+            logger.warning(
+                f"{symbol} 归属校验拒绝补挂保护单",
+                owner=owner,
+                my_record_name=self.my_record_name,
+            )
+            try:
+                await self.notification.send(
+                    message=f"{symbol} 持仓归属校验失败（{reason}），跳过补挂保护单",
+                    level="warning",
+                    project="btc_eth_aggressive",
+                )
+            except Exception as _e:
+                logger.warning("发送归属告警失败", error=str(_e))
             return
 
         # 计算 ATR / 精度 / 保护价格

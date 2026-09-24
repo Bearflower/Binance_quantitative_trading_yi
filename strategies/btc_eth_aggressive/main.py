@@ -21,6 +21,7 @@ from shared.config_loader import load_strategy_config
 from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared import condition_orders
 from strategies.btc_eth_aggressive.strategy import BTCEthStrategy
+from shared.position_ownership import load_ownership_config, filter_owned_positions
 
 # 北京时区（从环境变量读取偏移量，默认 UTC+8）
 _timezone_offset_hours = int(os.getenv("TIMEZONE_OFFSET_HOURS", "8"))
@@ -30,54 +31,6 @@ BEIJING_TZ = timezone(timedelta(hours=_timezone_offset_hours))
 def get_beijing_time() -> datetime:
     """获取当前北京时间"""
     return datetime.now(BEIJING_TZ)
-
-
-async def _get_original_entry_symbols_since_hour(db_manager, original_strategy_name: str) -> set:
-    """
-    查询原版策略在本小时内已开仓币种集合，用于激进版跳过，避免重复开仓。
-
-    口径：原版当小时内存在开仓单（trade_records 中 strategy 为原版策略名、
-    order_type='LIMIT'、side 为入场方向的记录，且 realized_pnl 为空）即视为该币种
-    已由原版开仓。平仓单会由 trade_logger.update_realized_pnl 回填 realized_pnl，
-    故 realized_pnl IS NULL 能排除平仓单、锁定尚未平仓的开仓单（原版仍持有该币种）。
-    executed_at 为无时区北京时间，故用当前北京时间的整点起点作为查询下界。
-
-    Args:
-        db_manager: DatabaseManager 实例，用于查询共享的 trading.trade_records 表
-        original_strategy_name: 原版策略名称（如 "MTPCS策略"），从配置读取，不硬编码
-
-    Returns:
-        已开仓且未平仓的币种 symbol 集合（如 {'BTCUSDT', 'ETHUSDT'}），
-        查询失败时返回空集合并记录告警
-    """
-    try:
-        now = get_beijing_time()
-        # executed_at 存储为无时区北京时间（见 trade_logger），参数需显式构造为无时区整点
-        # 不能用 now.replace(tzinfo=None)，asyncpg 编码 aware datetime 时会触发
-        # "can't subtract offset-naive and offset-aware datetimes" 内部错误
-        hour_start = datetime(now.year, now.month, now.day, now.hour, 0, 0, tzinfo=None)
-        rows = await db_manager.fetch_all(
-            """SELECT DISTINCT symbol
-               FROM trading.trade_records
-               WHERE strategy = $1
-                 AND order_type = 'LIMIT'
-                 AND side IN ('BUY', 'SELL')
-                 AND realized_pnl IS NULL
-                 AND executed_at >= $2""",
-            original_strategy_name, hour_start
-        )
-        symbols = {row['symbol'] for row in rows}
-        if symbols:
-            logger.info(
-                "本小时内原版已开仓币种，激进版将跳过",
-                symbols=sorted(symbols),
-                strategy=original_strategy_name
-            )
-        return symbols
-    except Exception as e:
-        logger.error("查询原版本小时开仓币种失败，激进版将不做跳过（全部币种正常分析）",
-                     error=str(e), exc_info=True)
-        return set()
 
 
 logger = structlog.get_logger()
@@ -96,7 +49,7 @@ async def initialize():
     """
     global config, binance_client, kline_service, notification_client, strategy
     
-    logger.info("初始化MTPCS策略（主流币种趋势回调确认策略）...")
+    logger.info("初始化MTPCS激进版策略（主流币种趋势回调确认策略）...")
     
     # 加载配置（合并基础配置 + AI 调优覆盖层）
     config = load_strategy_config(os.path.dirname(__file__))
@@ -132,10 +85,11 @@ async def initialize():
     )
     await db_manager.connect()
     
-    trade_logger = TradeLogger(db_manager, "MTPCS激进策略")
+    _own = load_ownership_config(config)
+    trade_logger = TradeLogger(db_manager, _own['my_record_name'])
     await trade_logger.ensure_table_exists()
     binance_client.set_trade_logger(trade_logger)
-    logger.info("交易记录器初始化完成", strategy="MTPCS激进策略")
+    logger.info("交易记录器初始化完成", strategy=_own['my_record_name'])
     
     kline_service = KLineService(
         service_url=os.getenv("KLINE_SERVICE_URL"),
@@ -180,7 +134,9 @@ async def run_strategy():
     """
     global binance_client, kline_service, notification_client, strategy
     
-    logger.info("MTPCS策略启动", timestamp=get_beijing_time().isoformat())
+    logger.info("MTPCS激进版策略启动", timestamp=get_beijing_time().isoformat())
+    # 读取归属配置（方案C）：用于上报前过滤非本策略持仓，防看板归属失真
+    _owc = load_ownership_config(config)
     
     try:
         # 执行策略
@@ -200,25 +156,8 @@ async def run_strategy():
 
             signals = []
             analysis_results = []  # 保存所有币种的分析结果
-
-            # 3. 本小时内原版已开仓的币种，激进版跳过，避免重复开仓（原版在5分先发单）
-            original_strategy_name = config['strategy']['schedule'].get(
-                'original_strategy_name', "MTPCS策略"
-            )
-            original_entry_symbols = await _get_original_entry_symbols_since_hour(
-                strategy.db_manager, original_strategy_name
-            )
-            analyze_symbols = [
-                s for s in strategy.symbols if s not in original_entry_symbols
-            ]
-            if original_entry_symbols:
-                logger.info(
-                    "激进版本轮跳过原版已开仓币种",
-                    skipped=sorted(original_entry_symbols),
-                    remaining_symbols=analyze_symbols
-                )
-
-            for symbol in analyze_symbols:
+            
+            for symbol in strategy.symbols:
                 try:
                     # 分析市场
                     result = await strategy.analyze(symbol)
@@ -232,6 +171,8 @@ async def run_strategy():
                         
                         # 执行交易信号
                         success = await strategy.execute_signal(result)
+                        # 记录成交结果，供汇总推送区分「已开仓」与「被拦截/失败」
+                        result['trade_success'] = success
                         
                         if success:
                             logger.info(
@@ -240,9 +181,13 @@ async def run_strategy():
                                 grade=result['grade'],
                                 score=result['score']
                             )
-                            # 开仓成功后立即保存 strategy_states（全部持仓）并同步持仓上报
+                            # 开仓成功后立即保存 strategy_states（全部持仓）和持仓上报
                             # 必须保存全部持仓，避免覆盖原有持仓记录导致孤儿单清理任务误判
                             positions, margin_dict, qty_dict = strategy.build_positions_report()
+                            # 上报前按归属过滤：剔除被共享账户对家策略开出的持仓（方案C）
+                            margin_dict, qty_dict = await filter_owned_positions(
+                                strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
+                            )
                             if positions:
                                 await save_strategy_state(strategy.db_manager, "btc_eth_aggressive", positions)
                                 # 同步当前持仓到看板聚合表（口径由策略侧计算，工具内部容错）
@@ -276,14 +221,13 @@ async def run_strategy():
             # 汇总结果
             logger.info(
                 "策略执行完成",
-                total_symbols=len(analyze_symbols),
-                skipped_symbols=len(strategy.symbols) - len(analyze_symbols),
+                total_symbols=len(strategy.symbols),
                 signals_generated=len(signals),
                 timestamp=get_beijing_time().isoformat()
             )
             
             # 生成详细的分析结果通知
-            summary_message = f"【MTPCS策略】{get_beijing_time().strftime('%H:%M')} 分析完成\n"
+            summary_message = f"【MTPCS激进版策略】{get_beijing_time().strftime('%H:%M')} 分析完成\n"
             summary_message += "\n📊 币种分析报告：\n"
             summary_message += "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             
@@ -302,10 +246,21 @@ async def run_strategy():
                     tp1_price = result.get('tp1_price', 0)
                     tp2_price = result.get('tp2_price', 0)
                     
-                    summary_message += f"{symbol}: 评分 {score} ({grade}级) - {direction} ✅\n"
-                    summary_message += f"  入场价: {float(entry_price):.4f}\n"
-                    summary_message += f"  止损: {float(stop_loss):.4f}\n"
-                    summary_message += f"  止盈: {float(tp1_price):.4f}\n"
+                    # 根据实际成交结果区分展示：✅已开仓 ⛔被拦截(原因) / 其他失败
+                    trade_success = result.get('trade_success', False)
+                    reject_reason = result.get('reject_reason', '')
+                    if trade_success:
+                        status_label = "✅已开仓"
+                    elif reject_reason:
+                        status_label = f"⛔被拦截({reject_reason})"
+                    else:
+                        status_label = "⏳未开仓"
+
+                    summary_message += f"{symbol}: 评分 {score} ({grade}级) - {direction} {status_label}\n"
+                    if trade_success:
+                        summary_message += f"  入场价: {float(entry_price):.4f}\n"
+                        summary_message += f"  止损: {float(stop_loss):.4f}\n"
+                        summary_message += f"  止盈: {float(tp1_price):.4f}\n"
                 else:
                     # 未生成信号的情况
                     if '数据不完整' in reason or '数据获取失败' in reason:
@@ -347,27 +302,14 @@ async def run_strategy():
                     else:
                         logger.error("通知发送失败", error=str(e))
 
-            # 保存策略状态到 strategy_states（用于 orphan_cleanup 统一检测）
-            positions = {}
-            for symbol, pos in strategy.positions.items():
-                positions[symbol] = {
-                    "direction": pos.direction,
-                    "entry_price": float(pos.entry_price) if pos.entry_price else None,
-                    "quantity": float(pos.initial_quantity) if pos.initial_quantity else 0,
-                    "current_quantity": float(pos.current_quantity) if pos.current_quantity else 0,
-                    "entry_time": str(pos.entry_time) if pos.entry_time else "",
-                    "entry_order_id": pos.entry_order_id,
-                    "stop_loss_order_id": pos.stop_loss_order_id,
-                    "tp1_order_id": pos.tp1_order_id,
-                    "tp2_order_id": pos.tp2_order_id,
-                }
-            await save_strategy_state(strategy.db_manager, "btc_eth_aggressive", positions)
-
-            # 周期末兜底：对齐持仓上报表（先删后插，清理平仓后残留的虚持仓，与原版同口径）
-            _, margin_dict, qty_dict = strategy.build_positions_report()
-            await sync_open_positions(
-                strategy.db_manager, "btc_eth_aggressive", margin_dict, qty_dict
+            # 保存策略状态到 strategy_states（用于 orphan_cleanup 统一检测）并同步持仓上报
+            positions, margin_dict, qty_dict = strategy.build_positions_report()
+            # 上报前按归属过滤：剔除被共享账户对家策略开出的持仓（方案C）
+            margin_dict, qty_dict = await filter_owned_positions(
+                strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
             )
+            await save_strategy_state(strategy.db_manager, "btc_eth_aggressive", positions)
+            await sync_open_positions(strategy.db_manager, "btc_eth_aggressive", margin_dict, qty_dict)
 
     except Exception as e:
         logger.error(
@@ -380,7 +322,7 @@ async def run_strategy():
         try:
             if notification_client:
                 await notification_client.send_alert(
-                    title="MTPCS策略执行失败",
+                    title="MTPCS激进版策略执行失败",
                     message=f"错误信息: {str(e)}",
                     level="error"
                 )
@@ -391,7 +333,7 @@ async def run_strategy():
             )
     
     finally:
-        logger.info("MTPCS策略本次执行结束", timestamp=get_beijing_time().isoformat())
+        logger.info("MTPCS激进版策略本次执行结束", timestamp=get_beijing_time().isoformat())
 
 
 async def send_daily_report():
@@ -400,7 +342,7 @@ async def send_daily_report():
     """
     global binance_client, notification_client, strategy
     
-    logger.info("开始发送MTPCS策略日报")
+    logger.info("开始发送MTPCS激进版策略日报")
     
     try:
         async with binance_client, notification_client:
@@ -412,7 +354,7 @@ async def send_daily_report():
             
             # 构建日报内容
             report_message = f"""
-【MTPCS策略日报】
+【MTPCS激进版策略日报】
 日期: {yesterday.strftime('%Y-%m-%d')}
 
 📊 交易统计:
@@ -442,7 +384,7 @@ async def send_daily_report():
                 project="btc_eth_aggressive"
             )
             
-            logger.info("MTPCS策略日报发送成功")
+            logger.info("MTPCS激进版策略日报发送成功")
     
     except Exception as e:
         logger.error(
@@ -455,7 +397,7 @@ async def send_daily_report():
         try:
             if notification_client:
                 await notification_client.send_alert(
-                    title="MTPCS策略日报发送失败",
+                    title="MTPCS激进版策略日报发送失败",
                     message=f"错误信息: {str(e)}",
                     level="error"
                 )
@@ -489,7 +431,7 @@ async def main():
             run_strategy,
             trigger=CronTrigger.from_crontab(cron_expr),
             id='btc_eth_aggressive_strategy',
-            name='MTPCS激进策略定时执行（主流币种趋势回调确认）',
+            name='MTPCS激进版策略定时执行（主流币种趋势回调确认）',
             replace_existing=True
         )
         

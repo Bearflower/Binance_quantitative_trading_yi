@@ -279,6 +279,39 @@ class DatabaseManager:
 
             return result
 
+    async def fetch_one_advisory_lock(
+        self,
+        lock_key: int,
+        query: str,
+        *args,
+        **kwargs
+    ) -> Optional[Dict[str, Any]]:
+        """
+        在 advisory lock 事务保护下执行单条查询
+
+        用于需要"查+判"串行化的场景（如持仓归属互斥判定）：
+        先取该业务 key 的 PostgreSQL advisory lock（pg_advisory_xact_lock），
+        再在同一事务内执行查询，保证同 lock_key 的并发读-判被锁串行化，
+        避免竞态窗口。
+
+        Args:
+            lock_key: advisory lock 键（int），调用方以 zlib.crc32 对业务 key 取 32 位
+            query: SELECT 查询
+            *args: 查询参数
+
+        Returns:
+            查询结果字典；无记录返回 None
+        """
+        if not self.pool:
+            await self.connect()
+
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", lock_key)
+                row = await conn.fetchrow(query, *args, **kwargs)
+
+        return dict(row) if row else None
+
     async def execute_transaction(
         self,
         queries: List[tuple]
