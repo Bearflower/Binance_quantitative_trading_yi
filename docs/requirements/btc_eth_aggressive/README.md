@@ -1,6 +1,6 @@
 # MTPCS 激进版（BTC/ETH/BNB 激进策略）
 
-> MTPCS（主流币种趋势回调确认策略）激进参数版：**交易代码与原版一致，仅调整策略参数为更激进的取值**，独立部署、独立数据库 schema，并与原版共用 ai-tuner 月度资金分配结果。
+> MTPCS（主流币种趋势回调确认策略）激进参数版：**交易代码与原版一致，仅调整策略参数为更激进的取值**，独立部署、独立数据库 schema，并**独立参与** ai-tuner 月度资金分配。
 
 **当前版本**: v2.6.0-aggressive-1（复制自原版 v6.21 配置基线，参数激进化）
 
@@ -31,9 +31,10 @@
 | 维度 | 激进版实现 |
 |------|-----------|
 | **订单隔离** | 独立 schema `btc_eth_aggressive`；统一交易记录写入共享表 `trading.trade_records`，以 `strategy` 字段="MTPCS激进策略"区分，**绝不改写原版订单** |
-| **资金共享** | 激进版**不单独参与**月度资金分配，共用原版(MTPCS)的分配结果——`ai_tuner/allocation/config_updater.py` 的 `_SHARED_FUND_MIRROR` 将原版分配结果镜像写入激进版 config |
+| **持仓归属隔离** | **双策略共享同一币安账户**：补保护单/开仓/对账按**开仓订单归属**（`trade_records` 中未平开仓单最新者）判定，非按币种。边界A（latest 归属）+ 边界B（持仓期互斥，他策略已持有该币未平开仓单→跳过开仓）。收敛于 `shared/position_ownership.py` |
+| **资金分配** | 激进版**独立参与**月度资金分配（`capital_allocation.participating_strategies` 含 `btc_eth_aggressive`），按自身月度表现独立排名、独立获得分配额度；已移除 `_SHARED_FUND_MIRROR` 资金镜像 |
 | **配置独立** | 独立 `strategies/btc_eth_aggressive/config.yaml` + 独立 `tuning_overrides/` 覆盖层（`.active` 指针管理版本） |
-| **AI 调优独立** | 独立 adapter `MTPCSAggressiveAdapter` 独立采集激进版周度表现数据；激进版不进去月度资金分配池 |
+| **AI 调优独立** | 独立 adapter `MTPCSAggressiveAdapter` 独立采集激进版周度表现数据；激进版独立进入月度资金分配池 |
 | **部署独立** | docker-compose 独立 service `btc-eth-aggressive-strategy`，容器 `trading_system-btc_eth_aggressive` |
 
 ## 🚀 快速部署
@@ -78,15 +79,14 @@ strategies/btc_eth_aggressive/
 
 相关集成点：
 - `ai_tuner/adapters/mtpcs_aggressive_adapter.py` — 激进版数据适配器
-- `ai_tuner/config.yaml` — 注册激进版策略条目（strategy_id=btc_eth_aggressive）
-- `ai_tuner/allocation/config_updater.py` — `_SHARED_FUND_MIRROR` 资金镜像
+- `ai_tuner/config.yaml` — 注册激进版策略条目（strategy_id=btc_eth_aggressive）+ 月度资金分配 `participating_strategies` 含激进版
 - `database/postgres/init-scripts/` — `btc_eth_aggressive` schema 与表
 - `docker-compose.yml` — `btc-eth-aggressive-strategy` service
 
 ## ⚠️ 风险提示
 
 1. 激进版参数放宽了入场门槛与风控尺度，**单笔与整体风险敞口高于原版**
-2. 激进版与原版共用同一个账户的资金与月度分配，**激进版产生的盈亏会计入共享账户**，但资金分配仍按原版表现决定
+2. 激进版与原版共用同一个币安账户的资金，但**月度资金分配独立计算**：激进版按自身月度表现（已实现 PnL）独立排名、独立获得分配额度，分配结果不再由原版镜像决定
 3. 建议激进版先以较低的资金优先级运行，观察一段周期后再评估是否加大投入
 4. 共享资金：原版24h内3连亏或2%亏损触发自动回滚时，应同步关注激进版是否受影响
 5. **分批止盈调整（2026-09-16）**：激进版与原版 v6.30 一致，分批止盈调整为 TP1 止盈 30% + TP2 止盈 40% + 剩余 30% 尾仓交移动止损，硬止损全仓单保留；对 S/A/B/C 四个信号等级统一生效
