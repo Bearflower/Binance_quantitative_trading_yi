@@ -13,6 +13,8 @@ market_cap:
   retry_interval: 1.0         # 每次重试前休眠间隔（秒）
   cache_ttl_seconds: 3600     # 市值缓存存活时间（秒）
   coin_list_cool_down_seconds: 60.0   # 币种列表加载失败后的冷却时长（秒）
+  request_interval: 2.0       # 连续请求最小间隔（秒），asyncio.Lock 保证原子性
+  rate_limit_cooldown_seconds: 60.0   # 触发 429 后的全局冷却期（秒），冷却期内跳过所有 CoinGecko 请求
 
 # 评分系统配置
 scoring:

@@ -53,6 +53,7 @@ class MarketDataProvider:
             cache_ttl_seconds=market_cap_config.get("cache_ttl_seconds", 3600),
             coin_list_cool_down_seconds=market_cap_config.get("coin_list_cool_down_seconds", 60.0),
             request_interval=market_cap_config.get("request_interval", 2.0),
+            rate_limit_cooldown_seconds=market_cap_config.get("rate_limit_cooldown_seconds", 60.0),
         )
 
         # 从配置读取API限制
@@ -203,6 +204,21 @@ class MarketDataProvider:
             oi_usd=oi_usd,
             volume_24h_usd=volume_24h_usd
         )
+
+    async def preload_market_caps(self, symbols: List[str]) -> None:
+        """
+        批量预加载市值缓存（推荐在候选池扫描开始时调用一次）
+
+        使用 CoinGecko /coins/markets 接口，将 N 个币种市值压缩为 1-2 次批量请求，
+        结果写入 market_cap_service 的缓存，后续 get_market_cap_with_fallback()
+        调用将全部命中缓存，不再发起 CoinGecko API 请求。
+
+        Args:
+            symbols: 需要预加载市值的交易对列表
+        """
+        if not symbols:
+            return
+        await self.market_cap_service.get_batch_market_caps(symbols)
 
     def _get_4h_slot(self, timestamp_ms: int) -> int:
         """

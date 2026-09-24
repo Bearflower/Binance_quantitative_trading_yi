@@ -608,6 +608,10 @@ class CandidatePool:
                 symbol_ticker_map[symbol] = ticker
                 liquid_symbols.append(symbol)
 
+            # 批量预加载市值缓存（用 CoinGecko /coins/markets 一次获取所有币种，
+            # 避免后续 _compute_dynamic_thresholds / _count_*_conditions 重复打 API）
+            await self.market_data.preload_market_caps(liquid_symbols)
+
             # V2.3 计算动态阈值（基于所有流动性币种）
             if self.dynamic_enabled:
                 self._dynamic_thresholds = await self._compute_dynamic_thresholds(symbol_ticker_map)
