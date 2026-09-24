@@ -350,6 +350,12 @@ services:
       - BINANCE_TESTNET=false
       - USE_UNIFIED_ACCOUNT=true
       - APP_ROOT=/app
+      # 数据库连接配置（与 dashboard-api 对齐，值从服务器 .env 的 DB_* 插值）
+      - DATABASE_HOST=${DB_HOST:-postgres}
+      - DATABASE_PORT=${DB_PORT:-5432}
+      - DATABASE_NAME=${DB_NAME:-trading_platform}
+      - DATABASE_USER=${DB_USER:-trading_user}
+      - DATABASE_PASSWORD=${DB_PASSWORD:-trading_password_2024}
     networks:
       - trading-network
     depends_on:
