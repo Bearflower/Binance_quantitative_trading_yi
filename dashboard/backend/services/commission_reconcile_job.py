@@ -39,12 +39,8 @@ async def run_reconcile(data_service) -> dict:
             data_service._binance_client,
             lookback_hours=lookback_hours,
         )
-        logger.info(
-            "佣金回填完成",
-            queried_orders=summary.get("queried_orders"),
-            matched_orders=summary.get("matched_orders"),
-            total_commission=str(summary.get("total_commission")),
-        )
+        # 注意：不在此处重复打印"佣金回填完成"——reconcile_commissions 内部已打汇总日志，
+        # 外层再打会造成同一条结果出现两条日志（首轮双跑排查时发现）。
         return summary
     except Exception as e:
         logger.error("佣金回填任务失败", error=str(e))
