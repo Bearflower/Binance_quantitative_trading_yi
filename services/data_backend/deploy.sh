@@ -161,6 +161,7 @@ docker run -d \
     --name $DATA_BACKEND_CONTAINER_NAME \
     --network trading-network-v2 \
     --env-file /root/data_backend/.env \
+    -e TZ=Asia/Shanghai \
     -e DATABASE_HOST=trading_system-postgres \
     -e DB_HOST=trading_system-postgres \
     --restart unless-stopped \

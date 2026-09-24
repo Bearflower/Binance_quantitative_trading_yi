@@ -7,6 +7,8 @@
 
 import asyncio
 import os
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -71,7 +73,7 @@ class TestAddIntervalJob:
         assert job.trigger.interval.total_seconds() == 60
 
     def test_interval_start_date_delayed(self, monkeypatch):
-        """首执行时间延迟至依赖就绪"""
+        """首次周期触发 = 启动延迟 + 一个周期（预热承担首次，避免首轮双跑）"""
         monkeypatch.setenv("STARTUP_READY_DELAY_SECONDS", "5")
         scheduler = build_scheduler()
         add_interval_job(
@@ -83,6 +85,9 @@ class TestAddIntervalJob:
         )
         job = scheduler.get_job("test_interval_delay")
         assert job.trigger.start_date is not None
+        # 首次触发应在 now + delay(5s) + interval(60s) = 65s 之后（±2s 容差，时区与调度器一致）
+        expected = datetime.now(ZoneInfo("Asia/Shanghai")) + timedelta(seconds=5 + 60)
+        assert abs((job.trigger.start_date - expected).total_seconds()) < 2
 
 
 class TestAddCronJob:
