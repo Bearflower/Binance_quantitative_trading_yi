@@ -39,17 +39,16 @@ class DataService:
     _STRATEGY_NAME_MAP = {v: k for k, v in _STRATEGY_KEY_MAP.items()}
 
     # 共用同一分配额度的策略组（value 为资金归属的策略 id）：
-    # MTPCS激进版占用的是 MTPCS 策略的分配金额，月度资金分配的占用比需合并计算。
-    _STRATEGY_ALLOCATION_GROUP = {
-        "btc_eth_aggressive": "btc_eth",
-    }
+    # 激进版(btc_eth_aggressive)已独立参与月度资金分配，不再与原版(btc_eth)合并占用比，
+    # 因此该映射为空（各策略按自身 id 独立统计占用比）。
+    _STRATEGY_ALLOCATION_GROUP = {}
 
     @classmethod
     def _allocation_group_ids(cls, strategy_id) -> list:
         """返回某策略及其共用同一分配额度的全部策略 id（含自身）
 
-        用于月度资金分配"家庭级"占用比合并：如 MTPCS(btc_eth) 与激进版
-        (btc_eth_aggressive) 共享 MTPCS 的分配金额，需将两者持仓保证金相加。
+        用于月度资金分配占用比统计。当前 _STRATEGY_ALLOCATION_GROUP 为空，
+        各策略独立参与分配，因此直接返回 [strategy_id]。
         """
         root = cls._STRATEGY_ALLOCATION_GROUP.get(strategy_id, strategy_id)
         return [root] + [k for k, v in cls._STRATEGY_ALLOCATION_GROUP.items() if v == root]
@@ -105,6 +104,9 @@ class DataService:
         self._binance_client = None
         self._trade_logger = None
         self._initialized = False
+        # 初始化互斥锁：预热与多个定时任务可能并发触发 _ensure_initialized，
+        # 无锁会导致重复创建 DatabaseManager/BinanceClient 与连接池泄漏。
+        self._init_lock = asyncio.Lock()
         self._income_cache = {}
         self._income_cache_ttl = int(os.getenv("INCOME_CACHE_TTL", "30"))  # income 缓存秒数
         self._income_cache_max = int(os.getenv("INCOME_CACHE_MAX", "20"))  # 缓存条目上限
@@ -120,28 +122,32 @@ class DataService:
     async def _ensure_initialized(self):
         if self._initialized:
             return
+        # 串行化初始化：多个定时任务并发触发时只允许一个协程执行建连，
+        # 其余协程在锁上等待后检查 _initialized 直接返回，避免重复建连/泄漏。
+        async with self._init_lock:
+            if self._initialized:
+                return
+            self._db_manager = DatabaseManager(
+                host=os.getenv("DATABASE_HOST", os.getenv("DB_HOST", "postgres")),
+                port=int(os.getenv("DATABASE_PORT", os.getenv("DB_PORT", "5432"))),
+                database=os.getenv("DATABASE_NAME", os.getenv("POSTGRES_DB", "trading_platform")),
+                user=os.getenv("DATABASE_USER", os.getenv("POSTGRES_USER", "trading_user")),
+                password=os.getenv("DATABASE_PASSWORD", os.getenv("DB_PASSWORD", "")),  # 通过 docker-compose 环境变量传入
+                min_pool_size=int(os.getenv("DB_MIN_POOL_SIZE", "1")),
+                max_pool_size=int(os.getenv("DB_MAX_POOL_SIZE", "5")),
+            )
+            await self._db_manager.connect()
 
-        self._db_manager = DatabaseManager(
-            host=os.getenv("DATABASE_HOST", os.getenv("DB_HOST", "postgres")),
-            port=int(os.getenv("DATABASE_PORT", os.getenv("DB_PORT", "5432"))),
-            database=os.getenv("DATABASE_NAME", os.getenv("POSTGRES_DB", "trading_platform")),
-            user=os.getenv("DATABASE_USER", os.getenv("POSTGRES_USER", "trading_user")),
-            password=os.getenv("DATABASE_PASSWORD", os.getenv("DB_PASSWORD", "")),  # 通过 docker-compose 环境变量传入
-            min_pool_size=int(os.getenv("DB_MIN_POOL_SIZE", "1")),
-            max_pool_size=int(os.getenv("DB_MAX_POOL_SIZE", "5")),
-        )
-        await self._db_manager.connect()
+            self._binance_client = BinanceClient(
+                api_key=os.getenv("BINANCE_API_KEY", ""),
+                api_secret=os.getenv("BINANCE_API_SECRET", ""),
+                testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
+                use_unified_account=os.getenv("USE_UNIFIED_ACCOUNT", "true").lower() == "true",
+            )
 
-        self._binance_client = BinanceClient(
-            api_key=os.getenv("BINANCE_API_KEY", ""),
-            api_secret=os.getenv("BINANCE_API_SECRET", ""),
-            testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
-            use_unified_account=os.getenv("USE_UNIFIED_ACCOUNT", "true").lower() == "true",
-        )
-
-        self._trade_logger = TradeLogger(self._db_manager, "Dashboard采集器")
-        self._initialized = True
-        logger.info("Dashboard数据服务初始化完成")
+            self._trade_logger = TradeLogger(self._db_manager, "Dashboard采集器")
+            self._initialized = True
+            logger.info("Dashboard数据服务初始化完成")
 
     def _get_date_range(self, report_type: str):
         """计算实时时间范围：日=今天，周=本周，月=本月（实时数据）"""
@@ -500,6 +506,8 @@ class DataService:
         # 读库快速路径（预计算落库，命中则直接返回；未命中/过期走实时兜底）
         metric = await self.get_overview_from_metric(report_type)
         if metric is not None:
+            # 快照字段固定、不含浮动盈亏，此处补上实时未实现盈亏（实时查交易所持仓）
+            metric["total_unrealized_pnl"] = f"{await self._query_unrealized_pnl():.4f}"
             return metric
 
         start_time, end_time = self._get_date_range(report_type)
@@ -552,11 +560,14 @@ class DataService:
         total_wins = total["wins"]
         total_closed = total["wins"] + total["losses"]
         win_rate = (total_wins / total_closed * 100) if total_closed > 0 else 0
+        # 实时浮动盈亏（未实现盈亏）：总盈亏 = net_pnl(已实现) + unrealized_pnl(未实现)
+        unrealized_pnl = await self._query_unrealized_pnl()
 
         return {
-            "total_pnl": f"{total['net_pnl']:.4f}",          # 总净盈亏（已扣佣金）
+            "total_pnl": f"{total['net_pnl']:.4f}",          # 总净盈亏（已扣佣金，已实现）
             "total_gross_pnl": f"{total['gross_pnl']:.4f}",   # 总毛利润
             "total_commission": f"{total['commission']:.4f}",  # 总佣金支出（负值）
+            "total_unrealized_pnl": f"{unrealized_pnl:.4f}",  # 浮动盈亏（未实现）
             "total_orders": total["order_count"],
             "total_closed": total_closed,
             "total_wins": total_wins,
@@ -565,6 +576,28 @@ class DataService:
             "report_type": report_type,
             "updated_at": datetime.now(BEIJING_TZ).isoformat(),
         }
+
+    async def _query_unrealized_pnl(self) -> float:
+        """实时查询所有持仓的未实现盈亏总量（浮动盈亏）。
+
+        币安 positionRisk 返回含 unrealizedProfit 字段（string），
+        汇总所有非零持仓；失败时降级为 0（不影响主统计输出）。
+        """
+        try:
+            positions = await self._binance_client.get_position()
+            total_unrealized = 0.0
+            for pos in positions:
+                try:
+                    # PM 账户 /papi/v1/um/positionRisk 返回 unRealizedProfit（大写 R），
+                    # 常规合约 /fapi/v2/positionRisk 返回 unrealizedProfit（小写 r），兼容两者
+                    raw = pos.get("unRealizedProfit", pos.get("unrealizedProfit", 0))
+                    total_unrealized += float(raw or 0)
+                except (TypeError, ValueError):
+                    continue
+            return round(total_unrealized, 4)
+        except Exception as e:
+            logger.warning("查询浮动盈亏失败，降级为 0", error=str(e)[:80])
+            return 0.0
 
     async def get_strategies(self, report_type: str = "daily"):
         overview = await self.get_overview(report_type)
@@ -1550,12 +1583,18 @@ class DataService:
         except Exception as e:
             logger.warning("读 strategy_open_positions 失败，跳过上报归属", error=str(e)[:80])
 
-        # 2) 每个币种最近下单标注的策略（归属兜底）
+        # 2) 每个币种最近一次"开仓方向"订单标注的策略（归属兜底）
+        # 仅统计 LIMIT/MARKET 开仓单，剔除 STOP/TAKE_PROFIT/STOP_MARKET/TAKE_PROFIT_MARKET/
+        # CONDITIONAL_ORDER/PNL_SUMMARY 等平仓/条件/总结记录；避免交易所触发的平仓条件单
+        # (比开仓时间更晚) 把该币种真实敞口抢占到错误策略名下，导致持仓归属颠倒。
+        # 例：激进版 08:10 SELL LIMIT 开 SOL 空仓后被归为'最近成交'，原版 09:01 的 BUY
+        # 条件单却成了'该币种最近一条记录'，从而误夺归属。
         last_trade_strategy = {}
         try:
             rows = await self._db_manager.fetch_all(
                 "SELECT DISTINCT ON (symbol) symbol, strategy "
                 "FROM trading.trade_records "
+                "WHERE order_type IN ('LIMIT', 'MARKET') "
                 "ORDER BY symbol, executed_at DESC"
             )
             for r in rows:

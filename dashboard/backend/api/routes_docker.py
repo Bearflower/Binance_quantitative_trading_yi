@@ -171,6 +171,7 @@ async def get_overview(
         "total_pnl": overview_data.get("total_pnl", 0),
         "total_gross_pnl": overview_data.get("total_gross_pnl", 0),
         "total_commission": overview_data.get("total_commission", 0),
+        "total_unrealized_pnl": overview_data.get("total_unrealized_pnl", "0.0000"),
         "total_orders": overview_data.get("total_orders", 0),
         "total_closed": overview_data.get("total_closed", 0),
         "total_wins": overview_data.get("total_wins", 0),

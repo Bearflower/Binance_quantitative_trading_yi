@@ -381,7 +381,7 @@ body::after {
 .stat-card.pnl         { --accent: var(--green);  --glow: rgba(14,174,124,0.08);  --icon-bg: var(--green-bg);  --glow-sd: 0 14px 30px rgba(14,174,124,0.12); }
 .stat-card.winrate     { --accent: var(--gold);   --glow: rgba(222,155,11,0.07); --icon-bg: var(--gold-bg);   --glow-sd: 0 14px 30px rgba(222,155,11,0.12); }
 .stat-card.closed      { --accent: var(--blue);   --glow: rgba(46,107,224,0.08); --icon-bg: var(--blue-bg);   --glow-sd: 0 14px 30px rgba(46,107,224,0.12); }
-.stat-card.orders      { --accent: var(--purple); --glow: rgba(109,94,242,0.08); --icon-bg: var(--purple-bg); --glow-sd: 0 14px 30px rgba(109,94,242,0.14); }
+.stat-card.unrealized  { --accent: var(--purple); --glow: rgba(109,94,242,0.08); --icon-bg: var(--purple-bg); --glow-sd: 0 14px 30px rgba(109,94,242,0.14); }
 .stat-card.commission  { --accent: var(--red);    --glow: rgba(229,69,107,0.07); --icon-bg: var(--red-bg);    --glow-sd: 0 14px 30px rgba(229,69,107,0.12); }
 .stat-card.positions   { --accent: var(--blue);   --glow: rgba(46,107,224,0.08); --icon-bg: var(--blue-bg);   --glow-sd: 0 14px 30px rgba(46,107,224,0.12); }
 

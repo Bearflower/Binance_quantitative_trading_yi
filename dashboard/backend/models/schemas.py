@@ -135,6 +135,7 @@ class OverviewData(BaseModel):
     total_pnl: str = Field(..., description="总盈亏（净）")
     total_gross_pnl: Optional[str] = Field(None, description="总毛利润（不含佣金）")
     total_commission: Optional[str] = Field(None, description="总佣金支出（负值）")
+    total_unrealized_pnl: Optional[str] = Field(None, description="浮动盈亏（未实现，实时）")
     total_orders: int = Field(..., description="总订单数")
     total_closed: int = Field(..., description="总平仓数")
     total_wins: int = Field(..., description="总盈利笔数")

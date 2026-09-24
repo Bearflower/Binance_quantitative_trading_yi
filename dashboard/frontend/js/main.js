@@ -172,19 +172,29 @@ function formatEquityTime(isoStr) {
  * 更新总览
  */
 function updateOverview(data) {
+    const unrealizedValue = parseFloat(data.total_unrealized_pnl || 0);
+    const realizedValue = parseFloat(data.total_pnl);
+
+    // 总盈亏 = 已实现盈亏 + 浮动盈亏（账户真实盈亏）
+    const pnlValue = realizedValue + unrealizedValue;
     const totalPnl = document.querySelector('#total-pnl');
-    const pnlValue = parseFloat(data.total_pnl);
     totalPnl.textContent = formatNumber(pnlValue);
     totalPnl.className = 'stat-value ' + (pnlValue >= 0 ? 'positive' : 'negative');
 
     const winRate = document.querySelector('#win-rate');
     if (winRate) winRate.textContent = formatPercent(data.win_rate);
 
-    const closedCount = document.querySelector('#closed-count');
-    if (closedCount) closedCount.textContent = data.total_closed.toLocaleString();
+    const realized = document.querySelector('#realized-pnl');
+    if (realized) {
+        realized.textContent = formatNumber(realizedValue);
+        realized.className = 'stat-value ' + (realizedValue >= 0 ? 'positive' : 'negative');
+    }
 
-    const orderCount = document.querySelector('#order-count');
-    if (orderCount) orderCount.textContent = data.total_orders.toLocaleString();
+    const unrealized = document.querySelector('#total-unrealized-pnl');
+    if (unrealized) {
+        unrealized.textContent = formatNumber(unrealizedValue);
+        unrealized.className = 'stat-value ' + (unrealizedValue >= 0 ? 'positive' : 'negative');
+    }
 
     const commission = document.querySelector('#total-commission');
     if (commission) {

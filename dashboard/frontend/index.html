@@ -102,7 +102,7 @@
       <div class="stat-card pnl animate-in">
         <div class="stat-head">
           <div class="stat-icon">◆</div>
-          <div class="stat-label">总盈亏 <span class="tooltip" data-tip="总盈亏 = 历史已实现净盈亏累计（已扣佣金），不含浮动盈亏">ⓘ</span></div>
+          <div class="stat-label">总盈亏 <span class="tooltip" data-tip="总盈亏 = 已实现盈亏 + 浮动盈亏（账户当前真实盈亏）">ⓘ</span></div>
           <div class="stat-sub">USDT</div>
         </div>
         <div class="stat-value positive" id="total-pnl">+0.00</div>
@@ -118,24 +118,24 @@
         <div class="stat-value gold" id="win-rate">0.0%</div>
       </div>
 
-      <!-- 总平仓数 -->
+      <!-- 浮动盈亏 -->
+      <div class="stat-card unrealized animate-in">
+        <div class="stat-head">
+          <div class="stat-icon">◈</div>
+          <div class="stat-label">浮动盈亏 <span class="tooltip" data-tip="浮动盈亏 = 当前持仓未实现盈亏（实时，未平仓持仓的浮动收益）">ⓘ</span></div>
+          <div class="stat-sub">USDT</div>
+        </div>
+        <div class="stat-value blue" id="total-unrealized-pnl">0.00</div>
+      </div>
+
+      <!-- 已实现盈亏 -->
       <div class="stat-card closed animate-in">
         <div class="stat-head">
           <div class="stat-icon">▨</div>
-          <div class="stat-label">总平仓数</div>
-          <div class="stat-sub" id="closed-sub">--</div>
+          <div class="stat-label">已实现盈亏 <span class="tooltip" data-tip="已实现盈亏 = 历史全部已平仓订单的净盈亏累计（已扣佣金）">ⓘ</span></div>
+          <div class="stat-sub">USDT</div>
         </div>
-        <div class="stat-value blue" id="closed-count">0</div>
-      </div>
-
-      <!-- 总委托数 -->
-      <div class="stat-card orders animate-in">
-        <div class="stat-head">
-          <div class="stat-icon">▤</div>
-          <div class="stat-label">总委托数</div>
-          <div class="stat-sub" id="order-sub">--</div>
-        </div>
-        <div class="stat-value gold" id="order-count">0</div>
+        <div class="stat-value gold" id="realized-pnl">0.00</div>
       </div>
 
       <!-- 总佣金 -->
@@ -438,6 +438,6 @@
   <!-- 脚本 -->
   <script src="js/api.js?v=20260913"></script>
   <script src="js/charts.js?v=20260913"></script>
-  <script src="js/main.js?v=20260915c"></script>
+  <script src="js/main.js?v=20260921"></script>
 </body>
 </html>
