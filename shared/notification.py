@@ -80,6 +80,12 @@ class NotificationClient:
         if webhook := os.getenv("FEISHU_WEBHOOK"):
             mapping["default"] = webhook
         
+        # 告警（send_alert 固定使用 project="alert"）优先走独立 webhook，
+        # 未配置时复用 btc_eth 的 webhook，避免回退到已失效的通知服务通道
+        mapping["alert"] = (
+            os.getenv("FEISHU_WEBHOOK_ALERT") or mapping.get("btc_eth") or mapping.get("default")
+        )
+        
         return mapping
     
     def register_webhook(self, project: str, webhook_url: str) -> None:
@@ -167,11 +173,25 @@ class NotificationClient:
                 level=level
             )
         
-        return await self._send_via_service(
-            message=message.strip(),
-            level=level,
+        # project 未配置专属 webhook：降级用 default webhook 发送
+        # 不再走 _send_via_service（8766 中间服务已废弃，服务器未部署）
+        if "default" in self._webhook_mapping:
+            logger.warning(
+                f"项目 {project} 未配置专属 webhook，降级使用 default 发送",
+                project=project
+            )
+            return await self._send_to_feishu_webhook(
+                webhook_url=self._webhook_mapping["default"],
+                message=message.strip(),
+                level=level
+            )
+
+        # default 也没有配置，只能放弃
+        logger.warning(
+            f"项目 {project} 未配置 webhook 且无 default 可降级，跳过发送",
             project=project
         )
+        return False
     
     async def _send_to_feishu_webhook(
         self,
