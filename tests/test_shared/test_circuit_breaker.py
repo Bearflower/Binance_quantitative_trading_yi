@@ -26,6 +26,7 @@ from shared.circuit_breaker import (
     BEIJING_TZ,
     CircuitBreaker,
     compute_1h_return,
+    compute_cumulative_return,
     floor_index_hour,
     load_circuit_breaker_config,
     parse_cron,
@@ -288,12 +289,15 @@ class TestFloorIndexHour:
 # ==================== 池指数计算 ====================
 
 class TestComputePoolIndex:
-    """_compute_pool_index：cap 截断、MIN_SYMBOLS 下限、单币异常跳过"""
+    """_compute_pool_index：cap 截断、MIN_SYMBOLS 下限、单币异常跳过（1h 与 12h 双输出）"""
 
     @staticmethod
-    def _klines(prev_close: float, cur_close: float) -> list:
-        """构造两根 1h K 线（含 close 字段）"""
-        return [{"close": prev_close, "open_time": 0}, {"close": cur_close, "open_time": 1}]
+    def _klines(cur_close: float, base: float = 100.0, bars: int = 13) -> list:
+        """构造 13 根 1h K 线：前 12 根 close=base，最后一根=cur_close。
+        1h 涨幅与 12h 累计涨幅同源：均等于 (cur_close-base)/base。"""
+        return [
+            {"close": base, "open_time": i} for i in range(bars - 1)
+        ] + [{"close": cur_close, "open_time": bars - 1}]
 
     class _FakeBinance:
         """可配置结果的假 Binance 客户端"""
@@ -307,32 +311,41 @@ class TestComputePoolIndex:
                 raise res
             return res
 
+    @staticmethod
+    def _unpack(result):
+        """把 4 元组拆成 (1h 段, 12h 段)，便于按窗口断言"""
+        equal_1h, valid_1h, equal_12h, valid_12h = result
+        return (equal_1h, valid_1h), (equal_12h, valid_12h)
+
     def test_equal_weight_average(self):
-        """等权均值：三币 ret 2% / 2% / -4% → 0.0"""
+        """等权均值：三币 ret 2% / 2% / -4% → 0.0（1h 与 12h 同步）"""
         client = self._FakeBinance({
-            "A": self._klines(100, 102),
-            "B": self._klines(100, 102),
-            "C": self._klines(100, 96),
+            "A": self._klines(102),
+            "B": self._klines(102),
+            "C": self._klines(96),
         })
-        equal_weight, symbols = self._sync_compute(client, ["A", "B", "C"], cap=0.10)
-        assert equal_weight == pytest.approx(0.0)
-        assert symbols == ["A", "B", "C"]
+        (e1, s1), (e12, s12) = self._unpack(self._sync_compute(client, ["A", "B", "C"], cap=0.10))
+        for eq in (e1, e12):
+            assert eq == pytest.approx(0.0)
+        assert s1 == ["A", "B", "C"]
+        assert s12 == ["A", "B", "C"]
 
     def test_cap_truncation(self):
-        """单币 ret 超出 ±10% 被截断：+50%/-50%/0% → mean(0.1,-0.1,0)=0.0"""
+        """单币 ret 超出 ±10% 被截断：+50%/-50%/0% → mean(0.1,-0.1,0)=0.0（1h 与 12h 同步）"""
         client = self._FakeBinance({
-            "A": self._klines(100, 150),
-            "B": self._klines(100, 50),
-            "C": self._klines(100, 100),
+            "A": self._klines(150),
+            "B": self._klines(50),
+            "C": self._klines(100),
         })
-        equal_weight, _ = self._sync_compute(client, ["A", "B", "C"], cap=0.10)
-        assert equal_weight == pytest.approx(0.0)
+        (e1, _), (e12, _) = self._unpack(self._sync_compute(client, ["A", "B", "C"], cap=0.10))
+        assert e1 == pytest.approx(0.0)
+        assert e12 == pytest.approx(0.0)
 
     def test_min_symbols_not_met(self):
         """有效标的不足 MIN_SYMBOLS(3) 返回 None（1 个异常跳过 + 2 个有效）"""
         client = self._FakeBinance({
-            "A": self._klines(100, 102),
-            "B": self._klines(100, 102),
+            "A": self._klines(102),
+            "B": self._klines(102),
             "C": RuntimeError("网络错误"),
         })
         assert self._sync_compute(client, ["A", "B", "C"], cap=0.10) is None
@@ -340,21 +353,151 @@ class TestComputePoolIndex:
     def test_symbol_exception_skipped(self):
         """单币异常跳过，其余正常参与均值"""
         client = self._FakeBinance({
-            "A": self._klines(100, 110),
+            "A": self._klines(110),
             "B": RuntimeError("网络错误"),
-            "C": self._klines(100, 90),
-            "D": self._klines(100, 104),
+            "C": self._klines(90),
+            "D": self._klines(104),
         })
-        equal_weight, symbols = self._sync_compute(client, ["A", "B", "C", "D"], cap=0.10)
-        assert symbols == ["A", "C", "D"]
+        _, (e12, s12) = self._unpack(self._sync_compute(client, ["A", "B", "C", "D"], cap=0.10))
+        assert s12 == ["A", "C", "D"]
         # mean(0.1, -0.1, 0.04) = 0.01333...
-        assert equal_weight == pytest.approx((0.10 - 0.10 + 0.04) / 3)
+        assert e12 == pytest.approx((0.10 - 0.10 + 0.04) / 3)
+
+    def test_12h_span_requires_13_bars(self):
+        """12h 累计需要 13 根 K 线：仅构造 2 根时 12h 无效、池整体视为不可用"""
+        client = self._FakeBinance({
+            "A": [{"close": 100, "open_time": 0}, {"close": 102, "open_time": 1}],
+            "B": [{"close": 100, "open_time": 0}, {"close": 102, "open_time": 1}],
+            "C": [{"close": 100, "open_time": 0}, {"close": 100, "open_time": 1}],
+        })
+        # 1h 有效 3 币但 12h 全部无效 → 整体 None（1h 与 12h 任一窗口不足即不可用）
+        assert self._sync_compute(client, ["A", "B", "C"], cap=0.10) is None
 
     @staticmethod
     def _sync_compute(client, symbols, cap):
         """同步封装异步 _compute_pool_index（pytest asyncio auto 模式下直接 await 亦可）"""
         import asyncio
         return asyncio.run(_compute_pool_index(client, symbols, cap))
+
+
+# ==================== 二期：12h 累计维度判定 ====================
+
+class TestGuardShort12h:
+    """SHORT 方向 12h 累计：pool_short_12h（慢牛拦空）"""
+
+    def test_12h_pool_blocked(self, breaker):
+        """12h 累计涨幅 > +2%，1h 瞬时 ≤2% → 拦（pool_short_12h）"""
+        allow, level = breaker.guard("short", "BTCUSDT", 0.01, 0.01, 0.03)
+        assert (allow, level) == (False, "pool_short_12h")
+
+    def test_12h_equal_threshold_allow(self, breaker):
+        """12h 累计涨幅 == +2%（等于阈值=放行）"""
+        allow, level = breaker.guard("short", "BTCUSDT", 0.01, 0.01, 0.02)
+        assert (allow, level) == (True, "allow")
+
+    def test_1h_still_precedence(self):
+        """1h 瞬时命中优先于 12h（同一组合级，先判 1h）"""
+        cfg = load_circuit_breaker_config()
+        cb = CircuitBreaker(cfg, db=None, pool="mtpcs")
+        allow, level = cb.guard("short", "BTCUSDT", 0.01, 0.03, 0.03)
+        assert (allow, level) == (False, "pool_short")
+
+    def test_12h_missing_fail_open(self, breaker):
+        """12h 指数缺失（None）不误拦；1h 不命中时放行"""
+        allow, level = breaker.guard("short", "BTCUSDT", 0.01, 0.01, None)
+        assert (allow, level) == (True, "allow")
+
+    def test_include_12h_off_ignored(self):
+        """include_12h=False 时回到一期行为：12h 命中不拦"""
+        cfg = dict(load_circuit_breaker_config())
+        cfg["include_12h"] = False
+        cb = CircuitBreaker(cfg, db=None, pool="mtpcs")
+        allow, level = cb.guard("short", "BTCUSDT", 0.01, 0.01, 0.05)
+        assert (allow, level) == (True, "allow")
+
+
+class TestGuardLong12h:
+    """LONG 方向 12h 累计：pool_long_12h（阴跌拦多）"""
+
+    def test_12h_pool_blocked(self, breaker):
+        """12h 累计跌幅 > +2%（12h 指数 < -0.02），1h 瞬时 ≥-2% → 拦（pool_long_12h）"""
+        allow, level = breaker.guard("long", "BTCUSDT", -0.01, -0.01, -0.03)
+        assert (allow, level) == (False, "pool_long_12h")
+
+    def test_12h_equal_threshold_allow(self, breaker):
+        """12h 累计 == -2%（等于阈值=放行）"""
+        allow, level = breaker.guard("long", "BTCUSDT", -0.01, -0.01, -0.02)
+        assert (allow, level) == (True, "allow")
+
+    def test_pool_12h_down_does_not_block_short(self, breaker):
+        """不串扰：12h 阴跌拦多但不拦空"""
+        allow, level = breaker.guard("short", "BTCUSDT", -0.01, 0.0, -0.03)
+        assert (allow, level) == (True, "allow")
+
+    def test_12h_missing_fail_open(self, breaker):
+        allow, level = breaker.guard("long", "BTCUSDT", -0.01, 0.0, None)
+        assert (allow, level) == (True, "allow")
+
+
+class TestComputeCumulativeReturn:
+    """compute_cumulative_return：12h 累计涨跌幅"""
+
+    def test_12h_positive(self):
+        """12 根后收盘 +3%：(103-100)/100 = 0.03"""
+        klines = [{"close": 100.0}] * 12 + [{"close": 103.0}]
+        assert compute_cumulative_return(klines, hours=12) == pytest.approx(0.03)
+
+    def test_12h_negative(self):
+        """12 根后收盘 -2%：(98-100)/100 = -0.02"""
+        klines = [{"close": 100.0}] * 12 + [{"close": 98.0}]
+        assert compute_cumulative_return(klines, hours=12) == pytest.approx(-0.02)
+
+    def test_insufficient_bars(self):
+        """不足 hours+1 根返回 None"""
+        assert compute_cumulative_return([]) is None
+        assert compute_cumulative_return([{"close": 100.0}] * 12, hours=12) is None
+
+    def test_start_close_non_positive(self):
+        """窗口起收盘价非正返回 None"""
+        klines = [{"close": 0.0}] * 12 + [{"close": 100.0}]
+        assert compute_cumulative_return(klines, hours=12) is None
+
+
+class TestLoadIndex12h:
+    """load_index_12h：查 equal_weight_12h 列 + 独立缓存键"""
+
+    @pytest.fixture
+    def index_hour(self):
+        return floor_index_hour()
+
+    async def test_load_12h_found(self, index_hour):
+        db = MagicMock()
+        db.fetch_one = AsyncMock(return_value={"equal_weight_12h": 0.03})
+        cb = CircuitBreaker(load_circuit_breaker_config(), db=db, pool="mtpcs")
+        assert await cb.load_index_12h(index_hour) == 0.03
+        db.fetch_one.assert_awaited_once()
+
+    async def test_load_12h_null_returns_none(self, index_hour):
+        """equal_weight_12h 为 NULL（旧数据未回填）返回 None（fail-open）"""
+        db = MagicMock()
+        db.fetch_one = AsyncMock(return_value={"equal_weight_12h": None})
+        cb = CircuitBreaker(load_circuit_breaker_config(), db=db, pool="mtpcs")
+        assert await cb.load_index_12h(index_hour) is None
+
+    async def test_load_12h_missing_row(self, index_hour):
+        db = MagicMock()
+        db.fetch_one = AsyncMock(return_value=None)
+        cb = CircuitBreaker(load_circuit_breaker_config(), db=db, pool="mtpcs")
+        assert await cb.load_index_12h(index_hour) is None
+
+    async def test_12h_and_1h_distinct_cache(self, index_hour):
+        """1h 与 12h 各自缓存互不串扰（两次独立查询）"""
+        db = MagicMock()
+        db.fetch_one = AsyncMock(return_value={"equal_weight": 0.01, "equal_weight_12h": 0.03})
+        cb = CircuitBreaker(load_circuit_breaker_config(), db=db, pool="mtpcs")
+        assert await cb.load_index(index_hour) == 0.01
+        assert await cb.load_index_12h(index_hour) == 0.03
+        assert db.fetch_one.await_count == 2
 
 
 # ==================== 配置加载 ====================
@@ -378,4 +521,8 @@ class TestConfigLoading:
         assert cfg["index_cron"] == "3 * * * *"
         assert "BTCUSDT" in cfg["fixed_pool"]
         assert cfg["include_hrs_pool"] is True
+        # 二期：12h 累计维度
+        assert cfg["include_12h"] is True
+        assert cfg["trigger_short_12h"] == 0.02
+        assert cfg["trigger_long_12h"] == 0.02
         assert MIN_SYMBOLS == 3

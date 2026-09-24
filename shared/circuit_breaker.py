@@ -92,6 +92,28 @@ def compute_1h_return(klines_1h) -> Optional[float]:
     return (cur_close - prev_close) / prev_close
 
 
+def compute_cumulative_return(klines_1h, hours: int = 12) -> Optional[float]:
+    """计算最近 N 根 1h K 线的累计涨跌幅（二期 12h 累计）
+
+    累计窗口 [t - hours, t]：涨幅 = (close_t - close_{t-hours}) / close_{t-hours}。
+    需要 hours+1 根 K 线才能跨满该窗口。
+
+    Args:
+        klines_1h: 1h K 线列表（每项含 'close' 字段），按时间正序
+        hours: 累计窗口小时数（默认 12）
+
+    Returns:
+        累计涨跌幅（小数，带符号）；K 线不足 hours+1 根或窗口起收盘价非正时返回 None
+    """
+    if not klines_1h or len(klines_1h) < hours + 1:
+        return None
+    start_close = float(klines_1h[-(hours + 1)]["close"])
+    cur_close = float(klines_1h[-1]["close"])
+    if start_close <= 0:
+        return None
+    return (cur_close - start_close) / start_close
+
+
 def parse_cron(expr: str) -> Tuple[Any, Any]:
     """解析 5 字段 cron 表达式，提取小时与分钟
 
@@ -137,24 +159,28 @@ class CircuitBreaker:
         self._single_coin_short = float(config["single_coin_short"])
         self._single_coin_long = float(config["single_coin_long"])
         self._cooldown_hours = float(config["single_coin_cooldown_hours"])
+        # 二期：12h 累计维度（组合级，双向对称）；include_12h 关闭时回到一期纯 1h 行为
+        self._include_12h = bool(config.get("include_12h", False))
+        self._trigger_short_12h = float(config.get("trigger_short_12h", 0.0))
+        self._trigger_long_12h = float(config.get("trigger_long_12h", 0.0))
         # 单币冷却截止时间 {symbol: datetime}，进程内存、跨周期保持
         self._cooldown_until: Dict[str, datetime] = {}
         # 指数缓存 {index_hour.isoformat(): Optional[float]}，同一整点只查一次库
         self._index_cache: Dict[str, Optional[float]] = {}
 
-    async def load_index(self, index_hour: datetime) -> Optional[float]:
-        """读取指定整点的池等权指数
+    async def _query_index(self, index_hour: datetime, column: str, cache_key: str) -> Optional[float]:
+        """按 (pool, index_hour) 查熔断指数快照表的某列并缓存（公共查询，load_index/12h 共用）
 
-        按 (pool, index_hour) 查熔断指数快照表；同一 index_hour 结果缓存。
-        指数缺失返回 None（调用方按 fail-open 放行处理）。
+        同一 index_hour 结果缓存；指数/列缺失返回 None（调用方按 fail-open 放行处理）。
 
         Args:
             index_hour: 北京整点时刻（由 floor_index_hour 生成）
+            column: 目标列名（'equal_weight' 或 'equal_weight_12h'）
+            cache_key: 缓存键（1h 用 index_hour.isoformat()，12h 用 isoformat()+':12h' 区分）
 
         Returns:
-            池等权 1h 涨幅（小数，带符号）；缺失或 DB 不可用时返回 None
+            该列指数值（小数，带符号）；缺失或 DB 不可用时返回 None
         """
-        cache_key = index_hour.isoformat()
         if cache_key in self._index_cache:
             return self._index_cache[cache_key]
         if self._db is None:
@@ -162,18 +188,19 @@ class CircuitBreaker:
             return None
         try:
             row = await self._db.fetch_one(
-                f"SELECT equal_weight FROM {_INDEX_TABLE} "
+                f"SELECT {column} FROM {_INDEX_TABLE} "
                 "WHERE pool = $1 AND index_hour = $2",
                 self.pool,
                 index_hour,
             )
-            value = float(row["equal_weight"]) if row else None
+            value = float(row[column]) if row and row.get(column) is not None else None
             self._index_cache[cache_key] = value
             if value is None:
                 logger.warning(
                     "熔断指数缺失，按放行处理（fail-open）",
                     pool=self.pool,
                     index_hour=index_hour.isoformat(),
+                    column=column,
                 )
             return value
         except Exception as e:
@@ -181,9 +208,52 @@ class CircuitBreaker:
                 "读取熔断指数失败，按放行处理（fail-open）",
                 pool=self.pool,
                 index_hour=index_hour.isoformat(),
+                column=column,
                 error=str(e),
             )
             return None
+
+    async def load_index(self, index_hour: datetime) -> Optional[float]:
+        """读取指定整点的池等权 1h 指数（短尺度）
+
+        Args:
+            index_hour: 北京整点时刻（由 floor_index_hour 生成）
+
+        Returns:
+            池等权 1h 涨幅（小数，带符号）；缺失或 DB 不可用时返回 None
+        """
+        return await self._query_index(index_hour, "equal_weight", index_hour.isoformat())
+
+    async def load_index_12h(self, index_hour: datetime) -> Optional[float]:
+        """读取指定整点的池等权 12h 累计指数（二期，慢变尺度）
+
+        与 1h 同表同整点、不同列（equal_weight_12h），缺失返回 None（fail-open）。
+
+        Args:
+            index_hour: 北京整点时刻（由 floor_index_hour 生成）
+
+        Returns:
+            池等权 12h 累计涨幅（小数，带符号）；缺失或 DB 不可用时返回 None
+        """
+        return await self._query_index(index_hour, "equal_weight_12h", index_hour.isoformat() + ":12h")
+
+    @staticmethod
+    def _is_blocked_1h(direction: str, v: Optional[float], trigger: float) -> bool:
+        """组合级 1h 瞬时判定：short 涨幅>trigger / long 跌幅>trigger（None 放行）"""
+        if v is None:
+            return False
+        return v > trigger if direction == "short" else v < -trigger
+
+    def _is_blocked_12h(self, direction: str, v12: Optional[float]) -> bool:
+        """组合级 12h 累计判定：short 累计涨幅>trigger_short_12h / long 累计跌幅>trigger_long_12h
+
+        仅当 include_12h 开启且 12h 指数存在才判定；None 放行。（guard 与 combined_blocked 共用）
+        """
+        if not self._include_12h or v12 is None:
+            return False
+        if direction == "short":
+            return v12 > self._trigger_short_12h
+        return v12 < -self._trigger_long_12h
 
     def guard(
         self,
@@ -191,31 +261,36 @@ class CircuitBreaker:
         symbol: str,
         symbol_ret_1h: Optional[float],
         pool_index: Optional[float],
+        pool_index_12h: Optional[float] = None,
     ) -> Tuple[bool, str]:
-        """开仓前熔断判定（需求 4.6 唯一实现）
+        """开仓前熔断判定（需求 4.6 + 二期 4.7 唯一实现）
 
-        判定顺序：冷却检查（不分方向）→ 组合级（池指数）→ 单币级（自身涨幅）。
-        指数/涨幅缺失（None）不参与对应判定（fail-open 放行）。
+        判定顺序：冷却检查（不分方向）→ 组合级（1h 瞬时与 12h 累计任一命中即拦）→
+        单币级（仍只看 1h）。指数/涨幅缺失（None）不参与对应判定（fail-open 放行）。
 
         Args:
             direction: 开仓方向，'short'/'long'（大小写不敏感，兼容 LONG/SHORT）
             symbol: 目标币种
             symbol_ret_1h: 目标币自身 1h 涨跌幅（可 None）
-            pool_index: 所属池等权指数（可 None）
+            pool_index: 所属池等权 1h 指数（可 None）
+            pool_index_12h: 所属池等权 12h 累计指数（可 None；include_12h=False 时忽略）
 
         Returns:
             (allow, level)：allow=True 放行（level="allow"）；
-            allow=False 拦截，level 取值：cooldown / pool_short / coin_short /
-            pool_long / coin_long
+            allow=False 拦截，level 取值：cooldown / pool_short / pool_short_12h /
+            coin_short / pool_long / pool_long_12h / coin_long
         """
         if self.is_in_cooldown(symbol):
             return False, "cooldown"
 
         norm = direction.lower()
         if norm == "short":
-            # S1 组合级：池等权 1h 涨幅 > trigger_short → 拦该策略本轮全部新空
-            if pool_index is not None and pool_index > self._trigger_short:
+            # S1 组合级 瞬时：池等权 1h 涨幅 > trigger_short → 拦该策略本轮全部新空
+            if self._is_blocked_1h(norm, pool_index, self._trigger_short):
                 return False, "pool_short"
+            # （二期）组合级累计：12h 累计涨幅 > trigger_short_12h → 拦全部新空（慢牛）
+            if self._is_blocked_12h(norm, pool_index_12h):
+                return False, "pool_short_12h"
             # S2 单币级：目标币自身 1h 涨幅 > single_coin_short → 拦该币新空并进冷却
             if symbol_ret_1h is not None and symbol_ret_1h > self._single_coin_short:
                 self.start_cooldown(symbol)
@@ -224,9 +299,12 @@ class CircuitBreaker:
             return True, "allow"
 
         # 多头方向
-        # L1 组合级：池等权 1h 跌幅 > trigger_long（指数 < -trigger_long）→ 拦全部新多
-        if pool_index is not None and pool_index < -self._trigger_long:
+        # L1 组合级 瞬时：池等权 1h 跌幅 > trigger_long（指数 < -trigger_long）→ 拦全部新多
+        if self._is_blocked_1h(norm, pool_index, self._trigger_long):
             return False, "pool_long"
+        # （二期）组合级累计：12h 累计跌幅 > trigger_long_12h → 拦全部新多（阴跌）
+        if self._is_blocked_12h(norm, pool_index_12h):
+            return False, "pool_long_12h"
         # L2 单币级：目标币自身 1h 跌幅 > single_coin_long → 拦该币新多并进冷却
         if symbol_ret_1h is not None and symbol_ret_1h < -self._single_coin_long:
             self.start_cooldown(symbol)
@@ -234,22 +312,28 @@ class CircuitBreaker:
         # L3 放行
         return True, "allow"
 
-    def combined_blocked(self, direction: str, pool_index: Optional[float]) -> bool:
-        """仅组合级判定（S1/L1），供 HRS 信号级预过滤使用
+    def combined_blocked(
+        self,
+        direction: str,
+        pool_index: Optional[float],
+        pool_index_12h: Optional[float] = None,
+    ) -> bool:
+        """仅组合级判定（S1/L1 + 二期 12h），供 HRS 信号级预过滤使用
 
         Args:
             direction: 'short'/'long'
-            pool_index: 池等权指数（None 视为未触发）
+            pool_index: 池等权 1h 指数（None 视为未触发）
+            pool_index_12h: 池等权 12h 累计指数（None 视为未触发；include_12h=False 时忽略）
 
         Returns:
             True 表示该方向应整体拦截；False 放行
         """
-        if pool_index is None:
-            return False
         norm = direction.lower()
-        if norm == "short":
-            return pool_index > self._trigger_short
-        return pool_index < -self._trigger_long
+        if self._is_blocked_1h(norm, pool_index, self._trigger_short if norm == "short" else self._trigger_long):
+            return True
+        if self._is_blocked_12h(norm, pool_index_12h):
+            return True
+        return False
 
     def is_in_cooldown(self, symbol: str) -> bool:
         """判断某币是否处于冷却期（不分方向）

@@ -17,6 +17,7 @@ import structlog
 
 from shared.circuit_breaker import (
     compute_1h_return,
+    compute_cumulative_return,
     floor_index_hour,
     load_circuit_breaker_config,
 )
@@ -27,15 +28,20 @@ logger = structlog.get_logger()
 # 参与均值的标的不足该值时该池指数视为不可用（消除早期小样本尖峰）
 MIN_SYMBOLS = 3
 
-# 指数 UPSERT SQL（同池同一整点幂等，失败仅记日志不阻断主流程）
+# 指数 UPSERT SQL（同池同一整点幂等，失败仅记日志不阻断主流程；1h/12h 同整点不同列）
 _INDEX_UPSERT_SQL = """
 INSERT INTO public.market_circuit_breaker_index
-    (pool, index_hour, equal_weight, symbol_count, symbols, updated_at)
-VALUES ($1, $2, $3, $4, $5::jsonb, CURRENT_TIMESTAMP)
+    (pool, index_hour, equal_weight, symbol_count, symbols,
+     equal_weight_12h, symbol_count_12h, symbols_12h, updated_at)
+VALUES ($1, $2, $3, $4, $5::jsonb,
+        $6, $7, $8::jsonb, CURRENT_TIMESTAMP)
 ON CONFLICT (pool, index_hour) DO UPDATE SET
     equal_weight = EXCLUDED.equal_weight,
     symbol_count = EXCLUDED.symbol_count,
     symbols = EXCLUDED.symbols,
+    equal_weight_12h = EXCLUDED.equal_weight_12h,
+    symbol_count_12h = EXCLUDED.symbol_count_12h,
+    symbols_12h = EXCLUDED.symbols_12h,
     updated_at = CURRENT_TIMESTAMP
 """
 
@@ -50,8 +56,11 @@ async def _compute_pool_index(
     pool_symbols: List[str],
     cap: float,
     min_symbols: int = MIN_SYMBOLS,
-) -> Optional[Tuple[float, List[str]]]:
-    """计算池等权 1h 涨幅（单币先 cap，单币失败跳过）
+) -> Optional[Tuple[float, List[str], float, List[str]]]:
+    """计算池等权 1h 瞬时 与 12h 累计 涨幅（单币先 cap，单币失败跳过）
+
+    一次拉取 13 根 1h K 线，同时算 1h 与 12h 累计两个值；两者共用同一 cap 与有效标的口径
+    （某币 1h 或 12h 任一算不出即视为该币本次无效，从两个窗口的有效集中剔除）。
 
     Args:
         binance_client: BinanceClient（需有 get_klines）
@@ -60,25 +69,38 @@ async def _compute_pool_index(
         min_symbols: 有效标的下限
 
     Returns:
-        (equal_weight, valid_symbols)：等权涨幅与参与均值标的；
+        (equal_1h, valid_1h, equal_12h, valid_12h)：
+        等权 1h 涨幅与参与及标的、等权 12h 累计涨幅与参与标的；
         有效标的不足 min_symbols 时返回 None
     """
-    returns: List[float] = []
-    valid_symbols: List[str] = []
+    ret_1h: List[float] = []
+    ret_12h: List[float] = []
+    valid_1h: List[str] = []
+    valid_12h: List[str] = []
     for symbol in pool_symbols:
         try:
-            klines = await binance_client.get_klines(symbol, "1h", limit=2)
-            ret = compute_1h_return(klines)
-            if ret is None:
-                continue
-            returns.append(_cap_return(ret, cap))
-            valid_symbols.append(symbol)
+            klines = await binance_client.get_klines(symbol, "1h", limit=13)
+            r1 = compute_1h_return(klines)
+            if r1 is not None:
+                ret_1h.append(_cap_return(r1, cap))
+                valid_1h.append(symbol)
+            r12 = compute_cumulative_return(klines, hours=12)
+            if r12 is not None:
+                ret_12h.append(_cap_return(r12, cap))
+                valid_12h.append(symbol)
         except Exception as e:
             # 单币拉取失败仅跳过，不影响其它标的
             logger.warning("单币涨幅计算失败，跳过", symbol=symbol, error=str(e))
-    if len(returns) < min_symbols:
+    if not ret_1h or not ret_12h:
         return None
-    return sum(returns) / len(returns), valid_symbols
+    if len(valid_1h) < min_symbols or len(valid_12h) < min_symbols:
+        return None
+    return (
+        sum(ret_1h) / len(ret_1h),
+        valid_1h,
+        sum(ret_12h) / len(ret_12h),
+        valid_12h,
+    )
 
 
 async def _load_hrs_pool_symbols(db) -> List[str]:
@@ -136,27 +158,35 @@ async def _compute_and_store_pool(
                 "池指数计算跳过", pool=pool, reason=msg, pool_size=len(pool_symbols)
             )
             return {"pool": pool, "skipped": True, "reason": msg, "pool_size": len(pool_symbols)}
-        equal_weight, valid_symbols = result
+        equal_1h, valid_1h, equal_12h, valid_12h = result
         await db.execute(
             _INDEX_UPSERT_SQL,
             pool,
             index_hour,
-            equal_weight,
-            len(valid_symbols),
-            json.dumps(valid_symbols),
+            equal_1h,
+            len(valid_1h),
+            json.dumps(valid_1h),
+            equal_12h,
+            len(valid_12h),
+            json.dumps(valid_12h),
         )
         logger.info(
             "池指数已落库",
             pool=pool,
             index_hour=index_hour.isoformat(),
-            equal_weight=round(equal_weight, 6),
-            symbol_count=len(valid_symbols),
+            equal_weight=round(equal_1h, 6),
+            symbol_count=len(valid_1h),
+            equal_weight_12h=round(equal_12h, 6),
+            symbol_count_12h=len(valid_12h),
         )
         return {
             "pool": pool,
-            "equal_weight": equal_weight,
-            "symbol_count": len(valid_symbols),
-            "symbols": valid_symbols,
+            "equal_weight": equal_1h,
+            "symbol_count": len(valid_1h),
+            "symbols": valid_1h,
+            "equal_weight_12h": equal_12h,
+            "symbol_count_12h": len(valid_12h),
+            "symbols_12h": valid_12h,
         }
     except Exception as e:
         logger.error("池指数计算失败", pool=pool, error=str(e))

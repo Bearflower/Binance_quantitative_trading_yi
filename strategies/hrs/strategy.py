@@ -446,8 +446,9 @@ class HRSStrategy(BaseStrategy):
             if self.circuit_breaker is not None:
                 index_hour = floor_index_hour() - timedelta(hours=1)
                 pool_index = await self.circuit_breaker.load_index(index_hour)
+                pool_index_12h = await self.circuit_breaker.load_index_12h(index_hour)
                 allow, level = self.circuit_breaker.guard(
-                    direction, symbol, signal.get("price_change_1h"), pool_index
+                    direction, symbol, signal.get("price_change_1h"), pool_index, pool_index_12h
                 )
                 if not allow:
                     logger.info(
@@ -456,6 +457,7 @@ class HRSStrategy(BaseStrategy):
                         direction=direction,
                         level=level,
                         pool_index=pool_index,
+                        pool_index_12h=pool_index_12h,
                     )
                     return False
 
@@ -943,14 +945,15 @@ class HRSStrategy(BaseStrategy):
         if self.circuit_breaker is not None:
             index_hour = floor_index_hour() - timedelta(hours=1)  # HRS 整点执行，读上一整点（T-1）指数
             pool_index = await self.circuit_breaker.load_index(index_hour)
+            pool_index_12h = await self.circuit_breaker.load_index_12h(index_hour)
             if pool_index is not None:
                 short_signals = [
                     s for s in short_signals
-                    if not self.circuit_breaker.combined_blocked("short", pool_index)
+                    if not self.circuit_breaker.combined_blocked("short", pool_index, pool_index_12h)
                 ]
                 long_signals = [
                     s for s in long_signals
-                    if not self.circuit_breaker.combined_blocked("long", pool_index)
+                    if not self.circuit_breaker.combined_blocked("long", pool_index, pool_index_12h)
                 ]
 
         # 处理双向冲突
