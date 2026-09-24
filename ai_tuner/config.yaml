@@ -565,17 +565,20 @@ profit_extraction:
 capital_allocation:
   enabled: true                            # 是否启用月度资金分配
   total_capital: 1000.0                    # 总资金池（USDT）
-  reserve_ratio: 0.10                      # 风险备用金比例（10%）
-  rank_ratios: [0.40, 0.30, 0.20]         # 排名分配比例（按收益率从高到低）
+  reserve_ratio: 0.15                      # 风险备用金比例（15%）
+  rank_ratios: [0.30, 0.25, 0.20, 0.10]   # 排名分配比例（按收益率从高到低，总和 0.85 = 1 - 0.15 备用金）
+  daily_refresh_cron: "15 0 * * *"        # 每日刷新分配金额的执行时刻（北京时间，cron 5字段：分 时 日 月 周）
   participating_strategies:                # 参与资金分配的策略列表
     - "btc_eth"
+    - "btc_eth_aggressive"
     - "new_coin"
     - "hrs"
   fallback:                                # 首月默认分配（无历史收益数据时使用）
     ratios:                                # 默认分配比例
-      btc_eth: 0.30
-      new_coin: 0.40
-      hrs: 0.20
+      btc_eth: 0.35
+      btc_eth_aggressive: 0.10
+      new_coin: 0.25
+      hrs: 0.15
   database:                                # 数据库配置
     schema: "public"
     table: "capital_allocation"

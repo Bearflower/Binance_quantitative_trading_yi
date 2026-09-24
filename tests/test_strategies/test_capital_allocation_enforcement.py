@@ -1306,26 +1306,26 @@ class TestMtpcsEntryLimits:
         assert strategy._calc_current_total_margin() == 0.0
 
     @pytest.mark.asyncio
-    async def test_aggressive_shares_btc_eth_allocation(self, tmp_path):
-        """激进版 strategy_id 固定为 btc_eth：与原版共用同一份月度分配"""
+    async def test_aggressive_uses_own_allocation(self, tmp_path):
+        """激进版独立参与月度资金分配：strategy_id=btc_eth_aggressive，读取自身分配条目"""
         strategy = object.__new__(BTCEthAggressiveStrategy)
         strategy.positions = {}
         strategy.binance_config = {'leverage': {'S': 5, 'A': 4, 'B': 3, 'C': 2}}
         config = _base_config({'trading': {'total_position_margin_limit': 1000.0}})
         strategy.capital_mgr = CapitalManager(
             _write_config(tmp_path, config),
-            db=_mock_db({'entries': _entries(156.33, strategy_id='btc_eth')}),
-            strategy_id='btc_eth',
+            db=_mock_db({'entries': _entries(120.0, strategy_id='btc_eth_aggressive')}),
+            strategy_id='btc_eth_aggressive',
         )
-        assert strategy.capital_mgr.strategy_id == 'btc_eth'
+        assert strategy.capital_mgr.strategy_id == 'btc_eth_aggressive'
 
         limit, source = await strategy.capital_mgr.get_effective_margin_limit()
-        assert limit == pytest.approx(156.33)
+        assert limit == pytest.approx(120.0)
         assert source == 'db'
 
         strategy.positions = {'BTCUSDT': self._make_position(10.0, 10.0, 'C')}
         signal = {'symbol': 'BTCUSDT', 'quantity': 0.5, 'entry_price': 100.0, 'leverage': 2}
-        # 占用 50 + 新增 25 = 75 ≤ 156.33 → 放行
+        # 占用 50 + 新增 25 = 75 ≤ 120.0 → 放行
         assert await strategy._check_entry_limits('BTCUSDT', signal) is True
 
 

@@ -48,6 +48,7 @@ from ai_tuner.notifier.messenger import Messenger  # noqa: E402
 from ai_tuner.scheduler.weekly_job import WeeklyTuningJob  # noqa: E402
 from ai_tuner.allocation.monthly_job import MonthlyAllocationJob  # noqa: E402
 from ai_tuner.allocation.profit_extraction_job import ProfitExtractionJob  # noqa: E402
+from ai_tuner.allocation.daily_refresher import DailyAllocationRefresher  # noqa: E402
 from ai_tuner.cleanup.orphan_cleanup import OrphanCleanupJob  # noqa: E402
 from ai_tuner.monitor.daily_health_check import DailyHealthCheck  # noqa: E402
 from ai_tuner.reconciler.income_reconciler import IncomeReconciler  # noqa: E402
@@ -98,6 +99,7 @@ class StratTuneAI:
         self.weekly_job: WeeklyTuningJob = None
         self.monthly_job: MonthlyAllocationJob = None
         self.profit_extraction_job: ProfitExtractionJob = None
+        self.daily_refresher: DailyAllocationRefresher = None
         self.orphan_cleanup_job: OrphanCleanupJob = None
         self.health_checker: DailyHealthCheck = None
         self.reconciler: IncomeReconciler = None
@@ -279,6 +281,14 @@ class StratTuneAI:
         else:
             logger.warning("BINANCE_API_KEY 未配置，利润提取任务将跳过")
 
+        # 9.7.5. 初始化每日分配金额刷新任务
+        self.daily_refresher = DailyAllocationRefresher(
+            config=self.config,
+            db_manager=self.db_manager,
+            binance_client=binance_client,
+        )
+        logger.info("每日分配金额刷新任务已初始化")
+
         # 9.8. 初始化孤儿条件单清理任务（阶段二）
         cleanup_cfg = self.config.get("orphan_cleanup", {})
         if cleanup_cfg.get("enabled", True):
@@ -379,6 +389,16 @@ class StratTuneAI:
             name="月度资金分配",
             replace_existing=True,
         )
+
+        # 每日分配金额刷新调度（北京时间每天 00:15，从配置读取 cron 与时区）
+        self.scheduler.add_job(
+            self._scheduled_daily_refresh,
+            trigger=self.daily_refresher.get_cron_trigger(),
+            id="daily_allocation_refresh",
+            name="每日分配金额刷新",
+            replace_existing=True,
+        )
+        logger.info("每日分配金额刷新任务已注册")
 
         logger.info("调度器初始化完成", cron_expression=cron_expr, monthly_cron_expression=monthly_cron)
 
@@ -527,6 +547,12 @@ class StratTuneAI:
         logger.info("月末最后一天，开始月度资金分配")
         if self.monthly_job:
             await self.monthly_job.run_monthly_allocation()
+
+    async def _scheduled_daily_refresh(self) -> None:
+        """调度器触发的每日分配金额刷新（每天 00:15 CST）"""
+        if self.daily_refresher:
+            logger.info("触发每日分配金额刷新")
+            await self.daily_refresher.run_daily_refresh()
 
     async def _scheduled_profit_extraction(self) -> None:
         """调度器触发的利润提取检查（每天 07:35 CST）"""

@@ -26,7 +26,7 @@ class AllocationEntry:
         strategy_id: 策略唯一标识
         strategy_name: 策略显示名称
         realized_pnl: 当月已实现盈亏（USDT）
-        initial_capital: 月初分配资金（USDT）
+        initial_capital: 月初实际占用保证金（USDT，作收益率分母）
         return_rate: 月收益率 = realized_pnl / initial_capital
         rank: 收益率排名（1 为最高）
         allocated_ratio: 分配比例（0~1）
@@ -89,6 +89,7 @@ class AllocationCalculator:
         Args:
             total_capital: 总资金池（USDT）
             pnl_data: 各策略盈亏数据 {strategy_id: {"pnl": float, "capital": float}}
+            capital 为月初实际占用保证金（作收益率分母）
             is_first_month: 是否为首月分配
             fallback_ratios: 首月默认分配比例 {strategy_id: ratio}
             fallback_capitals: 首月默认分配金额 {strategy_id: amount}
@@ -115,7 +116,7 @@ class AllocationCalculator:
 
         if is_first_month:
             entries = self._calculate_first_month(
-                allocatable_amount=allocatable_amount,
+                total_capital=total_capital,
                 fallback_ratios=fallback_ratios,
                 fallback_capitals=fallback_capitals,
                 strategy_names=strategy_names,
@@ -139,7 +140,7 @@ class AllocationCalculator:
 
     def _calculate_first_month(
         self,
-        allocatable_amount: float,
+        total_capital: float,
         fallback_ratios: Dict[str, float],
         fallback_capitals: Dict[str, float],
         strategy_names: Dict[str, str],
@@ -148,8 +149,8 @@ class AllocationCalculator:
         首月分配：使用 fallback 默认比例
 
         Args:
-            allocatable_amount: 可分配资金（USDT）
-            fallback_ratios: 默认分配比例
+            total_capital: 总资金池（USDT）
+            fallback_ratios: 默认分配比例（占总资金比例，语义为 total_capital × ratio）
             fallback_capitals: 默认分配金额
             strategy_names: 策略显示名称映射
 
@@ -160,11 +161,11 @@ class AllocationCalculator:
         rank = 1
 
         for strategy_id, ratio in fallback_ratios.items():
-            # 优先使用 fallback_capitals 中配置的金额，否则按比例计算
+            # 优先使用 fallback_capitals 中配置的金额，否则按总资金比例计算
             if strategy_id in fallback_capitals:
                 amount = fallback_capitals[strategy_id]
             else:
-                amount = round(allocatable_amount * ratio, 2)
+                amount = round(total_capital * ratio, 2)
 
             entries.append(AllocationEntry(
                 strategy_id=strategy_id,

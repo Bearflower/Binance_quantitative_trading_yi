@@ -1232,6 +1232,9 @@ class ConfigOperator:
         用于非 AI 调优写入（如资金分配 capital_limits 更新）。
         AI 调优参数变更请使用 apply_overrides()。
 
+        注：资金分配的"每日刷新金额"（DailyAllocationRefresher）属例外——
+        只 UPDATE 数据库 public.capital_allocation，绝不调用本方法修改策略 config。
+
         流程:
         1. 备份当前配置（通过 rollback_manager）
         2. 读取当前配置
@@ -3074,10 +3077,13 @@ logger.error(
 │   ├── __init__.py
 │   ├── allocation_calculator.py       # 分配比例计算引擎
 │   ├── monthly_job.py                 # 月度分配调度器
+│   ├── daily_refresher.py             # 每日净资产重算分配金额（DailyAllocationRefresher）
+│   ├── balance_provider.py            # 合约账户净资产获取（get_actual_balance）
 │   ├── pnl_collector.py               # 各策略收益数据采集
 │   ├── config_updater.py              # 写入数据库和配置
 │   └── tests/
-│       └── test_allocation.py         # 单元测试
+│       ├── test_allocation.py         # 单元测试
+│       └── test_daily_refresher.py    # 每日刷新单元测试
 │
 ├── scheduler/                        # 定时调度
 │   ├── __init__.py

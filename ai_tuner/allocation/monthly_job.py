@@ -13,7 +13,6 @@
 """
 
 from datetime import datetime, timezone, timedelta
-from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
@@ -22,6 +21,7 @@ from ai_tuner.allocation.allocation_calculator import (
     AllocationCalculator,
     AllocationResult,
 )
+from ai_tuner.allocation.balance_provider import get_actual_balance
 from ai_tuner.allocation.config_updater import AllocationConfigUpdater
 from ai_tuner.allocation.pnl_collector import PnLCollector
 
@@ -134,39 +134,14 @@ class MonthlyAllocationJob:
         """
         从交易所获取合约账户净资产（USDT）
 
-        净资产 = 账户总权益（accountEquity / totalMarginBalance），
-        包含可用余额 + 持仓保证金 + 未实现盈亏，用于计算资金分配
-        的百分比与对应资金；不使用可用余额（availableBalance），
-        否则会低估可分配资金、误判各策略占比。
-
-        优先级：
-        1. 有 binance_client 且查询成功 → 返回净资产
-        2. 查询失败或没有 binance_client → 返回 None（使用配置值兜底）
+        委托公共模块 balance_provider.get_actual_balance 实现，保持对外
+        方法签名不变，行为等价。有 binance_client 且查询成功返回净资产；
+        查询失败或没有 binance_client 返回 None（使用配置值兜底）。
 
         Returns:
             净资产（USDT），失败返回 None
         """
-        if self.binance_client is None:
-            logger.info("无币安客户端，使用配置的 total_capital")
-            return None
-
-        try:
-            account_info = await self.binance_client.get_account_info()
-            # totalMarginBalance 在 PM 账户下即 accountEquity（账户总权益/净资产）
-            total_margin_balance = account_info.get("totalMarginBalance")
-            if total_margin_balance is None:
-                logger.warning("账户信息缺少 totalMarginBalance，使用配置值兜底")
-                return None
-            amount = float(total_margin_balance)
-            logger.info(
-                "获取合约账户净资产",
-                net_asset=amount,
-                available_balance=float(account_info.get("availableBalance", Decimal("0"))),
-            )
-            return amount
-        except Exception as e:
-            logger.warning("获取合约账户净资产失败，使用配置值兜底", error=str(e))
-            return None
+        return await get_actual_balance(self.binance_client)
 
     async def run_monthly_allocation(self) -> Optional[Dict[str, Any]]:
         """

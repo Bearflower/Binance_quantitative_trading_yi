@@ -1,45 +1,69 @@
 """
 盈亏与资金数据采集器
 
-负责从各策略数据表查询当月已实现盈亏和月初分配资金。
+负责从各策略数据表查询当月已实现盈亏和月初实际占用保证金。
 
 数据来源：
     - trading.trade_records: 各策略的已实现盈亏记录
-    - public.capital_allocation: 上月分配记录（用于获取月初分配资金）
+    - public.strategy_position_snapshot_history: 各策略月初实际占用保证金
+      （open_margin，作为月收益率的分母，替代名义分配额）
 """
 
-import json
 import structlog
-from datetime import datetime, timezone, timedelta
+from datetime import datetime
 from typing import Any, Dict, List
 
-# 中国标准时间时区 (UTC+8)
-CST = timezone(timedelta(hours=8))
+# 部分策略配置名与 trade_records 落库名不一致，需显式映射（strategy_id -> 落库名列表）
+# 背景：trade_records.strategy 存中文名（如 "MTPCS策略"），且 hrs 配置名("HRS混合反转策略")
+# 与落库名("HRS策略")不一致，若直接按配置名查询会导致 PnL 恒为 0。
+_STRATEGY_DB_NAME_OVERRIDES = {
+    "hrs": ["HRS策略"],
+}
 
 logger = structlog.get_logger()
+
+
+def _to_naive(dt: datetime) -> datetime:
+    """转换为 naive datetime（数据库 TIMESTAMP 字段无时区）"""
+    return dt.replace(tzinfo=None) if dt.tzinfo else dt
 
 
 class PnLCollector:
     """
     盈亏与资金数据采集器
 
-    从数据库查询各参与策略的当月已实现盈亏和月初分配资金。
+    从数据库查询各参与策略的当月已实现盈亏和月初实际占用保证金。
     """
 
-    # 查询当月已实现盈亏的 SQL 模板
+    # 查询当月已实现盈亏的 SQL 模板（按落库中文名列表匹配）
     _PNL_QUERY_TEMPLATE = """
         SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
         FROM trading.trade_records
-        WHERE strategy = $1
+        WHERE strategy = ANY($1::text[])
           AND executed_at >= $2
           AND executed_at < $3
     """
 
-    # 查询上月分配记录的 SQL 模板
-    _PREV_ALLOCATION_QUERY = """
-        SELECT entries
-        FROM public.capital_allocation
-        WHERE month = $1
+    # 持仓占用对账的历史明细表（小时级快照，月度资金分配读取其月初实际占用保证金）
+    _SNAPSHOT_HISTORY_TABLE = "public.strategy_position_snapshot_history"
+
+    # 查询本月（snapshot_hour >= 月初）最早一条快照的持仓保证金
+    _MONTH_START_MARGIN_QUERY = f"""
+        SELECT open_margin
+        FROM {_SNAPSHOT_HISTORY_TABLE}
+        WHERE strategy_id = $1
+          AND snapshot_hour >= $2
+        ORDER BY snapshot_hour ASC
+        LIMIT 1
+    """
+
+    # 回退：本月无快照时，取早于本月最晚一条快照的持仓保证金
+    _PREV_PERIOD_MARGIN_QUERY = f"""
+        SELECT open_margin
+        FROM {_SNAPSHOT_HISTORY_TABLE}
+        WHERE strategy_id = $1
+          AND snapshot_hour < $2
+        ORDER BY snapshot_hour DESC
         LIMIT 1
     """
 
@@ -64,7 +88,7 @@ class PnLCollector:
         month_end: datetime,
     ) -> Dict[str, Dict[str, float]]:
         """
-        采集所有参与策略的当月已实现盈亏和月初分配资金
+        采集所有参与策略的当月已实现盈亏和月初实际占用保证金
 
         Args:
             month_start: 当月起始时间（包含）
@@ -73,7 +97,7 @@ class PnLCollector:
         Returns:
             {strategy_id: {"pnl": float, "capital": float}} 格式的字典
             - pnl: 当月已实现盈亏（USDT）
-            - capital: 月初分配资金（USDT），若无上月记录则为 0.0
+            - capital: 月初实际占用保证金（USDT，作收益率分母），无历史快照时为 0.0
         """
         result: Dict[str, Dict[str, float]] = {}
 
@@ -84,15 +108,21 @@ class PnLCollector:
                 continue
 
             try:
+                # 解析该策略在 trade_records 中的落库中文名列表
+                db_names = self._resolve_db_names(strategy_cfg)
+
                 # 查询当月已实现盈亏
                 pnl = await self._query_strategy_pnl(
-                    strategy_id=strategy_id,
+                    db_names=db_names,
                     month_start=month_start,
                     month_end=month_end,
                 )
 
-                # 查询月初分配资金
-                capital = await self._query_prev_month_capital(strategy_id)
+                # 查询月初实际占用保证金（作收益率分母）
+                capital = await self._query_month_start_margin(
+                    strategy_id,
+                    month_start,
+                )
 
                 result[strategy_id] = {
                     "pnl": pnl,
@@ -120,9 +150,39 @@ class PnLCollector:
 
         return result
 
+    def _resolve_db_names(self, strategy_cfg: Dict[str, Any]) -> list:
+        """
+        解析某策略在 trade_records 中的落库中文名列表
+
+        优先级：
+        1. _STRATEGY_DB_NAME_OVERRIDES 中该 strategy_id 的显式映射
+        2. 配置中的 name 字段（非空时作为单元素列表）
+        3. name 为空：返回空列表并告警（PnL 将按 0 处理）
+
+        Args:
+            strategy_cfg: 策略配置字典（含 strategy_id、name 等字段）
+
+        Returns:
+            落库中文名列表，可能为空
+        """
+        strategy_id = strategy_cfg.get("strategy_id", "")
+        override = _STRATEGY_DB_NAME_OVERRIDES.get(strategy_id)
+        if override:
+            return override
+
+        name = strategy_cfg.get("name", "")
+        if name:
+            return [name]
+
+        logger.warning(
+            "策略配置缺少可用的落库名称，PnL 采集按 0 处理",
+            strategy_id=strategy_id,
+        )
+        return []
+
     async def _query_strategy_pnl(
         self,
-        strategy_id: str,
+        db_names: list,
         month_start: datetime,
         month_end: datetime,
     ) -> float:
@@ -130,20 +190,23 @@ class PnLCollector:
         查询指定策略当月的已实现盈亏
 
         Args:
-            strategy_id: 策略唯一标识
+            db_names: 该策略在 trade_records 中的落库中文名列表（为空时直接返回 0.0）
             month_start: 当月起始时间（包含）
             month_end: 当月结束时间（不包含）
 
         Returns:
             已实现盈亏总额（USDT）
         """
+        if not db_names:
+            return 0.0
+
         # 数据库 TIMESTAMP 字段无时区，需转为 naive datetime
-        naive_start = month_start.replace(tzinfo=None) if month_start.tzinfo else month_start
-        naive_end = month_end.replace(tzinfo=None) if month_end.tzinfo else month_end
+        naive_start = _to_naive(month_start)
+        naive_end = _to_naive(month_end)
 
         row = await self.db_manager.fetch_one(
             self._PNL_QUERY_TEMPLATE,
-            strategy_id,
+            db_names,
             naive_start,
             naive_end,
         )
@@ -151,38 +214,39 @@ class PnLCollector:
             return float(row["total_pnl"])
         return 0.0
 
-    async def _query_prev_month_capital(self, strategy_id: str) -> float:
+    async def _query_month_start_margin(self, strategy_id: str, month_start: datetime) -> float:
         """
-        查询指定策略上月的分配资金
+        查询指定策略月初实际占用的持仓保证金（open_margin），作为收益率分母
 
-        从上月 public.capital_allocation 表中查找该策略的 allocated_amount。
+        从 public.strategy_position_snapshot_history 中取该策略本月最早一条快照的持仓保证金；
+        若本月无历史快照（历史表尚未积累月初数据），回退取早于本月的最晚一条快照。
 
         Args:
             strategy_id: 策略唯一标识
+            month_start: 当月起始时间（可带时区，可按需转为 naive）
 
         Returns:
-            上月分配资金（USDT），若无记录返回 0.0
+            月初实际占用保证金（USDT）；无任何历史快照时返回 0.0
         """
-        # 计算上月月份标识
-        now = datetime.now(CST)
-        if now.month == 1:
-            prev_month = f"{now.year - 1}-12"
-        else:
-            prev_month = f"{now.year}-{now.month - 1:02d}"
+        naive_start = _to_naive(month_start)
 
+        # 优先取本月最早一条快照的持仓保证金
         row = await self.db_manager.fetch_one(
-            self._PREV_ALLOCATION_QUERY,
-            prev_month,
+            self._MONTH_START_MARGIN_QUERY,
+            strategy_id,
+            naive_start,
         )
+        if row is not None and row.get("open_margin") is not None:
+            return float(row["open_margin"])
 
-        if row and row.get("entries"):
-            entries = row["entries"]
-            # entries 可能是 JSON 字符串或已解析的列表
-            if isinstance(entries, str):
-                entries = json.loads(entries)
-            if isinstance(entries, list):
-                for entry in entries:
-                    if entry.get("strategy_id") == strategy_id:
-                        return float(entry.get("allocated_amount", 0.0))
+        # 本月无快照，回退到早于本月的最晚一条快照
+        row = await self.db_manager.fetch_one(
+            self._PREV_PERIOD_MARGIN_QUERY,
+            strategy_id,
+            naive_start,
+        )
+        if row is not None and row.get("open_margin") is not None:
+            return float(row["open_margin"])
 
+        logger.warning("策略无历史持仓快照，月初占用按 0 处理", strategy_id=strategy_id)
         return 0.0
