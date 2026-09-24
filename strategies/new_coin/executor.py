@@ -26,6 +26,7 @@ from shared.position_baseline import (
     calc_occupied_margin,
     calc_position_margin,
 )
+from shared.utils import to_aware_utc
 
 
 logger = structlog.get_logger()
@@ -1778,6 +1779,33 @@ class TradingExecutor:
         except Exception as e:
             logger.error(f"检查持仓管理失败: {symbol}, 错误: {e}")
     
+    def _normalize_entry_time(
+        self, symbol: str, entry_time: Any, check_name: str
+    ) -> Optional[datetime]:
+        """
+        规范化入场时间并做判空告警（供各止损检查方法复用）
+
+        入场时间来源不一：持仓跟踪表存 aware datetime，而重启后的持仓重建流程可能传入
+        ISO 字符串；若直接参与 datetime 相减会抛 TypeError，导致止损检查失效。此处统一
+        调用 to_aware_utc 规范化，转换失败时记录告警并返回 None。
+
+        Args:
+            symbol: 交易对，用于日志排查
+            entry_time: 原始入场时间（ISO 字符串 / naive datetime / aware datetime 等）
+            check_name: 检查名称（如 "紧急止损"），用于拼接告警文案
+
+        Returns:
+            规范化后的 aware UTC datetime；返回 None 表示无法解析，调用方应跳过检查
+        """
+        normalized = to_aware_utc(entry_time)
+        if normalized is None:
+            logger.warning(
+                f"入场时间无法解析，跳过{check_name}检查",
+                symbol=symbol,
+                entry_time=entry_time,
+            )
+        return normalized
+
     async def _check_emergency_stop(self, symbol: str, entry_time: datetime) -> None:
         """
         检查紧急止损
@@ -1791,8 +1819,14 @@ class TradingExecutor:
             entry_time: 入场时间
         """
         try:
+            # 防御性规范化：entry_time 可能来自 ISO 字符串（如重启后的持仓重建流程），
+            # 统一转为 aware datetime 后再相减，避免 TypeError 导致止损检查失效
+            normalized_entry_time = self._normalize_entry_time(symbol, entry_time, "紧急止损")
+            if normalized_entry_time is None:
+                return
+
             # 计算持仓时长（分钟）
-            holding_minutes = (datetime.now(timezone.utc) - entry_time).total_seconds() / 60
+            holding_minutes = (datetime.now(timezone.utc) - normalized_entry_time).total_seconds() / 60
             
             # 超过检查时间则不触发
             if holding_minutes > self.emergency_stop_check_minutes:
@@ -1860,8 +1894,14 @@ class TradingExecutor:
             entry_time: 入场时间
         """
         try:
+            # 防御性规范化：entry_time 可能来自 ISO 字符串（如重启后的持仓重建流程），
+            # 统一转为 aware datetime 后再相减，避免 TypeError 导致止损检查失效
+            normalized_entry_time = self._normalize_entry_time(symbol, entry_time, "时间止损")
+            if normalized_entry_time is None:
+                return
+
             # 计算持仓时长
-            holding_hours = (datetime.now(timezone.utc) - entry_time).total_seconds() / 3600
+            holding_hours = (datetime.now(timezone.utc) - normalized_entry_time).total_seconds() / 3600
             
             if holding_hours >= self.max_holding_hours:
                 # 检查是否达到第一目标

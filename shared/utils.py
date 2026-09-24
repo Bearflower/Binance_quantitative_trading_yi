@@ -6,6 +6,7 @@ import asyncio
 import functools
 import os
 import re
+from datetime import datetime, timezone
 from typing import Any, Callable, Dict, Optional
 
 import structlog
@@ -205,3 +206,47 @@ def get_nested_value(config: Dict[str, Any], key_path: str) -> Any:
         else:
             return None
     return current
+
+
+def to_aware_utc(value: Any, default: Optional[datetime] = None) -> Optional[datetime]:
+    """
+    将各种形式的入参统一规范化为 timezone-aware 的 UTC datetime
+
+    用于消除不同数据结构对时间字段的类型约定差异：例如本地持仓记录 self.positions
+    以 ISO 字符串保存 entry_time（需持久化到数据库），而持仓跟踪表 position_tracking
+    以 aware datetime 保存。若两者混用后直接参与 datetime 相减，会抛出
+    `unsupported operand type(s) for -: 'datetime.datetime' and 'str'`，
+    导致止损等资金保护逻辑失效。所有时间规范化逻辑统一在此实现，禁止各模块重复编写。
+
+    Args:
+        value: 待规范化的时间值，支持以下类型：
+            - ISO 格式字符串（如 "2026-09-19T17:03:32.231255+00:00"）
+            - naive datetime（无时区，按 UTC 补全）
+            - aware datetime（含时区，统一转换到 UTC）
+            - None 或其他非法值
+        default: 无法解析时返回的兜底值，默认 None
+
+    Returns:
+        timezone-aware 的 UTC datetime；当 value 为 None 或解析失败时返回 default
+    """
+    if value is None:
+        return default
+
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            # 非法 ISO 字符串，返回兜底值
+            return default
+        # 解析结果若为 naive，按 UTC 补全时区；否则统一转换到 UTC
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
+
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+
+    # 其他非预期类型（数字、列表等）无法规范化
+    return default

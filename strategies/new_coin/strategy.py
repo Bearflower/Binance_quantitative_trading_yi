@@ -18,6 +18,7 @@ from shared.database import DatabaseManager
 from shared.condition_orders import get_open_orders
 from shared.strategy_state import sync_open_positions
 from shared.position_baseline import rebuild_from_exchange
+from shared.utils import to_aware_utc
 
 from .scoring_engine import ScoringEngine, ScoringResult
 from .pattern import PatternRecognizer
@@ -1685,7 +1686,11 @@ class NewCoinStrategy(BaseStrategy):
             entry.setdefault('algo_ids', {})
             entry['entry_price'] = pos['entry_price']
             entry['entry_quantity'] = pos['quantity']
-            entry['entry_time'] = pos['entry_time']
+            # self.positions 中的 entry_time 是 ISO 字符串（持久化格式），
+            # 但 executor.position_tracking 的约定是 aware datetime；
+            # 若直接赋值，重启后 (now - entry_time) 会抛 TypeError，导致紧急止损/时间止损失效，
+            # 故此处必须统一转换为 aware datetime，转换失败时以当前 UTC 时间兜底。
+            entry['entry_time'] = to_aware_utc(pos['entry_time']) or datetime.now(timezone.utc)
             tracking[symbol] = entry
         if rebuilt:
             logger.info("持仓基线已同步到 position_tracking", symbols=list(rebuilt.keys()))
