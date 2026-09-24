@@ -195,8 +195,48 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H 43.156.242.184 >> ~/.ssh/known_hosts
 
+          # 写 SSH 客户端配置：Host/User/IdentityFile 与超时加固参数在此统一定义一次。
+          # 后续所有 scp/ssh 调用自动继承，无需再显式指定 `-i` 与 `root@`（并非漏写），
+          # 既避免重复书写导致静默挂起，也消除了三处调用中 `-i`/`root@` 的冗余。
+          cat >> ~/.ssh/config << 'SSH_CONFIG'
+          Host 43.156.242.184
+            User root
+            IdentityFile ~/.ssh/id_rsa
+            ConnectTimeout 15
+            ServerAliveInterval 15
+            ServerAliveCountMax 3
+          SSH_CONFIG
+          chmod 600 ~/.ssh/config
+
+          # 写公共重试函数：仅供后续 step 通过 source 复用，避免重复代码。
+          # 关键设计：只在 exit 255（连接层失败）时重试；其余 exit code 立即返回。
+          # 因为远程部署脚本有真实副作用（pull/up/写部署日志），
+          # 对脚本自身失败重试会造成重复部署与审计日志污染，故仅连接失败才重试。
+          cat > /tmp/ci_retry.sh << 'RETRY_SH'
+          retry_connect() {
+            local i rc
+            for i in 1 2 3; do
+              rc=0
+              "$@" || rc=$?
+              if [ "$rc" -eq 0 ]; then
+                return 0
+              fi
+              if [ "$rc" -ne 255 ]; then
+                echo "❌ 非连接类失败（exit ${rc}），不重试"
+                return "$rc"
+              fi
+              echo "⚠️ 连接失败（exit 255），第 ${i}/3 次，15s 后重试..."
+              sleep 15
+            done
+            echo "❌ 连接重试 3 次仍失败"
+            return 255
+          }
+          RETRY_SH
+
       - name: 📤 上传 docker-compose.yml（scp）
-        run: scp -i ~/.ssh/id_rsa docker-compose.yml root@43.156.242.184:/root/trading_system/docker-compose.yml
+        run: |
+          source /tmp/ci_retry.sh
+          retry_connect scp docker-compose.yml 43.156.242.184:/root/trading_system/docker-compose.yml
 
       - name: 🚀 生成并上传远程部署脚本
         run: |
@@ -245,7 +285,10 @@ jobs:
           REMOTE_SCRIPT
           sed -i "s|__GHCR_TOKEN__|${{ secrets.GHCR_PULL_TOKEN }}|g" /tmp/deploy.sh
           sed -i "s|__COMMIT_SHA__|${{ github.sha }}|g" /tmp/deploy.sh
-          scp -i ~/.ssh/id_rsa /tmp/deploy.sh root@43.156.242.184:/tmp/deploy.sh
+          source /tmp/ci_retry.sh
+          retry_connect scp /tmp/deploy.sh 43.156.242.184:/tmp/deploy.sh
 
       - name: ▶️ 执行远程部署脚本
-        run: ssh -i ~/.ssh/id_rsa root@43.156.242.184 "bash /tmp/deploy.sh && rm /tmp/deploy.sh"
+        run: |
+          source /tmp/ci_retry.sh
+          retry_connect ssh 43.156.242.184 "bash /tmp/deploy.sh && rm /tmp/deploy.sh"

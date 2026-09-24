@@ -50,9 +50,12 @@
 # 三个 Job
 detect       # 路径过滤（纯诊断，输出变更清单）
 build-all    # 静态 10 个矩阵并行
-             # → 每个 job 自己 git diff HEAD~1 HEAD
-             # → shared/ 变了？→ 构建
-             # → 自己目录变了？→ 构建
+             # → 每个 job 自己 git diff ${{ github.event.before }}..${{ github.sha }}
+             #   （整段推送范围，checkout fetch-depth: 0；before 全 0 时回退 HEAD~1）
+             # → shared/ 或 docker-compose.yml / VERSION 变了？→ 全部重建
+             # → 变更全部落在 .github/？→ 全部重建（打破"改 CI 即全 skip"死循环）
+             # → 自己目录变了？→ 构建自己
+             # → 范围为空 / before 本地不可达？→ fail-safe 全量重建
              # → 否则 skip（秒级）
 deploy       # SSH 服务器 pull + up（幂等）
 ```
@@ -63,7 +66,7 @@ deploy       # SSH 服务器 pull + up（幂等）
 - 从 skip 判断到 exit 0：3 秒
 - 改 1 个策略 ≈ 3 min（只构建那个）
 - 改 shared/ ≈ 10 min（全部 10 个构建）
-- 只改 .github/ ≈ 3 min（全 skip + deploy 幂等执行）
+- 只改 .github/ ≈ 10 min（无法判断历史镜像是否已构建，全部 10 个重建，用于打破死循环）
 
 ### 2.3 服务器需要的 GitHub Secrets
 
@@ -185,6 +188,8 @@ ssh root@43.156.242.184 "docker exec trading_system-btc_eth cat /app/VERSION"
 
 **症状**：deploy 红了，显示 SSH exit code 100
 
+**CI 已内置 SSH 加固**：deploy job 在 `~/.ssh/config` 中统一定义 `ConnectTimeout 15` / `ServerAliveInterval 15` / `ServerAliveCountMax 3`（Host/User/IdentityFile 也由 config 提供），并由 `/tmp/ci_retry.sh` 的 `retry_connect` **仅对 exit 255（连接层失败）重试 3 次**；非 255 立即返回，避免远程脚本重复部署与审计日志污染。因此瞬时网络不可达的现象从"静默挂起约 16 分钟"变为"约 45 秒内快速失败"（Run #18 曾挂起 953 秒后报 255）。
+
 **常见原因**：
 - `SERVER_SSH_KEY` Secret 没配或配错
 - 服务器密钥没正确绑定到云平台实例
@@ -258,11 +263,11 @@ docker builder prune -f         # 清理构建缓存（更激进）
 docker images prune -f          # 清理未使用镜像
 ```
 
-### 问题 8：只改了 deploy.yml 但 Actions 全 skip
+### 问题 8：只改了 deploy.yml，却触发全部 10 个镜像重建
 
-**现象**：build-all 10 个 job 全部 skip（git diff 发现只有 deploy.yml 变了）
+**现象**：一次推送只改了 `.github/` 下的文件（如 `deploy.yml`），但 build-all 10 个 job 全部绿色构建。
 
-**这是正常行为**。deploy.yml 是 CI/CD 配置，不影响镜像内容。deploy job 会正常跑（pull + up 幂等执行，服务器容器不会乱）。
+**这是有意为之，不是故障**。判定逻辑中，若变更**全部落在 `.github/`**，无法判断历史镜像是否已构建（典型的"修 CI"提交若全部 skip，会导致真正的代码修复永远无法上线），因此改为全部重建，专门用于打破该死循环。
 
 ---
 
@@ -295,4 +300,4 @@ docker system prune -f
 
 ---
 
-**最后更新：** 2026-09-23（v3 — GitHub Actions + GHCR 自动化方案）
+**最后更新：** 2026-09-24（v3.1 — deploy job SSH 加固：超时参数 + 仅连接失败重试 3 次）

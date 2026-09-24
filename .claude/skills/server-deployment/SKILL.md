@@ -13,8 +13,8 @@ description: 服务器自动化部署（主项目专用）。提供 SSH 免密�
 ## 关键信息速查
 
 - **生产服务器**：`43.156.242.184`（root，SSH 密钥 `/Users/yl/vscode/inspection_automation/docs/only.pem`，权限必须 600，禁止提交进 Git）
-- **一键部署入口**：`./one_click_deploy.sh`（打包→上传→部署→验证一体）
-- **部署验证**：`./verify_deployment.sh`
+- **一键部署入口**：push `main` → GitHub Actions 自动云端构建镜像 → push GHCR → SSH 服务器 `docker compose pull && docker compose up -d`（全自动，已无手动部署脚本）
+- **部署验证**：Actions Run 全绿 + 服务器 `deploy_logs/YYYYMMDD.log` 出现 `DEPLOY_SUCCESS` + 容器内 VERSION 与本地一致
 - **变更范围分析**：按 `git diff` 对照变更-容器映射表，按需重建（`shared/` 变更 → 重建全部策略容器 + ai-tuner；`.env` 变更 → 仅重启；hrs 的 Dockerfile 是 `COPY . /app/`，任何项目文件变更都要重建 hrs）
 
 ## 铁律
