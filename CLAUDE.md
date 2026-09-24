@@ -55,7 +55,7 @@
 1. **变更范围分析**：按 `git diff` 对照变更-容器映射表，按需重建（`shared/` 变更 → 重建所有策略容器 + ai-tuner；`.env` 变更 → 仅重启；hrs 的 Dockerfile 是 `COPY . /app/`，任何项目文件变更都要重建 hrs）
 2. **防部署幻觉五层验证**：容器状态 → 镜像 ID → VERSION 文件 DEPLOY_ID → 关键文件 MD5（本地 `md5 -q` vs 容器内 `md5sum`）→ 日志无错误。任一失败 = 部署失败
 3. **已知坑**：PostgreSQL 容器命名冲突会让 `set -e` 中断部署脚本，导致后面的服务（如 kline-monitor）不会被启动——部署后必须 `docker ps` 确认**所有**服务在运行
-4. 一键部署入口：`./one_click_deploy.sh`；验证：`./verify_deployment.sh`
+4. 一键部署入口：**push main → GitHub Actions 自动构建 + GHCR + SSH 部署**（见 `.trae/rules/deployment.md`），不再手动打包
 
 ## 数据库
 
