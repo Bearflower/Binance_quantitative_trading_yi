@@ -26,4 +26,5 @@ EXPOSE 8767
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD curl -f http://localhost:8767/api/health || exit 1
 
+# 生产入口用 main_docker：main.py 为遗留演示代码（api/routes.py 为占位会抛 NotImplementedError），uvicorn main:app 会误命中它导致接口 500
 CMD ["python", "-m", "uvicorn", "main_docker:app", "--host", "0.0.0.0", "--port", "8767"]
