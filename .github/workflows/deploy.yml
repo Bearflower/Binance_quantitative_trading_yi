@@ -62,7 +62,7 @@ jobs:
       - name: 📋 输出变更文件清单
         run: |
           echo "=== 本次 commit (${{ github.sha }}) 改动 ==="
-          echo "Commit message: ${{ github.event.head_commit.message }}"
+          echo "Commit message: $(printf '%s' '${{ github.event.head_commit.message }}' | tr '\n' ' ')"
           echo ""
           echo "检测到变更（自动过滤 docs/backtest/tests/.trae/*.md）"
 
