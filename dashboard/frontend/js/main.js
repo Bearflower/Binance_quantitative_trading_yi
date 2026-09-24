@@ -87,10 +87,10 @@ async function loadData() {
         ]);
 
         // 更新合约账户净资产（实时快照，不随日/周/月切换）
-        loadAccountEquity();
+        await loadAccountEquity();
 
         // 更新收益率（跟随顶部日/周/月/年切换）
-        loadReturns(currentType);
+        await loadReturns(currentType);
 
         // 更新总览
         updateOverview(overview);
