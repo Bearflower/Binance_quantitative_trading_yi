@@ -341,24 +341,12 @@ class TradingExecutor:
             atr = await self._calculate_atr(symbol)
 
             # 12. 初始化持仓跟踪（必须在创建条件单之前，确保 record_condition_order 能正常执行）
-            self.position_tracking[symbol] = {
-                'entry_price': current_price,
-                'entry_time': datetime.now(timezone.utc),  # 使用带时区的时间
-                'entry_quantity': float(quantity),
-                'atr': float(atr),
-                'lowest_price': current_price,  # 记录持仓期间的最低价
-                'target1_reached': False,
-                'target2_reached': False,
-                'remaining_quantity': float(quantity),
-                'algo_ids': {},  # 存储条件单的 algoId，key='sl'/'tp1'/'tp2'/'trailing_stop'
-                # 动态利润保护字段
-                'direction': 'SHORT',
-                'highest_price': current_price,  # 做空时追踪最高价（反弹触发止损用）
-                'trailing_activated': False,
-                'trailing_stop_price': None,
-                'pending_profit_pct': None,
-                'current_tier_index': -1,
-            }
+            #     经唯一工厂构建，确保字段集与重启恢复/补单路径完全一致
+            self.position_tracking[symbol] = self._build_tracking_entry(
+                entry_price=current_price,
+                entry_quantity=quantity,
+                atr=atr,
+            )
 
             # 记录初始持仓数量（用于止盈成交检测）
             self._last_tracked_qty[symbol] = float(quantity)
@@ -2165,8 +2153,7 @@ class TradingExecutor:
                 )
                 
                 # 平仓剩余仓位
-                remaining_quantity = Decimal(str(tracking.get('remaining_quantity', 0)))
-                if remaining_quantity > 0:
+                if self._should_close_remaining(symbol, tracking):
                     await self._close_position(symbol, self.close_percent, "移动止盈")
                 
                 # 清除持仓跟踪（幂等）
@@ -2872,6 +2859,152 @@ class TradingExecutor:
         self.position_tracking.pop(symbol, None)
         self._last_tracked_qty.pop(symbol, None)
 
+    def _should_close_remaining(self, symbol: str, tracking: Dict[str, Any]) -> bool:
+        """
+        判断移动止盈是否应平掉剩余仓位（读侧兜底）
+
+        正常条目直接依据 remaining_quantity；残缺条目（重启恢复）缺该字段时退化到
+        最近跟踪数量，二者均不可用则返回 True，交由 _close_position 依据交易所实际
+        持仓决策——避免残缺条目被当作 0 而静默漏平尾仓。
+
+        Args:
+            symbol: 交易对
+            tracking: 该 symbol 的跟踪条目
+
+        Returns:
+            bool: True 表示应尝试平仓；False 表示剩余量为 0（确已平完）无需平仓
+        """
+        remaining_raw = tracking.get('remaining_quantity')
+        if remaining_raw is None:
+            fallback_qty = self._last_tracked_qty.get(symbol)
+            logger.warning(
+                f"{symbol} 持仓跟踪缺少剩余数量，退化使用最近跟踪数量以避免漏平尾仓",
+                fallback_quantity=fallback_qty,
+            )
+            return fallback_qty is None or fallback_qty > 0
+        return float(remaining_raw) > 0
+
+    def _build_tracking_entry(
+        self,
+        *,
+        entry_price: float,
+        entry_quantity: float,
+        atr: float,
+        entry_time: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        构建字段完整的持仓跟踪条目（唯一创建入口）
+
+        所有创建 position_tracking 条目的路径都必须经此方法，确保字段集完全一致，
+        避免重启恢复等路径产生残缺条目（如只建 algo_ids），导致读侧 KeyError 或静默漏平。
+
+        Args:
+            entry_price: 入场价格
+            entry_quantity: 入场数量
+            atr: 入场时的 ATR
+            entry_time: 入场时间（aware datetime）；缺省时使用当前 UTC 时间
+
+        Returns:
+            Dict[str, Any]: 字段完整的跟踪条目（每次返回独立对象，algo_ids 为独立空字典）
+        """
+        price = float(entry_price)
+        quantity = float(entry_quantity)
+        return {
+            'entry_price': price,
+            'entry_time': entry_time or datetime.now(timezone.utc),
+            'entry_quantity': quantity,
+            'atr': float(atr),
+            'lowest_price': price,  # 持仓期间最低价（做空反弹触发移动止盈）
+            'highest_price': price,  # 做空时追踪最高价（反弹触发止损用）
+            'target1_reached': False,
+            'target2_reached': False,
+            'remaining_quantity': quantity,
+            'algo_ids': {},  # 存储条件单 algoId，key='sl'/'tp1'/'tp2'/'trailing_stop'
+            'direction': 'SHORT',
+            'trailing_activated': False,
+            'trailing_stop_price': None,
+            'pending_profit_pct': None,
+            'current_tier_index': -1,
+        }
+
+    def ensure_tracking_entry(
+        self,
+        symbol: str,
+        *,
+        entry_price: Optional[float] = None,
+        entry_quantity: Optional[float] = None,
+        atr: Optional[float] = None,
+        entry_time: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """
+        幂等获取持仓跟踪条目：不存在则创建全字段条目，已存在则只补缺失键
+
+        已存在的条目仅通过 setdefault 补齐缺失字段，绝不覆盖已有值，以保留
+        重启后已恢复的 algo_ids、已记录的最高/最低价、已置位的目标标志等状态。
+
+        Args:
+            symbol: 交易对
+            entry_price: 入场价格（创建/补齐时使用；缺省按 0.0）
+            entry_quantity: 入场数量（创建/补齐时使用；缺省按 0.0）
+            atr: 入场 ATR（创建/补齐时使用；缺省按 0.0）
+            entry_time: 入场时间（创建/补齐时使用；缺省使用当前 UTC 时间）
+
+        Returns:
+            Dict[str, Any]: 该 symbol 的跟踪条目（同一引用，可原地修改）
+        """
+        defaults = self._build_tracking_entry(
+            entry_price=float(entry_price or 0.0),
+            entry_quantity=float(entry_quantity or 0.0),
+            atr=float(atr or 0.0),
+            entry_time=entry_time,
+        )
+        entry = self.position_tracking.get(symbol)
+        if entry is None:
+            self.position_tracking[symbol] = defaults
+            return defaults
+        # 已存在：只补缺失键，绝不覆盖已有值（保住已恢复的 algo_ids / 极值等）
+        for key, value in defaults.items():
+            entry.setdefault(key, value)
+        return entry
+
+    def _mark_partial_close(self, symbol: str, closed_quantity: float, target_level: int) -> None:
+        """
+        市价部分平仓成功后回写跟踪状态（读侧兜底）
+
+        根因修复后条目字段必完整；此处仍对重启恢复的残缺条目兜底，
+        避免写回 remaining_quantity 时抛 KeyError，造成"假失败"日志与状态丢失。
+
+        Args:
+            symbol: 交易对
+            closed_quantity: 本次实际平仓数量
+            target_level: 达成的目标级别（1 或 2）
+        """
+        tracking_entry = self.position_tracking.get(symbol)
+        if tracking_entry is None:
+            logger.warning(
+                f"{symbol} 无持仓跟踪条目，跳过部分平仓状态回写",
+                target_level=target_level,
+            )
+            return
+
+        previous_remaining = tracking_entry.get('remaining_quantity')
+        if previous_remaining is None:
+            # 残缺条目兜底：退化使用入场数量作为剩余量基准
+            previous_remaining = tracking_entry.get('entry_quantity', 0.0)
+            logger.warning(
+                f"{symbol} 持仓跟踪缺少剩余数量，退化使用入场数量",
+                entry_quantity=previous_remaining,
+            )
+        tracking_entry['remaining_quantity'] = max(
+            0.0, float(previous_remaining) - float(closed_quantity)
+        )
+        if target_level == 1:
+            tracking_entry['target1_reached'] = True
+        else:
+            tracking_entry['target2_reached'] = True
+        # 同步上次跟踪数量（用于止盈成交检测）
+        self._last_tracked_qty[symbol] = tracking_entry['remaining_quantity']
+
     def update_target_status(self, symbol: str, target_level: int, exchange_qty: Optional[float] = None) -> None:
         """
         更新目标达成状态
@@ -2889,20 +3022,31 @@ class TradingExecutor:
 
         tracking = self.position_tracking[symbol]
 
+        close_percent: Optional[float]
         if target_level == 1:
             tracking['target1_reached'] = True
             logger.info(f"第一目标已达成: {symbol}")
+            close_percent = float(self.target1_close_percent)
         elif target_level == 2:
             tracking['target2_reached'] = True
             logger.info(f"第二目标已达成: {symbol}")
+            close_percent = float(self.target2_close_percent)
+        else:
+            close_percent = None
 
         # 剩余数量：优先使用交易所实际数量，缺失时按比例估算
         if exchange_qty is not None:
             tracking['remaining_quantity'] = float(exchange_qty)
-        elif target_level == 1:
-            tracking['remaining_quantity'] *= (1 - float(self.target1_close_percent))
-        elif target_level == 2:
-            tracking['remaining_quantity'] *= (1 - float(self.target2_close_percent))
+        elif close_percent is not None:
+            # 先取值再赋值（禁止 *=）：残缺条目（重启恢复）缺字段时不再抛 KeyError
+            current_remaining = tracking.get('remaining_quantity')
+            if current_remaining is None:
+                logger.warning(
+                    f"{symbol} 持仓跟踪缺少剩余数量，无法按比例估算",
+                    target_level=target_level,
+                )
+            else:
+                tracking['remaining_quantity'] = float(current_remaining) * (1 - close_percent)
 
     async def replenish_conditional_orders(self, symbol: str, entry_price: Decimal) -> bool:
         """
@@ -2975,25 +3119,13 @@ class TradingExecutor:
             # 3. 获取精度
             tick_size, step_size = await self._get_symbol_precision(symbol)
             
-            # 4. 初始化持仓跟踪（如果不存在）
+            # 4. 初始化持仓跟踪（如果不存在；经唯一工厂构建，字段集与其他路径一致）
             if symbol not in self.position_tracking:
-                self.position_tracking[symbol] = {
-                    'entry_price': float(entry_price),
-                    'entry_time': datetime.now(timezone.utc),
-                    'entry_quantity': float(current_quantity),
-                    'atr': float(atr),
-                    'lowest_price': float(entry_price),
-                    'highest_price': float(entry_price),
-                    'target1_reached': False,
-                    'target2_reached': False,
-                    'remaining_quantity': float(current_quantity),
-                    'algo_ids': {},
-                    'direction': 'SHORT',
-                    'trailing_activated': False,
-                    'trailing_stop_price': None,
-                    'pending_profit_pct': None,
-                    'current_tier_index': -1,
-                }
+                self.position_tracking[symbol] = self._build_tracking_entry(
+                    entry_price=entry_price,
+                    entry_quantity=current_quantity,
+                    atr=atr,
+                )
                 # 记录初始持仓数量（用于止盈成交检测）
                 self._last_tracked_qty[symbol] = float(current_quantity)
             
@@ -3076,12 +3208,7 @@ class TradingExecutor:
                             f"市价平仓 TP1 部分成功: {symbol}",
                             quantity=float(target1_quantity)
                         )
-                        if symbol in self.position_tracking:
-                            remaining = self.position_tracking[symbol]['remaining_quantity'] - float(target1_quantity)
-                            self.position_tracking[symbol]['remaining_quantity'] = max(0, remaining)
-                            self.position_tracking[symbol]['target1_reached'] = True
-                            # 同步上次跟踪数量（用于止盈成交检测）
-                            self._last_tracked_qty[symbol] = self.position_tracking[symbol]['remaining_quantity']
+                        self._mark_partial_close(symbol, float(target1_quantity), 1)
                 except Exception as e:
                     logger.warning(
                         f"市价平仓 TP1 部分失败: {symbol}",
@@ -3159,12 +3286,7 @@ class TradingExecutor:
                             f"市价平仓 TP2 部分成功: {symbol}",
                             quantity=float(tp2_quantity)
                         )
-                        if symbol in self.position_tracking:
-                            remaining = self.position_tracking[symbol]['remaining_quantity'] - float(tp2_quantity)
-                            self.position_tracking[symbol]['remaining_quantity'] = max(0, remaining)
-                            self.position_tracking[symbol]['target2_reached'] = True
-                            # 同步上次跟踪数量（用于止盈成交检测）
-                            self._last_tracked_qty[symbol] = self.position_tracking[symbol]['remaining_quantity']
+                        self._mark_partial_close(symbol, float(tp2_quantity), 2)
                 except Exception as e:
                     logger.warning(
                         f"市价平仓 TP2 部分失败: {symbol}",

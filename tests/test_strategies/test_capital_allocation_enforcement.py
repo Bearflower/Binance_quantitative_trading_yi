@@ -1038,6 +1038,10 @@ def _build_baseline_executor(own_symbols: Optional[set] = None) -> MagicMock:
     executor.get_open_short_symbols = AsyncMock(
         return_value={'HUTUSDT'} if own_symbols is None else own_symbols
     )
+    # 生产代码经 executor.ensure_tracking_entry（唯一创建入口）建/补条目，
+    # mock 必须绑定真实实现，否则写入落到 mock 上、position_tracking 保持为空
+    executor._build_tracking_entry = TradingExecutor._build_tracking_entry.__get__(executor)
+    executor.ensure_tracking_entry = TradingExecutor.ensure_tracking_entry.__get__(executor)
     return executor
 
 

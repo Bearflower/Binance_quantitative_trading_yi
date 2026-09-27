@@ -1542,11 +1542,15 @@ class NewCoinStrategy(BaseStrategy):
                         # 仅恢复有持仓的币种的条件单，避免无持仓时误操作
                         if symbol not in self.positions:
                             continue
-                        # 初始化 position_tracking 条目
+                        # 初始化 position_tracking 条目（经统一工厂确保字段完整，
+                        # 避免重启后残缺条目导致平仓读侧 KeyError / 静默漏平）
                         if symbol not in self.trading_executor.position_tracking:
-                            self.trading_executor.position_tracking[symbol] = {
-                                'algo_ids': {},
-                            }
+                            pos = self.positions.get(symbol) or {}
+                            self.trading_executor.ensure_tracking_entry(
+                                symbol,
+                                entry_price=float(pos.get('entry_price', 0) or 0),
+                                entry_quantity=float(pos.get('quantity', 0) or 0),
+                            )
                         role = f'db_{order.get("order_type", "UNKNOWN")}_{algo_id}'
                         self.trading_executor.position_tracking[symbol]['algo_ids'][role] = algo_id
                         restored_count += 1
@@ -1674,24 +1678,29 @@ class NewCoinStrategy(BaseStrategy):
 
         重启后若交易所已有持仓而 position_tracking 为空，占用保证金会被记为 0，
         导致在已有占用之上继续按满额度开仓；故必须把数量与入场价同步到跟踪表。
-        已存在的 algo_ids（条件单恢复）与 atr 字段必须保留，不得覆盖丢失。
+        条目经 executor.ensure_tracking_entry 建/补，已存在的 algo_ids（条件单恢复）
+        与 atr 字段由该方法以 setdefault 保留，不得覆盖丢失。
+        remaining_quantity 显式写为交易所当前实际持仓量（真实剩余量），作为重启初值。
 
         Args:
             executor: 交易执行器（提供 position_tracking）
             rebuilt: 重建后的持仓记录（key 为交易对）
         """
-        tracking = executor.position_tracking
         for symbol, pos in rebuilt.items():
-            entry = tracking.get(symbol) or {}
-            entry.setdefault('algo_ids', {})
+            # entry_time 源为 ISO 字符串，必须统一转 aware datetime，
+            # 转换失败时以当前 UTC 时间兜底（否则重启后时间止损会抛 TypeError）
+            entry_time = to_aware_utc(pos['entry_time']) or datetime.now(timezone.utc)
+            entry = executor.ensure_tracking_entry(
+                symbol,
+                entry_price=pos['entry_price'],
+                entry_quantity=pos['quantity'],
+                entry_time=entry_time,
+            )
             entry['entry_price'] = pos['entry_price']
             entry['entry_quantity'] = pos['quantity']
-            # self.positions 中的 entry_time 是 ISO 字符串（持久化格式），
-            # 但 executor.position_tracking 的约定是 aware datetime；
-            # 若直接赋值，重启后 (now - entry_time) 会抛 TypeError，导致紧急止损/时间止损失效，
-            # 故此处必须统一转换为 aware datetime，转换失败时以当前 UTC 时间兜底。
-            entry['entry_time'] = to_aware_utc(pos['entry_time']) or datetime.now(timezone.utc)
-            tracking[symbol] = entry
+            entry['entry_time'] = entry_time
+            # 交易所当前在仓数量即真实剩余量，重启后可安全作为初值
+            entry['remaining_quantity'] = pos['quantity']
         if rebuilt:
             logger.info("持仓基线已同步到 position_tracking", symbols=list(rebuilt.keys()))
 
