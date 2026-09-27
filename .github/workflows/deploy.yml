@@ -258,24 +258,37 @@ jobs:
               echo "__GHCR_TOKEN__" | docker login ghcr.io -u bearflower --password-stdin
             fi
 
-            # 2. 拉取有新版本的镜像（compose pull 自动对比 registry 标签）
+            # 2. 清理可能残留的独立部署容器（compose.yml 接管前的命名冲突防护）
+            # 场景：data-backend 曾独立 docker run 部署，compose.yml 也定义了同名 → docker compose up 报冲突 exit 1
+            # 对 compose.yml 中每个 container_name，若已存在（独立部署残留）则强制移除；不存在时 rm 非零被 `|| true` 吞掉
+            echo "🧹 清理残留独立部署容器..."
+            for name in trading_system-postgres trading_system-hrs trading_system-btc_eth trading_system-btc_eth_aggressive \
+                        trading_system-new_coin trading_system-grid ai-tuner trading_system-kline trading_system-kline-monitor \
+                        data-backend dashboard-api; do
+              if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
+                echo "   - 移除残留容器: $name"
+                docker rm -f "$name" || true
+              fi
+            done
+
+            # 3. 拉取有新版本的镜像（compose pull 自动对比 registry 标签）
             echo "📥 docker compose pull..."
             docker compose pull
 
-            # 3. 只更新镜像变了的容器（compose up -d 自动检测）
+            # 4. 只更新镜像变了的容器（compose up -d 自动检测）
             echo "🔄 docker compose up -d..."
             docker compose up -d --remove-orphans
 
-            # 4. 等容器就绪
+            # 5. 等容器就绪
             echo "⏳ 等待 15s..."
             sleep 15
 
-            # 5. 状态检查
+            # 6. 状态检查
             echo ""
             echo "✅ 当前容器状态："
             docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "trading_system|ai-tuner|data-backend|dashboard-api" || echo "⚠️ 未找到 trading 相关容器"
 
-            # 6. 写部署日志
+            # 7. 写部署日志
             mkdir -p deploy_logs
             DEPLOY_TIME=$(date "+%Y-%m-%d %H:%M:%S")
             COMMIT_SHA="__COMMIT_SHA__"
