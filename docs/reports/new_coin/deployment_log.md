@@ -1,6 +1,42 @@
 # 部署确认报告
 
 ---
+## 2026-09-27 追加部署（修复重启后 position_tracking 条目残缺：remaining_quantity KeyError / 静默漏平）
+
+### 变更内容
+- **修复 `{"error": "'remaining_quantity'", "event": "市价平仓 TP1 部分失败: APLDUSDT"}`（假失败日志）**：重启恢复路径只创建残缺条目 `{'algo_ids': {}}`，读侧四处受影响
+  - 根因（仅 new_coin，其他策略无 `_sync_baseline_to_tracking` 恢复模式）：`strategy.py` 条件单恢复只建 `{'algo_ids': {}}`，`_sync_baseline_to_tracking` 只补 `entry_price/entry_quantity/entry_time`，最终缺 `remaining_quantity`、`target1_reached`、`target2_reached`、`atr`、`lowest_price`、`highest_price`、`direction`、`trailing_activated`、`trailing_stop_price`、`pending_profit_pct`、`current_tier_index`
+  - TP1/TP2 市价平仓回写 `remaining_quantity` 抛 KeyError（**单其实已成交**，仅日志假失败且 `target1_reached` 未置位）
+  - `update_target_status` 的 `remaining_quantity *=` 抛 KeyError（原两处字面量重复 16 行）
+  - `_check_trailing_stop` 读 `.get('remaining_quantity', 0)` == 0 → **静默不平尾仓**，随后 `clear_position_tracking` 清跟踪
+  - `_sync_trailing_stop_order` / 补单路径同样受影响
+- **写入侧**：新增唯一创建入口 `executor.py::_build_tracking_entry()`（三处重复字面量收敛为一处）与幂等 `ensure_tracking_entry()`；正常开仓、补全条件单、重启恢复（条件单恢复 + 基线同步）三条路径统一走工厂，字段集完全一致；`_sync_baseline_to_tracking` 显式写 `remaining_quantity = pos['quantity']`（重启初值 = 交易所当前在仓数量）；`entry_time` 仍经 `to_aware_utc` 规范化
+- **读侧**：新增 `_mark_partial_close()`（回写不再抛 KeyError）与 `_should_close_remaining()`（剩余量缺失时退化到最近跟踪数量，避免静默漏平）；`update_target_status` 改为先取值再赋值
+- **测试**：新增 `tests/test_strategies/test_new_coin_tracking_entry.py`（11 项，含复现 L3080 写回路径）；`tests/test_strategies/test_capital_allocation_enforcement.py` 的 `_build_baseline_executor` mock 补绑真实 `_build_tracking_entry` / `ensure_tracking_entry`（生产代码现经该方法写条目）
+
+### 验证结果（五层验证）
+| 层级 | 内容 | 结果 |
+|------|------|------|
+| 1 容器状态 | trading_system-new_coin `Up (healthy)` | ✅ |
+| 2 镜像 | `ghcr.io/bearflower/trading-new-coin:latest` | ✅ |
+| 3 VERSION | ⚠️ 仓库内 VERSION 为静态文件（`DEPLOY_ID=2C5243DD` / `GIT_SHA=9aa9b62`，2026-09-23），未随本次 CI 更新；容器内与本地完全一致，故以文件 MD5 为准 | ⚠️ |
+| 4 文件MD5 | 容器内 executor.py / strategy.py 与本地逐字节一致 | ✅ |
+| 5 日志错误 | 重启后 `error`/`traceback` 计数 = 0；无 `持仓跟踪缺少剩余数量` 告警 | ✅ |
+
+### MD5（本地=容器内）
+| 文件 | MD5 |
+|------|-----|
+| strategies/new_coin/executor.py | d04d173311f443565eaa3965e0e0ad11 |
+| strategies/new_coin/strategy.py | eedd5b02e977e881618a82d2f2446e5d |
+
+### 测试
+- ✅ 本地 `tests/test_strategies` 565 passed / 1 xfailed / 0 failed；新增测试 11 passed（修复前 10 failed / 1 passed 复现回归）
+- ✅ 幻觉测试 10 项逐项实读源文件核实（import / 属性 / 配置键 `target1_close_percent` `target2_close_percent` / `rebuilt` 键 `quantity` `entry_price` `entry_time` / 同步异步上下文 / 新增行 ≤120 字符）
+- ✅ 规范检测（code-specification-inspector）：无硬编码、无重复代码、无幽灵参数、无新增超长行/超长函数 —— 通过
+- ✅ 部署路径：仅 `strategies/new_coin/` 变更 → 仅 `new-coin` 构建，其余 9 个矩阵 job skip（GitHub Actions Run #23 全绿）
+- ✅ 启动路径验证：容器重启后日志「持仓基线已同步到 position_tracking symbols=['USDBRLUSDT']」，`position_count=1`（非本策略持仓已过滤），无 `remaining_quantity` 告警
+
+---
 ## 2026-09-22 追加部署（修复 entry_time 类型不一致导致止损失效 + 重复代码重构）
 
 ### 变更内容
