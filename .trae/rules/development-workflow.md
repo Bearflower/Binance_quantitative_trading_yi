@@ -3,7 +3,7 @@
 ## 完整开发流程
 
 ```
-前置关卡 → 需求分析 → 架构设计 → 编码实现 → 代码检测 → 强制测试 → 代码审查与文档对照 → 文档更新
+前置关卡 → 需求分析 → 架构设计 → 编码实现 → 代码检测 → 强制测试 → 代码审查与文档对照 → 文档更新 → 上线部署
 ```
 
 ---
@@ -17,7 +17,7 @@
 用 TodoWrite 创建任务清单，包含完整的开发环节，全部标记为 `pending`：
 
 ```
-需求分析 → 架构设计 → 编码实现 → 代码检测 → 强制测试 → 代码审查与文档对照 → 文档更新
+需求分析 → 架构设计 → 编码实现 → 代码检测 → 强制测试 → 代码审查与文档对照 → 文档更新 → 上线部署
 ```
 
 ### 1.2 展示给用户确认
@@ -34,11 +34,12 @@
 | 5 | 强制测试（幻觉测试 + 功能测试 + 覆盖率验证） | 调度者逐项检查 + api-test-pro | ⏳ 待执行 |
 | 6 | 代码审查与文档对照 | code-specification-inspector + code-document-curator | ⏳ 待执行 |
 | 7 | 文档更新 | code-document-curator | ⏳ 待执行 |
-| 8 | 上下文交接存档 | `context-handoff` skill | ⏳ 待执行 |
+| 8 | 上线部署 | 调度者（push → Actions 自动部署 → 结果汇报） | ⏳ 待执行 |
+| 9 | 上下文交接存档 | `context-handoff` skill | ⏳ 待执行 |
 
-> 说明：第 8 行"上下文交接存档"是**会话级交接**，非代码开发环节；触发时机为上下文使用率偏高（约 70%+）、完成关键里程碑、或用户手动触发（详见"七・五、上下文交接存档"）。若本次任务未产生新状态，可标注"跳过"。
+> 说明：第 9 行"上下文交接存档"是**会话级交接**，非代码开发环节；触发时机为上下文使用率偏高（约 70%+）、完成关键里程碑、或用户手动触发（详见"七・五、上下文交接存档"）。若本次任务未产生新状态，可标注"跳过"。
 >
-> ⚙️ **部署已自动化**：push main 后 GitHub Actions 自动云端构建镜像 → push GHCR → SSH 服务器 pull+up → 写部署日志。**无需 AI 干预部署流程。** 开发完成告知用户"已 push，Actions 自动部署中"即可。
+> ⚙️ **部署已自动化**：push main 后 GitHub Actions 自动云端构建镜像 → push GHCR → SSH 服务器 pull+up → 写部署日志。AI 不需要手动 SSH 部署，但**必须负责 push main + 观察 Actions 结果 + 告知用户部署状态**。
 
 是否确认开始执行？
 ```
@@ -148,7 +149,7 @@
 3. 涉及代码编写时，调用 `backend-architect` 和 `python-engineer`，让其先熟读开发规范文档后再开发
 4. 代码编写完成后，先调 `code-specification-inspector` 做快速规范检查，通过后进入幻觉测试（逐项验证 10 项检查清单），再进入功能测试阶段
 5. 代码审查时，先调 `code-specification-inspector` 智能体，再调 `TRAE-code-review` 技能
-6. 测试通过 → 文档更新 → **告知用户开发结果**（push main 后 Actions 自动部署，无需 AI 手动部署）
+6. 测试通过 → 文档更新 → **push main 触发部署** → 观察 Actions Run 状态 → 全绿则部署完成，红了则读 log 找原因
 
 ---
 
@@ -289,28 +290,37 @@
 
 ---
 
-## 七、部署已自动化（无需 AI 干预）⭐⭐⭐
+## 七、上线部署（自动化 + 流程化）⭐⭐⭐
 
-**部署由 GitHub Actions 全自动完成，AI 不需要也不应该手动执行部署流程。**
+**部署由 GitHub Actions 全自动执行，但 AI 必须负责触发、观察、汇报。push main 是开发流程的最后一步，不是可选项。**
 
-### 7.1 部署触发
+### 7.1 部署触发（push main）
 
-开发完成后，用户（或 AI 辅助）执行 `git push origin main` 即触发部署：
+开发完成后，AI 或用户执行 `git push origin main` 即触发部署：
 
 ```
 push main → GitHub Actions 自动触发 → 云端构建镜像 → push GHCR → SSH 服务器 pull+up → 写部署日志
 ```
 
-### 7.2 AI 在部署环节的职责
+### 7.2 AI 在部署环节的职责（必须执行）
 
-| 场景 | AI 要做的 | AI 不要做的 |
-|------|----------|-----------|
-| 开发完成告知用户 | 说"已 push，Actions 自动部署中" | 不要手动跑 `docker-compose build` |
-| Actions 成功 | 告知用户 Actions Run #N 全绿 | 不要自己 SSH 服务器验证 |
-| Actions 失败 | 告知用户失败原因（读 Actions log） | 不要自己手动部署掩盖问题 |
-| 服务器运维 | 用户明确要求时才 SSH | 不要主动 SSH 生产服务器 |
+| 步骤 | AI 要做的 | 说明 |
+|------|----------|------|
+| **第 1 步：push main** | 执行 `git push origin main` | 这是开发流程的最后一个动作，测试+审查+文档都 OK 了才推 |
+| **第 2 步：等待 Actions** | 等 3-5 分钟后打开 Actions Run 页面 | 不要 push 完就完事，必须等构建部署完成 |
+| **第 3 步：确认结果** | Actions Run 全绿 ✅ → 部署完成；有红 ❌ → 读 log 找原因 | 不要假设"应该成功了" |
+| **第 4 步：告知用户** | 汇总结论：成功 or 失败 + 原因 + 下一步建议 | 用户必须知道部署状态 |
 
-### 7.3 部署状态查询方式
+### 7.3 Actions Run 结果判定
+
+| 结果 | AI 汇报模板 |
+|------|-----------|
+| **全绿** ✅ | "✅ Actions Run #123 全绿，10 个镜像已构建，部署完成。服务器 11 个容器正常运行。" |
+| **build-all 某个 job 红了** | "❌ build-all 的 trading-hrs 构建失败，log 显示 pip install 超时。建议重新 Run 或加 PIP_INDEX_URL。" |
+| **deploy job 红了** | "❌ deploy job 失败，SSH exit code 100。可能是 SERVER_SSH_KEY Secret 未配或服务器防火墙问题。" |
+| **skip 合理** | "3 个 build-all job 被 skip（只改了 .trae/rules/），deploy job 正常执行。✅ 部署完成。" |
+
+### 7.4 部署状态查询方式
 
 | 查什么 | 去哪查 |
 |--------|--------|
@@ -319,9 +329,7 @@ push main → GitHub Actions 自动触发 → 云端构建镜像 → push GHCR �
 | 服务器部署日志 | SSH 服务器 → `/root/trading_system/deploy_logs/YYYYMMDD.log` |
 | 容器状态 | `ssh root@43.156.242.184 "docker ps"` |
 
-### 7.4 什么时候需要手动干预部署
-
-只有以下场景需要 AI 或用户手动 SSH 服务器：
+### 7.5 什么时候需要手动干预部署
 
 | 场景 | 原因 | 操作 |
 |------|------|------|
@@ -330,11 +338,11 @@ push main → GitHub Actions 自动触发 → 云端构建镜像 → push GHCR �
 | 服务器磁盘满了 | Docker 构建缓存 | `docker system prune -f` |
 | 服务器重启后 | 容器可能没自动起来 | `docker compose up -d` |
 
-> 以上操作属于**运维**，不属于"开发流程"。开发流程到此结束。
+> 以上操作属于**运维**，AI 只有在用户明确要求时才可执行。
 
-### 7.5 详细部署技术文档
+### 7.6 详细部署技术文档
 
-详见 `deployment.md`（已同步更新为 GitHub Actions + GHCR 方案）。
+详见 `deployment.md`（GitHub Actions + GHCR 方案的完整技术细节）。
 
 ---
 
@@ -380,4 +388,4 @@ push main → GitHub Actions 自动触发 → 云端构建镜像 → push GHCR �
 
 ---
 
-**最后更新：** 2026-09-08
+**最后更新：** 2026-09-27
