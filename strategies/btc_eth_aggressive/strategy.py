@@ -5310,11 +5310,35 @@ class BTCEthStrategy:
 
         Returns:
             成交后的订单信息，超时返回 None
+
+        说明：
+            Binance PM 统一账户的 U-M 订单在下单后会有短暂（~百 ms 级）
+            的 API 可见延迟，期间 GET /papi/v1/um/order 查询会返回 [-2013]
+            Order does not exist。本方法在首循环前小等 0.5s 让 PM API 同步，
+            并把 -2013 当作可重试的瞬时错误在循环内消化，不让它落到外层
+            except 直接返回 None。
         """
         try:
+            # PM API 订单可见性：下单后短暂延迟才可用，首循环前先小等
+            await asyncio.sleep(min(check_interval, 0.5))
+
             deadline = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
             while datetime.now(timezone.utc) < deadline:
-                order = await self.binance.get_order(symbol, order_id)
+                try:
+                    order = await self.binance.get_order(symbol, order_id)
+                except BinanceAPIError as api_err:
+                    # [-2013] Order does not exist: PM API 瞬时不可见，等待后重试
+                    if api_err.code == -2013:
+                        logger.warning(
+                            f"{symbol} 限价单 PM API 暂不可见（-2013），{check_interval:.1f}s 后重试",
+                            order_id=order_id,
+                            error=str(api_err),
+                        )
+                        await asyncio.sleep(check_interval)
+                        continue
+                    # 其他 BinanceAPIError（如 -2022 / -4118）直接向上抛，落外层 except
+                    raise
+
                 status = order.get("status", "")
 
                 if status == "FILLED":
