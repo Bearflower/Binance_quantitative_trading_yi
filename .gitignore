@@ -43,3 +43,6 @@ backtest/cash_carry/data_2y/
 
 # 会话交接存档（本地交接用，不入库）
 docs/handoffs/
+
+# 项目归档目录（清理出的冗余文件，暂存不入库）
+_archive/
