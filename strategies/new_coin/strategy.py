@@ -1621,7 +1621,10 @@ class NewCoinStrategy(BaseStrategy):
         self._prune_missing_positions(executor, rebuilt)
 
         self.positions = rebuilt
-        self._sync_baseline_to_tracking(executor, rebuilt)
+        # 重启恢复的条目可能缺失 atr，会使 ATR 相关止盈/止损阈值退化为 0 并误触发平仓
+        # （资金风险）。故在同步基线前批量算得 ATR，由同步侧仅回填缺失项（不覆盖有效值）。
+        atr_map = await self._calc_rebuilt_atr_map(executor, rebuilt)
+        self._sync_baseline_to_tracking(executor, rebuilt, atr_map)
         executor.baseline_ready = True
         logger.info(
             "持仓基线重建完成",
@@ -1629,6 +1632,32 @@ class NewCoinStrategy(BaseStrategy):
             total_margin=round(sum(p['margin'] for p in rebuilt.values()), 4),
             symbols=list(rebuilt.keys()),
         )
+
+    async def _calc_rebuilt_atr_map(
+        self, executor: Any, rebuilt: Dict[str, Dict[str, Any]]
+    ) -> Dict[str, Decimal]:
+        """
+        批量计算重建持仓各币种的 ATR（供基线同步回填缺失项）
+
+        重启恢复的条目若缺失 atr，ATR 相关阈值会退化为 0 并误触发平仓；故在同步基线
+        前一次性并行取回 ATR。executor._calculate_atr 内部已兜底异常并返回 0，此处
+        无需重复 try/except；K 线不可用时对应值即为 0，由同步侧统一汇总告警。
+
+        Args:
+            executor: 交易执行器（提供 _calculate_atr）
+            rebuilt: 重建后的持仓记录（key 为交易对）
+
+        Returns:
+            Dict[str, Decimal]: {symbol: ATR}；rebuilt 为空时返回空字典
+        """
+        if not rebuilt:
+            return {}
+        symbols = list(rebuilt.keys())
+        # 各 symbol 的 ATR 相互独立，并行计算以缩短重启恢复耗时
+        atrs = await asyncio.gather(
+            *[executor._calculate_atr(symbol) for symbol in symbols]
+        )
+        return dict(zip(symbols, atrs))
 
     async def _filter_own_positions(
         self, executor: Any, positions: Dict[str, Any]
@@ -1672,6 +1701,7 @@ class NewCoinStrategy(BaseStrategy):
         self,
         executor: Any,
         rebuilt: Dict[str, Dict[str, Any]],
+        atr_map: Optional[Dict[str, Decimal]] = None,
     ) -> None:
         """
         将重建后的持仓基线同步写入 executor.position_tracking（R4 / AC-3）
@@ -1679,13 +1709,17 @@ class NewCoinStrategy(BaseStrategy):
         重启后若交易所已有持仓而 position_tracking 为空，占用保证金会被记为 0，
         导致在已有占用之上继续按满额度开仓；故必须把数量与入场价同步到跟踪表。
         条目经 executor.ensure_tracking_entry 建/补，已存在的 algo_ids（条件单恢复）
-        与 atr 字段由该方法以 setdefault 保留，不得覆盖丢失。
+        由该方法以 setdefault 保留，不得覆盖丢失；atr 则仅在"本次算得有效值且条目当前
+        缺失（<=0）"时回填，绝不覆盖条件单恢复路径已写入的有效 atr（避免两个写入口
+        互相覆盖，也避免 ATR 阈值退化为 0 造成误平仓）。
         remaining_quantity 显式写为交易所当前实际持仓量（真实剩余量），作为重启初值。
 
         Args:
             executor: 交易执行器（提供 position_tracking）
             rebuilt: 重建后的持仓记录（key 为交易对）
+            atr_map: {symbol: ATR}；为 None 或缺该币种时不回填 atr
         """
+        missing_atr: List[str] = []
         for symbol, pos in rebuilt.items():
             # entry_time 源为 ISO 字符串，必须统一转 aware datetime，
             # 转换失败时以当前 UTC 时间兜底（否则重启后时间止损会抛 TypeError）
@@ -1701,8 +1735,37 @@ class NewCoinStrategy(BaseStrategy):
             entry['entry_time'] = entry_time
             # 交易所当前在仓数量即真实剩余量，重启后可安全作为初值
             entry['remaining_quantity'] = pos['quantity']
+            self._backfill_tracking_atr(entry, atr_map.get(symbol) if atr_map else None)
+            # 回填后仍无有效 ATR（K 线不可用等），汇总告警一次，避免逐币刷屏
+            if float(entry.get('atr', 0) or 0) <= 0:
+                missing_atr.append(symbol)
+        if missing_atr:
+            logger.warning(
+                "重启基线重建：部分币种 ATR 缺失（K 线不可用或数据不足），"
+                "ATR 相关止盈/止损阈值可能退化",
+                symbols=sorted(missing_atr),
+            )
         if rebuilt:
             logger.info("持仓基线已同步到 position_tracking", symbols=list(rebuilt.keys()))
+
+    @staticmethod
+    def _backfill_tracking_atr(entry: Dict[str, Any], atr: Optional[Decimal]) -> None:
+        """
+        回填跟踪条目的 atr（原地修改）
+
+        仅当"新值有效（>0）且条目当前 atr<=0"时写入：既不覆盖已有有效值，也不写入无效值。
+
+        Args:
+            entry: 持仓跟踪条目
+            atr: 本次计算得到的 ATR（None/<=0 视为无效，不写入）
+        """
+        if atr is None:
+            return
+        atr_value = float(atr)
+        if atr_value <= 0:
+            return
+        if float(entry.get('atr', 0) or 0) <= 0:
+            entry['atr'] = atr_value
 
     def _merge_rebuilt_positions(
         self, rebuilt_positions: Dict[str, Any]

@@ -2104,6 +2104,30 @@ class TradingExecutor:
         """
         return 5.0
     
+    def _warn_invalid_atr(self, symbol: str, context: str, atr) -> bool:
+        """
+        ATR 无效（<=0）时记中文告警并返回 True，调用方据此跳过本轮检查
+
+        atr 参数不加类型注解：两处调用分别传入 float（移动止盈读原始条目）与
+        Decimal（动态利润保护先经 Decimal(str(...)) 归一），二者均支持与 0 比较
+        及 float() 转换，避免额外引入 Union 或强转。
+
+        Args:
+            symbol: 交易对
+            context: 触发场景的中文名（如"移动止盈"/"动态利润保护"），拼接进告警文案
+            atr: 当前 ATR 值（float 或 Decimal）
+
+        Returns:
+            bool: True 表示 ATR 无效、调用方应跳过本轮；False 表示有效可继续
+        """
+        if atr <= 0:
+            logger.warning(
+                f"{symbol} {context}缺少有效 ATR，跳过本轮检查（避免误触发平仓）",
+                atr=float(atr),
+            )
+            return True
+        return False
+
     async def _check_trailing_stop(self, symbol: str) -> None:
         """
         检查移动止盈
@@ -2138,6 +2162,15 @@ class TradingExecutor:
                 logger.debug(f"更新最低价: {symbol} = {current_price}")
                 return
             
+            # atr 防护：重启恢复路径可能未回填 atr（视为 0）。此时阈值 = 0×倍数 = 0，
+            # 而进入本分支必有 current_price >= lowest_price（见上方最低价早退块），故
+            # price_bounce >= 0 恒为真 → 重启后第一次检查即误触发移动止盈平仓（资金风险）。
+            # 故 atr<=0 时记中文告警并跳过本轮阈值比较与平仓；此处最低价已维护完毕，
+            # 不会因跳过而漏更新最低价（方向保守）。本方法返回契约为 None，直接 return
+            # 与上方最低价分支的既有返回一致，不破坏调用方 check_position_management。
+            if self._warn_invalid_atr(symbol, "移动止盈", atr):
+                return
+
             # 计算反弹幅度
             price_bounce = current_price - lowest_price
             trailing_stop_threshold = atr * float(self.trailing_stop_atr_multiplier)
@@ -2363,6 +2396,15 @@ class TradingExecutor:
             atr = Decimal(str(tracking.get('atr', 0)))
             highest_price = tracking.get('highest_price')
             lowest_price = tracking.get('lowest_price')
+
+            # atr 防护：重启恢复路径可能未回填 atr（视为 0）。此时硬止损价会退化为
+            # entry_price（entry + 0×倍数），"最终止损价"被错误压低到入场价附近，
+            # 价格一回到入场价即判定 triggered → 重启后立刻误平仓（资金风险）。
+            # 故 atr<=0 时记中文告警并跳过本轮。本方法返回契约为 None，调用方
+            # check_position_management 以裸 await 调用并忽略返回值，故直接 return
+            # 与"未激活"分支的既有返回一致，不会破坏调用方逻辑。
+            if self._warn_invalid_atr(symbol, "动态利润保护", atr):
+                return
 
             # 获取波动率调节因子（如果配置启用）
             vol_adj = 1.0

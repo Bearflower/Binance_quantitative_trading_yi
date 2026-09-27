@@ -19,14 +19,19 @@ import os
 import pytest
 from decimal import Decimal
 from datetime import datetime
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 # 复用同目录既有测试的配置与执行器工厂，避免重复代码
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), '..', '..')
 sys.path.insert(0, os.path.abspath(PROJECT_ROOT))
 
-from test_take_profit_fill_detect import create_executor  # noqa: E402
+from test_take_profit_fill_detect import create_executor, setup_position_tracking  # noqa: E402
+from test_capital_allocation_enforcement import (  # noqa: E402
+    _build_baseline_executor,
+    _build_new_coin_strategy,
+)
+from shared.dynamic_trailing import calculate_dynamic_trailing_stop  # noqa: E402
 from strategies.new_coin.strategy import NewCoinStrategy  # noqa: E402
 
 
@@ -78,7 +83,11 @@ class TestResidualEntryReadPaths:
     async def test_trailing_stop_falls_back_to_last_tracked_qty(self):
         """移动止盈读侧：剩余量缺失时回退到最近跟踪数量并平仓（修复前静默漏平）"""
         executor = create_executor()
-        executor.position_tracking["APLDUSDT"] = {'algo_ids': {}}  # 残缺条目
+        # 残缺条目（仅缺 remaining_quantity）但显式给出有效 atr/最低价，绕过 atr<=0 防护，
+        # 保证本用例聚焦"剩余量缺失"路径：当前价 10 - 最低价 5 = 反弹 5 ≥ 2×1.5 = 3。
+        executor.position_tracking["APLDUSDT"] = {
+            'algo_ids': {}, 'atr': 2.0, 'lowest_price': 5.0,
+        }
         executor._last_tracked_qty["APLDUSDT"] = 100.0
         executor.binance_api._request = AsyncMock(return_value={'price': '10'})
         executor._close_position = AsyncMock(return_value=True)
@@ -91,7 +100,10 @@ class TestResidualEntryReadPaths:
     async def test_trailing_stop_attempts_close_when_all_missing(self):
         """剩余量与最近跟踪数量均缺失时，交由 _close_position 依据交易所决策（不漏平）"""
         executor = create_executor()
-        executor.position_tracking["APLDUSDT"] = {'algo_ids': {}}
+        # 显式给出有效 atr/最低价以绕过 atr<=0 防护，聚焦"全部缺失不漏平"路径。
+        executor.position_tracking["APLDUSDT"] = {
+            'algo_ids': {}, 'atr': 2.0, 'lowest_price': 5.0,
+        }
         executor.binance_api._request = AsyncMock(return_value={'price': '10'})
         executor._close_position = AsyncMock(return_value=True)
 
@@ -103,7 +115,11 @@ class TestResidualEntryReadPaths:
     async def test_trailing_stop_skips_when_remaining_explicit_zero(self):
         """剩余量显式为 0（确已平完）时应跳过平仓，避免多余下单"""
         executor = create_executor()
-        executor.position_tracking["APLDUSDT"] = {'algo_ids': {}, 'remaining_quantity': 0.0}
+        # 显式给出有效 atr/最低价以绕过 atr<=0 防护，聚焦"剩余量为 0 跳过平仓"路径。
+        executor.position_tracking["APLDUSDT"] = {
+            'algo_ids': {}, 'atr': 2.0, 'lowest_price': 5.0,
+            'remaining_quantity': 0.0,
+        }
         executor.binance_api._request = AsyncMock(return_value={'price': '10'})
         executor._close_position = AsyncMock(return_value=True)
 
@@ -229,3 +245,181 @@ class TestSyncBaselineToTracking:
         assert entry['atr'] == 3.0  # 保留既有 atr
         assert isinstance(entry['entry_time'], datetime)
         assert entry['entry_time'].tzinfo is not None  # 必须为 aware datetime
+
+    def test_sync_does_not_overwrite_valid_restored_atr(self):
+        """b) 条件单恢复已写入有效 atr 时，基线同步传入的 atr_map 不得覆盖它"""
+        executor = create_executor()
+        executor.position_tracking["APLDUSDT"] = {
+            'algo_ids': {'db_TAKE_PROFIT_1': 'algo-1'},
+            'atr': 3.0,  # 条件单恢复路径写入的有效 atr
+        }
+        strategy = NewCoinStrategy.__new__(NewCoinStrategy)
+        rebuilt = {
+            "APLDUSDT": {
+                'entry_price': 50.0,
+                'quantity': 200.0,
+                'entry_time': '2026-09-24T02:00:00+00:00',
+            }
+        }
+
+        strategy._sync_baseline_to_tracking(executor, rebuilt, {"APLDUSDT": Decimal('2')})
+
+        assert executor.position_tracking["APLDUSDT"]['atr'] == 3.0
+
+
+# ============================================================================
+# 6. 重启基线重建回填 atr（修复：重启恢复路径 ATR 缺失导致误平仓）
+# ============================================================================
+
+def _baseline_exchange_position() -> list:
+    """构造单个 HUTUSDT 做空持仓的交易所 get_position 返回值"""
+    return [{'symbol': 'HUTUSDT', 'positionAmt': -4, 'markPrice': 25, 'entryPrice': 30}]
+
+
+class TestRestartBaselineAtrBackfill:
+    """_rebuild_position_baseline 在重启恢复时回填 atr（资金路径防护）"""
+
+    @pytest.mark.asyncio
+    async def test_backfills_atr_when_kline_available(self):
+        """a) K 线可用时：重启恢复后条目 atr > 0（修复前恒为 0，阈值为 0 会误平仓）"""
+        strategy = _build_new_coin_strategy()
+        executor = _build_baseline_executor()
+        strategy.trading_executor = executor
+        strategy.binance_client = MagicMock()
+        strategy.binance_client.get_position = AsyncMock(
+            return_value=_baseline_exchange_position()
+        )
+
+        await strategy._rebuild_position_baseline()
+
+        entry = executor.position_tracking['HUTUSDT']
+        assert entry['atr'] > 0
+        assert entry['atr'] == pytest.approx(2.0)
+
+    @pytest.mark.asyncio
+    async def test_zero_atr_does_not_raise_and_keeps_non_positive(self):
+        """c) _calculate_atr 返回 0（K 线不可用）时：不抛异常、记告警、条目 atr 保持 <=0"""
+        strategy = _build_new_coin_strategy()
+        executor = _build_baseline_executor()
+        executor._calculate_atr = AsyncMock(return_value=Decimal('0'))
+        strategy.trading_executor = executor
+        strategy.binance_client = MagicMock()
+        strategy.binance_client.get_position = AsyncMock(
+            return_value=_baseline_exchange_position()
+        )
+
+        with patch('strategies.new_coin.strategy.logger') as mock_logger:
+            await strategy._rebuild_position_baseline()  # 不应抛异常
+
+        entry = executor.position_tracking['HUTUSDT']
+        assert float(entry.get('atr', 0) or 0) <= 0  # 无有效值时不伪造
+        mock_logger.warning.assert_called()  # 汇总告警至少一次
+
+
+# ============================================================================
+# 7. 动态利润保护 atr 防护（修复：atr=0 导致重启后立即误平仓）
+# ============================================================================
+
+class TestDynamicTrailingAtrGuard:
+    """_check_dynamic_trailing 在 atr<=0 时跳过本轮，不误触发平仓"""
+
+    @pytest.mark.asyncio
+    async def test_zero_atr_does_not_trigger_close(self):
+        """d) atr=0 时不触发平仓（修复前会因硬止损退化为入场价而误平仓）"""
+        executor = create_executor({
+            'trading': {'dynamic_trailing': {
+                'regression_tiers': [{'profit_ceiling': 999.0, 'retrace_ratio': 1.5}],
+            }},
+        })
+        # 重启恢复的条目：atr 缺失（=0），浮盈 10%，当前价回到入场价
+        setup_position_tracking(
+            executor, 'HUTUSDT',
+            atr=0.0, lowest_price=90.0, target2_reached=True,
+        )
+        executor._close_position = AsyncMock(return_value=True)
+        executor._cancel_trailing_stop_order = AsyncMock()
+
+        # 证据：无防护时（直接调用纯函数，atr=0）判定 triggered=True → 修复前据此误平仓
+        raw = calculate_dynamic_trailing_stop(
+            direction='SHORT',
+            entry_price=Decimal('100'),
+            current_price=Decimal('100'),
+            highest_price=None,
+            lowest_price=Decimal('90'),
+            trailing_activated=False,
+            tp1_hit=True,
+            tp2_hit=True,
+            pending_profit_pct=None,
+            current_tier_index=-1,
+            current_trailing_stop_price=None,
+            config=executor.config['trading']['dynamic_trailing'],
+            atr=Decimal('0'),
+            stop_loss_atr_multiplier=Decimal('2.5'),
+        )
+        assert raw is not None and raw.triggered is True, "证据：无防护时 atr=0 会误判触发"
+
+        await executor._check_dynamic_trailing('HUTUSDT', Decimal('100'))
+
+        # 修复后：atr<=0 跳过本轮 → 不取消条件单、不平仓
+        executor._cancel_trailing_stop_order.assert_not_awaited()
+        executor._close_position.assert_not_awaited()
+
+
+# ============================================================================
+# 8. 移动止盈 atr 防护（修复：atr=0 导致重启后立即误平仓）
+# ============================================================================
+
+class TestTrailingStopAtrGuard:
+    """_check_trailing_stop 在 atr<=0 时跳过阈值比较与平仓，且仍维护最低价"""
+
+    @pytest.mark.asyncio
+    async def test_zero_atr_does_not_trigger_close(self):
+        """e) atr=0 时不平仓（修复前 bounce>=0 恒真 → 重启后立即误平尾仓）"""
+        executor = create_executor()
+        tracking = setup_position_tracking(
+            executor, 'HUTUSDT', atr=0.0, lowest_price=5.0, remaining_quantity=1.0,
+        )
+        executor.binance_api._request = AsyncMock(return_value={'price': '10'})
+        executor._close_position = AsyncMock(return_value=True)
+        executor.clear_position_tracking = MagicMock()
+
+        # 证据：无防护时阈值 = 0 × trailing_stop_atr_multiplier(=1.5) = 0，
+        # 而 bounce = 10 - 5 = 5 ≥ 0 恒为真 → 修复前据此误触发平仓。
+        evidence_bounce = 10.0 - 5.0
+        evidence_threshold = 0.0 * float(executor.trailing_stop_atr_multiplier)
+        assert evidence_bounce >= evidence_threshold, "证据：无防护时 atr=0 会误判触发"
+
+        await executor._check_trailing_stop('HUTUSDT')
+
+        executor._close_position.assert_not_awaited()
+        executor.clear_position_tracking.assert_not_called()
+        assert tracking['lowest_price'] == pytest.approx(5.0)  # 未创新低，最低价不被破坏
+
+    @pytest.mark.asyncio
+    async def test_zero_atr_new_low_updates_lowest_and_skips_close(self):
+        """f) atr=0 且现价创新低：仍更新 lowest_price（跟踪完整），但不平仓"""
+        executor = create_executor()
+        tracking = setup_position_tracking(
+            executor, 'HUTUSDT', atr=0.0, lowest_price=5.0, remaining_quantity=1.0,
+        )
+        executor.binance_api._request = AsyncMock(return_value={'price': '4'})  # 低于 lowest=5
+        executor._close_position = AsyncMock(return_value=True)
+
+        await executor._check_trailing_stop('HUTUSDT')
+
+        assert tracking['lowest_price'] == pytest.approx(4.0)  # 最低价仍被维护
+        executor._close_position.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_missing_atr_treated_as_zero_and_skips_close(self):
+        """g) atr 键缺失（视为 0）时同样跳过，不平仓，不误平尾仓"""
+        executor = create_executor()
+        executor.position_tracking['HUTUSDT'] = {
+            'algo_ids': {}, 'lowest_price': 5.0, 'remaining_quantity': 1.0,
+        }
+        executor.binance_api._request = AsyncMock(return_value={'price': '10'})
+        executor._close_position = AsyncMock(return_value=True)
+
+        await executor._check_trailing_stop('HUTUSDT')
+
+        executor._close_position.assert_not_awaited()

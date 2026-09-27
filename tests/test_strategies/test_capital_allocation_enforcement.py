@@ -1042,6 +1042,9 @@ def _build_baseline_executor(own_symbols: Optional[set] = None) -> MagicMock:
     # mock 必须绑定真实实现，否则写入落到 mock 上、position_tracking 保持为空
     executor._build_tracking_entry = TradingExecutor._build_tracking_entry.__get__(executor)
     executor.ensure_tracking_entry = TradingExecutor.ensure_tracking_entry.__get__(executor)
+    # 基线重建会 await executor._calculate_atr(symbol) 回填 atr；mock 需提供可 await 的返回值，
+    # 否则 await MagicMock 会抛 TypeError
+    executor._calculate_atr = AsyncMock(return_value=Decimal('2'))
     return executor
 
 
