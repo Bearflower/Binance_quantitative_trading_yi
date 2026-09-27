@@ -559,6 +559,7 @@ position_detection:
 | R4 | 交易所条件单创建失败（如网络问题），导致动态止损价未同步到交易所 | 利润保护不生效 | 中 | 失败时记录日志，下个周期重试；硬止损单作为兜底 |
 | R5 | 波动率计算中 `_base_atr_cache` 缓存膨胀 | 内存泄漏 | 低 | 使用 LRU 或在 shared 层使用 `@lru_cache` |
 | R6 | btc_eth 修改为调用 shared 层后，回归测试不足导致功能异常 | 影响线上交易 | 中 | 优先保证 new_coin 功能，btc_eth 重构作为 P1 延后 |
+| R7 | 重启恢复（基线重建）路径未回填 `atr`（条目 `atr=0`）：`_check_dynamic_trailing` 硬止损价退化为 `entry_price`、`_check_trailing_stop` 阈值 `atr×倍数=0` 后恒真 | 重启后立即误平仓（资金风险） | 中 | 2026-09-27 修复：`_rebuild_position_baseline` 批量回填 ATR（仅补缺失项，不覆盖有效值）；`_check_dynamic_trailing` / `_check_trailing_stop` 各加 `atr<=0` 守卫（`_warn_invalid_atr`）跳过本轮 |
 
 ### 7.3 注意事项
 

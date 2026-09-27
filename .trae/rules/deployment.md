@@ -57,7 +57,9 @@ build-all    # 静态 10 个矩阵并行
              # → 自己目录变了？→ 构建自己
              # → 范围为空 / before 本地不可达？→ fail-safe 全量重建
              # → 否则 skip（秒级）
-deploy       # SSH 服务器 pull + up（幂等）
+             # → 构建前用本次 Run 元数据覆写仓库根 VERSION（进入 context: . 的 build context）
+             # → 把构建决策 + 本次 VERSION（DEPLOY_ID/GIT_SHA/DEPLOY_TIME）写入 Run Summary
+deploy       # SSH 服务器 pull + up（幂等），部署日志行追加 deploy_id=...
 ```
 
 **为什么用静态矩阵 + 每个 job 自己判断 skip？**
@@ -146,18 +148,47 @@ ssh root@43.156.242.184 "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.St
 ssh root@43.156.242.184 "cat /root/trading_system/deploy_logs/$(date '+%Y%m%d').log"
 ```
 
-预期：当日日志有 `DEPLOY_SUCCESS` 行。
+预期：当日日志有 `DEPLOY_SUCCESS commit=<sha> deploy_id=<DEPLOY_ID>` 行，其中 `deploy_id` 与 build 侧写入容器的 `DEPLOY_ID` **完全一致**（同一公式、同一 Run），可用来把"构建的镜像"与"落地的部署"一一对应。
 
-### 4.4 VERSION 文件验证
+### 4.4 VERSION 文件验证（2026-09-27 起对本轮构建的容器已可用）
 
-```bash
-# 本地
-cat VERSION
-# 对比
-ssh root@43.156.242.184 "docker exec trading_system-btc_eth cat /app/VERSION"
-```
+**口径变化（重要）**：此前 `VERSION` 是仓库里被 git 跟踪的**静态文件**，容器内恒为旧值，第三层形同虚设、只能以文件 MD5 为准。**现在 CI 会在 build 前用本次 Run 元数据覆写仓库根的 `VERSION` 并写入 `context: .` 的 build context**，因此**本次实际构建**的容器内 `/app/VERSION` 就是本次 Run 的值，第三层对环境重新可用。
 
-预期：DEPLOY_ID 和 GIT_COMMIT 一致。
+- **期望值来源**：本次 Actions Run 的 Summary（`🏷️ 构建 VERSION — trading-xxx` 段落直接打印了 `DEPLOY_ID` / `GIT_SHA` / `DEPLOY_TIME(UTC)`），或用下方公式自行反解。**不要**拿仓库里被 git 跟踪的 `VERSION` 当期望值（它是静态文件，不随 CI 更新）。
+- **DEPLOY_ID 生成公式**（确定性、可反解，替代旧的随机 uuidgen）：
+
+  ```
+  DEPLOY_ID = printf '%08X' ( (run_number << 8) | run_attempt )
+  # 高 24 位 = run_number，低 8 位 = run_attempt
+  ```
+
+- **反解方式**：`run_number = DEPLOY_ID >> 8`、`run_attempt = DEPLOY_ID & 0xFF`。
+
+  ```bash
+  # 期望值：从 Actions Summary 抄本次 Run 的 DEPLOY_ID（或按公式反解）
+  ssh root@43.156.242.184 "docker exec trading_system-btc_eth cat /app/VERSION"
+  ```
+
+  预期：容器内 `DEPLOY_ID` / `GIT_SHA` / `GIT_COMMIT` 与本次 Run 一致。
+
+- **校验范围（2026-09-27 明确）**：**只校验本次实际构建（build-all 绿色）的容器**。被 skip 的容器不会重建，其 `/app/VERSION` 仍是上一次构建时的值（更早的镜像甚至可能没有 VERSION 文件），此时第三层不适用，**回退用第四层关键文件 MD5 核对**（本地 `md5 -q` vs 容器内 `md5sum`）。判定本次构建了哪些容器，直接看 Run Summary 里 `✅ 已构建` / `⏭️ 跳过` 的清单。
+
+### 4.5 哪些容器内置 /app/VERSION（10/10 全覆盖）
+
+| 容器 | Dockerfile | 引入方式 |
+|------|-----------|---------|
+| trading-btc-eth | `strategies/btc_eth/Dockerfile` | 显式 `COPY VERSION /app/VERSION` |
+| trading-btc-eth-aggr（激进版） | `strategies/btc_eth_aggressive/Dockerfile` | 显式 `COPY VERSION /app/VERSION` |
+| trading-new-coin | `strategies/new_coin/Dockerfile` | 显式 `COPY VERSION /app/VERSION` |
+| trading-grid | `strategies/grid/Dockerfile` | 显式 `COPY VERSION /app/VERSION` |
+| trading-ai-tuner | `ai_tuner/Dockerfile` | 显式 `COPY VERSION /app/VERSION` |
+| trading-data-backend | `services/data_backend/Dockerfile` | 显式 `COPY VERSION ./VERSION`（`WORKDIR=/app`，落到 `/app/VERSION`） |
+| trading-kline-service | `services/kline_service/Dockerfile` | 显式 `COPY VERSION /app/VERSION`（2026-09-27 补齐） |
+| trading-kline-monitor | `services/kline_monitor/Dockerfile` | 显式 `COPY VERSION /app/VERSION`（2026-09-27 补齐） |
+| trading-hrs | `strategies/hrs/Dockerfile` | 间接：`COPY . /app/` 整体复制 |
+| trading-dashboard-api | `dashboard/backend/Dockerfile` | 间接：`COPY . .`（`WORKDIR=/app`） |
+
+> kline-service / kline-monitor 此前**未** `COPY VERSION`，导致第三层对这两个容器长期失效；本次补齐后，**10 个镜像全部内置 `/app/VERSION`**，第三层对"本轮构建的容器"均可核对。
 
 ---
 
@@ -301,4 +332,4 @@ docker system prune -f
 
 ---
 
-**最后更新：** 2026-09-24（v3.1 — deploy job SSH 加固：超时参数 + 仅连接失败重试 3 次；detect job 提交信息插值改为 env 传值，防止引号导致 detect 失败、deploy 被整体跳过）
+**最后更新：** 2026-09-27（v3.2 — 第三层 VERSION 校验口径修正：CI 构建前写入 Run 元数据版 VERSION，`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 确定性可反解；第三层仅对"本轮实际构建"的容器可用，skip 的容器回退第四层 MD5；kline-service / kline-monitor 补 `COPY VERSION` 后 10 个镜像全覆盖；deploy 日志追加 `deploy_id=`）

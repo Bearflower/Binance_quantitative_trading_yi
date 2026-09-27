@@ -1,5 +1,10 @@
 # 部署规则
 
+> ⚠️ **口径更新（2026-09-27）**：本文档描述的"本地打包 + SCP 上传 + 服务器 `docker-compose build --no-cache`"属于**历史流程**，现行流程已改为 **push main → GitHub Actions 云端构建镜像 → GHCR → 服务器仅 pull + up**（详见 `.trae/rules/deployment.md`）。因此：
+> - `VERSION` 不再由本地 `uuidgen` 生成，而是**由 CI 在构建前用本次 Run 元数据覆写**（进入 `context: .` 的 build context）：`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)`，可反解（`run_number=id>>8`、`run_attempt=id&0xFF`）。
+> - 第六节"第三层 VERSION 文件验证"**仅对本次实际构建的容器**可用；被 skip 的容器不重建，回退第四层关键文件 MD5。仓库里被 git 跟踪的 `VERSION` 是静态文件，**不可**当作期望值。
+> - 下方 5.x 的服务器侧 `build`、`one_click_deploy.sh`、`verify_deployment.sh` 等命令仅为历史参考，当前不再使用。
+
 ## 部署触发条件
 
 - 用户输入 `/deploy`，触发部署流程
@@ -81,16 +86,18 @@ bash scripts/check_code_sync.sh
 
 ### 3.5 生成版本标记文件
 
-打包前自动生成 VERSION 文件，后续用它验证容器内代码是否为当前版本：
+**现行流程下，`VERSION` 不再在本地生成**，而是由 `.github/workflows/deploy.yml` 的 build job 在构建前写入（进入 `context: .` 的 build context），格式如下（示意，实际由 CI 执行）：
 
 ```bash
-cat > VERSION << EOF
-DEPLOY_TIME=$(date '+%Y-%m-%d %H:%M:%S')
+DEPLOY_TIME=$(date -u '+%Y-%m-%d %H:%M:%S')     # 统一 UTC
 GIT_COMMIT=$(git log --oneline -1 2>/dev/null || echo "no-git")
-DEPLOY_ID=$(uuidgen | cut -d- -f1)
-FILE_MD5=$(md5sum strategies/btc_eth/main.py | cut -d' ' -f1)
-EOF
+GIT_SHA=<本次 commit sha>
+# DEPLOY_ID：确定性、可反解（替代旧的随机 uuidgen）
+# 高 24 位 = run_number，低 8 位 = run_attempt
+DEPLOY_ID=$(printf '%08X' $(( (run_number << 8) | run_attempt )))
 ```
+
+反解：`run_number = DEPLOY_ID >> 8`、`run_attempt = DEPLOY_ID & 0xFF`。
 
 ---
 
@@ -359,23 +366,25 @@ echo "✅ 镜像版本一致"
 
 ### 第三层：VERSION 文件验证（关键）⭐⭐⭐
 
+> **适用前提（2026-09-27 起）**：`VERSION` 由 CI 构建期写入，故本层**只对"本次实际构建"的容器成立**。被 skip 的容器不重建（`/app/VERSION` 仍是上次构建值，老镜像可能没有该文件），此时本层不适用，直接回退第四层关键文件 MD5。期望值取**本次 Actions Run 的 Summary**（`🏷️ 构建 VERSION` 段落）或按 `DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 自行反解；**不要**用仓库里被 git 跟踪的静态 `VERSION`。
+
 ```bash
 echo "=== 3. VERSION 文件验证 ==="
-LOCAL_DEPLOY_ID=$(grep DEPLOY_ID VERSION | cut -d= -f2)
+# 期望值：从 Actions Run Summary 抄本次 Run 的 DEPLOY_ID（或按公式反解）
+EXPECTED_DEPLOY_ID="<本次 Run 的 DEPLOY_ID>"
 CONTAINER_DEPLOY_ID=$(ssh root@SERVER_IP "docker exec CONTAINER_NAME cat /app/VERSION 2>/dev/null | grep DEPLOY_ID | cut -d= -f2" || echo "NOT_FOUND")
 
 if [ "$CONTAINER_DEPLOY_ID" = "NOT_FOUND" ]; then
-    echo "❌ 部署幻觉检测失败：容器内不存在 VERSION 文件！说明容器内运行的代码不是本次部署的代码"
-    exit 1
+    echo "⚠️ 容器内不存在 VERSION 文件（该容器本次未重建？）→ 本层不适用，回退第四层 MD5"
+else
+    if [ "$EXPECTED_DEPLOY_ID" != "$CONTAINER_DEPLOY_ID" ]; then
+        echo "❌ 部署幻觉检测失败：VERSION 文件不匹配！"
+        echo "   期望 DEPLOY_ID: $EXPECTED_DEPLOY_ID"
+        echo "   容器内 DEPLOY_ID: $CONTAINER_DEPLOY_ID"
+        exit 1
+    fi
+    echo "✅ VERSION 文件匹配，确认容器内为本次部署代码"
 fi
-
-if [ "$LOCAL_DEPLOY_ID" != "$CONTAINER_DEPLOY_ID" ]; then
-    echo "❌ 部署幻觉检测失败：VERSION 文件不匹配！"
-    echo "   本地 DEPLOY_ID: $LOCAL_DEPLOY_ID"
-    echo "   容器内 DEPLOY_ID: $CONTAINER_DEPLOY_ID"
-    exit 1
-fi
-echo "✅ VERSION 文件匹配，确认容器内为本次部署代码"
 ```
 
 ### 第四层：代码 MD5 校验（终极验证）⭐⭐⭐
@@ -508,7 +517,7 @@ echo "报告已保存到: $REPORT_FILE"
 □ 1. 变更范围分析: 仅重建了受影响容器，无关容器未受影响
 □ 2. 容器状态确认: docker ps 显示所有目标容器运行中
 □ 3. 镜像 ID 对比: 容器镜像 ID == 最新构建镜像 ID
-□ 4. VERSION 文件: 容器内 DEPLOY_ID == 本地 DEPLOY_ID
+□ 4. VERSION 文件: 本轮构建的容器内 DEPLOY_ID == 本次 Run 期望值（skip 的容器不重建，回退 MD5 校验）
 □ 5. 关键文件 MD5: 容器内文件 MD5 == 本地文件 MD5
 □ 6. 日志无错误: 容器日志中无 error/exception/fatal
 □ 7. 部署确认报告: 已生成并保存
@@ -642,13 +651,9 @@ bash scripts/check_code_sync.sh
 # 变更范围分析（确定受影响容器）
 git diff --name-only HEAD~1 HEAD | grep -oP '^[^/]+/[^/]+' | sort -u
 
-# 生成版本标记
-cat > VERSION << EOF
-DEPLOY_TIME=$(date '+%Y-%m-%d %H:%M:%S')
-GIT_COMMIT=$(git log --oneline -1 2>/dev/null || echo "no-git")
-DEPLOY_ID=$(uuidgen | cut -d- -f1)
-FILE_MD5=$(md5sum strategies/btc_eth/main.py | cut -d' ' -f1)
-EOF
+# 查看本次构建写入的 VERSION（现行流程：VERSION 由 CI 构建期生成，本地不再生成）
+# 期望 DEPLOY_ID = printf '%08X' ((run_number<<8)|run_attempt)，见 Actions Run 的 Summary
+ssh root@SERVER_IP "docker exec CONTAINER_NAME cat /app/VERSION"
 
 # 按需部署（仅重建受影响容器）
 ssh root@SERVER_IP "cd /root/PROJECT_NAME && docker-compose build --no-cache btc-eth-strategy && docker-compose up -d btc-eth-strategy"
@@ -688,4 +693,4 @@ ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/main.py"
 
 ---
 
-**最后更新：** 2026-09-11（自 .trae/rules 迁移至 Claude 规范）
+**最后更新：** 2026-09-27（口径更新：现行流程为 GitHub Actions + GHCR，`VERSION` 由 CI 构建期写入、`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 可反解；第三层 VERSION 校验仅对"本轮实际构建"的容器可用，skip 容器回退 MD5。此前为 2026-09-11 自 .trae/rules 迁移至 Claude 规范）

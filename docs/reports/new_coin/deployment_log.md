@@ -1,6 +1,68 @@
 # 部署确认报告
 
 ---
+## 2026-09-27 追加部署（修复重启恢复未回填 ATR 导致误平仓 + CI 构建期写入 VERSION）
+
+### 变更内容
+- **修复「重启恢复路径未回填 ATR → `atr=0` → ATR 相关止盈/止损阈值退化为 0 → 重启后立即误平仓」（资金风险）**
+  - `strategies/new_coin/executor.py`：`_check_trailing_stop`（移动止盈，阈值 `atr×倍数=0` 后 `price_bounce>=0` 恒真 → 重启后首次检查即误平）与 `_check_dynamic_trailing`（动态利润保护，硬止损价退化为 `entry_price` → 价格一回入场价即误平）各加 `atr<=0` 守卫，跳过本轮比较；两处同构守卫提取为 `_warn_invalid_atr(symbol, context, atr) -> bool`
+  - `strategies/new_coin/strategy.py`：`_rebuild_position_baseline` 在同步基线前用 `asyncio.gather` 批量算 ATR（新增 `_calc_rebuilt_atr_map`）；`_sync_baseline_to_tracking` 增加 `atr_map` 入参 + 新增静态方法 `_backfill_tracking_atr`（仅「新值 > 0 且条目 `atr <= 0`」时回填，**绝不覆盖**条件单恢复路径已写入的有效 atr；仍无有效 ATR 时汇总一次 WARN；不写数据库）
+- **部署防幻觉增强：第三层 VERSION 校验由「失效」转为「可用」**
+  - `.github/workflows/deploy.yml`：build 侧新增「📊 记录构建决策到 Summary」「🏷️ 生成 VERSION」两步——构建前把 `DEPLOY_TIME`(UTC)/`GIT_COMMIT`/`GIT_SHA`/`DEPLOY_ID` 写入仓库根 `VERSION`（进入 `context: .` 的 build context）；deploy 侧用同一公式注入 `__DEPLOY_ID__`，部署日志行追加 `deploy_id=...`
+  - `DEPLOY_ID = printf '%08X' ((run_number << 8) | run_attempt)`，确定性且可反解（`run_number = id >> 8`、`run_attempt = id & 0xFF`）
+  - `services/kline_service/Dockerfile`、`services/kline_monitor/Dockerfile`：各加 `COPY VERSION /app/VERSION`（此前无 VERSION 导致第三层失效）；本次后 **10 个镜像全部内置 `/app/VERSION`**
+  - 口径补充：第三层**只校验本次实际构建的容器**；被 skip 的容器不重建（VERSION 仍为上次构建值/老镜像可能无此文件），回退第四层关键文件 MD5
+- **测试**：`tests/test_strategies/test_new_coin_tracking_entry.py`（新增 ATR 守卫回归测试 + 工厂一致性测试）、`tests/test_strategies/test_capital_allocation_enforcement.py`（mock 补绑）
+
+### 部署事实
+- 提交：`ba0bdf2`（代码修复）+ `ef4e2de`（CI + Dockerfile），一起 push → **Actions Run #25 全绿**
+- 本次 Run 期望值：`run_number=25`、`run_attempt=1` → **`DEPLOY_ID = 00001901`**、`GIT_SHA = ef4e2de9693f2abd42bdaf4d5ac6ccd422dd4558`
+- 实际构建：仅 `new-coin` / `kline-service` / `kline-monitor`（另 7 个 job 的「生成 VERSION」步骤为 skipped，判定正确）
+
+### 验证结果（五层验证）
+| 层级 | 内容 | 结果 |
+|------|------|------|
+| 1 容器状态 | 11 个 trading 容器全部 `Up (healthy)`（含本次未重建的 7 个） | ✅ |
+| 2 镜像 | 全部为 `ghcr.io/bearflower/trading-*:latest` | ✅ |
+| 3 VERSION | 本次构建的 3 个容器内 `/app/VERSION` 均为 `DEPLOY_ID=00001901` / `GIT_SHA=ef4e2de...`，与本次 Run 一致；skip 的 7 个容器按新口径不校验（回退第四层） | ✅ |
+| 4 文件MD5 | `new-coin` 容器内 `executor.py` / `strategy.py` 与本地逐字节一致 | ✅ |
+| 5 日志错误 | `new-coin` 重启后 `error` 计数 = 0；启动流程正常、对齐整点周期 | ✅ |
+
+### 功能验证（本次修复的关键运行证据）
+重启后 `new-coin` 日志依次出现：
+
+```
+info     基线重建完成            {'position_count': 4, 'symbols': ['XRPUSDT','牛来USDT','SOLUSDT','USDBRLUSDT']}
+warning  基线重建：跳过非本策略持仓  {'own_symbols': ['AMCUSDT','APLDUSDT','PATHUSDT','USDBRLUSDT']}
+info     持仓基线已同步到 position_tracking  {'symbols': ['USDBRLUSDT']}
+info     持仓基线重建完成          {'position_count': 1, 'total_margin': 50.6613}
+```
+
+- **未出现**「重启基线重建：部分币种 ATR 缺失」告警 → 说明恢复条目的 `atr` 回填成功且 > 0（该告警的触发条件正是「回填后 `atr <= 0`」）
+- **未出现**「移动止盈缺少有效 ATR，跳过本轮检查」/「触发移动止盈」/「触发动态利润保护止损」→ 修复前 `atr=0` 会在此刻立即误平尾仓，本次未发生
+- 部署日志：`[2026-09-27 21:33:20] DEPLOY_SUCCESS commit=ef4e2de9693f2... deploy_id=00001901`，与容器内 VERSION 一一对应 ✅
+
+### MD5（本地 = 容器内，`new-coin`）
+| 文件 | MD5 |
+|------|------|
+| strategies/new_coin/executor.py | 71ab506293a9d1b2cb2e1ee8ff39386a |
+| strategies/new_coin/strategy.py | a6b43acde5e31be6befcdba7f8ee6fc2 |
+
+> 回滚比对基线（上一次部署）：`executor.py=d04d173311f443565eaa3965e0e0ad11`、`strategy.py=eedd5b02e977e881618a82d2f2446e5d`。
+
+### 测试
+- ✅ 本地 `tests/test_strategies`：**572 passed / 1 xfailed / 0 failed**
+- ✅ 新增 ATR 守卫回归用例 3 项（`atr=0` 不平仓且仍维护最低价 / `atr=0` 创新低只更新最低价 / `atr` 键缺失视为 0 跳过），并含「无防护时阈值 0 会误判触发」的证据断言
+- ✅ 3 个既有读侧用例（剩余量缺失回退 / 全部缺失 / 显式 0）改为显式给出有效 `atr`，**原断言保留**，未丢失「不漏平」覆盖
+- ✅ 幻觉测试 10 项逐项实读源文件核实（`asyncio`/`Decimal`/`Optional`/`List` 导入；`_calculate_atr` 为 async 且全部失败路径返回 `Decimal('0')`；`ensure_tracking_entry` 关键字参数；`_sync_baseline_to_tracking` 唯一生产调用点已传 `atr_map`；`_build_tracking_entry` 含 `atr` 键；新增行最长 103 字符）
+- ✅ 规范检测（code-specification-inspector）首轮发现 2 处已整改：两处同构 ATR 守卫提取为 `_warn_invalid_atr`；`deploy.yml` 部署日志行 133 字符拆为 `LOG_FILE`/`LOG_MSG`（现最长新增行 103 字符）
+- ✅ `deploy.yml` YAML 解析通过；「生成 VERSION」步骤与部署远程脚本**经 YAML 解析后的 shell** `bash -n` rc=0
+- ✅ 部署方式确认：仅重建 3 个镜像，其余 7 个正确 skip（`.github/` 变更非独占未触发全量，`VERSION` 未随提交变更）
+
+### 本次暴露的既有问题（未在本次修复，待决策）
+- `deploy.yml` 部署脚本第 2 步对 compose 全部 `container_name` 做**无条件 `docker rm -f`**（原意是清理「独立 docker run 残留容器」以规避命名冲突），导致**每次部署都会强制移除并重建全部容器**（本次 7 个未变更镜像的容器也在 21:32:53 被一并重启）。这使「只 recreate 镜像变了的容器」的增量设计失效，且每次部署都给所有策略带来短时停机。
+
+---
 ## 2026-09-27 追加部署（修复重启后 position_tracking 条目残缺：remaining_quantity KeyError / 静默漏平）
 
 ### 变更内容
