@@ -157,6 +157,48 @@ jobs:
           echo "⏭️ ${{ matrix.service.name }} 无改动 → 跳过构建"
           echo "should_build=false" >> "$GITHUB_OUTPUT"
 
+      - name: 📊 记录构建决策到 Summary
+        # decide 正常结束即记录，便于人工/AI 一眼看出本次实际构建了哪些服务
+        if: steps.decide.outcome == 'success'
+        run: |
+          if [ "${{ steps.decide.outputs.should_build }}" = "true" ]; then
+            echo "- ✅ 已构建 trading-${{ matrix.service.name }}" >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "- ⏭️ 跳过 trading-${{ matrix.service.name }}（无本服务相关改动）" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: 🏷️ 生成 VERSION（注入本次 Run 元数据）
+        # 位置必须在 🐳 Build + Push（context: .）之前，使生成的 VERSION 进入 build context
+        if: steps.decide.outputs.should_build == 'true'
+        env:
+          # 提交信息用户可控：走 env 传值 + printf，避免引号/中文/换行破坏 shell 解析
+          COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+        run: |
+          # DEPLOY_ID：确定性且可追溯到本次 Run（不用随机 uuid，便于事后核对）
+          # 高 24 位 = run_number，低 8 位 = run_attempt；可反解：id>>8 / id&0xFF
+          DEPLOY_ID=$(printf '%08X' $(( (${{ github.run_number }} << 8) | ${{ github.run_attempt }} )))
+          # DEPLOY_TIME 统一用 UTC，避免与服务器本地时区混淆
+          DEPLOY_TIME=$(date -u '+%Y-%m-%d %H:%M:%S')
+          GIT_SHA="${{ github.sha }}"
+          GIT_SHORT=$(printf '%s' "$GIT_SHA" | cut -c1-7)
+          # 提交标题仅取首行（提交信息可能多行）
+          COMMIT_TITLE=$(printf '%s\n' "$COMMIT_MESSAGE" | head -n1)
+          cat > VERSION <<VERSION_EOF
+          DEPLOY_TIME=${DEPLOY_TIME}
+          GIT_COMMIT=${GIT_SHORT} ${COMMIT_TITLE}
+          GIT_SHA=${GIT_SHA}
+          DEPLOY_ID=${DEPLOY_ID}
+          VERSION_EOF
+
+          RUN_META="run_number=${{ github.run_number }}, run_attempt=${{ github.run_attempt }}"
+          echo "=== 本次构建写入的 VERSION ==="
+          cat VERSION
+          echo "${RUN_META} GIT_SHA=${GIT_SHA}"
+          echo "### 🏷️ 构建 VERSION — trading-${{ matrix.service.name }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DEPLOY_ID: ${DEPLOY_ID} (${RUN_META})" >> "$GITHUB_STEP_SUMMARY"
+          echo "- GIT_SHA: ${GIT_SHA}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- DEPLOY_TIME(UTC): ${DEPLOY_TIME}" >> "$GITHUB_STEP_SUMMARY"
+
       - name: 🔐 登录 GHCR
         if: steps.decide.outputs.should_build == 'true'
         uses: docker/login-action@v3
@@ -292,7 +334,10 @@ jobs:
             mkdir -p deploy_logs
             DEPLOY_TIME=$(date "+%Y-%m-%d %H:%M:%S")
             COMMIT_SHA="__COMMIT_SHA__"
-            echo "[${DEPLOY_TIME}] DEPLOY_SUCCESS commit=${COMMIT_SHA}" >> "deploy_logs/$(date '+%Y%m%d').log"
+            DEPLOY_ID="__DEPLOY_ID__"
+            LOG_FILE="deploy_logs/$(date '+%Y%m%d').log"
+            LOG_MSG="[${DEPLOY_TIME}] DEPLOY_SUCCESS commit=${COMMIT_SHA} deploy_id=${DEPLOY_ID}"
+            echo "${LOG_MSG}" >> "${LOG_FILE}"
 
             echo ""
             echo "========================================"
@@ -301,6 +346,10 @@ jobs:
           REMOTE_SCRIPT
           sed -i "s|__GHCR_TOKEN__|${{ secrets.GHCR_PULL_TOKEN }}|g" /tmp/deploy.sh
           sed -i "s|__COMMIT_SHA__|${{ github.sha }}|g" /tmp/deploy.sh
+          # DEPLOY_ID 与 build 侧同一公式（高 24 位 run_number、低 8 位 run_attempt，可反解），
+          # 注入远程脚本，使部署日志中的 deploy_id 可与本次构建的容器一一核对
+          DEPLOY_ID=$(printf '%08X' $(( (${{ github.run_number }} << 8) | ${{ github.run_attempt }} )))
+          sed -i "s|__DEPLOY_ID__|${DEPLOY_ID}|g" /tmp/deploy.sh
           source /tmp/ci_retry.sh
           retry_connect scp /tmp/deploy.sh 43.156.242.184:/tmp/deploy.sh
 

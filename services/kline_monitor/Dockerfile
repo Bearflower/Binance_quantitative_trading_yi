@@ -11,6 +11,9 @@ RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r r
 # 复制监控脚本
 COPY services/kline_monitor/src/ ./src/
 
+# 复制版本信息（部署五层验证需容器内 /app/VERSION 核对 DEPLOY_ID / GIT_COMMIT）
+COPY VERSION /app/VERSION
+
 # 创建数据目录（用于持久化状态文件）
 RUN mkdir -p /app/data
 

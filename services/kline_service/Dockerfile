@@ -27,6 +27,9 @@ COPY services/kline_service/db/ ./db/
 COPY services/kline_service/scripts/ ./scripts/
 COPY services/kline_service/src/ ./src/
 
+# 复制版本信息（部署五层验证需容器内 /app/VERSION 核对 DEPLOY_ID / GIT_COMMIT）
+COPY VERSION /app/VERSION
+
 # 设置 PYTHONPATH
 ENV PYTHONPATH=/app:/app/src
 
