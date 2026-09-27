@@ -835,6 +835,23 @@ class TradingExecutor:
         tp_qty = self._calc_tp_qty(
             quantity, params[f"target{target[-1]}_close_percent"], step_size
         )
+
+        # 名义价值 < 20 USDT（Binance 限价单最低要求）→ 改用 TAKE_PROFIT_MARKET + reduceOnly
+        # Binance -4164 错误信息明确写了 "notional must be greater than 20"
+        notional = float(tp_qty) * float(tp_price)
+        if notional < 20:
+            logger.info(
+                "止盈单名义价值低于20USDT，转为市价止盈reduceOnly模式",
+                symbol=symbol, role=target, notional=round(notional, 4),
+                tp_qty=float(tp_qty), tp_price=float(tp_price),
+            )
+            success_count, _, _ = await self._submit_tp_role_order(
+                symbol, direction, target, tp_price, Decimal("0"),
+                tp_qty,
+                reduce_only=True, order_type_override="TAKE_PROFIT_MARKET",
+            )
+            return success_count > 0
+
         tp_limit = self._calc_limit_price(direction, float(tp_price), self.take_profit_offset)
         result = await self._place_protection_order(
             symbol=symbol, role=target, side=self._get_close_side(direction),
