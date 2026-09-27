@@ -300,18 +300,35 @@ jobs:
               echo "__GHCR_TOKEN__" | docker login ghcr.io -u bearflower --password-stdin
             fi
 
-            # 2. 清理可能残留的独立部署容器（compose.yml 接管前的命名冲突防护）
-            # 场景：data-backend 曾独立 docker run 部署，compose.yml 也定义了同名 → docker compose up 报冲突 exit 1
-            # 对 compose.yml 中每个 container_name，若已存在（独立部署残留）则强制移除；不存在时 rm 非零被 `|| true` 吞掉
-            echo "🧹 清理残留独立部署容器..."
-            for name in trading_system-postgres trading_system-hrs trading_system-btc_eth trading_system-btc_eth_aggressive \
-                        trading_system-new_coin trading_system-grid ai-tuner trading_system-kline trading_system-kline-monitor \
-                        data-backend dashboard-api; do
-              if docker ps -a --format '{{.Names}}' | grep -qx "$name"; then
-                echo "   - 移除残留容器: $name"
+            # 2. 仅清理「不属于本 compose 项目」的残留容器（compose.yml 接管前的命名冲突防护）
+            # 场景：data-backend / dashboard-api 曾独立 docker run 部署，compose.yml 也定义了同名
+            #       → docker compose up 报 "container name already in use" exit 1
+            # 判定：容器 ID 是否出现在本项目管辖范围（docker compose ps -a -q）内
+            #       在  → 本项目容器，保留（交给 compose up -d 按镜像变化增量 recreate，避免全量停机）
+            #       不在 → 独立部署残留，移除
+            echo "🧹 清理非本 compose 项目的残留容器..."
+            PROJECT_IDS=$(docker compose ps -a -q 2>/dev/null || true)
+            RESIDUAL_CANDIDATES="trading_system-postgres trading_system-hrs trading_system-btc_eth \
+              trading_system-btc_eth_aggressive trading_system-new_coin trading_system-grid \
+              ai-tuner trading_system-kline trading_system-kline-monitor data-backend dashboard-api"
+            if [ -z "$PROJECT_IDS" ]; then
+              # 未取到本项目容器清单（compose 异常）时不删任何容器：
+              # 先删后 up 失败会导致全部服务停机且无替代，宁可让 docker compose up 自己报冲突
+              echo "⚠️ 未取到本 compose 项目容器清单，跳过残留清理"
+            else
+              for name in $RESIDUAL_CANDIDATES; do
+                cid=$(docker inspect -f '{{.Id}}' "$name" 2>/dev/null || true)
+                if [ -z "$cid" ]; then
+                  continue
+                fi
+                if printf '%s\n' "$PROJECT_IDS" | grep -qx "$cid"; then
+                  echo "   - 保留（本 compose 项目）: $name"
+                  continue
+                fi
+                echo "   - 移除独立部署残留: $name"
                 docker rm -f "$name" || true
-              fi
-            done
+              done
+            fi
 
             # 3. 拉取有新版本的镜像（compose pull 自动对比 registry 标签）
             echo "📥 docker compose pull..."

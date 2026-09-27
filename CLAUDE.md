@@ -56,6 +56,7 @@
 2. **防部署幻觉五层验证**：容器状态 → 镜像 ID → VERSION 文件 DEPLOY_ID（CI 构建期用 Run 元数据写入，`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 确定性可反解；第三层**仅对本次实际构建的容器**可用，被 skip 的容器回退下一层）→ 关键文件 MD5（本地 `md5 -q` vs 容器内 `md5sum`）→ 日志无错误。任一失败 = 部署失败
 3. **已知坑**：PostgreSQL 容器命名冲突会让 `set -e` 中断部署脚本，导致后面的服务（如 kline-monitor）不会被启动——部署后必须 `docker ps` 确认**所有**服务在运行
 4. 一键部署入口：**push main → GitHub Actions 自动构建 + GHCR + SSH 部署**（见 `.trae/rules/deployment.md`），不再手动打包
+5. **残留清理口径**：服务器侧只移除不属于本 compose 项目的独立 `docker run` 残留，本项目容器交由 `docker compose up -d` 增量 recreate（避免每次部署全量停机）
 
 ## 数据库
 

@@ -59,8 +59,13 @@ info     持仓基线重建完成          {'position_count': 1, 'total_margin':
 - ✅ `deploy.yml` YAML 解析通过；「生成 VERSION」步骤与部署远程脚本**经 YAML 解析后的 shell** `bash -n` rc=0
 - ✅ 部署方式确认：仅重建 3 个镜像，其余 7 个正确 skip（`.github/` 变更非独占未触发全量，`VERSION` 未随提交变更）
 
-### 本次暴露的既有问题（未在本次修复，待决策）
-- `deploy.yml` 部署脚本第 2 步对 compose 全部 `container_name` 做**无条件 `docker rm -f`**（原意是清理「独立 docker run 残留容器」以规避命名冲突），导致**每次部署都会强制移除并重建全部容器**（本次 7 个未变更镜像的容器也在 21:32:53 被一并重启）。这使「只 recreate 镜像变了的容器」的增量设计失效，且每次部署都给所有策略带来短时停机。
+### 本次暴露的既有问题（已于后续提交修复）✅
+- **问题（本次部署时暴露）**：`deploy.yml` 部署脚本第 2 步对 compose 全部 `container_name` 做**无条件 `docker rm -f`**（原意是清理「独立 docker run 残留容器」以规避命名冲突），导致**每次部署都会强制移除并重建全部容器**（本次 7 个未变更镜像的容器也在 21:32:53 被一并重启）。这使「只 recreate 镜像变了的容器」的增量设计失效，且每次部署都给所有策略带来短时停机。
+- **修复（代码已就绪，随本次推送生效）**：第 2 步改为按「残留容器判定口径」清理——先取本项目管辖容器 ID 集合 `PROJECT_IDS=$(docker compose ps -a -q)`，再对候选名取 `docker inspect -f '{{.Id}}' <name>`：
+  - **命中本项目 → 保留**，交给后续 `docker compose up -d` 按镜像变化**增量 recreate**；
+  - **未命中 → 判定为独立 `docker run` 残留 → 才 `docker rm -f`**；
+  - 新增空值守卫：`PROJECT_IDS` 为空（compose 异常）时**不删任何容器**，只打警告，宁可由 `compose up` 自行报命名冲突。
+- **验证结论（本地/干跑）**：YAML 解析通过、`bash -n` rc=0；生产服务器干跑判定 **11/11 全部 KEEP（零误删）**；受控 stub 三场景功能测试通过——A 正常部署 11 保留/0 移除、B 仅移除真正的独立残留、C 守卫分支 0 删除。（本次代码尚未 push，实际部署结果以上线后 Actions Run 为准。）
 
 ---
 ## 2026-09-27 追加部署（修复重启后 position_tracking 条目残缺：remaining_quantity KeyError / 静默漏平）

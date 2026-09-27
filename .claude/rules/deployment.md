@@ -3,6 +3,7 @@
 > ⚠️ **口径更新（2026-09-27）**：本文档描述的"本地打包 + SCP 上传 + 服务器 `docker-compose build --no-cache`"属于**历史流程**，现行流程已改为 **push main → GitHub Actions 云端构建镜像 → GHCR → 服务器仅 pull + up**（详见 `.trae/rules/deployment.md`）。因此：
 > - `VERSION` 不再由本地 `uuidgen` 生成，而是**由 CI 在构建前用本次 Run 元数据覆写**（进入 `context: .` 的 build context）：`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)`，可反解（`run_number=id>>8`、`run_attempt=id&0xFF`）。
 > - 第六节"第三层 VERSION 文件验证"**仅对本次实际构建的容器**可用；被 skip 的容器不重建，回退第四层关键文件 MD5。仓库里被 git 跟踪的 `VERSION` 是静态文件，**不可**当作期望值。
+> - 服务器侧残留容器清理口径：**只移除不属于本 compose 项目的独立 `docker run` 残留**，本项目容器交由 `docker compose up -d` 增量 recreate（取不到清单时不删任何容器）。
 > - 下方 5.x 的服务器侧 `build`、`one_click_deploy.sh`、`verify_deployment.sh` 等命令仅为历史参考，当前不再使用。
 
 ## 部署触发条件
@@ -693,4 +694,4 @@ ssh root@SERVER_IP "docker exec CONTAINER_NAME md5sum /app/main.py"
 
 ---
 
-**最后更新：** 2026-09-27（口径更新：现行流程为 GitHub Actions + GHCR，`VERSION` 由 CI 构建期写入、`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 可反解；第三层 VERSION 校验仅对"本轮实际构建"的容器可用，skip 容器回退 MD5。此前为 2026-09-11 自 .trae/rules 迁移至 Claude 规范）
+**最后更新：** 2026-09-27（口径更新：现行流程为 GitHub Actions + GHCR，`VERSION` 由 CI 构建期写入、`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 可反解；第三层 VERSION 校验仅对"本轮实际构建"的容器可用，skip 容器回退 MD5；残留容器清理口径收敛为只删非本 compose 项目容器（本项目容器交由 `docker compose up -d` 增量 recreate）。此前为 2026-09-11 自 .trae/rules 迁移至 Claude 规范）

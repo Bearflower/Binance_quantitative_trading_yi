@@ -59,7 +59,8 @@ build-all    # 静态 10 个矩阵并行
              # → 否则 skip（秒级）
              # → 构建前用本次 Run 元数据覆写仓库根 VERSION（进入 context: . 的 build context）
              # → 把构建决策 + 本次 VERSION（DEPLOY_ID/GIT_SHA/DEPLOY_TIME）写入 Run Summary
-deploy       # SSH 服务器 pull + up（幂等），部署日志行追加 deploy_id=...
+deploy       # SSH 服务器 pull + up（幂等）：残留容器清理只移除非本 compose 项目容器，本项目容器增量 recreate
+             # 部署日志行追加 deploy_id=...（残留清理口径见 §2.6）
 ```
 
 **为什么用静态矩阵 + 每个 job 自己判断 skip？**
@@ -103,6 +104,19 @@ services:
 
 postgres 用公共镜像 `postgres:15-alpine`，不动。
 
+### 2.6 服务器侧残留容器清理口径（2026-09-27 修正）
+
+deploy 远程脚本第 2 步的清理**不是**无条件删除 compose 里的全部 `container_name`，而是**只移除「不属于本 compose 项目」的独立部署残留容器**：
+
+- 先取本项目管辖容器 ID 集合：`PROJECT_IDS=$(docker compose ps -a -q)`
+- 对每个候选容器名取 ID：`docker inspect -f '{{.Id}}' <name>`
+  - **命中 `PROJECT_IDS` → 判定为本项目容器 → 保留**，交给后续 `docker compose up -d` 按镜像变化**增量 recreate**
+  - **未命中 → 判定为独立 `docker run` 残留 → 才 `docker rm -f`**
+- 空值守卫：`PROJECT_IDS` 为空（`docker compose ps` 异常）时**不删任何容器**，只打警告，宁可由 `docker compose up` 自行报命名冲突失败，也不制造「先删后 up 失败」的全量停机。
+
+> 修正原因：旧实现对全部候选名无条件 `docker rm -f`（`|| true` 吞错），使「只 recreate 镜像变了的容器」的增量语义失效——每次部署都强制重建全部容器，给所有策略带来短时停机。
+> 清理本意只是规避「独立 `docker run` 容器与 compose 同名」的命名冲突，不应波及本项目容器。
+
 ---
 
 ## 三、防幻觉机制（为什么 Actions 方案能杜绝幻觉）
@@ -112,7 +126,7 @@ postgres 用公共镜像 `postgres:15-alpine`，不动。
 | 服务器 Docker 构建缓存旧代码 | **云端全新 Runner，零缓存污染** |
 | SCP 上传不完整 | **直接 registry pull，HTTP 客户端有完整校验** |
 | 服务器资源紧张导致构建失败没感知 | **Runner 2核/7G 内存，构建失败直接 exit code 非零** |
-| 多容器混淆 | **compose up -d 只 recreate 镜像变了的容器** |
+| 多容器混淆 | **compose up -d 只 recreate 镜像变了的容器**；清理仅限非本 compose 项目残留容器，本项目容器不再被无条件 `rm -f` |
 | 脚本提前退出 | **部署脚本 set -e + deploy job 失败即报红** |
 | 提交信息含引号致 detect 失败、deploy 被整体跳过 | **提交信息走 env 传值，避免 shell 二次解析** |
 | AI 手动部署掩盖问题 | **push → Actions → 自动部署，全链路可追溯** |
@@ -141,6 +155,9 @@ ssh root@43.156.242.184 "docker ps --format 'table {{.Names}}\t{{.Image}}\t{{.St
 ```
 
 预期：所有 11 个容器 image 字段都是 `ghcr.io/bearflower/trading-xxx:latest`。
+
+同时核对「增量生效」：只有本次构建（build-all 绿色）的容器 `STATUS` 显示刚启动，未变更镜像的容器保持不变。
+部署日志第 2 步只应出现「保留（本 compose 项目）」或「移除独立部署残留」，不应出现对本项目容器的无条件删除。
 
 ### 4.3 部署日志
 
@@ -332,4 +349,4 @@ docker system prune -f
 
 ---
 
-**最后更新：** 2026-09-27（v3.2 — 第三层 VERSION 校验口径修正：CI 构建前写入 Run 元数据版 VERSION，`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 确定性可反解；第三层仅对"本轮实际构建"的容器可用，skip 的容器回退第四层 MD5；kline-service / kline-monitor 补 `COPY VERSION` 后 10 个镜像全覆盖；deploy 日志追加 `deploy_id=`）
+**最后更新：** 2026-09-27（v3.3 — 残留容器清理口径修正：deploy 脚本第 2 步只移除不属于本 compose 项目的独立 `docker run` 残留（按 `docker compose ps -a -q` 的容器 ID 集合判定），本项目容器交给 `docker compose up -d` 增量 recreate，并新增「取不到清单则不删任何容器」空值守卫；修复前对全部容器无条件 `rm -f` 导致每次部署全量停机。v3.2 — 第三层 VERSION 校验口径修正：CI 构建前写入 Run 元数据版 VERSION，`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 确定性可反解；第三层仅对"本轮实际构建"的容器可用，skip 的容器回退第四层 MD5；kline-service / kline-monitor 补 `COPY VERSION` 后 10 个镜像全覆盖；deploy 日志追加 `deploy_id=`）
