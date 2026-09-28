@@ -24,12 +24,28 @@ class DashboardAPI {
                 }
             });
 
+            // 安全解析 JSON：检查 Content-Type 再执行 response.json()，
+            // 避免 404/空体时 "Unexpected end of JSON input" 掩盖真实错误
+            const _parseJsonSafely = async (resp) => {
+                const ct = resp.headers.get('content-type') || '';
+                if (!ct.includes('application/json')) {
+                    const text = await resp.text();
+                    throw new Error(`HTTP ${resp.status}: ${text.slice(0, 120) || '空响应体'}`);
+                }
+                try {
+                    return await resp.json();
+                } catch {
+                    const text = await resp.text();
+                    throw new Error(`HTTP ${resp.status}: 响应体解析失败 — ${text.slice(0, 120) || '空响应体'}`);
+                }
+            };
+
             if (!response.ok) {
-                const error = await response.json();
-                throw new Error(error.error?.message || `API错误: ${response.status}`);
+                const errBody = await _parseJsonSafely(response);
+                throw new Error(errBody.error?.message || errBody.message || `API错误: ${response.status}`);
             }
 
-            const result = await response.json();
+            const result = await _parseJsonSafely(response);
             
             // 检查业务状态码
             if (result.code !== 0) {

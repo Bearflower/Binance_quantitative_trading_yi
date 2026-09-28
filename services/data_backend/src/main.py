@@ -116,6 +116,9 @@ def _schedule_startup_warmup(loop, data_service: DataService) -> None:
     # 熔断开关开启时预热一次指数，保证首小时策略开仓即可读到指数
     if load_circuit_breaker_config().get("enabled"):
         schedule_startup_run(loop, lambda: run_breaker_index(data_service))
+    # 每日净资产快照自愈：容器一启动立即补今日快照（UPSERT 幂等，不会重复）
+    # 防 23:30 容器重启/时区错位导致当日快照永久缺失 → 次日 daily 期初空
+    schedule_startup_run(loop, lambda: run_snapshot(data_service))
 
 
 async def main() -> None:

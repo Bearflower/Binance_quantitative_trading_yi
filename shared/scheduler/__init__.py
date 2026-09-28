@@ -111,6 +111,9 @@ def add_cron_job(
 
     执行时（小时/分钟）从环境变量 env_hour / env_minute 读取（默认值兜底）。
 
+    显式传 ZoneInfo("Asia/Shanghai") 给 CronTrigger，不依赖容器全局 TZ 环境变量——
+    即使容器 TZ env 丢失、时区错配，调度仍按北京时间触发，杜绝 UTC 回退。
+
     Args:
         scheduler: 目标调度器
         func: 待执行的异步任务函数
@@ -125,6 +128,7 @@ def add_cron_job(
     Returns:
         (hour, minute) 实际生效的执行时间（"*" 表示通配该字段）
     """
+    from zoneinfo import ZoneInfo
     hour_raw = os.getenv(env_hour, str(default_hour))
     minute_raw = os.getenv(env_minute, str(default_minute))
     # "*" 通配保留字符串（如每小时 03 分 = hour="*"），其余转 int，兼容既有 int 调用
@@ -132,7 +136,11 @@ def add_cron_job(
     minute = minute_raw if minute_raw == "*" else int(minute_raw)
     scheduler.add_job(
         func,
-        CronTrigger(hour=hour, minute=minute),
+        CronTrigger(
+            hour=hour,
+            minute=minute,
+            timezone=ZoneInfo("Asia/Shanghai"),  # 显式指定时区，不依赖容器全局 TZ
+        ),
         args=list(args) if args else [],
         id=job_id,
         max_instances=1,

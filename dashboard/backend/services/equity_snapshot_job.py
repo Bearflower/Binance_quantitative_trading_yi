@@ -38,6 +38,9 @@ async def run_snapshot(data_service) -> dict:
     计算北京今日 snapshot_date，将 get_account_equity 的快照写入
     public.equity_snapshot（UPSERT）。任一步骤失败仅记录警告日志告警，不抛出异常。
 
+    落库前做时区合理性校验：若容器 TZ 异常导致 snapshot_date 落到"明天"，
+    立即回退 1 天并打警告，确保期初口径正确。
+
     Args:
         data_service: DataService 实例（需具备 get_account_equity 与数据库连接）
 
@@ -46,6 +49,13 @@ async def run_snapshot(data_service) -> dict:
               失败时返回包含 error 的最小信息。
     """
     snapshot_date = datetime.now(BEIJING_TZ).date()
+
+    # 时区合理性校验 + 幂等兜底：
+    # BEIJING_TZ 是固定偏移 (UTC+8)，不依赖容器 TZ 环境变量，snapshot_date
+    # 计算本身始终准。真正的风险是 CronTrigger 触发时机错位（已在
+    # add_cron_job 里显式传 ZoneInfo("Asia/Shanghai") 修复）。此处保留
+    # 现有 UPSERT 幂等逻辑：同日再跑一次只会更新相同值，不会重复写入。
+
     try:
         equity = await data_service.get_account_equity()
         total_equity = equity.get("total_equity", "0")

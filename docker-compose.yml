@@ -356,6 +356,8 @@ services:
       - DATABASE_NAME=${DB_NAME:-trading_platform}
       - DATABASE_USER=${DB_USER:-trading_user}
       - DATABASE_PASSWORD=${DB_PASSWORD:-trading_password_2024}
+      # 时区：快照任务在北京时间 23:30 触发，必须显式注入，否则 zoneinfo 解析失败回退 UTC
+      - TZ=Asia/Shanghai
     networks:
       - trading-network
     depends_on:
