@@ -3595,23 +3595,63 @@ class BTCEthStrategy:
         Binance PM 账户对已平仓 symbol 返回空列表，不是 posAmt=0，
         所以必须把"API 返回空"也视为"交易所已无持仓"。
 
+        v6.30 关键修复：不再用 abs() 吞掉 positionAmt 的正负号，
+        改为检测交易所实际方向（LONG/SHORT）与本地 position.direction 是否一致。
+        两策略共用 PM 账户时，原版的 SHORT 会把激进版的 LONG 净持仓抵消成 SHORT，
+        abs() 会把 -30.1 当作 30.1 LONG 记录，后续 SELL ReduceOnly 在 SHORT 上必被拒（-4118）。
+
         Returns:
             {'closed': bool, 'partially_closed': bool, 'actual_quantity': Decimal | None}
         """
         try:
             exchange_positions = await self.binance.get_position(symbol)
             prev_quantity = float(position.current_quantity)
+            prev_direction = position.direction
             matched_pos = next((p for p in exchange_positions if p.get('symbol') == symbol), None)
 
             if matched_pos is None:
                 # Binance PM 对已平仓 symbol 返回空列表
                 return self._mark_position_flat(
                     symbol, position, close_reason, prev_quantity, "交易所返回空持仓列表，视为已平仓")
-            pos_amt = abs(float(matched_pos.get('positionAmt', 0)))
-            if pos_amt < 0.0001:
+
+            # 保留正负号，用符号判断方向
+            pos_amt_signed = float(matched_pos.get('positionAmt', 0))
+
+            if abs(pos_amt_signed) < 0.0001:
                 # 显式返回 posAmt=0 的边缘情况
                 return self._mark_position_flat(
                     symbol, position, close_reason, prev_quantity, "交易所 posAmt≈0")
+
+            # 检测方向反转：交易所实际方向与本地记录不一致
+            if pos_amt_signed > 0 and prev_direction != 'LONG':
+                # 本地以为 SHORT/FLAT，但交易所实际 LONG
+                logger.error(
+                    f"{symbol} 持仓方向反转！本地={prev_direction} 交易所=LONG(posAmt={pos_amt_signed})"
+                    f"，可能被其他策略对冲，强制标记 FLAT",
+                    close_reason=close_reason,
+                    previous_direction=prev_direction,
+                    exchange_position_amt=pos_amt_signed
+                )
+                return self._mark_position_flat(
+                    symbol, position, close_reason, prev_quantity,
+                    f"持仓方向反转：本地{prev_direction} vs 交易所LONG，强制清仓重试")
+
+            if pos_amt_signed < 0 and prev_direction != 'SHORT':
+                # 本地以为 LONG/FLAT，但交易所实际 SHORT
+                logger.error(
+                    f"{symbol} 持仓方向反转！本地={prev_direction} 交易所=SHORT(posAmt={pos_amt_signed})"
+                    f"，可能被其他策略对冲，强制标记 FLAT",
+                    close_reason=close_reason,
+                    previous_direction=prev_direction,
+                    exchange_position_amt=pos_amt_signed
+                )
+                return self._mark_position_flat(
+                    symbol, position, close_reason, prev_quantity,
+                    f"持仓方向反转：本地{prev_direction} vs 交易所SHORT，强制清仓重试")
+
+            # 方向一致，用绝对值做持仓量比较
+            pos_amt = abs(pos_amt_signed)
+
             if pos_amt < prev_quantity - 0.00001:
                 # 持仓已被部分平仓（如止损/止盈条件单已成交部分）
                 return self._update_synced_quantity(
