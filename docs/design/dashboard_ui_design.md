@@ -1,7 +1,7 @@
 # 金融科技数据看板 UI 设计文档
 
-> **版本**: v1.2  
-> **更新日期**: 2026-09-02  
+> **版本**: v1.3  
+> **更新日期**: 2026-09-29  
 > **设计师**: UI 设计师  
 > **项目**: Binance 量化交易数据看板
 
@@ -341,17 +341,17 @@
 
         <div class="stat-card commission">
           <div class="stat-icon">§</div>
-          <div class="stat-label">总佣金</div>
-          <div class="stat-value red" id="total-commission">0.00</div>
-          <div class="stat-sub">USDT（手续费支出）</div>
+          <div class="stat-label">年化夏普率</div>
+          <div class="stat-value gold" id="total-sharpe">--</div>
+          <div class="stat-sub">风险调整收益（币圈 365 天年化）</div>
         </div>
 
-        <!-- 当前持仓（新增卡片） -->
+        <!-- 最大回撤（2026-09-29 替换原"当前持仓"卡） -->
         <div class="stat-card positions">
           <div class="stat-icon">▣</div>
-          <div class="stat-label">当前持仓</div>
-          <div class="stat-value blue" id="current-positions">0</div>
-          <div class="stat-sub">非零仓位数量</div>
+          <div class="stat-label">最大回撤</div>
+          <div class="stat-value blue" id="total-max-drawdown">--</div>
+          <div class="stat-sub">历史净值区间最大回撤比例</div>
         </div>
 
       </div>
@@ -381,7 +381,7 @@
               </div>
             </div>
             
-            <!-- 次要指标 -->
+            <!-- 次要指标（2026-09-29 从 3 项扩为 5 项，追加年化夏普 / 最大回撤） -->
             <div class="strategy-metrics">
               <div class="metric-item">
                 <span class="metric-label">胜率</span>
@@ -394,6 +394,14 @@
               <div class="metric-item">
                 <span class="metric-label">委托数</span>
                 <span class="metric-value">890</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">年化夏普</span>
+                <span class="metric-value">1.23</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">最大回撤</span>
+                <span class="metric-value">15.0%</span>
               </div>
             </div>
             

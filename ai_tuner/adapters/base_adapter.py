@@ -124,6 +124,17 @@ class BacktestResult(BaseModel):
     composite_score: float = Field(default=0.0, description="综合评分（0-100）")
 
 
+class UnifiedPerformanceMetrics(BaseModel):
+    """统一绩效指标（从 public.performance_metric_snapshot 读取，与看板同源）
+
+    注意：不复用 PerformanceMetrics.sharpe_approx 和 RiskMetrics.max_drawdown_pct，
+    那两个是各适配器逐笔近似值（口径不同）。本模型是事后统计的精准值。
+    """
+    sharpe: Optional[float] = Field(None, description="年化夏普比率(精准)")
+    max_drawdown: Optional[float] = Field(None, description="最大回撤比例(0~1, 精准)")
+    source: str = Field("performance_metric_snapshot", description="数据来源标识")
+
+
 class StrategyReport(BaseModel):
     """策略周度体检报告（统一 Schema）"""
     meta: StrategyMeta = Field(default_factory=StrategyMeta, description="策略元信息")
@@ -133,6 +144,9 @@ class StrategyReport(BaseModel):
     simulation: List[SimulationMetrics] = Field(default_factory=list, description="模拟推演结果（半自动策略使用）")
     backtest: Any = Field(default=None, description="回测结果（方案D，网格策略使用）")
     anomalies: List[str] = Field(default_factory=list, description="异常事件列表")
+    unified_performance: Optional[UnifiedPerformanceMetrics] = Field(
+        None, description="统一绩效指标(精准,来自预计算快照)"
+    )
 
 
 # ============================================================

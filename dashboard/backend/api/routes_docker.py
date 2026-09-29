@@ -155,7 +155,7 @@ async def get_overview(
     
     返回所有策略的汇总统计数据
     """
-    cache_key = f"overview:{type}"
+    cache_key = f"overview_v2:{type}"
     
     cached_data = cache.get(cache_key)
     if cached_data:
@@ -166,7 +166,12 @@ async def get_overview(
         )
     
     overview_data = await data_service.get_overview(report_type=type)
-    
+
+    # 注入绩效指标（夏普比率 + 最大回撤），就地修改 overview_data dict
+    granularity_map = {"daily": "day", "weekly": "week", "monthly": "month", "yearly": "year"}
+    granularity = granularity_map.get(type, "day")
+    await data_service._attach_performance_metrics(overview_data, granularity)
+
     response_data = {
         "total_pnl": overview_data.get("total_pnl", 0),
         "total_gross_pnl": overview_data.get("total_gross_pnl", 0),
@@ -176,6 +181,8 @@ async def get_overview(
         "total_closed": overview_data.get("total_closed", 0),
         "total_wins": overview_data.get("total_wins", 0),
         "win_rate": overview_data.get("win_rate", 0),
+        "total_sharpe": overview_data.get("total_sharpe"),
+        "total_max_drawdown": overview_data.get("total_max_drawdown"),
         "strategies": overview_data.get("strategies", []),
         "report_type": type,
         "updated_at": datetime.now(BEIJING_TZ).isoformat()
@@ -212,7 +219,7 @@ async def get_strategies(
     
     返回所有策略的统计数据
     """
-    cache_key = f"strategies:{type}"
+    cache_key = f"strategies_v2:{type}"
     
     cached_data = cache.get(cache_key)
     if cached_data:

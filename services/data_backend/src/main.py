@@ -35,6 +35,7 @@ from services.data_service_docker import DataService
 from services.equity_snapshot_job import run_snapshot
 from services.market_circuit_breaker_job import run_breaker_index
 from services.metric_precompute_job import run_precompute
+from services.performance_metric_job import run_performance_metrics
 from shared.circuit_breaker import load_circuit_breaker_config, parse_cron
 
 logger = structlog.get_logger()
@@ -49,6 +50,7 @@ _JOBS = [
     "position_reconcile",
     "commission_reconcile",
     "market_breaker_index",
+    "performance_metric",
 ]
 
 
@@ -106,6 +108,16 @@ def _register_jobs(scheduler, data_service: DataService) -> None:
             args=[data_service],
             misfire_grace=3600,
         )
+    # 绩效指标预计算：夏普比率 + 最大回撤（默认 10 分钟一次，比盈亏类 metric 更低频）
+    add_interval_job(
+        scheduler,
+        run_performance_metrics,
+        "performance_metric",
+        env_key="PERFORMANCE_METRIC_INTERVAL_SECONDS",
+        default_seconds=600,
+        args=[data_service],
+        misfire_grace=600,
+    )
 
 
 def _schedule_startup_warmup(loop, data_service: DataService) -> None:
@@ -119,6 +131,8 @@ def _schedule_startup_warmup(loop, data_service: DataService) -> None:
     # 每日净资产快照自愈：容器一启动立即补今日快照（UPSERT 幂等，不会重复）
     # 防 23:30 容器重启/时区错位导致当日快照永久缺失 → 次日 daily 期初空
     schedule_startup_run(loop, lambda: run_snapshot(data_service))
+    # 绩效指标预热：启动即计算一次，避免看板刚上线时绩效字段为空
+    schedule_startup_run(loop, lambda: run_performance_metrics(data_service))
 
 
 async def main() -> None:

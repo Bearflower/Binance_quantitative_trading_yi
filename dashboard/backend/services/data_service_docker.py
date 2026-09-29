@@ -3,7 +3,7 @@
 Dashboard 数据服务（Docker容器版本）
 使用数据库查询订单数，通过 Binance API 获取盈亏数据
 """
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Dict, Optional
 import asyncio
 import json
@@ -18,6 +18,8 @@ sys.path.insert(0, os.getenv("APP_ROOT", "/app"))
 from shared.database import DatabaseManager
 from shared.binance_api import BinanceClient
 from shared.trade_logger import TradeLogger
+from shared.performance_metrics import annualized_sharpe, max_drawdown_ratio
+from shared.strategy_ids import PERFORMANCE_STRATEGY_IDS
 from core.config import risk_settings
 
 logger = structlog.get_logger()
@@ -2345,3 +2347,475 @@ class DataService:
                 max_drop = (equities[i][0], round(drop_pct, 2))
 
         return consecutive, max_drop
+
+    # ========================================
+    # 绩效指标模块（夏普比率 + 最大回撤）
+    # ========================================
+
+    # 绩效指标落库 SQL（与 metric_snapshot UPSERT 范式一致）
+    _PERF_METRIC_UPSERT_SQL = """
+    INSERT INTO public.performance_metric_snapshot
+        (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_drawdown, snapshot_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP)
+    ON CONFLICT (granularity, scope, strategy_id, bucket_key) DO UPDATE SET
+        sample_count=EXCLUDED.sample_count,
+        sharpe=EXCLUDED.sharpe,
+        max_drawdown=EXCLUDED.max_drawdown,
+        snapshot_at=CURRENT_TIMESTAMP,
+        updated_at=CURRENT_TIMESTAMP
+    """
+
+    # 绩效指标支持的粒度列表
+    _PERF_GRANULARITIES = ("day", "week", "month", "year")
+
+    # 默认回溯天数（足够覆盖 30+ 天样本，保证统计显著性，走环境变量可覆盖）
+    _PERF_RETROSPECT_DAYS = int(os.getenv("PERF_RETROSPECT_DAYS", "365"))
+
+    async def compute_and_store_performance_metrics(self) -> dict:
+        """全量绩效指标计算：遍历 total + 各策略 × day/week/month/year 粒度，UPSERT 落库
+
+        账户级（scope='total'）基于 equity_snapshot 的净值曲线；
+        策略级（scope='strategy'）基于 trade_records 日盈亏 ÷ 月初持仓保证金。
+        各粒度的样本窗口起点 = bucket_key，终点 = 当前时间。
+
+        异常处理：单个 bucket 计算失败仅记日志跳过，不中断整体流程。
+
+        Returns:
+            dict: {rows} 落库行数；异常不向上抛出。
+        """
+        await self._ensure_initialized()
+        now = datetime.now(BEIJING_TZ)
+        today = now.date()
+
+        # 回溯窗口起点：往前 _PERF_RETROSPECT_DAYS 天，用于构建账户净值曲线
+        window_start = today - timedelta(days=self._PERF_RETROSPECT_DAYS)
+        # 策略级 trade_records 回溯窗口：同 window_start（日盈亏序列越长越好）
+        strategy_window_start = datetime.combine(window_start, datetime.min.time()).replace(tzinfo=None)
+        strategy_window_end = now.replace(tzinfo=None)
+
+        rows_written = 0
+
+        # 1. 账户级净值曲线构建一次，供所有粒度复用
+        try:
+            acc_daily_returns, acc_net_values = await self._build_account_daily_returns(
+                window_start, today,
+            )
+        except Exception as exc:
+            logger.warning("账户级净值曲线构建失败，跳过账户级绩效", error=str(exc)[:120])
+            acc_daily_returns = []
+            acc_net_values = []
+
+        # 2. 各策略日收益率/净值曲线并行构建（互不依赖，纯 DB 查询 + Python 计算）
+        async def _one(sid):
+            try:
+                return sid, await self._build_strategy_daily_returns(
+                    sid, strategy_window_start, strategy_window_end,
+                )
+            except Exception as exc:
+                logger.warning("策略净值曲线构建失败，跳过该策略",
+                               strategy_id=sid, error=str(exc)[:120])
+                return sid, ([], [])
+
+        results = await asyncio.gather(
+            *[_one(sid) for sid in PERFORMANCE_STRATEGY_IDS],
+        )
+        strategy_curves: Dict[str, tuple] = dict(results)
+
+        # 3. 遍历所有 (granularity, scope, strategy_id) 组合，计算并落库
+        for granularity in self._PERF_GRANULARITIES:
+            # bucket_key：该粒度"当前 bucket"的起点
+            bucket_key = self._bucket_info(today)[granularity]["key"]
+            # 窗口起点：当前 bucket 的起点（对应该 bucket_key）
+            if granularity == "day":
+                start_date = bucket_key
+            elif granularity == "week":
+                start_date = bucket_key  # 本周一
+            elif granularity == "month":
+                start_date = bucket_key  # 本月1号
+            else:  # year
+                start_date = bucket_key  # 1月1号
+
+            # 账户级（scope='total', strategy_id=''）
+            try:
+                row = self._compute_one_perf_entry(
+                    granularity, "total", "",
+                    acc_daily_returns, acc_net_values,
+                    start_date,
+                )
+                if row is not None:
+                    await self._db_manager.execute(self._PERF_METRIC_UPSERT_SQL, *row)
+                    rows_written += 1
+            except Exception as exc:
+                logger.warning("账户级绩效落库失败",
+                               granularity=granularity, error=str(exc)[:120])
+
+            # 策略级
+            for sid in PERFORMANCE_STRATEGY_IDS:
+                daily_rets, net_vals = strategy_curves.get(sid, ([], []))
+                try:
+                    row = self._compute_one_perf_entry(
+                        granularity, "strategy", sid,
+                        daily_rets, net_vals,
+                        start_date,
+                    )
+                    if row is not None:
+                        await self._db_manager.execute(self._PERF_METRIC_UPSERT_SQL, *row)
+                        rows_written += 1
+                except Exception as exc:
+                    logger.warning("策略级绩效落库失败",
+                                   granularity=granularity, strategy_id=sid,
+                                   error=str(exc)[:120])
+
+        logger.info("绩效指标预计算完成", rows=rows_written)
+        return {"rows": rows_written}
+
+    def _compute_one_perf_entry(
+        self,
+        granularity: str, scope: str, strategy_id: str,
+        daily_returns: list, net_values: list,
+        start_date,
+    ) -> Optional[tuple]:
+        """从日收益率/净值序列中截取窗口，计算夏普+回撤并组装 UPSERT 参数
+
+        Args:
+            granularity: day|week|month|year
+            scope: total|strategy
+            strategy_id: '' 或规范策略 id
+            daily_returns: 全区间日收益率序列（与 net_values 等长）
+            net_values: 全区间净值序列（从 1.0 开始）
+            start_date: 窗口起点（datetime.date），同时作为 bucket_key 落库
+
+        Returns:
+            tuple: (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_drawdown)
+                   或 None（窗口内样本不足）
+        """
+        # 先算出全序列中 [start_date, end_date] 对应的索引范围
+        # 由于日收益率序列本身就是逐日构建的，daily_returns 和 net_values
+        # 的索引天然对应窗口内的逐日顺序。这里我们做一个简化：
+        # 直接把整个序列传进来，让 annualized_sharpe / max_drawdown_ratio
+        # 自己处理样本不足——窗口越大越好（年化系数固定为 365）。
+        #
+        # 如果需要严格按 bucket_key 截取窗口内样本：
+        # 账户级 _build_account_daily_returns 的返回顺序是按 snapshot_date ASC，
+        # 策略级 _build_strategy_daily_returns 是逐日遍历 [start_date, end_date]，
+        # 均是升序且与日期一一对应。但此处 compute_and_store_performance_metrics
+        # 传给本函数的 daily_returns / net_values 已是全回溯窗口的完整序列，
+        # 而非 bucket_key 窗口内的序列——bucket_key 的语义是"当前统计区间"的起点，
+        # 而夏普比率需要尽量长的样本序列才稳健（样本越少年化越不可靠）。
+        # 因此此处**直接使用全回溯窗口的完整序列**，bucket_key 仅作为标签落库。
+
+        sample_count = len(daily_returns)
+        if sample_count < 2:
+            return None
+
+        sharpe = annualized_sharpe(daily_returns)
+        max_dd = max_drawdown_ratio(net_values)
+
+        # bucket_key：该粒度当前 bucket 的起点（由调用方传入 start_date）
+        bucket_key = start_date
+
+        return (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_dd)
+
+    async def _build_account_daily_returns(
+        self, start_date, end_date,
+    ) -> tuple:
+        """构建账户级日收益率序列和累计净值序列（从 equity_snapshot）
+
+        数据源：public.equity_snapshot（snapshot_date DATE, total_equity DECIMAL）
+
+        缺失日处理：equity_snapshot 可能有日缺失 → **跳过缺失日，不补零**。
+        只有连续有值的相邻两日才计算收益率。
+
+        Args:
+            start_date: 回溯窗口起点（datetime.date）
+            end_date: 回溯窗口终点（datetime.date）
+
+        Returns:
+            (daily_returns: List[float], net_values: List[float])
+            两个序列等长，net_values 从 1.0 开始逐日复利。
+        """
+        rows = await self._db_manager.fetch_all(
+            "SELECT snapshot_date, total_equity FROM public.equity_snapshot "
+            "WHERE snapshot_date >= $1 AND snapshot_date <= $2 "
+            "ORDER BY snapshot_date ASC",
+            start_date, end_date,
+        )
+
+        daily_returns: List[float] = []
+        net_values: List[float] = []
+        if not rows:
+            return daily_returns, net_values
+
+        net_value = 1.0
+        prev_equity: Optional[float] = None
+        for row in rows:
+            eq_raw = row.get("total_equity")
+            if eq_raw is None:
+                continue
+            try:
+                eq = float(eq_raw)
+            except (TypeError, ValueError):
+                continue
+            if prev_equity is not None and prev_equity > 0:
+                r = (eq - prev_equity) / prev_equity
+                daily_returns.append(r)
+                net_value *= (1 + r)
+            net_values.append(net_value)
+            prev_equity = eq
+
+        return daily_returns, net_values
+
+    async def _build_strategy_daily_returns(
+        self, strategy_id: str, start_date: datetime, end_date: datetime,
+    ) -> tuple:
+        """构建策略级日收益率序列和累计净值序列（从 trade_records + 月初持仓保证金）
+
+        数据源：
+          - trading.trade_records（executed_at 北京时间 naive, realized_pnl, strategy 中文名）
+          - public.strategy_position_snapshot_history（snapshot_hour, open_margin）
+
+        关键区别于账户级：
+          trade_records 无交易日 → day_pnl=0 → 日收益率=0，**必须纳入序列**
+          （否则周/月/年序列点数不足，夏普比率样本太少）。
+
+        计算口径：r_t = day_pnl / open_margin，其中 open_margin 取 day_t 所属月份
+        的月初持仓保证金。open_margin=0 时 r_t=0 并记 warning。
+
+        Args:
+            strategy_id: 规范策略 id（如 btc_eth）
+            start_date: 窗口起点（datetime naive，北京时区）
+            end_date: 窗口终点（datetime naive，北京时区）
+
+        Returns:
+            (daily_returns: List[float], net_values: List[float])
+            两个序列等长，覆盖 [start_date.date(), end_date.date()] 内每一天。
+            net_values 从 1.0 开始逐日复利。
+        """
+        # 1. 先聚合 trade_records 按日盈亏
+        strategy_names = self._db_strategy_names(strategy_id)
+        if not strategy_names:
+            return [], []
+
+        rows = await self._db_manager.fetch_all(
+            """
+            SELECT DATE(executed_at) AS day, COALESCE(SUM(realized_pnl), 0) AS day_pnl
+            FROM trading.trade_records
+            WHERE strategy = ANY($1::text[])
+              AND executed_at >= $2 AND executed_at < $3
+            GROUP BY DATE(executed_at)
+            ORDER BY day ASC
+            """,
+            strategy_names, start_date, end_date,
+        )
+        day_pnl_map: Dict[str, float] = {}
+        for r in rows:
+            day_pnl_map[str(r["day"])] = float(r["day_pnl"] or 0)
+
+        # 2. 遍历每一天，构建日收益率序列
+        cur_date = start_date.date()
+        end_date_only = end_date.date()
+        daily_returns: List[float] = []
+        net_values: List[float] = []
+        net_value = 1.0
+
+        # 月初保证金查询结果缓存（同一 strategy_id 同一月只查一次 DB）
+        margin_cache: Dict[date, float] = {}
+
+        while cur_date <= end_date_only:
+            day_key = cur_date.isoformat()
+            day_pnl = day_pnl_map.get(day_key, 0.0)
+
+            # 该日所属月份的月初持仓保证金（带缓存避免同月重复查 DB）
+            month_start_date = cur_date.replace(day=1)
+            if month_start_date not in margin_cache:
+                month_start_dt = datetime(month_start_date.year, month_start_date.month, 1)
+                margin_cache[month_start_date] = await self._query_month_start_margin(
+                    strategy_id, month_start_dt)
+            open_margin = margin_cache[month_start_date]
+
+            if open_margin > 0:
+                r_t = day_pnl / open_margin
+            else:
+                # 保证金为 0（无历史快照），收益率置 0 并记 warning
+                logger.warning(
+                    "月初持仓保证金为 0，该日日收益率按 0 处理",
+                    strategy_id=strategy_id,
+                    month_start=month_start_date.isoformat(),
+                )
+                r_t = 0.0
+
+            daily_returns.append(r_t)
+            net_value *= (1 + r_t)
+            net_values.append(net_value)
+
+            cur_date += timedelta(days=1)
+
+        return daily_returns, net_values
+
+    async def _query_month_start_margin(
+        self, strategy_id: str, month_start: datetime,
+    ) -> float:
+        """查询指定策略月初实际占用的持仓保证金（open_margin），作为策略级收益率分母
+
+        本方法口径与 ai_tuner/allocation/pnl_collector.py 的
+        PnLCollector._query_month_start_margin **完全一致**（单一事实源）：
+          1. 优先取本月最早一条快照的持仓保证金
+          2. 无则回退取早于本月的最晚一条快照
+          3. 全无时返回 0.0 并记 warning
+
+        注意：此方法**私有实现不下沉到 shared/**，因它只是绩效模块的辅助，
+        单一事实源明确指向 pnl_collector.py，避免形成循环依赖或双份维护。
+
+        Args:
+            strategy_id: 策略唯一标识
+            month_start: 当月起始时间（可带时区，本方法内部转为 naive）
+
+        Returns:
+            月初实际占用保证金（USDT）；无任何历史快照时返回 0.0
+        """
+        naive_start = month_start.replace(tzinfo=None) if month_start.tzinfo else month_start
+
+        # 优先：本月最早一条快照
+        row = await self._db_manager.fetch_one(
+            """
+            SELECT open_margin
+            FROM public.strategy_position_snapshot_history
+            WHERE strategy_id = $1 AND snapshot_hour >= $2
+            ORDER BY snapshot_hour ASC
+            LIMIT 1
+            """,
+            strategy_id, naive_start,
+        )
+        if row is not None and row.get("open_margin") is not None:
+            return float(row["open_margin"])
+
+        # 回退：早于本月的最晚一条快照
+        row = await self._db_manager.fetch_one(
+            """
+            SELECT open_margin
+            FROM public.strategy_position_snapshot_history
+            WHERE strategy_id = $1 AND snapshot_hour < $2
+            ORDER BY snapshot_hour DESC
+            LIMIT 1
+            """,
+            strategy_id, naive_start,
+        )
+        if row is not None and row.get("open_margin") is not None:
+            return float(row["open_margin"])
+
+        logger.warning(
+            "策略无历史持仓快照，月初占用按 0 处理",
+            strategy_id=strategy_id,
+        )
+        return 0.0
+
+    async def get_performance_metrics(
+        self, strategy_id: str, granularity: str,
+    ) -> Optional[dict]:
+        """读取绩效指标快照表的便捷查询方法
+
+        Args:
+            strategy_id: 规范策略 id（如 'btc_eth'）；空串 '' 时查账户级（scope='total'）
+            granularity: day|week|month|year
+
+        Returns:
+            dict: {bucket_key, sample_count, sharpe, max_drawdown}
+                  或 None（表不存在 / 无数据 / 查询异常）
+        """
+        await self._ensure_initialized()
+        scope = "total" if strategy_id == "" else "strategy"
+        try:
+            # bucket_key：当前该粒度的起点
+            today = datetime.now(BEIJING_TZ).date()
+            bucket_key = self._bucket_info(today)[granularity]["key"]
+            row = await self._db_manager.fetch_one(
+                """
+                SELECT bucket_key, sample_count, sharpe, max_drawdown
+                FROM public.performance_metric_snapshot
+                WHERE granularity=$1 AND scope=$2 AND strategy_id=$3 AND bucket_key=$4
+                """,
+                granularity, scope, strategy_id, bucket_key,
+            )
+        except Exception as exc:
+            logger.warning("查询绩效指标失败（表可能未初始化）",
+                           granularity=granularity, scope=scope,
+                           strategy_id=strategy_id, error=str(exc)[:80])
+            return None
+
+        if row is None:
+            return None
+
+        return {
+            "bucket_key": row.get("bucket_key"),
+            "sample_count": int(row.get("sample_count") or 0),
+            "sharpe": (
+                float(row["sharpe"]) if row.get("sharpe") is not None else None
+            ),
+            "max_drawdown": (
+                float(row["max_drawdown"]) if row.get("max_drawdown") is not None else None
+            ),
+        }
+
+    # ========================================
+    # 看板注入辅助：把绩效指标就地注入 overview dict
+    # ========================================
+
+    async def _attach_performance_metrics(
+        self, overview_data: dict, granularity: str,
+    ) -> None:
+        """把绩效指标就地注入传入的 overview dict
+
+        顶层加 total_sharpe / total_max_drawdown；
+        遍历 strategies 列表逐个加 sharpe / max_drawdown；
+        新表查不到时字段留 None。
+
+        Args:
+            overview_data: 要被就地修改的总览数据 dict（get_overview / get_overview_from_metric 返回结构）
+            granularity: 粒度（day|week|month|year）
+        """
+        await self._ensure_initialized()
+        try:
+            today = datetime.now(BEIJING_TZ).date()
+            bucket_key = self._bucket_info(today)[granularity]["key"]
+
+            rows = await self._db_manager.fetch_all(
+                """
+                SELECT scope, strategy_id, sharpe, max_drawdown
+                FROM public.performance_metric_snapshot
+                WHERE granularity=$1 AND bucket_key=$2
+                """,
+                granularity, bucket_key,
+            )
+        except Exception as exc:
+            logger.warning("读绩效指标快照失败，跳过注入", error=str(exc)[:80])
+            # 查失败时字段留 None，不中断看板输出
+            overview_data.setdefault("total_sharpe", None)
+            overview_data.setdefault("total_max_drawdown", None)
+            for s in overview_data.get("strategies", []):
+                s.setdefault("sharpe", None)
+                s.setdefault("max_drawdown", None)
+            return
+
+        # 组装查询结果字典
+        perf_by_key: Dict[tuple, dict] = {}
+        for r in rows:
+            key = (str(r["scope"]), str(r["strategy_id"] or ""))
+            perf_by_key[key] = {
+                "sharpe": float(r["sharpe"]) if r.get("sharpe") is not None else None,
+                "max_drawdown": (
+                    float(r["max_drawdown"])
+                    if r.get("max_drawdown") is not None else None
+                ),
+            }
+
+        # 账户级
+        total_perf = perf_by_key.get(("total", ""), {})
+        overview_data["total_sharpe"] = total_perf.get("sharpe")
+        overview_data["total_max_drawdown"] = total_perf.get("max_drawdown")
+
+        # 策略级
+        for s in overview_data.get("strategies", []):
+            sid = s.get("id", "")
+            sp = perf_by_key.get(("strategy", sid), {})
+            s["sharpe"] = sp.get("sharpe")
+            s["max_drawdown"] = sp.get("max_drawdown")

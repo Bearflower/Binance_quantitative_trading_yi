@@ -138,24 +138,24 @@
         <div class="stat-value gold" id="realized-pnl">0.00</div>
       </div>
 
-      <!-- 总佣金 -->
-      <div class="stat-card commission animate-in">
+      <!-- 夏普率 -->
+      <div class="stat-card sharpe animate-in">
         <div class="stat-head">
-          <div class="stat-icon">§</div>
-          <div class="stat-label">总佣金</div>
-          <div class="stat-sub" id="commission-sub">USDT（手续费支出）</div>
+          <div class="stat-icon">α</div>
+          <div class="stat-label">年化夏普率 <span class="tooltip" data-tip="基于过去 365 天日收益率年化计算，桶起点仅作标签。日卡样本不足时显示--。">ⓘ</span></div>
+          <div class="stat-sub" id="sharpe-sub">Sharpe</div>
         </div>
-        <div class="stat-value red" id="total-commission">0.00</div>
+        <div class="stat-value" id="total-sharpe">--</div>
       </div>
 
-      <!-- 当前持仓 -->
-      <div class="stat-card positions animate-in">
+      <!-- 最大回撤 -->
+      <div class="stat-card drawdown animate-in">
         <div class="stat-head">
-          <div class="stat-icon">▣</div>
-          <div class="stat-label">当前持仓</div>
-          <div class="stat-sub">非零仓位数量</div>
+          <div class="stat-icon">∇</div>
+          <div class="stat-label">最大回撤 <span class="tooltip" data-tip="本周期内净值曲线的最大回撤幅度。">ⓘ</span></div>
+          <div class="stat-sub" id="drawdown-sub">Max DD</div>
         </div>
-        <div class="stat-value blue" id="current-positions">0</div>
+        <div class="stat-value negative" id="total-max-drawdown">--</div>
       </div>
 
     </div>
@@ -198,6 +198,14 @@
             <div class="label">持仓保证金</div>
             <div class="value">0.00</div>
           </div>
+          <div class="strategy-metric" data-metric="sharpe">
+            <div class="label">夏普率</div>
+            <div class="value">--</div>
+          </div>
+          <div class="strategy-metric" data-metric="max_drawdown">
+            <div class="label">最大回撤</div>
+            <div class="value negative">--</div>
+          </div>
         </div>
         <div class="strategy-footer">
           <a href="detail.html?strategy=btc_eth" class="strategy-detail-link">
@@ -237,6 +245,14 @@
           <div class="strategy-metric" data-metric="open_margin">
             <div class="label">持仓保证金</div>
             <div class="value">0.00</div>
+          </div>
+          <div class="strategy-metric" data-metric="sharpe">
+            <div class="label">夏普率</div>
+            <div class="value">--</div>
+          </div>
+          <div class="strategy-metric" data-metric="max_drawdown">
+            <div class="label">最大回撤</div>
+            <div class="value negative">--</div>
           </div>
         </div>
         <div class="strategy-footer">
@@ -278,6 +294,14 @@
             <div class="label">持仓保证金</div>
             <div class="value">0.00</div>
           </div>
+          <div class="strategy-metric" data-metric="sharpe">
+            <div class="label">夏普率</div>
+            <div class="value">--</div>
+          </div>
+          <div class="strategy-metric" data-metric="max_drawdown">
+            <div class="label">最大回撤</div>
+            <div class="value negative">--</div>
+          </div>
         </div>
         <div class="strategy-footer">
           <a href="detail.html?strategy=new_coin" class="strategy-detail-link">
@@ -317,6 +341,14 @@
           <div class="strategy-metric" data-metric="open_margin">
             <div class="label">持仓保证金</div>
             <div class="value">0.00</div>
+          </div>
+          <div class="strategy-metric" data-metric="sharpe">
+            <div class="label">夏普率</div>
+            <div class="value">--</div>
+          </div>
+          <div class="strategy-metric" data-metric="max_drawdown">
+            <div class="label">最大回撤</div>
+            <div class="value negative">--</div>
           </div>
         </div>
         <div class="strategy-footer">

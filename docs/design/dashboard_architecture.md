@@ -1,8 +1,8 @@
 # Dashboard 架构设计文档
 
-> **版本**：v1.2
+> **版本**：v1.3
 > **创建日期**：2026-06-02
-> **最后更新**：2026-09-02
+> **最后更新**：2026-09-29
 > **作者**：后端架构师
 
 ---
@@ -277,6 +277,8 @@ GET /api/overview?type=daily
   "total_fills": 120,
   "total_closed": 100,
   "win_rate": 65.0,
+  "total_sharpe": null,
+  "total_max_drawdown": null,
   "strategies": [
     {
       "id": "btc_eth",
@@ -288,7 +290,9 @@ GET /api/overview?type=daily
       "win_count": 40,
       "loss_count": 20,
       "total_pnl": "800.00",
-      "win_rate": 66.7
+      "win_rate": 66.7,
+      "sharpe": 1.23,
+      "max_drawdown": 0.15
     },
     {
       "id": "new_coin",
@@ -300,7 +304,9 @@ GET /api/overview?type=daily
       "win_count": 18,
       "loss_count": 12,
       "total_pnl": "334.56",
-      "win_rate": 60.0
+      "win_rate": 60.0,
+      "sharpe": null,
+      "max_drawdown": null
     },
     {
       "id": "hrs",
@@ -312,13 +318,21 @@ GET /api/overview?type=daily
       "win_count": 7,
       "loss_count": 3,
       "total_pnl": "100.00",
-      "win_rate": 70.0
+      "win_rate": 70.0,
+      "sharpe": null,
+      "max_drawdown": null
     }
   ],
   "report_date": "2026-06-01",
   "data_source": "binance_api"
 }
 ```
+
+> **v2 新增字段说明**（2026-09-29）：
+> - `total_sharpe` / `total_max_drawdown`（顶层）：账户级合并所有策略的年化夏普比率 / 最大回撤；样本不足时为 `null`（前端显示 `--`）
+> - `sharpe` / `max_drawdown`（策略级）：该策略自身的年化夏普比率 / 最大回撤；同理可空
+> - 数据来源：`public.performance_metric_snapshot` 表，由 data-backend 定时任务每 600 秒写入
+> - 缓存键升级为 `overview_v2:{type}`（见 §10.1 缓存优化）
 
 #### 4.2.4 策略列表
 
@@ -342,12 +356,16 @@ GET /api/strategies?type=daily
       "loss_count": 20,
       "total_pnl": "800.00",
       "win_rate": 66.7,
+      "sharpe": 1.23,
+      "max_drawdown": 0.15,
       "error": null
     }
   ],
   "report_date": "2026-06-01"
 }
 ```
+
+> **v2 新增字段说明**（2026-09-29）：`sharpe` / `max_drawdown` 同上，策略级绩效指标，可空。缓存键升级为 `strategies_v2:{type}`。
 
 #### 4.2.5 单个策略详情
 
@@ -1723,6 +1741,10 @@ docker ps -f name=dashboard-api
 | income API | 30秒 | 服务级缓存，带锁防惊群 | >80% |
 | 元数据 | 24小时 | 策略变更时 | >99% |
 | 趋势数据 | 按类型分流 | 1次 income + 1次 DB + 内存切片 | >90% |
+| **总览数据 v2**（2026-09-29 升级） | 按类型分流 | 实时刷新 | 复用原 TTL |
+| **策略列表 v2**（2026-09-29 升级） | 按类型分流 | 实时刷新 | 复用原 TTL |
+
+> **v2 缓存键说明**（2026-09-29）：为在响应 JSON 中新增 `total_sharpe`、`total_max_drawdown`、`sharpe`、`max_drawdown` 四个绩效字段，缓存键从 `overview:{type}` / `strategies:{type}` 升级为 `overview_v2:{type}` / `strategies_v2:{type}`。新键名与老键名完全隔离，避免线上老缓存（不含绩效字段）污染新接口。所有环境（本地开发 + 生产）部署新版本后，老键会自然过期丢弃，无需手动清理。
 
 **缓存预热**：
 
@@ -1731,13 +1753,13 @@ async def warmup_cache():
     """缓存预热：应用启动时预加载常用数据"""
     logger.info("开始缓存预热")
 
-    # 预加载日报数据
+    # 预加载日报数据（v2 缓存键）
     daily_stats = await data_service.get_daily_stats()
-    cache_service.set("overview:daily", format_response(daily_stats), 300)
+    cache_service.set("overview_v2:daily", format_response(daily_stats), 300)
 
-    # 预加载周报数据
+    # 预加载周报数据（v2 缓存键）
     weekly_stats = await data_service.get_weekly_stats()
-    cache_service.set("overview:weekly", format_response(weekly_stats), 1800)
+    cache_service.set("overview_v2:weekly", format_response(weekly_stats), 1800)
 
     logger.info("缓存预热完成")
 ```

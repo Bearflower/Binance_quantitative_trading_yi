@@ -65,6 +65,8 @@ class StrategySummary(BaseModel):
     gross_pnl: Optional[str] = Field(None, description="毛利润（不含佣金）")
     commission: Optional[str] = Field(None, description="佣金支出（负值）")
     win_rate: float = Field(0.0, description="胜率")
+    sharpe: Optional[float] = Field(None, description="策略年化夏普比率")
+    max_drawdown: Optional[float] = Field(None, description="策略最大回撤(0~1)")
     error: Optional[str] = Field(None, description="错误信息")
 
 
@@ -140,6 +142,8 @@ class OverviewData(BaseModel):
     total_closed: int = Field(..., description="总平仓数")
     total_wins: int = Field(..., description="总盈利笔数")
     win_rate: float = Field(..., description="总胜率")
+    total_sharpe: Optional[float] = Field(None, description="账户级年化夏普比率")
+    total_max_drawdown: Optional[float] = Field(None, description="账户级最大回撤(0~1)")
     strategies: List[StrategySummary] = Field(
         ...,
         description="策略列表"

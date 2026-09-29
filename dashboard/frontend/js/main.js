@@ -124,7 +124,6 @@ async function loadAccountEquity() {
     const equityEl = document.querySelector('#account-equity');
     const timeEl = document.querySelector('#account-equity-time');
     const availEl = document.querySelector('#account-equity-avail');
-    const posEl = document.querySelector('#current-positions');
     if (!equityEl) return;
 
     try {
@@ -145,16 +144,12 @@ async function loadAccountEquity() {
                 maximumFractionDigits: 2
             })}`;
         }
-        if (posEl) {
-            posEl.textContent = (data.open_positions ?? 0).toLocaleString();
-        }
     } catch (error) {
         console.warn('账户净资产加载失败:', error);
         equityEl.textContent = '--';
         equityEl.className = 'equity-value';
         if (timeEl) timeEl.textContent = '--';
         if (availEl) availEl.textContent = '可用 --';
-        if (posEl) posEl.textContent = '--';
     }
 }
 
@@ -196,11 +191,19 @@ function updateOverview(data) {
         unrealized.className = 'stat-value ' + (unrealizedValue >= 0 ? 'positive' : 'negative');
     }
 
-    const commission = document.querySelector('#total-commission');
-    if (commission) {
-        const commValue = parseFloat(data.total_commission);
-        commission.textContent = formatNumber(commValue);
-        commission.className = 'stat-value ' + (commValue < 0 ? 'red' : 'positive');
+    // 年化夏普率（可为 null → '--'）
+    const sharpeEl = document.querySelector('#total-sharpe');
+    if (sharpeEl) {
+        const v = data.total_sharpe;
+        sharpeEl.textContent = (v == null || Number.isNaN(v)) ? '--' : Number(v).toFixed(2);
+        sharpeEl.className = 'stat-value' + ((v != null && !Number.isNaN(v) && v > 0) ? ' positive' : '');
+    }
+    // 最大回撤（可为 null → '--'；非 null 时显示负百分比）
+    const ddEl = document.querySelector('#total-max-drawdown');
+    if (ddEl) {
+        const v = data.total_max_drawdown;
+        ddEl.textContent = (v == null || Number.isNaN(v)) ? '--' : `-${(Number(v) * 100).toFixed(1)}%`;
+        ddEl.className = 'stat-value negative';
     }
 }
 
@@ -237,6 +240,21 @@ function updateStrategyCards(strategies) {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2
             });
+        }
+
+        // 策略级年化夏普率
+        const strSharpe = card.querySelector('[data-metric="sharpe"] .value');
+        if (strSharpe) {
+            const v = strategy.sharpe;
+            strSharpe.textContent = (v == null || Number.isNaN(v)) ? '--' : Number(v).toFixed(2);
+            strSharpe.className = 'value' + ((v != null && !Number.isNaN(v) && v > 0) ? ' positive' : '');
+        }
+        // 策略级最大回撤
+        const strDD = card.querySelector('[data-metric="max_drawdown"] .value');
+        if (strDD) {
+            const v = strategy.max_drawdown;
+            strDD.textContent = (v == null || Number.isNaN(v)) ? '--' : `-${(Number(v) * 100).toFixed(1)}%`;
+            strDD.className = 'value negative';
         }
     });
 }

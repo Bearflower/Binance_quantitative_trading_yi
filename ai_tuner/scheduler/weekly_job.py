@@ -16,6 +16,7 @@ from typing import Any, Dict
 import structlog
 from jinja2 import Template
 
+from ai_tuner.adapters.base_adapter import UnifiedPerformanceMetrics
 from ai_tuner.deploy.diff_generator import DiffGenerator
 from ai_tuner.deploy.version_manager import VersionManager
 from ai_tuner.engine.cost_tracker import CostTracker
@@ -264,6 +265,25 @@ class WeeklyTuningJob:
 
         # 步骤2：采集数据
         report = await adapter.collect()
+
+        # 从公共绩效表读取本周夏普率 + 最大回撤（与看板同源）
+        # 失败不阻断调优——ai-tuner 核心任务是参数建议，绩效指标是 LLM 额外参考
+        try:
+            from ai_tuner.allocation.performance_reader import UnifiedPerformanceReader
+            perf_reader = UnifiedPerformanceReader(self.db_manager)
+            perf = await perf_reader.get_latest(adapter.strategy_id, granularity="week")
+            if perf is not None:
+                report.unified_performance = UnifiedPerformanceMetrics(
+                    sharpe=perf.get("sharpe"),
+                    max_drawdown=perf.get("max_drawdown"),
+                )
+        except Exception as e:
+            logger.warning(
+                "统一绩效指标读取失败, 不阻断调优流程",
+                error=str(e),
+                strategy_id=adapter.strategy_id,
+            )
+
         if report.performance.total_trades == 0:
             # 方案D：检查适配器是否允许无交易调优
             if getattr(adapter, "allow_tuning_without_trades", False):
