@@ -2670,12 +2670,13 @@ class DataService:
         """
         naive_start = month_start.replace(tzinfo=None) if month_start.tzinfo else month_start
 
-        # 优先：本月最早一条快照
+        # 优先：本月最早一条**有持仓**的快照（open_margin > 0）
+        # 跳过持仓为 0 的快照（策略启动后可能有一段时间没开仓）
         row = await self._db_manager.fetch_one(
             """
             SELECT open_margin
             FROM public.strategy_position_snapshot_history
-            WHERE strategy_id = $1 AND snapshot_hour >= $2
+            WHERE strategy_id = $1 AND snapshot_hour >= $2 AND open_margin > 0
             ORDER BY snapshot_hour ASC
             LIMIT 1
             """,
@@ -2684,12 +2685,12 @@ class DataService:
         if row is not None and row.get("open_margin") is not None:
             return float(row["open_margin"])
 
-        # 回退：早于本月的最晚一条快照
+        # 回退：早于本月的最晚一条**有持仓**的快照
         row = await self._db_manager.fetch_one(
             """
             SELECT open_margin
             FROM public.strategy_position_snapshot_history
-            WHERE strategy_id = $1 AND snapshot_hour < $2
+            WHERE strategy_id = $1 AND snapshot_hour < $2 AND open_margin > 0
             ORDER BY snapshot_hour DESC
             LIMIT 1
             """,
