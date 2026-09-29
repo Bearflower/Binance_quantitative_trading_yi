@@ -104,7 +104,7 @@ async def main():
             await db_manager.connect()
             
             # 初始化交易记录器（自动记录所有下单到 trading.trade_records）
-            trade_logger = TradeLogger(db_manager, "新币做空策略")
+            trade_logger = TradeLogger(db_manager, "new_coin")
             await trade_logger.ensure_table_exists()
             # 初始化条件单记录表（用于孤儿条件单清理和订单追踪）
             await condition_orders.ensure_table(db_manager)

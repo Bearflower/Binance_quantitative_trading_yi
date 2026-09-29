@@ -29,16 +29,16 @@ BEIJING_TZ = timezone(timedelta(hours=8))
 class DataService:
     """真实数据服务"""
 
-    _STRATEGY_KEY_MAP = {
-        "MTPCS策略": "btc_eth",
-        "MTPCS激进策略": "btc_eth_aggressive",
-        "MTPCS激进版": "btc_eth_aggressive",
-        "新币做空策略": "new_coin",
-        "HRS策略": "hrs",
-        "网格策略": "grid",
+    # 策略身份映射（v3.4 简化：写入侧已统一为英文 canonical ID）
+    # trade_records.strategy 直接存 btc_eth/btc_eth_aggressive/new_coin/hrs/grid，
+    # 不再需要中文名→英文名的翻译。保留 _STRATEGY_NAME_MAP 仅用于 API 输出中文名。
+    _STRATEGY_NAME_MAP = {
+        "btc_eth": "MTPCS策略",
+        "btc_eth_aggressive": "MTPCS激进版",
+        "new_coin": "新币做空策略",
+        "hrs": "HRS策略",
+        "grid": "网格交易策略",
     }
-
-    _STRATEGY_NAME_MAP = {v: k for k, v in _STRATEGY_KEY_MAP.items()}
 
     # 共用同一分配额度的策略组（value 为资金归属的策略 id）：
     # 激进版(btc_eth_aggressive)已独立参与月度资金分配，不再与原版(btc_eth)合并占用比，
@@ -56,27 +56,12 @@ class DataService:
         return [root] + [k for k, v in cls._STRATEGY_ALLOCATION_GROUP.items() if v == root]
 
     @staticmethod
-    def _normalize_strategy_id(raw) -> Optional[str]:
-        """把各数据源的策略标识归一化为规范 id
+    def _db_strategy_ids(strategy_id: str) -> list:
+        """返回某策略在 DB 中落库的全部 id（trade_records.strategy 现在直接存英文 ID）"""
+        return [strategy_id]
 
-        strategy_open_positions / trade_records 可能存中文名（如 HRS策略），
-        而月度分配与概览使用规范 id（如 hrs）。统一经映射归并，避免同名持仓分裂。
-        """
-        if not raw:
-            return None
-        s = str(raw).strip()
-        return DataService._STRATEGY_KEY_MAP.get(s, s)  # 未知标识原样保留，避免丢持仓
-
-    @staticmethod
-    def _db_strategy_names(strategy_id: str) -> list:
-        """返回某策略 id 在 DB 中的全部落库中文名（去重保序）
-
-        _STRATEGY_KEY_MAP 允许一个策略 id 对应多个中文名（如激进版在 DB 落库为
-        "MTPCS激进策略"、但用户也叫"MTPCS激进版"），查询 trade_records 时必须按
-        全部落库名匹配，避免遗漏或与展示名不一致。
-        """
-        names = [k for k, v in DataService._STRATEGY_KEY_MAP.items() if v == strategy_id]
-        return list(dict.fromkeys(names))
+    # 兼容旧调用方的别名（v3.4 后 trade_records.strategy 已统一为英文 ID）
+    _db_strategy_names = _db_strategy_ids
 
     _STRATEGY_SYMBOLS = {
         "btc_eth": ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT", "TRXUSDT"],
@@ -324,7 +309,7 @@ class DataService:
         try:
             rows = await self._db_manager.fetch_all(
                 "SELECT DISTINCT symbol FROM trading.trade_records "
-                "WHERE strategy = 'HRS策略' "
+                "WHERE strategy = 'hrs' "
                 "AND order_type NOT IN ('STOP', 'TAKE_PROFIT', 'STOP_MARKET', 'TAKE_PROFIT_MARKET')"
             )
             return {row["symbol"] for row in rows}
@@ -406,7 +391,7 @@ class DataService:
                     total_daily.setdefault(d, self._new_stats_cell()),
                     gross, comm, cnt, wins, losses)
                 continue
-            key = self._STRATEGY_KEY_MAP.get(r["strategy"])
+            key = r["strategy"]  # v3.4 起 trade_records.strategy 直接存英文 ID
             if key:
                 self._fold_stats_cell(
                     strategy_daily.setdefault((key, d), self._new_stats_cell()),
@@ -523,7 +508,7 @@ class DataService:
         summary, total = await self._get_strategy_summary(start_time, end_time)
 
         strategies_data = []
-        strategy_keys = list(dict.fromkeys(self._STRATEGY_KEY_MAP.values()))  # 去重保序（多个中文名可映射同一策略 id）
+        strategy_keys = list(self._STRATEGY_NAME_MAP.keys())  # v3.4：直接取 canonical ID 列表
         for strategy_key in strategy_keys:
             strategy_name = self._STRATEGY_NAME_MAP.get(strategy_key, strategy_key)
             cell = summary.get(strategy_key, self._new_stats_cell())
@@ -1015,7 +1000,7 @@ class DataService:
                 start, now
             )
             for r in rows:
-                key = self._STRATEGY_KEY_MAP.get(r["strategy"])
+                key = r["strategy"]  # v3.4 起 trade_records.strategy 直接存英文 ID
                 if key and r["symbol"] not in seen:
                     symbols_with_key.append((key, r["symbol"]))
                     seen.add(r["symbol"])
@@ -1241,7 +1226,7 @@ class DataService:
         strategies = []
         # 覆盖策略全集：预计算有 metric 行 → 用其盈亏；否则全 0 兜底（仅体现持仓，
         # 覆盖激进版等"有持仓但近期无独立成交、metric 行缺失"的策略，避免策略被跳过）
-        strategy_keys = list(dict.fromkeys(self._STRATEGY_KEY_MAP.values()))  # 去重保序（多个中文名可映射同一策略 id）
+        strategy_keys = list(self._STRATEGY_NAME_MAP.keys())  # v3.4：直接取 canonical ID 列表
         for extra_key in open_summary.keys():
             if extra_key not in strategy_keys:
                 strategy_keys.append(extra_key)
@@ -1577,7 +1562,7 @@ class DataService:
             )
             for r in rows:
                 sym = str(r["symbol"])
-                sid = self._normalize_strategy_id(r["strategy_id"])
+                sid = str(r["strategy_id"]).strip()  # v3.4：trade_records.strategy 已统一为英文 ID
                 if sym in reported and reported[sym][0] != sid:
                     reported_conflict.add(sym)
                 elif sym not in reported:
@@ -1600,7 +1585,7 @@ class DataService:
                 "ORDER BY symbol, executed_at DESC"
             )
             for r in rows:
-                last_trade_strategy[str(r["symbol"])] = self._normalize_strategy_id(r["strategy"])
+                last_trade_strategy[str(r["symbol"])] = str(r["strategy"]).strip()
         except Exception as e:
             logger.warning("读 trade_records 下端归属失败", error=str(e)[:80])
 

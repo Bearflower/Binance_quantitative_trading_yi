@@ -3,6 +3,8 @@
 # 策略基本信息
 strategy:
   name: new_coin
+  # 本策略在 trading.trade_records 中的归属名（R07 占用互斥/归属判定权威名）
+  record_name: "新币做空策略"
   version: "1.1.0"
   description: "新币做空策略 - 利用新币上市后的价格下跌趋势获利（V4.1 信号质量优化版）"
 
@@ -214,12 +216,16 @@ trading:
     tick_size: 0.01     # 默认价格精度
     step_size: 0.001    # 默认数量精度
 
-  # 平仓重试配置
+  # 平仓配置（R03：统一走 shared.reduce_only_close，全部带 reduceOnly）
   close_position:
-    max_retries: 3          # 限价单平仓最大重试次数
-    retry_interval: 2       # 重试间隔（秒）
-    poll_interval: 2        # 限价单成交轮询间隔（秒）
-    timeout: 10             # 单次限价单超时（秒）
+    max_retries: 3          # 限价/市价平仓最大重试次数（每轮重读真实持仓重算剩余量）
+    retry_interval: 2       # 两轮重试间隔（秒）
+    poll_interval: 2        # 单笔平仓单终态轮询间隔（秒）
+    timeout: 10             # 单笔平仓单等待终态超时（秒）
+    reduce_only: true       # 平仓单强制加减仓约束（D1）
+    sync_before_reduce_only: true  # 被拒 -2022 时先对账/先撤同向条件单再重试（D1）
+    position_confirm_retries: 2    # 平仓后持仓对账重试次数
+    position_confirm_interval: 1   # 平仓后持仓对账间隔（秒）
     close_percent: 1.0      # 全仓平仓比例（1.0 = 100%）
 
 # 资金限额配置（方案 D：运行时读 DB 为主来源，config 为兜底）
@@ -294,6 +300,15 @@ notification:
   enabled: true                # 是否启用通知
   channels:
     - feishu                   # 通知渠道
+
+# 持仓归属隔离（方案C + R07 开仓占用互斥）
+# 本策略归属名取 strategy.record_name（= "新币做空策略"，与 trade_records 权威名一致）；
+# competing_record_names 为空表示与共享账户内任意其他策略互斥（默认保守口径）。
+ownership:
+  enabled: true                    # 是否启用占用互斥（关闭即回到既有 trade_records 判定）
+  claim_ttl_minutes: 30            # 占用有效期（分钟）
+  claim_cleanup_interval_minutes: 10  # 过期占用清理周期（分钟）
+  lock_timeout_seconds: 5          # advisory lock 获取/事务超时（秒）
 
 # 数据库配置
 database:

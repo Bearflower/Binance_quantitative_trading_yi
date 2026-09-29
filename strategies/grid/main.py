@@ -82,7 +82,7 @@ async def main():
             logger.info("数据库连接成功")
             
             # 初始化交易记录器（自动记录所有下单到 trading.trade_records）
-            trade_logger = TradeLogger(db_client, "网格交易策略")
+            trade_logger = TradeLogger(db_client, "grid")
             await trade_logger.ensure_table_exists()
             binance_client.set_trade_logger(trade_logger)
             logger.info("交易记录器初始化完成", strategy="网格交易策略")

@@ -94,7 +94,7 @@ async def main():
         async with binance_client, kline_service, notification_client:
             await db_manager.connect()
 
-            trade_logger = TradeLogger(db_manager, "HRS策略")
+            trade_logger = TradeLogger(db_manager, "hrs")
             await trade_logger.ensure_table_exists()
             # 初始化条件单记录表（用于孤儿条件单清理和订单追踪）
             await condition_orders.ensure_table(db_manager)

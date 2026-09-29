@@ -21,15 +21,15 @@ BEIJING_TZ = timezone(timedelta(hours=8))
 
 
 class DataService:
-    """真实数据服务"""
+    """真实数据服务（v3.4：trade_records.strategy 已统一为英文 ID）"""
 
-    _STRATEGY_KEY_MAP = {
-        "MTPCS策略": "btc_eth",
-        "新币做空策略": "new_coin",
-        "HRS策略": "hrs",
+    _STRATEGY_NAME_MAP = {
+        "btc_eth": "MTPCS策略",
+        "new_coin": "新币做空策略",
+        "hrs": "HRS策略",
+        "btc_eth_aggressive": "MTPCS激进版",
+        "grid": "网格交易策略",
     }
-
-    _STRATEGY_NAME_MAP = {v: k for k, v in _STRATEGY_KEY_MAP.items()}
 
     _STRATEGY_SYMBOLS = {
         "btc_eth": ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT", "SOLUSDT", "TRXUSDT"],
@@ -97,7 +97,7 @@ class DataService:
         """从DB获取HRS策略交易过的币种"""
         try:
             rows = await self._db_manager.fetch_all(
-                "SELECT DISTINCT symbol FROM trading.trade_records WHERE strategy = 'HRS策略'"
+                "SELECT DISTINCT symbol FROM trading.trade_records WHERE strategy = 'hrs'"
             )
             return {row["symbol"] for row in rows}
         except Exception as e:
@@ -112,7 +112,7 @@ class DataService:
         end_ms = int(end_bj.timestamp() * 1000)
 
         result = {}
-        strategy_keys = list(self._STRATEGY_KEY_MAP.values())
+        strategy_keys = list(self._STRATEGY_NAME_MAP.keys())  # v3.4：直接取 canonical ID
         for key in strategy_keys:
             result[key] = {"wins": 0, "losses": 0, "total_pnl": 0.0}
 
@@ -225,14 +225,14 @@ class DataService:
         total_closed = 0
         total_wins = 0
 
-        strategy_keys = list(self._STRATEGY_KEY_MAP.values())
+        strategy_keys = list(self._STRATEGY_NAME_MAP.keys())  # v3.4：直接取 canonical ID
         for strategy_key in strategy_keys:
             strategy_name = self._STRATEGY_NAME_MAP.get(strategy_key, strategy_key)
             order_count = 0
 
             for name, data in unified_stats.items():
-                mapped_key = self._STRATEGY_KEY_MAP.get(name, "")
-                if mapped_key == strategy_key:
+                # v3.4：DB 已统一英文 ID，但 Binance API 可能返回中文名，这里尝试双向匹配
+                if name == strategy_key or self._STRATEGY_NAME_MAP.get(strategy_key) == name:
                     order_count = data["trade_count"]
                     break
 
@@ -312,11 +312,7 @@ class DataService:
         await self._ensure_initialized()
         start_time, end_time = self._get_date_range(report_type)
 
-        name_mapping = {v: k for k, v in self._STRATEGY_KEY_MAP.items()}
-        strategy_name = name_mapping.get(strategy_id, "")
-        if not strategy_name:
-            return []
-
+        # v3.4：trade_records.strategy 已统一为英文 canonical ID，直接用 strategy_id 查
         rows = await self._db_manager.fetch_all(
             "SELECT symbol, COUNT(*) as order_count, "
             "AVG(price)::numeric(18,4) as avg_price, "
@@ -324,7 +320,7 @@ class DataService:
             "FROM trading.trade_records "
             "WHERE strategy = $1 AND executed_at >= $2 AND executed_at <= $3 "
             "GROUP BY symbol ORDER BY order_count DESC",
-            strategy_name, start_time, end_time
+            strategy_id, start_time, end_time
         )
 
         symbols = []

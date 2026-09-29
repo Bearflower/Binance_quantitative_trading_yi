@@ -3,7 +3,7 @@ strategy:
   version: "2.6.0"  # v6.21 BNB参数放宽+差异化冷却+移除TRX
 
   # 持仓归属隔离（方案C）：归属名写入 trading.trade_records 的策略字段，用于账户持仓归属判定
-  record_name: "MTPCS策略"
+  record_name: "btc_eth"
 
   # 交易对配置
   symbols:
@@ -343,6 +343,13 @@ strategy:
       max_single_position_usdt: 500
       min_close_notional_usdt: 20
       entry_order_timeout_seconds: 300  # 限价单入场超时等待（秒），60→300 低波动行情下给更多时间成交
+
+    # 保护单补挂（R05）：开仓成交后保护单未挂全时的重试策略
+    protection_retry:
+      max_retries: 3                # 补挂最大尝试次数，达上限触发 on_exhausted
+      retry_interval_cycles: 1      # 相邻补挂尝试间隔（主循环周期数）
+      on_exhausted: "alert"         # 达上限处理：alert=仅告警（D2，不自动减仓）
+      notify: true                  # 补挂告警/耗尽告警是否推送飞书
 
     # 趋势过滤器
     trend_filter:
@@ -709,8 +716,13 @@ notification:
     - warning
     - error
 
-# 持仓归属隔离（方案C）· 对家策略名
-# 与激进版共享同一币安账户；持仓期互斥限定与列表内的对家策略互斥，防止同币双开互挂保护单
+# 持仓归属隔离（方案C + R07 占用互斥）
+# 与激进版共享同一币安账户；持仓期互斥限定与列表内的对家策略互斥，防止同币双开互挂保护单。
+# R07 占用表：开仓窗口期对 symbol 原子占位，覆盖 trade_records 权威归属写入前的竞态窗口。
 ownership:
+  enabled: true                        # 占用互斥总闸（D4：置 false 回到既有 trade_records 互斥）
   competing_record_names:
-    - "MTPCS激进策略"
+    - "btc_eth_aggressive"
+  claim_ttl_minutes: 30                # 占用有效期（分钟），超时由主循环清理
+  claim_cleanup_interval_minutes: 10   # 过期占用清理间隔（分钟）
+  lock_timeout_seconds: 5              # advisory lock 获取/事务超时保护（秒）
