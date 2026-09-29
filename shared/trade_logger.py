@@ -276,9 +276,9 @@ class TradeLogger:
                 order_id,
                 side,
                 order_type,
-                str(executed_qty),
-                str(avg_price),
-                str(commission),
+                executed_qty,
+                avg_price,
+                commission,
                 status,
                 executed_at
             )
@@ -339,7 +339,6 @@ class TradeLogger:
         """
         try:
             strategy_name = strategy or self.strategy_name
-            pnl_str = str(realized_pnl)
 
             # ---------- 模式一：order_id 精确匹配 ----------
             if order_id:
@@ -349,7 +348,7 @@ class TradeLogger:
                     "UPDATE trading.trade_records "
                     "SET realized_pnl = $1 "
                     "WHERE order_id = $2 AND strategy = $3 AND side = $4",
-                    pnl_str,
+                    realized_pnl,
                     order_id,
                     strategy_name,
                     match_side
@@ -361,7 +360,7 @@ class TradeLogger:
                         "回写平仓盈亏成功",
                         match_mode="order_id",
                         order_id=order_id,
-                        realized_pnl=pnl_str,
+                        realized_pnl=realized_pnl,
                         strategy=strategy_name,
                         side=match_side
                     )
@@ -394,7 +393,7 @@ class TradeLogger:
                     "    ORDER BY executed_at DESC"
                     "    LIMIT 1"
                     ")",
-                    pnl_str,
+                    realized_pnl,
                     strategy_name,
                     symbol,
                     match_side,
@@ -410,7 +409,7 @@ class TradeLogger:
                         side=match_side,
                         executed_at=executed_at.isoformat(),
                         time_window=time_window,
-                        realized_pnl=pnl_str,
+                        realized_pnl=realized_pnl,
                         strategy=strategy_name
                     )
                     return True
@@ -421,7 +420,7 @@ class TradeLogger:
                     symbol=symbol,
                     side=match_side,
                     executed_at=executed_at.isoformat() if executed_at else None,
-                    realized_pnl=pnl_str,
+                    realized_pnl=realized_pnl,
                     strategy=strategy_name
                 )
             else:
@@ -471,7 +470,6 @@ class TradeLogger:
         """
         try:
             strategy_name = strategy or self.strategy_name
-            pnl_str = str(realized_pnl)
             exec_time = executed_at or datetime.now(BEIJING_TZ).replace(tzinfo=None)
 
             await self.db.execute(
@@ -483,7 +481,7 @@ class TradeLogger:
                 symbol,
                 side,
                 exec_time,
-                pnl_str,
+                realized_pnl,  # Decimal → asyncpg 直接编码为 numeric
                 close_reason,
             )
 
@@ -493,7 +491,7 @@ class TradeLogger:
                 symbol=symbol,
                 side=side,
                 close_reason=close_reason,
-                realized_pnl=pnl_str,
+                realized_pnl=realized_pnl,
             )
             return True
 
@@ -581,11 +579,12 @@ class TradeLogger:
         exec_time = executed_at or datetime.now(BEIJING_TZ).replace(tzinfo=None)
         window = self.STOP_LOSS_MATCH_WINDOW_SECONDS
         try:
+            # 固定 7 个占位符 + COALESCE，避免条件拼接造成占位符编号错位
+            # （realized_pnl=None 时保持原值，非 None 时覆盖）
             result = await self.db.execute(
                 "UPDATE trading.trade_records "
-                "SET close_reason = $1"
-                + (", realized_pnl = $2" if realized_pnl is not None else "")
-                + " WHERE id = ("
+                "SET close_reason = $1, realized_pnl = COALESCE($2::numeric, realized_pnl)"
+                " WHERE id = ("
                 "    SELECT id FROM trading.trade_records"
                 "    WHERE strategy = $3 AND symbol = $4 AND side = $5"
                 "    AND order_type <> 'PNL_SUMMARY'"
@@ -595,7 +594,7 @@ class TradeLogger:
                 "    LIMIT 1"
                 ")",
                 self.CLOSE_REASON_STOP_LOSS,
-                *( (str(realized_pnl),) if realized_pnl is not None else () ),
+                str(realized_pnl) if realized_pnl is not None else None,
                 strategy_name,
                 symbol,
                 side,
@@ -816,7 +815,7 @@ class TradeLogger:
                     # 佣金统一按负值（支出）落库，与看板聚合口径一致（net = realized_pnl + commission）
                     expense = -commission
                     await self.db.execute(
-                        self._UPDATE_COMMISSION_SQL, str(expense), symbol, order_id
+                        self._UPDATE_COMMISSION_SQL, expense, symbol, order_id
                     )
                     summary["matched_orders"] += 1
                     summary["total_commission"] += expense
