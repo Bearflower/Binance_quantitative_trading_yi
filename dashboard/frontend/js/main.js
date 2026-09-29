@@ -3,6 +3,72 @@
  * 页面交互和数据加载
  */
 
+// ========================================
+// Tooltip 全局浮层（渲染到 body 下，脱离父级 stacking context）
+// 放在文件最前，避免被后面的 runtime error 阻断
+// ========================================
+(function setupGlobalTooltip() {
+    // document.body 此时尚未就绪（script 在 body 底部其实已就绪，但保险起见）
+    function ensureEl() {
+        if (!document.body) return null;
+        let tipEl = document.createElement('div');
+        tipEl.className = 'global-tooltip';
+        document.body.appendChild(tipEl);
+        return tipEl;
+    }
+
+    function showTooltip(trigger) {
+        const tipEl = ensureEl();
+        if (!tipEl) return;
+        const text = trigger.getAttribute('data-tip');
+        if (!text) return;
+        tipEl.textContent = text;
+        tipEl.classList.add('visible');
+        positionTip(tipEl, trigger);
+    }
+
+    function hideTooltip() {
+        // 全局查找（可能还没创建）
+        const tip = document.querySelector('.global-tooltip');
+        if (tip) tip.classList.remove('visible');
+    }
+
+    function positionTip(tipEl, trigger) {
+        const rect = trigger.getBoundingClientRect();
+        const gap = 8;
+
+        // 临时显示测量尺寸（visibility:hidden 不影响布局但不显示）
+        tipEl.style.visibility = 'hidden';
+        tipEl.style.top = '0';
+        tipEl.style.left = '0';
+        tipEl.classList.add('visible');
+        const tipW = tipEl.offsetWidth;
+        const tipH = tipEl.offsetHeight;
+        tipEl.classList.remove('visible');
+        tipEl.style.visibility = '';
+
+        let top = rect.top - tipH - gap;
+        let left = rect.left + rect.width / 2 - tipW / 2;
+
+        if (top < 8) top = rect.bottom + gap;
+        left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8));
+
+        tipEl.style.top = top + 'px';
+        tipEl.style.left = left + 'px';
+    }
+
+    document.addEventListener('mouseover', (e) => {
+        const trigger = e.target.closest('.tooltip');
+        if (trigger) showTooltip(trigger);
+    });
+    document.addEventListener('mouseout', (e) => {
+        const trigger = e.target.closest('.tooltip');
+        if (trigger) hideTooltip();
+    });
+    window.addEventListener('scroll', hideTooltip, { passive: true });
+    window.addEventListener('resize', hideTooltip);
+})();
+
 // 当前数据类型（daily/weekly/monthly/yearly）
 let currentType = 'daily';
 
@@ -657,69 +723,3 @@ function showError(message) {
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', init);
-
-
-// ========================================
-// Tooltip 全局浮层（渲染到 body 下，脱离父级 stacking context）
-// 代码立即执行（script 在 body 底部，DOM body 已就绪）
-// ========================================
-(function setupGlobalTooltip() {
-    // 立即创建 tooltip 容器（script 在 body 底部，DOM body 已就绪）
-    let tipEl = document.createElement('div');
-    tipEl.className = 'global-tooltip';
-    document.body.appendChild(tipEl);
-
-    function showTooltip(trigger) {
-        const text = trigger.getAttribute('data-tip');
-        if (!text) return;
-        tipEl.textContent = text;
-        tipEl.classList.add('visible');
-        positionTip(trigger);
-    }
-
-    function hideTooltip() {
-        tipEl.classList.remove('visible');
-    }
-
-    function positionTip(trigger) {
-        const rect = trigger.getBoundingClientRect();
-        const gap = 8;
-
-        // 先临时显示测量尺寸
-        tipEl.style.visibility = 'hidden';
-        tipEl.style.top = '0';
-        tipEl.style.left = '0';
-        tipEl.classList.add('visible');
-        const tipW = tipEl.offsetWidth;
-        const tipH = tipEl.offsetHeight;
-        tipEl.classList.remove('visible');
-        tipEl.style.visibility = '';
-
-        // 默认显示在触发元素上方
-        let top = rect.top - tipH - gap;
-        let left = rect.left + rect.width / 2 - tipW / 2;
-
-        // 上方空间不够则翻转到下方
-        if (top < 8) {
-            top = rect.bottom + gap;
-        }
-
-        // 水平方向边界保护
-        left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8));
-
-        tipEl.style.top = top + 'px';
-        tipEl.style.left = left + 'px';
-    }
-
-    // 事件委托
-    document.addEventListener('mouseover', (e) => {
-        const trigger = e.target.closest('.tooltip');
-        if (trigger) showTooltip(trigger);
-    });
-    document.addEventListener('mouseout', (e) => {
-        const trigger = e.target.closest('.tooltip');
-        if (trigger) hideTooltip();
-    });
-    window.addEventListener('scroll', hideTooltip, { passive: true });
-    window.addEventListener('resize', hideTooltip);
-})();
