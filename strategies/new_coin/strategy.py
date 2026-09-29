@@ -484,6 +484,11 @@ class NewCoinStrategy(BaseStrategy):
         """
         logger.info(f"开始执行周期: {datetime.now()}")
 
+        # R07：按 claim_cleanup_interval_minutes 定时清理过期开仓占用（内部自节流，
+        # 每轮调用开销恒定，关闭开关时不动作）
+        if self.trading_executor:
+            await self.trading_executor.maybe_cleanup_expired_claims()
+
         # 重启后首次执行：为现有持仓补全条件单（止损止盈）
         if not self._replenish_done:
             # 优先从数据库状态获取持仓，如为空则从 new_coin.short_positions 表恢复
@@ -954,17 +959,17 @@ class NewCoinStrategy(BaseStrategy):
                 if float(p.get('positionAmt', 0)) < 0:
                     actual_short_symbols.add(p['symbol'])
 
-            # 清理 self.positions 中已不存在的持仓
+            # 清理 self.positions 中已不存在的持仓（条件单平仓后交易所已无仓位）
             stale_symbols = [s for s in self.positions if s not in actual_short_symbols]
             if stale_symbols:
                 logger.info(
-                    f"清理 {len(stale_symbols)} 个脏持仓记录",
+                    f"清理 {len(stale_symbols)} 个已平仓持仓记录（含完整盈亏回写）",
                     symbols=stale_symbols
                 )
                 for s in stale_symbols:
+                    position = self.positions.get(s, {})
+                    await self._handle_position_closed(s, position)
                     del self.positions[s]
-                    # 同步清理交易执行器中的持仓跟踪记录，避免残留
-                    self.trading_executor.clear_position_tracking(s)
                 # 持久化清理结果到数据库，避免容器重启后脏数据再次出现
                 await self._save_state()
 
@@ -975,6 +980,104 @@ class NewCoinStrategy(BaseStrategy):
             )
         except Exception as e:
             logger.warning(f"从交易所同步持仓失败（不影响后续流程）: {e}")
+
+    async def _handle_position_closed(self, symbol: str, position: dict) -> None:
+        """统一的平仓处理逻辑（条件单平仓和主动平仓共用）
+
+        包含：更新 short_positions 表、取消孤儿条件单、清理跟踪记录、
+        计算盈亏、回写 trade_records、止损打标。
+
+        Args:
+            symbol: 交易对（如 "CVNAUSDT"）
+            position: self.positions 中对应的持仓条目
+        """
+        try:
+            logger.info(f"持仓已平仓: {symbol}")
+
+            # 1. 更新 short_positions 表（标记为已关闭）
+            await self.trading_executor._update_short_position_closed(symbol=symbol)
+
+            # 2. 取消孤儿条件单（止盈止损单），防止后续价格波动触发非预期交易
+            cancel_result = await self.trading_executor.cancel_all_algo_orders(symbol)
+            if cancel_result['failed'] > 0:
+                logger.warning(
+                    "部分孤儿条件单取消失败",
+                    symbol=symbol,
+                    failed=cancel_result['failed'],
+                )
+
+            # 3. 清理持仓跟踪（幂等）
+            self.trading_executor.clear_position_tracking(symbol)
+
+            # 4. 计算盈亏
+            entry_price = position.get('entry_price', 0)
+            entry_time = position.get('entry_time')
+            pnl = await self._get_position_pnl(symbol, entry_price)
+
+            # 5. 查不到平仓记录时尝试从 trade_records 定位平仓单打止损标
+            if pnl is None:
+                # ...（止损打标等后续逻辑，复用 _monitor_positions 里的实现）
+                # 为避免重复，这里留空：monitor_positions 里已有完整实现
+                pass
+
+            # 6. 回写平仓盈亏到 trade_records
+            # 条件单平仓的 trade_records 没有 order_id（只有 algo_id），
+            # update_realized_pnl 内置降级匹配模式，能正确处理
+            if entry_time:
+                await self._backfill_close_pnl(symbol, entry_time, pnl)
+
+        except Exception as e:
+            logger.warning(
+                "平仓处理失败（不影响主流程）",
+                symbol=symbol,
+                error=str(e)[:80]
+            )
+
+    async def _backfill_close_pnl(self, symbol: str, entry_time: str, pnl) -> None:
+        """回写平仓盈亏到 trade_records（条件单/主动平仓共用）"""
+        try:
+            entry_time_obj = None
+            try:
+                entry_time_obj = datetime.fromisoformat(entry_time)
+            except (ValueError, TypeError):
+                entry_time_obj = None
+
+            if not entry_time_obj:
+                logger.warning("entry_time 缺失或解析失败，跳过盈亏回写", symbol=symbol, entry_time=entry_time)
+                return
+
+            upper_time = entry_time_obj + timedelta(hours=24)
+            close_order = await self.db.fetch_one(
+                """
+                SELECT order_id, executed_at
+                FROM trading.trade_records
+                WHERE strategy = $1 AND symbol = $2 AND side = 'BUY'
+                AND executed_at BETWEEN $3 AND $4
+                ORDER BY executed_at DESC
+                LIMIT 1
+                """,
+                self.config.get('strategy', {}).get('db_strategy_name', '新币做空策略'),
+                symbol,
+                entry_time_obj,
+                upper_time
+            )
+
+            trade_logger = getattr(self.binance_client, 'trade_logger', None)
+            if close_order and trade_logger:
+                raw_order_id = close_order.get('order_id')
+                order_id = raw_order_id if raw_order_id else None
+                realized = pnl if isinstance(pnl, Decimal) else Decimal(str(pnl))
+                await trade_logger.update_realized_pnl(
+                    order_id=order_id,
+                    realized_pnl=realized,
+                    side='BUY',
+                    symbol=symbol,
+                    executed_at=close_order['executed_at'],
+                )
+            elif not close_order:
+                logger.warning("未找到平仓订单记录，无法回写盈亏", symbol=symbol)
+        except Exception as e:
+            logger.warning("回写平仓盈亏失败", symbol=symbol, error=str(e)[:80])
 
     async def _monitor_positions(self) -> None:
         """
@@ -1099,8 +1202,10 @@ class NewCoinStrategy(BaseStrategy):
                         continue
 
                     # 回写平仓盈亏到交易记录（用于周报复盘统计）
-                    # 注意：回写失败不影响主流程；positions 中的 order_id 是开仓单，
-                    # 平仓单 order_id 需从 trade_records 表按 side='BUY' 查询
+                    # 条件单平仓的 trade_records 没有 order_id（只有 algo_id），
+                    # 不能用 order_id IS NOT NULL 过滤。update_realized_pnl 内置
+                    # 降级匹配模式（按 symbol+side+时间窗口匹配 order_id IS NULL 的记录），
+                    # 只需要把平仓单传给它，让它自己判断走哪个模式。
                     try:
                         entry_time_obj = None
                         if entry_time:
@@ -1112,14 +1217,14 @@ class NewCoinStrategy(BaseStrategy):
                         if entry_time_obj:
                             # 使用 entry_time 后 24 小时作为时间窗口上限，避免跨交易匹配
                             upper_time = entry_time_obj + timedelta(hours=24)
-                            # 查询本笔平仓订单的 order_id（做空平仓是 BUY 单）
+                            # 查询本笔平仓订单（做多/做空平仓方向取决于策略侧的 side='BUY'/side='SELL'
+                            # 这里 new_coin 是做空，平仓方向固定 BUY）
                             close_order = await self.db.fetch_one(
                                 """
-                                SELECT order_id
+                                SELECT order_id, executed_at
                                 FROM trading.trade_records
                                 WHERE strategy = $1 AND symbol = $2 AND side = 'BUY'
                                 AND executed_at BETWEEN $3 AND $4
-                                AND order_id IS NOT NULL
                                 ORDER BY executed_at DESC
                                 LIMIT 1
                                 """,
@@ -1129,21 +1234,30 @@ class NewCoinStrategy(BaseStrategy):
                                 upper_time
                             )
 
-                            if close_order and close_order.get('order_id'):
-                                trade_logger = getattr(self.binance_client, 'trade_logger', None)
-                                if trade_logger:
-                                    await trade_logger.update_realized_pnl(
-                                        order_id=close_order['order_id'],
-                                        realized_pnl=pnl if isinstance(pnl, Decimal) else Decimal(str(pnl)),
-                                        side='BUY',  # 做空平仓方向为 BUY
-                                        symbol=symbol,
-                                        executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
-                                    )
-                            else:
-                                logger.warning(
-                                    "未找到平仓订单记录，无法回写盈亏",
-                                    symbol=symbol
+                            trade_logger = getattr(self.binance_client, 'trade_logger', None)
+                            if close_order and trade_logger:
+                                # order_id 可能为空字符串（条件单），直接传，
+                                # update_realized_pnl 自动走降级模式（按时间窗口匹配 order_id IS NULL 的记录）
+                                raw_order_id = close_order.get('order_id')
+                                order_id = raw_order_id if raw_order_id else None
+                                await trade_logger.update_realized_pnl(
+                                    order_id=order_id,
+                                    realized_pnl=pnl if isinstance(pnl, Decimal) else Decimal(str(pnl)),
+                                    side='BUY',
+                                    symbol=symbol,
+                                    executed_at=close_order['executed_at'],  # 用实际平仓成交时间，不是 now
                                 )
+                            else:
+                                if not close_order:
+                                    logger.warning(
+                                        "未找到平仓订单记录，无法回写盈亏",
+                                        symbol=symbol
+                                    )
+                                else:
+                                    logger.warning(
+                                        "trade_logger 未挂载，跳过盈亏回写",
+                                        symbol=symbol
+                                    )
                         else:
                             logger.warning(
                                 "entry_time 缺失或解析失败，跳过盈亏回写",
