@@ -300,6 +300,26 @@ jobs:
               echo "__GHCR_TOKEN__" | docker login ghcr.io -u bearflower --password-stdin
             fi
 
+            # 1.5 磁盘预检查（2026-09-30 新增：上一次部署因服务器磁盘 100% 导致 docker pull 解压失败）
+            # 低于 5GB 自动清理 Docker 缓存，低于 2GB 则中止部署（防部署中途炸掉）
+            echo "💾 磁盘预检查..."
+            FREE_KB=$(df / | awk 'NR==2 {print $4}')
+            FREE_GB=$((FREE_KB / 1024 / 1024))
+            echo "   根分区剩余: ${FREE_GB}GB (${FREE_KB}KB)"
+            if [ "$FREE_GB" -lt 5 ]; then
+              echo "⚠️ 磁盘不足 5GB，执行自动清理..."
+              docker system prune -af --volumes || true
+              docker builder prune -af || true
+              FREE_KB=$(df / | awk 'NR==2 {print $4}')
+              FREE_GB=$((FREE_KB / 1024 / 1024))
+              echo "   清理后剩余: ${FREE_GB}GB"
+            fi
+            if [ "$FREE_GB" -lt 2 ]; then
+              echo "❌ 磁盘严重不足（< 2GB），中止部署！请手动扩容或清理后重试。"
+              exit 1
+            fi
+            echo "✅ 磁盘充足 (>= 2GB)"
+
             # 2. 仅清理「不属于本 compose 项目」的残留容器（compose.yml 接管前的命名冲突防护）
             # 场景：data-backend / dashboard-api 曾独立 docker run 部署，compose.yml 也定义了同名
             #       → docker compose up 报 "container name already in use" exit 1

@@ -1143,10 +1143,20 @@ class DataService:
         """读预计算快速路径：当前区间（scope=total/strategy）返回与 get_overview 同结构 dict
 
         无数据或快照过期（超过新鲜度超时）返回 None，由调用方走实时兜底。
+
+        v3.4：当日（daily bucket_key == 今天）永远走实时路径——
+        今日数据还在实时变化，后台预计算可能在交易中途刷入不完整/错误快照，
+        导致 API 返回与 DB 实时查询不一致。今日快照由数据落库完整性无法保证，
+        禁止用作 API 返回来源。
         """
         await self._ensure_initialized()
         granularity = self._metric_granularity(report_type)
-        bucket_key = self._bucket_info(datetime.now(BEIJING_TZ).date())[granularity]["key"]
+        today = datetime.now(BEIJING_TZ).date()
+        bucket_key = self._bucket_info(today)[granularity]["key"]
+        
+        # 禁止当日预计算快照（不完整/可能过时）
+        if granularity == "day" and bucket_key == today:
+            return None
         try:
             rows = await self._db_manager.fetch_all(
                 "SELECT scope, strategy_id, symbol, net_pnl, gross_pnl, commission, "
