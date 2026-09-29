@@ -312,7 +312,6 @@ body::after {
   padding: 14px 16px;
   transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease, background 0.24s ease;
   position: relative;
-  overflow: hidden;
   display: flex;
   flex-direction: column;
   justify-content: center;
@@ -448,7 +447,6 @@ body::after {
   justify-content: flex-start;
   gap: 8px;
   position: relative;
-  overflow: hidden;
   transition: transform 0.24s ease, border-color 0.24s ease, box-shadow 0.24s ease;
   box-shadow: var(--shadow-glow-purple), var(--shadow-card);
 }
@@ -964,14 +962,16 @@ body::after {
   background: #1C1B24;
   color: #F7F6F2;
   font-size: 12px;
-  line-height: 1.5;
-  padding: 6px 10px;
+  line-height: 1.55;
+  padding: 8px 12px;
   border-radius: 8px;
-  white-space: nowrap;
+  max-width: 280px;
+  white-space: normal;
+  word-break: break-word;
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.2s ease, transform 0.2s ease;
-  z-index: 30;
+  z-index: 999;
   box-shadow: 0 10px 26px rgba(40, 36, 60, 0.22);
 }
 
