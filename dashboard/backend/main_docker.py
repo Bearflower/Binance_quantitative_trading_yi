@@ -4,12 +4,14 @@ FastAPI 应用入口
 """
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 import random
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.middleware.gzip import GZipMiddleware
+from starlette.responses import FileResponse
 import structlog
 
 from api.routes_docker import router as api_router
@@ -256,14 +258,29 @@ async def global_exception_handler(request: Request, exc: Exception):
 
 
 # ========================================
-# 根路径
+# 前端静态文件 + SPA 回退
 # ========================================
 
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
+
+
 @app.get("/")
-async def root():
-    """根路径"""
-    return {
-        "message": "Dashboard API",
-        "version": "1.0.0",
-        "docs": "/api/docs"
-    }
+async def serve_index():
+    """根路径 → 前端首页"""
+    return FileResponse(FRONTEND_DIR / "index.html")
+
+
+@app.get("/{full_path:path}")
+async def serve_static_or_spa(full_path: str):
+    """
+    静态文件优先，不存在则回退到 index.html（SPA 路由）
+
+    FastAPI 路由匹配顺序：
+    1. /api/* 路由（router prefix="/api"，已先注册）
+    2. 以上中间件
+    3. 本 catch-all：先检查是否为真实静态文件，否则回退 index.html
+    """
+    file_path = FRONTEND_DIR / full_path
+    if file_path.is_file():
+        return FileResponse(file_path)
+    return FileResponse(FRONTEND_DIR / "index.html")
