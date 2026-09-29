@@ -5,72 +5,103 @@
 
 // ========================================
 // Tooltip 全局浮层（渲染到 body 下，脱离父级 stacking context）
-// 单次创建 + 缓存 + relatedTarget 判断防闪烁
+// 用 mouseenter/mouseleave（不冒泡、只触发一次）彻底避免 mouseover/out 级联闪烁
 // ========================================
 (function setupGlobalTooltip() {
-    // 闭包缓存：只创建一次
     let tipEl = null;
 
     function getTipEl() {
         if (!tipEl && document.body) {
             tipEl = document.createElement('div');
             tipEl.className = 'global-tooltip';
+            tipEl.style.pointerEvents = 'none'; // tooltip 绝不截获鼠标事件
             document.body.appendChild(tipEl);
         }
         return tipEl;
     }
 
-    function showTooltip(trigger) {
-        const tip = getTipEl();
-        if (!tip) return;
-        const text = trigger.getAttribute('data-tip');
-        if (!text) return;
-        tip.textContent = text;
-        tip.classList.add('visible');
-        positionTip(trigger);
-    }
-
-    function hideTooltip() {
-        if (tipEl) tipEl.classList.remove('visible');
-    }
-
     function positionTip(trigger) {
         const rect = trigger.getBoundingClientRect();
-        const gap = 8;
-        tipEl.style.visibility = 'hidden';
-        tipEl.style.top = '0';
-        tipEl.style.left = '0';
-        tipEl.classList.add('visible');
-        const tipW = tipEl.offsetWidth;
-        const tipH = tipEl.offsetHeight;
-        tipEl.classList.remove('visible');
-        tipEl.style.visibility = '';
-        let top = rect.top - tipH - gap;
-        let left = rect.left + rect.width / 2 - tipW / 2;
-        if (top < 8) top = rect.bottom + gap;
-        left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8));
-        tipEl.style.top = top + 'px';
-        tipEl.style.left = left + 'px';
+        const tip = getTipEl();
+        // 用 opacity+visibility 做测量（让元素渲染布局但视觉不可见），不动 visible class
+        tip.style.opacity = '0';
+        tip.style.visibility = 'hidden';
+        tip.style.top = '0';
+        tip.style.left = '0';
+        // 确保 tip 当前是"在 DOM 里渲染"状态——依赖 visible class 已由调用者加上
+        if (!tip.classList.contains('visible')) tip.classList.add('visible');
+        const w = tip.offsetWidth;
+        const h = tip.offsetHeight;
+        tip.style.opacity = '';
+        tip.style.visibility = '';
+        let top = rect.top - h - 8;
+        let left = rect.left + rect.width / 2 - w / 2;
+        if (top < 8) top = rect.bottom + 8;
+        left = Math.max(8, Math.min(left, window.innerWidth - w - 8));
+        tip.style.top = top + 'px';
+        tip.style.left = left + 'px';
     }
 
-    // mouseover：进入 .tooltip 或其子元素 → 显示
-    document.addEventListener('mouseover', (e) => {
-        const trigger = e.target.closest('.tooltip');
-        if (trigger) showTooltip(trigger);
-    });
+    // 直接绑定（mouseenter/mouseleave 不冒泡，不能事件委托）
+    function bindTooltip(trigger) {
+        if (trigger.dataset.tipBound === '1') return;
+        trigger.dataset.tipBound = '1';
+        trigger.addEventListener('mouseenter', () => {
+            const text = trigger.getAttribute('data-tip');
+            if (!text) return;
+            const tip = getTipEl();
+            tip.textContent = text;
+            tip.classList.add('visible');
+            positionTip(trigger);
+        });
+        trigger.addEventListener('mouseleave', () => {
+            const tip = getTipEl();
+            if (tip) tip.classList.remove('visible');
+        });
+        // 触摸屏：touch 显示
+        trigger.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const text = trigger.getAttribute('data-tip');
+            const tip = getTipEl();
+            if (tip.classList.contains('visible')) {
+                tip.classList.remove('visible');
+            } else {
+                tip.textContent = text || '';
+                tip.classList.add('visible');
+                positionTip(trigger);
+            }
+        });
+    }
 
-    // mouseout：relatedTarget 是鼠标"进入"的新元素
-    // 如果新元素还在同一个 trigger 内 → 不 hide（鼠标只是在内部移动）
-    document.addEventListener('mouseout', (e) => {
-        const trigger = e.target.closest('.tooltip');
-        if (!trigger) return;
-        const newTarget = e.relatedTarget;
-        if (newTarget && trigger.contains(newTarget)) return;
-        hideTooltip();
-    });
+    // DOM 就绪后绑定所有 .tooltip
+    function bindAll() {
+        document.querySelectorAll('.tooltip[data-tip]').forEach(bindTooltip);
+    }
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bindAll);
+    } else {
+        bindAll();
+    }
 
-    window.addEventListener('scroll', hideTooltip, { passive: true });
-    window.addEventListener('resize', hideTooltip);
+    // 动态新增的 .tooltip（MutationObserver）
+    new MutationObserver((mutations) => {
+        mutations.forEach(m => {
+            m.addedNodes.forEach(n => {
+                if (n.nodeType === 1) {
+                    if (n.matches?.('.tooltip[data-tip]')) bindTooltip(n);
+                    n.querySelectorAll?.('.tooltip[data-tip]').forEach(bindTooltip);
+                }
+            });
+        });
+    }).observe(document.documentElement, { childList: true, subtree: true });
+
+    // 点击空白处关闭 tooltip（触摸屏）
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.tooltip')) {
+            const tip = getTipEl();
+            if (tip) tip.classList.remove('visible');
+        }
+    });
 })();
 
 // 当前数据类型（daily/weekly/monthly/yearly）
