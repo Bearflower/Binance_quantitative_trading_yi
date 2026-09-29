@@ -657,3 +657,71 @@ function showError(message) {
 
 // 页面加载完成后初始化
 document.addEventListener('DOMContentLoaded', init);
+
+
+// ========================================
+// Tooltip 全局浮层（渲染到 body 下，脱离父级 stacking context）
+// ========================================
+(function setupGlobalTooltip() {
+    let tipEl = null;
+
+    function ensureTipEl() {
+        if (!tipEl) {
+            tipEl = document.createElement('div');
+            tipEl.className = 'global-tooltip';
+            document.body.appendChild(tipEl);
+        }
+        return tipEl;
+    }
+
+    function showTooltip(trigger) {
+        const text = trigger.getAttribute('data-tip');
+        if (!text) return;
+        const tip = ensureTipEl();
+        tip.textContent = text;
+        tip.classList.add('visible');
+        positionTip(tip, trigger);
+    }
+
+    function hideTooltip() {
+        if (tipEl) tipEl.classList.remove('visible');
+    }
+
+    function positionTip(tip, trigger) {
+        const rect = trigger.getBoundingClientRect();
+        const tipW = tip.offsetWidth;
+        const tipH = tip.offsetHeight;
+        const gap = 6;
+
+        // 默认：显示在触发元素上方
+        let top = rect.top - tipH - gap;
+        let left = rect.left + rect.width / 2 - tipW / 2;
+
+        // 上方空间不够则翻转到下方
+        if (top < 8) {
+            top = rect.bottom + gap;
+            tip.classList.add('flip-down');
+        } else {
+            tip.classList.remove('flip-down');
+        }
+
+        // 水平方向边界保护
+        left = Math.max(8, Math.min(left, window.innerWidth - tipW - 8));
+
+        tip.style.top = top + 'px';
+        tip.style.left = left + 'px';
+    }
+
+    // 事件委托：所有 .tooltip 的 mouseenter/mouseleave
+    document.addEventListener('mouseover', (e) => {
+        const trigger = e.target.closest('.tooltip');
+        if (trigger) showTooltip(trigger);
+    });
+    document.addEventListener('mouseout', (e) => {
+        const trigger = e.target.closest('.tooltip');
+        if (trigger) hideTooltip();
+    });
+    // 窗口 resize/scroll 时隐藏（避免位置错位）
+    window.addEventListener('scroll', hideTooltip, { passive: true });
+    window.addEventListener('resize', hideTooltip);
+})();

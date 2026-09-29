@@ -942,7 +942,7 @@ body::after {
 }
 
 /* ========================================
-   Tooltip 问号提示（亮色下用深色浮层更醒目，反色于卡片）
+   Tooltip 问号提示（JS 动态渲染到 body 下，脱离父级层叠上下文）
    ======================================== */
 .tooltip {
   position: relative;
@@ -953,12 +953,10 @@ body::after {
   flex-shrink: 0;
 }
 
-.tooltip::after {
-  content: attr(data-tip);
-  position: absolute;
-  bottom: 150%;
-  left: 50%;
-  transform: translateX(-50%) translateY(4px);
+/* 全局 tooltip 浮层（fixed 定位到 body，z-index 最高） */
+.global-tooltip {
+  position: fixed;
+  z-index: 99999;
   background: #1C1B24;
   color: #F7F6F2;
   font-size: 12px;
@@ -968,16 +966,26 @@ body::after {
   max-width: 280px;
   white-space: normal;
   word-break: break-word;
+  box-shadow: 0 10px 26px rgba(40, 36, 60, 0.28);
   opacity: 0;
+  transition: opacity 0.18s ease;
   pointer-events: none;
-  transition: opacity 0.2s ease, transform 0.2s ease;
-  z-index: 999;
-  box-shadow: 0 10px 26px rgba(40, 36, 60, 0.22);
+  font-family: var(--font-sans);
 }
 
-.tooltip:hover::after {
+.global-tooltip.visible {
   opacity: 1;
-  transform: translateX(-50%) translateY(0);
+}
+
+.global-tooltip::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 5px;
+  border-style: solid;
+  border-color: #1C1B24 transparent transparent transparent;
 }
 
 /* ========================================
