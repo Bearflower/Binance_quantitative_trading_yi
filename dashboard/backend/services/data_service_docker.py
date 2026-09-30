@@ -2416,26 +2416,24 @@ class DataService:
         )
         strategy_curves: Dict[str, tuple] = dict(results)
 
+        # 各粒度对应不同回溯窗口（天），保证每个 tab 的 sharpe/max_dd 反映不同时间尺度：
+        # day→30d（近1月）、week→90d（近3月）、month→180d（近半年）、year→365d（全年）
+        # 样本量最低 30 天，够稳健不会噪声
+        _PERF_WINDOW_DAYS = {"day": 30, "week": 90, "month": 180, "year": 365}
+
         # 3. 遍历所有 (granularity, scope, strategy_id) 组合，计算并落库
         for granularity in self._PERF_GRANULARITIES:
-            # bucket_key：该粒度"当前 bucket"的起点
+            # bucket_key：该粒度"当前 bucket"的起点（仅用于落库标签）
             bucket_key = self._bucket_info(today)[granularity]["key"]
-            # 窗口起点：当前 bucket 的起点（对应该 bucket_key）
-            if granularity == "day":
-                start_date = bucket_key
-            elif granularity == "week":
-                start_date = bucket_key  # 本周一
-            elif granularity == "month":
-                start_date = bucket_key  # 本月1号
-            else:  # year
-                start_date = bucket_key  # 1月1号
+            # 实际绩效计算用的回溯窗口长度
+            window_days = _PERF_WINDOW_DAYS.get(granularity, 365)
 
             # 账户级（scope='total', strategy_id=''）
             try:
                 row = self._compute_one_perf_entry(
                     granularity, "total", "",
                     acc_daily_returns, acc_net_values,
-                    start_date,
+                    bucket_key, window_days,
                 )
                 if row is not None:
                     await self._db_manager.execute(self._PERF_METRIC_UPSERT_SQL, *row)
@@ -2451,7 +2449,7 @@ class DataService:
                     row = self._compute_one_perf_entry(
                         granularity, "strategy", sid,
                         daily_rets, net_vals,
-                        start_date,
+                        bucket_key, window_days,
                     )
                     if row is not None:
                         await self._db_manager.execute(self._PERF_METRIC_UPSERT_SQL, *row)
@@ -2468,36 +2466,27 @@ class DataService:
         self,
         granularity: str, scope: str, strategy_id: str,
         daily_returns: list, net_values: list,
-        start_date,
+        bucket_key, window_days: int,
     ) -> Optional[tuple]:
-        """从日收益率/净值序列中截取窗口，计算夏普+回撤并组装 UPSERT 参数
+        """从日收益率/净值序列中截取 [最后 window_days 天] 计算夏普+回撤并组装 UPSERT 参数
 
         Args:
-            granularity: day|week|month|year
+            granularity: day|week|month|year（仅用于日志/落库标签）
             scope: total|strategy
             strategy_id: '' 或规范策略 id
-            daily_returns: 全区间日收益率序列（与 net_values 等长）
-            net_values: 全区间净值序列（从 1.0 开始）
-            start_date: 窗口起点（datetime.date），同时作为 bucket_key 落库
+            daily_returns: 全回溯窗口（365d）日收益率序列，升序
+            net_values: 全回溯窗口（365d）净值序列，升序
+            bucket_key: 该粒度当前 bucket 起点（仅作为落库标签）
+            window_days: 本次要截取多少天（day→30, week→90, month→180, year→365）
 
         Returns:
             tuple: (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_drawdown)
-                   或 None（窗口内样本不足）
+                   或 None（窗口内样本不足 2 个）
         """
-        # 先算出全序列中 [start_date, end_date] 对应的索引范围
-        # 由于日收益率序列本身就是逐日构建的，daily_returns 和 net_values
-        # 的索引天然对应窗口内的逐日顺序。这里我们做一个简化：
-        # 直接把整个序列传进来，让 annualized_sharpe / max_drawdown_ratio
-        # 自己处理样本不足——窗口越大越好（年化系数固定为 365）。
-        #
-        # 如果需要严格按 bucket_key 截取窗口内样本：
-        # 账户级 _build_account_daily_returns 的返回顺序是按 snapshot_date ASC，
-        # 策略级 _build_strategy_daily_returns 是逐日遍历 [start_date, end_date]，
-        # 均是升序且与日期一一对应。但此处 compute_and_store_performance_metrics
-        # 传给本函数的 daily_returns / net_values 已是全回溯窗口的完整序列，
-        # 而非 bucket_key 窗口内的序列——bucket_key 的语义是"当前统计区间"的起点，
-        # 而夏普比率需要尽量长的样本序列才稳健（样本越少年化越不可靠）。
-        # 因此此处**直接使用全回溯窗口的完整序列**，bucket_key 仅作为标签落库。
+        # 从末尾截取最近 window_days 天
+        if len(daily_returns) > window_days:
+            daily_returns = daily_returns[-window_days:]
+            net_values = net_values[-window_days:]
 
         sample_count = len(daily_returns)
         if sample_count < 2:
@@ -2505,9 +2494,6 @@ class DataService:
 
         sharpe = annualized_sharpe(daily_returns)
         max_dd = max_drawdown_ratio(net_values)
-
-        # bucket_key：该粒度当前 bucket 的起点（由调用方传入 start_date）
-        bucket_key = start_date
 
         return (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_dd)
 
