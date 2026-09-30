@@ -283,6 +283,21 @@ jobs:
           source /tmp/ci_retry.sh
           retry_connect scp docker-compose.yml 43.156.242.184:/root/trading_system/docker-compose.yml
 
+      - name: 📦 同步数据库 init-scripts
+        run: |
+          source /tmp/ci_retry.sh
+          # 空目录安全：git checkout 可能因 sparse/fetch-depth 漏拉 database/，此时跳过
+          if [ ! -d "database/postgres/init-scripts" ] || [ -z "$(ls -A database/postgres/init-scripts 2>/dev/null)" ]; then
+            echo "⏭️ init-scripts 目录不存在或为空，跳过同步"
+            exit 0
+          fi
+          # 确保服务器父目录存在（compose 用 ./database/postgres/init-scripts 相对路径挂载）
+          retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/database/postgres"
+          # 源路径无尾部斜杠 → 整个 init-scripts/ 目录作为子目录落到服务器父级下
+          retry_connect scp -r database/postgres/init-scripts 43.156.242.184:/root/trading_system/database/postgres/
+          echo "✅ init-scripts 已同步，文件清单："
+          ls -1 database/postgres/init-scripts/
+
       - name: 🚀 生成并上传远程部署脚本
         run: |
           cat > /tmp/deploy.sh << 'REMOTE_SCRIPT'
@@ -357,6 +372,61 @@ jobs:
             # 4. 只更新镜像变了的容器（compose up -d 自动检测）
             echo "🔄 docker compose up -d..."
             docker compose up -d --remove-orphans
+
+            # ========== step 4.5：执行数据库 init-scripts（幂等）==========
+            # 背景：postgres 官方镜像 entrypoint 仅在 PGDATA 首次为空时自动执行
+            #       /docker-entrypoint-initdb.d/ 脚本。生产 volume 已持久化，
+            #       entrypoint 不会再触发 → 新增 SQL 脚本无法自动生效。
+            #       解决：compose up -d 后显式 exec 跑一遍（脚本全 IF NOT EXISTS 幂等）。
+            # 前置：init-scripts 已由 deploy job 上一个 scp step 上传到
+            #       /root/trading_system/database/postgres/init-scripts/，
+            #       compose volume 自动挂载到容器内 /docker-entrypoint-initdb.d/
+            echo "🗄️  数据库 init-scripts 执行..."
+
+            # 4.5.1 等 postgres 就绪（最多 120s，超时让 set -e 炸掉整个部署）
+            echo "   等待 postgres 就绪..."
+            PG_READY=0
+            for i in $(seq 1 60); do
+              if docker exec trading_system-postgres pg_isready \
+                    -U trading_user -d trading_platform -h localhost >/dev/null 2>&1; then
+                PG_READY=1
+                break
+              fi
+              sleep 2
+            done
+            if [ "$PG_READY" -ne 1 ]; then
+              echo "❌ postgres 在 120s 内未就绪，中止部署！"
+              exit 1
+            fi
+            echo "   ✅ postgres 就绪"
+
+            # 4.5.2 按文件名数字前缀顺序执行 /docker-entrypoint-initdb.d/*.sql
+            #       sort 保证 01→02→…→09 顺序，脚本内部 IF NOT EXISTS 全幂等
+            SQL_GLOB=$(docker exec trading_system-postgres \
+              sh -c 'ls -1 /docker-entrypoint-initdb.d/*.sql 2>/dev/null | sort')
+            if [ -z "$SQL_GLOB" ]; then
+              echo "   ⏭️  容器内无 SQL 脚本，跳过"
+            else
+              echo "   发现 SQL 脚本："
+              docker exec trading_system-postgres \
+                sh -c 'ls -1 /docker-entrypoint-initdb.d/*.sql 2>/dev/null | sort | sed "s|^|     |"'
+              echo "   开始执行..."
+              while IFS= read -r sql_path; do
+                [ -z "$sql_path" ] && continue
+                sql_name=$(basename "$sql_path")
+                echo "     ▶ 执行 $sql_name ..."
+                # --set ON_ERROR_STOP=on：让 psql 遇到 SQL ERROR 级错误（如 CREATE INDEX 缺 IF NOT EXISTS 时的 duplicate）
+                # 立即返回非零 exit code → set -e 中断远程脚本 → deploy job 报红，防止错误静默吞没
+                # 仅吞 stdout（CREATE TABLE/CREATE INDEX 输出），stderr 透传到 Actions 日志便于报错时定位
+                docker exec trading_system-postgres \
+                  psql --set ON_ERROR_STOP=on \
+                    -U trading_user -d trading_platform -f "$sql_path" \
+                  >/dev/null
+                echo "     ✅ $sql_name 完成"
+              done <<< "$SQL_GLOB"
+            fi
+            echo "✅ init-scripts 全部执行完毕"
+            # ==========================================================
 
             # 5. 等容器就绪
             echo "⏳ 等待 15s..."

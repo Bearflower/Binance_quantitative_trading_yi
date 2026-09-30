@@ -53,12 +53,12 @@ CREATE TABLE IF NOT EXISTS btc_eth.trades (
 );
 
 -- 创建索引
-CREATE INDEX idx_btc_eth_signals_symbol ON btc_eth.trade_signals(symbol);
-CREATE INDEX idx_btc_eth_signals_created ON btc_eth.trade_signals(created_at);
-CREATE INDEX idx_btc_eth_positions_symbol ON btc_eth.positions(symbol);
-CREATE INDEX idx_btc_eth_positions_status ON btc_eth.positions(status);
-CREATE INDEX idx_btc_eth_trades_symbol ON btc_eth.trades(symbol);
-CREATE INDEX idx_btc_eth_trades_executed ON btc_eth.trades(executed_at);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_signals_symbol ON btc_eth.trade_signals(symbol);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_signals_created ON btc_eth.trade_signals(created_at);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_positions_symbol ON btc_eth.positions(symbol);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_positions_status ON btc_eth.positions(status);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_trades_symbol ON btc_eth.trades(symbol);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_trades_executed ON btc_eth.trades(executed_at);
 
 -- ============================================
 -- BTC/ETH 激进版策略表（独立 schema）
@@ -111,12 +111,12 @@ CREATE TABLE IF NOT EXISTS btc_eth_aggressive.trades (
 );
 
 -- 创建索引
-CREATE INDEX idx_btc_eth_agg_signals_symbol ON btc_eth_aggressive.trade_signals(symbol);
-CREATE INDEX idx_btc_eth_agg_signals_created ON btc_eth_aggressive.trade_signals(created_at);
-CREATE INDEX idx_btc_eth_agg_positions_symbol ON btc_eth_aggressive.positions(symbol);
-CREATE INDEX idx_btc_eth_agg_positions_status ON btc_eth_aggressive.positions(status);
-CREATE INDEX idx_btc_eth_agg_trades_symbol ON btc_eth_aggressive.trades(symbol);
-CREATE INDEX idx_btc_eth_agg_trades_executed ON btc_eth_aggressive.trades(executed_at);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_agg_signals_symbol ON btc_eth_aggressive.trade_signals(symbol);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_agg_signals_created ON btc_eth_aggressive.trade_signals(created_at);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_agg_positions_symbol ON btc_eth_aggressive.positions(symbol);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_agg_positions_status ON btc_eth_aggressive.positions(status);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_agg_trades_symbol ON btc_eth_aggressive.trades(symbol);
+CREATE INDEX IF NOT EXISTS idx_btc_eth_agg_trades_executed ON btc_eth_aggressive.trades(executed_at);
 
 -- ============================================
 -- 新币做空策略表
@@ -184,13 +184,13 @@ CREATE TABLE IF NOT EXISTS new_coin.orders (
 );
 
 -- 创建索引
-CREATE INDEX idx_new_coin_monitor_symbol ON new_coin.coin_monitor(symbol);
-CREATE INDEX idx_new_coin_monitor_status ON new_coin.coin_monitor(status);
-CREATE INDEX idx_new_coin_short_signals_symbol ON new_coin.short_signals(symbol);
-CREATE INDEX idx_new_coin_short_positions_symbol ON new_coin.short_positions(symbol);
-CREATE INDEX idx_new_coin_orders_symbol ON new_coin.orders(symbol);
-CREATE INDEX idx_new_coin_orders_created ON new_coin.orders(created_at);
-CREATE INDEX idx_new_coin_orders_strategy ON new_coin.orders(strategy);
+CREATE INDEX IF NOT EXISTS idx_new_coin_monitor_symbol ON new_coin.coin_monitor(symbol);
+CREATE INDEX IF NOT EXISTS idx_new_coin_monitor_status ON new_coin.coin_monitor(status);
+CREATE INDEX IF NOT EXISTS idx_new_coin_short_signals_symbol ON new_coin.short_signals(symbol);
+CREATE INDEX IF NOT EXISTS idx_new_coin_short_positions_symbol ON new_coin.short_positions(symbol);
+CREATE INDEX IF NOT EXISTS idx_new_coin_orders_symbol ON new_coin.orders(symbol);
+CREATE INDEX IF NOT EXISTS idx_new_coin_orders_created ON new_coin.orders(created_at);
+CREATE INDEX IF NOT EXISTS idx_new_coin_orders_strategy ON new_coin.orders(strategy);
 
 -- ============================================
 -- 网格交易策略表
@@ -244,12 +244,12 @@ CREATE TABLE IF NOT EXISTS grid.grid_trades (
 );
 
 -- 创建索引
-CREATE INDEX idx_grid_config_symbol ON grid.grid_config(symbol);
-CREATE INDEX idx_grid_config_status ON grid.grid_config(status);
-CREATE INDEX idx_grid_orders_config ON grid.grid_orders(config_id);
-CREATE INDEX idx_grid_orders_status ON grid.grid_orders(status);
-CREATE INDEX idx_grid_trades_config ON grid.grid_trades(config_id);
-CREATE INDEX idx_grid_trades_executed ON grid.grid_trades(executed_at);
+CREATE INDEX IF NOT EXISTS idx_grid_config_symbol ON grid.grid_config(symbol);
+CREATE INDEX IF NOT EXISTS idx_grid_config_status ON grid.grid_config(status);
+CREATE INDEX IF NOT EXISTS idx_grid_orders_config ON grid.grid_orders(config_id);
+CREATE INDEX IF NOT EXISTS idx_grid_orders_status ON grid.grid_orders(status);
+CREATE INDEX IF NOT EXISTS idx_grid_trades_config ON grid.grid_trades(config_id);
+CREATE INDEX IF NOT EXISTS idx_grid_trades_executed ON grid.grid_trades(executed_at);
 
 -- ============================================
 -- 公共表
