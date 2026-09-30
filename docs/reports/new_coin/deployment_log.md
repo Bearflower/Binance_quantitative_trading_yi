@@ -1,6 +1,52 @@
 # 部署确认报告
 
 ---
+## 2026-09-30 追加部署（修复 new_coin 生产停机 + 提交 R01–R08 交易安全修复）
+
+### 故障现象
+`trading_system-new_coin` 容器日志自 2026-09-29T23:25:58Z 起每分钟抛一次（共 509 条）：
+
+```
+AttributeError: 'TradingExecutor' object has no attribute 'maybe_cleanup_expired_claims'
+  File "/app/strategies/new_coin/strategy.py", line 490, in _execute_cycle
+    await self.trading_executor.maybe_cleanup_expired_claims()
+```
+
+策略周期整体异常中断 —— 既不交易也不管理存量持仓（资金风险）。
+
+### 根因
+半截提交：`bdacd16` 只提交了调用侧 `strategies/new_coin/strategy.py`（引入 `maybe_cleanup_expired_claims` 调用），
+其实现（`strategies/new_coin/executor.py` 中的 R07 占用清理）整包滞留在未提交工作区。
+已在 HEAD（`644cde0`）复核复现：`strategy.py:490` 有调用、`executor.py` 无实现。
+
+### 变更内容
+- **整批提交 R01–R08 交易安全修复**（工作区已写好但从未提交），使 caller/callee 一致：
+  R01 K线表名 SQL 注入白名单、R02 下单幂等 newClientOrderId + 读写分级重试、R03 减仓平仓 reduceOnly、
+  R04 HRS 平仓重试终态确认、R05 MTPCS 保护单补挂、R06 统一订单终态等待、
+  R07 跨策略开仓占用互斥（`trading.position_claims`）、R08 ai_tuner 孤儿清理保护
+- 另修复工作区新引入的 3 处运行时缺陷（死变量 `order_type_desc`、`self._alert` 幻觉调用、
+  `_close_with_reduce_only` 签名不匹配）与 2 处未使用导入（`asyncio` / `timedelta`）
+
+### 部署事实
+- 提交：`cfe4ebe`（57 个文件）→ **Actions Run #44 全绿**
+- 本次 Run 期望值：`run_number=44`、`run_attempt=1` → **`DEPLOY_ID = 00002C01`**、
+  `GIT_SHA = cfe4ebe11751ada7d262a96d5fba305021d13ef0`
+- 实际构建：因变更含 `shared/*`，**10 个镜像全量重建**（符合预期）
+
+### 验证结果（五层验证）
+| 层级 | 内容 | 结果 |
+|------|------|------|
+| 1 容器状态 | 11 个 trading 容器全部 `Up (healthy)`，10 个本次重建容器均为新启动 | ✅ |
+| 2 镜像 | 全部为 `ghcr.io/bearflower/trading-*:latest` | ✅ |
+| 3 VERSION | `new-coin` 容器内 `/app/VERSION` = `DEPLOY_ID=00002C01` / `GIT_SHA=cfe4ebe...`，与本次 Run 一致 | ✅ |
+| 4 文件MD5 | 本地 `md5 -q` 与容器内 `md5sum` 均为 `b00e33e3aa8440144f7266b47b56be3f`（`executor.py`） | ✅ |
+| 5 日志错误 | `AttributeError` 计数 = **0**；启动流程正常、对齐整点周期（等待至 04:00） | ✅ |
+
+### 遗留说明
+- 启动时另有 2 条 `error`：`USDBRLUSDT` K线服务返回 400 → ATR 计算失败。与本次修复无关（该标的 K 线数据缺失/不可用），需另行跟进。
+- 部署日志：`[2026-09-30 11:41:10] DEPLOY_SUCCESS commit=cfe4ebe11751ada7d262a96d5fba305021d13ef0 deploy_id=00002C01`
+
+---
 ## 2026-09-27 追加部署（修复重启恢复未回填 ATR 导致误平仓 + CI 构建期写入 VERSION）
 
 ### 变更内容
