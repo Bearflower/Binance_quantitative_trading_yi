@@ -39,6 +39,8 @@ class OrphanCleanupJob:
         notification_client: NotificationClient,
         stale_hours_threshold: float = 2.0,
         position_lookback_days: float = 7.0,
+        require_exchange_confirmation: bool = True,
+        alert_on_missing_state: bool = True,
     ):
         """
         初始化孤儿条件单清理任务
@@ -50,12 +52,44 @@ class OrphanCleanupJob:
             stale_hours_threshold: 策略状态超时阈值（小时），超过此时间则视为策略异常
             position_lookback_days: _strategy_has_position 查询 trade_records 的回顾窗口（天），
                                     默认 7 天，越长越保守（越不容易误杀活条件单）
+            require_exchange_confirmation: R08 开关：无状态分支是否强制以交易所持仓为准
+                                           （True 时无法确认或无仓才清理；False 时回退到既有行为）
+            alert_on_missing_state: R08 开关：状态缺失而保守保留保护单时是否发送告警
         """
         self.db = db
         self.binance = binance_client
         self.notification_client = notification_client
         self.stale_hours_threshold = stale_hours_threshold
         self.position_lookback_days = position_lookback_days
+        self.require_exchange_confirmation = require_exchange_confirmation
+        self.alert_on_missing_state = alert_on_missing_state
+
+    def _is_confirmed_no_position(self, symbol: str, exchange_positions: Optional[Set[str]]) -> bool:
+        """R08-F1/F2：仅当「交易所明确返回且不含该 symbol」才算确认无仓。
+
+        exchange_positions is None（查询失败/无法确认）→ 返回 False，保守保留保护单。
+        """
+        if exchange_positions is None:
+            return False
+        return symbol not in exchange_positions
+
+    async def _alert_missing_state(self, alerts: list) -> None:
+        """R08-F5：状态缺失而保守保留保护单时，发送聚合告警（可观测）"""
+        if not alerts or not self.alert_on_missing_state:
+            return
+        msg_parts = [f"⚠️ 孤儿清理保守保留：{len(alerts)} 个条件单因策略状态缺失被保留（未撤单）"]
+        for item in alerts[:15]:
+            msg_parts.append(f"  ├─ {item}")
+        if len(alerts) > 15:
+            msg_parts.append(f"  └─ ... 还有 {len(alerts) - 15} 条")
+        try:
+            await self.notification_client.send(
+                message="\n".join(msg_parts),
+                level="warning",
+                project="tuner",
+            )
+        except Exception as e:  # noqa: BLE001 - 告警失败不得影响清理主流程
+            logger.warning("状态缺失告警发送失败", error=str(e))
 
     async def _ensure_table(self):
         """确保 condition_orders 表存在"""
@@ -396,6 +430,7 @@ class OrphanCleanupJob:
             canceled = []   # 成功取消的列表
             failed = []     # 取消失败的列表
             skipped = []    # 跳过（正常持仓中的条件单）
+            no_state_alerts = []  # R08-F5：状态缺失而保守保留的告警条目
 
             if not open_orders:
                 logger.info("数据库中无 OPEN 条件单")
@@ -414,7 +449,29 @@ class OrphanCleanupJob:
                 state = strategy_states.get(sn)
 
                 # 场景A: 策略无状态记录
+                # R08-F1/F2/F3：无状态分支必须先经交易所持仓前置检查，禁止仅凭「状态缺失」判孤儿
                 if not state:
+                    if self.require_exchange_confirmation:
+                        if not self._is_confirmed_no_position(symbol, exchange_positions):
+                            reason = "无法确认持仓" if exchange_positions is None else "交易所确认有持仓"
+                            skipped.append(
+                                f"{sn} | {symbol} | {order['order_type']} | 无状态但保留: {reason}"
+                            )
+                            no_state_alerts.append(f"{sn} | {symbol} | {order['order_type']} | {reason}")
+                            logger.warning(
+                                "策略状态缺失，保守保留保护单（不撤单）",
+                                strategy=sn, symbol=symbol, reason=reason,
+                            )
+                            continue
+                        if await self._strategy_has_position(sn, symbol):
+                            skipped.append(
+                                f"{sn} | {symbol} | {order['order_type']} | 无状态但保留: 策略有活交易记录"
+                            )
+                            logger.warning(
+                                "策略状态缺失但存在活交易记录，保守保留保护单（不撤单）",
+                                strategy=sn, symbol=symbol,
+                            )
+                            continue
                     stale_orders.append(order)
                     continue
 
@@ -484,6 +541,9 @@ class OrphanCleanupJob:
                         )
 
             # 8. 发送飞书通知
+            # R08-F5：状态缺失而保守保留时单独告警（即使无取消/失败也可观测）
+            await self._alert_missing_state(no_state_alerts)
+
             if canceled or failed:
                 msg_parts = ["孤儿条件单自动清理完成"]
                 if canceled:

@@ -634,6 +634,9 @@ orphan_cleanup:
   enabled: true                    # 是否启用孤儿条件单清理
   interval_minutes: 30             # 检查间隔（分钟）
   stale_hours_threshold: 2         # 策略状态超时阈值（小时），超过此时间未更新则视为策略异常，自动取消条件单
+  require_exchange_confirmation: true  # R08：无状态分支必须以交易所实时持仓为准，无法确认或无仓才清理
+  alert_on_missing_state: true         # R08：因状态缺失而保守保留保护单时发送飞书告警
+  position_lookback_days: 7.0          # R08：查询 trade_records 判断是否持仓的回顾窗口（天），越长越保守
 
 # ============================================================
 # 统一 PnL 校准器配置

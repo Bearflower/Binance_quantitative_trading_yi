@@ -1,0 +1,906 @@
+{
+  "summary": {
+    "scope": "current-workspace full-source snapshot",
+    "commit": "e4912619e513ad3f309944526c34e65c492af6c7",
+    "ocr_version": "1.12.9",
+    "inventory_files": 389,
+    "total_files": 301,
+    "reviewed_files": 291,
+    "skipped_files": 10,
+    "coverage_rate": 96.68,
+    "coverage_definition": "OCR规则级文件覆盖率（含静态筛查），不是逐行人工深审或运行时测试覆盖率",
+    "targeted_deep_review_files": 64,
+    "ocr_excluded_files": [
+      {
+        "path": "ai_tuner/allocation/tests/test_allocation.py",
+        "status": "added",
+        "insertions": 867,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/allocation/tests/test_daily_refresher.py",
+        "status": "added",
+        "insertions": 374,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/requirements.txt",
+        "status": "added",
+        "insertions": 10,
+        "deletions": 0,
+        "exclude_reason": "unsupported_ext"
+      },
+      {
+        "path": "ai_tuner/tests/test_auto_apply.py",
+        "status": "added",
+        "insertions": 493,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_config_operator.py",
+        "status": "added",
+        "insertions": 336,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_context_builder.py",
+        "status": "added",
+        "insertions": 536,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_cost_tracker.py",
+        "status": "added",
+        "insertions": 338,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_diff_generator.py",
+        "status": "added",
+        "insertions": 249,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_effect_tracker.py",
+        "status": "added",
+        "insertions": 498,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_grid_adapter.py",
+        "status": "added",
+        "insertions": 188,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_income_reconciler.py",
+        "status": "added",
+        "insertions": 383,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_learning_signal.py",
+        "status": "added",
+        "insertions": 414,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_llm_client.py",
+        "status": "added",
+        "insertions": 251,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_response_parser.py",
+        "status": "added",
+        "insertions": 655,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_rollback_manager.py",
+        "status": "added",
+        "insertions": 258,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "ai_tuner/tests/test_version_manager.py",
+        "status": "added",
+        "insertions": 244,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "dashboard/backend/requirements.txt",
+        "status": "added",
+        "insertions": 22,
+        "deletions": 0,
+        "exclude_reason": "unsupported_ext"
+      },
+      {
+        "path": "dashboard/backend/tests/test_config.py",
+        "status": "added",
+        "insertions": 86,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "dashboard/nginx/dashboard.conf",
+        "status": "added",
+        "insertions": 52,
+        "deletions": 0,
+        "exclude_reason": "unsupported_ext"
+      },
+      {
+        "path": "requirements.txt",
+        "status": "added",
+        "insertions": 28,
+        "deletions": 0,
+        "exclude_reason": "unsupported_ext"
+      },
+      {
+        "path": "services/kline_monitor/requirements.txt",
+        "status": "added",
+        "insertions": 2,
+        "deletions": 0,
+        "exclude_reason": "unsupported_ext"
+      },
+      {
+        "path": "services/kline_service/requirements.txt",
+        "status": "added",
+        "insertions": 39,
+        "deletions": 0,
+        "exclude_reason": "unsupported_ext"
+      },
+      {
+        "path": "strategies/btc_eth/test_realized_pnl_fix.py",
+        "status": "added",
+        "insertions": 560,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/btc_eth/test_v23_functional.py",
+        "status": "added",
+        "insertions": 1138,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/btc_eth/test_v23_orphan_cleanup.py",
+        "status": "added",
+        "insertions": 1074,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/btc_eth/tests/test_ranging_risk_three_mechanisms.py",
+        "status": "added",
+        "insertions": 1182,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/btc_eth/tests/test_signal_level_risk.py",
+        "status": "added",
+        "insertions": 463,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/btc_eth/tests/test_stop_loss_mark.py",
+        "status": "added",
+        "insertions": 93,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/btc_eth/tests/test_time_stop_review.py",
+        "status": "added",
+        "insertions": 470,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/btc_eth_aggressive/tests/test_stop_loss_mark.py",
+        "status": "added",
+        "insertions": 157,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/hrs/requirements.txt",
+        "status": "added",
+        "insertions": 6,
+        "deletions": 0,
+        "exclude_reason": "unsupported_ext"
+      },
+      {
+        "path": "strategies/hrs/tests/test_fix_verification.py",
+        "status": "added",
+        "insertions": 1822,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/hrs/tests/test_market_data.py",
+        "status": "added",
+        "insertions": 418,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/hrs/tests/test_pattern.py",
+        "status": "added",
+        "insertions": 468,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/hrs/tests/test_position_manager.py",
+        "status": "added",
+        "insertions": 256,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/hrs/tests/test_risk_manager.py",
+        "status": "added",
+        "insertions": 310,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/hrs/tests/test_scoring_engine.py",
+        "status": "added",
+        "insertions": 457,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/hrs/tests/test_stop_loss_mark.py",
+        "status": "added",
+        "insertions": 83,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/hrs/tests/test_trend_filter_validation.py",
+        "status": "added",
+        "insertions": 630,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/hrs/tests/test_v23_dynamic_thresholds.py",
+        "status": "added",
+        "insertions": 676,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/new_coin/test_delisted_symbols.py",
+        "status": "added",
+        "insertions": 143,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/new_coin/test_drawdown_fix.py",
+        "status": "added",
+        "insertions": 617,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/new_coin/test_realized_pnl_fix.py",
+        "status": "added",
+        "insertions": 985,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "strategies/new_coin/tests/test_stop_loss_mark.py",
+        "status": "added",
+        "insertions": 135,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/integration/test_btc_eth_strategy.py",
+        "status": "added",
+        "insertions": 522,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/integration/test_grid_strategy.py",
+        "status": "added",
+        "insertions": 396,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/integration/test_kline_integration.py",
+        "status": "added",
+        "insertions": 545,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/integration/test_new_coin_strategy.py",
+        "status": "added",
+        "insertions": 369,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/integration/test_v6_16_7_fix.py",
+        "status": "added",
+        "insertions": 872,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_dynamic_grid_params.py",
+        "status": "added",
+        "insertions": 354,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_frequency_controller.py",
+        "status": "added",
+        "insertions": 365,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_kline_service/test_binance_client.py",
+        "status": "added",
+        "insertions": 359,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_kline_service/test_collector.py",
+        "status": "added",
+        "insertions": 268,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_kline_service/test_registry.py",
+        "status": "added",
+        "insertions": 312,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_kline_service/test_scheduler.py",
+        "status": "added",
+        "insertions": 379,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_position_manager_cancel.py",
+        "status": "added",
+        "insertions": 178,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_position_ownership.py",
+        "status": "added",
+        "insertions": 640,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_binance_api.py",
+        "status": "added",
+        "insertions": 237,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_circuit_breaker.py",
+        "status": "added",
+        "insertions": 528,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_commissions.py",
+        "status": "added",
+        "insertions": 215,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_database.py",
+        "status": "added",
+        "insertions": 164,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_dynamic_trailing.py",
+        "status": "added",
+        "insertions": 1180,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_indicators.py",
+        "status": "added",
+        "insertions": 250,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_kline_service.py",
+        "status": "added",
+        "insertions": 513,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_notification.py",
+        "status": "added",
+        "insertions": 107,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_scheduler.py",
+        "status": "added",
+        "insertions": 173,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_trade_logger.py",
+        "status": "added",
+        "insertions": 86,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_unrealized_pnl.py",
+        "status": "added",
+        "insertions": 105,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_shared/test_utils.py",
+        "status": "added",
+        "insertions": 143,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_bb_touch_half_zone.py",
+        "status": "added",
+        "insertions": 152,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_btc_eth_aggressive_reduceonly.py",
+        "status": "added",
+        "insertions": 368,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_btc_eth_kline.py",
+        "status": "added",
+        "insertions": 1056,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_btc_eth_trailing_boundary.py",
+        "status": "added",
+        "insertions": 847,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_capital_allocation_enforcement.py",
+        "status": "added",
+        "insertions": 1862,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_dynamic_trailing_boundary.py",
+        "status": "added",
+        "insertions": 683,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_executor_trailing.py",
+        "status": "added",
+        "insertions": 1024,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_grid_kline.py",
+        "status": "added",
+        "insertions": 843,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_hrs_kline.py",
+        "status": "added",
+        "insertions": 684,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_mtpcs_partial_tp_and_trailing.py",
+        "status": "added",
+        "insertions": 343,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_mtpcs_v628_add_position.py",
+        "status": "added",
+        "insertions": 743,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_new_coin_kline.py",
+        "status": "added",
+        "insertions": 861,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_new_coin_tracking_entry.py",
+        "status": "added",
+        "insertions": 425,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_position_size_allocated_ratio.py",
+        "status": "added",
+        "insertions": 102,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_ranging_volume_confirm.py",
+        "status": "added",
+        "insertions": 323,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_take_profit_fill_detect.py",
+        "status": "added",
+        "insertions": 303,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_time_stop_review.py",
+        "status": "added",
+        "insertions": 314,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_strategies/test_total_margin_control.py",
+        "status": "added",
+        "insertions": 170,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      },
+      {
+        "path": "tests/test_tuning_overrides.py",
+        "status": "added",
+        "insertions": 343,
+        "deletions": 0,
+        "exclude_reason": "default_path"
+      }
+    ],
+    "severity_counts": {
+      "high": 12,
+      "medium": 6
+    }
+  },
+  "findings": [
+    {
+      "id": "R01",
+      "title": "K 线查询允许外部输入改变 SQL 结构",
+      "path": "services/kline_service/api/routes.py",
+      "start_line": 88,
+      "end_line": 93,
+      "severity": "high",
+      "category": "security",
+      "content": "公开查询参数 symbol、interval 未按交易对和周期白名单验证，就被拼入 FROM 表名。_table_exists 返回 false 后，自动建表即使失败也继续执行查询；因此不存在表检查不能阻断注入。同类逻辑也出现在 indicators 查询。Compose 将 8765 映射到所有接口，应用没有认证；实际公网可达性仍取决于服务器防火墙。",
+      "evidence": "本地提取真实路由函数，使用假的数据库连接；传入带 CROSS JOIN 的 interval 后，恶意 SQL 片段原样到达 fetch_all。未访问生产数据库，未执行注入 SQL。",
+      "recommendation": "在路由和注册入口统一验证 symbol 与 interval，严格白名单化 SQL 标识符；自动建表失败后停止查询；限制接口访问。",
+      "related": []
+    },
+    {
+      "id": "R02",
+      "title": "非幂等下单被通用重试器重复提交",
+      "path": "shared/binance_api.py",
+      "start_line": 195,
+      "end_line": 201,
+      "severity": "high",
+      "category": "bug",
+      "content": "_request 对所有方法统一重试，包括开仓 POST。若交易所已受理而响应超时，下一次请求会创建新的订单；place_order 没有生成稳定的客户订单标识，也没有先查询前一请求结果。默认 max_retries=3 表示最多四次提交。",
+      "evidence": "模拟第一次请求已受理但响应 TimeoutError，第二次成功：交易所侧接受订单 [1,2]，调用方只获得订单 2。",
+      "recommendation": "将读请求与非幂等写请求的重试策略分开；为每次交易意图生成稳定标识，遇到未知执行结果先核对订单/成交/持仓，再决定是否重发。",
+      "related": [
+        "shared/utils.py:63",
+        "shared/binance_api.py:528"
+      ]
+    },
+    {
+      "id": "R03",
+      "title": "新币平仓重试原数量，部分成交后可能反向开多",
+      "path": "strategies/new_coin/executor.py",
+      "start_line": 2582,
+      "end_line": 2588,
+      "severity": "high",
+      "category": "bug",
+      "content": "close_quantity 只在重试循环外按原持仓计算。首笔 BUY 部分成交并撤单后，下一笔仍买入原数量，且未设置 reduceOnly；市价兜底也沿用同一数量。止盈单同时成交时也有相同过量平仓风险。",
+      "evidence": "真实 _close_position 方法配合本地模拟：初始 position=-1，第一笔 BUY 1 成交 0.4 后撤单，第二笔继续 BUY 1，最终 position=+0.4，函数返回 True。",
+      "recommendation": "每次撤单后确认最终成交量、重新读取剩余持仓，所有平仓请求设置减仓约束，兜底也只能提交剩余量。",
+      "related": []
+    },
+    {
+      "id": "R04",
+      "title": "HRS 平仓失败或未成交仍撤保护单并删除持仓",
+      "path": "strategies/hrs/strategy.py",
+      "start_line": 1938,
+      "end_line": 1941,
+      "severity": "high",
+      "category": "bug",
+      "content": "时间止损和移动止盈分支没有验证 close_position 的结果，就回写盈亏、撤销保护单并 remove_position。执行器会在异常时返回 None；正常限价单仅收到 NEW 回执也被当成成功返回。真实仓位可能仍在，但本地管理和交易所止损一起被清除。",
+      "evidence": "模拟 close_position 返回 None：_monitor_positions 仍调用 cancel_all_orders 一次、remove_position 一次。已核对真实 _writeback_pnl 会容错返回，不会阻止后续清理。",
+      "recommendation": "把平仓受理与完全成交分开处理；只有成交/持仓对账确认归零后才删除状态，失败或部分成交时保留/重建剩余仓位保护。",
+      "related": [
+        "strategies/hrs/executor.py:913",
+        "strategies/hrs/strategy.py:1983"
+      ]
+    },
+    {
+      "id": "R05",
+      "title": "MTPCS 保护单失败后丢失已成交开仓的管理状态",
+      "path": "strategies/btc_eth/strategy.py",
+      "start_line": 2656,
+      "end_line": 2663,
+      "severity": "high",
+      "category": "bug",
+      "content": "入场已确认成交后，只要 STOP、TP1、TP2 任一创建失败，就直接返回 False；self.positions 直到全部成功才写入。STOP 失败会留下无止损仓位，TP 失败也会留下不受本地完整管理的仓位。激进版存在相同流程。",
+      "evidence": "模拟入场 FILLED、保护单失败：方法返回 False，positions 仍为空。后续补挂依赖持仓归属和数据库订单状态，不能替代开仓当下的状态与保护。",
+      "recommendation": "成交后先登记真实持仓，把保护完整性作为独立状态；保护失败进入可重试补挂或减仓兜底流程，不能将已成交交易视为未发生。",
+      "related": [
+        "strategies/btc_eth_aggressive/strategy.py:2665"
+      ]
+    },
+    {
+      "id": "R06",
+      "title": "入场超时撤单忽略部分成交和撤单竞态",
+      "path": "strategies/btc_eth/strategy.py",
+      "start_line": 2854,
+      "end_line": 2861,
+      "severity": "high",
+      "category": "bug",
+      "content": "_wait_for_order_fill 只把 FILLED 视为成交，对 CANCELED/EXPIRED 即使 executedQty>0 也返回 None；超时路径撤单后不读取最终成交量就退出。新币和 MTPCS 激进版存在同类处理，已成交的部分仓位不会进入正常保护流程。",
+      "evidence": "模拟订单 CANCELED、executedQty=0.4、origQty=1：真实入场方法返回 None，撤单回执中的成交量也未处理。",
+      "recommendation": "撤单后核对订单最终状态与累计成交量；部分成交必须建仓保护或明确减仓清零，并处理查询与撤单之间完成成交的竞态。",
+      "related": [
+        "strategies/btc_eth/strategy.py:5384",
+        "strategies/new_coin/executor.py:309",
+        "strategies/btc_eth_aggressive/strategy.py:2863"
+      ]
+    },
+    {
+      "id": "R07",
+      "title": "归属 advisory lock 没有覆盖开仓预占，无法互斥",
+      "path": "shared/database.py",
+      "start_line": 308,
+      "end_line": 313,
+      "severity": "high",
+      "category": "bug",
+      "content": "fetch_one_advisory_lock 在读取归属后就结束事务释放锁。调用方之后才设置杠杆、校验、下单和写交易记录；两个策略可以依次读到无归属并同时开同币种仓位。共享 PM 净仓位会合并或抵消，后续单一归属判断不能撤销这个结果。",
+      "evidence": "使用真实 DatabaseManager 方法和模拟事务锁并发执行两个策略：A、B 的 blocked 均为 false，均获准进入后续开仓。",
+      "recommendation": "在锁内原子创建持久化的交易对占用/交易意图记录，再释放锁进行外部请求；以唯一约束与超时恢复维护占用状态。",
+      "related": [
+        "shared/position_ownership.py:109",
+        "strategies/btc_eth/strategy.py:2628"
+      ]
+    },
+    {
+      "id": "R08",
+      "title": "孤儿清理在缺少策略状态时误撤真实持仓的止损",
+      "path": "ai_tuner/cleanup/orphan_cleanup.py",
+      "start_line": 416,
+      "end_line": 419,
+      "severity": "high",
+      "category": "bug",
+      "content": "当 strategy_states 没有对应记录时，无条件加入 stale_orders 并 continue，绕过了交易所是否还有持仓的保护判断。首次持久化失败、状态尚未写入或状态丢失时，即使本轮已确认交易所持仓存在，也会撤掉该仓位的保护单。",
+      "evidence": "模拟交易所明确持有 BTCUSDT、策略状态为空、数据库有 STOP_LOSS：execute 仍调用 _cancel_order 一次。",
+      "recommendation": "所有清理分支先检查交易所实时持仓；缺状态或无法确认无仓时保留保护单并告警，不能仅据状态缺失判定孤儿。",
+      "related": []
+    },
+    {
+      "id": "R09",
+      "title": "AI 自动应用绕过规范化与边界截断，写入错误配置类型",
+      "path": "ai_tuner/scheduler/weekly_job.py",
+      "start_line": 366,
+      "end_line": 372,
+      "severity": "high",
+      "category": "bug",
+      "content": "validate_params 返回的 validated 是已提取 to 并截断范围的扁平数值，但这里只在 errors 非空时使用它。正常建议和仅有 warnings 的越界建议继续使用原始 {from,to}；自动应用将其写成字典覆盖标量，人工审批提取 to 后又可能应用未截断的原值。",
+      "evidence": "真实校验器把 scoring.min_score=999 校正为 95，errors=[]，周任务分支却仍选择原始 {from:70,to:999}。实际写覆盖层后，load_strategy_config 读取到的 min_score 是 dict。现有自动应用测试用标量 mock，未覆盖真实 parser 格式。",
+      "recommendation": "始终使用 validated 作为可执行配置，原始建议只保留供审计；保存、审批、自动应用共享同一份已校验值，增加 parser→validator→writer 的贯通测试。",
+      "related": [
+        "ai_tuner/adapters/base_adapter.py:319",
+        "ai_tuner/scheduler/weekly_job.py:427",
+        "ai_tuner/main.py:779"
+      ]
+    },
+    {
+      "id": "R10",
+      "title": "调参写入位置与运行策略配置脱节",
+      "path": "docker-compose.yml",
+      "start_line": 236,
+      "end_line": 238,
+      "severity": "high",
+      "category": "bug",
+      "content": "ai-tuner 将覆盖层写入宿主机 ./strategies；btc_eth、激进版、new_coin、grid 的策略目录来自镜像，没有挂载该目录。HRS 仅挂载单个 config.yaml，也看不到 tuning_overrides。各 main.py 只在启动时调用 load_strategy_config，没有应用后重载/重启流程。因此文件写入成功与 mark_applied 不表示运行策略已经采用新参数，普通重启多数容器也无法读取宿主覆盖层。",
+      "evidence": "交叉核对 Compose volumes、各 Dockerfile、所有 load_strategy_config 调用点及审批/自动应用路径；未检查线上容器是否有仓库之外的额外挂载。",
+      "recommendation": "让调参与策略共享受控的版本化配置目录，并实现重载或受控重启及版本确认；只有运行进程确认版本后才标记 applied。",
+      "related": [
+        "strategies/btc_eth/main.py:55",
+        "strategies/hrs/main.py:34",
+        "ai_tuner/main.py:791"
+      ]
+    },
+    {
+      "id": "R11",
+      "title": "Dashboard 每次请求创建连接池且不关闭",
+      "path": "dashboard/backend/api/routes_docker.py",
+      "start_line": 49,
+      "end_line": 51,
+      "severity": "high",
+      "category": "performance",
+      "content": "Depends(get_data_service) 为每个请求构造 DataService；缓存未命中时 _ensure_initialized 新建 asyncpg 池和 BinanceClient，但依赖无 yield/finally，生产 lifespan 也不持有并关闭这些实例。周期刷新、多个端点和多个用户持续创建连接池，可能耗尽共享 PostgreSQL 连接，连带影响策略。",
+      "evidence": "核对依赖工厂、DataService._ensure_initialized 和 main_docker.lifespan；每个实例独立 _initialized/_db_manager，无关闭路径。未进行生产压测。",
+      "recommendation": "在 lifespan 建立并关闭应用级 DataService，依赖返回共享实例；同时关闭 asyncpg pool 和 HTTP session。",
+      "related": [
+        "dashboard/backend/services/data_service_docker.py:122",
+        "dashboard/backend/main_docker.py:166"
+      ]
+    },
+    {
+      "id": "R12",
+      "title": "CI 增量构建遗漏跨目录依赖，修复不会进入对应容器",
+      "path": ".github/workflows/deploy.yml",
+      "start_line": 148,
+      "end_line": 158,
+      "severity": "high",
+      "category": "bug",
+      "content": "仅按 matrix.service.dir 及 shared/、VERSION、compose 判断重建，未覆盖 Dockerfile 的实际 COPY 输入。data-backend COPY dashboard/backend/services、core、config，修改这些文件只会重建 dashboard-api，实际运行快照/熔断任务的 data-backend 被跳过；单改根 requirements.txt 也会跳过全部服务。",
+      "evidence": "对照 matrix 的 data-backend dir=services/data_backend 与其 Dockerfile 的 COPY 清单，路径判断可以确定进入 should_build=false 分支。",
+      "recommendation": "按每个镜像的实际构建依赖建立路径集合，根依赖文件/构建忽略规则触发所有受影响镜像；增加构建决策用例。",
+      "related": [
+        "services/data_backend/Dockerfile:22",
+        ".github/workflows/deploy.yml:133"
+      ]
+    },
+    {
+      "id": "R13",
+      "title": "回滚只恢复基础 YAML，不会撤销生效覆盖层",
+      "path": "ai_tuner/main.py",
+      "start_line": 928,
+      "end_line": 935,
+      "severity": "medium",
+      "category": "bug",
+      "content": "审批和自动应用修改 tuning_overrides/.active，而回滚接口仍只调用旧版 RollbackManager.rollback 恢复 config.yaml。当前覆盖层指针保持原值，load_strategy_config 仍将有问题的参数覆盖回来；没有历史基础备份时还会直接返回无备份。",
+      "evidence": "本地基础值 70、覆盖值 80，rollback 返回 True 后，重新 load_strategy_config 的有效值仍是 80。",
+      "recommendation": "回滚应切换到已知有效的覆盖层版本（或明确禁用当前覆盖层），确认运行版本并同步记忆状态。",
+      "related": []
+    },
+    {
+      "id": "R14",
+      "title": "新覆盖层只包含本次差量，静默撤销之前调参",
+      "path": "ai_tuner/deploy/config_operator.py",
+      "start_line": 205,
+      "end_line": 210,
+      "severity": "medium",
+      "category": "bug",
+      "content": "每次 apply_overrides 从空字典生成新版本，随后 .active 只指向这个版本；loader 只合并基础配置和当前单个版本，不会叠加历史版本。AI 只调整一个参数时，之前已调整但本轮未提到的参数会回到基础值。",
+      "evidence": "基础 scoring=70；第一次覆盖 scoring=80；第二次只修改 risk.max_loss 后，读取到 scoring 又变回 70。",
+      "recommendation": "以当前有效覆盖层合并本次已校验差量，形成完整版本快照；显式区分恢复默认与未调整。",
+      "related": [
+        "shared/config_loader.py:95"
+      ]
+    },
+    {
+      "id": "R15",
+      "title": "熔断指数缺失结果被缓存整个整点，补写后仍失效",
+      "path": "shared/circuit_breaker.py",
+      "start_line": 196,
+      "end_line": 197,
+      "severity": "medium",
+      "category": "bug",
+      "content": "未找到指数时也把 None 放入 _index_cache；同一 index_hour 再次读取立即返回缓存。指数任务延迟或数据库记录晚到时，即使稍后补写了触发熔断的指数，该策略在这一整点内仍按缺失放行。这里的问题是无法恢复，而不是既定的短时 fail-open 策略本身。",
+      "evidence": "模拟数据库第一次无记录、第二次本可返回 5%：两次 load_index 都返回 None，数据库仅被查询一次。",
+      "recommendation": "对缺失值不缓存或使用短 TTL 重试；成功值缓存应有有界清理，补写后能重新评估熔断。",
+      "related": []
+    },
+    {
+      "id": "R16",
+      "title": "网格部分卖出未减少成本，后续平均价与盈亏失真",
+      "path": "strategies/grid/position_manager.py",
+      "start_line": 114,
+      "end_line": 127,
+      "severity": "medium",
+      "category": "bug",
+      "content": "部分 SELL 减少 quantity 却保留原 total_cost，下一次 BUY 用过大的 total_cost 重算 avg_price。影响启用自动网格持仓管理的场景；当前半自动信号模式未必触发该分支。",
+      "evidence": "BUY 2@100 → SELL 1@110 → BUY 1@100，正确剩余成本均价应为 100，实际算出 150。",
+      "recommendation": "按被平数量减少原持仓成本，保持 total_cost=quantity×avg_price，并明确处理越过零仓位的合约方向。",
+      "related": []
+    },
+    {
+      "id": "R17",
+      "title": "K 线测试全局替换 shared.utils，污染其他测试",
+      "path": "tests/test_kline_service/conftest.py",
+      "start_line": 36,
+      "end_line": 40,
+      "severity": "medium",
+      "category": "test",
+      "content": "conftest 在导入期改写 sys.modules[\"shared.utils\"] 为 MagicMock，未按 fixture 恢复。之后收集的模块会导入假的重试器和时间转换函数，真实错误被掩盖或产生大量与执行顺序相关的失败。",
+      "evidence": "test_utils.py 单独运行 17 passed；与 test_kline_service/test_binance_client.py 合并运行变成 13 failed、25 passed，其中重试与参数校验测试使用了 MagicMock。",
+      "recommendation": "为服务共享模块使用独立包名，或将补丁限定于 fixture 生命周期并恢复模块状态；保留合并运行验证。",
+      "related": []
+    },
+    {
+      "id": "R18",
+      "title": "新币回测图表引用不可见的 mdates，生成过程失败",
+      "path": "backtest/new_coin/report_generator.py",
+      "start_line": 389,
+      "end_line": 389,
+      "severity": "medium",
+      "category": "bug",
+      "content": "matplotlib.dates 只在 generate_charts 方法的局部作用域导入，另两个 _plot_* 方法直接使用 mdates，运行到日期格式化必然 NameError。外层捕获后停止后续图表生成，报告可缺失资金与回撤图。",
+      "evidence": "Pyflakes 在 389、424 行报告 undefined name；核对 import 位于另一个方法的局部作用域。",
+      "recommendation": "在模块或实际使用的方法导入 matplotlib.dates，或显式传入依赖，并用非空曲线验证图表输出。",
+      "related": [
+        "backtest/new_coin/report_generator.py:339",
+        "backtest/new_coin/report_generator.py:424"
+      ]
+    }
+  ]
+}

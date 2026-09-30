@@ -169,13 +169,14 @@ async def lifespan(app: FastAPI):
 
     # 初始化采集器（固定标的）
     try:
-        # 固定标的：包含 MTPCS 策略需要的所有币种
-        FIXED_SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "TRXUSDT"]
+        # 固定标的与采集周期统一来自配置（config.py），避免多处硬编码漂移
+        fixed_symbols = settings.fixed_symbols_list
+        collect_intervals = settings.intervals_list
         collector = KlineCollector(
             binance_client=binance_client,
             db=db_manager,
-            symbols=FIXED_SYMBOLS,
-            intervals=["15m", "1h", "4h", "1d"],
+            symbols=fixed_symbols,
+            intervals=collect_intervals,
         )
         logger.info("K 线采集器已初始化")
     except Exception as e:
@@ -197,8 +198,8 @@ async def lifespan(app: FastAPI):
         scheduler = TaskScheduler(collector)
 
         # 添加固定标的的定时任务
-        for symbol in FIXED_SYMBOLS:
-            for interval in ["15m", "1h", "4h", "1d"]:
+        for symbol in fixed_symbols:
+            for interval in collect_intervals:
                 scheduler.add_job(symbol, interval)
 
         # 添加已注册标的的定时任务

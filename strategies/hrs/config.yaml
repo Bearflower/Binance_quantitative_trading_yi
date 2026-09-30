@@ -328,6 +328,16 @@ trading:
   # 月度额可用时优先生效，本值不参与 min 压制
   total_position_margin_limit: 110
 
+  # R04 平仓重试与终态确认配置（close_position 复用 shared.reduce_only_close）
+  retry_count: 2                 # 平仓最大重试次数（每轮重读真实持仓重算剩余量）
+  retry_interval: 1.0            # 两轮重试间隔（秒）
+  close_order:
+    wait_timeout_seconds: 10     # 单笔平仓单等待终态超时（秒）
+    poll_interval_seconds: 2     # 单笔平仓单终态轮询间隔（秒）
+    reduce_only: true            # 平仓单强制加减仓约束（D1）
+    sync_before_reduce_only: true  # 被拒 -2022 时先对账/先撤同向条件单再重试（D1）
+    keep_protection_on_partial: true  # 部分成交时按剩余量重建保护单；否则保留旧单
+
   # 价格精度配置
   price:
     quantize_precision: 1        # 数量化精度（1=整数）

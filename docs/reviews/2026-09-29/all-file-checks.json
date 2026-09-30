@@ -1,0 +1,2349 @@
+[
+  {
+    "path": ".github/workflows/deploy.yml",
+    "status": "passed",
+    "lines": 376,
+    "check": "YAML parse"
+  },
+  {
+    "path": "ai_tuner/Dockerfile",
+    "status": "read",
+    "lines": 49,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "ai_tuner/adapters/__init__.py",
+    "status": "read",
+    "lines": 40,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/adapters/base_adapter.py",
+    "status": "read",
+    "lines": 384,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/adapters/grid_adapter.py",
+    "status": "read",
+    "lines": 983,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/adapters/hrs_adapter.py",
+    "status": "read",
+    "lines": 310,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/adapters/mtpcs_adapter.py",
+    "status": "read",
+    "lines": 366,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/adapters/mtpcs_aggressive_adapter.py",
+    "status": "read",
+    "lines": 364,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/adapters/new_coin_adapter.py",
+    "status": "read",
+    "lines": 426,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/__init__.py",
+    "status": "read",
+    "lines": 40,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/allocation_calculator.py",
+    "status": "read",
+    "lines": 267,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/balance_provider.py",
+    "status": "read",
+    "lines": 60,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/config_updater.py",
+    "status": "read",
+    "lines": 367,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/daily_refresher.py",
+    "status": "read",
+    "lines": 219,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/monthly_job.py",
+    "status": "read",
+    "lines": 380,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/pnl_collector.py",
+    "status": "read",
+    "lines": 252,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/profit_extraction_job.py",
+    "status": "read",
+    "lines": 236,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/tests/__init__.py",
+    "status": "read",
+    "lines": 0,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/tests/test_allocation.py",
+    "status": "read",
+    "lines": 867,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/allocation/tests/test_daily_refresher.py",
+    "status": "read",
+    "lines": 374,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/backtest/__init__.py",
+    "status": "read",
+    "lines": 31,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/backtest/grid_backtest.py",
+    "status": "read",
+    "lines": 558,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/backtest/market_segment.py",
+    "status": "read",
+    "lines": 271,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/backtest/metrics.py",
+    "status": "read",
+    "lines": 411,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/backtest/models.py",
+    "status": "read",
+    "lines": 79,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/cleanup/__init__.py",
+    "status": "read",
+    "lines": 5,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/cleanup/orphan_cleanup.py",
+    "status": "read",
+    "lines": 513,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/config.yaml",
+    "status": "passed",
+    "lines": 656,
+    "check": "YAML parse"
+  },
+  {
+    "path": "ai_tuner/deploy/__init__.py",
+    "status": "read",
+    "lines": 20,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/deploy/config_operator.py",
+    "status": "read",
+    "lines": 437,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/deploy/diff_generator.py",
+    "status": "read",
+    "lines": 128,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/deploy/rollback_manager.py",
+    "status": "read",
+    "lines": 162,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/deploy/version_manager.py",
+    "status": "read",
+    "lines": 213,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/engine/__init__.py",
+    "status": "read",
+    "lines": 20,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/engine/cost_tracker.py",
+    "status": "read",
+    "lines": 200,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/engine/llm_client.py",
+    "status": "read",
+    "lines": 183,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/engine/response_parser.py",
+    "status": "read",
+    "lines": 321,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/feedback/__init__.py",
+    "status": "read",
+    "lines": 22,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/feedback/context_enhancer.py",
+    "status": "read",
+    "lines": 199,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/feedback/effect_tracker.py",
+    "status": "read",
+    "lines": 386,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/feedback/learning_signal.py",
+    "status": "read",
+    "lines": 341,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/main.py",
+    "status": "read",
+    "lines": 974,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/memory/__init__.py",
+    "status": "read",
+    "lines": 18,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/memory/context_builder.py",
+    "status": "read",
+    "lines": 108,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/memory/db_handler.py",
+    "status": "read",
+    "lines": 419,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/monitor/__init__.py",
+    "status": "read",
+    "lines": 3,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/monitor/daily_health_check.py",
+    "status": "read",
+    "lines": 193,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/notifier/__init__.py",
+    "status": "read",
+    "lines": 14,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/notifier/messenger.py",
+    "status": "read",
+    "lines": 507,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/reconciler/__init__.py",
+    "status": "read",
+    "lines": 11,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/reconciler/income_reconciler.py",
+    "status": "read",
+    "lines": 333,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/reconciler/tests/__init__.py",
+    "status": "read",
+    "lines": 5,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/requirements.txt",
+    "status": "read",
+    "lines": 10,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "ai_tuner/scheduler/__init__.py",
+    "status": "read",
+    "lines": 14,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/scheduler/weekly_job.py",
+    "status": "read",
+    "lines": 587,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/__init__.py",
+    "status": "read",
+    "lines": 3,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_auto_apply.py",
+    "status": "read",
+    "lines": 493,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_config_operator.py",
+    "status": "read",
+    "lines": 336,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_context_builder.py",
+    "status": "read",
+    "lines": 536,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_cost_tracker.py",
+    "status": "read",
+    "lines": 338,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_diff_generator.py",
+    "status": "read",
+    "lines": 249,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_effect_tracker.py",
+    "status": "read",
+    "lines": 498,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_grid_adapter.py",
+    "status": "read",
+    "lines": 188,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_income_reconciler.py",
+    "status": "read",
+    "lines": 383,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_learning_signal.py",
+    "status": "read",
+    "lines": 414,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_llm_client.py",
+    "status": "read",
+    "lines": 251,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_response_parser.py",
+    "status": "read",
+    "lines": 655,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_rollback_manager.py",
+    "status": "read",
+    "lines": 258,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "ai_tuner/tests/test_version_manager.py",
+    "status": "read",
+    "lines": 244,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/__init__.py",
+    "status": "read",
+    "lines": 3,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/analyze_filter_reason.py",
+    "status": "read",
+    "lines": 80,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_adjustment_050801.py",
+    "status": "read",
+    "lines": 1115,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_btc_eth.py",
+    "status": "read",
+    "lines": 380,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_compare_all_versions.py",
+    "status": "read",
+    "lines": 265,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_compare_v616_vs_v6161.py",
+    "status": "read",
+    "lines": 1126,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_engine_complete.py",
+    "status": "read",
+    "lines": 569,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_plan3.py",
+    "status": "read",
+    "lines": 309,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_plan4.py",
+    "status": "read",
+    "lines": 300,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_v616.py",
+    "status": "read",
+    "lines": 1348,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_v6161.py",
+    "status": "read",
+    "lines": 1429,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_v6162.py",
+    "status": "read",
+    "lines": 1651,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/convert_kline_data.py",
+    "status": "read",
+    "lines": 97,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/download_klines.py",
+    "status": "read",
+    "lines": 201,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/download_klines_server.py",
+    "status": "read",
+    "lines": 90,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/export_klines_from_db.py",
+    "status": "read",
+    "lines": 51,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/btc_eth/scripts/run_backtest_optimized.py",
+    "status": "read",
+    "lines": 525,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/__init__.py",
+    "status": "read",
+    "lines": 14,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/backtest_engine.py",
+    "status": "read",
+    "lines": 1709,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/config.yaml",
+    "status": "passed",
+    "lines": 140,
+    "check": "YAML parse"
+  },
+  {
+    "path": "backtest/grid/data_loader.py",
+    "status": "read",
+    "lines": 245,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/exchange_simulator.py",
+    "status": "read",
+    "lines": 953,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/performance_analyzer.py",
+    "status": "read",
+    "lines": 429,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/report_generator.py",
+    "status": "read",
+    "lines": 355,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/run_backtest.py",
+    "status": "read",
+    "lines": 81,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/scripts/backtest_grid.py",
+    "status": "read",
+    "lines": 794,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/scripts/backtest_visualization.py",
+    "status": "read",
+    "lines": 359,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/grid/trailing_stop_simulator.py",
+    "status": "read",
+    "lines": 191,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/batch_backtest.sh",
+    "status": "passed",
+    "lines": 26,
+    "check": "bash -n",
+    "detail": ""
+  },
+  {
+    "path": "backtest/hrs/cache_manager.py",
+    "status": "read",
+    "lines": 228,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/download_klines.py",
+    "status": "read",
+    "lines": 159,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/download_labusdt.py",
+    "status": "read",
+    "lines": 157,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/market_scanner.py",
+    "status": "read",
+    "lines": 612,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/quick_backtest.py",
+    "status": "read",
+    "lines": 994,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/quick_backtest_labusdt.py",
+    "status": "read",
+    "lines": 483,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/report_generator.py",
+    "status": "read",
+    "lines": 584,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/run_backtest.py",
+    "status": "read",
+    "lines": 299,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/ssh_config.py",
+    "status": "read",
+    "lines": 11,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/hrs/timeline_backtest.py",
+    "status": "read",
+    "lines": 1204,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/__init__.py",
+    "status": "read",
+    "lines": 19,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/backtest.py",
+    "status": "read",
+    "lines": 114,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/backtest_engine.py",
+    "status": "read",
+    "lines": 663,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/data_loader.py",
+    "status": "read",
+    "lines": 284,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/order_executor.py",
+    "status": "read",
+    "lines": 183,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/position_manager.py",
+    "status": "read",
+    "lines": 364,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/report_generator.py",
+    "status": "read",
+    "lines": 456,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/scripts/download_klines_from_api.py",
+    "status": "read",
+    "lines": 499,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/scripts/export_data_from_server.py",
+    "status": "read",
+    "lines": 415,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/scripts/generate_sample_data.py",
+    "status": "read",
+    "lines": 91,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "backtest/new_coin/statistics_analyzer.py",
+    "status": "read",
+    "lines": 224,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/Dockerfile",
+    "status": "read",
+    "lines": 31,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "dashboard/backend/api/__init__.py",
+    "status": "read",
+    "lines": 1,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/api/routes.py",
+    "status": "read",
+    "lines": 553,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/api/routes_docker.py",
+    "status": "read",
+    "lines": 605,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/collectors/__init__.py",
+    "status": "read",
+    "lines": 3,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/collectors/collector.py",
+    "status": "read",
+    "lines": 414,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/collectors/weekly_collector.py",
+    "status": "read",
+    "lines": 625,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/config.yaml",
+    "status": "passed",
+    "lines": 68,
+    "check": "YAML parse"
+  },
+  {
+    "path": "dashboard/backend/config/risk.yaml",
+    "status": "passed",
+    "lines": 18,
+    "check": "YAML parse"
+  },
+  {
+    "path": "dashboard/backend/core/__init__.py",
+    "status": "read",
+    "lines": 1,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/core/cache.py",
+    "status": "read",
+    "lines": 205,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/core/config.py",
+    "status": "read",
+    "lines": 367,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/docker-compose.yml",
+    "status": "passed",
+    "lines": 31,
+    "check": "YAML parse"
+  },
+  {
+    "path": "dashboard/backend/main.py",
+    "status": "read",
+    "lines": 242,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/main_docker.py",
+    "status": "read",
+    "lines": 269,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/models/__init__.py",
+    "status": "read",
+    "lines": 1,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/models/schemas.py",
+    "status": "read",
+    "lines": 406,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/requirements.txt",
+    "status": "read",
+    "lines": 22,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "dashboard/backend/scripts/generate_risk_config.py",
+    "status": "read",
+    "lines": 209,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/services/__init__.py",
+    "status": "read",
+    "lines": 1,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/services/commission_reconcile_job.py",
+    "status": "read",
+    "lines": 47,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/services/data_service.py",
+    "status": "read",
+    "lines": 225,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/services/data_service_docker.py",
+    "status": "read",
+    "lines": 2347,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/services/data_service_real.py",
+    "status": "read",
+    "lines": 445,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/services/equity_snapshot_job.py",
+    "status": "read",
+    "lines": 89,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/services/market_circuit_breaker_job.py",
+    "status": "read",
+    "lines": 250,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/services/metric_precompute_job.py",
+    "status": "read",
+    "lines": 46,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/backend/tests/test_config.py",
+    "status": "read",
+    "lines": 86,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "dashboard/deploy.sh",
+    "status": "passed",
+    "lines": 314,
+    "check": "bash -n",
+    "detail": ""
+  },
+  {
+    "path": "dashboard/frontend/css/style.css",
+    "status": "read",
+    "lines": 1211,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "dashboard/frontend/detail.html",
+    "status": "read",
+    "lines": 440,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "dashboard/frontend/index.html",
+    "status": "read",
+    "lines": 443,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "dashboard/frontend/js/api.js",
+    "status": "passed",
+    "lines": 154,
+    "check": "node --check",
+    "detail": ""
+  },
+  {
+    "path": "dashboard/frontend/js/charts.js",
+    "status": "passed",
+    "lines": 305,
+    "check": "node --check",
+    "detail": ""
+  },
+  {
+    "path": "dashboard/frontend/js/config.js",
+    "status": "passed",
+    "lines": 63,
+    "check": "node --check",
+    "detail": ""
+  },
+  {
+    "path": "dashboard/frontend/js/main.js",
+    "status": "passed",
+    "lines": 641,
+    "check": "node --check",
+    "detail": ""
+  },
+  {
+    "path": "dashboard/nginx/dashboard.conf",
+    "status": "read",
+    "lines": 52,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "database/postgres/docker-compose.yml",
+    "status": "passed",
+    "lines": 40,
+    "check": "YAML parse"
+  },
+  {
+    "path": "database/postgres/init-scripts/01-create-schema.sql",
+    "status": "read",
+    "lines": 35,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "database/postgres/init-scripts/02-init-tables.sql",
+    "status": "read",
+    "lines": 300,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "database/postgres/init-scripts/03-create-trade-records.sql",
+    "status": "read",
+    "lines": 45,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "database/postgres/init-scripts/04-multimodule.sql",
+    "status": "read",
+    "lines": 59,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "database/postgres/init-scripts/05-metric-snapshot.sql",
+    "status": "read",
+    "lines": 46,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "database/postgres/init-scripts/06-position-snapshot.sql",
+    "status": "read",
+    "lines": 46,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "database/postgres/init-scripts/07-market-circuit-breaker.sql",
+    "status": "read",
+    "lines": 38,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "database/postgres/scripts/backup-postgres.sh",
+    "status": "passed",
+    "lines": 60,
+    "check": "bash -n",
+    "detail": ""
+  },
+  {
+    "path": "docker-compose.yml",
+    "status": "passed",
+    "lines": 429,
+    "check": "YAML parse"
+  },
+  {
+    "path": "docs/architecture.html",
+    "status": "read",
+    "lines": 14869,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "docs/architecture/StratTuneAI-反馈闭环架构图.html",
+    "status": "read",
+    "lines": 414,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "docs/architecture/StratTuneAI调优流程.html",
+    "status": "read",
+    "lines": 14882,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "docs/architecture/StratTuneAI调优流程.visual-check.html",
+    "status": "read",
+    "lines": 32,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "docs/architecture/业务逻辑架构图.html",
+    "status": "read",
+    "lines": 255,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "docs/architecture/核心交易业务流程.html",
+    "status": "read",
+    "lines": 14897,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "docs/architecture/核心交易业务流程.visual-check.html",
+    "status": "read",
+    "lines": 32,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "docs/architecture/系统架构图.html",
+    "status": "read",
+    "lines": 14869,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "docs/architecture/系统架构图.visual-check.html",
+    "status": "read",
+    "lines": 32,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "docs/design/dashboard_multimodule_mockup.html",
+    "status": "read",
+    "lines": 919,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "pytest.ini",
+    "status": "read",
+    "lines": 6,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "requirements.txt",
+    "status": "read",
+    "lines": 28,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "scripts/analyze_risk.py",
+    "status": "read",
+    "lines": 137,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/backfill_klines.py",
+    "status": "read",
+    "lines": 100,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/backfill_pnl.py",
+    "status": "read",
+    "lines": 198,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/backfill_realized_pnl.py",
+    "status": "read",
+    "lines": 361,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/check_code_sync.sh",
+    "status": "passed",
+    "lines": 341,
+    "check": "bash -n",
+    "detail": ""
+  },
+  {
+    "path": "scripts/check_commission.py",
+    "status": "read",
+    "lines": 186,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/check_commission_detail.py",
+    "status": "read",
+    "lines": 273,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/check_market_vs_positions.py",
+    "status": "read",
+    "lines": 79,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/check_pnl.py",
+    "status": "read",
+    "lines": 124,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/check_tpsl_orders.py",
+    "status": "read",
+    "lines": 181,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/check_tpsl_orders_server.py",
+    "status": "read",
+    "lines": 142,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/check_trade_stats.py",
+    "status": "read",
+    "lines": 65,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/cleanup_klines.sh",
+    "status": "passed",
+    "lines": 84,
+    "check": "bash -n",
+    "detail": ""
+  },
+  {
+    "path": "scripts/collector_fixed.py",
+    "status": "read",
+    "lines": 358,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/diagnose_billusdt.py",
+    "status": "read",
+    "lines": 235,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/download_klines.py",
+    "status": "read",
+    "lines": 269,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/download_solusdt_klines.py",
+    "status": "read",
+    "lines": 69,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/download_solusdt_klines_v2.py",
+    "status": "read",
+    "lines": 81,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/fix_sl_tp_billusdt.py",
+    "status": "read",
+    "lines": 228,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/investigate_billusdt.py",
+    "status": "read",
+    "lines": 291,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/manual_allocation_trigger.py",
+    "status": "read",
+    "lines": 112,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/manual_short_billusdt.py",
+    "status": "read",
+    "lines": 554,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/monitor_sl_tp_billusdt.py",
+    "status": "read",
+    "lines": 231,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/query_mtpcs_trades.py",
+    "status": "read",
+    "lines": 305,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/quick_check.py",
+    "status": "read",
+    "lines": 107,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/set_sl_tp_billusdt.py",
+    "status": "read",
+    "lines": 126,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/ssh_query.py",
+    "status": "read",
+    "lines": 37,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/test_kline_pipeline.sh",
+    "status": "passed",
+    "lines": 326,
+    "check": "bash -n",
+    "detail": ""
+  },
+  {
+    "path": "scripts/validate_precision.py",
+    "status": "read",
+    "lines": 262,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "scripts/validate_precision_offline.py",
+    "status": "read",
+    "lines": 284,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/data_backend/Dockerfile",
+    "status": "read",
+    "lines": 34,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "services/data_backend/deploy.sh",
+    "status": "passed",
+    "lines": 234,
+    "check": "bash -n",
+    "detail": ""
+  },
+  {
+    "path": "services/data_backend/src/main.py",
+    "status": "read",
+    "lines": 156,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_monitor/Dockerfile",
+    "status": "read",
+    "lines": 28,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "services/kline_monitor/requirements.txt",
+    "status": "read",
+    "lines": 2,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "services/kline_monitor/src/__init__.py",
+    "status": "read",
+    "lines": 1,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_monitor/src/monitor.py",
+    "status": "read",
+    "lines": 319,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/Dockerfile",
+    "status": "read",
+    "lines": 47,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "services/kline_service/api/__init__.py",
+    "status": "read",
+    "lines": 5,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/api/registry_routes.py",
+    "status": "read",
+    "lines": 438,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/api/routes.py",
+    "status": "read",
+    "lines": 314,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/core/__init__.py",
+    "status": "read",
+    "lines": 7,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/core/binance_client.py",
+    "status": "read",
+    "lines": 227,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/core/collector.py",
+    "status": "read",
+    "lines": 381,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/core/indicator.py",
+    "status": "read",
+    "lines": 325,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/core/registry.py",
+    "status": "read",
+    "lines": 344,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/core/scheduler.py",
+    "status": "read",
+    "lines": 317,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/db/migrations/create_registered_symbols_table.py",
+    "status": "read",
+    "lines": 49,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/db/run_migrations.py",
+    "status": "read",
+    "lines": 66,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/models/__init__.py",
+    "status": "read",
+    "lines": 5,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/models/kline.py",
+    "status": "read",
+    "lines": 73,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/models/registered_symbol.py",
+    "status": "read",
+    "lines": 128,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/requirements.txt",
+    "status": "read",
+    "lines": 39,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "services/kline_service/scripts/fetch_history_bulk.py",
+    "status": "read",
+    "lines": 163,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/scripts/fetch_history_data.py",
+    "status": "read",
+    "lines": 141,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/shared/core/config.py",
+    "status": "read",
+    "lines": 103,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/shared/core/database.py",
+    "status": "read",
+    "lines": 112,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/shared/utils/helpers.py",
+    "status": "read",
+    "lines": 310,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/shared/utils/logger.py",
+    "status": "read",
+    "lines": 151,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "services/kline_service/src/main.py",
+    "status": "read",
+    "lines": 312,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/__init__.py",
+    "status": "read",
+    "lines": 27,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/base_strategy.py",
+    "status": "read",
+    "lines": 274,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/binance_api.py",
+    "status": "read",
+    "lines": 1471,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/capital_manager.py",
+    "status": "read",
+    "lines": 626,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/circuit_breaker.py",
+    "status": "read",
+    "lines": 372,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/circuit_breaker_config.yaml",
+    "status": "passed",
+    "lines": 44,
+    "check": "YAML parse"
+  },
+  {
+    "path": "shared/condition_orders.py",
+    "status": "read",
+    "lines": 189,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/config_loader.py",
+    "status": "read",
+    "lines": 299,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/database.py",
+    "status": "read",
+    "lines": 353,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/dynamic_atr_filter.py",
+    "status": "read",
+    "lines": 485,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/dynamic_trailing.py",
+    "status": "read",
+    "lines": 406,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/indicators.py",
+    "status": "read",
+    "lines": 355,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/kline_service.py",
+    "status": "read",
+    "lines": 321,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/market_cap.py",
+    "status": "read",
+    "lines": 556,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/notification.py",
+    "status": "read",
+    "lines": 481,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/position_baseline.py",
+    "status": "read",
+    "lines": 444,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/position_ownership.py",
+    "status": "read",
+    "lines": 265,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/scheduler/__init__.py",
+    "status": "read",
+    "lines": 181,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/strategy_state.py",
+    "status": "read",
+    "lines": 153,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/trade_logger.py",
+    "status": "read",
+    "lines": 869,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "shared/utils.py",
+    "status": "read",
+    "lines": 252,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/Dockerfile",
+    "status": "read",
+    "lines": 30,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "strategies/btc_eth/__init__.py",
+    "status": "read",
+    "lines": 12,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/config.yaml",
+    "status": "passed",
+    "lines": 716,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/btc_eth/main.py",
+    "status": "read",
+    "lines": 468,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/market_state.py",
+    "status": "read",
+    "lines": 292,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/strategy.py",
+    "status": "read",
+    "lines": 6011,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/test_realized_pnl_fix.py",
+    "status": "read",
+    "lines": 560,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/test_v23_functional.py",
+    "status": "read",
+    "lines": 1138,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/test_v23_orphan_cleanup.py",
+    "status": "read",
+    "lines": 1074,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/tests/__init__.py",
+    "status": "read",
+    "lines": 0,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/tests/test_ranging_risk_three_mechanisms.py",
+    "status": "read",
+    "lines": 1182,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/tests/test_signal_level_risk.py",
+    "status": "read",
+    "lines": 463,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/tests/test_stop_loss_mark.py",
+    "status": "read",
+    "lines": 93,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/tests/test_time_stop_review.py",
+    "status": "read",
+    "lines": 470,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth/tuning_overrides/V20260811.yaml",
+    "status": "passed",
+    "lines": 17,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/Dockerfile",
+    "status": "read",
+    "lines": 30,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/__init__.py",
+    "status": "read",
+    "lines": 12,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/config.yaml",
+    "status": "passed",
+    "lines": 723,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/main.py",
+    "status": "read",
+    "lines": 468,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/market_state.py",
+    "status": "read",
+    "lines": 292,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/strategy.py",
+    "status": "read",
+    "lines": 6020,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/tests/__init__.py",
+    "status": "read",
+    "lines": 0,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/tests/test_stop_loss_mark.py",
+    "status": "read",
+    "lines": 157,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/tuning_overrides/V20260910.yaml",
+    "status": "passed",
+    "lines": 7,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/grid/Dockerfile",
+    "status": "read",
+    "lines": 35,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "strategies/grid/__init__.py",
+    "status": "read",
+    "lines": 12,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/config.yaml",
+    "status": "passed",
+    "lines": 376,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/grid/grid_calculator.py",
+    "status": "read",
+    "lines": 976,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/main.py",
+    "status": "read",
+    "lines": 158,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/margin_advisor.py",
+    "status": "read",
+    "lines": 661,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/market_state.py",
+    "status": "read",
+    "lines": 1024,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/order_manager.py",
+    "status": "read",
+    "lines": 393,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/position_manager.py",
+    "status": "read",
+    "lines": 342,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/risk_manager.py",
+    "status": "read",
+    "lines": 381,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/signal_bot.py",
+    "status": "read",
+    "lines": 994,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/strategy.py",
+    "status": "read",
+    "lines": 853,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/grid/tuning_overrides/V20260830.yaml",
+    "status": "passed",
+    "lines": 3,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/hrs/Dockerfile",
+    "status": "read",
+    "lines": 22,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "strategies/hrs/__init__.py",
+    "status": "read",
+    "lines": 3,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/candidate_pool.py",
+    "status": "read",
+    "lines": 995,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/config.yaml",
+    "status": "passed",
+    "lines": 580,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/hrs/executor.py",
+    "status": "read",
+    "lines": 1741,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/main.py",
+    "status": "read",
+    "lines": 136,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/market_data.py",
+    "status": "read",
+    "lines": 458,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/pattern.py",
+    "status": "read",
+    "lines": 559,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/position_manager.py",
+    "status": "read",
+    "lines": 668,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/requirements.txt",
+    "status": "read",
+    "lines": 6,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "strategies/hrs/risk_manager.py",
+    "status": "read",
+    "lines": 747,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/scoring_engine.py",
+    "status": "read",
+    "lines": 1461,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/strategy.py",
+    "status": "read",
+    "lines": 3690,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/__init__.py",
+    "status": "read",
+    "lines": 3,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/test_fix_verification.py",
+    "status": "read",
+    "lines": 1822,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/test_market_data.py",
+    "status": "read",
+    "lines": 418,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/test_pattern.py",
+    "status": "read",
+    "lines": 468,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/test_position_manager.py",
+    "status": "read",
+    "lines": 256,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/test_risk_manager.py",
+    "status": "read",
+    "lines": 310,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/test_scoring_engine.py",
+    "status": "read",
+    "lines": 457,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/test_stop_loss_mark.py",
+    "status": "read",
+    "lines": 83,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/test_trend_filter_validation.py",
+    "status": "read",
+    "lines": 630,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tests/test_v23_dynamic_thresholds.py",
+    "status": "read",
+    "lines": 676,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/hrs/tuning_overrides/V20260819.yaml",
+    "status": "passed",
+    "lines": 4,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/new_coin/Dockerfile",
+    "status": "read",
+    "lines": 34,
+    "check": "text inventory / risk pattern scan"
+  },
+  {
+    "path": "strategies/new_coin/__init__.py",
+    "status": "read",
+    "lines": 12,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/config.yaml",
+    "status": "passed",
+    "lines": 305,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/new_coin/detector.py",
+    "status": "read",
+    "lines": 551,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/executor.py",
+    "status": "read",
+    "lines": 3408,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/main.py",
+    "status": "read",
+    "lines": 152,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/pattern.py",
+    "status": "read",
+    "lines": 298,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/scoring_engine.py",
+    "status": "read",
+    "lines": 710,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/strategy.py",
+    "status": "read",
+    "lines": 2209,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/test_delisted_symbols.py",
+    "status": "read",
+    "lines": 143,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/test_drawdown_fix.py",
+    "status": "read",
+    "lines": 617,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/test_realized_pnl_fix.py",
+    "status": "read",
+    "lines": 985,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/tests/__init__.py",
+    "status": "read",
+    "lines": 1,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/tests/test_stop_loss_mark.py",
+    "status": "read",
+    "lines": 135,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "strategies/new_coin/tuning_overrides/V20260811.yaml",
+    "status": "passed",
+    "lines": 13,
+    "check": "YAML parse"
+  },
+  {
+    "path": "strategies/new_coin/tuning_overrides/V20260830.yaml",
+    "status": "passed",
+    "lines": 17,
+    "check": "YAML parse"
+  },
+  {
+    "path": "tests/integration/__init__.py",
+    "status": "read",
+    "lines": 3,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/integration/test_btc_eth_strategy.py",
+    "status": "read",
+    "lines": 522,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/integration/test_grid_strategy.py",
+    "status": "read",
+    "lines": 396,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/integration/test_kline_integration.py",
+    "status": "read",
+    "lines": 545,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/integration/test_new_coin_strategy.py",
+    "status": "read",
+    "lines": 369,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/integration/test_v6_16_7_fix.py",
+    "status": "read",
+    "lines": 872,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_dynamic_grid_params.py",
+    "status": "read",
+    "lines": 354,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_frequency_controller.py",
+    "status": "read",
+    "lines": 365,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_kline_service/__init__.py",
+    "status": "read",
+    "lines": 0,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_kline_service/conftest.py",
+    "status": "read",
+    "lines": 203,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_kline_service/test_binance_client.py",
+    "status": "read",
+    "lines": 359,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_kline_service/test_collector.py",
+    "status": "read",
+    "lines": 268,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_kline_service/test_registry.py",
+    "status": "read",
+    "lines": 312,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_kline_service/test_scheduler.py",
+    "status": "read",
+    "lines": 379,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_position_manager_cancel.py",
+    "status": "read",
+    "lines": 178,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_position_ownership.py",
+    "status": "read",
+    "lines": 640,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/__init__.py",
+    "status": "read",
+    "lines": 3,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_binance_api.py",
+    "status": "read",
+    "lines": 237,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_circuit_breaker.py",
+    "status": "read",
+    "lines": 528,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_commissions.py",
+    "status": "read",
+    "lines": 215,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_database.py",
+    "status": "read",
+    "lines": 164,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_dynamic_trailing.py",
+    "status": "read",
+    "lines": 1180,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_indicators.py",
+    "status": "read",
+    "lines": 250,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_kline_service.py",
+    "status": "read",
+    "lines": 513,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_notification.py",
+    "status": "read",
+    "lines": 107,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_scheduler.py",
+    "status": "read",
+    "lines": 173,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_trade_logger.py",
+    "status": "read",
+    "lines": 86,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_unrealized_pnl.py",
+    "status": "read",
+    "lines": 105,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_shared/test_utils.py",
+    "status": "read",
+    "lines": 143,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/__init__.py",
+    "status": "read",
+    "lines": 0,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_bb_touch_half_zone.py",
+    "status": "read",
+    "lines": 152,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_btc_eth_aggressive_reduceonly.py",
+    "status": "read",
+    "lines": 368,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_btc_eth_kline.py",
+    "status": "read",
+    "lines": 1056,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_btc_eth_trailing_boundary.py",
+    "status": "read",
+    "lines": 847,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_capital_allocation_enforcement.py",
+    "status": "read",
+    "lines": 1862,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_dynamic_trailing_boundary.py",
+    "status": "read",
+    "lines": 683,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_executor_trailing.py",
+    "status": "read",
+    "lines": 1024,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_grid_kline.py",
+    "status": "read",
+    "lines": 843,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_hrs_kline.py",
+    "status": "read",
+    "lines": 684,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_mtpcs_partial_tp_and_trailing.py",
+    "status": "read",
+    "lines": 343,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_mtpcs_v628_add_position.py",
+    "status": "read",
+    "lines": 743,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_new_coin_kline.py",
+    "status": "read",
+    "lines": 861,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_new_coin_tracking_entry.py",
+    "status": "read",
+    "lines": 425,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_position_size_allocated_ratio.py",
+    "status": "read",
+    "lines": 102,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_ranging_volume_confirm.py",
+    "status": "read",
+    "lines": 323,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_take_profit_fill_detect.py",
+    "status": "read",
+    "lines": 303,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_time_stop_review.py",
+    "status": "read",
+    "lines": 314,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_strategies/test_total_margin_control.py",
+    "status": "read",
+    "lines": 170,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tests/test_tuning_overrides.py",
+    "status": "read",
+    "lines": 343,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tools/download_klines_simple.sh",
+    "status": "passed",
+    "lines": 155,
+    "check": "bash -n",
+    "detail": ""
+  },
+  {
+    "path": "tools/download_new_coin_klines.py",
+    "status": "read",
+    "lines": 645,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tools/gen_solusdt_1d_sql.py",
+    "status": "read",
+    "lines": 21,
+    "check": "AST + pyflakes"
+  },
+  {
+    "path": "tools/verify_solusdt.sh",
+    "status": "passed",
+    "lines": 45,
+    "check": "bash -n",
+    "detail": ""
+  }
+]

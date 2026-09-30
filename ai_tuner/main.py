@@ -298,6 +298,14 @@ class StratTuneAI:
                     binance_client=binance_client,
                     notification_client=self.notification_client,
                     stale_hours_threshold=float(cleanup_cfg.get("stale_hours_threshold", 2.0)),
+                    # R08：无状态分支必须以交易所实时持仓为准，无法确认则保守保留保护单
+                    position_lookback_days=float(cleanup_cfg.get("position_lookback_days", 7.0)),
+                    require_exchange_confirmation=bool(
+                        cleanup_cfg.get("require_exchange_confirmation", True)
+                    ),
+                    alert_on_missing_state=bool(
+                        cleanup_cfg.get("alert_on_missing_state", True)
+                    ),
                 )
                 logger.info("孤儿条件单清理任务（阶段二）已初始化，支持自动取消条件单")
             else:

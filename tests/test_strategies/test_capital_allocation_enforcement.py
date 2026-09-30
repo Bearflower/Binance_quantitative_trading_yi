@@ -67,6 +67,10 @@ from strategies.btc_eth_aggressive.strategy import BTCEthStrategy as BTCEthAggre
 from strategies.hrs.strategy import HRSStrategy
 from strategies.new_coin.executor import TradingExecutor
 from strategies.new_coin.strategy import NewCoinStrategy
+from shared.order_fill_waiter import (
+    OrderFillResult,
+    STATUS_FILLED,
+)
 
 # 中国标准时间（与 CapitalManager 判定「当月」的时区保持一致）
 CST = timezone(timedelta(hours=8))
@@ -691,12 +695,24 @@ def _stub_entry_checks(executor: TradingExecutor, occupied_margin: float = 0.0) 
     executor.calc_current_occupied_margin = AsyncMock(return_value=occupied_margin)
 
 
+def _make_filled_fill(order_id: int = 1) -> OrderFillResult:
+    """构造「完全成交」终态结果（R06 OrderFillResult），替代旧 dict 桩"""
+    return OrderFillResult(
+        status=STATUS_FILLED,
+        executed_qty=Decimal('1'),
+        orig_qty=Decimal('1'),
+        remaining_qty=Decimal('0'),
+        order_id=order_id,
+        raw={'orderId': order_id, 'status': STATUS_FILLED},
+    )
+
+
 def _stub_order_path(executor: TradingExecutor) -> None:
     """打桩下单及后续链路（前置校验通过后才会走到这里）"""
     executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
     executor._set_leverage = AsyncMock()
     executor._place_short_order = AsyncMock(return_value={'orderId': 1, 'status': 'FILLED'})
-    executor._wait_for_order_fill = AsyncMock(return_value={'orderId': 1, 'status': 'FILLED'})
+    executor._wait_for_order_fill = AsyncMock(return_value=_make_filled_fill(1))
     executor._save_order = AsyncMock()
     executor._calculate_atr = AsyncMock(return_value=Decimal('0'))
     executor._insert_short_position = AsyncMock()

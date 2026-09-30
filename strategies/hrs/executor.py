@@ -15,6 +15,13 @@ from shared.binance_api import BinanceClient
 from shared.database import DatabaseManager
 from shared.indicators import TechnicalIndicators
 from shared.notification import NotificationClient
+# R04 统一减仓平仓助手（剩余量重算 + reduceOnly + -2022 前置对账 + 撤单后读最终量）
+from shared.reduce_only_close import (
+    CLOSE_FAILED,
+    CLOSE_FILLED,
+    CloseOutcome,
+    close_remaining,
+)
 
 from .position_manager import PositionManager
 
@@ -866,78 +873,116 @@ class TradingExecutor:
         direction: str,
         close_percent: float = 1.0,
         reason: str = "",
-    ) -> Optional[Dict[str, Any]]:
+    ) -> CloseOutcome:
         """
-        平仓
+        平仓（R04：返回结构化 CloseOutcome，杜绝「NEW 回执即成功」）
+
+        复用 shared.reduce_only_close.close_remaining：读真实持仓 → 按剩余量重算 →
+        强制 reduceOnly → -2022 前置对账/撤同向条件单 → 等待终态 → 对账防反向。
+        仅当真实减仓达标且持仓对账通过才 success=True；无持仓视为已平（closed_qty=0）。
+        任何异常均不外抛，返回 CLOSE_FAILED（主循环不能被平仓异常打断）。
 
         Args:
             symbol: 交易对
-            direction: 方向 ('short'/'long')
-            close_percent: 平仓比例
-            reason: 平仓原因
+            direction: 持仓方向 ('short'/'long')
+            close_percent: 平仓比例（0~1，默认全平）
+            reason: 平仓原因（仅用于日志）
 
         Returns:
-            成功返回订单结果字典（含 orderId），失败返回 None
+            CloseOutcome（status/closed_qty/target_qty/success/reason/raw）
         """
+        trading_cfg = self.config.get("trading", {})
+        cfg = trading_cfg.get("close_order", {})
         try:
-            positions = await self.binance_api.get_position(symbol)
-            position = None
-            for pos in positions:
-                pos_amt = float(pos.get("positionAmt", 0))
-                if direction == "short" and pos_amt < 0:
-                    position = pos
-                    break
-                elif direction == "long" and pos_amt > 0:
-                    position = pos
-                    break
-
-            if not position:
-                logger.warning("未找到持仓", symbol=symbol, direction=direction)
-                return None
-
-            position_amt = abs(float(position.get("positionAmt", 0)))
-            close_quantity = position_amt * close_percent
-
-            _, step_size = await self._get_symbol_precision(symbol)
-            close_quantity_decimal = self._format_quantity(Decimal(str(close_quantity)), step_size)
-
-            side = self._get_close_side(direction)
-            # 获取当前价格用于限价平仓
-            ticker = await self.binance_api.get_ticker(symbol)
-            close_price = float(ticker.get("lastPrice", 0))
-            if close_price <= 0:
-                logger.warning("无法获取当前价格，使用市价平仓", symbol=symbol)
-                order = await self.binance_api.place_order(
-                    symbol=symbol,
-                    side=side,
-                    order_type="MARKET",
-                    quantity=close_quantity_decimal,
+            target_qty, step_size, tick_size = await self._read_close_target_qty(
+                symbol, direction, close_percent
+            )
+            # 无对应方向持仓 → 对账判定已平，幂等返回成功（不回写、不撤单、不删仓）
+            if target_qty <= 0:
+                logger.warning("当前无持仓，无需减仓", symbol=symbol, direction=direction)
+                return CloseOutcome(
+                    CLOSE_FILLED, Decimal("0"), Decimal("0"), True, "当前无持仓，无需减仓"
                 )
-            else:
-                order = await self.binance_api.place_order(
-                    symbol=symbol,
-                    side=side,
-                    order_type=self.order_type_close,
-                    quantity=close_quantity_decimal,
-                    price=Decimal(str(close_price)),
-                    timeInForce="GTC",
-                )
-
-            if order:
-                logger.info(
-                    "平仓成功",
-                    symbol=symbol,
-                    direction=direction,
-                    reason=reason,
-                    quantity=float(close_quantity_decimal),
-                )
-                return order
-
-            return None
-
+            order_type, price = await self._resolve_close_order(symbol, tick_size)
+            outcome = await close_remaining(
+                self.binance_api, symbol, target_qty,
+                side=self._get_close_side(direction),
+                order_type=order_type, price=price,
+                reduce_only=cfg.get("reduce_only", True),
+                sync_before_reduce_only=cfg.get("sync_before_reduce_only", True),
+                step_size=str(step_size),
+                max_retries=cfg.get("max_retries", trading_cfg.get("retry_count", 3)),
+                retry_interval=cfg.get("retry_interval", trading_cfg.get("retry_interval", 2.0)),
+                poll_interval=cfg.get("poll_interval_seconds"),
+                timeout_seconds=cfg.get("wait_timeout_seconds", 10.0),
+                position_confirm_retries=cfg.get("position_confirm_retries", 2),
+                position_confirm_interval=cfg.get("position_confirm_interval", 1.0),
+            )
         except Exception as e:
-            logger.error("平仓失败", symbol=symbol, error=str(e))
-            return None
+            logger.error(
+                "平仓异常", symbol=symbol, direction=direction, reason=reason, error=str(e)
+            )
+            return CloseOutcome(CLOSE_FAILED, Decimal("0"), Decimal("0"), False, f"平仓异常: {e}")
+
+        log_fields = {
+            "symbol": symbol,
+            "direction": direction,
+            "reason": reason,
+            "status": outcome.status,
+            "closed_qty": float(outcome.closed_qty),
+            "target_qty": float(outcome.target_qty),
+        }
+        if outcome.success:
+            logger.info("平仓成功", **log_fields)
+        else:
+            logger.warning("平仓未完全成交", **log_fields)
+        return outcome
+
+    async def _read_close_target_qty(
+        self, symbol: str, direction: str, close_percent: float
+    ) -> Tuple[Decimal, Decimal, Decimal]:
+        """
+        读取真实持仓并解析本次平仓目标量（R04-F1：以交易所真实持仓为准）
+
+        Args:
+            symbol: 交易对
+            direction: 持仓方向 ('short'/'long')
+            close_percent: 平仓比例（0~1）
+
+        Returns:
+            (target_qty, step_size, tick_size)；无对应方向持仓时 target_qty 为 0，
+            由调用方据此提前短路为「无持仓即已平」
+        """
+        positions = await self.binance_api.get_position(symbol)
+        position_amt = Decimal("0")
+        for pos in positions or []:
+            pos_amt = float(pos.get("positionAmt", 0))
+            if (direction == "short" and pos_amt < 0) or (direction == "long" and pos_amt > 0):
+                position_amt = abs(Decimal(str(pos_amt)))
+                break
+
+        tick_size, step_size = await self._get_symbol_precision(symbol)
+        return position_amt * Decimal(str(close_percent)), step_size, tick_size
+
+    async def _resolve_close_order(
+        self, symbol: str, tick_size: Decimal
+    ) -> Tuple[str, Optional[Decimal]]:
+        """
+        解析平仓单类型与限价（价格无效时退化为市价）
+
+        Args:
+            symbol: 交易对
+            tick_size: 价格精度
+
+        Returns:
+            (order_type, price)；市价平仓时 price 为 None
+        """
+        ticker = await self.binance_api.get_ticker(symbol)
+        close_price = float(ticker.get("lastPrice", 0) or 0)
+        if close_price <= 0:
+            logger.warning("无法获取当前价格，使用市价平仓", symbol=symbol)
+            return "MARKET", None
+        return self.order_type_close, self._format_price(Decimal(str(close_price)), tick_size)
 
     async def replenish_position_orders(
         self,

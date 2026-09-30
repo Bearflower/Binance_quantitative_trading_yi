@@ -29,7 +29,17 @@ from shared.position_ownership import (
     load_ownership_config,
     resolve_position_owner,
     is_symbol_owned_by_other,
+    try_claim_symbol,
+    release_claim,
+    cleanup_expired_claims,
+    DEFAULT_OWNERSHIP_ENABLED,
+    DEFAULT_CLAIM_TTL_MINUTES,
+    DEFAULT_CLAIM_CLEANUP_INTERVAL_MINUTES,
+    DEFAULT_LOCK_TIMEOUT_SECONDS,
 )
+from shared.order_fill_waiter import OrderFillResult
+from shared.reduce_only_close import close_remaining
+from shared import protection_retry
 from shared.position_baseline import (
     DEFAULT_CONTRACT_SIZE,
     calc_graded_positions_margin,
@@ -124,6 +134,11 @@ class PositionState:
         # v6.28 加仓统一托管：重建待收敛标记（取消旧单/重建条件单任一失败置 True，由 _retry_rebuild_pending 收敛）
         # 移动止损尾仓精度调整后为 0 时直接 logger.warning 跳过即可，无需额外状态字段
         self.rebuild_pending: bool = False
+        # R05（v6.30）保护完整性：开仓成交并登记持仓后为 True，待硬止损+TP1+TP2 全部就位后清除。
+        # 为 True 表示「持仓已建立、保护待补」，由 _retry_protection_pending 按配置节流补挂，
+        # 补挂达上限仅告警（D2，不自动减仓）并保持 True，供进程重启后 _ensure_position_protection 兜底。
+        self.protection_pending: bool = False
+        self.protection_retry_count: int = 0  # 保护补挂累计尝试次数（达配置上限触发 on_exhausted）
 
 
 class FrequencyController:
@@ -556,7 +571,14 @@ class BTCEthStrategy:
     # 信号等级降级阶梯（v6.26：机制②轻度过热降级，从高到低）
     # C 为最低档，再降即返回 None（禁开）
     _GRADE_LADDER = ['S', 'A', 'B', 'C']
-    
+
+    # R07 占用/归属配置的类级防御默认（取值同 load_ownership_config 默认，禁止硬编码）。
+    # __init__ 会依配置覆盖为实例属性；此默认兜底未走 __init__ 的部分构造场景（如按 __new__ 组装的实例）
+    _ownership_enabled: bool = DEFAULT_OWNERSHIP_ENABLED
+    _claim_ttl_minutes: int = DEFAULT_CLAIM_TTL_MINUTES
+    _claim_cleanup_interval_minutes: int = DEFAULT_CLAIM_CLEANUP_INTERVAL_MINUTES
+    _lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS
+
     def __init__(
         self,
         config: Dict,
@@ -663,10 +685,23 @@ class BTCEthStrategy:
         else:
             self.circuit_breaker = None
 
-        # 持仓归属隔离（方案C）：本策略归属名 + 共享账户对家策略列表
+        # 持仓归属隔离（方案C + R07）：本策略归属名 + 对家策略列表 + 占用互斥配置
         _owc = load_ownership_config(config)
         self.my_record_name = _owc['my_record_name']
         self._competing_record_names = _owc['competing_record_names']
+        # R07 占用互斥配置（开关/占用有效期/清理间隔/锁超时），全部走配置不硬编码
+        self._ownership_enabled = _owc['enabled']
+        self._claim_ttl_minutes = _owc['claim_ttl_minutes']
+        self._claim_cleanup_interval_minutes = _owc['claim_cleanup_interval_minutes']
+        self._lock_timeout_seconds = _owc['lock_timeout_seconds']
+        self._last_claim_cleanup_time: Optional[datetime] = None
+
+        # R05 保护单补挂配置（strategy.risk.protection_retry）
+        _prot = self.risk_config.get('protection_retry', {})
+        self._protection_max_retries = int(_prot.get('max_retries', 3))
+        self._protection_retry_interval_cycles = int(_prot.get('retry_interval_cycles', 1))
+        self._protection_on_exhausted = _prot.get('on_exhausted', 'alert')
+        self._protection_notify = bool(_prot.get('notify', True))
 
         logger.info(
             "BTC/ETH策略初始化",
@@ -2614,144 +2649,105 @@ class BTCEthStrategy:
         return await self._add_position(symbol, pos, signal)
 
     async def _open_new_position(self, signal: Dict) -> bool:
-        """新开仓主流程（v6.28 重构瘦身）
-
-        负责：频率控制记录 → 入场下单（_place_entry_order）→ 下保护单（硬止损/TP1/TP2）
-        → 初始化持仓状态。非加仓场景（单笔持仓）行为与 v6.28 原逻辑完全一致。
-
-        Args:
-            signal: 交易信号
-
-        Returns:
-            是否执行成功
-        """
-        symbol = signal['symbol']
-        try:
-            logger.info(
-                f"执行交易信号: {symbol}",
-                direction=signal['direction'],
-                grade=signal['grade'],
-                score=signal['score']
-            )
-
-            # 开仓互斥（方案C）：同名币已由对家策略持有未平开仓单则跳过，防互留保护单
-            if await is_symbol_owned_by_other(
-                self.db_manager,
-                symbol,
-                self.my_record_name,
-                self._competing_record_names,
-            ):
-                logger.info(
-                    f"{symbol} 已被其他策略持有未平开仓单，跳过开仓（归属互斥）",
-                    competing=self._competing_record_names,
-                )
-                try:
-                    await self.notification.send(
-                        message=f"{symbol} 开仓被归属互斥拦截（其他策略已持有该币开仓单），跳过",
-                        level="warning",
-                        project="btc_eth_aggressive",
-                    )
-                except Exception as _e:
-                    logger.warning("发送归属互斥告警失败", error=str(_e))
-                return False
-
-            # 记录交易（频率控制）
-            await self.frequency_controller.record_trade(symbol, signal['timestamp'])
-
-            # 入场下单（设置杠杆 + 仓位检查 + 限价单 + 等待成交）
-            entry_order = await self._place_entry_order(symbol, signal)
-            if entry_order is None:
-                return False
-
-            # 下硬止损/TP1/TP2 保护单（任一失败终止开仓）
-            order_ids, ok = await self._place_entry_protection_orders(symbol, signal)
-            if not ok:
-                return False
-
-            # 初始化持仓状态并保存
-            position = self._build_position_state(signal, entry_order.get('orderId'), order_ids)
-            self.positions[symbol] = position
-
-            logger.info(
-                f"交易信号执行完成: {symbol}",
-                entry_order_id=position.entry_order_id,
-                stop_loss_order_id=position.stop_loss_order_id,
-                tp1_order_id=position.tp1_order_id
-            )
-            return True
-
-        except Exception as e:
-            logger.error(f"执行交易信号失败: {symbol}", error=str(e), exc_info=True)
-            await self._send_signal_error_notification(symbol, e)
-            return False
+        """新开仓主流程（R05/R06/R07 加固；实现在 shared.protection_retry.open_new_position）"""
+        return await protection_retry.open_new_position(
+            self, signal,
+            is_owned_fn=is_symbol_owned_by_other, try_claim_fn=try_claim_symbol)
 
     async def _place_entry_protection_orders(
-        self, symbol: str, signal: Dict
-    ) -> Tuple[Optional[Dict[str, int]], bool]:
-        """新开仓保护单：硬止损 + TP1/TP2（v6.28 重构拆分子函数）
-
-        全部读配置不硬编码；任一保护单失败返回 (None, False) 终止开仓。
-        """
-        direction = signal['direction']
-        stop_side = "SELL" if direction == "LONG" else "BUY"
-        grade_risk = self._get_grade_risk(signal.get('grade', 'A'))
-        partial_cfg = grade_risk['partial_take_profit']
-        tp1_ratio = Decimal(str(partial_cfg['tp1_close_ratio']))
-        tp2_ratio = Decimal(str(partial_cfg['tp2_close_ratio']))
-        stop_offset = Decimal(str(self.risk_config.get('stop_limit_order', {}).get('offset_pct', 0.002)))
-        tp_offset = Decimal(str(self.risk_config.get('tp_limit_order', {}).get('offset_pct', 0.0015)))
-
-        # 1. 硬止损单（全量）
-        initial_stop = Decimal(str(signal['initial_stop_loss']))
-        stop_limit = self._apply_limit_offset(initial_stop, stop_offset, direction)
-        logger.info(
-            f"{symbol} 下止损限价单",
-            stop_side=stop_side,
-            stop_price=float(initial_stop),
-            limit_price=float(stop_limit),
-            quantity=float(signal['quantity'])
-        )
-        stop_order_id = await self._place_conditional_order_and_record(
-            symbol, stop_side, "STOP", initial_stop, stop_limit,
-            signal['quantity'], "STOP_LOSS", self.strategy_name
-        )
-        if stop_order_id is None:
-            logger.error(f"{symbol} 止损单下单失败，终止开仓")
-            return None, False
-
-        # 2/3. TP1/TP2 止盈单（按等级比例，统一走 _place_tp_order）
-        order_ids = {}
-        for level, ratio in ((1, tp1_ratio), (2, tp2_ratio)):
-            tp_price = Decimal(str(signal[f'tp{level}_price']))
-            tp_limit = self._apply_limit_offset(tp_price, tp_offset, direction)
-            tp_qty = signal['quantity'] * ratio
-            tp_id = await self._place_tp_order(
-                symbol, stop_side, tp_price, tp_limit, tp_qty, f"TP{level}", self.strategy_name
-            )
-            if tp_id is None:
-                logger.error(f"{symbol} TP{level}止盈单下单失败，终止开仓")
-                return None, False
-            order_ids[level] = tp_id
-        return {'stop': stop_order_id, 'tp1': order_ids[1], 'tp2': order_ids[2]}, True
+        self, symbol: str, signal: Dict, actual_quantity: Decimal
+    ) -> Dict[str, Optional[int]]:
+        """新开仓保护单：硬止损 + TP1/TP2（R05；实现在 shared.protection_retry）"""
+        return await protection_retry.fill_entry_protection_orders(
+            self, symbol, signal, actual_quantity)
 
     @staticmethod
     def _build_position_state(
-        signal: Dict, entry_order_id: Optional[int], order_ids: Dict[str, int]
+        signal: Dict, entry: OrderFillResult, actual_quantity: Decimal
     ) -> PositionState:
-        """根据信号与保护单ID构建新持仓状态（v6.28 重构拆分子函数）"""
-        position = PositionState()
-        position.entry_price = signal['entry_price']
-        position.entry_time = signal['timestamp']
-        position.direction = signal['direction']
-        position.initial_quantity = signal['quantity']
-        position.current_quantity = signal['quantity']
-        position.atr = signal['atr']
-        position.grade = signal.get('grade', 'A')
-        position.entry_order_id = entry_order_id
-        position.stop_loss_order_id = order_ids['stop']
-        position.tp1_order_id = order_ids['tp1']
-        position.tp2_order_id = order_ids['tp2']
-        return position
+        """根据信号与成交结果构建新持仓状态（R05；实现在 shared.protection_retry）"""
+        return protection_retry.build_position_state(PositionState, signal, entry, actual_quantity)
+
+    @staticmethod
+    def _apply_protection_order_ids(
+        position: PositionState, order_ids: Dict[str, Optional[int]]
+    ) -> None:
+        """把逐单保护下单结果写入持仓，并按完整性设置 protection_pending（R05）"""
+        protection_retry.apply_protection_order_ids(position, order_ids)
+
+    async def _notify_warning(self, message: str) -> None:
+        """统一告警推送（失败仅记日志，不中断主流程）"""
+        await protection_retry.send_warning(self.notification, self.strategy_name, message)
+
+    async def _handle_claim_conflict(self, symbol: str, owner: Optional[str]) -> None:
+        """占用冲突处理：告警 + 跳过开仓（R07-F3，不抛异常中断主循环）"""
+        await protection_retry.handle_claim_conflict(self, symbol, owner)
+
+    async def _release_claim_if_no_position(self, symbol: str, reason: str) -> None:
+        """仅在未登记持仓时释放占用（防保护失败/异常误放已建仓的占位，R07-F4）"""
+        await protection_retry.release_claim_if_no_position(
+            self.positions, self.db_manager, symbol, self.my_record_name, reason, release_claim)
+
+    async def _resolve_entry_quantity(
+        self, symbol: str, entry: OrderFillResult
+    ) -> Optional[Decimal]:
+        """按实际成交量解析可建仓数量（R05-F1 + R06-F5/D3；实现在 shared.protection_retry）"""
+        return await protection_retry.resolve_entry_quantity(self, symbol, entry)
+
+    async def _zero_micro_entry(self, symbol: str, entry: OrderFillResult) -> None:
+        """D3：残余微仓清零（走 shared.reduce_only_close.close_remaining）"""
+        await protection_retry.zero_micro_entry(self, symbol, entry, close_remaining)
+
+    async def _replenish_protection_round(
+        self, symbol: str, position: PositionState, *, notify_first: bool = False
+    ) -> bool:
+        """保护补挂一轮（R05；实现在 shared.protection_retry）"""
+        return await protection_retry.replenish_protection_round(
+            self, symbol, position, notify_first=notify_first)
+
+    async def _replenish_missing_protection(self, symbol: str, position: PositionState) -> bool:
+        """补挂缺失的保护腿（硬止损/TP1/TP2，R05-F3；实现在 shared.protection_retry）"""
+        return await protection_retry.replenish_missing_protection(self, symbol, position)
+
+    async def _place_missing_tp_level(
+        self, symbol: str, position: PositionState, level: int,
+        step_size: str, tick_size: Decimal, stop_side: str,
+        partial_cfg: Dict, tp_offset: Decimal,
+    ) -> Optional[str]:
+        """补挂单个 TP 腿（R05；实现在 shared.protection_retry）"""
+        return await protection_retry.place_missing_tp_level(
+            self, symbol, position, level, step_size, tick_size,
+            stop_side, partial_cfg, tp_offset)
+
+    async def _retry_protection_pending(self) -> None:
+        """保护待补持仓的节流补挂（R05-F3/F4；实现在 shared.protection_retry）"""
+        await protection_retry.retry_protection_pending(self)
+
+    def _protection_due(self, position: PositionState) -> bool:
+        """补挂节流：首次即时补挂，其后每 retry_interval_cycles 个主循环尝试一次"""
+        return protection_retry.protection_due(
+            position, self._cycle_count, self._protection_retry_interval_cycles)
+
+    async def _handle_protection_exhausted(self, symbol: str, position: PositionState) -> None:
+        """保护补挂达上限处理（D2：默认 alert，不自动减仓）"""
+        await protection_retry.handle_protection_exhausted(self, symbol, position)
+
+    @staticmethod
+    def _missing_protection_legs(position: PositionState) -> list:
+        """列出当前缺失的保护腿（用于告警）"""
+        return protection_retry.missing_protection_legs(position)
+
+    async def _notify_protection_incomplete(self, symbol: str, position: PositionState) -> None:
+        """保护不完整告警（R05：开仓成功但保护待补）"""
+        await protection_retry.notify_protection_incomplete(self, symbol, position)
+
+    async def _notify_protection_exhausted(self, symbol: str, position: PositionState) -> None:
+        """保护补挂耗尽告警（D2：仅告警，不自动减仓，提醒人工关注裸仓风险）"""
+        await protection_retry.notify_protection_exhausted(self, symbol, position)
+
+    async def _maybe_cleanup_expired_claims(self) -> None:
+        """按 claim_cleanup_interval_minutes 定时清理过期占用（R07-F7）"""
+        await protection_retry.maybe_cleanup_expired_claims(self, cleanup_expired_claims)
 
     async def _send_signal_error_notification(self, symbol: str, error: Exception) -> None:
         """信号执行失败时发送飞书错误通知（v6.28 重构拆分子函数）"""
@@ -2764,17 +2760,18 @@ class BTCEthStrategy:
         except Exception as notify_error:
             logger.error(f"{symbol} 发送错误通知失败", error=str(notify_error))
 
-    async def _place_entry_order(self, symbol: str, signal: Dict) -> Optional[Dict]:
+    async def _place_entry_order(self, symbol: str, signal: Dict) -> Optional[OrderFillResult]:
         """入场下单公共逻辑（新开仓与加仓复用，v6.28）
 
-        负责：设置杠杆 → 开仓前检查 → 下限价单 → 等待成交。
+        负责：设置杠杆 → 开仓前检查 → 下限价单 → 等待终态（R06 结构化）。
 
         Args:
             symbol: 交易对
             signal: 交易信号
 
         Returns:
-            成交后的订单信息 dict；可预期失败返回 None（已记日志），意外异常向上抛
+            有成交（完全/部分）返回 OrderFillResult；可预期失败返回 None（已记日志），
+            意外异常向上抛
         """
         # 1. 设置杠杆倍数（必须为整数，覆盖层可能产生浮点数）
         leverage = int(signal['leverage']) if signal['leverage'] > 0 else 1
@@ -2823,53 +2820,9 @@ class BTCEthStrategy:
             return False
         return True
 
-    async def _place_and_wait_entry_order(self, symbol: str, signal: Dict) -> Optional[Dict]:
-        """下限价单开仓并等待成交（v6.28 拆分子函数）
-
-        Args:
-            symbol: 交易对
-            signal: 交易信号
-
-        Returns:
-            成交后的订单信息 dict；超时未成交返回 None（已取消订单）
-        """
-        # 确定开仓方向 + 下限价单开仓
-        entry_side = "BUY" if signal['direction'] == "LONG" else "SELL"
-        logger.info(
-            f"{symbol} 下限价单开仓",
-            side=entry_side,
-            quantity=float(signal['quantity']),
-            entry_price=float(signal['entry_price'])
-        )
-        entry_order = await self.binance.place_order(
-            symbol=symbol,
-            side=entry_side,
-            quantity=signal['quantity'],
-            price=signal['entry_price'],
-            order_type="LIMIT"
-        )
-        entry_order_id = entry_order.get('orderId')
-        logger.info(
-            f"{symbol} 开仓订单已下单",
-            order_id=entry_order_id,
-            status=entry_order.get('status')
-        )
-
-        # 等待限价单成交（超时时间从配置读取）
-        entry_timeout = self.risk_config.get('position_sizing', {}).get('entry_order_timeout_seconds', 60)
-        entry_order = await self._wait_for_order_fill(
-            symbol, entry_order_id, entry_timeout
-        )
-        if not entry_order:
-            # 超时未成交，取消限价单，避免后续价格到达时突然成交
-            logger.warning(f"{symbol} 限价单超时未成交，取消订单")
-            try:
-                await self.binance.cancel_order(symbol, entry_order_id)
-            except Exception as cancel_e:
-                logger.warning(f"{symbol} 取消限价单失败", error=str(cancel_e))
-            return None
-
-        return entry_order
+    async def _place_and_wait_entry_order(self, symbol: str, signal: Dict) -> Optional[OrderFillResult]:
+        """下限价单开仓并等待终态（R06；实现在 shared.protection_retry）"""
+        return await protection_retry.place_and_wait_entry_order(self, symbol, signal)
 
     async def _add_position(self, symbol: str, position: PositionState, signal: Dict) -> bool:
         """加仓主流程（v6.28 加仓统一托管）：开新仓成交 → 取消旧单 → 合并 → 重建条件单。"""
@@ -2920,42 +2873,16 @@ class BTCEthStrategy:
     def _merge_position(
         position: PositionState,
         signal: Dict,
-        entry_order: Dict,
+        entry_order: OrderFillResult,
         actual_quantity: Decimal,
     ) -> None:
-        """合并持仓（原地修改，v6.28）
+        """合并持仓（原地修改，v6.28；实现在 shared.protection_retry）
 
-        加权均价 = (旧entry×旧量 + 新entry×本次增量) / 合并后总量；
-        更新 initial/current_quantity 为交易所实际总量、ATR/grade 取新信号；
-        保留 highest/lowest、tp1_hit/tp2_hit、trailing、entry_time 等状态。
-        加仓窗口已保证 tp1_hit/tp2_hit 均为 False，故合并前
-        current_quantity == initial_quantity，以 initial_quantity 作为旧量计算增量。
-
-        Args:
-            position: 持仓状态（原地修改）
-            signal: 加仓信号
-            entry_order: 本次加仓订单信息
-            actual_quantity: 交易所实际持仓量（合并后总持仓）
+        加权均价 = (旧entry×旧量 + 新entry×本次增量) / 合并后总量；更新
+        initial/current_quantity 为交易所实际总量、ATR/grade 取新信号；保留
+        highest/lowest、tp1_hit/tp2_hit、trailing、entry_time 等状态。
         """
-        old_quantity = position.initial_quantity
-        old_entry = position.entry_price or Decimal('0')
-        new_entry = Decimal(str(signal['entry_price']))
-        total_quantity = Decimal(str(actual_quantity))
-        added_quantity = total_quantity - old_quantity
-
-        # 加权均价：仅当确有增量成交时重算，避免除零
-        if added_quantity > 0 and old_quantity > 0:
-            position.entry_price = (old_entry * old_quantity + new_entry * added_quantity) / total_quantity
-        elif added_quantity > 0:
-            position.entry_price = new_entry
-
-        position.initial_quantity = total_quantity
-        position.current_quantity = total_quantity
-        position.atr = Decimal(str(signal['atr']))
-        position.grade = signal.get('grade', position.grade)
-        position.entry_order_id = entry_order.get('orderId')
-        # highest_price/lowest_price 保留不重置；tp1_hit/tp2_hit 保持 False
-        # trailing_stop_price/trailing_activated 保留（若已激活）；entry_time 保留最早入场时间
+        protection_retry.merge_position(position, signal, entry_order, actual_quantity)
 
     async def _place_conditional_order_and_record(
         self,
@@ -3568,6 +3495,12 @@ class BTCEthStrategy:
         
         # 收敛加仓重建待处理持仓（v6.28：取消旧单/重建条件单失败的重试落点）
         await self._retry_rebuild_pending()
+
+        # 收敛保护待补持仓（R05：开仓保护不完整的节流补挂落点）
+        await self._retry_protection_pending()
+
+        # 定时清理过期占用（R07-F7：按 claim_cleanup_interval_minutes 节流）
+        await self._maybe_cleanup_expired_claims()
     
     async def _get_current_price(self, symbol: str) -> Optional[Decimal]:
         """
@@ -5209,6 +5142,8 @@ class BTCEthStrategy:
             # 清理完成后删除持仓记录
             if symbol in self.positions:
                 del self.positions[symbol]
+                # R07-F4：平仓归零释放占用（仅释放本策略占用，幂等）
+                await release_claim(self.db_manager, symbol, self.my_record_name, reason="position_closed")
                 logger.info(
                     f"{symbol} 已平仓持仓记录已删除",
                     final_cancel_pending=position.cancel_pending
@@ -5338,81 +5273,37 @@ class BTCEthStrategy:
         order_id: int,
         timeout_seconds: int = 60,
         check_interval: float = 2.0,
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Optional[OrderFillResult]:
+        """等待限价单至终态并返回结构化结果（R06；实现在 shared.protection_retry）
+
+        统一走 shared.order_fill_waiter.wait_order_final_state：超时撤单后重读最终成交量、
+        -2013 可见延迟在等待循环内消化、识别部分成交（executedQty>0）。order_fill.enabled=false
+        时降级为 D4 回退路径（_wait_for_order_fill_legacy），行为回到修复前。
         """
-        等待限价单成交，超时返回 None
+        return await protection_retry.wait_for_order_fill(
+            self.binance, symbol, order_id, timeout_seconds, check_interval,
+            legacy_fn=self._wait_for_order_fill_legacy)
 
-        Args:
-            symbol: 交易对
-            order_id: 订单 ID
-            timeout_seconds: 超时秒数
-            check_interval: 检查间隔（秒）
+    async def _wait_for_order_fill_legacy(
+        self,
+        symbol: str,
+        order_id: int,
+        timeout_seconds: int,
+        check_interval: float,
+    ) -> Optional[OrderFillResult]:
+        """D4 回退：order_fill.enabled=false 时的既有简易轮询（实现在 shared.protection_retry）
 
-        Returns:
-            成交后的订单信息，超时返回 None
-
-        说明：
-            Binance PM 统一账户的 U-M 订单在下单后会有短暂（~百 ms 级）
-            的 API 可见延迟，期间 GET /papi/v1/um/order 查询会返回 [-2013]
-            Order does not exist。本方法在首循环前小等 0.5s 让 PM API 同步，
-            并把 -2013 当作可重试的瞬时错误在循环内消化，不让它落到外层
-            except 直接返回 None。
+        行为与修复前一致（超时返回 None、CANCELED/EXPIRED/REJECTED 视为未成交）；
+        仅供总闸关闭时使用，用于不改代码快速回退。
         """
-        try:
-            # PM API 订单可见性：下单后短暂延迟才可用，首循环前先小等
-            await asyncio.sleep(min(check_interval, 0.5))
+        return await protection_retry.wait_for_order_fill_legacy(
+            self.binance, symbol, order_id, timeout_seconds, check_interval,
+            build_result_fn=self._build_legacy_fill_result)
 
-            deadline = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
-            while datetime.now(timezone.utc) < deadline:
-                try:
-                    order = await self.binance.get_order(symbol, order_id)
-                except BinanceAPIError as api_err:
-                    # [-2013] Order does not exist: PM API 瞬时不可见，等待后重试
-                    if api_err.code == -2013:
-                        logger.warning(
-                            f"{symbol} 限价单 PM API 暂不可见（-2013），{check_interval:.1f}s 后重试",
-                            order_id=order_id,
-                            error=str(api_err),
-                        )
-                        await asyncio.sleep(check_interval)
-                        continue
-                    # 其他 BinanceAPIError（如 -2022 / -4118）直接向上抛，落外层 except
-                    raise
-
-                status = order.get("status", "")
-
-                if status == "FILLED":
-                    logger.info(
-                        f"{symbol} 限价单已成交",
-                        order_id=order_id,
-                        executed_qty=order.get("executedQty"),
-                        cummulative_quote=order.get("cummulativeQuoteQty"),
-                    )
-                    return order
-
-                if status in ("CANCELED", "EXPIRED", "REJECTED"):
-                    logger.warning(
-                        f"{symbol} 限价单已取消/过期/拒绝",
-                        order_id=order_id,
-                        status=status,
-                    )
-                    return None
-
-                await asyncio.sleep(check_interval)
-
-            logger.warning(
-                f"{symbol} 限价单超时未成交",
-                order_id=order_id,
-                timeout_seconds=timeout_seconds,
-            )
-            return None
-        except Exception as e:
-            logger.error(
-                f"{symbol} 检查限价单成交状态异常",
-                order_id=order_id,
-                error=str(e),
-            )
-            return None
+    @staticmethod
+    def _build_legacy_fill_result(order: Dict[str, Any]) -> OrderFillResult:
+        """由交易所订单对象构建 OrderFillResult（D4 回退路径，仅完全成交场景）"""
+        return protection_retry.build_legacy_fill_result(order)
 
     async def cleanup_orphan_algo_orders(self):
         """
@@ -5696,6 +5587,10 @@ class BTCEthStrategy:
             symbol, existing_pos, current_price, direction, current_quantity, atr, grade='A')
         await self._place_missing_tp_orders(
             symbol, direction, existing_pos, has_tp1, has_tp2, prices)
+
+        # R05（重启兜底）：补挂后仍不完整 → 标记 protection_pending，
+        # 交由主循环 _retry_protection_pending 节流补挂（重启后无内存状态，靠此识别）
+        protection_retry.mark_protection_pending_if_incomplete(existing_pos, symbol)
 
     @staticmethod
     def _check_existing_protection(
@@ -5994,6 +5889,8 @@ class BTCEthStrategy:
         # 执行清理
         for symbol in symbols_to_remove:
             del self.positions[symbol]
+            # R07-F4：交易所已无持仓（僵尸记录）→ 释放占用（幂等）
+            await release_claim(self.db_manager, symbol, self.my_record_name, reason="position_closed")
 
         if symbols_to_remove:
             logger.info("持仓同步完成", removed_count=len(symbols_to_remove))

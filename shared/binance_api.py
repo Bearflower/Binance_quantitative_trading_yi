@@ -5,6 +5,7 @@
 """
 import asyncio
 import time
+import uuid
 from typing import Dict, List, Optional, Any
 from decimal import Decimal
 import aiohttp
@@ -15,6 +16,7 @@ from urllib.parse import urlencode
 import structlog
 
 from .utils import retry_on_failure
+from .api_retry_config import get_api_retry, is_api_retry_enabled
 
 
 logger = structlog.get_logger()
@@ -23,6 +25,9 @@ logger = structlog.get_logger()
 # 这些错误无论重试多少次都不会自动恢复
 _NON_RETRYABLE_ERROR_CODES = {-2011, -2013, -2019, -2021, -2022, -4108, -4136, -4507, -9999}  # -2011/-2013=订单不存在（已成交或已撤销）, -4108=交割/结算中, -4136=PM账户不支持STOP+closePosition, -4507=限价超出触发价倍数上限, -9999=废弃API端点
 
+# 写请求“结果未知”的异常：网络超时/连接中断，不能据此断定交易所未受理（R02-F3）
+_UNKNOWN_RESULT_EXCEPTIONS = (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError, ConnectionError)
+
 
 class BinanceAPIError(Exception):
     """币安API异常"""
@@ -30,6 +35,34 @@ class BinanceAPIError(Exception):
         self.code = code
         self.message = message
         super().__init__(f"[{code}] {message}")
+
+
+class UnknownOrderResultError(Exception):
+    """写请求结果未知异常（R02-F3）
+
+    表示下单/写请求在“结果未知”（超时、连接中断）后，且按 newClientOrderId 核对
+    也无法确认交易所是否受理。此异常语义为「不得盲目重发」，由上层决定后续处置
+    （重查、告警或人工介入），避免同一次交易意图在交易所侧产生多笔订单。
+    """
+
+    def __init__(
+        self,
+        method: str,
+        endpoint: str,
+        *,
+        symbol: Optional[str] = None,
+        client_order_id: Optional[str] = None,
+        original_error: Optional[Exception] = None,
+    ):
+        self.method = method
+        self.endpoint = endpoint
+        self.symbol = symbol
+        self.client_order_id = client_order_id
+        self.original_error = original_error
+        detail = f"clientOrderId={client_order_id}" if client_order_id else "无幂等标识"
+        super().__init__(
+            f"写请求结果未知（{method} {endpoint}, symbol={symbol}, {detail}）: {original_error}"
+        )
 
 
 class RateLimiter:
@@ -192,14 +225,113 @@ class BinanceClient:
         ).hexdigest()
         return signature
     
-    @retry_on_failure(max_retries=3, delay=1.0, non_retryable_codes=_NON_RETRYABLE_ERROR_CODES)
     async def _request(
         self,
         method: str,
         endpoint: str,
         params: Optional[Dict] = None,
-        signed: bool = True
+        signed: bool = True,
+        *,
+        idempotency_key: Optional[str] = None,
+        idempotent: bool = False,
     ) -> Dict:
+        """请求统一入口：读/写分级分发（R02）
+
+        - GET / 幂等 POST（如 set_leverage，`idempotent=True`）/ DELETE（撤单，天然幂等）
+          → `_request_read`，按配置对瞬时错误重试（沿用既有重试语义）。
+        - 非幂等 POST（下单等）→ `_request_write`，默认不盲重发，结果未知时先按
+          `idempotency_key`（newClientOrderId）核对，确认未受理才允许重发。
+
+        `api_retry.enabled=false` 时全部走读路径，`不改代码`即回退到既有“全 method 重试”语义（D4）。
+        """
+        if not is_api_retry_enabled():
+            return await self._request_read(method, endpoint, params, signed)
+
+        if method.upper() != "POST" or idempotent:
+            return await self._request_read(method, endpoint, params, signed)
+
+        return await self._request_write(
+            method, endpoint, params, signed, idempotency_key=idempotency_key
+        )
+
+    async def _request_read(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[Dict],
+        signed: bool,
+    ) -> Dict:
+        """读请求路径：按 api_retry.read 配置对瞬时错误重试（复用 retry_on_failure，避免重复实现）"""
+        read_cfg = get_api_retry()["read"]
+        retried = retry_on_failure(
+            max_retries=int(read_cfg["max_retries"]),
+            delay=float(read_cfg["delay_seconds"]),
+            backoff=float(read_cfg["backoff"]),
+            non_retryable_codes=_NON_RETRYABLE_ERROR_CODES,
+        )(self._request_once)
+        return await retried(method, endpoint, params, signed)
+
+    async def _request_write(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[Dict],
+        signed: bool,
+        *,
+        idempotency_key: Optional[str] = None,
+    ) -> Dict:
+        """非幂等写请求路径：默认不重试（R02-F1）
+
+        结果未知（超时/断连）时（R02-F3）：先按 `newClientOrderId` 查单，
+        查到即返回（不重发）；确认未受理且仍有重试额度才允许按同一幂等 ID 重发；
+        仍无法确认则抛 `UnknownOrderResultError`（保守，不重复提交）。
+        """
+        cfg = get_api_retry()
+        write_cfg = cfg["write"]
+        max_retries = int(write_cfg["max_retries"])
+        symbol = (params or {}).get("symbol")
+        can_verify = bool(idempotency_key and symbol and write_cfg["retry_after_verify"])
+        last_error: Optional[Exception] = None
+
+        for _ in range(max_retries + 1):
+            try:
+                return await self._request_once(method, endpoint, params, signed)
+            except _UNKNOWN_RESULT_EXCEPTIONS as exc:
+                last_error = exc
+                logger.warning(
+                    "写请求结果未知，先核对是否已受理",
+                    method=method,
+                    endpoint=endpoint,
+                    symbol=symbol,
+                    idempotency_key=idempotency_key,
+                    error=str(exc),
+                )
+            if can_verify:
+                found = await self._verify_write_by_client_id(symbol, idempotency_key, cfg)
+                if found is not None:
+                    logger.info(
+                        "核对到已受理订单，直接返回（不重发）",
+                        symbol=symbol,
+                        idempotency_key=idempotency_key,
+                    )
+                    return found
+
+        raise UnknownOrderResultError(
+            method,
+            endpoint,
+            symbol=symbol,
+            client_order_id=idempotency_key,
+            original_error=last_error,
+        )
+
+    async def _request_once(
+        self,
+        method: str,
+        endpoint: str,
+        params: Optional[Dict] = None,
+        signed: bool = True,
+    ) -> Dict:
+        """单次 HTTP 请求（不做任何重试），供读/写路径复用"""
         await self._init_session()
         
         await self.rate_limiter.acquire()
@@ -254,6 +386,28 @@ class BinanceClient:
                 raise BinanceAPIError(code, message)
             
             return data
+
+    async def _verify_write_by_client_id(
+        self,
+        symbol: str,
+        client_order_id: str,
+        cfg: Dict,
+    ) -> Optional[Dict]:
+        """写请求结果未知后，按客户端订单号有限次核对（次数/间隔来自配置）"""
+        attempts = max(int(cfg["order_verify_max_attempts"]), 1)
+        interval = float(cfg["order_verify_interval_seconds"])
+        for index in range(attempts):
+            order = await self.get_order_by_client_id(symbol, client_order_id)
+            if order is not None:
+                return order
+            if index < attempts - 1:
+                await asyncio.sleep(max(interval, 0.0))
+        return None
+
+    def _generate_client_order_id(self) -> str:
+        """生成稳定幂等标识 newClientOrderId（前缀来自配置，总长不超过 36 字符）"""
+        prefix = str(get_api_retry().get("client_order_id_prefix") or "")
+        return f"{prefix}{uuid.uuid4().hex}"[:36]
     
     async def get_account_balance(self) -> Dict[str, Decimal]:
         """
@@ -403,7 +557,42 @@ class BinanceClient:
         
         endpoint = "/papi/v1/um/order" if self.use_unified_account else "/fapi/v1/order"
         return await self._request("GET", endpoint, params, signed=True)
-    
+
+    async def get_order_by_client_id(
+        self, symbol: str, client_order_id: str
+    ) -> Optional[Dict]:
+        """按客户端订单号查询订单状态（R02-F3）
+
+        写请求“结果未知”（超时/断连）后，先按 newClientOrderId 查询该订单是否已被
+        交易所受理，避免盲目重发造成重复下单。
+
+        Args:
+            symbol: 交易对名称
+            client_order_id: 客户端订单号（newClientOrderId）
+
+        Returns:
+            订单详情字典；订单不存在（-2011/-2013，含 PM 账户首查可见延迟）返回 None；
+            其他错误原样抛出。
+        """
+        if not symbol or not symbol.strip():
+            raise ValueError("交易对不能为空")
+
+        if not client_order_id or not str(client_order_id).strip():
+            raise ValueError("客户端订单ID不能为空")
+
+        params = {
+            "symbol": symbol.strip().upper(),
+            "origClientOrderId": str(client_order_id).strip(),
+        }
+        endpoint = "/papi/v1/um/order" if self.use_unified_account else "/fapi/v1/order"
+        try:
+            return await self._request("GET", endpoint, params, signed=True)
+        except BinanceAPIError as e:
+            # -2013 订单不存在（含可见延迟）、-2011 订单已不存在 → 视为“未查到”
+            if e.code in (-2011, -2013):
+                return None
+            raise
+
     async def get_open_algo_orders(self, symbol: Optional[str] = None) -> List[Dict]:
         """
         获取未成交的算法条件单（止盈止损单）
@@ -431,21 +620,25 @@ class BinanceClient:
         quantity: Optional[Decimal] = None,
         price: Optional[Decimal] = None,
         order_type: str = "MARKET",
+        *,
+        client_order_id: Optional[str] = None,
         **kwargs
     ) -> Dict:
         """
         下单（自动调整精度）
-        
+
         Args:
             symbol: 交易对名称
             side: 买卖方向 (BUY/SELL)
             quantity: 数量（自动调整到stepSize的整数倍）
             price: 价格（自动调整到tickSize的整数倍）
             order_type: 订单类型 (MARKET/LIMIT/STOP/STOP_MARKET/TAKE_PROFIT/TAKE_PROFIT_MARKET)
-            **kwargs: 其他参数
-        
+            client_order_id: 幂等标识 newClientOrderId（R02-F2）。同一交易意图内应复用
+                同一个 ID；不传则在本次调用内生成一次并全程复用（重试复用同一 ID）。
+            **kwargs: 其他参数（reduce_only / closePosition / timeInForce 等）
+
         Returns:
-            订单响应字典
+            订单响应字典（保留 orderId 等既有字段，向后兼容 R02-F4）
         """
         if not symbol or not symbol.strip():
             raise ValueError("交易对不能为空")
@@ -471,6 +664,11 @@ class BinanceClient:
         
         if price is not None and price <= 0:
             raise ValueError(f"价格必须大于0: {price}")
+
+        # R02-F2：稳定幂等标识 —— 显式入参或 kwargs 中的 newClientOrderId 优先，否则本次调用内生成一次
+        client_order_id = client_order_id or kwargs.pop("newClientOrderId", None)
+        if not client_order_id:
+            client_order_id = self._generate_client_order_id()
         
         # 检测市价单并记录警告（不拒绝执行，仅提醒）
         if order_type == 'MARKET':
@@ -513,6 +711,7 @@ class BinanceClient:
             "symbol": symbol,
             "side": side,
             "type": order_type,
+            "newClientOrderId": client_order_id,
         }
         
         if order_type == "LIMIT":
@@ -535,7 +734,7 @@ class BinanceClient:
             params["reduceOnly"] = "true"
 
         endpoint = "/papi/v1/um/order" if self.use_unified_account else "/fapi/v1/order"
-        result = await self._request("POST", endpoint, params)
+        result = await self._request("POST", endpoint, params, idempotency_key=client_order_id)
 
         # 自动记录交易到统一交易记录表（失败不影响正常流程）
         if self.trade_logger:
@@ -560,6 +759,8 @@ class BinanceClient:
         price: Optional[Decimal] = None,
         order_type: str = "STOP_MARKET",
         working_type: str = "CONTRACT_PRICE",
+        *,
+        client_order_id: Optional[str] = None,
         **kwargs
     ) -> Dict:
         """
@@ -693,6 +894,15 @@ class BinanceClient:
             "workingType": working_type,
         }
 
+        # R02-F5：条件单同样为“非幂等写请求”，结果未知时不得盲重发。
+        # 普通合约账户支持 newClientOrderId 幂等标识；PM 账户条件单走 algo 端点
+        # （不支持 newClientOrderId，传入可能报 -1106），故仅在普通账户下生成/透传。
+        client_order_id = client_order_id or kwargs.pop("newClientOrderId", None)
+        if not self.use_unified_account and not client_order_id:
+            client_order_id = self._generate_client_order_id()
+        if client_order_id and not self.use_unified_account:
+            params["newClientOrderId"] = client_order_id
+
         if self.use_unified_account:
             params["algoType"] = "CONDITIONAL"
             params["triggerPrice"] = str(adjusted_stop_price)
@@ -726,7 +936,9 @@ class BinanceClient:
             if key not in params:
                 params[key] = str(value)
 
-        result = await self._request("POST", endpoint, params)
+        result = await self._request(
+            "POST", endpoint, params, idempotency_key=client_order_id
+        )
 
         # 自动记录条件单交易到统一交易记录表（失败不影响正常流程）
         if self.trade_logger:
@@ -992,7 +1204,8 @@ class BinanceClient:
         }
         
         endpoint = "/papi/v1/um/leverage" if self.use_unified_account else "/fapi/v1/leverage"
-        return await self._request("POST", endpoint, params)
+        # 设置杠杆为幂等写操作：失败重试不会产生副作用，保留既有重试语义
+        return await self._request("POST", endpoint, params, idempotent=True)
     
     async def get_exchange_info(self) -> Dict[str, Any]:
         """

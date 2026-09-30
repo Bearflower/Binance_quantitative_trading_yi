@@ -1163,8 +1163,33 @@ class TestReplenishChainBoundary:
 # 测试14: 平仓链路（close_position）
 # ============================================================
 
+def _position_sequence(*amounts):
+    """构造 get_position 的顺序返回值（末值重复），模拟「平仓后对账归零」"""
+    state = {"n": 0}
+
+    async def _get_position(symbol=None):
+        idx = min(state["n"], len(amounts) - 1)
+        state["n"] += 1
+        return [{"symbol": symbol or "BTCUSDT", "positionAmt": amounts[idx]}]
+
+    return _get_position
+
+
+def _filled_order(order_id):
+    """构造一笔完全成交订单（供 get_order / place_order 返回）"""
+    return {
+        "orderId": order_id,
+        "clientOrderId": f"c{order_id}",
+        "status": "FILLED",
+        "executedQty": "1.0",
+        "origQty": "1.0",
+        "avgPrice": "51000",
+        "symbol": "BTCUSDT",
+    }
+
+
 class TestClosePosition:
-    """测试 close_position() 的限价/市价/未找到持仓分支"""
+    """测试 close_position() 的结构化结果（R04：不再把 NEW 回执当成功）"""
 
     @pytest.fixture
     def executor(self, mock_binance_api):
@@ -1172,55 +1197,67 @@ class TestClosePosition:
         return TradingExecutor(CONFIG, mock_binance_api, MagicMock(), MagicMock(), pm)
 
     def test_平仓成功_限价单(self, executor):
-        """找到持仓且有有效价格 → 限价平仓"""
-        executor.binance_api.get_position = AsyncMock(return_value=[
-            {"symbol": "BTCUSDT", "positionAmt": "-1.0"},
-        ])
+        """找到持仓且有有效价格 → 限价平仓，返回完全成交结构"""
+        executor.binance_api.get_position = AsyncMock(
+            side_effect=_position_sequence("-1.0", "-1.0", "-1.0", "0")
+        )
         executor.binance_api.get_ticker = AsyncMock(return_value={"lastPrice": "51000.0"})
         executor.binance_api.get_symbol_info = AsyncMock(
             return_value={"tickSize": "0.1", "stepSize": "0.001"}
         )
-        executor.binance_api.place_order = AsyncMock(return_value={"orderId": 200})
+        executor.binance_api.place_order = AsyncMock(return_value=_filled_order(200))
+        executor.binance_api.get_order = AsyncMock(return_value=_filled_order(200))
 
-        order = asyncio.run(executor.close_position("BTCUSDT", "short", reason="测试平仓"))
+        outcome = asyncio.run(executor.close_position("BTCUSDT", "short", reason="测试平仓"))
 
-        assert order == {"orderId": 200}
+        assert outcome.success is True
+        assert outcome.status == "FILLED"
         call_kwargs = executor.binance_api.place_order.await_args.kwargs
-        assert call_kwargs["side"] == "BUY"
+        # 平仓方向按位置参数传入（close_remaining 以位置参数调用 place_order）
+        assert executor.binance_api.place_order.await_args.args[1] == "BUY"
         assert call_kwargs["order_type"] == "LIMIT"
+        assert call_kwargs["reduce_only"] is True
 
-    def test_平仓未找到持仓_返回None(self, executor):
-        """交易所无对应方向持仓 → 返回 None"""
+    def test_平仓未找到持仓_返回成功结构(self, executor):
+        """交易所无对应方向持仓 → 幂等返回成功（closed_qty=0）"""
         executor.binance_api.get_position = AsyncMock(return_value=[])
-        assert asyncio.run(executor.close_position("BTCUSDT", "short")) is None
+        outcome = asyncio.run(executor.close_position("BTCUSDT", "short"))
+        assert outcome.success is True
+        assert outcome.status == "FILLED"
+        assert outcome.closed_qty == Decimal("0")
 
     def test_平仓价格无效_市价平仓(self, executor):
         """当前价格无效（<=0）→ 市价平仓"""
-        executor.binance_api.get_position = AsyncMock(return_value=[
-            {"symbol": "BTCUSDT", "positionAmt": "-1.0"},
-        ])
+        executor.binance_api.get_position = AsyncMock(
+            side_effect=_position_sequence("-1.0", "-1.0", "-1.0", "0")
+        )
         executor.binance_api.get_ticker = AsyncMock(return_value={"lastPrice": "0.0"})
         executor.binance_api.get_symbol_info = AsyncMock(
             return_value={"tickSize": "0.1", "stepSize": "0.001"}
         )
-        executor.binance_api.place_order = AsyncMock(return_value={"orderId": 201})
+        executor.binance_api.place_order = AsyncMock(return_value=_filled_order(201))
+        executor.binance_api.get_order = AsyncMock(return_value=_filled_order(201))
 
-        order = asyncio.run(executor.close_position("BTCUSDT", "short"))
+        outcome = asyncio.run(executor.close_position("BTCUSDT", "short"))
 
-        assert order == {"orderId": 201}
+        assert outcome.success is True
         assert executor.binance_api.place_order.await_args.kwargs["order_type"] == "MARKET"
 
-    def test_平仓下单失败_返回None(self, executor):
-        """平仓下单返回空 → 返回 None"""
-        executor.binance_api.get_position = AsyncMock(return_value=[
-            {"symbol": "BTCUSDT", "positionAmt": "-1.0"},
-        ])
+    def test_平仓下单失败_返回失败结构(self, executor):
+        """平仓下单返回空 → 保留仓位，返回失败结构"""
+        executor.binance_api.get_position = AsyncMock(
+            side_effect=_position_sequence("-1.0")
+        )
         executor.binance_api.get_ticker = AsyncMock(return_value={"lastPrice": "51000.0"})
         executor.binance_api.get_symbol_info = AsyncMock(
             return_value={"tickSize": "0.1", "stepSize": "0.001"}
         )
         executor.binance_api.place_order = AsyncMock(return_value=None)
-        assert asyncio.run(executor.close_position("BTCUSDT", "short")) is None
+
+        outcome = asyncio.run(executor.close_position("BTCUSDT", "short"))
+
+        assert outcome.success is False
+        assert outcome.status == "FAILED"
 
 
 # ============================================================
@@ -1516,25 +1553,29 @@ class TestClosePositionExtra:
         return TradingExecutor(CONFIG, mock_binance_api, MagicMock(), MagicMock(), pm)
 
     def test_平仓成功_做多(self, executor):
-        """做多平仓 → 卖出方向 SELL"""
-        executor.binance_api.get_position = AsyncMock(return_value=[
-            {"symbol": "BTCUSDT", "positionAmt": "1.0"},
-        ])
+        """做多平仓 → 卖出方向 SELL，返回完全成交结构"""
+        executor.binance_api.get_position = AsyncMock(
+            side_effect=_position_sequence("1.0", "1.0", "1.0", "0")
+        )
         executor.binance_api.get_ticker = AsyncMock(return_value={"lastPrice": "51000.0"})
         executor.binance_api.get_symbol_info = AsyncMock(
             return_value={"tickSize": "0.1", "stepSize": "0.001"}
         )
-        executor.binance_api.place_order = AsyncMock(return_value={"orderId": 202})
+        executor.binance_api.place_order = AsyncMock(return_value=_filled_order(202))
+        executor.binance_api.get_order = AsyncMock(return_value=_filled_order(202))
 
-        order = asyncio.run(executor.close_position("BTCUSDT", "long", reason="测试平仓"))
+        outcome = asyncio.run(executor.close_position("BTCUSDT", "long", reason="测试平仓"))
 
-        assert order == {"orderId": 202}
-        assert executor.binance_api.place_order.await_args.kwargs["side"] == "SELL"
+        assert outcome.success is True
+        # 平仓方向按位置参数传入（close_remaining 以位置参数调用 place_order(symbol, side, ...)）
+        assert executor.binance_api.place_order.await_args.args[1] == "SELL"
 
-    def test_平仓异常_返回None(self, executor):
-        """查询持仓抛异常 → 返回 None"""
+    def test_平仓异常_返回失败结构(self, executor):
+        """查询持仓抛异常 → 返回失败结构（不抛出、不返回 None 歧义）"""
         executor.binance_api.get_position = AsyncMock(side_effect=RuntimeError("查询失败"))
-        assert asyncio.run(executor.close_position("BTCUSDT", "short")) is None
+        outcome = asyncio.run(executor.close_position("BTCUSDT", "short"))
+        assert outcome.success is False
+        assert outcome.status == "FAILED"
 
 
 # ============================================================

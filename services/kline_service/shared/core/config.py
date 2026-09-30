@@ -37,7 +37,25 @@ class Settings(BaseSettings):
     # K 线数据服务配置
     SYMBOLS: str = Field(default="BTCUSDT,ETHUSDT,BNBUSDT")
     COLLECT_INTERVALS: str = Field(default="15m,1h,4h,1d")
-    
+
+    # K 线表名安全校验配置（R01：防止外部输入改变 SQL 结构）
+    # 说明：正则与白名单必须来自配置，路由/注册层不得出现字面量
+    TABLE_NAME_PATTERN: str = Field(
+        default=r"^kline_[a-z0-9]{3,20}_([0-9]+[mhdw]|1M)$",
+        description="合法 K 线表名的严格正则（生成表名后必须整体匹配）",
+    )
+    SYMBOL_FORMAT_PATTERN: str = Field(
+        default=r"^[A-Z0-9]{3,20}$",
+        description="交易对格式正则（大写字母/数字，格式层校验）",
+    )
+    FIXED_SYMBOLS: str = Field(
+        default="BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,TRXUSDT",
+        description="固定标的白名单（逗号分隔），作为 symbol 白名单静态兜底",
+    )
+    # 接口鉴权（本轮预留不启用，见需求文档 Q1；仅预留配置位，不改动路由行为）
+    KLINE_API_AUTH_ENABLED: bool = Field(default=False, description="K 线接口 Token 鉴权开关（预留）")
+    KLINE_API_TOKEN: str = Field(default="", description="K 线接口 Token（预留）")
+
     # 首次采集最小窗口（分钟），确保足够数据用于 ATR 计算
     MIN_INITIAL_COLLECT_MINUTES: int = Field(default=1000, ge=60, le=10080, description="首次采集最小窗口（分钟）")
 
@@ -67,6 +85,11 @@ class Settings(BaseSettings):
     def intervals_list(self) -> List[str]:
         """获取周期列表"""
         return [i.strip() for i in self.COLLECT_INTERVALS.split(",") if i.strip()]
+    
+    @property
+    def fixed_symbols_list(self) -> List[str]:
+        """获取固定标的白名单列表（统一大写）"""
+        return [s.strip().upper() for s in self.FIXED_SYMBOLS.split(",") if s.strip()]
     
     @property
     def cors_origins_list(self) -> List[str]:

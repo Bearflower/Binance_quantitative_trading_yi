@@ -18,11 +18,39 @@ sys.path.insert(0, os.path.abspath(PROJECT_ROOT))
 
 from strategies.new_coin.executor import TradingExecutor
 from shared.binance_api import BinanceAPIError
+from shared.order_fill_waiter import (
+    OrderFillResult,
+    STATUS_CANCELED_UNFILLED,
+    STATUS_FILLED,
+)
 
 
 # ============================================================================
 # 辅助函数
 # ============================================================================
+
+def make_fill_result(order_id: int, *, filled: bool = True) -> OrderFillResult:
+    """构造订单终态结果（R06 OrderFillResult），替代旧 dict/None 桩
+
+    filled=True → 完全成交（is_filled=True，可走建仓路径）；
+    filled=False → 未成交终态（is_filled/has_fill 均为 False）。
+    """
+    if filled:
+        return OrderFillResult(
+            status=STATUS_FILLED,
+            executed_qty=Decimal('1'),
+            orig_qty=Decimal('1'),
+            remaining_qty=Decimal('0'),
+            order_id=order_id,
+            raw={'orderId': order_id, 'status': STATUS_FILLED},
+        )
+    return OrderFillResult(
+        status=STATUS_CANCELED_UNFILLED,
+        orig_qty=Decimal('1'),
+        order_id=order_id,
+        raw={'orderId': order_id, 'status': 'NEW'},
+    )
+
 
 def create_mock_binance_api():
     """创建 Mock BinanceClient"""
@@ -770,7 +798,7 @@ class TestPlaceShortOrder:
         executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
         executor._set_leverage = AsyncMock()
         executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
-        executor._wait_for_order_fill = AsyncMock(return_value={'orderId': 1, 'status': 'FILLED'})
+        executor._wait_for_order_fill = AsyncMock(return_value=make_fill_result(1))
         executor._save_order = AsyncMock()
         executor._calculate_atr = AsyncMock(return_value=2.0)
         executor._set_batch_take_profit = AsyncMock()
@@ -932,7 +960,7 @@ class TestExecuteShortFailureReason:
         setup_execute_short_ready(executor)
         executor.market_order_score_threshold = 7.0
         executor._place_short_order = AsyncMock(return_value={'orderId': 1, 'status': 'NEW'})
-        executor._wait_for_order_fill = AsyncMock(return_value=None)
+        executor._wait_for_order_fill = AsyncMock(return_value=make_fill_result(1, filled=False))
 
         order, reason = await executor.execute_short('BTCUSDT', {'total_score': 7.4}, 100.0)
 
@@ -947,7 +975,7 @@ class TestExecuteShortFailureReason:
         setup_execute_short_ready(executor)
         executor.market_order_score_threshold = 7.0
         executor._place_short_order = AsyncMock(return_value={'orderId': 2, 'status': 'NEW'})
-        executor._wait_for_order_fill = AsyncMock(return_value=None)
+        executor._wait_for_order_fill = AsyncMock(return_value=make_fill_result(2, filled=False))
 
         order, reason = await executor.execute_short('BTCUSDT', {'total_score': 6.5}, 100.0)
 

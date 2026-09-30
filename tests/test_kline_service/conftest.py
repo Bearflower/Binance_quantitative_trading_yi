@@ -56,6 +56,13 @@ mock_settings = MagicMock()
 mock_settings.DATABASE_URL = "sqlite:///:memory:"
 mock_settings.KLINE_TABLE_PREFIX = "klines_"
 mock_settings.KLINE_SERVICE_PORT = 8000
+# R01：表名校验 guard 依赖以下配置项（须为真实字符串，否则 fail-closed 会拒绝合法输入）。
+# 取值镜像 services/kline_service/shared/core/config.py 的默认值，保持测试替身与生产配置一致。
+mock_settings.SYMBOLS = "BTCUSDT,ETHUSDT,BNBUSDT"
+mock_settings.COLLECT_INTERVALS = "15m,1h,4h,1d"
+mock_settings.SYMBOL_FORMAT_PATTERN = r"^[A-Z0-9]{3,20}$"
+mock_settings.TABLE_NAME_PATTERN = r"^kline_[a-z0-9]{3,20}_([0-9]+[mhdw]|1M)$"
+mock_settings.FIXED_SYMBOLS = "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,TRXUSDT"
 mock_config_module = MagicMock()
 mock_config_module.settings = mock_settings
 sys.modules["shared.core.config"] = mock_config_module

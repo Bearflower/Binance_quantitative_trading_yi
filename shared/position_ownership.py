@@ -17,7 +17,7 @@ binance.get_position() 返回整个共享账户的全部持仓。此前策略补
 """
 import structlog
 import zlib
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Any
 
 logger = structlog.get_logger()
 
@@ -26,6 +26,75 @@ _ENTRY_ORDER_TYPES = ('LIMIT', 'MARKET')
 
 # 归属判定查询所用表：统一 schema 前缀常量，禁止散落硬编码
 _TRADE_RECORDS_TABLE = "trading.trade_records"
+
+# ============================================================
+# R07 占用表（开仓窗口期预占）SQL 常量与配置默认值
+#   见 docs/plans/fix-2026-09-29-p0-r01-r08-architecture.md §9.4/§11
+# ============================================================
+_CLAIMS_TABLE = "trading.position_claims"
+
+# 默认值（架构 §9.4 明确给出的默认口径；均可由各策略 ownership 段覆盖）
+DEFAULT_OWNERSHIP_ENABLED = True
+DEFAULT_CLAIM_TTL_MINUTES = 30
+DEFAULT_CLAIM_CLEANUP_INTERVAL_MINUTES = 10
+DEFAULT_LOCK_TIMEOUT_SECONDS = 5
+
+# 有效占用查询（仅未过期）
+_CLAIM_SELECT_ACTIVE_SQL = (
+    f"SELECT strategy FROM {_CLAIMS_TABLE} "
+    "WHERE symbol = $1 AND claim_state IN ('PENDING','ACTIVE') AND expires_at > NOW() "
+    "ORDER BY id DESC LIMIT 1"
+)
+# 释放本策略占用（只释放自己的，不误放对家）
+_CLAIM_RELEASE_SQL = (
+    f"UPDATE {_CLAIMS_TABLE} SET claim_state = 'RELEASED', released_at = NOW(), reason = $3 "
+    "WHERE symbol = $1 AND strategy = $2 AND claim_state IN ('PENDING','ACTIVE')"
+)
+# 清理全部过期有效占用（置 RELEASED，保留行便于审计，不删行）
+_CLAIM_CLEANUP_SQL = (
+    f"UPDATE {_CLAIMS_TABLE} SET claim_state = 'RELEASED', released_at = NOW(), reason = 'expired' "
+    "WHERE claim_state IN ('PENDING','ACTIVE') AND expires_at <= NOW()"
+)
+
+
+def _supports_claims(db_manager) -> bool:
+    """
+    能力探测：db_manager 是否支持占用表操作
+
+    仅真实 DatabaseManager（类属性 supports_position_claims=True）才启用占用表判定，
+    mock/旧实现自动降级为既有 trade_records 互斥语义，保证既有测试与灰度回退。
+    """
+    return bool(getattr(type(db_manager), 'supports_position_claims', False))
+
+
+def _parse_update_count(result) -> int:
+    """解析 asyncpg execute（如 'UPDATE 3'）影响的记录数，异常返回 0。"""
+    if not isinstance(result, str):
+        return 0
+    try:
+        return int(result.strip().split()[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+def _is_owner_blocking(
+    owner: Optional[str],
+    my_record_name: Optional[str],
+    competing_record_names: Optional[List[str]],
+) -> bool:
+    """
+    互斥判定单点：owner 是否构成对本策略的开仓互斥
+
+    - owner 为 None（无归属）=> 不互斥（放行）
+    - owner 为本策略（含加仓场景）=> 不互斥（放行）
+    - competing_record_names 非空 => 仅当 owner 命中对家列表才互斥
+    - competing_record_names 为空 => 与任意其他策略互斥（默认保守口径）
+    """
+    if owner is None or owner == my_record_name:
+        return False
+    if competing_record_names:
+        return owner in competing_record_names
+    return True
 
 
 def _open_entry_sql(status_filter: bool) -> str:
@@ -84,7 +153,50 @@ def load_ownership_config(config) -> dict:
     return {
         'my_record_name': my_name,
         'competing_record_names': list(competing),
+        # R07 占用互斥配置（缺失时取架构 §9.4 默认值，禁止在业务层硬编码）
+        'enabled': _cfg_bool(ownership_cfg.get('enabled'), DEFAULT_OWNERSHIP_ENABLED),
+        'claim_ttl_minutes': _cfg_int(
+            ownership_cfg.get('claim_ttl_minutes'), DEFAULT_CLAIM_TTL_MINUTES
+        ),
+        'claim_cleanup_interval_minutes': _cfg_int(
+            ownership_cfg.get('claim_cleanup_interval_minutes'),
+            DEFAULT_CLAIM_CLEANUP_INTERVAL_MINUTES,
+        ),
+        'lock_timeout_seconds': _cfg_float(
+            ownership_cfg.get('lock_timeout_seconds'), DEFAULT_LOCK_TIMEOUT_SECONDS
+        ),
     }
+
+
+def _cfg_bool(value, default: bool) -> bool:
+    """配置布尔解析：None 取默认值；字符串 'false'/'0' 视为 False。"""
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in ('false', '0', 'no', 'off')
+    return bool(value)
+
+
+def _cfg_int(value, default: int) -> int:
+    """配置整数解析：None 或非法值取默认值。"""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        logger.warning("ownership 整数配置非法，取默认值", value=value, default=default)
+        return default
+
+
+def _cfg_float(value, default: float) -> float:
+    """配置浮点解析：None 或非法值取默认值。"""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        logger.warning("ownership 浮点配置非法，取默认值", value=value, default=default)
+        return default
 
 
 async def _resolve_owner_with_lock(db_manager, symbol: str) -> Optional[str]:
@@ -116,6 +228,36 @@ async def _resolve_owner_with_lock(db_manager, symbol: str) -> Optional[str]:
     except Exception as e:
         logger.error(
             "持仓归属（互斥）查询异常，按无归属处理",
+            symbol=symbol,
+            error=str(e),
+            exc_info=True,
+        )
+        return None
+    strategy = row.get('strategy') if row else None
+    return strategy if strategy else None
+
+
+async def _resolve_claim_owner(db_manager, symbol: str) -> Optional[str]:
+    """
+    查询该 symbol 当前的「有效占用」策略名（占用表，仅未过期，R07）
+
+    占用表是「开仓窗口期预占」，用于在 trade_records 权威归属写入前互斥；
+    查询异常/无记录/不支持占用表的 db 均返回 None（降级到 trade_records 判定）。
+
+    Args:
+        db_manager: DatabaseManager 实例（可为 None）
+        symbol: 交易对
+
+    Returns:
+        占用策略名；无有效占用/查询异常/能力不足返回 None
+    """
+    if db_manager is None or not _supports_claims(db_manager):
+        return None
+    try:
+        row = await db_manager.fetch_one(_CLAIM_SELECT_ACTIVE_SQL, symbol)
+    except Exception as e:
+        logger.error(
+            "占用表查询异常，按无占用处理",
             symbol=symbol,
             error=str(e),
             exc_info=True,
@@ -237,11 +379,15 @@ async def is_symbol_owned_by_other(
     symbol: str,
     my_record_name: Optional[str],
     competing_record_names: Optional[List[str]] = None,
+    *,
+    enabled: bool = True,
 ) -> bool:
     """
-    边界B：判断该 symbol 是否已被"其他策略"持有未平开仓单（持仓期互斥）
+    边界B：判断该 symbol 是否已被"其他策略"持有（持仓期互斥）
 
-    返回 owner 存在 且 owner 不是本策略。competing_record_names 用于限定互斥范围：
+    双重判定（R07 §9.2）：占用表「有效占用（预占）」OR
+    trade_records「未平开仓单（权威）」。返回任一来源构成互斥即为 True。
+    competing_record_names 用于限定互斥范围：
     - 非空 => 仅与列表内的对家策略互斥（精确互斥）；
     - 空/未传 => 与任何其他策略互斥（默认保守口径）。
     任何 DB 异常均返回 False（不放行双开，记 ERROR）。
@@ -251,15 +397,155 @@ async def is_symbol_owned_by_other(
         symbol: 交易对
         my_record_name: 本策略归属名
         competing_record_names: 共享账户对家策略名列表（空则默认与任意其他策略互斥）
+        enabled: ownership.enabled 开关（D4）；False 时仅做 trade_records 判定（回到既有行为）
 
     Returns:
         True 表示该 symbol 已被其他策略持有，应跳过开仓
     """
-    owner = await _resolve_owner_with_lock(db_manager, symbol)
-    if owner is None:
-        return False  # 无归属（含查询异常降级）不放行双开
-    if owner == my_record_name:
-        return False  # 归属为本策略（含加仓场景），放行
-    if competing_record_names:
-        return owner in competing_record_names
-    return True
+    # 既有权威归属判定：trade_records 未平开仓单（语义保持不变）
+    authority_owner = await _resolve_owner_with_lock(db_manager, symbol)
+    if _is_owner_blocking(authority_owner, my_record_name, competing_record_names):
+        return True
+    if not enabled:
+        return False
+    # R07：占用表「有效占用」判定（开仓窗口期预占，仅支持占用表的 db 才启用）
+    claim_owner = await _resolve_claim_owner(db_manager, symbol)
+    return _is_owner_blocking(claim_owner, my_record_name, competing_record_names)
+
+
+async def try_claim_symbol(
+    db_manager,
+    symbol: str,
+    my_record_name: str,
+    *,
+    competing_record_names: Optional[List[str]] = None,
+    ttl_minutes: int = DEFAULT_CLAIM_TTL_MINUTES,
+    intent_id: Optional[str] = None,
+    enabled: bool = DEFAULT_OWNERSHIP_ENABLED,
+    lock_timeout_seconds: float = DEFAULT_LOCK_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """
+    开仓前尝试对该 symbol 原子占位（R07 预占互斥，开仓入口用）
+
+    关闭开关（enabled=False）或 db_manager 不支持占用表时，降级为既有
+    trade_records 互斥判定（is_symbol_owned_by_other），回到既有行为；启用时调用
+    DatabaseManager.claim_position_atomic 在 advisory lock 事务内完成
+    「查归属 + 写占用」原子操作（外部请求必须在锁外），并二次校验权威归属，
+    避免覆盖 R07 上线前已持仓的对家。
+
+    Args:
+        db_manager: DatabaseManager 实例（可为 None）
+        symbol: 交易对
+        my_record_name: 本策略归属名
+        competing_record_names: 对家策略名列表（空则与任意其他策略互斥）
+        ttl_minutes: 占用有效期（分钟）
+        intent_id: 交易决策稳定标识（缺省由 db 层生成）
+        enabled: ownership.enabled 开关（D4），关闭即回到既有行为
+        lock_timeout_seconds: advisory lock 获取/事务超时保护（秒）
+
+    Returns:
+        {'claimed': bool, 'owner': Optional[str], 'claim_id': Optional[int]}；
+        冲突/异常均返回 claimed=False（走「已被持有，跳过开仓」，不抛异常）
+    """
+    if not enabled or db_manager is None or not _supports_claims(db_manager):
+        blocked = await is_symbol_owned_by_other(
+            db_manager, symbol, my_record_name, competing_record_names, enabled=False
+        )
+        return {"claimed": not blocked, "owner": None, "claim_id": None}
+    lock_key = zlib.crc32(symbol.encode()) & 0xFFFFFFFF
+    try:
+        result = await db_manager.claim_position_atomic(
+            lock_key,
+            symbol,
+            my_record_name,
+            intent_id,
+            int(ttl_minutes),
+            competing_names=competing_record_names,
+            lock_timeout_seconds=lock_timeout_seconds,
+        )
+    except Exception as e:
+        logger.error(
+            "占用占位异常，按冲突处理（保守不双开）",
+            symbol=symbol,
+            error=str(e),
+            exc_info=True,
+        )
+        return {"claimed": False, "owner": None, "claim_id": None}
+    # 占用冲突且冲突方构成互斥（含 owner 缺失的保守情形）→ 拒绝
+    if not result.get("claimed"):
+        owner = result.get("owner")
+        if owner is None or _is_owner_blocking(owner, my_record_name, competing_record_names):
+            return {"claimed": False, "owner": owner, "claim_id": result.get("claim_id")}
+    # 二次校验权威归属（trade_records）：避免覆盖 R07 上线前已持仓的对家
+    authority_owner = await _resolve_owner_with_lock(db_manager, symbol)
+    if _is_owner_blocking(authority_owner, my_record_name, competing_record_names):
+        await release_claim(db_manager, symbol, my_record_name, reason="authority_conflict")
+        return {"claimed": False, "owner": authority_owner, "claim_id": None}
+    return {"claimed": True, "owner": my_record_name, "claim_id": result.get("claim_id")}
+
+
+async def release_claim(
+    db_manager,
+    symbol: str,
+    my_record_name: str,
+    reason: str = "released",
+) -> bool:
+    """
+    释放本策略对某 symbol 的占用（开仓失败/放弃/平仓归零时调用，R07-F4）
+
+    仅释放「本策略」的 PENDING/ACTIVE 占用，不误放对家；占用置 RELEASED
+    保留行（便于审计与回滚）。异常返回 False 并告警，不抛异常中断主循环。
+
+    Args:
+        db_manager: DatabaseManager 实例（可为 None）
+        symbol: 交易对
+        my_record_name: 本策略归属名
+        reason: 释放原因（写入 reason 字段，如 'open_failed'/'position_closed'）
+
+    Returns:
+        True 表示本策略确有占用被释放（或开关关闭/能力不足视为无需释放）；
+        False 表示无占用可释放或释放查询异常
+    """
+    if db_manager is None or not _supports_claims(db_manager):
+        return True  # 未启用占用互斥时释放视为幂等成功
+    try:
+        result = await db_manager.execute(
+            _CLAIM_RELEASE_SQL, symbol, my_record_name, reason
+        )
+        return _parse_update_count(result) > 0
+    except Exception as e:
+        logger.error(
+            "释放占用异常",
+            symbol=symbol,
+            strategy=my_record_name,
+            error=str(e),
+            exc_info=True,
+        )
+        return False
+
+
+async def cleanup_expired_claims(db_manager) -> int:
+    """
+    清理全部已过期占用（主循环按 claim_cleanup_interval_minutes 定时调用，R07-F7）
+
+    将 expires_at <= NOW() 的 PENDING/ACTIVE 占用置 RELEASED（保留行不删，
+    便于审计与回滚）；异常返回 0 并告警，不抛异常中断主循环。
+
+    Args:
+        db_manager: DatabaseManager 实例（可为 None）
+
+    Returns:
+        本次置 RELEASED 的过期占用行数（0 表示无过期或执行异常）
+    """
+    if db_manager is None or not _supports_claims(db_manager):
+        return 0
+    try:
+        result = await db_manager.execute(_CLAIM_CLEANUP_SQL)
+        return _parse_update_count(result)
+    except Exception as e:
+        logger.error(
+            "清理过期占用异常",
+            error=str(e),
+            exc_info=True,
+        )
+        return 0

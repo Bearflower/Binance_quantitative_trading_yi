@@ -5,10 +5,30 @@ PostgreSQL连接池管理
 from typing import Optional, List, Dict, Any
 import asyncpg
 import re
+import uuid
 import structlog
 
 
 logger = structlog.get_logger()
+
+# 占用表相关 SQL 常量（占用判定/写入单点，禁止在业务层重复拼接）
+#   见 docs/plans/fix-2026-09-29-p0-r01-r08-architecture.md §11
+_CLAIM_SELECT_ACTIVE_SQL = (
+    "SELECT strategy, id FROM trading.position_claims "
+    "WHERE symbol = $1 AND claim_state IN ('PENDING','ACTIVE') "
+    "ORDER BY id DESC LIMIT 1"
+)
+_CLAIM_RELEASE_EXPIRED_SQL = (
+    "UPDATE trading.position_claims SET claim_state = 'RELEASED', released_at = NOW(), "
+    "reason = 'expired' WHERE symbol = $1 AND claim_state IN ('PENDING','ACTIVE') "
+    "AND expires_at <= NOW()"
+)
+_CLAIM_INSERT_SQL = (
+    "INSERT INTO trading.position_claims "
+    "(symbol, strategy, trade_intent_id, claim_state, expires_at) "
+    "VALUES ($1, $2, $3, 'PENDING', NOW() + make_interval(mins => $4::int)) "
+    "ON CONFLICT DO NOTHING RETURNING id"
+)
 
 
 class DatabaseError(Exception):
@@ -23,6 +43,9 @@ class SQLInjectionError(DatabaseError):
 
 class DatabaseManager:
     """数据库管理器"""
+
+    # 能力标记：仅真实 DatabaseManager 支持占用表原子占位；mock/旧实现据此自动降级
+    supports_position_claims = True
     
     def __init__(
         self,
@@ -311,6 +334,74 @@ class DatabaseManager:
                 row = await conn.fetchrow(query, *args, **kwargs)
 
         return dict(row) if row else None
+
+    async def claim_position_atomic(
+        self,
+        lock_key: int,
+        symbol: str,
+        strategy: str,
+        intent_id: Optional[str],
+        ttl_minutes: int,
+        *,
+        competing_names: Optional[List[str]] = None,
+        lock_timeout_seconds: float = 5.0,
+    ) -> Dict[str, Any]:
+        """
+        在 advisory lock 事务内原子完成「查有效占用 + 写入本策略占用」（R07-F1/F2）
+
+        流程（全程同一事务，锁内只做轻量「查+写」，外部请求必须在锁外）：
+          1. 设置事务级 lock_timeout；获取 pg_advisory_xact_lock(lock_key)
+          2. 先释放该 symbol 已过期的有效占用（部分唯一索引不区分 expires_at）
+          3. 查询是否已有有效占用：
+             - 占用者为本策略 => 幂等复用（claimed=True，返回既有 claim_id）
+             - 占用者为对家（competing_names 为空或命中）=> claimed=False
+             - 占用者非对家 => 不视为冲突，继续尝试插入
+          4. INSERT（ON CONFLICT DO NOTHING）：成功则 claimed=True；
+             被部分唯一索引拒绝则回查冲突方，claimed=False
+
+        Args:
+            lock_key: advisory lock 键（调用方以 zlib.crc32 对 symbol 取 32 位）
+            symbol: 交易对
+            strategy: 本策略归属名
+            intent_id: 交易决策稳定标识；缺省时内部生成，保证 NOT NULL
+            ttl_minutes: 占用有效期（分钟），写入 expires_at
+            competing_names: 对家策略名列表；为空表示与任意其他策略互斥
+            lock_timeout_seconds: advisory lock 获取/事务超时保护（秒）
+
+        Returns:
+            {'claimed': bool, 'owner': Optional[str], 'claim_id': Optional[int]}
+            （部分唯一索引冲突返回 claimed=False，不抛异常）
+        """
+        if not self.pool:
+            await self.connect()
+
+        intent = intent_id or uuid.uuid4().hex
+        timeout_ms = f"{int(lock_timeout_seconds * 1000)}ms"
+        async with self.pool.acquire() as conn:
+            async with conn.transaction():
+                # 事务级超时保护：锁等待超限抛错，避免长时间阻塞主循环
+                await conn.execute("SELECT set_config('lock_timeout', $1, true)", timeout_ms)
+                await conn.execute("SELECT pg_advisory_xact_lock($1)", lock_key)
+                await conn.execute(_CLAIM_RELEASE_EXPIRED_SQL, symbol)
+                row = await conn.fetchrow(_CLAIM_SELECT_ACTIVE_SQL, symbol)
+                if row:
+                    existing_strategy = row["strategy"]
+                    existing_id = row["id"]
+                    if existing_strategy == strategy:
+                        # 同策略重复占位幂等复用，不冲突
+                        return {"claimed": True, "owner": strategy, "claim_id": existing_id}
+                    if not competing_names or existing_strategy in competing_names:
+                        return {"claimed": False, "owner": existing_strategy, "claim_id": existing_id}
+                new_id = await conn.fetchval(
+                    _CLAIM_INSERT_SQL, symbol, strategy, intent, int(ttl_minutes)
+                )
+                if new_id is not None:
+                    return {"claimed": True, "owner": strategy, "claim_id": new_id}
+                # 插入被部分唯一索引拒绝（并发/非对家已持有）：回查冲突方，不抛异常
+                conflict = await conn.fetchrow(_CLAIM_SELECT_ACTIVE_SQL, symbol)
+                owner = conflict["strategy"] if conflict else None
+                claim_id = conflict["id"] if conflict else None
+                return {"claimed": False, "owner": owner, "claim_id": claim_id}
 
     async def execute_transaction(
         self,

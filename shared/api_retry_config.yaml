@@ -1,0 +1,41 @@
+# ============================================
+# API 重试 / 幂等 / 订单终态等待 共享配置（唯一事实源，R02 + R06）
+# 供 shared/binance_api.py（读/写分级重试、newClientOrderId 幂等）与
+# shared/order_fill_waiter.py（订单终态等待）统一读取（经 shared/config_loader.py）。
+# 严禁在代码中硬编码以下任一数值；支持“路径转大写下划线”的同名环境变量覆盖，例如：
+#   api_retry.enabled                              -> API_RETRY_ENABLED
+#   api_retry.read.max_retries                     -> API_RETRY_READ_MAX_RETRIES
+#   order_fill.pm_order_visibility_delay_seconds   -> ORDER_FILL_PM_ORDER_VISIBILITY_DELAY_SECONDS
+# 文档依据：docs/plans/fix-2026-09-29-p0-r01-r08-architecture.md §4.4 / §8.4 / §13.2 / §16
+# ============================================
+api_retry:
+  # 总闸（D4）：false 时所有请求回退到既有“全 method 重试”语义（不改代码即可回退）
+  enabled: true
+
+  # 读请求（GET，及幂等写 / DELETE 撤单）重试策略
+  read:
+    max_retries: 3        # 最大重试次数（沿用既有语义）
+    delay_seconds: 1.0    # 初始延迟（秒）
+    backoff: 2.0          # 退避系数
+
+  # 非幂等写请求（下单 POST）策略：默认不重试，仅在核对“未受理”后才允许重发
+  write:
+    max_retries: 0        # 写请求重试次数（0=不盲重发）
+    retry_after_verify: true  # 是否允许“核对未受理后”按同一幂等 ID 重发
+
+  # 写请求结果未知（超时/断连）后，按 newClientOrderId 核对订单的尝试次数与间隔
+  order_verify_max_attempts: 3
+  order_verify_interval_seconds: 0.5
+
+  # newClientOrderId 前缀（幂等标识；同一交易意图内复用同一个 ID）
+  client_order_id_prefix: "sq"
+
+order_fill:
+  # 总闸（D4）：false 时策略侧不使用结构化等待助手（回退到既有实现）
+  enabled: true
+  # 轮询订单状态的间隔（秒）
+  check_interval_seconds: 2
+  # PM 账户下单后首查可见延迟（秒）：替代原硬编码 min(check_interval, 0.5)
+  pm_order_visibility_delay_seconds: 0.5
+  # 撤单后读取订单最终成交量的重试次数
+  final_state_read_retries: 2

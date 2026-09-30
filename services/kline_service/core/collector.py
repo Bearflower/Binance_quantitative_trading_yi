@@ -9,6 +9,7 @@ from shared.core.database import DatabaseManager
 from shared.utils.logger import get_logger
 from .binance_client import BinanceClient
 from .registry import registry
+from .table_name_guard import build_kline_table_name
 from models.kline import KlineData
 
 logger = get_logger(__name__)
@@ -134,7 +135,8 @@ class KlineCollector:
             # 批量插入
             total_stored = 0
             for (symbol, interval), data_list in grouped.items():
-                table_name = f"kline_{symbol.lower()}_{interval}"
+                # 表名统一走 guard（R01 单词点），禁止内联拼接；registry 参与白名单层校验
+                table_name = build_kline_table_name(symbol, interval, registry=registry)
                 stored = await self._batch_insert(table_name, data_list)
                 total_stored += stored
 
@@ -281,8 +283,10 @@ class KlineCollector:
         Returns:
             是否创建成功（或已存在）
         """
-        table_name = f"kline_{symbol.lower()}_{interval}"
         try:
+            # 表名统一走 guard（R01 单词点），禁止内联拼接；registry 参与白名单层校验。
+            # 注意：本行若抛异常，table_name 将未绑定 → 下方 except 日志改用原始 symbol/interval。
+            table_name = build_kline_table_name(symbol, interval, registry=registry)
             async with self.db.get_connection() as conn:
                 check_query = """
                     SELECT EXISTS (
@@ -297,7 +301,7 @@ class KlineCollector:
                     logger.info(f"K 线表创建成功：{table_name}")
                 return True
         except Exception as e:
-            logger.error(f"确保 K 线表存在失败：{table_name} - {e}")
+            logger.error(f"确保 K 线表存在失败：symbol={symbol} interval={interval} - {e}")
             return False
 
     async def collect_recent(

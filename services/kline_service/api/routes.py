@@ -9,6 +9,8 @@ from shared.core.database import Database
 from core.binance_client import BinanceClient
 from core.collector import KlineCollector
 from core.indicator import TechnicalIndicatorCalculator
+from core.registry import registry
+from core.table_name_guard import TableNameValidationError, build_kline_table_name
 from models.kline import KlineData
 
 logger = get_logger(__name__)
@@ -47,6 +49,38 @@ async def _table_exists(conn, table_name: str) -> bool:
     return await conn.fetch_val(query, {"table_name": table_name})
 
 
+def _validated_table_name(symbol: str, interval: str) -> str:
+    """校验并返回合法表名（R01 单词点）；非法输入抛 HTTPException(400)，不触达任何 SQL
+
+    本函数是 K 线路由的唯一实现（routes / registry_routes 共用），统一带 error 明细的提示文案。
+    """
+    try:
+        return build_kline_table_name(symbol, interval, registry=registry)
+    except TableNameValidationError as e:
+        logger.warning(f"K 线查询参数非法：symbol={symbol!r} interval={interval!r} - {e}")
+        raise HTTPException(status_code=400, detail=f"参数非法：{e}") from e
+
+
+async def _ensure_table_ready(conn, table_name: str, symbol: str, interval: str) -> bool:
+    """确保查询表可用：表不存在时尝试自动建表。
+
+    R01-F3：建表失败或采集器不可用时立即返回 False，调用方据此返回「无数据」，
+    禁止继续执行该表的 SELECT。
+    """
+    if await _table_exists(conn, table_name):
+        return True
+    if not collector:
+        logger.debug(f"K 线表 {table_name} 不存在且采集器未初始化，返回无数据")
+        return False
+    try:
+        await collector.ensure_table(symbol, interval)
+        logger.info(f"K 线表自动创建成功：{table_name}")
+        return True
+    except Exception as e:  # noqa: BLE001 - 建表失败即终止查询
+        logger.warning(f"K 线表自动创建失败：{table_name} - {e}")
+        return False
+
+
 @router.get("/klines/latest")
 async def get_latest_klines(
     symbol: str = Query(..., description="交易对，如 BTCUSDT"),
@@ -68,22 +102,13 @@ async def get_latest_klines(
         if not db:
             raise HTTPException(status_code=500, detail="数据库未初始化")
 
-        table_name = f"kline_{symbol.lower()}_{interval}"
+        # R01：先做严格白名单校验，非法输入在拼 SQL 之前即拒绝
+        table_name = _validated_table_name(symbol, interval)
 
         async with db.get_connection() as conn:
-            # 先检查表是否存在，避免触发 PostgreSQL relation does not exist 错误日志
-            if not await _table_exists(conn, table_name):
-                logger.info(f"K 线表 {table_name} 不存在，尝试自动创建")
-                # 自动创建 K 线表（兜底机制），确保后续查询可用
-                if collector:
-                    try:
-                        await collector.ensure_table(symbol, interval)
-                        logger.info(f"K 线表自动创建成功: {table_name}")
-                    except Exception as e:
-                        logger.warning(f"K 线表自动创建失败: {table_name} - {e}")
-                else:
-                    logger.debug(f"K 线表 {table_name} 不存在且采集器未初始化，返回空数据")
-                    return {"code": 0, "message": "无数据", "data": []}
+            # 表不存在时尝试自动建表；建表失败或采集器不可用即返回「无数据」（R01-F3）
+            if not await _ensure_table_ready(conn, table_name, symbol, interval):
+                return {"code": 0, "message": "无数据", "data": []}
 
             query = f"""
                 SELECT * FROM {table_name}
@@ -129,6 +154,9 @@ async def get_latest_klines(
 
             return {"code": 0, "message": "success", "data": klines}
 
+    except HTTPException:
+        # 参数非法（400）等已明确的 HTTP 错误，原样向上抛出，不得被下方兜底转为 500
+        raise
     except Exception as e:
         error_msg = str(e)
         # 防御性处理：表存在检查有竞态条件时兜底
@@ -160,23 +188,13 @@ async def get_indicators(
         if not db:
             raise HTTPException(status_code=500, detail="数据库未初始化")
 
-        # 获取历史 K 线
-        table_name = f"kline_{symbol.lower()}_{interval}"
+        # R01：先做严格白名单校验，非法输入在拼 SQL 之前即拒绝
+        table_name = _validated_table_name(symbol, interval)
 
         async with db.get_connection() as conn:
-            # 先检查表是否存在，避免触发 PostgreSQL relation does not exist 错误日志
-            if not await _table_exists(conn, table_name):
-                logger.info(f"K 线表 {table_name} 不存在，尝试自动创建")
-                # 自动创建 K 线表（兜底机制），确保后续查询可用
-                if collector:
-                    try:
-                        await collector.ensure_table(symbol, interval)
-                        logger.info(f"K 线表自动创建成功: {table_name}")
-                    except Exception as e:
-                        logger.warning(f"K 线表自动创建失败: {table_name} - {e}")
-                else:
-                    logger.debug(f"K 线表 {table_name} 不存在且采集器未初始化，返回空数据")
-                    return {"code": 0, "message": "无数据", "data": None}
+            # 表不存在时尝试自动建表；建表失败或采集器不可用即返回「无数据」（R01-F3）
+            if not await _ensure_table_ready(conn, table_name, symbol, interval):
+                return {"code": 0, "message": "无数据", "data": None}
 
             query = f"""
                 SELECT * FROM {table_name}
@@ -222,6 +240,9 @@ async def get_indicators(
 
             return {"code": 0, "message": "success", "data": indicators}
 
+    except HTTPException:
+        # 参数非法（400）等已明确的 HTTP 错误，原样向上抛出，不得被下方兜底转为 500
+        raise
     except Exception as e:
         error_msg = str(e)
         # 防御性处理：表存在检查有竞态条件时兜底
@@ -253,6 +274,10 @@ async def manual_collect(
         if not collector:
             raise HTTPException(status_code=500, detail="采集器未初始化")
 
+        # R01：采集入口同样先走 guard，非法 symbol/interval 拒绝，避免落到建表/查询
+        table_name = _validated_table_name(symbol, interval)
+        logger.info(f"手动采集 K 线：{table_name} 最近 {minutes} 分钟")
+
         stored = await collector.collect_recent(symbol, interval, minutes)
 
         return {
@@ -265,6 +290,8 @@ async def manual_collect(
             },
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"手动采集失败：{e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -11,8 +11,14 @@ from models.registered_symbol import (
     RegisteredSymbolConfig, RegisteredSymbolList, RegisterResponse
 )
 from core.registry import registry
+from core.table_name_guard import (
+    TableNameValidationError,
+    validate_symbol_interval_format,
+)
 from shared.core.config import settings
 from shared.utils.logger import get_logger
+# 表名白名单校验为单点实现：与查询路由共用 routes 中的唯一实现，避免重复包装
+from api.routes import _validated_table_name
 
 logger = get_logger(__name__)
 
@@ -128,7 +134,7 @@ def _remove_collection_task(scheduler, task_id: str) -> bool:
         task_id: 任务 ID
         
     Returns:
-        bool: 是否移除成功
+        是否移除成功
     """
     try:
         scheduler.remove_task(task_id)
@@ -137,6 +143,18 @@ def _remove_collection_task(scheduler, task_id: str) -> bool:
     except Exception as e:
         logger.warning(f"移除采集任务失败：{task_id} - {e}", exc_info=True)
         return False
+
+
+def _validate_register_format(symbol: str, intervals) -> None:
+    """注册前格式层校验：阻止非法 symbol/interval 落库与建表（R01-F4）。
+
+    此时新标的尚未进入白名单，故仅做格式层校验；白名单层在注册完成后校验。
+    """
+    for interval in intervals or []:
+        try:
+            validate_symbol_interval_format(symbol, interval)
+        except TableNameValidationError as e:
+            raise HTTPException(status_code=400, detail=f"参数非法：{e}") from e
 
 
 @router.post("", response_model=RegisterResponse, summary="注册新的标的")
@@ -154,7 +172,10 @@ async def register_symbol(request: RegisterRequest):
     """
     try:
         scheduler = get_scheduler()
-        
+
+        # R01-F4：注册前先做格式层校验，阻止非法 symbol/interval 落库与建表
+        _validate_register_format(request.symbol, request.intervals)
+
         # 从请求头获取调用方标识（如果有）
         created_by = "api"  # 可以从请求头获取更详细的信息
         
@@ -197,6 +218,8 @@ async def register_symbol(request: RegisterRequest):
         try:
             collector = get_collector()
             for interval in config.intervals:
+                # 0. R01-F4：白名单层校验（此时标的已激活，可命中白名单并生成合法表名）
+                table_name = _validated_table_name(config.symbol, interval)
                 # 1. 确保 K 线表存在（即使没有数据也要创建）
                 table_created = await collector.ensure_table(config.symbol, interval)
                 # 2. 立即触发首次采集，确保至少 1000 分钟（~16.7h）的数据用于 ATR 计算
@@ -204,9 +227,9 @@ async def register_symbol(request: RegisterRequest):
                 minutes = max(_get_collect_minutes(interval), _MIN_INITIAL_COLLECT_MINUTES)
                 stored = await collector.collect_recent(config.symbol, interval, minutes=minutes)
                 if stored > 0:
-                    logger.info(f"注册后首次采集成功：{config.symbol} {interval}，存储{stored}条数据")
+                    logger.info(f"注册后首次采集成功：{table_name}，存储{stored}条数据")
                 elif table_created:
-                    logger.info(f"K 线表已创建，首次采集暂无数据（可能新币刚上线）：{config.symbol} {interval}")
+                    logger.info(f"K 线表已创建，首次采集暂无数据（可能新币刚上线）：{table_name}")
         except Exception as e:
             logger.warning(f"注册后触发采集失败（不影响下次定时任务）：{config.symbol} - {e}")
 
@@ -214,6 +237,9 @@ async def register_symbol(request: RegisterRequest):
         
         return RegisterResponse(code=0, message="success", data=config)
         
+    except HTTPException:
+        # 参数非法（400）等已明确的 HTTP 错误，原样抛出，不得被下方兜底转为 500
+        raise
     except RuntimeError as e:
         logger.error(f"调度器未初始化：{e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"服务配置错误：{str(e)}")
@@ -243,6 +269,12 @@ async def unregister_symbol(symbol: str = Query(..., description="交易对符�
         # 移除所有采集任务
         removed_count = 0
         for interval in config.intervals:
+            # R01-F4：任务 ID 由 symbol/interval 构造，先经 guard 校验（非法则跳过该周期）
+            try:
+                _validated_table_name(symbol, interval)
+            except HTTPException:
+                logger.warning(f"取消注册跳过非法采集周期：{symbol} {interval}")
+                continue
             task_id = f"{symbol}_{interval}"
             if _remove_collection_task(scheduler, task_id):
                 removed_count += 1

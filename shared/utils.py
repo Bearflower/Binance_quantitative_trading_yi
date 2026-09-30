@@ -7,12 +7,36 @@ import functools
 import os
 import re
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, Dict, Optional
 
 import structlog
 
 
 logger = structlog.get_logger()
+
+
+def to_decimal(value: Any, default: str = "0") -> Decimal:
+    """
+    将交易所返回的数量/价格字段安全转换为 Decimal
+
+    交易所响应（executedQty / origQty / avgPrice / positionAmt 等）可能为空字符串、
+    None 或非法字符串；若直接 Decimal(str(value)) 会抛 InvalidOperation 中断交易流程。
+    本函数统一做容错转换，供订单终态解析与持仓对账复用，避免各模块重复实现。
+
+    Args:
+        value: 待转换的值（str / int / float / Decimal / None）
+        default: 无法转换时返回的兜底值（字符串形式的 Decimal）
+
+    Returns:
+        转换后的 Decimal；value 为 None/空串/非法值时返回 Decimal(default)
+    """
+    if value is None or value == "":
+        return Decimal(default)
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError, TypeError):
+        return Decimal(default)
 
 
 def retry_on_failure(

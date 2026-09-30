@@ -3,11 +3,10 @@
 执行做空交易、设置止损止盈
 """
 from typing import Dict, Any, Optional, List, Tuple
-import asyncio
 import os
 import time
 from decimal import Decimal, InvalidOperation
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 import structlog
 
 from shared.binance_api import BinanceClient, BinanceAPIError
@@ -15,6 +14,27 @@ from shared.database import DatabaseManager
 from shared.notification import NotificationClient
 from shared.kline_service import KLineService
 from shared.condition_orders import record_condition_order
+# R06 统一订单终态助手（替代内联等待实现，杜绝三策略重复代码）
+from shared.order_fill_waiter import (
+    OrderFillResult,
+    wait_order_final_state,
+)
+# R03 统一减仓平仓助手（剩余量重算 + reduceOnly + -2022 前置对账 + 撤单后读最终量）
+from shared.reduce_only_close import (
+    CLOSE_ACCEPTED,
+    CLOSE_FAILED,
+    CLOSE_FILLED,
+    CLOSE_PARTIAL,
+    CloseOutcome,
+    close_remaining,
+)
+# R07 开仓占用互斥（锁内原子占位 / 释放 / 过期清理）
+from shared.position_ownership import (
+    cleanup_expired_claims,
+    load_ownership_config,
+    release_claim,
+    try_claim_symbol,
+)
 from shared.dynamic_trailing import (
     calculate_dynamic_trailing_stop,
     get_volatility_adjustment,
@@ -76,6 +96,11 @@ class TradingExecutor:
         self.notification = notification
         self.config = config
         self.kline_service = kline_service
+
+        # R07 开仓占用互斥配置（record_name/competing_record_names/enabled/TTL/清理周期等）
+        self._ownership = load_ownership_config(config)
+        # 过期占用清理的时间戳（单调时钟，避免系统时间回拨影响节流判定）
+        self._last_claim_cleanup_at = 0.0
 
         # 资金分配管理器（方案 D：DB 主来源 + config 兜底，保证金口径）
         resolved_config_path = config_path or os.path.join(
@@ -243,6 +268,7 @@ class TradingExecutor:
               失败原因包含账户余额不足/仓位大小计算失败/总仓位超限/总持仓保证金超限/
               开空仓下单失败/市价单未成交/限价单超时未成交/执行异常等
         """
+        claimed = False  # R07：是否已成功占位（异常/失败时需释放）
         try:
             logger.info(
                 f"准备执行做空: {symbol}",
@@ -271,11 +297,19 @@ class TradingExecutor:
             if await self._is_symbol_occupied(symbol):
                 return None, "该币种已有持仓，禁止重复开仓"
 
+            # 3.5 R07 开仓占用互斥：锁内原子占位（外部请求须在锁外，故先占位再下单）
+            claim = await self._claim_symbol(symbol)
+            if not claim.get("claimed"):
+                await self._notify_claim_conflict(symbol, claim.get("owner"))
+                return None, "该币种已被其他策略持有，跳过开仓"
+            claimed = True
+
             # 4. 额度核算：占用统计 → 限额读取 → 缩仓 → 门槛判定 → 限额校验（决策 D3）
             position_size, reject_reason = await self._resolve_open_margin_budget(
                 symbol, current_price
             )
             if position_size is None:
+                await self._release_claim_quietly(symbol, "open_failed")
                 return None, reject_reason
 
             # 5. 获取交易对精度
@@ -302,37 +336,36 @@ class TradingExecutor:
 
             if not order:
                 logger.error("开空仓失败")
+                await self._release_claim_quietly(symbol, "open_failed")
                 return None, "开空仓下单失败"
 
-            # 9. 等待订单成交（超时从配置读取）
+            # 9. R06-F5：统一等待订单终态（识别部分成交、撤单竞态、PM 可见延迟）
             entry_timeout = self.config.get('trading', {}).get('entry_order_timeout_seconds', 60)
             entry_order_id = order.get('orderId')
-            filled_order = await self._wait_for_order_fill(
-                symbol, entry_order_id, timeout_seconds=entry_timeout
+            fill = await self._wait_for_order_fill(
+                symbol, entry_order_id, timeout_seconds=entry_timeout,
+                client_order_id=order.get('clientOrderId'),
             )
-            if not filled_order:
-                # 超时未成交，按实际下单方式区分文案（市价单无「超时」概念，仅提示未成交）
-                order_type_desc = "市价单" if use_market_order else "限价单"
-                # 取消未成交订单，避免后续价格到达时突然成交
-                logger.warning(f"{symbol} {order_type_desc}超时未成交，取消订单")
-                try:
-                    await self.binance_api.cancel_order(symbol, str(entry_order_id))
-                except BinanceAPIError as cancel_e:
-                    # -2011/-2013 表示订单已不存在（在超时边界刚好成交或已被撤销），
-                    # 取消目标已达成，属正常竞态，降级为 info
-                    if cancel_e.code in (-2011, -2013):
-                        logger.info(
-                            f"{symbol} {order_type_desc}已不存在（超时边界成交/已撤销），无需取消",
-                            order_id=entry_order_id,
-                            error_code=cancel_e.code,
-                        )
-                    else:
-                        logger.warning(f"{symbol} 取消{order_type_desc}失败", error=str(cancel_e))
-                except Exception as cancel_e:
-                    logger.warning(f"{symbol} 取消{order_type_desc}失败", error=str(cancel_e))
+            if fill.is_filled:
+                order = fill.raw or order
+            elif fill.has_fill:
+                # 部分成交：按实际成交量建仓并挂保护（R06-AC1/AC2）
+                actual_qty = self._format_quantity(fill.executed_qty, step_size)
+                if actual_qty <= 0:
+                    # D3：精度截断后低于最小下单量 → 减仓清零，失败则告警
+                    await self._zero_micro_entry(symbol, fill.executed_qty, step_size)
+                    await self._release_claim_quietly(symbol, "open_failed")
+                    return None, "部分成交量低于最小下单量，已尝试减仓清零"
+                quantity = actual_qty
+                order = fill.raw or order
+                logger.warning("入场部分成交，按实际成交量建仓", symbol=symbol,
+                               executed_qty=str(actual_qty))
+            else:
+                # 无成交/结果未知：取消可能仍挂着的订单，避免后续价格到达时成交
+                await self._cancel_entry_order_quietly(symbol, entry_order_id)
+                await self._release_claim_quietly(symbol, "open_failed")
                 fail_reason = "市价单未成交" if use_market_order else "限价单超时未成交"
                 return None, fail_reason
-            order = filled_order
 
             # 10. 保存订单到数据库
             await self._save_order(order, score_result)
@@ -396,6 +429,8 @@ class TradingExecutor:
                 error=str(e),
                 exc_info=True
             )
+            if claimed:
+                await self._release_claim_quietly(symbol, "open_exception")
             return None, f"执行异常: {str(e)}"
 
     async def _resolve_open_margin_budget(
@@ -696,6 +731,98 @@ class TradingExecutor:
         )
         await self._notify_duplicate_symbol(symbol, exchange_qty, sources)
         return True
+
+    async def _claim_symbol(self, symbol: str) -> Dict[str, Any]:
+        """
+        开仓前对该 symbol 原子占位（R07 预占互斥）
+
+        占用参数全部取自 ownership 配置（归属名/对家名单/有效期/advisory lock 超时/开关），
+        禁止硬编码；intent_id 缺省交由 db 层生成。冲突/异常由 try_claim_symbol 内部
+        兜底为 claimed=False，绝不抛异常，交由调用方跳过开仓。
+
+        Args:
+            symbol: 交易对
+
+        Returns:
+            try_claim_symbol 的结果字典 {'claimed', 'owner', 'claim_id'}
+        """
+        return await try_claim_symbol(
+            self.db,
+            symbol,
+            self._ownership['my_record_name'],
+            competing_record_names=self._ownership['competing_record_names'],
+            ttl_minutes=self._ownership['claim_ttl_minutes'],
+            enabled=self._ownership['enabled'],
+            lock_timeout_seconds=self._ownership['lock_timeout_seconds'],
+        )
+
+    async def _release_claim_quietly(self, symbol: str, reason: str) -> None:
+        """
+        静默释放本策略对该 symbol 的占用（开仓失败/异常路径调用，R07-F4）
+
+        调用点全在失败/异常分支上，故此处绝不能再抛出异常：释放失败仅记 warning。
+
+        Args:
+            symbol: 交易对
+            reason: 释放原因（如 'open_failed'/'open_exception'）
+        """
+        try:
+            await release_claim(
+                self.db, symbol, self._ownership['my_record_name'], reason=reason
+            )
+        except Exception as e:
+            logger.warning(
+                "释放开仓占用失败",
+                symbol=symbol,
+                reason=reason,
+                error=str(e),
+            )
+
+    async def _notify_claim_conflict(self, symbol: str, owner: Optional[str]) -> None:
+        """
+        发送开仓占用冲突告警（该币种已被其他策略占用而跳过开仓时）
+
+        复用本文件既有告警写法（notification.project 兜底 new_coin），异常仅记日志。
+
+        Args:
+            symbol: 交易对
+            owner: 占用方策略名（不可用时为 None）
+        """
+        project = self.config.get('notification', {}).get('project', 'new_coin')
+        owner_desc = owner if owner else "未知策略"
+        message = (
+            f"【新币做空策略】开仓占用冲突已跳过\n"
+            f"币种: {symbol}\n"
+            f"占用方: {owner_desc}\n"
+            f"原因: 该币种已被其他策略持有，跳过开仓"
+        )
+        try:
+            await self.notification.send(message=message, level="warning", project=project)
+        except Exception as e:
+            logger.warning("发送开仓占用冲突通知失败", symbol=symbol, error=str(e))
+
+    async def maybe_cleanup_expired_claims(self) -> None:
+        """
+        按 claim_cleanup_interval_minutes 定时清理过期开仓占用（R07-F7）
+
+        内部自节流：以单调时钟 time.monotonic() 与上次清理时间戳比较，未满一个
+        清理周期则直接返回，保证每轮调用开销恒定；关闭 ownership.enabled 时不动作。
+        使用单调时钟可避免系统时间回拨导致节流失效。
+        """
+        if not self._ownership['enabled']:
+            return
+        now = time.monotonic()
+        # 清理周期（分钟）转秒，下限 1 分钟，防止配置为 0/负值时失控高频清理
+        interval_seconds = max(self._ownership['claim_cleanup_interval_minutes'], 1) * 60
+        if now - self._last_claim_cleanup_at < interval_seconds:
+            return
+        self._last_claim_cleanup_at = now
+        try:
+            cleared = await cleanup_expired_claims(self.db)
+            if cleared:
+                logger.info("过期开仓占用清理完成", cleared=cleared)
+        except Exception as e:
+            logger.warning("清理过期开仓占用失败", error=str(e))
 
     async def _collect_occupancy_sources(
         self,
@@ -1356,60 +1483,90 @@ class TradingExecutor:
     async def _wait_for_order_fill(
         self,
         symbol: str,
-        order_id: int,
+        order_id: Optional[int],
         timeout_seconds: int = 60,
-        check_interval: float = 2.0,
-    ) -> Optional[Dict[str, Any]]:
+        check_interval: Optional[float] = None,
+        client_order_id: Optional[str] = None,
+    ) -> OrderFillResult:
         """
-        等待限价单成交，超时返回 None
+        等待入场订单至终态（R06 薄封装：统一走 shared.order_fill_waiter）
+
+        保留本方法名以兼容既有调用点，内部委托 ``wait_order_final_state``，
+        结构化返回 OrderFillResult（识别部分成交/撤单竞态/PM 可见延迟）。
 
         Args:
             symbol: 交易对
-            order_id: 订单 ID
-            timeout_seconds: 超时秒数
-            check_interval: 检查间隔（秒）
+            order_id: 交易所订单号（与 client_order_id 至少提供其一）
+            timeout_seconds: 超时秒数（取策略配置 entry_order_timeout_seconds）
+            check_interval: 轮询间隔（None 则取 order_fill 共享配置）
+            client_order_id: 客户端订单号（order_id 缺失时按此查单）
 
         Returns:
-            成交后的订单信息，超时返回 None
+            OrderFillResult（.is_filled 完全成交 / .has_fill 含部分成交）
         """
+        return await wait_order_final_state(
+            self.binance_api,
+            symbol,
+            order_id=order_id,
+            client_order_id=client_order_id,
+            timeout_seconds=timeout_seconds,
+            check_interval=check_interval,
+        )
+
+    async def _cancel_entry_order_quietly(self, symbol: str, order_id: Optional[int]) -> None:
+        """
+        静默取消入场订单（-2011/-2013 视为已不存在，属正常竞态）
+
+        Args:
+            symbol: 交易对
+            order_id: 交易所订单号
+        """
+        if order_id is None:
+            return
         try:
-            deadline = datetime.now(timezone.utc) + timedelta(seconds=timeout_seconds)
-            while datetime.now(timezone.utc) < deadline:
-                order = await self.binance_api.get_order(symbol, order_id)
-                status = order.get("status", "")
-
-                if status == "FILLED":
-                    logger.info(
-                        f"{symbol} 限价单已成交",
-                        order_id=order_id,
-                        executed_qty=order.get("executedQty"),
-                        cummulative_quote=order.get("cummulativeQuoteQty"),
-                    )
-                    return order
-
-                if status in ("CANCELED", "EXPIRED", "REJECTED"):
-                    logger.warning(
-                        f"{symbol} 限价单已取消/过期/拒绝",
-                        order_id=order_id,
-                        status=status,
-                    )
-                    return None
-
-                await asyncio.sleep(check_interval)
-
-            logger.warning(
-                f"{symbol} 限价单超时未成交",
-                order_id=order_id,
-                timeout_seconds=timeout_seconds,
-            )
-            return None
+            await self.binance_api.cancel_order(symbol, str(order_id))
+        except BinanceAPIError as e:
+            if e.code in (-2011, -2013):
+                logger.info("入场订单已不存在（边界成交/已撤销），无需取消",
+                            symbol=symbol, order_id=order_id, error_code=e.code)
+            else:
+                logger.warning("取消入场订单失败", symbol=symbol, error=str(e))
         except Exception as e:
-            logger.error(
-                f"{symbol} 检查限价单成交状态异常",
-                order_id=order_id,
-                error=str(e),
+            logger.warning("取消入场订单异常", symbol=symbol, error=str(e))
+
+    async def _zero_micro_entry(
+        self, symbol: str, executed_qty: Decimal, step_size: Decimal
+    ) -> None:
+        """
+        D3：入场部分成交量经精度截断为 0（低于最小下单量）→ 减仓清零微仓
+
+        清零失败仅告警（不静默丢弃），由人工复核。
+
+        Args:
+            symbol: 交易对
+            executed_qty: 实际已成成交量（绝对值）
+            step_size: 该交易对数量精度（由开仓流程已获取的精度传入）
+        """
+        target = abs(Decimal(str(executed_qty)))
+        if target <= 0:
+            return
+        # 平仓口径与 _close_position 一致（trading.close_position），避免重复定义阈值
+        cfg = self.config.get('trading', {}).get('close_position', {})
+        outcome = await self._close_with_reduce_only(
+            symbol, target, order_type="MARKET", step_size=step_size, cfg=cfg
+        )
+        if not outcome.success:
+            logger.warning("微仓减仓清零失败，需人工复核", symbol=symbol, reason=outcome.reason)
+            message = (
+                f"【新币做空微仓清零告警】\n"
+                f"交易对: {symbol}\n"
+                f"目标数量: {target}\n"
+                f"说明: {outcome.reason}\n"
+                f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
             )
-            return None
+            await self._notify_close_failure(symbol, "微仓清零失败", message)
+        else:
+            logger.info("微仓减仓清零成功", symbol=symbol)
 
     async def _send_notification(
         self,
@@ -2496,193 +2653,158 @@ class TradingExecutor:
         reason: str
     ) -> bool:
         """
-        平仓
-        
+        平仓（R03：委托统一减仓助手，先限价、未成功再市价兜底）
+
+        分两阶段：阶段一以订单簿买一价（回退最新价）限价平仓；阶段一未达标时
+        进入阶段二按市价兜底。两阶段均通过 shared.close_remaining 提交，强制带
+        减仓约束（reduceOnly）并按剩余待平量重算，防止反向开仓。
+
         Args:
             symbol: 交易对
             close_percent: 平仓比例（0-1）
             reason: 平仓原因
-            
+
         Returns:
-            是否成功
+            是否成功（True 仅当剩余待平量=0 且持仓对账通过，R03-F5）
         """
         try:
-            # 获取当前持仓
-            positions = await self.binance_api.get_position(symbol)
-            
-            short_position = None
-            for pos in positions:
-                # 单方向模式下 positionSide='BOTH'，用 positionAmt<0 判断
-                if float(pos.get('positionAmt', 0)) < 0:
-                    short_position = pos
-                    break
-            
-            if not short_position:
-                logger.warning(f"未找到做空持仓: {symbol}")
-                return False
-            
-            # 计算平仓数量
-            position_amt = abs(Decimal(str(short_position.get('positionAmt', 0))))
-            close_quantity = position_amt * close_percent
-            
-            # 获取数量精度
-            _, step_size = await self._get_symbol_precision(symbol)
-            close_quantity = self._format_quantity(close_quantity, step_size)
-            
-            # 获取当前价格用于限价平仓
-            ticker = await self.binance_api.get_ticker(symbol)
-            close_price = float(ticker.get("lastPrice", 0))
-
-            if close_price <= 0:
-                logger.warning("无法获取当前价格，使用市价平仓", symbol=symbol)
-                order = await self.binance_api.place_order(
-                    symbol=symbol,
-                    side='BUY',
-                    order_type='MARKET',
-                    quantity=close_quantity
-                )
-            else:
-                # 优先使用限价单平仓，带超时重试机制
-                close_pos_config = self.config.get('trading', {}).get('close_position', {})
-                max_retries = close_pos_config.get('max_retries', 3)
-                retry_interval = close_pos_config.get('retry_interval', 2)  # 重试间隔（秒）
-                poll_interval = close_pos_config.get('poll_interval', 2)   # 轮询间隔（秒）
-                timeout = close_pos_config.get('timeout', 10)              # 单次限价单超时（秒）
-
-                filled = False
-                order = None
-                last_error = None
-
-                for retry_attempt in range(max_retries + 1):
-                    try:
-                        # 每次重试更新价格（使用订单簿最优价，若无则用最新价）
-                        try:
-                            orderbook = await self.binance_api.get_orderbook(symbol, limit=5)
-                            limit_price = Decimal(str(orderbook['bids'][0][0]))
-                        except Exception:
-                            orderbook = {}  # 避免后续 orderbook.get() 引发 NameError
-                            limit_price = Decimal(str(close_price))
-
-                        # 调整价格精度
-                        tick_size, _ = await self._get_symbol_precision(symbol)
-                        limit_price = self._format_price(limit_price, tick_size)
-
-                        # 确保 orderbook 有 bids 数据
-                        if not orderbook.get('bids'):
-                            logger.warning("订单簿 bids 为空，使用最新价作为限价", symbol=symbol)
-                            limit_price = Decimal(str(close_price))
-                            limit_price = self._format_price(limit_price, tick_size)
-
-                        logger.info(
-                            f"限价平仓（第{retry_attempt + 1}次）",
-                            symbol=symbol,
-                            limit_price=float(limit_price)
-                        )
-
-                        order_result = await self.binance_api.place_order(
-                            symbol=symbol,
-                            side='BUY',
-                            order_type='LIMIT',
-                            quantity=close_quantity,
-                            price=limit_price,
-                            timeInForce='GTC'
-                        )
-
-                        # 轮询等待成交
-                        elapsed = 0
-                        while elapsed < timeout:
-                            await asyncio.sleep(poll_interval)
-                            elapsed += poll_interval
-
-                            open_orders = await self.binance_api.get_open_orders(symbol)
-                            order_still_open = any(
-                                str(o.get('orderId')) == str(order_result['orderId'])
-                                for o in open_orders
-                            )
-
-                            if not order_still_open:
-                                logger.info(
-                                    "限价平仓已成交",
-                                    symbol=symbol,
-                                    order_id=order_result.get('orderId'),
-                                    elapsed_seconds=elapsed,
-                                    retry_attempt=retry_attempt
-                                )
-                                order = order_result
-                                filled = True
-                                break
-
-                        if filled:
-                            break
-
-                        # 超时未成交，撤销后重试
-                        try:
-                            await self.binance_api.cancel_order(symbol, str(order_result['orderId']))
-                            logger.info(
-                                "限价平仓超时，撤销后重试",
-                                symbol=symbol,
-                                retry_attempt=retry_attempt + 1,
-                                max_retries=max_retries
-                            )
-                        except Exception as cancel_error:
-                            # 订单可能在轮询与取消之间成交
-                            if hasattr(cancel_error, 'code') and cancel_error.code == self._ORDER_NOT_FOUND_CODE:
-                                logger.info(
-                                    "限价平仓单已成交（取消时确认）",
-                                    symbol=symbol,
-                                    order_id=order_result.get('orderId')
-                                )
-                                order = order_result
-                                filled = True
-                                break
-                            else:
-                                raise
-
-                        if retry_attempt < max_retries:
-                            await asyncio.sleep(retry_interval)
-
-                    except Exception as e:
-                        last_error = e
-                        logger.warning(
-                            "限价平仓异常",
-                            symbol=symbol,
-                            error=str(e),
-                            retry_attempt=retry_attempt + 1
-                        )
-                        if retry_attempt < max_retries:
-                            await asyncio.sleep(retry_interval)
-
-                if not filled:
-                    # 所有重试均失败，回退到市价单
-                    logger.warning(
-                        "限价平仓所有重试均未成交，回退市价单",
-                        symbol=symbol,
-                        last_error=str(last_error) if last_error else "超时未成交"
-                    )
-                    order = await self.binance_api.place_order(
-                        symbol=symbol,
-                        side='BUY',
-                        order_type='MARKET',
-                        quantity=close_quantity
-                    )
-            
-            if order:
-                logger.info(
-                    f"平仓成功: {symbol}",
-                    reason=reason,
-                    quantity=float(close_quantity),
-                    order_id=order.get('orderId')
-                )
-                # B1 修复：平仓成功后更新 short_positions 表为关闭状态
+            # 1. 读取交易所真实空头持仓，计算目标平仓量（以真实持仓为上限，防反向）
+            target_qty, step_size, tick_size = await self._read_short_target(symbol, close_percent)
+            if target_qty <= 0:
+                # 已无空头持仓：幂等视为已平仓
+                logger.info("已无空头持仓，视为已平仓", symbol=symbol, reason=reason)
                 await self._update_short_position_closed(symbol=symbol)
                 return True
-            else:
-                logger.error(f"平仓失败: {symbol}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"平仓失败: {symbol}, 错误: {e}")
+
+            cfg = self.config.get('trading', {}).get('close_position', {})
+            # 2. 阶段一：限价平仓（订单簿买一价优先，取不到回退最新价）
+            limit_price = await self._resolve_close_limit_price(symbol, tick_size)
+            outcome: Optional[CloseOutcome] = None
+            if limit_price > 0:
+                outcome = await self._close_with_reduce_only(
+                    symbol, target_qty, order_type="LIMIT",
+                    step_size=step_size, cfg=cfg, price=limit_price,
+                )
+
+            # 3. 阶段二：限价未成功 → 市价兜底（同样带 reduceOnly）
+            if outcome is None or not outcome.success:
+                outcome = await self._close_with_reduce_only(
+                    symbol, target_qty, order_type="MARKET",
+                    step_size=step_size, cfg=cfg,
+                )
+
+            # 4. 结果判定：任一阶段达标即视为平仓成功
+            if outcome.success:
+                logger.info(
+                    "平仓成功", symbol=symbol, reason=reason,
+                    status=outcome.status, closed_qty=str(outcome.closed_qty),
+                )
+                await self._update_short_position_closed(symbol=symbol)
+                return True
+
+            await self._alert_close_failure(symbol, reason, outcome)
             return False
+        except Exception as e:
+            logger.error("平仓失败", symbol=symbol, reason=reason, error=str(e), exc_info=True)
+            await self._notify_close_failure(symbol, reason, f"平仓异常：{e}")
+            return False
+
+    async def _read_short_target(
+        self,
+        symbol: str,
+        close_percent: Decimal,
+    ) -> Tuple[Decimal, Decimal, Decimal]:
+        """读取交易所真实空头持仓，返回（目标平仓量, 数量精度, 价格精度）"""
+        positions = await self.binance_api.get_position(symbol)
+        position_amt = Decimal("0")
+        for pos in positions or []:
+            amt = Decimal(str(pos.get('positionAmt', 0)))
+            if amt < 0:
+                position_amt = amt
+                break
+        tick_size, step_size = await self._get_symbol_precision(symbol)
+        target_qty = abs(position_amt) * Decimal(str(close_percent))
+        return target_qty, step_size, tick_size
+
+    async def _resolve_close_limit_price(self, symbol: str, tick_size: Decimal) -> Decimal:
+        """确定限价平仓价格：订单簿买一价优先，取不到回退最新价，最后按 tick_size 取整"""
+        price = Decimal("0")
+        try:
+            orderbook = await self.binance_api.get_orderbook(symbol, limit=5)
+            bids = orderbook.get('bids') or []
+            if bids:
+                price = Decimal(str(bids[0][0]))
+        except Exception as e:
+            logger.warning("获取订单簿失败，回退最新价", symbol=symbol, error=str(e))
+        if price <= 0:
+            try:
+                ticker = await self.binance_api.get_ticker(symbol)
+                price = Decimal(str(ticker.get('lastPrice', 0)))
+            except Exception as e:
+                logger.warning("获取最新价失败", symbol=symbol, error=str(e))
+                return Decimal("0")
+        if price <= 0:
+            return Decimal("0")
+        return self._format_price(price, tick_size)
+
+    async def _close_with_reduce_only(
+        self,
+        symbol: str,
+        target_qty: Decimal,
+        *,
+        order_type: str,
+        step_size: Decimal,
+        cfg: Dict[str, Any],
+        price: Optional[Decimal] = None,
+    ) -> CloseOutcome:
+        """单阶段减仓：展开配置后委托 shared.close_remaining（限价/市价共用）"""
+        return await close_remaining(
+            self.binance_api,
+            symbol,
+            target_qty,
+            side="BUY",  # 新币做空策略固定平空
+            order_type=order_type,
+            price=price,
+            reduce_only=bool(cfg.get('reduce_only', True)),
+            sync_before_reduce_only=bool(cfg.get('sync_before_reduce_only', True)),
+            step_size=str(step_size),
+            max_retries=int(cfg.get('max_retries', 3)),
+            retry_interval=float(cfg.get('retry_interval', 2)),
+            poll_interval=float(cfg.get('poll_interval', 2)),
+            timeout_seconds=float(cfg.get('timeout', 10)),
+            position_confirm_retries=int(cfg.get('position_confirm_retries', 2)),
+            position_confirm_interval=float(cfg.get('position_confirm_interval', 1)),
+        )
+
+    async def _alert_close_failure(
+        self, symbol: str, reason: str, outcome: CloseOutcome
+    ) -> None:
+        """平仓未达标时发送飞书告警（含状态与原因说明）"""
+        status_text = {
+            CLOSE_FILLED: "已成交",
+            CLOSE_PARTIAL: "部分成交",
+            CLOSE_ACCEPTED: "已受理未成交",
+            CLOSE_FAILED: "未成交",
+        }.get(outcome.status, outcome.status)
+        message = f"""
+【新币做空平仓告警】
+交易对: {symbol}
+平仓原因: {reason}
+结果状态: {status_text}（{outcome.status}）
+已平数量: {outcome.closed_qty} / 目标: {outcome.target_qty}
+说明: {outcome.reason}
+时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+        await self._notify_close_failure(symbol, reason, message)
+
+    async def _notify_close_failure(self, symbol: str, reason: str, message: str) -> None:
+        """发送平仓告警通知（通知异常不影响主流程）"""
+        project = self.config.get('notification', {}).get('project', 'new_coin')
+        try:
+            await self.notification.send(message=message, level="warning", project=project)
+        except Exception as e:
+            logger.error("平仓告警发送失败", symbol=symbol, reason=reason, error=str(e))
+
     
     async def cancel_all_algo_orders(self, symbol: str) -> Dict[str, Any]:
         """

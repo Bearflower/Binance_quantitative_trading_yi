@@ -1,0 +1,2436 @@
+{
+  "schema_version": "1",
+  "mode": "workspace",
+  "repository": "/private/var/folders/kl/x_hqjwpx56b4bhylbzg04jlm0000gn/T/binance-review-d5inzwci/snapshot",
+  "total_files": 389,
+  "reviewable_count": 301,
+  "excluded_count": 88,
+  "total_insertions": 209406,
+  "total_deletions": 0,
+  "reviewable_files": [
+    {
+      "path": ".github/workflows/deploy.yml",
+      "status": "added",
+      "insertions": 376,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/Dockerfile",
+      "status": "added",
+      "insertions": 49,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/adapters/__init__.py",
+      "status": "added",
+      "insertions": 40,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/adapters/base_adapter.py",
+      "status": "added",
+      "insertions": 384,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/adapters/grid_adapter.py",
+      "status": "added",
+      "insertions": 983,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/adapters/hrs_adapter.py",
+      "status": "added",
+      "insertions": 310,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/adapters/mtpcs_adapter.py",
+      "status": "added",
+      "insertions": 366,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/adapters/mtpcs_aggressive_adapter.py",
+      "status": "added",
+      "insertions": 364,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/adapters/new_coin_adapter.py",
+      "status": "added",
+      "insertions": 426,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/__init__.py",
+      "status": "added",
+      "insertions": 40,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/allocation_calculator.py",
+      "status": "added",
+      "insertions": 267,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/balance_provider.py",
+      "status": "added",
+      "insertions": 60,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/config_updater.py",
+      "status": "added",
+      "insertions": 367,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/daily_refresher.py",
+      "status": "added",
+      "insertions": 219,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/monthly_job.py",
+      "status": "added",
+      "insertions": 380,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/pnl_collector.py",
+      "status": "added",
+      "insertions": 252,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/profit_extraction_job.py",
+      "status": "added",
+      "insertions": 236,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/allocation/tests/__init__.py",
+      "status": "added",
+      "insertions": 0,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/backtest/__init__.py",
+      "status": "added",
+      "insertions": 31,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/backtest/grid_backtest.py",
+      "status": "added",
+      "insertions": 558,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/backtest/market_segment.py",
+      "status": "added",
+      "insertions": 271,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/backtest/metrics.py",
+      "status": "added",
+      "insertions": 411,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/backtest/models.py",
+      "status": "added",
+      "insertions": 79,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/cleanup/__init__.py",
+      "status": "added",
+      "insertions": 5,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/cleanup/orphan_cleanup.py",
+      "status": "added",
+      "insertions": 513,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/config.yaml",
+      "status": "added",
+      "insertions": 656,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/deploy/__init__.py",
+      "status": "added",
+      "insertions": 20,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/deploy/config_operator.py",
+      "status": "added",
+      "insertions": 437,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/deploy/diff_generator.py",
+      "status": "added",
+      "insertions": 128,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/deploy/rollback_manager.py",
+      "status": "added",
+      "insertions": 162,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/deploy/version_manager.py",
+      "status": "added",
+      "insertions": 213,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/engine/__init__.py",
+      "status": "added",
+      "insertions": 20,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/engine/cost_tracker.py",
+      "status": "added",
+      "insertions": 200,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/engine/llm_client.py",
+      "status": "added",
+      "insertions": 183,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/engine/response_parser.py",
+      "status": "added",
+      "insertions": 321,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/feedback/__init__.py",
+      "status": "added",
+      "insertions": 22,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/feedback/context_enhancer.py",
+      "status": "added",
+      "insertions": 199,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/feedback/effect_tracker.py",
+      "status": "added",
+      "insertions": 386,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/feedback/learning_signal.py",
+      "status": "added",
+      "insertions": 341,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/main.py",
+      "status": "added",
+      "insertions": 974,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/memory/__init__.py",
+      "status": "added",
+      "insertions": 18,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/memory/context_builder.py",
+      "status": "added",
+      "insertions": 108,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/memory/db_handler.py",
+      "status": "added",
+      "insertions": 419,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/monitor/__init__.py",
+      "status": "added",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/monitor/daily_health_check.py",
+      "status": "added",
+      "insertions": 193,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/notifier/__init__.py",
+      "status": "added",
+      "insertions": 14,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/notifier/messenger.py",
+      "status": "added",
+      "insertions": 507,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/reconciler/__init__.py",
+      "status": "added",
+      "insertions": 11,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/reconciler/income_reconciler.py",
+      "status": "added",
+      "insertions": 333,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/reconciler/tests/__init__.py",
+      "status": "added",
+      "insertions": 5,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/scheduler/__init__.py",
+      "status": "added",
+      "insertions": 14,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/scheduler/weekly_job.py",
+      "status": "added",
+      "insertions": 587,
+      "deletions": 0
+    },
+    {
+      "path": "ai_tuner/tests/__init__.py",
+      "status": "added",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/__init__.py",
+      "status": "added",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/analyze_filter_reason.py",
+      "status": "added",
+      "insertions": 80,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_adjustment_050801.py",
+      "status": "added",
+      "insertions": 1115,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_btc_eth.py",
+      "status": "added",
+      "insertions": 380,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_compare_all_versions.py",
+      "status": "added",
+      "insertions": 265,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_compare_v616_vs_v6161.py",
+      "status": "added",
+      "insertions": 1126,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_engine_complete.py",
+      "status": "added",
+      "insertions": 569,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_plan3.py",
+      "status": "added",
+      "insertions": 309,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_plan4.py",
+      "status": "added",
+      "insertions": 300,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_v616.py",
+      "status": "added",
+      "insertions": 1348,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_v6161.py",
+      "status": "added",
+      "insertions": 1429,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/backtest_v6162.py",
+      "status": "added",
+      "insertions": 1651,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/convert_kline_data.py",
+      "status": "added",
+      "insertions": 97,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/download_klines.py",
+      "status": "added",
+      "insertions": 201,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/download_klines_server.py",
+      "status": "added",
+      "insertions": 90,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/export_klines_from_db.py",
+      "status": "added",
+      "insertions": 51,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/btc_eth/scripts/run_backtest_optimized.py",
+      "status": "added",
+      "insertions": 525,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/__init__.py",
+      "status": "added",
+      "insertions": 14,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/backtest_engine.py",
+      "status": "added",
+      "insertions": 1709,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/config.yaml",
+      "status": "added",
+      "insertions": 140,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/data_loader.py",
+      "status": "added",
+      "insertions": 245,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/exchange_simulator.py",
+      "status": "added",
+      "insertions": 953,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/performance_analyzer.py",
+      "status": "added",
+      "insertions": 429,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/report_generator.py",
+      "status": "added",
+      "insertions": 355,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/run_backtest.py",
+      "status": "added",
+      "insertions": 81,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/scripts/backtest_grid.py",
+      "status": "added",
+      "insertions": 794,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/scripts/backtest_visualization.py",
+      "status": "added",
+      "insertions": 359,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/grid/trailing_stop_simulator.py",
+      "status": "added",
+      "insertions": 191,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/batch_backtest.sh",
+      "status": "added",
+      "insertions": 26,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/cache_manager.py",
+      "status": "added",
+      "insertions": 228,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/download_klines.py",
+      "status": "added",
+      "insertions": 159,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/download_labusdt.py",
+      "status": "added",
+      "insertions": 157,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/market_scanner.py",
+      "status": "added",
+      "insertions": 612,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/quick_backtest.py",
+      "status": "added",
+      "insertions": 994,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/quick_backtest_labusdt.py",
+      "status": "added",
+      "insertions": 483,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/report_generator.py",
+      "status": "added",
+      "insertions": 584,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/run_backtest.py",
+      "status": "added",
+      "insertions": 299,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/ssh_config.py",
+      "status": "added",
+      "insertions": 11,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/hrs/timeline_backtest.py",
+      "status": "added",
+      "insertions": 1204,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/__init__.py",
+      "status": "added",
+      "insertions": 19,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/backtest.py",
+      "status": "added",
+      "insertions": 114,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/backtest_engine.py",
+      "status": "added",
+      "insertions": 663,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/data_loader.py",
+      "status": "added",
+      "insertions": 284,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/order_executor.py",
+      "status": "added",
+      "insertions": 183,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/position_manager.py",
+      "status": "added",
+      "insertions": 364,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/report_generator.py",
+      "status": "added",
+      "insertions": 456,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/scripts/download_klines_from_api.py",
+      "status": "added",
+      "insertions": 499,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/scripts/export_data_from_server.py",
+      "status": "added",
+      "insertions": 415,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/scripts/generate_sample_data.py",
+      "status": "added",
+      "insertions": 91,
+      "deletions": 0
+    },
+    {
+      "path": "backtest/new_coin/statistics_analyzer.py",
+      "status": "added",
+      "insertions": 224,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/Dockerfile",
+      "status": "added",
+      "insertions": 31,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/api/__init__.py",
+      "status": "added",
+      "insertions": 1,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/api/routes.py",
+      "status": "added",
+      "insertions": 553,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/api/routes_docker.py",
+      "status": "added",
+      "insertions": 605,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/collectors/__init__.py",
+      "status": "added",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/collectors/collector.py",
+      "status": "added",
+      "insertions": 414,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/collectors/weekly_collector.py",
+      "status": "added",
+      "insertions": 625,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/config.yaml",
+      "status": "added",
+      "insertions": 68,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/config/risk.yaml",
+      "status": "added",
+      "insertions": 18,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/core/__init__.py",
+      "status": "added",
+      "insertions": 1,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/core/cache.py",
+      "status": "added",
+      "insertions": 205,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/core/config.py",
+      "status": "added",
+      "insertions": 367,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/docker-compose.yml",
+      "status": "added",
+      "insertions": 31,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/main.py",
+      "status": "added",
+      "insertions": 242,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/main_docker.py",
+      "status": "added",
+      "insertions": 269,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/models/__init__.py",
+      "status": "added",
+      "insertions": 1,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/models/schemas.py",
+      "status": "added",
+      "insertions": 406,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/scripts/generate_risk_config.py",
+      "status": "added",
+      "insertions": 209,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/services/__init__.py",
+      "status": "added",
+      "insertions": 1,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/services/commission_reconcile_job.py",
+      "status": "added",
+      "insertions": 47,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/services/data_service.py",
+      "status": "added",
+      "insertions": 225,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/services/data_service_docker.py",
+      "status": "added",
+      "insertions": 2347,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/services/data_service_real.py",
+      "status": "added",
+      "insertions": 445,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/services/equity_snapshot_job.py",
+      "status": "added",
+      "insertions": 89,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/services/market_circuit_breaker_job.py",
+      "status": "added",
+      "insertions": 250,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/backend/services/metric_precompute_job.py",
+      "status": "added",
+      "insertions": 46,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/deploy.sh",
+      "status": "added",
+      "insertions": 314,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/frontend/css/style.css",
+      "status": "added",
+      "insertions": 1211,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/frontend/detail.html",
+      "status": "added",
+      "insertions": 440,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/frontend/index.html",
+      "status": "added",
+      "insertions": 443,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/frontend/js/api.js",
+      "status": "added",
+      "insertions": 154,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/frontend/js/charts.js",
+      "status": "added",
+      "insertions": 305,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/frontend/js/config.js",
+      "status": "added",
+      "insertions": 63,
+      "deletions": 0
+    },
+    {
+      "path": "dashboard/frontend/js/main.js",
+      "status": "added",
+      "insertions": 641,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/docker-compose.yml",
+      "status": "added",
+      "insertions": 40,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/init-scripts/01-create-schema.sql",
+      "status": "added",
+      "insertions": 35,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/init-scripts/02-init-tables.sql",
+      "status": "added",
+      "insertions": 300,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/init-scripts/03-create-trade-records.sql",
+      "status": "added",
+      "insertions": 45,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/init-scripts/04-multimodule.sql",
+      "status": "added",
+      "insertions": 59,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/init-scripts/05-metric-snapshot.sql",
+      "status": "added",
+      "insertions": 46,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/init-scripts/06-position-snapshot.sql",
+      "status": "added",
+      "insertions": 46,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/init-scripts/07-market-circuit-breaker.sql",
+      "status": "added",
+      "insertions": 38,
+      "deletions": 0
+    },
+    {
+      "path": "database/postgres/scripts/backup-postgres.sh",
+      "status": "added",
+      "insertions": 60,
+      "deletions": 0
+    },
+    {
+      "path": "docker-compose.yml",
+      "status": "added",
+      "insertions": 429,
+      "deletions": 0
+    },
+    {
+      "path": "docs/architecture.html",
+      "status": "added",
+      "insertions": 14869,
+      "deletions": 0
+    },
+    {
+      "path": "docs/architecture/StratTuneAI-反馈闭环架构图.html",
+      "status": "added",
+      "insertions": 414,
+      "deletions": 0
+    },
+    {
+      "path": "docs/architecture/StratTuneAI调优流程.html",
+      "status": "added",
+      "insertions": 14882,
+      "deletions": 0
+    },
+    {
+      "path": "docs/architecture/StratTuneAI调优流程.visual-check.html",
+      "status": "added",
+      "insertions": 32,
+      "deletions": 0
+    },
+    {
+      "path": "docs/architecture/业务逻辑架构图.html",
+      "status": "added",
+      "insertions": 255,
+      "deletions": 0
+    },
+    {
+      "path": "docs/architecture/核心交易业务流程.html",
+      "status": "added",
+      "insertions": 14897,
+      "deletions": 0
+    },
+    {
+      "path": "docs/architecture/核心交易业务流程.visual-check.html",
+      "status": "added",
+      "insertions": 32,
+      "deletions": 0
+    },
+    {
+      "path": "docs/architecture/系统架构图.html",
+      "status": "added",
+      "insertions": 14869,
+      "deletions": 0
+    },
+    {
+      "path": "docs/architecture/系统架构图.visual-check.html",
+      "status": "added",
+      "insertions": 32,
+      "deletions": 0
+    },
+    {
+      "path": "docs/design/dashboard_multimodule_mockup.html",
+      "status": "added",
+      "insertions": 919,
+      "deletions": 0
+    },
+    {
+      "path": "pytest.ini",
+      "status": "added",
+      "insertions": 6,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/analyze_risk.py",
+      "status": "added",
+      "insertions": 137,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/backfill_klines.py",
+      "status": "added",
+      "insertions": 100,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/backfill_pnl.py",
+      "status": "added",
+      "insertions": 198,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/backfill_realized_pnl.py",
+      "status": "added",
+      "insertions": 361,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/check_code_sync.sh",
+      "status": "added",
+      "insertions": 341,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/check_commission.py",
+      "status": "added",
+      "insertions": 186,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/check_commission_detail.py",
+      "status": "added",
+      "insertions": 273,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/check_market_vs_positions.py",
+      "status": "added",
+      "insertions": 79,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/check_pnl.py",
+      "status": "added",
+      "insertions": 124,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/check_tpsl_orders.py",
+      "status": "added",
+      "insertions": 181,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/check_tpsl_orders_server.py",
+      "status": "added",
+      "insertions": 142,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/check_trade_stats.py",
+      "status": "added",
+      "insertions": 65,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/cleanup_klines.sh",
+      "status": "added",
+      "insertions": 84,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/collector_fixed.py",
+      "status": "added",
+      "insertions": 358,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/diagnose_billusdt.py",
+      "status": "added",
+      "insertions": 235,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/download_klines.py",
+      "status": "added",
+      "insertions": 269,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/download_solusdt_klines.py",
+      "status": "added",
+      "insertions": 69,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/download_solusdt_klines_v2.py",
+      "status": "added",
+      "insertions": 81,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/fix_sl_tp_billusdt.py",
+      "status": "added",
+      "insertions": 228,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/investigate_billusdt.py",
+      "status": "added",
+      "insertions": 291,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/manual_allocation_trigger.py",
+      "status": "added",
+      "insertions": 112,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/manual_short_billusdt.py",
+      "status": "added",
+      "insertions": 554,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/monitor_sl_tp_billusdt.py",
+      "status": "added",
+      "insertions": 231,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/query_mtpcs_trades.py",
+      "status": "added",
+      "insertions": 305,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/quick_check.py",
+      "status": "added",
+      "insertions": 107,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/set_sl_tp_billusdt.py",
+      "status": "added",
+      "insertions": 126,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/ssh_query.py",
+      "status": "added",
+      "insertions": 37,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/test_kline_pipeline.sh",
+      "status": "added",
+      "insertions": 326,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/validate_precision.py",
+      "status": "added",
+      "insertions": 262,
+      "deletions": 0
+    },
+    {
+      "path": "scripts/validate_precision_offline.py",
+      "status": "added",
+      "insertions": 284,
+      "deletions": 0
+    },
+    {
+      "path": "services/data_backend/Dockerfile",
+      "status": "added",
+      "insertions": 34,
+      "deletions": 0
+    },
+    {
+      "path": "services/data_backend/deploy.sh",
+      "status": "added",
+      "insertions": 234,
+      "deletions": 0
+    },
+    {
+      "path": "services/data_backend/src/main.py",
+      "status": "added",
+      "insertions": 156,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_monitor/Dockerfile",
+      "status": "added",
+      "insertions": 28,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_monitor/src/__init__.py",
+      "status": "added",
+      "insertions": 1,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_monitor/src/monitor.py",
+      "status": "added",
+      "insertions": 319,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/Dockerfile",
+      "status": "added",
+      "insertions": 47,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/api/__init__.py",
+      "status": "added",
+      "insertions": 5,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/api/registry_routes.py",
+      "status": "added",
+      "insertions": 438,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/api/routes.py",
+      "status": "added",
+      "insertions": 314,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/core/__init__.py",
+      "status": "added",
+      "insertions": 7,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/core/binance_client.py",
+      "status": "added",
+      "insertions": 227,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/core/collector.py",
+      "status": "added",
+      "insertions": 381,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/core/indicator.py",
+      "status": "added",
+      "insertions": 325,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/core/registry.py",
+      "status": "added",
+      "insertions": 344,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/core/scheduler.py",
+      "status": "added",
+      "insertions": 317,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/db/migrations/create_registered_symbols_table.py",
+      "status": "added",
+      "insertions": 49,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/db/run_migrations.py",
+      "status": "added",
+      "insertions": 66,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/models/__init__.py",
+      "status": "added",
+      "insertions": 5,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/models/kline.py",
+      "status": "added",
+      "insertions": 73,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/models/registered_symbol.py",
+      "status": "added",
+      "insertions": 128,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/scripts/fetch_history_bulk.py",
+      "status": "added",
+      "insertions": 163,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/scripts/fetch_history_data.py",
+      "status": "added",
+      "insertions": 141,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/shared/core/config.py",
+      "status": "added",
+      "insertions": 103,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/shared/core/database.py",
+      "status": "added",
+      "insertions": 112,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/shared/utils/helpers.py",
+      "status": "added",
+      "insertions": 310,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/shared/utils/logger.py",
+      "status": "added",
+      "insertions": 151,
+      "deletions": 0
+    },
+    {
+      "path": "services/kline_service/src/main.py",
+      "status": "added",
+      "insertions": 312,
+      "deletions": 0
+    },
+    {
+      "path": "shared/__init__.py",
+      "status": "added",
+      "insertions": 27,
+      "deletions": 0
+    },
+    {
+      "path": "shared/base_strategy.py",
+      "status": "added",
+      "insertions": 274,
+      "deletions": 0
+    },
+    {
+      "path": "shared/binance_api.py",
+      "status": "added",
+      "insertions": 1471,
+      "deletions": 0
+    },
+    {
+      "path": "shared/capital_manager.py",
+      "status": "added",
+      "insertions": 626,
+      "deletions": 0
+    },
+    {
+      "path": "shared/circuit_breaker.py",
+      "status": "added",
+      "insertions": 372,
+      "deletions": 0
+    },
+    {
+      "path": "shared/circuit_breaker_config.yaml",
+      "status": "added",
+      "insertions": 44,
+      "deletions": 0
+    },
+    {
+      "path": "shared/condition_orders.py",
+      "status": "added",
+      "insertions": 189,
+      "deletions": 0
+    },
+    {
+      "path": "shared/config_loader.py",
+      "status": "added",
+      "insertions": 299,
+      "deletions": 0
+    },
+    {
+      "path": "shared/database.py",
+      "status": "added",
+      "insertions": 353,
+      "deletions": 0
+    },
+    {
+      "path": "shared/dynamic_atr_filter.py",
+      "status": "added",
+      "insertions": 485,
+      "deletions": 0
+    },
+    {
+      "path": "shared/dynamic_trailing.py",
+      "status": "added",
+      "insertions": 406,
+      "deletions": 0
+    },
+    {
+      "path": "shared/indicators.py",
+      "status": "added",
+      "insertions": 355,
+      "deletions": 0
+    },
+    {
+      "path": "shared/kline_service.py",
+      "status": "added",
+      "insertions": 321,
+      "deletions": 0
+    },
+    {
+      "path": "shared/market_cap.py",
+      "status": "added",
+      "insertions": 556,
+      "deletions": 0
+    },
+    {
+      "path": "shared/notification.py",
+      "status": "added",
+      "insertions": 481,
+      "deletions": 0
+    },
+    {
+      "path": "shared/position_baseline.py",
+      "status": "added",
+      "insertions": 444,
+      "deletions": 0
+    },
+    {
+      "path": "shared/position_ownership.py",
+      "status": "added",
+      "insertions": 265,
+      "deletions": 0
+    },
+    {
+      "path": "shared/scheduler/__init__.py",
+      "status": "added",
+      "insertions": 181,
+      "deletions": 0
+    },
+    {
+      "path": "shared/strategy_state.py",
+      "status": "added",
+      "insertions": 153,
+      "deletions": 0
+    },
+    {
+      "path": "shared/trade_logger.py",
+      "status": "added",
+      "insertions": 869,
+      "deletions": 0
+    },
+    {
+      "path": "shared/utils.py",
+      "status": "added",
+      "insertions": 252,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth/Dockerfile",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth/__init__.py",
+      "status": "added",
+      "insertions": 12,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth/config.yaml",
+      "status": "added",
+      "insertions": 716,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth/main.py",
+      "status": "added",
+      "insertions": 468,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth/market_state.py",
+      "status": "added",
+      "insertions": 292,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth/strategy.py",
+      "status": "added",
+      "insertions": 6011,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth/tests/__init__.py",
+      "status": "added",
+      "insertions": 0,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth/tuning_overrides/V20260811.yaml",
+      "status": "added",
+      "insertions": 17,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/Dockerfile",
+      "status": "added",
+      "insertions": 30,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/__init__.py",
+      "status": "added",
+      "insertions": 12,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/config.yaml",
+      "status": "added",
+      "insertions": 723,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/main.py",
+      "status": "added",
+      "insertions": 468,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/market_state.py",
+      "status": "added",
+      "insertions": 292,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/strategy.py",
+      "status": "added",
+      "insertions": 6020,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/tests/__init__.py",
+      "status": "added",
+      "insertions": 0,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/tuning_overrides/V20260910.yaml",
+      "status": "added",
+      "insertions": 7,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/Dockerfile",
+      "status": "added",
+      "insertions": 35,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/__init__.py",
+      "status": "added",
+      "insertions": 12,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/config.yaml",
+      "status": "added",
+      "insertions": 376,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/grid_calculator.py",
+      "status": "added",
+      "insertions": 976,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/main.py",
+      "status": "added",
+      "insertions": 158,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/margin_advisor.py",
+      "status": "added",
+      "insertions": 661,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/market_state.py",
+      "status": "added",
+      "insertions": 1024,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/order_manager.py",
+      "status": "added",
+      "insertions": 393,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/position_manager.py",
+      "status": "added",
+      "insertions": 342,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/risk_manager.py",
+      "status": "added",
+      "insertions": 381,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/signal_bot.py",
+      "status": "added",
+      "insertions": 994,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/strategy.py",
+      "status": "added",
+      "insertions": 853,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/grid/tuning_overrides/V20260830.yaml",
+      "status": "added",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/Dockerfile",
+      "status": "added",
+      "insertions": 22,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/__init__.py",
+      "status": "added",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/candidate_pool.py",
+      "status": "added",
+      "insertions": 995,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/config.yaml",
+      "status": "added",
+      "insertions": 580,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/executor.py",
+      "status": "added",
+      "insertions": 1741,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/main.py",
+      "status": "added",
+      "insertions": 136,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/market_data.py",
+      "status": "added",
+      "insertions": 458,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/pattern.py",
+      "status": "added",
+      "insertions": 559,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/position_manager.py",
+      "status": "added",
+      "insertions": 668,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/risk_manager.py",
+      "status": "added",
+      "insertions": 747,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/scoring_engine.py",
+      "status": "added",
+      "insertions": 1461,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/strategy.py",
+      "status": "added",
+      "insertions": 3690,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/tests/__init__.py",
+      "status": "added",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/hrs/tuning_overrides/V20260819.yaml",
+      "status": "added",
+      "insertions": 4,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/Dockerfile",
+      "status": "added",
+      "insertions": 34,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/__init__.py",
+      "status": "added",
+      "insertions": 12,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/config.yaml",
+      "status": "added",
+      "insertions": 305,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/detector.py",
+      "status": "added",
+      "insertions": 551,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/executor.py",
+      "status": "added",
+      "insertions": 3408,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/main.py",
+      "status": "added",
+      "insertions": 152,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/pattern.py",
+      "status": "added",
+      "insertions": 298,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/scoring_engine.py",
+      "status": "added",
+      "insertions": 710,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/strategy.py",
+      "status": "added",
+      "insertions": 2209,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/tests/__init__.py",
+      "status": "added",
+      "insertions": 1,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/tuning_overrides/V20260811.yaml",
+      "status": "added",
+      "insertions": 13,
+      "deletions": 0
+    },
+    {
+      "path": "strategies/new_coin/tuning_overrides/V20260830.yaml",
+      "status": "added",
+      "insertions": 17,
+      "deletions": 0
+    },
+    {
+      "path": "tests/integration/__init__.py",
+      "status": "added",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "tests/test_kline_service/__init__.py",
+      "status": "added",
+      "insertions": 0,
+      "deletions": 0
+    },
+    {
+      "path": "tests/test_kline_service/conftest.py",
+      "status": "added",
+      "insertions": 203,
+      "deletions": 0
+    },
+    {
+      "path": "tests/test_shared/__init__.py",
+      "status": "added",
+      "insertions": 3,
+      "deletions": 0
+    },
+    {
+      "path": "tests/test_strategies/__init__.py",
+      "status": "added",
+      "insertions": 0,
+      "deletions": 0
+    },
+    {
+      "path": "tools/download_klines_simple.sh",
+      "status": "added",
+      "insertions": 155,
+      "deletions": 0
+    },
+    {
+      "path": "tools/download_new_coin_klines.py",
+      "status": "added",
+      "insertions": 645,
+      "deletions": 0
+    },
+    {
+      "path": "tools/gen_solusdt_1d_sql.py",
+      "status": "added",
+      "insertions": 21,
+      "deletions": 0
+    },
+    {
+      "path": "tools/verify_solusdt.sh",
+      "status": "added",
+      "insertions": 45,
+      "deletions": 0
+    }
+  ],
+  "excluded_files": [
+    {
+      "path": "ai_tuner/allocation/tests/test_allocation.py",
+      "status": "added",
+      "insertions": 867,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/allocation/tests/test_daily_refresher.py",
+      "status": "added",
+      "insertions": 374,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/requirements.txt",
+      "status": "added",
+      "insertions": 10,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "ai_tuner/tests/test_auto_apply.py",
+      "status": "added",
+      "insertions": 493,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_config_operator.py",
+      "status": "added",
+      "insertions": 336,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_context_builder.py",
+      "status": "added",
+      "insertions": 536,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_cost_tracker.py",
+      "status": "added",
+      "insertions": 338,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_diff_generator.py",
+      "status": "added",
+      "insertions": 249,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_effect_tracker.py",
+      "status": "added",
+      "insertions": 498,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_grid_adapter.py",
+      "status": "added",
+      "insertions": 188,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_income_reconciler.py",
+      "status": "added",
+      "insertions": 383,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_learning_signal.py",
+      "status": "added",
+      "insertions": 414,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_llm_client.py",
+      "status": "added",
+      "insertions": 251,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_response_parser.py",
+      "status": "added",
+      "insertions": 655,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_rollback_manager.py",
+      "status": "added",
+      "insertions": 258,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "ai_tuner/tests/test_version_manager.py",
+      "status": "added",
+      "insertions": 244,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "dashboard/backend/requirements.txt",
+      "status": "added",
+      "insertions": 22,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "dashboard/backend/tests/test_config.py",
+      "status": "added",
+      "insertions": 86,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "dashboard/nginx/dashboard.conf",
+      "status": "added",
+      "insertions": 52,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "requirements.txt",
+      "status": "added",
+      "insertions": 28,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "services/kline_monitor/requirements.txt",
+      "status": "added",
+      "insertions": 2,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "services/kline_service/requirements.txt",
+      "status": "added",
+      "insertions": 39,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "strategies/btc_eth/test_realized_pnl_fix.py",
+      "status": "added",
+      "insertions": 560,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/btc_eth/test_v23_functional.py",
+      "status": "added",
+      "insertions": 1138,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/btc_eth/test_v23_orphan_cleanup.py",
+      "status": "added",
+      "insertions": 1074,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/btc_eth/tests/test_ranging_risk_three_mechanisms.py",
+      "status": "added",
+      "insertions": 1182,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/btc_eth/tests/test_signal_level_risk.py",
+      "status": "added",
+      "insertions": 463,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/btc_eth/tests/test_stop_loss_mark.py",
+      "status": "added",
+      "insertions": 93,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/btc_eth/tests/test_time_stop_review.py",
+      "status": "added",
+      "insertions": 470,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/tests/test_stop_loss_mark.py",
+      "status": "added",
+      "insertions": 157,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/requirements.txt",
+      "status": "added",
+      "insertions": 6,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "strategies/hrs/tests/test_fix_verification.py",
+      "status": "added",
+      "insertions": 1822,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_market_data.py",
+      "status": "added",
+      "insertions": 418,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_pattern.py",
+      "status": "added",
+      "insertions": 468,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_position_manager.py",
+      "status": "added",
+      "insertions": 256,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_risk_manager.py",
+      "status": "added",
+      "insertions": 310,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_scoring_engine.py",
+      "status": "added",
+      "insertions": 457,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_stop_loss_mark.py",
+      "status": "added",
+      "insertions": 83,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_trend_filter_validation.py",
+      "status": "added",
+      "insertions": 630,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_v23_dynamic_thresholds.py",
+      "status": "added",
+      "insertions": 676,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/new_coin/test_delisted_symbols.py",
+      "status": "added",
+      "insertions": 143,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/new_coin/test_drawdown_fix.py",
+      "status": "added",
+      "insertions": 617,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/new_coin/test_realized_pnl_fix.py",
+      "status": "added",
+      "insertions": 985,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/new_coin/tests/test_stop_loss_mark.py",
+      "status": "added",
+      "insertions": 135,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/integration/test_btc_eth_strategy.py",
+      "status": "added",
+      "insertions": 522,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/integration/test_grid_strategy.py",
+      "status": "added",
+      "insertions": 396,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/integration/test_kline_integration.py",
+      "status": "added",
+      "insertions": 545,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/integration/test_new_coin_strategy.py",
+      "status": "added",
+      "insertions": 369,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/integration/test_v6_16_7_fix.py",
+      "status": "added",
+      "insertions": 872,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_dynamic_grid_params.py",
+      "status": "added",
+      "insertions": 354,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_frequency_controller.py",
+      "status": "added",
+      "insertions": 365,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_kline_service/test_binance_client.py",
+      "status": "added",
+      "insertions": 359,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_kline_service/test_collector.py",
+      "status": "added",
+      "insertions": 268,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_kline_service/test_registry.py",
+      "status": "added",
+      "insertions": 312,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_kline_service/test_scheduler.py",
+      "status": "added",
+      "insertions": 379,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_position_manager_cancel.py",
+      "status": "added",
+      "insertions": 178,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_position_ownership.py",
+      "status": "added",
+      "insertions": 640,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_binance_api.py",
+      "status": "added",
+      "insertions": 237,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_circuit_breaker.py",
+      "status": "added",
+      "insertions": 528,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_commissions.py",
+      "status": "added",
+      "insertions": 215,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_database.py",
+      "status": "added",
+      "insertions": 164,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_dynamic_trailing.py",
+      "status": "added",
+      "insertions": 1180,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_indicators.py",
+      "status": "added",
+      "insertions": 250,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_kline_service.py",
+      "status": "added",
+      "insertions": 513,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_notification.py",
+      "status": "added",
+      "insertions": 107,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_scheduler.py",
+      "status": "added",
+      "insertions": 173,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_trade_logger.py",
+      "status": "added",
+      "insertions": 86,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_unrealized_pnl.py",
+      "status": "added",
+      "insertions": 105,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_shared/test_utils.py",
+      "status": "added",
+      "insertions": 143,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_bb_touch_half_zone.py",
+      "status": "added",
+      "insertions": 152,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_btc_eth_aggressive_reduceonly.py",
+      "status": "added",
+      "insertions": 368,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_btc_eth_kline.py",
+      "status": "added",
+      "insertions": 1056,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_btc_eth_trailing_boundary.py",
+      "status": "added",
+      "insertions": 847,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_capital_allocation_enforcement.py",
+      "status": "added",
+      "insertions": 1862,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_dynamic_trailing_boundary.py",
+      "status": "added",
+      "insertions": 683,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_executor_trailing.py",
+      "status": "added",
+      "insertions": 1024,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_grid_kline.py",
+      "status": "added",
+      "insertions": 843,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_kline.py",
+      "status": "added",
+      "insertions": 684,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_mtpcs_partial_tp_and_trailing.py",
+      "status": "added",
+      "insertions": 343,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_mtpcs_v628_add_position.py",
+      "status": "added",
+      "insertions": 743,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_new_coin_kline.py",
+      "status": "added",
+      "insertions": 861,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_new_coin_tracking_entry.py",
+      "status": "added",
+      "insertions": 425,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_position_size_allocated_ratio.py",
+      "status": "added",
+      "insertions": 102,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_ranging_volume_confirm.py",
+      "status": "added",
+      "insertions": 323,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_take_profit_fill_detect.py",
+      "status": "added",
+      "insertions": 303,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_time_stop_review.py",
+      "status": "added",
+      "insertions": 314,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_total_margin_control.py",
+      "status": "added",
+      "insertions": 170,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_tuning_overrides.py",
+      "status": "added",
+      "insertions": 343,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    }
+  ]
+}

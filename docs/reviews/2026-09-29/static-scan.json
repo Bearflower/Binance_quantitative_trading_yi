@@ -1,0 +1,1910 @@
+[
+  {
+    "path": "ai_tuner/adapters/__init__.py",
+    "lines": 40,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/adapters/base_adapter.py",
+    "lines": 384,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/adapters/grid_adapter.py",
+    "lines": 983,
+    "functions": 24,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/adapters/hrs_adapter.py",
+    "lines": 310,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/adapters/mtpcs_adapter.py",
+    "lines": 366,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/adapters/mtpcs_aggressive_adapter.py",
+    "lines": 364,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/adapters/new_coin_adapter.py",
+    "lines": 426,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/__init__.py",
+    "lines": 40,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/allocation_calculator.py",
+    "lines": 267,
+    "functions": 3,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/balance_provider.py",
+    "lines": 60,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/config_updater.py",
+    "lines": 367,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/daily_refresher.py",
+    "lines": 219,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/monthly_job.py",
+    "lines": 380,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/pnl_collector.py",
+    "lines": 252,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/profit_extraction_job.py",
+    "lines": 236,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/tests/__init__.py",
+    "lines": 0,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/tests/test_allocation.py",
+    "lines": 867,
+    "functions": 39,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/allocation/tests/test_daily_refresher.py",
+    "lines": 374,
+    "functions": 20,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/backtest/__init__.py",
+    "lines": 31,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/backtest/grid_backtest.py",
+    "lines": 558,
+    "functions": 15,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/backtest/market_segment.py",
+    "lines": 271,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/backtest/metrics.py",
+    "lines": 411,
+    "functions": 10,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/backtest/models.py",
+    "lines": 79,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/cleanup/__init__.py",
+    "lines": 5,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/cleanup/orphan_cleanup.py",
+    "lines": 513,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/deploy/__init__.py",
+    "lines": 20,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/deploy/config_operator.py",
+    "lines": 437,
+    "functions": 10,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/deploy/diff_generator.py",
+    "lines": 128,
+    "functions": 3,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/deploy/rollback_manager.py",
+    "lines": 162,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/deploy/version_manager.py",
+    "lines": 213,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/engine/__init__.py",
+    "lines": 20,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/engine/cost_tracker.py",
+    "lines": 200,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/engine/llm_client.py",
+    "lines": 183,
+    "functions": 3,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/engine/response_parser.py",
+    "lines": 321,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/feedback/__init__.py",
+    "lines": 22,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/feedback/context_enhancer.py",
+    "lines": 199,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/feedback/effect_tracker.py",
+    "lines": 386,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/feedback/learning_signal.py",
+    "lines": 341,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/main.py",
+    "lines": 974,
+    "functions": 24,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/memory/__init__.py",
+    "lines": 18,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/memory/context_builder.py",
+    "lines": 108,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/memory/db_handler.py",
+    "lines": 419,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/monitor/__init__.py",
+    "lines": 3,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/monitor/daily_health_check.py",
+    "lines": 193,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/notifier/__init__.py",
+    "lines": 14,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/notifier/messenger.py",
+    "lines": 507,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/reconciler/__init__.py",
+    "lines": 11,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/reconciler/income_reconciler.py",
+    "lines": 333,
+    "functions": 16,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/reconciler/tests/__init__.py",
+    "lines": 5,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/scheduler/__init__.py",
+    "lines": 14,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/scheduler/weekly_job.py",
+    "lines": 587,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/__init__.py",
+    "lines": 3,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_auto_apply.py",
+    "lines": 493,
+    "functions": 15,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_config_operator.py",
+    "lines": 336,
+    "functions": 20,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_context_builder.py",
+    "lines": 536,
+    "functions": 22,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_cost_tracker.py",
+    "lines": 338,
+    "functions": 23,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_diff_generator.py",
+    "lines": 249,
+    "functions": 16,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_effect_tracker.py",
+    "lines": 498,
+    "functions": 22,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_grid_adapter.py",
+    "lines": 188,
+    "functions": 10,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_income_reconciler.py",
+    "lines": 383,
+    "functions": 26,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_learning_signal.py",
+    "lines": 414,
+    "functions": 11,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_llm_client.py",
+    "lines": 251,
+    "functions": 21,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_response_parser.py",
+    "lines": 655,
+    "functions": 50,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_rollback_manager.py",
+    "lines": 258,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "ai_tuner/tests/test_version_manager.py",
+    "lines": 244,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "backtest/__init__.py",
+    "lines": 3,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/analyze_filter_reason.py",
+    "lines": 80,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_adjustment_050801.py",
+    "lines": 1115,
+    "functions": 20,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_btc_eth.py",
+    "lines": 380,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_compare_all_versions.py",
+    "lines": 265,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_compare_v616_vs_v6161.py",
+    "lines": 1126,
+    "functions": 35,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_engine_complete.py",
+    "lines": 569,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_plan3.py",
+    "lines": 309,
+    "functions": 11,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_plan4.py",
+    "lines": 300,
+    "functions": 11,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_v616.py",
+    "lines": 1348,
+    "functions": 23,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_v6161.py",
+    "lines": 1429,
+    "functions": 24,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/backtest_v6162.py",
+    "lines": 1651,
+    "functions": 26,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/convert_kline_data.py",
+    "lines": 97,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/download_klines.py",
+    "lines": 201,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/download_klines_server.py",
+    "lines": 90,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/export_klines_from_db.py",
+    "lines": 51,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "backtest/btc_eth/scripts/run_backtest_optimized.py",
+    "lines": 525,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/__init__.py",
+    "lines": 14,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/backtest_engine.py",
+    "lines": 1709,
+    "functions": 34,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/data_loader.py",
+    "lines": 245,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/exchange_simulator.py",
+    "lines": 953,
+    "functions": 37,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/performance_analyzer.py",
+    "lines": 429,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/report_generator.py",
+    "lines": 355,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/run_backtest.py",
+    "lines": 81,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/scripts/backtest_grid.py",
+    "lines": 794,
+    "functions": 15,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/scripts/backtest_visualization.py",
+    "lines": 359,
+    "functions": 3,
+    "parsed": true
+  },
+  {
+    "path": "backtest/grid/trailing_stop_simulator.py",
+    "lines": 191,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/cache_manager.py",
+    "lines": 228,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/download_klines.py",
+    "lines": 159,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/download_labusdt.py",
+    "lines": 157,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/market_scanner.py",
+    "lines": 612,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/quick_backtest.py",
+    "lines": 994,
+    "functions": 14,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/quick_backtest_labusdt.py",
+    "lines": 483,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/report_generator.py",
+    "lines": 584,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/run_backtest.py",
+    "lines": 299,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/ssh_config.py",
+    "lines": 11,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "backtest/hrs/timeline_backtest.py",
+    "lines": 1204,
+    "functions": 20,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/__init__.py",
+    "lines": 19,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/backtest.py",
+    "lines": 114,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/backtest_engine.py",
+    "lines": 663,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/data_loader.py",
+    "lines": 284,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/order_executor.py",
+    "lines": 183,
+    "functions": 4,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/position_manager.py",
+    "lines": 364,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/report_generator.py",
+    "lines": 456,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/scripts/download_klines_from_api.py",
+    "lines": 499,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/scripts/export_data_from_server.py",
+    "lines": 415,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/scripts/generate_sample_data.py",
+    "lines": 91,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "backtest/new_coin/statistics_analyzer.py",
+    "lines": 224,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/api/__init__.py",
+    "lines": 1,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/api/routes.py",
+    "lines": 553,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/api/routes_docker.py",
+    "lines": 605,
+    "functions": 14,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/collectors/__init__.py",
+    "lines": 3,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/collectors/collector.py",
+    "lines": 414,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/collectors/weekly_collector.py",
+    "lines": 625,
+    "functions": 14,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/core/__init__.py",
+    "lines": 1,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/core/cache.py",
+    "lines": 205,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/core/config.py",
+    "lines": 367,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/main.py",
+    "lines": 242,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/main_docker.py",
+    "lines": 269,
+    "functions": 10,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/models/__init__.py",
+    "lines": 1,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/models/schemas.py",
+    "lines": 406,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/scripts/generate_risk_config.py",
+    "lines": 209,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/services/__init__.py",
+    "lines": 1,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/services/commission_reconcile_job.py",
+    "lines": 47,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/services/data_service.py",
+    "lines": 225,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/services/data_service_docker.py",
+    "lines": 2347,
+    "functions": 71,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/services/data_service_real.py",
+    "lines": 445,
+    "functions": 11,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/services/equity_snapshot_job.py",
+    "lines": 89,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/services/market_circuit_breaker_job.py",
+    "lines": 250,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/services/metric_precompute_job.py",
+    "lines": 46,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "dashboard/backend/tests/test_config.py",
+    "lines": 86,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "scripts/analyze_risk.py",
+    "lines": 137,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "scripts/backfill_klines.py",
+    "lines": 100,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "scripts/backfill_pnl.py",
+    "lines": 198,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "scripts/backfill_realized_pnl.py",
+    "lines": 361,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "scripts/check_commission.py",
+    "lines": 186,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "scripts/check_commission_detail.py",
+    "lines": 273,
+    "functions": 3,
+    "parsed": true
+  },
+  {
+    "path": "scripts/check_market_vs_positions.py",
+    "lines": 79,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "scripts/check_pnl.py",
+    "lines": 124,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "scripts/check_tpsl_orders.py",
+    "lines": 181,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "scripts/check_tpsl_orders_server.py",
+    "lines": 142,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "scripts/check_trade_stats.py",
+    "lines": 65,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "scripts/collector_fixed.py",
+    "lines": 358,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "scripts/diagnose_billusdt.py",
+    "lines": 235,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "scripts/download_klines.py",
+    "lines": 269,
+    "functions": 4,
+    "parsed": true
+  },
+  {
+    "path": "scripts/download_solusdt_klines.py",
+    "lines": 69,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "scripts/download_solusdt_klines_v2.py",
+    "lines": 81,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "scripts/fix_sl_tp_billusdt.py",
+    "lines": 228,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "scripts/investigate_billusdt.py",
+    "lines": 291,
+    "functions": 10,
+    "parsed": true
+  },
+  {
+    "path": "scripts/manual_allocation_trigger.py",
+    "lines": 112,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "scripts/manual_short_billusdt.py",
+    "lines": 554,
+    "functions": 16,
+    "parsed": true
+  },
+  {
+    "path": "scripts/monitor_sl_tp_billusdt.py",
+    "lines": 231,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "scripts/query_mtpcs_trades.py",
+    "lines": 305,
+    "functions": 4,
+    "parsed": true
+  },
+  {
+    "path": "scripts/quick_check.py",
+    "lines": 107,
+    "functions": 3,
+    "parsed": true
+  },
+  {
+    "path": "scripts/set_sl_tp_billusdt.py",
+    "lines": 126,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "scripts/ssh_query.py",
+    "lines": 37,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "scripts/validate_precision.py",
+    "lines": 262,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "scripts/validate_precision_offline.py",
+    "lines": 284,
+    "functions": 4,
+    "parsed": true
+  },
+  {
+    "path": "services/data_backend/src/main.py",
+    "lines": 156,
+    "functions": 4,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_monitor/src/__init__.py",
+    "lines": 1,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_monitor/src/monitor.py",
+    "lines": 319,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/api/__init__.py",
+    "lines": 5,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/api/registry_routes.py",
+    "lines": 438,
+    "functions": 14,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/api/routes.py",
+    "lines": 314,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/core/__init__.py",
+    "lines": 7,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/core/binance_client.py",
+    "lines": 227,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/core/collector.py",
+    "lines": 381,
+    "functions": 10,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/core/indicator.py",
+    "lines": 325,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/core/registry.py",
+    "lines": 344,
+    "functions": 14,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/core/scheduler.py",
+    "lines": 317,
+    "functions": 16,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/db/migrations/create_registered_symbols_table.py",
+    "lines": 49,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/db/run_migrations.py",
+    "lines": 66,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/models/__init__.py",
+    "lines": 5,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/models/kline.py",
+    "lines": 73,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/models/registered_symbol.py",
+    "lines": 128,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/scripts/fetch_history_bulk.py",
+    "lines": 163,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/scripts/fetch_history_data.py",
+    "lines": 141,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/shared/core/config.py",
+    "lines": 103,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/shared/core/database.py",
+    "lines": 112,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/shared/utils/helpers.py",
+    "lines": 310,
+    "functions": 19,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/shared/utils/logger.py",
+    "lines": 151,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "services/kline_service/src/main.py",
+    "lines": 312,
+    "functions": 4,
+    "parsed": true
+  },
+  {
+    "path": "shared/__init__.py",
+    "lines": 27,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "shared/base_strategy.py",
+    "lines": 274,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "shared/binance_api.py",
+    "lines": 1471,
+    "functions": 43,
+    "parsed": true
+  },
+  {
+    "path": "shared/capital_manager.py",
+    "lines": 626,
+    "functions": 23,
+    "parsed": true
+  },
+  {
+    "path": "shared/circuit_breaker.py",
+    "lines": 372,
+    "functions": 15,
+    "parsed": true
+  },
+  {
+    "path": "shared/condition_orders.py",
+    "lines": 189,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "shared/config_loader.py",
+    "lines": 299,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "shared/database.py",
+    "lines": 353,
+    "functions": 11,
+    "parsed": true
+  },
+  {
+    "path": "shared/dynamic_atr_filter.py",
+    "lines": 485,
+    "functions": 18,
+    "parsed": true
+  },
+  {
+    "path": "shared/dynamic_trailing.py",
+    "lines": 406,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "shared/indicators.py",
+    "lines": 355,
+    "functions": 11,
+    "parsed": true
+  },
+  {
+    "path": "shared/kline_service.py",
+    "lines": 321,
+    "functions": 10,
+    "parsed": true
+  },
+  {
+    "path": "shared/market_cap.py",
+    "lines": 556,
+    "functions": 22,
+    "parsed": true
+  },
+  {
+    "path": "shared/notification.py",
+    "lines": 481,
+    "functions": 14,
+    "parsed": true
+  },
+  {
+    "path": "shared/position_baseline.py",
+    "lines": 444,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "shared/position_ownership.py",
+    "lines": 265,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "shared/scheduler/__init__.py",
+    "lines": 181,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "shared/strategy_state.py",
+    "lines": 153,
+    "functions": 2,
+    "parsed": true
+  },
+  {
+    "path": "shared/trade_logger.py",
+    "lines": 869,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "shared/utils.py",
+    "lines": 252,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/__init__.py",
+    "lines": 12,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/main.py",
+    "lines": 468,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/market_state.py",
+    "lines": 292,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/strategy.py",
+    "lines": 6011,
+    "functions": 127,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/test_realized_pnl_fix.py",
+    "lines": 560,
+    "functions": 19,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/test_v23_functional.py",
+    "lines": 1138,
+    "functions": 86,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/test_v23_orphan_cleanup.py",
+    "lines": 1074,
+    "functions": 75,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/tests/__init__.py",
+    "lines": 0,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/tests/test_ranging_risk_three_mechanisms.py",
+    "lines": 1182,
+    "functions": 139,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/tests/test_signal_level_risk.py",
+    "lines": 463,
+    "functions": 30,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/tests/test_stop_loss_mark.py",
+    "lines": 93,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth/tests/test_time_stop_review.py",
+    "lines": 470,
+    "functions": 33,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/__init__.py",
+    "lines": 12,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/main.py",
+    "lines": 468,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/market_state.py",
+    "lines": 292,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/strategy.py",
+    "lines": 6020,
+    "functions": 127,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/tests/__init__.py",
+    "lines": 0,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "strategies/btc_eth_aggressive/tests/test_stop_loss_mark.py",
+    "lines": 157,
+    "functions": 14,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/__init__.py",
+    "lines": 12,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/grid_calculator.py",
+    "lines": 976,
+    "functions": 18,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/main.py",
+    "lines": 158,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/margin_advisor.py",
+    "lines": 661,
+    "functions": 32,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/market_state.py",
+    "lines": 1024,
+    "functions": 15,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/order_manager.py",
+    "lines": 393,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/position_manager.py",
+    "lines": 342,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/risk_manager.py",
+    "lines": 381,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/signal_bot.py",
+    "lines": 994,
+    "functions": 17,
+    "parsed": true
+  },
+  {
+    "path": "strategies/grid/strategy.py",
+    "lines": 853,
+    "functions": 19,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/__init__.py",
+    "lines": 3,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/candidate_pool.py",
+    "lines": 995,
+    "functions": 27,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/executor.py",
+    "lines": 1741,
+    "functions": 36,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/main.py",
+    "lines": 136,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/market_data.py",
+    "lines": 458,
+    "functions": 16,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/pattern.py",
+    "lines": 559,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/position_manager.py",
+    "lines": 668,
+    "functions": 25,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/risk_manager.py",
+    "lines": 747,
+    "functions": 23,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/scoring_engine.py",
+    "lines": 1461,
+    "functions": 22,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/strategy.py",
+    "lines": 3690,
+    "functions": 68,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/__init__.py",
+    "lines": 3,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/test_fix_verification.py",
+    "lines": 1822,
+    "functions": 146,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/test_market_data.py",
+    "lines": 418,
+    "functions": 36,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/test_pattern.py",
+    "lines": 468,
+    "functions": 38,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/test_position_manager.py",
+    "lines": 256,
+    "functions": 31,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/test_risk_manager.py",
+    "lines": 310,
+    "functions": 34,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/test_scoring_engine.py",
+    "lines": 457,
+    "functions": 45,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/test_stop_loss_mark.py",
+    "lines": 83,
+    "functions": 4,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/test_trend_filter_validation.py",
+    "lines": 630,
+    "functions": 31,
+    "parsed": true
+  },
+  {
+    "path": "strategies/hrs/tests/test_v23_dynamic_thresholds.py",
+    "lines": 676,
+    "functions": 34,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/__init__.py",
+    "lines": 12,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/detector.py",
+    "lines": 551,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/executor.py",
+    "lines": 3408,
+    "functions": 60,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/main.py",
+    "lines": 152,
+    "functions": 1,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/pattern.py",
+    "lines": 298,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/scoring_engine.py",
+    "lines": 710,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/strategy.py",
+    "lines": 2209,
+    "functions": 33,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/test_delisted_symbols.py",
+    "lines": 143,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/test_drawdown_fix.py",
+    "lines": 617,
+    "functions": 30,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/test_realized_pnl_fix.py",
+    "lines": 985,
+    "functions": 43,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/tests/__init__.py",
+    "lines": 1,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "strategies/new_coin/tests/test_stop_loss_mark.py",
+    "lines": 135,
+    "functions": 8,
+    "parsed": true
+  },
+  {
+    "path": "tests/integration/__init__.py",
+    "lines": 3,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "tests/integration/test_btc_eth_strategy.py",
+    "lines": 522,
+    "functions": 14,
+    "parsed": true
+  },
+  {
+    "path": "tests/integration/test_grid_strategy.py",
+    "lines": 396,
+    "functions": 19,
+    "parsed": true
+  },
+  {
+    "path": "tests/integration/test_kline_integration.py",
+    "lines": 545,
+    "functions": 25,
+    "parsed": true
+  },
+  {
+    "path": "tests/integration/test_new_coin_strategy.py",
+    "lines": 369,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "tests/integration/test_v6_16_7_fix.py",
+    "lines": 872,
+    "functions": 28,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_dynamic_grid_params.py",
+    "lines": 354,
+    "functions": 3,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_frequency_controller.py",
+    "lines": 365,
+    "functions": 9,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_kline_service/__init__.py",
+    "lines": 0,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_kline_service/conftest.py",
+    "lines": 203,
+    "functions": 6,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_kline_service/test_binance_client.py",
+    "lines": 359,
+    "functions": 32,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_kline_service/test_collector.py",
+    "lines": 268,
+    "functions": 19,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_kline_service/test_registry.py",
+    "lines": 312,
+    "functions": 24,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_kline_service/test_scheduler.py",
+    "lines": 379,
+    "functions": 36,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_position_manager_cancel.py",
+    "lines": 178,
+    "functions": 10,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_position_ownership.py",
+    "lines": 640,
+    "functions": 50,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/__init__.py",
+    "lines": 3,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_binance_api.py",
+    "lines": 237,
+    "functions": 21,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_circuit_breaker.py",
+    "lines": 528,
+    "functions": 62,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_commissions.py",
+    "lines": 215,
+    "functions": 15,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_database.py",
+    "lines": 164,
+    "functions": 19,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_dynamic_trailing.py",
+    "lines": 1180,
+    "functions": 54,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_indicators.py",
+    "lines": 250,
+    "functions": 18,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_kline_service.py",
+    "lines": 513,
+    "functions": 43,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_notification.py",
+    "lines": 107,
+    "functions": 4,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_scheduler.py",
+    "lines": 173,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_trade_logger.py",
+    "lines": 86,
+    "functions": 5,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_unrealized_pnl.py",
+    "lines": 105,
+    "functions": 7,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_shared/test_utils.py",
+    "lines": 143,
+    "functions": 27,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/__init__.py",
+    "lines": 0,
+    "functions": 0,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_bb_touch_half_zone.py",
+    "lines": 152,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_btc_eth_aggressive_reduceonly.py",
+    "lines": 368,
+    "functions": 21,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_btc_eth_kline.py",
+    "lines": 1056,
+    "functions": 55,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_btc_eth_trailing_boundary.py",
+    "lines": 847,
+    "functions": 38,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_capital_allocation_enforcement.py",
+    "lines": 1862,
+    "functions": 154,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_dynamic_trailing_boundary.py",
+    "lines": 683,
+    "functions": 33,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_executor_trailing.py",
+    "lines": 1024,
+    "functions": 46,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_grid_kline.py",
+    "lines": 843,
+    "functions": 42,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_hrs_kline.py",
+    "lines": 684,
+    "functions": 38,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_mtpcs_partial_tp_and_trailing.py",
+    "lines": 343,
+    "functions": 20,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_mtpcs_v628_add_position.py",
+    "lines": 743,
+    "functions": 58,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_new_coin_kline.py",
+    "lines": 861,
+    "functions": 40,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_new_coin_tracking_entry.py",
+    "lines": 425,
+    "functions": 20,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_position_size_allocated_ratio.py",
+    "lines": 102,
+    "functions": 4,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_ranging_volume_confirm.py",
+    "lines": 323,
+    "functions": 20,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_take_profit_fill_detect.py",
+    "lines": 303,
+    "functions": 18,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_time_stop_review.py",
+    "lines": 314,
+    "functions": 20,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_strategies/test_total_margin_control.py",
+    "lines": 170,
+    "functions": 12,
+    "parsed": true
+  },
+  {
+    "path": "tests/test_tuning_overrides.py",
+    "lines": 343,
+    "functions": 21,
+    "parsed": true
+  },
+  {
+    "path": "tools/download_new_coin_klines.py",
+    "lines": 645,
+    "functions": 13,
+    "parsed": true
+  },
+  {
+    "path": "tools/gen_solusdt_1d_sql.py",
+    "lines": 21,
+    "functions": 0,
+    "parsed": true
+  }
+]

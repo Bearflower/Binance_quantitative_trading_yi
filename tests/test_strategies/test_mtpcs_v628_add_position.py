@@ -29,6 +29,8 @@ sys.path.insert(0, os.path.abspath(PROJECT_ROOT))
 import pytest
 import yaml
 
+from shared.order_fill_waiter import OrderFillResult
+
 # 两版本参数化：模块路径 + 配置文件相对路径（元组作为单个值，配合 ids 显示用例名）
 STRATEGY_MODULES = [
     ('strategies.btc_eth.strategy', 'strategies/btc_eth/config.yaml'),
@@ -71,6 +73,30 @@ def make_position(position_cls, **overrides):
     return pos
 
 
+def make_fill(order_id=100, executed=Decimal('0.1'), orig=None, status='FILLED',
+              avg_price=Decimal('0')):
+    """构造入场订单终态结果（R06 OrderFillResult），替代旧 dict 桩
+
+    executed>0 => has_fill=True（部分/完全成交均可建仓）；status=FILLED 且
+    remaining<=0 => is_filled=True。
+    """
+    executed = Decimal(str(executed))
+    orig = executed if orig is None else Decimal(str(orig))
+    remaining = orig - executed
+    if remaining < 0:
+        remaining = Decimal('0')
+    return OrderFillResult(
+        status=status,
+        executed_qty=executed,
+        orig_qty=orig,
+        remaining_qty=remaining,
+        avg_price=Decimal(str(avg_price)),
+        order_id=order_id,
+        client_order_id=None,
+        raw={},
+    )
+
+
 # ============================================================================
 # Fixtures（两版本参数化）
 # ============================================================================
@@ -108,7 +134,7 @@ def strategy(strategy_builder):
     s.binance.place_order = AsyncMock(return_value={'orderId': 100, 'status': 'FILLED'})
     s._check_entry_limits = AsyncMock(return_value=True)
     s._check_total_margin_ratio = AsyncMock(return_value=True)
-    s._wait_for_order_fill = AsyncMock(return_value={'orderId': 100, 'status': 'FILLED'})
+    s._wait_for_order_fill = AsyncMock(return_value=make_fill())
     s.frequency_controller.record_trade = AsyncMock()
     s._send_signal_error_notification = AsyncMock()
     return s
@@ -206,9 +232,9 @@ class TestOpenNewPosition:
     async def test_success_builds_position(self, strategy, position_cls):
         """成功：记录频率 → 开仓 → 保护单 → 构建持仓状态"""
         s = strategy
-        s._place_entry_order = AsyncMock(return_value={'orderId': 100, 'status': 'FILLED'})
+        s._place_entry_order = AsyncMock(return_value=make_fill())
         s._place_entry_protection_orders = AsyncMock(
-            return_value=({'stop': 201, 'tp1': 202, 'tp2': 203}, True))
+            return_value={'stop': 201, 'tp1': 202, 'tp2': 203})
         result = await s._open_new_position(make_signal())
         assert result is True
         s.frequency_controller.record_trade.assert_awaited_once()
@@ -220,6 +246,7 @@ class TestOpenNewPosition:
         assert pos.tp1_order_id == 202
         assert pos.tp2_order_id == 203
         assert pos.grade == 'A'
+        assert pos.protection_pending is False
 
     async def test_entry_order_none_fails(self, strategy, position_cls):
         """失败：入场下单返回 None → 返回 False"""
@@ -229,14 +256,18 @@ class TestOpenNewPosition:
         assert result is False
         assert 'BTCUSDT' not in s.positions
 
-    async def test_protection_orders_fail_aborts(self, strategy, position_cls):
-        """失败：保护单任一失败 → 终止开仓"""
+    async def test_protection_failure_keeps_position(self, strategy, position_cls):
+        """R05：保护单失败不丢仓位 —— 持仓已登记，protection_pending=True 并进入补挂"""
         s = strategy
-        s._place_entry_order = AsyncMock(return_value={'orderId': 100, 'status': 'FILLED'})
-        s._place_entry_protection_orders = AsyncMock(return_value=(None, False))
+        s._place_entry_order = AsyncMock(return_value=make_fill())
+        s._place_entry_protection_orders = AsyncMock(
+            return_value={'stop': None, 'tp1': None, 'tp2': None})
+        s._replenish_protection_round = AsyncMock(return_value=False)
         result = await s._open_new_position(make_signal())
-        assert result is False
-        assert 'BTCUSDT' not in s.positions
+        assert result is True
+        assert 'BTCUSDT' in s.positions
+        assert s.positions['BTCUSDT'].protection_pending is True
+        s._replenish_protection_round.assert_awaited_once()
 
     async def test_exception_sends_error_and_fails(self, strategy, position_cls):
         """异常：入场下单抛异常 → 发错误通知并返回 False"""
@@ -248,10 +279,12 @@ class TestOpenNewPosition:
         assert 'BTCUSDT' not in s.positions
 
     async def test_place_entry_order_success(self, strategy, position_cls):
-        """_place_entry_order：设置杠杆 + 检查通过 + 限价单成交"""
+        """_place_entry_order：设置杠杆 + 检查通过 + 限价单成交（返回 OrderFillResult）"""
         s = strategy
         result = await s._place_entry_order('BTCUSDT', make_signal())
-        assert result == {'orderId': 100, 'status': 'FILLED'}
+        assert result is not None
+        assert result.order_id == 100
+        assert result.has_fill is True
         s.binance.set_leverage.assert_awaited_once_with('BTCUSDT', 5)
         s._check_entry_limits.assert_awaited_once()
 
@@ -336,7 +369,7 @@ class TestAddPosition:
 
         async def fake_place_entry(symbol, sig):
             order_log.append('place_entry')
-            return {'orderId': 100, 'status': 'FILLED'}
+            return make_fill()
 
         async def fake_sync(symbol, position, close_reason):
             order_log.append('sync')
@@ -371,7 +404,7 @@ class TestAddPosition:
         """同步发现交易所已平仓 → 回滚加仓，不取消旧单不合并"""
         s = strategy
         pos = make_position(position_cls)
-        s._place_entry_order = AsyncMock(return_value={'orderId': 100, 'status': 'FILLED'})
+        s._place_entry_order = AsyncMock(return_value=make_fill())
         s._sync_position_with_exchange = AsyncMock(
             return_value={'closed': True, 'partially_closed': False,
                           'actual_quantity': Decimal('0')})
@@ -385,7 +418,7 @@ class TestAddPosition:
         """同步异常（actual_quantity=None）→ 回滚加仓"""
         s = strategy
         pos = make_position(position_cls)
-        s._place_entry_order = AsyncMock(return_value={'orderId': 100, 'status': 'FILLED'})
+        s._place_entry_order = AsyncMock(return_value=make_fill())
         s._sync_position_with_exchange = AsyncMock(
             return_value={'closed': False, 'partially_closed': False,
                           'actual_quantity': None})
@@ -396,7 +429,7 @@ class TestAddPosition:
         """取消旧条件单失败 → 标记 rebuild_pending 并返回 False"""
         s = strategy
         pos = make_position(position_cls)
-        s._place_entry_order = AsyncMock(return_value={'orderId': 100, 'status': 'FILLED'})
+        s._place_entry_order = AsyncMock(return_value=make_fill())
         s._sync_position_with_exchange = AsyncMock(
             return_value={'closed': False, 'partially_closed': False,
                           'actual_quantity': Decimal('0.2')})
@@ -409,7 +442,7 @@ class TestAddPosition:
         """重建条件单失败 → 标记 rebuild_pending 并返回 False"""
         s = strategy
         pos = make_position(position_cls)
-        s._place_entry_order = AsyncMock(return_value={'orderId': 100, 'status': 'FILLED'})
+        s._place_entry_order = AsyncMock(return_value=make_fill())
         s._sync_position_with_exchange = AsyncMock(
             return_value={'closed': False, 'partially_closed': False,
                           'actual_quantity': Decimal('0.2')})
@@ -431,14 +464,14 @@ class TestMergePosition:
         """加权均价：(60000×0.1 + 61000×0.1) / 0.2 = 60500"""
         pos = make_position(position_cls)
         signal = make_signal(entry_price=Decimal('61000'))
-        strategy._merge_position(pos, signal, {'orderId': 999}, Decimal('0.2'))
+        strategy._merge_position(pos, signal, make_fill(order_id=999), Decimal('0.2'))
         assert pos.entry_price == Decimal('60500')
 
     async def test_no_added_keeps_entry(self, strategy, position_cls):
         """无实际增量（added<=0）→ 入场价保持不变"""
         pos = make_position(position_cls)
         signal = make_signal(entry_price=Decimal('61000'))
-        strategy._merge_position(pos, signal, {'orderId': 999}, Decimal('0.1'))
+        strategy._merge_position(pos, signal, make_fill(order_id=999), Decimal('0.1'))
         assert pos.entry_price == Decimal('60000')
 
     async def test_old_zero_uses_new_entry(self, strategy, position_cls):
@@ -446,14 +479,14 @@ class TestMergePosition:
         pos = make_position(position_cls, initial_quantity=Decimal('0'),
                             current_quantity=Decimal('0'))
         signal = make_signal(entry_price=Decimal('61000'))
-        strategy._merge_position(pos, signal, {'orderId': 999}, Decimal('0.1'))
+        strategy._merge_position(pos, signal, make_fill(order_id=999), Decimal('0.1'))
         assert pos.entry_price == Decimal('61000')
 
     async def test_updates_quantities_and_metadata(self, strategy, position_cls):
         """更新 initial/current 数量、ATR、等级、入场订单ID"""
         pos = make_position(position_cls)
         signal = make_signal(entry_price=Decimal('61000'), atr=Decimal('1200'), grade='S')
-        strategy._merge_position(pos, signal, {'orderId': 999}, Decimal('0.2'))
+        strategy._merge_position(pos, signal, make_fill(order_id=999), Decimal('0.2'))
         assert pos.initial_quantity == Decimal('0.2')
         assert pos.current_quantity == Decimal('0.2')
         assert pos.atr == Decimal('1200')

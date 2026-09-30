@@ -25,7 +25,7 @@ from shared.trade_logger import TradeLogger
 from shared.position_baseline import calc_occupied_margin, calc_position_margin
 
 from .candidate_pool import CandidatePool
-from .executor import TradingExecutor, OpenResult
+from .executor import TradingExecutor, OpenResult, CloseOutcome
 from .market_data import MarketDataProvider
 from .pattern import PatternRecognizer
 from .position_manager import PositionManager
@@ -1925,19 +1925,18 @@ class HRSStrategy(BaseStrategy):
                         close_percent=1.0,
                         reason="时间止损",
                     )
-                    # 回写平仓盈亏
-                    close_qty = entry_quantity  # 全仓平仓
-                    await self._writeback_pnl(
+                    # R04：仅完全成交才回写盈亏/撤单/删仓；失败或部分成交则保留仓位并告警，
+                    # 由守卫内部按情况重建保护，下一周期幂等重试
+                    if not await self._finalize_close_if_filled(
                         symbol=symbol,
                         direction=direction,
+                        result=order_result,
                         entry_price=entry_price,
                         exit_price=current_price,
-                        quantity=close_qty,
-                        close_order=order_result,
-                    )
-                    # 取消条件单
-                    await self.position_manager.cancel_all_orders(symbol)
-                    self.position_manager.remove_position(symbol)
+                        quantity=entry_quantity,
+                        close_reason="时间止损",
+                    ):
+                        continue
                     await self.risk_manager.record_loss(symbol, entry_price, current_price)
                     # 使用 calculate_pnl 统一计算盈亏（支持做多/做空方向）
                     pnl = TradeLogger.calculate_pnl(
@@ -1975,17 +1974,17 @@ class HRSStrategy(BaseStrategy):
                             close_percent=1.0,
                             reason="移动止盈",
                         )
-                        # 回写平仓盈亏（仅剩余部分）
-                        await self._writeback_pnl(
+                        # R04：仅完全成交才回写盈亏/撤单/删仓；失败或部分成交则保留仓位并告警
+                        if not await self._finalize_close_if_filled(
                             symbol=symbol,
                             direction=direction,
+                            result=order_result,
                             entry_price=entry_price,
                             exit_price=current_price,
                             quantity=remaining_qty,
-                            close_order=order_result,
-                        )
-                        await self.position_manager.cancel_all_orders(symbol)
-                        self.position_manager.remove_position(symbol)
+                            close_reason="移动止盈",
+                        ):
+                            continue
                         self.risk_manager.record_profit()
                         self._total_pnl += 0  # 盈利暂不累计到回撤计算
                         await self._save_state()
@@ -3459,6 +3458,106 @@ class HRSStrategy(BaseStrategy):
             )
             return False
         return True
+
+    async def _finalize_close_if_filled(
+        self,
+        symbol: str,
+        direction: str,
+        result: CloseOutcome,
+        *,
+        entry_price: float,
+        exit_price: float,
+        quantity: float,
+        close_reason: str,
+    ) -> bool:
+        """
+        R04 守卫：依据平仓结构化结果决定是否执行清理（时间止损/移动止盈共用单点）
+
+        - 完全成交（result.success）：closed_qty>0 时按「实际减仓量」回写盈亏 → 撤保护单 → 删持仓，
+          返回 True；closed_qty<=0（如交易所真实持仓已为 0）时跳过回写，仅做幂等清理并告警；
+        - 部分成交：保留仓位，按剩余量重建保护（先撤旧单再重建），告警，返回 False；
+        - 失败/仅受理：保留仓位与保护单，不撤单不删仓，告警，返回 False。
+        幂等：未成交时本轮不清理，下一监控周期按真实持仓重试，不产生超额单。
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            result: close_position 返回的结构化减仓结果
+            entry_price: 入场价（回写盈亏用）
+            exit_price: 平仓价（回写盈亏用）
+            quantity: 调用方请求的回写数量（仅用于日志；实际回写量以 result.closed_qty 为准）
+            close_reason: 平仓原因（告警文案用）
+
+        Returns:
+            bool: True 表示已完全成交并完成清理；False 表示保留仓位待下轮重试
+        """
+        if result is not None and result.success:
+            closed_qty = float(result.closed_qty)
+            if closed_qty > 0:
+                # 按「交易所确认的实际减仓量」回写，避免 closed_qty=0 时按入参数量虚增盈亏
+                await self._writeback_pnl(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry_price,
+                    exit_price=exit_price,
+                    quantity=closed_qty,
+                    close_order=result.raw,
+                )
+            else:
+                logger.warning(
+                    "平仓成功但实际已减仓量为 0，跳过盈亏回写",
+                    symbol=symbol,
+                    direction=direction,
+                    close_reason=close_reason,
+                    requested_qty=quantity,
+                )
+            await self.position_manager.cancel_all_orders(symbol)
+            self.position_manager.remove_position(symbol)
+            return True
+
+        await self._handle_incomplete_close(symbol, direction, result, close_reason)
+        return False
+
+    async def _handle_incomplete_close(
+        self,
+        symbol: str,
+        direction: str,
+        result: Optional[CloseOutcome],
+        close_reason: str,
+    ) -> None:
+        """
+        R04-F4/AC4：平仓未完全成交时的兜底——保留仓位、按情况重建保护并告警
+
+        - 部分成交（closed_qty>0）：按剩余量重建保护（内部先撤旧单再重建；
+          撤单失败则保留旧单不叠新单），由 keep_protection_on_partial 开关控制；
+        - 失败/仅受理：保留仓位与既有保护单，不撤单不删仓。
+
+        Args:
+            symbol: 交易对
+            direction: 方向 ('short'/'long')
+            result: 减仓结果（可为 None）
+            close_reason: 平仓原因
+        """
+        status = result.status if result is not None else "FAILED"
+        detail = result.reason if result is not None else "无平仓结果"
+        closed_qty = result.closed_qty if result is not None else Decimal("0")
+        keep_protection = self.config.get("trading", {}).get("close_order", {}).get(
+            "keep_protection_on_partial", True
+        )
+        if closed_qty > 0 and keep_protection:
+            try:
+                await self._replenish_single_position(symbol)
+            except Exception as e:
+                logger.warning("部分平仓后重建保护单失败，保留旧单不叠新单",
+                               symbol=symbol, error=str(e))
+        logger.warning("平仓未完全成交，保留仓位待下轮重试",
+                       symbol=symbol, direction=direction, close_reason=close_reason,
+                       status=status, detail=detail)
+        await self._send_anomaly_alert(
+            f"【HRS策略平仓未完成】\n交易对: {symbol}\n方向: {direction}\n"
+            f"平仓原因: {close_reason}\n状态: {status}\n说明: {detail}\n"
+            f"已保留仓位与保护单，下一周期重试"
+        )
 
     async def _send_anomaly_alert(self, message: str) -> None:
         """
