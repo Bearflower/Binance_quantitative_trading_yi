@@ -26,13 +26,14 @@
 | R02 | P1 | bug | `shared/binance_api.py:195`（关联 `shared/utils.py:63`、`binance_api.py:528`） | 全量 | **是** | `shared/binance_api.py`、`shared/utils.py`、新增 shared 重试/幂等配置；各调用方下单处 |
 | R03 | P1 | bug | `strategies/new_coin/executor.py:2582`（关联 `:2526`/`:2556`） | new-coin | 否（仅 new-coin） | `strategies/new_coin/executor.py`、`strategies/new_coin/config.yaml` |
 | R04 | P1 | bug | `strategies/hrs/strategy.py:1938`（关联 `:1983`、`executor.py:913`） | hrs | 否（仅 hrs） | `strategies/hrs/strategy.py`、`strategies/hrs/executor.py`、`strategies/hrs/config.yaml` |
-| R05 | P1 | bug | `strategies/btc_eth/strategy.py:2656`；同构 `strategies/btc_eth_aggressive/strategy.py:2665` | btc-eth、btc-eth-aggr | 否（两个策略容器） | 两套 `strategy.py`、两份 `config.yaml` |
+| R05 | P1 | bug | `strategies/btc_eth/strategy.py:2656`；同构 `strategies/btc_eth_aggressive/strategy.py:2665` | btc-eth、btc-eth-aggr | 否（两个策略容器）³ | 两套 `strategy.py`、两份 `config.yaml` |
 | R06 | P1 | bug | `strategies/btc_eth/strategy.py:2854`（关联 `:5384`）；`new_coin/executor.py:309`；`btc_eth_aggressive/strategy.py:2863` | btc-eth、btc-eth-aggr、new-coin（建议抽 shared 则全量）² | 视方案² | 见 R06「影响面」 |
 | R07 | P1 | bug | `shared/database.py:308`（关联 `shared/position_ownership.py:109`、`btc_eth/strategy.py:2628`） | 全量 | **是** | `shared/database.py`、`shared/position_ownership.py`、各开仓调用方、数据库迁移脚本 |
 | R08 | P1 | bug | `ai_tuner/cleanup/orphan_cleanup.py:416`（同函数 `:429-435` 有正确保护可参照） | ai-tuner | 否（仅 ai-tuner） | `ai_tuner/cleanup/orphan_cleanup.py`、`ai_tuner/config.yaml` |
 
 > ¹ 全量重建：按 `deployment.md`，`shared/*` 变更触发 CI 重建所有策略容器 + ai-tuner + data-backend + dashboard-api。
 > ² R06 跨 3 个策略，若把「等待成交」统一抽到 `shared/`（推荐，满足「禁止重复代码」硬约束）则触发全量重建；若各策略内部各自实现则违反重复代码规范。**该取舍见开放问题 Q2。**
+> ³ **修订（2026-09-30）**：R05 同构逻辑最终抽取到 `shared/protection_retry.py` 两策略共用，实际**触发全量重建**，本表原「仅两策略容器」判断作废（详见架构方案 §7.7 与本文 §8.7 修订注）。
 
 ### 2.1 建议实施顺序
 
@@ -396,6 +397,8 @@
 ### 8.7 影响面
 
 `strategies/btc_eth/*` + `strategies/btc_eth_aggressive/*`，重建 btc-eth 与 btc-eth-aggr 两个容器。**不触发全量重建**。向后兼容：正常（保护单全部成功）路径行为不变。
+
+> **修订（2026-09-30）**：实现阶段按用户决策将 R05 与 R06/R07 的两策略同构逻辑抽取到 `shared/protection_retry.py` 共用（彻底消除重复代码），故 R05 **改为触发全量重建**（`shared/*` 变更）。参数落地位置与最终部署影响面以架构方案 §7.7 为准。
 
 ### 8.8 风险与回滚
 
