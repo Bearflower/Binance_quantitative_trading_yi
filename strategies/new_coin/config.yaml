@@ -97,7 +97,16 @@ trading:
   # 做空止损/平仓是买入：限价 = 触发价 × (1 + slippage)，限价略高确保成交
   # 做空止盈是买入：限价 = 触发价 × (1 + slippage)，限价略高确保成交（修复：原为1-slippage方向错误）
   limit_order_slippage: 0.001  # 0.1%，限价相对于触发价的偏移量
-  
+  min_notional: 5              # 最小名义价值（USDT）：低于此值的条件单会被币安拒绝（-4164）
+
+  # 条件单补全配置（P0-3：先算后撤；硬编码提取）
+  replenish:
+    cancel_after_ready: true   # 是否启用「先算后撤」（false 回退旧顺序，仅供紧急回退）
+    # 幂等忽略错误码：订单已存在（-4164/-2021/-4136/-4507）、订单不存在（-2011）视为已处理
+    ignore_error_codes: ['-4164', '-2011', '-2021', '-4136', '-4507']
+    # MCTPS 策略托管的交易对：由 MCTPS 管理保护单，本策略不补全
+    skip_symbols: [BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, TRXUSDT]
+
   # 分批止盈配置（基于ATR）
   batch_take_profit:
     enabled: true       # 是否启用分批止盈
@@ -293,6 +302,11 @@ kline:
   min_klines_for_analysis: 15  # 分析阶段最少K线数（= atr_period + 1，确保ATR计算有足够数据）
   data_delay_seconds: 90       # K线数据延迟缓冲（秒），整点后等K线服务写入完成再查询
   atr_period: 14               # ATR计算周期（用于分批止盈和ATR止损）
+  # P0-1：持仓标的 K 线可用性保障（有持仓不注销 / 取 K 线前 ensure-active）
+  keep_registration_when_position_open: true  # 有未平持仓时是否保留 K 线注册（不注销）
+  ensure_active_before_use: true              # 取 K 线（ATR）前是否 ensure-active 兜底重注册
+  ensure_active_retries: 2                    # ensure-active 重试次数
+  ensure_active_retry_interval: 2             # ensure-active 重试间隔（秒）
 
 # 通知配置
 notification:

@@ -377,3 +377,48 @@ class TestTaskScheduler:
 
         # 不应抛出异常
         await scheduler._do_initial_collection(tasks)
+
+    # ==================== P0-1：注册表缓存周期刷新 ====================
+
+    def _settings(self):
+        """取本批测试共用的 shared.core.config.settings 替身（MagicMock）。"""
+        from shared.core.config import settings as mock_settings
+        return mock_settings
+
+    def test_registry_refresh_seconds_reads_config(self, scheduler, monkeypatch):
+        """配置为正整数时，_registry_refresh_seconds 原样返回该秒数。"""
+        monkeypatch.setattr(self._settings(), "REGISTRY_CACHE_REFRESH_SECONDS", 60)
+        assert scheduler._registry_refresh_seconds() == 60
+
+    def test_registry_refresh_seconds_zero_from_config(self, scheduler, monkeypatch):
+        """配置为 0 时返回 0（禁用刷新）。"""
+        monkeypatch.setattr(self._settings(), "REGISTRY_CACHE_REFRESH_SECONDS", 0)
+        assert scheduler._registry_refresh_seconds() == 0
+
+    def test_start_registers_refresh_job_when_enabled(self, scheduler):
+        """刷新间隔 > 0 → start 注册 id='refresh_registry_cache' 的 interval 任务。"""
+        with patch("services.kline_service.core.scheduler.registry") as mock_registry:
+            mock_registry.get_active_symbols.return_value = []
+            with patch.object(scheduler, "_registry_refresh_seconds", return_value=60):
+                scheduler.start()
+
+        assert scheduler.scheduler.get_job("refresh_registry_cache") is not None
+
+    def test_start_skips_refresh_job_when_disabled(self, scheduler):
+        """刷新间隔 = 0 → start 不注册刷新任务（保持现状）。"""
+        with patch("services.kline_service.core.scheduler.registry") as mock_registry:
+            mock_registry.get_active_symbols.return_value = []
+            with patch.object(scheduler, "_registry_refresh_seconds", return_value=0):
+                scheduler.start()
+
+        assert scheduler.scheduler.get_job("refresh_registry_cache") is None
+
+    @pytest.mark.asyncio
+    async def test_refresh_registry_cache_calls_refresh_active(self, scheduler):
+        """_refresh_registry_cache 直接委托 registry.refresh_active()（await 一次）。"""
+        with patch("services.kline_service.core.scheduler.registry") as mock_registry:
+            mock_registry.refresh_active = AsyncMock(return_value=3)
+
+            await scheduler._refresh_registry_cache()
+
+            mock_registry.refresh_active.assert_awaited_once()

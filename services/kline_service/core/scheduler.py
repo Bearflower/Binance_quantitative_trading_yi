@@ -9,6 +9,7 @@ from apscheduler.triggers.cron import CronTrigger
 from shared.utils.logger import get_logger
 from .collector import KlineCollector
 from .registry import registry
+from .table_name_guard import read_non_negative_int
 
 logger = get_logger(__name__)
 
@@ -178,7 +179,19 @@ class TaskScheduler:
         
         # 从注册表加载所有活跃的标的，恢复采集任务（重启后恢复）
         self._load_from_registry()
-        
+
+        # P0-1：按配置周期性重载注册表内存缓存，消除与 DB 的漂移（0 = 禁用）
+        refresh_seconds = self._registry_refresh_seconds()
+        if refresh_seconds > 0:
+            self.scheduler.add_job(
+                self._refresh_registry_cache,
+                trigger='interval',
+                seconds=refresh_seconds,
+                id='refresh_registry_cache',
+                name='Refresh Registry Cache',
+            )
+            logger.info(f"🔄 已添加注册表缓存刷新任务（每 {refresh_seconds} 秒）")
+
         self.scheduler.start()
         logger.info("✅ 定时任务调度器已启动")
         
@@ -251,6 +264,18 @@ class TaskScheduler:
                 self.add_job(config.symbol, interval)
                 count += 1
         logger.info(f"从注册表加载 {len(active_symbols)} 个活跃标的，添加 {count} 个采集任务")
+
+    def _registry_refresh_seconds(self) -> int:
+        """读取注册表缓存刷新间隔（秒）；缺失/非法（含 MagicMock）一律回退 0（禁用）"""
+        from shared.core.config import settings as _settings
+
+        return read_non_negative_int(
+            getattr(_settings, "REGISTRY_CACHE_REFRESH_SECONDS", None), 0
+        )
+
+    async def _refresh_registry_cache(self):
+        """周期重载注册表内存缓存（refresh_active 内部已做异常兜底并保留旧缓存）"""
+        await registry.refresh_active()
     
     async def _cleanup_expired_symbols(self):
         """清理过期的标的配置"""

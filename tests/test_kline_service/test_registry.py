@@ -310,3 +310,45 @@ class TestSymbolRegistry:
 
         configs = registry.get_all_configs(include_inactive=True)
         assert len(configs) == 2
+
+    # ==================== refresh_active（P0-1：消除与 DB 的缓存漂移） ====================
+
+    @pytest.mark.asyncio
+    async def test_refresh_active_reloads_cache_and_returns_count(self, registry, mock_conn):
+        """刷新成功：以 DB active 行整体重建缓存并返回数量"""
+        registry._cache["STALE"] = MagicMock()  # 旧缓存中的陈旧条目应被覆盖清除
+        now = datetime.now()
+        mock_conn.fetch_all.return_value = [
+            {
+                "id": 1, "symbol": "ACNUSDT", "intervals": ["1h"],
+                "registered_at": now, "expires_at": now + timedelta(days=10),
+                "duration_days": 10, "priority": "normal", "status": "active",
+                "created_by": "new_coin", "updated_at": now,
+            }
+        ]
+
+        with patch("services.kline_service.core.registry.db_manager") as mock_db:
+            cm = AsyncMock()
+            cm.__aenter__.return_value = mock_conn
+            mock_db.get_connection.return_value = cm
+
+            count = await registry.refresh_active()
+
+        assert count == 1
+        assert "ACNUSDT" in registry._cache
+        assert "STALE" not in registry._cache  # 整体重建，清除漂移条目
+
+    @pytest.mark.asyncio
+    async def test_refresh_active_failure_keeps_old_cache(self, registry, mock_registered_symbol_config):
+        """刷新失败：仅告警并保留旧缓存（fail-safe，不清空白名单）"""
+        registry._cache["BTCUSDT"] = mock_registered_symbol_config
+
+        with patch("services.kline_service.core.registry.db_manager") as mock_db:
+            cm = AsyncMock()
+            cm.__aenter__.side_effect = Exception("数据库连接失败")
+            mock_db.get_connection.return_value = cm
+
+            count = await registry.refresh_active()
+
+        assert count == 0
+        assert "BTCUSDT" in registry._cache  # 旧缓存未被清空

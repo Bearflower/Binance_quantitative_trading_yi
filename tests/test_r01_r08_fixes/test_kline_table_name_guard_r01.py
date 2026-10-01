@@ -11,6 +11,7 @@
 """
 
 from datetime import datetime, timedelta
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -18,8 +19,11 @@ from fastapi import HTTPException
 from api import routes
 from core.table_name_guard import (
     TableNameValidationError,
+    _flag_enabled,
+    _split_csv,
     build_kline_table_name,
     is_valid_table_name,
+    read_non_negative_int,
     validate_symbol_interval_format,
 )
 
@@ -329,3 +333,89 @@ def test_validate_format_rejects_non_string(real_settings):
 def test_validate_format_rejects_blank_interval(real_settings):
     with pytest.raises(TableNameValidationError):
         validate_symbol_interval_format("BTCUSDT", "   ", settings=real_settings)
+
+
+# ============================================================
+# R01：guard 辅助函数的残余分支（配置解析的健壮性）
+# ============================================================
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        (True, True),
+        (False, False),
+        (None, True),          # 未知值 → 回退默认（此处 default=True）
+        ("true", True),
+        ("1", True),
+        ("on", True),
+        ("yes", True),
+        (" TRUE ", True),      # 去空白 + 小写归一
+        ("false", False),
+        ("0", False),
+        ("off", False),
+        ("random", False),     # 无法识别的字符串 → False
+        (123, True),           # 非 bool/None/str → 回退默认
+    ],
+)
+def test_flag_enabled_parsing(value, expected):
+    """_flag_enabled 仅接受真实布尔/可识别字符串，其余回退默认值。"""
+    assert _flag_enabled(value, default=True) is expected
+
+
+def test_flag_enabled_none_returns_custom_default():
+    """None → 返回调用方传入的默认值（可为 False）。"""
+    assert _flag_enabled(None, default=False) is False
+
+
+def test_flag_enabled_mock_falls_back_to_default():
+    """不可识别的配置替身（MagicMock）→ 回退默认值，不抛异常。"""
+    assert _flag_enabled(MagicMock(), default=True) is True
+    assert _flag_enabled(MagicMock(), default=False) is False
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        (None, set()),
+        ("", set()),
+        ("  ", set()),
+        ("BTCUSDT, ETHUSDT ", {"BTCUSDT", "ETHUSDT"}),
+        (["BTCUSDT", " ETHUSDT "], {"BTCUSDT", "ETHUSDT"}),
+        (("BTCUSDT", ""), {"BTCUSDT"}),
+        ({"BTCUSDT", "ETHUSDT"}, {"BTCUSDT", "ETHUSDT"}),
+    ],
+)
+def test_split_csv_normalizes(raw, expected):
+    """_split_csv 对 None/字符串/序列统一拆分并去除空白与空项。"""
+    assert _split_csv(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "value,default,expected",
+    [
+        (True, 7, 7),      # bool（int 子类）→ 拒绝，回退默认
+        (False, 7, 7),
+        (-1, 7, 7),        # 负数 → 回退默认
+        (5, 0, 5),         # 合法非负整数 → 原值
+        (0, 7, 0),
+        ("5", 7, 7),       # 字符串 → 回退默认
+        (None, 7, 7),
+    ],
+)
+def test_read_non_negative_int(value, default, expected):
+    """read_non_negative_int 仅接受真正的非负整数（拒绝 bool/负数/非 int）。"""
+    assert read_non_negative_int(value, default) == expected
+
+
+def test_read_non_negative_int_mock_falls_back():
+    """配置替身（MagicMock）→ 回退默认值，不抛异常。"""
+    assert read_non_negative_int(MagicMock(), 3) == 3
+
+
+@pytest.mark.parametrize(
+    "value",
+    [123, None, ["kline_btcusdt_1h"], b"kline_btcusdt_1h", MagicMock()],
+)
+def test_is_valid_table_name_rejects_non_string(value, real_settings):
+    """非 str 输入 → 直接 False（fail-closed），不做正则匹配。"""
+    assert is_valid_table_name(value, settings=real_settings) is False

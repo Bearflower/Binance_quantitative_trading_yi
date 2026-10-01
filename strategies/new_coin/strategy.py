@@ -106,6 +106,12 @@ class NewCoinStrategy(BaseStrategy):
         detector_config = config.get('detector', {})
         self.check_interval = detector_config.get('check_interval', 300)
 
+        # P0-1：有未平持仓时是否保留 K 线注册（默认保留，避免持仓标的被白名单拒绝）
+        kline_config = config.get('kline', {})
+        self.keep_registration_when_position_open = bool(
+            kline_config.get('keep_registration_when_position_open', True)
+        )
+
         logger.info(
             "新币做空策略初始化",
             strategy_name=self.strategy_name,
@@ -471,6 +477,54 @@ class NewCoinStrategy(BaseStrategy):
 
         logger.info("新币做空策略已停止")
 
+    async def _has_open_position(self, symbol: str) -> bool:
+        """判断该标的是否存在未平空头持仓（内存优先，DB 兜底，异常保守为 True）
+
+        P0-1-F1：用于「有持仓则不注销」守卫。任何无法确认的情况都保守视为有持仓，
+        确保不会误撤持仓标的的 K 线注册（否则后续 ATR 会被白名单拒绝）。
+
+        Args:
+            symbol: 交易对
+
+        Returns:
+            bool: True 表示确认存在未平持仓（或无法确认，保守取值）
+        """
+        if symbol in self.positions:
+            return True
+        if not self.trading_executor:
+            logger.warning(f"交易执行器不可用，保守视为有持仓: {symbol}")
+            return True
+        return await self.trading_executor._has_open_short_position(
+            symbol, default_on_error=True
+        )
+
+    async def _unregister_if_safe(self, symbol: str) -> tuple:
+        """统一注销出口（P0-1-F1/F4）：有未平持仓则保留注册，否则注销并同步本地缓存。
+
+        Args:
+            symbol: 交易对
+
+        Returns:
+            tuple[bool, bool]: (ok, unregistered)
+                - ok: True 表示结果安全（已注销 / 因有持仓而保留 / 无需注销）；
+                      False 表示注销失败、注册状态被保留
+                - unregistered: True 表示本次确实执行并成功完成了注销，供调用方
+                      据此决定是否打印"已注销"日志，避免行为与日志不一致
+        """
+        if self.keep_registration_when_position_open and await self._has_open_position(symbol):
+            logger.info(f"检测到未平持仓，保留 K 线注册: {symbol}")
+            return True, False
+        try:
+            ok = await self.kline_service.unregister_symbol(symbol)
+        except Exception as e:
+            logger.warning(f"K线服务注销异常: {symbol}: {e}")
+            ok = False
+        if ok:
+            self._registered_symbols.discard(symbol)
+        else:
+            logger.warning(f"K线服务注销失败，保留注册状态: {symbol}")
+        return ok, ok
+
     async def _execute_cycle(self) -> None:
         """
         执行一个周期
@@ -654,12 +708,10 @@ class NewCoinStrategy(BaseStrategy):
                     if reason == SKIP_REASON_TOO_LONG:
                         self.listing_detector.known_symbols.add(symbol)
                         await self.listing_detector._save_known_symbols()
-                        # 从K线服务注销，停止采集数据
-                        try:
-                            await self.kline_service.unregister_symbol(symbol)
+                        # 从K线服务注销，停止采集数据（P0-1：有未平持仓则不注销）
+                        _, unregistered = await self._unregister_if_safe(symbol)
+                        if unregistered:
                             logger.info(f"已从K线服务注销过期币种: {symbol}")
-                        except Exception as e:
-                            logger.warning(f"K线服务注销失败: {symbol}: {e}")
                         continue  # 不加入cycle_results，不在通知中显示
 
                     # 其他skip原因（如上线时间过短）仍加入cycle_results
@@ -774,14 +826,12 @@ class NewCoinStrategy(BaseStrategy):
                     result_item['entry_fail_reason'] = fail_reason
 
                     if entry_success:
-                        # 入场成功后立即停止对该币种的监控
+                        # 入场成功后停止对该币种的新币检测（保留业务收益）
                         self.listing_detector.known_symbols.add(symbol)
                         await self.listing_detector._save_known_symbols()
-                        try:
-                            await self.kline_service.unregister_symbol(symbol)
-                            logger.info(f"入场成功，已停止监控: {symbol}")
-                        except Exception as e:
-                            logger.warning(f"K线服务注销失败: {symbol}: {e}")
+                        # P0-1：有未平持仓时不注销 K 线注册，避免后续 ATR 被白名单拒绝
+                        await self._unregister_if_safe(symbol)
+                        logger.info(f"入场成功，已停止监控: {symbol}")
 
             except Exception as e:
                 logger.error(

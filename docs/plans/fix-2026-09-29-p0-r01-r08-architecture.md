@@ -207,6 +207,8 @@ async with db.get_connection() as conn:
 | R01-AC5 | `/indicators`、`/collect/manual`、registry 入口共用 guard，行为一致 |
 | R01-AC6 | `TABLE_NAME_PATTERN`（配置）单测覆盖合法/注入样例 |
 
+> 修订（2026-09-30）：本轮描述的三层校验「白名单外一律拒绝」是 R01 当时的**写路径语义**，现已由 fix-2026-09-30 P0 修复中的 **P0-2** 在**读路径**上放宽为「白名单 OR（格式合法且 `kline_{symbol}_{interval}` 数据表已存在）」，新增读路径入口 `build_readable_table_name`（`ALLOW_EXISTING_TABLE_SYMBOLS` 开关，默认 `true`）。**写路径（注册/建表/采集）的「白名单外一律拒绝」语义保持不变**，`build_kline_table_name` 仍是写路径入口，格式层与表名正则仍是 fail-closed。详见 [P0 修复架构方案：持仓保护单丢失](fix-2026-09-30-p0-protection-orders-missing-architecture.md) §4。
+
 ### 3.7 重复代码抽取
 
 所有入口（`/klines/latest`、`/indicators`、`/collect/manual`、`registry_routes`）统一调用 `build_kline_table_name`，删除各处 `f"kline_{symbol.lower()}_{interval}"` 内联拼接。
@@ -935,6 +937,8 @@ CREATE INDEX IF NOT EXISTS idx_position_claims_strategy
 | R06 | 部分成交建仓后保护单量不匹配 → 超量 | 保护单量按实际成交量；`order_fill.enabled` 开关 | 全量重建 |
 | R07 | 死锁/残留占用永久阻塞某币种 | `ownership.enabled=false` 回退；TTL + 定时清理 + 失败即释放 | 全量重建 + 回滚迁移（**保留表不删**） |
 | R08 | 过保守导致真孤儿条件单残留（占配额） | `require_exchange_confirmation=false` 回退 | 仅 ai-tuner 重建 |
+
+> 修订（2026-09-30）：上表 R01 行的「白名单过严拒绝线上合法但未登记的 symbol」风险，已由 fix-2026-09-30 **P0-2** 在读路径上缓解——读路径改为「白名单 OR 表已存在且格式合法」放行（`ALLOW_EXISTING_TABLE_SYMBOLS` 默认 `true`），历史已注销但有数据表的标的可正常读取；写路径语义不变。回退开关即关闭 `ALLOW_EXISTING_TABLE_SYMBOLS`。详见 [P0 修复架构方案：持仓保护单丢失](fix-2026-09-30-p0-protection-orders-missing-architecture.md) §4。
 
 ### 13.2 全局回退总闸
 

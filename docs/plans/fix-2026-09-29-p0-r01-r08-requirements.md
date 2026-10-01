@@ -125,11 +125,15 @@
 
 仅 `services/kline_service/*`，只重建 kline-service 容器。**不触发全量重建**。向后兼容：合法请求行为不变；非法请求从「可能 500/注入」变为「4xx 拒绝」，属预期收紧。
 
+> 修订（2026-09-30）：本次修复的「非法请求一律 4xx」为 R01 当时的**写路径语义**。读路径（`/klines/latest`、`/indicators`）已由 fix-2026-09-30 **P0-2** 放宽为「白名单 OR（格式合法且数据表已存在）」放行；**写路径（注册/建表/采集）语义不变**。详见 [P0 修复架构方案：持仓保护单丢失](fix-2026-09-30-p0-protection-orders-missing-architecture.md) §4。
+
 ### 4.8 风险与回滚
 
 - 风险：白名单过严可能拒绝历史上合法但未登记的 `symbol`（如策略新币）→ 缓解：白名单须包含 `SymbolRegistry` 全部激活标的；上线前核对线上已注册标的清单。
 - 风险：`interval` 正则漏掉合法周期（如 `1w`、`1M`）→ 缓解：以线上 `registered_symbols.intervals` 实际值为准设计正则。
 - 回滚：revert 该 commit（仅 kline-service 重建）。
+
+> 修订（2026-09-30）：上述「白名单过严拒绝历史上合法但未登记的 symbol」风险，已由 fix-2026-09-30 **P0-2** 在读路径上缓解——新增读路径入口 `build_readable_table_name`，「数据表已存在且格式合法」的标的可绕过白名单读取（`ALLOW_EXISTING_TABLE_SYMBOLS` 默认 `true`）；写路径白名单语义与注入防护（严格正则 + 参数化查询）保持不变。回退方式：关闭 `ALLOW_EXISTING_TABLE_SYMBOLS`。详见 [P0 修复架构方案：持仓保护单丢失](fix-2026-09-30-p0-protection-orders-missing-architecture.md) §4、§8。
 
 ---
 

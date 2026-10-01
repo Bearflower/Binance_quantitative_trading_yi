@@ -15,6 +15,31 @@ from shared.utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+# 加载/刷新内存缓存共用的 active 行查询（避免两处重复 SQL）
+_ACTIVE_QUERY = """
+    SELECT id, symbol, intervals, registered_at, expires_at,
+           duration_days, priority, status, created_by, updated_at
+    FROM registered_symbols
+    WHERE status = 'active'
+"""
+
+
+def _row_to_config(row) -> RegisteredSymbolConfig:
+    """将数据库行映射为 RegisteredSymbolConfig（首次加载与周期刷新共用）"""
+    return RegisteredSymbolConfig(
+        id=row['id'],
+        symbol=row['symbol'],
+        intervals=row['intervals'],
+        registered_at=row['registered_at'],
+        expires_at=row['expires_at'],
+        duration_days=row['duration_days'],
+        priority=row['priority'],
+        status=row['status'],
+        created_by=row['created_by'],
+        updated_at=row['updated_at'],
+    )
+
+
 class SymbolRegistry:
     """标的注册管理器"""
     
@@ -41,37 +66,38 @@ class SymbolRegistry:
         logger.info(f"✅ 标的注册管理器已初始化，加载了 {len(self._cache)} 个配置")
     
     async def _load_from_database(self) -> None:
-        """从数据库加载配置"""
+        """从数据库加载配置（启动首次加载，失败向上抛出由 initialize 处理）"""
         try:
-            async with db_manager.get_connection() as conn:
-                query = """
-                    SELECT id, symbol, intervals, registered_at, expires_at, 
-                           duration_days, priority, status, created_by, updated_at
-                    FROM registered_symbols
-                    WHERE status = 'active'
-                """
-                rows = await conn.fetch_all(query)
-                
-                for row in rows:
-                    config = RegisteredSymbolConfig(
-                        id=row['id'],
-                        symbol=row['symbol'],
-                        intervals=row['intervals'],
-                        registered_at=row['registered_at'],
-                        expires_at=row['expires_at'],
-                        duration_days=row['duration_days'],
-                        priority=row['priority'],
-                        status=row['status'],
-                        created_by=row['created_by'],
-                        updated_at=row['updated_at']
-                    )
-                    self._cache[config.symbol] = config
-                
-                logger.info(f"从数据库加载了 {len(self._cache)} 个已注册标的配置")
-                
+            configs = await self._fetch_active_configs()
         except Exception as e:
             logger.error(f"从数据库加载配置失败：{e}")
             raise
+        self._cache = {config.symbol: config for config in configs}
+        logger.info(f"从数据库加载了 {len(self._cache)} 个已注册标的配置")
+
+    async def _fetch_active_configs(self) -> List[RegisteredSymbolConfig]:
+        """查询 DB 中全部 active 行并映射为配置对象（异常向上抛出，由调用方决定语义）"""
+        async with db_manager.get_connection() as conn:
+            rows = await conn.fetch_all(_ACTIVE_QUERY)
+        return [_row_to_config(row) for row in rows]
+
+    async def refresh_active(self) -> int:
+        """重载 DB 中全部 active 行为内存缓存（周期刷新，消除与 DB 的漂移）。
+
+        与 initialize 的首次加载同源（_fetch_active_configs）。刷新失败仅告警并
+        保留旧缓存（fail-safe：宁可短暂陈旧，也不清空导致白名单骤缩）。
+
+        Returns:
+            int: 刷新后的 active 数量；刷新失败返回 0
+        """
+        try:
+            configs = await self._fetch_active_configs()
+        except Exception as e:
+            logger.warning(f"注册表缓存刷新失败，保留旧缓存：{e}")
+            return 0
+        self._cache = {config.symbol: config for config in configs}
+        logger.info(f"✅ 注册表缓存已刷新，active {len(self._cache)} 个")
+        return len(self._cache)
     
     async def register(self, request: RegisterRequest, created_by: str = "system") -> RegisteredSymbolConfig:
         """

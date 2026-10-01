@@ -1,7 +1,8 @@
 """K 线数据服务 API 路由"""
 
+import time
 from fastapi import APIRouter, HTTPException, Query
-from typing import List, Optional
+from typing import Optional
 from datetime import datetime
 
 from shared.utils.logger import get_logger
@@ -10,7 +11,13 @@ from core.binance_client import BinanceClient
 from core.collector import KlineCollector
 from core.indicator import TechnicalIndicatorCalculator
 from core.registry import registry
-from core.table_name_guard import TableNameValidationError, build_kline_table_name
+from core.table_name_guard import (
+    TableNameValidationError,
+    build_kline_table_name,
+    build_readable_table_name,
+    build_table_name_by_format,
+    read_non_negative_int,
+)
 from models.kline import KlineData
 
 logger = get_logger(__name__)
@@ -61,13 +68,83 @@ def _validated_table_name(symbol: str, interval: str) -> str:
         raise HTTPException(status_code=400, detail=f"参数非法：{e}") from e
 
 
+# 表存在性检查结果缓存：{table_name: (exists: bool, ts: float)}（TTL=0 时不写入）
+_table_exists_cache: dict = {}
+
+
+def _read_table_exists_cache_ttl() -> int:
+    """读取表存在性缓存 TTL（秒）；缺失/非法（含 MagicMock）一律回退 0（实时查询）"""
+    from shared.core.config import settings as _settings
+
+    return read_non_negative_int(
+        getattr(_settings, "EXISTING_TABLE_CHECK_CACHE_TTL_SECONDS", None), 0
+    )
+
+
+def _cache_lookup(table_name: str, ttl: int) -> Optional[bool]:
+    """命中未过期的缓存则返回存在性，未命中/已过期返回 None"""
+    if ttl <= 0:
+        return None
+    entry = _table_exists_cache.get(table_name)
+    if entry is not None and (time.monotonic() - entry[1]) < ttl:
+        return entry[0]
+    return None
+
+
+async def _resolve_table_exists(conn, table_name: str) -> bool:
+    """带 TTL 缓存的表存在性查询（复用参数化查询；异常不写缓存，交由上层 fail-closed）"""
+    ttl = _read_table_exists_cache_ttl()
+    cached = _cache_lookup(table_name, ttl)
+    if cached is not None:
+        return cached
+    exists = bool(await _table_exists(conn, table_name))
+    if ttl > 0:
+        _table_exists_cache[table_name] = (exists, time.monotonic())
+    return exists
+
+
+def _make_table_exists_checker(conn):
+    """构造注入给读路径 guard 的存在性回调（表名以绑定参数传入，绝不拼接）"""
+
+    async def _check(table_name: str) -> bool:
+        return await _resolve_table_exists(conn, table_name)
+
+    return _check
+
+
+def _precheck_read_format(symbol: str, interval: str) -> None:
+    """读路径前置格式校验（无 DB）：非法输入在触达 DB 之前即抛 HTTPException(400)"""
+    try:
+        build_table_name_by_format(symbol, interval)
+    except TableNameValidationError as e:
+        logger.warning(f"K 线查询参数非法：symbol={symbol!r} interval={interval!r} - {e}")
+        raise HTTPException(status_code=400, detail=f"参数非法：{e}") from e
+
+
+async def _validated_read_table_name(conn, symbol: str, interval: str) -> str:
+    """读路径唯一入口（P0-2）：白名单 OR「表已存在且格式合法」；非法输入抛 HTTPException(400)
+
+    存在性事实由 conn 参数化查询注入 guard，guard 自身不直连 DB（见 table_name_guard）。
+    """
+    try:
+        return await build_readable_table_name(
+            symbol,
+            interval,
+            table_exists=_make_table_exists_checker(conn),
+            registry=registry,
+        )
+    except TableNameValidationError as e:
+        logger.warning(f"K 线查询参数非法：symbol={symbol!r} interval={interval!r} - {e}")
+        raise HTTPException(status_code=400, detail=f"参数非法：{e}") from e
+
+
 async def _ensure_table_ready(conn, table_name: str, symbol: str, interval: str) -> bool:
     """确保查询表可用：表不存在时尝试自动建表。
 
     R01-F3：建表失败或采集器不可用时立即返回 False，调用方据此返回「无数据」，
     禁止继续执行该表的 SELECT。
     """
-    if await _table_exists(conn, table_name):
+    if await _resolve_table_exists(conn, table_name):
         return True
     if not collector:
         logger.debug(f"K 线表 {table_name} 不存在且采集器未初始化，返回无数据")
@@ -79,6 +156,20 @@ async def _ensure_table_ready(conn, table_name: str, symbol: str, interval: str)
     except Exception as e:  # noqa: BLE001 - 建表失败即终止查询
         logger.warning(f"K 线表自动创建失败：{table_name} - {e}")
         return False
+
+
+async def _resolve_ready_table(conn, symbol: str, interval: str) -> str:
+    """读路径共用（/klines/latest 与 /indicators）：校验表名并确保表可用。
+
+    不可用（表不存在且建表失败或采集器不可用）时返回空字符串，调用方据此返回「无数据」。
+
+    Returns:
+        str: 可用表名；不可用时为空字符串
+    """
+    table_name = await _validated_read_table_name(conn, symbol, interval)
+    if not await _ensure_table_ready(conn, table_name, symbol, interval):
+        return ""
+    return table_name
 
 
 @router.get("/klines/latest")
@@ -102,12 +193,14 @@ async def get_latest_klines(
         if not db:
             raise HTTPException(status_code=500, detail="数据库未初始化")
 
-        # R01：先做严格白名单校验，非法输入在拼 SQL 之前即拒绝
-        table_name = _validated_table_name(symbol, interval)
+        # P0-2：读路径前置格式校验（不触达 DB）；非法输入在连库之前即 400
+        _precheck_read_format(symbol, interval)
+        table_name = ""
 
         async with db.get_connection() as conn:
-            # 表不存在时尝试自动建表；建表失败或采集器不可用即返回「无数据」（R01-F3）
-            if not await _ensure_table_ready(conn, table_name, symbol, interval):
+            # P0-2：白名单 OR「表已存在且格式合法」+ 确保表可用；不可用即返回「无数据」
+            table_name = await _resolve_ready_table(conn, symbol, interval)
+            if not table_name:
                 return {"code": 0, "message": "无数据", "data": []}
 
             query = f"""
@@ -188,12 +281,14 @@ async def get_indicators(
         if not db:
             raise HTTPException(status_code=500, detail="数据库未初始化")
 
-        # R01：先做严格白名单校验，非法输入在拼 SQL 之前即拒绝
-        table_name = _validated_table_name(symbol, interval)
+        # P0-2：读路径前置格式校验（不触达 DB）；非法输入在连库之前即 400
+        _precheck_read_format(symbol, interval)
+        table_name = ""
 
         async with db.get_connection() as conn:
-            # 表不存在时尝试自动建表；建表失败或采集器不可用即返回「无数据」（R01-F3）
-            if not await _ensure_table_ready(conn, table_name, symbol, interval):
+            # P0-2：白名单 OR「表已存在且格式合法」+ 确保表可用；不可用即返回「无数据」
+            table_name = await _resolve_ready_table(conn, symbol, interval)
+            if not table_name:
                 return {"code": 0, "message": "无数据", "data": None}
 
             query = f"""
