@@ -97,7 +97,9 @@ async def test_p0_3_ac1_atr_failure_does_not_cancel():
     ex = make_executor()
     ex._calculate_atr = AsyncMock(return_value=Decimal('0'))
 
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单', '止盈单']
+    )
 
     assert result is False
     ex.cancel_all_algo_orders.assert_not_awaited()
@@ -105,8 +107,11 @@ async def test_p0_3_ac1_atr_failure_does_not_cancel():
     assert "ACNUSDT" not in ex._replenished_symbols
 
 
-async def test_p0_3_ac2_prepare_before_cancel_then_place_all():
-    """ATR 正常：完整顺序应为 只读准备 → 撤单 → 挂单，最终置位。"""
+async def test_p0_3_ac2_incremental_prepare_then_place_no_cancel():
+    """P0-D 迁移：默认路径为「只读准备 → 增量挂单」，全缺时挂 3 条、**零撤单**、置位。
+
+    原断言「先撤后挂」已被 P0-D 增量语义取代（默认路径不再撤单，消除 SL 空窗）。
+    """
     ex = make_executor()
     order = []
 
@@ -126,21 +131,26 @@ async def test_p0_3_ac2_prepare_before_cancel_then_place_all():
     ex.cancel_all_algo_orders = _cancel
     ex._place_conditional_and_record = _place
 
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单', '止盈单']
+    )
 
     assert result is True
-    assert order[0] == 'atr'      # 先算 ATR（只读）
-    assert order[1] == 'cancel'   # 确认可挂后才撤旧单
+    assert order[0] == 'atr'          # 先算 ATR（只读）
+    assert 'cancel' not in order      # P0-D：默认路径零撤单
     assert order.count('place') == 3  # SL/TP1/TP2
     assert "ACNUSDT" in ex._replenished_symbols
 
 
 async def test_p0_3_ac3_cancel_failure_blocks_placement():
-    """撤单存在失败项 → 阻断挂新单、返回 False。"""
+    """P0-D 迁移：撤单失败阻断挂新单的语义**仅存于回退分支**（cancel_after_ready=False）。"""
     ex = make_executor()
+    ex.replenish_cancel_after_ready = False
     ex.cancel_all_algo_orders = AsyncMock(return_value={'failed': 1})
 
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单', '止盈单']
+    )
 
     assert result is False
     ex._place_conditional_and_record.assert_not_awaited()
@@ -148,11 +158,13 @@ async def test_p0_3_ac3_cancel_failure_blocks_placement():
 
 
 async def test_p0_3_ac4_partial_place_failure_not_marked():
-    """撤成功但 TP1 挂单失败 → False、不置位（下周期重试）。"""
+    """全缺时 TP1 挂单失败 → False、不置位（下周期重试）。"""
     ex = make_executor()
     ex._place_conditional_and_record = AsyncMock(side_effect=[True, False, True])
 
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单', '止盈单']
+    )
 
     assert result is False
     assert "ACNUSDT" not in ex._replenished_symbols
@@ -163,7 +175,9 @@ async def test_p0_3_ac5_no_position_returns_true_without_touch():
     ex = make_executor()
     ex._resolve_short_quantity = AsyncMock(return_value=Decimal('0'))
 
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    )
 
     assert result is True
     ex.cancel_all_algo_orders.assert_not_awaited()
@@ -175,7 +189,9 @@ async def test_p0_3_ac6_already_replenished_skips():
     ex = make_executor()
     ex._replenished_symbols.add("ACNUSDT")
 
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    )
 
     assert result is True
     ex.cancel_all_algo_orders.assert_not_awaited()
@@ -186,7 +202,9 @@ async def test_p0_3_managed_symbol_skipped_from_config():
     ex = make_executor()
     ex.replenish_skip_symbols = {"BTCUSDT"}
 
-    result = await ex.replenish_conditional_orders("BTCUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "BTCUSDT", Decimal('100'), missing=['止损单']
+    )
 
     assert result is True
     ex.cancel_all_algo_orders.assert_not_awaited()
@@ -202,7 +220,9 @@ async def test_p0_1_ac5_ensure_active_failure_skips_atr_and_cancel():
     ex.ensure_active_before_use = True
     ex.kline_service.register_symbol = AsyncMock(return_value=False)
 
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    )
 
     assert result is False
     assert ex.kline_service.register_symbol.await_count == 2  # 按配置重试 2 次
@@ -436,13 +456,6 @@ async def test_cancel_orders_strict(outcome, expected):
     assert await ex._cancel_orders_strict("ACNUSDT") is expected
 
 
-async def test_cancel_orders_best_effort_swallows_exception():
-    """best-effort 撤单：抛异常仅告警，绝不向外抛出。"""
-    ex = make_executor()
-    ex.cancel_all_algo_orders = AsyncMock(side_effect=Exception("撤单失败"))
-    assert await ex._cancel_orders_best_effort("ACNUSDT") is None
-
-
 # ============================================================
 # P0-1：ensure-active 重试语义（异常分支）
 # ============================================================
@@ -473,25 +486,27 @@ async def test_ensure_symbol_active_all_exceptions_skips_atr_and_cancel():
     ex = make_executor()
     ex.ensure_active_before_use = True
     ex.kline_service.register_symbol = AsyncMock(side_effect=Exception("持续失败"))
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    )
     assert result is False
     ex._calculate_atr.assert_not_awaited()
     ex.cancel_all_algo_orders.assert_not_awaited()
 
 
 # ============================================================
-# P0-3：回退开关（先撤后算）与严格模式异常阻断
+# P0-3：回退开关（旧全量重建）与严格模式异常阻断
 # ============================================================
 
-async def test_replenish_fallback_uses_best_effort_cancel_before_read():
-    """回退开关关闭「先算后撤」：best-effort 先撤（异常不阻断）→ 只读准备 → 挂单。"""
+async def test_replenish_fallback_prepare_then_strict_cancel_then_place_all():
+    """P0-D 迁移：回退分支（cancel_after_ready=False）为 只读准备 → strict 撤单 → 全量挂。"""
     ex = make_executor()
     ex.replenish_cancel_after_ready = False
     events = []
 
     async def _cancel(symbol):
         events.append('cancel')
-        raise Exception("撤单异常（best-effort 应吞掉）")
+        return {'failed': 0}
 
     async def _atr(symbol):
         events.append('atr')
@@ -500,18 +515,24 @@ async def test_replenish_fallback_uses_best_effort_cancel_before_read():
     ex.cancel_all_algo_orders = _cancel
     ex._calculate_atr = _atr
 
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    )
 
     assert result is True
-    assert events == ['cancel', 'atr']  # 撤单在只读准备之前，且异常未阻断
-    assert ex._place_conditional_and_record.await_count == 3  # SL/TP1/TP2
+    assert events == ['atr', 'cancel']              # 先算后撤
+    assert ex._place_conditional_and_record.await_count == 3  # 全量 SL/TP1/TP2
+    assert "ACNUSDT" in ex._replenished_symbols
 
 
 async def test_replenish_strict_cancel_exception_blocks_placement():
-    """严格模式（默认）：撤单抛异常 → 阻断挂新单、返回 False。"""
+    """P0-D 迁移：回退分支（cancel_after_ready=False）撤单抛异常 → 阻断挂新单、返回 False。"""
     ex = make_executor()
+    ex.replenish_cancel_after_ready = False
     ex.cancel_all_algo_orders = AsyncMock(side_effect=Exception("撤单异常"))
-    result = await ex.replenish_conditional_orders("ACNUSDT", Decimal('100'))
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    )
     assert result is False
     ex._place_conditional_and_record.assert_not_awaited()
 
@@ -522,7 +543,9 @@ async def test_replenish_top_level_exception_converges_via_handler():
     ex._resolve_short_quantity = AsyncMock(
         side_effect=Exception("-2021 触发条件不满足")
     )
-    assert await ex.replenish_conditional_orders("ACNUSDT", Decimal('100')) is True
+    assert await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    ) is True
     assert "ACNUSDT" in ex._replenished_symbols
 
 
@@ -775,3 +798,266 @@ async def test_unregister_if_safe_exception_returns_false_and_keeps_cache():
     s.kline_service.unregister_symbol = AsyncMock(side_effect=Exception("注销网络异常"))
     assert await s._unregister_if_safe("ACNUSDT") == (False, False)
     assert "ACNUSDT" in s._registered_symbols
+
+
+# ============================================================
+# P0-D：增量补挂（只补缺失类型、绝不撤/改有效保护单）
+# ============================================================
+
+def _logged_messages(mock_logger) -> list:
+    """收集 mock logger 全部调用（位置参数 + 关键字）转成的字符串，供日志断言。"""
+    messages = []
+    for method in (mock_logger.info, mock_logger.warning, mock_logger.error):
+        for call in method.call_args_list:
+            messages.extend(str(a) for a in call.args)
+            messages.extend(str(v) for v in call.kwargs.values())
+    return messages
+
+
+async def test_find_missing_protection_strict_query_error_returns_none():
+    """P0-D-AC7（前置）：strict=True 且查询异常 → None（不可判定）。
+
+    默认（非 strict）仍 fail-closed 返回全类型（P0-A-AC3 契约不变）。
+    """
+    ex = make_executor()
+    ex.replenish_require_take_profit = True
+    ex.db = MagicMock()
+    ex.db.fetch_all = AsyncMock(side_effect=Exception("DB 不可用"))
+    assert await ex.find_missing_protection("ACNUSDT", strict=True) is None
+    assert await ex.find_missing_protection("ACNUSDT") == ['止损单', '止盈单']
+
+
+async def test_incremental_zero_cancel_when_sl_exists():
+    """P0-D-AC1/AC20：仅缺 TP 且 SL 已存在 → 零撤单、SL 未被触碰、日志无「撤销旧条件单」。"""
+    ex = make_executor()
+    ex.position_tracking["ACNUSDT"] = {"algo_ids": {"sl": 111}}
+
+    with patch.object(executor_module, "logger", new=MagicMock()) as mock_logger:
+        result = await ex.replenish_conditional_orders(
+            "ACNUSDT", Decimal('100'), missing=['止盈单']
+        )
+
+    assert result is True
+    ex.cancel_all_algo_orders.assert_not_awaited()                    # 零撤单（INV-1）
+    assert ex.position_tracking["ACNUSDT"]["algo_ids"]["sl"] == 111   # SL 原样保留
+    assert not any("撤销旧条件单" in m for m in _logged_messages(mock_logger))  # AC20
+
+
+async def test_incremental_only_missing_sl_places_sl():
+    """P0-D-AC2：仅缺 SL → 只挂 1 条 SL，不挂 TP。"""
+    ex = make_executor()
+
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    )
+
+    assert result is True
+    assert ex._place_conditional_and_record.await_count == 1
+    assert ex._place_conditional_and_record.await_args.kwargs["algo_key"] == 'sl'
+
+
+async def test_incremental_only_missing_tp_keeps_sl():
+    """P0-D-AC3（核心止血）：仅缺 TP → 补 TP1+TP2，SL 分支不进入、零撤单。"""
+    ex = make_executor()
+    ex.position_tracking["ACNUSDT"] = {"algo_ids": {"sl": 111}}
+
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止盈单']
+    )
+
+    assert result is True
+    ex.cancel_all_algo_orders.assert_not_awaited()
+    keys = [c.kwargs["algo_key"] for c in ex._place_conditional_and_record.await_args_list]
+    assert keys == ['tp1', 'tp2']
+    assert ex.position_tracking["ACNUSDT"]["algo_ids"]["sl"] == 111
+
+
+async def test_incremental_all_missing_places_all():
+    """P0-D-AC4：全缺 → 挂 SL+TP1+TP2，零撤单（无单可撤）、置位。"""
+    ex = make_executor()
+
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单', '止盈单']
+    )
+
+    assert result is True
+    ex.cancel_all_algo_orders.assert_not_awaited()
+    keys = [c.kwargs["algo_key"] for c in ex._place_conditional_and_record.await_args_list]
+    assert keys == ['sl', 'tp1', 'tp2']
+    assert "ACNUSDT" in ex._replenished_symbols
+
+
+async def test_incremental_partial_failure_not_marked():
+    """P0-D-AC10：全缺且 TP1 失败 → False、不置位，保留已成功项。"""
+    ex = make_executor()
+    ex._place_conditional_and_record = AsyncMock(side_effect=[True, False, True])
+
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单', '止盈单']
+    )
+
+    assert result is False
+    assert "ACNUSDT" not in ex._replenished_symbols
+    assert ex._place_conditional_and_record.await_count == 3
+
+
+async def test_incremental_retry_only_missing_second_round():
+    """P0-D-AC11：首轮 SL 失败不置位；次轮只补 SL，零撤单、不触发全量重建。"""
+    ex = make_executor()
+    ex._place_conditional_and_record = AsyncMock(side_effect=[False, True])
+
+    first = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    )
+    assert first is False
+    assert "ACNUSDT" not in ex._replenished_symbols
+
+    second = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止损单']
+    )
+    assert second is True
+    assert "ACNUSDT" in ex._replenished_symbols
+    ex.cancel_all_algo_orders.assert_not_awaited()
+    assert ex._place_conditional_and_record.await_count == 2
+
+
+async def test_incremental_preserves_existing_algo_ids_and_writes_new():
+    """P0-D-AC13：保留既有 algo_ids（sl 不被清空/覆盖）；新挂 TP 条目正确写入。"""
+    ex = make_executor(stub_orchestration=False)
+    ex.position_tracking["ACNUSDT"] = {"algo_ids": {"sl": 111}}
+    ex.binance_api.place_conditional_order = AsyncMock(return_value={'algoId': 2001})
+
+    with _patch_record_condition_order():
+        result = await ex.replenish_conditional_orders(
+            "ACNUSDT", Decimal('100'), missing=['止盈单']
+        )
+
+    assert result is True
+    algo_ids = ex.position_tracking["ACNUSDT"]["algo_ids"]
+    assert algo_ids["sl"] == 111          # 既有键保留（INV-4）
+    assert algo_ids["tp1"] == 2001        # 新挂条目写入
+    assert algo_ids["tp2"] == 2001
+    ex.cancel_all_algo_orders.assert_not_awaited()
+
+
+async def test_market_close_does_not_cancel_sl():
+    """P0-D-AC14：TP 计划 market_close → 只做市价部分平仓，零撤 SL，SL 保持。"""
+    ex = make_executor()
+    ex._get_current_price = AsyncMock(return_value=Decimal('90'))  # 现价已过 TP 目标价
+    ex._market_close_partial = AsyncMock()
+    ex.position_tracking["ACNUSDT"] = {"algo_ids": {"sl": 111}}
+
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止盈单']
+    )
+
+    assert result is True
+    ex.cancel_all_algo_orders.assert_not_awaited()
+    assert ex._market_close_partial.await_count == 2   # TP1/TP2 各一次
+    assert ex.position_tracking["ACNUSDT"]["algo_ids"]["sl"] == 111
+
+
+def test_new_config_defaults_without_crash():
+    """P0-D-AC18：配置缺省（无 cancel_after_ready）→ 默认 true（增量补挂），不崩溃。"""
+    ex = object.__new__(TradingExecutor)
+    with patch.object(executor_module, "CapitalManager", MagicMock(return_value=MagicMock())):
+        TradingExecutor.__init__(
+            ex, MagicMock(), MagicMock(), MagicMock(),
+            {"strategy": {"name": "new_coin"}, "trading": {}},
+        )
+    assert ex.replenish_cancel_after_ready is True
+    assert ex.replenish_require_take_profit is True
+
+
+# ============================================================
+# P0-D：algo_id 回填（DB 为权威、本地缓存尽力补齐；只填空缺不覆盖）
+# ============================================================
+
+async def test_backfill_algo_ids_from_db_fills_missing_sl():
+    """回填：DB 有 OPEN STOP_LOSS → 新建立 tracking 的 algo_ids['sl'] 填为该 algo_id。"""
+    ex = make_executor()
+    ex.position_tracking["ACNUSDT"] = {"algo_ids": {}}
+    ex.db.fetch_all = AsyncMock(
+        return_value=[{"algo_id": 555, "order_type": "STOP_LOSS"}]
+    )
+
+    await ex._backfill_algo_ids_from_db("ACNUSDT")
+
+    assert ex.position_tracking["ACNUSDT"]["algo_ids"]["sl"] == 555
+    args = ex.db.fetch_all.await_args.args
+    assert args[1] == "ACNUSDT"              # 参数化传 symbol（勿拼字符串）
+    assert "status='OPEN'" in args[0]        # 仅取 OPEN 记录
+
+
+async def test_backfill_algo_ids_from_db_fills_tp_slots_in_row_order():
+    """回填：两行 TAKE_PROFIT → 按行序填 tp1、tp2（DB 不区分档位，尽力而为）。"""
+    ex = make_executor()
+    ex.position_tracking["ACNUSDT"] = {"algo_ids": {}}
+    ex.db.fetch_all = AsyncMock(return_value=[
+        {"algo_id": 11, "order_type": "TAKE_PROFIT"},
+        {"algo_id": 22, "order_type": "TAKE_PROFIT"},
+    ])
+
+    await ex._backfill_algo_ids_from_db("ACNUSDT")
+
+    assert ex.position_tracking["ACNUSDT"]["algo_ids"] == {"tp1": 11, "tp2": 22}
+
+
+async def test_backfill_algo_ids_from_db_does_not_overwrite_existing():
+    """不覆盖（INV-4）：既有 algo_ids['sl']=111 保持 111，不被 DB 的不同 algo_id 覆盖。"""
+    ex = make_executor()
+    ex.position_tracking["ACNUSDT"] = {"algo_ids": {"sl": 111}}
+    ex.db.fetch_all = AsyncMock(
+        return_value=[{"algo_id": 999, "order_type": "STOP_LOSS"}]
+    )
+
+    await ex._backfill_algo_ids_from_db("ACNUSDT")
+
+    assert ex.position_tracking["ACNUSDT"]["algo_ids"]["sl"] == 111
+
+
+async def test_backfill_algo_ids_from_db_error_is_swallowed():
+    """容错：DB 查询抛异常 → 不抛出、algo_ids 不变，且补挂照常进行。"""
+    ex = make_executor()
+    ex.position_tracking["ACNUSDT"] = {"algo_ids": {"sl": 111}}
+    ex.db.fetch_all = AsyncMock(side_effect=Exception("DB 不可用"))
+
+    await ex._backfill_algo_ids_from_db("ACNUSDT")          # 不得抛异常
+    assert ex.position_tracking["ACNUSDT"]["algo_ids"] == {"sl": 111}
+
+    result = await ex.replenish_conditional_orders(
+        "ACNUSDT", Decimal('100'), missing=['止盈单']
+    )
+    assert result is True                                   # 回填失败不阻断补挂
+
+
+async def test_backfill_algo_ids_from_db_skips_untracked_symbol():
+    """边界：symbol 不在 position_tracking → 直接返回，不查 DB。"""
+    ex = make_executor()
+    ex.db.fetch_all = AsyncMock(return_value=[])
+
+    await ex._backfill_algo_ids_from_db("NOPEUSDT")
+
+    ex.db.fetch_all.assert_not_awaited()
+
+
+async def test_incremental_backfills_sl_then_places_tp_zero_cancel():
+    """端到端：tracking 缺失 + 仅缺 TP + DB 有 OPEN STOP_LOSS →
+    回填 sl、新挂 tp1/tp2，且零撤单。"""
+    ex = make_executor(stub_orchestration=False)
+    ex.db.fetch_all = AsyncMock(
+        return_value=[{"algo_id": 777, "order_type": "STOP_LOSS"}]
+    )
+    ex.binance_api.place_conditional_order = AsyncMock(return_value={'algoId': 2002})
+
+    with _patch_record_condition_order():
+        result = await ex.replenish_conditional_orders(
+            "ACNUSDT", Decimal('100'), missing=['止盈单']
+        )
+
+    assert result is True
+    algo_ids = ex.position_tracking["ACNUSDT"]["algo_ids"]
+    assert algo_ids["sl"] == 777            # DB 回填（既有保护单的取消依据）
+    assert algo_ids["tp1"] == 2002          # 本轮新挂
+    assert algo_ids["tp2"] == 2002
+    ex.cancel_all_algo_orders.assert_not_awaited()          # 零撤单（INV-1）

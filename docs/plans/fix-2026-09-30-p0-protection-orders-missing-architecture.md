@@ -64,6 +64,8 @@
 [服务侧]   白名单 OR 表存在 即放行读取；注册接口幂等复位 status=active 并回传真实 status
 ```
 
+> 后续变更（P0-D，2026-10-01）：本文档 §2.1 流程图步骤 1「先撤旧保护单」、§2.3 表「先撤单 → 后算 ATR」与「先算后撤」不变式描述，均为本轮（P0-3）之历史口径。P0-D 已将 new_coin 补挂改为**增量补挂（只补缺失类型、默认零撤单）**；「先算后撤」仅保留在回退分支（`cancel_after_ready=false`）。`cancel_after_ready` 语义已重定义（见 §6.1 批注）。以 [P0-D 架构设计](./fix-2026-10-01-incremental-replenish-architecture.md) 为准。
+
 ### 2.2 分层落点总表
 
 | 项 | 层 | 文件 | 关键函数 | 改动性质 |
@@ -384,6 +386,8 @@ Phase C（挂新单；失败记录缺口，下周期收敛）
 | `trading.replenish.skip_symbols` | `['BTCUSDT','ETHUSDT','BNBUSDT','SOLUSDT','XRPUSDT','TRXUSDT']` | MCTPS 托管跳过清单，替换 `executor.py:3236` `mctps_symbols` | `trading.replenish` |
 
 > 现有 `kline.interval='1h'`、`kline.atr_period=14`、`trading.stop_loss_percent`、`trading.emergency_stop`、`trading.target*_atr_multiplier`、`trading.close_position.*` 沿用，不新增硬编码。
+
+> 后续变更（P0-D，2026-10-01）：上表 `trading.replenish.cancel_after_ready` 的旧定义「『先算后撤』总开关（`false` 回退旧顺序）」已重定义——`true`=启用**增量补挂（只补不撤）**；`false`=回退旧全量重建（含 strict 撤单，会重新引入 SL 空窗）。键名与默认值 `true` 不变。详见 [P0-D 架构设计](./fix-2026-10-01-incremental-replenish-architecture.md) 决策 B/H。
 
 ### 6.2 `services/kline_service/shared/core/config.py`
 

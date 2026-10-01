@@ -35,6 +35,7 @@
 - [R01–R08 交易安全修复架构方案](plans/fix-2026-09-29-p0-r01-r08-architecture.md) - 第一批交易安全问题修复架构设计（K线表名注入、下单幂等、平仓反向、HRS 平仓误清理、保护单丢态、入场部分成交、开仓预占互斥、孤儿清理误撤止损）
 - [P0 修复架构方案：持仓保护单丢失](plans/fix-2026-09-30-p0-protection-orders-missing-architecture.md) - 2026-09-30 P0 修复架构设计（P0-1 持仓标的保持 K 线可用、P0-2 kline 白名单读路径放行、P0-3 补全保护单先算后撤）
 - [P0 补漏架构方案：new_coin 未保护持仓对账 + kline 表存在性死代码 + 读路径静默化契约](plans/fix-2026-10-01-p0-remaining-unprotected-positions-architecture.md) - 2026-10-01 架构设计（权威集合 DB_open∩交易所空头、僵尸对账连续 N 周期 + 关闭前回查、持续保护守卫替代一次性补全、`to_regclass` 表存在性、400/200空/503 异常类型契约）
+- [P0-D 架构设计：new_coin 持仓保护「增量补挂」](plans/fix-2026-10-01-incremental-replenish-architecture.md) - 2026-10-01 架构设计（只补缺失类型、默认零撤单，消除撤旧止损造成的 SL 空窗；`cancel_after_ready` 语义重定义；`replenish_conditional_orders` 签名变更 + 入口 fail-closed 守卫）
 
 ### K线服务
 
@@ -70,6 +71,7 @@
 - [R01–R08 交易安全修复需求文档](plans/fix-2026-09-29-p0-r01-r08-requirements.md) - 第一批交易安全问题修复需求（R01–R08，K线表名注入、下单幂等、平仓反向、HRS 平仓误清理、保护单丢态、入场部分成交、开仓预占互斥、孤儿清理误撤止损）
 - [P0 修复需求文档：持仓保护单丢失](plans/fix-2026-09-30-p0-protection-orders-missing-requirements.md) - 2026-09-30 P0 修复需求（保护单丢失补全失败 + 重复裸奔：P0-1/P0-2/P0-3 三项，含验收标准）
 - [P0 补漏需求文档：new_coin 补全链路候选集遗漏 + kline「表已存在即放行」死代码 + 读路径静默化可观测性](plans/fix-2026-10-01-p0-remaining-unprotected-positions-requirements.md) - 2026-10-01 P0 补漏需求（问题 A/B/C，含 21 条验收标准；更正「4 笔未平持仓」为 4 条僵尸 open 记录）
+- [P0-D 需求文档：new_coin 持仓保护「增量补挂」](plans/fix-2026-10-01-incremental-replenish-requirements.md) - 2026-10-01 P0-D 需求（只补缺失类型、绝不撤已存在有效保护单，消除撤旧止损造成的 SL 空窗；`cancel_after_ready` 语义重定义，含 P0-D-AC1..20 与 D-Q1..6）
 
 ### 月度资金分配与限额
 

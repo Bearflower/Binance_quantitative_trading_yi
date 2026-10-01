@@ -145,9 +145,14 @@ class TestResidualEntryReadPaths:
         executor.cancel_all_algo_orders = AsyncMock()
         executor._calculate_atr = AsyncMock(return_value=Decimal('2'))
         executor._get_symbol_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.001')))
+        # ensure-active 前置步骤需可 await 的注册桩（create_executor 的 kline_service 为纯 MagicMock）
+        executor.kline_service.register_symbol = AsyncMock(return_value=True)
 
         with patch('strategies.new_coin.executor.record_condition_order', new=AsyncMock()):
-            ok = await executor.replenish_conditional_orders("APLDUSDT", Decimal('100'))
+            # P0-D：增量补挂需显式声明缺失类型；此场景聚焦 TP 市价平仓，只补 TP
+            ok = await executor.replenish_conditional_orders(
+                "APLDUSDT", Decimal('100'), missing=['止盈单']
+            )
 
         entry = executor.position_tracking["APLDUSDT"]
         assert ok is True

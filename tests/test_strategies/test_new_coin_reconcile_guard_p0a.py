@@ -242,18 +242,61 @@ class TestProtectionGuard:
 
     @pytest.mark.asyncio
     async def test_gap_triggers_replenish_with_entry_price(self):
-        """真实敞口缺保护单 → 清完成标记并按 DB 入场价补挂。"""
+        """真实敞口缺保护单 → 清完成标记并按 DB 入场价增量补挂（strict 核验 + 传 missing）。"""
         strategy = _build_strategy()
         _setup_guard(strategy, ['AAAUSDT'], [{'symbol': 'AAAUSDT', 'entry_price': 100.0, 'opened_at': None}])
         strategy.trading_executor.find_missing_protection = AsyncMock(return_value=['止损单'])
 
         await strategy._guard_protection_orders()
 
+        # P0-D：核验用 strict=True（不可判定时返回 None），补挂时把权威 missing 传入
+        strategy.trading_executor.find_missing_protection.assert_awaited_once_with(
+            'AAAUSDT', strict=True
+        )
         strategy.trading_executor.reset_replenish_flag.assert_called_once_with('AAAUSDT')
         strategy.trading_executor.replenish_conditional_orders.assert_awaited_once()
         args = strategy.trading_executor.replenish_conditional_orders.await_args.args
         assert args[0] == 'AAAUSDT'
         assert args[1] == Decimal('100.0')
+        assert strategy.trading_executor.replenish_conditional_orders.await_args.kwargs[
+            'missing'
+        ] == ['止损单']
+
+    @pytest.mark.asyncio
+    async def test_guard_uncertain_when_db_error_no_place(self):
+        """P0-D-AC7：核验不可判定（None）→ 零补挂、零清标记、告警含「不可判定」、累计重试。"""
+        strategy = _build_strategy()
+        _setup_guard(strategy, ['AAAUSDT'], [{'symbol': 'AAAUSDT', 'entry_price': 100.0, 'opened_at': None}])
+        strategy.trading_executor.find_missing_protection = AsyncMock(return_value=None)
+
+        await strategy._guard_protection_orders()
+
+        strategy.trading_executor.replenish_conditional_orders.assert_not_awaited()
+        strategy.trading_executor.reset_replenish_flag.assert_not_called()
+        assert strategy._protection_gap_attempts['AAAUSDT'] == 1
+        strategy.notification_client.send.assert_awaited()
+        message = strategy.notification_client.send.await_args.kwargs['message']
+        assert '不可判定' in message
+
+    @pytest.mark.asyncio
+    async def test_gap_closed_then_reopen_self_heal(self):
+        """P0-D-AC12：缺口闭合 → 下轮不补且清计数；随后再丢 → 重新补。"""
+        strategy = _build_strategy()  # guard_interval_seconds=0，不节流
+        _setup_guard(strategy, ['AAAUSDT'], [{'symbol': 'AAAUSDT', 'entry_price': 100.0, 'opened_at': None}])
+        strategy.trading_executor.find_missing_protection = AsyncMock(return_value=['止盈单'])
+
+        await strategy._guard_protection_orders()   # 第一轮：缺 TP → 补
+        assert strategy.trading_executor.replenish_conditional_orders.await_count == 1
+        assert strategy._protection_gap_attempts == {}
+
+        strategy.trading_executor.find_missing_protection = AsyncMock(return_value=[])
+        await strategy._guard_protection_orders()   # 第二轮：无缺口 → 不补、清计数
+        assert strategy.trading_executor.replenish_conditional_orders.await_count == 1
+        assert strategy._protection_gap_attempts == {}
+
+        strategy.trading_executor.find_missing_protection = AsyncMock(return_value=['止盈单'])
+        await strategy._guard_protection_orders()   # 第三轮：TP 再丢 → 重新补
+        assert strategy.trading_executor.replenish_conditional_orders.await_count == 2
 
     @pytest.mark.asyncio
     async def test_no_gap_does_nothing(self):

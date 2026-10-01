@@ -370,6 +370,8 @@ ATR计算失败，跳过补全条件单: USDBRLUSDT                     level=wa
 
 > 现有 `kline.atr_period`、`stop_loss_percent`、`emergency_stop`、`atr_stop_multiplier` 等沿用，不得新增硬编码。
 
+> 后续变更（P0-D，2026-10-01）：上表 `trading.replenish.cancel_after_ready` 的旧定义「是否『先算 ATR 再撤单』（总开关）」已重定义——`true`=启用**增量补挂（只补不撤）**；`false`=回退旧全量重建（含 strict 撤单）。键名与默认值 `true` 不变。详见 [P0-D 需求文档](./fix-2026-10-01-incremental-replenish-requirements.md) D-Q5 与 [P0-D 架构设计](./fix-2026-10-01-incremental-replenish-architecture.md)。
+
 ---
 
 ## 10. 验收命令清单（可执行）

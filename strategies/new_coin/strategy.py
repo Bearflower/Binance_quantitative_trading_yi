@@ -1160,9 +1160,19 @@ class NewCoinStrategy(BaseStrategy):
                 self._guard_inflight.discard(symbol)
 
     async def _guard_symbol(self, symbol: str, db_position: Dict[str, Any]) -> None:
-        """核验单个真实敞口的保护单，缺失则补挂；失败不置完成、下周期重试并告警。"""
+        """核验单个真实敞口的保护单，缺失则**增量**补挂。
+
+        失败不置完成标记、下周期重试并告警。
+        P0-D：`find_missing_protection(strict=True)` 的 `None` 表示「不可判定」——
+        判定不确定一律**零补挂、仅告警**（防凭 fail-closed 全类型结果误挂重复止损单）；
+        仅非空缺失类型才传入 `replenish_conditional_orders`，由增量执行器只补缺失类型。
+        """
         executor = self.trading_executor
-        missing = await executor.find_missing_protection(symbol)
+        missing = await executor.find_missing_protection(symbol, strict=True)
+        if missing is None:
+            # S6 不可判定：零补挂零撤单，仅告警，下周期重试
+            await self._record_gap_and_alert(symbol, ["保护单核验失败(不可判定)"])
+            return
         if not missing:
             self._protection_gap_attempts.pop(symbol, None)
             return
@@ -1171,13 +1181,21 @@ class NewCoinStrategy(BaseStrategy):
             logger.warning("守卫跳过：入场价无效，无法补挂", symbol=symbol, entry_price=entry_price)
             await self._notify_protection_issue(symbol, missing)
             return
-        # 补挂前清除完成标记，允许后续失去保护后自愈；同轮内防重仍由 _should_skip_replenish 保证
+        # 补挂前清除完成标记，允许后续失去保护后自愈；
+        # 同轮内防重仍由 _should_skip_replenish 保证
         executor.reset_replenish_flag(symbol)
-        ok = await executor.replenish_conditional_orders(symbol, Decimal(str(entry_price)))
+        ok = await executor.replenish_conditional_orders(
+            symbol, Decimal(str(entry_price)), missing=missing
+        )
         if not ok:
-            attempts = self._protection_gap_attempts.get(symbol, 0) + 1
-            self._protection_gap_attempts[symbol] = attempts
-            await self._notify_protection_issue(symbol, missing, attempts)
+            # S9 部分失败：累计重试 + 告警（含缺失类型列表），下周期只补仍缺的类型
+            await self._record_gap_and_alert(symbol, missing)
+
+    async def _record_gap_and_alert(self, symbol: str, reasons: List[str]) -> None:
+        """累计缺口重试次数并发送告警（不可判定与补挂失败分支共用，避免重复代码）。"""
+        attempts = self._protection_gap_attempts.get(symbol, 0) + 1
+        self._protection_gap_attempts[symbol] = attempts
+        await self._notify_protection_issue(symbol, reasons, attempts)
 
     async def _notify_protection_issue(
         self, symbol: str, reasons: List[str], attempt: int = 1

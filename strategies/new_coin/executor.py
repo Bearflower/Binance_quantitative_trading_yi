@@ -66,6 +66,12 @@ _CONDITION_ORDER_META: Dict[str, tuple] = {
     'tp2': ('TAKE_PROFIT', 'TAKE_PROFIT', 'TP2 止盈条件单已存在，跳过', '补全 TP2 止盈条件单成功'),
 }
 
+# 缺失保护单类型（类型级）：find_missing_protection 与增量补挂共用，杜绝魔法字符串。
+# 说明（方案甲已知局限）：判定为「类型级」而非「档位级」——只要存在任一条 OPEN 的
+# TAKE_PROFIT 即视为「止盈单不缺」。若「仅 TP1 丢失、TP2 仍在」则不会补挂 TP1。
+_MISSING_SL = "止损单"
+_MISSING_TP = "止盈单"
+
 
 class TradingExecutor:
     """交易执行器
@@ -989,27 +995,33 @@ class TradingExecutor:
         return True
 
     async def find_missing_protection(
-        self, symbol: str, *, require_take_profit: Optional[bool] = None
-    ) -> List[str]:
-        """核验标的缺失哪些 OPEN 保护条件单（P0-A-AC3）。
+        self, symbol: str, *, require_take_profit: Optional[bool] = None,
+        strict: bool = False,
+    ) -> Optional[List[str]]:
+        """核验标的缺失哪些 OPEN 保护条件单（P0-A-AC3 / P0-D-AC7）。
 
         Args:
             symbol: 交易对
             require_take_profit: 是否要求止盈单；None 时读取配置
                 trading.replenish.require_take_profit（默认 true）
+            strict: 查询异常时的收敛策略（区分「确认缺失」与「不可判定」）：
+                False（默认）保守返回「全部应存在类型」（fail-closed，用于
+                「是否触发守卫」）；True 返回 None 表示「不可判定」（用于
+                「挂什么」——判定不确定一律不补挂，防重复止损单）。
 
         Returns:
-            List[str]: 缺失的中文类型列表（如 ["止损单"]）；无缺口返回 []
+            Optional[List[str]]: 缺失的中文类型列表（如 [_MISSING_SL]）；无缺口
+            返回 []；strict=True 且查询异常时返回 None（不可判定）。
 
         Note:
-            查询异常时保守返回「全部应存在类型」（fail-closed），避免因 DB 抖动
-            误判为「已保护」而放过真实缺口；由守卫触发补挂。
+            strict=False 查询异常时保守返回「全部应存在类型」（fail-closed），
+            避免因 DB 抖动误判为「已保护」而放过真实缺口；由守卫触发补挂。
         """
         if require_take_profit is None:
             require_take_profit = self.replenish_require_take_profit
-        missing = ["止损单"]
+        missing = [_MISSING_SL]
         if require_take_profit:
-            missing.append("止盈单")
+            missing.append(_MISSING_TP)
         try:
             rows = await self.db.fetch_all(
                 """
@@ -1023,15 +1035,17 @@ class TradingExecutor:
             logger.warning(
                 "查询条件单保护缺口失败（保守返回全部应存在类型）",
                 symbol=symbol,
+                strict=strict,
                 error=str(e),
             )
-            return missing
+            # strict：不可判定返回 None（调用方据此零补挂，防重复止损单）
+            return None if strict else missing
         open_types = {str(r.get('order_type', '')).upper() for r in (rows or [])}
         result: List[str] = []
         if "STOP_LOSS" not in open_types:
-            result.append("止损单")
+            result.append(_MISSING_SL)
         if require_take_profit and "TAKE_PROFIT" not in open_types:
-            result.append("止盈单")
+            result.append(_MISSING_TP)
         return result
 
     def reset_replenish_flag(self, symbol: str) -> None:
@@ -3350,38 +3364,51 @@ class TradingExecutor:
             else:
                 tracking['remaining_quantity'] = float(current_remaining) * (1 - close_percent)
 
-    async def replenish_conditional_orders(self, symbol: str, entry_price: Decimal) -> bool:
-        """为现有持仓补全缺失的条件单（止损 SL、TP1、TP2）。
+    async def replenish_conditional_orders(
+        self, symbol: str, entry_price: Decimal, *, missing: List[str]
+    ) -> bool:
+        """增量补全该标的缺失的保护条件单（只补缺失类型，绝不撤/改有效保护单）。
 
-        P0-3 安全不变式：先完成全部只读准备（Phase A：读持仓/ensure-active/
-        ATR/精度/现价/组价组量）→ 确认可挂后才撤旧单（Phase B）→ 挂新单
-        （Phase C）。Phase A 任一失败都不触碰交易所，杜绝「撤了旧单却挂不回」
-        的裸奔窗口；撤单失败则阻断挂新单；挂单失败不置位，下周期收敛。
+        P0-D 安全不变式：默认路径先完成全部只读准备（Phase A：读持仓/ensure-active/
+        ATR/精度/现价/组价组量），再**只挂 `missing` 覆盖的类型**（Phase C），
+        全程**零撤单**——消除「仅缺 TP 时先撤 SL 再重挂」造成的 SL 空窗。
+        `missing` 由守卫 `find_missing_protection(strict=True)` 的权威结果传入
+        （恒为非空列表）；空列表/None 由守卫提前返回，不进入本函数。
 
         Args:
             symbol: 交易对
             entry_price: 入场价格（从数据库恢复）
+            missing: 缺失的保护单类型列表（关键字必填，取值 [_MISSING_SL]/[_MISSING_TP]
+                或两者）。不设默认值：money-safety 函数不允许「静默默认」，强制每个
+                调用点显式声明缺失类型，避免默认全类型导致重复挂 SL。
 
         Returns:
             bool: True 表示补全完成或无需补全（含无空头持仓）；False 表示存在缺口
+
+        Note:
+            应急回退：`trading.replenish.cancel_after_ready=false` 时回退到旧「全量
+            重建」行为（先算后撤 → strict 撤单 → 全量挂 SL+TP1+TP2），**会重新引入
+            SL 空窗**，仅供短期止血，不作为默认。
         """
         try:
+            if not missing:
+                # 空缺失类型属调用方违约：零挂零撤且不置位（fail-closed，守卫已保证非空）
+                logger.warning(f"补全条件单缺少缺失类型入参，跳过: {symbol}")
+                return False
             if self._should_skip_replenish(symbol):
                 return True
             logger.info(f"开始补全条件单: {symbol}", entry_price=float(entry_price))
-            if not self.replenish_cancel_after_ready:
-                # 回退开关：沿用旧顺序（best-effort 撤单 → 只读准备 → 挂单）
-                await self._cancel_orders_best_effort(symbol)
-                status, plans = await self._prepare_replenish_plans(symbol, entry_price)
-            else:
-                status, plans = await self._prepare_replenish_plans(symbol, entry_price)
-                if status == _REPLENISH_READY and not await self._cancel_orders_strict(symbol):
-                    return False  # B1：撤单失败必须阻断挂新单
+            status, plans = await self._prepare_replenish_plans(symbol, entry_price)
             if status == _REPLENISH_NO_POSITION:
                 return True
             if status != _REPLENISH_READY:
                 return False
-            return await self._execute_replenish_plans(symbol, plans)
+            if not self.replenish_cancel_after_ready:
+                # 应急回退：旧全量重建（先算后撤，撤单失败必须阻断挂新单，避免重复单）
+                if not await self._cancel_orders_strict(symbol):
+                    return False
+                return await self._execute_replenish_plans(symbol, plans)
+            return await self._execute_incremental_plans(symbol, plans, missing)
         except Exception as e:
             return self._handle_replenish_exception(symbol, e)
 
@@ -3561,15 +3588,134 @@ class TradingExecutor:
             return False
         return True
 
-    async def _cancel_orders_best_effort(self, symbol: str) -> None:
-        """回退开关专用：best-effort 撤单（异常仅告警，不阻断流程）。"""
+    def _ensure_replenish_tracking(self, symbol: str, plans: Dict[str, Any]) -> None:
+        """确保补挂前持仓跟踪已存在（挂单 / 部分平仓回写路径均依赖它）。
+
+        经唯一工厂 `_build_tracking_entry` 构建，字段集与开仓 / 重启恢复路径一致；
+        已存在则**保留不清空、不覆盖**（满足 INV-4：不覆盖既有 algo_ids）。
+        """
+        if symbol in self.position_tracking:
+            return
+        self.position_tracking[symbol] = self._build_tracking_entry(
+            entry_price=plans['entry_price'], entry_quantity=plans['quantity'],
+            atr=plans['atr'],
+        )
+        self._last_tracked_qty[symbol] = float(plans['quantity'])
+
+    async def _backfill_algo_ids_from_db(self, symbol: str) -> None:
+        """从 DB OPEN 记录尽力回填缺失的 algo_ids（best-effort，只填空缺、绝不覆盖）。
+
+        增量路径下，判定为「已存在」的类型不会重新挂单；若其 algo_id 因重启等
+        原因未写入本地 `position_tracking`，后续 `cancel_all_algo_orders` 会因
+        `algo_ids` 非空而**跳过 DB 兜底查询**（见该函数 `if not algo_ids:`），
+        导致该保护单被遗漏撤销。此处在挂缺失类型前按类型回填，保证取消依据完整。
+
+        映射（DB 无法区分 TP 档位，按行序尽力填；algo_id 仅用于后续取消清理）：
+        - `STOP_LOSS` → `'sl'`
+        - `TAKE_PROFIT` → 依次填 `'tp1'`、`'tp2'`
+
+        只填缺失键（`setdefault`），绝不覆盖既有键（满足 INV-4）；symbol 不在
+        `position_tracking` 时不写；查询异常 / 字段缺失一律告警吞掉，不阻断补挂。
+        """
+        entry = self.position_tracking.get(symbol)
+        if not isinstance(entry, dict):
+            return
+        algo_ids = entry.get('algo_ids')
+        if not isinstance(algo_ids, dict):
+            return
         try:
-            await self.cancel_all_algo_orders(symbol)
+            rows = await self.db.fetch_all(
+                "SELECT algo_id, order_type FROM condition_orders "
+                "WHERE strategy_name='new_coin' AND status='OPEN' AND symbol=$1",
+                symbol,
+            )
         except Exception as e:
-            logger.warning("取消旧条件单失败", symbol=symbol, error=str(e))
+            logger.warning(
+                "回填条件单 algoId 失败（忽略，不阻断补挂）", symbol=symbol, error=str(e)
+            )
+            return
+        tp_slots = ('tp1', 'tp2')
+        tp_index = 0
+        for row in (rows or []):
+            algo_id = row.get('algo_id')
+            if algo_id is None:
+                continue
+            order_type = str(row.get('order_type', '')).upper()
+            if order_type == 'STOP_LOSS':
+                algo_ids.setdefault('sl', algo_id)
+            elif order_type == 'TAKE_PROFIT' and tp_index < len(tp_slots):
+                algo_ids.setdefault(tp_slots[tp_index], algo_id)
+                tp_index += 1
+
+    async def _place_protection_orders(
+        self, symbol: str, plans: Dict[str, Any], *, place_sl: bool, place_tp: bool
+    ) -> bool:
+        """按需挂保护单（SL / TP1+TP2），返回本轮所需类型是否全部到位。
+
+        增量与全量两条补挂路径共用的挂单内核：`place_sl` / `place_tp` 决定本次是否
+        需要挂该类型，未请求的类型一律不挂、不撤。
+
+        Returns:
+            bool: True 表示本轮请求的类型全部挂成功或幂等命中；False 表示存在缺口
+        """
+        all_success = True
+        if place_sl:
+            ok = await self._place_conditional_and_record(
+                symbol, algo_key='sl', stop_price=plans['sl']['price'],
+                limit_price=plans['sl']['limit_price'], quantity=plans['quantity'],
+            )
+            all_success = all_success and ok
+        if place_tp:
+            for level, key in ((1, 'tp1'), (2, 'tp2')):
+                ok = await self._apply_take_profit(symbol, plans[key], level)
+                all_success = all_success and ok
+        return all_success
+
+    def _finalize_replenish(self, symbol: str, all_success: bool, *, label: str) -> None:
+        """统一收尾：全部到位才置位 `_replenished_symbols`，并按结果记日志。
+
+        Args:
+            symbol: 交易对
+            all_success: 本轮所需类型是否全部到位（挂成功或幂等命中）
+            label: 日志标签（如「增量补全」「全量补全」），用于区分调用路径
+        """
+        if all_success:
+            self._replenished_symbols.add(symbol)
+            logger.info(f"条件单{label}完成: {symbol}")
+        else:
+            logger.warning(f"条件单{label}部分失败: {symbol}")
+
+    async def _execute_incremental_plans(
+        self, symbol: str, plans: Dict[str, Any], missing: List[str]
+    ) -> bool:
+        """Phase C（增量）：只挂 `missing` 覆盖的类型，绝不撤/改既有有效保护单。
+
+        类型级映射（方案甲，已知局限见 `_MISSING_TP` 注释）：
+        - `_MISSING_SL in missing` → 补 1 条 SL；
+        - `_MISSING_TP in missing` → 视为 TP 全缺，补 TP1+TP2。
+        `missing` 未含的类型一律不挂、不撤。
+
+        首步幂等建立持仓跟踪（已存在则保留，**不清空、不覆盖** algo_ids），紧接
+        从 DB 回填既有保护单的 algo_id（best-effort，保证取消依据完整）；只有本轮
+        全部缺失类型「挂成功或幂等命中」才置位 `_replenished_symbols`。
+        `market_close` 分支只做 TP 的部分市价平仓，绝不撤 SL（P0-D-AC14）。
+
+        Returns:
+            bool: True 表示缺失类型全部补全成功；False 表示存在缺口
+        """
+        # 挂单路径（_place_conditional_and_record / _mark_partial_close）依赖 tracking 已存在
+        self._ensure_replenish_tracking(symbol, plans)
+        # 回填既有保护单 algo_id：避免 algo_ids 非空时 cancel_all_algo_orders 跳过 DB 兜底
+        await self._backfill_algo_ids_from_db(symbol)
+        all_success = await self._place_protection_orders(
+            symbol, plans,
+            place_sl=_MISSING_SL in missing, place_tp=_MISSING_TP in missing,
+        )
+        self._finalize_replenish(symbol, all_success, label="增量补全")
+        return all_success
 
     async def _execute_replenish_plans(self, symbol: str, plans: Dict[str, Any]) -> bool:
-        """Phase C：撤单完成后挂 SL/TP1/TP2；失败记录缺口，下周期收敛。
+        """Phase C（回退全量）：撤单完成后挂 SL/TP1/TP2；失败记录缺口，下周期收敛。
 
         Phase C 首步才建立持仓跟踪（Phase A 保持纯只读）：只有撤单已成功、即将
         挂单时才创建条目，避免撤单失败留下「已建 tracking 但无 algo_ids」的半成品。
@@ -3578,27 +3724,11 @@ class TradingExecutor:
             bool: True 表示全部补全成功（置位 _replenished_symbols）；False 表示存在缺口
         """
         # 挂单路径（_place_conditional_and_record / _mark_partial_close）依赖 tracking 已存在
-        if symbol not in self.position_tracking:
-            self.position_tracking[symbol] = self._build_tracking_entry(
-                entry_price=plans['entry_price'], entry_quantity=plans['quantity'],
-                atr=plans['atr'],
-            )
-            self._last_tracked_qty[symbol] = float(plans['quantity'])
-        all_success = True
-        sl_ok = await self._place_conditional_and_record(
-            symbol, algo_key='sl', stop_price=plans['sl']['price'],
-            limit_price=plans['sl']['limit_price'], quantity=plans['quantity'],
+        self._ensure_replenish_tracking(symbol, plans)
+        all_success = await self._place_protection_orders(
+            symbol, plans, place_sl=True, place_tp=True,
         )
-        if not sl_ok:
-            all_success = False
-        for level, key in ((1, 'tp1'), (2, 'tp2')):
-            if not await self._apply_take_profit(symbol, plans[key], level):
-                all_success = False
-        if all_success:
-            self._replenished_symbols.add(symbol)
-            logger.info(f"条件单全部补全完成: {symbol}")
-        else:
-            logger.warning(f"条件单补全部分失败: {symbol}")
+        self._finalize_replenish(symbol, all_success, label="全量补全")
         return all_success
 
     async def _apply_take_profit(self, symbol: str, plan: Dict[str, Any], level: int) -> bool:

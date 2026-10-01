@@ -123,6 +123,8 @@ async def _guard_protection_orders():
 - 权威标的初始化 `self.positions` 缓存（仅当 `self.positions` 为空时回填），保证 `_monitor_positions` 仍可跟踪；
 - `_replenish_done` 属性（`strategy.py:102`）**删除**，同时删除其全部读写点（`:547/:618/:629`），避免遗留幽灵状态。
 
+> 后续变更（P0-D，2026-10-01）：上文「`replenish_conditional_orders` 已是『先算后撤』三阶段实现、**本轮不改其内部顺序**」仅描述本轮（P0-A）口径。P0-D 已将其改为**增量补挂（只补缺失类型、默认零撤单）**，签名新增 keyword-only `missing` 参数，并在入口加 fail-closed 守卫（`missing` 空/None → 零挂零撤、不置位、返回 False）。以 [P0-D 架构设计](./fix-2026-10-01-incremental-replenish-architecture.md) 为准。
+
 #### 3.1.4 `_execute_cycle` 新顺序
 
 ```
@@ -311,6 +313,8 @@ flowchart LR
     K --> C
 ```
 
+> 后续变更（P0-D，2026-10-01）：上图节点 `replenish_conditional_orders` 的「先算后撤→挂单」已改为**增量补挂（只补缺失类型、默认零撤单）**。详见 [P0-D 架构设计](./fix-2026-10-01-incremental-replenish-architecture.md)。
+
 ---
 
 ## 6. 配置项清单（新增/修改，全部带默认值，禁止硬编码）
@@ -389,6 +393,8 @@ flowchart LR
 | 读路径 503 影响存量调用方 | 白名单命中但建表失败比例高 | 仅「应采集却不可用」才 503；「未采集」仍 200 空；调用方按 status_code 分类 | kline-service 单镜像回滚（GHCR 上一 tag） |
 | `to_regclass` 在异常绑定类型下报错 | 表名含非法字符 | 表名已由 `TABLE_NAME_PATTERN` 严格校验后传入；仍参数化绑定 | 回滚 kline-service 镜像 |
 | 部署中断窗口 | 重建 kline-service 短暂中断 | 与上一轮一致：先上 new_coin（守卫先算后撤，K 线不可用不裸奔），再上 kline-service | — |
+
+> 后续变更（P0-D，2026-10-01）：本行「守卫先算后撤」表述已过时——补挂默认路径已改为**增量补挂（零撤单）**，回退开关 `cancel_after_ready=false` 才走旧「先算后撤」。详见 [P0-D 架构设计](./fix-2026-10-01-incremental-replenish-architecture.md)。
 
 ---
 
