@@ -153,6 +153,21 @@ jobs:
             exit 0
           fi
 
+          # 6.5) 全项目 COPY 服务（hrs/dashboard-api）：任何非 .github/ 变更都触发重建
+          #     原因：它们的 Dockerfile 是 `COPY . /app/` 或 `COPY . .`，
+          #     会把整个仓库（包括 services/、shared/、其他 strategies/）复制进去，
+          #     任何项目文件变更都会影响镜像内容
+          FULL_COPY_SERVICES="hrs|dashboard-api"
+          SERVICE_NAME="${{ matrix.service.name }}"
+          if echo "$SERVICE_NAME" | grep -qE "^(${FULL_COPY_SERVICES})$"; then
+            NON_GITHUB_CHANGES=$(echo "$CHANGED_FILES" | grep -v '^\.github/' | head -1)
+            if [ -n "$NON_GITHUB_CHANGES" ]; then
+              echo "✅ 全项目 COPY 服务（$SERVICE_NAME），有非 .github/ 变更 → 需要构建"
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
           # 7) 其他改动（不影响本服务镜像）→ skip
           echo "⏭️ ${{ matrix.service.name }} 无改动 → 跳过构建"
           echo "should_build=false" >> "$GITHUB_OUTPUT"
