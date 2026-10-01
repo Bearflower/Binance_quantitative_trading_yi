@@ -15,8 +15,15 @@ logger = structlog.get_logger()
 
 
 class KLineServiceError(Exception):
-    """K线服务异常"""
-    pass
+    """K线服务异常
+
+    Attributes:
+        status_code: HTTP 状态码（如 400/500）；None 表示非 HTTP 层面的异常
+    """
+
+    def __init__(self, message: str, status_code: Optional[int] = None):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class KLineService:
@@ -117,7 +124,8 @@ class KLineService:
                 
                 if response.status != 200:
                     raise KLineServiceError(
-                        f"K线服务请求失败: {response.status}"
+                        f"K线服务请求失败: {response.status}",
+                        status_code=response.status,
                     )
                 
                 if not isinstance(data, dict):

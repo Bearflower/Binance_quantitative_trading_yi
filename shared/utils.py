@@ -90,7 +90,7 @@ def retry_on_failure(
                 try:
                     return await func(*args, **kwargs)
                 except exceptions as e:
-                    # 不可重试的错误码，立即抛出不重试
+                    # 不可重试的 Binance 错误码，立即抛出不重试
                     if non_retryable_codes and hasattr(e, 'code') and getattr(e, 'code') in non_retryable_codes:
                         code = getattr(e, 'code')
                         # -9999 是废弃API端点（已知预期行为），-2011/-2013 是订单已成交/已取消（正常竞态），
@@ -102,6 +102,17 @@ def retry_on_failure(
                             function=func.__name__,
                             error_code=code,
                             error=str(e)
+                        )
+                        raise
+
+                    # 不可重试的 HTTP 4xx 状态码（客户端错误，重试不改变请求语义）
+                    status = getattr(e, 'status_code', None)
+                    if status is not None and 400 <= int(status) < 500:
+                        logger.info(
+                            "遇到 HTTP 4xx 客户端错误，不重试直接抛出",
+                            function=func.__name__,
+                            status_code=status,
+                            error=str(e),
                         )
                         raise
                     

@@ -41,12 +41,14 @@ class Settings(BaseSettings):
     # K 线表名安全校验配置（R01：防止外部输入改变 SQL 结构）
     # 说明：正则与白名单必须来自配置，路由/注册层不得出现字面量
     TABLE_NAME_PATTERN: str = Field(
-        default=r"^kline_[a-z0-9]{3,20}_([0-9]+[mhdw]|1M)$",
+        # 允许中文：币安合约已出现中文名交易对（牛来USDT、龙虾USDT）
+        default=r"^kline_[a-z0-9\u4e00-\u9fff]{3,20}_([0-9]+[mhdw]|1M)$",
         description="合法 K 线表名的严格正则（生成表名后必须整体匹配）",
     )
     SYMBOL_FORMAT_PATTERN: str = Field(
-        default=r"^[A-Z0-9]{3,20}$",
-        description="交易对格式正则（大写字母/数字，格式层校验）",
+        # 允许中文：币安合约已出现中文名交易对（牛来USDT、龙虾USDT）
+        default=r"^[A-Z0-9\u4e00-\u9fff]{3,20}$",
+        description="交易对格式正则（大写字母/数字/中文，格式层校验）",
     )
     FIXED_SYMBOLS: str = Field(
         default="BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,TRXUSDT",
@@ -55,6 +57,24 @@ class Settings(BaseSettings):
     # 接口鉴权（本轮预留不启用，见需求文档 Q1；仅预留配置位，不改动路由行为）
     KLINE_API_AUTH_ENABLED: bool = Field(default=False, description="K 线接口 Token 鉴权开关（预留）")
     KLINE_API_TOKEN: str = Field(default="", description="K 线接口 Token（预留）")
+
+    # 读路径「表已存在即放行」（P0-2，见 fix-2026-09-30 架构 §4.3）
+    # 说明：仅对读路径（/klines/latest、/indicators）生效；写路径与白名单语义保持不变
+    ALLOW_EXISTING_TABLE_SYMBOLS: bool = Field(
+        default=True,
+        description="读路径是否允许「表存在且格式合法」的标的绕过白名单",
+    )
+    EXISTING_TABLE_CHECK_CACHE_TTL_SECONDS: int = Field(
+        default=0,
+        ge=0,
+        description="表存在性检查结果缓存有效期（秒）；0 = 实时查询不缓存",
+    )
+    # 注册表内存缓存周期性重载（P0-1，见 fix-2026-09-30 架构 §3.3）
+    REGISTRY_CACHE_REFRESH_SECONDS: int = Field(
+        default=300,
+        ge=0,
+        description="注册表内存缓存周期性重载间隔（秒）；0 = 禁用（保持现状）",
+    )
 
     # 首次采集最小窗口（分钟），确保足够数据用于 ATR 计算
     MIN_INITIAL_COLLECT_MINUTES: int = Field(default=1000, ge=60, le=10080, description="首次采集最小窗口（分钟）")
