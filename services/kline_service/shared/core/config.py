@@ -51,7 +51,13 @@ class Settings(BaseSettings):
         description="交易对格式正则（大写字母/数字/中文，格式层校验）",
     )
     FIXED_SYMBOLS: str = Field(
-        default="BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,TRXUSDT",
+        # 覆盖 HRS 候选池高频标的 + 币安中文名合约
+        default="BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,TRXUSDT,"
+                "牛来USDT,龙虾USDT,"
+                "ADAUSDT,LINKUSDT,DOTUSDT,AVAXUSDT,MATICUSDT,DOGEUSDT,"
+                "UNIUSDT,ARBUSDT,OPUSDT,LTCUSDT,BCHUSDT,XLMUSDT,"
+                "ATOMUSDT,ETCUSDT,NEARUSDT,AAVEUSDT,INJUSDT,SUIUSDT,"
+                "SEIUSDT,TIAUSDT,ONDOUSDT",
         description="固定标的白名单（逗号分隔），作为 symbol 白名单静态兜底",
     )
     # 接口鉴权（本轮预留不启用，见需求文档 Q1；仅预留配置位，不改动路由行为）

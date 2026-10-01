@@ -33,7 +33,8 @@ from test_kline_table_name_guard_r01 import (
 
 # 格式合法但不在白名单的标的：前者「表已存在」（生产 P0 现场），后者「表不存在」
 _EXISTING_TABLE_SYMBOL = "USDBRLUSDT"
-_NON_WHITELIST_MISSING = "DOGEUSDT"
+# 故意选一个格式合法但不是真实币的 symbol，确保不在白名单且测试稳定
+_NON_WHITELIST_MISSING = "ZZZZUSDT"
 
 
 class _ExistenceRecorder:
@@ -118,7 +119,7 @@ async def test_p0_2_guard_missing_table_rejected(real_settings):
         await build_readable_table_name(
             _NON_WHITELIST_MISSING, "1h", table_exists=rec, registry=None, settings=real_settings
         )
-    assert rec.calls == ["kline_dogeusdt_1h"]
+    assert rec.calls == ["kline_zzzzusdt_1h"]
 
 
 async def test_p0_2_guard_existence_error_fail_closed(real_settings):
@@ -198,12 +199,18 @@ async def test_p0_2_ac2_injection_rejected_without_db():
 
 
 async def test_p0_2_ac3_non_whitelist_missing_table_rejected_without_select():
-    """非白名单且表不存在 → 400，且不执行 SELECT。"""
+    """非白名单且表不存在 → 返回空 list（不重试不告警），不执行 SELECT。
+
+    架构改变：格式合法但未采集的 symbol 不应返回 400——400 意味着客户端参数错误，
+    但这里参数完全合法，只是数据不存在。返回空 list 让 HRS 直接跳过，未来新币
+    自动兼容（collector 采了就有，没采就空）。
+    防注入由格式层正则保证，与白名单/表存在无关。
+    """
     conn = _FakeConn(table_exists=False)
     routes.db = _FakeDB(conn)
-    with pytest.raises(HTTPException) as exc:
-        await routes.get_latest_klines(symbol=_NON_WHITELIST_MISSING, interval="1h", limit=10)
-    assert exc.value.status_code == 400
+    result = await routes.get_latest_klines(symbol=_NON_WHITELIST_MISSING, interval="1h", limit=10)
+    assert result["code"] == 0
+    assert result["data"] == []
     assert conn.fetch_all_calls == []
 
 
@@ -254,7 +261,7 @@ async def test_p0_2_ac7_indicators_rejects_injection_without_db():
 # routes 层：表存在性 TTL 缓存（EXISTING_TABLE_CHECK_CACHE_TTL_SECONDS）
 # ============================================================
 
-_TABLE = "kline_dogeusdt_1h"
+_TABLE = "kline_zzzzusdt_1h"
 
 
 def test_read_table_exists_cache_ttl_reads_configured_value(real_settings, monkeypatch):

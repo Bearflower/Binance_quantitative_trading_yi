@@ -247,8 +247,14 @@ async def get_latest_klines(
 
             return {"code": 0, "message": "success", "data": klines}
 
-    except HTTPException:
-        # 参数非法（400）等已明确的 HTTP 错误，原样向上抛出，不得被下方兜底转为 500
+    except HTTPException as e:
+        # 区分 HTTP 400 的两类不同语义：
+        # - "格式非法"：symbol/interval 含注入风险，必须 400（防 SQL 注入）
+        # - "不在白名单/表不存在"：格式合法但未采集，返回空 list（不重试不告警）
+        if e.status_code == 400:
+            detail = str(getattr(e, "detail", ""))
+            if "格式非法" not in detail and ("不在白名单" in detail or "表不存在" in detail):
+                return {"code": 0, "message": "无数据（不在采集范围）", "data": []}
         raise
     except Exception as e:
         error_msg = str(e)
@@ -335,8 +341,12 @@ async def get_indicators(
 
             return {"code": 0, "message": "success", "data": indicators}
 
-    except HTTPException:
-        # 参数非法（400）等已明确的 HTTP 错误，原样向上抛出，不得被下方兜底转为 500
+    except HTTPException as e:
+        # 同 /klines/latest：格式非法（400）vs 白名单不命中（空 data=None）
+        if e.status_code == 400:
+            detail = str(getattr(e, "detail", ""))
+            if "格式非法" not in detail and ("不在白名单" in detail or "表不存在" in detail):
+                return {"code": 0, "message": "无数据（不在采集范围）", "data": None}
         raise
     except Exception as e:
         error_msg = str(e)
