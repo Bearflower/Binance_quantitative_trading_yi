@@ -106,6 +106,17 @@ trading:
     ignore_error_codes: ['-4164', '-2011', '-2021', '-4136', '-4507']
     # MCTPS 策略托管的交易对：由 MCTPS 管理保护单，本策略不补全
     skip_symbols: [BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT, XRPUSDT, TRXUSDT]
+    # 持续保护守卫节流窗口（秒）：距上次守卫不足此值时跳过本轮核验（P0-A-AC4）
+    guard_interval_seconds: 300
+    # 守卫核验时是否要求存在 OPEN 的止盈单（false 仅核验止损单）（P0-A-AC3）
+    require_take_profit: true
+    # 保护缺口/ATR 不可用告警的同一 (kind,symbol) 降频窗口（秒）（P0-C-AC6）
+    alert_throttle_seconds: 3600
+
+  # DB ↔ 交易所双向对账（P0-A-AC2/AC6：僵尸关闭 + 他策略不动）
+  reconcile:
+    enabled: true            # 是否启用僵尸对账（false 回退旧的「仅内存 stale」行为）
+    zombie_confirm_cycles: 3 # 僵尸关闭所需的连续无仓周期数 N（关闭前仍会再回查一次）
 
   # 分批止盈配置（基于ATR）
   batch_take_profit:

@@ -7,6 +7,7 @@ import traceback
 
 from shared.core.database import DatabaseManager
 from shared.utils.logger import get_logger
+from shared.utils.table_exists import table_exists
 from .binance_client import BinanceClient
 from .registry import registry
 from .table_name_guard import build_kline_table_name
@@ -215,14 +216,8 @@ class KlineCollector:
     async def _create_table_if_not_exists(
         self, conn, table_name: str, sample_data: Dict
     ):
-        """检查表是否存在，不存在则创建"""
-        check_query = """
-            SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_name = :table_name AND table_schema = 'public'
-            )
-        """
-        exists = await conn.fetch_val(check_query, {"table_name": table_name})
+        """检查表是否存在，不存在则创建（存在性判断复用唯一助手，尊重 search_path）"""
+        exists = await table_exists(conn, table_name)
 
         if not exists:
             logger.info(f"创建表：{table_name}")
@@ -288,14 +283,7 @@ class KlineCollector:
             # 注意：本行若抛异常，table_name 将未绑定 → 下方 except 日志改用原始 symbol/interval。
             table_name = build_kline_table_name(symbol, interval, registry=registry)
             async with self.db.get_connection() as conn:
-                check_query = """
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_name = :table_name AND table_schema = 'public'
-                    )
-                """
-                exists = await conn.fetch_val(check_query, {"table_name": table_name})
-                if not exists:
+                if not await table_exists(conn, table_name):
                     logger.info(f"预创建 K 线表：{table_name}")
                     await self._create_table_if_not_exists(conn, table_name, {})
                     logger.info(f"K 线表创建成功：{table_name}")

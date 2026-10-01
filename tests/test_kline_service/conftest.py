@@ -4,6 +4,7 @@ K线服务测试通用配置
 
 import sys
 import os
+import importlib.util
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
@@ -38,6 +39,18 @@ mock_utils = MagicMock()
 mock_utils.get_logger = mock_logger_module.get_logger
 mock_utils.retry_on_failure.side_effect = lambda **kwargs: lambda f: f
 sys.modules["shared.utils"] = mock_utils
+
+# shared.utils.table_exists：读路径/采集/自检共用的真实实现（无 shared 包依赖）。
+# 桩 shared.utils 为 MagicMock（非包），无法经父包 __path__ 定位子模块，
+# 故按文件路径加载后直接登记到 sys.modules，保证 `import shared.utils.table_exists` 可解析。
+_tbl_spec = importlib.util.spec_from_file_location(
+    "shared.utils.table_exists",
+    Path(KLINE_SERVICE_PATH) / "shared" / "utils" / "table_exists.py",
+)
+_tbl_mod = importlib.util.module_from_spec(_tbl_spec)
+_tbl_spec.loader.exec_module(_tbl_mod)
+sys.modules["shared.utils.table_exists"] = _tbl_mod
+mock_utils.table_exists = _tbl_mod
 
 # 模拟 shared.core.database
 mock_db_module = MagicMock()

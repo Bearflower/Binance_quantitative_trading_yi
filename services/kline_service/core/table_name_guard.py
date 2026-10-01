@@ -18,7 +18,26 @@ logger = get_logger(__name__)
 
 
 class TableNameValidationError(ValueError):
-    """表名/参数校验失败（路由层据此返回 4xx，禁止继续拼 SQL）"""
+    """表名/参数校验失败（禁止继续拼 SQL）。
+
+    为「去文案匹配」提供显式错误类型：路由层按**子类类型**决定响应契约，
+    不再解析 detail 文案。三个子类语义：
+      - TableNameFormatError      → symbol/interval 格式非法（注入风险）→ 400
+      - SymbolNotCollectedError   → 格式合法、未采集（表不存在）→ 200 空（不告警）
+      - TableUnavailableError     → 应采集但表不可用（建表失败/DB 异常）→ 503 + 告警
+    """
+
+
+class TableNameFormatError(TableNameValidationError):
+    """symbol/interval 格式非法（注入风险），路由层应返回 400"""
+
+
+class SymbolNotCollectedError(TableNameValidationError):
+    """格式合法但尚未采集（不在白名单且表不存在），路由层应返回 200 空数据"""
+
+
+class TableUnavailableError(TableNameValidationError):
+    """应采集却不可用（建表失败或存在性查询/DB 异常），路由层应返回 503 并告警"""
 
 
 def _resolve_settings(settings):
@@ -116,14 +135,14 @@ def validate_symbol_interval_format(symbol: str, interval: str, *, settings=None
     """
     cfg = _resolve_settings(settings)
     if not isinstance(symbol, str) or not isinstance(interval, str):
-        raise TableNameValidationError("symbol/interval 必须为字符串")
+        raise TableNameFormatError("symbol/interval 必须为字符串")
     norm_symbol = symbol.strip().upper()
     symbol_pattern = _pattern(cfg, "SYMBOL_FORMAT_PATTERN")
     if symbol_pattern is None or not _compile(symbol_pattern).fullmatch(norm_symbol):
-        raise TableNameValidationError(f"symbol 格式非法：{symbol!r}")
+        raise TableNameFormatError(f"symbol 格式非法：{symbol!r}")
     norm_interval = interval.strip()
     if not norm_interval:
-        raise TableNameValidationError("interval 不能为空")
+        raise TableNameFormatError("interval 不能为空")
     return norm_symbol, norm_interval
 
 
@@ -143,7 +162,7 @@ def _assemble_table_name(cfg, norm_symbol: str, norm_interval: str) -> str:
     """由已规范化的 symbol/interval 组装表名，并整体匹配 TABLE_NAME_PATTERN（fail-closed）"""
     table_name = f"kline_{norm_symbol.lower()}_{norm_interval}"
     if not is_valid_table_name(table_name, settings=cfg):
-        raise TableNameValidationError(f"表名不匹配 TABLE_NAME_PATTERN：{table_name}")
+        raise TableNameFormatError(f"表名不匹配 TABLE_NAME_PATTERN：{table_name}")
     return table_name
 
 
@@ -193,16 +212,16 @@ async def build_readable_table_name(
     registry=None,
     settings=None,
 ) -> str:
-    """【读路径唯一入口，P0-2】白名单 OR「表已存在且格式合法」。
+    """【读路径唯一入口，P0-2/P0-C】白名单 OR「表已存在且格式合法」。
 
-    校验顺序（任一不通过即抛 TableNameValidationError，绝不继续拼 SQL）：
-      1) 格式层 + 表名层：复用 _validate_format_and_assemble（不新增第二套校验）
+    校验顺序（任一不通过即抛 TableNameValidationError 子类，绝不继续拼 SQL）：
+      1) 格式层 + 表名层：失败 → TableNameFormatError（路由层 400）
       2) 白名单命中（FIXED ∪ SYMBOLS ∪ registry active）→ 直接放行
       3) 未命中且开关开启且注入了 table_exists 回调：
            表存在 → 记 INFO（source=existing_table）并放行
-           不存在 → 拒绝
-           回调抛异常 → 拒绝（fail-closed）
-      4) 其余（开关关闭 / 未注入回调）→ 拒绝
+           不存在 → SymbolNotCollectedError（路由层 200 空数据，不告警）
+           回调抛异常 → TableUnavailableError（fail-closed，路由层 503 + 告警）
+      4) 其余（开关关闭 / 未注入回调）→ SymbolNotCollectedError（未采集口径）
 
     「表是否存在」的事实由具备 DB 连接的路由层以参数化回调注入，本模块不直连 DB。
     """
@@ -213,14 +232,14 @@ async def build_readable_table_name(
         return table_name
     allow_existing = _flag_enabled(getattr(cfg, "ALLOW_EXISTING_TABLE_SYMBOLS", None), True)
     if not allow_existing or table_exists is None:
-        raise TableNameValidationError(f"symbol/interval 不在白名单：{norm_symbol}/{norm_interval}")
+        raise SymbolNotCollectedError(f"symbol/interval 未采集：{norm_symbol}/{norm_interval}")
     try:
         exists = await table_exists(table_name)
-    except Exception as e:  # noqa: BLE001 - 存在性查询失败即 fail-closed
-        raise TableNameValidationError(f"表存在性检查失败（fail-closed）：{table_name} - {e}") from e
+    except Exception as e:  # noqa: BLE001 - 存在性查询失败即 fail-closed（应采集却不可用）
+        raise TableUnavailableError(f"表存在性检查失败（fail-closed）：{table_name} - {e}") from e
     if not exists:
-        raise TableNameValidationError(
-            f"symbol/interval 不在白名单且表不存在：{norm_symbol}/{norm_interval}"
+        raise SymbolNotCollectedError(
+            f"symbol/interval 未采集（表不存在）：{norm_symbol}/{norm_interval}"
         )
     logger.info("读路径按「表已存在」放行：%s（source=existing_table）", table_name)
     return table_name

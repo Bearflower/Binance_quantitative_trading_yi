@@ -13,7 +13,7 @@ import structlog
 from shared.binance_api import BinanceClient, BinanceAPIError
 from shared.database import DatabaseManager
 from shared.notification import NotificationClient
-from shared.kline_service import KLineService
+from shared.kline_service import KLineService, KLineServiceError
 from shared.condition_orders import record_condition_order
 # R06 统一订单终态助手（替代内联等待实现，杜绝三策略重复代码）
 from shared.order_fill_waiter import (
@@ -206,6 +206,14 @@ class TradingExecutor:
         self.replenish_ignore_error_codes = [str(code).strip() for code in raw_ignore]
         raw_skip = replenish_config.get('skip_symbols', []) or []
         self.replenish_skip_symbols = {str(s).strip().upper() for s in raw_skip if str(s).strip()}
+        # 保护缺口/ATR 不可用告警的同 (kind,symbol) 降频窗口（秒），从配置读取
+        self.alert_throttle_seconds = float(
+            replenish_config.get('alert_throttle_seconds', 3600)
+        )
+        # 守卫核验保护单时是否要求存在止盈单（P0-A-AC3），从配置读取
+        self.replenish_require_take_profit = bool(
+            replenish_config.get('require_take_profit', True)
+        )
         # K 线注册态保障配置（P0-1）：ensure-active 开关 / 重试次数 / 间隔 / 采集周期
         kline_config = config.get('kline', {})
         self.kline_interval = kline_config.get('interval', '1h')
@@ -223,8 +231,10 @@ class TradingExecutor:
         self.duplicate_notify_window_seconds = int(
             trading_config.get('duplicate_symbol_notify_window_seconds', 3600)
         )
-        # {symbol: 上次通知时间戳（monotonic）}
-        self._duplicate_notify_ts: Dict[str, float] = {}
+
+        # 通用告警节流表：{(kind, symbol, ...): 上次放行时间戳（monotonic）}
+        # 供「同币种重复开仓」「持仓保护缺口」「ATR 不可用」等复用（禁重复降频逻辑）
+        self._notify_ts: Dict[tuple, float] = {}
 
         # 持仓跟踪（用于移动止盈和时间止损）
         self.position_tracking: Dict[str, Dict[str, Any]] = {}
@@ -958,6 +968,76 @@ class TradingExecutor:
             logger.warning("查询 short_positions 未平仓币种集合失败", error=str(e))
             return None
 
+    def should_notify(self, key: tuple, window_seconds: float) -> bool:
+        """通用告警节流判定：同一 key 在窗口内只放行一次（P0-C-AC6）。
+
+        用「是否已记录」判定，而非与 0.0 比较：monotonic 基准在容器/机器重启后归零，
+        若以 0.0 为哨兵会把「首次告警」误判为窗口内而静默丢弃。
+
+        Args:
+            key: 告警标识（如 (kind, symbol)、(kind, symbol, context)）
+            window_seconds: 降频窗口（秒）；<=0 表示不降频（每次都放行）
+
+        Returns:
+            bool: True 表示应发送；False 表示窗口内已发送过、应跳过
+        """
+        now = time.monotonic()
+        last_ts = self._notify_ts.get(key)
+        if last_ts is not None and window_seconds > 0 and now - last_ts < window_seconds:
+            return False
+        self._notify_ts[key] = now
+        return True
+
+    async def find_missing_protection(
+        self, symbol: str, *, require_take_profit: Optional[bool] = None
+    ) -> List[str]:
+        """核验标的缺失哪些 OPEN 保护条件单（P0-A-AC3）。
+
+        Args:
+            symbol: 交易对
+            require_take_profit: 是否要求止盈单；None 时读取配置
+                trading.replenish.require_take_profit（默认 true）
+
+        Returns:
+            List[str]: 缺失的中文类型列表（如 ["止损单"]）；无缺口返回 []
+
+        Note:
+            查询异常时保守返回「全部应存在类型」（fail-closed），避免因 DB 抖动
+            误判为「已保护」而放过真实缺口；由守卫触发补挂。
+        """
+        if require_take_profit is None:
+            require_take_profit = self.replenish_require_take_profit
+        missing = ["止损单"]
+        if require_take_profit:
+            missing.append("止盈单")
+        try:
+            rows = await self.db.fetch_all(
+                """
+                SELECT DISTINCT order_type FROM condition_orders
+                WHERE strategy_name = $1 AND symbol = $2 AND status = 'OPEN'
+                """,
+                "new_coin",
+                symbol,
+            )
+        except Exception as e:
+            logger.warning(
+                "查询条件单保护缺口失败（保守返回全部应存在类型）",
+                symbol=symbol,
+                error=str(e),
+            )
+            return missing
+        open_types = {str(r.get('order_type', '')).upper() for r in (rows or [])}
+        result: List[str] = []
+        if "STOP_LOSS" not in open_types:
+            result.append("止损单")
+        if require_take_profit and "TAKE_PROFIT" not in open_types:
+            result.append("止盈单")
+        return result
+
+    def reset_replenish_flag(self, symbol: str) -> None:
+        """清除补全完成标记，允许后续失去保护后自愈（同轮内防重仍由 _should_skip 保证）"""
+        self._replenished_symbols.discard(symbol)
+
     async def _notify_duplicate_symbol(
         self,
         symbol: str,
@@ -972,13 +1052,8 @@ class TradingExecutor:
             exchange_qty: 交易所持仓数量（不可用时为 None）
             sources: 命中来源列表
         """
-        now = time.monotonic()
-        # 用「是否已记录」判定，而非与 0.0 比较：monotonic 基准在容器/机器重启后归零，
-        # 若以 0.0 为哨兵会把「首次告警」误判为窗口内而静默丢弃
-        last_ts = self._duplicate_notify_ts.get(symbol)
-        if last_ts is not None and now - last_ts < self.duplicate_notify_window_seconds:
+        if not self.should_notify(("duplicate_symbol", symbol), self.duplicate_notify_window_seconds):
             return
-        self._duplicate_notify_ts[symbol] = now
 
         project = self.config.get('notification', {}).get('project', 'new_coin')
         qty_desc = f"{exchange_qty:.6f}" if exchange_qty is not None else "未知"
@@ -1691,11 +1766,37 @@ class TradingExecutor:
             else:
                 logger.warning(f"TR数据不足，无法计算ATR: {symbol}")
                 return Decimal('0')
-                
+
+        except KLineServiceError as e:
+            # C-3：区分「服务拒绝」与「数据不足」——K 线服务非 200/异常抛 KLineServiceError，
+            # 属应采集却不可用，记 ERROR 并降频告警（200 空 list 走上方 warning 分支，不告警）
+            logger.error(
+                f"K线服务拒绝，ATR 不可用: {symbol}",
+                status_code=getattr(e, "status_code", None),
+                error=str(e),
+            )
+            await self._notify_atr_unavailable(symbol)
+            return Decimal('0')
         except Exception as e:
             logger.error(f"计算ATR失败: {symbol}, 错误: {e}")
             return Decimal('0')
-    
+
+    async def _notify_atr_unavailable(self, symbol: str) -> None:
+        """ATR 不可用（K线服务拒绝）降频告警（ERROR 级，飞书；P0-C-AC3/AC5）"""
+        if not self.should_notify(("atr_unavailable", symbol), self.alert_throttle_seconds):
+            return
+        project = self.config.get('notification', {}).get('project', 'new_coin')
+        message = (
+            f"【新币做空策略】ATR 不可用（K线服务拒绝）\n"
+            f"币种: {symbol}\n"
+            f"影响: 相关止盈止损阈值无法计算，已跳过本轮检查\n"
+            f"处理: 请检查 K 线服务与该标的采集状态"
+        )
+        try:
+            await self.notification.send(message=message, level="error", project=project)
+        except Exception as e:
+            logger.warning("发送 ATR 不可用告警失败", symbol=symbol, error=str(e))
+
     async def _set_batch_take_profit(
         self,
         symbol: str,
@@ -2359,6 +2460,8 @@ class TradingExecutor:
             # 不会因跳过而漏更新最低价（方向保守）。本方法返回契约为 None，直接 return
             # 与上方最低价分支的既有返回一致，不破坏调用方 check_position_management。
             if self._warn_invalid_atr(symbol, "移动止盈", atr):
+                # C-5：ATR=0 已跳过本轮，补发降频告警（既跳过又可观测）
+                await self._notify_atr_unavailable(symbol)
                 return
 
             # 计算反弹幅度
@@ -2594,6 +2697,8 @@ class TradingExecutor:
             # check_position_management 以裸 await 调用并忽略返回值，故直接 return
             # 与"未激活"分支的既有返回一致，不会破坏调用方逻辑。
             if self._warn_invalid_atr(symbol, "动态利润保护", atr):
+                # C-5：ATR=0 已跳过本轮，补发降频告警（既跳过又可观测）
+                await self._notify_atr_unavailable(symbol)
                 return
 
             # 获取波动率调节因子（如果配置启用）

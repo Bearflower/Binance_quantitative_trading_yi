@@ -853,7 +853,6 @@ class TestInvalidSymbolsCache:
         strategy._refresh_drawdown_status = AsyncMock()
         strategy._monitor_positions = AsyncMock()
         strategy.drawdown_pause_until = None
-        strategy._replenish_done = True
 
         await strategy._execute_cycle()
 

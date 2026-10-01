@@ -14,6 +14,7 @@ from typing import Optional
 from shared.core.database import db_manager
 from shared.core.config import settings
 from shared.utils.logger import get_logger
+from shared.utils.table_exists import table_exists
 
 from core.binance_client import BinanceClient
 from core.collector import KlineCollector
@@ -95,12 +96,11 @@ async def _verify_database_identity():
         missing_tables = []
 
         for table_name in expected_tables:
-            exists = await conn.fetch_val("""
-                SELECT EXISTS (
-                    SELECT FROM information_schema.tables 
-                    WHERE table_name = :table_name AND table_schema = 'public'
-                )
-            """, {"table_name": table_name})
+            try:
+                exists = await table_exists(conn, table_name)
+            except Exception as e:  # noqa: BLE001 - 自检失败该表按缺失处理（fail-closed 记 warning）
+                logger.warning(f"启动自检表存在性查询失败：{table_name} - {e}")
+                exists = False
             if exists:
                 found_tables.append(table_name)
             else:

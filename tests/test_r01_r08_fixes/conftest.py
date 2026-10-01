@@ -96,6 +96,17 @@ def _install_stub_modules():
     _logger_mod = _module("shared.utils.logger")
     _logger_mod.get_logger = lambda name, *a, **k: logging.getLogger(name)
     _utils.logger = _logger_mod
+    # 真实实现（不依赖 shared 包解析）：读路径/采集/自检统一复用它做存在性判断。
+    # 必须显式登记子模块：桩 `shared.utils` 非包，`import shared.utils.table_exists`
+    # 无法经父包 __path__ 定位，故按文件路径加载后直接写入 sys.modules。
+    _tbl_spec = importlib.util.spec_from_file_location(
+        "shared.utils.table_exists",
+        KLINE_SERVICE_PATH / "shared" / "utils" / "table_exists.py",
+    )
+    _tbl_mod = importlib.util.module_from_spec(_tbl_spec)
+    _tbl_spec.loader.exec_module(_tbl_mod)
+    sys.modules["shared.utils.table_exists"] = _tbl_mod
+    _utils.table_exists = _tbl_mod
 
     _core = _module("shared.core")
     _core_config = _module("shared.core.config")

@@ -15,6 +15,8 @@
 | 约束 | 遵守 `coding-standards.md`（禁止硬编码/重复代码/幽灵参数、单函数≤50 行、单行≤120 字符、中文注释）、`deployment.md`（`shared/*` 变更触发全量重建）、`CLAUDE.md` |
 
 > 本文档只做架构设计与接口约定，不含业务实现代码；涉及契约的伪代码因需要而给出。
+>
+> 🔁 **后续变更（2026-10-01）**：本轮 P0-2「表已存在即放行」因存在性判断硬编码 `table_schema='public'` 成为**死代码**（已由 [P0 补漏架构方案](./fix-2026-10-01-p0-remaining-unprotected-positions-architecture.md) 改用 `to_regclass` 修复）；`_replenish_done` 一次性语义已被**每周期持续保护守卫**取代。本文档 §5.4 等关于 `_replenish_done` 协同的描述为**当轮设计快照**，不再反映现行实现。
 
 ### 1.1 需求已定（用户拍板，三项全做，不得削减）
 

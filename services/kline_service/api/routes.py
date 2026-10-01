@@ -7,12 +7,16 @@ from datetime import datetime
 
 from shared.utils.logger import get_logger
 from shared.core.database import Database
+from shared.utils.table_exists import table_exists
 from core.binance_client import BinanceClient
 from core.collector import KlineCollector
 from core.indicator import TechnicalIndicatorCalculator
 from core.registry import registry
 from core.table_name_guard import (
+    SymbolNotCollectedError,
+    TableNameFormatError,
     TableNameValidationError,
+    TableUnavailableError,
     build_kline_table_name,
     build_readable_table_name,
     build_table_name_by_format,
@@ -46,14 +50,12 @@ async def health_check():
 
 
 async def _table_exists(conn, table_name: str) -> bool:
-    """检查表是否存在（避免查询不存在的表触发 PostgreSQL 错误日志）"""
-    query = """
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_name = :table_name AND table_schema = 'public'
-        )
+    """检查表是否存在：复用唯一助手 table_exists（尊重 search_path、参数化）。
+
+    历史实现硬编码 table_schema='public'，而 kline 表实际落在 search_path
+    命中的 schema（生产为 btc_eth），导致判断恒为 False、相关放行分支不可达。
     """
-    return await conn.fetch_val(query, {"table_name": table_name})
+    return await table_exists(conn, table_name)
 
 
 def _validated_table_name(symbol: str, interval: str) -> str:
@@ -122,9 +124,11 @@ def _precheck_read_format(symbol: str, interval: str) -> None:
 
 
 async def _validated_read_table_name(conn, symbol: str, interval: str) -> str:
-    """读路径唯一入口（P0-2）：白名单 OR「表已存在且格式合法」；非法输入抛 HTTPException(400)
+    """读路径唯一入口（P0-2/P0-C）：白名单 OR「表已存在且格式合法」。
 
-    存在性事实由 conn 参数化查询注入 guard，guard 自身不直连 DB（见 table_name_guard）。
+    - 格式非法（注入风险）→ HTTPException(400)；
+    - SymbolNotCollectedError / TableUnavailableError **原样上抛**，由
+      `_resolve_ready_table` 与端点按类型转换为 200 空 / 503（不再解析 detail 文案）。
     """
     try:
         return await build_readable_table_name(
@@ -133,42 +137,43 @@ async def _validated_read_table_name(conn, symbol: str, interval: str) -> str:
             table_exists=_make_table_exists_checker(conn),
             registry=registry,
         )
-    except TableNameValidationError as e:
+    except TableNameFormatError as e:
         logger.warning(f"K 线查询参数非法：symbol={symbol!r} interval={interval!r} - {e}")
         raise HTTPException(status_code=400, detail=f"参数非法：{e}") from e
 
 
-async def _ensure_table_ready(conn, table_name: str, symbol: str, interval: str) -> bool:
-    """确保查询表可用：表不存在时尝试自动建表。
+async def _ensure_table_ready(conn, table_name: str, symbol: str, interval: str) -> None:
+    """确保查询表可用；表不存在时尝试自动建表。
 
-    R01-F3：建表失败或采集器不可用时立即返回 False，调用方据此返回「无数据」，
-    禁止继续执行该表的 SELECT。
+    不可用（表缺失且采集器不可用 / 建表失败）→ 抛 TableUnavailableError（503 + 告警），
+    不再静默返回「无数据」——那是「应采集却不可用」被误解为「未采集」的旧缺陷。
     """
     if await _resolve_table_exists(conn, table_name):
-        return True
+        return
     if not collector:
-        logger.debug(f"K 线表 {table_name} 不存在且采集器未初始化，返回无数据")
-        return False
+        raise TableUnavailableError(f"表 {table_name} 不存在且采集器不可用")
     try:
         await collector.ensure_table(symbol, interval)
-        logger.info(f"K 线表自动创建成功：{table_name}")
-        return True
-    except Exception as e:  # noqa: BLE001 - 建表失败即终止查询
-        logger.warning(f"K 线表自动创建失败：{table_name} - {e}")
-        return False
+    except Exception as e:  # noqa: BLE001 - 建表失败即视为该表不可用
+        raise TableUnavailableError(f"K 线表自动创建失败：{table_name} - {e}") from e
+    logger.info(f"K 线表自动创建成功：{table_name}")
 
 
 async def _resolve_ready_table(conn, symbol: str, interval: str) -> str:
     """读路径共用（/klines/latest 与 /indicators）：校验表名并确保表可用。
 
-    不可用（表不存在且建表失败或采集器不可用）时返回空字符串，调用方据此返回「无数据」。
+    契约（P0-C-AC1）：
+      - 未采集（SymbolNotCollectedError）→ 返回空字符串，调用方 200 空数据（不告警）；
+      - 应采集却不可用（TableUnavailableError）/ 格式非法（HTTPException 400）→ 上抛。
 
     Returns:
-        str: 可用表名；不可用时为空字符串
+        str: 可用表名；未采集时返回空字符串
     """
-    table_name = await _validated_read_table_name(conn, symbol, interval)
-    if not await _ensure_table_ready(conn, table_name, symbol, interval):
+    try:
+        table_name = await _validated_read_table_name(conn, symbol, interval)
+    except SymbolNotCollectedError:
         return ""
+    await _ensure_table_ready(conn, table_name, symbol, interval)
     return table_name
 
 
@@ -247,15 +252,13 @@ async def get_latest_klines(
 
             return {"code": 0, "message": "success", "data": klines}
 
-    except HTTPException as e:
-        # 区分 HTTP 400 的两类不同语义：
-        # - "格式非法"：symbol/interval 含注入风险，必须 400（防 SQL 注入）
-        # - "不在白名单/表不存在"：格式合法但未采集，返回空 list（不重试不告警）
-        if e.status_code == 400:
-            detail = str(getattr(e, "detail", ""))
-            if "格式非法" not in detail and ("不在白名单" in detail or "表不存在" in detail):
-                return {"code": 0, "message": "无数据（不在采集范围）", "data": []}
+    except HTTPException:
+        # 格式非法（注入风险）→ 400，原样上抛（不再按 detail 文案区分）
         raise
+    except TableUnavailableError as e:
+        # 应采集却不可用（建表失败/存在性查询异常）→ 503 + 告警（不再静默 200 空）
+        logger.error(f"K 线数据不可用（应采集却缺失）：symbol={symbol} interval={interval} - {e}")
+        raise HTTPException(status_code=503, detail="K线数据暂不可用") from e
     except Exception as e:
         error_msg = str(e)
         # 防御性处理：表存在检查有竞态条件时兜底
@@ -341,13 +344,13 @@ async def get_indicators(
 
             return {"code": 0, "message": "success", "data": indicators}
 
-    except HTTPException as e:
-        # 同 /klines/latest：格式非法（400）vs 白名单不命中（空 data=None）
-        if e.status_code == 400:
-            detail = str(getattr(e, "detail", ""))
-            if "格式非法" not in detail and ("不在白名单" in detail or "表不存在" in detail):
-                return {"code": 0, "message": "无数据（不在采集范围）", "data": None}
+    except HTTPException:
+        # 格式非法（注入风险）→ 400，原样上抛（不再按 detail 文案区分）
         raise
+    except TableUnavailableError as e:
+        # 应采集却不可用（建表失败/存在性查询异常）→ 503 + 告警（不再静默 200 空）
+        logger.error(f"K 线指标不可用（应采集却缺失）：symbol={symbol} interval={interval} - {e}")
+        raise HTTPException(status_code=503, detail="K线数据暂不可用") from e
     except Exception as e:
         error_msg = str(e)
         # 防御性处理：表存在检查有竞态条件时兜底

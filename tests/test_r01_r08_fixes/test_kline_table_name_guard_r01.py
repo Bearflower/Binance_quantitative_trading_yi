@@ -127,11 +127,13 @@ async def test_r01_ac2_interval_injection_rejected_without_sql():
 
 
 # ============================================================
-# R01-AC3：建表失败即终止，不执行 SELECT
+# R01-AC3：建表失败/采集器不可用即终止，不执行 SELECT
+# 契约更新（P0-C）：白名单标的「应采集却不可用」不再静默 200 空，
+# 而是抛 TableUnavailableError → 端点统一转 503（不再解析 detail 文案）。
 # ============================================================
 
 async def test_r01_ac3_ensure_table_failure_returns_no_data_without_select():
-    """表不存在且自动建表抛异常 → 返回「无数据」，且不执行 SELECT。"""
+    """表不存在且自动建表抛异常 → 503（不可用告警），且不执行 SELECT。"""
     conn = _FakeConn(table_exists=False)
     routes.db = _FakeDB(conn)
 
@@ -140,19 +142,20 @@ async def test_r01_ac3_ensure_table_failure_returns_no_data_without_select():
             raise RuntimeError("建表失败")
 
     routes.collector = _BrokenCollector()
-    result = await routes.get_latest_klines(symbol="BTCUSDT", interval="1h", limit=10)
-    assert result["data"] == []
-    assert result["message"] == "无数据"
+    with pytest.raises(HTTPException) as exc:
+        await routes.get_latest_klines(symbol="BTCUSDT", interval="1h", limit=10)
+    assert exc.value.status_code == 503
     assert conn.fetch_all_calls == []
 
 
 async def test_r01_ac3_collector_unavailable_returns_no_data():
-    """表不存在且采集器不可用 → 返回「无数据」，且不执行 SELECT。"""
+    """表不存在且采集器不可用 → 503（不可用告警），且不执行 SELECT。"""
     conn = _FakeConn(table_exists=False)
     routes.db = _FakeDB(conn)
     routes.collector = None
-    result = await routes.get_latest_klines(symbol="BTCUSDT", interval="1h", limit=10)
-    assert result["data"] == []
+    with pytest.raises(HTTPException) as exc:
+        await routes.get_latest_klines(symbol="BTCUSDT", interval="1h", limit=10)
+    assert exc.value.status_code == 503
     assert conn.fetch_all_calls == []
 
 

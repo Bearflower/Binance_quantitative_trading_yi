@@ -20,6 +20,7 @@ from fastapi import HTTPException
 from api import routes
 from core.table_name_guard import (
     TableNameValidationError,
+    TableUnavailableError,
     build_readable_table_name,
     build_table_name_by_format,
 )
@@ -225,12 +226,12 @@ async def test_p0_2_ac4_whitelist_behavior_unchanged():
 
 
 async def test_p0_2_ac5_existence_query_error_fail_closed():
-    """存在性查询异常 → 400（不放行），不执行 SELECT。"""
+    """存在性查询异常 → 503（TableUnavailableError → 端点转 503），不执行 SELECT。"""
     conn = _BrokenExistenceConn(table_exists=True)
     routes.db = _FakeDB(conn)
     with pytest.raises(HTTPException) as exc:
         await routes.get_latest_klines(symbol=_EXISTING_TABLE_SYMBOL, interval="1h", limit=10)
-    assert exc.value.status_code == 400
+    assert exc.value.status_code == 503
     assert conn.fetch_all_calls == []
 
 
@@ -336,24 +337,27 @@ async def test_resolve_ready_table_returns_name_when_ready():
 
 
 async def test_resolve_ready_table_returns_empty_when_not_ready():
-    """白名单标的但表不可用（不存在且无采集器）→ 返回空字符串。"""
+    """白名单标的但表不可用（不存在且无采集器）→ 抛 TableUnavailableError（503 契约）。"""
     conn = _FakeConn(table_exists=False)
-    assert await routes._resolve_ready_table(conn, "BTCUSDT", "1h") == ""
+    with pytest.raises(TableUnavailableError):
+        await routes._resolve_ready_table(conn, "BTCUSDT", "1h")
 
 
 async def test_p0_2_latest_no_data_when_table_unavailable():
-    """表不可用 → /klines/latest 返回「无数据」（data=[]）且不执行 SELECT。"""
+    """表不可用 → /klines/latest 抛 503（不再静默 200 空）且不执行 SELECT。"""
     conn = _FakeConn(table_exists=False)
     routes.db = _FakeDB(conn)
-    result = await routes.get_latest_klines(symbol="BTCUSDT", interval="1h", limit=10)
-    assert result == {"code": 0, "message": "无数据", "data": []}
+    with pytest.raises(HTTPException) as exc:
+        await routes.get_latest_klines(symbol="BTCUSDT", interval="1h", limit=10)
+    assert exc.value.status_code == 503
     assert conn.fetch_all_calls == []
 
 
 async def test_p0_2_indicators_no_data_when_table_unavailable():
-    """表不可用 → /indicators 返回「无数据」（data=None），返回体与 latest 不同。"""
+    """表不可用 → /indicators 抛 503（与 latest 一致）且不执行 SELECT。"""
     conn = _FakeConn(table_exists=False)
     routes.db = _FakeDB(conn)
-    result = await routes.get_indicators(symbol="BTCUSDT", interval="1h", period=20)
-    assert result == {"code": 0, "message": "无数据", "data": None}
+    with pytest.raises(HTTPException) as exc:
+        await routes.get_indicators(symbol="BTCUSDT", interval="1h", period=20)
+    assert exc.value.status_code == 503
     assert conn.fetch_all_calls == []

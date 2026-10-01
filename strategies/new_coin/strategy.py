@@ -5,6 +5,7 @@
 from typing import Dict, Any, Optional, List, Tuple
 import asyncio
 import os
+import time
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import structlog
@@ -99,12 +100,27 @@ class NewCoinStrategy(BaseStrategy):
         # 无效币种缓存（-9999错误，避免重复请求已废弃/无效币种）
         self._invalid_symbols: set = set()
 
-        # 重启后条件单补全标志（只补一次）
-        self._replenish_done: bool = False
-
         # 检测间隔
         detector_config = config.get('detector', {})
         self.check_interval = detector_config.get('check_interval', 300)
+
+        # P0-A 对账与持续保护守卫状态（替代原 _replenish_done 一次性语义）
+        reconcile_config = config.get('trading', {}).get('reconcile', {})
+        self.reconcile_enabled = bool(reconcile_config.get('enabled', True))
+        # 安全下限兜底：至少为 1，避免配置误填 0/负值导致首周期即关闭、绕过「连续确认」
+        self.zombie_confirm_cycles = max(
+            1, int(reconcile_config.get('zombie_confirm_cycles', 3))
+        )
+        replenish_config = config.get('trading', {}).get('replenish', {})
+        self.guard_interval_seconds = float(replenish_config.get('guard_interval_seconds', 300))
+        # 僵尸候选的连续无仓计数 {symbol: 计数}（仅内存态，重启归零更保守）
+        self._zombie_miss_counts: Dict[str, int] = {}
+        # 守卫防重入集合（同一 symbol 不并发补全）
+        self._guard_inflight: set = set()
+        # 守卫上次运行时间戳（monotonic，避免系统时间回拨影响节流）
+        self._guard_last_run_at: float = 0.0
+        # 保护缺口累计重试次数 {symbol: 次数}（供告警文案）
+        self._protection_gap_attempts: Dict[str, int] = {}
 
         # P0-1：有未平持仓时是否保留 K 线注册（默认保留，避免持仓标的被白名单拒绝）
         kline_config = config.get('kline', {})
@@ -543,92 +559,9 @@ class NewCoinStrategy(BaseStrategy):
         if self.trading_executor:
             await self.trading_executor.maybe_cleanup_expired_claims()
 
-        # 重启后首次执行：为现有持仓补全条件单（止损止盈）
-        if not self._replenish_done:
-            # 优先从数据库状态获取持仓，如为空则从 new_coin.short_positions 表恢复
-            # B1 修复：彻底移除全账户 positionRisk 兜底 —— 那会把其他策略（btc_eth/hrs/grid）
-            # 的 short 仓位也当成 new_coin 自己的，导致误纳他策略仓位
-            positions_to_replenish = dict(self.positions) if self.positions else None
-            sync_failed = False
-            
-            if not positions_to_replenish:
-                # 从 new_coin.short_positions 表恢复自己的持仓（B1 修复：精确过滤）
-                logger.info("内存状态无持仓，从 new_coin.short_positions 表恢复自己的持仓...")
-                try:
-                    db_positions = await self.db.fetch_all(
-                        """
-                        SELECT symbol, entry_price, opened_at
-                        FROM new_coin.short_positions
-                        WHERE status = 'open'
-                        ORDER BY opened_at ASC
-                        """
-                    )
-                    if db_positions:
-                        positions_to_replenish = {}
-                        for row in db_positions:
-                            symbol = row['symbol']
-                            entry_price = float(row.get('entry_price', 0) or 0)
-                            opened_at = row.get('opened_at')
-                            opened_at_iso = opened_at.isoformat() if opened_at else datetime.now(timezone.utc).isoformat()
-                            positions_to_replenish[symbol] = {
-                                'entry_price': entry_price,
-                                'entry_time': opened_at_iso,
-                            }
-                        logger.info(
-                            f"从 new_coin.short_positions 表恢复到 {len(db_positions)} 个自有持仓",
-                            symbols=list(positions_to_replenish.keys())
-                        )
-                    else:
-                        logger.info("new_coin.short_positions 表无 open 状态持仓（本策略当前无持仓）")
-                except Exception as e:
-                    logger.error(f"从 new_coin.short_positions 表恢复持仓失败: {e}")
-                    sync_failed = True
-            
-            if positions_to_replenish:
-                logger.info(
-                    f"检测到 {len(positions_to_replenish)} 个持仓需要补全条件单",
-                    symbols=list(positions_to_replenish.keys())
-                )
-                
-                # 同步到 self.positions，确保 _monitor_positions 能正常跟踪
-                if not self.positions:
-                    self.positions = positions_to_replenish
-                
-                all_success = True
-                for symbol, pos in positions_to_replenish.items():
-                    entry_price = pos.get('entry_price', 0)
-                    if entry_price > 0:
-                        result = await self.trading_executor.replenish_conditional_orders(
-                            symbol=symbol,
-                            entry_price=Decimal(str(entry_price))
-                        )
-                        if not result:
-                            all_success = False
-                            logger.warning(
-                                f"补全条件单失败，下周期将重试: {symbol}"
-                            )
-                    else:
-                        logger.warning(
-                            f"持仓入场价格无效，跳过补全条件单: {symbol}",
-                            entry_price=entry_price
-                        )
-                
-                # 仅所有操作成功时才标记完成，否则下周期重试
-                if all_success and not sync_failed:
-                    self._replenish_done = True
-                    logger.info("条件单补全检查完成")
-                else:
-                    logger.warning(
-                        "条件单补全部分失败，下周期将重试",
-                        all_success=all_success,
-                        sync_failed=sync_failed
-                    )
-            else:
-                # 无持仓或同步失败
-                if not sync_failed:
-                    self._replenish_done = True
-                    logger.debug("无持仓，跳过条件单补全")
-                # 同步失败时保留标志为 False，下周期重试
+        # P0-A：原「重启后一次性补全（_replenish_done）」已移除，改为每周期
+        # 由 _reconcile_positions_with_exchange()（对账僵尸/脏数据）+ _guard_protection_orders()
+        # （持续保护守卫）驱动，见下方 1.5 / 1.6。
 
         # 保留无效币种缓存（不清空）：-4108（交割/结算中）和-9999（未知币种）均为永久状态
         # 已交割/结算的币种不会重新上线，新币种名称不同不会出现在缓存中
@@ -649,13 +582,15 @@ class NewCoinStrategy(BaseStrategy):
                 logger.info("回撤熔断期已结束，恢复交易")
                 self.drawdown_pause_until = None
 
-        # 1.5 同步持仓：从交易所获取实际持仓，清理 self.positions 中的脏数据
-        # 避免因重启后状态恢复导致已平仓的脏数据阻塞新入场
-        await self._sync_positions_from_exchange()
+        # 1.5 DB ↔ 交易所双向对账：关闭僵尸记录 + 清理内存脏数据（他策略一律不动）
+        await self._reconcile_positions_with_exchange()
 
         # 1.6 基线未就绪时重试重建（启动时交易所不可用会导致禁止开仓）
         if self.trading_executor and not self.trading_executor.baseline_ready:
             await self._rebuild_position_baseline()
+
+        # 1.7 持续保护守卫：对真实敞口核验保护单，缺失即补挂并告警（替代一次性补全）
+        await self._guard_protection_orders()
 
         # 2. 检测新币
         new_coins = await self.listing_detector.detect_new_listings()
@@ -993,43 +928,277 @@ class NewCoinStrategy(BaseStrategy):
         except Exception as e:
             logger.error(f"周报复盘失败: {e}")
 
-    async def _sync_positions_from_exchange(self) -> None:
+    async def _reconcile_positions_with_exchange(self) -> None:
+        """DB ↔ 交易所双向对账（P0-A：僵尸 / 内存脏数据 / 他策略三元组）。
+
+        - 内存脏数据（self.positions − 交易所空头）→ 复用 _handle_position_closed 关闭；
+        - 僵尸（DB open − 交易所空头）→ 连续 N 周期确认 + 关闭前回查后关闭；
+        - 他策略（交易所空头 − DB open）→ 一律不动（仅 debug）；
+        - 首查（positionRisk / DB open）异常 → 整轮跳过档案，不推进任何计数（fail-closed）。
         """
-        从交易所同步实际持仓，清理 self.positions 中的脏数据
-        
-        每个周期在分析新币前执行，避免因重启后状态恢复导致已平仓的脏数据阻塞新入场。
+        if self.trading_executor is None:
+            return
+        if not self.reconcile_enabled:
+            await self._sync_memory_only()
+            return
+        exchange_short, own_open = await self._fetch_reconcile_sources()
+        if exchange_short is None or own_open is None:
+            return
+        changed = await self._close_stale_memory_positions(exchange_short)
+        changed = await self._reconcile_zombies(own_open, exchange_short) or changed
+        others = exchange_short - own_open
+        if others:
+            logger.debug("对账：跳过他策略持仓（不动）", symbols=sorted(others))
+        if changed:
+            await self._save_state()
+        logger.info(
+            "对账完成",
+            exchange_short=len(exchange_short),
+            own_open=len(own_open),
+            tracked=len(self.positions),
+        )
+
+    async def _sync_memory_only(self) -> None:
+        """对账开关关闭时的回退：仅清理内存 stale（旧行为，不触达 DB open）。"""
+        exchange_short = await self._fetch_exchange_short_symbols()
+        if exchange_short is None:
+            return
+        if await self._close_stale_memory_positions(exchange_short):
+            await self._save_state()
+
+    async def _fetch_reconcile_sources(self) -> Tuple[Optional[set], Optional[set]]:
+        """取「交易所空头」与「DB 自有 open」两来源集合（对账与守卫共用）。
+
+        Returns:
+            Tuple[Optional[set], Optional[set]]: (交易所空头, DB 自有)；任一不可用返回 (None, None)
         """
+        exchange_short = await self._fetch_exchange_short_symbols()
+        own_open = await self.trading_executor.get_open_short_symbols()
+        if exchange_short is None or own_open is None:
+            logger.warning(
+                "对账/守卫跳过：交易所持仓或 DB 自有币种不可用（fail-closed，本轮不推进）",
+                exchange_ok=exchange_short is not None,
+                own_open_ok=own_open is not None,
+            )
+            return None, None
+        return exchange_short, own_open
+
+    @staticmethod
+    def _parse_short_symbols(positions: Any) -> Optional[set]:
+        """解析 positionRisk 响应的空头币种集合；非 list 结构返回 None（fail-closed）。
+
+        对账取空头与僵尸关闭前回查共用，消除「list 校验 + positionAmt<0 判定」的同构重复。
+        返回 None 表示响应结构不可用（既非列表），调用方据此区分失败信号。
+        """
+        if not isinstance(positions, list):
+            return None
+        shorts = set()
+        for p in positions:
+            if not isinstance(p, dict):
+                continue
+            try:
+                if float(p.get('positionAmt', 0) or 0) < 0:
+                    symbol = p.get('symbol')
+                    if symbol:
+                        shorts.add(symbol)
+            except (TypeError, ValueError):
+                continue
+        return shorts
+
+    async def _fetch_exchange_short_symbols(self) -> Optional[set]:
+        """获取交易所实际空头币种集合（positionAmt < 0）；接口异常返回 None。"""
         try:
-            exchange_positions = await self.binance_client._request(
+            positions = await self.binance_client._request(
                 "GET", "/papi/v1/um/positionRisk", signed=True
             )
-            # 获取交易所实际做空持仓（positionAmt < 0）
-            actual_short_symbols = set()
-            for p in exchange_positions:
-                if float(p.get('positionAmt', 0)) < 0:
-                    actual_short_symbols.add(p['symbol'])
+        except Exception as e:
+            logger.warning("获取交易所持仓失败（对账跳过）", error=str(e))
+            return None
+        shorts = self._parse_short_symbols(positions)
+        if shorts is None:
+            # 响应结构非预期（既非列表也非 None）→ fail-closed，避免误关真实敞口
+            logger.warning(
+                "交易所持仓响应结构异常（对账跳过）",
+                response_type=type(positions).__name__,
+            )
+        return shorts
 
-            # 清理 self.positions 中已不存在的持仓（条件单平仓后交易所已无仓位）
-            stale_symbols = [s for s in self.positions if s not in actual_short_symbols]
-            if stale_symbols:
-                logger.info(
-                    f"清理 {len(stale_symbols)} 个已平仓持仓记录（含完整盈亏回写）",
-                    symbols=stale_symbols
-                )
-                for s in stale_symbols:
-                    position = self.positions.get(s, {})
-                    await self._handle_position_closed(s, position)
-                    del self.positions[s]
-                # 持久化清理结果到数据库，避免容器重启后脏数据再次出现
-                await self._save_state()
+    async def _close_stale_memory_positions(self, exchange_short: set) -> bool:
+        """关闭内存中交易所已无仓的脏数据；返回是否发生了关闭。"""
+        stale_symbols = [s for s in self.positions if s not in exchange_short]
+        if not stale_symbols:
+            return False
+        logger.info(
+            f"清理 {len(stale_symbols)} 个已平仓持仓记录（含完整盈亏回写）",
+            symbols=stale_symbols,
+        )
+        for symbol in stale_symbols:
+            await self._handle_position_closed(symbol, self.positions.get(symbol, {}))
+            del self.positions[symbol]
+        return True
 
+    async def _reconcile_zombies(self, own_open: set, exchange_short: set) -> bool:
+        """僵尸对账：DB open 但交易所无仓 → 连续 N 周期确认后关闭；返回是否关闭。"""
+        candidates = own_open - exchange_short
+        # 仅保留本候选集的计数（已恢复持仓的自动清除）
+        self._zombie_miss_counts = {
+            s: c for s, c in self._zombie_miss_counts.items() if s in candidates
+        }
+        closed_any = False
+        for symbol in sorted(candidates):
+            if await self._try_close_zombie(symbol):
+                closed_any = True
+        return closed_any
+
+    async def _try_close_zombie(self, symbol: str) -> bool:
+        """对单个僵尸候选推进状态机；返回是否已关闭（供调用方决定持久化）。"""
+        misses = self._zombie_miss_counts.get(symbol, 0) + 1
+        self._zombie_miss_counts[symbol] = misses
+        if misses < self.zombie_confirm_cycles:
             logger.info(
-                f"持仓同步完成",
-                actual_count=len(actual_short_symbols),
-                tracked_count=len(self.positions)
+                "疑似僵尸持仓，第 k/N 次确认",
+                symbol=symbol, miss=misses, required=self.zombie_confirm_cycles,
+            )
+            return False
+        confirmed = await self._reconfirm_symbol_absent(symbol)
+        if confirmed is None:
+            logger.warning("僵尸回查失败，本轮不关闭（fail-closed）", symbol=symbol)
+            return False
+        if not confirmed:
+            self._zombie_miss_counts.pop(symbol, None)
+            logger.info("僵尸回查发现有仓，视为真实敞口（计数清零）", symbol=symbol)
+            return False
+        await self._handle_position_closed(symbol, self.positions.get(symbol, {}))
+        self._zombie_miss_counts.pop(symbol, None)
+        logger.warning(
+            "对账：关闭僵尸持仓记录", symbol=symbol, confirms=self.zombie_confirm_cycles
+        )
+        return True
+
+    async def _reconfirm_symbol_absent(self, symbol: str) -> Optional[bool]:
+        """关闭前一次性交易所回查该标的是否确无空头持仓。
+
+        Returns:
+            Optional[bool]: True=确认无仓；False=有仓；None=回查失败（fail-closed）
+        """
+        try:
+            positions = await self.binance_client._request(
+                "GET", "/papi/v1/um/positionRisk", signed=True
             )
         except Exception as e:
-            logger.warning(f"从交易所同步持仓失败（不影响后续流程）: {e}")
+            logger.warning("僵尸回查交易所持仓异常", symbol=symbol, error=str(e))
+            return None
+        shorts = self._parse_short_symbols(positions)
+        if shorts is None:
+            # 响应结构非预期 → fail-closed，保持不关闭（宁可不关，不可误关）
+            logger.warning("僵尸回查响应结构异常（本轮不关闭）", symbol=symbol)
+            return None
+        return symbol not in shorts
+
+    async def _compute_authoritative_symbols(self) -> Optional[set]:
+        """权威集合 = DB open ∩ 交易所实际空头（P0-A-AC1）。
+
+        Returns:
+            Optional[set]: 真实敞口集合；任一来源不可用返回 None（fail-closed）
+        """
+        exchange_short, own_open = await self._fetch_reconcile_sources()
+        if exchange_short is None or own_open is None:
+            return None
+        authoritative = own_open & exchange_short
+        logger.info(
+            "权威集合（DB open ∩ 交易所空头）",
+            source="intersection", members=sorted(authoritative),
+        )
+        return authoritative
+
+    async def _load_open_positions_from_db(self) -> Dict[str, Dict[str, Any]]:
+        """读取 DB 本策略未平仓记录；异常返回空字典（调用方按无入场价处理）。"""
+        try:
+            rows = await self.db.fetch_all(
+                "SELECT symbol, entry_price, opened_at FROM new_coin.short_positions "
+                "WHERE status = 'open' ORDER BY opened_at ASC"
+            )
+        except Exception as e:
+            logger.error(f"读取 new_coin.short_positions 未平仓记录失败: {e}")
+            return {}
+        result: Dict[str, Dict[str, Any]] = {}
+        for row in rows or []:
+            symbol = row.get('symbol')
+            if not symbol:
+                continue
+            opened_at = row.get('opened_at')
+            result[symbol] = {
+                'entry_price': float(row.get('entry_price', 0) or 0),
+                'entry_time': opened_at.isoformat() if opened_at else None,
+            }
+        return result
+
+    async def _guard_protection_orders(self) -> None:
+        """持续保护守卫（P0-A-AC3/AC4）：按配置周期核验真实敞口保护单，缺失即补挂。"""
+        if self.trading_executor is None:
+            return
+        now = time.monotonic()
+        if now - self._guard_last_run_at < self.guard_interval_seconds:
+            return
+        authoritative = await self._compute_authoritative_symbols()
+        if authoritative is None:
+            # 取数失败不推进时间戳，保留下一轮立即重试（fail-closed 可观测）
+            return
+        self._guard_last_run_at = now
+        if not authoritative:
+            return
+        db_positions = await self._load_open_positions_from_db()
+        for symbol in sorted(authoritative):
+            if symbol in self._guard_inflight:
+                continue
+            self._guard_inflight.add(symbol)
+            try:
+                await self._guard_symbol(symbol, db_positions.get(symbol, {}))
+            except Exception as e:
+                logger.warning("保护守卫单标的异常（不影响其余标的）", symbol=symbol, error=str(e))
+            finally:
+                self._guard_inflight.discard(symbol)
+
+    async def _guard_symbol(self, symbol: str, db_position: Dict[str, Any]) -> None:
+        """核验单个真实敞口的保护单，缺失则补挂；失败不置完成、下周期重试并告警。"""
+        executor = self.trading_executor
+        missing = await executor.find_missing_protection(symbol)
+        if not missing:
+            self._protection_gap_attempts.pop(symbol, None)
+            return
+        entry_price = float(db_position.get('entry_price', 0) or 0)
+        if entry_price <= 0:
+            logger.warning("守卫跳过：入场价无效，无法补挂", symbol=symbol, entry_price=entry_price)
+            await self._notify_protection_issue(symbol, missing)
+            return
+        # 补挂前清除完成标记，允许后续失去保护后自愈；同轮内防重仍由 _should_skip_replenish 保证
+        executor.reset_replenish_flag(symbol)
+        ok = await executor.replenish_conditional_orders(symbol, Decimal(str(entry_price)))
+        if not ok:
+            attempts = self._protection_gap_attempts.get(symbol, 0) + 1
+            self._protection_gap_attempts[symbol] = attempts
+            await self._notify_protection_issue(symbol, missing, attempts)
+
+    async def _notify_protection_issue(
+        self, symbol: str, reasons: List[str], attempt: int = 1
+    ) -> None:
+        """真实敞口保护缺口告警（飞书，按配置降频，含 symbol/缺哪类/重试次数）。"""
+        # 降频窗口单一来源：executor 从配置读取（其兜底默认值亦在此单点定义）
+        throttle = self.trading_executor.alert_throttle_seconds
+        if not self.trading_executor.should_notify(("protection_gap", symbol), throttle):
+            return
+        project = self.config.get('notification', {}).get('project', 'new_coin')
+        message = (
+            f"【新币做空策略】持仓保护单缺失\n"
+            f"币种: {symbol}\n"
+            f"缺少类型: {', '.join(reasons)}\n"
+            f"累计重试次数: {attempt}\n"
+            f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        )
+        try:
+            await self.notification_client.send(message=message, level="error", project=project)
+        except Exception as e:
+            logger.warning("发送保护缺口告警失败", symbol=symbol, error=str(e))
 
     async def _handle_position_closed(self, symbol: str, position: dict) -> None:
         """统一的平仓处理逻辑（条件单平仓和主动平仓共用）
