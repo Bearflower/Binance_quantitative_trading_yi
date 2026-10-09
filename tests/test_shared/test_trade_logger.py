@@ -4,6 +4,7 @@
 覆盖 realized_pnl=None / 有值、_parse_update_count 影响行数 >0 / =0、异常降级路径。
 均通过 mock DatabaseManager 执行，不发起真实请求。
 """
+from datetime import datetime
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -84,3 +85,79 @@ class TestMarkExistingCloseRecord:
         )
 
         assert ok is False
+
+
+class TestInsertPnlSummaryIdempotency:
+    """测试 TradeLogger.insert_pnl_summary 的 since 幂等去重
+
+    回归背景：HRS 整笔平仓回写的是「自开仓起的累计盈亏」，非幂等——进程重启或
+    监控循环重复命中同一次平仓时，会用完全相同的金额再写一条 PNL_SUMMARY，
+    导致同一笔平仓被重复计入 realized_pnl。
+    """
+
+    @pytest.fixture
+    def logger(self):
+        db = MagicMock()
+        db.execute = AsyncMock(return_value="INSERT 0 1")
+        db.fetch_one = AsyncMock(return_value=None)
+        return TradeLogger(db, "hrs"), db
+
+    @pytest.mark.asyncio
+    async def test_since_none_skips_dedup_check(self, logger):
+        """since=None 时不做去重查询，保持原有行为（直接插入）"""
+        trade_logger, db = logger
+
+        ok = await trade_logger.insert_pnl_summary(
+            realized_pnl=Decimal("-12.5"), symbol="SUIUSDT", side="SELL",
+        )
+
+        assert ok is True
+        db.fetch_one.assert_not_awaited()
+        db.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_since_hits_existing_skips_insert(self, logger):
+        """since 非 None 且已存在同额 PNL_SUMMARY → 跳过插入并返回 True"""
+        trade_logger, db = logger
+        db.fetch_one = AsyncMock(return_value={"id": 123})
+
+        ok = await trade_logger.insert_pnl_summary(
+            realized_pnl=Decimal("-12.5"), symbol="SUIUSDT", side="SELL",
+            since=datetime(2026, 8, 21, 11, 0),
+        )
+
+        assert ok is True
+        db.fetch_one.assert_awaited_once()
+        db.execute.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_since_misses_inserts(self, logger):
+        """since 非 None 但无同额记录 → 正常插入"""
+        trade_logger, db = logger
+        db.fetch_one = AsyncMock(return_value=None)
+
+        ok = await trade_logger.insert_pnl_summary(
+            realized_pnl=Decimal("-12.5"), symbol="SUIUSDT", side="SELL",
+            since=datetime(2026, 8, 21, 11, 0),
+        )
+
+        assert ok is True
+        db.execute.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_dedup_query_scope_and_params(self, logger):
+        """去重查询必须限定 PNL_SUMMARY、同额，并以 since 为下界"""
+        trade_logger, db = logger
+        db.fetch_one = AsyncMock(return_value=None)
+        since = datetime(2026, 8, 21, 11, 0)
+
+        await trade_logger.insert_pnl_summary(
+            realized_pnl=Decimal("-12.5"), symbol="SUIUSDT", side="SELL",
+            since=since,
+        )
+
+        sql, *params = db.fetch_one.await_args.args
+        assert "order_type = 'PNL_SUMMARY'" in sql
+        assert "realized_pnl = $4" in sql
+        assert "executed_at >= $5" in sql
+        assert params == ["hrs", "SUIUSDT", "SELL", Decimal("-12.5"), since]

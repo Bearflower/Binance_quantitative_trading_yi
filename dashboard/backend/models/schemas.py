@@ -67,6 +67,9 @@ class StrategySummary(BaseModel):
     win_rate: float = Field(0.0, description="胜率")
     sharpe: Optional[float] = Field(None, description="策略年化夏普比率")
     max_drawdown: Optional[float] = Field(None, description="策略最大回撤(0~1)")
+    perf_window_start: Optional[str] = Field(None, description="绩效样本窗口起点(ISO日期，滚动窗口)")
+    perf_window_end: Optional[str] = Field(None, description="绩效样本窗口终点(ISO日期)")
+    perf_sample_count: Optional[int] = Field(None, description="绩效样本数(天数)")
     error: Optional[str] = Field(None, description="错误信息")
 
 
@@ -144,6 +147,9 @@ class OverviewData(BaseModel):
     win_rate: float = Field(..., description="总胜率")
     total_sharpe: Optional[float] = Field(None, description="账户级年化夏普比率")
     total_max_drawdown: Optional[float] = Field(None, description="账户级最大回撤(0~1)")
+    total_perf_window_start: Optional[str] = Field(None, description="账户级绩效样本窗口起点(ISO日期)")
+    total_perf_window_end: Optional[str] = Field(None, description="账户级绩效样本窗口终点(ISO日期)")
+    total_perf_sample_count: Optional[int] = Field(None, description="账户级绩效样本数(天数)")
     strategies: List[StrategySummary] = Field(
         ...,
         description="策略列表"

@@ -183,6 +183,9 @@ async def get_overview(
         "win_rate": overview_data.get("win_rate", 0),
         "total_sharpe": overview_data.get("total_sharpe"),
         "total_max_drawdown": overview_data.get("total_max_drawdown"),
+        "total_perf_window_start": overview_data.get("total_perf_window_start"),
+        "total_perf_window_end": overview_data.get("total_perf_window_end"),
+        "total_perf_sample_count": overview_data.get("total_perf_sample_count"),
         "strategies": overview_data.get("strategies", []),
         "report_type": type,
         "updated_at": datetime.now(BEIJING_TZ).isoformat()

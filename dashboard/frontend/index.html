@@ -142,7 +142,7 @@
       <div class="stat-card sharpe animate-in">
         <div class="stat-head">
           <div class="stat-icon">α</div>
-          <div class="stat-label">年化夏普率 <span class="tooltip" data-tip="基于过去 365 天日收益率年化计算，桶起点仅作标签。日卡样本不足时显示--。通常夏普率大于1算优秀，0.5~1算尚可，0或负数说明承担了风险却没赚到钱。">ⓘ</span></div>
+          <div class="stat-label">年化夏普率 <span class="tooltip" data-tip="按当前 tab 对应的滚动回溯窗口（日≈30天/周≈90天/月≈180天/年≈365天）内的日收益率年化计算。日卡样本不足时显示--。通常夏普率大于1算优秀，0.5~1算尚可，0或负数说明承担了风险却没赚到钱。">ⓘ</span></div>
           <div class="stat-sub" id="sharpe-sub">Sharpe</div>
         </div>
         <div class="stat-value" id="total-sharpe">--</div>
@@ -152,7 +152,7 @@
       <div class="stat-card drawdown animate-in">
         <div class="stat-head">
           <div class="stat-icon">∇</div>
-          <div class="stat-label">最大回撤 <span class="tooltip" data-tip="本周期内净值曲线从峰值到谷值的最大跌幅比例（0~1）。数值越小（越接近0），代表亏损控制得越好。">ⓘ</span></div>
+          <div class="stat-label">最大回撤 <span class="tooltip" data-tip="按当前 tab 对应的滚动回溯窗口（日≈30天/周≈90天/月≈180天/年≈365天）内，净值曲线从峰值到谷值的最大跌幅比例（0~1）。注意月度 tab 统计的是「近 180 天滚动窗口」，而非本自然月。">ⓘ</span></div>
           <div class="stat-sub" id="drawdown-sub">Max DD</div>
         </div>
         <div class="stat-value negative" id="total-max-drawdown">--</div>
@@ -205,6 +205,7 @@
           <div class="strategy-metric" data-metric="max_drawdown">
             <div class="label">最大回撤</div>
             <div class="value negative">--</div>
+            <div class="metric-window"></div>
           </div>
         </div>
         <div class="strategy-footer">
@@ -253,6 +254,7 @@
           <div class="strategy-metric" data-metric="max_drawdown">
             <div class="label">最大回撤</div>
             <div class="value negative">--</div>
+            <div class="metric-window"></div>
           </div>
         </div>
         <div class="strategy-footer">
@@ -301,6 +303,7 @@
           <div class="strategy-metric" data-metric="max_drawdown">
             <div class="label">最大回撤</div>
             <div class="value negative">--</div>
+            <div class="metric-window"></div>
           </div>
         </div>
         <div class="strategy-footer">
@@ -349,6 +352,7 @@
           <div class="strategy-metric" data-metric="max_drawdown">
             <div class="label">最大回撤</div>
             <div class="value negative">--</div>
+            <div class="metric-window"></div>
           </div>
         </div>
         <div class="strategy-footer">

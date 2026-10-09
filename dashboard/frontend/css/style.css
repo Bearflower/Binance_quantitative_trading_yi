@@ -675,6 +675,15 @@ body::after {
 .strategy-metric .value.positive { color: var(--green); }
 .strategy-metric .value.negative { color: var(--red); }
 
+/* 绩效样本窗口（滚动回溯窗口，澄清月度≠本自然月） */
+.strategy-metric .metric-window {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-family: var(--font-mono);
+  white-space: nowrap;
+}
+
 .strategy-footer {
   display: flex;
   align-items: center;

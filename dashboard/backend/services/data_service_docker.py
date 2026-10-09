@@ -2350,12 +2350,15 @@ class DataService:
     # 绩效指标落库 SQL（与 metric_snapshot UPSERT 范式一致）
     _PERF_METRIC_UPSERT_SQL = """
     INSERT INTO public.performance_metric_snapshot
-        (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_drawdown, snapshot_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,CURRENT_TIMESTAMP)
+        (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_drawdown,
+         window_start, window_end, snapshot_at)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_TIMESTAMP)
     ON CONFLICT (granularity, scope, strategy_id, bucket_key) DO UPDATE SET
         sample_count=EXCLUDED.sample_count,
         sharpe=EXCLUDED.sharpe,
         max_drawdown=EXCLUDED.max_drawdown,
+        window_start=EXCLUDED.window_start,
+        window_end=EXCLUDED.window_end,
         snapshot_at=CURRENT_TIMESTAMP,
         updated_at=CURRENT_TIMESTAMP
     """
@@ -2392,13 +2395,14 @@ class DataService:
 
         # 1. 账户级净值曲线构建一次，供所有粒度复用
         try:
-            acc_daily_returns, acc_net_values = await self._build_account_daily_returns(
+            acc_daily_returns, acc_net_values, acc_dates = await self._build_account_daily_returns(
                 window_start, today,
             )
         except Exception as exc:
             logger.warning("账户级净值曲线构建失败，跳过账户级绩效", error=str(exc)[:120])
             acc_daily_returns = []
             acc_net_values = []
+            acc_dates = []
 
         # 2. 各策略日收益率/净值曲线并行构建（互不依赖，纯 DB 查询 + Python 计算）
         async def _one(sid):
@@ -2409,7 +2413,7 @@ class DataService:
             except Exception as exc:
                 logger.warning("策略净值曲线构建失败，跳过该策略",
                                strategy_id=sid, error=str(exc)[:120])
-                return sid, ([], [])
+                return sid, ([], [], [])
 
         results = await asyncio.gather(
             *[_one(sid) for sid in PERFORMANCE_STRATEGY_IDS],
@@ -2432,7 +2436,7 @@ class DataService:
             try:
                 row = self._compute_one_perf_entry(
                     granularity, "total", "",
-                    acc_daily_returns, acc_net_values,
+                    acc_daily_returns, acc_net_values, acc_dates,
                     bucket_key, window_days,
                 )
                 if row is not None:
@@ -2444,11 +2448,11 @@ class DataService:
 
             # 策略级
             for sid in PERFORMANCE_STRATEGY_IDS:
-                daily_rets, net_vals = strategy_curves.get(sid, ([], []))
+                daily_rets, net_vals, dates = strategy_curves.get(sid, ([], [], []))
                 try:
                     row = self._compute_one_perf_entry(
                         granularity, "strategy", sid,
-                        daily_rets, net_vals,
+                        daily_rets, net_vals, dates,
                         bucket_key, window_days,
                     )
                     if row is not None:
@@ -2465,7 +2469,7 @@ class DataService:
     def _compute_one_perf_entry(
         self,
         granularity: str, scope: str, strategy_id: str,
-        daily_returns: list, net_values: list,
+        daily_returns: list, net_values: list, dates: list,
         bucket_key, window_days: int,
     ) -> Optional[tuple]:
         """从日收益率/净值序列中截取 [最后 window_days 天] 计算夏普+回撤并组装 UPSERT 参数
@@ -2475,18 +2479,21 @@ class DataService:
             scope: total|strategy
             strategy_id: '' 或规范策略 id
             daily_returns: 全回溯窗口（365d）日收益率序列，升序
-            net_values: 全回溯窗口（365d）净值序列，升序
+            net_values: 全回溯窗口（365d）净值序列，升序（与 daily_returns 等长对齐）
+            dates: 与 daily_returns 等长的日期序列（用于记录实际样本窗口）
             bucket_key: 该粒度当前 bucket 起点（仅作为落库标签）
             window_days: 本次要截取多少天（day→30, week→90, month→180, year→365）
 
         Returns:
-            tuple: (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_drawdown)
+            tuple: (granularity, scope, strategy_id, bucket_key, sample_count,
+                    sharpe, max_drawdown, window_start, window_end)
                    或 None（窗口内样本不足 2 个）
         """
-        # 从末尾截取最近 window_days 天
+        # 从末尾截取最近 window_days 天（三个序列同步截取，保持对齐）
         if len(daily_returns) > window_days:
             daily_returns = daily_returns[-window_days:]
             net_values = net_values[-window_days:]
+            dates = dates[-window_days:] if dates else dates
 
         sample_count = len(daily_returns)
         if sample_count < 2:
@@ -2495,7 +2502,12 @@ class DataService:
         sharpe = annualized_sharpe(daily_returns)
         max_dd = max_drawdown_ratio(net_values)
 
-        return (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_dd)
+        # 实际样本窗口（用于前端澄清"这是滚动窗口，不是日历周期"）
+        window_start = dates[0] if dates else None
+        window_end = dates[-1] if dates else None
+
+        return (granularity, scope, strategy_id, bucket_key, sample_count,
+                sharpe, max_dd, window_start, window_end)
 
     async def _build_account_daily_returns(
         self, start_date, end_date,
@@ -2512,8 +2524,9 @@ class DataService:
             end_date: 回溯窗口终点（datetime.date）
 
         Returns:
-            (daily_returns: List[float], net_values: List[float])
-            两个序列等长，net_values 从 1.0 开始逐日复利。
+            (daily_returns: List[float], net_values: List[float], dates: List[date])
+            三个序列**等长对齐**：第 i 项对应窗口内第 i 个有效交易日，
+            net_values[i] 为该日收盘后的净值（基准 1.0，账户权益恒为正 → 回撤 ≤100%）。
         """
         rows = await self._db_manager.fetch_all(
             "SELECT snapshot_date, total_equity FROM public.equity_snapshot "
@@ -2524,8 +2537,9 @@ class DataService:
 
         daily_returns: List[float] = []
         net_values: List[float] = []
+        dates: List[date] = []
         if not rows:
-            return daily_returns, net_values
+            return daily_returns, net_values, dates
 
         net_value = 1.0
         prev_equity: Optional[float] = None
@@ -2537,30 +2551,45 @@ class DataService:
                 eq = float(eq_raw)
             except (TypeError, ValueError):
                 continue
-            if prev_equity is not None and prev_equity > 0:
+            # 首个样本仅作为基准（当日无收益率），从第二个样本起才产生收益率
+            if prev_equity is None:
+                prev_equity = eq
+                continue
+            if prev_equity > 0:
                 r = (eq - prev_equity) / prev_equity
-                daily_returns.append(r)
                 net_value *= (1 + r)
-            net_values.append(net_value)
+                daily_returns.append(r)
+                net_values.append(net_value)
+                dates.append(row.get("snapshot_date"))
             prev_equity = eq
 
-        return daily_returns, net_values
+        return daily_returns, net_values, dates
 
     async def _build_strategy_daily_returns(
         self, strategy_id: str, start_date: datetime, end_date: datetime,
     ) -> tuple:
-        """构建策略级日收益率序列和累计净值序列（从 trade_records + 月初持仓保证金）
+        """构建策略级日收益率序列和累计净值序列（资金基数 + 累计盈亏口径）
 
         数据源：
-          - trading.trade_records（executed_at 北京时间 naive, realized_pnl, strategy 中文名）
-          - public.strategy_position_snapshot_history（snapshot_hour, open_margin）
+          - trading.trade_records（executed_at 北京时间 naive, realized_pnl, strategy）
+          - public.strategy_position_snapshot_history（allocated_amount / open_margin）
 
         关键区别于账户级：
           trade_records 无交易日 → day_pnl=0 → 日收益率=0，**必须纳入序列**
           （否则周/月/年序列点数不足，夏普比率样本太少）。
 
-        计算口径：r_t = day_pnl / open_margin，其中 open_margin 取 day_t 所属月份
-        的月初持仓保证金。open_margin=0 时 r_t=0 并记 warning。
+        **口径（2026-10-09 修订）**：以「固定资金基数 + 累计已实现盈亏」构建权益曲线，
+        **不再逐日复利**：
+            equity_t   = base_capital + cum_pnl_t        # 基数固定，不随盈亏滚动
+            net_values = equity_t / base_capital          # 起点 1.0
+            r_t        = day_pnl / base_capital           # 供夏普比率使用
+        base_capital 取策略资金分配额 allocated_amount（窗口起点及之前最近一条，
+        缺失时退化为最早一条；再退化为占用保证金 open_margin），**全窗口固定**。
+
+        为何不复利：旧口径 r_t = day_pnl / 月初占用保证金（含杠杆），且 net_value 逐日
+        复利；当某月盈亏量级超过保证金基数时 r_t < -1 → 净值转负 → 回撤 >100%
+        （如 HRS 97.8%、btc_eth 100.9%）。改为固定基数 + 累加后，亏损以「本金亏光」
+        为上限：equity_t ≤ 0 时净值钳到 0，最大回撤上限即 100%。
 
         Args:
             strategy_id: 规范策略 id（如 btc_eth）
@@ -2568,14 +2597,23 @@ class DataService:
             end_date: 窗口终点（datetime naive，北京时区）
 
         Returns:
-            (daily_returns: List[float], net_values: List[float])
-            两个序列等长，覆盖 [start_date.date(), end_date.date()] 内每一天。
-            net_values 从 1.0 开始逐日复利。
+            (daily_returns: List[float], net_values: List[float], dates: List[date])
+            三个序列等长，覆盖 [start_date.date(), end_date.date()] 内每一天；
+            base_capital ≤ 0（无任何分配/保证金快照）时返回 ([], [], [])。
         """
         # 1. 先聚合 trade_records 按日盈亏
         strategy_names = self._db_strategy_names(strategy_id)
         if not strategy_names:
-            return [], []
+            return [], [], []
+
+        # 2. 解析全窗口固定的资金基数（分母）
+        base_capital = await self._query_strategy_base_capital(strategy_id, start_date)
+        if base_capital <= 0:
+            logger.warning(
+                "策略无可用资金基数（allocated_amount/open_margin 均为 0），跳过该策略绩效",
+                strategy_id=strategy_id,
+            )
+            return [], [], []
 
         rows = await self._db_manager.fetch_all(
             """
@@ -2592,103 +2630,118 @@ class DataService:
         for r in rows:
             day_pnl_map[str(r["day"])] = float(r["day_pnl"] or 0)
 
-        # 2. 遍历每一天，构建日收益率序列
+        # 3. 遍历每一天，按「基数 + 累计盈亏」构建净值曲线
         cur_date = start_date.date()
         end_date_only = end_date.date()
         daily_returns: List[float] = []
         net_values: List[float] = []
-        net_value = 1.0
-
-        # 月初保证金查询结果缓存（同一 strategy_id 同一月只查一次 DB）
-        margin_cache: Dict[date, float] = {}
+        dates: List[date] = []
+        cum_pnl = 0.0
 
         while cur_date <= end_date_only:
-            day_key = cur_date.isoformat()
-            day_pnl = day_pnl_map.get(day_key, 0.0)
+            day_pnl = day_pnl_map.get(cur_date.isoformat(), 0.0)
+            cum_pnl += day_pnl
 
-            # 该日所属月份的月初持仓保证金（带缓存避免同月重复查 DB）
-            month_start_date = cur_date.replace(day=1)
-            if month_start_date not in margin_cache:
-                month_start_dt = datetime(month_start_date.year, month_start_date.month, 1)
-                margin_cache[month_start_date] = await self._query_month_start_margin(
-                    strategy_id, month_start_dt)
-            open_margin = margin_cache[month_start_date]
-
-            if open_margin > 0:
-                r_t = day_pnl / open_margin
-            else:
-                # 保证金为 0（无历史快照），收益率置 0 并记 warning
-                logger.warning(
-                    "月初持仓保证金为 0，该日日收益率按 0 处理",
-                    strategy_id=strategy_id,
-                    month_start=month_start_date.isoformat(),
-                )
-                r_t = 0.0
+            r_t = day_pnl / base_capital
+            equity_t = base_capital + cum_pnl
+            # 亏损以「本金亏光」为上限：净值不为负，回撤上限 100%
+            net_value = equity_t / base_capital
+            if net_value < 0:
+                net_value = 0.0
 
             daily_returns.append(r_t)
-            net_value *= (1 + r_t)
             net_values.append(net_value)
+            dates.append(cur_date)
 
             cur_date += timedelta(days=1)
 
-        return daily_returns, net_values
+        return daily_returns, net_values, dates
 
-    async def _query_month_start_margin(
-        self, strategy_id: str, month_start: datetime,
+    async def _query_strategy_base_capital(
+        self, strategy_id: str, at_time: datetime,
     ) -> float:
-        """查询指定策略月初实际占用的持仓保证金（open_margin），作为策略级收益率分母
+        """查询策略在指定时点的资金基数（收益率分母），全窗口固定使用
 
-        本方法口径与 ai_tuner/allocation/pnl_collector.py 的
-        PnLCollector._query_month_start_margin **完全一致**（单一事实源）：
-          1. 优先取本月最早一条快照的持仓保证金
-          2. 无则回退取早于本月的最晚一条快照
-          3. 全无时返回 0.0 并记 warning
+        口径（2026-10-09 修订，替代旧的「月初占用保证金」分母）：
+          1. 优先取 at_time 及之前**最近一条** allocated_amount > 0 的快照
+             （资金分配额，语义为「策略资金基数」，不含杠杆）
+          2. 该时点前无快照（如窗口起点早于首条快照）→ 退化为**最早一条**
+             allocated_amount > 0 的快照
+          3. 以上均无 → 退化为占用保证金 open_margin（与
+             ai_tuner/allocation/pnl_collector.py 的月初占用口径同源），口径差异：
+             open_margin 为含杠杆的实际占用保证金，仅作兜底，不随月份变化
+          4. 全无 → 返回 0.0 并记 warning
 
-        注意：此方法**私有实现不下沉到 shared/**，因它只是绩效模块的辅助，
-        单一事实源明确指向 pnl_collector.py，避免形成循环依赖或双份维护。
+        与旧实现的差异：旧实现按月查询「月初占用保证金」，且第一条 SQL 缺月份上界，
+        历史月份会回落到「未来最早的一条快照」，导致各月分母相同且失真；现改为
+        窗口起点单点查询 + 全窗口固定基数，且所有查询都带时间上界，不再取未来快照。
 
         Args:
             strategy_id: 策略唯一标识
-            month_start: 当月起始时间（可带时区，本方法内部转为 naive）
+            at_time: 查询基准时间（窗口起点，可带时区，本方法内部转为 naive）
 
         Returns:
-            月初实际占用保证金（USDT）；无任何历史快照时返回 0.0
+            策略资金基数（USDT）；无任何历史快照时返回 0.0
         """
-        naive_start = month_start.replace(tzinfo=None) if month_start.tzinfo else month_start
+        naive_at = at_time.replace(tzinfo=None) if at_time.tzinfo else at_time
 
-        # 优先：本月最早一条**有持仓**的快照（open_margin > 0）
-        # 跳过持仓为 0 的快照（策略启动后可能有一段时间没开仓）
+        # 1. 窗口起点及之前最近一条有分配额的快照
         row = await self._db_manager.fetch_one(
             """
-            SELECT open_margin
+            SELECT allocated_amount
             FROM public.strategy_position_snapshot_history
-            WHERE strategy_id = $1 AND snapshot_hour >= $2 AND open_margin > 0
-            ORDER BY snapshot_hour ASC
-            LIMIT 1
-            """,
-            strategy_id, naive_start,
-        )
-        if row is not None and row.get("open_margin") is not None:
-            return float(row["open_margin"])
-
-        # 回退：早于本月的最晚一条**有持仓**的快照
-        row = await self._db_manager.fetch_one(
-            """
-            SELECT open_margin
-            FROM public.strategy_position_snapshot_history
-            WHERE strategy_id = $1 AND snapshot_hour < $2 AND open_margin > 0
+            WHERE strategy_id = $1 AND snapshot_hour <= $2 AND allocated_amount > 0
             ORDER BY snapshot_hour DESC
             LIMIT 1
             """,
-            strategy_id, naive_start,
+            strategy_id, naive_at,
+        )
+        if row is not None and row.get("allocated_amount") is not None:
+            return float(row["allocated_amount"])
+
+        # 2. 最早一条有分配额的快照（窗口起点早于首条快照时的兜底）
+        row = await self._db_manager.fetch_one(
+            """
+            SELECT allocated_amount
+            FROM public.strategy_position_snapshot_history
+            WHERE strategy_id = $1 AND allocated_amount > 0
+            ORDER BY snapshot_hour ASC
+            LIMIT 1
+            """,
+            strategy_id,
+        )
+        if row is not None and row.get("allocated_amount") is not None:
+            return float(row["allocated_amount"])
+
+        # 3. 退化：窗口起点及之前最近一条有持仓的快照（占用保证金兜底）
+        row = await self._db_manager.fetch_one(
+            """
+            SELECT open_margin
+            FROM public.strategy_position_snapshot_history
+            WHERE strategy_id = $1 AND snapshot_hour <= $2 AND open_margin > 0
+            ORDER BY snapshot_hour DESC
+            LIMIT 1
+            """,
+            strategy_id, naive_at,
         )
         if row is not None and row.get("open_margin") is not None:
             return float(row["open_margin"])
 
-        logger.warning(
-            "策略无历史持仓快照，月初占用按 0 处理",
-            strategy_id=strategy_id,
+        # 4. 退化：最早一条有持仓的快照
+        row = await self._db_manager.fetch_one(
+            """
+            SELECT open_margin
+            FROM public.strategy_position_snapshot_history
+            WHERE strategy_id = $1 AND open_margin > 0
+            ORDER BY snapshot_hour ASC
+            LIMIT 1
+            """,
+            strategy_id,
         )
+        if row is not None and row.get("open_margin") is not None:
+            return float(row["open_margin"])
+
+        logger.warning("策略无历史持仓/分配快照，资金基数按 0 处理", strategy_id=strategy_id)
         return 0.0
 
     async def get_performance_metrics(
@@ -2701,7 +2754,8 @@ class DataService:
             granularity: day|week|month|year
 
         Returns:
-            dict: {bucket_key, sample_count, sharpe, max_drawdown}
+            dict: {bucket_key, sample_count, sharpe, max_drawdown,
+                   window_start, window_end}
                   或 None（表不存在 / 无数据 / 查询异常）
         """
         await self._ensure_initialized()
@@ -2712,7 +2766,8 @@ class DataService:
             bucket_key = self._bucket_info(today)[granularity]["key"]
             row = await self._db_manager.fetch_one(
                 """
-                SELECT bucket_key, sample_count, sharpe, max_drawdown
+                SELECT bucket_key, sample_count, sharpe, max_drawdown,
+                       window_start, window_end
                 FROM public.performance_metric_snapshot
                 WHERE granularity=$1 AND scope=$2 AND strategy_id=$3 AND bucket_key=$4
                 """,
@@ -2727,6 +2782,7 @@ class DataService:
         if row is None:
             return None
 
+        window_start, window_end = self._perf_window_iso(row)
         return {
             "bucket_key": row.get("bucket_key"),
             "sample_count": int(row.get("sample_count") or 0),
@@ -2736,7 +2792,23 @@ class DataService:
             "max_drawdown": (
                 float(row["max_drawdown"]) if row.get("max_drawdown") is not None else None
             ),
+            "window_start": window_start,
+            "window_end": window_end,
         }
+
+    @staticmethod
+    def _perf_window_iso(row: dict) -> tuple:
+        """把快照行的 window_start/window_end（DATE）格式化为 ISO 字符串
+
+        Returns:
+            (window_start, window_end)：无值时返回 (None, None)
+        """
+        ws = row.get("window_start")
+        we = row.get("window_end")
+        return (
+            ws.isoformat() if hasattr(ws, "isoformat") else ws,
+            we.isoformat() if hasattr(we, "isoformat") else we,
+        )
 
     # ========================================
     # 看板注入辅助：把绩效指标就地注入 overview dict
@@ -2747,8 +2819,8 @@ class DataService:
     ) -> None:
         """把绩效指标就地注入传入的 overview dict
 
-        顶层加 total_sharpe / total_max_drawdown；
-        遍历 strategies 列表逐个加 sharpe / max_drawdown；
+        顶层加 total_sharpe / total_max_drawdown / total_perf_window_*；
+        遍历 strategies 列表逐个加 sharpe / max_drawdown / perf_window_*；
         新表查不到时字段留 None。
 
         Args:
@@ -2762,7 +2834,8 @@ class DataService:
 
             rows = await self._db_manager.fetch_all(
                 """
-                SELECT scope, strategy_id, sharpe, max_drawdown
+                SELECT scope, strategy_id, sharpe, max_drawdown, sample_count,
+                       window_start, window_end
                 FROM public.performance_metric_snapshot
                 WHERE granularity=$1 AND bucket_key=$2
                 """,
@@ -2773,27 +2846,40 @@ class DataService:
             # 查失败时字段留 None，不中断看板输出
             overview_data.setdefault("total_sharpe", None)
             overview_data.setdefault("total_max_drawdown", None)
+            overview_data.setdefault("total_perf_window_start", None)
+            overview_data.setdefault("total_perf_window_end", None)
+            overview_data.setdefault("total_perf_sample_count", None)
             for s in overview_data.get("strategies", []):
                 s.setdefault("sharpe", None)
                 s.setdefault("max_drawdown", None)
+                s.setdefault("perf_window_start", None)
+                s.setdefault("perf_window_end", None)
+                s.setdefault("perf_sample_count", None)
             return
 
         # 组装查询结果字典
         perf_by_key: Dict[tuple, dict] = {}
         for r in rows:
             key = (str(r["scope"]), str(r["strategy_id"] or ""))
+            window_start, window_end = self._perf_window_iso(r)
             perf_by_key[key] = {
                 "sharpe": float(r["sharpe"]) if r.get("sharpe") is not None else None,
                 "max_drawdown": (
                     float(r["max_drawdown"])
                     if r.get("max_drawdown") is not None else None
                 ),
+                "window_start": window_start,
+                "window_end": window_end,
+                "sample_count": int(r.get("sample_count") or 0),
             }
 
         # 账户级
         total_perf = perf_by_key.get(("total", ""), {})
         overview_data["total_sharpe"] = total_perf.get("sharpe")
         overview_data["total_max_drawdown"] = total_perf.get("max_drawdown")
+        overview_data["total_perf_window_start"] = total_perf.get("window_start")
+        overview_data["total_perf_window_end"] = total_perf.get("window_end")
+        overview_data["total_perf_sample_count"] = total_perf.get("sample_count")
 
         # 策略级
         for s in overview_data.get("strategies", []):
@@ -2801,3 +2887,6 @@ class DataService:
             sp = perf_by_key.get(("strategy", sid), {})
             s["sharpe"] = sp.get("sharpe")
             s["max_drawdown"] = sp.get("max_drawdown")
+            s["perf_window_start"] = sp.get("window_start")
+            s["perf_window_end"] = sp.get("window_end")
+            s["perf_sample_count"] = sp.get("sample_count")

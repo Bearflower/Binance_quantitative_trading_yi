@@ -452,12 +452,18 @@ class TradeLogger:
         strategy: Optional[str] = None,
         executed_at: Optional[datetime] = None,
         close_reason: Optional[str] = None,
+        since: Optional[datetime] = None,
     ) -> bool:
         """
         插入一条 PnL 汇总记录（用于全部平仓场景）
 
         当条件单（TP1/TP2/止损）全部成交时，没有对应的 trade_records 可 UPDATE，
         直接 INSERT 一条汇总记录，不会触发模式二的降级匹配。
+
+        **幂等**：`since` 非 None 时先做去重检查——同一 (strategy, symbol, side)
+        自 since 起若已存在金额相同的 PNL_SUMMARY 记录，则跳过插入并返回 True。
+        用于「整笔平仓的累计盈亏」这类非幂等回写：进程重启 / 监控循环重复命中同
+        一次平仓时会用完全相同的金额再写一遍，去重检查把重复记账挡住。
 
         Args:
             realized_pnl: 已实现盈亏（USDT），盈利为正、亏损为负
@@ -467,10 +473,35 @@ class TradeLogger:
             executed_at: 平仓成交时间，默认当前时间
             close_reason: 平仓原因标记（如 STOP_LOSS/TAKE_PROFIT），
                           看板据此统计止损/止盈次数；None 表示未知/手动。
+            since: 幂等去重起点（通常传该持仓的开仓时间）；None 表示不做去重
         """
         try:
             strategy_name = strategy or self.strategy_name
             exec_time = executed_at or datetime.now(BEIJING_TZ).replace(tzinfo=None)
+
+            if since is not None:
+                existed = await self.db.fetch_one(
+                    "SELECT id FROM trading.trade_records"
+                    " WHERE strategy = $1 AND symbol = $2 AND side = $3"
+                    " AND order_type = 'PNL_SUMMARY' AND realized_pnl = $4"
+                    " AND executed_at >= $5"
+                    " LIMIT 1",
+                    strategy_name,
+                    symbol,
+                    side,
+                    realized_pnl,
+                    since,
+                )
+                if existed:
+                    logger.info(
+                        "PnL汇总记录已存在，跳过重复插入",
+                        strategy=strategy_name,
+                        symbol=symbol,
+                        side=side,
+                        realized_pnl=str(realized_pnl),
+                        since=since.isoformat(),
+                    )
+                    return True
 
             await self.db.execute(
                 "INSERT INTO trading.trade_records "

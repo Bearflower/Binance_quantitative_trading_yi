@@ -1725,12 +1725,28 @@ class HRSStrategy(BaseStrategy):
                 return
 
             # 3. 直接插入一条 PnL 汇总记录（条件单成交无 trade_records 可 UPDATE）
+            #    只写这一条：亏损时把 STOP_LOSS 标记一并带上，不再额外调用 mark_stop_loss。
+            #    旧实现先 insert_pnl_summary 再 mark_stop_loss，而 log_stop_loss 的匹配条件带
+            #    `order_type <> 'PNL_SUMMARY'`，必然匹配不到刚写入的汇总记录 → 降级又插一条
+            #    金额完全相同的记录，同一笔平仓被记两次（HRS 回撤因此虚高到 100%）。
+            #    since 传开仓时间，用于挡住进程重启/监控循环重复命中时的重复回写。
             close_side = "SELL" if direction == "long" else "BUY"
+            since_dt: Optional[datetime] = None
+            if isinstance(entry_time, datetime):
+                since_dt = (
+                    entry_time.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+                    if entry_time.tzinfo is not None
+                    else entry_time
+                )
             success = await trade_logger.insert_pnl_summary(
                 realized_pnl=pnl_value,
                 symbol=symbol,
                 side=close_side,
                 executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None),
+                close_reason=(
+                    trade_logger.CLOSE_REASON_STOP_LOSS if pnl_value < 0 else None
+                ),
+                since=since_dt,
             )
 
             if success:
@@ -1740,15 +1756,8 @@ class HRSStrategy(BaseStrategy):
                     direction=direction,
                     pnl=float(pnl_value),
                     source=pnl_source,
+                    is_stop_loss=pnl_value < 0,
                 )
-                # 全部平仓若为亏损，判定为条件单止损自动平仓，打 STOP_LOSS 标记
-                # 供风控看板"最近止损次数"统计（问题3）
-                if pnl_value < 0:
-                    await self.mark_stop_loss(
-                        symbol=symbol,
-                        side=close_side,
-                        realized_pnl=pnl_value,
-                    )
             else:
                 logger.warning(
                     "全部平仓PnL回写失败",

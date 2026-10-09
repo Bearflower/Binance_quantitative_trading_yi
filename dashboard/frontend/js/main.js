@@ -306,6 +306,24 @@ function updateOverview(data) {
         ddEl.textContent = (v == null || Number.isNaN(v)) ? '--' : `-${(Number(v) * 100).toFixed(1)}%`;
         ddEl.className = 'stat-value negative';
     }
+    // 回撤/夏普的统计窗口（滚动回溯窗口，澄清"月度≠本自然月"）
+    const ddSub = document.querySelector('#drawdown-sub');
+    if (ddSub) {
+        ddSub.textContent = formatPerfWindow(
+            data.total_perf_window_start, data.total_perf_window_end, data.total_perf_sample_count
+        ) || 'Max DD';
+    }
+}
+
+/**
+ * 格式化绩效样本窗口：如 "近180天 07/12~10/09"
+ * 无窗口数据时返回空串（调用方自行兜底）
+ */
+function formatPerfWindow(startIso, endIso, count) {
+    if (!startIso || !endIso) return '';
+    const mmdd = (s) => String(s).slice(5, 10).replace('-', '/');
+    const span = count ? `近${count}天 ` : '';
+    return `${span}${mmdd(startIso)}~${mmdd(endIso)}`;
 }
 
 /**
@@ -356,6 +374,13 @@ function updateStrategyCards(strategies) {
             const v = strategy.max_drawdown;
             strDD.textContent = (v == null || Number.isNaN(v)) ? '--' : `-${(Number(v) * 100).toFixed(1)}%`;
             strDD.className = 'value negative';
+        }
+        // 策略级回撤的统计窗口（滚动回溯窗口，澄清"月度≠本自然月"）
+        const strWin = card.querySelector('[data-metric="max_drawdown"] .metric-window');
+        if (strWin) {
+            strWin.textContent = formatPerfWindow(
+                strategy.perf_window_start, strategy.perf_window_end, strategy.perf_sample_count
+            );
         }
     });
 }
