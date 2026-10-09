@@ -19,8 +19,11 @@
     │   └── V20260728.yaml             # 上上周
 """
 
+import copy
+import hashlib
+import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import structlog
 import yaml
@@ -29,6 +32,9 @@ logger = structlog.get_logger()
 
 # shared 包所在目录（用于定位共享配置文件，如 circuit_breaker_config.yaml）
 _SHARED_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# 计算 config_hash 时剔除的敏感键（小写子串匹配：webhook/密钥/令牌/口令）
+_SENSITIVE_SUBSTRINGS = ("webhook", "secret", "password", "token", "api_key")
 
 # ============================================================
 # 公开 API
@@ -83,21 +89,67 @@ def load_strategy_config(strategy_dir: str) -> Dict[str, Any]:
     Returns:
         合并后的配置字典。基础配置也不存在时返回空字典。
     """
-    # 读取基础配置
+    merged, _metadata = load_strategy_config_with_metadata(strategy_dir)
+    return merged
+
+
+def load_strategy_config_with_metadata(
+    strategy_dir: str
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    加载策略合并配置并返回同源元数据（旧 load_strategy_config 委托本路径）。
+
+    元数据字段：
+    - requested_overrides_version: .active 指向的请求版本（无则 None）
+    - applied_overrides_version: 实际成功合并的覆盖版本（回退基础配置记 None，
+      不可标为已应用）
+    - config_hash: 合并配置的 SHA-256（剔除敏感键，UTF-8 + 排序键 + 固定分隔符）
+    - load_error: 加载错误说明（无错误为 None）
+
+    Args:
+        strategy_dir: 策略目录路径（绝对路径或相对于项目根目录）
+
+    Returns:
+        (合并配置, 元数据)；基础配置缺失时配置为空字典。
+    """
+    components = _load_components(strategy_dir)
+    base_config = components["base_config"]
+    requested = components["requested_version"]
+    override_config = components["override_config"]
+
+    if base_config is None:
+        return {}, _build_metadata(None, requested, None, components["load_error"])
+    if override_config is None:
+        # 覆盖层缺失/解析失败：回退基础配置，applied 记 None
+        return copy.deepcopy(base_config), _build_metadata(
+            base_config, requested, None, components["load_error"])
+
+    merged = deep_merge(base_config, override_config)
+    logger.info(
+        "合并配置加载完成",
+        strategy_dir=strategy_dir,
+        active_version=requested,
+        has_overrides=True,
+    )
+    return merged, _build_metadata(merged, requested, requested, None)
+
+
+def _load_components(strategy_dir: str) -> Dict[str, Any]:
+    """加载基础配置与覆盖层组件，统一各降级路径的错误记录。"""
     config_path = os.path.join(strategy_dir, "config.yaml")
     base_config = _read_yaml(config_path)
     if not base_config:
         logger.warning("基础配置文件不存在或为空，返回空配置", config_path=config_path)
-        return {}
+        return {"base_config": None, "requested_version": None,
+                "override_config": None,
+                "load_error": f"基础配置缺失或为空: {config_path}"}
 
-    # 尝试读取覆盖层
     override_dir = os.path.join(strategy_dir, "tuning_overrides")
     active_version = _read_active_version(override_dir)
     if not active_version:
-        # 降级：只返回基础配置
-        return base_config
+        return {"base_config": base_config, "requested_version": None,
+                "override_config": None, "load_error": None}
 
-    # 读取覆盖层配置
     override_path = os.path.join(override_dir, f"{active_version}.yaml")
     override_config = _read_yaml(override_path)
     if not override_config:
@@ -106,17 +158,46 @@ def load_strategy_config(strategy_dir: str) -> Dict[str, Any]:
             override_path=override_path,
             active_version=active_version,
         )
-        return base_config
+        return {"base_config": base_config, "requested_version": active_version,
+                "override_config": None,
+                "load_error": f"覆盖层缺失或解析失败: {override_path}"}
+    return {"base_config": base_config, "requested_version": active_version,
+            "override_config": override_config, "load_error": None}
 
-    # 深度合并（覆盖层参数优先）
-    merged = deep_merge(base_config, override_config)
-    logger.info(
-        "合并配置加载完成",
-        strategy_dir=strategy_dir,
-        active_version=active_version,
-        has_overrides=True,
-    )
-    return merged
+
+def _build_metadata(config: Optional[Dict[str, Any]], requested: Optional[str],
+                    applied: Optional[str], load_error: Optional[str]) -> Dict[str, Any]:
+    """组装元数据；config 为 None（基础配置缺失）时 config_hash 记 None。"""
+    return {
+        "requested_overrides_version": requested,
+        "applied_overrides_version": applied,
+        "config_hash": compute_config_hash(config) if config is not None else None,
+        "load_error": load_error,
+    }
+
+
+def compute_config_hash(config: Dict[str, Any]) -> str:
+    """计算配置身份哈希：剔除敏感键后按规范化 JSON 取 SHA-256（UTF-8 十六进制）。"""
+    sanitized = _sanitize_for_hash(copy.deepcopy(config))
+    serialized = json.dumps(
+        sanitized, ensure_ascii=False, sort_keys=True,
+        separators=(",", ":"), default=str)
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _sanitize_for_hash(value: Any) -> Any:
+    """递归剔除敏感键（小写子串匹配）；非字典结构原样返回。"""
+    if isinstance(value, dict):
+        cleaned = {}
+        for key, item in value.items():
+            key_lower = str(key).lower()
+            if any(s in key_lower for s in _SENSITIVE_SUBSTRINGS):
+                continue
+            cleaned[key] = _sanitize_for_hash(item)
+        return cleaned
+    if isinstance(value, list):
+        return [_sanitize_for_hash(item) for item in value]
+    return value
 
 
 def deep_merge(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -217,11 +298,8 @@ def _read_active_version(override_dir: str) -> Optional[str]:
     """
     读取 .active 文件获取当前生效的覆盖层版本号
 
-    降级策略（任一条件满足，返回 None）：
-    - tuning_overrides/ 目录不存在
-    - .active 文件不存在
-    - .active 内容为空（或仅含空白字符）
-    - .active 内容格式异常
+    降级策略（任一条件满足，返回 None）：目录不存在、.active 不存在、
+    内容为空、格式异常、读取异常。
 
     Args:
         override_dir: tuning_overrides 目录路径
@@ -232,48 +310,40 @@ def _read_active_version(override_dir: str) -> Optional[str]:
     try:
         if not os.path.exists(override_dir):
             return None
-
-        active_path = os.path.join(override_dir, ".active")
-        if not os.path.exists(active_path):
-            logger.debug("覆盖层目录存在但 .active 文件不存在，降级为基础配置",
-                         override_dir=override_dir)
-            return None
-
-        with open(active_path, "r", encoding="utf-8") as f:
-            content = f.read().strip()
-
-        if not content:
-            logger.warning(
-                ".active 文件内容为空，降级为基础配置",
-                active_path=active_path,
-            )
-            return None
-
-        # 验证版本号格式：V + 8位日期
-        if not content.startswith("V") or len(content) < 2:
-            logger.warning(
-                ".active 文件内容格式异常（预期 V{YYYYMMDD}），降级为基础配置",
-                active_path=active_path,
-                content=content,
-            )
-            return None
-
-        return content
-
+        return _read_active_file(os.path.join(override_dir, ".active"))
     except PermissionError as e:
         logger.warning(
             ".active 文件权限不足，降级为基础配置",
-            active_path=active_path,
-            error=str(e),
+            override_dir=override_dir, error=str(e),
         )
         return None
     except Exception as e:
         logger.warning(
             ".active 文件读取失败，降级为基础配置",
-            override_dir=override_dir,
-            error=str(e),
+            override_dir=override_dir, error=str(e),
         )
         return None
+
+
+def _read_active_file(active_path: str) -> Optional[str]:
+    """读取并校验 .active 内容（V+版本号）；不存在/空/格式错返回 None。"""
+    if not os.path.exists(active_path):
+        logger.debug("覆盖层目录存在但 .active 文件不存在，降级为基础配置",
+                     active_path=active_path)
+        return None
+    with open(active_path, "r", encoding="utf-8") as f:
+        content = f.read().strip()
+    if not content:
+        logger.warning(".active 文件内容为空，降级为基础配置",
+                       active_path=active_path)
+        return None
+    # 验证版本号格式：V + 至少 1 个字符
+    if not content.startswith("V") or len(content) < 2:
+        logger.warning(
+            ".active 文件内容格式异常（预期 V{YYYYMMDD}），降级为基础配置",
+            active_path=active_path, content=content)
+        return None
+    return content
 
 
 def _deep_copy(value: Any) -> Any:

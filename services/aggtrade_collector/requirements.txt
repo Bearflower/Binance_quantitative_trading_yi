@@ -1,0 +1,3 @@
+# aggTrades 落库器运行依赖（与仓库根 requirements.txt 版本对齐）
+aiohttp==3.9.1
+PyYAML==6.0.1

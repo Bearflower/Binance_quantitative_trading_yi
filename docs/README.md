@@ -36,6 +36,7 @@
 - [P0 修复架构方案：持仓保护单丢失](plans/fix-2026-09-30-p0-protection-orders-missing-architecture.md) - 2026-09-30 P0 修复架构设计（P0-1 持仓标的保持 K 线可用、P0-2 kline 白名单读路径放行、P0-3 补全保护单先算后撤）
 - [P0 补漏架构方案：new_coin 未保护持仓对账 + kline 表存在性死代码 + 读路径静默化契约](plans/fix-2026-10-01-p0-remaining-unprotected-positions-architecture.md) - 2026-10-01 架构设计（权威集合 DB_open∩交易所空头、僵尸对账连续 N 周期 + 关闭前回查、持续保护守卫替代一次性补全、`to_regclass` 表存在性、400/200空/503 异常类型契约）
 - [P0-D 架构设计：new_coin 持仓保护「增量补挂」](plans/fix-2026-10-01-incremental-replenish-architecture.md) - 2026-10-01 架构设计（只补缺失类型、默认零撤单，消除撤旧止损造成的 SL 空窗；`cancel_after_ready` 语义重定义；`replenish_conditional_orders` 签名变更 + 入口 fail-closed 守卫）
+- [网格实时风险预警 V2.5.4 实施计划](plans/grid_realtime_alert_实施计划.md) - 双轨数据路径（轨道A REST 回溯验证参数方向 / 轨道B 常驻落库攒 30 天统计样本）、两库分离、阶段 M0–M3 与 AC 映射
 
 ### K线服务
 
@@ -111,7 +112,8 @@
 - [网格交易 V2.2](requirements/grid/Grid_Trading_V2.2.md) - V2.2 参数优化升级
 - [网格交易 V2.3](requirements/grid/网格交易系统%20V2.3%20完整策略文档.md) - V2.3 紧急极端趋势 + 趋势加速检测
 - [网格交易 V2.4](requirements/grid/网格交易系统%20V2.4%20完整策略文档.md) - V2.4 三层预警架构
-- [网格交易 V2.5](requirements/grid/网格策略迭代记录.md#网格交易策略-v25-升级-2026-08-27-) - V2.5 K线服务对接 + 定时执行节点固定（最新版）
+- [网格交易 V2.5](requirements/grid/网格策略迭代记录.md#网格交易策略-v25-升级-2026-08-27-) - V2.5 K线服务对接 + 定时执行节点固定
+- [网格交易 V2.5.4](requirements/grid/Grid_Trading_V2.5.4.md) - V2.5.4 实时风险预警（shadow 影子模式、仅建议不交易、双轨数据路径、32 条 AC，最新版）
 - [网格信号灯 V2.0 实施方案](requirements/grid/网格信号灯 V2.0 实施方案（ETHUSDT 专版）.md) - ETHUSDT 专版实施方案
 - [网格策略迭代记录](requirements/grid/网格策略迭代记录.md) - 迭代历史记录
 - [网格策略回测AI调优系统-PRD](requirements/网格策略回测AI调优系统-PRD.md) - 方案D：回测驱动的AI参数调优需求文档

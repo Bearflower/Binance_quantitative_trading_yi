@@ -1,0 +1,51 @@
+# grid V2.5.4 aggTrades 落库器配置（计划 §1.1~§1.3）
+# 所有阈值/路径/保留期均在此配置，代码不硬编码。
+# 相对路径相对「基准目录」解析：--base-dir > 环境变量 AGGTRADE_BASE_DIR > 仓库根。
+
+symbol: ETHUSDT
+
+# REST 公共行情（/fapi/v1/aggTrades，signed=False）
+rest:
+  base_url: https://fapi.binance.com
+  agg_trades_path: /fapi/v1/aggTrades
+  timeout_seconds: 10
+  page_limit: 1000            # 币安单页上限 1000
+  slice_hours: 1              # startTime+endTime 窗口硬约束 ≤1h
+  max_retries: 3              # 仅 ConnectionError/SSLError/429/5xx 重试（§1.1）
+  backoff_base_seconds: 1     # 连接故障/5xx 退避 1/2/4s
+  # 生产 IP 被 kline-service 等多容器共享（2026-10-09 回溯曾触发 429/-1003 2400 次每分钟），
+  # 页间主动降速，给其他容器预留额度；实际耗时由数据量决定，一次性回溯可接受。
+  page_sleep_min_seconds: 0.3
+  page_sleep_max_seconds: 0.5
+  rate_limit_wait_seconds: 60     # 429 无 Retry-After 头时等待一个完整分钟限流窗口
+  rate_limit_max_wait_seconds: 120  # Retry-After 等待封顶，防异常头长等
+
+storage:
+  # 本地 Mac 默认路径（计划 §1.3）；服务器由 --base-dir=/app/data 覆盖
+  db_path: data/aggtrades/ethusdt_aggtrades.sqlite
+  agg_trades_retention_hours: 72   # 逐笔保留期（§1.3 定值，配置项）
+  busy_timeout_ms: 5000
+  insert_batch_size: 2000          # 逐笔落库/REST 成交流缓冲批大小（§1.1 每批一提交）
+
+backfill:
+  lookback_hours: 48           # 轨道A 回溯近 1~2 天（常驻首启空库时的引导回溯深度）
+
+# 轨道B 常驻落库器（B8 部署件，计划 §0.1/§1.3；serve 子命令使用）
+# 启动即清理一次；随后按 incremental 周期补齐，累计到 cleanup 周期执行一次滚动清理。
+daemon:
+  incremental_interval_seconds: 10   # 增量补齐周期（fromId 续传，页间已主动限速）
+  cleanup_interval_seconds: 3600     # 逐笔滚动清理周期（§1.3 定值每小时）
+
+# 现有 20 分钟样本（需求 §2.1 固定指纹）
+sample_file:
+  path: ethusdt_aggtrades_20261007_0950_1010.json
+  sha256: 63e375fb1cb7586c03c303682cab6fde389c94165cbbb67735f05064a04ec2fc
+
+# 样本清单与开发/验证段划分标记（M0 退出条件，计划 §3.5）
+manifest:
+  path: data/aggtrades/sample_manifest.json
+
+# 验证段划分口径（固定项目事实：上线日起算的样本外窗口，仅写入清单标签不参与判定）
+validation_segment:
+  start_rule_beijing: "2026-10-08T00:00:00+08:00"
+  min_full_days: 30

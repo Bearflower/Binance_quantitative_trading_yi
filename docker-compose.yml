@@ -209,6 +209,69 @@ services:
       retries: 3
       start_period: 40s
 
+  # ============================================
+  # 网格实时风险预警（V2.5.4，shadow 影子模式：仅记录，不外发、不交易）
+  # 与 grid-strategy 共用 ghcr.io/bearflower/trading-grid 镜像，仅替换启动命令
+  # 共用 host 卷 ./data/grid（grid_realtime.sqlite3 双进程交接：出口写、实时读）
+  # 前置：schema 由部署脚本一次性迁移命令建好（业务进程只 check_schema）
+  # ============================================
+  grid-realtime:
+    image: ghcr.io/bearflower/trading-grid:latest
+    container_name: trading_system-grid-realtime
+    restart: unless-stopped
+    command: ["python", "-m", "strategies.grid.realtime.main"]
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_NAME=grid
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./logs/grid:/app/logs
+      - ./data/grid:/app/data
+    networks:
+      - trading-network
+    depends_on:
+      grid-strategy:
+        condition: service_started
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================
+  # aggTrades 常驻落库器（grid V2.5.4 轨道B：攒 30 天统计样本，2026-10-08 起算）
+  # 仅采集公共行情，不调用任何交易接口；独立命名卷，与 grid_realtime 库分离
+  # ============================================
+  aggtrade-collector:
+    image: ghcr.io/bearflower/trading-aggtrade-collector:latest
+    container_name: trading_system-aggtrade-collector
+    restart: unless-stopped
+    environment:
+      - AGGTRADE_BASE_DIR=/app
+      - TZ=Asia/Shanghai
+    volumes:
+      - aggtrade-data:/app/data
+    networks:
+      - trading-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   # daily-report / weekly-report 已废弃（无 Dockerfile + 目录为空，2026-09-16 注释）
   # 原 docker-compose 块引用不存在的 strategies/daily_report/Dockerfile 和
   # strategies/weekly_report/Dockerfile，build 失败。如需恢复请先补 Dockerfile。
@@ -418,6 +481,10 @@ volumes:
   postgres-data:
     driver: local
   kline-monitor-data:
+    driver: local
+  # aggTrades 落库器行情库（逐笔 72h 滚动 + 1s 稠密物化全量 30 天）
+  # 独立命名卷，与 grid_realtime.sqlite3 的 ./data/grid 卷分离
+  aggtrade-data:
     driver: local
 
 # ============================================

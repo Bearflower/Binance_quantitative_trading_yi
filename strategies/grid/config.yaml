@@ -303,6 +303,71 @@ signal_bot:
   # 信号模式
   mode: semi
 
+# V2.5.4 实时风险预警（shadow 影子模式：只记录不外发；参数基线=M1 实验 e30 结论）
+# 口径权威：docs/requirements/grid/Grid_Trading_V2.5.4.md §9；本节经 parse_profile 全量校验
+realtime_alert:
+  enabled: true
+  mode: shadow
+  profile: shadow_e30
+  symbol: ETHUSDT
+  price_source: agg_trade
+  reference:
+    max_age_seconds: 21600
+  features:
+    sample_seconds: 1
+    windows_seconds: [60, 180, 300]
+    max_anchor_gap_seconds: 2
+    e_resample_seconds: 1
+  normal:
+    return_3m: 0.005
+    return_5m: 0.005
+    min_efficiency: 0.30          # M1 结论：0.60→0.30（恢复真实提前量，误报代理 0）
+    near_grid_fraction: 0.40
+    hold_seconds: 10
+  urgent:
+    near_grid_fraction: 0.20
+    return_3m: 0.0075
+    return_5m: 0.0075
+    min_efficiency: 0.70
+    hold_seconds: 3
+    buffer_return_1m: 0.003
+    critical_buffer_fraction: 0.75
+  recovery:
+    inside_fraction: 0.45
+    hold_seconds: 60
+  repeat:
+    notice_seconds: 1800
+    urgent_seconds: 300
+    boundary_seconds: 300
+    health_seconds: 1800
+  health:
+    max_silence_seconds: 5
+    max_event_lag_seconds: 3
+  storage:
+    path: /app/data/grid_realtime.sqlite3
+    busy_timeout_ms: 1000
+    sent_retention_days: 30
+    audit_retention_days: 90
+    max_bytes: 1073741824
+  transport:
+    heartbeat_seconds: 20
+    reconnect_initial_seconds: 1
+    reconnect_max_seconds: 30
+    refill_requests_per_second: 1
+  reference_sync:
+    heartbeat_seconds: 1
+    max_silence_seconds: 5
+  delivery:
+    queue_capacity: 1000
+    retry_initial_seconds: 1
+    retry_max_seconds: 30
+    event_ttl_seconds: 30
+    report_delay_seconds: 30        # 锁存事实超时补报标题阈值（§8.2），禁硬编码
+    maintenance_interval_seconds: 60  # 后台 checkpoint/清理周期（§8.2），禁硬编码
+  shadow_research:
+    enabled: false               # 研究参考提醒开关：须人工显式开启（§9.3）
+    notice_interval_seconds: 1800
+
 # V2.5 多因子保证金智能引导配置
 margin_guide:
   # 状态系数（按 MarketState 枚举映射，与市场状态判定口径一致）

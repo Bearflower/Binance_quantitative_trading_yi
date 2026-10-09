@@ -4,12 +4,12 @@ name: CI/CD — 构建镜像并自动部署
 # Binance 量化交易系统 CI/CD 流水线（智能增量构建 v3）
 #
 # 改了啥 → 只构建啥：
-#   shared/** 改了 → 全部 10 个重建
+#   shared/** 改了 → 全部 11 个重建
 #   只改某个策略目录 → 只构建那个
 #
 # 原理：
 #   detect job 先跑 git diff 看有哪些路径变了
-#   静态 10 个 build job → 每个开头 git diff 自己判断要不要 build
+#   静态 11 个 build job → 每个开头 git diff 自己判断要不要 build
 #   服务器 deploy → docker compose pull/up 本身就是增量的
 # ============================================
 
@@ -71,7 +71,7 @@ jobs:
           echo "检测到变更（自动过滤 docs/backtest/tests/.trae/*.md）"
 
   # ============================================
-  # Job 1: 静态 10 个矩阵并行
+  # Job 1: 静态 11 个矩阵并行
   # 每个 job 用整段推送范围（github.event.before..sha）判断：
   #   shared/** 或 VERSION / docker-compose.yml 改了 → 全部构建
   #   变更全部落在 .github/** → 全部构建（无法判断历史构建状态，避免死循环）
@@ -99,6 +99,7 @@ jobs:
           - { name: "ai-tuner",       dir: "ai_tuner",                        dockerfile: "ai_tuner/Dockerfile" }
           - { name: "data-backend",   dir: "services/data_backend",           dockerfile: "services/data_backend/Dockerfile" }
           - { name: "dashboard-api",  dir: "dashboard/backend",               dockerfile: "dashboard/backend/Dockerfile" }
+          - { name: "aggtrade-collector", dir: "services/aggtrade_collector", dockerfile: "services/aggtrade_collector/Dockerfile" }
 
     steps:
       - uses: actions/checkout@v4
@@ -360,6 +361,7 @@ jobs:
             PROJECT_IDS=$(docker compose ps -a -q 2>/dev/null || true)
             RESIDUAL_CANDIDATES="trading_system-postgres trading_system-hrs trading_system-btc_eth \
               trading_system-btc_eth_aggressive trading_system-new_coin trading_system-grid \
+              trading_system-grid-realtime trading_system-aggtrade-collector \
               ai-tuner trading_system-kline trading_system-kline-monitor data-backend dashboard-api"
             if [ -z "$PROJECT_IDS" ]; then
               # 未取到本项目容器清单（compose 异常）时不删任何容器：
@@ -383,6 +385,19 @@ jobs:
             # 3. 拉取有新版本的镜像（compose pull 自动对比 registry 标签）
             echo "📥 docker compose pull..."
             docker compose pull
+
+            # ========== step 3.5：grid_realtime 一次性 schema 迁移 ==========
+            # 为什么必须在 up -d 之前：
+            #   - grid-realtime 业务进程启动只 check_schema（不建表），缺表直接抛错 → crash-loop
+            #   - grid-strategy 出口的 _init_export 只在构造时校验一次 schema，失败即永久停用
+            #     （只 warning 不重试）→ 若此时表未建好，出口交接会一直不可用直到下次重启
+            # 迁移命令幂等：ensure_schema 全 CREATE ... IF NOT EXISTS + ON CONFLICT DO NOTHING
+            # 卷：与 grid-strategy / grid-realtime 共用 ./data/grid:/app/data
+            # --no-deps：不拉起 depends_on（迁移不依赖任何在跑服务）
+            echo "🗄️  grid_realtime schema 迁移（一次性）..."
+            docker compose run --rm --no-deps grid-realtime \
+              python -m strategies.grid.realtime.reference_store \
+              --db-path /app/data/grid_realtime.sqlite3
 
             # 4. 只更新镜像变了的容器（compose up -d 自动检测）
             echo "🔄 docker compose up -d..."

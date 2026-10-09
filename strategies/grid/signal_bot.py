@@ -3,18 +3,26 @@
 半自动信号灯系统，自动分析市场状态并推送网格参数
 """
 import asyncio
+import os
+import sqlite3
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from typing import Dict, Optional
 import structlog
 
+from shared.config_loader import load_strategy_config_with_metadata
 from shared.kline_service import KLineService
 from shared.notification import NotificationClient
 from shared.binance_api import BinanceClient
+from .heartbeat import HeartbeatThread
 from .market_state import MarketStateDetector, MarketState, MarketAnalysis
 from .grid_calculator import GridCalculator, DynamicGridParams
 from .margin_advisor import MarginAdvisor, MarginAdvice, DANGEROUS_STATES
+from .realtime.reference_store import (ExportStore, SessionState, check_schema,
+                                        connect, make_reference_id)
+from .realtime.rules import ReferenceSnapshot
 
 
 logger = structlog.get_logger()
@@ -189,8 +197,16 @@ class GridSignalBot:
         # 保守方案网格减少步长（从配置文件读取）
         self.conservative_grid_reduce = config.get('signal_bot', {}).get('conservative_grid_reduce', 10)
 
-        # 历史状态记录（用于检测变化）
+        # 历史状态记录（用于检测切换）
         self.last_signals: Dict[str, GridSignal] = {}
+
+        # V2.5.4 实时预警交接：默认全部 None（enabled=false 时零行为变化，AC-01）
+        self.export_store: Optional[ExportStore] = None
+        self._export_conn: Optional[sqlite3.Connection] = None
+        self._heartbeat: Optional[HeartbeatThread] = None
+        self._state: Optional[SessionState] = None
+        self._metadata: Dict = {}
+        self._init_export()
 
         logger.info(
             "网格信号灯机器人初始化完成",
@@ -407,38 +423,42 @@ class GridSignalBot:
             run_at_minute=self.run_at_minute
         )
 
-        # 首次执行：等待到下一个固定分钟节点
-        await self._wait_until_next_run()
+        self._start_export()
+        try:
+            # 首次执行：等待到下一个固定分钟节点
+            await self._wait_until_next_run()
 
-        while True:
-            try:
-                # 对每个交易对执行检测
-                for symbol in self.symbols:
-                    try:
-                        signal = await self.run_once(symbol)
+            while True:
+                try:
+                    # 对每个交易对执行检测
+                    for symbol in self.symbols:
+                        try:
+                            signal = await self.run_once(symbol)
 
-                        # 检查是否需要推送
-                        if self._should_notify(signal):
-                            await self._send_notification(signal)
-                            self.last_signals[symbol] = signal
+                            # 检查是否需要推送
+                            if self._should_notify(signal):
+                                await self._send_with_export(signal)
+                                self.last_signals[symbol] = signal
 
-                    except Exception as e:
-                        logger.error(
-                            f"信号检测失败: {symbol}",
-                            error=str(e),
-                            exc_info=True
-                        )
+                        except Exception as e:
+                            logger.error(
+                                f"信号检测失败: {symbol}",
+                                error=str(e),
+                                exc_info=True
+                            )
 
-                # 等待到下一个固定分钟节点（保持对齐）
-                await self._wait_until_next_run()
+                    # 等待到下一个固定分钟节点（保持对齐）
+                    await self._wait_until_next_run()
 
-            except Exception as e:
-                logger.error(
-                    "信号检测循环失败",
-                    error=str(e),
-                    exc_info=True
-                )
-                await asyncio.sleep(60)
+                except Exception as e:
+                    logger.error(
+                        "信号检测循环失败",
+                        error=str(e),
+                        exc_info=True
+                    )
+                    await asyncio.sleep(60)
+        finally:
+            self._shutdown_export()
 
     async def _calculate_grid_params(
         self,
@@ -588,6 +608,131 @@ class GridSignalBot:
                 exc_info=True
             )
             return False
+
+    # ─────────── V2.5.4 快照导出与持久化交接 ───────────
+
+    def _init_export(self) -> None:
+        """enabled 时打开持久连接并校验 schema（失败不阻止构造，AC-01）。"""
+        rt_cfg = self.config.get("realtime_alert", {})
+        if not rt_cfg.get("enabled"):
+            return
+        _, self._metadata = load_strategy_config_with_metadata(
+            os.path.dirname(__file__))
+        try:
+            conn = connect(rt_cfg["storage"]["path"],
+                           rt_cfg["storage"]["busy_timeout_ms"])
+            check_schema(conn)
+        except (KeyError, sqlite3.Error, RuntimeError) as exc:
+            logger.warning("实时交接持久化不可用，出口将只推送不落库",
+                           error=str(exc))
+            return
+        self._export_conn = conn
+        self.export_store = ExportStore(conn)
+
+    def _start_export(self) -> None:
+        """run_loop 起点：开始会话 + 心跳线程。"""
+        if self.export_store is None or self._state is not None:
+            return
+        rt_cfg = self.config["realtime_alert"]
+        sid = self.export_store.begin_session(_now_ms())
+        self._state = SessionState(sid, 0, None, None)
+        self._heartbeat = HeartbeatThread(
+            lambda: self._state, rt_cfg["storage"]["path"],
+            rt_cfg["reference_sync"]["heartbeat_seconds"],
+            rt_cfg["storage"]["busy_timeout_ms"], _now_ms)
+        self._heartbeat.start()
+        logger.info("实时交接会话已开始", session_id=sid)
+
+    def _shutdown_export(self) -> None:
+        """run_loop 终点（含取消）：停心跳、关会话与连接。"""
+        if self._heartbeat is not None:
+            self._heartbeat.stop()
+            self._heartbeat = None
+        if self.export_store is not None and self._state is not None:
+            try:
+                self.export_store.close_session(_now_ms())
+            except sqlite3.Error as exc:
+                logger.warning("关闭出口会话失败", error=str(exc))
+        self._state = None
+        if self._export_conn is not None:
+            self._export_conn.close()
+            self._export_conn = None
+        self.export_store = None
+
+    async def _send_with_export(self, signal: GridSignal) -> bool:
+        """发送并走 PREPARED→SENDING→SENT/FAILED 交接；持久化故障不阻止推送。"""
+        if not self._export_ready(signal):
+            return await self._send_notification(signal)
+        try:
+            return await self._send_tracked(signal)
+        except sqlite3.Error as exc:
+            self._abort_export(exc)
+            return await self._send_notification(signal)
+
+    def _export_ready(self, signal: GridSignal) -> bool:
+        """交接可用条件：store/会话就绪且本信号含边界（无边界不创建更新）。"""
+        return (self.export_store is not None and self._state is not None
+                and signal.grid_params is not None)
+
+    async def _send_tracked(self, signal: GridSignal) -> bool:
+        """持久化可用时的完整发送链路。"""
+        gp = signal.grid_params
+        calculated_ms = _datetime_ms(signal.timestamp)
+        reference_id = make_reference_id(
+            calculated_ms, gp.lower_boundary, gp.upper_boundary,
+            gp.stop_loss_low, gp.stop_loss_high)
+        snapshot = self._build_snapshot(signal, reference_id, calculated_ms)
+        self.export_store.prepare(_now_ms(), self._state, snapshot)
+        self._state = SessionState(
+            self._state.session_id, self._state.current_seq,
+            self._state.current_reference_id,
+            self._state.current_seq + 1)
+        self.export_store.mark_sending(reference_id)
+        sent = await self._send_notification(signal)
+        self._finish_send(reference_id, sent)
+        return sent
+
+    def _finish_send(self, reference_id: str, sent: bool) -> None:
+        """按发送结果落 SENT（序号前移）或 FAILED（清未决）。"""
+        assert self.export_store is not None and self._state is not None
+        now = _now_ms()
+        if sent:
+            self.export_store.mark_sent(reference_id, now, self._state, now)
+            seq = self._state.pending_seq
+            self._state = SessionState(
+                self._state.session_id, seq, reference_id, None)
+        else:
+            self.export_store.mark_failed(reference_id, self._state, now)
+            self._state = SessionState(
+                self._state.session_id, self._state.current_seq,
+                self._state.current_reference_id, None)
+
+    def _abort_export(self, exc: Exception) -> None:
+        """持久化故障：尽力置 SYNC_UNCERTAIN 并断开交接（§4.2.4）。"""
+        logger.warning("实时交接持久化故障，暂停操作建议", error=str(exc))
+        try:
+            if self.export_store is not None and self._state is not None:
+                self.export_store.set_sync_uncertain(self._state, _now_ms())
+        except sqlite3.Error:
+            pass
+        self._shutdown_export()
+
+    def _build_snapshot(self, signal: GridSignal, reference_id: str,
+                        calculated_ms: int) -> ReferenceSnapshot:
+        """从 signal 计算对象构造快照（不解析消息文本、不重算边界）。"""
+        gp, ma = signal.grid_params, signal.market_analysis
+        return ReferenceSnapshot(
+            reference_id=reference_id, symbol=signal.symbol,
+            calculated_at_ms=calculated_ms, effective_at_ms=calculated_ms,
+            grid_lower=gp.lower_boundary, grid_upper=gp.upper_boundary,
+            stop_lower=gp.stop_loss_low, stop_upper=gp.stop_loss_high,
+            stop_move_up_price=gp.stop_move_up_price,
+            stop_move_down_price=gp.stop_move_down_price,
+            market_state=ma.state.value, atr=ma.atr_smooth,
+            adx_1h=ma.adx_1h, adx_4h=ma.adx_4h,
+            config_version=str(self.config.get("strategy", {}).get("version")),
+            overrides_version=self._metadata.get("applied_overrides_version"),
+            config_hash=self._metadata.get("config_hash"), source="signal_bot")
 
     def _generate_signal_message(
         self,
@@ -992,3 +1137,13 @@ ATR 在 2 小时内飙升 {change_pct:.1f}%，市场可能出现剧烈单边行�
 
 市场已从强趋势/波动率异常恢复，可以重新创建网格或恢复挂单。
 """.strip()
+
+
+def _now_ms() -> int:
+    """当前墙钟毫秒（出口状态时间戳）。"""
+    return int(time.time() * 1000)
+
+
+def _datetime_ms(value: datetime) -> int:
+    """naive/带时区 datetime 转墙钟毫秒（同 signal.timestamp 口径）。"""
+    return int(value.timestamp() * 1000)
