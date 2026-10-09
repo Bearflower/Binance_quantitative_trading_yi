@@ -3,10 +3,16 @@
 
 每月末自动触发，编排完整的月度资金分配流程：
 
+月份口径（需求 §14.1，v1.4 修复）：
+- 盈亏归属月（pnl_month）：刚结束的当月，PnL/成交行数采集范围
+- 生效月（effective_month）：次月，作为幂等键、写库 month、配置
+  allocation_month、通知卡片月份与返回字典月份，与消费方
+  （capital_manager / daily_refresher / dashboard 按当前月查询）对齐
+
 流程：
-1. 幂等性检查：查询当月是否已存在分配记录
-2. 计算时间范围：当月起止时间
-3. 盈亏采集：从数据库查询各策略当月已实现盈亏
+1. 幂等性检查：查询生效月是否已存在分配记录
+2. 计算时间范围：盈亏归属月起止时间
+3. 盈亏采集：从数据库查询各策略盈亏归属月已实现盈亏
 4. 分配计算：按收益率排名或首月默认比例计算分配方案
 5. 写入存储：数据库 + 配置文件
 6. 飞书通知：推送月度分配报告卡片
@@ -29,6 +35,40 @@ logger = structlog.get_logger()
 
 # 中国标准时间时区 (UTC+8)
 CST = timezone(timedelta(hours=8))
+
+
+def _next_month(year: int, month: int) -> Tuple[int, int]:
+    """
+    计算指定月份的下一个月
+
+    Args:
+        year: 年份
+        month: 月份（1~12）
+
+    Returns:
+        (下一年份, 下一月份)；12 月跨年到次年 1 月
+    """
+    if month == 12:
+        return year + 1, 1
+    return year, month + 1
+
+
+def _resolve_months(now: datetime) -> Tuple[str, str]:
+    """
+    依据运行时刻推导（盈亏归属月, 生效月）
+
+    月度任务在月末运行：盈亏采集归属刚结束的当月，分配记录对次月生效。
+
+    Args:
+        now: 运行时刻
+
+    Returns:
+        (pnl_month, effective_month)，格式均为 "YYYY-MM"
+    """
+    pnl_month = now.strftime("%Y-%m")
+    next_year, next_month = _next_month(now.year, now.month)
+    effective_month = f"{next_year:04d}-{next_month:02d}"
+    return pnl_month, effective_month
 
 
 class MonthlyAllocationJob:
@@ -143,22 +183,31 @@ class MonthlyAllocationJob:
         """
         return await get_actual_balance(self.binance_client)
 
-    async def run_monthly_allocation(self) -> Optional[Dict[str, Any]]:
+    async def run_monthly_allocation(
+        self,
+        pnl_month: Optional[str] = None,
+        effective_month: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
         """
         执行月度资金分配主流程
 
         流程：
         1. 确保表存在
-        2. 幂等性检查
-        3. 计算时间范围
+        2. 幂等性检查（按生效月）
+        3. 计算盈亏归属月时间范围
         4. 盈亏采集
         5. 获取实际余额（有 binance_client 时从交易所查询）
-        6. 分配计算
+        6. 分配计算（结果月份为生效月）
         7. 写入存储
         8. 飞书通知
 
+        Args:
+            pnl_month: 盈亏归属月 "YYYY-MM"（缺省按运行时刻取当月）
+            effective_month: 生效月 "YYYY-MM"（缺省取次月）；
+                补生成历史月份时由手动脚本显式提供，两者必须同时给出
+
         Returns:
-            分配结果字典，如果跳过或失败返回 None
+            分配结果字典（month 为生效月），如果跳过或失败返回 None
         """
         logger.info("月度资金分配开始")
 
@@ -171,17 +220,19 @@ class MonthlyAllocationJob:
                 logger.info("月度资金分配未启用，跳过")
                 return None
 
-            # 1. 计算当前月份标识
+            # 1. 解析月份口径：盈亏归属月（采集范围）与生效月（幂等键/写库/通知）
             now = datetime.now(CST)
-            current_month = now.strftime("%Y-%m")
+            pnl_month, effective_month = self._resolve_month_inputs(
+                now, pnl_month, effective_month
+            )
 
-            # 2. 幂等性检查
-            if await self._check_idempotency(current_month):
-                logger.info("当月已存在分配记录，跳过", month=current_month)
+            # 2. 幂等性检查（生效月）
+            if await self._check_idempotency(effective_month):
+                logger.info("生效月已存在分配记录，跳过", month=effective_month)
                 return None
 
-            # 3. 计算时间范围（当月 1 日 00:00:00 到下月第一天 00:00:00，左闭右开）
-            month_start, month_end = self._calculate_month_range(now)
+            # 3. 计算盈亏归属月时间范围（月初 00:00:00 到次月 1 日 00:00:00，左闭右开）
+            month_start, month_end = self._calculate_month_range(pnl_month)
 
             # 4. 判断是否为首月
             is_first_month = await self._check_is_first_month()
@@ -231,7 +282,7 @@ class MonthlyAllocationJob:
                 rank_ratios=rank_ratios,
                 reserve_ratio=reserve_ratio,
                 strategy_names=strategy_names,
-                month=current_month,
+                month=effective_month,
             )
 
             # 7. 写入存储
@@ -254,14 +305,15 @@ class MonthlyAllocationJob:
 
             logger.info(
                 "月度资金分配完成",
-                month=current_month,
+                pnl_month=pnl_month,
+                month=effective_month,
                 total_capital=total_capital,
                 strategy_count=len(result.entries),
                 is_first_month=is_first_month,
             )
 
             return {
-                "month": current_month,
+                "month": effective_month,
                 "total_capital": total_capital,
                 "entries": [
                     {
@@ -277,6 +329,33 @@ class MonthlyAllocationJob:
         except Exception as e:
             logger.error("月度资金分配异常", error=str(e), exc_info=True)
             return None
+
+    def _resolve_month_inputs(
+        self,
+        now: datetime,
+        pnl_month: Optional[str],
+        effective_month: Optional[str],
+    ) -> Tuple[str, str]:
+        """
+        解析月份入参
+
+        - 两者均缺省：按运行时刻推导（盈亏归属月=当月，生效月=次月）
+        - 两者均显式提供：直接使用（手动补生成历史月份场景）
+        - 仅提供其一：拒绝执行，避免盈亏范围与记录月份错配（R3 资金安全）
+
+        Args:
+            now: 运行时刻
+            pnl_month: 显式盈亏归属月（可缺省）
+            effective_month: 显式生效月（可缺省）
+
+        Returns:
+            (pnl_month, effective_month)
+        """
+        if pnl_month is None and effective_month is None:
+            return _resolve_months(now)
+        if pnl_month is None or effective_month is None:
+            raise ValueError("pnl_month 与 effective_month 必须同时提供或同时缺省")
+        return pnl_month, effective_month
 
     async def _check_idempotency(self, month: str) -> bool:
         """
@@ -326,26 +405,24 @@ class MonthlyAllocationJob:
             logger.error("首月判断异常，默认非首月", error=str(e))
             return False
 
-    def _calculate_month_range(self, now: datetime) -> Tuple[datetime, datetime]:
+    def _calculate_month_range(self, pnl_month: str) -> Tuple[datetime, datetime]:
         """
-        计算当月时间范围
+        计算盈亏归属月的采集窗口（左闭右开）
 
         Args:
-            now: 当前时间
+            pnl_month: 盈亏归属月标识，格式 "YYYY-MM"
 
         Returns:
-            (month_start, month_end) 元组，均为 datetime 对象
+            (month_start, month_end)：该月 1 日 00:00:00（含）至次月
+            1 日 00:00:00（不含），CST 墙钟时间；跨年由 _next_month 处理
         """
-        # 当月第一天 00:00:00
-        month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        # 月初第一天 00:00:00（strptime 同时校验月份格式）
+        anchor = datetime.strptime(pnl_month, "%Y-%m").replace(tzinfo=CST)
+        month_start = anchor
 
-        # 下月第一天 00:00:00（即当月结束，不包含）
-        if now.month == 12:
-            month_end = now.replace(year=now.year + 1, month=1, day=1,
-                                    hour=0, minute=0, second=0, microsecond=0)
-        else:
-            month_end = now.replace(month=now.month + 1, day=1,
-                                    hour=0, minute=0, second=0, microsecond=0)
+        # 次月第一天 00:00:00（即归属月结束，不包含）
+        next_year, next_month = _next_month(anchor.year, anchor.month)
+        month_end = datetime(next_year, next_month, 1, tzinfo=CST)
 
         return month_start, month_end
 

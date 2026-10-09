@@ -10,7 +10,7 @@
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import structlog
 
@@ -74,7 +74,7 @@ class AllocationCalculator:
     def calculate(
         self,
         total_capital: float,
-        pnl_data: Dict[str, Dict[str, float]],
+        pnl_data: Dict[str, Dict[str, Any]],
         is_first_month: bool,
         fallback_ratios: Dict[str, float],
         fallback_capitals: Dict[str, float],
@@ -88,8 +88,11 @@ class AllocationCalculator:
 
         Args:
             total_capital: 总资金池（USDT）
-            pnl_data: 各策略盈亏数据 {strategy_id: {"pnl": float, "capital": float}}
-            capital 为月初实际占用保证金（作收益率分母）
+            pnl_data: 各策略盈亏数据
+                {strategy_id: {"pnl": float, "capital": float, "has_trades": bool}}
+                capital 为月初实际占用保证金（作收益率分母）；
+                has_trades 缺省 True（旧 payload 兼容，fail-open，§14.2），
+                False 表示当月零开仓，强制排名垫底
             is_first_month: 是否为首月分配
             fallback_ratios: 首月默认分配比例 {strategy_id: ratio}
             fallback_capitals: 首月默认分配金额 {strategy_id: amount}
@@ -190,28 +193,32 @@ class AllocationCalculator:
 
     def _calculate_by_ranking(
         self,
-        pnl_data: Dict[str, Dict[str, float]],
+        pnl_data: Dict[str, Dict[str, Any]],
         total_capital: float,
         rank_ratios: List[float],
         strategy_names: Dict[str, str],
     ) -> List[AllocationEntry]:
         """
-        非首月分配：按收益率排名分配
+        非首月分配：按收益率排名分配（零开仓策略强制垫底，需求 §14.2）
 
         Args:
-            pnl_data: 各策略盈亏数据
+            pnl_data: 各策略盈亏数据（has_trades 缺省 True）
             total_capital: 总资金池（USDT）
             rank_ratios: 排名分配比例（占总资金百分比）
             strategy_names: 策略显示名称映射
 
         Returns:
-            分配条目列表（按收益率降序排列）
+            分配条目列表（有开仓者在前并按收益率降序；零开仓者垫底，
+            组内按 strategy_id 升序保证确定性）
         """
         # 计算各策略收益率
         strategy_returns = []
         for strategy_id, data in pnl_data.items():
             pnl = data.get("pnl", 0.0)
             capital = data.get("capital", 0.0)
+
+            # 零开仓标记缺省 True：向后兼容旧 payload，且与采集异常 fail-open 一致
+            has_trades = bool(data.get("has_trades", True))
 
             # 计算收益率：若 capital 为 0，收益率为 0（避免除零）
             return_rate = pnl / capital if capital > 0 else 0.0
@@ -221,10 +228,14 @@ class AllocationCalculator:
                 "pnl": pnl,
                 "capital": capital,
                 "return_rate": return_rate,
+                "has_trades": has_trades,
             })
 
-        # 按收益率降序排名
-        strategy_returns.sort(key=lambda x: x["return_rate"], reverse=True)
+        # 排序键：① 有开仓(0) 优先于零开仓(1)；② 组内收益率降序；
+        # ③ 同收益率按 strategy_id 升序，保证排名可复现
+        strategy_returns.sort(
+            key=lambda x: (0 if x["has_trades"] else 1, -x["return_rate"], x["strategy_id"])
+        )
 
         entries = []
         for rank, s in enumerate(strategy_returns, start=1):
@@ -260,8 +271,18 @@ class AllocationCalculator:
                 strategy_id=strategy_id,
                 rank=rank,
                 return_rate=round(s["return_rate"], 4),
+                has_trades=s["has_trades"],
                 ratio=ratio,
                 amount=amount,
             )
+
+            # 零开仓策略强制垫底提示（需求 §14.2）
+            if not s["has_trades"]:
+                logger.info(
+                    "零开仓策略强制排名垫底",
+                    strategy_id=strategy_id,
+                    rank=rank,
+                    ratio=ratio,
+                )
 
         return entries

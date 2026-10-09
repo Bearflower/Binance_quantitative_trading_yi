@@ -501,6 +501,237 @@ class TestAllocationCalculator(unittest.TestCase):
         self.assertEqual(entries[2].allocated_amount, 200.0)
 
     # ============================================================
+    # 测试用例 5b：零开仓策略强制排名垫底（需求 §14.2，AC-2.1~2.6 + 边界）
+    # ============================================================
+
+    def test_ac21_single_zero_trade_ranks_last(self):
+        """AC-2.1：4 策略中 1 个零开仓 → rank=4、allocated_ratio=0.10"""
+        rank_ratios = [0.30, 0.25, 0.20, 0.10]
+        pnl_data = {
+            "btc_eth": {"pnl": 300.0, "capital": 500.0, "has_trades": True},
+            "btc_eth_aggressive": {"pnl": 250.0, "capital": 500.0, "has_trades": True},
+            "new_coin": {"pnl": 100.0, "capital": 400.0, "has_trades": True},
+            "hrs": {"pnl": 0.0, "capital": 0.0, "has_trades": False},
+        }
+        result = self._make_result(
+            pnl_data=pnl_data,
+            is_first_month=False,
+            rank_ratios=rank_ratios,
+            strategy_names={sid: sid for sid in pnl_data},
+        )
+
+        entries = result.entries
+        self.assertEqual([e.strategy_id for e in entries[:3]],
+                         ["btc_eth", "btc_eth_aggressive", "new_coin"])
+        idle = entries[3]
+        self.assertEqual(idle.strategy_id, "hrs")
+        self.assertEqual(idle.rank, 4)
+        self.assertEqual(idle.allocated_ratio, 0.10)
+        self.assertEqual(idle.allocated_amount, 100.0)
+
+    def test_ac22_zero_trade_behind_negative_return(self):
+        """AC-2.2：零开仓（收益 0）仍排在「有开仓且负收益」策略之后"""
+        pnl_data = {
+            "active_loser": {"pnl": -50.0, "capital": 500.0, "has_trades": True},
+            "idle": {"pnl": 0.0, "capital": 0.0, "has_trades": False},
+        }
+        result = self._make_result(
+            pnl_data=pnl_data,
+            is_first_month=False,
+            rank_ratios=[0.40, 0.30],
+            strategy_names={},
+        )
+
+        entries = result.entries
+        # -0.1 < 0，但有开仓者必须在零开仓者之前
+        self.assertEqual(entries[0].strategy_id, "active_loser")
+        self.assertEqual(entries[0].allocated_ratio, 0.40)
+        self.assertEqual(entries[1].strategy_id, "idle")
+        self.assertEqual(entries[1].allocated_ratio, 0.30)
+
+    def test_ac23_two_zero_trades_take_bottom_ranks(self):
+        """AC-2.3：2 个零开仓占 rank3/rank4（0.20/0.10），组内 strategy_id 升序，总额 85%"""
+        rank_ratios = [0.30, 0.25, 0.20, 0.10]
+        pnl_data = {
+            "btc_eth": {"pnl": 300.0, "capital": 500.0, "has_trades": True},
+            "btc_eth_aggressive": {"pnl": 250.0, "capital": 500.0, "has_trades": True},
+            "new_coin": {"pnl": 0.0, "capital": 0.0, "has_trades": False},
+            "hrs": {"pnl": 0.0, "capital": 0.0, "has_trades": False},
+        }
+        result = self._make_result(
+            pnl_data=pnl_data,
+            is_first_month=False,
+            rank_ratios=rank_ratios,
+            strategy_names={},
+        )
+
+        entries = result.entries
+        self.assertEqual([e.strategy_id for e in entries[:2]],
+                         ["btc_eth", "btc_eth_aggressive"])
+        # 零开仓组内按 strategy_id 升序：hrs < new_coin
+        self.assertEqual(entries[2].strategy_id, "hrs")
+        self.assertEqual(entries[2].rank, 3)
+        self.assertEqual(entries[2].allocated_ratio, 0.20)
+        self.assertEqual(entries[3].strategy_id, "new_coin")
+        self.assertEqual(entries[3].rank, 4)
+        self.assertEqual(entries[3].allocated_ratio, 0.10)
+        self.assertAlmostEqual(sum(e.allocated_ratio for e in entries), 0.85)
+
+    def test_ac24_all_zero_trades_order_by_strategy_id(self):
+        """AC-2.4：全部零开仓 → 仍取四档比例（总额 85%），顺序按 strategy_id 升序"""
+        rank_ratios = [0.30, 0.25, 0.20, 0.10]
+        pnl_data = {
+            sid: {"pnl": 0.0, "capital": 0.0, "has_trades": False}
+            for sid in ["hrs", "new_coin", "btc_eth_aggressive", "btc_eth"]
+        }
+        result = self._make_result(
+            pnl_data=pnl_data,
+            is_first_month=False,
+            rank_ratios=rank_ratios,
+            strategy_names={},
+        )
+
+        entries = result.entries
+        self.assertEqual(
+            [e.strategy_id for e in entries],
+            ["btc_eth", "btc_eth_aggressive", "hrs", "new_coin"],
+        )
+        self.assertEqual([e.allocated_ratio for e in entries], rank_ratios)
+        self.assertAlmostEqual(sum(e.allocated_ratio for e in entries), 0.85)
+
+    def test_ac25_first_month_ignores_zero_trades(self):
+        """AC-2.5：首月走 fallback 比例，零开仓规则不适用"""
+        fallback_ratios = {
+            "btc_eth": 0.35,
+            "btc_eth_aggressive": 0.10,
+            "new_coin": 0.25,
+            "hrs": 0.15,
+        }
+        # 即使 payload 标注零开仓，首月分配也不受排名规则影响
+        pnl_data = {
+            "hrs": {"pnl": 0.0, "capital": 0.0, "has_trades": False},
+        }
+        result = self._make_result(
+            total_capital=1000.0,
+            pnl_data=pnl_data,
+            is_first_month=True,
+            fallback_ratios=fallback_ratios,
+            reserve_ratio=0.15,
+            strategy_names={},
+        )
+
+        self.assertEqual(len(result.entries), 4)
+        self.assertEqual(
+            {e.strategy_id: e.allocated_ratio for e in result.entries},
+            fallback_ratios,
+        )
+
+    def test_first_month_prefers_fallback_capitals(self):
+        """首月分配：fallback_capitals 命中时使用配置金额而非 total×ratio（既有分支）"""
+        result = self._make_result(
+            total_capital=1000.0,
+            pnl_data={},
+            is_first_month=True,
+            fallback_ratios={"btc_eth": 0.35, "hrs": 0.15},
+            fallback_capitals={"btc_eth": 320.0},
+            reserve_ratio=0.15,
+            strategy_names={},
+        )
+
+        amounts = {e.strategy_id: e.allocated_amount for e in result.entries}
+        self.assertEqual(amounts["btc_eth"], 320.0)       # 命中 capitals
+        self.assertEqual(amounts["hrs"], 150.0)           # 未命中走 total×ratio
+
+    def test_ac26_has_trades_zero_pnl_ranked_by_return(self):
+        """AC-2.6：有开仓但 pnl=0（收益率 0）不被误判零开仓，排在负收益者之前"""
+        pnl_data = {
+            "flat_active": {"pnl": 0.0, "capital": 0.0, "has_trades": True},
+            "loser": {"pnl": -50.0, "capital": 500.0, "has_trades": True},
+        }
+        result = self._make_result(
+            pnl_data=pnl_data,
+            is_first_month=False,
+            rank_ratios=[0.40, 0.30],
+            strategy_names={},
+        )
+
+        entries = result.entries
+        self.assertEqual(entries[0].strategy_id, "flat_active")
+        self.assertEqual(entries[0].return_rate, 0.0)
+        self.assertEqual(entries[1].strategy_id, "loser")
+
+    def test_missing_has_trades_defaults_true(self):
+        """边界：旧 payload 无 has_trades 键时缺省 True，排序与原收益率逻辑一致"""
+        pnl_data = {
+            "flat": {"pnl": 0.0, "capital": 0.0},          # 无 has_trades 键
+            "loser": {"pnl": -50.0, "capital": 500.0},    # 无 has_trades 键
+            "winner": {"pnl": 100.0, "capital": 500.0},
+        }
+        result = self._make_result(
+            pnl_data=pnl_data,
+            is_first_month=False,
+            strategy_names={},
+        )
+
+        self.assertEqual(
+            [e.strategy_id for e in result.entries],
+            ["winner", "flat", "loser"],
+        )
+
+    def test_equal_return_rate_breaks_tie_by_strategy_id(self):
+        """边界：同收益率且都有开仓时，按 strategy_id 升序保证确定性"""
+        pnl_data = {
+            "zzz": {"pnl": 150.0, "capital": 500.0, "has_trades": True},
+            "aaa": {"pnl": 150.0, "capital": 500.0, "has_trades": True},
+            "mmm": {"pnl": 50.0, "capital": 500.0, "has_trades": True},
+        }
+        result = self._make_result(
+            pnl_data=pnl_data,
+            is_first_month=False,
+            strategy_names={},
+        )
+
+        self.assertEqual(
+            [e.strategy_id for e in result.entries], ["aaa", "zzz", "mmm"]
+        )
+
+    def test_zero_trade_high_return_still_bottoms(self):
+        """边界：零开仓即使名义收益率最高也强制垫底（开仓分组优先于收益率）"""
+        pnl_data = {
+            "active_low": {"pnl": 50.0, "capital": 500.0, "has_trades": True},
+            "idle_high": {"pnl": 450.0, "capital": 500.0, "has_trades": False},
+        }
+        result = self._make_result(
+            pnl_data=pnl_data,
+            is_first_month=False,
+            rank_ratios=[0.40, 0.30],
+            strategy_names={},
+        )
+
+        entries = result.entries
+        self.assertEqual(entries[0].strategy_id, "active_low")
+        self.assertEqual(entries[1].strategy_id, "idle_high")
+        self.assertEqual(entries[1].allocated_ratio, 0.30)
+
+    def test_ranking_overflow_strategy_gets_zero_ratio(self):
+        """边界：策略数超过 rank_ratios 长度时，超出者比例 0（既有保护逻辑保留）"""
+        pnl_data = {
+            f"s{i}": {"pnl": 100.0 - i, "capital": 500.0, "has_trades": True}
+            for i in range(5)
+        }
+        result = self._make_result(
+            pnl_data=pnl_data,
+            is_first_month=False,
+            rank_ratios=[0.30, 0.25, 0.20, 0.10],
+            strategy_names={},
+        )
+
+        self.assertEqual(len(result.entries), 5)
+        self.assertEqual(result.entries[4].strategy_id, "s4")
+        self.assertEqual(result.entries[4].rank, 5)
+        self.assertEqual(result.entries[4].allocated_ratio, 0.0)
+
+    # ============================================================
     # 测试用例 6：风险备用金计算
     # ============================================================
 
@@ -861,6 +1092,250 @@ class TestPnLCollector(unittest.TestCase):
             )
         )
         self.assertEqual(margin, 100.0)
+
+    # ------------------------------------------------------------
+    # 成交行数查询（零开仓判定，需求 §14.2，AC-2.7/2.8 + fail-open）
+    # ------------------------------------------------------------
+
+    def test_trade_count_sql_text_excludes_status(self):
+        """F1 防回归：SQL 含 order_type NOT IN 排除项且不含任何 status 条件"""
+        sql = " ".join(PnLCollector._TRADE_COUNT_QUERY_TEMPLATE.split()).upper()
+        self.assertIn(
+            "ORDER_TYPE NOT IN ('PNL_SUMMARY', 'CONDITIONAL_ORDER')", sql
+        )
+        self.assertNotIn("STATUS", sql)
+        # 窗口与策略过滤口径保持一致
+        self.assertIn("STRATEGY = ANY($1::TEXT[])", sql)
+        self.assertIn("EXECUTED_AT >= $2", sql)
+        self.assertIn("EXECUTED_AT < $3", sql)
+
+    def test_query_trade_count_empty_names_returns_zero(self):
+        """落库名列表为空时直接返回 0，不执行数据库查询"""
+
+        class _FakeDb:
+            def __init__(self):
+                self.called = False
+
+            async def fetch_one(self, *args, **kwargs):
+                self.called = True
+                return {"cnt": 9}
+
+        fake_db = _FakeDb()
+        collector = PnLCollector(db_manager=fake_db, strategies=[])
+        count = asyncio.run(
+            collector._query_strategy_trade_count(
+                [], datetime(2026, 9, 1), datetime(2026, 10, 1)
+            )
+        )
+        self.assertEqual(count, 0)
+        self.assertFalse(fake_db.called)
+
+    def test_query_trade_count_passes_args_and_parses(self):
+        """成交行数查询传参正确（落库名列表 + naive 窗口），cnt 正常解析"""
+
+        class _FakeDb:
+            def __init__(self):
+                self.query = None
+                self.args = None
+
+            async def fetch_one(self, query, *args):
+                self.query = query
+                self.args = args
+                return {"cnt": 7}
+
+        from datetime import timedelta, timezone
+
+        cst = timezone(timedelta(hours=8))
+        fake_db = _FakeDb()
+        collector = PnLCollector(db_manager=fake_db, strategies=[])
+        count = asyncio.run(
+            collector._query_strategy_trade_count(
+                ["btc_eth"],
+                datetime(2026, 9, 1, tzinfo=cst),
+                datetime(2026, 10, 1, tzinfo=cst),
+            )
+        )
+        self.assertEqual(count, 7)
+        self.assertEqual(fake_db.args[0], ["btc_eth"])
+        # 带时区入参被转为 naive（库 TIMESTAMP 无时区）
+        self.assertEqual(fake_db.args[1], datetime(2026, 9, 1))
+        self.assertEqual(fake_db.args[2], datetime(2026, 10, 1))
+        self.assertIn("order_type NOT IN", fake_db.query)
+
+    def test_query_trade_count_none_row_and_null_cnt(self):
+        """无返回行或 cnt 为 NULL 时按 0 处理（两个保护分支）"""
+
+        class _FakeDb:
+            def __init__(self, row):
+                self.row = row
+
+            async def fetch_one(self, *args, **kwargs):
+                return self.row
+
+        collector = PnLCollector(db_manager=None, strategies=[])
+        # 分别覆盖「无返回行」与「cnt 为 NULL」两个保护分支
+        for row in (None, {"cnt": None}):
+            fake_db = _FakeDb(row)
+            collector.db_manager = fake_db
+            count = asyncio.run(
+                collector._query_strategy_trade_count(
+                    ["btc_eth"], datetime(2026, 9, 1), datetime(2026, 10, 1)
+                )
+            )
+            self.assertEqual(count, 0)
+
+    def test_query_pnl_null_total_defaults_zero(self):
+        """PnL 查询 total_pnl 为 NULL 时按 0.0 处理（既有保护分支）"""
+
+        class _FakeDb:
+            async def fetch_one(self, *args, **kwargs):
+                return {"total_pnl": None}
+
+        collector = PnLCollector(db_manager=_FakeDb(), strategies=[])
+        pnl = asyncio.run(
+            collector._query_strategy_pnl(
+                ["btc_eth"], datetime(2026, 9, 1), datetime(2026, 10, 1)
+            )
+        )
+        self.assertEqual(pnl, 0.0)
+
+    def _make_trade_record_db(self, rows):
+        """按生产 SQL 同口径在内存中计算成交行数的伪造库（status 仅记录不参与判定）"""
+
+        class _FakeTradeRecordDb:
+            _EXCLUDED = ("PNL_SUMMARY", "CONDITIONAL_ORDER")
+
+            def __init__(self):
+                self.count_query = None
+                self.count_args = None
+
+            async def fetch_one(self, query, *args):
+                norm = " ".join(query.split()).upper()
+                if "SUM(REALIZED_PNL)" in norm:
+                    return {"total_pnl": 12.5}
+                if "OPEN_MARGIN" in norm:
+                    return {"open_margin": 100.0}
+                # 与生产 SQL 同口径：只看 order_type，刻意不读 status
+                self.count_query = query
+                self.count_args = args
+                cnt = sum(
+                    1 for order_type, _status in rows
+                    if order_type not in self._EXCLUDED
+                )
+                return {"cnt": cnt}
+
+        return _FakeTradeRecordDb()
+
+    def test_ac27_real_value_domain_new_status_counts_as_trade(self):
+        """AC-2.7（F1 防回归）：生产真实值域 status='NEW' 的 LIMIT 行计为有开仓"""
+        # 生产实测：限价/市价/STOP/TP 行 status 恒为 'NEW'，禁止构造 'FILLED'
+        rows = [("LIMIT", "NEW"), ("MARKET", "NEW"), ("STOP", "CREATED")]
+        db = self._make_trade_record_db(rows)
+        collector = PnLCollector(
+            db_manager=db,
+            strategies=[{"strategy_id": "btc_eth", "name": "MTPCS策略"}],
+        )
+
+        result = asyncio.run(
+            collector.collect_all_realized_pnl(
+                datetime(2026, 9, 1), datetime(2026, 10, 1)
+            )
+        )
+
+        self.assertEqual(result["btc_eth"]["trade_count"], 3)
+        self.assertTrue(result["btc_eth"]["has_trades"])
+        # SQL 本身不含 status（即使 mock 行带 status，判据也不读它）
+        self.assertNotIn("status", db.count_query)
+        self.assertIn("order_type NOT IN", db.count_query)
+
+    def test_ac28_excluded_order_types_not_counted(self):
+        """AC-2.8：CONDITIONAL_ORDER 与 PNL_SUMMARY 行不计入成交行数 → 零开仓"""
+        rows = [("CONDITIONAL_ORDER", "CREATED"), ("PNL_SUMMARY", "NEW")]
+        db = self._make_trade_record_db(rows)
+        collector = PnLCollector(
+            db_manager=db,
+            strategies=[{"strategy_id": "btc_eth", "name": "MTPCS策略"}],
+        )
+
+        result = asyncio.run(
+            collector.collect_all_realized_pnl(
+                datetime(2026, 9, 1), datetime(2026, 10, 1)
+            )
+        )
+
+        self.assertEqual(result["btc_eth"]["trade_count"], 0)
+        self.assertFalse(result["btc_eth"]["has_trades"])
+
+    def test_collect_trade_count_exception_fail_open(self):
+        """零开仓判定（§14.2）：仅成交行数查询异常时 fail-open 为有开仓，PnL 仍正常"""
+
+        class _CountOnlyErrorDb:
+            def __init__(self):
+                self.count_attempted = False
+
+            async def fetch_one(self, query, *args):
+                norm = " ".join(query.split()).upper()
+                if "COUNT(*) AS CNT" in norm and "TRADE_RECORDS" in norm:
+                    self.count_attempted = True
+                    raise RuntimeError("成交行数查询失败（模拟）")
+                if "SUM(REALIZED_PNL)" in norm:
+                    return {"total_pnl": 5.0}
+                return {"open_margin": 50.0}
+
+        db = _CountOnlyErrorDb()
+        collector = PnLCollector(
+            db_manager=db,
+            strategies=[{"strategy_id": "hrs", "name": "HRS策略"}],
+        )
+
+        result = asyncio.run(
+            collector.collect_all_realized_pnl(
+                datetime(2026, 9, 1), datetime(2026, 10, 1)
+            )
+        )
+
+        self.assertTrue(db.count_attempted)
+        self.assertTrue(result["hrs"]["has_trades"])
+        self.assertEqual(result["hrs"]["trade_count"], 0)
+        self.assertEqual(result["hrs"]["pnl"], 5.0)
+        self.assertEqual(result["hrs"]["capital"], 50.0)
+
+    def test_collect_whole_strategy_exception_fail_open(self):
+        """整段采集异常（如 PnL 查询失败）时默认值 has_trades 同样 fail-open 为 True"""
+
+        class _PnlErrorDb:
+            async def fetch_one(self, *args, **kwargs):
+                raise RuntimeError("PnL 查询失败（模拟）")
+
+        collector = PnLCollector(
+            db_manager=_PnlErrorDb(),
+            strategies=[{"strategy_id": "new_coin", "name": "新币策略"}],
+        )
+
+        result = asyncio.run(
+            collector.collect_all_realized_pnl(
+                datetime(2026, 9, 1), datetime(2026, 10, 1)
+            )
+        )
+
+        self.assertEqual(result["new_coin"]["pnl"], 0.0)
+        self.assertEqual(result["new_coin"]["capital"], 0.0)
+        self.assertTrue(result["new_coin"]["has_trades"])
+
+    def test_collect_skips_strategy_without_id(self):
+        """策略配置缺少 strategy_id 时跳过，不出现在结果中"""
+        collector = PnLCollector(
+            db_manager=None,
+            strategies=[{"strategy_id": "", "name": "无名策略"}],
+        )
+
+        result = asyncio.run(
+            collector.collect_all_realized_pnl(
+                datetime(2026, 9, 1), datetime(2026, 10, 1)
+            )
+        )
+
+        self.assertEqual(result, {})
 
 
 if __name__ == "__main__":

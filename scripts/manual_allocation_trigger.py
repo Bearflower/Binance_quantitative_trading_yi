@@ -2,15 +2,21 @@
 手动触发月度资金分配（临时脚本，仅运维用，不入库）
 
 用法：在 ai-tuner 容器内执行：
+    # 常规月末触发（月份自动推导：盈亏归属当月、生效次月）
     python /tmp/manual_allocation_trigger.py
+
+    # 补生成历史月份（需求 §14.3 AC-3，两个参数必须同时提供）
+    python /tmp/manual_allocation_trigger.py --pnl-month 2026-09 --effective-month 2026-10
 
 复用 StratTuneAI 的组件初始化（config/db/notification/binance），
 仅调用 monthly_job.run_monthly_allocation()，不启动 web 服务与调度器。
 """
 
+import argparse
 import asyncio
 import os
 import sys
+from typing import List, Optional
 
 # 确保项目根目录在 sys.path 中
 _project_root = "/app"
@@ -20,7 +26,33 @@ if _project_root not in sys.path:
 from ai_tuner.main import StratTuneAI
 
 
-async def main() -> None:
+def _parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
+    """
+    解析命令行参数
+
+    Args:
+        argv: 参数列表（None 时取 sys.argv，测试时可显式传入）
+
+    Returns:
+        含 pnl_month / effective_month 的 Namespace，缺省均为 None（自动推导）
+    """
+    parser = argparse.ArgumentParser(description="手动触发月度资金分配")
+    parser.add_argument(
+        "--pnl-month",
+        dest="pnl_month",
+        default=None,
+        help="盈亏归属月，格式 YYYY-MM（如 2026-09）；须与 --effective-month 同时提供",
+    )
+    parser.add_argument(
+        "--effective-month",
+        dest="effective_month",
+        default=None,
+        help="生效月（次月），格式 YYYY-MM（如 2026-10）；须与 --pnl-month 同时提供",
+    )
+    return parser.parse_args(argv)
+
+
+async def main(args: argparse.Namespace) -> None:
     """初始化系统组件并手动执行一次月度资金分配"""
     app = StratTuneAI()
     # 仅初始化 config（加载配置），不启动完整服务
@@ -99,8 +131,11 @@ async def main() -> None:
         binance_client=binance_client,
     )
 
-    # 执行月度资金分配
-    result = await app.monthly_job.run_monthly_allocation()
+    # 执行月度资金分配（显式月份用于补生成历史月份，缺省自动推导）
+    result = await app.monthly_job.run_monthly_allocation(
+        pnl_month=args.pnl_month,
+        effective_month=args.effective_month,
+    )
     print("[手动触发] 月度资金分配结果:", result)
 
     # 关闭数据库连接
@@ -109,4 +144,4 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main(_parse_args()))
