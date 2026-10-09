@@ -1,5 +1,6 @@
 """main.py 测试：延迟分位、健康监控、在线编排全链路、历史穿越、文案、CLI。"""
 import asyncio
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -441,11 +442,14 @@ def test_gap_ok():
 async def test_sync_engine_same_reference_returns_empty(conn, cfg, snap):
     """同一参考再次同步直接返回 []（current 非 None 且 reference_id 相同）。"""
     base = snap.effective_at_ms
-    _publish_reference(conn, snap, base)
+    _, ref_id = _publish_reference(conn, snap, base)
     service = _service(cfg, conn, lambda: base + 1000)
     await _fill_queue(service, [])
     await service.tick()
-    assert service._sync_engine(snap, base + 2000, None) == []
+    # 落库参考 id 由 make_reference_id 生成，须与 fixture 的 id 区分，才能真正命中早返回分支
+    assert service._engine.snapshot.reference_id == ref_id
+    same = replace(snap, reference_id=ref_id)
+    assert service._sync_engine(same, base + 2000, None) == []
 
 
 async def test_evaluate_missing_returns_empty(conn, cfg):

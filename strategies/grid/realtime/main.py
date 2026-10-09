@@ -21,6 +21,10 @@ from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Deque, Dict, List, Optional
 
+import structlog
+
+from shared.utils import setup_logging
+
 from . import feed as feed_mod
 from .delivery import (RESEARCH, Delivery, WebhookSingleSender)
 from .features import (MS_PER_SECOND, AggTrade, SecondSample,
@@ -34,6 +38,8 @@ from .state import RealtimeEngine
 
 _BEIJING = timezone(timedelta(hours=8))
 _TEMPLATE = "【实时预警】{level_text} · {direction_text} · {beijing}\n"
+
+logger = structlog.get_logger()
 
 
 # ───────────────────── 延迟分位 ─────────────────────
@@ -78,8 +84,10 @@ class HealthMonitor:
         for reason, since in reasons.items():
             if reason not in self._active:
                 self._active[reason] = since
+                logger.warning("实时预警降级", reason=reason)
                 events.append(_health_event(reason, since, price, False))
         for gone in [r for r in self._active if r not in reasons]:
+            logger.info("实时预警恢复", reason=gone)
             events.append(_health_event(gone, now_ms, price, True))
             self._active.pop(gone)
         return events
@@ -130,7 +138,11 @@ class RealtimeService:
     async def run(self) -> None:
         """进程主循环（启动前只校验 schema，不迁移）。"""
         check_schema(self._conn)
+        logger.info("schema 校验通过", db_path=self._cfg["storage"]["path"],
+                    mode=self._cfg.get("mode"))
         feed_task = await self._start_feed()
+        logger.info("行情接入已启动", symbol=self._cfg.get("symbol"),
+                    sender=self._sender is not None)
         period = self._cfg["features"]["sample_seconds"]
         try:
             while True:
@@ -336,6 +348,7 @@ class RealtimeService:
             return
         result = self._delivery.maintenance(now_ms)
         self._storage_degraded = result["storage_degraded"]
+        logger.info("实时预警运行态", **self._snapshot())
 
     # ─── feed 接入 ───
 
@@ -363,6 +376,10 @@ class RealtimeService:
         return trades
 
     async def _on_feed_health(self, healthy: bool, reason: str) -> None:
+        if healthy != self._feed_healthy:
+            level = "info" if healthy else "warning"
+            getattr(logger, level)("行情连接状态变化", healthy=healthy,
+                                   reason=reason)
         self._feed_healthy = healthy
 
     def _snapshot(self) -> Dict:
@@ -506,8 +523,13 @@ def main(argv=None) -> int:
     parser.add_argument("--db-path", default=None,
                         help="覆盖 storage.path（须绝对路径）")
     args = parser.parse_args(argv)
+    setup_logging(level=os.getenv("LOG_LEVEL", "INFO"),
+                  format=os.getenv("LOG_FORMAT", "json"))
     cfg = _load_cfg()
     db_path = args.db_path or cfg["storage"]["path"]
+    logger.info("实时预警进程启动", db_path=db_path,
+                mode=cfg.get("mode"), symbol=cfg.get("symbol"),
+                profile=cfg.get("profile"))
     conn = connect(db_path, cfg["storage"]["busy_timeout_ms"])
     # alert 模式需要发送；shadow 下开启 research 通道（§9.3）同样需要真实 sender
     needs_sender = (cfg.get("mode") == "alert"

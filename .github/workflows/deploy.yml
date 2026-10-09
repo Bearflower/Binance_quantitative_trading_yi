@@ -395,7 +395,7 @@ jobs:
             # 卷：与 grid-strategy / grid-realtime 共用 ./data/grid:/app/data
             # --no-deps：不拉起 depends_on（迁移不依赖任何在跑服务）
             echo "🗄️  grid_realtime schema 迁移（一次性）..."
-            docker compose run --rm --no-deps grid-realtime \
+            docker compose run -T --rm --no-deps grid-realtime \
               python -m strategies.grid.realtime.reference_store \
               --db-path /app/data/grid_realtime.sqlite3
 
