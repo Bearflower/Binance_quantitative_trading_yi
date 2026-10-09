@@ -101,8 +101,17 @@ class TaskScheduler:
             logger.warning(f"无效的 Cron 表达式：{cron_expression}，使用默认 15 分钟")
             trigger = CronTrigger(minute="*/15")
 
-        # 创建任务函数
+        # 创建任务函数（闭包内捕获 symbol / interval / minutes / self）
         async def collect_task():
+            # 防御性自删：如果 scheduler ↔ registry 同步漏掉了，标的已过期/下架后
+            # 本 job 仍会被 cron 触发 → 在 collect_recent 之前自检并自删，
+            # 避免 stale job 持续抛「symbol 不在白名单」错误（PHAUSDT 事故）
+            if not self._symbol_is_active(symbol):
+                logger.warning(
+                    f"定时任务 {symbol} {interval} 触发时标的已不在 active 列表，自删任务"
+                )
+                self.remove_task(f"{symbol}_{interval}")
+                return
             try:
                 logger.info(f"定时任务：采集 {symbol} {interval}")
                 stored = await self.collector.collect_recent(
@@ -131,6 +140,24 @@ class TaskScheduler:
         }
 
         logger.info(f"添加定时任务：{task_id} - {cron_expression}")
+
+    def _symbol_is_active(self, symbol: str) -> bool:
+        """判断 symbol 是否仍应被采集：固定标的 or registry active。
+
+        用于 collect_task 闭包的防御性自删，避免 registry.cleanup_expired /
+        validate_registered_symbols 只删 registry 不删 scheduler 的漂移期间
+        持续触发 store_klines 白名单校验失败。
+        """
+        from shared.core.config import settings as _settings
+
+        upper = symbol.upper()
+        fixed = {s.upper() for s in (_settings.fixed_symbols_list or [])}
+        if upper in fixed:
+            return True
+        active = {
+            cfg.symbol.upper() for cfg in registry.get_active_symbols()
+        }
+        return upper in active
 
     def add_jobs_from_config(
         self, config: Dict[str, Dict[str, Optional[str]]]
@@ -242,7 +269,7 @@ class TaskScheduler:
                     task_minutes = 1000  # 默认值
                     for task_id, task_info in tasks.items():
                         if task_info["symbol"] == symbol and task_info["interval"] == interval:
-                            task_minutes = task_info["minutes"]
+                            task_minutes = task_info.get("minutes", 1000)
                             break
                     # 日线周期使用更大窗口（30天），确保网格策略有足够日线数据计算ATR基线
                     if interval == '1d' and task_minutes < 43200:
@@ -276,24 +303,67 @@ class TaskScheduler:
     async def _refresh_registry_cache(self):
         """周期重载注册表内存缓存（refresh_active 内部已做异常兜底并保留旧缓存）"""
         await registry.refresh_active()
-    
+        # 同步 scheduler job：DB 直改导致 registry 缓存漂移时，刷新后也要清理 stale job
+        await self._sync_jobs_to_registry()
+
     async def _cleanup_expired_symbols(self):
-        """清理过期的标的配置"""
+        """清理过期的标的配置，并同步移除对应的 scheduler job"""
         try:
             cleaned = await registry.cleanup_expired()
             if cleaned > 0:
                 logger.info(f"🧹 清理了 {cleaned} 个过期的标的配置")
+            # 同步 scheduler job：过期标的的采集任务必须一并移除，避免 stale job
+            # 持续触发并在 store_klines 白名单校验时抛错（PHAUSDT 事故根因）
+            await self._sync_jobs_to_registry()
         except Exception as e:
             logger.error(f"清理过期配置失败：{e}")
 
     async def _validate_registered_symbols(self):
-        """验证所有注册的标的在币安上是否有效"""
+        """验证所有注册的标的在币安上是否有效，并同步移除被下架标的的 scheduler job"""
         try:
             cleaned = await self.collector.validate_registered_symbols()
             if cleaned > 0:
                 logger.info(f"🧹 定期验证完成，清理了 {cleaned} 个无效的标的")
+            # 同步 scheduler job：被自动下架清理的标的，其采集任务必须一并移除
+            await self._sync_jobs_to_registry()
         except Exception as e:
             logger.error(f"定期验证标的失败：{e}")
+
+    async def _sync_jobs_to_registry(self) -> None:
+        """将 scheduler 任务列表与 registry active 列表对齐。
+
+        仅处理「注册标的」（symbol 不在 settings.fixed_symbols_list）：
+        - scheduler 中有、registry 中无 active 记录 → 移除任务（标的已过期/下架/DB 直改）
+        - 固定标的（BTCUSDT 等）始终保留，不受 registry 变化影响
+
+        这是对 registry.cleanup_expired / validate_registered_symbols / refresh_active
+        只动 registry 不动 scheduler 的补偿，避免 stale job 持续触发 store_klines 白名单
+        校验失败（PHAUSDT 事故根因）。
+        """
+        from shared.core.config import settings as _settings
+
+        fixed = {s.upper() for s in (_settings.fixed_symbols_list or [])}
+        active_registry_symbols = {
+            cfg.symbol.upper() for cfg in registry.get_active_symbols()
+        }
+
+        stale_ids = []
+        for task_id, task_info in list(self.tasks.items()):
+            symbol = task_info["symbol"].upper()
+            if symbol in fixed:
+                # 固定标的：跳过，不受 registry 影响
+                continue
+            if symbol not in active_registry_symbols:
+                stale_ids.append(task_id)
+
+        for task_id in stale_ids:
+            logger.warning(
+                f"🧹 移除 stale 采集任务（标的已不在 registry active 列表）：{task_id}"
+            )
+            self.remove_task(task_id)
+
+        if stale_ids:
+            logger.info(f"registry ↔ scheduler 同步完成：移除 {len(stale_ids)} 个 stale 任务")
 
     def shutdown(self, wait: bool = True):
         """

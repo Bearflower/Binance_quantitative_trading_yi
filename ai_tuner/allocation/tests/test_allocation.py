@@ -722,24 +722,24 @@ class TestPnLCollector(unittest.TestCase):
         return PnLCollector(db_manager=None, strategies=strategies)
 
     # ------------------------------------------------------------
-    # _resolve_db_names：策略配置名 -> trade_records 落库中文名
+    # _resolve_db_names：直接用 strategy_id（trade_records.strategy 存英文短名）
     # ------------------------------------------------------------
 
-    def test_resolve_db_names_uses_config_name(self):
-        """配置名与落库名一致时直接使用配置名（如 btc_eth）"""
+    def test_resolve_db_names_uses_strategy_id(self):
+        """trade_records.strategy 存英文短名，直接返回 [strategy_id]"""
         strategy_cfg = {"strategy_id": "btc_eth", "name": "MTPCS策略"}
         collector = self._make_collector([strategy_cfg])
-        self.assertEqual(collector._resolve_db_names(strategy_cfg), ["MTPCS策略"])
+        self.assertEqual(collector._resolve_db_names(strategy_cfg), ["btc_eth"])
 
-    def test_resolve_db_names_hrs_override(self):
-        """hrs 配置名(HRS混合反转策略)与落库名(HRS策略)不一致，走显式映射"""
+    def test_resolve_db_names_hrs_uses_strategy_id(self):
+        """hrs 也直接用 strategy_id，不再需要中文名映射"""
         strategy_cfg = {"strategy_id": "hrs", "name": "HRS混合反转策略"}
         collector = self._make_collector([strategy_cfg])
-        self.assertEqual(collector._resolve_db_names(strategy_cfg), ["HRS策略"])
+        self.assertEqual(collector._resolve_db_names(strategy_cfg), ["hrs"])
 
-    def test_resolve_db_names_empty_name(self):
-        """name 为空时返回空列表（避免误查导致 PnL 恒 0）"""
-        strategy_cfg = {"strategy_id": "btc_eth_aggressive", "name": ""}
+    def test_resolve_db_names_missing_id_returns_empty(self):
+        """strategy_id 为空时返回空列表（避免误查导致 PnL 恒 0）"""
+        strategy_cfg = {"strategy_id": "", "name": "测试策略"}
         collector = self._make_collector([strategy_cfg])
         self.assertEqual(collector._resolve_db_names(strategy_cfg), [])
 

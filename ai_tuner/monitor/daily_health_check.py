@@ -44,9 +44,8 @@ class DailyHealthCheck:
                 continue
 
             try:
-                # 获取策略名称（数据库 trade_records 表中使用策略名称查询）
-                strategy_name = strategy.get("name", strategy_id)
-                report = await self._collect_recent_performance(strategy_name)
+                # trade_records.strategy 存的是英文短名（strategy_id），直接用 strategy_id 查询
+                report = await self._collect_recent_performance(strategy_id)
                 anomalies = self._detect_anomalies(strategy_id, report)
                 if anomalies:
                     await self._notify_anomalies(strategy_id, anomalies)
@@ -55,12 +54,12 @@ class DailyHealthCheck:
             except Exception as e:
                 logger.error("健康检查异常", strategy_id=strategy_id, error=str(e))
 
-    async def _collect_recent_performance(self, strategy_name: str) -> Dict[str, Any]:
+    async def _collect_recent_performance(self, strategy_id: str) -> Dict[str, Any]:
         """
         从数据库查询最近24小时的交易表现
 
         Args:
-            strategy_name: 策略名称（如 "MTPCS策略"）
+            strategy_id: 策略ID（与 trade_records.strategy 字段一致，如 "btc_eth"、"hrs"）
 
         Returns:
             包含最近24小时交易表现的字典
@@ -77,7 +76,7 @@ class DailyHealthCheck:
             FROM trading.trade_records
             WHERE strategy = $1 AND executed_at >= $2
         """
-        row = await self.db_manager.fetch_one(query, strategy_name, since)
+        row = await self.db_manager.fetch_one(query, strategy_id, since)
         row = row or {}
 
         # 查询连续亏损（使用窗口函数计算最近连续亏损笔数）
@@ -99,7 +98,7 @@ class DailyHealthCheck:
             ORDER BY MAX(executed_at) DESC
             LIMIT 1
         """
-        row_consecutive = await self.db_manager.fetch_one(query_consecutive, strategy_name, since)
+        row_consecutive = await self.db_manager.fetch_one(query_consecutive, strategy_id, since)
         row_consecutive = row_consecutive or {}
 
         return {

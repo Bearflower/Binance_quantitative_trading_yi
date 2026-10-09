@@ -2,7 +2,7 @@
 市场数据模块
 负责获取候选池币种的市场数据：价格、OI、成交量、资金费率等
 """
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Set
 from datetime import datetime, timedelta, timezone
 import structlog
 
@@ -62,6 +62,8 @@ class MarketDataProvider:
 
         # 资金费率缓存（避免重复请求）
         self._funding_rate_cache: Dict[str, Dict[int, float]] = {}
+        # 无效合约缓存（-4108 交割/结算/盘前、-9999 未知端点），避免重复请求产生告警日志
+        self._invalid_contracts: Set[str] = set()
         # 从配置读取缓存TTL
         funding_config = config.get("funding_rate", {})
         self._funding_rate_cache_ttl = funding_config.get("cache_ttl_seconds", 28800)
@@ -98,12 +100,19 @@ class MarketDataProvider:
         """
         获取持仓量（OI，美元价值）
 
+        无效合约（-4108 交割/结算/盘前、-9999 未知端点）会被缓存到
+        _invalid_contracts，后续调用直接返回 0.0，避免重复产生告警日志。
+
         Args:
             symbol: 交易对
 
         Returns:
-            OI美元价值
+            OI美元价值，无效合约返回 0.0
         """
+        # 已确认无效的合约，跳过重复请求
+        if symbol in self._invalid_contracts:
+            return 0.0
+
         try:
             data = await self.binance_api._request(
                 "GET",
@@ -124,7 +133,13 @@ class MarketDataProvider:
             logger.debug("获取OI", symbol=symbol, oi=oi, oi_usd=oi_usd)
             return oi_usd
         except Exception as e:
-            logger.warning("获取OI失败", symbol=symbol, error=str(e))
+            err_msg = str(e)
+            # -4108（交割/结算/盘前/已关闭）、-9999（未知端点/未上线合约）为永久无效状态
+            if "-4108" in err_msg or "-9999" in err_msg:
+                self._invalid_contracts.add(symbol)
+                logger.info("合约无效（交割/结算/盘前），加入跳过列表", symbol=symbol)
+            else:
+                logger.warning("获取OI失败", symbol=symbol, error=err_msg)
             return 0.0
 
     async def get_funding_rate(self, symbol: str, at_time: Optional[int] = None) -> float:

@@ -553,6 +553,8 @@ async def place_and_wait_entry_order(strategy, symbol: str, signal: Dict) -> Opt
             order_id=entry_order_id,
             status=(result.status if result is not None else None),
         )
+        # 预期内的未成交（maker 挂单未触及目标价，超时撤单）：回写原因供 main.py 以 warning 记录，避免误报 error
+        signal['skip_reason'] = "限价单未成交，放弃开仓"
         return None
     return result
 
@@ -580,6 +582,8 @@ async def open_new_position(strategy, signal: Dict, *, is_owned_fn, try_claim_fn
         if not await _acquire_entry_slot(
             strategy, symbol, is_owned_fn=is_owned_fn, try_claim_fn=try_claim_fn
         ):
+            # 预期内的拒绝（他策略占用/归属互斥）：回写原因供 main.py 以 warning 记录
+            signal['skip_reason'] = "归属/占用冲突，未取得开仓占位"
             return False
 
         # 记录交易（频率控制）
@@ -594,6 +598,8 @@ async def open_new_position(strategy, signal: Dict, *, is_owned_fn, try_claim_fn
         # R05：成交确认后立即登记持仓（R06-F5：部分成交按实际成交量建仓，不丢弃）
         position = await _establish_position(strategy, symbol, signal, entry)
         if position is None:
+            # 预期内的放弃（成交量经精度截断后不足最小下单量，已清零）：回写原因
+            signal['skip_reason'] = "入场成交量不足最小下单量，已清零"
             return False
 
         logger.info(

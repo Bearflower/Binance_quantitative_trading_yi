@@ -195,11 +195,21 @@ async def run_strategy():
                                     strategy.db_manager, "btc_eth_aggressive", margin_dict, qty_dict
                                 )
                         else:
-                            logger.error(
-                                f"{symbol} 交易信号执行失败",
-                                direction=result['direction'],
-                                grade=result['grade']
-                            )
+                            # 未执行成功的区分：预期内的拒绝/未成交（skip_reason 或资金拦截 reject_reason）
+                            # 记 warning 并带原因，避免误报为 error；仅无预期原因的真实异常才记 error
+                            skip_reason = result.get('skip_reason') or result.get('reject_reason')
+                            if skip_reason:
+                                logger.warning(
+                                    f"{symbol} 交易信号未执行: {skip_reason}",
+                                    direction=result['direction'],
+                                    grade=result['grade']
+                                )
+                            else:
+                                logger.error(
+                                    f"{symbol} 交易信号执行失败",
+                                    direction=result['direction'],
+                                    grade=result['grade']
+                                )
                     else:
                         logger.info(f"{symbol} 未生成交易信号: {result.get('reason', '未知原因')}")
                 

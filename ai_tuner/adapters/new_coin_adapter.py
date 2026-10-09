@@ -122,7 +122,7 @@ class NewCoinAdapter(BaseAdapter):
               AND realized_pnl IS NOT NULL
             ORDER BY executed_at ASC
         """
-        trades = await self.db_manager.fetch_all(query, self.strategy_name, week_start, week_end)
+        trades = await self.db_manager.fetch_all(query, self.strategy_id, week_start, week_end)
 
         # 补充查询 new_coin.orders 中已成交但 PnL 未回写的记录（本周新数据）
         query2 = """

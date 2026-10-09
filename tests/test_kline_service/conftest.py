@@ -76,6 +76,12 @@ mock_settings.COLLECT_INTERVALS = "15m,1h,4h,1d"
 mock_settings.SYMBOL_FORMAT_PATTERN = r"^[A-Z0-9]{3,20}$"
 mock_settings.TABLE_NAME_PATTERN = r"^kline_[a-z0-9]{3,20}_([0-9]+[mhdw]|1M)$"
 mock_settings.FIXED_SYMBOLS = "BTCUSDT,ETHUSDT,BNBUSDT,SOLUSDT,XRPUSDT,TRXUSDT"
+# fixed_symbols_list：scheduler._symbol_is_active / _sync_jobs_to_registry 依赖此 property。
+# 纯 MagicMock 访问会返回不可迭代对象，须显式给出真值列表以匹配生产 settings 的 property 行为。
+_FIXED = [s.strip().upper() for s in mock_settings.FIXED_SYMBOLS.split(",") if s.strip()]
+mock_settings.fixed_symbols_list = _FIXED
+mock_settings.intervals_list = [s.strip() for s in mock_settings.COLLECT_INTERVALS.split(",") if s.strip()]
+mock_settings.REGISTRY_CACHE_REFRESH_SECONDS = 0
 mock_config_module = MagicMock()
 mock_config_module.settings = mock_settings
 sys.modules["shared.core.config"] = mock_config_module

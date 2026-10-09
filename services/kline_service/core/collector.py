@@ -147,8 +147,17 @@ class KlineCollector:
             return total_stored
 
         except Exception as e:
-            logger.error(f"存储 K 线数据失败：{e}")
-            self.stats["total_errors"] += 1
+            from .table_name_guard import TableNameValidationError
+            if isinstance(e, TableNameValidationError):
+                # 白名单校验失败：通常是 registry 刷新移除标的后，stale job 还在触发。
+                # scheduler.collect_task 已有 _symbol_is_active 自删（下次触发会清理），
+                # 此处降级为 WARNING 避免刷屏；单次失败不影响数据完整性。
+                logger.warning(
+                    f"存储 K 线数据跳过：{e}（标的可能已过期或下架，下次触发将自删）"
+                )
+            else:
+                logger.error(f"存储 K 线数据失败：{e}")
+                self.stats["total_errors"] += 1
             return 0
 
     async def _batch_insert(

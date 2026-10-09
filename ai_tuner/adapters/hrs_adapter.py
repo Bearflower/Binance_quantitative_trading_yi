@@ -114,7 +114,7 @@ class HRSAdapter(BaseAdapter):
               AND realized_pnl IS NOT NULL
             ORDER BY executed_at ASC
         """
-        return await self.db_manager.fetch_all(query, self.strategy_name, week_start, week_end)
+        return await self.db_manager.fetch_all(query, self.strategy_id, week_start, week_end)
 
     def _calc_performance(self, trades: List[Dict[str, Any]]) -> PerformanceMetrics:
         """计算绩效指标"""

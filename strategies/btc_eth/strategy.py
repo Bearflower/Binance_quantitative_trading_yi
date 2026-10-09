@@ -2594,6 +2594,8 @@ class BTCEthStrategy:
                     level=level,
                     pool_index=pool_index,
                 )
+                # 预期内的拦截：回写原因供 main.py 以 warning 记录，避免误报 error
+                signal['skip_reason'] = "组合级熔断拦截开仓"
                 return False
 
         pos = self.positions.get(symbol)
@@ -2611,6 +2613,8 @@ class BTCEthStrategy:
                 grade=signal.get('grade'),
                 score=signal.get('score')
             )
+            # 预期内的拒绝：回写原因供 main.py 以 warning 记录
+            signal['skip_reason'] = "反向信号拒绝加仓"
             return False
 
         # ③ 决策2：已进入分批止盈，拒绝加仓
@@ -2622,6 +2626,8 @@ class BTCEthStrategy:
                 grade=signal.get('grade'),
                 score=signal.get('score')
             )
+            # 预期内的拒绝：回写原因供 main.py 以 warning 记录
+            signal['skip_reason'] = "已进入分批止盈，拒绝加仓"
             return False
 
         # ④ 决策3：持仓浮亏，拒绝加仓
@@ -2633,6 +2639,8 @@ class BTCEthStrategy:
                 grade=signal.get('grade'),
                 score=signal.get('score')
             )
+            # 预期内的拒绝：回写原因供 main.py 以 warning 记录
+            signal['skip_reason'] = "持仓浮亏，拒绝加仓"
             return False
 
         # ⑤ 浮盈同向 → 加仓统一托管

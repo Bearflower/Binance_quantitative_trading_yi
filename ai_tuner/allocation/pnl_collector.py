@@ -13,12 +13,8 @@ import structlog
 from datetime import datetime
 from typing import Any, Dict, List
 
-# 部分策略配置名与 trade_records 落库名不一致，需显式映射（strategy_id -> 落库名列表）
-# 背景：trade_records.strategy 存中文名（如 "MTPCS策略"），且 hrs 配置名("HRS混合反转策略")
-# 与落库名("HRS策略")不一致，若直接按配置名查询会导致 PnL 恒为 0。
-_STRATEGY_DB_NAME_OVERRIDES = {
-    "hrs": ["HRS策略"],
-}
+# trade_records.strategy 存的是英文短名（strategy_id），直接用 strategy_id 列表查询即可
+# 例如 "btc_eth"、"btc_eth_aggressive"、"new_coin"、"hrs"、"grid"
 
 logger = structlog.get_logger()
 
@@ -152,31 +148,23 @@ class PnLCollector:
 
     def _resolve_db_names(self, strategy_cfg: Dict[str, Any]) -> list:
         """
-        解析某策略在 trade_records 中的落库中文名列表
+        解析某策略在 trade_records 中的落库 strategy_id 列表
 
-        优先级：
-        1. _STRATEGY_DB_NAME_OVERRIDES 中该 strategy_id 的显式映射
-        2. 配置中的 name 字段（非空时作为单元素列表）
-        3. name 为空：返回空列表并告警（PnL 将按 0 处理）
+        trade_records.strategy 存的是英文短名（strategy_id），直接返回单元素列表即可。
 
         Args:
-            strategy_cfg: 策略配置字典（含 strategy_id、name 等字段）
+            strategy_cfg: 策略配置字典（含 strategy_id）
 
         Returns:
-            落库中文名列表，可能为空
+            strategy_id 列表
         """
         strategy_id = strategy_cfg.get("strategy_id", "")
-        override = _STRATEGY_DB_NAME_OVERRIDES.get(strategy_id)
-        if override:
-            return override
-
-        name = strategy_cfg.get("name", "")
-        if name:
-            return [name]
+        if strategy_id:
+            return [strategy_id]
 
         logger.warning(
-            "策略配置缺少可用的落库名称，PnL 采集按 0 处理",
-            strategy_id=strategy_id,
+            "策略配置缺少 strategy_id，PnL 采集按 0 处理",
+            strategy=strategy_cfg.get("name", ""),
         )
         return []
 
