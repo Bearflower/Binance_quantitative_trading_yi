@@ -13,6 +13,9 @@ from shared.binance_api import BinanceClient
 
 logger = structlog.get_logger()
 
+# 本模块负责的策略名（写入/更新 condition_orders 时的归属键，避免散落魔法字符串）
+_STRATEGY_NAME = "hrs"
+
 
 class PositionManager:
     """
@@ -330,9 +333,37 @@ class PositionManager:
             from shared.condition_orders import record_condition_order
             order_type_map = {"sl": "STOP_LOSS", "tp1": "TAKE_PROFIT", "tp2": "TAKE_PROFIT"}
             order_type = order_type_map.get(role, "STOP_LOSS")
-            await record_condition_order(self.db, "hrs", symbol, algo_id=algo_id, order_type=order_type)
+            await record_condition_order(
+                self.db, _STRATEGY_NAME, symbol, algo_id=algo_id, order_type=order_type
+            )
         except Exception as e:
             logger.warning("异步记录条件单失败", symbol=symbol, role=role, algo_id=algo_id, error=str(e))
+
+    async def _sync_db_canceled(self, symbol: str) -> None:
+        """
+        将 DB 中该 symbol 上本策略的所有 OPEN 条件单同步为 CANCELED（2026-10-09 修复）
+
+        背景：条件单只在「创建成功」时写入 condition_orders（status=OPEN），而撤单
+        （补单清场 / 平仓清场 / 批量撤单）此前只清本地内存 algo_ids、不回写数据库，
+        导致交易所上早已不存在的旧单在 DB 里长期保留 OPEN，沉积成「假孤儿单」，
+        并被孤儿清理任务反复「取消」（-2011 被当作取消成功）。
+
+        仅在交易所确已撤单成功时调用；失败只告警，不阻断主流程。
+
+        Args:
+            symbol: 交易对
+        """
+        if self.db is None:
+            return
+        try:
+            from shared.condition_orders import mark_open_orders_canceled
+            await mark_open_orders_canceled(self.db, _STRATEGY_NAME, symbol)
+        except Exception as e:
+            logger.warning(
+                "同步条件单取消状态失败（不阻断主流程）",
+                symbol=symbol,
+                error=str(e),
+            )
 
     def get_algo_ids(self, symbol: str) -> List[int]:
         """
@@ -436,6 +467,9 @@ class PositionManager:
                 )
                 if is_batch_success:
                     self.clear_algo_ids(symbol)
+                    # 2026-10-09 修复：交易所已批量撤单（该币种全部条件单），
+                    # 必须同步 DB 状态，否则 condition_orders 残留 OPEN 行沉积为「假孤儿单」
+                    await self._sync_db_canceled(symbol)
                     logger.info(
                         "批量取消条件单成功",
                         symbol=symbol,
@@ -471,6 +505,8 @@ class PositionManager:
         逐个取消。这样即使批量 API 再次失败，也能清理所有孤儿单
         （比如 V2.11 每次 replenish 新增一个旧单但批量 API 又返回失败）。
         """
+        from shared.condition_orders import mark_order_canceled
+
         result = {"total": 0, "cancelled": 0, "failed": 0, "method": "individual"}
 
         # Step 1: 先按本地 algo_ids 取消
@@ -521,15 +557,8 @@ class PositionManager:
                         try:
                             await self.binance_api.cancel_algo_order(symbol, int(algo_id))
                             result["cancelled"] += 1
-                            # 同步更新 DB 状态为 CANCELED
-                            await self.db.execute(
-                                """
-                                UPDATE btc_eth.condition_orders
-                                SET status = 'CANCELED', updated_at = NOW()
-                                WHERE algo_id = $1 AND symbol = $2
-                                """,
-                                int(algo_id), symbol,
-                            )
+                            # 同步更新 DB 状态为 CANCELED（复用共享助手，避免重复 SQL）
+                            await mark_order_canceled(self.db, algo_id=int(algo_id))
                             already_cancelled.add(int(algo_id))
                         except Exception as db_cancel_err:
                             result["failed"] += 1
@@ -549,6 +578,11 @@ class PositionManager:
         # 全部取消成功才清空本地（部分失败则保留记录，下一轮补单重试仍可取消，FR-07）
         if local_algo_ids and result["failed"] == 0:
             self.clear_algo_ids(symbol)
+
+        # 2026-10-09 修复：逐个撤单全部成功 → 同步 DB 状态为 CANCELED，防「假孤儿单」沉积；
+        # 部分失败时保守保留 OPEN（由下一轮补单/孤儿清理任务继续兜底），不误标
+        if result["failed"] == 0:
+            await self._sync_db_canceled(symbol)
 
         logger.info(
             "取消条件单完成",

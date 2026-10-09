@@ -168,6 +168,44 @@ async def mark_order_executed(db, algo_id=None, order_id=None):
         logger.warning("标记条件单已执行失败", error=str(e))
 
 
+async def mark_open_orders_canceled(db, strategy_name, symbol):
+    """
+    将指定策略在指定交易对上所有 OPEN 条件单批量标记为 CANCELED
+
+    用于「已对交易所执行整币种撤单」后的数据库状态同步：
+    批量撤单（cancel_all_algo_orders）成功、或逐个撤单全部成功后，交易所上该 symbol
+    已无条件单，若 DB 仍保留 OPEN 行，会沉积成「假孤儿单」——既污染持仓保护单计数，
+    又会被孤儿清理任务反复「取消」（Binance 返回 -2011 被当作取消成功），产生误导性告警。
+
+    仅在交易所确已撤单成功时调用；调用方需自行保证「部分失败不误标」。
+
+    Args:
+        db: DatabaseManager 实例
+        strategy_name: 策略名称（如 hrs）
+        symbol: 交易对（如 LITEUSDT）
+
+    Returns:
+        str: 数据库执行结果（形如 "UPDATE 3"）；异常时返回空字符串
+    """
+    try:
+        result = await db.execute(
+            "UPDATE condition_orders SET status='CANCELED', updated_at=NOW() "
+            "WHERE strategy_name=$1 AND symbol=$2 AND status='OPEN'",
+            strategy_name, symbol,
+        )
+        logger.info(
+            "条件单状态已同步为已取消",
+            strategy=strategy_name, symbol=symbol, result=result,
+        )
+        return result
+    except Exception as e:
+        logger.warning(
+            "同步条件单取消状态失败（不阻断主流程）",
+            strategy=strategy_name, symbol=symbol, error=str(e),
+        )
+        return ""
+
+
 async def get_open_orders(db, strategy_name=None):
     """
     查询所有或指定策略的 OPEN 状态条件单

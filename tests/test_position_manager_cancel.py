@@ -130,8 +130,8 @@ def test_f2_db_fallback_cleans_orphans():
         assert result["total"] == 8, f"期望 total=8，实际 {result['total']}"
         assert result["cancelled"] == 8, f"期望 cancelled=8，实际 {result['cancelled']}"
 
-        # DB UPDATE 应该被调了 5 次（孤儿那 5 个）
-        assert mock_db.execute.await_count == 5, f"期望 DB UPDATE 5 次，实际 {mock_db.execute.await_count}"
+        # DB UPDATE 次数 = 5 个孤儿逐个标记 + 1 次整币种状态同步（failed==0）= 6
+        assert mock_db.execute.await_count == 6, f"期望 DB UPDATE 6 次，实际 {mock_db.execute.await_count}"
         print("✅ 测试 3 通过：DB 兜底正确清理 5 个孤儿单")
 
     asyncio.run(run())
@@ -167,6 +167,140 @@ def test_f2_db_fallback_filter_by_strategy_name():
     asyncio.run(run())
 
 
+# ==================== 2026-10-09 修复：撤单后 DB 状态同步（防「假孤儿单」） ====================
+# 根因：条件单只在「创建成功」时写入 condition_orders(status=OPEN)，而撤单此前只清本地
+# 内存 algo_ids、不同步 DB，导致交易所早已不存在的旧单在 DB 中长期保留 OPEN，
+# 沉积成「假孤儿单」，并被孤儿清理任务反复「取消」（Binance -2011 被当作取消成功）。
+
+# 整币种状态同步 SQL 的识别标记（区别于按 algo_id 单条标记）
+_BLANKET_SYNC_MARK = "strategy_name=$1 AND symbol=$2"
+
+
+def _make_db_with_orders(algo_ids=None):
+    """构造 mock DB：fetch_all 返回指定 OPEN 单；execute 记录调用"""
+    mock_db = MagicMock()
+    mock_db.fetch_all = AsyncMock(
+        return_value=[{"algo_id": a} for a in (algo_ids or [])]
+    )
+    mock_db.execute = AsyncMock(return_value="UPDATE 1")
+    return mock_db
+
+
+def _blanket_sync_calls(mock_db):
+    """取出调用记录中「整币种状态同步」那条 SQL 的参数"""
+    return [
+        c.args for c in mock_db.execute.await_args_list
+        if _BLANKET_SYNC_MARK in c.args[0]
+    ]
+
+
+# ==================== 测试 5: AC1 — 批量撤单成功后同步 DB 状态 ====================
+
+def test_ac1_batch_success_syncs_db():
+    """批量撤单成功（{complete:true}）→ 必须把该 symbol 的 OPEN 行同步为 CANCELED"""
+    async def run():
+        pm = _make_manager()
+        _add_position(pm, "LITEUSDT")
+        pm.db = _make_db_with_orders()
+        pm.binance_api.cancel_all_algo_orders = AsyncMock(return_value={"complete": True})
+
+        result = await pm.cancel_all_orders("LITEUSDT")
+
+        assert result["method"] == "batch", f"期望 batch，实际 {result['method']}"
+        calls = _blanket_sync_calls(pm.db)
+        assert len(calls) == 1, f"批量成功后应同步一次 DB 状态，实际 {len(calls)} 次"
+        assert calls[0][1] == "hrs" and calls[0][2] == "LITEUSDT", "同步参数应为策略名+交易对"
+        print("✅ 测试 5 通过：批量撤单成功后同步 DB 状态")
+
+    asyncio.run(run())
+
+
+# ==================== 测试 6: AC2 — 逐个撤单全部成功后同步 DB 状态 ====================
+
+def test_ac2_individual_all_success_syncs_db():
+    """批量接口失败回退逐个撤单，全部成功 → 同步 DB 状态"""
+    async def run():
+        pm = _make_manager()
+        _add_position(pm, "HBARUSDT")
+        pm.db = _make_db_with_orders()  # 本地 3 个，DB 无额外孤儿
+        pm.binance_api.cancel_all_algo_orders = AsyncMock(
+            side_effect=Exception("API timeout")
+        )
+        pm.binance_api.cancel_algo_order = AsyncMock(return_value={})
+
+        result = await pm.cancel_all_orders("HBARUSDT")
+
+        assert result["method"] == "individual"
+        assert result["failed"] == 0
+        assert len(_blanket_sync_calls(pm.db)) == 1, "逐个撤单全部成功后应同步一次 DB 状态"
+        print("✅ 测试 6 通过：逐个撤单全部成功后同步 DB 状态")
+
+    asyncio.run(run())
+
+
+# ==================== 测试 7: AC3 — 部分失败时不得误标 ====================
+
+def test_ac3_partial_failure_no_sync():
+    """逐个撤单部分失败 → 不得把未撤成功的单标记为 CANCELED（保守保留 OPEN）"""
+    async def run():
+        pm = _make_manager()
+        _add_position(pm, "HBARUSDT")
+        pm.db = _make_db_with_orders()
+        pm.binance_api.cancel_all_algo_orders = AsyncMock(
+            side_effect=Exception("API timeout")
+        )
+
+        async def fake_cancel(symbol, algo_id):
+            if algo_id == 111:
+                raise RuntimeError("取消失败")
+            return {}
+
+        pm.binance_api.cancel_algo_order = AsyncMock(side_effect=fake_cancel)
+
+        result = await pm.cancel_all_orders("HBARUSDT")
+
+        assert result["failed"] == 1, f"期望 failed=1，实际 {result['failed']}"
+        assert _blanket_sync_calls(pm.db) == [], "部分失败时不应整币种标记 CANCELED"
+        print("✅ 测试 7 通过：部分失败时不同步 DB 状态")
+
+    asyncio.run(run())
+
+
+# ==================== 测试 8: AC4 — db 为 None 时不报错、不产生 DB 调用 ====================
+
+def test_ac4_none_db_no_error():
+    """db=None（回测/无持久化环境）→ 撤单流程不受影响、不报错"""
+    async def run():
+        pm = _make_manager(db=None)
+        _add_position(pm, "LITEUSDT")
+        pm.binance_api.cancel_all_algo_orders = AsyncMock(return_value={"complete": True})
+
+        result = await pm.cancel_all_orders("LITEUSDT")
+
+        assert result["method"] == "batch"
+        print("✅ 测试 8 通过：db=None 时撤单流程正常")
+
+    asyncio.run(run())
+
+
+# ==================== 测试 9: AC6 — 同步失败不阻断主流程 ====================
+
+def test_ac6_sync_failure_not_raised():
+    """DB 同步异常 → 共享助手吞异常返回空串，不向上抛出"""
+    async def run():
+        from shared.condition_orders import mark_open_orders_canceled
+
+        mock_db = MagicMock()
+        mock_db.execute = AsyncMock(side_effect=RuntimeError("DB 不可用"))
+
+        result = await mark_open_orders_canceled(mock_db, "hrs", "LITEUSDT")
+
+        assert result == "", f"异常时应返回空串，实际 {result!r}"
+        print("✅ 测试 9 通过：同步失败不阻断主流程")
+
+    asyncio.run(run())
+
+
 if __name__ == "__main__":
     print("=" * 50)
     print("PositionManager.cancel_all_orders 单元测试")
@@ -175,4 +309,9 @@ if __name__ == "__main__":
     test_f1_error_json_not_treated_as_success()
     test_f2_db_fallback_cleans_orphans()
     test_f2_db_fallback_filter_by_strategy_name()
-    print("\n🎉 全部 4 个测试通过！")
+    test_ac1_batch_success_syncs_db()
+    test_ac2_individual_all_success_syncs_db()
+    test_ac3_partial_failure_no_sync()
+    test_ac4_none_db_no_error()
+    test_ac6_sync_failure_not_raised()
+    print("\n🎉 全部 9 个测试通过！")
