@@ -4,9 +4,9 @@
 支持动态网格参数计算，根据市场状态自动调整
 """
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 from enum import Enum
-from typing import List, Optional, Dict, Tuple
+from typing import ClassVar, List, Optional, Dict, Tuple
 import pandas as pd
 import structlog
 
@@ -26,6 +26,35 @@ class GridMode(Enum):
     """
     ARITHMETIC = "等差"
     GEOMETRIC = "等比"
+
+
+# 约束链绑定归属（V2.5.5 方案B，FR-10）
+BINDING_STRUCT = 'STRUCT'        # 结构约束（ATR 波动结构）
+BINDING_PROFIT = 'PROFIT'        # 利润率约束（每格利润率下限）
+BINDING_CAPITAL = 'CAPITAL'      # 资本约束（每格张数下限）
+BINDING_INFEASIBLE = 'INFEASIBLE'  # 输入非法，无法判定绑定约束
+
+
+@dataclass
+class CapitalFeasibility:
+    """
+    资本可行性解析结果（V2.5.5 方案B）
+
+    Attributes:
+        feasible: 是否可行（min(N_struct, N_profit, N_cap) >= N_min）
+        grid_count: 最终网格数；不可行时返回 N_struct 仅供参考
+        qty_per_grid: 每格张数；可行时按 N_final、不可行时按 N_min 计算
+        binding: 绑定约束 STRUCT / PROFIT / CAPITAL；不可行取实际压制项；
+                 输入非法时为 INFEASIBLE
+        required_margin: 不可行时，保持杠杆满足 N_min 格所需的最低保证金（ceil，可达）
+        required_leverage: 不可行时，保持保证金满足 N_min 格所需的最低杠杆（ceil，可达）
+    """
+    feasible: bool
+    grid_count: int
+    qty_per_grid: Decimal
+    binding: str
+    required_margin: Optional[Decimal] = None
+    required_leverage: Optional[int] = None
 
 
 @dataclass
@@ -56,6 +85,10 @@ class DynamicGridParams:
     profit_rate: Decimal = Decimal('0')
     grid_spacing: Decimal = Decimal('0')
 
+    # 数据验证层硬性下限（ClassVar 不参与 dataclass 字段）：
+    # 与 config.yaml 中 grid.weak_trend_min_grid_count 的全局最小值保持一致
+    MIN_GRID_COUNT_HARD_LIMIT: ClassVar[int] = 4
+
     def __post_init__(self):
         """参数验证"""
         if self.lower_boundary <= 0:
@@ -64,13 +97,14 @@ class DynamicGridParams:
         if self.upper_boundary <= self.lower_boundary:
             raise ValueError(f"上边界 {self.upper_boundary} 必须大于下边界 {self.lower_boundary}")
 
-        # 网格数量范围验证将在GridCalculator中根据配置进行
-        # 这里保留基本的最小值验证（至少5个网格）
-        # 注意：最小网格数量将在GridCalculator初始化时从配置读取
-        # 数据验证层硬性限制：防止传入无效参数（如负数或极小值）
-        MIN_GRID_COUNT_HARD_LIMIT = 5  # 数据验证层硬性下限
-        if self.grid_count < MIN_GRID_COUNT_HARD_LIMIT:
-            raise ValueError(f"网格数量必须至少为{MIN_GRID_COUNT_HARD_LIMIT}，实际为 {self.grid_count}")
+        # 数据验证层硬性下限：取各市场状态配置下限的全局最小值
+        # （弱趋势 weak_trend_min_grid_count=4，见 config.yaml）。
+        # 状态感知的业务范围（震荡[5,12]/弱趋势[4,10]）由
+        # GridCalculator.calculate_dynamic_grid_params 按 config 夹逼（修正 D-3）。
+        if self.grid_count < self.MIN_GRID_COUNT_HARD_LIMIT:
+            raise ValueError(
+                f"网格数量必须至少为{self.MIN_GRID_COUNT_HARD_LIMIT}，实际为 {self.grid_count}"
+            )
 
         if not isinstance(self.grid_mode, GridMode):
             raise ValueError(f"网格模式必须是 GridMode 类型，实际为 {type(self.grid_mode).__name__}")
@@ -539,12 +573,12 @@ class GridCalculator:
             atr_multiplier = Decimal(str(atr_multipliers.get('weak_trend', 6.0)))
             weak_reduction = float(self.config.get('grid', {}).get('weak_trend_grid_reduction_factor', 0.8))
             raw_count = round(float(atr_ratio) * weak_base_count * weak_reduction)
-            grid_count = max(min(raw_count, max_grid), min_grid)
 
-            # 弱趋势最小/最大网格数
+            # 弱趋势最小/最大网格数（D-3：必须直接按弱趋势限夹逼，
+            # 旧实现先用震荡 5/12 夹一次，会把弱趋势 4 格静默抬回 5）
             weak_min = self.config.get('grid', {}).get('weak_trend_min_grid_count', 4)
             weak_max = self.config.get('grid', {}).get('weak_trend_max_grid_count', 10)
-            grid_count = max(min(grid_count, weak_max), weak_min)
+            grid_count = max(min(raw_count, weak_max), weak_min)
         else:
             # 震荡市场：标准参数
             atr_multiplier = Decimal(str(atr_multipliers.get('oscillation', 5.0)))
@@ -599,17 +633,26 @@ class GridCalculator:
             current_price=current_price
         )
 
-        # 7. 验证网格数量范围
-        min_grid_count = self.config.get('grid', {}).get('min_grid_count', 20)
-        max_grid_count = self.config.get('grid', {}).get('max_grid_count', 50)
-        if grid_count < min_grid_count or grid_count > max_grid_count:
+        # 7. 验证网格数量范围（状态感知夹逼，修正 D-3）：
+        # 弱趋势使用 weak_trend_min/max_grid_count（4/10），
+        # 震荡使用 min/max_grid_count（5/12）。
+        # 旧实现对弱趋势误用震荡的 5/12，把弱趋势 4 格静默抬回 5，
+        # 导致 weak_trend_min_grid_count=4 配置失效。
+        if market_state == '弱趋势':
+            range_min_grid = self.config.get('grid', {}).get('weak_trend_min_grid_count', 4)
+            range_max_grid = self.config.get('grid', {}).get('weak_trend_max_grid_count', 10)
+        else:
+            range_min_grid = min_grid
+            range_max_grid = max_grid
+        if grid_count < range_min_grid or grid_count > range_max_grid:
             logger.warning(
                 "网格数量超出配置范围，已自动调整",
+                market_state=market_state,
                 original_grid_count=grid_count,
-                min_grid_count=min_grid_count,
-                max_grid_count=max_grid_count
+                min_grid_count=range_min_grid,
+                max_grid_count=range_max_grid
             )
-            grid_count = max(min_grid_count, min(max_grid_count, grid_count))
+            grid_count = max(range_min_grid, min(range_max_grid, grid_count))
 
         # 8. 构建结果
         params = DynamicGridParams(
@@ -825,16 +868,21 @@ class GridCalculator:
     def validate_profit_rate(
         self,
         params: DynamicGridParams,
-        min_profit_rate: Optional[Decimal] = None
+        min_profit_rate: Optional[Decimal] = None,
+        min_grid_count: Optional[int] = None
     ) -> Tuple[bool, Optional[int]]:
         """
         验证每格利润率是否满足要求
 
-        币安要求每格利润率 > 1%，如果不满足则减少网格数量
+        币安要求每格利润率 > 1%，如果不满足则减少网格数量。
+        降网格试探沿用 _calculate_profit_rate 的等差/等比精确口径，
+        不使用 W/(P×r_min) 近似（等比临界场景可能差 1）。
 
         Args:
             params: 动态网格参数
             min_profit_rate: 最小利润率（可选，默认从配置读取）
+            min_grid_count: 降网格下限（可选，默认读 grid.min_grid_count；
+                            弱趋势应传 weak_trend_min_grid_count）
 
         Returns:
             (是否满足, 建议的网格数量)
@@ -849,10 +897,11 @@ class GridCalculator:
         if params.profit_rate >= min_profit_rate:
             return True, None
 
-        # 尝试减少网格数量（从配置读取最小网格数量）
-        min_grid_count = self.config.get('grid', {}).get('min_grid_count')
+        # 尝试减少网格数量（未显式传入时从配置读取震荡最小网格数量）
         if min_grid_count is None:
-            raise ValueError("配置缺失：grid.min_grid_count")
+            min_grid_count = self.config.get('grid', {}).get('min_grid_count')
+            if min_grid_count is None:
+                raise ValueError("配置缺失：grid.min_grid_count")
 
         for new_count in range(params.grid_count - 1, min_grid_count - 1, -1):
             profit_rate, _ = self._calculate_profit_rate(
@@ -926,51 +975,147 @@ class GridCalculator:
 
         return baseline_atr
 
-    def validate_position_size(
+    def _resolve_min_quantity(self, min_quantity: Optional[Decimal]) -> Decimal:
+        """解析每格最小张数 q_min：None 时读 trading.min_quantity（FR-06，禁止硬编码）"""
+        if min_quantity is None:
+            min_quantity = self.config.get('trading', {}).get('min_quantity', 1)
+        return Decimal(str(min_quantity))
+
+    @staticmethod
+    def _ceil_to_int(value: Decimal) -> int:
+        """Decimal 向上取整为 int（保证所需保证金/杠杆可达，FR-04）"""
+        return int(value.to_integral_value(rounding=ROUND_CEILING))
+
+    def max_grids_by_capital(
         self,
         price: Decimal,
-        grid_count: int,
         leverage: int,
-        margin: Decimal
-    ) -> Tuple[bool, str, Optional[Decimal]]:
+        margin: Decimal,
+        min_quantity: Optional[Decimal] = None
+    ) -> int:
         """
-        验证仓位大小是否满足最小交易限制
+        资本约束上限 C3：N_cap = floor(M×L/(P×q_min))
+
+        输入非法（price/leverage/margin/q_min <= 0）时返回 0，不抛异常。
 
         Args:
-            price: 当前价格
-            grid_count: 网格数量
-            leverage: 杠杆倍数
-            margin: 总保证金
+            price: 当前价格 P
+            leverage: 杠杆 L
+            margin: 保证金 M
+            min_quantity: 每格最小张数 q_min（None 时读 trading.min_quantity）
 
         Returns:
-            (是否可行, 提示信息, 最小所需保证金)
+            当前保证金最多可支撑的网格数
         """
-        # 计算总名义价值
-        total_nominal = margin * Decimal(str(leverage))
+        q_min = self._resolve_min_quantity(min_quantity)
+        if price <= 0 or leverage <= 0 or margin <= 0 or q_min <= 0:
+            return 0
+        n_cap = (margin * Decimal(str(leverage)) / (price * q_min)).to_integral_value(
+            rounding=ROUND_FLOOR
+        )
+        return int(n_cap)
 
-        # 计算每格名义价值
-        nominal_per_grid = total_nominal / Decimal(str(grid_count))
+    def resolve_capital_feasibility(
+        self,
+        price: Decimal,
+        leverage: int,
+        margin: Decimal,
+        n_struct: int,
+        n_profit_max: int,
+        n_min: int,
+        min_quantity: Optional[Decimal] = None,
+        enforce_capital: bool = True
+    ) -> CapitalFeasibility:
+        """
+        解析约束链 C1/C2/C3 下的最终网格数与资本可行性（V2.5.5 方案B）
 
-        # 计算每格张数
-        qty_per_grid = nominal_per_grid / price
+        N_final = min(N_struct, N_profit, N_cap)，其中
+        N_cap = floor(M×L/(P×q_min))。可行要求 N_final >= N_min。
+        绑定约束并列时按 STRUCT > PROFIT > CAPITAL 取归属（A-review tie-break）。
 
-        if qty_per_grid >= Decimal('1'):
-            return True, f"每格{float(qty_per_grid):.2f}张（取整后{int(qty_per_grid)}张）", None
-        else:
-            # 计算最小所需保证金
-            min_margin = (Decimal('1') * price * Decimal(str(grid_count))) / Decimal(str(leverage))
+        不可行时反推可达出口：
+        - M_required = ceil(N_min×P×q_min/L)（保持杠杆所需保证金）
+        - L_required = ceil(N_min×P×q_min/M)（保持保证金所需杠杆）
 
-            message = (
-                f"每格仅{float(qty_per_grid):.2f}张，不足1张。"
-                f"请将保证金增至{float(min_margin):.0f} USDT，"
-                f"或减少网格数量至{max(5, int(float(margin * Decimal(str(leverage)) / price)))}格"
-            )
+        Args:
+            price: 当前价格 P
+            leverage: 杠杆 L
+            margin: 本次可行性口径使用的保证金 M（FR-01：建议保证金）
+            n_struct: 结构约束上限（ATR 比值，已夹状态上下限）
+            n_profit_max: 利润率约束上限（精确口径，见 validate_profit_rate）
+            n_min: 市场状态对应的最小网格数（震荡 5 / 弱趋势 4）
+            min_quantity: 每格最小张数 q_min（None 时读 trading.min_quantity）
+            enforce_capital: 是否启用 C3 资本下压；False 时仅供灰度整体回退
+                             （capital_constraint.enabled=false）复用同一条计算链
 
+        Returns:
+            CapitalFeasibility；输入非法时返回 feasible=False/binding=INFEASIBLE，
+            不抛异常（4.6 边界，避免中断推送）
+        """
+        q_min = self._resolve_min_quantity(min_quantity)
+        reference_count = max(int(n_struct), 0)
+
+        # 非法输入防御：记录告警并返回不可行，不中断推送
+        if price <= 0 or leverage <= 0 or margin <= 0 or q_min <= 0 or n_min <= 0:
             logger.warning(
-                "仓位大小验证失败",
-                qty_per_grid=float(qty_per_grid),
-                min_margin=float(min_margin)
+                "资本可行性输入非法，判定不可行",
+                price=float(price),
+                leverage=leverage,
+                margin=float(margin),
+                min_quantity=float(q_min),
+                n_min=n_min
+            )
+            return CapitalFeasibility(
+                feasible=False,
+                grid_count=reference_count,
+                qty_per_grid=Decimal('0'),
+                binding=BINDING_INFEASIBLE
             )
 
-            return False, message, min_margin
+        # 约束候选（顺序即并列时的 tie-break 优先级：STRUCT > PROFIT > CAPITAL）
+        candidates = [(BINDING_STRUCT, int(n_struct)), (BINDING_PROFIT, int(n_profit_max))]
+        if enforce_capital:
+            candidates.append((BINDING_CAPITAL, self.max_grids_by_capital(
+                price=price, leverage=leverage, margin=margin, min_quantity=q_min
+            )))
+        binding, n_final = min(candidates, key=lambda item: item[1])
+
+        if n_final >= n_min:
+            qty_per_grid = margin * Decimal(str(leverage)) / (
+                price * Decimal(str(n_final))
+            )
+            return CapitalFeasibility(
+                feasible=True,
+                grid_count=n_final,
+                qty_per_grid=qty_per_grid,
+                binding=binding
+            )
+
+        # 不可行：按 N_min 反推可达的保证金/杠杆出口（ceil 保证可达）
+        qty_at_min = margin * Decimal(str(leverage)) / (price * Decimal(str(n_min)))
+        required_margin = Decimal(str(self._ceil_to_int(
+            Decimal(str(n_min)) * price * q_min / Decimal(str(leverage))
+        )))
+        required_leverage = self._ceil_to_int(
+            Decimal(str(n_min)) * price * q_min / margin
+        )
+        logger.warning(
+            "资本可行性判定不可行",
+            margin=float(margin),
+            leverage=leverage,
+            n_struct=n_struct,
+            n_profit_max=n_profit_max,
+            n_min=n_min,
+            binding=binding,
+            required_margin=float(required_margin),
+            required_leverage=required_leverage
+        )
+        return CapitalFeasibility(
+            feasible=False,
+            grid_count=reference_count,
+            qty_per_grid=qty_at_min,
+            binding=binding,
+            required_margin=required_margin,
+            required_leverage=required_leverage
+        )
 

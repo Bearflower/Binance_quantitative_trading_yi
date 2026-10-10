@@ -128,6 +128,13 @@ grid:
   # 振幅阈值（决定等差/等比切换）
   amplitude_threshold: 0.3
 
+  # V2.5.5 方案B：保证金-网格数联动总开关
+  # true：最终网格数 = min(结构, 利润率, 资本)，可行性口径=建议保证金，
+  #       不可行时反推所需保证金/杠杆
+  # false：整体回退 V2.5 已知行为（可行性用固定 trading.margin、资本不下压、旧文案）
+  capital_constraint:
+    enabled: true
+
 # 交易配置
 trading:
   # 杠杆倍数

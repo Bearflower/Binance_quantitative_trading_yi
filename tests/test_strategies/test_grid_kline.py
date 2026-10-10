@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from shared.kline_service import KLineService
+from strategies.grid.grid_calculator import CapitalFeasibility, BINDING_STRUCT
 from strategies.grid.market_state import (
     MarketState,
     MarketAnalysis,
@@ -465,7 +466,13 @@ class TestGridSignalBotKline:
             stop_move_down_price=None,
         )
         calc.validate_profit_rate.return_value = (True, None)
-        calc.validate_position_size.return_value = (True, "", None)
+        # V2.5.5 方案B：_calculate_grid_params 合并约束链后消费可行性结果
+        calc.resolve_capital_feasibility.return_value = CapitalFeasibility(
+            feasible=True,
+            grid_count=10,
+            qty_per_grid=Decimal("1.5"),
+            binding=BINDING_STRUCT,
+        )
         return calc
 
     @pytest.mark.asyncio
@@ -505,8 +512,8 @@ class TestGridSignalBotKline:
             confidence=Decimal("0.5"),
         )
 
-        # 直接测试 _calculate_grid_params
-        params = await bot._calculate_grid_params(MOCK_SYMBOL, analysis)
+        # 直接测试 _calculate_grid_params（V2.5.5 起返回 参数+资本可行性 二元组）
+        params, feasibility = await bot._calculate_grid_params(MOCK_SYMBOL, analysis)
 
         # 验证 get_klines 被正确调用（1日K线，100条）
         mock_kline_service.get_klines.assert_called_once_with(
@@ -515,6 +522,7 @@ class TestGridSignalBotKline:
         # 验证网格参数被计算
         assert params is not None
         assert params.grid_count == 10
+        assert feasibility.feasible is True
 
     @pytest.mark.asyncio
     async def test_kline_failure_during_grid_params(
