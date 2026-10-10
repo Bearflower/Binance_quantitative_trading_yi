@@ -83,7 +83,7 @@
 | 2 内 R3 独立设计复核（A-review） | **已通过**（2026-10-09，GLM-5.3 独立会话，见 §7.1） |
 | 3 编码 / 4 代码检测 / 5 强制测试（B） | 已执行 |
 | 6 审查与文档对照 / 7 文档更新（C） | **已通过**（2026-10-09，GLM-5.3 独立会话实现对照，见 §7.1） |
-| 8 部署（D） | 未部署（需用户授权发布；下一角色 D：Seed-2.1-Pro-0915） |
+| 8 部署（D） | **已部署且上线验证通过**（2026-10-09，commit `e9466537`，Run #54，DEPLOY_ID `00003601`；五层验证通过，见 §7.2；两轮监控观察存量只降不增、告警已停止） |
 
 ### 7.1 R3 独立复核结论（A-review + C 段实现对照片审查，GLM-5.3，2026-10-09）
 
@@ -112,3 +112,26 @@
 1. 表名前缀不一致：`mark_open_orders_canceled`（无前缀）与 `_cancel_individual_orders` Step 2（显式 `btc_eth.condition_orders`）并存，隐式耦合 `search_path`，建议后续统一。
 2. 并发安全是「现状无窗口」而非结构性互斥；未来引入并行手动操作入口（如 HTTP 指令）需加 symbol 级互斥。
 3. 测试 2 的 mock 直接返回 `{"code": -2011}` dict，与真实路径（`_request` 抛异常进 except）层次不同，但双层防护均被验证。
+
+### 7.2 D 段发布与五层防幻觉验证（Seed-2.1-Pro-0915，2026-10-09）
+
+- 发布：commit `e9466537`（3 个代码文件 + 本 plan 文档），push main；Run [#54](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/37932875167)，`DEPLOY_ID=00003601`（run_number=54 / attempt=1）。
+- 第一层 Actions：detect ✅ / build-all 10 镜像全量构建 ✅（共享模块 `shared/` 变更，符合全量预期）/ deploy ✅。
+- 第二层容器：11 容器全部 healthy；10 个应用镜像均为 `ghcr.io/bearflower/trading-*:latest`，全部本轮 recreate；postgres 公共镜像保持不动。
+- 第三层部署日志：`DEPLOY_SUCCESS commit=e94665376e0991dbc081b3e10c39a22f445e4e50 deploy_id=00003601`。
+- 第四层 VERSION：trading-hrs / btc-eth / ai-tuner 容器内 `/app/VERSION` 均为 `DEPLOY_ID=00003601`、`GIT_SHA=e9466537…`，与 Run Summary 一致。
+- 第五层日志：`trading_system-hrs` 启动后无 error/exception/traceback，正常初始化并对齐 HH:21 监控周期。
+- 存量基线（部署时刻 20:58）：`btc_eth.condition_orders` 中 `strategy_name='hrs' AND status='OPEN'` 共 **274 条**（SEIUSDT 80、牛来USDT 64、1000SHIBUSDT 43 等），为历史沉积假孤儿，由孤儿清理任务逐步收敛；本修复防新增沉积。
+- 上线观察：待 1–2 个 HH:21 监控周期后核对存量只降不增、且发生过撤单/补单清场的 symbol 不再新增 OPEN。
+
+**上线观察时间序列（2026-10-09）**：
+
+| 时刻 | 事件 | hrs OPEN 总量 | 关键数据 |
+|---|---|---|---|
+| 20:58 部署前 | 基线 | 274 | 牛来USDT 64 / SEIUSDT 80 / 1000SHIBUSDT 43 / BZUSDT 38 … |
+| 21:21 | HRS 补单周期 | 274 | AEROUSDT `UPDATE 3` 撤旧建新；COINUSDT 撤 5 建 3、DRAMUSDT 撤 4 建 2（整币种同步顺带清沉积） |
+| 21:56 | ai-tuner 孤儿清理（部署后首轮） | 274 → **210** | `canceled=64 failed=0 skipped=255`；牛来USDT（无持仓）120 行全转 CANCELED |
+| 21:56 后 | 存量分布 | **210** | SEIUSDT 80 / 1000SHIBUSDT 43 / BZUSDT 38 / PONSUSDT 12 / TQQQUSDT 12 / SANDUSDT 9 / TRUMPUSDT 5 / COINUSDT 3 / AEROUSDT 3 / ONDOUSDT 3 / DRAMUSDT 2 |
+| 22:26 | ai-tuner 孤儿清理第 2 轮 | 210 → **209** | **无取消、无失败** → 日志「所有条件单正常」，**本轮未发送飞书告警** |
+
+结论：总量 **274 → 210 → 209（只降不增）**；部署后首轮清理一次性消化无持仓沉积（牛来USDT 64 条），次轮已无可清理项、告警停止。飞书「跳过（正常持仓）」由修复前的 376~420 降至 255，为修复生效的硬证据。剩余 ~209 条为**有持仓/有活交易记录** symbol 的历史沉积，按 R08 保守口径保留，将在对应持仓平掉后随清理收敛；本修复防的是新增沉积，不再线性增长。
