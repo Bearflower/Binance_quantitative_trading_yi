@@ -121,7 +121,12 @@ async def initialize():
     
     # 启动时孤儿条件单检测与清理（v6.23）
     await strategy._startup_orphan_cleanup()
-    
+
+    # 接管「交易所存在、归属本策略、已挂满保护单但未登记」的持仓（2026-10-10 修复）
+    # 必须先于 _ensure_position_protection：后者对"已有完整保护单"的持仓会直接跳过，
+    # 不会补登进 self.positions，导致重启后该持仓永久掉出跟踪表
+    await strategy._adopt_untracked_exchange_positions()
+
     # 确保持仓有止损止盈保护单（v6.20.4：检测缺少条件单的旧持仓并自动补单）
     await strategy._ensure_position_protection()
     

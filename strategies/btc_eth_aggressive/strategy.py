@@ -5476,6 +5476,175 @@ class BTCEthStrategy:
         except Exception as e:
             logger.error("启动时孤儿条件单检测失败", error=str(e), exc_info=True)
 
+    async def _adopt_untracked_exchange_positions(self):
+        """接管「交易所存在、归属本策略、已挂满保护单」但未登记在 self.positions 的持仓。
+
+        2026-10-10 修复：启动时不从 strategy_states 恢复持仓，且 _ensure_symbol_protection
+        对「已有完整保护单」的交易所持仓直接 return、不登记，导致这类仓位重启后永久掉出
+        self.positions（不再监控，也不进入 strategy_states / strategy_open_positions 上报，
+        看板缺失）。本方法在启动时把它们重新纳入 self.positions。
+
+        只重建内存状态，不下任何单；既有保护单保持不变。
+        """
+        try:
+            exchange_positions = await self.binance.get_position()
+        except Exception as e:
+            logger.warning("接管持仓：获取交易所持仓失败，跳过", error=str(e))
+            return
+        if not exchange_positions:
+            return
+
+        # OPEN 保护单按 symbol/order_type 归集（get_open_orders 已按 created_at 升序）
+        try:
+            open_orders = await get_open_orders(self.db_manager, self.strategy_name)
+        except Exception as e:
+            logger.warning("接管持仓：查询 OPEN 条件单失败，跳过", error=str(e))
+            return
+        orders_by_symbol: Dict[str, Dict[str, list]] = {}
+        for o in open_orders or []:
+            sym = o.get('symbol')
+            orders_by_symbol.setdefault(sym, {}).setdefault(
+                o.get('order_type'), []).append(o)
+
+        managed_symbols = set(self.symbols)
+        adopted = []
+        for pos_data in exchange_positions:
+            symbol = pos_data.get('symbol', '')
+            position_amt = float(pos_data.get('positionAmt', 0) or 0)
+            if symbol not in managed_symbols or abs(position_amt) < self.min_position_amt:
+                continue
+            if symbol in self.positions:
+                continue  # 已跟踪，幂等跳过
+            ps = await self._build_adopted_position_state(
+                symbol, pos_data, orders_by_symbol.get(symbol, {}))
+            if ps is None:
+                continue
+            self.positions[symbol] = ps
+            adopted.append(symbol)
+            logger.info(
+                "接管交易所持仓（重启后恢复跟踪）",
+                symbol=symbol,
+                direction=ps.direction,
+                entry_price=float(ps.entry_price),
+                quantity=float(ps.current_quantity),
+                stop_loss_order_id=ps.stop_loss_order_id,
+                tp1_order_id=ps.tp1_order_id,
+                tp2_order_id=ps.tp2_order_id,
+            )
+        if adopted:
+            logger.info("接管交易所持仓完成", count=len(adopted), symbols=adopted)
+
+    async def _build_adopted_position_state(
+        self, symbol: str, pos_data: Dict, symbol_orders: Dict[str, list],
+    ) -> Optional[PositionState]:
+        """为「已挂满保护单」的交易所持仓构造 PositionState（接管用）。
+
+        返回 None 表示放弃接管（保护单不完整 / 归属不匹配 / 取价失败 / 安全闸拦截）。
+        """
+        # 仅接管已挂满保护单的持仓：未满的仓位由 _ensure_symbol_protection 既有逻辑
+        # 补挂缺失订单并登记，不走本路径，避免重复。
+        stop_orders = symbol_orders.get('STOP_LOSS', [])
+        tp_orders = symbol_orders.get('TAKE_PROFIT', [])
+        if not stop_orders or len(tp_orders) < 2:
+            return None
+
+        position_amt = float(pos_data.get('positionAmt', 0) or 0)
+        direction = 'LONG' if position_amt > 0 else 'SHORT'
+        current_quantity = Decimal(str(abs(position_amt)))
+
+        # 归属守卫（方案C）：不接管对家策略开出的仓位
+        try:
+            owner = await resolve_position_owner(self.db_manager, symbol)
+        except Exception as e:
+            logger.warning("接管持仓：归属判定异常，跳过", symbol=symbol, error=str(e))
+            return None
+        if owner is None or owner != self.my_record_name:
+            logger.warning(
+                "接管持仓：归属校验未通过，跳过",
+                symbol=symbol,
+                owner=owner,
+                my_record_name=self.my_record_name,
+            )
+            return None
+
+        current_price = await self._get_current_price(symbol)
+        if current_price is None:
+            logger.warning("接管持仓：获取当前价失败，跳过", symbol=symbol)
+            return None
+
+        # 入场价优先用交易所 entryPrice（真实），缺失/为0时回退当前价
+        try:
+            entry_price = Decimal(str(pos_data.get('entryPrice') or 0))
+        except Exception:
+            entry_price = Decimal('0')
+        if entry_price <= 0:
+            logger.warning(
+                "接管持仓：entryPrice 缺失，回退当前价",
+                symbol=symbol, current_price=float(current_price),
+            )
+            entry_price = current_price
+
+        atr = await self._calc_protection_atr(symbol, current_price)
+        grade = 'A'  # 原始信号等级不可恢复，兜底 A（与既有重启补挂口径一致）
+        logger.warning("接管持仓：原始信号等级不可恢复，按 A 兜底", symbol=symbol)
+
+        # 安全闸：若按重建 ATR 计算的 TP1 已落在当前价之内，接管后
+        # _check_partial_take_profit 会在下一周期立即市价平 TP1（误交易），故放弃本次接管。
+        tp1_price = self._calculate_tp_price(entry_price, atr, direction, 1, grade)
+        tp1_reached = (
+            (direction == 'LONG' and current_price >= tp1_price)
+            or (direction == 'SHORT' and current_price <= tp1_price)
+        )
+        if tp1_reached:
+            logger.warning(
+                "接管持仓：当前价已达重建TP1，放弃接管避免误市价止盈",
+                symbol=symbol,
+                current_price=float(current_price),
+                tp1_price=float(tp1_price),
+            )
+            return None
+
+        ps = PositionState()
+        ps.direction = direction
+        ps.entry_price = entry_price
+        ps.initial_quantity = current_quantity
+        ps.current_quantity = current_quantity
+        ps.atr = atr
+        ps.grade = grade
+        ps.entry_time = self._adopted_entry_time(symbol_orders)
+        ps.highest_price = current_price
+        ps.lowest_price = current_price
+
+        # 恢复订单ID：STOP_LOSS 按 created_at 升序，首张=硬止损，第二张=移动尾仓止损
+        ps.stop_loss_order_id = stop_orders[0].get('algo_id')
+        if len(stop_orders) >= 2:
+            ps.trailing_stop_order_id = stop_orders[1].get('algo_id')
+        ps.tp1_order_id = tp_orders[0].get('algo_id')
+        ps.tp2_order_id = tp_orders[1].get('algo_id')
+        return ps
+
+    @staticmethod
+    def _adopted_entry_time(symbol_orders: Dict[str, list]) -> datetime:
+        """用该 symbol 最早一条 OPEN 保护单的 created_at 近似原始入场时间（兜底 now）。
+
+        避免时间止损（_check_time_stop 依赖 entry_time）的计时被重置。
+        """
+        candidates = [
+            o.get('created_at')
+            for orders in symbol_orders.values()
+            for o in orders
+            if o.get('created_at')
+        ]
+        if not candidates:
+            return datetime.now()
+        earliest = min(candidates)
+        if isinstance(earliest, datetime):
+            return earliest
+        try:
+            return datetime.fromisoformat(str(earliest))
+        except Exception:
+            return datetime.now()
+
     async def _ensure_position_protection(self):
         """确保持仓有止损止盈保护单（v6.20.5）
 
