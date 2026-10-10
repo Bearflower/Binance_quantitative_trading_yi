@@ -466,6 +466,8 @@ class TestGridSignalBotKline:
             stop_move_down_price=None,
         )
         calc.validate_profit_rate.return_value = (True, None)
+        # V2.5.5 回炉修复：_calculate_grid_params 新增资本下限联动，mock 出 Decimal 下限
+        calc.min_required_margin.return_value = Decimal("0")
         # V2.5.5 方案B：_calculate_grid_params 合并约束链后消费可行性结果
         calc.resolve_capital_feasibility.return_value = CapitalFeasibility(
             feasible=True,
@@ -512,8 +514,8 @@ class TestGridSignalBotKline:
             confidence=Decimal("0.5"),
         )
 
-        # 直接测试 _calculate_grid_params（V2.5.5 起返回 参数+资本可行性 二元组）
-        params, feasibility = await bot._calculate_grid_params(MOCK_SYMBOL, analysis)
+        # 直接测试 _calculate_grid_params（V2.5.5 回炉起返回 参数+资本可行性+实际保证金 三元组）
+        params, feasibility, _effective = await bot._calculate_grid_params(MOCK_SYMBOL, analysis)
 
         # 验证 get_klines 被正确调用（1日K线，100条）
         mock_kline_service.get_klines.assert_called_once_with(

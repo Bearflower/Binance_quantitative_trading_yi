@@ -326,12 +326,19 @@ class GridSignalBot:
             elif state in [MarketState.WEAK_TREND, MarketState.OSCILLATION]:
                 # V2.5.5 FR-01：可行性保证金口径 = 建议保证金；开关关闭时整体回退固定配置值
                 margin_used = self._select_margin_for_feasibility(advice)
-                grid_params, capital_feasibility = await self._calculate_grid_params(
+                grid_params, capital_feasibility, effective_margin = await self._calculate_grid_params(
                     symbol,
                     market_analysis,
                     margin=margin_used,
                     atr_baseline=self.margin_advisor.last_baseline_atr
                 )
+                # 回炉修复：资本下限抬升保证金时，同步回写建议保证金与实际口径
+                if effective_margin > margin_used:
+                    margin_used = effective_margin
+                    if advice is not None:
+                        advice = self.margin_advisor.apply_capital_floor(
+                            advice, effective_margin
+                        )
                 position_valid = capital_feasibility.feasible
                 message = self._generate_signal_message(
                     symbol=symbol,
@@ -346,12 +353,19 @@ class GridSignalBot:
                 # 未知状态，默认震荡处理
                 logger.warning(f"{symbol} 未知市场状态: {state}，默认按震荡处理")
                 margin_used = self._select_margin_for_feasibility(advice)
-                grid_params, capital_feasibility = await self._calculate_grid_params(
+                grid_params, capital_feasibility, effective_margin = await self._calculate_grid_params(
                     symbol,
                     market_analysis,
                     margin=margin_used,
                     atr_baseline=self.margin_advisor.last_baseline_atr
                 )
+                # 回炉修复：资本下限抬升保证金时，同步回写建议保证金与实际口径
+                if effective_margin > margin_used:
+                    margin_used = effective_margin
+                    if advice is not None:
+                        advice = self.margin_advisor.apply_capital_floor(
+                            advice, effective_margin
+                        )
                 position_valid = capital_feasibility.feasible
                 message = self._generate_signal_message(
                     symbol=symbol,
@@ -543,7 +557,9 @@ class GridSignalBot:
             atr_baseline: 基准ATR（V2.5 由保证金引导复用传入，避免重复拉取 K 线）
 
         Returns:
-            (DynamicGridParams, CapitalFeasibility)
+            (DynamicGridParams, CapitalFeasibility, effective_margin)
+            effective_margin 为资本下限联动后的实际保证金口径（回炉修复），
+            调用方据此回写建议保证金与 margin_used。
 
         Raises:
             ValueError: 参数验证失败
@@ -567,13 +583,23 @@ class GridSignalBot:
         )
         n_min, _ = self._state_grid_bounds(market_analysis.state)
 
-        if not self.capital_constraint_enabled:
-            return self._legacy_grid_params(
-                params, market_analysis, atr_baseline, n_min
-            )
-
         if margin is None:
             margin = self.default_margin
+
+        if not self.capital_constraint_enabled:
+            legacy_params, legacy_feasibility = self._legacy_grid_params(
+                params, market_analysis, atr_baseline, n_min
+            )
+            return legacy_params, legacy_feasibility, margin
+
+        # 回炉修复：资本下限联动——建议保证金不得低于支撑 n_min 格的最低保证金
+        min_required = self.grid_calculator.min_required_margin(
+            price=market_analysis.current_price,
+            leverage=self.default_leverage,
+            n_min=n_min,
+            min_quantity=self.min_quantity
+        )
+        effective_margin = margin if margin >= min_required else min_required
 
         # C2 利润率约束（精确口径）
         n_profit_max = self._resolve_profit_cap(params, n_min)
@@ -582,7 +608,7 @@ class GridSignalBot:
         feasibility = self.grid_calculator.resolve_capital_feasibility(
             price=market_analysis.current_price,
             leverage=self.default_leverage,
-            margin=margin,
+            margin=effective_margin,
             n_struct=params.grid_count,
             n_profit_max=n_profit_max,
             n_min=n_min,
@@ -601,7 +627,7 @@ class GridSignalBot:
                     current_price=market_analysis.current_price
                 )
 
-        return params, feasibility
+        return params, feasibility, effective_margin
 
     def _legacy_grid_params(
         self,

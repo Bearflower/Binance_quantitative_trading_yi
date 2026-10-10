@@ -287,6 +287,19 @@ class TestResolveCapitalFeasibility:
         """max_grids_by_capital 非法输入返回 0"""
         assert calculator.max_grids_by_capital(Decimal('0'), LEV, M_ADVISED) == 0
 
+    def test_min_required_margin_sample(self, calculator):
+        """回炉修复：min_required_margin = ceil(5×2558.48/10) = 1280"""
+        assert calculator.min_required_margin(P_SAMPLE, LEV, N_MIN_OSC) == Decimal('1280')
+
+    def test_min_required_margin_weak_trend(self, calculator):
+        """回炉修复：弱趋势 n_min=4 → ceil(4×2558.48/10) = 1024"""
+        assert calculator.min_required_margin(P_SAMPLE, LEV, 4) == Decimal('1024')
+
+    def test_min_required_margin_illegal_returns_zero(self, calculator):
+        """回炉修复：min_required_margin 非法输入返回 0，不抛异常"""
+        assert calculator.min_required_margin(Decimal('0'), LEV, N_MIN_OSC) == Decimal('0')
+        assert calculator.min_required_margin(P_SAMPLE, 0, N_MIN_OSC) == Decimal('0')
+
     def test_enforce_capital_false_rollback(self, calculator):
         """enforce_capital=False：C3 不压制（灰度回退复用同一计算链）"""
         result = calculator.resolve_capital_feasibility(
@@ -405,9 +418,10 @@ class TestGridParamsConstraintChain:
         """AC-04 链路口径：M=1400 下压到 5 格，spacing/profit 按 N_final 重算"""
         bot = make_bot()
         analysis = make_analysis()  # atr=15.48, baseline=18 → N_struct=7 等差
-        params, feasibility = await bot._calculate_grid_params(
+        params, feasibility, effective = await bot._calculate_grid_params(
             'ETHUSDT', analysis, margin=M_FEASIBLE, atr_baseline=Decimal('18')
         )
+        assert effective == M_FEASIBLE  # 1400 >= min_required=1280，不抬升
         assert params.grid_count == 5
         assert feasibility.binding == BINDING_CAPITAL
         width = params.upper_boundary - params.lower_boundary
@@ -416,17 +430,18 @@ class TestGridParamsConstraintChain:
         assert params.profit_rate == params.grid_spacing / analysis.current_price
 
     @pytest.mark.asyncio
-    async def test_chain_infeasible_keeps_struct(self):
-        """不可行时保留 N_struct 供参考，出口值 1280/14"""
+    async def test_chain_lifts_margin_and_presses_count(self):
+        """回炉修复：M=936 < min_required=1280 → 抬升保证金到 1280，主推网格数压到 5"""
         bot = make_bot()
         analysis = make_analysis()
-        params, feasibility = await bot._calculate_grid_params(
+        params, feasibility, effective = await bot._calculate_grid_params(
             'ETHUSDT', analysis, margin=M_ADVISED, atr_baseline=Decimal('18')
         )
-        assert params.grid_count == N_STRUCT_SAMPLE
-        assert feasibility.feasible is False
-        assert feasibility.required_margin == Decimal('1280')
-        assert feasibility.required_leverage == 14
+        assert effective == Decimal('1280')  # ceil(5×2558.48/10)=1280
+        assert feasibility.feasible is True
+        assert feasibility.grid_count == 5
+        assert feasibility.binding == BINDING_CAPITAL
+        assert params.grid_count == 5
 
     @pytest.mark.asyncio
     async def test_profit_rate_still_binds(self):
@@ -435,7 +450,7 @@ class TestGridParamsConstraintChain:
         # atr=5 → W=60，P=2558.48，等差下 7 格利润率仅 0.33%，
         # 最大满足 1% 的格数 floor(60/(2558.48×0.01))=2 < N_min=5 → 不可行 PROFIT
         analysis = make_analysis(atr_smooth=Decimal('5'))
-        params, feasibility = await bot._calculate_grid_params(
+        params, feasibility, effective = await bot._calculate_grid_params(
             'ETHUSDT', analysis, margin=Decimal('5000'), atr_baseline=Decimal('5')
         )
         assert feasibility.feasible is False
@@ -448,7 +463,7 @@ class TestGridParamsConstraintChain:
         # 真实配置 base_grid_count=6：ratio=15.5/13.5=1.148 → raw=round(6.89)=7；
         # W=12×13.5=162 → 7 格利润率 0.90%<1%，6 格 1.06%≥1% → suggested=6
         analysis = make_analysis(atr_smooth=Decimal('13.5'))
-        params, feasibility = await bot._calculate_grid_params(
+        params, feasibility, effective = await bot._calculate_grid_params(
             'ETHUSDT', analysis, margin=Decimal('5000'), atr_baseline=Decimal('15.5')
         )
         assert feasibility.feasible is True
@@ -464,7 +479,7 @@ class TestGridParamsConstraintChain:
         bot = make_bot()
         assert bot._state_grid_bounds(MarketState.WEAK_TREND) == (4, 10)
         analysis = make_analysis(state=MarketState.WEAK_TREND)
-        params, feasibility = await bot._calculate_grid_params(
+        params, feasibility, effective = await bot._calculate_grid_params(
             'ETHUSDT', analysis, margin=Decimal('5000'), atr_baseline=Decimal('18')
         )
         assert params.grid_count == 6
@@ -484,46 +499,46 @@ class TestRunOnceMarginCaliber:
         return await bot.run_once('ETHUSDT')
 
     @pytest.mark.asyncio
-    async def test_ac01_uses_advised_margin(self):
-        """AC-01：可行性计算传入 advice.suggested_margin=936"""
+    async def test_ac01_advised_margin_floored_by_capital(self):
+        """回炉修复 AC-01：建议保证金 936 被资本下限抬升到 1280，可行性按 1280 计算"""
         bot = make_bot()
         spy = MagicMock(wraps=bot.grid_calculator.resolve_capital_feasibility)
         bot.grid_calculator.resolve_capital_feasibility = spy
         signal = await self._run_once(bot, advice=make_advice(M_ADVISED))
         assert spy.call_count == 1
-        assert spy.call_args.kwargs['margin'] == M_ADVISED
-        assert signal.margin_used == M_ADVISED
+        # 936 < min_required=1280 → 可行性口径抬升为 1280（FR-01 口径 + 资本下限）
+        assert spy.call_args.kwargs['margin'] == Decimal('1280')
+        assert signal.margin_used == Decimal('1280')
 
     @pytest.mark.asyncio
     async def test_fallback_when_advice_none(self):
-        """advice 不可得：回退 trading.margin=500"""
+        """advice 不可得：回退 trading.margin=500 后被资本下限抬升到 1280"""
         bot = make_bot()
         spy = MagicMock(wraps=bot.grid_calculator.resolve_capital_feasibility)
         bot.grid_calculator.resolve_capital_feasibility = spy
         signal = await self._run_once(bot, advice=None)
-        assert spy.call_args.kwargs['margin'] == Decimal('500')
-        assert signal.margin_used == Decimal('500')
+        assert spy.call_args.kwargs['margin'] == Decimal('1280')
+        assert signal.margin_used == Decimal('1280')
 
     @pytest.mark.asyncio
     async def test_ac06_message_self_consistency(self):
-        """AC-06：同一推送三处数值可互相复算（样例 M=936 不可行分支）"""
+        """AC-06（回炉修复）：建议保证金 936 抬升后三处一致——1280 / 5格 / 每格≥1张"""
         bot = make_bot()
         signal = await self._run_once(bot, advice=make_advice(M_ADVISED))
         msg = signal.message
-        assert '建议保证金: 936 USDT' in msg
-        assert '无法支撑最少 5 格' in msg
-        assert '保证金提高至 1280 USDT' in msg
-        assert '杠杆提高至 14x' in msg
-        assert '可达上限：3 格' in msg
-        # 不再出现 V2.5 不可行建议「减少网格数量至5格」（修正 D-1，AC-05）
-        assert '减少网格数量至5格' not in msg
-        assert '方案1（保守）' not in msg
-        # 数值复算（与实现同口径 ROUND_CEILING，禁用 Decimal // 负数截断）：
-        # 1280=ceil(5×2558.48/10)，14=ceil(5×2558.48/936)
-        ceil_margin = (P_SAMPLE * 5 / LEV).to_integral_value(rounding=ROUND_CEILING)
-        ceil_leverage = (P_SAMPLE * 5 / M_ADVISED).to_integral_value(rounding=ROUND_CEILING)
-        assert Decimal('1280') == ceil_margin
-        assert Decimal('14') == ceil_leverage
+        # 资金板块与保证金引导板块均展示抬升后的 1280，主推网格数压到 5
+        assert '建议保证金: 1280 USDT' in msg
+        assert '网格数量 5 格（受资本约束）' in msg
+        assert '每格 1.00 张（≥1，满足）' in msg
+        # 彻底联动后 feasibility 变可行，不再出现不可行提醒与省钱方案
+        assert '资金可行性提醒' not in msg
+        assert '无法支撑最少 5 格' not in msg
+        assert '保证金提高至 1280 USDT' not in msg
+        assert '杠杆提高至 14x' not in msg
+        # 1280=ceil(5×2558.48/10)（与实现同口径 ROUND_CEILING）
+        assert Decimal('1280') == (P_SAMPLE * 5 / LEV).to_integral_value(
+            rounding=ROUND_CEILING
+        )
 
     @pytest.mark.asyncio
     async def test_feasible_message_struct(self):
@@ -648,16 +663,65 @@ class TestRunOnceMarginCaliber:
         assert signal.position_valid is True
 
     @pytest.mark.asyncio
-    async def test_infeasible_ncap_zero_hides_reachable_line(self):
-        """N_cap=0：资金连 1 格都不足时，不可行文案不展示「可达上限」行"""
+    async def test_tiny_advice_lifted_to_feasible(self):
+        """回炉修复：建议保证金=1 被抬升到 1280，position_valid 变 True"""
         bot = make_bot()
         signal = await self._run_once(bot, advice=make_advice(Decimal('1')))
-        assert signal.position_valid is False
-        assert signal.capital_feasibility.feasible is False
-        assert '可达上限' not in signal.message
-        assert '无法支撑最少 5 格' in signal.message
-        # 出口方案仍给出（按 N_min 反推）
-        assert '保证金提高至 1280 USDT' in signal.message
+        assert signal.position_valid is True
+        assert signal.capital_feasibility.feasible is True
+        assert signal.margin_used == Decimal('1280')
+        assert '网格数量 5 格' in signal.message
+
+    def test_infeasible_ncap_zero_hides_reachable_line(self):
+        """N_cap=0：资金连 1 格都不足时，不可行文案不展示「可达上限」行（_build_funding_text 直测）"""
+        bot = make_bot()
+        feasibility = CapitalFeasibility(
+            feasible=False, grid_count=7, qty_per_grid=Decimal('0.04'),
+            binding=BINDING_CAPITAL,
+            required_margin=Decimal('1280'), required_leverage=12793,
+        )
+        text = bot._build_funding_text(
+            make_analysis(), sample_struct_params(7), feasibility, Decimal('1')
+        )
+        assert '可达上限' not in text
+        assert '无法支撑最少 5 格' in text
+        assert '保证金提高至 1280 USDT' in text
+
+
+class TestApplyCapitalFloor:
+    """回炉修复：建议保证金资本下限联动（apply_capital_floor）"""
+
+    def test_no_lift_when_floor_below_suggested(self):
+        """floor <= 建议值：原样返回同一对象"""
+        bot = make_bot()
+        advice = make_advice(Decimal('5000'), action=ACTION_NONE)
+        result = bot.margin_advisor.apply_capital_floor(advice, Decimal('1280'))
+        assert result is advice
+        assert result.suggested_margin == Decimal('5000')
+
+    def test_lift_raises_suggested_and_action(self):
+        """floor > 建议值：抬升建议保证金并重算 action/adjust"""
+        bot = make_bot()
+        advice = make_advice(Decimal('936'), action=ACTION_NONE)
+        result = bot.margin_advisor.apply_capital_floor(advice, Decimal('1280'))
+        assert result is not advice
+        assert result.suggested_margin == Decimal('1280')
+        # 1280 vs 当前 500 → ratio 2.56 > increase_ratio → ADD
+        assert result.action == ACTION_ADD
+        assert result.adjust_amount > 0
+        assert result.cooldown_blocked is False
+
+    def test_lift_respects_cooldown_blocked(self):
+        """冷却拦截优先：cooldown_blocked 时抬升后仍不操作"""
+        bot = make_bot()
+        advice = make_advice(Decimal('936'), action=ACTION_ADD)
+        advice.cooldown_blocked = True
+        advice.blocked_direction = ACTION_ADD
+        result = bot.margin_advisor.apply_capital_floor(advice, Decimal('1280'))
+        assert result.suggested_margin == Decimal('1280')
+        assert result.action == ACTION_NONE
+        assert result.blocked_direction == ACTION_ADD
+        assert result.cooldown_blocked is True
 
 
 class TestCapitalConstraintRollback:
@@ -697,7 +761,7 @@ class TestCapitalConstraintRollback:
         config['trading']['margin'] = 2000
         bot = make_bot(config)
         analysis = make_analysis()
-        params, feasibility = await bot._calculate_grid_params(
+        params, feasibility, _effective = await bot._calculate_grid_params(
             'ETHUSDT', analysis, margin=Decimal('2000'), atr_baseline=Decimal('18')
         )
         text = bot._build_legacy_funding_text(analysis, params, feasibility)
