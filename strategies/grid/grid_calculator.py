@@ -976,9 +976,9 @@ class GridCalculator:
         return baseline_atr
 
     def _resolve_min_quantity(self, min_quantity: Optional[Decimal]) -> Decimal:
-        """解析每格最小张数 q_min：None 时读 trading.min_quantity（FR-06，禁止硬编码）"""
+        """解析每格最小下单量 q_min（ETH）：None 时读 trading.min_quantity（FR-06，禁止硬编码）"""
         if min_quantity is None:
-            min_quantity = self.config.get('trading', {}).get('min_quantity', 1)
+            min_quantity = self.config.get('trading', {}).get('min_quantity', 0.01)
         return Decimal(str(min_quantity))
 
     @staticmethod
@@ -1014,35 +1014,6 @@ class GridCalculator:
             rounding=ROUND_FLOOR
         )
         return int(n_cap)
-
-    def min_required_margin(
-        self,
-        price: Decimal,
-        leverage: int,
-        n_min: int,
-        min_quantity: Optional[Decimal] = None
-    ) -> Decimal:
-        """
-        支撑 n_min 格所需的最低保证金（V2.5.5 回炉修复：资本下限联动）
-
-        M_required = ceil(N_min×P×q_min/L)，独立于当前/建议保证金，
-        是「按当前杠杆至少建 N_min 格」所需的最小资金口径。
-
-        Args:
-            price: 当前价格 P
-            leverage: 杠杆 L
-            n_min: 市场状态对应的最小网格数
-            min_quantity: 每格最小张数 q_min（None 时读 trading.min_quantity）
-
-        Returns:
-            最低保证金（输入非法时返回 0，不抛异常）
-        """
-        q_min = self._resolve_min_quantity(min_quantity)
-        if price <= 0 or leverage <= 0 or n_min <= 0 or q_min <= 0:
-            return Decimal('0')
-        return Decimal(str(self._ceil_to_int(
-            Decimal(str(n_min)) * price * q_min / Decimal(str(leverage))
-        )))
 
     def resolve_capital_feasibility(
         self,
@@ -1122,7 +1093,9 @@ class GridCalculator:
 
         # 不可行：按 N_min 反推可达的保证金/杠杆出口（ceil 保证可达）
         qty_at_min = margin * Decimal(str(leverage)) / (price * Decimal(str(n_min)))
-        required_margin = self.min_required_margin(price, leverage, n_min, q_min)
+        required_margin = Decimal(str(self._ceil_to_int(
+            Decimal(str(n_min)) * price * q_min / Decimal(str(leverage))
+        )))
         required_leverage = self._ceil_to_int(
             Decimal(str(n_min)) * price * q_min / margin
         )

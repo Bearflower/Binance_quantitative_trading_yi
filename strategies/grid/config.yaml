@@ -143,8 +143,8 @@ trading:
   # 默认保证金（USDT）
   margin: 500
 
-  # 最小交易张数
-  min_quantity: 1
+  # 每格最小下单量（ETH；1 张=0.01 ETH）
+  min_quantity: 0.01
 
   # 最大持仓数量（同时持有的交易对数量）
   max_positions: 2

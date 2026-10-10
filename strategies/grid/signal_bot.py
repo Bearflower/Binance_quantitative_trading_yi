@@ -181,8 +181,8 @@ class GridSignalBot:
         self.default_leverage = config.get('trading', {}).get('leverage', 10)
         self.default_margin = Decimal(str(config.get('trading', {}).get('margin', 500)))
 
-        # V2.5.5 方案B：每格最小张数 q_min（FR-06，启用原幽灵配置 trading.min_quantity）
-        self.min_quantity = Decimal(str(config.get('trading', {}).get('min_quantity', 1)))
+        # V2.5.5 方案B：每格最小下单量 q_min（ETH，FR-06，启用原幽灵配置 trading.min_quantity）
+        self.min_quantity = Decimal(str(config.get('trading', {}).get('min_quantity', 0.01)))
         # 方案B 总开关；false 时整体回退 V2.5 已知行为（含 FR-01 口径，见设计 4.4）
         self.capital_constraint_enabled = bool(
             config.get('grid', {}).get('capital_constraint', {}).get('enabled', True)
@@ -326,19 +326,12 @@ class GridSignalBot:
             elif state in [MarketState.WEAK_TREND, MarketState.OSCILLATION]:
                 # V2.5.5 FR-01：可行性保证金口径 = 建议保证金；开关关闭时整体回退固定配置值
                 margin_used = self._select_margin_for_feasibility(advice)
-                grid_params, capital_feasibility, effective_margin = await self._calculate_grid_params(
+                grid_params, capital_feasibility = await self._calculate_grid_params(
                     symbol,
                     market_analysis,
                     margin=margin_used,
                     atr_baseline=self.margin_advisor.last_baseline_atr
                 )
-                # 回炉修复：资本下限抬升保证金时，同步回写建议保证金与实际口径
-                if effective_margin > margin_used:
-                    margin_used = effective_margin
-                    if advice is not None:
-                        advice = self.margin_advisor.apply_capital_floor(
-                            advice, effective_margin
-                        )
                 position_valid = capital_feasibility.feasible
                 message = self._generate_signal_message(
                     symbol=symbol,
@@ -353,19 +346,12 @@ class GridSignalBot:
                 # 未知状态，默认震荡处理
                 logger.warning(f"{symbol} 未知市场状态: {state}，默认按震荡处理")
                 margin_used = self._select_margin_for_feasibility(advice)
-                grid_params, capital_feasibility, effective_margin = await self._calculate_grid_params(
+                grid_params, capital_feasibility = await self._calculate_grid_params(
                     symbol,
                     market_analysis,
                     margin=margin_used,
                     atr_baseline=self.margin_advisor.last_baseline_atr
                 )
-                # 回炉修复：资本下限抬升保证金时，同步回写建议保证金与实际口径
-                if effective_margin > margin_used:
-                    margin_used = effective_margin
-                    if advice is not None:
-                        advice = self.margin_advisor.apply_capital_floor(
-                            advice, effective_margin
-                        )
                 position_valid = capital_feasibility.feasible
                 message = self._generate_signal_message(
                     symbol=symbol,
@@ -557,9 +543,7 @@ class GridSignalBot:
             atr_baseline: 基准ATR（V2.5 由保证金引导复用传入，避免重复拉取 K 线）
 
         Returns:
-            (DynamicGridParams, CapitalFeasibility, effective_margin)
-            effective_margin 为资本下限联动后的实际保证金口径（回炉修复），
-            调用方据此回写建议保证金与 margin_used。
+            (DynamicGridParams, CapitalFeasibility)
 
         Raises:
             ValueError: 参数验证失败
@@ -583,23 +567,13 @@ class GridSignalBot:
         )
         n_min, _ = self._state_grid_bounds(market_analysis.state)
 
-        if margin is None:
-            margin = self.default_margin
-
         if not self.capital_constraint_enabled:
-            legacy_params, legacy_feasibility = self._legacy_grid_params(
+            return self._legacy_grid_params(
                 params, market_analysis, atr_baseline, n_min
             )
-            return legacy_params, legacy_feasibility, margin
 
-        # 回炉修复：资本下限联动——建议保证金不得低于支撑 n_min 格的最低保证金
-        min_required = self.grid_calculator.min_required_margin(
-            price=market_analysis.current_price,
-            leverage=self.default_leverage,
-            n_min=n_min,
-            min_quantity=self.min_quantity
-        )
-        effective_margin = margin if margin >= min_required else min_required
+        if margin is None:
+            margin = self.default_margin
 
         # C2 利润率约束（精确口径）
         n_profit_max = self._resolve_profit_cap(params, n_min)
@@ -608,7 +582,7 @@ class GridSignalBot:
         feasibility = self.grid_calculator.resolve_capital_feasibility(
             price=market_analysis.current_price,
             leverage=self.default_leverage,
-            margin=effective_margin,
+            margin=margin,
             n_struct=params.grid_count,
             n_profit_max=n_profit_max,
             n_min=n_min,
@@ -627,7 +601,7 @@ class GridSignalBot:
                     current_price=market_analysis.current_price
                 )
 
-        return params, feasibility, effective_margin
+        return params, feasibility
 
     def _legacy_grid_params(
         self,
@@ -904,9 +878,11 @@ class GridSignalBot:
         """
         生成资金板块文案（V2.5.5 方案B，设计 4.5）
 
-        可行：资金配置三行（杠杆/保证金/每格张数+N_final+绑定约束）；
+        可行：资金配置三行（杠杆/保证金/每格下单量 ETH+N_final+绑定约束）；
         不可行：可达性提醒 + 方案1（加保证金至 M_required）/方案2（加杠杆至 L_required），
         不再输出 V2.5「减少至5格」这类不可达建议（修正 D-1）。
+        O-1（A-review 裁定）：binding=PROFIT 不可行时资本非绑定，抑制「可达上限」行与
+        方案1/2，仅保留区间过窄/波动率过低归因（避免「加资金无法解决」与「提高保证金」自相矛盾）。
         """
         q_min = self.min_quantity
         if feasibility.feasible:
@@ -914,14 +890,22 @@ class GridSignalBot:
             return f"""💰 资金配置
 - 建议杠杆: {self.default_leverage}x
 - 建议保证金: {float(margin_used):.0f} USDT
-- 每格 {float(feasibility.qty_per_grid):.2f} 张（≥{q_min}，满足），网格数量 {feasibility.grid_count} 格（受{binding_label}约束）"""
+- 每格 {float(feasibility.qty_per_grid):.2f} ETH（≥{q_min}，满足），网格数量 {feasibility.grid_count} 格（受{binding_label}约束）"""
 
         n_min, _ = self._state_grid_bounds(market_analysis.state)
         lines = [
             "💰 资金可行性提醒",
             f"当前建议保证金 {float(margin_used):.0f} USDT 无法支撑最少 {n_min} 格"
-            f"（每格仅 {float(feasibility.qty_per_grid):.2f} 张，需 ≥{q_min} 张）。"
+            f"（每格仅 {float(feasibility.qty_per_grid):.3f} ETH，需 ≥{q_min} ETH）。"
         ]
+        # 利润率绑定（区间过窄/波动率过低）：与 D-4 间距提示分开表述（设计 4.6）
+        # O-1：资本非绑定时不展示资本口径的「可达上限」与加保证金/杠杆方案
+        if feasibility.binding == BINDING_PROFIT:
+            lines.append(
+                "区间过窄/波动率过低：即使最少网格也无法满足每格利润率下限，"
+                "增加资金无法解决，建议暂不创建网格。"
+            )
+            return "\n".join(lines)
         # 资本可达上限（仅在至少 1 格时展示）
         n_cap = self.grid_calculator.max_grids_by_capital(
             price=market_analysis.current_price,
@@ -931,12 +915,6 @@ class GridSignalBot:
         )
         if n_cap >= 1:
             lines.append(f"可达上限：{n_cap} 格。")
-        # 利润率绑定（区间过窄/波动率过低）：与 D-4 间距提示分开表述（设计 4.6）
-        if feasibility.binding == BINDING_PROFIT:
-            lines.append(
-                "区间过窄/波动率过低：即使最少网格也无法满足每格利润率下限，"
-                "增加资金无法解决，建议暂不创建网格。"
-            )
         lines.append("建议：")
         lines.append(
             f"- 方案1：将保证金提高至 {feasibility.required_margin} USDT"
@@ -958,8 +936,9 @@ class GridSignalBot:
         """
         方案B 关闭时的 V2.5 资金板块文案（整体回退，设计 4.4）
 
-        复用 resolve_capital_feasibility(enforce_capital=False) 的每格张数，
+        复用 resolve_capital_feasibility(enforce_capital=False) 的每格下单量，
         但有效/无效判定与文案模板完全保持 V2.5 已知行为。
+        ETH 口径下数量可为小数，不输出「取整后N张」段（A-review 9.3 修改点②）。
         """
         margin = self.default_margin
         qty_per_grid = feasibility.qty_per_grid
@@ -967,7 +946,7 @@ class GridSignalBot:
             return f"""💰 资金配置
 - 建议杠杆: {self.default_leverage}x
 - 建议保证金: {float(margin):.0f} USDT
-- 每格{float(qty_per_grid):.2f}张（取整后{int(qty_per_grid)}张）"""
+- 每格{float(qty_per_grid):.2f} ETH"""
 
         price = market_analysis.current_price
         min_margin = (
@@ -975,7 +954,7 @@ class GridSignalBot:
             / Decimal(str(self.default_leverage))
         )
         position_message = (
-            f"每格仅{float(qty_per_grid):.2f}张，不足{self.min_quantity}张。"
+            f"每格仅{float(qty_per_grid):.2f} ETH，不足{self.min_quantity} ETH。"
             f"请将保证金增至{float(min_margin):.0f} USDT，"
             f"或减少网格数量至"
             f"{max(self.min_grid_count, int(float(margin * Decimal(str(self.default_leverage)) / price)))}格"
@@ -1071,7 +1050,7 @@ class GridSignalBot:
 3. 填入以上价格区间、网格数量、网格模式。
 4. 设置杠杆（建议{self.default_leverage}x）、总投入金额（根据您的资金能力）。
 5. 高级设置中，启用"上移/下移"并填入停止价格（如适用），设置止盈止损价格。
-6. 确认创建前请检查每格下单数量≥{self.min_quantity}张。
+6. 确认创建前请检查每格下单数量≥{self.min_quantity} ETH。
 """
 
         # V2.5 保证金引导板块（插入在资金配置与操作指令之间；skipped 时不拼装）
@@ -1083,8 +1062,8 @@ class GridSignalBot:
             if self.capital_constraint_enabled:
                 qty_note = (
                     f"按建议保证金 {float(margin_used):.0f} USDT 计算，"
-                    f"每格 {float(capital_feasibility.qty_per_grid):.2f} 张"
-                    f"（需≥{self.min_quantity} 张）"
+                    f"每格 {float(capital_feasibility.qty_per_grid):.2f} ETH"
+                    f"（需≥{self.min_quantity} ETH）"
                 )
             margin_section = self.margin_advisor.format_section(advice, qty_note=qty_note)
 

@@ -517,55 +517,6 @@ class MarginAdvisor:
             blocked_direction=blocked_direction,
         )
 
-    def apply_capital_floor(self, advice: MarginAdvice, floor_margin: Decimal) -> MarginAdvice:
-        """
-        资本下限联动（V2.5.5 回炉修复）：把建议保证金抬升到至少支撑 n_min 格的最低保证金
-
-        当五因子建议值低于资本下限时，抬升 suggested_margin 到 floor_margin，
-        并重算 action / adjust_amount，保证「建议保证金」与网格可行性口径一致。
-        冷却拦截优先级最高：cooldown_blocked 时保持 action=NONE 与 blocked_direction，
-        不因资本抬升而解除冷却。floor_margin <= 建议值时原样返回同一对象。
-
-        Args:
-            advice: 五因子保证金引导建议
-            floor_margin: 资本下限（min_required_margin，支撑 n_min 格的最低保证金）
-
-        Returns:
-            抬升后的 MarginAdvice（未抬升时返回原对象）
-        """
-        if floor_margin <= advice.suggested_margin:
-            return advice
-
-        current = advice.current_margin
-        if advice.cooldown_blocked:
-            action = ACTION_NONE
-            adjust_amount = Decimal('0')
-            blocked_direction = advice.blocked_direction
-        elif current == Decimal('0'):
-            action = ACTION_NONE
-            adjust_amount = Decimal('0')
-            blocked_direction = None
-        else:
-            action = self._evaluate_action(floor_margin, current)
-            adjust_amount = Decimal('0')
-            if action != ACTION_NONE:
-                adjust_amount = min(abs(floor_margin - current), self._max_step)
-            blocked_direction = None
-
-        return MarginAdvice(
-            suggested_margin=floor_margin,
-            current_margin=advice.current_margin,
-            action=action,
-            adjust_amount=adjust_amount,
-            coeffs=advice.coeffs,
-            funding_rate=advice.funding_rate,
-            btc_state=advice.btc_state,
-            divergence_line=advice.divergence_line,
-            skipped=advice.skipped,
-            cooldown_blocked=advice.cooldown_blocked,
-            blocked_direction=blocked_direction,
-        )
-
     async def _maybe_check_divergence(self, symbol: str, analysis: MarketAnalysis,
                                       btc_state: Optional[MarketState]) -> Optional[str]:
         """BTC 背离检测（仅趋势态且 BTC 检测成功时执行），失败返回 None"""
