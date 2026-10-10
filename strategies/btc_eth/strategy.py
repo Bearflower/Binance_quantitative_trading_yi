@@ -5543,9 +5543,12 @@ class BTCEthStrategy:
         direction = 'LONG' if position_amt > 0 else 'SHORT'
         current_quantity = Decimal(str(abs(position_amt)))
 
-        # 归属守卫（方案C）：不接管对家策略开出的仓位
+        # 归属守卫（方案C）：不接管对家策略开出的仓位。
+        # status_filter=False：trade_records 的开仓单 status 恒为 'NEW'（成交后不更新为
+        # FILLED），默认 True 会使归属查询恒为 None、守卫误拒全部接管；与上报路径
+        # filter_owned_positions 同口径。
         try:
-            owner = await resolve_position_owner(self.db_manager, symbol)
+            owner = await resolve_position_owner(self.db_manager, symbol, status_filter=False)
         except Exception as e:
             logger.warning("接管持仓：归属判定异常，跳过", symbol=symbol, error=str(e))
             return None

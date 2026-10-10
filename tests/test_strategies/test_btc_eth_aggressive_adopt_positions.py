@@ -99,13 +99,15 @@ def make_orders(symbol: str, stop_count: int = 1, tp_count: int = 2) -> list:
     return orders
 
 
-def patch_env(module: str, orders: list, owner):
+def patch_env(module: str, orders: list, owner, owner_mock=None):
     """patch 掉模块级 get_open_orders / resolve_position_owner（避免真实 DB 查询）"""
+    if owner_mock is None:
+        owner_mock = AsyncMock(return_value=owner)
     stack = ExitStack()
     stack.enter_context(patch(
         f'{module}.get_open_orders', new=AsyncMock(return_value=orders)))
     stack.enter_context(patch(
-        f'{module}.resolve_position_owner', new=AsyncMock(return_value=owner)))
+        f'{module}.resolve_position_owner', new=owner_mock))
     return stack
 
 
@@ -128,10 +130,13 @@ class TestAdoptPositionsAggressive:
         s = build_strategy('aggressive')
         sym = s.symbols[0]
         s.binance.get_position = AsyncMock(return_value=[make_pos(sym)])
+        owner_mock = AsyncMock(return_value='btc_eth_aggressive')
 
-        with patch_env(_AGGR_MODULE, make_orders(sym), 'btc_eth_aggressive'):
+        with patch_env(_AGGR_MODULE, make_orders(sym), 'btc_eth_aggressive', owner_mock=owner_mock):
             await s._adopt_untracked_exchange_positions()
 
+        # 归属守卫必须用 status_filter=False（开仓记录 status 恒为 NEW）
+        owner_mock.assert_awaited_once_with(s.db_manager, sym, status_filter=False)
         assert sym in s.positions
         ps = s.positions[sym]
         assert ps.direction == 'LONG'
@@ -279,10 +284,12 @@ class TestAdoptPositionsBase:
         s = build_strategy('base')
         sym = s.symbols[0]
         s.binance.get_position = AsyncMock(return_value=[make_pos(sym)])
+        owner_mock = AsyncMock(return_value='btc_eth')
 
-        with patch_env(_BASE_MODULE, make_orders(sym), 'btc_eth'):
+        with patch_env(_BASE_MODULE, make_orders(sym), 'btc_eth', owner_mock=owner_mock):
             await s._adopt_untracked_exchange_positions()
 
+        owner_mock.assert_awaited_once_with(s.db_manager, sym, status_filter=False)
         assert sym in s.positions
         ps = s.positions[sym]
         assert ps.direction == 'LONG'
