@@ -2283,6 +2283,9 @@ class HRSStrategy(BaseStrategy):
                     quantity DOUBLE PRECISION,
                     entry_time BIGINT,
                     algo_ids JSONB,            -- FR-06: 条件单 algoId 映射 {role: algoId}
+                    remaining_quantity DOUBLE PRECISION,  -- 剩余数量（随止盈缩减）
+                    target1_reached BOOLEAN,              -- TP1 是否达成
+                    target2_reached BOOLEAN,              -- TP2 是否达成
                     PRIMARY KEY (symbol, direction)
                 )
             """)
@@ -2290,6 +2293,18 @@ class HRSStrategy(BaseStrategy):
             # FR-06: 幂等迁移（存量库升级关键：为 hrs_positions 补齐 algo_ids 列）
             await self.db.execute_ddl("""
                 ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS algo_ids JSONB
+            """)
+
+            # 2026-10-10: 幂等迁移（持久化 remaining_quantity 与止盈目标标记，
+            # 避免重启后目标标记丢失、remaining_quantity 与交易所不自洽）
+            await self.db.execute_ddl("""
+                ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS remaining_quantity DOUBLE PRECISION
+            """)
+            await self.db.execute_ddl("""
+                ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS target1_reached BOOLEAN
+            """)
+            await self.db.execute_ddl("""
+                ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS target2_reached BOOLEAN
             """)
 
             await self.db.execute_ddl("""
@@ -2416,7 +2431,8 @@ class HRSStrategy(BaseStrategy):
 
             # 尝试从独立表恢复
             positions_rows = await self.db.fetch_all(
-                "SELECT symbol, direction, entry_price, quantity, entry_time, algo_ids FROM hrs.hrs_positions"
+                "SELECT symbol, direction, entry_price, quantity, entry_time, algo_ids, "
+                "remaining_quantity, target1_reached, target2_reached FROM hrs.hrs_positions"
             )
             blacklist_rows = await self.db.fetch_all(
                 "SELECT symbol, reason FROM hrs.hrs_blacklist"
@@ -2451,6 +2467,20 @@ class HRSStrategy(BaseStrategy):
                         if isinstance(algo_ids, str):
                             algo_ids = json.loads(algo_ids)
                         pos["algo_ids"] = algo_ids or {}
+
+                    # 2026-10-10: 恢复 remaining_quantity 与止盈目标标记。存量行为
+                    # NULL 时保持 add_position 的默认值（remaining=开仓量、标记为 False）。
+                    if pos:
+                        if row.get("remaining_quantity") is not None:
+                            pos["remaining_quantity"] = float(row["remaining_quantity"])
+                            # 跟踪量对齐剩余数量，避免重启后把已缩量的持仓误判为止盈待成交
+                            self.position_manager.sync_tracked_qty(
+                                row["symbol"], pos["remaining_quantity"]
+                            )
+                        if row.get("target1_reached") is not None:
+                            pos["target1_reached"] = bool(row["target1_reached"])
+                        if row.get("target2_reached") is not None:
+                            pos["target2_reached"] = bool(row["target2_reached"])
 
                 # 恢复黑名单
                 blacklist_symbols = set()
@@ -2883,19 +2913,28 @@ class HRSStrategy(BaseStrategy):
                     entry_time_ts = now_ts
                 # FR-06: 持久化 algo_ids 映射（JSONB）
                 algo_ids_json = json.dumps(pos.get("algo_ids", {}), ensure_ascii=False)
+                # 2026-10-10: 一并持久化 remaining_quantity 与止盈目标标记
+                entry_quantity = pos.get("entry_quantity", 0)
+                remaining_quantity = pos.get("remaining_quantity", entry_quantity)
                 await self.db.execute(
                     """
-                    INSERT INTO hrs.hrs_positions (symbol, direction, entry_price, quantity, entry_time, algo_ids)
-                    VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+                    INSERT INTO hrs.hrs_positions
+                        (symbol, direction, entry_price, quantity, entry_time, algo_ids,
+                         remaining_quantity, target1_reached, target2_reached)
+                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
                     ON CONFLICT (symbol, direction) DO UPDATE
-                    SET entry_price = $3, quantity = $4, entry_time = $5, algo_ids = $6::jsonb
+                    SET entry_price = $3, quantity = $4, entry_time = $5, algo_ids = $6::jsonb,
+                        remaining_quantity = $7, target1_reached = $8, target2_reached = $9
                     """,
                     symbol,
                     pos.get("direction", ""),
                     pos.get("entry_price", 0),
-                    pos.get("entry_quantity", 0),
+                    entry_quantity,
                     entry_time_ts,
                     algo_ids_json,
+                    remaining_quantity,
+                    bool(pos.get("target1_reached", False)),
+                    bool(pos.get("target2_reached", False)),
                 )
 
             # 4. 保存活跃币种到 hrs_active_symbols
@@ -3311,14 +3350,24 @@ class HRSStrategy(BaseStrategy):
                 return
 
             # 交易所持仓量明显小于初始开仓量 → 说明 TP1 已部分成交
-            if exchange_qty < entry_quantity * self._tp1_filled_ratio:
+            if not target1_reached and exchange_qty < entry_quantity * self._tp1_filled_ratio:
+                # 2026-10-10 修复：统一走 mark_target_reached（既置标记又按比例
+                # 缩减 remaining_quantity），避免此前直接置 target1_reached 绕过
+                # 比例缩减，造成 remaining_quantity 与目标标记不自洽（上报量失真，
+                # 且下一轮 detect 会把同一段减仓误判为 TP2）。
+                self.position_manager.mark_target_reached(symbol, 1)
                 target1_reached = True
-                pos["target1_reached"] = True
                 logger.info(
                     "检测到TP1已成交，更新状态",
                     symbol=symbol,
                     entry_quantity=entry_quantity,
                     exchange_qty=exchange_qty,
+                )
+                # 跟踪基准对齐「模型认为的剩余量」，而非直接对齐交易所量：
+                # 若停机期间 TP2 也已成交，交易所量会明显低于该基准，下一轮
+                # detect 仍能识别出 TP2，避免把未成交的目标永久漏记。
+                self.position_manager.sync_tracked_qty(
+                    symbol, pos.get("remaining_quantity", exchange_qty)
                 )
 
             # ATR为0时尝试重新计算

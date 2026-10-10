@@ -640,6 +640,15 @@ class PositionManager:
 
         return None
 
+    def sync_tracked_qty(self, symbol: str, qty: float) -> None:
+        """将「上次跟踪数量」同步为交易所实际持仓量。
+
+        用于补单等已按交易所量对账本地模型的场景：对账后调用，避免紧接其后的
+        detect_take_profit_fills 把同一段减仓重复判定为止盈目标成交，从而二次
+        缩减 remaining_quantity（造成本地剩余量与交易所不自洽）。
+        """
+        self._last_tracked_qty[symbol] = qty
+
     def _detect_target_filled(
         self,
         symbol: str,

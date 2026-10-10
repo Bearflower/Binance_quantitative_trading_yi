@@ -577,6 +577,9 @@ class NewCoinStrategy(BaseStrategy):
         if self.drawdown_pause_until:
             if datetime.now(timezone.utc) < self.drawdown_pause_until:
                 logger.warning(f"回撤熔断中，暂停至 {self.drawdown_pause_until}")
+                # 2026-10-10 修复：熔断只应暂停「开仓」，持仓仍须监控（移动止盈/
+                # 时间止损）并同步上报，否则熔断期间看板持仓同样停更。
+                await self._run_cycle_tail()
                 return
             else:
                 logger.info("回撤熔断期已结束，恢复交易")
@@ -597,6 +600,12 @@ class NewCoinStrategy(BaseStrategy):
 
         if not new_coins:
             logger.debug("未检测到新币")
+            # 2026-10-10 修复：无新币周期也要监控持仓并同步上报，否则
+            # 移动止盈/时间止损不会运行，且 strategy_open_positions /
+            # strategy_states 会停更（此前只有「有新币」的周期才走到下面的
+            # 监控与保存逻辑），导致看板数量/保证金与实际不一致
+            # （如 VKTXUSDT 上报 2.47 而交易所实为 1.07）。
+            await self._run_cycle_tail()
             return
 
         logger.info(f"检测到 {len(new_coins)} 个新币")
@@ -840,10 +849,24 @@ class NewCoinStrategy(BaseStrategy):
             except Exception as e:
                 logger.warning(f"发送评分汇总通知失败: {e}")
 
-        # 4. 监控现有持仓
+        # 4~5. 监控现有持仓 + 周报（与各提前返回分支共用，保证每周期都执行）
+        await self._run_cycle_tail()
+
+    async def _run_cycle_tail(self) -> None:
+        """周期收尾：监控现有持仓 + 每周期无条件同步持仓上报 + 周报检查。
+
+        2026-10-10 修复：原逻辑只位于 _execute_cycle 正常分支末尾，提前 return
+        的分支（无新币、回撤熔断暂停）会跳过，导致持仓监控（移动止盈/时间止损）
+        不运行、strategy_open_positions / strategy_states 停更。抽为独立方法后，
+        供「有新币」「无新币」「熔断暂停」各路径统一调用。
+        """
+        # 4. 监控现有持仓（移动止盈、时间止损、平仓检测等）
         await self._monitor_positions()
 
-        # 5. 检查是否需要发送周报（周一0点UTC，防重复：记录上次发送日期）
+        # 每周期无条件保存状态并同步持仓上报，避免看板持仓停更
+        await self._save_state()
+
+        # 5. 周报（周一0点UTC，防重复：记录上次发送日期）
         now = datetime.now(timezone.utc)
         if now.weekday() == 0 and now.hour == 0:
             last_review_date = getattr(self, '_last_weekly_review_date', None)

@@ -270,3 +270,116 @@ class TestGetExchangePositionQty:
         )
 
         assert await strategy._get_exchange_position_qty(SYMBOL) == pytest.approx(30.0)
+
+
+# ============================================================================
+# _replenish_single_position 的 TP1 标记（2026-10-10 修复）
+# ============================================================================
+
+class TestReplenishTp1Mark:
+    """TP1 标记必须走 mark_target_reached，不得直接置 pos['target1_reached']"""
+
+    @pytest.mark.asyncio
+    async def test_tp1_detected_routes_through_mark_target_reached(self):
+        """交易所量明显小于开仓量 → 调用 mark_target_reached(1)，跟踪基准对齐剩余量"""
+        strategy = _make_strategy()
+        pos = _make_position(
+            entry_quantity=100.0,
+            remaining_quantity=100.0,
+            target1_reached=False,
+            target2_reached=False,
+        )
+        strategy.position_manager.get_position.return_value = pos
+
+        def _mark(sym, target):
+            """复刻真实 mark_target_reached 的比例缩减，供跟踪基准断言"""
+            pos["target1_reached"] = True
+            pos["remaining_quantity"] *= 0.7
+
+        strategy.position_manager.mark_target_reached.side_effect = _mark
+        strategy.binance_client.get_position = AsyncMock(
+            return_value=[{"symbol": SYMBOL, "positionAmt": "-70.000"}]
+        )
+
+        await strategy._replenish_single_position(SYMBOL)
+
+        strategy.position_manager.mark_target_reached.assert_called_once_with(SYMBOL, 1)
+        strategy.position_manager.sync_tracked_qty.assert_called_once_with(
+            SYMBOL, pytest.approx(70.0)
+        )
+
+    @pytest.mark.asyncio
+    async def test_tp1_mark_syncs_to_remaining_not_exchange(self):
+        """停机期间 TP1+TP2 均成交时，跟踪基准应取模型剩余量(70)而非交易所量(30)，
+        否则下一轮 detect 无法识别出 TP2，造成目标永久漏记"""
+        strategy = _make_strategy()
+        pos = _make_position(
+            entry_quantity=100.0,
+            remaining_quantity=100.0,
+            target1_reached=False,
+            target2_reached=False,
+        )
+        strategy.position_manager.get_position.return_value = pos
+
+        def _mark(sym, target):
+            pos["target1_reached"] = True
+            pos["remaining_quantity"] *= 0.7
+
+        strategy.position_manager.mark_target_reached.side_effect = _mark
+        strategy.binance_client.get_position = AsyncMock(
+            return_value=[{"symbol": SYMBOL, "positionAmt": "-30.000"}]
+        )
+
+        await strategy._replenish_single_position(SYMBOL)
+
+        strategy.position_manager.sync_tracked_qty.assert_called_once_with(
+            SYMBOL, pytest.approx(70.0)
+        )
+
+    @pytest.mark.asyncio
+    async def test_no_tp1_no_qty_sync(self):
+        """TP1 未成交时不得改动跟踪基准（否则会掩盖交易所减仓）"""
+        strategy = _make_strategy()
+        strategy.position_manager.get_position.return_value = _make_position(
+            entry_quantity=100.0,
+            remaining_quantity=100.0,
+            target1_reached=False,
+            target2_reached=False,
+        )
+        strategy.binance_client.get_position = AsyncMock(
+            return_value=[{"symbol": SYMBOL, "positionAmt": "-100.000"}]
+        )
+
+        await strategy._replenish_single_position(SYMBOL)
+
+        strategy.position_manager.mark_target_reached.assert_not_called()
+        strategy.position_manager.sync_tracked_qty.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_tp1_already_reached_not_remark(self):
+        """target1_reached 已为 True 时不得重复标记（避免 remaining 二次缩减）"""
+        strategy = _make_strategy()
+        strategy.position_manager.get_position.return_value = _make_position(
+            entry_quantity=100.0,
+            remaining_quantity=70.0,
+            target1_reached=True,
+        )
+        strategy.binance_client.get_position = AsyncMock(
+            return_value=[{"symbol": SYMBOL, "positionAmt": "-70.000"}]
+        )
+
+        await strategy._replenish_single_position(SYMBOL)
+
+        strategy.position_manager.mark_target_reached.assert_not_called()
+
+
+class TestSyncTrackedQty:
+    """PositionManager.sync_tracked_qty 覆盖跟踪数量"""
+
+    def test_sync_tracked_qty_updates_value(self):
+        pm = PositionManager(CONFIG, binance_api=MagicMock(), db=None)
+        pm._last_tracked_qty[SYMBOL] = 100.0
+
+        pm.sync_tracked_qty(SYMBOL, 48.0)
+
+        assert pm._last_tracked_qty[SYMBOL] == pytest.approx(48.0)
