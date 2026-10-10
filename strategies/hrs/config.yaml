@@ -418,6 +418,8 @@ trading:
     qty_tolerance_absolute: 0.0001  # 数量容差绝对值
     zero_qty_threshold: 0.0001   # 持仓数量低于该值视为全部平仓/零持仓
     tp1_filled_ratio: 0.9        # 交易所持仓量 < 初始开仓量 × 该比例 视为 TP1 已成交
+    query_max_retries: 1         # 交易所持仓量查询瞬时失败的轻量重试次数（避免一次抖动跳过整轮）
+    query_retry_delay_seconds: 1.0  # 上述重试的间隔秒数
 
   # FR-03/FR-04: 保护单管理开关
   entry:

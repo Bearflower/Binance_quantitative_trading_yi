@@ -159,6 +159,10 @@ class HRSStrategy(BaseStrategy):
         position_detection_config = hrs_trading_config.get("position_detection", {})
         self._zero_qty_threshold = position_detection_config.get("zero_qty_threshold", 0.0001)
         self._tp1_filled_ratio = position_detection_config.get("tp1_filled_ratio", 0.9)
+        # 交易所持仓量查询的轻量重试（从配置读取，禁止硬编码）：
+        # 瞬时取数失败时重试，避免因一次抖动就跳过整轮监控/补单
+        self._position_query_max_retries = position_detection_config.get("query_max_retries", 1)
+        self._position_query_retry_delay = position_detection_config.get("query_retry_delay_seconds", 1.0)
 
         # ATR 配置：重新计算所需最少 K 线数（从配置读取，禁止硬编码）
         self._atr_min_recalc_klines = config.get("atr", {}).get("min_recalc_klines", 15)
@@ -1843,6 +1847,33 @@ class HRSStrategy(BaseStrategy):
             )
             return False
 
+    async def _get_exchange_position_qty(self, symbol: str) -> Optional[float]:
+        """查询交易所该币种的实际持仓数量（绝对值）
+
+        作为「是否仍有持仓」的唯一判据：
+        - 返回 >0：确认仍有持仓
+        - 返回 0.0：确认已无持仓
+        - 返回 None：多次取数均失败，调用方应跳过本轮下单，避免对已不存在的
+          持仓下 closePosition 条件单触发 -4509
+
+        瞬时取数失败会按配置做轻量重试，尽量不因一次抖动跳过整轮监控/补单。
+        """
+        last_err: Optional[Exception] = None
+        for attempt in range(self._position_query_max_retries + 1):
+            try:
+                positions_data = await self.binance_client.get_position(symbol)
+                for pos_data in positions_data:
+                    qty = abs(float(pos_data.get("positionAmt", 0)))
+                    if qty > 0:
+                        return qty
+                return 0.0
+            except Exception as e:
+                last_err = e
+                if attempt < self._position_query_max_retries:
+                    await asyncio.sleep(self._position_query_retry_delay)
+        logger.warning("获取交易所持仓量失败，跳过本轮补单", symbol=symbol, error=str(last_err))
+        return None
+
     async def _monitor_positions(self) -> None:
         """监控持仓：移动止盈、时间止损"""
         positions = self.position_manager.get_all_positions()
@@ -1864,16 +1895,18 @@ class HRSStrategy(BaseStrategy):
                 self.position_manager.update_best_price(symbol, current_price)
 
                 # P1-6: 使用 detect_take_profit_fills() 检测止盈单成交
-                try:
-                    positions_data = await self.binance_client.get_position(symbol)
-                    pos_amt = 0.0
-                    for pos_data in positions_data:
-                        pos_amt = abs(float(pos_data.get("positionAmt", 0)))
-                        if pos_amt > 0:
-                            break
-
-                    # 调用 position_manager 的止盈检测方法
-                    tp_result = self.position_manager.detect_take_profit_fills(symbol, pos_amt)
+                # 2026-10-10 修复：先取交易所实际持仓，作为「是否仍有持仓」的唯一判据。
+                # 取数失败（None）时不再盲目补单，避免对已不存在的持仓下 closePosition 条件单（-4509）。
+                position_open = False
+                tp_result: Optional[int] = None
+                pos_amt = await self._get_exchange_position_qty(symbol)
+                if pos_amt is not None:
+                    position_open = pos_amt > 0
+                    try:
+                        # 调用 position_manager 的止盈检测方法
+                        tp_result = self.position_manager.detect_take_profit_fills(symbol, pos_amt)
+                    except Exception as e:
+                        logger.warning("止盈成交检测失败", symbol=symbol, error=str(e))
 
                     if tp_result == 0:
                         # 全部平仓——计算 TP1、TP2 和剩余部分的 PnL 并回写
@@ -1893,14 +1926,6 @@ class HRSStrategy(BaseStrategy):
                         if self._should_unregister(symbol):
                             await self._unregister_single_symbol(symbol)
                         continue  # 跳过后续检查
-                    elif tp_result == 1:
-                        # P1-6: TP1成交后，补充TP2订单（重启后可能丢失）
-                        await self._replenish_single_position(symbol)
-                    elif tp_result == 2:
-                        # V2.7: TP2成交后，补充剩余持仓移动止盈保护单
-                        await self._replenish_single_position(symbol)
-                except Exception as e:
-                    logger.debug("获取持仓变化失败", symbol=symbol, error=str(e))
 
                 # V2.11: 移动止损定期更新（tp2_reached后每次监控循环重建）
                 # 根因：update_best_price() 每次循环都更新内存中的 best_price，
@@ -1908,12 +1933,17 @@ class HRSStrategy(BaseStrategy):
                 # 之后不再更新，导致移动止损"挂在高位不动"。
                 # 修复：target2_reached=True 时每次 monitor 都重建，
                 # best_price 已在 line 1761 更新过，所以重建出的止损价是最新的。
-                if pos.get("target2_reached", False):
+                # 2026-10-10 修复：仅当确认交易所仍有持仓（position_open）时才补单，
+                # 否则对幽灵持仓反复下 closePosition 单会持续触发 -4509。
+                need_replenish = position_open and (
+                    tp_result in (1, 2) or pos.get("target2_reached", False)
+                )
+                if need_replenish:
                     try:
                         await self._replenish_single_position(symbol)
                     except Exception as replenish_err:
                         logger.warning(
-                            "移动止损重建失败（下次循环重试）",
+                            "保护单补充失败（下次循环重试）",
                             symbol=symbol,
                             error=str(replenish_err),
                         )
@@ -3250,26 +3280,46 @@ class HRSStrategy(BaseStrategy):
                 logger.warning("持仓数据无效，跳过补单", symbol=symbol)
                 return
 
-            # 补单前检查交易所实际持仓量，更新 target1_reached 状态
-            # 避免重启后 TP1 已成交但数据库状态未同步
-            try:
-                positions_data = await self.binance_client.get_position(symbol)
-                for pos_data in positions_data:
-                    exchange_qty = abs(float(pos_data.get("positionAmt", 0)))
-                    if exchange_qty > 0:
-                        # 如果交易所持仓量明显小于初始开仓量(>10%差异)，说明 TP1 已部分成交
-                        if exchange_qty < entry_quantity * self._tp1_filled_ratio:
-                            target1_reached = True
-                            pos["target1_reached"] = True
-                            logger.info(
-                                "检测到TP1已成交，更新状态",
-                                symbol=symbol,
-                                entry_quantity=entry_quantity,
-                                exchange_qty=exchange_qty,
-                            )
-                        break
-            except Exception as e:
-                logger.debug("获取交易所持仓量失败", symbol=symbol, error=str(e))
+            # 补单前检查交易所实际持仓量：既用于更新 target1_reached，也作为
+            # 「是否仍有持仓」的判据。交易所已无持仓时清理本地幽灵持仓并撤单，
+            # 避免对其下 closePosition 条件单反复触发 -4509（2026-10-10 修复）。
+            exchange_qty = await self._get_exchange_position_qty(symbol)
+            if exchange_qty is None:
+                return
+
+            if exchange_qty <= self.position_manager.zero_qty_threshold:
+                logger.warning(
+                    "交易所已无该币持仓，清理本地幽灵持仓并撤单",
+                    symbol=symbol,
+                    direction=direction,
+                )
+                # 与 _monitor_positions 全平路径对齐：先回写已实现盈亏，避免在启动阶段
+                # （_replenish_all_positions）清理幽灵持仓时丢失该笔 PnL 记录。
+                try:
+                    ticker = await self.binance_client.get_ticker(symbol)
+                    ghost_price = float(ticker.get("lastPrice", 0))
+                except Exception as e:
+                    ghost_price = entry_price  # 取价失败时以开仓价兜底（理论 PnL 趋近 0）
+                    logger.warning("取价失败，幽灵平仓以开仓价兜底", symbol=symbol, error=str(e))
+                await self._writeback_pnl_for_full_close(
+                    symbol=symbol, direction=direction, entry_price=entry_price,
+                    entry_quantity=entry_quantity, atr=atr, current_price=ghost_price, pos=pos,
+                )
+                await self.position_manager.cancel_all_orders(symbol)
+                self.position_manager.remove_position(symbol)
+                await self._save_state()
+                return
+
+            # 交易所持仓量明显小于初始开仓量 → 说明 TP1 已部分成交
+            if exchange_qty < entry_quantity * self._tp1_filled_ratio:
+                target1_reached = True
+                pos["target1_reached"] = True
+                logger.info(
+                    "检测到TP1已成交，更新状态",
+                    symbol=symbol,
+                    entry_quantity=entry_quantity,
+                    exchange_qty=exchange_qty,
+                )
 
             # ATR为0时尝试重新计算
             if atr <= 0:

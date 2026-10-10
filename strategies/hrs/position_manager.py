@@ -700,3 +700,9 @@ class PositionManager:
             if isinstance(et, str):
                 p["entry_time"] = datetime.fromisoformat(et)
             self._positions[symbol] = p
+            # 2026-10-10 修复：同步恢复上次跟踪数量。否则重启后首轮
+            # detect_take_profit_fills 会走「首次跟踪」分支（last_qty 为 None），
+            # 无法识别「已经全部平仓」的持仓，导致幽灵持仓残留并反复触发 -4509。
+            self._last_tracked_qty[symbol] = p.get(
+                "remaining_quantity", p.get("entry_quantity", 0)
+            )
