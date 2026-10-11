@@ -614,14 +614,8 @@ class MarginAdvisor:
             )
         return lines
 
-    def _tail_lines(self, advice: MarginAdvice, qty_note: Optional[str] = None) -> list:
-        """尾部细节行：因子/资金费率/BTC一致性/冷却/背离/下单注意
-
-        Args:
-            qty_note: 由 signal_bot 注入的实际每格张数注意行（V2.5.5 方案B，
-                      设计 4.5）；None 时保持 V2.5 固定文案。
-                      由调用方注入以保持 MarginAdvisor 不反向依赖网格可行性。
-        """
+    def _tail_lines(self, advice: MarginAdvice) -> list:
+        """尾部细节行：因子/资金费率/BTC一致性/冷却/背离/下单注意"""
         lines = []
         # 因子行（状态描述按 MarketState 枚举 + ADX 细分推导，与 _state_coeff 一致）
         c = advice.coeffs
@@ -646,29 +640,22 @@ class MarginAdvisor:
                 f"- 说明: 距上次{verb}未满{float(self._cooldown_hours):.0f}h冷却期，"
                 "本次仅提示不操作"
             )
-        else:
-            if qty_note:
-                # V2.5.5（设计 4.5）：引用按建议保证金复算的实际每格张数
-                lines.append(f"- 注意: {qty_note}")
-            else:
-                _, verb = self._action_texts(advice.action)
-                lines.append(f"- 注意: {verb}后请确认每格下单张数≥1张")
+        # 目标②去重：删除整个 qty_note 展示块（if qty_note: 的 V2.5.5 ETH 口径行
+        # 与 else 的 V2.5 「每格下单张数」固定文案）。每格量已归校验板块，
+        # 钱板块不再重复展示。signal_bot 侧已删除 qty_note 注入。
         return lines
 
-    def format_section(self, advice: MarginAdvice, qty_note: Optional[str] = None) -> str:
+    def format_section(self, advice: MarginAdvice) -> str:
         """
         格式化保证金引导板块（纯文本，行序与需求推送模板一致）
 
         标题由动作决定（建议加码/建议减码/清仓/无需调整），
         冷却拦截时显示「冷却中，暂不操作」并附加说明行。
         依次为：标题、保证金、调整幅度、因子明细、尾部细节行。
-
-        Args:
-            qty_note: 实际每格张数注意行（V2.5.5 由 signal_bot 注入，None 保持 V2.5 文案）
         """
         title = self._section_title(advice)
         lines = [f"💰 保证金引导（{title}）"]
         lines += self._margin_lines(advice)
         lines += self._action_lines(advice)
-        lines += self._tail_lines(advice, qty_note=qty_note)
+        lines += self._tail_lines(advice)
         return "\n".join(lines)

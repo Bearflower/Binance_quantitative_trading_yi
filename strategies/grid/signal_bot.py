@@ -887,25 +887,26 @@ class GridSignalBot:
         q_min = self.min_quantity
         if feasibility.feasible:
             binding_label = self._BINDING_LABELS.get(feasibility.binding, '结构')
+            # 目标②去重：删「- 建议保证金」行（M 归钱板块），改承接语「按以上保证金」
             return f"""💰 资金配置
 - 建议杠杆: {self.default_leverage}x
-- 建议保证金: {float(margin_used):.0f} USDT
-- 每格 {float(feasibility.qty_per_grid):.2f} ETH（≥{q_min}，满足），网格数量 {feasibility.grid_count} 格（受{binding_label}约束）"""
+- 按以上保证金，每格 {float(feasibility.qty_per_grid):.2f} ETH（≥{q_min}，满足），可开 {feasibility.grid_count} 格（受{binding_label}约束）"""
 
+        # 目标①：PROFIT 不可行——首行即利润率归因，跳过资本口径首行
+        # （CAPITAL/INFEASIBLE 等非 PROFIT 分支继续走资本口径 + 可达上限 + 方案1/2）
+        if feasibility.binding == BINDING_PROFIT:
+            return "\n".join([
+                "💰 资金可行性提醒",
+                "区间过窄/波动率过低：当前网格每格利润率无法达到下限，"
+                "即使减少网格数也无法满足，增加资金无法解决，建议暂不创建网格。",
+            ])
+        # CAPITAL 等非 PROFIT 不可行：保持资本口径（首行 + 可达上限 + 方案1/2）
         n_min, _ = self._state_grid_bounds(market_analysis.state)
         lines = [
             "💰 资金可行性提醒",
             f"当前建议保证金 {float(margin_used):.0f} USDT 无法支撑最少 {n_min} 格"
             f"（每格仅 {float(feasibility.qty_per_grid):.3f} ETH，需 ≥{q_min} ETH）。"
         ]
-        # 利润率绑定（区间过窄/波动率过低）：与 D-4 间距提示分开表述（设计 4.6）
-        # O-1：资本非绑定时不展示资本口径的「可达上限」与加保证金/杠杆方案
-        if feasibility.binding == BINDING_PROFIT:
-            lines.append(
-                "区间过窄/波动率过低：即使最少网格也无法满足每格利润率下限，"
-                "增加资金无法解决，建议暂不创建网格。"
-            )
-            return "\n".join(lines)
         # 资本可达上限（仅在至少 1 格时展示）
         n_cap = self.grid_calculator.max_grids_by_capital(
             price=market_analysis.current_price,
@@ -1042,36 +1043,32 @@ class GridSignalBot:
                 market_analysis, grid_params, capital_feasibility
             )
 
-        # 操作指令
-        operation_text = f"""
-💡 操作指令：
-1. 登录币安APP → 永续合约 → 策略交易 → 运行中，终止当前 {symbol} 网格（如有）。
-2. 点击"创建网格" → 合约网格。
-3. 填入以上价格区间、网格数量、网格模式。
-4. 设置杠杆（建议{self.default_leverage}x）、总投入金额（根据您的资金能力）。
-5. 高级设置中，启用"上移/下移"并填入停止价格（如适用），设置止盈止损价格。
-6. 确认创建前请检查每格下单数量≥{self.min_quantity} ETH。
-"""
+        # 目标②：删除「💡 操作指令」板块（用户明确不需要）
+        # 操作指令第 6 行的「每格下单量 ≥ 0.01 ETH」已被校验板块「每格 qty（≥q_min 满足/需≥q_min）」吸收
 
-        # V2.5 保证金引导板块（插入在资金配置与操作指令之间；skipped 时不拼装）
-        # V2.5.5：尾部「每格张数」注意行由 signal_bot 注入可行性结果（设计 4.5），
-        # 保持 MarginAdvisor 不反向依赖网格可行性；开关关闭时保持 V2.5 原文案
+        # 目标②去重：保证金引导板块（删除 qty_note 注入；每格量归校验板块）
+        # 目标③：PROFIT 不可行时「钱」板块抑制
         margin_section = ""
-        if advice is not None and not advice.skipped:
-            qty_note = None
-            if self.capital_constraint_enabled:
-                qty_note = (
-                    f"按建议保证金 {float(margin_used):.0f} USDT 计算，"
-                    f"每格 {float(capital_feasibility.qty_per_grid):.2f} ETH"
-                    f"（需≥{self.min_quantity} ETH）"
-                )
-            margin_section = self.margin_advisor.format_section(advice, qty_note=qty_note)
+        advice_present = advice is not None and not advice.skipped
+        is_profit_infeasible = (
+            not capital_feasibility.feasible
+            and capital_feasibility.binding == BINDING_PROFIT
+        )
+        if advice_present and not is_profit_infeasible:
+            # 目标②去重：不再注入 qty_note（已随 §10.5 统一删除；
+            # margin_advisor.format_section 已清理 qty_note 参数，不再输出「每格下单张数」类文案）
+            margin_section = self.margin_advisor.format_section(advice)
 
-        # 组合消息（保证金板块仅在非空时插入）
-        parts = [
-            title, market_data, grid_params_text, stop_loss_text,
-            move_text, funding_text, margin_section, operation_text
-        ]
+        # 目标③：PROFIT 不可行时抑制「钱」+「格」板块，仅保留「行情 → 校验归因」两段
+        # 目标②：正常 feasible=true 或 CAPITAL 不可行时，四段序「行情→钱→格→校验」
+        if is_profit_infeasible:
+            parts = [title, market_data, funding_text]
+        else:
+            parts = [
+                title, market_data, margin_section,
+                grid_params_text, stop_loss_text,
+                move_text, funding_text,
+            ]
         message = "\n\n".join(part.strip() for part in parts if part.strip())
 
         return message.strip()

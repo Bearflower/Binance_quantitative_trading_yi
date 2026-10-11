@@ -525,7 +525,7 @@ class TestRunOnceMarginCaliber:
         assert feasibility.qty_per_grid == expected_qty
         assert '建议保证金: 673 USDT' in msg
         assert '每格 0.39 ETH（≥0.01，满足）' in msg
-        assert '网格数量 7 格' in msg
+        assert '可开 7 格' in msg
         # 误报与单位口径消除
         assert '无法支撑' not in msg
         assert '张' not in msg
@@ -536,7 +536,7 @@ class TestRunOnceMarginCaliber:
         bot = make_bot()
         signal = await self._run_once(bot, advice=make_advice(Decimal('5000')))
         assert signal.position_valid is True
-        assert '网格数量 7 格（受结构约束）' in signal.message
+        assert '可开 7 格（受结构约束）' in signal.message
         assert '资金可行性提醒' not in signal.message
 
     @pytest.mark.asyncio
@@ -544,7 +544,7 @@ class TestRunOnceMarginCaliber:
         """可行 CAPITAL 文案：M=16 → 6 格（受资本约束）"""
         bot = make_bot()
         signal = await self._run_once(bot, advice=make_advice(M_FEASIBLE))
-        assert '网格数量 6 格（受资本约束）' in signal.message
+        assert '可开 6 格（受资本约束）' in signal.message
 
     def test_feasible_message_profit_binding_direct(self):
         """可行 PROFIT 文案（_build_funding_text 直造）"""
@@ -556,10 +556,10 @@ class TestRunOnceMarginCaliber:
         text = bot._build_funding_text(
             make_analysis(), sample_struct_params(6), feasibility, Decimal('5000')
         )
-        assert '网格数量 6 格（受利润率约束）' in text
+        assert '可开 6 格（受利润率约束）' in text
 
     def test_infeasible_profit_copy_direct(self):
-        """O-1（A-review 裁定）：PROFIT 不可行只保留区间过窄归因，抑制可达上限与方案1/2"""
+        """PROFIT 不可行：首行利润率归因，无资本口径行、无方案1/2、无可达上限"""
         bot = make_bot()
         feasibility = CapitalFeasibility(
             feasible=False, grid_count=7, qty_per_grid=Decimal('0.009'),
@@ -569,8 +569,13 @@ class TestRunOnceMarginCaliber:
         text = bot._build_funding_text(
             make_analysis(), sample_struct_params(7), feasibility, Decimal('5000')
         )
+        # 目标①：PROFIT 首行利润率归因
         assert '区间过窄/波动率过低' in text
-        # 资本口径行与加保证金/杠杆方案与「增加资金无法解决」自相矛盾，一并抑制
+        assert '暂不创建网格' in text
+        # 首行无资本口径（不应出现「无法支撑最少 N 格」与矛盾括号）
+        assert '无法支撑' not in text
+        assert '每格仅' not in text
+        # O-1 遗留：无可达上限、无方案1/2
         assert '可达上限' not in text
         assert '保证金提高至' not in text
         assert '杠杆提高至' not in text
@@ -578,14 +583,21 @@ class TestRunOnceMarginCaliber:
         assert '若两者均不接受' not in text
 
     @pytest.mark.asyncio
-    async def test_margin_section_qty_note_injected(self):
-        """4.5：保证金引导尾部行注入实际每格下单量（ETH），替换固定文案"""
+    async def test_no_duplicate_margin_and_qty(self):
+        """目标②去重：钱板块无 qty_note、校验板块无「建议保证金」重复行"""
         bot = make_bot()
         signal = await self._run_once(bot, advice=make_advice(
             Decimal('5000'), action=ACTION_ADD
         ))
-        assert '按建议保证金 5000 USDT 计算，每格 2.79 ETH（需≥0.01 ETH）' in signal.message
-        assert '请确认每格下单张数≥1张' not in signal.message
+        msg = signal.message
+        # 钱板块不应出现 qty_note（「按建议保证金…每格 X ETH」已删除）
+        assert '按建议保证金' not in msg
+        # 校验板块应有承接语「按以上保证金」而非重复的「建议保证金: N USDT」行
+        assert '按以上保证金' in msg
+        # 每格量仍出现在校验板块
+        assert '每格 2.79 ETH' in msg
+        # 校验板块含网格数 + 绑定约束
+        assert '可开 7 格' in msg
 
     @pytest.mark.asyncio
     async def test_ac10_non_funding_sections_unchanged(self):
@@ -601,10 +613,6 @@ class TestRunOnceMarginCaliber:
             '- 网格数量: 7 格',
             '📈 上移功能（启用）',
             '📉 下移功能（启用）',
-            '1. 登录币安APP',
-            '2. 点击"创建网格" → 合约网格。',
-            '3. 填入以上价格区间、网格数量、网格模式。',
-            '6. 确认创建前请检查每格下单数量≥0.01 ETH。',
         ]
         for line in expected_lines:
             assert line in msg, f"缺失固定行: {line}"
@@ -748,7 +756,7 @@ class TestCapitalConstraintRollback:
 
     @pytest.mark.asyncio
     async def test_rollback_margin_section_keeps_v25_copy(self):
-        """回退分支：保证金引导尾部行保持 V2.5 固定文案"""
+        """回退分支：保证金引导格式仍正确（去重统一生效后，尾部注意行已随 §10.5 删除）"""
         config = load_yaml_config()
         config['grid']['capital_constraint']['enabled'] = False
         bot = make_bot(config)
@@ -759,5 +767,104 @@ class TestCapitalConstraintRollback:
         # last_baseline_atr 为只读 property，compute_advice 被 mock 后直接写底层字段
         bot.margin_advisor._last_baseline_atr = Decimal('18')
         signal = await bot.run_once('ETHUSDT')
-        assert '请确认每格下单张数≥1张' in signal.message
-        assert '按建议保证金' not in signal.message
+        msg = signal.message
+        # V2.5 保证金引导核心结构仍正确（标题/保证金/调整幅度）
+        assert '💰 保证金引导（建议加码）' in msg
+        assert '建议保证金: 936 USDT' in msg
+        # 目标②去重统一生效：钱板块不再含「按建议保证金」（V2.5.5 注入）
+        # 也不再含 V2.5 固定文案「请确认每格下单张数≥1张」—— 每格量归校验板块
+        assert '按建议保证金' not in msg
+        assert '每格下单张数' not in msg
+
+
+# ========== §10 B 段新增测例：grid 推送文案与板块结构修复 ==========
+
+class TestGridPushMessageStructure:
+    """§10.4/10.5/10.6：目标①②③ 新文案/排序/板块抑制测例"""
+
+    def test_infeasible_capital_copy_kept(self):
+        """目标①回归：CAPITAL 不可行首行保持资本口径（含「无法支撑」+「每格仅 qty ETH」矛盾括号）"""
+        bot = make_bot()
+        feasibility = CapitalFeasibility(
+            feasible=False, grid_count=4, qty_per_grid=Decimal('0.005'),
+            binding=BINDING_CAPITAL,
+            required_margin=Decimal('3000'), required_leverage=20,
+        )
+        text = bot._build_funding_text(
+            make_analysis(), sample_struct_params(7), feasibility, Decimal('500')
+        )
+        # 资本口径首行必须保留
+        assert '无法支撑最少' in text
+        assert '每格仅' in text
+        # 可达上限 + 方案1/2 也保留
+        assert '可达上限' in text
+        assert '保证金提高至 3000 USDT' in text
+        assert '杠杆提高至 20x' in text
+        assert '方案1' in text
+        assert '方案2' in text
+
+    @pytest.mark.asyncio
+    async def test_section_order_margin_before_grid_before_funding(self):
+        """目标②：feasible=true 时四段序「行情→钱→格→校验」成立（钱在格前、格在校验前）"""
+        bot = make_bot()
+        analysis = make_analysis()
+        bot.market_detector.detect_market_state = AsyncMock(return_value=analysis)
+        bot.margin_advisor.compute_advice = AsyncMock(return_value=make_advice(
+            Decimal('5000'), action=ACTION_ADD))
+        bot.margin_advisor._last_baseline_atr = Decimal('18')
+        signal = await bot.run_once('ETHUSDT')
+        msg = signal.message
+        idx_market = msg.index('📊 当前市场数据')
+        idx_margin = msg.index('💰 保证金引导')
+        idx_grid = msg.index('📐 建议网格参数')
+        idx_funding = msg.index('💰 资金配置')
+        assert idx_market < idx_margin < idx_grid < idx_funding, (
+            f"板块顺序错误：行情@{idx_market} 钱@{idx_margin} 格@{idx_grid} 校验@{idx_funding}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_operation_section_removed(self):
+        """目标②：「💡 操作指令」板块已删除（用户明确不需要）"""
+        bot = make_bot()
+        analysis = make_analysis()
+        bot.market_detector.detect_market_state = AsyncMock(return_value=analysis)
+        bot.margin_advisor.compute_advice = AsyncMock(return_value=make_advice(Decimal('5000')))
+        bot.margin_advisor._last_baseline_atr = Decimal('18')
+        signal = await bot.run_once('ETHUSDT')
+        assert '操作指令' not in signal.message
+        assert '登录币安APP' not in signal.message
+
+    @pytest.mark.asyncio
+    async def test_profit_infeasible_only_two_sections(self):
+        """目标③/3B：PROFIT 不可行 message 仅含「行情 + 校验归因」两段，抑制钱/格板块"""
+        bot = make_bot()
+        analysis = make_analysis()
+        # 直接构造 grid_params + feasibility 注入 PROFIT 不可行，不走 calculator
+        # （_calculate_grid_params 会触发 K 线 fetch）
+        feasibility = CapitalFeasibility(
+            feasible=False, grid_count=7, qty_per_grid=Decimal('0.009'),
+            binding=BINDING_PROFIT,
+            required_margin=Decimal('13'), required_leverage=11,
+        )
+        params = sample_struct_params(7)
+        advice = make_advice(Decimal('5000'), action=ACTION_ADD)
+        msg = bot._generate_signal_message(
+            'ETHUSDT', analysis, params, feasibility, Decimal('5000'),
+            advice=advice,
+        )
+        # 两段保留
+        assert '📊 当前市场数据' in msg
+        assert '💰 资金可行性提醒' in msg
+        assert '区间过窄/波动率过低' in msg
+        assert '暂不创建网格' in msg
+        # 钱板块抑制
+        assert '💰 保证金引导' not in msg
+        # 格板块抑制
+        assert '📐 建议网格参数' not in msg
+        assert '🎯 止盈止损' not in msg
+        assert '📈 上移功能' not in msg
+        assert '📉 下移功能' not in msg
+        # 行动板块删除
+        assert '操作指令' not in msg
+        # PROFIT 不可行不应出现资本口径首行
+        assert '无法支撑' not in msg
