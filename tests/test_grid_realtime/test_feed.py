@@ -14,9 +14,11 @@ from strategies.grid.realtime.rules import parse_profile
 SYMBOL = "ETHUSDT"
 
 
-def _ws_payload(tid, price="2700.0", qty="0.1", t=1_000_000, maker=False):
-    return {"e": "aggTrade", "s": SYMBOL, "a": tid, "p": price, "q": qty,
-            "T": t, "m": maker}
+def _ws_payload(tid, price="2700.0", qty="0.1", trade_time=1_000_000,
+                maker=False):
+    """构造原始成交流消息：e=trade、t=成交 id、T=成交时间 ms。"""
+    return {"e": "trade", "s": SYMBOL, "t": tid, "p": price, "q": qty,
+            "T": trade_time, "m": maker}
 
 
 def _msg_text(payload):
@@ -68,57 +70,57 @@ def test_parse_ws_valid():
 
 
 @pytest.mark.parametrize("payload", [
-    {"e": "trade", "s": SYMBOL},               # 事件类型错
-    {"e": "aggTrade", "s": "BTCUSDT"},         # 品种错
-    {"e": "aggTrade", "s": SYMBOL},            # 缺字段
-    {"e": "aggTrade", "s": SYMBOL, "a": "x", "p": "1", "q": "1", "T": 1},
-    {"e": "aggTrade", "s": SYMBOL, "a": 0, "p": "1", "q": "1", "T": 1},
-    {"e": "aggTrade", "s": SYMBOL, "a": 1, "p": "0", "q": "1", "T": 1},
-    {"e": "aggTrade", "s": SYMBOL, "a": 1, "p": "1", "q": "1", "T": 0},
-    {"e": "aggTrade", "s": SYMBOL, "a": 1, "p": "1", "q": "-1", "T": 1},
+    {"e": "aggTrade", "s": SYMBOL},           # 事件类型错
+    {"e": "trade", "s": "BTCUSDT"},           # 品种错
+    {"e": "trade", "s": SYMBOL},              # 缺字段
+    {"e": "trade", "s": SYMBOL, "t": "x", "p": "1", "q": "1", "T": 1},
+    {"e": "trade", "s": SYMBOL, "t": 0, "p": "1", "q": "1", "T": 1},
+    {"e": "trade", "s": SYMBOL, "t": 1, "p": "0", "q": "1", "T": 1},
+    {"e": "trade", "s": SYMBOL, "t": 1, "p": "1", "q": "1", "T": 0},
+    {"e": "trade", "s": SYMBOL, "t": 1, "p": "1", "q": "-1", "T": 1},
 ])
 def test_parse_ws_invalid(payload):
     assert parse_ws_message(payload, SYMBOL) is None
 
 
 def test_parse_rest_row_valid():
-    row = {"a": 5, "p": "100", "q": "2", "T": 9, "m": False}
-    trade = parse_rest_row(row, SYMBOL)
+    row = {"id": 5, "price": "100", "qty": "2", "time": 9, "isBuyerMaker": False}
+    trade = parse_rest_row(row)
     assert trade.agg_trade_id == 5 and trade.is_buyer_maker == 0
 
 
 def test_parse_rest_row_missing_maker_defaults():
-    trade = parse_rest_row({"a": 5, "p": "100", "q": "2", "T": 9}, SYMBOL)
+    trade = parse_rest_row({"id": 5, "price": "100", "qty": "2", "time": 9})
     assert trade is not None and trade.is_buyer_maker == 0
 
 
 @pytest.mark.parametrize("row", [
-    {"a": "x"}, {"a": 0, "p": "1", "q": "1", "T": 1},
-    {"a": 1, "p": "1", "q": "1", "T": -1}],
+    {"id": "x"}, {"id": 0, "price": "1", "qty": "1", "time": 1},
+    {"id": 1, "price": "1", "qty": "1", "time": -1}],
 )
 def test_parse_rest_row_invalid(row):
-    assert parse_rest_row(row, SYMBOL) is None
+    assert parse_rest_row(row) is None
 
 
 # ───────────────────── 端点 ─────────────────────
 
 def test_ws_url_default():
     assert ws_url("ETHUSDT") == (
-        "wss://fstream.binance.com/ws/ethusdt@aggTrade")
+        "wss://fstream.binance.com/ws/ethusdt@trade")
 
 
 def test_ws_url_env_override(monkeypatch):
     monkeypatch.setenv("BINANCE_WS_BASE_URL", "wss://example.com/")
-    assert ws_url("ETHUSDT") == "wss://example.com/ws/ethusdt@aggTrade"
+    assert ws_url("ETHUSDT") == "wss://example.com/ws/ethusdt@trade"
 
 
 def test_rest_url_default():
-    assert rest_url() == "https://fapi.binance.com/fapi/v1/aggTrades"
+    assert rest_url() == "https://fapi.binance.com/fapi/v1/trades"
 
 
 def test_rest_url_env_override(monkeypatch):
     monkeypatch.setenv("BINANCE_REST_BASE_URL", "https://example.com")
-    assert rest_url() == "https://example.com/fapi/v1/aggTrades"
+    assert rest_url() == "https://example.com/fapi/v1/trades"
 
 
 def test_now_ms():
@@ -155,7 +157,7 @@ async def test_stream_reconnect_dedup_and_health(cfg):
 
     sleep = _NoSleep()
 
-    async def rest_fetcher(cursor):
+    async def rest_fetcher():
         return []
 
     feed = TradeFeed(cfg, on_health=on_health, ws_factory=factory,
@@ -184,7 +186,7 @@ async def test_stream_backoff_increases_after_first_disconnect(cfg):
     factory.count = 0
 
     feed = TradeFeed(cfg, ws_factory=factory,
-                     rest_fetcher=lambda c: _async([]), sleep=_NoSleep())
+                     rest_fetcher=lambda: _async([]), sleep=_NoSleep())
     with pytest.raises(RuntimeError):
         async for _ in feed.stream():
             pass
@@ -205,7 +207,7 @@ async def test_dedup_old_id_skipped(cfg):
 
     sleep = _NoSleep()
 
-    async def rest_fetcher(cursor):
+    async def rest_fetcher():
         return []
 
     feed = TradeFeed(cfg, ws_factory=factory, rest_fetcher=rest_fetcher,
@@ -232,7 +234,7 @@ async def test_non_text_and_bad_json_skipped(cfg):
     factory.count = 0
 
     feed = TradeFeed(cfg, ws_factory=factory,
-                     rest_fetcher=lambda c: _async([]), sleep=_NoSleep())
+                     rest_fetcher=lambda: _async([]), sleep=_NoSleep())
     items = []
     with pytest.raises(RuntimeError, match="测试终止"):
         async for trade in feed.stream():
@@ -248,11 +250,12 @@ async def _async(value):
 
 def _rest_trade(tid):
     return parse_rest_row(
-        {"a": tid, "p": "100", "q": "1", "T": tid, "m": False}, SYMBOL)
+        {"id": tid, "price": "100", "qty": "1", "time": tid,
+         "isBuyerMaker": False})
 
 
 async def test_refill_no_cursor_yields_nothing(cfg):
-    feed = TradeFeed(cfg, rest_fetcher=lambda c: _async([]))
+    feed = TradeFeed(cfg, rest_fetcher=lambda: _async([]))
     items = [t async for t in feed._refill()]
     assert items == []
 
@@ -260,36 +263,35 @@ async def test_refill_no_cursor_yields_nothing(cfg):
 async def test_refill_short_page(cfg):
     requests = []
 
-    async def fetcher(cursor):
-        requests.append(cursor)
-        return [_rest_trade(cursor), _rest_trade(cursor + 1)]
+    async def fetcher():
+        requests.append(None)
+        return [_rest_trade(103), _rest_trade(101), _rest_trade(102)]
 
     sleep = _NoSleep()
     feed = TradeFeed(cfg, rest_fetcher=fetcher, sleep=sleep)
     feed._last_id = 100
     items = [t async for t in feed._refill()]
-    assert [t.agg_trade_id for t in items] == [101, 102]
-    assert feed.last_id == 102 and requests == [101]
-    assert sleep.calls == []  # 短页不限速等待
+    assert [t.agg_trade_id for t in items] == [101, 102, 103]
+    assert feed.last_id == 103 and requests == [None]
+    assert sleep.calls == []  # 单次拉取不限速等待
 
 
-async def test_refill_full_then_short(cfg):
-    pages = {101: [_rest_trade(i) for i in range(101, 1101)],
-             1101: [_rest_trade(1101)]}
-
-    async def fetcher(cursor):
-        return pages[cursor]
+async def test_refill_yields_all_fresh_sorted(cfg):
+    """单次拉取最近一批：按 id 升序补齐 > last_id 的缺口。"""
+    async def fetcher():
+        return [_rest_trade(i) for i in range(1101, 100, -1)]  # 降序返回
 
     sleep = _NoSleep()
     feed = TradeFeed(cfg, rest_fetcher=fetcher, sleep=sleep)
     feed._last_id = 100
     items = [t async for t in feed._refill()]
-    assert len(items) == 1001 and items[-1].agg_trade_id == 1101
-    assert sleep.calls == [1 / cfg["transport"]["refill_requests_per_second"]]
+    assert [t.agg_trade_id for t in items] == list(range(101, 1102))
+    assert feed.last_id == 1101
+    assert sleep.calls == []
 
 
 async def test_refill_stale_ids_filtered(cfg):
-    async def fetcher(cursor):
+    async def fetcher():
         return [_rest_trade(50), _rest_trade(51)]  # 全部 ≤ last_id
 
     feed = TradeFeed(cfg, rest_fetcher=fetcher, sleep=_NoSleep())
@@ -359,7 +361,7 @@ async def test_default_rest_fetch_non_200(cfg, monkeypatch):
 
     monkeypatch.setattr(aiohttp, "ClientSession", lambda: FakeSession())
     feed = TradeFeed(cfg)
-    assert await feed._default_rest_fetch(1) == []
+    assert await feed._default_rest_fetch() == []
 
 
 async def test_default_rest_fetch_200(cfg, monkeypatch):
@@ -373,7 +375,8 @@ async def test_default_rest_fetch_200(cfg, monkeypatch):
             return False
 
         async def json(self, content_type):
-            return [{"a": 1, "p": "100", "q": "1", "T": 1, "m": False}]
+            return [{"id": 1, "price": "100", "qty": "1", "time": 1,
+                     "isBuyerMaker": False}]
 
     class FakeSession:
         def get(self, url, params):
@@ -384,7 +387,7 @@ async def test_default_rest_fetch_200(cfg, monkeypatch):
 
     monkeypatch.setattr(aiohttp, "ClientSession", lambda: FakeSession())
     feed = TradeFeed(cfg)
-    rows = await feed._default_rest_fetch(1)
+    rows = await feed._default_rest_fetch()
     assert len(rows) == 1 and rows[0].agg_trade_id == 1
 
 
