@@ -1025,6 +1025,27 @@ class TestPnLCollector(unittest.TestCase):
         # SQL 应使用 ANY($1::text[]) 匹配多个落库名
         self.assertIn("ANY($1::text[])", fake_db.query)
 
+    def test_pnl_query_template_uses_conditional_summary_only_scope(self):
+        """盈亏 SQL 采用防双计条件口径：有汇总行只算汇总，无汇总回退明细
+
+        背景：HRS 将整笔平仓累计盈亏写入 PNL_SUMMARY 行，同时每笔部分平仓
+        盈亏回填明细行，混合 SUM 会把同一笔平仓记两次
+        （2026-09 实测 HRS 亏损被虚增至 -31.31，防双计后为 -2.28）。
+        """
+        template = PnLCollector._PNL_QUERY_TEMPLATE
+        # 条件分支：窗口内存在汇总行 → 只累计汇总行（防双计）
+        self.assertIn("BOOL_OR(order_type = 'PNL_SUMMARY')", template)
+        self.assertIn(
+            "SUM(realized_pnl) FILTER (WHERE order_type = 'PNL_SUMMARY')",
+            template,
+        )
+        # 无汇总行 → 回退累计全部明细行（其他策略行为不变）
+        self.assertIn("ELSE COALESCE(SUM(realized_pnl), 0)", template)
+        # 基础窗口条件保持不变
+        self.assertIn("ANY($1::text[])", template)
+        self.assertIn("executed_at >= $2", template)
+        self.assertIn("executed_at < $3", template)
+
     # ------------------------------------------------------------
     # _query_base_capital：查询策略资金基数（月收益率分母，与看板口径一致）
     # ------------------------------------------------------------

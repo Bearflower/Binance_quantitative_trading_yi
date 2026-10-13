@@ -35,9 +35,20 @@ class PnLCollector:
     从数据库查询各参与策略的当月已实现盈亏和策略资金基数（月收益率分母）。
     """
 
-    # 查询当月已实现盈亏的 SQL 模板（按落库中文名列表匹配）
+    # 查询当月已实现盈亏的 SQL 模板（防双计条件口径，2026-10-13）
+    # 背景：HRS 的整笔平仓累计盈亏同时以两种形态落库——每笔部分平仓回填明细行
+    # （TAKE_PROFIT/STOP_MARKET/CONDITIONAL_ORDER 等）+ 整笔累计写入 PNL_SUMMARY 行，
+    # 混合 SUM 会把同一笔平仓记两次（2026-09 实测 HRS 亏损被虚增至 -31.31，
+    # 其中明细行合计 -29.03、汇总行合计 -2.28，双计重叠约 -2.28）。
+    # 口径：窗口内存在 PNL_SUMMARY 行 → 只累计汇总行（防双计，HRS 适用）；
+    #       不存在汇总行（其他策略）→ 回退累计全部明细行，与旧口径行为一致。
+    # 已知代价：跨月持仓的累计汇总行 executed_at 落在最后平仓月，
+    # 部分平仓盈亏的月份归属会推迟到平仓完成的月份。
     _PNL_QUERY_TEMPLATE = """
-        SELECT COALESCE(SUM(realized_pnl), 0) AS total_pnl
+        SELECT CASE WHEN BOOL_OR(order_type = 'PNL_SUMMARY')
+                    THEN COALESCE(SUM(realized_pnl) FILTER (WHERE order_type = 'PNL_SUMMARY'), 0)
+                    ELSE COALESCE(SUM(realized_pnl), 0)
+               END AS total_pnl
         FROM trading.trade_records
         WHERE strategy = ANY($1::text[])
           AND executed_at >= $2
@@ -238,10 +249,14 @@ class PnLCollector:
         month_end: datetime,
     ) -> float:
         """
-        查询指定策略当月的已实现盈亏
+        查询指定策略当月的已实现盈亏（防双计条件口径）
+
+        口径：窗口内存在 PNL_SUMMARY 行 → 只累计汇总行（HRS 的整笔累计
+        与分笔回填并存，混合求和会双计）；不存在 → 回退累计全部明细行
+        （其他策略无汇总行，行为与旧口径一致）。
 
         Args:
-            db_names: 该策略在 trade_records 中的落库中文名列表（为空时直接返回 0.0）
+            db_names: 该策略在 trade_records 中的落库名列表（为空时直接返回 0.0）
             month_start: 当月起始时间（包含）
             month_end: 当月结束时间（不包含）
 
