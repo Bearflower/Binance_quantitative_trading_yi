@@ -263,7 +263,8 @@ function createPositionUtilTrendChart(containerId, data) {
         grid: { top: 40, right: 40, bottom: 40, left: 55, containLabel: true },
         tooltip: {
             trigger: 'axis',
-            valueFormatter: (val) => (parseFloat(val) || 0).toFixed(1) + '%',
+            // 后端 series 为 0~1 小数，与坐标轴一致 ×100 显示为百分比
+            valueFormatter: (val) => ((parseFloat(val) || 0) * 100).toFixed(1) + '%',
             axisPointer: { type: 'line' }
         },
         legend: { data: series.map(s => s.name), top: 0, right: 0, itemWidth: 16, itemHeight: 8, itemGap: 16 },
