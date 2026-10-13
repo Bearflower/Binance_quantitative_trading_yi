@@ -76,13 +76,42 @@ class DataService:
 
     # trade_records 盈亏/委托/成交聚合共用列（策略级 _query_stats_rows 与币种级
     # get_strategy_symbols 同源引用，保证"概览 == 详情"口径单源，杜绝跨策略污染）
+    #
+    # 防双计盈亏口径（2026-10-13，与 ai_tuner/allocation/pnl_collector.py
+    # _PNL_QUERY_TEMPLATE 同款条件对齐）：HRS 的整笔平仓累计盈亏（PNL_SUMMARY 行）
+    # 与分笔回填明细行并存，混合 SUM 会把同一笔平仓记两次。因此统计组内
+    # 存在 PNL_SUMMARY 行 → 盈亏类指标只按汇总行计；不存在 → 按全部明细行计
+    # （其他策略行为不变）。wins/losses 随之从"分笔正负"演进为"整笔正负"。
+    # order_count（委托行数）与 commission 不涉双计，维持全行口径。
     _TRADE_RECORD_AGG_COLUMNS = """\
                    COUNT(*) AS order_count,
-                   COUNT(realized_pnl) AS closed_count,
-                   COUNT(*) FILTER (WHERE realized_pnl > 0) AS wins,
-                   COUNT(*) FILTER (WHERE realized_pnl < 0) AS losses,
-                   COALESCE(SUM(realized_pnl), 0) AS gross_pnl,
+                   CASE WHEN BOOL_OR(order_type = 'PNL_SUMMARY')
+                        THEN COUNT(*) FILTER (WHERE order_type = 'PNL_SUMMARY')
+                        ELSE COUNT(realized_pnl) END AS closed_count,
+                   CASE WHEN BOOL_OR(order_type = 'PNL_SUMMARY')
+                        THEN COUNT(*) FILTER (WHERE order_type = 'PNL_SUMMARY' AND realized_pnl > 0)
+                        ELSE COUNT(*) FILTER (WHERE realized_pnl > 0) END AS wins,
+                   CASE WHEN BOOL_OR(order_type = 'PNL_SUMMARY')
+                        THEN COUNT(*) FILTER (WHERE order_type = 'PNL_SUMMARY' AND realized_pnl < 0)
+                        ELSE COUNT(*) FILTER (WHERE realized_pnl < 0) END AS losses,
+                   CASE WHEN BOOL_OR(order_type = 'PNL_SUMMARY')
+                        THEN COALESCE(SUM(realized_pnl) FILTER (WHERE order_type = 'PNL_SUMMARY'), 0)
+                        ELSE COALESCE(SUM(realized_pnl), 0) END AS gross_pnl,
                    COALESCE(SUM(commission), 0) AS commission"""
+
+    # 净值曲线日盈亏查询（防双计条件口径，与 _TRADE_RECORD_AGG_COLUMNS 同款判定：
+    # 组内存在 PNL_SUMMARY 行只按汇总行计，否则回退全行口径）
+    _DAILY_PNL_QUERY = """
+        SELECT DATE(executed_at) AS day,
+               CASE WHEN BOOL_OR(order_type = 'PNL_SUMMARY')
+                    THEN COALESCE(SUM(realized_pnl) FILTER (WHERE order_type = 'PNL_SUMMARY'), 0)
+                    ELSE COALESCE(SUM(realized_pnl), 0) END AS day_pnl
+        FROM trading.trade_records
+        WHERE strategy = ANY($1::text[])
+          AND executed_at >= $2 AND executed_at < $3
+        GROUP BY DATE(executed_at)
+        ORDER BY day ASC
+    """
 
     _ORDER_HISTORY_LIMIT = int(os.getenv("ORDER_HISTORY_LIMIT", "1000"))
 
@@ -2616,14 +2645,7 @@ class DataService:
             return [], [], []
 
         rows = await self._db_manager.fetch_all(
-            """
-            SELECT DATE(executed_at) AS day, COALESCE(SUM(realized_pnl), 0) AS day_pnl
-            FROM trading.trade_records
-            WHERE strategy = ANY($1::text[])
-              AND executed_at >= $2 AND executed_at < $3
-            GROUP BY DATE(executed_at)
-            ORDER BY day ASC
-            """,
+            self._DAILY_PNL_QUERY,
             strategy_names, start_date, end_date,
         )
         day_pnl_map: Dict[str, float] = {}

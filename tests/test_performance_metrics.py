@@ -27,6 +27,14 @@ _DASHBOARD_BACKEND = os.path.join(
 if _DASHBOARD_BACKEND not in sys.path:
     sys.path.insert(0, _DASHBOARD_BACKEND)
 
+# 仓库根 services/ 是无 __init__.py 的命名空间包；若它先被全量收集缓存，
+# 仅插 sys.path 无法让其中新增 backend 路径，需显式补入命名空间 __path__。
+# 注意 __path__ 条目是「services 包目录本身」而非其父目录。
+_BACKEND_SERVICES_DIR = os.path.join(_DASHBOARD_BACKEND, "services")
+_services_pkg = sys.modules.get("services")
+if _services_pkg is not None and _BACKEND_SERVICES_DIR not in _services_pkg.__path__:
+    _services_pkg.__path__.append(_BACKEND_SERVICES_DIR)
+
 from services.data_service_docker import DataService  # noqa: E402
 
 
@@ -354,3 +362,36 @@ class TestPerfEntryWindow:
         )
         assert row is None
 
+
+
+class TestPnlDedupScope:
+    """盈亏防双计口径守卫测试（与 ai_tuner/allocation/pnl_collector.py 同款条件对齐）
+
+    背景：HRS 的整笔平仓累计盈亏（PNL_SUMMARY 行）与分笔回填明细行并存，
+    混合 SUM 会把同一笔平仓记两次（2026-09 实测 HRS 亏损被虚增至 -31.31，
+    防双计后为 -2.28）。本测试防止口径被误改回混合求和。
+    """
+
+    def test_agg_columns_use_conditional_summary_only_scope(self):
+        """聚合列模板：统计组内存在汇总行则盈亏类指标只按汇总行计"""
+        cols = DataService._TRADE_RECORD_AGG_COLUMNS
+        # 条件分支：存在 PNL_SUMMARY 行 → 盈亏类指标只累计汇总行（防双计）
+        assert "BOOL_OR(order_type = 'PNL_SUMMARY')" in cols
+        assert "SUM(realized_pnl) FILTER (WHERE order_type = 'PNL_SUMMARY')" in cols
+        assert "COUNT(*) FILTER (WHERE order_type = 'PNL_SUMMARY')" in cols
+        # 无汇总行 → 回退全行口径（其他策略行为不变）
+        assert "ELSE COALESCE(SUM(realized_pnl), 0)" in cols
+        assert "ELSE COUNT(realized_pnl)" in cols
+        # order_count / commission 不涉双计，维持全行口径
+        assert "COUNT(*) AS order_count" in cols
+        assert "SUM(commission), 0) AS commission" in cols
+
+    def test_daily_pnl_query_uses_conditional_summary_only_scope(self):
+        """净值曲线日盈亏查询采用同款防双计条件口径"""
+        query = DataService._DAILY_PNL_QUERY
+        assert "BOOL_OR(order_type = 'PNL_SUMMARY')" in query
+        assert "SUM(realized_pnl) FILTER (WHERE order_type = 'PNL_SUMMARY')" in query
+        assert "ELSE COALESCE(SUM(realized_pnl), 0)" in query
+        # 窗口与分组条件保持不变
+        assert "strategy = ANY($1::text[])" in query
+        assert "GROUP BY DATE(executed_at)" in query
