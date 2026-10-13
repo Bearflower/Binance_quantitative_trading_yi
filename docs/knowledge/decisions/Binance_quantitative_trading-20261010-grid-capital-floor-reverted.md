@@ -7,7 +7,7 @@ id: Binance_quantitative_trading-20261010-grid-capital-floor-reverted
 标签: [grid, 设计裁定]
 任务标识: grid_min_quantity_unit_fix_2026-10-10.md
 状态: 已采纳
-审查: 待审查
+审查: 已审查
 ---
 
 # 作废 be0a71a「资本下限抬升」机制，恢复诚实单位口径

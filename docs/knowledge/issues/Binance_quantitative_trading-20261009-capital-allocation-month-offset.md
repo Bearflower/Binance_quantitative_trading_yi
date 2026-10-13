@@ -7,7 +7,7 @@ id: Binance_quantitative_trading-20261009-capital-allocation-month-offset
 标签: [bug, ai_tuner, 月份口径]
 任务标识: capital_allocation_month_fix_zerotrade_2026-10-09.md
 状态: 已解决
-审查: 待审查
+审查: 已审查
 ---
 
 # 月度资金分配「记录月份错位」导致 10 月限额落空

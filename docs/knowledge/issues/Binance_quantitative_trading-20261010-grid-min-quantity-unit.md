@@ -7,7 +7,7 @@ id: Binance_quantitative_trading-20261010-grid-min-quantity-unit
 标签: [bug, grid, 单位换算]
 任务标识: grid_min_quantity_unit_fix_2026-10-10.md
 状态: 已解决
-审查: 待审查
+审查: 已审查
 ---
 
 # 网格 min_quantity 单位错误导致资本可行性提醒全线误报
@@ -34,5 +34,5 @@ strategies/grid/{config.yaml, grid_calculator.py, signal_bot.py}；commit cb4551
 ## 关联
 - 本地补充来源: [handoff](../../handoffs/grid_min_quantity_unit_fix_2026-10-10.md)（不随 Git 同步）
 - 持久证据: 需求文档 docs/requirements/grid/网格交易系统 V2.5.5 保证金-网格数联动（方案B）需求与设计.md §9；commit cb4551e
-- 必要证据摘要: min_quantity 1→0.01 ETH；58/58 + 717/717 测试通过；§9.10 条件④已核实、①②③ 待 feasible=true 推送补验
+- 必要证据摘要: min_quantity 1→0.01 ETH（ETHUSDT 永续 1 张合约面值 0.01 ETH）；命令1 54 passed、命令2 101 passed/1 failed（唯一失败=基线既有）、命令3 场景1/2通过；§9.10 条件④已核实、①②③ 待 feasible=true 推送补验
 - 相关: [作废 be0a71a 资本下限抬升机制](../decisions/Binance_quantitative_trading-20261010-grid-capital-floor-reverted.md)

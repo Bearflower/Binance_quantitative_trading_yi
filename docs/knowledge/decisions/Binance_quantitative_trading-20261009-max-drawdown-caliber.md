@@ -7,7 +7,7 @@ id: Binance_quantitative_trading-20261009-max-drawdown-caliber
 标签: [dashboard, 指标口径]
 任务标识: max_drawdown_caliber_and_hrs_dup_2026-10-09.md
 状态: 已采纳
-审查: 待审查
+审查: 已审查
 ---
 
 # 看板最大回撤统一为「资金基数 + 累计已实现盈亏」口径

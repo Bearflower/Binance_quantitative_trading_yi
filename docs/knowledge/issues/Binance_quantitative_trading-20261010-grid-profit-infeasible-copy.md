@@ -7,7 +7,7 @@ id: Binance_quantitative_trading-20261010-grid-profit-infeasible-copy
 标签: [bug, grid, 文案]
 任务标识: grid_profit_infeasible_copy_fix_2026-10-10.md
 状态: 已解决
-审查: 待审查
+审查: 已审查
 ---
 
 # grid PROFIT 不可行分支把「利润率不达标」误述为「资金不足」
