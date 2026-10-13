@@ -437,7 +437,7 @@ realtime_alert:
   mode: shadow
   profile: research_seed_01
   symbol: ETHUSDT
-  price_source: agg_trade
+  price_source: trade
   reference:
     max_age_seconds: 21600
   features:

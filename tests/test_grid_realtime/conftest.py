@@ -50,7 +50,7 @@ def db_setup(tmp_path):
 def profile_raw() -> dict:
     raw = {
         "enabled": False, "mode": "shadow", "symbol": "ETHUSDT",
-        "price_source": "agg_trade", "profile": "test",
+        "price_source": "trade", "profile": "test",
         "efficiency_filter": {"enabled": True},
         "reference": {"max_age_seconds": 21600},
         "features": {"sample_seconds": 1, "windows_seconds": [60, 180, 300],
