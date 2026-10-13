@@ -150,7 +150,13 @@ class _FakeDb:
             self.fetch_calls.append(("pnl", args))
             sid = args[0][0]
             return {"total_pnl": self.pnl.get(sid, 0.0)}
-        # 月初持仓保证金
+        # 资金基数（与看板口径一致：优先 allocated_amount，>0 过滤模拟生产 SQL）
+        if "ALLOCATED_AMOUNT" in norm:
+            self.fetch_calls.append(("base_capital_alloc", args))
+            sid = args[0]
+            val = self.capital.get(sid, 0.0)
+            return {"allocated_amount": val} if val > 0 else None
+        # 持仓保证金（资金基数回退链兜底）
         if "OPEN_MARGIN" in norm:
             self.fetch_calls.append(("margin", args))
             sid = args[0]

@@ -26,7 +26,7 @@ class AllocationEntry:
         strategy_id: 策略唯一标识
         strategy_name: 策略显示名称
         realized_pnl: 当月已实现盈亏（USDT）
-        initial_capital: 月初实际占用保证金（USDT，作收益率分母）
+        initial_capital: 策略资金基数（USDT，作收益率分母，与看板资金基数口径一致）
         return_rate: 月收益率 = realized_pnl / initial_capital
         rank: 收益率排名（1 为最高）
         allocated_ratio: 分配比例（0~1）
@@ -90,7 +90,7 @@ class AllocationCalculator:
             total_capital: 总资金池（USDT）
             pnl_data: 各策略盈亏数据
                 {strategy_id: {"pnl": float, "capital": float, "has_trades": bool}}
-                capital 为月初实际占用保证金（作收益率分母）；
+                capital 为策略资金基数（作收益率分母，与看板资金基数口径一致）；
                 has_trades 缺省 True（旧 payload 兼容，fail-open，§14.2），
                 False 表示当月零开仓，强制排名垫底
             is_first_month: 是否为首月分配

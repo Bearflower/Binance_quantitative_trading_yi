@@ -384,7 +384,7 @@ class TestAllocationCalculator(unittest.TestCase):
 
     def test_return_rate_zero_when_capital_zero_with_pnl(self):
         """
-        分母（capital，即月初实际占用保证金）为 0 且 pnl 非 0 时，
+        分母（capital，即策略资金基数）为 0 且 pnl 非 0 时，
         收益率记为 0.0（避免除零）。
         """
         pnl_data = {
@@ -1026,72 +1026,118 @@ class TestPnLCollector(unittest.TestCase):
         self.assertIn("ANY($1::text[])", fake_db.query)
 
     # ------------------------------------------------------------
-    # _query_month_start_margin：查询月初实际占用保证金（收益率分母）
+    # _query_base_capital：查询策略资金基数（月收益率分母，与看板口径一致）
     # ------------------------------------------------------------
 
-    def _make_margin_db(self, month_row=None, prev_row=None):
-        """构造按查询类型区分的伪造数据库：本月查询命中 month_row，回退查询命中 prev_row"""
+    def _make_base_capital_db(self, alloc_at=None, alloc_earliest=None,
+                              margin_at=None, margin_earliest=None):
+        """构造按 SQL 关键字区分 4 步回退链的伪造数据库
 
-        class FakeMonthMarginDb:
-            """伪造数据库：根据 SQL 关键字区分本月查询与回退查询"""
+        区分依据与生产 SQL 对应：
+          - SELECT 字段：allocated_amount（分配额）vs open_margin（持仓保证金）
+          - 是否带时点上界 snapshot_hour <=：at 查询 vs earliest 查询
+        """
+
+        rows = {
+            "alloc_at": alloc_at,
+            "alloc_earliest": alloc_earliest,
+            "margin_at": margin_at,
+            "margin_earliest": margin_earliest,
+        }
+
+        class FakeBaseCapitalDb:
+            """伪造数据库：按回退链步骤返回对应行"""
 
             def __init__(self):
                 self.calls = []
 
             async def fetch_one(self, query, *args):
                 self.calls.append(query)
-                if "snapshot_hour >=" in query:
-                    return month_row
-                return prev_row
+                if "allocated_amount" in query:
+                    key = "alloc_at" if "snapshot_hour <=" in query else "alloc_earliest"
+                else:
+                    key = "margin_at" if "snapshot_hour <=" in query else "margin_earliest"
+                return rows[key]
 
-        return FakeMonthMarginDb()
+        return FakeBaseCapitalDb()
 
-    def test_month_start_margin_normal(self):
-        """本月存在历史快照时，取本月最早一条快照的 open_margin 作为分母"""
-        db = self._make_margin_db(month_row={"open_margin": 79.7})
+    def test_base_capital_prefers_allocated_at_month_start(self):
+        """AC-9.1：月初及之前有分配额快照时，取最近一条 allocated_amount 作分母（主口径）"""
+        db = self._make_base_capital_db(alloc_at={"allocated_amount": 87.56})
         collector = PnLCollector(db_manager=db, strategies=[])
-        margin = asyncio.run(
-            collector._query_month_start_margin("hrs", datetime(2026, 9, 1))
+        capital = asyncio.run(
+            collector._query_base_capital("btc_eth", datetime(2026, 9, 1))
         )
-        self.assertEqual(margin, 79.7)
-        # 命中本月查询，不应触发回退查询
-        self.assertIn("snapshot_hour >=", db.calls[0])
+        self.assertEqual(capital, 87.56)
+        # 第 1 步即命中，SQL 应为「时点上界 + 分配额 > 0 + 倒序取最近一条」
         self.assertEqual(len(db.calls), 1)
+        norm = " ".join(db.calls[0].split())
+        self.assertIn("allocated_amount", norm)
+        self.assertIn("snapshot_hour <= $2", norm)
+        self.assertIn("allocated_amount > 0", norm)
+        self.assertIn("ORDER BY snapshot_hour DESC", norm)
 
-    def test_month_start_margin_fallbacks_to_last_period(self):
-        """本月无历史快照时，回退取早于本月的最近一条快照的 open_margin"""
-        db = self._make_margin_db(month_row=None, prev_row={"open_margin": 80.0})
+    def test_base_capital_falls_back_to_earliest_allocated(self):
+        """AC-9.2：月初前无快照时，回退取全表最早一条分配额快照（快照晚于月初场景）"""
+        db = self._make_base_capital_db(alloc_earliest={"allocated_amount": 116.75})
         collector = PnLCollector(db_manager=db, strategies=[])
-        margin = asyncio.run(
-            collector._query_month_start_margin("hrs", datetime(2026, 9, 1))
+        capital = asyncio.run(
+            collector._query_base_capital("new_coin", datetime(2026, 9, 1))
         )
-        self.assertEqual(margin, 80.0)
-        # 依次为本月查询 + 回退查询
+        self.assertEqual(capital, 116.75)
+        # 依次为 at 查询 + earliest 查询，未触达 open_margin 兜底
         self.assertEqual(len(db.calls), 2)
+        self.assertIn("allocated_amount", db.calls[1])
+        self.assertNotIn("snapshot_hour <=", db.calls[1])
 
-    def test_month_start_margin_returns_zero_when_no_history(self):
-        """完全无历史快照时返回 0.0（不抛异常，除零保护由上层计算器处理）"""
-        db = self._make_margin_db(month_row=None, prev_row=None)
+    def test_base_capital_falls_back_to_margin_at(self):
+        """AC-9.3：无任何分配额快照时，退化用月初及之前最近一条持仓保证金兜底"""
+        db = self._make_base_capital_db(margin_at={"open_margin": 113.85})
         collector = PnLCollector(db_manager=db, strategies=[])
-        margin = asyncio.run(
-            collector._query_month_start_margin("hrs", datetime(2026, 9, 1))
+        capital = asyncio.run(
+            collector._query_base_capital("btc_eth_aggressive", datetime(2026, 9, 1))
         )
-        self.assertEqual(margin, 0.0)
+        self.assertEqual(capital, 113.85)
+        self.assertEqual(len(db.calls), 3)
+        self.assertIn("open_margin", db.calls[2])
+        self.assertIn("snapshot_hour <=", db.calls[2])
 
-    def test_month_start_margin_accepts_aware_datetime(self):
+    def test_base_capital_falls_back_to_earliest_margin(self):
+        """AC-9.4：月初前也无持仓时，退化用全表最早一条持仓保证金兜底"""
+        db = self._make_base_capital_db(margin_earliest={"open_margin": 76.82})
+        collector = PnLCollector(db_manager=db, strategies=[])
+        capital = asyncio.run(
+            collector._query_base_capital("hrs", datetime(2026, 9, 1))
+        )
+        self.assertEqual(capital, 76.82)
+        self.assertEqual(len(db.calls), 4)
+        self.assertIn("open_margin", db.calls[3])
+        self.assertNotIn("snapshot_hour <=", db.calls[3])
+
+    def test_base_capital_returns_zero_when_no_history(self):
+        """AC-9.5：完全无历史快照时返回 0.0（不抛异常，除零保护由上层计算器处理）"""
+        db = self._make_base_capital_db()
+        collector = PnLCollector(db_manager=db, strategies=[])
+        capital = asyncio.run(
+            collector._query_base_capital("hrs", datetime(2026, 9, 1))
+        )
+        self.assertEqual(capital, 0.0)
+        self.assertEqual(len(db.calls), 4)
+
+    def test_base_capital_accepts_aware_datetime(self):
         """传入带时区的 month_start 也可正常查询（内部会转为 naive）"""
         from datetime import timedelta, timezone
 
         cst = timezone(timedelta(hours=8))
-        db = self._make_margin_db(month_row={"open_margin": 100.0})
+        db = self._make_base_capital_db(alloc_at={"allocated_amount": 100.0})
         collector = PnLCollector(db_manager=db, strategies=[])
-        margin = asyncio.run(
-            collector._query_month_start_margin(
+        capital = asyncio.run(
+            collector._query_base_capital(
                 "hrs",
                 datetime(2026, 9, 1, 0, 0, tzinfo=cst),
             )
         )
-        self.assertEqual(margin, 100.0)
+        self.assertEqual(capital, 100.0)
 
     # ------------------------------------------------------------
     # 成交行数查询（零开仓判定，需求 §14.2，AC-2.7/2.8 + fail-open）
@@ -1213,6 +1259,9 @@ class TestPnLCollector(unittest.TestCase):
                 norm = " ".join(query.split()).upper()
                 if "SUM(REALIZED_PNL)" in norm:
                     return {"total_pnl": 12.5}
+                # 资金基数查询：优先返回分配额（主口径），与生产回退链首步一致
+                if "ALLOCATED_AMOUNT" in norm:
+                    return {"allocated_amount": 100.0}
                 if "OPEN_MARGIN" in norm:
                     return {"open_margin": 100.0}
                 # 与生产 SQL 同口径：只看 order_type，刻意不读 status

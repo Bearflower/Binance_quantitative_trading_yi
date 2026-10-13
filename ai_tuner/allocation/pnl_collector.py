@@ -1,12 +1,16 @@
 """
 盈亏与资金数据采集器
 
-负责从各策略数据表查询当月已实现盈亏和月初实际占用保证金。
+负责从各策略数据表查询当月已实现盈亏和策略资金基数（月收益率分母）。
 
 数据来源：
     - trading.trade_records: 各策略的已实现盈亏记录
-    - public.strategy_position_snapshot_history: 各策略月初实际占用保证金
-      （open_margin，作为月收益率的分母，替代名义分配额）
+    - public.strategy_position_snapshot_history: 各策略资金基数（月收益率分母）
+
+分母口径（2026-10-13 与看板对齐，dashboard/backend/services/data_service_docker.py
+_query_strategy_base_capital 同一回退链）：优先取资金分配额 allocated_amount
+（名义资金基数，不含杠杆），无分配额时退化用持仓保证金 open_margin 兜底；
+全部缺失时返回 0.0，由上层除零保护处理。
 """
 
 import structlog
@@ -28,7 +32,7 @@ class PnLCollector:
     """
     盈亏与资金数据采集器
 
-    从数据库查询各参与策略的当月已实现盈亏和月初实际占用保证金。
+    从数据库查询各参与策略的当月已实现盈亏和策略资金基数（月收益率分母）。
     """
 
     # 查询当月已实现盈亏的 SQL 模板（按落库中文名列表匹配）
@@ -53,26 +57,43 @@ class PnLCollector:
           AND order_type NOT IN ('PNL_SUMMARY', 'CONDITIONAL_ORDER')
     """
 
-    # 持仓占用对账的历史明细表（小时级快照，月度资金分配读取其月初实际占用保证金）
+    # 持仓占用对账的历史明细表（小时级快照，月度资金分配读取其资金基数作收益率分母）
     _SNAPSHOT_HISTORY_TABLE = "public.strategy_position_snapshot_history"
 
-    # 查询本月（snapshot_hour >= 月初）最早一条快照的持仓保证金
-    _MONTH_START_MARGIN_QUERY = f"""
-        SELECT open_margin
+    # —— 资金基数（月收益率分母）回退链，与看板 _query_strategy_base_capital 逐字对齐 ——
+    # 1. 月初及之前最近一条有分配额的快照（月初已生效的资金分配额，名义基数不含杠杆）
+    _BASE_CAPITAL_ALLOC_AT_QUERY = f"""
+        SELECT allocated_amount
         FROM {_SNAPSHOT_HISTORY_TABLE}
-        WHERE strategy_id = $1
-          AND snapshot_hour >= $2
+        WHERE strategy_id = $1 AND snapshot_hour <= $2 AND allocated_amount > 0
+        ORDER BY snapshot_hour DESC
+        LIMIT 1
+    """
+
+    # 2. 全表最早一条有分配额的快照（快照晚于月初时的兜底，如历史月份）
+    _BASE_CAPITAL_ALLOC_EARLIEST_QUERY = f"""
+        SELECT allocated_amount
+        FROM {_SNAPSHOT_HISTORY_TABLE}
+        WHERE strategy_id = $1 AND allocated_amount > 0
         ORDER BY snapshot_hour ASC
         LIMIT 1
     """
 
-    # 回退：本月无快照时，取早于本月最晚一条快照的持仓保证金
-    _PREV_PERIOD_MARGIN_QUERY = f"""
+    # 3. 月初及之前最近一条有持仓的快照（占用保证金兜底，含杠杆，仅作退化）
+    _BASE_CAPITAL_MARGIN_AT_QUERY = f"""
         SELECT open_margin
         FROM {_SNAPSHOT_HISTORY_TABLE}
-        WHERE strategy_id = $1
-          AND snapshot_hour < $2
+        WHERE strategy_id = $1 AND snapshot_hour <= $2 AND open_margin > 0
         ORDER BY snapshot_hour DESC
+        LIMIT 1
+    """
+
+    # 4. 全表最早一条有持仓的快照
+    _BASE_CAPITAL_MARGIN_EARLIEST_QUERY = f"""
+        SELECT open_margin
+        FROM {_SNAPSHOT_HISTORY_TABLE}
+        WHERE strategy_id = $1 AND open_margin > 0
+        ORDER BY snapshot_hour ASC
         LIMIT 1
     """
 
@@ -97,7 +118,7 @@ class PnLCollector:
         month_end: datetime,
     ) -> Dict[str, Dict[str, Any]]:
         """
-        采集所有参与策略的当月已实现盈亏、月初实际占用保证金与成交行数
+        采集所有参与策略的当月已实现盈亏、策略资金基数与成交行数
 
         Args:
             month_start: 当月起始时间（包含）
@@ -107,7 +128,7 @@ class PnLCollector:
             {strategy_id: {"pnl": float, "capital": float,
                            "trade_count": int, "has_trades": bool}} 格式的字典
             - pnl: 当月已实现盈亏（USDT）
-            - capital: 月初实际占用保证金（USDT，作收益率分母），无历史快照时为 0.0
+            - capital: 策略资金基数（USDT，作收益率分母，与看板口径一致），无可用快照时为 0.0
             - trade_count: 当月非排除下单行数（零开仓判定口径，§14.2）
             - has_trades: 当月是否有开仓活动；成交行数查询异常时 fail-open 为 True
         """
@@ -137,7 +158,7 @@ class PnLCollector:
         month_end: datetime,
     ) -> Dict[str, Any]:
         """
-        采集单个策略的盈亏、占用保证金与成交行数
+        采集单个策略的盈亏、资金基数与成交行数
 
         任一查询异常均返回安全默认值且不中断整体流程；成交行数异常单独兜底
         为 has_trades=True（fail-open，避免数据缺失导致错误垫底，§14.2）。
@@ -153,7 +174,7 @@ class PnLCollector:
         """
         try:
             pnl = await self._query_strategy_pnl(db_names, month_start, month_end)
-            capital = await self._query_month_start_margin(strategy_id, month_start)
+            capital = await self._query_base_capital(strategy_id, month_start)
 
             # 成交行数查询异常 fail-open 为「有开仓」（R3 资金保护，§14.2）
             try:
@@ -282,39 +303,59 @@ class PnLCollector:
             return int(row["cnt"])
         return 0
 
-    async def _query_month_start_margin(self, strategy_id: str, month_start: datetime) -> float:
+    async def _query_base_capital(self, strategy_id: str, month_start: datetime) -> float:
         """
-        查询指定策略月初实际占用的持仓保证金（open_margin），作为收益率分母
+        查询指定策略的资金基数（月收益率分母），口径与看板完全一致
 
-        从 public.strategy_position_snapshot_history 中取该策略本月最早一条快照的持仓保证金；
-        若本月无历史快照（历史表尚未积累月初数据），回退取早于本月的最晚一条快照。
+        从 public.strategy_position_snapshot_history 按 4 步回退链取值：
+          1. 月初及之前最近一条 allocated_amount > 0 的快照（月初已生效资金分配额）
+          2. 全表最早一条 allocated_amount > 0 的快照（快照晚于月初时的兜底）
+          3. 月初及之前最近一条 open_margin > 0 的快照（占用保证金退化兜底）
+          4. 全表最早一条 open_margin > 0 的快照
+        全部缺失时返回 0.0（上层除零保护将收益率置 0）。
 
         Args:
             strategy_id: 策略唯一标识
-            month_start: 当月起始时间（可带时区，可按需转为 naive）
+            month_start: 当月起始时间（可带时区，内部转为 naive 作时点上界）
 
         Returns:
-            月初实际占用保证金（USDT）；无任何历史快照时返回 0.0
+            策略资金基数（USDT）；无任何可用快照时返回 0.0
         """
         naive_start = _to_naive(month_start)
 
-        # 优先取本月最早一条快照的持仓保证金
+        # 1. 月初及之前最近一条有分配额的快照
         row = await self.db_manager.fetch_one(
-            self._MONTH_START_MARGIN_QUERY,
+            self._BASE_CAPITAL_ALLOC_AT_QUERY,
+            strategy_id,
+            naive_start,
+        )
+        if row is not None and row.get("allocated_amount") is not None:
+            return float(row["allocated_amount"])
+
+        # 2. 全表最早一条有分配额的快照
+        row = await self.db_manager.fetch_one(
+            self._BASE_CAPITAL_ALLOC_EARLIEST_QUERY,
+            strategy_id,
+        )
+        if row is not None and row.get("allocated_amount") is not None:
+            return float(row["allocated_amount"])
+
+        # 3. 月初及之前最近一条有持仓的快照（open_margin 退化兜底）
+        row = await self.db_manager.fetch_one(
+            self._BASE_CAPITAL_MARGIN_AT_QUERY,
             strategy_id,
             naive_start,
         )
         if row is not None and row.get("open_margin") is not None:
             return float(row["open_margin"])
 
-        # 本月无快照，回退到早于本月的最晚一条快照
+        # 4. 全表最早一条有持仓的快照
         row = await self.db_manager.fetch_one(
-            self._PREV_PERIOD_MARGIN_QUERY,
+            self._BASE_CAPITAL_MARGIN_EARLIEST_QUERY,
             strategy_id,
-            naive_start,
         )
         if row is not None and row.get("open_margin") is not None:
             return float(row["open_margin"])
 
-        logger.warning("策略无历史持仓快照，月初占用按 0 处理", strategy_id=strategy_id)
+        logger.warning("策略无历史持仓/分配快照，资金基数按 0 处理", strategy_id=strategy_id)
         return 0.0

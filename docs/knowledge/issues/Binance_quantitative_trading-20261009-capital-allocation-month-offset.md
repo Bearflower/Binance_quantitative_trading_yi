@@ -27,6 +27,9 @@ monthly_job.py 的 run_monthly_allocation() 用「刚结束当月」now.strftime
 ## 适用范围与修订
 ai_tuner/allocation/{monthly_job.py, pnl_collector.py, allocation_calculator.py}、scripts/manual_allocation_trigger.py；commit 48b8bf2 已上线。零开仓垫底规则本轮一并落地（has_trades 排序键）。
 
+## 后续口径修正（2026-10-13）
+同模块 `pnl_collector.py` 的月收益率分母由「月初实际占用保证金 `open_margin`」改为「策略资金基数」，与看板 `_query_strategy_base_capital` 的 4 步回退链对齐（`_query_month_start_margin` → `_query_base_capital`）；修复快照表 2026-09-10 才起积累致 9 月部分策略分母取 0、收益率被除零保护静默置 0 的缺陷。2026-09 排名与现行 2026-10 生效分配比例不受影响。详见需求文档 §5.2（v1.5），不改本 issue 的月份口径结论与状态。
+
 ## 教训
 幂等键与业务月份是两种语义，不能复用同一个字段；「刚好结束的月」与「生效月」在月末边界必然错位。（AI 归纳，仅供参考）
 
