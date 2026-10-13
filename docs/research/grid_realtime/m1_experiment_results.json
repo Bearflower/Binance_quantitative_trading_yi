@@ -1,0 +1,854 @@
+{
+  "results": {
+    "research_seed_02.e30.s1": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "NOTICE": {
+              "minus_120s": true,
+              "minus_30s": true,
+              "minus_60s": true
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "NOTICE": 1,
+            "URGENT": 3
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "NOTICE": 242.997,
+            "URGENT": 0.746
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 487
+    },
+    "research_seed_02.e30.s3": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "NOTICE": {
+              "minus_120s": true,
+              "minus_30s": true,
+              "minus_60s": true
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "NOTICE": 1,
+            "URGENT": 3
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "NOTICE": 242.997,
+            "URGENT": 0.746
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 487
+    },
+    "research_seed_02.e30.s5": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "NOTICE": {
+              "minus_120s": true,
+              "minus_30s": true,
+              "minus_60s": true
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "NOTICE": 1,
+            "URGENT": 3
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "NOTICE": 242.997,
+            "URGENT": 0.746
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 487
+    },
+    "research_seed_02.e40.s1": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "URGENT": 3
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "URGENT": 0.746
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 486
+    },
+    "research_seed_02.e40.s3": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "NOTICE": {
+              "minus_120s": true,
+              "minus_30s": true,
+              "minus_60s": true
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "NOTICE": 1,
+            "URGENT": 3
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "NOTICE": 242.997,
+            "URGENT": 0.746
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 487
+    },
+    "research_seed_02.e40.s5": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "NOTICE": {
+              "minus_120s": true,
+              "minus_30s": true,
+              "minus_60s": true
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "NOTICE": 1,
+            "URGENT": 3
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "NOTICE": 242.997,
+            "URGENT": 0.746
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 487
+    },
+    "research_seed_02.e60.s1": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "URGENT": 3
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "URGENT": 0.746
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 486
+    },
+    "research_seed_02.e60.s3": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "URGENT": 3
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "URGENT": 0.746
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 486
+    },
+    "research_seed_02.e60.s5": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "NOTICE": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "NOTICE": 1,
+            "URGENT": 3
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "NOTICE": 6.997,
+            "URGENT": 0.746
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 487
+    },
+    "research_seed_02.nofilter": {
+      "directions": {
+        "DOWN": {
+          "actionable_seconds": {
+            "BOUNDARY_REACHED": {
+              "minus_120s": false,
+              "minus_30s": false,
+              "minus_60s": false
+            },
+            "NOTICE": {
+              "minus_120s": true,
+              "minus_30s": true,
+              "minus_60s": true
+            },
+            "URGENT": {
+              "minus_120s": false,
+              "minus_30s": true,
+              "minus_60s": false
+            }
+          },
+          "episodes": 1,
+          "events_by_level": {
+            "BOUNDARY_REACHED": 483,
+            "NOTICE": 1,
+            "URGENT": 4
+          },
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 1
+            }
+          },
+          "first_boundary_ms": 1791338477997,
+          "first_buffer_entry_ms": 1791338474591,
+          "first_critical_ms": 1791338477251,
+          "lead_seconds": {
+            "BOUNDARY_REACHED": 0.0,
+            "NOTICE": 242.997,
+            "URGENT": 36.997
+          }
+        },
+        "UP": {
+          "actionable_seconds": {},
+          "episodes": 0,
+          "events_by_level": {},
+          "false_proxy": {
+            "15min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "30min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            },
+            "60min": {
+              "false_alarm": 0,
+              "truncated": 0,
+              "unresolved": 0,
+              "valid": 0
+            }
+          },
+          "first_boundary_ms": null,
+          "first_buffer_entry_ms": null,
+          "first_critical_ms": null,
+          "lead_seconds": {}
+        }
+      },
+      "events_total": 488
+    }
+  },
+  "snapshot_id": "grid-ev-20261007-0905"
+}

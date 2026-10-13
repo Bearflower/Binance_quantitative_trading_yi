@@ -1,0 +1,133 @@
+# grid V2.5.4 M1 研究文件：证据快照 + 基础 profile（需求 §9.2）+ 对照实验 10 组合
+# 数值均为研究配置，不是线上参数（需求 §9.2 声明）；仅用于离线回放。
+# 矩阵口径：计划 §3.2；效率阈值只改 normal 分支，urgent 效率恒为 0.70。
+
+snapshot:
+  reference_id: grid-ev-20261007-0905
+  symbol: ETHUSDT
+  calculated_at_ms: 1791335100000   # 2026-10-07 09:05（北京）
+  effective_at_ms: 1791335100000
+  grid_lower: "2623.52"
+  grid_upper: "2767.96"
+  stop_lower: "2599.45"
+  stop_upper: "2792.03"
+  stop_move_up_price: "2780.00"
+  stop_move_down_price: "2611.48"
+  market_state: null
+  atr: "12.04"
+  adx_1h: "23.84"
+  adx_4h: "24.16"
+  config_version: null
+  overrides_version: null
+  config_hash: null
+  message_id: null
+  source: 09:05_原始飞书推送
+
+base:
+  enabled: false
+  mode: shadow
+  symbol: ETHUSDT
+  price_source: trade
+  efficiency_filter:
+    enabled: true
+  reference:
+    max_age_seconds: 21600
+  features:
+    sample_seconds: 1
+    windows_seconds: [60, 180, 300]
+    max_anchor_gap_seconds: 2
+    e_resample_seconds: 1
+  normal:
+    return_3m: 0.005
+    return_5m: 0.005
+    min_efficiency: 0.60
+    near_grid_fraction: 0.40
+    hold_seconds: 10
+  urgent:
+    near_grid_fraction: 0.20
+    return_3m: 0.0075
+    return_5m: 0.0075
+    min_efficiency: 0.70
+    hold_seconds: 3
+    buffer_return_1m: 0.003
+    critical_buffer_fraction: 0.75
+  recovery:
+    inside_fraction: 0.45
+    hold_seconds: 60
+  repeat:
+    notice_seconds: 1800
+    urgent_seconds: 300
+    boundary_seconds: 300
+    health_seconds: 1800
+  health:
+    max_silence_seconds: 5
+    max_event_lag_seconds: 3
+  storage:
+    path: /app/data/grid_realtime.sqlite3
+    busy_timeout_ms: 1000
+    sent_retention_days: 30
+    audit_retention_days: 90
+    max_bytes: 1073741824
+  transport:
+    heartbeat_seconds: 20
+    reconnect_initial_seconds: 1
+    reconnect_max_seconds: 30
+    refill_requests_per_second: 1
+  reference_sync:
+    heartbeat_seconds: 1
+    max_silence_seconds: 5
+  delivery:
+    queue_capacity: 1000
+    retry_initial_seconds: 1
+    retry_max_seconds: 30
+    event_ttl_seconds: 30
+  shadow_research:
+    enabled: false
+    notice_interval_seconds: 1800
+
+profiles:
+  research_seed_02.nofilter:
+    efficiency_filter:
+      enabled: false
+
+  research_seed_02.e30.s1:
+    normal:
+      min_efficiency: 0.30
+  research_seed_02.e30.s3:
+    features:
+      e_resample_seconds: 3
+    normal:
+      min_efficiency: 0.30
+  research_seed_02.e30.s5:
+    features:
+      e_resample_seconds: 5
+    normal:
+      min_efficiency: 0.30
+
+  research_seed_02.e40.s1:
+    normal:
+      min_efficiency: 0.40
+  research_seed_02.e40.s3:
+    features:
+      e_resample_seconds: 3
+    normal:
+      min_efficiency: 0.40
+  research_seed_02.e40.s5:
+    features:
+      e_resample_seconds: 5
+    normal:
+      min_efficiency: 0.40
+
+  research_seed_02.e60.s1:
+    normal:
+      min_efficiency: 0.60
+  research_seed_02.e60.s3:
+    features:
+      e_resample_seconds: 3
+    normal:
+      min_efficiency: 0.60
+  research_seed_02.e60.s5:
+    features:
+      e_resample_seconds: 5
+    normal:
+      min_efficiency: 0.60
