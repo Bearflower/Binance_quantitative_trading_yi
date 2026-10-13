@@ -1,7 +1,7 @@
 # Binance_quantitative_trading 知识库索引
 
 最后巡检: 2026-10-13（冷启动初始化）
-条目统计: 问题 3 / 决策 2 / 变更日志累计 0
+条目统计: 问题 3 / 决策 2 / 变更日志累计 1
 
 ## 巡检状态汇总
 | 状态   | 数量 | 判定规则              |
@@ -28,6 +28,7 @@
 ## 每日变更（近 30 天）
 | 日期 | 变更数 | 摘要 |
 |------|--------|------|
+| 2026-10-13 | 4 | [knowledge-base-build] 建立知识库样板（3 模板 + 5 样例 + INDEX）、knowledge 入 Git、修正 3 条样例证据/状态、补齐 skill 与 Claude 入口接入 |
 
 ## 待复查清单
 - [ ] Binance_quantitative_trading-20261010-grid-min-quantity-unit：§9.10 条件①②③（feasible=true 互算自洽）待补验
