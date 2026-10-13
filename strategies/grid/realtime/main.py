@@ -361,10 +361,15 @@ class RealtimeService:
         return asyncio.create_task(self._pump_feed())
 
     async def _pump_feed(self) -> None:
+        """从 feed 搬运成交入队；队列满时逐出最旧一笔，保住最新成交。
+
+        逐出最旧而非丢弃最新，是为了让整秒采样（取不晚于整秒的最后一笔）
+        在清算瀑布等极端突发下仍取到真实末笔价，不因队列溢出错失最新成交。
+        """
         async for trade in self._feed.stream():  # pragma: no branch
             if self._trade_queue.full():
                 self._storage_degraded = True
-                continue
+                self._trade_queue.get_nowait()
             self._trade_queue.put_nowait(trade)
 
     def _drain_trades(self) -> List[AggTrade]:

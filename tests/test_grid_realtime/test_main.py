@@ -208,7 +208,8 @@ class _ListFeed:
             yield trade
 
 
-async def test_pump_feed_queue_full_sets_storage_degraded(conn, cfg):
+async def test_pump_feed_queue_full_evicts_oldest_keeps_newest(conn, cfg):
+    """队列满时逐出最旧、保留最新（采样需取每秒末笔）。"""
     small_cfg = {**cfg, "delivery": {**cfg["delivery"], "queue_capacity": 1}}
     service = _service(small_cfg, conn, lambda: 1)
     service._feed = _ListFeed(
@@ -217,7 +218,7 @@ async def test_pump_feed_queue_full_sets_storage_degraded(conn, cfg):
     await service._pump_feed()
     assert service._storage_degraded is True
     queued = service._trade_queue.get_nowait()
-    assert queued.agg_trade_id == 1
+    assert queued.agg_trade_id == 2  # 最旧 id=1 被逐出，最新 id=2 保留
 
 
 # ───────────────────── run 主循环 ─────────────────────
