@@ -79,6 +79,12 @@ class TradeLogger:
         environ.get("STOP_LOSS_MATCH_WINDOW_SECONDS", "600")
     )
 
+    # L1 降级匹配守卫上限：update_realized_pnl 降级匹配的时间窗不得超过此值（秒）
+    # 防止调用方传过大窗口导致跨持仓命中；默认 5min 不变，仅加硬守卫
+    _MAX_FALLBACK_WINDOW_SECONDS = int(
+        environ.get("MAX_FALLBACK_WINDOW_SECONDS", "1800")  # 30min
+    )
+
     # 建表 DDL
     _CREATE_TABLE_DDL = """
     CREATE TABLE IF NOT EXISTS trading.trade_records (
@@ -340,6 +346,10 @@ class TradeLogger:
         try:
             strategy_name = strategy or self.strategy_name
 
+            # ── L1 降级匹配守卫：时间窗上限 30min（1800s） ─────────────────────────
+            # 防止调用方传过大窗口导致跨持仓命中；默认 5min 不变，仅加守卫
+            effective_window = min(time_window, self._MAX_FALLBACK_WINDOW_SECONDS)
+
             # ---------- 模式一：order_id 精确匹配 ----------
             if order_id:
                 # 模式一使用传入的 side，若未传入则默认 'BUY'（兼容旧调用方）
@@ -375,22 +385,26 @@ class TradeLogger:
 
             # ---------- 模式二：降级匹配（按 strategy + symbol + side + 时间范围） ----------
             if symbol and executed_at:
-                start_time = executed_at - timedelta(seconds=time_window)
-                end_time = executed_at + timedelta(seconds=time_window)
+                start_time = executed_at - timedelta(seconds=effective_window)
+                end_time = executed_at + timedelta(seconds=effective_window)
 
                 # 降级匹配使用传入的 side，若未传入则默认 'BUY'（兼容旧调用方）
                 match_side = side or 'BUY'
 
+                # L1 修复：SELECT 里加 order_type 过滤（排除 LIMIT 开仓单）+ UPDATE 里加二次校验
+                # 旧版会按 executed_at DESC 取最近一条 order_id IS NULL 的行，
+                # 可能错回填到 LIMIT 开仓单（close_reason 空）而非真实平仓行
                 result = await self.db.execute(
                     "UPDATE trading.trade_records "
                     "SET realized_pnl = $1 "
                     "WHERE id = ("
-                    "    SELECT id FROM trading.trade_records"
-                    "    WHERE strategy = $2 AND symbol = $3 AND side = $4"
-                    "    AND executed_at BETWEEN $5 AND $6"
-                    "    AND order_id IS NULL"
-                    "    AND realized_pnl IS NULL"
-                    "    ORDER BY executed_at DESC"
+                    "    SELECT tr.id FROM trading.trade_records tr"
+                    "    WHERE tr.strategy = $2 AND tr.symbol = $3 AND tr.side = $4"
+                    "    AND tr.executed_at BETWEEN $5 AND $6"
+                    "    AND tr.order_id IS NULL"
+                    "    AND tr.realized_pnl IS NULL"
+                    "    AND tr.order_type NOT IN ('LIMIT', 'CONDITIONAL_ORDER')"
+                    "    ORDER BY tr.executed_at DESC"
                     "    LIMIT 1"
                     ")",
                     realized_pnl,
@@ -408,7 +422,7 @@ class TradeLogger:
                         symbol=symbol,
                         side=match_side,
                         executed_at=executed_at.isoformat(),
-                        time_window=time_window,
+                        time_window=effective_window,
                         realized_pnl=realized_pnl,
                         strategy=strategy_name
                     )
@@ -480,16 +494,18 @@ class TradeLogger:
             exec_time = executed_at or datetime.now(BEIJING_TZ).replace(tzinfo=None)
 
             if since is not None:
+                # H1 修复：去掉 realized_pnl 作为去重键
+                # 同 symbol 同 side 跨持仓场景，若盈亏金额巧合相等会被误挡
+                # since（entry_time）已足够：同一持仓 entry_time 唯一，全平只一次
                 existed = await self.db.fetch_one(
                     "SELECT id FROM trading.trade_records"
                     " WHERE strategy = $1 AND symbol = $2 AND side = $3"
-                    " AND order_type = 'PNL_SUMMARY' AND realized_pnl = $4"
-                    " AND executed_at >= $5"
+                    " AND order_type = 'PNL_SUMMARY'"
+                    " AND executed_at >= $4"
                     " LIMIT 1",
                     strategy_name,
                     symbol,
                     side,
-                    realized_pnl,
                     since,
                 )
                 if existed:
@@ -498,7 +514,6 @@ class TradeLogger:
                         strategy=strategy_name,
                         symbol=symbol,
                         side=side,
-                        realized_pnl=str(realized_pnl),
                         since=since.isoformat(),
                     )
                     return True

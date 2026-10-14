@@ -1,7 +1,7 @@
 # Binance_quantitative_trading 知识库索引
 
-最后巡检: 2026-10-13（冷启动初始化；同日完成 5 条样例 + 第一批 11 条放下时复核；同日扩充第二批 8 条）
-条目统计: 问题 21 / 决策 5 / 变更日志累计 1
+最后巡检: 2026-10-14（2026-10-13 完成冷启动初始化 + 5 条样例 + 第一批 11 条放下时复核 + 第二批 8 条扩充；2026-10-14 新增 1 条诊断沉淀，未重跑全量巡检）
+条目统计: 问题 23 / 决策 5 / 变更日志累计 2
 
 ## 巡检状态汇总
 | 状态   | 数量 | 判定规则              |
@@ -21,7 +21,9 @@
 ## 问题模式库
 | ID | 标题 | 标签 | 日期 | 状态 |
 |----|------|------|------|------|
-| Binance_quantitative_trading-20261013-hrs-pnl-double-count | HRS 盈亏双重记账，混合求和致亏损虚增 13 倍 | bug,hrs,盈亏口径,防双计,dashboard,ai_tuner | 2026-10-13 | 已解决（统计口径层） |
+| Binance_quantitative_trading-20261014-hrs-third-close-path-missing-summary | HRS 第三平仓路径（时间止损/移动止盈）结构漏写 PNL_SUMMARY 汇总 | bug,hrs,盈亏口径,写入层 | 2026-10-14 | 已解决（代码修复完成，待部署验证） |
+| Binance_quantitative_trading-20261014-adhoc-sql-guess-columns | 临时 psql 会话猜列名/窗口函数误用，postgres 日志报 5 条 ERROR（非生产缺陷） | 运维,postgres,ad-hoc SQL,窗口函数,日志排查 | 2026-10-14 | 已解决（无需代码修复） |
+| Binance_quantitative_trading-20261013-hrs-pnl-double-count | HRS 盈亏双重记账，混合求和致亏损虚增 13 倍 | bug,hrs,盈亏口径,防双计,dashboard,ai_tuner | 2026-10-13 | 已解决（统计层部署，写入层待部署） |
 | Binance_quantitative_trading-20261013-grid-feed-silent-unhealthy | 币安 @aggTrade 停推叠加未捕获 TimeoutError 致 feed 静默假健康 | bug,实时行情,可观测性 | 2026-10-13 | 已解决 |
 | Binance_quantitative_trading-20261013-grid-feed-queue-drop-latest | 队列溢出丢弃最新数据致采样取滞后价 | bug,实时行情,队列 | 2026-10-13 | 已解决 |
 | Binance_quantitative_trading-20261013-allocation-return-denominator-zero | 月度分配收益率分母取 0 被静默置 0 | bug,ai_tuner,分母口径 | 2026-10-13 | 已解决 |
@@ -55,6 +57,7 @@
 ## 每日变更（近 30 天）
 | 日期 | 变更数 | 摘要 |
 |------|--------|------|
+| 2026-10-14 | 2 | [postgres_error_triage] postgres 日志 5 条 ERROR 定性为临时 psql 会话误用（非生产缺陷，零数据影响），沉淀 issue 1 条（含修正 SQL 与日志排查要点），INDEX/changelog 同步；[hrs-pnl-governance] HRS income 对账定真值（7月+6.36/8月-54.53/9月-39.6538/10月+3.43，修正旧结论 -2.28 非真值）+ H6 第三平仓路径漏写汇总修复（178 tests/GC 通过，待部署）+ 回填 21 组 0 未决（锚 income 合计 -52.920，dry-run 待授权），沉淀 H6 issue 1 条并更正 hrs-pnl-double-count 状态 |
 | 2026-10-13 | 9 | [knowledge-base-build] 建立知识库样板（3 模板 + 5 样例 + INDEX）、knowledge 入 Git、修正 3 条样例证据/状态、补齐 skill 与 Claude 入口接入；[knowledge-base-expand] 第一批 11 条 + 放下时复核转「已审查」（1 条 commit 引用更正）；第二批 8 条（09-21 分配/佣金 + 10-01 补挂/部署 + 10-13 分母口径）；[hrs-pnl-dedup] HRS 盈亏双计防双计口径修复（f940a61/91e99c2，统计层，写入层待治理）；[pnl-caliber-map] 看板盈亏三口径设计确认（本期净盈亏/总盈亏/已实现+浮动，决策：维持现状不改文案） |
 
 ## 待复查清单

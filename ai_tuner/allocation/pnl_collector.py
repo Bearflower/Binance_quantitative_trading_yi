@@ -44,6 +44,9 @@ class PnLCollector:
     #       不存在汇总行（其他策略）→ 回退累计全部明细行，与旧口径行为一致。
     # 已知代价：跨月持仓的累计汇总行 executed_at 落在最后平仓月，
     # 部分平仓盈亏的月份归属会推迟到平仓完成的月份。
+    # 持仓级近似去重：组内若存在 PNL_SUMMARY 汇总行，只累计汇总行（避免明细+汇总双计）；
+    # 否则回退全行 SUM（老策略/老数据无汇总行时不丢数）
+    # H6 修复生效后，HRS 策略自 2026-10-15 起正确产生 PNL_SUMMARY，11 月月度分配按此口径
     _PNL_QUERY_TEMPLATE = """
         SELECT CASE WHEN BOOL_OR(order_type = 'PNL_SUMMARY')
                     THEN COALESCE(SUM(realized_pnl) FILTER (WHERE order_type = 'PNL_SUMMARY'), 0)

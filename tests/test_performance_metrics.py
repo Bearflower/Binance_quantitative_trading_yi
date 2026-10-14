@@ -317,7 +317,30 @@ class TestBaseCapitalQueryNoFutureSnapshot:
 
 
 class TestPerfEntryWindow:
-    """_compute_one_perf_entry：窗口截取与实际样本窗口落库字段"""
+    """_compute_one_perf_entry：窗口截取与实际样本窗口落库字段
+
+    同步方法类，合跑前若有 async 测试污染事件循环（_local._loop 残留 closed loop），
+    会触发 RuntimeError "There is no current event loop"。
+    autouse fixture 每次方法前重置 _local._loop，确保跨文件合跑隔离。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _reset_event_loop(self):
+        """每次方法前重置 asyncio 事件循环（pytest-asyncio 跨文件合跑污染守卫）
+
+        问题根因：async 测试关闭 loop 后 _local._set_called 残留 True，
+        导致后续同步测试触发 get_event_loop() 时跳过"自动 new loop"分支直接 raise。
+        修法：同时清 _loop 和 _set_called 两个私有属性。
+        """
+        import asyncio
+        policy = asyncio.get_event_loop_policy()
+        loop_local = getattr(policy, "_local", None)
+        if loop_local is not None:
+            try:
+                policy.set_event_loop(None)
+                loop_local._set_called = False  # 关键：pytest-asyncio 关闭 loop 后会留 True
+            except Exception:
+                pass
 
     def test_window_dates_recorded(self):
         svc = DataService()

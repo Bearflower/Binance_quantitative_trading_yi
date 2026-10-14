@@ -4,7 +4,7 @@
 覆盖 realized_pnl=None / 有值、_parse_update_count 影响行数 >0 / =0、异常降级路径。
 均通过 mock DatabaseManager 执行，不发起真实请求。
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -158,6 +158,80 @@ class TestInsertPnlSummaryIdempotency:
 
         sql, *params = db.fetch_one.await_args.args
         assert "order_type = 'PNL_SUMMARY'" in sql
-        assert "realized_pnl = $4" in sql
-        assert "executed_at >= $5" in sql
-        assert params == ["hrs", "SUIUSDT", "SELL", Decimal("-12.5"), since]
+        # H1 修复：realized_pnl 不再作为去重键（同 symbol+side 跨持仓金额巧合相等会误挡）
+        # since（entry_time）已足够保证幂等，同一持仓 entry_time 唯一、全平只一次
+        assert "realized_pnl" not in sql
+        assert "executed_at >= $4" in sql
+        assert params == ["hrs", "SUIUSDT", "SELL", since]
+
+
+class TestUpdateRealizedPnlFallbackGuard:
+    """L1 修复：update_realized_pnl 降级匹配守卫
+    - fallback SQL 排除 LIMIT/CONDITIONAL_ORDER 开仓单
+    - 时间窗受 _MAX_FALLBACK_WINDOW_SECONDS 硬守卫约束
+    """
+
+    @pytest.fixture
+    def logger(self):
+        """构造 TradeLogger，mock DatabaseManager"""
+        db = MagicMock()
+        db.execute = AsyncMock(return_value="UPDATE 1")
+        return TradeLogger(db, "测试策略"), db
+
+    @pytest.mark.asyncio
+    async def test_fallback_sql_excludes_limit_and_conditional(self, logger):
+        """降级匹配 SQL 必须排除 LIMIT/CONDITIONAL_ORDER，防止错回填开仓单"""
+        trade_logger, db = logger
+        # order_id 传空字符串（falsey）→ 跳过模式一直接进入降级匹配
+        ok = await trade_logger.update_realized_pnl(
+            order_id="",
+            symbol="BTCUSDT",
+            side="SELL",
+            realized_pnl=Decimal("-12.5"),
+            executed_at=datetime(2026, 10, 14, 10, 0),
+        )
+        assert ok is True
+        sql = db.execute.await_args.args[0]
+        # 关键守卫：SELECT 里必须排除 LIMIT 和 CONDITIONAL_ORDER
+        assert "order_type NOT IN ('LIMIT', 'CONDITIONAL_ORDER')" in sql
+
+    @pytest.mark.asyncio
+    async def test_time_window_capped_by_max_guard(self, logger):
+        """传超大 time_window（86400s）时应被硬守卫截断到 _MAX_FALLBACK_WINDOW_SECONDS（默认 1800s）"""
+        trade_logger, db = logger
+        executed_at = datetime(2026, 10, 14, 10, 0)
+        ok = await trade_logger.update_realized_pnl(
+            order_id="",
+            symbol="BTCUSDT",
+            side="SELL",
+            realized_pnl=Decimal("-12.5"),
+            executed_at=executed_at,
+            time_window=86400,  # 超大值
+        )
+        assert ok is True
+        # 参数顺序：(sql, realized_pnl, strategy_name, symbol, match_side, start_time, end_time)
+        start_time, end_time = db.execute.await_args.args[5], db.execute.await_args.args[6]
+        expected_start = str(executed_at - timedelta(seconds=1800))
+        expected_end = str(executed_at + timedelta(seconds=1800))
+        assert str(start_time) == expected_start, f"期望 start={expected_start}，实际={start_time}"
+        assert str(end_time) == expected_end, f"期望 end={expected_end}，实际={end_time}"
+
+    @pytest.mark.asyncio
+    async def test_small_window_passthrough(self, logger):
+        """time_window=300s（5min，小于上限）不应被截断"""
+        trade_logger, db = logger
+        executed_at = datetime(2026, 10, 14, 10, 0)
+        ok = await trade_logger.update_realized_pnl(
+            order_id="",
+            symbol="ETHUSDT",
+            side="BUY",
+            realized_pnl=Decimal("25.0"),
+            executed_at=executed_at,
+            time_window=300,  # 默认 5min
+        )
+        assert ok is True
+        start_time, end_time = db.execute.await_args.args[5], db.execute.await_args.args[6]
+        expected_start = str(executed_at - timedelta(seconds=300))
+        expected_end = str(executed_at + timedelta(seconds=300))
+        assert str(start_time) == expected_start, f"期望 start={expected_start}"
+        assert str(end_time) == expected_end, f"期望 end={expected_end}"

@@ -83,6 +83,8 @@ class DataService:
     # 存在 PNL_SUMMARY 行 → 盈亏类指标只按汇总行计；不存在 → 按全部明细行计
     # （其他策略行为不变）。wins/losses 随之从"分笔正负"演进为"整笔正负"。
     # order_count（委托行数）与 commission 不涉双计，维持全行口径。
+    # 持仓级近似去重：组内存在 PNL_SUMMARY 汇总行只累计汇总行，否则回退明细行
+    # H6 修复生效后，HRS 策略自 2026-10-15 起正确产生 PNL_SUMMARY，dashboard 自动走汇总行口径
     _TRADE_RECORD_AGG_COLUMNS = """\
                    COUNT(*) AS order_count,
                    CASE WHEN BOOL_OR(order_type = 'PNL_SUMMARY')

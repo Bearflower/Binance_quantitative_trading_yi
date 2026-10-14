@@ -1966,6 +1966,7 @@ class HRSStrategy(BaseStrategy):
                     )
                     # R04：仅完全成交才回写盈亏/撤单/删仓；失败或部分成交则保留仓位并告警，
                     # 由守卫内部按情况重建保护，下一周期幂等重试
+                    # H6 修复：传 pos 让 _finalize_close_if_filled 在全平后补 PNL_SUMMARY 汇总写入
                     if not await self._finalize_close_if_filled(
                         symbol=symbol,
                         direction=direction,
@@ -1974,6 +1975,7 @@ class HRSStrategy(BaseStrategy):
                         exit_price=current_price,
                         quantity=entry_quantity,
                         close_reason="时间止损",
+                        pos=pos,
                     ):
                         continue
                     await self.risk_manager.record_loss(symbol, entry_price, current_price)
@@ -1992,11 +1994,11 @@ class HRSStrategy(BaseStrategy):
                         symbol, direction, "时间止损", current_price, entry_price
                     )
 
-                    # 止损打标：记录本次时间止损，供看板"最近止损次数"统计
-                    await self.mark_stop_loss(
-                        symbol=symbol,
-                        side="SELL" if direction == "long" else "BUY",
-                    )
+                    # H6 修复：不再调 mark_stop_loss
+                    # 原 mark_stop_loss → log_stop_loss 会尝试给明细行打标，但明细行 order_type <> PNL_SUMMARY 条件
+                    # 匹配不到刚写入的 STOP_LOSS 汇总行 → fallback 又插一条金额相同的 STOP_LOSS 行 → 双写
+                    # 现 _finalize_close_if_filled 内 _writeback_pnl_for_full_close 在 pnl<0 时自动带 close_reason='STOP_LOSS'
+                    # （close_reason 参数由 _writeback_pnl_for_full_close 内部按 pnl 符号决定），无需额外打标
 
                     # 平仓后检查是否需要注销K线服务
                     if self._should_unregister(symbol):
@@ -2014,6 +2016,7 @@ class HRSStrategy(BaseStrategy):
                             reason="移动止盈",
                         )
                         # R04：仅完全成交才回写盈亏/撤单/删仓；失败或部分成交则保留仓位并告警
+                        # H6 修复：传 pos 让 _finalize_close_if_filled 在全平后补 PNL_SUMMARY 汇总写入
                         if not await self._finalize_close_if_filled(
                             symbol=symbol,
                             direction=direction,
@@ -2022,6 +2025,7 @@ class HRSStrategy(BaseStrategy):
                             exit_price=current_price,
                             quantity=remaining_qty,
                             close_reason="移动止盈",
+                            pos=pos,
                         ):
                             continue
                         self.risk_manager.record_profit()
@@ -3577,12 +3581,21 @@ class HRSStrategy(BaseStrategy):
         exit_price: float,
         quantity: float,
         close_reason: str,
+        pos: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
-        R04 守卫：依据平仓结构化结果决定是否执行清理（时间止损/移动止盈共用单点）
+        R04 守卫 + H6 修复：依据平仓结构化结果决定是否执行清理
+        （时间止损/移动止盈共用单点，**全平场景补 PNL_SUMMARY 汇总写入**）
 
-        - 完全成交（result.success）：closed_qty>0 时按「实际减仓量」回写盈亏 → 撤保护单 → 删持仓，
-          返回 True；closed_qty<=0（如交易所真实持仓已为 0）时跳过回写，仅做幂等清理并告警；
+        修复根因（H6）：时间止损/移动止盈经本路径平仓后，只调 _writeback_pnl
+        做明细 UPDATE + remove_position，从不调 insert_pnl_summary 做汇总 INSERT。
+        remove_position 后主循环持仓已为 None，永不再触发全平回写。
+        修复方式：remove_position 前复用 _writeback_pnl_for_full_close 的
+        "实际值优先→理论兜底→since 去重"取值链，补一条 PNL_SUMMARY。
+
+        - 完全成交（result.success）：closed_qty>0 时按「实际减仓量」回写明细 PnL →
+          补 PNL_SUMMARY 汇总（全平场景） → 撤保护单 → 删持仓 → 返回 True；
+          closed_qty<=0 时跳过回写，仅幂等清理并告警；
         - 部分成交：保留仓位，按剩余量重建保护（先撤旧单再重建），告警，返回 False；
         - 失败/仅受理：保留仓位与保护单，不撤单不删仓，告警，返回 False。
         幂等：未成交时本轮不清理，下一监控周期按真实持仓重试，不产生超额单。
@@ -3594,7 +3607,9 @@ class HRSStrategy(BaseStrategy):
             entry_price: 入场价（回写盈亏用）
             exit_price: 平仓价（回写盈亏用）
             quantity: 调用方请求的回写数量（仅用于日志；实际回写量以 result.closed_qty 为准）
-            close_reason: 平仓原因（告警文案用）
+            close_reason: 平仓原因（告警文案用；含"止损"时汇总行带 STOP_LOSS 标记）
+            pos: 持仓字典（含 entry_time/atr 等，用于汇总写入的 entry_time 取值链）；
+                 None 时跳过汇总写入（兼容旧单测）
 
         Returns:
             bool: True 表示已完全成交并完成清理；False 表示保留仓位待下轮重试
@@ -3619,6 +3634,38 @@ class HRSStrategy(BaseStrategy):
                     close_reason=close_reason,
                     requested_qty=quantity,
                 )
+
+            # ── H6 修复：全平场景补 PNL_SUMMARY 汇总写入 ─────────────────────────────
+            # 复用 _writeback_pnl_for_full_close 的取值链（实际值优先→理论兜底），
+            # 避免重复实现。pos 为 None 时跳过（单测兼容）。
+            #
+            # 设计限制说明：income 结算延迟（P50=377min，极端 847min）场景下，
+            # _writeback_pnl_for_full_close 的"实际值优先"分支从 Binance 拉 income
+            # 可能尚未结算 → 退回理论值（entry/exit/quantity 计算）兜底。
+            # 回填脚本 hrs_pnl_backfill.py 以 reconcile.match_income_to_trades 归属
+            # 的 income 真值为锚，后续可覆盖更新理论值汇总行（通过 close_reason/
+            # order_id=backfill- 识别批次）。两阶段保证：实时兜底 + 离线校准。
+            if pos is not None:
+                try:
+                    await self._writeback_pnl_for_full_close(
+                        symbol=symbol,
+                        direction=direction,
+                        entry_price=entry_price,
+                        entry_quantity=float(pos.get("entry_quantity", quantity) or quantity),
+                        atr=float(pos.get("atr", 0) or 0),
+                        current_price=exit_price,
+                        pos=pos,
+                    )
+                except Exception as e:
+                    # 汇总写入失败不影响主流程（明细已回写），H4 设计：记 ERROR 供后续追踪
+                    logger.error(
+                        "H6 修复：PNL_SUMMARY 汇总写入异常，明细已回填不受影响",
+                        symbol=symbol,
+                        direction=direction,
+                        close_reason=close_reason,
+                        error=str(e),
+                    )
+
             await self.position_manager.cancel_all_orders(symbol)
             self.position_manager.remove_position(symbol)
             return True
