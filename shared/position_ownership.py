@@ -27,6 +27,20 @@ _ENTRY_ORDER_TYPES = ('LIMIT', 'MARKET')
 # 归属判定查询所用表：统一 schema 前缀常量，禁止散落硬编码
 _TRADE_RECORDS_TABLE = "trading.trade_records"
 
+# D3.2：持仓归零后标记最新入场记录 CLOSED（release_claim reason='position_closed' 时执行）
+# 按 symbol + strategy 匹配最新非终态入场记录（LIMIT/MARKET），避免部分平仓（TP1/TP2）
+# 过早标记 CLOSED 导致剩余持仓失去互斥权威记录（方案 9.3.2）
+_MARK_ENTRY_CLOSED_SQL = (
+    f"UPDATE {_TRADE_RECORDS_TABLE} SET status = 'CLOSED' "
+    "WHERE id = ("
+    f"  SELECT id FROM {_TRADE_RECORDS_TABLE}"
+    "  WHERE symbol = $1 AND strategy = $2"
+    "  AND order_type IN ('LIMIT','MARKET')"
+    "  AND status NOT IN ('CANCELED','EXPIRED','CLOSED')"
+    "  ORDER BY executed_at DESC, id DESC LIMIT 1"
+    ")"
+)
+
 # ============================================================
 # R07 占用表（开仓窗口期预占）SQL 常量与配置默认值
 #   见 docs/plans/fix-2026-09-29-p0-r01-r08-architecture.md §9.4/§11
@@ -97,22 +111,37 @@ def _is_owner_blocking(
     return True
 
 
+# 已终态入场记录 status 值（CANCELED=撤单未成交，EXPIRED=交易所过期，CLOSED=持仓已了结）
+# 这三类记录不再参与归属/互斥判定：D3 撤单/平仓终态标记后，互斥 SQL 自动排除
+_TERMINAL_ENTRY_STATUSES = ("CANCELED", "EXPIRED", "CLOSED")
+
+
 def _open_entry_sql(status_filter: bool) -> str:
     """
-    构建"最新未平开仓单"归属判定 SQL（归属/互斥底层 SQL 单点，杜绝重复）
+    构建"最新非终态入场记录"归属判定 SQL（归属/互斥底层 SQL 单点，杜绝重复）
+
+    终态（CANCELED/EXPIRED/CLOSED）记录一律排除：撤单后标记 CANCELED、
+    持仓归零后标记 CLOSED，使该币种不再被互斥误拦。FILLED 视为未平
+    （直到平仓流程标记 CLOSED）。
 
     Args:
-        status_filter: True => 追加 status='FILLED'（保护单路径权威）；
-                       False => 不含 status 过滤（互斥B路径，含 NEW 挂单更保守）
+        status_filter: True => 追加 AND status='FILLED'（保护单路径权威，
+                       仅看真实成交开仓单）；
+                       False => 不含 status 过滤（互斥B路径，含 NEW 挂单
+                       更保守；但仍然排除 CANCELED/EXPIRED/CLOSED）
 
     Returns:
         查询 SQL 字符串（符号通过 $1 参数化）
     """
+    terminal_clause = (
+        f" AND status NOT IN ({', '.join(repr(s) for s in _TERMINAL_ENTRY_STATUSES)})"
+    )
     status_clause = " AND status = 'FILLED'" if status_filter else ""
     return (
         f"SELECT strategy FROM {_TRADE_RECORDS_TABLE} "
         "WHERE symbol = $1 AND order_type IN ('LIMIT','MARKET') "
         "AND realized_pnl IS NULL"
+        + terminal_clause
         + status_clause
         + " ORDER BY executed_at DESC, id DESC LIMIT 1"
     )
@@ -496,6 +525,11 @@ async def release_claim(
     仅释放「本策略」的 PENDING/ACTIVE 占用，不误放对家；占用置 RELEASED
     保留行（便于审计与回滚）。异常返回 False 并告警，不抛异常中断主循环。
 
+    D3.2 持仓归零终态标记：reason=='position_closed' 时，额外将 trade_records
+    中该 symbol+strategy 最新非终态入场记录置 CLOSED（标记失败仅告警，不影响
+    占用释放主流程）。此标记不依赖 claims 能力——即使 db_manager 不支持 claims，
+    只要非 None 仍执行，确保撤单平仓路径与互斥 SQL 的终态排除逻辑闭环。
+
     Args:
         db_manager: DatabaseManager 实例（可为 None）
         symbol: 交易对
@@ -506,6 +540,20 @@ async def release_claim(
         True 表示本策略确有占用被释放（或开关关闭/能力不足视为无需释放）；
         False 表示无占用可释放或释放查询异常
     """
+    # D3.2：平仓归零 → 标记 trade_records 入场记录 CLOSED
+    # 不依赖 claims 能力：db_manager 非 None 就执行；失败仅告警不影响主流程
+    if reason == "position_closed" and db_manager is not None:
+        try:
+            await db_manager.execute(
+                _MARK_ENTRY_CLOSED_SQL, symbol, my_record_name,
+            )
+        except Exception as e:
+            logger.warning(
+                "持仓归零：入场记录 CLOSED 标记失败（不影响占用释放）",
+                symbol=symbol, strategy=my_record_name, error=str(e)[:200],
+            )
+
+    # 以下为 R07 占用表释放逻辑（原有行为不变）
     if db_manager is None or not _supports_claims(db_manager):
         return True  # 未启用占用互斥时释放视为幂等成功
     try:

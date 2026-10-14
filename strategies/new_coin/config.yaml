@@ -4,7 +4,8 @@
 strategy:
   name: new_coin
   # 本策略在 trading.trade_records 中的归属名（R07 占用互斥/归属判定权威名）
-  record_name: "新币做空策略"
+  # 与 main.py 中 TradeLogger("new_coin") 写库名保持一致
+  record_name: "new_coin"
   version: "1.1.0"
   description: "新币做空策略 - 利用新币上市后的价格下跌趋势获利（V4.1 信号质量优化版）"
 
@@ -330,7 +331,7 @@ notification:
     - feishu                   # 通知渠道
 
 # 持仓归属隔离（方案C + R07 开仓占用互斥）
-# 本策略归属名取 strategy.record_name（= "新币做空策略"，与 trade_records 权威名一致）；
+# 本策略归属名取 strategy.record_name（= "new_coin"，与 trade_records 写库名一致）；
 # competing_record_names 为空表示与共享账户内任意其他策略互斥（默认保守口径）。
 ownership:
   enabled: true                    # 是否启用占用互斥（关闭即回到既有 trade_records 判定）

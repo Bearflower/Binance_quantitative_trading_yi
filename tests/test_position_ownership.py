@@ -71,13 +71,22 @@ class TestResolvePositionOwner:
         assert "LIMIT 1" in sql_filled
 
     def test_status_filter_alters_sql(self):
-        """status过滤：True 追加 FILLED；False 不含 status"""
+        """status过滤：True 追加 FILLED；False 不追加（但两条都含终态排除）"""
         sql_filled = _open_entry_sql(True)
         sql_unfiltered = _open_entry_sql(False)
         assert "AND status = 'FILLED'" in sql_filled
-        assert "status" not in sql_unfiltered
+        # False 版本不含 status='FILLED' 精确匹配（但仍含终态排除）
+        assert "status = 'FILLED'" not in sql_unfiltered
         # 两条 SQL 其余约束一致（归属用开仓订单单点）
         assert sql_unfiltered.startswith("SELECT strategy FROM")
+
+    def test_terminal_statuses_excluded(self):
+        """D2：两条 SQL 都必须排除 CANCELED/EXPIRED/CLOSED 终态入场记录"""
+        for sql in (_open_entry_sql(True), _open_entry_sql(False)):
+            assert "CANCELED" in sql
+            assert "EXPIRED" in sql
+            assert "CLOSED" in sql
+            assert "status NOT IN" in sql
 
     @pytest.mark.asyncio
     async def test_status_filter_passed_to_db(self):

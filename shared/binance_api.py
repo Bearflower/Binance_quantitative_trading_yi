@@ -1056,28 +1056,137 @@ class BinanceClient:
     ) -> Dict:
         """
         撤销订单
+
+        撤单成功（HTTP 200）后，按响应 status + executedQty 判据决定是否同步标记
+        trade_records 入场记录 NEW→CANCELED（方案 9.3.1）：
+          - status=='CANCELED' AND executedQty==0 → 标记
+          - status=='FILLED'（撤销瞬间成交）→ 不标记
+          - executedQty>0（部分成交后撤）→ 不标记 + warning
+
+        交易所返回 -2011（订单不存在/已消失）时，get_order 复查终态：
+          - 复查仍为 CANCELED/EXPIRED → 标记
+          - 复查为 FILLED/NEW/PARTIALLY_FILLED → 不标记
+          - 复查失败 → 不标记仅告警（保守）
+
+        其他 BinanceAPIError 原样抛出，不做标记处理。
         """
         if not symbol or not symbol.strip():
             raise ValueError("交易对不能为空")
-        
+
         if not order_id and not client_order_id:
             raise ValueError("必须提供 orderId 或 clientOrderId")
-        
+
         if order_id is not None and not str(order_id).strip():
             raise ValueError("订单ID不能为空")
-        
+
         if client_order_id is not None and not str(client_order_id).strip():
             raise ValueError("客户端订单ID不能为空")
-        
+
         params = {"symbol": symbol.strip().upper()}
-        
+
         if order_id:
             params["orderId"] = str(order_id).strip()
         elif client_order_id:
             params["origClientOrderId"] = str(client_order_id).strip()
-        
+
         endpoint = "/papi/v1/um/order" if self.use_unified_account else "/fapi/v1/order"
-        return await self._request("DELETE", endpoint, params)
+
+        try:
+            result = await self._request("DELETE", endpoint, params)
+        except BinanceAPIError as e:
+            # -2011：订单不存在/已消失——get_order 复查终态后再决定标记
+            if e.code == -2011 and order_id:
+                await self._mark_entry_after_cancel_missing(symbol, str(order_id))
+            raise
+
+        # 撤单响应判据决定是否标记
+        await self._mark_entry_by_cancel_response(result, symbol, str(order_id) if order_id else None)
+        return result
+
+    async def _mark_entry_by_cancel_response(self, result: Dict, symbol: str, order_id: Optional[str]) -> None:
+        """按撤单响应 status + executedQty 判据标记 trade_records NEW→CANCELED
+
+        判据（方案 9.3.1）：
+          - status=='CANCELED' AND executedQty==0 → 标记
+          - status=='FILLED' → 不标记（撤销瞬间成交，已是真实持仓）
+          - executedQty>0 → 不标记 + warning（部分成交后撤，残余仓位需要互斥继续拦截）
+          - 其他 status → 不标记，仅告警（未知状态保守不碰）
+
+        本函数为内部 helper，不抛出任何异常——标记失败仅告警，绝不影响撤单主流程。
+        """
+        if not self.trade_logger or not order_id:
+            return
+        try:
+            status = result.get("status", "")
+            # F5 加固：若响应缺 executedQty 键（某些交易所实现），且 status==CANCELED，
+            # 无法区分"真 0 成交"和"键缺失"——保守不标记并告警。否则部分成交记录
+            # 会被误标 CANCELED，其真实持仓退出互斥 → 跨策略双开（资金风险）。
+            if "executedQty" not in result:
+                logger.warning(
+                    "撤单响应缺 executedQty 键，保守跳过入场记录标记",
+                    symbol=symbol, order_id=order_id, status=status,
+                )
+                return
+            executed_qty = float(result.get("executedQty", 0))
+            if status == "CANCELED" and executed_qty == 0:
+                await self.trade_logger.mark_entry_canceled(order_id, symbol)
+            elif status == "FILLED":
+                logger.info(
+                    "撤单响应 FILLED，跳过入场记录标记（撤销瞬间成交）",
+                    symbol=symbol, order_id=order_id,
+                )
+            elif executed_qty > 0:
+                logger.warning(
+                    "撤单响应 executedQty>0，跳过入场记录标记（部分成交后撤）",
+                    symbol=symbol, order_id=order_id, executedQty=executed_qty,
+                )
+            else:
+                logger.warning(
+                    "撤单响应异常状态，跳过入场记录标记",
+                    symbol=symbol, order_id=order_id, status=status,
+                )
+        except Exception as e:
+            logger.warning(
+                "撤单终态标记分支异常，不影响撤单主流程",
+                symbol=symbol, order_id=order_id, error=str(e)[:200],
+            )
+
+    async def _mark_entry_after_cancel_missing(self, symbol: str, order_id: str) -> None:
+        """cancel 返回 -2011 时 get_order 复查终态并决定标记
+
+        本函数为内部 helper，仅在 cancel_order 捕获 -2011 后调用。get_order 失败或
+        返回非终态时保守不标记，绝不抛异常影响上层。
+        """
+        if not self.trade_logger:
+            return
+        try:
+            order_int = int(order_id)
+        except (ValueError, TypeError):
+            logger.warning("撤单 -2011 后 order_id 非整数，无法 get_order 复查", symbol=symbol, order_id=order_id)
+            return
+        try:
+            order = await self.get_order(symbol, order_int)
+        except Exception as e:
+            logger.warning(
+                "撤单 -2011 后 get_order 复查仍失败，跳过标记",
+                symbol=symbol, order_id=order_id, error=str(e)[:200],
+            )
+            return
+        if not order:
+            return
+        status = order.get("status", "")
+        if status in ("CANCELED", "EXPIRED"):
+            await self.trade_logger.mark_entry_canceled(order_id, symbol)
+        elif status in ("FILLED", "NEW", "PARTIALLY_FILLED"):
+            logger.info(
+                "撤单 -2011 后 get_order 显示未取消，跳过标记",
+                symbol=symbol, order_id=order_id, status=status,
+            )
+        else:
+            logger.info(
+                "撤单 -2011 后 get_order 状态非终态，跳过标记",
+                symbol=symbol, order_id=order_id, status=status,
+            )
     
     async def cancel_algo_order(
         self,

@@ -913,3 +913,58 @@ class TradeLogger:
                 continue
             total += Decimal(str(raw))
         return (total > 0), total
+
+    async def mark_entry_canceled(
+        self,
+        order_id: str,
+        symbol: str,
+    ) -> bool:
+        """
+        将一条 NEW 状态的入场记录标记为 CANCELED（撤单同步终态）
+
+        仅执行 NEW→CANCELED 降级，绝不触碰 FILLED/CANCELED/EXPIRED/CLOSED 等其他状态
+        的记录，保证幂等且安全（避免把真实成交记录误标 CANCELED）。
+        操作失败仅告警不抛异常，保证不影响主流程。
+
+        命名约定：与 shared/condition_orders.mark_order_canceled（操作
+        condition_orders 表）区分，本方法操作 trade_records 入场记录。
+
+        Args:
+            order_id: 被撤订单的 orderId（trade_records.order_id）
+            symbol: 交易对（trade_records.symbol）
+
+        Returns:
+            True 表示至少一条记录被成功标记；False 表示无命中或执行异常
+        """
+        if not order_id or not symbol:
+            logger.warning(
+                "mark_entry_canceled 参数缺失",
+                order_id=order_id, symbol=symbol,
+            )
+            return False
+        try:
+            result = await self.db.execute(
+                "UPDATE trading.trade_records "
+                "SET status = 'CANCELED' "
+                "WHERE order_id = $1 AND symbol = $2 AND status = 'NEW'",
+                str(order_id), symbol.strip().upper(),
+            )
+            rows = self._parse_update_count(result)
+            if rows > 0:
+                logger.info(
+                    "撤单终态标记：入场记录已置 CANCELED",
+                    symbol=symbol, order_id=order_id, strategy=self.strategy_name,
+                )
+            else:
+                # 未命中可能是：已终态/非入场记录/参数不匹配。正常场景，不告警。
+                logger.debug(
+                    "撤单终态标记：无 NEW 记录命中，跳过",
+                    symbol=symbol, order_id=order_id,
+                )
+            return rows > 0
+        except Exception as e:
+            logger.warning(
+                "撤单终态标记失败，不影响撤单主流程",
+                symbol=symbol, order_id=order_id, error=str(e)[:200],
+            )
+            return False
