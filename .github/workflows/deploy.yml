@@ -169,6 +169,21 @@ jobs:
             fi
           fi
 
+          # 6.6) data-backend：Dockerfile 除自身代码外还 COPY 了
+          #      dashboard/backend/{core,config,services}（performance_metric 定时任务
+          #      在 data-backend 容器内共用 data_service_docker.py），因此
+          #      dashboard/backend/ 下任何变更（不只 dashboard-api 自身）都必须重建 data-backend，
+          #      否则出现"只重建 dashboard-api、data-backend 快照口径滞后"的部署遗漏
+          #      场景实证：2026-10-14 8cf1ae4 修复 _DAILY_PNL_QUERY 持仓级防双计，
+          #      仅触发 dashboard-api 重建，data-backend 绩效快照仍按旧天级口径计算
+          if [ "$SERVICE_NAME" = "data-backend" ]; then
+            if echo "$CHANGED_FILES" | grep -qE '^(dashboard/backend/|services/data_backend/)'; then
+              echo "✅ dashboard/backend 或 services/data_backend 有改动 → data-backend 需要构建"
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
           # 7) 其他改动（不影响本服务镜像）→ skip
           echo "⏭️ ${{ matrix.service.name }} 无改动 → 跳过构建"
           echo "should_build=false" >> "$GITHUB_OUTPUT"
