@@ -101,17 +101,35 @@ class DataService:
                         ELSE COALESCE(SUM(realized_pnl), 0) END AS gross_pnl,
                    COALESCE(SUM(commission), 0) AS commission"""
 
-    # 净值曲线日盈亏查询（防双计条件口径，与 _TRADE_RECORD_AGG_COLUMNS 同款判定：
-    # 组内存在 PNL_SUMMARY 行只按汇总行计，否则回退全行口径）
+    # 净值曲线日盈亏查询（防双计条件口径，与 _TRADE_RECORD_AGG_COLUMNS 同款条件对齐，
+    # 但判定粒度升级为持仓级：CTE grp 先按 (strategy, symbol, side) 在窗口内聚合出
+    # BOOL_OR(order_type='PNL_SUMMARY') AS has_summary，主查询 JOIN 后按天分组。
+    # 跨天持仓不再双计的原因：汇总行往往写在平仓日，而明细行分布在更早的建仓日——
+    # 旧实现只按天判定（天内有汇总 → 计汇总；天内无汇总 → 计明细），导致汇总日计整笔
+    # 汇总、明细日又计明细；新实现升级到持仓级判定（窗口内该组任一交易日有汇总 →
+    # 所有交易日都只计汇总行，明细全不再计），因此同一笔平仓只落一次 PNL_SUMMARY 金额。
+    # IS NOT DISTINCT FROM 用于 JOIN 键防 NULL 丢失，旧实现不丢 NULL symbol 行，新实现亦然）
     _DAILY_PNL_QUERY = """
-        SELECT DATE(executed_at) AS day,
-               CASE WHEN BOOL_OR(order_type = 'PNL_SUMMARY')
-                    THEN COALESCE(SUM(realized_pnl) FILTER (WHERE order_type = 'PNL_SUMMARY'), 0)
-                    ELSE COALESCE(SUM(realized_pnl), 0) END AS day_pnl
-        FROM trading.trade_records
-        WHERE strategy = ANY($1::text[])
-          AND executed_at >= $2 AND executed_at < $3
-        GROUP BY DATE(executed_at)
+        WITH grp AS (
+            SELECT strategy, symbol, side,
+                   BOOL_OR(order_type = 'PNL_SUMMARY') AS has_summary
+            FROM trading.trade_records
+            WHERE strategy = ANY($1::text[])
+              AND executed_at >= $2 AND executed_at < $3
+            GROUP BY strategy, symbol, side
+        )
+        SELECT DATE(t.executed_at) AS day,
+               COALESCE(SUM(t.realized_pnl)
+                        FILTER (WHERE g.has_summary AND t.order_type = 'PNL_SUMMARY'), 0)
+               + COALESCE(SUM(t.realized_pnl) FILTER (WHERE NOT g.has_summary), 0) AS day_pnl
+        FROM trading.trade_records t
+        JOIN grp g
+          ON g.strategy IS NOT DISTINCT FROM t.strategy
+         AND g.symbol   IS NOT DISTINCT FROM t.symbol
+         AND g.side     IS NOT DISTINCT FROM t.side
+        WHERE t.strategy = ANY($1::text[])
+          AND t.executed_at >= $2 AND t.executed_at < $3
+        GROUP BY DATE(t.executed_at)
         ORDER BY day ASC
     """
 
