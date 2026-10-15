@@ -10,7 +10,10 @@
         cancel 抛 -2011 → get_order 复查后决定（CANCELED/EXPIRED→标记，FILLED/失败→不标记）
   AC5  清理脚本 classify_entry 纯函数四分类
   AC9  release_claim(reason='position_closed') 标记 CLOSED：
-        成功路径 + open_failed 反例 + db 抛异常不影响主流程
+        成功路径 + db 抛异常不影响主流程
+  D2   release_claim 扩 reason 落终态：open_failed / open_exception / micro_zeroed
+       → 标 CANCELED（终态，被互斥 SQL 排除）；position_closed → CLOSED（不回归）
+  D3   终态标记命中 0 行 → warning（可观测）
 
 全部 fake/mock，禁止真实网络。
 """
@@ -27,12 +30,13 @@ if PROJECT_ROOT not in sys.path:
 
 from shared.binance_api import BinanceClient, BinanceAPIError  # noqa: E402
 from shared.position_ownership import (  # noqa: E402
+    _MARK_ENTRY_CANCELED_SQL,
     _MARK_ENTRY_CLOSED_SQL,
     _open_entry_sql,
     release_claim,
 )
 from shared.trade_logger import TradeLogger  # noqa: E402
-from scripts.fix_ghost_entry_records import classify_entry  # noqa: E402
+from scripts.fix_ghost_entry_records import build_candidate_query, classify_entry  # noqa: E402
 
 
 # ============================================================
@@ -391,13 +395,43 @@ class TestAC9ReleaseClaimPositionClosed:
         call_args_list = [c[0][0] for c in claims_db.execute.call_args_list]
         assert _MARK_ENTRY_CLOSED_SQL in call_args_list
 
-    async def test_open_failed_does_not_mark_entry_closed(self, claims_db):
-        """reason='open_failed'（非 position_closed）→ 不执行 CLOSED 标记 SQL"""
+    async def test_open_failed_marks_entry_canceled(self, claims_db):
+        """D2：reason='open_failed' → 入场记录置 CANCELED（终态），不置 CLOSED"""
         ok = await release_claim(claims_db, "BTCUSDT", "new_coin", reason="open_failed")
         assert ok is True
-        # 只执行一次：_CLAIM_RELEASE_SQL
-        assert claims_db.execute.await_count == 1
-        assert _MARK_ENTRY_CLOSED_SQL not in claims_db.execute.call_args[0][0]
+        # execute 两次：第一次 CANCELED 标记，第二次 _CLAIM_RELEASE_SQL
+        assert claims_db.execute.await_count == 2
+        called_sqls = [c[0][0] for c in claims_db.execute.call_args_list]
+        assert _MARK_ENTRY_CANCELED_SQL in called_sqls
+        assert _MARK_ENTRY_CLOSED_SQL not in called_sqls
+
+    @pytest.mark.parametrize("reason", ["open_exception", "micro_zeroed"])
+    async def test_unfilled_reasons_mark_canceled(self, claims_db, reason):
+        """D2：open_exception / micro_zeroed → 同样置 CANCELED（未成仓/被撤语义）"""
+        ok = await release_claim(claims_db, "BTCUSDT", "new_coin", reason=reason)
+        assert ok is True
+        called_sqls = [c[0][0] for c in claims_db.execute.call_args_list]
+        assert _MARK_ENTRY_CANCELED_SQL in called_sqls
+        assert _MARK_ENTRY_CLOSED_SQL not in called_sqls
+
+    async def test_unmapped_reason_no_terminal_marking(self, claims_db):
+        """D2 反例：reason='released'（未命中映射）→ 不做终态标记，只释放占用"""
+        ok = await release_claim(claims_db, "BTCUSDT", "new_coin", reason="released")
+        assert ok is True
+        called_sqls = [c[0][0] for c in claims_db.execute.call_args_list]
+        assert _MARK_ENTRY_CANCELED_SQL not in called_sqls
+        assert _MARK_ENTRY_CLOSED_SQL not in called_sqls
+
+    async def test_terminal_mark_zero_rows_warns(self, claims_db):
+        """D3：终态标记命中 0 行 → warning（原静默），占用释放继续成功"""
+        claims_db.execute = AsyncMock(side_effect=["UPDATE 0", "UPDATE 1"])
+        with patch("shared.position_ownership.logger") as fake_logger:
+            ok = await release_claim(
+                claims_db, "BTCUSDT", "new_coin", reason="position_closed"
+            )
+        assert ok is True
+        assert fake_logger.warning.called
+        assert "未匹配到可标记终态的入场记录" in str(fake_logger.warning.call_args)
 
     async def test_mark_entry_failure_does_not_block_release(self, claims_db):
         """CLOSED 标记 SQL 抛异常 → 仅告警，占用释放继续正常执行"""
@@ -659,3 +693,135 @@ class TestF3NewCoinConfigAndOccupancy:
             inst = TradingExecutor()
             result = await inst._is_symbol_occupied("SNPSUSDT")
             assert result is False
+
+
+# ============================================================
+# T2：build_candidate_query 过滤参数化（--symbol / --strategy）
+# ============================================================
+class TestT2BuildCandidateQuery:
+    """分币种/策略受限清理：过滤值一律参数化，禁止字符串拼接"""
+
+    def test_no_filter_returns_base_sql_and_no_params(self):
+        sql, params = build_candidate_query()
+        assert params == []
+        assert "symbol = ANY(" not in sql
+        assert "ORDER BY executed_at ASC, id ASC" in sql
+        assert "LIMIT $" not in sql
+
+    def test_symbol_filter_is_parameterized(self):
+        sql, params = build_candidate_query(symbols=["BNBUSDT"])
+        assert params == [["BNBUSDT"]]
+        assert "AND symbol = ANY($1)" in sql
+        # 过滤值不得出现在 SQL 文本中（参数化，防注入/防范围失控）
+        assert "BNBUSDT" not in sql
+
+    def test_symbol_strategy_limit_param_order(self):
+        sql, params = build_candidate_query(
+            symbols=["BNBUSDT", "SOLUSDT"],
+            strategies=["btc_eth_aggressive"],
+            max_rows=50,
+        )
+        assert params == [["BNBUSDT", "SOLUSDT"], ["btc_eth_aggressive"], 50]
+        assert "AND symbol = ANY($1)" in sql
+        assert "AND strategy = ANY($2)" in sql
+        assert sql.rstrip().endswith("LIMIT $3")
+
+    def test_empty_iterable_treated_as_no_filter(self):
+        sql, params = build_candidate_query(symbols=[], strategies=None)
+        assert params == []
+        assert "ANY(" not in sql
+
+
+# ============================================================
+# T2b：audit_entry 持仓判定（查询成功但无该币种行 → 归零，不误判 SKIP）
+# ============================================================
+class TestT2bAuditEntryPositionResolution:
+    """FILLED 记录的持仓判定：区分「查询成功但无持仓行」与「查询异常」"""
+
+    @pytest.mark.asyncio
+    async def test_filled_no_position_row_is_closed(self):
+        """账户无任何持仓行（合法返回）→ position_amt=0 → CLOSED"""
+        from scripts.fix_ghost_entry_records import audit_entry
+
+        client = MagicMock()
+        client.get_order = AsyncMock(return_value={"status": "FILLED"})
+        client.get_position = AsyncMock(return_value=[])
+        result = await audit_entry(
+            client, {"symbol": "BNBUSDT", "order_id": "96733987860"}, min_interval=0.0
+        )
+        assert result["category"] == "CLOSED"
+        assert result["position_amt"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_filled_other_symbol_rows_is_closed(self):
+        """返回列表只有其他币种行 → 本币种视为归零 → CLOSED"""
+        from scripts.fix_ghost_entry_records import audit_entry
+
+        client = MagicMock()
+        client.get_order = AsyncMock(return_value={"status": "FILLED"})
+        client.get_position = AsyncMock(
+            return_value=[{"symbol": "BTCUSDT", "positionAmt": "1"}]
+        )
+        result = await audit_entry(
+            client, {"symbol": "BNBUSDT", "order_id": "1"}, min_interval=0.0
+        )
+        assert result["category"] == "CLOSED"
+
+    @pytest.mark.asyncio
+    async def test_filled_nonzero_position_kept(self):
+        """本币种持仓非 0（SOL 真仓）→ KEPT（保留，互斥继续生效）"""
+        from scripts.fix_ghost_entry_records import audit_entry
+
+        client = MagicMock()
+        client.get_order = AsyncMock(return_value={"status": "FILLED"})
+        client.get_position = AsyncMock(
+            return_value=[{"symbol": "SOLUSDT", "positionAmt": "0.52"}]
+        )
+        result = await audit_entry(
+            client, {"symbol": "SOLUSDT", "order_id": "249454901842"}, min_interval=0.0
+        )
+        assert result["category"] == "KEPT"
+        assert result["position_amt"] == 0.52
+
+    @pytest.mark.asyncio
+    async def test_filled_position_query_error_skips(self):
+        """持仓查询异常 → 保守 SKIP（不得误判为归零）"""
+        from scripts.fix_ghost_entry_records import audit_entry
+
+        client = MagicMock()
+        client.get_order = AsyncMock(return_value={"status": "FILLED"})
+        client.get_position = AsyncMock(side_effect=Exception("positionRisk down"))
+        result = await audit_entry(
+            client, {"symbol": "BNBUSDT", "order_id": "1"}, min_interval=0.0
+        )
+        assert result["category"] == "SKIP"
+        assert result["position_amt"] is None
+
+
+# ============================================================
+# AC4：release_claim_if_no_position 守卫（真仓不误标终态）
+# ============================================================
+class TestAC4ReleaseClaimGuard:
+    """未成仓释放的三个调用点都经此守卫：已登记持仓的 symbol 一律不释放"""
+
+    @pytest.mark.asyncio
+    async def test_position_present_skips_release(self):
+        from shared.protection_retry import release_claim_if_no_position
+
+        fn = AsyncMock()
+        await release_claim_if_no_position(
+            {"BTCUSDT": object()}, MagicMock(), "BTCUSDT", "new_coin",
+            "open_failed", fn,
+        )
+        fn.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_position_absent_releases_with_reason(self):
+        from shared.protection_retry import release_claim_if_no_position
+
+        fn = AsyncMock()
+        await release_claim_if_no_position(
+            {}, MagicMock(), "BTCUSDT", "new_coin", "open_failed", fn,
+        )
+        fn.assert_awaited_once()
+        assert fn.call_args.kwargs["reason"] == "open_failed"

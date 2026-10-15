@@ -48,8 +48,33 @@ _CANDIDATE_SQL = """
     WHERE order_type IN ('LIMIT', 'MARKET')
       AND status = 'NEW'
       AND realized_pnl IS NULL
-    ORDER BY executed_at ASC, id ASC
 """
+
+
+def build_candidate_query(symbols=None, strategies=None, max_rows=None):
+    """
+    在候选集基础上追加可选的 symbol/strategy 过滤，返回 (sql, params)
+
+    - symbols / strategies：可迭代的币种/策略名，命中即保留（ANY 语义）；为空则不限制；
+    - 过滤值一律以 $n 占位参数化，禁止字符串拼接（既有安全口径，避免注入与范围失控）；
+    - max_rows 非 None 时追加 LIMIT（同样参数化）。
+
+    Returns:
+        (sql 字符串, 参数列表)
+    """
+    filters = []
+    params = []
+    for column, values in (("symbol", symbols), ("strategy", strategies)):
+        if values:
+            params.append(list(values))
+            filters.append(f"AND {column} = ANY(${len(params)})")
+    parts = [_CANDIDATE_SQL.strip()]
+    parts.extend(filters)
+    parts.append("ORDER BY executed_at ASC, id ASC")
+    if max_rows is not None:
+        params.append(int(max_rows))
+        parts.append(f"LIMIT ${len(params)}")
+    return "\n    ".join(parts), params
 
 # 置 CANCELED（交易所确认未成交）
 _MARK_CANCELED_SQL = """
@@ -187,6 +212,9 @@ async def audit_entry(
         await asyncio.sleep(min_interval)
         try:
             positions = await client.get_position(symbol)
+            # 查询成功即视为可判定：无该币种持仓行 => 持仓归零（而非查询失败）
+            # 否则「查到但无持仓」被误判为 SKIP，FILLED+已平仓的历史记录永不收敛
+            position_amt = 0.0
             for pos in positions or []:
                 if pos.get("symbol") == symbol.upper():
                     pos_amt_str = pos.get("positionAmt", "0")
@@ -196,6 +224,7 @@ async def audit_entry(
                         position_amt = None
                     break
         except Exception as e:
+            position_amt = None  # 查询异常 → 保守 SKIP
             error_msg = (error_msg + f"; get_position 异常: {e}") if error_msg else f"get_position 异常: {e}"
 
     # ---------- 分类 ----------
@@ -217,6 +246,8 @@ async def run_audit(
     execute: bool = False,
     max_rows: Optional[int] = None,
     min_interval: float = 0.2,
+    symbols: Optional[List[str]] = None,
+    strategies: Optional[List[str]] = None,
 ) -> Dict[str, List[Dict]]:
     """
     执行全量对账循环：候选集 → 逐单对账 → 汇总分类
@@ -227,6 +258,8 @@ async def run_audit(
         execute: True 时落库；False 时只输出（dry-run）
         max_rows: 候选集上限（None 表示全部）
         min_interval: 两次 API 调用间隔秒数
+        symbols: 仅处理指定币种（None 表示不限制）
+        strategies: 仅处理指定策略（None 表示不限制）
 
     Returns:
         dict: {"CANCELED": [...], "CLOSED": [...], "KEPT": [...],
@@ -236,12 +269,17 @@ async def run_audit(
     print(f"幽灵入场记录清理脚本（D4） — {'EXECUTE' if execute else 'DRY-RUN'}")
     print(f"{'=' * 70}")
 
-    # 1. 拉取候选集
-    query = _CANDIDATE_SQL
-    if max_rows is not None:
-        query += f" LIMIT {int(max_rows)}"
-    rows = await db_conn.fetch(query)
-    print(f"\n候选集：共 {len(rows)} 条 NEW 入场记录（order_type IN LIMIT/MARKET, realized_pnl IS NULL）")
+    # 1. 拉取候选集（symbol/strategy 过滤一律参数化）
+    query, params = build_candidate_query(symbols, strategies, max_rows)
+    rows = await db_conn.fetch(query, *params)
+    scope = []
+    if symbols:
+        scope.append(f"symbol IN {list(symbols)}")
+    if strategies:
+        scope.append(f"strategy IN {list(strategies)}")
+    scope_text = ("，范围：" + "；".join(scope)) if scope else ""
+    print(f"\n候选集：共 {len(rows)} 条 NEW 入场记录"
+          f"（order_type IN LIMIT/MARKET, realized_pnl IS NULL）{scope_text}")
 
     if not rows:
         print("无候选记录，脚本退出。")
@@ -372,6 +410,8 @@ async def async_main(args: argparse.Namespace) -> int:
             execute=args.execute,
             max_rows=args.max_rows,
             min_interval=args.interval,
+            symbols=args.symbol,
+            strategies=args.strategy,
         )
     finally:
         await db_conn.close()
@@ -406,6 +446,18 @@ def parse_args() -> argparse.Namespace:
         type=float,
         default=0.2,
         help="两次 API 调用最小间隔秒数（默认 0.2）",
+    )
+    p.add_argument(
+        "--symbol",
+        action="append",
+        default=None,
+        help="仅处理指定币种（可重复：--symbol BNBUSDT --symbol SOLUSDT）",
+    )
+    p.add_argument(
+        "--strategy",
+        action="append",
+        default=None,
+        help="仅处理指定策略（可重复：--strategy btc_eth_aggressive）",
     )
     return p.parse_args()
 
