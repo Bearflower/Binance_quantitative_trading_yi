@@ -6,7 +6,7 @@ id: Binance_quantitative_trading-20261013-hrs-pnl-double-count
 日期: 2026-10-13
 标签: [bug, hrs, 盈亏口径, 防双计, dashboard, ai_tuner]
 任务标识: hrs_pnl_dedup_2026-10-13.md
-状态: 已解决（统计层已部署 f940a61/91e99c2；写入层已修复待部署；回填待授权）
+状态: 已解决（统计层 f940a61/91e99c2 + 写入层已部署上线验证 Run #71-73；生产回填已执行 21 行 SUM −52.91988）
 审查: 已审查
 ---
 
@@ -87,9 +87,23 @@ END
 | `shared/trade_logger.py::insert_pnl_summary`（L496-510 附近） | H1 去重收紧：移除 `AND realized_pnl = $4`（`since=entry_time` 已保证幂等，避免金额巧合误挡） | H1 |
 | `shared/trade_logger.py::update_realized_pnl`（L349-416 附近） | L1 降级匹配守卫：时间窗上限 `_MAX_FALLBACK_WINDOW_SECONDS`（默认 1800s）+ SQL 排除 `order_type IN ('LIMIT','CONDITIONAL_ORDER')` 错行 | L1 |
 
-### 回填概况（dry-run 就绪，待用户授权执行）
+### 回填执行与上线验证定案（2026-10-15，D 段完成）
 
-`ai_tuner/reconciler/hrs_pnl_backfill.py`：识别 **21 组待回填、0 组未决**，金额**锚 income 真值合计 `-52.920`**（≠ 明细 SUM `-56.003`；EPICUSDT 反转 `-0.806 → +0.948`）。回填行 `order_id` 写批次号（`backfill-YYYYMMDD-NN`）便于回滚，`executed_at` 取该组最后一笔平仓成交时间（禁止取执行时刻）；默认 dry-run，执行需人工授权。
+`ai_tuner/reconciler/hrs_pnl_backfill.py`：识别 **21 组、0 组未决**，金额**锚 income 真值合计 `-52.920`**（≠ 明细 SUM `-56.003`；EPICUSDT 反转 `-0.806 → +0.948`）。回填行 `order_id` 写批次号（`backfill-YYYYMMDD-NN`）便于回滚，`executed_at` 取该组最后一笔平仓成交时间（禁止取执行时刻）；默认 dry-run。
+
+**执行结果（2026-10-15，用户授权）**：本地生成 21 条 INSERT → 生产库实时预检（无 `backfill-%` 残留、当日新增汇总不在 21 组内，无重复风险）→ 单事务 `ON_ERROR_STOP` 写入 → **21 行 `SUM = -52.91988`，与 dry-run 分毫不差**（hrs 汇总行 75+21+1 = 96 行 ✓）。
+
+**写入层修复与部署（Run #71-73）**：
+- `8808e74`（Run #71，DEPLOY_ID 00004701）：收入层对账实现 + 写入层修复（H6 全平分支补写汇总、`trade_logger` H1/L1 收紧）上线。
+- `8cf1ae4`（Run #72，00004801）：dashboard 日净值按 (strategy,symbol,side) **持仓级**判定（CTE 窗口内有汇总只计汇总、无汇总回退全行，`IS NOT DISTINCT FROM` 防 NULL 丢行）。
+- `1d1b247`（Run #73，00004901）：修复 CI 遗漏——`dashboard/backend/` 或 `services/data_backend/` 变更须重建 **data-backend**（快照定时任务宿主），deploy.yml 规则 6.6。
+- 三轮 CI 五层验证全绿（11/11 构建 job、容器健康、VERSION/MD5/部署日志一致）。
+
+**回填后防双计口径重算（生产库实测）**：7月 +5.75 / 8月 −29.09 / **9月 −30.74**（修复前 −2.28）/ 10月 +10.29；全历史累计 ≈ −43.8 vs 基数 58.37 → 净值不触 0，**回撤 100% 的"统计伪影"成因已消除**。
+
+**上线验证定论**：data-backend 用新代码重算快照后，day/week/month/year = **1.0 全部是真实回撤，非统计伪影**——本地按生产日盈亏序列（新持仓级口径，75 天）逐点复现生产算法吻合：9/17 亏穿基数触 0，10/9 回升至峰值 0.2565（equity 14.97）后回落；**income 真值证实 7-9 月累计约 −87.8 > 基数 58.37，HRS 真实亏穿资金基数**，净值贴地后的任何"正→0"回落即 100% 回撤（诚实呈现）。**当前 HRS equity ≈ 3.74 USDT（净值 0.064），风险状况需用户知悉。**
+
+**遗留转出（未完成项）**：ai_tuner 月度口径 `ai_tuner/allocation/pnl_collector.py::_PNL_QUERY_TEMPLATE` 的跨月持仓 carry-in 边界（10月 +10.29 vs income 真值 +3.43，影响 11 月分配排名输入）**本任务未动**，已转出至新任务 `capital_base_caliber_fix_2026-10-15`（目标3 = ai_tuner 月度口径与看板持仓级对齐；非目标4 明确排除纯写入层 `PNL_SUMMARY` 跨月 carry-in）。归档如实保留「未完成/转出」，不虚报通过。
 
 ### 真实交易对更正（用户核实）
 
@@ -100,6 +114,7 @@ END
 
 ## 关联
 - 持久证据: commit `f940a61` / `91e99c2`；生产库 9 月双计实测（-2.28 vs -29.03 vs -31.31）；SOPHUSDT 案例行
+- 持久证据（上线/回填，2026-10-15）: commit `8808e74` / `8cf1ae4` / `1d1b247`（Run #71/#72/#73，DEPLOY_ID 00004701/00004801/00004901）；生产回填 21 行 `SUM=-52.91988`；回填后月度 7月 +5.75 / 8月 −29.09 / 9月 −30.74 / 10月 +10.29；未完成项（ai_tuner 月度口径 carry-in）转出至 `capital_base_caliber_fix_2026-10-15`
 - 持久证据（后续治理）: 对账报告 `docs/reports/hrs_income_reconcile_report.md`；对账脚本 `ai_tuner/reconciler/hrs_income_reconcile.py`（+ `tests/test_hrs_income_reconcile.py` 40 项）；回填工具 `ai_tuner/reconciler/hrs_pnl_backfill.py`；设计文档 `docs/plans/hrs_pnl_governance_design.md`
 - 相关: [Binance_quantitative_trading-20261014-hrs-third-close-path-missing-summary](./Binance_quantitative_trading-20261014-hrs-third-close-path-missing-summary.md)（本条写入层延续：第三平仓路径结构漏写 PNL_SUMMARY）
 - 相关: [Binance_quantitative_trading-20261013-allocation-return-denominator-zero](./Binance_quantitative_trading-20261013-allocation-return-denominator-zero.md)（同属月度分配口径缺陷；该条修分母，本条修分子双计）

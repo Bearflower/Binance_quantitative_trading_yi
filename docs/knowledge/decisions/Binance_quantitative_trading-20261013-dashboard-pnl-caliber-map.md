@@ -7,7 +7,7 @@ id: Binance_quantitative_trading-20261013-dashboard-pnl-caliber-map
 标签: [dashboard, 指标口径, 盈亏]
 任务标识: hrs_pnl_dedup_2026-10-13.md
 状态: 已采纳
-审查: 待审查
+审查: 已审查
 ---
 
 # 看板盈亏三口径设计确认（本期净盈亏=净值差法，总盈亏=全历史已实现+浮动）
@@ -47,3 +47,4 @@ ssh root@43.156.242.184 "curl -s 'http://localhost:8767/api/account/returns?peri
 - 持久证据: `dashboard/frontend/index.html` 三处 data-tip；`dashboard/frontend/js/main.js` `updateOverview` L270-293；`dashboard/backend/services/data_service_docker.py` `get_account_returns`（净值差法 L1391-1402）
 - 相关: [Binance_quantitative_trading-20261013-hrs-pnl-double-count](./issues/Binance_quantitative_trading-20261013-hrs-pnl-double-count.md)（同日排查；「已实现 −7.24」为 HRS 防双计部署后、预计算重写前的过渡值，将随新口径收敛）
 - 相关: [Binance_quantitative_trading-20261009-max-drawdown-caliber](./Binance_quantitative_trading-20261009-max-drawdown-caliber.md)（同属看板指标口径设计）
+- 后续（2026-10-15）: HRS 看板日/周/月/年最大回撤 = 100% 经 `hrs_pnl_governance` D 段上线验证定性为**真实回撤（非统计伪影）**——income 真值证实 7-9 月累计约 −87.8 > 基数 58.37，策略真实亏穿资金基数。由此衍生的“资金基数/回撤分段口径”修复任务 `capital_base_caliber_fix_2026-10-15`（其将取代上述 `max-drawdown-caliber` 决策）。本条“盈亏三口径”结论本身不受影响。

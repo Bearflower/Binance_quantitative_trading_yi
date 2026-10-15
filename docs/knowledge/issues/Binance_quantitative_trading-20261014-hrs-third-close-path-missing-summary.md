@@ -6,7 +6,7 @@ id: Binance_quantitative_trading-20261014-hrs-third-close-path-missing-summary
 日期: 2026-10-14
 标签: [bug, hrs, 盈亏口径, 写入层]
 任务标识: hrs_pnl_governance_2026-10-14.md
-状态: 已解决（代码修复完成，待部署验证）
+状态: 已解决（已部署上线验证通过，Run #71-73 五层验证 + 生产回填 −52.91988）
 审查: 已审查
 ---
 
@@ -40,10 +40,10 @@ HRS 存在**三条平仓路径**，汇总行只挂在其中一条上：
 - **代码修复**：178 项相关单测通过（含 `tests/test_strategies/test_hrs_ghost_position_guard.py` 断言全平后 `_writeback_pnl_for_full_close` 被调用一次、`tests/test_shared/test_trade_logger.py` 断言 `_MAX_FALLBACK_WINDOW_SECONDS` 硬守卫截断）。
 - **GC 审查**：C 段 code-specification-inspector 复检通过。
 - **根因实证**：BTRUSDT 三笔 income `tradeId=143943408 / 162269923 / 166830754` 在币安 PM API 真实存在且匹配归属 HRS（`docs/reports/hrs_income_reconcile_report.md` §一）。
-- **待验证**：部署后核对 HRS 日最大回撤自 1.0 回落、且新写汇总行金额与 income 真值一致（本任务 D 段执行）。
+- **已部署验证（2026-10-15，D 段）**：`8808e74`（Run #71，DEPLOY_ID 00004701）上线，五层验证通过；生产回填 21 组 `SUM = -52.91988`（与 dry-run 分毫不差；hrs 汇总行 75+21+1 = 96）。回填后月度口径：7月 +5.75 / 8月 −29.09 / 9月 −30.74 / 10月 +10.29。**补充定论**：上线后回撤 day/week/month/year = 1.0 经核为**真实回撤、非统计伪影**（income 真值证实 7-9 月累计约 −87.8 > 基数 58.37，真实亏穿基数）——本写入层缺陷已修复，不再制造"漏记汇总"。
 
 ## 适用范围与修订
-适用于 `strategies/hrs/strategy.py` + `shared/trade_logger.py`（`shared/` 变更 → 全部策略容器重建）。当前**代码修复已完成、未部署**，状态为「已解决（代码修复完成，待部署验证）」；部署证据补齐前不得视为生产已根治。上游统计口径条目 [20261013-hrs-pnl-double-count](./Binance_quantitative_trading-20261013-hrs-pnl-double-count.md) 保留历史（统计层）结论，本条为其写入层延续。无替代条目。
+适用于 `strategies/hrs/strategy.py` + `shared/trade_logger.py`（`shared/` 变更 → 全部策略容器重建）。**已部署**（`8808e74` Run #71，五层验证通过）+ 生产回填已执行并验证（`SUM = -52.91988`），状态为「已解决」。上游统计口径条目 [20261013-hrs-pnl-double-count](./Binance_quantitative_trading-20261013-hrs-pnl-double-count.md) 保留历史（统计层）结论，本条为其写入层延续。无替代条目。
 
 ## 教训
 当平仓路径不止一条时，"写汇总"必须挂在**最终一致的结算点**上，而不是依赖某一条路径顺带触发；一旦某条路径以 `remove_position` 收尾，就切断了"全平回写"的最后触发时机，漏写因此成为**结构性**而非偶发。（AI 归纳，仅供参考）
@@ -51,5 +51,5 @@ HRS 存在**三条平仓路径**，汇总行只挂在其中一条上：
 ## 关联
 - 本地补充来源: [handoff](../../handoffs/hrs_pnl_governance_2026-10-14.md)（不随 Git 同步）
 - 持久证据: 对账报告 `docs/reports/hrs_income_reconcile_report.md`（§一 BTRUSDT 铁证、§二 各月真值表）；设计文档 `docs/plans/hrs_pnl_governance_design.md`（§2.1 三路径分解、§2.2 H6）；代码 `strategies/hrs/strategy.py::_finalize_close_if_filled`、`shared/trade_logger.py::insert_pnl_summary / update_realized_pnl`
-- 必要证据摘要: 2026-09 无汇总组 114 行 = -33.71（其中 TAKE_PROFIT -30.9864、LIMIT -1.3402）；BTRUSDT 三笔 -27.35405；修复代码未部署
+- 必要证据摘要: 2026-09 无汇总组 114 行 = -33.71（其中 TAKE_PROFIT -30.9864、LIMIT -1.3402）；BTRUSDT 三笔 -27.35405；修复代码已部署（Run #71）+ 回填 −52.91988
 - 相关: [Binance_quantitative_trading-20261013-hrs-pnl-double-count](./Binance_quantitative_trading-20261013-hrs-pnl-double-count.md)（上游：统计层防双计，本条是其写入层延续）
