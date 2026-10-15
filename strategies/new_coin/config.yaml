@@ -76,10 +76,20 @@ scoring:
     min_total_score: 7.0      # 技术总分最低要求（V4.1：从6.0提高到7.0，强化技术面硬性要求）
     min_three_tops_score: 3.0 # 三次冲顶最低评分（V4.1：从2.0提高到3.0，要求形态更清晰）
 
-  # 反弹放弃配置
+  # 反弹放弃配置（B3 修复：参照线固定 + 下单前新鲜实时价）
   rebound_check:
     enabled: true           # 是否启用反弹放弃检查
-    lookback_klines: 5      # 检查最近N根K线的最高价
+    lookback_klines: 5      # 检查最近N根K线的最高价（仅纳入已关闭的K线，避免半截K线抬高参照线）
+    # B3 新增：下单前新鲜实时价的最大允许年龄（秒）
+    # 从交易所 ticker 获取的是实时价，observed_at 取调用时间；
+    # 未来若接入带服务器时间戳的行情源，超龄检查会自动生效。
+    max_price_age_seconds: 30
+    # B3 新增：影子模式
+    # 该闸门此前因参照线包含末根K线而恒不触发，修复后会**减少**部分新开仓；
+    # 先影子对比旧版与新版的入场决策差集（按 symbol 单列被影子拦截的开仓），
+    # 影子阶段不真实改变下单行为；用户拍板放行后再将 enabled 置 false。
+    shadow:
+      enabled: true         # true=影子（安全态，只记录不拦截）；false=真实拦截
 
 # 交易配置
 trading:
