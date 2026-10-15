@@ -180,3 +180,94 @@ new_coin 对自家已持仓币的重复开仓防护不依赖归属层，而由 R
 - **复审（原 C 审查者 resume，独立上下文）**：F1-F6 逐项核对落地（binance_api.py:1124-1129 缺键分支、fix_ghost_entry_records.py:93 错误码集合、9.3/9.4 标注、测试齐备）；自行复跑 `pytest tests/test_position_ownership.py tests/test_newcoin_hrs_fixes/ tests/test_shared/test_ghost_entry_cleanup.py -q` → **124 passed, EXIT=0**；无新阻塞。非阻塞 N1（缺键 warning 语义泛化）、N2（classify_entry 冗余守卫）、N3（-2011/-2013 不查持仓，靠 dry-run 人工核对兜底）均不阻塞。
 - **结论：GC 通过，交接 D 段（部署 + D4 dry-run/execute + AC7 上线验证）**。
 - 文档同步：docs/architecture/数据库设计.md v1.8（status 终态语义 + 互斥口径）；本节及 9.3.1/9.4 补记加固内容。
+
+## 10. 增量修补（2026-10-15，提交 `8071f06`，Run 76 已部署）
+
+> 本节为对 §9 修复的**增量修补**记录，非新任务；任务标识沿用 `ghost_entry_mutex_fix_2026-10-14`。基线由 `fce42bf` 顺延至 `8071f06`。
+
+### 10.1 用户报告
+
+btc_eth（MTPCS 原版）推送：
+
+> ⚠️ BNBUSDT 开仓被占用互斥拦截（已被 其他策略 持有），跳过
+> ⚠️ SOLUSDT 开仓被占用互斥拦截（已被 其他策略 持有），跳过
+
+但币安 APP 中并无其他策略持有这两个币种，用户怀疑「上一版激进版平仓未同步」。
+
+### 10.2 逐单对账实证（E1–E4）
+
+| 编号 | 结论 | 证据 |
+|------|------|------|
+| **E1（BNB 幽灵）** | 幽灵记录 | BNBUSDT 互斥命中 `trade_records` id=3773（strategy=btc_eth_aggressive / order_type=LIMIT / status=NEW / realized_pnl IS NULL）；逐单向交易所对账：该币 8 笔订单全部 `status=FILLED`，而 BNBUSDT 当前 `positionRisk` **无该币种行（净持仓 0）** → 「真实成交、事后已了结」却被互斥口径视为未平的幽灵记录 |
+| **E2（SOL 亦为幽灵误拦）** | 幽灵记录（非真仓）｜**前结论已更正** | 用户更正：btc_eth **11:05** 告警**早于**激进版 **11:10** 开仓 → 告警时点该真仓尚不存在。以互斥 SQL 加 `executed_at` 截止重建时点 owner：截止 `2026-10-15 11:05:00` / `11:09:59` owner 均为 `btc_eth_aggressive` **id=3926**（status=NEW / realized_pnl NULL / executed_at **2026-10-13 21:10:02**，2 天前幽灵）；截止 `11:10:30` owner 才变为 id=4026（`2026-10-15 11:10:03` 开、交易所 FILLED executedQty=0.52 的真仓）。故 **11:05 拦截由幽灵 id=3926 触发，与 BNB 同根因**（此前 E2 用「当前态」回溯「历史事件」，结论错误） |
+| **E3（标记链路有效）** | 假设证伪 | 旧 SOL 记录 id=4002 已被正确标为 CLOSED → 「终态标记失效」假设**证伪** |
+| **E4（真正根因）** | 未成仓 reason 不落终态 | `release_claim` 原先只在 `reason='position_closed'` 落终态，而 `open_failed` / `open_exception` / `micro_zeroed` 三条「未成仓」reason 完全不落终态 → 下单即写的 NEW 记录永久残留；且只标「最新一条」、0 行命中时静默无观测 |
+
+### 10.3 改动点（D2 扩展 / D3 分类器修复 T2b）
+
+**D2 扩展 —— [shared/position_ownership.py](file:///Users/yl/vscode/Binance_quantitative_trading/shared/position_ownership.py)**
+
+- 新增单点 SQL 构建器 `_mark_entry_terminal_sql(status)`（消除重复子查询文本，复用既有 `_ENTRY_ORDER_TYPES` / `_TERMINAL_ENTRY_STATUSES` 常量），派生 `_MARK_ENTRY_CLOSED_SQL` 与 `_MARK_ENTRY_CANCELED_SQL`；
+- 新增映射 `_ENTRY_TERMINAL_SQL_BY_REASON = {position_closed→CLOSED, open_failed→CANCELED, open_exception→CANCELED, micro_zeroed→CANCELED}`；
+- `release_claim` 由「仅 position_closed 标 CLOSED」改为「按 reason 查表决定终态」（未命中不标记），并解析 `db_manager.execute` 返回的 `"UPDATE n"` 影响行数（`_parse_update_count`），**命中 0 行时 `logger.warning("未匹配到可标记终态的入场记录")`**（替代原先静默）；标记失败仅告警，不影响占用释放主流程；不依赖 claims 能力（`db_manager` 非 None 即执行）。
+
+**D3 分类器修复（T2b）—— [scripts/fix_ghost_entry_records.py](file:///Users/yl/vscode/Binance_quantitative_trading/scripts/fix_ghost_entry_records.py)**
+
+- `build_candidate_query(symbols, strategies, max_rows)`：symbol/strategy 过滤一律 `$n` 参数化（`= ANY($n)`），新增 CLI `--symbol` / `--strategy`（`action="append"`）；
+- `audit_entry` 中「`get_position` 查询成功但返回列表无该币种行」原先留 `position_amt=None` → 被判 SKIP，导致 FILLED+已平仓的历史记录永不收敛；修复为**查询成功即初值 `0.0`**（无该币种持仓行 = 持仓归零），仅查询抛异常时才保留 None（保守 SKIP）。
+
+### 10.4 测试补强（T2/T2b）—— [tests/test_shared/test_ghost_entry_cleanup.py](file:///Users/yl/vscode/Binance_quantitative_trading/tests/test_shared/test_ghost_entry_cleanup.py)
+
+新增/调整：`TestT2BuildCandidateQuery`（4 例）、`TestT2bAuditEntryPositionResolution`（4 例）、`TestAC4ReleaseClaimGuard`（2 例）、`test_unfilled_reasons_mark_canceled`（parametrize 2 例）、`test_unmapped_reason_no_terminal_marking`、`test_terminal_mark_zero_rows_warns`；原 `test_open_failed_does_not_mark_entry_closed` 改为 `test_open_failed_marks_entry_canceled`。
+
+### 10.5 T3/T4/T5 执行结果
+
+- **T3 dry-run**（btc_eth 容器内，`--symbol BNBUSDT --symbol SOLUSDT`）：BNB 8 条 → CLOSED；SOL 47 条 → KEPT；SKIP=0。
+- **T4 写库**（用户已批准 P1）：`--execute --symbol BNBUSDT` → `落库完成：CANCELED=0，CLOSED=8`；执行后 BNBUSDT 的互斥 owner **变空**（`_open_entry_sql(False)` 命中 0）；SOL 记录分布逐项与执行前一致（4026 仍为该策略真仓记录）；仅 8 条目标行（id 1699/1795/2307/2354/2465/2778/2891/3773）status 变为 CLOSED。
+- **T5 回归**：见 10.6。
+
+### 10.6 测试证据
+
+- `pytest tests/test_shared/test_ghost_entry_cleanup.py` → **70 passed**；
+- 互斥相关 4 文件（test_ghost_entry_cleanup / test_position_claims / test_newcoin_hrs_fixes/test_r03_r04 / test_mtpcs_fixes/test_r05_r06_mtpcs）隔离跑 → **153 passed**；
+- `tests/test_strategies/test_mtpcs_v628_add_position.py` 隔离跑 → **98 passed**；
+- 判定：全量套件中出现的 99 failed / 325 errors 属「事件循环污染」的既有测试隔离问题，**非本次改动引入**（隔离跑全绿）。
+
+### 10.7 发布与五层验证（Run 76，2026-10-15 15:08 北京时间）
+
+- **L1**：11 个容器全部 `ghcr.io/bearflower/trading-*:latest`，Up 12 min (healthy)；
+- **L2**：镜像 ID 已记录（btc_eth `sha256:b177c6beebebc5513839fa9319cbd9ffe657685b37f0abecf3da1f75ffce04ff` 等）；
+- **L3**：11 容器 `/app/VERSION` 全为 `GIT_SHA=8071f0696f92d89c97b5f25fe00339f6259b795d` / `DEPLOY_ID=00004C01`；
+- **L4**：容器内 `/app/shared/position_ownership.py` MD5 = `d842463fe38d792669820b56b1fa4ff4` = 本地 `md5 -q`；
+- **L5**：`deploy_logs/20261015.log` → `[2026-10-15 15:08:08] DEPLOY_SUCCESS commit=8071f0696f92d89c97b5f25fe00339f6259b795d deploy_id=00004C01`，无 error/failed/冲突关键字，deploy_id 与容器 VERSION 完全一致。
+
+### 10.8 AC1b 观测结果（2026-10-15 北京时间 16:05 轮次，AC1b 通过）
+
+- **线上日志（btc_eth 容器，轮次起点 `2026-10-15T08:05:00.161971Z`）**：本轮对 BTCUSDT / ETHUSDT / BNBUSDT / SOLUSDT / XRPUSDT 全部 5 个币种完成分析，全量 56 条日志中**互斥相关条数 = 0**（无任何「开仓被占用互斥拦截」推送）。
+- **本轮未走到互斥判定（如实记录）**：5 个币种均在信号阶段被拒——BTC/BNB/SOL/XRP「震荡入场: 量价确认拒绝：成交量未缩量」，ETH「趋势过滤: 4h价格距EMA21过远(110.79 > 75.10)」；因此该轮「零拦截」属弱证据。
+- **因果补强（SQL 直查生产库，互斥口径 `order_type IN ('LIMIT','MARKET') AND realized_pnl IS NULL AND status NOT IN ('CANCELED','EXPIRED','CLOSED')`）**：
+  - `BNBUSDT` 命中数 = **0**，无 owner（8 条幽灵已于 T4 置 CLOSED，owner 为空）；
+  - `SOLUSDT` owner（**当前态**）= `btc_eth_aggressive`（id=4037 / NEW / executed_at 16:10:05）——此仅为**当前态**，**不可**用它回溯证明 11:05 告警正确：11:05 时点 owner 实为同一策略的幽灵 id=3926（见 §10.9 更正）。
+- **结论：AC1b 通过**（日志零拦截 + 互斥 owner 为空 双重证据）。
+
+### 10.9 结论（**已更正**）：SOLUSDT 11:05 的拦截同属幽灵误拦
+
+- **更正声明**：原结论「SOLUSDT 为激进版真仓 → btc_eth 被互斥拦截正确、非缺陷」**错误**。错因：**用「当前状态」回溯推断「历史事件」**（用清理时点查到的真仓 id=4026/4037 去解释几小时前发生的告警）。
+- **用户提供的关键时间线**：激进版（MTCPS 激进版）真仓 **11:10 开仓**，而 MTCPS 原版（btc_eth）**11:05 就发出了**互斥告警——**告警早于对手方开仓**，故 11:05 时点该真仓根本不存在。
+- **时点重建实证**（互斥 SQL `order_type IN ('LIMIT','MARKET') AND realized_pnl IS NULL AND status NOT IN ('CANCELED','EXPIRED','CLOSED')`，`ORDER BY executed_at DESC, id DESC LIMIT 1`，叠加 `executed_at <= 截止`）：
+  - 截止 `2026-10-15 11:05:00` → owner = `btc_eth_aggressive` **id=3926**（NEW / realized_pnl NULL / executed_at **2026-10-13 21:10:02**，2 天前幽灵）；
+  - 截止 `2026-10-15 11:09:59` → owner 仍为 id=3926；
+  - 截止 `2026-10-15 11:10:30` → owner 变为 id=4026（`2026-10-15 11:10:03` 新开真仓）。
+- **结论**：11:05 的 SOLUSDT 拦截与 BNBUSDT **同根因**（幽灵 NEW 记录未落终态）→ **是缺陷，不是正确保护**。对照：**16:05 轮次**时点 owner = id=4026（真仓），若彼时走到互斥判定，拦截才算正确（本轮 5 币均在信号阶段被拒、未走到互斥判定）。
+- **遗留风险（已于 §10.10 解除）**：SOLUSDT 现存 `btc_eth_aggressive` NEW 记录（当时 44 条，多为幽灵，`realized_pnl IS NULL`），其中 id=3926 已实证为幽灵。真仓 id=4026 一旦平仓并正确落 CLOSED，**下一条幽灵 NEW 会立即成为互斥 owner，误拦复现**。故 SOL 亦需逐单对账清理，**不可**照搬 BNB 那样一刀切置 CLOSED（须保留交易所 FILLED 且持仓非 0 的真实存活入场单）。
+
+### 10.10 SOLUSDT 存量清理执行（用户手动平仓后，2026-10-15 17:32 北京时间）
+
+- **前置：空仓窗口前的 dry-run 为 no-op（安全闸预期行为）**：当时 SOLUSDT 由激进版真仓持有（`positionAmt=1.57`，登记 `btc_eth_aggressive`，`updated_at` 17:10:41）→ 分类器按**币种级净持仓**判定，交易所侧 FILLED 的记录一律 `KEPT` → dry-run **49 条全 KEPT / 0 可清**。此为安全闸在起作用，**非脚本故障**；未强行清理、未当场改分类器。
+- **触发**：用户于币安 APP 手动平掉 SOLUSDT 持仓 → 出现空仓窗口。
+- **执行前快照（只读）**：SOL NEW 候选 **49 条**（`btc_eth_aggressive` 33 / `btc_eth` 16）；互斥 owner（当前态）= `btc_eth_aggressive` id=4041（17:10:02）。
+- **dry-run（空仓后，`--symbol SOLUSDT`）**：`CLOSED 49 / CANCELED 0 / KEPT 0 / LIVE 0 / SKIP 0`（`positionAmt=0.0`）——与 BNB 完全同构。
+- **`--execute --symbol SOLUSDT`** → `落库完成：CANCELED=0，CLOSED=49`。
+- **执行后复检（AC2/AC3）**：SOLUSDT 互斥 SQL 命中数 = **0**（owner 变空）；49 条目标行逐条 `CLOSED`（id 885…4041，复核「非 CLOSED 的：无」）；其他币种互斥 owner 概览不变（`--symbol` 限定生效）。
+- **结论**：SOLUSDT 幽灵存量清空，§10.9 遗留风险解除。btc_eth 下一 `:05` 轮次对 SOLUSDT 不再被幽灵记录误拦；若激进版在空仓后重新开仓，拦截恢复为**真实**互斥，属正确行为。
+- **说明**：本次清理是在**用户手动平仓制造的空仓窗口**内完成的；分类器依赖币种级净持仓这一局限（非空仓时无法收敛）已如实记录，如需在持仓期间也能收敛，应另立「按 order_id/myTrades 逐单对账」增强任务。

@@ -12,9 +12,10 @@ id: checklist-2026-10-15-ghost-entry-bnb-sol
 ## 功能类
 
 - [x] AC1：`BNBUSDT` 的 `_open_entry_sql(False)` 命中数 = 0（互斥 owner 为空，8 条幽灵已置 CLOSED）
-- [ ] AC1b：清理后 btc_eth 下一 `:05` 轮次对 BNBUSDT 不再推送「开仓被占用互斥拦截」（需线上日志确认）
-- [x] AC2：`SOLUSDT` 处置与交易所事实一致（4026 为真仓 → KEPT 保留，互斥继续生效）
-- [x] AC3：`--execute` 后 KEPT/LIVE 类记录 status 逐条未变（SOL 分布与执行前逐项一致）
+- [x] AC1b：清理后 btc_eth 下一 `:05` 轮次对 BNBUSDT 不再推送「开仓被占用互斥拦截」（北京 16:05 轮次全量日志互斥条数=0；该轮 5 币均在信号阶段被拒、未走到互斥判定，属弱证据）→ 补 SQL 直查 `BNBUSDT` 互斥 owner 命中数=0 作为因果证据
+- [x] AC2：`SOLUSDT` 处置与交易所事实一致（4026 为真仓 → KEPT 保留，避免误标）；**更正**：该次拦截并非由 4026 触发（真仓 11:10 才开、**晚于 11:05 告警**），11:05 时点 owner = id=3926 幽灵 → 同属幽灵误拦，属缺陷
+- [x] AC2-exec（2026-10-15 17:32，用户手动平仓后）：SOLUSDT 空仓窗口 dry-run `CLOSED 49 / KEPT 0 / LIVE 0 / SKIP 0` → `--execute --symbol SOLUSDT` `CLOSED=49`；复检互斥 SQL 命中数 = 0，49 条逐条 CLOSED；其他币种 owner 概览不变
+- [x] AC3：`--execute` 后 KEPT/LIVE 类记录 status 逐条未变（BNB 轮次 SOL 分布与执行前逐项一致；SOL 清理轮次 `--symbol` 限定生效，非目标行未动）
 
 ## 代码类
 
@@ -33,9 +34,14 @@ id: checklist-2026-10-15-ghost-entry-bnb-sol
 
 ## 发布类
 
-- [ ] AC6：push main → GitHub Actions 构建部署成功
-- [ ] AC6-2：五层验证（容器状态 → 镜像 ID → 本轮构建容器 VERSION DEPLOY_ID → 关键文件 MD5 → 部署日志无错）
+- [x] AC6：push main → GitHub Actions 构建部署成功（Run 76；deploy_logs `2026-10-15 15:08:08 DEPLOY_SUCCESS commit=8071f0696f92d89c97b5f25fe00339f6259b795d deploy_id=00004C01`）
+- [x] AC6-2：五层验证（容器状态 → 镜像 ID → 本轮构建容器 VERSION DEPLOY_ID → 关键文件 MD5 → 部署日志无错）
+      L1 11 容器全部 `ghcr.io/bearflower/trading-*:latest` 且 Up 12 min (healthy)；
+      L2 镜像 ID 已记录（如 btc_eth `sha256:b177c6be…`）；
+      L3 11 容器 `/app/VERSION` 全为 `GIT_SHA=8071f0696f92d89c97b5f25fe00339f6259b795d` / `DEPLOY_ID=00004C01`，与 deploy_logs 的 `deploy_id` 一致；
+      L4 `/app/shared/position_ownership.py` 容器内 MD5 `d842463fe38d792669820b56b1fa4ff4` = 本地 `md5 -q`；
+      L5 今日部署日志无 error/failed/冲突关键字，`DEPLOY_SUCCESS` 行存在
 
 ## 文档类
 
-- [ ] T9：知识条目 / 前轮方案 §10 / handoff 与最终代码一致
+- [x] T9：知识条目 / 前轮方案 §10 / handoff 与最终代码一致（方案 §10.1–§10.9；issue/decision/changelog/INDEX 幂等合并；handoff `docs/handoffs/ghost_entry_bnb_sol_2026-10-15.md`；AC1b 已通过；SOL 11:05 拦截更正为幽灵误拦；SOL 存量清理执行 `49→CLOSED` 记录于 spec §10.5）
