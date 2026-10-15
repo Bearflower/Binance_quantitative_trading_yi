@@ -12,6 +12,7 @@ from shared.config_loader import load_strategy_config
 from shared.database import DatabaseManager
 from shared.kline_service import KLineService
 from shared.notification import NotificationClient
+from shared.position_ownership import load_ownership_config
 from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
 from shared import condition_orders
@@ -104,7 +105,9 @@ async def main():
             await db_manager.connect()
             
             # 初始化交易记录器（自动记录所有下单到 trading.trade_records）
-            trade_logger = TradeLogger(db_manager, "new_coin")
+            # 写库名统一取本策略归属名（strategy.record_name，与 position_ownership 同源），避免硬编码漂移
+            my_record_name = load_ownership_config(config)['my_record_name']
+            trade_logger = TradeLogger(db_manager, my_record_name)
             await trade_logger.ensure_table_exists()
             # 初始化条件单记录表（用于孤儿条件单清理和订单追踪）
             await condition_orders.ensure_table(db_manager)

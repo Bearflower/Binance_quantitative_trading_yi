@@ -53,9 +53,9 @@ def config():
     """测试配置"""
     return {
         'strategy': {
-            'name': 'new_coin_test',
-            'version': '1.0.0',
-            'db_strategy_name': '新币做空策略测试'
+            'name': 'new_coin',
+            'record_name': 'new_coin',
+            'version': '1.0.0'
         },
         'scoring': {
             'weights': {

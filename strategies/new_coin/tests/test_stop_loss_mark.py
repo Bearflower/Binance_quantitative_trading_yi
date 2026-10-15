@@ -20,7 +20,9 @@ from unittest.mock import AsyncMock, MagicMock
 def make_strategy() -> NewCoinStrategy:
     """构造绕过 __init__ 的策略实例，注入被测方法需要的依赖 mock。"""
     strategy = object.__new__(NewCoinStrategy)
-    strategy.config = {'strategy': {'db_strategy_name': '新币做空策略'}}
+    strategy.config = {'strategy': {'name': 'new_coin', 'record_name': 'new_coin'}}
+    # 派生属性由 __init__ 生成，本 fixture 绕过了 __init__，需手动补齐以忠实镜像新契约
+    strategy.my_record_name = 'new_coin'
     strategy.positions = {}
     strategy.consecutive_losses = 0
 

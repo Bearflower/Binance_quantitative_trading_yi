@@ -11,7 +11,7 @@ realized_pnl 修复代码单元测试
 5. NewCoinStrategy._monitor_positions 平仓单查询 SQL 修复
 
 配置参数（来自 config.yaml）：
-- strategy.db_strategy_name: '新币做空策略'
+- strategy.record_name: 'new_coin'
 
 关键代码位置：
 - shared/trade_logger.py 的 update_realized_pnl: 第221-341行
@@ -65,7 +65,7 @@ def strategy():
     config = {
         "strategy": {
             "name": "new_coin",
-            "db_strategy_name": "新币做空策略",
+            "record_name": "new_coin",
         },
         "detector": {"check_interval": 300},
         "trading": {
@@ -738,7 +738,7 @@ class TestNewCoinSQLFix:
         config = {
             "strategy": {
                 "name": "new_coin",
-                "db_strategy_name": "新币做空策略",
+                "record_name": "new_coin",
             },
             "detector": {"check_interval": 300},
             "trading": {

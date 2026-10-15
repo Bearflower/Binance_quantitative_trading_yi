@@ -130,6 +130,7 @@
 - [动态利润保护架构设计](plans/new_coin动态利润保护架构设计.md) - 动态利润保护架构设计方案
 - [shared/dynamic_trailing.py](../shared/dynamic_trailing.py) - 动态利润保护核心计算模块（两策略共用，含阶梯回撤、波动率调节、硬止损兜底、单向移动保护）
 - [PRD-realized_pnl回写修复.md](plans/PRD-realized_pnl回写修复.md) — trade_records.realized_pnl 回写修复
+- [new_coin 平仓链路策略名口径修复需求文档](plans/fix-2026-10-15-new-coin-db-strategy-name-mismatch-requirements.md) - 统一策略名取值来源为 `load_ownership_config(config)['my_record_name']`（= `strategy.record_name`），消除 `db_strategy_name` 默认值「新币做空策略」与写库名 `new_coin` 不一致导致的 3 条静默失效链路；B 段已落地（未提交）
 
 ### HRS 混合反转策略
 

@@ -15,6 +15,7 @@ from shared.trade_logger import TradeLogger
 from shared.binance_api import BinanceClient
 from shared.kline_service import KLineService
 from shared.notification import NotificationClient
+from shared.position_ownership import load_ownership_config
 from shared.database import DatabaseManager
 from shared.condition_orders import get_open_orders
 from shared.strategy_state import sync_open_positions
@@ -85,6 +86,9 @@ class NewCoinStrategy(BaseStrategy):
 
         # 策略名称
         self.strategy_name = config.get('strategy', {}).get('name', 'new_coin')
+
+        # 写库名统一来源（与 position_ownership 同源）：strategy.record_name，缺失时回退 strategy.name
+        self.my_record_name = load_ownership_config(self.config)['my_record_name']
 
         # 初始化各模块（延迟到 initialize 方法）
         self.scoring_engine: Optional[ScoringEngine] = None
@@ -921,8 +925,8 @@ class NewCoinStrategy(BaseStrategy):
             week_start = now - timedelta(days=now.weekday())
             week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
 
-            # 从配置读取策略名称（用于数据库查询）
-            strategy_name = self.config.get('strategy', {}).get('db_strategy_name', '新币做空策略')
+            # 写库名从统一来源获取（position_ownership.load_ownership_config）
+            strategy_name = self.my_record_name
 
             # 从数据库获取本周交易记录
             records = await self.db.fetch_all(
@@ -1340,7 +1344,7 @@ class NewCoinStrategy(BaseStrategy):
                 ORDER BY executed_at DESC
                 LIMIT 1
                 """,
-                self.config.get('strategy', {}).get('db_strategy_name', '新币做空策略'),
+                self.my_record_name,
                 symbol,
                 entry_time_obj,
                 upper_time
@@ -1453,7 +1457,7 @@ class NewCoinStrategy(BaseStrategy):
                                 ORDER BY executed_at DESC
                                 LIMIT 1
                                 """,
-                                self.config.get('strategy', {}).get('db_strategy_name', '新币做空策略'),
+                                self.my_record_name,
                                 symbol,
                                 entry_time_obj,
                                 upper_time
@@ -1502,7 +1506,7 @@ class NewCoinStrategy(BaseStrategy):
                                 ORDER BY executed_at DESC
                                 LIMIT 1
                                 """,
-                                self.config.get('strategy', {}).get('db_strategy_name', '新币做空策略'),
+                                self.my_record_name,
                                 symbol,
                                 entry_time_obj,
                                 upper_time
