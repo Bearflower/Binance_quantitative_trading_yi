@@ -29,7 +29,10 @@ from datetime import datetime, timezone, timedelta
 import pytest
 
 from shared.trade_logger import TradeLogger
-from strategies.new_coin.strategy import NewCoinStrategy
+from strategies.new_coin.strategy import (
+    NewCoinStrategy,
+    _entry_time_to_naive_beijing,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -983,3 +986,228 @@ class TestCalculatePnl:
         """不支持的持仓方向抛出 ValueError"""
         with pytest.raises(ValueError, match="不支持的持仓方向"):
             TradeLogger.calculate_pnl('INVALID', Decimal('100'), Decimal('110'), Decimal('1'))
+
+
+# ===========================================================================
+# F5: _entry_time_to_naive_beijing 时区转换单元测试
+# ===========================================================================
+
+
+class TestEntryTimeToNaiveBeijing:
+    """entry_time 时区转换公共函数测试
+
+    覆盖 AC1/AC2/AC3：带时区、无时区、缺失/非法三条路径。
+    """
+
+    def test_aware_utc_plus_00_00(self):
+        """aware +00:00 输入 → 无时区 +8h 北京时间
+
+        例如 UTC 00:00 → 北京 08:00（+8h）
+        """
+        result = _entry_time_to_naive_beijing("2026-10-01T00:00:00+00:00")
+        assert result is not None
+        assert result.tzinfo is None, "结果必须是无时区 datetime"
+        assert result == datetime(2026, 10, 1, 8, 0, 0), (
+            "UTC 00:00 应转换为北京时间 08:00"
+        )
+
+    def test_aware_plus_08_00(self):
+        """aware +08:00 输入 → 无时区、小时数与输入一致
+
+        已经是北京时间的 aware datetime 转无时区，不额外位移。
+        """
+        result = _entry_time_to_naive_beijing("2026-10-01T15:30:00+08:00")
+        assert result is not None
+        assert result.tzinfo is None
+        assert result == datetime(2026, 10, 1, 15, 30, 0), (
+            "+08:00 应直接去掉时区，小时数不变"
+        )
+
+    def test_aware_other_positive_offset(self):
+        """其他正偏移时区（+03:00 等）正确换算为无时区北京时间"""
+        result = _entry_time_to_naive_beijing("2026-10-01T05:00:00+03:00")
+        assert result is not None
+        assert result.tzinfo is None
+        # +03:00 05:00 == UTC 02:00 == 北京 10:00
+        assert result == datetime(2026, 10, 1, 10, 0, 0)
+
+    def test_aware_negative_offset(self):
+        """负偏移时区（-05:00 等）正确换算"""
+        result = _entry_time_to_naive_beijing("2026-10-01T12:00:00-05:00")
+        assert result is not None
+        assert result.tzinfo is None
+        # -05:00 12:00 == UTC 17:00 == 北京 次日 01:00（注意日期变化）
+        assert result == datetime(2026, 10, 2, 1, 0, 0)
+
+    def test_naive_passthrough(self):
+        """无时区字符串 → 原样返回，不额外位移"""
+        naive_input = "2026-06-01T00:00:00"
+        result = _entry_time_to_naive_beijing(naive_input)
+        assert result is not None
+        assert result.tzinfo is None
+        assert result == datetime(2026, 6, 1, 0, 0, 0)
+
+    def test_none_returns_none(self):
+        """None 输入返回 None"""
+        assert _entry_time_to_naive_beijing(None) is None
+
+    def test_empty_string_returns_none(self):
+        """空串返回 None"""
+        assert _entry_time_to_naive_beijing("") is None
+
+    def test_whitespace_only_returns_none(self):
+        """全空白串返回 None（`not entry_time` 短路）"""
+        assert _entry_time_to_naive_beijing("   ") is None
+
+    def test_illegal_string_returns_none(self):
+        """非法 ISO 串（如 'not-a-time'）返回 None，不抛异常"""
+        assert _entry_time_to_naive_beijing("not-a-time") is None
+        assert _entry_time_to_naive_beijing("2026-13-01T99:00:00") is None
+
+    def test_invalid_type_returns_none(self):
+        """非字符串类型（int/object）返回 None（TypeError 被捕获）"""
+        assert _entry_time_to_naive_beijing(123) is None
+        assert _entry_time_to_naive_beijing(object()) is None
+
+
+# ===========================================================================
+# F6: 端到端断言 —— aware entry_time 经 _monitor_positions 平仓回写分支
+#     后 db.fetch_one 收到的 $3/$4 参数必须是无时区 datetime
+# ===========================================================================
+
+
+class TestEntryTimeToNaiveBeijingEndToEnd:
+    """端到端：带时区 entry_time → db.fetch_one 参数 tzinfo 必须为 None"""
+
+    @pytest.fixture
+    def awaitable_strategy(self, strategy):
+        """复用模块级 strategy fixture，仅补齐平仓分支需要 await 的执行器方法
+
+        生产代码在平仓分支会 await trading_executor 的异步方法，而模块级 fixture
+        里 trading_executor 是 MagicMock（其方法不可 await），故在此显式替换为
+        AsyncMock。改动只作用于本测试类，不影响其他测试类的 fixture 与既有结论。
+        """
+        strategy.trading_executor._update_short_position_closed = AsyncMock(
+            return_value=None
+        )
+        strategy.trading_executor.clear_position_tracking = MagicMock()
+        return strategy
+
+    async def test_fetch_one_args_tzinfo_none_with_aware_entry_time(
+        self, awaitable_strategy
+    ):
+        """aware +00:00 entry_time → fetch_one $3/$4 参数 tzinfo 必须为 None
+
+        该参数最终作为 executed_at BETWEEN $3 AND $4 的查询参数传给 asyncpg，
+        带时区会触发 DataError: invalid input for query argument $3。
+        """
+        # 用 aware +00:00 的 ISO 时间构造持仓（UTC 02:35:28 = 北京 10:35:28）
+        awaitable_strategy.positions = {
+            "SECZUSDT": {
+                "entry_price": 100.0,
+                "entry_time": "2026-10-01T02:35:28+00:00",
+            }
+        }
+
+        # mock 依赖：已平仓 + pnl 非 None + fetch_one 返回 order_id
+        awaitable_strategy.binance_client.get_position = AsyncMock(return_value=[])
+        awaitable_strategy._get_position_pnl = AsyncMock(return_value=-15.0)
+        awaitable_strategy.db.fetch_one = AsyncMock(
+            return_value={
+                "order_id": "ORDER999",
+                "executed_at": datetime(2026, 10, 1, 12, 0, 0),
+            }
+        )
+        mock_trade_logger = MagicMock()
+        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
+        awaitable_strategy.binance_client.trade_logger = mock_trade_logger
+        awaitable_strategy._save_state = AsyncMock()
+        awaitable_strategy._check_max_drawdown = AsyncMock()
+        awaitable_strategy._check_consecutive_loss_pause = AsyncMock()
+        awaitable_strategy._add_to_stop_loss_monitor = AsyncMock()
+
+        await awaitable_strategy._monitor_positions()
+
+        # 平仓回写分支会查询平仓单，取最后一次 fetch_one 调用
+        call_args = awaitable_strategy.db.fetch_one.call_args
+        assert call_args is not None, "fetch_one 应至少被调用一次"
+        args = call_args.args
+        # SQL 后的位置参数：(strategy_name, symbol, entry_time_obj, upper_time)
+        entry_arg = args[3]
+        upper_arg = args[4]
+
+        assert isinstance(entry_arg, datetime), "$3 必须是 datetime 实例"
+        assert entry_arg.tzinfo is None, (
+            "$3 (entry_time_obj) 必须无时区，got tzinfo=%s" % entry_arg.tzinfo
+        )
+        assert isinstance(upper_arg, datetime), "$4 必须是 datetime 实例"
+        assert upper_arg.tzinfo is None, (
+            "$4 (upper_time) 必须无时区，got tzinfo=%s" % upper_arg.tzinfo
+        )
+
+        # aware 输入 UTC 02:35:28 应转成无时区北京时间 10:35:28
+        expected_entry = datetime(2026, 10, 1, 10, 35, 28)
+        assert entry_arg == expected_entry, (
+            "aware +00:00 应转成无时区北京时间，期望 %s，实际 %s"
+            % (expected_entry, entry_arg)
+        )
+        assert upper_arg == expected_entry + timedelta(hours=24), (
+            "upper_time 应为 entry_time_obj + 24h"
+        )
+
+    async def test_fetch_one_args_tzinfo_none_when_pnl_missing(
+        self, awaitable_strategy
+    ):
+        """pnl 查不到时走条件单补打标分支，$3/$4 仍必须无时区
+
+        覆盖 _monitor_positions 中 pnl is None 分支的 entry_time 解析点：
+        带时区 entry_time 在该分支同样会触发 asyncpg DataError。
+        """
+        awaitable_strategy.positions = {
+            "SECZUSDT": {
+                "entry_price": 100.0,
+                "entry_time": "2026-10-01T02:35:28+00:00",
+            }
+        }
+        awaitable_strategy.binance_client.get_position = AsyncMock(return_value=[])
+        awaitable_strategy._get_position_pnl = AsyncMock(return_value=None)
+        awaitable_strategy.db.fetch_one = AsyncMock(return_value=None)
+        awaitable_strategy._save_state = AsyncMock()
+
+        await awaitable_strategy._monitor_positions()
+
+        call_args = awaitable_strategy.db.fetch_one.call_args
+        assert call_args is not None, "pnl 缺失分支应查询平仓单"
+        entry_arg = call_args.args[3]
+        upper_arg = call_args.args[4]
+        assert entry_arg.tzinfo is None, "$3 必须无时区"
+        assert upper_arg.tzinfo is None, "$4 必须无时区"
+        assert entry_arg == datetime(2026, 10, 1, 10, 35, 28)
+
+    async def test_backfill_close_pnl_args_tzinfo_none(self, awaitable_strategy):
+        """_backfill_close_pnl 收到带时区 entry_time 时 $3/$4 必须无时区
+
+        覆盖 _backfill_close_pnl 内的 entry_time 解析点（条件单/主动平仓共用）。
+        """
+        awaitable_strategy.db.fetch_one = AsyncMock(
+            return_value={
+                "order_id": "ORDER999",
+                "executed_at": datetime(2026, 10, 1, 12, 0, 0),
+            }
+        )
+        mock_trade_logger = MagicMock()
+        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
+        awaitable_strategy.binance_client.trade_logger = mock_trade_logger
+
+        await awaitable_strategy._backfill_close_pnl(
+            "SECZUSDT", "2026-10-01T02:35:28+00:00", Decimal("-15.0")
+        )
+
+        call_args = awaitable_strategy.db.fetch_one.call_args
+        assert call_args is not None, "应查询平仓单以回写盈亏"
+        entry_arg = call_args.args[3]
+        upper_arg = call_args.args[4]
+        assert entry_arg.tzinfo is None, "$3 必须无时区"
+        assert upper_arg.tzinfo is None, "$4 必须无时区"
+        assert entry_arg == datetime(2026, 10, 1, 10, 35, 28)
+        mock_trade_logger.update_realized_pnl.assert_called_once()

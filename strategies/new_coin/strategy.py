@@ -30,6 +30,34 @@ from .executor import TradingExecutor
 logger = structlog.get_logger()
 
 
+# 北京时间时区（与 trade_records.executed_at 的无时区北京时间口径一致）
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def _entry_time_to_naive_beijing(entry_time: Optional[str]) -> Optional[datetime]:
+    """把 entry_time 解析为无时区北京时间 datetime。
+
+    trade_records.executed_at 为无时区 TIMESTAMP（存北京时间），asyncpg 拒绝
+    向该列写入带时区 datetime；而 entry_time 来源既有无时区也有带时区 ISO 字符串。
+    本函数统一转成无时区北京时间，避免查询抛 DataError。
+
+    Args:
+        entry_time: 入场时间 ISO 字符串，可为空。
+
+    Returns:
+        无时区北京时间 datetime；缺失或解析失败返回 None。
+    """
+    if not entry_time:
+        return None
+    try:
+        dt = datetime.fromisoformat(entry_time)
+    except (ValueError, TypeError):
+        return None
+    if dt.tzinfo is not None:
+        return dt.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    return dt
+
+
 # 预定义的跳过原因常量
 SKIP_REASON_TOO_LONG = '上线时间过长'
 
@@ -1296,11 +1324,7 @@ class NewCoinStrategy(BaseStrategy):
     async def _backfill_close_pnl(self, symbol: str, entry_time: str, pnl) -> None:
         """回写平仓盈亏到 trade_records（条件单/主动平仓共用）"""
         try:
-            entry_time_obj = None
-            try:
-                entry_time_obj = datetime.fromisoformat(entry_time)
-            except (ValueError, TypeError):
-                entry_time_obj = None
+            entry_time_obj = _entry_time_to_naive_beijing(entry_time)
 
             if not entry_time_obj:
                 logger.warning("entry_time 缺失或解析失败，跳过盈亏回写", symbol=symbol, entry_time=entry_time)
@@ -1417,12 +1441,7 @@ class NewCoinStrategy(BaseStrategy):
                         # 尝试从 trade_records 定位本笔平仓单（做空平仓为 BUY），
                         # 取真实已实现盈亏判定止损，确保条件单自动平仓的亏损也能打标（问题3）
                         close_rec = None
-                        entry_time_obj = None
-                        if entry_time:
-                            try:
-                                entry_time_obj = datetime.fromisoformat(entry_time)
-                            except (ValueError, TypeError):
-                                entry_time_obj = None
+                        entry_time_obj = _entry_time_to_naive_beijing(entry_time)
                         if entry_time_obj:
                             upper_time = entry_time_obj + timedelta(hours=24)
                             close_rec = await self.db.fetch_one(
@@ -1467,12 +1486,7 @@ class NewCoinStrategy(BaseStrategy):
                     # 降级匹配模式（按 symbol+side+时间窗口匹配 order_id IS NULL 的记录），
                     # 只需要把平仓单传给它，让它自己判断走哪个模式。
                     try:
-                        entry_time_obj = None
-                        if entry_time:
-                            try:
-                                entry_time_obj = datetime.fromisoformat(entry_time)
-                            except (ValueError, TypeError):
-                                entry_time_obj = None
+                        entry_time_obj = _entry_time_to_naive_beijing(entry_time)
 
                         if entry_time_obj:
                             # 使用 entry_time 后 24 小时作为时间窗口上限，避免跨交易匹配
