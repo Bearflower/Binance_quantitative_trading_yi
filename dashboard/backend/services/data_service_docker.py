@@ -2396,12 +2396,433 @@ class DataService:
     # 绩效指标模块（夏普比率 + 最大回撤）
     # ========================================
 
-    # 绩效指标落库 SQL（与 metric_snapshot UPSERT 范式一致）
+    # ---------- CS1 新增：资金段推导 ----------
+
+    # 辅锚 E3 去噪阈值 K：分配额跳变后「恒定 ≥ K 天」才被认定为段边界
+    # 必须配置化、禁硬编码（架构 §12.1 / 用户已拍板 K=3 天）
+    _PERF_SEGMENT_STATIC_DAYS = int(os.getenv("PERF_SEGMENT_STATIC_DAYS", "3"))
+
+    # 段边界对齐 E1/E2 的时间容差（秒）——防止 E3 在 E1/E2 边界附近重复触发
+    _SEGMENT_ALIGN_TOLERANCE_SECONDS = 3600  # 1 小时
+    # 哨兵值：当两个 datetime 无法比较（AttributeError/TypeError）时用于"diff < tolerance"判断
+    # 10**9 ≈ 31.7 年的秒数，远大于任何合理对齐时间差，确保比较时必然不通过
+    _SEGMENT_ALIGN_FALLBACK_SECONDS = 10**9
+
+    # capital_allocation 全历史按月读取（用于 E1 month 切换 / E2 ratio 变更事件识别）
+    # 按月升序返回 [(month_date, created_at, entries_json_list), ...]
+    _CAPITAL_ALLOCATION_HISTORY_SQL = """
+        SELECT month, created_at, entries
+        FROM public.capital_allocation
+        ORDER BY month ASC
+    """
+
+    # 向后取段内首条正快照（段初分配额查询，架构 §4.1 落地规则）
+    # direction=backward：段边界事件生效时刻**之后**的段内首条正快照（向后取，ORDER BY ASC LIMIT 1）
+    # direction=forward_earliest：所有方向的最早一条正快照（仅作为 open_margin 极端退化后的最后兜底）
+    _SEGMENT_OPENING_CAPITAL_SQL = """
+        SELECT allocated_amount, snapshot_hour
+        FROM public.strategy_position_snapshot_history
+        WHERE strategy_id = $1 AND snapshot_hour >= $2 AND allocated_amount > 0
+        ORDER BY snapshot_hour ASC
+        LIMIT 1
+    """
+
+    # grid 不可评分：snapshot_history 无任何行 → 新口径不产生任何新行
+    _CHECK_SNAPSHOT_EXISTS_SQL = """
+        SELECT 1 FROM public.strategy_position_snapshot_history
+        WHERE strategy_id = $1 LIMIT 1
+    """
+
+    @staticmethod
+    def derive_segments(
+        strategy_id: str,
+        capital_allocation_rows: list,
+        snapshots: list,
+        static_days_k: int = -1,
+    ) -> list:
+        """纯函数：根据 capital_allocation 历史 + snapshot_history 推导策略资金段边界（CS1）
+
+        输入：
+            strategy_id: 策略 id（如 'hrs'）
+            capital_allocation_rows: [(month_date, created_at, entries_json_list)] 按月升序
+            snapshots: [(snapshot_hour, allocated_amount)] 按时间升序
+            static_days_k: E3 阈值 K（跳变后恒定 ≥ K 天才认定边界）；
+                          传 -1 时用 DataService._PERF_SEGMENT_STATIC_DAYS（配置化默认）
+
+        返回：
+            list[dict]，每个元素形如：
+            {
+                "event_time": datetime,       # 段边界事件的生效时点
+                "event_type": str,            # 'E1_month_switch' / 'E2_ratio_change' / 'E3_static_jump'
+            }
+            已按 event_time 升序去重。调用方随后需用向后取段内首条正快照的 SQL
+            （见 _SEGMENT_OPENING_CAPITAL_SQL）查询段初分配额。
+
+        段边界规则（架构 §4.1）：
+            - 主锚 E1：capital_allocation 新增 month 记录 → 事件时点 = created_at
+            - 主锚 E2：相邻 month 记录该策略的 allocated_ratio 不同 → 事件时点依附 E1 的 created_at
+            - 辅锚 E3：snapshot_history allocated_amount 静态跳变（跳变后恒定 ≥ K 天，且不对齐任何 E1/E2）
+        """
+        # 默认值兜底：从配置化类常量读（禁硬编码 K=3）
+        if static_days_k < 0:
+            static_days_k = DataService._PERF_SEGMENT_STATIC_DAYS
+
+        events = []  # [(event_time, event_type)]
+
+        # ---- 1. 主锚 E1 + E2 ----
+        prev_ratio = None
+        for record in capital_allocation_rows:
+            # _month 未在本函数内使用，仅作解包占位（命名表明知晓该字段语义）
+            _month, created_at, entries = record
+            # 找到该策略在 entries JSONB 数组中的条目
+            cur_ratio = None
+            if isinstance(entries, list):
+                for e in entries:
+                    if isinstance(e, dict) and e.get("strategy_id") == strategy_id:
+                        raw_ratio = e.get("allocated_ratio")
+                        try:
+                            cur_ratio = float(raw_ratio) if raw_ratio is not None else None
+                        except (TypeError, ValueError):
+                            cur_ratio = None
+                        break
+
+            # E1：month 切换（只要有记录就算事件）
+            events.append((created_at, "E1_month_switch"))
+
+            # E2：相邻 ratio 不同 → 额外事件（依附 E1 的 created_at）
+            if prev_ratio is not None and cur_ratio is not None and cur_ratio != prev_ratio:
+                events.append((created_at, "E2_ratio_change"))
+
+            if cur_ratio is not None:
+                prev_ratio = cur_ratio
+
+        # ---- 2. 辅锚 E3：静态跳变（跳变后恒定 ≥ K 天 且 不对齐任何 E1/E2）----
+        # 先收集所有 E1/E2 的事件时点（用于对齐排除）
+        e1e2_times = set()
+        for evt_time, _ in events:
+            e1e2_times.add(evt_time)
+
+        e3_threshold_duration = timedelta(days=static_days_k)
+
+        i = 0
+        while i < len(snapshots):
+            cur_hour, cur_amt = snapshots[i]
+            # 向后扫，看 cur_amt 持续不变到哪里
+            j = i
+            while j + 1 < len(snapshots) and snapshots[j + 1][1] == cur_amt:
+                j += 1
+            # 持续时长
+            duration = snapshots[j][0] - snapshots[i][0]
+            # 从 i 到 j 这段都是 cur_amt
+            if i > 0 and snapshots[i - 1][1] != cur_amt and duration >= e3_threshold_duration:
+                # 这是一个跳变点（前一个值 != 当前值），且当前值持续 ≥ K 天
+                # 检查是否对齐任何 E1/E2（1 小时容差，从配置化常量读）
+                aligned = False
+                for e1e2_time in e1e2_times:
+                    try:
+                        diff = abs((cur_hour - e1e2_time).total_seconds())
+                    except (AttributeError, TypeError):
+                        diff = DataService._SEGMENT_ALIGN_FALLBACK_SECONDS
+                    if diff < DataService._SEGMENT_ALIGN_TOLERANCE_SECONDS:
+                        aligned = True
+                        break
+                if not aligned:
+                    events.append((cur_hour, "E3_static_jump"))
+            i = j + 1
+
+        # ---- 3. 排序去重（同同时点合并所有事件类型，用逗号拼接）----
+        # E1（month 切换）和 E2（ratio 变更）可能在同一 created_at 同时触发——
+        # 两者都是独立的段边界，合并为同一条但保留类型信息，便于审计
+        events.sort(key=lambda x: x[0])
+        merged = {}
+        for evt_time, evt_type in events:
+            if evt_time not in merged:
+                merged[evt_time] = []
+            merged[evt_time].append(evt_type)
+
+        dedup = []
+        for evt_time in sorted(merged.keys()):
+            types = merged[evt_time]
+            # 如果有 E2，优先记录 E2（因为它语义上是更细粒度的变更）；
+            # 如果没有 E2 但有 E1，记录 E1；如果有 E3 也要记下来
+            unique_types = []
+            for t in types:
+                if t not in unique_types:
+                    unique_types.append(t)
+            # 事件类型可以是复合的（如 E1_month_switch+E2_ratio_change），
+            # 下游使用 event_time 才是段边界的真正驱动
+            dedup.append({
+                "event_time": evt_time,
+                "event_type": "+".join(unique_types) if len(unique_types) > 1 else unique_types[0],
+            })
+
+        return dedup
+
+    async def _derive_segments_for_strategy(
+        self, strategy_id: str,
+    ) -> list:
+        """DB 版资金段推导：读取 capital_allocation 全历史 + snapshot_history，
+        调用 derive_segments 纯函数得到事件时点，然后向后取段初分配额。
+
+        Returns:
+            list[dict]，每个段 dict 形如：
+            {
+                "event_time": datetime,
+                "event_type": str,
+                "segment_start": datetime,       # 段起点（= event_time）
+                "opening_capital": float,        # 段初分配额（向后取的首条正快照）；0 表示零分母期
+                "opening_capital_time": datetime, # 段初分配额对应的快照时点
+                "skip": bool,                     # 该段是否应跳过（零分母期 / 无正快照）
+            }
+            若策略完全无 snapshot_history 行（如 grid）→ 返回 []
+        """
+        from datetime import timedelta as _tdelta
+
+        # 1. 先查 snapshot_history 是否有任何行（grid 不可评分守卫）
+        has_snapshot = await self._db_manager.fetch_one(
+            self._CHECK_SNAPSHOT_EXISTS_SQL, strategy_id,
+        )
+        if has_snapshot is None:
+            logger.info(
+                "策略无任何 snapshot_history 行，标记不可评分（类似 grid），跳过分段",
+                strategy_id=strategy_id,
+            )
+            return []
+
+        # 2. 读 capital_allocation 全历史按月升序（可能空 → 纯 E3 分段）
+        alloc_rows = await self._db_manager.fetch_all(self._CAPITAL_ALLOCATION_HISTORY_SQL)
+        alloc_parsed = []
+        for r in alloc_rows:
+            month = r.get("month")
+            created_at = r.get("created_at")
+            entries = r.get("entries") or []
+            if month is None or created_at is None:
+                continue
+            alloc_parsed.append((month, created_at, entries))
+
+        # 3. 读 snapshot_history 的 allocated_amount + snapshot_hour（用于 E3 去噪）
+        #    回溯窗口拉到最早（不限时，deriving segments 需要全量历史跳变信息）
+        snap_rows = await self._db_manager.fetch_all(
+            """
+            SELECT snapshot_hour, allocated_amount
+            FROM public.strategy_position_snapshot_history
+            WHERE strategy_id = $1
+            ORDER BY snapshot_hour ASC
+            """,
+            strategy_id,
+        )
+        snapshots = []
+        for r in snap_rows:
+            hour = r.get("snapshot_hour")
+            amt = r.get("allocated_amount")
+            if hour is None:
+                continue
+            try:
+                amt_f = float(amt) if amt is not None else 0.0
+            except (TypeError, ValueError):
+                amt_f = 0.0
+            snapshots.append((hour, amt_f))
+
+        if not snapshots:
+            logger.info(
+                "策略 snapshot_history 无 allocated_amount 可值，标记不可评分",
+                strategy_id=strategy_id,
+            )
+            return []
+
+        # 4. 调纯函数 derive_segments 得到事件时点
+        events = self.derive_segments(
+            strategy_id, alloc_parsed, snapshots, self._PERF_SEGMENT_STATIC_DAYS,
+        )
+
+        if not events:
+            # 没有任何 E1/E2/E3 事件 → 整个快照期退化单段（段初 = 首条正快照）
+            events = [{"event_time": snapshots[0][0], "event_type": "snapshot_debut"}]
+
+        # 5. 对每个事件时点，向后取段内首条正快照（段初分配额）
+        segments = []
+        for evt in events:
+            evt_time = evt["event_time"]
+            evt_type = evt["event_type"]
+
+            # 向后查首条 allocated_amount > 0 快照
+            opening_row = await self._db_manager.fetch_one(
+                self._SEGMENT_OPENING_CAPITAL_SQL, strategy_id, evt_time,
+            )
+
+            opening_capital = 0.0
+            opening_capital_time = evt_time
+            skip = True  # 默认跳过，有正快照才变为 False
+
+            if opening_row is not None and opening_row.get("allocated_amount") is not None:
+                try:
+                    opening_capital = float(opening_row["allocated_amount"])
+                    opening_capital_time = opening_row.get("snapshot_hour") or evt_time
+                    if opening_capital > 0:
+                        skip = False
+                except (TypeError, ValueError):
+                    opening_capital = 0.0
+                    skip = True
+
+            if skip:
+                logger.info(
+                    "资金段跳过（零分母期或无正快照）",
+                    strategy_id=strategy_id,
+                    segment_start=str(evt_time),
+                    event_type=evt_type,
+                    opening_capital=opening_capital,
+                )
+
+            segments.append({
+                "event_time": evt_time,
+                "event_type": evt_type,
+                "segment_start": evt_time,
+                "opening_capital": opening_capital,
+                "opening_capital_time": opening_capital_time,
+                "skip": skip,
+            })
+
+        # 6. 段边界时间顺序校验（纯审计，发现问题只 warn 不阻断）
+        for i in range(len(segments)):
+            seg = segments[i]
+            logger.info(
+                "资金段审计日志（常开 INFO）",
+                strategy_id=strategy_id,
+                segment_index=i,
+                segment_start=str(seg["segment_start"]),
+                event_type=seg["event_type"],
+                opening_capital=seg["opening_capital"],
+                opening_capital_time=str(seg["opening_capital_time"]),
+                skip=seg["skip"],
+            )
+
+        return segments
+
+    async def _build_strategy_segmented_series(
+        self, strategy_id: str, start_date: datetime, end_date: datetime,
+    ) -> list:
+        """策略级分段净值序列构建（CS1 + CS2 核心，废弃旧的单一基数口径）
+
+        替代旧的 _build_strategy_daily_returns（单一基数 + 尾部切片），
+        改为：先推导资金段 → 段内独立累积 → 各段返回（后续 compute 层按窗口截取）
+
+        Args:
+            strategy_id: 策略 id（如 'hrs'）
+            start_date: 回溯窗口起点（datetime naive）
+            end_date: 回溯窗口终点（datetime naive）
+
+        Returns:
+            list[dict]，每个元素是一个段的完整数据：
+            {
+                "segment_start": datetime,       # 段边界事件生效时点
+                "opening_capital": float,        # 段初分配额
+                "opening_capital_time": datetime,
+                "skip": bool,                    # 该段是否应跳过
+                "daily_returns": List[float],    # 段内日收益率（不复利，day_pnl / opening_capital）
+                "net_values": List[float],       # 段内净值序列（max(0, 1 + cum_pnl / opening_capital)）
+                "dates": List[date],             # 与 daily_returns / net_values 等长对齐的日期
+            }
+            注意：daily_returns / net_values / dates 的时间范围是
+            [max(segment_start.date(), start_date.date()), end_date.date()]
+            且段内重新归一（cum 从 0 起）。
+        """
+        from datetime import timedelta as _tdelta
+
+        # 1. 推导资金段（含 DB 查询 + 段初分配额填充）
+        segments_info = await self._derive_segments_for_strategy(strategy_id)
+        if not segments_info:
+            return []
+
+        # 2. 聚合 trade_records 按日盈亏（持仓级防双计口径，复用已有 _DAILY_PNL_QUERY）
+        strategy_names = self._db_strategy_names(strategy_id)
+        if not strategy_names:
+            return []
+
+        rows = await self._db_manager.fetch_all(
+            self._DAILY_PNL_QUERY, strategy_names, start_date, end_date,
+        )
+        day_pnl_map: Dict[str, float] = {}
+        for r in rows:
+            day_pnl_map[str(r["day"])] = float(r["day_pnl"] or 0)
+
+        # 3. 补段边界时间为「段起点日的 00:00 naive」（方便日期比较）
+        #    段与段之间的分界 = 下一段的 event_time 所在日
+        n = len(segments_info)
+
+        # 4. 遍历每个段，构建段内净值序列
+        result = []
+        for idx, seg in enumerate(segments_info):
+            if seg["skip"] or seg["opening_capital"] <= 0:
+                # 零分母期段 → 跳过，不计入任何段回撤（架构 §4.5）
+                continue
+
+            seg_start = seg["segment_start"]
+            opening_capital = seg["opening_capital"]
+
+            # 段内日期范围：
+            #   起点 = max(seg_start.date(), start_date.date())  —— 截断到策略回溯窗口
+            #   终点 = min(下一段的 event_time.date() 前一天, end_date.date())
+            seg_start_date = seg_start.date() if hasattr(seg_start, "date") else seg_start
+            window_start_date = start_date.date()
+            actual_start = max(seg_start_date, window_start_date)
+
+            if idx + 1 < n:
+                next_start_date = (segments_info[idx + 1]["segment_start"]).date()
+                actual_end = min(next_start_date - _tdelta(days=1), end_date.date())
+            else:
+                actual_end = end_date.date()
+
+            if actual_start > actual_end:
+                # 段与当前窗口不相交
+                continue
+
+            cum_pnl = 0.0
+            daily_returns = []
+            net_values = []
+            dates = []
+
+            cur_date = actual_start
+            while cur_date <= actual_end:
+                day_pnl = day_pnl_map.get(cur_date.isoformat(), 0.0)
+                cum_pnl += day_pnl
+
+                r_t = day_pnl / opening_capital if opening_capital > 0 else 0.0
+                equity_t = opening_capital + cum_pnl
+                net_value = equity_t / opening_capital if opening_capital > 0 else 1.0
+                # 亏损以「本金亏光」为上限：净值钳到 0
+                if net_value < 0:
+                    net_value = 0.0
+
+                daily_returns.append(r_t)
+                net_values.append(net_value)
+                dates.append(cur_date)
+
+                cur_date += _tdelta(days=1)
+
+            if not daily_returns:
+                continue
+
+            result.append({
+                "segment_start": seg_start,
+                "opening_capital": opening_capital,
+                "opening_capital_time": seg["opening_capital_time"],
+                "skip": seg["skip"],
+                "daily_returns": daily_returns,
+                "net_values": net_values,
+                "dates": dates,
+            })
+
+        return result
+
+    # ---------- CS4：caliber 审计列 ----------
+    # 绩效指标落库 SQL（与 metric_snapshot UPSERT 范式一致，CS4 追加 caliber_version 写入）
+    _CALIBER_VERSION = "segmented-v1"
+
     _PERF_METRIC_UPSERT_SQL = """
     INSERT INTO public.performance_metric_snapshot
         (granularity, scope, strategy_id, bucket_key, sample_count, sharpe, max_drawdown,
-         window_start, window_end, snapshot_at)
-    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_TIMESTAMP)
+         window_start, window_end, snapshot_at, caliber_version)
+    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CURRENT_TIMESTAMP, $10)
     ON CONFLICT (granularity, scope, strategy_id, bucket_key) DO UPDATE SET
         sample_count=EXCLUDED.sample_count,
         sharpe=EXCLUDED.sharpe,
@@ -2409,7 +2830,8 @@ class DataService:
         window_start=EXCLUDED.window_start,
         window_end=EXCLUDED.window_end,
         snapshot_at=CURRENT_TIMESTAMP,
-        updated_at=CURRENT_TIMESTAMP
+        updated_at=CURRENT_TIMESTAMP,
+        caliber_version=EXCLUDED.caliber_version
     """
 
     # 绩效指标支持的粒度列表
@@ -2421,11 +2843,15 @@ class DataService:
     async def compute_and_store_performance_metrics(self) -> dict:
         """全量绩效指标计算：遍历 total + 各策略 × day/week/month/year 粒度，UPSERT 落库
 
-        账户级（scope='total'）基于 equity_snapshot 的净值曲线；
-        策略级（scope='strategy'）基于 trade_records 日盈亏 ÷ 月初持仓保证金。
-        各粒度的样本窗口起点 = bucket_key，终点 = 当前时间。
+        账户级（scope='total'）仍基于 equity_snapshot 净值曲线（不变，与资金段无关）；
+        策略级（scope='strategy'）**全新分段口径**（CS1 + CS2）：
+            1. 先按 derive_segments 推导出各策略的资金段（主锚 E1/E2 + 辅锚 E3）
+            2. 段内独立计算净值序列（分母 = 段初分配额，不复利，负值钳 0）
+            3. 各粒度窗口内，与窗口相交的段**分别算回撤取最大**（跨段不比、段内重基准）
 
         异常处理：单个 bucket 计算失败仅记日志跳过，不中断整体流程。
+
+        CS4：UPSERT 时写入 caliber_version='segmented-v1' 审计列。
 
         Returns:
             dict: {rows} 落库行数；异常不向上抛出。
@@ -2434,15 +2860,18 @@ class DataService:
         now = datetime.now(BEIJING_TZ)
         today = now.date()
 
-        # 回溯窗口起点：往前 _PERF_RETROSPECT_DAYS 天，用于构建账户净值曲线
+        # 回溯窗口起点：往前 _PERF_RETROSPECT_DAYS 天
         window_start = today - timedelta(days=self._PERF_RETROSPECT_DAYS)
-        # 策略级 trade_records 回溯窗口：同 window_start（日盈亏序列越长越好）
+        # 策略级 trade_records 回溯窗口（段内日盈亏序列构建用，越长越好）
         strategy_window_start = datetime.combine(window_start, datetime.min.time()).replace(tzinfo=None)
         strategy_window_end = now.replace(tzinfo=None)
 
         rows_written = 0
 
-        # 1. 账户级净值曲线构建一次，供所有粒度复用
+        # 各粒度对应不同回溯窗口（天），保证每个 tab 的 sharpe/max_dd 反映不同时间尺度
+        _PERF_WINDOW_DAYS = {"day": 30, "week": 90, "month": 180, "year": 365}
+
+        # ---------- 1. 账户级净值曲线（不变，基于 equity_snapshot）----------
         try:
             acc_daily_returns, acc_net_values, acc_dates = await self._build_account_daily_returns(
                 window_start, today,
@@ -2453,35 +2882,28 @@ class DataService:
             acc_net_values = []
             acc_dates = []
 
-        # 2. 各策略日收益率/净值曲线并行构建（互不依赖，纯 DB 查询 + Python 计算）
-        async def _one(sid):
+        # ---------- 2. 各策略分段净值序列并行构建（CS1 新方法）----------
+        async def _one_segmented(sid):
             try:
-                return sid, await self._build_strategy_daily_returns(
+                return sid, await self._build_strategy_segmented_series(
                     sid, strategy_window_start, strategy_window_end,
                 )
             except Exception as exc:
-                logger.warning("策略净值曲线构建失败，跳过该策略",
+                logger.warning("策略分段净值曲线构建失败，跳过该策略",
                                strategy_id=sid, error=str(exc)[:120])
-                return sid, ([], [], [])
+                return sid, []
 
-        results = await asyncio.gather(
-            *[_one(sid) for sid in PERFORMANCE_STRATEGY_IDS],
+        segmented_results = await asyncio.gather(
+            *[_one_segmented(sid) for sid in PERFORMANCE_STRATEGY_IDS],
         )
-        strategy_curves: Dict[str, tuple] = dict(results)
+        strategy_segmented_curves: Dict[str, list] = dict(segmented_results)
 
-        # 各粒度对应不同回溯窗口（天），保证每个 tab 的 sharpe/max_dd 反映不同时间尺度：
-        # day→30d（近1月）、week→90d（近3月）、month→180d（近半年）、year→365d（全年）
-        # 样本量最低 30 天，够稳健不会噪声
-        _PERF_WINDOW_DAYS = {"day": 30, "week": 90, "month": 180, "year": 365}
-
-        # 3. 遍历所有 (granularity, scope, strategy_id) 组合，计算并落库
+        # ---------- 3. 遍历所有 (granularity, scope, strategy_id) 组合 ----------
         for granularity in self._PERF_GRANULARITIES:
-            # bucket_key：该粒度"当前 bucket"的起点（仅用于落库标签）
             bucket_key = self._bucket_info(today)[granularity]["key"]
-            # 实际绩效计算用的回溯窗口长度
             window_days = _PERF_WINDOW_DAYS.get(granularity, 365)
 
-            # 账户级（scope='total', strategy_id=''）
+            # 账户级（scope='total'）：旧口径不变，尾部切片即可
             try:
                 row = self._compute_one_perf_entry(
                     granularity, "total", "",
@@ -2489,31 +2911,177 @@ class DataService:
                     bucket_key, window_days,
                 )
                 if row is not None:
-                    await self._db_manager.execute(self._PERF_METRIC_UPSERT_SQL, *row)
+                    # CS4：UPSERT SQL 现在多 caliber_version 参数
+                    upsert_row = row + (self._CALIBER_VERSION,)
+                    await self._db_manager.execute(self._PERF_METRIC_UPSERT_SQL, *upsert_row)
                     rows_written += 1
             except Exception as exc:
                 logger.warning("账户级绩效落库失败",
                                granularity=granularity, error=str(exc)[:120])
 
-            # 策略级
+            # 策略级：CS2 新口径——分段重基准，各段算回撤取最大
             for sid in PERFORMANCE_STRATEGY_IDS:
-                daily_rets, net_vals, dates = strategy_curves.get(sid, ([], [], []))
+                segmented_series = strategy_segmented_curves.get(sid, [])
+                if not segmented_series:
+                    # grid 不可评分 / 无快照 / 零分母期全覆盖 → 跳过，不产生新行
+                    # （架构 §4.4：新算法对不可评分策略不产生任何新行、不覆盖旧值 → 无回归）
+                    logger.debug(
+                        "策略分段净值为空，跳过策略级绩效（可能不可评分）",
+                        strategy_id=sid, granularity=granularity,
+                    )
+                    continue
                 try:
-                    row = self._compute_one_perf_entry(
-                        granularity, "strategy", sid,
-                        daily_rets, net_vals, dates,
-                        bucket_key, window_days,
+                    row = self._compute_strategy_perf_by_segments(
+                        granularity, sid, segmented_series,
+                        bucket_key, window_days, today,
                     )
                     if row is not None:
-                        await self._db_manager.execute(self._PERF_METRIC_UPSERT_SQL, *row)
+                        upsert_row = row + (self._CALIBER_VERSION,)
+                        await self._db_manager.execute(self._PERF_METRIC_UPSERT_SQL, *upsert_row)
                         rows_written += 1
                 except Exception as exc:
                     logger.warning("策略级绩效落库失败",
                                    granularity=granularity, strategy_id=sid,
                                    error=str(exc)[:120])
 
-        logger.info("绩效指标预计算完成", rows=rows_written)
+        logger.info("绩效指标预计算完成（分段口径 CS1+CS2+CS4）", rows=rows_written)
         return {"rows": rows_written}
+
+    def _compute_strategy_perf_by_segments(
+        self,
+        granularity: str, _strategy_id: str,
+        segmented_series: list,
+        bucket_key, window_days: int, today,
+    ) -> Optional[tuple]:
+        """CS2 新口径：从分段净值序列中，按窗口截取各段子序列算回撤取最大
+
+        架构 §4.3 确定性算法（与 A-review 复核脚本 /tmp/review_verify_v11.py 同构）：
+            1. window_start = today - window_days（滚动回溯窗口起点）
+            2. 遍历每个资金段，用 _segment_window_overlap 求交集（start_idx）
+            3. 对窗口内子序列的 daily_returns **从 0 起重新累积**重建净值（cum-reset）
+               → 完整段 / 残缺段**同一套公式**，分母 = 真实段初 base 已编码在 daily_returns 里
+            4. 各段分别算 max_dd → 取最大者（跨段独立）
+            5. 所有相交段日收益率拼接算 sharpe
+
+        权威契约：nv = max(0, 1 + cum_reseted)，其中 cum_reseted = sum_{r in seg_window_rets} r
+        （daily_returns 语义 = day_pnl / base，所以直接累加即等价于 day_pnl 累加 / base）
+
+        Args:
+            granularity: day|week|month|year
+            _strategy_id: 规范策略 id（本方法内只用于日志，加下划线明示非核心）
+            segmented_series: _build_strategy_segmented_series 返回的分段列表
+            bucket_key: 落库标签（该粒度当前 bucket 起点）
+            window_days: 本粒度回溯窗口天数
+            today: 当前日期
+
+        Returns:
+            tuple: (granularity, scope='strategy', strategy_id, bucket_key, sample_count,
+                    sharpe, max_drawdown, window_start, window_end)
+                   或 None（窗口内样本不足 2 个）
+        """
+        window_start_date = today - timedelta(days=window_days)
+
+        all_windowed_rets = []  # 所有相交段在窗口内的日收益率（拼接算 sharpe）
+        max_dd_segments = []    # 各段独立算的 max_dd
+        all_intersection_dates = []  # 用于最终 window_start/window_end
+
+        for seg in segmented_series:
+            seg_dates = seg["dates"]
+            seg_rets = seg["daily_returns"]
+            if not seg_dates:
+                continue
+
+            # 辅助函数：求段与窗口的交集起点索引；返回 None 表示不相交
+            start_idx = self._segment_window_overlap_idx(
+                seg_dates, window_start_date, today,
+            )
+            if start_idx is None:
+                continue
+
+            seg_window_dates = seg_dates[start_idx:]
+            seg_window_rets = seg_rets[start_idx:]
+
+            if len(seg_window_dates) < 2:
+                # 窗口内样本不足 2 个 → 该段 dd 不算（sharpe 可继续累加）
+                all_windowed_rets.extend(seg_window_rets)
+                all_intersection_dates.extend(seg_window_dates)
+                continue
+
+            # ===== 阻断项修复：cum-reset 公式，取代旧的比例缩放 =====
+            # 权威契约（架构 §4.3 / /tmp/review_verify_v11.py seg_drawdown 函数）：
+            #   cum = 0; nvs = []
+            #   for r in seg_window_rets: cum += r; nvs.append(max(0.0, 1.0 + cum))
+            # 完整段（start_idx=0）与残缺段（start_idx>0）同公式，分母 = 真实段初 base
+            # 已编码在 daily_returns 语义里（r = day_pnl / base），cum 重新归零即"窗口起点之后
+            # 从 1.0 起独立波动"的残缺段重归一（AC-1.5）
+            cum = 0.0
+            window_net_values = []
+            for r in seg_window_rets:
+                cum += r
+                window_net_values.append(max(0.0, 1.0 + cum))
+
+            dd = max_drawdown_ratio(window_net_values)
+            if dd is not None:
+                max_dd_segments.append(dd)
+
+            all_windowed_rets.extend(seg_window_rets)
+            all_intersection_dates.extend(seg_window_dates)
+
+        if not all_windowed_rets:
+            return None
+
+        sample_count = len(all_windowed_rets)
+        if sample_count < 2:
+            return None
+
+        # 总体 max_dd = 各段 max_dd 的最大值（跨段不比，AC-1.4）
+        max_dd = max(max_dd_segments) if max_dd_segments else None
+        if max_dd is None:
+            return None
+
+        # sharpe：所有相交段在窗口内的日收益率拼接（跨段拼接后语义上不是连续复利序列，
+        # 但 sharpe 是标准差 * sqrt(365) 的无复利指标，拼接后仍有统计意义）
+        sharpe = annualized_sharpe(all_windowed_rets)
+
+        # 实际样本窗口：用所有相交段的日期范围（不再二次遍历 segmented_series）
+        window_start_actual = min(all_intersection_dates) if all_intersection_dates else window_start_date
+        window_end_actual = max(all_intersection_dates) if all_intersection_dates else today
+
+        return (granularity, "strategy", _strategy_id, bucket_key, sample_count,
+                sharpe, max_dd, window_start_actual, window_end_actual)
+
+    @staticmethod
+    def _segment_window_overlap_idx(
+        seg_dates: list, window_start, window_end,
+    ) -> Optional[int]:
+        """辅助函数：求段与滚动窗口的交集起点索引（去重重复代码）
+
+        架构 §4.3 段-窗口相交判定：seg_start <= window_end 且 seg_end >= window_start，
+        交集起点 = max(seg_start, window_start)，返回该值在 seg_dates 中的索引。
+
+        Args:
+            seg_dates: 段内完整日期序列（升序）
+            window_start: 滚动窗口起点（date）
+            window_end: 滚动窗口终点（date，一般是 today）
+
+        Returns:
+            int: 交集起点在 seg_dates 中的索引；None 表示段与窗口不相交
+        """
+        seg_start = seg_dates[0]
+        seg_end = seg_dates[-1]
+
+        # 段与窗口是否相交
+        if seg_end < window_start or seg_start > window_end:
+            return None
+
+        # 找到交集起点索引（有效起点 = max(段起点, 窗口起点)）
+        effective_start = max(seg_start, window_start)
+        for idx, d in enumerate(seg_dates):
+            if d >= effective_start:
+                return idx
+
+        # 理论上不会走到这里（已过相交判定），防御性返回 None
+        return None
 
     def _compute_one_perf_entry(
         self,
@@ -2523,15 +3091,18 @@ class DataService:
     ) -> Optional[tuple]:
         """从日收益率/净值序列中截取 [最后 window_days 天] 计算夏普+回撤并组装 UPSERT 参数
 
+        账户级专用（scope='total'，基于 equity_snapshot，与资金段无关）；
+        策略级在 CS2 后已改用 _compute_strategy_perf_by_segments。
+
         Args:
-            granularity: day|week|month|year（仅用于日志/落库标签）
-            scope: total|strategy
-            strategy_id: '' 或规范策略 id
-            daily_returns: 全回溯窗口（365d）日收益率序列，升序
-            net_values: 全回溯窗口（365d）净值序列，升序（与 daily_returns 等长对齐）
-            dates: 与 daily_returns 等长的日期序列（用于记录实际样本窗口）
-            bucket_key: 该粒度当前 bucket 起点（仅作为落库标签）
-            window_days: 本次要截取多少天（day→30, week→90, month→180, year→365）
+            granularity: day|week|month|year
+            scope: 只支持 'total'
+            strategy_id: 只支持 ''
+            daily_returns: 全回溯窗口日收益率序列，升序
+            net_values: 全回溯窗口净值序列，升序
+            dates: 与 daily_returns 等长的日期序列
+            bucket_key: 落库标签（该粒度当前 bucket 起点）
+            window_days: 截取的回溯窗口天数
 
         Returns:
             tuple: (granularity, scope, strategy_id, bucket_key, sample_count,
@@ -2613,178 +3184,6 @@ class DataService:
             prev_equity = eq
 
         return daily_returns, net_values, dates
-
-    async def _build_strategy_daily_returns(
-        self, strategy_id: str, start_date: datetime, end_date: datetime,
-    ) -> tuple:
-        """构建策略级日收益率序列和累计净值序列（资金基数 + 累计盈亏口径）
-
-        数据源：
-          - trading.trade_records（executed_at 北京时间 naive, realized_pnl, strategy）
-          - public.strategy_position_snapshot_history（allocated_amount / open_margin）
-
-        关键区别于账户级：
-          trade_records 无交易日 → day_pnl=0 → 日收益率=0，**必须纳入序列**
-          （否则周/月/年序列点数不足，夏普比率样本太少）。
-
-        **口径（2026-10-09 修订）**：以「固定资金基数 + 累计已实现盈亏」构建权益曲线，
-        **不再逐日复利**：
-            equity_t   = base_capital + cum_pnl_t        # 基数固定，不随盈亏滚动
-            net_values = equity_t / base_capital          # 起点 1.0
-            r_t        = day_pnl / base_capital           # 供夏普比率使用
-        base_capital 取策略资金分配额 allocated_amount（窗口起点及之前最近一条，
-        缺失时退化为最早一条；再退化为占用保证金 open_margin），**全窗口固定**。
-
-        为何不复利：旧口径 r_t = day_pnl / 月初占用保证金（含杠杆），且 net_value 逐日
-        复利；当某月盈亏量级超过保证金基数时 r_t < -1 → 净值转负 → 回撤 >100%
-        （如 HRS 97.8%、btc_eth 100.9%）。改为固定基数 + 累加后，亏损以「本金亏光」
-        为上限：equity_t ≤ 0 时净值钳到 0，最大回撤上限即 100%。
-
-        Args:
-            strategy_id: 规范策略 id（如 btc_eth）
-            start_date: 窗口起点（datetime naive，北京时区）
-            end_date: 窗口终点（datetime naive，北京时区）
-
-        Returns:
-            (daily_returns: List[float], net_values: List[float], dates: List[date])
-            三个序列等长，覆盖 [start_date.date(), end_date.date()] 内每一天；
-            base_capital ≤ 0（无任何分配/保证金快照）时返回 ([], [], [])。
-        """
-        # 1. 先聚合 trade_records 按日盈亏
-        strategy_names = self._db_strategy_names(strategy_id)
-        if not strategy_names:
-            return [], [], []
-
-        # 2. 解析全窗口固定的资金基数（分母）
-        base_capital = await self._query_strategy_base_capital(strategy_id, start_date)
-        if base_capital <= 0:
-            logger.warning(
-                "策略无可用资金基数（allocated_amount/open_margin 均为 0），跳过该策略绩效",
-                strategy_id=strategy_id,
-            )
-            return [], [], []
-
-        rows = await self._db_manager.fetch_all(
-            self._DAILY_PNL_QUERY,
-            strategy_names, start_date, end_date,
-        )
-        day_pnl_map: Dict[str, float] = {}
-        for r in rows:
-            day_pnl_map[str(r["day"])] = float(r["day_pnl"] or 0)
-
-        # 3. 遍历每一天，按「基数 + 累计盈亏」构建净值曲线
-        cur_date = start_date.date()
-        end_date_only = end_date.date()
-        daily_returns: List[float] = []
-        net_values: List[float] = []
-        dates: List[date] = []
-        cum_pnl = 0.0
-
-        while cur_date <= end_date_only:
-            day_pnl = day_pnl_map.get(cur_date.isoformat(), 0.0)
-            cum_pnl += day_pnl
-
-            r_t = day_pnl / base_capital
-            equity_t = base_capital + cum_pnl
-            # 亏损以「本金亏光」为上限：净值不为负，回撤上限 100%
-            net_value = equity_t / base_capital
-            if net_value < 0:
-                net_value = 0.0
-
-            daily_returns.append(r_t)
-            net_values.append(net_value)
-            dates.append(cur_date)
-
-            cur_date += timedelta(days=1)
-
-        return daily_returns, net_values, dates
-
-    async def _query_strategy_base_capital(
-        self, strategy_id: str, at_time: datetime,
-    ) -> float:
-        """查询策略在指定时点的资金基数（收益率分母），全窗口固定使用
-
-        口径（2026-10-09 修订，替代旧的「月初占用保证金」分母）：
-          1. 优先取 at_time 及之前**最近一条** allocated_amount > 0 的快照
-             （资金分配额，语义为「策略资金基数」，不含杠杆）
-          2. 该时点前无快照（如窗口起点早于首条快照）→ 退化为**最早一条**
-             allocated_amount > 0 的快照
-          3. 以上均无 → 退化为占用保证金 open_margin（与
-             ai_tuner/allocation/pnl_collector.py 的月初占用口径同源），口径差异：
-             open_margin 为含杠杆的实际占用保证金，仅作兜底，不随月份变化
-          4. 全无 → 返回 0.0 并记 warning
-
-        与旧实现的差异：旧实现按月查询「月初占用保证金」，且第一条 SQL 缺月份上界，
-        历史月份会回落到「未来最早的一条快照」，导致各月分母相同且失真；现改为
-        窗口起点单点查询 + 全窗口固定基数，且所有查询都带时间上界，不再取未来快照。
-
-        Args:
-            strategy_id: 策略唯一标识
-            at_time: 查询基准时间（窗口起点，可带时区，本方法内部转为 naive）
-
-        Returns:
-            策略资金基数（USDT）；无任何历史快照时返回 0.0
-        """
-        naive_at = at_time.replace(tzinfo=None) if at_time.tzinfo else at_time
-
-        # 1. 窗口起点及之前最近一条有分配额的快照
-        row = await self._db_manager.fetch_one(
-            """
-            SELECT allocated_amount
-            FROM public.strategy_position_snapshot_history
-            WHERE strategy_id = $1 AND snapshot_hour <= $2 AND allocated_amount > 0
-            ORDER BY snapshot_hour DESC
-            LIMIT 1
-            """,
-            strategy_id, naive_at,
-        )
-        if row is not None and row.get("allocated_amount") is not None:
-            return float(row["allocated_amount"])
-
-        # 2. 最早一条有分配额的快照（窗口起点早于首条快照时的兜底）
-        row = await self._db_manager.fetch_one(
-            """
-            SELECT allocated_amount
-            FROM public.strategy_position_snapshot_history
-            WHERE strategy_id = $1 AND allocated_amount > 0
-            ORDER BY snapshot_hour ASC
-            LIMIT 1
-            """,
-            strategy_id,
-        )
-        if row is not None and row.get("allocated_amount") is not None:
-            return float(row["allocated_amount"])
-
-        # 3. 退化：窗口起点及之前最近一条有持仓的快照（占用保证金兜底）
-        row = await self._db_manager.fetch_one(
-            """
-            SELECT open_margin
-            FROM public.strategy_position_snapshot_history
-            WHERE strategy_id = $1 AND snapshot_hour <= $2 AND open_margin > 0
-            ORDER BY snapshot_hour DESC
-            LIMIT 1
-            """,
-            strategy_id, naive_at,
-        )
-        if row is not None and row.get("open_margin") is not None:
-            return float(row["open_margin"])
-
-        # 4. 退化：最早一条有持仓的快照
-        row = await self._db_manager.fetch_one(
-            """
-            SELECT open_margin
-            FROM public.strategy_position_snapshot_history
-            WHERE strategy_id = $1 AND open_margin > 0
-            ORDER BY snapshot_hour ASC
-            LIMIT 1
-            """,
-            strategy_id,
-        )
-        if row is not None and row.get("open_margin") is not None:
-            return float(row["open_margin"])
-
-        logger.warning("策略无历史持仓/分配快照，资金基数按 0 处理", strategy_id=strategy_id)
-        return 0.0
 
     async def get_performance_metrics(
         self, strategy_id: str, granularity: str,

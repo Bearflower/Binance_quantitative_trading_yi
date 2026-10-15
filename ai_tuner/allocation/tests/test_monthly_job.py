@@ -145,8 +145,8 @@ class _FakeDb:
             self.fetch_calls.append(("trade_count", args))
             sid = args[0][0]
             return {"cnt": self.trade_count.get(sid, 0)}
-        # 当月已实现盈亏
-        if "SUM(REALIZED_PNL)" in norm:
+        # 当月已实现盈亏（新口径 SQL 含 AS TOTAL_PNL 别名，旧识别键 SUM(REALIZED_PNL) 不再匹配）
+        if "AS TOTAL_PNL" in norm:
             self.fetch_calls.append(("pnl", args))
             sid = args[0][0]
             return {"total_pnl": self.pnl.get(sid, 0.0)}

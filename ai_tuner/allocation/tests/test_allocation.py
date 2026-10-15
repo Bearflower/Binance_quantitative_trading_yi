@@ -1025,26 +1025,39 @@ class TestPnLCollector(unittest.TestCase):
         # SQL 应使用 ANY($1::text[]) 匹配多个落库名
         self.assertIn("ANY($1::text[])", fake_db.query)
 
-    def test_pnl_query_template_uses_conditional_summary_only_scope(self):
-        """盈亏 SQL 采用防双计条件口径：有汇总行只算汇总，无汇总回退明细
+    def test_pnl_query_template_position_level_cte_sql_guards(self):
+        """CS3 SQL 文本守卫：新模板必须为持仓级 CTE，对齐 dashboard _DAILY_PNL_QUERY
 
-        背景：HRS 将整笔平仓累计盈亏写入 PNL_SUMMARY 行，同时每笔部分平仓
-        盈亏回填明细行，混合 SUM 会把同一笔平仓记两次
-        （2026-09 实测 HRS 亏损被虚增至 -31.31，防双计后为 -2.28）。
+        架构 §7.1 / 需求 §2.4 三机制归因：旧实现整表 BOOL_OR 导致无汇总组明细漏计
+        （机制①，10 月 HRS −5.2765 USDT）。新口径按 (strategy, symbol, side) 分组判定。
+        本测试只校验 SQL 文本形态（不执行），具体语义由后续行为级测试 + 恒等式测试覆盖。
         """
         template = PnLCollector._PNL_QUERY_TEMPLATE
-        # 条件分支：窗口内存在汇总行 → 只累计汇总行（防双计）
-        self.assertIn("BOOL_OR(order_type = 'PNL_SUMMARY')", template)
-        self.assertIn(
-            "SUM(realized_pnl) FILTER (WHERE order_type = 'PNL_SUMMARY')",
-            template,
-        )
-        # 无汇总行 → 回退累计全部明细行（其他策略行为不变）
-        self.assertIn("ELSE COALESCE(SUM(realized_pnl), 0)", template)
-        # 基础窗口条件保持不变
-        self.assertIn("ANY($1::text[])", template)
-        self.assertIn("executed_at >= $2", template)
-        self.assertIn("executed_at < $3", template)
+        norm = " ".join(template.split())
+
+        # —— 持仓级 CTE 结构（架构 §7.1 目标形态）——
+        self.assertIn("WITH GRP AS", norm.upper())
+        self.assertIn("BOOL_OR(order_type = 'PNL_SUMMARY') AS has_summary", norm)
+        # 持仓级三元组分组键
+        self.assertIn("GROUP BY strategy, symbol, side", norm)
+
+        # —— JOIN + IS NOT DISTINCT FROM 防 NULL 丢行 ——
+        self.assertIn("IS NOT DISTINCT FROM t.strategy", norm)
+        self.assertIn("IS NOT DISTINCT FROM t.symbol", norm)
+        self.assertIn("IS NOT DISTINCT FROM t.side", norm)
+
+        # —— 有汇总组只取 summary + 无汇总组回退明细（AC-2.1 / AC-2.3）——
+        self.assertIn("FILTER (WHERE g.has_summary AND t.order_type = 'PNL_SUMMARY')", norm)
+        self.assertIn("FILTER (WHERE NOT g.has_summary)", norm)
+
+        # —— 窗口条件保持不变（判定窗口 = 整月，不做前后延展）——
+        self.assertIn("ANY($1::text[])", norm)
+        self.assertIn("executed_at >= $2", norm)
+        self.assertIn("executed_at < $3", norm)
+
+        # —— 不得残留旧整表 BOOL_OR 口径 ——
+        self.assertNotIn("SELECT CASE WHEN BOOL_OR", norm.upper())
+        self.assertNotIn("THEN COALESCE(SUM(realized_pnl)", norm)  # 旧 CASE 分支
 
     # ------------------------------------------------------------
     # _query_base_capital：查询策略资金基数（月收益率分母，与看板口径一致）
@@ -1278,7 +1291,7 @@ class TestPnLCollector(unittest.TestCase):
 
             async def fetch_one(self, query, *args):
                 norm = " ".join(query.split()).upper()
-                if "SUM(REALIZED_PNL)" in norm:
+                if "AS TOTAL_PNL" in norm:
                     return {"total_pnl": 12.5}
                 # 资金基数查询：优先返回分配额（主口径），与生产回退链首步一致
                 if "ALLOCATED_AMOUNT" in norm:
@@ -1348,7 +1361,7 @@ class TestPnLCollector(unittest.TestCase):
                 if "COUNT(*) AS CNT" in norm and "TRADE_RECORDS" in norm:
                     self.count_attempted = True
                     raise RuntimeError("成交行数查询失败（模拟）")
-                if "SUM(REALIZED_PNL)" in norm:
+                if "AS TOTAL_PNL" in norm:
                     return {"total_pnl": 5.0}
                 return {"open_margin": 50.0}
 
@@ -1406,6 +1419,292 @@ class TestPnLCollector(unittest.TestCase):
         )
 
         self.assertEqual(result, {})
+
+    # ============================================================
+    # CS3 行为级 mock 测试：持仓级 CTE vs 整表 BOOL_OR 的语义差异
+    #
+    # 采用纯 Python 模拟引擎执行新/旧两种 SQL 逻辑，用构造数据验证：
+    #   1) 恒等式 AC-2.2a：position_level − whole_table == no_summary_group_detail_sum
+    #   2) 有汇总组只取 summary（防 CONDITIONAL_ORDER 同值双写）
+    #   3) 无汇总组回退明细 SUM（AC-2.3，非 HRS 策略不回归）
+    # ============================================================
+
+    def _simulate_pnl_queries(self, rows, strategies, window_start, window_end):
+        """
+        用纯 Python 按新 SQL（持仓级 CTE）与旧 SQL（整表 BOOL_OR）分别计算 total_pnl。
+
+        入参：
+          rows: [(strategy, symbol, side, order_type, realized_pnl, executed_at), ...]
+          strategies: [strategy_id, ...]  （$1 策略数组）
+          window_start / window_end: 模拟 $2 / $3 窗口边界
+
+        返回字典：
+          {
+            "position_level": 新持仓级 CTE 口径的 total_pnl,
+            "whole_table":    旧整表 BOOL_OR 口径的 total_pnl,
+            "no_summary_detail_sum": 无汇总组明细 SUM（三机制①的量）,
+          }
+        """
+        # —— 过滤窗口内的有效行 ——
+        windowed = [
+            r for r in rows
+            if r[0] in strategies and window_start <= r[5] < window_end
+        ]
+
+        # —— 1) 整表 BOOL_OR（旧口径）——
+        whole_has_summary = any(r[3] == "PNL_SUMMARY" for r in windowed)
+        if whole_has_summary:
+            whole_table = sum(r[4] for r in windowed if r[3] == "PNL_SUMMARY")
+        else:
+            whole_table = sum(r[4] for r in windowed)
+
+        # —— 2) 持仓级 CTE（新口径）——
+        # 先按 (strategy, symbol, side) 分组
+        from collections import defaultdict
+
+        groups = defaultdict(list)
+        for r in windowed:
+            key = (r[0], r[1], r[2])  # strategy, symbol, side
+            groups[key].append(r)
+
+        position_level = 0.0
+        no_summary_detail_sum = 0.0
+        for key, group_rows in groups.items():
+            has_summary = any(r[3] == "PNL_SUMMARY" for r in group_rows)
+            if has_summary:
+                # 有汇总组：只取 summary 行
+                position_level += sum(
+                    r[4] for r in group_rows if r[3] == "PNL_SUMMARY"
+                )
+            else:
+                # 无汇总组：回退明细 SUM
+                detail_sum = sum(r[4] for r in group_rows)
+                position_level += detail_sum
+                no_summary_detail_sum += detail_sum
+
+        return {
+            "position_level": position_level,
+            "whole_table": whole_table,
+            "no_summary_detail_sum": no_summary_detail_sum,
+        }
+
+    def test_ac22a_identity_holds_position_level_minus_whole_table(self):
+        """AC-2.2a 恒等式：持仓级 − 整表 == 无汇总组明细 SUM
+
+        构造：组 A（有 summary + CONDITIONAL_ORDER 明细同值）、组 B（仅明细）、
+        组 C（仅 summary）。
+        旧口径整表 BOOL_OR 为 True → 只取 summary 行 → 丢失组 B 明细（漏计机制①）。
+        新口径：组 A 取 summary、组 B 取明细、组 C 取 summary → 正确。
+        恒等式 position_level − whole_table 应精确等于组 B 的明细 SUM。
+        """
+        from datetime import datetime
+
+        # 组 A（有汇总行 + CONDITIONAL_ORDER 明细同值，防双计验证）
+        row_a1 = ("hrs", "ARBUSDT", "buy", "CONDITIONAL_ORDER", -2.874080,
+                  datetime(2026, 10, 12, 10, 0))
+        row_a2 = ("hrs", "ARBUSDT", "buy", "PNL_SUMMARY", -2.874080,
+                  datetime(2026, 10, 12, 10, 0))
+
+        # 组 B（仅明细，无汇总——机制①漏计来源）
+        row_b1 = ("hrs", "LITEUSDT", "sell", "TAKE_PROFIT", -1.5,
+                  datetime(2026, 10, 5, 9, 0))
+        row_b2 = ("hrs", "LITEUSDT", "sell", "STOP_MARKET", -1.1035,
+                  datetime(2026, 10, 8, 14, 0))
+
+        # 组 C（仅 summary）
+        row_c1 = ("hrs", "ONDOUSDT", "buy", "PNL_SUMMARY", 1.2,
+                  datetime(2026, 10, 10, 8, 0))
+
+        rows = [row_a1, row_a2, row_b1, row_b2, row_c1]
+        start = datetime(2026, 10, 1)
+        end = datetime(2026, 11, 1)
+
+        sim = self._simulate_pnl_queries(rows, ["hrs"], start, end)
+
+        # 恒等式（AC-2.2a）
+        self.assertAlmostEqual(
+            sim["position_level"] - sim["whole_table"],
+            sim["no_summary_detail_sum"],
+            places=6,
+            msg="恒等式 AC-2.2a 不成立：持仓级 − 整表 ≠ 无汇总组明细 SUM",
+        )
+
+        # 具体值验证（可漂移，仅相对）：
+        # whole_table 口径：整表 BOOL_OR=True → 只取 summary → A.summary(-2.87408) + C.summary(1.2)
+        self.assertAlmostEqual(
+            sim["whole_table"], -2.87408 + 1.2, places=6,
+        )
+        # position_level 口径：A.summary + B.all_detail + C.summary
+        self.assertAlmostEqual(
+            sim["position_level"],
+            -2.87408 + (-1.5 + -1.1035) + 1.2,
+            places=6,
+        )
+        # no_summary_detail_sum = B.all_detail（LITEUSDT 组）
+        self.assertAlmostEqual(
+            sim["no_summary_detail_sum"], -1.5 + -1.1035, places=6,
+        )
+        # 差异 = -2.6035（组 B 明细被旧口径整表 BOOL_OR 漏计）
+        self.assertAlmostEqual(
+            sim["position_level"] - sim["whole_table"], -2.6035, places=6,
+        )
+
+    def test_ac22a_identity_with_multiple_no_summary_groups(self):
+        """AC-2.2a 恒等式：多组无汇总明细 + 多组有汇总混合，差异 = 全部无汇总组明细之和
+
+        模拟架构 §7.1 生产 10 月 HRS 四组无汇总持仓场景：
+        LITEUSDT −2.6035 / ONDOUSDT −3.2190 / NBISUSDT +0.3861 / QQQUSDT +0.1599
+        （此四组全部无 PNL_SUMMARY 行，旧口径整表 BOOL_OR 漏计，差异应精确为四组合计）。
+        """
+        from datetime import datetime
+
+        summary_group = ("hrs", "ARBUSDT", "buy", "PNL_SUMMARY", 5.0,
+                         datetime(2026, 10, 10, 10, 0))
+        # 四个无汇总组（生产实测 10 月 HRS 机制①漏计来源）
+        no_summary_groups = [
+            ("hrs", "LITEUSDT", "sell", "STOP_MARKET", -2.6035,
+             datetime(2026, 10, 5, 9, 0)),
+            ("hrs", "ONDOUSDT", "sell", "TAKE_PROFIT", -3.2190,
+             datetime(2026, 10, 6, 14, 0)),
+            ("hrs", "NBISUSDT", "buy", "CONDITIONAL_ORDER", 0.3861,
+             datetime(2026, 10, 7, 11, 0)),
+            ("hrs", "QQQUSDT", "buy", "TAKE_PROFIT", 0.1599,
+             datetime(2026, 10, 8, 8, 0)),
+        ]
+
+        rows = [summary_group] + no_summary_groups
+        start = datetime(2026, 10, 1)
+        end = datetime(2026, 11, 1)
+
+        sim = self._simulate_pnl_queries(rows, ["hrs"], start, end)
+
+        # 恒等式
+        self.assertAlmostEqual(
+            sim["position_level"] - sim["whole_table"],
+            sim["no_summary_detail_sum"],
+            places=6,
+        )
+
+        # 差异 = 四组合计 = -5.2765（与架构 §7.1 三机制①量化一致）
+        expected_no_summary_sum = -2.6035 + -3.2190 + 0.3861 + 0.1599
+        self.assertAlmostEqual(
+            sim["no_summary_detail_sum"], expected_no_summary_sum, places=6,
+        )
+        self.assertAlmostEqual(
+            sim["position_level"] - sim["whole_table"], -5.2765, places=6,
+        )
+
+    def test_ac23_non_hrs_no_summary_falls_back_to_detail_sum(self):
+        """AC-2.3：非 HRS 策略（btc_eth / new_coin）无 PNL_SUMMARY 行 → 回退明细 SUM
+
+        预期：position_level == whole_table（旧口径与新口径一致，不回归）；
+        no_summary_detail_sum == position_level（全部来自无汇总组）。
+        """
+        from datetime import datetime
+
+        # btc_eth：全窗口只有 LIMIT/MARKET/CONDITIONAL_ORDER 明细，无 PNL_SUMMARY
+        rows = [
+            ("btc_eth", "BTCUSDT", "buy", "LIMIT", 12.5,
+             datetime(2026, 10, 3, 8, 0)),
+            ("btc_eth", "BTCUSDT", "sell", "MARKET", -8.3,
+             datetime(2026, 10, 5, 12, 0)),
+            ("btc_eth", "ETHUSDT", "buy", "CONDITIONAL_ORDER", 3.7,
+             datetime(2026, 10, 7, 9, 0)),
+        ]
+        start = datetime(2026, 10, 1)
+        end = datetime(2026, 11, 1)
+
+        sim = self._simulate_pnl_queries(rows, ["btc_eth"], start, end)
+
+        # 整表 BOOL_OR 为 False（无任何 PNL_SUMMARY）→ 旧口径也回退明细 SUM
+        self.assertAlmostEqual(sim["whole_table"], 12.5 + -8.3 + 3.7, places=6)
+        # 所有组都无汇总 → 新口径也全部取明细
+        self.assertAlmostEqual(sim["position_level"], sim["whole_table"], places=6)
+        self.assertAlmostEqual(sim["no_summary_detail_sum"], sim["position_level"], places=6)
+
+    def test_position_level_distinguishes_has_summary_per_symbol_side(self):
+        """持仓级判定：同一策略下，symbol/side 不同的组独立判定
+
+        构造：HRS 策略
+          - ETHUSDT buy 组：有 PNL_SUMMARY + CONDITIONAL_ORDER 明细同值
+          - ETHUSDT sell 组：仅明细（无汇总）
+          - BTCUSDT buy 组：仅 summary
+        旧口径整表 BOOL_OR 为 True → 只取 summary 行 → ETHUSDT sell 组明细被漏计。
+        新口径：ETHUSDT buy 取 summary、ETHUSDT sell 取明细、BTCUSDT buy 取 summary → 正确。
+        """
+        from datetime import datetime
+
+        rows = [
+            # ETHUSDT buy 组：有 summary + CONDITIONAL_ORDER 同值
+            ("hrs", "ETHUSDT", "buy", "CONDITIONAL_ORDER", -2.0,
+             datetime(2026, 10, 3, 8, 0)),
+            ("hrs", "ETHUSDT", "buy", "PNL_SUMMARY", -2.0,
+             datetime(2026, 10, 3, 8, 0)),
+            # ETHUSDT sell 组：仅明细，无汇总（被旧口径漏计）
+            ("hrs", "ETHUSDT", "sell", "STOP_MARKET", -1.2,
+             datetime(2026, 10, 5, 14, 0)),
+            ("hrs", "ETHUSDT", "sell", "TAKE_PROFIT", 0.8,
+             datetime(2026, 10, 5, 16, 0)),
+            # BTCUSDT buy 组：仅 summary
+            ("hrs", "BTCUSDT", "buy", "PNL_SUMMARY", 5.0,
+             datetime(2026, 10, 7, 10, 0)),
+        ]
+        start = datetime(2026, 10, 1)
+        end = datetime(2026, 11, 1)
+
+        sim = self._simulate_pnl_queries(rows, ["hrs"], start, end)
+
+        # 旧口径：只取 summary 行（整表 BOOL_OR=True）
+        # → ETHUSDT buy summary(-2.0) + BTCUSDT buy summary(5.0) = 3.0
+        self.assertAlmostEqual(sim["whole_table"], 3.0, places=6)
+
+        # 新口径：ETHUSDT buy 取 summary(-2.0) + ETHUSDT sell 取明细(-1.2+0.8=-0.4)
+        #          + BTCUSDT buy 取 summary(5.0) = 2.6
+        self.assertAlmostEqual(sim["position_level"], 2.6, places=6)
+
+        # 差异 = ETHUSDT sell 组明细 = -0.4（被旧口径漏计的机制①）
+        self.assertAlmostEqual(
+            sim["position_level"] - sim["whole_table"], -0.4, places=6,
+        )
+        # 恒等式
+        self.assertAlmostEqual(
+            sim["position_level"] - sim["whole_table"],
+            sim["no_summary_detail_sum"],
+            places=6,
+        )
+
+    def test_position_level_aggregator_method_runs_against_new_sql_via_fake_db(self):
+        """集成测试：_query_strategy_pnl 调用链走新 SQL，无运行时异常
+
+        FakeDb 回传固定值，验证 SQL 字符串走的是新持仓级 CTE 路径。
+        """
+        class FakeDb:
+            def __init__(self):
+                self.query = None
+                self.args = None
+
+            async def fetch_one(self, query, *args):
+                self.query = query
+                self.args = args
+                return {"total_pnl": 42.5}
+
+        fake_db = FakeDb()
+        collector = PnLCollector(db_manager=fake_db, strategies=[])
+        pnl = asyncio.run(
+            collector._query_strategy_pnl(
+                ["hrs"], datetime(2026, 10, 1), datetime(2026, 11, 1),
+            )
+        )
+
+        self.assertEqual(pnl, 42.5)
+        norm = " ".join(fake_db.query.split())
+        # 断言走了新 SQL（持仓级 CTE）
+        self.assertIn("WITH GRP AS", norm.upper())
+        self.assertIn("GROUP BY strategy, symbol, side", norm)
+        self.assertIn("IS NOT DISTINCT FROM t.strategy", norm)
+        self.assertIn("FILTER (WHERE NOT g.has_summary)", norm)
+        # 不能有旧 CASE WHEN BOOL_OR
+        self.assertNotIn("SELECT CASE WHEN BOOL_OR", norm.upper())
 
 
 if __name__ == "__main__":

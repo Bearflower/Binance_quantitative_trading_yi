@@ -46,6 +46,15 @@ CREATE INDEX IF NOT EXISTS idx_perf_metric_bucket
     ON public.performance_metric_snapshot(granularity, scope, bucket_key);
 
 -- ============================================
+-- CS4：caliber_version 审计列（2026-10-15 分段口径修复）
+--   幂等 ADD COLUMN，可空 VARCHAR(16)
+--   新口径写入 'segmented-v1'；旧代码/旧消费方不读此列，无回归
+--   schema 变更走 CS4：dashboard/backend 写入时带上 caliber_version
+-- ============================================
+ALTER TABLE public.performance_metric_snapshot
+    ADD COLUMN IF NOT EXISTS caliber_version VARCHAR(16);
+
+-- ============================================
 -- 授权：给看板连接用户读写权限
 -- ============================================
 GRANT SELECT, INSERT, UPDATE, DELETE ON public.performance_metric_snapshot TO trading_user;
