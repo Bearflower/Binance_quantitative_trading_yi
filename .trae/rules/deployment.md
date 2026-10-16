@@ -117,6 +117,14 @@ deploy 远程脚本第 2 步的清理**不是**无条件删除 compose 里的全
 > 修正原因：旧实现对全部候选名无条件 `docker rm -f`（`|| true` 吞错），使「只 recreate 镜像变了的容器」的增量语义失效——每次部署都强制重建全部容器，给所有策略带来短时停机。
 > 清理本意只是规避「独立 `docker run` 容器与 compose 同名」的命名冲突，不应波及本项目容器。
 
+### 2.7 并发策略（2026-10-16 修正：cancel-in-progress 改为 false）
+
+`concurrency.group: deploy-${{ github.ref }}` 仍保持「同一分支同一时刻只跑一个 Run」，但 **`cancel-in-progress` 由 `true` 改为 `false`**。
+
+- **语义**：`true` 会在新 push 到来时取消正在进行的旧 Run；`false` 则让在跑的 Run 先跑完整个流程，新 Run 只排队（pending），不打断前者。
+- **为何这样改**：`true` 会在 `build-all` 构建中途取消整个 Run，使 GHCR 出现「部分服务已重建、部分未重建」的**撕裂镜像集**；而 deploy job 的 `if` 显式允许 `build-all.result == 'cancelled'` 仍继续部署，于是撕裂集被落地 → **混版容器组**（真实事故：2026-10-15 run 78，data-backend 已更新、ai-tuner 未更新）。改为 `false` 后，在跑的 Run 跑完自身完整构建范围并原子部署，再由下一次 Run 接手。
+- **残留风险（后续设计项）**：被取消的 pending Run 所携带的目录变更，不会出现在后继 Run 的 `git diff event.before..sha` 范围内 → 变更可能**静默丢失**（CS3 差点永不上线）。彻底闭合需**持久化 last-deployed sha**（例如部署后写回状态、以服务器实际 SHA 作为下次 diff 基线），确保「已推送但未部署」的变更被后续 Run 补齐。
+
 ---
 
 ## 三、防幻觉机制（为什么 Actions 方案能杜绝幻觉）
@@ -349,4 +357,4 @@ docker system prune -f
 
 ---
 
-**最后更新：** 2026-09-27（v3.3 — 残留容器清理口径修正：deploy 脚本第 2 步只移除不属于本 compose 项目的独立 `docker run` 残留（按 `docker compose ps -a -q` 的容器 ID 集合判定），本项目容器交给 `docker compose up -d` 增量 recreate，并新增「取不到清单则不删任何容器」空值守卫；修复前对全部容器无条件 `rm -f` 导致每次部署全量停机。v3.2 — 第三层 VERSION 校验口径修正：CI 构建前写入 Run 元数据版 VERSION，`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 确定性可反解；第三层仅对"本轮实际构建"的容器可用，skip 的容器回退第四层 MD5；kline-service / kline-monitor 补 `COPY VERSION` 后 10 个镜像全覆盖；deploy 日志追加 `deploy_id=`）
+**最后更新：** 2026-10-16（v3.4 — 并发策略修正：`concurrency.cancel-in-progress` 由 `true` 改为 `false`（见 §2.7），避免构建中途取消导致 GHCR 撕裂镜像集被 deploy 落地成混版容器组（2026-10-15 run 78）；残留风险「被取消 pending Run 的变更不被后继 Run 覆盖 → 静默丢失」记入后续设计项「持久化 last-deployed sha」。v3.3 — 残留容器清理口径修正：deploy 脚本第 2 步只移除不属于本 compose 项目的独立 `docker run` 残留（按 `docker compose ps -a -q` 的容器 ID 集合判定），本项目容器交给 `docker compose up -d` 增量 recreate，并新增「取不到清单则不删任何容器」空值守卫；修复前对全部容器无条件 `rm -f` 导致每次部署全量停机。v3.2 — 第三层 VERSION 校验口径修正：CI 构建前写入 Run 元数据版 VERSION，`DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 确定性可反解；第三层仅对"本轮实际构建"的容器可用，skip 的容器回退第四层 MD5；kline-service / kline-monitor 补 `COPY VERSION` 后 10 个镜像全覆盖；deploy 日志追加 `deploy_id=`）
