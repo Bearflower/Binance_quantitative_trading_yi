@@ -25,7 +25,7 @@ from shared.utils import to_aware_utc
 from .scoring_engine import ScoringEngine, ScoringResult
 from .pattern import PatternRecognizer
 from .detector import ListingDetector
-from .executor import TradingExecutor
+from .executor import TradingExecutor, derive_reached_targets
 
 
 logger = structlog.get_logger()
@@ -61,6 +61,53 @@ def _entry_time_to_naive_beijing(entry_time: Optional[str]) -> Optional[datetime
 
 # 预定义的跳过原因常量
 SKIP_REASON_TOO_LONG = '上线时间过长'
+
+# B3：反弹放弃检查的默认新鲜度（秒）——下单前实时价距当前时间的最大允许差
+_PRICE_FRESH_DEFAULT_SECONDS = 30
+# B3：影子模式默认开启——该闸门此前恒不触发，修复后会减少部分新开仓，
+# 默认先影子对比差集，用户拍板放行后才真实拦截
+_SHADOW_DEFAULT = True
+
+
+def _compute_breakout_reference_high(
+    klines: List[Dict[str, Any]], lookback: int, now_ms: Optional[int] = None
+) -> Optional[Dict[str, Any]]:
+    """从 K 线序列里挑出已关闭的最后 lookback 根，计算参照高点与窗口结束时间。
+
+    契约（对应 D3 决策）：
+    - 只纳入 **已关闭** 的 K 线（close_time < now_ms），避免用半截 K 线的瞬时高点抬高参照线
+    - 若 klines[-1] 未关闭（K 线服务或网络滞后），排除后再取窗口
+    - 全部 K 线都未关闭或可用数 < 1 时返回 None（调用方应跳过反弹检查）
+
+    Args:
+        klines: K 线列表（来自 K 线服务，已含 close_time 毫秒时间戳）
+        lookback: 回看向根数（取 min(lookback, len(已关闭))）
+        now_ms: 当前时间毫秒（默认 time.time()*1000）。测试时可注入以避免时钟依赖。
+
+    Returns:
+        {'high': float, 'window_end': int} 或 None。high 为参照高点（浮点），
+        window_end 为被纳入的最后一根 K 线 close_time（毫秒）。
+    """
+    if not klines or lookback <= 0:
+        return None
+    if now_ms is None:
+        now_ms = int(time.time() * 1000)
+
+    # 只保留已关闭的
+    closed = [k for k in klines if int(k.get('close_time', 0)) < now_ms]
+    if not closed:
+        return None
+
+    window = closed[-lookback:] if len(closed) >= lookback else closed
+    highs = [float(k.get('high', 0)) for k in window]
+    highs = [h for h in highs if h > 0]
+    if not highs:
+        return None
+    return {
+        'high': max(highs),
+        'window_end': int(window[-1].get('close_time', 0)),
+    }
+
 
 class NewCoinStrategy(BaseStrategy):
     """新币做空策略
@@ -280,33 +327,43 @@ class NewCoinStrategy(BaseStrategy):
             funding_rate = await self._get_funding_rate(symbol)
             current_price = float(klines[-1].get('close', 0))
 
-            # 计算最近N根K线的最高价（用于反弹放弃检查）
+            # B3：计算参照高点（仅已关闭 K 线，固定为 breakout_reference 传递到下单时）
             rebound_config = self.config.get('scoring', {}).get('rebound_check', {})
-            recent_high = 0.0
+            breakout_reference = None
             if rebound_config.get('enabled', True):
                 lookback = rebound_config.get('lookback_klines', 5)
-                recent_klines = klines[-lookback:] if len(klines) >= lookback else klines
-                if recent_klines:
-                    recent_high = max(float(k.get('high', 0)) for k in recent_klines)
+                ref = _compute_breakout_reference_high(klines, lookback)
+                if ref is not None:
+                    breakout_reference = {
+                        'breakout_reference_high': ref['high'],
+                        'reference_window_end': ref['window_end'],
+                        'signal_time': int(time.time() * 1000),
+                    }
+                # 即使参照算不出来（全部 K 线未关闭），也不阻断 analyze
+                # ——后续 execute_signal 没有 breakout_reference 就直接跳过反弹检查
 
-            # 计算OI变化率（A方案：多层fallback）
+            # 计算OI变化率（A方案：多层fallback；B3 新增记录实际命中的回看时长）
             oi_config = self.config.get('scoring', {}).get('sentiment', {}).get('oi_change', {})
             lookback_hours = oi_config.get('lookback_hours', 3)
             oi_change_rate = None  # None表示无法计算
+            # B3：实际命中的回看时长（None 表示全 fallback 都失败）
+            oi_lookback_hours_actual: Optional[int] = None
 
             # 尝试1：配置的回溯时长（默认3小时）
             oi_hours_ago = await self._get_open_interest_ahead(symbol, hours_ago=lookback_hours)
             if oi_hours_ago > 0:
                 oi_change_rate = (oi_usd - oi_hours_ago) / oi_hours_ago
+                oi_lookback_hours_actual = int(lookback_hours)
             else:
                 # 尝试2：1小时前OI（fallback）
                 oi_1h = await self._get_open_interest_ahead(symbol, hours_ago=1)
                 if oi_1h > 0:
                     oi_change_rate = (oi_usd - oi_1h) / oi_1h
+                    oi_lookback_hours_actual = 1
                     logger.info(f"OI变化率使用1小时fallback: {symbol}")
 
                 # 尝试3：上线以来最短窗口（在_get_open_interest_ahead的fallback中已实现）
-                # 如果以上都失败，oi_change_rate保持None
+                # 如果以上都失败，oi_change_rate 保持 None，oi_lookback_hours_actual 也为 None
 
             # C方案：判断是否使用降级模式
             degraded_config = self.config.get('scoring', {}).get('sentiment', {}).get('degraded_mode', {})
@@ -339,6 +396,13 @@ class NewCoinStrategy(BaseStrategy):
                 recent_coins_oi=recent_coins_oi
             )
 
+            # B3：保留最近高点（供旧 run_cycle 里 `recent_high` 读取兼容），
+            # 但主参照已用 breakout_reference 固定到 result 顶层
+            legacy_recent_high = (
+                breakout_reference['breakout_reference_high']
+                if breakout_reference else 0.0
+            )
+
             # 构建分析结果
             result = {
                 'symbol': symbol,
@@ -350,14 +414,19 @@ class NewCoinStrategy(BaseStrategy):
                     'oi_usd': oi_usd,
                     'total_volume': total_volume,
                     'funding_rate': funding_rate,
-                    'recent_high': recent_high
-                }
+                    'recent_high': legacy_recent_high,
+                },
+                # B3：新增字段——随 signal 传递到下单前
+                'breakout_reference': breakout_reference,
+                'sentiment_degraded': sentiment_degraded,
+                'oi_lookback_hours_actual': oi_lookback_hours_actual,
             }
 
             logger.info(
                 f"分析完成: {symbol}",
                 total_score=score_result.total_score,
-                veto=score_result.veto
+                veto=score_result.veto,
+                oi_lookback_hours_actual=oi_lookback_hours_actual,
             )
 
             return result
@@ -369,6 +438,119 @@ class NewCoinStrategy(BaseStrategy):
                 exc_info=True
             )
             return {'symbol': symbol, 'error': str(e)}
+
+    # ------------------------------------------------------------------ B3
+    async def _fetch_fresh_ticker(
+        self, symbol: str, max_age_seconds: Optional[float] = None
+    ) -> Tuple[Optional[Decimal], Optional[int]]:
+        """获取新鲜实时价 + 记录观察时间。
+
+        Args:
+            symbol: 交易对（大写）
+            max_age_seconds: 新鲜度上限（秒）；不传则只返回 (price, observed_at)，不做超龄检查。
+
+        Returns:
+            (price_decimal, observed_at_epoch_seconds)。价无效/获取失败返回 (None, None)。
+        """
+        try:
+            price = await self.binance_client.get_ticker_price(symbol)
+        except Exception as exc:
+            logger.warning(
+                "获取实时价失败", symbol=symbol, error=str(exc)
+            )
+            return None, None
+
+        if price is None or price <= 0:
+            logger.warning("实时价无效", symbol=symbol, price=price)
+            return None, None
+
+        observed_at = int(time.time())
+
+        if max_age_seconds is not None:
+            # 新鲜 ticker 返回时 observed_at 就是当前时间，基本不会超龄；
+            # 这里保留检查，供未来接入带服务器时间戳的行情源时也能覆盖
+            age = int(time.time()) - observed_at
+            if age > max_age_seconds:
+                logger.warning(
+                    "实时价超龄", symbol=symbol, age_seconds=age,
+                    limit_seconds=max_age_seconds,
+                )
+                return None, observed_at
+
+        return price, observed_at
+
+    async def _fetch_fresh_price_and_check_rebound(
+        self, signal: Dict[str, Any]
+    ) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+        """B3 反弹闸门：取新鲜实时价 vs 固定参照高点。
+
+        契约（D3）：
+        - 有 breakout_reference → 走新路径（新鲜价 + 反弹检查 + 影子）
+        - 无 breakout_reference（legacy signal）→ 返回 (None, None, None)，调用方走旧路径
+        - 获取失败 / 价无效 / 超龄 → 返回 (None, 拒绝原因, None)，**无论影子与否都拒绝**
+          （新鲜价无效 = 无法信任价格，安全优先）
+        - 反弹超限且影子关闭 → 返回 (None, 拒绝原因, None)
+        - 反弹超限且影子开启 → 返回 (实时价, None, 影子记录原因)（放行但留痕）
+        - 反弹未超限 → 返回 (实时价, None, None)
+
+        Returns:
+            (current_price_float, rejection_reason, shadow_reason)
+        """
+        symbol = signal.get('symbol')
+        ref = signal.get('breakout_reference')
+        if not ref or not symbol:
+            # legacy path 或数据缺失 → 由调用方回退
+            return None, None, None
+
+        rebound_config = self.config.get('scoring', {}).get('rebound_check', {})
+        max_age = float(
+            rebound_config.get('max_price_age_seconds', _PRICE_FRESH_DEFAULT_SECONDS)
+        )
+        shadow_enabled = bool(
+            rebound_config.get('shadow', {}).get('enabled', _SHADOW_DEFAULT)
+        )
+
+        # 1. 取新鲜实时价（带新鲜度校验）
+        price_dec, observed_at = await self._fetch_fresh_ticker(symbol, max_age_seconds=max_age)
+        if price_dec is None:
+            reason = (
+                "实时价获取失败/无效/超龄，拒绝新开仓"
+                if observed_at is None else "实时价超龄，拒绝新开仓"
+            )
+            return None, reason, None
+
+        current_price = float(price_dec)
+
+        # 2. 反弹比较：实时价严格「超过」参照高点 → 触发闸门
+        ref_high = float(ref.get('breakout_reference_high', 0))
+        if ref_high > 0 and current_price > ref_high:
+            msg = (
+                f"反弹放弃: 实时价 {current_price} > 参照高点 {ref_high} "
+                f"（信号生成时固定的已关闭K线窗口）"
+            )
+            if shadow_enabled:
+                # 影子模式：放行但记录到实例属性，供 run_cycle 汇总统计差集
+                self._record_shadow_rebound(symbol, current_price, ref_high)
+                logger.info(f"[影子] {msg}")
+                return current_price, None, msg
+            else:
+                logger.warning(msg)
+                return None, msg, None
+
+        # 3. 未触发反弹闸门
+        return current_price, None, None
+
+    def _record_shadow_rebound(
+        self, symbol: str, real_price: float, ref_high: float
+    ) -> None:
+        """影子记录：若闸门启用会拒绝哪些开仓。按 symbol 记录（覆盖同币晚到的信号）。"""
+        if not hasattr(self, '_shadow_rebound_rejects'):
+            self._shadow_rebound_rejects: Dict[str, Any] = {}
+        self._shadow_rebound_rejects[symbol] = {
+            'real_price': real_price,
+            'reference_high': ref_high,
+            'recorded_at': int(time.time()),
+        }
 
     async def execute_signal(self, signal: Dict[str, Any]) -> Tuple[bool, str]:
         """
@@ -419,9 +601,32 @@ class NewCoinStrategy(BaseStrategy):
                 logger.warning(f"今日开仓已达上限: {self.daily_trade_count}/{daily_limit}")
                 return False, f"今日开仓已达上限({self.daily_trade_count}/{daily_limit})"
 
-            # 获取当前价格
-            market_data = signal.get('market_data', {})
-            current_price = market_data.get('current_price', 0)
+            # B3：优先走新路径（新鲜实时价 + 反弹闸门 + 影子）
+            # 无 breakout_reference → 回退 legacy 旧路径（兼容未升级的 signal）
+            current_price: Optional[float] = None
+
+            # 懒初始化影子记录容器
+            if not hasattr(self, '_shadow_rebound_rejects'):
+                self._shadow_rebound_rejects: Dict[str, Any] = {}
+
+            fresh_price, reject_reason, _shadow_reason = \
+                await self._fetch_fresh_price_and_check_rebound(signal)
+            if reject_reason is not None:
+                # 反弹闸门（非影子）或实时价不可用 → 拒绝新开仓
+                logger.warning(f"新开仓被拒绝: {symbol}", reason=reject_reason)
+                return False, reject_reason
+
+            if fresh_price is not None:
+                # 新路径成功：用新鲜 ticker 价作为开仓价
+                current_price = fresh_price
+            else:
+                # legacy 回退
+                market_data = signal.get('market_data', {})
+                current_price_raw = market_data.get('current_price', 0)
+                try:
+                    current_price = float(current_price_raw) if current_price_raw else 0.0
+                except (TypeError, ValueError):
+                    current_price = 0.0
 
             if current_price <= 0:
                 logger.error(f"当前价格无效: {current_price}")
@@ -750,29 +955,17 @@ class NewCoinStrategy(BaseStrategy):
                     patterns.get('volume_divergence', (False, 0.0))[1]
                 )
 
+                # B3：显式传 sentiment_degraded（此前未传导致降级门槛在生产等同失效）
+                sentiment_degraded = bool(analysis.get('sentiment_degraded', False))
                 should_entry = self.scoring_engine.should_entry(
                     score_result,
                     three_tops_score,
-                    total_technical_score
+                    total_technical_score,
+                    sentiment_degraded=sentiment_degraded,
                 )
 
-                # 反弹放弃检查：价格反弹超过最近高点则放弃入场
-                rebound_abandoned = False
-                rebound_config = self.config.get('scoring', {}).get('rebound_check', {})
-                if should_entry and rebound_config.get('enabled', True):
-                    lookback = rebound_config.get('lookback_klines', 5)
-                    market_data = analysis.get('market_data', {})
-                    recent_high = market_data.get('recent_high', 0)
-                    current_price = market_data.get('current_price', 0)
-                    if current_price > 0 and recent_high > 0 and current_price > recent_high:
-                        should_entry = False
-                        rebound_abandoned = True
-                        logger.info(
-                            f"反弹放弃: {symbol}",
-                            current_price=current_price,
-                            recent_high=recent_high,
-                            lookback=lookback
-                        )
+                # B3：反弹放弃检查已移到 execute_signal（下单前入口），用新鲜 ticker 比较
+                # 此处不再做反弹闸门，避免「用 analyze 时的旧 close 价 vs 参照高点」恒 False
 
                 # 记录本轮评分结果
                 result_item = {
@@ -784,17 +977,21 @@ class NewCoinStrategy(BaseStrategy):
                     'veto': score_result_dict['veto'],
                     'veto_reason': score_result_dict.get('veto_reason', ''),
                     'should_entry': should_entry,
-                    'rebound_abandoned': rebound_abandoned,
+                    # B3：反弹放弃状态改为在 execute_signal 里回填（含影子模式记录）
+                    'rebound_abandoned': False,
                 }
                 cycle_results.append(result_item)
 
                 if should_entry:
-                    # 执行交易
+                    # B3：把 breakout_reference、sentiment_degraded、OI 实际回看时长随 signal 传递
                     signal = {
                         'symbol': symbol,
                         'score_result': score_result_dict,
                         'action': 'SHORT',
-                        'market_data': analysis.get('market_data', {})
+                        'market_data': analysis.get('market_data', {}),
+                        'breakout_reference': analysis.get('breakout_reference'),
+                        'sentiment_degraded': sentiment_degraded,
+                        'oi_lookback_hours_actual': analysis.get('oi_lookback_hours_actual'),
                     }
 
                     entry_success, fail_reason = await self.execute_signal(signal)
@@ -1223,7 +1420,14 @@ class NewCoinStrategy(BaseStrategy):
         仅非空缺失类型才传入 `replenish_conditional_orders`，由增量执行器只补缺失类型。
         """
         executor = self.trading_executor
-        missing = await executor.find_missing_protection(symbol, strict=True)
+        # AC-D §6.4：从 position_tracking 读取档位状态，传入守卫判定三档表
+        tracking = executor.position_tracking.get(symbol) if executor else None
+        target1 = tracking.get('target1_reached') if tracking else None
+        target2 = tracking.get('target2_reached') if tracking else None
+        missing = await executor.find_missing_protection(
+            symbol, strict=True,
+            target1_reached=target1, target2_reached=target2,
+        )
         if missing is None:
             # S6 不可判定：零补挂零撤单，仅告警，下周期重试
             await self._record_gap_and_alert(symbol, ["保护单核验失败(不可判定)"])
@@ -2016,7 +2220,7 @@ class NewCoinStrategy(BaseStrategy):
         # 重启恢复的条目可能缺失 atr，会使 ATR 相关止盈/止损阈值退化为 0 并误触发平仓
         # （资金风险）。故在同步基线前批量算得 ATR，由同步侧仅回填缺失项（不覆盖有效值）。
         atr_map = await self._calc_rebuilt_atr_map(executor, rebuilt)
-        self._sync_baseline_to_tracking(executor, rebuilt, atr_map)
+        await self._sync_baseline_to_tracking(executor, rebuilt, atr_map)
         executor.baseline_ready = True
         logger.info(
             "持仓基线重建完成",
@@ -2089,25 +2293,25 @@ class NewCoinStrategy(BaseStrategy):
             )
         return {symbol: pos for symbol, pos in positions.items() if symbol in own_symbols}
 
-    def _sync_baseline_to_tracking(
+    async def _sync_baseline_to_tracking(
         self,
         executor: Any,
         rebuilt: Dict[str, Dict[str, Any]],
         atr_map: Optional[Dict[str, Decimal]] = None,
     ) -> None:
-        """
-        将重建后的持仓基线同步写入 executor.position_tracking（R4 / AC-3）
+        """将重建后的持仓基线同步写入 executor.position_tracking（R4 / AC-3 + AC-A §3.4）。
 
-        重启后若交易所已有持仓而 position_tracking 为空，占用保证金会被记为 0，
-        导致在已有占用之上继续按满额度开仓；故必须把数量与入场价同步到跟踪表。
-        条目经 executor.ensure_tracking_entry 建/补，已存在的 algo_ids（条件单恢复）
-        由该方法以 setdefault 保留，不得覆盖丢失；atr 则仅在"本次算得有效值且条目当前
-        缺失（<=0）"时回填，绝不覆盖条件单恢复路径已写入的有效 atr（避免两个写入口
-        互相覆盖，也避免 ATR 阈值退化为 0 造成误平仓）。
-        remaining_quantity 显式写为交易所当前实际持仓量（真实剩余量），作为重启初值。
+        除既有同步职责外，本轮新增两项（AC-A 锚点方案配套）：
+        1. 从 short_positions 表查询初始开仓量，回填 tp_anchor_quantity（§3.4 第2点）。
+           同 symbol 多条 open 记录取 ORDER BY opened_at DESC LIMIT 1（§3.4 第5点 T8），
+           命中多条打 warning；open 记录缺失则 tp_anchor_quantity 留空（fail-closed）。
+           entry_quantity 语义保持「交易所当前剩余量」不变（§2.2 前提修正）。
+        2. 基线重建后做档位回填自愈（§3.4 第3点）：await executor._get_symbol_precision
+           预热 step_size 缓存 → 用 derive_reached_targets 回填 target1/2_reached，
+           解决「存量已在 30% 但 target2 未置位、之后无新减仓事件」的自愈盲区。
 
         Args:
-            executor: 交易执行器（提供 position_tracking）
+            executor: 交易执行器（提供 position_tracking / _get_symbol_precision）
             rebuilt: 重建后的持仓记录（key 为交易对）
             atr_map: {symbol: ATR}；为 None 或缺该币种时不回填 atr
         """
@@ -2123,7 +2327,7 @@ class NewCoinStrategy(BaseStrategy):
                 entry_time=entry_time,
             )
             entry['entry_price'] = pos['entry_price']
-            entry['entry_quantity'] = pos['quantity']
+            entry['entry_quantity'] = pos['quantity']  # 保持「当前剩余量」语义
             entry['entry_time'] = entry_time
             # 交易所当前在仓数量即真实剩余量，重启后可安全作为初值
             entry['remaining_quantity'] = pos['quantity']
@@ -2131,14 +2335,117 @@ class NewCoinStrategy(BaseStrategy):
             # 回填后仍无有效 ATR（K 线不可用等），汇总告警一次，避免逐币刷屏
             if float(entry.get('atr', 0) or 0) <= 0:
                 missing_atr.append(symbol)
+
+            # AC-A §3.4 第2点：从 short_positions 回填 tp_anchor_quantity（初始开仓量）
+            await self._backfill_anchor_quantity(executor, symbol, entry)
+
         if missing_atr:
             logger.warning(
                 "重启基线重建：部分币种 ATR 缺失（K 线不可用或数据不足），"
                 "ATR 相关止盈/止损阈值可能退化",
                 symbols=sorted(missing_atr),
             )
+
+        # AC-A §3.4 第3点：档位回填自愈（预热精度缓存 + derive_reached_targets）
+        await self._backfill_target_statuses(executor, list(rebuilt.keys()))
+
         if rebuilt:
             logger.info("持仓基线已同步到 position_tracking", symbols=list(rebuilt.keys()))
+
+    async def _backfill_anchor_quantity(
+        self, executor: Any, symbol: str, entry: Dict[str, Any]
+    ) -> None:
+        """从 short_positions 表回填 tp_anchor_quantity（§3.4 第2点 + 第5点 T8）。
+
+        取初始开仓量的唯一权威来源（_insert_short_position 写入、_update_short_position_closed
+        不覆盖 quantity，已在 §3.4 核实），替换 position_tracking 里被重启路径覆盖为「当前量」
+        的 entry_quantity，使档位判定锚点恢复正确。
+
+        Args:
+            executor: 交易执行器（提供 db）
+            symbol: 交易对
+            entry: 该 symbol 的 tracking 条目（原地写 tp_anchor_quantity）
+        """
+        # 已有值（非 None 且 > 0）则不覆盖（fail-closed）
+        existing = entry.get('tp_anchor_quantity')
+        if existing is not None and float(existing) > 0:
+            return
+        try:
+            rows = await executor.db.fetch_all(
+                """
+                SELECT quantity, opened_at FROM short_positions
+                WHERE symbol=$1 AND status='open'
+                ORDER BY opened_at DESC
+                """,
+                symbol,
+            )
+        except Exception as e:
+            logger.warning(
+                "回填 tp_anchor_quantity 查询 short_positions 失败（忽略，留空 fail-closed）",
+                symbol=symbol, error=str(e),
+            )
+            return
+        if not rows:
+            logger.warning(
+                "short_positions 无 open 记录，tp_anchor_quantity 留空（fail-closed）",
+                symbol=symbol,
+            )
+            return
+        # §3.4 第5点 T8：取最新一条 open；命中多条打 warning
+        if len(rows) > 1:
+            logger.warning(
+                "short_positions 同 symbol 存在多条 open 记录，取最新一条",
+                symbol=symbol, open_count=len(rows),
+            )
+        anchor = float(rows[0].get('quantity', 0) or 0)
+        if anchor > 0:
+            entry['tp_anchor_quantity'] = anchor
+
+    async def _backfill_target_statuses(
+        self, executor: Any, symbols: List[str]
+    ) -> None:
+        """基线重建后档位回填自愈（§3.4 第3点）。
+
+        await executor._get_symbol_precision 预热 _precision_cache（避免落入 default_step_size
+        兜底使 tol 偏小 → 回到漏检方向，§3.1 数学验证），再用 derive_reached_targets 做纯量判定。
+        """
+        for symbol in symbols:
+            tracking = executor.position_tracking.get(symbol)
+            if not tracking:
+                continue
+            # 先统一预热精度缓存（§3.4 第3点 架构明确要求）
+            try:
+                await executor._get_symbol_precision(symbol)
+            except Exception:
+                pass
+            anchor = tracking.get('tp_anchor_quantity')
+            if anchor is None or float(anchor) <= 0:
+                # 锚点缺失：已预热精度（为后续 detect 做准备），跳过本轮自愈（fail-closed）
+                continue
+            remaining = float(tracking.get('remaining_quantity', 0) or 0)
+            if remaining <= 0:
+                continue
+            hit1, hit2 = derive_reached_targets(
+                anchor_qty=float(anchor),
+                exchange_qty=remaining,
+                target1_close_percent=executor.target1_close_percent,
+                target2_close_percent=executor.target2_close_percent,
+                tolerance_ratio=executor.qty_tolerance_ratio,
+                tolerance_absolute=executor.qty_tolerance_absolute,
+                step_size=executor._step_size_for(symbol),
+            )
+            if hit1 and not tracking.get('target1_reached'):
+                tracking['target1_reached'] = True
+                logger.info(
+                    "基线回填自愈：target1_reached=True",
+                    symbol=symbol, remaining=remaining, anchor=float(anchor),
+                )
+            if hit2 and not tracking.get('target2_reached'):
+                tracking['target2_reached'] = True
+                logger.info(
+                    "基线回填自愈：target2_reached=True（移动止损可接管）",
+                    symbol=symbol, remaining=remaining, anchor=float(anchor),
+                )
 
     @staticmethod
     def _backfill_tracking_atr(entry: Dict[str, Any], atr: Optional[Decimal]) -> None:

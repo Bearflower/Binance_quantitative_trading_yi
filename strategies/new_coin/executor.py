@@ -14,7 +14,12 @@ from shared.binance_api import BinanceClient, BinanceAPIError
 from shared.database import DatabaseManager
 from shared.notification import NotificationClient
 from shared.kline_service import KLineService, KLineServiceError
-from shared.condition_orders import record_condition_order
+from shared.condition_orders import (
+    record_condition_order,
+    mark_order_canceled,
+    mark_order_executed,
+    mark_open_orders_canceled,
+)
 # R06 统一订单终态助手（替代内联等待实现，杜绝三策略重复代码）
 from shared.order_fill_waiter import (
     OrderFillResult,
@@ -48,6 +53,11 @@ from shared.position_baseline import (
     calc_position_margin,
 )
 from shared.utils import to_aware_utc
+# B6b: 真实成交均价解析（avg_price / avgPrice / 对象属性统一入口）
+# 说明：该助手属 B6c 工作流、尚未提交进 shared/protection_retry（HEAD 中不存在）。
+# 若此处直接 import，则镜像内 shared 为旧版 → ImportError → 容器崩溃重启（2026-10-15 已发生一次）。
+# 故暂时在本地内联实现（见 resolve_fill_avg_price），三文件自包含、不依赖未提交的 shared 改动；
+# 待 B6c 收口、shared/protection_retry.resolve_fill_avg_price 进入 HEAD 后，可改回 import。
 
 
 logger = structlog.get_logger()
@@ -71,6 +81,83 @@ _CONDITION_ORDER_META: Dict[str, tuple] = {
 # TAKE_PROFIT 即视为「止盈单不缺」。若「仅 TP1 丢失、TP2 仍在」则不会补挂 TP1。
 _MISSING_SL = "止损单"
 _MISSING_TP = "止盈单"
+
+
+def derive_reached_targets(
+    *,
+    anchor_qty: float,
+    exchange_qty: float,
+    target1_close_percent: Decimal,
+    target2_close_percent: Decimal,
+    tolerance_ratio: float = 0.01,
+    tolerance_absolute: float = 0.0001,
+    step_size: float = 0.001,
+) -> Tuple[bool, bool]:
+    """TP 档位阈值判定纯函数（§3.2 架构契约）。
+
+    核心度量：直接比较 exchange_qty 与「锚点 × 累计剩余比例 + 容差」。
+    TP1 命中 = exchange_qty <= anchor_qty × (1 - target1_close_percent) + tol1
+    TP2 命中 = exchange_qty <= anchor_qty × (1 - target1_close_percent - target2_close_percent) + tol2
+      （注意 TP2 用累计平仓比例，因为 TP1+TP2 是分批平仓）
+    tol1 = anchor_qty × tolerance_ratio + tolerance_absolute + 1 × step_size
+    tol2 = anchor_qty × tolerance_ratio + tolerance_absolute + 2 × step_size
+      （step_size 是 ROUND_DOWN 截断项：委托量只减不增，剩余只增不减；
+       容差须向上浮方向放宽 N × step_size，否则大 step 小锚点时漏检）
+
+    零硬编码、无副作用、无状态——运行时减仓检测与重启基线回填共用。
+    anchor_qty <= 0 或 exchange_qty <= 0 → fail-closed (False, False)
+    """
+    if anchor_qty <= 0 or exchange_qty <= 0:
+        return (False, False)
+
+    # 累计剩余比例（做空分批平仓：TP1=30% 平仓后剩 70%，TP2=40% 再平仓后剩 30%）
+    remaining_after_tp1 = 1.0 - float(target1_close_percent)  # ≈ 0.70
+    remaining_after_tp2 = (1.0 - float(target1_close_percent)
+                           - float(target2_close_percent))     # ≈ 0.30
+
+    # 档位阈值（绝对数量）
+    threshold1 = anchor_qty * remaining_after_tp1
+    threshold2 = anchor_qty * remaining_after_tp2
+
+    # 容差：相对项 + 绝对项 + step_size 截断项（按已跨越档数 N 放大）
+    tol1 = anchor_qty * tolerance_ratio + tolerance_absolute + 1 * step_size
+    tol2 = anchor_qty * tolerance_ratio + tolerance_absolute + 2 * step_size
+
+    hit1 = exchange_qty <= threshold1 + tol1
+    hit2 = exchange_qty <= threshold2 + tol2
+    return (hit1, hit2)
+
+
+def resolve_fill_avg_price(entry_order) -> Optional[Decimal]:
+    """解析订单终态的真实成交均价；无有效成交均价时返回 None（不编造）。
+
+    兼容 OrderFillResult（.avg_price）与扁平 dict（avgPrice / avg_price）。
+    调用方决定缺失时的回退口径（如回退信号价）。
+
+    B6b 本地内联版：语义与 shared/protection_retry.resolve_fill_avg_price 一致，
+    仅因该 shared 改动尚未进入 HEAD 而暂时本地化，避免镜像 ImportError。
+    """
+    if isinstance(entry_order, dict):
+        raw = entry_order.get("avgPrice") or entry_order.get("avg_price")
+    else:
+        raw = getattr(entry_order, "avg_price", None)
+    if raw is None:
+        return None
+    value = Decimal(str(raw))
+    return value if value > 0 else None
+
+
+def _parse_fill_facts(fill: OrderFillResult) -> Tuple[Decimal, Optional[Decimal]]:
+    """从 OrderFillResult 解析真实成交数量与成交均价（B6b 模块级助手）
+
+    数量链：fill.executed_qty（wait_order_final_state 内已做对账，权威值）
+    均价链：resolve_fill_avg_price(fill) → 复用 B6c 的 avg_price / avgPrice 统一入口
+
+    均价未知时返回 None（绝不编造），由调用方决定是否回退信号价。
+    """
+    qty = fill.executed_qty or Decimal("0")
+    avg = resolve_fill_avg_price(fill)
+    return qty, avg
 
 
 class TradingExecutor:
@@ -261,6 +348,12 @@ class TradingExecutor:
         # 上次跟踪的持仓数量（用于止盈成交检测，对比交易所实际数量变化）
         self._last_tracked_qty: Dict[str, float] = {}
 
+        # AC-A §3.5.2：UNKNOWN 减仓重试计数（防刷屏死循环）
+        self._unknown_reduction_counts: Dict[str, int] = {}
+        # reconcile.zombie_confirm_cycles：UNKNOWN 减仓强制推进上限（默认 3）
+        reconcile_config = trading_config.get('reconcile', {})
+        self._zombie_confirm_cycles: int = int(reconcile_config.get('zombie_confirm_cycles', 3))
+
         logger.info(
             "交易执行器初始化完成",
             leverage=self.leverage,
@@ -386,36 +479,53 @@ class TradingExecutor:
                 await self._release_claim_quietly(symbol, "open_failed")
                 return None, "开空仓下单失败"
 
-            # 9. R06-F5：统一等待订单终态（识别部分成交、撤单竞态、PM 可见延迟）
+            # 9. R06-F5 + B6b：统一等待订单终态 → 用真实成交数量/均价落仓
             entry_timeout = self.config.get('trading', {}).get('entry_order_timeout_seconds', 60)
             entry_order_id = order.get('orderId')
             fill = await self._wait_for_order_fill(
                 symbol, entry_order_id, timeout_seconds=entry_timeout,
                 client_order_id=order.get('clientOrderId'),
             )
-            if fill.is_filled:
-                order = fill.raw or order
-            elif fill.has_fill:
-                # 部分成交：按实际成交量建仓并挂保护（R06-AC1/AC2）
-                actual_qty = self._format_quantity(fill.executed_qty, step_size)
-                if actual_qty <= 0:
-                    # D3：精度截断后低于最小下单量 → 减仓清零，失败则告警
-                    await self._zero_micro_entry(symbol, fill.executed_qty, step_size)
-                    await self._release_claim_quietly(symbol, "open_failed")
-                    return None, "部分成交量低于最小下单量，已尝试减仓清零"
-                quantity = actual_qty
-                order = fill.raw or order
-                logger.warning("入场部分成交，按实际成交量建仓", symbol=symbol,
-                               executed_qty=str(actual_qty))
-            else:
-                # 无成交/结果未知：取消可能仍挂着的订单，避免后续价格到达时成交
+
+            # B6b: 用模块级助手解析真实成交（数量 + 均价，均价缺失则为 None）
+            raw_qty, fill_avg_price = _parse_fill_facts(fill)
+
+            if not fill.has_fill:
+                # 完全无成交（订单被撤/超时/被拒）：取消可能仍挂着的订单，释放占用
                 await self._cancel_entry_order_quietly(symbol, entry_order_id)
                 await self._release_claim_quietly(symbol, "open_failed")
                 fail_reason = "市价单未成交" if use_market_order else "限价单超时未成交"
                 return None, fail_reason
 
-            # 10. 保存订单到数据库
-            await self._save_order(order, score_result)
+            # 有成交（完全 or 部分）：精度截断判定 + 用真实成交量覆盖计划量
+            actual_qty = self._format_quantity(raw_qty, step_size)
+            order = fill.raw or order
+
+            if actual_qty <= 0:
+                # D3：精度截断后低于最小下单量（微仓 / 精度截断）→ 减仓清零 + 释放占用
+                await self._zero_micro_entry(symbol, raw_qty, step_size)
+                await self._release_claim_quietly(symbol, "open_failed")
+                return None, "真实成交量为0（精度截断后低于最小下单量），无法建立持仓"
+
+            quantity = actual_qty
+            if not fill.is_filled:
+                logger.warning(
+                    "入场部分成交，按实际成交量建仓",
+                    symbol=symbol, executed_qty=str(actual_qty),
+                )
+
+            # B6b: 入场价优先真实成交均价；缺失则回退信号价并告警（不以信号价冒充成交价）
+            if fill_avg_price is not None:
+                entry_price_decimal = fill_avg_price
+            else:
+                logger.warning(
+                    "成交均价未知，暂以计划价登记（非真实成交均价）",
+                    symbol=symbol,
+                )
+                entry_price_decimal = Decimal(str(current_price))
+
+            # 10. 保存订单到数据库（B6b: 显式传 symbol，避免隐式依赖 order 里的 symbol 字段）
+            await self._save_order(order, score_result, symbol=symbol)
 
             # 11. 计算ATR（用于分批止盈）
             atr = await self._calculate_atr(symbol)
@@ -423,7 +533,7 @@ class TradingExecutor:
             # 12. 初始化持仓跟踪（必须在创建条件单之前，确保 record_condition_order 能正常执行）
             #     经唯一工厂构建，确保字段集与重启恢复/补单路径完全一致
             self.position_tracking[symbol] = self._build_tracking_entry(
-                entry_price=current_price,
+                entry_price=float(entry_price_decimal),
                 entry_quantity=quantity,
                 atr=atr,
             )
@@ -435,7 +545,7 @@ class TradingExecutor:
             await self._insert_short_position(
                 symbol=symbol,
                 quantity=quantity,
-                entry_price=Decimal(str(current_price)),
+                entry_price=entry_price_decimal,
             )
 
             # 14. 设置止损止盈（根据配置选择策略）
@@ -444,7 +554,7 @@ class TradingExecutor:
                 await self._set_batch_take_profit(
                     symbol=symbol,
                     total_quantity=quantity,
-                    entry_price=Decimal(str(current_price)),
+                    entry_price=entry_price_decimal,
                     atr=atr,
                     tick_size=tick_size,
                     step_size=step_size
@@ -454,12 +564,14 @@ class TradingExecutor:
                 await self._set_stop_loss_take_profit(
                     symbol,
                     quantity,
-                    Decimal(str(current_price)),
+                    entry_price_decimal,
                     tick_size
                 )
 
-            # 15. 发送通知
-            await self._send_notification(symbol, order, current_price, score_result)
+            # 15. 发送通知（展示真实成交价而非计划价）
+            await self._send_notification(
+                symbol, order, float(entry_price_decimal), score_result,
+            )
 
             logger.info(
                 f"做空执行成功: {symbol}",
@@ -995,33 +1107,61 @@ class TradingExecutor:
         return True
 
     async def find_missing_protection(
-        self, symbol: str, *, require_take_profit: Optional[bool] = None,
+        self,
+        symbol: str,
+        *,
+        require_take_profit: Optional[bool] = None,
         strict: bool = False,
+        target1_reached: Optional[bool] = None,
+        target2_reached: Optional[bool] = None,
     ) -> Optional[List[str]]:
-        """核验标的缺失哪些 OPEN 保护条件单（P0-A-AC3 / P0-D-AC7）。
+        """核验标的缺失哪些 OPEN 保护条件单（P0-A-AC3 / P0-D-AC7 + AC-D §6.4 档位感知）。
+
+        §6.4 三档表：
+          target2_reached=True → 不要求 TP（无论 config），只核验止损类
+          target1_reached=True 且 target2_reached=False → 维持 require_take_profit
+          两档均 False（含 None 不可知）→ 维持 require_take_profit + warning
+
+        §8.2 MANUAL_STOP 白名单：止损类存在判定扩展为
+          STOP_LOSS / TRAILING_STOP / MANUAL_STOP 任一。
 
         Args:
             symbol: 交易对
             require_take_profit: 是否要求止盈单；None 时读取配置
-                trading.replenish.require_take_profit（默认 true）
-            strict: 查询异常时的收敛策略（区分「确认缺失」与「不可判定」）：
-                False（默认）保守返回「全部应存在类型」（fail-closed，用于
-                「是否触发守卫」）；True 返回 None 表示「不可判定」（用于
-                「挂什么」——判定不确定一律不补挂，防重复止损单）。
+                trading.replenish.require_take_profit（默认 true）。
+                注意：target2_reached=True 时**强制覆盖**为 False（§6.4）
+            strict: 查询异常时的收敛策略：False（默认）fail-closed 返回
+                全部应存在类型；True 返回 None 表示「不可判定」。
+            target1_reached: 档位状态（来自 position_tracking）；None 视同 False
+            target2_reached: 档位状态；None 视同 False
 
         Returns:
-            Optional[List[str]]: 缺失的中文类型列表（如 [_MISSING_SL]）；无缺口
-            返回 []；strict=True 且查询异常时返回 None（不可判定）。
-
-        Note:
-            strict=False 查询异常时保守返回「全部应存在类型」（fail-closed），
-            避免因 DB 抖动误判为「已保护」而放过真实缺口；由守卫触发补挂。
+            Optional[List[str]]: 缺失的中文类型列表（如 [_MISSING_SL]）；
+            无缺口返回 []；strict=True 且查询异常返回 None。
         """
-        if require_take_profit is None:
-            require_take_profit = self.replenish_require_take_profit
+        # §6.4：档位感知的止盈单要求覆盖
+        if target2_reached is True:
+            # 尾仓 30%：TP 单已成交或应成交，不再要求补 TP（强制覆盖）
+            effective_require_tp = False
+        elif require_take_profit is None:
+            effective_require_tp = self.replenish_require_take_profit
+        else:
+            effective_require_tp = require_take_profit
+
+        # tracking 缺失时 None → 视同两档均 False（fail 方向与现状一致）
+        if target1_reached is None and target2_reached is None:
+            logger.debug(
+                "档位状态不可知，find_missing_protection 视同两档未达成",
+                symbol=symbol,
+            )
+
+        # 止损类白名单（§8.2 MANUAL_STOP + AC-C TRAILING_STOP 扩展）
+        _SL_TYPES = {"STOP_LOSS", "TRAILING_STOP", "MANUAL_STOP"}
+
         missing = [_MISSING_SL]
-        if require_take_profit:
+        if effective_require_tp:
             missing.append(_MISSING_TP)
+
         try:
             rows = await self.db.fetch_all(
                 """
@@ -1038,13 +1178,16 @@ class TradingExecutor:
                 strict=strict,
                 error=str(e),
             )
-            # strict：不可判定返回 None（调用方据此零补挂，防重复止损单）
             return None if strict else missing
+
         open_types = {str(r.get('order_type', '')).upper() for r in (rows or [])}
         result: List[str] = []
-        if "STOP_LOSS" not in open_types:
+
+        # 止损类：STOP_LOSS / TRAILING_STOP / MANUAL_STOP 任一即视为已保护
+        if not (open_types & _SL_TYPES):
             result.append(_MISSING_SL)
-        if require_take_profit and "TAKE_PROFIT" not in open_types:
+        # 止盈类：effective_require_tp 为真时才核验
+        if effective_require_tp and "TAKE_PROFIT" not in open_types:
             result.append(_MISSING_TP)
         return result
 
@@ -1376,10 +1519,17 @@ class TradingExecutor:
     async def _save_order(
         self,
         order: Dict[str, Any],
-        score_result: Dict[str, Any]
+        score_result: Dict[str, Any],
+        *,
+        symbol: Optional[str] = None,
     ):
-        """保存订单到数据库"""
+        """保存订单到数据库
+
+        B6b: 显式接收 symbol 参数（kw-only），不再隐式依赖 order['symbol'] 字段。
+        若调用方未传，仍回退到 order.get('symbol') 以兼容历史路径。
+        """
         try:
+            resolved_symbol = symbol or order.get('symbol')
             await self.db.execute(
                 """
                 INSERT INTO orders (
@@ -1388,7 +1538,7 @@ class TradingExecutor:
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
                 """,
                 str(order.get('orderId')),
-                order.get('symbol'),
+                resolved_symbol,
                 'new_coin',
                 'SELL',
                 'LIMIT',
@@ -2034,31 +2184,29 @@ class TradingExecutor:
             tracking = self.position_tracking[symbol]
             entry_time = tracking.get('entry_time')
 
-            # 0. 检测止盈目标成交（持仓数量对比，激活移动止损）
+            # 0. 取一次当前价格（同时供 detect 来源甄别 + target2 后移动止损使用）
+            current_price = await self._fetch_current_price_or_none(symbol)
+
+            # 1. 检测止盈目标成交（持仓数量对比，激活移动止损）
             exchange_qty = await self._get_exchange_position_qty(symbol)
             if exchange_qty is not None:
-                fill_level = self.detect_take_profit_fills(symbol, exchange_qty)
+                fill_level = self.detect_take_profit_fills(
+                    symbol, exchange_qty, current_price=current_price
+                )
                 if fill_level == 0:
                     # 全部平仓：交由 _monitor_positions 完成清理
                     return
 
-            # 1. 检查时间止损
+            # 2. 检查时间止损
             if self.time_stop_enabled:
                 await self._check_time_stop(symbol, entry_time)
 
-            # 1.5 检查紧急止损
+            # 2.5 检查紧急止损
             if self.emergency_stop_enabled:
                 await self._check_emergency_stop(symbol, entry_time)
 
-            # 2. 检查动态利润保护（仅在 TP2 到达后激活）
-            # 获取当前价格一次，同时用于动态利润保护和最高价更新
-            if tracking.get('target2_reached'):
-                ticker = await self.binance_api._request(
-                    "GET", "/fapi/v1/ticker/price",
-                    params={'symbol': symbol}, signed=False
-                )
-                current_price = Decimal(str(ticker.get('price', 0)))
-
+            # 3. 检查动态利润保护（仅在 TP2 到达后激活）
+            if tracking.get('target2_reached') and current_price is not None:
                 # 更新最高价（做空时追踪反弹）
                 if current_price > Decimal(str(tracking.get('highest_price', 0))):
                     tracking['highest_price'] = float(current_price)
@@ -2537,6 +2685,14 @@ class TradingExecutor:
                     algo_id=old_id, error=str(e)
                 )
             algo_ids['trailing_stop'] = None
+            # AC-D2：平仓触发撤移动止损 → mark_order_canceled
+            try:
+                await mark_order_canceled(self.db, algo_id=old_id)
+            except Exception as e:
+                logger.warning(
+                    "平仓触发撤移动止损后的 DB mark 同步失败",
+                    symbol=symbol, algo_id=old_id, error=str(e),
+                )
 
     async def _sync_trailing_stop_order(
         self,
@@ -2588,6 +2744,14 @@ class TradingExecutor:
                     algo_id=old_trailing_id, error=str(e)
                 )
             algo_ids['trailing_stop'] = None
+            # AC-D2：撤旧移动止损单 → mark_order_canceled 同步 DB 状态
+            try:
+                await mark_order_canceled(self.db, algo_id=old_trailing_id)
+            except Exception as e:
+                logger.warning(
+                    "撤旧移动止损单后的 DB mark 同步失败",
+                    symbol=symbol, algo_id=old_trailing_id, error=str(e),
+                )
 
         # 2. 首次激活时，取消原有硬止损单（已被动态止损替代）
         old_sl_id = algo_ids.get('sl')
@@ -2615,6 +2779,14 @@ class TradingExecutor:
                     algo_id=old_sl_id, error=str(e)
                 )
             algo_ids['sl'] = None
+            # AC-D2：撤旧硬止损单 → mark_order_canceled
+            try:
+                await mark_order_canceled(self.db, algo_id=old_sl_id)
+            except Exception as e:
+                logger.warning(
+                    "撤旧硬止损单后的 DB mark 同步失败",
+                    symbol=symbol, algo_id=old_sl_id, error=str(e),
+                )
 
         # 3. 计算止损限价（做空：限价 = 止损价 * (1 + offset_pct)，向不利方向偏移）
         stop_limit_price = trailing_stop * (Decimal('1') + stop_offset_pct)
@@ -3088,6 +3260,17 @@ class TradingExecutor:
         if symbol in self.position_tracking and 'algo_ids' in self.position_tracking[symbol]:
             self.position_tracking[symbol]['algo_ids'] = {}
 
+        # AC-D2：全量撤单成功（至少撤了一张）后，mark_open_orders_canceled 同步 DB
+        if result['cancelled'] > 0:
+            try:
+                await mark_open_orders_canceled(self.db, "new_coin", symbol)
+            except Exception as e:
+                logger.warning(
+                    "全量撤单后的 DB mark_open_orders_canceled 同步失败",
+                    symbol=symbol, strategy="new_coin", cancelled=result['cancelled'],
+                    error=str(e),
+                )
+
         # 4. 记录汇总日志
         logger.info(
             "孤儿条件单清理完成",
@@ -3124,51 +3307,352 @@ class TradingExecutor:
             logger.warning(f"获取持仓数量失败: {symbol}", error=str(e))
             return None
 
-    def detect_take_profit_fills(self, symbol: str, exchange_qty: float) -> Optional[int]:
-        """
-        通过对比持仓数量变化检测止盈单成交
+    def _step_size_for(self, symbol: str) -> float:
+        """同步读取该 symbol 的数量精度（step_size，§3.3）。
 
-        对比交易所实际持仓数量与上次跟踪数量：
-        - 100% -> 70%：target1 成交，标记 target1_reached
-        - 70% -> 30%：target2 成交，标记 target2_reached 并激活移动止损
-        - 0%：全部平仓
+        只读 _precision_cache，命中返回 step_size（转 float）；未命中返回
+        self.default_step_size。**不触达交易所、不 async**。
+
+        供 strategy._backfill_target_statuses 和 detect_take_profit_fills 调用，
+        二者均以同步方式访问（strategy.py L2434 直接调用，不加 await）。
+        """
+        cached = self._precision_cache.get(symbol)
+        if cached is not None:
+            return float(cached[1])
+        return float(self.default_step_size)
+
+    def _resolve_tier_anchor(
+        self, symbol: str, tracking: Dict[str, Any]
+    ) -> Optional[float]:
+        """锚点解析（§3.4）：返回该 symbol 档位判定的可靠锚点数量。
+
+        优先级：tp_anchor_quantity（开仓写入、基线回填初始开仓量）→
+        退化 entry_quantity（仅开仓路径可靠）→ fail-closed 返回 None。
+        """
+        anchor = tracking.get('tp_anchor_quantity')
+        if anchor is not None and float(anchor) > 0:
+            return float(anchor)
+        entry = tracking.get('entry_quantity')
+        if entry is not None and float(entry) > 0:
+            logger.warning(
+                "tp_anchor_quantity 缺失，退化用 entry_quantity（老进度条兼容）",
+                symbol=symbol,
+            )
+            return float(entry)
+        return None
+
+    def _classify_fill_source(
+        self,
+        symbol: str,
+        tracking: Dict[str, Any],
+        current_price: Optional[Decimal],
+        tier_hit: bool,
+    ) -> str:
+        """减仓来源甄别（§3.5.1 方案甲：量主导、价格仅作 SL 排除）。
+
+        tier_hit 直接复用 derive_reached_targets 返回值（单一容差来源），
+        不再要求价格进入 TP 区——封死 B5「TP 成交后价格反弹出 TP 区误判
+        UNKNOWN → 永不重判」的资金风险。
 
         Args:
             symbol: 交易对
-            exchange_qty: 交易所当前做空持仓数量（绝对值）
+            tracking: 持仓跟踪条目
+            current_price: 当前价格（Decimal），为 None 时 fail-closed 返回 UNKNOWN
+            tier_hit: derive_reached_targets 是否命中至少一档
 
         Returns:
-            达成的目标级别（1/2），0 表示全部平仓，None 表示无变化或未启用
+            "TP" | "SL" | "UNKNOWN"
+        """
+        if current_price is None:
+            return "UNKNOWN"
+        # SL 触发区：entry_price × (1 + stop_loss_percent)
+        entry_price = float(tracking.get('entry_price', 0))
+        if entry_price <= 0:
+            return "UNKNOWN"
+        sl_trigger = entry_price * (1 + float(self.stop_loss_percent))
+        # SL 排除信号：价格越过 SL 触发价 → 无条件判 SL（无论 tier_hit）
+        if float(current_price) >= sl_trigger:
+            return "SL"
+        # TP / UNKNOWN 分流：tier_hit 为真且价格在 SL 下方 → TP
+        if tier_hit:
+            return "TP"
+        # 量未跨档、价格也未到 SL 区 → UNKNOWN（手动平仓 / 强平 / 不明来源）
+        logger.debug(
+            "减仓来源甄别结果：UNKNOWN（量未跨档、价格未到 SL 区）", symbol=symbol,
+        )
+        return "UNKNOWN"
+
+    def _handle_non_tp_reduction(
+        self,
+        symbol: str,
+        tracking: Dict[str, Any],
+        source: str,
+        exchange_qty: Optional[float] = None,
+    ) -> Optional[int]:
+        """非 TP 减仓处置（§3.5.2）。
+
+        SL：SL 部分成交 → 异步撤除剩余 OPEN TAKE_PROFIT + mark_open_orders_canceled，
+          剩余仓位由既有止损逻辑接管。
+        UNKNOWN：不推进 _last_tracked_qty（方案乙要点，防永久漏检）、告警保留重判；
+          连续超 _zombie_confirm_cycles 次后强制推进 exchange_qty 并升级为 critical 告警，
+          交由 reconcile 僵尸对账兜底。
+
+        Args:
+            symbol: 交易对
+            tracking: 持仓跟踪条目
+            source: "SL" | "UNKNOWN"
+            exchange_qty: 交易所当前持仓数量（UNKNOWN 超重试时用于强制推进 last）
+
+        Returns:
+            始终返回 None（非 TP 路径不产生目标级返回值）
+        """
+        if source == "SL":
+            # SL 部分成交：异步撤剩余 OPEN TAKE_PROFIT + 同步 DB 状态
+            # （create_task 不阻塞 detect 主流程；撤单失败留告警下轮重试）
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # 无 running loop（同步单测 / 非 async 上下文）→ 静默跳过
+                logger.debug(
+                    "SL 撤 TP 条件单未触发（无 running loop，可能非 async 上下文）",
+                    symbol=symbol,
+                )
+                return None
+
+            async def _cancel_tp_on_sl():
+                try:
+                    for tp_role in ('tp1', 'tp2'):
+                        tp_id = tracking.get('algo_ids', {}).get(tp_role)
+                        if tp_id is not None:
+                            try:
+                                await self.binance_api.cancel_algo_order(
+                                    symbol, tp_id
+                                )
+                                tracking['algo_ids'][tp_role] = None
+                            except Exception as e:
+                                logger.warning(
+                                    "SL 部分成交后撤 TP 条件单失败（不阻断主流程）",
+                                    symbol=symbol, tp_role=tp_role,
+                                    algo_id=tp_id, error=str(e),
+                                )
+                    await mark_open_orders_canceled(self.db, "new_coin", symbol)
+                except Exception as e:
+                    logger.warning(
+                        "SL 部分成交后置撤 TP 条件单异常（不阻断主流程）",
+                        symbol=symbol, error=str(e),
+                    )
+
+            loop.create_task(_cancel_tp_on_sl())
+            logger.info(
+                "SL 部分成交，已触发异步撤剩余 OPEN TAKE_PROFIT 单",
+                symbol=symbol,
+            )
+            return None
+
+        # UNKNOWN 分支：不推进 last、保留重判 + 重试计数
+        count = self._unknown_reduction_counts.get(symbol, 0) + 1
+        self._unknown_reduction_counts[symbol] = count
+        if count > self._zombie_confirm_cycles:
+            # 超上限：强制推进 last 到 exchange_qty（传入值或兜底 remaining_quantity）
+            force_to = exchange_qty
+            if force_to is None:
+                force_to = tracking.get('remaining_quantity')
+            if force_to is not None:
+                self._last_tracked_qty[symbol] = float(force_to)
+            # 强制推进后复位计数器：本次减仓已被消费，后续新减仓应重新拥有完整重判窗口
+            self._unknown_reduction_counts.pop(symbol, None)
+            logger.critical(
+                "UNKNOWN 减仓超重试上限，强制推进 _last_tracked_qty 并告警",
+                symbol=symbol, unknown_count=count, force_to=force_to,
+            )
+        else:
+            logger.warning(
+                "减仓来源不明，保留重判（下轮继续检测）",
+                symbol=symbol, unknown_count=count,
+            )
+        return None
+
+    def _resolve_detection_baseline(
+        self, symbol: str, exchange_qty: float,
+    ) -> tuple:
+        """止盈成交检测前段守卫与档位锚点解析。
+
+        把 detect_take_profit_fills 里的「配置开关 / 首次跟踪 / 持仓缺失 /
+        全部平仓 / 无变化 / 锚点解析」六步统一收敛，外层拿到 stop 信号直接 return。
+
+        Returns:
+            (stop, payload):
+                stop=True  → payload 是应直接 return 的值（None 或 0）。
+                             函数内已完成相关副作用（更新 _last_tracked_qty、打日志）。
+                stop=False → payload 是 dict {
+                    'last_qty': float,
+                    'tracking': Dict[str, Any],
+                    'anchor': float,
+                }，调用方继续 derive → classify → dispatch。
         """
         if not self.position_detection_enabled:
-            return None
+            return True, None
+
         last_qty = self._last_tracked_qty.get(symbol)
         if last_qty is None:
             # 首次跟踪，记录当前数量
             self._last_tracked_qty[symbol] = exchange_qty
-            return None
-        if exchange_qty < self.zero_qty_threshold:
-            # 全部平仓
-            self._last_tracked_qty[symbol] = exchange_qty
-            return 0
-        # 允许微小误差（精度截断/手续费）
-        qty_tolerance = max(last_qty * self.qty_tolerance_ratio, self.qty_tolerance_absolute)
-        if exchange_qty >= last_qty - qty_tolerance:
-            return None
-        # 持仓减少，检测止盈目标
-        self._last_tracked_qty[symbol] = exchange_qty
+            return True, None
+
         tracking = self.position_tracking.get(symbol)
         if not tracking:
-            return None
-        if not tracking.get('target1_reached'):
+            return True, None
+
+        # 全部平仓（优先处理）
+        if exchange_qty < self.zero_qty_threshold:
+            self._last_tracked_qty[symbol] = exchange_qty
+            return True, 0
+
+        # 无变化（复用容差，语义不变）
+        qty_tolerance = max(
+            last_qty * self.qty_tolerance_ratio, self.qty_tolerance_absolute
+        )
+        if exchange_qty >= last_qty - qty_tolerance:
+            return True, None
+
+        # 锚点解析（§3.4）
+        anchor = self._resolve_tier_anchor(symbol, tracking)
+        if anchor is None or anchor <= 0:
+            logger.warning(
+                "锚点缺失，跳过档位判定（fail-closed）", symbol=symbol,
+            )
+            self._last_tracked_qty[symbol] = exchange_qty
+            return True, None
+
+        return False, {'last_qty': last_qty, 'tracking': tracking, 'anchor': anchor}
+
+    def detect_take_profit_fills(
+        self,
+        symbol: str,
+        exchange_qty: float,
+        current_price: Optional[Decimal] = None,
+    ) -> Optional[int]:
+        """止盈成交检测（§3.3 状态机）。
+
+        核心修复：
+        - 先做纯量档位判定 derive_reached_targets（一次算 hit1/hit2，可同轮置位两档）
+        - 先置位、后更新 _last_tracked_qty（修复先更新后 return 丢跨档信息的缺陷）
+        - 来源甄别（_classify_fill_source）分 TP / SL / UNKNOWN 三路
+        - SL 部分成交不置位不 mark TP；UNKNOWN 不推进 last 保留重判（B5 闭环）
+
+        Args:
+            symbol: 交易对
+            exchange_qty: 交易所当前做空持仓数量（绝对值）
+            current_price: 当前价格（供减仓来源甄别）；为 None 时甄别退化为 UNKNOWN
+
+        Returns:
+            达成的目标级别（2 表示 TP1+TP2 均可能已置位，1 表示仅 TP1），
+            0 表示全部平仓，None 表示无变化或未启用
+        """
+        # 前段守卫与锚点解析（提取自 detect_take_profit_fills，统一六步前置检查）
+        stop, baseline = self._resolve_detection_baseline(symbol, exchange_qty)
+        if stop:
+            return baseline
+
+        last_qty = baseline['last_qty']
+        tracking = baseline['tracking']
+        anchor = baseline['anchor']
+
+        # 纯量档位命中（B5 闭环：置位唯一判据是累计剩余比例 vs 档位阈值）
+        hit1, hit2 = derive_reached_targets(
+            anchor_qty=anchor,
+            exchange_qty=exchange_qty,
+            target1_close_percent=self.target1_close_percent,
+            target2_close_percent=self.target2_close_percent,
+            tolerance_ratio=self.qty_tolerance_ratio,
+            tolerance_absolute=self.qty_tolerance_absolute,
+            step_size=self._step_size_for(symbol),
+        )
+
+        # 来源甄别（tier_hit 直接复用 derive 返回值，单一容差来源）
+        source = self._classify_fill_source(
+            symbol, tracking, current_price, tier_hit=(hit1 or hit2)
+        )
+
+        if source == "TP":
+            # TP 减仓：一次性置位（可能同轮置位 1+2，不逐级 return）
+            reached = self._apply_tp_marks(
+                symbol, tracking, exchange_qty, last_qty, hit1, hit2,
+            )
+            # 置位后才更新 last（修复点：先置位再更锚，跨档信息不丢）
+            self._last_tracked_qty[symbol] = exchange_qty
+            # TP 减仓成功：清除 UNKNOWN 重试计数
+            self._unknown_reduction_counts.pop(symbol, None)
+            return reached
+
+        if source == "SL":
+            # SL 部分成交：推进 last（表示本次减仓已收敛），不置位 target 不 mark TP
+            self._last_tracked_qty[symbol] = exchange_qty
+            return self._handle_non_tp_reduction(
+                symbol, tracking, "SL", exchange_qty=exchange_qty
+            )
+
+        # source == "UNKNOWN"：不推进 last（保留下轮重判），告警 + 重试上限
+        return self._handle_non_tp_reduction(
+            symbol, tracking, "UNKNOWN", exchange_qty=exchange_qty
+        )
+
+    def _apply_tp_marks(
+        self,
+        symbol: str,
+        tracking: Dict[str, Any],
+        exchange_qty: float,
+        last_qty: float,
+        hit1: bool,
+        hit2: bool,
+    ) -> Optional[int]:
+        """TP 减仓置位与 mark_order_executed 调度。
+
+        一次性置位已达成的档位（可能同轮置位 1+2，不逐级 return），
+        并异步调度 AC-D1 mark_order_executed 关闭 DB 记录。
+
+        Args:
+            symbol: 交易对
+            tracking: 持仓跟踪条目
+            exchange_qty: 交易所当前持仓数量
+            last_qty: 上轮跟踪数量（用于日志对比）
+            hit1: derive_reached_targets 是否命中 TP1
+            hit2: derive_reached_targets 是否命中 TP2
+
+        Returns:
+            本次实际置位的最高档位（1 或 2）；若均未置位返回 None
+        """
+        reached = None
+
+        if hit1 and not tracking.get('target1_reached'):
             self.update_target_status(symbol, 1, exchange_qty=exchange_qty)
-            logger.info("检测到第一目标止盈成交", symbol=symbol, last_qty=last_qty, current_qty=exchange_qty)
-            return 1
-        if not tracking.get('target2_reached'):
+            logger.info(
+                "检测到第一目标止盈成交",
+                symbol=symbol, last_qty=last_qty, current_qty=exchange_qty,
+            )
+            reached = 1
+            # AC-D1：mark_order_executed 关闭 DB 中对应 TP1 记录（异步不阻塞）
+            tp1_algo_id = tracking.get('algo_ids', {}).get('tp1')
+            if tp1_algo_id is not None:
+                asyncio.create_task(
+                    mark_order_executed(self.db, algo_id=tp1_algo_id)
+                )
+
+        if hit2 and not tracking.get('target2_reached'):
             self.update_target_status(symbol, 2, exchange_qty=exchange_qty)
-            logger.info("检测到第二目标止盈成交，激活移动止损", symbol=symbol, last_qty=last_qty, current_qty=exchange_qty)
-            return 2
-        return None
+            logger.info(
+                "检测到第二目标止盈成交，激活移动止损",
+                symbol=symbol, last_qty=last_qty, current_qty=exchange_qty,
+            )
+            reached = 2
+            # AC-D1：mark_order_executed 关闭 DB 中对应 TP2 记录
+            tp2_algo_id = tracking.get('algo_ids', {}).get('tp2')
+            if tp2_algo_id is not None:
+                asyncio.create_task(
+                    mark_order_executed(self.db, algo_id=tp2_algo_id)
+                )
+
+        return reached
 
     def clear_position_tracking(self, symbol: str) -> None:
         """清理持仓跟踪与上次跟踪数量（幂等）"""
@@ -3229,6 +3713,9 @@ class TradingExecutor:
             'entry_price': price,
             'entry_time': entry_time or datetime.now(timezone.utc),
             'entry_quantity': quantity,
+            # AC-A §2.2 / §3.4：独立锚点字段（初始开仓量），重启后仍可靠；
+            # 与 entry_quantity / remaining_quantity 语义解耦（二者被重启路径覆盖为当前量）
+            'tp_anchor_quantity': quantity,
             'atr': float(atr),
             'lowest_price': price,  # 持仓期间最低价（做空反弹触发移动止盈）
             'highest_price': price,  # 做空时追踪最高价（反弹触发止损用）
@@ -3465,6 +3952,26 @@ class TradingExecutor:
             params={'symbol': symbol}, signed=False
         )
         return Decimal(str(ticker.get('price', 0)))
+
+    async def _fetch_current_price_or_none(self, symbol: str) -> Optional[Decimal]:
+        """安全取当前价格：失败或 <=0 均返回 None 并记 warning。
+
+        复用 _get_current_price 的底层请求逻辑，统一异常处理与无效值兜底，
+        避免调用方重复写 try/except + 零值判断。
+        """
+        try:
+            price = await self._get_current_price(symbol)
+            if price <= 0:
+                logger.warning(
+                    "获取当前价格为无效值（<=0），返回 None", symbol=symbol, price=price,
+                )
+                return None
+            return price
+        except Exception as e:
+            logger.warning(
+                "获取当前价格失败，返回 None 降级", symbol=symbol, error=str(e),
+            )
+            return None
 
     def _plan_stop_loss(
         self, entry_price: Decimal, atr: Decimal, tick_size: Decimal, slippage: Decimal
