@@ -15,6 +15,11 @@
 仅「同源」（同取 allocated_amount 名义基数、方向相反）。本链优先取资金分配额
 allocated_amount（名义资金基数，不含杠杆），无分配额时退化用持仓保证金 open_margin
 兜底；全部缺失时返回 0.0，由上层除零保护处理。
+
+重建提示（2026-10-16）：CS3 持仓级去重（`_PNL_QUERY_TEMPLATE` 升级为
+(strategy, symbol, side) CTE）只在 ai-tuner 镜像重建后才生效。CI 按 `ai_tuner/` 目录
+命中触发重建；若该目录变更所在 Run 被 `concurrency.cancel-in-progress` 取消，会造成
+「代码已合并但镜像未重建」的部分部署，需重新触发构建方能上线。
 """
 
 import structlog
