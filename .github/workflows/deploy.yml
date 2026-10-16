@@ -26,11 +26,17 @@ on:
 
 concurrency:
   group: deploy-${{ github.ref }}
-  # cancel-in-progress: true 会在构建进行中取消整个 Run，使 GHCR 出现「部分服务已重建、部分未重建」的撕裂镜像集；
-  # 而 deploy job 的 if 显式允许 build-all.result == 'cancelled' 继续部署，撕裂集因此被落地 → 混版容器组（真实事故：2026-10-15 run 78）。
-  # 改为 false 后，在跑的 Run 先跑完自身完整构建范围并原子部署，再由下一次 Run 接手。
-  # 注：彻底闭合「被取消的 pending Run 变更不被后继 Run 覆盖」还需持久化 last-deployed sha（属后续设计项）。
+  # 并发策略（2026-10-16）：
+  # 1) cancel-in-progress: false —— 在跑的 Run 不中途取消，避免 build-all 半途夭折使 GHCR 出现
+  #    「部分服务已重建、部分未重建」的撕裂镜像集（旧 true 曾在 2026-10-15 run 78 致混版部署）。
+  # 2) queue: max —— 最多 100 个 pending Run 排队、FIFO 依次执行且互不取消。默认 queue: single 会把
+  #    旧 pending Run 顶替（cancel），而每次 Run 的 diff 仅覆盖自身 push 范围 before..HEAD，
+  #    被顶替那次推送的目录变更便不被后继 Run 覆盖 → 静默丢失；queue: max 闭合此路径。
+  #    （queue: max 可与 cancel-in-progress: false 并用，不可与 true 并用，否则校验报错）
+  # 残留（独立于本次修复）：构建失败的 Run 其变更不被后继 Run 覆盖 —— Run 变红可见、可重跑恢复；
+  #    如需根治可持久化 last-deployed sha 作 diff 基。
   cancel-in-progress: false
+  queue: max
 
 env:
   REGISTRY: ghcr.io
