@@ -726,3 +726,12 @@ ownership:
   claim_ttl_minutes: 30                # 占用有效期（分钟），超时由主循环清理
   claim_cleanup_interval_minutes: 10   # 过期占用清理间隔（分钟）
   lock_timeout_seconds: 5              # advisory lock 获取/事务超时保护（秒）
+
+# ── 决策证据旁路（C1） ─────────────────────────────────────────────
+# 采集 analyze() 返回的决策上下文（direction / score / 特征值 / 阈值），
+# 序列化落库到 trading.decision_evidence + decision_feature_evidence。
+# 默认关闭；开启后仍不影响交易逻辑——整段旁路异步，超时/异常全吞。
+decision_evidence:
+  enabled: false                       # 旁路证据采集开关，默认关闭
+  account_id: ""                       # 空=回退 env TRADE_ACCOUNT_ID，再回退 default
+  db_timeout_seconds: 3.0              # 写库超时（旁路不得拖慢主循环）

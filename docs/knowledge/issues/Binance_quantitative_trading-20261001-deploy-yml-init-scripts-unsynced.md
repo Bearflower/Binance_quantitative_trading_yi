@@ -40,6 +40,8 @@ id: Binance_quantitative_trading-20261001-deploy-yml-init-scripts-unsynced
 ## 适用范围与修订
 `.github/workflows/deploy.yml`（commit `644cde0`）、`database/postgres/init-scripts/02-init-tables.sql`。对开发者的新增约束：① 新增 SQL 脚本数字前缀递增（如 `10-xxx.sql`）保证执行顺序；② 所有 `CREATE` 语句（TABLE/SCHEMA/INDEX/VIEW/FUNCTION）带 `IF NOT EXISTS`；③ 放入 `database/postgres/init-scripts/` 并提交 git。注意：`deploy.yml` 改动会触发 **10 个镜像全量重建**（`仅 .github/` 变更 → 防死循环机制判定全量重建，约 5 分钟）。无替代条目。
 
+**同类复发（2026-10-15，C1/D1 只读采集交付）——约束的边界场景**：本轮新增 `database/postgres/migrations/2026-10-15-decision-evidence.sql`、`2026-10-15-execution-facts.sql` **放在 `migrations/`（手动迁移目录）而非 `init-scripts/`**，故 **CI 部署不会自动 apply**。与 2026-10-01 事故的差别在于：本轮是**有意的**——消费方（决策证据消费、会计/资金流核对）尚未在同一部署流程迁入，贸然执行会让生产库多出**无业务方消费的空表**（「孤儿 schema 对象」）。教训边界补充：**`migrations/` 目录不是自动生效路径**；新表若要随部署生效，**唯一办法是迁入 `init-scripts/`（数字前缀 + `IF NOT EXISTS`）**，否则须由人工迁移并留痕。
+
 ## 教训
 「已初始化库不回跑 entrypoint」是 PostgreSQL 的固有行为，任何新增迁移脚本都必须由**部署流程显式按序执行**（本题以 deploy.yml 同步目录 + deploy.sh `psql` 按序执行为解），不能指望 entrypoint 自动重跑。同时**幂等性必须闭环**：所有 `CREATE` 语句带 `IF NOT EXISTS`，否则第二次部署即破幂等，一旦叠加 `ON_ERROR_STOP=on` 会立即炸——可用该开关反作 CI 守门人。同步步骤要带空目录守卫，手动修复（schema 补建、scp）须固化为自动流程，避免只留在会话里。（AI 归纳，仅供参考）
 

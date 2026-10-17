@@ -5,6 +5,7 @@
 """
 from typing import Dict, Any, Tuple, Optional, List, TYPE_CHECKING
 from dataclasses import dataclass, field
+import copy
 import structlog
 
 if TYPE_CHECKING:
@@ -35,6 +36,8 @@ class ScoringResult:
     trend_filter_passed: bool = True      # V2.6: 标准模式趋势过滤结果
     trend_filter_reason: str = ""         # V2.6: 趋势过滤阻断原因
     details: Dict[str, Any] = field(default_factory=dict)
+    # R1: 并行的 shadow 结果列表（EMM / 半EMM），不参与生产冲突消解
+    shadows: List["ScoringResult"] = field(default_factory=list)
 
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""
@@ -59,6 +62,7 @@ class ScoringResult:
             "trend_filter_passed": self.trend_filter_passed,
             "trend_filter_reason": self.trend_filter_reason,
             "details": self.details,
+            "shadows": [s.to_dict() for s in self.shadows],
         }
 
 
@@ -622,6 +626,21 @@ class ScoringEngine:
         Returns:
             ScoringResult 对象
         """
+        # R4 前置 veto：缺真实市值直接拒绝新入场（LV-RM 同为开仓侧）
+        if not has_market_cap:
+            logger.warning(
+                "R4 veto: LV-RM 开仓侧缺真实市值，显式拒绝新入场",
+                symbol=symbol, direction=direction,
+            )
+            return ScoringResult(
+                symbol=symbol, direction=direction,
+                total_score=0.0, contract_score=0.0,
+                technical_score=0.0, sentiment_score=0.0,
+                veto=True,
+                veto_reason="缺少真实未过期市值，拒绝新入场",
+                entry_mode="lv_rm",
+            )
+
         lv_rm_config = self.config.get("lv_rm", {})
         entry_config = lv_rm_config.get("entry", {})
         scoring_config = lv_rm_config.get("scoring", {})
@@ -1124,128 +1143,29 @@ class ScoringEngine:
         else:  # short
             return current_close < prev_high  # 滞涨
 
-    def score(
+    # ==================== R1/R4: 拆分为主评分 + shadow 链 ====================
+
+    def _make_scoring_result(
         self,
         symbol: str,
         direction: str,
-        oi_market_cap_ratio: float,
-        patterns: Dict[str, Any],
-        funding_rate: float,
-        has_market_cap: bool = True,
-        price_change_24h: Optional[float] = None,
-        klines_4h: Optional[List[Dict]] = None,
+        contract_score: float,
+        contract_details: Dict[str, Any],
+        technical_score: float,
+        technical_details: Dict[str, Any],
+        sentiment_score: float,
+        sentiment_details: Dict[str, Any],
+        entry_mode: str,
+        extreme_bonus: float,
+        extreme_bonus_applied: bool,
+        extreme_bonus_reason: Optional[str],
     ) -> ScoringResult:
-        """
-        执行完整评分（V2.0-C：双轨并行 - 标准模式 + EMM模式）
-
-        Args:
-            symbol: 交易对
-            direction: 方向 ('short' 或 'long')
-            oi_market_cap_ratio: OI/市值比
-            patterns: 形态检测结果（EMM模式下可传空字典）
-            funding_rate: 资金费率（小数形式）
-            has_market_cap: 是否成功获取市值
-            price_change_24h: 24小时价格涨跌幅百分比值（如 -25.0 表示跌25%），
-                              用于EMM判断和极端行情加分
-            klines_4h: 4h K线数据（可选），用于标准模式趋势过滤
-
-        Returns:
-            评分结果
-        """
-        logger.info("开始评分", symbol=symbol, direction=direction)
-
-        # 1. 合约数据评分
-        contract_score, contract_details = self.calculate_contract_score(
-            oi_market_cap_ratio, direction, has_market_cap
-        )
-
-        # 2. V2.0-C：先检查是否触发 EMM 极端市场模式
-        is_emm, emm_details = self.check_emm_conditions(
-            direction=direction,
-            price_change_24h=price_change_24h,
-            funding_rate=funding_rate,
-            oi_market_cap_ratio=oi_market_cap_ratio,
-        )
-
-        if is_emm:
-            # EMM模式：使用固定技术分，跳过形态检测
-            technical_score = self.emm_technical_score
-            technical_details = {
-                "emm_mode": True,
-                "emm_details": emm_details,
-                "total_score": technical_score,
-                "primary_pattern_score": 0,
-                "shadow_pattern_score": 0,
-                "volume_pattern_score": 0,
-                "technical_score_raw": 0,
-            }
-            extreme_bonus = 0.0
-            extreme_bonus_applied = False
-            extreme_bonus_reason = None
-            entry_mode = "emm"
-            logger.info(
-                "EMM极端市场模式触发",
-                symbol=symbol,
-                direction=direction,
-                emm_details=emm_details,
-                technical_score=technical_score,
-            )
-        else:
-            # 标准模式：走原有 V2.0 逻辑，price_change_24h 需转为小数形式
-            price_change_decimal = price_change_24h / 100.0 if price_change_24h is not None else None
-            technical_score, technical_details = self.calculate_technical_score(
-                patterns, direction, price_change_decimal
-            )
-            extreme_bonus = technical_details.get("extreme_bonus", 0.0)
-            extreme_bonus_applied = technical_details.get("extreme_bonus_applied", False)
-            extreme_bonus_reason = technical_details.get("extreme_bonus_reason")
-            entry_mode = "standard"
-
-            # 思路3：检查半EMM（2/3条件满足则跳过形态门槛）
-            is_semi_emm, semi_conditions_met, _ = self.check_semi_emm_conditions(
-                direction=direction,
-                price_change_24h=price_change_24h,
-                funding_rate=funding_rate,
-                oi_market_cap_ratio=oi_market_cap_ratio,
-            )
-            if is_semi_emm:
-                entry_mode = "semi_emm"
-                technical_details["semi_emm"] = True
-                technical_details["semi_emm_conditions_met"] = semi_conditions_met
-                # V2.2：半EMM触发时，技术分应用地板值（与完整EMM对齐）
-                original_tech = technical_score
-                technical_score = max(technical_score, self.emm_tech_floor)
-                technical_details["total_score"] = technical_score
-                technical_details["semi_emm_floor_applied"] = True
-                technical_details["semi_emm_floor_original"] = original_tech
-                # F+G组合：半EMM触发时，合约分应用地板值
-                original_contract = contract_score
-                contract_score = max(contract_score, self.semi_emm_contract_floor)
-                contract_details["semi_emm_floor_applied"] = True
-                contract_details["semi_emm_floor_original"] = original_contract
-                logger.info(
-                    "半EMM触发，应用地板值",
-                    symbol=symbol,
-                    direction=direction,
-                    conditions_met=semi_conditions_met,
-                    tech_original=original_tech,
-                    tech_floored=technical_score,
-                    contract_original=original_contract,
-                    contract_floored=contract_score,
-                )
-
-        # 3. 情绪面评分
-        sentiment_score, sentiment_details = self.calculate_sentiment_score(
-            funding_rate, direction
-        )
-
-        # 4. 计算总分
+        """组装 ScoringResult（禁止重复代码：主链与 shadow 链共用）"""
         total_score = (
             contract_score * self.contract_weight
             + technical_score * self.technical_weight
             + sentiment_score * self.sentiment_weight
         )
-
         details = {
             "contract": contract_details,
             "technical": technical_details,
@@ -1256,8 +1176,7 @@ class ScoringEngine:
                 "sentiment": self.sentiment_weight,
             },
         }
-
-        result = ScoringResult(
+        return ScoringResult(
             symbol=symbol,
             direction=direction,
             total_score=round(total_score, 2),
@@ -1273,60 +1192,300 @@ class ScoringEngine:
             details=details,
         )
 
-        # V2.6: 标准模式趋势过滤（仅对非EMM/非LV-RM模式生效）
-        if klines_4h and result.entry_mode in ("standard", "semi_emm"):
-            current_close_4h = float(klines_4h[-1].get("close", 0))
-            ema_4h = self._calc_ema(klines_4h, self.trend_filter_ema_period)
-            trend_ok, trend_reason = self._check_standard_trend_filter(
-                direction=direction,
-                current_price_4h=current_close_4h,
-                ema_4h=ema_4h,
-                klines_4h=klines_4h,  # V2.8: 传入 K 线数据用于 EMA 斜率计算
+    def _apply_trend_filter(
+        self,
+        result: ScoringResult,
+        klines_4h: Optional[List[Dict]],
+        direction: str,
+    ) -> None:
+        """V2.6 标准模式趋势过滤（禁止重复代码：主链与 shadow 链共用）"""
+        if not klines_4h or result.entry_mode not in ("standard", "semi_emm"):
+            return
+        current_close_4h = float(klines_4h[-1].get("close", 0))
+        ema_4h = self._calc_ema(klines_4h, self.trend_filter_ema_period)
+        trend_ok, trend_reason = self._check_standard_trend_filter(
+            direction=direction,
+            current_price_4h=current_close_4h,
+            ema_4h=ema_4h,
+            klines_4h=klines_4h,
+        )
+        total_score = result.total_score
+        if not trend_ok and self._score_exemption_enabled:
+            exemption_threshold = (
+                self._score_exemption_short_threshold
+                if direction == "short"
+                else self._score_exemption_threshold
             )
-            # V2.9: 高分豁免趋势过滤（V2.10: 多空分离门槛）
-            if not trend_ok and self._score_exemption_enabled:
-                # 根据方向选择豁免阈值
-                exemption_threshold = (
-                    self._score_exemption_short_threshold
-                    if direction == "short"
-                    else self._score_exemption_threshold
+            if total_score >= exemption_threshold:
+                trend_ok = True
+                trend_reason = (
+                    f"高分豁免(总分{total_score}≥{exemption_threshold})，跳过趋势过滤"
                 )
-                if total_score >= exemption_threshold:
-                    trend_ok = True
-                    trend_reason = (
-                        f"高分豁免(总分{total_score}≥{exemption_threshold})，跳过趋势过滤"
-                    )
-                    logger.info(
-                        "高分豁免趋势过滤",
-                        symbol=symbol,
-                        direction=direction,
-                        total_score=total_score,
-                        threshold=exemption_threshold,
-                        original_reason=trend_reason,
-                    )
-            result.trend_filter_passed = trend_ok
-            result.trend_filter_reason = trend_reason
-            if not trend_ok:
                 logger.info(
-                    "趋势过滤阻断",
-                    symbol=symbol,
-                    direction=direction,
-                    reason=trend_reason,
+                    "高分豁免趋势过滤",
+                    symbol=result.symbol, direction=direction,
+                    total_score=total_score, threshold=exemption_threshold,
+                    original_reason=trend_reason,
                 )
+        result.trend_filter_passed = trend_ok
+        result.trend_filter_reason = trend_reason
+        if not trend_ok:
+            logger.info(
+                "趋势过滤阻断",
+                symbol=result.symbol, direction=direction, reason=trend_reason,
+            )
+
+    def _score_standard(
+        self,
+        symbol: str,
+        direction: str,
+        patterns: Dict[str, Any],
+        contract_score: float,
+        contract_details: Dict[str, Any],
+        sentiment_score: float,
+        sentiment_details: Dict[str, Any],
+        klines_4h: Optional[List[Dict]],
+    ) -> ScoringResult:
+        """R1: 旧版 standard 独立评分链 —— 不传 price_change、extreme_bonus=0、无 semi_emm
+
+        这是 score() 主结果，确保 price_change_24h 接入前后旧版意图一致。
+
+        funding_rate 不在此链用（情绪分已在上层计算好传入），不设形参。
+        """
+        technical_score, technical_details = self.calculate_technical_score(
+            patterns, direction, price_change_24h=None  # 旧版无 price_change
+        )
+        result = self._make_scoring_result(
+            symbol=symbol, direction=direction,
+            contract_score=contract_score, contract_details=contract_details,
+            technical_score=technical_score, technical_details=technical_details,
+            sentiment_score=sentiment_score, sentiment_details=sentiment_details,
+            entry_mode="standard",
+            extreme_bonus=0.0, extreme_bonus_applied=False, extreme_bonus_reason=None,
+        )
+        self._apply_trend_filter(result, klines_4h, direction)
+        return result
+
+    def _score_emm(
+        self,
+        symbol: str,
+        direction: str,
+        funding_rate: float,
+        oi_market_cap_ratio: float,
+        price_change_24h: float,
+        contract_score: float,
+        contract_details: Dict[str, Any],
+        sentiment_score: float,
+        sentiment_details: Dict[str, Any],
+        klines_4h: Optional[List[Dict]],
+    ) -> ScoringResult:
+        """R1: EMM shadow 链 —— 保留 price_change_24h、extreme_bonus、无 semi_emm 分支
+
+        shadow 链独立 deepcopy contract_details / sentiment_details，
+        防止写入地板标记时反向污染 primary 的 details。
+        """
+        # R1 关键防御：shadow 链绝不改写主链共享的 dict
+        contract_details = copy.deepcopy(contract_details)
+        sentiment_details = copy.deepcopy(sentiment_details)
+        _, emm_details = self.check_emm_conditions(
+            direction=direction,
+            price_change_24h=price_change_24h,
+            funding_rate=funding_rate,
+            oi_market_cap_ratio=oi_market_cap_ratio,
+        )
+        technical_score = self.emm_technical_score
+        technical_details = {
+            "emm_mode": True,
+            "emm_details": emm_details,
+            "total_score": technical_score,
+            "primary_pattern_score": 0,
+            "shadow_pattern_score": 0,
+            "volume_pattern_score": 0,
+            "technical_score_raw": 0,
+        }
+        logger.info(
+            "EMM极端市场模式触发（shadow链）",
+            symbol=symbol, direction=direction,
+            emm_details=emm_details, technical_score=technical_score,
+        )
+        result = self._make_scoring_result(
+            symbol=symbol, direction=direction,
+            contract_score=contract_score, contract_details=contract_details,
+            technical_score=technical_score, technical_details=technical_details,
+            sentiment_score=sentiment_score, sentiment_details=sentiment_details,
+            entry_mode="emm",
+            extreme_bonus=0.0, extreme_bonus_applied=False, extreme_bonus_reason=None,
+        )
+        self._apply_trend_filter(result, klines_4h, direction)
+        return result
+
+    def _score_semi_emm(
+        self,
+        symbol: str,
+        direction: str,
+        funding_rate: float,
+        oi_market_cap_ratio: float,
+        price_change_24h: float,
+        patterns: Dict[str, Any],
+        contract_score: float,
+        contract_details: Dict[str, Any],
+        sentiment_score: float,
+        sentiment_details: Dict[str, Any],
+        klines_4h: Optional[List[Dict]],
+    ) -> Optional[ScoringResult]:
+        """R1: 半EMM shadow 链 —— 保留 price_change_24h、extreme_bonus、地板值
+
+        shadow 链独立 deepcopy contract_details / sentiment_details / patterns，
+        防止写入 semi_emm_floor_applied 标记时反向污染 primary。
+        """
+        # R1 关键防御：shadow 链绝不改写主链共享的 dict
+        contract_details = copy.deepcopy(contract_details)
+        sentiment_details = copy.deepcopy(sentiment_details)
+        patterns = copy.deepcopy(patterns)
+        is_semi, semi_conditions_met, _ = self.check_semi_emm_conditions(
+            direction=direction,
+            price_change_24h=price_change_24h,
+            funding_rate=funding_rate,
+            oi_market_cap_ratio=oi_market_cap_ratio,
+        )
+        if not is_semi:
+            return None
+        price_change_decimal = price_change_24h / 100.0
+        technical_score, technical_details = self.calculate_technical_score(
+            patterns, direction, price_change_decimal
+        )
+        extreme_bonus = technical_details.get("extreme_bonus", 0.0)
+        extreme_bonus_applied = technical_details.get("extreme_bonus_applied", False)
+        extreme_bonus_reason = technical_details.get("extreme_bonus_reason")
+        # 地板值应用（半EMM特有）
+        technical_details["semi_emm"] = True
+        technical_details["semi_emm_conditions_met"] = semi_conditions_met
+        original_tech = technical_score
+        technical_score = max(technical_score, self.emm_tech_floor)
+        technical_details["total_score"] = technical_score
+        technical_details["semi_emm_floor_applied"] = True
+        technical_details["semi_emm_floor_original"] = original_tech
+        original_contract = contract_score
+        contract_score = max(contract_score, self.semi_emm_contract_floor)
+        contract_details["semi_emm_floor_applied"] = True
+        contract_details["semi_emm_floor_original"] = original_contract
+        logger.info(
+            "半EMM触发（shadow链），应用地板值",
+            symbol=symbol, direction=direction,
+            conditions_met=semi_conditions_met,
+            tech_original=original_tech, tech_floored=technical_score,
+            contract_original=original_contract, contract_floored=contract_score,
+        )
+        result = self._make_scoring_result(
+            symbol=symbol, direction=direction,
+            contract_score=contract_score, contract_details=contract_details,
+            technical_score=technical_score, technical_details=technical_details,
+            sentiment_score=sentiment_score, sentiment_details=sentiment_details,
+            entry_mode="semi_emm",
+            extreme_bonus=extreme_bonus,
+            extreme_bonus_applied=extreme_bonus_applied,
+            extreme_bonus_reason=extreme_bonus_reason,
+        )
+        self._apply_trend_filter(result, klines_4h, direction)
+        return result
+
+    def score(
+        self,
+        symbol: str,
+        direction: str,
+        oi_market_cap_ratio: float,
+        patterns: Dict[str, Any],
+        funding_rate: float,
+        has_market_cap: bool = True,
+        price_change_24h: Optional[float] = None,
+        klines_4h: Optional[List[Dict]] = None,
+    ) -> ScoringResult:
+        """
+        执行完整评分（R1/R4 重构：主结果恒 standard + shadow 链并行）
+
+        R4 前置 veto：has_market_cap=False 直接 veto，不进入 fallback 分。
+        R1 主结果：price_change_24h=None 的旧版 standard 链（extreme_bonus=0）。
+        R1 shadow 链：EMM / 半EMM 各一条独立 ScoringResult，挂到 primary.shadows。
+        """
+        logger.info("开始评分", symbol=symbol, direction=direction)
+
+        # R4 前置 veto：缺真实市值直接拒绝新入场
+        if not has_market_cap:
+            logger.warning(
+                "R4 veto: 开仓侧缺真实市值，显式拒绝新入场",
+                symbol=symbol, direction=direction,
+            )
+            return ScoringResult(
+                symbol=symbol, direction=direction,
+                total_score=0.0, contract_score=0.0,
+                technical_score=0.0, sentiment_score=0.0,
+                veto=True,
+                veto_reason="缺少真实未过期市值，拒绝新入场",
+                entry_mode="standard",
+            )
+
+        # 公共计算：合约分 + 情绪分（不依赖 entry_mode，只算一次）
+        contract_score, contract_details = self.calculate_contract_score(
+            oi_market_cap_ratio, direction, has_market_cap
+        )
+        sentiment_score, sentiment_details = self.calculate_sentiment_score(
+            funding_rate, direction
+        )
+
+        # R1 主结果：旧版 standard 独立计算（price_change 不传 → extreme_bonus=0）
+        primary = self._score_standard(
+            symbol=symbol, direction=direction,
+            patterns=patterns,
+            contract_score=contract_score, contract_details=contract_details,
+            sentiment_score=sentiment_score, sentiment_details=sentiment_details,
+            klines_4h=klines_4h,
+        )
+
+        # R1 shadow 链：EMM + 半EMM（只有 price_change_24h 可得时才有意义）
+        if price_change_24h is not None:
+            is_emm, _ = self.check_emm_conditions(
+                direction=direction,
+                price_change_24h=price_change_24h,
+                funding_rate=funding_rate,
+                oi_market_cap_ratio=oi_market_cap_ratio,
+            )
+            if is_emm:
+                emm_shadow = self._score_emm(
+                    symbol=symbol, direction=direction,
+                    funding_rate=funding_rate,
+                    oi_market_cap_ratio=oi_market_cap_ratio,
+                    price_change_24h=price_change_24h,
+                    contract_score=contract_score, contract_details=contract_details,
+                    sentiment_score=sentiment_score, sentiment_details=sentiment_details,
+                    klines_4h=klines_4h,
+                )
+                primary.shadows.append(emm_shadow)
+            semi_shadow = self._score_semi_emm(
+                symbol=symbol, direction=direction,
+                funding_rate=funding_rate,
+                oi_market_cap_ratio=oi_market_cap_ratio,
+                price_change_24h=price_change_24h,
+                patterns=patterns,
+                contract_score=contract_score, contract_details=contract_details,
+                sentiment_score=sentiment_score, sentiment_details=sentiment_details,
+                klines_4h=klines_4h,
+            )
+            if semi_shadow is not None:
+                primary.shadows.append(semi_shadow)
 
         logger.info(
             "评分完成",
-            symbol=symbol,
-            direction=direction,
-            total_score=result.total_score,
-            contract_score=result.contract_score,
-            technical_score=result.technical_score,
-            sentiment_score=result.sentiment_score,
-            entry_mode=result.entry_mode,
-            trend_filter_passed=result.trend_filter_passed,
+            symbol=symbol, direction=direction,
+            total_score=primary.total_score,
+            contract_score=primary.contract_score,
+            technical_score=primary.technical_score,
+            sentiment_score=primary.sentiment_score,
+            entry_mode=primary.entry_mode,
+            trend_filter_passed=primary.trend_filter_passed,
+            shadow_count=len(primary.shadows),
         )
 
-        return result
+        return primary
 
     def should_entry(self, score_result: ScoringResult) -> bool:
         """

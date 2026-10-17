@@ -1,0 +1,50 @@
+{
+  "shadow_replaces_standard": {
+    "before_mode": "standard",
+    "before_entry": true,
+    "after_mode": "emm",
+    "after_entry": true,
+    "after_shadow": true
+  },
+  "missing_cap_entry": {
+    "contract_score": 5,
+    "should_entry": true
+  },
+  "lv_rm_existing_also_shadow": true,
+  "same_ms_cross_page": {
+    "expected": 4,
+    "actual": 2,
+    "complete": false,
+    "errors": [
+      "翻页超过 max_pages=3，强制终止"
+    ],
+    "requests": [
+      1,
+      1000,
+      1000
+    ]
+  },
+  "cursor_before_persist": {
+    "first_marked_complete": true,
+    "first_errors": [],
+    "persisted_after_retry_ids": [
+      2
+    ],
+    "expected_ids": [
+      1,
+      2
+    ]
+  },
+  "income_filter_cursor_collision": {
+    "pnl_count": 1,
+    "fee_expected": 1,
+    "fee_actual": 0,
+    "fee_complete": true
+  },
+  "slow_ticker_accepted": {
+    "request_seconds": 60,
+    "max_age_seconds": 5,
+    "price": "100",
+    "observed_at": 1060
+  }
+}

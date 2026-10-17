@@ -3,12 +3,14 @@
 负责 HRS 策略的持仓跟踪、止损止盈监控、平仓回调等
 """
 import asyncio
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, List
 
 import structlog
 
 from shared.binance_api import BinanceClient
+from shared.config_loader import compute_config_hash
+from shared.utils import to_aware_utc
 
 
 logger = structlog.get_logger()
@@ -16,16 +18,27 @@ logger = structlog.get_logger()
 # 本模块负责的策略名（写入/更新 condition_orders 时的归属键，避免散落魔法字符串）
 _STRATEGY_NAME = "hrs"
 
+# B5: 使用独立持仓时限的入场模式（LV-RM 有独立 time_stop 配置）
+_LV_RM_ENTRY_MODE = "lv_rm"
+# B5: 入场模式未知的哨兵值（存量仓缺少记录）——不编造模式，按标准时限继续复核
+_ENTRY_MODE_UNKNOWN = "unknown"
+# B5: 入场期配置指纹的截取长度（16 位足够区分版本，避免整串 SHA-256 落库）
+_CONFIG_HASH_LENGTH = 16
+
 
 class PositionManager:
     """
     持仓管理器
 
     功能：
-    - 持仓跟踪（币种、方向、数量、开仓价、开仓时间）
+    - 持仓跟踪（币种、方向、数量、开仓价、开仓时刻、入场模式）
     - 分批止盈管理（第一目标30%、第二目标40%、移动止盈30%）
-    - 时间止损监控
+    - 时间止损监控（基于下次复核时刻，不覆盖开仓时刻）
     - 平仓后自动取消未触发条件单
+
+    B5 生命周期时间语义（两个时间字段，切勿混用）：
+    - opened_at：不可变的真实开仓时刻，入场时确定，之后只读；
+    - next_review_at：可变的下次时间止损复核时刻，延期时只前进、不改写 opened_at。
     """
 
     def __init__(
@@ -61,9 +74,17 @@ class PositionManager:
             batch_config.get("trailing_stop_atr_multiplier", 1.5),
         )
 
-        # 时间止损
+        # 时间止损（标准模式时限）
         time_stop_config = trading_config.get("time_stop", {})
         self.max_holding_hours = time_stop_config.get("max_holding_hours", 72)
+
+        # B5: LV-RM 独立持仓时限（与 executor 同一读取口径；未配置时回退标准时限）
+        lv_rm_time_stop = config.get("lv_rm", {}).get("time_stop", {})
+        self.lv_rm_max_holding_hours = lv_rm_time_stop.get(
+            "max_holding_hours", self.max_holding_hours
+        )
+        # B5: 入场期配置指纹（供决策证据链区分「当时的配置版本」），仅取前 16 位
+        self.entry_config_hash: str = compute_config_hash(config)[:_CONFIG_HASH_LENGTH]
 
         # 持仓检测容差
         detection_config = trading_config.get("position_detection", {})
@@ -73,9 +94,11 @@ class PositionManager:
         self.zero_qty_threshold = detection_config.get("zero_qty_threshold", 0.0001)
 
         # 持仓跟踪
-        # {symbol: {"direction": "short"/"long", "entry_price": float, "entry_time": datetime,
-        #   "entry_quantity": float, "atr": float, "target1_reached": bool, "target2_reached": bool,
-        #   "best_price": float, "remaining_quantity": float}}
+        # {symbol: {"direction": "short"/"long", "entry_price": float, "opened_at": datetime,
+        #   "next_review_at": datetime, "position_id": str, "entry_mode": str,
+        #   "entry_config_hash": str, "entry_quantity": float, "atr": float,
+        #   "target1_reached": bool, "target2_reached": bool, "best_price": float,
+        #   "remaining_quantity": float}}
         self._positions: Dict[str, Dict[str, Any]] = {}
 
         # P1-6: 上次检测到的交易所持仓数量，用于检测止盈单成交
@@ -100,6 +123,8 @@ class PositionManager:
         entry_price: float,
         quantity: float,
         atr: float,
+        entry_mode: Optional[str] = None,
+        opened_at: Optional[datetime] = None,
     ) -> None:
         """
         添加持仓跟踪
@@ -110,11 +135,14 @@ class PositionManager:
             entry_price: 入场价格
             quantity: 数量
             atr: ATR值
+            entry_mode: 入场模式（standard/emm/semi_emm/lv_rm）；未提供记为 unknown
+                （不编造模式，时间止损按标准时限复核）
+            opened_at: 真实开仓时刻（tz-aware UTC）；未提供则取当前时刻
         """
+        lifecycle = self._build_lifecycle_metadata(symbol, direction, entry_mode, opened_at)
         self._positions[symbol] = {
             "direction": direction,
             "entry_price": entry_price,
-            "entry_time": datetime.now(timezone.utc),
             "entry_quantity": quantity,
             "atr": atr,
             "target1_reached": False,
@@ -123,6 +151,7 @@ class PositionManager:
             "remaining_quantity": quantity,
             # FR-01: 合并开仓阶段暂存的 pending algoId（保护单创建早于 add_position）
             "algo_ids": self._pending_algo_ids.pop(symbol, {}),  # role -> algoId, role: "sl"/"tp1"/"tp2"
+            **lifecycle,
         }
         # P1-6: 初始化跟踪数量
         self._last_tracked_qty[symbol] = quantity
@@ -133,7 +162,40 @@ class PositionManager:
             entry_price=entry_price,
             quantity=quantity,
             atr=atr,
+            entry_mode=lifecycle["entry_mode"],
+            position_id=lifecycle["position_id"],
         )
+
+    def _resolve_holding_hours(self, entry_mode: Optional[str]) -> float:
+        """按入场模式解析持仓时限（小时）：仅 lv_rm 用独立时限，其余（含未知）用标准时限。"""
+        if entry_mode == _LV_RM_ENTRY_MODE:
+            return self.lv_rm_max_holding_hours
+        return self.max_holding_hours
+
+    @staticmethod
+    def _build_position_id(symbol: str, direction: str, opened_at: datetime) -> str:
+        """构造确定性持仓生命周期身份：同币平仓后再开（新的开仓时刻）= 新周期。"""
+        return f"hrs:{symbol}:{direction}:{int(opened_at.timestamp() * 1000)}"
+
+    def _build_lifecycle_metadata(
+        self,
+        symbol: str,
+        direction: str,
+        entry_mode: Optional[str],
+        opened_at: Optional[datetime],
+    ) -> Dict[str, Any]:
+        """构造 B5 持仓生命周期元数据（不可变开仓时刻 + 可变下次复核时刻 + 入场证据）"""
+        opened = to_aware_utc(opened_at) or datetime.now(timezone.utc)
+        mode = entry_mode or _ENTRY_MODE_UNKNOWN
+        return {
+            "position_id": self._build_position_id(symbol, direction, opened),
+            "opened_at": opened,
+            "next_review_at": opened + timedelta(hours=self._resolve_holding_hours(mode)),
+            "entry_mode": mode,
+            "entry_config_hash": self.entry_config_hash,
+            "opening_time_uncertain": False,
+            "entry_mode_unknown": mode == _ENTRY_MODE_UNKNOWN,
+        }
 
     def remove_position(self, symbol: str) -> None:
         """
@@ -241,9 +303,16 @@ class PositionManager:
             drawdown = pos["best_price"] - current_price
             return drawdown >= threshold
 
+    def _deadline_from_opened(self, pos: Dict[str, Any]) -> Optional[datetime]:
+        """按不可变 opened_at 与模式时限推导复核时刻（元数据缺失时的兜底，不编造时间）。"""
+        opened = to_aware_utc(pos.get("opened_at"))
+        if opened is None:
+            return None
+        return opened + timedelta(hours=self._resolve_holding_hours(pos.get("entry_mode")))
+
     def check_time_stop(self, symbol: str) -> bool:
         """
-        检查时间止损
+        检查时间止损（B5：比较下次复核时刻，而非用可能被重置的时间倒推开仓时长）
 
         Args:
             symbol: 交易对
@@ -258,23 +327,33 @@ class PositionManager:
         if pos["target1_reached"]:
             return False
 
-        holding_hours = (datetime.now(timezone.utc) - pos["entry_time"]).total_seconds() / 3600
-        return holding_hours >= self.max_holding_hours
+        deadline = to_aware_utc(pos.get("next_review_at")) or self._deadline_from_opened(pos)
+        if deadline is None:
+            # 时间元数据缺失，不误判为超时（保守保留持仓）
+            return False
+        return datetime.now(timezone.utc) >= deadline
 
     def reset_time_stop(self, symbol: str) -> None:
         """
-        重置时间止损计时器（将 entry_time 设为当前时间）
+        重置时间止损计时器（只前进下次复核时刻，绝不改写开仓时刻）
 
         当时间止损触发但重新分析后认为仍值得持有，调用此方法
-        延长持仓时间，避免立即平仓。
+        延长持仓时间，避免立即平仓。B5：开仓时刻 opened_at 保持不可变，
+        否则收入匹配窗与持仓身份会被错误截短。
 
         Args:
             symbol: 交易对
         """
         pos = self._positions.get(symbol)
-        if pos:
-            pos["entry_time"] = datetime.now(timezone.utc)
-            logger.info("时间止损已重置", symbol=symbol)
+        if not pos:
+            return
+        hours = self._resolve_holding_hours(pos.get("entry_mode"))
+        pos["next_review_at"] = datetime.now(timezone.utc) + timedelta(hours=hours)
+        logger.info(
+            "时间止损已重置",
+            symbol=symbol,
+            next_review_at=pos["next_review_at"].isoformat(),
+        )
 
     def mark_target_reached(self, symbol: str, target: int) -> None:
         """
@@ -695,19 +774,30 @@ class PositionManager:
         positions = {}
         for symbol, pos in self._positions.items():
             p = dict(pos)
-            if isinstance(p["entry_time"], datetime):
-                p["entry_time"] = p["entry_time"].isoformat()
+            for key in ("opened_at", "next_review_at"):
+                if isinstance(p.get(key), datetime):
+                    p[key] = p[key].isoformat()
+            # 回滚兼容：旧版本只认 entry_time 键，此处保留同名别名（值 = opened_at，
+            # 不是独立语义字段）——新格式写入后旧版本仍可读取，无需迁移。
+            p["entry_time"] = p.get("opened_at")
             positions[symbol] = p
         return {"positions": positions}
 
     def from_dict(self, data: Dict[str, Any]) -> None:
-        """从字典恢复状态"""
+        """从字典恢复状态（B5：兼容只含旧 entry_time 的历史状态）"""
         positions = data.get("positions", {})
         for symbol, pos in positions.items():
             p = dict(pos)
-            et = p.get("entry_time")
-            if isinstance(et, str):
-                p["entry_time"] = datetime.fromisoformat(et)
+            opened = self._restore_opened_at(p)
+            # entry_time 仅作回滚别名，恢复后不再保留，避免与 opened_at 双字段并存
+            p.pop("entry_time", None)
+            p["opened_at"] = opened
+            p["next_review_at"] = (
+                to_aware_utc(p.get("next_review_at"))
+                or opened + timedelta(hours=self._resolve_holding_hours(p.get("entry_mode")))
+            )
+            p.setdefault("position_id", self._build_position_id(
+                symbol, p.get("direction", ""), opened))
             self._positions[symbol] = p
             # 2026-10-10 修复：同步恢复上次跟踪数量。否则重启后首轮
             # detect_take_profit_fills 会走「首次跟踪」分支（last_qty 为 None），
@@ -715,3 +805,24 @@ class PositionManager:
             self._last_tracked_qty[symbol] = p.get(
                 "remaining_quantity", p.get("entry_quantity", 0)
             )
+
+    def _restore_opened_at(self, pos: Dict[str, Any]) -> datetime:
+        """恢复不可变开仓时刻（就地补全兼容标记）。
+
+        D9 迁移口径：新状态有 opened_at 则信任；只有旧 entry_time 时（其值可能已被
+        时间止损重置覆盖）只能将其作为 opened_at 并标记 opening_time_uncertain，
+        不编造原始开仓时刻。entry_mode 缺失时同样标记 entry_mode_unknown，按标准时限复核。
+        """
+        raw_opened = pos.get("opened_at")
+        opened = to_aware_utc(raw_opened)
+        legacy_time = to_aware_utc(pos.get("entry_time"))
+        uncertain = bool(pos.get("opening_time_uncertain")) or raw_opened is None
+        if opened is None:
+            opened = legacy_time or datetime.now(timezone.utc)
+        if not pos.get("entry_mode"):
+            pos["entry_mode"] = _ENTRY_MODE_UNKNOWN
+            pos["entry_mode_unknown"] = True
+        else:
+            pos["entry_mode_unknown"] = bool(pos.get("entry_mode_unknown"))
+        pos["opening_time_uncertain"] = uncertain
+        return opened

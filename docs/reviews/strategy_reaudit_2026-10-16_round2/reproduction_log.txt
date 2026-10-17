@@ -1,0 +1,77 @@
+2026-10-16 20:11:33 [debug    ] 信号已记录到数据库                      direction=short score=8 symbol=TESTUSDT
+2026-10-16 20:11:33 [debug    ] 信号已记录到数据库                      direction=short score=8 symbol=TESTUSDT
+2026-10-16 20:11:33 [info     ] R1: 执行 shadow 信号分桶             shadow_count=1 shadow_long_count=0 shadow_short_count=1
+2026-10-16 20:11:33 [info     ] shadow 信号：逐条跑决策链（影子闸门兜底）       direction=short entry_mode=emm signal_origin=None symbol=TESTUSDT
+2026-10-16 20:11:33 [info     ] 准备执行做空: TESTUSDT               price=100.0 score=8
+2026-10-16 20:11:33 [warning  ] 执行准备耗时过长，重取价并重判                age_seconds=1792152693.3 limit_seconds=5.0 symbol=TESTUSDT
+2026-10-16 20:11:33 [info     ] TESTUSDT 开仓方式判定                score=8.0 threshold=7 use_market_order=True
+2026-10-16 20:11:33 [error    ] 开空仓失败
+2026-10-16 20:11:33 [warning  ] API 请求失败，不丢已取数据                account_id=test error=Official API contract: fromId cannot be sent with startTime or endTime income_type=None source=userTrades symbol=TESTUSDT
+{
+  "signal_resolution": [
+    {
+      "symbol": "TESTUSDT",
+      "direction": "short",
+      "status": "resolved",
+      "resolution": "executed"
+    },
+    {
+      "symbol": "TESTUSDT",
+      "direction": "short",
+      "status": "resolved",
+      "resolution": "executed"
+    }
+  ],
+  "refreshed_quantity": {
+    "budget_price": 100,
+    "quantity": "1",
+    "order_price": "120.0",
+    "old_margin": 50,
+    "new_margin": 60,
+    "budget_checks": 1
+  },
+  "fills_contract": {
+    "calls": [
+      {
+        "symbol": "TESTUSDT",
+        "startTime": 1000,
+        "endTime": 2000,
+        "limit": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "startTime": 1000,
+        "endTime": 2000,
+        "limit": 2,
+        "fromId": 2
+      }
+    ],
+    "records": 2,
+    "complete": false,
+    "errors": [
+      "Official API contract: fromId cannot be sent with startTime or endTime"
+    ]
+  },
+  "income_same_ms": {
+    "available": 3,
+    "collected": 2,
+    "complete": false,
+    "errors": [
+      "同毫秒记录超过单页上限且接口不支持事件ID续传，无法继续翻页"
+    ],
+    "calls": [
+      {
+        "start_time": 1000,
+        "end_time": 2000,
+        "limit": 2,
+        "income_type": "REALIZED_PNL"
+      },
+      {
+        "start_time": 1000,
+        "end_time": 2000,
+        "limit": 2,
+        "income_type": "REALIZED_PNL"
+      }
+    ]
+  }
+}

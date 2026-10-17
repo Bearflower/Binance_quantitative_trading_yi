@@ -1,0 +1,15 @@
+{
+  "head": "a17a1c296beb42f646059735765b8e084d6a529b",
+  "scope": "local working tree, including uncommitted changes; offline review only",
+  "files": {
+    "strategies/hrs/strategy.py": "e865bb8986152482f1e826b48ada8579f86b38e0370889deb594eb406fc6b68d",
+    "strategies/hrs/scoring_engine.py": "a0b49dc53881d6e5e4fb834b27bbf48d293484ee3dfe6b200a3e7065652a5e99",
+    "strategies/hrs/candidate_pool.py": "eaf3f8d0090bda581f304e398ce6811d75450d15bcad2b600be59b52c95ce493",
+    "strategies/new_coin/strategy.py": "97ec160bc233f09a55ed4a979cb7813f2711d58b73cc8ac17323234a97e42ce6",
+    "strategies/new_coin/executor.py": "156b52fc9e6999a00716bdf6efb0bc560a923e0a214317bc8eb5b90605d16182",
+    "scripts/export_execution_facts.py": "e2cc402dba116780f18872b4767ff3ab8707bc9929203059b564e55666611e9b",
+    "shared/binance_api.py": "37cfad84f54891cb40bfe1e20f3f84f20e7ace1c73ab80206c60b104f59db08e",
+    "shared/execution_facts_sink.py": "865aa69cc82ff5caebc848e9163102251558cbe302bd3d90b111ad30778ff762",
+    "tests/test_shared/test_execution_facts_regression.py": "68396d7f610a50cb85b3268b844f9eeca46d5f99aff22fa1026ba4f9881ac53b"
+  }
+}

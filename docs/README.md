@@ -1,7 +1,7 @@
 # Binance 量化交易系统 - 文档索引
 
-> **版本**: v6.34.5
-> **更新日期**: 2026-10-01
+> **版本**: v6.34.8
+> **更新日期**: 2026-10-17
 > **维护者**: 开发团队
 
 ---
@@ -131,6 +131,9 @@
 - [shared/dynamic_trailing.py](../shared/dynamic_trailing.py) - 动态利润保护核心计算模块（两策略共用，含阶梯回撤、波动率调节、硬止损兜底、单向移动保护）
 - [PRD-realized_pnl回写修复.md](plans/PRD-realized_pnl回写修复.md) — trade_records.realized_pnl 回写修复
 - [new_coin 平仓链路策略名口径修复需求文档](plans/fix-2026-10-15-new-coin-db-strategy-name-mismatch-requirements.md) - 统一策略名取值来源为 `load_ownership_config(config)['my_record_name']`（= `strategy.record_name`），消除 `db_strategy_name` 默认值「新币做空策略」与写库名 `new_coin` 不一致导致的 3 条静默失效链路；B 段已落地（未提交）
+- [TP2 跨档漏检 + 移动止损保护范围 修复需求文档](plans/fix-2026-10-15-newcoin-tp2-miss-and-trailing-scope-requirements.md) - 修复「TP1+TP2 同轮成交致 `target2_reached` 漏置位 → 移动止损不激活 → 尾仓裸奔」；AC-A~AC-E，风险定级 R3
+- [TP2 跨档漏检 + 移动止损保护范围 修复架构方案](plans/fix-2026-10-15-newcoin-tp2-miss-and-trailing-scope-architecture.md) - 锚点 + 累计比例 + 单轮齐置位 + 纯函数复用；守卫档位感知、按档补挂、`mark_*` 同步、MANUAL_STOP 接管；v1.2 含 §17 实现落地补记
+- [TP2 漏检与移动止损保护 A 段设计复核报告](reviews/2026-10-15_TP2漏检与移动止损保护_A-review.md) - 三轮独立设计复核（B1~B5 闭环、GA 通过）＋ §8 B 段落实情况回标
 
 ### HRS 混合反转策略
 
@@ -205,6 +208,27 @@
 - [精度验证报告](reports/精度验证报告_20260515.md) - 精度验证测试
 - [评分计算逻辑检查报告](reports/评分计算逻辑检查报告_20260515.md) - 评分逻辑检查
 - [风控机制审查报告](reports/风控机制审查报告_20260509.md) - 风控机制审查
+
+---
+
+## 研究与证据
+
+- [代码审计报告（2026-10-15）](research/code_audit_2026-10-15/README.md) - 五类策略行为、数据与收益口径审计；配套 [源码哈希与离线证据](research/code_audit_2026-10-15/verification.json)、[只读复现脚本](research/code_audit_2026-10-15/verify_readonly.py)
+- [策略行为修复、数据补证与相对收益研究执行方案](superpowers/plans/2026-10-15-strategy-evidence-and-relative-return-plan.md) - A–F 工作包总方案（含 **C1 决策证据契约 / D1 只读采集** 交付状态；2026-10-15 C1/D1 已交付，测试 84 passed；同轮 **R1/R2/R3 消费方/生产者接线 + DDL 迁入 `init-scripts/`** 已落地（开关默认关闭、零行为变更），测试 123 passed）
+- [R1/R2/R3 证据与 execution_facts 落地 Spec](superpowers/specs/2026-10-15-r1-r2-r3-evidence-execution-facts/spec.md)（配套 [tasks.md](superpowers/specs/2026-10-15-r1-r2-r3-evidence-execution-facts/tasks.md)）- R1 注入 PG sink / R2 接 btc_eth 生产者 / R3 DDL 迁 init-scripts；开关默认关闭、零行为变更
+- [策略修复基线（A1）](research/strategy_remediation/baseline.md) - 本地/线上版本基线、关键源码哈希、审计问题对照（配套 [baseline_manifest.json](research/strategy_remediation/baseline_manifest.json)）
+- [业务决策记录（A2）](research/strategy_remediation/decisions.md) - D1–D9 业务口径与启用方式（EMM 窗口、新币反弹参照、市值缺失政策、先影子等）
+- [策略修复复审报告（2026-10-16）](reviews/strategy_reaudit_2026-10-16/README.md) - 独立复审 R1–R6 六项调用链/采集完整性问题；**§7「修复收口（2026-10-16 修复方补记）」逐条记录修复状态与回归用例**（配套 [复现脚本](reviews/strategy_reaudit_2026-10-16/reproduce_findings.py)）
+- [R1–R6 收口需求与验收标准](research/strategy_remediation/requirements_R1-R6_2026-10-16.md) - 逐条「问题本质→期望行为→验收标准」，状态「已实现 + 已通过回归」（§6 落地状态与验收结论）
+- [R1–R6 收口架构设计定稿](research/strategy_remediation/architecture_R1-R6_2026-10-16.md) - 生产/影子分离、先事实后游标、新鲜度链路、ID/页码续传契约；状态「设计定稿 + 已落地」（§7 落地状态与偏差修正）
+- [第二轮复审报告（2026-10-16）](reviews/strategy_reaudit_2026-10-16_round2/README.md) - 独立复审新发现 R7/R8/R9 三项（成交续页参数互斥、新币重取价未重算额度、影子记录被同币同向生产更新污染）；配套 [复现脚本](reviews/strategy_reaudit_2026-10-16_round2/reproduce_findings.py) 与 [复现结果](reviews/strategy_reaudit_2026-10-16_round2/reproduction_results.json)
+- [R7–R9 收口需求与验收标准](research/strategy_remediation/requirements_R7-R9_2026-10-16.md) - 逐条「问题本质→期望行为→验收标准」，状态「已实现 + 已通过回归」（§7 逐条闭环对照 + RK1/RK2/income 能力限制披露 + 旧回归 triage）
+- [R7–R9 收口架构设计定稿](research/strategy_remediation/architecture_R7-R9_2026-10-16.md) - 时间定位/ID 续传分离、重取价二次额度核算、信号结果按唯一 `signal_id` 精准更新；状态「设计定稿 + 已落地」（§8 落地状态与能力限制）
+- [第三轮复审报告（2026-10-17）](reviews/strategy_reaudit_2026-10-17/README.md) - 独立复审上轮 R7/R8/R9 修复；判定「满页到达窗口结束毫秒仍会静默漏数」为 P1 未闭合，附 `verify_offline.py` 独立复现脚本与 `results.json`
+- [R10/R11/R12 + RK1/RK2 收口需求与验收标准](research/strategy_remediation/requirements_R10-RK_2026-10-17.md) - 逐条「问题定义→根因→验收标准」，状态「已实现 + 已通过回归」（§7 逐条闭环状态表 + R10 架构偏差 + 统计口径定义 + 能力限制披露 + 审计材料适配 + §3 回归用例文件名勘误）
+- [R10/R12 + RK1/R11/RK2 收口架构设计定稿](research/strategy_remediation/architecture_R10-RK_2026-10-17.md) - 分页闭区间收尾、income 缺口标记、HRS 落库失败告警、V2.10 评分口径、RK2 统计口径；状态「已落地」（§6.2 口径正交声明 + 执行率 3/9 分母、§1.5/§7.1 实现偏差）
+
+> 知识库（可复用问题/决策沉淀）见 [docs/knowledge/INDEX.md](knowledge/INDEX.md)。
 
 ---
 
@@ -308,8 +332,9 @@ StratTuneAI 引入 AI 调优覆盖层（tuning_overrides）机制，实现基础
 - **迁移方案**: 系统迁移、数据迁移、方案对比
 - **设计文档**: UI 设计、交互设计、视觉设计
 - **测试报告**: 测试结果、性能对比、问题修复
+- **研究与证据**: 代码审计报告、修复基线、业务决策记录
 
 ---
 
-**最后更新**: 2026-10-01
+**最后更新**: 2026-10-16
 **维护者**: 开发团队

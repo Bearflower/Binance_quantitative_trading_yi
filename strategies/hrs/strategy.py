@@ -51,6 +51,43 @@ KLINE_INTERVAL_MS = {
     "1d": 86400000,
 }
 
+# B1 (D1): 24h 价格涨跌幅的观测窗口——由指标定义决定，非可调阈值
+# 所需 K 线根数 = round(WINDOW_MS / interval_ms) + 1（首根为基准、末根为当前）
+_PRICE_CHANGE_WINDOW_MS = 24 * 3600 * 1000
+
+# B1/B2: 受 execution_mode 影子开关约束的延伸入场模式（标准模式不在此列）
+SHADOW_CAPABLE_ENTRY_MODES = ("emm", "semi_emm", "lv_rm")
+
+# B5: hrs_positions 生命周期元数据列（建表与幂等迁移共用同一份定义，避免两处漂移）
+_POSITION_LIFECYCLE_COLUMNS = {
+    "position_id": "TEXT",            # 确定性持仓生命周期身份
+    "opened_at": "BIGINT",            # 不可变真实开仓时刻（毫秒）
+    "next_review_at": "BIGINT",       # 可变下次时间止损复核时刻（毫秒）
+    "entry_mode": "TEXT",             # 入场模式（含 unknown 哨兵）
+    "entry_config_hash": "TEXT",      # 入场期配置指纹
+    "opening_time_uncertain": "BOOLEAN",  # 开仓时刻不可信（仅恢复出被重置的旧时间）
+    "entry_mode_unknown": "BOOLEAN",      # 入场模式缺失（存量仓）
+}
+
+
+def _ms_to_datetime(value: Any) -> Optional[datetime]:
+    """毫秒时间戳 → tz-aware UTC datetime；非正整数或类型不符返回 None。"""
+    if isinstance(value, int) and value > 0:
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    return None
+
+
+def _datetime_to_ms(value: Any) -> Optional[int]:
+    """tz-aware datetime 或 ISO 字符串 → 毫秒时间戳；无法解析返回 None。"""
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    if isinstance(value, datetime):
+        return int(value.timestamp() * 1000)
+    return None
+
 
 class HRSStrategy(BaseStrategy):
     """混合反转策略 (HRS)
@@ -265,6 +302,244 @@ class HRSStrategy(BaseStrategy):
 
         logger.info("HRS策略资源初始化完成")
 
+    # ------------------------------------------------------------------
+    # B4 (D4/D5): 市值来源感知的公共获取方法（开仓侧 vs 退出侧分口径）
+    # ------------------------------------------------------------------
+
+    async def _fetch_market_cap_ratio(
+        self,
+        symbol: str,
+        oi_usd: float,
+        volume_24h_usd: float,
+        require_true_for_entry: bool,
+    ) -> Tuple[float, bool, str, float]:
+        """
+        B4 公共方法：获取 OI/市值比 + 来源信息，消除三处同构代码。
+
+        Args:
+            symbol: 交易对
+            oi_usd: OI 美元价值
+            volume_24h_usd: 24h 成交额（兼容接口保留）
+            require_true_for_entry: True=开仓侧（D4），只接受真实市值；
+                                    False=退出侧（D5），代理/缺失不阻断
+        Returns:
+            (oi_market_cap_ratio, has_market_cap_for_scoring, source, market_cap_value)
+            - oi_market_cap_ratio: 代理/缺失时为 0.0（开仓侧）或真实代理值（退出侧）
+            - has_market_cap_for_scoring: 传给 scoring_engine 的 has_market_cap 参数
+              （开仓侧只认真实来源；退出侧不管来源，有值就是 True）
+            - source: "coingecko" / "cache_hit" / "oi_proxy" / "missing"
+            - market_cap_value: 原始市值数值（代理值或真实值；供 result dict 落盘）
+        """
+        cap_prov = await self.market_data.get_market_cap_provenance(
+            symbol, oi_usd, volume_24h_usd,
+        )
+        is_true = cap_prov.source in ("coingecko", "cache_hit")
+
+        if require_true_for_entry:
+            # 开仓侧（D4）：只用真实市值
+            if is_true and cap_prov.value > 0 and oi_usd > 0:
+                return oi_usd / cap_prov.value, True, cap_prov.source, cap_prov.value
+            # 代理/缺失 → has_market_cap=False，让 scoring_engine 走 contract fallback
+            return 0.0, False, cap_prov.source, cap_prov.value
+
+        # 退出侧（D5）：代理值也允许（has_market_cap=True），不阻断保护/减仓
+        if cap_prov.value > 0 and oi_usd > 0:
+            return oi_usd / cap_prov.value, True, cap_prov.source, cap_prov.value
+        return 0.0, False, cap_prov.source, cap_prov.value
+
+    # ------------------------------------------------------------------
+    # B1 (D1): 24h / 1h 价格变化计算（公共 helper，禁止各处重复实现）
+    # ------------------------------------------------------------------
+
+    def _calc_price_change_24h(
+        self,
+        klines: List[Dict[str, Any]],
+        decision_time_ms: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        """
+        B1 (D1): 计算 24h 价格涨跌幅（百分比数值，20 表示 20%）
+
+        口径（D1 已拍板）：基于整点已收盘 K 线（间隔由 self.kline_interval 决定），
+            value = (close(t) / close(t-24h) - 1) * 100
+        所需根数 = round(24h / interval) + 1（首根为基准、末根为当前；
+            1h→25、4h→7、1d→2）。不足、缺口、基准价异常、末根未收盘一律判不可用。
+
+        Args:
+            klines: K 线列表（按时间升序，含 open_time / close）
+            decision_time_ms: 决策时刻（毫秒）；None 时取当前时刻
+
+        Returns:
+            {
+                "available": bool,      # 是否可用（True 才可判定 EMM/极端行情）
+                "value": float|None,    # 百分比数值（无法计算时为 None）
+                "reason": str,          # 不可用原因（available=True 时为 ""）
+                "base_close": float,    # close(t-24h)
+                "current_close": float, # close(t)
+                "num_klines": int,      # 传入的 K 线根数
+            }
+        """
+        result: Dict[str, Any] = {
+            "available": False,
+            "value": None,
+            "reason": "",
+            "base_close": 0.0,
+            "current_close": 0.0,
+            "num_klines": len(klines) if klines else 0,
+        }
+        if not klines:
+            result["reason"] = "K线缺失"
+            return result
+
+        # 先取 interval_ms：既用于推导窗口所需根数，也用于后续连续性/末根校验
+        interval_ms = KLINE_INTERVAL_MS.get(self.kline_interval, 3600000)
+        if interval_ms <= 0:
+            result["reason"] = (
+                f"K线间隔无效（interval={self.kline_interval!r}）"
+            )
+            return result
+
+        # 1) 根数门槛：所需根数 = round(24h / interval) + 1
+        required = int(round(_PRICE_CHANGE_WINDOW_MS / interval_ms)) + 1
+        if len(klines) < required:
+            result["reason"] = (
+                f"K线不足（需 {required} 根，实际 {len(klines)} 根）"
+            )
+            return result
+
+        window = klines[-required:]
+
+        # 2) 连续性：取末 required 根，逐根校验 open_time 等间隔（缺根即缺口）
+        reason = self._validate_kline_continuity(window, interval_ms)
+        if reason:
+            result["reason"] = reason
+            return result
+
+        # 3) 末根必须已收盘：决策时刻需 ≥ 末根开盘 + 一个周期
+        reason = self._validate_last_kline_closed(window, interval_ms, decision_time_ms)
+        if reason:
+            result["reason"] = reason
+            return result
+
+        # 4) 基准价有效性
+        base_close = float(window[0].get("close", 0) or 0)
+        current_close = float(window[-1].get("close", 0) or 0)
+        result["base_close"] = base_close
+        result["current_close"] = current_close
+        if base_close <= 0:
+            result["reason"] = "基准价为零/非正，无法计算涨跌幅"
+            return result
+
+        result["available"] = True
+        result["value"] = (current_close / base_close - 1) * 100
+        return result
+
+    def _validate_kline_continuity(
+        self, window: List[Dict[str, Any]], interval_ms: int
+    ) -> Optional[str]:
+        """
+        B1 (D1): 校验 K 线窗口是否等间隔连续（缺根即缺口）
+
+        Args:
+            window: 待校验的 K 线窗口（按时间升序，含 open_time）
+            interval_ms: 期望的 K 线间隔（毫秒）
+
+        Returns:
+            校验通过返回 None；否则返回中文原因字符串
+        """
+        for i in range(1, len(window)):
+            prev_ot = window[i - 1].get("open_time", 0)
+            cur_ot = window[i].get("open_time", 0)
+            if cur_ot - prev_ot != interval_ms:
+                return (
+                    f"K线存在缺口/时间不连续（第 {i} 根间隔 {cur_ot - prev_ot}ms，"
+                    f"期望 {interval_ms}ms）"
+                )
+        return None
+
+    def _validate_last_kline_closed(
+        self,
+        window: List[Dict[str, Any]],
+        interval_ms: int,
+        decision_time_ms: Optional[int],
+    ) -> Optional[str]:
+        """
+        B1 (D1): 校验窗口末根 K 线是否已收盘
+
+        Args:
+            window: K 线窗口（按时间升序，含 open_time）
+            interval_ms: K 线间隔（毫秒）
+            decision_time_ms: 决策时刻（毫秒）；None 时取当前时刻
+
+        Returns:
+            已收盘返回 None；否则返回中文原因字符串
+        """
+        last_open_time = window[-1].get("open_time", 0)
+        now_ms = decision_time_ms if decision_time_ms is not None else int(
+            datetime.now(timezone.utc).timestamp() * 1000
+        )
+        if now_ms < last_open_time + interval_ms:
+            return "末根K线未收盘（决策时刻早于其收盘时间），拒绝使用形成中K线"
+        return None
+
+    def _calc_price_change_1h(self, klines: List[Dict[str, Any]]) -> Optional[float]:
+        """
+        计算最近 1 小时价格变化（小数形式，0.05 表示 +5%）
+
+        供组合级熔断单币轨与 LV-RM 信号共用（B1/B2 抽取的公共 helper，禁止重复实现）。
+        K 线不足 2 根或前一根收盘价非正时返回 None（调用方按缺失 fail-open 处理）。
+
+        Args:
+            klines: 1h K 线列表（按时间升序）
+
+        Returns:
+            小数形式的 1h 涨跌幅；不可计算时返回 None
+        """
+        if not klines or len(klines) < 2:
+            return None
+        price_1h_ago = float(klines[-2].get("close", 0) or 0)
+        current_price = float(klines[-1].get("close", 0) or 0)
+        if price_1h_ago <= 0:
+            return None
+        return (current_price - price_1h_ago) / price_1h_ago
+
+    def _is_shadow_entry_mode(self, entry_mode: str, signal_origin: Optional[str] = None) -> bool:
+        """
+        B1/B2 (R1): 判断某入场模式当前是否处于影子执行模式
+
+        EMM / 半EMM / LV-RM 三类延伸入场模式受各自 config 段 execution_mode 控制；
+        取值为 "shadow" 时只跑决策链、不真实下单。标准模式不受本开关影响。
+
+        R1 扩展：lv_rm 需结合 signal_origin 区分来源——
+          - empty_pool（_run_lv_rm_only_cycle 空池路径）：按 config.lv_rm.execution_mode 判定（D8 影子）
+          - nonempty_pool（_finalize_and_execute_signals 非空池路径）：保持原政策，不影子化
+          - signal_origin 缺失（防御）：fail-closed 返回 True（影子）并告警
+
+        Args:
+            entry_mode: 入场模式（"standard"/"emm"/"semi_emm"/"lv_rm"）
+            signal_origin: lv_rm 信号来源，None 时对非 lv_rm 不影响；
+                          lv_rm 缺失则 fail-closed 视为影子
+
+        Returns:
+            True 表示该模式处于影子（不真实下单）状态
+        """
+        if entry_mode not in SHADOW_CAPABLE_ENTRY_MODES:
+            return False
+        mode_cfg = self.config.get(entry_mode, {}) or {}
+        if entry_mode == "lv_rm":
+            # R1: lv_rm 按 signal_origin 区分影子范围
+            if signal_origin is None:
+                logger.warning(
+                    "lv_rm 信号缺 signal_origin，fail-closed 判为影子",
+                )
+                return True
+            if signal_origin == "nonempty_pool":
+                # 非空池 LV-RM：保持原政策，不影子化
+                return False
+            # empty_pool（或未来扩展来源）：按 config 判定
+            return mode_cfg.get("execution_mode") == "shadow"
+        # emm / semi_emm：按 config 判定（不看 signal_origin）
+        return mode_cfg.get("execution_mode") == "shadow"
+
     async def analyze(self, symbol: str) -> Dict[str, Any]:
         """
         分析单个币种的做空和做多机会
@@ -299,16 +574,39 @@ class HRSStrategy(BaseStrategy):
             kline_interval_ms = KLINE_INTERVAL_MS.get(self.kline_interval, 3600000)
             current_close_time = current_open_time + kline_interval_ms
 
+            # B1 (D1): 24h 涨跌幅（百分比数值，20 表示 20%），供 EMM/半EMM 判定
+            # 与极端行情加分使用；不可用时传 None，EMM 不触发（fail-closed）
+            pc24_result = self._calc_price_change_24h(klines)
+            price_change_24h = pc24_result["value"] if pc24_result["available"] else None
+            if not pc24_result["available"]:
+                logger.debug(
+                    "price_change_24h 不可用，EMM/极端行情加法不触发",
+                    symbol=symbol,
+                    reason=pc24_result["reason"],
+                )
+
             # 获取OI和资金费率
             oi_usd = await self.market_data.get_oi_usd(symbol)
             # P0-4: 传入K线收盘时间，确保与资金费率结算周期对齐
             funding_rate = await self.market_data.get_funding_rate(symbol, at_time=current_close_time)
             volume_24h = await self.market_data.get_24h_volume(symbol)
 
-            # 获取市值
-            market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
-            has_market_cap = market_cap > 0
-            oi_market_cap_ratio = oi_usd / market_cap if has_market_cap else 0.0
+            # B4 (D4): 开仓侧只用真实市值（require_true_for_entry=True）
+            # 代理/缺失时 has_market_cap=False，scoring_engine 走 contract fallback，
+            # 其他因子（资金费率/形态/EMA20）仍可触发入场
+            (
+                oi_market_cap_ratio,
+                has_market_cap,
+                _mc_source,
+                market_cap,
+            ) = await self._fetch_market_cap_ratio(
+                symbol, oi_usd, volume_24h, require_true_for_entry=True,
+            )
+            if _mc_source in ("oi_proxy", "missing"):
+                logger.debug(
+                    "开仓侧市值来源不合格，contract 因子走 fallback",
+                    symbol=symbol, source=_mc_source,
+                )
 
             # 检查做空候选
             if symbol in self.candidate_pool.get_short_candidates():
@@ -333,10 +631,12 @@ class HRSStrategy(BaseStrategy):
                         patterns=short_patterns,
                         funding_rate=funding_rate,
                         has_market_cap=has_market_cap,
+                        price_change_24h=price_change_24h,
                         klines_4h=klines_4h,
                     )
                     result["short"] = {
                         "score_result": short_score.to_dict(),
+                        "_scoring_result": short_score,  # R1: 原始 ScoringResult，供 shadows 遍历
                         "patterns": short_patterns,
                         "current_price": current_close,
                         "oi_usd": oi_usd,
@@ -368,10 +668,12 @@ class HRSStrategy(BaseStrategy):
                         patterns=long_patterns,
                         funding_rate=funding_rate,
                         has_market_cap=has_market_cap,
+                        price_change_24h=price_change_24h,
                         klines_4h=klines_4h,
                     )
                     result["long"] = {
                         "score_result": long_score.to_dict(),
+                        "_scoring_result": long_score,  # R1: 原始 ScoringResult，供 shadows 遍历
                         "patterns": long_patterns,
                         "current_price": current_close,
                         "oi_usd": oi_usd,
@@ -443,6 +745,23 @@ class HRSStrategy(BaseStrategy):
 
             if not symbol or not direction:
                 return False
+
+            # ===== R1: 执行模式影子闸门（前置入口版）=====
+            # 影子判定在任何风控/熔断/加仓/下单之前完成，彻底阻断：
+            # - 绝不让 shadow 信号误触发 _handle_add_position 真实加仓
+            # - 绝不让 shadow 信号计算仓位/资金/下单（省资源 + 防幻觉）
+            # 闸门仅标记 shadow_blocked=True + return True，不落单。
+            # R1: 补 signal_origin 入参，让 lv_rm 正确区分 empty_pool vs nonempty_pool
+            if self._is_shadow_entry_mode(entry_mode, signal.get("signal_origin")):
+                logger.info(
+                    "影子模式：入口处短路，不下单不加仓",
+                    symbol=symbol,
+                    direction=direction,
+                    entry_mode=entry_mode,
+                    reason="execution_mode=shadow",
+                )
+                signal["shadow_blocked"] = True
+                return True
 
             # 组合级熔断闸门：开仓决策前统一否决性拦截（含 LV-RM 等所有信号来源）
             # 组合级独立生效（与单币涨幅无关）；单币涨幅缺失时仅单币级 fail-open（guard 内处理）
@@ -569,6 +888,8 @@ class HRSStrategy(BaseStrategy):
                     )
                     return False
 
+            # 影子闸门已在 execute_signal 入口处前置（L747-762），此处不再重复判定。
+
             # 执行开仓（FR-01: 返回 OpenResult，分离「成交」与「保护单完整性」信号）
             result: Optional[OpenResult] = None
             if direction == "short":
@@ -591,13 +912,36 @@ class HRSStrategy(BaseStrategy):
                 )
 
             if result.order_filled:
-                # 记录持仓
+                # B6a: 零成交不建档，杜绝幽灵持仓
+                if result.filled_quantity <= 0:
+                    logger.warning(
+                        "开仓标记为已成交但实际成交量为零，跳过建档",
+                        symbol=symbol, direction=direction,
+                    )
+                    return False
+
+                # B6a: entry_price 优先用真实成交均价；None 时回退信号价并告警
+                actual_entry_price: float
+                if result.avg_fill_price is not None and result.avg_fill_price > 0:
+                    actual_entry_price = result.avg_fill_price
+                else:
+                    actual_entry_price = current_price
+                    logger.warning(
+                        "成交均价未知，暂以信号价登记（非真实成交均价）",
+                        symbol=symbol, direction=direction,
+                        fallback_price=current_price,
+                        filled_quantity=result.filled_quantity,
+                    )
+
+                # 记录持仓（B5：带上入场模式，供时间止损按模式选择持仓时限；
+                # B6a：quantity 用真实成交量，entry_price 用真实成交均价）
                 self.position_manager.add_position(
                     symbol=symbol,
                     direction=direction,
-                    entry_price=current_price,
-                    quantity=quantity,
+                    entry_price=actual_entry_price,
+                    quantity=result.filled_quantity,
                     atr=atr,
+                    entry_mode=entry_mode,
                 )
 
                 # 记录风控
@@ -798,189 +1142,326 @@ class HRSStrategy(BaseStrategy):
         5. 定期清理残留订单（Fix #2）
         6. 定期裁剪K线缓存（Fix #7）
         """
-        now = datetime.now(timezone.utc)
-
-        # Fix #8: 资金费率结算时间安全检查
-        if self._is_settlement_skip_window():
-            logger.info("资金费率结算窗口，跳过本周期评分")
-            return
-
-        # 检查回撤熔断
         try:
-            account_info = await self.binance_client.get_account_info()
-            balance = float(account_info.get("totalMarginBalance", 0))
-            if balance > 0 and not await self.risk_manager.check_drawdown(self._total_pnl, balance):
-                logger.warning("回撤熔断触发，跳过本周期")
+            now = datetime.now(timezone.utc)
+
+            # Fix #8: 资金费率结算时间安全检查
+            if self._is_settlement_skip_window():
+                logger.info("资金费率结算窗口，跳过本周期评分")
                 return
-        except Exception as e:
-            logger.warning("回撤检查失败，继续执行", error=str(e))
 
-        # P1-8: 检查暂停状态并输出日志
-        if self.risk_manager.is_paused():
-            now_utc = datetime.now(timezone.utc)
-            pause_info = self._get_pause_info()
-            if pause_info:
-                remaining = (pause_info["until"] - now_utc).total_seconds() / 3600
-                logger.info(
-                    "策略暂停中，跳过本周期",
-                    reason=pause_info["reason"],
-                    remaining_hours=round(remaining, 1),
-                )
-            else:
-                logger.info("策略暂停中，跳过本周期")
-            return
-
-        # 检查是否需要在8:05更新候选池
-        await self._check_candidate_update(now)
-
-        # 获取活跃候选币种
-        active_symbols = self.candidate_pool.get_active_symbols()
-        if not active_symbols:
-            logger.debug("无活跃候选币种，仅执行 LV-RM 检查")
-            await self._run_lv_rm_only_cycle()
-            await self._monitor_positions()
-            return
-
-        logger.info("开始评分周期", symbols=list(active_symbols)[:10])
-
-        # 评分并处理
-        short_signals = []
-        long_signals = []
-
-        for symbol in list(active_symbols):
+            # 检查回撤熔断
             try:
-                # P2-6: 检查极端行情熔断
-                if self.risk_manager.is_circuit_breaker_active(symbol):
-                    cb_info = self.risk_manager.get_circuit_breaker_info(symbol)
-                    logger.debug(
-                        "熔断中，跳过评分",
-                        symbol=symbol,
-                        remaining_minutes=round(cb_info["remaining_minutes"], 1) if cb_info else 0,
-                    )
-                    continue
+                account_info = await self.binance_client.get_account_info()
+                balance = float(account_info.get("totalMarginBalance", 0))
+                if balance > 0 and not await self.risk_manager.check_drawdown(self._total_pnl, balance):
+                    logger.warning("回撤熔断触发，跳过本周期")
+                    return
+            except Exception as e:
+                logger.warning("回撤检查失败，继续执行", error=str(e))
 
-                # P2-6: 计算1小时价格变化并检查熔断
-                klines = self._klines_cache.get(symbol, [])
-                # 组合级熔断单币轨：目标币自身 1h 涨幅（K线不足时按缺失处理，fail-open）
-                price_change_1h = None
-                if len(klines) >= 2:
-                    price_1h_ago = float(klines[-2].get("close", 0))
-                    current_price_for_cb = float(klines[-1].get("close", 0))
-                    if price_1h_ago > 0:
-                        price_change_1h = (current_price_for_cb - price_1h_ago) / price_1h_ago
+            # P1-8: 检查暂停状态并输出日志
+            if self.risk_manager.is_paused():
+                now_utc = datetime.now(timezone.utc)
+                pause_info = self._get_pause_info()
+                if pause_info:
+                    remaining = (pause_info["until"] - now_utc).total_seconds() / 3600
+                    logger.info(
+                        "策略暂停中，跳过本周期",
+                        reason=pause_info["reason"],
+                        remaining_hours=round(remaining, 1),
+                    )
+                else:
+                    logger.info("策略暂停中，跳过本周期")
+                return
+
+            # 检查是否需要在8:05更新候选池
+            await self._check_candidate_update(now)
+
+            # 获取活跃候选币种
+            active_symbols = self.candidate_pool.get_active_symbols()
+            if not active_symbols:
+                logger.debug("无活跃候选币种，仅执行 LV-RM 检查")
+                # B2: 空池分支只跑 LV-RM（含统一收尾链），持仓监控/上报交由 finally 统一调度
+                await self._run_lv_rm_only_cycle()
+                return
+
+            logger.info("开始评分周期", symbols=list(active_symbols)[:10])
+
+            # 评分并处理
+            short_signals = []
+            long_signals = []
+
+            for symbol in list(active_symbols):
+                try:
+                    # P2-6: 检查极端行情熔断
+                    if self.risk_manager.is_circuit_breaker_active(symbol):
+                        cb_info = self.risk_manager.get_circuit_breaker_info(symbol)
+                        logger.debug(
+                            "熔断中，跳过评分",
+                            symbol=symbol,
+                            remaining_minutes=round(cb_info["remaining_minutes"], 1) if cb_info else 0,
+                        )
+                        continue
+
+                    # P2-6: 计算1小时价格变化并检查熔断
+                    klines = self._klines_cache.get(symbol, [])
+                    # 组合级熔断单币轨：目标币自身 1h 涨幅（K线不足时按缺失处理，fail-open）
+                    price_change_1h = self._calc_price_change_1h(klines)
+                    if price_change_1h is not None:
                         if not self.risk_manager.check_price_change(symbol, price_change_1h):
                             # 触发熔断，跳过评分
                             continue
 
-                analysis = await self.analyze(symbol)
-                if analysis.get("skip") or analysis.get("error"):
-                    continue
+                    analysis = await self.analyze(symbol)
+                    if analysis.get("skip") or analysis.get("error"):
+                        continue
 
-                # 处理做空信号
-                short_data = analysis.get("short")
-                if short_data and short_data.get("should_entry"):
-                    # P2-6: 已有持仓时不产生新信号（不加仓）
-                    if self.position_manager.has_position(symbol):
-                        logger.debug("该币种已有持仓，跳过做空信号", symbol=symbol)
-                    else:
-                        # P1-1: 记录信号首次触发时间
-                        self._record_signal_timestamp(symbol, "short")
-                        short_signals.append({
-                            "symbol": symbol,
-                            "direction": "short",
-                            "score": short_data["score_result"]["total_score"],
-                            "technical_score": short_data["score_result"].get("technical_score", 0),
-                            "sentiment_score": short_data["score_result"].get("sentiment_score", 0),
-                            "current_price": short_data["current_price"],
-                            "price_change_1h": price_change_1h,  # 组合级熔断单币轨
-                            "klines": self._klines_cache.get(symbol, []),
-                        })
-                else:
-                    # 信号消失，清理时间戳
-                    self._clear_signal_timestamp(symbol, "short")
+                    # 处理做空信号
+                    short_data = analysis.get("short")
+                    if short_data and short_data.get("should_entry"):
+                        # P2-6: 已有持仓时不产生新信号（不加仓）
+                        if self.position_manager.has_position(symbol):
+                            logger.debug("该币种已有持仓，跳过做空信号", symbol=symbol)
+                        else:
+                            # P1-1: 记录信号首次触发时间
+                            self._record_signal_timestamp(symbol, "short")
+                            short_signals.append({
+                                "symbol": symbol,
+                                "direction": "short",
+                                "score": short_data["score_result"]["total_score"],
+                                "technical_score": short_data["score_result"].get("technical_score", 0),
+                                "sentiment_score": short_data["score_result"].get("sentiment_score", 0),
+                                "current_price": short_data["current_price"],
+                                "price_change_1h": price_change_1h,  # 组合级熔断单币轨
+                                # B1: entry_mode 随 signal 传递，供 execute_signal 影子闸门判定
+                                "entry_mode": short_data["score_result"].get("entry_mode", "standard"),
+                                "klines": self._klines_cache.get(symbol, []),
+                            })
 
-                # 处理做多信号
-                long_data = analysis.get("long")
-                if long_data and long_data.get("should_entry"):
-                    # P2-6: 已有持仓时不产生新信号（不加仓）
-                    if self.position_manager.has_position(symbol):
-                        logger.debug("该币种已有持仓，跳过做多信号", symbol=symbol)
-                    else:
-                        # P1-1: 记录信号首次触发时间
-                        self._record_signal_timestamp(symbol, "long")
-                        long_signals.append({
-                            "symbol": symbol,
-                            "direction": "long",
-                            "score": long_data["score_result"]["total_score"],
-                            "technical_score": long_data["score_result"].get("technical_score", 0),
-                            "sentiment_score": long_data["score_result"].get("sentiment_score", 0),
-                            "current_price": long_data["current_price"],
-                            "price_change_1h": price_change_1h,  # 组合级熔断单币轨
-                            "klines": self._klines_cache.get(symbol, []),
-                        })
-                else:
-                    # 信号消失，清理时间戳
-                    self._clear_signal_timestamp(symbol, "long")
+                    # R1: EMM / 半EMM shadow 信号也入列（影子对比用，不占仓不下单）
+                    # shadow 不过 P2-6 已有持仓过滤（影子需要覆盖所有场景）
+                    if short_data and short_data.get("_scoring_result"):
+                        for shadow_sr in short_data["_scoring_result"].shadows:
+                            if self.scoring_engine.should_entry(shadow_sr):
+                                short_signals.append({
+                                    "symbol": symbol,
+                                    "direction": "short",
+                                    "score": shadow_sr.total_score,
+                                    "technical_score": shadow_sr.technical_score,
+                                    "sentiment_score": shadow_sr.sentiment_score,
+                                    "current_price": short_data["current_price"],
+                                    "price_change_1h": price_change_1h,
+                                    "entry_mode": shadow_sr.entry_mode,
+                                    "signal_origin": "shadow_scoring",  # R1: 标记来源，_is_shadow_entry_mode 判定用
+                                    "klines": self._klines_cache.get(symbol, []),
+                                })
+                                logger.info(
+                                    "R1 shadow 做空信号入列",
+                                    symbol=symbol, entry_mode=shadow_sr.entry_mode,
+                                    score=round(shadow_sr.total_score, 2),
+                                )
+                    elif short_data and short_data.get("should_entry"):
+                        # 影子没出来但 primary 出来了（price_change_24h 缺失场景），不报错正常跳过
+                        pass
+                    elif short_data is None:
+                        pass  # 该 symbol 不在候选池
 
+                    if short_data:
+                        # 信号消失，清理时间戳
+                        if not short_data.get("should_entry"):
+                            self._clear_signal_timestamp(symbol, "short")
+
+                    # 处理做多信号
+                    long_data = analysis.get("long")
+                    if long_data and long_data.get("should_entry"):
+                        # P2-6: 已有持仓时不产生新信号（不加仓）
+                        if self.position_manager.has_position(symbol):
+                            logger.debug("该币种已有持仓，跳过做多信号", symbol=symbol)
+                        else:
+                            # P1-1: 记录信号首次触发时间
+                            self._record_signal_timestamp(symbol, "long")
+                            long_signals.append({
+                                "symbol": symbol,
+                                "direction": "long",
+                                "score": long_data["score_result"]["total_score"],
+                                "technical_score": long_data["score_result"].get("technical_score", 0),
+                                "sentiment_score": long_data["score_result"].get("sentiment_score", 0),
+                                "current_price": long_data["current_price"],
+                                "price_change_1h": price_change_1h,  # 组合级熔断单币轨
+                                # B1: entry_mode 传递（同上）
+                                "entry_mode": long_data["score_result"].get("entry_mode", "standard"),
+                                "klines": self._klines_cache.get(symbol, []),
+                            })
+
+                    # R1: EMM / 半EMM shadow 信号也入列（影子对比用，不占仓不下单）
+                    # shadow 不过 P2-6 已有持仓过滤（影子需要覆盖所有场景）
+                    if long_data and long_data.get("_scoring_result"):
+                        for shadow_sr in long_data["_scoring_result"].shadows:
+                            if self.scoring_engine.should_entry(shadow_sr):
+                                long_signals.append({
+                                    "symbol": symbol,
+                                    "direction": "long",
+                                    "score": shadow_sr.total_score,
+                                    "technical_score": shadow_sr.technical_score,
+                                    "sentiment_score": shadow_sr.sentiment_score,
+                                    "current_price": long_data["current_price"],
+                                    "price_change_1h": price_change_1h,
+                                    "entry_mode": shadow_sr.entry_mode,
+                                    "signal_origin": "shadow_scoring",  # R1: 标记来源，_is_shadow_entry_mode 判定用
+                                    "klines": self._klines_cache.get(symbol, []),
+                                })
+                                logger.info(
+                                    "R1 shadow 做多信号入列",
+                                    symbol=symbol, entry_mode=shadow_sr.entry_mode,
+                                    score=round(shadow_sr.total_score, 2),
+                                )
+
+                    if long_data:
+                        # 信号消失，清理时间戳
+                        if not long_data.get("should_entry"):
+                            self._clear_signal_timestamp(symbol, "long")
+
+                except Exception as e:
+                    logger.error("分析失败", symbol=symbol, error=str(e))
+
+            # B2: 统一收尾链（超时过滤 → 落库 → LV-RM 追加 → 组合级熔断预过滤 →
+            # 冲突解析 → 周期汇总）；空池路径复用同一收尾链，禁止各自复制一份。
+            await self._finalize_and_execute_signals(
+                short_signals,
+                long_signals,
+                source_symbols=list(active_symbols),
+                include_lv_rm_append=True,
+            )
+
+        finally:
+            # B2: 所有早退路径（结算窗口 / 回撤熔断 / 暂停 / 候选池空）都统一走这里，
+            # 确保持仓监控与看板上报每周期恰好执行一次；各步独立 try 避免相互覆盖异常。
+            try:
+                self._trim_klines_cache()
             except Exception as e:
-                logger.error("分析失败", symbol=symbol, error=str(e))
+                logger.warning("K线缓存裁剪失败", error=str(e))
+            try:
+                await self._cleanup_orphan_orders()
+            except Exception as e:
+                logger.warning("清理残留订单失败", error=str(e))
+            try:
+                await self._monitor_positions()
+            except Exception as e:
+                logger.warning("持仓监控失败", error=str(e))
+            try:
+                await self._report_positions_to_dashboard()
+            except Exception as e:
+                logger.warning("持仓上报失败", error=str(e))
 
-        # P1-1: 过滤超时信号
-        short_signals = await self._filter_timeout_signals(short_signals, "short")
-        long_signals = await self._filter_timeout_signals(long_signals, "long")
+    async def _finalize_and_execute_signals(
+        self,
+        short_signals: List[Dict],
+        long_signals: List[Dict],
+        source_symbols: List[str],
+        include_lv_rm_append: bool = False,
+    ) -> None:
+        """
+        B2: 统一信号收尾链（所有信号来源共用：标准 / EMM / 半EMM / LV-RM）
 
-        # P2-1: 记录信号日志到独立表
+        收尾顺序（空池与非空池两条路径统一，禁止因入口不同绕过风险闸门）：
+          0. LV-RM 追加扫描（include_lv_rm_append=True 时；空池路径已在调用方完成扫描）
+          1. P1-1 超时信号过滤
+          2. P2-1 信号落库到独立表
+          3. 组合级熔断信号预过滤（读 HRS 池 T-1 指数）
+          4. 双向冲突解析 + 逐条 execute_signal（影子闸门在 execute_signal 内部兜底）
+          5. 周期汇总通知
+
+        Args:
+            short_signals: 做空信号列表
+            long_signals: 做多信号列表
+            source_symbols: 本周期参与评分的活跃候选币种（仅用于汇总通知展示）
+            include_lv_rm_append: 是否在本链内追加 LV-RM 扫描（主循环非空池路径使用）
+        """
+        # 0. LV-RM 追加扫描（必须在超时过滤/落库之前执行；空池路径在调用方已完成扫描）
+        #    两条路径由此统一走同一套风险闸门，禁止因入口不同绕过超时/落库。
+        if include_lv_rm_append:
+            lv_rm_config = self.config.get("lv_rm", {})
+            if lv_rm_config.get("enabled", True):
+                try:
+                    low_vol_symbols = await self.candidate_pool.get_low_volatility_candidates()
+                    if low_vol_symbols:
+                        await self._check_lv_rm_entries(
+                            low_vol_symbols, short_signals, long_signals,
+                            signal_origin="nonempty_pool",  # R1: 非空池 → 保持原政策
+                        )
+                except Exception as e:
+                    logger.error("LV-RM检查失败", error=str(e))
+
+        # R9 关键调整：先落库拿到 signal_id，再超时过滤
+        # 原顺序「先过滤后落库」导致超时信号未落库、无 signal_id；
+        # 对调后：落库回填 id，再按 id 精准标记 timeout。
+
+        # 1. P2-1: 先记录信号日志到独立表（回填 signal_id 到同一 dict 引用）
         for sig in short_signals + long_signals:
             await self._log_signal_to_db(sig["symbol"], sig["direction"], sig)
 
-        # ===== V2.4: LV-RM 低波动反转模块检查 =====
-        lv_rm_config = self.config.get("lv_rm", {})
-        if lv_rm_config.get("enabled", True):
-            try:
-                # 获取低波动候选币种
-                low_vol_symbols = await self.candidate_pool.get_low_volatility_candidates()
-                if low_vol_symbols:
-                    await self._check_lv_rm_entries(low_vol_symbols, short_signals, long_signals)
-            except Exception as e:
-                logger.error("LV-RM检查失败", error=str(e))
+        # 2. P1-1: 再过滤超时信号（此时信号 dict 已有 signal_id，可精准标记 timeout）
+        short_signals = await self._filter_timeout_signals(short_signals, "short")
+        long_signals = await self._filter_timeout_signals(long_signals, "long")
 
-        # ===== 组合级熔断：信号级组合预过滤（读 HRS 池 T-1 指数）=====
+        # 3. 组合级熔断：信号级组合预过滤（读 HRS 池 T-1 指数）
         # 覆盖标准 + EMM + LV-RM 全部信号来源；单币级判定由 execute_signal 闸门兜底
-        if self.circuit_breaker is not None:
-            index_hour = floor_index_hour() - timedelta(hours=1)  # HRS 整点执行，读上一整点（T-1）指数
-            pool_index = await self.circuit_breaker.load_index(index_hour)
-            pool_index_12h = await self.circuit_breaker.load_index_12h(index_hour)
+        circuit_breaker = getattr(self, "circuit_breaker", None)
+        if circuit_breaker is not None:
+            # HRS 整点执行，读上一整点（T-1）指数
+            index_hour = floor_index_hour() - timedelta(hours=1)
+            pool_index = await circuit_breaker.load_index(index_hour)
+            pool_index_12h = await circuit_breaker.load_index_12h(index_hour)
             if pool_index is not None:
                 short_signals = [
                     s for s in short_signals
-                    if not self.circuit_breaker.combined_blocked("short", pool_index, pool_index_12h)
+                    if not circuit_breaker.combined_blocked("short", pool_index, pool_index_12h)
                 ]
                 long_signals = [
                     s for s in long_signals
-                    if not self.circuit_breaker.combined_blocked("long", pool_index, pool_index_12h)
+                    if not circuit_breaker.combined_blocked("long", pool_index, pool_index_12h)
                 ]
 
-        # 处理双向冲突
-        await self._resolve_conflicts(short_signals, long_signals)
+        # ===== R1+R9: 单次遍历分桶 production / shadow，方向分离 =====
+        # 只产出 prod_short/prod_long/shadow_short/shadow_long 四个列表，
+        # 供后续冲突消解与影子执行分别消费（一次遍历 O(n)，禁止两轮分桶重复）。
+        shadow_short, shadow_long = [], []
+        prod_short, prod_long = [], []
+        for s in short_signals:
+            if self._is_shadow_entry_mode(
+                s.get("entry_mode", "standard"), s.get("signal_origin")):
+                shadow_short.append(s)
+            else:
+                prod_short.append(s)
+        for s in long_signals:
+            if self._is_shadow_entry_mode(
+                s.get("entry_mode", "standard"), s.get("signal_origin")):
+                shadow_long.append(s)
+            else:
+                prod_long.append(s)
 
-        # 发送周期汇总通知
+        # 4. production 走冲突消解（只影响生产信号，shadow 不抢占 slot）
+        await self._resolve_conflicts(prod_short, prod_long)
+
+        # R1: shadow 信号分桶执行（不参与冲突消解，逐条走 execute_signal）
+        # RK3: 门控与消费列表同源（shadow_short / shadow_long），禁止引用死变量
+        if shadow_short or shadow_long:
+            await self._execute_shadow_signals(shadow_short, shadow_long)
+
+        # 5. 发送周期汇总通知（用完整列表，包括 shadow 已标记的）
+        all_production = prod_short + prod_long
+        all_shadow = shadow_short + shadow_long
+        all_signals = all_production + all_shadow
+        short_for_summary = [s for s in all_signals if s.get("direction") == "short"]
+        long_for_summary = [s for s in all_signals if s.get("direction") == "long"]
         await self._send_cycle_summary(
-            short_signals, long_signals, list(active_symbols),
+            short_for_summary,
+            long_for_summary,
+            source_symbols,
             list(self.candidate_pool.get_short_candidates()),
             list(self.candidate_pool.get_long_candidates()),
         )
-
-        # Fix #7: 定期裁剪K线缓存
-        self._trim_klines_cache()
-
-        # Fix #2: 定期清理残留订单
-        await self._cleanup_orphan_orders()
-
-        # 监控持仓
-        await self._monitor_positions()
-
-        # 上报当前持仓到看板聚合表（封装：候选池空/暂停时主循环也会调用，保证持续更新）
-        await self._report_positions_to_dashboard()
 
     async def _report_positions_to_dashboard(self) -> None:
         """上报当前持仓与策略状态到看板聚合表（strategy_states / strategy_open_positions）
@@ -1002,7 +1483,8 @@ class HRSStrategy(BaseStrategy):
                 "entry_price": pos.get("entry_price"),
                 "quantity": pos.get("entry_quantity"),
                 "remaining_quantity": pos.get("remaining_quantity"),
-                "entry_time": str(pos.get("entry_time", "")),
+                "opened_at": str(pos.get("opened_at", "")),
+                "entry_mode": pos.get("entry_mode"),
                 "algo_ids": pos.get("algo_ids", {}),
             }
             entry_qty = float(pos.get("entry_quantity", 0) or 0)
@@ -1363,6 +1845,50 @@ class HRSStrategy(BaseStrategy):
         except Exception as e:
             logger.warning("K线服务注销失败", symbol=symbol, error=str(e))
 
+    async def _execute_shadow_signals(
+        self,
+        shadow_short: List[Dict],
+        shadow_long: List[Dict],
+    ) -> None:
+        """
+        R1: shadow 信号分桶执行
+
+        所有 shadow 信号逐条跑 execute_signal（内部必然 shadow_blocked=True），
+        不参与冲突消解、不抢占 production 信号 slot。
+        落库 resolution='shadow'，绝不落 executed。
+        """
+        all_shadow = shadow_short + shadow_long
+        logger.info(
+            "R1: 执行 shadow 信号分桶",
+            shadow_count=len(all_shadow),
+            shadow_short_count=len(shadow_short),
+            shadow_long_count=len(shadow_long),
+        )
+        for signal in all_shadow:
+            try:
+                symbol = signal["symbol"]
+                direction = signal["direction"]
+                logger.info(
+                    "shadow 信号：逐条跑决策链（影子闸门兜底）",
+                    symbol=symbol, direction=direction,
+                    entry_mode=signal.get("entry_mode"),
+                    signal_origin=signal.get("signal_origin"),
+                )
+                ok = await self.execute_signal(signal)
+                if ok:
+                    # 影子闸门必然置位 shadow_blocked=True（execute_signal 内部已处理）
+                    # R9: 按 signal_id 精准标 shadow，避免污染同币同向 production 行
+                    await self._update_signal_resolution(
+                        signal.get("signal_id"), "shadow",
+                    )
+            except Exception as e:
+                logger.error(
+                    "shadow 信号执行异常（已单独记录，不阻断主流程）",
+                    symbol=signal.get("symbol"),
+                    direction=signal.get("direction"),
+                    error=str(e),
+                )
+
     async def _resolve_conflicts(
         self,
         short_signals: List[Dict],
@@ -1390,37 +1916,53 @@ class HRSStrategy(BaseStrategy):
             if short_s["score"] > long_s["score"]:
                 # 选择做空，做多标记为冲突
                 del long_by_symbol[symbol]
-                await self._update_signal_resolution(symbol, "long", "conflict")
+                await self._update_signal_resolution(
+                    long_s.get("signal_id"), "conflict",
+                )
             elif long_s["score"] > short_s["score"]:
                 # 选择做多，做空标记为冲突
                 del short_by_symbol[symbol]
-                await self._update_signal_resolution(symbol, "short", "conflict")
+                await self._update_signal_resolution(
+                    short_s.get("signal_id"), "conflict",
+                )
             else:
                 # 分数相同，比较技术面
                 short_tech = short_s.get("technical_score", 0)
                 long_tech = long_s.get("technical_score", 0)
                 if short_tech > long_tech:
                     del long_by_symbol[symbol]
-                    await self._update_signal_resolution(symbol, "long", "conflict")
+                    await self._update_signal_resolution(
+                        long_s.get("signal_id"), "conflict",
+                    )
                 elif long_tech > short_tech:
                     del short_by_symbol[symbol]
-                    await self._update_signal_resolution(symbol, "short", "conflict")
+                    await self._update_signal_resolution(
+                        short_s.get("signal_id"), "conflict",
+                    )
                 else:
                     # 技术分也相同，比较情绪得分
                     short_sentiment = short_s.get("sentiment_score", 0)
                     long_sentiment = long_s.get("sentiment_score", 0)
                     if short_sentiment > long_sentiment:
                         del long_by_symbol[symbol]
-                        await self._update_signal_resolution(symbol, "long", "conflict")
+                        await self._update_signal_resolution(
+                            long_s.get("signal_id"), "conflict",
+                        )
                     elif long_sentiment > short_sentiment:
                         del short_by_symbol[symbol]
-                        await self._update_signal_resolution(symbol, "short", "conflict")
+                        await self._update_signal_resolution(
+                            short_s.get("signal_id"), "conflict",
+                        )
                     else:
                         # 都相同，放弃两个
                         del short_by_symbol[symbol]
                         del long_by_symbol[symbol]
-                        await self._update_signal_resolution(symbol, "short", "conflict")
-                        await self._update_signal_resolution(symbol, "long", "conflict")
+                        await self._update_signal_resolution(
+                            short_s.get("signal_id"), "conflict",
+                        )
+                        await self._update_signal_resolution(
+                            long_s.get("signal_id"), "conflict",
+                        )
                         logger.info("双向信号冲突且无法区分，放弃", symbol=symbol)
 
         # 执行无冲突的信号
@@ -1428,7 +1970,13 @@ class HRSStrategy(BaseStrategy):
             success = await self.execute_signal(signal)
             # P2-1: 更新信号结果
             if success:
-                await self._update_signal_resolution(signal["symbol"], signal["direction"], "executed")
+                # B1/B2: 影子模式返回 True，但从未真实成交，必须落库为 'shadow'。
+                # 若写 'executed' 会把「未发生的成交」写成事实证据（证据幻觉）。
+                resolution = "shadow" if signal.get("shadow_blocked") else "executed"
+                # R9: 按 signal_id 精准更新，杜绝宽范围污染
+                await self._update_signal_resolution(
+                    signal.get("signal_id"), resolution,
+                )
 
     async def _writeback_pnl(
         self,
@@ -1506,24 +2054,24 @@ class HRSStrategy(BaseStrategy):
     async def _get_actual_pnl_from_binance(
         self,
         symbol: str,
-        entry_time: datetime,
+        opened_at: datetime,
     ) -> Optional[Decimal]:
         """
         从币安API获取该持仓的实际已实现盈亏
 
-        查询该 symbol 从入场时间到当前时间的全部 REALIZED_PNL 记录，
+        查询该 symbol 从开仓时刻到当前时间的全部 REALIZED_PNL 记录，
         汇总得到实际 PnL。
 
         Args:
             symbol: 交易对
-            entry_time: 入场时间（UTC datetime）
+            opened_at: 不可变开仓时刻（UTC datetime）
 
         Returns:
             实际 PnL 总和（USDT），API 失败或未找到记录返回 None
         """
         try:
-            # 将 entry_time 转换为毫秒时间戳
-            start_ms = int(entry_time.timestamp() * 1000)
+            # 将开仓时刻转换为毫秒时间戳
+            start_ms = int(opened_at.timestamp() * 1000)
             end_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
 
             income_records = await self.binance_client.get_income_history(
@@ -1677,13 +2225,16 @@ class HRSStrategy(BaseStrategy):
         atr: float,
         current_price: float,
         pos: Dict[str, Any],
-    ) -> None:
+    ) -> Optional[Decimal]:
         """
         全部平仓时回写完整 PnL（优先从币安API获取实际值，降级到理论计算）
 
         当 detect_take_profit_fills 检测到全部平仓（tp_result == 0）时，
         优先从币安API获取该持仓的实际已实现盈亏，写入 trade_records。
         API 失败时降级到理论计算（合并 TP1+TP2+剩余为 1 个总值，只写入 1 次）。
+
+        B6a: 返回本次回写使用的已实现盈亏（Decimal），让调用方复用同一值判定
+        胜负计数，避免"全平=止盈/止损"的事件名预判错误。
 
         Args:
             symbol: 交易对
@@ -1693,22 +2244,25 @@ class HRSStrategy(BaseStrategy):
             atr: ATR 值
             current_price: 当前价格（用于剩余部分的出场价估算）
             pos: 持仓数据字典
+
+        Returns:
+            本次回写使用的已实现盈亏；计算失败返回 None
         """
         try:
             if entry_price <= 0 or entry_quantity <= 0:
-                return
+                return None
 
             trade_logger = getattr(self.binance_client, 'trade_logger', None)
             if not trade_logger:
-                return
+                return None
 
             pnl_value: Optional[Decimal] = None
             pnl_source = "theoretical"
 
-            # 1. 优先从币安 API 获取实际 PnL
-            entry_time = pos.get("entry_time")
-            if isinstance(entry_time, datetime):
-                pnl_value = await self._get_actual_pnl_from_binance(symbol, entry_time)
+            # 1. 优先从币安 API 获取实际 PnL（B5：取不可变开仓时刻，不受复核延期影响）
+            opened_at = pos.get("opened_at")
+            if isinstance(opened_at, datetime):
+                pnl_value = await self._get_actual_pnl_from_binance(symbol, opened_at)
                 if pnl_value is not None:
                     pnl_source = "binance_api"
 
@@ -1726,7 +2280,7 @@ class HRSStrategy(BaseStrategy):
 
             if pnl_value is None:
                 logger.warning("PnL计算失败，无法回写", symbol=symbol)
-                return
+                return None
 
             # 3. 直接插入一条 PnL 汇总记录（条件单成交无 trade_records 可 UPDATE）
             #    只写这一条：亏损时把 STOP_LOSS 标记一并带上，不再额外调用 mark_stop_loss。
@@ -1736,11 +2290,11 @@ class HRSStrategy(BaseStrategy):
             #    since 传开仓时间，用于挡住进程重启/监控循环重复命中时的重复回写。
             close_side = "SELL" if direction == "long" else "BUY"
             since_dt: Optional[datetime] = None
-            if isinstance(entry_time, datetime):
+            if isinstance(opened_at, datetime):
                 since_dt = (
-                    entry_time.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
-                    if entry_time.tzinfo is not None
-                    else entry_time
+                    opened_at.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
+                    if opened_at.tzinfo is not None
+                    else opened_at
                 )
             success = await trade_logger.insert_pnl_summary(
                 realized_pnl=pnl_value,
@@ -1771,8 +2325,11 @@ class HRSStrategy(BaseStrategy):
                     source=pnl_source,
                 )
 
+            return pnl_value
+
         except Exception as e:
             logger.warning("全部平仓PnL回写失败，不影响主流程", symbol=symbol, error=str(e))
+            return None
 
     async def _should_hold_on_time_stop(self, symbol: str, direction: str) -> bool:
         """
@@ -1805,9 +2362,23 @@ class HRSStrategy(BaseStrategy):
             oi_usd = await self.market_data.get_oi_usd(symbol)
             funding_rate = await self.market_data.get_funding_rate(symbol)
             volume_24h = await self.market_data.get_24h_volume(symbol)
-            market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
-            has_market_cap = market_cap > 0
-            oi_market_cap_ratio = oi_usd / market_cap if has_market_cap else 0.0
+            # B4 (D5): 退出侧不阻断 —— require_true_for_entry=False，
+            # 代理值也允许进入 scoring_engine（has_market_cap=True）
+            # 缺失时 has_market_cap=False，scoring_engine 走 contract fallback，
+            # 持仓保护/减仓/退出照常工作（开仓数据要求不能变成无法退出）
+            (
+                oi_market_cap_ratio,
+                has_market_cap,
+                _mc_source,
+                _mc_value,
+            ) = await self._fetch_market_cap_ratio(
+                symbol, oi_usd, volume_24h, require_true_for_entry=False,
+            )
+            if _mc_source != "coingecko" and _mc_source != "cache_hit":
+                logger.info(
+                    "时间止损重新分析：市值来源非真实值，记录但不阻断退出",
+                    symbol=symbol, source=_mc_source,
+                )
 
             # 3. 获取形态识别结果
             if direction == "short":
@@ -1909,8 +2480,8 @@ class HRSStrategy(BaseStrategy):
                         logger.warning("止盈成交检测失败", symbol=symbol, error=str(e))
 
                     if tp_result == 0:
-                        # 全部平仓——计算 TP1、TP2 和剩余部分的 PnL 并回写
-                        await self._writeback_pnl_for_full_close(
+                        # B6a: 全部平仓——回写 PnL 并按真实已实现盈亏判定胜负
+                        close_pnl = await self._writeback_pnl_for_full_close(
                             symbol=symbol,
                             direction=direction,
                             entry_price=entry_price,
@@ -1921,7 +2492,13 @@ class HRSStrategy(BaseStrategy):
                         )
                         await self.position_manager.cancel_all_orders(symbol)
                         self.position_manager.remove_position(symbol)
-                        self.risk_manager.record_profit()
+
+                        # B6a: 按真实已实现盈亏符号计数，不再假设"全平=止盈"
+                        await self._record_outcome_by_pnl(
+                            close_pnl, symbol, direction,
+                            entry_price, current_price, "全平仓",
+                        )
+
                         await self._save_state()
                         if self._should_unregister(symbol):
                             await self._unregister_single_symbol(symbol)
@@ -1967,6 +2544,7 @@ class HRSStrategy(BaseStrategy):
                     # R04：仅完全成交才回写盈亏/撤单/删仓；失败或部分成交则保留仓位并告警，
                     # 由守卫内部按情况重建保护，下一周期幂等重试
                     # H6 修复：传 pos 让 _finalize_close_if_filled 在全平后补 PNL_SUMMARY 汇总写入
+                    # B6a：_finalize_close_if_filled 内部把 pnl_value 存进 pos['_last_close_pnl']
                     if not await self._finalize_close_if_filled(
                         symbol=symbol,
                         direction=direction,
@@ -1978,8 +2556,16 @@ class HRSStrategy(BaseStrategy):
                         pos=pos,
                     ):
                         continue
-                    await self.risk_manager.record_loss(symbol, entry_price, current_price)
+
+                    # B6a: 按实际已实现盈亏符号判定胜负，不再假设"时间止损=亏损"
+                    time_stop_pnl = pos.get("_last_close_pnl")
+                    await self._record_outcome_by_pnl(
+                        time_stop_pnl, symbol, direction,
+                        entry_price, current_price, "时间止损",
+                    )
+
                     # 使用 calculate_pnl 统一计算盈亏（支持做多/做空方向）
+                    # 累计 _total_pnl 用于回撤追踪，不影响风控胜负计数
                     pnl = TradeLogger.calculate_pnl(
                         direction="LONG" if direction == "long" else "SHORT",
                         entry_price=Decimal(str(entry_price)),
@@ -2017,6 +2603,7 @@ class HRSStrategy(BaseStrategy):
                         )
                         # R04：仅完全成交才回写盈亏/撤单/删仓；失败或部分成交则保留仓位并告警
                         # H6 修复：传 pos 让 _finalize_close_if_filled 在全平后补 PNL_SUMMARY 汇总写入
+                        # B6a：_finalize_close_if_filled 内部把 pnl_value 存进 pos['_last_close_pnl']
                         if not await self._finalize_close_if_filled(
                             symbol=symbol,
                             direction=direction,
@@ -2028,7 +2615,16 @@ class HRSStrategy(BaseStrategy):
                             pos=pos,
                         ):
                             continue
-                        self.risk_manager.record_profit()
+
+                        # B6a: 移动止盈虽命名为"止盈"，但极端行情下回撤可能超过入场价
+                        # 导致净亏损（闪崩/ATR 突增）。这里按实际净盈亏符号判定胜负，
+                        # 不再假设"移动止盈=盈利"。
+                        trailing_pnl = pos.get("_last_close_pnl")
+                        await self._record_outcome_by_pnl(
+                            trailing_pnl, symbol, direction,
+                            entry_price, current_price, "移动止盈",
+                        )
+
                         self._total_pnl += 0  # 盈利暂不累计到回撤计算
                         await self._save_state()
 
@@ -2110,23 +2706,40 @@ class HRSStrategy(BaseStrategy):
             logger.debug("LV-RM 未启用，跳过")
             return
 
+        # B2: 用具名列表承接 LV-RM 信号，并进入统一收尾链
+        # （_finalize_and_execute_signals）——抽取前此处把信号直接丢进临时 [] ，
+        # 导致空池期间 LV-RM 产出的信号永远不会被落库/执行（信号黑洞）。
+        short_signals: List[Dict] = []
+        long_signals: List[Dict] = []
         try:
             low_vol_symbols = await self.candidate_pool.get_lv_rm_scan_range()
             if low_vol_symbols:
-                await self._check_lv_rm_entries(low_vol_symbols, [], [])
+                # R1: 空池路径 → signal_origin="empty_pool"
+                await self._check_lv_rm_entries(
+                    low_vol_symbols, short_signals, long_signals,
+                    signal_origin="empty_pool",
+                )
             else:
                 logger.debug("LV-RM 无低波动候选币种")
         except Exception as e:
             logger.error("LV-RM 独立检查失败", error=str(e))
+
+        # 空池路径没有标准/EMM 信号源，LV-RM 已在上方扫描，故不再追加
+        await self._finalize_and_execute_signals(
+            short_signals,
+            long_signals,
+            source_symbols=[],
+        )
 
     async def _check_lv_rm_entries(
         self,
         low_vol_symbols: List[str],
         short_signals: List[Dict],
         long_signals: List[Dict],
+        signal_origin: str = "nonempty_pool",
     ) -> None:
         """
-        V2.4: 检查LV-RM低波动反转信号
+        V2.4 (R1): 检查LV-RM低波动反转信号
 
         对低波动候选币种执行LV-RM评分，检查入场条件。
 
@@ -2134,6 +2747,9 @@ class HRSStrategy(BaseStrategy):
             low_vol_symbols: 低波动币种列表
             short_signals: 做空信号列表（标准模式，将被追加）
             long_signals: 做多信号列表（标准模式，将被追加）
+            signal_origin: 信号来源（"empty_pool" / "nonempty_pool"），
+                           用于区分 lv_rm 信号是否应影子化（R1）。
+                           默认 "nonempty_pool"（保持原政策），内部两入口显式传参。
         """
         lv_rm_config = self.config.get("lv_rm", {})
         scan_config = lv_rm_config.get("scan", {})
@@ -2175,13 +2791,22 @@ class HRSStrategy(BaseStrategy):
                     current_open_time = klines[-1].get("open_time", 0)
                     current_close_time = current_open_time + KLINE_INTERVAL_MS.get(self.kline_interval, 3600000)
 
+                    # B1/B2: 1h 涨跌幅只算一次，供做空/做多两个信号共用（禁止重复实现）
+                    price_change_1h = self._calc_price_change_1h(klines)
+
                     # 获取OI和资金费率
                     oi_usd = await self.market_data.get_oi_usd(symbol)
                     funding_rate = await self.market_data.get_funding_rate(symbol, at_time=current_close_time)
                     volume_24h = await self.market_data.get_24h_volume(symbol)
-                    market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
-                    has_market_cap = market_cap > 0
-                    oi_market_cap_ratio = oi_usd / market_cap if has_market_cap else 0.0
+                    # B4 (D4): LV-RM 开仓侧只用真实市值（与 analyze 同口径）
+                    (
+                        oi_market_cap_ratio,
+                        has_market_cap,
+                        _mc_source,
+                        _mc_value,
+                    ) = await self._fetch_market_cap_ratio(
+                        symbol, oi_usd, volume_24h, require_true_for_entry=True,
+                    )
 
                     # LV-RM 评分（做空）
                     score = await self.scoring_engine.score_lv_rm(
@@ -2221,9 +2846,11 @@ class HRSStrategy(BaseStrategy):
                                 "sentiment_score": score.sentiment_score,
                                 "current_price": current_close,
                                 "klines": klines,
+                                "price_change_1h": price_change_1h,  # 组合级熔断单币轨
                                 "entry_mode": "lv_rm",
                                 "bb_position": score.bb_position,
                                 "rsi_value": score.rsi_value,
+                                "signal_origin": signal_origin,  # R1: 区分 empty_pool / nonempty_pool
                             })
                     else:
                         self._clear_signal_timestamp(symbol, "short")
@@ -2242,9 +2869,11 @@ class HRSStrategy(BaseStrategy):
                                 "sentiment_score": score_long.sentiment_score,
                                 "current_price": current_close,
                                 "klines": klines,
+                                "price_change_1h": price_change_1h,  # 组合级熔断单币轨
                                 "entry_mode": "lv_rm",
                                 "bb_position": score_long.bb_position,
                                 "rsi_value": score_long.rsi_value,
+                                "signal_origin": signal_origin,  # R1: 区分 empty_pool / nonempty_pool
                             })
                     else:
                         self._clear_signal_timestamp(symbol, "long")
@@ -2279,17 +2908,22 @@ class HRSStrategy(BaseStrategy):
                 )
             """)
 
-            await self.db.execute_ddl("""
+            # B5: 生命周期元数据列与建表共用 _POSITION_LIFECYCLE_COLUMNS，避免两处定义漂移
+            lifecycle_columns_sql = ",\n                    ".join(
+                f"{name} {col_type}" for name, col_type in _POSITION_LIFECYCLE_COLUMNS.items()
+            )
+            await self.db.execute_ddl(f"""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_positions (
                     symbol TEXT,
                     direction TEXT,
                     entry_price DOUBLE PRECISION,
                     quantity DOUBLE PRECISION,
-                    entry_time BIGINT,
-                    algo_ids JSONB,            -- FR-06: 条件单 algoId 映射 {role: algoId}
+                    entry_time BIGINT,         -- 回滚兼容别名（值 = opened_at），非独立语义字段
+                    algo_ids JSONB,            -- FR-06: 条件单 algoId 映射 {{role: algoId}}
                     remaining_quantity DOUBLE PRECISION,  -- 剩余数量（随止盈缩减）
                     target1_reached BOOLEAN,              -- TP1 是否达成
                     target2_reached BOOLEAN,              -- TP2 是否达成
+                    {lifecycle_columns_sql},
                     PRIMARY KEY (symbol, direction)
                 )
             """)
@@ -2310,6 +2944,12 @@ class HRSStrategy(BaseStrategy):
             await self.db.execute_ddl("""
                 ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS target2_reached BOOLEAN
             """)
+
+            # B5: 幂等迁移（补齐生命周期元数据列；列清单与建表共用同一份定义）
+            for column, col_type in _POSITION_LIFECYCLE_COLUMNS.items():
+                await self.db.execute_ddl(
+                    f"ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS {column} {col_type}"
+                )
 
             await self.db.execute_ddl("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_orders (
@@ -2378,6 +3018,7 @@ class HRSStrategy(BaseStrategy):
             """)
 
             # V2.0 新增：信号日志表（P2-1 独立表持久化）
+            # R9: entry_mode / signal_origin 两列——方案 A 归属隔离的建表声明（本轮不 apply）
             await self.db.execute_ddl("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_signals (
                     id BIGSERIAL PRIMARY KEY,
@@ -2391,7 +3032,9 @@ class HRSStrategy(BaseStrategy):
                     triggered_at TIMESTAMPTZ DEFAULT NOW(),
                     status TEXT DEFAULT 'triggered',
                     resolution TEXT,
-                    resolved_at TIMESTAMPTZ
+                    resolved_at TIMESTAMPTZ,
+                    entry_mode TEXT,
+                    signal_origin TEXT
                 )
             """)
             # 信号日志索引
@@ -2414,9 +3057,63 @@ class HRSStrategy(BaseStrategy):
                 ADD COLUMN IF NOT EXISTS rsi_value DOUBLE PRECISION
             """)
 
+            # R9: 归属隔离字段——幂等补齐存量库（本轮不 apply 迁移）
+            await self.db.execute_ddl("""
+                ALTER TABLE hrs.hrs_signals ADD COLUMN IF NOT EXISTS entry_mode TEXT
+            """)
+            await self.db.execute_ddl("""
+                ALTER TABLE hrs.hrs_signals ADD COLUMN IF NOT EXISTS signal_origin TEXT
+            """)
+
             logger.info("数据库Schema初始化完成")
         except Exception as e:
             logger.error("数据库Schema初始化失败", error=str(e))
+
+    def _apply_position_row(self, row: Dict[str, Any]) -> None:
+        """将 hrs_positions 单行恢复为内存持仓（B5：开仓/复核时刻分离 + D9 旧仓标记）
+
+        Args:
+            row: hrs_positions 查询结果行
+        """
+        pm = self.position_manager
+        symbol = row["symbol"]
+        # D9: 优先读 opened_at；缺失时回退 entry_time（旧行可能已被旧版 reset 覆盖，需标不确定）
+        opened_at = _ms_to_datetime(row.get("opened_at")) or _ms_to_datetime(row.get("entry_time"))
+        entry_mode = row.get("entry_mode") or None
+        pm.add_position(
+            symbol=symbol,
+            direction=row["direction"],
+            entry_price=float(row["entry_price"]),
+            quantity=float(row["quantity"]),
+            atr=0.0,  # ATR 后续分析时更新
+            entry_mode=entry_mode,
+            opened_at=opened_at,
+        )
+        pos = pm.get_position(symbol)
+        if pos is None:
+            return
+        # 真实开仓时刻或入场模式缺失 → 打标记，不编造
+        pos["opening_time_uncertain"] = (
+            bool(row.get("opening_time_uncertain")) or row.get("opened_at") is None
+        )
+        pos["entry_mode_unknown"] = bool(row.get("entry_mode_unknown")) or entry_mode is None
+        pos["position_id"] = row.get("position_id") or pos["position_id"]
+        pos["entry_config_hash"] = row.get("entry_config_hash")  # 存量 NULL 保持 None，不编造
+        next_review_at = _ms_to_datetime(row.get("next_review_at"))
+        if next_review_at is not None:
+            pos["next_review_at"] = next_review_at
+        # FR-06: 恢复 algo_ids 映射（兼容 dict 或 str 存储）
+        if row.get("algo_ids"):
+            algo_ids = row["algo_ids"]
+            pos["algo_ids"] = (json.loads(algo_ids) if isinstance(algo_ids, str) else algo_ids) or {}
+        # 2026-10-10: 恢复 remaining_quantity 与止盈目标标记，存量行 NULL 时保持 add_position 默认
+        if row.get("remaining_quantity") is not None:
+            pos["remaining_quantity"] = float(row["remaining_quantity"])
+            pm.sync_tracked_qty(symbol, pos["remaining_quantity"])
+        if row.get("target1_reached") is not None:
+            pos["target1_reached"] = bool(row["target1_reached"])
+        if row.get("target2_reached") is not None:
+            pos["target2_reached"] = bool(row["target2_reached"])
 
     async def _restore_state(self) -> None:
         """
@@ -2435,7 +3132,9 @@ class HRSStrategy(BaseStrategy):
 
             # 尝试从独立表恢复
             positions_rows = await self.db.fetch_all(
-                "SELECT symbol, direction, entry_price, quantity, entry_time, algo_ids, "
+                "SELECT symbol, direction, entry_price, quantity, entry_time, opened_at, "
+                "next_review_at, entry_mode, entry_config_hash, position_id, "
+                "opening_time_uncertain, entry_mode_unknown, algo_ids, "
                 "remaining_quantity, target1_reached, target2_reached FROM hrs.hrs_positions"
             )
             blacklist_rows = await self.db.fetch_all(
@@ -2451,40 +3150,7 @@ class HRSStrategy(BaseStrategy):
 
                 # 恢复持仓
                 for row in positions_rows:
-                    self.position_manager.add_position(
-                        symbol=row["symbol"],
-                        direction=row["direction"],
-                        entry_price=float(row["entry_price"]),
-                        quantity=float(row["quantity"]),
-                        atr=0.0,  # ATR 后续分析时更新
-                    )
-                    # 覆盖 entry_time
-                    pos = self.position_manager.get_position(row["symbol"])
-                    if pos and row.get("entry_time"):
-                        et = row["entry_time"]
-                        if isinstance(et, int) and et > 0:
-                            pos["entry_time"] = datetime.fromtimestamp(et / 1000, tz=timezone.utc)
-
-                    # FR-06: 恢复 algo_ids 映射（兼容 dict 或 str 存储）
-                    if pos and row.get("algo_ids"):
-                        algo_ids = row["algo_ids"]
-                        if isinstance(algo_ids, str):
-                            algo_ids = json.loads(algo_ids)
-                        pos["algo_ids"] = algo_ids or {}
-
-                    # 2026-10-10: 恢复 remaining_quantity 与止盈目标标记。存量行为
-                    # NULL 时保持 add_position 的默认值（remaining=开仓量、标记为 False）。
-                    if pos:
-                        if row.get("remaining_quantity") is not None:
-                            pos["remaining_quantity"] = float(row["remaining_quantity"])
-                            # 跟踪量对齐剩余数量，避免重启后把已缩量的持仓误判为止盈待成交
-                            self.position_manager.sync_tracked_qty(
-                                row["symbol"], pos["remaining_quantity"]
-                            )
-                        if row.get("target1_reached") is not None:
-                            pos["target1_reached"] = bool(row["target1_reached"])
-                        if row.get("target2_reached") is not None:
-                            pos["target2_reached"] = bool(row["target2_reached"])
+                    self._apply_position_row(row)
 
                 # 恢复黑名单
                 blacklist_symbols = set()
@@ -2857,6 +3523,51 @@ class HRSStrategy(BaseStrategy):
 
             await asyncio.sleep(self.warmup_check_interval_seconds)
 
+    async def _persist_position_row(self, symbol: str, pos: Dict[str, Any], now_ts: int) -> None:
+        """持久化单条持仓到 hrs_positions（B5：写 opened_at 及生命周期列，entry_time 为回滚别名）
+
+        Args:
+            symbol: 交易对
+            pos: 内存持仓记录
+            now_ts: 兜底毫秒时间戳（opened_at 缺失时使用）
+        """
+        opened_ms = _datetime_to_ms(pos.get("opened_at")) or now_ts
+        next_review_ms = _datetime_to_ms(pos.get("next_review_at"))
+        # FR-06: 持久化 algo_ids 映射（JSONB）
+        algo_ids_json = json.dumps(pos.get("algo_ids", {}), ensure_ascii=False)
+        # 2026-10-10: 一并持久化 remaining_quantity 与止盈目标标记
+        entry_quantity = pos.get("entry_quantity", 0)
+        remaining_quantity = pos.get("remaining_quantity", entry_quantity)
+        await self.db.execute(
+            """
+            INSERT INTO hrs.hrs_positions
+                (symbol, direction, entry_price, quantity, entry_time, opened_at, next_review_at,
+                 entry_mode, entry_config_hash, position_id, opening_time_uncertain,
+                 entry_mode_unknown, algo_ids, remaining_quantity, target1_reached, target2_reached)
+            VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15)
+            ON CONFLICT (symbol, direction) DO UPDATE
+            SET entry_price = $3, quantity = $4, entry_time = $5, opened_at = $5,
+                next_review_at = $6, entry_mode = $7, entry_config_hash = $8, position_id = $9,
+                opening_time_uncertain = $10, entry_mode_unknown = $11, algo_ids = $12::jsonb,
+                remaining_quantity = $13, target1_reached = $14, target2_reached = $15
+            """,
+            symbol,
+            pos.get("direction", ""),
+            pos.get("entry_price", 0),
+            entry_quantity,
+            opened_ms,
+            next_review_ms,
+            pos.get("entry_mode"),
+            pos.get("entry_config_hash"),
+            pos.get("position_id"),
+            bool(pos.get("opening_time_uncertain", False)),
+            bool(pos.get("entry_mode_unknown", False)),
+            algo_ids_json,
+            remaining_quantity,
+            bool(pos.get("target1_reached", False)),
+            bool(pos.get("target2_reached", False)),
+        )
+
     async def _save_state(self) -> None:
         """
         保存策略状态到数据库（P2-1: 独立表持久化）
@@ -2908,38 +3619,7 @@ class HRSStrategy(BaseStrategy):
             # 3. 保存持仓到 hrs_positions
             await self.db.execute("DELETE FROM hrs.hrs_positions")
             for symbol, pos in self.position_manager.get_all_positions().items():
-                entry_time = pos.get("entry_time")
-                if isinstance(entry_time, datetime):
-                    entry_time_ts = int(entry_time.timestamp() * 1000)
-                elif isinstance(entry_time, str):
-                    entry_time_ts = int(datetime.fromisoformat(entry_time).timestamp() * 1000)
-                else:
-                    entry_time_ts = now_ts
-                # FR-06: 持久化 algo_ids 映射（JSONB）
-                algo_ids_json = json.dumps(pos.get("algo_ids", {}), ensure_ascii=False)
-                # 2026-10-10: 一并持久化 remaining_quantity 与止盈目标标记
-                entry_quantity = pos.get("entry_quantity", 0)
-                remaining_quantity = pos.get("remaining_quantity", entry_quantity)
-                await self.db.execute(
-                    """
-                    INSERT INTO hrs.hrs_positions
-                        (symbol, direction, entry_price, quantity, entry_time, algo_ids,
-                         remaining_quantity, target1_reached, target2_reached)
-                    VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
-                    ON CONFLICT (symbol, direction) DO UPDATE
-                    SET entry_price = $3, quantity = $4, entry_time = $5, algo_ids = $6::jsonb,
-                        remaining_quantity = $7, target1_reached = $8, target2_reached = $9
-                    """,
-                    symbol,
-                    pos.get("direction", ""),
-                    pos.get("entry_price", 0),
-                    entry_quantity,
-                    entry_time_ts,
-                    algo_ids_json,
-                    remaining_quantity,
-                    bool(pos.get("target1_reached", False)),
-                    bool(pos.get("target2_reached", False)),
-                )
+                await self._persist_position_row(symbol, pos, now_ts)
 
             # 4. 保存活跃币种到 hrs_active_symbols
             await self.db.execute("DELETE FROM hrs.hrs_active_symbols")
@@ -3038,15 +3718,22 @@ class HRSStrategy(BaseStrategy):
         direction: str,
         signal: Dict[str, Any],
         resolution: Optional[str] = None,
-    ) -> None:
+    ) -> Optional[int]:
         """
-        P2-1: 将信号记录持久化到 hrs_signals 表
+        P2-1: 将信号记录持久化到 hrs_signals 表，并返回唯一 signal_id。
+
+        R9 方案 A 关键：INSERT ... RETURNING id 取回主键，回填 signal["signal_id"]，
+        供后续四条收尾分支（执行/冲突/超时/影子）按 id 精准更新，杜绝宽范围污染。
 
         Args:
             symbol: 交易对
             direction: 方向 ('short' 或 'long')
-            signal: 信号字典，包含 score, technical_score, sentiment_score, current_price 等
-            resolution: 结果状态，如 'executed', 'abandoned', 'timeout' 等
+            signal: 信号字典，包含 score, technical_score, sentiment_score,
+                    current_price 等；回填 signal_id / entry_mode / signal_origin
+            resolution: 结果状态（通常 None，落库时默认 'triggered'）
+
+        Returns:
+            signal_id（成功）或 None（INSERT 异常时，fail-safe 跳过后续宽范围更新）
         """
         try:
             total_score = signal.get("score", 0)
@@ -3056,6 +3743,9 @@ class HRSStrategy(BaseStrategy):
             # V2.4: LV-RM 字段
             bb_position = signal.get("bb_position")
             rsi_value = signal.get("rsi_value")
+            # R9: 归属字段（供 entry_mode / signal_origin 两列）
+            entry_mode = signal.get("entry_mode")
+            signal_origin = signal.get("signal_origin")
 
             # 合约数据评分从 total_score 反推（近似）
             scoring_config = self.config.get("scoring", {})
@@ -3072,13 +3762,15 @@ class HRSStrategy(BaseStrategy):
             else:
                 contract_score = 0
 
-            await self.db.execute(
+            # R9: 改 fetch_one 执行 INSERT ... RETURNING id（execute 不返回结果集）
+            row = await self.db.fetch_one(
                 """
                 INSERT INTO hrs.hrs_signals
                     (symbol, direction, total_score, technical_score, sentiment_score,
                      contract_score, current_price, status, resolution,
-                     bb_position, rsi_value)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, 'triggered', $8, $9, $10)
+                     bb_position, rsi_value, entry_mode, signal_origin)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, 'triggered', $8, $9, $10, $11, $12)
+                RETURNING id
                 """,
                 symbol,
                 direction,
@@ -3090,36 +3782,68 @@ class HRSStrategy(BaseStrategy):
                 resolution,
                 bb_position,
                 rsi_value,
+                entry_mode,
+                signal_origin,
             )
-            logger.debug("信号已记录到数据库", symbol=symbol, direction=direction, score=total_score)
+            signal_id: Optional[int] = None
+            if row is not None and row.get("id") is not None:
+                signal_id = int(row["id"])
+                signal["signal_id"] = signal_id  # 回填到同一 dict 引用，分桶后自动可见
+            logger.debug(
+                "信号已记录到数据库",
+                symbol=symbol, direction=direction, score=total_score, signal_id=signal_id,
+            )
+            return signal_id
         except Exception as e:
             logger.warning("信号日志持久化失败", symbol=symbol, error=str(e))
+            # RK1: 追加可识别告警，避免仅靠淹没的日志发现
+            await self._alert_signal_db_failure(
+                "insert_failed", symbol=symbol, direction=direction, error=str(e),
+            )
+            return None
 
     async def _update_signal_resolution(
         self,
-        symbol: str,
-        direction: str,
+        signal_id: Optional[int],
         resolution: str,
     ) -> None:
         """
-        P2-1: 更新信号的处理结果
+        P2-1: 按唯一 signal_id 更新单条信号结果（R9 方案 A：杜绝宽范围污染）
 
         Args:
-            symbol: 交易对
-            direction: 方向
-            resolution: 结果状态 ('executed', 'abandoned', 'timeout', 'conflict')
+            signal_id: 由 _log_signal_to_db INSERT RETURNING 取回的唯一主键；
+                       None 时跳过更新并 warning（fail-safe，不回退宽范围 WHERE）
+            resolution: 结果状态 ('executed', 'abandoned', 'timeout', 'conflict',
+                        'shadow')。'shadow' 表示影子模式：决策链跑完但未真实下单，
+                        严禁与 'executed' 混用（防把未发生的成交写成事实证据）。
         """
+        if signal_id is None:
+            # R9 fail-safe：signal_id 缺失时绝不回退到 symbol+direction 宽范围 WHERE，
+            # 否则重新引入「一条更新误伤同币同向其他信号」的根因。
+            logger.warning(
+                "信号缺少 signal_id，跳过结果更新（避免误伤其他信号）",
+                resolution=resolution,
+            )
+            # RK1: 追加可识别告警；此处无 symbol，仅传 resolution（signal_id 缺失是根因）
+            await self._alert_signal_db_failure(
+                "signal_id_missing", resolution=resolution,
+            )
+            return
         try:
             await self.db.execute(
                 """
                 UPDATE hrs.hrs_signals
-                SET status = 'resolved', resolution = $3, resolved_at = NOW()
-                WHERE symbol = $1 AND direction = $2 AND status = 'triggered'
+                SET status = 'resolved', resolution = $2, resolved_at = NOW()
+                WHERE id = $1
                 """,
-                symbol, direction, resolution,
+                signal_id, resolution,
             )
         except Exception as e:
-            logger.warning("信号结果更新失败", symbol=symbol, error=str(e))
+            logger.warning("信号结果更新失败", signal_id=signal_id, error=str(e))
+            # RK1: 追加可识别告警
+            await self._alert_signal_db_failure(
+                "update_failed", signal_id=signal_id, resolution=resolution, error=str(e),
+            )
 
     # ==================== P1-1: 信号超时跟踪 ====================
 
@@ -3190,8 +3914,10 @@ class HRSStrategy(BaseStrategy):
                             elapsed_hours=round(elapsed_hours, 1),
                             timeout_bars=self.abandon_timeout_bars,
                         )
-                        # P2-1: 更新信号结果为 timeout
-                        await self._update_signal_resolution(symbol, direction, "timeout")
+                        # P2-1: 按唯一 signal_id 更新信号结果为 timeout（R9 精准定位）
+                        await self._update_signal_resolution(
+                            signal.get("signal_id"), "timeout",
+                        )
                         self._clear_signal_timestamp(symbol, direction)
                         continue
                 except (ValueError, TypeError):
@@ -3571,6 +4297,37 @@ class HRSStrategy(BaseStrategy):
             return False
         return True
 
+    async def _record_outcome_by_pnl(
+        self,
+        pnl,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        current_price: float,
+        context: str,
+    ) -> None:
+        """按真实已实现盈亏符号记录风控胜负（消除全平仓/时间止损/移动止盈三处重复）。
+
+        Args:
+            pnl: 已实现盈亏值（可为 float/Decimal/int）；None 表示无法确定
+            symbol: 交易对
+            direction: 方向（'long'/'short'）
+            entry_price: 入场价（传给 risk_manager.record_loss）
+            current_price: 当前价（传给 risk_manager.record_loss）
+            context: 语义标签，用于无法确定时的告警上下文（如 "全平仓"/"时间止损"/"移动止盈"）
+        """
+        if pnl is None:
+            logger.warning(
+                f"{context}平仓 PnL 无法确定，跳过胜负计数",
+                symbol=symbol, direction=direction,
+            )
+            return
+        if pnl > 0:
+            self.risk_manager.record_profit()
+        elif pnl < 0:
+            await self.risk_manager.record_loss(symbol, entry_price, current_price)
+        # pnl == 0 盈亏平衡，不计数
+
     async def _finalize_close_if_filled(
         self,
         symbol: str,
@@ -3608,7 +4365,7 @@ class HRSStrategy(BaseStrategy):
             exit_price: 平仓价（回写盈亏用）
             quantity: 调用方请求的回写数量（仅用于日志；实际回写量以 result.closed_qty 为准）
             close_reason: 平仓原因（告警文案用；含"止损"时汇总行带 STOP_LOSS 标记）
-            pos: 持仓字典（含 entry_time/atr 等，用于汇总写入的 entry_time 取值链）；
+            pos: 持仓字典（含 opened_at/atr 等，用于汇总写入的开仓时刻取值链）；
                  None 时跳过汇总写入（兼容旧单测）
 
         Returns:
@@ -3645,9 +4402,12 @@ class HRSStrategy(BaseStrategy):
             # 回填脚本 hrs_pnl_backfill.py 以 reconcile.match_income_to_trades 归属
             # 的 income 真值为锚，后续可覆盖更新理论值汇总行（通过 close_reason/
             # order_id=backfill- 识别批次）。两阶段保证：实时兜底 + 离线校准。
+            #
+            # B6a: 接住 pnl_value 存到 pos 里（可变引用透传），让调用方复用同一值
+            # 判定胜负计数，不再"时间止损=亏损"无条件预判。
             if pos is not None:
                 try:
-                    await self._writeback_pnl_for_full_close(
+                    pnl_from_finalize = await self._writeback_pnl_for_full_close(
                         symbol=symbol,
                         direction=direction,
                         entry_price=entry_price,
@@ -3656,6 +4416,8 @@ class HRSStrategy(BaseStrategy):
                         current_price=exit_price,
                         pos=pos,
                     )
+                    if pnl_from_finalize is not None:
+                        pos["_last_close_pnl"] = pnl_from_finalize
                 except Exception as e:
                     # 汇总写入失败不影响主流程（明细已回写），H4 设计：记 ERROR 供后续追踪
                     logger.error(
@@ -3727,6 +4489,57 @@ class HRSStrategy(BaseStrategy):
             await self.notification_client.send(message=message, level="warning", project="hrs")
         except Exception as e:
             logger.warning("发送异常告警失败", error=str(e))
+
+    async def _alert_signal_db_failure(
+        self,
+        kind: str,
+        *,
+        symbol: Optional[str] = None,
+        direction: Optional[str] = None,
+        signal_id: Optional[int] = None,
+        resolution: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """
+        RK1: 信号落库/更新失败的可识别告警（收敛三处失败路径）。
+
+        复用 shared/notification.py::send_alert，走独立 alert webhook；
+        开关读 config.yaml::notification.events.signal_db_failure。
+        kind 区分三类来源：insert_failed / signal_id_missing / update_failed。
+
+        Args:
+            kind: 失败类型标识
+            symbol: 交易对（insert_failed 时必有）
+            direction: 方向（insert_failed 时必有）
+            signal_id: 信号主键（update_failed 时必有）
+            resolution: 结果状态（signal_id_missing / update_failed 时必有）
+            error: 异常信息字符串
+        """
+        # 防御：notification 相关属性在最小 fixture 中可能未初始化
+        # 未初始化等同于"通知未启用"，跳过不影响主流程
+        if not hasattr(self, "_notif_enabled"):
+            return
+        if not self._should_notify("signal_db_failure"):
+            return
+        parts = [f"kind={kind}"]
+        if symbol:
+            parts.append(f"symbol={symbol}")
+        if direction:
+            parts.append(f"direction={direction}")
+        if signal_id is not None:
+            parts.append(f"signal_id={signal_id}")
+        if resolution:
+            parts.append(f"resolution={resolution}")
+        if error is not None:
+            parts.append(f"error={error}")
+        try:
+            await self.notification_client.send_alert(
+                title="HRS信号落库失败",
+                message="; ".join(parts),
+                level="warning",
+            )
+        except Exception as e:
+            logger.warning("发送信号落库告警失败", error=str(e))
 
     # ==================== P2-4: 通知事件 ====================
 

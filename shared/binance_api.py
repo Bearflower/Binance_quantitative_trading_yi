@@ -1624,30 +1624,55 @@ class BinanceClient:
         symbol: str,
         order_id: Optional[str] = None,
         start_time: Optional[int] = None,
+        end_time: Optional[int] = None,
+        limit: Optional[int] = None,
+        from_id: Optional[int] = None,
     ) -> List[Dict]:
         """
         查询成交明细（userTrades）
 
         用于事后核对真实成交与手续费（佣金只在 userTrades 中返回，下单结果不含）。
-        支持按指定订单号精准拉取该订单全部分笔成交，以及按时间范围拉取某币种成交。
+        支持按指定订单号精准拉取该订单全部分笔成交，也支持按时间范围拉取某币种成交，
+        并可通过 end_time / limit 组合实现分页。
+
+        分页语义：仅当返回条数 < limit 时可判定到页尾；若恰好返回 limit 条，
+        调用方需按 trade_time 递增缩小窗口继续拉取，或使用游标逐页递进。
+        不传任何可选参数时，行为与本方法引入分页能力之前完全一致（向后兼容）。
 
         Args:
             symbol: 交易对（如 "BTCUSDT"）
             order_id: 订单ID（可选，提供时只返回该订单的成交明细）
             start_time: 起始时间戳（毫秒，可选）
+            end_time: 结束时间戳（毫秒，可选；用于时间窗上界或分页边界）
+            limit: 最大返回条数（可选，不传时由币安默认 500 条；上限 1000）
+            from_id: 从指定 trade id 开始续传（可选，币安原生支持；用于同毫秒跨页）
 
         Returns:
-            userTrades 成交明细列表，每条包含 orderId, commission,
+            userTrades 成交明细列表，每条包含 id, orderId, commission,
             commissionAsset, symbol, qty 等字段；非列表响应回退为空列表
         """
         if not symbol or not symbol.strip():
             raise ValueError("交易对不能为空")
 
-        params = {"symbol": symbol.strip().upper()}
+        # PM UM userTrades 契约：fromId 与 startTime/endTime 互斥
+        # 在 params 组装之前拦截，命中即抛，不进任何请求逻辑
+        if from_id is not None and (start_time is not None or end_time is not None):
+            raise ValueError(
+                "from_id 与 start_time/end_time 互斥，不能同时传入"
+                "（PM UM userTrades 契约约束）"
+            )
+
+        params: Dict[str, Any] = {"symbol": symbol.strip().upper()}
         if order_id is not None:
             params["orderId"] = order_id
         if start_time is not None:
             params["startTime"] = start_time
+        if end_time is not None:
+            params["endTime"] = end_time
+        if limit is not None:
+            params["limit"] = limit
+        if from_id is not None:
+            params["fromId"] = from_id
 
         # PM 账户走 /papi/v1/um/userTrades，普通合约账户走 /fapi/v1/userTrades
         endpoint = (

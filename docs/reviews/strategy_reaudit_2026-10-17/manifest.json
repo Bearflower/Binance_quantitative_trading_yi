@@ -1,0 +1,13 @@
+{
+  "head": "a17a1c296beb42f646059735765b8e084d6a529b",
+  "scope": "working tree including uncommitted changes; offline review",
+  "files": {
+    "scripts/export_execution_facts.py": "6f88029a6de6155fab7fc2a0d217c6100eeece2cd8db944ce6ab2987cbabec47",
+    "shared/binance_api.py": "739b3ce1aa56f28fecf8fb272a96c5288c3043db5ccb486a9aae759da9925693",
+    "strategies/new_coin/executor.py": "7c419fd8e0a38ec1d177e851c367847431f6320eeb6aee6296b627c8b2c59264",
+    "strategies/hrs/strategy.py": "447dda3fab764af1da426d382cb8ab9a7a4bb0ab005f349cba425ecde68ff3c4",
+    "tests/test_shared/test_execution_facts_regression.py": "75a06d9cf347816e1ae4e2805c51c51fc9cacb6a58559d450af5eec3235fe5a0",
+    "strategies/hrs/tests/test_r9_signal_attribution.py": "f4e765f2fa590009661170a990625a681101b9cd2de5063ab2c05fa5135774e1",
+    "strategies/new_coin/tests/test_reprice_budget_r8.py": "ee761b3b4dbcd80aa8c65c8b7e64bb0e44071ab156a0fcec13474d88b7982c5e"
+  }
+}

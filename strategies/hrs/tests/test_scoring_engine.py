@@ -371,7 +371,11 @@ class TestEntryDecision:
         assert engine.should_entry(result) is False
 
     def test_技术总分不足不应入场(self, engine):
-        """技术总分低于4.0，不应入场"""
+        """
+        V2.10 多空分离：short 方向 technical=2.0 已满足做空技术门槛 2.0（原做多门槛 4.0），
+        因此本 short 信号应入场。本用例标题沿用历史名，断言更新为 True。
+        真正的做空技术分不足场景见 test_做空技术分不足应拒入场。
+        """
         result = engine.score(
             symbol="DOGEUSDT",
             direction="short",
@@ -383,9 +387,71 @@ class TestEntryDecision:
             },
             funding_rate=0.002,
         )
-        # 合约分: 10, 技术分: 2, 情绪分: 10
-        # 但技术总分 2 < 4.0
-        assert result.technical_score < 4.0
+        # V2.10: short_min_total_score=2.0，technical_score=2.0 刚好满足做空技术门槛
+        # 总分 6.4 >= short_entry_threshold=5.5，形态分 2.0 >= short_min_primary=1.0
+        assert result.technical_score >= 2.0  # V2.10 short 门槛
+        assert result.technical_score < 4.0   # 做多门槛
+        assert engine.should_entry(result) is True
+
+    def test_做空技术分不足应拒入场(self, engine):
+        """真正的做空技术分不足（technical < 2.0）应拒入场，总分够高也没用"""
+        result = engine.score(
+            symbol="DOGEUSDT",
+            direction="short",
+            oi_market_cap_ratio=0.30,
+            # 只给一个极低分的形态，让 technical_score < 2.0
+            patterns={
+                "three_tops": (True, 0.5),
+                "long_upper_shadow": (False, 0.0),
+                "volume_stagnation": (False, 0.0),
+            },
+            funding_rate=0.002,
+        )
+        # 技术总分 < 2.0，但总分 5.7 仍 >= short_entry_threshold 5.5
+        # 确保失败点确实在技术门槛，而非总分门槛
+        assert result.technical_score < 2.0
+        assert result.total_score >= 5.5
+        assert engine.should_entry(result) is False
+
+    def test_standard_and_shadow_independent(self, engine):
+        """
+        R11: standard 主评分结果与 shadow 链（EMM/LV-RM 等影子模式）互不影响。
+        should_entry 只读 primary result 自身属性，不读取 shadows 列表。
+        """
+        # 构造一个 primary：short 技术分刚好略低于门槛，应拒入场
+        result = engine.score(
+            symbol="DOGEUSDT",
+            direction="short",
+            oi_market_cap_ratio=0.30,
+            patterns={
+                "three_tops": (True, 1.0),
+                "long_upper_shadow": (False, 0.0),
+                "volume_stagnation": (False, 0.0),
+            },
+            funding_rate=0.002,
+        )
+        # 先确认 should_entry 在加 shadow 前就返回 False
+        assert result.technical_score < 2.0
+        assert engine.should_entry(result) is False
+
+        # 模拟：向 result.shadows 挂一个高分 EMM shadow（技术分 5.0）
+        # should_entry 只读 primary，不应被 shadow 影响
+        from strategies.hrs.scoring_engine import ScoringResult
+        emm_shadow = ScoringResult(
+            symbol=result.symbol,
+            direction=result.direction,
+            total_score=8.0,
+            contract_score=10,
+            technical_score=5.0,
+            sentiment_score=10,
+            veto=False,
+            veto_reason=None,
+            entry_mode="emm",
+        )
+        assert result.shadows == []  # score() 默认不挂 shadow，此处手动注入
+        result.shadows.append(emm_shadow)
+
+        # should_entry 仍然只看 primary 的 technical_score，shadow 不参与判定
         assert engine.should_entry(result) is False
 
     def test_基础形态评分不足不应入场(self, engine):

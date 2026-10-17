@@ -1,0 +1,12 @@
+{
+  "head": "dbfd39bfff8c1eade0aa5dce5de291e2559dfd08",
+  "scope": "working tree offline review",
+  "files": {
+    "scripts/export_execution_facts.py": "ed532cb06d809a40dd71e3a360c56cb81f063b64cad6e5b48b21c2d42794390b",
+    "strategies/hrs/strategy.py": "b80ecaf0a2794cf3517d5336aa49705c9fda52320b149af6cbe2a8a9d78b8301",
+    "strategies/hrs/tests/test_scoring_engine.py": "c5c78c123bc9488f499c53e2f2dacd75f3d2d8b54a2475442eb0894142086342",
+    "strategies/hrs/tests/test_rk1_signal_db_alert.py": "e32eb7f0a1c867c570d11f4aa3b9531f0bb4e72273e603b70f95d728dc121758",
+    "strategies/hrs/tests/test_rk2_signal_stats.py": "f4c85be6ce947d42019f0c8c5ac7a30458b0520cade0f8b155fa363c6bec4ce2",
+    "docs/research/strategy_remediation/architecture_R10-RK_2026-10-17.md": "6cfdb5221ef47bdc9e8261772d3178b5193914ee7924758e6a568daf95c6b6fa"
+  }
+}

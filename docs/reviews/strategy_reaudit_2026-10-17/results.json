@@ -1,0 +1,104 @@
+{
+  "signals": [
+    {
+      "id": 1,
+      "mode": "standard",
+      "status": "resolved",
+      "resolution": "executed"
+    },
+    {
+      "id": 2,
+      "mode": "emm",
+      "status": "resolved",
+      "resolution": "shadow"
+    }
+  ],
+  "reprice": {
+    "budget_checks": 2,
+    "quantity": "0.833",
+    "final_price": "120.0",
+    "margin": "49.9800"
+  },
+  "interior": {
+    "expected": 5,
+    "actual": 5,
+    "ids": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "complete": true,
+    "calls": [
+      {
+        "symbol": "TESTUSDT",
+        "startTime": 1,
+        "endTime": 1000,
+        "limit": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 3
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 4
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 5
+      }
+    ],
+    "errors": []
+  },
+  "boundary": {
+    "expected": 5,
+    "actual": 5,
+    "ids": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "complete": true,
+    "calls": [
+      {
+        "symbol": "TESTUSDT",
+        "startTime": 1,
+        "endTime": 1000,
+        "limit": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 3
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 4
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 5
+      }
+    ],
+    "errors": []
+  }
+}

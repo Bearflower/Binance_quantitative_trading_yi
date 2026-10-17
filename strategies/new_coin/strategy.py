@@ -2,7 +2,8 @@
 新币做空策略主类
 继承 BaseStrategy，实现新币做空的核心逻辑
 """
-from typing import Dict, Any, Optional, List, Tuple
+from dataclasses import dataclass
+from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple
 import asyncio
 import os
 import time
@@ -25,7 +26,9 @@ from shared.utils import to_aware_utc
 from .scoring_engine import ScoringEngine, ScoringResult
 from .pattern import PatternRecognizer
 from .detector import ListingDetector
-from .executor import TradingExecutor, derive_reached_targets
+from .executor import (
+    TradingExecutor, derive_reached_targets, _PRICE_FRESH_DEFAULT_SECONDS,
+)
 
 
 logger = structlog.get_logger()
@@ -62,11 +65,51 @@ def _entry_time_to_naive_beijing(entry_time: Optional[str]) -> Optional[datetime
 # 预定义的跳过原因常量
 SKIP_REASON_TOO_LONG = '上线时间过长'
 
-# B3：反弹放弃检查的默认新鲜度（秒）——下单前实时价距当前时间的最大允许差
-_PRICE_FRESH_DEFAULT_SECONDS = 30
+# B3：反弹放弃检查的默认新鲜度常量已移至 executor.py，strategy.py 从中 import
 # B3：影子模式默认开启——该闸门此前恒不触发，修复后会减少部分新开仓，
 # 默认先影子对比差集，用户拍板放行后才真实拦截
 _SHADOW_DEFAULT = True
+
+
+# ------------------------------------------------------------------ R5
+@dataclass
+class FreshQuote:
+    """带请求时间信息的报价快照（R5 价格新鲜度）。
+
+    设计要点：
+    - 源行情时间可得（ticker 带权威时间戳）→ ``source_time_ms`` 非 None、
+      ``source_time_kind="server_time"``
+    - 当前 BinanceClient.get_ticker_price 只返回裸价，源时间不可得时
+      ``source_time_ms=None``、``source_time_kind="request_span"``（代理口径），
+      用请求起止时间差作为延迟代理，**不静默放行**（验收断言 4）。
+    - ``age_ms(now_ms)`` 是唯一新鲜度计算实现，executor 也复用此方法，
+      禁止在多处复制同构逻辑（禁止重复代码）。
+    """
+
+    price: Decimal
+    source_time_ms: Optional[int]
+    request_started_ms: int
+    request_finished_ms: int
+    source_time_kind: str  # "server_time" 或 "request_span"
+
+    @property
+    def request_span_ms(self) -> int:
+        """本次请求耗时（毫秒）。"""
+        return max(0, self.request_finished_ms - self.request_started_ms)
+
+    def age_ms(self, now_ms: int) -> int:
+        """统一计算报价龄值（毫秒）——唯一实现。
+
+        源时间可得 → ``now - source_time_ms``；
+        否则（代理口径）→ ``now - request_started_ms``——自请求发起以来的总时长，
+        涵盖请求耗时 + 获取后等待/执行准备耗时，支持 executor 下单前重校时
+        真实累积执行准备时间（此前实现固定返回 request_span_ms 常量，导致
+        执行准备耗时再长也不会超龄，entry_guard 永不触发——R5 阻断修复）。
+        """
+        if self.source_time_ms is not None:
+            return max(0, now_ms - self.source_time_ms)
+        # 代理口径：now 相对请求发起时刻的总时长（含执行准备耗时）
+        return max(0, now_ms - self.request_started_ms)
 
 
 def _compute_breakout_reference_high(
@@ -439,68 +482,113 @@ class NewCoinStrategy(BaseStrategy):
             )
             return {'symbol': symbol, 'error': str(e)}
 
-    # ------------------------------------------------------------------ B3
+    # ------------------------------------------------------------------ R5
     async def _fetch_fresh_ticker(
         self, symbol: str, max_age_seconds: Optional[float] = None
-    ) -> Tuple[Optional[Decimal], Optional[int]]:
-        """获取新鲜实时价 + 记录观察时间。
+    ) -> Tuple[Optional["FreshQuote"], Optional[str]]:
+        """获取带请求时间信息的实时报价（R5 价格新鲜度核心）。
+
+        改造要点（对比旧实现）：
+        - 请求前记 ``request_started_ms``、请求后记 ``request_finished_ms``，
+          **请求延迟独立判超龄**（旧版 ``observed_at`` 在返回后才设，
+          随后再取 time.time() 比较恒为 0，请求耗时被吞掉）。
+        - 源时间戳：当前 BinanceClient.get_ticker_price 只返回裸价（shared 不改），
+          ``source_time_ms=None``、``source_time_kind="request_span"``（代理口径），
+          **不静默放行**（验收断言 4）。
+        - ``FreshQuote.age_ms()`` 是唯一新鲜度计算实现（禁止重复代码）。
 
         Args:
             symbol: 交易对（大写）
-            max_age_seconds: 新鲜度上限（秒）；不传则只返回 (price, observed_at)，不做超龄检查。
+            max_age_seconds: 新鲜度上限（秒）；不传则不做超龄检查。
 
         Returns:
-            (price_decimal, observed_at_epoch_seconds)。价无效/获取失败返回 (None, None)。
+            (FreshQuote, reject_reason)。
+            获取失败 → (None, "获取实时价失败: ...")；
+            价无效   → (None, "实时价无效")；
+            超龄     → (None, "实时价超龄（请求耗时 X.Xs > 上限 Ys）")。
         """
+        request_started_ms = int(time.time() * 1000)
         try:
             price = await self.binance_client.get_ticker_price(symbol)
         except Exception as exc:
+            request_finished_ms = int(time.time() * 1000)
+            span_s = (request_finished_ms - request_started_ms) / 1000
             logger.warning(
-                "获取实时价失败", symbol=symbol, error=str(exc)
+                "获取实时价失败", symbol=symbol, error=str(exc),
+                request_span_seconds=round(span_s, 3),
             )
-            return None, None
+            return None, f"获取实时价失败: {exc}"
+
+        request_finished_ms = int(time.time() * 1000)
 
         if price is None or price <= 0:
             logger.warning("实时价无效", symbol=symbol, price=price)
-            return None, None
+            return None, "实时价无效"
 
-        observed_at = int(time.time())
+        # 当前 get_ticker_price 只返回裸价，无权威源时间戳 → 代理口径
+        source_time_ms = None
+        source_time_kind = "request_span"
+
+        quote = FreshQuote(
+            price=price,
+            source_time_ms=source_time_ms,
+            request_started_ms=request_started_ms,
+            request_finished_ms=request_finished_ms,
+            source_time_kind=source_time_kind,
+        )
+
+        span_s = quote.request_span_ms / 1000
+        # 源时间不可得 → 明确记录代理口径，禁止静默放行（验收断言 4）——
+        # info 级确保生产环境可见（此前 debug 属准静默放行）
+        logger.info(
+            "实时价带请求时间（源时间不可得，降级为请求延迟代理口径）",
+            symbol=symbol,
+            price=str(price), request_span_seconds=round(span_s, 3),
+            source_time_kind=source_time_kind,
+            note="shared/binance_api.get_ticker_price 未返回 ticker 时间戳",
+        )
 
         if max_age_seconds is not None:
-            # 新鲜 ticker 返回时 observed_at 就是当前时间，基本不会超龄；
-            # 这里保留检查，供未来接入带服务器时间戳的行情源时也能覆盖
-            age = int(time.time()) - observed_at
-            if age > max_age_seconds:
+            max_age_ms = max_age_seconds * 1000
+            now_ms = int(time.time() * 1000)
+            age_ms = quote.age_ms(now_ms)
+            if age_ms > max_age_ms:
                 logger.warning(
-                    "实时价超龄", symbol=symbol, age_seconds=age,
-                    limit_seconds=max_age_seconds,
+                    "实时价超龄", symbol=symbol,
+                    age_ms=age_ms, limit_ms=max_age_ms,
+                    request_span_ms=quote.request_span_ms,
+                    source_time_kind=source_time_kind,
                 )
-                return None, observed_at
+                return None, (
+                    f"实时价超龄（请求耗时 {span_s:.1f}s > 上限 {max_age_seconds}s）"
+                )
 
-        return price, observed_at
+        return quote, None
 
     async def _fetch_fresh_price_and_check_rebound(
         self, signal: Dict[str, Any]
-    ) -> Tuple[Optional[float], Optional[str], Optional[str]]:
-        """B3 反弹闸门：取新鲜实时价 vs 固定参照高点。
+    ) -> Tuple[Optional["FreshQuote"], Optional[str], Optional[str], Optional[float]]:
+        """B3 + R5：取带请求时间的新鲜实时价 + 反弹闸门 + 固定参照一并返回。
 
-        契约（D3）：
+        契约（D3 + R5）：
         - 有 breakout_reference → 走新路径（新鲜价 + 反弹检查 + 影子）
-        - 无 breakout_reference（legacy signal）→ 返回 (None, None, None)，调用方走旧路径
-        - 获取失败 / 价无效 / 超龄 → 返回 (None, 拒绝原因, None)，**无论影子与否都拒绝**
+        - 无 breakout_reference（legacy signal）→ 返回 (None, None, None, None)，
+          调用方走旧路径（兼容未升级信号）
+        - 获取失败 / 价无效 / 超龄 → 返回 (None, 拒绝原因, None, None)，**无论影子与否都拒绝**
           （新鲜价无效 = 无法信任价格，安全优先）
-        - 反弹超限且影子关闭 → 返回 (None, 拒绝原因, None)
-        - 反弹超限且影子开启 → 返回 (实时价, None, 影子记录原因)（放行但留痕）
-        - 反弹未超限 → 返回 (实时价, None, None)
+        - 反弹超限且影子关闭 → 返回 (None, 拒绝原因, None, ref_high)
+        - 反弹超限且影子开启 → 返回 (FreshQuote, None, 影子记录原因, ref_high)（放行但留痕）
+        - 反弹未超限 → 返回 (FreshQuote, None, None, ref_high)
+        - ``ref_high`` 是信号生成时固定的「最近 N 根已关闭 K 线最高价」，**不随重取价抬高**（D3）。
 
         Returns:
-            (current_price_float, rejection_reason, shadow_reason)
+            (FreshQuote_or_None, rejection_reason, shadow_reason, ref_high)
         """
         symbol = signal.get('symbol')
         ref = signal.get('breakout_reference')
         if not ref or not symbol:
             # legacy path 或数据缺失 → 由调用方回退
-            return None, None, None
+            return None, None, None, None
 
         rebound_config = self.config.get('scoring', {}).get('rebound_check', {})
         max_age = float(
@@ -510,18 +598,18 @@ class NewCoinStrategy(BaseStrategy):
             rebound_config.get('shadow', {}).get('enabled', _SHADOW_DEFAULT)
         )
 
-        # 1. 取新鲜实时价（带新鲜度校验）
-        price_dec, observed_at = await self._fetch_fresh_ticker(symbol, max_age_seconds=max_age)
-        if price_dec is None:
-            reason = (
-                "实时价获取失败/无效/超龄，拒绝新开仓"
-                if observed_at is None else "实时价超龄，拒绝新开仓"
-            )
-            return None, reason, None
+        # 1. 取新鲜实时价（带请求时间 + 超龄校验）
+        quote, ticker_reject = await self._fetch_fresh_ticker(
+            symbol, max_age_seconds=max_age
+        )
+        if quote is None:
+            # ticker_reject 已含完整原因（超龄/无效/获取失败），直接透传
+            return None, ticker_reject or "实时价获取失败/无效/超龄，拒绝新开仓", None, None
 
-        current_price = float(price_dec)
+        current_price = float(quote.price)
 
         # 2. 反弹比较：实时价严格「超过」参照高点 → 触发闸门
+        #    ref_high 来自信号生成时固定的已关闭 K 线窗口（D3：不随重取价抬高）
         ref_high = float(ref.get('breakout_reference_high', 0))
         if ref_high > 0 and current_price > ref_high:
             msg = (
@@ -532,13 +620,13 @@ class NewCoinStrategy(BaseStrategy):
                 # 影子模式：放行但记录到实例属性，供 run_cycle 汇总统计差集
                 self._record_shadow_rebound(symbol, current_price, ref_high)
                 logger.info(f"[影子] {msg}")
-                return current_price, None, msg
+                return quote, None, msg, ref_high
             else:
                 logger.warning(msg)
-                return None, msg, None
+                return None, msg, None, ref_high
 
         # 3. 未触发反弹闸门
-        return current_price, None, None
+        return quote, None, None, ref_high
 
     def _record_shadow_rebound(
         self, symbol: str, real_price: float, ref_high: float
@@ -601,26 +689,74 @@ class NewCoinStrategy(BaseStrategy):
                 logger.warning(f"今日开仓已达上限: {self.daily_trade_count}/{daily_limit}")
                 return False, f"今日开仓已达上限({self.daily_trade_count}/{daily_limit})"
 
-            # B3：优先走新路径（新鲜实时价 + 反弹闸门 + 影子）
+            # B3 + R5：优先走新路径（新鲜实时价 + 反弹闸门 + 影子 + 传递时间）
             # 无 breakout_reference → 回退 legacy 旧路径（兼容未升级的 signal）
+            # 同时为 executor 下单前重校准备 entry_guard 闭包
             current_price: Optional[float] = None
+            fresh_quote: Optional["FreshQuote"] = None
 
             # 懒初始化影子记录容器
             if not hasattr(self, '_shadow_rebound_rejects'):
                 self._shadow_rebound_rejects: Dict[str, Any] = {}
 
-            fresh_price, reject_reason, _shadow_reason = \
+            # 读反弹配置（entry_guard 也复用同一配置段，禁止硬编码）
+            rebound_config = self.config.get('scoring', {}).get('rebound_check', {})
+            max_age = float(
+                rebound_config.get('max_price_age_seconds', _PRICE_FRESH_DEFAULT_SECONDS)
+            )
+            shadow_enabled = bool(
+                rebound_config.get('shadow', {}).get('enabled', _SHADOW_DEFAULT)
+            )
+
+            fresh_quote, reject_reason, _shadow_reason, ref_high = \
                 await self._fetch_fresh_price_and_check_rebound(signal)
             if reject_reason is not None:
                 # 反弹闸门（非影子）或实时价不可用 → 拒绝新开仓
                 logger.warning(f"新开仓被拒绝: {symbol}", reason=reject_reason)
                 return False, reject_reason
 
-            if fresh_price is not None:
-                # 新路径成功：用新鲜 ticker 价作为开仓价
-                current_price = fresh_price
+            if fresh_quote is not None:
+                # 新路径成功：用带请求时间的 FreshQuote，同时准备 executor 下单前重校
+                current_price = float(fresh_quote.price)
+
+                # entry_guard：executor 执行准备耗时超 max_age 时，
+                # 重取实时价 + 重判反弹（D3 固定参照 ref_high 不重算抬高）
+                # 反弹突破处理：非影子拒绝 / 影子放行留痕（同 _fetch_fresh_price_and_check_rebound 口径）
+                # 禁止 executor 复制反弹逻辑——反弹属 strategy 业务，executor 只负责执行
+                _entry_symbol = symbol
+                _entry_ref_high = ref_high
+
+                async def entry_guard() -> Tuple[Optional["FreshQuote"], Optional[str]]:
+                    """executor 下单前重校闭包——唯一实现（禁止重复代码）。"""
+                    new_quote, ticker_reject = await self._fetch_fresh_ticker(
+                        _entry_symbol, max_age_seconds=max_age
+                    )
+                    if new_quote is None:
+                        reason = ticker_reject or "执行前重取实时价失败"
+                        logger.warning(
+                            "执行前重取实时价不可用",
+                            symbol=_entry_symbol, reason=reason,
+                        )
+                        return None, reason
+                    new_price = float(new_quote.price)
+                    if _entry_ref_high and _entry_ref_high > 0 \
+                            and new_price > _entry_ref_high:
+                        # 反弹突破固定参照（D3：不重算抬高）
+                        msg = (
+                            f"执行前反弹放弃: 实时价 {new_price} > 固定参照 {_entry_ref_high}"
+                        )
+                        if shadow_enabled:
+                            self._record_shadow_rebound(
+                                _entry_symbol, new_price, _entry_ref_high
+                            )
+                            logger.info(f"[影子] {msg}")
+                            return new_quote, None  # 影子放行留痕
+                        else:
+                            logger.warning(msg)
+                            return None, msg
+                    return new_quote, None
             else:
-                # legacy 回退
+                # legacy 回退：无 FreshQuote、无 entry_guard
                 market_data = signal.get('market_data', {})
                 current_price_raw = market_data.get('current_price', 0)
                 try:
@@ -633,10 +769,14 @@ class NewCoinStrategy(BaseStrategy):
                 return False, "当前价格无效"
 
             # 执行做空（execute_short 返回 (order, fail_reason) 元组，透传真实失败原因）
+            # R5：新路径传 FreshQuote + entry_guard（executor 下单前超龄则重取并重判）；
+            #      legacy 路径只传 current_price，executor 跳过重校（兼容旧信号）
             order, fail_reason = await self.trading_executor.execute_short(
                 symbol=symbol,
                 score_result=score_result_dict,
-                current_price=current_price
+                current_price=current_price,
+                quote=fresh_quote,
+                entry_guard=entry_guard if fresh_quote is not None else None,
             )
 
             if order:

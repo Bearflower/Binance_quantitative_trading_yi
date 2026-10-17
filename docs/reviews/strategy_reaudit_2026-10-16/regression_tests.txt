@@ -1,0 +1,123 @@
+.................................................................FFF.... [  8%]
+..................................................FEEEE
+==================================== ERRORS ====================================
+_____________ ERROR at setup of TestSettlementTime.test_UTC_00时段结算 _____________
+strategies/hrs/tests/test_market_data.py:56: in mdp
+    return MarketDataProvider(mock_binance_api, mock_kline_service, CONFIG)
+strategies/hrs/market_data.py:54: in __init__
+    self.market_cap_service = MarketCapService(
+shared/market_cap.py:142: in __init__
+    self._request_lock = asyncio.Lock()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/locks.py:81: in __init__
+    self._loop = events.get_event_loop()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/events.py:642: in get_event_loop
+    raise RuntimeError('There is no current event loop in thread %r.'
+E   RuntimeError: There is no current event loop in thread 'MainThread'.
+_____________ ERROR at setup of TestSettlementTime.test_UTC_08时段结算 _____________
+strategies/hrs/tests/test_market_data.py:56: in mdp
+    return MarketDataProvider(mock_binance_api, mock_kline_service, CONFIG)
+strategies/hrs/market_data.py:54: in __init__
+    self.market_cap_service = MarketCapService(
+shared/market_cap.py:142: in __init__
+    self._request_lock = asyncio.Lock()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/locks.py:81: in __init__
+    self._loop = events.get_event_loop()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/events.py:642: in get_event_loop
+    raise RuntimeError('There is no current event loop in thread %r.'
+E   RuntimeError: There is no current event loop in thread 'MainThread'.
+_____________ ERROR at setup of TestSettlementTime.test_UTC_16时段结算 _____________
+strategies/hrs/tests/test_market_data.py:56: in mdp
+    return MarketDataProvider(mock_binance_api, mock_kline_service, CONFIG)
+strategies/hrs/market_data.py:54: in __init__
+    self.market_cap_service = MarketCapService(
+shared/market_cap.py:142: in __init__
+    self._request_lock = asyncio.Lock()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/locks.py:81: in __init__
+    self._loop = events.get_event_loop()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/events.py:642: in get_event_loop
+    raise RuntimeError('There is no current event loop in thread %r.'
+E   RuntimeError: There is no current event loop in thread 'MainThread'.
+_______________ ERROR at setup of TestSettlementTime.test_结算时间边界 _______________
+strategies/hrs/tests/test_market_data.py:56: in mdp
+    return MarketDataProvider(mock_binance_api, mock_kline_service, CONFIG)
+strategies/hrs/market_data.py:54: in __init__
+    self.market_cap_service = MarketCapService(
+shared/market_cap.py:142: in __init__
+    self._request_lock = asyncio.Lock()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/locks.py:81: in __init__
+    self._loop = events.get_event_loop()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/events.py:642: in get_event_loop
+    raise RuntimeError('There is no current event loop in thread %r.'
+E   RuntimeError: There is no current event loop in thread 'MainThread'.
+=================================== FAILURES ===================================
+_______ TestExecuteSignalRejectOnExchangePosition.test_开启开关且交易所允许开仓_正常执行 _______
+strategies/hrs/tests/test_fix_verification.py:999: in test_开启开关且交易所允许开仓_正常执行
+    assert asyncio.run(strategy.execute_signal(_short_signal())) is True
+E   AssertionError: assert False is True
+E    +  where False = <function run at 0x1021f3790>(<coroutine object HRSStrategy.execute_signal at 0x127de0640>)
+E    +    where <function run at 0x1021f3790> = asyncio.run
+E    +    and   <coroutine object HRSStrategy.execute_signal at 0x127de0640> = execute_signal({'current_price': 50000.0, 'direction': 'short', 'entry_mode': 'standard', 'klines': [], ...})
+E    +      where execute_signal = <strategies.hrs.strategy.HRSStrategy object at 0x127d65a90>.execute_signal
+E    +      and   {'current_price': 50000.0, 'direction': 'short', 'entry_mode': 'standard', 'klines': [], ...} = _short_signal()
+---------------------------- Captured stdout setup -----------------------------
+2026-10-16 13:15:40 [info     ] 持仓管理器初始化完成                     max_holding_hours=72 target1_atr_multiplier=1.5 target2_atr_multiplier=3.5
+2026-10-16 13:15:40 [info     ] 交易执行器初始化完成                     atr_multiplier=2.5 emergency_percent=0.015 entry_timeout_minutes=15 leverage=2 order_type_entry=LIMIT order_type_stop_loss=STOP_MARKET order_type_take_profit=TAKE_PROFIT
+2026-10-16 13:15:40 [info     ] 策略基类初始化                        config_keys=['strategy', 'market_cap', 'scoring', 'emm', 'semi_emm', 'candidate_pool', 'pattern', 'trading', 'position_sizing', 'capital_limits', 'kline', 'cycle', 'funding_rate', 'atr', 'notification', 'circuit_breaker', 'database', 'lv_rm', 'logging']
+2026-10-16 13:15:40 [info     ] HRS策略初始化                       check_interval=3600 strategy_name=hrs
+----------------------------- Captured stdout call -----------------------------
+2026-10-16 13:15:40 [error    ] 执行信号失败                         error='HRSStrategy' object has no attribute 'circuit_breaker'
+________ TestExecuteSignalRejectOnExchangePosition.test_关闭开关_不执行交易所持仓检查 ________
+strategies/hrs/tests/test_fix_verification.py:1010: in test_关闭开关_不执行交易所持仓检查
+    assert asyncio.run(strategy.execute_signal(_long_signal())) is True
+E   AssertionError: assert False is True
+E    +  where False = <function run at 0x1021f3790>(<coroutine object HRSStrategy.execute_signal at 0x127e6a040>)
+E    +    where <function run at 0x1021f3790> = asyncio.run
+E    +    and   <coroutine object HRSStrategy.execute_signal at 0x127e6a040> = execute_signal({'current_price': 50000.0, 'direction': 'long', 'entry_mode': 'standard', 'klines': [], ...})
+E    +      where execute_signal = <strategies.hrs.strategy.HRSStrategy object at 0x130b35fd0>.execute_signal
+E    +      and   {'current_price': 50000.0, 'direction': 'long', 'entry_mode': 'standard', 'klines': [], ...} = _long_signal()
+---------------------------- Captured stdout setup -----------------------------
+2026-10-16 13:15:40 [info     ] 持仓管理器初始化完成                     max_holding_hours=72 target1_atr_multiplier=1.5 target2_atr_multiplier=3.5
+2026-10-16 13:15:40 [info     ] 交易执行器初始化完成                     atr_multiplier=2.5 emergency_percent=0.015 entry_timeout_minutes=15 leverage=2 order_type_entry=LIMIT order_type_stop_loss=STOP_MARKET order_type_take_profit=TAKE_PROFIT
+2026-10-16 13:15:40 [info     ] 策略基类初始化                        config_keys=['strategy', 'market_cap', 'scoring', 'emm', 'semi_emm', 'candidate_pool', 'pattern', 'trading', 'position_sizing', 'capital_limits', 'kline', 'cycle', 'funding_rate', 'atr', 'notification', 'circuit_breaker', 'database', 'lv_rm', 'logging']
+2026-10-16 13:15:40 [info     ] HRS策略初始化                       check_interval=3600 strategy_name=hrs
+----------------------------- Captured stdout call -----------------------------
+2026-10-16 13:15:40 [error    ] 执行信号失败                         error='HRSStrategy' object has no attribute 'circuit_breaker'
+______ TestCreateProtectionOrdersFailure.test_TP下单失败_收集失败角色_仍记录持仓并触发补单告警 _______
+strategies/hrs/tests/test_fix_verification.py:1044: in test_TP下单失败_收集失败角色_仍记录持仓并触发补单告警
+    assert asyncio.run(strategy.execute_signal(_short_signal())) is True
+E   AssertionError: assert False is True
+E    +  where False = <function run at 0x1021f3790>(<coroutine object HRSStrategy.execute_signal at 0x127de0840>)
+E    +    where <function run at 0x1021f3790> = asyncio.run
+E    +    and   <coroutine object HRSStrategy.execute_signal at 0x127de0840> = execute_signal({'current_price': 50000.0, 'direction': 'short', 'entry_mode': 'standard', 'klines': [], ...})
+E    +      where execute_signal = <strategies.hrs.strategy.HRSStrategy object at 0x127e69520>.execute_signal
+E    +      and   {'current_price': 50000.0, 'direction': 'short', 'entry_mode': 'standard', 'klines': [], ...} = _short_signal()
+---------------------------- Captured stdout setup -----------------------------
+2026-10-16 13:15:40 [info     ] 持仓管理器初始化完成                     max_holding_hours=72 target1_atr_multiplier=1.5 target2_atr_multiplier=3.5
+2026-10-16 13:15:40 [info     ] 交易执行器初始化完成                     atr_multiplier=2.5 emergency_percent=0.015 entry_timeout_minutes=15 leverage=2 order_type_entry=LIMIT order_type_stop_loss=STOP_MARKET order_type_take_profit=TAKE_PROFIT
+2026-10-16 13:15:40 [info     ] 策略基类初始化                        config_keys=['strategy', 'market_cap', 'scoring', 'emm', 'semi_emm', 'candidate_pool', 'pattern', 'trading', 'position_sizing', 'capital_limits', 'kline', 'cycle', 'funding_rate', 'atr', 'notification', 'circuit_breaker', 'database', 'lv_rm', 'logging']
+2026-10-16 13:15:40 [info     ] HRS策略初始化                       check_interval=3600 strategy_name=hrs
+----------------------------- Captured stdout call -----------------------------
+2026-10-16 13:15:40 [error    ] 执行信号失败                         error='HRSStrategy' object has no attribute 'circuit_breaker'
+__________________ TestMarketDataProviderInit.test_从配置正确加载参数 ___________________
+strategies/hrs/tests/test_market_data.py:44: in test_从配置正确加载参数
+    mdp = MarketDataProvider(mock_binance_api, mock_kline_service, CONFIG)
+strategies/hrs/market_data.py:54: in __init__
+    self.market_cap_service = MarketCapService(
+shared/market_cap.py:142: in __init__
+    self._request_lock = asyncio.Lock()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/locks.py:81: in __init__
+    self._loop = events.get_event_loop()
+/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/asyncio/events.py:642: in get_event_loop
+    raise RuntimeError('There is no current event loop in thread %r.'
+E   RuntimeError: There is no current event loop in thread 'MainThread'.
+=========================== short test summary info ============================
+FAILED strategies/hrs/tests/test_fix_verification.py::TestExecuteSignalRejectOnExchangePosition::test_开启开关且交易所允许开仓_正常执行
+FAILED strategies/hrs/tests/test_fix_verification.py::TestExecuteSignalRejectOnExchangePosition::test_关闭开关_不执行交易所持仓检查
+FAILED strategies/hrs/tests/test_fix_verification.py::TestCreateProtectionOrdersFailure::test_TP下单失败_收集失败角色_仍记录持仓并触发补单告警
+FAILED strategies/hrs/tests/test_market_data.py::TestMarketDataProviderInit::test_从配置正确加载参数
+ERROR strategies/hrs/tests/test_market_data.py::TestSettlementTime::test_UTC_00时段结算
+ERROR strategies/hrs/tests/test_market_data.py::TestSettlementTime::test_UTC_08时段结算
+ERROR strategies/hrs/tests/test_market_data.py::TestSettlementTime::test_UTC_16时段结算
+ERROR strategies/hrs/tests/test_market_data.py::TestSettlementTime::test_结算时间边界
+!!!!!!!!!!!!!!!!!!!!!!!!!! stopping after 8 failures !!!!!!!!!!!!!!!!!!!!!!!!!!!
+4 failed, 119 passed, 4 errors in 9.91s

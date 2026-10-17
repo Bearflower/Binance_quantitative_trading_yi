@@ -15,6 +15,10 @@ market_cap:
   coin_list_cool_down_seconds: 60.0   # 币种列表加载失败后的冷却时长（秒）
   request_interval: 2.0       # 连续请求最小间隔（秒），asyncio.Lock 保证原子性
   rate_limit_cooldown_seconds: 60.0   # 触发 429 后的全局冷却期（秒），冷却期内跳过所有 CoinGecko 请求
+  # B4 (D4): OI×市值 代理系数（默认 20.0，对应 OI/市值=0.05）
+  # 历史硬编码值已提取为配置；与 candidate_pool.long.oi_market_cap_max=0.05 是同一口径的倒数（1/0.05=20）
+  # 注意：代理值 source=oi_proxy，严禁混入真实市值截面（D4）；仅用于展示/兜底
+  fallback_ratio: 20.0
 
 # 评分系统配置
 scoring:
@@ -133,6 +137,9 @@ scoring:
 # ============================================================
 emm:
   enabled: true                       # 是否启用EMM模块
+  # B1 (D2): 执行模式 —— shadow = 影子计算，仅记录决策证据；execute = 真实执行
+  # 由用户拍板放行后才能切换为 execute；影子是默认安全态
+  execution_mode: shadow
   # 动态阈值分位数（由candidate_pool计算后注入，此处为固定回退值）
   dynamic:
     funding_rate_percentile_long: 0.10    # 做多EMM：费率取BOTTOM 10%
@@ -161,6 +168,9 @@ emm:
 # ============================================================
 semi_emm:
   enabled: true                       # 是否启用半EMM
+  # B1 (D2): 执行模式 —— shadow = 影子计算，仅记录决策证据；execute = 真实执行
+  # 默认 shadow；用户拍板放行后才能切换为 execute
+  execution_mode: shadow
   min_conditions: 2                   # 最少满足条件数（2/3）
   emm_tech_floor: 5.0                 # 半EMM触发时技术分地板值（与完整EMM对齐）
   entry_threshold: 5.0                # F+G：半EMM总分阈值（低于标准6.0）
@@ -511,6 +521,7 @@ notification:
     anomaly_alert: true          # 异常告警
     pause_notification: true     # 暂停通知
     cycle_summary: true          # 周期汇总
+    signal_db_failure: true      # RK1: 信号落库/更新失败告警（可识别，非仅日志）
 
 # 极端行情熔断配置（P2-6）
 circuit_breaker:
@@ -527,6 +538,9 @@ database:
 # ============================================================
 lv_rm:
   enabled: true                       # 是否启用 LV-RM 模块
+  # B2 (D8): 执行模式 —— shadow = 影子计算，仅记录决策证据；execute = 真实执行
+  # 默认影子，用户拍板放行后才能切换为 execute
+  execution_mode: shadow
   # V2.5: 扫描范围为全市场流动性币种（独立于候选池）
   scan:
     scan_source: "all_liquid"         # V2.5: 扫描来源（all_liquid = 全市场流动性币种）

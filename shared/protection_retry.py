@@ -260,6 +260,22 @@ async def _place_entry_tp_order(
     )
 
 
+def resolve_fill_avg_price(entry_order) -> Optional[Decimal]:
+    """解析订单终态的真实成交均价；无有效成交均价时返回 None（不编造）。
+
+    兼容 OrderFillResult（.avg_price）与扁平 dict（avgPrice / avg_price）。
+    调用方决定缺失时的回退口径（如回退信号价）。
+    """
+    if isinstance(entry_order, dict):
+        raw = entry_order.get("avgPrice") or entry_order.get("avg_price")
+    else:
+        raw = getattr(entry_order, "avg_price", None)
+    if raw is None:
+        return None
+    value = Decimal(str(raw))
+    return value if value > 0 else None
+
+
 def build_position_state(position_cls, signal: Dict, entry, actual_quantity: Decimal):
     """根据信号与成交结果构建新持仓状态（R05：用真实成交量/入场价）
 
@@ -268,7 +284,7 @@ def build_position_state(position_cls, signal: Dict, entry, actual_quantity: Dec
     """
     position = position_cls()
     # 入场价优先取成交均价（真实成交价），缺失则回退信号价
-    avg_price = entry.avg_price if entry.avg_price and entry.avg_price > 0 else None
+    avg_price = resolve_fill_avg_price(entry)
     position.entry_price = avg_price if avg_price is not None else Decimal(str(signal['entry_price']))
     position.entry_time = signal['timestamp']
     position.direction = signal['direction']
@@ -290,7 +306,8 @@ def merge_position(position, signal: Dict, entry_order, actual_quantity: Decimal
     """
     old_quantity = position.initial_quantity
     old_entry = position.entry_price or Decimal('0')
-    new_entry = Decimal(str(signal['entry_price']))
+    # 新入场价优先取本次加仓的真实成交均价，缺失才回退信号价（不以信号价冒充成交均价）
+    new_entry = resolve_fill_avg_price(entry_order) or Decimal(str(signal['entry_price']))
     total_quantity = Decimal(str(actual_quantity))
     added_quantity = total_quantity - old_quantity
 

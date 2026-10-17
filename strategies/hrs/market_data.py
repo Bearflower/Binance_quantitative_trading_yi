@@ -1,13 +1,15 @@
 """
 市场数据模块
 负责获取候选池币种的市场数据：价格、OI、成交量、资金费率等
+V2: B4 —— 新增市值 Provenance 接口（get_market_cap_provenance），
+    允许调用方区分真实/代理/缺失来源，禁止只靠「值为正」判断真实市值。
 """
 from typing import Dict, Any, Optional, List, Set
 from datetime import datetime, timedelta, timezone
 import structlog
 
 from shared.binance_api import BinanceClient
-from shared.market_cap import MarketCapService
+from shared.market_cap import MarketCapService, MarketCapProvenance
 from shared.kline_service import KLineService
 
 
@@ -46,6 +48,9 @@ class MarketDataProvider:
 
         # 从配置读取市值服务参数（带默认值兜底）
         market_cap_config = config.get("market_cap", {})
+        # B4 (D4): fallback_ratio —— OI×市值代理系数；历史硬编码 20.0，现从配置读取
+        # 与 candidate_pool.long.oi_market_cap_max=0.05 是同一件事的倒数（1/0.05=20）
+        fallback_ratio = market_cap_config.get("fallback_ratio", 20.0)
         self.market_cap_service = MarketCapService(
             timeout=market_cap_config.get("timeout", 10),
             retry_count=market_cap_config.get("retry_count", 2),
@@ -54,6 +59,7 @@ class MarketDataProvider:
             coin_list_cool_down_seconds=market_cap_config.get("coin_list_cool_down_seconds", 60.0),
             request_interval=market_cap_config.get("request_interval", 2.0),
             rate_limit_cooldown_seconds=market_cap_config.get("rate_limit_cooldown_seconds", 60.0),
+            fallback_ratio=fallback_ratio,
         )
 
         # 从配置读取API限制
@@ -206,6 +212,9 @@ class MarketDataProvider:
         """
         获取市值（带降级兜底）
 
+        旧接口：只返回数值，丢弃来源信息。
+        新消费者（HRS 开仓侧 / candidate_pool）请改用 get_market_cap_provenance。
+
         Args:
             symbol: 交易对
             oi_usd: OI美元价值
@@ -217,7 +226,32 @@ class MarketDataProvider:
         return await self.market_cap_service.get_market_cap_with_fallback(
             symbol=symbol,
             oi_usd=oi_usd,
-            volume_24h_usd=volume_24h_usd
+            volume_24h_usd=volume_24h_usd,
+        )
+
+    async def get_market_cap_provenance(
+        self, symbol: str, oi_usd: float, volume_24h_usd: float
+    ) -> MarketCapProvenance:
+        """
+        B4 (D4): 获取市值 + 来源信息（HRS 新消费者的首选接口）
+
+        返回的 MarketCapProvenance 六个字段：
+            value / source / as_of / available_at / is_proxy / missing_reason
+        调用方必须用 source 判断是否真实市值（coingecko / cache_hit），
+        禁止靠「值 > 0」判断。
+
+        Args:
+            symbol: 交易对
+            oi_usd: OI美元价值（用于代理兜底）
+            volume_24h_usd: 24h成交额（兼容接口保留）
+
+        Returns:
+            MarketCapProvenance
+        """
+        return await self.market_cap_service.get_market_cap_with_provenance(
+            symbol=symbol,
+            oi_usd=oi_usd,
+            _volume_24h_usd=volume_24h_usd,
         )
 
     async def preload_market_caps(self, symbols: List[str]) -> None:

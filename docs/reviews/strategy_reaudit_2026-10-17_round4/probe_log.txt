@@ -1,0 +1,113 @@
+2026-10-17 08:41:10 [debug    ] 信号已记录到数据库                      direction=short score=8 signal_id=1 symbol=TESTUSDT
+2026-10-17 08:41:10 [debug    ] 信号已记录到数据库                      direction=short score=8 signal_id=2 symbol=TESTUSDT
+2026-10-17 08:41:10 [info     ] R1: 执行 shadow 信号分桶             shadow_count=1 shadow_long_count=0 shadow_short_count=1
+2026-10-17 08:41:10 [info     ] shadow 信号：逐条跑决策链（影子闸门兜底）       direction=short entry_mode=emm signal_origin=None symbol=TESTUSDT
+2026-10-17 08:41:10 [info     ] 准备执行做空: TESTUSDT               price=100.0 score=8
+2026-10-17 08:41:10 [warning  ] 执行准备耗时过长，重取价并重判                age_seconds=1792197670.1 limit_seconds=5.0 symbol=TESTUSDT
+2026-10-17 08:41:10 [warning  ] 重取价改变，按最终价重算额度与数量              budget_price=100 final_price=120.0 symbol=TESTUSDT
+2026-10-17 08:41:10 [info     ] TESTUSDT 开仓方式判定                score=8.0 threshold=7 use_market_order=True
+2026-10-17 08:41:10 [error    ] 开空仓失败
+{
+  "signals": [
+    {
+      "id": 1,
+      "mode": "standard",
+      "status": "resolved",
+      "resolution": "executed"
+    },
+    {
+      "id": 2,
+      "mode": "emm",
+      "status": "resolved",
+      "resolution": "shadow"
+    }
+  ],
+  "reprice": {
+    "budget_checks": 2,
+    "quantity": "0.833",
+    "final_price": "120.0",
+    "margin": "49.9800"
+  },
+  "interior": {
+    "expected": 5,
+    "actual": 5,
+    "ids": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "complete": true,
+    "calls": [
+      {
+        "symbol": "TESTUSDT",
+        "startTime": 1,
+        "endTime": 1000,
+        "limit": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 3
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 4
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 5
+      }
+    ],
+    "errors": []
+  },
+  "boundary": {
+    "expected": 5,
+    "actual": 5,
+    "ids": [
+      1,
+      2,
+      3,
+      4,
+      5
+    ],
+    "complete": true,
+    "calls": [
+      {
+        "symbol": "TESTUSDT",
+        "startTime": 1,
+        "endTime": 1000,
+        "limit": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 3
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 4
+      },
+      {
+        "symbol": "TESTUSDT",
+        "limit": 2,
+        "fromId": 5
+      }
+    ],
+    "errors": []
+  }
+}

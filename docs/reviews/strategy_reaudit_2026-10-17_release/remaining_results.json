@@ -1,0 +1,17 @@
+{
+  "single_millisecond": {
+    "expected": 1,
+    "actual": 1,
+    "api_calls": 1,
+    "complete": true
+  },
+  "income": {
+    "first_status": "incomplete",
+    "second_status": "incomplete",
+    "errors": [
+      "income 同毫秒记录可能超单页且接口不支持事件ID续传，无法确认右边界排空"
+    ],
+    "actual": 2,
+    "expected": 3
+  }
+}

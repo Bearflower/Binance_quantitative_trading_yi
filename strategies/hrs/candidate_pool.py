@@ -20,7 +20,13 @@ class DynamicThresholds:
 
     存储每日扫描时从全市场计算的分位数阈值，
     供候选池筛选和 EMM 评分使用。
+
+    R4 扩展：逐截面样本字段（禁止以 funding_rates 长度冒充 OI/市值样本数）
     """
+
+    # 业务默认值（与 config.yaml candidate_pool.dynamic_thresholds.min_sample_size 对齐）
+    DEFAULT_MIN_SAMPLE_SIZE = 10
+
     __slots__ = (
         "funding_rate_short", "funding_rate_long",
         "oi_market_cap_short", "oi_market_cap_long",
@@ -28,6 +34,8 @@ class DynamicThresholds:
         "funding_rate_emm_long", "funding_rate_emm_short",
         "oi_market_cap_emm",
         "sample_count", "computed_at",
+        # R4: 逐截面有效样本数（各截面自身的有效样本，禁止相互冒充）
+        "funding_sample_count", "oi_market_cap_sample_count", "ema_sample_count",
     )
 
     def __init__(self) -> None:
@@ -42,10 +50,49 @@ class DynamicThresholds:
         self.oi_market_cap_emm: float = 0.0
         self.sample_count: int = 0
         self.computed_at: Optional[datetime] = None
+        # R4: 逐截面样本数（默认 0，is_valid 会整体校验）
+        self.funding_sample_count: int = 0
+        self.oi_market_cap_sample_count: int = 0
+        self.ema_sample_count: int = 0
 
-    def is_valid(self) -> bool:
-        """检查动态阈值是否有效（已计算且有足够样本）"""
-        return self.sample_count > 0 and self.computed_at is not None
+    def is_valid(self, min_sample_size: Optional[int] = None) -> bool:
+        """R4 逐截面整体门槛
+
+        OI/市值截面自身样本数 + 资金费率截面自身样本数均需 >= min_sample_size；
+        禁止用 funding_rates 长度冒充真实市值/OI 样本数。
+
+        向后兼容：若 funding_sample_count + oi_market_cap_sample_count 都为 0
+        （旧调用方只设了 sample_count），回退到旧版 sample_count 逻辑。
+
+        Args:
+            min_sample_size: 每截面最小样本门槛；None 时使用类级默认值
+                             DEFAULT_MIN_SAMPLE_SIZE（与 config 对齐）。
+                             调用方（candidate_pool._compute_dynamic_thresholds）
+                             通常显式传 self.dynamic_min_sample_size。
+        """
+        if min_sample_size is None:
+            min_sample_size = self.DEFAULT_MIN_SAMPLE_SIZE
+        if self.computed_at is None:
+            return False
+        # 兼容旧调用方（只设 sample_count 没设逐截面字段）
+        if self.funding_sample_count == 0 and self.oi_market_cap_sample_count == 0:
+            return self.sample_count >= min_sample_size
+        # R4 严格逐截面校验
+        if self.funding_sample_count < min_sample_size:
+            logger.warning(
+                "动态阈值资金费率截面样本不足",
+                funding_sample_count=self.funding_sample_count,
+                min_required=min_sample_size,
+            )
+            return False
+        if self.oi_market_cap_sample_count < min_sample_size:
+            logger.warning(
+                "动态阈值 OI/市值截面样本不足",
+                oi_market_cap_sample_count=self.oi_market_cap_sample_count,
+                min_required=min_sample_size,
+            )
+            return False
+        return True
 
     def to_dict(self) -> Dict[str, Any]:
         """转为字典（用于日志和持久化）"""
@@ -60,6 +107,10 @@ class DynamicThresholds:
             "funding_rate_emm_short": self.funding_rate_emm_short,
             "oi_market_cap_emm": self.oi_market_cap_emm,
             "sample_count": self.sample_count,
+            # R4: 逐截面样本数（供人工核对各截面覆盖）
+            "funding_sample_count": self.funding_sample_count,
+            "oi_market_cap_sample_count": self.oi_market_cap_sample_count,
+            "ema_sample_count": self.ema_sample_count,
         }
 
 
@@ -428,6 +479,11 @@ class CandidatePool:
         oi_market_caps: List[float] = []
         ema_deviations: List[float] = []
 
+        # 影子报告统计：真实样本数 vs 被排除（代理/缺失/过期）样本数
+        true_market_cap_samples = 0
+        excluded_proxy = 0
+        excluded_missing = 0
+
         for symbol, ticker in symbol_ticker_map.items():
             try:
                 # 获取资金费率（年化百分比）
@@ -435,12 +491,20 @@ class CandidatePool:
                 annual_rate = funding_rate * self.settlements_per_day * self.days_per_year * 100
                 funding_rates.append(annual_rate)
 
-                # 获取 OI/市值比
+                # B4 (D4): 改用 provenance 接口 —— 区分真实市值 vs 代理/缺失
                 oi_usd = await self.market_data.get_oi_usd(symbol)
                 volume_24h = float(ticker.get("quoteVolume", 0))
-                market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
-                if market_cap > 0 and oi_usd > 0:
-                    oi_market_caps.append(oi_usd / market_cap)
+                cap_prov = await self.market_data.get_market_cap_provenance(
+                    symbol, oi_usd, volume_24h,
+                )
+                if cap_prov.source in ("coingecko", "cache_hit") and cap_prov.value > 0 and oi_usd > 0:
+                    # 只有真实、未过期市值才进入 OI/市值 真实截面
+                    oi_market_caps.append(oi_usd / cap_prov.value)
+                    true_market_cap_samples += 1
+                elif cap_prov.source == "oi_proxy":
+                    excluded_proxy += 1
+                elif cap_prov.source == "missing":
+                    excluded_missing += 1
 
                 # 获取 EMA20 偏离
                 try:
@@ -462,11 +526,31 @@ class CandidatePool:
             except Exception as e:
                 logger.debug("计算动态阈值时跳过币种", symbol=symbol, error=str(e))
 
+        # B4 影子报告：记录有效样本 vs 被排除代理/缺失，供人工核对
+        total_scanned = len(symbol_ticker_map)
+        if excluded_proxy > 0 or excluded_missing > 0:
+            coverage = true_market_cap_samples / max(total_scanned, 1)
+            logger.info(
+                "B4 市值来源影子报告（动态阈值截面）",
+                total_scanned=total_scanned,
+                true_market_cap_samples=true_market_cap_samples,
+                excluded_proxy=excluded_proxy,
+                excluded_missing=excluded_missing,
+                coverage=f"{coverage:.1%}",
+            )
+
+        # R4: 逐截面样本赋值（禁止用 funding_rates 长度冒充 OI/市值样本数）
         thresholds.sample_count = len(funding_rates)
-        if thresholds.sample_count < self.dynamic_min_sample_size:
+        thresholds.funding_sample_count = len(funding_rates)
+        thresholds.oi_market_cap_sample_count = len(oi_market_caps)
+        thresholds.ema_sample_count = len(ema_deviations)
+
+        # R4: 逐截面整体门槛校验（任一截面不足 → is_valid() 返回 False，回退固定阈值）
+        if not thresholds.is_valid(min_sample_size=self.dynamic_min_sample_size):
             logger.warning(
-                "动态阈值样本不足",
-                sample_count=thresholds.sample_count,
+                "R4: 动态阈值逐截面样本不足（任一截面不足均整体判无效）",
+                funding_sample_count=thresholds.funding_sample_count,
+                oi_market_cap_sample_count=thresholds.oi_market_cap_sample_count,
                 min_required=self.dynamic_min_sample_size,
             )
             return thresholds  # is_valid() 返回 False，调用方回退固定阈值
@@ -728,11 +812,14 @@ class CandidatePool:
                 if annual_rate >= self.short_funding_rate * 100:
                     conditions_met += 1
 
-            # 条件3: OI/市值比
+            # 条件3: OI/市值比 —— B4 (D4)：只用真实市值（coingecko/cache_hit）
+            # 代理值（oi_proxy）和缺失值（missing）不得混入，跳过此条件（不计入达标也不计入未达标）
             volume_24h = float(ticker.get("quoteVolume", 0))
-            market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
-            if market_cap > 0:
-                oi_market_cap_ratio = oi_usd / market_cap
+            cap_prov = await self.market_data.get_market_cap_provenance(
+                symbol, oi_usd, volume_24h,
+            )
+            if cap_prov.source in ("coingecko", "cache_hit") and cap_prov.value > 0:
+                oi_market_cap_ratio = oi_usd / cap_prov.value
                 if use_dynamic:
                     # V2.5: 动态阈值（50分位）
                     if oi_market_cap_ratio >= dt.oi_market_cap_short:
@@ -741,8 +828,11 @@ class CandidatePool:
                     if oi_market_cap_ratio >= self.short_oi_market_cap_min:
                         conditions_met += 1
             else:
-                # P1-9: 市值获取失败时，跳过此条件（不计入达标也不计入未达标）
-                logger.debug("市值获取失败，做空跳过OI/市值比条件", symbol=symbol)
+                # P1-9 / B4: 市值来源不合格，跳过此条件（不计入达标也不计入未达标）
+                logger.debug(
+                    "做空跳过OI/市值比条件（市值来源不合格）",
+                    symbol=symbol, source=cap_prov.source,
+                )
 
             # 条件4: EMA20 偏离（做空：价格需向上偏离 EMA20(4h)）
             try:
@@ -816,11 +906,14 @@ class CandidatePool:
                 if annual_rate <= self.long_funding_rate * 100:
                     conditions_met += 1
 
-            # 条件3: OI/市值比
+            # 条件3: OI/市值比 —— B4 (D4)：只用真实市值（coingecko/cache_hit）
+            # 代理值（oi_proxy）和缺失值（missing）不得混入，跳过此条件
             volume_24h = float(ticker.get("quoteVolume", 0))
-            market_cap = await self.market_data.get_market_cap(symbol, oi_usd, volume_24h)
-            if market_cap > 0:
-                oi_market_cap_ratio = oi_usd / market_cap
+            cap_prov = await self.market_data.get_market_cap_provenance(
+                symbol, oi_usd, volume_24h,
+            )
+            if cap_prov.source in ("coingecko", "cache_hit") and cap_prov.value > 0:
+                oi_market_cap_ratio = oi_usd / cap_prov.value
                 if use_dynamic:
                     # V2.5: 动态阈值（50分位）
                     if oi_market_cap_ratio <= dt.oi_market_cap_long:
@@ -829,8 +922,11 @@ class CandidatePool:
                     if oi_market_cap_ratio <= self.long_oi_market_cap_max:
                         conditions_met += 1
             else:
-                # P1-9: 市值获取失败时，跳过此条件
-                logger.debug("市值获取失败，做多跳过OI/市值比条件", symbol=symbol)
+                # P1-9 / B4: 市值来源不合格，跳过此条件
+                logger.debug(
+                    "做多跳过OI/市值比条件（市值来源不合格）",
+                    symbol=symbol, source=cap_prov.source,
+                )
 
             # 条件4: EMA20 偏离（做多：价格需向下偏离 EMA20(4h)）
             try:

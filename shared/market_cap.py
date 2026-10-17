@@ -3,15 +3,57 @@ CoinGecko 市值服务
 提供加密货币市值查询，支持降级兜底策略
 V2: 新增批量接口 /coins/markets，将 N 次请求压缩为 1-2 次；
     429 全局冷却期 + asyncio.Lock 防止并发竞态
+V3 (B4): 新增 Provenance 建模 —— 市值来源区分真实/缓存/代理/缺失/过期；
+    禁止调用方靠「值 > 0」判断是否真实市值；
+    OI×fallback_ratio 代理值在 source=oi_proxy 时不得混入真实市值截面。
 """
+from __future__ import annotations
+
 import asyncio
 import time
-from typing import Dict, List, Optional
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Literal, Tuple
 import aiohttp
 import structlog
 
 
 logger = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# B4: 市值来源枚举 + Provenance 数据类
+# ---------------------------------------------------------------------------
+# source 取值说明：
+#   coingecko   —— 本次请求直接命中 CoinGecko /coins/markets 或单币接口
+#   cache_hit   —— 从本服务缓存拿到，缓存写入时来源是 coingecko
+#   oi_proxy    —— CoinGecko 拿不到，用 oi_usd * fallback_ratio 代理（仅用于展示/兜底，
+#                  严禁混入依赖真实市值的候选截面）
+#   missing     —— 拿不到真实市值且 OI 不足，无法给出代理值
+#   expired     —— 缓存已过期，API 也拿不到新值（当前不会单独作为最终 source
+#                  暴露给外部；缓存过期后 get_market_cap 会返回 None，外部根据
+#                  后续 API 是否成功再决定 source）
+_MarketCapSource = Literal["coingecko", "cache_hit", "oi_proxy", "missing", "expired"]
+
+
+@dataclass
+class MarketCapProvenance:
+    """
+    B4: 市值来源与质量信息（D4：禁止只靠值是否为正判断真实市值）
+
+    六个字段（D4 约定）：
+        value:          市值（美元）；proxy/missing 时为代理值或 0.0
+        source:         来源枚举（见 _MarketCapSource 注释）
+        as_of:          市值数据本身的时间戳（秒，epoch）；API 命中时约等于 now
+        available_at:   本服务拿到此值的时间戳（秒，epoch）
+        is_proxy:       是否为代理值（source == "oi_proxy"）
+        missing_reason: 缺失原因（None 表示有值）
+    """
+    value: float = 0.0
+    source: _MarketCapSource = "missing"
+    as_of: float = 0.0
+    available_at: float = 0.0
+    is_proxy: bool = False
+    missing_reason: Optional[str] = None
 
 
 class CoinGeckoError(Exception):
@@ -26,9 +68,10 @@ class MarketCapService:
     功能：
     - 通过 CoinGecko 免费 API 查询币种市值
     - 支持批量查询：/coins/markets 一次获取最多 250 个币种市值
-    - 支持降级兜底：CoinGecko 不可用时使用 OI/24h成交额 替代
+    - 支持降级兜底：CoinGecko 不可用时使用 OI×fallback_ratio 代理
     - 支持市值缓存、网络异常重试、币种列表加载失败冷却
     - 429 全局冷却期：触发限流后 N 秒内直接返回 None
+    - B4: 来源感知接口（get_market_cap_with_provenance / get_batch_market_caps_with_provenance）
     """
 
     # /coins/markets 单次请求最多返回的币种数量（CoinGecko 上限）
@@ -44,7 +87,8 @@ class MarketCapService:
         cache_ttl_seconds: int = 3600,
         coin_list_cool_down_seconds: float = 60.0,
         request_interval: float = 2.0,
-        rate_limit_cooldown_seconds: float = 60.0
+        rate_limit_cooldown_seconds: float = 60.0,
+        fallback_ratio: float = 20.0,
     ):
         """
         初始化市值服务
@@ -61,6 +105,9 @@ class MarketCapService:
                               用 asyncio.Lock 保证原子性
             rate_limit_cooldown_seconds: 触发 HTTP 429 后的全局冷却期（秒），
                                          冷却期内所有请求直接返回 None，不再打 API
+            fallback_ratio: B4: OI×市值 代理系数（默认 20.0，对应 OI/市值=0.05）。
+                           硬编码历史值已提取为配置参数，禁止裸数字。
+                           代理值 source=oi_proxy，不得混入真实市值截面。
         """
         self.timeout = timeout
         self.use_pro_api = use_pro_api
@@ -71,6 +118,7 @@ class MarketCapService:
         self.coin_list_cool_down_seconds = coin_list_cool_down_seconds
         self.request_interval = request_interval
         self.rate_limit_cooldown_seconds = rate_limit_cooldown_seconds
+        self.fallback_ratio = fallback_ratio
 
         # CoinGecko 币种 ID 缓存（symbol -> coingecko_id），实例级避免多实例状态共享
         self._coin_id_cache: Dict[str, str] = {}
@@ -96,7 +144,8 @@ class MarketCapService:
         logger.info(
             "市值服务初始化",
             use_pro_api=use_pro_api,
-            base_url=self._base_url
+            base_url=self._base_url,
+            fallback_ratio=fallback_ratio,
         )
 
     async def _init_session(self) -> None:
@@ -122,7 +171,7 @@ class MarketCapService:
         self._rate_limit_cooldown_until = time.time() + self.rate_limit_cooldown_seconds
         logger.warning(
             "CoinGecko 进入全局冷却期",
-            cooldown_seconds=self.rate_limit_cooldown_seconds
+            cooldown_seconds=self.rate_limit_cooldown_seconds,
         )
 
     async def _enforce_request_interval(self) -> None:
@@ -162,7 +211,7 @@ class MarketCapService:
         await self._enforce_request_interval()
 
         url = f"{self._base_url}/coins/list"
-        params = {}
+        params: Dict[str, str] = {}
         if self.use_pro_api and self.api_key:
             params["x_cg_pro_api_key"] = self.api_key
 
@@ -278,9 +327,12 @@ class MarketCapService:
 
         # 2. 429 冷却期检查
         if self._is_rate_limited():
-            logger.debug("CoinGecko 429 冷却期内，跳过批量请求",
-                         cooldown_left=round(
-                             self._rate_limit_cooldown_until - time.time(), 1))
+            logger.debug(
+                "CoinGecko 429 冷却期内，跳过批量请求",
+                cooldown_left=round(
+                    self._rate_limit_cooldown_until - time.time(), 1
+                ),
+            )
             return {}
 
         # 3. 确保币种列表已加载
@@ -292,10 +344,12 @@ class MarketCapService:
             logger.debug("批量请求中无有效 coin_id", total=len(uncached))
             return {}
 
-        logger.info("开始批量获取市值",
-                    request_symbols=len(symbols),
-                    uncached_symbols=len(uncached),
-                    valid_coin_ids=len(symbol_to_id))
+        logger.info(
+            "开始批量获取市值",
+            request_symbols=len(symbols),
+            uncached_symbols=len(uncached),
+            valid_coin_ids=len(symbol_to_id),
+        )
 
         # 5. 分批请求（每批最多 _BATCH_PAGE_SIZE 个 coin_id）
         # 先构建反向映射 coin_id -> symbol，用于把批量结果的 coin_id 转回 symbol
@@ -329,9 +383,11 @@ class MarketCapService:
         # 6. 写入缓存
         if batch_results:
             self._set_cached_market_caps(batch_results)
-            logger.info("批量市值获取完成",
-                        total_requested=len(uncached),
-                        success=len(batch_results))
+            logger.info(
+                "批量市值获取完成",
+                total_requested=len(uncached),
+                success=len(batch_results),
+            )
         else:
             logger.warning("批量市值获取无结果")
 
@@ -352,7 +408,7 @@ class MarketCapService:
         await self._enforce_request_interval()
 
         url = f"{self._base_url}/coins/markets"
-        params = {
+        params: Dict[str, str] = {
             "vs_currency": "usd",
             "ids": ",".join(coin_ids),
             "per_page": len(coin_ids),
@@ -370,14 +426,17 @@ class MarketCapService:
                     self._record_rate_limit()
                     return None
                 if resp.status != 200:
-                    logger.warning("CoinGecko /coins/markets 请求失败",
-                                   status=resp.status)
+                    logger.warning(
+                        "CoinGecko /coins/markets 请求失败", status=resp.status,
+                    )
                     return {}
                 data = await resp.json()
                 return self._parse_coins_markets_response(data, coin_ids)
         except Exception as e:
-            logger.warning("CoinGecko /coins/markets 请求异常",
-                           error=str(e) or type(e).__name__)
+            logger.warning(
+                "CoinGecko /coins/markets 请求异常",
+                error=str(e) or type(e).__name__,
+            )
             return {}
 
     def _parse_coins_markets_response(
@@ -401,10 +460,12 @@ class MarketCapService:
                 result[coin_id] = float(market_cap)
         if len(result) < len(requested_ids):
             missing = [cid for cid in requested_ids if cid not in result]
-            logger.debug("批量市值部分币种缺失",
-                         requested=len(requested_ids),
-                         returned=len(result),
-                         missing_count=len(missing))
+            logger.debug(
+                "批量市值部分币种缺失",
+                requested=len(requested_ids),
+                returned=len(result),
+                missing_count=len(missing),
+            )
         return result
 
     async def get_market_cap(self, symbol: str) -> Optional[float]:
@@ -427,7 +488,9 @@ class MarketCapService:
 
         # 429 冷却期内跳过 API 请求
         if self._is_rate_limited():
-            logger.debug("CoinGecko 429 冷却期内，跳过单币市值请求", symbol=symbol)
+            logger.debug(
+                "CoinGecko 429 冷却期内，跳过单币市值请求", symbol=symbol,
+            )
             return None
 
         await self._ensure_coin_list()
@@ -449,7 +512,7 @@ class MarketCapService:
         HTTP 429 时设置全局冷却期并抛出 CoinGeckoError。
         """
         url = f"{self._base_url}/coins/{coin_id}"
-        params = {
+        params: Dict[str, str] = {
             "localization": "false",
             "tickers": "false",
             "community_data": "false",
@@ -487,16 +550,22 @@ class MarketCapService:
                 return None
             except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                 if attempt < self.retry_count:
-                    logger.warning("获取市值网络异常，准备重试", symbol=symbol,
-                                   attempt=attempt + 1,
-                                   error=str(e) or type(e).__name__)
+                    logger.warning(
+                        "获取市值网络异常，准备重试", symbol=symbol,
+                        attempt=attempt + 1,
+                        error=str(e) or type(e).__name__,
+                    )
                     await asyncio.sleep(self.retry_interval)
                 else:
-                    logger.warning("获取市值重试次数用尽", symbol=symbol,
-                                   error=str(e) or type(e).__name__)
+                    logger.warning(
+                        "获取市值重试次数用尽", symbol=symbol,
+                        error=str(e) or type(e).__name__,
+                    )
             except Exception as e:
-                logger.warning("获取市值异常", symbol=symbol,
-                               error=str(e) or type(e).__name__)
+                logger.warning(
+                    "获取市值异常", symbol=symbol,
+                    error=str(e) or type(e).__name__,
+                )
                 return None
         return None
 
@@ -504,7 +573,7 @@ class MarketCapService:
         self,
         symbol: str,
         coin_id: str,
-        resp: aiohttp.ClientResponse
+        resp: aiohttp.ClientResponse,
     ) -> Optional[float]:
         """从单币响应解析市值"""
         data = await resp.json()
@@ -521,36 +590,223 @@ class MarketCapService:
             return float(market_cap)
         return None
 
+    # ------------------------------------------------------------------
+    # B4: 来源感知的内部辅助 + 对外 Provenance 接口
+    # ------------------------------------------------------------------
+
+    async def _try_get_market_cap_with_source(
+        self, symbol: str
+    ) -> Tuple[Optional[float], Optional[str]]:
+        """
+        B4 内部辅助：尝试获取市值并报告来源。
+
+        Returns:
+            (value, source)
+            - value: 市值（美元）；拿不到时为 None
+            - source: "cache_hit"（缓存命中）/ "coingecko"（API 命中）/ None（拿不到）
+        """
+        # 缓存命中 → cache_hit
+        cached = self._get_cached_market_cap(symbol)
+        if cached is not None:
+            return cached, "cache_hit"
+
+        # 429 冷却期
+        if self._is_rate_limited():
+            logger.debug(
+                "CoinGecko 429 冷却期内，跳过单币市值请求", symbol=symbol,
+            )
+            return None, None
+
+        await self._ensure_coin_list()
+
+        coin_id = self._get_coin_id(symbol)
+        if not coin_id:
+            logger.warning("未找到CoinGecko币种ID", symbol=symbol)
+            return None, None
+
+        market_cap = await self._request_market_cap(symbol, coin_id)
+        if market_cap is not None:
+            self._set_cached_market_cap(symbol, market_cap)
+            return market_cap, "coingecko"
+        return None, None
+
+    async def get_market_cap_with_provenance(
+        self,
+        symbol: str,
+        oi_usd: float,
+        _volume_24h_usd: float = 0.0,
+    ) -> MarketCapProvenance:
+        """
+        B4 (D4): 获取市值 + 来源信息（新接口，取代只返回 float 的旧口径）
+
+        六个字段：value / source / as_of / available_at / is_proxy / missing_reason。
+        调用方必须用 source（而不是「值 > 0」）判断是否拿到真实市值。
+        volume_24h_usd 参数已确认当前无实际用途，保留仅为兼容 MarketDataProvider 签名。
+
+        Args:
+            symbol: 交易对
+            oi_usd: OI 美元价值（用于代理兜底）
+            _volume_24h_usd: 24h 成交额（兼容接口保留，本方法未实际使用）
+
+        Returns:
+            MarketCapProvenance
+        """
+        now = time.time()
+        cap, source = await self._try_get_market_cap_with_source(symbol)
+        available_at = time.time()
+
+        if cap is not None and source is not None:
+            # 有真实值
+            return MarketCapProvenance(
+                value=cap,
+                source=source,  # "coingecko" 或 "cache_hit"
+                as_of=now,
+                available_at=available_at,
+                is_proxy=False,
+                missing_reason=None,
+            )
+
+        # 拿不到真实值 → 代理或缺失
+        if oi_usd > 0:
+            proxy_cap = oi_usd * self.fallback_ratio
+            logger.info(
+                "市值降级兜底（代理值，严禁混入真实市值截面）",
+                symbol=symbol,
+                proxy_cap=proxy_cap,
+                oi_usd=oi_usd,
+                fallback_ratio=self.fallback_ratio,
+            )
+            return MarketCapProvenance(
+                value=proxy_cap,
+                source="oi_proxy",
+                as_of=now,
+                available_at=available_at,
+                is_proxy=True,
+                missing_reason=None,
+            )
+
+        return MarketCapProvenance(
+            value=0.0,
+            source="missing",
+            as_of=now,
+            available_at=available_at,
+            is_proxy=False,
+            missing_reason="CoinGecko 无此数据且 OI 不足无法代理",
+        )
+
+    async def get_batch_market_caps_with_provenance(
+        self,
+        symbols: List[str],
+        oi_map: Optional[Dict[str, float]] = None,
+    ) -> Dict[str, MarketCapProvenance]:
+        """
+        B4 (D4): 批量获取市值 provenance 映射。
+
+        流程：
+            1. 先用 get_batch_market_caps 做批量（内部已处理缓存 + API）；
+               批量命中的 symbol source 统一记为 "coingecko"（一次性 API 命中）。
+            2. 未命中的 symbol：
+               - 如 oi_map[sym] 可查且 > 0 → source=oi_proxy, value=oi*fallback_ratio
+               - 否则 → source=missing
+
+        Args:
+            symbols: 交易对列表
+            oi_map: {symbol: oi_usd}；可选，缺失时代理值走 missing
+
+        Returns:
+            {symbol: MarketCapProvenance}
+        """
+        now = time.time()
+        available_at = now
+
+        # 1. 先看缓存 —— 缓存命中的 symbol 直接标记 cache_hit
+        result: Dict[str, MarketCapProvenance] = {}
+        uncached_symbols: List[str] = []
+        for sym in symbols:
+            cached = self._get_cached_market_cap(sym)
+            if cached is not None:
+                result[sym] = MarketCapProvenance(
+                    value=cached,
+                    source="cache_hit",
+                    as_of=now,
+                    available_at=available_at,
+                    is_proxy=False,
+                    missing_reason=None,
+                )
+            else:
+                uncached_symbols.append(sym)
+
+        # 2. 批量 API 获取未缓存的
+        if uncached_symbols:
+            batch = await self.get_batch_market_caps(uncached_symbols)
+            for sym, cap in batch.items():
+                result[sym] = MarketCapProvenance(
+                    value=cap,
+                    source="coingecko",
+                    as_of=now,
+                    available_at=time.time(),
+                    is_proxy=False,
+                    missing_reason=None,
+                )
+
+        # 3. 未命中的 symbol → oi_proxy / missing
+        if oi_map is None:
+            oi_map = {}
+        for sym in symbols:
+            if sym in result:
+                continue
+            oi = oi_map.get(sym, 0.0)
+            if oi > 0:
+                result[sym] = MarketCapProvenance(
+                    value=oi * self.fallback_ratio,
+                    source="oi_proxy",
+                    as_of=now,
+                    available_at=time.time(),
+                    is_proxy=True,
+                    missing_reason=None,
+                )
+            else:
+                result[sym] = MarketCapProvenance(
+                    value=0.0,
+                    source="missing",
+                    as_of=now,
+                    available_at=time.time(),
+                    is_proxy=False,
+                    missing_reason="CoinGecko 批量无此币种且 OI 不足无法代理",
+                )
+
+        return result
+
     async def get_market_cap_with_fallback(
         self,
         symbol: str,
         oi_usd: float,
-        volume_24h_usd: float
+        volume_24h_usd: float,
     ) -> float:
         """
-        获取市值，带降级兜底策略
+        获取市值，带降级兜底策略（旧接口，保留返回类型 float 供现有消费者使用）
 
         降级策略：
         1. 优先使用 CoinGecko 获取市值
-        2. CoinGecko 不可用时，使用 OI × 20 粗略估算
+        2. CoinGecko 不可用时，使用 OI × fallback_ratio 粗略估算
+
+        B4 改动：
+        - 委托到 get_market_cap_with_provenance，只返回 provenance.value；
+          来源信息被丢弃 —— 这是**故意保留**的行为（旧消费者只关心数值）。
+          HRS 的新消费者请改用 get_market_cap_with_provenance 拿到 source 字段。
+        - OI×20 硬编码已替换为构造参数 fallback_ratio（默认 20.0）。
 
         Args:
             symbol: 交易对
             oi_usd: 持仓量（美元）
-            volume_24h_usd: 24小时成交额（美元，当前未使用）
+            volume_24h_usd: 24小时成交额（美元，兼容接口保留，当前未实际使用）
 
         Returns:
             市值（美元），降级兜底时也返回正值
         """
-        cap = await self.get_market_cap(symbol)
-        if cap is not None:
-            return cap
-
-        fallback_cap = oi_usd * 20.0 if oi_usd > 0 else 0.0
-        logger.info(
-            "市值降级兜底",
+        prov = await self.get_market_cap_with_provenance(
             symbol=symbol,
-            fallback_cap=fallback_cap,
-            oi_usd=oi_usd
+            oi_usd=oi_usd,
+            _volume_24h_usd=volume_24h_usd,
         )
-        return fallback_cap
+        return prov.value

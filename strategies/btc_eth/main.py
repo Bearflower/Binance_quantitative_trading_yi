@@ -21,11 +21,16 @@ from shared.config_loader import load_strategy_config
 from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared import condition_orders
 from strategies.btc_eth.strategy import BTCEthStrategy
+from strategies.btc_eth.evidence_recorder import DecisionEvidenceRecorder
+from shared.decision_evidence_sink import PostgresDecisionEvidenceSink
 from shared.position_ownership import load_ownership_config, filter_owned_positions
 
 # 北京时区（从环境变量读取偏移量，默认 UTC+8）
 _timezone_offset_hours = int(os.getenv("TIMEZONE_OFFSET_HOURS", "8"))
 BEIJING_TZ = timezone(timedelta(hours=_timezone_offset_hours))
+
+# 错误详情日志截断长度（避免把长异常栈打进单字段）
+_LOG_ERROR_TRUNCATE = 200
 
 
 def get_beijing_time() -> datetime:
@@ -112,6 +117,21 @@ async def initialize():
         db_manager=db_manager
     )
     
+    # ── C1 决策证据旁路（enabled 真值时构造 recorder 挂到 strategy 实例）
+    _de_cfg = config.get("decision_evidence") if isinstance(config, dict) else None
+    if isinstance(_de_cfg, dict) and bool(_de_cfg.get("enabled")):
+        try:
+            _de_sink = PostgresDecisionEvidenceSink(db_manager)
+            strategy._evidence_recorder = DecisionEvidenceRecorder(
+                sink=_de_sink, config=config,
+            )
+            logger.info("决策证据旁路已开启", account_id=strategy._evidence_recorder.account_id)
+        except Exception as exc:
+            logger.warning(
+                "决策证据旁路初始化失败（降级为关闭）",
+                error=str(exc)[:_LOG_ERROR_TRUNCATE],
+            )
+    
     # 初始化条件单记录表（用于孤儿条件单清理和订单追踪）
     await condition_orders.ensure_table(db_manager)
 
@@ -166,6 +186,11 @@ async def run_strategy():
                 try:
                     # 分析市场
                     result = await strategy.analyze(symbol)
+                    
+                    # ── C1 旁路决策证据记录（enabled=False / recorder=None 时空跑；全吞异常）
+                    _rec = getattr(strategy, "_evidence_recorder", None)
+                    if _rec is not None:
+                        await _rec.record(result, symbol)
                     
                     # 保存分析结果（analyze()方法现在总是返回结果）
                     analysis_results.append(result)

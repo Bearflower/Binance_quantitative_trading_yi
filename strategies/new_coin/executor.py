@@ -2,7 +2,9 @@
 交易执行模块
 执行做空交易、设置止损止盈
 """
-from typing import Dict, Any, Optional, List, Tuple
+from __future__ import annotations
+
+from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple, TYPE_CHECKING
 import asyncio
 import os
 import time
@@ -20,6 +22,15 @@ from shared.condition_orders import (
     mark_order_executed,
     mark_open_orders_canceled,
 )
+# R5 单一默认值来源（executor 和 strategy 共享，避免双份漂移）
+# 注：strategy.py 有顶层 from .executor import ...（TradingExecutor/derive_reached_targets），
+# 故 strategy 可以安全地从 executor 导入此常量，无循环依赖风险
+_PRICE_FRESH_DEFAULT_SECONDS = 30
+
+# R5：FreshQuote 在 strategy.py 顶层（strategy → executor 是既有循环），
+# 用 TYPE_CHECKING 延迟导入避免循环；运行时只用到 quote 参数的实例方法 .age_ms()。
+if TYPE_CHECKING:
+    from strategies.new_coin.strategy import FreshQuote
 # R06 统一订单终态助手（替代内联等待实现，杜绝三策略重复代码）
 from shared.order_fill_waiter import (
     OrderFillResult,
@@ -391,15 +402,18 @@ class TradingExecutor:
         self,
         symbol: str,
         score_result: Dict[str, Any],
-        current_price: float
+        current_price: Optional[float] = None,
+        quote: Optional[FreshQuote] = None,
+        entry_guard: Optional[Callable[[], Awaitable[Tuple[Optional[FreshQuote], Optional[str]]]]] = None,
     ) -> Tuple[Optional[Dict[str, Any]], str]:
-        """
-        执行做空交易
+        """执行做空交易。
 
         Args:
             symbol: 交易对
             score_result: 评分结果字典
-            current_price: 当前价格
+            current_price: 当前价格（legacy 兼容，新路径不传——用 quote.price）
+            quote: R5 FreshQuote——带请求时间的报价快照（新路径传，legacy 为 None）
+            entry_guard: R5 下单前重校闭包——若 quote 超龄则调此闭包重取价并重判反弹
 
         Returns:
             (订单信息字典, 失败原因) 元组：
@@ -410,10 +424,14 @@ class TradingExecutor:
         """
         claimed = False  # R07：是否已成功占位（异常/失败时需释放）
         try:
+            # R5：新路径优先用 FreshQuote.price（更精确的请求时价格），legacy 用 current_price
+            _log_price = (
+                current_price if quote is None else float(quote.price)
+            )
             logger.info(
                 f"准备执行做空: {symbol}",
                 score=score_result.get('total_score'),
-                price=current_price
+                price=_log_price,
             )
 
             # 1. 获取账户余额
@@ -444,22 +462,86 @@ class TradingExecutor:
                 return None, "该币种已被其他策略持有，跳过开仓"
             claimed = True
 
-            # 4. 额度核算：占用统计 → 限额读取 → 缩仓 → 门槛判定 → 限额校验（决策 D3）
-            position_size, reject_reason = await self._resolve_open_margin_budget(
-                symbol, current_price
+            # 5. 获取交易对精度（前置，step_size 不随价格变，先取一次复用）
+            tick_size, step_size = await self._get_symbol_precision(symbol)
+
+            # 4. 首次额度核算 + 格式化数量 + min_notional 校验（统一入口，R8 新增）
+            budget_price = current_price  # 记录首次核算价，供 R8 重算判定
+            quantity, reject_reason = await self._resolve_quantity_at_price(
+                symbol, current_price, step_size
             )
-            if position_size is None:
+            if quantity is None:
                 await self._release_claim_quietly(symbol, "open_failed")
                 return None, reject_reason
 
-            # 5. 获取交易对精度
-            tick_size, step_size = await self._get_symbol_precision(symbol)
-
-            # 6. 格式化数量
-            quantity = self._format_quantity(position_size, step_size)
-
             # 7. 设置杠杆
             await self._set_leverage(symbol, self.leverage)
+
+            # ------------------------------------------------------------------ R5
+            # 7.5 下单前重校：执行准备耗时（余额/占位/额度/精度/杠杆）可能已让
+            #    初始 FreshQuote 超龄。新路径（quote + entry_guard 均存在）
+            #    按 max_age_seconds 检查 age，超龄则调 entry_guard 重取价 + 重判反弹。
+            #    legacy 路径（quote 为 None）直接用 current_price，跳过重校。
+            final_price: float
+            if quote is not None and entry_guard is not None:
+                now_ms = int(time.time() * 1000)
+                age_ms = quote.age_ms(now_ms)
+                max_age_seconds = float(
+                    self.config.get('scoring', {}).get('rebound_check', {}).get(
+                        'max_price_age_seconds', _PRICE_FRESH_DEFAULT_SECONDS
+                    )
+                )
+                max_age_ms = max_age_seconds * 1000
+                if age_ms > max_age_ms:
+                    age_s = age_ms / 1000
+                    limit_s = max_age_ms / 1000
+                    logger.warning(
+                        "执行准备耗时过长，重取价并重判",
+                        symbol=symbol,
+                        age_seconds=round(age_s, 1),
+                        limit_seconds=round(limit_s, 1),
+                    )
+                    new_quote, guard_reason = await entry_guard()
+                    if new_quote is None:
+                        await self._release_claim_quietly(symbol, "open_failed")
+                        reason = guard_reason or "执行前重取价失败"
+                        logger.warning("执行前重校拒绝开仓", symbol=symbol, reason=reason)
+                        return None, reason
+                    # 重取成功 → 用新报价
+                    quote = new_quote
+                final_price = float(quote.price)
+            else:
+                # legacy 路径（旧测试或无 FreshQuote 的调用）
+                final_price = current_price or 0.0
+
+            if final_price <= 0:
+                await self._release_claim_quietly(symbol, "open_failed")
+                return None, "最终开仓价无效"
+            # ------------------------------------------------------------------ R5
+
+            # ------------------------------------------------------------------ R8
+            # 最终有效报价与首次核算价不一致 → 二次重算额度/数量/精度/min_notional
+            # （entry_guard 只重判反弹/新鲜度，不重算额度——与反弹闸门正交）
+            if final_price != budget_price:
+                logger.warning(
+                    "重取价改变，按最终价重算额度与数量",
+                    symbol=symbol,
+                    budget_price=budget_price,
+                    final_price=final_price,
+                )
+                quantity, reject_reason = await self._resolve_quantity_at_price(
+                    symbol, final_price, step_size
+                )
+                if quantity is None:
+                    await self._release_claim_quietly(symbol, "open_failed")
+                    logger.warning(
+                        "重取价后额度不足或低于最小下单金额，拒绝开仓",
+                        symbol=symbol,
+                        final_price=final_price,
+                        reason=reject_reason,
+                    )
+                    return None, reject_reason
+            # ------------------------------------------------------------------ R8
 
             # 8. 开空仓（根据评分决定下单方式）
             #    评分 ≥ market_order_score_threshold：用市价单抢单，确保成交
@@ -472,7 +554,10 @@ class TradingExecutor:
                 threshold=self.market_order_score_threshold,
                 use_market_order=use_market_order,
             )
-            order = await self._place_short_order(symbol, quantity, Decimal(str(current_price)), use_market_order=use_market_order)
+            order = await self._place_short_order(
+                symbol, quantity, Decimal(str(final_price)),
+                use_market_order=use_market_order,
+            )
 
             if not order:
                 logger.error("开空仓失败")
@@ -522,7 +607,7 @@ class TradingExecutor:
                     "成交均价未知，暂以计划价登记（非真实成交均价）",
                     symbol=symbol,
                 )
-                entry_price_decimal = Decimal(str(current_price))
+                entry_price_decimal = Decimal(str(final_price))
 
             # 10. 保存订单到数据库（B6b: 显式传 symbol，避免隐式依赖 order 里的 symbol 字段）
             await self._save_order(order, score_result, symbol=symbol)
@@ -639,6 +724,53 @@ class TradingExecutor:
             return None, reject_reason
 
         return position_size, ""
+
+    # ------------------------------------------------------------------ R8
+    async def _resolve_quantity_at_price(
+        self,
+        symbol: str,
+        price: float,
+        step_size: Decimal,
+    ) -> Tuple[Optional[Decimal], str]:
+        """按最终价核算仓位数量 + 最小名义金额校验（开仓下单前唯一入口）。
+
+        内部复用 _resolve_open_margin_budget（额度核算唯一实现） +
+        _format_quantity（精度唯一实现）+ min_notional 校验。
+        首次核算（L466）与二次重算（R5 重取价后，final_price 变化触发）
+        均调用本函数，杜绝两处口径漂移。
+
+        Args:
+            symbol: 交易对
+            price: 当前用于核算的价格（首次为 current_price，重算为 final_price）
+            step_size: 数量精度（symbol 级别属性，不随价格变）
+
+        Returns:
+            (quantity, reject_reason)：quantity 为 None 表示拒开
+        """
+        position_size, reject = await self._resolve_open_margin_budget(symbol, price)
+        if position_size is None:
+            return None, reject
+
+        quantity = self._format_quantity(position_size, step_size)
+        if quantity <= 0:
+            return None, "精度截断后数量为 0，无法开仓"
+
+        # 最小名义金额校验：防止币安 -4164 拒单（R8 首次引入开仓路径）
+        notional = quantity * Decimal(str(price))
+        if notional < self.min_notional:
+            logger.warning(
+                "下单名义金额低于最小值，拒绝开仓",
+                symbol=symbol,
+                notional=float(notional),
+                min_notional=float(self.min_notional),
+            )
+            return None, (
+                f"名义金额 {float(notional):.6f} 低于最小下单金额 "
+                f"{float(self.min_notional):.6f}，拒绝开仓"
+            )
+
+        return quantity, ""
+    # ------------------------------------------------------------------ R8
 
     async def _read_available_budget(
         self,

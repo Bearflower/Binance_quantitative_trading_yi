@@ -281,19 +281,19 @@ class TestExecuteSignalReboundGate:
         assert '无效' in reason or '实时价' in reason
 
     async def test_stale_ticker_rejects(self, base_config):
-        """ticker 超龄（mock 返回 observed_at 过老） → 拒绝。
+        """ticker 超龄（mock 返回 FreshQuote age 超 max_age） → 拒绝。
 
-        通过 patch 让 `_fetch_fresh_ticker` 返回一个 observed_at 超龄的价格。
+        通过 patch 让 `_fetch_fresh_ticker` 返回 (None, reason) 触发超龄拒绝分支。
+        R5 改造后 `_fetch_fresh_ticker` 返回 (Optional[FreshQuote], Optional[str])，
+        用明确的字符串拒绝原因替代旧 observed_at timestamp。
         """
         base_config['scoring']['rebound_check']['shadow']['enabled'] = False
         base_config['scoring']['rebound_check']['max_price_age_seconds'] = 5
         strategy = _make_minimal_strategy(base_config)
 
-        # ticker 超龄：返回 (None, stale_observed) 触发 _fetch_fresh_price_and_check_rebound 的
-        # 「实时价超龄」拒绝分支（observed_at 有值 → reason 精确为"实时价超龄"）
-        stale_observed = int(time.time()) - 30
+        # R5：新签名 (None, 超龄原因字符串) —— 代替旧 (None, observed_at_int)
         async def fake_fetch(*args, **kwargs):
-            return None, stale_observed
+            return None, "实时价超龄（请求耗时 35.0s > 上限 5s）"
 
         signal = _signal_with_reference(breakout_high=100.0)
         with patch.object(NewCoinStrategy, '_fetch_fresh_ticker', fake_fetch):

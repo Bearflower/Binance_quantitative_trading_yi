@@ -29,14 +29,63 @@ from .position_manager import PositionManager
 logger = structlog.get_logger()
 
 
+def _parse_fill_facts(order: Optional[Dict[str, Any]]) -> Tuple[float, Optional[float]]:
+    """从币安订单字典解析实际成交数量与成交均价（B6a 模块级助手）
+
+    均价解析顺序：avgPrice（币安 v3 order 字段）→ cummulativeQuoteQty/executedQty → None
+    解析失败时返回 (executedQty, None)，不在此处做"用信号价冒充均价"的降级。
+
+    Args:
+        order: 币安 API 返回的订单字典（可为 None）
+
+    Returns:
+        (实际成交数量, 成交均价或 None)
+    """
+    if not order:
+        return 0.0, None
+
+    # 实际成交数量
+    try:
+        executed_qty = float(order.get("executedQty", 0))
+    except (TypeError, ValueError):
+        executed_qty = 0.0
+
+    # 成交均价：优先 avgPrice；没有就用 cummulativeQuoteQty / executedQty 推导
+    avg_price: Optional[float] = None
+    try:
+        raw_avg = order.get("avgPrice")
+        if raw_avg not in (None, "", "0"):
+            avg_price = float(raw_avg)
+        elif executed_qty > 0:
+            cumm_qty = order.get("cummulativeQuoteQty")
+            if cumm_qty not in (None, "", "0"):
+                avg_price = float(cumm_qty) / executed_qty
+    except (TypeError, ValueError, ZeroDivisionError):
+        avg_price = None
+
+    return executed_qty, avg_price
+
+
 @dataclass
 class OpenResult:
-    """开仓执行结果：分离「开仓成交」与「保护单完整性」两个独立信号（FR-01）"""
+    """开仓执行结果：分离「开仓成交」与「保护单完整性」两个独立信号（FR-01 / B6a）"""
 
-    order_filled: bool             # 开仓是否成交（决定是否记录持仓）
-    protection_complete: bool      # 三类保护单是否完整创建
-    failed_roles: List[str]        # 创建失败的保护单角色（"sl"/"tp1"/"tp2"）
+    order_filled: bool              # 开仓是否成交（决定是否记录持仓）
+    protection_complete: bool       # 三类保护单是否完整创建
+    failed_roles: List[str]         # 创建失败的保护单角色（"sl"/"tp1"/"tp2"）
     order: Optional[Dict[str, Any]] = None  # 开仓订单信息
+    # B6a：真实成交事实，不再把信号价/计划量当作成交事实
+    filled_quantity: float = 0.0   # 实际成交数量（交易所 executedQty）
+    avg_fill_price: Optional[float] = None  # 真实成交均价；无法确定时为 None
+
+
+def _empty_fill_result(order: Optional[Dict[str, Any]]) -> OpenResult:
+    """B6a：零成交终态结果（order_filled=False、成交事实为零，调用方据此不建档）"""
+    return OpenResult(
+        order_filled=False, protection_complete=False,
+        failed_roles=[], order=order,
+        filled_quantity=0.0, avg_fill_price=None,
+    )
 
 
 @dataclass
@@ -233,6 +282,31 @@ class TradingExecutor:
             "max_holding_hours": self.max_holding_hours,
         }
 
+    def _resolve_actual_fill(
+        self, symbol: str, order, step_size, direction_label: str
+    ) -> Optional[Tuple[Decimal, float, Optional[float]]]:
+        """B6a：解析终态订单真实成交事实，并按精度对齐实际成交量
+
+        收敛 execute_short/execute_long 的同构逻辑：零成交时打日志并返回 None，
+        调用方据此返回 _empty_fill_result(order)（不建档）；有成交时返回
+        (实际成交量, 原始成交数量, 成交均价或 None)。
+
+        Args:
+            symbol: 交易对
+            order: 币安终态订单字典
+            step_size: 数量精度步长
+            direction_label: 方向中文标签（"做空"/"做多"，仅用于日志）
+
+        Returns:
+            有成交返回 (actual_qty, filled_qty, avg_price)；零成交返回 None
+        """
+        filled_qty, avg_price = _parse_fill_facts(order)
+        if filled_qty <= 0:
+            logger.warning(f"{direction_label}开仓零成交，不建档", symbol=symbol)
+            return None
+        actual_qty = self._format_quantity(Decimal(str(filled_qty)), step_size)
+        return actual_qty, filled_qty, avg_price
+
     async def execute_short(
         self,
         symbol: str,
@@ -294,6 +368,12 @@ class TradingExecutor:
                 logger.warning("做空开仓超时，信号已放弃", symbol=symbol)
                 return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
+            # B6a：解析终态订单真实成交事实；零成交不建档
+            resolved = self._resolve_actual_fill(symbol, order, step_size, "做空")
+            if resolved is None:
+                return _empty_fill_result(order)
+            actual_qty, filled_qty, avg_price = resolved
+
             # 根据入场模式获取止损止盈参数
             params = self._get_lv_rm_params(entry_mode)
             # 计算止损价格（做空：取三者最大值），用于通知与日志
@@ -301,17 +381,21 @@ class TradingExecutor:
 
             # FR-01: 统一入口创建 SL/TP1/TP2 三类保护单，收集失败角色
             failed_roles = await self._create_protection_orders(
-                symbol, "short", entry_price, atr, quantity, tick_size, step_size, params
+                symbol, "short", entry_price, atr, actual_qty, tick_size, step_size, params
             )
 
             # 发送通知
-            await self._send_notification(symbol, "做空", entry_price, float(quantity), score, stop_loss_price)
+            await self._send_notification(
+                symbol, "做空", entry_price, float(actual_qty), score, stop_loss_price
+            )
 
             logger.info(
                 "做空执行成功",
                 symbol=symbol,
                 entry_price=entry_price,
-                quantity=float(quantity),
+                planned_quantity=float(quantity),
+                filled_quantity=filled_qty,
+                avg_fill_price=avg_price,
                 stop_loss=stop_loss_price,
                 failed_roles=failed_roles,
             )
@@ -321,6 +405,8 @@ class TradingExecutor:
                 protection_complete=not failed_roles,
                 failed_roles=failed_roles,
                 order=order,
+                filled_quantity=filled_qty,
+                avg_fill_price=avg_price,
             )
 
         except Exception as e:
@@ -388,6 +474,12 @@ class TradingExecutor:
                 logger.warning("做多开仓超时，信号已放弃", symbol=symbol)
                 return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
+            # B6a：解析终态订单真实成交事实；零成交不建档
+            resolved = self._resolve_actual_fill(symbol, order, step_size, "做多")
+            if resolved is None:
+                return _empty_fill_result(order)
+            actual_qty, filled_qty, avg_price = resolved
+
             # 根据入场模式获取止损止盈参数
             params = self._get_lv_rm_params(entry_mode)
             # 计算止损价格（做多：取三者最小值），用于通知与日志
@@ -395,17 +487,21 @@ class TradingExecutor:
 
             # FR-01: 统一入口创建 SL/TP1/TP2 三类保护单，收集失败角色
             failed_roles = await self._create_protection_orders(
-                symbol, "long", entry_price, atr, quantity, tick_size, step_size, params
+                symbol, "long", entry_price, atr, actual_qty, tick_size, step_size, params
             )
 
             # 发送通知
-            await self._send_notification(symbol, "做多", entry_price, float(quantity), score, stop_loss_price)
+            await self._send_notification(
+                symbol, "做多", entry_price, float(actual_qty), score, stop_loss_price
+            )
 
             logger.info(
                 "做多执行成功",
                 symbol=symbol,
                 entry_price=entry_price,
-                quantity=float(quantity),
+                planned_quantity=float(quantity),
+                filled_quantity=filled_qty,
+                avg_fill_price=avg_price,
                 stop_loss=stop_loss_price,
                 failed_roles=failed_roles,
             )
@@ -415,6 +511,8 @@ class TradingExecutor:
                 protection_complete=not failed_roles,
                 failed_roles=failed_roles,
                 order=order,
+                filled_quantity=filled_qty,
+                avg_fill_price=avg_price,
             )
 
         except Exception as e:

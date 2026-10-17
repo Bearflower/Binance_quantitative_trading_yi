@@ -1,0 +1,68 @@
+{
+  "signal_resolution": [
+    {
+      "symbol": "TESTUSDT",
+      "direction": "short",
+      "status": "resolved",
+      "resolution": "executed"
+    },
+    {
+      "symbol": "TESTUSDT",
+      "direction": "short",
+      "status": "resolved",
+      "resolution": "executed"
+    }
+  ],
+  "refreshed_quantity": {
+    "budget_price": 100,
+    "quantity": "1",
+    "order_price": "120.0",
+    "old_margin": 50,
+    "new_margin": 60,
+    "budget_checks": 1
+  },
+  "fills_contract": {
+    "calls": [
+      {
+        "symbol": "TESTUSDT",
+        "startTime": 1000,
+        "endTime": 2000,
+        "limit": 2
+      },
+      {
+        "symbol": "TESTUSDT",
+        "startTime": 1000,
+        "endTime": 2000,
+        "limit": 2,
+        "fromId": 2
+      }
+    ],
+    "records": 2,
+    "complete": false,
+    "errors": [
+      "Official API contract: fromId cannot be sent with startTime or endTime"
+    ]
+  },
+  "income_same_ms": {
+    "available": 3,
+    "collected": 2,
+    "complete": false,
+    "errors": [
+      "同毫秒记录超过单页上限且接口不支持事件ID续传，无法继续翻页"
+    ],
+    "calls": [
+      {
+        "start_time": 1000,
+        "end_time": 2000,
+        "limit": 2,
+        "income_type": "REALIZED_PNL"
+      },
+      {
+        "start_time": 1000,
+        "end_time": 2000,
+        "limit": 2,
+        "income_type": "REALIZED_PNL"
+      }
+    ]
+  }
+}

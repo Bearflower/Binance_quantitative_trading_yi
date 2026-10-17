@@ -47,7 +47,7 @@ async def test_全部平仓为亏损_单条写入且带止损标():
         entry_quantity=100,
         atr=0.02,
         current_price=0.98,
-        pos={'entry_time': entry_time},
+        pos={'opened_at': entry_time},
     )
 
     tl = strategy.binance_client.trade_logger
@@ -76,7 +76,7 @@ async def test_全部平仓为盈利_不打止损标():
         entry_quantity=100,
         atr=0.02,
         current_price=1.1,
-        pos={'entry_time': datetime.now(timezone.utc)},
+        pos={'opened_at': datetime.now(timezone.utc)},
     )
 
     tl = strategy.binance_client.trade_logger
@@ -95,15 +95,15 @@ async def test_做空平仓方向映射为BUY():
         entry_quantity=100,
         atr=0.02,
         current_price=1.02,
-        pos={'entry_time': datetime.now(timezone.utc)},
+        pos={'opened_at': datetime.now(timezone.utc)},
     )
     assert strategy.binance_client.trade_logger.insert_pnl_summary.await_args.kwargs['side'] == 'BUY'
 
 
-async def test_无entry_time时since为空且不报错():
-    """持仓缺少 entry_time（或类型异常）时 since 传 None，不做去重但不应报错。"""
+async def test_无opened_at时since为空且不报错():
+    """持仓缺少 opened_at（或类型异常）时 since 传 None，不做去重但不应报错。"""
     strategy = make_strategy()
-    # pos 无 entry_time → 跳过币安 API 路径，降级到理论 PnL 计算
+    # pos 无 opened_at → 跳过币安 API 路径，降级到理论 PnL 计算
     strategy._calculate_theoretical_total_pnl = AsyncMock(return_value=Decimal('-30'))
     await strategy._writeback_pnl_for_full_close(
         symbol='SUIUSDT',
@@ -129,6 +129,6 @@ async def test_全部平仓PnL回写失败_不影响主流程():
         entry_quantity=100,
         atr=0.02,
         current_price=0.98,
-        pos={'entry_time': datetime.now(timezone.utc)},
+        pos={'opened_at': datetime.now(timezone.utc)},
     )
     strategy.binance_client.trade_logger.log_stop_loss.assert_not_awaited()

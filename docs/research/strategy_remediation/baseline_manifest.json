@@ -1,0 +1,85 @@
+{
+  "schema": "strategy_remediation_baseline/1",
+  "collected_at": "2026-10-15 (Asia/Shanghai)",
+  "repo": {
+    "root": "/Users/yl/vscode/Binance_quantitative_trading",
+    "remote": "Bearflower/Binance_quantitative_trading_yi",
+    "head": "94ca3eda8a6a51d69c1a1e6b36008f2fe10f51e7",
+    "head_subject": "fix(new_coin): 修复平仓盈亏回写 executed_at 时区编码错误",
+    "uncommitted_scope": "docs/, .github/, .trae/, .claude/, skills/, task.md only; strategies/ and shared/ clean",
+    "strategy_code_equals_head": true
+  },
+  "audit_probe": {
+    "script": "docs/research/code_audit_2026-10-15/verify_readonly.py",
+    "passed": 9,
+    "meaning": "审计描述的 9 个问题在当前本地源码上仍可复现，尚未修复"
+  },
+  "prior_task_commits": [
+    {
+      "sha": "fce42bfd1025dbd5fbf681515b89a894e217ecd3",
+      "date": "2026-10-14",
+      "files": [
+        "shared/binance_api.py",
+        "shared/position_ownership.py",
+        "shared/trade_logger.py",
+        "strategies/new_coin/config.yaml",
+        "scripts/fix_ghost_entry_records.py"
+      ],
+      "note": "互斥终态状态机；共享模块变更触发全部策略容器重建"
+    },
+    {
+      "sha": "94ca3eda8a6a51d69c1a1e6b36008f2fe10f51e7",
+      "date": "2026-10-15",
+      "files": [
+        "strategies/new_coin/strategy.py",
+        "strategies/new_coin/test_realized_pnl_fix.py"
+      ],
+      "note": "仅改盈亏回写路径(executed_at 时区)，未触及 analyze/should_entry/反弹判断；B3 无重叠"
+    }
+  ],
+  "source_hashes_git_blob": {
+    "strategies/hrs/strategy.py": "8aead78c125ebbdce7f34460e7884c76aaf8da36",
+    "strategies/hrs/scoring_engine.py": "3c57cc21bb7caa1ec014bb6a4295f0b36b99bbf3",
+    "strategies/hrs/candidate_pool.py": "afd913bdd0f8d26417a80b5a56753f3f0f88ffb1",
+    "strategies/hrs/market_data.py": "52e16482f53d5f0b5664a93517913430f0e8b1ed",
+    "strategies/hrs/position_manager.py": "3ee637e83ac9128cba6470170b53a7bedd3f493f",
+    "strategies/new_coin/strategy.py": "c6b46ed6e1b7fe71d5ec90e27a97bc72fadabf6c",
+    "strategies/new_coin/executor.py": "9acef00268c7ad5bb71fb9d0ec4991cf2c029bfe",
+    "shared/market_cap.py": "980f850958efa160dd1bb7840e9c4714cff1ef33",
+    "shared/config_loader.py": "3c094d9041c47317907d0cf1f07c58440fa22a60",
+    "shared/capital_manager.py": "173074650794b8dc4257e78ee4716120966782cf",
+    "shared/protection_retry.py": "c627d592c94829567255e49a12cf0527e65b1f26"
+  },
+  "online_containers": [
+    {"name": "trading_system-hrs", "image_digest": "sha256:d5ed68d46ad715db4e5b9a29d77f07e78976ca34e6b18cd47f17ca5caedeed8d", "git_sha": "94ca3ed", "deploy_id": "00004B01", "created": "2026-10-15 09:03"},
+    {"name": "trading_system-new_coin", "image_digest": "sha256:59c320460cfb65fcf2fd188cdd01362f6adb1b6422c48daabd4fa86f27b0b0e0", "git_sha": "94ca3ed", "deploy_id": "00004B01", "created": "2026-10-15 09:03"},
+    {"name": "dashboard-api", "image_digest": "sha256:e217553edbf90ae7edad6d00453be06f1cc002f2148ed9d0f5e215ca248e861a", "git_sha": "94ca3ed", "deploy_id": "00004B01", "created": "2026-10-15 09:03"},
+    {"name": "trading_system-btc_eth", "image_digest": "sha256:f8792c95c7c1f8e0635d9c604425b1de319f9533c6c4ff1c67b9b4dfbc818900", "git_sha": "fce42bf", "deploy_id": "00004A01", "created": "2026-10-14 21:25"},
+    {"name": "trading_system-btc_eth_aggressive", "image_digest": "sha256:f5ca46dd2b177f1bb4bcaddee1e8c2a928e8bd906d6df53ba4286e441ef08683", "git_sha": "fce42bf", "deploy_id": "00004A01", "created": "2026-10-14 21:25"},
+    {"name": "trading_system-grid", "image_digest": "sha256:60a3e033ed7029fc4b82f0d0f193ca8387c9ee57a745eca4c3e9c5fc732be050", "git_sha": "fce42bf", "deploy_id": "00004A01", "created": "2026-10-14 21:25"},
+    {"name": "trading_system-kline", "image_digest": "sha256:bee48dc5135e0103b40a9268460a1c477f88b8af2d39682e06c6c04d092a8327", "git_sha": "fce42bf", "deploy_id": "00004A01", "created": "2026-10-14 21:25"},
+    {"name": "trading_system-kline-monitor", "image_digest": "sha256:894f7edf66b4b08c610972697413a98de28514c54db933dd29282afc9bf2b096", "git_sha": "fce42bf", "deploy_id": "00004A01", "created": "2026-10-14 21:25"},
+    {"name": "ai-tuner", "image_digest": "sha256:315ddc8f2a61d2f4e3553a9c3975c1a080642300d3d4cd2407516a477cc69ee6", "git_sha": "fce42bf", "deploy_id": "00004A01", "created": "2026-10-14 21:25"},
+    {"name": "data-backend", "image_digest": "sha256:615c736a4debccc70b58c388e90ed29bcbb9ac5c42b906bf97ce35e3b531ec29", "git_sha": "fce42bf", "deploy_id": "00004A01", "created": "2026-10-14 21:25"},
+    {"name": "trading_system-aggtrade-collector", "image_digest": "sha256:967e287a34bb6592f8c6ea587df3147d7d174b9f2354eeb5f2fdf19ad3eb8efb", "git_sha": "fce42bf", "deploy_id": "00004A01", "created": "2026-10-14 21:25"}
+  ],
+  "applied_config_versions": {
+    "btc_eth": {"requested": "V20260811", "applied": "V20260811", "config_hash": "0f6be0c8901a7a269c2ed67d7e750a12c1b2aca8cd77bbf3e7b2193ddacd9c53", "load_error": null},
+    "btc_eth_aggressive": {"requested": "V20260910", "applied": null, "config_hash": "6a09c3b3b268c9bd1687a2124f2ffa563a4917475f4b08937c441612090951c0", "load_error": "覆盖层缺失或解析失败"},
+    "new_coin": {"requested": "V20260830", "applied": "V20260830", "config_hash": "a6ef3ce8b241c36ab89822f62cfe65481149dce6849dd46a29afffbe1e5ca093", "load_error": null},
+    "hrs": {"requested": "V20260819", "applied": null, "config_hash": "cf3ba1acada5b40b67c44fae1947b7c89d12474dd1c6de16fc001fabe4daab20", "load_error": "覆盖层缺失或解析失败"},
+    "grid": {"requested": "V20260830", "applied": "V20260830", "config_hash": "c22da318d94dbca21f4e86ef64fcd7e8bed3a934c189bcfc58dba4b83ccd283d", "load_error": null}
+  },
+  "audit_issues_status": [
+    {"id": 1, "issue": "HRS EMM/semi-EMM 不可触发(score 未传 price_change_24h)", "status": "still_present", "workpackage": "B1"},
+    {"id": 2, "issue": "HRS 空候选池 LV-RM 只算不执行", "status": "still_present", "workpackage": "B2"},
+    {"id": 3, "issue": "HRS _resolve_conflicts 非按全市场强弱排序", "status": "still_present", "workpackage": "B2 observe"},
+    {"id": 4, "issue": "market_cap 回退 OI×20 致 OI/市值恒 0.05", "status": "still_present", "workpackage": "B4"},
+    {"id": 5, "issue": "LV-RM 初始保护与后续管理不同口径", "status": "still_present", "workpackage": "B5"},
+    {"id": 6, "issue": "新币 recent_high 含末根致 close>recent_high 恒不触发", "status": "still_present", "workpackage": "B3"},
+    {"id": 7, "issue": "新币 sentiment_degraded 未传入 should_entry", "status": "still_present", "workpackage": "B3"},
+    {"id": 8, "issue": "HRS reset_time_stop 混用开仓/复核时间", "status": "still_present", "workpackage": "B5"},
+    {"id": 9, "issue": "MTPCS 加仓 merge_position 用信号价参与均价", "status": "still_present", "workpackage": "B6c"}
+  ],
+  "unknown_version_differences": []
+}

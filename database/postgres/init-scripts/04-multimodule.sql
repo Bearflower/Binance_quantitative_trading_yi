@@ -45,8 +45,15 @@ CREATE TABLE IF NOT EXISTS trading.strategy_open_positions (
     margin      DECIMAL(20,8) NOT NULL DEFAULT 0,     -- 当前占用保证金
     quantity    DECIMAL(20,8) NOT NULL DEFAULT 0,     -- 当前持仓数量
     updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    strategy    VARCHAR(32) GENERATED ALWAYS AS (strategy_id) STORED,  -- 向后兼容：旧代码/手动查询仍用 strategy 列
     PRIMARY KEY (strategy_id, symbol)
 );
+
+-- 存量库补列（幂等）：为已存在的表补上 strategy 生成列，兼容旧代码中引用
+-- strategy_open_positions.strategy 而非 strategy_open_positions.strategy_id 的查询
+ALTER TABLE trading.strategy_open_positions
+    ADD COLUMN IF NOT EXISTS strategy VARCHAR(32)
+        GENERATED ALWAYS AS (strategy_id) STORED;
 
 -- ============================================
 -- 授权：给看板/策略连接用户读写权限

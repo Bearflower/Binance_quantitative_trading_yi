@@ -1,0 +1,35 @@
+........................................................................ [ 26%]
+........................................................................ [ 52%]
+........................................................................ [ 78%]
+....................................................FF......             [100%]
+=================================== FAILURES ===================================
+__________ TestNewCoinFillFacts.test_partial_fill_real_qty_and_price ___________
+tests/test_strategies/test_fill_fact_consistency.py:339: in test_partial_fill_real_qty_and_price
+    assert order is not None
+E   assert None is not None
+----------------------------- Captured stdout call -----------------------------
+2026-10-17 13:23:06 [info     ] 准备执行做空: BTCUSDT                price=50000.0 score=85
+2026-10-17 13:23:06 [error    ] 执行做空失败: BTCUSDT                error='TradingExecutor' object has no attribute 'min_notional'
+Traceback (most recent call last):
+  File "/Users/yl/vscode/Binance_quantitative_trading/strategies/new_coin/executor.py", line 470, in execute_short
+    quantity, reject_reason = await self._resolve_quantity_at_price(
+  File "/Users/yl/vscode/Binance_quantitative_trading/strategies/new_coin/executor.py", line 760, in _resolve_quantity_at_price
+    if notional < self.min_notional:
+AttributeError: 'TradingExecutor' object has no attribute 'min_notional'
+______ TestNewCoinFillFacts.test_avg_price_unknown_fallback_with_warning _______
+tests/test_strategies/test_fill_fact_consistency.py:388: in test_avg_price_unknown_fallback_with_warning
+    assert order is not None
+E   assert None is not None
+----------------------------- Captured stdout call -----------------------------
+2026-10-17 13:23:06 [info     ] 准备执行做空: BTCUSDT                price=50000.0 score=85
+2026-10-17 13:23:06 [error    ] 执行做空失败: BTCUSDT                error='TradingExecutor' object has no attribute 'min_notional'
+Traceback (most recent call last):
+  File "/Users/yl/vscode/Binance_quantitative_trading/strategies/new_coin/executor.py", line 470, in execute_short
+    quantity, reject_reason = await self._resolve_quantity_at_price(
+  File "/Users/yl/vscode/Binance_quantitative_trading/strategies/new_coin/executor.py", line 760, in _resolve_quantity_at_price
+    if notional < self.min_notional:
+AttributeError: 'TradingExecutor' object has no attribute 'min_notional'
+=========================== short test summary info ============================
+FAILED tests/test_strategies/test_fill_fact_consistency.py::TestNewCoinFillFacts::test_partial_fill_real_qty_and_price
+FAILED tests/test_strategies/test_fill_fact_consistency.py::TestNewCoinFillFacts::test_avg_price_unknown_fallback_with_warning
+2 failed, 274 passed in 0.66s

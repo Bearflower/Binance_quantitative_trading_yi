@@ -1,0 +1,19 @@
+{
+  "head": "b177486a7b2e65e8e068d5b405b12c47b59678b8",
+  "scope": "local working tree including uncommitted changes; no production verification",
+  "files": {
+    "strategies/hrs/strategy.py": "79021d073ef124b5b714ffc5a632be095927c793682c91bee0e1f80aa652f033",
+    "strategies/hrs/scoring_engine.py": "7156b4f1669b81bc090e9ba210f3e848ae2df10c1592da83d6ad1f25bd033607",
+    "strategies/hrs/config.yaml": "8991b4e67c6385c23116fde90e4b3995474c137d2123757f751a55a31f1ac751",
+    "strategies/hrs/candidate_pool.py": "58649c67ba71490f6c73357ed75b5365b5ee37ef65a9a408f216fa1de641e770",
+    "strategies/new_coin/strategy.py": "e03a116011140bc3f4a1fbab7841a35f35578a33bced0893648726ace4ba84b1",
+    "strategies/new_coin/executor.py": "2ac56b4bf04d89988afc5645570866b6b9ddf6e04e2f902e6cadf785013ed564",
+    "scripts/export_execution_facts.py": "400ff634de9de0ddcb96d49b8235c4be70498d3075b847fe5e4044de6317dc60",
+    "shared/execution_facts_sink.py": "0cb7b12f433be40b2f2493901d71e595bae24b63eb696993a5909126e77f6f87",
+    "shared/market_cap.py": "0298d49d0ac5ef582bfccd74f7900a2680a385f6d366bb053634e6d2ac7ade37",
+    "shared/protection_retry.py": "2a89c2244781054083c4e92aacbb1f6203d5315cfd3b7630e65af5acb9552207",
+    "strategies/hrs/position_manager.py": "b0da3e5067e9b1a7d19a88a9e066f0681d91025acbcf26dc20601ca01f859aff",
+    "strategies/hrs/executor.py": "c2ac204410460c31672b379c4a29e44569252ffc1e0e3a64f154688f555086f9",
+    "docs/research/strategy_remediation/decisions.md": "f75022117238765954292fc4977c32107eff8d8579222a901998388cc62cfce8"
+  }
+}

@@ -1,0 +1,171 @@
+{
+  "scope": "offline method/AST probes only; not live deployment or PnL verification",
+  "config_metadata": {
+    "btc_eth": {
+      "requested_overrides_version": "V20260811",
+      "applied_overrides_version": "V20260811",
+      "config_hash": "0f6be0c8901a7a269c2ed67d7e750a12c1b2aca8cd77bbf3e7b2193ddacd9c53",
+      "load_error": null
+    },
+    "btc_eth_aggressive": {
+      "requested_overrides_version": "V20260910",
+      "applied_overrides_version": null,
+      "config_hash": "6a09c3b3b268c9bd1687a2124f2ffa563a4917475f4b08937c441612090951c0",
+      "load_error": "覆盖层缺失或解析失败: /Users/yl/vscode/Binance_quantitative_trading/strategies/btc_eth_aggressive/tuning_overrides/V20260910.yaml"
+    },
+    "new_coin": {
+      "requested_overrides_version": "V20260830",
+      "applied_overrides_version": "V20260830",
+      "config_hash": "a6ef3ce8b241c36ab89822f62cfe65481149dce6849dd46a29afffbe1e5ca093",
+      "load_error": null
+    },
+    "hrs": {
+      "requested_overrides_version": "V20260819",
+      "applied_overrides_version": null,
+      "config_hash": "cf3ba1acada5b40b67c44fae1947b7c89d12474dd1c6de16fc001fabe4daab20",
+      "load_error": "覆盖层缺失或解析失败: /Users/yl/vscode/Binance_quantitative_trading/strategies/hrs/tuning_overrides/V20260819.yaml"
+    },
+    "grid": {
+      "requested_overrides_version": "V20260830",
+      "applied_overrides_version": "V20260830",
+      "config_hash": "c22da318d94dbca21f4e86ef64fcd7e8bed3a934c189bcfc58dba4b83ccd283d",
+      "load_error": null
+    }
+  },
+  "checks": [
+    {
+      "probe": "hrs_standard_path_emm_missing_price_change",
+      "status": "passed",
+      "score_call_lines": [
+        329,
+        364
+      ]
+    },
+    {
+      "probe": "hrs_empty_pool_lv_signals_discarded",
+      "status": "passed",
+      "generated": 1,
+      "returned": null
+    },
+    {
+      "probe": "newcoin_degraded_flag_omitted",
+      "status": "passed",
+      "line": 749,
+      "current_regular_min": 9.0,
+      "current_degraded_min": 7.0
+    },
+    {
+      "probe": "newcoin_rebound_inequality",
+      "status": "passed",
+      "valid_ohlc_examples": 100,
+      "invariant": "last close <= last high <= max(inclusive recent highs)"
+    },
+    {
+      "probe": "hrs_fallback_ratio_constant",
+      "status": "passed",
+      "ratios": [
+        0.05,
+        0.05,
+        0.05
+      ]
+    },
+    {
+      "probe": "mtpcs_notional_sizing_no_leverage_factor",
+      "status": "passed",
+      "allocation": 1000,
+      "safety": 0.1,
+      "ratio": 0.24,
+      "notional": "216.000"
+    },
+    {
+      "probe": "newcoin_margin_sizing",
+      "status": "passed",
+      "available_margin": 30,
+      "leverage": 2,
+      "price": 100,
+      "quantity": "0.6"
+    },
+    {
+      "probe": "hrs_stop_risk_then_margin_caps",
+      "status": "passed",
+      "account": 1000,
+      "stop_distance": 0.05,
+      "leverage": 2,
+      "margin_cap": 50,
+      "quantity": 1.0
+    },
+    {
+      "probe": "grid_semi_guards_and_shadow_config",
+      "status": "passed",
+      "automatic_methods_guarded": 4
+    }
+  ],
+  "source_sha256": {
+    "shared/capital_manager.py": "0b4153812bee0f6348e2d2526bd7523f02ab04f88cac076d6843a9d71dcdca62",
+    "shared/circuit_breaker.py": "84615782209b22a81a88a10620b2e6838b432b363e7abdd10c407b9926f20193",
+    "shared/config_loader.py": "8deee7ce081df114ba8231a74574bc9d8c7f0a58e00a7f95b65be66d3dff1e06",
+    "shared/kline_service.py": "c15ee90bf996ac810767f6c41d8094eb5e0cf4022f31ed70cd7b7a29b005b903",
+    "shared/market_cap.py": "cd6eed84cbe3856ee59a530aefb99b648a360317a5ad4ad3530438102d0847ce",
+    "shared/order_fill_waiter.py": "d6af6b9a734eb78dc2f48975e485fd8b20967f1aee06695e47a3e6fccf31e274",
+    "shared/position_ownership.py": "f02f9057c81b9474709a5c9d36b2a404d8274fc942279d0694bac5d005e2b4c8",
+    "shared/protection_retry.py": "680c28683b383637521214dd3b8aba51172f0ef123177deb32b130c19d1f10e3",
+    "strategies/btc_eth/__init__.py": "19c1c46e15abab31f7d362fedded0e806df1cc8c5afac8b2f5fc616f74144335",
+    "strategies/btc_eth/config.yaml": "bc882497762c2e00f1aec3982e5a2ccbfb4105dec7d37d3a38847c00220fed0e",
+    "strategies/btc_eth/main.py": "581a1b394468d84dd424a1cbf6b494a0fa50382fcd69b28896e635ff16f49c4e",
+    "strategies/btc_eth/market_state.py": "c97de3216bce7b6318d880ad875c498a847ba8dbfbad9b61a7cf7f394720f78c",
+    "strategies/btc_eth/strategy.py": "35149e9e44d8349ff79dc9b07866629c4c38370db7dc4550a4b78c61e2cf288e",
+    "strategies/btc_eth/test_realized_pnl_fix.py": "5d8416e2fe136d9034425fe6fef30e21f8a21d5bbafcc3cb7550d2d2eb283057",
+    "strategies/btc_eth/test_v23_functional.py": "9b22c3941b4c530ef66a4f2aec4f224437add92ae1111e2bb6ec86770725b130",
+    "strategies/btc_eth/test_v23_orphan_cleanup.py": "9c54d9e64e9c0959a02a68eda5dcb93291e3b4d6aceda9263fba0f7e8295489d",
+    "strategies/btc_eth/tuning_overrides/.active": "b1befdb60e7dafdb0064dfd6aef2b243611b9c9966224c2b0095383129073db0",
+    "strategies/btc_eth/tuning_overrides/V20260811.yaml": "0fdfd65ce5bddaa2201c553e695417761f5fdc638240dc6eae68e523878c34f2",
+    "strategies/btc_eth_aggressive/__init__.py": "19c1c46e15abab31f7d362fedded0e806df1cc8c5afac8b2f5fc616f74144335",
+    "strategies/btc_eth_aggressive/config.yaml": "6673c0ec10142e4aee2d883a259768f5653fe889d31bea2dd1ccc36353aeeecf",
+    "strategies/btc_eth_aggressive/main.py": "da0c96ebda382b9134688450a7a39d5ac3a61293048d76801ce0825aa2a78825",
+    "strategies/btc_eth_aggressive/market_state.py": "c97de3216bce7b6318d880ad875c498a847ba8dbfbad9b61a7cf7f394720f78c",
+    "strategies/btc_eth_aggressive/strategy.py": "8d831090f2110eb40de81d47d17a6a5cfc9f49b73eea89ce352100b3eb7209fa",
+    "strategies/btc_eth_aggressive/tuning_overrides/.active": "afd942cef0512cab18ad6db0fc4da20a9297a8c81aaafac7d6d21bd997cb09eb",
+    "strategies/btc_eth_aggressive/tuning_overrides/V20260910.yaml": "070069cfa693a99000355d519b27229a01950a8b1c67185c35dc0dedcb411acc",
+    "strategies/grid/__init__.py": "362eaaf5ecb21b992c103f30334978b92f2847d997ae65bcb1d8177707f22abb",
+    "strategies/grid/config.yaml": "a6c4f478602e9389cbf5c8227cf660676094b3c70446ac026ca3d356880d26c5",
+    "strategies/grid/grid_calculator.py": "7a99686c1d5ee1db9380cc089fd1342ef2fd0ed7bfa8af7dc31ac8167b492b4b",
+    "strategies/grid/heartbeat.py": "1dea9c9febdc4afc32ee0bbab1cee50c40d9ab880b329ccd6844e7a53c8a56db",
+    "strategies/grid/main.py": "f4990ba504c4435f08b62fba9b5e9db339d836e5668ed9c55dcb51e92a2e1f2d",
+    "strategies/grid/margin_advisor.py": "8ffddebe054963e69a8c0938eae30d4193df9c5db450469ac0ee6bafb68bb0b4",
+    "strategies/grid/market_state.py": "2d3e9968b3d4fecd5added84b874f1a71fe6bba4d1582887e9eddcf514284732",
+    "strategies/grid/order_manager.py": "69ee187b8cdb0499967a95c9068f2c932d0ce3dfb0a218daf6e470b48535a9f1",
+    "strategies/grid/position_manager.py": "a38bd3f487d814c5672ad8f9d34ca6041830fbc62c3fab16cd8c67aeb743c3cc",
+    "strategies/grid/risk_manager.py": "173b72b8c9a2bd62285b6cb7877f26d8cf7548d84369c9532b6e96efd3506a78",
+    "strategies/grid/signal_bot.py": "7dde652029fbc83b6f6a1cc7b7e24f4062deee154e216a3cbd43ff848c3bf2fe",
+    "strategies/grid/strategy.py": "6577fe17b26fc832ca597c4fd56d62c0f9a2e342f48c44e6493dece0041315f2",
+    "strategies/grid/tuning_overrides/.active": "2299be262f28a64b2ebc2eb1c5de30f7ab15b1e3757d233b1a9ef275ca4c4488",
+    "strategies/grid/tuning_overrides/V20260830.yaml": "d90f4afbd7fa368434651c0e0f620bc170ebf2c8102d24b2f573ed65a7f25e07",
+    "strategies/hrs/__init__.py": "bb07dcc43a9053f29f8846faccc7693d7b1fcc4587c23d28d377a91caac424d3",
+    "strategies/hrs/candidate_pool.py": "9a8d042014a30d8b03dbfcae940eb94f4631dffedd4e011524300fff5cc57a14",
+    "strategies/hrs/config.yaml": "97b3c263e5c0727e3e47a4b5691512303d2aa110fdd4b878eebf4cb7e8528507",
+    "strategies/hrs/executor.py": "818e161355eb96766d4bae8589bf8c525c27abcf8578969b59a5de238b776aee",
+    "strategies/hrs/main.py": "e8836849fee6d6462b71f97c8aab8575a26b1447e95b029aba61bb33299b3982",
+    "strategies/hrs/market_data.py": "0117a79dd8f8d67fea415fc3f62715d7b5812e7f16af7125908d442e5ff209b1",
+    "strategies/hrs/pattern.py": "89ff9db4634db6fefe2637f0f7cef732a5d713bcb5d4c9f56bbf7830153f0c2b",
+    "strategies/hrs/position_manager.py": "433459a1184e687d9a983a7ae8d0768af8037df01801de2ef5fd7896317fd4a6",
+    "strategies/hrs/risk_manager.py": "c8af481655198da868d485f4da7e9d915670d28d40988b4ac03ae759a4fe7197",
+    "strategies/hrs/scoring_engine.py": "7156b4f1669b81bc090e9ba210f3e848ae2df10c1592da83d6ad1f25bd033607",
+    "strategies/hrs/strategy.py": "ad4ba59be706c6b3ce80417baf54ffa0c233b80a210f85cd6d4c6805b9d472a8",
+    "strategies/hrs/tuning_overrides/.active": "dec92d270df0b7a3e08dbfad7515d719e0b0487780b8497c8a907de832bcb4a6",
+    "strategies/hrs/tuning_overrides/V20260819.yaml": "58d9475920031e3a076f65911f42a440d46dfbaba454542f7ceefbd14a8d1ab9",
+    "strategies/new_coin/__init__.py": "fef3cdad3dbb10d4e4abc9cdf1c6bd672e593b29769adab3ab04d045d47f41ce",
+    "strategies/new_coin/config.yaml": "03e940565159474d76aea3ccbeab103e4ead7b35056d088a511a37ebe615901f",
+    "strategies/new_coin/detector.py": "5af1be36ab132c19c72eb21298b6275bdb123f28d52a80150159292703eb98e8",
+    "strategies/new_coin/executor.py": "8d262fcc9eecf77ab87fc27aa594b99be80ad988f307bf6e092031e847120d37",
+    "strategies/new_coin/main.py": "2d87db2d40aa6f747cad9cb4f617d823cddffa743a150151d841556713fab81b",
+    "strategies/new_coin/pattern.py": "4cc2b6e46dff7d31891eb7b46953f860bfb359fab1927b72fbf45478b9db73e4",
+    "strategies/new_coin/scoring_engine.py": "8dc222bf1c56248868ee975b8da777951ad26793f19ef60fe14fa64b49a4d068",
+    "strategies/new_coin/strategy.py": "2265418b379b882614328d9e438ce19ae289b469c7d9278f08a092542e903871",
+    "strategies/new_coin/test_delisted_symbols.py": "2092b6e455194297828c717a213c0c4ca387250290d5aa59d60d9b69fbce9294",
+    "strategies/new_coin/test_drawdown_fix.py": "b3bc9644f62904b5d6e1953910afafd48be7c0a271cc85f78844650b7282b99a",
+    "strategies/new_coin/test_realized_pnl_fix.py": "2e6d7da380a80689ac4428f6cf515227bb6b60a4f188454a60bce882d491293a",
+    "strategies/new_coin/tuning_overrides/.active": "2299be262f28a64b2ebc2eb1c5de30f7ab15b1e3757d233b1a9ef275ca4c4488",
+    "strategies/new_coin/tuning_overrides/V20260811.yaml": "b2a26badde98903c0b98c79c27d798109098b998b50c3c58219f46f6d0c84142",
+    "strategies/new_coin/tuning_overrides/V20260830.yaml": "8511a0d913c381a601b106523c642a3f93fff103a98dd11fc506ba74fa287922"
+  }
+}

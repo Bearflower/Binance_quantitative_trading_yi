@@ -172,9 +172,9 @@ class TestTimeStop:
 
     def test_未达第一目标且持仓超时触发(self, pm):
         pm.add_position("DOGEUSDT", "short", 1.0, 100, 0.005)
-        # 手动设置开仓时间为 73 小时前
+        # B5: 时间止损比较 next_review_at（可变复核时刻），手动置为已过期
         pos = pm.get_position("DOGEUSDT")
-        pos["entry_time"] = datetime.now(timezone.utc) - timedelta(hours=73)
+        pos["next_review_at"] = datetime.now(timezone.utc) - timedelta(hours=1)
         assert pm.check_time_stop("DOGEUSDT") is True
 
     def test_未达第一目标但持仓未超时不触发(self, pm):
@@ -186,7 +186,7 @@ class TestTimeStop:
         pm.add_position("DOGEUSDT", "short", 1.0, 100, 0.005)
         pm.mark_target_reached("DOGEUSDT", 1)
         pos = pm.get_position("DOGEUSDT")
-        pos["entry_time"] = datetime.now(timezone.utc) - timedelta(hours=73)
+        pos["next_review_at"] = datetime.now(timezone.utc) - timedelta(hours=1)
         # 已达第一目标，不触发时间止损
         assert pm.check_time_stop("DOGEUSDT") is False
 
