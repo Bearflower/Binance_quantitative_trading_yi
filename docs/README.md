@@ -227,8 +227,8 @@
 - [第三轮复审报告（2026-10-17）](reviews/strategy_reaudit_2026-10-17/README.md) - 独立复审上轮 R7/R8/R9 修复；判定「满页到达窗口结束毫秒仍会静默漏数」为 P1 未闭合，附 `verify_offline.py` 独立复现脚本与 `results.json`
 - [R10/R11/R12 + RK1/RK2 收口需求与验收标准](research/strategy_remediation/requirements_R10-RK_2026-10-17.md) - 逐条「问题定义→根因→验收标准」，状态「已实现 + 已通过回归」（§7 逐条闭环状态表 + R10 架构偏差 + 统计口径定义 + 能力限制披露 + 审计材料适配 + §3 回归用例文件名勘误）
 - [R10/R12 + RK1/R11/RK2 收口架构设计定稿](research/strategy_remediation/architecture_R10-RK_2026-10-17.md) - 分页闭区间收尾、income 缺口标记、HRS 落库失败告警、V2.10 评分口径、RK2 统计口径；状态「已落地」（§6.2 口径正交声明 + 执行率 3/9 分母、§1.5/§7.1 实现偏差）
-- [目的驱动型全自动 AI Tuner 与策略回测体系设计（spec）](superpowers/specs/2026-10-16-purpose-driven-ai-tuner-design.md) - 总纲设计；**阶段一（参数安全 + 90 天准备度审计）已落地**，阶段二/三未实现，差异见文首「实现偏差回标（S1–S9）」
-- [AI Tuner MVP 安全与准备度实施计划（plan）](superpowers/plans/2026-10-17-ai-tuner-mvp-safety-readiness.md) - Plan 1 实施计划；阶段一已实现（219 用例通过），差异见文首「实现偏差回标（D1–D10）」
+- [目的驱动型全自动 AI Tuner 与策略回测体系设计（spec）](superpowers/specs/2026-10-16-purpose-driven-ai-tuner-design.md) - 总纲设计；**阶段一（参数安全 + 90 天准备度审计）已落地**，阶段二/三未实现，差异见文首「实现偏差回标（S1–S10）」
+- [AI Tuner MVP 安全与准备度实施计划（plan）](superpowers/plans/2026-10-17-ai-tuner-mvp-safety-readiness.md) - Plan 1 实施计划；阶段一已实现（227 用例通过），差异见文首「实现偏差回标（D1–D12）」
 - [AI Tuner MVP 准备度报告样例](reports/ai-tuner-mvp-readiness-report.example.json) - `scripts/ai_tuner_mvp.py audit` 输出 schema 样例（供核验报告结构与门禁字段）
 
 > 知识库（可复用问题/决策沉淀）见 [docs/knowledge/INDEX.md](knowledge/INDEX.md)。

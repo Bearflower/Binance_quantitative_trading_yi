@@ -2,11 +2,15 @@
 """功能矩阵 5 + 6：ReadinessAuditor
 
 - 矩阵 5：config purpose_driven_mvp.readiness 的 8 个键都被真实读取（改配置改门禁）
-- 矩阵 6：hrs 缺口报告（trade_signals 表缺失 / 无 K 线表 / 无快照表 → 结构化 gaps 不崩）
+- 矩阵 6：hrs 缺口报告（信号/K线/快照 → 结构化 gaps 不崩）
 - 覆盖 auditor 全部查询分支、异常分支与策略选择逻辑（DB 用 FakeDB 桩）
-"""
 
-from datetime import timedelta
+v2 修复说明（2026-10-18）：
+- 信号表探测从「遍历已知 schema 找 trade_signals + 校验 strategy_id 列」
+  改为「schema 直接是 strategy_id + ILIKE '%signal%' 探测表 + 候选时间列集合」
+- K 线表定位从「任意取第一张」改为「先查主力合约 symbol 再按 symbol 找表」
+- 时间列类型探测 + 绑定值转换（naive 去 tzinfo / aware 保留 UTC）消除 asyncpg 冲突
+"""
 
 import pytest
 
@@ -86,8 +90,7 @@ class TestConfigDrivenThresholds:
         assert any("K线覆盖" in f and "101.0%" in f for f in failures)
 
     async def test_min_external_snapshot_coverage_no_fallback(self, config, fake_db, as_of):
-        """M4 + per_strategy：把 aggressive 的 per_strategy 条目设为 required+0.5 →
-        coverage=0 触发 failure（证明 per_strategy 覆盖生效，阈值无硬编码兜底）"""
+        """per_strategy 覆盖 aggressive: required+0.5，coverage=0 触发 failure"""
         per = config["purpose_driven_mvp"]["readiness"]["per_strategy"]
         per["btc_eth_aggressive"]["external_snapshot_requirement"] = "required"
         per["btc_eth_aggressive"]["min_external_snapshot_coverage"] = 0.5
@@ -105,7 +108,7 @@ class TestConfigDrivenThresholds:
     async def test_window_days_drives_kline_expectation(self, config, as_of):
         """window_days 真实生效：同样 100 根 K 线，窗口 1 天达标、90 天不达标"""
         responses = dict(BASELINE_RESPONSES)
-        responses["FROM btc_eth.klines_1h"] = {"cnt": 100}
+        responses["FROM btc_eth.kline_btcusdt_1h"] = {"cnt": 100}
         config["purpose_driven_mvp"]["readiness"]["window_days"] = 1
         ok_result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
         # 1 天窗口预期 24 根，100 根 → 覆盖率封顶 1.0 → 通过
@@ -127,7 +130,7 @@ class TestConfigDrivenThresholds:
     async def test_window_start_passed_to_sql(self, auditor, fake_db, as_of):
         """窗口以绑定变量 $2/$3 传入 SQL（参数化，无字面量拼接）"""
         await auditor.run(as_of=as_of)
-        trade_sql = next(s for s in fake_db.sql_log if "closed_trades" in s)
+        trade_sql = next(s for s in fake_db.sql_log if "COUNT(*) AS closed_trades" in s)
         assert "$2" in trade_sql and "$3" in trade_sql
 
     async def test_as_of_defaults_to_now(self, auditor, fake_db):
@@ -137,23 +140,61 @@ class TestConfigDrivenThresholds:
 
 
 # ===========================================================================
-# 矩阵 6：hrs 缺口报告（数据缺失不崩、gaps 结构化）
+# 时区绑定转换（V1 新增：naive 列去 tz / aware 列保留 UTC）
+# ===========================================================================
+
+
+class TestTimezoneBinding:
+    """验证 _bind_window 按列类型正确转换时间绑定值（消除 asyncpg 冲突的核心修复）"""
+
+    async def test_naive_column_receives_naive_value(self, fake_db, config, as_of):
+        """trading.trade_records.executed_at 是 naive → 绑定值应不带 tzinfo"""
+        await ReadinessAuditor(fake_db, config).run(as_of=as_of)
+        # 找到 trade_records 主查询的调用参数
+        trade_call = next(
+            c for c in fake_db.call_args_log
+            if "COUNT(*) AS closed_trades" in c[1]
+        )
+        _, sql, args = trade_call
+        # args[0] = strategy_id, args[1] = window_start（应 naive）, args[2] = window_end（应 naive）
+        ws, we = args[1], args[2]
+        assert ws.tzinfo is None, f"naive 列应收到 naive 值，实际 tzinfo={ws.tzinfo}"
+        assert we.tzinfo is None, f"naive 列应收到 naive 值，实际 tzinfo={we.tzinfo}"
+
+    async def test_aware_column_receives_aware_utc(self, config, as_of):
+        """hrs.hrs_signals.triggered_at 是 aware → 绑定值应带 UTC tzinfo"""
+        db = FakeDB()
+        await ReadinessAuditor(db, config).run(as_of=as_of)
+        # 找 hrs 信号计数查询（SQL 含 FROM hrs.hrs_signals）
+        hrs_signal_call = next(
+            c for c in db.call_args_log
+            if "FROM hrs.hrs_signals" in c[1]
+        )
+        _, sql, args = hrs_signal_call
+        ws, we = args[0], args[1]
+        assert ws.tzinfo is not None, "aware 列应收到 aware 值"
+        assert we.tzinfo is not None, "aware 列应收到 aware 值"
+        assert ws.utcoffset() is not None, "应为 UTC 或带 offset"
+
+
+# ===========================================================================
+# 矩阵 6：缺口报告（数据缺失不崩、gaps 结构化）
 # ===========================================================================
 
 
 class TestHrsGapReporting:
     async def test_all_data_sources_missing_produces_structured_gaps(self, config, as_of):
-        """全部数据源探测失败：signals=0 / kline=0 / snapshot=0，gaps 逐项说明且不崩
-        注意：aggressive 快照 not_required → 自定义 gap 文案；hrs 快照 required → 原始快照表缺失文案"""
-        db = FakeDB(responses={})  # 空路由：所有探测返回空
+        """全部数据源探测失败：signals=0 / kline=0 / snapshot=0，gaps 逐项说明且不崩"""
+        db = FakeDB(responses={})
         result = await ReadinessAuditor(db, config).run(as_of=as_of)
         for cr in result.candidates.values():
             assert cr.effective_signals == 0
             assert cr.kline_coverage == 0.0
             assert cr.external_snapshot_coverage == 0.0
             assert isinstance(cr.gaps, list) and cr.gaps
-            assert any("trade_signals 表缺失" in g for g in cr.gaps)
-            assert any("K 线表未探测到" in g for g in cr.gaps)
+            # 新文案："schema xxx 不存在" 或 "schema xxx 下无信号表"
+            assert any("无信号表" in g or "schema" in g.lower() for g in cr.gaps)
+            assert any("K 线" in g for g in cr.gaps)
             assert any("regime_count 是 proxy" in g for g in cr.gaps)
             assert any("inferred" in g for g in cr.gaps)
         # aggressive 快照 not_required → gap 含 not_required 文案
@@ -164,15 +205,15 @@ class TestHrsGapReporting:
         assert any("无历史外部快照表" in g for g in hrs.gaps)
         assert result.decision == "STOP"
 
-    async def test_hrs_signal_gap_via_empty_schema_probe(self, config, as_of):
-        """hrs 无 trade_signals 表 → effective_signals 记 0 + gap（模拟 hrs schema 缺失场景）"""
+    async def test_hrs_schema_probe_returns_empty(self, config, as_of):
+        """模拟 hrs schema 不存在（schema 探测返回 None）→ effective_signals 记 0"""
         responses = dict(BASELINE_RESPONSES)
-        # 信号 schema 探测返回空列表（所有 schema 都没有该表）
-        responses["table_name = 'trade_signals'"] = []
+        # 覆盖 schema 存在性探测：让所有策略的 schema 探测都返回 None
+        responses["FROM information_schema.schemata WHERE schema_name = $1"] = None
         result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
         hrs = result.candidates["hrs"]
         assert hrs.effective_signals == 0
-        assert any("trade_signals 表缺失" in g for g in hrs.gaps)
+        assert any("schema" in g.lower() and "不存在" in g for g in hrs.gaps)
 
     async def test_gap_report_does_not_crash_run(self, config, as_of):
         """缺口只进报告不抛异常：run 正常返回完整结果"""
@@ -187,11 +228,146 @@ class TestHrsGapReporting:
 
 
 # ===========================================================================
-# 查询分支与异常分支全覆盖
+# 信号表探测与查询（V1 重写：aggressive/hrs 各走各自 schema/表/时间列）
 # ===========================================================================
 
 
-class TestQueryBranches:
+class TestSignalDetection:
+    async def test_aggressive_trade_signals_detected_and_counted(self, fake_db, config, as_of):
+        """aggressive 策略：schema 直接用 btc_eth_aggressive → 表 trade_signals → 时间列 created_at"""
+        result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.effective_signals == 200
+        # 验证 FakeDB 确实发起了 aggressive 的信号计数查询
+        assert any("FROM btc_eth_aggressive.trade_signals" in s for s in fake_db.sql_log)
+        # 验证没有发起旧的 btc_eth.trade_signals 查询（不属于 aggressive）
+        assert not any("FROM btc_eth.trade_signals" in s for s in fake_db.sql_log)
+
+    async def test_hrs_uses_triggered_at_not_signal_time(self, fake_db, config, as_of):
+        """hrs 策略：schema 直接用 hrs → 表 hrs_signals → 时间列 triggered_at
+        （不再用旧代码虚构的 signal_time 列）"""
+        result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
+        cr = result.candidates["hrs"]
+        assert cr.effective_signals == 200
+        # 计数 SQL 必须含 triggered_at 关键词（证明探测正确）
+        assert any("triggered_at" in s and "FROM hrs.hrs_signals" in s
+                   for s in fake_db.sql_log)
+
+    async def test_signal_count_query_failure_records_gap(self, config, as_of):
+        """信号计数查询异常 → 0 + gap 说明（非静默）"""
+        db = FakeDB(errors={"FROM btc_eth_aggressive.trade_signals": RuntimeError("超时")})
+        result = await ReadinessAuditor(db, config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.effective_signals == 0
+        assert any("信号计数查询失败" in g for g in cr.gaps)
+
+    async def test_signal_schema_probe_failure_treated_as_missing(self, config, as_of):
+        """schema 探测查询异常 → 视为表不存在 → 信号记 0 + gap"""
+        db = FakeDB(errors={
+            "FROM information_schema.schemata WHERE schema_name = $1": RuntimeError("权限不足")
+        })
+        result = await ReadinessAuditor(db, config).run(as_of=as_of)
+        # schema 探测异常 → 返回 False → 信号计数记 0 + gap
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.effective_signals == 0
+        assert any("schema" in g.lower() and "不存在" in g for g in cr.gaps)
+
+    async def test_signal_table_probe_failure(self, config, as_of):
+        """信号表探测（ILIKE '%signal%'）异常 → 信号记 0 + gap"""
+        db = FakeDB(errors={
+            "WHERE table_schema = 'btc_eth_aggressive' AND table_name ILIKE": RuntimeError("boom")
+        })
+        result = await ReadinessAuditor(db, config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.effective_signals == 0
+        # 探测异常 → 返回 None → gap 文案含信号表相关内容
+        assert any("无信号表" in g or "查询失败" in g for g in cr.gaps)
+
+
+# ===========================================================================
+# K 线主力合约取表与覆盖度（V1 修复：消除任意取第一张表）
+# ===========================================================================
+
+
+class TestKlineDominantSymbol:
+    async def test_kline_table_lookup_by_dominant_symbol(self, fake_db, config, as_of):
+        """K 线表按主力合约 symbol 定位（BTCUSDT），不是任意第一张"""
+        result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.kline_coverage == 1.0
+        # 验证 FakeDB 里确实发了主力合约查询 + 按 symbol 找 K 线表
+        assert any("GROUP BY symbol ORDER BY COUNT(*) DESC" in s for s in fake_db.sql_log)
+        assert any("kline_btcusdt" in s for s in fake_db.sql_log)
+
+    async def test_no_dominant_symbol_zero_coverage_with_gap(self, config, as_of):
+        """主力合约探测返回 None（窗口内无交易）→ coverage=0 + 明确 gap"""
+        db = FakeDB(errors={"GROUP BY symbol ORDER BY COUNT(*) DESC": RuntimeError("无数据")})
+        result = await ReadinessAuditor(db, config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.kline_coverage == 0.0
+        assert any("主力合约" in g or "无交易记录" in g for g in cr.gaps)
+
+    async def test_kline_table_for_symbol_not_found(self, config, as_of):
+        """有主力合约但找不到对应 K 线表（改主力合约返回一个无 K 线的 symbol）"""
+        responses = dict(BASELINE_RESPONSES)
+        responses["GROUP BY symbol ORDER BY COUNT(*) DESC"] = {"symbol": "XYZNOTEXIST"}
+        # 覆盖 BASELINE_RESPONSES 的 K 线表探测路由键，让 _detect_kline_table_name 返回 None
+        responses["WHERE table_schema = $1 AND table_name ILIKE $2"] = None
+        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.kline_coverage == 0.0
+        assert any("K 线表" in g or "pattern" in g.lower() for g in cr.gaps)
+
+    async def test_kline_schema_missing_gap(self, config, as_of):
+        responses = dict(BASELINE_RESPONSES)
+        responses["ORDER BY table_schema"] = None
+        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.kline_coverage == 0.0
+        assert any("K 线表未探测到" in g for g in cr.gaps)
+
+    async def test_kline_schema_probe_failure_gap(self, config, as_of):
+        db = FakeDB(errors={"ORDER BY table_schema": RuntimeError("down")})
+        result = await ReadinessAuditor(db, config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.kline_coverage == 0.0
+        assert any("K 线表未探测到" in g for g in cr.gaps)
+
+    async def test_kline_timestamp_column_missing_gap(self, config, as_of):
+        responses = dict(BASELINE_RESPONSES)
+        responses["column_name IN ('timestamp', 'open_time'"] = None
+        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.kline_coverage == 0.0
+        assert any("未识别到时间戳列" in g for g in cr.gaps)
+
+    async def test_kline_count_failure_gap(self, config, as_of):
+        db = FakeDB(errors={"FROM btc_eth.kline_btcusdt_1h": RuntimeError("query timeout")})
+        result = await ReadinessAuditor(db, config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        assert cr.kline_coverage == 0.0
+        assert any("K 线查询失败" in g for g in cr.gaps)
+
+    async def test_kline_coverage_capped_at_one(self, config, as_of):
+        """实际 bar 数超出预期时覆盖率封顶 1.0"""
+        responses = dict(BASELINE_RESPONSES)
+        responses["FROM btc_eth.kline_btcusdt_1h"] = {"cnt": 99999}
+        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
+        assert result.candidates["btc_eth_aggressive"].kline_coverage == 1.0
+
+    async def test_kline_zero_window_coverage_zero(self, config, as_of):
+        """window_days=0 → 预期 bar 数为 0 → 覆盖率记 0（除零守卫）"""
+        config["purpose_driven_mvp"]["readiness"]["window_days"] = 0
+        result = await ReadinessAuditor(FakeDB(), config).run(as_of=as_of)
+        assert result.candidates["btc_eth_aggressive"].kline_coverage == 0.0
+
+
+# ===========================================================================
+# 其他查询分支与异常分支（trade_records / regime / 快照）
+# ===========================================================================
+
+
+class TestOtherQueryBranches:
     async def test_trade_records_row_none_defaults(self, config, as_of):
         """trade_records 查询返回 None → (0, 1.0)（新库无数据视为字段完整）"""
         responses = dict(BASELINE_RESPONSES)
@@ -220,132 +396,17 @@ class TestQueryBranches:
         assert any("已平仓交易 0 < 20" in f for f in cr.failures)
         assert any("交易字段完整度" in f for f in cr.failures)
 
-    async def test_signal_count_query_failure_records_gap(self, config, as_of):
-        """信号计数查询异常 → 0 + gap 说明（非静默）"""
-        responses = dict(BASELINE_RESPONSES)
-        responses["FROM btc_eth.trade_signals"] = None
-        db = FakeDB(responses=responses, errors={"FROM btc_eth.trade_signals": RuntimeError("超时")})
-        result = await ReadinessAuditor(db, config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.effective_signals == 0
-        assert any("trade_signals 查询失败" in g for g in cr.gaps)
-
-    async def test_signal_schema_probe_failure_treated_as_missing(self, config, as_of):
-        """schema 探测查询异常 → 视为表缺失"""
-        db = FakeDB(errors={"table_name = 'trade_signals'": RuntimeError("权限不足")})
-        result = await ReadinessAuditor(db, config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.effective_signals == 0
-        assert any("trade_signals 表缺失" in g for g in cr.gaps)
-
-    async def test_signal_schema_multiple_rows_takes_first_valid(self, config, as_of):
-        """多 schema 都有 trade_signals 时取第一个且列校验通过的 schema"""
-        responses = dict(BASELINE_RESPONSES)
-        responses["table_name = 'trade_signals'"] = [
-            {"table_schema": "new_coin"},
-            {"table_schema": "btc_eth"},
-        ]
-        # 计数路由指向第一个 schema（new_coin），证明计数 SQL 使用探测到的 schema
-        responses["FROM new_coin.trade_signals"] = {"cnt": 200}
-        db = FakeDB(responses)
-        result = await ReadinessAuditor(db, config).run(as_of=as_of)
-        # 计数 SQL 应指向第一个 schema（new_coin）
-        assert any("FROM new_coin.trade_signals" in s for s in db.sql_log)
-        assert result.candidates["btc_eth_aggressive"].effective_signals == 200
-
-    async def test_signal_schema_column_check_fails_returns_none(self, config, as_of):
-        """所有候选 schema 都没有 strategy_id 列 → 视为缺失"""
-        responses = dict(BASELINE_RESPONSES)
-        responses["column_name = 'strategy_id'"] = None  # 列校验返回 None
-        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.effective_signals == 0
-        assert any("trade_signals 表缺失" in g for g in cr.gaps)
-
     async def test_regime_query_failure_silent_zero(self, config, as_of):
         """regime 查询异常 → 静默记 0（不阻断）"""
-        db = FakeDB(errors={"AS syms": RuntimeError("boom")})
+        db = FakeDB(errors={"COUNT(DISTINCT symbol) AS syms": RuntimeError("boom")})
         result = await ReadinessAuditor(db, config).run(as_of=as_of)
         assert result.candidates["btc_eth_aggressive"].regime_count == 0
 
     async def test_regime_row_none_zero(self, config, as_of):
         responses = dict(BASELINE_RESPONSES)
-        responses["AS syms"] = None
+        responses["COUNT(DISTINCT symbol) AS syms"] = None
         result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
         assert result.candidates["btc_eth_aggressive"].regime_count == 0
-
-    async def test_kline_schema_missing_gap(self, config, as_of):
-        responses = dict(BASELINE_RESPONSES)
-        responses["ORDER BY table_schema"] = None
-        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.kline_coverage == 0.0
-        assert any("K 线表未探测到" in g for g in cr.gaps)
-
-    async def test_kline_schema_probe_failure_gap(self, config, as_of):
-        db = FakeDB(errors={"ORDER BY table_schema": RuntimeError("down")})
-        result = await ReadinessAuditor(db, config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.kline_coverage == 0.0
-        assert any("K 线表未探测到" in g for g in cr.gaps)
-
-    async def test_kline_table_name_missing_gap(self, config, as_of):
-        responses = dict(BASELINE_RESPONSES)
-        responses["table_name ILIKE"] = None
-        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert any("未识别到 K 线表名" in g for g in cr.gaps)
-
-    async def test_kline_timestamp_column_missing_gap(self, config, as_of):
-        responses = dict(BASELINE_RESPONSES)
-        responses["column_name IN"] = None
-        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert any("未识别到时间戳列" in g for g in cr.gaps)
-
-    async def test_kline_count_failure_gap(self, config, as_of):
-        db = FakeDB(errors={"FROM btc_eth.klines_1h": RuntimeError("query timeout")})
-        result = await ReadinessAuditor(db, config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.kline_coverage == 0.0
-        assert any("K 线查询失败" in g for g in cr.gaps)
-
-    async def test_kline_coverage_capped_at_one(self, config, as_of):
-        """实际 bar 数超出预期时覆盖率封顶 1.0"""
-        responses = dict(BASELINE_RESPONSES)
-        responses["FROM btc_eth.klines_1h"] = {"cnt": 99999}
-        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
-        assert result.candidates["btc_eth_aggressive"].kline_coverage == 1.0
-
-    async def test_kline_zero_window_coverage_zero(self, config, as_of):
-        """window_days=0 → 预期 bar 数为 0 → 覆盖率记 0（除零守卫）"""
-        config["purpose_driven_mvp"]["readiness"]["window_days"] = 0
-        result = await ReadinessAuditor(FakeDB(), config).run(as_of=as_of)
-        assert result.candidates["btc_eth_aggressive"].kline_coverage == 0.0
-
-    async def test_kline_table_name_probe_exception_gap(self, config, as_of):
-        """K 线表名探测异常 → coverage 0 + gap（表名探测 SQL 精确匹配，不影响 schema 探测）"""
-        db = FakeDB(
-            responses=BASELINE_RESPONSES,
-            # 键 "table_schema = $1 AND table_name ILIKE" 只命中表名探测 SQL，
-            # 不会命中 schema 探测 SQL（其 WHERE 是 table_schema = ANY($1) 后接换行）
-            errors={"table_schema = $1 AND table_name ILIKE": RuntimeError("x")},
-        )
-        result = await ReadinessAuditor(db, config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.kline_coverage == 0.0
-        assert any("未识别到 K 线表名" in g for g in cr.gaps)
-
-    async def test_kline_timestamp_probe_exception_gap(self, config, as_of):
-        """K 线时间戳列探测异常 → coverage 0 + gap"""
-        db = FakeDB(
-            responses=BASELINE_RESPONSES,
-            errors={"column_name IN": RuntimeError("y")},
-        )
-        result = await ReadinessAuditor(db, config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.kline_coverage == 0.0
-        assert any("未识别到时间戳列" in g for g in cr.gaps)
 
     async def test_external_snapshot_always_zero_with_gap(self, auditor, as_of):
         """快照表不存在 → coverage 恒 0；aggressive not_required → 自定义 gap 文案"""
@@ -425,7 +486,9 @@ class TestGapsBuilding:
         db = FakeDB(responses={})
         result = await ReadinessAuditor(db, config).run(as_of=as_of)
         gaps = result.candidates["btc_eth_aggressive"].gaps
-        signal_idx = next(i for i, g in enumerate(gaps) if "trade_signals" in g)
+        # 新文案：信号探测失败 → "schema xxx 不存在" 或 "无信号表"
+        signal_idx = next(i for i, g in enumerate(gaps)
+                          if "无信号表" in g or ("schema" in g.lower() and "不存在" in g))
         kline_idx = next(i for i, g in enumerate(gaps) if "K 线" in g)
         snapshot_idx = next(i for i, g in enumerate(gaps) if "外部快照" in g)
         assert signal_idx < kline_idx < snapshot_idx
@@ -448,7 +511,6 @@ class TestGapsBuilding:
         assert data["candidates"]["s"]["failures"] == ["f"]
         assert data["candidates"]["s"]["gaps"] == ["g"]
         assert data["window_days"] == 90
-        # 新字段也被正确序列化
         assert data["candidates"]["s"]["external_snapshot_requirement"] == "required"
         assert data["candidates"]["s"]["external_snapshot_reason"] == "required_historical_external_snapshots_missing"
 
@@ -464,6 +526,7 @@ class TestPerStrategySnapshotGate:
         bad_config = {
             "purpose_driven_mvp": {
                 "candidates": ["btc_eth_aggressive"],
+                "identity_ratio_baseline": 0.90,  # 强制键
                 "readiness": {
                     "window_days": 90,
                     "min_closed_trades": 20,
@@ -486,11 +549,9 @@ class TestPerStrategySnapshotGate:
 
     async def test_global_default_used_when_no_per_strategy(self, config, fake_db, as_of):
         """未在 per_strategy 中声明的策略 → 使用全局默认阈值 0.95 + required"""
-        # 临时移除 btc_eth_aggressive 的 per_strategy 覆盖
         del config["purpose_driven_mvp"]["readiness"]["per_strategy"]["btc_eth_aggressive"]
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         aggr = result.candidates["btc_eth_aggressive"]
-        # 全局阈值 0.95 + coverage 0 → failure
         assert not aggr.eligible
         assert aggr.external_snapshot_requirement == "required"
         assert aggr.external_snapshot_reason == "required_historical_external_snapshots_missing"
@@ -500,13 +561,12 @@ class TestPerStrategySnapshotGate:
         """per_strategy aggressive: not_required + 0.0 → 不因快照 coverage 低而失败"""
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         aggr = result.candidates["btc_eth_aggressive"]
-        # aggressive coverage=0, 但 requirement=not_required → 无快照失败项
         assert aggr.external_snapshot_coverage == 0.0
         assert aggr.external_snapshot_requirement == "not_required_for_current_manifest"
         assert not any("外部快照覆盖" in f for f in aggr.failures)
 
     async def test_resolve_snapshot_policy_required_gate(self, config, fake_db, as_of):
-        """per_strategy hrs: required + 0.95, coverage=0 → failure 含 required_historical_external_snapshots_missing"""
+        """per_strategy hrs: required + 0.95, coverage=0 → failure"""
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         hrs = result.candidates["hrs"]
         assert hrs.external_snapshot_requirement == "required"

@@ -97,6 +97,7 @@ _BASE_CONFIG = {
     "purpose_driven_mvp": {
         "mode": "audit",
         "candidates": ["btc_eth_aggressive", "hrs"],
+        "identity_ratio_baseline": 0.90,  # 强制键
         "readiness": {
             "window_days": 90,
             "min_closed_trades": 20,

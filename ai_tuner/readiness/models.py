@@ -15,7 +15,7 @@ class CandidateReadiness:
 
     # --- 基础数据量 ---
     closed_trades: int          # 窗口内已平仓交易数
-    effective_signals: int      # 窗口内有效信号数（来自 trade_signals 表）
+    effective_signals: int      # 窗口内有效信号数（来自该策略 schema 下的信号表，按 ILIKE '%signal%' 探测）
     regime_count: int           # 窗口内覆盖的市场状态数
 
     # --- 字段完整度 ---

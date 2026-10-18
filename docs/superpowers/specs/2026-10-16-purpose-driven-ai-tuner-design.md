@@ -24,6 +24,7 @@
 | S7 | §14 自动决策状态机 | 正常周度流程含自动切换与生效确认 | 阶段一 `purpose_driven_mvp.mode = audit`：**跑完整流水线但仅拦截写入**（不产生覆盖层、不切换 `.active`、不 `mark_applied`）；状态机整体属阶段四/五 |
 | S8 | §16 / §6.4 regime 覆盖度 | 真实市场状态覆盖度 | 阶段一 `regime_count` 为 `COUNT(DISTINCT symbol)` 的 **proxy**（非真实市场状态数，标 TODO 阶段二） |
 | S9 | §18 阶段 1 交付项 | 含「参数到指标的映射和 OAT 敏感性基线」 | 阶段一已交付 `ParameterManifest` + 90 天准备度审计 CLI（`scripts/ai_tuner_mvp.py audit`），**参数→指标映射与 OAT 敏感性基线尚未建立**（阶段一计划内未完成项，转阶段二） |
+| S10 | §16 / §11.3 数据完整性（回标补记） | 设计只要求「外部数据时点快照齐全、缺快照报证据不足」，未规定审计读取层的列类型绑定与表/列探测口径 | 阶段一实施后经**生产 DB 取证**修复审计读取层三处口径缺陷（详见 plan 回标 **D12**）：**时间列按 `information_schema` 类型自适应绑定**（naive 列去 tzinfo、aware 列保留 UTC，消除 asyncpg naive/aware 冲突）、**信号表按 schema=`strategy_id` 隔离 + `ILIKE '%signal%'` 探测表名 + 候选时间列优先级探测**（不再假设存在 `strategy_id` 列、不再硬编码 `signal_time`）、**K 线覆盖度按窗口内主力合约（symbol 出现次数最多者）取表**（口径为「主力合约抽样」，非全候选池覆盖）；`identity_ratio_baseline` 与 `window_days` 列为强制键（缺失即 `ValueError`，去硬编码兜底） |
 
 > 阶段一硬门禁阈值（均在 `ai_tuner/config.yaml` 的 `purpose_driven_mvp.readiness`，全部可配置）：`window_days=90`、`min_closed_trades=20`、`min_effective_signals=100`、`min_trade_field_completeness=0.95`、`min_config_identity_coverage=0.90`、`min_kline_coverage=0.98`、`min_external_snapshot_coverage=0.0`、`min_regime_count=3`。
 
