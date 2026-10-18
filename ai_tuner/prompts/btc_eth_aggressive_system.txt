@@ -2,25 +2,33 @@
 
 ## 策略简介
 
-MTPCS 激进策略是 MTPCS 的激进版本，同样基于趋势跟踪+回调确认的多时间框架策略，交易 BTC/ETH/BNB/SOL/XRP/TRX 等主流币种，但使用更高的杠杆和更积极的信号阈值以追求更高收益，同时承担更大的波动风险。
+MTPCS 激进策略是 MTPCS 的激进版本，基于趋势跟踪 + 回调确认的多时间框架策略，交易 BTC/ETH/BNB/SOL/XRP/TRX 等主流币种。特点：更高杠杆、更积极的信号阈值、承担更大波动风险。
 
-## 可调参数说明
+## 可调参数（来自 ParameterManifest，仅 entry_quality 组）
 
-可调参数仅为 `current_params` 中列出的参数，不要引入不在其中的参数。
+你只能从以下 TUNABLE 参数里选 1-2 个：
 
-1. **评分阈值**：scoring.min_score 控制最低入场门槛，越高越保守；scoring.weights.* 控制各维度权重
-2. **止损参数**：risk.signal_levels.*.stop_loss_atr_multiplier 控制初始止损幅度
-3. **分批止盈**：risk.signal_levels.*.partial_take_profit.* 控制止盈目标和平仓比例
-4. **吊灯止损**：risk.signal_levels.*.dynamic_trailing.* 控制启动条件
-5. **时间止损**：risk.signal_levels.*.time_stop.* 控制最大持仓时间
-6. **频率控制**：trading.max_daily_total_trades / trading.symbol_cooldown_hours
+| path | 当前值范围 | 变化上限 | 效果 |
+|------|----------|---------|------|
+| strategy.scoring.min_score | 55.0 – 70.0 | 10% | 提高 → 收紧入场门槛，减少交易但提升胜率 |
+| strategy.scoring.trend_strength.adx_strong_threshold | 22.0 – 32.0 | 10% | 提高 → 只在强趋势中开仓 |
+| strategy.scoring.trend_strength.adx_medium_threshold | 17.0 – 24.0 | 10% | 与 strong 配合，形成趋势强度档位 |
+| strategy.scoring.breakout_pullback.proximity_pct | 0.0075 – 0.0125 | 10% | 收窄 → 更严格的回调确认 |
+
+## 硬约束（不变量）
+
+- `adx_strong_threshold` 必须始终 > `adx_medium_threshold`（strong > medium）
+- 每次最多 2 个 adjustment
+- 每个参数单次变化 ≤ 10%
 
 ## 调优策略建议
 
 - 激进策略的目标是高收益，但需警惕高回撤
-- 胜率过低 → 提高 min_score 和等级阈值，收紧入场
-- 盈亏比差 → 扩大 tp1/tp2_atr_multiplier，同时收紧 stop_loss_atr_multiplier
-- 连亏过多 → 降低 consecutive_loss_pause，增加 pause_duration_hours
-- 交易频率过高 → 降低 max_daily_total_trades，增加 symbol_cooldown_hours
-- 回撤过大 → 收紧止损，提高 min_score 过滤低质量信号
-- 表现良好 → 维持不变或小幅优化止盈参数
+- 胜率过低 → 提高 min_score 和 ADX 阈值，收紧入场
+- 趋势不明确 → 调高 adx_medium_threshold，等待更强趋势信号
+- 回调确认太松 → 收窄 proximity_pct
+- 表现良好 → HOLD（维持不变）
+
+## 输出格式
+
+按 common_rules.txt 里定义的新信封 JSON 格式输出，decision/objective/diagnosis/target_metrics/adjustments/applicable_market_regimes/expected_impact/confidence 全部字段齐备。

@@ -6,6 +6,23 @@
 
 ## 已完成的任务
 
+### [最后更新:2026-10-16 15:40] CI/CD 并发策略缺陷修复（GitHub Actions deploy.yml concurrency，已上线验证闭环）
+- **状态**: 已完成（已 push main、Actions 全绿、防幻觉第三/四层一致、无混版）
+- **创建时间**: 2026-10-16
+- **完成时间**: 2026-10-16 15:40
+- **涉及容器**: 本轮真构建仅 `hrs` + `dashboard-api` 两个镜像（其余 8 个服务 skip，与预测 blast radius 吻合）；`ai-tuner`/`data-backend` 正确未重建
+- **问题**: CI 部署出现两类异常——① 混版容器组（真实事故 2026-10-15 run 78：`data-backend` 已更新、`ai-tuner` 未更新）；② 某次 push 的目录变更在后续 Run 中静默丢失（此前 CS3 差点永不上线）
+- **根因**: 三条复合缺陷——**D1** `concurrency.cancel-in-progress: true` 在构建中途取消在跑 Run → GHCR 出现「部分服务已重建、部分未重建」的**撕裂镜像集**；**D2** deploy job 的 `if` 显式允许 `needs.build-all.result == 'cancelled'` 仍继续部署（`deploy.yml:271`）→ 撕裂集落地成混版；**D3** 每次 Run 的 diff 基固定为 `github.event.before`（仅覆盖本次推送范围 `before..HEAD`），默认 `queue: single` 语义下 **pending Run 被新 push 顶替（cancel）** → 被顶替推送的目录变更不被后继 Run 覆盖 → 静默丢失。**归因更正**：D3 系默认 `queue: single` 语义所致，**与 `cancel-in-progress` 取值无关**，故方案 A 不能闭合 D3
+- **实现**: 2 文件——`.github/workflows/deploy.yml` `concurrency` 块改为 `cancel-in-progress: false`（提交 `0c4d088`，闭合 D1）+ 新增 `queue: max`（提交 `a17a1c2`，闭合 D3）；`.trae/rules/deployment.md` §2.7 同步升 v3.4→v3.5（含归因更正）。`queue: max` 与 `cancel-in-progress: false` 可并用（与 `true` 互斥）
+- **依据核实**: GitHub 官方并发文档核实——`queue` 为 `concurrency` 合法子键（`single` 默认/`max`）；`queue: max` 允许同组最多 100 个 pending Run 排队、FIFO 依次执行且互不取消
+- **测试/审查**: CI 配置类变更（不涉策略/服务代码），以真实 Actions Run 作为验证证据（见下）；未单独编写单测
+- **部署**: commit `0c4d088` + `a17a1c2`（HEAD），均已 push main，GitHub Actions 自动构建部署
+- **上线验证**: Run #83（`0c4d088`）Actions **success**、真构建仅 `hrs`+`dashboard-api`、`hrs` VERSION `GIT_SHA=0c4d088`/`DEPLOY_ID=00005301`、部署日志 `[2026-10-16 14:50:44] DEPLOY_SUCCESS deploy_id=00005301`；Run #84（`a17a1c2` 最终态）**13 job 全绿**、真构建仅 `hrs`+`dashboard-api`、`trading_system-hrs`/`dashboard-api` VERSION `a17a1c2`/`00005401`（已 recreate）、`ai-tuner`（`e0f582c`/`00005101`）与 `data-backend`（`fd03712`/`00004E01`）**正确未重建**、部署日志 `[2026-10-16 15:18:14] DEPLOY_SUCCESS deploy_id=00005401`（=`(84<<8)|1`，与 `DEPLOY_ID=printf '%08X' ((run_number<<8)|run_attempt)` 公式精确一致）；**防幻觉第三层（VERSION DEPLOY_ID）与第四层（关键文件 MD5）一致，无混版**
+- **遗留**: ① **路径 ③ 仍开放**（构建失败的 Run 其变更不被后继 Run diff 覆盖 → 服务可滞留旧镜像，Run 变红可见、可重跑恢复），仅方案 D（持久化 last-deployed sha 作 diff 基）可根治，**经多智能体评估为非必须**，登记为待复查/知悉项；② 已知遗留（非本次引入、可选操作）：`data-backend`（`fd03712`/`00004E01`）与 `ai-tuner`（`e0f582c`/`00005101`）sha 不同，系 run 78/81 遗留，可选定向重建消除
+- **文档更新**: `.trae/rules/deployment.md` §2.7 + 版本号（v3.4→v3.5，commit `0c4d088`/`a17a1c2`，已随代码提交）；知识条目 issue 1 条 + decision 1 条；changelog `docs/knowledge/changelog/2026-10-16.md`；INDEX 三表 + 统计同步
+- **文档对照**: `code-document-curator` 已核对——`docs/` 下无与本变更相悖或需同步的部署文档（`docs/` 内提及「并发」的均为 HRS 策略文档，与 CI 并发无关）；`.trae/rules/deployment.md` 已更新至 v3.5，无需再改
+- **交接快照**: `docs/handoffs/ci_concurrency_queue_max_2026-10-16.md`（gitignore，未新建第二份）
+
 ### [最后更新:2026-10-10 09:27] HRS 撤单后条件单 DB 状态同步修复（已上线，两轮观察验证闭环）
 - **状态**: 已完成（R3，0→8 全流程；GA / GC 通过；上线验证闭环）
 - **创建时间**: 2026-10-09

@@ -3,9 +3,31 @@
 ## 1. 文档信息
 
 - 日期：2026-10-16
-- 状态：待用户书面确认
+- 状态：已确认，进入 MVP 实施计划
 - 首期候选策略：MTPCS 激进版；若准备度审计不通过则改为 HRS
 - 关联模块：`ai_tuner/`、`shared/config_loader.py`、各策略的 `tuning_overrides/`
+
+---
+
+## 1b. 实现偏差回标（阶段一，2026-10-18）
+
+> 本设计为总纲；**阶段一仅落地「参数安全与准备度审计」**（对应 §18「阶段 1：准备度审计与参数契约」）。下表只回标阶段一实测与设计的差异，**不改写上方设计正文**。事实基线以代码与 `ai_tuner/config.yaml` 为准（配套实施计划见 [plan（2026-10-17）](../plans/2026-10-17-ai-tuner-mvp-safety-readiness.md)，其文首亦有对应回标）。
+
+| 编号 | 设计位置 | 设计描述 | 阶段一实现（偏差） |
+|---|---|---|---|
+| S1 | §6.3 参数清单示例 | 单参数含 `enabled` / `runtime_path` / 每参数 `invariants[]` / `conflicts_with[]` | 阶段一 manifest 实际字段为 `path` / `status` / `value_type` / `min_value` / `max_value` / `max_change_pct` / `group` / `live_usage_probe` / `affects`；**不变量是 manifest 级**（`invariants[]`），无 `enabled` / `runtime_path` / `conflicts_with` |
+| S2 | §6.1 / §17.2 | 「最多 1～3 个参数」；「单轮最多修改 1～2 个」 | 阶段一 `max_adjustments_per_run = 2`，两个 MVP 候选一致（在许可区间内） |
+| S3 | §16 / §11.3 | 外部数据时点快照须齐全，缺快照须报「证据不足」 | 经查数据库**无任何外部时点快照表**（OI/市值/资金费率/情绪）→ `external_snapshot_coverage` 实测 0，阈值设 `0.0` **降级为报告项**（缺口写入 `gaps`）；hrs 无 schema/信号表 → 很可能审计不通过 |
+| S4 | §16 | 准备度审计含「入场/分批止盈/移动止损/最终平仓能否回放」 | 阶段一仅实现**数据质量门禁 7 项**（已平仓交易数、有效信号数、字段完整度、配置身份覆盖度、K 线覆盖度、外部快照覆盖度、regime 覆盖度）；**可回放性属阶段二/三**，阶段一未落地 |
+| S5 | §16 / §12.5 | 「确定策略级硬回撤、最低样本和成绩阈值」 | 阶段一仅确定**最低样本/覆盖率阈值**（全部可配置、禁硬编码）；**硬回撤与成绩阈值待阶段三基准回放后校准** |
+| S6 | §15 输出协议 | 8 字段信封 `decision/objective/diagnosis/target_metrics/adjustments{from,to,change_pct,causal_reason}/applicable_market_regimes/expected_impact/confidence` | 与实现一致 ✓；`objective` 固定串 `maximize_risk_adjusted_net_return_under_drawdown_cap` 由 `ResponseParser` 精确匹配；`decision` 枚举 `PROPOSE|HOLD|DATA_ERROR` |
+| S7 | §14 自动决策状态机 | 正常周度流程含自动切换与生效确认 | 阶段一 `purpose_driven_mvp.mode = audit`：**跑完整流水线但仅拦截写入**（不产生覆盖层、不切换 `.active`、不 `mark_applied`）；状态机整体属阶段四/五 |
+| S8 | §16 / §6.4 regime 覆盖度 | 真实市场状态覆盖度 | 阶段一 `regime_count` 为 `COUNT(DISTINCT symbol)` 的 **proxy**（非真实市场状态数，标 TODO 阶段二） |
+| S9 | §18 阶段 1 交付项 | 含「参数到指标的映射和 OAT 敏感性基线」 | 阶段一已交付 `ParameterManifest` + 90 天准备度审计 CLI（`scripts/ai_tuner_mvp.py audit`），**参数→指标映射与 OAT 敏感性基线尚未建立**（阶段一计划内未完成项，转阶段二） |
+
+> 阶段一硬门禁阈值（均在 `ai_tuner/config.yaml` 的 `purpose_driven_mvp.readiness`，全部可配置）：`window_days=90`、`min_closed_trades=20`、`min_effective_signals=100`、`min_trade_field_completeness=0.95`、`min_config_identity_coverage=0.90`、`min_kline_coverage=0.98`、`min_external_snapshot_coverage=0.0`、`min_regime_count=3`。
+
+---
 
 ## 2. 背景与问题
 

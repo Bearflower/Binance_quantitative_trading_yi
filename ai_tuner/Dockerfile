@@ -29,10 +29,13 @@ COPY shared/ /app/shared/
 COPY VERSION /app/VERSION
 
 # 复制策略配置文件（适配器运行需要读取配置）
+# 顺序与 ai_tuner/config.yaml 的 strategies 声明保持一致：
+# btc_eth（旧契约）→ btc_eth_aggressive（MVP 候选，新契约）→ grid → hrs（MVP 候选，新契约）→ new_coin
 COPY strategies/btc_eth/config.yaml /app/strategies/btc_eth/config.yaml
-COPY strategies/new_coin/config.yaml /app/strategies/new_coin/config.yaml
+COPY strategies/btc_eth_aggressive/config.yaml /app/strategies/btc_eth_aggressive/config.yaml
 COPY strategies/grid/config.yaml /app/strategies/grid/config.yaml
 COPY strategies/hrs/config.yaml /app/strategies/hrs/config.yaml
+COPY strategies/new_coin/config.yaml /app/strategies/new_coin/config.yaml
 
 # 创建日志目录
 RUN mkdir -p /app/logs

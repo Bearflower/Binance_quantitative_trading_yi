@@ -9,6 +9,7 @@
 import os
 from abc import ABC, abstractmethod
 from functools import cached_property
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import structlog
@@ -167,9 +168,13 @@ class BaseAdapter(ABC):
     类属性（子类必须覆盖）：
     - strategy_id: 策略唯一标识
     - strategy_name: 策略显示名称
-    - config_path: 策略配置文件路径
+    - config_path: 策略配置文件路径（仓库根相对路径，如 strategies/xxx/config.yaml）
     - param_whitelist: AI 可调参数白名单
     """
+
+    # 仓库根（唯一口径）：ai_tuner/adapters/base_adapter.py → 上两级 = 仓库根
+    # H1 修复：确保 _load_manifest 和 _read_effective_config 共用同一 project_root
+    _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
     # 子类必须覆盖的类属性
     strategy_id: str = ""
@@ -253,7 +258,17 @@ class BaseAdapter(ABC):
         return {}
 
     def get_param_whitelist(self) -> List[str]:
-        """返回该策略的参数白名单列表（从 config.yaml 读取）"""
+        """返回该策略的参数白名单列表（优先 manifest，否则从 config.yaml 读取）"""
+        manifest_path = self._strategy_cfg.get("parameter_manifest")
+        if manifest_path:
+            manifest = self._load_manifest(manifest_path)
+            if manifest is not None:
+                return list(manifest.parameters.keys())
+            # manifest 文件声明了但加载失败 → 告警 + 回退 config.yaml
+            logger.warning(
+                "[%s] manifest 加载失败（路径 %s），回退 config.yaml param_whitelist",
+                self.strategy_id, manifest_path,
+            )
         return self._strategy_cfg.get("param_whitelist", [])
 
     def get_redline_params(self) -> List[str]:
@@ -261,41 +276,145 @@ class BaseAdapter(ABC):
         return self._strategy_cfg.get("redline_params", [])
 
     def get_param_ranges(self) -> Dict[str, List[float]]:
-        """返回该策略的参数范围定义（从 config.yaml 读取）"""
+        """返回该策略的参数范围定义（优先 manifest，否则从 config.yaml 读取）"""
+        manifest_path = self._strategy_cfg.get("parameter_manifest")
+        if manifest_path:
+            manifest = self._load_manifest(manifest_path)
+            if manifest is not None:
+                return {
+                    path: [spec.min_value, spec.max_value]
+                    for path, spec in manifest.parameters.items()
+                }
+            # manifest 文件声明了但加载失败 → 告警 + 回退 config.yaml
+            logger.warning(
+                "[%s] manifest 加载失败（路径 %s），回退 config.yaml param_ranges",
+                self.strategy_id, manifest_path,
+            )
         return self._strategy_cfg.get("param_ranges", {})
 
     def get_change_rate_threshold(self) -> float:
         """
-        返回该策略的变化率告警阈值（从 config.yaml 读取）
-        
-        变化率 = abs(new - old) / abs(old)，超过此阈值时触发告警。
-        返回 0 表示不检查变化率。
-        
-        Returns:
-            变化率阈值（如 2.0 表示 200%）
+        返回该策略的变化率告警阈值
+
+        新契约（manifest）下，变化上限由 manifest 中各参数的 max_change_pct 定义，
+        本方法返回 0 表示"不走全局阈值"（变化校验由 validate_proposal 负责）。
         """
+        manifest_path = self._strategy_cfg.get("parameter_manifest")
+        if manifest_path:
+            return 0.0
         return float(self._strategy_cfg.get("change_rate_threshold", 0))
 
-    def validate_params(self, adjustments: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        校验 AI 建议的参数调整是否合法（统一实现）
+    # ---------------------------------------------------------------
+    # manifest 加载辅助（lazy + cached，仅 MVP 候选使用）
+    # ---------------------------------------------------------------
 
-        校验规则：
-        1. 白名单检查：不在白名单中的参数直接拒绝
-        2. 红线参数检查：属于红线参数的参数直接拒绝（不截断）
-        3. 数值范围检查：超出范围的参数截断到边界值
-        4. 大变化率检查：变化率超过阈值时记录警告（不阻断）
+    def _load_manifest(self, relative_path: str):
+        """
+        加载 manifest 文件（带简单缓存）
 
         Args:
-            adjustments: AI 建议的参数调整，格式为 {param_path: {"from": old, "to": new}}
+            relative_path: manifest 相对项目根的路径，如 "ai_tuner/parameters/manifests/btc_eth_aggressive.yaml"
+
+        Returns:
+            ParameterManifest；文件不存在时返回 None
+        """
+        # H1 修复：用类常量 _PROJECT_ROOT（= 仓库根）统一路径口径
+        if "_manifest_cache" not in self.__dict__:
+            self.__dict__["_manifest_cache"] = None
+        if self.__dict__["_manifest_cache"] is not None:
+            return self.__dict__["_manifest_cache"]
+
+        full_path = BaseAdapter._PROJECT_ROOT / relative_path
+        if not full_path.exists():
+            return None
+
+        from ai_tuner.parameters.manifest import ManifestRegistry
+
+        registry = ManifestRegistry(full_path.parent)
+        manifest = registry.load(self.strategy_id)
+        self.__dict__["_manifest_cache"] = manifest
+        return manifest
+
+    def _read_effective_config(self) -> Dict[str, Any]:
+        """读取策略当前生效的配置（config_path 指定的 YAML 文件）"""
+        config_path = getattr(self, "config_path", None)
+        if not config_path:
+            return {}
+        # H1 修复：用类常量 _PROJECT_ROOT（= 仓库根）替代 os.path.dirname(dirname(...))
+        # 后者只上一级到 ai_tuner/ 目录，拼 config_path（仓库根相对）会找不到文件
+        full_path = BaseAdapter._PROJECT_ROOT / config_path
+        if not full_path.exists():
+            logger.warning("策略配置文件不存在", strategy_id=self.strategy_id, path=str(full_path))
+            return {}
+        import yaml as _yaml
+        with open(full_path, "r", encoding="utf-8") as f:
+            return _yaml.safe_load(f) or {}
+
+    # ---------------------------------------------------------------
+    # 统一参数校验入口（双契约分流）
+    # ---------------------------------------------------------------
+
+    def validate_params(
+        self,
+        adjustments: Dict[str, Any],
+        decision: str = "PROPOSE",
+    ) -> Dict[str, Any]:
+        """
+        校验 AI 建议的参数调整
+
+        双契约分流：
+        - 有 parameter_manifest（MVP 候选）→ 走 manifest 确定性校验（from 匹配、范围、变化率、不变量）
+        - 无 manifest（其他策略）→ 保持旧的白名单/红线/范围截断逻辑
+
+        Args:
+            adjustments: AI 建议的参数调整，格式 {param_path: {"from": old, "to": new}}
+            decision: 新契约 decision（PROPOSE / HOLD / DATA_ERROR）；旧契约忽略
 
         Returns:
             校验结果字典：
-            - valid: bool，是否全部通过校验（无错误）
-            - errors: list，错误信息列表（红线参数、白名单、缺值等）
-            - warnings: list，警告信息列表（大变化率等）
-            - validated: dict，校验后的参数（红线参数和白名单外的不包含在内）
+            - valid: bool
+            - errors: list（阻断性错误）
+            - warnings: list（非阻断性警告）
+            - validated: dict（校验通过的参数调整，格式 {path: {"from": old, "to": new}} 或旧格式的 {path: new}）
         """
+        manifest_path = self._strategy_cfg.get("parameter_manifest")
+        if manifest_path:
+            return self._validate_via_manifest(adjustments, decision, manifest_path)
+        return self._validate_via_legacy(adjustments)
+
+    def _validate_via_manifest(
+        self,
+        adjustments: Dict[str, Any],
+        decision: str,
+        manifest_path: str,
+    ) -> Dict[str, Any]:
+        """
+        新契约路径：委托给 manifest.validate_proposal
+
+        返回 validated 字段格式为 {path: {"from": old, "to": new}}，供后续 apply_overrides 使用
+        """
+        from ai_tuner.parameters.manifest import validate_proposal
+
+        manifest = self._load_manifest(manifest_path)
+        if manifest is None:
+            return {
+                "valid": False,
+                "errors": [f"manifest 文件未找到: {manifest_path}"],
+                "warnings": [],
+                "validated": {},
+            }
+
+        effective_config = self._read_effective_config()
+        result = validate_proposal(manifest, effective_config, decision, adjustments)
+        return {
+            "valid": result.valid,
+            "errors": result.errors,
+            "warnings": result.warnings,
+            "validated": result.adjustments,
+        }
+
+    def _validate_via_legacy(self, adjustments: Dict[str, Any]) -> Dict[str, Any]:
+        """旧契约路径：白名单 → 红线 → 范围截断 → 变化率警告（保持原有行为）"""
         errors: list = []
         warnings: list = []
         validated: dict = {}
@@ -314,7 +433,7 @@ class BaseAdapter(ABC):
                 errors.append(f"参数 {param_path} 不在白名单中，已拒绝")
                 continue
 
-            # 2. 红线参数检查（直接拒绝，不截断）
+            # 2. 红线参数检查
             if param_path in redline:
                 errors.append(f"参数 {param_path} 属于红线参数，禁止修改，已拒绝")
                 continue
@@ -355,7 +474,6 @@ class BaseAdapter(ABC):
                                 f"从 {old_value} 变为 {new_value}"
                             )
                 except (ValueError, TypeError):
-                    # 非数值类型跳过变化率检查
                     pass
 
             validated[param_path] = new_value
@@ -381,6 +499,9 @@ class BaseAdapter(ABC):
         for attr in ("_system_config", "_strategy_cfg"):
             if attr in self.__dict__:
                 del self.__dict__[attr]
+        # 同时清 manifest 缓存（独立的 __dict__["_manifest_cache"] 条目）
+        if "_manifest_cache" in self.__dict__:
+            del self.__dict__["_manifest_cache"]
         logger.debug("策略适配器缓存已清除", strategy_id=self.strategy_id)
 
     def to_dict(self) -> Dict[str, Any]:

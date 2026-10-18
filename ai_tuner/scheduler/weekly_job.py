@@ -11,6 +11,7 @@
 import importlib
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict
 
 import structlog
@@ -26,6 +27,7 @@ from ai_tuner.feedback.context_enhancer import ContextEnhancer
 from ai_tuner.feedback.effect_tracker import EffectTracker
 from ai_tuner.feedback.learning_signal import LearningSignalGenerator
 from ai_tuner.memory.context_builder import ContextBuilder
+from ai_tuner.parameters.manifest import ManifestRegistry
 
 logger = structlog.get_logger()
 
@@ -42,7 +44,14 @@ class WeeklyTuningJob:
     周度调优任务
 
     执行完整的 AI 调优流水线：采集数据 → 调用 AI → 解析建议 → 推送审批
+
+    类常量：
+    - _PROJECT_ROOT: 仓库根（绝对路径），统一口径，避免 self.project_root 混淆
     """
+
+    # 仓库根（绝对路径）：ai_tuner/scheduler/weekly_job.py → 上两级 = 仓库根
+    # H2 修复：manifest/策略配置等文件一律用此常量拼路径，与 base_adapter._PROJECT_ROOT 一致
+    _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
     def __init__(
         self,
@@ -134,19 +143,35 @@ class WeeklyTuningJob:
         # 本次调优批次标识（北京当前日期，作为 ai_tuner_runs.run_key）
         run_key = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
 
+        # 预先算好 MVP 候选集合，循环内复用（避免每个策略重算一次 config.get）
+        mvp_candidates = set(
+            self.config.get("purpose_driven_mvp", {}).get("candidates", [])
+        )
+
         for strategy_cfg in strategies:
             strategy_id = strategy_cfg.get("strategy_id", "")
             strategy_name = strategy_cfg.get("name", "")
+            is_mvp_candidate = strategy_id in mvp_candidates
 
             try:
                 result = await self._tune_single_strategy(strategy_cfg, force=force)
                 if result == "success":
                     total_success += 1
-                    strategy_details.append(f"✅ {strategy_name}：已调整")
+                    if is_mvp_candidate:
+                        strategy_details.append(
+                            f"🛡️ {strategy_name}：审计模式 — 已生成建议并推送飞书，未写入覆盖层"
+                        )
+                    else:
+                        strategy_details.append(f"✅ {strategy_name}：已调整")
                     await self._record_run(run_key, strategy_id, strategy_cfg, "success", result)
                 elif result == "skip":
                     total_skip += 1
-                    strategy_details.append(f"⏸️ {strategy_name}：无需调整")
+                    if is_mvp_candidate:
+                        strategy_details.append(
+                            f"🛡️ {strategy_name}：审计模式 — AI 建议维持不变，未写入覆盖层"
+                        )
+                    else:
+                        strategy_details.append(f"⏸️ {strategy_name}：无需调整")
                     await self._record_run(run_key, strategy_id, strategy_cfg, "skip", result)
                 else:
                     total_error += 1
@@ -244,6 +269,9 @@ class WeeklyTuningJob:
         """
         对单个策略执行完整的调优流水线
 
+        MVP 阶段一拦截：purpose_driven_mvp 候选策略走完整流水线
+        （采集→LLM→校验→diff→飞书推送），仅在步骤12 拦截写入。
+
         Args:
             strategy_cfg: 策略配置字典
             force: 是否强制调优（跳过"本周已调优"检查）
@@ -253,15 +281,40 @@ class WeeklyTuningJob:
         """
         strategy_id = strategy_cfg["strategy_id"]
         strategy_name = strategy_cfg["name"]
-        adapter_class_path = strategy_cfg["adapter_class"]
-        config_path = strategy_cfg["config_path"]
+
+        # --- MVP 阶段一：候选策略走完整流水线（采集→LLM→校验→diff→飞书推送），
+        #     仅在步骤12 拦截写入（不写覆盖层、不动 .active、不 mark_applied）。
+        #     判定条件：候选策略 + (非 live 或 非 selected_strategy)
+        mvp_cfg = self.config.get("purpose_driven_mvp", {})
+        candidates = set(mvp_cfg.get("candidates", []))
+        _mvp_mode = mvp_cfg.get("mode", "audit")
+        _mvp_selected = mvp_cfg.get("selected_strategy")
+        is_mvp_blocked = (
+            strategy_id in candidates
+            and (_mvp_mode != "live" or strategy_id != _mvp_selected)
+        )
+        if is_mvp_blocked:
+            logger.info(
+                "策略由 purpose_driven_mvp 管理：完整跑流水线，仅拦截写入",
+                strategy_id=strategy_id,
+                mode=_mvp_mode,
+                selected=_mvp_selected,
+            )
 
         logger.info("开始调优策略", strategy_id=strategy_id, strategy_name=strategy_name)
+
+        adapter_class_path = strategy_cfg["adapter_class"]
+        config_path = strategy_cfg["config_path"]
 
         # 步骤1：动态导入并实例化适配器
         adapter = self._load_adapter(adapter_class_path, strategy_cfg)
         if not adapter:
             return "error"
+
+        # 判定契约模式：有 parameter_manifest 的适配器走新契约严格校验，
+        # 其他保持旧契约宽松解析（legacy 是默认，双契约并行不动）。
+        has_manifest = bool(getattr(adapter, "_strategy_cfg", {}).get("parameter_manifest"))
+        contract_mode = "new" if has_manifest else "legacy"
 
         # 步骤2：采集数据
         report = await adapter.collect()
@@ -356,23 +409,30 @@ class WeeklyTuningJob:
             )
             return "error"
 
-        # 步骤6：解析 JSON 响应
-        parsed = self.response_parser.parse_response(raw_response)
+        # 步骤6：解析 JSON 响应（契约模式由适配器是否有 parameter_manifest 决定）
+        parsed = self.response_parser.parse_response(raw_response, contract_mode=contract_mode)
         if "error" in parsed:
             # 【语义重试】首次解析失败时，追加强调JSON格式的提示词重试一次
             logger.warning("AI响应解析失败，准备重试", strategy_id=strategy_id, error=parsed["error"])
-            retry_instruction = (
-                "\n\n【重要】请严格只输出 JSON 格式，不要包含任何其他文字。"
-                "不要用 markdown 代码块包裹。不要有 __REASONING__ 前缀。"
-                "输出必须包含以下字段：reasons, summary, adjustments, expected_impact, confidence。"
-            )
+            if contract_mode == "new":
+                retry_instruction = (
+                    "\n\n【重要】请严格只输出 JSON 格式，不要包含任何其他文字。"
+                    "不要用 markdown 代码块包裹。不要有 __REASONING__ 前缀。"
+                    "输出必须包含以下字段：decision, objective, diagnosis, target_metrics, adjustments, expected_impact。"
+                )
+            else:
+                retry_instruction = (
+                    "\n\n【重要】请严格只输出 JSON 格式，不要包含任何其他文字。"
+                    "不要用 markdown 代码块包裹。不要有 __REASONING__ 前缀。"
+                    "输出必须包含以下字段：reasons, summary, adjustments, expected_impact, confidence。"
+                )
             raw_response = await self.llm_client.call_llm(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt + retry_instruction,
                 strategy_id=strategy_id,
             )
             if raw_response:
-                parsed = self.response_parser.parse_response(raw_response)
+                parsed = self.response_parser.parse_response(raw_response, contract_mode=contract_mode)
 
         if "error" in parsed:
             logger.error("AI响应解析失败（重试后）", strategy_id=strategy_id, error=parsed["error"])
@@ -387,15 +447,33 @@ class WeeklyTuningJob:
         adjustments = parsed.get("adjustments", {})
         validation = self.response_parser.validate_adjustments(adjustments, adapter)
 
+        # 参数校验错误：独立分支，不等同于"HOLD 维持不变"
         if validation["errors"]:
-            logger.warning("参数校验有问题，使用校正后的值", errors=validation["errors"])
-            adjustments = validation["validated"]
+            logger.error("参数校验失败，拒绝提案",
+                         strategy_id=strategy_id,
+                         errors=validation["errors"])
+            await self.messenger.send_error_notification(
+                strategy_name=strategy_name,
+                strategy_id=strategy_id,
+                error_detail="参数校验失败：" + "; ".join(validation["errors"]),
+            )
+            return "error"
+
+        adjustments = validation["validated"]
+
+        # --- 契约适配层：把新/旧契约字段统一成下游（save_memory、通知卡片）使用的格式 ---
+        if contract_mode == "new":
+            # 新契约：decision / objective / diagnosis(list) / target_metrics / adjustments / expected_impact
+            reasons_text = "\n".join(parsed.get("diagnosis", [])) if isinstance(parsed.get("diagnosis"), list) else str(parsed.get("diagnosis", ""))
+            summary_text = parsed.get("objective", "")
+        else:
+            reasons_text = parsed.get("reasons", "")
+            summary_text = parsed.get("summary", "")
 
         # 步骤8：保存记忆到数据库
-        summary = parsed.get("summary", "")
         ai_suggestions = {
-            "reasons": parsed.get("reasons", ""),
-            "summary": summary,
+            "reasons": reasons_text,
+            "summary": summary_text,
             "adjustments": adjustments,
             "expected_impact": parsed.get("expected_impact", ""),
             "confidence": parsed.get("confidence", 0),
@@ -406,13 +484,14 @@ class WeeklyTuningJob:
             strategy_name=strategy_name,
             report=report_dict,
             ai_suggestions=ai_suggestions,
-            summary=summary,
+            summary=summary_text,
             active_version=new_version,
         )
 
         # 步骤9：如果 AI 建议"维持不变"，发送通知告知用户
         if not adjustments:
-            no_change_reason = parsed.get("reasons", "当前参数配置经过评估无需调整，已维持现有配置不变。")
+            # 新契约下 decision 字段能直接判断 HOLD/DATA_ERROR，旧契约下靠 adjustments 为空
+            no_change_reason = reasons_text or "当前参数配置经过评估无需调整，已维持现有配置不变。"
             await self.messenger.send_no_changes_notification(
                 strategy_name=strategy_name,
                 strategy_id=strategy_id,
@@ -434,14 +513,14 @@ class WeeklyTuningJob:
             strategy_name=strategy_name,
             strategy_id=strategy_id,
             diff_text=diff_text,
-            ai_reasons=parsed.get("reasons", ""),
+            ai_reasons=reasons_text,
             expected_impact=parsed.get("expected_impact", ""),
             memory_id=memory_id,
         )
 
-        # 步骤12：自动应用配置（如果启用）
+        # 步骤12：自动应用配置（MVP 审计模式下拦截写入）
         auto_apply_cfg = self.config.get("approval", {}).get("auto_apply", {})
-        if auto_apply_cfg.get("enabled", False):
+        if auto_apply_cfg.get("enabled", False) and not is_mvp_blocked:
             if config_path:
                 # 调用 ConfigOperator 写入覆盖层（同步方法，不用 await）
                 success = self.config_operator.apply_overrides(config_path, adjustments)
@@ -464,6 +543,14 @@ class WeeklyTuningJob:
                     )
             else:
                 logger.warning("策略缺少 config_path，无法自动应用", strategy_id=strategy_id)
+        elif is_mvp_blocked and auto_apply_cfg.get("enabled", False):
+            # MVP 审计模式：完整流水线已跑，仅拦截写入；info 日志说明未写入的原因
+            logger.info(
+                "MVP 审计模式：建议已生成并推送飞书，但未写入覆盖层、未标记已应用",
+                strategy_id=strategy_id,
+                mode=_mvp_mode,
+                memory_id=memory_id,
+            )
 
         logger.info("策略调优完成", strategy_id=strategy_id, memory_id=memory_id)
         return "success"
@@ -568,6 +655,9 @@ class WeeklyTuningJob:
             week_start = report_meta.get("week_start", "")
             week_end = report_meta.get("week_end", "")
 
+            # 从 ParameterManifest 提取 allowed_parameters（若该策略有 manifest）
+            allowed_parameters = self._extract_allowed_parameters(strategy_id)
+
             user_prompt = Template(strategy_user_template).render(
                 strategy_name=strategy_name,
                 current_params=json.dumps(current_params, ensure_ascii=False, indent=2),
@@ -576,6 +666,7 @@ class WeeklyTuningJob:
                 feedback_context=feedback_context,
                 week_start=week_start,
                 week_end=week_end,
+                allowed_parameters=allowed_parameters,
             )
 
             return system_prompt, user_prompt
@@ -587,6 +678,67 @@ class WeeklyTuningJob:
                 error=str(e),
             )
             return "", ""
+
+    def _extract_allowed_parameters(self, strategy_id: str) -> str:
+        """
+        从 ParameterManifest 提取允许调优的参数清单，格式化为可读文本
+
+        Args:
+            strategy_id: 策略唯一标识
+
+        Returns:
+            允许调优参数清单的 Markdown 文本；无 manifest 时返回空字符串
+        """
+        try:
+            # 检查 config.yaml 里该策略是否声明了 parameter_manifest
+            strategy_cfg = next(
+                (s for s in self.config.get("strategies", [])
+                 if s.get("strategy_id") == strategy_id),
+                None,
+            )
+            manifest_path = strategy_cfg.get("parameter_manifest") if strategy_cfg else None
+            if not manifest_path:
+                return ""  # 旧契约策略，不注入 manifest
+
+            # H2 修复：manifest_path 是仓库根相对路径 → 拼仓库根得绝对路径
+            manifest_abs = WeeklyTuningJob._PROJECT_ROOT / manifest_path
+            registry = ManifestRegistry(manifest_abs.parent)
+            manifest = registry.load(strategy_id)
+            # M5 修复：用模型既有 can_adjust 属性（封装了 status 检查，避免重复字符串判断）
+            tunable = [
+                (path, spec) for path, spec in manifest.parameters.items()
+                if spec.can_adjust
+            ]
+
+            if not tunable:
+                return ""
+
+            # 格式化为 Markdown 表格
+            lines = ["| path | 范围 | 变化上限 | 组 |",
+                     "|------|------|---------|-----|"]
+            for path, spec in tunable:
+                lines.append(
+                    f"| `{path}` | {spec.min_value} – {spec.max_value} | "
+                    f"{spec.max_change_pct:.0%} | {spec.group or '-'} |"
+                )
+            # M5 修复：不变量行不需要 f-string 占位符
+            lines.append("不变量（必须满足）：")
+            for inv in manifest.invariants:
+                left, kind, right = inv["left"], inv["kind"], inv["right"]
+                symbol = {"greater_than": ">", "greater_than_or_equal": ">="}.get(kind, kind)
+                lines.append(f"- `{left}` {symbol} `{right}`")
+            return "\n".join(lines)
+
+        # H2 修复：收窄异常类型——之前 except Exception 吞了 FileNotFoundError 导致静默返回 ""
+        # 只捕获预期错误；未知异常应冒泡暴露（而不是被吞掉）
+        except FileNotFoundError as exc:
+            logger.error("manifest 文件不存在（H2 路径拼错或文件缺失）",
+                         strategy_id=strategy_id, error=str(exc))
+            return ""
+        except (ValueError, AttributeError, KeyError) as exc:
+            logger.error("manifest 解析失败",
+                         strategy_id=strategy_id, error=str(exc))
+            return ""
 
     @staticmethod
     def _load_template(file_path: str) -> str:

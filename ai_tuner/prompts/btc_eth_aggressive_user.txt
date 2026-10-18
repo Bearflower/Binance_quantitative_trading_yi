@@ -6,11 +6,17 @@
 {{ current_params }}
 ```
 
-**【重要】** 只有以上 `current_params` 中列出的参数可以调整。**严禁引入以下红线参数（禁止调整）：**
-- `binance.leverage.*`（各等级杠杆）
-- `binance.position_ratio.*`（各等级仓位比例）
+## 本轮 ParameterManifest（仅 TUNABLE 参数可调整）
 
-## 本周体检报告
+以下是本轮允许你调整的 entry_quality 组参数。严禁引入此清单以外的任何参数：
+
+{{ allowed_parameters }}
+
+## 硬约束（不变量）
+
+- strategy.scoring.trend_strength.adx_strong_threshold 必须始终 > strategy.scoring.trend_strength.adx_medium_threshold
+
+## 本周诊断数据
 
 ```json
 {{ report }}
@@ -24,4 +30,4 @@
 
 {{ feedback_context }}
 
-请基于以上数据，给出本周的参数调优建议。严格按照 JSON 格式输出。
+请基于以上数据，严格按照 common_rules.txt 里定义的新信封 JSON 格式输出 decision / objective / diagnosis / target_metrics / adjustments / applicable_market_regimes / expected_impact / confidence 全部字段。证据不足或数据缺失时必须输出 HOLD。

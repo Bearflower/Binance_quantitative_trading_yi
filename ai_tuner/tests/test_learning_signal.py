@@ -256,11 +256,11 @@ class TestL3ZeroTrades:
 
 
 class TestL4StaleTrigger:
-    """测试 L4 连续不变触发"""
+    """测试 L4 连续不变触发（MVP 阶段一：已禁用，连续 HOLD 不再触发强制调参）"""
 
     @pytest.mark.asyncio
-    async def test_consecutive_unchanged_trigger(self, base_config, mock_db_handler, sample_current_report):
-        """验证连续 N 次维持不变时触发调整指令"""
+    async def test_consecutive_unchanged_no_forced_tuning(self, base_config, mock_db_handler, sample_current_report):
+        """MVP 阶段一：连续 N 次维持不变不再触发强制调参指令"""
         # 连续 3 次 adjustments 为空
         mock_db_handler.get_recent_applied_memories.return_value = [
             {"ai_suggestions": {"adjustments": {}}},
@@ -289,10 +289,10 @@ class TestL4StaleTrigger:
             current_report=sample_current_report,
         )
 
-        # L4 输出在"约束"段落
-        assert "约束" in result
-        assert "已连续3次维持不变" in result
-        assert "调整幅度控制在正常范围的 50% 以内" in result
+        # MVP 阶段一：连续 HOLD 不产生"约束"段落（不再强制调参）
+        assert "约束" not in result
+        # 但 L1 决策方向段落仍存在
+        assert "决策方向" in result
 
 
 # ============================================================

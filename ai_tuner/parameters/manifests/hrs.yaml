@@ -1,0 +1,46 @@
+# hrs 策略 MVP 候选参数清单
+# 仅 entry_quality 参数组纳入新契约
+# 注意：hrs 的参数路径没有 strategy. 前缀（直接在 config 根下的 scoring 键）
+strategy_id: hrs
+schema_version: "1"
+max_adjustments_per_run: 2
+parameters:
+  scoring.entry_threshold:
+    status: tunable
+    value_type: float
+    min_value: 5.0
+    max_value: 7.0
+    max_change_pct: 0.10
+    group: entry_quality
+    live_usage_probe: ScoringEngine.should_entry
+  scoring.short_entry_threshold:
+    status: tunable
+    value_type: float
+    min_value: 4.5
+    max_value: 6.5
+    max_change_pct: 0.10
+    group: entry_quality
+    live_usage_probe: ScoringEngine.should_entry
+  scoring.technical.min_total_score:
+    status: tunable
+    value_type: float
+    min_value: 3.0
+    max_value: 5.0
+    max_change_pct: 0.10
+    group: entry_quality
+    live_usage_probe: ScoringEngine.should_entry
+  scoring.technical.short_min_total_score:
+    status: tunable
+    value_type: float
+    min_value: 1.5
+    max_value: 3.0
+    max_change_pct: 0.10
+    group: entry_quality
+    live_usage_probe: ScoringEngine.should_entry
+invariants:
+  - kind: greater_than_or_equal
+    left: scoring.entry_threshold
+    right: scoring.short_entry_threshold
+  - kind: greater_than_or_equal
+    left: scoring.technical.min_total_score
+    right: scoring.technical.short_min_total_score

@@ -2,9 +2,40 @@
 # 所有参数从环境变量或此配置文件读取，禁止硬编码
 
 # ============================================================
-# 已注册策略列表
-# 新增策略只需在此列表中添加一项即可
+# 目的驱动型 MVP 模式（阶段一：参数安全 + 准备度审计）
+# 仅 btc_eth_aggressive 和 hrs 走新契约；其他策略保持旧契约
 # ============================================================
+purpose_driven_mvp:
+  mode: audit                              # audit | shadow | live
+  candidates:
+    - btc_eth_aggressive
+    - hrs
+  # 阶段一（audit mode）不自动回写此值；
+  # 由 `python3 scripts/ai_tuner_mvp.py audit` 产出 JSON 报告后，人工读取 selected_strategy，
+  # 手动填入此配置；audit 模式下该值不参与路由判断（MVP 拦截按 candidates 生效）。
+  # 阶段二（live mode）会自动把 auditor 结果写回此处并由 weekly_job 读取启用。
+  selected_strategy: null
+  parameter_group: entry_quality
+  diagnostic_weeks: 8
+  blind_weeks: 2
+  max_historical_versions: 3
+  min_score_advantage: 5.0
+  max_switches_in_days: 7
+
+  # 准备度审计阈值（全部可配置，严禁硬编码）
+  # 说明：external_snapshot_coverage 在阶段一因数据库无快照表预期为 0，
+  #      阈值设 0.0 使其降级为报告项（gaps 里输出缺口说明）；
+  #      后续阶段补齐快照表后重新评估阈值。
+  readiness:
+    window_days: 90
+    min_closed_trades: 20
+    min_effective_signals: 100
+    min_trade_field_completeness: 0.95
+    min_config_identity_coverage: 0.90
+    min_kline_coverage: 0.98
+    min_external_snapshot_coverage: 0.0
+    min_regime_count: 3
+
 strategies:
   - strategy_id: "btc_eth"
     name: "MTPCS策略"
@@ -118,6 +149,9 @@ strategies:
     name: "MTPCS激进策略"
     adapter_class: "ai_tuner.adapters.mtpcs_aggressive_adapter.MTPCSAggressiveAdapter"
     config_path: "strategies/btc_eth_aggressive/config.yaml"
+    # MVP 阶段一：manifest 替代 param_whitelist/param_ranges 做确定性校验
+    # 旧字段保留给非 MVP 策略参考；此策略的 validate_params 优先走 manifest
+    parameter_manifest: "ai_tuner/parameters/manifests/btc_eth_aggressive.yaml"
     # 红线参数：AI 调优时禁止修改这些参数（直接拒绝）
     redline_params:
       - "binance.leverage.S"
@@ -284,6 +318,8 @@ strategies:
     enabled: true
     adapter_class: "ai_tuner.adapters.hrs_adapter.HRSAdapter"
     config_path: "strategies/hrs/config.yaml"
+    # MVP 阶段一：manifest 做确定性校验（新契约）
+    parameter_manifest: "ai_tuner/parameters/manifests/hrs.yaml"
     # 红线参数：AI 调优时禁止修改这些参数（直接拒绝）
     redline_params:
       - "trading.stop_loss.atr_multiplier"

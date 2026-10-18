@@ -1,0 +1,43 @@
+# btc_eth_aggressive 策略 MVP 候选参数清单
+# 仅 entry_quality 参数组纳入新契约
+strategy_id: btc_eth_aggressive
+schema_version: "1"
+max_adjustments_per_run: 2
+parameters:
+  strategy.scoring.min_score:
+    status: tunable
+    value_type: float
+    min_value: 55.0
+    max_value: 70.0
+    max_change_pct: 0.10
+    group: entry_quality
+    live_usage_probe: BTCEthStrategy.analyze
+    affects: {primary: [trade_count, expectancy], secondary: [max_drawdown]}
+  strategy.scoring.trend_strength.adx_strong_threshold:
+    status: tunable
+    value_type: float
+    min_value: 22.0
+    max_value: 32.0
+    max_change_pct: 0.10
+    group: entry_quality
+    live_usage_probe: BTCEthStrategy._calculate_trend_strength_score
+  strategy.scoring.trend_strength.adx_medium_threshold:
+    status: tunable
+    value_type: float
+    min_value: 17.0
+    max_value: 24.0
+    max_change_pct: 0.10
+    group: entry_quality
+    live_usage_probe: BTCEthStrategy._calculate_trend_strength_score
+  strategy.scoring.breakout_pullback.proximity_pct:
+    status: tunable
+    value_type: float
+    min_value: 0.0075
+    max_value: 0.0125
+    max_change_pct: 0.10
+    group: entry_quality
+    live_usage_probe: BTCEthStrategy._detect_breakout_pullback
+invariants:
+  - kind: greater_than
+    left: strategy.scoring.trend_strength.adx_strong_threshold
+    right: strategy.scoring.trend_strength.adx_medium_threshold

@@ -283,59 +283,15 @@ class LearningSignalGenerator:
 
     async def _apply_l4_stale_trigger(
         self,
-        db_handler: MemoryDBHandler,
+        _db_handler,  # M7 修复：阶段一 L4 禁用，本函数体未使用 db_handler → 幽灵参数加 _ 前缀
         strategy_id: str,
     ) -> Optional[str]:
         """
         L4：连续不变触发
 
-        检查最近 N 条已生效记录，如果连续 N 次"维持不变"（adjustments 为空），
-        则必须输出至少 1 个参数调整。
-
-        Args:
-            db_handler: 记忆库数据库处理器
-            strategy_id: 策略唯一标识
-
-        Returns:
-            警告信息，无需触发时返回 None
+        阶段一：连续 HOLD 不再触发强制调参，保持当前实现仅用于向后兼容。
+        主计划明确删除"证据不足时为了调参而调参"的规则。
         """
-        try:
-            recent = await db_handler.get_recent_applied_memories(
-                strategy_id=strategy_id,
-                limit=self.stale_unchanged_count,
-            )
-
-            if len(recent) < self.stale_unchanged_count:
-                return None
-
-            # 检查是否全部"维持不变"
-            all_empty = True
-            for mem in recent:
-                ai_suggestions = mem.get("ai_suggestions", {}) or {}
-                if isinstance(ai_suggestions, str):
-                    import json
-                    try:
-                        ai_suggestions = json.loads(ai_suggestions)
-                    except (json.JSONDecodeError, TypeError):
-                        ai_suggestions = {}
-                adjustments = ai_suggestions.get("adjustments", {}) if isinstance(ai_suggestions, dict) else {}
-                if adjustments:
-                    all_empty = False
-                    break
-
-            if all_empty:
-                ratio_pct = int(self.stale_adjustment_ratio * 100)
-                return (
-                    f"已连续{self.stale_unchanged_count}次维持不变，本次必须输出至少 1 个参数调整"
-                    f"（即使幅度很小），调整幅度控制在正常范围的 {ratio_pct}% 以内（保守调整）"
-                )
-
-            return None
-
-        except Exception as e:
-            logger.error(
-                "L4 规则检查异常",
-                strategy_id=strategy_id,
-                error=str(e),
-            )
-            return None
+        logger.debug("连续 HOLD 不触发强制调参（MVP 阶段一：禁用 L4）",
+                     strategy_id=strategy_id)
+        return None

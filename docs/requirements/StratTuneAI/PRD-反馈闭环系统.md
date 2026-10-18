@@ -460,7 +460,7 @@ LearningSignal 在 Prompt 中注入明确的"学习指令"，引导 LLM 基于�
   → 调整幅度控制在正常范围的 50% 以内（保守调整）
 ```
 
-#### 3.3.3 接口定义
+> ⚠️ **实现偏差回标（2026-10-18，MVP 阶段一）**：L4「连续不变强制调参」**已禁用**——`_apply_l4_stale_trigger()` 恒返回 `None`，连续 HOLD **不再触发强制调整**（下方 LRN-004、验收项、R-004、术语表等仍为原设计描述，行为以本节回标为准）。`config.yaml` 的 `stale_unchanged_count` / `stale_adjustment_ratio` 暂保留为兼容字段。恢复须待阶段三落地。见 [spec §1b](../../superpowers/specs/2026-10-16-purpose-driven-ai-tuner-design.md)。
 
 ```python
 class LearningSignalGenerator:

@@ -2,67 +2,41 @@
 
 ## 策略简介
 
-HRS 策略是一个基于多维度评分的新币种反转交易策略，专注于识别短期暴涨暴跌后的反转机会。
-核心思路：当市场出现极端行情（24h大幅涨跌、资金费率极端、OI/市值比异常）时，做反向交易。
+HRS 是新币种反转交易策略，当市场出现极端行情（24h 大幅涨跌、资金费率极端、OI/市值比异常）时做反向交易。三轨并行信号（标准 + EMM + LV-RM）。
 
-## 评分体系
+## 可调参数（来自 ParameterManifest，仅 entry_quality 组）
 
-HRS 策略通过三个维度综合评分（满分10分）：
-1. **合约数据（权重 0.25）**：OI/市值比，衡量市场拥挤程度
-   - 做空：OI/市值比越高（拥挤）→ 分数越高
-   - 做多：OI/市值比越低（冷清）→ 分数越高
-2. **技术面（权重 0.45）**：K线形态识别（三顶/三底、长影线、成交量背离、双顶/双底、V型反转）
-3. **情绪面（权重 0.30）**：资金费率年化，衡量市场情绪极端程度
-   - 做空：费率越高（过度看多）→ 分数越高
-   - 做多：费率越低（过度看空）→ 分数越高
+你只能从以下 TUNABLE 参数里选 1-2 个：
 
-## 核心参数说明
+| path | 当前值范围 | 变化上限 | 效果 |
+|------|----------|---------|------|
+| scoring.entry_threshold | 5.0 – 7.0 | 10% | 提高 → 收紧总入场门槛 |
+| scoring.short_entry_threshold | 4.5 – 6.5 | 10% | 做空入场阈值，应 ≤ entry_threshold |
+| scoring.technical.min_total_score | 3.0 – 5.0 | 10% | 技术面最低分，三轨并行的核心过滤 |
+| scoring.technical.short_min_total_score | 1.5 – 3.0 | 10% | 做空技术面最低分，应 ≤ min_total_score |
 
-### 评分权重
-1. **scoring.weights.contract**：合约数据权重（0.30-0.60），越高越依赖OI数据
-2. **scoring.weights.technical**：技术面权重（0.20-0.50），越高越依赖形态分析
-3. **scoring.weights.sentiment**：情绪面权重（0.10-0.35），越高越依赖资金费率
+## 硬约束（不变量）
 
-### 入场控制
-4. **scoring.entry_threshold**：入场总分阈值（3.0-8.0），越高越严格
-5. **scoring.technical.min_total_score**：技术面最低分要求（4.0-8.0）
-6. **scoring.technical.min_base_pattern_score**：基础形态最低分（1.0-4.0）
-
-### OI/市值比阈值（控制市场拥挤判断的敏感度）
-7-10. **scoring.oi_market_cap.extreme_crowded/high/medium/neutral**：各拥挤等级阈值
-
-### 资金费率阈值（控制情绪判断的敏感度）
-11-13. **scoring.sentiment.funding_rate.extreme_high/high/medium**：各费率等级阈值
-
-### 风控参数
-14. **risk.stop_loss.atr_hard_stop**：ATR硬止损倍数（1.5-3.0），越大越宽松
-15. **risk.stop_loss.emergency_stop_percent**：紧急止损百分比（3%-10%）
-16. **risk.stop_loss.min_absolute_stop_percent**：最小绝对止损（1%-5%）
-17. **risk.batch_take_profit.tp1_atr_multiplier**：第一止盈目标ATR倍数（1.0-3.0）
-18. **risk.batch_take_profit.tp2_atr_multiplier**：第二止盈目标ATR倍数（2.0-5.0）
-19. **risk.batch_take_profit.trailing_stop_atr_multiplier**：移动止盈ATR倍数（0.5-2.0）
-20. **risk.consecutive_loss.max_consecutive_losses**：连续亏损暂停阈值（2-5次）
-21. **risk.consecutive_loss.pause_days**：暂停天数（3-14天）
-22. **risk.max_drawdown.pause_days**：最大回撤暂停天数（3-14天）
-
-### 候选池筛选（交易对选择标准）
-23. **candidate.short_24h_gain_threshold**：做空标的24h涨幅门槛（5%-20%）
-24. **candidate.long_24h_loss_threshold**：做多标的24h跌幅门槛（5%-20%）
-25. **candidate.volume_24h_min**：24h最小成交额（100万-5000万 USDT）
-26. **candidate.oi_min**：最小持仓量OI（50万-2000万 USDT）
+- `scoring.entry_threshold` >= `scoring.short_entry_threshold`（做多阈值不低于做空阈值）
+- `scoring.technical.min_total_score` >= `scoring.technical.short_min_total_score`（做多技术分不低于做空）
+- 每次最多 2 个 adjustment
+- 每个参数单次变化 ≤ 10%
 
 ## 调优策略建议
 
-- 胜率过低 → 提高 entry_threshold 和 min_total_score，收紧入场条件
-- 盈亏比差 → 调整 tp1/tp2_atr_multiplier，优化止盈目标
-- 连亏过多 → 降低 max_consecutive_losses，增加 pause_days
-- 回撤过大 → 收紧 stop_loss 参数，降低杠杆
-- 交易信号过多 → 提高 entry_threshold，收紧候选池筛选条件
-- 信号过少 → 降低 entry_threshold，放宽候选池阈值
-- 表现良好 → 维持不变
+- 信号过多 → 提高 entry_threshold 和 min_total_score，收紧入场条件
+- 信号过少 → 放宽两个阈值
+- 做空方向表现差 → 降低 short_entry_threshold / short_min_total_score（让做空更难触发）
+- 做多方向表现差 → 保持或提高 entry_threshold / min_total_score
+- 回撤过大 → 收紧做空阈值（short_*）过滤质量
+- 表现良好 → HOLD（维持不变）
 
 ## 注意
 
-- HRS 是新币种反转策略，与 MTPCS（主流币趋势）风格不同
+- HRS 是新币种反转策略，与 MTPCS（主流币趋势）风格完全不同
 - 持仓方向与市场短期趋势相反，属于逆势交易
-- 单笔最大亏损控制在账户总资金的2%
+- 当前数据库没有 trade_signals 表（预期行为），signals 查询会返回 0
+
+## 输出格式
+
+按 common_rules.txt 里定义的新信封 JSON 格式输出。

@@ -1751,6 +1751,12 @@ class WeeklyTuningJob:
         """
         ...
 
+        # ⚠️ 实现偏差回标（2026-10-18，MVP 阶段一）：
+        #   步骤 4 的 L1~L4 规则引擎中，L4「连续不变强制调参」已禁用
+        #   （learning_signal._apply_l4_stale_trigger() 恒返回 None，调用点保留为占位）；
+        #   步骤 12 在 purpose_driven_mvp.mode=audit 下仅拦截写入（不写覆盖层、不切换 .active），
+        #   候选策略跑完整流水线但不落地。恢复须待阶段三。见 spec §1b。
+
     async def handle_approval(
         self,
         strategy_id: str,

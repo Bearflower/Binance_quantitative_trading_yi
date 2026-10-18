@@ -115,6 +115,16 @@ StratTuneAI 是一个 AI 驱动的多策略参数自动调优系统，以独立 
 | 通知 | 飞书通知服务 |
 | 容器化 | 独立 Docker 容器 |
 
+### Purpose-driven AI Tuner MVP readiness
+
+目的驱动型 AI Tuner 的阶段一（参数安全 + 90 天准备度审计）已落地。启用回放/自动生效前，先跑 90 天准备度审计：
+
+```bash
+python3 scripts/ai_tuner_mvp.py audit --as-of 2026-10-17T00:00:00Z --output var/ai_tuner/readiness.json
+```
+
+退出码 `0` 表示选出一个策略；`2` 表示两个候选均不安全（JSON 报告列出每个未过的门禁）；`1` 表示运行时错误。阶段一为 `purpose_driven_mvp.mode=audit`：候选策略跑完整调优流水线，但**仅拦截写入**（不写覆盖层、不切换 `.active`）。
+
 ## 文档
 
 - [文档索引](docs/README.md) - 完整文档目录（v6.30.0）

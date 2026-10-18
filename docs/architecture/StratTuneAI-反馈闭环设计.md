@@ -599,6 +599,8 @@ ContextEnhancer 的输出通过以下方式注入到 Prompt：
   → 调整幅度控制在正常范围的 stale_adjustment_ratio * 100% 以内（保守调整，默认 50%）
 ```
 
+> ⚠️ **实现偏差回标（2026-10-18，MVP 阶段一）**：L4「连续不变强制调参」**已禁用**——`LearningSignalGenerator` 的 `_apply_l4_stale_trigger()` 恒返回 `None`，连续 HOLD **不再触发强制调整**；`build_learning_instructions()` 仍保留 L4 调用点（占位），`config.yaml` 的 `learning.stale_unchanged_count` / `stale_adjustment_ratio` 暂保留为兼容字段（行为已失效）。恢复须待阶段三（回放 + 自动生效）落地。见 [spec §1b](../superpowers/specs/2026-10-16-purpose-driven-ai-tuner-design.md)。
+
 #### 2.3.3 关键方法签名
 
 ```python
