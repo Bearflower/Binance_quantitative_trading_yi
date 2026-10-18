@@ -229,7 +229,7 @@
 - [R10/R12 + RK1/R11/RK2 收口架构设计定稿](research/strategy_remediation/architecture_R10-RK_2026-10-17.md) - 分页闭区间收尾、income 缺口标记、HRS 落库失败告警、V2.10 评分口径、RK2 统计口径；状态「已落地」（§6.2 口径正交声明 + 执行率 3/9 分母、§1.5/§7.1 实现偏差）
 - [目的驱动型全自动 AI Tuner 与策略回测体系设计（spec）](superpowers/specs/2026-10-16-purpose-driven-ai-tuner-design.md) - 总纲设计；**阶段一（参数安全 + 90 天准备度审计）已落地**（2026-10-18 审计校准 `decision=STOP`，阈值维持不变），阶段二/三未实现，差异见文首「实现偏差回标（S1–S11）」
 - [AI Tuner MVP 安全与准备度实施计划（plan）](superpowers/plans/2026-10-17-ai-tuner-mvp-safety-readiness.md) - Plan 1 实施计划；阶段一已实现（227 用例通过），差异见文首「实现偏差回标（D1–D13）」及「阶段一收口结论与阶段二前置项」
-- [AI Tuner MVP 准备度报告样例](reports/ai-tuner-mvp-readiness-report.example.json) - **虚构示例（非当前真实状态）**，仅用于核验 `scripts/ai_tuner_mvp.py audit` 的输出结构与门禁字段；**真实实测报告见 [ai-tuner-mvp-readiness-report-2026-10-18.json](reports/ai-tuner-mvp-readiness-report-2026-10-18.json)**（`decision=STOP`、`selected_strategy=null`）
+- [AI Tuner MVP 准备度报告样例](reports/ai-tuner-mvp-readiness-report.example.json) - **虚构示例（非当前真实状态）**，仅用于核验 `scripts/ai_tuner_mvp.py audit` 的输出结构与门禁字段。真实实测报告（`ai-tuner-mvp-readiness-report-2026-10-18.json`）**仅本地留存、未纳入 Git**，其结论已摘要回标至 plan **D13** / spec **S11**（`decision=STOP`、`selected_strategy=null`）
 
 > 知识库（可复用问题/决策沉淀）见 [docs/knowledge/INDEX.md](knowledge/INDEX.md)。
 
