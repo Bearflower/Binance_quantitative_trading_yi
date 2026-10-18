@@ -13,9 +13,12 @@
       "config_identity_ratio": 0.9,
       "kline_coverage": 0.99,
       "external_snapshot_coverage": 0.0,
+      "external_snapshot_requirement": "not_required_for_current_manifest",
+      "external_snapshot_reason": "not_required_for_current_manifest",
       "failures": [],
       "gaps": [
-        "无历史外部快照表（OI/市值/资金费率/情绪时点快照），external_snapshot_coverage 记 0；后续阶段需补齐快照采集器",
+        "trade_signals 表缺失（information_schema 探测无 schema 含该表），effective_signals 记 0",
+        "外部快照 coverage=0.0% （not_required_for_current_manifest：当前 manifest 的入场逻辑不依赖 OI/市值/资金费率/情绪快照）",
         "配置身份用 inferred（无版本列），当前 baseline=0.90，实际覆盖度可能被高估；TODO(阶段二): 补齐 identity 列后改为动态计算",
         "regime_count 是 proxy（COUNT DISTINCT symbol），非真实市场状态覆盖数；TODO(阶段二): 引入 market_regime 表后改为真实计数"
       ]
@@ -29,12 +32,15 @@
       "config_identity_ratio": 0.75,
       "kline_coverage": 0.96,
       "external_snapshot_coverage": 0.0,
+      "external_snapshot_requirement": "required",
+      "external_snapshot_reason": "required_historical_external_snapshots_missing",
       "failures": [
         "已平仓交易 12 < 20",
         "有效信号 0 < 100",
         "交易字段完整度 88.0% < 95.0%",
         "配置身份覆盖 75.0% < 90.0%",
         "K线覆盖 96.0% < 98.0%",
+        "外部快照覆盖 0.0% < 95.0% (required_historical_external_snapshots_missing)",
         "regime_count(proxy) 2 < 3"
       ],
       "gaps": [

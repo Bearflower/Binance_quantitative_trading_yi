@@ -23,9 +23,13 @@ purpose_driven_mvp:
   max_switches_in_days: 7
 
   # 准备度审计阈值（全部可配置，严禁硬编码）
-  # 说明：external_snapshot_coverage 在阶段一因数据库无快照表预期为 0，
-  #      阈值设 0.0 使其降级为报告项（gaps 里输出缺口说明）；
-  #      后续阶段补齐快照表后重新评估阈值。
+  # 说明：外部快照门禁必须是「策略级」的，不能全局一刀切。
+  #      - btc_eth_aggressive：入场逻辑主要依赖历史 K 线与技术指标，
+  #        不依赖 OI/市值/资金费率/情绪快照 → 阈值 0.0 作报告项，
+  #        requirement 标记为 not_required_for_current_manifest。
+  #      - hrs：OI、市值、资金费和候选池历史状态直接影响评分与可交易集合，
+  #        外部快照是必需数据 → 阈值 0.95 硬门禁，缺失即 ineligible。
+  #      全局默认 0.95 + required；per_strategy 可覆盖。
   readiness:
     window_days: 90
     min_closed_trades: 20
@@ -33,8 +37,19 @@ purpose_driven_mvp:
     min_trade_field_completeness: 0.95
     min_config_identity_coverage: 0.90
     min_kline_coverage: 0.98
-    min_external_snapshot_coverage: 0.0
+    min_external_snapshot_coverage: 0.95
     min_regime_count: 3
+    external_snapshot_requirement: required
+    # 策略级覆盖：per_strategy 中的值优先于全局默认
+    per_strategy:
+      btc_eth_aggressive:
+        min_external_snapshot_coverage: 0.0
+        external_snapshot_requirement: not_required_for_current_manifest
+        # 原因：入场逻辑不依赖 OI/市值/资金费率/情绪快照
+      hrs:
+        min_external_snapshot_coverage: 0.95
+        external_snapshot_requirement: required
+        # 原因：OI/市值/资金费/候选池历史状态直接影响评分与可交易集合，外部快照必需
 
 strategies:
   - strategy_id: "btc_eth"

@@ -24,6 +24,12 @@ class CandidateReadiness:
     kline_coverage: float               # 窗口内 K 线完整度（已收盘 bar 覆盖）
     external_snapshot_coverage: float   # 外部时点快照完整度（OI/市值/资金费率/情绪）
 
+    # --- 外部快照门禁策略级元数据 ---
+    # 取值："required"（缺失即 ineligible）或 "not_required_for_current_manifest"（报告项）
+    external_snapshot_requirement: str = "required"
+    # 失败原因代码：required_historical_external_snapshots_missing / not_required_for_current_manifest
+    external_snapshot_reason: str = ""
+
     # --- 失败清单（每个条目对应一个未过的 gate，含实际值和阈值）---
     failures: List[str] = field(default_factory=list)
 

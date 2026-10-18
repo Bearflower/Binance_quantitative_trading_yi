@@ -123,6 +123,8 @@ async def run_audit(as_of: datetime, output_path: Path) -> int:
               f"identity={cr.config_identity_ratio:.1%} "
               f"kline={cr.kline_coverage:.1%} "
               f"snapshot={cr.external_snapshot_coverage:.1%}")
+        print(f"    快照门禁: requirement={cr.external_snapshot_requirement} "
+              f"reason={cr.external_snapshot_reason or '(none)'}")
         if cr.failures:
             print(f"    失败门禁：")
             for fail in cr.failures:

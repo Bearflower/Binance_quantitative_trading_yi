@@ -34,12 +34,27 @@ def auditor(config, fake_db):
 
 class TestConfigDrivenThresholds:
     async def test_baseline_all_pass_selects_first_candidate(self, auditor, fake_db, as_of, config):
-        """基线数据下全部 7 项门禁通过 → SELECT 且选中 config candidates 的第一个"""
+        """基线数据下：aggressive 因快照 not_required 而全过门禁 → SELECT
+        （hrs 快照 required 但 coverage=0 → ineligible，不影响 aggressive 的选择）"""
         result = await auditor.run(as_of=as_of)
         assert result.decision == "SELECT"
         assert result.selected_strategy == config["purpose_driven_mvp"]["candidates"][0]
         assert result.window_days == 90
-        assert all(cr.eligible for cr in result.candidates.values())
+        assert result.candidates["btc_eth_aggressive"].eligible
+        assert not result.candidates["hrs"].eligible
+        # 验证 aggressive 的快照 requirement/reason
+        aggr = result.candidates["btc_eth_aggressive"]
+        assert aggr.external_snapshot_requirement == "not_required_for_current_manifest"
+        assert aggr.external_snapshot_reason == "not_required_for_current_manifest"
+
+    async def test_hrs_snapshot_required_gate_blocks_eligibility(self, auditor, as_of):
+        """hrs 快照 required + coverage=0 → ineligible，failures 含 required_historical_external_snapshots_missing"""
+        result = await auditor.run(as_of=as_of)
+        hrs = result.candidates["hrs"]
+        assert not hrs.eligible
+        assert hrs.external_snapshot_requirement == "required"
+        assert hrs.external_snapshot_reason == "required_historical_external_snapshots_missing"
+        assert any("required_historical_external_snapshots_missing" in f for f in hrs.failures)
 
     async def test_min_closed_trades_from_config(self, config, fake_db, as_of):
         """min_closed_trades 改为 101 → 出现对应失败项（阈值生效）"""
@@ -71,11 +86,15 @@ class TestConfigDrivenThresholds:
         assert any("K线覆盖" in f and "101.0%" in f for f in failures)
 
     async def test_min_external_snapshot_coverage_no_fallback(self, config, fake_db, as_of):
-        """M4：快照阈值无兜底，config 设 0.5 而实际 0 → 失败（证明无硬编码兜底）"""
-        config["purpose_driven_mvp"]["readiness"]["min_external_snapshot_coverage"] = 0.5
+        """M4 + per_strategy：把 aggressive 的 per_strategy 条目设为 required+0.5 →
+        coverage=0 触发 failure（证明 per_strategy 覆盖生效，阈值无硬编码兜底）"""
+        per = config["purpose_driven_mvp"]["readiness"]["per_strategy"]
+        per["btc_eth_aggressive"]["external_snapshot_requirement"] = "required"
+        per["btc_eth_aggressive"]["min_external_snapshot_coverage"] = 0.5
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         failures = result.candidates["btc_eth_aggressive"].failures
         assert any("外部快照覆盖" in f and "50.0%" in f for f in failures)
+        assert any("required_historical_external_snapshots_missing" in f for f in failures)
 
     async def test_min_regime_count_from_config(self, config, fake_db, as_of):
         config["purpose_driven_mvp"]["readiness"]["min_regime_count"] = 6
@@ -124,7 +143,8 @@ class TestConfigDrivenThresholds:
 
 class TestHrsGapReporting:
     async def test_all_data_sources_missing_produces_structured_gaps(self, config, as_of):
-        """全部数据源探测失败：signals=0 / kline=0 / snapshot=0，gaps 逐项说明且不崩"""
+        """全部数据源探测失败：signals=0 / kline=0 / snapshot=0，gaps 逐项说明且不崩
+        注意：aggressive 快照 not_required → 自定义 gap 文案；hrs 快照 required → 原始快照表缺失文案"""
         db = FakeDB(responses={})  # 空路由：所有探测返回空
         result = await ReadinessAuditor(db, config).run(as_of=as_of)
         for cr in result.candidates.values():
@@ -134,10 +154,15 @@ class TestHrsGapReporting:
             assert isinstance(cr.gaps, list) and cr.gaps
             assert any("trade_signals 表缺失" in g for g in cr.gaps)
             assert any("K 线表未探测到" in g for g in cr.gaps)
-            assert any("无历史外部快照表" in g for g in cr.gaps)
             assert any("regime_count 是 proxy" in g for g in cr.gaps)
             assert any("inferred" in g for g in cr.gaps)
-            assert result.decision == "STOP"
+        # aggressive 快照 not_required → gap 含 not_required 文案
+        aggr = result.candidates["btc_eth_aggressive"]
+        assert any("not_required_for_current_manifest" in g for g in aggr.gaps)
+        # hrs 快照 required → gap 含原始快照表缺失文案
+        hrs = result.candidates["hrs"]
+        assert any("无历史外部快照表" in g for g in hrs.gaps)
+        assert result.decision == "STOP"
 
     async def test_hrs_signal_gap_via_empty_schema_probe(self, config, as_of):
         """hrs 无 trade_signals 表 → effective_signals 记 0 + gap（模拟 hrs schema 缺失场景）"""
@@ -323,11 +348,11 @@ class TestQueryBranches:
         assert any("未识别到时间戳列" in g for g in cr.gaps)
 
     async def test_external_snapshot_always_zero_with_gap(self, auditor, as_of):
-        """快照表不存在 → coverage 恒 0 且 gap 说明（预期行为）"""
+        """快照表不存在 → coverage 恒 0；aggressive not_required → 自定义 gap 文案"""
         result = await auditor.run(as_of=as_of)
         cr = result.candidates["btc_eth_aggressive"]
         assert cr.external_snapshot_coverage == 0.0
-        assert any("无历史外部快照表" in g for g in cr.gaps)
+        assert any("not_required_for_current_manifest" in g for g in cr.gaps)
 
 
 # ===========================================================================
@@ -411,6 +436,8 @@ class TestGapsBuilding:
             strategy_id="s", closed_trades=1, effective_signals=1, regime_count=1,
             complete_trade_ratio=1.0, config_identity_ratio=1.0,
             kline_coverage=1.0, external_snapshot_coverage=0.0,
+            external_snapshot_requirement="required",
+            external_snapshot_reason="required_historical_external_snapshots_missing",
             failures=["f"], gaps=["g"],
         )
         rr = ReadinessResult(
@@ -421,3 +448,67 @@ class TestGapsBuilding:
         assert data["candidates"]["s"]["failures"] == ["f"]
         assert data["candidates"]["s"]["gaps"] == ["g"]
         assert data["window_days"] == 90
+        # 新字段也被正确序列化
+        assert data["candidates"]["s"]["external_snapshot_requirement"] == "required"
+        assert data["candidates"]["s"]["external_snapshot_reason"] == "required_historical_external_snapshots_missing"
+
+
+# ===========================================================================
+# 策略级外部快照门禁（per_strategy 覆盖）
+# ===========================================================================
+
+
+class TestPerStrategySnapshotGate:
+    def test_per_strategy_missing_key_raises(self, fake_db):
+        """per_strategy 条目缺必备键 → ValueError（不静默）"""
+        bad_config = {
+            "purpose_driven_mvp": {
+                "candidates": ["btc_eth_aggressive"],
+                "readiness": {
+                    "window_days": 90,
+                    "min_closed_trades": 20,
+                    "min_effective_signals": 100,
+                    "min_trade_field_completeness": 0.95,
+                    "min_config_identity_coverage": 0.90,
+                    "min_kline_coverage": 0.98,
+                    "min_external_snapshot_coverage": 0.95,
+                    "min_regime_count": 3,
+                    "external_snapshot_requirement": "required",
+                    "per_strategy": {
+                        "btc_eth_aggressive": {"min_external_snapshot_coverage": 0.0},
+                        # 缺 external_snapshot_requirement
+                    },
+                },
+            },
+        }
+        with pytest.raises(ValueError, match="per_strategy.btc_eth_aggressive 缺键"):
+            ReadinessAuditor(fake_db, bad_config)
+
+    async def test_global_default_used_when_no_per_strategy(self, config, fake_db, as_of):
+        """未在 per_strategy 中声明的策略 → 使用全局默认阈值 0.95 + required"""
+        # 临时移除 btc_eth_aggressive 的 per_strategy 覆盖
+        del config["purpose_driven_mvp"]["readiness"]["per_strategy"]["btc_eth_aggressive"]
+        result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
+        aggr = result.candidates["btc_eth_aggressive"]
+        # 全局阈值 0.95 + coverage 0 → failure
+        assert not aggr.eligible
+        assert aggr.external_snapshot_requirement == "required"
+        assert aggr.external_snapshot_reason == "required_historical_external_snapshots_missing"
+        assert any("required_historical_external_snapshots_missing" in f for f in aggr.failures)
+
+    async def test_resolve_snapshot_policy_not_required(self, config, fake_db, as_of):
+        """per_strategy aggressive: not_required + 0.0 → 不因快照 coverage 低而失败"""
+        result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
+        aggr = result.candidates["btc_eth_aggressive"]
+        # aggressive coverage=0, 但 requirement=not_required → 无快照失败项
+        assert aggr.external_snapshot_coverage == 0.0
+        assert aggr.external_snapshot_requirement == "not_required_for_current_manifest"
+        assert not any("外部快照覆盖" in f for f in aggr.failures)
+
+    async def test_resolve_snapshot_policy_required_gate(self, config, fake_db, as_of):
+        """per_strategy hrs: required + 0.95, coverage=0 → failure 含 required_historical_external_snapshots_missing"""
+        result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
+        hrs = result.candidates["hrs"]
+        assert hrs.external_snapshot_requirement == "required"
+        assert hrs.external_snapshot_reason == "required_historical_external_snapshots_missing"
+        assert any("required_historical_external_snapshots_missing" in f for f in hrs.failures)

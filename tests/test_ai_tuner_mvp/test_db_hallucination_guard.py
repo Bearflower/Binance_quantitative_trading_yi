@@ -104,8 +104,19 @@ _BASE_CONFIG = {
             "min_trade_field_completeness": 0.95,
             "min_config_identity_coverage": 0.90,
             "min_kline_coverage": 0.98,
-            "min_external_snapshot_coverage": 0.0,
+            "min_external_snapshot_coverage": 0.95,
             "min_regime_count": 3,
+            "external_snapshot_requirement": "required",
+            "per_strategy": {
+                "btc_eth_aggressive": {
+                    "min_external_snapshot_coverage": 0.0,
+                    "external_snapshot_requirement": "not_required_for_current_manifest",
+                },
+                "hrs": {
+                    "min_external_snapshot_coverage": 0.95,
+                    "external_snapshot_requirement": "required",
+                },
+            },
         },
     },
 }

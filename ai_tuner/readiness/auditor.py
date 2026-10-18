@@ -39,6 +39,13 @@ _REQUIRED_READINESS_KEYS = [
     "min_kline_coverage",
     "min_external_snapshot_coverage",
     "min_regime_count",
+    "external_snapshot_requirement",
+]
+
+# per_strategy 每个策略条目必须含的键（缺失即 ValueError，不静默）
+_REQUIRED_PER_STRATEGY_KEYS = [
+    "min_external_snapshot_coverage",
+    "external_snapshot_requirement",
 ]
 
 
@@ -62,10 +69,37 @@ class ReadinessAuditor:
             raise ValueError(
                 f"purpose_driven_mvp.readiness 缺键: {missing}"
             )
+        # 策略级外部快照覆盖（per_strategy）：可选，但每个条目必须含必备键
+        self.per_strategy: Dict[str, dict] = {}
+        per_cfg = self.readiness_cfg.get("per_strategy", {}) or {}
+        for sid, entry in per_cfg.items():
+            missing_keys = [k for k in _REQUIRED_PER_STRATEGY_KEYS if k not in entry]
+            if missing_keys:
+                raise ValueError(
+                    f"purpose_driven_mvp.readiness.per_strategy.{sid} 缺键: {missing_keys}"
+                )
+            self.per_strategy[sid] = dict(entry)
         # M2 修复：配置身份 baseline 从 config 读取，而非硬编码 0.90
         self.identity_baseline = float(
             mvp.get("identity_ratio_baseline", 0.90)
         )
+
+    def _resolve_snapshot_policy(self, strategy_id: str) -> tuple:
+        """解析策略级外部快照门禁参数（per_strategy 覆盖优先于全局默认）
+
+        Returns:
+            (threshold, requirement)：生效阈值（float）与 requirement 代码（str）
+        """
+        entry = self.per_strategy.get(strategy_id, {})
+        threshold = float(
+            entry.get("min_external_snapshot_coverage",
+                      self.readiness_cfg["min_external_snapshot_coverage"])
+        )
+        requirement = str(
+            entry.get("external_snapshot_requirement",
+                      self.readiness_cfg["external_snapshot_requirement"])
+        )
+        return threshold, requirement
 
     # ---------------------------------------------------------------
     # 主入口
@@ -132,16 +166,20 @@ class ReadinessAuditor:
         snapshot_coverage, snapshot_gaps = await self._query_external_snapshot()
         identity_ratio = self.identity_baseline  # M2 修复：从 config 读
 
+        # 策略级外部快照门禁（per_strategy 覆盖优先）
+        snap_threshold, snap_requirement = self._resolve_snapshot_policy(strategy_id)
+
         # Step 2: 门禁判定（拆分到独立方法）
-        failures = self._apply_gate_thresholds(
+        failures, snap_reason = self._apply_gate_thresholds(
             closed_trades, signals_count, complete_ratio,
             identity_ratio, kline_coverage, snapshot_coverage,
-            regime_proxy,
+            regime_proxy, snap_threshold, snap_requirement,
         )
 
         # Step 3: 报告组装（拆分到独立方法）
         gaps = self._build_gaps_list(
-            signal_gaps, kline_gaps, snapshot_gaps, regime_gaps, identity_ratio
+            signal_gaps, kline_gaps, snapshot_gaps, regime_gaps,
+            identity_ratio, snapshot_coverage, snap_requirement,
         )
 
         return CandidateReadiness(
@@ -153,6 +191,8 @@ class ReadinessAuditor:
             config_identity_ratio=round(identity_ratio, 4),
             kline_coverage=round(kline_coverage, 4),
             external_snapshot_coverage=round(snapshot_coverage, 4),
+            external_snapshot_requirement=snap_requirement,
+            external_snapshot_reason=snap_reason,
             failures=failures,
             gaps=gaps,
         )
@@ -166,17 +206,25 @@ class ReadinessAuditor:
         kline_coverage: float,
         snapshot_coverage: float,
         regime_count: int,
-    ) -> List[str]:
+        snapshot_threshold: float,
+        snapshot_requirement: str,
+    ) -> tuple:
         """
         门禁判定：把各项指标与 config thresholds 比较
 
         所有阈值从 config 读取，M4 修复：min_external_snapshot_coverage
         不再有兜底（缺失即报错），由 config 决定。
+        外部快照门禁支持策略级覆盖：
+        - requirement == "not_required_for_current_manifest" → 不产生 failure
+        - 否则（"required"）→ coverage < threshold 时产生 failure
+          且文案必须含 required_historical_external_snapshots_missing 子串
+
+        Returns:
+            (failures, snapshot_reason)：失败列表与快照原因代码
         """
         cfg = self.readiness_cfg
-        # M4 修复：无兜底，config 缺失时 .get() 返回 None 导致后续比较 TypeError
-        # — 但 config 加载时已校验，这里只 .get() 不用默认值
         failures: List[str] = []
+        snap_reason = ""
         if closed_trades < cfg["min_closed_trades"]:
             failures.append(f"已平仓交易 {closed_trades} < {cfg['min_closed_trades']}")
         if signals_count < cfg["min_effective_signals"]:
@@ -187,11 +235,20 @@ class ReadinessAuditor:
             failures.append(f"配置身份覆盖 {identity_ratio:.1%} < {cfg['min_config_identity_coverage']:.1%}")
         if kline_coverage < cfg["min_kline_coverage"]:
             failures.append(f"K线覆盖 {kline_coverage:.1%} < {cfg['min_kline_coverage']:.1%}")
-        if snapshot_coverage < cfg["min_external_snapshot_coverage"]:
-            failures.append(f"外部快照覆盖 {snapshot_coverage:.1%} < {cfg['min_external_snapshot_coverage']:.1%}")
+        # 外部快照门禁：策略级 requirement 决定是否产生 failure
+        if snapshot_requirement == "not_required_for_current_manifest":
+            snap_reason = "not_required_for_current_manifest"
+        elif snapshot_coverage < snapshot_threshold:
+            failures.append(
+                f"外部快照覆盖 {snapshot_coverage:.1%} < {snapshot_threshold:.1%} "
+                f"(required_historical_external_snapshots_missing)"
+            )
+            snap_reason = "required_historical_external_snapshots_missing"
+        else:
+            snap_reason = "snapshot_coverage_ok"
         if regime_count < cfg["min_regime_count"]:
             failures.append(f"regime_count(proxy) {regime_count} < {cfg['min_regime_count']}")
-        return failures
+        return failures, snap_reason
 
     @staticmethod
     def _build_gaps_list(
@@ -200,9 +257,21 @@ class ReadinessAuditor:
         snapshot_gaps: List[str],
         regime_gaps: List[str],
         identity_ratio: float,
+        snapshot_coverage: float,
+        snapshot_requirement: str,
     ) -> List[str]:
-        """组装 gaps 列表（含 proxy 标注和 identity inferred 标注）"""
-        gaps = list(signal_gaps) + list(kline_gaps) + list(snapshot_gaps) + list(regime_gaps)
+        """组装 gaps 列表（含 proxy 标注、identity inferred 标注和快照门禁说明）"""
+        gaps = list(signal_gaps) + list(kline_gaps)
+        # 外部快照门禁说明：区分"不要求"与"必需但缺失"
+        if snapshot_requirement == "not_required_for_current_manifest":
+            gaps.append(
+                f"外部快照 coverage={snapshot_coverage:.1%} "
+                f"（not_required_for_current_manifest：当前 manifest 的入场逻辑"
+                f"不依赖 OI/市值/资金费率/情绪快照）"
+            )
+        else:
+            gaps.extend(snapshot_gaps)
+        gaps += list(regime_gaps)
         if identity_ratio < 1.0:
             gaps.append(
                 f"配置身份用 inferred（无版本列），当前 baseline={identity_ratio:.2f}，"
