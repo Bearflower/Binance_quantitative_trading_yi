@@ -33,7 +33,7 @@ id: Binance_quantitative_trading-20261018-db-api-hallucination-asyncpg-vs-wrappe
 
 ## 验证
 
-- `tests/test_ai_tuner_mvp/test_db_hallucination_guard.py` 全绿；阶段一累计 **219 用例通过**。
+- `tests/test_ai_tuner_mvp/test_db_hallucination_guard.py` 全绿；阶段一累计 **227 用例通过**。
 - 审计器实际使用 `fetch_one`（trade_records / trade_signals / regime / K 线覆盖、information_schema 探测）与 `fetch_all`（信号 schema 探测）。
 
 ## 适用范围与修订
@@ -54,5 +54,5 @@ id: Binance_quantitative_trading-20261018-db-api-hallucination-asyncpg-vs-wrappe
 
 - 本地补充来源: [handoff](../../handoffs/)（不随 Git 同步）
 - 持久证据: `shared/database.py`（`fetch_one` / `fetch_all` / `disconnect`）、`ai_tuner/readiness/auditor.py`、`scripts/ai_tuner_mvp.py`、`tests/test_ai_tuner_mvp/test_db_hallucination_guard.py`
-- 必要证据摘要: 审计器与 CLI 全量改用封装层方法，219 用例通过；无剩余未验证项。
+- 必要证据摘要: 审计器与 CLI 全量改用封装层方法，阶段一累计 227 用例通过；无剩余未验证项。
 - 相关: [income-history-silent-empty-non-unified](../issues/Binance_quantitative_trading-20261015-income-history-silent-empty-non-unified.md)（同为「调用层与实现层行为不一致致静默」主题）

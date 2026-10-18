@@ -36,7 +36,7 @@ id: Binance_quantitative_trading-20261018-relative-path-wrong-root-silent-load-f
 
 ## 验证
 
-- 回归用例：`tests/test_ai_tuner_mvp/test_h_severity_regressions.py`（H1/H2 路径口径）、`tests/test_ai_tuner_mvp/test_parameter_manifest.py`、`tests/test_ai_tuner_mvp/test_manifest_validation.py`；阶段一累计 **219 用例通过**。
+- 回归用例：`tests/test_ai_tuner_mvp/test_h_severity_regressions.py`（H1/H2 路径口径）、`tests/test_ai_tuner_mvp/test_parameter_manifest.py`、`tests/test_ai_tuner_mvp/test_manifest_validation.py`；阶段一累计 **227 用例通过**。
 - 相关：`ai_tuner/Dockerfile` 补 `COPY strategies/btc_eth_aggressive/config.yaml`，确保容器内 `_read_effective_config()` 能读到真实配置（进程/容器两环境路径口径一致）。
 
 ## 适用范围与修订
@@ -57,5 +57,5 @@ id: Binance_quantitative_trading-20261018-relative-path-wrong-root-silent-load-f
 
 - 本地补充来源: [handoff](../../handoffs/)（不随 Git 同步）
 - 持久证据: `ai_tuner/adapters/base_adapter.py`（`_PROJECT_ROOT`、`_load_manifest`、`_read_effective_config`）、`ai_tuner/scheduler/weekly_job.py`（H2 路径与异常收窄）、`tests/test_ai_tuner_mvp/test_h_severity_regressions.py`
-- 必要证据摘要: 阶段一实装引入 `_PROJECT_ROOT` 统一口径后，manifest 校验的 `from` 值能对齐真实生效配置；219 用例通过。待验证项：无。
+- 必要证据摘要: 阶段一实装引入 `_PROJECT_ROOT` 统一口径后，manifest 校验的 `from` 值能对齐真实生效配置；阶段一累计 227 用例通过。待验证项：无。
 - 相关: [deploy-yml-init-scripts-unsynced](../issues/Binance_quantitative_trading-20261001-deploy-yml-init-scripts-unsynced.md)（同为「部署看似执行、实际未按预期生效」型）

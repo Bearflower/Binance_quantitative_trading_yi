@@ -17,7 +17,7 @@
 |---|---|---|---|
 | S1 | §6.3 参数清单示例 | 单参数含 `enabled` / `runtime_path` / 每参数 `invariants[]` / `conflicts_with[]` | 阶段一 manifest 实际字段为 `path` / `status` / `value_type` / `min_value` / `max_value` / `max_change_pct` / `group` / `live_usage_probe` / `affects`；**不变量是 manifest 级**（`invariants[]`），无 `enabled` / `runtime_path` / `conflicts_with` |
 | S2 | §6.1 / §17.2 | 「最多 1～3 个参数」；「单轮最多修改 1～2 个」 | 阶段一 `max_adjustments_per_run = 2`，两个 MVP 候选一致（在许可区间内） |
-| S3 | §16 / §11.3 | 外部数据时点快照须齐全，缺快照须报「证据不足」 | 经查数据库**无任何外部时点快照表**（OI/市值/资金费率/情绪）→ `external_snapshot_coverage` 实测 0，阈值设 `0.0` **降级为报告项**（缺口写入 `gaps`）；hrs 无 schema/信号表 → 很可能审计不通过 |
+| S3 | §16 / §11.3 | 外部数据时点快照须齐全，缺快照须报「证据不足」 | 经查数据库**无任何外部时点快照表**（OI/市值/资金费率/情绪）→ `external_snapshot_coverage` 实测 0。**门禁为策略级**（详见 plan 回标 D11）：全局默认 `min_external_snapshot_coverage=0.95` + `required`；`btc_eth_aggressive` 经 `per_strategy` 覆写为 `0.0` + `not_required_for_current_manifest`（报告须写「不要求」而非「合格」）；`hrs` 保持 `0.95` + `required`（缺失即 failure，原因码 `required_historical_external_snapshots_missing`）。hrs 有独立信号表 `hrs.hrs_signals`（实测 5416 行），实测不合格项为 K 线覆盖 83.66% 与外部快照 0.0% |
 | S4 | §16 | 准备度审计含「入场/分批止盈/移动止损/最终平仓能否回放」 | 阶段一仅实现**数据质量门禁 7 项**（已平仓交易数、有效信号数、字段完整度、配置身份覆盖度、K 线覆盖度、外部快照覆盖度、regime 覆盖度）；**可回放性属阶段二/三**，阶段一未落地 |
 | S5 | §16 / §12.5 | 「确定策略级硬回撤、最低样本和成绩阈值」 | 阶段一仅确定**最低样本/覆盖率阈值**（全部可配置、禁硬编码）；**硬回撤与成绩阈值待阶段三基准回放后校准** |
 | S6 | §15 输出协议 | 8 字段信封 `decision/objective/diagnosis/target_metrics/adjustments{from,to,change_pct,causal_reason}/applicable_market_regimes/expected_impact/confidence` | 与实现一致 ✓；`objective` 固定串 `maximize_risk_adjusted_net_return_under_drawdown_cap` 由 `ResponseParser` 精确匹配；`decision` 枚举 `PROPOSE|HOLD|DATA_ERROR` |
@@ -25,8 +25,9 @@
 | S8 | §16 / §6.4 regime 覆盖度 | 真实市场状态覆盖度 | 阶段一 `regime_count` 为 `COUNT(DISTINCT symbol)` 的 **proxy**（非真实市场状态数，标 TODO 阶段二） |
 | S9 | §18 阶段 1 交付项 | 含「参数到指标的映射和 OAT 敏感性基线」 | 阶段一已交付 `ParameterManifest` + 90 天准备度审计 CLI（`scripts/ai_tuner_mvp.py audit`），**参数→指标映射与 OAT 敏感性基线尚未建立**（阶段一计划内未完成项，转阶段二） |
 | S10 | §16 / §11.3 数据完整性（回标补记） | 设计只要求「外部数据时点快照齐全、缺快照报证据不足」，未规定审计读取层的列类型绑定与表/列探测口径 | 阶段一实施后经**生产 DB 取证**修复审计读取层三处口径缺陷（详见 plan 回标 **D12**）：**时间列按 `information_schema` 类型自适应绑定**（naive 列去 tzinfo、aware 列保留 UTC，消除 asyncpg naive/aware 冲突）、**信号表按 schema=`strategy_id` 隔离 + `ILIKE '%signal%'` 探测表名 + 候选时间列优先级探测**（不再假设存在 `strategy_id` 列、不再硬编码 `signal_time`）、**K 线覆盖度按窗口内主力合约（symbol 出现次数最多者）取表**（口径为「主力合约抽样」，非全候选池覆盖）；`identity_ratio_baseline` 与 `window_days` 列为强制键（缺失即 `ValueError`，去硬编码兜底） |
+| S11 | §16 首期策略选择 / §13.5 候选通过标准 | 设计要求「具体阈值必须在首个策略准备度审计和基准回放后校准，不能脱离数据直接硬编码」，未给出校准结论 | **阶段一审计校准结论（2026-10-18，详见 plan 回标 D13）**：在 ai-tuner 容器内对生产库实测（`as_of=2026-10-18`，窗口 90 天），`decision=STOP`、`selected_strategy=null`。**8 项 readiness 阈值 + `min_score_advantage=5.0` 一律维持不变**；`btc_eth_aggressive` 有效信号=0 保持 `min_effective_signals=100` 门禁、**记为真实数据缺口**（不豁免、不降级 `not_required`）；`min_kline_coverage=0.98` 维持阈值但**口径升级为「策略 universe 逐 symbol 覆盖率」**（阶段二实现项）；路线为「先补齐数据缺口、不调阈值」。**阶段二前置项三项**：① MTPCS 系信号持久化（`*.trade_signals` 均 0 行）；② 外部时点快照采集（OI/市值/资金费率/情绪，库内无表）；③ K 线补齐与覆盖口径升级 |
 
-> 阶段一硬门禁阈值（均在 `ai_tuner/config.yaml` 的 `purpose_driven_mvp.readiness`，全部可配置）：`window_days=90`、`min_closed_trades=20`、`min_effective_signals=100`、`min_trade_field_completeness=0.95`、`min_config_identity_coverage=0.90`、`min_kline_coverage=0.98`、`min_external_snapshot_coverage=0.0`、`min_regime_count=3`。
+> 阶段一硬门禁阈值（均在 `ai_tuner/config.yaml` 的 `purpose_driven_mvp.readiness`，全部可配置）：`window_days=90`、`min_closed_trades=20`、`min_effective_signals=100`、`min_trade_field_completeness=0.95`、`min_config_identity_coverage=0.90`、`min_kline_coverage=0.98`、`min_external_snapshot_coverage=0.95`（全局默认；`btc_eth_aggressive` 经 `per_strategy` 覆写为 `0.0`、`hrs` 保持 `0.95`）、`min_regime_count=3`。
 
 ---
 

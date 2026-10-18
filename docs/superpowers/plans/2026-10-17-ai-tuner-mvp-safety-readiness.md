@@ -28,8 +28,28 @@
 | D10 | Task 7 Step 3 | 更新根 `README.md`、创建报告样例 | 本回标完成：根 README 增补「Purpose-driven AI Tuner MVP readiness」段；报告样例落 `docs/reports/ai-tuner-mvp-readiness-report.example.json` |
 | D11 | Task 6 Step 3 阈值 / 用户复核 | 外部快照门禁为单一全局阈值 | **改为策略级门禁**（用户拍板）：全局默认 `min_external_snapshot_coverage: 0.95` + `external_snapshot_requirement: required`；`readiness.per_strategy` 按策略覆盖——`btc_eth_aggressive` 设 `0.0` + `not_required_for_current_manifest`（入场逻辑不依赖 OI/市值/资金费/情绪快照，报告须写「不要求」而非「合格」），`hrs` 保持 `0.95` + `required`（OI/市值/资金费/候选池历史状态直接影响评分与可交易集合，缺失即 failure，原因码 `required_historical_external_snapshots_missing`）。`CandidateReadiness` 新增 `external_snapshot_requirement` / `external_snapshot_reason` 两字段承载该语义。**不得**在全局把外部快照阈值统一降为零 |
 | D12 | Task 6 Step 3/4 审计读取 + config | 计划未规定审计读取层的列类型绑定与表/列探测口径；`window_days` 走 `get` 兜底、无 `identity_ratio_baseline` 强制键 | 经**生产 DB 取证**修复审计读取层三处口径缺陷（回归 227 用例全绿）：**(1) 时区绑定**——新增 `_fetch_column_data_type` + `_bind_window`，先查 `information_schema` 的列 `data_type`，naive 列（`timestamp without time zone`）去 tzinfo、aware 列（`timestamp with time zone`）保留 UTC 后再绑定，覆盖 `trading.trade_records.executed_at`(naive) / kline `open_time`(naive) / `hrs.hrs_signals.triggered_at`(aware)，消除 asyncpg `can't subtract offset-naive and offset-aware datetimes` 致窗口查询全败；**(2) 信号表探测重写**——schema 直接取 `strategy_id`（信号按 schema 隔离），表名用 `ILIKE '%signal%'` 探测（覆盖 `trade_signals`/`hrs_signals`/`short_signals`），时间列按 `['created_at','signal_time','triggered_at','executed_at']` 优先级探测并取其类型（原硬编码 `signal_time` + 要求 `strategy_id` 列 → 生产无该列 → 恒报「trade_signals 表缺失」假故障）；**(3) K 线覆盖度按主力合约**——先取该策略窗口内 `trade_records` 中 symbol 出现次数最多者，再按 `kline_<symbol小写>_%h`（优先 1h）定位表，覆盖度口径为「主力合约抽样」，非全候选池覆盖（原为任意取第一张 K 线表，常取到无关小币）。配置强制化：`ai_tuner/config.yaml` 的 `purpose_driven_mvp` 新增 `identity_ratio_baseline: 0.90`；`auditor.py` 新增 `_REQUIRED_MVP_KEYS`（`candidates`/`identity_ratio_baseline`）并把 `window_days` 纳入 `_REQUIRED_READINESS_KEYS`，去除原硬编码兜底（缺失即 `ValueError`） |
+| D13 | Task 6 Step 3/4 阈值 + 阶段一收口 | 计划只给出 8 项 `readiness` 门禁的「初始值」，并声明「具体阈值必须在首个策略准备度审计和基准回放后校准，不能脱离数据直接硬编码」——未规定校准结论 | **2026-10-18 阶段一审计校准完成（用户拍板）**。基线：阶段一已部署（commit `6abbcc8`，DEPLOY_ID=`00005801`）；在 ai-tuner 容器内对生产库实测（`as_of=2026-10-18`，窗口 90 天），结论 `decision=STOP`、`selected_strategy=null`（两候选均不合格）。实测值——`btc_eth_aggressive`：已平仓 611 ✓ / 有效信号 **0 ✗** / 字段完整度 100% ✓ / 配置身份覆盖度 0.90 ✓(inferred) / K 线覆盖 **0.9796 ✗**（主力 XRPUSDT 97.96%）/ 外部快照 n/a(`not_required`) / regime 5 ✓；`hrs`：已平仓 1472 ✓ / 有效信号 5416 ✓ / 字段完整度 100% ✓ / 配置身份覆盖度 0.90 ✓(inferred) / K 线覆盖 **0.8366 ✗**（主力 BZUSDT 83.66%）/ 外部快照 **0.0 ✗**（`required`，库内无快照表）/ regime 60 ✓。**校准结论：8 项 readiness 阈值 + `min_score_advantage=5.0` 一律维持不变（不调整）；`btc_eth_aggressive` 有效信号=0 保持 `min_effective_signals=100` 门禁、视为真实数据缺口（不豁免、不降级 `not_required`）；`min_kline_coverage=0.98` 维持阈值但口径升级为「策略 universe 逐 symbol 覆盖率」（阶段二实现项）；路线为「先补齐数据缺口、不调阈值」**。真实原因已核查生产库：`btc_eth_aggressive.trade_signals` 与 `btc_eth.trade_signals` **均为 0 行**——MTPCS 系只 `execute_signal` 执行、从不将信号持久化到 DB，故有效信号恒为 0（真实数据缺口，非缺陷） |
 
 > 另：`scripts/ai_tuner_mvp.py` 需显式把仓库根注入 `sys.path[0]`（以文件方式运行 `python3 scripts/ai_tuner_mvp.py` 时 `sys.path[0]=scripts/`，`shared/`、`ai_tuner/` 会导入失败）——计划未提，属实际实现补充。
+
+### 阶段一收口结论与阶段二前置项（2026-10-18）
+
+**四条决策（用户拍板；不调阈值、不改代码、不豁免门禁）**
+
+1. **阈值一律不调整**：8 项 readiness 门禁 + `min_score_advantage=5.0` 全部维持现状。
+2. **`btc_eth_aggressive` 有效信号=0**：保持 `min_effective_signals=100` 门禁，**视为真实数据缺口**（不豁免、不降级 `not_required`）。
+3. **`min_kline_coverage=0.98`**：维持阈值，但**口径升级**——从当前「主力合约抽样」升级为「策略 universe 逐 symbol 覆盖率」（阶段二实现项）。
+4. **下一步路线**：**先补齐数据缺口，不调阈值**。
+
+**阶段一审计实测结论**：`decision=STOP`、`selected_strategy=null`（两候选均不合格，详见回标 D13）。
+
+**阶段二前置项（数据缺口清单）**
+
+| 缺口 | 现状 | 涉及门禁 |
+|---|---|---|
+| ① MTPCS 系（btc_eth / btc_eth_aggressive）信号持久化 | 各自 `*.trade_signals` 均 0 行 | `min_effective_signals=100`（激进版 ✗） |
+| ② 外部时点快照采集（OI / 市值 / 资金费率 / 情绪） | 库内无任何快照表 | hrs `external_snapshot_requirement=required`（覆盖 0.0 ✗） |
+| ③ K 线补齐 + 覆盖口径升级为策略 universe 逐 symbol | 主力合约抽样仅 97.96% / 83.66% | `min_kline_coverage=0.98`（两候选 ✗） |
 
 ---
 
@@ -775,7 +795,7 @@ Expected: FAIL because the readiness package is missing.
 
 - [ ] **Step 3: Define explicit readiness gates**
 
-> ⚠️ **实现偏差（见 D5/D6）**：`ReadinessAuditor(db_manager, config)` 两参数；`min_external_snapshot_coverage` 实际为 `0.0`（库内无外部快照表，降级为报告项）。
+> ⚠️ **实现偏差（见 D5/D6）**：`ReadinessAuditor(db_manager, config)` 两参数；`min_external_snapshot_coverage` 初版实现曾取全局 `0.0`（库内无外部快照表，降级为报告项），**该全局降级已被 D11 修正为策略级门禁**——全局默认 `0.95` + `required`，仅 `btc_eth_aggressive` 经 `per_strategy` 覆写为 `0.0` + `not_required_for_current_manifest`，`hrs` 保持 `0.95` + `required`。
 
 ```python
 # ai_tuner/readiness/models.py
