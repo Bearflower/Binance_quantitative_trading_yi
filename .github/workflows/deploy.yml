@@ -387,6 +387,7 @@ jobs:
             RESIDUAL_CANDIDATES="trading_system-postgres trading_system-hrs trading_system-btc_eth \
               trading_system-btc_eth_aggressive trading_system-new_coin trading_system-grid \
               trading_system-grid-realtime trading_system-aggtrade-collector \
+              trading_system-mtcps-xau-shadow \
               ai-tuner trading_system-kline trading_system-kline-monitor data-backend dashboard-api"
             if [ -z "$PROJECT_IDS" ]; then
               # 未取到本项目容器清单（compose 异常）时不删任何容器：

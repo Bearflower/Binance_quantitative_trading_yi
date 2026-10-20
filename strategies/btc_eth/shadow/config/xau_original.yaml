@@ -1,0 +1,476 @@
+# XAUUSDT MTCPS 原版影子 profile 冻结配置
+# 基线：btc_eth 原版 ETHUSDT（spec §5.2）
+# symbol_config 显式声明 XAUUSDT，禁止隐式回退
+# 叠加 pilot 外层资金约束（回放器读取），采集器不落 quantity
+# instance.execution_mode=shadow_batch 触发 parse_instance_config 强制关闭写路径
+
+instance:
+  id: "mtcps_xau_shadow"
+  execution_mode: "shadow_batch"
+  capital_strategy_id: ""
+  circuit_breaker_pool: ""
+  state_reporting_enabled: false
+  real_ordering_enabled: false
+  symbol: "XAUUSDT"
+  initial_virtual_equity_usdt: 300
+  profiles:
+    - xau_original
+    - xau_aggressive
+
+# 影子专属配置（采集器主流程读取，不进 BTCEthStrategy）
+shadow:
+  kline_intervals: ["1h", "4h", "1d"]
+  cron: "15 * * * *"               # 与生产 5 分/10 分错峰
+  run_id_prefix: "xau-shadow"
+
+# pilot 外层资金约束（回放期门槛输入，采集器不读）
+pilot:
+  max_single_position_margin_usdt: 30   # 最大单笔保证金 USDT（spec §5.2）
+  max_concurrent_positions: 1           # 最大并发持仓
+  max_leverage: 3                       # 最大杠杆 3x
+
+strategy:
+  name: mtcps_xau_original
+  version: "2.6.0-xau-shadow-original"
+  record_name: "mtcps_xau_shadow_original"   # 归属名（影子不写 trade_records，但解析函数需要）
+
+  symbols:
+    - XAUUSDT                          # 影子只采集这一个
+
+  position_sync:
+    min_position_amt: 0.00001
+
+  timeframes:
+    - 1h
+    - 4h
+    - 1d
+
+  schedule:
+    cron: "15 * * * *"
+
+  # 原版评分门槛（S:90/A:75/B:65/C:55，min_score=75）
+  scoring:
+    min_score: 75
+    grade_thresholds:
+      S: 90
+      A: 75
+      B: 65
+      C: 55
+    weights:
+      trend_strength: 0.25
+      pattern_quality: 0.50
+      momentum_divergence: 0.25
+    a_level_bonus:
+      rsi_low: 35
+      rsi_high: 65
+      bonus: 2
+    trend_strength:
+      base_score: 50
+      consistency_bonus: 15
+      dual_uptrend_bonus: 10
+      macd_positive_bonus: 10
+      macd_negative_penalty: -10
+      adx_strong_threshold: 25
+      adx_strong_bonus: 15
+      adx_medium_threshold: 20
+      adx_medium_bonus: 8
+    pattern_quality:
+      base_score: 50
+      bullish_engulfing_bonus: 20
+      bearish_engulfing_bonus: 20
+      breakout_pullback_bonus: 25
+      divergence_bonus: 30
+    breakout_pullback:
+      proximity_pct: 0.01
+    momentum_divergence:
+      base_score: 60
+      rsi_oversold: 30
+      rsi_overbought: 70
+      rsi_normal_bonus: 5
+      rsi_oversold_bonus: 20
+      rsi_overbought_penalty: -20
+      macd_hist_positive_bonus: 10
+      macd_hist_negative_penalty: -10
+      divergence_bonus: 15
+
+  # 显式声明 XAUUSDT 参数（spec §5.2 原版 ETH 基线）
+  symbol_config:
+    XAUUSDT:
+      adx_min: 35                     # ← 原版 ETH 基线
+      vol_ratio_base: {S: 1.8, A: 0, B: 0, C: 0}   # ← 原版 ETH 基线
+      atr_abs_min: 0.007              # ← 原版 ETH 基线 (0.7%)
+      atr_percentile: 50              # ← 原版 ETH 基线
+      atr_factor_strong: 0.8          # ← 原版 ETH 基线
+      s_min_score: 88                 # ← 原版 ETH 基线
+      max_daily_trades: 1             # ← 原版 ETH 基线
+      position_ratio_s: 0.50          # ← 原版 ETH 基线
+
+  # 风险控制（完整保留原版信号等级止盈止损）
+  risk:
+    signal_levels:
+      S:
+        stop_loss_atr_multiplier: 2.5
+        partial_take_profit:
+          tp1_atr_multiplier: 6.0
+          tp1_close_ratio: 0.30
+          tp2_atr_multiplier: 9.0
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 3.0
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.5
+              retrace_ratio: 0.0
+            - profit_ceiling: 4.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 8.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 96
+          close_ratio: 0.50
+          review_enabled: false
+          max_review_hours: 24
+
+      A:
+        stop_loss_atr_multiplier: 1.5
+        partial_take_profit:
+          tp1_atr_multiplier: 4.0
+          tp1_close_ratio: 0.30
+          tp2_atr_multiplier: 6.0
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 1.5
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.5
+              retrace_ratio: 0.0
+            - profit_ceiling: 4.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 8.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 72
+          close_ratio: 0.50
+          review_enabled: false
+          max_review_hours: 24
+
+      B:
+        stop_loss_atr_multiplier: 1.2
+        partial_take_profit:
+          tp1_atr_multiplier: 3.0
+          tp1_close_ratio: 0.30
+          tp2_atr_multiplier: 5.0
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 1.0
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.5
+              retrace_ratio: 0.0
+            - profit_ceiling: 3.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 6.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 48
+          close_ratio: 0.60
+          review_enabled: false
+          max_review_hours: 24
+
+      C:
+        stop_loss_atr_multiplier: 1.0
+        partial_take_profit:
+          tp1_atr_multiplier: 2.0
+          tp1_close_ratio: 0.30
+          tp2_atr_multiplier: 3.5
+          tp2_close_ratio: 0.40
+          remaining_ratio: 0.30
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 0.5
+            also_on_tp1: true
+          regression_tiers:
+            - profit_ceiling: 1.0
+              retrace_ratio: 0.0
+            - profit_ceiling: 2.0
+              retrace_ratio: 0.5
+            - profit_ceiling: 4.0
+              retrace_ratio: 0.35
+            - profit_ceiling: 999.0
+              retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 24
+          close_ratio: 0.80
+          review_enabled: false
+          max_review_hours: 24
+
+    max_position_size: 0.1
+    quantity_inference_eps_ratio: 0.005
+
+    close_limit_order:
+      enabled: true
+      timeout_seconds: 10
+      poll_interval_seconds: 2
+      max_retries: 3
+      retry_interval_seconds: 2
+      applicable_reasons: [TP1, TP2, TRAILING_STOP, TIME_STOP, STOP_LOSS, EXTREME, LIQUIDATION, LIQUIDATION_REDUCE]
+      micro_close:
+        trigger_multiplier_long: 2.0
+        trigger_multiplier_short: 0.5
+
+    stop_limit_order:
+      offset_pct: 0.002
+    tp_limit_order:
+      offset_pct: 0.0015
+
+    cleanup_silent_error_codes: [-2022, -2011]
+    cancel_retry:
+      max_retries: 10
+      retry_interval_cycles: 1
+      notify_on_timeout: true
+      max_cleanup_hours: 48
+      cleanup_timeout_seconds: 30
+      trade_lookup_window_minutes: 5
+
+    frequency_control:
+      max_daily_symbol_trades: 1
+      symbol_cooldown_hours: 72
+      consecutive_loss_pause: 2
+      pause_duration_hours: 24
+      max_daily_loss_usdt: 25
+      max_daily_loss_ratio: 0.05
+      initial_capital_usdt: 300
+      weekly_loss_pause_enabled: true
+      weekly_loss_max_ratio: 0.15
+      weekly_loss_pause_days: 3
+
+    position_sizing:
+      safety_margin_ratio: 0.10
+      min_margin_usdt: 30
+      max_single_position_usdt: 500
+      min_close_notional_usdt: 20
+      entry_order_timeout_seconds: 300
+
+    protection_retry:
+      max_retries: 3
+      retry_interval_cycles: 1
+      on_exhausted: "alert"
+      notify: true
+
+    trend_filter:
+      enabled: true
+      ema_slope_min: 0.0005
+      ema_slope_flat: 0.0003
+      ema_slope_window: 5
+      ema21_proximity_atr_mult: 1.5
+
+    prohibition:
+      atr_price_max: 0.045
+      atr_price_min: 0.010
+      kline_spike_6h_pct: 0.05
+      funding_rate_max_abs: 0.0005
+      daily_change_long_max: 0.25
+      daily_change_short_max: -0.20
+      spread_max: 0.003
+
+    dynamic_atr:
+      enabled: true
+      lookback_hours: 720
+      min_samples: 30
+      cache_ttl_seconds: 3600
+
+    dynamic_volume:
+      enabled: true
+      lookback_hours: 20
+      adx_strong_threshold: 25
+      adx_coefficient: 0.8
+      near_threshold_coefficient: 0.8
+      default_vol_ratio_base:
+        S: 1.4
+        A: 1.2
+        B: 0.0
+        C: 0.0
+
+    extreme_market:
+      reverse_pct: 0.05
+      close_ratio: 0.50
+      tighten_stop_atr: 1.0
+
+    liquidation_warning:
+      margin_ratio_reduce: 1.5
+      margin_ratio_close: 1.2
+      reduce_ratio: 0.50
+
+    position_management:
+      max_concurrent_positions: 1     # ← 原版 2，XAU 影子跟随 pilot 约束
+      volatility_target_risk: 200
+      volatility_target_min: 10
+      volatility_target_max: 800
+
+    # 市场状态识别
+    market_state:
+      enabled: true
+      fallback:
+        can_trade: true
+        min_grade: C
+        vol_boost: 0.0
+        position_ratio_mult: 1.0
+        stop_loss_atr: 0
+      strong_trend_adx: 35
+      strong_trend_bb_width: 0.07
+      strong_trend_price_change: 5.0
+      strong_trend_daily_slope: 0.15
+      behaviors:
+        STRONG_TREND:
+          can_trade: true
+          strategy_mode: trend
+          min_grade: S
+          vol_boost: 0.0
+          position_ratio_mult: 0.5
+          stop_loss_atr: 1.5
+          max_daily_trades: 2
+          ranging_symbol_cooldown_hours: 72
+        RANGING:
+          can_trade: true
+          strategy_mode: ranging
+          min_grade: B
+          vol_boost: 0.0
+          position_ratio_mult: 2.0
+          max_daily_trades: 3
+          ranging_symbol_cooldown_hours: 3
+
+    # 震荡市策略
+    ranging_strategy:
+      enabled: true
+      entry_conditions:
+        bb_touch: true
+        rsi_extreme: true
+        rsi_oversold: 25
+        rsi_overbought: 70
+        reversal_pattern: true
+      exit_conditions:
+        bb_mid_touch: true
+        bb_mid_min_distance_atr: 0.3
+        rsi_neutral_long: 55
+        rsi_neutral_short: 45
+        time_stop_hours: 24
+      risk:
+        stop_loss_atr: 2.0
+        take_profit_atr: 4.0
+      allowed_grades: ['S', 'A', 'B']
+      scoring_weights:
+        trend_strength: 0.15
+        pattern_quality: 0.60
+        momentum_divergence: 0.25
+      trend_filter:
+        strong_slope_atr_mult: 0.8
+      direction_alignment:
+        enabled: true
+        fast_ma: "EMA21"
+        slow_ma: "EMA55"
+        fallback_on_missing: false
+        stick_threshold_pct: 0.3
+      overheat_protection:
+        enabled: true
+        downgrade_enabled: true
+        bias_fast_downgrade_pct: 4.0
+        bias_fast_ban_pct: 6.0
+        bias_slow_downgrade_pct: 6.0
+        bias_slow_ban_pct: 9.0
+        rsi_extreme_long: 85
+        rsi_extreme_short: 15
+        rsi_warn_long: 75
+        rsi_warn_short: 25
+      volume_confirm:
+        enabled: true
+        shrink_ratio: 1.1
+      volatility_regime:
+        enabled: true
+        atr_long_period: 50
+        spike_ratio: 2.0
+        pause_bars: 12
+        pause_interval_hours: 4
+
+    economic_calendar:
+      enabled: true
+      ban_window_minutes: 60
+      events: []                      # 影子观察期可空
+
+    position_sizing:
+      total:
+        account_ratio_cap: 0.3
+
+trading:
+  total_position_margin_limit: 300   # 影子 300 USDT 总额度
+  min_position_margin: 5             # 最小 5 USDT
+
+capital_limits:
+  db_cache_ttl_seconds: 300
+  db_query_timeout_seconds: 3.0
+
+binance:
+  leverage:
+    S: 5
+    A: 4
+    B: 3
+    C: 2
+  position_ratio:
+    S: 0.50
+    A: 0.30
+    B: 0.15
+    C: 0.05
+  order_optimization:
+    use_limit_order: true
+    use_buy_one_price: true
+    use_sell_one_price: true
+
+notification:
+  enabled: false                     # 影子不发飞书（采集器走 structlog + 高优告警旁路）
+  levels:
+    - error
+
+ownership:
+  enabled: false                     # 影子不参与持仓归属互斥
+  competing_record_names: []
+  claim_ttl_minutes: 30
+  claim_cleanup_interval_minutes: 10
+  lock_timeout_seconds: 5
+
+decision_evidence:
+  enabled: false                     # 影子不采集决策证据旁路

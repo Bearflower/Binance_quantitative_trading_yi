@@ -51,6 +51,7 @@ from strategies.btc_eth.market_state import (
     get_market_state_behavior,
     MarketState
 )
+from shared.instance_config import parse_instance_config
 
 
 logger = structlog.get_logger()
@@ -602,7 +603,23 @@ class BTCEthStrategy:
         self.kline_service = kline_service
         self.notification = notification_client
         self.db_manager = db_manager
-        
+
+        # 实例配置解析（§1 实例参数化）
+        # 生产默认值必须与改动前行为完全一致，缺省仍为 btc_eth / live / mtpcs
+        self.instance = parse_instance_config(
+            config,
+            default_id="btc_eth",
+            default_execution_mode="live",
+            default_capital_strategy_id="btc_eth",
+            default_circuit_breaker_pool="mtpcs",
+            default_state_reporting_enabled=True,
+            default_real_ordering_enabled=True,
+        )
+        self.instance_id = self.instance.id
+        self.execution_mode = self.instance.execution_mode
+        self.state_reporting_enabled = self.instance.state_reporting_enabled
+        self.real_ordering_enabled = self.instance.real_ordering_enabled
+
         # 策略配置
         self.symbols = config['strategy']['symbols']
         self.timeframes = config['strategy']['timeframes']
@@ -610,12 +627,14 @@ class BTCEthStrategy:
         self.scoring_config = config['strategy']['scoring']
         self.symbol_config = config['strategy'].get('symbol_config', {})  # v6.16.10 币种差异化配置
         self.binance_config = config['binance']
-        
-        # 初始化频率控制器
+
+        # 初始化频率控制器（生产缺省仍为 "MTPCS策略"，影子不建此表）
+        # 影子实例可用 instance_id 派生，但生产必须保持不变
+        _freq_strategy_name = "MTPCS策略"
         self.frequency_controller = FrequencyController(
             self.risk_config['frequency_control'],
             db_manager=self.db_manager,
-            strategy_name="MTPCS策略"
+            strategy_name=_freq_strategy_name
         )
         
         # 初始化动态ATR过滤器（v6.16.10）
@@ -648,7 +667,8 @@ class BTCEthStrategy:
         self.positions: Dict[str, PositionState] = {}
         
         # 策略名称（v6.28：用于 record_condition_order 等数据库落库的 strategy_name 参数）
-        self.strategy_name = "btc_eth"
+        # §1 实例参数化：由 instance.id 注入，生产缺省仍为 btc_eth
+        self.strategy_name = self.instance.id
         
         # 交易对精度信息缓存
         self.symbol_precision: Dict[str, Dict] = {}
@@ -664,12 +684,13 @@ class BTCEthStrategy:
         self._cancel_lock = asyncio.Lock()
 
         # 资金分配管理器（方案 D：运行时读 DB 为主来源，config 为兜底；保证金口径）
-        # strategy_id=btc_eth：MTPCS 原版独立参与月度资金分配（激进版 btc_eth_aggressive 独立分配）
+        # §1 实例参数化：strategy_id 由 instance.capital_strategy_id 注入，
+        # 生产缺省仍为 btc_eth，影子实例可置空或独立值
         config_dir = os.path.dirname(os.path.abspath(__file__))
         self.capital_mgr = CapitalManager(
             os.path.join(config_dir, "config.yaml"),
             db=self.db_manager,
-            strategy_id="btc_eth",
+            strategy_id=self.instance.capital_strategy_id,
         )
         
         # 最小持仓量阈值（v6.23.1：从配置读取，禁止硬编码）
@@ -677,10 +698,11 @@ class BTCEthStrategy:
             config.get('strategy', {}).get('position_sync', {}).get('min_position_amt', 0.00001)
         )
 
-        # 组合级熔断器（池=mtpcs 固定池；enabled=false 时置 None，不拦截任何开仓）
+        # 组合级熔断器（§1 实例参数化：pool 由 instance.circuit_breaker_pool 注入，
+        # 生产缺省仍为 mtpcs；enabled=false 时置 None，不拦截任何开仓）
         cb_cfg = load_circuit_breaker_config()
         if cb_cfg.get("enabled"):
-            self.circuit_breaker = CircuitBreaker(cb_cfg, self.db_manager, pool="mtpcs")
+            self.circuit_breaker = CircuitBreaker(cb_cfg, self.db_manager, pool=self.instance.circuit_breaker_pool)
         else:
             self.circuit_breaker = None
 
@@ -710,85 +732,65 @@ class BTCEthStrategy:
         )
     
     async def analyze(self, symbol: str) -> Optional[Dict]:
-        """
-        分析市场数据，生成交易信号（v6.16.10）
-        
-        Args:
-            symbol: 交易对
-        
-        Returns:
-            分析结果字典
+        """分析市场数据，生成交易信号（v6.29：§3 拆分后编排版本）
+
+        编排顺序严格保持原 analyze() 调用顺序不变：
+          1. _check_stateful_execution_eligibility (pre_kline)   原 L732-761
+          2. 获取 klines + 校验                                    原 L763-779
+          3. _build_indicators                                    原 L781-782
+          4. market_state 识别                                    原 L784-816
+          5. _check_stateful_execution_eligibility (post_state)  原 L818-869
+          6. _analyze_stationary_signal (无状态市场决策)          原 L871-978 + L1024-1062
+          7. _calculate_position_size + 精度 + min_notional + 组装 原 L980-1022 + L1067-1085
+
+        影子采集器跳过 1/5/7，只调用 2-4 + 6（spec §7）。
         """
         logger.info(f"开始分析 {symbol}")
-        
-        # 初始化基础分析结果
+
         analysis_result = {
             'symbol': symbol,
             'score': 0,
             'grade': 'D',
             'reason': ''
         }
-        
+
         try:
-            # 1. 频率控制检查
             current_time = datetime.now()
-            can_trade, reason = self.frequency_controller.can_trade(symbol, current_time)
-            
+
+            # ---- 阶段一：K线前有状态前置检查（频率/经济日历/持仓浮亏） ----
+            can_trade, reason = await self._check_stateful_execution_eligibility(
+                symbol, current_time,
+            )
             if not can_trade:
-                logger.info(f"{symbol} 频率控制限制: {reason}")
-                analysis_result['reason'] = f"频率限制: {reason}"
+                analysis_result['reason'] = reason
                 return analysis_result
-            
-            # 1.1 经济日历检查（v6.16.10 新增，频率控制之后、K线之前）
-            eco_can_trade, eco_reason = self._check_economic_calendar(current_time)
-            if not eco_can_trade:
-                logger.info(f"{symbol} 经济日历禁止交易: {eco_reason}")
-                analysis_result['reason'] = f"经济日历: {eco_reason}"
-                return analysis_result
-            
-            # 1.2 亏损时禁止加仓检查（v6.16.10，v6.28 复用 _is_position_profitable）
-            if symbol in self.positions:
-                position = self.positions[symbol]
-                if position.current_quantity > 0:
-                    if not await self._is_position_profitable(symbol, position):
-                        logger.info(
-                            f"{symbol} 已有持仓浮亏，禁止加仓",
-                            direction=position.direction,
-                            entry_price=float(position.entry_price) if position.entry_price else None,
-                            grade=position.grade
-                        )
-                        analysis_result['reason'] = "已有持仓浮亏，禁止加仓"
-                        return analysis_result
-            
-            # 2. 获取多时间框架数据
+
+            # ---- 获取 klines + 校验 ----
             klines = await self.kline_service.get_multi_timeframe_data(
                 symbol=symbol,
                 intervals=self.timeframes
             )
-            
+
             if not klines or len(klines) == 0:
                 logger.warning(f"{symbol} 获取K线数据失败")
                 analysis_result['reason'] = "K线数据获取失败"
                 return analysis_result
-            
-            # 检查数据完整性
+
             for timeframe in self.timeframes:
                 if timeframe not in klines or not klines[timeframe]:
                     logger.warning(f"{symbol} {timeframe} K线数据不完整")
                     analysis_result['reason'] = f"{timeframe} K线数据不完整"
                     return analysis_result
-            
-            # 3. 计算技术指标
+
+            # ---- 计算技术指标 ----
             indicators = self._build_indicators(klines)
-            
-            # 3.5 市场状态识别（v6.18 激进收紧版）
+
+            # ---- 市场状态识别 + can_trade ----
             market_state_config = self.risk_config.get('market_state', {})
             market_state = None
+            market_state_name = 'RANGING'
             if market_state_config.get('enabled', True) and '4h' in klines:
-                # 提取4h收盘价用于计算价格变化
                 close_4h = pd.Series([float(k['close']) for k in klines['4h']])
-                # 补传日线指标：日线EMA21斜率判断强趋势市的必要条件，
-                # 漏传会导致 daily_slope 恒为0，强趋势市永远无法识别（v6.21.1 修复）
                 market_state, state_desc = get_market_state(
                     indicators['4h'],
                     close_prices=close_4h,
@@ -796,16 +798,16 @@ class BTCEthStrategy:
                     config=market_state_config
                 )
                 market_behavior = get_market_state_behavior(market_state, market_state_config)
-                
+                market_state_name = market_state.value if market_state else 'RANGING'
+
                 logger.info(f"{symbol} 市场状态: {state_desc}, 行为: {market_behavior}")
-                
+
                 # 震荡市：完全禁止开仓
                 if not market_behavior['can_trade']:
                     logger.info(f"{symbol} 震荡市，完全禁止开仓")
                     analysis_result['reason'] = f"市场状态: {state_desc}，禁止开仓"
                     return analysis_result
             else:
-                # 市场状态未启用或无4h数据，使用配置的 fallback 行为
                 fallback = market_state_config.get('fallback', {})
                 market_behavior = {
                     'can_trade': fallback.get('can_trade', True),
@@ -814,195 +816,51 @@ class BTCEthStrategy:
                     'position_ratio_mult': fallback.get('position_ratio_mult', 1.0),
                     'stop_loss_atr': fallback.get('stop_loss_atr', 0)
                 }
-            
-            # 3.6 v6.21：市场状态特定频率控制检查
-            market_state_name = market_state.value if market_state else 'RANGING'
-            symbol_cfg = self.symbol_config.get(symbol, {})
-            market_max_trades = market_behavior.get('max_daily_trades', 999)
-            today_str = current_time.date().isoformat()
-            # 全局每日交易数检查（使用全局计数器）
-            if today_str not in self.frequency_controller.daily_trades:
-                self.frequency_controller.daily_trades[today_str] = 0
-            if self.frequency_controller.daily_trades[today_str] >= market_max_trades:
-                logger.info(
-                    f"{symbol} 市场状态{market_state_name}已达每日最大交易数{market_max_trades}笔"
-                )
-                analysis_result['reason'] = f"频率限制: {market_state_name}已达每日最大交易数{market_max_trades}笔"
+
+            # ---- 阶段二：market_state 后有状态检查（每日交易数/冷却期） ----
+            can_trade, reason = await self._check_stateful_execution_eligibility(
+                symbol, current_time,
+                market_state_name=market_state_name,
+                market_behavior=market_behavior,
+            )
+            if not can_trade:
+                analysis_result['reason'] = reason
                 return analysis_result
-            # v6.21：per-symbol 震荡市每日交易数限制（使用 per-symbol 计数器，不阻塞其他币种）
-            if market_state_name == 'RANGING' and 'ranging_max_daily_trades' in symbol_cfg:
-                symbol_max_trades = symbol_cfg['ranging_max_daily_trades']
-                symbol_daily = self.frequency_controller.symbol_daily_trades.setdefault(symbol, {})
-                if today_str not in symbol_daily:
-                    symbol_daily[today_str] = 0
-                if symbol_daily[today_str] >= symbol_max_trades:
-                    logger.info(
-                        f"{symbol} 震荡市已达每日最大交易数{symbol_max_trades}笔"
-                    )
-                    analysis_result['reason'] = f"频率限制: {symbol}震荡市已达每日最大交易数{symbol_max_trades}笔"
-                    return analysis_result
-            
-            # 3.7 v6.22.1：市场状态特定冷却期检查（从 can_trade() 移至此处）
-            # 趋势市冷却期: 72h，震荡市冷却期: 3h
-            if symbol in self.frequency_controller.symbol_last_trade_time:
-                cooldown_hours = market_behavior.get('ranging_symbol_cooldown_hours', 72)
-                # v6.21：per-symbol 震荡市冷却期覆盖
-                if market_state_name == 'RANGING' and 'ranging_cooldown_hours' in symbol_cfg:
-                    cooldown_hours = symbol_cfg['ranging_cooldown_hours']
-                last_trade_time = self.frequency_controller.symbol_last_trade_time[symbol]
-                
-                # 处理时区问题
-                check_time = current_time
-                if last_trade_time.tzinfo is not None and check_time.tzinfo is None:
-                    last_trade_time = last_trade_time.replace(tzinfo=None)
-                elif last_trade_time.tzinfo is None and check_time.tzinfo is not None:
-                    check_time = check_time.replace(tzinfo=None)
-                
-                time_since_last = check_time - last_trade_time
-                if time_since_last < timedelta(hours=cooldown_hours):
-                    remaining = timedelta(hours=cooldown_hours) - time_since_last
-                    remaining_hours = remaining.seconds // 3600 + remaining.days * 24
-                    logger.info(
-                        f"{symbol} 冷却期中({market_state_name}市,冷却{cooldown_hours}h)，剩余{remaining_hours}小时"
-                    )
-                    analysis_result['reason'] = f"冷却期: {symbol}冷却期中({market_state_name}市)，剩余{remaining_hours}小时"
-                    return analysis_result
-            
-            # 3.8 v6.21：per-symbol 震荡市 ADX 下限检查
-            # 在 RANGING 模式下，对特定币种额外要求最低 ADX 值
-            if market_state_name == 'RANGING' and 'ranging_adx_min' in symbol_cfg:
-                adx_4h = indicators.get('4h', {}).get('ADX', pd.Series([0])).iloc[-1]
-                if pd.notna(adx_4h) and adx_4h < symbol_cfg['ranging_adx_min']:
-                    logger.info(
-                        f"{symbol} 震荡市ADX={float(adx_4h):.1f} < {symbol_cfg['ranging_adx_min']}，跳过"
-                    )
-                    analysis_result['reason'] = f"震荡市ADX不足: {float(adx_4h):.1f} < {symbol_cfg['ranging_adx_min']}"
-                    return analysis_result
-            
-            # 4. 入场检查（v6.22：根据市场状态分流）
-            strategy_mode = market_behavior.get('strategy_mode', 'trend')
-            if strategy_mode == 'ranging':
-                # 震荡市：使用反转入场条件
-                entry_pass, entry_result = self._check_ranging_entry(symbol, indicators, klines)
-                if not entry_pass:
-                    logger.info(f"{symbol} 震荡入场未通过: {entry_result}")
-                    analysis_result['reason'] = f"震荡入场: {entry_result}"
-                    return analysis_result
-                direction = entry_result  # 震荡市入场结果直接包含方向
-            else:
-                # 趋势市：使用趋势过滤器
-                trend_pass, trend_result = self._check_trend_filter(symbol, indicators, klines)
-                if not trend_pass:
-                    logger.info(f"{symbol} 趋势过滤未通过: {trend_result}")
-                    analysis_result['reason'] = f"趋势过滤: {trend_result}"
-                    return analysis_result
-                if trend_result:
-                    direction = trend_result
-                else:
-                    direction = self._determine_direction(indicators)
-            
-            # 5. 禁止入场条件检查（v6.16.10 新增）
-            allowed, prohibition_reason = await self._check_prohibited_conditions(symbol, klines)
-            if not allowed:
-                logger.info(f"{symbol} 禁止入场: {prohibition_reason}")
-                analysis_result['reason'] = f"禁止入场: {prohibition_reason}"
+
+            # ---- 阶段三：无状态市场决策 ----
+            stationary_components, reason = await self._analyze_stationary_signal(
+                symbol, klines, indicators, market_state_name, market_behavior,
+            )
+            if stationary_components is None:
+                analysis_result['reason'] = reason
                 return analysis_result
-            
-            # 6. 动态ATR过滤器（v6.16.10 新增）
-            current_price = Decimal(str(klines['1h'][-1]['close']))
-            atr = Decimal(str(indicators['1h']['ATR'].iloc[-1]))
-            
-            if self.atr_filter and self.atr_filter.enabled:
-                atr_pct = float(atr / current_price) * 100
-                self.atr_filter.update_history(symbol, float(atr), float(current_price))
-                
-                adx_1d = indicators.get('1d', {}).get('ADX', pd.Series([0])).iloc[-1]
-                if pd.isna(adx_1d) or adx_1d == 0:
-                    # 1d ADX不可用时（数据不足或过期）降级使用4h ADX
-                    adx_4h = indicators.get('4h', {}).get('ADX', pd.Series([0])).iloc[-1]
-                    if not pd.isna(adx_4h) and adx_4h > 0:
-                        adx_1d = adx_4h
-                        logger.debug(f"{symbol} 1d ADX不可用，降级使用4h ADX={float(adx_4h):.1f}")
-                should_filter, filter_reason = self.atr_filter.should_filter(
-                    symbol, atr_pct, float(adx_1d) if pd.notna(adx_1d) else 0
-                )
-                if should_filter:
-                    logger.info(f"{symbol} ATR过滤: {filter_reason}")
-                    analysis_result['reason'] = f"ATR过滤: {filter_reason}"
-                    return analysis_result
-            
-            # 7. 计算综合评分（v6.22：震荡市使用不同权重）
-            score = self._calculate_score(indicators, klines, market_state_name)
+
+            direction = stationary_components['direction']
+            grade = stationary_components['grade']
+            score = stationary_components['score']
             analysis_result['score'] = score
-            
-            if score < self.scoring_config['min_score']:
-                logger.info(
-                    f"{symbol} 评分 {score} < 最低评分 {self.scoring_config['min_score']}，跳过"
-                )
-                analysis_result['reason'] = f"评分 {score} < 最低评分 {self.scoring_config['min_score']}"
-                analysis_result['grade'] = self._determine_grade(score, symbol)
-                return analysis_result
-            
-            # 8. 确定信号等级（v6.16.10：币种差异化S级阈值）
-            grade = self._determine_grade(score, symbol)
-
-            # 8.0 v6.26：机制②轻度过热降级（仅震荡市路径，min_grade 过滤之前）
-            if strategy_mode == 'ranging':
-                grade = self._apply_overheat_downgrade(
-                    grade, direction, indicators, klines,
-                    self.risk_config.get('ranging_strategy', {})
-                )
-                if grade is None:
-                    # 降档后低于最低允许等级（C 再降即禁开）
-                    analysis_result['reason'] = "过热降级后低于最低允许等级，禁开"
-                    return analysis_result
-
             analysis_result['grade'] = grade
-            
-            # 8.1 市场状态等级过滤（v6.17）
-            min_grade = market_behavior.get('min_grade', 'C')
-            if self.GRADE_ORDER.get(grade, 3) > self.GRADE_ORDER.get(min_grade, 3):
-                logger.info(
-                    f"{symbol} 市场状态不允许{grade}级信号（最低{min_grade}）",
-                    market_state=market_state.value if market_state else 'RANGING'
-                )
-                analysis_result['reason'] = f"市场状态不允许{grade}级信号（最低{min_grade}）"
-                return analysis_result
-            
-            # 9. 动态成交量过滤器（v6.16.10 新增，v6.17 集成市场状态 vol_boost）
-            vol_boost = market_behavior.get('vol_boost', 0.0)
-            vol_pass, vol_reason = self._check_volume_filter(symbol, grade, klines, vol_boost)
-            if not vol_pass:
-                logger.info(f"{symbol} 成交量过滤: {vol_reason}")
-                analysis_result['reason'] = f"成交量过滤: {vol_reason}"
-                return analysis_result
-            
-            # 10. 计算动态仓位大小（v6.16.10：波动率目标 + 同时持仓限制）
+
+            # ---- 阶段四：有状态仓位计算 + 精度 ----
+            current_price = Decimal(str(klines['1h'][-1]['close']))
             position_size_usdt, fail_reason = await self._calculate_position_size(grade, current_price, symbol)
-            
+
             if position_size_usdt is None:
                 logger.warning(f"{symbol} 仓位计算失败: {fail_reason}")
                 analysis_result['reason'] = f"仓位计算失败: {fail_reason}"
                 return analysis_result
-            
-            # 10.0 用户决定：去掉市场状态仓位乘数（position_ratio_mult）对仓位大小的放大，
-            # 仓位大小仅由「分配额 × 等级比例」决定（见 _calculate_position_size）。
 
-            # 10.1 获取交易对精度信息
+            # 获取精度信息
             precision_info = await self._get_symbol_precision(symbol)
             step_size = precision_info.get('stepSize', '0.001')
             tick_size = precision_info.get('tickSize', Decimal('0.01'))
-            
-            # 10.2 将USDT金额转换为币的数量
+
             quantity = position_size_usdt / current_price
-            
-            # 10.3 调整数量精度
             quantity = self._adjust_quantity_precision(quantity, step_size)
-            
-            # 10.4 检查最小下单量
+
             min_notional = Decimal(precision_info.get('minNotional', '5'))
             actual_notional = quantity * current_price
-            
+
             if actual_notional < min_notional:
                 logger.warning(
                     f"{symbol} 下单金额不足最小要求",
@@ -1010,9 +868,11 @@ class BTCEthStrategy:
                     min_notional=float(min_notional),
                     quantity=float(quantity)
                 )
-                analysis_result['reason'] = f"下单金额 {float(actual_notional):.2f}U < 最小要求 {float(min_notional)}U"
+                analysis_result['reason'] = (
+                    f"下单金额 {float(actual_notional):.2f}U < 最小要求 {float(min_notional)}U"
+                )
                 return analysis_result
-            
+
             logger.info(
                 f"{symbol} 仓位计算完成",
                 position_size_usdt=float(position_size_usdt),
@@ -1020,48 +880,18 @@ class BTCEthStrategy:
                 current_price=float(current_price),
                 actual_notional=float(actual_notional)
             )
-            
-            # 11. 计算初始止损价格（v6.22：震荡市使用专用止损参数）
-            if strategy_mode == 'ranging':
-                ranging_risk = self.risk_config.get('ranging_strategy', {}).get('risk', {})
-                sl_atr_mult = ranging_risk.get('stop_loss_atr', 2.0)
-            else:
-                grade_risk = self._get_grade_risk(grade)
-                sl_atr_mult = grade_risk['stop_loss_atr_multiplier']
-            
-            if direction == 'LONG':
-                initial_stop_loss = current_price - atr * Decimal(str(sl_atr_mult))
-            else:
-                initial_stop_loss = current_price + atr * Decimal(str(sl_atr_mult))
-            
-            # 12. 计算限价单价格
-            limit_price = await self._get_optimized_price(symbol, direction)
-            
-            if limit_price:
-                limit_price = self._adjust_price_precision(limit_price, tick_size)
-            else:
-                limit_price = current_price
-            
-            # 13. 生成信号
+
+            # ---- 阶段五：组装最终 signal ----
             signal = {
                 'symbol': symbol,
-                'direction': direction,
-                'grade': grade,
-                'score': score,
-                'entry_price': limit_price,
-                'initial_stop_loss': initial_stop_loss,
-                'atr': atr,
+                **stationary_components,
                 'leverage': self.binance_config['leverage'][grade],
                 'position_size_usdt': position_size_usdt,
                 'quantity': quantity,
                 'position_ratio': self.binance_config['position_ratio'][grade],
                 'timestamp': current_time,
-                'market_state': market_state_name,  # v6.21：记录市场状态用于频率控制
-                'price_change_1h': compute_1h_return(klines['1h']),  # 组合级熔断单币轨：目标币自身 1h 涨幅
-                'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1, grade),
-                'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2, grade),
             }
-            
+
             logger.info(
                 f"{symbol} 生成交易信号",
                 direction=direction,
@@ -1073,9 +903,9 @@ class BTCEthStrategy:
                 tp1_price=float(signal['tp1_price']),
                 tp2_price=float(signal['tp2_price'])
             )
-            
+
             return signal
-            
+
         except Exception as e:
             logger.error(
                 f"{symbol} 分析失败",
@@ -1084,7 +914,274 @@ class BTCEthStrategy:
             )
             analysis_result['reason'] = f"执行异常: {str(e)}"
             return analysis_result
-    
+
+    # ------------------------------------------------------------------
+    # §3 analyze() 拆分：两个可独立调用的子边界
+    # ------------------------------------------------------------------
+
+    async def _check_stateful_execution_eligibility(
+        self,
+        symbol: str,
+        current_time: datetime,
+        *,
+        market_state_name: Optional[str] = None,
+        market_behavior: Optional[Dict] = None,
+    ) -> Tuple[bool, str]:
+        """有状态执行资格检查（§3.2，覆盖原 L732-761 + L818-869）
+
+        按传入参数的不同覆盖两段检查：
+        - 当 market_state_name=None 时，执行 K 线前的有状态前置检查：
+            频率控制（连续亏损暂停/日损/周损）、经济日历禁交易、
+            已有持仓浮亏禁加仓。
+        - 当 market_state_name/behavior 有值时，执行 market_state 后的
+          有状态检查：市场状态特定每日交易数、per-symbol 冷却期。
+
+        生产 analyze() 会两次调用本方法；影子采集器只调用无状态函数，
+        不调用本方法（有状态门槛在回放期按时间顺序施加，见 spec §7）。
+
+        Returns:
+            (can_trade: bool, reason: str)  reason 为空串表示通过
+        """
+        # ---- 阶段一：K线前有状态前置检查 ----
+        if market_state_name is None:
+            # 频率控制检查（连续亏损暂停/日损/周损）
+            can_trade, reason = self.frequency_controller.can_trade(symbol, current_time)
+            if not can_trade:
+                logger.info(f"{symbol} 频率控制限制: {reason}")
+                return False, f"频率限制: {reason}"
+
+            # 经济日历禁交易
+            eco_can_trade, eco_reason = self._check_economic_calendar(current_time)
+            if not eco_can_trade:
+                logger.info(f"{symbol} 经济日历禁止交易: {eco_reason}")
+                return False, f"经济日历: {eco_reason}"
+
+            # 已有持仓浮亏禁加仓
+            if symbol in self.positions:
+                position = self.positions[symbol]
+                if position.current_quantity > 0:
+                    if not await self._is_position_profitable(symbol, position):
+                        logger.info(
+                            f"{symbol} 已有持仓浮亏，禁止加仓",
+                            direction=position.direction,
+                            entry_price=float(position.entry_price) if position.entry_price else None,
+                            grade=position.grade,
+                        )
+                        return False, "已有持仓浮亏，禁止加仓"
+
+            return True, ""
+
+        # ---- 阶段二：market_state 后有状态检查 ----
+        assert market_state_behavior is not None, (
+            "market_state_behavior 必须与 market_state_name 同时提供"
+        )
+        symbol_cfg = self.symbol_config.get(symbol, {})
+        today_str = current_time.date().isoformat()
+
+        # 市场状态特定频率控制：全局每日交易数
+        market_max_trades = market_state_behavior.get('max_daily_trades', 999)
+        if today_str not in self.frequency_controller.daily_trades:
+            self.frequency_controller.daily_trades[today_str] = 0
+        if self.frequency_controller.daily_trades[today_str] >= market_max_trades:
+            logger.info(
+                f"{symbol} 市场状态{market_state_name}已达每日最大交易数{market_max_trades}笔"
+            )
+            return False, (
+                f"频率限制: {market_state_name}已达每日最大交易数{market_max_trades}笔"
+            )
+
+        # per-symbol 震荡市每日交易数限制
+        if market_state_name == 'RANGING' and 'ranging_max_daily_trades' in symbol_cfg:
+            symbol_max_trades = symbol_cfg['ranging_max_daily_trades']
+            symbol_daily = self.frequency_controller.symbol_daily_trades.setdefault(symbol, {})
+            if today_str not in symbol_daily:
+                symbol_daily[today_str] = 0
+            if symbol_daily[today_str] >= symbol_max_trades:
+                logger.info(
+                    f"{symbol} 震荡市已达每日最大交易数{symbol_max_trades}笔"
+                )
+                return False, (
+                    f"频率限制: {symbol}震荡市已达每日最大交易数{symbol_max_trades}笔"
+                )
+
+        # 市场状态特定冷却期检查
+        if symbol in self.frequency_controller.symbol_last_trade_time:
+            cooldown_hours = market_state_behavior.get('ranging_symbol_cooldown_hours', 72)
+            if market_state_name == 'RANGING' and 'ranging_cooldown_hours' in symbol_cfg:
+                cooldown_hours = symbol_cfg['ranging_cooldown_hours']
+            last_trade_time = self.frequency_controller.symbol_last_trade_time[symbol]
+
+            check_time = current_time
+            if last_trade_time.tzinfo is not None and check_time.tzinfo is None:
+                last_trade_time = last_trade_time.replace(tzinfo=None)
+            elif last_trade_time.tzinfo is None and check_time.tzinfo is not None:
+                check_time = check_time.replace(tzinfo=None)
+
+            time_since_last = check_time - last_trade_time
+            if time_since_last < timedelta(hours=cooldown_hours):
+                remaining = timedelta(hours=cooldown_hours) - time_since_last
+                remaining_hours = remaining.seconds // 3600 + remaining.days * 24
+                logger.info(
+                    f"{symbol} 冷却期中({market_state_name}市,冷却{cooldown_hours}h)，剩余{remaining_hours}小时"
+                )
+                return False, (
+                    f"冷却期: {symbol}冷却期中({market_state_name}市)，剩余{remaining_hours}小时"
+                )
+
+        return True, ""
+
+    async def _analyze_stationary_signal(
+        self,
+        symbol: str,
+        klines: Dict,
+        indicators: Dict,
+        market_state_name: str,
+        market_behavior: Dict,
+    ) -> Tuple[Optional[Dict], str]:
+        """无状态市场决策（§3.2，覆盖原 L882-978 + L1024-1062）
+
+        纯由 klines + indicators + config 决定，不读取 self.positions / capital_mgr /
+        frequency_controller，不包含资金字段（quantity/leverage/position_ratio）。
+
+        影子采集器只调用本方法和 market_state 识别，不调用有状态函数。
+
+        Returns:
+            (signal_components_or_None, reason: str)
+            - signal_components 含 direction/grade/score/entry_price/initial_stop_loss/
+              tp1_price/tp2_price/atr/market_state/price_change_1h
+            - reason 为空串表示成立；否则表示不成立原因（含日志）
+        """
+        # 3.8 震荡市 ADX 下限检查
+        current_price = Decimal(str(klines['1h'][-1]['close']))
+        if market_state_name == 'RANGING' and 'ranging_adx_min' in self.symbol_config.get(symbol, {}):
+            adx_4h = indicators.get('4h', {}).get('ADX', pd.Series([0])).iloc[-1]
+            if pd.notna(adx_4h) and adx_4h < self.symbol_config[symbol]['ranging_adx_min']:
+                logger.info(
+                    f"{symbol} 震荡市ADX={float(adx_4h):.1f} < {self.symbol_config[symbol]['ranging_adx_min']}，跳过"
+                )
+                return None, f"震荡市ADX不足: {float(adx_4h):.1f} < {self.symbol_config[symbol]['ranging_adx_min']}"
+
+        # 4. 入场检查（v6.22：根据市场状态分流）
+        atr = Decimal(str(indicators['1h']['ATR'].iloc[-1]))
+        strategy_mode = market_behavior.get('strategy_mode', 'trend')
+        if strategy_mode == 'ranging':
+            # 震荡市：使用反转入场条件
+            entry_pass, entry_result = self._check_ranging_entry(symbol, indicators, klines)
+            if not entry_pass:
+                logger.info(f"{symbol} 震荡入场未通过: {entry_result}")
+                return None, f"震荡入场: {entry_result}"
+            direction = entry_result
+        else:
+            # 趋势市：使用趋势过滤器
+            trend_pass, trend_result = self._check_trend_filter(symbol, indicators, klines)
+            if not trend_pass:
+                logger.info(f"{symbol} 趋势过滤未通过: {trend_result}")
+                return None, f"趋势过滤: {trend_result}"
+            if trend_result:
+                direction = trend_result
+            else:
+                direction = self._determine_direction(indicators)
+
+        # 5. 禁止入场条件检查
+        allowed, prohibition_reason = await self._check_prohibited_conditions(symbol, klines)
+        if not allowed:
+            logger.info(f"{symbol} 禁止入场: {prohibition_reason}")
+            return None, f"禁止入场: {prohibition_reason}"
+
+        # 6. 动态ATR过滤器
+        if self.atr_filter and self.atr_filter.enabled:
+            atr_pct = float(atr / current_price) * 100
+            self.atr_filter.update_history(symbol, float(atr), float(current_price))
+
+            adx_1d = indicators.get('1d', {}).get('ADX', pd.Series([0])).iloc[-1]
+            if pd.isna(adx_1d) or adx_1d == 0:
+                adx_4h = indicators.get('4h', {}).get('ADX', pd.Series([0])).iloc[-1]
+                if not pd.isna(adx_4h) and adx_4h > 0:
+                    adx_1d = adx_4h
+                    logger.debug(f"{symbol} 1d ADX不可用，降级使用4h ADX={float(adx_4h):.1f}")
+            should_filter, filter_reason = self.atr_filter.should_filter(
+                symbol, atr_pct, float(adx_1d) if pd.notna(adx_1d) else 0
+            )
+            if should_filter:
+                logger.info(f"{symbol} ATR过滤: {filter_reason}")
+                return None, f"ATR过滤: {filter_reason}"
+
+        # 7. 计算综合评分
+        score = self._calculate_score(indicators, klines, market_state_name)
+
+        if score < self.scoring_config['min_score']:
+            logger.info(
+                f"{symbol} 评分 {score} < 最低评分 {self.scoring_config['min_score']}，跳过"
+            )
+            grade = self._determine_grade(score, symbol)
+            return None, (
+                f"评分 {score} < 最低评分 {self.scoring_config['min_score']}"
+            )
+
+        # 8. 确定信号等级
+        grade = self._determine_grade(score, symbol)
+
+        # 8.0 v6.26：机制②轻度过热降级（仅震荡市路径）
+        if strategy_mode == 'ranging':
+            grade = self._apply_overheat_downgrade(
+                grade, direction, indicators, klines,
+                self.risk_config.get('ranging_strategy', {})
+            )
+            if grade is None:
+                return None, "过热降级后低于最低允许等级，禁开"
+
+        # 8.1 市场状态等级过滤
+        min_grade = market_behavior.get('min_grade', 'C')
+        if self.GRADE_ORDER.get(grade, 3) > self.GRADE_ORDER.get(min_grade, 3):
+            logger.info(
+                f"{symbol} 市场状态不允许{grade}级信号（最低{min_grade}）",
+                market_state=market_state_name,
+            )
+            return None, f"市场状态不允许{grade}级信号（最低{min_grade}）"
+
+        # 9. 动态成交量过滤器
+        vol_boost = market_behavior.get('vol_boost', 0.0)
+        vol_pass, vol_reason = self._check_volume_filter(symbol, grade, klines, vol_boost)
+        if not vol_pass:
+            logger.info(f"{symbol} 成交量过滤: {vol_reason}")
+            return None, f"成交量过滤: {vol_reason}"
+
+        # ---- L1024-1062: 止损/TP/entry 组装（无状态） ----
+        if strategy_mode == 'ranging':
+            ranging_risk = self.risk_config.get('ranging_strategy', {}).get('risk', {})
+            sl_atr_mult = ranging_risk.get('stop_loss_atr', 2.0)
+        else:
+            grade_risk = self._get_grade_risk(grade)
+            sl_atr_mult = grade_risk['stop_loss_atr_multiplier']
+
+        if direction == 'LONG':
+            initial_stop_loss = current_price - atr * Decimal(str(sl_atr_mult))
+        else:
+            initial_stop_loss = current_price + atr * Decimal(str(sl_atr_mult))
+
+        # 计算限价单价格
+        limit_price = await self._get_optimized_price(symbol, direction)
+        if limit_price:
+            precision_info = await self._get_symbol_precision(symbol)
+            tick_size = precision_info.get('tickSize', Decimal('0.01'))
+            limit_price = self._adjust_price_precision(limit_price, tick_size)
+        else:
+            limit_price = current_price
+
+        # 返回不含资金字段的 signal 组件
+        return {
+            'direction': direction,
+            'grade': grade,
+            'score': score,
+            'entry_price': limit_price,
+            'initial_stop_loss': initial_stop_loss,
+            'atr': atr,
+            'market_state': market_state_name,
+            'price_change_1h': compute_1h_return(klines['1h']),
+            'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1, grade),
+            'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2, grade),
+        }, ""
+
     def _calculate_score(self, indicators: Dict, klines: Dict, market_state: str = 'STRONG_TREND') -> float:
         """
         计算综合评分（v6.22：震荡市使用不同权重）

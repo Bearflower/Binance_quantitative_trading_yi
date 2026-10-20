@@ -14,6 +14,7 @@
 | 数据看板 | — | dashboard | 交易数据可视化，http://43.156.242.184/ |
 | K线服务 | — | `kline-service` | 独立部署，为所有策略提供 K 线数据 |
 | K线监控 | — | `kline-monitor` | K 线数据健康监控（部署后容易遗漏，必须确认） |
+| MTCPS XAU 影子采集 | — | `mtcps-xau-shadow` | XAUUSDT 影子仿真 + 本地回放 + 小资金 pilot 通道；复用 btc-eth 镜像，只读不交易，仅写 `research` schema |
 
 **生产服务器**：`43.156.242.184`（root，SSH 密钥 `/Users/yl/vscode/inspection_automation/docs/only.pem`）
 
@@ -21,6 +22,7 @@
 
 ```
 ├── strategies/           # 策略模块（btc_eth / grid / new_coin / hrs）
+│   └── btc_eth/shadow/   # XAUUSDT 影子采集器（只读决策落库 research schema）
 ├── shared/               # 共享核心模块（所有容器共用，改动必重建全部策略容器）
 │   ├── base_strategy.py  # 策略基类
 │   ├── binance_api.py    # Binance API 客户端
@@ -28,11 +30,14 @@
 │   ├── database.py       # 数据库服务（PostgreSQL）
 │   ├── kline_service.py  # K线服务客户端
 │   ├── notification.py   # 飞书通知
+│   ├── instance_config.py    # 实例参数化（INSTANCE_ID / EXECUTION_MODE / CAPITAL_STRATEGY_ID 等）
+│   ├── readonly_client.py    # 影子只读安全边界（写接口 fail-closed）
 │   └── trade_logger.py   # 统一交易记录器（自动记录到 trading.trade_records）
 ├── ai_tuner/             # StratTuneAI 多策略 AI 调优系统
 ├── dashboard/            # 数据可视化看板
 ├── services/             # kline_service / kline_monitor
 ├── backtest/             # 回测代码（仅本地执行，不部署）
+│   └── btc_eth/replay/   # XAU 影子确定性回放引擎（本地运行，产出对比报告）
 ├── database/             # 数据库初始化脚本
 ├── docs/                 # 项目文档（plans/architecture/deployment/reports/handoffs/...）
 ├── scripts/              # 运维脚本（含 check_code_sync.sh）
@@ -57,6 +62,7 @@
 3. **已知坑**：PostgreSQL 容器命名冲突会让 `set -e` 中断部署脚本，导致后面的服务（如 kline-monitor）不会被启动——部署后必须 `docker ps` 确认**所有**服务在运行
 4. 一键部署入口：**push main → GitHub Actions 自动构建 + GHCR + SSH 部署**（见 `.trae/rules/deployment.md`），不再手动打包
 5. **残留清理口径**：服务器侧只移除不属于本 compose 项目的独立 `docker run` 残留，本项目容器交由 `docker compose up -d` 增量 recreate（避免每次部署全量停机）
+6. **影子容器（`mtcps-xau-shadow`）**：复用 `ghcr.io/bearflower/trading-btc-eth:latest` 镜像、仅换 `command` 为 shadow 入口，**不新增镜像、不参与生产交易、不参与资金分配/熔断、不进看板、不写 `trading.*` 与交易记录**，仅写 `research` schema；`docker compose stop mtcps-xau-shadow` 即回退，不影响生产实例
 
 ## 数据库
 

@@ -193,11 +193,11 @@ async def run_strategy():
                             margin_dict, qty_dict = await filter_owned_positions(
                                 strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
                             )
-                            if positions:
-                                await save_strategy_state(strategy.db_manager, "btc_eth_aggressive", positions)
+                            if positions and strategy.state_reporting_enabled:
+                                await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
                                 # 同步当前持仓到看板聚合表（口径由策略侧计算，工具内部容错）
                                 await sync_open_positions(
-                                    strategy.db_manager, "btc_eth_aggressive", margin_dict, qty_dict
+                                    strategy.db_manager, strategy.instance_id, margin_dict, qty_dict
                                 )
                         else:
                             # 未执行成功的区分：预期内的拒绝/未成交（skip_reason 或资金拦截 reject_reason）
@@ -308,7 +308,7 @@ async def run_strategy():
                     await notification_client.send(
                         message=summary_message,
                         level="info",
-                        project="btc_eth_aggressive"
+                        project=strategy.instance_id
                     )
                     break
                 except Exception as e:
@@ -323,8 +323,9 @@ async def run_strategy():
             margin_dict, qty_dict = await filter_owned_positions(
                 strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
             )
-            await save_strategy_state(strategy.db_manager, "btc_eth_aggressive", positions)
-            await sync_open_positions(strategy.db_manager, "btc_eth_aggressive", margin_dict, qty_dict)
+            if strategy.state_reporting_enabled:
+                await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
+                await sync_open_positions(strategy.db_manager, strategy.instance_id, margin_dict, qty_dict)
 
     except Exception as e:
         logger.error(
@@ -396,7 +397,7 @@ async def send_daily_report():
             await notification_client.send(
                 message=report_message,
                 level="info",
-                project="btc_eth_aggressive"
+                project=strategy.instance_id
             )
             
             logger.info("MTPCS激进版策略日报发送成功")

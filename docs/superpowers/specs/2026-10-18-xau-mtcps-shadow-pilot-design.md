@@ -2,7 +2,7 @@
 
 **日期**：2026-10-18
 
-**状态**：审查决策已纳入，待用户最终批准
+**状态**：已复核并获批（2026-10-18 用户确认 P1–P4 口径），进入开发实施阶段
 
 **目标品种**：`XAUUSDT` Binance USDⓈ-M TradFi 黄金永续合约
 
@@ -145,6 +145,8 @@ profiles:
 
 候选配置在观察周期开始时冻结。每条决策事件记录 `config_hash` 和 `git_commit`；中途修改配置必须开启新的 `run_id`，不得与旧样本混算。
 
+> 注（实施阶段核实项）：最大杠杆 3x 可由配置表达（`strategies/btc_eth/config.yaml` 存在按信号等级的 `leverage` 配置项）；但「最大单笔保证金 30 USDT」上限是否需要新增独立配置键尚待实施核实（现有相关口径为 `trading.total_position_margin_limit: 210` 的总额约束）。标注为「实施阶段核实项」，不得写成已确认结论。
+
 ## 6. 影子采集数据模型
 
 ### 6.1 `research.shadow_runs`
@@ -201,6 +203,8 @@ profiles:
 - 退出原因
 - 回放引擎版本和输入数据截止时间
 
+**补充说明**：`research` schema 的 DDL 通过新增 `database/postgres/init-scripts/12-research-schema.sql` 建立（幂等 `CREATE SCHEMA IF NOT EXISTS research` + `CREATE TABLE/INDEX IF NOT EXISTS` + `GRANT` 给 `trading_user`，与既有 01–11 脚本同风格、自包含、无 BEGIN/COMMIT）；该文件由 CI deploy 的「同步 init-scripts + 幂等执行」步骤自动在服务器生效，不需要手工 psql 迁移。
+
 ## 7. 决策采集流程
 
 ```text
@@ -215,6 +219,8 @@ profiles:
 采集阶段不应用现有真实持仓、真实成交或真实频率状态过滤候选信号。可能依赖持仓、冷却期、每日交易次数或资金占用的有状态执行门槛，在批量回放时按时间顺序统一施加。
 
 为避免改变生产 `analyze()` 语义，实施时需把“无状态市场决策”与“有状态执行资格检查”拆成可单独调用的边界。生产主流程仍按原顺序调用两者。
+
+采集期 `decision='candidate'` 的语义是「无状态市场信号成立」，与执行门槛无关；有状态门槛（每日交易次数、单品种冷却期、持仓/加仓限制、资金占用、组合熔断）只在回放期按时间顺序施加，采集期不读取、不落任何门槛状态；回放期被门槛拒绝的候选仍永久保留并记结构化 `rejection_reason`。
 
 ## 8. 批量回放规则
 
@@ -252,8 +258,19 @@ profiles:
 - 同一根 1m K 线同时穿越止损和止盈且无法从更细数据判断顺序时，采用保守的“止损先发生”口径。
 - 准入主口径对所有成交保守地按 taker 每边 5 bps 计算手续费。如能取得账户当期可审计费率，可在报告中增加“实际费率口径”，但不替代保守准入口径。
 - 资金费使用实际历史费率和持仓跨越的结算时点计算。
-- 滑点基准固定为每边 2 bps；额外输出每边 1 bps、2 bps、4 bps 三档压力测试。限价挂单在成交判定中不额外加入场滑点，但其退出仍按对应压力档计算。
+- 滑点基准固定为每边 2 bps；额外输出每边 1 bps、2 bps、4 bps 三档压力测试（**三档为各自独立的每边绝对档位，非在基准之上叠加**，见 §8.5）。限价挂单在成交判定中不额外加入场滑点，但其退出仍按对应压力档计算。
 - 非活跃时段和传统市场活跃时段分组统计，不将两者只汇总为一个数字。
+
+### 8.5 回放口径实施裁定（2026-10-19）
+
+本节记入实施阶段由架构师 + 用户联合裁定的 4 项口径（对应修复设计 [2026-10-19-xau-replay-fix-design.md](../plans/2026-10-19-xau-replay-fix-design.md) §11），用于消除 §8.4 与采集期语义的待定项：
+
+1. **移动止损触发即全平**：回放中 `dynamic_trailing` 触发时平掉剩余全部持仓（`close_ratio = 1.0`），退出原因统一记 `TRAILING_STOP`，平仓价取触发时的停止价（保守，不用 K 线收盘价）。生产侧「平尾仓」行为在本期回放中以**简化模型**标注（报告元数据 `trailing_flat_close: true`），不追求与生产逐笔一致。
+2. **滑点三档为独立绝对档位**：§8.4 的每边 1 / 2 / 4 bps 三档各自独立取值，不在基准 2 bps 之上累加；报告逐档输出压力结果。准入门槛第 ⑦ 项维持「2× 基准滑点压力」（= 每边 4 bps），键名 `no_capital_preservation_breach_at_2x_slippage` 不变。
+3. **`analysis_success_rate` 口径**：分母 = 该 profile 的调度次数（决策事件条数 `n_scheduled`）；分子 = `decision != "analysis_error"` 的条数（即 `n_candidates + n_no_signal`）。候选信号数 `n_candidates = decision == "candidate"` 单独输出。
+4. **`vol_adj` 本期降级取 1.0**：快照仅 30 天 1m，无法确定性重算生产所需约 44 天日线 ATR 中位数；本期从回放 config `trailing.volatility_adjustment_override` 读取中性值 1.0（**禁止硬编码**），与生产数据不足时的 fallback 一致；报告标注 `vol_adj_fallback_used: true, vol_adj_value: 1.0`。
+
+> 说明：以上为实施阶段裁定，回写本 spec 以消除 §8.4 滑点档位口径歧义；不改变生产 `strategies/` 任何代码。
 
 ## 9. 观察周期与样本要求
 
@@ -269,7 +286,7 @@ profiles:
 
 每个 profile 分别输出：
 
-- 调度次数、分析成功率、候选信号数
+- 调度次数、分析成功率（口径见 §8.5）、候选信号数
 - 虚拟订单数、成交率、未成交原因
 - 执行门槛拒绝原因分布
 - 总盈亏、手续费、资金费、滑点、净盈亏
@@ -312,6 +329,8 @@ profiles:
 - 最大杠杆：3x。
 - 下单数量还必须满足当时 XAUUSDT 交易规则。
 - 计划单笔止损金额控制在 3–5 USDT；若根据止损距离反推的仓位超过 30 USDT 保证金上限，以 30 USDT 为准。
+
+> 注（实施阶段核实项）：最大杠杆 3x 可由配置表达（`strategies/btc_eth/config.yaml` 存在按信号等级的 `leverage` 配置项）；但「最大单笔保证金 30 USDT」上限是否需要新增独立配置键尚待实施核实（现有相关口径为 `trading.total_position_margin_limit: 210` 的总额约束）。标注为「实施阶段核实项」，不得写成已确认结论。
 
 ### 11.2 亏损分级
 
@@ -386,6 +405,9 @@ profiles:
 - 停止和回退影子阶段只需停用该 service；无需修改现有交易对池或清理真实持仓。
 - 生产服务器只运行影子决策采集和事件导出，不运行批量回放或基线历史回测。
 - 本地回放命令需显式指定决策事件导出文件和市场快照 manifest；默认不连接生产数据库。
+- **配置隔离**：影子实例的 profile 配置使用独立 bind-mount 配置文件（生产 btc_eth / btc_eth_aggressive 的 `config.yaml` 是打进镜像的，仅 hrs 走挂载），与生产配置文件物理隔离，禁止直接读写或改写生产 `config.yaml`；镜像内保留生产默认配置，影子容器通过挂载覆盖为 XAU 专用配置。
+- **容器形态**：影子容器复用现有 `ghcr.io/bearflower/trading-btc-eth:latest` 镜像，仅替换启动 `command`（与现有 `grid-realtime` 影子服务同一做法，见 `docker-compose.yml` 的 grid-realtime 服务）；因此不新增镜像、不修改 GitHub Actions 构建矩阵条目；影子入口代码放在 `strategies/btc_eth/shadow/`（已被 btc_eth Dockerfile 的 `COPY strategies/btc_eth/` 覆盖）。
+- **数据库写入者**：影子容器以 `trading_user` 连接，只写 `research` schema，禁止写 `trading.*`、生产策略 schema 与看板聚合表。
 
 ### 14.2 实盘 pilot 阶段
 
@@ -407,13 +429,14 @@ profiles:
 
 ## 16. 实施顺序
 
-1. 先参数化 MTCPS 实例身份和执行模式，并用回归测试锁定现有两个生产实例的默认行为。
-2. 建立只读 Binance 安全边界。
-3. 拆分无状态市场决策和有状态执行资格检查。
-4. 建立 `research` schema 和幂等决策事件写入。
-5. 增加 original / aggressive 两个冻结 profile 和 XAUUSDT 显式配置。
-6. 实现确定性批量回放器和对比报告。
-7. 实现本地市场数据拉取、不可变快照和 manifest 校验，然后在本地用历史数据跑基线回测和安全验收。
-8. 部署影子实例，开始最长 8 周的前向观察。
-9. 达到时间和样本门槛后生成准入报告。
-10. 只在候选版本通过准入且用户确认后，再单独设计和启用 `mtcps_xau_pilot` 实盘服务。
+1. 行情侧前置：把 XAUUSDT 注册进 kline-service 动态标的并按 §4.4 采集 1h/4h/1d（不新增 1m 常驻采集），确认决策输入可用。
+2. 先参数化 MTCPS 实例身份和执行模式，并用回归测试锁定现有两个生产实例的默认行为。
+3. 建立只读 Binance 安全边界。
+4. 拆分无状态市场决策和有状态执行资格检查。
+5. 建立 `research` schema 和幂等决策事件写入。
+6. 增加 original / aggressive 两个冻结 profile 和 XAUUSDT 显式配置。
+7. 实现确定性批量回放器和对比报告。
+8. 实现本地市场数据拉取、不可变快照和 manifest 校验，然后在本地用历史数据跑基线回测和安全验收。
+9. 部署影子实例，开始最长 8 周的前向观察。
+10. 达到时间和样本门槛后生成准入报告。
+11. 只在候选版本通过准入且用户确认后，再单独设计和启用 `mtcps_xau_pilot` 实盘服务。
