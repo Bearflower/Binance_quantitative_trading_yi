@@ -147,8 +147,11 @@ services:
   # MTCPS XAUUSDT 影子采集服务（只读、不交易）
   # 复用 ghcr.io/bearflower/trading-btc-eth 镜像，仅换启动命令
   # 隔离三条：
-  #   1) 独立 bind-mount config（./strategies/btc_eth/shadow/config → /app/.../shadow/config:ro）
-  #      与生产 btc_eth/config.yaml 物理隔离，影子 profile 配置改动不影响生产
+  #   1) 影子 profile 配置随镜像烘焙（Dockerfile 用 COPY strategies/btc_eth/ → /app/strategies/btc_eth/），
+  #      位于独立子目录 strategies/btc_eth/shadow/config/（xau_original.yaml / xau_aggressive.yaml），
+  #      与生产 strategies/btc_eth/config.yaml 物理隔离；**不再使用宿主 bind mount**——
+  #      宿主目录缺失会被 Docker 自动创建为空目录并遮蔽镜像内烘焙的配置文件，
+  #      曾导致 2026-10 crash-loop（容器内找不到 xau_original.yaml）
   #   2) DATABASE_URL 走 schema=research，且 main.py 里 repository.py 全硬 research. 前缀
   #      绝不写 trading.*
   #   3) environment 强制 execution_mode=shadow_batch + real_ordering_enabled=false +
@@ -176,7 +179,6 @@ services:
     volumes:
       - ./logs/mtcps_xau_shadow:/app/logs
       - ./data/mtcps_xau_shadow:/app/data
-      - ./strategies/btc_eth/shadow/config:/app/strategies/btc_eth/shadow/config:ro
     networks:
       - trading-network
     depends_on:
