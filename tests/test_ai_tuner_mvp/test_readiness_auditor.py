@@ -572,3 +572,201 @@ class TestPerStrategySnapshotGate:
         assert hrs.external_snapshot_requirement == "required"
         assert hrs.external_snapshot_reason == "required_historical_external_snapshots_missing"
         assert any("required_historical_external_snapshots_missing" in f for f in hrs.failures)
+
+
+# ===========================================================================
+# MTPCS 信号持久化审计口径：cancelled 不计入 effective_signals
+# ===========================================================================
+
+
+class TestEffectiveSignalsExcludesCancelled:
+    """验证 _query_signal_count 按 strategy_id 查表决定是否追加 status 过滤：
+
+    - btc_eth_aggressive 已声明 → AND status IN ('pending','executed') 生效
+    - hrs 未声明 → 保持纯 COUNT(*)（hrs 状态域 triggered/executed/timeout/conflict，
+      与 MTPCS 系口径不同，本次不改）
+    - K 线覆盖调用方 → extra_condition 空串，SQL 不变
+
+    FakeDB 路由键为纯子串匹配（见 conftest.FakeDB._match）：
+    aggressive SQL 含 FROM btc_eth_aggressive.trade_signals + status IN (...) → 命中
+    hrs SQL  含 FROM hrs.hrs_signals（无 status IN）→ 命中
+    K 线 SQL 含 FROM btc_eth.kline_btcusdt_1h → 命中
+    """
+
+    async def test_aggressive_signal_count_sql_contains_status_filter(self, config, as_of):
+        """aggressive 已声明 effective_signal_statuses → SQL 必须含
+        AND status IN ('pending','executed')"""
+        custom_db = FakeDB()
+        await ReadinessAuditor(custom_db, config).run(as_of=as_of)
+        signal_sqls = [
+            s for s in custom_db.sql_log
+            if "FROM btc_eth_aggressive.trade_signals" in s
+        ]
+        assert signal_sqls, "应至少有一条 aggressive 信号计数 SQL"
+        for sql in signal_sqls:
+            assert "status IN ('pending','executed')" in sql, (
+                f"aggressive 信号计数 SQL 应含 status 过滤，实际: {sql}"
+            )
+
+    async def test_hrs_signal_count_sql_does_not_contain_status_filter(self, config, as_of):
+        """hrs 未声明 effective_signal_statuses → SQL 必须**不含**任何 status IN。
+
+        这是本次修复的核心边界约束：hrs 的 status 域为
+        triggered / executed / timeout / conflict（见 strategies/hrs/strategy.py
+        L3023-3065 建表），与 MTPCS 的 pending/executed/cancelled 完全不同口径，
+        本次改动不触及 hrs。
+        """
+        custom_db = FakeDB()
+        await ReadinessAuditor(custom_db, config).run(as_of=as_of)
+        hrs_signal_sqls = [
+            s for s in custom_db.sql_log
+            if "FROM hrs.hrs_signals" in s
+        ]
+        assert hrs_signal_sqls, "应至少有一条 hrs 信号计数 SQL"
+        for sql in hrs_signal_sqls:
+            assert "status IN" not in sql, (
+                f"hrs 信号计数 SQL 应不含 status 过滤（保持 COUNT(*) 口径），实际: {sql}"
+            )
+
+    async def test_kline_count_sql_does_not_contain_status_filter(self, config, as_of):
+        """K 线查询调用 _count_rows_in_window 时不传 extra_condition（默认空串），
+        故 SQL 中不应出现 status IN (...) 过滤——否则会炸掉 K 线覆盖度统计。"""
+        custom_db = FakeDB()
+        await ReadinessAuditor(custom_db, config).run(as_of=as_of)
+        kline_sqls = [
+            s for s in custom_db.sql_log
+            if "FROM btc_eth.kline_btcusdt_1h" in s
+        ]
+        assert kline_sqls, "应至少有一条 K 线计数 SQL"
+        for sql in kline_sqls:
+            assert "status IN" not in sql, (
+                f"K 线计数 SQL 不应含 status 过滤，实际: {sql}"
+            )
+
+    async def test_cancelled_rows_excluded_from_effective_signals(self, config, as_of):
+        """aggressive 已声明 status 过滤，FakeDB 按带 status IN 的 SQL 返回 150，
+        验证 effective_signals 取 150。"""
+        from tests.test_ai_tuner_mvp.conftest import BASELINE_RESPONSES
+
+        responses = dict(BASELINE_RESPONSES)
+        # 路由键为纯子串匹配，aggressive SQL 含 "FROM btc_eth_aggressive.trade_signals"
+        responses["FROM btc_eth_aggressive.trade_signals"] = {"cnt": 150}
+
+        db = FakeDB(responses)
+        result = await ReadinessAuditor(db, config).run(as_of=as_of)
+        cr = result.candidates["btc_eth_aggressive"]
+        # effective_signals 应该是 150（被 cancelled 排除后）
+        assert cr.effective_signals == 150
+        # min_effective_signals=100，150>=100，不应有"有效信号不足"失败
+        assert not any("有效信号" in f and "150 <" in f for f in cr.failures)
+
+
+# ===========================================================================
+# effective_signal_statuses 配置校验：非法值必须构造阶段即抛 ValueError
+# ===========================================================================
+
+
+class TestEffectiveSignalStatusesConfigValidation:
+    """effective_signal_statuses 是可选键，但**若存在则必须格式合法**，
+    在 ReadinessAuditor.__init__ 阶段即抛 ValueError，不静默降级。"""
+
+    @staticmethod
+    def _base_config():
+        """完整合法的最小 config purpose_driven_mvp.readiness 段"""
+        return {
+            "purpose_driven_mvp": {
+                "candidates": ["btc_eth_aggressive"],
+                "identity_ratio_baseline": 0.90,
+                "readiness": {
+                    "window_days": 90,
+                    "min_closed_trades": 20,
+                    "min_effective_signals": 100,
+                    "min_trade_field_completeness": 0.95,
+                    "min_config_identity_coverage": 0.90,
+                    "min_kline_coverage": 0.98,
+                    "min_external_snapshot_coverage": 0.95,
+                    "min_regime_count": 3,
+                    "external_snapshot_requirement": "required",
+                    "per_strategy": {
+                        "btc_eth_aggressive": {
+                            "min_external_snapshot_coverage": 0.0,
+                            "external_snapshot_requirement": "not_required_for_current_manifest",
+                        },
+                        "hrs": {
+                            "min_external_snapshot_coverage": 0.95,
+                            "external_snapshot_requirement": "required",
+                        },
+                    },
+                },
+            },
+        }
+
+    def test_absent_key_defaults_to_empty_dict(self, fake_db):
+        """effective_signal_statuses 缺失 → 所有策略走 COUNT(*) 默认路径"""
+        cfg = self._base_config()
+        # 不写 effective_signal_statuses 键
+        auditor = ReadinessAuditor(fake_db, cfg)
+        assert auditor.effective_signal_statuses == {}
+
+    def test_none_value_defaults_to_empty_dict(self, fake_db):
+        """值显式设 None → 也降级为 {}"""
+        cfg = self._base_config()
+        cfg["purpose_driven_mvp"]["readiness"]["effective_signal_statuses"] = None
+        auditor = ReadinessAuditor(fake_db, cfg)
+        assert auditor.effective_signal_statuses == {}
+
+    def test_non_dict_value_raises(self, fake_db):
+        """整体类型不是 dict → ValueError"""
+        cfg = self._base_config()
+        cfg["purpose_driven_mvp"]["readiness"]["effective_signal_statuses"] = ["pending", "executed"]
+        with pytest.raises(ValueError, match="必须是 dict"):
+            ReadinessAuditor(fake_db, cfg)
+
+    def test_strategy_value_not_list_raises(self, fake_db):
+        """某策略的值不是 list → ValueError"""
+        cfg = self._base_config()
+        cfg["purpose_driven_mvp"]["readiness"]["effective_signal_statuses"] = {
+            "btc_eth_aggressive": "pending,executed",
+        }
+        with pytest.raises(ValueError, match="必须是非空 list"):
+            ReadinessAuditor(fake_db, cfg)
+
+    def test_strategy_empty_list_raises(self, fake_db):
+        """list 为空 → ValueError（空集合 IN () 是 SQL 语法错误）"""
+        cfg = self._base_config()
+        cfg["purpose_driven_mvp"]["readiness"]["effective_signal_statuses"] = {
+            "btc_eth_aggressive": [],
+        }
+        with pytest.raises(ValueError, match="必须是非空 list"):
+            ReadinessAuditor(fake_db, cfg)
+
+    def test_illegal_char_in_status_raises(self, fake_db):
+        """status 串含非法字符（分号/单引号等）→ ValueError（防 SQL 注入）"""
+        cfg = self._base_config()
+        cfg["purpose_driven_mvp"]["readiness"]["effective_signal_statuses"] = {
+            "btc_eth_aggressive": ["pending", "executed'; DROP TABLE users"],
+        }
+        with pytest.raises(ValueError, match="非法 status 串"):
+            ReadinessAuditor(fake_db, cfg)
+
+    def test_status_not_string_raises(self, fake_db):
+        """list 里混了 int → ValueError"""
+        cfg = self._base_config()
+        cfg["purpose_driven_mvp"]["readiness"]["effective_signal_statuses"] = {
+            "btc_eth_aggressive": ["pending", 123],
+        }
+        with pytest.raises(ValueError, match="非法 status 串"):
+            ReadinessAuditor(fake_db, cfg)
+
+    def test_valid_statuses_accepted(self, fake_db):
+        """合法 dict[list[str]] → 正常解析（下划线和数字都允许）"""
+        cfg = self._base_config()
+        cfg["purpose_driven_mvp"]["readiness"]["effective_signal_statuses"] = {
+            "btc_eth_aggressive": ["pending", "executed"],
+            "btc_eth": ["executed"],
+        }
+        auditor = ReadinessAuditor(fake_db, cfg)
+        assert auditor.effective_signal_statuses == {
+            "btc_eth_aggressive": ["pending", "executed"],
+            "btc_eth": ["executed"],
+        }

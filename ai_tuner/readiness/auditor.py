@@ -45,6 +45,50 @@ _SIGNAL_TABLE_PATTERN = "%signal%"
 # naive 分支用 None/降级处理，不单独声明常量
 _TS_AWARE = "timestamp with time zone"
 
+# status 串允许字符白名单（防 SQL 注入：auditor 用 f-string 直接拼进 AND status IN (...)）
+# 仅允许 [A-Za-z0-9_]——PostgreSQL status 列一般都是 snake_case
+_ALLOWED_STATUS_CHAR = re.compile(r"^[A-Za-z0-9_]+$")
+
+
+# ---------- 策略级有效信号状态集合校验 ----------
+
+
+def _validate_effective_signal_statuses(raw: Any) -> Dict[str, List[str]]:
+    """校验 readiness.effective_signal_statuses 配置值
+
+    可选键，若为 None 或空 dict → 返回 {}（所有策略走纯 COUNT(*)）。
+    若存在，必须满足：
+      - 整体类型是 dict
+      - 每个 value 是非空 list[str]
+      - 每个 str 只含 [A-Za-z0-9_]（防 SQL 注入）
+    任一违反 → ValueError（构造阶段即炸，不静默）。
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"purpose_driven_mvp.readiness.effective_signal_statuses 必须是 dict，"
+            f"实际: {type(raw).__name__}"
+        )
+    validated: Dict[str, List[str]] = {}
+    for sid, statuses in raw.items():
+        if not isinstance(statuses, list) or len(statuses) == 0:
+            raise ValueError(
+                f"effective_signal_statuses.{sid} 必须是非空 list，"
+                f"实际: {statuses!r}"
+            )
+        clean: List[str] = []
+        for s in statuses:
+            if not isinstance(s, str) or not _ALLOWED_STATUS_CHAR.match(s):
+                raise ValueError(
+                    f"effective_signal_statuses.{sid} 中含非法 status 串: {s!r} "
+                    f"（仅允许 [A-Za-z0-9_]）"
+                )
+            clean.append(s)
+        validated[str(sid).strip()] = clean
+    return validated
+
+
 # ---------- 配置强制键清单 ----------
 
 # readiness 段必须存在的键（缺失即 ValueError，不静默）
@@ -115,6 +159,14 @@ class ReadinessAuditor:
                 )
             self.per_strategy[sid] = dict(entry)
 
+        # 策略级「有效信号」状态过滤集合（可选，不在 _REQUIRED_READINESS_KEYS）。
+        # 仅声明了的策略（dict 中含 sid）会在信号计数时追加 AND status IN (...)；
+        # 未声明者（如 hrs，其状态域 triggered/executed/timeout/conflict 与 MTPCS 完全不同）
+        # 保持纯 COUNT(*) 口径不变——禁止硬编码，策略状态集合差异由配置声明。
+        self.effective_signal_statuses = _validate_effective_signal_statuses(
+            self.readiness_cfg.get("effective_signal_statuses")
+        )
+
     # ---------------------------------------------------------------
     # 辅助：schema / 表 / 列类型探测 + 时间绑定 + 公共窗口计数
     # ---------------------------------------------------------------
@@ -160,17 +212,25 @@ class ReadinessAuditor:
         self,
         schema: str, table: str, ts_col: str,
         window_start: datetime, window_end: datetime,
+        extra_condition: str = "",
     ) -> int:
-        """公共窗口计数：COUNT(*) AS cnt FROM {schema}.{table} WHERE {ts_col} >= $1 AND {ts_col} < $2
+        """公共窗口计数：
+        COUNT(*) AS cnt FROM {schema}.{table}
+        WHERE {ts_col} >= $1 AND {ts_col} < $2 {extra_condition}
 
         两个调用方（信号计数 / K 线覆盖）共享的精确同构 SQL 块，消除重复。
         时间绑定走 _bind_window（按列类型自动转换 naive/aware）。
+
+        extra_condition 为可选的额外 WHERE 子句（注意调用方须带前导空格，
+        如 " AND status IN ('pending','executed')"），默认空串时 K 线等调用方行为不变。
+        此参数**不得引入新的 $N 占位符**，避免打乱 $1/$2 的参数序号。
         """
         sql = f"""
         SELECT COUNT(*) AS cnt
         FROM {schema}.{table}
         WHERE {ts_col} >= $1
           AND {ts_col} <  $2
+          {extra_condition}
         """
         ws = await self._bind_window(schema, table, ts_col, window_start)
         we = await self._bind_window(schema, table, ts_col, window_end)
@@ -298,8 +358,19 @@ class ReadinessAuditor:
             return 0, gap
 
         try:
+            # 按 strategy_id 查表决定是否追加状态过滤：
+            #   - 已声明 → AND status IN (s1, s2, ...)
+            #   - 未声明（如 hrs，其 status 域为 triggered/executed/timeout/conflict 独立口径）
+            #     → 走纯 COUNT(*)，保持原有计数口径不变
+            statuses = self.effective_signal_statuses.get(strategy_id)
+            extra_condition = ""
+            if statuses:
+                quoted = ",".join(f"'{s}'" for s in statuses)
+                extra_condition = f" AND status IN ({quoted})"
+
             cnt = await self._count_rows_in_window(
-                strategy_id, table_name, ts_col, window_start, window_end
+                strategy_id, table_name, ts_col, window_start, window_end,
+                extra_condition=extra_condition,
             )
             return cnt, []
         except Exception as exc:

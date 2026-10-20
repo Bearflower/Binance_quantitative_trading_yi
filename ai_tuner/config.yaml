@@ -54,6 +54,14 @@ purpose_driven_mvp:
         min_external_snapshot_coverage: 0.95
         external_snapshot_requirement: required
         # 原因：OI/市值/资金费/候选池历史状态直接影响评分与可交易集合，外部快照必需
+    # 「有效信号」计数口径（按策略）：仅对声明了的策略施加 status 过滤；
+    # 未声明者（如 hrs）保持纯 COUNT(*) 口径不变。
+    # 本键**不在 _REQUIRED_READINESS_KEYS 里**（hrs 未声明必须合法）。
+    # 禁止硬编码——策略状态集合差异（如 hrs 是 triggered/executed/timeout/conflict，
+    # 与 MTPCS 系的 pending/executed/cancelled 完全不同）应由配置声明，auditor 只查表。
+    effective_signal_statuses:
+      btc_eth: ["pending", "executed"]            # MTPCS 系统一口径（排除 cancelled）
+      btc_eth_aggressive: ["pending", "executed"] # 激进版同上
 
 strategies:
   - strategy_id: "btc_eth"

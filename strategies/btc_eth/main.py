@@ -20,6 +20,10 @@ from shared.utils import setup_logging
 from shared.config_loader import load_strategy_config
 from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared import condition_orders
+from shared.mtpc_signal_persistence import (
+    ensure_signal_table_exists,
+    persist_signal,
+)
 from strategies.btc_eth.strategy import BTCEthStrategy
 from strategies.btc_eth.evidence_recorder import DecisionEvidenceRecorder
 from shared.decision_evidence_sink import PostgresDecisionEvidenceSink
@@ -95,6 +99,9 @@ async def initialize():
     await trade_logger.ensure_table_exists()
     binance_client.set_trade_logger(trade_logger)
     logger.info("交易记录器初始化完成", strategy=_own['my_record_name'])
+
+    # 信号持久化：幂等补齐 dedup_key 列 + 唯一索引（失败只记日志，不阻断启动）
+    await ensure_signal_table_exists(db_manager, "btc_eth")
     
     kline_service = KLineService(
         service_url=os.getenv("KLINE_SERVICE_URL"),
@@ -203,7 +210,17 @@ async def run_strategy():
                         success = await strategy.execute_signal(result)
                         # 记录成交结果，供汇总推送区分「已开仓」与「被拦截/失败」
                         result['trade_success'] = success
-                        
+
+                        # 信号持久化（一次性写终态：executed / cancelled）。
+                        # 必须在 execute_signal 之后、且 trade_success 已写入 result 之后调用。
+                        # 落库失败完全吞异常，绝不影响后续下单/通知逻辑。
+                        await persist_signal(
+                            db=strategy.db_manager,
+                            schema="btc_eth",
+                            signal=result,
+                            notification=notification_client,
+                        )
+
                         if success:
                             logger.info(
                                 f"{symbol} 交易信号执行成功",
