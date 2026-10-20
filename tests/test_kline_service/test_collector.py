@@ -268,37 +268,6 @@ class TestKlineCollector:
         assert collector.stats["total_collected"] == 100
 
 
-# ==================== _parse_affected_rows 模块级 helper ====================
-
-
-class TestParseAffectedRows:
-    """测试 collector 模块级 helper _parse_affected_rows。
-
-    该 helper 是 _batch_insert 修复 ON CONFLICT DO NOTHING 计数语义的核心依赖：
-    databases + asyncpg 返回形如 "INSERT 0 1" / "INSERT 0 0" 的状态标签，
-    末位数字才是实际新增行数，必须正确解析。
-    """
-
-    def test_insert_tag_parses_last_token(self):
-        """标准 INSERT 状态标签：末位是受影响行数"""
-        from services.kline_service.core.collector import _parse_affected_rows
-        assert _parse_affected_rows("INSERT 0 1") == 1
-        assert _parse_affected_rows("INSERT 0 0") == 0
-        assert _parse_affected_rows("INSERT 0 5") == 5
-
-    def test_non_string_returns_zero(self):
-        """非字符串返回值 → 计 0 并 warning（避免虚增）"""
-        from services.kline_service.core.collector import _parse_affected_rows
-        assert _parse_affected_rows(None) == 0
-        assert _parse_affected_rows(123) == 0
-
-    def test_garbage_tag_returns_zero(self):
-        """异常状态标签无法解析末位数字 → 计 0 并 warning"""
-        from services.kline_service.core.collector import _parse_affected_rows
-        assert _parse_affected_rows("garbage") == 0
-        assert _parse_affected_rows("") == 0
-
-
 # ==================== _batch_insert 计数语义（ON CONFLICT DO NOTHING） ====================
 
 
@@ -320,7 +289,7 @@ class TestBatchInsertCounting:
 
         mock_conn = AsyncMock()
         mock_conn.fetch_val = AsyncMock(return_value=True)
-        mock_conn.execute = AsyncMock()
+        mock_conn.fetch_all = AsyncMock()  # RETURNING 返回行列表
 
         cm = AsyncMock()
         cm.__aenter__.return_value = mock_conn
@@ -354,13 +323,14 @@ class TestBatchInsertCounting:
     async def test_batch_insert_mixed_new_and_conflict_counted_correctly(
         self, collector_with_mock_conn,
     ):
-        """1 条真实新增（INSERT 0 1）+ 3 条冲突（INSERT 0 0）→ 返回 1 而非 4"""
+        """1 条真实新增（返回 1 行）+ 3 条冲突（返回 []）→ 返回 1 而非 4"""
         collector, mock_conn = collector_with_mock_conn
-        mock_conn.execute.side_effect = [
-            "INSERT 0 1",   # 第一次：新增
-            "INSERT 0 0",   # 第二次：DO NOTHING
-            "INSERT 0 0",   # 第三次：DO NOTHING
-            "INSERT 0 0",   # 第四次：DO NOTHING
+        # RETURNING open_time：新增时返回含 open_time 的行列表，冲突时返回空列表
+        mock_conn.fetch_all.side_effect = [
+            [{"open_time": 0}],      # 第一次：新增 1 条
+            [],                      # 第二次：冲突 DO NOTHING
+            [],                      # 第三次：冲突 DO NOTHING
+            [],                      # 第四次：冲突 DO NOTHING
         ]
 
         data_list = self._data_list(4)
@@ -371,7 +341,7 @@ class TestBatchInsertCounting:
     async def test_batch_insert_all_conflicts_return_zero(self, collector_with_mock_conn):
         """全部 DO NOTHING（重复补采同范围）→ 返回 0"""
         collector, mock_conn = collector_with_mock_conn
-        mock_conn.execute.return_value = "INSERT 0 0"
+        mock_conn.fetch_all.return_value = []  # 每次都冲突
 
         inserted = await collector._batch_insert(
             "kline_btcusdt_15m", self._data_list(3),
