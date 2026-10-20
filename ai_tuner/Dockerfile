@@ -24,6 +24,7 @@ RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r /
 # 复制应用代码
 COPY ai_tuner/ /app/ai_tuner/
 COPY shared/ /app/shared/
+COPY scripts/ai_tuner_mvp.py /app/scripts/ai_tuner_mvp.py
 
 # 复制 VERSION 文件（部署时生成，用于版本验证）
 COPY VERSION /app/VERSION
