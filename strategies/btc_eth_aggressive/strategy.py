@@ -1163,14 +1163,14 @@ class BTCEthStrategy:
             return True, ""
 
         # ---- 阶段二：market_state 后有状态检查 ----
-        assert market_state_behavior is not None, (
-            "market_state_behavior 必须与 market_state_name 同时提供"
+        assert market_behavior is not None, (
+            "market_behavior 必须与 market_state_name 同时提供"
         )
         symbol_cfg = self.symbol_config.get(symbol, {})
         today_str = current_time.date().isoformat()
 
         # 市场状态特定频率控制：全局每日交易数
-        market_max_trades = market_state_behavior.get('max_daily_trades', 999)
+        market_max_trades = market_behavior.get('max_daily_trades', 999)
         if today_str not in self.frequency_controller.daily_trades:
             self.frequency_controller.daily_trades[today_str] = 0
         if self.frequency_controller.daily_trades[today_str] >= market_max_trades:
@@ -1197,7 +1197,7 @@ class BTCEthStrategy:
 
         # 市场状态特定冷却期检查
         if symbol in self.frequency_controller.symbol_last_trade_time:
-            cooldown_hours = market_state_behavior.get('ranging_symbol_cooldown_hours', 72)
+            cooldown_hours = market_behavior.get('ranging_symbol_cooldown_hours', 72)
             if market_state_name == 'RANGING' and 'ranging_cooldown_hours' in symbol_cfg:
                 cooldown_hours = symbol_cfg['ranging_cooldown_hours']
             last_trade_time = self.frequency_controller.symbol_last_trade_time[symbol]
