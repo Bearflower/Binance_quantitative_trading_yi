@@ -62,7 +62,7 @@
 3. **已知坑**：PostgreSQL 容器命名冲突会让 `set -e` 中断部署脚本，导致后面的服务（如 kline-monitor）不会被启动——部署后必须 `docker ps` 确认**所有**服务在运行
 4. 一键部署入口：**push main → GitHub Actions 自动构建 + GHCR + SSH 部署**（见 `.trae/rules/deployment.md`），不再手动打包
 5. **残留清理口径**：服务器侧只移除不属于本 compose 项目的独立 `docker run` 残留，本项目容器交由 `docker compose up -d` 增量 recreate（避免每次部署全量停机）
-6. **影子容器（`mtcps-xau-shadow`）**：复用 `ghcr.io/bearflower/trading-btc-eth:latest` 镜像、仅换 `command` 为 shadow 入口，**不新增镜像、不参与生产交易、不参与资金分配/熔断、不进看板、不写 `trading.*` 与交易记录**，仅写 `research` schema；`docker compose stop mtcps-xau-shadow` 即回退，不影响生产实例
+6. **影子容器（`mtcps-xau-shadow`）**：复用 `ghcr.io/bearflower/trading-btc-eth:latest` 镜像、仅换 `command` 为 shadow 入口，**不新增镜像、不参与生产交易、不参与资金分配/熔断、不进看板、不写 `trading.*` 与交易记录**，仅写 `research` schema；`docker compose stop mtcps-xau-shadow` 即回退，不影响生产实例。**复用前提（2026-10-20 补记）**：该 btc-eth 镜像现须含影子入口依赖的兄弟包 `strategies/btc_eth_aggressive/`（`strategies/btc_eth/shadow/collector.py` 会 import 其 `BTCEthStrategy`）——`strategies/btc_eth/Dockerfile` 曾漏 COPY 该目录致 2026-10-19 部署后容器 `ModuleNotFoundError` crash-loop，本次已补齐 `COPY strategies/btc_eth_aggressive/` 并加静态守护测试；因 CI 按各 job 自身目录 diff 判定，**仅改 `strategies/btc_eth_aggressive/` 时该镜像不重建（遗留隐患，见 `docs/knowledge/INDEX.md` 待复查清单）**
 
 ## 数据库
 

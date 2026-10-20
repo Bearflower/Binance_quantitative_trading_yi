@@ -106,6 +106,10 @@ postgres 用公共镜像 `postgres:15-alpine`，不动。
 
 > **影子容器（2026-10-19）**：`mtcps-xau-shadow` **不新增镜像**——复用 `ghcr.io/bearflower/trading-btc-eth:latest`，仅把 `command` 改为 shadow 入口（`python -m strategies.btc_eth.shadow.main`），与既有 `grid-realtime` 影子服务同一做法。因此 build-all 矩阵不新增条目、无需新增镜像命名。该容器只读不交易、不参与资金分配/熔断、不进看板，仅写 `research` schema；已列入 deploy 脚本 `RESIDUAL_CANDIDATES`，回退用 `docker compose stop mtcps-xau-shadow`。
 
+> **复用前提（2026-10-20 补记）**：复用 `trading-btc-eth` 镜像的**前提是该镜像已含影子入口所需的兄弟包 `strategies/btc_eth_aggressive/`**（`strategies/btc_eth/shadow/collector.py` 会 `from strategies.btc_eth_aggressive.strategy import BTCEthStrategy`）。该目录此前未被 `strategies/btc_eth/Dockerfile` COPY，导致 2026-10-19 部署（Run 全绿）后 `mtcps-xau-shadow` 容器 `ModuleNotFoundError` crash-loop；本次已在该 Dockerfile 补齐 `COPY strategies/btc_eth_aggressive/ /app/strategies/btc_eth_aggressive/`，并新增静态守护测试 `tests/test_strategies/test_shadow_image_dependencies.py`（解析 Dockerfile COPY vs shadow import 顶层包断言覆盖）。
+>
+> **遗留隐患（知悉项，待独立评估）**：因 btc-eth 镜像现依赖 `strategies/btc_eth_aggressive/` 目录内容，而 CI 增量构建按「各 job 只看自己目录是否变更」判定——**未来仅改 `strategies/btc_eth_aggressive/` 时 btc-eth 镜像不会重建 → 影子容器可能跑旧 aggr 代码**。此「镜像依赖与 CI diff 判定不一致」隐患已登记至 `docs/knowledge/INDEX.md` 待复查清单。
+
 ### 2.6 服务器侧残留容器清理口径（2026-09-27 修正）
 
 deploy 远程脚本第 2 步的清理**不是**无条件删除 compose 里的全部 `container_name`，而是**只移除「不属于本 compose 项目」的独立部署残留容器**：

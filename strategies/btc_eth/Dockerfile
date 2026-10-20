@@ -18,6 +18,9 @@ COPY shared/ /app/shared/
 
 # 复制策略代码
 COPY strategies/btc_eth/ /app/strategies/btc_eth/
+# 影子采集器（python -m strategies.btc_eth.shadow.main）需要同时 import
+# 原版与激进版策略类，此处一并 COPY；该镜像复用给 mtcps-xau-shadow 容器
+COPY strategies/btc_eth_aggressive/ /app/strategies/btc_eth_aggressive/
 
 # 复制版本标记文件
 COPY VERSION /app/VERSION
