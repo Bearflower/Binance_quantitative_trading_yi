@@ -1,0 +1,45 @@
+# 影子回放器运行时配置（禁止硬编码，全部从此读取）
+# 生产端费用/滑点/限价有效期数值统一收敛于此，便于日后审计和调整。
+
+# 入场撮合参数
+entry:
+  # 限价订单有效期（秒），与生产现行值保持一致
+  limit_order_expiry_seconds: 300
+
+# 费用口径 —— 主准入口径（spec §8.4）
+fees:
+  # taker 手续费每边 5 bps（0.0005）
+  taker_bps: 5
+
+# 滑点口径 —— 每边 bps；三档压力测试叠加于此
+slippage:
+  baseline_bps: 2           # 基准：每边 2 bps
+  tiers_bps: [1, 2, 4]     # 压力测试三档（叠加在 baseline 之上还是独立档位？spec 原文"1/2/4 bps 三档压力"）
+  # 限价挂单入场成交判定不额外加入场滑点，仅退出按压力档
+  limit_entry_no_extra_slippage: true
+
+#  TradFi 合约 TradFi 非活跃时段分组（UTC 小时窗口）
+# 活跃：伦敦 + 美盘叠合（UTC 07:00–20:00），非活跃：其余（含亚盘 00:00–07:00）
+tradfi_active_hours_utc: [7, 20]
+
+# 准入门槛（spec §10.2）
+admission:
+  min_closed_trades: 12
+  min_profit_factor: 1.20
+  max_drawdown_pct: 15
+  capital_preservation_pct: 30   # 30% 最终亏损红线
+  slippage_pressure_multiplier: 2  # 2× 滑点压力下不得触发 30% 红线
+
+# 反事实停牌标记（counterfactual）的 pilot 停机政策亏损红线
+# 单一真源：scan_triggers 从此数组读取阈值，禁止在代码中硬编码
+# 第 3 档 30% 与 admission.capital_preservation_pct 语义一致（最终亏损红线）；
+# 若二者不一致应在启动阶段显式暴露（本配置文件内维护，当前设计刻意对齐）。
+counterfactual:
+  halt_lines_pct: [15, 25, 30]
+
+# 移动止损（trailing）配置（本期降级，禁止硬编码 1.0）
+trailing:
+  # 波动率调节因子 override——快照仅 30 天 1m，无法确定性重算生产所需约 44 天日线 ATR 中位数，
+  # 故本期固定中性值 1.0（与生产 fallback 一致）。未来若扩展快照到日线 × (30+14+buffer) ≈ 50 天，
+  # 可改为动态计算并从此键切换取值。报告标注 vol_adj_fallback_used=true。
+  volatility_adjustment_override: 1.0

@@ -1,3 +1,16 @@
+# 实例配置（§1 实例参数化：影子仿真/实盘灰度共用此入口）
+# 生产默认值必须与改动前行为完全一致；环境变量可覆盖：
+#   INSTANCE_ID / EXECUTION_MODE / CAPITAL_STRATEGY_ID / CIRCUIT_BREAKER_POOL /
+#   STATE_REPORTING_ENABLED / REAL_ORDERING_ENABLED / INSTANCE_CONFIG_PATH
+# execution_mode=shadow_batch 时强制 real_ordering_enabled=false + state_reporting_enabled=false
+instance:
+  id: "btc_eth"
+  execution_mode: "live"
+  capital_strategy_id: "btc_eth"
+  circuit_breaker_pool: "mtpcs"
+  state_reporting_enabled: true
+  real_ordering_enabled: true
+
 strategy:
   name: btc_eth_trend
   version: "2.6.0"  # v6.21 BNB参数放宽+差异化冷却+移除TRX

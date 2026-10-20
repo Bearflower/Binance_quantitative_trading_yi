@@ -104,6 +104,8 @@ services:
 
 postgres 用公共镜像 `postgres:15-alpine`，不动。
 
+> **影子容器（2026-10-19）**：`mtcps-xau-shadow` **不新增镜像**——复用 `ghcr.io/bearflower/trading-btc-eth:latest`，仅把 `command` 改为 shadow 入口（`python -m strategies.btc_eth.shadow.main`），与既有 `grid-realtime` 影子服务同一做法。因此 build-all 矩阵不新增条目、无需新增镜像命名。该容器只读不交易、不参与资金分配/熔断、不进看板，仅写 `research` schema；已列入 deploy 脚本 `RESIDUAL_CANDIDATES`，回退用 `docker compose stop mtcps-xau-shadow`。
+
 ### 2.6 服务器侧残留容器清理口径（2026-09-27 修正）
 
 deploy 远程脚本第 2 步的清理**不是**无条件删除 compose 里的全部 `container_name`，而是**只移除「不属于本 compose 项目」的独立部署残留容器**：
