@@ -280,6 +280,25 @@ profiles:
 4. 正式评估需同时满足：前向运行至少 30 天，且该 profile 至少有 12 笔已结束的有效虚拟交易。
 5. 最长观察 8 周。8 周后仍不足 12 笔时，结论为“样本不足，暂不准入”，而非自动放宽参数。
 
+### 9.1 运行口径（2026-10-20）
+
+**（1）命名口径（仅文档/展示层，不改技术标识）**
+本实例对外统一展示名称写作 **MTCPS 黄金版（XAU）**。**代码与技术标识一律不改**：继续保留 `instance_id=mtcps_xau_shadow`、`run_id_prefix=xau-shadow`、现有数据库记录与配置文件（`xau_original.yaml` / `xau_aggressive.yaml`）名。**现有降级事件作为上线调试历史保留**（不删除、不改写），但**不计入正式观察期**（见下）。
+
+**（2）正式 8 周观察期起点定义**
+起点 = 三周期（`1h` / `4h` / `1d`）**数据验收通过后**，**第一次 HH:15 采集周期中两个 profile（`xau_original` / `xau_aggressive`）均无 `data_quality_reason` 降级**的周期。此前所有时间统一记作「**上线准备期**」，**不计入** 8 周观察期（含此前的降级历史）。
+
+> 判定依据：`research.shadow_decision_events.data_quality_reason` 为空即视为该 profile 该周期无降级；两个 profile 同周期均无降级即为上述「第一次」起点。
+
+**（3）注册有效期 `duration_days=30` 与第 25 天续期**
+- kline-service `/register` 接口 `duration_days` 上限 **30 天**（`RegisterRequest.duration_days: ge=1, le=30`；DB 侧 `CHECK (duration_days BETWEEN 1 AND 30)`）。XAUUSDT 本次以 `XAUUSDT + intervals=[1h,4h,1d] + duration_days=30` 注册（`expires_at≈2026-11-19`）。
+- 8 周（56 天）观察期需在 **第 25 天**用**相同注册接口**再次提交 `XAUUSDT + intervals=[1h,4h,1d] + duration_days=30` 续期、覆盖剩余观察期：因 `/register` 对已 `active` 标的走 `_update_registration`，取 `max(now+30, 现 expires_at)`，等效续期。
+- **暂不使用 `PUT /renew`**：`RegisteredSymbolConfig.renew()` 实现为 `expires_at += additional_days` 与 `duration_days += additional_days`，会把 `duration_days` 累加至 >30 从而撞 DB `duration_days<=30` 约束而失败。
+- 第 25 天续期步骤须**写入运行手册/提醒**（落地见实施计划 [2026-10-19-xau-mtcps-shadow-implementation-plan.md](../plans/2026-10-19-xau-mtcps-shadow-implementation-plan.md) §9.4）。
+
+**（4）行情补采（kline-service 容器内执行）**
+`services/kline_service/scripts/fetch_history_bulk.py` 已支持 `--intervals` 参数与周期真实上限（`1d` cap **200**、`4h`=30、`1h`=15）；三周期数据验收依赖此命令补采（命令与前置条件见实施计划 §9.4）。
+
 ## 10. 报告与准入门槛
 
 ### 10.1 必须输出的指标

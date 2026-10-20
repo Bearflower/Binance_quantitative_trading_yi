@@ -16,6 +16,31 @@ from models.kline import KlineData
 logger = get_logger(__name__)
 
 
+def _parse_affected_rows(result: str) -> int:
+    """解析 asyncpg/databases 返回的 SQL 状态标签，取实际影响行数。
+
+    databases + asyncpg 驱动的 conn.execute() 返回形如 "INSERT 0 1" 或
+    "INSERT 0 0" 的状态标签字符串——最后一位是受影响行数。ON CONFLICT
+    DO NOTHING 时冲突行对应的就是 0，需要正确累计才能得到真实新增条数
+    而非提交条数。
+
+    Args:
+        result: conn.execute() 的返回值（字符串）
+
+    Returns:
+        实际影响行数；解析失败时返回 0 并输出 warning（避免虚增）
+    """
+    if not isinstance(result, str):
+        logger.warning(f"无法解析影响行数（返回值非字符串：{type(result)}），计 0")
+        return 0
+    tokens = result.strip().split()
+    try:
+        return int(tokens[-1])
+    except (ValueError, IndexError):
+        logger.warning(f"无法解析影响行数（状态标签异常：{result!r}），计 0")
+        return 0
+
+
 class KlineCollector:
     """K 线数据采集器"""
 
@@ -119,7 +144,7 @@ class KlineCollector:
             klines: KlineData 列表
 
         Returns:
-            成功存储的数量
+            实际新增条数（ON CONFLICT DO NOTHING 下冲突行不计入）
         """
         if not klines:
             return 0
@@ -171,7 +196,8 @@ class KlineCollector:
             data_list: 数据列表
 
         Returns:
-            插入数量
+            实际新增条数（解析 ON CONFLICT DO NOTHING 的影响行数，
+                          冲突行计 0，不被虚增）
         """
         try:
             async with self.db.get_connection() as conn:
@@ -212,8 +238,8 @@ class KlineCollector:
                         'taker_buy_volume': data['taker_buy_volume'],
                         'taker_buy_quote_volume': data['taker_buy_quote_volume']
                     }
-                    await conn.execute(query, values)
-                    inserted += 1
+                    result = await conn.execute(query, values)
+                    inserted += _parse_affected_rows(result)
                 
                 logger.info(f"成功插入 {inserted} 条数据到 {table_name}")
                 return inserted

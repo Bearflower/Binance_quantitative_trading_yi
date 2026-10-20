@@ -428,12 +428,26 @@ backtest/btc_eth/replay/          # 已被 .dockerignore 排除 → 不进镜像
 
 ### 9.4 初次上线前需人工执行的步骤清单
 
-1. **注册 XAUUSDT**：调 kline-service `register XAUUSDT ["1h","4h","1d"]`（一次性，之后 kline-service 持久化在 `registered_symbols`）。
-2. **确认行情就绪**：等 kline-service 回填/采集到可用 XAU `1h/4h/1d`；确认 `/klines/latest?symbol=XAUUSDT&interval=1h` 返回非空（含至少 1 根已闭合 K 线）。
-3. **run 初始化**：影子采集器首次启动自动创建 `research.shadow_runs` active run（或人工执行一次 `shadow/export.py --init-run`）；确认 `config_hashes` 与 `git_commit` 写入正确。
-4. **本地基线回测 + 安全验收**（spec 实施顺序 8）：先在本地跑历史数据基线回测与安全验收，通过后才开影子。
-5. **确认 init-scripts 生效**：push 后观察 deploy job 的 init-scripts 步骤执行到 `12-research-schema.sql`（无报错），`research` schema 三表 + GRANT 就位。
-6. **观察 Actions 全绿**：`btc-eth` 镜像因 `strategies/btc_eth/shadow/` 变更而重建，矩阵其余 skip 属正常。
+1. **注册 XAUUSDT**：调 kline-service `register XAUUSDT ["1h","4h","1d"]`，**`duration_days=30`**（接口上限 30 天；本次 `expires_at≈2026-11-19`）。一次性，之后 kline-service 持久化在 `registered_symbols`。
+2. **补采三周期历史 K 线**：CI 部署 kline-service 后，在容器内执行补采脚本（已修复：`1d` 上限 200 天、分页按 interval 真实时长推进、只存已闭合 K 线、幂等、并 `await registry.initialize()` 修复白名单阻断）：
+
+   ```bash
+   docker exec <kline-service 容器名> python3 scripts/fetch_history_bulk.py \
+     --symbols XAUUSDT --intervals 1h,4h,1d --days 200
+   ```
+
+   参数说明：`--intervals 1h,4h,1d` 限定采集周期（未提供则采集全部周期）；`--days 200` 受各周期真实上限约束（`1d` cap=200、`4h`=30、`1h`=15，取 `min(days, cap)`）。参考单测 `tests/test_kline_service/test_fetch_history_bulk.py`。
+3. **确认行情就绪**：确认 `/klines/latest?symbol=XAUUSDT&interval=1h` 返回非空（含至少 1 根已闭合 K 线）。
+4. **run 初始化**：影子采集器首次启动自动创建 `research.shadow_runs` active run（或人工执行一次 `shadow/export.py --init-run`）；确认 `config_hashes` 与 `git_commit` 写入正确。
+5. **本地基线回测 + 安全验收**（spec 实施顺序 8）：先在本地跑历史数据基线回测与安全验收，通过后才开影子。
+6. **确认 init-scripts 生效**：push 后观察 deploy job 的 init-scripts 步骤执行到 `12-research-schema.sql`（无报错），`research` schema 三表 + GRANT 就位。
+7. **观察 Actions 全绿**：`btc-eth` 镜像因 `strategies/btc_eth/shadow/` 变更而重建，矩阵其余 skip 属正常。
+
+### 9.5 运行期提醒（须人工执行）
+
+- **第 25 天注册续期**：8 周观察期 = 56 天 > 接口上限 30 天，故须在**第 25 天**用**相同注册接口**再次提交 `XAUUSDT + intervals=[1h,4h,1d] + duration_days=30`（幂等覆盖续期剩余观察期）。**不使用 `PUT /renew`**（`renew()` 会把 `duration_days` 累加至 >30，撞 DB `duration_days<=30` 约束）。口径与依据见 spec §9.1（3）。
+- **正式 8 周观察期起点**：起点 = 三周期数据验收通过后，第一次 HH:15 两个 profile 均无 `data_quality_reason` 降级的周期；此前时间记作「上线准备期」，不计入 8 周（含已保留的降级历史）。口径见 spec §9.1（2）。
+- **展示命名**：对外统一称 **MTCPS 黄金版（XAU）**；技术标识（`instance_id=mtcps_xau_shadow`、`run_id_prefix=xau-shadow`、配置/DB 记录名）不改。口径见 spec §9.1（1）。
 
 ---
 
