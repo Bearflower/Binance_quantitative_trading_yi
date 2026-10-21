@@ -62,6 +62,19 @@ purpose_driven_mvp:
     effective_signal_statuses:
       btc_eth: ["pending", "executed"]            # MTPCS 系统一口径（排除 cancelled）
       btc_eth_aggressive: ["pending", "executed"] # 激进版同上
+    # 策略 universe 解析契约（阶段二 Task 2）
+    # 可选键（不在 _REQUIRED_READINESS_KEYS 中）——
+    # 声明每个策略的 universe 数据来源（静态配置 / 历史快照表）和必须覆盖的周期。
+    # 严禁硬编码 symbol / 周期 / 阈值，全部由 resolver 按 source 路由到对应实现读取。
+    universe:
+      btc_eth_aggressive:
+        source: strategy_config
+        config_path: strategies/btc_eth_aggressive/config.yaml
+        symbol_path: strategy.symbols
+        intervals: [1h, 4h, 1d]
+      hrs:
+        source: historical_snapshot
+        intervals: [1h, 4h, 1d]
 
 strategies:
   - strategy_id: "btc_eth"

@@ -278,3 +278,232 @@ class TestRunAuditWithStub:
         assert cli_module._resolve_env("${MVP_MISSING_VAR:fallback}") == "fallback"
         assert cli_module._resolve_env("plain") == "plain"
         assert cli_module._resolve_env({"a": ["${MVP_TEST_VAR}"]}) == {"a": ["hello"]}
+
+
+# ===========================================================================
+# kline-audit 子命令测试（TDD：先写失败测试）
+# ===========================================================================
+
+
+class TestRunKlineAuditWithStub:
+    """kline-audit 子命令函数级测试：FakeDB + monkeypatch compute_kline_coverage"""
+
+    REQUIRED_TOP_KEYS = {
+        "strategy_id", "window", "weighted_coverage",
+        "symbols", "missing_ranges", "recommended_commands",
+    }
+
+    @pytest.fixture
+    def cli_module(self):
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location("ai_tuner_mvp_cli", CLI_PATH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    # ------------------------------------------------------------------
+    # Test 1: 输出 JSON 六个固定键齐全 + recommended_commands 格式
+    # ------------------------------------------------------------------
+    async def test_kline_audit_emits_required_fields(self, cli_module, monkeypatch, tmp_path):
+        """kline-audit 输出 JSON 含六个固定键，window 三键齐全且 days 来自配置，
+        missing_ranges 时间以 Z 结尾，recommended_commands 含四参数"""
+        from datetime import datetime, timedelta, timezone
+        from ai_tuner.readiness.kline_coverage import (
+            KlineCoverageResult, SymbolCoverage,
+        )
+
+        # --- 构造假的 KlineCoverageResult：1 个 symbol 有 1 条缺失 ---
+        missing_start = datetime(2026, 8, 1, tzinfo=timezone.utc).replace(tzinfo=None)
+        missing_end = missing_start + timedelta(hours=24)
+        sym_row = SymbolCoverage(
+            symbol="BTCUSDT", interval="1h",
+            expected=2160, actual=2000,
+            missing_ranges=((missing_start, missing_end),),
+            gap=None,
+        )
+        fake_result = KlineCoverageResult(
+            weighted_coverage=2000 / 2160,
+            symbols=(sym_row,),
+            evidence_start=missing_start,
+            evidence_end=missing_end,
+            gaps=(),
+        )
+
+        # --- monkeypatch DatabaseManager + compute_kline_coverage ---
+        class FakeDBMgr:
+            def __init__(self, **kwargs):
+                pass
+
+            async def connect(self):
+                pass
+
+            async def disconnect(self):
+                pass
+
+        import shared.database as shared_db
+        import ai_tuner.readiness.kline_coverage as kc_mod
+
+        monkeypatch.setattr(shared_db, "DatabaseManager", FakeDBMgr)
+
+        async def fake_compute(*args, **kwargs):
+            return fake_result
+
+        monkeypatch.setattr(kc_mod, "compute_kline_coverage", fake_compute)
+
+        # --- 调用被测函数 ---
+        as_of = datetime(2026, 10, 21, tzinfo=timezone.utc)
+        out_path = tmp_path / "kline-audit.json"
+        exit_code = await cli_module.run_kline_audit(
+            "btc_eth_aggressive", as_of, out_path
+        )
+        assert exit_code == 0
+
+        # --- 断言六个固定键齐全 ---
+        data = json.loads(out_path.read_text("utf-8"))
+        assert self.REQUIRED_TOP_KEYS.issubset(data.keys()), (
+            f"缺失键: {self.REQUIRED_TOP_KEYS - data.keys()}"
+        )
+        # gaps 可选键：若存在必须是 list
+        if "gaps" in data:
+            assert isinstance(data["gaps"], list)
+
+        # --- window 三键齐全，days 从配置读 ---
+        assert {"start", "end", "days"}.issubset(data["window"].keys())
+        from tests.test_ai_tuner_mvp.conftest import PROJECT_ROOT as _PR
+        import yaml as _yaml
+        with open(_PR / "ai_tuner" / "config.yaml", "r", encoding="utf-8") as f:
+            _cfg = _yaml.safe_load(f)
+        expected_days = _cfg["purpose_driven_mvp"]["readiness"]["window_days"]
+        assert data["window"]["days"] == expected_days
+
+        # --- missing_ranges 跨 symbol 展平，时间以 Z 结尾 ---
+        assert len(data["missing_ranges"]) == 1
+        mr = data["missing_ranges"][0]
+        assert mr["symbol"] == "BTCUSDT"
+        assert mr["interval"] == "1h"
+        assert mr["start"].endswith("Z")
+        assert mr["end"].endswith("Z")
+
+        # --- recommended_commands 包含四参数 ---
+        assert len(data["recommended_commands"]) == 1
+        cmd = data["recommended_commands"][0]
+        assert "--symbols BTCUSDT" in cmd
+        assert "--intervals 1h" in cmd
+        assert "--start" in cmd
+        assert "--end" in cmd
+
+    # ------------------------------------------------------------------
+    # Test 2: 只读铁律 —— DB 桩无 execute，源码静态断言无写库/采集痕迹
+    # ------------------------------------------------------------------
+    async def test_kline_audit_is_read_only(self, cli_module, monkeypatch):
+        """kline-audit 只允许 SELECT/fetch_*，execute 被禁止；
+        静态断言源码不含写 SQL / subprocess / fetch_history_bulk"""
+        import shared.database as shared_db
+
+        class ReadOnlyDBMgr:
+            """只读 DB 桩：fetch_one/fetch_all 返回 None/[]（fail-closed），
+            execute 方法不存在让调用方根本无法触发写路径"""
+            def __init__(self, **kwargs):
+                pass
+
+            async def connect(self):
+                pass
+
+            async def disconnect(self):
+                pass
+
+            async def fetch_one(self, sql, *args):
+                return None
+
+            async def fetch_all(self, sql, *args):
+                return []
+
+        monkeypatch.setattr(shared_db, "DatabaseManager", ReadOnlyDBMgr)
+
+        from datetime import datetime, timezone
+        as_of = datetime(2026, 10, 21, tzinfo=timezone.utc)
+        exit_code = await cli_module.run_kline_audit(
+            "btc_eth_aggressive", as_of, None
+        )
+        # 退出码 0（只打印摘要）或 1（数据库连接失败）均可；核心是不抛异常
+        assert exit_code in (0, 1)
+
+        # --- 静态断言：源码不含写库/采集痕迹 ---
+        src = CLI_PATH.read_text("utf-8")
+        # 真正危险的痕迹：写 SQL / 启动外部进程 / 导入采集脚本 / 调用 execute
+        forbidden = [
+            "subprocess",
+            "import fetch_history_bulk",
+            "INSERT ",
+            "UPDATE ",
+            "DELETE ",
+            ".execute(",
+        ]
+        for token in forbidden:
+            assert token not in src, f"源码中禁止出现 {token!r}"
+
+    # ------------------------------------------------------------------
+    # Test 3: 原子写入 —— 父目录创建 / tmp 消失 / JSON 合法
+    # ------------------------------------------------------------------
+    async def test_kline_audit_writes_output_file(self, cli_module, monkeypatch, tmp_path):
+        """传入嵌套路径，断言父目录创建、tmp 消失、JSON 合法、weighted_coverage 是 float"""
+        from datetime import datetime, timezone
+        from ai_tuner.readiness.kline_coverage import (
+            KlineCoverageResult, SymbolCoverage,
+        )
+
+        sym_row = SymbolCoverage(
+            symbol="BTCUSDT", interval="1h",
+            expected=2160, actual=2160,
+            missing_ranges=(),
+            gap=None,
+        )
+        fake_result = KlineCoverageResult(
+            weighted_coverage=1.0,
+            symbols=(sym_row,),
+            evidence_start=None,
+            evidence_end=None,
+            gaps=(),
+        )
+
+        class FakeDBMgr:
+            def __init__(self, **kwargs):
+                pass
+
+            async def connect(self):
+                pass
+
+            async def disconnect(self):
+                pass
+
+        import shared.database as shared_db
+        import ai_tuner.readiness.kline_coverage as kc_mod
+
+        monkeypatch.setattr(shared_db, "DatabaseManager", FakeDBMgr)
+
+        async def fake_compute(*args, **kwargs):
+            return fake_result
+
+        monkeypatch.setattr(kc_mod, "compute_kline_coverage", fake_compute)
+
+        nested = tmp_path / "nested" / "deep"
+        out_path = nested / "kline-audit.json"
+        # 父目录 nested/deep 不存在，run_kline_audit 应自动创建
+        assert not nested.exists()
+
+        exit_code = await cli_module.run_kline_audit(
+            "btc_eth_aggressive",
+            datetime(2026, 10, 21, tzinfo=timezone.utc),
+            out_path,
+        )
+        assert exit_code == 0
+        # 父目录已创建
+        assert nested.exists()
+        # 文件存在
+        assert out_path.exists()
+        # tmp 后缀已消失（原子替换完成）
+        assert not out_path.with_suffix(".json.tmp").exists()
+        # 合法 JSON
+        data = json.loads(out_path.read_text("utf-8"))
+        assert isinstance(data["weighted_coverage"], float)

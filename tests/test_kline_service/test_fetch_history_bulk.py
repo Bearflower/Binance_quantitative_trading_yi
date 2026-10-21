@@ -278,8 +278,9 @@ async def test_idempotent_repeated_runs_same_range_produce_no_duplicates(patched
     store_counts = iter([200, 0])
     m['collector_instance'].store_klines.side_effect = lambda kl: next(store_counts)
 
-    total1 = await bulk.fetch_symbol_history('BTCUSDT', days=30, intervals=['1h'])
-    total2 = await bulk.fetch_symbol_history('BTCUSDT', days=30, intervals=['1h'])
+    # 返回值现为 (total_stored, failures) 结构化结果，取第一项
+    total1, _ = await bulk.fetch_symbol_history('BTCUSDT', days=30, intervals=['1h'])
+    total2, _ = await bulk.fetch_symbol_history('BTCUSDT', days=30, intervals=['1h'])
 
     assert total1 == 200
     assert total2 == 0  # 重复范围不会产生新行
@@ -295,3 +296,264 @@ async def test_fetch_symbol_history_skips_empty_interval_cap(patched_environment
 
     # collect_klines 不应被调用（actual_days <= 0 时 continue）
     m['collector_instance'].collect_klines.assert_not_called()
+
+
+# ---------- 新增：精确区间模式 + 互斥 + 结构化失败 ----------
+
+
+@pytest.mark.asyncio
+async def test_collect_range_never_requests_outside_utc_window(patched_environment):
+    """精确区间模式下，collect_klines 的 start_time >= 起点、end_time <= 终点。
+
+    构造精确区间 2026-10-01T00:00:00Z → 2026-10-05T00:00:00Z，
+    用 1h interval 采集。对每次 collect_klines 调用的 start_time / end_time 做边界断言。
+    """
+    from datetime import datetime, timezone
+
+    m = patched_environment
+    # 让 collect_klines 返回空即可，只关心它被调用的参数
+    m['collector_instance'].collect_klines.return_value = []
+
+    start_dt = datetime(2026, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
+    end_dt = datetime(2026, 10, 5, 0, 30, 0, tzinfo=timezone.utc)  # 故意带偏移，会被向下对齐
+
+    await bulk.fetch_symbol_history(
+        'BTCUSDT', intervals=['1h'],
+        start_dt=start_dt, end_dt=end_dt,
+    )
+
+    assert m['collector_instance'].collect_klines.called, "应至少调用一次"
+    for c in m['collector_instance'].collect_klines.call_args_list:
+        kwargs = c.kwargs
+        call_start = kwargs.get('start_time')
+        call_end = kwargs.get('end_time')
+        assert call_start is not None, "collect_klines 应传 start_time"
+        assert call_end is not None, "collect_klines 应传 end_time"
+        # 起点不得小于精确区间起点（起点已向上对齐到 1h 边界 = 保持原值）
+        assert call_start >= int(start_dt.timestamp()) * 1000, (
+            f"start_time={call_start} 小于区间起点"
+        )
+        # 终点不得大于 interval 对齐后的 end_dt
+        end_aligned = bulk._align_end_down(end_dt, '1h')
+        assert call_end <= int(end_aligned.timestamp()) * 1000, (
+            f"end_time={call_end} 大于 interval 对齐后的终点"
+        )
+
+
+def test_exact_range_start_is_aligned_up_not_down():
+    """非整点 start 必须 ceil，禁止请求用户指定范围以前的数据。"""
+    from datetime import datetime, timezone
+
+    start = datetime(2026, 10, 1, 0, 30, tzinfo=timezone.utc)
+    end = datetime(2026, 10, 1, 3, 30, tzinfo=timezone.utc)
+    start_ms, end_ms = bulk._resolve_interval_range("1h", True, start, end, 0)
+
+    assert start_ms == int(datetime(2026, 10, 1, 1, 0, tzinfo=timezone.utc).timestamp()) * 1000
+    assert end_ms == int(datetime(2026, 10, 1, 3, 0, tzinfo=timezone.utc).timestamp()) * 1000
+
+
+@pytest.mark.asyncio
+async def test_strict_collector_propagates_api_failure():
+    """批量补采使用的 strict collector 不得把 API 异常伪装成空结果。"""
+    from core.collector import KlineCollector
+
+    client = MagicMock()
+    client.get_klines = AsyncMock(side_effect=RuntimeError("api down"))
+    collector = KlineCollector(client, MagicMock(), strict_errors=True)
+
+    with pytest.raises(RuntimeError, match="api down"):
+        await collector.collect_klines("BTCUSDT", "1h")
+
+
+@pytest.mark.asyncio
+async def test_strict_collector_propagates_store_failure():
+    """strict 模式下写库失败也必须进入批量补采 failures。"""
+    from core.collector import KlineCollector
+
+    collector = KlineCollector(MagicMock(), MagicMock(), strict_errors=True)
+    collector._batch_insert = AsyncMock(side_effect=RuntimeError("db down"))
+    kline = MagicMock()
+    kline.symbol = "BTCUSDT"
+    kline.interval = "1h"
+    kline.to_dict.return_value = {"open_time": 1}
+
+    with pytest.raises(RuntimeError, match="db down"):
+        await collector.store_klines([kline])
+
+
+@pytest.mark.asyncio
+async def test_end_is_aligned_down_to_interval_boundary(patched_environment):
+    """--end 带小数时间时，按 interval 向下对齐。
+
+    例：end=2026-10-21T00:30:00Z，interval=1h → 区间上界对齐到
+    2026-10-21T00:00:00Z；因 Binance endTime 为闭区间，请求值应再减 1ms。
+    """
+    from datetime import datetime, timezone
+
+    m = patched_environment
+    m['collector_instance'].collect_klines.return_value = []
+
+    start_dt = datetime(2026, 10, 1, 0, 0, 0, tzinfo=timezone.utc)
+    # 故意选一个不是 1h 边界的 end
+    end_dt = datetime(2026, 10, 21, 0, 30, 0, tzinfo=timezone.utc)
+
+    await bulk.fetch_symbol_history(
+        'ETHUSDT', intervals=['1h'],
+        start_dt=start_dt, end_dt=end_dt,
+    )
+
+    end_aligned = bulk._align_end_down(end_dt, '1h')
+    # Binance endTime 为闭区间；为实现 [start,end) 必须传 end-1ms
+    expected_end_ms = int(end_aligned.timestamp()) * 1000 - 1
+
+    all_call_ends = [
+        c.kwargs.get('end_time')
+        for c in m['collector_instance'].collect_klines.call_args_list
+    ]
+    assert all_call_ends, "应至少调用一次 collect_klines"
+    # 所有调用的 end_time 都应等于对齐后的值
+    for call_end in all_call_ends:
+        assert call_end == expected_end_ms, (
+            f"call end_time={call_end} != 对齐后的 {expected_end_ms}"
+        )
+
+
+@pytest.mark.asyncio
+async def test_one_symbol_failure_is_reported_and_exit_is_nonzero():
+    """一个 symbol 成功、另一个 symbol 在 interval 级抛异常 → 失败列表非空、main 返回 1。
+
+    完全替换 _build_collector 为一个固定返回的 mock，避免真实 DB/网络。
+    """
+    from datetime import datetime, timezone
+
+    # 用 patched_environment 的手动版本（保持简洁）
+    from unittest.mock import AsyncMock, MagicMock, patch as _patch
+
+    db = MagicMock()
+    db.connect = AsyncMock()
+    db.disconnect = AsyncMock()
+
+    registry = MagicMock()
+    registry.initialize = AsyncMock()
+
+    binance_cls = MagicMock()
+    binance_cls.return_value.connect = AsyncMock()
+    binance_cls.return_value.disconnect = AsyncMock()
+
+    collector_cls = MagicMock()
+    collector = MagicMock()
+    collector_cls.return_value = collector
+
+    patches = [
+        _patch.object(bulk, 'db_manager', db),
+        _patch.object(bulk, 'registry', registry),
+        _patch.object(bulk, 'BinanceClient', binance_cls),
+        _patch.object(bulk, 'KlineCollector', collector_cls),
+    ]
+    for p in patches:
+        p.start()
+
+    try:
+        # BTCUSDT 成功（返回空，正常走流程）
+        # ETHUSDT 失败（collect_klines 抛异常）
+        call_count = [0]
+
+        async def success_side(*args, **kwargs):
+            call_count[0] += 1
+            return []
+
+        async def fail_side(*args, **kwargs):
+            raise RuntimeError("模拟采集失败")
+
+        def _collect_side(symbol, interval, **kw):
+            if symbol == 'ETHUSDT':
+                return fail_side()
+            return success_side()
+
+        collector.collect_klines.side_effect = lambda symbol, interval, **kw: (
+            fail_side() if symbol == 'ETHUSDT' else success_side()
+        )
+        collector.store_klines.return_value = 0
+
+        start_dt = datetime(2026, 10, 1, tzinfo=timezone.utc)
+        end_dt = datetime(2026, 10, 5, tzinfo=timezone.utc)
+
+        # 直接测 fetch_symbol_history 的结构化结果
+        _, btc_failures = await bulk.fetch_symbol_history(
+            'BTCUSDT', intervals=['1h'], start_dt=start_dt, end_dt=end_dt,
+        )
+        _, eth_failures = await bulk.fetch_symbol_history(
+            'ETHUSDT', intervals=['1h'], start_dt=start_dt, end_dt=end_dt,
+        )
+
+        assert btc_failures == [], "BTCUSDT 应成功、无失败记录"
+        assert len(eth_failures) == 1, "ETHUSDT 应记录一个失败"
+        assert eth_failures[0]['symbol'] == 'ETHUSDT'
+        assert eth_failures[0]['interval'] == '1h'
+        assert 'RuntimeError' in eth_failures[0]['error'] or '模拟' in eth_failures[0]['error']
+
+        # 再测 main() 聚合后的返回码
+        with _patch.object(bulk, 'asyncio') as mock_asyncio:
+            mock_asyncio.sleep = AsyncMock()  # 跳过 symbol 间 1s sleep
+
+            # 让 main 走到聚合逻辑：分别跑两个 symbol，各自用上面相同的 side_effect
+            original_collect = collector.collect_klines.side_effect
+            # 重新设一次，避免被前面调用耗尽
+            collector.collect_klines.side_effect = lambda symbol, interval, **kw: (
+                fail_side() if symbol == 'ETHUSDT' else success_side()
+            )
+
+            import sys
+            original_argv = sys.argv
+            try:
+                sys.argv = [
+                    'fetch_history_bulk.py',
+                    '--symbols', 'BTCUSDT,ETHUSDT',
+                    '--start', '2026-10-01T00:00:00Z',
+                    '--end', '2026-10-05T00:00:00Z',
+                    '--intervals', '1h',
+                ]
+                exit_code = await bulk.main()
+            finally:
+                sys.argv = original_argv
+
+        assert exit_code == 1, f"有失败时 main 应返回 1，实际返回 {exit_code}"
+
+    finally:
+        for p in reversed(patches):
+            p.stop()
+
+
+def test_days_and_start_end_are_mutually_exclusive():
+    """--days 与 --start/--end 互斥；只给 --start 或只给 --end 都应 SystemExit(code=2)。"""
+    import sys
+
+    # 组合 1：同时给 --days 和 --start/--end → exit 2
+    original_argv = sys.argv
+    try:
+        sys.argv = [
+            'fetch_history_bulk.py',
+            '--days', '30',
+            '--start', '2026-10-01T00:00:00Z',
+            '--end', '2026-10-05T00:00:00Z',
+        ]
+        with pytest.raises(SystemExit) as exc:
+            import asyncio
+            asyncio.run(bulk.main())
+        assert exc.value.code == 2, "days 与 start/end 互斥 → parser.error → exit 2"
+    finally:
+        sys.argv = original_argv
+
+    # 组合 2：只给 --start → exit 2
+    original_argv = sys.argv
+    try:
+        sys.argv = [
+            'fetch_history_bulk.py',
+            '--start', '2026-10-01T00:00:00Z',
+        ]
+        with pytest.raises(SystemExit) as exc:
+            import asyncio
+            asyncio.run(bulk.main())
+        assert exc.value.code == 2, "只给 --start 未给 --end → exit 2"
+    finally:
+        sys.argv = original_argv

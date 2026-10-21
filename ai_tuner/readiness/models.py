@@ -21,7 +21,9 @@ class CandidateReadiness:
     # --- 字段完整度 ---
     complete_trade_ratio: float         # trade_records 必填字段完整度
     config_identity_ratio: float        # 配置身份可追溯度（版本覆盖层 ↔ 交易记录）
-    kline_coverage: float               # 窗口内 K 线完整度（已收盘 bar 覆盖）
+    # 按策略 universe 逐 symbol 加权的覆盖率（sum(actual)/sum(expected)），
+    # expected/actual 均按闭合 bar 计数、去重 open_time，缺表按 0%。
+    kline_coverage: float
     external_snapshot_coverage: float   # 外部时点快照完整度（OI/市值/资金费率/情绪）
 
     # --- 外部快照门禁策略级元数据 ---
@@ -35,6 +37,12 @@ class CandidateReadiness:
 
     # --- 数据缺口（无法采集的指标来源说明，用于报告）---
     gaps: List[str] = field(default_factory=list)
+
+    # --- K 线覆盖逐 symbol/interval 细目（阶段二 Task 3）---
+    # 由 kline_coverage.compute_kline_coverage 填充；内容为 JSON 安全的字典
+    # （datetime 一律 isoformat 字符串），ReadinessResult.to_dict → asdict 后可直接 json.dumps。
+    # 键：symbol / interval / expected / actual / coverage / missing_ranges（ISO 字符串对）/ gap
+    kline_symbols: List[Dict] = field(default_factory=list)
 
     @property
     def eligible(self) -> bool:

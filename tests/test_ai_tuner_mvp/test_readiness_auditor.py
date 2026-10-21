@@ -20,12 +20,6 @@ from tests.test_ai_tuner_mvp.conftest import BASELINE_RESPONSES, FakeDB
 
 
 @pytest.fixture
-def config(tuner_config):
-    """真实系统配置（auditor 只读 purpose_driven_mvp 段）"""
-    return tuner_config
-
-
-@pytest.fixture
 def auditor(config, fake_db):
     """全达标基线审计器"""
     return ReadinessAuditor(fake_db, config)
@@ -75,19 +69,19 @@ class TestConfigDrivenThresholds:
         config["purpose_driven_mvp"]["readiness"]["min_trade_field_completeness"] = 1.1
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         failures = result.candidates["btc_eth_aggressive"].failures
-        assert any("交易字段完整度" in f and "110.0%" in f for f in failures)
+        assert any("交易字段完整度" in f and "110.00%" in f for f in failures)
 
     async def test_min_config_identity_coverage_from_config(self, config, fake_db, as_of):
         config["purpose_driven_mvp"]["readiness"]["min_config_identity_coverage"] = 0.91
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         failures = result.candidates["btc_eth_aggressive"].failures
-        assert any("配置身份覆盖" in f and "90.0%" in f and "91.0%" in f for f in failures)
+        assert any("配置身份覆盖" in f and "90.00%" in f and "91.00%" in f for f in failures)
 
     async def test_min_kline_coverage_from_config(self, config, fake_db, as_of):
         config["purpose_driven_mvp"]["readiness"]["min_kline_coverage"] = 1.01
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         failures = result.candidates["btc_eth_aggressive"].failures
-        assert any("K线覆盖" in f and "101.0%" in f for f in failures)
+        assert any("K线覆盖" in f and "101.00%" in f for f in failures)
 
     async def test_min_external_snapshot_coverage_no_fallback(self, config, fake_db, as_of):
         """per_strategy 覆盖 aggressive: required+0.5，coverage=0 触发 failure"""
@@ -96,7 +90,7 @@ class TestConfigDrivenThresholds:
         per["btc_eth_aggressive"]["min_external_snapshot_coverage"] = 0.5
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         failures = result.candidates["btc_eth_aggressive"].failures
-        assert any("外部快照覆盖" in f and "50.0%" in f for f in failures)
+        assert any("外部快照覆盖" in f and "50.00%" in f for f in failures)
         assert any("required_historical_external_snapshots_missing" in f for f in failures)
 
     async def test_min_regime_count_from_config(self, config, fake_db, as_of):
@@ -106,17 +100,25 @@ class TestConfigDrivenThresholds:
         assert any("regime_count(proxy) 5 < 6" in f for f in failures)
 
     async def test_window_days_drives_kline_expectation(self, config, as_of):
-        """window_days 真实生效：同样 100 根 K 线，窗口 1 天达标、90 天不达标"""
-        responses = dict(BASELINE_RESPONSES)
-        responses["FROM btc_eth.kline_btcusdt_1h"] = {"cnt": 100}
+        """window_days 真实生效：同样 actual=100，窗口 1 天达标、90 天不达标。
+
+        新口径走 generate_series，FakeDB 的 COUNT(*) AS expected 路由键返回
+        (actual, expected)——我们按窗口天数手工指定 expected 来模拟不同窗口长度。
+        """
+        base = dict(BASELINE_RESPONSES)
+
+        # 1 天窗口：预期 24 根（aggressive 默认 1h interval），actual=100 → 覆盖≈4.17 → 封顶 1.0 → 通过
+        responses_short = dict(base)
+        responses_short["COUNT(*) AS expected"] = {"actual": 100, "expected": 24}
         config["purpose_driven_mvp"]["readiness"]["window_days"] = 1
-        ok_result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
-        # 1 天窗口预期 24 根，100 根 → 覆盖率封顶 1.0 → 通过
+        ok_result = await ReadinessAuditor(FakeDB(responses_short), config).run(as_of=as_of)
         assert not any("K线覆盖" in f for f in ok_result.candidates["btc_eth_aggressive"].failures)
 
+        # 90 天窗口：预期 2160 根，actual=100 → 覆盖≈4.6% → 不通过
+        responses_long = dict(base)
+        responses_long["COUNT(*) AS expected"] = {"actual": 100, "expected": 2160}
         config["purpose_driven_mvp"]["readiness"]["window_days"] = 90
-        fail_result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
-        # 90 天窗口预期 2160 根，100 根 → 覆盖率约 4.6% → 失败
+        fail_result = await ReadinessAuditor(FakeDB(responses_long), config).run(as_of=as_of)
         assert any("K线覆盖" in f for f in fail_result.candidates["btc_eth_aggressive"].failures)
 
     async def test_identity_baseline_from_config_not_hardcoded(self, config, fake_db, as_of):
@@ -125,7 +127,7 @@ class TestConfigDrivenThresholds:
         config["purpose_driven_mvp"]["readiness"]["min_config_identity_coverage"] = 0.6
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         failures = result.candidates["btc_eth_aggressive"].failures
-        assert any("配置身份覆盖 50.0% < 60.0%" in f for f in failures)
+        assert any("配置身份覆盖 50.00% < 60.00%" in f for f in failures)
 
     async def test_window_start_passed_to_sql(self, auditor, fake_db, as_of):
         """窗口以绑定变量 $2/$3 传入 SQL（参数化，无字面量拼接）"""
@@ -194,7 +196,13 @@ class TestHrsGapReporting:
             assert isinstance(cr.gaps, list) and cr.gaps
             # 新文案："schema xxx 不存在" 或 "schema xxx 下无信号表"
             assert any("无信号表" in g or "schema" in g.lower() for g in cr.gaps)
-            assert any("K 线" in g for g in cr.gaps)
+            # K 线缺口文案：table_missing / universe_not_configured / historical_universe_missing（新口径）
+            assert any(
+                "table_missing" in g
+                or "universe_not_configured" in g
+                or "historical_universe_missing" in g
+                for g in cr.gaps
+            ), cr.gaps
             assert any("regime_count 是 proxy" in g for g in cr.gaps)
             assert any("inferred" in g for g in cr.gaps)
         # aggressive 快照 not_required → gap 含 not_required 文案
@@ -285,80 +293,67 @@ class TestSignalDetection:
 
 
 # ===========================================================================
-# K 线主力合约取表与覆盖度（V1 修复：消除任意取第一张表）
+# K 线覆盖：逐 symbol generate_series + 加权覆盖（阶段二 Task 3 新口径）
+#
+# 旧口径"主力合约抽样"已废弃——新口径走 kline_coverage.compute_kline_coverage
+# 内部：universe resolver → 逐 symbol × interval → generate_series COUNT DISTINCT open_time。
+# 以下测试全部验证新口径行为，不再断言主力合约相关 SQL。
 # ===========================================================================
 
 
 class TestKlineDominantSymbol:
-    async def test_kline_table_lookup_by_dominant_symbol(self, fake_db, config, as_of):
-        """K 线表按主力合约 symbol 定位（BTCUSDT），不是任意第一张"""
+    async def test_kline_coverage_via_generate_series_not_dominant_symbol(self, fake_db, config, as_of):
+        """新口径：K 线覆盖用 generate_series SQL，不再按主力合约取表。"""
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         cr = result.candidates["btc_eth_aggressive"]
+        # 全达标基线：coverage=1.0
         assert cr.kline_coverage == 1.0
-        # 验证 FakeDB 里确实发了主力合约查询 + 按 symbol 找 K 线表
-        assert any("GROUP BY symbol ORDER BY COUNT(*) DESC" in s for s in fake_db.sql_log)
-        assert any("kline_btcusdt" in s for s in fake_db.sql_log)
+        # 验证：FakeDB 里出现 generate_series SQL（新口径）
+        assert any("generate_series" in s for s in fake_db.sql_log), (
+            "K 线覆盖应使用 generate_series SQL"
+        )
+        # 验证：**没有**主力合约 GROUP BY 子串（旧口径已退出主流程）
+        assert not any("GROUP BY symbol ORDER BY COUNT(*) DESC" in s for s in fake_db.sql_log), (
+            "主力合约探测应已退出 K 线覆盖主流程"
+        )
 
-    async def test_no_dominant_symbol_zero_coverage_with_gap(self, config, as_of):
-        """主力合约探测返回 None（窗口内无交易）→ coverage=0 + 明确 gap"""
-        db = FakeDB(errors={"GROUP BY symbol ORDER BY COUNT(*) DESC": RuntimeError("无数据")})
-        result = await ReadinessAuditor(db, config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.kline_coverage == 0.0
-        assert any("主力合约" in g or "无交易记录" in g for g in cr.gaps)
-
-    async def test_kline_table_for_symbol_not_found(self, config, as_of):
-        """有主力合约但找不到对应 K 线表（改主力合约返回一个无 K 线的 symbol）"""
+    async def test_all_tables_missing_produces_zero_with_table_missing_gap(self, config, as_of):
+        """所有 K 线表不存在 → coverage=0 + gap 含 table_missing"""
         responses = dict(BASELINE_RESPONSES)
-        responses["GROUP BY symbol ORDER BY COUNT(*) DESC"] = {"symbol": "XYZNOTEXIST"}
-        # 覆盖 BASELINE_RESPONSES 的 K 线表探测路由键，让 _detect_kline_table_name 返回 None
-        responses["WHERE table_schema = $1 AND table_name ILIKE $2"] = None
+        # 表存在性探测返回 None → 所有 pair 按缺表计
+        responses["SELECT 1 FROM information_schema.tables"] = None
         result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
         cr = result.candidates["btc_eth_aggressive"]
         assert cr.kline_coverage == 0.0
-        assert any("K 线表" in g or "pattern" in g.lower() for g in cr.gaps)
+        assert any("table_missing" in g for g in cr.gaps), cr.gaps
 
-    async def test_kline_schema_missing_gap(self, config, as_of):
-        responses = dict(BASELINE_RESPONSES)
-        responses["ORDER BY table_schema"] = None
-        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.kline_coverage == 0.0
-        assert any("K 线表未探测到" in g for g in cr.gaps)
-
-    async def test_kline_schema_probe_failure_gap(self, config, as_of):
-        db = FakeDB(errors={"ORDER BY table_schema": RuntimeError("down")})
+    async def test_kline_compute_exception_produces_zero_coverage(self, config, as_of):
+        """generate_series 计数异常 → _query_count catch 后返回 (0,0) → coverage=0（不崩）"""
+        db = FakeDB(errors={"COUNT(*) AS expected": RuntimeError("query timeout")})
         result = await ReadinessAuditor(db, config).run(as_of=as_of)
         cr = result.candidates["btc_eth_aggressive"]
         assert cr.kline_coverage == 0.0
-        assert any("K 线表未探测到" in g for g in cr.gaps)
-
-    async def test_kline_timestamp_column_missing_gap(self, config, as_of):
-        responses = dict(BASELINE_RESPONSES)
-        responses["column_name IN ('timestamp', 'open_time'"] = None
-        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.kline_coverage == 0.0
-        assert any("未识别到时间戳列" in g for g in cr.gaps)
-
-    async def test_kline_count_failure_gap(self, config, as_of):
-        db = FakeDB(errors={"FROM btc_eth.kline_btcusdt_1h": RuntimeError("query timeout")})
-        result = await ReadinessAuditor(db, config).run(as_of=as_of)
-        cr = result.candidates["btc_eth_aggressive"]
-        assert cr.kline_coverage == 0.0
-        assert any("K 线查询失败" in g for g in cr.gaps)
 
     async def test_kline_coverage_capped_at_one(self, config, as_of):
-        """实际 bar 数超出预期时覆盖率封顶 1.0"""
-        responses = dict(BASELINE_RESPONSES)
-        responses["FROM btc_eth.kline_btcusdt_1h"] = {"cnt": 99999}
-        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
+        """baseline 全达标：所有 pair actual=expected → aggregate=1.0
+
+        aggregate_coverage 本身不封顶（sum(actual)/sum(expected)），
+        但 baseline FakeDB responses 让 actual==expected → 比值正好 1.0。
+        """
+        result = await ReadinessAuditor(FakeDB(), config).run(as_of=as_of)
         assert result.candidates["btc_eth_aggressive"].kline_coverage == 1.0
 
     async def test_kline_zero_window_coverage_zero(self, config, as_of):
-        """window_days=0 → 预期 bar 数为 0 → 覆盖率记 0（除零守卫）"""
+        """window_days=0 → 预期桶数为 0 → coverage=0（除零守卫）
+
+        FakeDB 的 COUNT(*) AS expected 路由固定返回 2160，
+        但 window_days=0 时 generate_series 实际返回 0 行。
+        这里覆盖 FakeDB 让 COUNT(*) 返回 0/0 来模拟真实行为。
+        """
         config["purpose_driven_mvp"]["readiness"]["window_days"] = 0
-        result = await ReadinessAuditor(FakeDB(), config).run(as_of=as_of)
+        responses = dict(BASELINE_RESPONSES)
+        responses["COUNT(*) AS expected"] = {"actual": 0, "expected": 0}
+        result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
         assert result.candidates["btc_eth_aggressive"].kline_coverage == 0.0
 
 
@@ -489,7 +484,9 @@ class TestGapsBuilding:
         # 新文案：信号探测失败 → "schema xxx 不存在" 或 "无信号表"
         signal_idx = next(i for i, g in enumerate(gaps)
                           if "无信号表" in g or ("schema" in g.lower() and "不存在" in g))
-        kline_idx = next(i for i, g in enumerate(gaps) if "K 线" in g)
+        # 新口径 K 线缺口用 table_missing / universe_not_configured 等
+        kline_idx = next(i for i, g in enumerate(gaps)
+                         if "table_missing" in g or "universe_not_configured" in g)
         snapshot_idx = next(i for i, g in enumerate(gaps) if "外部快照" in g)
         assert signal_idx < kline_idx < snapshot_idx
 
@@ -629,18 +626,25 @@ class TestEffectiveSignalsExcludesCancelled:
             )
 
     async def test_kline_count_sql_does_not_contain_status_filter(self, config, as_of):
-        """K 线查询调用 _count_rows_in_window 时不传 extra_condition（默认空串），
-        故 SQL 中不应出现 status IN (...) 过滤——否则会炸掉 K 线覆盖度统计。"""
+        """K 线覆盖走 generate_series + COUNT(DISTINCT open_time)，
+        SQL 中不应出现 status IN (...) 过滤——否则会炸掉覆盖度统计。"""
         custom_db = FakeDB()
         await ReadinessAuditor(custom_db, config).run(as_of=as_of)
+        # 新口径：K 线覆盖 SQL 含 generate_series（两种：count + missing）
         kline_sqls = [
             s for s in custom_db.sql_log
-            if "FROM btc_eth.kline_btcusdt_1h" in s
+            if "generate_series" in s
         ]
-        assert kline_sqls, "应至少有一条 K 线计数 SQL"
+        assert kline_sqls, "应至少有一条 generate_series K 线覆盖 SQL"
         for sql in kline_sqls:
             assert "status IN" not in sql, (
-                f"K 线计数 SQL 不应含 status 过滤，实际: {sql}"
+                f"K 线覆盖 SQL 应不含 status 过滤，实际: {sql}"
+            )
+        # 仅对 count SQL（含 COUNT(*) AS expected）断言 COUNT(DISTINCT 去重
+        count_sqls = [s for s in kline_sqls if "COUNT(*) AS expected" in s]
+        for sql in count_sqls:
+            assert "COUNT(DISTINCT" in sql, (
+                f"K 线覆盖计数 SQL 应用 COUNT(DISTINCT open_time) 去重，实际: {sql}"
             )
 
     async def test_cancelled_rows_excluded_from_effective_signals(self, config, as_of):
@@ -770,3 +774,49 @@ class TestEffectiveSignalStatusesConfigValidation:
             "btc_eth_aggressive": ["pending", "executed"],
             "btc_eth": ["executed"],
         }
+
+
+# ===========================================================================
+# 门禁失败文案百分比精度：必须保留两位小数，避免 "98.0% < 98.0%" 自相矛盾
+# ===========================================================================
+
+
+class TestGateRatioPrecision:
+    """门禁 failure 文案和 gaps 说明中的百分比必须保留两位小数。"""
+
+    def test_kline_failure_keeps_two_decimal_percentage(self, auditor):
+        """kline_coverage=0.9796 < 阈值 0.98 → 文案必须显示 97.96% < 98.00%，
+        不能因 .1% 四舍五入成 98.0% < 98.0% 自相矛盾。"""
+        failures, _ = auditor._apply_gate_thresholds(
+            closed_trades=100, signals_count=100, complete_ratio=1.0,
+            identity_ratio=1.0, kline_coverage=0.9796, snapshot_coverage=1.0,
+            regime_count=3, snapshot_threshold=0.95, snapshot_requirement="required",
+        )
+        assert any("K线覆盖 97.96% < 98.00%" in f for f in failures)
+
+    def test_identity_failure_keeps_two_decimal_percentage(self, auditor):
+        """identity_ratio=0.8999 < 阈值 0.90 → 文案保留两位小数（90.00%）。"""
+        failures, _ = auditor._apply_gate_thresholds(
+            closed_trades=100, signals_count=100, complete_ratio=1.0,
+            identity_ratio=0.8999, kline_coverage=1.0, snapshot_coverage=1.0,
+            regime_count=3, snapshot_threshold=0.95, snapshot_requirement="required",
+        )
+        assert any("配置身份覆盖 89.99%" in f for f in failures)
+
+    def test_snapshot_failure_keeps_two_decimal_percentage(self, auditor):
+        """snapshot_coverage=0.9799 < snapshot_threshold=0.98 → 文案保留两位。"""
+        failures, _ = auditor._apply_gate_thresholds(
+            closed_trades=100, signals_count=100, complete_ratio=1.0,
+            identity_ratio=1.0, kline_coverage=1.0, snapshot_coverage=0.9799,
+            regime_count=3, snapshot_threshold=0.98, snapshot_requirement="required",
+        )
+        assert any("外部快照覆盖 97.99% < 98.00%" in f for f in failures)
+
+    def test_gaps_snapshot_not_required_keeps_two_decimal(self):
+        """_build_gaps_list 里 snapshot coverage=0.9876 也应保留两位小数。"""
+        gaps = ReadinessAuditor._build_gaps_list(
+            signal_gaps=[], kline_gaps=[], snapshot_gaps=[], regime_gaps=[],
+            identity_ratio=1.0, snapshot_coverage=0.9876,
+            snapshot_requirement="not_required_for_current_manifest",
+        )
+        assert any("coverage=98.76%" in g for g in gaps)

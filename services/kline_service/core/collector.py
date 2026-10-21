@@ -25,6 +25,7 @@ class KlineCollector:
         db: DatabaseManager,
         symbols: Optional[List[str]] = None,
         intervals: Optional[List[str]] = None,
+        strict_errors: bool = False,
     ):
         """
         初始化采集器
@@ -34,6 +35,8 @@ class KlineCollector:
             db: 数据库连接
             symbols: 要采集的交易对列表
             intervals: 要采集的时间间隔列表
+            strict_errors: 为 True 时采集、解析或写库异常直接向上抛出；默认 False
+                           保持实时采集链路原有的容错行为
         """
         self.binance_client = binance_client
         self.db = db
@@ -45,6 +48,7 @@ class KlineCollector:
             "BNBUSDT",
         ]
         self.intervals = intervals or ["15m", "1h", "4h", "1d"]
+        self.strict_errors = strict_errors
 
         self.running = False
         self.stats = {
@@ -96,6 +100,8 @@ class KlineCollector:
                 except Exception as e:
                     logger.error(f"解析 K 线数据失败：{e}")
                     self.stats["total_errors"] += 1
+                    if self.strict_errors:
+                        raise
                     continue
 
             logger.info(
@@ -109,6 +115,8 @@ class KlineCollector:
         except Exception as e:
             logger.error(f"采集 {symbol} {interval} 失败：{e}")
             self.stats["total_errors"] += 1
+            if self.strict_errors:
+                raise
             return []
 
     async def store_klines(self, klines: List[KlineData]) -> int:
@@ -158,6 +166,8 @@ class KlineCollector:
             else:
                 logger.error(f"存储 K 线数据失败：{e}")
                 self.stats["total_errors"] += 1
+            if self.strict_errors:
+                raise
             return 0
 
     async def _batch_insert(

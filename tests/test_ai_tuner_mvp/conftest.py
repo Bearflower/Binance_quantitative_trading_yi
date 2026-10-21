@@ -100,6 +100,12 @@ def tuner_config():
 
 
 @pytest.fixture
+def config(tuner_config):
+    """真实系统配置（auditor 只读 purpose_driven_mvp 段）"""
+    return tuner_config
+
+
+@pytest.fixture
 def as_of():
     """固定审计截止时间（UTC），保证窗口与 K 线计数可预计算"""
     return datetime(2026, 10, 17, tzinfo=timezone.utc)
@@ -128,33 +134,41 @@ def as_of():
 #
 # 注意：FakeDB 内部 SQL 含真实换行符，路由键必须包含换行才能精确匹配。
 # 为简化，这里用 SQL 模板中足够独特的、无换行的子串定位。
-_BASELINE_INFORMATION_SCHEMA_COLUMNS = (
-    "FROM information_schema.columns\n        WHERE table_schema = $1 "
-    "AND table_name = $2 AND column_name = $3"
-)
+# information_schema.columns 的 SQL 在 auditor（8空格缩进，类方法内）和
+# kline_coverage（4空格缩进，模块级函数内）中格式不同，
+# 所以 tuple 键一律用短版 sql_key "FROM information_schema.columns"
+# （不带 WHERE 子句、不关心缩进），靠 args_prefix 精确区分。
+
+_BASELINE_COLS_KEY = "FROM information_schema.columns"
 
 BASELINE_RESPONSES = {
     # ============ 时间列类型探测（args-aware，精确到列名）============
     # trading.trade_records.executed_at → naive（被 _bind_window 多处调用）
-    (_BASELINE_INFORMATION_SCHEMA_COLUMNS,
+    (_BASELINE_COLS_KEY,
      ("trading", "trade_records", "executed_at")): {
         "data_type": "timestamp without time zone"
     },
     # aggressive 信号表时间列探测（循环候选列，created_at 第一个命中）→ naive
     # 精确 3 参数前缀：只有 ('btc_eth_aggressive', 'trade_signals', 'created_at') 命中
-    (_BASELINE_INFORMATION_SCHEMA_COLUMNS,
+    (_BASELINE_COLS_KEY,
      ("btc_eth_aggressive", "trade_signals", "created_at")): {
         "data_type": "timestamp without time zone"
     },
-    # hrs 信号表时间列探测（created_at/signal_time/executed_at 不存在，triggered_at 命中）→ aware
+    # hrs 信号表：created_at / signal_time 在真实表中不存在 → 返回 None，
+    # 让 auditor 继续探测候选集合直到 triggered_at（下面那条精确键返回 aware）
+    (_BASELINE_COLS_KEY,
+     ("hrs", "hrs_signals", "created_at")): None,
+    (_BASELINE_COLS_KEY,
+     ("hrs", "hrs_signals", "signal_time")): None,
+    # hrs 信号表时间列探测（created_at/signal_time 不存在，triggered_at 命中）→ aware
     # 精确 3 参数前缀：只有 ('hrs', 'hrs_signals', 'triggered_at') 命中返回 aware；
     # 其他候选列的调用遍历所有键都不命中 → FakeDB 返回 None → auditor 继续下一个候选
-    (_BASELINE_INFORMATION_SCHEMA_COLUMNS,
+    (_BASELINE_COLS_KEY,
      ("hrs", "hrs_signals", "triggered_at")): {
         "data_type": "timestamp with time zone"
     },
     # K 线时间列探测
-    (_BASELINE_INFORMATION_SCHEMA_COLUMNS,
+    (_BASELINE_COLS_KEY,
      ("btc_eth", "kline_btcusdt_1h", "open_time")): {
         "data_type": "timestamp without time zone"
     },
@@ -162,6 +176,14 @@ BASELINE_RESPONSES = {
     # ============ schema / 表存在性探测 ============
     # information_schema.schemata 验证 schema 存在（每个策略各查一次，返回存在即可）
     "FROM information_schema.schemata WHERE schema_name = $1": {"?column?": 1},
+
+    # K 线表存在性探测（阶段二 Task 3：_table_exists 用 information_schema.tables）
+    "SELECT 1 FROM information_schema.tables": {"?column?": 1},
+
+    # K 线时间列探测兜底（阶段二 Task 3：_detect_ts_column 用 information_schema.columns）
+    # 用 tuple 键 + args_prefix=None（不检查 args），放在精确 tuple 键之后插入，
+    # 保证精确 args 前缀命中优先（如 hrs triggered_at 返回 aware），未命中时兜底 naive。
+    ("FROM information_schema.columns", None): {"data_type": "timestamp without time zone"},
 
     # aggressive 信号表探测（f-string SQL 含字面 'btc_eth_aggressive'）
     "WHERE table_schema = 'btc_eth_aggressive' AND table_name ILIKE": [
@@ -176,12 +198,7 @@ BASELINE_RESPONSES = {
     "ORDER BY table_schema": {"table_schema": "btc_eth"},
 
     # K 线表名探测（按 symbol 过滤）
-    # auditor 的 _detect_kline_table_name 用参数化 SQL：
-    #   WHERE table_schema = $1 AND table_name ILIKE $2 ORDER BY table_name LIMIT 1
-    # 优先 1h（pattern kline_<symbol>_%h）、退而任意周期（kline_<symbol>_%），
-    # 两个调用共享同一 SQL 模板但不同 args 前缀。
-    # 纯子串 WHERE table_schema = $1 AND table_name ILIKE $2 即可唯一命中
-    # （_find_signal_table 只有 ILIKE $1 不会误命中）。
+    # 旧 auditor._detect_kline_table_name 已删除，这些路由键仍保留以便未来扩展
     "WHERE table_schema = $1 AND table_name ILIKE $2": {"table_name": "kline_btcusdt_1h"},
 
     # K 线时间戳列探测（候选列集合）
@@ -206,6 +223,13 @@ BASELINE_RESPONSES = {
 
     # K 线计数（schema/table/ts_col 字面在 FROM/WHERE 里）
     "FROM btc_eth.kline_btcusdt_1h": {"cnt": 2160},
+
+    # ============ 阶段二 Task 3：K 线 generate_series 计数 ============
+    # 90 天窗口 × 24 bar/天 = 2160；5 symbol × 3 interval = 15 pair
+    # 所有 pair 都 2160/2160 → weighted 1.0（全达标基线）
+    "COUNT(*) AS expected": {"actual": 2160, "expected": 2160},
+    # 缺失桶查询：返回空列表（全达标，无缺失）
+    "WHERE k.open_time IS NULL": [],
 }
 
 

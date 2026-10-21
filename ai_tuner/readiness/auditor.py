@@ -22,28 +22,33 @@
 
 import re
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import structlog
 
+from . import db_probe
 from .models import CandidateReadiness, ReadinessResult
 
 logger = structlog.get_logger()
 
-# ---------- 模块常量 ----------
 
-# 数据库已知 schema 列表（来自 postgres init-scripts，用于 K 线探测的 SQL 参数）
-_KNOWN_SCHEMAS = ["btc_eth", "btc_eth_aggressive", "new_coin", "grid", "trading", "public"]
+def format_ratio(value: float) -> str:
+    """把 0-1 浮点比率格式化为百分比字符串（保留两位小数）。
+
+    门禁 failure/gaps 文案和 CLI 摘要必须复用同一精度，避免
+    97.96% 因 .1% 四舍五入成 98.0% 跟阈值 98.0% 看起来自相矛盾。
+    """
+    return f"{value:.2%}"
+
+
+# ---------- 模块常量 ----------
 
 # 信号表候选时间列名（按固定优先级匹配）
 _SIGNAL_TS_CANDIDATES = ["created_at", "signal_time", "triggered_at", "executed_at"]
 
 # 信号表候选表名后缀（按优先级匹配，覆盖 trade_signals / hrs_signals / short_signals）
 _SIGNAL_TABLE_PATTERN = "%signal%"
-
-# information_schema.columns.data_type aware 字面量（模块常量，避免散写）
-# naive 分支用 None/降级处理，不单独声明常量
-_TS_AWARE = "timestamp with time zone"
 
 # status 串允许字符白名单（防 SQL 注入：auditor 用 f-string 直接拼进 AND status IN (...)）
 # 仅允许 [A-Za-z0-9_]——PostgreSQL status 列一般都是 snake_case
@@ -118,54 +123,74 @@ _REQUIRED_PER_STRATEGY_KEYS = [
 ]
 
 
+def _init_from_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """从 config.yaml 解析 auditor 所需的全部配置属性（含强制键校验）
+
+    返回 dict 含 candidates / identity_baseline / readiness_cfg / per_strategy /
+    effective_signal_statuses / universe_cfg——__init__ 只需逐一赋值。
+    """
+    mvp = config.get("purpose_driven_mvp", {})
+    missing_mvp = [k for k in _REQUIRED_MVP_KEYS if k not in mvp]
+    if missing_mvp:
+        raise ValueError(f"purpose_driven_mvp 缺键: {missing_mvp}")
+
+    readiness_cfg = mvp.get("readiness", {})
+    missing = [k for k in _REQUIRED_READINESS_KEYS if k not in readiness_cfg]
+    if missing:
+        raise ValueError(f"purpose_driven_mvp.readiness 缺键: {missing}")
+
+    per_strategy: Dict[str, dict] = {}
+    per_cfg = readiness_cfg.get("per_strategy", {}) or {}
+    for sid, entry in per_cfg.items():
+        missing_keys = [k for k in _REQUIRED_PER_STRATEGY_KEYS if k not in entry]
+        if missing_keys:
+            raise ValueError(
+                f"purpose_driven_mvp.readiness.per_strategy.{sid} 缺键: {missing_keys}"
+            )
+        per_strategy[sid] = dict(entry)
+
+    return {
+        "candidates": list(mvp["candidates"]),
+        "identity_baseline": float(mvp["identity_ratio_baseline"]),
+        "readiness_cfg": readiness_cfg,
+        "per_strategy": per_strategy,
+        "effective_signal_statuses": _validate_effective_signal_statuses(
+            readiness_cfg.get("effective_signal_statuses")
+        ),
+        "universe_cfg": dict(readiness_cfg.get("universe") or {}),
+    }
+
+
 class ReadinessAuditor:
     """执行 90 天准备度审计"""
 
-    def __init__(self, db_manager, config: Dict[str, Any]):
+    def __init__(
+        self,
+        db_manager,
+        config: Dict[str, Any],
+        project_root: Optional[Path] = None,
+    ):
         """
         Args:
-            db_manager: DatabaseManager 实例（异步）
-            config: 完整 ai_tuner/config.yaml 内容
+            db_manager:   DatabaseManager 实例（异步）
+            config:       完整 ai_tuner/config.yaml 内容
+            project_root: 仓库根（给 universe resolver / table_name_guard 用）。
+                          默认 Path(__file__).resolve().parents[2]，现有调用点
+                          （scripts/ai_tuner_mvp.py、测试 fixture）都无需改动即可工作。
         """
         self.db = db_manager
-        mvp = config.get("purpose_driven_mvp", {})
-
-        # mvp 顶层强制键校验（含 identity_ratio_baseline）
-        missing_mvp = [k for k in _REQUIRED_MVP_KEYS if k not in mvp]
-        if missing_mvp:
-            raise ValueError(
-                f"purpose_driven_mvp 缺键: {missing_mvp}"
-            )
-
-        self.candidates = list(mvp["candidates"])
-        self.identity_baseline = float(mvp["identity_ratio_baseline"])
-        self.readiness_cfg = mvp.get("readiness", {})
-
-        # readiness 段强制键校验（含 window_days，不再 get 兜底）
-        missing = [k for k in _REQUIRED_READINESS_KEYS if k not in self.readiness_cfg]
-        if missing:
-            raise ValueError(
-                f"purpose_driven_mvp.readiness 缺键: {missing}"
-            )
-
-        # 策略级外部快照覆盖（per_strategy）：可选，但每个条目必须含必备键
-        self.per_strategy: Dict[str, dict] = {}
-        per_cfg = self.readiness_cfg.get("per_strategy", {}) or {}
-        for sid, entry in per_cfg.items():
-            missing_keys = [k for k in _REQUIRED_PER_STRATEGY_KEYS if k not in entry]
-            if missing_keys:
-                raise ValueError(
-                    f"purpose_driven_mvp.readiness.per_strategy.{sid} 缺键: {missing_keys}"
-                )
-            self.per_strategy[sid] = dict(entry)
-
-        # 策略级「有效信号」状态过滤集合（可选，不在 _REQUIRED_READINESS_KEYS）。
-        # 仅声明了的策略（dict 中含 sid）会在信号计数时追加 AND status IN (...)；
-        # 未声明者（如 hrs，其状态域 triggered/executed/timeout/conflict 与 MTPCS 完全不同）
-        # 保持纯 COUNT(*) 口径不变——禁止硬编码，策略状态集合差异由配置声明。
-        self.effective_signal_statuses = _validate_effective_signal_statuses(
-            self.readiness_cfg.get("effective_signal_statuses")
+        # 仓库根：默认按文件位置推断，允许显式传入（测试可覆盖）
+        self.project_root = Path(
+            project_root if project_root is not None
+            else Path(__file__).resolve().parents[2]
         )
+        attrs = _init_from_config(config)
+        self.candidates = attrs["candidates"]
+        self.identity_baseline = attrs["identity_baseline"]
+        self.readiness_cfg = attrs["readiness_cfg"]
+        self.per_strategy = attrs["per_strategy"]
+        self.effective_signal_statuses = attrs["effective_signal_statuses"]
+        self.universe_cfg = attrs["universe_cfg"]
 
     # ---------------------------------------------------------------
     # 辅助：schema / 表 / 列类型探测 + 时间绑定 + 公共窗口计数
@@ -174,39 +199,14 @@ class ReadinessAuditor:
     async def _fetch_column_data_type(
         self, schema: str, table: str, column: str
     ) -> Optional[str]:
-        """通过 information_schema.columns 探测目标列的 data_type"""
-        sql = """
-        SELECT data_type
-        FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = $2 AND column_name = $3
-        """
-        try:
-            row = await self.db.fetch_one(sql, schema, table, column)
-            return row["data_type"] if row else None
-        except Exception as exc:
-            logger.warning("列类型探测失败", schema=schema, table=table,
-                           column=column, error=str(exc))
-            return None
+        """委托 db_probe：消除与 kline_coverage.py 的重复探测逻辑"""
+        return await db_probe.fetch_column_data_type(self.db, schema, table, column)
 
     async def _bind_window(
         self, schema: str, table: str, column: str, dt: datetime
     ) -> datetime:
-        """按目标时间列类型转换窗口绑定值（消除 asyncpg naive/aware 冲突）
-
-        naive 列 → dt.replace(tzinfo=None)；
-        aware 列 → dt.astimezone(timezone.utc)（dt 无 tz 则补 UTC）；
-        探测失败 → 降级 naive 去 tzinfo（保证不炸）。
-        公共方法，多处复用：trade_records / 信号计数 / K 线计数。
-        """
-        dtype = await self._fetch_column_data_type(schema, table, column)
-        if dtype == _TS_AWARE:
-            if dt.tzinfo is None:
-                return dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc)
-        # 显式 naive 列（_TS_NAIVE）或探测失败（None）→ 去 tzinfo，
-        # 统一处理保证 asyncpg 不炸；其他 data_type（如 "timestamp" 无 precision）
-        # 也降级走这条，做防御性兜底。aware/naive 分支语义对称，便于维护
-        return dt.replace(tzinfo=None)
+        """委托 db_probe：按时间列类型把 dt 正确绑定（消除与 kline_coverage.py 的重复）"""
+        return await db_probe.bind_datetime(self.db, schema, table, column, dt)
 
     async def _count_rows_in_window(
         self,
@@ -282,31 +282,6 @@ class ReadinessAuditor:
         )
         return None
 
-    async def _detect_dominant_symbol(
-        self, strategy_id: str, window_start: datetime, window_end: datetime
-    ) -> Optional[str]:
-        """查询窗口内该策略的主力合约（symbol 出现次数最多者）
-
-        用于 K 线表定位：避免任意取第一张 K 线表（经常是无关小币）。
-        """
-        sql = """
-        SELECT symbol
-        FROM trading.trade_records
-        WHERE strategy = $1 AND executed_at >= $2 AND executed_at < $3
-        GROUP BY symbol ORDER BY COUNT(*) DESC LIMIT 1
-        """
-        try:
-            ws = await self._bind_window("trading", "trade_records",
-                                         "executed_at", window_start)
-            we = await self._bind_window("trading", "trade_records",
-                                         "executed_at", window_end)
-            row = await self.db.fetch_one(sql, strategy_id, ws, we)
-            return row["symbol"] if row else None
-        except Exception as exc:
-            logger.warning("主力合约查询失败", strategy=strategy_id,
-                           error=str(exc))
-            return None
-
     # ---------------------------------------------------------------
     # 信号表探测 + 计数（拆成 probe / count 两步，各 ≤50 行）
     # ---------------------------------------------------------------
@@ -379,48 +354,8 @@ class ReadinessAuditor:
             return 0, [f"{strategy_id}.{table_name} 信号计数查询失败: {exc}"]
 
     # ---------------------------------------------------------------
-    # K 线表定位 + 覆盖度（拆成 locate / coverage 两步，各 ≤50 行）
+    # K 线覆盖度（委托 kline_coverage.compute_kline_coverage）
     # ---------------------------------------------------------------
-
-    async def _locate_kline_table(
-        self,
-        strategy_id: str,
-        window_start: datetime,
-        window_end: datetime,
-    ) -> Tuple[Optional[str], Optional[str], List[str]]:
-        """按主力合约定位 K 线表（独立方法，让 _query_kline_coverage 主体 ≤50 行）
-
-        Returns:
-            (schema_or_None, table_name_or_None, gaps_for_missing_cases)
-            成功 → (schema, table_name, [])；失败 → (None, None, gaps)
-        """
-        # Step 1: 主力合约探测
-        dominant = await self._detect_dominant_symbol(
-            strategy_id, window_start, window_end
-        )
-        if dominant is None:
-            return None, None, [
-                f"K 线覆盖度无法计算：strategy={strategy_id} 在窗口内无交易记录"
-                f"（主力合约探测为空）；TODO(阶段二): 改为按策略 universe 逐 symbol 计算"
-            ]
-
-        # Step 2: K 线 schema 探测（所有生产 K 线都在 btc_eth schema）
-        schema = await self._resolve_kline_schema()
-        if schema is None:
-            return None, None, [
-                "K 线表未探测到（search_path 下所有 schema 都没有 K 线表）"
-            ]
-
-        # Step 3: 按主力合约找 K 线表（优先 1h 周期，退而任意周期）
-        table_name = await self._detect_kline_table_name(schema, dominant)
-        if table_name is None:
-            return None, None, [
-                f"schema {schema} 下无匹配主力合约 {dominant} 的 K 线表"
-                f"（pattern: kline_{dominant.lower()}_%）；"
-                f"TODO(阶段二): 改为按策略 universe 逐 symbol 计算"
-            ]
-
-        return schema, table_name, []
 
     async def _query_kline_coverage(
         self,
@@ -428,44 +363,32 @@ class ReadinessAuditor:
         window_start: datetime,
         window_end: datetime,
     ) -> tuple:
-        """查询 K 线覆盖度（按主力合约取表）
+        """按策略 universe 逐 symbol 加权计算 K 线覆盖
 
-        覆盖度含义：**主力合约抽样**，不是全候选池覆盖。
-        TODO(阶段二): 改为按策略 universe 逐 symbol 计算覆盖率。
+        委托 kline_coverage.compute_kline_coverage
+        （内部走 UniverseResolver + generate_series + COUNT DISTINCT open_time）。
+
+        Returns:
+            (weighted_coverage, gaps_list, symbols_detail_list)
         """
-        # Step 1-3: 定位 K 线表（主力合约 → schema → table）
-        schema, table_name, gap = await self._locate_kline_table(
-            strategy_id, window_start, window_end
-        )
-        if schema is None:
-            return 0.0, gap
-
-        # Step 4: 时间戳列探测
-        ts_col = await self._detect_timestamp_column(schema, table_name)
-        if ts_col is None:
-            return 0.0, [f"schema {schema}.{table_name} 下未识别到时间戳列"]
-
-        # Step 5: 周期推导 + 计数
-        period_sec = self._infer_kline_period(table_name)
-        if period_sec is None:
-            logger.warning("K 线周期未知", table=table_name)
-            return 0.0, [
-                f"K 线周期未知（表名 {table_name} 未匹配 1m/5m/15m/1h/4h/1d），"
-                f"覆盖率记 0"
-            ]
-        expected_bars = int((window_end - window_start).total_seconds() / period_sec)
+        from . import kline_coverage as kc
 
         try:
-            actual = await self._count_rows_in_window(
-                schema, table_name, ts_col, window_start, window_end
+            result = await kc.compute_kline_coverage(
+                self.db,
+                strategy_id=strategy_id,
+                universe_cfg=self.universe_cfg or None,
+                project_root=self.project_root,
+                window_start=window_start,
+                window_end=window_end,
             )
         except Exception as exc:
-            logger.warning("K 线覆盖查询失败", schema=schema, table=table_name,
-                           error=str(exc))
-            return 0.0, [f"K 线查询失败: {exc}"]
+            logger.warning("K 线覆盖计算异常", strategy=strategy_id, error=str(exc))
+            return 0.0, [f"K 线覆盖计算异常: {exc}"], []
 
-        coverage = actual / expected_bars if expected_bars > 0 else 0.0
-        return min(coverage, 1.0), []
+        gaps = list(result.gaps)
+        symbols_detail = [kc.symbol_row_to_dict(s) for s in result.symbols]
+        return result.weighted_coverage, gaps, symbols_detail
 
     # ---------------------------------------------------------------
     # 门禁参数解析 / 主入口 / 单策略审计
@@ -533,12 +456,33 @@ class ReadinessAuditor:
         regime_proxy, regime_gaps = await self._query_regime_coverage(
             strategy_id, window_start, window_end
         )
-        kline_coverage, kline_gaps = await self._query_kline_coverage(
+        kline_coverage, kline_gaps, kline_symbols = await self._query_kline_coverage(
             strategy_id, window_start, window_end
         )
         snapshot_coverage, snapshot_gaps = await self._query_external_snapshot()
-        identity_ratio = self.identity_baseline
+        return self._build_candidate(
+            strategy_id=strategy_id,
+            closed_trades=closed_trades, complete_ratio=complete_ratio,
+            signals_count=signals_count, signal_gaps=signal_gaps,
+            regime_proxy=regime_proxy, regime_gaps=regime_gaps,
+            kline_coverage=kline_coverage, kline_gaps=kline_gaps,
+            kline_symbols=kline_symbols,
+            snapshot_coverage=snapshot_coverage, snapshot_gaps=snapshot_gaps,
+        )
 
+    def _build_candidate(
+        self,
+        *,
+        strategy_id: str,
+        closed_trades: int, complete_ratio: float,
+        signals_count: int, signal_gaps: List[str],
+        regime_proxy: int, regime_gaps: List[str],
+        kline_coverage: float, kline_gaps: List[str],
+        kline_symbols: list,
+        snapshot_coverage: float, snapshot_gaps: List[str],
+    ) -> CandidateReadiness:
+        """把各查询结果组装成 CandidateReadiness（门禁判定 + gaps 汇总 + 返回）"""
+        identity_ratio = self.identity_baseline
         snap_threshold, snap_requirement = self._resolve_snapshot_policy(strategy_id)
 
         failures, snap_reason = self._apply_gate_thresholds(
@@ -546,12 +490,10 @@ class ReadinessAuditor:
             identity_ratio, kline_coverage, snapshot_coverage,
             regime_proxy, snap_threshold, snap_requirement,
         )
-
         gaps = self._build_gaps_list(
             signal_gaps, kline_gaps, snapshot_gaps, regime_gaps,
             identity_ratio, snapshot_coverage, snap_requirement,
         )
-
         return CandidateReadiness(
             strategy_id=strategy_id,
             closed_trades=closed_trades,
@@ -565,6 +507,7 @@ class ReadinessAuditor:
             external_snapshot_reason=snap_reason,
             failures=failures,
             gaps=gaps,
+            kline_symbols=list(kline_symbols or []),
         )
 
     def _apply_gate_thresholds(
@@ -582,16 +525,26 @@ class ReadinessAuditor:
         if signals_count < cfg["min_effective_signals"]:
             failures.append(f"有效信号 {signals_count} < {cfg['min_effective_signals']}")
         if complete_ratio < cfg["min_trade_field_completeness"]:
-            failures.append(f"交易字段完整度 {complete_ratio:.1%} < {cfg['min_trade_field_completeness']:.1%}")
+            failures.append(
+                f"交易字段完整度 {format_ratio(complete_ratio)} "
+                f"< {format_ratio(cfg['min_trade_field_completeness'])}"
+            )
         if identity_ratio < cfg["min_config_identity_coverage"]:
-            failures.append(f"配置身份覆盖 {identity_ratio:.1%} < {cfg['min_config_identity_coverage']:.1%}")
+            failures.append(
+                f"配置身份覆盖 {format_ratio(identity_ratio)} "
+                f"< {format_ratio(cfg['min_config_identity_coverage'])}"
+            )
         if kline_coverage < cfg["min_kline_coverage"]:
-            failures.append(f"K线覆盖 {kline_coverage:.1%} < {cfg['min_kline_coverage']:.1%}")
+            failures.append(
+                f"K线覆盖 {format_ratio(kline_coverage)} "
+                f"< {format_ratio(cfg['min_kline_coverage'])}"
+            )
         if snapshot_requirement == "not_required_for_current_manifest":
             snap_reason = "not_required_for_current_manifest"
         elif snapshot_coverage < snapshot_threshold:
             failures.append(
-                f"外部快照覆盖 {snapshot_coverage:.1%} < {snapshot_threshold:.1%} "
+                f"外部快照覆盖 {format_ratio(snapshot_coverage)} "
+                f"< {format_ratio(snapshot_threshold)} "
                 f"(required_historical_external_snapshots_missing)"
             )
             snap_reason = "required_historical_external_snapshots_missing"
@@ -615,7 +568,7 @@ class ReadinessAuditor:
         gaps = list(signal_gaps) + list(kline_gaps)
         if snapshot_requirement == "not_required_for_current_manifest":
             gaps.append(
-                f"外部快照 coverage={snapshot_coverage:.1%} "
+                f"外部快照 coverage={format_ratio(snapshot_coverage)} "
                 f"（not_required_for_current_manifest：当前 manifest 的入场逻辑"
                 f"不依赖 OI/市值/资金费率/情绪快照）"
             )
@@ -702,93 +655,6 @@ class ReadinessAuditor:
             "无历史外部快照表（OI/市值/资金费率/情绪时点快照），"
             "external_snapshot_coverage 记 0；后续阶段需补齐快照采集器"
         ]
-
-    # ---------------------------------------------------------------
-    # K 线探测辅助（schema / table / timestamp / period）
-    # ---------------------------------------------------------------
-
-    async def _resolve_kline_schema(self) -> Optional[str]:
-        """探测哪个 schema 下有 K 线表（ORDER BY table_schema → btc_eth 优先）"""
-        sql = """
-        SELECT table_schema
-        FROM information_schema.tables
-        WHERE table_schema = ANY($1)
-          AND table_name ILIKE '%kline%'
-        ORDER BY table_schema
-        LIMIT 1
-        """
-        try:
-            row = await self.db.fetch_one(sql, _KNOWN_SCHEMAS)
-        except Exception as exc:
-            logger.warning("K 线 schema 探测失败", error=str(exc))
-            return None
-        return row["table_schema"] if row else None
-
-    async def _detect_kline_table_name(
-        self, schema: str, dominant_symbol: str
-    ) -> Optional[str]:
-        """按主力合约 symbol 定位 K 线表（优先 1h 周期，退而任意周期）
-
-        两段 SELECT 结构相同 → 用 pattern 列表循环消除重复代码（观察项 6）。
-        """
-        symbol_lower = dominant_symbol.lower()
-        # 优先 1h（覆盖 90 天窗口 2160 bar），退而任意周期
-        for pattern_like, label in [
-            (f"kline_{symbol_lower}_%h", "1h"),
-            (f"kline_{symbol_lower}_%", "任意"),
-        ]:
-            sql = """
-            SELECT table_name FROM information_schema.tables
-            WHERE table_schema = $1 AND table_name ILIKE $2
-            ORDER BY table_name LIMIT 1
-            """
-            try:
-                row = await self.db.fetch_one(sql, schema, pattern_like)
-                if row:
-                    return row["table_name"]
-            except Exception as exc:
-                logger.warning(
-                    "按 symbol 探测 K 线表失败", schema=schema,
-                    symbol=dominant_symbol, period=label, error=str(exc),
-                )
-        return None
-
-    async def _detect_timestamp_column(self, schema: str, table: str) -> Optional[str]:
-        """探测 K 线表的时间戳列名；异常时记录 warning 后返回 None"""
-        sql = """
-        SELECT column_name FROM information_schema.columns
-        WHERE table_schema = $1 AND table_name = $2
-          AND column_name IN ('timestamp', 'open_time', 'close_time', 'ts')
-        LIMIT 1
-        """
-        try:
-            row = await self.db.fetch_one(sql, schema, table)
-            return row["column_name"] if row else None
-        except Exception as exc:
-            logger.warning("K 线时间戳列探测异常", schema=schema, table=table,
-                           error=str(exc))
-            return None
-
-    @staticmethod
-    def _infer_kline_period(table_name: str) -> Optional[int]:
-        """从 K 线表名推导 bar 周期（秒）
-
-        长模式优先：_1d(86400) → _24h(86400) → _4h(14400) → _1h(3600)
-        → _15m(900) → _5m(300) → _1m(60)
-        """
-        period_map = [
-            (re.compile(r"_1[dD]"), 86400),
-            (re.compile(r"_24[hH]"), 86400),
-            (re.compile(r"_4[hH]"), 14400),
-            (re.compile(r"_1[hH]"), 3600),
-            (re.compile(r"_15[mM]"), 900),
-            (re.compile(r"_5[mM]"), 300),
-            (re.compile(r"_1[mM]"), 60),
-        ]
-        for pattern, sec in period_map:
-            if pattern.search(table_name):
-                return sec
-        return None
 
     # ---------------------------------------------------------------
     # 策略选择（确定性顺序）
