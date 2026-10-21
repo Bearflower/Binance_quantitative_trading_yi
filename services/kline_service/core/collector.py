@@ -88,6 +88,16 @@ class KlineCollector:
                 limit=limit,
             )
 
+            # BinanceClient 用 None 表示请求/重试最终失败；空列表才是合法的
+            # “该窗口没有数据”。严格补采不能把失败误报成成功空结果。
+            if raw_data is None:
+                if self.strict_errors:
+                    raise RuntimeError(
+                        f"Binance API 获取 {symbol} {interval} K 线失败"
+                    )
+                logger.warning(f"未获取到 {symbol} {interval} 的 K 线数据")
+                return []
+
             if not raw_data:
                 logger.warning(f"未获取到 {symbol} {interval} 的 K 线数据")
                 return []

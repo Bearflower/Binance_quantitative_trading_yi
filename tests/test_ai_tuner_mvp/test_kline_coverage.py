@@ -229,6 +229,13 @@ async def test_missing_table_produces_zero_coverage_with_gap():
     # 至少有一个 symbol/interval 的 gap="table_missing"
     table_missing_rows = [s for s in result.symbols if s.gap == "table_missing"]
     assert table_missing_rows, "至少一个 pair 应带 gap=table_missing"
+    expected_range = (
+        (as_of - timedelta(hours=24)).replace(tzinfo=None),
+        as_of.replace(tzinfo=None),
+    )
+    assert all(row.missing_ranges == (expected_range,) for row in table_missing_rows), (
+        "缺表代表整个闭合窗口缺失，必须生成完整窗口的精确补采区间"
+    )
 
 
 # ===========================================================================

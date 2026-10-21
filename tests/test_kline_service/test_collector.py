@@ -68,6 +68,17 @@ class TestKlineCollector:
         assert collector.stats["total_collected"] == 0
 
     @pytest.mark.asyncio
+    async def test_collect_klines_strict_mode_rejects_none_api_failure(self, collector):
+        """真实客户端用 None 表示请求失败；严格补采模式必须让任务非零退出。"""
+        collector.strict_errors = True
+        collector.binance_client.get_klines.return_value = None
+
+        with pytest.raises(RuntimeError, match="Binance API"):
+            await collector.collect_klines("BTCUSDT", "15m")
+
+        assert collector.stats["total_errors"] == 1
+
+    @pytest.mark.asyncio
     async def test_collect_klines_api_exception(self, collector):
         """测试 collect_klines 币安API异常"""
         collector.binance_client.get_klines.side_effect = Exception("API 异常")

@@ -435,8 +435,14 @@ async def _single_pair_coverage(db,
 
     # 表不存在 → expected 仍按应有桶数计，actual=0
     if not await db_probe.table_exists(db, _KLINE_SCHEMA, validated_table):
-        expected = _expected_buckets(window_start, window_end, period_sec)
-        return _placeholder_row(symbol, interval, expected, "table_missing")
+        ws, we = _align_window(window_start, window_end, period_sec)
+        expected = max(0, int((we - ws).total_seconds() / period_sec))
+        # 缺表等价于完整闭合窗口全部缺失，可安全生成一个精确补采区间。
+        # 与查询失败不同：这里不是把未知状态猜成缺口，而是已确认存储表不存在。
+        missing_ranges = ((ws, we),) if expected > 0 else ()
+        return _placeholder_row(
+            symbol, interval, expected, "table_missing", 0, missing_ranges,
+        )
 
     # 表存在 → 探测时间列 + 计算
     ts_col, ts_dtype = await _detect_ts_column(db, _KLINE_SCHEMA, validated_table)
