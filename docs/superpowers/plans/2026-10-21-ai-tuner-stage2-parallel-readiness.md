@@ -694,19 +694,19 @@ git commit -m "feat(ai-tuner): 部署独立 HRS 快照采集器"
 - Create after execution: `docs/reports/ai-tuner-kline-coverage-<UTC审计日期>.json`，日期由审计命令的 `--as-of` 自动生成，不接受人工自由命名
 - Modify after evidence: `docs/superpowers/plans/2026-10-17-ai-tuner-mvp-safety-readiness.md`
 
-- [ ] **Step 1：先部署只读审计能力**
+- [x] **Step 1：先部署只读审计能力**
 
 按常规流程完成测试、代码审查、合并、push、Actions 和生产容器版本核验。尚未执行补采前，先运行 `kline-audit` 保存真实缺口报告。
 
-- [ ] **Step 2：人工核对补采计划边界**
+- [x] **Step 2：人工核对补采计划边界**
 
 确认所有建议命令只包含两个候选策略真实 universe、批准周期和 90 天窗口；不得采集任意未登记 symbol，不得写交易表。
 
-- [ ] **Step 3：执行补采并记录结果**
+- [x] **Step 3：执行补采并记录结果**
 
 逐 symbol/interval 执行精确区间补采。每批后重新运行只读审计；失败项保留，不得用手工 SQL 伪造 bar。
 
-- [ ] **Step 4：重跑 readiness**
+- [x] **Step 4：重跑 readiness**
 
 Expected:
 
@@ -714,9 +714,11 @@ Expected:
 - HRS 可能仍因历史 universe/外部快照不足而 STOP，这是预期结果；
 - 激进版有效信号未满 100 时仍为 STOP，不调整阈值。
 
-- [ ] **Step 5：提交证据文档**
+- [x] **Step 5：提交证据文档**
 
 真实报告中不得包含凭据、数据库连接串或原始敏感 payload。
+
+**执行结果（2026-10-21）**：生产补采共新增 260 根 K 线，激进版 90 天完整 universe 加权覆盖率达到 `1.0`，`missing_ranges=[]`、`recommended_commands=[]`；完整 readiness 保持 `STOP`，原因转为激进版有效信号 `6 < 100`，HRS 仍缺历史 universe 与外部快照。证据文件：`docs/reports/ai-tuner-kline-coverage-2026-10-21.json`。
 
 ### Task 10：启动确定性回放基础设施
 

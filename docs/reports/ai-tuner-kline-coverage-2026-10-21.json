@@ -1,0 +1,29 @@
+{
+  "gaps": [],
+  "missing_ranges": [],
+  "recommended_commands": [],
+  "strategy_id": "btc_eth_aggressive",
+  "symbols": [
+    {"actual": 2159, "coverage": 1.0, "expected": 2159, "gap": null, "interval": "1h", "missing_ranges": [], "symbol": "BTCUSDT"},
+    {"actual": 539, "coverage": 1.0, "expected": 539, "gap": null, "interval": "4h", "missing_ranges": [], "symbol": "BTCUSDT"},
+    {"actual": 89, "coverage": 1.0, "expected": 89, "gap": null, "interval": "1d", "missing_ranges": [], "symbol": "BTCUSDT"},
+    {"actual": 2159, "coverage": 1.0, "expected": 2159, "gap": null, "interval": "1h", "missing_ranges": [], "symbol": "ETHUSDT"},
+    {"actual": 539, "coverage": 1.0, "expected": 539, "gap": null, "interval": "4h", "missing_ranges": [], "symbol": "ETHUSDT"},
+    {"actual": 89, "coverage": 1.0, "expected": 89, "gap": null, "interval": "1d", "missing_ranges": [], "symbol": "ETHUSDT"},
+    {"actual": 2159, "coverage": 1.0, "expected": 2159, "gap": null, "interval": "1h", "missing_ranges": [], "symbol": "BNBUSDT"},
+    {"actual": 539, "coverage": 1.0, "expected": 539, "gap": null, "interval": "4h", "missing_ranges": [], "symbol": "BNBUSDT"},
+    {"actual": 89, "coverage": 1.0, "expected": 89, "gap": null, "interval": "1d", "missing_ranges": [], "symbol": "BNBUSDT"},
+    {"actual": 2159, "coverage": 1.0, "expected": 2159, "gap": null, "interval": "1h", "missing_ranges": [], "symbol": "SOLUSDT"},
+    {"actual": 539, "coverage": 1.0, "expected": 539, "gap": null, "interval": "4h", "missing_ranges": [], "symbol": "SOLUSDT"},
+    {"actual": 89, "coverage": 1.0, "expected": 89, "gap": null, "interval": "1d", "missing_ranges": [], "symbol": "SOLUSDT"},
+    {"actual": 2159, "coverage": 1.0, "expected": 2159, "gap": null, "interval": "1h", "missing_ranges": [], "symbol": "XRPUSDT"},
+    {"actual": 539, "coverage": 1.0, "expected": 539, "gap": null, "interval": "4h", "missing_ranges": [], "symbol": "XRPUSDT"},
+    {"actual": 89, "coverage": 1.0, "expected": 89, "gap": null, "interval": "1d", "missing_ranges": [], "symbol": "XRPUSDT"}
+  ],
+  "weighted_coverage": 1.0,
+  "window": {
+    "days": 90,
+    "end": "2026-10-21T10:04:00Z",
+    "start": "2026-07-23T10:04:00Z"
+  }
+}
