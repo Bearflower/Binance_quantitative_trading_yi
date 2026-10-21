@@ -5,7 +5,7 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, Optional, Tuple
 
 
-_REAL_MARKET_CAP_SOURCES = frozenset({"coingecko", "coingecko_cache"})
+_REAL_MARKET_CAP_SOURCES = frozenset({"coingecko", "cache_hit", "coingecko_cache"})
 
 
 @dataclass(frozen=True)

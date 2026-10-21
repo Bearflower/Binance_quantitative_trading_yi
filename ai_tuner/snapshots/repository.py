@@ -84,6 +84,54 @@ class SnapshotRepository:
         )
         return int((row or {}).get("count", 0))
 
+    async def store_universe(
+        self,
+        strategy_id: str,
+        observed_at: datetime,
+        short_symbols,
+        long_symbols,
+        source_run_id: str,
+        config_hash: str,
+    ) -> None:
+        short_set = {str(symbol).upper() for symbol in short_symbols}
+        long_set = {str(symbol).upper() for symbol in long_symbols}
+        for symbol in sorted(short_set | long_set):
+            membership = "both" if symbol in short_set and symbol in long_set else (
+                "short" if symbol in short_set else "long"
+            )
+            await self.db.execute(
+                """
+                INSERT INTO public.ai_tuner_universe_snapshots
+                    (strategy_id, observed_at, symbol, membership, source_run_id, config_hash)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (strategy_id, observed_at, symbol) DO NOTHING
+                """,
+                strategy_id,
+                observed_at,
+                symbol,
+                membership,
+                source_run_id,
+                config_hash,
+            )
+
+    async def latest_universe(self, strategy_id: str, as_of: datetime):
+        rows = await self.db.fetch_all(
+            """
+            SELECT symbol
+            FROM public.ai_tuner_universe_snapshots
+            WHERE strategy_id = $1
+              AND observed_at = (
+                  SELECT MAX(observed_at)
+                  FROM public.ai_tuner_universe_snapshots
+                  WHERE strategy_id = $1 AND observed_at <= $2
+              )
+            ORDER BY symbol
+            """,
+            strategy_id,
+            as_of,
+        )
+        return {row["symbol"] for row in rows}
+
     async def latest_market_snapshots(self, strategy_id: str, as_of: datetime):
         return await self.db.fetch_all(
             """
