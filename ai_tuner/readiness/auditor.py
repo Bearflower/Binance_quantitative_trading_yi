@@ -21,6 +21,7 @@
 """
 
 import re
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -31,6 +32,16 @@ from . import db_probe
 from .models import CandidateReadiness, ReadinessResult
 
 logger = structlog.get_logger()
+
+
+@dataclass(frozen=True)
+class SnapshotCoverage:
+    expected: int
+    complete: int
+    coverage: float
+    evidence_start: Optional[datetime]
+    sources: List[str]
+    gaps: List[str]
 
 
 def format_ratio(value: float) -> str:
@@ -459,7 +470,9 @@ class ReadinessAuditor:
         kline_coverage, kline_gaps, kline_symbols = await self._query_kline_coverage(
             strategy_id, window_start, window_end
         )
-        snapshot_coverage, snapshot_gaps = await self._query_external_snapshot()
+        snapshot_result = await self._query_external_snapshot(
+            strategy_id, window_start, window_end
+        )
         return self._build_candidate(
             strategy_id=strategy_id,
             closed_trades=closed_trades, complete_ratio=complete_ratio,
@@ -467,7 +480,9 @@ class ReadinessAuditor:
             regime_proxy=regime_proxy, regime_gaps=regime_gaps,
             kline_coverage=kline_coverage, kline_gaps=kline_gaps,
             kline_symbols=kline_symbols,
-            snapshot_coverage=snapshot_coverage, snapshot_gaps=snapshot_gaps,
+            snapshot_coverage=snapshot_result.coverage,
+            snapshot_gaps=snapshot_result.gaps,
+            snapshot_result=snapshot_result,
         )
 
     def _build_candidate(
@@ -480,6 +495,7 @@ class ReadinessAuditor:
         kline_coverage: float, kline_gaps: List[str],
         kline_symbols: list,
         snapshot_coverage: float, snapshot_gaps: List[str],
+        snapshot_result: Optional[SnapshotCoverage] = None,
     ) -> CandidateReadiness:
         """把各查询结果组装成 CandidateReadiness（门禁判定 + gaps 汇总 + 返回）"""
         identity_ratio = self.identity_baseline
@@ -505,6 +521,13 @@ class ReadinessAuditor:
             external_snapshot_coverage=round(snapshot_coverage, 4),
             external_snapshot_requirement=snap_requirement,
             external_snapshot_reason=snap_reason,
+            external_snapshot_expected=(snapshot_result.expected if snapshot_result else 0),
+            external_snapshot_complete=(snapshot_result.complete if snapshot_result else 0),
+            external_snapshot_evidence_start=(
+                snapshot_result.evidence_start.isoformat()
+                if snapshot_result and snapshot_result.evidence_start else None
+            ),
+            external_snapshot_sources=(snapshot_result.sources if snapshot_result else []),
             failures=failures,
             gaps=gaps,
             kline_symbols=list(kline_symbols or []),
@@ -649,12 +672,80 @@ class ReadinessAuditor:
                            error=str(exc))
             return 0, [f"regime_count(proxy) 查询失败，覆盖度记 0：{exc}"]
 
-    async def _query_external_snapshot(self) -> tuple:
-        """外部时点快照覆盖度（无历史快照表是预期行为）"""
-        return 0.0, [
-            "无历史外部快照表（OI/市值/资金费率/情绪时点快照），"
-            "external_snapshot_coverage 记 0；后续阶段需补齐快照采集器"
-        ]
+    async def _query_external_snapshot(
+        self, strategy_id: str, window_start: datetime, window_end: datetime
+    ) -> SnapshotCoverage:
+        """按历史 universe 的 symbol-hour 计算完整外部快照覆盖率。"""
+        sql = """
+        WITH revisions AS (
+            SELECT strategy_id, symbol, observed_at,
+                   LEAD(observed_at, 1, $3) OVER (
+                       PARTITION BY strategy_id, symbol ORDER BY observed_at
+                   ) AS valid_until
+            FROM public.ai_tuner_universe_snapshots
+            WHERE strategy_id = $1 AND observed_at < $3
+        ), universe_hours AS (
+            SELECT DISTINCT r.symbol, hour.bucket_start
+            FROM revisions r
+            CROSS JOIN LATERAL generate_series(
+                GREATEST(date_trunc('hour', r.observed_at), date_trunc('hour', $2)),
+                LEAST(
+                    date_trunc('hour', r.valid_until - interval '1 microsecond'),
+                    date_trunc('hour', $3 - interval '1 microsecond')
+                ),
+                interval '1 hour'
+            ) AS hour(bucket_start)
+            WHERE r.valid_until > $2
+        ), evidence AS (
+            SELECT u.symbol, u.bucket_start,
+                   m.oi_source, m.funding_source, m.market_cap_source,
+                   CASE WHEN m.open_interest_usd > 0
+                              AND m.funding_rate IS NOT NULL
+                              AND m.market_cap_usd > 0
+                              AND m.oi_market_cap_ratio IS NOT NULL
+                              AND m.sentiment_score IS NOT NULL
+                              AND m.market_cap_source IN ('coingecko', 'cache_hit', 'coingecko_cache')
+                              AND m.source_observed_at <= u.bucket_start + interval '1 hour'
+                        THEN 1 ELSE 0 END AS complete
+            FROM universe_hours u
+            LEFT JOIN public.ai_tuner_market_snapshots m
+              ON m.strategy_id = $1 AND m.symbol = u.symbol
+             AND m.bucket_start = u.bucket_start
+        )
+        SELECT COUNT(*) AS symbol_hours_expected,
+               COALESCE(SUM(complete), 0) AS complete,
+               MIN(bucket_start) AS evidence_start,
+               ARRAY_REMOVE(ARRAY_AGG(DISTINCT oi_source), NULL) ||
+               ARRAY_REMOVE(ARRAY_AGG(DISTINCT funding_source), NULL) ||
+               ARRAY_REMOVE(ARRAY_AGG(DISTINCT market_cap_source), NULL) AS sources
+        FROM evidence
+        """
+        try:
+            row = await self.db.fetch_one(sql, strategy_id, window_start, window_end)
+            expected = int(
+                (row or {}).get("symbol_hours_expected")
+                or (row or {}).get("expected")
+                or 0
+            )
+            complete = int((row or {}).get("complete") or 0)
+            if expected == 0:
+                return SnapshotCoverage(
+                    0, 0, 0.0, None, [], [
+                        "historical_universe_missing",
+                        "无历史外部快照表或窗口内无历史 HRS universe 快照",
+                    ]
+                )
+            sources = sorted(set((row or {}).get("sources") or []))
+            return SnapshotCoverage(
+                expected, complete, min(complete / expected, 1.0),
+                (row or {}).get("evidence_start"), sources, [],
+            )
+        except Exception as exc:
+            logger.warning("外部快照覆盖查询失败", strategy=strategy_id, error=str(exc))
+            return SnapshotCoverage(
+                0, 0, 0.0, None, [],
+                [f"external_snapshot_query_failed：{exc}"],
+            )
 
     # ---------------------------------------------------------------
     # 策略选择（确定性顺序）
