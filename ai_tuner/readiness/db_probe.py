@@ -83,7 +83,7 @@ async def bind_datetime(db, schema: str, table: str, column: str,
     return dt.replace(tzinfo=None)
 
 
-async def table_exists(db, schema: str, table: str) -> bool:
+async def table_exists(db, schema: str, table: str) -> Optional[bool]:
     """information_schema.tables 查表是否存在
 
     Args:
@@ -92,7 +92,8 @@ async def table_exists(db, schema: str, table: str) -> bool:
         table:  表名（含前缀）
 
     Returns:
-        True/False；探测异常 → False（fail-closed，视为缺表）。
+        True 表示存在，False 表示查询成功且确定不存在；探测异常 → None。
+        三态返回让调用方能够 fail-closed，同时避免把数据库故障伪装成缺表。
     """
     sql = """
     SELECT 1 FROM information_schema.tables
@@ -103,4 +104,4 @@ async def table_exists(db, schema: str, table: str) -> bool:
         return row is not None
     except Exception as exc:
         logger.warning("表存在性探测失败", schema=schema, table=table, error=str(exc))
-        return False
+        return None

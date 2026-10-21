@@ -433,8 +433,13 @@ async def _single_pair_coverage(db,
         expected = _expected_buckets(window_start, window_end, period_sec)
         return _placeholder_row(symbol, interval, expected, "table_name_format_invalid")
 
-    # 表不存在 → expected 仍按应有桶数计，actual=0
-    if not await db_probe.table_exists(db, _KLINE_SCHEMA, validated_table):
+    table_state = await db_probe.table_exists(db, _KLINE_SCHEMA, validated_table)
+    if table_state is None:
+        expected = _expected_buckets(window_start, window_end, period_sec)
+        return _placeholder_row(symbol, interval, expected, "table_probe_failed")
+
+    # 查询成功且确定表不存在 → expected 仍按应有桶数计，actual=0
+    if table_state is False:
         ws, we = _align_window(window_start, window_end, period_sec)
         expected = max(0, int((we - ws).total_seconds() / period_sec))
         # 缺表等价于完整闭合窗口全部缺失，可安全生成一个精确补采区间。

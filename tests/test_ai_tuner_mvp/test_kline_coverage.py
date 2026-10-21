@@ -238,6 +238,29 @@ async def test_missing_table_produces_zero_coverage_with_gap():
     )
 
 
+@pytest.mark.asyncio
+async def test_table_probe_failure_does_not_invent_backfill_range():
+    """information_schema 查询失败是未知状态，不能伪装成确定缺表。"""
+    from ai_tuner.readiness.kline_coverage import _single_pair_coverage
+
+    fake_db = MagicMock()
+    fake_db.fetch_one = AsyncMock(side_effect=RuntimeError("database unavailable"))
+    as_of = datetime(2026, 10, 18, tzinfo=timezone.utc)
+
+    row = await _single_pair_coverage(
+        fake_db,
+        "BTCUSDT",
+        "1h",
+        as_of - timedelta(hours=24),
+        as_of,
+    )
+
+    assert row.expected == 24
+    assert row.actual == 0
+    assert row.gap == "table_probe_failed"
+    assert row.missing_ranges == ()
+
+
 # ===========================================================================
 # HRS 历史 universe 缺失 → weighted 0.0 + historical_universe_missing + 未查 K 线
 # ===========================================================================
