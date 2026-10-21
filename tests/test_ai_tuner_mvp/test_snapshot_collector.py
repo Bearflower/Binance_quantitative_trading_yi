@@ -5,7 +5,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ai_tuner.snapshots.collector import SnapshotCollector
-from ai_tuner.snapshots.cli import build_parser
+from ai_tuner.snapshots.cli import build_parser, is_failed_bucket
+from ai_tuner.snapshots.collector import CollectionSummary
 from strategies.hrs.strategy import HRSStrategy
 
 
@@ -21,6 +22,12 @@ def test_snapshot_cli_exposes_safe_commands():
         "--end", "2026-10-02T00:00:00Z",
     ])
     assert args.command == "backfill-supported"
+
+
+def test_only_total_collection_failure_counts_as_failed_bucket():
+    assert is_failed_bucket(CollectionSummary(2, 0, 0, 0, 2)) is True
+    assert is_failed_bucket(CollectionSummary(2, 1, 0, 0, 1)) is False
+    assert is_failed_bucket(CollectionSummary(0, 0, 0, 0, 0)) is False
 
 
 @pytest.mark.asyncio

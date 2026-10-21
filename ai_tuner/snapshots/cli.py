@@ -4,18 +4,31 @@ import argparse
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import structlog
+import yaml
 
 from shared.binance_api import BinanceClient
 from shared.database import DatabaseManager
 from shared.market_cap import MarketCapService
+from shared.notification import NotificationClient
 
-from .collector import SnapshotCollector
+from .collector import CollectionSummary, SnapshotCollector
 from .repository import SnapshotRepository
 
 
 logger = structlog.get_logger()
+
+
+def is_failed_bucket(summary: CollectionSummary) -> bool:
+    return summary.requested > 0 and summary.failed == summary.requested
+
+
+def _snapshot_config() -> dict:
+    path = Path(__file__).resolve().parents[1] / "config.yaml"
+    with path.open(encoding="utf-8") as handle:
+        return (yaml.safe_load(handle) or {}).get("snapshot_collection", {})
 
 
 def _utc(value: str) -> datetime:
@@ -36,7 +49,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _runtime():
+def _runtime(config: dict):
     db = DatabaseManager(
         host=os.getenv("DB_HOST", "postgres"), port=int(os.getenv("DB_PORT", "5432")),
         database=os.environ["DB_NAME"], user=os.environ["DB_USER"],
@@ -48,11 +61,21 @@ def _runtime():
         use_unified_account=True,
     )
     market_cap = MarketCapService(api_key=os.getenv("COINGECKO_API_KEY") or None)
-    return db, binance, market_cap, SnapshotCollector(SnapshotRepository(db), binance, market_cap)
+    notifier = NotificationClient(
+        service_url=os.getenv("NOTIFICATION_SERVICE_URL", ""), use_direct_webhook=True
+    )
+    return (
+        db, binance, market_cap, notifier,
+        SnapshotCollector(
+            SnapshotRepository(db), binance, market_cap,
+            concurrency=int(config.get("concurrency", 5)),
+        ),
+    )
 
 
 async def _run(args) -> None:
-    db, binance, market_cap, collector = _runtime()
+    config = _snapshot_config()
+    db, binance, market_cap, notifier, collector = _runtime(config)
     try:
         await db.connect()
         if args.command == "once":
@@ -65,21 +88,29 @@ async def _run(args) -> None:
             logger.info("HRS可支持历史快照回填完成", **summary.__dict__)
         else:
             consecutive_failures = 0
+            schedule_minute = int(config.get("schedule_minute", 20))
+            notify_after = int(config.get("notify_after_consecutive_failures", 3))
             while True:
                 now = datetime.now(timezone.utc)
-                next_run = now.replace(minute=20, second=0, microsecond=0)
+                next_run = now.replace(minute=schedule_minute, second=0, microsecond=0)
                 if next_run <= now:
                     next_run += timedelta(hours=1)
                 await asyncio.sleep((next_run - now).total_seconds())
                 summary = await collector.collect_once(next_run)
-                consecutive_failures = consecutive_failures + 1 if summary.failed else 0
+                consecutive_failures = consecutive_failures + 1 if is_failed_bucket(summary) else 0
                 logger.info(
                     "HRS外部快照时间桶完成", bucket_start=next_run.replace(minute=0).isoformat(),
                     universe=summary.requested, complete=summary.complete, proxy=summary.proxy,
                     missing=summary.missing, failed=summary.failed,
                     consecutive_failures=consecutive_failures,
                 )
+                if consecutive_failures == notify_after:
+                    await notifier.send(
+                        f"AI Tuner HRS 外部快照已连续 {notify_after} 个时间桶全部采集失败",
+                        level="error", project="tuner",
+                    )
     finally:
+        await notifier.close()
         await market_cap.close()
         await binance.close()
         await db.disconnect()
