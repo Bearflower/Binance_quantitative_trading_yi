@@ -293,9 +293,11 @@ async def _query_count(db, schema: str, table: str, ts_col: str,
     )
     start_bound = await db_probe.bind_datetime(db, schema, table, ts_col, start)
     end_bound = await db_probe.bind_datetime(db, schema, table, ts_col, end)
-    interval_literal = f"{period_sec} seconds"
+    # asyncpg 的 interval 编码器接收 datetime.timedelta；字符串只适用于 SQL
+    # 字面量，作为绑定参数会触发 "str object has no attribute days"。
+    interval_delta = timedelta(seconds=period_sec)
     try:
-        row = await db.fetch_one(sql, start_bound, end_bound, interval_literal)
+        row = await db.fetch_one(sql, start_bound, end_bound, interval_delta)
     except Exception as exc:
         expected = _expected_buckets(start, end, period_sec)
         truncated = str(exc)[:120]
@@ -321,9 +323,9 @@ async def _query_missing_starts(db, schema: str, table: str, ts_col: str,
     )
     start_bound = await db_probe.bind_datetime(db, schema, table, ts_col, start)
     end_bound = await db_probe.bind_datetime(db, schema, table, ts_col, end)
-    interval_literal = f"{period_sec} seconds"
+    interval_delta = timedelta(seconds=period_sec)
     try:
-        rows = await db.fetch_all(sql, start_bound, end_bound, interval_literal)
+        rows = await db.fetch_all(sql, start_bound, end_bound, interval_delta)
     except Exception as exc:
         truncated = str(exc)[:120]
         logger.warning("K 线缺失桶查询失败", schema=schema, table=table, error=truncated)
