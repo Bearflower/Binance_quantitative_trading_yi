@@ -260,7 +260,8 @@ class HRSStrategy(BaseStrategy):
         if not self.db:
             raise ValueError("数据库管理器未设置")
 
-        self.snapshot_repository = SnapshotRepository(self.db)
+        # 快照写入必须由 main 注入独立最小权限连接；未配置时宁可停采，
+        # 不得回退到持有交易库超级权限的主连接。
 
         # 延迟绑定 DB 到资金分配管理器（方案 D：DB 为月度分配额主来源）
         self.capital_mgr.bind_database(self.db, self.strategy_name)

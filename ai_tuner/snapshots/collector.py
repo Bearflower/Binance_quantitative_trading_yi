@@ -61,10 +61,17 @@ class SnapshotCollector:
             bucket_start = as_of.astimezone(timezone.utc).replace(minute=0, second=0, microsecond=0)
             raw_payload = {
                 "open_interest_contracts": oi,
+                "open_interest_usd": oi_usd,
                 "last_price": price,
                 "funding_rate": funding,
+                "market_cap_usd": market_cap_usd,
                 "market_cap_source": cap.source,
+                "market_cap_as_of": cap.as_of,
+                "market_cap_available_at": cap.available_at,
                 "market_cap_missing_reason": cap.missing_reason,
+                "oi_market_cap_ratio": ratio,
+                "sentiment_score": funding * 3 * 365 * 100,
+                "sentiment_formula_version": "funding_annual_pct_v1",
             }
             payload_hash = hashlib.sha256(
                 json.dumps(raw_payload, sort_keys=True, separators=(",", ":")).encode()

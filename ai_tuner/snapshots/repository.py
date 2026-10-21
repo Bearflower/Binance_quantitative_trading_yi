@@ -34,12 +34,51 @@ ON CONFLICT (strategy_id, symbol, bucket_start) DO UPDATE SET
     payload_hash = EXCLUDED.payload_hash,
     raw_payload = EXCLUDED.raw_payload,
     collected_at = NOW()
-WHERE $18 >= CASE
-    WHEN ai_tuner_market_snapshots.market_cap_source IN ('coingecko', 'coingecko_cache')
+WHERE $18 > CASE
+    WHEN ai_tuner_market_snapshots.market_cap_source = 'coingecko'
          AND ai_tuner_market_snapshots.open_interest_usd > 0
          AND ai_tuner_market_snapshots.market_cap_usd > 0
          AND ai_tuner_market_snapshots.funding_rate IS NOT NULL
-         AND ai_tuner_market_snapshots.oi_market_cap_ratio IS NOT NULL THEN 2
+         AND ai_tuner_market_snapshots.sentiment_formula_version = 'funding_annual_pct_v1'
+         AND ABS(
+             ai_tuner_market_snapshots.oi_market_cap_ratio
+             - ai_tuner_market_snapshots.open_interest_usd
+               / NULLIF(ai_tuner_market_snapshots.market_cap_usd, 0)
+         ) <= 1e-9 * GREATEST(
+             1.0, ABS(
+                 ai_tuner_market_snapshots.open_interest_usd
+                 / NULLIF(ai_tuner_market_snapshots.market_cap_usd, 0)
+             )
+         )
+         AND ABS(
+             ai_tuner_market_snapshots.sentiment_score
+             - ai_tuner_market_snapshots.funding_rate * 3 * 365 * 100
+         ) <= 1e-9 * GREATEST(
+             1.0, ABS(ai_tuner_market_snapshots.funding_rate * 3 * 365 * 100)
+         ) THEN 5
+    WHEN ai_tuner_market_snapshots.market_cap_source IN ('cache_hit', 'coingecko_cache')
+         AND ai_tuner_market_snapshots.open_interest_usd > 0
+         AND ai_tuner_market_snapshots.market_cap_usd > 0
+         AND ai_tuner_market_snapshots.funding_rate IS NOT NULL
+         AND ai_tuner_market_snapshots.sentiment_formula_version = 'funding_annual_pct_v1'
+         AND ABS(
+             ai_tuner_market_snapshots.oi_market_cap_ratio
+             - ai_tuner_market_snapshots.open_interest_usd
+               / NULLIF(ai_tuner_market_snapshots.market_cap_usd, 0)
+         ) <= 1e-9 * GREATEST(
+             1.0, ABS(
+                 ai_tuner_market_snapshots.open_interest_usd
+                 / NULLIF(ai_tuner_market_snapshots.market_cap_usd, 0)
+             )
+         )
+         AND ABS(
+             ai_tuner_market_snapshots.sentiment_score
+             - ai_tuner_market_snapshots.funding_rate * 3 * 365 * 100
+         ) <= 1e-9 * GREATEST(
+             1.0, ABS(ai_tuner_market_snapshots.funding_rate * 3 * 365 * 100)
+         ) THEN 4
+    WHEN ai_tuner_market_snapshots.market_cap_source = 'coingecko' THEN 3
+    WHEN ai_tuner_market_snapshots.market_cap_source IN ('cache_hit', 'coingecko_cache') THEN 2
     WHEN ai_tuner_market_snapshots.market_cap_source = 'oi_proxy' THEN 1
     ELSE 0
 END
@@ -95,49 +134,74 @@ class SnapshotRepository:
     ) -> None:
         short_set = {str(symbol).upper() for symbol in short_symbols}
         long_set = {str(symbol).upper() for symbol in long_symbols}
-        for symbol in sorted(short_set | long_set):
+        symbols = sorted(short_set | long_set)
+        queries = [(
+            """
+            INSERT INTO public.ai_tuner_universe_scan_runs
+                (strategy_id, observed_at, source_run_id, config_hash, symbol_count)
+            VALUES ($1, $2, $3, $4, $5)
+            ON CONFLICT (strategy_id, observed_at) DO NOTHING
+            """,
+            (strategy_id, observed_at, source_run_id, config_hash, len(symbols)),
+        )]
+        memberships = []
+        for symbol in symbols:
             membership = "both" if symbol in short_set and symbol in long_set else (
                 "short" if symbol in short_set else "long"
             )
-            await self.db.execute(
+            memberships.append(membership)
+        if symbols:
+            queries.append((
                 """
                 INSERT INTO public.ai_tuner_universe_snapshots
                     (strategy_id, observed_at, symbol, membership, source_run_id, config_hash)
-                VALUES ($1, $2, $3, $4, $5, $6)
+                SELECT $1, $2, members.symbol, members.membership, $5, $6
+                FROM UNNEST($3::text[], $4::text[]) AS members(symbol, membership)
+                WHERE EXISTS (
+                    SELECT 1 FROM public.ai_tuner_universe_scan_runs r
+                    WHERE r.strategy_id = $1 AND r.observed_at = $2
+                      AND r.source_run_id = $5 AND r.config_hash = $6
+                      AND r.symbol_count = CARDINALITY($3::text[])
+                )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM public.ai_tuner_universe_snapshots existing
+                    WHERE existing.strategy_id = $1 AND existing.observed_at = $2
+                )
                 ON CONFLICT (strategy_id, observed_at, symbol) DO NOTHING
                 """,
-                strategy_id,
-                observed_at,
-                symbol,
-                membership,
-                source_run_id,
-                config_hash,
-            )
+                (strategy_id, observed_at, symbols, memberships, source_run_id, config_hash),
+            ))
+        await self.db.execute_transaction(queries)
 
     async def latest_universe(self, strategy_id: str, as_of: datetime):
         rows = await self.db.fetch_all(
             """
-            SELECT symbol
-            FROM public.ai_tuner_universe_snapshots
-            WHERE strategy_id = $1
-              AND observed_at = (
+            SELECT u.symbol
+            FROM public.ai_tuner_universe_scan_runs r
+            LEFT JOIN public.ai_tuner_universe_snapshots u
+              ON u.strategy_id = r.strategy_id AND u.observed_at = r.observed_at
+            WHERE r.strategy_id = $1
+              AND r.observed_at = (
                   SELECT MAX(observed_at)
-                  FROM public.ai_tuner_universe_snapshots
+                  FROM public.ai_tuner_universe_scan_runs
                   WHERE strategy_id = $1 AND observed_at <= $2
               )
-            ORDER BY symbol
+            ORDER BY u.symbol
             """,
             strategy_id,
             as_of,
         )
-        return {row["symbol"] for row in rows}
+        return {row["symbol"] for row in rows if row.get("symbol")}
 
     async def latest_market_snapshots(self, strategy_id: str, as_of: datetime):
         return await self.db.fetch_all(
             """
             SELECT DISTINCT ON (symbol) *
             FROM public.ai_tuner_market_snapshots
-            WHERE strategy_id = $1 AND bucket_start <= $2
+            WHERE strategy_id = $1
+              AND bucket_start <= $2
+              AND source_observed_at <= $2
+              AND collected_at <= $2
             ORDER BY symbol, bucket_start DESC
             """,
             strategy_id,

@@ -677,13 +677,17 @@ class ReadinessAuditor:
     ) -> SnapshotCoverage:
         """按历史 universe 的 symbol-hour 计算完整外部快照覆盖率。"""
         sql = """
-        WITH revisions AS (
-            SELECT strategy_id, symbol, observed_at,
-                   LEAD(observed_at, 1, $3) OVER (
-                       PARTITION BY strategy_id, symbol ORDER BY observed_at
-                   ) AS valid_until
+        WITH scan_runs AS (
+            SELECT observed_at,
+                   LEAD(observed_at, 1, $3) OVER (ORDER BY observed_at) AS valid_until
+            FROM public.ai_tuner_universe_scan_runs
+            WHERE strategy_id = $1 AND observed_at < $3 AND created_at <= $3
+        ), revisions AS (
+            SELECT u.strategy_id, u.symbol, u.observed_at, r.valid_until
             FROM public.ai_tuner_universe_snapshots
-            WHERE strategy_id = $1 AND observed_at < $3
+            AS u
+            JOIN scan_runs r ON r.observed_at = u.observed_at
+            WHERE u.strategy_id = $1 AND u.observed_at < $3 AND u.created_at <= $3
         ), universe_hours AS (
             SELECT DISTINCT r.symbol, hour.bucket_start
             FROM revisions r
@@ -704,17 +708,36 @@ class ReadinessAuditor:
                               AND m.market_cap_usd > 0
                               AND m.oi_market_cap_ratio IS NOT NULL
                               AND m.sentiment_score IS NOT NULL
+                              AND m.sentiment_formula_version = 'funding_annual_pct_v1'
+                              AND ABS(
+                                  m.oi_market_cap_ratio
+                                  - (m.open_interest_usd / NULLIF(m.market_cap_usd, 0))
+                              ) <= 1e-9 * GREATEST(
+                                  1.0, ABS(m.open_interest_usd / NULLIF(m.market_cap_usd, 0))
+                              )
+                              AND ABS(
+                                  m.sentiment_score
+                                  - (m.funding_rate * 3 * 365 * 100)
+                              ) <= 1e-9 * GREATEST(
+                                  1.0, ABS(m.funding_rate * 3 * 365 * 100)
+                              )
                               AND m.market_cap_source IN ('coingecko', 'cache_hit', 'coingecko_cache')
                               AND m.source_observed_at <= u.bucket_start + interval '1 hour'
+                              AND m.source_observed_at <= $3
                         THEN 1 ELSE 0 END AS complete
             FROM universe_hours u
             LEFT JOIN public.ai_tuner_market_snapshots m
               ON m.strategy_id = $1 AND m.symbol = u.symbol
              AND m.bucket_start = u.bucket_start
+             AND m.collected_at <= $3
         )
         SELECT COUNT(*) AS symbol_hours_expected,
                COALESCE(SUM(complete), 0) AS complete,
                MIN(bucket_start) AS evidence_start,
+               EXISTS(
+                   SELECT 1 FROM scan_runs WHERE observed_at <= $2
+               ) AS has_window_start_universe,
+               (SELECT MIN(observed_at) FROM scan_runs) AS first_scan_at,
                ARRAY_REMOVE(ARRAY_AGG(DISTINCT oi_source), NULL) ||
                ARRAY_REMOVE(ARRAY_AGG(DISTINCT funding_source), NULL) ||
                ARRAY_REMOVE(ARRAY_AGG(DISTINCT market_cap_source), NULL) AS sources
@@ -728,14 +751,23 @@ class ReadinessAuditor:
                 or 0
             )
             complete = int((row or {}).get("complete") or 0)
-            if expected == 0:
+            has_window_start_universe = bool(
+                (row or {}).get("has_window_start_universe", False)
+            )
+            first_scan_at = (row or {}).get("first_scan_at")
+            sources = sorted(set((row or {}).get("sources") or []))
+            if expected == 0 or not has_window_start_universe:
+                missing_marker = (
+                    f"historical_universe_missing_before={first_scan_at.isoformat()}"
+                    if first_scan_at else "historical_universe_missing"
+                )
                 return SnapshotCoverage(
-                    0, 0, 0.0, None, [], [
-                        "historical_universe_missing",
+                    expected, complete, 0.0,
+                    (row or {}).get("evidence_start"), sources, [
+                        missing_marker,
                         "无历史外部快照表或窗口内无历史 HRS universe 快照",
                     ]
                 )
-            sources = sorted(set((row or {}).get("sources") or []))
             return SnapshotCoverage(
                 expected, complete, min(complete / expected, 1.0),
                 (row or {}).get("evidence_start"), sources, [],

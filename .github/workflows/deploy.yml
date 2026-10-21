@@ -409,6 +409,37 @@ jobs:
             fi
 
             # 3. 拉取有新版本的镜像（compose pull 自动对比 registry 标签）
+            # AI Tuner 快照写入使用独立最小权限角色。密钥只生成并保存在服务器 .env，
+            # 不进入 Git、Actions 日志或镜像。hex 字符集也避免后续 SQL/Compose 转义歧义。
+            mkdir -p .secrets
+            chmod 700 .secrets
+            SNAPSHOT_SECRET_FILE=.secrets/ai_tuner_snapshot.env
+            MIGRATION_ADMIN_SECRET_FILE=.secrets/trading_migration_admin_password
+            if grep -q '^AI_TUNER_SNAPSHOT_DB_PASSWORD=' "$SNAPSHOT_SECRET_FILE" 2>/dev/null; then
+              AI_TUNER_SNAPSHOT_DB_PASSWORD=$(sed -n 's/^AI_TUNER_SNAPSHOT_DB_PASSWORD=//p' "$SNAPSHOT_SECRET_FILE" | tail -n 1)
+            else
+              AI_TUNER_SNAPSHOT_DB_PASSWORD=$(openssl rand -hex 32)
+              printf 'AI_TUNER_SNAPSHOT_DB_USER=ai_tuner_snapshot_writer\nAI_TUNER_SNAPSHOT_DB_PASSWORD=%s\n' \
+                "$AI_TUNER_SNAPSHOT_DB_PASSWORD" > "$SNAPSHOT_SECRET_FILE"
+            fi
+            if [ -z "$AI_TUNER_SNAPSHOT_DB_PASSWORD" ]; then
+              echo "❌ AI_TUNER_SNAPSHOT_DB_PASSWORD 为空，中止部署"
+              exit 1
+            fi
+            chmod 600 "$SNAPSHOT_SECRET_FILE"
+
+            if [ -s "$MIGRATION_ADMIN_SECRET_FILE" ]; then
+              TRADING_MIGRATION_ADMIN_PASSWORD=$(tr -d '\r\n' < "$MIGRATION_ADMIN_SECRET_FILE")
+            else
+              TRADING_MIGRATION_ADMIN_PASSWORD=$(openssl rand -hex 32)
+              printf '%s\n' "$TRADING_MIGRATION_ADMIN_PASSWORD" > "$MIGRATION_ADMIN_SECRET_FILE"
+            fi
+            if [ -z "$TRADING_MIGRATION_ADMIN_PASSWORD" ]; then
+              echo "❌ TRADING_MIGRATION_ADMIN_PASSWORD 为空，中止部署"
+              exit 1
+            fi
+            chmod 600 "$MIGRATION_ADMIN_SECRET_FILE"
+
             echo "📥 docker compose pull..."
             docker compose pull
 
@@ -456,6 +487,44 @@ jobs:
             fi
             echo "   ✅ postgres 就绪"
 
+            # 首次迁移时，旧 trading_user 仍是初始化超级用户，由它创建独立迁移管理员；
+            # 后续部署只使用 migration admin。密码仅保存在服务器 .env，不注入业务容器。
+            MIGRATION_ADMIN_EXISTS=$(docker exec trading_system-postgres \
+              psql -U trading_user -d trading_platform -tAc \
+                "SELECT 1 FROM pg_roles WHERE rolname='trading_migration_admin'" | tr -d '[:space:]')
+            if [ "$MIGRATION_ADMIN_EXISTS" != "1" ]; then
+              docker exec trading_system-postgres \
+                psql --set ON_ERROR_STOP=on -U trading_user -d trading_platform \
+                  -c "CREATE ROLE trading_migration_admin LOGIN SUPERUSER" >/dev/null
+            fi
+            docker exec -i trading_system-postgres \
+              psql --set ON_ERROR_STOP=on \
+                --set migration_password="$TRADING_MIGRATION_ADMIN_PASSWORD" \
+                -U trading_migration_admin -d trading_platform <<'MIGRATION_ADMIN_SQL' >/dev/null
+            SELECT format(
+              'ALTER ROLE trading_migration_admin LOGIN SUPERUSER PASSWORD %L',
+              :'migration_password'
+            ) \gexec
+            MIGRATION_ADMIN_SQL
+
+            ROLE_MIGRATION_REQUIRED=$(docker exec trading_system-postgres \
+              psql -U trading_migration_admin -d trading_platform -tAc \
+                "SELECT ((SELECT rolsuper FROM pg_roles WHERE rolname='trading_user') OR (SELECT pg_get_userbyid(datdba)='trading_user' FROM pg_database WHERE datname='trading_platform'))::int" \
+              | tr -d '[:space:]')
+            if [ "$ROLE_MIGRATION_REQUIRED" = "1" ]; then
+              # 首次权限迁移前保留数据库和全局角色双份备份，供人工回滚核验。
+              ROLE_MIGRATION_BACKUP="$(date '+%Y%m%d_%H%M%S')"
+              mkdir -p database/postgres/backups
+              docker exec trading_system-postgres \
+                pg_dump -U trading_migration_admin -d trading_platform -Fc \
+                > "database/postgres/backups/pre_role_migration_${ROLE_MIGRATION_BACKUP}.dump"
+              docker exec trading_system-postgres \
+                pg_dumpall -U trading_migration_admin --globals-only \
+                > "database/postgres/backups/pre_role_migration_globals_${ROLE_MIGRATION_BACKUP}.sql"
+              test -s "database/postgres/backups/pre_role_migration_${ROLE_MIGRATION_BACKUP}.dump"
+              test -s "database/postgres/backups/pre_role_migration_globals_${ROLE_MIGRATION_BACKUP}.sql"
+            fi
+
             # 4.5.2 按文件名数字前缀顺序执行 /docker-entrypoint-initdb.d/*.sql
             #       sort 保证 01→02→…→09 顺序，脚本内部 IF NOT EXISTS 全幂等
             SQL_GLOB=$(docker exec trading_system-postgres \
@@ -476,17 +545,90 @@ jobs:
                 # 仅吞 stdout（CREATE TABLE/CREATE INDEX 输出），stderr 透传到 Actions 日志便于报错时定位
                 docker exec trading_system-postgres \
                   psql --set ON_ERROR_STOP=on \
-                    -U trading_user -d trading_platform -f "$sql_path" \
+                    -U trading_migration_admin -d trading_platform -f "$sql_path" \
                   >/dev/null
                 echo "     ✅ $sql_name 完成"
               done <<< "$SQL_GLOB"
             fi
+            # init SQL 只创建 LOGIN 角色、不内嵌凭据；此处从服务器本地 secret 设置密码。
+            # 密码为 openssl 生成的 hex，使用 psql 变量 quote_literal，避免拼接 SQL。
+            docker exec -i trading_system-postgres \
+              psql --set ON_ERROR_STOP=on \
+                --set snapshot_password="$AI_TUNER_SNAPSHOT_DB_PASSWORD" \
+                -U trading_migration_admin -d trading_platform <<'SNAPSHOT_ROLE_SQL' >/dev/null
+            SELECT format(
+              'ALTER ROLE ai_tuner_snapshot_writer LOGIN PASSWORD %L',
+              :'snapshot_password'
+            ) \gexec
+            SNAPSHOT_ROLE_SQL
+            # 切断业务运行时的超级用户/数据库 owner 能力，使上面的 REVOKE 真正生效。
+            ROLE_MIGRATION_APPLIED=0
+            rollback_role_migration() {
+              rc=$?
+              trap - ERR
+              set +e
+              if [ "$ROLE_MIGRATION_REQUIRED" = "1" ] && [ "$ROLE_MIGRATION_APPLIED" = "1" ]; then
+                echo "⚠️ 权限迁移后门禁失败，恢复 trading_user 原权限和数据库 owner"
+                docker exec trading_system-postgres \
+                  psql -U trading_migration_admin -d trading_platform \
+                    -c "ALTER DATABASE trading_platform OWNER TO trading_user" \
+                    -c "ALTER ROLE trading_user SUPERUSER CREATEDB CREATEROLE REPLICATION" \
+                    >/dev/null
+              fi
+              docker compose ps
+              exit "$rc"
+            }
+            trap rollback_role_migration ERR
+            if [ "$ROLE_MIGRATION_REQUIRED" = "1" ]; then
+              ROLE_MIGRATION_APPLIED=1
+              docker exec trading_system-postgres \
+                psql --set ON_ERROR_STOP=on \
+                  -U trading_migration_admin -d trading_platform \
+                  -c "ALTER DATABASE trading_platform OWNER TO trading_migration_admin" \
+                  -c "ALTER ROLE trading_user NOSUPERUSER NOCREATEROLE NOCREATEDB NOREPLICATION" \
+                  -c "GRANT CONNECT, TEMPORARY ON DATABASE trading_platform TO trading_user" \
+                  -c "GRANT USAGE, CREATE ON SCHEMA public TO trading_user" \
+                  >/dev/null
+            fi
+            PERMISSION_BOUNDARY_OK=$(docker exec trading_system-postgres \
+              psql -U trading_migration_admin -d trading_platform -tAc \
+                "SELECT (NOT (SELECT rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication FROM pg_roles WHERE rolname='trading_user') AND (SELECT pg_get_userbyid(datdba)='trading_migration_admin' FROM pg_database WHERE datname='trading_platform') AND has_table_privilege('trading_user','public.ai_tuner_market_snapshots','SELECT') AND has_table_privilege('trading_user','public.ai_tuner_universe_snapshots','SELECT') AND has_table_privilege('trading_user','public.ai_tuner_universe_scan_runs','SELECT') AND NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','INSERT') AND NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','UPDATE') AND NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','DELETE') AND NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','TRUNCATE') AND NOT has_table_privilege('trading_user','public.ai_tuner_universe_snapshots','INSERT') AND NOT has_table_privilege('trading_user','public.ai_tuner_universe_snapshots','UPDATE') AND NOT has_table_privilege('trading_user','public.ai_tuner_universe_snapshots','DELETE') AND NOT has_table_privilege('trading_user','public.ai_tuner_universe_snapshots','TRUNCATE') AND NOT has_table_privilege('trading_user','public.ai_tuner_universe_scan_runs','INSERT') AND NOT has_table_privilege('trading_user','public.ai_tuner_universe_scan_runs','UPDATE') AND NOT has_table_privilege('trading_user','public.ai_tuner_universe_scan_runs','DELETE') AND NOT has_table_privilege('trading_user','public.ai_tuner_universe_scan_runs','TRUNCATE') AND has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','SELECT') AND has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','INSERT') AND has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','UPDATE') AND NOT has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','DELETE') AND has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_universe_snapshots','SELECT') AND has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_universe_snapshots','INSERT') AND NOT has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_universe_snapshots','DELETE') AND has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_universe_scan_runs','SELECT') AND has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_universe_scan_runs','INSERT') AND NOT has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_universe_scan_runs','DELETE'))::int" \
+              | tr -d '[:space:]')
+            if [ "$PERMISSION_BOUNDARY_OK" != "1" ]; then
+              echo "❌ AI Tuner 快照权限边界验证失败，中止部署"
+              false
+            fi
+            docker compose restart ai-tuner-snapshot >/dev/null
             echo "✅ init-scripts 全部执行完毕"
             # ==========================================================
 
-            # 5. 等容器就绪
-            echo "⏳ 等待 15s..."
-            sleep 15
+            # 5. 等全部长期运行容器就绪；失败时先恢复旧运行时角色权限，避免扩大故障。
+            echo "⏳ 等待全部容器就绪（最多 180s）..."
+            ALL_CONTAINERS_HEALTHY=0
+            for i in $(seq 1 60); do
+              ALL_CONTAINERS_HEALTHY=1
+              for container in \
+                trading_system-postgres trading_system-hrs trading_system-btc_eth \
+                trading_system-btc_eth_aggressive trading_system-mtcps-xau-shadow \
+                trading_system-new_coin trading_system-grid trading_system-grid-realtime \
+                trading_system-aggtrade-collector ai-tuner ai-tuner-snapshot \
+                trading_system-kline trading_system-kline-monitor data-backend dashboard-api; do
+                state=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo missing)
+                health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || echo missing)
+                if [ "$state" != "running" ] || { [ "$health" != "healthy" ] && [ "$health" != "none" ]; }; then
+                  ALL_CONTAINERS_HEALTHY=0
+                  break
+                fi
+              done
+              [ "$ALL_CONTAINERS_HEALTHY" -eq 1 ] && break
+              sleep 3
+            done
+            if [ "$ALL_CONTAINERS_HEALTHY" -ne 1 ]; then
+              echo "❌ 权限迁移后容器未全部就绪，恢复 trading_user 原权限并中止"
+              false
+            fi
+            ROLE_MIGRATION_APPLIED=0
+            trap - ERR
 
             # 6. 状态检查
             echo ""

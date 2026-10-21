@@ -9,10 +9,10 @@ from pathlib import Path
 import structlog
 import yaml
 
-from shared.binance_api import BinanceClient
 from shared.database import DatabaseManager
 from shared.market_cap import MarketCapService
 from shared.notification import NotificationClient
+from shared.readonly_client import ReadOnlyBinanceClient
 
 from .collector import CollectionSummary, SnapshotCollector
 from .repository import SnapshotRepository
@@ -22,7 +22,15 @@ logger = structlog.get_logger()
 
 
 def is_failed_bucket(summary: CollectionSummary) -> bool:
-    return summary.requested > 0 and summary.failed == summary.requested
+    return summary.requested > 0 and summary.complete == 0
+
+
+async def collect_safely(collector: SnapshotCollector, as_of: datetime) -> CollectionSummary:
+    try:
+        return await collector.collect_once(as_of)
+    except Exception as exc:
+        logger.error("HRS外部快照整桶采集失败", error=str(exc), bucket=as_of.isoformat())
+        return CollectionSummary(requested=1, complete=0, proxy=0, missing=0, failed=1)
 
 
 def _snapshot_config() -> dict:
@@ -52,13 +60,14 @@ def build_parser() -> argparse.ArgumentParser:
 def _runtime(config: dict):
     db = DatabaseManager(
         host=os.getenv("DB_HOST", "postgres"), port=int(os.getenv("DB_PORT", "5432")),
-        database=os.environ["DB_NAME"], user=os.environ["DB_USER"],
-        password=os.environ["DB_PASSWORD"], min_pool_size=1, max_pool_size=5,
+        database=os.environ["DB_NAME"], user=os.environ["AI_TUNER_SNAPSHOT_DB_USER"],
+        password=os.environ["AI_TUNER_SNAPSHOT_DB_PASSWORD"],
+        min_pool_size=1, max_pool_size=5,
     )
-    binance = BinanceClient(
-        api_key=os.environ["BINANCE_API_KEY"], api_secret=os.environ["BINANCE_API_SECRET"],
+    binance = ReadOnlyBinanceClient(
+        api_key="public-market-data", api_secret="public-market-data",
         testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
-        use_unified_account=True,
+        use_unified_account=False, instance_id="ai-tuner-snapshot",
     )
     market_cap = MarketCapService(api_key=os.getenv("COINGECKO_API_KEY") or None)
     notifier = NotificationClient(
@@ -96,7 +105,7 @@ async def _run(args) -> None:
                 if next_run <= now:
                     next_run += timedelta(hours=1)
                 await asyncio.sleep((next_run - now).total_seconds())
-                summary = await collector.collect_once(next_run)
+                summary = await collect_safely(collector, next_run)
                 consecutive_failures = consecutive_failures + 1 if is_failed_bucket(summary) else 0
                 logger.info(
                     "HRS外部快照时间桶完成", bucket_start=next_run.replace(minute=0).isoformat(),
@@ -105,10 +114,13 @@ async def _run(args) -> None:
                     consecutive_failures=consecutive_failures,
                 )
                 if consecutive_failures == notify_after:
-                    await notifier.send(
-                        f"AI Tuner HRS 外部快照已连续 {notify_after} 个时间桶全部采集失败",
-                        level="error", project="tuner",
-                    )
+                    try:
+                        await notifier.send(
+                            f"AI Tuner HRS 外部快照已连续 {notify_after} 个时间桶全部采集失败",
+                            level="error", project="tuner",
+                        )
+                    except Exception as exc:
+                        logger.error("HRS快照失败通知发送失败", error=str(exc))
     finally:
         await notifier.close()
         await market_cap.close()

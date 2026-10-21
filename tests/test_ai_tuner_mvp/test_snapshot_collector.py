@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from ai_tuner.snapshots.collector import SnapshotCollector
-from ai_tuner.snapshots.cli import build_parser, is_failed_bucket
+from ai_tuner.snapshots.cli import build_parser, collect_safely, is_failed_bucket
 from ai_tuner.snapshots.collector import CollectionSummary
 from strategies.hrs.strategy import HRSStrategy
 
@@ -27,7 +27,18 @@ def test_snapshot_cli_exposes_safe_commands():
 def test_only_total_collection_failure_counts_as_failed_bucket():
     assert is_failed_bucket(CollectionSummary(2, 0, 0, 0, 2)) is True
     assert is_failed_bucket(CollectionSummary(2, 1, 0, 0, 1)) is False
+    assert is_failed_bucket(CollectionSummary(2, 0, 2, 0, 0)) is True
+    assert is_failed_bucket(CollectionSummary(2, 0, 0, 2, 0)) is True
     assert is_failed_bucket(CollectionSummary(0, 0, 0, 0, 0)) is False
+
+
+@pytest.mark.asyncio
+async def test_daemon_survives_top_level_collection_failure():
+    collector = MagicMock()
+    collector.collect_once = AsyncMock(side_effect=RuntimeError("db unavailable"))
+    summary = await collect_safely(collector, AS_OF)
+    assert summary.failed == 1
+    assert is_failed_bucket(summary) is True
 
 
 @pytest.mark.asyncio
@@ -90,6 +101,29 @@ async def test_single_symbol_failure_does_not_cancel_other_symbols():
     assert summary.complete == 1
     assert summary.failed == 1
     assert repository.store_market_snapshot.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_raw_evidence_includes_market_cap_provenance_and_derivations():
+    repository = MagicMock()
+    repository.latest_universe = AsyncMock(return_value={"BTCUSDT"})
+    repository.store_market_snapshot = AsyncMock()
+    binance = MagicMock()
+    binance.get_open_interest = AsyncMock(return_value=10.0)
+    binance.get_funding_rate = AsyncMock(return_value=0.0001)
+    binance.get_ticker = AsyncMock(return_value={"lastPrice": "100", "quoteVolume": "5000"})
+    market_cap = MagicMock()
+    market_cap.get_market_cap_with_provenance = AsyncMock(return_value=SimpleNamespace(
+        value=100_000.0, source="coingecko", as_of=AS_OF.timestamp(),
+        available_at=AS_OF.timestamp(), is_proxy=False, missing_reason=None,
+    ))
+
+    await SnapshotCollector(repository, binance, market_cap).collect_once(AS_OF)
+    payload = repository.store_market_snapshot.await_args.args[0].raw_payload
+    assert payload["market_cap_usd"] == 100_000.0
+    assert payload["market_cap_as_of"] == AS_OF.timestamp()
+    assert payload["oi_market_cap_ratio"] == 0.01
+    assert payload["sentiment_formula_version"] == "funding_annual_pct_v1"
 
 
 @pytest.mark.asyncio
