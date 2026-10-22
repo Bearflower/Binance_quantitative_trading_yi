@@ -176,13 +176,21 @@ async def test_closed_bar_excludes_partial_last_bar():
     ]
     assert count_calls, f"应有 generate_series COUNT 调用，实际 call_args_log={db.call_args_log}"
     _, sql, args = count_calls[0]
-    ws, we, _ = args[:3]
+    ws, we, interval_arg = args[:3]
     # window_end 向下对齐到 1h 边界
     assert we.minute == 0 and we.second == 0, (
         f"window_end 应向下对齐到 1h 边界，实际 minute={we.minute} second={we.second}"
     )
     # window_start 向上对齐到 1h 边界
     assert ws.minute == 0 and ws.second == 0
+    # asyncpg 的 PostgreSQL interval 编码器要求 datetime.timedelta，字符串会在
+    # 真实连接中报 "str object has no attribute days"。
+    assert interval_arg == timedelta(hours=1)
+    assert all(
+        isinstance(call_args[2], timedelta)
+        for _, call_sql, call_args in db.call_args_log
+        if "generate_series" in call_sql
+    )
 
 
 # ===========================================================================

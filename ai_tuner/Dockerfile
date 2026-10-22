@@ -38,6 +38,9 @@ COPY strategies/grid/config.yaml /app/strategies/grid/config.yaml
 COPY strategies/hrs/config.yaml /app/strategies/hrs/config.yaml
 COPY strategies/new_coin/config.yaml /app/strategies/new_coin/config.yaml
 
+# 构建期验证独立快照采集入口已打包；运行时由 ai-tuner-snapshot 服务调用
+RUN python -c "import ai_tuner.snapshots.cli"
+
 # 创建日志目录
 RUN mkdir -p /app/logs
 

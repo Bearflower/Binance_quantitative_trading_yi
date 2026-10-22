@@ -76,6 +76,18 @@ purpose_driven_mvp:
         source: historical_snapshot
         intervals: [1h, 4h, 1d]
 
+# HRS 外部时点快照采集。独立进程只留证，不具备参数写入能力。
+snapshot_collection:
+  strategy_id: hrs
+  schedule_minute: 20
+  bucket_minutes: 60
+  concurrency: 5
+  notify_after_consecutive_failures: 3
+  complete_market_cap_sources: [coingecko, cache_hit]
+  historical_backfill:
+    allowed_sources: [binance_open_interest_history, binance_funding_rate_history]
+    forbid_current_market_cap_for_past: true
+
 strategies:
   - strategy_id: "btc_eth"
     name: "MTPCS策略"

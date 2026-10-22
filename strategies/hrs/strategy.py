@@ -3,6 +3,7 @@
 继承 BaseStrategy，实现做空和做多双向反转交易逻辑
 """
 import asyncio
+import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,7 @@ from shared.notification import NotificationClient
 from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared.trade_logger import TradeLogger
 from shared.position_baseline import calc_occupied_margin, calc_position_margin
+from ai_tuner.snapshots.repository import SnapshotRepository
 
 from .candidate_pool import CandidatePool
 from .executor import TradingExecutor, OpenResult, CloseOutcome
@@ -119,6 +121,7 @@ class HRSStrategy(BaseStrategy):
         self.trading_executor: Optional[TradingExecutor] = None
         self.position_manager: Optional[PositionManager] = None
         self.risk_manager: Optional[RiskManager] = None
+        self.snapshot_repository = None
 
         # K线缓存（用于1h K线和4h合成）
         self._klines_cache: Dict[str, List[Dict]] = {}
@@ -256,6 +259,9 @@ class HRSStrategy(BaseStrategy):
             raise ValueError("通知客户端未设置")
         if not self.db:
             raise ValueError("数据库管理器未设置")
+
+        # 快照写入必须由 main 注入独立最小权限连接；未配置时宁可停采，
+        # 不得回退到持有交易库超级权限的主连接。
 
         # 延迟绑定 DB 到资金分配管理器（方案 D：DB 为月度分配额主来源）
         self.capital_mgr.bind_database(self.db, self.strategy_name)
@@ -1536,6 +1542,25 @@ class HRSStrategy(BaseStrategy):
             await self._perform_candidate_scan(scan_time_str)
             return
 
+    async def _persist_universe_snapshot(self, observed_at: datetime) -> None:
+        """旁路保存候选池历史；失败只告警，绝不影响交易流程。"""
+        if self.snapshot_repository is None:
+            return
+        try:
+            config_hash = hashlib.sha256(
+                json.dumps(self.config, sort_keys=True, default=str).encode()
+            ).hexdigest()
+            await self.snapshot_repository.store_universe(
+                strategy_id="hrs",
+                observed_at=observed_at,
+                short_symbols=self.candidate_pool.get_short_candidates(),
+                long_symbols=self.candidate_pool.get_long_candidates(),
+                source_run_id=f"hrs:{observed_at.isoformat()}",
+                config_hash=config_hash,
+            )
+        except Exception as exc:
+            logger.warning("HRS候选池历史快照写入失败", error=str(exc))
+
     async def _perform_candidate_scan(self, scan_time_str: str) -> None:
         """
         执行候选池扫描的内部逻辑
@@ -1559,6 +1584,7 @@ class HRSStrategy(BaseStrategy):
             },
             state_key="candidate_pool",
         )
+        await self._persist_universe_snapshot(datetime.now(timezone.utc))
 
         # P0-5: 候选池更新后，注入 strategy 维护的统一4h K线缓存
         self.candidate_pool.set_klines_4h_cache(self._klines_4h_cache)

@@ -275,15 +275,19 @@ ORDER BY g.open_time
 async def _prepare_series(db, template: str, schema: str, table: str, ts_col: str,
                           start: datetime, end: datetime, period_sec: int,
                           boundary_cast: str,
-                          ) -> tuple[str, datetime, datetime, str]:
-    """填表名/列名/边界 cast，并按列类型绑定起止，返回 (sql, start, end, interval)"""
+                          ) -> tuple[str, datetime, datetime, timedelta]:
+    """填表名/列名/边界 cast，并按列类型绑定起止，返回 (sql, start, end, interval)
+
+    interval 必须是 datetime.timedelta：asyncpg 的 interval 编码器只接受 timedelta，
+    传字符串会触发 "str object has no attribute days"（main 294ccd9 修复）。
+    """
     sql = template.format(
         schema_table=f"{schema}.{table}", ts_col=ts_col, boundary_cast=boundary_cast,
     )
     start_bound, end_bound = await db_probe.bind_bounds(
         db, schema, table, ts_col, start, end,
     )
-    return sql, start_bound, end_bound, f"{period_sec} seconds"
+    return sql, start_bound, end_bound, timedelta(seconds=period_sec)
 
 
 async def _query_count(db, schema: str, table: str, ts_col: str,
@@ -300,11 +304,11 @@ async def _query_count(db, schema: str, table: str, ts_col: str,
         boundary_cast: generate_series 窗口边界的 SQL cast 字面量
                        （"timestamp" / "timestamptz"，由 _boundary_cast 推导）。
     """
-    sql, start_bound, end_bound, interval_literal = await _prepare_series(
+    sql, start_bound, end_bound, interval_delta = await _prepare_series(
         db, _COUNT_SQL, schema, table, ts_col, start, end, period_sec, boundary_cast,
     )
     try:
-        row = await db.fetch_one(sql, start_bound, end_bound, interval_literal)
+        row = await db.fetch_one(sql, start_bound, end_bound, interval_delta)
     except Exception as exc:
         expected = _expected_buckets(start, end, period_sec)
         truncated = str(exc)[:120]
@@ -325,11 +329,11 @@ async def _query_missing_starts(db, schema: str, table: str, ts_col: str,
     异常时 gap = f"missing_query_failed:{exc[:120]}"，starts = ()——
     调用方必须把 gap 合并进 SymbolCoverage.gap，不能静默显示"无缺失区间"。
     """
-    sql, start_bound, end_bound, interval_literal = await _prepare_series(
+    sql, start_bound, end_bound, interval_delta = await _prepare_series(
         db, _MISSING_SQL, schema, table, ts_col, start, end, period_sec, boundary_cast,
     )
     try:
-        rows = await db.fetch_all(sql, start_bound, end_bound, interval_literal)
+        rows = await db.fetch_all(sql, start_bound, end_bound, interval_delta)
     except Exception as exc:
         truncated = str(exc)[:120]
         logger.warning("K 线缺失桶查询失败", schema=schema, table=table, error=truncated)

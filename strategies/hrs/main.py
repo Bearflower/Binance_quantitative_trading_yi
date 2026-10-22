@@ -16,6 +16,7 @@ from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
 from shared import condition_orders
 from strategies.hrs.strategy import HRSStrategy
+from ai_tuner.snapshots.repository import SnapshotRepository
 
 
 logger = structlog.get_logger()
@@ -78,6 +79,22 @@ async def main():
             max_pool_size=int(os.getenv("DATABASE_MAX_POOL_SIZE", "20")),
         )
 
+        snapshot_db_manager = None
+        snapshot_db_user = os.getenv("AI_TUNER_SNAPSHOT_DB_USER")
+        snapshot_db_password = os.getenv("AI_TUNER_SNAPSHOT_DB_PASSWORD")
+        if snapshot_db_user and snapshot_db_password:
+            snapshot_db_manager = DatabaseManager(
+                host=os.getenv("DATABASE_HOST"),
+                port=int(os.getenv("DATABASE_PORT", "5432")),
+                database=os.getenv("DATABASE_NAME"),
+                user=snapshot_db_user,
+                password=snapshot_db_password,
+                min_pool_size=1,
+                max_pool_size=2,
+            )
+        else:
+            logger.warning("HRS universe 快照停采：独立最小权限数据库凭据未配置")
+
         logger.info("客户端初始化完成")
 
         # 创建策略实例
@@ -87,6 +104,8 @@ async def main():
         await strategy.set_kline_service(kline_service)
         await strategy.set_notification_client(notification_client)
         await strategy.set_database(db_manager)
+        if snapshot_db_manager is not None:
+            strategy.snapshot_repository = SnapshotRepository(snapshot_db_manager)
 
         await strategy.initialize()
         logger.info("策略初始化完成，开始运行")
@@ -104,6 +123,8 @@ async def main():
             try:
                 await strategy.run()
             finally:
+                if snapshot_db_manager is not None:
+                    await snapshot_db_manager.disconnect()
                 await db_manager.disconnect()
 
     except KeyboardInterrupt:

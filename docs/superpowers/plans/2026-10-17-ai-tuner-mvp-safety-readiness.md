@@ -50,7 +50,9 @@
 |---|---|---|
 | ① MTPCS 系（btc_eth / btc_eth_aggressive）信号持久化 | **已落地**（本轮：dedup_key 小时粒度幂等 + cancelled→executed 单向升级；审计侧 `readiness.effective_signal_statuses` 按策略声明过滤 `pending/executed`） | `min_effective_signals=100`（激进版 ✗） |
 | ② 外部时点快照采集（OI / 市值 / 资金费率 / 情绪） | 库内无任何快照表 | hrs `external_snapshot_requirement=required`（覆盖 0.0 ✗） |
-| ③ K 线补齐 + 覆盖口径升级为策略 universe 逐 symbol | 主力合约抽样仅 97.96% / 83.66% | `min_kline_coverage=0.98`（两候选 ✗） |
+| ③ K 线补齐 + 覆盖口径升级为策略 universe 逐 symbol | **激进版已完成**：2026-10-21 按 5 symbols × 1h/4h/1d、90 天闭合桶审计并精确补采 260 根，覆盖率由 98.1342% 升至 **100%**，缺口与建议命令均为 0；HRS 仍因历史 universe 缺失无法形成覆盖证据 | 激进版 `min_kline_coverage=0.98` ✓；HRS ✗ |
+
+**阶段二 K 线生产复审（2026-10-21）**：审计窗口为 `[2026-07-23T10:04:00Z, 2026-10-21T10:04:00Z)`。补采严格限定 `BTCUSDT/ETHUSDT/BNBUSDT/SOLUSDT/XRPUSDT` 与 `1h/4h` 的 5 个缺口区间，分 5 批新增 `20 + 20 + 25 + 85 + 110 = 260` 根；每批后均重跑只读审计，覆盖率依次为 `98.2777% / 98.4212% / 98.6006% / 99.2106% / 100%`。最终逐 symbol/interval 共 15 项全部为 100%，证据见 `docs/reports/ai-tuner-kline-coverage-2026-10-21.json`。完整 readiness 仍为 `decision=STOP`、`selected_strategy=null`：激进版仅有 6 条有效信号（门禁 100），HRS 仍缺历史 universe 与必需外部快照；未调整任何门禁阈值、策略参数或覆盖层。
 
 **已知输出格式待修复项（非阻断）**：审计报告在渲染「已平仓交易/覆盖率」类失败项时统一保留一位小数，导致 `btc_eth_aggressive` 的 K 线覆盖 `97.96%` 被显示为「K线覆盖 98.0% < 98.0%」（两侧同为 98.0%，看起来自相矛盾）。实际 `97.96% < 98%`，不影响门禁判定。后续修复：失败项文案改为按门禁精度展示比较值，或提高渲染精度。
 

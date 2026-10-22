@@ -31,6 +31,10 @@ class CandidateReadiness:
     external_snapshot_requirement: str = "required"
     # 失败原因代码：required_historical_external_snapshots_missing / not_required_for_current_manifest
     external_snapshot_reason: str = ""
+    external_snapshot_expected: int = 0
+    external_snapshot_complete: int = 0
+    external_snapshot_evidence_start: Optional[str] = None
+    external_snapshot_sources: List[str] = field(default_factory=list)
 
     # --- 失败清单（每个条目对应一个未过的 gate，含实际值和阈值）---
     failures: List[str] = field(default_factory=list)

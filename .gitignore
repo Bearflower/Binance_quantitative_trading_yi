@@ -1,6 +1,7 @@
 # 环境变量与配置
 .env
 .deploy_config
+.secrets/
 
 # 部署包
 *.tar.gz
