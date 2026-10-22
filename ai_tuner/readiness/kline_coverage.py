@@ -66,9 +66,6 @@ _KLINE_SCHEMA = "btc_eth"
 # 时间列候选名（固定优先级）
 _TS_CANDIDATES = ("open_time", "timestamp", "ts")
 
-# 保留兼容参数；缺口必须按真实连续性合并，不能为压缩报告伪造连续区间
-_MAX_MISSING_RANGES = 200
-
 
 # ===========================================================================
 # 不可变模型
@@ -267,11 +264,26 @@ LEFT JOIN {schema_table} k ON k.{ts_col} = expected.open_time
 """
 
 _MISSING_SQL = """
-SELECT g.open_time FROM generate_series($1::{boundary_cast}, $2::{boundary_cast} - $3::interval, $3::interval) g(open_time)
+SELECT g.open_time
+FROM generate_series($1::{boundary_cast}, $2::{boundary_cast} - $3::interval, $3::interval) g(open_time)
 LEFT JOIN {schema_table} k ON k.{ts_col} = g.open_time
 WHERE k.{ts_col} IS NULL
 ORDER BY g.open_time
 """
+
+
+async def _prepare_series(db, template: str, schema: str, table: str, ts_col: str,
+                          start: datetime, end: datetime, period_sec: int,
+                          boundary_cast: str,
+                          ) -> tuple[str, datetime, datetime, str]:
+    """填表名/列名/边界 cast，并按列类型绑定起止，返回 (sql, start, end, interval)"""
+    sql = template.format(
+        schema_table=f"{schema}.{table}", ts_col=ts_col, boundary_cast=boundary_cast,
+    )
+    start_bound, end_bound = await db_probe.bind_bounds(
+        db, schema, table, ts_col, start, end,
+    )
+    return sql, start_bound, end_bound, f"{period_sec} seconds"
 
 
 async def _query_count(db, schema: str, table: str, ts_col: str,
@@ -288,12 +300,9 @@ async def _query_count(db, schema: str, table: str, ts_col: str,
         boundary_cast: generate_series 窗口边界的 SQL cast 字面量
                        （"timestamp" / "timestamptz"，由 _boundary_cast 推导）。
     """
-    sql = _COUNT_SQL.format(
-        schema_table=f"{schema}.{table}", ts_col=ts_col, boundary_cast=boundary_cast,
+    sql, start_bound, end_bound, interval_literal = await _prepare_series(
+        db, _COUNT_SQL, schema, table, ts_col, start, end, period_sec, boundary_cast,
     )
-    start_bound = await db_probe.bind_datetime(db, schema, table, ts_col, start)
-    end_bound = await db_probe.bind_datetime(db, schema, table, ts_col, end)
-    interval_literal = f"{period_sec} seconds"
     try:
         row = await db.fetch_one(sql, start_bound, end_bound, interval_literal)
     except Exception as exc:
@@ -316,12 +325,9 @@ async def _query_missing_starts(db, schema: str, table: str, ts_col: str,
     异常时 gap = f"missing_query_failed:{exc[:120]}"，starts = ()——
     调用方必须把 gap 合并进 SymbolCoverage.gap，不能静默显示"无缺失区间"。
     """
-    sql = _MISSING_SQL.format(
-        schema_table=f"{schema}.{table}", ts_col=ts_col, boundary_cast=boundary_cast,
+    sql, start_bound, end_bound, interval_literal = await _prepare_series(
+        db, _MISSING_SQL, schema, table, ts_col, start, end, period_sec, boundary_cast,
     )
-    start_bound = await db_probe.bind_datetime(db, schema, table, ts_col, start)
-    end_bound = await db_probe.bind_datetime(db, schema, table, ts_col, end)
-    interval_literal = f"{period_sec} seconds"
     try:
         rows = await db.fetch_all(sql, start_bound, end_bound, interval_literal)
     except Exception as exc:
@@ -340,18 +346,17 @@ def _merge_missing_starts(
     starts: Iterable[datetime],
     *,
     interval: str,
-    max_ranges: int = _MAX_MISSING_RANGES,
 ) -> tuple[tuple[datetime, datetime], ...]:
     """把连续缺失桶的 open_time 序列合并成 (start, end) 区间（左闭右开）
 
     从 INTERVAL_SECONDS 模块常量取 interval 对应秒数，不再从调用方传 periods——
     单一可信源，消除幽灵形参 + 避免两处不一致（audit 里改 INTERVAL_SECONDS 忘记改调用）。
+    缺口按真实连续性完整合并，不按数量截断（截断会伪造"无缺口"的假象）。
     """
     period = INTERVAL_SECONDS.get(interval)
     if period is None or not starts:
         return ()
     starts_sorted = sorted(starts)
-    _ = max_ranges  # API 兼容；正确性优先，不按数量伪合并离散缺口
 
     ranges: list[tuple[datetime, datetime]] = []
     seg_start = starts_sorted[0]
@@ -526,6 +531,31 @@ def _combine_symbol_rows(rows: Iterable[SymbolCoverage]) -> list[SymbolCoverage]
     return combined
 
 
+def _has_historical_gap(resolution) -> bool:
+    """历史 universe 未覆盖完整审计窗口即 fail-closed（局部高覆盖不得掩盖更早缺口）"""
+    return any(
+        str(gap).startswith("historical_universe_missing")
+        for gap in resolution.gaps
+    )
+
+
+async def _collect_pair_rows(
+    db, resolution, audit_start: datetime, audit_end: datetime,
+) -> list[SymbolCoverage]:
+    """按切片裁剪窗口后逐个 (symbol, interval) 计算覆盖"""
+    rows: list[SymbolCoverage] = []
+    for sl, symbol, interval in _iter_pairs(resolution):
+        slice_start = max(audit_start, _as_utc(sl.valid_from))
+        slice_end = min(audit_end, _as_utc(sl.valid_to))
+        if slice_start >= slice_end:
+            continue
+        rows.append(await _single_pair_coverage(
+            db, symbol, interval,
+            window_start=slice_start, window_end=slice_end,
+        ))
+    return rows
+
+
 async def compute_kline_coverage(
     db,
     *,
@@ -561,28 +591,12 @@ async def compute_kline_coverage(
                        strategy=strategy_id, error=str(exc))
         return _empty_result(f"universe_resolver_failed:{exc}")
 
-    # 历史 universe 只要未覆盖完整审计窗口就 fail-closed；不能用局部切片的
-    # 高覆盖率掩盖更早时期 universe 不可证明的问题。
-    historical_gap = any(
-        str(gap).startswith("historical_universe_missing")
-        for gap in resolution.gaps
-    )
-    if not resolution.slices or historical_gap:
+    if not resolution.slices or _has_historical_gap(resolution):
         return _empty_result(resolution.gaps)
 
-    rows: list[SymbolCoverage] = []
-    audit_start = _as_utc(window_start)
-    audit_end = _as_utc(window_end)
-    for sl, symbol, interval in _iter_pairs(resolution):
-        slice_start = max(audit_start, _as_utc(sl.valid_from))
-        slice_end = min(audit_end, _as_utc(sl.valid_to))
-        if slice_start >= slice_end:
-            continue
-        pair = await _single_pair_coverage(
-            db, symbol, interval,
-            window_start=slice_start, window_end=slice_end,
-        )
-        rows.append(pair)
+    rows = await _collect_pair_rows(
+        db, resolution, _as_utc(window_start), _as_utc(window_end),
+    )
     aggregated = aggregate_coverage(_combine_symbol_rows(rows))
     return KlineCoverageResult(
         weighted_coverage=aggregated.weighted_coverage,

@@ -372,7 +372,7 @@ def test_missing_ranges_preserves_gaps_above_threshold():
 
     base = datetime(2026, 10, 17, 0, 0, tzinfo=timezone.utc)
     starts = tuple(base + timedelta(hours=i) for i in range(250))
-    result = _merge_missing_starts(starts, interval="1h", max_ranges=200)
+    result = _merge_missing_starts(starts, interval="1h")
     # 因为 250 个桶本来就连续，所以自然合并成一个区间
     assert len(result) == 1
     start, end = result[0]
@@ -387,7 +387,7 @@ def test_many_disjoint_missing_ranges_are_not_falsely_joined():
     base = datetime(2026, 10, 1, tzinfo=timezone.utc)
     starts = tuple(base + timedelta(hours=i * 2) for i in range(201))
 
-    result = _merge_missing_starts(starts, interval="1h", max_ranges=200)
+    result = _merge_missing_starts(starts, interval="1h")
 
     assert len(result) == 201
     assert result[0] == (base, base + timedelta(hours=1))

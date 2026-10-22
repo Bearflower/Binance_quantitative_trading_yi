@@ -53,6 +53,16 @@ async def fetch_column_data_type(db, schema: str, table: str, column: str
         return None
 
 
+def _coerce_for_dtype(dtype: Optional[str], dt: datetime) -> datetime:
+    """按已探测到的列 data_type 规整 dt（aware → UTC、naive → 去 tzinfo）"""
+    if dtype == TS_AWARE:
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    # 显式 naive 或探测失败 → 去 tzinfo
+    return dt.replace(tzinfo=None)
+
+
 async def bind_datetime(db, schema: str, table: str, column: str,
                         dt: datetime) -> datetime:
     """按目标时间列类型把 dt 正确绑定到 asyncpg
@@ -75,12 +85,19 @@ async def bind_datetime(db, schema: str, table: str, column: str,
         正确适配该列类型的 datetime
     """
     dtype = await fetch_column_data_type(db, schema, table, column)
-    if dtype == TS_AWARE:
-        if dt.tzinfo is None:
-            return dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
-    # 显式 naive 或探测失败 → 去 tzinfo
-    return dt.replace(tzinfo=None)
+    return _coerce_for_dtype(dtype, dt)
+
+
+async def bind_bounds(db, schema: str, table: str, column: str,
+                      start: datetime, end: datetime
+                      ) -> tuple[datetime, datetime]:
+    """一次探测同时绑定窗口起止，消除调用方逐行重复的两次 bind_datetime
+
+    与两次调用 bind_datetime 的返回值完全一致；仅把 information_schema
+    探测从 2 次降为 1 次（同一列无需重复探测）。
+    """
+    dtype = await fetch_column_data_type(db, schema, table, column)
+    return _coerce_for_dtype(dtype, start), _coerce_for_dtype(dtype, end)
 
 
 async def table_exists(db, schema: str, table: str) -> Optional[bool]:

@@ -590,6 +590,17 @@ class ReadinessAuditor:
     # 其余查询方法（trade_records / regime / 外部快照）
     # ---------------------------------------------------------------
 
+    async def _fetch_trading_window(
+        self, sql: str, strategy_id: str,
+        window_start: datetime, window_end: datetime,
+    ) -> Optional[dict]:
+        """按 executed_at 列类型绑定窗口后查询 trading.trade_records"""
+        ws, we = await db_probe.bind_bounds(
+            self.db, "trading", "trade_records", "executed_at",
+            window_start, window_end,
+        )
+        return await self.db.fetch_one(sql, strategy_id, ws, we)
+
     async def _query_trade_records(
         self,
         strategy_id: str,
@@ -610,11 +621,7 @@ class ReadinessAuditor:
           AND side IS NOT NULL
         """
         try:
-            ws = await self._bind_window("trading", "trade_records",
-                                         "executed_at", window_start)
-            we = await self._bind_window("trading", "trade_records",
-                                         "executed_at", window_end)
-            row = await self.db.fetch_one(sql, strategy_id, ws, we)
+            row = await self._fetch_trading_window(sql, strategy_id, window_start, window_end)
             if row is None:
                 return 0, 1.0
             return int(row["closed_trades"] or 0), float(row["complete_ratio"] or 1.0)
@@ -638,11 +645,7 @@ class ReadinessAuditor:
           AND executed_at <  $3
         """
         try:
-            ws = await self._bind_window("trading", "trade_records",
-                                         "executed_at", window_start)
-            we = await self._bind_window("trading", "trade_records",
-                                         "executed_at", window_end)
-            row = await self.db.fetch_one(sql, strategy_id, ws, we)
+            row = await self._fetch_trading_window(sql, strategy_id, window_start, window_end)
             return int((row or {}).get("syms") or 0), []
         except Exception as exc:
             logger.warning("regime_count 查询失败", strategy=strategy_id,
