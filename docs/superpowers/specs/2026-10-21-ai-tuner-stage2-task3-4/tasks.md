@@ -39,12 +39,26 @@
 
 - 执行：`code-specification-inspector-local`
 - 检查：硬编码 / 重复代码 / 幽灵参数 / 中文注释 / 函数 ≤50 行 / 行宽 ≤120
+- [x] 结论：通过（两轮修复后）。修复项：`db_probe.bind_bounds` / `_prepare_series` / `_fetch_trading_window` 消除窗口绑定样板；删除 `_merge_missing_starts.max_ranges` 幽灵参数与 `_MAX_MISSING_RANGES`；`compute_kline_coverage` 拆为 `_has_historical_gap` + `_collect_pair_rows`；`_MISSING_SQL` 单行 123 字符换行
+- 证据：AST 自查 0 违规（行宽/函数长度），`294 passed`；本地 commit `4827a44`
+- 说明：合并 main 后（`4f4e6eb`）冲突解为「保留 `_prepare_series` + 采用 main 的 `timedelta` interval 绑定」；`tests/test_kline_service/test_scheduler.py` 9 个失败为合并前既有基线（main 同口径同样 9 failed / 418 passed），与本次改动无关
 
 ### A6 强制测试
 
 - 幻觉测试 10 项（调度者逐项执行，对照真实文件/配置/SQL）
 - 功能测试：`api-test-pro-local`
 - 覆盖率：新增函数 100% 分支覆盖（含异常路径、空值、缺表、历史缺失）
+- [x] 幻觉测试：import 目标（`db_probe`/`CandidateReadiness`/`UniverseResolver`/`SnapshotRepository`）均存在；配置键 `purpose_driven_mvp.readiness.universe.{btc_eth_aggressive,hrs}` 与 `per_strategy` 强制键齐备；`strategies/btc_eth_aggressive/config.yaml` 的 `strategy.symbols` 实读为 5 个 symbol；三张 HRS 快照表在生产库存在（见下）
+- [x] 功能测试：322 passed → 补测试后 **343 passed**；`test_kline_service/test_scheduler.py` 9 个失败为既有基线（main 同口径同样失败）
+- [x] 覆盖率缺口补齐：新增 `tests/test_ai_tuner_mvp/test_db_probe.py`（13 例，aware/naive/探测失败/三态）与 `test_kline_coverage.py` 8 例（`count_query_row_none`、`unknown_interval`、`table_name_format_invalid`、`timestamp_column_missing`、`universe_resolver_failed`、`universe_not_configured`、未知 interval 合并、切片不相交跳过）
+- [x] 审计可解释性最小改动：`StaticUniverseResolver` 在 symbols/intervals 为空时追加 `static_universe_empty:<sid>` / `intervals_not_configured:<sid>` gap（不改变 slice 结构、config_hash 与门禁判定）
+
+### 生产库现状核查（只读，2026-10-22）
+
+- 三表存在：`ai_tuner_universe_scan_runs` / `ai_tuner_universe_snapshots` / `ai_tuner_market_snapshots`（DDL：`database/postgres/init-scripts/13-ai-tuner-market-snapshots.sql`）
+- 关键列：`observed_at`(timestamptz)、`source_observed_at`(timestamptz)、`collected_at`(timestamptz)；`universe_snapshots` 含 `membership`；`market_snapshots` 含 OI/资金费率/市值/情绪/`payload_hash`/`raw_payload`
+- **当前行数均为 0**（三表空）→ HRS 任何真实资格考试必须返回 `BLOCKED_DATA`；HRS universe resolver 会返回 `historical_universe_missing_before=...`
+- 主键均为 `(strategy_id, observed_at, ...)`，与 resolver 的 `observed_at <= as_of` 查询口径一致
 
 ### A7 审查 + 文档回标
 

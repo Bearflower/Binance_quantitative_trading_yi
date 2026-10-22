@@ -823,3 +823,246 @@ async def test_generate_series_cast_follows_column_type():
         assert "::timestamptz" not in sql, (
             f"列类型 naive 时不应出现 ::timestamptz，实际: {sql}"
         )
+
+
+# ===========================================================================
+# 缺口：_query_count fetch_one 返回 None
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_count_query_row_none_produces_gap():
+    """_query_count 里 fetch_one 返回 None → gap="count_query_row_none"，
+    expected 仍按闭合桶数兜底。
+
+    注意调用链 fetch_one 会被调用 4 次：
+    1) table_exists
+    2) _detect_ts_column 中 open_time 探测
+    3) bind_bounds 中再次探测 open_time
+    4) count SQL（本次要让它返回 None）
+    """
+    from ai_tuner.readiness import kline_coverage as kc
+
+    fake_db = MagicMock()
+    fake_db.fetch_one = AsyncMock(side_effect=[
+        {"?column?": 1},                                # 1) table_exists
+        {"data_type": "timestamp without time zone"},   # 2) open_time 探测命中
+        {"data_type": "timestamp without time zone"},   # 3) bind_bounds 再次探测
+        None,                                           # 4) count SQL 返回 None → gap
+    ])
+    # missing 查询不会执行（count_gap != None 时提前 return）
+    fake_db.fetch_all = AsyncMock()
+
+    as_of = datetime(2026, 10, 18, tzinfo=timezone.utc)
+    row = await kc._single_pair_coverage(
+        fake_db, "BTCUSDT", "1h",
+        as_of - timedelta(hours=24), as_of,
+    )
+    # expected 按闭合桶数兜底（24 小时窗口 → 24 根）
+    assert row.expected == 24, f"expected 应为 24，实际 {row.expected}"
+    assert row.actual == 0
+    assert row.gap == "count_query_row_none"
+
+
+# ===========================================================================
+# 缺口：未知 interval
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_unknown_interval_gap():
+    """interval="2h"（未在 INTERVAL_SECONDS 里）→
+    gap 以 unknown_interval: 开头、expected=0、**不查询任何 K 线表**。"""
+    from ai_tuner.readiness import kline_coverage as kc
+
+    fake_db = MagicMock()
+    fake_db.fetch_one = AsyncMock()
+    fake_db.fetch_all = AsyncMock()
+
+    as_of = datetime(2026, 10, 18, tzinfo=timezone.utc)
+    row = await kc._single_pair_coverage(
+        fake_db, "BTCUSDT", "2h",
+        as_of - timedelta(hours=24), as_of,
+    )
+    assert row.expected == 0
+    assert row.actual == 0
+    assert row.gap.startswith("unknown_interval:")
+    # 断言：_build_table_name / table_exists / generate_series 均未触发
+    fake_db.fetch_one.assert_not_awaited()
+    fake_db.fetch_all.assert_not_awaited()
+
+
+# ===========================================================================
+# 缺口：symbol 非法格式
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_invalid_symbol_gap():
+    """symbol="bt c"（含空格）→ _build_table_name 抛 ValueError →
+    gap="table_name_format_invalid"，expected 按桶数计，**不查询 K 线表**。"""
+    from ai_tuner.readiness import kline_coverage as kc
+
+    fake_db = MagicMock()
+    fake_db.fetch_one = AsyncMock()
+    fake_db.fetch_all = AsyncMock()
+
+    as_of = datetime(2026, 10, 18, tzinfo=timezone.utc)
+    row = await kc._single_pair_coverage(
+        fake_db, "bt c", "1h",
+        as_of - timedelta(hours=24), as_of,
+    )
+    # 注意：period_sec 是有效值（1h=3600），所以 expected 仍按闭合桶数算
+    assert row.gap == "table_name_format_invalid"
+    assert row.expected == 24, f"expected 应为 24，实际 {row.expected}"
+    assert row.actual == 0
+    # 断言：没到 table_exists 那一步
+    fake_db.fetch_one.assert_not_awaited()
+    fake_db.fetch_all.assert_not_awaited()
+
+
+# ===========================================================================
+# 缺口：表存在但时间列全部缺失
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_ts_column_missing_gap():
+    """table_exists → True，但 open_time / timestamp / ts 三列全部探测失败 →
+    gap="timestamp_column_missing"。"""
+    from ai_tuner.readiness import kline_coverage as kc
+
+    fake_db = MagicMock()
+    fake_db.fetch_one = AsyncMock(side_effect=[
+        {"?column?": 1},     # table_exists → True
+        None,                # open_time 不存在
+        None,                # timestamp 不存在
+        None,                # ts 不存在
+    ])
+
+    as_of = datetime(2026, 10, 18, tzinfo=timezone.utc)
+    row = await kc._single_pair_coverage(
+        fake_db, "BTCUSDT", "1h",
+        as_of - timedelta(hours=24), as_of,
+    )
+    assert row.gap == "timestamp_column_missing"
+    assert row.expected == 24
+    assert row.actual == 0
+
+
+# ===========================================================================
+# 缺口：universe resolver 抛异常
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_universe_resolver_failure_gap():
+    """让 StaticConfigUniverseResolver 构造时就抛（config_path 指向不存在文件）→
+    compute_kline_coverage 返回 gap 以 universe_resolver_failed: 开头、
+    weighted 0.0、不抛异常。"""
+    from ai_tuner.readiness.kline_coverage import compute_kline_coverage
+
+    fake_db = MagicMock()
+    fake_db.fetch_one = AsyncMock()
+    fake_db.fetch_all = AsyncMock()
+
+    # 故意给一个不存在的 config_path —— UniverseResolver 内部会
+    # StaticConfigUniverseResolver(...).resolve() → FileNotFoundError
+    universe_cfg = {
+        "ghost": {
+            "source": "strategy_config",
+            "config_path": "strategies/nonexistent/config.yaml",
+            "symbol_path": "strategy.symbols",
+            "intervals": ["1h"],
+        },
+    }
+    as_of = datetime(2026, 10, 18, tzinfo=timezone.utc)
+
+    # 关键：不抛异常
+    result = await compute_kline_coverage(
+        fake_db,
+        strategy_id="ghost",
+        universe_cfg=universe_cfg,
+        project_root=_PROJECT_ROOT,
+        window_start=as_of - timedelta(hours=24),
+        window_end=as_of,
+    )
+    assert result.weighted_coverage == 0.0
+    assert len(result.symbols) == 0
+    assert len(result.gaps) >= 1
+    assert result.gaps[0].startswith("universe_resolver_failed:"), result.gaps
+
+
+# ===========================================================================
+# 缺口：universe_cfg=None
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_missing_universe_config_gap():
+    """universe_cfg=None → gap="universe_not_configured_for_<sid>"、
+    weighted 0.0，不抛。"""
+    from ai_tuner.readiness.kline_coverage import compute_kline_coverage
+
+    fake_db = MagicMock()
+    result = await compute_kline_coverage(
+        fake_db,
+        strategy_id="any",
+        universe_cfg=None,
+        project_root=_PROJECT_ROOT,
+        window_start=datetime(2026, 10, 17, tzinfo=timezone.utc),
+        window_end=datetime(2026, 10, 18, tzinfo=timezone.utc),
+    )
+    assert result.weighted_coverage == 0.0
+    assert result.gaps == ("universe_not_configured_for_any",)
+
+
+# ===========================================================================
+# _merge_missing_starts：未知 interval 返回空
+# ===========================================================================
+
+
+def test_merge_missing_starts_unknown_interval_returns_empty():
+    """INTERVAL_SECONDS 不含 "2h" → period=None → 早退返回 ()"""
+    from ai_tuner.readiness.kline_coverage import _merge_missing_starts
+
+    base = datetime(2026, 10, 17, tzinfo=timezone.utc)
+    starts = (base, base + timedelta(hours=1))
+    assert _merge_missing_starts(starts, interval="2h") == ()
+
+
+# ===========================================================================
+# _collect_pair_rows：slice 与审计窗口不相交 → 跳过
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_collect_pair_rows_skips_disjoint_slice(monkeypatch):
+    """slice.valid_to < audit_start → _single_pair_coverage 不应被调用"""
+    from ai_tuner.readiness import kline_coverage as kc
+    from ai_tuner.readiness.universe import UniverseResolution, UniverseSlice
+
+    # slice 在审计窗口之前（完全不相交）
+    slice_start = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    slice_end = datetime(2026, 9, 2, tzinfo=timezone.utc)
+    audit_start = datetime(2026, 10, 1, tzinfo=timezone.utc)
+    audit_end = datetime(2026, 10, 2, tzinfo=timezone.utc)
+
+    resolution = UniverseResolution(
+        slices=(UniverseSlice(
+            "s", slice_start, slice_end, ("BTCUSDT",), ("1h",),
+            "strategy_config", "a" * 64,
+        ),),
+        covered_from=None,
+        gaps=(),
+    )
+
+    pair_mock = AsyncMock(return_value=kc.SymbolCoverage(
+        "BTCUSDT", "1h", expected=24, actual=24,
+    ))
+    monkeypatch.setattr(kc, "_single_pair_coverage", pair_mock)
+
+    await kc._collect_pair_rows(
+        object(), resolution, audit_start, audit_end,
+    )
+    pair_mock.assert_not_awaited()

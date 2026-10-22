@@ -189,11 +189,18 @@ class StaticConfigUniverseResolver:
             source="strategy_config",
             config_hash=config_hash,
         )
+        # 审计可解释性：symbols / intervals 为空时追加 gap
+        # （不得改变 slices 结构、covered_from、config_hash，也不改变门禁判定）
+        gaps: list[str] = []
+        if not symbols:
+            gaps.append(f"static_universe_empty:{strategy_id}")
+        if not self._intervals:
+            gaps.append(f"intervals_not_configured:{strategy_id}")
         # 静态型 covered_from 无意义（配置文件无时间戳）→ 用 None 避免误导
         return UniverseResolution(
             slices=(slice_,),
             covered_from=None,
-            gaps=(),
+            gaps=tuple(gaps),
         )
 
     def _read_config_bytes(self) -> bytes:
