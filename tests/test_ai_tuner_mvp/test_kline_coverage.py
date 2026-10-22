@@ -355,6 +355,52 @@ async def test_strategy_without_universe_config_graceful():
 
 
 # ===========================================================================
+# 静态 universe 为空 → 0.0 + static_universe_empty gap
+# ===========================================================================
+
+
+@pytest.mark.asyncio
+async def test_empty_static_universe_yields_zero_coverage_with_gap(tmp_path):
+    """symbols=[] 时无任何 (symbol, interval) 对：
+    weighted=0.0、gaps 含 static_universe_empty:<sid>，且不查询 K 线表。
+    """
+    from ai_tuner.readiness.kline_coverage import compute_kline_coverage
+
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    (cfg_dir / "config.yaml").write_text(
+        "strategy:\n  symbols: []\n", encoding="utf-8",
+    )
+
+    fake_db = MagicMock()
+    fake_db.fetch_one = AsyncMock()
+    fake_db.fetch_all = AsyncMock()
+
+    as_of = datetime(2026, 10, 18, tzinfo=timezone.utc)
+    result = await compute_kline_coverage(
+        fake_db,
+        strategy_id="empty_static",
+        universe_cfg={
+            "empty_static": {
+                "source": "strategy_config",
+                "config_path": "cfg/config.yaml",
+                "symbol_path": "strategy.symbols",
+                "intervals": ["1h"],
+            },
+        },
+        project_root=tmp_path,
+        window_start=as_of - timedelta(hours=24),
+        window_end=as_of,
+    )
+
+    assert result.weighted_coverage == 0.0
+    assert len(result.symbols) == 0
+    assert "static_universe_empty:empty_static" in result.gaps
+    fake_db.fetch_one.assert_not_awaited()
+    fake_db.fetch_all.assert_not_awaited()
+
+
+# ===========================================================================
 # missing_ranges 连续区间合并
 # ===========================================================================
 

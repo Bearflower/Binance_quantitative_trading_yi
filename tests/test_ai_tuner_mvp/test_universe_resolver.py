@@ -279,3 +279,57 @@ def test_dot_path_missing_raises():
     from ai_tuner.readiness.universe import _resolve_dot_path
     with pytest.raises(KeyError):
         _resolve_dot_path({"strategy": {}}, "strategy.symbols")
+
+
+# ---------------------------------------------------------------------------
+# 补：静态 universe 为空时追加审计 gap（两个分支各自独立覆盖）
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "symbols_yaml,intervals,expected_gaps",
+    [
+        ("[]", ["1h"], ("static_universe_empty:empty_static",)),
+        ("[BTCUSDT]", [], ("intervals_not_configured:empty_static",)),
+        ("[]", [], (
+            "static_universe_empty:empty_static",
+            "intervals_not_configured:empty_static",
+        )),
+    ],
+    ids=["empty_symbols", "empty_intervals", "both_empty"],
+)
+async def test_static_empty_universe_emits_audit_gaps(
+    tmp_path, as_of, symbols_yaml, intervals, expected_gaps
+):
+    """symbols / intervals 为空时只追加 gap：
+    slices 结构与 config_hash 不得改变（审计可解释但不改门禁判定）。
+    """
+    from ai_tuner.readiness.universe import UniverseResolver
+
+    cfg_dir = tmp_path / "cfg"
+    cfg_dir.mkdir()
+    raw = f"strategy:\n  symbols: {symbols_yaml}\n".encode("utf-8")
+    (cfg_dir / "config.yaml").write_bytes(raw)
+
+    universe_cfg = {
+        "empty_static": {
+            "source": "strategy_config",
+            "config_path": "cfg/config.yaml",
+            "symbol_path": "strategy.symbols",
+            "intervals": list(intervals),
+        },
+    }
+    resolver = UniverseResolver(
+        universe_cfg=universe_cfg, project_root=tmp_path, db=None,
+    )
+    result = await resolver.resolve(
+        "empty_static", as_of - timedelta(days=1), as_of,
+    )
+
+    assert result.gaps == expected_gaps
+    assert len(result.slices) == 1
+    assert result.covered_from is None
+    # config_hash 仍是对原始配置字节的 sha256（不受 gap 影响）
+    import hashlib
+    assert result.slices[0].config_hash == hashlib.sha256(raw).hexdigest()
