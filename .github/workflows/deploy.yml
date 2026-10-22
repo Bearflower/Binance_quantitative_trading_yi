@@ -497,15 +497,13 @@ jobs:
                 psql --set ON_ERROR_STOP=on -U trading_user -d trading_platform \
                   -c "CREATE ROLE trading_migration_admin LOGIN SUPERUSER" >/dev/null
             fi
-            docker exec -i trading_system-postgres \
-              psql --set ON_ERROR_STOP=on \
-                --set migration_password="$TRADING_MIGRATION_ADMIN_PASSWORD" \
-                -U trading_migration_admin -d trading_platform <<'MIGRATION_ADMIN_SQL' >/dev/null
-            SELECT format(
-              'ALTER ROLE trading_migration_admin LOGIN SUPERUSER PASSWORD %L',
-              :'migration_password'
-            ) \gexec
-            MIGRATION_ADMIN_SQL
+            printf '%s\n' \
+              "ALTER ROLE trading_migration_admin LOGIN SUPERUSER PASSWORD :'migration_password';" \
+              | docker exec -i trading_system-postgres \
+                  psql --set ON_ERROR_STOP=on \
+                    --set migration_password="$TRADING_MIGRATION_ADMIN_PASSWORD" \
+                    -U trading_migration_admin -d trading_platform \
+                  >/dev/null
 
             ROLE_MIGRATION_REQUIRED=$(docker exec trading_system-postgres \
               psql -U trading_migration_admin -d trading_platform -tAc \
@@ -552,15 +550,13 @@ jobs:
             fi
             # init SQL 只创建 LOGIN 角色、不内嵌凭据；此处从服务器本地 secret 设置密码。
             # 密码为 openssl 生成的 hex，使用 psql 变量 quote_literal，避免拼接 SQL。
-            docker exec -i trading_system-postgres \
-              psql --set ON_ERROR_STOP=on \
-                --set snapshot_password="$AI_TUNER_SNAPSHOT_DB_PASSWORD" \
-                -U trading_migration_admin -d trading_platform <<'SNAPSHOT_ROLE_SQL' >/dev/null
-            SELECT format(
-              'ALTER ROLE ai_tuner_snapshot_writer LOGIN PASSWORD %L',
-              :'snapshot_password'
-            ) \gexec
-            SNAPSHOT_ROLE_SQL
+            printf '%s\n' \
+              "ALTER ROLE ai_tuner_snapshot_writer LOGIN PASSWORD :'snapshot_password';" \
+              | docker exec -i trading_system-postgres \
+                  psql --set ON_ERROR_STOP=on \
+                    --set snapshot_password="$AI_TUNER_SNAPSHOT_DB_PASSWORD" \
+                    -U trading_migration_admin -d trading_platform \
+                  >/dev/null
             # 切断业务运行时的超级用户/数据库 owner 能力，使上面的 REVOKE 真正生效。
             ROLE_MIGRATION_APPLIED=0
             rollback_role_migration() {

@@ -49,6 +49,10 @@ def test_deploy_provisions_snapshot_secret_only_on_server():
     workflow = (REPO_ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
     assert "openssl rand -hex 32" in workflow
     assert "ALTER ROLE ai_tuner_snapshot_writer LOGIN PASSWORD" in workflow
+    assert "<<'MIGRATION_ADMIN_SQL'" not in workflow
+    assert "<<'SNAPSHOT_ROLE_SQL'" not in workflow
+    assert "PASSWORD :'migration_password';" in workflow
+    assert "PASSWORD :'snapshot_password';" in workflow
     assert "SNAPSHOT_SECRET_FILE=.secrets/ai_tuner_snapshot.env" in workflow
     assert "MIGRATION_ADMIN_SECRET_FILE=.secrets/trading_migration_admin_password" in workflow
     assert "TRADING_MIGRATION_ADMIN_PASSWORD=%s" not in workflow
