@@ -1,740 +1,237 @@
-# AI Tuner MVP Replay and Qualification Implementation Plan
+# AI Tuner 阶段二：双策略确定性回放与资格考试 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **状态**：修订版（2026-10-22）。取代原「只实现选中的单一策略」口径。
+> **执行方式**：按 Task 0–10 顺序推进，每个 Task 完成即提交（本地 commit，**不 push、不部署**）。
 
-**Goal:** Build a deterministic, no-future-data replay and qualification engine that can reproduce the selected strategy's live history before evaluating parameter candidates.
+**目标**：建设一套共享的确定性回放与资格考试底座，同时支持 `btc_eth_aggressive` 与 `hrs`；在最大回撤硬约束内，评估扣除手续费、滑点、资金费率后的风险调整收益。
 
-**Architecture:** A shared event clock, as-of data portal, portfolio/broker simulator, regime classifier, and metric calculator are strategy-neutral. Thin strategy adapters reuse live calculation functions and translate their outputs to replay orders. Qualification compares all versions on identical slices and costs, then applies hard gates before calculating a score.
+**架构**：冻结数据快照 → 无未来数据 DataPortal → 确定性事件时钟 → 策略适配器（MTPCS 激进版 / HRS）→ 统一虚拟 Broker（费用/滑点/资金费/精度/保证金）→ 成绩卡与硬门禁 → `PASS` / `FAIL` / `BLOCKED_DATA`。
 
-**Tech Stack:** Python 3.10, dataclasses, pandas/numpy already in the project, PostgreSQL historical K-lines, existing MTPCS aggressive and HRS strategy modules, pytest/pytest-asyncio.
+**技术栈**：Python（运行期与容器均为 3.9/3.10，禁用 3.10+ 专属语法）、`dataclasses`、`decimal.Decimal`、pandas/numpy（项目已有）、pytest。
 
 ---
 
-## File map
+## 零、决策记录（2026-10-22 用户裁定）
 
-- Create `ai_tuner/replay/models.py`: immutable bars, snapshots, orders, fills, positions, trades, and replay results.
-- Create `ai_tuner/replay/clock.py`: deterministic event ordering.
-- Create `ai_tuner/replay/data_portal.py`: timestamp-bounded reads and coverage checks.
-- Create `ai_tuner/replay/broker.py`: order fills, fees, slippage, funding, and equity.
-- Create `ai_tuner/replay/engine.py`: shared event loop and audit trail.
-- Create `ai_tuner/replay/adapters/base.py`: replay adapter protocol.
-- Create `ai_tuner/replay/adapters/mtpcs_aggressive.py`: live-function wrapper for MTPCS aggressive.
-- Create `ai_tuner/replay/adapters/hrs.py`: live-function wrapper for HRS when its snapshot data passes readiness.
-- Create `ai_tuner/regime/features.py`, `classifier.py`: six normal regimes plus `STRESS`.
-- Create `ai_tuner/qualification/metrics.py`: net return, drawdown, Sortino, Calmar, expectancy, concentration.
-- Create `ai_tuner/qualification/gates.py`: blind, sample, drawdown, stability, cost, and parity gates.
-- Create `ai_tuner/qualification/runner.py`: current/new/history same-slice comparison.
-- Create `ai_tuner/parity/golden.py`: live-history event normalization and parity report.
-- Extend `scripts/ai_tuner_mvp.py`: `replay`, `parity`, and `qualify` commands.
-- Create `tests/test_ai_tuner_mvp/replay/`, `regime/`, `qualification/`, and `parity/`.
+| 编号 | 决策项 | 结论 |
+|---|---|---|
+| D1 | 运行位置 | **本地离线优先**。框架代码随仓库与 ai-tuner 镜像打包，但回放/对账/考试**只在开发机执行**，不在容器内触发；符合 `coding-standards.md` 禁止服务器回测。 |
+| D2 | 快照来源 | **本地冻结文件 + manifest（SHA-256）**。Postgres 仅通过只读导出脚本（SELECT / COPY TO STDOUT）产出快照到 git 忽略目录；回放只读本地文件，不连库。 |
+| D3 | 实盘代码提取 | **授权**对 `strategies/btc_eth_aggressive/strategy.py` 做等价纯函数提取，范围仅限：评分、方向判断、入场过滤、止损/止盈/退出价格计算，及与上述计算直接相关的无副作用辅助函数。 |
+| D4 | 样本不足时的口径 | 合成夹具只验证引擎确定性/撮合/成本/无未来数据/fail-closed，**不得记为「实盘金样对账通过」**；激进版约 10 条真实信号只能产出「部分对账报告」，最终状态 `BLOCKED_DATA`；HRS 三表无有效历史时只验证空数据接线与 `BLOCKED_DATA`；**样本不足不得写成策略 `FAIL`**；达到真实样本门禁后必须重跑正式 parity 与 qualify。 |
 
-### Task 1: Define immutable replay events and deterministic ordering
+### D3 执行要求（逐条强制执行，不得放宽）
 
-**Files:**
-- Create: `ai_tuner/replay/__init__.py`
-- Create: `ai_tuner/replay/models.py`
-- Create: `ai_tuner/replay/clock.py`
-- Test: `tests/test_ai_tuner_mvp/replay/test_clock.py`
+1. 先建立 characterization / golden 测试；
+2. 冻结当前输入与逐字段输出；
+3. 再移动代码；
+4. 实盘与回放共同调用新纯函数；
+5. 提取前后输出逐字段一致；
+6. 不改变公式、默认值、异常语义与调用顺序；
+7. **任何不一致都必须停止**，不得通过放宽测试解决。
 
-- [ ] **Step 1: Write failing clock tests**
+---
 
-```python
-from datetime import datetime, timezone
-import pytest
+## 一、阶段二边界（禁止事项）
 
-from ai_tuner.replay.clock import EventClock
-from ai_tuner.replay.models import Bar
+阶段二只负责回放、对账、资格考试与生成不可变报告，**不得**：
 
+- 修改生产策略参数；
+- 写入或切换 `.active` 覆盖层；
+- 调低 readiness 门禁；
+- 触发生产自动生效；
+- 让 LLM 修改代码或策略逻辑；
+- 在容器内或服务器上执行回放。
 
-UTC = timezone.utc
+输出只有 `PASS` / `FAIL` / `BLOCKED_DATA`，**不得**在阶段二输出「自动生效」。
 
+---
 
-def bar(symbol, opened, closed):
-    return Bar(symbol, "1h", datetime.fromisoformat(opened).replace(tzinfo=UTC),
-        datetime.fromisoformat(closed).replace(tzinfo=UTC), 100, 102, 99, 101, 10)
+## 二、Task 0：现有回放能力复用审计（已完成）
 
+审计对象：`backtest/btc_eth/replay/`（本地 XAU 影子回放器，3623 行）。
 
-def test_clock_orders_by_close_time_then_symbol_then_interval():
-    events = [bar("ETHUSDT", "2026-01-01T00:00:00", "2026-01-01T01:00:00"),
-              bar("BTCUSDT", "2026-01-01T00:00:00", "2026-01-01T01:00:00")]
-    assert [x.symbol for x in EventClock(events)] == ["BTCUSDT", "ETHUSDT"]
+| 能力 | 直接复用 | 抽象后复用 | 新建 | 依据 |
+|---|---:|---:|---:|---|
+| 快照哈希 / manifest 校验 | ✓ | | | `snapshot.py:104-129`（`_sha256_file` / `_sha256_text` / `_compute_manifest_sha256`）、`verify_snapshot:213-253`（顶层哈希防「嵌套哈希同步篡改」） |
+| Decimal 撮合 / 精度舍入 | ✓ | | | `matching.py:13-93`（`q_round` / `round_price` / `round_quantity` / `clamp_notional` / `market_fill_price`）、`parse_symbol_filters:97` |
+| 手续费 / 滑点 / 资金费 / PnL | ✓ | | | `fees.py:17-100`；PnL 已委托 `shared.trade_logger.TradeLogger.calculate_pnl`，无重复实现 |
+| 不变量校验 | ✓ | | | `invariants.py:14-88` |
+| 成绩卡指标 | | ✓ | | `report.py:130` `compute_metrics`、`:363` 最大回撤；但 `decide_admission:492` 是「xau_original vs xau_aggressive 选冠军」口径，**与本次「两策略不混选」冲突，禁止复用** |
+| 硬门禁 | | ✓ | | `report.py:406` `_admission_checks` 阈值全走配置，但仅 7 项，缺样本量/盲测/相邻扰动/集中度/版本兼容 |
+| XAU profile 事件引擎 | | ✓ | | `engine.py:126-135` 强制校验 `xau_original`/`xau_aggressive` config hash；`:361` 硬编码 `PER_PROFILES`；`state.py:17-56` 默认值即单品种 pilot（1 仓 / 30 USDT / 72h 冷却） |
+| 无未来数据门户 | | | ✓ | 现有引擎假定事件已冻结到 cutoff（`__init__.py:8-9` 明确「不重算 score」），无逐查询 `as_of` 守卫，也无 universe / 外部快照读取面 |
+| 同根 K 线止盈止损保守顺序 | | ✓ | | `engine.py:833` `_check_and_close_on_bar` 为单持仓 XAU 口径，通用化需重写判定骨架 |
+| MTPCS 激进版适配器 | | | ✓ | 实盘 6382 行，纯计算散落（`_calculate_score:1374`、`_detect_breakout_pullback:1619`、`_determine_grade:2225`、`_determine_direction:2267`、`_calculate_tp_price:2597`、`_calculate_stop_price:3271`），同类方法大量耦合 DB / 下单 |
+| HRS 适配器 | | | ✓ | `hrs/strategy.py` 4783 行 + `scoring_engine.py` 1619 行；三张 point-in-time 表行数均为 0 |
+| 资格考试门禁 | | | ✓ | 全新 |
 
+### 审计结论
 
-def test_bar_rejects_non_closed_or_invalid_ohlc():
-    with pytest.raises(ValueError):
-        bar("BTCUSDT", "2026-01-01T01:00:00", "2026-01-01T00:00:00")
-```
+1. **`backtest/` 不能作为运行期依赖**：`ai_tuner/Dockerfile` 仅 `COPY ai_tuner/ shared/ scripts/ai_tuner_mvp.py` 与 `strategies/*/config.yaml`，不含 `backtest/` 与策略代码。所谓「复用」= 把纯函数搬迁到双端都能导入的位置，**不是** `import backtest.*`。
+2. **`backtest/btc_eth/replay/` 保持不动**：它绑定 XAU 双 profile 与冻结决策事件，服务影子仿真；本阶段不改造它，避免两个引擎互相污染。
+3. **纯函数落点**：`strategies/btc_eth_aggressive/core/`（该目录已在 `strategies/btc_eth_aggressive/Dockerfile:20` 整体 COPY，实盘镜像自动打包）；实盘 `strategy.py` 与回放适配器共同 import。HRS 未获提取授权，适配器只调用现有模块，缺数据即 `BLOCKED_DATA`。
 
-- [ ] **Step 2: Run and verify failure**
+---
 
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/replay/test_clock.py -q`
-
-Expected: FAIL because replay models do not exist.
-
-- [ ] **Step 3: Implement immutable models and clock**
-
-```python
-# ai_tuner/replay/models.py
-from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-
-@dataclass(frozen=True)
-class Bar:
-    symbol: str
-    interval: str
-    open_time: datetime
-    close_time: datetime
-    open: float
-    high: float
-    low: float
-    close: float
-    volume: float
-
-    def __post_init__(self):
-        if self.close_time <= self.open_time:
-            raise ValueError("bar close_time must be after open_time")
-        if self.low > min(self.open, self.close) or self.high < max(self.open, self.close):
-            raise ValueError("invalid OHLC envelope")
-
-
-@dataclass(frozen=True)
-class ReplayOrder:
-    order_id: str
-    symbol: str
-    side: str
-    order_type: str
-    quantity: float
-    created_at: datetime
-    limit_price: Optional[float] = None
-    stop_price: Optional[float] = None
-    reduce_only: bool = False
-    reason: str = ""
-
-
-@dataclass(frozen=True)
-class ReplayFill:
-    order_id: str
-    symbol: str
-    side: str
-    quantity: float
-    price: float
-    fee: float
-    filled_at: datetime
-    reason: str
-
-
-@dataclass
-class ReplayResult:
-    strategy_id: str
-    version: str
-    started_at: datetime
-    ended_at: datetime
-    fills: List[ReplayFill]
-    closed_trades: List[Dict[str, Any]]
-    equity_curve: List[tuple[datetime, float]]
-    audit_events: List[Dict[str, Any]]
-```
-
-```python
-# ai_tuner/replay/clock.py
-class EventClock:
-    def __init__(self, events):
-        self._events = tuple(sorted(events, key=lambda x: (x.close_time, x.symbol, x.interval)))
-
-    def __iter__(self):
-        return iter(self._events)
-```
-
-- [ ] **Step 4: Run tests and commit**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/replay/test_clock.py -q`
-
-Expected: `2 passed`.
-
-```bash
-git add ai_tuner/replay tests/test_ai_tuner_mvp/replay/test_clock.py
-git commit -m "feat(ai-tuner): add deterministic replay events"
-```
-
-### Task 2: Enforce as-of data access and closed-bar semantics
-
-**Files:**
-- Create: `ai_tuner/replay/data_portal.py`
-- Test: `tests/test_ai_tuner_mvp/replay/test_data_portal.py`
-
-- [ ] **Step 1: Write failing no-lookahead tests**
-
-```python
-from datetime import datetime, timezone
-import pytest
-
-from ai_tuner.replay.data_portal import FutureDataAccess, InMemoryDataPortal
-
-
-UTC = timezone.utc
-
-
-def test_snapshot_never_returns_rows_after_as_of(sample_bars):
-    portal = InMemoryDataPortal(sample_bars)
-    as_of = datetime(2026, 1, 1, 3, tzinfo=UTC)
-    rows = portal.bars("BTCUSDT", "1h", as_of=as_of, limit=20)
-    assert rows
-    assert max(row.close_time for row in rows) <= as_of
-
-
-def test_explicit_future_query_raises(sample_bars):
-    portal = InMemoryDataPortal(sample_bars, decision_time=datetime(2026, 1, 1, 3, tzinfo=UTC))
-    with pytest.raises(FutureDataAccess):
-        portal.bars("BTCUSDT", "1h", as_of=datetime(2026, 1, 1, 4, tzinfo=UTC), limit=20)
-```
-
-- [ ] **Step 2: Run and verify failure**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/replay/test_data_portal.py -q`
-
-Expected: FAIL because the data portal is missing.
-
-- [ ] **Step 3: Implement the portal contract**
-
-```python
-class FutureDataAccess(RuntimeError):
-    pass
-
-
-class DataPortal:
-    def __init__(self, decision_time=None):
-        self.decision_time = decision_time
-
-    def _guard(self, as_of):
-        if self.decision_time is not None and as_of > self.decision_time:
-            raise FutureDataAccess(f"requested {as_of.isoformat()} after {self.decision_time.isoformat()}")
-
-
-class InMemoryDataPortal(DataPortal):
-    def __init__(self, bars, decision_time=None):
-        super().__init__(decision_time)
-        self._bars = tuple(bars)
-
-    def bars(self, symbol, interval, as_of, limit):
-        self._guard(as_of)
-        rows = [b for b in self._bars if b.symbol == symbol and b.interval == interval and b.close_time <= as_of]
-        return rows[-limit:]
-```
-
-Add `PostgresDataPortal` with parameterized SQL using `close_time <= $3`, deterministic ascending order, and the K-line table-name guard from `services/kline_service/core/table_name_guard.py`. Add timestamped readers for funding and candidate snapshots; a missing table or gap returns a structured coverage failure, never a current-value fallback.
-
-- [ ] **Step 4: Add an invariant test for query boundaries**
-
-Use a fake `DatabaseManager` and assert every query includes a supplied `as_of` argument and `close_time <=` or snapshot equivalent.
-
-```python
-@pytest.mark.asyncio
-async def test_postgres_portal_binds_as_of(fake_db, as_of):
-    portal = PostgresDataPortal(fake_db, decision_time=as_of)
-    await portal.bars("BTCUSDT", "1h", as_of=as_of, limit=20)
-    query, args = fake_db.fetch_all.await_args.args
-    assert "close_time <=" in query
-    assert as_of in args
-```
-
-- [ ] **Step 5: Run tests and commit**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/replay/test_data_portal.py -q`
-
-Expected: all tests pass.
-
-```bash
-git add ai_tuner/replay/data_portal.py tests/test_ai_tuner_mvp/replay/test_data_portal.py
-git commit -m "feat(ai-tuner): prevent future data access"
-```
-
-### Task 3: Simulate orders, costs, funding, and equity deterministically
-
-**Files:**
-- Create: `ai_tuner/replay/broker.py`
-- Test: `tests/test_ai_tuner_mvp/replay/test_broker.py`
-
-- [ ] **Step 1: Write failing broker invariants**
-
-```python
-from ai_tuner.replay.broker import BrokerConfig, SimulatedBroker
-
-
-def test_increasing_cost_never_increases_final_equity(single_round_trip):
-    base = SimulatedBroker(BrokerConfig(1000, 0.0004, 0.0002))
-    stressed = SimulatedBroker(BrokerConfig(1000, 0.0006, 0.0003))
-    for broker in (base, stressed):
-        broker.execute_market(single_round_trip.open_order, price=100)
-        broker.execute_market(single_round_trip.close_order, price=110)
-    assert stressed.equity(110) < base.equity(110)
-
-
-def test_reduce_only_cannot_reverse_position(reduce_only_order):
-    broker = SimulatedBroker(BrokerConfig(1000, 0.0004, 0))
-    broker.open_position("BTCUSDT", quantity=1, price=100)
-    fill = broker.execute_market(reduce_only_order(quantity=2), price=101)
-    assert fill.quantity == 1
-    assert broker.position("BTCUSDT").quantity == 0
-```
-
-- [ ] **Step 2: Run and verify failure**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/replay/test_broker.py -q`
-
-Expected: FAIL because `SimulatedBroker` is missing.
-
-- [ ] **Step 3: Implement the minimum production-equivalent broker**
-
-```python
-@dataclass(frozen=True)
-class BrokerConfig:
-    initial_cash: float
-    taker_fee_rate: float
-    slippage_rate: float
-    maker_fee_rate: float = 0.0002
-
-
-class SimulatedBroker:
-    def __init__(self, config):
-        self.config = config
-        self.cash = config.initial_cash
-        self.positions = {}
-        self.fills = []
-        self.equity_curve = []
-
-    def _fill_price(self, side, reference):
-        sign = 1 if side == "BUY" else -1
-        return reference * (1 + sign * self.config.slippage_rate)
-
-    def execute_market(self, order, price):
-        quantity = self._reduce_only_quantity(order) if order.reduce_only else order.quantity
-        fill_price = self._fill_price(order.side, price)
-        fee = fill_price * quantity * self.config.taker_fee_rate
-        self._apply_fill(order, quantity, fill_price, fee)
-        return self.fills[-1]
-```
-
-Complete `_apply_fill()` with weighted entry, realized PnL, partial closes, long/short symmetry, and no position reversal for reduce-only. Add deterministic intrabar ordering configured as `stop_first` when stop and take-profit are both touched in one bar. Accrue funding only at timestamped settlement events from the portal. Reject orders below supplied quantity precision or minimum notional instead of silently rounding upward.
-
-- [ ] **Step 4: Run tests and commit**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/replay/test_broker.py -q`
-
-Expected: all broker and cost monotonicity tests pass.
-
-```bash
-git add ai_tuner/replay/broker.py tests/test_ai_tuner_mvp/replay/test_broker.py
-git commit -m "feat(ai-tuner): simulate replay execution and costs"
-```
-
-### Task 4: Add the six-state market-regime classifier and `STRESS`
-
-**Files:**
-- Create: `ai_tuner/regime/__init__.py`
-- Create: `ai_tuner/regime/features.py`
-- Create: `ai_tuner/regime/classifier.py`
-- Test: `tests/test_ai_tuner_mvp/regime/test_classifier.py`
-
-- [ ] **Step 1: Write boundary and hysteresis tests**
-
-```python
-from ai_tuner.regime.classifier import RegimeClassifier, RegimeThresholds
-
-
-def test_direction_and_volatility_form_six_normal_states(feature_factory):
-    classifier = RegimeClassifier(RegimeThresholds())
-    assert classifier.classify(feature_factory(ret14=0.08, adx=30, vol_pct=0.40)).label == "uptrend_normal_vol"
-    assert classifier.classify(feature_factory(ret14=-0.08, adx=30, vol_pct=0.85)).label == "downtrend_high_vol"
-    assert classifier.classify(feature_factory(ret14=0.01, adx=14, vol_pct=0.40)).label == "range_normal_vol"
-
-
-def test_stress_overrides_normal_label(feature_factory):
-    classifier = RegimeClassifier(RegimeThresholds(stress_return_1d=0.12))
-    assert classifier.classify(feature_factory(ret1=0.14)).label == "STRESS"
-
-
-def test_low_confidence_does_not_switch_before_confirmation(feature_factory):
-    classifier = RegimeClassifier(RegimeThresholds(confirmations=3))
-    labels = [classifier.update(feature_factory(ret14=0.07, adx=27)).label for _ in range(2)]
-    assert labels == ["unconfirmed", "unconfirmed"]
-```
-
-- [ ] **Step 2: Run and verify failure**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/regime/test_classifier.py -q`
-
-Expected: FAIL because the regime package is missing.
-
-- [ ] **Step 3: Implement feature snapshots and classification**
-
-```python
-@dataclass(frozen=True)
-class RegimeFeatures:
-    as_of: datetime
-    return_1d: float
-    return_7d: float
-    return_14d: float
-    ema20_over_ema50_4h: float
-    ema20_slope_4h: float
-    adx_4h: float
-    breadth_above_ema20: float
-    atr_price_percentile_180d: float
-    realized_vol_percentile_180d: float
-
-
-@dataclass(frozen=True)
-class RegimeSnapshot:
-    label: str
-    confidence: float
-    features: RegimeFeatures
-```
-
-Use BTC/ETH plus local-universe breadth. Direction is trend only when return, EMA relation/slope, and ADX agree; otherwise range. High volatility is the maximum of ATR and realized-volatility percentile crossing the configured enter threshold. Use lower exit thresholds and consecutive confirmations for switching. `STRESS` fires immediately on 1-day return shock, top-tail realized volatility, or configured liquidity-gap flag.
-
-- [ ] **Step 4: Run tests and commit**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/regime/test_classifier.py -q`
-
-Expected: all tests pass.
-
-```bash
-git add ai_tuner/regime tests/test_ai_tuner_mvp/regime
-git commit -m "feat(ai-tuner): classify market regimes"
-```
-
-### Task 5: Add portfolio metrics and the hard qualification gates
-
-**Files:**
-- Create: `ai_tuner/qualification/__init__.py`
-- Create: `ai_tuner/qualification/metrics.py`
-- Create: `ai_tuner/qualification/gates.py`
-- Test: `tests/test_ai_tuner_mvp/qualification/test_metrics.py`
-- Test: `tests/test_ai_tuner_mvp/qualification/test_gates.py`
-
-- [ ] **Step 1: Write failing metric and gate tests**
-
-```python
-from ai_tuner.qualification.gates import GateConfig, QualificationGates
-from ai_tuner.qualification.metrics import calculate_metrics
-
-
-def test_larger_loss_cannot_improve_drawdown():
-    base = calculate_metrics([1000, 1040, 1010, 1060], [40, -30, 50])
-    worse = calculate_metrics([1000, 1040, 960, 1010], [40, -80, 50])
-    assert worse.max_drawdown > base.max_drawdown
-
-
-def test_candidate_fails_before_scoring_when_drawdown_exceeds_cap(metric_factory):
-    gates = QualificationGates(GateConfig(max_drawdown=0.12, min_trades=20))
-    result = gates.evaluate(metric_factory(max_drawdown=0.15, trades=40),
-                            metric_factory(max_drawdown=0.10, trades=40))
-    assert result.eligible is False
-    assert "max_drawdown" in result.failures
-
-
-def test_stability_requires_neighbors_not_to_collapse(metric_factory):
-    gates = QualificationGates(GateConfig(max_drawdown=0.12, min_trades=20, max_neighbor_score_drop=8.0))
-    result = gates.evaluate(metric_factory(score=70), metric_factory(score=60),
-                            neighbors=[metric_factory(score=40), metric_factory(score=69)])
-    assert result.eligible is False
-    assert "stability_plateau" in result.failures
-```
-
-- [ ] **Step 2: Run and verify failure**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/qualification/test_metrics.py tests/test_ai_tuner_mvp/qualification/test_gates.py -q`
-
-Expected: FAIL because qualification modules are missing.
-
-- [ ] **Step 3: Implement metric calculation**
-
-`MetricSet` must include net return, max drawdown, Sortino, Calmar, expectancy, trade count, win count, loss count, fee/slippage/funding totals, worst-trade share, best-trade profit share, symbol profit concentration, and per-window results. Use daily equity returns for Sortino and elapsed years for Calmar; return `0` rather than infinity when the denominator is zero.
-
-```python
-score = (
-    0.35 * normalize_risk_adjusted(metrics.sortino, metrics.calmar)
-    + 0.25 * normalize_net_return(metrics.net_return)
-    + 0.20 * normalize_drawdown(metrics.max_drawdown, config.max_drawdown)
-    + 0.10 * normalize_window_stability(metrics.window_returns)
-    + 0.10 * normalize_sample_expectancy(metrics.trade_count, metrics.expectancy)
-)
-```
-
-- [ ] **Step 4: Implement hard gates before score comparison**
-
-Reject on: drawdown cap, blind-window deterioration beyond tolerance, insufficient trades/signals, incompatible code/config/schema identity, unstable OAT neighbors at `-10%, -5%, candidate, +5%, +10%`, failure at 1.5× fees/slippage, excessive single-trade/symbol concentration, or any data-integrity error. A 2× cost run is recorded as diagnostic evidence but is not an MVP pass gate.
-
-```python
-def evaluate(self, candidate, current, neighbors=(), stressed=None):
-    failures = []
-    if candidate.max_drawdown > self.config.max_drawdown:
-        failures.append("max_drawdown")
-    if candidate.trade_count < self.config.min_trades:
-        failures.append("minimum_sample")
-    if candidate.blind_score < current.blind_score - self.config.blind_tolerance:
-        failures.append("blind_deterioration")
-    if neighbors and min(x.score for x in neighbors) < candidate.score - self.config.max_neighbor_score_drop:
-        failures.append("stability_plateau")
-    if stressed is not None and not stressed.passes_hard_limits:
-        failures.append("cost_stress_1_5x")
-    return GateResult(eligible=not failures, failures=failures)
-```
-
-- [ ] **Step 5: Run tests and commit**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/qualification -q`
-
-Expected: all tests pass.
-
-```bash
-git add ai_tuner/qualification tests/test_ai_tuner_mvp/qualification
-git commit -m "feat(ai-tuner): add qualification metrics and gates"
-```
-
-### Task 6: Wrap live strategy calculations in replay adapters
-
-**Files:**
-- Create: `ai_tuner/replay/adapters/__init__.py`
-- Create: `ai_tuner/replay/adapters/base.py`
-- Create: `ai_tuner/replay/adapters/mtpcs_aggressive.py`
-- Create: `ai_tuner/replay/adapters/hrs.py`
-- Modify: `strategies/btc_eth_aggressive/strategy.py:1089-1466`
-- Modify: `strategies/hrs/scoring_engine.py:1127-1360`
-- Test: `tests/test_ai_tuner_mvp/replay/test_strategy_adapters.py`
-
-- [ ] **Step 1: Write failing adapter parity tests for pure calculations**
-
-```python
-def test_mtpcs_replay_score_equals_live_score(mtpcs_live_strategy, mtpcs_adapter, mtpcs_snapshot):
-    live = mtpcs_live_strategy._calculate_score(
-        mtpcs_snapshot.indicators, mtpcs_snapshot.klines, mtpcs_snapshot.market_state)
-    replay = mtpcs_adapter.calculate_signal(mtpcs_snapshot, mtpcs_live_strategy.config)
-    assert replay.score == live
-
-
-def test_hrs_replay_entry_decision_equals_live_scoring(hrs_engine, hrs_adapter, hrs_snapshot):
-    live_result = hrs_engine.score(**hrs_snapshot.score_inputs)
-    replay = hrs_adapter.calculate_signal(hrs_snapshot, hrs_engine.config)
-    assert replay.should_enter == hrs_engine.should_entry(live_result)
-```
-
-- [ ] **Step 2: Run and verify failure**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/replay/test_strategy_adapters.py -q`
-
-Expected: FAIL because replay adapters are missing.
-
-- [ ] **Step 3: Define the adapter protocol**
-
-```python
-class ReplayAdapter(Protocol):
-    strategy_id: str
-    required_intervals: tuple[str, ...]
-
-    def build_universe(self, portal, at_time): ...
-    def build_snapshot(self, portal, symbol, at_time): ...
-    def calculate_signal(self, snapshot, config): ...
-    def create_orders(self, signal, portfolio, config): ...
-    def manage_open_position(self, snapshot, position, config): ...
-    def apply_strategy_guards(self, state, config): ...
-```
-
-- [ ] **Step 4: Extract dependency-free calculation entry points**
-
-Move no trading rules. Add pure wrappers that accept already-closed K-lines and configuration, and have both live and replay paths call those wrappers. MTPCS must reuse score, grade, market-state guard, ATR filter, entry-limit price, partial TP, trailing, and time-stop calculations. HRS must reuse pattern recognition, scoring, trend filters, and entry threshold checks; its adapter refuses to build a universe unless timestamped candidate/OI/market-cap/funding snapshots are complete.
-
-```python
-def calculate_signal(self, snapshot, config):
-    strategy = self._strategy_factory(config)
-    score = strategy._calculate_score(snapshot.indicators, snapshot.klines, snapshot.market_state)
-    grade = strategy._determine_grade(score, snapshot.symbol)
-    return ReplaySignal(
-        symbol=snapshot.symbol,
-        direction=snapshot.direction,
-        score=score,
-        grade=grade,
-        should_enter=score >= strategy.scoring_config["min_score"],
-    )
-```
-
-- [ ] **Step 5: Run strategy adapter and existing strategy tests**
-
-Run:
-
-```bash
-python3 -m pytest \
-  tests/test_ai_tuner_mvp/replay/test_strategy_adapters.py \
-  tests/test_strategies/test_btc_eth_aggressive_adopt_positions.py \
-  strategies/hrs/tests/test_scoring_engine.py \
-  strategies/hrs/tests/test_pattern.py -q
-```
-
-Expected: all tests pass and live calculation outputs are unchanged.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add ai_tuner/replay/adapters strategies/btc_eth_aggressive/strategy.py strategies/hrs/scoring_engine.py tests/test_ai_tuner_mvp/replay/test_strategy_adapters.py
-git commit -m "feat(ai-tuner): reuse live logic in replay adapters"
-```
-
-### Task 7: Build the replay engine and same-slice qualification runner
-
-**Files:**
-- Create: `ai_tuner/replay/engine.py`
-- Create: `ai_tuner/qualification/runner.py`
-- Test: `tests/test_ai_tuner_mvp/replay/test_engine.py`
-- Test: `tests/test_ai_tuner_mvp/qualification/test_runner.py`
-
-- [ ] **Step 1: Write failing determinism and same-slice tests**
-
-```python
-def test_same_input_produces_byte_identical_result(replay_runner, replay_request):
-    first = replay_runner.run(replay_request).canonical_json()
-    second = replay_runner.run(replay_request).canonical_json()
-    assert first == second
-
-
-def test_all_versions_receive_identical_data_slice(qualification_runner, candidates):
-    result = qualification_runner.run(candidates)
-    fingerprints = {run.data_fingerprint for run in result.runs}
-    assert len(fingerprints) == 1
-
-
-def test_ineligible_candidate_is_never_ranked(qualification_runner, candidates):
-    candidates[1].force_drawdown = 0.40
-    result = qualification_runner.run(candidates)
-    assert candidates[1].version not in [x.version for x in result.ranking]
-```
-
-- [ ] **Step 2: Run and verify failure**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/replay/test_engine.py tests/test_ai_tuner_mvp/qualification/test_runner.py -q`
-
-Expected: FAIL because the engine and runner are missing.
-
-- [ ] **Step 3: Implement the deterministic event loop**
-
-The engine processes a stable universe and closed bars at each clock time, manages existing positions before opening new ones, assigns order IDs from `(run_id, event_sequence)`, records every read boundary and decision, and fingerprints sorted input rows plus code/config/schema identities.
-
-```python
-for event in clock:
-    portal.advance_to(event.close_time)
-    broker.process_resting_orders(event, intrabar_policy=request.intrabar_policy)
-    adapter.manage_all_open_positions(portal, broker, event.close_time, request.config)
-    for symbol in adapter.build_universe(portal, event.close_time):
-        snapshot = adapter.build_snapshot(portal, symbol, event.close_time)
-        signal = adapter.calculate_signal(snapshot, request.config)
-        if adapter.apply_strategy_guards(signal, broker.state, request.config):
-            for order in adapter.create_orders(signal, broker.portfolio, request.config):
-                broker.submit(order)
-    broker.mark_to_market(event.close_time, portal)
-```
-
-- [ ] **Step 4: Implement the qualification matrix**
-
-The runner accepts current, one proposed, and up to three compatible historical configurations. It evaluates 8-week diagnosis, 2-week blind, similar-regime slices, rolling windows, OAT neighbors, baseline costs, 1.5× cost, and 2× diagnostic cost. It applies gates first, then sorts eligible versions by conservative score, max drawdown, and version string for deterministic ties.
-
-```python
-runs = [self._evaluate(candidate, shared_slice) for candidate in candidates[:5]]
-eligible = [run for run in runs if run.gates.eligible]
-ranking = sorted(
-    eligible,
-    key=lambda run: (-run.metrics.conservative_score, run.metrics.max_drawdown, run.version),
-)
-return QualificationResult(runs=runs, ranking=ranking, data_fingerprint=shared_slice.fingerprint)
-```
-
-- [ ] **Step 5: Run tests and commit**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/replay tests/test_ai_tuner_mvp/qualification -q`
-
-Expected: all tests pass.
-
-```bash
-git add ai_tuner/replay/engine.py ai_tuner/qualification/runner.py tests/test_ai_tuner_mvp/replay tests/test_ai_tuner_mvp/qualification
-git commit -m "feat(ai-tuner): qualify versions on identical replay data"
-```
-
-### Task 8: Add golden live-history parity as the unlock gate
-
-**Files:**
-- Create: `ai_tuner/parity/__init__.py`
-- Create: `ai_tuner/parity/golden.py`
-- Modify: `scripts/ai_tuner_mvp.py`
-- Test: `tests/test_ai_tuner_mvp/parity/test_golden.py`
-
-- [ ] **Step 1: Write failing parity tests**
-
-```python
-def test_parity_fails_when_exit_reason_differs(golden_comparator, live_trade, replay_trade):
-    replay_trade.exit_reason = "TIME_STOP"
-    report = golden_comparator.compare([live_trade], [replay_trade])
-    assert report.passed is False
-    assert report.mismatches[0].field == "exit_reason"
-
-
-def test_parity_requires_signal_order_exit_fee_and_equity_thresholds(golden_comparator, matched_history):
-    report = golden_comparator.compare(*matched_history)
-    assert report.passed is True
-    assert report.signal_direction_match >= 0.98
-    assert report.exit_reason_match >= 0.95
-```
-
-- [ ] **Step 2: Run and verify failure**
-
-Run: `python3 -m pytest tests/test_ai_tuner_mvp/parity/test_golden.py -q`
-
-Expected: FAIL because parity comparison is missing.
-
-- [ ] **Step 3: Implement explicit initial tolerances**
-
-Use configurable starting tolerances: signal direction ≥98%, entry timestamp within one strategy cycle for ≥95%, entry price relative error ≤0.20%, exit reason ≥95%, partial-close quantity relative error ≤0.5%, total fees relative error ≤1%, final equity relative error ≤0.5%, and daily equity correlation ≥0.99. Every mismatch includes symbol, timestamp, live value, replay value, and rule.
-
-```python
-@dataclass(frozen=True)
-class ParityTolerances:
-    signal_direction_match: float = 0.98
-    entry_time_match: float = 0.95
-    entry_price_relative_error: float = 0.002
-    exit_reason_match: float = 0.95
-    partial_quantity_relative_error: float = 0.005
-    fee_relative_error: float = 0.01
-    final_equity_relative_error: float = 0.005
-    daily_equity_correlation: float = 0.99
-```
-
-- [ ] **Step 4: Add CLI commands**
+## 三、文件结构
 
 ```text
-python3 scripts/ai_tuner_mvp.py replay --strategy btc_eth_aggressive --start ... --end ... --version V20260910 --output var/ai_tuner/replay.json
-python3 scripts/ai_tuner_mvp.py parity --strategy btc_eth_aggressive --golden-range ranges.json --output var/ai_tuner/parity.json
-python3 scripts/ai_tuner_mvp.py qualify --strategy btc_eth_aggressive --candidate candidate.json --as-of ... --output var/ai_tuner/qualification.json
+ai_tuner/replay/
+  __init__.py                     # ENGINE_VERSION / COST_MODEL_VERSION
+  models.py                       # Decimal 冻结模型
+  clock.py                        # 确定性事件排序
+  data_portal.py                  # as_of 强制 + FutureDataAccess + 覆盖度检查
+  broker.py                       # 统一虚拟 Broker
+  engine.py                       # 共享事件循环 + audit trail
+  artifacts.py                    # 六个不可变文件 canonical 序列化
+  adapters/base.py                # ReplayAdapter 协议
+  adapters/mtpcs_aggressive.py    # 复用提取后的纯函数
+  adapters/hrs.py                 # 以三表为契约，缺数据 BLOCKED_DATA
+ai_tuner/regime/{__init__,features,classifier}.py
+ai_tuner/qualification/{__init__,metrics,gates,runner}.py
+ai_tuner/parity/{__init__,golden}.py
+strategies/btc_eth_aggressive/core/{__init__,scoring,direction,filters,exits}.py
+scripts/ai_tuner_mvp.py           # 扩展 replay / parity / qualify
+scripts/export_replay_snapshot.py # 只读导出（SELECT / COPY TO STDOUT）
+tests/test_ai_tuner_mvp/{replay,regime,qualification,parity}/
+tests/test_strategies/test_btc_eth_aggressive_core_equivalence.py
+.gitignore                        # 新增 var/replay/
 ```
 
-`qualify` exits `3` if the latest parity report is absent, stale for the current code/config/schema identity, or failed.
+---
 
-- [ ] **Step 5: Run Plan 2 acceptance**
+## 四、Task 1：冻结输入快照
 
-Run:
+**实现**
+- `scripts/export_replay_snapshot.py`：只读导出到 `var/replay/snapshots/<strategy>/<as_of>/`，仅 SELECT / COPY TO STDOUT，不写入任何生产表。
+- 快照 manifest 至少记录 10 项：`strategy_id`、`as_of`、时间窗口、数据文件 SHA-256、基础配置哈希、参数 manifest 哈希、覆盖层哈希、代码提交 SHA、回放引擎版本、费用模型版本、数据缺口列表。
+- 复用 `_sha256_file` / `_compute_manifest_sha256` 口径（搬迁实现，不 import `backtest`）。
+
+**验收**：缺任一必需数据 → `BLOCKED_DATA`（不自动忽略）；同一目录重复校验哈希一致。
+
+---
+
+## 五、Task 2：无未来数据访问
+
+**实现**
+- 所有查询显式携带 `as_of`：K 线 `close_time <= as_of`；universe `observed_at / created_at <= as_of`；外部快照 `source_observed_at / collected_at <= as_of`；信号、资金费率、版本记录同规则。
+- 越界 → `FutureDataAccess`，**整个资格考试失败**并写 `audit_events.jsonl` 证据。
+- 覆盖度不足 → 结构化 coverage failure（`BLOCKED_DATA`），**禁止**用当前 API 值填补。
+
+**验收**：未来数据访问用例全部失败退出；无 fallback 路径。
+
+---
+
+## 六、Task 3：统一虚拟 Broker
+
+**实现**：市价单、限价单、止损、止盈、reduce-only、部分平仓、手续费、基准滑点、1.5×/2× 成本档、资金费率、价格与数量精度、最小名义价值、杠杆与保证金约束；同根 K 线同时触发止盈止损时采用**保守、确定性**顺序。
+
+**验收**：成本单调性不变量 —— 提高手续费或滑点后，最终权益不得上升。
+
+---
+
+## 七、Task 4：MTPCS 激进版适配器
+
+**实现**
+- 按 D3 流程：characterization/golden 测试 → 冻结逐字段输出 → 提取到 `strategies/btc_eth_aggressive/core/` → 实盘与回放共用 → 逐字段比对。
+- 覆盖：指标计算、趋势强度、breakout/pullback、评分、入场过滤、止盈止损、移动止损、时间退出。
+- 禁止在回放目录手抄策略逻辑。
+
+**验收**：提取前后逐字段一致；原全量策略测试与新增对账测试同时通过。
+
+---
+
+## 八、Task 5：HRS 适配器
+
+**实现**：按历史时点恢复 `ai_tuner_universe_scan_runs` / `ai_tuner_universe_snapshots` / `ai_tuner_market_snapshots` —— 当时有效 universe、long/short membership、当时外部快照、当时评分阈值、黑名单与候选池状态、入场/退出/持仓管理。缺失即 `BLOCKED_DATA`，禁止实时补值。
+
+**当前事实**：三表行数为 0 → 本轮只交付空数据接线与 `BLOCKED_DATA` 证据，不做正式考试。
+
+---
+
+## 九、Task 6：金样对账
+
+**实现**
+- 两个策略分别建立金样；选真实运行过的连续区间，冻结实盘信号/入场/退出/费用/盈亏。
+- 使用完全相同的当前参数回放，逐项对比信号方向、时间、价格、退出原因、费用、盈亏、权益曲线。
+- 容差**由真实数据校准并写入配置**，不得在代码里放宽。
+- 术语（D4）：合成夹具 → 仅验证确定性；真实数据不足 → `partial_parity` + `BLOCKED_DATA`；不得把样本不足写成 `FAIL`。
+
+**验收**：金样未通过（非样本不足）前不得运行新候选资格考试。
+
+---
+
+## 十、Task 7：市场状态分类
+
+**实现**：6 类（涨/跌/震荡 × 正常/高波动）+ `STRESS`，阈值全部来自配置；只用当时已收盘数据；仅用于分组与历史版本匹配，**不得**变成新的交易条件。
+
+---
+
+## 十一、Task 8：成绩卡与硬门禁
+
+**成绩卡**：扣费后净收益、最大回撤、Sortino、Calmar、单笔期望、胜率、盈亏比、有效信号数、已平仓交易数、收益集中度、分币种表现、分市场状态表现、1.5×/2× 成本表现、相邻参数扰动表现、全部淘汰原因。
+
+**硬门禁（10 项，任一失败即不得参与综合评分）**：数据完整度、无未来数据、金样对账、最大回撤、最低样本量、最近两周盲测、参数相邻值稳定性、1.5× 成本压力、收益集中度、版本兼容性。
+
+---
+
+## 十二、Task 9：同场资格考试
+
+**实现**：每个策略内部比较「当前覆盖层 + 1 个 LLM 新候选 + ≤3 个兼容历史覆盖层」，同数据、同窗口、同初始资金、同成本假设。窗口：前 8 周诊断区、最近 2 周盲测区、更早数据用于市场状态与稳定性验证。**盲测结果不得提供给 LLM**。输出仅 `PASS` / `FAIL` / `BLOCKED_DATA`。
+
+**禁止**：跨策略比较、选「冠军」。
+
+---
+
+## 十三、Task 10：CLI 与不可变报告
 
 ```bash
-python3 -m pytest \
-  tests/test_ai_tuner_mvp/replay \
-  tests/test_ai_tuner_mvp/regime \
-  tests/test_ai_tuner_mvp/qualification \
-  tests/test_ai_tuner_mvp/parity \
-  tests/test_strategies/test_btc_eth_aggressive_ai_tuner.py \
-  tests/test_strategies/test_hrs_ai_tuner.py -q
+python3 scripts/ai_tuner_mvp.py replay   --strategy btc_eth_aggressive --as-of 2026-10-22T00:00:00Z
+python3 scripts/ai_tuner_mvp.py parity   --strategy btc_eth_aggressive --as-of 2026-10-22T00:00:00Z
+python3 scripts/ai_tuner_mvp.py qualify  --strategy btc_eth_aggressive --candidate candidate.json --as-of 2026-10-22T00:00:00Z
 ```
 
-Expected: all tests pass. Production mode remains `audit` or `shadow`; no candidate is activated by this plan.
+`--strategy hrs` 使用相同命令。每次输出六个文件：`run_manifest.json`、`data_quality.json`、`parity_report.json`、`scorecard.json`、`qualification_decision.json`、`audit_events.jsonl`。
 
-- [ ] **Step 6: Commit**
+**序列化口径**：canonical JSON（`sort_keys=True`、`separators=(",", ":")`、Decimal→字符串、UTF-8、末尾单个换行）；`audit_events.jsonl` 行序按 `(timestamp, seq)` 固定。相同输入重复执行，文件**逐字节一致**。
 
-```bash
-git add ai_tuner/parity scripts/ai_tuner_mvp.py tests/test_ai_tuner_mvp/parity
-git commit -m "feat(ai-tuner): gate qualification on live parity"
-```
+**退出码**：`0` = PASS，`2` = FAIL，`3` = BLOCKED_DATA，`1` = 运行时错误。
+
+---
+
+## 十四、开发顺序
+
+1. Task 0 审计（完成）与共享底座；
+2. MTPCS 激进版适配器（等价提取）；
+3. MTPCS 激进版金样对账（样本不足则 `partial_parity` + `BLOCKED_DATA`）；
+4. 成绩卡与资格门禁；
+5. HRS 适配器（接线 + `BLOCKED_DATA`）；
+6. HRS 金样对账（待数据）；
+7. 双策略 CLI 与不可变报告；
+8. 提交级审查；
+9. 只部署 shadow / 只读能力（本轮**不部署**，等复审）；
+10. 阶段三自动生效另议。
+
+---
+
+## 十五、验收标准
+
+- 相同输入重复回放，结果逐字节一致；
+- 任意未来数据访问都会失败；
+- 当前参数回放能够通过金样对账（样本不足时为 `BLOCKED_DATA`，不记 `FAIL`）；
+- 当前版本与「完全相同的候选」结果一致；
+- 更高成本不会产生更高净收益；
+- 缺 K 线、universe 或外部快照时 fail-closed；
+- 两个策略的数据、状态与参数互不串用；
+- 两个策略均能单独执行 `replay` / `parity` / `qualify`；
+- 资格考试不写生产覆盖层、不改 `auto_apply`、不降 readiness 阈值、不触发实盘参数变更；
+- MTPCS 提取前后逐字段输出一致，全量策略测试通过。
+
+---
+
+## 十六、提交边界
+
+- 每个 Task 独立本地 commit；**不 push、不部署**，等待复审。
+- 真实交易数据与快照**不提交**（`var/replay/` 进 `.gitignore`）。
+- 回放引擎版本、费用模型版本写入报告，便于复审追溯。
