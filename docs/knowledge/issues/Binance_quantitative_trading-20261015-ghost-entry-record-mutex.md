@@ -55,6 +55,7 @@ id: Binance_quantitative_trading-20261015-ghost-entry-record-mutex
 - 遗留：SKIP 293 条保守未处理（多为已下架币对 positionRisk 查不到 / REJECTED 状态），new_coin 记录因 D1 后自家放行、btc_eth 记录为大币无跨策略重叠，实际误拦风险极低；如需收敛另立任务。
 - 已知保守缺口：new_coin/hrs 平仓路径无 `release_claim(position_closed)` 调用点（仅 btc_eth/aggr 有）→ 该两策略已平仓入场记录维持 NEW 保守超拦，无资金风险，由 D4 存量清理补偿。
 - 无替代条目。
+- **后续根因（2026-10-26，不替代本条目）**：同一症状（BNBUSDT 互斥误拦、同为 `btc_eth` 记录）在生产复现，根因为本轮 D2 扩展引入的单点构建器 `_mark_entry_terminal_sql` 内层 SELECT 缺 `realized_pnl IS NULL`（致平仓单被标 CLOSED、真入场单残留 NEW），另叠加冲突告警固定传 `owner=None`；已独立登记见 [bnb-false-mutex-terminal-mark-missing-realized-pnl](Binance_quantitative_trading-20261026-bnb-false-mutex-terminal-mark-missing-realized-pnl.md)。本条目原两项根因（未成仓不落终态 / 归属名不一致）的修复仍然有效。
 
 ## 教训
 （AI 归纳仅供参考）

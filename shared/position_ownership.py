@@ -34,10 +34,12 @@ _TERMINAL_ENTRY_STATUSES = ("CANCELED", "EXPIRED", "CLOSED")
 
 def _mark_entry_terminal_sql(status: str) -> str:
     """
-    构建「把最新非终态入场记录置为指定终态」的 UPDATE SQL（终态标记单点，杜绝重复）
+    构建「把最新未平仓入场记录置为指定终态」的 UPDATE SQL（终态标记单点，杜绝重复）
 
-    按 symbol + strategy 匹配最新非终态入场记录（LIMIT/MARKET），避免部分平仓
-    （TP1/TP2）过早标记导致剩余持仓失去互斥权威记录（方案 9.3.2）。
+    按 symbol + strategy 匹配最新未平仓（realized_pnl IS NULL）的入场记录
+    （LIMIT/MARKET），避免平仓单（realized_pnl 已非空）因 ORDER BY executed_at DESC
+    排在前面而被误标成终态，真正的入场记录残留 `status=NEW / realized_pnl=NULL`
+    被互斥 SQL 永久命中。本条件与 `_open_entry_sql(False)` 的口径对齐。
 
     Args:
         status: 目标终态（CANCELED / CLOSED）
@@ -53,6 +55,7 @@ def _mark_entry_terminal_sql(status: str) -> str:
         f"  SELECT id FROM {_TRADE_RECORDS_TABLE}"
         "  WHERE symbol = $1 AND strategy = $2"
         f"  AND order_type IN ({order_types})"
+        "  AND realized_pnl IS NULL"
         f"  AND status NOT IN ({terminal_in})"
         "  ORDER BY executed_at DESC, id DESC LIMIT 1"
         ")"
@@ -465,6 +468,58 @@ async def is_symbol_owned_by_other(
     # R07：占用表「有效占用」判定（开仓窗口期预占，仅支持占用表的 db 才启用）
     claim_owner = await _resolve_claim_owner(db_manager, symbol)
     return _is_owner_blocking(claim_owner, my_record_name, competing_record_names)
+
+
+async def resolve_conflict_owner(
+    db_manager,
+    symbol: str,
+    my_record_name: Optional[str],
+    competing_record_names: Optional[List[str]] = None,
+    *,
+    enabled: bool = True,
+) -> Optional[str]:
+    """
+    为「占用/归属互斥冲突」解析拦路策略名（仅供告警定位，不参与决策）
+
+    稳定状态（同一数据快照）下，内部短路顺序与 `is_symbol_owned_by_other`
+    完全同序（先权威归属、再占用表预占），可用于把「判定被拦」与「告警 owner」
+    对应起来。
+
+    两次独立查询之间若数据变化（如对家策略在两查之间释放）或异常，可能解析
+    不到 owner，此时告警降级为「其他策略」。本函数绝不影响放行/拒绝决策——
+    决策仍由 `is_symbol_owned_by_other` / `try_claim_symbol` 负责。
+
+    Args:
+        db_manager: DatabaseManager 实例（可为 None）
+        symbol: 交易对
+        my_record_name: 本策略归属名
+        competing_record_names: 共享账户对家策略名列表（空则默认与任意其他策略互斥）
+        enabled: ownership.enabled 开关（与 is_symbol_owned_by_other 口径一致）
+
+    Returns:
+        构成互斥的拦路策略名；无冲突/解析异常/不构成互斥返回 None
+    """
+    try:
+        # 1) 权威归属（trade_records 未平开仓单）
+        authority_owner = await _resolve_owner_with_lock(db_manager, symbol)
+        if _is_owner_blocking(authority_owner, my_record_name, competing_record_names):
+            return authority_owner
+        # 2) 占用表预占（仅 enabled=True 时查询，与 is_symbol_owned_by_other 对齐）
+        if enabled:
+            claim_owner = await _resolve_claim_owner(db_manager, symbol)
+            if _is_owner_blocking(claim_owner, my_record_name, competing_record_names):
+                return claim_owner
+        # 3) 其余情况：无冲突或不构成互斥
+        return None
+    except Exception as e:
+        # 防御性兜底：两 _resolve_* 本身已 catch 异常，此处是超纲保护，禁止抛异常
+        logger.warning(
+            "resolve_conflict_owner 解析异常，降级为无 owner",
+            symbol=symbol,
+            error=str(e)[:200],
+            exc_info=True,
+        )
+        return None
 
 
 async def try_claim_symbol(

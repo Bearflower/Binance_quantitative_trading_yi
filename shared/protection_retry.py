@@ -35,6 +35,7 @@ import structlog
 from .api_retry_config import is_order_fill_enabled
 from .binance_api import BinanceAPIError
 from .order_fill_waiter import OrderFillResult, wait_order_final_state
+from .position_ownership import resolve_conflict_owner
 
 logger = structlog.get_logger()
 
@@ -581,12 +582,20 @@ async def place_and_wait_entry_order(strategy, symbol: str, signal: Dict) -> Opt
 # ============================================================
 
 
-async def open_new_position(strategy, signal: Dict, *, is_owned_fn, try_claim_fn) -> bool:
+async def open_new_position(
+    strategy, signal: Dict, *, is_owned_fn, try_claim_fn,
+    resolve_owner_fn=resolve_conflict_owner,
+) -> bool:
     """新开仓主流程（R05/R06/R07 加固）
 
     流程：归属互斥（R07-F5）→ 原子占位（R07）→ 频率记录 → 入场下单（R06 结构化终态
     等待，识别部分成交）→ 成交后立即登记持仓并按实际成交量挂保护单（R05）→ 保护不完整
     即时补挂一轮并交主循环节流收敛。任一保护单失败不得丢弃仓位（D2），缺口靠补挂收敛。
+
+    Args:
+        resolve_owner_fn: 冲突告警 owner 解析函数，默认 `resolve_conflict_owner`。
+            用于在归属互斥命中时定位「拦路策略」并传入 `_handle_claim_conflict`，
+            使告警/日志带真实 owner 而非恒为 None。
 
     Returns:
         是否执行成功（持仓是否建立；保护完整性由 protection_pending 表达）
@@ -597,7 +606,8 @@ async def open_new_position(strategy, signal: Dict, *, is_owned_fn, try_claim_fn
                     grade=signal['grade'], score=signal['score'])
 
         if not await _acquire_entry_slot(
-            strategy, symbol, is_owned_fn=is_owned_fn, try_claim_fn=try_claim_fn
+            strategy, symbol, is_owned_fn=is_owned_fn, try_claim_fn=try_claim_fn,
+            resolve_owner_fn=resolve_owner_fn,
         ):
             # 预期内的拒绝（他策略占用/归属互斥）：回写原因供 main.py 以 warning 记录
             signal['skip_reason'] = "归属/占用冲突，未取得开仓占位"
@@ -635,13 +645,53 @@ async def open_new_position(strategy, signal: Dict, *, is_owned_fn, try_claim_fn
         return False
 
 
-async def _acquire_entry_slot(strategy, symbol: str, *, is_owned_fn, try_claim_fn) -> bool:
-    """开仓前归属互斥（R07-F5）与原子占位（R07）：未取得占位返回 False（已告警）"""
+async def _resolve_conflict_owner_for_symbol(
+    strategy, symbol: str, resolve_owner_fn,
+) -> Optional[str]:
+    """内部辅助：为冲突告警解析拦路策略名
+
+    封装 try/except 降级逻辑，供归属互斥分支与 claim 冲突分支共用。
+    解析异常时记录 warning 并返回 None，保证失败时告警降级为「其他策略」，
+    绝不抛异常中断主循环。
+    """
+    try:
+        return await resolve_owner_fn(
+            strategy.db_manager, symbol, strategy.my_record_name,
+            strategy._competing_record_names,
+            enabled=strategy._ownership_enabled,
+        )
+    except Exception as e:
+        logger.warning(
+            f"{symbol} 冲突 owner 解析异常，降级为未知 owner",
+            error=str(e)[:200],
+            exc_info=True,
+        )
+        return None
+
+
+async def _acquire_entry_slot(
+    strategy, symbol: str, *, is_owned_fn, try_claim_fn,
+    resolve_owner_fn=resolve_conflict_owner,
+) -> bool:
+    """开仓前归属互斥（R07-F5）与原子占位（R07）：未取得占位返回 False（已告警）
+
+    两个拒绝分支都会解析真实拦路 owner 用于告警定位：
+    - 归属互斥命中 → 调用 resolve_owner_fn（内部复用 _resolve_conflict_owner_for_symbol）
+    - claim 冲突 → 优先用 claim.owner；若保守情形下仍为 None，再调用 resolve_owner_fn 解析一次
+    解析失败时降级为 None（告警文案退化为「其他策略」），不中断主循环。
+
+    Args:
+        resolve_owner_fn: 冲突告警 owner 解析函数，默认 `resolve_conflict_owner`；
+            内部已 try/except 兜底禁止抛异常，本函数额外通过
+            _resolve_conflict_owner_for_symbol 包一层以防外部替换实现抛异常。
+    """
     if await is_owned_fn(
         strategy.db_manager, symbol, strategy.my_record_name,
         strategy._competing_record_names, enabled=strategy._ownership_enabled,
     ):
-        await strategy._handle_claim_conflict(symbol, None)
+        await strategy._handle_claim_conflict(
+            symbol, await _resolve_conflict_owner_for_symbol(strategy, symbol, resolve_owner_fn)
+        )
         return False
     claim = await try_claim_fn(
         strategy.db_manager, symbol, strategy.my_record_name,
@@ -651,7 +701,12 @@ async def _acquire_entry_slot(strategy, symbol: str, *, is_owned_fn, try_claim_f
         lock_timeout_seconds=strategy._lock_timeout_seconds,
     )
     if not claim.get('claimed'):
-        await strategy._handle_claim_conflict(symbol, claim.get('owner'))
+        # claim 冲突时优先用 try_claim_symbol 返回的 owner；
+        # 保守情形下仍为 None（如 claimed=False 且 result.owner 为空）则再解析一次
+        owner = claim.get('owner')
+        if owner is None:
+            owner = await _resolve_conflict_owner_for_symbol(strategy, symbol, resolve_owner_fn)
+        await strategy._handle_claim_conflict(symbol, owner)
         return False
     return True
 
