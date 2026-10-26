@@ -825,3 +825,437 @@ class TestAC4ReleaseClaimGuard:
         )
         fn.assert_awaited_once()
         assert fn.call_args.kwargs["reason"] == "open_failed"
+
+
+# ============================================================
+# 2026-10-26 修复：realized_pnl IS NULL + resolve_conflict_owner
+# ============================================================
+
+class TestBNBFixAC1SQLContainsRealizedPnl:
+    """AC1：终态标记 SQL 必须包含 realized_pnl IS NULL 条件，
+    与 _open_entry_sql(False) 判定口径对齐。"""
+
+    def test_mark_entry_terminal_sql_both_statuses_contain_realized_pnl(self):
+        from shared.position_ownership import _mark_entry_terminal_sql
+        closed = _mark_entry_terminal_sql('CLOSED')
+        canceled = _mark_entry_terminal_sql('CANCELED')
+        for sql in (closed, canceled):
+            assert "realized_pnl IS NULL" in sql
+
+    def test_module_level_sql_constants_contain_realized_pnl(self):
+        """模块级常量 _MARK_ENTRY_*_SQL 也必须含 realized_pnl IS NULL"""
+        assert "realized_pnl IS NULL" in _MARK_ENTRY_CLOSED_SQL
+        assert "realized_pnl IS NULL" in _MARK_ENTRY_CANCELED_SQL
+
+
+class TestBNBFixAC2ReleaseClaimUsesRealizedPnlFilter:
+    """AC2：release_claim(reason='position_closed') 的 CLOSED 标记 SQL
+    必须同时含 realized_pnl IS NULL 和 status='CLOSED'，参数正确；
+    并对 UPDATE 0 / UPDATE 1 分别做告警行为断言（伪 DB 行为）。"""
+
+    @pytest.mark.asyncio
+    async def test_release_claim_closed_sql_and_params(self):
+        from shared.position_ownership import release_claim
+
+        db = MagicMock()
+        db.execute = AsyncMock(return_value="UPDATE 1")
+        # 关键：不要在 type(db) 上设置 supports_position_claims；
+        # getattr(type(db), 'supports_position_claims', False) 会回退默认 False，
+        # 使 _supports_claims 返回 False，release_claim 在终态标记后早退。
+        await release_claim(db, "BNBUSDT", "btc_eth", reason="position_closed")
+        # 只调了一次 execute（claims 不支持，走早退）；即 _MARK_ENTRY_CLOSED_SQL
+        db.execute.assert_awaited_once()
+        sql, symbol_arg, strategy_arg = db.execute.call_args.args
+        assert "realized_pnl IS NULL" in sql
+        assert "status = 'CLOSED'" in sql
+        assert symbol_arg == "BNBUSDT"
+        assert strategy_arg == "btc_eth"
+
+    @pytest.mark.asyncio
+    async def test_release_claim_update_one_does_not_warn(self):
+        """UPDATE 1 命中入场记录 → 正常路径，不触发 0 行告警"""
+        from shared.position_ownership import release_claim
+
+        db = MagicMock()
+        db.execute = AsyncMock(return_value="UPDATE 1")
+        with patch("shared.position_ownership.logger.warning") as fake_warn:
+            await release_claim(db, "BNBUSDT", "btc_eth", reason="position_closed")
+        # 不应出现"未匹配到可标记终态的入场记录"告警
+        for call in fake_warn.call_args_list:
+            assert "未匹配到可标记终态的入场记录" not in str(call)
+
+    @pytest.mark.asyncio
+    async def test_release_claim_update_zero_triggers_warning(self):
+        """UPDATE 0 未命中 → 必须触发 warning（伪 DB 行为断言）"""
+        from shared.position_ownership import release_claim
+
+        db = MagicMock()
+        db.execute = AsyncMock(return_value="UPDATE 0")
+        with patch("shared.position_ownership.logger.warning") as fake_warn:
+            await release_claim(db, "BNBUSDT", "btc_eth", reason="position_closed")
+        assert any(
+            "未匹配到可标记终态的入场记录" in str(call)
+            for call in fake_warn.call_args_list
+        )
+
+
+class TestBNBFixAC3ResolveConflictOwner:
+    """AC3：resolve_conflict_owner + _acquire_entry_slot 冲突分支 owner 解析"""
+
+    # ---------- resolve_conflict_owner 单元 ----------
+
+    @pytest.mark.asyncio
+    async def test_authority_hit_returns_authority_owner(self):
+        from shared.position_ownership import resolve_conflict_owner
+
+        db = MagicMock()
+        with patch(
+            "shared.position_ownership._resolve_owner_with_lock",
+            new=AsyncMock(return_value="btc_eth"),
+        ), patch(
+            "shared.position_ownership._resolve_claim_owner",
+            new=AsyncMock(return_value=None),
+        ) as fake_claim:
+            owner = await resolve_conflict_owner(
+                db, "BNBUSDT", "btc_eth_aggressive",
+                competing_record_names=["btc_eth"],
+            )
+        assert owner == "btc_eth"
+        # authority 命中短路，claim 不应被查询
+        fake_claim.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_authority_miss_claim_hit_returns_claim_owner(self):
+        from shared.position_ownership import resolve_conflict_owner
+
+        db = MagicMock()
+        with patch(
+            "shared.position_ownership._resolve_owner_with_lock",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "shared.position_ownership._resolve_claim_owner",
+            new=AsyncMock(return_value="new_coin"),
+        ):
+            owner = await resolve_conflict_owner(
+                db, "SNPSUSDT", "btc_eth",
+                competing_record_names=["new_coin"],
+            )
+        assert owner == "new_coin"
+
+    @pytest.mark.asyncio
+    async def test_enabled_false_skips_claim_query(self):
+        """enabled=False → 不调 _resolve_claim_owner（与 is_symbol_owned_by_other 对齐）"""
+        from shared.position_ownership import resolve_conflict_owner
+
+        db = MagicMock()
+        with patch(
+            "shared.position_ownership._resolve_owner_with_lock",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "shared.position_ownership._resolve_claim_owner",
+            new=AsyncMock(),
+        ) as fake_claim:
+            owner = await resolve_conflict_owner(
+                db, "SOLUSDT", "btc_eth",
+                competing_record_names=["new_coin"],
+                enabled=False,
+            )
+        assert owner is None
+        fake_claim.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resolve_owner_with_lock_exception_returns_none_no_raise(self):
+        """_resolve_owner_with_lock 抛异常 → 返回 None 且**不向上抛异常**"""
+        from shared.position_ownership import resolve_conflict_owner
+
+        db = MagicMock()
+        with patch(
+            "shared.position_ownership._resolve_owner_with_lock",
+            new=AsyncMock(side_effect=Exception("advisory lock 炸了")),
+        ):
+            owner = await resolve_conflict_owner(
+                db, "BNBUSDT", "btc_eth_aggressive",
+                competing_record_names=["btc_eth"],
+            )
+        assert owner is None  # 不抛异常
+
+    # ---------- 一致性对拍：is_symbol_owned_by_other ⇔ resolve_conflict_owner ----------
+
+    @pytest.mark.asyncio
+    async def test_consistency_authority_hit(self):
+        """一致组 1：权威归属命中 → is_symbol_owned_by_other=True ⇔ owner != None"""
+        from shared.position_ownership import (
+            is_symbol_owned_by_other, resolve_conflict_owner,
+        )
+
+        db = MagicMock()
+        with patch(
+            "shared.position_ownership._resolve_owner_with_lock",
+            new=AsyncMock(return_value="btc_eth"),
+        ), patch(
+            "shared.position_ownership._resolve_claim_owner",
+            new=AsyncMock(return_value=None),
+        ):
+            blocked = await is_symbol_owned_by_other(
+                db, "BNBUSDT", "btc_eth_aggressive",
+                competing_record_names=["btc_eth"],
+            )
+            owner = await resolve_conflict_owner(
+                db, "BNBUSDT", "btc_eth_aggressive",
+                competing_record_names=["btc_eth"],
+            )
+        assert blocked is True
+        assert owner is not None
+        assert owner == "btc_eth"
+
+    @pytest.mark.asyncio
+    async def test_consistency_claim_hit(self):
+        """一致组 2：权威无命中 + claim 命中"""
+        from shared.position_ownership import (
+            is_symbol_owned_by_other, resolve_conflict_owner,
+        )
+
+        db = MagicMock()
+        with patch(
+            "shared.position_ownership._resolve_owner_with_lock",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "shared.position_ownership._resolve_claim_owner",
+            new=AsyncMock(return_value="new_coin"),
+        ):
+            blocked = await is_symbol_owned_by_other(
+                db, "SNPSUSDT", "btc_eth",
+                competing_record_names=["new_coin"],
+            )
+            owner = await resolve_conflict_owner(
+                db, "SNPSUSDT", "btc_eth",
+                competing_record_names=["new_coin"],
+            )
+        assert blocked is True
+        assert owner == "new_coin"
+
+    @pytest.mark.asyncio
+    async def test_consistency_no_conflict(self):
+        """一致组 3：全无 → 两者都不拦截"""
+        from shared.position_ownership import (
+            is_symbol_owned_by_other, resolve_conflict_owner,
+        )
+
+        db = MagicMock()
+        with patch(
+            "shared.position_ownership._resolve_owner_with_lock",
+            new=AsyncMock(return_value=None),
+        ), patch(
+            "shared.position_ownership._resolve_claim_owner",
+            new=AsyncMock(return_value=None),
+        ):
+            blocked = await is_symbol_owned_by_other(
+                db, "ETHUSDT", "btc_eth",
+                competing_record_names=["new_coin"],
+            )
+            owner = await resolve_conflict_owner(
+                db, "ETHUSDT", "btc_eth",
+                competing_record_names=["new_coin"],
+            )
+        assert blocked is False
+        assert owner is None
+
+    # ---------- _acquire_entry_slot 冲突分支透传 owner ----------
+
+    @pytest.mark.asyncio
+    async def test_acquire_entry_slot_passes_real_owner(self):
+        """归属互斥命中时，_handle_claim_conflict 第二个参数是解析出的真实 owner"""
+        from shared.protection_retry import _acquire_entry_slot
+
+        strategy = MagicMock()
+        strategy.my_record_name = "btc_eth_aggressive"
+        strategy._competing_record_names = ["btc_eth"]
+        strategy._ownership_enabled = True
+        strategy._claim_ttl_minutes = 30
+        strategy._lock_timeout_seconds = 5
+        strategy.db_manager = MagicMock()
+        strategy._handle_claim_conflict = AsyncMock()
+
+        is_owned = AsyncMock(return_value=True)
+        try_claim = AsyncMock()
+
+        async def resolve_owner(*args, **kwargs):
+            return "btc_eth"
+
+        result = await _acquire_entry_slot(
+            strategy, "BNBUSDT",
+            is_owned_fn=is_owned, try_claim_fn=try_claim,
+            resolve_owner_fn=resolve_owner,
+        )
+        assert result is False
+        strategy._handle_claim_conflict.assert_awaited_once_with("BNBUSDT", "btc_eth")
+        try_claim.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_acquire_entry_slot_resolve_owner_exception_degrades(self):
+        """resolve_owner_fn 抛异常 → _handle_claim_conflict 收到 None，
+        _acquire_entry_slot 返回 False 且**不向上抛异常**"""
+        from shared.protection_retry import _acquire_entry_slot
+
+        strategy = MagicMock()
+        strategy.my_record_name = "btc_eth_aggressive"
+        strategy._competing_record_names = ["btc_eth"]
+        strategy._ownership_enabled = True
+        strategy._claim_ttl_minutes = 30
+        strategy._lock_timeout_seconds = 5
+        strategy.db_manager = MagicMock()
+        strategy._handle_claim_conflict = AsyncMock()
+
+        is_owned = AsyncMock(return_value=True)
+        try_claim = AsyncMock()
+
+        async def boom(*args, **kwargs):
+            raise Exception("resolve_owner_fn 炸了")
+
+        with patch("shared.protection_retry.logger.warning") as fake_warn:
+            result = await _acquire_entry_slot(
+                strategy, "BNBUSDT",
+                is_owned_fn=is_owned, try_claim_fn=try_claim,
+                resolve_owner_fn=boom,
+            )
+        assert result is False  # 不抛异常
+        strategy._handle_claim_conflict.assert_awaited_once_with("BNBUSDT", None)
+        # 必须触发降级 warning
+        assert any(
+            "冲突 owner 解析异常" in str(call)
+            for call in fake_warn.call_args_list
+        )
+
+    @pytest.mark.asyncio
+    async def test_acquire_entry_slot_claim_conflict_owner_none_fallback(self):
+        """claim 分支 owner=None（保守情形）→ 触发 resolve_owner_fn fallback"""
+        from shared.protection_retry import _acquire_entry_slot
+
+        strategy = MagicMock()
+        strategy.my_record_name = "btc_eth_aggressive"
+        strategy._competing_record_names = ["btc_eth"]
+        strategy._ownership_enabled = True
+        strategy._claim_ttl_minutes = 30
+        strategy._lock_timeout_seconds = 5
+        strategy.db_manager = MagicMock()
+        strategy._handle_claim_conflict = AsyncMock()
+
+        is_owned = AsyncMock(return_value=False)
+        # 保守情形：claimed=False 且 owner=None（try_claim_symbol 可能的返回）
+        try_claim = AsyncMock(return_value={"claimed": False, "owner": None, "claim_id": None})
+
+        async def resolve_owner(*args, **kwargs):
+            return "btc_eth"
+
+        result = await _acquire_entry_slot(
+            strategy, "BNBUSDT",
+            is_owned_fn=is_owned, try_claim_fn=try_claim,
+            resolve_owner_fn=resolve_owner,
+        )
+        assert result is False
+        strategy._handle_claim_conflict.assert_awaited_once_with("BNBUSDT", "btc_eth")
+
+
+# ============================================================
+# 待修 3 补充：终态标记 SQL 语义镜像 + 两选一场景回归钉住
+# ============================================================
+
+def _simulate_mark_entry_terminal_select(
+    rows, symbol: str, strategy: str, *, include_realized_pnl_filter: bool,
+):
+    """SQL 语义镜像（纯函数）：模拟 `_mark_entry_terminal_sql` 内层 SELECT 行为，
+    用于钉住「realized_pnl IS NULL 是修复点」。
+
+    逐条过滤：symbol 相等 → strategy 相等 → order_type ∈ ('LIMIT','MARKET')
+    → realized_pnl is None（可选，include_realized_pnl_filter=False 时跳过）
+    → status ∉ ('CANCELED','EXPIRED','CLOSED') → 按 executed_at DESC, id DESC 取第一条。
+
+    Args:
+        rows: 假记录列表（每条为 dict，含 id/symbol/strategy/order_type/status/realized_pnl/executed_at）
+        symbol: 匹配 symbol
+        strategy: 匹配 strategy
+        include_realized_pnl_filter: 是否模拟 SQL 中的 `realized_pnl IS NULL` 条件
+            True → 真实修复后 SQL；False → 修复前（平仓单会被误选中）
+
+    Returns:
+        被选中的记录 dict；无命中返回 None
+    """
+    entry_types = ('LIMIT', 'MARKET')
+    terminal = {'CANCELED', 'EXPIRED', 'CLOSED'}
+    filtered = [
+        r for r in rows
+        if r['symbol'] == symbol
+        and r['strategy'] == strategy
+        and r['order_type'] in entry_types
+        and (not include_realized_pnl_filter or r.get('realized_pnl') is None)
+        and r['status'] not in terminal
+    ]
+    if not filtered:
+        return None
+    filtered.sort(key=lambda r: (r.get('executed_at') or '', r.get('id') or 0), reverse=True)
+    return filtered[0]
+
+
+class TestBNBFixMarkEntryTerminalSemantics:
+    """待修 3：SQL 文本位置断言 + 两选一场景行为钉住（核心回归）"""
+
+    # ---------- 3a：SQL 文本位置断言 ----------
+
+    def test_mark_entry_terminal_sql_realized_pnl_filter_between_order_type_and_order_by(self):
+        from shared.position_ownership import _mark_entry_terminal_sql
+        sql = _mark_entry_terminal_sql('CLOSED')
+        idx_order_type = sql.index('order_type IN')
+        idx_realized = sql.index('realized_pnl IS NULL')
+        idx_order_by = sql.index('ORDER BY executed_at DESC, id DESC LIMIT 1')
+        # 必须在 order_type IN 之后、ORDER BY 之前（即子查询 WHERE 过滤链上）
+        assert idx_order_type < idx_realized < idx_order_by
+
+    def test_mark_entry_terminal_sql_preserves_limit_one_and_order_by(self):
+        from shared.position_ownership import _mark_entry_terminal_sql
+        sql = _mark_entry_terminal_sql('CANCELED')
+        assert 'ORDER BY executed_at DESC, id DESC' in sql
+        assert 'LIMIT 1' in sql
+
+    # ---------- 3b：两选一场景行为钉住 ----------
+
+    def test_real_fix_selects_entry_not_exit(self):
+        """生产数据复刻：BNBUSDT 入场单(id=4292) vs 平仓单(id=4315)，
+        修复后必须选中入场单 4292（平仓单因 realized_pnl 非空被排除）"""
+        rows = [
+            {
+                'id': 4315, 'symbol': 'BNBUSDT', 'strategy': 'btc_eth',
+                'order_type': 'LIMIT', 'status': 'FILLED',
+                'realized_pnl': 0.4344, 'executed_at': '2026-10-23 20:05:00.945',
+            },
+            {
+                'id': 4292, 'symbol': 'BNBUSDT', 'strategy': 'btc_eth',
+                'order_type': 'LIMIT', 'status': 'NEW',
+                'realized_pnl': None, 'executed_at': '2026-10-23 06:05:03',
+            },
+        ]
+        selected = _simulate_mark_entry_terminal_select(
+            rows, 'BNBUSDT', 'btc_eth', include_realized_pnl_filter=True,
+        )
+        assert selected is not None
+        assert selected['id'] == 4292
+
+    def test_without_realized_pnl_filter_would_select_exit(self):
+        """同上数据，**去掉** realized_pnl IS NULL 条件（修复前 SQL）时会选中 4315，
+        证实该条件正是修复点（ORDER BY executed_at DESC 让更晚的平仓单排在前面）"""
+        rows = [
+            {
+                'id': 4315, 'symbol': 'BNBUSDT', 'strategy': 'btc_eth',
+                'order_type': 'LIMIT', 'status': 'FILLED',
+                'realized_pnl': 0.4344, 'executed_at': '2026-10-23 20:05:00.945',
+            },
+            {
+                'id': 4292, 'symbol': 'BNBUSDT', 'strategy': 'btc_eth',
+                'order_type': 'LIMIT', 'status': 'NEW',
+                'realized_pnl': None, 'executed_at': '2026-10-23 06:05:03',
+            },
+        ]
+        selected = _simulate_mark_entry_terminal_select(
+            rows, 'BNBUSDT', 'btc_eth', include_realized_pnl_filter=False,
+        )
+        assert selected is not None
+        assert selected['id'] == 4315  # 坏的选择！证明 realized_pnl IS NULL 是修复点
