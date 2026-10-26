@@ -155,7 +155,12 @@ class SnapshotRepository:
                 """
                 INSERT INTO public.ai_tuner_universe_snapshots
                     (strategy_id, observed_at, symbol, membership, source_run_id, config_hash)
-                SELECT $1, $2, members.symbol, members.membership, $5, $6
+                -- 参数必须显式转换为目标列类型：strategy_id/source_run_id 为 varchar，
+                -- 而下方 WHERE 中的 "= $1" 会按 texteq 操作符把参数推定为 text；
+                -- 同一参数先后被推定为 text 与 varchar 会触发
+                -- "inconsistent types deduced for parameter $1: text versus character varying"。
+                SELECT $1::varchar(64), $2::timestamptz, members.symbol, members.membership,
+                       $5::varchar(128), $6::char(64)
                 FROM UNNEST($3::text[], $4::text[]) AS members(symbol, membership)
                 WHERE EXISTS (
                     SELECT 1 FROM public.ai_tuner_universe_scan_runs r
