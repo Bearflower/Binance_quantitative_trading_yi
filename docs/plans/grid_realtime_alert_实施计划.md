@@ -127,8 +127,8 @@ def has_gap(conn, symbol, since_ms) -> bool              # 回溯补缺口判据
 在线预警进程使用 `@trade` 原始成交（WS 字段 `t`，REST `/fapi/v1/trades` 字段 `id`）；30 天研究落库器使用 `/fapi/v1/aggTrades` 聚合成交（字段 `a`）。两种 ID 空间不同，实时进程不写 `agg_trades`，不得把 WS 原始成交 ID 与行情库聚合成交 ID 比较。2026-10-13 的在线切流取代了早期「WS 与库内 max(agg_trade_id) 比对」设计。
 
 - **研究落库器**：独立以聚合成交 ID 从库内最大 ID 续拉、物化与 72 小时滚动清理；逐笔连续性按同一聚合 ID 空间核验。已有较早缺口不能由最大 ID 续拉自动修复，须记录并在 REST 可用范围内专项回补。
-- **在线实时进程**：按原始成交 ID 去重。发现 WS 向前跳号或断线时进入 DEGRADED，尝试用 `/fapi/v1/trades` 最近一页（上限 1000）按原始 ID 补连续前缀；不得跨缺口直接推进游标。该端点没有 `fromId`，长断线不能保证补全，须记录「缺口未补齐」并以新 WS 成交开始新观察段。
-- **退出判据**：每次断线或缺口均丢弃旧滚动样本；新观察段须重新积累完整最长特征窗口（当前 300 秒），期间暂停依赖完整窗口的普通／紧急判断，仅保留新鲜价格可确认的边界事实。达到预热时长、行情恢复健康且特征数据完整后才恢复窗口判断。研究库的聚合成交补齐不能替代在线原始成交的连续性判据。
+- **在线实时进程**：原始成交 ID 只做同源去重与排序，不把数字不相邻单独判为丢包；2026-10-27 生产 REST 最近成交页实测存在可见 ID 跳号。WS 断线时进入 DEGRADED，尝试用 `/fapi/v1/trades` 最近一页（上限 1000）补较新的可见成交；只有该页含上次已消费 ID 才使用，否则记录「无法覆盖断线游标」并从新 WS 成交开启观察段。该端点没有 `fromId`，REST 与后续 WS 的交界也不能据此证明逐笔无遗漏。
+- **退出判据**：每次断线均丢弃旧滚动样本；新观察段须重新积累完整最长特征窗口（当前 300 秒），期间暂停依赖完整窗口的普通／紧急判断，仅保留新鲜价格可确认的边界事实。达到预热时长、行情恢复健康且特征数据完整后才恢复窗口判断。研究库的聚合成交补齐不能替代在线原始成交的健康判据；若未来要求逐笔无遗漏证明，须另设计覆盖 WS/REST 交界的机制。
 
 ---
 
@@ -147,7 +147,7 @@ replay 复用 feed/features/rules/state（替换 Clock 与投递）
 
 | 文件 | 职责 | 关键签名 |
 |---|---|---|
-| `feed.py` | aggTrades WS 接入、退避重连、去重、补齐；吐有序成交流 | `async iter_trades(cfg) -> AsyncIterator[AggTrade]` |
+| `feed.py` | 原始成交 `@trade` WS 接入、退避重连、去重、最近成交尽力补入；吐有序成交流 | `async iter_trades(cfg) -> AsyncIterator[AggTrade]` |
 | `features.py` | 整秒采样、滚动窗口、效率；特征不可用填 `None` | `sample_price`、`compute_features` |
 | `rules.py` | **纯规则**：不 import pandas/网络/时间/系统时钟 | `classify_region`、`evaluate_*`、`pick_state` |
 | `state.py` | 状态机、持续计时、episode/reference 去重、恢复 | `evaluate_episode`、`record_event`、`recover` |
