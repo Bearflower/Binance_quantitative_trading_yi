@@ -19,7 +19,7 @@
 | [x] T13 | 新增 HRS 适配器（历史时点恢复） | `ai_tuner/replay/adapters/hrs.py` | 缺任一必需表（值为 `None`）→ `DataBlocked` → 由 runner 映射 `BLOCKED_DATA`；空表 `[]` 不阻断；无实时补值路径 |
 | [x] T14 | 新增适配器测试 | `tests/test_ai_tuner_mvp/replay/test_adapters_{mtpcs,hrs,protocol}.py` | 覆盖签名一致性、MTPCS 等价、HRS 缺数据阻断、import 白名单 |
 | [x] T15 | 回归与基线 | 全仓库 | 本分支 `83 failed / 2549 passed / 248 errors`，基线 `d364537` 同命令 `83 failed / 2499 passed / 248 errors`，失败清单 `diff` 为空（无回归）；新增 50 条通过。Spec §5 各组命令结果见下方「基线对照」 |
-| [ ] T16 | 本地提交（不 push、不部署） | git | 提交信息说明「S5 等价提取收尾 + 双适配器」；工作树 clean |
+| [x] T16 | 本地提交（不 push、不部署） | git | 提交 `48c2b43`（22 文件，+5508/-802），工作树 clean；未 push、未部署 |
 
 ## 执行顺序
 
