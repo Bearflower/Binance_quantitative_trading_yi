@@ -141,6 +141,14 @@ jobs:
           echo "推送范围: ${BASE}..HEAD"
           echo "$CHANGED_FILES"
 
+          # 仅变更分批日志覆盖配置和本工作流时无需重建业务镜像。
+          # Compose 会按 logging 配置只 recreate 本批服务；全项目 COPY 的镜像也无需重建。
+          if [ -n "$CHANGED_FILES" ] && [ -z "$(echo "$CHANGED_FILES" | grep -vE '^(docker-compose\.logging\.yml|\.github/workflows/deploy\.yml|docs/deployment/log-retention\.md)$')" ]; then
+            echo "✅ 仅日志覆盖配置/部署工作流变化 → 跳过镜像构建"
+            echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # 4) shared/ 或 docker-compose.yml / VERSION 变了 → 全部重建
           if echo "$CHANGED_FILES" | grep -qE '^(shared/|docker-compose\.yml$|VERSION$)'; then
             echo "✅ shared/ 或 docker-compose.yml / VERSION 有改动 → 全部重建"
@@ -323,6 +331,7 @@ jobs:
         run: |
           source /tmp/ci_retry.sh
           retry_connect scp docker-compose.yml 43.156.242.184:/root/trading_system/docker-compose.yml
+          retry_connect scp docker-compose.logging.yml 43.156.242.184:/root/trading_system/docker-compose.logging.yml
 
       - name: 📦 同步数据库 init-scripts
         run: |
@@ -344,6 +353,7 @@ jobs:
           cat > /tmp/deploy.sh << 'REMOTE_SCRIPT'
             set -e
             cd /root/trading_system
+            export COMPOSE_FILE=docker-compose.yml:docker-compose.logging.yml
 
             echo "========================================"
             echo "CI/CD 自动部署"
@@ -630,6 +640,30 @@ jobs:
             echo ""
             echo "✅ 当前容器状态："
             docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "trading_system|ai-tuner|data-backend|dashboard-api" || echo "⚠️ 未找到 trading 相关容器"
+
+            # 验证本批 journald 服务的实际驱动与可查询记录。
+            # 只打印服务名和容器 ID，不在 Actions 日志中输出业务日志内容。
+            JOURNAL_SERVICES=$(docker compose config --format json | python3 -c 'import json,sys; services=json.load(sys.stdin)["services"]; print(" ".join(name for name,config in services.items() if config.get("logging",{}).get("driver")=="journald"))')
+            for service in $JOURNAL_SERVICES; do
+              cid=$(docker compose ps -q "$service")
+              if [ -z "$cid" ] || [ "$(docker inspect -f '{{.HostConfig.LogConfig.Type}}' "$cid")" != "journald" ]; then
+                echo "❌ $service 未使用 journald 日志驱动"
+                exit 1
+              fi
+              found=0
+              for i in $(seq 1 15); do
+                if [ -n "$(journalctl -q --no-pager -n 1 -o cat CONTAINER_ID_FULL="$cid")" ]; then
+                  found=1
+                  break
+                fi
+                sleep 2
+              done
+              if [ "$found" -ne 1 ]; then
+                echo "❌ $service 的当前容器日志未进入 journald"
+                exit 1
+              fi
+              echo "✅ journald $service container=$cid"
+            done
 
             # 7. 写部署日志
             mkdir -p deploy_logs

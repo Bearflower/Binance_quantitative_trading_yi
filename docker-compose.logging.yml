@@ -1,0 +1,7 @@
+# Staged journald rollout. Keep this file alongside docker-compose.yml on the server.
+# Add services here only after their current logs have been archived and the
+# preceding rollout batch has passed health and cross-recreation log checks.
+services:
+  dashboard-api:
+    logging: !override
+      driver: journald
