@@ -128,6 +128,7 @@ class RealtimeService:
         self._scanner: Optional[FactScanner] = None
         self._trade_queue: Optional[asyncio.Queue] = None
         self._feed_healthy = True
+        self._feed_recovery_until_ms = 0
         self._storage_degraded = False
         self._event_refs: Dict[str, tuple] = {}
         self._tick_count = 0
@@ -209,7 +210,9 @@ class RealtimeService:
             self._sample_price, mark, self._cfg["features"]["windows_seconds"],
             self._cfg["features"]["e_resample_seconds"], [300])
         events += self._engine.on_second(
-            mark, features, degraded=not self._feed_healthy)
+            mark, features,
+            degraded=(not self._feed_healthy
+                      or mark < self._feed_recovery_until_ms))
         events += self._emit_facts(same, snap)
         return events
 
@@ -330,7 +333,7 @@ class RealtimeService:
     def _reasons(self, status: str) -> Dict[str, int]:
         reasons: Dict[str, int] = {}
         now = self._now()
-        if not self._feed_healthy:
+        if not self._feed_healthy or now < self._feed_recovery_until_ms:
             reasons["feed_interrupted"] = now
         if status == SYNC_UNCERTAIN:
             reasons["sync_uncertain"] = now
@@ -386,6 +389,10 @@ class RealtimeService:
             getattr(logger, level)("行情连接状态变化", healthy=healthy,
                                    reason=reason)
         self._feed_healthy = healthy
+        if not healthy:
+            self._samples.clear()
+            warmup_ms = max(self._cfg["features"]["windows_seconds"]) * MS_PER_SECOND
+            self._feed_recovery_until_ms = self._now() + warmup_ms
 
     def _snapshot(self) -> Dict:
         """运行态量化快照（测试断言与运维巡检用）。"""

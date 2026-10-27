@@ -199,6 +199,22 @@ async def test_feed_interrupted_health_reason(conn, cfg):
     assert "feed_interrupted" in service._health.active_reasons
 
 
+async def test_feed_recovery_discards_old_window_and_waits_for_warmup(conn, cfg):
+    now = 5_000_000
+    clock = [now]
+    service = _service(cfg, conn, lambda: clock[0])
+    service._samples.append(SecondSample(now - 1000, Decimal("2700"),
+                                         now - 1000, 1))
+    await service._on_feed_health(False, "原始成交 ID 缺口")
+    assert not service._samples
+    await service._on_feed_health(True, "")
+    assert "feed_interrupted" in service._reasons("VALID")
+    clock[0] += max(cfg["features"]["windows_seconds"]) * 1000 - 1
+    assert "feed_interrupted" in service._reasons("VALID")
+    clock[0] += 1
+    assert "feed_interrupted" not in service._reasons("VALID")
+
+
 class _ListFeed:
     def __init__(self, trades):
         self._trades = trades

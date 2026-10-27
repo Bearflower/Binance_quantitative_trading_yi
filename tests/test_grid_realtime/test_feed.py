@@ -219,6 +219,115 @@ async def test_dedup_old_id_skipped(cfg):
     assert [t.agg_trade_id for t in items] == [10, 11]
 
 
+async def test_ws_id_gap_refills_before_reporting_healthy(cfg):
+    ws1 = FakeWs([_msg_text(_ws_payload(100)),
+                  _msg_text(_ws_payload(103))])
+    ws2 = FakeWs([_msg_text(_ws_payload(103)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    sockets = [ws1, ws2]
+    health = []
+
+    async def factory(_url):
+        if sockets:
+            return sockets.pop(0)
+        raise RuntimeError("测试终止")
+
+    async def on_health(healthy, reason):
+        health.append((healthy, reason))
+
+    feed = TradeFeed(
+        cfg, on_health=on_health, ws_factory=factory,
+        rest_fetcher=lambda: _async([_rest_trade(101), _rest_trade(102)]),
+        sleep=_NoSleep())
+    items = []
+    with pytest.raises(RuntimeError, match="测试终止"):
+        async for trade in feed.stream():
+            items.append(trade.agg_trade_id)
+    assert items == [100, 101, 102, 103]
+    assert any(not healthy and "缺口" in reason for healthy, reason in health)
+
+
+async def test_unfillable_ws_gap_starts_fresh_epoch(cfg):
+    ws1 = FakeWs([_msg_text(_ws_payload(100)),
+                  _msg_text(_ws_payload(103))])
+    ws2 = FakeWs([_msg_text(_ws_payload(200)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    sockets = [ws1, ws2]
+    health = []
+
+    async def factory(_url):
+        if sockets:
+            return sockets.pop(0)
+        raise RuntimeError("测试终止")
+
+    async def on_health(healthy, reason):
+        health.append((healthy, reason))
+
+    feed = TradeFeed(
+        cfg, on_health=on_health, ws_factory=factory,
+        rest_fetcher=lambda: _async([_rest_trade(102), _rest_trade(103)]),
+        sleep=_NoSleep())
+    items = []
+    with pytest.raises(RuntimeError, match="测试终止"):
+        async for trade in feed.stream():
+            items.append(trade.agg_trade_id)
+    assert items == [100, 200]
+    assert any(not healthy and "未补齐" in reason for healthy, reason in health)
+
+
+async def test_rest_refill_failure_keeps_reconnecting(cfg):
+    ws1 = FakeWs([_msg_text(_ws_payload(100)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    ws2 = FakeWs([_msg_text(_ws_payload(101)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    sockets = [ws1, ws2]
+    health = []
+
+    async def factory(_url):
+        if sockets:
+            return sockets.pop(0)
+        raise RuntimeError("测试终止")
+
+    async def fetcher():
+        raise TimeoutError("REST 超时")
+
+    async def on_health(healthy, reason):
+        health.append((healthy, reason))
+
+    feed = TradeFeed(cfg, on_health=on_health, ws_factory=factory,
+                     rest_fetcher=fetcher, sleep=_NoSleep())
+    items = []
+    with pytest.raises(RuntimeError, match="测试终止"):
+        async for trade in feed.stream():
+            items.append(trade.agg_trade_id)
+    assert items == [100, 101]
+    assert any(not healthy and "REST" in reason for healthy, reason in health)
+
+
+async def test_rest_failure_after_gap_starts_fresh_epoch(cfg):
+    ws1 = FakeWs([_msg_text(_ws_payload(100)),
+                  _msg_text(_ws_payload(103))])
+    ws2 = FakeWs([_msg_text(_ws_payload(200)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    sockets = [ws1, ws2]
+
+    async def factory(_url):
+        if sockets:
+            return sockets.pop(0)
+        raise RuntimeError("测试终止")
+
+    async def fetcher():
+        raise TimeoutError("REST 超时")
+
+    feed = TradeFeed(cfg, ws_factory=factory,
+                     rest_fetcher=fetcher, sleep=_NoSleep())
+    items = []
+    with pytest.raises(RuntimeError, match="测试终止"):
+        async for trade in feed.stream():
+            items.append(trade.agg_trade_id)
+    assert items == [100, 200]
+
+
 async def test_non_text_and_bad_json_skipped(cfg):
     ws = FakeWs([_msg(aiohttp.WSMsgType.BINARY),
                  SimpleNamespace(type=aiohttp.WSMsgType.TEXT,

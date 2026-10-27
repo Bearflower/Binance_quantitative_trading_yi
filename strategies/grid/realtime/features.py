@@ -20,7 +20,7 @@ MS_PER_SECOND = 1000
 
 @dataclass(frozen=True)
 class AggTrade:
-    """单笔聚合成交（字段口径见 services/aggtrade_collector/models.py）。"""
+    """成交输入；回放为聚合成交，在线 feed 为原始成交，ID 仅在同源内比较。"""
 
     agg_trade_id: int
     price: Decimal

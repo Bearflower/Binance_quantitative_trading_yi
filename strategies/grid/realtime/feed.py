@@ -6,8 +6,8 @@
 - 重连指数退避（transport.reconnect_initial_seconds → reconnect_max_seconds）。
 - 去重：按原始成交 id（WS 字段 t / REST 字段 id），重复/乱序旧笔丢弃，
   不用旧价格报警（AC-11）。
-- REST 补齐（/fapi/v1/trades 无 fromId，单次取最近一批）只用于窗口连续性；
-  DEGRADED 期间 main 不触发事件，故不补发过时事件；重连后只判断最新状态。
+- REST 补齐（/fapi/v1/trades 无 fromId，单次取最近一批）仅补原始 ID
+  的连续前缀；缺口不可补齐时开启新观察段，main 清空旧窗口并重新预热。
 - WS/REST 端点为技术常量，允许环境变量覆盖；不调用任何交易接口。
 """
 from __future__ import annotations
@@ -114,11 +114,12 @@ class TradeFeed:
         self._rest_fetcher = rest_fetcher
         self._sleep = sleep
         self._last_id: Optional[int] = None
+        self._missing_until: Optional[int] = None
         self._backoff = cfg["transport"]["reconnect_initial_seconds"]
 
     @property
     def last_id(self) -> Optional[int]:
-        """库内已知最大 agg_trade_id（去重/补齐游标）。"""
+        """本进程已消费的最大原始成交 ID（不与聚合成交库 ID 混用）。"""
         return self._last_id
 
     async def stream(self) -> AsyncIterator[AggTrade]:
@@ -131,8 +132,14 @@ class TradeFeed:
                 reason = str(exc)
             await self._set_health(False, reason)
             await self._sleep(self._backoff)
-            async for trade in self._refill():
-                yield trade
+            try:
+                async for trade in self._refill():
+                    yield trade
+            except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as exc:
+                await self._set_health(False, f"REST 补齐失败: {type(exc).__name__}")
+                if self._missing_until is not None:
+                    self._last_id = None
+                    self._missing_until = None
             self._increase_backoff()
 
     async def _consume_ws(self) -> AsyncIterator[AggTrade]:
@@ -146,6 +153,11 @@ class TradeFeed:
                     continue
                 if self._last_id is not None and trade.agg_trade_id <= self._last_id:
                     continue
+                if (self._last_id is not None
+                        and trade.agg_trade_id > self._last_id + 1):
+                    self._missing_until = trade.agg_trade_id - 1
+                    raise FeedInterrupted(
+                        f"原始成交 ID 缺口: {self._last_id + 1}..{self._missing_until}")
                 self._last_id = trade.agg_trade_id
                 self._backoff = self._cfg["transport"]["reconnect_initial_seconds"]
                 await self._set_health(True, "")
@@ -183,8 +195,15 @@ class TradeFeed:
         fresh = sorted((t for t in rows if t.agg_trade_id > self._last_id),
                        key=lambda tr: tr.agg_trade_id)
         for trade in fresh:
+            if trade.agg_trade_id != self._last_id + 1:
+                break
             self._last_id = trade.agg_trade_id
             yield trade
+        if self._missing_until is not None:
+            if self._last_id < self._missing_until:
+                await self._set_health(False, "原始成交缺口未补齐，重新预热")
+                self._last_id = None
+            self._missing_until = None
 
     def _increase_backoff(self) -> None:
         """指数退避封顶 reconnect_max_seconds。"""
