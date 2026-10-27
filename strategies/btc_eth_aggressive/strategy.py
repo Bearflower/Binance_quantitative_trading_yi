@@ -53,6 +53,13 @@ from strategies.btc_eth_aggressive.market_state import (
 )
 from shared.instance_config import parse_instance_config
 
+# core 纯计算包（v6.31 等价提取：实盘与回放适配器共用）
+from strategies.btc_eth_aggressive.core import common as _core_common
+from strategies.btc_eth_aggressive.core import scoring as _core_scoring
+from strategies.btc_eth_aggressive.core import direction as _core_direction
+from strategies.btc_eth_aggressive.core import filters as _core_filters
+from strategies.btc_eth_aggressive.core import exits as _core_exits
+
 
 logger = structlog.get_logger()
 
@@ -66,30 +73,8 @@ _TAKE_PROFIT_CLOSE_REASONS = {"TP1", "TP2", "TRAILING_STOP"}
 
 
 def _safe_last(indicators: Dict, timeframe: str, field: str) -> Optional[float]:
-    """
-    安全读取某时间框架某指标的最新有效值（v6.26 新增）
-
-    统一兜底：字段缺失、时间框架缺失、Series 为空、值为 NaN 时返回 None，
-    禁止调用方裸用 iloc[-1] 读取指标导致主循环中断。
-
-    Args:
-        indicators: 多时间框架指标字典，形如 {timeframe: {field: pd.Series}}
-        timeframe: 时间框架（如 '1h' / '4h' / '1d'）
-        field: 指标字段名（如 'EMA21' / 'RSI' / 'ATR' / 'BB_Middle' / 'Volume_MA'）
-
-    Returns:
-        最新有效值（float）；缺失 / 空 / NaN 返回 None
-    """
-    timeframe_indicators = indicators.get(timeframe)
-    if not isinstance(timeframe_indicators, dict):
-        return None
-    series = timeframe_indicators.get(field)
-    if series is None or len(series) == 0:
-        return None
-    value = series.iloc[-1]
-    if pd.isna(value):
-        return None
-    return float(value)
+    """安全读取某时间框架某指标的最新有效值（v6.31 转发 core.common.safe_last）。"""
+    return _core_common.safe_last(indicators, timeframe, field)
 
 
 class PositionState:
@@ -1388,50 +1373,8 @@ class BTCEthStrategy:
         Returns:
             综合评分（0-100）
         """
-        score = 0.0
-        
-        # 震荡市使用不同权重（形态权重提高，趋势权重降低）
-        if market_state == 'RANGING':
-            ranging_config = self.risk_config.get('ranging_strategy', {})
-            weights = ranging_config.get('scoring_weights', {
-                'trend_strength': 0.15,
-                'pattern_quality': 0.60,
-                'momentum_divergence': 0.25,
-            })
-        else:
-            weights = self.scoring_config['weights']
-        
-        # 趋势强度评分（40%）
-        trend_score = self._calculate_trend_strength_score(indicators)
-        score += trend_score * weights['trend_strength']
-        
-        # 形态质量评分（35%）
-        pattern_score = self._calculate_pattern_quality_score(indicators, klines)
-        score += pattern_score * weights['pattern_quality']
-        
-        # 动量背离评分（25%）
-        momentum_score = self._calculate_momentum_divergence_score(indicators, klines)
-        score += momentum_score * weights['momentum_divergence']
-        
-        # A级额外加分：4h RSI 在 35~65 之间 +2 分（v6.16.10）
-        if '4h' in indicators:
-            rsi_4h = indicators['4h']['RSI'].iloc[-1]
-            bonus_config = self.scoring_config.get('a_level_bonus', {})
-            if pd.notna(rsi_4h):
-                rsi_low = bonus_config.get('rsi_low', 35)
-                rsi_high = bonus_config.get('rsi_high', 65)
-                if rsi_low <= rsi_4h <= rsi_high:
-                    score += bonus_config.get('bonus', 2)
-        
-        logger.debug(
-            "评分计算完成",
-            trend_strength_score=trend_score,
-            pattern_quality_score=pattern_score,
-            momentum_divergence_score=momentum_score,
-            total_score=score
-        )
-        
-        return round(score, 2)
+        return _core_scoring.calculate_score(
+            indicators, klines, self.scoring_config, self.risk_config, market_state)
     
     def _calculate_trend_strength_score(self, indicators: Dict) -> float:
         """
@@ -1450,49 +1393,7 @@ class BTCEthStrategy:
         Returns:
             趋势强度评分（0-100）
         """
-        score = float(self.scoring_config['trend_strength']['base_score'])  # 基础分
-        
-        # 检查1h和4h的MA趋势
-        if '1h' in indicators and '4h' in indicators:
-            ma21_1h = indicators['1h']['MA21'].iloc[-1]
-            ma55_1h = indicators['1h']['MA55'].iloc[-1]
-            ma21_4h = indicators['4h']['MA21'].iloc[-1]
-            ma55_4h = indicators['4h']['MA55'].iloc[-1]
-            
-            # 1h趋势
-            trend_1h = ma21_1h > ma55_1h
-            # 4h趋势
-            trend_4h = ma21_4h > ma55_4h
-            
-            # 趋势一致加分
-            if trend_1h == trend_4h:
-                score += self.scoring_config['trend_strength']['consistency_bonus']
-            
-            # 上升趋势加分
-            if trend_1h and trend_4h:
-                score += self.scoring_config['trend_strength']['dual_uptrend_bonus']
-            elif not trend_1h and not trend_4h:
-                # 下降趋势也有一定分数
-                pass
-        
-        # 检查MACD
-        if '1h' in indicators:
-            macd = indicators['1h']['MACD'].iloc[-1]
-            if macd > 0:
-                score += self.scoring_config['trend_strength']['macd_positive_bonus']
-            else:
-                score += self.scoring_config['trend_strength']['macd_negative_penalty']
-        
-        # 检查ADX趋势强度
-        if '1h' in indicators:
-            adx = indicators['1h']['ADX'].iloc[-1]
-            if pd.notna(adx):
-                if adx > self.scoring_config['trend_strength']['adx_strong_threshold']:
-                    score += self.scoring_config['trend_strength']['adx_strong_bonus']
-                elif adx >= self.scoring_config['trend_strength']['adx_medium_threshold']:
-                    score += self.scoring_config['trend_strength']['adx_medium_bonus']
-        
-        return max(0, min(100, score))
+        return _core_scoring.trend_strength_score(indicators, self.scoring_config)
     
     def _calculate_pattern_quality_score(self, indicators: Dict, klines: Dict) -> float:
         """
@@ -1511,44 +1412,8 @@ class BTCEthStrategy:
         Returns:
             形态质量评分（0-100）
         """
-        score = float(self.scoring_config['pattern_quality']['base_score'])  # 基础分
-        
-        if '1h' not in klines:
-            return score
-        
-        # 获取最近几根K线
-        recent_klines = klines['1h'][-5:]
-        if len(recent_klines) < 3:
-            return score
-        
-        # 转换为DataFrame方便计算
-        df = pd.DataFrame(recent_klines)
-        df['open'] = pd.to_numeric(df['open'])
-        df['high'] = pd.to_numeric(df['high'])
-        df['low'] = pd.to_numeric(df['low'])
-        df['close'] = pd.to_numeric(df['close'])
-        
-        # 检测阳包阴形态（看涨）
-        if self._detect_bullish_engulfing(df):
-            score += self.scoring_config['pattern_quality']['bullish_engulfing_bonus']
-            logger.debug("检测到阳包阴形态")
-        
-        # 检测阴包阳形态（看跌）
-        if self._detect_bearish_engulfing(df):
-            score += self.scoring_config['pattern_quality']['bearish_engulfing_bonus']
-            logger.debug("检测到阴包阳形态")
-        
-        # 检测突破回踩形态
-        if self._detect_breakout_pullback(df, indicators):
-            score += self.scoring_config['pattern_quality']['breakout_pullback_bonus']
-            logger.debug("检测到突破回踩形态")
-        
-        # 检测背离形态
-        if self._detect_divergence(indicators, klines):
-            score += self.scoring_config['pattern_quality']['divergence_bonus']
-            logger.debug("检测到背离形态")
-        
-        return max(0, min(100, score))
+        return _core_scoring.pattern_quality_score(
+            indicators, klines, self.scoring_config)
     
     def _detect_bullish_engulfing(self, df: pd.DataFrame) -> bool:
         """
@@ -1565,23 +1430,7 @@ class BTCEthStrategy:
         Returns:
             是否检测到阳包阴形态
         """
-        if len(df) < 2:
-            return False
-        
-        prev = df.iloc[-2]
-        curr = df.iloc[-1]
-        
-        # 前一根是阴线
-        prev_is_bearish = prev['close'] < prev['open']
-        # 当前是阳线
-        curr_is_bullish = curr['close'] > curr['open']
-        # 当前实体包含前一根实体
-        curr_engulfs = (
-            curr['open'] <= prev['close'] and
-            curr['close'] >= prev['open']
-        )
-        
-        return prev_is_bearish and curr_is_bullish and curr_engulfs
+        return _core_scoring.detect_bullish_engulfing(df)
     
     def _detect_bearish_engulfing(self, df: pd.DataFrame) -> bool:
         """
@@ -1598,23 +1447,7 @@ class BTCEthStrategy:
         Returns:
             是否检测到阴包阳形态
         """
-        if len(df) < 2:
-            return False
-        
-        prev = df.iloc[-2]
-        curr = df.iloc[-1]
-        
-        # 前一根是阳线
-        prev_is_bullish = prev['close'] > prev['open']
-        # 当前是阴线
-        curr_is_bearish = curr['close'] < curr['open']
-        # 当前实体包含前一根实体
-        curr_engulfs = (
-            curr['open'] >= prev['close'] and
-            curr['close'] <= prev['open']
-        )
-        
-        return prev_is_bullish and curr_is_bearish and curr_engulfs
+        return _core_scoring.detect_bearish_engulfing(df)
     
     def _detect_breakout_pullback(self, df: pd.DataFrame, indicators: Dict) -> bool:
         """
@@ -1632,29 +1465,8 @@ class BTCEthStrategy:
         Returns:
             是否检测到突破回踩形态
         """
-        if '1h' not in indicators:
-            return False
-        
-        if len(df) < 5:
-            return False
-        
-        ma21 = indicators['1h']['MA21'].iloc[-1]
-        current_close = df.iloc[-1]['close']
-        
-        # 检查是否在MA21附近（从配置读取阈值）
-        proximity_pct = self.scoring_config['breakout_pullback']['proximity_pct']
-        distance_ratio = abs(current_close - ma21) / ma21
-        near_ma21 = distance_ratio < proximity_pct
-        
-        # 检查MA21是否上升
-        ma21_prev = indicators['1h']['MA21'].iloc[-5]
-        ma21_rising = ma21 > ma21_prev
-        
-        # 检查之前是否突破MA21
-        prev_closes = df.iloc[-5:-1]['close']
-        broke_above = any(close > ma21_prev for close in prev_closes)
-        
-        return near_ma21 and ma21_rising and broke_above
+        return _core_scoring.detect_breakout_pullback(
+            df, indicators, self.scoring_config)
     
     def _detect_divergence(self, indicators: Dict, klines: Dict) -> bool:
         """
@@ -1671,35 +1483,7 @@ class BTCEthStrategy:
         Returns:
             是否检测到背离形态
         """
-        if '1h' not in indicators or '1h' not in klines:
-            return False
-        
-        # 获取最近20根K线
-        closes = [float(k['close']) for k in klines['1h'][-20:]]
-        rsi_values = indicators['1h']['RSI'].iloc[-20:].values
-        
-        if len(closes) < 20 or len(rsi_values) < 20:
-            return False
-        
-        # 检测顶背离
-        price_high = max(closes[-10:])
-        price_prev_high = max(closes[-20:-10])
-        rsi_high = max(rsi_values[-10:])
-        rsi_prev_high = max(rsi_values[-20:-10])
-        
-        if price_high > price_prev_high and rsi_high < rsi_prev_high:
-            return True
-        
-        # 检测底背离
-        price_low = min(closes[-10:])
-        price_prev_low = min(closes[-20:-10])
-        rsi_low = min(rsi_values[-10:])
-        rsi_prev_low = min(rsi_values[-20:-10])
-        
-        if price_low < price_prev_low and rsi_low > rsi_prev_low:
-            return True
-        
-        return False
+        return _core_scoring.detect_divergence(indicators, klines)
     
     def _calculate_momentum_divergence_score(self, indicators: Dict, klines: Dict) -> float:
         """
@@ -1720,39 +1504,12 @@ class BTCEthStrategy:
         Returns:
             动量背离评分（0-100）
         """
-        score = float(self.scoring_config['momentum_divergence']['base_score'])  # 基础分
-        
-        if '1h' in indicators:
-            rsi = indicators['1h']['RSI'].iloc[-1]
-            
-            if pd.notna(rsi):
-                if rsi < self.scoring_config['momentum_divergence']['rsi_oversold']:
-                    # 超卖，买入机会
-                    score += self.scoring_config['momentum_divergence']['rsi_oversold_bonus']
-                elif rsi > self.scoring_config['momentum_divergence']['rsi_overbought']:
-                    # 超买，风险较高
-                    score += self.scoring_config['momentum_divergence']['rsi_overbought_penalty']
-                else:
-                    # 正常区间
-                    score += self.scoring_config['momentum_divergence']['rsi_normal_bonus']
-            
-            # MACD柱状图
-            macd_hist = indicators['1h']['MACD_Hist'].iloc[-1]
-            if pd.notna(macd_hist):
-                if macd_hist > 0:
-                    score += self.scoring_config['momentum_divergence']['macd_hist_positive_bonus']
-                else:
-                    score += self.scoring_config['momentum_divergence']['macd_hist_negative_penalty']
-            
-            # 检测背离加分
-            if self._detect_divergence(indicators, klines):
-                score += self.scoring_config['momentum_divergence']['divergence_bonus']
-        
-        return max(0, min(100, score))
+        return _core_scoring.momentum_divergence_score(
+            indicators, klines, self.scoring_config)
     
     def _check_trend_filter(
         self, 
-        symbol: str, 
+        _symbol: str, 
         indicators: Dict, 
         klines: Dict
     ) -> Tuple[bool, str]:
@@ -1772,84 +1529,7 @@ class BTCEthStrategy:
         Returns:
             (是否通过, 方向或失败原因)
         """
-        config = self.risk_config.get('trend_filter', {})
-        if not config.get('enabled', True):
-            return True, ""
-        
-        # 1. 日线趋势判断
-        if '1d' not in indicators:
-            return False, "日线数据缺失"
-        
-        df_1d = pd.DataFrame(klines['1d'])
-        close_1d = Decimal(str(df_1d['close'].iloc[-1]))
-        ema55_1d = indicators['1d']['EMA55'].iloc[-1]
-        
-        # 日线 EMA21 斜率（从配置读取窗口大小）
-        slope_window = config.get('ema_slope_window', 5)
-        ema21_series = indicators['1d']['MA21'].iloc[-slope_window:]
-        if len(ema21_series) >= slope_window:
-            x = np.arange(slope_window)
-            slope, _ = np.polyfit(x, ema21_series.values, 1)
-            slope_pct = slope / ema21_series.iloc[-1]
-        else:
-            slope_pct = 0
-        
-        # 禁止：斜率过平
-        if abs(slope_pct) < config['ema_slope_flat']:
-            return False, f"日线EMA21斜率过平({slope_pct*100:.2f}%)"
-        
-        # 确定方向
-        if slope_pct > 0:
-            direction = 'LONG'
-        else:
-            direction = 'SHORT'
-        
-        # 做多硬性条件
-        if direction == 'LONG':
-            if close_1d <= ema55_1d:
-                return False, "日线收盘价未站上EMA55"
-            if slope_pct < config['ema_slope_min']:
-                return False, f"日线EMA21斜率不足({slope_pct*100:.2f}% < 0.05%)"
-        else:
-            if close_1d >= ema55_1d:
-                return False, "日线收盘价未跌破EMA55"
-            if slope_pct > -config['ema_slope_min']:
-                return False, f"日线EMA21斜率不足({slope_pct*100:.2f}% > -0.05%)"
-        
-        # 2. 4h 价格回调检查
-        if '4h' in indicators:
-            atr_4h = indicators['4h']['ATR'].iloc[-1]
-            ema21_4h = indicators['4h']['MA21'].iloc[-1]
-            close_4h = Decimal(str(klines['4h'][-1]['close']))
-            
-            proximity = abs(close_4h - Decimal(str(ema21_4h)))
-            max_proximity = Decimal(str(atr_4h)) * Decimal(str(config['ema21_proximity_atr_mult']))
-            
-            if proximity > max_proximity:
-                return False, f"4h价格距EMA21过远({float(proximity):.2f} > {float(max_proximity):.2f})"
-        
-        # 3. 1h 收盘价检查
-        if '1h' in indicators:
-            ema21_1h = indicators['1h']['MA21'].iloc[-1]
-            close_1h = Decimal(str(klines['1h'][-1]['close']))
-            
-            if direction == 'LONG' and close_1h <= Decimal(str(ema21_1h)):
-                return False, "1h收盘价未站上EMA21"
-            elif direction == 'SHORT' and close_1h >= Decimal(str(ema21_1h)):
-                return False, "1h收盘价未跌破EMA21"
-        
-        # 4. ATR/价格检查
-        if '1h' in indicators:
-            atr_1h = Decimal(str(indicators['1h']['ATR'].iloc[-1]))
-            atr_ratio = float(atr_1h / close_1h)
-            prohibition = self.risk_config.get('prohibition', {})
-            
-            if atr_ratio > prohibition.get('atr_price_max', 0.045):
-                return False, f"波动率过高(ATR/价格={atr_ratio*100:.1f}% > 4.5%)"
-            if atr_ratio < prohibition.get('atr_price_min', 0.010):
-                return False, f"波动率过低(ATR/价格={atr_ratio*100:.1f}% < 1.0%)"
-        
-        return True, direction
+        return _core_filters.check_trend_filter(indicators, klines, self.risk_config)
     
     @staticmethod
     def _bb_touch_votes(df_4h: pd.DataFrame, indicators: Dict,
@@ -1863,34 +1543,7 @@ class BTCEthStrategy:
         返回 (多票增量, 空票增量, 命中描述列表, 距下轨比例, 距上轨比例)。
         禁用或数据缺失（含 BB_Middle 缺失）时返回 0 票，诊断比例取默认 1.0。
         """
-        if not entry_conditions.get('bb_touch', True):
-            return 0, 0, [], 1.0, 1.0
-        if df_4h.empty or 'close' not in df_4h.columns:
-            return 0, 0, [], 1.0, 1.0
-        close_4h_raw = df_4h['close'].iloc[-1]
-        if pd.isna(close_4h_raw):
-            return 0, 0, [], 1.0, 1.0
-        close_4h = float(close_4h_raw)
-        bb_upper = _safe_last(indicators, '4h', 'BB_Upper')
-        bb_middle = _safe_last(indicators, '4h', 'BB_Middle')
-        bb_lower = _safe_last(indicators, '4h', 'BB_Lower')
-        if bb_upper is None or bb_middle is None or bb_lower is None:
-            return 0, 0, [], 1.0, 1.0
-        bb_range = bb_upper - bb_lower
-        if bb_range <= 0:
-            return 0, 0, [], 1.0, 1.0
-        dist_to_lower = (close_4h - bb_lower) / bb_range
-        dist_to_upper = (bb_upper - close_4h) / bb_range
-        long_delta = 0
-        short_delta = 0
-        conds = []
-        if close_4h < bb_middle:
-            long_delta += 1
-            conds.append(f"BB下半区(距下轨{dist_to_lower*100:.1f}%)")
-        elif close_4h > bb_middle:
-            short_delta += 1
-            conds.append(f"BB上半区(距上轨{dist_to_upper*100:.1f}%)")
-        return long_delta, short_delta, conds, dist_to_lower, dist_to_upper
+        return _core_direction.bb_touch_votes(df_4h, indicators, entry_conditions)
 
     @staticmethod
     def _rsi_extreme_votes(indicators: Dict,
@@ -1900,56 +1553,13 @@ class BTCEthStrategy:
         返回 (多票增量, 空票增量, 命中描述列表, RSI 诊断值)。
         禁用或数据缺失时返回 0 票，诊断值取默认 0.0。
         """
-        if not entry_conditions.get('rsi_extreme', True):
-            return 0, 0, [], 0.0
-        rsi = _safe_last(indicators, '4h', 'RSI')
-        if rsi is None:
-            return 0, 0, [], 0.0
-        oversold = entry_conditions.get('rsi_oversold', 20)
-        overbought = entry_conditions.get('rsi_overbought', 80)
-        long_delta = 0
-        short_delta = 0
-        conds = []
-        if rsi < oversold:
-            long_delta += 1
-            conds.append(f"RSI超卖({rsi:.1f}<{oversold})")
-        if rsi > overbought:
-            short_delta += 1
-            conds.append(f"RSI超买({rsi:.1f}>{overbought})")
-        return long_delta, short_delta, conds, rsi
+        return _core_direction.rsi_extreme_votes(indicators, entry_conditions)
 
     @staticmethod
     def _reversal_pattern_votes(df_4h: pd.DataFrame,
                                 entry_conditions: Dict) -> Tuple[int, int, list]:
         """反转K线形态投票：看涨吞没投多、看跌吞没投空（沿用原判定，仅迁移）。"""
-        if not entry_conditions.get('reversal_pattern', True):
-            return 0, 0, []
-        if len(df_4h) < 2:
-            return 0, 0, []
-        prev_open_raw = df_4h['open'].iloc[-2]
-        prev_close_raw = df_4h['close'].iloc[-2]
-        curr_open_raw = df_4h['open'].iloc[-1]
-        curr_close_raw = df_4h['close'].iloc[-1]
-        if any(pd.isna(v) for v in (prev_open_raw, prev_close_raw, curr_open_raw, curr_close_raw)):
-            return 0, 0, []
-        prev_open = float(prev_open_raw)
-        prev_close = float(prev_close_raw)
-        curr_open = float(curr_open_raw)
-        curr_close = float(curr_close_raw)
-        long_delta = 0
-        short_delta = 0
-        conds = []
-        # 看涨吞没：前阴后阳，后实体包住前实体
-        if (prev_close < prev_open and curr_close > curr_open and
-                curr_open <= prev_close and curr_close >= prev_open):
-            long_delta += 1
-            conds.append("看涨吞没")
-        # 看跌吞没：前阳后阴，后实体包住前实体
-        if (prev_close > prev_open and curr_close < curr_open and
-                curr_open >= prev_close and curr_close <= prev_open):
-            short_delta += 1
-            conds.append("看跌吞没")
-        return long_delta, short_delta, conds
+        return _core_direction.reversal_pattern_votes(df_4h, entry_conditions)
 
     def _vote_ranging_direction(self, indicators: Dict, klines: Dict,
                                 entry_conditions: Dict) -> Tuple[Optional[str], str, list]:
@@ -1958,46 +1568,8 @@ class BTCEthStrategy:
         依次汇总 BB 触轨、RSI 极端、反转 K 线形态三项投票，多数方向获胜；
         无票或平票返回 None。
         """
-        df_4h = pd.DataFrame(klines['4h'])
-        long_votes = 0
-        short_votes = 0
-        conditions_met = []
-
-        ld, sd, conds, dist_to_lower, dist_to_upper = self._bb_touch_votes(
-            df_4h, indicators, entry_conditions)
-        long_votes += ld
-        short_votes += sd
-        conditions_met.extend(conds)
-
-        ld, sd, conds, rsi = self._rsi_extreme_votes(indicators, entry_conditions)
-        long_votes += ld
-        short_votes += sd
-        conditions_met.extend(conds)
-
-        ld, sd, conds = self._reversal_pattern_votes(df_4h, entry_conditions)
-        long_votes += ld
-        short_votes += sd
-        conditions_met.extend(conds)
-
-        if long_votes == 0 and short_votes == 0:
-            bb_info = (
-                f"BB距下轨{dist_to_lower*100:.1f}%/距上轨{dist_to_upper*100:.1f}%"
-                if entry_conditions.get('bb_touch', True) else "BB=禁用"
-            )
-            rsi_info = (
-                f"RSI={rsi:.1f}"
-                if entry_conditions.get('rsi_extreme', True) else "RSI=禁用"
-            )
-            return None, f"无震荡入场条件满足({bb_info}, {rsi_info})", conditions_met
-
-        if long_votes > short_votes:
-            direction = 'LONG'
-        elif short_votes > long_votes:
-            direction = 'SHORT'
-        else:
-            return None, f"方向不一致(long={long_votes}, short={short_votes})", conditions_met
-
-        return direction, "", conditions_met
+        return _core_direction.vote_ranging_direction(
+            indicators, klines, entry_conditions)
 
     @staticmethod
     def _check_direction_alignment(direction: str, indicators: Dict,
@@ -2007,137 +1579,37 @@ class BTCEthStrategy:
         校验日线均线排列与候选方向是否一致：多头排列禁止做空、空头排列禁止做多；
         均线缺失/NaN/粘合按 CP-2 保守拒绝（fallback_on_missing=false）。
         """
-        config = ranging_config.get('direction_alignment', {})
-        if not config.get('enabled', True):
-            return True, ""
-        fast = _safe_last(indicators, '1d', config.get('fast_ma', 'EMA21'))
-        slow = _safe_last(indicators, '1d', config.get('slow_ma', 'EMA55'))
-        if fast is None or slow is None or slow == 0:
-            if config.get('fallback_on_missing', False):
-                logger.warning("均线数据缺失，放行方向护栏")
-                return True, ""
-            return False, "方向一致性拒绝：日线均线数据缺失"
-        stick_threshold = config.get('stick_threshold_pct', 0.3)
-        if abs(fast - slow) / slow * 100 <= stick_threshold:
-            return False, "方向一致性拒绝：日线均线粘合"
-        if fast > slow and direction == 'SHORT':
-            return False, "方向一致性拒绝：多头排列禁止做空"
-        if fast < slow and direction == 'LONG':
-            return False, "方向一致性拒绝：空头排列禁止做多"
-        return True, ""
+        return _core_direction.check_direction_alignment(
+            direction, indicators, ranging_config)
 
     @staticmethod
     def _safe_last_klines_value(klines: Dict, timeframe: str, field: str) -> Optional[float]:
         """安全读取指定周期 K 线最新字段值，数据缺失/异常返回 None（v6.28 提取公共逻辑）。"""
-        tf_data = klines.get(timeframe)
-        if not tf_data:
-            return None
-        df = pd.DataFrame(tf_data)
-        if df.empty or field not in df.columns:
-            return None
-        raw = df[field].iloc[-1]
-        if pd.isna(raw):
-            return None
-        return float(raw)
+        return _core_common.safe_last_klines_value(klines, timeframe, field)
 
     @staticmethod
     def _evaluate_overheat(direction: str, indicators: Dict, klines: Dict, cfg: Dict) -> str:
         """机制②过热档位评估（供禁开与降级复用），返回 'ban'/'downgrade'/'ok'。"""
-        if not cfg:
-            return 'ok'
-        close_1d = BTCEthStrategy._safe_last_klines_value(klines, '1d', 'close')
-        if close_1d is None:
-            return 'ok'
-
-        fast = _safe_last(indicators, '1d', 'EMA21')
-        slow = _safe_last(indicators, '1d', 'EMA55')
-        rsi_4h = _safe_last(indicators, '4h', 'RSI')
-        if fast is None or slow is None or fast == 0 or slow == 0 or rsi_4h is None:
-            return 'ok'
-
-        bias_fast = (close_1d - fast) / fast * 100
-        bias_slow = (close_1d - slow) / slow * 100
-        downgrade_enabled = cfg.get('downgrade_enabled', True)
-
-        if direction == 'LONG':
-            rsi_ban = cfg['rsi_extreme_long']
-            rsi_warn = cfg['rsi_warn_long']
-            over_fast_ban = bias_fast >= cfg['bias_fast_ban_pct']
-            over_slow_ban = bias_slow >= cfg['bias_slow_ban_pct']
-            over_fast_down = bias_fast >= cfg['bias_fast_downgrade_pct']
-            over_slow_down = bias_slow >= cfg['bias_slow_downgrade_pct']
-            rsi_ban_cond = rsi_4h > rsi_ban
-            rsi_down_cond = rsi_warn < rsi_4h <= rsi_ban
-        else:  # direction == 'SHORT'
-            rsi_ban = cfg['rsi_extreme_short']
-            rsi_warn = cfg['rsi_warn_short']
-            over_fast_ban = bias_fast <= -cfg['bias_fast_ban_pct']
-            over_slow_ban = bias_slow <= -cfg['bias_slow_ban_pct']
-            over_fast_down = bias_fast <= -cfg['bias_fast_downgrade_pct']
-            over_slow_down = bias_slow <= -cfg['bias_slow_downgrade_pct']
-            rsi_ban_cond = rsi_4h < rsi_ban
-            rsi_down_cond = rsi_ban <= rsi_4h < rsi_warn
-
-        if over_fast_ban or over_slow_ban or rsi_ban_cond:
-            return 'ban'
-        if over_fast_down or over_slow_down or rsi_down_cond:
-            return 'ban' if not downgrade_enabled else 'downgrade'
-        return 'ok'
+        return _core_filters.evaluate_overheat(direction, indicators, klines, cfg)
 
     def _check_overheat_ban(self, direction: str, indicators: Dict, klines: Dict,
                             ranging_config: Dict) -> Tuple[bool, str]:
         """机制②：重度过热禁开。乖离率或 RSI 进入极值区时拒绝入场。"""
-        cfg = ranging_config.get('overheat_protection', {})
-        if not cfg.get('enabled', True):
-            return True, ""
-        if self._evaluate_overheat(direction, indicators, klines, cfg) == 'ban':
-            return False, "过热禁开：乖离率或RSI进入极值区"
-        return True, ""
+        return _core_filters.check_overheat_ban(
+            direction, indicators, klines, ranging_config)
 
     def _apply_overheat_downgrade(self, grade: str, direction: str, indicators: Dict,
                                   klines: Dict, ranging_config: Dict) -> Optional[str]:
         """机制②：轻度过热降级一档（S→A→B→C，C 再降即返回 None 禁开）。"""
-        cfg = ranging_config.get('overheat_protection', {})
-        if not cfg.get('enabled', True):
-            return grade
-        if self._evaluate_overheat(direction, indicators, klines, cfg) != 'downgrade':
-            return grade
-        idx = self._GRADE_LADDER.index(grade) if grade in self._GRADE_LADDER else None
-        if idx is None or idx + 1 >= len(self._GRADE_LADDER):
-            return None
-        new_grade = self._GRADE_LADDER[idx + 1]
-        logger.info("轻度过热，信号降一档", before=grade, after=new_grade, direction=direction)
-        return new_grade
+        return _core_filters.apply_overheat_downgrade(
+            grade, direction, indicators, klines, ranging_config)
 
     @staticmethod
     def _check_volume_confirm(direction: str, indicators: Dict, klines: Dict,
                               ranging_config: Dict) -> Tuple[bool, str]:
         """机制③a：量价确认（价格半区校验 + 缩量），数据缺失保守拒绝。"""
-        cfg = ranging_config.get('volume_confirm', {})
-        if not cfg.get('enabled', True):
-            return True, ""
-        close_4h = BTCEthStrategy._safe_last_klines_value(klines, '4h', 'close')
-        if close_4h is None:
-            return False, "量价确认拒绝：量价数据缺失"
-        volume = BTCEthStrategy._safe_last_klines_value(klines, '4h', 'volume')
-        if volume is None:
-            return False, "量价确认拒绝：量价数据缺失"
-        bb_middle = _safe_last(indicators, '4h', 'BB_Middle')
-        vol_ma = _safe_last(indicators, '4h', 'Volume_MA')
-        if bb_middle is None or vol_ma is None:
-            return False, "量价确认拒绝：量价数据缺失"
-
-        shrink_ratio = cfg.get('shrink_ratio', 1.1)  # 兜底默认值与配置一致（v6.28）
-        # v6.28 逻辑修正：价格方向确认由「穿越中轨」改为「半区校验」。
-        # 触下轨做多时价格必然在中轨下方，原要求 close > 中轨 形成逻辑死结，
-        # 现改为做多要求收盘价处于布林带下半区（接近下轨的买入区），做空反之。
-        if direction == 'LONG' and not close_4h < bb_middle:
-            return False, "量价确认拒绝：收盘价未处于布林带下半区（做多需在下半区）"
-        if direction == 'SHORT' and not close_4h > bb_middle:
-            return False, "量价确认拒绝：收盘价未处于布林带上半区（做空需在上半区）"
-        if not volume < shrink_ratio * vol_ma:
-            return False, "量价确认拒绝：成交量未缩量"
-        return True, ""
+        return _core_filters.check_volume_confirm(
+            direction, indicators, klines, ranging_config)
 
     def _check_volatility_regime(self, symbol: str, indicators: Dict,
                                  ranging_config: Dict) -> Tuple[bool, str]:
@@ -2157,19 +1629,19 @@ class BTCEthStrategy:
             logger.warning(f"{symbol} 波动数据缺失，跳过极端期检测")
             return True, ""
 
-        spike_ratio = cfg.get('spike_ratio', 2.0)
-        if atr_short / atr_long > spike_ratio:
+        # 纯比值判定转发 core（本 wrapper 只保留 per-symbol 暂停状态与日志）
+        ok, reason, ratio = _core_filters.evaluate_volatility_regime(indicators, ranging_config)
+        if not ok:
             pause_bars = cfg.get('pause_bars', 12)
             bar_hours = cfg.get('pause_interval_hours', 4)
             pause_until = now + timedelta(hours=pause_bars * bar_hours)
             self.symbol_extreme_pause_until[symbol] = pause_until
-            ratio = atr_short / atr_long
             logger.warning(
                 f"{symbol} 标记极端期，暂停震荡反转",
                 atr_short=atr_short, atr_long=atr_long, ratio=ratio,
-                spike_ratio=spike_ratio, pause_until=str(pause_until)
+                spike_ratio=cfg.get('spike_ratio', 2.0), pause_until=str(pause_until)
             )
-            return False, f"极端期：ATR短长比={ratio:.2f} 超阈值，暂停震荡反转"
+            return False, reason
         return True, ""
 
     def _check_ranging_entry(
@@ -2233,22 +1705,8 @@ class BTCEthStrategy:
         Returns:
             等级（S/A/B/C）
         """
-        thresholds = self.scoring_config['grade_thresholds']
-        
-        # 币种差异化 S 级阈值（v6.16.10）
-        if symbol and symbol in self.symbol_config:
-            s_threshold = self.symbol_config[symbol].get('s_min_score', thresholds['S'])
-        else:
-            s_threshold = thresholds['S']
-        
-        if score >= s_threshold:
-            return 'S'
-        elif score >= thresholds['A']:
-            return 'A'
-        elif score >= thresholds['B']:
-            return 'B'
-        else:
-            return 'C'
+        return _core_scoring.determine_grade(
+            score, self.scoring_config, self.symbol_config, symbol)
     
     def _get_grade_risk(self, grade: str) -> Dict:
         """根据信号等级获取对应的风险参数
@@ -2259,10 +1717,7 @@ class BTCEthStrategy:
         Returns:
             该等级的风险参数字典，若 signal_levels 不存在则返回全局 risk 配置
         """
-        signal_levels = self.risk_config.get('signal_levels')
-        if not signal_levels:
-            return self.risk_config  # 向后兼容
-        return signal_levels.get(grade, signal_levels.get('A', self.risk_config))
+        return _core_exits.get_grade_risk(grade, self.risk_config)
     
     def _determine_direction(self, indicators: Dict) -> str:
         """
@@ -2278,34 +1733,7 @@ class BTCEthStrategy:
         Returns:
             方向（LONG/SHORT）
         """
-        long_votes = 0
-        short_votes = 0
-        
-        # 检查各时间框架（从配置读取，跳过日线等不适合方向判断的时间框架）
-        direction_timeframes = [tf for tf in self.timeframes if tf in ('1h', '4h')]
-        for timeframe in direction_timeframes:
-            if timeframe in indicators:
-                ma21 = indicators[timeframe]['MA21'].iloc[-1]
-                ma55 = indicators[timeframe]['MA55'].iloc[-1]
-                macd = indicators[timeframe]['MACD'].iloc[-1]
-                
-                if pd.notna(ma21) and pd.notna(ma55):
-                    if ma21 > ma55:
-                        long_votes += 1
-                    else:
-                        short_votes += 1
-                
-                if pd.notna(macd):
-                    if macd > 0:
-                        long_votes += 1
-                    else:
-                        short_votes += 1
-        
-        # 根据投票结果决定方向
-        if long_votes > short_votes:
-            return 'LONG'
-        else:
-            return 'SHORT'
+        return _core_direction.determine_direction(indicators, self.timeframes)
     
     async def _check_prohibited_conditions(
         self, 
@@ -2320,14 +1748,10 @@ class BTCEthStrategy:
         """
         config = self.risk_config.get('prohibition', {})
         
-        # 1. 最近6h内单根1h K线涨跌幅 > 5%
-        if '1h' in klines:
-            df_1h = pd.DataFrame(klines['1h'])
-            recent_6 = df_1h.tail(6)
-            for _, row in recent_6.iterrows():
-                pct = abs((row['close'] - row['open']) / row['open'])
-                if pct > config.get('kline_spike_6h_pct', 0.05):
-                    return False, f"6h内出现单根K线涨跌幅{pct*100:.1f}% > 5%"
+        # 1. 最近6h内单根1h K线涨跌幅 > 5%（纯计算转发 core，便于回放复用）
+        spike_reason = _core_filters.check_kline_spike(klines, config)
+        if spike_reason is not None:
+            return False, spike_reason
         
         # 2. 资金费率绝对值 > 0.05%
         try:
@@ -2382,44 +1806,8 @@ class BTCEthStrategy:
             klines: K线数据
             vol_boost: 成交量要求提升比例（v6.17 混合市 +20%）
         """
-        config = self.risk_config.get('dynamic_volume', {})
-        if not config.get('enabled', True):
-            return True, ""
-        
-        # B/C 级不检查成交量
-        if grade in ('B', 'C'):
-            return True, ""
-        
-        # 获取币种配置
-        symbol_cfg = self.symbol_config.get(symbol, {})
-        vol_ratio = symbol_cfg.get('vol_ratio_base', {})
-        required_mult = vol_ratio.get(grade, 0)
-        
-        if required_mult == 0:
-            return True, ""
-        
-        # 应用市场状态成交量加成（v6.17）
-        if vol_boost > 0:
-            required_mult = required_mult * (1 + vol_boost)
-            logger.debug(f"{symbol} 成交量要求提升{vol_boost*100:.0f}%: {required_mult:.2f}x")
-        
-        # 计算当前1h成交量 / 过去20h均量
-        if '1h' not in klines:
-            return True, ""
-        
-        df_1h = pd.DataFrame(klines['1h'])
-        current_vol = float(df_1h['volume'].iloc[-1])
-        avg_vol_20h = float(df_1h['volume'].iloc[-21:-1].mean())
-        
-        if pd.isna(avg_vol_20h) or avg_vol_20h == 0:
-            return True, ""
-        
-        vol_ratio_actual = current_vol / avg_vol_20h
-        
-        if vol_ratio_actual < required_mult:
-            return False, f"成交量不足({vol_ratio_actual:.1f}x < {required_mult}x)"
-        
-        return True, ""
+        return _core_filters.check_volume_filter(
+            symbol, grade, klines, self.risk_config, self.symbol_config, vol_boost)
     
     async def _calculate_position_size(
         self,
@@ -2615,18 +2003,8 @@ class BTCEthStrategy:
         Returns:
             止盈价格
         """
-        grade_risk = self._get_grade_risk(grade)
-        partial_config = grade_risk['partial_take_profit']
-        
-        if tp_level == 1:
-            atr_multiplier = Decimal(str(partial_config['tp1_atr_multiplier']))
-        else:
-            atr_multiplier = Decimal(str(partial_config['tp2_atr_multiplier']))
-        
-        if direction == 'LONG':
-            return entry_price + atr * atr_multiplier
-        else:
-            return entry_price - atr * atr_multiplier
+        return _core_exits.calculate_tp_price(
+            entry_price, atr, direction, tp_level, grade, self.risk_config)
     
     async def _get_symbol_precision(self, symbol: str) -> Dict:
         """
@@ -3277,13 +2655,9 @@ class BTCEthStrategy:
         Returns:
             硬止损触发价（Decimal）
         """
-        grade_risk = self._get_grade_risk(position.grade)
-        stop_mult = Decimal(str(grade_risk.get('stop_loss_atr_multiplier', 1.5)))
-        entry = position.entry_price or Decimal('0')
-        atr = position.atr or Decimal('0')
-        if position.direction == 'LONG':
-            return entry - atr * stop_mult
-        return entry + atr * stop_mult
+        return _core_exits.calculate_stop_price(
+            position.direction, position.entry_price, position.atr,
+            position.grade, self.risk_config)
 
     @staticmethod
     def _apply_limit_offset(price: Decimal, offset_pct: Decimal, direction: str) -> Decimal:
@@ -3297,9 +2671,7 @@ class BTCEthStrategy:
         Returns:
             偏移后的限价
         """
-        if direction == 'LONG':
-            return price * (Decimal('1') - offset_pct)
-        return price * (Decimal('1') + offset_pct)
+        return _core_exits.apply_limit_offset(price, offset_pct, direction)
 
     async def _get_precision_params(self, symbol: str) -> Tuple[str, Decimal]:
         """获取交易对精度参数（stepSize/tickSize），失败返回默认值
@@ -4737,9 +4109,9 @@ class BTCEthStrategy:
         
         # 基于最高/最低价计算浮盈百分比（而非当前价）
         # 设计依据：用峰值计算允许回撤，才能在价格回落时锁住利润
+        if position.entry_price is None or position.entry_price <= 0:
+            return None
         if position.direction == 'LONG':
-            if position.entry_price is None or position.entry_price <= 0:
-                return None
             # 取最高价作为参考价（若无历史最高价，回退到当前价）
             reference_price = (
                 position.highest_price
@@ -4747,11 +4119,7 @@ class BTCEthStrategy:
                 else current_price
             )
             unrealized_pnl_pct = float((reference_price - position.entry_price) / position.entry_price) * 100
-            if unrealized_pnl_pct < 0:
-                unrealized_pnl_pct = 0.0  # 浮亏不计入
         else:
-            if position.entry_price is None or position.entry_price <= 0:
-                return None
             # 取最低价作为参考价（若无历史最低价，回退到当前价）
             reference_price = (
                 position.lowest_price
@@ -4760,8 +4128,8 @@ class BTCEthStrategy:
                 else current_price
             )
             unrealized_pnl_pct = float((position.entry_price - reference_price) / position.entry_price) * 100
-            if unrealized_pnl_pct < 0:
-                unrealized_pnl_pct = 0.0  # 浮亏不计入
+        if unrealized_pnl_pct < 0:
+            unrealized_pnl_pct = 0.0  # 浮亏不计入
         
         position.pending_profit_pct = unrealized_pnl_pct
         
@@ -4770,12 +4138,9 @@ class BTCEthStrategy:
         profit_activated = unrealized_pnl_pct >= min_profit
         tp1_activated = activation_config.get('also_on_tp1', True) and position.tp1_hit
         
-        if not profit_activated and not tp1_activated:
-            # 如果已激活但浮盈回落，保持激活状态不退出
-            if position.trailing_activated:
-                pass
-            else:
-                return None
+        # 已激活但浮盈回落时保持激活状态不退出
+        if not profit_activated and not tp1_activated and not position.trailing_activated:
+            return None
         
         # 标记已激活
         if not position.trailing_activated:
@@ -4791,11 +4156,12 @@ class BTCEthStrategy:
             logger.warning(f"{symbol} 动态利润保护配置错误：regression_tiers 为空")
             return None
 
-        # 保本模式：浮盈 < 1.5% 且 TP1未触发
+        # 保本模式：浮盈 < 首档 且 TP1未触发（止损取入场价，不计算波动率调节因子）
         first_tier_ceiling = float(tiers[0]['profit_ceiling'])
-        if unrealized_pnl_pct < first_tier_ceiling and not position.tp1_hit:
-            stop_price = position.entry_price
+        breakeven_floor = unrealized_pnl_pct < first_tier_ceiling and not position.tp1_hit
+        if breakeven_floor:
             position.current_tier_index = 0
+            vol_adj = 1.0
         else:
             # 确定回撤阶梯
             tier_index = -1
@@ -4805,43 +4171,28 @@ class BTCEthStrategy:
                     break
             if tier_index == -1:
                 tier_index = len(tiers) - 1
-            
             position.current_tier_index = tier_index
-            retrace_ratio = float(tiers[tier_index]['retrace_ratio'])
-            
+
             # 计算波动率调节因子
             vol_adj = await self._get_volatility_adjustment(symbol, position)
-            
-            # 计算允许回撤（基于参考价，而非当前价）
-            if position.direction == 'LONG':
-                profit_per_unit = reference_price - position.entry_price
-                allowed_retrace = profit_per_unit * Decimal(str(retrace_ratio)) * Decimal(str(vol_adj))
-                stop_price = reference_price - allowed_retrace
-            else:
-                profit_per_unit = position.entry_price - reference_price
-                allowed_retrace = profit_per_unit * Decimal(str(retrace_ratio)) * Decimal(str(vol_adj))
-                stop_price = reference_price + allowed_retrace
-        
-        # 计算硬止损价（兜底）
-        hard_stop_mult = Decimal(str(grade_risk.get('stop_loss_atr_multiplier', 1.5)))
-        if position.direction == 'LONG':
-            hard_stop_price = position.entry_price - position.atr * hard_stop_mult
-        else:
-            hard_stop_price = position.entry_price + position.atr * hard_stop_mult
-        
-        # 最终止损价：做多取MAX，做空取MIN
-        if position.direction == 'LONG':
-            final_stop = max(stop_price, hard_stop_price)
-        else:
-            final_stop = min(stop_price, hard_stop_price)
-        
-        # 单向移动保护：做多只能上移，做空只能下移
-        if position.trailing_stop_price is not None:
-            if position.direction == 'LONG' and final_stop <= position.trailing_stop_price:
-                final_stop = position.trailing_stop_price
-            elif position.direction == 'SHORT' and final_stop >= position.trailing_stop_price:
-                final_stop = position.trailing_stop_price
-        
+
+        # 最终价格公式（硬止损取更保守者 + 单向移动保护）转发 core；
+        # 激活门槛、档位索引、pending_profit_pct、trailing_activated、日志均留在本 wrapper。
+        # retrace_ratio 位置参数在 activated=True 路径由 tiers 自行推导，故传 0.0 占位。
+        final_stop = _core_exits.trailing_stop_price(
+            position.direction,
+            position.entry_price,
+            Decimal(str(reference_price)),
+            0.0,
+            vol_adj,
+            Decimal(str(grade_risk.get('stop_loss_atr_multiplier', 1.5))),
+            position.atr,
+            position.trailing_stop_price,
+            activated=True,
+            tiers=tiers,
+            breakeven_floor=breakeven_floor,
+        )
+
         position.trailing_stop_price = final_stop
         
         return final_stop
@@ -5046,47 +4397,27 @@ class BTCEthStrategy:
         """v6.27 时间平仓复核编排：数据预检 + 依序复用三机制。
 
         返回: (True, "")=该持有；(False, reason)=任一机制判定不该持有。
-        注：仅编排不重写三机制；_check_volatility_regime 首参为 symbol。
+        注：判定逻辑已等价提取到 core.filters.should_keep_position，
+        本 wrapper 只注入带 symbol 的机制③（保留 symbol_extreme_pause_until 副作用）。
         """
         ranging_config = self.risk_config.get('ranging_strategy', {})
-        try:
-            # 步骤1：数据可用性预检（任一关键指标缺失 → 保守不该持有）
-            required = [('1d', 'EMA21'), ('1d', 'EMA55'), ('4h', 'RSI'),
-                        ('4h', 'ATR'), ('4h', 'ATR_long')]
-            for timeframe, field in required:
-                if _safe_last(indicators, timeframe, field) is None:
-                    return False, f"复核数据缺失：{timeframe}.{field}，无法评估风险，保守平仓"
-            if not klines.get('1d') or not klines.get('4h'):
-                return False, "复核K线数据为空，无法评估风险，保守平仓"
 
-            # 步骤2：机制① 方向一致性对齐（持仓方向与日线排列是否仍一致）
-            ok, reason = self._check_direction_alignment(position.direction, indicators, ranging_config)
-            logger.info(f"{symbol} 时间平仓复核·机制①方向一致性", ok=ok, reason=reason,
-                        ema21=_safe_last(indicators, '1d', 'EMA21'),
-                        ema55=_safe_last(indicators, '1d', 'EMA55'))
-            if not ok:
-                return False, reason
+        def _volatility_check(ind: Dict, cfg: Dict) -> Tuple[bool, str, Optional[float]]:
+            """注入带 symbol 的机制③检查，保留 symbol_extreme_pause_until 暂停副作用。"""
+            ok, reason = self._check_volatility_regime(symbol, ind, cfg)
+            return ok, reason, None
 
-            # 步骤3：机制② 重度过热
-            ok, reason = self._check_overheat_ban(position.direction, indicators, klines, ranging_config)
-            logger.info(f"{symbol} 时间平仓复核·机制②重度过热", ok=ok, reason=reason,
-                        rsi_4h=_safe_last(indicators, '4h', 'RSI'))
-            if not ok:
-                return False, reason
-
-            # 步骤4：机制③ 波动熔断（首参 symbol，会写 symbol_extreme_pause_until，属预期）
-            ok, reason = self._check_volatility_regime(symbol, indicators, ranging_config)
-            logger.info(f"{symbol} 时间平仓复核·机制③波动熔断", ok=ok, reason=reason,
-                        atr=_safe_last(indicators, '4h', 'ATR'),
-                        atr_long=_safe_last(indicators, '4h', 'ATR_long'))
-            if not ok:
-                return False, reason
-
-            return True, ""
-        except Exception as e:
-            # 编排层兜底：任何异常 → 保守「不该持有」，不允许中断主循环
-            logger.error(f"{symbol} 时间平仓复核异常，保守平仓", error=str(e))
-            return False, f"复核异常：{e}"
+        keep, reason = _core_filters.should_keep_position(
+            position.direction, indicators, klines, self.risk_config,
+            volatility_check=_volatility_check,
+        )
+        if keep:
+            logger.info(f"{symbol} 时间平仓复核：该持有，继续持有", reason=reason,
+                        ranging_config=ranging_config)
+        else:
+            logger.info(f"{symbol} 时间平仓复核：不该持有", reason=reason,
+                        ranging_config=ranging_config)
+        return keep, reason
 
     async def _do_time_stop_close(self, symbol: str, position: PositionState,
                                   close_ratio: Decimal, reason: str,
@@ -5139,17 +4470,7 @@ class BTCEthStrategy:
         Returns:
             各时间框架技术指标字典 {timeframe: indicators}
         """
-        # v6.26：长周期ATR周期从配置读取（CP-4），生产与回测统一口径
-        atr_long_period = self.risk_config.get('ranging_strategy', {}).get(
-            'volatility_regime', {}).get('atr_long_period', 50)
-        indicators = {}
-        for timeframe, data in klines.items():
-            df = pd.DataFrame(data)
-            for col in ('open', 'high', 'low', 'close', 'volume'):
-                df[col] = pd.to_numeric(df[col], errors='coerce')
-            indicators[timeframe] = TechnicalIndicators.calculate_all(
-                df, atr_long_period=atr_long_period)
-        return indicators
+        return _core_common.build_indicators(klines, self.risk_config)
 
     async def _get_review_market_data(self, symbol: str) -> Tuple[Optional[Dict], Optional[Dict]]:
         """复核期按需拉取多周期 K 线并计算指标（v6.27，口径与 analyze 一致）。
@@ -5181,24 +4502,23 @@ class BTCEthStrategy:
         grade_risk = self._get_grade_risk(position.grade)
         time_stop_config = grade_risk['time_stop']
         max_holding_hours = time_stop_config['max_holding_hours']
+        # 复核期分支所需（core 纯决策返回 None 时才会走到，见下方）
         close_ratio = Decimal(str(time_stop_config['close_ratio']))
-        # v6.27 复核制开关与复核期上限（配置缺失默认 False/0，保证向后兼容）
         review_enabled = time_stop_config.get('review_enabled', False)
-        max_review_hours = time_stop_config.get('max_review_hours', 0)
         holding_hours = (datetime.now() - position.entry_time).total_seconds() / 3600
+
+        # 纯决策（未到期 / 到点平仓 / 复核期）转发 core
+        decision = _core_exits.time_stop_decision(holding_hours, grade_risk)
+        if decision is not None:
+            await self._do_time_stop_close(
+                symbol, position, Decimal(decision['close_ratio']),
+                reason=decision['reason'],
+                review_exhausted=decision['review_exhausted'],
+                set_tp1_hit=decision['set_tp1_hit'],
+            )
+            return
         if holding_hours < max_holding_hours:
             return  # 未到时间平仓阈值
-        # 兜底（最高优先级）：复核期耗尽，无条件强制平仓（reason 与 review_enabled=false 统一）
-        if review_enabled and holding_hours >= max_holding_hours + max_review_hours:
-            await self._do_time_stop_close(symbol, position, close_ratio,
-                                           reason="TIME_STOP", review_exhausted=True)
-            return
-
-        # review_enabled=false：完全恢复原逻辑（无条件到点平仓，置 tp1_hit 防重复）
-        if not review_enabled:
-            await self._do_time_stop_close(symbol, position, close_ratio,
-                                           reason="TIME_STOP", set_tp1_hit=True)
-            return
 
         # 进入复核期：按需拉取数据（仅复核期持仓触发，其余持仓零开销）
         indicators, klines = await self._get_review_market_data(symbol)

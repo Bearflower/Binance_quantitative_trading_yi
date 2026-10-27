@@ -1,0 +1,954 @@
+{
+  "live": {
+    "bb_touch_votes/divergence": [
+      1,
+      0,
+      [
+        "BB下半区(距下轨29.7%)"
+      ],
+      0.297448572,
+      0.702551428
+    ],
+    "bb_touch_votes/ranging": [
+      0,
+      1,
+      [
+        "BB上半区(距上轨17.5%)"
+      ],
+      0.825187574,
+      0.174812426
+    ],
+    "bb_touch_votes/trend_down": [
+      1,
+      0,
+      [
+        "BB下半区(距下轨0.9%)"
+      ],
+      0.008984256,
+      0.991015744
+    ],
+    "bb_touch_votes/trend_pullback": [
+      0,
+      1,
+      [
+        "BB上半区(距上轨49.3%)"
+      ],
+      0.507408167,
+      0.492591833
+    ],
+    "bb_touch_votes/trend_up": [
+      0,
+      1,
+      [
+        "BB上半区(距上轨19.6%)"
+      ],
+      0.804021521,
+      0.195978479
+    ],
+    "direction/divergence": "SHORT",
+    "direction/ranging": "LONG",
+    "direction/trend_down": "SHORT",
+    "direction/trend_pullback": "LONG",
+    "direction/trend_up": "LONG",
+    "direction_alignment/divergence/LONG": [
+      false,
+      "方向一致性拒绝：日线均线粘合"
+    ],
+    "direction_alignment/divergence/SHORT": [
+      false,
+      "方向一致性拒绝：日线均线粘合"
+    ],
+    "direction_alignment/ranging/LONG": [
+      false,
+      "方向一致性拒绝：日线均线粘合"
+    ],
+    "direction_alignment/ranging/SHORT": [
+      false,
+      "方向一致性拒绝：日线均线粘合"
+    ],
+    "direction_alignment/trend_down/LONG": [
+      false,
+      "方向一致性拒绝：空头排列禁止做多"
+    ],
+    "direction_alignment/trend_down/SHORT": [
+      true,
+      ""
+    ],
+    "direction_alignment/trend_pullback/LONG": [
+      true,
+      ""
+    ],
+    "direction_alignment/trend_pullback/SHORT": [
+      false,
+      "方向一致性拒绝：多头排列禁止做空"
+    ],
+    "direction_alignment/trend_up/LONG": [
+      true,
+      ""
+    ],
+    "direction_alignment/trend_up/SHORT": [
+      false,
+      "方向一致性拒绝：多头排列禁止做空"
+    ],
+    "grade/divergence/BTCUSDT": "A",
+    "grade/divergence/SOLUSDT": "A",
+    "grade/divergence/XRPUSDT": "A",
+    "grade/divergence/no_symbol": "A",
+    "grade/ranging/BTCUSDT": "A",
+    "grade/ranging/SOLUSDT": "A",
+    "grade/ranging/XRPUSDT": "A",
+    "grade/ranging/no_symbol": "A",
+    "grade/trend_down/BTCUSDT": "A",
+    "grade/trend_down/SOLUSDT": "A",
+    "grade/trend_down/XRPUSDT": "S",
+    "grade/trend_down/no_symbol": "S",
+    "grade/trend_pullback/BTCUSDT": "A",
+    "grade/trend_pullback/SOLUSDT": "A",
+    "grade/trend_pullback/XRPUSDT": "S",
+    "grade/trend_pullback/no_symbol": "S",
+    "grade/trend_up/BTCUSDT": "A",
+    "grade/trend_up/SOLUSDT": "A",
+    "grade/trend_up/XRPUSDT": "A",
+    "grade/trend_up/no_symbol": "A",
+    "grade_risk/A": {
+      "stop_mult": 1.8,
+      "tp1": 4.0,
+      "tp2": 6.0
+    },
+    "grade_risk/B": {
+      "stop_mult": 1.3,
+      "tp1": 3.0,
+      "tp2": 5.0
+    },
+    "grade_risk/C": {
+      "stop_mult": 1.1,
+      "tp1": 2.0,
+      "tp2": 3.5
+    },
+    "grade_risk/S": {
+      "stop_mult": 3.0,
+      "tp1": 6.0,
+      "tp2": 9.0
+    },
+    "indicators/divergence/1d": {
+      "ADX": 21.684473811,
+      "ATR": 1.179961571,
+      "ATR_long": 1.20929388,
+      "BB_Lower": 99.889715466,
+      "BB_Middle": 103.18640835,
+      "BB_Upper": 106.483101234,
+      "EMA21": 103.195556518,
+      "EMA55": 103.013230993,
+      "MA21": 103.150272524,
+      "MA55": 103.000607691,
+      "MACD": -0.072009763,
+      "MACD_Hist": -0.216637377,
+      "RSI": 34.26504927,
+      "Volume_MA": 2185.6818366
+    },
+    "indicators/divergence/1h": {
+      "ADX": 42.181793146,
+      "ATR": 2.028571429,
+      "ATR_long": 1.12,
+      "BB_Lower": 92.694453476,
+      "BB_Middle": 98.45,
+      "BB_Upper": 104.205546524,
+      "EMA21": 98.329151045,
+      "EMA55": 100.913004837,
+      "MA21": 98.776190476,
+      "MA55": 101.961348491,
+      "MACD": -2.022991384,
+      "MACD_Hist": -0.372913405,
+      "RSI": 34.88372093,
+      "Volume_MA": 500.0
+    },
+    "indicators/divergence/4h": {
+      "ADX": 23.587239232,
+      "ATR": 0.838099929,
+      "ATR_long": 0.8647608,
+      "BB_Lower": 100.388285511,
+      "BB_Middle": 103.0,
+      "BB_Upper": 105.611714489,
+      "EMA21": 102.729448162,
+      "EMA55": 102.89839324,
+      "MA21": 102.949618429,
+      "MA55": 102.899275818,
+      "MACD": -0.251053153,
+      "MACD_Hist": -0.196045858,
+      "RSI": 44.258291647,
+      "Volume_MA": 360.0
+    },
+    "indicators/ranging/1d": {
+      "ADX": 21.684473811,
+      "ATR": 1.179961571,
+      "ATR_long": 1.20929388,
+      "BB_Lower": 99.889715466,
+      "BB_Middle": 103.18640835,
+      "BB_Upper": 106.483101234,
+      "EMA21": 103.195556518,
+      "EMA55": 103.013230993,
+      "MA21": 103.150272524,
+      "MA55": 103.000607691,
+      "MACD": -0.072009763,
+      "MACD_Hist": -0.216637377,
+      "RSI": 34.26504927,
+      "Volume_MA": 2185.6818366
+    },
+    "indicators/ranging/1h": {
+      "ADX": 16.039730635,
+      "ATR": 0.79,
+      "ATR_long": 0.6268,
+      "BB_Lower": 102.103781573,
+      "BB_Middle": 104.005,
+      "BB_Upper": 105.906218427,
+      "EMA21": 104.044787146,
+      "EMA55": 104.023720029,
+      "MA21": 104.066666667,
+      "MA55": 103.981348491,
+      "MACD": 0.023353131,
+      "MACD_Hist": 0.025183582,
+      "RSI": 67.088607595,
+      "Volume_MA": 86.0
+    },
+    "indicators/ranging/4h": {
+      "ADX": 21.714374438,
+      "ATR": 1.152243714,
+      "ATR_long": 0.95272106,
+      "BB_Lower": 100.696497676,
+      "BB_Middle": 103.24349575,
+      "BB_Upper": 105.790493824,
+      "EMA21": 103.156366864,
+      "EMA55": 103.069880126,
+      "MA21": 103.181519143,
+      "MA55": 102.987819727,
+      "MACD": 0.102668522,
+      "MACD_Hist": 0.062528859,
+      "RSI": 57.805174946,
+      "Volume_MA": 354.48650075
+    },
+    "indicators/trend_down/1d": {
+      "ADX": 100.0,
+      "ATR": 3.68,
+      "ATR_long": 3.69945144,
+      "BB_Lower": 52.400957062,
+      "BB_Middle": 66.6389971,
+      "BB_Upper": 80.877037138,
+      "EMA21": 67.233981447,
+      "EMA55": 85.7955734,
+      "MA21": 67.27428019,
+      "MA55": 87.614180764,
+      "MACD": -8.376160148,
+      "MACD_Hist": -0.075457087,
+      "RSI": 0.0,
+      "Volume_MA": 2185.6818366
+    },
+    "indicators/trend_down/1h": {
+      "ADX": 64.832400652,
+      "ATR": 0.244593071,
+      "ATR_long": 0.2429835,
+      "BB_Lower": 132.79883408,
+      "BB_Middle": 133.41276585,
+      "BB_Upper": 134.02669762,
+      "EMA21": 133.498988241,
+      "EMA55": 134.479527196,
+      "MA21": 133.443586524,
+      "MA55": 134.475909527,
+      "MACD": -0.416583864,
+      "MACD_Hist": -0.029908397,
+      "RSI": 19.629866149,
+      "Volume_MA": 88.9445275
+    },
+    "indicators/trend_down/4h": {
+      "ADX": 100.0,
+      "ATR": 0.96,
+      "ATR_long": 0.96649436,
+      "BB_Lower": 102.684487372,
+      "BB_Middle": 106.0895899,
+      "BB_Upper": 109.494692428,
+      "EMA21": 106.294494979,
+      "EMA55": 111.354536328,
+      "MA21": 106.253400381,
+      "MA55": 111.4,
+      "MACD": -2.147589538,
+      "MACD_Hist": -0.076053721,
+      "RSI": 0.0,
+      "Volume_MA": 360.0
+    },
+    "indicators/trend_pullback/1d": {
+      "ADX": 100.0,
+      "ATR": 3.68,
+      "ATR_long": 3.66054856,
+      "BB_Lower": 159.189830428,
+      "BB_Middle": 173.4389971,
+      "BB_Upper": 187.688163772,
+      "EMA21": 172.846869554,
+      "EMA55": 154.258497321,
+      "MA21": 172.87428019,
+      "MA55": 152.414180764,
+      "MACD": 8.35521371,
+      "MACD_Hist": -0.043215758,
+      "RSI": 100.0,
+      "Volume_MA": 2185.6818366
+    },
+    "indicators/trend_pullback/1h": {
+      "ADX": 34.0078841,
+      "ATR": 1.7638425,
+      "ATR_long": 1.64015286,
+      "BB_Lower": 109.568975248,
+      "BB_Middle": 116.33219595,
+      "BB_Upper": 123.095416652,
+      "EMA21": 116.985056124,
+      "EMA55": 114.166780281,
+      "MA21": 116.26161519,
+      "MA55": 113.791127273,
+      "MACD": 1.25411847,
+      "MACD_Hist": -0.208350351,
+      "RSI": 67.885279442,
+      "Volume_MA": 88.9445275
+    },
+    "indicators/trend_pullback/4h": {
+      "ADX": 18.935251113,
+      "ATR": 0.277351429,
+      "ATR_long": 0.25317964,
+      "BB_Lower": 100.622076285,
+      "BB_Middle": 101.5463063,
+      "BB_Upper": 102.470536315,
+      "EMA21": 101.604894078,
+      "EMA55": 101.261571413,
+      "MA21": 101.549320762,
+      "MA55": 101.246078691,
+      "MACD": 0.118990104,
+      "MACD_Hist": -0.054675149,
+      "RSI": 62.677765414,
+      "Volume_MA": 360.0
+    },
+    "indicators/trend_up/1d": {
+      "ADX": 100.0,
+      "ATR": 3.68,
+      "ATR_long": 3.66054856,
+      "BB_Lower": 159.189830428,
+      "BB_Middle": 173.4389971,
+      "BB_Upper": 187.688163772,
+      "EMA21": 172.846869554,
+      "EMA55": 154.258497321,
+      "MA21": 172.87428019,
+      "MA55": 152.414180764,
+      "MACD": 8.35521371,
+      "MACD_Hist": -0.043215758,
+      "RSI": 100.0,
+      "Volume_MA": 2185.6818366
+    },
+    "indicators/trend_up/1h": {
+      "ADX": 71.508512,
+      "ATR": 0.2531645,
+      "ATR_long": 0.2453835,
+      "BB_Lower": 105.494397943,
+      "BB_Middle": 106.55276585,
+      "BB_Upper": 107.611133757,
+      "EMA21": 106.579002479,
+      "EMA55": 105.562286164,
+      "MA21": 106.523586524,
+      "MA55": 105.515909527,
+      "MACD": 0.423258135,
+      "MACD_Hist": -0.029834047,
+      "RSI": 83.403587127,
+      "Volume_MA": 88.9445275
+    },
+    "indicators/trend_up/4h": {
+      "ADX": 100.0,
+      "ATR": 0.96,
+      "ATR_long": 0.95350564,
+      "BB_Lower": 130.914729177,
+      "BB_Middle": 134.7895899,
+      "BB_Upper": 138.664450623,
+      "EMA21": 134.694505561,
+      "EMA55": 129.657839076,
+      "MA21": 134.653400381,
+      "MA55": 129.6,
+      "MACD": 2.052240966,
+      "MACD_Hist": -0.075973959,
+      "RSI": 100.0,
+      "Volume_MA": 360.0
+    },
+    "keep_position/divergence": [
+      false,
+      "方向一致性拒绝：日线均线粘合"
+    ],
+    "keep_position/ranging": [
+      false,
+      "方向一致性拒绝：日线均线粘合"
+    ],
+    "keep_position/trend_down": [
+      false,
+      "方向一致性拒绝：空头排列禁止做多"
+    ],
+    "keep_position/trend_pullback": [
+      false,
+      "过热禁开：乖离率或RSI进入极值区"
+    ],
+    "keep_position/trend_up": [
+      false,
+      "过热禁开：乖离率或RSI进入极值区"
+    ],
+    "limit_offset/LONG": "99.800",
+    "limit_offset/SHORT": "100.200",
+    "overheat/divergence/LONG": "ok",
+    "overheat/divergence/SHORT": "ok",
+    "overheat/ranging/LONG": "ok",
+    "overheat/ranging/SHORT": "ok",
+    "overheat/trend_down/LONG": "ok",
+    "overheat/trend_down/SHORT": "ban",
+    "overheat/trend_pullback/LONG": "ban",
+    "overheat/trend_pullback/SHORT": "ok",
+    "overheat/trend_up/LONG": "ban",
+    "overheat/trend_up/SHORT": "ok",
+    "overheat_ban/divergence/LONG": [
+      true,
+      ""
+    ],
+    "overheat_ban/divergence/SHORT": [
+      true,
+      ""
+    ],
+    "overheat_ban/ranging/LONG": [
+      true,
+      ""
+    ],
+    "overheat_ban/ranging/SHORT": [
+      true,
+      ""
+    ],
+    "overheat_ban/trend_down/LONG": [
+      true,
+      ""
+    ],
+    "overheat_ban/trend_down/SHORT": [
+      false,
+      "过热禁开：乖离率或RSI进入极值区"
+    ],
+    "overheat_ban/trend_pullback/LONG": [
+      false,
+      "过热禁开：乖离率或RSI进入极值区"
+    ],
+    "overheat_ban/trend_pullback/SHORT": [
+      true,
+      ""
+    ],
+    "overheat_ban/trend_up/LONG": [
+      false,
+      "过热禁开：乖离率或RSI进入极值区"
+    ],
+    "overheat_ban/trend_up/SHORT": [
+      true,
+      ""
+    ],
+    "overheat_downgrade/divergence/LONG/A": "A",
+    "overheat_downgrade/divergence/LONG/B": "B",
+    "overheat_downgrade/divergence/LONG/C": "C",
+    "overheat_downgrade/divergence/LONG/S": "S",
+    "overheat_downgrade/divergence/SHORT/A": "A",
+    "overheat_downgrade/divergence/SHORT/B": "B",
+    "overheat_downgrade/divergence/SHORT/C": "C",
+    "overheat_downgrade/divergence/SHORT/S": "S",
+    "overheat_downgrade/ranging/LONG/A": "A",
+    "overheat_downgrade/ranging/LONG/B": "B",
+    "overheat_downgrade/ranging/LONG/C": "C",
+    "overheat_downgrade/ranging/LONG/S": "S",
+    "overheat_downgrade/ranging/SHORT/A": "A",
+    "overheat_downgrade/ranging/SHORT/B": "B",
+    "overheat_downgrade/ranging/SHORT/C": "C",
+    "overheat_downgrade/ranging/SHORT/S": "S",
+    "overheat_downgrade/trend_down/LONG/A": "A",
+    "overheat_downgrade/trend_down/LONG/B": "B",
+    "overheat_downgrade/trend_down/LONG/C": "C",
+    "overheat_downgrade/trend_down/LONG/S": "S",
+    "overheat_downgrade/trend_down/SHORT/A": "A",
+    "overheat_downgrade/trend_down/SHORT/B": "B",
+    "overheat_downgrade/trend_down/SHORT/C": "C",
+    "overheat_downgrade/trend_down/SHORT/S": "S",
+    "overheat_downgrade/trend_pullback/LONG/A": "A",
+    "overheat_downgrade/trend_pullback/LONG/B": "B",
+    "overheat_downgrade/trend_pullback/LONG/C": "C",
+    "overheat_downgrade/trend_pullback/LONG/S": "S",
+    "overheat_downgrade/trend_pullback/SHORT/A": "A",
+    "overheat_downgrade/trend_pullback/SHORT/B": "B",
+    "overheat_downgrade/trend_pullback/SHORT/C": "C",
+    "overheat_downgrade/trend_pullback/SHORT/S": "S",
+    "overheat_downgrade/trend_up/LONG/A": "A",
+    "overheat_downgrade/trend_up/LONG/B": "B",
+    "overheat_downgrade/trend_up/LONG/C": "C",
+    "overheat_downgrade/trend_up/LONG/S": "S",
+    "overheat_downgrade/trend_up/SHORT/A": "A",
+    "overheat_downgrade/trend_up/SHORT/B": "B",
+    "overheat_downgrade/trend_up/SHORT/C": "C",
+    "overheat_downgrade/trend_up/SHORT/S": "S",
+    "pattern/divergence/bearish_engulfing": false,
+    "pattern/divergence/breakout_pullback": false,
+    "pattern/divergence/bullish_engulfing": false,
+    "pattern/divergence/divergence": true,
+    "pattern/ranging/bearish_engulfing": false,
+    "pattern/ranging/breakout_pullback": false,
+    "pattern/ranging/bullish_engulfing": true,
+    "pattern/ranging/divergence": false,
+    "pattern/trend_down/bearish_engulfing": false,
+    "pattern/trend_down/breakout_pullback": false,
+    "pattern/trend_down/bullish_engulfing": false,
+    "pattern/trend_down/divergence": true,
+    "pattern/trend_pullback/bearish_engulfing": false,
+    "pattern/trend_pullback/breakout_pullback": true,
+    "pattern/trend_pullback/bullish_engulfing": false,
+    "pattern/trend_pullback/divergence": false,
+    "pattern/trend_up/bearish_engulfing": false,
+    "pattern/trend_up/breakout_pullback": true,
+    "pattern/trend_up/bullish_engulfing": false,
+    "pattern/trend_up/divergence": false,
+    "prohibited/divergence": [
+      true,
+      ""
+    ],
+    "prohibited/ranging": [
+      true,
+      ""
+    ],
+    "prohibited/trend_down": [
+      true,
+      ""
+    ],
+    "prohibited/trend_pullback": [
+      true,
+      ""
+    ],
+    "prohibited/trend_up": [
+      true,
+      ""
+    ],
+    "ranging_vote/divergence": [
+      "LONG",
+      "",
+      [
+        "BB下半区(距下轨29.7%)"
+      ]
+    ],
+    "ranging_vote/ranging": [
+      null,
+      "方向不一致(long=1, short=1)",
+      [
+        "BB上半区(距上轨17.5%)",
+        "看涨吞没"
+      ]
+    ],
+    "ranging_vote/trend_down": [
+      "LONG",
+      "",
+      [
+        "BB下半区(距下轨0.9%)",
+        "RSI超卖(0.0<30)"
+      ]
+    ],
+    "ranging_vote/trend_pullback": [
+      null,
+      "方向不一致(long=1, short=1)",
+      [
+        "BB上半区(距上轨49.3%)",
+        "看涨吞没"
+      ]
+    ],
+    "ranging_vote/trend_up": [
+      "SHORT",
+      "",
+      [
+        "BB上半区(距上轨19.6%)",
+        "RSI超买(100.0>65)"
+      ]
+    ],
+    "reversal_pattern_votes/divergence": [
+      0,
+      0,
+      []
+    ],
+    "reversal_pattern_votes/ranging": [
+      1,
+      0,
+      [
+        "看涨吞没"
+      ]
+    ],
+    "reversal_pattern_votes/trend_down": [
+      0,
+      0,
+      []
+    ],
+    "reversal_pattern_votes/trend_pullback": [
+      1,
+      0,
+      [
+        "看涨吞没"
+      ]
+    ],
+    "reversal_pattern_votes/trend_up": [
+      0,
+      0,
+      []
+    ],
+    "rsi_extreme_votes/divergence": [
+      0,
+      0,
+      [],
+      44.258291647
+    ],
+    "rsi_extreme_votes/ranging": [
+      0,
+      0,
+      [],
+      57.805174946
+    ],
+    "rsi_extreme_votes/trend_down": [
+      1,
+      0,
+      [
+        "RSI超卖(0.0<30)"
+      ],
+      0.0
+    ],
+    "rsi_extreme_votes/trend_pullback": [
+      0,
+      0,
+      [],
+      62.677765414
+    ],
+    "rsi_extreme_votes/trend_up": [
+      0,
+      1,
+      [
+        "RSI超买(100.0>65)"
+      ],
+      100.0
+    ],
+    "safe_last/empty_series": null,
+    "safe_last/missing_timeframe": null,
+    "safe_last/nan_value": null,
+    "safe_last_klines/empty": null,
+    "safe_last_klines/ok": 105.4,
+    "score/divergence/momentum": 70.0,
+    "score/divergence/pattern": 80.0,
+    "score/divergence/total_ranging": 75.75,
+    "score/divergence/total_strong_trend": 73.25,
+    "score/divergence/trend": 55.0,
+    "score/ranging/momentum": 75.0,
+    "score/ranging/pattern": 70.0,
+    "score/ranging/total_ranging": 75.5,
+    "score/ranging/total_strong_trend": 77.0,
+    "score/ranging/trend": 85.0,
+    "score/trend_down/momentum": 85.0,
+    "score/trend_down/pattern": 80.0,
+    "score/trend_down/total_ranging": 79.75,
+    "score/trend_down/total_strong_trend": 78.75,
+    "score/trend_down/trend": 70.0,
+    "score/trend_pullback/momentum": 55.0,
+    "score/trend_pullback/pattern": 75.0,
+    "score/trend_pullback/total_ranging": 75.75,
+    "score/trend_pullback/total_strong_trend": 78.25,
+    "score/trend_pullback/trend": 100,
+    "score/trend_up/momentum": 30.0,
+    "score/trend_up/pattern": 75.0,
+    "score/trend_up/total_ranging": 67.5,
+    "score/trend_up/total_strong_trend": 70.0,
+    "score/trend_up/trend": 100,
+    "stop/A/LONG": "97.750",
+    "stop/A/SHORT": "102.250",
+    "stop/B/LONG": "98.375",
+    "stop/B/SHORT": "101.625",
+    "stop/C/LONG": "98.625",
+    "stop/C/SHORT": "101.375",
+    "stop/S/LONG": "96.250",
+    "stop/S/SHORT": "103.750",
+    "time_stop/A/0.0": null,
+    "time_stop/A/120.0": {
+      "action": "close",
+      "close_ratio": "0.5",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/A/200.0": {
+      "action": "close",
+      "close_ratio": "0.5",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/A/50.0": null,
+    "time_stop/A/95.0": null,
+    "time_stop/A/96.0": {
+      "action": "close",
+      "close_ratio": "0.5",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/B/0.0": null,
+    "time_stop/B/120.0": {
+      "action": "close",
+      "close_ratio": "0.6",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/B/200.0": {
+      "action": "close",
+      "close_ratio": "0.6",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/B/50.0": null,
+    "time_stop/B/95.0": {
+      "action": "close",
+      "close_ratio": "0.6",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/B/96.0": {
+      "action": "close",
+      "close_ratio": "0.6",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/C/0.0": null,
+    "time_stop/C/120.0": {
+      "action": "close",
+      "close_ratio": "0.8",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/C/200.0": {
+      "action": "close",
+      "close_ratio": "0.8",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/C/50.0": {
+      "action": "close",
+      "close_ratio": "0.8",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/C/95.0": {
+      "action": "close",
+      "close_ratio": "0.8",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/C/96.0": {
+      "action": "close",
+      "close_ratio": "0.8",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/S/0.0": null,
+    "time_stop/S/120.0": {
+      "action": "close",
+      "close_ratio": "0.5",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/S/200.0": {
+      "action": "close",
+      "close_ratio": "0.5",
+      "reason": "TIME_STOP",
+      "review_exhausted": false,
+      "set_tp1_hit": true
+    },
+    "time_stop/S/50.0": null,
+    "time_stop/S/95.0": null,
+    "time_stop/S/96.0": null,
+    "tp/A/LONG/1": "105.000",
+    "tp/A/LONG/2": "107.500",
+    "tp/A/SHORT/1": "95.000",
+    "tp/A/SHORT/2": "92.500",
+    "tp/B/LONG/1": "103.750",
+    "tp/B/LONG/2": "106.250",
+    "tp/B/SHORT/1": "96.250",
+    "tp/B/SHORT/2": "93.750",
+    "tp/C/LONG/1": "102.500",
+    "tp/C/LONG/2": "104.375",
+    "tp/C/SHORT/1": "97.500",
+    "tp/C/SHORT/2": "95.625",
+    "tp/S/LONG/1": "107.500",
+    "tp/S/LONG/2": "111.250",
+    "tp/S/SHORT/1": "92.500",
+    "tp/S/SHORT/2": "88.750",
+    "trailing/0": null,
+    "trailing/1": "101.60000",
+    "trailing/2": "98.75000",
+    "trailing/3": "98.10",
+    "trend_filter/divergence": [
+      true,
+      "SHORT"
+    ],
+    "trend_filter/ranging": [
+      false,
+      "1h收盘价未跌破EMA21"
+    ],
+    "trend_filter/trend_down": [
+      false,
+      "4h价格距EMA21过远(3.51 > 1.44)"
+    ],
+    "trend_filter/trend_pullback": [
+      true,
+      "LONG"
+    ],
+    "trend_filter/trend_up": [
+      false,
+      "4h价格距EMA21过远(2.49 > 1.44)"
+    ],
+    "vol_regime/divergence": [
+      true,
+      ""
+    ],
+    "vol_regime/ranging": [
+      true,
+      ""
+    ],
+    "vol_regime/trend_down": [
+      true,
+      ""
+    ],
+    "vol_regime/trend_pullback": [
+      true,
+      ""
+    ],
+    "vol_regime/trend_up": [
+      true,
+      ""
+    ],
+    "volume_confirm/divergence/LONG": [
+      true,
+      ""
+    ],
+    "volume_confirm/divergence/SHORT": [
+      false,
+      "量价确认拒绝：收盘价未处于布林带上半区（做空需在上半区）"
+    ],
+    "volume_confirm/ranging/LONG": [
+      false,
+      "量价确认拒绝：收盘价未处于布林带下半区（做多需在下半区）"
+    ],
+    "volume_confirm/ranging/SHORT": [
+      true,
+      ""
+    ],
+    "volume_confirm/trend_down/LONG": [
+      true,
+      ""
+    ],
+    "volume_confirm/trend_down/SHORT": [
+      false,
+      "量价确认拒绝：收盘价未处于布林带上半区（做空需在上半区）"
+    ],
+    "volume_confirm/trend_pullback/LONG": [
+      false,
+      "量价确认拒绝：收盘价未处于布林带下半区（做多需在下半区）"
+    ],
+    "volume_confirm/trend_pullback/SHORT": [
+      true,
+      ""
+    ],
+    "volume_confirm/trend_up/LONG": [
+      false,
+      "量价确认拒绝：收盘价未处于布林带下半区（做多需在下半区）"
+    ],
+    "volume_confirm/trend_up/SHORT": [
+      true,
+      ""
+    ],
+    "volume_filter/divergence/A": [
+      true,
+      ""
+    ],
+    "volume_filter/divergence/B": [
+      true,
+      ""
+    ],
+    "volume_filter/divergence/C": [
+      true,
+      ""
+    ],
+    "volume_filter/divergence/S": [
+      false,
+      "成交量不足(1.0x < 3.0x)"
+    ],
+    "volume_filter/ranging/A": [
+      true,
+      ""
+    ],
+    "volume_filter/ranging/B": [
+      true,
+      ""
+    ],
+    "volume_filter/ranging/C": [
+      true,
+      ""
+    ],
+    "volume_filter/ranging/S": [
+      false,
+      "成交量不足(0.7x < 3.0x)"
+    ],
+    "volume_filter/trend_down/A": [
+      true,
+      ""
+    ],
+    "volume_filter/trend_down/B": [
+      true,
+      ""
+    ],
+    "volume_filter/trend_down/C": [
+      true,
+      ""
+    ],
+    "volume_filter/trend_down/S": [
+      false,
+      "成交量不足(1.0x < 3.0x)"
+    ],
+    "volume_filter/trend_pullback/A": [
+      true,
+      ""
+    ],
+    "volume_filter/trend_pullback/B": [
+      true,
+      ""
+    ],
+    "volume_filter/trend_pullback/C": [
+      true,
+      ""
+    ],
+    "volume_filter/trend_pullback/S": [
+      false,
+      "成交量不足(1.0x < 3.0x)"
+    ],
+    "volume_filter/trend_up/A": [
+      true,
+      ""
+    ],
+    "volume_filter/trend_up/B": [
+      true,
+      ""
+    ],
+    "volume_filter/trend_up/C": [
+      true,
+      ""
+    ],
+    "volume_filter/trend_up/S": [
+      false,
+      "成交量不足(1.0x < 3.0x)"
+    ]
+  }
+}

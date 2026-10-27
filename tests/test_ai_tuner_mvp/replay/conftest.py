@@ -219,7 +219,7 @@ class ScriptedAdapter:
             return ()
         return tuple(self._script(self.seen_bars[-1], ctx))
 
-    def protective_prices(self, position):
+    def protective_prices(self, symbol):
         return {}
 
 

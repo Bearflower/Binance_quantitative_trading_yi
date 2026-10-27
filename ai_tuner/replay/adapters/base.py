@@ -66,6 +66,6 @@ class ReplayAdapter(Protocol):
         """从当前指标状态产出意图（确定性序）。"""
         ...
 
-    def protective_prices(self, position: Any) -> Optional[dict]:
-        """持仓开仓后返回止损/止盈价格（由 core/exits 计算）。"""
+    def protective_prices(self, symbol: str) -> Optional[dict]:
+        """该 symbol 有持仓时返回止损/止盈价格（由 core/exits 计算，engine 传入 symbol）。"""
         ...
