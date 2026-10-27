@@ -125,7 +125,7 @@ class TestProtectionOwnershipCheck:
         with patch(
             "strategies.btc_eth.strategy.resolve_position_owner",
             new=AsyncMock(return_value="MTPCS策略"),
-        ), patch(
+        ) as owner_mock, patch(
             "strategies.btc_eth.strategy.BTCEthStrategy._get_current_price",
             new=AsyncMock(return_value=None),
         ) as m_price:
@@ -134,6 +134,7 @@ class TestProtectionOwnershipCheck:
             )
         # 归属为自己 => 继续原逻辑（走到了取价步骤）
         m_price.assert_awaited_once_with("SOLUSDT")
+        owner_mock.assert_awaited_once_with(s.db_manager, "SOLUSDT", status_filter=False)
         s.notification.send.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -431,7 +432,7 @@ class TestAggressiveSymmetry:
         with patch(
             "strategies.btc_eth_aggressive.strategy.resolve_position_owner",
             new=AsyncMock(return_value="MTPCS激进策略"),
-        ), patch(
+        ) as owner_mock, patch(
             "strategies.btc_eth_aggressive.strategy.BTCEthStrategy._get_current_price",
             new=AsyncMock(return_value=None),
         ) as m_price:
@@ -439,6 +440,7 @@ class TestAggressiveSymmetry:
                 pos_data, {"SOLUSDT"}, {}, None, None, None
             )
         m_price.assert_awaited_once_with("SOLUSDT")
+        owner_mock.assert_awaited_once_with(s.db_manager, "SOLUSDT", status_filter=False)
         s.notification.send.assert_not_awaited()
 
     @pytest.mark.asyncio

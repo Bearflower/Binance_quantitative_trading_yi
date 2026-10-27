@@ -6014,7 +6014,7 @@ class BTCEthStrategy:
             return
 
         # 持仓归属校验（方案C）：不为对家策略开的仓位补挂保护单
-        owner = await resolve_position_owner(self.db_manager, symbol)
+        owner = await resolve_position_owner(self.db_manager, symbol, status_filter=False)
         if owner is None or owner != self.my_record_name:
             reason = "无法判定归属" if owner is None else f"归属{owner}"
             logger.warning(
