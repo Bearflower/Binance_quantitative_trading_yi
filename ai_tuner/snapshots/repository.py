@@ -151,14 +151,16 @@ class SnapshotRepository:
             )
             memberships.append(membership)
         if symbols:
+            # 关于参数显式类型转换（::varchar(64)/::timestamptz/::char(64) 等）：
+            # strategy_id/source_run_id 在目标列是 varchar，而下方 WHERE 中的
+            # "= $1" 会按 texteq 操作符把参数推定为 text；同一参数先后被推定为
+            # text 与 varchar 会触发
+            # "inconsistent types deduced for parameter $1: text versus character varying"。
+            # 因此 SELECT 列表里对涉及 WHERE 等值比较的参数一律显式 :: 转换。
             queries.append((
                 """
                 INSERT INTO public.ai_tuner_universe_snapshots
                     (strategy_id, observed_at, symbol, membership, source_run_id, config_hash)
-                -- 参数必须显式转换为目标列类型：strategy_id/source_run_id 为 varchar，
-                -- 而下方 WHERE 中的 "= $1" 会按 texteq 操作符把参数推定为 text；
-                -- 同一参数先后被推定为 text 与 varchar 会触发
-                -- "inconsistent types deduced for parameter $1: text versus character varying"。
                 SELECT $1::varchar(64), $2::timestamptz, members.symbol, members.membership,
                        $5::varchar(128), $6::char(64)
                 FROM UNNEST($3::text[], $4::text[]) AS members(symbol, membership)
