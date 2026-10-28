@@ -1431,7 +1431,7 @@ Expected: 三条命令均退出 0。
 
 ```bash
 python3 -m pytest tests/test_strategies/test_xau_calibrated_profile.py \
-  -k differs_from_original_only_by_whitelist -q
+  -k calibrated_profile_only_differs_from_original_on_allowlist -q
 git diff -- strategies/btc_eth/shadow/config/xau_original.yaml \
   strategies/btc_eth/shadow/config/xau_calibrated.yaml
 ```
