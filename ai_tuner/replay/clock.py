@@ -7,18 +7,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Tuple
 
 BAR_CLOSE = "bar_close"
 FUNDING = "funding_settlement"
 SNAPSHOT = "external_snapshot"
+DAILY_MARK = "daily_mark"
 
-# 同一时刻的事件处理次序（数字小者先）：资金费先计提，再喂外部快照，最后推进 K 线。
+# 同一时刻的事件处理次序（数字小者先）：资金费、外部快照、K 线、日界线盯市。
 EVENT_PRIORITY: Dict[str, int] = {
     FUNDING: 0,
     SNAPSHOT: 1,
     BAR_CLOSE: 2,
+    DAILY_MARK: 3,
 }
 
 
@@ -104,4 +106,19 @@ def collect_snapshot_events(snapshots: Iterable[Any]) -> List[Event]:
                 payload=snap,
             )
         )
+    return events
+
+
+def collect_daily_mark_events(window_start: datetime, as_of: datetime) -> List[Event]:
+    """Generate each UTC midnight strictly after the start through the cutoff."""
+    utc_start = window_start.astimezone(timezone.utc)
+    midnight = utc_start.replace(hour=0, minute=0, second=0, microsecond=0)
+    if midnight <= utc_start:
+        midnight += timedelta(days=1)
+    events: List[Event] = []
+    while midnight <= as_of:
+        events.append(
+            Event(time=midnight, kind=DAILY_MARK, subject="", seq=len(events), payload=None)
+        )
+        midnight += timedelta(days=1)
     return events

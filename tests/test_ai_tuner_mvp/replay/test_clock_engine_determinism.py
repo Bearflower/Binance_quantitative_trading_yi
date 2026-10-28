@@ -5,10 +5,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
+import pytest
+
+from ai_tuner.replay import clock
 from ai_tuner.replay.broker import SymbolFilters, VirtualBroker
 from ai_tuner.replay.data_portal import DataPortal
 from ai_tuner.replay.engine import run_replay
-from ai_tuner.replay.models import ConfigHashes, OrderIntent, UniverseSlice
+from ai_tuner.replay.models import ConfigHashes, DataBlocked, OrderIntent, Position, UniverseSlice
 
 from .conftest import ScriptedAdapter, make_bars, write_snapshot
 
@@ -132,3 +135,119 @@ def test_final_position_is_reported_when_never_closed(tmp_path):
     assert result.final_position is not None
     assert result.final_position.symbol == "BTCUSDT"
     assert result.closed_trades == ()
+
+
+def _window_portal(tmp_path, start, as_of, bars_by_key, symbols, funding=None):
+    directory = str(tmp_path / "window_snapshot")
+    write_snapshot(
+        directory, "fixture", as_of, start, bars_by_key, symbols, ["1h"],
+        funding_by_symbol=funding,
+    )
+    return DataPortal(directory, "fixture", as_of, start)
+
+
+def _cash_adapter(start, as_of, symbols):
+    universe = UniverseSlice(
+        strategy_id="fixture", valid_from=start, valid_to=as_of + timedelta(days=1),
+        symbols=tuple(symbols), intervals=("1h",), source="strategy_config",
+        config_hash="a" * 64,
+    )
+    return ScriptedAdapter(universe, _config_hashes(), lambda bar, ctx: ())
+
+
+def _open_position(symbol, start):
+    return Position(
+        position_id=symbol, symbol=symbol, direction="LONG",
+        entry_price=Decimal("100"), entry_quantity=Decimal("1"),
+        current_quantity=Decimal("1"), atr=Decimal("0"), grade="A",
+        entry_time=start,
+    )
+
+
+def test_same_timestamp_equity_uses_both_symbols_closing_prices(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=1)
+    portal = _window_portal(
+        tmp_path, start, as_of,
+        {
+            "BTCUSDT|1h": make_bars("BTCUSDT", "1h", start, [("100", "110", "90", "110")]),
+            "ETHUSDT|1h": make_bars("ETHUSDT", "1h", start, [("100", "120", "80", "120")]),
+        },
+        ["BTCUSDT", "ETHUSDT"],
+    )
+    broker = _broker()
+    broker.positions = {symbol: _open_position(symbol, start) for symbol in ("BTCUSDT", "ETHUSDT")}
+    broker.last_prices = {symbol: Decimal("100") for symbol in broker.positions}
+
+    result = run_replay(portal, _cash_adapter(start, as_of, broker.positions), broker)
+
+    assert result.equity_curve[-1].marked_equity == Decimal("10030")
+
+
+def test_funding_only_timestamp_has_equity_point(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=3)
+    bars = make_bars("BTCUSDT", "1h", start, [("100", "100", "100", "100")], step_minutes=180)
+    funding_time = start + timedelta(hours=2)
+    portal = _window_portal(
+        tmp_path, start, as_of, {"BTCUSDT|1h": bars}, ["BTCUSDT"],
+        {"BTCUSDT": [(funding_time, "0.01")]},
+    )
+    broker = _broker()
+    broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
+    broker.last_prices["BTCUSDT"] = Decimal("100")
+
+    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker)
+
+    assert funding_time in [point.ts for point in result.equity_curve]
+    funding_point = next(point for point in result.equity_curve if point.ts == funding_time)
+    assert funding_point.marked_equity != Decimal("10000")
+
+
+def test_daily_mark_events_cover_each_utc_midnight_inside_window():
+    start = datetime(2026, 10, 21, 12, tzinfo=UTC)
+    end = datetime(2026, 10, 24, 0, tzinfo=UTC)
+    events = clock.collect_daily_mark_events(start, end)
+
+    assert [event.time for event in events] == [
+        datetime(2026, 10, day, tzinfo=UTC) for day in (22, 23, 24)
+    ]
+    assert all(event.kind == clock.DAILY_MARK for event in events)
+
+
+def test_cash_only_window_marks_midnight_without_bar_close(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = datetime(2026, 10, 23, 4, tzinfo=UTC)
+    bars = make_bars("BTCUSDT", "1h", start, [("100", "100", "100", "100")])
+    portal = _window_portal(tmp_path, start, as_of, {"BTCUSDT|1h": bars}, ["BTCUSDT"])
+
+    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), _broker())
+
+    assert [point.ts for point in result.equity_curve if point.ts.hour == 0] == [
+        datetime(2026, 10, 22, tzinfo=UTC), datetime(2026, 10, 23, tzinfo=UTC)
+    ]
+    assert all(point.marked_equity == Decimal("10000") for point in result.equity_curve)
+
+
+def test_open_position_without_midnight_close_blocks_daily_mark(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = datetime(2026, 10, 22, 4, tzinfo=UTC)
+    bars = make_bars("BTCUSDT", "1h", start, [("100", "100", "100", "100")])
+    portal = _window_portal(tmp_path, start, as_of, {"BTCUSDT|1h": bars}, ["BTCUSDT"])
+    broker = _broker()
+    broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
+
+    with pytest.raises(DataBlocked) as error:
+        run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker)
+
+    assert error.value.gaps == ("daily_equity_gap:BTCUSDT:2026-10-22T00:00:00Z",)
+
+
+def test_equity_has_single_initial_and_final_point(tmp_path):
+    result = _run(_portal(tmp_path))
+    timestamps = [point.ts for point in result.equity_curve]
+
+    assert timestamps[0] == WINDOW_START
+    assert result.equity_curve[0].marked_equity == Decimal("10000")
+    assert timestamps[-1] == AS_OF
+    assert len(timestamps) == len(set(timestamps))

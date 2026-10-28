@@ -3,7 +3,7 @@
 推进顺序（契约 §1.1 / §6）：
 1. ``adapter.prepare`` 校验必需数据（缺 → DataBlocked）；
 2. 由快照生成确定性事件序列（资金费 → 外部快照 → K 线收盘）；
-3. 逐事件推进：Broker 撮合 → 记录盯市权益 → 适配器更新状态 → 产出意图 → Broker 排队；
+3. 逐事件推进 Broker 与适配器；同一时刻全部事件完成后记录一次盯市权益；
 4. 汇总 ReplayResult 与 audit trail（按 (ts, seq) 固定）。
 
 本模块不 import ``backtest.*``，不重算策略评分（评分由适配器提供）。
@@ -13,16 +13,19 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from itertools import groupby
 from typing import Any, Dict, List, Optional, Tuple
 
 from .broker import VirtualBroker
 from .clock import (
     BAR_CLOSE,
+    DAILY_MARK,
     FUNDING,
     SNAPSHOT,
     Event,
     build_schedule,
     collect_bar_events,
+    collect_daily_mark_events,
     collect_funding_events,
     collect_snapshot_events,
 )
@@ -73,6 +76,7 @@ def run_replay(
     events.extend(collect_funding_events(funding_by_symbol))
     if snapshots:
         events.extend(collect_snapshot_events(snapshots))
+    events.extend(collect_daily_mark_events(portal.window_start, portal.as_of))
     schedule = build_schedule(events)
 
     audit: List[Dict[str, Any]] = [
@@ -89,29 +93,39 @@ def run_replay(
             },
         }
     ]
-    equity: Dict[datetime, EquityPoint] = {}
+    equity: Dict[datetime, EquityPoint] = {portal.window_start: broker.mark(portal.window_start)}
+    last_bar_close: Dict[str, datetime] = {}
 
-    for event in schedule:
-        if event.kind == FUNDING:
-            broker.settle_funding(event.subject, event.payload, event.time)
-        elif event.kind == SNAPSHOT:
-            ctx.portfolio = broker.view()
-            adapter.on_snapshot(event.payload, ctx)
-        elif event.kind == BAR_CLOSE:
-            bar = event.payload
-            broker.on_bar(bar.symbol, bar, bar.close_time)
-            if bar.close_time not in equity:
-                equity[bar.close_time] = broker.mark(bar.close_time)
-            ctx.portfolio = broker.view()
-            adapter.on_bar(bar, ctx)
-            intents = adapter.intents(ctx)
-            if intents:
-                broker.submit(intents, bar, bar.close_time)
-            _apply_protective_prices(broker, adapter, bar.symbol)
-        _drain_broker_audit(broker, audit, event.time)
+    for timestamp, simultaneous_events in groupby(schedule, key=lambda event: event.time):
+        for event in simultaneous_events:
+            if event.kind == FUNDING:
+                broker.settle_funding(event.subject, event.payload, event.time)
+            elif event.kind == SNAPSHOT:
+                ctx.portfolio = broker.view()
+                adapter.on_snapshot(event.payload, ctx)
+            elif event.kind == BAR_CLOSE:
+                bar = event.payload
+                broker.on_bar(bar.symbol, bar, bar.close_time)
+                last_bar_close[bar.symbol] = bar.close_time
+                ctx.portfolio = broker.view()
+                adapter.on_bar(bar, ctx)
+                intents = adapter.intents(ctx)
+                if intents:
+                    broker.submit(intents, bar, bar.close_time)
+                _apply_protective_prices(broker, adapter, bar.symbol)
+            elif event.kind == DAILY_MARK:
+                missing = [
+                    "daily_equity_gap:{0}:{1}".format(symbol, to_utc_z(timestamp))
+                    for symbol in sorted(broker.positions)
+                    if broker.positions[symbol].is_open()
+                    and last_bar_close.get(symbol) != timestamp
+                ]
+                if missing:
+                    raise DataBlocked(missing)
+            _drain_broker_audit(broker, audit, event.time)
+        equity[timestamp] = broker.mark(timestamp)
 
-    if portal.as_of not in equity:
-        equity[portal.as_of] = broker.mark(portal.as_of)
+    equity[portal.as_of] = broker.mark(portal.as_of)
 
     return ReplayResult(
         manifest_ref=portal.manifest_sha256,
