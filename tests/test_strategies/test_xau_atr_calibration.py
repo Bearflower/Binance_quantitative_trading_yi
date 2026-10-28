@@ -138,9 +138,14 @@ def test_runtime_history_excludes_current_bar_and_future_bars():
 
     included = pd.DataFrame(_rows())
     expected_atr = TechnicalIndicators.calculate_atr(included, period=14).iloc[:-1]
-    expected_count = int((expected_atr.notna() & (expected_atr > 0)).sum())
-    assert len(atr_values) == len(closes) == expected_count == 46
-    assert all(value > 0 for value in atr_values)
+    expected_mask = expected_atr.notna() & (expected_atr > 0)
+    expected_atr_values = expected_atr.loc[expected_mask].astype(float).tolist()
+    expected_closes = (
+        included.iloc[:-1].loc[expected_mask, "close"].astype(float).tolist()
+    )
+    assert len(atr_values) == len(closes) == 46
+    assert atr_values == pytest.approx(expected_atr_values)
+    assert closes == pytest.approx(expected_closes)
 
 
 def test_build_calibration_fails_closed_when_too_few_rows():
@@ -174,3 +179,65 @@ def test_trade_count_compatibility_gaps_and_non_finite_input():
         }
     ]
     assert result.snapshot_rows[0]["trades"] == 50
+
+
+def test_invalid_interval_and_non_monotonic_open_time_are_excluded_deterministically():
+    rows = _rows()
+    invalid_close_time = rows[20]["close_time"] - 1_800_000
+    non_monotonic_open = dict(
+        rows[20],
+        open_time=rows[0]["open_time"],
+        close_time=invalid_close_time,
+    )
+    short_close_time = rows[40]["close_time"] + 1_800_000
+    short_interval = dict(
+        rows[40],
+        open_time=short_close_time - 1_799_999,
+        close_time=short_close_time,
+    )
+
+    forward = build_calibration(
+        [*rows, non_monotonic_open, short_interval],
+        cutoff_ms=rows[-1]["close_time"],
+    )
+    reverse = build_calibration(
+        [short_interval, non_monotonic_open, *reversed(rows)],
+        cutoff_ms=rows[-1]["close_time"],
+    )
+
+    assert forward.exclusions == reverse.exclusions == {"invalid_interval": 2}
+    assert forward.snapshot_rows == reverse.snapshot_rows
+    assert all(
+        current["open_time"] > previous["open_time"]
+        for previous, current in zip(
+            forward.snapshot_rows, forward.snapshot_rows[1:]
+        )
+    )
+    assert all(
+        row["close_time"] - row["open_time"] == 3_599_999
+        for row in forward.snapshot_rows
+    )
+
+
+def test_result_evidence_is_not_shared_with_input_or_manifest():
+    rows = _rows()
+    result = build_calibration(rows, cutoff_ms=rows[-1]["close_time"])
+    first_snapshot_open = result.snapshot_rows[0]["open"]
+    rows[0]["open"] = -1
+
+    manifest = result.to_manifest(
+        source="kline-service-postgres",
+        git_commit="abc123",
+        snapshot_sha256=result.snapshot_sha256,
+        generated_at="2026-10-27T08:00:00+00:00",
+    )
+    manifest["exclusions"]["mutated"] = 1
+    manifest["gaps"].append(
+        {"previous_close_time": 1, "next_close_time": 2, "delta_ms": 1}
+    )
+    manifest["calibration"]["p50_percent"] = -1
+
+    assert result.snapshot_rows[0]["open"] == first_snapshot_open
+    assert "mutated" not in result.exclusions
+    assert result.gaps == []
+    assert result.p50_percent > 0

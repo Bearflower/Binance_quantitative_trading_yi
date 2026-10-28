@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import math
@@ -58,8 +59,8 @@ class CalibrationResult:
             "source_rows": self.source_rows,
             "valid_rows": self.valid_rows,
             "atr_sample_count": self.atr_sample_count,
-            "exclusions": self.exclusions,
-            "gaps": self.gaps,
+            "exclusions": copy.deepcopy(self.exclusions),
+            "gaps": copy.deepcopy(self.gaps),
             "snapshot_sha256": snapshot_sha256,
             "git_commit": git_commit,
             "calibration": {
@@ -178,6 +179,9 @@ def _normalize_rows(
         if close_time > cutoff_ms or close_time <= open_time:
             _increment(exclusions, "future_or_open")
             continue
+        if close_time - open_time != _ONE_HOUR_MS - 1:
+            _increment(exclusions, "invalid_interval")
+            continue
         if close_time in accepted:
             _increment(exclusions, "duplicate_close_time")
             continue
@@ -202,6 +206,11 @@ def _normalize_rows(
         accepted[close_time] = candidate
 
     normalized = [accepted[close_time] for close_time in sorted(accepted)]
+    if any(
+        current["open_time"] <= previous["open_time"]
+        for previous, current in zip(normalized, normalized[1:])
+    ):
+        raise CalibrationError("open_time_not_strictly_increasing")
     gaps: List[Dict[str, int]] = []
     for previous, current in zip(normalized, normalized[1:]):
         delta = current["close_time"] - previous["close_time"]
