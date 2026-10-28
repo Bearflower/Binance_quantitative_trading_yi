@@ -78,6 +78,11 @@ deploy       # SSH 服务器 pull + up（幂等）：残留容器清理只移除
 | `SERVER_SSH_KEY` | 服务器 only.pem 的完整内容 | Actions SSH 服务器认证 |
 | `GHCR_PULL_TOKEN` | GitHub PAT（read:packages） | 服务器 pull GHCR 私有镜像认证 |
 
+`GHCR_PULL_TOKEN` 只允许由 Actions masked environment 经 SSH stdin 传给远端
+`docker login --password-stdin`；禁止 sed 进部署脚本或上传到临时文件。远端部署脚本使用
+`/root/trading_system/.deploy_tmp/deploy-<run_id>-<run_attempt>.sh`，目录和脚本权限均为
+`0700`，执行成功或失败都由 EXIT trap 清理并保留原退出码。
+
 ### 2.4 GHCR 镜像命名规范
 
 ```

@@ -270,6 +270,8 @@ jobs:
     needs: [detect, build-all]
     if: always() && needs.detect.result == 'success' && (needs.build-all.result == 'success' || needs.build-all.result == 'skipped' || needs.build-all.result == 'cancelled')
     runs-on: ubuntu-latest
+    env:
+      REMOTE_DEPLOY_SCRIPT: /root/trading_system/.deploy_tmp/deploy-${{ github.run_id }}-${{ github.run_attempt }}.sh
 
     steps:
       - uses: actions/checkout@v4
@@ -332,6 +334,28 @@ jobs:
           }
           RETRY_SH
 
+      - name: 🔐 远端登录 GHCR
+        env:
+          GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}
+        run: |
+          set -o pipefail
+          for i in 1 2 3; do
+            rc=0
+            printf '%s' "$GHCR_PULL_TOKEN" | ssh 43.156.242.184 \
+              "docker login ghcr.io -u bearflower --password-stdin" || rc=$?
+            if [ "$rc" -eq 0 ]; then
+              exit 0
+            fi
+            if [ "$rc" -ne 255 ]; then
+              echo "❌ GHCR 登录失败（exit ${rc}），不重试"
+              exit "$rc"
+            fi
+            echo "⚠️ GHCR 登录连接失败（exit 255），第 ${i}/3 次，15s 后重试..."
+            sleep 15
+          done
+          echo "❌ GHCR 登录连接重试 3 次仍失败"
+          exit 255
+
       - name: 📤 上传 docker-compose.yml（scp）
         run: |
           source /tmp/ci_retry.sh
@@ -355,7 +379,9 @@ jobs:
 
       - name: 🚀 生成并上传远程部署脚本
         run: |
-          cat > /tmp/deploy.sh << 'REMOTE_SCRIPT'
+          LOCAL_DEPLOY_SCRIPT="${RUNNER_TEMP}/deploy-${{ github.run_id }}-${{ github.run_attempt }}.sh"
+          trap 'rm -f "$LOCAL_DEPLOY_SCRIPT"' EXIT
+          cat > "$LOCAL_DEPLOY_SCRIPT" << 'REMOTE_SCRIPT'
             set -e
             cd /root/trading_system
 
@@ -372,7 +398,6 @@ jobs:
             if [ "$DEPLOY_MODE" = "calibrated-first-create" ]; then
               TARGET_SERVICE="mtcps-xau-calibrated-shadow"
               TARGET_CONTAINER="trading_system-mtcps-xau-calibrated-shadow"
-              echo "__GHCR_TOKEN__" | docker login ghcr.io -u bearflower --password-stdin
               echo "📥 仅拉取 ${TARGET_SERVICE}..."
               docker compose pull mtcps-xau-calibrated-shadow
               echo "🔄 仅创建 ${TARGET_SERVICE}（不启动/重建依赖）..."
@@ -405,12 +430,6 @@ jobs:
               exit 0
             fi
             # calibrated-first-create end
-
-            # 1. 服务器 GHCR 认证（首次）
-            if ! docker image inspect ghcr.io/bearflower/trading-btc-eth:latest >/dev/null 2>&1; then
-              echo "🔐 首次登录 GHCR..."
-              echo "__GHCR_TOKEN__" | docker login ghcr.io -u bearflower --password-stdin
-            fi
 
             # 1.5 磁盘预检查（仅普通全量部署）。目标化首次创建不得执行全局 prune。
             echo "💾 磁盘预检查..."
@@ -701,17 +720,32 @@ jobs:
             echo "🎉 CI/CD 部署完成！"
             echo "========================================"
           REMOTE_SCRIPT
-          sed -i "s|__GHCR_TOKEN__|${{ secrets.GHCR_PULL_TOKEN }}|g" /tmp/deploy.sh
-          sed -i "s|__COMMIT_SHA__|${{ github.sha }}|g" /tmp/deploy.sh
-          sed -i "s|__DEPLOY_MODE__|${{ steps.deployment_mode.outputs.mode }}|g" /tmp/deploy.sh
+          sed -i "s|__COMMIT_SHA__|${{ github.sha }}|g" "$LOCAL_DEPLOY_SCRIPT"
+          sed -i "s|__DEPLOY_MODE__|${{ steps.deployment_mode.outputs.mode }}|g" "$LOCAL_DEPLOY_SCRIPT"
           # DEPLOY_ID 与 build 侧同一公式（高 24 位 run_number、低 8 位 run_attempt，可反解），
           # 注入远程脚本，使部署日志中的 deploy_id 可与本次构建的容器一一核对
           DEPLOY_ID=$(printf '%08X' $(( (${{ github.run_number }} << 8) | ${{ github.run_attempt }} )))
-          sed -i "s|__DEPLOY_ID__|${DEPLOY_ID}|g" /tmp/deploy.sh
+          sed -i "s|__DEPLOY_ID__|${DEPLOY_ID}|g" "$LOCAL_DEPLOY_SCRIPT"
           source /tmp/ci_retry.sh
-          retry_connect scp /tmp/deploy.sh 43.156.242.184:/tmp/deploy.sh
+          retry_connect ssh 43.156.242.184 \
+            "mkdir -p /root/trading_system/.deploy_tmp && chmod 700 /root/trading_system/.deploy_tmp"
+          retry_connect scp "$LOCAL_DEPLOY_SCRIPT" \
+            "43.156.242.184:${REMOTE_DEPLOY_SCRIPT}"
+          retry_connect ssh 43.156.242.184 \
+            "chmod 700 \"$REMOTE_DEPLOY_SCRIPT\""
 
       - name: ▶️ 执行远程部署脚本
         run: |
-          source /tmp/ci_retry.sh
-          retry_connect ssh 43.156.242.184 "bash /tmp/deploy.sh && rm /tmp/deploy.sh"
+          # 部署脚本可能合法返回 255；不得交给连接重试器，以免误判并重复副作用。
+          # 若 SSH 本身失败，脚本可能遗留，但它不含 token 且位于 root-only 目录。
+          ssh 43.156.242.184 \
+            "REMOTE_DEPLOY_SCRIPT='$REMOTE_DEPLOY_SCRIPT'; \
+             cleanup_deploy_script() { \
+               rc=\$?; \
+               trap - EXIT; \
+               rm -f \"\$REMOTE_DEPLOY_SCRIPT\"; \
+               rmdir /root/trading_system/.deploy_tmp 2>/dev/null || true; \
+               exit \"\$rc\"; \
+             }; \
+             trap cleanup_deploy_script EXIT; \
+             bash \"\$REMOTE_DEPLOY_SCRIPT\""

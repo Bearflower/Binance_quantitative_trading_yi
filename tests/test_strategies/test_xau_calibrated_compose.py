@@ -90,7 +90,7 @@ def _calibrated_first_create_block():
 
 def _remote_script_through_targeted_exit():
     remote = re.search(
-        r"cat > /tmp/deploy\.sh << 'REMOTE_SCRIPT'(?P<body>.*?)"
+        r"cat > \"\$LOCAL_DEPLOY_SCRIPT\" << 'REMOTE_SCRIPT'(?P<body>.*?)"
         r"^\s*REMOTE_SCRIPT$",
         WORKFLOW,
         re.DOTALL | re.MULTILINE,
@@ -144,7 +144,7 @@ def test_targeted_remote_prefix_has_no_full_deploy_side_effects():
         "init-scripts",
     ):
         assert forbidden not in prefix
-    assert "docker login ghcr.io" in prefix
+    assert "docker login ghcr.io" not in prefix
     _assert_targeted_block_safe(prefix)
 
 
@@ -156,6 +156,64 @@ def test_init_scripts_sync_is_full_deploy_only():
     )
     assert sync_step is not None
     assert "if: steps.deployment_mode.outputs.mode == 'full'" in sync_step.group("body")
+
+
+def _workflow_step(name):
+    match = re.search(
+        rf"- name: {re.escape(name)}(?P<body>.*?)(?=\n\s+- name:|\Z)",
+        WORKFLOW,
+        re.DOTALL,
+    )
+    assert match is not None, f"deploy.yml 缺少步骤: {name}"
+    return match.group("body")
+
+
+def test_ghcr_token_is_streamed_to_independent_login_and_never_in_script():
+    assert "__GHCR_TOKEN__" not in WORKFLOW
+    assert 'sed -i "s|__GHCR_TOKEN__' not in WORKFLOW
+    login = _workflow_step("🔐 远端登录 GHCR")
+    assert "GHCR_PULL_TOKEN: ${{ secrets.GHCR_PULL_TOKEN }}" in login
+    assert 'printf \'%s\' "$GHCR_PULL_TOKEN" | ssh ' in login
+    assert "set -o pipefail" in login
+    assert "docker login ghcr.io -u bearflower --password-stdin" in login
+    assert "for i in 1 2 3" in login
+
+
+def test_remote_deploy_script_path_is_unique_private_and_not_tmp():
+    assert "/tmp/deploy.sh" not in WORKFLOW
+    expected = (
+        "/root/trading_system/.deploy_tmp/"
+        "deploy-${{ github.run_id }}-${{ github.run_attempt }}.sh"
+    )
+    assert expected in WORKFLOW
+    upload = _workflow_step("🚀 生成并上传远程部署脚本")
+    assert 'mkdir -p /root/trading_system/.deploy_tmp' in upload
+    assert 'chmod 700 /root/trading_system/.deploy_tmp' in upload
+    assert 'chmod 700 \\"$REMOTE_DEPLOY_SCRIPT\\"' in upload
+
+
+def _assert_remote_execution_always_cleans(step):
+    trap_at = step.index("trap cleanup_deploy_script EXIT")
+    execute_at = step.index('bash \\\"\\$REMOTE_DEPLOY_SCRIPT\\\"')
+    assert trap_at < execute_at
+    assert 'rm -f \\\"\\$REMOTE_DEPLOY_SCRIPT\\\"' in step
+    assert 'rmdir /root/trading_system/.deploy_tmp' in step
+    assert 'exit \\\"\\$rc\\\"' in step
+
+
+def test_remote_execution_cleanup_preserves_success_or_failure_exit_code():
+    step = _workflow_step("▶️ 执行远程部署脚本")
+    _assert_remote_execution_always_cleans(step)
+    assert "retry_connect" not in step
+    assert "ssh 43.156.242.184" in step
+
+
+def test_remote_execution_guard_detects_missing_failure_cleanup():
+    step = _workflow_step("▶️ 执行远程部署脚本")
+    with pytest.raises((AssertionError, ValueError)):
+        _assert_remote_execution_always_cleans(
+            step.replace("trap cleanup_deploy_script EXIT", "# trap removed")
+        )
 
 
 def _assert_targeted_block_safe(block):
