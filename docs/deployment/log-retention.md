@@ -27,6 +27,10 @@ journalctl -q --no-pager -n 1 CONTAINER_NAME=dashboard-api
 
 当前可恢复的旧 `json-file` 日志已导出到服务器 `/root/trading_system/log_archive/pre_journald_20261027_122204/`，目录权限 700，文件权限 600；`manifest.tsv` 含服务、容器 ID、时间范围、字节数和 SHA-256。这个快照只覆盖导出时仍可读取的日志。
 
+从部署 `b1ead61` 起，CI 在每次 `docker compose up` 前调用 `scripts/archive_container_logs.sh`，把仍使用 `json-file` 的本项目容器日志保存到 `log_archive/pre_up_<时间>_<DEPLOY_ID>/`。归档目录只供 root 访问，清单含容器 ID、日志起止时间、字节数和 SHA-256；已切换到 journald 的服务不会重复归档。归档失败会中止部署。
+
+截至 2026-10-28 09:41，`dashboard-api`、`data-backend`、`aggtrade-collector`、`kline-monitor` 已切换并通过健康、旧日志归档及新 journal 记录检查。其余服务按用户指定的 2026-10-28 14:30（北京时间）维护窗口分批切换。每日 09:00 的只读自动检查监控日志驱动、记录、journal 容量、磁盘余量和容器健康；正常状态保持安静。
+
 ## 回退
 
 先导出受影响容器的当前日志。将对应服务从 `docker-compose.logging.yml` 移除并按项目部署流程发布；Compose 会重建该服务并恢复基础配置中的 `json-file`。已写入 journal 的日志不会因容器删除而消失。回退前后核对容器健康、驱动、日志和部署记录。
