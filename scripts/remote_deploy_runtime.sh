@@ -8,6 +8,8 @@ echo "========================================"
 echo "CI/CD 自动部署"
 echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
 DEPLOY_MODE="__DEPLOY_MODE__"
+COMMIT_SHA="__COMMIT_SHA__"
+DEPLOY_ID="__DEPLOY_ID__"
 echo "模式: ${DEPLOY_MODE}"
 echo "========================================"
 
@@ -41,8 +43,6 @@ if [ "$DEPLOY_MODE" = "calibrated-first-create" ]; then
 
   mkdir -p deploy_logs
   DEPLOY_TIME=$(date "+%Y-%m-%d %H:%M:%S")
-  COMMIT_SHA="__COMMIT_SHA__"
-  DEPLOY_ID="__DEPLOY_ID__"
   echo "[${DEPLOY_TIME}] DEPLOY_SUCCESS commit=${COMMIT_SHA} deploy_id=${DEPLOY_ID} mode=${DEPLOY_MODE}" \
     >> "deploy_logs/$(date '+%Y%m%d').log"
   echo "✅ calibrated 服务首次创建完成；既有共享镜像消费者未重建"
@@ -71,7 +71,7 @@ echo "✅ 磁盘充足 (>= 2GB)"
 
 # 任何 up/recreate 前先归档尚未切换的 json-file 容器日志。
 # 即使本轮只更新一项，也保护并行部署后新产生的旧容器日志。
-bash scripts/archive_container_logs.sh "log_archive/pre_up_$(date '+%Y%m%d_%H%M%S')___DEPLOY_ID__"
+bash scripts/archive_container_logs.sh "log_archive/pre_up_$(date '+%Y%m%d_%H%M%S')_${DEPLOY_ID}"
 
 # 2. 仅清理「不属于本 compose 项目」的残留容器（compose.yml 接管前的命名冲突防护）
 # 场景：data-backend / dashboard-api 曾独立 docker run 部署，compose.yml 也定义了同名
@@ -356,8 +356,6 @@ done
 # 7. 写部署日志
 mkdir -p deploy_logs
 DEPLOY_TIME=$(date "+%Y-%m-%d %H:%M:%S")
-COMMIT_SHA="__COMMIT_SHA__"
-DEPLOY_ID="__DEPLOY_ID__"
 LOG_FILE="deploy_logs/$(date '+%Y%m%d').log"
 LOG_MSG="[${DEPLOY_TIME}] DEPLOY_SUCCESS commit=${COMMIT_SHA} deploy_id=${DEPLOY_ID}"
 echo "${LOG_MSG}" >> "${LOG_FILE}"

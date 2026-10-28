@@ -286,14 +286,14 @@ jobs:
 
   # ============================================
   # Job 2: SSH 服务器部署
-  # 不管 build 有没有真的构建（可能全 skip），都跑 deploy
+  # 矩阵构建 job 成功后部署；矩阵内单项可按变更判定跳过构建 step
   # docker compose pull → 只拉有新版本的 tag
   # docker compose up -d → 只 recreate 镜像变了的容器
   # ============================================
   deploy:
     name: 🚀 SSH 服务器部署
     needs: [detect, build-all]
-    if: always() && needs.detect.result == 'success' && (needs.build-all.result == 'success' || needs.build-all.result == 'skipped' || needs.build-all.result == 'cancelled')
+    if: needs.detect.result == 'success' && needs.build-all.result == 'success'
     runs-on: ubuntu-latest
     env:
       REMOTE_DEPLOY_SCRIPT: /root/trading_system/.deploy_tmp/deploy-${{ github.run_id }}-${{ github.run_attempt }}.sh
@@ -409,13 +409,15 @@ jobs:
         run: |
           LOCAL_DEPLOY_SCRIPT="${RUNNER_TEMP}/deploy-${{ github.run_id }}-${{ github.run_attempt }}.sh"
           trap 'rm -f "$LOCAL_DEPLOY_SCRIPT"' EXIT
-          cp scripts/remote_deploy_runtime.sh "$LOCAL_DEPLOY_SCRIPT"
-          sed -i "s|__COMMIT_SHA__|${{ github.sha }}|g" "$LOCAL_DEPLOY_SCRIPT"
-          sed -i "s|__DEPLOY_MODE__|${{ steps.deployment_mode.outputs.mode }}|g" "$LOCAL_DEPLOY_SCRIPT"
           # DEPLOY_ID 与 build 侧同一公式（高 24 位 run_number、低 8 位 run_attempt，可反解），
           # 注入远程脚本，使部署日志中的 deploy_id 可与本次构建的容器一一核对
           DEPLOY_ID=$(printf '%08X' $(( (${{ github.run_number }} << 8) | ${{ github.run_attempt }} )))
-          sed -i "s|__DEPLOY_ID__|${DEPLOY_ID}|g" "$LOCAL_DEPLOY_SCRIPT"
+          python3 scripts/render_remote_deploy.py \
+            --source scripts/remote_deploy_runtime.sh \
+            --output "$LOCAL_DEPLOY_SCRIPT" \
+            --mode "${{ steps.deployment_mode.outputs.mode }}" \
+            --commit-sha "${{ github.sha }}" \
+            --deploy-id "$DEPLOY_ID"
           source /tmp/ci_retry.sh
           retry_connect ssh 43.156.242.184 \
             "mkdir -p /root/trading_system/.deploy_tmp && chmod 700 /root/trading_system/.deploy_tmp"

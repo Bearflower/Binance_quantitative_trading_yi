@@ -150,6 +150,15 @@ def test_each_workflow_run_block_stays_below_github_expression_limit():
                 )
 
 
+def test_deploy_job_requires_successful_build_matrix():
+    parsed = yaml.safe_load(WORKFLOW)
+    condition = parsed["jobs"]["deploy"]["if"]
+    assert "needs.detect.result == 'success'" in condition
+    assert "needs.build-all.result == 'success'" in condition
+    assert "cancelled" not in condition
+    assert "skipped" not in condition
+
+
 def test_remote_runtime_is_repository_script_and_bash_syntax_valid():
     assert REMOTE_RUNTIME.is_file()
     result = subprocess.run(
@@ -191,6 +200,58 @@ def test_calibrated_build_override_guard_detects_missing_btc_eth_binding():
         _assert_calibrated_build_override(
             decision.replace('SERVICE_NAME" = "btc-eth', 'SERVICE_NAME" = "hrs')
         )
+
+
+def _run_build_decision(block, service_name, tmp_path):
+    base = subprocess.check_output(
+        ["git", "rev-parse", "origin/main"], cwd=ROOT, text=True
+    ).strip()
+    rendered = (
+        block.replace("${{ github.event.before }}", base)
+        .replace("${{ github.event_name }}", "push")
+        .replace("${{ matrix.service.name }}", service_name)
+    )
+    output = tmp_path / f"{service_name}.out"
+    result = subprocess.run(
+        ["bash", "-c", rendered],
+        cwd=ROOT,
+        env={"PATH": str(Path("/usr/bin")) + ":/bin:/usr/local/bin", "GITHUB_OUTPUT": str(output)},
+        text=True,
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr
+    values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+    return values["should_build"]
+
+
+def _assert_only_btc_eth_builds(block, tmp_path):
+    parsed = yaml.safe_load(WORKFLOW)
+    services = [
+        service["name"]
+        for service in parsed["jobs"]["build-all"]["strategy"]["matrix"]["service"]
+    ]
+    assert len(services) == 11
+    actual = {
+        service: _run_build_decision(block, service, tmp_path) for service in services
+    }
+    assert actual == {
+        service: "true" if service == "btc-eth" else "false"
+        for service in services
+    }
+
+
+def test_retry_marker_real_build_decision_only_builds_btc_eth(tmp_path):
+    _assert_only_btc_eth_builds(_workflow_step("⏭️ 判断是否需要构建"), tmp_path)
+
+
+def test_real_build_decision_guard_detects_hrs_mutation(tmp_path):
+    decision = _workflow_step("⏭️ 判断是否需要构建")
+    mutated = decision.replace(
+        'if [ "$SERVICE_NAME" = "btc-eth" ]; then',
+        'if [ "$SERVICE_NAME" = "btc-eth" ] || [ "$SERVICE_NAME" = "hrs" ]; then',
+    )
+    with pytest.raises(AssertionError):
+        _assert_only_btc_eth_builds(mutated, tmp_path)
 
 
 def test_first_create_remote_path_targets_only_calibrated_service():
@@ -280,15 +341,15 @@ def test_upload_step_contains_no_secret_and_ghcr_secret_is_login_only():
     assert "GHCR_PULL_TOKEN" not in WORKFLOW.replace(login, "", 1)
 
 
-def test_upload_step_secret_guard_detects_post_copy_injection():
+def test_upload_step_secret_guard_detects_post_render_injection():
     upload = _workflow_step("🚀 生成并上传远程部署脚本")
     mutation = (
         '\nprintf \'%s\' "${{ secrets.GHCR_PULL_TOKEN }}" '
         '>> "$LOCAL_DEPLOY_SCRIPT"\n'
     )
-    copy_line = 'cp scripts/remote_deploy_runtime.sh "$LOCAL_DEPLOY_SCRIPT"'
-    copy_end = upload.index(copy_line) + len(copy_line)
-    mutated = upload[:copy_end] + mutation + upload[copy_end:]
+    render_end_line = '--deploy-id "$DEPLOY_ID"'
+    render_end = upload.index(render_end_line) + len(render_end_line)
+    mutated = upload[:render_end] + mutation + upload[render_end:]
 
     with pytest.raises(AssertionError):
         _assert_upload_step_contains_no_secret_token(mutated)
@@ -305,6 +366,8 @@ def test_remote_deploy_script_path_is_unique_private_and_not_tmp():
     assert 'mkdir -p /root/trading_system/.deploy_tmp' in upload
     assert 'chmod 700 /root/trading_system/.deploy_tmp' in upload
     assert 'chmod 700 \\"$REMOTE_DEPLOY_SCRIPT\\"' in upload
+    assert "python3 scripts/render_remote_deploy.py" in upload
+    assert "sed -i" not in upload
 
 
 def test_remote_execution_cleanup_preserves_success_or_failure_exit_code():
