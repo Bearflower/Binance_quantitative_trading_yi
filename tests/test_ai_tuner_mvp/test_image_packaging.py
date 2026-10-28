@@ -47,31 +47,34 @@ def test_snapshot_tables_use_dedicated_non_delete_writer_role():
 
 def test_deploy_provisions_snapshot_secret_only_on_server():
     workflow = (REPO_ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
-    assert "openssl rand -hex 32" in workflow
-    assert "ALTER ROLE ai_tuner_snapshot_writer LOGIN PASSWORD" in workflow
-    assert "<<'MIGRATION_ADMIN_SQL'" not in workflow
-    assert "<<'SNAPSHOT_ROLE_SQL'" not in workflow
-    assert "PASSWORD :'migration_password';" in workflow
-    assert "PASSWORD :'snapshot_password';" in workflow
-    assert "SNAPSHOT_SECRET_FILE=.secrets/ai_tuner_snapshot.env" in workflow
-    assert "MIGRATION_ADMIN_SECRET_FILE=.secrets/trading_migration_admin_password" in workflow
-    assert "TRADING_MIGRATION_ADMIN_PASSWORD=%s" not in workflow
-    assert "CREATE ROLE trading_migration_admin LOGIN SUPERUSER" in workflow
-    assert "ALTER DATABASE trading_platform OWNER TO trading_migration_admin" in workflow
-    assert "ALTER ROLE trading_user NOSUPERUSER NOCREATEROLE NOCREATEDB" in workflow
-    assert "-U trading_migration_admin -d trading_platform -f" in workflow
-    assert "pg_dumpall -U trading_migration_admin --globals-only" in workflow
-    assert "PERMISSION_BOUNDARY_OK" in workflow
-    assert "has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','SELECT')" in workflow
-    assert "has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','INSERT')" in workflow
-    assert "has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','UPDATE')" in workflow
-    assert "NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','INSERT')" in workflow
-    assert "NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','UPDATE')" in workflow
-    assert "NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','TRUNCATE')" in workflow
-    assert "ALTER ROLE trading_user SUPERUSER CREATEDB CREATEROLE REPLICATION" in workflow
-    assert workflow.index("CREATE ROLE trading_migration_admin LOGIN SUPERUSER") < workflow.index(
+    runtime = (REPO_ROOT / "scripts/remote_deploy_runtime.sh").read_text(encoding="utf-8")
+    assert "scripts/remote_deploy_runtime.sh" in workflow
+    assert "scripts/run_remote_deploy.sh" in workflow
+    assert "openssl rand -hex 32" in runtime
+    assert "ALTER ROLE ai_tuner_snapshot_writer LOGIN PASSWORD" in runtime
+    assert "<<'MIGRATION_ADMIN_SQL'" not in runtime
+    assert "<<'SNAPSHOT_ROLE_SQL'" not in runtime
+    assert "PASSWORD :'migration_password';" in runtime
+    assert "PASSWORD :'snapshot_password';" in runtime
+    assert "SNAPSHOT_SECRET_FILE=.secrets/ai_tuner_snapshot.env" in runtime
+    assert "MIGRATION_ADMIN_SECRET_FILE=.secrets/trading_migration_admin_password" in runtime
+    assert "TRADING_MIGRATION_ADMIN_PASSWORD=%s" not in runtime
+    assert "CREATE ROLE trading_migration_admin LOGIN SUPERUSER" in runtime
+    assert "ALTER DATABASE trading_platform OWNER TO trading_migration_admin" in runtime
+    assert "ALTER ROLE trading_user NOSUPERUSER NOCREATEROLE NOCREATEDB" in runtime
+    assert "-U trading_migration_admin -d trading_platform -f" in runtime
+    assert "pg_dumpall -U trading_migration_admin --globals-only" in runtime
+    assert "PERMISSION_BOUNDARY_OK" in runtime
+    assert "has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','SELECT')" in runtime
+    assert "has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','INSERT')" in runtime
+    assert "has_table_privilege('ai_tuner_snapshot_writer','public.ai_tuner_market_snapshots','UPDATE')" in runtime
+    assert "NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','INSERT')" in runtime
+    assert "NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','UPDATE')" in runtime
+    assert "NOT has_table_privilege('trading_user','public.ai_tuner_market_snapshots','TRUNCATE')" in runtime
+    assert "ALTER ROLE trading_user SUPERUSER CREATEDB CREATEROLE REPLICATION" in runtime
+    assert runtime.index("CREATE ROLE trading_migration_admin LOGIN SUPERUSER") < runtime.index(
         "-U trading_migration_admin -d trading_platform -f"
     )
-    assert workflow.index("pg_dumpall -U trading_migration_admin --globals-only") < workflow.index(
+    assert runtime.index("pg_dumpall -U trading_migration_admin --globals-only") < runtime.index(
         "ALTER DATABASE trading_platform OWNER TO trading_migration_admin"
     )

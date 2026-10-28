@@ -34,6 +34,7 @@ class ShadowInstanceConfig:
     initial_virtual_equity_usdt: float   # 300 USDT
     profiles: list                       # ["xau_original", "xau_aggressive"]
     kline_intervals: list                # ["1h", "4h", "1d"]
+    run_id_prefix: str                   # run_id 前缀
     cron: str                            # 调度 cron 表达式
 
     @property
@@ -101,6 +102,11 @@ def parse_shadow_instance_config(
         or config.get("shadow", {}).get("cron")
         or default_cron
     )
+    run_id_prefix = (
+        os.getenv("SHADOW_RUN_ID_PREFIX")
+        or config.get("shadow", {}).get("run_id_prefix")
+        or "xau-shadow"
+    )
 
     return ShadowInstanceConfig(
         instance=instance,
@@ -108,6 +114,7 @@ def parse_shadow_instance_config(
         initial_virtual_equity_usdt=initial_equity,
         profiles=profiles,
         kline_intervals=kline_intervals,
+        run_id_prefix=run_id_prefix,
         cron=cron,
     )
 

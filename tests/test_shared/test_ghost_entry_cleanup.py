@@ -847,6 +847,15 @@ class TestBNBFixAC1SQLContainsRealizedPnl:
         assert "realized_pnl IS NULL" in _MARK_ENTRY_CLOSED_SQL
         assert "realized_pnl IS NULL" in _MARK_ENTRY_CANCELED_SQL
 
+    def test_full_close_marks_all_nonterminal_entries_for_same_owner(self):
+        """同币多次开仓已归零时，旧 NEW 也必须退出互斥判定。"""
+        from shared.position_ownership import _mark_entry_terminal_sql
+        sql = _mark_entry_terminal_sql('CLOSED')
+        assert "WHERE symbol = $1 AND strategy = $2" in sql
+        assert "realized_pnl IS NULL" in sql
+        assert "status NOT IN" in sql
+        assert "LIMIT 1" not in sql
+
 
 class TestBNBFixAC2ReleaseClaimUsesRealizedPnlFilter:
     """AC2：release_claim(reason='position_closed') 的 CLOSED 标记 SQL
@@ -1201,14 +1210,13 @@ class TestBNBFixMarkEntryTerminalSemantics:
 
     # ---------- 3a：SQL 文本位置断言 ----------
 
-    def test_mark_entry_terminal_sql_realized_pnl_filter_between_order_type_and_order_by(self):
+    def test_mark_entry_terminal_sql_realized_pnl_filter_after_order_type(self):
         from shared.position_ownership import _mark_entry_terminal_sql
         sql = _mark_entry_terminal_sql('CLOSED')
         idx_order_type = sql.index('order_type IN')
         idx_realized = sql.index('realized_pnl IS NULL')
-        idx_order_by = sql.index('ORDER BY executed_at DESC, id DESC LIMIT 1')
-        # 必须在 order_type IN 之后、ORDER BY 之前（即子查询 WHERE 过滤链上）
-        assert idx_order_type < idx_realized < idx_order_by
+        assert idx_order_type < idx_realized
+        assert 'ORDER BY executed_at DESC, id DESC LIMIT 1' not in sql
 
     def test_mark_entry_terminal_sql_preserves_limit_one_and_order_by(self):
         from shared.position_ownership import _mark_entry_terminal_sql

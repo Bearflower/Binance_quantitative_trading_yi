@@ -1,0 +1,445 @@
+instance:
+  id: mtcps_xau_calibrated_shadow
+  execution_mode: shadow_batch
+  capital_strategy_id: ''
+  circuit_breaker_pool: ''
+  state_reporting_enabled: false
+  real_ordering_enabled: false
+  symbol: XAUUSDT
+  initial_virtual_equity_usdt: 300
+  profiles:
+  - xau_calibrated
+shadow:
+  kline_intervals:
+  - 1h
+  - 4h
+  - 1d
+  cron: 20 * * * *
+  run_id_prefix: xau-calibrated-shadow
+  bootstrap_dynamic_atr_history: true
+  calibration_manifest: strategies/btc_eth/shadow/config/calibration/xau_calibrated_atr_manifest.json
+  calibration_manifest_sha256: 46942cc14ceaa28dc8e9c397ad2c70b21de594f282b9def9c1410e66a4a71c78
+  calibration_snapshot_sha256: fb4cbe2c9cd0d39a1495faa584591466541f89eb25e932affe78c73137caea17
+  calibration_cutoff_ms: 1793167199999
+pilot:
+  max_single_position_margin_usdt: 30
+  max_concurrent_positions: 1
+  max_leverage: 3
+strategy:
+  name: mtcps_xau_calibrated
+  version: 2.6.0-xau-shadow-calibrated
+  record_name: mtcps_xau_shadow_calibrated
+  symbols:
+  - XAUUSDT
+  position_sync:
+    min_position_amt: 1.0e-05
+  timeframes:
+  - 1h
+  - 4h
+  - 1d
+  schedule:
+    cron: 15 * * * *
+  scoring:
+    min_score: 75
+    grade_thresholds:
+      S: 90
+      A: 75
+      B: 65
+      C: 55
+    weights:
+      trend_strength: 0.25
+      pattern_quality: 0.5
+      momentum_divergence: 0.25
+    a_level_bonus:
+      rsi_low: 35
+      rsi_high: 65
+      bonus: 2
+    trend_strength:
+      base_score: 50
+      consistency_bonus: 15
+      dual_uptrend_bonus: 10
+      macd_positive_bonus: 10
+      macd_negative_penalty: -10
+      adx_strong_threshold: 25
+      adx_strong_bonus: 15
+      adx_medium_threshold: 20
+      adx_medium_bonus: 8
+    pattern_quality:
+      base_score: 50
+      bullish_engulfing_bonus: 20
+      bearish_engulfing_bonus: 20
+      breakout_pullback_bonus: 25
+      divergence_bonus: 30
+    breakout_pullback:
+      proximity_pct: 0.01
+    momentum_divergence:
+      base_score: 60
+      rsi_oversold: 30
+      rsi_overbought: 70
+      rsi_normal_bonus: 5
+      rsi_oversold_bonus: 20
+      rsi_overbought_penalty: -20
+      macd_hist_positive_bonus: 10
+      macd_hist_negative_penalty: -10
+      divergence_bonus: 15
+  symbol_config:
+    XAUUSDT:
+      adx_min: 35
+      vol_ratio_base:
+        S: 1.8
+        A: 0
+        B: 0
+        C: 0
+      atr_abs_min: 0.0016161930783960743
+      atr_fallback_percent: 0.3160363742979797
+      atr_percentile: 50
+      atr_factor_strong: 0.8
+      s_min_score: 88
+      max_daily_trades: 1
+      position_ratio_s: 0.5
+  risk:
+    signal_levels:
+      S:
+        stop_loss_atr_multiplier: 2.5
+        partial_take_profit:
+          tp1_atr_multiplier: 6.0
+          tp1_close_ratio: 0.3
+          tp2_atr_multiplier: 9.0
+          tp2_close_ratio: 0.4
+          remaining_ratio: 0.3
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 3.0
+            also_on_tp1: true
+          regression_tiers:
+          - profit_ceiling: 1.5
+            retrace_ratio: 0.0
+          - profit_ceiling: 4.0
+            retrace_ratio: 0.5
+          - profit_ceiling: 8.0
+            retrace_ratio: 0.35
+          - profit_ceiling: 999.0
+            retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 96
+          close_ratio: 0.5
+          review_enabled: false
+          max_review_hours: 24
+      A:
+        stop_loss_atr_multiplier: 1.5
+        partial_take_profit:
+          tp1_atr_multiplier: 4.0
+          tp1_close_ratio: 0.3
+          tp2_atr_multiplier: 6.0
+          tp2_close_ratio: 0.4
+          remaining_ratio: 0.3
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 1.5
+            also_on_tp1: true
+          regression_tiers:
+          - profit_ceiling: 1.5
+            retrace_ratio: 0.0
+          - profit_ceiling: 4.0
+            retrace_ratio: 0.5
+          - profit_ceiling: 8.0
+            retrace_ratio: 0.35
+          - profit_ceiling: 999.0
+            retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 72
+          close_ratio: 0.5
+          review_enabled: false
+          max_review_hours: 24
+      B:
+        stop_loss_atr_multiplier: 1.2
+        partial_take_profit:
+          tp1_atr_multiplier: 3.0
+          tp1_close_ratio: 0.3
+          tp2_atr_multiplier: 5.0
+          tp2_close_ratio: 0.4
+          remaining_ratio: 0.3
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 1.0
+            also_on_tp1: true
+          regression_tiers:
+          - profit_ceiling: 1.5
+            retrace_ratio: 0.0
+          - profit_ceiling: 3.0
+            retrace_ratio: 0.5
+          - profit_ceiling: 6.0
+            retrace_ratio: 0.35
+          - profit_ceiling: 999.0
+            retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 48
+          close_ratio: 0.6
+          review_enabled: false
+          max_review_hours: 24
+      C:
+        stop_loss_atr_multiplier: 1.0
+        partial_take_profit:
+          tp1_atr_multiplier: 2.0
+          tp1_close_ratio: 0.3
+          tp2_atr_multiplier: 3.5
+          tp2_close_ratio: 0.4
+          remaining_ratio: 0.3
+        dynamic_trailing:
+          enabled: true
+          activation:
+            min_profit_pct: 0.5
+            also_on_tp1: true
+          regression_tiers:
+          - profit_ceiling: 1.0
+            retrace_ratio: 0.0
+          - profit_ceiling: 2.0
+            retrace_ratio: 0.5
+          - profit_ceiling: 4.0
+            retrace_ratio: 0.35
+          - profit_ceiling: 999.0
+            retrace_ratio: 0.25
+          volatility_adjustment:
+            enabled: true
+            atr_lookback_days: 30
+            atr_period: 14
+            cache_ttl_seconds: 3600
+        time_stop:
+          max_holding_hours: 24
+          close_ratio: 0.8
+          review_enabled: false
+          max_review_hours: 24
+    max_position_size: 0.1
+    quantity_inference_eps_ratio: 0.005
+    close_limit_order:
+      enabled: true
+      timeout_seconds: 10
+      poll_interval_seconds: 2
+      max_retries: 3
+      retry_interval_seconds: 2
+      applicable_reasons:
+      - TP1
+      - TP2
+      - TRAILING_STOP
+      - TIME_STOP
+      - STOP_LOSS
+      - EXTREME
+      - LIQUIDATION
+      - LIQUIDATION_REDUCE
+      micro_close:
+        trigger_multiplier_long: 2.0
+        trigger_multiplier_short: 0.5
+    stop_limit_order:
+      offset_pct: 0.002
+    tp_limit_order:
+      offset_pct: 0.0015
+    cleanup_silent_error_codes:
+    - -2022
+    - -2011
+    cancel_retry:
+      max_retries: 10
+      retry_interval_cycles: 1
+      notify_on_timeout: true
+      max_cleanup_hours: 48
+      cleanup_timeout_seconds: 30
+      trade_lookup_window_minutes: 5
+    frequency_control:
+      max_daily_symbol_trades: 1
+      symbol_cooldown_hours: 72
+      consecutive_loss_pause: 2
+      pause_duration_hours: 24
+      max_daily_loss_usdt: 25
+      max_daily_loss_ratio: 0.05
+      initial_capital_usdt: 300
+      weekly_loss_pause_enabled: true
+      weekly_loss_max_ratio: 0.15
+      weekly_loss_pause_days: 3
+    position_sizing:
+      total:
+        account_ratio_cap: 0.3
+    protection_retry:
+      max_retries: 3
+      retry_interval_cycles: 1
+      on_exhausted: alert
+      notify: true
+    trend_filter:
+      enabled: true
+      ema_slope_min: 0.0005
+      ema_slope_flat: 0.0003
+      ema_slope_window: 5
+      ema21_proximity_atr_mult: 1.5
+    prohibition:
+      atr_price_max: 0.045
+      atr_price_min: 0.01
+      kline_spike_6h_pct: 0.05
+      funding_rate_max_abs: 0.0005
+      daily_change_long_max: 0.25
+      daily_change_short_max: -0.2
+      spread_max: 0.003
+    dynamic_atr:
+      enabled: true
+      lookback_hours: 720
+      min_history_count: 30
+      cache_ttl_seconds: 3600
+    dynamic_volume:
+      enabled: true
+      lookback_hours: 20
+      adx_strong_threshold: 25
+      adx_coefficient: 0.8
+      near_threshold_coefficient: 0.8
+      default_vol_ratio_base:
+        S: 1.4
+        A: 1.2
+        B: 0.0
+        C: 0.0
+    extreme_market:
+      reverse_pct: 0.05
+      close_ratio: 0.5
+      tighten_stop_atr: 1.0
+    liquidation_warning:
+      margin_ratio_reduce: 1.5
+      margin_ratio_close: 1.2
+      reduce_ratio: 0.5
+    position_management:
+      max_concurrent_positions: 1
+      volatility_target_risk: 200
+      volatility_target_min: 10
+      volatility_target_max: 800
+    market_state:
+      enabled: true
+      fallback:
+        can_trade: true
+        min_grade: C
+        vol_boost: 0.0
+        position_ratio_mult: 1.0
+        stop_loss_atr: 0
+      strong_trend_adx: 35
+      strong_trend_bb_width: 0.07
+      strong_trend_price_change: 5.0
+      strong_trend_daily_slope: 0.15
+      behaviors:
+        STRONG_TREND:
+          can_trade: true
+          strategy_mode: trend
+          min_grade: S
+          vol_boost: 0.0
+          position_ratio_mult: 0.5
+          stop_loss_atr: 1.5
+          max_daily_trades: 2
+          ranging_symbol_cooldown_hours: 72
+        RANGING:
+          can_trade: true
+          strategy_mode: ranging
+          min_grade: B
+          vol_boost: 0.0
+          position_ratio_mult: 2.0
+          max_daily_trades: 3
+          ranging_symbol_cooldown_hours: 3
+    ranging_strategy:
+      enabled: true
+      entry_conditions:
+        bb_touch: true
+        rsi_extreme: true
+        rsi_oversold: 25
+        rsi_overbought: 70
+        reversal_pattern: true
+      exit_conditions:
+        bb_mid_touch: true
+        bb_mid_min_distance_atr: 0.3
+        rsi_neutral_long: 55
+        rsi_neutral_short: 45
+        time_stop_hours: 24
+      risk:
+        stop_loss_atr: 2.0
+        take_profit_atr: 4.0
+      allowed_grades:
+      - S
+      - A
+      - B
+      scoring_weights:
+        trend_strength: 0.15
+        pattern_quality: 0.6
+        momentum_divergence: 0.25
+      trend_filter:
+        strong_slope_atr_mult: 0.8
+      direction_alignment:
+        enabled: true
+        fast_ma: EMA21
+        slow_ma: EMA55
+        fallback_on_missing: false
+        stick_threshold_pct: 0.3
+      overheat_protection:
+        enabled: true
+        downgrade_enabled: true
+        bias_fast_downgrade_pct: 4.0
+        bias_fast_ban_pct: 6.0
+        bias_slow_downgrade_pct: 6.0
+        bias_slow_ban_pct: 9.0
+        rsi_extreme_long: 85
+        rsi_extreme_short: 15
+        rsi_warn_long: 75
+        rsi_warn_short: 25
+      volume_confirm:
+        enabled: true
+        shrink_ratio: 1.1
+      volatility_regime:
+        enabled: true
+        atr_long_period: 50
+        spike_ratio: 2.0
+        pause_bars: 12
+        pause_interval_hours: 4
+    economic_calendar:
+      enabled: true
+      ban_window_minutes: 60
+      events: []
+trading:
+  total_position_margin_limit: 300
+  min_position_margin: 5
+capital_limits:
+  db_cache_ttl_seconds: 300
+  db_query_timeout_seconds: 3.0
+binance:
+  leverage:
+    S: 5
+    A: 4
+    B: 3
+    C: 2
+  position_ratio:
+    S: 0.5
+    A: 0.3
+    B: 0.15
+    C: 0.05
+  order_optimization:
+    use_limit_order: true
+    use_buy_one_price: true
+    use_sell_one_price: true
+notification:
+  enabled: false
+  levels:
+  - error
+ownership:
+  enabled: false
+  competing_record_names: []
+  claim_ttl_minutes: 30
+  claim_cleanup_interval_minutes: 10
+  lock_timeout_seconds: 5
+decision_evidence:
+  enabled: false

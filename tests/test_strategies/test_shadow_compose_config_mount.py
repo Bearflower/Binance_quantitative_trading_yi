@@ -30,7 +30,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 COMPOSE_FILE = REPO_ROOT / "docker-compose.yml"
 
 # 目标服务名
-SERVICE_NAME = "mtcps-xau-shadow"
+SERVICE_NAMES = ("mtcps-xau-shadow", "mtcps-xau-calibrated-shadow")
 
 # 判定关键字：bind mount 的宿主侧和容器内路径同时命中此子串
 # 即判定为"遮蔽镜像内烘焙 shadow 目录"的有害挂载。
@@ -55,7 +55,8 @@ def _parse_compose_service_volumes(compose_path: Path, service_name: str) -> lis
     return list(volumes)
 
 
-def test_shadow_compose_does_not_mask_image_config():
+@pytest.mark.parametrize("service_name", SERVICE_NAMES)
+def test_shadow_compose_does_not_mask_image_config(service_name):
     """mtcps-xau-shadow 服务不应使用宿主 bind mount 遮蔽镜像内烘焙的 shadow 目录。
 
     覆盖两种有害挂载：
@@ -67,7 +68,7 @@ def test_shadow_compose_does_not_mask_image_config():
     """
     assert COMPOSE_FILE.exists(), f"找不到 docker-compose.yml: {COMPOSE_FILE}"
 
-    volumes = _parse_compose_service_volumes(COMPOSE_FILE, SERVICE_NAME)
+    volumes = _parse_compose_service_volumes(COMPOSE_FILE, service_name)
 
     offending_mounts: list[str] = []
     for mount in volumes:
@@ -85,7 +86,7 @@ def test_shadow_compose_does_not_mask_image_config():
             offending_mounts.append(mount_str)
 
     assert not offending_mounts, (
-        f"mtcps-xau-shadow 检测到遮蔽镜像内烘焙 shadow 目录的 bind mount:\n"
+        f"{service_name} 检测到遮蔽镜像内烘焙 shadow 目录的 bind mount:\n"
         f"  {offending_mounts}\n"
         f"危害：宿主目录缺失时 Docker 会自动创建空目录，遮蔽镜像内 COPY 进来的\n"
         f"config/xau_original.yaml / xau_aggressive.yaml，导致影子采集器 crash-loop。\n"

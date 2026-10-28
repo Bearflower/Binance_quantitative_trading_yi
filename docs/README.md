@@ -232,6 +232,8 @@
 - [AI Tuner MVP 准备度报告样例](reports/ai-tuner-mvp-readiness-report.example.json) - **虚构示例（非当前真实状态）**，仅用于核验 `scripts/ai_tuner_mvp.py audit` 的输出结构与门禁字段。真实实测报告（`ai-tuner-mvp-readiness-report-2026-10-18.json`）**仅本地留存、未纳入 Git**，其结论已摘要回标至 plan **D13** / spec **S11**（`decision=STOP`、`selected_strategy=null`）
 - [XAUUSDT MTCPS 影子仿真与小资金灰度 设计文档（spec）](superpowers/specs/2026-10-18-xau-mtcps-shadow-pilot-design.md) - 为黄金 XAUUSDT 新增 MTPCS 影子采集 + 本地确定性回放 + 小资金 pilot 通道总设计；影子只读不交易、写独立 `research` schema；**§9.1 运行口径（2026-10-20）**含展示命名「MTCPS 黄金版（XAU）」、正式 8 周观察期起点定义、`duration_days=30` 第 25 天续期、行情补采
 - [XAUUSDT MTCPS 影子仿真与小资金灰度 实施计划（plan）](superpowers/plans/2026-10-19-xau-mtcps-shadow-implementation-plan.md) - 实例参数化、影子只读安全边界（双层 fail-closed）、research schema、回放与准入判定落地计划；**§9.4/§9.5** 含三周期补采命令与第 25 天续期/观察期起点运行提醒
+- [MTPCS 黄金校准版（XAU）设计（spec）](superpowers/specs/2026-10-27-xau-mtcps-calibrated-shadow-design.md) - 以 MTCPS 原版为基线、仅校准 ATR；300 USDT 独立虚拟权益，每小时第 20 分运行，首个干净事件起独立观察八周；原版/激进版观察期不重置、报告按同窗口比较
+- [MTPCS 黄金校准版（XAU）实施计划（plan）](superpowers/plans/2026-10-27-xau-mtcps-calibrated-shadow-implementation-plan.md) - 独立 instance/profile/run 标识、不可变 ATR 快照与 manifest 哈希绑定、确定性 history bootstrap、Compose/CI 守护与部署前授权门禁；当前不代表已部署或观察期已开始
 
 > 知识库（可复用问题/决策沉淀）见 [docs/knowledge/INDEX.md](knowledge/INDEX.md)。
 
@@ -341,5 +343,5 @@ StratTuneAI 引入 AI 调优覆盖层（tuning_overrides）机制，实现基础
 
 ---
 
-**最后更新**: 2026-10-20
+**最后更新**: 2026-10-27
 **维护者**: 开发团队

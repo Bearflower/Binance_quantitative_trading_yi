@@ -41,10 +41,12 @@ from .collector import (
     _read_git_info,
 )
 from .instance import (
+    ShadowInstanceConfig,
     parse_shadow_instance_config,
     connect_db_from_env,
 )
 from .repository import ShadowRepository
+from .readiness import clear_readiness, process_start_token, write_readiness
 
 
 logger = structlog.get_logger()
@@ -115,8 +117,8 @@ def _generate_run_id(
 # ---------------------------------------------------------------------------
 # 依赖装配
 # ---------------------------------------------------------------------------
-def _build_binance_client() -> ReadOnlyBinanceClient:
-    """构造只读 Binance 客户端（实例标识 mtcps_xau_shadow）"""
+def _build_binance_client(instance_id: str) -> ReadOnlyBinanceClient:
+    """构造使用运行时实例标识的只读 Binance 客户端"""
     api_key = os.getenv("BINANCE_API_KEY", "")
     api_secret = os.getenv("BINANCE_API_SECRET", "")
     if not api_key or not api_secret:
@@ -126,7 +128,7 @@ def _build_binance_client() -> ReadOnlyBinanceClient:
     return ReadOnlyBinanceClient(
         api_key=api_key,
         api_secret=api_secret,
-        instance_id="mtcps_xau_shadow",
+        instance_id=instance_id,
     )
 
 
@@ -134,6 +136,16 @@ def _build_kline_service() -> KLineService:
     """构造 K 线服务客户端"""
     service_url = os.getenv("KLINE_SERVICE_URL", "http://kline-service:8080")
     return KLineService(service_url=service_url)
+
+
+def _build_runtime_dependencies(
+    shadow_cfg: ShadowInstanceConfig,
+) -> tuple[ReadOnlyBinanceClient, KLineService]:
+    """按运行时实例配置装配外部客户端。"""
+    return (
+        _build_binance_client(shadow_cfg.instance_id),
+        _build_kline_service(),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -153,8 +165,73 @@ async def _build_collector_and_run_once(
         )
 
 
+async def _prepare_shadow_run(
+    repo: ShadowRepository,
+    shadow_cfg: ShadowInstanceConfig,
+    *,
+    now: datetime,
+    git_commit: str,
+    git_sha: str,
+    config_hashes: Dict[str, str],
+) -> str:
+    """选择可复用的 active run，或按运行时前缀创建新 run。"""
+    active_run = await repo.find_active_run(instance_id=shadow_cfg.instance_id)
+
+    if active_run:
+        existing_hashes_raw = active_run.get("config_hashes")
+        existing_hashes: Dict[str, str] = {}
+        if existing_hashes_raw:
+            try:
+                existing_hashes = (
+                    json.loads(existing_hashes_raw)
+                    if isinstance(existing_hashes_raw, str)
+                    else dict(existing_hashes_raw)
+                )
+            except Exception:
+                existing_hashes = {}
+        if (
+            existing_hashes == config_hashes
+            and (active_run.get("git_commit") or "") == git_commit
+        ):
+            run_id = active_run["run_id"]
+            logger.info("继续使用已存在的 active run", run_id=run_id)
+            return run_id
+
+        old_run_id = active_run["run_id"]
+        logger.warning(
+            "config_hash 或 git 变化，关闭旧 run 开新 run",
+            old_run_id=old_run_id,
+            new_hashes=config_hashes,
+            old_hashes=existing_hashes,
+        )
+        await repo.close_shadow_run(run_id=old_run_id, status="closed")
+
+    run_id = _generate_run_id(
+        now,
+        git_commit,
+        config_hashes,
+        prefix=shadow_cfg.run_id_prefix,
+    )
+    await repo.upsert_shadow_run(
+        run_id=run_id,
+        instance_id=shadow_cfg.instance_id,
+        symbol=shadow_cfg.symbol,
+        started_at=now,
+        initial_virtual_equity_usdt=shadow_cfg.initial_virtual_equity_usdt,
+        git_commit=git_commit,
+        git_sha=git_sha,
+        config_hashes=config_hashes,
+    )
+    if not active_run:
+        logger.info("首次启动，已创建新 active run", run_id=run_id)
+    return run_id
+
+
 async def run_forever() -> None:
     """影子采集器主循环"""
+    # 防止容器重启后旧 PID 标记造成假健康；仅写容器内 /tmp，不写交易状态。
+    clear_readiness()
+
     # ---- 1. 加载配置 ----
     profile_configs = _load_profile_configs()
     # 以第一个 profile 的 instance 段作为全局影子实例配置
@@ -180,69 +257,17 @@ async def run_forever() -> None:
     repo = ShadowRepository(db)
 
     now = datetime.utcnow()
-    active_run = await repo.find_active_run(instance_id=shadow_cfg.instance_id)
-
-    run_id: str
-    if active_run:
-        # 对比 config_hashes
-        existing_hashes_raw = active_run.get("config_hashes")
-        existing_hashes: Dict[str, str] = {}
-        if existing_hashes_raw:
-            try:
-                existing_hashes = (
-                    json.loads(existing_hashes_raw)
-                    if isinstance(existing_hashes_raw, str)
-                    else dict(existing_hashes_raw)
-                )
-            except Exception:
-                existing_hashes = {}
-        if existing_hashes == config_hashes and (active_run.get("git_commit") or "") == git_commit:
-            run_id = active_run["run_id"]
-            logger.info(
-                "继续使用已存在的 active run",
-                run_id=run_id,
-            )
-        else:
-            # 配置变了 → 关闭旧 run，开新 run
-            old_run_id = active_run["run_id"]
-            logger.warning(
-                "config_hash 或 git 变化，关闭旧 run 开新 run",
-                old_run_id=old_run_id,
-                new_hashes=config_hashes,
-                old_hashes=existing_hashes,
-            )
-            await repo.close_shadow_run(run_id=old_run_id, status="closed")
-            run_id = _generate_run_id(now, git_commit, config_hashes)
-            await repo.upsert_shadow_run(
-                run_id=run_id,
-                instance_id=shadow_cfg.instance_id,
-                symbol=shadow_cfg.symbol,
-                started_at=now,
-                initial_virtual_equity_usdt=shadow_cfg.initial_virtual_equity_usdt,
-                git_commit=git_commit,
-                git_sha=git_sha,
-                config_hashes=config_hashes,
-            )
-    else:
-        run_id = _generate_run_id(now, git_commit, config_hashes)
-        await repo.upsert_shadow_run(
-            run_id=run_id,
-            instance_id=shadow_cfg.instance_id,
-            symbol=shadow_cfg.symbol,
-            started_at=now,
-            initial_virtual_equity_usdt=shadow_cfg.initial_virtual_equity_usdt,
-            git_commit=git_commit,
-            git_sha=git_sha,
-            config_hashes=config_hashes,
-        )
-        logger.info(
-            "首次启动，已创建新 active run",
-            run_id=run_id,
-        )
+    run_id = await _prepare_shadow_run(
+        repo,
+        shadow_cfg,
+        now=now,
+        git_commit=git_commit,
+        git_sha=git_sha,
+        config_hashes=config_hashes,
+    )
 
     # ---- 5. 装配依赖 ----
-    binance_client = _build_binance_client()
-    kline_service = _build_kline_service()
+    binance_client, kline_service = _build_runtime_dependencies(shadow_cfg)
 
     collector = ShadowCollector(
         run_id=run_id,
@@ -286,6 +311,18 @@ async def run_forever() -> None:
         replace_existing=True,
     )
     scheduler.start()
+    write_readiness({
+        "pid": os.getpid(),
+        "process_start_token": process_start_token(os.getpid()),
+        "instance_id": shadow_cfg.instance_id,
+        "profiles": shadow_cfg.profiles,
+        "run_id": run_id,
+        "run_id_prefix": shadow_cfg.run_id_prefix,
+        "cron": cron_expr,
+        "execution_mode": shadow_cfg.execution_mode,
+        "real_ordering_enabled": shadow_cfg.instance.real_ordering_enabled,
+        "state_reporting_enabled": shadow_cfg.instance.state_reporting_enabled,
+    })
     logger.info(
         "影子采集器已启动（cron=%s）",
         cron_expr,
@@ -299,6 +336,7 @@ async def run_forever() -> None:
     except KeyboardInterrupt:
         logger.info("收到 SIGINT，正在优雅关闭...")
     finally:
+        clear_readiness()
         scheduler.shutdown(wait=False)
         # 关闭 active run
         await repo.close_shadow_run(run_id=run_id, status="aborted")

@@ -49,6 +49,16 @@ def _mark_entry_terminal_sql(status: str) -> str:
     """
     terminal_in = ', '.join(repr(s) for s in _TERMINAL_ENTRY_STATUSES)
     order_types = ', '.join(repr(t) for t in _ENTRY_ORDER_TYPES)
+    if status == 'CLOSED':
+        # 平仓归零后，同策略同币种的多次入场都已结束；只关闭最新一条会留下
+        # 更早的 NEW 记录，下一次开仓继续被互斥拦截。
+        return (
+            f"UPDATE {_TRADE_RECORDS_TABLE} SET status = 'CLOSED' "
+            "WHERE symbol = $1 AND strategy = $2"
+            f" AND order_type IN ({order_types})"
+            " AND realized_pnl IS NULL"
+            f" AND status NOT IN ({terminal_in})"
+        )
     return (
         f"UPDATE {_TRADE_RECORDS_TABLE} SET status = '{status}' "
         "WHERE id = ("

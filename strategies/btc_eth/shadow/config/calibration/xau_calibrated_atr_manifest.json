@@ -1,0 +1,43 @@
+{
+  "algorithm_version": "xau-atr14-sma-v1",
+  "atr_sample_count": 2025,
+  "calibration": {
+    "atr_abs_min": 0.0016161930783960743,
+    "atr_percentile": 50,
+    "fallback_atr_percent": 0.3160363742979797,
+    "min_history_count": 30,
+    "p25_percent": 0.16161930783960743,
+    "p50_percent": 0.3160363742979797
+  },
+  "cutoff_ms": 1793167199999,
+  "exclusions": {},
+  "gaps": [
+    {
+      "delta_ms": 86400000,
+      "next_close_time": 1786006799999,
+      "previous_close_time": 1785920399999
+    },
+    {
+      "delta_ms": 75600000,
+      "next_close_time": 1790413199999,
+      "previous_close_time": 1790337599999
+    },
+    {
+      "delta_ms": 18000000,
+      "next_close_time": 1790758799999,
+      "previous_close_time": 1790740799999
+    }
+  ],
+  "generated_at": "2026-10-28T06:37:18.101402+00:00",
+  "git_commit": "22fa540eec9ba05040f1d5624a8498943d17a3a0",
+  "interval": "1h",
+  "manifest_sha256": "46942cc14ceaa28dc8e9c397ad2c70b21de594f282b9def9c1410e66a4a71c78",
+  "schema_version": 1,
+  "snapshot_end_close_time": 1793167199999,
+  "snapshot_sha256": "fb4cbe2c9cd0d39a1495faa584591466541f89eb25e932affe78c73137caea17",
+  "snapshot_start_close_time": 1785664799999,
+  "source": "kline-service-postgres",
+  "source_rows": 2038,
+  "symbol": "XAUUSDT",
+  "valid_rows": 2038
+}

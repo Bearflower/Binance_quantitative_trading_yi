@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -32,6 +33,7 @@ from strategies.btc_eth.market_state import (
     get_market_state_behavior,
 )
 
+from .atr_calibration import CalibrationError, prepare_runtime_atr_history
 from .repository import ShadowRepository
 
 
@@ -190,13 +192,15 @@ def _read_git_info() -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 # 影子 profile → 策略类 显式工厂映射（fail-closed，禁止静默回退原版）
 # ---------------------------------------------------------------------------
-# 两个 profile 对应两个独立策略类（同名 BTCEthStrategy，位于不同包）：
+# profile 显式对应策略类（同名 BTCEthStrategy，位于不同包）：
 #   - xau_original   → strategies.btc_eth.strategy.BTCEthStrategy
 #   - xau_aggressive → strategies.btc_eth_aggressive.strategy.BTCEthStrategy
+#   - xau_calibrated → strategies.btc_eth.strategy.BTCEthStrategy
 # 契约：profile_id 不在此表 → 抛 ValueError（fail-closed，绝不准许静默回退原版）。
 _PROFILE_TO_STRATEGY_CLASS: Dict[str, Any] = {
     "xau_original": OriginalBTCEthStrategy,
     "xau_aggressive": AggressiveBTCEthStrategy,
+    "xau_calibrated": OriginalBTCEthStrategy,
 }
 
 
@@ -222,7 +226,7 @@ def _build_shadow_strategy(
         real_ordering_enabled=False + state_reporting_enabled=False（双开关）
 
     Args:
-        profile_id: profile 标识（xau_original / xau_aggressive）
+        profile_id: profile 标识（xau_original / xau_aggressive / xau_calibrated）
         profile_config: 冻结 YAML 配置
         binance_client: ReadOnlyBinanceClient 实例
         kline_service: KLineService 实例
@@ -492,7 +496,44 @@ class ShadowCollector:
                 source_kline_close_times=close_times,
             )]
 
-        # ---- 2. 市场状态识别 ----
+        # ---- 2. 校准版按本次闭合 1h K 线确定性重建动态 ATR 历史 ----
+        try:
+            bootstrap_count = self._bootstrap_atr_history(
+                profile_id=profile_id,
+                strategy=strategy,
+                multi_klines=multi_klines,
+                scheduled_at=scheduled_at,
+            )
+            atr_snapshot_inputs = (
+                self._validated_atr_snapshot_inputs(indicators, multi_klines)
+                if bootstrap_count
+                else None
+            )
+            analysis_indicators = (
+                self._with_sanitized_adx(
+                    indicators,
+                    atr_snapshot_inputs[2],
+                )
+                if atr_snapshot_inputs is not None
+                else indicators
+            )
+        except Exception as exc:
+            logger.error(
+                "ATR 历史初始化异常",
+                profile_id=profile_id,
+                symbol=symbol,
+                error=str(exc),
+            )
+            return [self._make_event(
+                profile_id=profile_id,
+                scheduled_at=scheduled_at,
+                evaluated_at=evaluated_at,
+                decision="analysis_error",
+                reason_codes=["atr_bootstrap_error"],
+                source_kline_close_times=close_times,
+            )]
+
+        # ---- 3. 市场状态识别 ----
         market_state_config = strategy.risk_config.get('market_state', {})
         market_state_name = 'RANGING'
         market_behavior: Dict[str, Any] = {}
@@ -529,6 +570,26 @@ class ShadowCollector:
 
         # 市场状态行为禁止开仓 → 直接 no_signal
         if not market_behavior.get('can_trade', True):
+            try:
+                atr_filter_snapshot = self._atr_filter_snapshot(
+                    strategy,
+                    atr_snapshot_inputs,
+                )
+            except Exception as exc:
+                logger.error(
+                    "ATR 审计快照异常",
+                    profile_id=profile_id,
+                    symbol=symbol,
+                    error=str(exc),
+                )
+                return [self._make_event(
+                    profile_id=profile_id,
+                    scheduled_at=scheduled_at,
+                    evaluated_at=evaluated_at,
+                    decision="analysis_error",
+                    reason_codes=["atr_bootstrap_error"],
+                    source_kline_close_times=close_times,
+                )]
             return [self._make_event(
                 profile_id=profile_id,
                 scheduled_at=scheduled_at,
@@ -536,29 +597,70 @@ class ShadowCollector:
                 decision="no_signal",
                 reason_codes=["market_state_disabled"],
                 direction=None,
+                feature_snapshot=(
+                    {"atr_filter": atr_filter_snapshot}
+                    if atr_snapshot_inputs is not None
+                    else None
+                ),
                 source_kline_close_times=close_times,
             )]
 
-        # ---- 3. 无状态市场决策 ----
+        # ---- 4. 无状态市场决策 ----
+        signal_exception: Optional[Exception] = None
         try:
             signal_components, reason = await strategy._analyze_stationary_signal(
-                symbol, multi_klines, indicators, market_state_name, market_behavior,
+                symbol,
+                multi_klines,
+                analysis_indicators,
+                market_state_name,
+                market_behavior,
             )
         except Exception as exc:
             logger.error(
                 "_analyze_stationary_signal 异常",
                 profile_id=profile_id, symbol=symbol, error=str(exc), exc_info=True,
             )
+            signal_exception = exc
+            signal_components, reason = None, ""
+
+        # 快照必须在真实信号分析之后生成，因为分析路径会把当前 ATR 追加一次。
+        try:
+            atr_filter_snapshot = self._atr_filter_snapshot(
+                strategy,
+                atr_snapshot_inputs,
+            )
+        except Exception as exc:
+            logger.error(
+                "ATR 审计快照异常",
+                profile_id=profile_id,
+                symbol=symbol,
+                error=str(exc),
+            )
+            return [self._make_event(
+                profile_id=profile_id,
+                scheduled_at=scheduled_at,
+                evaluated_at=evaluated_at,
+                decision="analysis_error",
+                reason_codes=["atr_bootstrap_error"],
+                source_kline_close_times=close_times,
+            )]
+
+        if signal_exception is not None:
             return [self._make_event(
                 profile_id=profile_id,
                 scheduled_at=scheduled_at,
                 evaluated_at=evaluated_at,
                 decision="analysis_error",
                 reason_codes=["stationary_signal_exception"],
+                feature_snapshot=(
+                    {"atr_filter": atr_filter_snapshot}
+                    if atr_snapshot_inputs is not None
+                    else None
+                ),
                 source_kline_close_times=close_times,
             )]
 
-        # ---- 4. 组装事件 ----
+        # ---- 5. 组装事件 ----
         if signal_components is None:
             # no_signal：解析 reason 得到 reason_codes
             reason_codes = _parse_no_signal_reason(reason)
@@ -571,6 +673,11 @@ class ShadowCollector:
                 direction=None,
                 grade=None,
                 score=None,
+                feature_snapshot=(
+                    {"atr_filter": atr_filter_snapshot}
+                    if atr_snapshot_inputs is not None
+                    else None
+                ),
                 source_kline_close_times=close_times,
             )]
 
@@ -581,7 +688,121 @@ class ShadowCollector:
             evaluated_at=evaluated_at,
             signal_components=signal_components,
             close_times=close_times,
+            atr_filter_snapshot=atr_filter_snapshot,
         )]
+
+    def _bootstrap_atr_history(
+        self,
+        *,
+        profile_id: str,
+        strategy: Any,
+        multi_klines: Dict[str, List[Dict]],
+        scheduled_at: datetime,
+    ) -> int:
+        """为显式启用的校准 profile 确定性重建动态 ATR 历史。"""
+        shadow_cfg = self.profile_configs[profile_id].get("shadow", {})
+        if not shadow_cfg.get("bootstrap_dynamic_atr_history", False):
+            return 0
+        if strategy.atr_filter is None or not strategy.atr_filter.enabled:
+            raise CalibrationError("calibrated profile requires enabled atr_filter")
+
+        atr_values, close_prices = prepare_runtime_atr_history(
+            multi_klines.get("1h", []),
+            scheduled_at=scheduled_at,
+        )
+        count = strategy.atr_filter.initialize_history(
+            self.symbol,
+            atr_values,
+            close_prices,
+        )
+        if count < strategy.atr_filter.min_history_count:
+            raise CalibrationError(
+                f"atr_history_below_min:{count}<"
+                f"{strategy.atr_filter.min_history_count}"
+            )
+        return count
+
+    def _validated_atr_snapshot_inputs(
+        self,
+        indicators: Dict[str, Any],
+        multi_klines: Dict[str, List[Dict]],
+    ) -> Tuple[float, float, float]:
+        """校验当前 ATR/收盘价/ADX，禁止非有限值进入决策事件。"""
+        atr = float(indicators["1h"]["ATR"].iloc[-1])
+        current_close = float(multi_klines["1h"][-1]["close"])
+        if not math.isfinite(atr) or atr <= 0:
+            raise CalibrationError(f"invalid_current_atr:{atr}")
+        if not math.isfinite(current_close) or current_close <= 0:
+            raise CalibrationError(f"invalid_current_close:{current_close}")
+
+        def _positive_finite_adx(timeframe: str) -> float:
+            series = indicators.get(timeframe, {}).get("ADX")
+            if series is None:
+                return 0.0
+            try:
+                value = float(series.iloc[-1])
+            except (IndexError, TypeError, ValueError, OverflowError):
+                return 0.0
+            return value if math.isfinite(value) and value > 0 else 0.0
+
+        adx_value = _positive_finite_adx("1d")
+        if adx_value == 0.0:
+            adx_value = _positive_finite_adx("4h")
+        return atr, current_close, adx_value
+
+    @staticmethod
+    def _with_sanitized_adx(
+        indicators: Dict[str, Any],
+        adx_value: float,
+    ) -> Dict[str, Any]:
+        """返回统一覆盖 1d/4h 最新 ADX 的分析视图，不修改共享指标。"""
+        import pandas as pd
+
+        analysis_indicators = dict(indicators)
+        for timeframe in ("1d", "4h"):
+            timeframe_indicators = dict(indicators.get(timeframe, {}))
+            original_adx = timeframe_indicators.get("ADX")
+            if original_adx is None or len(original_adx) == 0:
+                sanitized_adx = pd.Series([adx_value])
+            else:
+                sanitized_adx = original_adx.copy(deep=True)
+                sanitized_adx.iloc[-1] = adx_value
+            timeframe_indicators["ADX"] = sanitized_adx
+            analysis_indicators[timeframe] = timeframe_indicators
+        return analysis_indicators
+
+    def _atr_filter_snapshot(
+        self,
+        strategy: Any,
+        snapshot_inputs: Optional[Tuple[float, float, float]],
+    ) -> Optional[Dict[str, Any]]:
+        """从真实分析后的 filter 状态记录本次实际动态 ATR 阈值。"""
+        if snapshot_inputs is None:
+            return None
+        if strategy.atr_filter is None or not strategy.atr_filter.enabled:
+            raise CalibrationError("calibrated profile requires enabled atr_filter")
+        atr, current_close, adx_value = snapshot_inputs
+
+        final_threshold, info = strategy.atr_filter.get_dynamic_min_atr_percent(
+            self.symbol,
+            adx_value,
+        )
+        snapshot = {
+            "current_atr_percent": atr / current_close * 100,
+            "base_threshold": float(info["base_threshold"]),
+            "final_threshold": float(final_threshold),
+            "absolute_min": float(info["absolute_min"]),
+            "coefficient": float(info["coefficient"]),
+            "adx": adx_value,
+            "history_count": int(info["history_count"]),
+        }
+        if any(
+            not math.isfinite(value)
+            for key, value in snapshot.items()
+            if key != "history_count"
+        ):
+            raise CalibrationError("non_finite_atr_snapshot")
+        return snapshot
 
     # ------------------------------------------------------------------ 事件组装辅助
     def _make_event(
@@ -598,6 +819,7 @@ class ShadowCollector:
         score: float | None = None,
         source_kline_close_times: Dict[str, int] | None = None,
         reference_price: float | None = None,
+        feature_snapshot: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """组装一条 shadow_decision_events 记录（research schema 契约）"""
         return {
@@ -618,7 +840,7 @@ class ShadowCollector:
             "tp2_rule": None,
             "trailing_rule": None,
             "time_stop_rule": None,
-            "feature_snapshot": None,
+            "feature_snapshot": feature_snapshot,
             "reason_codes": reason_codes or [],
             "data_quality_reason": data_quality_reason,
             "config_hash": self.config_hashes.get(profile_id, ""),
@@ -634,6 +856,7 @@ class ShadowCollector:
         evaluated_at: datetime,
         signal_components: Dict[str, Any],
         close_times: Dict[str, int],
+        atr_filter_snapshot: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """从无状态 signal_components 组装 candidate 事件
 
@@ -661,6 +884,14 @@ class ShadowCollector:
         tp1_mult = risk_cfg.get("partial_take_profit", {}).get("tp1_atr_multiplier") if atr else None
         tp2_mult = risk_cfg.get("partial_take_profit", {}).get("tp2_atr_multiplier") if atr else None
 
+        feature_snapshot = {
+            "market_state": signal_components.get("market_state"),
+            "atr": float(atr) if atr is not None else None,
+            "price_change_1h": float(signal_components.get("price_change_1h", 0)),
+        }
+        if atr_filter_snapshot is not None:
+            feature_snapshot["atr_filter"] = atr_filter_snapshot
+
         return {
             "run_id": self.run_id,
             "profile_id": profile_id,
@@ -679,11 +910,7 @@ class ShadowCollector:
             "tp2_rule": _rule_dict("tp2", atr, tp2_mult),
             "trailing_rule": risk_cfg.get("dynamic_trailing"),
             "time_stop_rule": risk_cfg.get("time_stop"),
-            "feature_snapshot": {
-                "market_state": signal_components.get("market_state"),
-                "atr": float(atr) if atr is not None else None,
-                "price_change_1h": float(signal_components.get("price_change_1h", 0)),
-            },
+            "feature_snapshot": feature_snapshot,
             "reason_codes": [],
             "data_quality_reason": None,
             "config_hash": self.config_hashes.get(profile_id, ""),

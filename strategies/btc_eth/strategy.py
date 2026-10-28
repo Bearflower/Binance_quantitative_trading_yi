@@ -654,6 +654,8 @@ class BTCEthStrategy:
                     override['percentile'] = cfg['atr_percentile'] / 100.0
                 if 'atr_factor_strong' in cfg:
                     override['strong_coefficient'] = cfg['atr_factor_strong']
+                if 'atr_fallback_percent' in cfg:
+                    override['fallback_atr_percent'] = cfg['atr_fallback_percent']
                 if override:
                     symbol_overrides[sym] = override
             if symbol_overrides:
@@ -5817,7 +5819,7 @@ class BTCEthStrategy:
             return
 
         # 持仓归属校验（方案C）：不为对家策略开的仓位补挂保护单
-        owner = await resolve_position_owner(self.db_manager, symbol)
+        owner = await resolve_position_owner(self.db_manager, symbol, status_filter=False)
         if owner is None or owner != self.my_record_name:
             reason = "无法判定归属" if owner is None else f"归属{owner}"
             logger.warning(

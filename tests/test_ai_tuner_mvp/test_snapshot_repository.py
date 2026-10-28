@@ -211,3 +211,80 @@ async def test_as_of_market_query_rejects_future_source_and_collection():
     await SnapshotRepository(db).latest_market_snapshots("hrs", AS_OF)
     assert "source_observed_at <= $2" in db.last_fetch_all_query
     assert "collected_at <= $2" in db.last_fetch_all_query
+
+
+# ---------------------------------------------------------------------------
+# 修复 #2 回归防线：store_universe 的 SQL 文本不得含 SQL 注释
+# ---------------------------------------------------------------------------
+
+
+class _SQLCaptureDB(FakeDatabase):
+    """扩展 FakeDatabase：额外记录 execute_transaction 里的每条 SQL 文本。"""
+
+    def __init__(self):
+        super().__init__()
+        self.transaction_sqls = []
+
+    async def execute_transaction(self, queries):
+        for sql, _args in queries:
+            self.transaction_sqls.append(sql)
+        return await super().execute_transaction(queries)
+
+
+@pytest.mark.asyncio
+async def test_store_universe_sql_is_comment_free_and_passes_validate_sql():
+    """store_universe 提交的所有 SQL：
+    1. 不含 -- / /* / */（shared.database._validate_sql 的注释注入拦截）
+    2. 每条 SQL 用真实 DatabaseManager._validate_sql 校验全部通过
+       （构造 DatabaseManager 时不建连接，只校验安全规则）
+    """
+    from datetime import timedelta
+
+    from shared.database import DatabaseManager
+
+    db = _SQLCaptureDB()
+    repo = SnapshotRepository(db)
+    await repo.store_universe(
+        "hrs",
+        AS_OF + timedelta(hours=2),
+        ["BTCUSDT"],
+        ["ETHUSDT", "SOLUSDT"],
+        "run-comment-free",
+        "c" * 64,
+    )
+
+    assert db.transaction_sqls, "store_universe 应至少提交一条 SQL"
+
+    # 1. 文本层硬检查：不含 SQL 注释标记
+    for sql in db.transaction_sqls:
+        assert "--" not in sql, f"SQL 中残留 -- 注释: {sql!r}"
+        assert "/*" not in sql, f"SQL 中残留 /* 注释: {sql!r}"
+        assert "*/" not in sql, f"SQL 中残留 */ 注释: {sql!r}"
+
+    # 2. 复用真实 DatabaseManager._validate_sql 逐条校验
+    #    注意 _validate_sql 会拦截 CREATE/ALTER/GRANT 等关键字；
+    #    store_universe 的 SQL 只有 INSERT/SELECT，能通过。
+    validator = DatabaseManager(
+        host="localhost", port=5432, database="_unused", user="_u", password="_p"
+    )
+    for sql in db.transaction_sqls:
+        validator._validate_sql(sql)  # 不抛即通过
+
+
+def test_validate_sql_rejects_double_dash_comment_neg_guard():
+    """负向对照：真实 DatabaseManager._validate_sql 对含 -- 的 SQL 应抛 SQLInjectionError。
+
+    此用例的存在是为了防止未来有人改坏 _validate_sql（比如放宽注释检查）导致
+    上一条正向测试假通过——校验器本身不能被静默失效。
+    """
+    from shared.database import DatabaseManager, SQLInjectionError
+
+    validator = DatabaseManager(
+        host="localhost", port=5432, database="_unused", user="_u", password="_p"
+    )
+    with pytest.raises(SQLInjectionError, match="注释注入"):
+        validator._validate_sql("SELECT 1 -- x")
+
+    # 额外覆盖 /* */ 注释
+    with pytest.raises(SQLInjectionError, match="注释注入"):
+        validator._validate_sql("SELECT 1 /* x */")

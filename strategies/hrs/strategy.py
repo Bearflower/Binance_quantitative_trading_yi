@@ -24,6 +24,7 @@ from shared.notification import NotificationClient
 from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared.trade_logger import TradeLogger
 from shared.position_baseline import calc_occupied_margin, calc_position_margin
+from shared.position_ownership import release_claim
 from ai_tuner.snapshots.repository import SnapshotRepository
 
 from .candidate_pool import CandidatePool
@@ -2518,6 +2519,7 @@ class HRSStrategy(BaseStrategy):
                         )
                         await self.position_manager.cancel_all_orders(symbol)
                         self.position_manager.remove_position(symbol)
+                        await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
 
                         # B6a: 按真实已实现盈亏符号计数，不再假设"全平=止盈"
                         await self._record_outcome_by_pnl(
@@ -2529,6 +2531,9 @@ class HRSStrategy(BaseStrategy):
                         if self._should_unregister(symbol):
                             await self._unregister_single_symbol(symbol)
                         continue  # 跳过后续检查
+
+                    if tp_result in (1, 2):
+                        await self._save_state()
 
                 # V2.11: 移动止损定期更新（tp2_reached后每次监控循环重建）
                 # 根因：update_best_price() 每次循环都更新内存中的 best_price，
@@ -2921,12 +2926,97 @@ class HRSStrategy(BaseStrategy):
             logger.info(f"对齐到每小时第{target_minute}分钟，等待 {wait_seconds:.0f} 秒")
             await asyncio.sleep(wait_seconds)
 
-    async def _ensure_db_schema(self) -> None:
-        """确保数据库schema和表结构存在"""
+    async def _execute_ddl_safe(self, sql: str) -> bool:
+        """安全执行单条幂等 DDL：失败仅记日志，绝不抛异常中断后续 DDL
+
+        用于 _ensure_db_schema 内部的幂等 CREATE/ALTER，
+        避免生产环境数据库账号权限不足时中断整段建表流程。
+
+        Returns:
+            True 表示 DDL 成功执行；False 表示执行失败（异常被吞掉）。
+            空 SQL 等边缘异常也返回 False，调用方不会感知异常。
+        """
+        try:
+            # 指纹计算放在 try 内：空 SQL 时 splitlines()[0] 会 IndexError，
+            # 不应反噬调用方（空 SQL 本身也是一种应计失败的异常输入）。
+            fingerprint = sql.strip().splitlines()[0][:80]
+        except IndexError:
+            fingerprint = sql.strip()[:80] or "<empty>"
+        try:
+            await self.db.execute_ddl(sql)
+            return True
+        except Exception as exc:
+            logger.error(
+                "幂等DDL执行失败",
+                ddl=fingerprint,
+                error=str(exc),
+            )
+            # 防御性初始化：_execute_ddl_safe 可能在 _ensure_db_schema 之外被单独调用（如单元测试），
+            # 此时实例尚未经过 __init__，_schema_ddl_failures 属性不存在。
+            self._schema_ddl_failures = getattr(self, "_schema_ddl_failures", 0) + 1
+            return False
+
+    async def _ensure_schema_exists(self) -> None:
+        """确保 hrs schema 存在，失败只记录不抛异常
+
+        先查询 information_schema.schemata（纯 SELECT，不触发 CREATE 权限）：
+        - 已存在：直接返回
+        - 不存在：尝试 CREATE SCHEMA IF NOT EXISTS；若权限不足则
+          记录可操作提示（由 DBA 执行 database/postgres/init-scripts/14-hrs-schema.sql），
+          然后 return 让后续依赖 schema 的幂等 DDL 继续尝试。
+        """
+        try:
+            row = await self.db.fetch_one(
+                "SELECT 1 AS exists_flag FROM information_schema.schemata "
+                "WHERE schema_name = $1",
+                "hrs",
+            )
+        except Exception as exc:
+            logger.warning(
+                "查询 information_schema.schemata 失败，按 schema 缺失处理",
+                error=str(exc),
+            )
+            row = None
+
+        if row is not None:
+            return
+
         try:
             await self.db.execute_ddl("CREATE SCHEMA IF NOT EXISTS hrs")
+        except Exception as exc:
+            # asyncpg 异常对象有 sqlstate 属性；非 asyncpg 异常可能没有——
+            # 用 getattr 安全取值，取不到就归为"未知原因"分支，避免 KeyError 反噬。
+            sqlstate = getattr(exc, "sqlstate", None)
+            if sqlstate == "42501":
+                # PostgreSQL 42501 = insufficient_privilege：确认是权限问题
+                logger.error(
+                    "hrs schema 缺失且建库失败",
+                    hint="检测到权限不足(42501)，请由 DBA 执行 database/postgres/init-scripts/14-hrs-schema.sql",
+                    error=str(exc),
+                )
+            else:
+                # 其他未知原因（网络、语法、连接问题等），只记原文
+                logger.error(
+                    "hrs schema 缺失且建库失败",
+                    error=str(exc),
+                )
+            self._schema_ddl_failures = getattr(self, "_schema_ddl_failures", 0) + 1
 
-            await self.db.execute_ddl("""
+    async def _ensure_db_schema(self) -> None:
+        """确保数据库schema和表结构存在
+
+        所有 DDL 都经 _execute_ddl_safe / _ensure_schema_exists 幂等封装，
+        单条失败只记日志不抛异常，避免账号权限不足时阻断后续 DDL。
+
+        每次调用前重置 _schema_ddl_failures，结束时按计数字段日志：
+        - 0 → info "数据库Schema初始化完成"
+        - >0 → error "数据库Schema初始化存在未完成项"（附计数与 hint）
+        """
+        try:
+            self._schema_ddl_failures = 0
+            await self._ensure_schema_exists()
+
+            await self._execute_ddl_safe("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_meta (
                     key TEXT PRIMARY KEY,
                     value TEXT,
@@ -2938,7 +3028,7 @@ class HRSStrategy(BaseStrategy):
             lifecycle_columns_sql = ",\n                    ".join(
                 f"{name} {col_type}" for name, col_type in _POSITION_LIFECYCLE_COLUMNS.items()
             )
-            await self.db.execute_ddl(f"""
+            await self._execute_ddl_safe(f"""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_positions (
                     symbol TEXT,
                     direction TEXT,
@@ -2955,29 +3045,29 @@ class HRSStrategy(BaseStrategy):
             """)
 
             # FR-06: 幂等迁移（存量库升级关键：为 hrs_positions 补齐 algo_ids 列）
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS algo_ids JSONB
             """)
 
             # 2026-10-10: 幂等迁移（持久化 remaining_quantity 与止盈目标标记，
             # 避免重启后目标标记丢失、remaining_quantity 与交易所不自洽）
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS remaining_quantity DOUBLE PRECISION
             """)
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS target1_reached BOOLEAN
             """)
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS target2_reached BOOLEAN
             """)
 
             # B5: 幂等迁移（补齐生命周期元数据列；列清单与建表共用同一份定义）
             for column, col_type in _POSITION_LIFECYCLE_COLUMNS.items():
-                await self.db.execute_ddl(
+                await self._execute_ddl_safe(
                     f"ALTER TABLE hrs.hrs_positions ADD COLUMN IF NOT EXISTS {column} {col_type}"
                 )
 
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_orders (
                     order_id BIGINT PRIMARY KEY,
                     symbol TEXT,
@@ -2988,7 +3078,7 @@ class HRSStrategy(BaseStrategy):
                 )
             """)
 
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_blacklist (
                     symbol TEXT PRIMARY KEY,
                     reason TEXT,
@@ -2996,7 +3086,7 @@ class HRSStrategy(BaseStrategy):
                 )
             """)
 
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_state (
                     state_key TEXT PRIMARY KEY,
                     state_data JSONB,
@@ -3005,7 +3095,7 @@ class HRSStrategy(BaseStrategy):
             """)
 
             # V1.9 新增：1h K线缓存表
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_klines_1h (
                     symbol TEXT NOT NULL,
                     open_time BIGINT NOT NULL,
@@ -3020,7 +3110,7 @@ class HRSStrategy(BaseStrategy):
             """)
 
             # V1.9 新增：4h K线缓存表（由1h合成）
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_klines_4h (
                     symbol TEXT NOT NULL,
                     open_time BIGINT NOT NULL,
@@ -3035,7 +3125,7 @@ class HRSStrategy(BaseStrategy):
             """)
 
             # V1.9 新增：活跃币种注册表
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_active_symbols (
                     symbol TEXT PRIMARY KEY,
                     registered_at TIMESTAMPTZ DEFAULT NOW(),
@@ -3045,7 +3135,7 @@ class HRSStrategy(BaseStrategy):
 
             # V2.0 新增：信号日志表（P2-1 独立表持久化）
             # R9: entry_mode / signal_origin 两列——方案 A 归属隔离的建表声明（本轮不 apply）
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 CREATE TABLE IF NOT EXISTS hrs.hrs_signals (
                     id BIGSERIAL PRIMARY KEY,
                     symbol TEXT NOT NULL,
@@ -3064,36 +3154,48 @@ class HRSStrategy(BaseStrategy):
                 )
             """)
             # 信号日志索引
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 CREATE INDEX IF NOT EXISTS idx_hrs_signals_symbol_time
                 ON hrs.hrs_signals (symbol, triggered_at DESC)
             """)
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 CREATE INDEX IF NOT EXISTS idx_hrs_signals_status
                 ON hrs.hrs_signals (status)
             """)
 
             # V2.4: LV-RM 字段
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 ALTER TABLE hrs.hrs_signals
                 ADD COLUMN IF NOT EXISTS bb_position DOUBLE PRECISION
             """)
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 ALTER TABLE hrs.hrs_signals
                 ADD COLUMN IF NOT EXISTS rsi_value DOUBLE PRECISION
             """)
 
             # R9: 归属隔离字段——幂等补齐存量库（本轮不 apply 迁移）
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 ALTER TABLE hrs.hrs_signals ADD COLUMN IF NOT EXISTS entry_mode TEXT
             """)
-            await self.db.execute_ddl("""
+            await self._execute_ddl_safe("""
                 ALTER TABLE hrs.hrs_signals ADD COLUMN IF NOT EXISTS signal_origin TEXT
             """)
 
-            logger.info("数据库Schema初始化完成")
+            # 按 _schema_ddl_failures 计数分流日志
+            if self._schema_ddl_failures == 0:
+                logger.info("数据库Schema初始化完成")
+            else:
+                logger.error(
+                    "数据库Schema初始化存在未完成项",
+                    failed_count=self._schema_ddl_failures,
+                    hint="详见上方「幂等DDL执行失败」日志",
+                )
         except Exception as e:
-            logger.error("数据库Schema初始化失败", error=str(e))
+            logger.error(
+                "hrs Schema 初始化存在未完成项",
+                detail="外层 try/except 兜底；单条 DDL 失败已由 _execute_ddl_safe 独立记录",
+                error=str(e),
+            )
 
     def _apply_position_row(self, row: Dict[str, Any]) -> None:
         """将 hrs_positions 单行恢复为内存持仓（B5：开仓/复核时刻分离 + D9 旧仓标记）
@@ -3422,6 +3524,7 @@ class HRSStrategy(BaseStrategy):
                         direction=local_positions[symbol].get("direction"),
                     )
                     self.position_manager.remove_position(symbol)
+                    await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
                     # 清理K线服务
                     if self._should_unregister(symbol):
                         await self._unregister_single_symbol(symbol)
@@ -4102,16 +4205,25 @@ class HRSStrategy(BaseStrategy):
                 )
                 await self.position_manager.cancel_all_orders(symbol)
                 self.position_manager.remove_position(symbol)
+                await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
                 await self._save_state()
                 return
 
             # 交易所持仓量明显小于初始开仓量 → 说明 TP1 已部分成交
             if not target1_reached and exchange_qty < entry_quantity * self._tp1_filled_ratio:
-                # 2026-10-10 修复：统一走 mark_target_reached（既置标记又按比例
-                # 缩减 remaining_quantity），避免此前直接置 target1_reached 绕过
-                # 比例缩减，造成 remaining_quantity 与目标标记不自洽（上报量失真，
-                # 且下一轮 detect 会把同一段减仓误判为 TP2）。
-                self.position_manager.mark_target_reached(symbol, 1)
+                # 实际成交量会因交易所数量精度偏离配置比例；若减少幅度接近 TP1，
+                # 以交易所剩余量为准。明显更少时可能停机期间 TP2 也已成交，
+                # 保留理论 TP1 基准，让下一轮继续识别 TP2。
+                expected_tp1_qty = entry_quantity * (
+                    1 - self.position_manager.target1_close_percent
+                )
+                tp2_halfway_qty = expected_tp1_qty * (
+                    1 - self.position_manager.target2_close_percent / 2
+                )
+                actual_qty = exchange_qty if exchange_qty >= tp2_halfway_qty else None
+                self.position_manager.mark_target_reached(
+                    symbol, 1, actual_remaining_quantity=actual_qty
+                )
                 target1_reached = True
                 logger.info(
                     "检测到TP1已成交，更新状态",
@@ -4119,12 +4231,12 @@ class HRSStrategy(BaseStrategy):
                     entry_quantity=entry_quantity,
                     exchange_qty=exchange_qty,
                 )
-                # 跟踪基准对齐「模型认为的剩余量」，而非直接对齐交易所量：
-                # 若停机期间 TP2 也已成交，交易所量会明显低于该基准，下一轮
-                # detect 仍能识别出 TP2，避免把未成交的目标永久漏记。
+                # 若可能同时成交 TP2，跟踪基准仍是理论 TP1 剩余量；
+                # 否则与交易所实际持仓量一致。
                 self.position_manager.sync_tracked_qty(
                     symbol, pos.get("remaining_quantity", exchange_qty)
                 )
+                await self._save_state()
 
             # ATR为0时尝试重新计算
             if atr <= 0:
@@ -4456,6 +4568,7 @@ class HRSStrategy(BaseStrategy):
 
             await self.position_manager.cancel_all_orders(symbol)
             self.position_manager.remove_position(symbol)
+            await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
             return True
 
         await self._handle_incomplete_close(symbol, direction, result, close_reason)

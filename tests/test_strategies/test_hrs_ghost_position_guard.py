@@ -24,7 +24,7 @@ import pytest
 import yaml
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), "..", "..")
 sys.path.insert(0, os.path.abspath(PROJECT_ROOT))
@@ -109,7 +109,9 @@ class TestReplenishSinglePositionGhostGuard:
             return_value=[{"symbol": SYMBOL, "positionAmt": "0.000"}]
         )
 
-        await strategy._replenish_single_position(SYMBOL)
+        with patch("strategies.hrs.strategy.release_claim", new_callable=AsyncMock) as release:
+            await strategy._replenish_single_position(SYMBOL)
+        release.assert_awaited_once_with(strategy.db, SYMBOL, strategy.strategy_name, reason="position_closed")
 
         # 清理前应先回写已实现盈亏（与全平路径对齐，避免丢失 PnL 记录）
         strategy._writeback_pnl_for_full_close.assert_awaited_once()
@@ -190,6 +192,23 @@ class TestMonitorPositionsGhostGuard:
         await strategy._monitor_positions()
 
         strategy._replenish_single_position.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_full_close_releases_entry_record(self):
+        strategy = _make_strategy()
+        strategy.binance_client.get_position = AsyncMock(
+            return_value=[{"symbol": SYMBOL, "positionAmt": "0"}]
+        )
+        strategy.position_manager.detect_take_profit_fills.return_value = 0
+        strategy._record_outcome_by_pnl = AsyncMock()
+
+        with patch("strategies.hrs.strategy.release_claim", new_callable=AsyncMock) as release:
+            await strategy._monitor_positions()
+
+        strategy.position_manager.remove_position.assert_called_once_with(SYMBOL)
+        release.assert_awaited_once_with(
+            strategy.db, SYMBOL, strategy.strategy_name, reason="position_closed"
+        )
 
 
 # ============================================================================

@@ -1,0 +1,49 @@
+# Staged journald rollout. Keep this file alongside docker-compose.yml on the server.
+# Add services here only after their current logs have been archived and the
+# preceding rollout batch has passed health and cross-recreation log checks.
+services:
+  dashboard-api:
+    logging: !override
+      driver: journald
+  data-backend:
+    logging: !override
+      driver: journald
+  aggtrade-collector:
+    logging: !override
+      driver: journald
+  kline-monitor:
+    logging: !override
+      driver: journald
+  ai-tuner:
+    logging: !override
+      driver: journald
+  ai-tuner-snapshot:
+    logging: !override
+      driver: journald
+  kline-service:
+    logging: !override
+      driver: journald
+  mtcps-xau-shadow:
+    logging: !override
+      driver: journald
+  grid-strategy:
+    logging: !override
+      driver: journald
+  grid-realtime:
+    logging: !override
+      driver: journald
+  new-coin-strategy:
+    logging: !override
+      driver: journald
+  hrs-strategy:
+    logging: !override
+      driver: journald
+  btc-eth-strategy:
+    logging: !override
+      driver: journald
+  btc-eth-aggressive-strategy:
+    logging: !override
+      driver: journald
+  postgres:
+    logging: !override
+      driver: journald

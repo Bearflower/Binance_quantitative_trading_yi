@@ -78,6 +78,11 @@ deploy       # SSH 服务器 pull + up（幂等）：残留容器清理只移除
 | `SERVER_SSH_KEY` | 服务器 only.pem 的完整内容 | Actions SSH 服务器认证 |
 | `GHCR_PULL_TOKEN` | GitHub PAT（read:packages） | 服务器 pull GHCR 私有镜像认证 |
 
+`GHCR_PULL_TOKEN` 只允许由 Actions masked environment 经 SSH stdin 传给远端
+`docker login --password-stdin`；禁止 sed 进部署脚本或上传到临时文件。远端部署脚本使用
+`/root/trading_system/.deploy_tmp/deploy-<run_id>-<run_attempt>.sh`，目录和脚本权限均为
+`0700`，执行成功或失败都由 EXIT trap 清理并保留原退出码。
+
 ### 2.4 GHCR 镜像命名规范
 
 ```
@@ -111,6 +116,11 @@ postgres 用公共镜像 `postgres:15-alpine`，不动。
 > **影子 profile 配置来源（2026-10-20 补记）**：`mtcps-xau-shadow` 的 profile 配置（`xau_original.yaml` / `xau_aggressive.yaml`）**随镜像烘焙**——`strategies/btc_eth/Dockerfile` 的 `COPY strategies/btc_eth/ /app/strategies/btc_eth/` 已把独立子目录 `strategies/btc_eth/shadow/config/` 一并带入镜像（git 跟踪，`git ls-files` 可见），运行期只读、不写回，**不使用宿主 bind mount**。原因：宿主目录 `./strategies/btc_eth/shadow/config` 若在服务器上缺失，Docker 会**自动创建空目录**并挂载，从而**遮蔽镜像内烘焙的配置文件**，容器启动即报「profile 配置文件不存在」crash-loop（2026-10-20 真实发生）。故 compose 已移除该挂载，镜像烘焙配置为单一可信源；另加静态守护测试 `tests/test_strategies/test_shadow_compose_config_mount.py` 拦截此类遮蔽挂载。回退仍为 `docker compose stop mtcps-xau-shadow`。
 >
 > **遗留隐患（知悉项，待独立评估）**：因 btc-eth 镜像现依赖 `strategies/btc_eth_aggressive/` 目录内容，而 CI 增量构建按「各 job 只看自己目录是否变更」判定——**未来仅改 `strategies/btc_eth_aggressive/` 时 btc-eth 镜像不会重建 → 影子容器可能跑旧 aggr 代码**。此「镜像依赖与 CI diff 判定不一致」隐患已登记至 `docs/knowledge/INDEX.md` 待复查清单。
+
+> **黄金校准影子容器（2026-10-27，部署前口径）**：`mtcps-xau-calibrated-shadow` 展示名为“MTPCS 黄金校准版（XAU）”，技术标识固定为 instance=`mtcps_xau_calibrated_shadow`、profile=`xau_calibrated`、run prefix=`xau-calibrated-shadow`。该服务复用 `trading-btc-eth` 镜像和 shadow 入口，基于 **MTCPS 原版**且**只校准 ATR**；300 USDT 独立虚拟权益，`SHADOW_CRON=20 * * * *`，以首个数据质量合格的干净事件为起点独立观察八周。原版/激进版观察期不重置，报告按同窗口比较。停止命令：`docker compose stop mtcps-xau-calibrated-shadow`。本段仅记录已实现的部署物料，**不声称已部署或观察期已开始**。
+> 首次创建模式仅由完整 push 范围内 marker 的 `name-status=A` 触发；修改/删除不触发，零或不可达 base fail-closed，`workflow_dispatch` 保持 full。目标化路径只认证 GHCR、上传 compose、pull/up 新服务并检查健康，不同步 init-scripts、不执行磁盘 prune。健康标记同时绑定 PID 与 `/proc/<pid>/stat` starttime，PID 复用不能复用旧标记。
+>
+> ATR 冻结证据由 `scripts/generate_xau_atr_calibration.py` 生成，manifest 与 `xau_calibrated.yaml` 双向绑定：2038 根有效 1h K 线、2025 个 ATR(14) 样本、P25=`0.0016161930783960743`、P50=`0.3160363742979797`、manifest hash=`46942cc14ceaa28dc8e9c397ad2c70b21de594f282b9def9c1410e66a4a71c78`、snapshot hash=`fb4cbe2c9cd0d39a1495faa584591466541f89eb25e932affe78c73137caea17`。`dynamic_atr.min_samples` 不做全局兼容；校准 profile 使用正确的 `min_history_count`，旧命名列为技术债单独治理。
 
 ### 2.6 服务器侧残留容器清理口径（2026-09-27 修正）
 
