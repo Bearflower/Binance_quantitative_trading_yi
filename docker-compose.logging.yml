@@ -14,3 +14,12 @@ services:
   kline-monitor:
     logging: !override
       driver: journald
+  ai-tuner:
+    logging: !override
+      driver: journald
+  ai-tuner-snapshot:
+    logging: !override
+      driver: journald
+  kline-service:
+    logging: !override
+      driver: journald
