@@ -11,7 +11,7 @@ from ai_tuner.replay import clock
 from ai_tuner.replay.broker import SymbolFilters, VirtualBroker
 from ai_tuner.replay.data_portal import DataPortal
 from ai_tuner.replay.engine import run_replay
-from ai_tuner.replay.models import ConfigHashes, DataBlocked, OrderIntent, Position, UniverseSlice
+from ai_tuner.replay.models import ConfigHashes, DataBlocked, EquityPoint, OrderIntent, Position, UniverseSlice
 
 from .conftest import ScriptedAdapter, make_bars, write_snapshot
 
@@ -351,3 +351,62 @@ def test_funding_check_does_not_change_intent_calls_or_audit_order(tmp_path):
     kinds = [event["type"] for event in result.audit_events]
     assert kinds == ["run_start", "fill", "funding_settlement"]
     assert [event["seq"] for event in result.audit_events] == list(range(len(kinds)))
+
+
+def test_pre_window_external_snapshots_are_context_only(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=1)
+    bars = make_bars("BTCUSDT", "1h", start, [("100", "100", "100", "100")])
+    snapshot_times = [start - timedelta(hours=1), start + timedelta(minutes=30)]
+    snapshots = [
+        {
+            "symbol": "BTCUSDT", "bucket_start": time.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "bucket_end": (time + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "observed_at": (time + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "is_complete": False,
+        }
+        for time in snapshot_times
+    ]
+    directory = str(tmp_path / "snapshot_with_warmup")
+    write_snapshot(
+        directory, "fixture", as_of, start, {"BTCUSDT|1h": bars}, ["BTCUSDT"], ["1h"],
+        market_snapshots=snapshots,
+    )
+    portal = DataPortal(directory, "fixture", as_of, start)
+
+    class SnapshotAdapter(ScriptedAdapter):
+        requires_external_snapshot = True
+
+        def prepare(self, data):
+            self.available_at_prepare = [s.bucket_start for s in data.external_snapshot("BTCUSDT")]
+            return super().prepare(data)
+
+        def on_snapshot(self, snap, ctx):
+            self.seen_snapshots.append(snap.bucket_start)
+
+    base = _cash_adapter(start, as_of, ["BTCUSDT"])
+    adapter = SnapshotAdapter(base._universe, _config_hashes(), lambda bar, ctx: ())
+    adapter.seen_snapshots = []
+
+    result = run_replay(portal, adapter, _broker(), include_snapshots=True)
+
+    assert adapter.available_at_prepare == snapshot_times
+    assert adapter.seen_snapshots == [snapshot_times[1]]
+    assert [point.ts for point in result.equity_curve] == [start, snapshot_times[1], as_of]
+    assert result.closed_trades == ()
+    assert [event["type"] for event in result.audit_events] == ["run_start"]
+
+
+def test_initial_point_is_literal_initial_equity_even_with_preloaded_position(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=1)
+    bars = make_bars("BTCUSDT", "1h", start, [("110", "110", "110", "110")])
+    portal = _window_portal(tmp_path, start, as_of, {"BTCUSDT|1h": bars}, ["BTCUSDT"])
+    broker = _broker()
+    broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
+    broker.last_prices["BTCUSDT"] = Decimal("110")
+
+    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker)
+
+    assert result.equity_curve[0] == EquityPoint(start, Decimal("10000"), Decimal("10000"), False)
+    assert result.equity_curve[-1].marked_equity == Decimal("10010")

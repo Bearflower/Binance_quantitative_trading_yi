@@ -73,7 +73,10 @@ def run_replay(
     snapshots: List[Any] = []
     if include_snapshots and getattr(adapter, "requires_external_snapshot", False):
         for symbol in ctx.universe.symbols:
-            snapshots.extend(portal.external_snapshot(symbol))
+            snapshots.extend(
+                snap for snap in portal.external_snapshot(symbol)
+                if portal.window_start < snap.bucket_start <= portal.as_of
+            )
 
     events: List[Event] = []
     events.extend(collect_bar_events(bars_by_subject))
@@ -98,7 +101,11 @@ def run_replay(
             },
         }
     ]
-    equity: Dict[datetime, EquityPoint] = {portal.window_start: broker.mark(portal.window_start)}
+    equity: Dict[datetime, EquityPoint] = {
+        portal.window_start: EquityPoint(
+            portal.window_start, broker.initial_equity, broker.initial_equity, False
+        )
+    }
     last_bar_close: Dict[str, datetime] = {}
 
     for timestamp, simultaneous_events in groupby(schedule, key=lambda event: event.time):
