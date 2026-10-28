@@ -429,6 +429,48 @@ class TestRunIdDeterminism:
         assert rid.startswith("xau-shadow-")
         assert "20261019100000" in rid
 
+    def test_calibrated_run_id_uses_configured_prefix(self):
+        from strategies.btc_eth.shadow.main import _generate_run_id
+
+        run_start = datetime(2026, 10, 27, 8, 0, 0, tzinfo=timezone.utc)
+        rid = _generate_run_id(
+            run_start,
+            "git",
+            {"xau_calibrated": "hash"},
+            prefix="xau-calibrated-shadow",
+        )
+
+        assert rid.startswith("xau-calibrated-shadow-20261027080000-")
+
+
+class TestCalibratedInstanceIdentity:
+    def test_calibrated_instance_env_overrides_identity(self, monkeypatch):
+        from strategies.btc_eth.shadow.instance import parse_shadow_instance_config
+
+        monkeypatch.setenv("INSTANCE_ID", "mtcps_xau_calibrated_shadow")
+        monkeypatch.setenv("SHADOW_PROFILES", "xau_calibrated")
+        monkeypatch.setenv("SHADOW_RUN_ID_PREFIX", "xau-calibrated-shadow")
+        monkeypatch.setenv("SHADOW_CRON", "20 * * * *")
+
+        config = parse_shadow_instance_config({})
+
+        assert config.instance_id == "mtcps_xau_calibrated_shadow"
+        assert config.profiles == ["xau_calibrated"]
+        assert config.run_id_prefix == "xau-calibrated-shadow"
+        assert config.cron == "20 * * * *"
+        assert config.instance.real_ordering_enabled is False
+        assert config.instance.state_reporting_enabled is False
+
+    def test_binance_client_receives_runtime_instance_id(self, monkeypatch):
+        from strategies.btc_eth.shadow.main import _build_binance_client
+
+        monkeypatch.setenv("BINANCE_API_KEY", "test-key")
+        monkeypatch.setenv("BINANCE_API_SECRET", "test-secret")
+
+        client = _build_binance_client("mtcps_xau_calibrated_shadow")
+
+        assert client.instance_id == "mtcps_xau_calibrated_shadow"
+
 
 # ---------------------------------------------------------------------------
 # 辅助：构造完整事件

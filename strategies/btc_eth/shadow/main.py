@@ -115,8 +115,8 @@ def _generate_run_id(
 # ---------------------------------------------------------------------------
 # 依赖装配
 # ---------------------------------------------------------------------------
-def _build_binance_client() -> ReadOnlyBinanceClient:
-    """构造只读 Binance 客户端（实例标识 mtcps_xau_shadow）"""
+def _build_binance_client(instance_id: str) -> ReadOnlyBinanceClient:
+    """构造使用运行时实例标识的只读 Binance 客户端"""
     api_key = os.getenv("BINANCE_API_KEY", "")
     api_secret = os.getenv("BINANCE_API_SECRET", "")
     if not api_key or not api_secret:
@@ -126,7 +126,7 @@ def _build_binance_client() -> ReadOnlyBinanceClient:
     return ReadOnlyBinanceClient(
         api_key=api_key,
         api_secret=api_secret,
-        instance_id="mtcps_xau_shadow",
+        instance_id=instance_id,
     )
 
 
@@ -212,7 +212,12 @@ async def run_forever() -> None:
                 old_hashes=existing_hashes,
             )
             await repo.close_shadow_run(run_id=old_run_id, status="closed")
-            run_id = _generate_run_id(now, git_commit, config_hashes)
+            run_id = _generate_run_id(
+                now,
+                git_commit,
+                config_hashes,
+                prefix=shadow_cfg.run_id_prefix,
+            )
             await repo.upsert_shadow_run(
                 run_id=run_id,
                 instance_id=shadow_cfg.instance_id,
@@ -224,7 +229,12 @@ async def run_forever() -> None:
                 config_hashes=config_hashes,
             )
     else:
-        run_id = _generate_run_id(now, git_commit, config_hashes)
+        run_id = _generate_run_id(
+            now,
+            git_commit,
+            config_hashes,
+            prefix=shadow_cfg.run_id_prefix,
+        )
         await repo.upsert_shadow_run(
             run_id=run_id,
             instance_id=shadow_cfg.instance_id,
@@ -241,7 +251,7 @@ async def run_forever() -> None:
         )
 
     # ---- 5. 装配依赖 ----
-    binance_client = _build_binance_client()
+    binance_client = _build_binance_client(shadow_cfg.instance_id)
     kline_service = _build_kline_service()
 
     collector = ShadowCollector(
