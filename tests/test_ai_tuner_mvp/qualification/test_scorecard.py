@@ -192,6 +192,18 @@ def test_independent_input_errors_are_aggregated():
     assert card["cost_monotonicity"]["holds"] is None
 
 
+def test_all_missing_and_unexpected_tiers_are_reported_together():
+    inputs = tiers()
+    inputs.pop("1.5x")
+    inputs.pop("2.0x")
+    inputs["3.0x"] = result([point(0, 100)])
+    card = scorecard(inputs)
+    assert card["evidence_status"] == "BLOCKED_DATA"
+    assert "tier_missing:1.5x" in card["blocked_reasons"]
+    assert "tier_missing:2.0x" in card["blocked_reasons"]
+    assert "unexpected_tier:3.0x" in card["blocked_reasons"]
+
+
 def test_zero_downside_blocks_sortino_but_keeps_calmar_diagnostic_reason():
     rising = [point(day, 100 + day) for day in range(71)]
     card = scorecard(tiers(baseline=rising))

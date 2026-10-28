@@ -53,14 +53,16 @@ def _validate_inputs(
         raise DataBlocked(window_reasons)
     if not isinstance(results, Mapping):
         raise DataBlocked(["invalid_tiers"])
-    for tier in TIERS:
-        if tier not in results:
-            raise DataBlocked(["tier_missing:{0}".format(tier)])
-    if set(results) != set(TIERS):
-        raise DataBlocked(["unexpected_tier"])
-    reference = None
     reasons = []
     for tier in TIERS:
+        if tier not in results:
+            reasons.append("tier_missing:{0}".format(tier))
+    for tier in sorted((key for key in results if key not in TIERS), key=str):
+        reasons.append("unexpected_tier:{0}".format(tier))
+    reference = None
+    for tier in TIERS:
+        if tier not in results:
+            continue
         result = results[tier]
         if not isinstance(result, ReplayResult):
             reasons.append("invalid_replay_result:{0}".format(tier))
