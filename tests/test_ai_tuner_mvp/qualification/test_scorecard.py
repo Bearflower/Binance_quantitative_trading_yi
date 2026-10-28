@@ -6,6 +6,7 @@ from decimal import Decimal
 import pytest
 
 from ai_tuner.qualification.scorecard import build_scorecard
+from ai_tuner.qualification.metrics import calmar_diagnostic
 from ai_tuner.replay.models import EquityPoint, ReplayResult
 
 
@@ -202,6 +203,41 @@ def test_all_missing_and_unexpected_tiers_are_reported_together():
     assert "tier_missing:1.5x" in card["blocked_reasons"]
     assert "tier_missing:2.0x" in card["blocked_reasons"]
     assert "unexpected_tier:3.0x" in card["blocked_reasons"]
+
+
+def test_calmar_anchors_diagnostic_start_while_baseline_mdd_uses_replay_start():
+    marks = [point(day, 100 if day < 7 else 100 + day) for day in range(78)]
+    marks[7] = point(7, 90)
+    marks[21] = point(21, 119)
+    inputs = {tier: result(marks) for tier in ("baseline", "1.5x", "2.0x")}
+    card = build_scorecard(
+        inputs,
+        initial_equity=D(100),
+        replay_start=START,
+        replay_end=START + timedelta(days=77),
+        diagnostic_start=START + timedelta(days=7),
+        diagnostic_end=START + timedelta(days=63),
+    )
+    assert card["evidence_status"] == "AVAILABLE"
+    assert card["calmar"] == calmar_diagnostic(
+        marks, START + timedelta(days=7), START + timedelta(days=63), D(90)
+    )
+    assert card["baseline_max_drawdown_pct"] == D(10)
+
+
+def test_missing_exact_diagnostic_start_mark_blocks_calmar_anchor():
+    marks = [point(day, 100 + (day % 4) - (day % 3)) for day in range(72)]
+    inputs = {tier: result(marks) for tier in ("baseline", "1.5x", "2.0x")}
+    card = build_scorecard(
+        inputs,
+        initial_equity=D(100),
+        replay_start=START,
+        replay_end=START + timedelta(days=71),
+        diagnostic_start=START + timedelta(hours=12),
+        diagnostic_end=DIAGNOSTIC_END + timedelta(hours=12),
+    )
+    assert card["evidence_status"] == "BLOCKED_DATA"
+    assert "diagnostic_start_mark_missing" in card["blocked_reasons"]
 
 
 def test_zero_downside_blocks_sortino_but_keeps_calmar_diagnostic_reason():

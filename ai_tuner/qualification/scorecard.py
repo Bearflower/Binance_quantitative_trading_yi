@@ -188,8 +188,16 @@ def build_scorecard(
         card["sortino_unavailable_reason"] = reason
         if reason:
             card["blocked_reasons"].append(reason)
+        diagnostic_start_mark = next(
+            (point for point in results["baseline"].equity_curve
+             if point.ts.astimezone(timezone.utc) == diag_start),
+            None,
+        )
+        if diagnostic_start_mark is None:
+            raise DataBlocked(["diagnostic_start_mark_missing"])
         card["calmar"] = calmar_diagnostic(
-            results["baseline"].equity_curve, diag_start, diag_end, initial_equity
+            results["baseline"].equity_curve, diag_start, diag_end,
+            diagnostic_start_mark.marked_equity,
         )
     except DataBlocked as error:
         card["blocked_reasons"].extend(error.gaps)
