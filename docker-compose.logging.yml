@@ -41,3 +41,6 @@ services:
   btc-eth-strategy:
     logging: !override
       driver: journald
+  btc-eth-aggressive-strategy:
+    logging: !override
+      driver: journald
