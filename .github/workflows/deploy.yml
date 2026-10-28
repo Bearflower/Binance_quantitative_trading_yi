@@ -738,14 +738,5 @@ jobs:
         run: |
           # 部署脚本可能合法返回 255；不得交给连接重试器，以免误判并重复副作用。
           # 若 SSH 本身失败，脚本可能遗留，但它不含 token 且位于 root-only 目录。
-          ssh 43.156.242.184 \
-            "REMOTE_DEPLOY_SCRIPT='$REMOTE_DEPLOY_SCRIPT'; \
-             cleanup_deploy_script() { \
-               rc=\$?; \
-               trap - EXIT; \
-               rm -f \"\$REMOTE_DEPLOY_SCRIPT\"; \
-               rmdir /root/trading_system/.deploy_tmp 2>/dev/null || true; \
-               exit \"\$rc\"; \
-             }; \
-             trap cleanup_deploy_script EXIT; \
-             bash \"\$REMOTE_DEPLOY_SCRIPT\""
+          ssh 43.156.242.184 bash -s -- "$REMOTE_DEPLOY_SCRIPT" \
+            < scripts/run_remote_deploy.sh

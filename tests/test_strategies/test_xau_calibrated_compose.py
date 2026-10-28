@@ -1,4 +1,5 @@
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ CALIBRATED_SERVICE = "mtcps-xau-calibrated-shadow"
 FIRST_CREATE_MARKER = (
     ROOT / ".github" / "deploy-modes" / "xau-calibrated-shadow-first-create"
 )
+REMOTE_WRAPPER = ROOT / "scripts" / "run_remote_deploy.sh"
 
 
 def _env_map(service):
@@ -88,7 +90,7 @@ def _calibrated_first_create_block():
     return match.group("body")
 
 
-def _remote_script_through_targeted_exit():
+def _remote_deploy_script():
     remote = re.search(
         r"cat > \"\$LOCAL_DEPLOY_SCRIPT\" << 'REMOTE_SCRIPT'(?P<body>.*?)"
         r"^\s*REMOTE_SCRIPT$",
@@ -96,7 +98,11 @@ def _remote_script_through_targeted_exit():
         re.DOTALL | re.MULTILINE,
     )
     assert remote is not None, "deploy.yml 缺少远程部署脚本"
-    prefix = remote.group("body").split("# calibrated-first-create end", 1)[0]
+    return remote.group("body")
+
+
+def _remote_script_through_targeted_exit():
+    prefix = _remote_deploy_script().split("# calibrated-first-create end", 1)[0]
     assert 'exit 0' in prefix
     return prefix
 
@@ -179,6 +185,23 @@ def test_ghcr_token_is_streamed_to_independent_login_and_never_in_script():
     assert "for i in 1 2 3" in login
 
 
+def _assert_remote_script_contains_no_secret_token(script):
+    assert "GHCR_PULL_TOKEN" not in script
+    assert "${{ secrets." not in script
+    assert "__GHCR_TOKEN__" not in script
+    assert re.search(r"(?i)(secret.*token|token.*secret)", script) is None
+
+
+def test_generated_remote_deploy_script_contains_no_secret_token_expression():
+    _assert_remote_script_contains_no_secret_token(_remote_deploy_script())
+
+
+def test_remote_script_secret_guard_detects_injection_mutation():
+    mutated = _remote_deploy_script() + '\necho "${{ secrets.GHCR_PULL_TOKEN }}"\n'
+    with pytest.raises(AssertionError):
+        _assert_remote_script_contains_no_secret_token(mutated)
+
+
 def test_remote_deploy_script_path_is_unique_private_and_not_tmp():
     assert "/tmp/deploy.sh" not in WORKFLOW
     expected = (
@@ -192,28 +215,59 @@ def test_remote_deploy_script_path_is_unique_private_and_not_tmp():
     assert 'chmod 700 \\"$REMOTE_DEPLOY_SCRIPT\\"' in upload
 
 
-def _assert_remote_execution_always_cleans(step):
-    trap_at = step.index("trap cleanup_deploy_script EXIT")
-    execute_at = step.index('bash \\\"\\$REMOTE_DEPLOY_SCRIPT\\\"')
-    assert trap_at < execute_at
-    assert 'rm -f \\\"\\$REMOTE_DEPLOY_SCRIPT\\\"' in step
-    assert 'rmdir /root/trading_system/.deploy_tmp' in step
-    assert 'exit \\\"\\$rc\\\"' in step
-
-
 def test_remote_execution_cleanup_preserves_success_or_failure_exit_code():
     step = _workflow_step("▶️ 执行远程部署脚本")
-    _assert_remote_execution_always_cleans(step)
     assert "retry_connect" not in step
-    assert "ssh 43.156.242.184" in step
+    assert 'ssh 43.156.242.184 bash -s -- "$REMOTE_DEPLOY_SCRIPT"' in step
+    assert "< scripts/run_remote_deploy.sh" in step
 
 
-def test_remote_execution_guard_detects_missing_failure_cleanup():
-    step = _workflow_step("▶️ 执行远程部署脚本")
-    with pytest.raises((AssertionError, ValueError)):
-        _assert_remote_execution_always_cleans(
-            step.replace("trap cleanup_deploy_script EXIT", "# trap removed")
+@pytest.mark.parametrize("exit_code", [0, 23, 255])
+def test_remote_execution_wrapper_preserves_exit_and_removes_script(
+    tmp_path,
+    exit_code,
+):
+    private_dir = tmp_path / ".deploy_tmp"
+    private_dir.mkdir(mode=0o700)
+    (private_dir / ".keep").write_text("keep", encoding="utf-8")
+    deploy_script = private_dir / "deploy-test.sh"
+    deploy_script.write_text(f"#!/usr/bin/env bash\nexit {exit_code}\n", encoding="utf-8")
+    deploy_script.chmod(0o700)
+
+    result = subprocess.run(
+        ["bash", str(REMOTE_WRAPPER), str(deploy_script)],
+        text=True,
+        capture_output=True,
+    )
+
+    assert result.returncode == exit_code
+    assert not deploy_script.exists()
+
+
+def test_workflow_yaml_and_deploy_shell_blocks_are_syntax_valid():
+    parsed = yaml.safe_load(WORKFLOW)
+    deploy_steps = parsed["jobs"]["deploy"]["steps"]
+    for step in deploy_steps:
+        if "run" not in step:
+            continue
+        shell = re.sub(r"\$\{\{.*?\}\}", "1", step["run"])
+        result = subprocess.run(
+            ["bash", "-n"], input=shell, text=True, capture_output=True
         )
+        assert result.returncode == 0, f"{step.get('name')}: {result.stderr}"
+
+    remote_result = subprocess.run(
+        ["bash", "-n"],
+        input=_remote_deploy_script(),
+        text=True,
+        capture_output=True,
+    )
+    assert remote_result.returncode == 0, remote_result.stderr
+
+    wrapper_result = subprocess.run(
+        ["bash", "-n", str(REMOTE_WRAPPER)], text=True, capture_output=True
+    )
+    assert wrapper_result.returncode == 0, wrapper_result.stderr
 
 
 def _assert_targeted_block_safe(block):
