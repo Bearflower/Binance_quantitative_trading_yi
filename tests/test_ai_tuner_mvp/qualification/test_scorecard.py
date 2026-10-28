@@ -1,5 +1,6 @@
 """Synthetic three-tier scorecard evidence, never qualification results."""
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -7,7 +8,13 @@ import pytest
 
 from ai_tuner.qualification.scorecard import build_scorecard
 from ai_tuner.qualification.metrics import calmar_diagnostic
-from ai_tuner.replay.models import EquityPoint, ReplayResult
+from ai_tuner.replay.artifacts import canonical_json
+from ai_tuner.replay.broker import VirtualBroker
+from ai_tuner.replay.data_portal import DataPortal
+from ai_tuner.replay.engine import run_replay
+from ai_tuner.replay.models import ConfigHashes, EquityPoint, ReplayResult, UniverseSlice
+
+from tests.test_ai_tuner_mvp.replay.conftest import ScriptedAdapter, make_bars, write_snapshot
 
 
 D = Decimal
@@ -308,3 +315,48 @@ def test_final_equity_cost_inversion_is_framework_fail():
 def test_same_inputs_produce_same_evidence():
     inputs = tiers()
     assert scorecard(inputs) == scorecard(inputs)
+
+
+def test_same_frozen_tiers_produce_identical_canonical_scorecard_bytes():
+    inputs = tiers()
+    first = canonical_json(scorecard(inputs)).encode("utf-8")
+    second = canonical_json(scorecard(inputs)).encode("utf-8")
+    assert first == second
+    assert first.endswith(b"\n")
+    assert hashlib.sha256(first).hexdigest() == "2352e152c79a966735bf77f349069ad6186672e230b6a00b088e84286f8c5883"
+
+
+def test_two_synthetic_replays_produce_identical_canonical_scorecard_bytes(tmp_path):
+    snapshot_dir = tmp_path / "frozen_snapshot"
+    write_snapshot(
+        str(snapshot_dir), "fixture", REPLAY_END, START,
+        {"BTCUSDT|1d": make_bars(
+            "BTCUSDT", "1d", START, [("100", "100", "100", "100")] * 70,
+            step_minutes=1440,
+        )},
+        ["BTCUSDT"], ["1d"],
+    )
+    universe = UniverseSlice(
+        "fixture", START, REPLAY_END + timedelta(days=1),
+        ("BTCUSDT",), ("1d",), "strategy_config", "a" * 64,
+    )
+    hashes = ConfigHashes("fixture", REPLAY_END, "b" * 64, "c" * 64, "d" * 64)
+
+    def replay_tiers():
+        portal = DataPortal(snapshot_dir, "fixture", REPLAY_END, START)
+        results = {}
+        for tier, multiplier in (("baseline", D(1)), ("1.5x", D("1.5")), ("2.0x", D(2))):
+            broker = VirtualBroker(
+                filters={}, fee_bps=D(5) * multiplier,
+                slippage_bps=D(2) * multiplier, stop_offset_pct=D("0.002"),
+                tp_offset_pct=D("0.0015"), initial_equity=D(100),
+                max_leverage=D(0), tp1_close_ratio=D("0.5"),
+            )
+            adapter = ScriptedAdapter(universe, hashes, lambda bar, ctx: ())
+            results[tier] = run_replay(portal, adapter, broker)
+        return results
+
+    first = canonical_json(scorecard(replay_tiers())).encode("utf-8")
+    second = canonical_json(scorecard(replay_tiers())).encode("utf-8")
+    assert first == second
+    assert b'"evidence_status":"BLOCKED_DATA"' in first  # flat cash has no downside
