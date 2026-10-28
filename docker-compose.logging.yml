@@ -32,3 +32,6 @@ services:
   grid-realtime:
     logging: !override
       driver: journald
+  new-coin-strategy:
+    logging: !override
+      driver: journald
