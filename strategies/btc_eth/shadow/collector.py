@@ -190,13 +190,15 @@ def _read_git_info() -> Tuple[str, str]:
 # ---------------------------------------------------------------------------
 # 影子 profile → 策略类 显式工厂映射（fail-closed，禁止静默回退原版）
 # ---------------------------------------------------------------------------
-# 两个 profile 对应两个独立策略类（同名 BTCEthStrategy，位于不同包）：
+# profile 显式对应策略类（同名 BTCEthStrategy，位于不同包）：
 #   - xau_original   → strategies.btc_eth.strategy.BTCEthStrategy
 #   - xau_aggressive → strategies.btc_eth_aggressive.strategy.BTCEthStrategy
+#   - xau_calibrated → strategies.btc_eth.strategy.BTCEthStrategy
 # 契约：profile_id 不在此表 → 抛 ValueError（fail-closed，绝不准许静默回退原版）。
 _PROFILE_TO_STRATEGY_CLASS: Dict[str, Any] = {
     "xau_original": OriginalBTCEthStrategy,
     "xau_aggressive": AggressiveBTCEthStrategy,
+    "xau_calibrated": OriginalBTCEthStrategy,
 }
 
 
@@ -222,7 +224,7 @@ def _build_shadow_strategy(
         real_ordering_enabled=False + state_reporting_enabled=False（双开关）
 
     Args:
-        profile_id: profile 标识（xau_original / xau_aggressive）
+        profile_id: profile 标识（xau_original / xau_aggressive / xau_calibrated）
         profile_config: 冻结 YAML 配置
         binance_client: ReadOnlyBinanceClient 实例
         kline_service: KLineService 实例

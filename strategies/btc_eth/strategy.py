@@ -654,6 +654,8 @@ class BTCEthStrategy:
                     override['percentile'] = cfg['atr_percentile'] / 100.0
                 if 'atr_factor_strong' in cfg:
                     override['strong_coefficient'] = cfg['atr_factor_strong']
+                if 'atr_fallback_percent' in cfg:
+                    override['fallback_atr_percent'] = cfg['atr_fallback_percent']
                 if override:
                     symbol_overrides[sym] = override
             if symbol_overrides:
