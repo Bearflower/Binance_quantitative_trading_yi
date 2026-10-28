@@ -29,3 +29,6 @@ services:
   grid-strategy:
     logging: !override
       driver: journald
+  grid-realtime:
+    logging: !override
+      driver: journald
