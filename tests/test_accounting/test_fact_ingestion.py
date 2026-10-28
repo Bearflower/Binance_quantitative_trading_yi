@@ -493,9 +493,8 @@ async def test_t9_income_empty_window_no_crash():
 
 # ────────────────────────────────────────────────────────────────────
 # T10: income 非统一账户空数组告警（幻觉追问 2 的防御性测试）
-# BinanceClient.get_income_history 在 use_unified_account=False 时返回 []
-# 脚本无法区分"真的无收入"和"被静默拦截"，但至少不应崩溃。
-# 这里 FakeClient 故意返回空列表，脚本应视为正常"无收入"收尾。
+# FakeClient 返回空列表模拟真正无收入，脚本应正常收尾；
+# 真实 BinanceClient 的非统一账户模式已改为抛错，不会与此混淆。
 # ────────────────────────────────────────────────────────────────────
 
 async def test_t10_income_empty_list_treated_as_normal():

@@ -1554,10 +1554,12 @@ class BinanceClient:
 
         Returns:
             收入记录列表，每条包含 symbol, incomeType, income, time 等字段
+
+        Raises:
+            ValueError: 非统一账户模式不支持此查询
         """
         if not self.use_unified_account:
-            logger.warning("收入查询仅支持统一账户模式")
-            return []
+            raise ValueError("收入查询仅支持统一账户模式（use_unified_account=True）")
 
         params = {
             "incomeType": income_type,

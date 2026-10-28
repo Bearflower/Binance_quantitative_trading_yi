@@ -39,7 +39,7 @@ D1 采集脚本覆盖率缺口补充测试（纯离线，不联网/不连库/不
 
   shared/binance_api 分页参数契约（mock _request，构造 client 不联网）：
     - get_user_trades：参数组装 / endpoint 选择（统一 vs 非统一账户）/ 空 symbol / 非 list 回退
-    - get_income_history：income_type 透传 / 非统一账户静默返回 [] / 非 list 回退
+    - get_income_history：income_type 透传 / 非统一账户显式报错 / 非 list 回退
 
   【R1 已修复】已完成窗口幂等重跑：
     原缺陷"已完成窗口重跑被 while-else 误判为 max_pages 超限"已通过
@@ -864,17 +864,29 @@ async def test_api_user_trades_non_list_response_falls_back_empty(monkeypatch):
     assert rows == []
 
 
-async def test_api_income_history_non_unified_returns_empty_without_request(monkeypatch):
-    """get_income_history：非统一账户 → 静默返回 []（L1558-1560 分支）且不发请求。
-    这正是"非统一账户 income 被静默拦截"的根源（脚本侧无法区分，见 docstring 告知）。
-    """
+async def test_api_income_history_non_unified_raises_without_request(monkeypatch):
+    """非统一账户收入查询必须明确失败，且不发请求。"""
     client = _make_offline_client(use_unified_account=False)
     capture = _CaptureRequest([])
     monkeypatch.setattr(client, "_request", capture)
 
-    rows = await client.get_income_history(start_time=1, end_time=2, limit=1000)
-    assert rows == []
+    with pytest.raises(ValueError, match="统一账户"):
+        await client.get_income_history(start_time=1, end_time=2, limit=1000)
     assert capture.calls == []                    # 未发起任何请求
+
+
+async def test_export_income_rejects_non_unified_client_before_cursor_write(monkeypatch):
+    """采集端必须把账户模式不支持与真正的空收入区分开。"""
+    client = _make_offline_client(use_unified_account=False)
+    capture = _CaptureRequest([])
+    monkeypatch.setattr(client, "_request", capture)
+    exporter = ExecutionFactExporter(account_id=_ACCOUNT, api_client=client)
+
+    with pytest.raises(ValueError, match="统一账户"):
+        await exporter.export_income(1, 2)
+
+    assert capture.calls == []
+    assert exporter._cursor_store == {}
 
 
 async def test_api_income_history_forwards_params_and_non_list_fallback(monkeypatch):

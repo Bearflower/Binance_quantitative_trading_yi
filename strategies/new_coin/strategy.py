@@ -3,7 +3,7 @@
 继承 BaseStrategy，实现新币做空的核心逻辑
 """
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple
+from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple, Union
 import asyncio
 import os
 import time
@@ -2945,7 +2945,7 @@ class NewCoinStrategy(BaseStrategy):
         self,
         symbol: str,
         entry_price: float,
-        entry_time: datetime
+        entry_time: Union[datetime, str]
     ) -> None:
         """
         添加到止损监控列表
@@ -2955,8 +2955,10 @@ class NewCoinStrategy(BaseStrategy):
         Args:
             symbol: 交易对
             entry_price: 入场价格
-            entry_time: 入场时间
+            entry_time: 入场时间，持仓状态中的 ISO 字符串或 datetime
         """
+        if isinstance(entry_time, str):
+            entry_time = datetime.fromisoformat(entry_time)
         # 获取配置
         blacklist_config = self.config.get('trading', {}).get('blacklist', {})
         

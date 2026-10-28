@@ -360,13 +360,9 @@ class ExecutionFactExporter:
     分页、去重、游标、脱敏逻辑全部在实例方法里——测试直接 new 本类
     传假对象就能全离线覆盖。
 
-    关于 api_client 的统一账户告警（幻觉追问 2）：
-      BinanceClient.get_income_history 在 use_unified_account=False 时会
-      直接返回 [] 并打 warning，本脚本**无法区分**"真的无收入"和
-      "非统一账户被静默拦截"。调用方应确保传入的 api_client 已启用
-      统一账户（use_unified_account=True），否则 income 采集结果
-      可能被静默丢弃。本脚本的 while 循环会把空数组判为 page_complete=TRUE
-      正常收尾，不会抛异常，但数据完整性取决于调用方。
+    income 采集要求统一账户客户端。若客户端显式声明
+    use_unified_account=False，export_income 在读取或写入游标前报错，
+    避免把“不支持的账户模式”记成成功采集的空结果。
     """
     account_id: str                              # 账户标识（下游复合键的一部分）
     api_client: Any                              # 需具备 async get_user_trades / get_income_history
@@ -476,6 +472,8 @@ class ExecutionFactExporter:
         income_type: Optional[str] = None,
     ) -> ExportResult:
         """拉取给定时间窗内的全部收入流水。"""
+        if getattr(self.api_client, "use_unified_account", True) is False:
+            raise ValueError("income 采集要求统一账户客户端（use_unified_account=True）")
         source = "um/income"
         income_type_arg = income_type or "REALIZED_PNL"
         seen: Set[Tuple[str, int]] = set()
@@ -1114,9 +1112,8 @@ def _build_client_from_env():
         return None, 2
 
     # use_unified_account 由 BinanceClient 默认值决定（项目默认 True）。
-    # 注意：若传入非统一账户客户端，income 采集会被静默返回 []
-    # （BinanceClient.get_income_history 内部拦截），详见 ExecutionFactExporter
-    # docstring 的"关于 api_client 的统一账户告警"。
+    # income 仅支持统一账户；非统一账户模式由 export_income 与
+    # BinanceClient.get_income_history 显式拒绝。
     client = BinanceClient(api_key=api_key, api_secret=api_secret)
     return client, 0
 

@@ -29,7 +29,9 @@ def make_strategy() -> NewCoinStrategy:
     # 交易执行器：持仓管理、取消条件单均为空操作
     strategy.trading_executor = MagicMock()
     strategy.trading_executor.check_position_management = AsyncMock()
+    strategy.trading_executor._update_short_position_closed = AsyncMock()
     strategy.trading_executor.cancel_all_algo_orders = AsyncMock(return_value={'failed': 0})
+    strategy.trading_executor.clear_position_tracking = MagicMock()
     strategy.trading_executor.position_tracking = {}
 
     # 数据库：无平仓订单记录（不影响止损打标）
@@ -89,6 +91,24 @@ async def test_止损打标_平仓后清理持仓():
     await strategy._monitor_positions()
 
     assert symbol not in strategy.positions
+
+
+async def test_真实止损监控_字符串入场时间不会阻断清仓():
+    """不 mock 止损监控方法，覆盖持仓里真实的 ISO 字符串时间。"""
+    strategy = make_strategy()
+    strategy.stop_loss_monitor = {}
+    strategy._add_to_stop_loss_monitor = NewCoinStrategy._add_to_stop_loss_monitor.__get__(strategy)
+    symbol = 'NEWCOINUSDT'
+    strategy.positions[symbol] = make_position_entry()
+
+    await strategy._monitor_positions()
+
+    assert symbol not in strategy.positions
+    assert strategy.consecutive_losses == 1
+    assert symbol in strategy.stop_loss_monitor
+    strategy.binance_client.trade_logger.log_stop_loss.assert_awaited_once()
+    await strategy._monitor_positions()
+    assert strategy.consecutive_losses == 1
 
 
 async def test_止损打标_pnl为None但平仓单为亏损_补正打标():
