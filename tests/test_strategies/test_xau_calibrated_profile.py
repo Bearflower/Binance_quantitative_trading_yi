@@ -484,3 +484,70 @@ async def test_adx_uses_one_day_then_four_hour_then_zero_fallback(
     assert events[0]["decision"] == "no_signal"
     assert events[0]["feature_snapshot"]["atr_filter"]["adx"] == expected_adx
     get_threshold.assert_called_once_with("XAUUSDT", expected_adx)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("one_day_adx", "four_hour_adx", "expected_adx"),
+    [
+        (float("inf"), float("nan"), 0.0),
+        (float("inf"), 22.0, 22.0),
+    ],
+)
+async def test_real_signal_path_receives_same_sanitized_adx_as_snapshot(
+    monkeypatch,
+    one_day_adx,
+    four_hour_adx,
+    expected_adx,
+):
+    config = _load_profile("xau_calibrated")
+    strategy = _build_shadow_strategy(
+        profile_id="xau_calibrated",
+        profile_config=config,
+        binance_client=MagicMock(),
+        kline_service=MagicMock(),
+    )
+    strategy.risk_config["market_state"]["enabled"] = False
+    monkeypatch.setattr(
+        strategy,
+        "_check_trend_filter",
+        MagicMock(return_value=(True, "LONG")),
+    )
+    monkeypatch.setattr(
+        strategy,
+        "_check_prohibited_conditions",
+        AsyncMock(return_value=(True, "")),
+    )
+    monkeypatch.setattr(strategy, "_calculate_score", MagicMock(return_value=0.0))
+    should_filter = MagicMock(wraps=strategy.atr_filter.should_filter)
+    monkeypatch.setattr(strategy.atr_filter, "should_filter", should_filter)
+
+    collector = _collector_for_single_profile("xau_calibrated", config, strategy)
+    multi = _closed_multi_timeframe_klines()
+    indicators = strategy._build_indicators(multi)
+    indicators["1d"]["ADX"].iloc[-1] = one_day_adx
+    indicators["4h"]["ADX"].iloc[-1] = four_hour_adx
+    monkeypatch.setattr(
+        strategy,
+        "_build_indicators",
+        MagicMock(return_value=indicators),
+    )
+
+    events = await collector._analyze_profile(
+        profile_id="xau_calibrated",
+        strategy=strategy,
+        multi_klines=multi,
+        close_times=_close_times(multi),
+        scheduled_at=datetime(2026, 10, 27, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert events[0]["decision"] == "no_signal"
+    assert should_filter.call_count == 1
+    assert should_filter.call_args.args[2] == expected_adx
+    assert events[0]["feature_snapshot"]["atr_filter"]["adx"] == expected_adx
+    if math.isinf(one_day_adx):
+        assert math.isinf(float(indicators["1d"]["ADX"].iloc[-1]))
+    if math.isnan(four_hour_adx):
+        assert math.isnan(float(indicators["4h"]["ADX"].iloc[-1]))
+    else:
+        assert float(indicators["4h"]["ADX"].iloc[-1]) == four_hour_adx

@@ -509,6 +509,14 @@ class ShadowCollector:
                 if bootstrap_count
                 else None
             )
+            analysis_indicators = (
+                self._with_sanitized_adx(
+                    indicators,
+                    atr_snapshot_inputs[2],
+                )
+                if atr_snapshot_inputs is not None
+                else indicators
+            )
         except Exception as exc:
             logger.error(
                 "ATR 历史初始化异常",
@@ -601,7 +609,11 @@ class ShadowCollector:
         signal_exception: Optional[Exception] = None
         try:
             signal_components, reason = await strategy._analyze_stationary_signal(
-                symbol, multi_klines, indicators, market_state_name, market_behavior,
+                symbol,
+                multi_klines,
+                analysis_indicators,
+                market_state_name,
+                market_behavior,
             )
         except Exception as exc:
             logger.error(
@@ -737,6 +749,26 @@ class ShadowCollector:
         if adx_value == 0.0:
             adx_value = _positive_finite_adx("4h")
         return atr, current_close, adx_value
+
+    @staticmethod
+    def _with_sanitized_adx(
+        indicators: Dict[str, Any],
+        adx_value: float,
+    ) -> Dict[str, Any]:
+        """返回仅覆盖 1d 最新 ADX 的分析视图，不修改共享指标。"""
+        import pandas as pd
+
+        analysis_indicators = dict(indicators)
+        one_day = dict(indicators.get("1d", {}))
+        original_adx = one_day.get("ADX")
+        if original_adx is None or len(original_adx) == 0:
+            sanitized_adx = pd.Series([adx_value])
+        else:
+            sanitized_adx = original_adx.copy(deep=True)
+            sanitized_adx.iloc[-1] = adx_value
+        one_day["ADX"] = sanitized_adx
+        analysis_indicators["1d"] = one_day
+        return analysis_indicators
 
     def _atr_filter_snapshot(
         self,
