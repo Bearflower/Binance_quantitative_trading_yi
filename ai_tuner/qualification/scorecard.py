@@ -8,7 +8,7 @@ candidate.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, Mapping
 
@@ -44,6 +44,13 @@ def _validate_inputs(
     )
     if not start <= diag_start < diag_end <= end:
         raise DataBlocked(["invalid_window_order"])
+    window_reasons = []
+    if diag_end - diag_start != timedelta(weeks=8):
+        window_reasons.append("diagnostic_window_not_eight_weeks")
+    if diag_end > end - timedelta(weeks=2):
+        window_reasons.append("blind_window_overlap")
+    if window_reasons:
+        raise DataBlocked(window_reasons)
     if not isinstance(results, Mapping):
         raise DataBlocked(["invalid_tiers"])
     for tier in TIERS:
@@ -52,39 +59,67 @@ def _validate_inputs(
     if set(results) != set(TIERS):
         raise DataBlocked(["unexpected_tier"])
     reference = None
+    reasons = []
     for tier in TIERS:
         result = results[tier]
         if not isinstance(result, ReplayResult):
-            raise DataBlocked(["invalid_replay_result:{0}".format(tier)])
+            reasons.append("invalid_replay_result:{0}".format(tier))
+            continue
         if not isinstance(result.manifest_ref, str) or not result.manifest_ref.strip():
-            raise DataBlocked(["manifest_missing:{0}".format(tier)])
-        if reference is None:
+            reasons.append("manifest_missing:{0}".format(tier))
+        elif reference is None:
             reference = result.manifest_ref
         elif result.manifest_ref != reference:
-            raise DataBlocked(["manifest_mismatch:{0}".format(tier)])
+            reasons.append("manifest_mismatch:{0}".format(tier))
         if not result.equity_curve:
-            raise DataBlocked(["equity_curve_empty:{0}".format(tier)])
+            reasons.append("equity_curve_empty:{0}".format(tier))
+            continue
         previous = None
         first_stamp = None
+        curve_valid = True
         for point in result.equity_curve:
             try:
                 stamp = _utc(point.ts)
             except (AttributeError, DataBlocked):
-                raise DataBlocked(["invalid_equity_timestamp:{0}".format(tier)])
+                reasons.append("invalid_equity_timestamp:{0}".format(tier))
+                curve_valid = False
+                continue
             if not start <= stamp <= end:
-                raise DataBlocked(["equity_outside_window:{0}".format(tier)])
+                reasons.append("equity_outside_window:{0}".format(tier))
+                curve_valid = False
             if previous is not None and stamp <= previous:
-                raise DataBlocked(["equity_timestamp_order:{0}".format(tier)])
+                reasons.append("equity_timestamp_order:{0}".format(tier))
+                curve_valid = False
             if first_stamp is None:
                 first_stamp = stamp
             previous = stamp
-            equity = point.marked_equity
+            equity = getattr(point, "marked_equity", None)
             if not isinstance(equity, Decimal) or not equity.is_finite() or equity <= 0:
-                raise DataBlocked(["invalid_marked_equity:{0}".format(tier)])
+                reasons.append("invalid_marked_equity:{0}".format(tier))
+                curve_valid = False
         if first_stamp != start:
-            raise DataBlocked(["equity_start_missing:{0}".format(tier)])
+            reasons.append("equity_start_missing:{0}".format(tier))
+            curve_valid = False
         if previous != end:
-            raise DataBlocked(["equity_end_missing:{0}".format(tier)])
+            reasons.append("equity_end_missing:{0}".format(tier))
+            curve_valid = False
+        if first_stamp == start:
+            first_point = result.equity_curve[0]
+            if getattr(first_point, "marked_equity", None) != initial_equity:
+                reasons.append("initial_equity_mismatch:{0}".format(tier))
+            if getattr(first_point, "has_open_position", None) is not False:
+                reasons.append("initial_position_open:{0}".format(tier))
+        if curve_valid:
+            try:
+                daily_returns(result.equity_curve, start, end)
+            except DataBlocked as error:
+                for gap in error.gaps:
+                    code, _, detail = gap.partition(":")
+                    reasons.append("{0}:{1}{2}".format(
+                        code, tier, ":" + detail if detail else ""
+                    ))
+    if reasons:
+        raise DataBlocked(dict.fromkeys(reasons))
     return start, end, diag_start, diag_end
 
 
@@ -110,6 +145,7 @@ def build_scorecard(
         "max_capital_loss_pct_1_5x": None,
         "preserved_capital_pct_1_5x": None,
         "cost_monotonicity": {"holds": None},
+        "cost_monotonicity_violation": False,
     }
     try:
         _, _, diag_start, diag_end = _validate_inputs(
@@ -134,6 +170,7 @@ def build_scorecard(
         finals = [card["tiers"][tier]["final_equity"] for tier in TIERS]
         monotonic = finals[0] >= finals[1] >= finals[2]
         card["cost_monotonicity"] = {"holds": monotonic, "final_equities": dict(zip(TIERS, finals))}
+        card["cost_monotonicity_violation"] = not monotonic
         if not monotonic:
             card["failure_reasons"].append("cost_monotonicity")
         returns, first, last = daily_returns(

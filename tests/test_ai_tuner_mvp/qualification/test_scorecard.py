@@ -131,6 +131,67 @@ def test_missing_terminal_stress_mark_blocks_instead_of_using_earlier_final():
     assert "equity_end_missing:1.5x" in card["blocked_reasons"]
 
 
+@pytest.mark.parametrize("tier", ["1.5x", "2.0x"])
+def test_missing_daily_mark_in_any_cost_tier_blocks(tier):
+    inputs = tiers()
+    daily = [point(day, 100 + (day % 4) - (day % 3)) for day in range(71) if day != 10]
+    inputs[tier] = result(daily)
+    card = scorecard(inputs)
+    assert card["evidence_status"] == "BLOCKED_DATA"
+    assert any(reason.startswith("daily_equity_gap:{0}:".format(tier)) for reason in card["blocked_reasons"])
+
+
+def test_diagnostic_window_cannot_extend_into_blind_segment():
+    card = build_scorecard(
+        tiers(), initial_equity=D(100), replay_start=START,
+        replay_end=REPLAY_END, diagnostic_start=START,
+        diagnostic_end=REPLAY_END,
+    )
+    assert card["evidence_status"] == "BLOCKED_DATA"
+    assert "blind_window_overlap" in card["blocked_reasons"]
+
+
+def test_diagnostic_window_must_be_eight_weeks():
+    card = build_scorecard(
+        tiers(), initial_equity=D(100), replay_start=START,
+        replay_end=REPLAY_END, diagnostic_start=START,
+        diagnostic_end=START + timedelta(days=55),
+    )
+    assert card["evidence_status"] == "BLOCKED_DATA"
+    assert "diagnostic_window_not_eight_weeks" in card["blocked_reasons"]
+
+
+def test_start_mark_must_match_initial_equity_and_be_flat():
+    inputs = tiers()
+    altered = list(inputs["1.5x"].equity_curve)
+    altered[0] = point(0, 110, open_position=True)
+    inputs["1.5x"] = result(altered)
+    card = scorecard(inputs)
+    assert card["evidence_status"] == "BLOCKED_DATA"
+    assert "initial_equity_mismatch:1.5x" in card["blocked_reasons"]
+    assert "initial_position_open:1.5x" in card["blocked_reasons"]
+
+
+def test_cost_monotonicity_violation_is_exposed_at_top_level():
+    high = [point(day, 100 + (day % 4) - (day % 3)) for day in range(71)]
+    high[-1] = point(70, 110)
+    card = scorecard(tiers(stress=high))
+    assert card["cost_monotonicity_violation"] is True
+    assert scorecard(tiers())["cost_monotonicity_violation"] is False
+
+
+def test_independent_input_errors_are_aggregated():
+    inputs = tiers()
+    inputs["1.5x"] = result(inputs["1.5x"].equity_curve, manifest="other")
+    inputs["2.0x"] = result([])
+    card = scorecard(inputs)
+    assert card["evidence_status"] == "BLOCKED_DATA"
+    assert "manifest_mismatch:1.5x" in card["blocked_reasons"]
+    assert "equity_curve_empty:2.0x" in card["blocked_reasons"]
+    assert card["cost_monotonicity_violation"] is False
+    assert card["cost_monotonicity"]["holds"] is None
+
+
 def test_zero_downside_blocks_sortino_but_keeps_calmar_diagnostic_reason():
     rising = [point(day, 100 + day) for day in range(71)]
     card = scorecard(tiers(baseline=rising))
