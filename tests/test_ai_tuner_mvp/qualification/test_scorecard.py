@@ -225,7 +225,7 @@ def test_calmar_anchors_diagnostic_start_while_baseline_mdd_uses_replay_start():
     assert card["baseline_max_drawdown_pct"] == D(10)
 
 
-def test_missing_exact_diagnostic_start_mark_blocks_calmar_anchor():
+def test_missing_exact_diagnostic_start_mark_is_calmar_only_null():
     marks = [point(day, 100 + (day % 4) - (day % 3)) for day in range(72)]
     inputs = {tier: result(marks) for tier in ("baseline", "1.5x", "2.0x")}
     card = build_scorecard(
@@ -236,8 +236,27 @@ def test_missing_exact_diagnostic_start_mark_blocks_calmar_anchor():
         diagnostic_start=START + timedelta(hours=12),
         diagnostic_end=DIAGNOSTIC_END + timedelta(hours=12),
     )
-    assert card["evidence_status"] == "BLOCKED_DATA"
-    assert "diagnostic_start_mark_missing" in card["blocked_reasons"]
+    assert card["evidence_status"] == "AVAILABLE"
+    assert card["calmar"]["calmar"] is None
+    assert card["calmar"]["calmar_unavailable_reason"] == "missing_start_boundary"
+
+
+def test_missing_calmar_boundary_does_not_block_complete_daily_sortino():
+    marks = [point(day, 100 + (day % 4) - (day % 3)) for day in range(72)]
+    inputs = {tier: result(marks) for tier in ("baseline", "1.5x", "2.0x")}
+    card = build_scorecard(
+        inputs,
+        initial_equity=D(100),
+        replay_start=START,
+        replay_end=START + timedelta(days=71),
+        diagnostic_start=START + timedelta(hours=12),
+        diagnostic_end=DIAGNOSTIC_END + timedelta(hours=12),
+    )
+    assert card["evidence_status"] == "AVAILABLE"
+    assert card["sortino"] is not None
+    assert card["daily_return_count"] == 55
+    assert card["calmar"]["calmar"] is None
+    assert card["calmar"]["calmar_unavailable_reason"] == "missing_start_boundary"
 
 
 def test_zero_downside_blocks_sortino_but_keeps_calmar_diagnostic_reason():
