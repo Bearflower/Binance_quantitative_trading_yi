@@ -25,6 +25,7 @@ from ai_tuner.replay.models import (
     ConfigHashes,
     DataBlocked,
     Position,
+    QualificationBlocked,
     UniverseSlice,
 )
 from strategies.btc_eth_aggressive.core import common
@@ -559,6 +560,31 @@ def test_intents_fields_follow_decision() -> None:
     assert intent.grade == decision["grade"]
     assert intent.reason == "{0}级信号".format(decision["grade"])
     assert intent.reference_price == decision["entry_price"]
+
+
+def test_intents_raise_qualification_blocked_without_market_state() -> None:
+    """构造未指定市场状态且 extras 也不带 → QualificationBlocked（不默认 TREND）。"""
+    raw_klines = golden.scenario_data("trend_pullback")["klines"]
+    adapter = MtpcsAggressiveAdapter(
+        _config(), quantity_for=lambda symbol, decision: Decimal("0.5")
+    )
+    ctx = _feed(adapter, raw_klines)
+    ctx.extras.pop("market_state")
+
+    with pytest.raises(QualificationBlocked) as excinfo:
+        adapter.intents(ctx)
+    assert "market_state_unavailable" in excinfo.value.reasons
+
+
+def test_decide_rejects_unknown_market_state() -> None:
+    """decide 收到允许集合之外的状态名 → ValueError（不得静默按 TREND 处理）。"""
+    raw_klines = golden.scenario_data("trend_pullback")["klines"]
+    adapter = _make_adapter()
+    _feed(adapter, raw_klines)
+
+    with pytest.raises(ValueError) as excinfo:
+        adapter.decide(SYMBOL, "SIDEWAYS")
+    assert "SIDEWAYS" in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

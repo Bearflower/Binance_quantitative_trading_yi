@@ -4,8 +4,9 @@
 - 决策链的每一步都委托 ``strategies/btc_eth_aggressive/core`` 的纯函数，本模块只负责
   「K 线缓冲 → 决策链编排 → OrderIntent」，**不复制实盘公式**、不读系统时钟、不写盘；
 - 市场状态（``TREND`` / ``RANGING``）由 S6 的 regime 识别结果**注入**——本适配器
-  **不做市场状态识别**，只接受构造期 ``market_state`` 或 ``PreparedContext.extras``
-  传入的值；
+  **不做市场状态识别**，只接受构造期 ``market_state``（仅供离线单测）或
+  ``PreparedContext.extras``（考试路径逐时点注入）传入的值；两者皆缺失即
+  ``QualificationBlocked``，绝不默认走 ``TREND``；
 - 仓位数量由外部注入的 ``quantity_for``（S6 的 sizing 逻辑）决定，适配器不发明数量
   公式、不硬编码数量；
 - 所有阈值一律从 ``config``（与实盘配置同结构）读取，模块内不出现业务阈值字面量。
@@ -21,7 +22,7 @@ from strategies.btc_eth_aggressive.core import direction as direction_mod
 from strategies.btc_eth_aggressive.core import exits, filters, scoring
 
 from ..broker import PortfolioView
-from ..models import ZERO, Bar, DataBlocked, OrderIntent
+from ..models import ZERO, Bar, DataBlocked, OrderIntent, QualificationBlocked
 from .base import PreparedContext
 
 __all__ = [
@@ -33,6 +34,9 @@ __all__ = [
 #: 市场状态名（由 S6 regime 注入，本适配器只做分支）
 MARKET_STATE_TREND = "TREND"
 MARKET_STATE_RANGING = "RANGING"
+
+#: 允许的市场状态集合（其余取值一律视为未接线的非法注入，直接拒绝而不猜 TREND）
+ALLOWED_MARKET_STATES = (MARKET_STATE_TREND, MARKET_STATE_RANGING)
 
 #: 取价/取 ATR 的优先周期（与实盘 analyze() 一致取 1h；该周期不在 timeframes 时
 #: 回退到配置中最后一个周期，不假设 1h 一定存在）
@@ -58,7 +62,7 @@ class MtpcsAggressiveAdapter:
         config: Dict[str, Any],
         *,
         quantity_for: Callable[[str, Dict[str, Any]], Decimal],
-        market_state: str = MARKET_STATE_TREND,
+        market_state: Optional[str] = None,
     ) -> None:
         """构造适配器。
 
@@ -67,9 +71,10 @@ class MtpcsAggressiveAdapter:
                 ``timeframes`` / ``scoring`` / ``symbol_config`` / ``risk``。
             quantity_for: 仓位数量注入函数 ``(symbol, decision) -> Decimal``，
                 由 S6 的 sizing 逻辑提供；适配器自身不推导数量。
-            market_state: ``"TREND"`` 或 ``"RANGING"``，由 S6 regime 注入。
-                本 Spec 不实现市场状态识别，仅接受注入值；``extras`` 中的
-                ``market_state`` 优先于该构造参数。
+            market_state: ``"TREND"`` 或 ``"RANGING"``，**仅供离线单测显式指定**。
+                考试路径必须由 ``ctx.extras["market_state"]`` 逐时点注入
+                （S6 regime 结果），``extras`` 优先于该构造参数；两者皆缺失时
+                ``intents`` 抛 ``QualificationBlocked``，不默认 TREND。
         """
         strategy_config = config.get("strategy", {})
         self._timeframes: List[str] = list(strategy_config.get("timeframes", []))
@@ -142,9 +147,19 @@ class MtpcsAggressiveAdapter:
         return None
 
     def intents(self, ctx: PreparedContext) -> Tuple[OrderIntent, ...]:
-        """按 symbol 排序产出市价开仓意图；已有未平仓持仓的 symbol 不加仓。"""
+        """按 symbol 排序产出市价开仓意图；已有未平仓持仓的 symbol 不加仓。
+
+        市场状态优先取 ``ctx.extras["market_state"]``（考试路径由 S6 逐时点注入），
+        缺失时回退构造期 ``market_state``（仅供离线单测）；两者皆缺失即
+        ``QualificationBlocked``，绝不默认按 ``TREND`` 静默回放。
+        """
+        market_state_name = ctx.extras.get("market_state")
+        if market_state_name is None:
+            market_state_name = self._market_state
+        if market_state_name is None:
+            raise QualificationBlocked(["market_state_unavailable"])
+
         symbols = ctx.extras.get("symbols") or list(ctx.universe.symbols)
-        market_state_name = ctx.extras.get("market_state", self._market_state)
         vol_boost = ctx.extras.get("vol_boost")
         if vol_boost is not None:
             self._vol_boost = float(vol_boost)
@@ -234,7 +249,13 @@ class MtpcsAggressiveAdapter:
         决策链顺序与实盘 ``analyze()`` 一致（见 Spec F5）：
         入场方向（趋势过滤 / 震荡投票+四护栏）→ 禁止入场第 1 项（K 线 spike）→
         综合评分与等级 → 震荡侧过热降级 → 成交量过滤 → 止损/止盈价格。
+
+        ``market_state_name`` 必须属于 ``ALLOWED_MARKET_STATES``，否则直接抛
+        ``ValueError``（不得把未知状态静默当作 ``TREND`` 处理）。
         """
+        if market_state_name not in ALLOWED_MARKET_STATES:
+            raise ValueError("market_state_name 非法：{0}".format(market_state_name))
+
         klines = self._klines_for(symbol)
         if klines is None:
             return None

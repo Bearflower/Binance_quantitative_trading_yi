@@ -1509,7 +1509,7 @@ class BTCEthStrategy:
     
     def _check_trend_filter(
         self, 
-        _symbol: str, 
+        _symbol: str,
         indicators: Dict, 
         klines: Dict
     ) -> Tuple[bool, str]:
