@@ -52,11 +52,19 @@ def _has_symlink_ancestor(path: Path) -> bool:
 
 
 def _repo_destination_is_ignored(destination: Path) -> bool:
-    repo = Path(__file__).resolve().parents[2]
-    try:
-        destination.resolve(strict=False).relative_to(repo)
-    except ValueError:
-        return True  # Outside this checkout: caller controls local storage.
+    existing = destination
+    while not existing.exists():
+        if existing == existing.parent:
+            return False
+        existing = existing.parent
+    lookup = subprocess.run(
+        ["git", "-C", str(existing), "rev-parse", "--show-toplevel"],
+        capture_output=True, text=True, check=False,
+    )
+    if lookup.returncode != 0:
+        # A true non-repository local directory is allowed; other git errors fail closed.
+        return "not a git repository" in lookup.stderr.lower()
+    repo = Path(lookup.stdout.strip())
     check = subprocess.run(
         ["git", "check-ignore", "-q", "--no-index", str(destination / "manifest.json")],
         cwd=repo, capture_output=True, check=False,
@@ -160,8 +168,11 @@ def seal_snapshot(
     if gaps:
         return _blocked(*gaps)
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = Path(tempfile.mkdtemp(prefix=".sealing-", dir=str(destination.parent)))
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        temporary = Path(tempfile.mkdtemp(prefix=".sealing-", dir=str(destination.parent)))
+    except OSError as exc:
+        return _blocked("snapshot_seal_failed:{0}".format(exc))
     try:
         files: Dict[str, Dict[str, str]] = {}
         for rel in sorted(selected):

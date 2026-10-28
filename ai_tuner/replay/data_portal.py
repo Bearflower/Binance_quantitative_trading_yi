@@ -23,7 +23,7 @@ import json
 import os
 from datetime import datetime, timedelta
 from decimal import Decimal
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .models import (
@@ -154,14 +154,37 @@ class DataPortal:
         if not files:
             raise DataBlocked(["manifest_files_empty"])
 
+        version = manifest.get("manifest_version")
         for name in sorted(files):
             info = files[name]
             raw_path = info.get("path")
             if not raw_path:
                 raise DataBlocked(["manifest_file_path_missing:{0}".format(name)])
+            if version == 2:
+                if not isinstance(raw_path, str):
+                    raise DataBlocked(["manifest_file_path_invalid:{0}".format(name)])
+                relative = PurePosixPath(raw_path)
+                if (
+                    raw_path != name
+                    or relative.is_absolute()
+                    or str(relative) != raw_path
+                    or "." in relative.parts
+                    or ".." in relative.parts
+                    or "\\" in raw_path
+                ):
+                    raise DataBlocked(["manifest_file_path_invalid:{0}".format(name)])
             path = Path(raw_path)
             if not path.is_absolute():
                 path = self.snapshot_dir / path
+            if version == 2:
+                root = self.snapshot_dir.absolute()
+                candidate = path.absolute()
+                if any(
+                    part.is_symlink()
+                    for part in (candidate, *candidate.parents)
+                    if part == root or root in part.parents
+                ):
+                    raise DataBlocked(["snapshot_file_symlink:{0}".format(name)])
             if not path.is_file():
                 raise DataBlocked(["snapshot_file_missing:{0}".format(name)])
             actual = sha256_file(str(path))
@@ -172,7 +195,6 @@ class DataPortal:
         if actual_top != manifest.get("sha256"):
             raise DataBlocked(["snapshot_manifest_hash_mismatch"])
 
-        version = manifest.get("manifest_version")
         if self.expected_envelope_sha256 is not None and version != 2:
             raise DataBlocked(["manifest_v2_required"])
         if version == 2:

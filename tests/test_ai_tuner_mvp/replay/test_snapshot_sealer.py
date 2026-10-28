@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_tuner.replay.data_portal import DataPortal
+from ai_tuner.replay.data_portal import DataPortal, compute_manifest_envelope_sha256
 from ai_tuner.replay.models import DataBlocked
 
 from .conftest import make_bars, write_snapshot
@@ -91,6 +91,42 @@ def test_v2_downgrade_is_detected_when_expected_digest_is_pinned(tmp_path):
             directory, "btc_eth_aggressive", AS_OF, START,
             expected_envelope_sha256=result["envelope_sha256"],
         )
+
+
+def test_v2_manifest_path_cannot_alias_another_hashed_file(tmp_path):
+    result = _seal(tmp_path, _source(tmp_path))
+    directory = Path(result["snapshot_dir"])
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    # Funding and trade signals are both legitimately empty, so their byte hashes match.
+    manifest["files"]["funding_rates.jsonl"]["path"] = "trade_signals.jsonl"
+    manifest["envelope_sha256"] = compute_manifest_envelope_sha256(manifest)
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(DataBlocked, match="manifest_file_path_invalid"):
+        DataPortal(directory, "btc_eth_aggressive", AS_OF, START)
+
+
+def test_v2_manifest_path_must_be_canonical_relative(tmp_path):
+    result = _seal(tmp_path, _source(tmp_path))
+    directory = Path(result["snapshot_dir"])
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["files"]["funding_rates.jsonl"]["path"] = "./funding_rates.jsonl"
+    manifest["envelope_sha256"] = compute_manifest_envelope_sha256(manifest)
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(DataBlocked, match="manifest_file_path_invalid"):
+        DataPortal(directory, "btc_eth_aggressive", AS_OF, START)
+
+
+def test_v2_data_file_symlink_cannot_escape_snapshot_root(tmp_path):
+    source = _source(tmp_path)
+    result = _seal(tmp_path, source)
+    directory = Path(result["snapshot_dir"])
+    target = directory / "funding_rates.jsonl"
+    target.unlink()
+    target.symlink_to(source / "funding_rates.jsonl")
+    with pytest.raises(DataBlocked, match="snapshot_file_symlink"):
+        DataPortal(directory, "btc_eth_aggressive", AS_OF, START)
 
 
 def test_modified_data_file_is_detected(tmp_path):
@@ -185,6 +221,41 @@ def test_repo_output_must_be_git_ignored(tmp_path):
     result = seal_snapshot_for_test(source, repo / "docs")
     assert result["decision"] == "BLOCKED_DATA"
     assert "output_not_git_ignored" in result["gaps"]
+
+
+def test_other_git_repo_output_must_be_git_ignored(tmp_path):
+    source = _source(tmp_path)
+    foreign_repo = tmp_path / "foreign_repo"
+    foreign_repo.mkdir()
+    init = subprocess.run(["git", "init", "-q", str(foreign_repo)], capture_output=True, check=False)
+    assert init.returncode == 0, init.stderr
+    result = seal_snapshot_for_test(source, foreign_repo / "private")
+    assert result["decision"] == "BLOCKED_DATA"
+    assert "output_not_git_ignored" in result["gaps"]
+    assert not (foreign_repo / "private").exists()
+
+
+@pytest.mark.parametrize("failure", ["mkdir", "mkdtemp"])
+def test_output_creation_failure_is_structured_blocked_data(tmp_path, monkeypatch, failure):
+    source = _source(tmp_path)
+    module = importlib.import_module("ai_tuner.replay.snapshot_sealer")
+    if failure == "mkdir":
+        original = Path.mkdir
+
+        def denied_mkdir(self, *args, **kwargs):
+            if self.name == "btc_eth_aggressive":
+                raise PermissionError("denied")
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "mkdir", denied_mkdir)
+    else:
+        def denied_temp(*args, **kwargs):
+            raise PermissionError("denied")
+
+        monkeypatch.setattr(module.tempfile, "mkdtemp", denied_temp)
+    result = _seal(tmp_path, source)
+    assert result["decision"] == "BLOCKED_DATA"
+    assert any(gap.startswith("snapshot_seal_failed:") for gap in result["gaps"])
 
 
 def seal_snapshot_for_test(source: Path, output: Path):
