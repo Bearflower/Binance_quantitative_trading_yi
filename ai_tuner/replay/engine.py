@@ -21,11 +21,13 @@ from .clock import (
     BAR_CLOSE,
     DAILY_MARK,
     FUNDING,
+    FUNDING_CHECK,
     SNAPSHOT,
     Event,
     build_schedule,
     collect_bar_events,
     collect_daily_mark_events,
+    collect_funding_check_events,
     collect_funding_events,
     collect_snapshot_events,
 )
@@ -58,7 +60,9 @@ def run_replay(
             bars = portal.bars(symbol, interval)
             if not bars:
                 raise DataBlocked(["kline_empty:{0}:{1}".format(symbol, interval)])
-            bars_by_subject["{0}|{1}".format(symbol, interval)] = list(bars)
+            bars_by_subject["{0}|{1}".format(symbol, interval)] = [
+                bar for bar in bars if bar.close_time > portal.window_start
+            ]
 
     funding_by_symbol: Dict[str, List[Tuple[datetime, Decimal]]] = {}
     for symbol in ctx.universe.symbols:
@@ -77,6 +81,7 @@ def run_replay(
     if snapshots:
         events.extend(collect_snapshot_events(snapshots))
     events.extend(collect_daily_mark_events(portal.window_start, portal.as_of))
+    events.extend(collect_funding_check_events(portal.window_start, portal.as_of))
     schedule = build_schedule(events)
 
     audit: List[Dict[str, Any]] = [
@@ -97,9 +102,21 @@ def run_replay(
     last_bar_close: Dict[str, datetime] = {}
 
     for timestamp, simultaneous_events in groupby(schedule, key=lambda event: event.time):
+        funding_received: set[str] = set()
         for event in simultaneous_events:
             if event.kind == FUNDING:
                 broker.settle_funding(event.subject, event.payload, event.time)
+                funding_received.add(event.subject)
+            elif event.kind == FUNDING_CHECK:
+                missing = [
+                    "funding_gap:{0}:{1}".format(symbol, to_utc_z(timestamp))
+                    for symbol in sorted(broker.positions)
+                    if broker.positions[symbol].is_open()
+                    and broker.positions[symbol].entry_time < timestamp
+                    and symbol not in funding_received
+                ]
+                if missing:
+                    raise DataBlocked(missing)
             elif event.kind == SNAPSHOT:
                 ctx.portfolio = broker.view()
                 adapter.on_snapshot(event.payload, ctx)
