@@ -1,9 +1,15 @@
 import copy
+import json
+import shutil
+import subprocess
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
+import yaml
 
 from shared.indicators import TechnicalIndicators
 from strategies.btc_eth.shadow.atr_calibration import (
@@ -12,6 +18,13 @@ from strategies.btc_eth.shadow.atr_calibration import (
     canonical_snapshot_bytes,
     prepare_runtime_atr_history,
     verify_manifest,
+)
+
+
+ROOT = Path(__file__).resolve().parents[2]
+CALIBRATION_SCRIPT = ROOT / "scripts" / "generate_xau_atr_calibration.py"
+CALIBRATED_PROFILE = (
+    ROOT / "strategies" / "btc_eth" / "shadow" / "config" / "xau_calibrated.yaml"
 )
 
 
@@ -241,3 +254,222 @@ def test_result_evidence_is_not_shared_with_input_or_manifest():
     assert "mutated" not in result.exclusions
     assert result.gaps == []
     assert result.p50_percent > 0
+
+
+def _run_calibration_cli(
+    tmp_path,
+    source_rows,
+    *,
+    json_array=False,
+    cutoff_ms=None,
+    git_commit="abc123",
+    extra_args=(),
+):
+    source = tmp_path / ("source.json" if json_array else "source.jsonl")
+    if json_array:
+        source.write_text(json.dumps(source_rows), encoding="utf-8")
+    else:
+        source.write_text(
+            "".join(json.dumps(row) + "\n" for row in source_rows),
+            encoding="utf-8",
+        )
+    snapshot = tmp_path / "snapshot.jsonl"
+    manifest = tmp_path / "manifest.json"
+    profile = tmp_path / "xau_calibrated.yaml"
+    shutil.copyfile(CALIBRATED_PROFILE, profile)
+    command = [
+        sys.executable,
+        str(CALIBRATION_SCRIPT),
+        "--input",
+        str(source),
+        "--snapshot-output",
+        str(snapshot),
+        "--manifest-output",
+        str(manifest),
+        "--profile-config",
+        str(profile),
+        "--cutoff-ms",
+        str(source_rows[-1]["close_time"] if cutoff_ms is None else cutoff_ms),
+        "--source",
+        "test-fixture",
+        "--git-commit",
+        git_commit,
+        *extra_args,
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return completed, snapshot, manifest, profile, command
+
+
+def test_cli_generates_verified_evidence_and_atomically_updates_profile(tmp_path):
+    rows = _rows()
+    completed, snapshot, manifest_path, profile_path, _command = (
+        _run_calibration_cli(tmp_path, rows)
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    verify_manifest(manifest, snapshot.read_bytes())
+    profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
+    symbol = profile["strategy"]["symbol_config"]["XAUUSDT"]
+    shadow = profile["shadow"]
+    assert symbol["atr_abs_min"] == manifest["calibration"]["atr_abs_min"]
+    assert symbol["atr_fallback_percent"] == manifest["calibration"][
+        "fallback_atr_percent"
+    ]
+    assert shadow["calibration_manifest_sha256"] == manifest["manifest_sha256"]
+    assert shadow["calibration_snapshot_sha256"] == manifest["snapshot_sha256"]
+    assert shadow["calibration_cutoff_ms"] == manifest["cutoff_ms"]
+    assert shadow["calibration_manifest"].endswith(
+        "calibration/xau_calibrated_atr_manifest.json"
+    )
+
+    summary = json.loads(completed.stdout)
+    assert summary["generated_at"] == manifest["generated_at"]
+    assert datetime.fromisoformat(summary["generated_at"]).tzinfo is not None
+    assert summary["snapshot_sha256"] == manifest["snapshot_sha256"]
+    assert summary["manifest_sha256"] == manifest["manifest_sha256"]
+    assert summary["atr_abs_min"] == manifest["calibration"]["atr_abs_min"]
+    assert summary["fallback_atr_percent"] == manifest["calibration"][
+        "fallback_atr_percent"
+    ]
+    assert datetime.fromisoformat(manifest["generated_at"]).tzinfo is not None
+    assert completed.stdout.count("\n") == 1
+
+
+def test_cli_accepts_json_array_max_cutoff_and_auto_git_commit(tmp_path):
+    rows = _rows()
+    completed, snapshot, manifest_path, _profile, command = _run_calibration_cli(
+        tmp_path,
+        rows,
+        json_array=True,
+        cutoff_ms="max",
+        git_commit="auto",
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    verify_manifest(manifest, snapshot.read_bytes())
+    expected_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=True,
+    ).stdout.strip()
+    assert manifest["cutoff_ms"] == max(row["close_time"] for row in rows)
+    assert manifest["git_commit"] == expected_sha
+
+
+def test_cli_refuses_different_existing_outputs_without_replace(tmp_path):
+    rows = _rows()
+    completed, snapshot, manifest, profile, command = _run_calibration_cli(
+        tmp_path, rows
+    )
+    assert completed.returncode == 0, completed.stderr
+    snapshot.write_bytes(b"do-not-overwrite\n")
+    before_manifest = manifest.read_bytes()
+    before_profile = profile.read_bytes()
+
+    refused = subprocess.run(
+        command,
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert refused.returncode != 0
+    assert snapshot.read_bytes() == b"do-not-overwrite\n"
+    assert manifest.read_bytes() == before_manifest
+    assert profile.read_bytes() == before_profile
+
+
+@pytest.mark.parametrize("invalid_payload", ["not-json\n", "[]\n"])
+def test_cli_invalid_or_empty_input_leaves_profile_unchanged(tmp_path, invalid_payload):
+    source = tmp_path / "invalid.json"
+    source.write_text(invalid_payload, encoding="utf-8")
+    snapshot = tmp_path / "snapshot.jsonl"
+    manifest = tmp_path / "manifest.json"
+    profile = tmp_path / "xau_calibrated.yaml"
+    shutil.copyfile(CALIBRATED_PROFILE, profile)
+    before_profile = profile.read_bytes()
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(CALIBRATION_SCRIPT),
+            "--input",
+            str(source),
+            "--snapshot-output",
+            str(snapshot),
+            "--manifest-output",
+            str(manifest),
+            "--profile-config",
+            str(profile),
+            "--cutoff-ms",
+            "max",
+            "--source",
+            "test-fixture",
+            "--git-commit",
+            "abc123",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert profile.read_bytes() == before_profile
+    assert not snapshot.exists()
+    assert not manifest.exists()
+
+
+def test_cli_profile_validation_failure_writes_no_evidence(tmp_path):
+    rows = _rows()
+    source = tmp_path / "source.jsonl"
+    source.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    snapshot = tmp_path / "snapshot.jsonl"
+    manifest = tmp_path / "manifest.json"
+    profile = tmp_path / "invalid-profile.yaml"
+    profile.write_text("strategy: {}\nshadow: {}\n", encoding="utf-8")
+    before_profile = profile.read_bytes()
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(CALIBRATION_SCRIPT),
+            "--input",
+            str(source),
+            "--snapshot-output",
+            str(snapshot),
+            "--manifest-output",
+            str(manifest),
+            "--profile-config",
+            str(profile),
+            "--cutoff-ms",
+            str(rows[-1]["close_time"]),
+            "--source",
+            "test-fixture",
+            "--git-commit",
+            "abc123",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert profile.read_bytes() == before_profile
+    assert not snapshot.exists()
+    assert not manifest.exists()
