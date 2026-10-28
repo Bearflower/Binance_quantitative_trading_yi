@@ -199,6 +199,49 @@ services:
       retries: 3
       start_period: 40s
 
+  # MTCPS XAUUSDT 黄金校准版影子采集服务（只读、不交易）
+  # 与基线影子服务使用独立实例、profile、run 前缀、调度和运行目录。
+  mtcps-xau-calibrated-shadow:
+    image: ghcr.io/bearflower/trading-btc-eth:latest
+    container_name: trading_system-mtcps-xau-calibrated-shadow
+    restart: unless-stopped
+    command: ["python", "-m", "strategies.btc_eth.shadow.main"]
+    env_file:
+      - .env
+    environment:
+      - STRATEGY_NAME=btc_eth
+      - INSTANCE_ID=mtcps_xau_calibrated_shadow
+      - SHADOW_PROFILES=xau_calibrated
+      - SHADOW_RUN_ID_PREFIX=xau-calibrated-shadow
+      - SHADOW_CRON=20 * * * *
+      - EXECUTION_MODE=shadow_batch
+      - STATE_REPORTING_ENABLED=false
+      - REAL_ORDERING_ENABLED=false
+      - CAPITAL_STRATEGY_ID=
+      - CIRCUIT_BREAKER_POOL=
+      - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=research
+    volumes:
+      - ./logs/mtcps_xau_calibrated_shadow:/app/logs
+      - ./data/mtcps_xau_calibrated_shadow:/app/data
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kline-service:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
   # ============================================
   # 新币做空策略服务
   # ============================================
