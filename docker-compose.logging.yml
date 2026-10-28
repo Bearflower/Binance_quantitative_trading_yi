@@ -5,3 +5,12 @@ services:
   dashboard-api:
     logging: !override
       driver: journald
+  data-backend:
+    logging: !override
+      driver: journald
+  aggtrade-collector:
+    logging: !override
+      driver: journald
+  kline-monitor:
+    logging: !override
+      driver: journald
