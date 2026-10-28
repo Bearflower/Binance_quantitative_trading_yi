@@ -723,16 +723,19 @@ class ShadowCollector:
         if not math.isfinite(current_close) or current_close <= 0:
             raise CalibrationError(f"invalid_current_close:{current_close}")
 
-        adx_series = indicators.get("1d", {}).get("ADX")
-        adx_value = 0.0 if adx_series is None else float(adx_series.iloc[-1])
-        if not math.isfinite(adx_value) or adx_value < 0:
-            raise CalibrationError(f"invalid_1d_adx:{adx_value}")
-        if adx_value <= 0.0:
-            adx_4h = indicators.get("4h", {}).get("ADX")
-            fallback = 0.0 if adx_4h is None else float(adx_4h.iloc[-1])
-            if not math.isfinite(fallback) or fallback < 0:
-                raise CalibrationError(f"invalid_4h_adx:{fallback}")
-            adx_value = fallback if fallback > 0 else 0.0
+        def _positive_finite_adx(timeframe: str) -> float:
+            series = indicators.get(timeframe, {}).get("ADX")
+            if series is None:
+                return 0.0
+            try:
+                value = float(series.iloc[-1])
+            except (IndexError, TypeError, ValueError, OverflowError):
+                return 0.0
+            return value if math.isfinite(value) and value > 0 else 0.0
+
+        adx_value = _positive_finite_adx("1d")
+        if adx_value == 0.0:
+            adx_value = _positive_finite_adx("4h")
         return atr, current_close, adx_value
 
     def _atr_filter_snapshot(

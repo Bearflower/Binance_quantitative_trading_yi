@@ -375,7 +375,7 @@ async def test_real_signal_path_updates_current_atr_once_before_snapshot(monkeyp
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("invalid_field", ["atr_nan", "close_inf", "adx_nan"])
+@pytest.mark.parametrize("invalid_field", ["atr_nan", "close_inf"])
 async def test_non_finite_atr_inputs_fail_closed_and_serialize(
     monkeypatch,
     invalid_field,
@@ -396,9 +396,6 @@ async def test_non_finite_atr_inputs_fail_closed_and_serialize(
         valid_indicators["1h"]["ATR"].iloc[-1] = float("nan")
     elif invalid_field == "close_inf":
         multi["1h"][-1]["close"] = float("inf")
-    else:
-        valid_indicators["1d"]["ADX"].iloc[-1] = float("nan")
-
     monkeypatch.setattr(
         strategy,
         "_build_indicators",
@@ -420,3 +417,70 @@ async def test_non_finite_atr_inputs_fail_closed_and_serialize(
         not isinstance(value, float) or math.isfinite(value)
         for value in events[0].values()
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("adx_case", "expected_adx"),
+    [
+        ("one_day_nan_four_hour_valid", 22.0),
+        ("both_non_finite", 0.0),
+        ("both_missing", 0.0),
+        ("both_non_positive", 0.0),
+    ],
+)
+async def test_adx_uses_one_day_then_four_hour_then_zero_fallback(
+    monkeypatch,
+    adx_case,
+    expected_adx,
+):
+    config = _load_profile("xau_calibrated")
+    strategy = _build_shadow_strategy(
+        profile_id="xau_calibrated",
+        profile_config=config,
+        binance_client=MagicMock(),
+        kline_service=MagicMock(),
+    )
+    strategy._analyze_stationary_signal = AsyncMock(return_value=(None, "评分不足"))
+    collector = _collector_for_single_profile("xau_calibrated", config, strategy)
+    multi = _closed_multi_timeframe_klines()
+    indicators = strategy._build_indicators(multi)
+
+    if adx_case == "one_day_nan_four_hour_valid":
+        indicators["1d"]["ADX"].iloc[-1] = float("nan")
+        indicators["4h"]["ADX"].iloc[-1] = 22.0
+    elif adx_case == "both_non_finite":
+        indicators["1d"]["ADX"].iloc[-1] = float("inf")
+        indicators["4h"]["ADX"].iloc[-1] = float("nan")
+    elif adx_case == "both_missing":
+        indicators["1d"].pop("ADX", None)
+        indicators["4h"].pop("ADX", None)
+    else:
+        indicators["1d"]["ADX"].iloc[-1] = -1.0
+        indicators["4h"]["ADX"].iloc[-1] = 0.0
+
+    monkeypatch.setattr(
+        strategy,
+        "_build_indicators",
+        MagicMock(return_value=indicators),
+    )
+    get_threshold = MagicMock(
+        wraps=strategy.atr_filter.get_dynamic_min_atr_percent
+    )
+    monkeypatch.setattr(
+        strategy.atr_filter,
+        "get_dynamic_min_atr_percent",
+        get_threshold,
+    )
+
+    events = await collector._analyze_profile(
+        profile_id="xau_calibrated",
+        strategy=strategy,
+        multi_klines=multi,
+        close_times=_close_times(multi),
+        scheduled_at=datetime(2026, 10, 27, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert events[0]["decision"] == "no_signal"
+    assert events[0]["feature_snapshot"]["atr_filter"]["adx"] == expected_adx
+    get_threshold.assert_called_once_with("XAUUSDT", expected_adx)
