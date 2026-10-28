@@ -7,7 +7,7 @@ those marks and fails closed when a required observation is absent or invalid.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal, localcontext
+from decimal import Decimal, DecimalException, localcontext
 from typing import Optional, Sequence, Tuple
 
 from ai_tuner.replay.models import DataBlocked, EquityPoint
@@ -163,6 +163,9 @@ def calmar_diagnostic(
     if selected[-1][0] != window_end:
         result["calmar_unavailable_reason"] = "missing_end_boundary"
         return result
+    if any(selected[index][0] == selected[index - 1][0] for index in range(1, len(selected))):
+        result["calmar_unavailable_reason"] = "duplicate_equity_timestamp"
+        return result
     if len(selected) < 2:
         result["calmar_unavailable_reason"] = "invalid_duration"
         return result
@@ -190,6 +193,9 @@ def calmar_diagnostic(
         if worst == ZERO:
             result["calmar_unavailable_reason"] = "zero_drawdown"
             return result
-        annualized = (last_equity / first_equity) ** (Decimal(365) / days) - ONE
-        result["calmar"] = annualized / worst
+        try:
+            annualized = (last_equity / first_equity) ** (Decimal(365) / days) - ONE
+            result["calmar"] = annualized / worst
+        except DecimalException:
+            result["calmar_unavailable_reason"] = "annualization_arithmetic_error"
     return result

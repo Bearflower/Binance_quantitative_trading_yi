@@ -156,6 +156,34 @@ def test_calmar_missing_end_mark_is_null_instead_of_using_earlier_mark():
     assert result["window_return"] is None
 
 
+@pytest.mark.parametrize("reverse", [False, True])
+@pytest.mark.parametrize("duplicate_at_start", [False, True])
+def test_calmar_duplicate_endpoint_mark_is_null_regardless_of_row_order(
+    reverse, duplicate_at_start
+):
+    start = point(0, 100)
+    end = point(2, 110)
+    duplicate = point(0, 90) if duplicate_at_start else point(2, 95)
+    marks = [start, point(1, 80), end, duplicate]
+    if reverse:
+        marks.reverse()
+    result = calmar_diagnostic(marks, start.ts, end.ts, D(100))
+    assert result["calmar"] is None
+    assert result["calmar_unavailable_reason"] == "duplicate_equity_timestamp"
+
+
+def test_calmar_decimal_overflow_is_diagnostic_null():
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    marks = [
+        EquityPoint(start, D(100), D(100), False),
+        EquityPoint(start + timedelta(microseconds=1), D(99), D(99), False),
+        EquityPoint(start + timedelta(microseconds=2), D(110), D(110), False),
+    ]
+    result = calmar_diagnostic(marks, marks[0].ts, marks[-1].ts, D(100))
+    assert result["calmar"] is None
+    assert result["calmar_unavailable_reason"] == "annualization_arithmetic_error"
+
+
 def test_calmar_nonpositive_equity_is_null_with_reason():
     marks = [point(0, 100), point(1, 0)]
     result = calmar_diagnostic(marks, marks[0].ts, marks[-1].ts, D(100))
