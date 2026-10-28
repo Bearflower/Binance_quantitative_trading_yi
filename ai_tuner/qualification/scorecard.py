@@ -149,6 +149,14 @@ def build_scorecard(
         "cost_monotonicity": {"holds": None},
         "cost_monotonicity_violation": False,
     }
+    if isinstance(results, Mapping):
+        for tier in TIERS:
+            result = results.get(tier)
+            if isinstance(result, ReplayResult):
+                card["failure_reasons"].extend(
+                    "replay_invariant_violation:{0}:{1}".format(tier, violation)
+                    for violation in result.invariant_violations
+                )
     try:
         _, _, diag_start, diag_end = _validate_inputs(
             results, initial_equity, replay_start, replay_end,

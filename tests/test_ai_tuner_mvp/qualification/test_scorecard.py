@@ -21,8 +21,8 @@ def point(day, equity, *, hour=0, open_position=False):
     return EquityPoint(ts, D(str(equity)), D(str(equity)), open_position)
 
 
-def result(points, manifest="frozen-manifest"):
-    return ReplayResult(manifest, tuple(points), (), None, (), ())
+def result(points, manifest="frozen-manifest", invariant_violations=()):
+    return ReplayResult(manifest, tuple(points), (), None, (), tuple(invariant_violations))
 
 
 def tiers(*, stress=None, baseline=None, twice=None):
@@ -249,6 +249,41 @@ def test_non_midnight_diagnostic_calmar_uses_complete_daily_boundaries():
     assert card["calmar"]["calmar"] is not None
     assert card["calmar"]["elapsed_days"] == D(55)
     assert card["calmar"]["window_return"] == marks[56].marked_equity / marks[1].marked_equity - 1
+
+
+def test_single_tier_replay_invariant_violation_is_framework_fail():
+    inputs = tiers()
+    inputs["1.5x"] = result(inputs["1.5x"].equity_curve,
+                             invariant_violations=("reduce_only_overfill",))
+    card = scorecard(inputs)
+    assert card["evidence_status"] == "FAIL"
+    assert "replay_invariant_violation:1.5x:reduce_only_overfill" in card["failure_reasons"]
+
+
+def test_replay_invariant_violations_aggregate_across_tiers():
+    inputs = tiers()
+    inputs["baseline"] = result(inputs["baseline"].equity_curve,
+                                invariant_violations=("negative_cash", "duplicate_fill"))
+    inputs["2.0x"] = result(inputs["2.0x"].equity_curve,
+                            invariant_violations=("negative_cash",))
+    card = scorecard(inputs)
+    assert card["evidence_status"] == "FAIL"
+    assert card["failure_reasons"] == [
+        "replay_invariant_violation:baseline:negative_cash",
+        "replay_invariant_violation:baseline:duplicate_fill",
+        "replay_invariant_violation:2.0x:negative_cash",
+    ]
+
+
+def test_blocked_data_outweighs_replay_invariant_fail():
+    inputs = tiers()
+    missing_day = tuple(point(day, 100 + (day % 4) - (day % 3))
+                        for day in range(71) if day != 10)
+    inputs["1.5x"] = result(missing_day, invariant_violations=("duplicate_fill",))
+    card = scorecard(inputs)
+    assert card["evidence_status"] == "BLOCKED_DATA"
+    assert "replay_invariant_violation:1.5x:duplicate_fill" in card["failure_reasons"]
+    assert any(reason.startswith("daily_equity_gap:1.5x:") for reason in card["blocked_reasons"])
 
 
 def test_zero_downside_blocks_sortino_but_keeps_calmar_diagnostic_reason():
