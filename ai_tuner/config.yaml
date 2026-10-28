@@ -26,6 +26,11 @@ purpose_driven_mvp:
   # 用于"配置是否有版本列"推断的 baseline 比例（阶段二补齐 identity 列后动态计算）
   identity_ratio_baseline: 0.90
 
+  # 资格考试成本压力红线；其余未校准门禁仍须由实测数据校准后显式配置。
+  qualification:
+    gates:
+      max_cost_1_5x_capital_loss_pct: 30
+
   # 准备度审计阈值（全部可配置，严禁硬编码）
   # 说明：外部快照门禁必须是「策略级」的，不能全局一刀切。
   #      - btc_eth_aggressive：入场逻辑主要依赖历史 K 线与技术指标，

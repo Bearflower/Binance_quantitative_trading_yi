@@ -14,7 +14,7 @@ GATE_SPECS = (
     ("minimum_sample", "min_effective_signals", "effective_signals", "min", "block"),
     ("blind_sample", "min_blind_trades", "blind_trades", "min", "block"),
     ("adjacent_perturbation", "adjacent_perturb_max_dd_delta_pct", "adjacent_dd_delta_pct", "max", "fail"),
-    ("cost_1_5x", "cost_1_5x_capital_preservation_pct", "cost_1_5x_capital_preservation_pct", "min", "fail"),
+    ("cost_1_5x", "max_cost_1_5x_capital_loss_pct", "max_capital_loss_pct_1_5x", "strict_max", "fail"),
     ("concentration", "max_single_trade_concentration_pct", "single_trade_concentration_pct", "max", "fail"),
     ("version_compatibility", "config_version_required", "config_compatible", "true", "block"),
 )
@@ -49,16 +49,22 @@ def evaluate_gates(
             reason = "threshold_missing:{0}".format(threshold_key)
         elif actual is None:
             reason = "actual_missing:{0}".format(actual_key)
-        elif operator in ("min", "max"):
+        elif operator in ("min", "max", "strict_max"):
             threshold_number = _number(threshold)
             actual_number = _number(actual)
-            if threshold_number is None:
+            if threshold_number is None or (
+                operator == "strict_max" and not Decimal("0") < threshold_number < Decimal("100")
+            ):
                 reason = "threshold_invalid:{0}".format(threshold_key)
-            elif actual_number is None:
+            elif actual_number is None or (
+                operator == "strict_max" and not Decimal("0") <= actual_number <= Decimal("100")
+            ):
                 reason = "actual_invalid:{0}".format(actual_key)
             elif operator == "min" and actual_number < threshold_number:
                 reason = gate_name
             elif operator == "max" and actual_number > threshold_number:
+                reason = gate_name
+            elif operator == "strict_max" and actual_number >= threshold_number:
                 reason = gate_name
         elif threshold is not True:
             reason = "threshold_invalid:{0}".format(threshold_key)

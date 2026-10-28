@@ -14,7 +14,7 @@ def _thresholds():
         "min_effective_signals": 100,
         "min_blind_trades": 10,
         "adjacent_perturb_max_dd_delta_pct": "3",
-        "cost_1_5x_capital_preservation_pct": "30",
+        "max_cost_1_5x_capital_loss_pct": "30",
         "max_single_trade_concentration_pct": "40",
         "config_version_required": True,
     }
@@ -29,7 +29,7 @@ def _actuals():
         "effective_signals": 120,
         "blind_trades": 20,
         "adjacent_dd_delta_pct": "1",
-        "cost_1_5x_capital_preservation_pct": "95",
+        "max_capital_loss_pct_1_5x": "5",
         "single_trade_concentration_pct": "20",
         "config_compatible": True,
     }
@@ -100,14 +100,50 @@ def test_missing_gate_maps_block_instead_of_throwing():
 
 def test_missing_actual_is_blocked():
     actuals = _actuals()
-    del actuals["cost_1_5x_capital_preservation_pct"]
+    del actuals["max_capital_loss_pct_1_5x"]
     result = evaluate_gates(actuals, _thresholds())
     assert result["status"] == "BLOCKED_DATA"
+    assert "actual_missing:max_capital_loss_pct_1_5x" in result["blocked_reasons"]
 
 
-def test_cost_gate_uses_preserved_capital_not_inverted_loss():
+@pytest.mark.parametrize("loss, expected_status", [
+    ("29.999", "PASS"),
+    ("30.000", "FAIL"),
+    ("30.001", "FAIL"),
+])
+def test_cost_gate_uses_strict_loss_boundary(loss, expected_status):
     actuals = _actuals()
-    actuals["cost_1_5x_capital_preservation_pct"] = "25"
+    actuals["max_capital_loss_pct_1_5x"] = loss
     result = evaluate_gates(actuals, _thresholds())
-    assert result["status"] == "FAIL"
-    assert "cost_1_5x" in result["elimination_reasons"]
+    assert result["status"] == expected_status
+    assert result["gates"]["cost_1_5x"]["pass"] is (expected_status == "PASS")
+
+
+@pytest.mark.parametrize("threshold", ["0", "-1", "100", "101", "NaN", "Infinity", "bad"])
+def test_cost_gate_rejects_out_of_range_or_nonfinite_threshold(threshold):
+    thresholds = _thresholds()
+    thresholds["max_cost_1_5x_capital_loss_pct"] = threshold
+    result = evaluate_gates(_actuals(), thresholds)
+    assert result["status"] == "BLOCKED_DATA"
+    assert "threshold_invalid:max_cost_1_5x_capital_loss_pct" in result["blocked_reasons"]
+
+
+@pytest.mark.parametrize("loss", ["-0.001", "100.001", "NaN", "Infinity", "bad"])
+def test_cost_gate_rejects_out_of_range_or_nonfinite_actual(loss):
+    actuals = _actuals()
+    actuals["max_capital_loss_pct_1_5x"] = loss
+    result = evaluate_gates(actuals, _thresholds())
+    assert result["status"] == "BLOCKED_DATA"
+    assert "actual_invalid:max_capital_loss_pct_1_5x" in result["blocked_reasons"]
+
+
+def test_legacy_cost_keys_alone_do_not_satisfy_gate():
+    thresholds = _thresholds()
+    actuals = _actuals()
+    del thresholds["max_cost_1_5x_capital_loss_pct"]
+    del actuals["max_capital_loss_pct_1_5x"]
+    thresholds["cost_1_5x_capital_preservation_pct"] = "30"
+    actuals["cost_1_5x_capital_preservation_pct"] = "95"
+    result = evaluate_gates(actuals, thresholds)
+    assert result["status"] == "BLOCKED_DATA"
+    assert "threshold_missing:max_cost_1_5x_capital_loss_pct" in result["blocked_reasons"]

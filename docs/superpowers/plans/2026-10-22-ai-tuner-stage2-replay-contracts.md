@@ -356,7 +356,12 @@ final_equity(m=1.0) >= final_equity(m=1.5) >= final_equity(m=2.0)
 |---|---|---|---|
 | `net_pnl_after_costs` | `str` | ✓ | Decimal USDT |
 | `max_drawdown_pct` | `str` | ✓ | Decimal |
-| `sortino` / `calmar` | `str` | ✓ | Decimal |
+| `sortino` | `str \| null` | ✓ | 年化 Sortino；无下行观察、权益/日点缺失或收益无效时为 `null`，不得写无穷大 |
+| `sortino_unavailable_reason` | `str \| null` | ✓ | `sortino=null` 时写明原因（如 `no_downside_observation`），否则为 `null` |
+| `calmar` | `str \| null` | ✓ | 年化 Calmar；零回撤、权益非正或时间跨度无效时为 `null`，不得写无穷大 |
+| `calmar_unavailable_reason` | `str \| null` | ✓ | `calmar=null` 时写明原因，否则为 `null` |
+| `short_window` / `calmar_use` | `bool` / `str` | ✓ | 诊断窗不足 365 天时 `short_window=true`、`calmar_use=diagnostic_only` |
+| `window_return` / `elapsed_days` | `str \| null` | ✓ | 展示未年化收益和实际 UTC 时间跨度；不可计算时为 `null` 并写原因 |
 | `expectancy` | `str` | ✓ | Decimal USDT |
 | `win_rate` / `profit_factor` | `str` | ✓ | Decimal |
 | `effective_signals` | `int` | ✓ | 有效信号数（来自 trade_signals） |
@@ -521,11 +526,13 @@ class ReplayAdapter(Protocol):
 | ⑤ 最低样本量 | `min_effective_signals` | `int` | `100` | 条（沿用，不下调） |
 | ⑥ 盲测样本 | `min_blind_trades` | `int` | `待校准` | 笔 |
 | ⑦ 相邻扰动 | `adjacent_perturb_max_dd_delta_pct` | `Decimal` | `待校准` | % |
-| ⑧ 1.5× 成本压力 | `cost_1_5x_capital_preservation_pct` | `Decimal` | `30` | %（1.5× 下不触发红线） |
+| ⑧ 1.5× 成本压力 | `max_cost_1_5x_capital_loss_pct` | `Decimal` | `30`（须显式配置） | %（全程最大初始资金亏损严格小于阈值） |
 | ⑨ 收益集中度 | `max_single_trade_concentration_pct` | `Decimal` | `待校准` | % |
 | ⑩ 版本兼容 | `config_version_required` | `bool` | `true` | — |
 
 > 「待校准」项为设计预留：必须在真实数据 stage 校准后写入 config，**代码不得出现 fallback 数字**；校准前相关门禁按未配置即 `BLOCKED_DATA` 处理（fail-closed）。
+
+1.5× 成本压力实际值为 `max_capital_loss_pct_1_5x = 100 × max(0, (E0 - min_path_equity) / E0)`，其中 `E0 > 0`，`min_path_equity` 是 1.5× 独立重放的全程盯市权益最低值（含起点、持仓、资金费结算及终点）。门禁使用未舍入的 Decimal 原值严格比较 `< 30`；`29.999` 通过，`30.000` 触线即 `FAIL`。阈值须为有限数且在 `(0, 100)`，实际值须为有限数且在 `[0, 100]`，缺失或非法均为 `BLOCKED_DATA`。旧键 `cost_1_5x_capital_preservation_pct` 是废弃的历史名称，不接受为新键别名；只提供旧键时按缺失阻断。基准档 `max_drawdown_pct=15` 硬门禁保持独立有效。
 
 ---
 
