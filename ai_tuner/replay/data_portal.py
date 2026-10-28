@@ -78,6 +78,28 @@ def compute_manifest_sha256(files: Dict[str, Dict[str, Any]]) -> str:
     return sha256_text(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
+def compute_manifest_envelope_sha256(manifest: Dict[str, Any]) -> str:
+    """v2 envelope integrity digest; does not attest the data source.
+
+    The digest binds identity/window/provenance labels and each relative path
+    plus file hash. Formal callers must pin the expected digest externally:
+    a self-contained manifest cannot prevent wholesale malicious replacement.
+    """
+    payload = {
+        "manifest_version": 2,
+        "strategy_id": manifest["strategy_id"],
+        "as_of": manifest["as_of"],
+        "window_start": manifest["window_start"],
+        "window_end": manifest["window_end"],
+        "source_provenance": manifest["source_provenance"],
+        "files": {
+            name: {"path": info["path"], "sha256": info["sha256"]}
+            for name, info in sorted(manifest["files"].items())
+        },
+    }
+    return sha256_text(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+
+
 def resolve_snapshot_dir(root: Any, strategy_id: str, as_of: datetime) -> Path:
     """解析快照目录：支持 ``20261022T000000Z`` 与 ``2026-10-22T00:00:00Z`` 两种命名。"""
     base = Path(root) / strategy_id
@@ -101,6 +123,7 @@ class DataPortal:
         window_start: datetime,
         window_end: Optional[datetime] = None,
         required_datasets: Iterable[str] = (),
+        expected_envelope_sha256: Optional[str] = None,
     ) -> None:
         self.snapshot_dir = Path(snapshot_dir)
         self.strategy_id = strategy_id
@@ -108,6 +131,7 @@ class DataPortal:
         self.window_start = window_start
         self.window_end = window_end or as_of
         self.required_datasets = tuple(required_datasets)
+        self.expected_envelope_sha256 = expected_envelope_sha256
 
         self.manifest: Dict[str, Any] = {}
         self.manifest_sha256 = ""
@@ -147,6 +171,25 @@ class DataPortal:
         actual_top = compute_manifest_sha256(files)
         if actual_top != manifest.get("sha256"):
             raise DataBlocked(["snapshot_manifest_hash_mismatch"])
+
+        version = manifest.get("manifest_version")
+        if self.expected_envelope_sha256 is not None and version != 2:
+            raise DataBlocked(["manifest_v2_required"])
+        if version == 2:
+            try:
+                actual_envelope = compute_manifest_envelope_sha256(manifest)
+            except (KeyError, TypeError, ValueError):
+                raise DataBlocked(["manifest_envelope_fields_invalid"])
+            if actual_envelope != manifest.get("envelope_sha256"):
+                raise DataBlocked(["manifest_envelope_hash_mismatch"])
+            if self.expected_envelope_sha256 is not None and actual_envelope != self.expected_envelope_sha256:
+                raise DataBlocked(["manifest_expected_envelope_mismatch"])
+            if manifest.get("source_provenance") != "unverified":
+                raise DataBlocked(["source_provenance_unverified_required"])
+            if manifest.get("strategy_id") != self.strategy_id or manifest.get("as_of") != to_utc_z(self.as_of) or manifest.get("window_start") != to_utc_z(self.window_start) or manifest.get("window_end") != to_utc_z(self.window_end):
+                raise DataBlocked(["manifest_identity_mismatch"])
+        elif version is not None or "envelope_sha256" in manifest:
+            raise DataBlocked(["manifest_version_invalid"])
 
         self.manifest = manifest
         self.manifest_sha256 = actual_top

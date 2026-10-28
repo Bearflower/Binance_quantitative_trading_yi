@@ -11,12 +11,13 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, Optional
 
-from .data_portal import compute_manifest_sha256, sha256_file
+from .data_portal import compute_manifest_envelope_sha256, compute_manifest_sha256, sha256_file
 
 
 _STRATEGIES = frozenset(("btc_eth_aggressive", "hrs"))
@@ -30,7 +31,7 @@ _REQUIRED = frozenset((
 
 
 def _blocked(*gaps: str) -> Dict[str, Any]:
-    return {"decision": "BLOCKED_DATA", "source_provenance": "unverified", "gaps": list(gaps)}
+    return {"decision": "BLOCKED_DATA", "source_provenance": "unverified", "source_attested": False, "gaps": list(gaps)}
 
 
 def _utc(value: Any) -> Optional[datetime]:
@@ -43,6 +44,24 @@ def _relative_files(source: Path, file_paths: Optional[Iterable[str]]) -> list[s
     if file_paths is not None:
         return list(file_paths)
     return sorted(path.relative_to(source).as_posix() for path in source.rglob("*") if path.is_file() and path.name != "manifest.json")
+
+
+def _has_symlink_ancestor(path: Path) -> bool:
+    absolute = path.absolute()
+    return any(part.is_symlink() for part in (absolute, *absolute.parents))
+
+
+def _repo_destination_is_ignored(destination: Path) -> bool:
+    repo = Path(__file__).resolve().parents[2]
+    try:
+        destination.resolve(strict=False).relative_to(repo)
+    except ValueError:
+        return True  # Outside this checkout: caller controls local storage.
+    check = subprocess.run(
+        ["git", "check-ignore", "-q", "--no-index", str(destination / "manifest.json")],
+        cwd=repo, capture_output=True, check=False,
+    )
+    return check.returncode == 0
 
 
 def seal_snapshot(
@@ -72,14 +91,16 @@ def seal_snapshot(
     if claimed_source_provenance != "unverified":
         gaps.append("source_provenance_unverifiable:{0}".format(claimed_source_provenance))
     source = Path(source_dir)
-    if not source.is_dir() or source.is_symlink():
+    if not source.is_dir() or _has_symlink_ancestor(source):
         gaps.append("source_missing_or_symlink:{0}".format(source))
     if gaps:
         return _blocked(*gaps)
 
     destination = Path(output_root) / "snapshots" / strategy_id / times[0].strftime("%Y%m%dT%H%M%SZ")
-    if any(path.is_symlink() for path in (Path(output_root), destination.parent.parent.parent, destination.parent.parent, destination.parent)):
+    if _has_symlink_ancestor(destination):
         return _blocked("output_symlink")
+    if not _repo_destination_is_ignored(destination):
+        return _blocked("output_not_git_ignored")
     if destination.exists() or destination.is_symlink():
         return _blocked("snapshot_already_exists:{0}".format(destination))
 
@@ -155,6 +176,7 @@ def seal_snapshot(
             files[rel] = {"path": rel, "sha256": sha256_file(str(target))}
 
         manifest = {
+            "manifest_version": 2,
             "strategy_id": strategy_id,
             "as_of": times[0].strftime("%Y-%m-%dT%H:%M:%SZ"),
             "window_start": times[1].strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -163,6 +185,7 @@ def seal_snapshot(
             "files": files,
             "sha256": compute_manifest_sha256(files),
         }
+        manifest["envelope_sha256"] = compute_manifest_envelope_sha256(manifest)
         (temporary / "manifest.json").write_text(
             json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False) + "\n",
             encoding="utf-8",
@@ -173,8 +196,10 @@ def seal_snapshot(
         return {
             "status": "SEALED",
             "source_provenance": "unverified",
+            "source_attested": False,
             "snapshot_dir": str(destination),
             "manifest_sha256": manifest["sha256"],
+            "envelope_sha256": manifest["envelope_sha256"],
         }
     except (OSError, ValueError) as exc:
         return _blocked("snapshot_seal_failed:{0}".format(exc))

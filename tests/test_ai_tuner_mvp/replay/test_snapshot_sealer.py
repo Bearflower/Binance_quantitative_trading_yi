@@ -50,7 +50,47 @@ def test_same_input_produces_identical_manifest_and_data_portal_accepts(tmp_path
     assert (first / "manifest.json").read_bytes() == (second / "manifest.json").read_bytes()
     manifest = json.loads((first / "manifest.json").read_text())
     assert manifest["source_provenance"] == "unverified"
+    assert manifest["manifest_version"] == 2
+    assert one["envelope_sha256"] == manifest["envelope_sha256"]
+    assert one["source_attested"] is False
     assert DataPortal(first, "btc_eth_aggressive", AS_OF, START).manifest_sha256 == manifest["sha256"]
+    assert DataPortal(
+        first, "btc_eth_aggressive", AS_OF, START,
+        expected_envelope_sha256=one["envelope_sha256"],
+    ).manifest_sha256 == manifest["sha256"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("strategy_id", "hrs"),
+    ("as_of", "2026-10-23T00:00:00Z"),
+    ("window_start", "2026-10-21T00:00:00Z"),
+    ("window_end", "2026-10-21T23:00:00Z"),
+    ("source_provenance", "live"),
+])
+def test_v2_metadata_tamper_is_detected(tmp_path, field, value):
+    result = _seal(tmp_path, _source(tmp_path))
+    directory = Path(result["snapshot_dir"])
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest[field] = value
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(DataBlocked, match="manifest_envelope_hash_mismatch"):
+        DataPortal(directory, "btc_eth_aggressive", AS_OF, START)
+
+
+def test_v2_downgrade_is_detected_when_expected_digest_is_pinned(tmp_path):
+    result = _seal(tmp_path, _source(tmp_path))
+    directory = Path(result["snapshot_dir"])
+    manifest_path = directory / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest.pop("manifest_version")
+    manifest.pop("envelope_sha256")
+    manifest_path.write_text(json.dumps(manifest))
+    with pytest.raises(DataBlocked, match="manifest_v2_required"):
+        DataPortal(
+            directory, "btc_eth_aggressive", AS_OF, START,
+            expected_envelope_sha256=result["envelope_sha256"],
+        )
 
 
 def test_modified_data_file_is_detected(tmp_path):
@@ -116,6 +156,35 @@ def test_output_root_symlink_is_rejected(tmp_path):
     result = seal_snapshot_for_test(source, output)
     assert result["decision"] == "BLOCKED_DATA"
     assert not (redirect / "snapshots").exists()
+
+
+def test_source_ancestor_symlink_is_rejected(tmp_path):
+    real = tmp_path / "real"
+    source = _source(real)
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+    result = _seal(tmp_path, linked / "source")
+    assert result["decision"] == "BLOCKED_DATA"
+    assert any("symlink" in gap for gap in result["gaps"])
+
+
+def test_output_ancestor_symlink_is_rejected(tmp_path):
+    source = _source(tmp_path)
+    real = tmp_path / "real"
+    real.mkdir()
+    linked = tmp_path / "linked"
+    linked.symlink_to(real, target_is_directory=True)
+    result = seal_snapshot_for_test(source, linked / "output")
+    assert result["decision"] == "BLOCKED_DATA"
+    assert not (real / "output").exists()
+
+
+def test_repo_output_must_be_git_ignored(tmp_path):
+    source = _source(tmp_path)
+    repo = Path(__file__).resolve().parents[3]
+    result = seal_snapshot_for_test(source, repo / "docs")
+    assert result["decision"] == "BLOCKED_DATA"
+    assert "output_not_git_ignored" in result["gaps"]
 
 
 def seal_snapshot_for_test(source: Path, output: Path):
