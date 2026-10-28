@@ -17,6 +17,13 @@ FIRST_CREATE_MARKER = (
     ROOT / ".github" / "deploy-modes" / "xau-calibrated-shadow-first-create"
 )
 REMOTE_WRAPPER = ROOT / "scripts" / "run_remote_deploy.sh"
+REMOTE_RUNTIME = ROOT / "scripts" / "remote_deploy_runtime.sh"
+RETRY_MARKER = (
+    ROOT
+    / ".github"
+    / "deploy-modes"
+    / "xau-calibrated-shadow-first-create-retry-1"
+)
 
 
 def _env_map(service):
@@ -50,7 +57,11 @@ def _shell_tokens(block):
 
 
 def _residual_cleanup_tokens():
-    match = re.search(r'RESIDUAL_CANDIDATES="(?P<body>.*?)"', WORKFLOW, re.DOTALL)
+    match = re.search(
+        r'RESIDUAL_CANDIDATES="(?P<body>.*?)"',
+        _remote_deploy_script(),
+        re.DOTALL,
+    )
     assert match is not None, "deploy.yml 缺少 RESIDUAL_CANDIDATES 清理清单"
     return _shell_tokens(match.group("body"))
 
@@ -58,7 +69,7 @@ def _residual_cleanup_tokens():
 def _long_running_health_gate_tokens():
     section = re.search(
         r"# 5\. 等全部长期运行容器就绪(?P<body>.*?)(?:# 6\.|\Z)",
-        WORKFLOW,
+        _remote_deploy_script(),
         re.DOTALL,
     )
     assert section is not None, "deploy.yml 缺少长期运行容器就绪检查区段"
@@ -83,7 +94,7 @@ def _calibrated_first_create_block():
     match = re.search(
         r"# calibrated-first-create begin(?P<body>.*?)"
         r"# calibrated-first-create end",
-        WORKFLOW,
+        _remote_deploy_script(),
         re.DOTALL,
     )
     assert match is not None, "deploy.yml 缺少 calibrated 首次创建目标化分支"
@@ -91,14 +102,8 @@ def _calibrated_first_create_block():
 
 
 def _remote_deploy_script():
-    remote = re.search(
-        r"cat > \"\$LOCAL_DEPLOY_SCRIPT\" << 'REMOTE_SCRIPT'(?P<body>.*?)"
-        r"^\s*REMOTE_SCRIPT$",
-        WORKFLOW,
-        re.DOTALL | re.MULTILINE,
-    )
-    assert remote is not None, "deploy.yml 缺少远程部署脚本"
-    return remote.group("body")
+    assert REMOTE_RUNTIME.is_file(), "仓库缺少远端部署 runtime 脚本"
+    return REMOTE_RUNTIME.read_text(encoding="utf-8")
 
 
 def _remote_script_through_targeted_exit():
@@ -129,6 +134,63 @@ def test_first_create_mode_is_selected_by_one_time_changed_file_signal():
     assert selection is not None
     assert "docker inspect" not in selection.group("body")
     assert '--event-name "${{ github.event_name }}"' in selection.group("body")
+
+
+def test_retry_marker_exists_for_run_120_parse_failure():
+    assert RETRY_MARKER.is_file()
+
+
+def test_each_workflow_run_block_stays_below_github_expression_limit():
+    parsed = yaml.safe_load(WORKFLOW)
+    for job_name, job in parsed["jobs"].items():
+        for step in job.get("steps", []):
+            if "run" in step:
+                assert len(step["run"]) < 21000, (
+                    f"{job_name}/{step.get('name')} run block is {len(step['run'])} chars"
+                )
+
+
+def test_remote_runtime_is_repository_script_and_bash_syntax_valid():
+    assert REMOTE_RUNTIME.is_file()
+    result = subprocess.run(
+        ["bash", "-n", str(REMOTE_RUNTIME)], text=True, capture_output=True
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_extracted_runtime_preserves_logging_overlay_and_pre_up_archive():
+    runtime = _remote_deploy_script()
+    assert "export COMPOSE_FILE=docker-compose.yml:docker-compose.logging.yml" in runtime
+    archive_at = runtime.index("bash scripts/archive_container_logs.sh")
+    full_pull_at = runtime.index('echo "📥 docker compose pull..."')
+    assert archive_at < full_pull_at
+
+    upload = _workflow_step("📤 上传 docker-compose.yml（scp）")
+    assert "docker-compose.logging.yml" in upload
+    assert "scripts/archive_container_logs.sh" in upload
+
+
+def _assert_calibrated_build_override(block):
+    selector_at = block.index("scripts/select_deploy_mode.py")
+    ordinary_at = block.index("shared/ 或 docker-compose.yml / VERSION")
+    assert selector_at < ordinary_at
+    assert 'if [ "$DEPLOY_MODE" = "calibrated-first-create" ]' in block
+    assert 'if [ "$SERVICE_NAME" = "btc-eth" ]' in block
+    assert 'echo "should_build=true" >> "$GITHUB_OUTPUT"' in block
+    assert 'echo "should_build=false" >> "$GITHUB_OUTPUT"' in block
+
+
+def test_calibrated_marker_builds_only_btc_eth_before_ordinary_matrix_rules():
+    decision = _workflow_step("⏭️ 判断是否需要构建")
+    _assert_calibrated_build_override(decision)
+
+
+def test_calibrated_build_override_guard_detects_missing_btc_eth_binding():
+    decision = _workflow_step("⏭️ 判断是否需要构建")
+    with pytest.raises((AssertionError, ValueError)):
+        _assert_calibrated_build_override(
+            decision.replace('SERVICE_NAME" = "btc-eth', 'SERVICE_NAME" = "hrs')
+        )
 
 
 def test_first_create_remote_path_targets_only_calibrated_service():
@@ -218,16 +280,15 @@ def test_upload_step_contains_no_secret_and_ghcr_secret_is_login_only():
     assert "GHCR_PULL_TOKEN" not in WORKFLOW.replace(login, "", 1)
 
 
-def test_upload_step_secret_guard_detects_post_heredoc_injection():
+def test_upload_step_secret_guard_detects_post_copy_injection():
     upload = _workflow_step("🚀 生成并上传远程部署脚本")
     mutation = (
         '\nprintf \'%s\' "${{ secrets.GHCR_PULL_TOKEN }}" '
         '>> "$LOCAL_DEPLOY_SCRIPT"\n'
     )
-    heredoc_end = upload.index("          REMOTE_SCRIPT") + len(
-        "          REMOTE_SCRIPT"
-    )
-    mutated = upload[:heredoc_end] + mutation + upload[heredoc_end:]
+    copy_line = 'cp scripts/remote_deploy_runtime.sh "$LOCAL_DEPLOY_SCRIPT"'
+    copy_end = upload.index(copy_line) + len(copy_line)
+    mutated = upload[:copy_end] + mutation + upload[copy_end:]
 
     with pytest.raises(AssertionError):
         _assert_upload_step_contains_no_secret_token(mutated)
@@ -345,7 +406,7 @@ def test_targeted_deploy_guard_detects_dangerous_command_mutations(mutate):
 
 
 def test_ordinary_deploy_keeps_full_compose_path_outside_first_create_block():
-    ordinary = WORKFLOW.replace(_calibrated_first_create_block(), "")
+    ordinary = _remote_deploy_script().replace(_calibrated_first_create_block(), "")
 
     assert "docker compose pull\n" in ordinary
     assert "docker compose up -d --remove-orphans" in ordinary

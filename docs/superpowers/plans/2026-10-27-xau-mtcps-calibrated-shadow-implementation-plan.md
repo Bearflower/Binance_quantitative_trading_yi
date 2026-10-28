@@ -1532,6 +1532,19 @@ marker 选择 `calibrated-first-create`，远端仅 pull/up
   变异、PID 失活/PID 复用与主循环写标记时序。
 - [x] 仅提交物料；不 push、不部署。
 
+### Task 8.6: Run #120 workflow 解析失败恢复
+
+- [x] 确认 Run #120 在解析阶段因 `Exceeded max expression length 21000` 失败，0 jobs、
+  未构建、未部署，禁止依赖该 Run 的镜像产物。
+- [x] 将完整远端部署 heredoc 提取为 `scripts/remote_deploy_runtime.sh`；workflow run block
+  只复制脚本并注入 deploy mode、commit SHA、deploy ID，secret 仍只经独立登录 stdin。
+- [x] 新增一次性 retry-1 marker；仅原 marker / retry-1 的 `status=A` 可触发目标化模式，
+  修改、删除、rename 不触发，双 marker/rename 歧义 fail-closed。
+- [x] retry 目标化 push 的 build matrix 仅强制构建 `btc-eth`，其他服务跳过；远端仍只
+  `pull/up --no-deps` calibrated 服务。
+- [x] 守护覆盖 workflow run block 长度、YAML、runtime Bash 语法、targeted/full/日志归档
+  语义及 secret 注入变异；本轮不 push、不部署。
+
 ---
 
 ### Task 9: Actions 部署与上线五层验证

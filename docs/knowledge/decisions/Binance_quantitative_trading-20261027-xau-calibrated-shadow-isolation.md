@@ -30,6 +30,10 @@ id: Binance_quantitative_trading-20261027-xau-calibrated-shadow-isolation
 8. 健康状态必须来自运行态就绪标记：主 PID 存活、Linux starttime token 匹配且
    instance/profile/run prefix/cron/
    execution mode/安全开关与环境契约一致；恒成功探针不构成健康证据。
+9. Run #120 在 Actions 解析阶段因单个 remote heredoc 表达式过长失败，未产生 job 或产物。
+   远端 runtime 固定为仓库脚本 `scripts/remote_deploy_runtime.sh`；规范 retry marker 仅在
+   `status=A` 时复用同一目标化边界，且该次 build matrix 只强制重建 `btc-eth`。原 marker
+   与 retry marker 同时出现或 rename 形成歧义时 fail-closed。
 
 ## ATR 冻结证据
 

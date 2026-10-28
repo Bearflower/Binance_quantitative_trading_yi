@@ -1,0 +1,4 @@
+One-time retry signal for the calibrated shadow first creation.
+
+Run #120 failed during workflow parsing before any job ran or image was built.
+Only a push that adds this exact retry marker selects the targeted deployment mode.

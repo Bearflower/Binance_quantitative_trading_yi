@@ -8,7 +8,10 @@ import sys
 from collections.abc import Iterable, Sequence
 
 
-MARKER = ".github/deploy-modes/xau-calibrated-shadow-first-create"
+MARKERS = {
+    ".github/deploy-modes/xau-calibrated-shadow-first-create",
+    ".github/deploy-modes/xau-calibrated-shadow-first-create-retry-1",
+}
 ZERO_SHA = "0" * 40
 
 
@@ -26,7 +29,7 @@ def select_deploy_mode(
     if not base or base == ZERO_SHA:
         raise DeployModeError("push base is missing or zero")
 
-    marker_changes = [(status, path) for status, path in changes if path == MARKER]
+    marker_changes = [(status, path) for status, path in changes if path in MARKERS]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
     if marker_changes and marker_changes[0][0] == "A":

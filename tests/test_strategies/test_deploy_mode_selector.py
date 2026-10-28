@@ -9,6 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 MARKER = ".github/deploy-modes/xau-calibrated-shadow-first-create"
+RETRY_MARKER = ".github/deploy-modes/xau-calibrated-shadow-first-create-retry-1"
 
 
 def test_added_marker_selects_targeted_mode():
@@ -19,11 +20,26 @@ def test_added_marker_selects_targeted_mode():
     )
 
 
+def test_added_retry_marker_selects_targeted_mode():
+    from scripts.select_deploy_mode import select_deploy_mode
+
+    assert select_deploy_mode("push", "abc", [("A", RETRY_MARKER)]) == (
+        "calibrated-first-create"
+    )
+
+
 @pytest.mark.parametrize("status", ["M", "D"])
 def test_modified_or_deleted_marker_does_not_select_targeted_mode(status):
     from scripts.select_deploy_mode import select_deploy_mode
 
     assert select_deploy_mode("push", "abc", [(status, MARKER)]) == "full"
+
+
+@pytest.mark.parametrize("status", ["M", "D", "R100"])
+def test_non_added_retry_marker_does_not_select_targeted_mode(status):
+    from scripts.select_deploy_mode import select_deploy_mode
+
+    assert select_deploy_mode("push", "abc", [(status, RETRY_MARKER)]) == "full"
 
 
 def test_workflow_dispatch_remains_full():
@@ -45,6 +61,24 @@ def test_duplicate_marker_statuses_fail_closed():
 
     with pytest.raises(DeployModeError):
         select_deploy_mode("push", "abc", [("A", MARKER), ("M", MARKER)])
+
+
+def test_original_and_retry_marker_additions_are_ambiguous():
+    from scripts.select_deploy_mode import DeployModeError, select_deploy_mode
+
+    with pytest.raises(DeployModeError):
+        select_deploy_mode("push", "abc", [("A", MARKER), ("A", RETRY_MARKER)])
+
+
+def test_rename_between_marker_names_is_ambiguous():
+    from scripts.select_deploy_mode import DeployModeError, select_deploy_mode
+
+    with pytest.raises(DeployModeError):
+        select_deploy_mode(
+            "push",
+            "abc",
+            [("R100", MARKER), ("R100", RETRY_MARKER)],
+        )
 
 
 def _git(repo: Path, *args: str) -> str:
