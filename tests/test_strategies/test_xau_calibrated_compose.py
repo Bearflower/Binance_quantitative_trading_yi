@@ -1,6 +1,7 @@
 import re
 from pathlib import Path
 
+import pytest
 import yaml
 
 
@@ -9,6 +10,10 @@ COMPOSE = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
 SERVICE = COMPOSE["services"]["mtcps-xau-calibrated-shadow"]
 WORKFLOW = (ROOT / ".github/workflows/deploy.yml").read_text()
 CALIBRATED_CONTAINER = "trading_system-mtcps-xau-calibrated-shadow"
+CALIBRATED_SERVICE = "mtcps-xau-calibrated-shadow"
+FIRST_CREATE_MARKER = (
+    ROOT / ".github" / "deploy-modes" / "xau-calibrated-shadow-first-create"
+)
 
 
 def _env_map(service):
@@ -69,3 +74,95 @@ def test_residual_cleanup_includes_calibrated_container():
 
 def test_long_running_health_gate_includes_calibrated_container():
     assert CALIBRATED_CONTAINER in _long_running_health_gate_tokens()
+
+
+def _calibrated_first_create_block():
+    match = re.search(
+        r"# calibrated-first-create begin(?P<body>.*?)"
+        r"# calibrated-first-create end",
+        WORKFLOW,
+        re.DOTALL,
+    )
+    assert match is not None, "deploy.yml 缺少 calibrated 首次创建目标化分支"
+    return match.group("body")
+
+
+def test_calibrated_healthcheck_uses_runtime_readiness_probe():
+    assert SERVICE["healthcheck"]["test"] == [
+        "CMD",
+        "python",
+        "-m",
+        "strategies.btc_eth.shadow.readiness",
+    ]
+
+
+def test_first_create_mode_is_selected_by_one_time_changed_file_signal():
+    assert FIRST_CREATE_MARKER.is_file()
+    assert str(FIRST_CREATE_MARKER.relative_to(ROOT)) in WORKFLOW
+    assert 'DEPLOY_MODE="calibrated-first-create"' in WORKFLOW
+    assert 'git diff "$BASE" HEAD --name-only' in WORKFLOW
+    selection = re.search(
+        r"- name: 🎯 选择部署模式(?P<body>.*?)(?=\n\s+- name:)",
+        WORKFLOW,
+        re.DOTALL,
+    )
+    assert selection is not None
+    assert "docker inspect" not in selection.group("body")
+    assert 'github.event_name }}" = "push"' in selection.group("body")
+    assert "非 push 触发，使用普通全量部署" in selection.group("body")
+
+
+def test_first_create_remote_path_targets_only_calibrated_service():
+    block = _calibrated_first_create_block()
+
+    _assert_targeted_block_safe(block)
+
+
+def _assert_targeted_block_safe(block):
+    pull_commands = [
+        line.strip()
+        for line in block.splitlines()
+        if line.strip().startswith("docker compose pull")
+    ]
+    up_commands = [
+        line.strip()
+        for line in block.splitlines()
+        if line.strip().startswith("docker compose up")
+    ]
+    assert pull_commands == [f"docker compose pull {CALIBRATED_SERVICE}"]
+    assert up_commands == [
+        f"docker compose up -d --no-deps {CALIBRATED_SERVICE}"
+    ]
+    assert "btc-eth-strategy" not in block
+    assert "mtcps-xau-shadow" not in block
+    assert "--remove-orphans" not in block
+    assert "docker compose run" not in block
+    assert "docker compose restart" not in block
+    assert "psql" not in block
+    assert f"docker compose stop {CALIBRATED_SERVICE}" in block
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda block: block.replace(
+            f"docker compose pull {CALIBRATED_SERVICE}",
+            "docker compose pull",
+        ),
+        lambda block: block.replace("--no-deps ", ""),
+        lambda block: block.replace(
+            f"docker compose up -d --no-deps {CALIBRATED_SERVICE}",
+            "docker compose up -d --remove-orphans",
+        ),
+    ],
+)
+def test_targeted_deploy_guard_detects_dangerous_command_mutations(mutate):
+    with pytest.raises(AssertionError):
+        _assert_targeted_block_safe(mutate(_calibrated_first_create_block()))
+
+
+def test_ordinary_deploy_keeps_full_compose_path_outside_first_create_block():
+    ordinary = WORKFLOW.replace(_calibrated_first_create_block(), "")
+
+    assert "docker compose pull\n" in ordinary
+    assert "docker compose up -d --remove-orphans" in ordinary

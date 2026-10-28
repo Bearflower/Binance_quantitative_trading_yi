@@ -101,7 +101,7 @@
 | 2026-10-13 | 9 | [knowledge-base-build] 建立知识库样板（3 模板 + 5 样例 + INDEX）、knowledge 入 Git、修正 3 条样例证据/状态、补齐 skill 与 Claude 入口接入；[knowledge-base-expand] 第一批 11 条 + 放下时复核转「已审查」（1 条 commit 引用更正）；第二批 8 条（09-21 分配/佣金 + 10-01 补挂/部署 + 10-13 分母口径）；[hrs-pnl-dedup] HRS 盈亏双计防双计口径修复（f940a61/91e99c2，统计层，写入层待治理）；[pnl-caliber-map] 看板盈亏三口径设计确认（本期净盈亏/总盈亏/已实现+浮动，决策：维持现状不改文案） |
 
 ## 待复查清单
-- [ ] 2026-10-27 新增 decision `xau-calibrated-shadow-isolation` 「审查」字段**待复核**；代码、配置与冻结证据已在分支收口，**未 push / 未部署 / 八周观察未开始**。部署后须以首个干净事件登记独立八周起点，原版/激进版观察期不重置。
+- [x] 2026-10-28 已补 decision `xau-calibrated-shadow-isolation` 最终部署边界复核：首次创建仅目标化 pull/up 新服务，运行态探针替代恒成功 healthcheck；代码、配置与冻结证据仍在分支，**未 push / 未部署 / 八周观察未开始**。部署后须以首个干净事件登记独立八周起点，原版/激进版观察期不重置。
 - [ ] 2026-10-27 既有 issue `hrs-schema-bootstrap-single-try-skip` 「审查」字段**待复核**；代码与测试状态以其原任务与上线验证为准，本轮仅补索引。
 - [ ] 2026-10-26 既有 issue `bnb-false-mutex-terminal-mark-missing-realized-pnl` 「审查」字段**待复核**；BNBUSDT 真实持仓平仓后的互斥查询与 owner 日志仍待上线验证，本轮仅补索引。
 - [ ] 2026-10-20 新增 1 条 issue（`shadow-image-missing-aggr-copy-crashloop`）「审查」字段**待复核**（沉淀时默认「待审查」，需下次放下时核对来源与表述后再转「已审查」，与状态维度相互独立）；该 issue 对应 `strategies/btc_eth/Dockerfile`（补 `COPY strategies/btc_eth_aggressive/`）+ 静态守护测试 `tests/test_strategies/test_shadow_image_dependencies.py`；**代码已修、待重新部署验证**（容器侧 `docker ps` 见 `Up` + `docker logs` 无 ModuleNotFoundError 以运维复核为准，文档侧未独立复跑）。

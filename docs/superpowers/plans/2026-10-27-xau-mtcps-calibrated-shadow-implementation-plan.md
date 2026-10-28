@@ -8,6 +8,9 @@
 
 **Tech Stack:** Python 3.9、pytest、pandas/numpy、PyYAML、asyncio/APScheduler、PostgreSQL `research` schema、Docker Compose、GitHub Actions。
 
+**2026-10-28 最终审查状态：** 实施与目标化首次创建路径已完成并通过本地守护；
+Task 9 仍未执行，未 push、未部署、未开始八周观察期。
+
 ---
 
 ## 文件结构与职责
@@ -1506,14 +1509,26 @@ Expected: 工作区干净；差异仅包含本计划列出的文件。
 
 - [ ] **Step 3: 报告不可避免的部署代价并取得授权**
 
-当前 CI 在服务器执行 `docker compose pull` 后统一运行 `docker compose up -d --remove-orphans`。btc-eth 镜像变化会使同镜像的 `btc-eth-strategy` 和 `mtcps-xau-shadow` 被 Compose recreate；因此，在 push/merge 前必须向用户报告：
-
-- btc-eth 镜像需要重建；
-- 生产 btc-eth 与现有 XAU shadow 可能短时重启；
-- 原版/激进版配置哈希和观察期口径不变，但可能形成新的物理 run 边界；
-- 报告层按等价配置链聚合，并按 `(profile_id, symbol, scheduled_at)` 去重。
+最终审查已补齐首次创建的目标化部署模式：本次 push 通过一次性 changed-files
+marker 选择 `calibrated-first-create`，远端仅 pull/up
+`mtcps-xau-calibrated-shadow` 且使用 `--no-deps`。生产 btc-eth 与既有 XAU shadow
+不得重启或形成新物理 run 边界。普通后续部署不命中 marker，继续走原全量路径。
 
 只有用户再次明确授权部署，才执行 Task 9。未授权时保持分支，不 push、不部署。
+
+### Task 8.5: 最终审查部署边界与运行态探针
+
+**Files:** `.github/workflows/deploy.yml`、`docker-compose.yml`、
+`strategies/btc_eth/shadow/{main,readiness}.py`、部署守护测试与本轮文档。
+
+- [x] 基于本次 push changed-files 的一次性 marker 选择首次创建模式，不使用
+  `docker inspect` 判断部署模式。
+- [x] 目标化远端分支仅执行新服务的 pull 与 `up -d --no-deps`，随后只等待新容器
+  健康；超时只 stop 新服务，普通部署保留原全量路径。
+- [x] 恒成功 healthcheck 替换为 PID 与运行时身份/安全契约探针。
+- [x] 主进程启动先清旧标记，scheduler 启动后原子写 `/tmp` 标记，退出清理。
+- [x] 守护测试覆盖危险命令变异、标记字段变异、PID 失活与主循环写标记时序。
+- [x] 仅提交物料；不 push、不部署。
 
 ---
 

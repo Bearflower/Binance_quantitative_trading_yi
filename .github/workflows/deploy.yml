@@ -273,6 +273,31 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 🎯 选择部署模式
+        id: deployment_mode
+        run: |
+          BASE="${{ github.event.before }}"
+          if [ -z "$BASE" ] || [ "$BASE" = "0000000000000000000000000000000000000000" ]; then
+            BASE=$(git rev-parse HEAD~1 2>/dev/null || echo "")
+          fi
+          DEPLOY_MODE="full"
+          if [ "${{ github.event_name }}" = "push" ] && \
+             [ -n "$BASE" ] && git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            CHANGED_FILES=$(git diff "$BASE" HEAD --name-only)
+            if printf '%s\n' "$CHANGED_FILES" | grep -qx \
+              '.github/deploy-modes/xau-calibrated-shadow-first-create'; then
+              DEPLOY_MODE="calibrated-first-create"
+            fi
+          elif [ "${{ github.event_name }}" = "push" ]; then
+            echo "⚠️ 无法确定 push 范围，fail-safe 使用普通全量部署"
+          else
+            echo "ℹ️ 非 push 触发，使用普通全量部署"
+          fi
+          echo "mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
+          echo "部署模式: ${DEPLOY_MODE}"
 
       - name: 🔑 配置 SSH
         run: |
@@ -348,6 +373,8 @@ jobs:
             echo "========================================"
             echo "CI/CD 自动部署"
             echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
+            DEPLOY_MODE="__DEPLOY_MODE__"
+            echo "模式: ${DEPLOY_MODE}"
             echo "========================================"
 
             # 1. 服务器 GHCR 认证（首次）
@@ -375,6 +402,45 @@ jobs:
               exit 1
             fi
             echo "✅ 磁盘充足 (>= 2GB)"
+
+            # calibrated-first-create begin
+            # 一次性 changed-files 信号只用于首次创建新服务。此分支不得触碰
+            # 共用 trading-btc-eth:latest 的生产策略或既有影子容器。
+            if [ "$DEPLOY_MODE" = "calibrated-first-create" ]; then
+              TARGET_SERVICE="mtcps-xau-calibrated-shadow"
+              TARGET_CONTAINER="trading_system-mtcps-xau-calibrated-shadow"
+              echo "📥 仅拉取 ${TARGET_SERVICE}..."
+              docker compose pull mtcps-xau-calibrated-shadow
+              echo "🔄 仅创建 ${TARGET_SERVICE}（不启动/重建依赖）..."
+              docker compose up -d --no-deps mtcps-xau-calibrated-shadow
+
+              TARGET_HEALTHY=0
+              for i in $(seq 1 60); do
+                state=$(docker inspect -f '{{.State.Status}}' "$TARGET_CONTAINER" 2>/dev/null || echo missing)
+                health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$TARGET_CONTAINER" 2>/dev/null || echo missing)
+                if [ "$state" = "running" ] && [ "$health" = "healthy" ]; then
+                  TARGET_HEALTHY=1
+                  break
+                fi
+                sleep 3
+              done
+              if [ "$TARGET_HEALTHY" -ne 1 ]; then
+                echo "❌ ${TARGET_SERVICE} 在 180s 内未通过运行态就绪探针"
+                docker compose logs --tail=100 "$TARGET_SERVICE" || true
+                docker compose stop mtcps-xau-calibrated-shadow || true
+                exit 1
+              fi
+
+              mkdir -p deploy_logs
+              DEPLOY_TIME=$(date "+%Y-%m-%d %H:%M:%S")
+              COMMIT_SHA="__COMMIT_SHA__"
+              DEPLOY_ID="__DEPLOY_ID__"
+              echo "[${DEPLOY_TIME}] DEPLOY_SUCCESS commit=${COMMIT_SHA} deploy_id=${DEPLOY_ID} mode=${DEPLOY_MODE}" \
+                >> "deploy_logs/$(date '+%Y%m%d').log"
+              echo "✅ calibrated 服务首次创建完成；既有共享镜像消费者未重建"
+              exit 0
+            fi
+            # calibrated-first-create end
 
             # 2. 仅清理「不属于本 compose 项目」的残留容器（compose.yml 接管前的命名冲突防护）
             # 场景：data-backend / dashboard-api 曾独立 docker run 部署，compose.yml 也定义了同名
@@ -648,6 +714,7 @@ jobs:
           REMOTE_SCRIPT
           sed -i "s|__GHCR_TOKEN__|${{ secrets.GHCR_PULL_TOKEN }}|g" /tmp/deploy.sh
           sed -i "s|__COMMIT_SHA__|${{ github.sha }}|g" /tmp/deploy.sh
+          sed -i "s|__DEPLOY_MODE__|${{ steps.deployment_mode.outputs.mode }}|g" /tmp/deploy.sh
           # DEPLOY_ID 与 build 侧同一公式（高 24 位 run_number、低 8 位 run_attempt，可反解），
           # 注入远程脚本，使部署日志中的 deploy_id 可与本次构建的容器一一核对
           DEPLOY_ID=$(printf '%08X' $(( (${{ github.run_number }} << 8) | ${{ github.run_attempt }} )))

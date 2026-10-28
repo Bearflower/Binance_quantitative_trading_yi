@@ -236,7 +236,7 @@ services:
         max-size: "10m"
         max-file: "3"
     healthcheck:
-      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      test: ["CMD", "python", "-m", "strategies.btc_eth.shadow.readiness"]
       interval: 30s
       timeout: 10s
       retries: 3

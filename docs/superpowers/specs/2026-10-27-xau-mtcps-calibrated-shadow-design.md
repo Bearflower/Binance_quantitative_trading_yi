@@ -2,7 +2,7 @@
 
 **日期**：2026-10-27
 
-**状态**：已获用户批准，待实施计划
+**状态**：实施物料与最终部署边界已完成，待独立 push / 部署授权
 
 **目标品种**：`XAUUSDT`
 
@@ -317,3 +317,37 @@ docker compose stop mtcps-xau-calibrated-shadow
 6. 原版、激进版的配置、数据和运行状态未受影响；
 7. 本地测试、变异测试、代码审查和上线五层验证全部通过；
 8. 已记录校准版八周观察起止时间和回退命令。
+
+## 14. 最终部署边界审查回标（2026-10-28）
+
+校准服务与 `btc-eth-strategy`、`mtcps-xau-shadow` 复用
+`trading-btc-eth:latest`。因此首次上线不得使用裸
+`docker compose pull` / `docker compose up -d --remove-orphans`，否则镜像摘要变化会
+recreate 既有两个消费者并切断其 active run。
+
+首次创建使用本次 push 的 changed-files 一次性信号
+`.github/deploy-modes/xau-calibrated-shadow-first-create` 选择
+`calibrated-first-create` 模式。远端只允许：
+
+```text
+docker compose pull mtcps-xau-calibrated-shadow
+docker compose up -d --no-deps mtcps-xau-calibrated-shadow
+```
+
+目标化分支只等待新容器通过真实运行态就绪探针，然后提前退出；不得运行全量
+pull/up、`--remove-orphans`、数据库迁移或其他容器 restart。模式选择不依赖远端容器
+是否存在，因此日后容器被删除不会被误判为“首次上线”；未命中一次性 changed-file
+信号的普通部署继续走原全量路径。
+
+新容器健康检查读取容器内 `/tmp` 原子 JSON 标记，并验证主 PID 存活、instance、
+profile、run 前缀、cron、`shadow_batch` 及两个安全开关。标记仅在 profile 加载、DB
+连接、run 准备、collector 装配和 scheduler 启动完成后写入；启动与退出均清理旧
+标记。探针不访问或写入交易状态。
+
+就绪超时自动回滚、人工回滚均只执行：
+
+```text
+docker compose stop mtcps-xau-calibrated-shadow
+```
+
+本回标只修订部署物料和健康判定，不代表已 push、已部署或八周观察期已开始。

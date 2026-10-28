@@ -46,6 +46,7 @@ from .instance import (
     connect_db_from_env,
 )
 from .repository import ShadowRepository
+from .readiness import clear_readiness, write_readiness
 
 
 logger = structlog.get_logger()
@@ -228,6 +229,9 @@ async def _prepare_shadow_run(
 
 async def run_forever() -> None:
     """影子采集器主循环"""
+    # 防止容器重启后旧 PID 标记造成假健康；仅写容器内 /tmp，不写交易状态。
+    clear_readiness()
+
     # ---- 1. 加载配置 ----
     profile_configs = _load_profile_configs()
     # 以第一个 profile 的 instance 段作为全局影子实例配置
@@ -307,6 +311,17 @@ async def run_forever() -> None:
         replace_existing=True,
     )
     scheduler.start()
+    write_readiness({
+        "pid": os.getpid(),
+        "instance_id": shadow_cfg.instance_id,
+        "profiles": shadow_cfg.profiles,
+        "run_id": run_id,
+        "run_id_prefix": shadow_cfg.run_id_prefix,
+        "cron": cron_expr,
+        "execution_mode": shadow_cfg.execution_mode,
+        "real_ordering_enabled": shadow_cfg.instance.real_ordering_enabled,
+        "state_reporting_enabled": shadow_cfg.instance.state_reporting_enabled,
+    })
     logger.info(
         "影子采集器已启动（cron=%s）",
         cron_expr,
@@ -320,6 +335,7 @@ async def run_forever() -> None:
     except KeyboardInterrupt:
         logger.info("收到 SIGINT，正在优雅关闭...")
     finally:
+        clear_readiness()
         scheduler.shutdown(wait=False)
         # 关闭 active run
         await repo.close_shadow_run(run_id=run_id, status="aborted")

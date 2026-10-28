@@ -1,0 +1,5 @@
+One-time changed-files signal for the first calibrated shadow service creation.
+
+Only a push that adds or changes this file selects the targeted deployment mode.
+Later ordinary pushes use the existing full deployment path, even if the container
+is absent on the server.

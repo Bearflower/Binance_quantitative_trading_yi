@@ -635,6 +635,60 @@ class TestShadowRuntimeAssembly:
             instance_id="mtcps_xau_calibrated_shadow",
         )
 
+    @pytest.mark.asyncio
+    async def test_run_forever_publishes_readiness_after_scheduler_start(
+        self,
+        calibrated_config,
+        monkeypatch,
+    ):
+        shadow_main, _, _ = self._patch_run_forever_runtime(
+            monkeypatch,
+            calibrated_config,
+            active_run=None,
+        )
+        events = []
+        scheduler = MagicMock()
+        scheduler.start.side_effect = lambda: events.append("scheduler-start")
+        clear = MagicMock(side_effect=lambda: events.append("clear"))
+
+        def record_ready(payload):
+            events.append("ready")
+            assert payload["instance_id"] == "mtcps_xau_calibrated_shadow"
+            assert payload["profiles"] == ["xau_calibrated"]
+            assert payload["run_id"].startswith("xau-calibrated-shadow-")
+            assert payload["run_id_prefix"] == "xau-calibrated-shadow"
+            assert payload["cron"] == "15 * * * *"
+            assert payload["execution_mode"] == "shadow_batch"
+            assert payload["real_ordering_enabled"] is False
+            assert payload["state_reporting_enabled"] is False
+
+        monkeypatch.setattr(
+            shadow_main,
+            "AsyncIOScheduler",
+            MagicMock(return_value=scheduler),
+        )
+        monkeypatch.setattr(shadow_main, "clear_readiness", clear)
+        monkeypatch.setattr(
+            shadow_main,
+            "write_readiness",
+            MagicMock(side_effect=record_ready),
+        )
+        monkeypatch.setattr(
+            shadow_main.asyncio,
+            "sleep",
+            AsyncMock(side_effect=KeyboardInterrupt),
+        )
+        kline_service = AsyncMock()
+        monkeypatch.setattr(
+            shadow_main,
+            "_build_kline_service",
+            MagicMock(return_value=kline_service),
+        )
+
+        await shadow_main.run_forever()
+
+        assert events == ["clear", "scheduler-start", "ready", "clear"]
+
 
 # ---------------------------------------------------------------------------
 # 辅助：构造完整事件
