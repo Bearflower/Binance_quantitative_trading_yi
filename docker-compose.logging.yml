@@ -38,3 +38,6 @@ services:
   hrs-strategy:
     logging: !override
       driver: journald
+  btc-eth-strategy:
+    logging: !override
+      driver: journald
