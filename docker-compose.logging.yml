@@ -35,3 +35,6 @@ services:
   new-coin-strategy:
     logging: !override
       driver: journald
+  hrs-strategy:
+    logging: !override
+      driver: journald
