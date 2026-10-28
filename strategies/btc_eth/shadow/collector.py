@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+import pandas as pd
 import structlog
 
 from shared.kline_service import KLineService
@@ -32,6 +33,7 @@ from strategies.btc_eth.market_state import (
     get_market_state_behavior,
 )
 
+from .atr_calibration import CalibrationError, prepare_runtime_atr_history
 from .repository import ShadowRepository
 
 
@@ -494,7 +496,40 @@ class ShadowCollector:
                 source_kline_close_times=close_times,
             )]
 
-        # ---- 2. 市场状态识别 ----
+        # ---- 2. 校准版按本次闭合 1h K 线确定性重建动态 ATR 历史 ----
+        try:
+            bootstrap_count = self._bootstrap_atr_history(
+                profile_id=profile_id,
+                strategy=strategy,
+                multi_klines=multi_klines,
+                scheduled_at=scheduled_at,
+            )
+            atr_filter_snapshot = (
+                self._atr_filter_snapshot(
+                    strategy,
+                    indicators,
+                    float(multi_klines["1h"][-1]["close"]),
+                )
+                if bootstrap_count
+                else None
+            )
+        except Exception as exc:
+            logger.error(
+                "ATR 历史初始化异常",
+                profile_id=profile_id,
+                symbol=symbol,
+                error=str(exc),
+            )
+            return [self._make_event(
+                profile_id=profile_id,
+                scheduled_at=scheduled_at,
+                evaluated_at=evaluated_at,
+                decision="analysis_error",
+                reason_codes=["atr_bootstrap_error"],
+                source_kline_close_times=close_times,
+            )]
+
+        # ---- 3. 市场状态识别 ----
         market_state_config = strategy.risk_config.get('market_state', {})
         market_state_name = 'RANGING'
         market_behavior: Dict[str, Any] = {}
@@ -538,10 +573,11 @@ class ShadowCollector:
                 decision="no_signal",
                 reason_codes=["market_state_disabled"],
                 direction=None,
+                feature_snapshot={"atr_filter": atr_filter_snapshot},
                 source_kline_close_times=close_times,
             )]
 
-        # ---- 3. 无状态市场决策 ----
+        # ---- 4. 无状态市场决策 ----
         try:
             signal_components, reason = await strategy._analyze_stationary_signal(
                 symbol, multi_klines, indicators, market_state_name, market_behavior,
@@ -560,7 +596,7 @@ class ShadowCollector:
                 source_kline_close_times=close_times,
             )]
 
-        # ---- 4. 组装事件 ----
+        # ---- 5. 组装事件 ----
         if signal_components is None:
             # no_signal：解析 reason 得到 reason_codes
             reason_codes = _parse_no_signal_reason(reason)
@@ -573,6 +609,7 @@ class ShadowCollector:
                 direction=None,
                 grade=None,
                 score=None,
+                feature_snapshot={"atr_filter": atr_filter_snapshot},
                 source_kline_close_times=close_times,
             )]
 
@@ -583,7 +620,75 @@ class ShadowCollector:
             evaluated_at=evaluated_at,
             signal_components=signal_components,
             close_times=close_times,
+            atr_filter_snapshot=atr_filter_snapshot,
         )]
+
+    def _bootstrap_atr_history(
+        self,
+        *,
+        profile_id: str,
+        strategy: Any,
+        multi_klines: Dict[str, List[Dict]],
+        scheduled_at: datetime,
+    ) -> int:
+        """为显式启用的校准 profile 确定性重建动态 ATR 历史。"""
+        shadow_cfg = self.profile_configs[profile_id].get("shadow", {})
+        if not shadow_cfg.get("bootstrap_dynamic_atr_history", False):
+            return 0
+        if strategy.atr_filter is None or not strategy.atr_filter.enabled:
+            raise CalibrationError("calibrated profile requires enabled atr_filter")
+
+        atr_values, close_prices = prepare_runtime_atr_history(
+            multi_klines.get("1h", []),
+            scheduled_at=scheduled_at,
+        )
+        count = strategy.atr_filter.initialize_history(
+            self.symbol,
+            atr_values,
+            close_prices,
+        )
+        if count < strategy.atr_filter.min_history_count:
+            raise CalibrationError(
+                f"atr_history_below_min:{count}<"
+                f"{strategy.atr_filter.min_history_count}"
+            )
+        return count
+
+    def _atr_filter_snapshot(
+        self,
+        strategy: Any,
+        indicators: Dict[str, Any],
+        current_close: float,
+    ) -> Optional[Dict[str, Any]]:
+        """记录本次决策实际使用的动态 ATR 阈值及其输入。"""
+        if strategy.atr_filter is None or not strategy.atr_filter.enabled:
+            return None
+
+        atr = float(indicators["1h"]["ATR"].iloc[-1])
+        adx_series = indicators.get("1d", {}).get("ADX")
+        adx_value = (
+            float(adx_series.iloc[-1])
+            if adx_series is not None and not pd.isna(adx_series.iloc[-1])
+            else 0.0
+        )
+        if adx_value == 0.0:
+            adx_4h = indicators.get("4h", {}).get("ADX")
+            if adx_4h is not None and not pd.isna(adx_4h.iloc[-1]):
+                adx_value = float(adx_4h.iloc[-1])
+
+        final_threshold, info = strategy.atr_filter.get_dynamic_min_atr_percent(
+            self.symbol,
+            adx_value,
+        )
+        return {
+            "current_atr_percent": atr / current_close * 100,
+            "base_threshold": info["base_threshold"],
+            "final_threshold": final_threshold,
+            "absolute_min": info["absolute_min"],
+            "coefficient": info["coefficient"],
+            "adx": adx_value,
+            "history_count": info["history_count"],
+        }
 
     # ------------------------------------------------------------------ 事件组装辅助
     def _make_event(
@@ -600,6 +705,7 @@ class ShadowCollector:
         score: float | None = None,
         source_kline_close_times: Dict[str, int] | None = None,
         reference_price: float | None = None,
+        feature_snapshot: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """组装一条 shadow_decision_events 记录（research schema 契约）"""
         return {
@@ -620,7 +726,7 @@ class ShadowCollector:
             "tp2_rule": None,
             "trailing_rule": None,
             "time_stop_rule": None,
-            "feature_snapshot": None,
+            "feature_snapshot": feature_snapshot,
             "reason_codes": reason_codes or [],
             "data_quality_reason": data_quality_reason,
             "config_hash": self.config_hashes.get(profile_id, ""),
@@ -636,6 +742,7 @@ class ShadowCollector:
         evaluated_at: datetime,
         signal_components: Dict[str, Any],
         close_times: Dict[str, int],
+        atr_filter_snapshot: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """从无状态 signal_components 组装 candidate 事件
 
@@ -685,6 +792,7 @@ class ShadowCollector:
                 "market_state": signal_components.get("market_state"),
                 "atr": float(atr) if atr is not None else None,
                 "price_change_1h": float(signal_components.get("price_change_1h", 0)),
+                "atr_filter": atr_filter_snapshot,
             },
             "reason_codes": [],
             "data_quality_reason": None,
