@@ -24,6 +24,7 @@ from shared.notification import NotificationClient
 from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared.trade_logger import TradeLogger
 from shared.position_baseline import calc_occupied_margin, calc_position_margin
+from shared.position_ownership import release_claim
 from ai_tuner.snapshots.repository import SnapshotRepository
 
 from .candidate_pool import CandidatePool
@@ -2518,6 +2519,7 @@ class HRSStrategy(BaseStrategy):
                         )
                         await self.position_manager.cancel_all_orders(symbol)
                         self.position_manager.remove_position(symbol)
+                        await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
 
                         # B6a: 按真实已实现盈亏符号计数，不再假设"全平=止盈"
                         await self._record_outcome_by_pnl(
@@ -3522,6 +3524,7 @@ class HRSStrategy(BaseStrategy):
                         direction=local_positions[symbol].get("direction"),
                     )
                     self.position_manager.remove_position(symbol)
+                    await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
                     # 清理K线服务
                     if self._should_unregister(symbol):
                         await self._unregister_single_symbol(symbol)
@@ -4202,6 +4205,7 @@ class HRSStrategy(BaseStrategy):
                 )
                 await self.position_manager.cancel_all_orders(symbol)
                 self.position_manager.remove_position(symbol)
+                await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
                 await self._save_state()
                 return
 
@@ -4564,6 +4568,7 @@ class HRSStrategy(BaseStrategy):
 
             await self.position_manager.cancel_all_orders(symbol)
             self.position_manager.remove_position(symbol)
+            await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
             return True
 
         await self._handle_incomplete_close(symbol, direction, result, close_reason)
