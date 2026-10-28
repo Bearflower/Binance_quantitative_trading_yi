@@ -143,7 +143,7 @@ jobs:
 
           # 仅变更分批日志覆盖配置和本工作流时无需重建业务镜像。
           # Compose 会按 logging 配置只 recreate 本批服务；全项目 COPY 的镜像也无需重建。
-          if [ -n "$CHANGED_FILES" ] && [ -z "$(echo "$CHANGED_FILES" | grep -vE '^(docker-compose\.logging\.yml|\.github/workflows/deploy\.yml|docs/deployment/log-retention\.md)$')" ]; then
+          if [ -n "$CHANGED_FILES" ] && [ -z "$(echo "$CHANGED_FILES" | grep -vE '^(docker-compose\.logging\.yml|\.github/workflows/deploy\.yml|docs/deployment/log-retention\.md|scripts/archive_container_logs\.sh|tests/test_log_archive\.py)$')" ]; then
             echo "✅ 仅日志覆盖配置/部署工作流变化 → 跳过镜像构建"
             echo "should_build=false" >> "$GITHUB_OUTPUT"
             exit 0
@@ -332,6 +332,8 @@ jobs:
           source /tmp/ci_retry.sh
           retry_connect scp docker-compose.yml 43.156.242.184:/root/trading_system/docker-compose.yml
           retry_connect scp docker-compose.logging.yml 43.156.242.184:/root/trading_system/docker-compose.logging.yml
+          retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/scripts"
+          retry_connect scp scripts/archive_container_logs.sh 43.156.242.184:/root/trading_system/scripts/archive_container_logs.sh
 
       - name: 📦 同步数据库 init-scripts
         run: |
@@ -385,6 +387,10 @@ jobs:
               exit 1
             fi
             echo "✅ 磁盘充足 (>= 2GB)"
+
+            # 任何 up/recreate 前先归档尚未切换的 json-file 容器日志。
+            # 即使本轮只更新一项，也保护并行部署后新产生的旧容器日志。
+            bash scripts/archive_container_logs.sh "log_archive/pre_up_$(date '+%Y%m%d_%H%M%S')___DEPLOY_ID__"
 
             # 2. 仅清理「不属于本 compose 项目」的残留容器（compose.yml 接管前的命名冲突防护）
             # 场景：data-backend / dashboard-api 曾独立 docker run 部署，compose.yml 也定义了同名
