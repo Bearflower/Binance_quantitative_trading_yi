@@ -140,6 +140,22 @@ def test_calmar_invalid_duration_is_null_with_reason():
     assert result["calmar_unavailable_reason"] == "invalid_duration"
 
 
+def test_calmar_missing_start_mark_is_null_instead_of_using_later_mark():
+    marks = [point(1, 80), point(2, 100)]
+    result = calmar_diagnostic(marks, point(0, 100).ts, marks[-1].ts, D(100))
+    assert result["calmar"] is None
+    assert result["calmar_unavailable_reason"] == "missing_start_boundary"
+    assert result["window_return"] is None
+
+
+def test_calmar_missing_end_mark_is_null_instead_of_using_earlier_mark():
+    marks = [point(0, 100), point(1, 80)]
+    result = calmar_diagnostic(marks, marks[0].ts, point(2, 100).ts, D(100))
+    assert result["calmar"] is None
+    assert result["calmar_unavailable_reason"] == "missing_end_boundary"
+    assert result["window_return"] is None
+
+
 def test_calmar_nonpositive_equity_is_null_with_reason():
     marks = [point(0, 100), point(1, 0)]
     result = calmar_diagnostic(marks, marks[0].ts, marks[-1].ts, D(100))

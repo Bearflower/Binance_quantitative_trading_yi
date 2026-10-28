@@ -150,8 +150,18 @@ def calmar_diagnostic(
     try:
         _positive(initial_equity, "invalid_initial_equity")
         selected = _selected_points(points, start, end)
+        window_start, window_end = _utc(start), _utc(end)
     except DataBlocked as error:
         result["calmar_unavailable_reason"] = error.gaps[0].split(":", 1)[0]
+        return result
+    if window_start >= window_end:
+        result["calmar_unavailable_reason"] = "invalid_duration"
+        return result
+    if not selected or selected[0][0] != window_start:
+        result["calmar_unavailable_reason"] = "missing_start_boundary"
+        return result
+    if selected[-1][0] != window_end:
+        result["calmar_unavailable_reason"] = "missing_end_boundary"
         return result
     if len(selected) < 2:
         result["calmar_unavailable_reason"] = "invalid_duration"
