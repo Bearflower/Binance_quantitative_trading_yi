@@ -23,3 +23,6 @@ services:
   kline-service:
     logging: !override
       driver: journald
+  mtcps-xau-shadow:
+    logging: !override
+      driver: journald
