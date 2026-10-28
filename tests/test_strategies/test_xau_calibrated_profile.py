@@ -23,6 +23,9 @@ _CONFIG_DIR = (
     / "shadow"
     / "config"
 )
+_CALIBRATION_MANIFEST = (
+    _CONFIG_DIR / "calibration" / "xau_calibrated_atr_manifest.json"
+)
 
 
 def _load_profile(profile_id: str) -> dict:
@@ -30,6 +33,10 @@ def _load_profile(profile_id: str) -> dict:
     assert path.is_file(), f"profile 配置不存在: {path}"
     with path.open("r", encoding="utf-8") as stream:
         return yaml.safe_load(stream)
+
+
+def _load_calibration_manifest() -> dict:
+    return json.loads(_CALIBRATION_MANIFEST.read_text(encoding="utf-8"))
 
 
 def _remove_path(config: dict, path: tuple[str, ...]) -> None:
@@ -120,6 +127,7 @@ def test_calibrated_profile_only_differs_from_original_on_allowlist():
 
 def test_calibrated_profile_has_frozen_identity_schedule_and_dynamic_atr():
     config = _load_profile("xau_calibrated")
+    manifest = _load_calibration_manifest()
 
     assert config["instance"] == {
         **config["instance"],
@@ -140,8 +148,12 @@ def test_calibrated_profile_has_frozen_identity_schedule_and_dynamic_atr():
     assert strategy["name"] == "mtcps_xau_calibrated"
     assert strategy["version"] == "2.6.0-xau-shadow-calibrated"
     assert strategy["record_name"] == "mtcps_xau_shadow_calibrated"
-    assert strategy["symbol_config"]["XAUUSDT"]["atr_abs_min"] == 0.00153
-    assert strategy["symbol_config"]["XAUUSDT"]["atr_fallback_percent"] == 0.317
+    assert strategy["symbol_config"]["XAUUSDT"]["atr_abs_min"] == manifest[
+        "calibration"
+    ]["atr_abs_min"]
+    assert strategy["symbol_config"]["XAUUSDT"]["atr_fallback_percent"] == (
+        manifest["calibration"]["fallback_atr_percent"]
+    )
 
     dynamic_atr = strategy["risk"]["dynamic_atr"]
     assert dynamic_atr == {
@@ -155,6 +167,7 @@ def test_calibrated_profile_has_frozen_identity_schedule_and_dynamic_atr():
 
 def test_calibrated_profile_uses_original_strategy_and_fallback_override():
     config = _load_profile("xau_calibrated")
+    manifest = _load_calibration_manifest()
 
     strategy = _build_shadow_strategy(
         profile_id="xau_calibrated",
@@ -167,10 +180,12 @@ def test_calibrated_profile_uses_original_strategy_and_fallback_override():
     assert strategy.real_ordering_enabled is False
     assert strategy.state_reporting_enabled is False
     assert strategy.atr_filter.symbol_overrides["XAUUSDT"] == {
-        "absolute_min_atr_percent": 0.153,
+        "absolute_min_atr_percent": manifest["calibration"]["atr_abs_min"] * 100,
         "percentile": 0.5,
         "strong_coefficient": 0.8,
-        "fallback_atr_percent": 0.317,
+        "fallback_atr_percent": manifest["calibration"][
+            "fallback_atr_percent"
+        ],
     }
 
 

@@ -28,6 +28,15 @@ CALIBRATION_SCRIPT = ROOT / "scripts" / "generate_xau_atr_calibration.py"
 CALIBRATED_PROFILE = (
     ROOT / "strategies" / "btc_eth" / "shadow" / "config" / "xau_calibrated.yaml"
 )
+CALIBRATION_MANIFEST = (
+    ROOT
+    / "strategies"
+    / "btc_eth"
+    / "shadow"
+    / "config"
+    / "calibration"
+    / "xau_calibrated_atr_manifest.json"
+)
 
 
 def _rows(count=60, end_ms=1_793_059_199_999):
@@ -68,6 +77,21 @@ def test_calibration_reuses_production_atr_and_percentiles():
         np.percentile(expected_percent.to_numpy(), 50)
     )
     assert result.atr_abs_min == pytest.approx(result.p25_percent / 100.0)
+
+
+def test_frozen_profile_is_bound_to_tracked_manifest():
+    manifest = json.loads(CALIBRATION_MANIFEST.read_text(encoding="utf-8"))
+    profile = yaml.safe_load(CALIBRATED_PROFILE.read_text(encoding="utf-8"))
+    symbol = profile["strategy"]["symbol_config"]["XAUUSDT"]
+    shadow = profile["shadow"]
+
+    assert symbol["atr_abs_min"] == manifest["calibration"]["atr_abs_min"]
+    assert symbol["atr_fallback_percent"] == manifest["calibration"][
+        "fallback_atr_percent"
+    ]
+    assert shadow["calibration_manifest_sha256"] == manifest["manifest_sha256"]
+    assert shadow["calibration_snapshot_sha256"] == manifest["snapshot_sha256"]
+    assert shadow["calibration_cutoff_ms"] == manifest["cutoff_ms"]
 
 
 def test_invalid_future_duplicate_and_zero_activity_rows_are_counted():
