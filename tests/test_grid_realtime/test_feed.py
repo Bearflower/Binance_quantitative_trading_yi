@@ -166,7 +166,7 @@ async def test_stream_reconnect_dedup_and_health(cfg):
         async for trade in feed.stream():
             items.append(trade)
     assert [t.agg_trade_id for t in items] == [10, 11, 12]
-    assert feed.last_id == 12
+    assert feed.last_id is None  # 第二次断线的 REST 页为空，等待新 WS 观察段
     assert ws1.closed and ws2.closed
     assert (False, "WS 连接关闭或出错") in health_events
     assert (True, "") in health_events
@@ -219,6 +219,114 @@ async def test_dedup_old_id_skipped(cfg):
     assert [t.agg_trade_id for t in items] == [10, 11]
 
 
+async def test_sparse_raw_ids_on_healthy_ws_do_not_force_reconnect(cfg):
+    ws1 = FakeWs([_msg_text(_ws_payload(100)),
+                  _msg_text(_ws_payload(103)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    sockets = [ws1]
+    health = []
+
+    async def factory(_url):
+        if sockets:
+            return sockets.pop(0)
+        raise RuntimeError("测试终止")
+
+    async def on_health(healthy, reason):
+        health.append((healthy, reason))
+
+    feed = TradeFeed(
+        cfg, on_health=on_health, ws_factory=factory,
+        rest_fetcher=lambda: _async([]),
+        sleep=_NoSleep())
+    items = []
+    with pytest.raises(RuntimeError, match="测试终止"):
+        async for trade in feed.stream():
+            items.append(trade.agg_trade_id)
+    assert items == [100, 103]
+    assert not any(not healthy and "缺口" in reason for healthy, reason in health)
+
+
+async def test_rest_page_without_cursor_starts_fresh_epoch(cfg):
+    ws1 = FakeWs([_msg_text(_ws_payload(100)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    ws2 = FakeWs([_msg_text(_ws_payload(200)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    sockets = [ws1, ws2]
+    health = []
+
+    async def factory(_url):
+        if sockets:
+            return sockets.pop(0)
+        raise RuntimeError("测试终止")
+
+    async def on_health(healthy, reason):
+        health.append((healthy, reason))
+
+    feed = TradeFeed(
+        cfg, on_health=on_health, ws_factory=factory,
+        rest_fetcher=lambda: _async([_rest_trade(102), _rest_trade(103)]),
+        sleep=_NoSleep())
+    items = []
+    with pytest.raises(RuntimeError, match="测试终止"):
+        async for trade in feed.stream():
+            items.append(trade.agg_trade_id)
+    assert items == [100, 200]
+    assert any(not healthy and "游标" in reason for healthy, reason in health)
+
+
+async def test_rest_refill_failure_keeps_reconnecting(cfg):
+    ws1 = FakeWs([_msg_text(_ws_payload(100)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    ws2 = FakeWs([_msg_text(_ws_payload(101)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    sockets = [ws1, ws2]
+    health = []
+
+    async def factory(_url):
+        if sockets:
+            return sockets.pop(0)
+        raise RuntimeError("测试终止")
+
+    async def fetcher():
+        raise TimeoutError("REST 超时")
+
+    async def on_health(healthy, reason):
+        health.append((healthy, reason))
+
+    feed = TradeFeed(cfg, on_health=on_health, ws_factory=factory,
+                     rest_fetcher=fetcher, sleep=_NoSleep())
+    items = []
+    with pytest.raises(RuntimeError, match="测试终止"):
+        async for trade in feed.stream():
+            items.append(trade.agg_trade_id)
+    assert items == [100, 101]
+    assert any(not healthy and "REST" in reason for healthy, reason in health)
+
+
+async def test_rest_failure_starts_fresh_epoch(cfg):
+    ws1 = FakeWs([_msg_text(_ws_payload(100)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    ws2 = FakeWs([_msg_text(_ws_payload(200)),
+                  _msg(aiohttp.WSMsgType.CLOSED)])
+    sockets = [ws1, ws2]
+
+    async def factory(_url):
+        if sockets:
+            return sockets.pop(0)
+        raise RuntimeError("测试终止")
+
+    async def fetcher():
+        raise TimeoutError("REST 超时")
+
+    feed = TradeFeed(cfg, ws_factory=factory,
+                     rest_fetcher=fetcher, sleep=_NoSleep())
+    items = []
+    with pytest.raises(RuntimeError, match="测试终止"):
+        async for trade in feed.stream():
+            items.append(trade.agg_trade_id)
+    assert items == [100, 200]
+
+
 async def test_non_text_and_bad_json_skipped(cfg):
     ws = FakeWs([_msg(aiohttp.WSMsgType.BINARY),
                  SimpleNamespace(type=aiohttp.WSMsgType.TEXT,
@@ -265,21 +373,21 @@ async def test_refill_short_page(cfg):
 
     async def fetcher():
         requests.append(None)
-        return [_rest_trade(103), _rest_trade(101), _rest_trade(102)]
+        return [_rest_trade(103), _rest_trade(100), _rest_trade(102)]
 
     sleep = _NoSleep()
     feed = TradeFeed(cfg, rest_fetcher=fetcher, sleep=sleep)
     feed._last_id = 100
     items = [t async for t in feed._refill()]
-    assert [t.agg_trade_id for t in items] == [101, 102, 103]
+    assert [t.agg_trade_id for t in items] == [102, 103]
     assert feed.last_id == 103 and requests == [None]
     assert sleep.calls == []  # 单次拉取不限速等待
 
 
 async def test_refill_yields_all_fresh_sorted(cfg):
-    """单次拉取最近一批：按 id 升序补齐 > last_id 的缺口。"""
+    """REST 页覆盖游标时，只补较新的可见成交；不要求 ID 数字相邻。"""
     async def fetcher():
-        return [_rest_trade(i) for i in range(1101, 100, -1)]  # 降序返回
+        return [_rest_trade(i) for i in range(1101, 99, -1)]  # 降序返回
 
     sleep = _NoSleep()
     feed = TradeFeed(cfg, rest_fetcher=fetcher, sleep=sleep)
@@ -297,7 +405,17 @@ async def test_refill_stale_ids_filtered(cfg):
     feed = TradeFeed(cfg, rest_fetcher=fetcher, sleep=_NoSleep())
     feed._last_id = 100
     items = [t async for t in feed._refill()]
-    assert items == [] and feed.last_id == 100  # 游标不回退
+    assert items == [] and feed.last_id is None  # 无重叠，重开观察段
+
+
+async def test_refill_sparse_ids_with_cursor_overlap(cfg):
+    feed = TradeFeed(cfg, rest_fetcher=lambda: _async(
+        [_rest_trade(100), _rest_trade(103), _rest_trade(103),
+         _rest_trade(107)]))
+    feed._last_id = 100
+    items = [t async for t in feed._refill()]
+    assert [t.agg_trade_id for t in items] == [103, 107]
+    assert feed.last_id == 107
 
 
 # ───────────────────── 默认工厂 ─────────────────────

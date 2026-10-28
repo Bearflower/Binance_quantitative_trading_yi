@@ -355,7 +355,9 @@ class PositionManager:
             next_review_at=pos["next_review_at"].isoformat(),
         )
 
-    def mark_target_reached(self, symbol: str, target: int) -> None:
+    def mark_target_reached(
+        self, symbol: str, target: int, actual_remaining_quantity: Optional[float] = None
+    ) -> None:
         """
         标记止盈目标达成
 
@@ -375,6 +377,9 @@ class PositionManager:
             pos["target2_reached"] = True
             pos["remaining_quantity"] *= (1 - self.target2_close_percent)
             logger.info("第二目标达成", symbol=symbol)
+
+        if actual_remaining_quantity is not None:
+            pos["remaining_quantity"] = actual_remaining_quantity
 
     def add_algo_id(self, symbol: str, role: str, algo_id: int) -> None:
         """
@@ -749,7 +754,7 @@ class PositionManager:
         """
         if not pos["target1_reached"]:
             # 第一目标达成
-            self.mark_target_reached(symbol, 1)
+            self.mark_target_reached(symbol, 1, actual_remaining_quantity=current_qty)
             logger.info(
                 "检测到第一目标止盈成交",
                 symbol=symbol,
@@ -759,7 +764,7 @@ class PositionManager:
             return 1
         if not pos["target2_reached"]:
             # 第二目标达成
-            self.mark_target_reached(symbol, 2)
+            self.mark_target_reached(symbol, 2, actual_remaining_quantity=current_qty)
             logger.info(
                 "检测到第二目标止盈成交，激活移动止损",
                 symbol=symbol,

@@ -24,6 +24,7 @@ from shared.notification import NotificationClient
 from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared.trade_logger import TradeLogger
 from shared.position_baseline import calc_occupied_margin, calc_position_margin
+from shared.position_ownership import release_claim
 from ai_tuner.snapshots.repository import SnapshotRepository
 
 from .candidate_pool import CandidatePool
@@ -2518,6 +2519,7 @@ class HRSStrategy(BaseStrategy):
                         )
                         await self.position_manager.cancel_all_orders(symbol)
                         self.position_manager.remove_position(symbol)
+                        await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
 
                         # B6a: 按真实已实现盈亏符号计数，不再假设"全平=止盈"
                         await self._record_outcome_by_pnl(
@@ -2529,6 +2531,9 @@ class HRSStrategy(BaseStrategy):
                         if self._should_unregister(symbol):
                             await self._unregister_single_symbol(symbol)
                         continue  # 跳过后续检查
+
+                    if tp_result in (1, 2):
+                        await self._save_state()
 
                 # V2.11: 移动止损定期更新（tp2_reached后每次监控循环重建）
                 # 根因：update_best_price() 每次循环都更新内存中的 best_price，
@@ -3519,6 +3524,7 @@ class HRSStrategy(BaseStrategy):
                         direction=local_positions[symbol].get("direction"),
                     )
                     self.position_manager.remove_position(symbol)
+                    await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
                     # 清理K线服务
                     if self._should_unregister(symbol):
                         await self._unregister_single_symbol(symbol)
@@ -4199,16 +4205,25 @@ class HRSStrategy(BaseStrategy):
                 )
                 await self.position_manager.cancel_all_orders(symbol)
                 self.position_manager.remove_position(symbol)
+                await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
                 await self._save_state()
                 return
 
             # 交易所持仓量明显小于初始开仓量 → 说明 TP1 已部分成交
             if not target1_reached and exchange_qty < entry_quantity * self._tp1_filled_ratio:
-                # 2026-10-10 修复：统一走 mark_target_reached（既置标记又按比例
-                # 缩减 remaining_quantity），避免此前直接置 target1_reached 绕过
-                # 比例缩减，造成 remaining_quantity 与目标标记不自洽（上报量失真，
-                # 且下一轮 detect 会把同一段减仓误判为 TP2）。
-                self.position_manager.mark_target_reached(symbol, 1)
+                # 实际成交量会因交易所数量精度偏离配置比例；若减少幅度接近 TP1，
+                # 以交易所剩余量为准。明显更少时可能停机期间 TP2 也已成交，
+                # 保留理论 TP1 基准，让下一轮继续识别 TP2。
+                expected_tp1_qty = entry_quantity * (
+                    1 - self.position_manager.target1_close_percent
+                )
+                tp2_halfway_qty = expected_tp1_qty * (
+                    1 - self.position_manager.target2_close_percent / 2
+                )
+                actual_qty = exchange_qty if exchange_qty >= tp2_halfway_qty else None
+                self.position_manager.mark_target_reached(
+                    symbol, 1, actual_remaining_quantity=actual_qty
+                )
                 target1_reached = True
                 logger.info(
                     "检测到TP1已成交，更新状态",
@@ -4216,12 +4231,12 @@ class HRSStrategy(BaseStrategy):
                     entry_quantity=entry_quantity,
                     exchange_qty=exchange_qty,
                 )
-                # 跟踪基准对齐「模型认为的剩余量」，而非直接对齐交易所量：
-                # 若停机期间 TP2 也已成交，交易所量会明显低于该基准，下一轮
-                # detect 仍能识别出 TP2，避免把未成交的目标永久漏记。
+                # 若可能同时成交 TP2，跟踪基准仍是理论 TP1 剩余量；
+                # 否则与交易所实际持仓量一致。
                 self.position_manager.sync_tracked_qty(
                     symbol, pos.get("remaining_quantity", exchange_qty)
                 )
+                await self._save_state()
 
             # ATR为0时尝试重新计算
             if atr <= 0:
@@ -4553,6 +4568,7 @@ class HRSStrategy(BaseStrategy):
 
             await self.position_manager.cancel_all_orders(symbol)
             self.position_manager.remove_position(symbol)
+            await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
             return True
 
         await self._handle_incomplete_close(symbol, direction, result, close_reason)

@@ -6,8 +6,9 @@
 - 重连指数退避（transport.reconnect_initial_seconds → reconnect_max_seconds）。
 - 去重：按原始成交 id（WS 字段 t / REST 字段 id），重复/乱序旧笔丢弃，
   不用旧价格报警（AC-11）。
-- REST 补齐（/fapi/v1/trades 无 fromId，单次取最近一批）只用于窗口连续性；
-  DEGRADED 期间 main 不触发事件，故不补发过时事件；重连后只判断最新状态。
+- 原始成交 ID 用于去重与排序，不要求数字相邻；实盘 REST 页中可见跳号。
+- 断线后 REST 最近一页仅在覆盖上次游标时补较新的可见成交；否则开启
+  新观察段。main 对所有断线清空旧窗口并重新预热。
 - WS/REST 端点为技术常量，允许环境变量覆盖；不调用任何交易接口。
 """
 from __future__ import annotations
@@ -118,7 +119,7 @@ class TradeFeed:
 
     @property
     def last_id(self) -> Optional[int]:
-        """库内已知最大 agg_trade_id（去重/补齐游标）。"""
+        """本进程已消费的最大原始成交 ID（不与聚合成交库 ID 混用）。"""
         return self._last_id
 
     async def stream(self) -> AsyncIterator[AggTrade]:
@@ -127,12 +128,17 @@ class TradeFeed:
             try:
                 async for trade in self._consume_ws():  # pragma: no branch
                     yield trade
-            except FeedInterrupted as exc:
+            except (FeedInterrupted, aiohttp.ClientError, OSError,
+                    asyncio.TimeoutError) as exc:
                 reason = str(exc)
             await self._set_health(False, reason)
             await self._sleep(self._backoff)
-            async for trade in self._refill():
-                yield trade
+            try:
+                async for trade in self._refill():
+                    yield trade
+            except (aiohttp.ClientError, OSError, asyncio.TimeoutError) as exc:
+                await self._set_health(False, f"REST 补齐失败: {type(exc).__name__}")
+                self._last_id = None
             self._increase_backoff()
 
     async def _consume_ws(self) -> AsyncIterator[AggTrade]:
@@ -172,17 +178,23 @@ class TradeFeed:
     async def _refill(self) -> AsyncIterator[AggTrade]:
         """单次取最近一批原始成交补齐缺口；无游标/失败则不补齐。
 
-        /fapi/v1/trades 无 fromId，无法按游标翻页，故单次拉取最近 _PAGE_LIMIT
-        笔并按 id 升序补齐 last_id 之后的缺口（短断连足够；更久缺口交由特征层
-        anchor gap 兜底，重连后仅判断最新状态，不补发过时事件）。
+        /fapi/v1/trades 无 fromId，无法按游标翻页。仅当页内包含上次已消费
+        成交时，按 ID 升序补入较新的可见成交；ID 数字不要求相邻。没有重叠
+        就放弃补齐、重开观察段。即使有重叠，也不宣称 REST 与随后 WS 无缝。
         """
         fetcher = self._rest_fetcher or self._default_rest_fetch
         if self._last_id is None:
             return
-        rows = await fetcher()
+        rows = await asyncio.wait_for(fetcher(), timeout=10)
+        if not any(t.agg_trade_id == self._last_id for t in rows):
+            await self._set_health(False, "REST 最近成交页不含断线游标，重新预热")
+            self._last_id = None
+            return
         fresh = sorted((t for t in rows if t.agg_trade_id > self._last_id),
                        key=lambda tr: tr.agg_trade_id)
         for trade in fresh:
+            if trade.agg_trade_id <= self._last_id:
+                continue
             self._last_id = trade.agg_trade_id
             yield trade
 

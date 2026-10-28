@@ -737,6 +737,15 @@ class TestDetectTakeProfitFills:
         # 剩余数量 = 1 * (1 - 0.30) = 0.7
         assert pos["remaining_quantity"] == pytest.approx(0.7)
 
+    def test_整数精度止盈后记录交易所实际剩余量(self, pm):
+        pm.add_position("NEARUSDT", "short", 4.55, 12.0, 0.08)
+
+        assert pm.detect_take_profit_fills("NEARUSDT", 9.0) == 1
+
+        pos = pm.get_position("NEARUSDT")
+        assert pos["target1_reached"] is True
+        assert pos["remaining_quantity"] == 9.0
+
     def test_TP1后再减少到30_标记TP2(self, pm):
         """70% → 30%：TP2 成交，返回 2，激活移动止损"""
         pm.add_position("BTCUSDT", "short", 50000.0, 1.0, 1000.0)
@@ -975,6 +984,36 @@ def _long_signal():
         "symbol": "BTCUSDT", "direction": "long", "score": 0.9,
         "current_price": 50000.0, "klines": [], "entry_mode": "standard",
     }
+
+
+def test_监控识别部分止盈后立即持久化(hrs_env):
+    strategy = hrs_env["strategy"]
+    pm = hrs_env["pm"]
+    pm.add_position("NEARUSDT", "short", 4.55, 12.0, 0.08)
+    strategy._get_exchange_position_qty = AsyncMock(return_value=9.0)
+    strategy._replenish_single_position = AsyncMock(return_value=None)
+
+    asyncio.run(strategy._monitor_positions())
+
+    assert pm.get_position("NEARUSDT")["target1_reached"] is True
+    strategy._save_state.assert_awaited_once()
+
+
+def test_启动补单识别整数精度止盈后保存实际数量(hrs_env):
+    strategy = hrs_env["strategy"]
+    pm = hrs_env["pm"]
+    pm.add_position("NEARUSDT", "short", 4.55, 12.0, 0.08)
+    strategy._get_exchange_position_qty = AsyncMock(return_value=9.0)
+    strategy.trading_executor.replenish_position_orders = AsyncMock(
+        return_value=MagicMock(note="")
+    )
+
+    asyncio.run(strategy._replenish_single_position("NEARUSDT"))
+
+    pos = pm.get_position("NEARUSDT")
+    assert pos["target1_reached"] is True
+    assert pos["remaining_quantity"] == 9.0
+    strategy._save_state.assert_awaited_once()
 
 
 class TestExecuteSignalRejectOnExchangePosition:
