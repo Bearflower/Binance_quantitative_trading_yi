@@ -202,6 +202,37 @@ def test_remote_script_secret_guard_detects_injection_mutation():
         _assert_remote_script_contains_no_secret_token(mutated)
 
 
+def _assert_upload_step_contains_no_secret_token(step):
+    assert "GHCR_PULL_TOKEN" not in step
+    assert "${{ secrets." not in step
+    assert re.search(r"(?i)(secret.*token|token.*secret)", step) is None
+
+
+def test_upload_step_contains_no_secret_and_ghcr_secret_is_login_only():
+    upload = _workflow_step("🚀 生成并上传远程部署脚本")
+    login = _workflow_step("🔐 远端登录 GHCR")
+
+    _assert_upload_step_contains_no_secret_token(upload)
+    assert "${{ secrets.GHCR_PULL_TOKEN }}" in login
+    assert WORKFLOW.count("${{ secrets.GHCR_PULL_TOKEN }}") == 1
+    assert "GHCR_PULL_TOKEN" not in WORKFLOW.replace(login, "", 1)
+
+
+def test_upload_step_secret_guard_detects_post_heredoc_injection():
+    upload = _workflow_step("🚀 生成并上传远程部署脚本")
+    mutation = (
+        '\nprintf \'%s\' "${{ secrets.GHCR_PULL_TOKEN }}" '
+        '>> "$LOCAL_DEPLOY_SCRIPT"\n'
+    )
+    heredoc_end = upload.index("          REMOTE_SCRIPT") + len(
+        "          REMOTE_SCRIPT"
+    )
+    mutated = upload[:heredoc_end] + mutation + upload[heredoc_end:]
+
+    with pytest.raises(AssertionError):
+        _assert_upload_step_contains_no_secret_token(mutated)
+
+
 def test_remote_deploy_script_path_is_unique_private_and_not_tmp():
     assert "/tmp/deploy.sh" not in WORKFLOW
     expected = (
