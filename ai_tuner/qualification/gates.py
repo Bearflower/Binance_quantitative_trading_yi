@@ -14,7 +14,7 @@ GATE_SPECS = (
     ("minimum_sample", "min_effective_signals", "effective_signals", "min", "block"),
     ("blind_sample", "min_blind_trades", "blind_trades", "min", "block"),
     ("adjacent_perturbation", "adjacent_perturb_max_dd_delta_pct", "adjacent_dd_delta_pct", "max", "fail"),
-    ("cost_1_5x", "cost_1_5x_capital_preservation_pct", "cost_1_5x_capital_loss_pct", "max", "fail"),
+    ("cost_1_5x", "cost_1_5x_capital_preservation_pct", "cost_1_5x_capital_preservation_pct", "min", "fail"),
     ("concentration", "max_single_trade_concentration_pct", "single_trade_concentration_pct", "max", "fail"),
     ("version_compatibility", "config_version_required", "config_compatible", "true", "block"),
 )

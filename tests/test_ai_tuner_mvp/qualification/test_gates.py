@@ -29,7 +29,7 @@ def _actuals():
         "effective_signals": 120,
         "blind_trades": 20,
         "adjacent_dd_delta_pct": "1",
-        "cost_1_5x_capital_loss_pct": "5",
+        "cost_1_5x_capital_preservation_pct": "95",
         "single_trade_concentration_pct": "20",
         "config_compatible": True,
     }
@@ -100,6 +100,14 @@ def test_missing_gate_maps_block_instead_of_throwing():
 
 def test_missing_actual_is_blocked():
     actuals = _actuals()
-    del actuals["cost_1_5x_capital_loss_pct"]
+    del actuals["cost_1_5x_capital_preservation_pct"]
     result = evaluate_gates(actuals, _thresholds())
     assert result["status"] == "BLOCKED_DATA"
+
+
+def test_cost_gate_uses_preserved_capital_not_inverted_loss():
+    actuals = _actuals()
+    actuals["cost_1_5x_capital_preservation_pct"] = "25"
+    result = evaluate_gates(actuals, _thresholds())
+    assert result["status"] == "FAIL"
+    assert "cost_1_5x" in result["elimination_reasons"]
