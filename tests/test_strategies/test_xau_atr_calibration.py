@@ -1,5 +1,7 @@
 import copy
+import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -263,6 +265,7 @@ def _run_calibration_cli(
     json_array=False,
     cutoff_ms=None,
     git_commit="abc123",
+    bind_manifest=True,
     extra_args=(),
 ):
     source = tmp_path / ("source.json" if json_array else "source.jsonl")
@@ -277,6 +280,16 @@ def _run_calibration_cli(
     manifest = tmp_path / "manifest.json"
     profile = tmp_path / "xau_calibrated.yaml"
     shutil.copyfile(CALIBRATED_PROFILE, profile)
+    if bind_manifest:
+        profile_data = yaml.safe_load(profile.read_text(encoding="utf-8"))
+        profile_data["shadow"]["calibration_manifest"] = os.path.relpath(
+            manifest,
+            ROOT,
+        )
+        profile.write_text(
+            yaml.safe_dump(profile_data, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
     command = [
         sys.executable,
         str(CALIBRATION_SCRIPT),
@@ -325,8 +338,8 @@ def test_cli_generates_verified_evidence_and_atomically_updates_profile(tmp_path
     assert shadow["calibration_manifest_sha256"] == manifest["manifest_sha256"]
     assert shadow["calibration_snapshot_sha256"] == manifest["snapshot_sha256"]
     assert shadow["calibration_cutoff_ms"] == manifest["cutoff_ms"]
-    assert shadow["calibration_manifest"].endswith(
-        "calibration/xau_calibrated_atr_manifest.json"
+    assert (ROOT / shadow["calibration_manifest"]).resolve() == (
+        manifest_path.resolve()
     )
 
     summary = json.loads(completed.stdout)
@@ -388,6 +401,21 @@ def test_cli_refuses_different_existing_outputs_without_replace(tmp_path):
     assert snapshot.read_bytes() == b"do-not-overwrite\n"
     assert manifest.read_bytes() == before_manifest
     assert profile.read_bytes() == before_profile
+
+
+def test_cli_rejects_manifest_output_not_bound_to_profile(tmp_path):
+    rows = _rows()
+    completed, snapshot, manifest, profile, _command = _run_calibration_cli(
+        tmp_path,
+        rows,
+        bind_manifest=False,
+    )
+
+    assert completed.returncode != 0
+    assert "manifest_output_does_not_match_profile" in completed.stderr
+    assert not snapshot.exists()
+    assert not manifest.exists()
+    assert profile.read_bytes() == CALIBRATED_PROFILE.read_bytes()
 
 
 @pytest.mark.parametrize("invalid_payload", ["not-json\n", "[]\n"])
@@ -473,3 +501,97 @@ def test_cli_profile_validation_failure_writes_no_evidence(tmp_path):
     assert profile.read_bytes() == before_profile
     assert not snapshot.exists()
     assert not manifest.exists()
+
+
+def test_cli_rejects_input_aliased_as_output_without_modifying_it(tmp_path):
+    rows = _rows()
+    source = tmp_path / "source.jsonl"
+    source.write_text(
+        "".join(json.dumps(row) + "\n" for row in rows),
+        encoding="utf-8",
+    )
+    original_source = source.read_bytes()
+    snapshot_alias = tmp_path / "snapshot-alias.jsonl"
+    snapshot_alias.symlink_to(source)
+    manifest = tmp_path / "manifest.json"
+    profile = tmp_path / "xau_calibrated.yaml"
+    shutil.copyfile(CALIBRATED_PROFILE, profile)
+    original_profile = profile.read_bytes()
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(CALIBRATION_SCRIPT),
+            "--input",
+            str(source),
+            "--snapshot-output",
+            str(snapshot_alias),
+            "--manifest-output",
+            str(manifest),
+            "--profile-config",
+            str(profile),
+            "--cutoff-ms",
+            str(rows[-1]["close_time"]),
+            "--source",
+            "test-fixture",
+            "--git-commit",
+            "abc123",
+            "--replace",
+        ],
+        cwd=ROOT,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert completed.returncode != 0
+    assert "input_path_must_not_be_an_output" in completed.stderr
+    assert source.read_bytes() == original_source
+    assert profile.read_bytes() == original_profile
+    assert not manifest.exists()
+
+
+def _load_calibration_script_module():
+    spec = importlib.util.spec_from_file_location(
+        "generate_xau_atr_calibration_for_test",
+        CALIBRATION_SCRIPT,
+    )
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("failed_replace_call", [2, 3])
+def test_output_transaction_rolls_back_second_or_third_replace_failure(
+    tmp_path,
+    monkeypatch,
+    failed_replace_call,
+):
+    module = _load_calibration_script_module()
+    outputs = []
+    for name in ("snapshot.jsonl", "manifest.json", "profile.yaml"):
+        path = tmp_path / name
+        old_content = f"old-{name}\n".encode()
+        path.write_bytes(old_content)
+        outputs.append((path, f"new-{name}\n".encode(), old_content))
+
+    real_replace = os.replace
+    call_count = 0
+
+    def flaky_replace(source, destination):
+        nonlocal call_count
+        call_count += 1
+        if call_count == failed_replace_call:
+            raise OSError("injected replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(module.os, "replace", flaky_replace)
+    with pytest.raises(OSError, match="injected replace failure"):
+        module._commit_transaction(
+            [(path, new_content) for path, new_content, _old in outputs]
+        )
+
+    for path, _new_content, old_content in outputs:
+        assert path.read_bytes() == old_content
+    assert not list(tmp_path.glob(".*.tmp"))

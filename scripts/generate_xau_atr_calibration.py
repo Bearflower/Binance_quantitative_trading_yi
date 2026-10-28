@@ -132,7 +132,9 @@ def _resolve_git_commit(raw: str) -> str:
 
 
 def _updated_profile_bytes(
-    profile_path: Path, manifest: Mapping[str, Any]
+    profile_path: Path,
+    manifest_path: Path,
+    manifest: Mapping[str, Any],
 ) -> bytes:
     try:
         profile = yaml.safe_load(profile_path.read_text(encoding="utf-8"))
@@ -151,6 +153,9 @@ def _updated_profile_bytes(
         raise GeneratorError("profile_calibration_manifest_missing")
     if Path(calibration_manifest).is_absolute():
         raise GeneratorError("profile_calibration_manifest_must_be_relative")
+    configured_manifest_path = (ROOT / calibration_manifest).resolve()
+    if configured_manifest_path != manifest_path.resolve():
+        raise GeneratorError("manifest_output_does_not_match_profile")
 
     symbol_config["atr_abs_min"] = calibration["atr_abs_min"]
     symbol_config["atr_fallback_percent"] = calibration["fallback_atr_percent"]
@@ -236,7 +241,21 @@ def _commit_transaction(outputs: Sequence[Tuple[Path, bytes]]) -> None:
         raise
 
 
+def _validate_path_topology(args: argparse.Namespace) -> None:
+    input_path = args.input.resolve()
+    output_paths = [
+        args.snapshot_output.resolve(),
+        args.manifest_output.resolve(),
+        args.profile_config.resolve(),
+    ]
+    if input_path in output_paths:
+        raise GeneratorError("input_path_must_not_be_an_output")
+    if len(output_paths) != len(set(output_paths)):
+        raise GeneratorError("output_paths_must_be_distinct")
+
+
 def _run(args: argparse.Namespace) -> Dict[str, Any]:
+    _validate_path_topology(args)
     rows = _load_rows(args.input)
     cutoff_ms = _resolve_cutoff(args.cutoff_ms, rows)
     git_commit = _resolve_git_commit(args.git_commit)
@@ -260,7 +279,11 @@ def _run(args: argparse.Namespace) -> Dict[str, Any]:
         )
         + "\n"
     ).encode("utf-8")
-    profile_bytes = _updated_profile_bytes(args.profile_config, manifest)
+    profile_bytes = _updated_profile_bytes(
+        args.profile_config,
+        args.manifest_output,
+        manifest,
+    )
 
     _preflight_output(
         args.snapshot_output,
