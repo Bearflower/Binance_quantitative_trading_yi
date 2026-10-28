@@ -488,16 +488,16 @@ async def test_adx_uses_one_day_then_four_hour_then_zero_fallback(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("one_day_adx", "four_hour_adx", "expected_adx"),
+    ("four_hour_case", "expected_adx"),
     [
-        (float("inf"), float("nan"), 0.0),
-        (float("inf"), 22.0, 22.0),
+        ("infinite", 0.0),
+        ("empty", 0.0),
+        ("valid", 22.0),
     ],
 )
 async def test_real_signal_path_receives_same_sanitized_adx_as_snapshot(
     monkeypatch,
-    one_day_adx,
-    four_hour_adx,
+    four_hour_case,
     expected_adx,
 ):
     config = _load_profile("xau_calibrated")
@@ -525,8 +525,13 @@ async def test_real_signal_path_receives_same_sanitized_adx_as_snapshot(
     collector = _collector_for_single_profile("xau_calibrated", config, strategy)
     multi = _closed_multi_timeframe_klines()
     indicators = strategy._build_indicators(multi)
-    indicators["1d"]["ADX"].iloc[-1] = one_day_adx
-    indicators["4h"]["ADX"].iloc[-1] = four_hour_adx
+    indicators["1d"]["ADX"].iloc[-1] = float("inf")
+    if four_hour_case == "empty":
+        indicators["4h"]["ADX"] = indicators["4h"]["ADX"].iloc[:0].copy()
+    elif four_hour_case == "infinite":
+        indicators["4h"]["ADX"].iloc[-1] = float("inf")
+    else:
+        indicators["4h"]["ADX"].iloc[-1] = 22.0
     monkeypatch.setattr(
         strategy,
         "_build_indicators",
@@ -545,9 +550,10 @@ async def test_real_signal_path_receives_same_sanitized_adx_as_snapshot(
     assert should_filter.call_count == 1
     assert should_filter.call_args.args[2] == expected_adx
     assert events[0]["feature_snapshot"]["atr_filter"]["adx"] == expected_adx
-    if math.isinf(one_day_adx):
-        assert math.isinf(float(indicators["1d"]["ADX"].iloc[-1]))
-    if math.isnan(four_hour_adx):
-        assert math.isnan(float(indicators["4h"]["ADX"].iloc[-1]))
+    assert math.isinf(float(indicators["1d"]["ADX"].iloc[-1]))
+    if four_hour_case == "empty":
+        assert indicators["4h"]["ADX"].empty
+    elif four_hour_case == "infinite":
+        assert math.isinf(float(indicators["4h"]["ADX"].iloc[-1]))
     else:
-        assert float(indicators["4h"]["ADX"].iloc[-1]) == four_hour_adx
+        assert float(indicators["4h"]["ADX"].iloc[-1]) == 22.0
