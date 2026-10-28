@@ -471,6 +471,170 @@ class TestCalibratedInstanceIdentity:
 
         assert client.instance_id == "mtcps_xau_calibrated_shadow"
 
+    def test_run_id_prefix_reads_shadow_yaml_when_env_missing(self, monkeypatch):
+        from strategies.btc_eth.shadow.instance import parse_shadow_instance_config
+
+        monkeypatch.delenv("SHADOW_RUN_ID_PREFIX", raising=False)
+
+        config = parse_shadow_instance_config({
+            "shadow": {"run_id_prefix": "yaml-shadow"},
+        })
+
+        assert config.run_id_prefix == "yaml-shadow"
+
+    def test_run_id_prefix_defaults_for_original_profiles(self, monkeypatch):
+        from strategies.btc_eth.shadow.instance import parse_shadow_instance_config
+
+        monkeypatch.delenv("SHADOW_RUN_ID_PREFIX", raising=False)
+        monkeypatch.delenv("SHADOW_PROFILES", raising=False)
+
+        config = parse_shadow_instance_config({})
+
+        assert config.run_id_prefix == "xau-shadow"
+        assert config.profiles == ["xau_original", "xau_aggressive"]
+
+
+class TestShadowRuntimeAssembly:
+    @pytest.fixture
+    def calibrated_config(self, monkeypatch):
+        from strategies.btc_eth.shadow.instance import parse_shadow_instance_config
+
+        monkeypatch.setenv("INSTANCE_ID", "mtcps_xau_calibrated_shadow")
+        monkeypatch.setenv("SHADOW_PROFILES", "xau_calibrated")
+        monkeypatch.setenv("SHADOW_RUN_ID_PREFIX", "xau-calibrated-shadow")
+        return parse_shadow_instance_config({})
+
+    def _patch_run_forever_runtime(
+        self,
+        monkeypatch,
+        calibrated_config,
+        *,
+        active_run,
+    ):
+        from strategies.btc_eth.shadow import main as shadow_main
+
+        monkeypatch.setenv("BINANCE_API_KEY", "test-key")
+        monkeypatch.setenv("BINANCE_API_SECRET", "test-secret")
+
+        db = AsyncMock()
+        repo = AsyncMock()
+        repo.find_active_run.return_value = active_run
+        client = MagicMock()
+        client_factory = MagicMock(return_value=client)
+        collector = MagicMock()
+        collector.run_id = "collector-run"
+        collector.run_once = AsyncMock()
+
+        monkeypatch.setattr(
+            shadow_main,
+            "_load_profile_configs",
+            MagicMock(return_value={"xau_calibrated": {}}),
+        )
+        monkeypatch.setattr(
+            shadow_main,
+            "parse_shadow_instance_config",
+            MagicMock(return_value=calibrated_config),
+        )
+        monkeypatch.setattr(
+            shadow_main,
+            "_read_git_info",
+            MagicMock(return_value=("git-commit", "git-sha")),
+        )
+        monkeypatch.setattr(
+            shadow_main,
+            "connect_db_from_env",
+            MagicMock(return_value=db),
+        )
+        monkeypatch.setattr(
+            shadow_main,
+            "ShadowRepository",
+            MagicMock(return_value=repo),
+        )
+        monkeypatch.setattr(shadow_main, "ReadOnlyBinanceClient", client_factory)
+        monkeypatch.setattr(
+            shadow_main,
+            "_build_kline_service",
+            MagicMock(return_value=MagicMock()),
+        )
+        monkeypatch.setattr(
+            shadow_main,
+            "ShadowCollector",
+            MagicMock(return_value=collector),
+        )
+        monkeypatch.setattr(
+            shadow_main,
+            "AsyncIOScheduler",
+            MagicMock(side_effect=RuntimeError("stop after assembly")),
+        )
+        return shadow_main, repo, client_factory
+
+    @pytest.mark.asyncio
+    async def test_no_active_run_uses_runtime_prefix(
+        self,
+        calibrated_config,
+        monkeypatch,
+    ):
+        shadow_main, repo, _ = self._patch_run_forever_runtime(
+            monkeypatch,
+            calibrated_config,
+            active_run=None,
+        )
+
+        with pytest.raises(RuntimeError, match="stop after assembly"):
+            await shadow_main.run_forever()
+
+        repo.upsert_shadow_run.assert_awaited_once()
+        run_id = repo.upsert_shadow_run.await_args.kwargs["run_id"]
+        assert run_id.startswith("xau-calibrated-shadow-")
+
+    @pytest.mark.asyncio
+    async def test_changed_active_run_uses_runtime_prefix(
+        self,
+        calibrated_config,
+        monkeypatch,
+    ):
+        shadow_main, repo, _ = self._patch_run_forever_runtime(
+            monkeypatch,
+            calibrated_config,
+            active_run={
+                "run_id": "old-run",
+                "config_hashes": {"xau_calibrated": "old-hash"},
+                "git_commit": "git-commit",
+            },
+        )
+
+        with pytest.raises(RuntimeError, match="stop after assembly"):
+            await shadow_main.run_forever()
+
+        repo.close_shadow_run.assert_awaited_once_with(
+            run_id="old-run",
+            status="closed",
+        )
+        repo.upsert_shadow_run.assert_awaited_once()
+        run_id = repo.upsert_shadow_run.await_args.kwargs["run_id"]
+        assert run_id.startswith("xau-calibrated-shadow-")
+
+    @pytest.mark.asyncio
+    async def test_runtime_dependencies_receive_instance_id(
+        self,
+        calibrated_config,
+        monkeypatch,
+    ):
+        shadow_main, _, client_factory = self._patch_run_forever_runtime(
+            monkeypatch,
+            calibrated_config,
+            active_run=None,
+        )
+
+        with pytest.raises(RuntimeError, match="stop after assembly"):
+            await shadow_main.run_forever()
+
+        client_factory.assert_called_once_with(
+            api_key="test-key",
+            api_secret="test-secret",
+            instance_id="mtcps_xau_calibrated_shadow",
+        )
+
 
 # ---------------------------------------------------------------------------
 # 辅助：构造完整事件

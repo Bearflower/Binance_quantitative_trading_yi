@@ -41,6 +41,7 @@ from .collector import (
     _read_git_info,
 )
 from .instance import (
+    ShadowInstanceConfig,
     parse_shadow_instance_config,
     connect_db_from_env,
 )
@@ -136,6 +137,16 @@ def _build_kline_service() -> KLineService:
     return KLineService(service_url=service_url)
 
 
+def _build_runtime_dependencies(
+    shadow_cfg: ShadowInstanceConfig,
+) -> tuple[ReadOnlyBinanceClient, KLineService]:
+    """按运行时实例配置装配外部客户端。"""
+    return (
+        _build_binance_client(shadow_cfg.instance_id),
+        _build_kline_service(),
+    )
+
+
 # ---------------------------------------------------------------------------
 # 主调度循环
 # ---------------------------------------------------------------------------
@@ -151,6 +162,68 @@ async def _build_collector_and_run_once(
             "影子采集周期异常（已吞掉，等待下次 cron 触发）",
             run_id=collector.run_id, error=str(exc), exc_info=True,
         )
+
+
+async def _prepare_shadow_run(
+    repo: ShadowRepository,
+    shadow_cfg: ShadowInstanceConfig,
+    *,
+    now: datetime,
+    git_commit: str,
+    git_sha: str,
+    config_hashes: Dict[str, str],
+) -> str:
+    """选择可复用的 active run，或按运行时前缀创建新 run。"""
+    active_run = await repo.find_active_run(instance_id=shadow_cfg.instance_id)
+
+    if active_run:
+        existing_hashes_raw = active_run.get("config_hashes")
+        existing_hashes: Dict[str, str] = {}
+        if existing_hashes_raw:
+            try:
+                existing_hashes = (
+                    json.loads(existing_hashes_raw)
+                    if isinstance(existing_hashes_raw, str)
+                    else dict(existing_hashes_raw)
+                )
+            except Exception:
+                existing_hashes = {}
+        if (
+            existing_hashes == config_hashes
+            and (active_run.get("git_commit") or "") == git_commit
+        ):
+            run_id = active_run["run_id"]
+            logger.info("继续使用已存在的 active run", run_id=run_id)
+            return run_id
+
+        old_run_id = active_run["run_id"]
+        logger.warning(
+            "config_hash 或 git 变化，关闭旧 run 开新 run",
+            old_run_id=old_run_id,
+            new_hashes=config_hashes,
+            old_hashes=existing_hashes,
+        )
+        await repo.close_shadow_run(run_id=old_run_id, status="closed")
+
+    run_id = _generate_run_id(
+        now,
+        git_commit,
+        config_hashes,
+        prefix=shadow_cfg.run_id_prefix,
+    )
+    await repo.upsert_shadow_run(
+        run_id=run_id,
+        instance_id=shadow_cfg.instance_id,
+        symbol=shadow_cfg.symbol,
+        started_at=now,
+        initial_virtual_equity_usdt=shadow_cfg.initial_virtual_equity_usdt,
+        git_commit=git_commit,
+        git_sha=git_sha,
+        config_hashes=config_hashes,
+    )
+    if not active_run:
+        logger.info("首次启动，已创建新 active run", run_id=run_id)
+    return run_id
 
 
 async def run_forever() -> None:
@@ -180,79 +253,17 @@ async def run_forever() -> None:
     repo = ShadowRepository(db)
 
     now = datetime.utcnow()
-    active_run = await repo.find_active_run(instance_id=shadow_cfg.instance_id)
-
-    run_id: str
-    if active_run:
-        # 对比 config_hashes
-        existing_hashes_raw = active_run.get("config_hashes")
-        existing_hashes: Dict[str, str] = {}
-        if existing_hashes_raw:
-            try:
-                existing_hashes = (
-                    json.loads(existing_hashes_raw)
-                    if isinstance(existing_hashes_raw, str)
-                    else dict(existing_hashes_raw)
-                )
-            except Exception:
-                existing_hashes = {}
-        if existing_hashes == config_hashes and (active_run.get("git_commit") or "") == git_commit:
-            run_id = active_run["run_id"]
-            logger.info(
-                "继续使用已存在的 active run",
-                run_id=run_id,
-            )
-        else:
-            # 配置变了 → 关闭旧 run，开新 run
-            old_run_id = active_run["run_id"]
-            logger.warning(
-                "config_hash 或 git 变化，关闭旧 run 开新 run",
-                old_run_id=old_run_id,
-                new_hashes=config_hashes,
-                old_hashes=existing_hashes,
-            )
-            await repo.close_shadow_run(run_id=old_run_id, status="closed")
-            run_id = _generate_run_id(
-                now,
-                git_commit,
-                config_hashes,
-                prefix=shadow_cfg.run_id_prefix,
-            )
-            await repo.upsert_shadow_run(
-                run_id=run_id,
-                instance_id=shadow_cfg.instance_id,
-                symbol=shadow_cfg.symbol,
-                started_at=now,
-                initial_virtual_equity_usdt=shadow_cfg.initial_virtual_equity_usdt,
-                git_commit=git_commit,
-                git_sha=git_sha,
-                config_hashes=config_hashes,
-            )
-    else:
-        run_id = _generate_run_id(
-            now,
-            git_commit,
-            config_hashes,
-            prefix=shadow_cfg.run_id_prefix,
-        )
-        await repo.upsert_shadow_run(
-            run_id=run_id,
-            instance_id=shadow_cfg.instance_id,
-            symbol=shadow_cfg.symbol,
-            started_at=now,
-            initial_virtual_equity_usdt=shadow_cfg.initial_virtual_equity_usdt,
-            git_commit=git_commit,
-            git_sha=git_sha,
-            config_hashes=config_hashes,
-        )
-        logger.info(
-            "首次启动，已创建新 active run",
-            run_id=run_id,
-        )
+    run_id = await _prepare_shadow_run(
+        repo,
+        shadow_cfg,
+        now=now,
+        git_commit=git_commit,
+        git_sha=git_sha,
+        config_hashes=config_hashes,
+    )
 
     # ---- 5. 装配依赖 ----
-    binance_client = _build_binance_client(shadow_cfg.instance_id)
-    kline_service = _build_kline_service()
+    binance_client, kline_service = _build_runtime_dependencies(shadow_cfg)
 
     collector = ShadowCollector(
         run_id=run_id,
