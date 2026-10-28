@@ -202,10 +202,7 @@ def test_calibrated_build_override_guard_detects_missing_btc_eth_binding():
         )
 
 
-def _run_build_decision(block, service_name, tmp_path):
-    base = subprocess.check_output(
-        ["git", "rev-parse", "origin/main"], cwd=ROOT, text=True
-    ).strip()
+def _run_build_decision(block, service_name, repo, base, tmp_path):
     rendered = (
         block.replace("${{ github.event.before }}", base)
         .replace("${{ github.event_name }}", "push")
@@ -214,7 +211,7 @@ def _run_build_decision(block, service_name, tmp_path):
     output = tmp_path / f"{service_name}.out"
     result = subprocess.run(
         ["bash", "-c", rendered],
-        cwd=ROOT,
+        cwd=repo,
         env={"PATH": str(Path("/usr/bin")) + ":/bin:/usr/local/bin", "GITHUB_OUTPUT": str(output)},
         text=True,
         capture_output=True,
@@ -224,6 +221,31 @@ def _run_build_decision(block, service_name, tmp_path):
     return values["should_build"]
 
 
+def _init_retry_marker_repo(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.invalid"], cwd=repo, check=True
+    )
+    (repo / "scripts").mkdir()
+    (repo / "scripts" / "select_deploy_mode.py").write_text(
+        MODE_SELECTOR
+    )
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=repo, check=True)
+    base = subprocess.check_output(
+        ["git", "rev-parse", "HEAD"], cwd=repo, text=True
+    ).strip()
+    marker = repo / ".github/deploy-modes/xau-calibrated-shadow-first-create-retry-1"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("retry-1\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "retry marker"], cwd=repo, check=True)
+    return repo, base
+
+
 def _assert_only_btc_eth_builds(block, tmp_path):
     parsed = yaml.safe_load(WORKFLOW)
     services = [
@@ -231,8 +253,10 @@ def _assert_only_btc_eth_builds(block, tmp_path):
         for service in parsed["jobs"]["build-all"]["strategy"]["matrix"]["service"]
     ]
     assert len(services) == 11
+    repo, base = _init_retry_marker_repo(tmp_path)
     actual = {
-        service: _run_build_decision(block, service, tmp_path) for service in services
+        service: _run_build_decision(block, service, repo, base, tmp_path)
+        for service in services
     }
     assert actual == {
         service: "true" if service == "btc-eth" else "false"
