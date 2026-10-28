@@ -113,6 +113,7 @@ postgres 用公共镜像 `postgres:15-alpine`，不动。
 > **遗留隐患（知悉项，待独立评估）**：因 btc-eth 镜像现依赖 `strategies/btc_eth_aggressive/` 目录内容，而 CI 增量构建按「各 job 只看自己目录是否变更」判定——**未来仅改 `strategies/btc_eth_aggressive/` 时 btc-eth 镜像不会重建 → 影子容器可能跑旧 aggr 代码**。此「镜像依赖与 CI diff 判定不一致」隐患已登记至 `docs/knowledge/INDEX.md` 待复查清单。
 
 > **黄金校准影子容器（2026-10-27，部署前口径）**：`mtcps-xau-calibrated-shadow` 展示名为“MTPCS 黄金校准版（XAU）”，技术标识固定为 instance=`mtcps_xau_calibrated_shadow`、profile=`xau_calibrated`、run prefix=`xau-calibrated-shadow`。该服务复用 `trading-btc-eth` 镜像和 shadow 入口，基于 **MTCPS 原版**且**只校准 ATR**；300 USDT 独立虚拟权益，`SHADOW_CRON=20 * * * *`，以首个数据质量合格的干净事件为起点独立观察八周。原版/激进版观察期不重置，报告按同窗口比较。停止命令：`docker compose stop mtcps-xau-calibrated-shadow`。本段仅记录已实现的部署物料，**不声称已部署或观察期已开始**。
+> 首次创建模式仅由完整 push 范围内 marker 的 `name-status=A` 触发；修改/删除不触发，零或不可达 base fail-closed，`workflow_dispatch` 保持 full。目标化路径只认证 GHCR、上传 compose、pull/up 新服务并检查健康，不同步 init-scripts、不执行磁盘 prune。健康标记同时绑定 PID 与 `/proc/<pid>/stat` starttime，PID 复用不能复用旧标记。
 >
 > ATR 冻结证据由 `scripts/generate_xau_atr_calibration.py` 生成，manifest 与 `xau_calibrated.yaml` 双向绑定：2038 根有效 1h K 线、2025 个 ATR(14) 样本、P25=`0.0016161930783960743`、P50=`0.3160363742979797`、manifest hash=`46942cc14ceaa28dc8e9c397ad2c70b21de594f282b9def9c1410e66a4a71c78`、snapshot hash=`fb4cbe2c9cd0d39a1495faa584591466541f89eb25e932affe78c73137caea17`。`dynamic_atr.min_samples` 不做全局兼容；校准 profile 使用正确的 `min_history_count`，旧命名列为技术债单独治理。
 

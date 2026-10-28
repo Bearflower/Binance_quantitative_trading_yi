@@ -335,12 +335,16 @@ docker compose up -d --no-deps mtcps-xau-calibrated-shadow
 ```
 
 目标化分支只等待新容器通过真实运行态就绪探针，然后提前退出；不得运行全量
-pull/up、`--remove-orphans`、数据库迁移或其他容器 restart。模式选择不依赖远端容器
-是否存在，因此日后容器被删除不会被误判为“首次上线”；未命中一次性 changed-file
-信号的普通部署继续走原全量路径。
+pull/up、`--remove-orphans`、数据库迁移、init-script 同步、磁盘 prune 或其他容器
+restart。选择器读取完整 push 范围的 `git diff --name-status`，仅 marker 状态为 `A`
+时命中；修改/删除 marker 均走 full，push base 为零或不可达则部署 job fail-closed。
+`workflow_dispatch` 与未命中 marker 的普通部署继续走原全量路径。模式选择不依赖远端
+容器是否存在，因此日后容器被删除不会被误判为“首次上线”。
 
-新容器健康检查读取容器内 `/tmp` 原子 JSON 标记，并验证主 PID 存活、instance、
-profile、run 前缀、cron、`shadow_batch` 及两个安全开关。标记仅在 profile 加载、DB
+新容器健康检查读取容器内 `/tmp` 原子 JSON 标记，并验证主 PID 存活、Linux
+`/proc/<pid>/stat` starttime 与标记一致、instance、profile、run 前缀、cron、
+`shadow_batch` 及两个安全开关。starttime 将标记绑定到本次进程启动，PID 复用时旧标记
+必定失败。标记仅在 profile 加载、DB
 连接、run 准备、collector 装配和 scheduler 启动完成后写入；启动与退出均清理旧
 标记。探针不访问或写入交易状态。
 

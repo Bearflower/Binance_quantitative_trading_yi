@@ -661,6 +661,7 @@ class TestShadowRuntimeAssembly:
             assert payload["execution_mode"] == "shadow_batch"
             assert payload["real_ordering_enabled"] is False
             assert payload["state_reporting_enabled"] is False
+            assert payload["process_start_token"] == "start-123"
 
         monkeypatch.setattr(
             shadow_main,
@@ -668,6 +669,9 @@ class TestShadowRuntimeAssembly:
             MagicMock(return_value=scheduler),
         )
         monkeypatch.setattr(shadow_main, "clear_readiness", clear)
+        monkeypatch.setattr(
+            shadow_main, "process_start_token", MagicMock(return_value="start-123")
+        )
         monkeypatch.setattr(
             shadow_main,
             "write_readiness",

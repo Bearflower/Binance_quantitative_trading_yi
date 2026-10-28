@@ -46,7 +46,7 @@ from .instance import (
     connect_db_from_env,
 )
 from .repository import ShadowRepository
-from .readiness import clear_readiness, write_readiness
+from .readiness import clear_readiness, process_start_token, write_readiness
 
 
 logger = structlog.get_logger()
@@ -313,6 +313,7 @@ async def run_forever() -> None:
     scheduler.start()
     write_readiness({
         "pid": os.getpid(),
+        "process_start_token": process_start_token(os.getpid()),
         "instance_id": shadow_cfg.instance_id,
         "profiles": shadow_cfg.profiles,
         "run_id": run_id,

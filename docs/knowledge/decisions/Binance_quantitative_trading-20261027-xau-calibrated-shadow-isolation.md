@@ -25,8 +25,10 @@ id: Binance_quantitative_trading-20261027-xau-calibrated-shadow-isolation
 5. 既有原版/激进版观察期**不重置**。最终报告对黄金校准版、原版和激进版使用相同时间窗口做比较，不混算全历史数据。
 6. 运维停止命令固定为 `docker compose stop mtcps-xau-calibrated-shadow`，不影响既有影子服务或生产策略。
 7. 首次创建采用 push changed-files 一次性 marker 驱动的目标化部署，只 pull/up 新服务并
-   使用 `--no-deps`；普通后续部署保持全量路径。禁止以远端容器是否存在作为模式判据。
-8. 健康状态必须来自运行态就绪标记：主 PID 存活且 instance/profile/run prefix/cron/
+   使用 `--no-deps`；仅 marker 的 `name-status=A` 触发，异常 push base fail-closed，普通后续
+   部署保持全量路径。禁止以远端容器是否存在作为模式判据。
+8. 健康状态必须来自运行态就绪标记：主 PID 存活、Linux starttime token 匹配且
+   instance/profile/run prefix/cron/
    execution mode/安全开关与环境契约一致；恒成功探针不构成健康证据。
 
 ## ATR 冻结证据

@@ -77,6 +77,18 @@ def _pid_is_alive(pid: object) -> bool:
     return True
 
 
+def process_start_token(pid: int, *, proc_root: Path = Path("/proc")) -> str:
+    """Return Linux proc stat field 22, which changes on PID reuse."""
+    stat = (proc_root / str(pid) / "stat").read_text(encoding="utf-8").strip()
+    command_end = stat.rfind(")")
+    if command_end < 0:
+        raise ValueError("invalid proc stat command field")
+    fields_after_command = stat[command_end + 1 :].split()
+    if len(fields_after_command) <= 19:
+        raise ValueError("proc stat is missing starttime")
+    return fields_after_command[19]
+
+
 def check_readiness(
     *,
     path: str | Path | None = None,
@@ -96,6 +108,15 @@ def check_readiness(
         return False, "readiness marker must be an object"
     if not _pid_is_alive(payload.get("pid")):
         return False, "pid is not alive"
+    marker_start_token = payload.get("process_start_token")
+    if not isinstance(marker_start_token, str) or not marker_start_token:
+        return False, "process_start_token mismatch"
+    try:
+        current_start_token = process_start_token(payload["pid"])
+    except (OSError, ValueError) as exc:
+        return False, f"process_start_token unavailable: {exc}"
+    if marker_start_token != current_start_token:
+        return False, "process_start_token mismatch"
 
     expected = _expected_contract(environment)
     for field, expected_value in expected.items():

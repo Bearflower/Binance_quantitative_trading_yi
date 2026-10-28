@@ -1522,12 +1522,14 @@ marker 选择 `calibrated-first-create`，远端仅 pull/up
 `strategies/btc_eth/shadow/{main,readiness}.py`、部署守护测试与本轮文档。
 
 - [x] 基于本次 push changed-files 的一次性 marker 选择首次创建模式，不使用
-  `docker inspect` 判断部署模式。
+  `docker inspect` 判断部署模式；仅 `git diff --name-status` 的 `A` 触发，零/不可达
+  push base fail-closed，`workflow_dispatch` 保持 full。
 - [x] 目标化远端分支仅执行新服务的 pull 与 `up -d --no-deps`，随后只等待新容器
-  健康；超时只 stop 新服务，普通部署保留原全量路径。
-- [x] 恒成功 healthcheck 替换为 PID 与运行时身份/安全契约探针。
+  健康；超时只 stop 新服务，不同步 init-scripts、不做磁盘 prune，普通部署保留原全量路径。
+- [x] 恒成功 healthcheck 替换为 PID、Linux 进程 starttime 与运行时身份/安全契约探针。
 - [x] 主进程启动先清旧标记，scheduler 启动后原子写 `/tmp` 标记，退出清理。
-- [x] 守护测试覆盖危险命令变异、标记字段变异、PID 失活与主循环写标记时序。
+- [x] 守护测试覆盖完整远程前缀、危险命令变异、marker 状态/多提交/异常 base、标记字段
+  变异、PID 失活/PID 复用与主循环写标记时序。
 - [x] 仅提交物料；不 push、不部署。
 
 ---

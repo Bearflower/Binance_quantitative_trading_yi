@@ -9,6 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 COMPOSE = yaml.safe_load((ROOT / "docker-compose.yml").read_text())
 SERVICE = COMPOSE["services"]["mtcps-xau-calibrated-shadow"]
 WORKFLOW = (ROOT / ".github/workflows/deploy.yml").read_text()
+MODE_SELECTOR = (ROOT / "scripts/select_deploy_mode.py").read_text()
 CALIBRATED_CONTAINER = "trading_system-mtcps-xau-calibrated-shadow"
 CALIBRATED_SERVICE = "mtcps-xau-calibrated-shadow"
 FIRST_CREATE_MARKER = (
@@ -87,6 +88,19 @@ def _calibrated_first_create_block():
     return match.group("body")
 
 
+def _remote_script_through_targeted_exit():
+    remote = re.search(
+        r"cat > /tmp/deploy\.sh << 'REMOTE_SCRIPT'(?P<body>.*?)"
+        r"^\s*REMOTE_SCRIPT$",
+        WORKFLOW,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert remote is not None, "deploy.yml 缺少远程部署脚本"
+    prefix = remote.group("body").split("# calibrated-first-create end", 1)[0]
+    assert 'exit 0' in prefix
+    return prefix
+
+
 def test_calibrated_healthcheck_uses_runtime_readiness_probe():
     assert SERVICE["healthcheck"]["test"] == [
         "CMD",
@@ -98,9 +112,9 @@ def test_calibrated_healthcheck_uses_runtime_readiness_probe():
 
 def test_first_create_mode_is_selected_by_one_time_changed_file_signal():
     assert FIRST_CREATE_MARKER.is_file()
-    assert str(FIRST_CREATE_MARKER.relative_to(ROOT)) in WORKFLOW
-    assert 'DEPLOY_MODE="calibrated-first-create"' in WORKFLOW
-    assert 'git diff "$BASE" HEAD --name-only' in WORKFLOW
+    assert str(FIRST_CREATE_MARKER.relative_to(ROOT)) in MODE_SELECTOR
+    assert 'return "calibrated-first-create"' in MODE_SELECTOR
+    assert "scripts/select_deploy_mode.py" in WORKFLOW
     selection = re.search(
         r"- name: 🎯 选择部署模式(?P<body>.*?)(?=\n\s+- name:)",
         WORKFLOW,
@@ -108,14 +122,40 @@ def test_first_create_mode_is_selected_by_one_time_changed_file_signal():
     )
     assert selection is not None
     assert "docker inspect" not in selection.group("body")
-    assert 'github.event_name }}" = "push"' in selection.group("body")
-    assert "非 push 触发，使用普通全量部署" in selection.group("body")
+    assert '--event-name "${{ github.event_name }}"' in selection.group("body")
 
 
 def test_first_create_remote_path_targets_only_calibrated_service():
     block = _calibrated_first_create_block()
 
     _assert_targeted_block_safe(block)
+
+
+def test_targeted_remote_prefix_has_no_full_deploy_side_effects():
+    prefix = _remote_script_through_targeted_exit()
+
+    for forbidden in (
+        "docker system prune",
+        "docker builder prune",
+        "RESIDUAL_CANDIDATES",
+        "docker compose run",
+        "docker compose restart",
+        "psql",
+        "init-scripts",
+    ):
+        assert forbidden not in prefix
+    assert "docker login ghcr.io" in prefix
+    _assert_targeted_block_safe(prefix)
+
+
+def test_init_scripts_sync_is_full_deploy_only():
+    sync_step = re.search(
+        r"- name: 📦 同步数据库 init-scripts(?P<body>.*?)(?=\n\s+- name:)",
+        WORKFLOW,
+        re.DOTALL,
+    )
+    assert sync_step is not None
+    assert "if: steps.deployment_mode.outputs.mode == 'full'" in sync_step.group("body")
 
 
 def _assert_targeted_block_safe(block):
