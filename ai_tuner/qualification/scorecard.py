@@ -190,11 +190,11 @@ def build_scorecard(
             card["blocked_reasons"].append(reason)
         diagnostic_start_mark = next(
             (point for point in results["baseline"].equity_curve
-             if point.ts.astimezone(timezone.utc) == diag_start),
+             if point.ts.astimezone(timezone.utc) == first),
             None,
         )
         card["calmar"] = calmar_diagnostic(
-            results["baseline"].equity_curve, diag_start, diag_end,
+            results["baseline"].equity_curve, first, last,
             diagnostic_start_mark.marked_equity if diagnostic_start_mark else initial_equity,
         )
     except DataBlocked as error:
