@@ -15,6 +15,7 @@
 | K线服务 | — | `kline-service` | 独立部署，为所有策略提供 K 线数据 |
 | K线监控 | — | `kline-monitor` | K 线数据健康监控（部署后容易遗漏，必须确认） |
 | MTCPS XAU 影子采集 | — | `mtcps-xau-shadow` | XAUUSDT 影子仿真 + 本地回放 + 小资金 pilot 通道；复用 btc-eth 镜像，只读不交易，仅写 `research` schema |
+| MTPCS 黄金校准版（XAU） | — | `mtcps-xau-calibrated-shadow` | 基于 MTCPS 原版、仅校准 ATR；300 USDT 独立虚拟权益，每小时第 20 分运行，只读不交易 |
 
 **生产服务器**：`43.156.242.184`（root，SSH 密钥 `/Users/yl/vscode/inspection_automation/docs/only.pem`）
 
@@ -63,6 +64,7 @@
 4. 一键部署入口：**push main → GitHub Actions 自动构建 + GHCR + SSH 部署**（见 `.trae/rules/deployment.md`），不再手动打包
 5. **残留清理口径**：服务器侧只移除不属于本 compose 项目的独立 `docker run` 残留，本项目容器交由 `docker compose up -d` 增量 recreate（避免每次部署全量停机）
 6. **影子容器（`mtcps-xau-shadow`）**：复用 `ghcr.io/bearflower/trading-btc-eth:latest` 镜像、仅换 `command` 为 shadow 入口，**不新增镜像、不参与生产交易、不参与资金分配/熔断、不进看板、不写 `trading.*` 与交易记录**，仅写 `research` schema；`docker compose stop mtcps-xau-shadow` 即回退，不影响生产实例。**复用前提（2026-10-20 补记）**：该 btc-eth 镜像现须含影子入口依赖的兄弟包 `strategies/btc_eth_aggressive/`（`strategies/btc_eth/shadow/collector.py` 会 import 其 `BTCEthStrategy`）——`strategies/btc_eth/Dockerfile` 曾漏 COPY 该目录致 2026-10-19 部署后容器 `ModuleNotFoundError` crash-loop，本次已补齐 `COPY strategies/btc_eth_aggressive/` 并加静态守护测试；因 CI 按各 job 自身目录 diff 判定，**仅改 `strategies/btc_eth_aggressive/` 时该镜像不重建（遗留隐患，见 `docs/knowledge/INDEX.md` 待复查清单）**。**profile 配置来源（2026-10-20 补记）**：影子 profile `xau_original.yaml` / `xau_aggressive.yaml` **随镜像烘焙**（`COPY strategies/btc_eth/` 带入 `strategies/btc_eth/shadow/config/`，git 跟踪、运行期只读不写回），**不使用宿主 bind mount**——宿主目录缺失时 Docker 会创建空目录并**遮蔽**镜像内配置，曾致 2026-10-20 「profile 配置文件不存在」crash-loop，故已移除该挂载并加守护测试；回退仍为 `docker compose stop mtcps-xau-shadow`
+7. **黄金校准影子容器（`mtcps-xau-calibrated-shadow`）**：展示名固定为“MTPCS 黄金校准版（XAU）”，技术标识保持英文（instance=`mtcps_xau_calibrated_shadow`、profile=`xau_calibrated`、run prefix=`xau-calibrated-shadow`）。它基于 MTCPS 原版且只校准 ATR，用 300 USDT 独立虚拟权益，每小时第 20 分运行；以首个数据质量合格的干净事件为起点独立观察八周。原版/激进版观察期不重置，评估报告按同窗口比较。回退命令为 `docker compose stop mtcps-xau-calibrated-shadow`；当前仅完成部署前代码与冻结证据，**不表示已部署或八周观察已开始**。
 
 ## 数据库
 
