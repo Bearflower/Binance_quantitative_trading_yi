@@ -1,6 +1,8 @@
 """隔离的 XAU 校准版影子 profile 契约测试。"""
 from __future__ import annotations
 
+import json
+import math
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import yaml
 
+from strategies.btc_eth.shadow.atr_calibration import prepare_runtime_atr_history
 from strategies.btc_eth.shadow.collector import ShadowCollector, _build_shadow_strategy
 from strategies.btc_eth.strategy import BTCEthStrategy as OriginalBTCEthStrategy
 
@@ -159,7 +162,6 @@ def test_calibrated_profile_uses_original_strategy_and_fallback_override():
         binance_client=MagicMock(),
         kline_service=MagicMock(),
     )
-
     assert type(strategy) is OriginalBTCEthStrategy
     assert strategy.execution_mode == "shadow_batch"
     assert strategy.real_ordering_enabled is False
@@ -229,7 +231,7 @@ async def test_original_profile_does_not_use_deterministic_bootstrap(monkeypatch
     collector = _collector_for_single_profile("xau_original", config, strategy)
     multi = _closed_multi_timeframe_klines()
 
-    await collector._analyze_profile(
+    events = await collector._analyze_profile(
         profile_id="xau_original",
         strategy=strategy,
         multi_klines=multi,
@@ -238,6 +240,7 @@ async def test_original_profile_does_not_use_deterministic_bootstrap(monkeypatch
     )
 
     initialize.assert_not_called()
+    assert events[0]["feature_snapshot"] is None
 
 
 @pytest.mark.asyncio
@@ -308,3 +311,112 @@ async def test_candidate_keeps_features_and_adds_atr_filter_snapshot():
     assert snapshot["price_change_1h"] == 0.012
     assert snapshot["atr_filter"]["history_count"] >= 30
     assert snapshot["atr_filter"]["final_threshold"] is not None
+
+
+@pytest.mark.asyncio
+async def test_real_signal_path_updates_current_atr_once_before_snapshot(monkeypatch):
+    config = _load_profile("xau_calibrated")
+    strategy = _build_shadow_strategy(
+        profile_id="xau_calibrated",
+        profile_config=config,
+        binance_client=MagicMock(),
+        kline_service=MagicMock(),
+    )
+    strategy.risk_config["market_state"]["enabled"] = False
+    monkeypatch.setattr(
+        strategy,
+        "_check_trend_filter",
+        MagicMock(return_value=(True, "LONG")),
+    )
+    monkeypatch.setattr(
+        strategy,
+        "_check_prohibited_conditions",
+        AsyncMock(return_value=(True, "")),
+    )
+    monkeypatch.setattr(strategy, "_calculate_score", MagicMock(return_value=0.0))
+    update_history = MagicMock(wraps=strategy.atr_filter.update_history)
+    monkeypatch.setattr(strategy.atr_filter, "update_history", update_history)
+    decision_thresholds = []
+    get_threshold = strategy.atr_filter.get_dynamic_min_atr_percent
+
+    def _record_threshold(*args, **kwargs):
+        result = get_threshold(*args, **kwargs)
+        decision_thresholds.append(result)
+        return result
+
+    monkeypatch.setattr(
+        strategy.atr_filter,
+        "get_dynamic_min_atr_percent",
+        _record_threshold,
+    )
+    collector = _collector_for_single_profile("xau_calibrated", config, strategy)
+    multi = _closed_multi_timeframe_klines()
+
+    events = await collector._analyze_profile(
+        profile_id="xau_calibrated",
+        strategy=strategy,
+        multi_klines=multi,
+        close_times=_close_times(multi),
+        scheduled_at=datetime(2026, 10, 27, 8, 0, tzinfo=timezone.utc),
+    )
+
+    update_history.assert_called_once()
+    final_history_count = len(strategy.atr_filter._atr_history["XAUUSDT"])
+    bootstrap_atr, _ = prepare_runtime_atr_history(
+        multi["1h"],
+        scheduled_at=datetime(2026, 10, 27, 8, 0, tzinfo=timezone.utc),
+    )
+    snapshot = events[0]["feature_snapshot"]["atr_filter"]
+    assert events[0]["decision"] == "no_signal"
+    assert final_history_count == len(bootstrap_atr) + 1
+    assert snapshot["history_count"] == final_history_count
+    assert snapshot["history_count"] == decision_thresholds[0][1]["history_count"]
+    assert snapshot["final_threshold"] == pytest.approx(decision_thresholds[0][0])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("invalid_field", ["atr_nan", "close_inf", "adx_nan"])
+async def test_non_finite_atr_inputs_fail_closed_and_serialize(
+    monkeypatch,
+    invalid_field,
+):
+    config = _load_profile("xau_calibrated")
+    strategy = _build_shadow_strategy(
+        profile_id="xau_calibrated",
+        profile_config=config,
+        binance_client=MagicMock(),
+        kline_service=MagicMock(),
+    )
+    strategy._analyze_stationary_signal = AsyncMock(return_value=(None, "不应执行"))
+    collector = _collector_for_single_profile("xau_calibrated", config, strategy)
+    multi = _closed_multi_timeframe_klines()
+    valid_indicators = strategy._build_indicators(multi)
+
+    if invalid_field == "atr_nan":
+        valid_indicators["1h"]["ATR"].iloc[-1] = float("nan")
+    elif invalid_field == "close_inf":
+        multi["1h"][-1]["close"] = float("inf")
+    else:
+        valid_indicators["1d"]["ADX"].iloc[-1] = float("nan")
+
+    monkeypatch.setattr(
+        strategy,
+        "_build_indicators",
+        MagicMock(return_value=valid_indicators),
+    )
+    events = await collector._analyze_profile(
+        profile_id="xau_calibrated",
+        strategy=strategy,
+        multi_klines=multi,
+        close_times=_close_times(multi),
+        scheduled_at=datetime(2026, 10, 27, 8, 0, tzinfo=timezone.utc),
+    )
+
+    assert events[0]["decision"] == "analysis_error"
+    assert events[0]["reason_codes"] == ["atr_bootstrap_error"]
+    strategy._analyze_stationary_signal.assert_not_awaited()
+    json.dumps(events[0], allow_nan=False, default=str)
+    assert all(
+        not isinstance(value, float) or math.isfinite(value)
+        for value in events[0].values()
+    )

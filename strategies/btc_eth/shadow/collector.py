@@ -15,12 +15,12 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import os
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-import pandas as pd
 import structlog
 
 from shared.kline_service import KLineService
@@ -504,12 +504,8 @@ class ShadowCollector:
                 multi_klines=multi_klines,
                 scheduled_at=scheduled_at,
             )
-            atr_filter_snapshot = (
-                self._atr_filter_snapshot(
-                    strategy,
-                    indicators,
-                    float(multi_klines["1h"][-1]["close"]),
-                )
+            atr_snapshot_inputs = (
+                self._validated_atr_snapshot_inputs(indicators, multi_klines)
                 if bootstrap_count
                 else None
             )
@@ -566,6 +562,26 @@ class ShadowCollector:
 
         # 市场状态行为禁止开仓 → 直接 no_signal
         if not market_behavior.get('can_trade', True):
+            try:
+                atr_filter_snapshot = self._atr_filter_snapshot(
+                    strategy,
+                    atr_snapshot_inputs,
+                )
+            except Exception as exc:
+                logger.error(
+                    "ATR 审计快照异常",
+                    profile_id=profile_id,
+                    symbol=symbol,
+                    error=str(exc),
+                )
+                return [self._make_event(
+                    profile_id=profile_id,
+                    scheduled_at=scheduled_at,
+                    evaluated_at=evaluated_at,
+                    decision="analysis_error",
+                    reason_codes=["atr_bootstrap_error"],
+                    source_kline_close_times=close_times,
+                )]
             return [self._make_event(
                 profile_id=profile_id,
                 scheduled_at=scheduled_at,
@@ -573,11 +589,16 @@ class ShadowCollector:
                 decision="no_signal",
                 reason_codes=["market_state_disabled"],
                 direction=None,
-                feature_snapshot={"atr_filter": atr_filter_snapshot},
+                feature_snapshot=(
+                    {"atr_filter": atr_filter_snapshot}
+                    if atr_snapshot_inputs is not None
+                    else None
+                ),
                 source_kline_close_times=close_times,
             )]
 
         # ---- 4. 无状态市场决策 ----
+        signal_exception: Optional[Exception] = None
         try:
             signal_components, reason = await strategy._analyze_stationary_signal(
                 symbol, multi_klines, indicators, market_state_name, market_behavior,
@@ -587,12 +608,43 @@ class ShadowCollector:
                 "_analyze_stationary_signal 异常",
                 profile_id=profile_id, symbol=symbol, error=str(exc), exc_info=True,
             )
+            signal_exception = exc
+            signal_components, reason = None, ""
+
+        # 快照必须在真实信号分析之后生成，因为分析路径会把当前 ATR 追加一次。
+        try:
+            atr_filter_snapshot = self._atr_filter_snapshot(
+                strategy,
+                atr_snapshot_inputs,
+            )
+        except Exception as exc:
+            logger.error(
+                "ATR 审计快照异常",
+                profile_id=profile_id,
+                symbol=symbol,
+                error=str(exc),
+            )
+            return [self._make_event(
+                profile_id=profile_id,
+                scheduled_at=scheduled_at,
+                evaluated_at=evaluated_at,
+                decision="analysis_error",
+                reason_codes=["atr_bootstrap_error"],
+                source_kline_close_times=close_times,
+            )]
+
+        if signal_exception is not None:
             return [self._make_event(
                 profile_id=profile_id,
                 scheduled_at=scheduled_at,
                 evaluated_at=evaluated_at,
                 decision="analysis_error",
                 reason_codes=["stationary_signal_exception"],
+                feature_snapshot=(
+                    {"atr_filter": atr_filter_snapshot}
+                    if atr_snapshot_inputs is not None
+                    else None
+                ),
                 source_kline_close_times=close_times,
             )]
 
@@ -609,7 +661,11 @@ class ShadowCollector:
                 direction=None,
                 grade=None,
                 score=None,
-                feature_snapshot={"atr_filter": atr_filter_snapshot},
+                feature_snapshot=(
+                    {"atr_filter": atr_filter_snapshot}
+                    if atr_snapshot_inputs is not None
+                    else None
+                ),
                 source_kline_close_times=close_times,
             )]
 
@@ -654,41 +710,63 @@ class ShadowCollector:
             )
         return count
 
+    def _validated_atr_snapshot_inputs(
+        self,
+        indicators: Dict[str, Any],
+        multi_klines: Dict[str, List[Dict]],
+    ) -> Tuple[float, float, float]:
+        """校验当前 ATR/收盘价/ADX，禁止非有限值进入决策事件。"""
+        atr = float(indicators["1h"]["ATR"].iloc[-1])
+        current_close = float(multi_klines["1h"][-1]["close"])
+        if not math.isfinite(atr) or atr <= 0:
+            raise CalibrationError(f"invalid_current_atr:{atr}")
+        if not math.isfinite(current_close) or current_close <= 0:
+            raise CalibrationError(f"invalid_current_close:{current_close}")
+
+        adx_series = indicators.get("1d", {}).get("ADX")
+        adx_value = 0.0 if adx_series is None else float(adx_series.iloc[-1])
+        if not math.isfinite(adx_value) or adx_value < 0:
+            raise CalibrationError(f"invalid_1d_adx:{adx_value}")
+        if adx_value <= 0.0:
+            adx_4h = indicators.get("4h", {}).get("ADX")
+            fallback = 0.0 if adx_4h is None else float(adx_4h.iloc[-1])
+            if not math.isfinite(fallback) or fallback < 0:
+                raise CalibrationError(f"invalid_4h_adx:{fallback}")
+            adx_value = fallback if fallback > 0 else 0.0
+        return atr, current_close, adx_value
+
     def _atr_filter_snapshot(
         self,
         strategy: Any,
-        indicators: Dict[str, Any],
-        current_close: float,
+        snapshot_inputs: Optional[Tuple[float, float, float]],
     ) -> Optional[Dict[str, Any]]:
-        """记录本次决策实际使用的动态 ATR 阈值及其输入。"""
-        if strategy.atr_filter is None or not strategy.atr_filter.enabled:
+        """从真实分析后的 filter 状态记录本次实际动态 ATR 阈值。"""
+        if snapshot_inputs is None:
             return None
-
-        atr = float(indicators["1h"]["ATR"].iloc[-1])
-        adx_series = indicators.get("1d", {}).get("ADX")
-        adx_value = (
-            float(adx_series.iloc[-1])
-            if adx_series is not None and not pd.isna(adx_series.iloc[-1])
-            else 0.0
-        )
-        if adx_value == 0.0:
-            adx_4h = indicators.get("4h", {}).get("ADX")
-            if adx_4h is not None and not pd.isna(adx_4h.iloc[-1]):
-                adx_value = float(adx_4h.iloc[-1])
+        if strategy.atr_filter is None or not strategy.atr_filter.enabled:
+            raise CalibrationError("calibrated profile requires enabled atr_filter")
+        atr, current_close, adx_value = snapshot_inputs
 
         final_threshold, info = strategy.atr_filter.get_dynamic_min_atr_percent(
             self.symbol,
             adx_value,
         )
-        return {
+        snapshot = {
             "current_atr_percent": atr / current_close * 100,
-            "base_threshold": info["base_threshold"],
-            "final_threshold": final_threshold,
-            "absolute_min": info["absolute_min"],
-            "coefficient": info["coefficient"],
+            "base_threshold": float(info["base_threshold"]),
+            "final_threshold": float(final_threshold),
+            "absolute_min": float(info["absolute_min"]),
+            "coefficient": float(info["coefficient"]),
             "adx": adx_value,
-            "history_count": info["history_count"],
+            "history_count": int(info["history_count"]),
         }
+        if any(
+            not math.isfinite(value)
+            for key, value in snapshot.items()
+            if key != "history_count"
+        ):
+            raise CalibrationError("non_finite_atr_snapshot")
+        return snapshot
 
     # ------------------------------------------------------------------ 事件组装辅助
     def _make_event(
@@ -770,6 +848,14 @@ class ShadowCollector:
         tp1_mult = risk_cfg.get("partial_take_profit", {}).get("tp1_atr_multiplier") if atr else None
         tp2_mult = risk_cfg.get("partial_take_profit", {}).get("tp2_atr_multiplier") if atr else None
 
+        feature_snapshot = {
+            "market_state": signal_components.get("market_state"),
+            "atr": float(atr) if atr is not None else None,
+            "price_change_1h": float(signal_components.get("price_change_1h", 0)),
+        }
+        if atr_filter_snapshot is not None:
+            feature_snapshot["atr_filter"] = atr_filter_snapshot
+
         return {
             "run_id": self.run_id,
             "profile_id": profile_id,
@@ -788,12 +874,7 @@ class ShadowCollector:
             "tp2_rule": _rule_dict("tp2", atr, tp2_mult),
             "trailing_rule": risk_cfg.get("dynamic_trailing"),
             "time_stop_rule": risk_cfg.get("time_stop"),
-            "feature_snapshot": {
-                "market_state": signal_components.get("market_state"),
-                "atr": float(atr) if atr is not None else None,
-                "price_change_1h": float(signal_components.get("price_change_1h", 0)),
-                "atr_filter": atr_filter_snapshot,
-            },
+            "feature_snapshot": feature_snapshot,
             "reason_codes": [],
             "data_quality_reason": None,
             "config_hash": self.config_hashes.get(profile_id, ""),
