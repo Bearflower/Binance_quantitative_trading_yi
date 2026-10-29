@@ -15,13 +15,13 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from .snapshot_sealer import _has_symlink_ancestor, _repo_destination_is_ignored
 
 
-SQL_VERSION = "raw-export-v1"
+SQL_VERSION = "raw-export-v2"
 _SYMBOL = re.compile(r"^[A-Z0-9]{2,20}$")
 _INTERVALS = frozenset(("1m", "5m", "15m", "1h", "4h", "1d"))
 _KLINE_TABLE = re.compile(r"^kline_[a-z0-9]{2,20}_(1m|5m|15m|1h|4h|1d)$")
@@ -33,7 +33,10 @@ _KNOWN_GAPS = (
     "historical_config_identity_missing",
     "strategy_equity_curve_missing",
     "actual_slippage_unattributed",
+    "historical_signal_status_unavailable",
+    "kline_historical_revision_unavailable",
 )
+_HRS_GAPS = ("market_snapshot_historical_version_unavailable",)
 
 
 def _blocked(*gaps: str) -> Dict[str, Any]:
@@ -50,8 +53,10 @@ def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _normalize(value: Any, zone: ZoneInfo) -> Any:
+def _normalize(value: Any, zone: Optional[ZoneInfo]) -> Any:
     if isinstance(value, datetime):
+        if value.tzinfo is None and zone is None:
+            raise ValueError("naive_datetime_without_column_timezone")
         return _iso(value.replace(tzinfo=zone) if value.tzinfo is None else value)
     if isinstance(value, Decimal):
         return str(value)
@@ -72,99 +77,133 @@ def _query_specs(strategy_id: str, kline_pairs: Iterable[Tuple[str, str]]) -> li
         table = "kline_{0}_{1}".format(symbol.lower(), interval)
         if not _KLINE_TABLE.fullmatch(table):
             raise ValueError("invalid_kline_table")
-        specs.append(("btc_eth", table, "open_time", ("open_time", "close_time", "open_price", "high_price", "low_price", "close_price", "volume", "quote_volume", "trade_count"), ("close_time",)))
+        specs.append(("btc_eth", table, "open_time", ("id", "open_time", "close_time", "open_price", "high_price", "low_price", "close_price", "volume", "quote_volume", "trade_count"), ("close_time",), ("id",)))
     if strategy_id == "btc_eth_aggressive":
-        specs.append(("btc_eth_aggressive", "trade_signals", "created_at", ("id", "created_at", "status", "symbol", "direction", "entry_price"), ("created_at",)))
+        specs.append(("btc_eth_aggressive", "trade_signals", "created_at", ("id", "symbol", "direction", "created_at"), ("created_at",), ("id",)))
     else:
         specs.extend((
-            ("hrs", "hrs_signals", "triggered_at", ("id", "triggered_at", "symbol", "direction", "status"), ("triggered_at",)),
-            ("public", "ai_tuner_universe_scan_runs", "observed_at", ("strategy_id", "observed_at", "created_at", "source_run_id", "config_hash"), ("observed_at", "created_at")),
-            ("public", "ai_tuner_universe_snapshots", "observed_at", ("strategy_id", "observed_at", "created_at", "symbol", "membership"), ("observed_at", "created_at")),
-            ("public", "ai_tuner_market_snapshots", "observed_at", ("strategy_id", "observed_at", "source_observed_at", "collected_at", "symbol", "bucket_start"), ("observed_at", "source_observed_at", "collected_at")),
+            ("hrs", "hrs_signals", "triggered_at", ("id", "symbol", "direction", "triggered_at"), ("triggered_at",), ("id",)),
+            ("public", "ai_tuner_universe_scan_runs", "observed_at", ("strategy_id", "observed_at", "created_at", "source_run_id", "config_hash", "symbol_count"), ("observed_at", "created_at"), ("source_run_id",)),
+            ("public", "ai_tuner_universe_snapshots", "observed_at", ("strategy_id", "observed_at", "created_at", "symbol", "membership", "source_run_id", "config_hash"), ("observed_at", "created_at"), ("symbol",)),
+            ("public", "ai_tuner_market_snapshots", "observed_at", ("strategy_id", "symbol", "observed_at", "bucket_start", "source_observed_at", "collected_at", "open_interest_usd", "funding_rate", "market_cap_usd", "oi_market_cap_ratio", "sentiment_score", "oi_source", "funding_source", "market_cap_source", "payload_hash"), ("observed_at", "source_observed_at", "collected_at"), ("symbol", "bucket_start")),
         ))
     return specs
 
 
-def _bounds_for_dtype(dtype: str, start: datetime, end: datetime, zone: ZoneInfo) -> tuple[datetime, datetime]:
+def _bounds_for_dtype(dtype: str, start: datetime, end: datetime, zone: Optional[ZoneInfo]) -> tuple[datetime, datetime]:
     if dtype == _AWARE:
         return start, end
-    if dtype == _NAIVE:
+    if dtype == _NAIVE and zone is not None:
         return start.astimezone(zone).replace(tzinfo=None), end.astimezone(zone).replace(tzinfo=None)
     raise ValueError("unsupported_time_column_type:{0}".format(dtype))
 
 
-def _select_sql_and_args(name, time_col, cutoff_cols, types, start, end, zone):
-    lower, upper = _bounds_for_dtype(types[time_col], start, end, zone)
+def _select_sql_and_args(name, time_col, columns, cutoff_cols, sort_cols, types, zones, start, end):
+    lower, upper = _bounds_for_dtype(types[time_col], start, end, zones[time_col])
     cutoff = " AND ".join("{0} <= ${1}".format(col, i + 3) for i, col in enumerate(cutoff_cols))
     # Dynamic identifiers are fixed literals or guarded by _query_specs.
-    sql = "SELECT * FROM {0} AS t WHERE {1} >= $1 AND {1} <= $2 AND {2}".format(name, time_col, cutoff)
+    sql = "SELECT {0} FROM {1} AS t WHERE {2} >= $1 AND {2} <= $2 AND {3}".format(
+        ", ".join(columns), name, time_col, cutoff,
+    )
     args = [lower, upper]
     for column in cutoff_cols:
-        _, bound = _bounds_for_dtype(types[column], start, end, zone)
+        _, bound = _bounds_for_dtype(types[column], start, end, zones[column])
         args.append(bound)
-    if name == "btc_eth_aggressive.trade_signals":
-        sql += " AND status IN (${0}, ${1})".format(len(args) + 1, len(args) + 2)
-        args.extend(("pending", "executed"))
-    elif name.startswith("public."):
+    if name.startswith("public."):
         sql += " AND strategy_id = ${0}".format(len(args) + 1)
         args.append("hrs")
     if name == "public.ai_tuner_market_snapshots":
+        sql += " AND date_trunc('hour', bucket_start AT TIME ZONE 'UTC') = bucket_start AT TIME ZONE 'UTC'"
+        sql += " AND source_observed_at <= bucket_start + INTERVAL '1 hour'"
         sql += " AND bucket_start + INTERVAL '1 hour' <= ${0}".format(len(args) + 1)
         args.append(end)
-    return sql + " ORDER BY {0}, to_jsonb(t)".format(time_col), args
+    canonical_row = "to_jsonb(ROW({0}))::text".format(", ".join("t." + column for column in columns))
+    return sql + " ORDER BY {0}, {1}".format(", ".join((time_col, *sort_cols)), canonical_row), args
 
 
-def _canonical_rows(fetched, time_col, cutoff_cols, start, end, zone, name):
+def _zone_for(name: str, column: str, dtype: str, bindings: Mapping[str, Mapping[str, str]]) -> Optional[ZoneInfo]:
+    if dtype == _AWARE:
+        return None
+    if dtype != _NAIVE:
+        raise ValueError("time_column_type_unknown:{0}.{1}".format(name, column))
+    binding = bindings.get("{0}.{1}".format(name, column))
+    if not binding or not binding.get("zone") or not binding.get("evidence"):
+        raise ValueError("naive_column_timezone_unverified:{0}.{1}".format(name, column))
+    try:
+        return ZoneInfo(binding["zone"])
+    except ZoneInfoNotFoundError as exc:
+        raise ValueError("naive_column_timezone_invalid:{0}.{1}".format(name, column)) from exc
+
+
+def _as_utc(value: datetime, zone: Optional[ZoneInfo]) -> datetime:
+    if not isinstance(value, datetime):
+        raise ValueError("time_value_missing")
+    if value.tzinfo is None:
+        if zone is None:
+            raise ValueError("naive_datetime_without_column_timezone")
+        return value.replace(tzinfo=zone).astimezone(timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _canonical_rows(fetched, time_col, cutoff_cols, sort_cols, start, end, zones, name):
     for record in fetched:
         for column in (time_col, *cutoff_cols):
             value = record[column]
-            if not isinstance(value, datetime):
-                raise ValueError("time_value_missing:{0}.{1}".format(name, column))
-            instant = value.replace(tzinfo=zone).astimezone(timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+            instant = _as_utc(value, zones[column])
             if instant > end:
                 raise ValueError("future_source_row:{0}.{1}".format(name, column))
             if column == time_col and instant < start:
                 raise ValueError("before_window_source_row:{0}.{1}".format(name, column))
         if name == "public.ai_tuner_market_snapshots":
-            bucket = record["bucket_start"]
-            if not isinstance(bucket, datetime):
-                raise ValueError("market_bucket_start_missing")
-            bucket_utc = bucket.replace(tzinfo=zone).astimezone(timezone.utc) if bucket.tzinfo is None else bucket.astimezone(timezone.utc)
+            bucket_utc = _as_utc(record["bucket_start"], zones["bucket_start"])
+            if bucket_utc.minute or bucket_utc.second or bucket_utc.microsecond:
+                raise ValueError("market_bucket_not_hour_aligned")
             if bucket_utc + timedelta(hours=1) > end:
                 raise ValueError("market_bucket_not_closed")
-    rows = [_normalize(dict(row), zone) for row in fetched]
-    rows.sort(key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
+            if _as_utc(record["source_observed_at"], zones["source_observed_at"]) > bucket_utc + timedelta(hours=1):
+                raise ValueError("market_source_after_bucket_end")
+    rows = [{key: _normalize(value, zones.get(key)) for key, value in dict(row).items()} for row in fetched]
+    rows.sort(key=lambda row: (row[time_col], *(row[col] for col in sort_cols),
+                               json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False)))
     return rows
 
 
-async def _extract_one(db, spec, start, end, zone):
-    schema, table, time_col, required, cutoff_cols = spec
+async def _extract_one(db, spec, start, end, bindings):
+    schema, table, time_col, columns, cutoff_cols, sort_cols = spec
     name = "{0}.{1}".format(schema, table)
     meta = await db.fetch(
         "SELECT column_name, data_type FROM information_schema.columns "
         "WHERE table_schema = $1 AND table_name = $2", schema, table,
     )
     types = {row["column_name"]: row["data_type"] for row in meta}
-    missing = sorted(set(required) - set(types))
+    missing = sorted(set(columns) - set(types))
     if missing:
         return None, None, "columns_missing:{0}:{1}".format(name, ",".join(missing))
-    for column in (time_col, *cutoff_cols):
-        if types[column] not in (_NAIVE, _AWARE):
-            raise ValueError("time_column_type_unknown:{0}.{1}".format(name, column))
-    sql, args = _select_sql_and_args(name, time_col, cutoff_cols, types, start, end, zone)
+    time_columns = (time_col, *cutoff_cols)
+    if name == "public.ai_tuner_market_snapshots":
+        time_columns += ("bucket_start",)
+    zones = {column: _zone_for(name, column, types[column], bindings) for column in time_columns}
+    sql, args = _select_sql_and_args(name, time_col, columns, cutoff_cols, sort_cols, types, zones, start, end)
     fetched = await db.fetch(sql, *args)
     if not fetched:
         return None, None, "dataset_empty:{0}".format(name)
-    rows = _canonical_rows(fetched, time_col, cutoff_cols, start, end, zone, name)
+    # Fake DBs and drivers may return extra fields; only approved columns leave this boundary.
+    projected = [{column: row[column] for column in columns} for row in fetched]
+    rows = _canonical_rows(projected, time_col, cutoff_cols, sort_cols, start, end, zones, name)
     times = [row[time_col] for row in rows]
     evidence = {
         "row_count": len(rows), "min_time": min(times), "max_time": max(times),
         "sql_version": SQL_VERSION, "window_start": _iso(start), "as_of": _iso(end),
         "time_column": time_col, "time_column_type": types[time_col],
-        "sort_key": "{0},to_jsonb(row)".format(time_col),
+        "sort_key": ",".join((time_col, *sort_cols, "canonical_row")),
+        "selected_columns": list(columns),
+        "naive_timezones": {
+            "{0}.{1}".format(name, column): dict(bindings["{0}.{1}".format(name, column)])
+            for column in sorted(set(time_columns)) if types[column] == _NAIVE
+        },
     }
     if name == "public.ai_tuner_market_snapshots":
-        evidence["closed_bucket_rule"] = "bucket_start + 1 hour <= as_of"
+        evidence["closed_bucket_rule"] = "UTC hour-aligned bucket_start; source_observed_at <= bucket_start + 1 hour <= as_of"
     return rows, evidence, None
 
 
@@ -198,8 +237,7 @@ async def export_raw_snapshot(
     *,
     strategy_id: str,
     kline_pairs: Iterable[Tuple[str, str]],
-    verified_naive_timezone: Optional[str] = None,
-    timezone_evidence: Optional[str] = None,
+    timezone_bindings: Optional[Mapping[str, Mapping[str, str]]] = None,
 ) -> Dict[str, Any]:
     """Query raw rows in one read-only repeatable-read transaction.
 
@@ -211,12 +249,10 @@ async def export_raw_snapshot(
     end, start = _utc(as_of), _utc(window_start)
     if end is None or start is None or start >= end:
         return _blocked("invalid_utc_window")
-    if not verified_naive_timezone or not timezone_evidence or not timezone_evidence.strip():
-        return _blocked("naive_db_timezone_unverified")
+    bindings = timezone_bindings or {}
     try:
-        zone = ZoneInfo(verified_naive_timezone)
         specs = _query_specs(strategy_id, kline_pairs)
-    except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
+    except (ValueError, TypeError) as exc:
         return _blocked("export_configuration_invalid:{0}".format(exc))
     if not specs or not any(schema == "btc_eth" for schema, *_ in specs):
         return _blocked("kline_pairs_missing")
@@ -232,26 +268,32 @@ async def export_raw_snapshot(
             schema, table = spec[:2]
             name = "{0}.{1}".format(schema, table)
             try:
-                rows, evidence, gap = await _extract_one(db, spec, start, end, zone)
+                rows, evidence, gap = await _extract_one(db, spec, start, end, bindings)
                 if gap:
                     gaps.append(gap)
                 else:
                     rows_by_source[name], query_evidence[name] = rows, evidence
+            except ValueError as exc:
+                gaps.append(str(exc))
+                break
             except Exception as exc:
                 # PostgreSQL errors (including UndefinedTable/UndefinedColumn)
                 # differ by driver; all are evidence gaps, never empty data.
                 gaps.append("source_unavailable:{0}:{1}".format(name, exc))
                 break
 
-    if any(gap.startswith(("columns_missing:", "source_unavailable:")) for gap in gaps):
-        return _blocked(*gaps, *_KNOWN_GAPS)
-    gaps.extend(_KNOWN_GAPS)
+    structural_gaps = (*_KNOWN_GAPS, *(_HRS_GAPS if strategy_id == "hrs" else ()))
+    if any(not gap.startswith("dataset_empty:") for gap in gaps):
+        return _blocked(*gaps, *structural_gaps)
+    gaps.extend(structural_gaps)
     manifest = {
         "decision": "BLOCKED_DATA", "source_provenance": "unverified",
         "sql_version": SQL_VERSION, "strategy_id": strategy_id,
         "as_of": _iso(end), "window_start": _iso(start),
-        "verified_naive_timezone": verified_naive_timezone,
-        "timezone_evidence": timezone_evidence,
+        "naive_timezone_bindings": {
+            key: value for evidence in query_evidence.values()
+            for key, value in evidence["naive_timezones"].items()
+        },
         "queries": query_evidence, "gaps": gaps,
     }
     try:

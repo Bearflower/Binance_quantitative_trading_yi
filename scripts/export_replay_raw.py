@@ -38,6 +38,15 @@ def _pair(raw: str) -> tuple[str, str]:
     return symbol, interval
 
 
+def _binding(raw: str) -> tuple[str, str]:
+    if "=" not in raw:
+        raise argparse.ArgumentTypeError("expected schema.table.column=value")
+    key, value = raw.split("=", 1)
+    if not key or not value:
+        raise argparse.ArgumentTypeError("nonempty schema.table.column=value required")
+    return key, value
+
+
 async def _run(args: argparse.Namespace) -> dict:
     dsn = os.environ.get(args.dsn_env)
     if not dsn:
@@ -48,11 +57,13 @@ async def _run(args: argparse.Namespace) -> dict:
     try:
         repo = Path(__file__).resolve().parents[1]
         output = repo / "var" / "replay" / "raw" / args.strategy / args.as_of.strftime("%Y%m%dT%H%M%SZ")
+        zones = dict(args.time_column_zone)
+        evidence = dict(args.time_column_evidence)
+        bindings = {key: {"zone": zone, "evidence": evidence.get(key, "")} for key, zone in zones.items()}
         return await export_raw_snapshot(
             conn, output, args.as_of, args.window_start,
             strategy_id=args.strategy, kline_pairs=args.kline,
-            verified_naive_timezone=args.naive_db_timezone,
-            timezone_evidence=args.timezone_evidence,
+            timezone_bindings=bindings,
         )
     finally:
         await conn.close()
@@ -64,8 +75,10 @@ def main(argv=None) -> int:
     parser.add_argument("--window-start", type=_aware_timestamp, required=True)
     parser.add_argument("--kline", type=_pair, action="append", required=True, help="SYMBOL:interval")
     parser.add_argument("--strategy", choices=("btc_eth_aggressive", "hrs"), required=True)
-    parser.add_argument("--naive-db-timezone", required=True, help="IANA zone verified against production DB")
-    parser.add_argument("--timezone-evidence", required=True, help="human-readable verification reference")
+    parser.add_argument("--time-column-zone", type=_binding, action="append", default=[],
+                        help="schema.table.column=IANA zone; repeat for each naive time column")
+    parser.add_argument("--time-column-evidence", type=_binding, action="append", default=[],
+                        help="schema.table.column=verification reference; repeat per naive column")
     parser.add_argument("--dsn-env", default="REPLAY_READONLY_DSN", help="name of env var holding read-only role DSN")
     args = parser.parse_args(argv)
     try:
