@@ -4,7 +4,7 @@ BTC/ETH策略逻辑
 """
 import asyncio
 import os
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple, Any, Set
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -125,6 +125,7 @@ class PositionState:
         # 补挂达上限仅告警（D2，不自动减仓）并保持 True，供进程重启后 _ensure_position_protection 兜底。
         self.protection_pending: bool = False
         self.protection_retry_count: int = 0  # 保护补挂累计尝试次数（达配置上限触发 on_exhausted）
+        self.not_placeable_legs: Set[str] = set()  # 数量精度取整为 0 的 TP 腿
 
 
 class FrequencyController:
@@ -2565,6 +2566,7 @@ class BTCEthStrategy:
         quantity: Decimal,
         order_kind: str,
         strategy_name: str,
+        tp_level: Optional[int] = None,
     ) -> Optional[str]:
         """统一封装条件单下单+落库：统一账户 algoId、普通账户 orderId，失败返回 None（v6.28）"""
         try:
@@ -2593,7 +2595,7 @@ class BTCEthStrategy:
                 )
                 await record_condition_order(
                     self.db_manager, strategy_name, symbol,
-                    order_type=order_kind, **record_kwargs
+                    order_type=order_kind, tp_level=tp_level, **record_kwargs
                 )
             return order_id
         except Exception as e:
@@ -2614,6 +2616,7 @@ class BTCEthStrategy:
         tp_qty: Decimal,
         tp_label: Optional[str],
         strategy_name: str,
+        tp_level: Optional[int] = None,
     ) -> Optional[str]:
         """统一挂 TP 止盈条件单（消除 TP1/TP2 重复下单逻辑，v6.28 重构）
 
@@ -2643,7 +2646,8 @@ class BTCEthStrategy:
             )
         return await self._place_conditional_order_and_record(
             symbol, side, "TAKE_PROFIT", tp_price, tp_limit,
-            tp_qty, "TAKE_PROFIT", strategy_name
+            tp_qty, "TAKE_PROFIT", strategy_name,
+            tp_level=tp_level or (int(tp_label[-1]) if tp_label in ("TP1", "TP2") else None)
         )
 
     def _calculate_stop_price(self, position: PositionState) -> Decimal:
@@ -2771,10 +2775,19 @@ class BTCEthStrategy:
                     position.entry_price, position.atr, position.direction, level, position.grade)
                 tp_qty = self._adjust_quantity_precision(
                     initial_qty * Decimal(str(partial_cfg[f'tp{level}_close_ratio'])), step_size)
+                # 数量精度调整后为 0，标记为 N/A 腿后跳过；硬止损已在前置重建中就位
+                if tp_qty <= 0:
+                    logger.warning(
+                        f"{symbol} TP{level}重建时数量精度调整后为0，标记为不可挂",
+                        level=level, tp_qty=float(tp_qty), step_size=str(step_size)
+                    )
+                    setattr(position, attr, None)
+                    position.not_placeable_legs.add(f'TP{level}')
+                    continue
                 tp_limit = self._adjust_price_precision(
                     self._apply_limit_offset(tp_price, tp_offset, position.direction), tick_size)
                 tp_id = await self._place_tp_order(
-                    symbol, stop_side, tp_price, tp_limit, tp_qty, None, self.strategy_name)
+                    symbol, stop_side, tp_price, tp_limit, tp_qty, None, self.strategy_name, tp_level=level)
                 if tp_id is None:
                     return False
                 setattr(position, attr, tp_id)
@@ -2893,11 +2906,13 @@ class BTCEthStrategy:
             tp2_limit = self._adjust_price_precision(
                 self._apply_limit_offset(tp2_price, tp_offset, position.direction), tick_size)
             tp2_id = await self._place_tp_order(
-                symbol, stop_side, tp2_price, tp2_limit, tp2_qty, None, self.strategy_name)
+                symbol, stop_side, tp2_price, tp2_limit, tp2_qty, None, self.strategy_name, tp_level=2)
             if tp2_id:
                 position.tp2_order_id = tp2_id
         else:
-            logger.warning(f"{symbol} 平尾仓补挂：TP2尾仓数量精度调整后为0，跳过TP2补挂")
+            # 数量取整为 0 的 TP2 视为不可挂（N/A），避免完整性判定反复认定缺失
+            position.not_placeable_legs.add('TP2')
+            logger.warning(f"{symbol} 平尾仓补挂：TP2尾仓数量精度调整后为0，标记为不可挂并跳过")
 
     async def _retry_rebuild_pending(self) -> None:
         """收敛 rebuild_pending 持仓（v6.28）
@@ -5154,6 +5169,9 @@ class BTCEthStrategy:
         tp_orders = symbol_orders.get('TAKE_PROFIT', [])
         if not stop_orders or len(tp_orders) < 2:
             return None
+        if len(tp_orders) != 2 or {o.get('tp_level') for o in tp_orders} != {1, 2}:
+            logger.warning('接管持仓：旧 TP 单缺少等级，拒绝按创建顺序推断', symbol=symbol)
+            return None
 
         position_amt = float(pos_data.get('positionAmt', 0) or 0)
         direction = 'LONG' if position_amt > 0 else 'SHORT'
@@ -5229,8 +5247,8 @@ class BTCEthStrategy:
         ps.stop_loss_order_id = stop_orders[0].get('algo_id')
         if len(stop_orders) >= 2:
             ps.trailing_stop_order_id = stop_orders[1].get('algo_id')
-        ps.tp1_order_id = tp_orders[0].get('algo_id')
-        ps.tp2_order_id = tp_orders[1].get('algo_id')
+        ps.tp1_order_id = next(o.get('algo_id') for o in tp_orders if o.get('tp_level') == 1)
+        ps.tp2_order_id = next(o.get('algo_id') for o in tp_orders if o.get('tp_level') == 2)
         return ps
 
     @staticmethod
@@ -5294,8 +5312,11 @@ class BTCEthStrategy:
             orders = await get_open_orders(self.db_manager, self.strategy_name)
             for o in orders:
                 sym = o.get('symbol')
+                order_type = o.get('order_type')
+                order_id = o.get('algo_id') or o.get('order_id')
+                entry = {'algo_id': order_id, 'tp_level': o.get('tp_level')} if order_type == 'TAKE_PROFIT' else order_id
                 existing_open_orders.setdefault(sym, {}).setdefault(
-                    o.get('order_type'), []).append(o.get('algo_id'))
+                    order_type, []).append(entry)
             if existing_open_orders:
                 logger.info("检测到已有OPEN条件单，跳过重复创建", symbols=list(existing_open_orders.keys()))
         except Exception as e:
@@ -5329,6 +5350,9 @@ class BTCEthStrategy:
         )
 
         existing_pos = self.positions.get(symbol)
+        was_untracked = existing_pos is None
+        unknown_tp = [o for o in existing_open_orders.get(symbol, {}).get('TAKE_PROFIT', [])
+                      if not isinstance(o, dict) or o.get('tp_level') not in (1, 2)]
         has_stop, has_tp1, has_tp2 = self._check_existing_protection(
             symbol, existing_pos, existing_open_orders)
         if has_stop and has_tp1 and has_tp2:
@@ -5354,6 +5378,19 @@ class BTCEthStrategy:
                 logger.warning("发送归属告警失败", error=str(_e))
             return
 
+        # 旧单没有 TP 等级：不根据当前价/重算 ATR 创建伪持仓状态。
+        # 已有硬止损时保留交易所订单并等待人工核对；无硬止损则先走下面的补挂路径。
+        if unknown_tp and was_untracked and has_stop:
+            logger.warning(f"{symbol} 旧 TP 单等级未知，保留硬止损并跳过自动接管/补挂 TP",
+                           count=len(unknown_tp))
+            try:
+                await self.notification.send(
+                    message=f"{symbol} 旧 TP 单等级未知，自动接管已暂停，请人工核对",
+                    level="warning", project=self.strategy_name)
+            except Exception as exc:
+                logger.warning("旧 TP 单核对告警发送失败", symbol=symbol, error=str(exc))
+            return
+
         # 计算 ATR / 精度 / 保护价格
         current_price = await self._get_current_price(symbol)
         if current_price is None:
@@ -5370,8 +5407,60 @@ class BTCEthStrategy:
         if not has_stop:
             existing_pos = await self._place_protection_stop(
                 symbol, direction, current_price, atr, current_quantity, prices, existing_pos)
+        if unknown_tp and was_untracked:
+            # 允许上面的硬止损补挂，但不把伪入场状态留给软件止盈/时间止损。
+            if self.positions.get(symbol) is existing_pos:
+                self.positions.pop(symbol, None)
+            if not existing_pos or not existing_pos.stop_loss_order_id:
+                try:
+                    await self.notification.send(
+                        message=f"{symbol} 旧 TP 单等级未知且硬止损补挂失败，需要人工核对",
+                        level="warning", project=self.strategy_name)
+                except Exception as exc:
+                    logger.warning("旧 TP 单硬止损告警发送失败", symbol=symbol, error=str(exc))
+            logger.warning(f"{symbol} 旧 TP 单等级未知，硬止损已尝试补挂，跳过自动接管/补挂 TP",
+                           count=len(unknown_tp))
+            return
+        if was_untracked:
+            try:
+                exchange_entry = Decimal(str(pos_data.get('entryPrice') or 0))
+            except Exception:
+                exchange_entry = Decimal('0')
+            if exchange_entry <= 0:
+                if self.positions.get(symbol) is existing_pos:
+                    self.positions.pop(symbol, None)
+                logger.warning(f"{symbol} 交易所入场价无效，跳过无可信基准的自动接管")
+                return
+            if prices.get('tp1_quantity', Decimal('1')) <= 0 and has_tp2:
+                rebuilt_tp1 = self._calculate_tp_price(exchange_entry, atr, direction, 1, grade)
+                tp1_reached = ((direction == 'LONG' and current_price >= rebuilt_tp1)
+                               or (direction == 'SHORT' and current_price <= rebuilt_tp1))
+                if tp1_reached:
+                    if self.positions.get(symbol) is existing_pos:
+                        self.positions.pop(symbol, None)
+                    logger.warning(f"{symbol} 重启后重建 TP1 已达触发价，跳过接管避免误市价平仓",
+                                   current_price=float(current_price), tp1_price=float(rebuilt_tp1))
+                    return
+            if existing_pos is not None:
+                existing_pos.entry_price = exchange_entry
+        else:
+            exchange_entry = current_price
         existing_pos = self._get_or_create_position_state(
-            symbol, existing_pos, current_price, direction, current_quantity, atr, grade='A')
+            symbol, existing_pos, exchange_entry, direction, current_quantity, atr, grade='A')
+        persisted = existing_open_orders.get(symbol, {})
+        if existing_pos.stop_loss_order_id is None and persisted.get('STOP_LOSS'):
+            existing_pos.stop_loss_order_id = persisted['STOP_LOSS'][0]
+        for order in persisted.get('TAKE_PROFIT', []):
+            if isinstance(order, dict) and order.get('tp_level') in (1, 2):
+                attr = f"tp{order['tp_level']}_order_id"
+                if getattr(existing_pos, attr) is None:
+                    setattr(existing_pos, attr, order.get('algo_id'))
+        if unknown_tp:
+            logger.warning(
+                f"{symbol} 存在未标等级的旧 TP 单，停止自动补挂 TP，避免重复下单",
+                count=len(unknown_tp),
+            )
+            return
         await self._place_missing_tp_orders(
             symbol, direction, existing_pos, has_tp1, has_tp2, prices)
 
@@ -5397,18 +5486,15 @@ class BTCEthStrategy:
                 f"{symbol} 从 condition_orders 表检测到已有 STOP_LOSS",
                 algo_id=stop_orders[0]
             )
-        if not has_tp1 and len(tp_orders) >= 1:
-            has_tp1 = True
-            logger.info(
-                f"{symbol} 从 condition_orders 表检测到已有 TP1 止盈单",
-                algo_id=tp_orders[0]
-            )
-        if not has_tp2 and len(tp_orders) >= 2:
-            has_tp2 = True
-            logger.info(
-                f"{symbol} 从 condition_orders 表检测到已有 TP2 止盈单",
-                algo_id=tp_orders[1]
-            )
+        for order in tp_orders:
+            level = order.get('tp_level') if isinstance(order, dict) else None
+            algo_id = order.get('algo_id') if isinstance(order, dict) else order
+            if level == 1 and not has_tp1:
+                has_tp1 = True
+                logger.info(f"{symbol} 从 condition_orders 表检测到已有 TP1 止盈单", algo_id=algo_id)
+            elif level == 2 and not has_tp2:
+                has_tp2 = True
+                logger.info(f"{symbol} 从 condition_orders 表检测到已有 TP2 止盈单", algo_id=algo_id)
         return has_stop, has_tp1, has_tp2
 
     @staticmethod
@@ -5425,11 +5511,13 @@ class BTCEthStrategy:
         )
         tp1_order_id = (
             existing_pos.tp1_order_id if existing_pos
-            else (tp_orders[0] if len(tp_orders) >= 1 else None)
+            else next((o.get('algo_id') for o in tp_orders
+                       if isinstance(o, dict) and o.get('tp_level') == 1), None)
         )
         tp2_order_id = (
             existing_pos.tp2_order_id if existing_pos
-            else (tp_orders[1] if len(tp_orders) >= 2 else None)
+            else next((o.get('algo_id') for o in tp_orders
+                       if isinstance(o, dict) and o.get('tp_level') == 2), None)
         )
         logger.info(
             f"{symbol} 已有完整保护单，跳过",
@@ -5562,25 +5650,34 @@ class BTCEthStrategy:
         self, symbol: str, direction: str, existing_pos: PositionState,
         has_tp1: bool, has_tp2: bool, prices: Dict,
     ) -> None:
-        """补挂缺失的 TP1/TP2 止盈单（v6.28 拆分子函数）"""
-        if not has_tp1:
+        """补挂缺失的 TP1/TP2 止盈单（v6.28 拆分子函数）
+
+        数量精度调整后为 0 的腿视为不可挂（N/A），标记后跳过，不向交易所发单。
+        """
+        if not has_tp1 and prices['tp1_quantity'] > 0:
             try:
                 tp1_order_id = await self._place_tp_protection_order(
                     symbol, direction, prices['tp1_price'], prices['tp1_limit_price'],
-                    prices['tp1_quantity'])
+                    prices['tp1_quantity'], 1)
                 if tp1_order_id:
                     existing_pos.tp1_order_id = tp1_order_id
             except Exception as e:
                 logger.warning(f"{symbol} 创建TP1止盈限价单失败", error=str(e))
-        if not has_tp2:
+        elif not has_tp1:
+            existing_pos.not_placeable_legs.add('TP1')
+            logger.warning(f"{symbol} TP1数量精度调整后为0，标记为不可挂并跳过")
+        if not has_tp2 and prices['tp2_quantity'] > 0:
             try:
                 tp2_order_id = await self._place_tp_protection_order(
                     symbol, direction, prices['tp2_price'], prices['tp2_limit_price'],
-                    prices['tp2_quantity'])
+                    prices['tp2_quantity'], 2)
                 if tp2_order_id:
                     existing_pos.tp2_order_id = tp2_order_id
             except Exception as e:
                 logger.warning(f"{symbol} 创建TP2止盈限价单失败", error=str(e))
+        elif not has_tp2:
+            existing_pos.not_placeable_legs.add('TP2')
+            logger.warning(f"{symbol} TP2数量精度调整后为0，标记为不可挂并跳过")
 
     async def _place_tp_protection_order(
         self,
@@ -5589,6 +5686,7 @@ class BTCEthStrategy:
         tp_price: Decimal,
         tp_limit_price: Decimal,
         tp_quantity: Decimal,
+        tp_level: int,
     ) -> Optional[str]:
         """补挂单个止盈条件单并记录到数据库，返回条件单ID。
 
@@ -5605,7 +5703,7 @@ class BTCEthStrategy:
         tp_side = 'SELL' if direction == 'LONG' else 'BUY'
         algo_id = await self._place_conditional_order_and_record(
             symbol, tp_side, "TAKE_PROFIT", tp_price, tp_limit_price,
-            tp_quantity, "TAKE_PROFIT", self.strategy_name
+            tp_quantity, "TAKE_PROFIT", self.strategy_name, tp_level=tp_level
         )
         if algo_id:
             logger.info(

@@ -94,7 +94,7 @@ def make_orders(symbol: str, stop_count: int = 1, tp_count: int = 2) -> list:
     for i in range(tp_count):
         orders.append({
             'symbol': symbol, 'order_type': 'TAKE_PROFIT',
-            'algo_id': 2100 + i, 'created_at': _T0,
+            'algo_id': 2100 + i, 'tp_level': i + 1, 'created_at': _T0,
         })
     return orders
 
@@ -147,6 +147,29 @@ class TestAdoptPositionsAggressive:
         assert ps.stop_loss_order_id == 2000
         assert ps.tp1_order_id == 2100
         assert ps.tp2_order_id == 2101
+
+    async def test_legacy_unlabelled_tp_orders_are_not_adopted_by_position(self):
+        s = build_strategy('aggressive')
+        sym = s.symbols[0]
+        s.binance.get_position = AsyncMock(return_value=[make_pos(sym)])
+        orders = make_orders(sym)
+        for order in orders:
+            order.pop('tp_level', None)
+        with patch_env(_AGGR_MODULE, orders, 'btc_eth_aggressive'):
+            await s._adopt_untracked_exchange_positions()
+        assert sym not in s.positions
+        assert_no_trade_api(s)
+
+    async def test_labelled_tp_orders_adopt_by_level_even_if_reversed(self):
+        s = build_strategy('aggressive')
+        sym = s.symbols[0]
+        s.binance.get_position = AsyncMock(return_value=[make_pos(sym)])
+        orders = make_orders(sym)
+        orders[-2:] = list(reversed(orders[-2:]))
+        with patch_env(_AGGR_MODULE, orders, 'btc_eth_aggressive'):
+            await s._adopt_untracked_exchange_positions()
+        assert s.positions[sym].tp1_order_id == 2100
+        assert s.positions[sym].tp2_order_id == 2101
 
     @pytest.mark.parametrize('owner', ['btc_eth', None])
     async def test_case2_owner_mismatch_not_adopted(self, owner):
