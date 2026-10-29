@@ -4808,15 +4808,8 @@ class BTCEthStrategy:
         else:
             stop_limit_price = trailing_stop * (Decimal('1') + stop_offset_pct)
         
-        # 精度调整
-        try:
-            precision = await self._get_symbol_precision(symbol)
-            tick_size = Decimal(str(precision.get('tick_size', '0.01')))
-            step_size = Decimal(str(precision.get('step_size', '0.001')))
-        except Exception:
-            tick_size = Decimal('0.01')
-            step_size = Decimal('0.001')
-        
+        # 精度调整（统一走 _get_precision_params，避免下划线键读错）
+        step_size, tick_size = await self._get_precision_params(symbol)
         stop_limit_price = self._adjust_price_precision(stop_limit_price, tick_size)
         # 移动止损单数量：按尾仓比例（remaining_ratio）计算，而非全仓
         trailing_remaining_ratio = Decimal(
@@ -4825,6 +4818,15 @@ class BTCEthStrategy:
         close_quantity = self._adjust_quantity_precision(
             position.initial_quantity * trailing_remaining_ratio, step_size
         )
+
+        # 尾仓数量精度调整后为 0，跳过移动止损下单（硬止损已全量保护，不受影响）
+        if close_quantity <= 0:
+            logger.warning(
+                f"{symbol} 移动止损尾仓数量精度调整后为0，跳过下单",
+                close_quantity=float(close_quantity),
+                step_size=str(step_size)
+            )
+            return
         
         # 4. 下新止损条件单（统一封装：下单 + 落库，v6.28）
         logger.info(
@@ -5945,14 +5947,8 @@ class BTCEthStrategy:
 
     async def _get_protection_precision(self, symbol: str) -> Tuple[Decimal, Decimal]:
         """获取交易对精度（tick_size/step_size），异常时用默认值（v6.28 拆分子函数）"""
-        try:
-            precision = await self._get_symbol_precision(symbol)
-            tick_size = Decimal(str(precision.get('tick_size', '0.01')))
-            step_size = Decimal(str(precision.get('step_size', '0.001')))
-        except Exception:
-            tick_size = Decimal('0.01')
-            step_size = Decimal('0.001')
-        return tick_size, step_size
+        step_size_str, tick_size = await self._get_precision_params(symbol)
+        return tick_size, Decimal(step_size_str)
 
     def _calc_protection_prices(
         self, direction: str, current_price: Decimal, atr: Decimal, grade: str,
