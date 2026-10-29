@@ -1039,13 +1039,13 @@ class TestEntryTimeToNaiveBeijing:
         # -05:00 12:00 == UTC 17:00 == 北京 次日 01:00（注意日期变化）
         assert result == datetime(2026, 10, 2, 1, 0, 0)
 
-    def test_naive_passthrough(self):
-        """无时区字符串 → 原样返回，不额外位移"""
+    def test_naive_utc_to_beijing(self):
+        """历史无时区 UTC 字符串 → 无时区北京时间"""
         naive_input = "2026-06-01T00:00:00"
         result = _entry_time_to_naive_beijing(naive_input)
         assert result is not None
         assert result.tzinfo is None
-        assert result == datetime(2026, 6, 1, 0, 0, 0)
+        assert result == datetime(2026, 6, 1, 8, 0, 0)
 
     def test_none_returns_none(self):
         """None 输入返回 None"""

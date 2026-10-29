@@ -10,7 +10,7 @@
 对应需求：把"止损打标"机制接入 new_coin 策略止损平仓点，供风控看板
 "最近止损次数"统计（pnl>=0 止盈不打标）。
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from strategies.new_coin.strategy import NewCoinStrategy
@@ -62,7 +62,7 @@ def make_trade_logger():
 
 def make_position_entry() -> dict:
     """构造一笔早已入场（非刚入场）的做空持仓。"""
-    long_ago = (datetime.now() - timedelta(hours=2)).isoformat()
+    long_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(tzinfo=None).isoformat()
     return {'entry_price': Decimal('100'), 'entry_time': long_ago}
 
 

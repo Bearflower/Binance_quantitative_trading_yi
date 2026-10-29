@@ -47,6 +47,7 @@ def mock_db():
     db = MagicMock()
     db.execute_ddl = AsyncMock()
     db.execute = AsyncMock()
+    db.execute_transaction = AsyncMock(return_value=True)
     db.fetch_one = AsyncMock(return_value=None)
     db.fetch_all = AsyncMock(return_value=[])
     return db
@@ -260,16 +261,14 @@ class TestRunOnce:
             with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=fixed_now):
                 await rec.run_once()
 
-        # 进度更新被调用
-        mock_update.assert_awaited_once()
-        # 成功回写 realized_pnl：找到 UPDATE 语句并核对参数（pnl=12.34, id=1）
-        update_calls = [
-            c for c in mock_db.execute.await_args_list
-            if "UPDATE trading.trade_records SET realized_pnl" in c.args[0]
-        ]
-        assert len(update_calls) == 1
-        assert update_calls[0].args[1] == Decimal("12.34")
-        assert update_calls[0].args[2] == 1
+        # 有盈亏回写时，进度必须同批事务提交，不能在事务后单独更新。
+        mock_update.assert_not_awaited()
+        queries = mock_db.execute_transaction.await_args.args[0]
+        assert len(queries) == 2
+        assert "UPDATE trading.trade_records SET realized_pnl" in queries[0][0]
+        assert queries[0][1] == (Decimal("12.34"), 1)
+        assert "last_reconciled_ts" in queries[1][0]
+        assert queries[1][1] == (fixed_now,)
 
     @pytest.mark.asyncio
     async def test_no_income_updates_progress_only(self, mock_db, mock_binance, base_config):
@@ -300,15 +299,11 @@ class TestRunOnce:
 
         mock_update.assert_awaited_once()
         # 不应存在 UPDATE realized_pnl 的回写调用
-        update_calls = [
-            c for c in mock_db.execute.await_args_list
-            if "UPDATE trading.trade_records SET realized_pnl" in c.args[0]
-        ]
-        assert update_calls == []
+        mock_db.execute_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_binance_api_exception_caught(self, mock_db, mock_binance, base_config):
-        """Binance API 抛异常时被捕获，任务不崩溃（记录日志并降级更新进度）"""
+        """Binance API 抛异常时任务记录失败，不能推进校准进度。"""
         rec = IncomeReconciler(mock_db, mock_binance, base_config)
         # get_income_history 抛出运行时异常
         mock_binance.get_income_history = AsyncMock(side_effect=RuntimeError("Binance 接口超时"))
@@ -318,9 +313,77 @@ class TestRunOnce:
                 with patch("ai_tuner.reconciler.income_reconciler.logger", new=MagicMock()) as mock_logger:
                     await rec.run_once()  # 不应抛异常
 
-        # 记录警告日志、进度仍被更新（优雅降级）
-        mock_logger.warning.assert_called()
-        mock_update.assert_awaited_once()
+        mock_logger.error.assert_called()
+        mock_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_resume_from_saved_cursor_after_long_api_outage(self, mock_db, mock_binance, base_config):
+        """已有游标时即使超过默认回看天数，也必须从未完成的游标重试。"""
+        rec = IncomeReconciler(mock_db, mock_binance, base_config)
+        now_ms = 1700000000000
+        last_ts = now_ms - 30 * 24 * 3600 * 1000
+        mock_db.fetch_one.return_value = {"last_reconciled_ts": last_ts}
+
+        with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=now_ms):
+            await rec.run_once()
+
+        assert mock_binance.get_income_history.await_args_list[0].kwargs["start_time"] == last_ts
+
+    @pytest.mark.asyncio
+    async def test_writeback_failure_does_not_advance_cursor(self, mock_db, mock_binance, base_config):
+        """匹配到收入后，DB 回写失败不能把该窗口标成已校准。"""
+        rec = IncomeReconciler(mock_db, mock_binance, base_config)
+        now_ms = 1700000000000
+        mock_db.fetch_one.return_value = {"last_reconciled_ts": 0}
+        mock_db.fetch_all.return_value = [
+            {"id": 1, "symbol": "BTCUSDT", "order_type": "STOP",
+             "executed_at": datetime(2023, 11, 15, 6, 13, 20)},
+        ]
+        mock_db.execute_transaction.side_effect = RuntimeError("database write failed")
+        mock_binance.get_income_history.return_value = [
+            {"symbol": "BTCUSDT", "time": now_ms, "income": "12.34"},
+        ]
+
+        with patch.object(rec, "_ensure_state_table", new=AsyncMock()):
+            with patch.object(rec, "_update_reconciled_ts", new=AsyncMock()) as mock_update:
+                with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=now_ms):
+                    await rec.run_once()
+
+        mock_update.assert_not_awaited()
+        mock_db.execute_transaction.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_two_income_matches_retry_as_one_atomic_batch(self, mock_db, mock_binance, base_config):
+        """第二笔更新失败后整批回滚；重试仍以两笔原收入与原成交匹配。"""
+        rec = IncomeReconciler(mock_db, mock_binance, base_config)
+        now_ms = 1700000000000
+        mock_db.fetch_one.return_value = {"last_reconciled_ts": 0}
+        mock_db.fetch_all.return_value = [
+            {"id": 1, "symbol": "BTCUSDT", "order_type": "STOP",
+             "executed_at": datetime(2023, 11, 15, 6, 13, 20)},
+            {"id": 2, "symbol": "BTCUSDT", "order_type": "STOP",
+             "executed_at": datetime(2023, 11, 15, 6, 13, 21)},
+        ]
+        mock_binance.get_income_history.return_value = [
+            {"symbol": "BTCUSDT", "time": now_ms, "income": "1.00"},
+            {"symbol": "BTCUSDT", "time": now_ms + 1000, "income": "2.00"},
+        ]
+        mock_db.execute_transaction.side_effect = [RuntimeError("second update failed"), True]
+
+        with patch.object(rec, "_ensure_state_table", new=AsyncMock()):
+            with patch.object(rec, "_update_reconciled_ts", new=AsyncMock()) as mock_update:
+                with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=now_ms + 1000):
+                    await rec.run_once()
+                    mock_update.assert_not_awaited()
+                    await rec.run_once()
+
+        mock_update.assert_not_awaited()
+        assert mock_db.execute_transaction.await_count == 2
+        first = mock_db.execute_transaction.await_args_list[0].args[0]
+        second = mock_db.execute_transaction.await_args_list[1].args[0]
+        assert first == second
+        assert [args[1] for _, args in second[:-1]] == [1, 2]
+        assert "last_reconciled_ts" in second[-1][0]
 
     @pytest.mark.asyncio
     async def test_top_level_exception_caught(self, mock_db, mock_binance, base_config):

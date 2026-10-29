@@ -889,15 +889,15 @@ async def test_export_income_rejects_non_unified_client_before_cursor_write(monk
     assert exporter._cursor_store == {}
 
 
-async def test_api_income_history_forwards_params_and_non_list_fallback(monkeypatch):
-    """get_income_history：incomeType/limit/startTime/endTime 进入 params；非 list 回退 []。"""
+async def test_api_income_history_forwards_params_and_rejects_non_list(monkeypatch):
+    """get_income_history：参数照常透传；非列表响应不能伪装成空收入。"""
     client = _make_offline_client(use_unified_account=True)
     capture = _CaptureRequest({"error": True})
     monkeypatch.setattr(client, "_request", capture)
 
-    rows = await client.get_income_history(start_time=1, end_time=2, limit=1000,
-                                           income_type="FUNDING_FEE")
-    assert rows == []                             # 非 list 回退
+    with pytest.raises(TypeError, match="income.*列表"):
+        await client.get_income_history(start_time=1, end_time=2, limit=1000,
+                                        income_type="FUNDING_FEE")
     call = capture.calls[0]
     assert call["endpoint"] == "/papi/v1/um/income"
     assert call["params"] == {"incomeType": "FUNDING_FEE", "limit": 1000,

@@ -1574,7 +1574,7 @@ class BinanceClient:
         data = await self._request("GET", "/papi/v1/um/income", params, signed=True)
 
         if not isinstance(data, list):
-            return []
+            raise TypeError("income API 响应必须为列表")
 
         return data
 

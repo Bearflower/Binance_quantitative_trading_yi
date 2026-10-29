@@ -4815,9 +4815,9 @@ class BTCEthStrategy:
         
         # v6.23.1：查询 trade_records 表确认是否有匹配的成交记录
         try:
-            # 明确指定北京时区（UTC+8），与 trade_records.executed_at 时区一致
+            # executed_at 为无时区的北京时间，查询参数也必须用同一口径
             beijing_tz = timezone(timedelta(hours=8))
-            now = datetime.now(beijing_tz)
+            now = datetime.now(beijing_tz).replace(tzinfo=None)
             lookup_window = self._get_cancel_retry_config('trade_lookup_window_minutes', 5)
             window_start = now - timedelta(minutes=lookup_window)
             window_end = now + timedelta(minutes=lookup_window)

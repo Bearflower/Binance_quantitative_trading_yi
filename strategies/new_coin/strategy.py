@@ -42,11 +42,12 @@ def _entry_time_to_naive_beijing(entry_time: Optional[str]) -> Optional[datetime
     """把 entry_time 解析为无时区北京时间 datetime。
 
     trade_records.executed_at 为无时区 TIMESTAMP（存北京时间），asyncpg 拒绝
-    向该列写入带时区 datetime；而 entry_time 来源既有无时区也有带时区 ISO 字符串。
-    本函数统一转成无时区北京时间，避免查询抛 DataError。
+    向该列写入带时区 datetime。旧版容器用 datetime.now() 写出的无时区
+    entry_time 是 UTC；新版带时区 ISO 串按其偏移转换。两者均归一为
+    无时区北京时间，供数据库窗口和入场 60 秒守卫使用。
 
     Args:
-        entry_time: 入场时间 ISO 字符串，可为空。
+        entry_time: 入场时间 ISO 字符串，可为空；无时区历史值按 UTC 解释。
 
     Returns:
         无时区北京时间 datetime；缺失或解析失败返回 None。
@@ -59,7 +60,7 @@ def _entry_time_to_naive_beijing(entry_time: Optional[str]) -> Optional[datetime
         return None
     if dt.tzinfo is not None:
         return dt.astimezone(BEIJING_TZ).replace(tzinfo=None)
-    return dt
+    return dt.replace(tzinfo=timezone.utc).astimezone(BEIJING_TZ).replace(tzinfo=None)
 
 
 # 预定义的跳过原因常量
@@ -784,7 +785,7 @@ class NewCoinStrategy(BaseStrategy):
                 self.positions[symbol] = {
                     'order_id': order.get('orderId'),
                     'entry_price': current_price,
-                    'entry_time': datetime.now().isoformat(),
+                    'entry_time': datetime.now(timezone.utc).isoformat(),
                     'score': score_result_dict.get('total_score')
                 }
 
@@ -1745,18 +1746,16 @@ class NewCoinStrategy(BaseStrategy):
                     # 检查是否刚入场（60秒内），避免因币安API传播延迟误判为平仓
                     entry_time_str = position.get('entry_time')
                     if entry_time_str:
-                        try:
-                            entry_dt = datetime.fromisoformat(entry_time_str)
-                            now = datetime.now()
-                            if (now - entry_dt).total_seconds() < 60:
+                        entry_dt = _entry_time_to_naive_beijing(entry_time_str)
+                        if entry_dt is not None:
+                            elapsed = (datetime.now(BEIJING_TZ).replace(tzinfo=None) - entry_dt).total_seconds()
+                            if elapsed < 60:
                                 logger.info(
                                     f"刚入场不足60秒，跳过平仓检测（避免API传播延迟误判）: {symbol}",
                                     entry_time=entry_time_str,
-                                    seconds_since_entry=(now - entry_dt).total_seconds()
+                                    seconds_since_entry=elapsed
                                 )
                                 continue
-                        except (ValueError, TypeError):
-                            pass
 
                     # 持仓已平仓
                     logger.info(f"持仓已平仓: {symbol}")
