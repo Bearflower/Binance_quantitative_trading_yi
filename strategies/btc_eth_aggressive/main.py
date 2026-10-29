@@ -18,7 +18,7 @@ from shared.notification import NotificationClient
 from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
 from shared.config_loader import load_strategy_config
-from shared.strategy_state import save_strategy_state, sync_open_positions
+from shared.strategy_state import save_strategy_state, sync_open_positions, touch_strategy_state
 from shared import condition_orders
 from shared.mtpc_signal_persistence import (
     ensure_signal_table_exists,
@@ -211,7 +211,11 @@ async def run_strategy():
                                 strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
                             )
                             if positions and strategy.state_reporting_enabled:
-                                await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
+                                if strategy.state_snapshot_safe_to_write:
+                                    await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
+                                else:
+                                    await touch_strategy_state(strategy.db_manager, strategy.instance_id)
+                                    logger.warning("入场时间未核实，仅刷新策略状态心跳")
                                 # 同步当前持仓到看板聚合表（口径由策略侧计算，工具内部容错）
                                 await sync_open_positions(
                                     strategy.db_manager, strategy.instance_id, margin_dict, qty_dict
@@ -341,7 +345,11 @@ async def run_strategy():
                 strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
             )
             if strategy.state_reporting_enabled:
-                await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
+                if strategy.state_snapshot_safe_to_write:
+                    await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
+                else:
+                    await touch_strategy_state(strategy.db_manager, strategy.instance_id)
+                    logger.warning("入场时间未核实，仅刷新策略状态心跳")
                 await sync_open_positions(strategy.db_manager, strategy.instance_id, margin_dict, qty_dict)
 
     except Exception as e:

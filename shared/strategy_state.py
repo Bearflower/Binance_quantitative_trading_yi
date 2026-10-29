@@ -14,13 +14,62 @@
 
 import json
 import structlog
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, Optional
 
 logger = structlog.get_logger()
 
 # 持仓保证金最小的有效阈值（margin 低于该值视为无持仓，USDT）
 MARGIN_EPSILON = 0.00000001
+
+
+async def touch_strategy_state(db, strategy_name: str, state_key: str = 'main') -> None:
+    """仅刷新心跳，保留待核实持仓的旧快照供下次恢复。"""
+    try:
+        await db.execute(
+            "UPDATE public.strategy_states SET updated_at = NOW() "
+            "WHERE strategy_name = $1 AND state_key = $2",
+            strategy_name, state_key,
+        )
+    except Exception as exc:
+        logger.warning('刷新策略状态心跳失败', strategy=strategy_name, error=str(exc))
+
+
+async def load_matching_position_entry_time(
+    db, strategy_name: str, symbol: str, direction: str, tp2_order_id,
+) -> Optional[datetime]:
+    """从同一张 TP2 单的持仓快照恢复入场时间；不可信时返回 None。"""
+    if db is None or tp2_order_id is None:
+        return None
+    try:
+        row = await db.fetch_one(
+            "SELECT state_data FROM public.strategy_states "
+            "WHERE strategy_name = $1 AND state_key = $2",
+            strategy_name, 'main',
+        )
+        if not row:
+            return None
+        state = row.get('state_data')
+        if isinstance(state, str):
+            state = json.loads(state)
+        if not isinstance(state, dict):
+            return None
+        position = state.get('positions', {}).get(symbol)
+        if not isinstance(position, dict) or position.get('direction') != direction:
+            return None
+        if str(position.get('tp2_order_id')) != str(tp2_order_id):
+            return None
+        entry_time = datetime.fromisoformat(position['entry_time'])
+        if entry_time.tzinfo is not None:
+            entry_time = entry_time.astimezone().replace(tzinfo=None)
+        if entry_time > datetime.now() + timedelta(minutes=1):
+            return None
+        return entry_time
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        logger.warning('持仓入场时间快照无效', strategy=strategy_name, symbol=symbol, error=str(exc))
+    except Exception as exc:
+        logger.warning('查询持仓入场时间快照失败', strategy=strategy_name, symbol=symbol, error=str(exc))
+    return None
 
 
 async def save_strategy_state(

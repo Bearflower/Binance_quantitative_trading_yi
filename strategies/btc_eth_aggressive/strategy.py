@@ -23,6 +23,7 @@ from shared.notification import NotificationClient
 from shared.indicators import TechnicalIndicators
 from shared.dynamic_atr_filter import DynamicATRFilter
 from shared.condition_orders import record_condition_order, get_open_orders
+from shared.strategy_state import load_matching_position_entry_time
 from shared.trade_logger import TradeLogger
 from shared.capital_manager import CapitalManager
 from shared.position_ownership import (
@@ -650,6 +651,10 @@ class BTCEthStrategy:
         
         # 持仓状态管理
         self.positions: Dict[str, PositionState] = {}
+        # 入场时间无法核实时不接管；缺硬止损时另行重试，保留旧快照供核对。
+        self._untracked_stop_retry_symbols: Set[str] = set()
+        self._unverified_entry_time_symbols: Set[str] = set()
+
         
         # 策略名称（v6.28：用于 record_condition_order 等数据库落库的 strategy_name 参数）
         # §1 实例参数化：由 instance.id 注入，生产缺省仍为 btc_eth_aggressive
@@ -3108,6 +3113,10 @@ class BTCEthStrategy:
         
         return True, "不在经济事件禁止窗口内"
     
+    @property
+    def state_snapshot_safe_to_write(self) -> bool:
+        return not self._unverified_entry_time_symbols
+
     async def update_positions(self):
         """
         更新持仓状态
@@ -3178,6 +3187,10 @@ class BTCEthStrategy:
 
         # 收敛保护待补持仓（R05：开仓保护不完整的节流补挂落点）
         await self._retry_protection_pending()
+
+        # 未接管且缺硬止损的仓位不能进入软件平仓流程，但仍需周期性补挂硬止损。
+        if self._unverified_entry_time_symbols:
+            await self._ensure_position_protection()
 
         # 定时清理过期占用（R07-F7：按 claim_cleanup_interval_minutes 节流）
         await self._maybe_cleanup_expired_claims()
@@ -5288,6 +5301,13 @@ class BTCEthStrategy:
         except Exception as e:
             logger.warning("获取交易所持仓失败，跳过持仓保护检查", error=str(e))
             return
+        live_symbols = {
+            pos.get('symbol')
+            for pos in exchange_positions or []
+            if abs(float(pos.get('positionAmt') or 0)) >= self.min_position_amt
+        }
+        self._untracked_stop_retry_symbols.intersection_update(live_symbols)
+        self._unverified_entry_time_symbols.intersection_update(live_symbols)
         if not exchange_positions:
             logger.info("交易所无持仓，无需保护")
             return
@@ -5355,6 +5375,8 @@ class BTCEthStrategy:
                       if not isinstance(o, dict) or o.get('tp_level') not in (1, 2)]
         has_stop, has_tp1, has_tp2 = self._check_existing_protection(
             symbol, existing_pos, existing_open_orders)
+        if has_stop:
+            self._untracked_stop_retry_symbols.discard(symbol)
         if has_stop and has_tp1 and has_tp2:
             self._log_full_protection_present(symbol, existing_pos, existing_open_orders)
             return
@@ -5407,6 +5429,19 @@ class BTCEthStrategy:
         if not has_stop:
             existing_pos = await self._place_protection_stop(
                 symbol, direction, current_price, atr, current_quantity, prices, existing_pos)
+        if was_untracked and symbol in self._unverified_entry_time_symbols and (has_tp1 or not has_tp2):
+            hard_stop_ready = bool(has_stop or (existing_pos and existing_pos.stop_loss_order_id))
+            if hard_stop_ready:
+                self._untracked_stop_retry_symbols.discard(symbol)
+            else:
+                self._untracked_stop_retry_symbols.add(symbol)
+            if self.positions.get(symbol) is existing_pos:
+                self.positions.pop(symbol, None)
+            logger.warning(
+                f"{symbol} 入场时间仍未核实且保护单状态已变化，暂停自动接管",
+                hard_stop_ready=hard_stop_ready,
+            )
+            return
         if unknown_tp and was_untracked:
             # 允许上面的硬止损补挂，但不把伪入场状态留给软件止盈/时间止损。
             if self.positions.get(symbol) is existing_pos:
@@ -5421,6 +5456,7 @@ class BTCEthStrategy:
             logger.warning(f"{symbol} 旧 TP 单等级未知，硬止损已尝试补挂，跳过自动接管/补挂 TP",
                            count=len(unknown_tp))
             return
+        restored_entry_time = None
         if was_untracked:
             try:
                 exchange_entry = Decimal(str(pos_data.get('entryPrice') or 0))
@@ -5431,7 +5467,7 @@ class BTCEthStrategy:
                     self.positions.pop(symbol, None)
                 logger.warning(f"{symbol} 交易所入场价无效，跳过无可信基准的自动接管")
                 return
-            if prices.get('tp1_quantity', Decimal('1')) <= 0 and has_tp2:
+            if prices.get('tp1_quantity', Decimal('1')) <= 0 and not has_tp1 and has_tp2:
                 rebuilt_tp1 = self._calculate_tp_price(exchange_entry, atr, direction, 1, grade)
                 tp1_reached = ((direction == 'LONG' and current_price >= rebuilt_tp1)
                                or (direction == 'SHORT' and current_price <= rebuilt_tp1))
@@ -5441,12 +5477,49 @@ class BTCEthStrategy:
                     logger.warning(f"{symbol} 重启后重建 TP1 已达触发价，跳过接管避免误市价平仓",
                                    current_price=float(current_price), tp1_price=float(rebuilt_tp1))
                     return
+            if prices.get('tp1_quantity', Decimal('1')) <= 0 and not has_tp1 and has_tp2:
+                tp2_id = next(
+                    (order.get('algo_id')
+                     for order in existing_open_orders.get(symbol, {}).get('TAKE_PROFIT', [])
+                     if isinstance(order, dict) and order.get('tp_level') == 2),
+                    None,
+                )
+                restored_entry_time = await load_matching_position_entry_time(
+                    self.db_manager, self.instance_id, symbol, direction, tp2_id,
+                )
+                if restored_entry_time is None:
+                    hard_stop_ready = bool(
+                        has_stop or (existing_pos and existing_pos.stop_loss_order_id)
+                    )
+                    first_warning = symbol not in self._unverified_entry_time_symbols
+                    self._unverified_entry_time_symbols.add(symbol)
+                    if hard_stop_ready:
+                        self._untracked_stop_retry_symbols.discard(symbol)
+                        message = f"{symbol} 仅TP2持仓入场时间无法核实，保留硬止损并暂停自动接管"
+                    else:
+                        self._untracked_stop_retry_symbols.add(symbol)
+                        message = f"{symbol} 仅TP2持仓入场时间无法核实且硬止损缺失，已安排补挂重试"
+                    if self.positions.get(symbol) is existing_pos:
+                        self.positions.pop(symbol, None)
+                    if first_warning:
+                        logger.warning(message, tp2_order_id=tp2_id)
+                        try:
+                            await self.notification.send(
+                                message=message, level="warning", project=self.strategy_name,
+                            )
+                        except Exception as exc:
+                            logger.warning("入场时间核对告警发送失败", symbol=symbol, error=str(exc))
+                    return
+                self._unverified_entry_time_symbols.discard(symbol)
+                self._untracked_stop_retry_symbols.discard(symbol)
             if existing_pos is not None:
                 existing_pos.entry_price = exchange_entry
         else:
             exchange_entry = current_price
         existing_pos = self._get_or_create_position_state(
             symbol, existing_pos, exchange_entry, direction, current_quantity, atr, grade='A')
+        if restored_entry_time is not None:
+            existing_pos.entry_time = restored_entry_time
         persisted = existing_open_orders.get(symbol, {})
         if existing_pos.stop_loss_order_id is None and persisted.get('STOP_LOSS'):
             existing_pos.stop_loss_order_id = persisted['STOP_LOSS'][0]

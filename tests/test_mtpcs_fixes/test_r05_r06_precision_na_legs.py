@@ -21,6 +21,7 @@
 import importlib
 import os
 import sys
+from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -316,6 +317,12 @@ async def test_restart_loader_keeps_tp_level(strategy, strategy_ctx, monkeypatch
 async def test_restart_only_tp2_marks_tp1_na_without_duplicate(strategy, strategy_ctx, monkeypatch):
     s = strategy
     symbol = 'BTCUSDT'
+    original_entry_time = datetime.now() - timedelta(hours=8)
+    s.db_manager = AsyncMock()
+    s.db_manager.fetch_one.return_value = {'state_data': {'positions': {symbol: {
+        'entry_time': original_entry_time.isoformat(), 'direction': 'LONG',
+        'tp2_order_id': 900,
+    }}}}
     async def owned(*args, **kwargs):
         return s.my_record_name
     monkeypatch.setattr(strategy_ctx.module, 'resolve_position_owner', owned)
@@ -335,9 +342,151 @@ async def test_restart_only_tp2_marks_tp1_na_without_duplicate(strategy, strateg
     pos = s.positions[symbol]
     assert pos.stop_loss_order_id == 800
     assert pos.entry_price == Decimal('90')
+    assert pos.entry_time == original_entry_time
     assert pos.tp2_order_id == 900
     assert 'TP1' in pos.not_placeable_legs
     assert not pos.protection_pending
+    s._place_tp_protection_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restart_only_tp2_without_matching_snapshot_does_not_reset_clock(
+    strategy, strategy_ctx, monkeypatch,
+):
+    s = strategy
+    symbol = 'BTCUSDT'
+    s.db_manager = AsyncMock()
+    s.db_manager.fetch_one.return_value = {'state_data': {'positions': {symbol: {
+        'entry_time': (datetime.now() - timedelta(hours=8)).isoformat(),
+        'direction': 'LONG', 'tp2_order_id': 901,
+    }}}}
+    monkeypatch.setattr(strategy_ctx.module, 'resolve_position_owner',
+                        AsyncMock(return_value=s.my_record_name))
+    s._get_current_price = AsyncMock(return_value=Decimal('91'))
+    s._calc_protection_atr = AsyncMock(return_value=Decimal('1'))
+    s._get_protection_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.01')))
+    s._calc_protection_prices = MagicMock(return_value={
+        'tp1_quantity': Decimal('0'), 'tp2_quantity': Decimal('0.01'),
+    })
+    s._place_tp_protection_order = AsyncMock()
+
+    await s._ensure_symbol_protection(
+        {'symbol': symbol, 'positionAmt': '0.03', 'entryPrice': '90'}, {symbol},
+        {symbol: {'STOP_LOSS': [800], 'TAKE_PROFIT': [{'algo_id': 900, 'tp_level': 2}]}},
+        Decimal('0.002'), Decimal('0.0015'), Decimal('1.5'),
+    )
+
+    assert symbol not in s.positions
+    s._place_tp_protection_order.assert_not_awaited()
+    s.notification.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('has_tp1', [False, True])
+async def test_missing_stop_keeps_retry_even_without_matching_snapshot(
+    strategy, strategy_ctx, monkeypatch, has_tp1,
+):
+    s = strategy
+    symbol = 'BTCUSDT'
+    s.db_manager = AsyncMock()
+    s.db_manager.fetch_one.return_value = None
+    monkeypatch.setattr(strategy_ctx.module, 'resolve_position_owner',
+                        AsyncMock(return_value=s.my_record_name))
+    s._get_current_price = AsyncMock(return_value=Decimal('91'))
+    s._calc_protection_atr = AsyncMock(return_value=Decimal('1'))
+    s._get_protection_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.01')))
+    s._calc_protection_prices = MagicMock(return_value={
+        'tp1_quantity': Decimal('0'), 'tp2_quantity': Decimal('0.01'),
+    })
+    s._place_protection_stop = AsyncMock(return_value=None)
+    s._place_tp_protection_order = AsyncMock()
+    tp_orders = [{'algo_id': 900, 'tp_level': 2}]
+    if has_tp1:
+        tp_orders.insert(0, {'algo_id': 899, 'tp_level': 1})
+
+    await s._ensure_symbol_protection(
+        {'symbol': symbol, 'positionAmt': '0.03', 'entryPrice': '90'}, {symbol},
+        {symbol: {'TAKE_PROFIT': tp_orders}},
+        Decimal('0.002'), Decimal('0.0015'), Decimal('1.5'),
+    )
+
+    s._place_protection_stop.assert_awaited_once()
+    if has_tp1:
+        assert symbol in s.positions  # 两张 TP 均在挂，不属于仅 TP2 的新闸
+        assert s.positions[symbol].protection_pending
+    else:
+        assert symbol not in s.positions  # 无可信时间，不接管到软件平仓流程
+        assert symbol in s._untracked_stop_retry_symbols
+        assert symbol in s._unverified_entry_time_symbols
+        s.notification.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('pending_stop', [False, True])
+async def test_unverified_position_rechecked_without_adopting_position(strategy, pending_stop):
+    s = strategy
+    s._unverified_entry_time_symbols.add('BTCUSDT')
+    if pending_stop:
+        s._untracked_stop_retry_symbols.add('BTCUSDT')
+    s._retry_pending_cancellations = AsyncMock()
+    s._cleanup_residual_orders = AsyncMock()
+    s._retry_rebuild_pending = AsyncMock()
+    s._retry_protection_pending = AsyncMock()
+    s._ensure_position_protection = AsyncMock()
+    s._maybe_cleanup_expired_claims = AsyncMock()
+
+    await s.update_positions()
+
+    assert 'BTCUSDT' not in s.positions
+    s._ensure_position_protection.assert_awaited_once()
+
+
+def test_unverified_entry_time_preserves_previous_state_snapshot(strategy):
+    assert strategy.state_snapshot_safe_to_write
+    strategy._unverified_entry_time_symbols.add('BTCUSDT')
+    assert not strategy.state_snapshot_safe_to_write
+
+
+@pytest.mark.asyncio
+async def test_closed_untracked_position_clears_stop_retry_and_snapshot_hold(strategy):
+    strategy._untracked_stop_retry_symbols.add('BTCUSDT')
+    strategy._unverified_entry_time_symbols.add('BTCUSDT')
+    strategy.binance.get_position = AsyncMock(return_value=[])
+
+    await strategy._ensure_position_protection()
+
+    assert not strategy._untracked_stop_retry_symbols
+    assert strategy.state_snapshot_safe_to_write
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('has_stop', [False, True])
+async def test_unverified_position_does_not_adopt_when_tp2_disappears(
+    strategy, strategy_ctx, monkeypatch, has_stop,
+):
+    s = strategy
+    symbol = 'BTCUSDT'
+    s._unverified_entry_time_symbols.add(symbol)
+    monkeypatch.setattr(strategy_ctx.module, 'resolve_position_owner',
+                        AsyncMock(return_value=s.my_record_name))
+    s._get_current_price = AsyncMock(return_value=Decimal('91'))
+    s._calc_protection_atr = AsyncMock(return_value=Decimal('1'))
+    s._get_protection_precision = AsyncMock(return_value=(Decimal('0.01'), Decimal('0.01')))
+    s._calc_protection_prices = MagicMock(return_value={
+        'tp1_quantity': Decimal('0'), 'tp2_quantity': Decimal('0.01'),
+    })
+    s._place_protection_stop = AsyncMock(return_value=None)
+    s._place_tp_protection_order = AsyncMock()
+    orders = {'STOP_LOSS': [800]} if has_stop else {}
+
+    await s._ensure_symbol_protection(
+        {'symbol': symbol, 'positionAmt': '0.03', 'entryPrice': '90'}, {symbol},
+        {symbol: orders}, Decimal('0.002'), Decimal('0.0015'), Decimal('1.5'),
+    )
+
+    assert symbol not in s.positions
+    assert symbol in s._unverified_entry_time_symbols
+    assert (symbol in s._untracked_stop_retry_symbols) is not has_stop
     s._place_tp_protection_order.assert_not_awaited()
 
 
