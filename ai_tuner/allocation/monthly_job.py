@@ -145,6 +145,8 @@ class MonthlyAllocationJob:
         self.pnl_collector = PnLCollector(
             db_manager=db_manager,
             strategies=self._strategy_configs,
+            binance_client=binance_client,
+            strict_hrs_income=True,
         )
         self.calculator = AllocationCalculator()
         self.config_updater = AllocationConfigUpdater()

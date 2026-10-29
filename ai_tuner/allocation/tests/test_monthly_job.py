@@ -24,8 +24,9 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from pathlib import Path
 
@@ -214,6 +215,11 @@ def _build_job(db, *, config=None, update_fails=False):
         config_operator=None,
         rollback_manager=None,
         binance_client=None,
+    )
+    # 月度编排测试的既有金额由 _FakeDb 提供；HRS income 归属细节由
+    # test_hrs_monthly_income.py 覆盖，此处仅固定其结果以检验后续分配流程。
+    job.pnl_collector.hrs_income_collector.collect = AsyncMock(
+        return_value=Decimal(str(db.pnl.get("hrs", 0)))
     )
     real_updater = AllocationConfigUpdater()
     saved_results = []
@@ -611,7 +617,8 @@ class TestRunMonthlyAllocation(unittest.TestCase):
 
         self.assertEqual(len(result["entries"]), 4)
         pnl_sids = {args[0][0] for args in self._find_calls(db, "pnl")}
-        self.assertEqual(pnl_sids, set(_STRATEGY_IDS))
+        self.assertEqual(pnl_sids, set(_STRATEGY_IDS) - {"hrs"})
+        job.pnl_collector.hrs_income_collector.collect.assert_awaited_once()
         self.assertNotIn("grid", pnl_sids)
 
     def test_uses_exchange_balance_when_available(self):
@@ -664,6 +671,9 @@ class TestRunMonthlyAllocation(unittest.TestCase):
             config_operator=None,
             rollback_manager=None,
             binance_client=None,
+        )
+        job.pnl_collector.hrs_income_collector.collect = AsyncMock(
+            return_value=Decimal(str(db.pnl["hrs"]))
         )
         saved = []
         real_updater = AllocationConfigUpdater()
