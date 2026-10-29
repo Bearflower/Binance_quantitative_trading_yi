@@ -102,8 +102,11 @@ def _health_event(reason: str, now_ms: int, price: Decimal,
     """构造健康事件（event_id 确定性；level=HEALTH）。"""
     from .state import AlertEvent
     tag = "recovered" if recovered else "degraded"
+    event_id = f"health-{tag}-{reason}"
+    if reason == "feed_queue_overflow":
+        event_id = f"{event_id}-{now_ms}"
     return AlertEvent(
-        event_id=f"health-{tag}-{reason}", episode_id=f"health-{reason}",
+        event_id=event_id, episode_id=f"health-{reason}",
         reference_id="", direction="SYSTEM", level="HEALTH",
         reason=f"{tag}:{reason}", decision_ms=now_ms, price=price)
 
@@ -130,6 +133,12 @@ class RealtimeService:
         self._feed_healthy = True
         self._feed_recovery_until_ms = 0
         self._storage_degraded = False
+        self._queue_dropped_total = 0
+        self._queue_dropped_since_tick = 0
+        self._queue_last_dropped_id: Optional[int] = None
+        self._queue_last_dropped_ms: Optional[int] = None
+        self._queue_overflow_since_ms = 0
+        self._queue_recovery_until_ms = 0
         self._event_refs: Dict[str, tuple] = {}
         self._tick_count = 0
         self._sender = sender
@@ -164,6 +173,15 @@ class RealtimeService:
 
     async def process(self, now_ms: int, trades: List[AggTrade]) -> None:
         """一拍全部业务（测试可直接驱动）。"""
+        if self._queue_dropped_since_tick:
+            self._samples.clear()
+            logger.warning(
+                "行情队列溢出", dropped_since_tick=self._queue_dropped_since_tick,
+                dropped_total=self._queue_dropped_total,
+                last_dropped_id=self._queue_last_dropped_id,
+                last_dropped_ms=self._queue_last_dropped_ms,
+                recovery_until_ms=self._queue_recovery_until_ms)
+            self._queue_dropped_since_tick = 0
         snap, status = self._reader.current_snapshot(now_ms)
         latest = _last_price(trades)
         events = self._sync_engine(snap, now_ms, latest)
@@ -212,7 +230,8 @@ class RealtimeService:
         events += self._engine.on_second(
             mark, features,
             degraded=(not self._feed_healthy
-                      or mark < self._feed_recovery_until_ms))
+                      or mark < self._feed_recovery_until_ms
+                      or mark < self._queue_recovery_until_ms))
         events += self._emit_facts(same, snap)
         return events
 
@@ -280,6 +299,11 @@ class RealtimeService:
     async def _record_one(self, event, now_ms: int,
                           snap: Optional[ReferenceSnapshot]) -> None:
         payload = build_payload(event, snap, self._cfg)
+        if event.level == "HEALTH" and event.reason.endswith(
+                ":feed_queue_overflow"):
+            payload += (f"\ndropped_total={self._queue_dropped_total}"
+                        f" last_dropped_id={self._queue_last_dropped_id}"
+                        f" last_dropped_ms={self._queue_last_dropped_ms}")
         config_hash = snap.config_hash if snap is not None else None
         self._event_refs[event.event_id] = (
             event.direction, event.episode_id, event.level)
@@ -335,6 +359,8 @@ class RealtimeService:
         now = self._now()
         if not self._feed_healthy or now < self._feed_recovery_until_ms:
             reasons["feed_interrupted"] = now
+        if now < self._queue_recovery_until_ms:
+            reasons["feed_queue_overflow"] = self._queue_overflow_since_ms
         if status == SYNC_UNCERTAIN:
             reasons["sync_uncertain"] = now
         elif status in ("MISSING", "INVALID"):
@@ -371,8 +397,16 @@ class RealtimeService:
         """
         async for trade in self._feed.stream():  # pragma: no branch
             if self._trade_queue.full():
-                self._storage_degraded = True
-                self._trade_queue.get_nowait()
+                dropped = self._trade_queue.get_nowait()
+                now = self._now()
+                if now >= self._queue_recovery_until_ms:
+                    self._queue_overflow_since_ms = now
+                self._queue_dropped_total += 1
+                self._queue_dropped_since_tick += 1
+                self._queue_last_dropped_id = dropped.agg_trade_id
+                self._queue_last_dropped_ms = now
+                warmup_ms = max(self._cfg["features"]["windows_seconds"]) * MS_PER_SECOND
+                self._queue_recovery_until_ms = now + warmup_ms
             self._trade_queue.put_nowait(trade)
 
     def _drain_trades(self) -> List[AggTrade]:
@@ -403,7 +437,11 @@ class RealtimeService:
             "health": self._health.active_reasons,
             "latency": self._latency.quantiles(),
             "feed_healthy": self._feed_healthy,
-            "storage_degraded": self._storage_degraded}
+            "storage_degraded": self._storage_degraded,
+            "queue_dropped_total": self._queue_dropped_total,
+            "queue_last_dropped_id": self._queue_last_dropped_id,
+            "queue_last_dropped_ms": self._queue_last_dropped_ms,
+            "queue_recovery_until_ms": self._queue_recovery_until_ms}
 
 
 # ───────────────────── 文案构造 ─────────────────────

@@ -2,8 +2,10 @@
 import asyncio
 from dataclasses import replace
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
+import yaml
 
 from strategies.grid.realtime import feed as feed_mod
 from strategies.grid.realtime import main as main_mod
@@ -232,9 +234,83 @@ async def test_pump_feed_queue_full_evicts_oldest_keeps_newest(conn, cfg):
         [make_trade(1, 1000, "1"), make_trade(2, 1000, "1")])
     service._trade_queue = asyncio.Queue(maxsize=1)
     await service._pump_feed()
-    assert service._storage_degraded is True
+    assert service._storage_degraded is False
+    assert service._snapshot()["queue_dropped_total"] == 1
+    assert service._snapshot()["queue_last_dropped_id"] == 1
     queued = service._trade_queue.get_nowait()
     assert queued.agg_trade_id == 2  # 最旧 id=1 被逐出，最新 id=2 保留
+
+
+async def test_queue_overflow_clears_samples_and_holds_until_rewarm(conn, cfg, snap):
+    base = snap.effective_at_ms
+    _publish_reference(conn, snap, base)
+    small_cfg = {**cfg, "delivery": {**cfg["delivery"], "queue_capacity": 1}}
+    clock = [base + 1000]
+    service = _service(small_cfg, conn, lambda: clock[0], trade_feed=_ListFeed([
+        make_trade(1, base + 100, "2700"),
+        make_trade(2, base + 200, "2701")]))
+    service._trade_queue = asyncio.Queue(maxsize=1)
+    service._samples.append(SecondSample(base - 1000, Decimal("2699"),
+                                         base - 1000, 0))
+    service._engine.runtimes["DOWN"].holds["normal"] = base - 1000
+    await service._pump_feed()
+
+    snapshot = await service.tick()  # 第 0 拍同时执行维护，不得清掉队列缺口
+    assert "feed_queue_overflow" in snapshot["health"]
+    assert snapshot["storage_degraded"] is False
+    assert len(service._samples) == 1
+    assert service._engine.runtimes["DOWN"].holds == {}
+    assert service._queue_recovery_until_ms == clock[0] + 300_000
+    row = conn.execute(
+        "SELECT payload, status FROM outbox WHERE kind='HEALTH' "
+        "ORDER BY outbox_id DESC LIMIT 1").fetchone()
+    assert row["status"] == "SHADOW"
+    assert "dropped_total=1" in row["payload"]
+
+    clock[0] += 299_000
+    await service.tick()
+    assert "feed_queue_overflow" in service._snapshot()["health"]
+    clock[0] += 2_000
+    await service.tick()
+    assert "feed_queue_overflow" not in service._snapshot()["health"]
+
+
+async def test_queue_overflow_repeated_episode_is_audited(conn, cfg, snap):
+    base = snap.effective_at_ms
+    _publish_reference(conn, snap, base)
+    small_cfg = {**cfg, "delivery": {**cfg["delivery"], "queue_capacity": 1}}
+    clock = [base + 1000]
+    service = _service(small_cfg, conn, lambda: clock[0])
+    service._trade_queue = asyncio.Queue(maxsize=1)
+    for i in range(2):
+        service._feed = _ListFeed([
+            make_trade(2 * i + 1, clock[0] - 100, "2700"),
+            make_trade(2 * i + 2, clock[0] - 50, "2701")])
+        await service._pump_feed()
+        await service.tick()
+        clock[0] += 301_000
+        await service.tick()
+    rows = conn.execute(
+        "SELECT event_id FROM event WHERE event_id LIKE "
+        "'health-degraded-feed_queue_overflow%' ORDER BY event_id").fetchall()
+    assert len(rows) == 2
+    assert rows[0]["event_id"] != rows[1]["event_id"]
+    assert service._snapshot()["queue_dropped_total"] == 2
+
+
+async def test_production_queue_buffers_observed_three_second_peak(conn):
+    root = Path(__file__).resolve().parents[2]
+    raw = yaml.safe_load((root / "strategies/grid/config.yaml").read_text())
+    production_cfg = parse_profile(raw["realtime_alert"])
+    peak = 15_481  # 2026-10-29 排查：近 72h 连续 3 秒原始成交估算峰值
+    service = _service(production_cfg, conn, lambda: 1,
+                       trade_feed=_ListFeed(
+                           [make_trade(i + 1, 1, "1") for i in range(peak)]))
+    service._trade_queue = asyncio.Queue(
+        maxsize=production_cfg["delivery"]["queue_capacity"])
+    await service._pump_feed()
+    assert service._snapshot()["queue_dropped_total"] == 0
+    assert service._trade_queue.qsize() == peak
 
 
 # ───────────────────── run 主循环 ─────────────────────

@@ -484,7 +484,7 @@ realtime_alert:
     heartbeat_seconds: 1
     max_silence_seconds: 5
   delivery:
-    queue_capacity: 1000
+    queue_capacity: 20000       # 近72h原始成交估算峰值：3秒15481；溢出仍按行情缺口降级
     retry_initial_seconds: 1
     retry_max_seconds: 30
     event_ttl_seconds: 30
