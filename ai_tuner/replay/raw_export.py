@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import shutil
+import subprocess
 import tempfile
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -18,10 +19,14 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, Mapping, Optional, Tuple
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from .snapshot_sealer import _has_symlink_ancestor, _repo_destination_is_ignored
+from .snapshot_sealer import _has_symlink_ancestor
 
 
 SQL_VERSION = "raw-export-v2"
+MAX_WINDOW_DAYS = 90
+MAX_KLINE_PAIRS = 64
+MAX_ROWS_PER_SOURCE = 50_000
+MAX_TOTAL_ESTIMATED_BYTES = 64 * 1024 * 1024
 _SYMBOL = re.compile(r"^[A-Z0-9]{2,20}$")
 _INTERVALS = frozenset(("1m", "5m", "15m", "1h", "4h", "1d"))
 _KLINE_TABLE = re.compile(r"^kline_[a-z0-9]{2,20}_(1m|5m|15m|1h|4h|1d)$")
@@ -36,7 +41,10 @@ _KNOWN_GAPS = (
     "historical_signal_status_unavailable",
     "kline_historical_revision_unavailable",
 )
-_HRS_GAPS = ("market_snapshot_historical_version_unavailable",)
+_HRS_GAPS = (
+    "market_snapshot_historical_version_unavailable",
+    "hrs_signal_attribution_unavailable",
+)
 
 
 def _blocked(*gaps: str) -> Dict[str, Any]:
@@ -51,6 +59,33 @@ def _utc(value: datetime) -> Optional[datetime]:
 
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _destination_is_private(output: Path) -> bool:
+    """The *directory* must be ignored, not just a manifest filename."""
+    existing = output
+    while not existing.exists():
+        if existing == existing.parent:
+            return False
+        existing = existing.parent
+    try:
+        lookup = subprocess.run(
+            ["git", "-C", str(existing), "rev-parse", "--show-toplevel"],
+            capture_output=True, text=True, check=False,
+        )
+    except OSError:
+        return False
+    if lookup.returncode != 0:
+        return "not a git repository" in lookup.stderr.lower()
+    repo = Path(lookup.stdout.strip())
+    targets = (str(output) + "/", str(output / "raw_manifest.json"), str(output / "__raw_probe__.jsonl"))
+    try:
+        return all(subprocess.run(
+            ["git", "check-ignore", "-q", "--no-index", target],
+            cwd=repo, capture_output=True, check=False,
+        ).returncode == 0 for target in targets)
+    except OSError:
+        return False
 
 
 def _normalize(value: Any, zone: Optional[ZoneInfo]) -> Any:
@@ -118,7 +153,10 @@ def _select_sql_and_args(name, time_col, columns, cutoff_cols, sort_cols, types,
         sql += " AND bucket_start + INTERVAL '1 hour' <= ${0}".format(len(args) + 1)
         args.append(end)
     canonical_row = "to_jsonb(ROW({0}))::text".format(", ".join("t." + column for column in columns))
-    return sql + " ORDER BY {0}, {1}".format(", ".join((time_col, *sort_cols)), canonical_row), args
+    sql += " ORDER BY {0}, {1}".format(", ".join((time_col, *sort_cols)), canonical_row)
+    sql += " LIMIT ${0}".format(len(args) + 1)
+    args.append(MAX_ROWS_PER_SOURCE + 1)
+    return sql, args
 
 
 def _zone_for(name: str, column: str, dtype: str, bindings: Mapping[str, Mapping[str, str]]) -> Optional[ZoneInfo]:
@@ -185,6 +223,8 @@ async def _extract_one(db, spec, start, end, bindings):
     zones = {column: _zone_for(name, column, types[column], bindings) for column in time_columns}
     sql, args = _select_sql_and_args(name, time_col, columns, cutoff_cols, sort_cols, types, zones, start, end)
     fetched = await db.fetch(sql, *args)
+    if len(fetched) > MAX_ROWS_PER_SOURCE:
+        raise ValueError("row_limit_exceeded:{0}:{1}".format(name, MAX_ROWS_PER_SOURCE))
     if not fetched:
         return None, None, "dataset_empty:{0}".format(name)
     # Fake DBs and drivers may return extra fields; only approved columns leave this boundary.
@@ -249,9 +289,14 @@ async def export_raw_snapshot(
     end, start = _utc(as_of), _utc(window_start)
     if end is None or start is None or start >= end:
         return _blocked("invalid_utc_window")
+    if end - start > timedelta(days=MAX_WINDOW_DAYS):
+        return _blocked("window_limit_exceeded:{0}d".format(MAX_WINDOW_DAYS))
     bindings = timezone_bindings or {}
     try:
-        specs = _query_specs(strategy_id, kline_pairs)
+        pairs = list(kline_pairs)
+        if len(pairs) > MAX_KLINE_PAIRS:
+            return _blocked("kline_pair_limit_exceeded:{0}".format(MAX_KLINE_PAIRS))
+        specs = _query_specs(strategy_id, pairs)
     except (ValueError, TypeError) as exc:
         return _blocked("export_configuration_invalid:{0}".format(exc))
     if not specs or not any(schema == "btc_eth" for schema, *_ in specs):
@@ -259,10 +304,11 @@ async def export_raw_snapshot(
     output = Path(output_dir)
     if output.exists() or output.is_symlink():
         return _blocked("raw_export_already_exists")
-    if _has_symlink_ancestor(output) or not _repo_destination_is_ignored(output):
+    if _has_symlink_ancestor(output) or not _destination_is_private(output):
         return _blocked("raw_output_not_safe_or_git_ignored")
 
     rows_by_source, query_evidence, gaps = {}, {}, []
+    estimated_bytes = 0
     async with db.transaction(readonly=True, isolation="repeatable_read"):
         for spec in specs:
             schema, table = spec[:2]
@@ -272,6 +318,13 @@ async def export_raw_snapshot(
                 if gap:
                     gaps.append(gap)
                 else:
+                    estimated_bytes += sum(
+                        len(json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")) + 1
+                        for row in rows
+                    )
+                    if estimated_bytes > MAX_TOTAL_ESTIMATED_BYTES:
+                        gaps.append("total_estimated_bytes_exceeded:{0}".format(MAX_TOTAL_ESTIMATED_BYTES))
+                        break
                     rows_by_source[name], query_evidence[name] = rows, evidence
             except ValueError as exc:
                 gaps.append(str(exc))
@@ -290,6 +343,9 @@ async def export_raw_snapshot(
         "decision": "BLOCKED_DATA", "source_provenance": "unverified",
         "sql_version": SQL_VERSION, "strategy_id": strategy_id,
         "as_of": _iso(end), "window_start": _iso(start),
+        "limits": {"max_window_days": MAX_WINDOW_DAYS, "max_kline_pairs": MAX_KLINE_PAIRS,
+                   "max_rows_per_source": MAX_ROWS_PER_SOURCE,
+                   "max_total_estimated_bytes": MAX_TOTAL_ESTIMATED_BYTES},
         "naive_timezone_bindings": {
             key: value for evidence in query_evidence.values()
             for key, value in evidence["naive_timezones"].items()

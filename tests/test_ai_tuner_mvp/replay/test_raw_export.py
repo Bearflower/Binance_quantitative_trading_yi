@@ -1,6 +1,10 @@
 """A database raw export is read-only evidence, never a replay qualification."""
 
 import json
+import importlib
+import subprocess
+import sys
+import types
 from datetime import datetime, timezone
 
 import pytest
@@ -243,6 +247,7 @@ async def test_hrs_selection_does_not_require_aggressive_signal_table(tmp_path):
     assert manifest["strategy_id"] == "hrs"
     assert "market_snapshot_historical_version_unavailable" in manifest["gaps"]
     assert "historical_signal_status_unavailable" in manifest["gaps"]
+    assert "hrs_signal_attribution_unavailable" in manifest["gaps"]
     assert "source_observed_at <= bucket_start + 1 hour <= as_of" in manifest["queries"]["public.ai_tuner_market_snapshots"]["closed_bucket_rule"]
     assert manifest["queries"]["public.ai_tuner_market_snapshots"]["sort_key"]
 
@@ -338,3 +343,84 @@ async def test_equal_event_time_rows_sort_by_numeric_id_not_fetch_order(tmp_path
     assert manifest["queries"]["btc_eth.kline_btcusdt_1h"]["sort_key"] == "open_time,id,canonical_row"
     sql = next(sql for sql, _ in db.calls if "FROM btc_eth.kline_btcusdt_1h" in sql)
     assert "ORDER BY open_time, id, to_jsonb(ROW(" in sql
+
+
+@pytest.mark.asyncio
+async def test_only_manifest_ignored_in_foreign_repo_rejects_before_db(tmp_path):
+    db = fake_db()
+    repo = tmp_path / "foreign"
+    repo.mkdir()
+    assert subprocess.run(["git", "init", "-q", str(repo)], capture_output=True).returncode == 0
+    (repo / ".gitignore").write_text("manifest.json\n", encoding="utf-8")
+    result = await export_raw_snapshot(db, repo / "raw", AS_OF, START,
+                                       strategy_id="btc_eth_aggressive", kline_pairs=[("BTCUSDT", "1h")],
+                                       timezone_bindings=TZ)
+    assert "raw_output_not_safe_or_git_ignored" in result["gaps"]
+    assert not db.calls
+    assert not (repo / "raw").exists()
+
+
+@pytest.mark.asyncio
+async def test_row_cap_plus_one_blocks_without_partial_output(tmp_path, monkeypatch):
+    import ai_tuner.replay.raw_export as module
+
+    monkeypatch.setattr(module, "MAX_ROWS_PER_SOURCE", 1)
+    db = fake_db()
+    row = db.rows["btc_eth.kline_btcusdt_1h"][0]
+    db.rows["btc_eth.kline_btcusdt_1h"] = [row, {**row, "id": 2}]
+    result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="btc_eth_aggressive", kline_pairs=[("BTCUSDT", "1h")],
+                                       timezone_bindings=TZ)
+    assert any("row_limit_exceeded" in gap for gap in result["gaps"])
+    sql, args = next((sql, args) for sql, args in db.calls if "FROM btc_eth.kline_btcusdt_1h" in sql)
+    assert "LIMIT $" in sql and args[-1] == 2
+    assert not (tmp_path / "raw").exists()
+
+
+@pytest.mark.asyncio
+async def test_window_and_pair_caps_block_before_database_access(tmp_path, monkeypatch):
+    import ai_tuner.replay.raw_export as module
+
+    db = fake_db()
+    too_long = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START.replace(year=2025),
+                                         strategy_id="btc_eth_aggressive", kline_pairs=[("BTCUSDT", "1h")],
+                                         timezone_bindings=TZ)
+    assert any("window_limit_exceeded" in gap for gap in too_long["gaps"])
+    monkeypatch.setattr(module, "MAX_KLINE_PAIRS", 1)
+    too_many = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                         strategy_id="btc_eth_aggressive",
+                                         kline_pairs=[("BTCUSDT", "1h"), ("ETHUSDT", "1h")],
+                                         timezone_bindings=TZ)
+    assert any("kline_pair_limit_exceeded" in gap for gap in too_many["gaps"])
+    assert not db.calls
+
+
+@pytest.mark.asyncio
+async def test_total_estimated_bytes_cap_blocks_without_output(tmp_path, monkeypatch):
+    import ai_tuner.replay.raw_export as module
+
+    monkeypatch.setattr(module, "MAX_TOTAL_ESTIMATED_BYTES", 1)
+    db = fake_db()
+    result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="btc_eth_aggressive", kline_pairs=[("BTCUSDT", "1h")],
+                                       timezone_bindings=TZ)
+    assert any("total_estimated_bytes_exceeded" in gap for gap in result["gaps"])
+    assert not (tmp_path / "raw").exists()
+
+
+def test_cli_classifies_connection_error_without_leaking_dsn(monkeypatch, capsys):
+    script = importlib.import_module("scripts.export_replay_raw")
+
+    async def fail_connect(*, dsn):
+        raise ConnectionError("secret in " + dsn)
+
+    monkeypatch.setitem(sys.modules, "asyncpg", types.SimpleNamespace(connect=fail_connect))
+    monkeypatch.setenv("REPLAY_READONLY_DSN", "password=very-secret")
+    code = script.main([
+        "--as-of", "2026-10-22T02:00:00Z", "--window-start", "2026-10-22T00:00:00Z",
+        "--strategy", "btc_eth_aggressive", "--kline", "BTCUSDT:1h",
+    ])
+    printed = capsys.readouterr().out
+    assert code == 2
+    assert json.loads(printed)["gaps"] == ["export_failed:connection"]
+    assert "very-secret" not in printed and "password=" not in printed

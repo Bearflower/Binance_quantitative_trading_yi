@@ -84,7 +84,12 @@ def main(argv=None) -> int:
     try:
         result = asyncio.run(_run(args))
     except Exception as exc:
-        result = {"decision": "BLOCKED_DATA", "gaps": ["export_failed:{0}".format(type(exc).__name__)], "source_provenance": "unverified"}
+        # Never print exception messages: connection errors may embed the DSN.
+        category = "connection" if isinstance(exc, (OSError, ConnectionError, TimeoutError)) else (
+            "database" if type(exc).__module__.startswith("asyncpg") else "unexpected"
+        )
+        result = {"decision": "BLOCKED_DATA", "gaps": ["export_failed:{0}".format(category)],
+                  "error_type": type(exc).__name__, "source_provenance": "unverified"}
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 2
 
