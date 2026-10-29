@@ -56,7 +56,7 @@ def fake_db():
             "hrs.hrs_signals": [{"id": 8, "triggered_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc)}],
             "public.ai_tuner_universe_scan_runs": [{"strategy_id": "hrs", "observed_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc), "created_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc)}],
             "public.ai_tuner_universe_snapshots": [{"strategy_id": "hrs", "observed_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc), "created_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc)}],
-            "public.ai_tuner_market_snapshots": [{"strategy_id": "hrs", "observed_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc), "source_observed_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc), "collected_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc)}],
+            "public.ai_tuner_market_snapshots": [{"strategy_id": "hrs", "observed_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc), "source_observed_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc), "collected_at": datetime(2026, 10, 22, 1, tzinfo=timezone.utc), "bucket_start": datetime(2026, 10, 22, 0, tzinfo=timezone.utc)}],
         },
         columns={
             ("btc_eth", "kline_btcusdt_1h"): {"open_time": "timestamp without time zone", "close_time": "timestamp without time zone", "open_price": "numeric", "high_price": "numeric", "low_price": "numeric", "close_price": "numeric", "volume": "numeric", "quote_volume": "numeric", "trade_count": "integer"},
@@ -72,9 +72,11 @@ def fake_db():
 @pytest.mark.asyncio
 async def test_export_is_snapshot_read_only_deterministic_and_never_passes(tmp_path):
     one = await export_raw_snapshot(fake_db(), tmp_path / "a", AS_OF, START,
+                                    strategy_id="btc_eth_aggressive",
                                     kline_pairs=[("BTCUSDT", "1h")],
                                     verified_naive_timezone="UTC", timezone_evidence="DBA-reviewed configuration")
     two = await export_raw_snapshot(fake_db(), tmp_path / "b", AS_OF, START,
+                                    strategy_id="btc_eth_aggressive",
                                     kline_pairs=[("BTCUSDT", "1h")],
                                     verified_naive_timezone="UTC", timezone_evidence="DBA-reviewed configuration")
     assert one["decision"] == two["decision"] == "BLOCKED_DATA"
@@ -92,7 +94,8 @@ async def test_export_is_snapshot_read_only_deterministic_and_never_passes(tmp_p
 @pytest.mark.asyncio
 async def test_naive_timezone_without_evidence_blocks_before_any_query(tmp_path):
     db = fake_db()
-    result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START, kline_pairs=[("BTCUSDT", "1h")])
+    result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="btc_eth_aggressive", kline_pairs=[("BTCUSDT", "1h")])
     assert result["decision"] == "BLOCKED_DATA"
     assert "naive_db_timezone_unverified" in result["gaps"]
     assert not db.calls
@@ -103,6 +106,7 @@ async def test_naive_timezone_without_evidence_blocks_before_any_query(tmp_path)
 async def test_injection_in_dynamic_table_name_blocks_before_query(tmp_path):
     db = fake_db()
     result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="btc_eth_aggressive",
                                        kline_pairs=[("BTCUSDT;DROP", "1h")],
                                        verified_naive_timezone="UTC", timezone_evidence="checked")
     assert result["decision"] == "BLOCKED_DATA"
@@ -114,6 +118,7 @@ async def test_missing_table_and_missing_column_block_without_empty_file(tmp_pat
     db = fake_db()
     db.columns.pop(("btc_eth", "kline_btcusdt_1h"))
     result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="btc_eth_aggressive",
                                        kline_pairs=[("BTCUSDT", "1h")],
                                        verified_naive_timezone="UTC", timezone_evidence="checked")
     assert result["decision"] == "BLOCKED_DATA"
@@ -125,6 +130,7 @@ async def test_missing_table_and_missing_column_block_without_empty_file(tmp_pat
 async def test_utc_cutoff_and_status_are_parameterized(tmp_path):
     db = fake_db()
     await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                              strategy_id="btc_eth_aggressive",
                               kline_pairs=[("BTCUSDT", "1h")],
                               verified_naive_timezone="UTC", timezone_evidence="checked")
     assert db.tx_options == {"readonly": True, "isolation": "repeatable_read"}
@@ -140,6 +146,7 @@ async def test_future_source_row_is_blocked_even_if_adapter_returns_it(tmp_path)
     db = fake_db()
     db.rows["public.ai_tuner_market_snapshots"][0]["source_observed_at"] = datetime(2026, 10, 22, 3, tzinfo=timezone.utc)
     result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="hrs",
                                        kline_pairs=[("BTCUSDT", "1h")],
                                        verified_naive_timezone="UTC", timezone_evidence="checked")
     assert result["decision"] == "BLOCKED_DATA"
@@ -152,6 +159,7 @@ async def test_confirmed_empty_table_is_gap_without_fabricated_empty_file(tmp_pa
     db = fake_db()
     db.rows["hrs.hrs_signals"] = []
     result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="hrs",
                                        kline_pairs=[("BTCUSDT", "1h")],
                                        verified_naive_timezone="UTC", timezone_evidence="checked")
     assert "dataset_empty:hrs.hrs_signals" in result["gaps"]
@@ -165,6 +173,7 @@ async def test_missing_column_blocks_without_partial_export(tmp_path):
     db = fake_db()
     db.columns[("public", "ai_tuner_market_snapshots")].pop("source_observed_at")
     result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="hrs",
                                        kline_pairs=[("BTCUSDT", "1h")],
                                        verified_naive_timezone="UTC", timezone_evidence="checked")
     assert "columns_missing:public.ai_tuner_market_snapshots:source_observed_at" in result["gaps"]
@@ -175,6 +184,7 @@ async def test_missing_column_blocks_without_partial_export(tmp_path):
 async def test_naive_time_bound_converts_to_verified_zone(tmp_path):
     db = fake_db()
     await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                              strategy_id="btc_eth_aggressive",
                               kline_pairs=[("BTCUSDT", "1h")],
                               verified_naive_timezone="Asia/Shanghai", timezone_evidence="verified DB timezone")
     query = next((args for sql, args in db.calls if "FROM btc_eth.kline_btcusdt_1h" in sql))
@@ -189,8 +199,53 @@ async def test_tracked_output_location_is_rejected_before_database_access(tmp_pa
     db = fake_db()
     repo = Path(__file__).resolve().parents[3]
     result = await export_raw_snapshot(db, repo / "docs" / "raw-test", AS_OF, START,
+                                       strategy_id="btc_eth_aggressive",
                                        kline_pairs=[("BTCUSDT", "1h")],
                                        verified_naive_timezone="UTC", timezone_evidence="checked")
     assert result["decision"] == "BLOCKED_DATA"
     assert "raw_output_not_safe_or_git_ignored" in result["gaps"]
     assert not db.calls
+
+
+@pytest.mark.asyncio
+async def test_strategy_selection_does_not_require_other_strategy_tables(tmp_path):
+    db = fake_db()
+    for key in list(db.columns):
+        if key[0] in ("hrs", "public"):
+            db.columns.pop(key)
+    result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="btc_eth_aggressive",
+                                       kline_pairs=[("BTCUSDT", "1h")],
+                                       verified_naive_timezone="UTC", timezone_evidence="checked")
+    assert result["decision"] == "BLOCKED_DATA"
+    assert (tmp_path / "raw" / "raw_manifest.json").exists()
+    assert not any("hrs." in gap or "public." in gap for gap in result["gaps"])
+    assert not any("FROM hrs." in sql or "FROM public." in sql for sql, _ in db.calls)
+
+
+@pytest.mark.asyncio
+async def test_hrs_selection_does_not_require_aggressive_signal_table(tmp_path):
+    db = fake_db()
+    db.columns.pop(("btc_eth_aggressive", "trade_signals"))
+    result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="hrs", kline_pairs=[("BTCUSDT", "1h")],
+                                       verified_naive_timezone="UTC", timezone_evidence="checked")
+    assert (tmp_path / "raw" / "raw_manifest.json").exists()
+    assert not any("btc_eth_aggressive" in gap for gap in result["gaps"])
+    assert not any("FROM btc_eth_aggressive." in sql for sql, _ in db.calls)
+    manifest = json.loads((tmp_path / "raw" / "raw_manifest.json").read_text())
+    assert manifest["strategy_id"] == "hrs"
+    assert manifest["queries"]["public.ai_tuner_market_snapshots"]["closed_bucket_rule"] == "bucket_start + 1 hour <= as_of"
+    assert manifest["queries"]["public.ai_tuner_market_snapshots"]["sort_key"]
+
+
+@pytest.mark.asyncio
+async def test_unclosed_hrs_market_bucket_is_blocked(tmp_path):
+    db = fake_db()
+    db.rows["public.ai_tuner_market_snapshots"][0]["bucket_start"] = datetime(2026, 10, 22, 1, 30, tzinfo=timezone.utc)
+    result = await export_raw_snapshot(db, tmp_path / "raw", AS_OF, START,
+                                       strategy_id="hrs", kline_pairs=[("BTCUSDT", "1h")],
+                                       verified_naive_timezone="UTC", timezone_evidence="checked")
+    assert result["decision"] == "BLOCKED_DATA"
+    assert any("market_bucket_not_closed" in gap for gap in result["gaps"])
+    assert not (tmp_path / "raw").exists()

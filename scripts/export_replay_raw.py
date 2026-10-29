@@ -47,9 +47,10 @@ async def _run(args: argparse.Namespace) -> dict:
     conn = await asyncpg.connect(dsn=dsn)
     try:
         repo = Path(__file__).resolve().parents[1]
-        output = repo / "var" / "replay" / "raw" / args.as_of.strftime("%Y%m%dT%H%M%SZ")
+        output = repo / "var" / "replay" / "raw" / args.strategy / args.as_of.strftime("%Y%m%dT%H%M%SZ")
         return await export_raw_snapshot(
-            conn, output, args.as_of, args.window_start, kline_pairs=args.kline,
+            conn, output, args.as_of, args.window_start,
+            strategy_id=args.strategy, kline_pairs=args.kline,
             verified_naive_timezone=args.naive_db_timezone,
             timezone_evidence=args.timezone_evidence,
         )
@@ -62,6 +63,7 @@ def main(argv=None) -> int:
     parser.add_argument("--as-of", type=_aware_timestamp, required=True)
     parser.add_argument("--window-start", type=_aware_timestamp, required=True)
     parser.add_argument("--kline", type=_pair, action="append", required=True, help="SYMBOL:interval")
+    parser.add_argument("--strategy", choices=("btc_eth_aggressive", "hrs"), required=True)
     parser.add_argument("--naive-db-timezone", required=True, help="IANA zone verified against production DB")
     parser.add_argument("--timezone-evidence", required=True, help="human-readable verification reference")
     parser.add_argument("--dsn-env", default="REPLAY_READONLY_DSN", help="name of env var holding read-only role DSN")

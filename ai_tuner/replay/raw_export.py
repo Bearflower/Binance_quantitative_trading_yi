@@ -12,7 +12,7 @@ import json
 import re
 import shutil
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, Iterable, Optional, Tuple
@@ -62,7 +62,9 @@ def _normalize(value: Any, zone: ZoneInfo) -> Any:
     return value
 
 
-def _query_specs(kline_pairs: Iterable[Tuple[str, str]]) -> list[tuple[str, str, str, tuple[str, ...], tuple[str, ...]]]:
+def _query_specs(strategy_id: str, kline_pairs: Iterable[Tuple[str, str]]) -> list[tuple[str, str, str, tuple[str, ...], tuple[str, ...]]]:
+    if strategy_id not in ("btc_eth_aggressive", "hrs"):
+        raise ValueError("strategy_unsupported")
     specs = []
     for symbol, interval in sorted(set(kline_pairs)):
         if not isinstance(symbol, str) or not _SYMBOL.fullmatch(symbol) or interval not in _INTERVALS:
@@ -71,13 +73,15 @@ def _query_specs(kline_pairs: Iterable[Tuple[str, str]]) -> list[tuple[str, str,
         if not _KLINE_TABLE.fullmatch(table):
             raise ValueError("invalid_kline_table")
         specs.append(("btc_eth", table, "open_time", ("open_time", "close_time", "open_price", "high_price", "low_price", "close_price", "volume", "quote_volume", "trade_count"), ("close_time",)))
-    specs.extend((
-        ("btc_eth_aggressive", "trade_signals", "created_at", ("id", "created_at", "status", "symbol", "direction", "entry_price"), ("created_at",)),
-        ("hrs", "hrs_signals", "triggered_at", ("id", "triggered_at", "symbol", "direction", "status"), ("triggered_at",)),
-        ("public", "ai_tuner_universe_scan_runs", "observed_at", ("strategy_id", "observed_at", "created_at", "source_run_id", "config_hash"), ("observed_at", "created_at")),
-        ("public", "ai_tuner_universe_snapshots", "observed_at", ("strategy_id", "observed_at", "created_at", "symbol", "membership"), ("observed_at", "created_at")),
-        ("public", "ai_tuner_market_snapshots", "observed_at", ("strategy_id", "observed_at", "source_observed_at", "collected_at", "symbol", "bucket_start"), ("observed_at", "source_observed_at", "collected_at")),
-    ))
+    if strategy_id == "btc_eth_aggressive":
+        specs.append(("btc_eth_aggressive", "trade_signals", "created_at", ("id", "created_at", "status", "symbol", "direction", "entry_price"), ("created_at",)))
+    else:
+        specs.extend((
+            ("hrs", "hrs_signals", "triggered_at", ("id", "triggered_at", "symbol", "direction", "status"), ("triggered_at",)),
+            ("public", "ai_tuner_universe_scan_runs", "observed_at", ("strategy_id", "observed_at", "created_at", "source_run_id", "config_hash"), ("observed_at", "created_at")),
+            ("public", "ai_tuner_universe_snapshots", "observed_at", ("strategy_id", "observed_at", "created_at", "symbol", "membership"), ("observed_at", "created_at")),
+            ("public", "ai_tuner_market_snapshots", "observed_at", ("strategy_id", "observed_at", "source_observed_at", "collected_at", "symbol", "bucket_start"), ("observed_at", "source_observed_at", "collected_at")),
+        ))
     return specs
 
 
@@ -104,6 +108,9 @@ def _select_sql_and_args(name, time_col, cutoff_cols, types, start, end, zone):
     elif name.startswith("public."):
         sql += " AND strategy_id = ${0}".format(len(args) + 1)
         args.append("hrs")
+    if name == "public.ai_tuner_market_snapshots":
+        sql += " AND bucket_start + INTERVAL '1 hour' <= ${0}".format(len(args) + 1)
+        args.append(end)
     return sql + " ORDER BY {0}, to_jsonb(t)".format(time_col), args
 
 
@@ -118,6 +125,13 @@ def _canonical_rows(fetched, time_col, cutoff_cols, start, end, zone, name):
                 raise ValueError("future_source_row:{0}.{1}".format(name, column))
             if column == time_col and instant < start:
                 raise ValueError("before_window_source_row:{0}.{1}".format(name, column))
+        if name == "public.ai_tuner_market_snapshots":
+            bucket = record["bucket_start"]
+            if not isinstance(bucket, datetime):
+                raise ValueError("market_bucket_start_missing")
+            bucket_utc = bucket.replace(tzinfo=zone).astimezone(timezone.utc) if bucket.tzinfo is None else bucket.astimezone(timezone.utc)
+            if bucket_utc + timedelta(hours=1) > end:
+                raise ValueError("market_bucket_not_closed")
     rows = [_normalize(dict(row), zone) for row in fetched]
     rows.sort(key=lambda row: json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
     return rows
@@ -147,7 +161,10 @@ async def _extract_one(db, spec, start, end, zone):
         "row_count": len(rows), "min_time": min(times), "max_time": max(times),
         "sql_version": SQL_VERSION, "window_start": _iso(start), "as_of": _iso(end),
         "time_column": time_col, "time_column_type": types[time_col],
+        "sort_key": "{0},to_jsonb(row)".format(time_col),
     }
+    if name == "public.ai_tuner_market_snapshots":
+        evidence["closed_bucket_rule"] = "bucket_start + 1 hour <= as_of"
     return rows, evidence, None
 
 
@@ -179,6 +196,7 @@ async def export_raw_snapshot(
     as_of: datetime,
     window_start: datetime,
     *,
+    strategy_id: str,
     kline_pairs: Iterable[Tuple[str, str]],
     verified_naive_timezone: Optional[str] = None,
     timezone_evidence: Optional[str] = None,
@@ -197,7 +215,7 @@ async def export_raw_snapshot(
         return _blocked("naive_db_timezone_unverified")
     try:
         zone = ZoneInfo(verified_naive_timezone)
-        specs = _query_specs(kline_pairs)
+        specs = _query_specs(strategy_id, kline_pairs)
     except (ZoneInfoNotFoundError, ValueError, TypeError) as exc:
         return _blocked("export_configuration_invalid:{0}".format(exc))
     if not specs or not any(schema == "btc_eth" for schema, *_ in specs):
@@ -230,7 +248,8 @@ async def export_raw_snapshot(
     gaps.extend(_KNOWN_GAPS)
     manifest = {
         "decision": "BLOCKED_DATA", "source_provenance": "unverified",
-        "sql_version": SQL_VERSION, "as_of": _iso(end), "window_start": _iso(start),
+        "sql_version": SQL_VERSION, "strategy_id": strategy_id,
+        "as_of": _iso(end), "window_start": _iso(start),
         "verified_naive_timezone": verified_naive_timezone,
         "timezone_evidence": timezone_evidence,
         "queries": query_evidence, "gaps": gaps,
