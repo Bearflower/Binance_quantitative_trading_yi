@@ -1,6 +1,7 @@
 """The prospective collector is an independent, least-privilege daemon."""
 
 import asyncio
+import json
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -95,7 +96,7 @@ async def test_hung_collection_is_cancelled_within_ninety_seconds(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_monitor_detects_missing_persisted_slot_once_and_restart_rechecks_recent_slots():
+async def test_monitor_detects_missing_persisted_slot_once_and_restart_rechecks_recent_slots(tmp_path):
     from ai_tuner.funding_schedule.cli import MissingSlotMonitor
 
     repo = SimpleNamespace(
@@ -103,7 +104,8 @@ async def test_monitor_detects_missing_persisted_slot_once_and_restart_rechecks_
     )
     notifier = SimpleNamespace(send=AsyncMock(return_value=True))
     now = SLOT + timedelta(minutes=13, seconds=10)
-    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT)
+    alert_path = tmp_path / "alerts.json"
+    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT, alert_state_path=alert_path)
     await monitor.check(now)
     await monitor.check(now + timedelta(seconds=30))
     assert notifier.send.await_count == 1
@@ -111,10 +113,23 @@ async def test_monitor_detects_missing_persisted_slot_once_and_restart_rechecks_
     assert (SLOT + timedelta(minutes=5)).isoformat() in notifier.send.await_args.args[0]
     assert repo.slots_with_runs.await_count == 2
 
-    # A new process has no in-memory alert set, but scans previously closed slots.
-    restarted = MissingSlotMonitor(repo, notifier, start_slot=SLOT)
+    # A restarted process scans the slot but respects persisted delivery.
+    restarted = MissingSlotMonitor(repo, notifier, start_slot=SLOT, alert_state_path=alert_path)
     await restarted.check(now)
-    assert notifier.send.await_count == 2
+    assert notifier.send.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_slot_failed_delivery_retries_after_one_minute_across_restarts(tmp_path):
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor
+
+    state = tmp_path / "alerts.json"
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()))
+    notifier = SimpleNamespace(send=AsyncMock(side_effect=[False, True]))
+    for minutes, expected_calls in ((3, 1), (3.5, 1), (4, 2), (4.5, 2)):
+        monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT, alert_state_path=state)
+        await monitor.check(SLOT + timedelta(minutes=minutes))
+        assert notifier.send.await_count == expected_calls
 
 
 @pytest.mark.asyncio
@@ -166,6 +181,56 @@ async def test_db_failure_alert_is_rate_limited_across_restarts_then_reset_after
 
 
 @pytest.mark.asyncio
+async def test_db_failure_unsent_alert_retries_after_one_minute_not_each_restart(tmp_path):
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor
+
+    state = tmp_path / "alerts.json"
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(side_effect=RuntimeError("secret")))
+    notifier = SimpleNamespace(send=AsyncMock(side_effect=[False, True]))
+    for seconds, expected_calls in ((0, 1), (30, 1), (60, 2), (90, 2)):
+        monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT, alert_state_path=state)
+        with pytest.raises(RuntimeError, match="monitor database unavailable"):
+            await monitor.check(SLOT + timedelta(seconds=seconds))
+        assert notifier.send.await_count == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_startup_db_failure_uses_same_persistent_attempt_and_delivery_cooldowns(tmp_path):
+    from ai_tuner.funding_schedule.cli import _startup_alert
+
+    state = tmp_path / "alerts.json"
+    notifier = SimpleNamespace(send=AsyncMock(side_effect=[False, True]))
+    for seconds, expected_calls in ((0, 1), (30, 1), (60, 2), (90, 2)):
+        await _startup_alert(notifier, "TimeoutError", alert_state_path=state,
+                             now=SLOT + timedelta(seconds=seconds))
+        assert notifier.send.await_count == expected_calls
+
+
+@pytest.mark.asyncio
+async def test_startup_failure_cooldown_is_not_cleared_until_monitor_query_recovers(tmp_path, monkeypatch):
+    from ai_tuner.funding_schedule import cli
+
+    state = tmp_path / "alerts.json"
+    monkeypatch.setattr(cli, "ALERT_STATE_PATH", state)
+    repo = SimpleNamespace(recent_failed_streak=AsyncMock(side_effect=RuntimeError("db secret")))
+    collector = SimpleNamespace(repository=repo)
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    for _ in range(2):
+        with pytest.raises(RuntimeError, match="startup state unavailable"):
+            await cli.run_daemon(collector, notifier)
+    assert notifier.send.await_count == 1
+
+    after = datetime.now(timezone.utc)
+    recovered_repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()))
+    monitor = cli.MissingSlotMonitor(recovered_repo, notifier, start_slot=after + timedelta(days=1),
+                                     alert_state_path=state)
+    await monitor.check(after + timedelta(minutes=3))
+    await cli._startup_alert(notifier, "TimeoutError", alert_state_path=state,
+                             now=after + timedelta(minutes=4))
+    assert notifier.send.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_db_failure_still_exits_when_alert_state_cannot_be_written(tmp_path):
     from ai_tuner.funding_schedule.cli import MissingSlotMonitor
 
@@ -179,7 +244,7 @@ async def test_db_failure_still_exits_when_alert_state_cannot_be_written(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_monitor_notification_timeout_cannot_block_next_check(monkeypatch):
+async def test_monitor_notification_timeout_cannot_block_next_check(tmp_path, monkeypatch):
     from ai_tuner.funding_schedule import cli
 
     async def hanging_send(*_, **__):
@@ -187,7 +252,8 @@ async def test_monitor_notification_timeout_cannot_block_next_check(monkeypatch)
 
     repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()))
     notifier = SimpleNamespace(send=AsyncMock(side_effect=hanging_send))
-    monitor = cli.MissingSlotMonitor(repo, notifier, start_slot=SLOT)
+    monitor = cli.MissingSlotMonitor(repo, notifier, start_slot=SLOT,
+                                     alert_state_path=tmp_path / "alerts.json")
     real_wait_for = asyncio.wait_for
 
     async def short_wait_for(awaitable, timeout):
@@ -297,6 +363,50 @@ async def test_failed_notification_is_retried_on_next_failed_slot():
     await tracker.observe(failure, SLOT + timedelta(minutes=5))
     await tracker.observe(failure, SLOT + timedelta(minutes=10))
     assert notifier.send.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_persisted_collection_streak_does_not_realert_each_restart(tmp_path):
+    from ai_tuner.funding_schedule.cli import FailureTracker
+
+    state = tmp_path / "alerts.json"
+    notifier = SimpleNamespace(send=AsyncMock(side_effect=[False, True]))
+    failure = SimpleNamespace(status="failed", failure_code="FETCH_FAILED", symbol_count=0)
+    first = FailureTracker(notifier, threshold=2, alert_state_path=state)
+    await first.observe(failure, SLOT)
+    await first.observe(failure, SLOT + timedelta(minutes=5))
+    assert notifier.send.await_count == 1
+
+    restarted = FailureTracker(notifier, threshold=2, alert_state_path=state)
+    restarted.consecutive = 2
+    await restarted.alert_persisted_streak(SLOT + timedelta(minutes=5, seconds=30))
+    assert notifier.send.await_count == 1
+    await restarted.alert_persisted_streak(SLOT + timedelta(minutes=6))
+    assert notifier.send.await_count == 2
+
+    restarted_again = FailureTracker(notifier, threshold=2, alert_state_path=state)
+    restarted_again.consecutive = 2
+    await restarted_again.alert_persisted_streak(SLOT + timedelta(minutes=10))
+    assert notifier.send.await_count == 2
+    await restarted_again.observe(SimpleNamespace(status="success", failure_code=None, symbol_count=2), SLOT)
+    assert not state.exists()
+
+
+def test_alert_state_prunes_old_missing_slots_but_keeps_failure_events(tmp_path):
+    from ai_tuner.funding_schedule.alert_state import PersistentAlertState
+
+    path = tmp_path / "alerts.json"
+    state = PersistentAlertState(path)
+    old_slot = "MISSING_SCHEDULE_SLOT:2026-10-30T05:00:00+00:00"
+    recent_slot = "MISSING_SCHEDULE_SLOT:2026-10-31T06:00:00+00:00"
+    state.mark_attempt(old_slot, SLOT)
+    state.mark_delivered(old_slot, SLOT)
+    state.mark_attempt("RUN_QUERY_FAILED", SLOT)
+    state.mark_attempt(recent_slot, SLOT + timedelta(hours=25))
+    stored = json.loads(path.read_text(encoding="utf-8"))
+    assert old_slot not in stored
+    assert recent_slot in stored
+    assert "RUN_QUERY_FAILED" in stored
 
 
 def test_compose_service_has_isolated_secret_and_no_trading_credentials():

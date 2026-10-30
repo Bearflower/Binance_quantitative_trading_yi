@@ -1,4 +1,4 @@
-"""Persistent, non-evidence cooldown for monitor database outage alerts."""
+"""Non-evidence, persistent delivery state for the funding collector's alerts."""
 
 from __future__ import annotations
 
@@ -8,32 +8,97 @@ import os
 from pathlib import Path
 
 
-QUERY_ALERT_STATE_PATH = Path("/app/logs/funding_schedule_query_alert.json")
-QUERY_ALERT_COOLDOWN = timedelta(minutes=15)
+ALERT_STATE_PATH = Path("/app/logs/funding_schedule_query_alert.json")
+ATTEMPT_COOLDOWN = timedelta(seconds=60)
+DELIVERED_FAILURE_COOLDOWN = timedelta(minutes=15)
+MISSING_SLOT_RETENTION = timedelta(hours=24)
 
 
-class RunQueryAlertCooldown:
-    def __init__(self, path: Path = QUERY_ALERT_STATE_PATH) -> None:
+class PersistentAlertState:
+    """Separate attempted sends from confirmed delivery across process restarts."""
+
+    def __init__(self, path: Path = ALERT_STATE_PATH) -> None:
         self.path = path
 
-    def should_alert(self, now: datetime) -> bool:
-        """A malformed or unavailable state fails open to one alert attempt."""
+    def _read(self) -> dict:
         try:
-            state = json.loads(self.path.read_text(encoding="utf-8"))
-            last = datetime.fromtimestamp(float(state["at"]), tz=timezone.utc)
-            elapsed = now - last
-            return not timedelta(0) <= elapsed < QUERY_ALERT_COOLDOWN
-        except (OSError, ValueError, TypeError, KeyError, OverflowError):
-            return True
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                return {}
+            # Prior revision stored only an attempt, not delivery proof.
+            if "at" in payload:
+                return {"RUN_QUERY_FAILED": {"attempted_at": payload["at"]}}
+            return payload
+        except (OSError, ValueError):
+            return {}
 
-    def mark(self, now: datetime) -> None:
-        """Persist before sending so a restart cannot immediately duplicate it."""
+    def should_attempt(self, key: str, now: datetime, *, delivered_cooldown: timedelta | None) -> bool:
+        entry = self._read().get(key)
+        if not isinstance(entry, dict):
+            return True
+        try:
+            delivered = entry.get("delivered_at")
+            if delivered is not None:
+                if delivered_cooldown is None:
+                    return False
+                elapsed = now - datetime.fromtimestamp(float(delivered), tz=timezone.utc)
+                if timedelta(0) <= elapsed < delivered_cooldown:
+                    return False
+            attempted = entry.get("attempted_at")
+            if attempted is not None:
+                elapsed = now - datetime.fromtimestamp(float(attempted), tz=timezone.utc)
+                if timedelta(0) <= elapsed < ATTEMPT_COOLDOWN:
+                    return False
+        except (ValueError, TypeError, OverflowError):
+            return True
+        return True
+
+    def mark_attempt(self, key: str, now: datetime) -> None:
+        state = self._read()
+        self._prune_missing_slots(state, now)
+        entry = state.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry["attempted_at"] = now.timestamp()
+        state[key] = entry
+        self._write(state)
+
+    def mark_delivered(self, key: str, now: datetime) -> None:
+        state = self._read()
+        self._prune_missing_slots(state, now)
+        entry = state.get(key)
+        if not isinstance(entry, dict):
+            entry = {}
+        entry["delivered_at"] = now.timestamp()
+        state[key] = entry
+        self._write(state)
+
+    def clear(self, key: str) -> None:
+        state = self._read()
+        if key in state:
+            del state[key]
+            if state:
+                self._write(state)
+            else:
+                self.path.unlink(missing_ok=True)
+
+    def _write(self, state: dict) -> None:
         temporary = self.path.with_name(self.path.name + f".{os.getpid()}.tmp")
         try:
-            temporary.write_text(json.dumps({"at": now.timestamp()}), encoding="utf-8")
+            temporary.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")), encoding="utf-8")
             os.replace(temporary, self.path)
         finally:
             temporary.unlink(missing_ok=True)
 
-    def clear(self) -> None:
-        self.path.unlink(missing_ok=True)
+    @staticmethod
+    def _prune_missing_slots(state: dict, now: datetime) -> None:
+        for key, entry in list(state.items()):
+            if not key.startswith("MISSING_SCHEDULE_SLOT:"):
+                continue
+            try:
+                stamp = entry.get("delivered_at", entry.get("attempted_at"))
+                recorded = datetime.fromtimestamp(float(stamp), tz=timezone.utc)
+                if now - recorded >= MISSING_SLOT_RETENTION:
+                    del state[key]
+            except (AttributeError, ValueError, TypeError, OverflowError):
+                del state[key]
