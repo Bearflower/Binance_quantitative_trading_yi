@@ -136,6 +136,7 @@ class PositionState:
         # v6.28 加仓统一托管：重建待收敛标记（取消旧单/重建条件单任一失败置 True，由 _retry_rebuild_pending 收敛）
         # 移动止损尾仓精度调整后为 0 时直接 logger.warning 跳过即可，无需额外状态字段
         self.rebuild_pending: bool = False
+        self.add_sync_pending: bool = False
         # R05（v6.30）保护完整性：开仓成交并登记持仓后为 True，待硬止损+TP1+TP2 全部就位后清除。
         # 为 True 表示「持仓已建立、保护待补」，由 _retry_protection_pending 按配置节流补挂，
         # 补挂达上限仅告警（D2，不自动减仓）并保持 True，供进程重启后 _ensure_position_protection 兜底。
@@ -2924,6 +2925,10 @@ class BTCEthStrategy:
 
     async def _add_position(self, symbol: str, position: PositionState, signal: Dict) -> bool:
         """加仓主流程（v6.28 加仓统一托管）：开新仓成交 → 取消旧单 → 合并 → 重建条件单。"""
+        if position.rebuild_pending:
+            signal['skip_reason'] = "保护单重建待完成，暂缓加仓"
+            logger.warning(f"{symbol} 保护单重建待完成，暂缓加仓")
+            return False
         entry_order = None
         try:
             # 成交前确认重建精度，避免新增仓位后才发现无法安全重挂保护单。
@@ -2935,11 +2940,21 @@ class BTCEthStrategy:
 
             # 顺序2：同步交易所实际持仓量（确认加仓成交且未触发平仓）
             sync = await self._sync_position_with_exchange(symbol, position, close_reason="ADD_POSITION")
-            if sync.get('closed') or sync.get('actual_quantity') is None:
+            if sync.get('closed'):
                 logger.warning(
-                    f"{symbol} 加仓后同步交易所持仓异常，回滚加仓流程",
+                    f"{symbol} 加仓后交易所持仓已平，停止重建保护单",
                     sync_result=sync
                 )
+                return False
+            if sync.get('actual_quantity') is None:
+                # 订单已有成交，不能把新增量当作未发生。暂记已确认成交量，
+                # 但交易所总量未知时不得撤旧保护单或按估算量重建。
+                provisional_qty = position.current_quantity + entry_order.executed_qty
+                self._merge_position(position, signal, entry_order, provisional_qty)
+                position.rebuild_pending = True
+                position.add_sync_pending = True
+                logger.warning(f"{symbol} 加仓已成交但持仓查询失败，保留原保护单并等待交易所数量确认",
+                               provisional_quantity=str(provisional_qty))
                 return False
 
             # 先按交易所实际总量合并内存持仓；后续撤单或重建失败也不能丢失新增仓位。
@@ -3364,6 +3379,20 @@ class BTCEthStrategy:
                 position.rebuild_pending = False
                 continue
             try:
+                if position.add_sync_pending:
+                    sync = await self._sync_position_with_exchange(
+                        symbol, position, close_reason="ADD_POSITION_REBUILD")
+                    if sync.get('closed'):
+                        position.add_sync_pending = False
+                        position.rebuild_pending = False
+                        continue
+                    actual_qty = sync.get('actual_quantity')
+                    if actual_qty is None:
+                        logger.warning(f"{symbol} 加仓重建收敛：持仓量仍不可确认，下轮重试")
+                        continue
+                    position.current_quantity = Decimal(str(actual_qty))
+                    position.initial_quantity = position.current_quantity
+                    position.add_sync_pending = False
                 # 幂等取消旧条件单（已为 None 的自动跳过）
                 if not await self._cancel_orders_for_rebuild(symbol, position):
                     logger.warning(f"{symbol} 加仓重建收敛：取消旧条件单失败，下轮重试")

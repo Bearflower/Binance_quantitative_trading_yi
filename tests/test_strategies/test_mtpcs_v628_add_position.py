@@ -360,6 +360,12 @@ class TestPlaceTPAndStopLossOrders:
 class TestAddPosition:
     """_add_position 加仓五步：开仓→同步→取消旧单→合并→重建（v6.28）"""
 
+    async def test_pending_rebuild_blocks_further_add(self, strategy, position_cls):
+        pos = make_position(position_cls, rebuild_pending=True)
+        strategy._place_entry_order = AsyncMock(return_value=make_fill())
+        assert await strategy._add_position('BTCUSDT', pos, make_signal()) is False
+        strategy._place_entry_order.assert_not_awaited()
+
     async def test_success_five_steps_in_order(self, strategy, position_cls):
         """加仓五步全部成功 → True，且顺序正确、加权均价生效"""
         s = strategy
@@ -414,8 +420,8 @@ class TestAddPosition:
         s._cancel_orders_for_rebuild.assert_not_awaited()
         assert pos.rebuild_pending is False
 
-    async def test_sync_none_rolls_back(self, strategy, position_cls):
-        """同步异常（actual_quantity=None）→ 回滚加仓"""
+    async def test_sync_none_keeps_filled_quantity_pending(self, strategy, position_cls):
+        """成交后查询失败时保留已成交量，等待确认交易所持仓再重建。"""
         s = strategy
         pos = make_position(position_cls)
         s._place_entry_order = AsyncMock(return_value=make_fill())
@@ -424,6 +430,35 @@ class TestAddPosition:
                           'actual_quantity': None})
         result = await s._add_position('BTCUSDT', pos, make_signal())
         assert result is False
+        assert pos.current_quantity == Decimal('0.2')
+        assert pos.rebuild_pending is True
+        assert pos.add_sync_pending is True
+
+    async def test_sync_none_retry_waits_for_exchange_quantity(self, strategy, position_cls):
+        s = strategy
+        pos = make_position(position_cls)
+        s.positions['BTCUSDT'] = pos
+        s._place_entry_order = AsyncMock(return_value=make_fill())
+        s._sync_position_with_exchange = AsyncMock(return_value={
+            'closed': False, 'partially_closed': False, 'actual_quantity': None})
+        s._cancel_orders_for_rebuild = AsyncMock(return_value=True)
+        s._rebuild_condition_orders = AsyncMock(return_value=True)
+        assert await s._add_position('BTCUSDT', pos, make_signal()) is False
+
+        await s._retry_rebuild_pending()
+        s._cancel_orders_for_rebuild.assert_not_awaited()
+        assert pos.rebuild_pending is True
+
+        s._sync_position_with_exchange.return_value = {
+            'closed': False, 'partially_closed': False,
+            'actual_quantity': Decimal('0.17')}
+        await s._retry_rebuild_pending()
+        assert pos.current_quantity == Decimal('0.17')
+        assert pos.initial_quantity == Decimal('0.17')
+        assert pos.rebuild_pending is False
+        assert pos.add_sync_pending is False
+        s._cancel_orders_for_rebuild.assert_awaited_once()
+        s._rebuild_condition_orders.assert_awaited_once()
 
     async def test_cancel_fail_marks_pending(self, strategy, position_cls):
         """取消旧条件单失败 → 标记 rebuild_pending 并返回 False"""
