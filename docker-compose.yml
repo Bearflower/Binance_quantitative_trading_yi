@@ -465,6 +465,44 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # Public-market GET collector; isolated DB writer, no trading API credentials.
+  ai-tuner-funding-schedule:
+    image: ghcr.io/bearflower/trading-ai-tuner:latest
+    container_name: ai-tuner-funding-schedule
+    restart: unless-stopped
+    command: ["python3", "-m", "ai_tuner.funding_schedule.cli", "daemon"]
+    env_file:
+      - .secrets/ai_tuner_funding_schedule.env
+    environment:
+      - TZ=Asia/Shanghai
+      - DB_HOST=${DB_HOST}
+      - DB_PORT=${DB_PORT:-5432}
+      - DB_NAME=${DB_NAME}
+      - FEISHU_WEBHOOK_TUNER=${FEISHU_WEBHOOK_TUNER}
+    volumes:
+      - ./logs/ai_tuner_funding_schedule:/app/logs
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys; sys.exit(0 if b'ai_tuner.funding_schedule.cli' in open('/proc/1/cmdline','rb').read() else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 256M
+
 # ============================================
   # K 线数据服务
   # ============================================
