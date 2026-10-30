@@ -80,6 +80,11 @@ if [ "$DEPLOY_MODE" = "calibrated-first-create" ]; then
 fi
 # calibrated-first-create end
 
+# Override both inherited shell and project .env COMPOSE_PROFILES. The normal
+# global up must never activate the funding collector before the ACL gate.
+# A later explicit --profile funding-schedule up is the only start path.
+export COMPOSE_PROFILES=
+
 stop_funding_collector_if_running() {
   # Exact container only; never stop sibling AI Tuner or trading services.
   if docker inspect ai-tuner-funding-schedule >/dev/null 2>&1; then
