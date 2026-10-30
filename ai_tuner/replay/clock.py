@@ -1,6 +1,6 @@
 """确定性事件时钟。
 
-事件时间来自快照内容与窗口内确定性 UTC 日界线 / 资金费检查点，
+事件时间来自快照内容、显式逐币种资金费日程与 UTC 日界线，
 不读系统时钟、不使用随机数、不依赖 dict/set 的遍历顺序。
 """
 
@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 BAR_CLOSE = "bar_close"
 FUNDING = "funding_settlement"
@@ -126,16 +126,20 @@ def collect_daily_mark_events(window_start: datetime, as_of: datetime) -> List[E
     return events
 
 
-def collect_funding_check_events(window_start: datetime, as_of: datetime) -> List[Event]:
-    """Generate UTC 00:00/08:00/16:00 settlement checks inside the window."""
-    utc_start = window_start.astimezone(timezone.utc)
-    settlement = utc_start.replace(hour=0, minute=0, second=0, microsecond=0)
-    while settlement <= utc_start:
-        settlement += timedelta(hours=8)
+def collect_funding_check_events(
+    schedule_by_symbol: Mapping[str, Sequence[datetime]],
+    window_start: datetime,
+    as_of: datetime,
+) -> List[Event]:
+    """Create checks only from externally supplied, per-symbol expected times.
+
+    Observed funding events must never be used to manufacture this schedule:
+    doing so would hide missing settlements. The caller must establish provenance.
+    """
     events: List[Event] = []
-    while settlement <= as_of:
-        events.append(
-            Event(time=settlement, kind=FUNDING_CHECK, subject="", seq=len(events), payload=None)
-        )
-        settlement += timedelta(hours=8)
+    for symbol in sorted(schedule_by_symbol):
+        for settlement in schedule_by_symbol[symbol]:
+            if window_start < settlement <= as_of:
+                events.append(Event(time=settlement, kind=FUNDING_CHECK,
+                                    subject=symbol, seq=len(events), payload=None))
     return events
