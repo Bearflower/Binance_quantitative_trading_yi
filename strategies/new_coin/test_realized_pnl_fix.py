@@ -913,10 +913,7 @@ class TestNewCoinSQLFix:
         assert "BTCUSDT" not in strategy.positions
 
     async def test_close_order_has_no_order_id(self, strategy):
-        """fetch_one 返回记录但 order_id 为空时跳过回写
-
-        验证：返回记录中 order_id 为空时，不调用 update_realized_pnl
-        """
+        """条件单无 order_id 时仍把成交时间交给回写器做安全降级匹配。"""
         strategy.positions = {
             "BTCUSDT": {
                 "entry_price": 100.0,
@@ -926,7 +923,10 @@ class TestNewCoinSQLFix:
         strategy.binance_client.get_position = AsyncMock(return_value=[])
         strategy._get_position_pnl = AsyncMock(return_value=50.0)
         # fetch_one 返回记录但 order_id 为空
-        strategy.db.fetch_one = AsyncMock(return_value={"order_id": None})
+        close_time = datetime(2026, 6, 1, 1)
+        strategy.db.fetch_one = AsyncMock(
+            return_value={"order_id": None, "executed_at": close_time}
+        )
         strategy.binance_client.trade_logger = MagicMock()
         strategy.binance_client.trade_logger.update_realized_pnl = AsyncMock()
         strategy._save_state = AsyncMock()
@@ -936,8 +936,11 @@ class TestNewCoinSQLFix:
 
         await strategy._monitor_positions()
 
-        # 不应调用 update_realized_pnl
-        strategy.binance_client.trade_logger.update_realized_pnl.assert_not_called()
+        strategy.binance_client.trade_logger.update_realized_pnl.assert_awaited_once()
+        kwargs = strategy.binance_client.trade_logger.update_realized_pnl.call_args.kwargs
+        assert kwargs["order_id"] is None
+        assert kwargs["executed_at"] == close_time
+        assert kwargs["symbol"] == "BTCUSDT"
         # 持仓应被删除
         assert "BTCUSDT" not in strategy.positions
 
