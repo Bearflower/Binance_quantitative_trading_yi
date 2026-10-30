@@ -107,6 +107,28 @@ class FundingScheduleRepository:
     def __init__(self, db) -> None:
         self.db = db
 
+    async def latest_run_slot(self) -> Optional[datetime]:
+        """Find evidence that this collector has previously operated."""
+        if not self.db.pool:
+            await self.db.connect()
+        async with self.db.pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT MAX(scheduled_at) AS scheduled_at FROM public.ai_tuner_funding_schedule_runs"
+            )
+        return row["scheduled_at"] if row else None
+
+    async def slots_with_runs(self, first_slot: datetime, last_slot: datetime) -> set[datetime]:
+        """Read persisted attempts; a failed run still proves the slot was attempted."""
+        if not self.db.pool:
+            await self.db.connect()
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT DISTINCT scheduled_at FROM public.ai_tuner_funding_schedule_runs
+                   WHERE scheduled_at >= $1::timestamptz AND scheduled_at <= $2::timestamptz""",
+                first_slot, last_slot,
+            )
+        return {row["scheduled_at"] for row in rows}
+
     async def recent_failed_streak(self, next_slot: datetime, *, limit: int = 3) -> int:
         """Restore only contiguous failed five-minute slots before a daemon restart.
 

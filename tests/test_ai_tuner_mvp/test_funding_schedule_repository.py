@@ -45,6 +45,8 @@ class FakeConnection:
 
     async def fetchrow(self, sql, *args):
         self.db.sql.append(sql)
+        if "MAX(scheduled_at)" in sql:
+            return {"scheduled_at": self.db.latest_run_slot}
         if "pg_advisory_xact_lock" in sql:
             return {"lock": 1}
         if "ai_tuner_universe_scan_runs" in sql:
@@ -59,6 +61,9 @@ class FakeConnection:
 
     async def fetch(self, sql, *args):
         self.db.sql.append(sql)
+        if "SELECT DISTINCT scheduled_at" in sql:
+            return [{"scheduled_at": slot} for slot in self.db.persisted_slots
+                    if args[0] <= slot <= args[1]]
         if "bool_or(status='success')" in sql:
             return self.db.failed_slot_rows
         if "ai_tuner_universe_snapshots" in sql:
@@ -89,6 +94,8 @@ class FakeDB:
         self.universe_symbols = ["SOLUSDT"]
         self.universe_snapshot_created_at = SLOT - timedelta(minutes=1)
         self.failed_slot_rows = []
+        self.persisted_slots = set()
+        self.latest_run_slot = None
 
 
 def fixture():
@@ -244,4 +251,17 @@ def test_persisted_streak_counts_only_contiguous_failed_slots():
         ]
         assert await repo.recent_failed_streak(next_slot, limit=3) == 0
         assert any("GROUP BY scheduled_at" in sql for sql in db.sql)
+    asyncio.run(exercise())
+
+
+def test_monitor_queries_only_persisted_run_slots_and_does_not_write():
+    async def exercise():
+        db = FakeDB()
+        db.persisted_slots = {SLOT, SLOT + timedelta(minutes=10)}
+        db.latest_run_slot = SLOT + timedelta(minutes=10)
+        repo = FundingScheduleRepository(db)
+        assert await repo.latest_run_slot() == SLOT + timedelta(minutes=10)
+        assert await repo.slots_with_runs(SLOT, SLOT + timedelta(minutes=15)) == db.persisted_slots
+        assert any("SELECT DISTINCT scheduled_at" in sql for sql in db.sql)
+        assert not any("UPDATE " in sql or "DELETE " in sql for sql in db.sql)
     asyncio.run(exercise())

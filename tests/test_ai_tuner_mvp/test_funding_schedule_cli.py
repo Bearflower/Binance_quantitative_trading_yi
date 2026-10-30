@@ -36,6 +36,15 @@ def test_next_slot_is_utc_aligned_and_skips_missed_slots():
     assert next_slot_after(SLOT, last_slot=SLOT) == SLOT + timedelta(minutes=5)
 
 
+def test_monitor_start_skips_predeployment_slots_but_rechecks_recent_after_restart():
+    from ai_tuner.funding_schedule.cli import monitor_start_slot
+
+    next_slot = SLOT + timedelta(minutes=20)
+    now = SLOT + timedelta(minutes=16)
+    assert monitor_start_slot(next_slot, None, now) == next_slot
+    assert monitor_start_slot(next_slot, SLOT, now) == SLOT
+
+
 def test_runtime_requires_an_alert_destination(monkeypatch):
     from ai_tuner.funding_schedule.cli import _runtime
 
@@ -55,6 +64,161 @@ async def test_once_collects_only_current_slot_and_does_not_loop():
     assert collector.collect_once.await_count == 1
     assert collector.collect_once.await_args.args[0] == SLOT
     assert notifier.send.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_hung_collection_is_cancelled_within_ninety_seconds(monkeypatch):
+    from ai_tuner.funding_schedule import cli
+
+    cancelled = asyncio.Event()
+
+    async def hanging_collect(*_):
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    real_wait_for = asyncio.wait_for
+
+    async def short_wait_for(awaitable, timeout):
+        assert timeout == 90
+        return await real_wait_for(awaitable, 0.01)
+
+    monkeypatch.setattr(cli.asyncio, "wait_for", short_wait_for)
+    result = await real_wait_for(
+        run_once(SimpleNamespace(collect_once=hanging_collect), SimpleNamespace(), scheduled_at=SLOT),
+        0.2,
+    )
+    assert result.status == "failed"
+    assert result.failure_code == "COLLECTION_TIMEOUT"
+    assert cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_monitor_detects_missing_persisted_slot_once_and_restart_rechecks_recent_slots():
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor
+
+    repo = SimpleNamespace(
+        slots_with_runs=AsyncMock(return_value={SLOT, SLOT + timedelta(minutes=10)}),
+    )
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    now = SLOT + timedelta(minutes=13, seconds=10)
+    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT)
+    await monitor.check(now)
+    await monitor.check(now + timedelta(seconds=30))
+    assert notifier.send.await_count == 1
+    assert "MISSING_SCHEDULE_SLOT" in notifier.send.await_args.args[0]
+    assert (SLOT + timedelta(minutes=5)).isoformat() in notifier.send.await_args.args[0]
+    assert repo.slots_with_runs.await_count == 2
+
+    # A new process has no in-memory alert set, but scans previously closed slots.
+    restarted = MissingSlotMonitor(repo, notifier, start_slot=SLOT)
+    await restarted.check(now)
+    assert notifier.send.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_monitor_db_query_failure_alerts_sanitized_code_and_exits():
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor
+
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(side_effect=RuntimeError("password=secret")))
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT)
+    with pytest.raises(RuntimeError, match="monitor database unavailable") as raised:
+        await monitor.check(SLOT + timedelta(minutes=3))
+    assert "secret" not in str(raised.value)
+    notifier.send.assert_awaited_once()
+    assert "RUN_QUERY_FAILED" in notifier.send.await_args.args[0]
+    assert "secret" not in notifier.send.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_monitor_notification_timeout_cannot_block_next_check(monkeypatch):
+    from ai_tuner.funding_schedule import cli
+
+    async def hanging_send(*_, **__):
+        await asyncio.Future()
+
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()))
+    notifier = SimpleNamespace(send=AsyncMock(side_effect=hanging_send))
+    monitor = cli.MissingSlotMonitor(repo, notifier, start_slot=SLOT)
+    real_wait_for = asyncio.wait_for
+
+    async def short_wait_for(awaitable, timeout):
+        assert timeout in (10, 15)
+        return await real_wait_for(awaitable, 0.01 if timeout == 10 else timeout)
+
+    monkeypatch.setattr(cli.asyncio, "wait_for", short_wait_for)
+    await real_wait_for(monitor.check(SLOT + timedelta(minutes=3)), 0.2)
+    await real_wait_for(monitor.check(SLOT + timedelta(minutes=3, seconds=30)), 0.2)
+    assert notifier.send.await_count == 1
+    assert repo.slots_with_runs.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_monitor_heartbeat_only_after_successful_persisted_query(tmp_path, monkeypatch):
+    from ai_tuner.funding_schedule import cli
+
+    heartbeat = tmp_path / "heartbeat"
+    ok = SimpleNamespace(check=AsyncMock(return_value=None))
+
+    async def stop_after_check(_):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(cli.asyncio, "sleep", stop_after_check)
+    with pytest.raises(asyncio.CancelledError):
+        await cli._monitor_loop(ok, heartbeat_path=heartbeat)
+    assert heartbeat.exists()
+
+    heartbeat.unlink()
+    failed = SimpleNamespace(check=AsyncMock(side_effect=RuntimeError("database unavailable")))
+    with pytest.raises(RuntimeError):
+        await cli._monitor_loop(failed, heartbeat_path=heartbeat)
+    assert not heartbeat.exists()
+
+
+@pytest.mark.asyncio
+async def test_db_connect_is_bounded_and_alerted(monkeypatch):
+    from ai_tuner.funding_schedule import cli
+
+    async def hanging_connect():
+        await asyncio.Future()
+
+    db = SimpleNamespace(connect=AsyncMock(side_effect=hanging_connect), disconnect=AsyncMock())
+    binance = SimpleNamespace(close=AsyncMock())
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True), close=AsyncMock())
+    monkeypatch.setattr(cli, "_runtime", lambda: (db, binance, notifier, MagicMock()))
+    real_wait_for = asyncio.wait_for
+
+    async def capture_wait_for(awaitable, timeout):
+        assert timeout in (10, 15)
+        return await real_wait_for(awaitable, 0.01 if timeout == 15 else timeout)
+
+    monkeypatch.setattr(cli.asyncio, "wait_for", capture_wait_for)
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await real_wait_for(cli._run("daemon"), 0.2)
+    notifier.send.assert_awaited_once()
+    assert "TimeoutError" in notifier.send.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_daemon_clears_previous_process_heartbeat_before_connect(tmp_path, monkeypatch):
+    from ai_tuner.funding_schedule import cli
+
+    heartbeat = tmp_path / "heartbeat"
+    heartbeat.write_text("9999999999", encoding="ascii")
+
+    async def check_cleared_then_fail():
+        assert not heartbeat.exists()
+        raise RuntimeError("unavailable")
+
+    db = SimpleNamespace(connect=check_cleared_then_fail, disconnect=AsyncMock())
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True), close=AsyncMock())
+    monkeypatch.setattr(cli, "HEARTBEAT_PATH", heartbeat)
+    monkeypatch.setattr(cli, "_runtime", lambda: (db, SimpleNamespace(close=AsyncMock()), notifier, MagicMock()))
+    with pytest.raises(RuntimeError, match="database unavailable"):
+        await cli._run("daemon")
+    assert not heartbeat.exists()
 
 
 @pytest.mark.asyncio
@@ -104,6 +268,9 @@ def test_compose_service_has_isolated_secret_and_no_trading_credentials():
     assert "DEEPSEEK_API_KEY" not in env
     assert "BINANCE_TESTNET" not in env
     assert service["healthcheck"]["test"]
+    assert service["healthcheck"]["test"] == [
+        "CMD", "python3", "-m", "ai_tuner.funding_schedule.health", "check",
+    ]
     assert service["deploy"]["resources"]["limits"]["memory"]
 
 
@@ -165,7 +332,9 @@ async def test_db_connect_failure_sends_immediate_sanitized_alert(monkeypatch):
 async def test_daemon_restores_failed_slots_before_next_collection(monkeypatch):
     from ai_tuner.funding_schedule import cli
 
-    repo = SimpleNamespace(recent_failed_streak=AsyncMock(return_value=2))
+    repo = SimpleNamespace(recent_failed_streak=AsyncMock(return_value=2),
+                           latest_run_slot=AsyncMock(return_value=None),
+                           slots_with_runs=AsyncMock(return_value={SLOT}))
     collector = SimpleNamespace(repository=repo, collect_once=AsyncMock(return_value=SimpleNamespace(
         status="failed", failure_code="FETCH_FAILED", symbol_count=0,
     )))
@@ -217,5 +386,17 @@ async def test_runtime_build_failure_alerts_when_webhook_is_available(monkeypatc
 def test_post_deploy_readiness_gate_does_not_equate_liveness_with_collection():
     doc = (ROOT / "docs/deployment/ai-tuner-funding-schedule-readiness.md").read_text(encoding="utf-8")
     assert "3" in doc and "scheduled" in doc.lower()
-    assert "liveness" in doc.lower()
+    assert "180 秒" in doc and "健康态" in doc
     assert "告警" in doc
+
+
+def test_health_requires_fresh_successful_monitor_heartbeat(tmp_path):
+    from ai_tuner.funding_schedule.health import is_monitor_fresh
+
+    heartbeat = tmp_path / "heartbeat"
+    assert not is_monitor_fresh(now=1000, path=heartbeat)
+    heartbeat.write_text("900", encoding="ascii")
+    assert is_monitor_fresh(now=1000, path=heartbeat)
+    assert not is_monitor_fresh(now=1100, path=heartbeat, max_age_seconds=180)
+    heartbeat.write_text("not-a-timestamp", encoding="ascii")
+    assert not is_monitor_fresh(now=1000, path=heartbeat)

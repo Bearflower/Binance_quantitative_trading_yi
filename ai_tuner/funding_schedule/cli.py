@@ -6,6 +6,7 @@ import argparse
 import asyncio
 from datetime import datetime, timedelta, timezone
 import os
+from pathlib import Path
 from uuid import uuid4
 
 import structlog
@@ -15,11 +16,17 @@ from shared.notification import NotificationClient
 from shared.readonly_client import ReadOnlyBinanceClient
 
 from .collector import CollectionResult, FundingScheduleCollector
+from .health import HEARTBEAT_PATH, clear_monitor_heartbeat, write_monitor_heartbeat
 from .repository import FundingScheduleRepository
 
 
 logger = structlog.get_logger()
 _PERIOD = timedelta(minutes=5)
+_COLLECTION_TIMEOUT_SECONDS = 90
+_DB_TIMEOUT_SECONDS = 15
+_NOTIFICATION_TIMEOUT_SECONDS = 10
+_MONITOR_GRACE = timedelta(seconds=10)
+_MONITOR_INTERVAL_SECONDS = 30
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -49,11 +56,29 @@ def next_slot_after(now: datetime, *, last_slot: datetime | None = None) -> date
     return next_slot
 
 
+def monitor_start_slot(first_slot: datetime, last_persisted: datetime | None,
+                       now: datetime) -> datetime:
+    """Do not invent pre-deployment gaps; restart audits recent closed slots."""
+    if last_persisted is None:
+        return _utc(first_slot)
+    _utc(last_persisted)
+    return current_slot(_utc(now) - 3 * _PERIOD)
+
+
 async def run_once(collector: FundingScheduleCollector, notifier: NotificationClient,
                    *, scheduled_at: datetime) -> CollectionResult:
     # Do not log exception text: HTTP/DB exceptions can contain credentials.
     try:
-        result = await collector.collect_once(scheduled_at, uuid4())
+        result = await asyncio.wait_for(
+            collector.collect_once(scheduled_at, uuid4()),
+            timeout=_COLLECTION_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError:
+        logger.error("资金费日程采集超时", slot=scheduled_at.isoformat())
+        # wait_for cancels the entire collector, including any DB transaction.
+        # No success or partial observation is fabricated; the monitor will
+        # detect a missing persisted run if cancellation interrupted the write.
+        return CollectionResult("failed", "COLLECTION_TIMEOUT", 0)
     except Exception as exc:
         logger.error("资金费日程采集异常", slot=scheduled_at.isoformat(), error_type=type(exc).__name__)
         return CollectionResult("failed", "RUNTIME_FAILURE", 0)
@@ -87,10 +112,12 @@ class FailureTracker:
 
     async def _send_alert(self, slot: datetime, failure_code: str | None) -> None:
         try:
-            sent = await self.notifier.send(
-                f"AI Tuner 资金费日程采集连续 {self.threshold} 个槽位失败；"
-                f"最近槽位 {slot.isoformat()}，失败代码 {failure_code}",
-                level="error", project="tuner",
+            sent = await asyncio.wait_for(
+                self.notifier.send(
+                    f"AI Tuner 资金费日程采集连续 {self.threshold} 个槽位失败；"
+                    f"最近槽位 {slot.isoformat()}，失败代码 {failure_code}",
+                    level="error", project="tuner",
+                ), timeout=_NOTIFICATION_TIMEOUT_SECONDS,
             )
             self.alerted = bool(sent)
             if not self.alerted:
@@ -99,18 +126,63 @@ class FailureTracker:
             logger.error("资金费日程告警发送失败", error_type=type(exc).__name__)
 
 
-async def run_daemon(collector: FundingScheduleCollector, notifier: NotificationClient) -> None:
-    tracker = FailureTracker(notifier)
-    first_slot = next_slot_after(datetime.now(timezone.utc))
+class MissingSlotMonitor:
+    """Check persisted run evidence independently from the collection loop."""
+
+    def __init__(self, repository: FundingScheduleRepository, notifier: NotificationClient,
+                 *, start_slot: datetime) -> None:
+        self.repository = repository
+        self.notifier = notifier
+        self.start_slot = _utc(start_slot)
+        self.alerted_slots: set[datetime] = set()
+
+    async def check(self, now: datetime) -> None:
+        closed = current_slot(_utc(now) - timedelta(seconds=120) - _MONITOR_GRACE)
+        first = max(self.start_slot, closed - 3 * _PERIOD)
+        try:
+            # Even an empty interval verifies the DB is reachable before a
+            # bootstrap heartbeat is written by the loop.
+            persisted = await asyncio.wait_for(
+                self.repository.slots_with_runs(first, closed),
+                timeout=_DB_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            logger.error("资金费日程缺槽查询失败", error_type=type(exc).__name__)
+            await _send_monitor_alert(self.notifier, "RUN_QUERY_FAILED")
+            raise RuntimeError("funding schedule monitor database unavailable") from None
+        if first > closed:
+            return
+        expected = set()
+        slot = first
+        while slot <= closed:
+            expected.add(slot)
+            if slot not in persisted and slot not in self.alerted_slots:
+                await _send_monitor_alert(
+                    self.notifier, "MISSING_SCHEDULE_SLOT", slot=slot,
+                )
+                self.alerted_slots.add(slot)
+            slot += _PERIOD
+        self.alerted_slots.intersection_update(expected)
+
+
+async def _send_monitor_alert(notifier: NotificationClient, code: str,
+                              *, slot: datetime | None = None) -> None:
+    suffix = f"；槽位 {slot.isoformat()}" if slot is not None else ""
     try:
-        tracker.consecutive = await collector.repository.recent_failed_streak(
-            first_slot, limit=tracker.threshold,
+        sent = await asyncio.wait_for(
+            notifier.send(
+                f"AI Tuner 资金费日程监视告警：{code}{suffix}",
+                level="error", project="tuner",
+            ), timeout=_NOTIFICATION_TIMEOUT_SECONDS,
         )
+        if not sent:
+            logger.error("资金费日程监视告警未送达", code=code)
     except Exception as exc:
-        logger.error("资金费日程失败计数恢复失败", error_type=type(exc).__name__)
-        await _startup_alert(notifier, type(exc).__name__)
-        raise RuntimeError("funding schedule startup state unavailable") from None
-    await tracker.alert_persisted_streak(first_slot - _PERIOD)
+        logger.error("资金费日程监视告警发送失败", code=code, error_type=type(exc).__name__)
+
+
+async def _collection_loop(collector: FundingScheduleCollector, notifier: NotificationClient,
+                           tracker: FailureTracker) -> None:
     last_slot = None
     while True:
         slot = next_slot_after(datetime.now(timezone.utc), last_slot=last_slot)
@@ -118,6 +190,51 @@ async def run_daemon(collector: FundingScheduleCollector, notifier: Notification
         last_slot = slot
         result = await run_once(collector, notifier, scheduled_at=slot)
         await tracker.observe(result, slot)
+
+
+async def _monitor_loop(monitor: MissingSlotMonitor, *, heartbeat_path: Path | None = None) -> None:
+    heartbeat_path = HEARTBEAT_PATH if heartbeat_path is None else heartbeat_path
+    while True:
+        await monitor.check(datetime.now(timezone.utc))
+        write_monitor_heartbeat(path=heartbeat_path)
+        await asyncio.sleep(_MONITOR_INTERVAL_SECONDS)
+
+
+async def run_daemon(collector: FundingScheduleCollector, notifier: NotificationClient) -> None:
+    tracker = FailureTracker(notifier)
+    first_slot = next_slot_after(datetime.now(timezone.utc))
+    try:
+        tracker.consecutive = await asyncio.wait_for(
+            collector.repository.recent_failed_streak(first_slot, limit=tracker.threshold),
+            timeout=_DB_TIMEOUT_SECONDS,
+        )
+        last_persisted = await asyncio.wait_for(
+            collector.repository.latest_run_slot(), timeout=_DB_TIMEOUT_SECONDS,
+        )
+    except Exception as exc:
+        logger.error("资金费日程失败计数恢复失败", error_type=type(exc).__name__)
+        await _startup_alert(notifier, type(exc).__name__)
+        raise RuntimeError("funding schedule startup state unavailable") from None
+    await tracker.alert_persisted_streak(first_slot - _PERIOD)
+    # First deployment has no prior evidence and must not label pre-deployment
+    # slots missing. A restart scans the most recent closed slots immediately.
+    monitor_start = monitor_start_slot(first_slot, last_persisted, datetime.now(timezone.utc))
+    monitor = MissingSlotMonitor(collector.repository, notifier, start_slot=monitor_start)
+    tasks = [
+        asyncio.create_task(_collection_loop(collector, notifier, tracker)),
+        asyncio.create_task(_monitor_loop(monitor)),
+    ]
+    try:
+        done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_EXCEPTION)
+        for task in done:
+            exception = task.exception()
+            if exception is not None:
+                raise exception
+        raise RuntimeError("funding schedule daemon task stopped")
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 def _runtime():
@@ -143,9 +260,11 @@ def _runtime():
 async def _startup_alert(notifier: NotificationClient, error_type: str) -> None:
     """Notify without emitting exception text, SQL DSNs, or credentials."""
     try:
-        sent = await notifier.send(
-            f"AI Tuner 资金费日程采集启动失败（{error_type}）；采集器未就绪，请检查容器与数据库。",
-            level="error", project="tuner",
+        sent = await asyncio.wait_for(
+            notifier.send(
+                f"AI Tuner 资金费日程采集启动失败（{error_type}）；采集器未就绪，请检查容器与数据库。",
+                level="error", project="tuner",
+            ), timeout=_NOTIFICATION_TIMEOUT_SECONDS,
         )
         if not sent:
             logger.error("资金费日程启动告警未送达")
@@ -154,6 +273,8 @@ async def _startup_alert(notifier: NotificationClient, error_type: str) -> None:
 
 
 async def _run(command: str) -> int:
+    if command == "daemon":
+        clear_monitor_heartbeat(path=HEARTBEAT_PATH)
     try:
         db, binance, notifier, collector = _runtime()
     except Exception as exc:
@@ -169,7 +290,7 @@ async def _run(command: str) -> int:
         raise RuntimeError("funding schedule runtime initialization failed") from None
     try:
         try:
-            await db.connect()
+            await asyncio.wait_for(db.connect(), timeout=_DB_TIMEOUT_SECONDS)
         except Exception as exc:
             logger.error("资金费日程数据库连接失败", error_type=type(exc).__name__)
             await _startup_alert(notifier, type(exc).__name__)

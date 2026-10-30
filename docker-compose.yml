@@ -493,14 +493,14 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    # Liveness only. Readiness requires three successful scheduled DB batches
-    # and a delivered alert; see docs/deployment/ai-tuner-funding-schedule-readiness.md.
+    # Successful persisted-slot monitor DB checks must remain fresh. This does
+    # not prove collection succeeded; see the separate deployment readiness gate.
     healthcheck:
-      test: ["CMD", "python3", "-c", "import sys; sys.exit(0 if b'ai_tuner.funding_schedule.cli' in open('/proc/1/cmdline','rb').read() else 1)"]
+      test: ["CMD", "python3", "-m", "ai_tuner.funding_schedule.health", "check"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 20s
+      start_period: 45s
     deploy:
       resources:
         limits:
