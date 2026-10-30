@@ -80,6 +80,13 @@ if [ "$DEPLOY_MODE" = "calibrated-first-create" ]; then
 fi
 # calibrated-first-create end
 
+# Dedicated persistent monitor alert state lives in this service's existing
+# bind mount. Provision it for the image's non-root UID before any collector
+# start; otherwise a restart could bypass the 15-minute alert cooldown.
+mkdir -p logs/ai_tuner_funding_schedule
+chown 1000:1000 logs/ai_tuner_funding_schedule
+chmod 700 logs/ai_tuner_funding_schedule
+
 # Override both inherited shell and project .env COMPOSE_PROFILES. The normal
 # global up must never activate the funding collector before the ACL gate.
 # A later explicit --profile funding-schedule up is the only start path.

@@ -118,18 +118,64 @@ async def test_monitor_detects_missing_persisted_slot_once_and_restart_rechecks_
 
 
 @pytest.mark.asyncio
-async def test_monitor_db_query_failure_alerts_sanitized_code_and_exits():
+async def test_monitor_db_query_failure_alerts_sanitized_code_and_exits(tmp_path):
     from ai_tuner.funding_schedule.cli import MissingSlotMonitor
 
     repo = SimpleNamespace(slots_with_runs=AsyncMock(side_effect=RuntimeError("password=secret")))
     notifier = SimpleNamespace(send=AsyncMock(return_value=True))
-    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT)
+    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT,
+                                 alert_state_path=tmp_path / "query-alert.json")
     with pytest.raises(RuntimeError, match="monitor database unavailable") as raised:
         await monitor.check(SLOT + timedelta(minutes=3))
     assert "secret" not in str(raised.value)
     notifier.send.assert_awaited_once()
     assert "RUN_QUERY_FAILED" in notifier.send.await_args.args[0]
     assert "secret" not in notifier.send.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_db_failure_alert_is_rate_limited_across_restarts_then_reset_after_recovery(tmp_path):
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor
+
+    state = tmp_path / "query-alert.json"
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(side_effect=[
+        RuntimeError("secret"), RuntimeError("secret"), RuntimeError("secret"),
+        set(), RuntimeError("secret"),
+    ]))
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    start = SLOT + timedelta(days=1)  # No missing-slot messages during recovery.
+
+    async def query_at(now):
+        monitor = MissingSlotMonitor(repo, notifier, start_slot=start, alert_state_path=state)
+        try:
+            await monitor.check(now)
+        except RuntimeError as exc:
+            assert "secret" not in str(exc)
+
+    await query_at(SLOT)
+    assert state.exists()
+    assert notifier.send.await_count == 1
+    await query_at(SLOT + timedelta(minutes=1))
+    assert notifier.send.await_count == 1  # Restart did not re-alert.
+    await query_at(SLOT + timedelta(minutes=15))
+    assert notifier.send.await_count == 2  # Cooldown expired.
+    await query_at(SLOT + timedelta(minutes=16))
+    assert not state.exists()  # A successful DB check clears outage state.
+    await query_at(SLOT + timedelta(minutes=17))
+    assert notifier.send.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_db_failure_still_exits_when_alert_state_cannot_be_written(tmp_path):
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor
+
+    invalid_path = tmp_path / "absent-directory" / "query-alert.json"
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(side_effect=RuntimeError("secret")))
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT, alert_state_path=invalid_path)
+    with pytest.raises(RuntimeError, match="monitor database unavailable"):
+        await monitor.check(SLOT + timedelta(minutes=3))
+    notifier.send.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -283,6 +329,11 @@ def test_image_and_deploy_script_include_separate_runtime_boundary():
         'if [ "$DEPLOY_MODE" = "calibrated-first-create" ]'
     )
     assert "chmod 600 \"$FUNDING_SECRET_FILE\"" in runtime
+    assert "mkdir -p logs/ai_tuner_funding_schedule" in runtime
+    assert "chown 1000:1000 logs/ai_tuner_funding_schedule" in runtime
+    assert runtime.index("chown 1000:1000 logs/ai_tuner_funding_schedule") < runtime.index(
+        "docker compose --profile funding-schedule up -d --no-deps ai-tuner-funding-schedule"
+    )
     assert "ALTER ROLE ai_tuner_funding_writer LOGIN PASSWORD :'funding_password'" in runtime
     assert "FUNDING_PERMISSION_BOUNDARY_OK" in runtime
     gate = runtime.index('if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then')

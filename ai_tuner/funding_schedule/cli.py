@@ -15,6 +15,7 @@ from shared.database import DatabaseManager
 from shared.notification import NotificationClient
 from shared.readonly_client import ReadOnlyBinanceClient
 
+from .alert_state import QUERY_ALERT_STATE_PATH, RunQueryAlertCooldown
 from .collector import CollectionResult, FundingScheduleCollector
 from .health import HEARTBEAT_PATH, clear_monitor_heartbeat, write_monitor_heartbeat
 from .repository import FundingScheduleRepository
@@ -130,11 +131,13 @@ class MissingSlotMonitor:
     """Check persisted run evidence independently from the collection loop."""
 
     def __init__(self, repository: FundingScheduleRepository, notifier: NotificationClient,
-                 *, start_slot: datetime) -> None:
+                 *, start_slot: datetime,
+                 alert_state_path: Path = QUERY_ALERT_STATE_PATH) -> None:
         self.repository = repository
         self.notifier = notifier
         self.start_slot = _utc(start_slot)
         self.alerted_slots: set[datetime] = set()
+        self.query_alert_state = RunQueryAlertCooldown(alert_state_path)
 
     async def check(self, now: datetime) -> None:
         closed = current_slot(_utc(now) - timedelta(seconds=120) - _MONITOR_GRACE)
@@ -148,8 +151,17 @@ class MissingSlotMonitor:
             )
         except Exception as exc:
             logger.error("资金费日程缺槽查询失败", error_type=type(exc).__name__)
-            await _send_monitor_alert(self.notifier, "RUN_QUERY_FAILED")
+            if self.query_alert_state.should_alert(now):
+                try:
+                    self.query_alert_state.mark(now)
+                except OSError as state_error:
+                    logger.error("资金费日程告警限频状态写入失败", error_type=type(state_error).__name__)
+                await _send_monitor_alert(self.notifier, "RUN_QUERY_FAILED")
             raise RuntimeError("funding schedule monitor database unavailable") from None
+        try:
+            self.query_alert_state.clear()
+        except OSError as state_error:
+            logger.error("资金费日程告警限频状态清理失败", error_type=type(state_error).__name__)
         if first > closed:
             return
         expected = set()
