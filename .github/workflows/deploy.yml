@@ -190,6 +190,14 @@ jobs:
             exit 0
           fi
 
+          # btc-eth 镜像还 COPY 了激进版策略，供 XAU 影子容器 import。
+          if [ "$SERVICE_NAME" = "btc-eth" ] && \
+             echo "$CHANGED_FILES" | grep -q '^strategies/btc_eth_aggressive/'; then
+            echo "✅ 激进版策略变更 → 重建依赖它的 btc-eth 镜像"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           # 6.5) 全项目 COPY 服务（hrs/dashboard-api）：任何非 .github/ 变更都触发重建
           #     原因：它们的 Dockerfile 是 `COPY . /app/` 或 `COPY . .`，
           #     会把整个仓库（包括 services/、shared/、其他 strategies/）复制进去，
