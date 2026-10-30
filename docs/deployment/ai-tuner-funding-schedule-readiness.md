@@ -2,7 +2,7 @@
 
 本清单只用于前瞻采集器的独立上线核对；它不授权历史回填、服务器回测、调优自动生效或资格考试 PASS。
 
-部署顺序：新服务位于 `funding-schedule` Compose profile，普通 `up -d --remove-orphans` 不会启动它。只有 14 号 DDL、独立密码设置和 ACL 门禁全部成功后，部署脚本才用显式 profile、`--no-deps` 启动。重复部署时旧容器可能继续运行，也可能被 `--remove-orphans` 移除；无论哪种情况，ACL 失败都必须停止精确目标 `ai-tuner-funding-schedule`，不能留下未验证的采集器运行。服务重建或停机造成的缺槽不可伪造回填，后续资格考试按缺口处理。
+部署顺序：新服务位于 `funding-schedule` Compose profile。普通部署开始时先仅停止既有 `ai-tuner-funding-schedule`，普通 `up -d --remove-orphans` 不会提前启动它。只有 14 号 DDL、独立密码设置和 ACL 门禁全部成功后，部署脚本才用显式 profile、`--no-deps` 启动。重复部署也遵守相同顺序；ACL 失败时再次停止精确目标，不能留下未验证的采集器运行。提前停机造成的缺槽是真实数据缺口，不可伪造回填，后续资格考试按缺口处理。
 
 ## 容器存活与采集成功是两件事
 

@@ -80,6 +80,21 @@ if [ "$DEPLOY_MODE" = "calibrated-first-create" ]; then
 fi
 # calibrated-first-create end
 
+stop_funding_collector_if_running() {
+  # Exact container only; never stop sibling AI Tuner or trading services.
+  if docker inspect ai-tuner-funding-schedule >/dev/null 2>&1; then
+    docker stop ai-tuner-funding-schedule >/dev/null
+    if [ "$(docker inspect -f '{{.State.Status}}' ai-tuner-funding-schedule)" = "running" ]; then
+      echo "❌ 资金费采集器仍在运行，中止部署"
+      return 1
+    fi
+  fi
+}
+# Strict fail-closed: an existing profiled service must not continue collecting
+# under a new deployment before this run's migration/password/ACL gate passes.
+# Any resulting missing five-minute slots are real gaps, never backfilled.
+stop_funding_collector_if_running
+
 # 1.5 磁盘预检查（仅普通全量部署）。目标化首次创建不得执行全局 prune。
 echo "💾 磁盘预检查..."
 FREE_KB=$(df / | awk 'NR==2 {print $4}')
@@ -294,12 +309,6 @@ printf '%s\n' \
       >/dev/null
 # 切断业务运行时的超级用户/数据库 owner 能力，使上面的 REVOKE 真正生效。
 ROLE_MIGRATION_APPLIED=0
-stop_funding_collector_if_running() {
-  # Exact container only; never stop sibling AI Tuner or trading services.
-  if docker inspect ai-tuner-funding-schedule >/dev/null 2>&1; then
-    docker stop ai-tuner-funding-schedule >/dev/null
-  fi
-}
 rollback_role_migration() {
   rc=$?
   trap - ERR

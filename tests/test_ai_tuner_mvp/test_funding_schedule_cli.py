@@ -120,6 +120,9 @@ def test_image_and_deploy_script_include_separate_runtime_boundary():
     assert "FUNDING_PERMISSION_BOUNDARY_OK" in runtime
     gate = runtime.index('if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then')
     assert runtime.index("docker compose up -d --remove-orphans") < gate
+    normal_branch = runtime.index("# calibrated-first-create end")
+    first_normal_compose = runtime.index("PROJECT_IDS=$(docker compose ps", normal_branch)
+    assert "\nstop_funding_collector_if_running\n" in runtime[normal_branch:first_normal_compose]
     assert runtime.index("docker compose --profile funding-schedule up -d --no-deps ai-tuner-funding-schedule") > gate
     assert "docker compose restart ai-tuner-funding-schedule" not in runtime
     assert "docker stop ai-tuner-funding-schedule" in runtime
