@@ -238,9 +238,70 @@ async def test_db_failure_still_exits_when_alert_state_cannot_be_written(tmp_pat
     repo = SimpleNamespace(slots_with_runs=AsyncMock(side_effect=RuntimeError("secret")))
     notifier = SimpleNamespace(send=AsyncMock(return_value=True))
     monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT, alert_state_path=invalid_path)
-    with pytest.raises(RuntimeError, match="monitor database unavailable"):
+    with pytest.raises(RuntimeError, match="alert state unavailable"):
         await monitor.check(SLOT + timedelta(minutes=3))
-    notifier.send.assert_awaited_once()
+    notifier.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_slot_state_failure_exits_without_heartbeat_or_external_alert(tmp_path):
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor, _monitor_loop
+
+    invalid_path = tmp_path / "absent-directory" / "alerts.json"
+    heartbeat = tmp_path / "heartbeat"
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()))
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT, alert_state_path=invalid_path)
+    with pytest.raises(RuntimeError, match="alert state unavailable"):
+        await monitor.check(SLOT + timedelta(minutes=3))
+    notifier.send.assert_not_awaited()
+    assert not heartbeat.exists()
+
+
+@pytest.mark.asyncio
+async def test_empty_successful_query_cannot_bootstrap_health_without_writable_state_dir(tmp_path):
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor, _monitor_loop
+
+    heartbeat = tmp_path / "heartbeat"
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()))
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT + timedelta(days=1),
+                                 alert_state_path=tmp_path / "absent-directory" / "alerts.json")
+    with pytest.raises(RuntimeError, match="alert state unavailable"):
+        await asyncio.wait_for(_monitor_loop(monitor, heartbeat_path=heartbeat), 0.2)
+    assert not heartbeat.exists()
+    notifier.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_unreadable_alert_state_fails_closed_before_notifier(tmp_path):
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor
+
+    state = tmp_path / "alerts.json"
+    state.write_text("{bad-json", encoding="utf-8")
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()))
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT, alert_state_path=state)
+    with pytest.raises(RuntimeError, match="alert state unavailable"):
+        await monitor.check(SLOT + timedelta(minutes=3))
+    notifier.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_successful_db_query_cannot_refresh_heartbeat_when_state_clear_fails(tmp_path):
+    from ai_tuner.funding_schedule.cli import MissingSlotMonitor, _monitor_loop
+
+    heartbeat = tmp_path / "heartbeat"
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()))
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    monitor = MissingSlotMonitor(repo, notifier, start_slot=SLOT + timedelta(days=1),
+                                 alert_state_path=tmp_path / "alerts.json")
+    monitor.alert_state.clear = MagicMock(side_effect=PermissionError("secret"))
+    with pytest.raises(RuntimeError, match="alert state unavailable") as raised:
+        await asyncio.wait_for(_monitor_loop(monitor, heartbeat_path=heartbeat), 0.2)
+    assert "secret" not in str(raised.value)
+    assert not heartbeat.exists()
+    notifier.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -290,7 +351,7 @@ async def test_monitor_heartbeat_only_after_successful_persisted_query(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_db_connect_is_bounded_and_alerted(monkeypatch):
+async def test_db_connect_is_bounded_and_alerted(tmp_path, monkeypatch):
     from ai_tuner.funding_schedule import cli
 
     async def hanging_connect():
@@ -300,6 +361,7 @@ async def test_db_connect_is_bounded_and_alerted(monkeypatch):
     binance = SimpleNamespace(close=AsyncMock())
     notifier = SimpleNamespace(send=AsyncMock(return_value=True), close=AsyncMock())
     monkeypatch.setattr(cli, "_runtime", lambda: (db, binance, notifier, MagicMock()))
+    monkeypatch.setattr(cli, "ALERT_STATE_PATH", tmp_path / "alerts.json")
     real_wait_for = asyncio.wait_for
 
     async def capture_wait_for(awaitable, timeout):
@@ -327,6 +389,7 @@ async def test_daemon_clears_previous_process_heartbeat_before_connect(tmp_path,
     db = SimpleNamespace(connect=check_cleared_then_fail, disconnect=AsyncMock())
     notifier = SimpleNamespace(send=AsyncMock(return_value=True), close=AsyncMock())
     monkeypatch.setattr(cli, "HEARTBEAT_PATH", heartbeat)
+    monkeypatch.setattr(cli, "ALERT_STATE_PATH", tmp_path / "alerts.json")
     monkeypatch.setattr(cli, "_runtime", lambda: (db, SimpleNamespace(close=AsyncMock()), notifier, MagicMock()))
     with pytest.raises(RuntimeError, match="database unavailable"):
         await cli._run("daemon")
@@ -334,11 +397,11 @@ async def test_daemon_clears_previous_process_heartbeat_before_connect(tmp_path,
 
 
 @pytest.mark.asyncio
-async def test_consecutive_failures_alert_at_threshold_without_secret_leak():
+async def test_consecutive_failures_alert_at_threshold_without_secret_leak(tmp_path):
     from ai_tuner.funding_schedule.cli import FailureTracker
 
     notifier = SimpleNamespace(send=AsyncMock())
-    tracker = FailureTracker(notifier, threshold=2)
+    tracker = FailureTracker(notifier, threshold=2, alert_state_path=tmp_path / "alerts.json")
     failure = SimpleNamespace(status="failed", failure_code="FETCH_FAILED", symbol_count=0)
     await tracker.observe(failure, SLOT)
     assert notifier.send.await_count == 0
@@ -353,14 +416,17 @@ async def test_consecutive_failures_alert_at_threshold_without_secret_leak():
 
 
 @pytest.mark.asyncio
-async def test_failed_notification_is_retried_on_next_failed_slot():
+async def test_failed_notification_is_retried_on_next_failed_slot(tmp_path):
     from ai_tuner.funding_schedule.cli import FailureTracker
 
     notifier = SimpleNamespace(send=AsyncMock(side_effect=[False, True]))
-    tracker = FailureTracker(notifier, threshold=2)
+    clock = [SLOT + timedelta(minutes=5)]
+    tracker = FailureTracker(notifier, threshold=2, alert_state_path=tmp_path / "alerts.json",
+                             clock=lambda: clock[0])
     failure = SimpleNamespace(status="failed", failure_code="FETCH_FAILED", symbol_count=0)
     await tracker.observe(failure, SLOT)
     await tracker.observe(failure, SLOT + timedelta(minutes=5))
+    clock[0] = SLOT + timedelta(minutes=10)
     await tracker.observe(failure, SLOT + timedelta(minutes=10))
     assert notifier.send.await_count == 2
 
@@ -372,24 +438,54 @@ async def test_persisted_collection_streak_does_not_realert_each_restart(tmp_pat
     state = tmp_path / "alerts.json"
     notifier = SimpleNamespace(send=AsyncMock(side_effect=[False, True]))
     failure = SimpleNamespace(status="failed", failure_code="FETCH_FAILED", symbol_count=0)
-    first = FailureTracker(notifier, threshold=2, alert_state_path=state)
+    clock = [SLOT + timedelta(minutes=5)]
+    first = FailureTracker(notifier, threshold=2, alert_state_path=state, clock=lambda: clock[0])
     await first.observe(failure, SLOT)
     await first.observe(failure, SLOT + timedelta(minutes=5))
     assert notifier.send.await_count == 1
 
-    restarted = FailureTracker(notifier, threshold=2, alert_state_path=state)
+    clock[0] = SLOT + timedelta(minutes=5, seconds=30)
+    restarted = FailureTracker(notifier, threshold=2, alert_state_path=state, clock=lambda: clock[0])
     restarted.consecutive = 2
     await restarted.alert_persisted_streak(SLOT + timedelta(minutes=5, seconds=30))
     assert notifier.send.await_count == 1
+    clock[0] = SLOT + timedelta(minutes=6)
     await restarted.alert_persisted_streak(SLOT + timedelta(minutes=6))
     assert notifier.send.await_count == 2
 
-    restarted_again = FailureTracker(notifier, threshold=2, alert_state_path=state)
+    restarted_again = FailureTracker(notifier, threshold=2, alert_state_path=state,
+                                     clock=lambda: SLOT + timedelta(minutes=10))
     restarted_again.consecutive = 2
     await restarted_again.alert_persisted_streak(SLOT + timedelta(minutes=10))
     assert notifier.send.await_count == 2
     await restarted_again.observe(SimpleNamespace(status="success", failure_code=None, symbol_count=2), SLOT)
     assert not state.exists()
+
+
+@pytest.mark.asyncio
+async def test_collection_streak_cooldown_starts_at_actual_send_not_old_slot(tmp_path):
+    from ai_tuner.funding_schedule.cli import FailureTracker
+
+    state = tmp_path / "alerts.json"
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    failure = SimpleNamespace(status="failed", failure_code="FETCH_FAILED", symbol_count=0)
+    sent_at = SLOT + timedelta(minutes=20)
+    tracker = FailureTracker(notifier, threshold=1, alert_state_path=state, clock=lambda: sent_at)
+    await tracker.observe(failure, SLOT)
+    assert notifier.send.await_count == 1
+    assert SLOT.isoformat() in notifier.send.await_args.args[0]
+
+    restarted = FailureTracker(notifier, threshold=1, alert_state_path=state,
+                               clock=lambda: sent_at + timedelta(minutes=14))
+    restarted.consecutive = 1
+    await restarted.alert_persisted_streak(SLOT + timedelta(minutes=5))
+    assert notifier.send.await_count == 1
+
+    after_cooldown = FailureTracker(notifier, threshold=1, alert_state_path=state,
+                                    clock=lambda: sent_at + timedelta(minutes=15))
+    after_cooldown.consecutive = 1
+    await after_cooldown.alert_persisted_streak(SLOT + timedelta(minutes=10))
+    assert notifier.send.await_count == 2
 
 
 def test_alert_state_prunes_old_missing_slots_but_keeps_failure_events(tmp_path):
@@ -472,7 +568,7 @@ def test_image_and_deploy_script_include_separate_runtime_boundary():
 
 
 @pytest.mark.asyncio
-async def test_db_connect_failure_sends_immediate_sanitized_alert(monkeypatch):
+async def test_db_connect_failure_sends_immediate_sanitized_alert(tmp_path, monkeypatch):
     from ai_tuner.funding_schedule import cli
 
     secret = "secret-value-should-not-leak"
@@ -480,6 +576,7 @@ async def test_db_connect_failure_sends_immediate_sanitized_alert(monkeypatch):
     binance = SimpleNamespace(close=AsyncMock())
     notifier = SimpleNamespace(send=AsyncMock(return_value=True), close=AsyncMock())
     monkeypatch.setattr(cli, "_runtime", lambda: (db, binance, notifier, MagicMock()))
+    monkeypatch.setattr(cli, "ALERT_STATE_PATH", tmp_path / "alerts.json")
     with pytest.raises(RuntimeError) as raised:
         await cli._run("daemon")
     assert secret not in str(raised.value)
@@ -490,7 +587,7 @@ async def test_db_connect_failure_sends_immediate_sanitized_alert(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_daemon_restores_failed_slots_before_next_collection(monkeypatch):
+async def test_daemon_restores_failed_slots_before_next_collection(tmp_path, monkeypatch):
     from ai_tuner.funding_schedule import cli
 
     repo = SimpleNamespace(recent_failed_streak=AsyncMock(return_value=2),
@@ -500,6 +597,7 @@ async def test_daemon_restores_failed_slots_before_next_collection(monkeypatch):
         status="failed", failure_code="FETCH_FAILED", symbol_count=0,
     )))
     notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    monkeypatch.setattr(cli, "ALERT_STATE_PATH", tmp_path / "alerts.json")
 
     async def stop_after_alert(_):
         if notifier.send.await_count:
@@ -513,29 +611,31 @@ async def test_daemon_restores_failed_slots_before_next_collection(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_failed_streak_restore_sends_sanitized_startup_alert():
-    from ai_tuner.funding_schedule.cli import run_daemon
+async def test_failed_streak_restore_sends_sanitized_startup_alert(tmp_path, monkeypatch):
+    from ai_tuner.funding_schedule import cli
 
     repo = SimpleNamespace(recent_failed_streak=AsyncMock(
         side_effect=RuntimeError("password=do-not-log"),
     ))
     collector = SimpleNamespace(repository=repo)
     notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    monkeypatch.setattr(cli, "ALERT_STATE_PATH", tmp_path / "alerts.json")
     with pytest.raises(RuntimeError) as raised:
-        await run_daemon(collector, notifier)
+        await cli.run_daemon(collector, notifier)
     assert "do-not-log" not in str(raised.value)
     notifier.send.assert_awaited_once()
     assert "do-not-log" not in notifier.send.await_args.args[0]
 
 
 @pytest.mark.asyncio
-async def test_runtime_build_failure_alerts_when_webhook_is_available(monkeypatch):
+async def test_runtime_build_failure_alerts_when_webhook_is_available(tmp_path, monkeypatch):
     from ai_tuner.funding_schedule import cli
 
     notifier = SimpleNamespace(send=AsyncMock(return_value=True), close=AsyncMock())
     monkeypatch.setenv("FEISHU_WEBHOOK_TUNER", "test-webhook")
     monkeypatch.setattr(cli, "_runtime", lambda: (_ for _ in ()).throw(RuntimeError("secret")))
     monkeypatch.setattr(cli, "NotificationClient", lambda **kwargs: notifier)
+    monkeypatch.setattr(cli, "ALERT_STATE_PATH", tmp_path / "alerts.json")
     with pytest.raises(RuntimeError) as raised:
         await cli._run("daemon")
     assert "secret" not in str(raised.value)

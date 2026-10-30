@@ -14,6 +14,13 @@ DELIVERED_FAILURE_COOLDOWN = timedelta(minutes=15)
 MISSING_SLOT_RETENTION = timedelta(hours=24)
 
 
+class AlertStateUnavailable(RuntimeError):
+    """Persistent alert delivery state cannot be trusted; never emit blindly."""
+
+    def __init__(self) -> None:
+        super().__init__("funding schedule alert state unavailable")
+
+
 class PersistentAlertState:
     """Separate attempted sends from confirmed delivery across process restarts."""
 
@@ -21,21 +28,31 @@ class PersistentAlertState:
         self.path = path
 
     def _read(self) -> dict:
+        # Absence of the file is normal only inside a writable, dedicated
+        # state directory. Otherwise a successful no-gap DB check could
+        # refresh health while alert deduplication is impossible.
+        if (not self.path.parent.is_dir() or self.path.parent.is_symlink()
+                or not os.access(self.path.parent, os.W_OK | os.X_OK)):
+            raise AlertStateUnavailable()
         try:
             payload = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(payload, dict):
-                return {}
+                raise AlertStateUnavailable()
             # Prior revision stored only an attempt, not delivery proof.
             if "at" in payload:
                 return {"RUN_QUERY_FAILED": {"attempted_at": payload["at"]}}
             return payload
-        except (OSError, ValueError):
+        except FileNotFoundError:
             return {}
+        except (OSError, ValueError) as exc:
+            raise AlertStateUnavailable() from None
 
     def should_attempt(self, key: str, now: datetime, *, delivered_cooldown: timedelta | None) -> bool:
         entry = self._read().get(key)
         if not isinstance(entry, dict):
-            return True
+            if entry is None:
+                return True
+            raise AlertStateUnavailable()
         try:
             delivered = entry.get("delivered_at")
             if delivered is not None:
@@ -50,7 +67,7 @@ class PersistentAlertState:
                 if timedelta(0) <= elapsed < ATTEMPT_COOLDOWN:
                     return False
         except (ValueError, TypeError, OverflowError):
-            return True
+            raise AlertStateUnavailable() from None
         return True
 
     def mark_attempt(self, key: str, now: datetime) -> None:
@@ -77,18 +94,26 @@ class PersistentAlertState:
         state = self._read()
         if key in state:
             del state[key]
-            if state:
-                self._write(state)
-            else:
-                self.path.unlink(missing_ok=True)
+            try:
+                if state:
+                    self._write(state)
+                else:
+                    self.path.unlink(missing_ok=True)
+            except OSError:
+                raise AlertStateUnavailable() from None
 
     def _write(self, state: dict) -> None:
         temporary = self.path.with_name(self.path.name + f".{os.getpid()}.tmp")
         try:
             temporary.write_text(json.dumps(state, sort_keys=True, separators=(",", ":")), encoding="utf-8")
             os.replace(temporary, self.path)
+        except OSError:
+            raise AlertStateUnavailable() from None
         finally:
-            temporary.unlink(missing_ok=True)
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     @staticmethod
     def _prune_missing_slots(state: dict, now: datetime) -> None:

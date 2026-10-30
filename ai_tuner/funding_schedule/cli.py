@@ -7,6 +7,7 @@ import asyncio
 from datetime import datetime, timedelta, timezone
 import os
 from pathlib import Path
+from typing import Callable
 from uuid import uuid4
 
 import structlog
@@ -15,7 +16,7 @@ from shared.database import DatabaseManager
 from shared.notification import NotificationClient
 from shared.readonly_client import ReadOnlyBinanceClient
 
-from .alert_state import ALERT_STATE_PATH, DELIVERED_FAILURE_COOLDOWN, PersistentAlertState
+from .alert_state import ALERT_STATE_PATH, AlertStateUnavailable, DELIVERED_FAILURE_COOLDOWN, PersistentAlertState
 from .collector import CollectionResult, FundingScheduleCollector
 from .health import HEARTBEAT_PATH, clear_monitor_heartbeat, write_monitor_heartbeat
 from .repository import FundingScheduleRepository
@@ -90,23 +91,22 @@ async def run_once(collector: FundingScheduleCollector, notifier: NotificationCl
 
 class FailureTracker:
     def __init__(self, notifier: NotificationClient, *, threshold: int = 3,
-                 alert_state_path: Path = ALERT_STATE_PATH) -> None:
+                 alert_state_path: Path | None = None,
+                 clock: Callable[[], datetime] = lambda: datetime.now(timezone.utc)) -> None:
         if threshold < 1:
             raise ValueError("threshold must be positive")
         self.notifier = notifier
         self.threshold = threshold
         self.consecutive = 0
         self.alerted = False
-        self.alert_state = PersistentAlertState(alert_state_path)
+        self.alert_state = PersistentAlertState(ALERT_STATE_PATH if alert_state_path is None else alert_state_path)
+        self.clock = clock
 
     async def observe(self, result: CollectionResult, slot: datetime) -> None:
         if result.status == "success":
             self.consecutive = 0
             self.alerted = False
-            try:
-                self.alert_state.clear("COLLECTION_STREAK")
-            except OSError as state_error:
-                logger.error("资金费日程连续失败告警状态清理失败", error_type=type(state_error).__name__)
+            self.alert_state.clear("COLLECTION_STREAK")
             return
         self.consecutive += 1
         if self.consecutive < self.threshold or self.alerted:
@@ -122,7 +122,7 @@ class FailureTracker:
             self.notifier, self.alert_state, "COLLECTION_STREAK",
             f"AI Tuner 资金费日程采集连续 {self.threshold} 个槽位失败；"
             f"最近槽位 {slot.isoformat()}，失败代码 {failure_code}",
-            now=_utc(slot), delivered_cooldown=DELIVERED_FAILURE_COOLDOWN,
+            now=_utc(self.clock()), delivered_cooldown=DELIVERED_FAILURE_COOLDOWN,
         )
 
 
@@ -131,11 +131,11 @@ class MissingSlotMonitor:
 
     def __init__(self, repository: FundingScheduleRepository, notifier: NotificationClient,
                  *, start_slot: datetime,
-                 alert_state_path: Path = ALERT_STATE_PATH) -> None:
+                 alert_state_path: Path | None = None) -> None:
         self.repository = repository
         self.notifier = notifier
         self.start_slot = _utc(start_slot)
-        self.alert_state = PersistentAlertState(alert_state_path)
+        self.alert_state = PersistentAlertState(ALERT_STATE_PATH if alert_state_path is None else alert_state_path)
 
     async def check(self, now: datetime) -> None:
         closed = current_slot(_utc(now) - timedelta(seconds=120) - _MONITOR_GRACE)
@@ -158,8 +158,9 @@ class MissingSlotMonitor:
         try:
             self.alert_state.clear("RUN_QUERY_FAILED")
             self.alert_state.clear("STARTUP_DB_UNAVAILABLE")
-        except OSError as state_error:
-            logger.error("资金费日程告警限频状态清理失败", error_type=type(state_error).__name__)
+        except OSError:
+            logger.error("资金费日程告警状态清理失败")
+            raise AlertStateUnavailable() from None
         if first > closed:
             return
         slot = first
@@ -177,28 +178,30 @@ class MissingSlotMonitor:
 async def _send_limited_alert(notifier: NotificationClient, state: PersistentAlertState,
                               key: str, message: str, *, now: datetime,
                               delivered_cooldown: timedelta | None) -> bool:
-    if not state.should_attempt(key, now, delivered_cooldown=delivered_cooldown):
-        return False
     try:
+        if not state.should_attempt(key, now, delivered_cooldown=delivered_cooldown):
+            return False
         state.mark_attempt(key, now)
-    except OSError as state_error:
-        logger.error("资金费日程告警限频状态写入失败", error_type=type(state_error).__name__)
+    except AlertStateUnavailable:
+        logger.error("资金费日程告警状态不可用", key=key)
+        raise
     try:
         sent = await asyncio.wait_for(
             notifier.send(message, level="error", project="tuner"),
             timeout=_NOTIFICATION_TIMEOUT_SECONDS,
         )
-        if not sent:
-            logger.error("资金费日程告警未送达", key=key)
-            return False
-        try:
-            state.mark_delivered(key, now)
-        except OSError as state_error:
-            logger.error("资金费日程告警送达状态写入失败", error_type=type(state_error).__name__)
-        return True
     except Exception as exc:
         logger.error("资金费日程告警发送失败", key=key, error_type=type(exc).__name__)
         return False
+    if not sent:
+        logger.error("资金费日程告警未送达", key=key)
+        return False
+    try:
+        state.mark_delivered(key, now)
+    except AlertStateUnavailable:
+        logger.error("资金费日程告警送达状态不可用", key=key)
+        raise
+    return True
 
 
 async def _collection_loop(collector: FundingScheduleCollector, notifier: NotificationClient,
