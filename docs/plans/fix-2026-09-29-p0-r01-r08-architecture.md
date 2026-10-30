@@ -22,7 +22,7 @@
 | 编号 | 决策 | 落地位置 |
 |------|------|---------|
 | **D1**（Q3，R03/R04） | 平仓单**强制带 `reduceOnly`**；被拒 `[-2022]` 时先 `_sync_position_with_exchange` 对账 / 先撤同向条件单，再按「剩余待平量」重试 | R03-F3、R04-F3 |
-| **D2**（Q4，R05） | 保护补挂达上限仍失败 → **仅告警 + 保持 `protection_pending`（不自动减仓）**；`on_exhausted` 默认 `"alert"` | R05-F4 |
+| **D2**（Q4，R05） | 保护补挂达上限仍失败 → **仅告警 + 保持 `protection_pending`（不自动减仓）**；`on_exhausted` 默认 `"alert"`（2026-10-29 边界补充：数量取整为 0 的 TP 腿记为 N/A，不计入缺失，硬止损始终全量保护） | R05-F4 |
 | **D3**（Q5，R06） | 部分成交经精度截断后小于最小下单量或为 0 → **减仓清零（平掉微仓）**；清零失败则告警 | R06-F2 边界 |
 | **D4**（Q8，全局） | R02 / R06 / R07 三处最高风险改动统一加 `enabled` 配置开关（默认 `true`） | §5/§9/§10 配置项 |
 
@@ -539,7 +539,7 @@ risk:
 
 | 分组 | 内容 |
 |------|------|
-| 保护完整性 | 三类保护单（硬止损 / TP1 / TP2）就位判定、`protection_pending` 标记、缺失腿列举、补挂节流（`protection_complete` / `apply_protection_order_ids` / `missing_protection_legs` / `protection_due` / `mark_protection_pending_if_incomplete`） |
+| 保护完整性 | 三类保护单（硬止损 / TP1 / TP2）就位判定、`protection_pending` 标记、缺失腿列举、补挂节流（`protection_complete` / `apply_protection_order_ids` / `missing_protection_legs` / `protection_due` / `mark_protection_pending_if_incomplete`）；2026-10-29 边界补充：数量取整为 0 的 TP 腿记为 N/A，不计入缺失，硬止损始终全量保护 |
 | 补挂收敛 | 一轮补挂、缺失腿补挂、TP 腿补挂、`on_exhausted` 处理、待补持仓节流补挂（`replenish_protection_round` / `replenish_missing_protection` / `place_missing_tp_level` / `retry_protection_pending` / `handle_protection_exhausted`） |
 | 占用薄编排 | 占用冲突告警、未登记持仓时释放占位、过期占用定时清理（`handle_claim_conflict` / `release_claim_if_no_position` / `maybe_cleanup_expired_claims`）；占用原语仍由 `shared.position_ownership` 提供，本模块只做薄编排，不重复实现占用逻辑 |
 | 入场执行 | 按实际成交量解析可建仓量、微仓清零（D3）、按真实成交量下保护单、构建/合并持仓状态（`resolve_entry_quantity` / `zero_micro_entry` / `fill_entry_protection_orders` / `build_position_state` / `merge_position`） |

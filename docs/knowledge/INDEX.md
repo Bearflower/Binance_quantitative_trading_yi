@@ -5,16 +5,17 @@
 2026-10-27 增量补充（未重跑全量巡检）：补入 2026-10-26/27 已存在但尚未进索引的 2 条 issue，并因“MTPCS 黄金校准版（XAU）”新增 1 条 decision 与 2026-10-27 每日变更；孤立/引用链分析仍沿用 2026-10-13 结论。
 2026-10-28 增量补充：容器日志跨重建保留任务新增 1 条 issue、1 条 decision 和 1 篇当日变更；仅核对本轮来源与链接，未重跑全库巡检。
 2026-10-29 增量补充：新影子容器纳入现有日志保留决策，更新 issue 与 decision 的适用范围，新增当日变更；无新增 issue 或 decision，未重跑全库巡检。
-条目统计: 问题 41 / 决策 15 / 变更日志累计 10
+2026-10-29 增量补充（第二次）：MTPCS 保护单精度与微仓腿 N/A 修复已是「已解决」状态（上游 `47af6c02` / `174de235` / `925d6693` 已合并，生产容器 `925d6693` 部署后观察 18 小时两类报错均为 0 次），新增 2 条 issue + 1 条 decision，并在当日变更中合并同一任务段落；合计问题 +2、决策 +1，变更日志文件数不变；未重跑全库巡检，孤立/引用链分析沿用 2026-10-13 结论。
+条目统计: 问题 43 / 决策 16 / 变更日志累计 10
 
 ## 巡检状态汇总
 | 状态   | 数量 | 判定规则              |
 |--------|------|-----------------------|
-| 正常   | 18   | 本次检查未发现需复查项，不代表重新验证全部结论（沿用旧口径：问题 41 − 待复查清单 23） |
+| 正常   | 20   | 本次检查未发现需复查项，不代表重新验证全部结论（沿用旧口径：问题 43 − 待复查清单 23） |
 | 待复查 | 23   | 存在证据缺口、相关代码变化或后续跟踪项等复查提示（= 待复查清单未勾选数，增量补充后实际） |
 | 孤立   | 8    | 无其他知识正文条目引用；索引入口不算入链，仅作提示（沿用 2026-10-13 全量链分析；本轮未重跑，未含 2026-10-15 及之后新增条目） |
 
-> 统计口径说明（2026-10-28 增量重算）：问题 = 问题模式库实际行数 41；决策 = 决策记录实际行数 15；待复查 = 待复查清单未勾选条目数 23；正常沿用旧表口径计为 41 − 23 = 18；孤立仍沿用 2026-10-13 全量链分析结论 8，本轮未重跑链分析。
+> 统计口径说明（2026-10-29 增量递增）：问题 = 问题模式库实际行数 43（41 + 本轮 2）；决策 = 决策记录实际行数 16（15 + 本轮 1）；变更日志累计仍为 10 个文件（本轮并入既有 2026-10-29，未新建文件）；待复查 = 待复查清单未勾选条目数 23（沿用）；正常沿用旧表口径计为 43 − 23 = 20；孤立仍沿用 2026-10-13 全量链分析结论 8，本轮未重跑链分析。
 
 > 冷启动说明：5 条黄金样例的「审查」字段原均为「待审查」（仅表是否核对来源与表述，与状态互不混用）。2026-10-13 code-document-curator 完成首次放下时复核，5 条均已转「已审查」（其中 grid-min-quantity-unit 经「必要证据摘要」修正后转正）。
 >
@@ -31,6 +32,8 @@
 ## 问题模式库
 | ID | 标题 | 标签 | 日期 | 状态 |
 |----|------|------|------|------|
+| Binance_quantitative_trading-20261029-micro-leg-zero-protection-replenish-exhausted | 微仓比例腿取整为 0 致 TP1 始终挂不出，保护补挂耗尽并告警 missing=["TP1"] | bug,保护单,微仓,精度,btc_eth_aggressive,补挂,高优先级 | 2026-10-29 | 已解决 |
+| Binance_quantitative_trading-20261029-precision-key-camelcase-silent-fallback | 精度键名驼峰/下划线不一致致静默兜底，BNBUSDT 下单被交易所拒 -4003 | bug,精度,btc_eth,btc_eth_aggressive,保护单,静默失效,高优先级 | 2026-10-29 | 已解决 |
 | Binance_quantitative_trading-20261028-container-json-logs-lost-on-recreate | 容器重建后旧 json-file 日志无法查询 | 部署,Docker,日志,可观测性 | 2026-10-28 | 已解决 |
 | Binance_quantitative_trading-20261027-hrs-schema-bootstrap-single-try-skip | HRS 建表链路单 try 包裹致首条 DDL 失败跳过后续；universe 快照 SQL 注释被校验拦截 | bug,静默失效,hrs,数据库权限,DDL迁移,ai_tuner,SQL校验 | 2026-10-27 | 待复查 |
 | Binance_quantitative_trading-20261026-bnb-false-mutex-terminal-mark-missing-realized-pnl | 终态标记 SQL 缺 realized_pnl IS NULL 致平仓单被标 CLOSED、入场记录残留 NEW | bug,持仓归属,互斥,trade_records,终态标记,全策略 | 2026-10-26 | 待复查 |
@@ -76,6 +79,7 @@
 ## 决策记录
 | ID | 标题 | 日期 | 状态 | 替代入口 |
 |----|------|------|------|----------|
+| Binance_quantitative_trading-20261029-micro-leg-not-placeable-na-caliber | 微仓比例腿数量取整为 0 时按 N/A 处理，不补足最小下单量 | 2026-10-29 | 已采纳 | — |
 | Binance_quantitative_trading-20261028-journald-container-log-retention | 本项目容器 stdout 使用宿主机 journald 跨重建保留 | 2026-10-28 | 已采纳 | — |
 | Binance_quantitative_trading-20261027-xau-calibrated-shadow-isolation | XAU ATR 校准采用独立影子实例与独立八周观察窗口 | 2026-10-27 | 已采纳 | — |
 | Binance_quantitative_trading-20261019-mtpc-signal-persistence-dedup-and-status | MTPCS 系信号持久化：dedup_key 小时粒度幂等 + 仅 cancelled→executed 单向升级 + 有效信号按策略声明 status 过滤 | 2026-10-19 | 已采纳 | — |
@@ -95,7 +99,7 @@
 ## 每日变更（近 30 天）
 | 日期 | 变更数 | 摘要 |
 |------|--------|------|
-| 2026-10-29 | 1 | [container_log_retention_2026-10-29] 新影子服务 `mtcps-xau-calibrated-shadow` 先归档旧日志，再由 `74916f3` 单独切换至 journald；09:25 部署后 16/16 健康、16/16 驱动和当前日志均核验通过。详见[当日变更](./changelog/2026-10-29.md)。 |
+| 2026-10-29 | 2 | [container_log_retention_2026-10-29] 新影子服务 `mtcps-xau-calibrated-shadow` 先归档旧日志，再由 `74916f3` 单独切换至 journald；09:25 部署后 16/16 健康、16/16 驱动和当前日志均核验通过。[r05_r06_precision_and_na_legs_2026-10-29] 两处线上缺陷修复**已上线并观察 18 小时无复发**：精度键名驼峰/下划线不一致致静默兜底（`47af6c02`）、微仓比例腿取整为 0 致 TP1 补挂耗尽（`174de235` + `925d6693`）；生产容器 `trading_system-btc_eth_aggressive` 运行 `925d6693`，`DEPLOY_TIME=2026-10-29 07:38:27 UTC`、`DEPLOY_ID=00008101`，部署后 `[-4003] Quantity less than zero.` 0 次、`保护单补挂达上限仍未完整` 0 次；新增 issue 2 + decision 1。详见[当日变更](./changelog/2026-10-29.md)。 |
 | 2026-10-28 | 1 | [container_log_retention_2026-10-27] 在 14:30 维护窗口内将余下 11 个服务分批切换至 journald，交易容器逐个处理、PostgreSQL 最后处理；`fe43e9e` 于 15:02 部署成功，15/15 健康且日志可查，86 份归档校验通过；新增 issue 1 + decision 1，14 天实际留存待观察。详见[当日变更](./changelog/2026-10-28.md)。 |
 | 2026-10-27 | 3 | [xau_mtcps_calibrated_shadow_2026-10-27] “MTPCS 黄金校准版（XAU）”部署前实现收口：基于 MTCPS 原版且只校准 ATR，300 USDT 独立虚拟权益，每小时第 20 分运行；新增独立 container/instance/profile/run 标识、确定性 history bootstrap、不可变快照/manifest/YAML 哈希绑定和 Compose/CI 守护；2038 根有效 1h K 线生成 2025 个 ATR 样本，P25=`0.0016161930783960743`、P50=`0.3160363742979797`；原版/激进版观察期不重置，报告按同窗口比较；**未 push / 未部署 / 观察期未开始**；新增 decision 1 条。[schema-bootstrap-and-sql-comment_2026-10-27] 本日既有变更：HRS DDL 逐条失败隔离 + universe 快照 SQL 注释校验修复，补入 issue 索引。 |
 | 2026-10-20 | 2 | [xau-mtcps-shadow-pilot_2026-10-19] 「`mtcps-xau-shadow` 复用 btc-eth 镜像漏 COPY 兄弟包致 crash-loop」修复：2026-10-19 部署 Run 全绿后新增容器反复重启（`docker ps` 见 `Restarting`、`docker logs` 见 `ModuleNotFoundError: No module named 'strategies.btc_eth_aggressive'`）；根因为 `strategies/btc_eth/shadow/collector.py:29` import 兄弟包 `strategies.btc_eth_aggressive.strategy.BTCEthStrategy`，而 `strategies/btc_eth/Dockerfile` 原先只 `COPY strategies/btc_eth/`、该镜像不含 aggr 目录；修复=新增 `COPY strategies/btc_eth_aggressive/ /app/strategies/btc_eth_aggressive/` + 新增静态守护测试 `tests/test_strategies/test_shadow_image_dependencies.py`（解析 Dockerfile COPY vs shadow import 顶层包，变异验证 FAIL→PASS）；文档同步 `.trae/rules/deployment.md` §2.5、部署指南、`CLAUDE.md`、系统架构设计 §6.2；**代码已修、待重新部署验证**；沉淀 issue 1（**无新增 decision**）；另登记 1 条知悉项（镜像依赖与 CI diff 判定不一致，待独立评估）；**同轮第二处独立根因**：`mtcps-xau-shadow` compose 宿主 bind mount 空目录遮蔽镜像内烘焙 profile 配置致「profile 配置文件不存在」crash-loop——服务器上宿主目录 `./strategies/btc_eth/shadow/config` 为空（Docker 为不存在的 bind 源自动创建空目录），空目录**遮蔽**镜像经 `COPY strategies/btc_eth/` 烘焙的 `xau_original.yaml`/`xau_aggressive.yaml`；修复=compose 移除该遮蔽挂载 + profile 配置改由镜像烘焙为单一可信源（git 跟踪、运行期只读不写回）+ 新增静态守护测试 `tests/test_strategies/test_shadow_compose_config_mount.py`（解析 compose volumes 拦截遮蔽 shadow 目录的挂载）；文档同步 `.trae/rules/deployment.md` §2.5（升 v3.6）、部署指南、`CLAUDE.md`；**代码已修、待重新部署验证**；沉淀 issue 1（**无新增 decision**） |
