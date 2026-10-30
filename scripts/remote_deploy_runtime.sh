@@ -337,6 +337,11 @@ FUNDING_PERMISSION_BOUNDARY_OK=$(docker exec trading_system-postgres \
               AND rolcanlogin AND NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication))
       AND NOT EXISTS (SELECT 1 FROM pg_auth_members
                       WHERE member='ai_tuner_funding_writer'::regrole)
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_database d WHERE d.datname=current_database()
+          AND (d.datdba='ai_tuner_funding_writer'::regrole
+               OR has_database_privilege('ai_tuner_funding_writer',d.oid,'CREATE'))
+      )
       AND has_schema_privilege('ai_tuner_funding_writer','public','USAGE')
       AND NOT has_schema_privilege('ai_tuner_funding_writer','public','CREATE')
       AND NOT EXISTS (
@@ -355,11 +360,46 @@ FUNDING_PERMISSION_BOUNDARY_OK=$(docker exec trading_system-postgres \
       AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','UPDATE')
       AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','DELETE')
       AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','TRUNCATE')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','REFERENCES,TRIGGER')
       AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','UPDATE')
       AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','DELETE')
       AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','TRUNCATE')
-      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_universe_scan_runs','INSERT,UPDATE,DELETE,TRUNCATE')
-      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_universe_snapshots','INSERT,UPDATE,DELETE,TRUNCATE')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','REFERENCES,TRIGGER')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_universe_scan_runs','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_universe_snapshots','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_class c
+        WHERE c.oid IN ('public.ai_tuner_funding_schedule_runs'::regclass,
+                        'public.ai_tuner_funding_schedule_observations'::regclass)
+          AND c.relowner='ai_tuner_funding_writer'::regrole
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE c.relkind='S'
+          AND n.nspname NOT IN ('pg_catalog','information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+          AND n.nspname NOT LIKE 'pg_temp%'
+          AND has_sequence_privilege('ai_tuner_funding_writer',c.oid,'USAGE,SELECT,UPDATE')
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+          JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE a.attnum > 0 AND NOT a.attisdropped
+          AND c.relkind IN ('r','p','v','m','f')
+          AND n.nspname NOT IN ('pg_catalog','information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+          AND n.nspname NOT LIKE 'pg_temp%'
+          AND (
+            has_column_privilege('ai_tuner_funding_writer',c.oid,a.attnum,'UPDATE,REFERENCES')
+            OR ((n.nspname <> 'public' OR c.relname NOT IN (
+              'ai_tuner_funding_schedule_runs','ai_tuner_funding_schedule_observations'))
+              AND has_column_privilege('ai_tuner_funding_writer',c.oid,a.attnum,'INSERT'))
+            OR ((n.nspname <> 'public' OR c.relname NOT IN (
+              'ai_tuner_funding_schedule_runs','ai_tuner_funding_schedule_observations',
+              'ai_tuner_universe_scan_runs','ai_tuner_universe_snapshots'))
+              AND has_column_privilege('ai_tuner_funding_writer',c.oid,a.attnum,'SELECT'))
+          )
+      )
       AND NOT EXISTS (
         SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
         WHERE n.nspname NOT IN ('pg_catalog','information_schema')

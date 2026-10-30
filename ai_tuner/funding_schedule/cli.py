@@ -79,10 +79,17 @@ class FailureTracker:
         self.consecutive += 1
         if self.consecutive < self.threshold or self.alerted:
             return
+        await self._send_alert(slot, result.failure_code)
+
+    async def alert_persisted_streak(self, slot: datetime) -> None:
+        if self.consecutive >= self.threshold and not self.alerted:
+            await self._send_alert(slot, "PERSISTED_FAILED_STREAK")
+
+    async def _send_alert(self, slot: datetime, failure_code: str | None) -> None:
         try:
             sent = await self.notifier.send(
                 f"AI Tuner 资金费日程采集连续 {self.threshold} 个槽位失败；"
-                f"最近槽位 {slot.isoformat()}，失败代码 {result.failure_code}",
+                f"最近槽位 {slot.isoformat()}，失败代码 {failure_code}",
                 level="error", project="tuner",
             )
             self.alerted = bool(sent)
@@ -94,6 +101,16 @@ class FailureTracker:
 
 async def run_daemon(collector: FundingScheduleCollector, notifier: NotificationClient) -> None:
     tracker = FailureTracker(notifier)
+    first_slot = next_slot_after(datetime.now(timezone.utc))
+    try:
+        tracker.consecutive = await collector.repository.recent_failed_streak(
+            first_slot, limit=tracker.threshold,
+        )
+    except Exception as exc:
+        logger.error("资金费日程失败计数恢复失败", error_type=type(exc).__name__)
+        await _startup_alert(notifier, type(exc).__name__)
+        raise RuntimeError("funding schedule startup state unavailable") from None
+    await tracker.alert_persisted_streak(first_slot - _PERIOD)
     last_slot = None
     while True:
         slot = next_slot_after(datetime.now(timezone.utc), last_slot=last_slot)
@@ -123,10 +140,40 @@ def _runtime():
     return db, binance, notifier, FundingScheduleCollector(FundingScheduleRepository(db), binance)
 
 
-async def _run(command: str) -> int:
-    db, binance, notifier, collector = _runtime()
+async def _startup_alert(notifier: NotificationClient, error_type: str) -> None:
+    """Notify without emitting exception text, SQL DSNs, or credentials."""
     try:
-        await db.connect()
+        sent = await notifier.send(
+            f"AI Tuner 资金费日程采集启动失败（{error_type}）；采集器未就绪，请检查容器与数据库。",
+            level="error", project="tuner",
+        )
+        if not sent:
+            logger.error("资金费日程启动告警未送达")
+    except Exception as exc:
+        logger.error("资金费日程启动告警发送失败", error_type=type(exc).__name__)
+
+
+async def _run(command: str) -> int:
+    try:
+        db, binance, notifier, collector = _runtime()
+    except Exception as exc:
+        logger.error("资金费日程运行时初始化失败", error_type=type(exc).__name__)
+        if os.environ.get("FEISHU_WEBHOOK_TUNER"):
+            fallback = NotificationClient(
+                service_url=os.getenv("NOTIFICATION_SERVICE_URL", ""), use_direct_webhook=True,
+            )
+            try:
+                await _startup_alert(fallback, type(exc).__name__)
+            finally:
+                await fallback.close()
+        raise RuntimeError("funding schedule runtime initialization failed") from None
+    try:
+        try:
+            await db.connect()
+        except Exception as exc:
+            logger.error("资金费日程数据库连接失败", error_type=type(exc).__name__)
+            await _startup_alert(notifier, type(exc).__name__)
+            raise RuntimeError("funding schedule database unavailable") from None
         if command == "once":
             result = await run_once(collector, notifier, scheduled_at=current_slot(datetime.now(timezone.utc)))
             return 0 if result.status == "success" else 1

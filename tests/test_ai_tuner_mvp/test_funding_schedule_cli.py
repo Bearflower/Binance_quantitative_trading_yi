@@ -1,9 +1,11 @@
 """The prospective collector is an independent, least-privilege daemon."""
 
+import asyncio
+
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import yaml
@@ -117,8 +119,90 @@ def test_image_and_deploy_script_include_separate_runtime_boundary():
     assert "FUNDING_PERMISSION_BOUNDARY_OK" in runtime
     assert "pg_auth_members" in runtime
     assert "n.nspname NOT IN ('pg_catalog','information_schema')" in runtime
+    assert "has_database_privilege('ai_tuner_funding_writer'" in runtime
+    assert "has_sequence_privilege('ai_tuner_funding_writer'" in runtime
+    assert "has_column_privilege('ai_tuner_funding_writer'" in runtime
+    assert "'REFERENCES,TRIGGER'" in runtime
     assert "ai-tuner-funding-schedule" in runtime
     for table in ("ai_tuner_funding_schedule_runs", "ai_tuner_funding_schedule_observations"):
         assert table in runtime
     for privilege in ("UPDATE", "DELETE", "TRUNCATE"):
         assert f"NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','{privilege}')" in runtime
+
+
+@pytest.mark.asyncio
+async def test_db_connect_failure_sends_immediate_sanitized_alert(monkeypatch):
+    from ai_tuner.funding_schedule import cli
+
+    secret = "secret-value-should-not-leak"
+    db = SimpleNamespace(connect=AsyncMock(side_effect=RuntimeError(secret)), disconnect=AsyncMock())
+    binance = SimpleNamespace(close=AsyncMock())
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True), close=AsyncMock())
+    monkeypatch.setattr(cli, "_runtime", lambda: (db, binance, notifier, MagicMock()))
+    with pytest.raises(RuntimeError) as raised:
+        await cli._run("daemon")
+    assert secret not in str(raised.value)
+    notifier.send.assert_awaited_once()
+    assert secret not in notifier.send.await_args.args[0]
+    notifier.close.assert_awaited_once()
+    binance.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_daemon_restores_failed_slots_before_next_collection(monkeypatch):
+    from ai_tuner.funding_schedule import cli
+
+    repo = SimpleNamespace(recent_failed_streak=AsyncMock(return_value=2))
+    collector = SimpleNamespace(repository=repo, collect_once=AsyncMock(return_value=SimpleNamespace(
+        status="failed", failure_code="FETCH_FAILED", symbol_count=0,
+    )))
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+
+    async def stop_after_alert(_):
+        if notifier.send.await_count:
+            raise asyncio.CancelledError()
+
+    monkeypatch.setattr(cli.asyncio, "sleep", stop_after_alert)
+    with pytest.raises(asyncio.CancelledError):
+        await cli.run_daemon(collector, notifier)
+    repo.recent_failed_streak.assert_awaited_once()
+    notifier.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_failed_streak_restore_sends_sanitized_startup_alert():
+    from ai_tuner.funding_schedule.cli import run_daemon
+
+    repo = SimpleNamespace(recent_failed_streak=AsyncMock(
+        side_effect=RuntimeError("password=do-not-log"),
+    ))
+    collector = SimpleNamespace(repository=repo)
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    with pytest.raises(RuntimeError) as raised:
+        await run_daemon(collector, notifier)
+    assert "do-not-log" not in str(raised.value)
+    notifier.send.assert_awaited_once()
+    assert "do-not-log" not in notifier.send.await_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_runtime_build_failure_alerts_when_webhook_is_available(monkeypatch):
+    from ai_tuner.funding_schedule import cli
+
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True), close=AsyncMock())
+    monkeypatch.setenv("FEISHU_WEBHOOK_TUNER", "test-webhook")
+    monkeypatch.setattr(cli, "_runtime", lambda: (_ for _ in ()).throw(RuntimeError("secret")))
+    monkeypatch.setattr(cli, "NotificationClient", lambda **kwargs: notifier)
+    with pytest.raises(RuntimeError) as raised:
+        await cli._run("daemon")
+    assert "secret" not in str(raised.value)
+    notifier.send.assert_awaited_once()
+    assert "secret" not in notifier.send.await_args.args[0]
+    notifier.close.assert_awaited_once()
+
+
+def test_post_deploy_readiness_gate_does_not_equate_liveness_with_collection():
+    doc = (ROOT / "docs/deployment/ai-tuner-funding-schedule-readiness.md").read_text(encoding="utf-8")
+    assert "3" in doc and "scheduled" in doc.lower()
+    assert "liveness" in doc.lower()
+    assert "告警" in doc

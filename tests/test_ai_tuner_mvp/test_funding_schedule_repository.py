@@ -59,6 +59,8 @@ class FakeConnection:
 
     async def fetch(self, sql, *args):
         self.db.sql.append(sql)
+        if "bool_or(status='success')" in sql:
+            return self.db.failed_slot_rows
         if "ai_tuner_universe_snapshots" in sql:
             if "created_at <= $3" in sql and self.db.universe_snapshot_created_at > args[2]:
                 return []
@@ -86,6 +88,7 @@ class FakeDB:
         self.universe_run = {"observed_at": SLOT - timedelta(minutes=1), "symbol_count": 1, "created_at": SLOT - timedelta(minutes=1)}
         self.universe_symbols = ["SOLUSDT"]
         self.universe_snapshot_created_at = SLOT - timedelta(minutes=1)
+        self.failed_slot_rows = []
 
 
 def fixture():
@@ -217,4 +220,28 @@ def test_snapshot_created_after_slot_cannot_supply_historical_membership():
         db.universe_snapshot_created_at = SLOT + timedelta(seconds=1)
         with pytest.raises(MissingHistoricalUniverse):
             await FundingScheduleRepository(db).latest_universe("hrs", SLOT)
+    asyncio.run(exercise())
+
+
+def test_persisted_streak_counts_only_contiguous_failed_slots():
+    async def exercise():
+        db = FakeDB()
+        repo = FundingScheduleRepository(db)
+        next_slot = SLOT + timedelta(minutes=5)
+        db.failed_slot_rows = [
+            {"scheduled_at": SLOT, "succeeded": False},
+            {"scheduled_at": SLOT - timedelta(minutes=5), "succeeded": False},
+        ]
+        assert await repo.recent_failed_streak(next_slot, limit=3) == 2
+        db.failed_slot_rows = [
+            {"scheduled_at": SLOT, "succeeded": False},
+            {"scheduled_at": SLOT - timedelta(minutes=10), "succeeded": False},
+        ]
+        assert await repo.recent_failed_streak(next_slot, limit=3) == 1
+        db.failed_slot_rows = [
+            {"scheduled_at": SLOT, "succeeded": True},
+            {"scheduled_at": SLOT - timedelta(minutes=5), "succeeded": False},
+        ]
+        assert await repo.recent_failed_streak(next_slot, limit=3) == 0
+        assert any("GROUP BY scheduled_at" in sql for sql in db.sql)
     asyncio.run(exercise())

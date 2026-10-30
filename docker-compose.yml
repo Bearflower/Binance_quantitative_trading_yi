@@ -491,6 +491,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
+    # Liveness only. Readiness requires three successful scheduled DB batches
+    # and a delivered alert; see docs/deployment/ai-tuner-funding-schedule-readiness.md.
     healthcheck:
       test: ["CMD", "python3", "-c", "import sys; sys.exit(0 if b'ai_tuner.funding_schedule.cli' in open('/proc/1/cmdline','rb').read() else 1)"]
       interval: 30s

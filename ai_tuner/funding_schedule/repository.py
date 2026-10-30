@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 from typing import Any, Mapping, Optional, Tuple
@@ -106,6 +106,35 @@ def _stored_values(row: Mapping[str, Any], columns: Tuple[str, ...]) -> Tuple[An
 class FundingScheduleRepository:
     def __init__(self, db) -> None:
         self.db = db
+
+    async def recent_failed_streak(self, next_slot: datetime, *, limit: int = 3) -> int:
+        """Restore only contiguous failed five-minute slots before a daemon restart.
+
+        Multiple immutable attempts for one slot are collapsed: any success
+        makes the slot successful. A missing slot breaks the streak rather than
+        silently treating downtime as a persisted failure.
+        """
+        if limit < 1 or next_slot.tzinfo is None or next_slot.utcoffset() != timedelta(0):
+            raise ValueError("positive limit and UTC-aware next_slot required")
+        if not self.db.pool:
+            await self.db.connect()
+        async with self.db.pool.acquire() as conn:
+            rows = await conn.fetch(
+                """SELECT scheduled_at, bool_or(status='success') AS succeeded
+                   FROM public.ai_tuner_funding_schedule_runs
+                   WHERE scheduled_at >= $1::timestamptz
+                     AND scheduled_at < $2::timestamptz
+                   GROUP BY scheduled_at ORDER BY scheduled_at DESC""",
+                next_slot - timedelta(minutes=5 * limit), next_slot,
+            )
+        expected = next_slot - timedelta(minutes=5)
+        streak = 0
+        for row in rows:
+            if streak >= limit or row["scheduled_at"] != expected or row["succeeded"]:
+                break
+            streak += 1
+            expected -= timedelta(minutes=5)
+        return streak
 
     async def latest_universe(self, strategy_id: str, scheduled_at: datetime) -> Tuple[str, ...]:
         """Distinguish a proven empty scan from missing historical membership."""
