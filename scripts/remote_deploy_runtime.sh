@@ -183,7 +183,8 @@ docker compose run -T --rm --no-deps grid-realtime \
   python -m strategies.grid.realtime.reference_store \
   --db-path /app/data/grid_realtime.sqlite3
 
-# 4. 只更新镜像变了的容器（compose up -d 自动检测）
+# 4. 只更新镜像变了的容器（compose up -d 自动检测）。资金费采集器
+# 位于 funding-schedule profile，不在全局 up 中启动/重建。
 echo "🔄 docker compose up -d..."
 docker compose up -d --remove-orphans
 
@@ -293,10 +294,17 @@ printf '%s\n' \
       >/dev/null
 # 切断业务运行时的超级用户/数据库 owner 能力，使上面的 REVOKE 真正生效。
 ROLE_MIGRATION_APPLIED=0
+stop_funding_collector_if_running() {
+  # Exact container only; never stop sibling AI Tuner or trading services.
+  if docker inspect ai-tuner-funding-schedule >/dev/null 2>&1; then
+    docker stop ai-tuner-funding-schedule >/dev/null
+  fi
+}
 rollback_role_migration() {
   rc=$?
   trap - ERR
   set +e
+  stop_funding_collector_if_running || echo "❌ 资金费采集器停止失败，需人工立即隔离"
   if [ "$ROLE_MIGRATION_REQUIRED" = "1" ] && [ "$ROLE_MIGRATION_APPLIED" = "1" ]; then
     echo "⚠️ 权限迁移后门禁失败，恢复 trading_user 原权限和数据库 owner"
     docker exec trading_system-postgres \
@@ -415,10 +423,12 @@ FUNDING_PERMISSION_BOUNDARY_OK=$(docker exec trading_system-postgres \
     )::int" | tr -d '[:space:]')
 if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then
   echo "❌ AI Tuner 资金费日程采集权限边界验证失败，中止部署"
+  stop_funding_collector_if_running
   false
 fi
 docker compose restart ai-tuner-snapshot >/dev/null
-docker compose restart ai-tuner-funding-schedule >/dev/null
+# Only now may the profiled service start. --no-deps avoids touching postgres.
+docker compose --profile funding-schedule up -d --no-deps ai-tuner-funding-schedule
 echo "✅ init-scripts 全部执行完毕"
 # ==========================================================
 

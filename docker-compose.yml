@@ -469,6 +469,8 @@ services:
   ai-tuner-funding-schedule:
     image: ghcr.io/bearflower/trading-ai-tuner:latest
     container_name: ai-tuner-funding-schedule
+    # Excluded from global up; explicitly started only after DDL/password/ACL gate.
+    profiles: ["funding-schedule"]
     restart: unless-stopped
     command: ["python3", "-m", "ai_tuner.funding_schedule.cli", "daemon"]
     env_file:

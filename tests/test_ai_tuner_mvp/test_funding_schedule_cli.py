@@ -95,6 +95,7 @@ def test_compose_service_has_isolated_secret_and_no_trading_credentials():
     assert service["command"] == ["python3", "-m", "ai_tuner.funding_schedule.cli", "daemon"]
     assert service["env_file"] == [".secrets/ai_tuner_funding_schedule.env"]
     assert service["restart"] == "unless-stopped"
+    assert service["profiles"] == ["funding-schedule"]
     env = "\n".join(service["environment"])
     assert "BINANCE_API_KEY" not in env
     assert "BINANCE_API_SECRET" not in env
@@ -117,6 +118,11 @@ def test_image_and_deploy_script_include_separate_runtime_boundary():
     assert "chmod 600 \"$FUNDING_SECRET_FILE\"" in runtime
     assert "ALTER ROLE ai_tuner_funding_writer LOGIN PASSWORD :'funding_password'" in runtime
     assert "FUNDING_PERMISSION_BOUNDARY_OK" in runtime
+    gate = runtime.index('if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then')
+    assert runtime.index("docker compose up -d --remove-orphans") < gate
+    assert runtime.index("docker compose --profile funding-schedule up -d --no-deps ai-tuner-funding-schedule") > gate
+    assert "docker compose restart ai-tuner-funding-schedule" not in runtime
+    assert "docker stop ai-tuner-funding-schedule" in runtime
     assert "pg_auth_members" in runtime
     assert "n.nspname NOT IN ('pg_catalog','information_schema')" in runtime
     assert "has_database_privilege('ai_tuner_funding_writer'" in runtime
