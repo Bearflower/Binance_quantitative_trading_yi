@@ -70,6 +70,8 @@ def _make_strategy(**pm_overrides) -> HRSStrategy:
 
     mock_pm = MagicMock()
     mock_pm.zero_qty_threshold = 0.0001
+    mock_pm.target1_close_percent = 0.30
+    mock_pm.target2_close_percent = 0.40
     mock_pm.get_all_positions.return_value = {SYMBOL: _make_position()}
     mock_pm.detect_take_profit_fills.return_value = None
     mock_pm.check_time_stop.return_value = False
@@ -310,10 +312,14 @@ class TestReplenishTp1Mark:
         )
         strategy.position_manager.get_position.return_value = pos
 
-        def _mark(sym, target):
+        def _mark(sym, target, *, actual_remaining_quantity=None):
             """复刻真实 mark_target_reached 的比例缩减，供跟踪基准断言"""
             pos["target1_reached"] = True
-            pos["remaining_quantity"] *= 0.7
+            pos["remaining_quantity"] = (
+                actual_remaining_quantity
+                if actual_remaining_quantity is not None
+                else pos["remaining_quantity"] * 0.7
+            )
 
         strategy.position_manager.mark_target_reached.side_effect = _mark
         strategy.binance_client.get_position = AsyncMock(
@@ -322,7 +328,9 @@ class TestReplenishTp1Mark:
 
         await strategy._replenish_single_position(SYMBOL)
 
-        strategy.position_manager.mark_target_reached.assert_called_once_with(SYMBOL, 1)
+        strategy.position_manager.mark_target_reached.assert_called_once_with(
+            SYMBOL, 1, actual_remaining_quantity=70.0
+        )
         strategy.position_manager.sync_tracked_qty.assert_called_once_with(
             SYMBOL, pytest.approx(70.0)
         )
@@ -340,7 +348,8 @@ class TestReplenishTp1Mark:
         )
         strategy.position_manager.get_position.return_value = pos
 
-        def _mark(sym, target):
+        def _mark(sym, target, *, actual_remaining_quantity=None):
+            assert actual_remaining_quantity is None
             pos["target1_reached"] = True
             pos["remaining_quantity"] *= 0.7
 

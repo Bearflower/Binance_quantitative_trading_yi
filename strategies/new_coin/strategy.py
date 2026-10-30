@@ -1259,9 +1259,13 @@ class NewCoinStrategy(BaseStrategy):
         """
         try:
             now = datetime.now(timezone.utc)
-            # 本周一0点UTC
-            week_start = now - timedelta(days=now.weekday())
-            week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            # trade_records.executed_at 是 naive 北京时间；周一 UTC 00:00
+            # 触发时，复盘上一完整北京自然周 [上周一, 本周一)。
+            now_beijing = now.astimezone(BEIJING_TZ)
+            week_end = (now_beijing - timedelta(days=now_beijing.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            week_start = week_end - timedelta(days=7)
 
             # 写库名从统一来源获取（position_ownership.load_ownership_config）
             strategy_name = self.my_record_name
@@ -1273,11 +1277,13 @@ class NewCoinStrategy(BaseStrategy):
                 FROM trading.trade_records 
                 WHERE strategy = $1 
                 AND executed_at >= $2
+                AND executed_at < $3
                 AND realized_pnl IS NOT NULL
                 ORDER BY executed_at
                 """,
                 strategy_name,
-                week_start.replace(tzinfo=None)  # 传入数据库需要去掉时区标记
+                week_start.replace(tzinfo=None),
+                week_end.replace(tzinfo=None),
             )
 
             if not records:
@@ -1298,7 +1304,7 @@ class NewCoinStrategy(BaseStrategy):
             # 发送周报通知
             message = (
                 f"【新币做空策略周报】\n"
-                f"周期: {week_start.strftime('%m/%d')} - {now.strftime('%m/%d')}\n"
+                f"周期: {week_start.strftime('%m/%d')} - {week_end.strftime('%m/%d')}\n"
                 f"交易笔数: {total_trades}\n"
                 f"胜率: {win_rate:.0%} ({win_count}胜/{loss_count}负)\n"
                 f"盈亏比: {profit_ratio:.2f}\n"

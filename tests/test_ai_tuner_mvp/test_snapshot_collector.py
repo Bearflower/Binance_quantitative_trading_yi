@@ -51,15 +51,18 @@ async def test_collector_uses_only_observed_universe():
     binance.get_funding_rate = AsyncMock(return_value=0.0001)
     binance.get_ticker = AsyncMock(return_value={"lastPrice": "100", "quoteVolume": "5000"})
     market_cap = MagicMock()
-    market_cap.get_market_cap_with_provenance = AsyncMock(
-        return_value=SimpleNamespace(
-            value=100_000.0,
-            source="coingecko",
-            as_of=AS_OF.timestamp(),
-            available_at=AS_OF.timestamp(),
-            is_proxy=False,
-            missing_reason=None,
-        )
+    # 批量接口返回 {symbol: provenance} 映射
+    market_cap.get_batch_market_caps_with_provenance = AsyncMock(
+        return_value={
+            "BTCUSDT": SimpleNamespace(
+                value=100_000.0, source="coingecko", as_of=AS_OF.timestamp(),
+                available_at=AS_OF.timestamp(), is_proxy=False, missing_reason=None,
+            ),
+            "ETHUSDT": SimpleNamespace(
+                value=200_000.0, source="coingecko", as_of=AS_OF.timestamp(),
+                available_at=AS_OF.timestamp(), is_proxy=False, missing_reason=None,
+            ),
+        }
     )
     collector = SnapshotCollector(repository, binance, market_cap, concurrency=2)
 
@@ -88,11 +91,14 @@ async def test_single_symbol_failure_does_not_cancel_other_symbols():
     binance.get_funding_rate = AsyncMock(return_value=0.0001)
     binance.get_ticker = AsyncMock(return_value={"lastPrice": "100", "quoteVolume": "5000"})
     market_cap = MagicMock()
-    market_cap.get_market_cap_with_provenance = AsyncMock(
-        return_value=SimpleNamespace(
-            value=100_000.0, source="coingecko", as_of=AS_OF.timestamp(),
-            available_at=AS_OF.timestamp(), is_proxy=False, missing_reason=None,
-        )
+    # 批量接口只接收成功 symbol（BTCUSDT）的 oi_map
+    market_cap.get_batch_market_caps_with_provenance = AsyncMock(
+        return_value={
+            "BTCUSDT": SimpleNamespace(
+                value=100_000.0, source="coingecko", as_of=AS_OF.timestamp(),
+                available_at=AS_OF.timestamp(), is_proxy=False, missing_reason=None,
+            ),
+        }
     )
 
     summary = await SnapshotCollector(repository, binance, market_cap).collect_once(AS_OF)
@@ -113,10 +119,12 @@ async def test_raw_evidence_includes_market_cap_provenance_and_derivations():
     binance.get_funding_rate = AsyncMock(return_value=0.0001)
     binance.get_ticker = AsyncMock(return_value={"lastPrice": "100", "quoteVolume": "5000"})
     market_cap = MagicMock()
-    market_cap.get_market_cap_with_provenance = AsyncMock(return_value=SimpleNamespace(
-        value=100_000.0, source="coingecko", as_of=AS_OF.timestamp(),
-        available_at=AS_OF.timestamp(), is_proxy=False, missing_reason=None,
-    ))
+    market_cap.get_batch_market_caps_with_provenance = AsyncMock(return_value={
+        "BTCUSDT": SimpleNamespace(
+            value=100_000.0, source="coingecko", as_of=AS_OF.timestamp(),
+            available_at=AS_OF.timestamp(), is_proxy=False, missing_reason=None,
+        ),
+    })
 
     await SnapshotCollector(repository, binance, market_cap).collect_once(AS_OF)
     payload = repository.store_market_snapshot.await_args.args[0].raw_payload
@@ -163,3 +171,153 @@ async def test_backfill_supported_never_invents_historical_market_cap():
     assert snapshot.market_cap_usd is None
     assert snapshot.market_cap_source == "missing"
     assert snapshot.is_complete is False
+
+
+# ===========================================================================
+# 批量市值相关新增用例（AC-1 / AC-4 / AC-5 / AC-6）
+# ===========================================================================
+
+
+def _mk_prov(value, source, is_proxy=False, missing_reason=None):
+    """快速构造 provenance SimpleNamespace"""
+    return SimpleNamespace(
+        value=value, source=source, as_of=AS_OF.timestamp(),
+        available_at=AS_OF.timestamp(), is_proxy=is_proxy,
+        missing_reason=missing_reason,
+    )
+
+
+def _setup_binance_mocks():
+    """为 symbol 集合准备 binance mock（无状态，不依赖传入 symbols）"""
+    binance = MagicMock()
+    binance.get_open_interest = AsyncMock(return_value=10.0)
+    binance.get_funding_rate = AsyncMock(return_value=0.0001)
+    binance.get_ticker = AsyncMock(return_value={"lastPrice": "100", "quoteVolume": "5000"})
+    return binance
+
+
+@pytest.mark.asyncio
+async def test_batch_market_cap_called_once_per_bucket():
+    """AC-1：单桶批量市值只调用 1 次，且传参为阶段一成功的 symbol 集合"""
+    repository = MagicMock()
+    repository.latest_universe = AsyncMock(return_value={"BTCUSDT", "ETHUSDT", "DOGEUSDT"})
+    repository.store_market_snapshot = AsyncMock()
+    binance = _setup_binance_mocks()
+    market_cap = MagicMock()
+    market_cap.get_batch_market_caps_with_provenance = AsyncMock(return_value={
+        "BTCUSDT": _mk_prov(1e9, "coingecko"),
+        "ETHUSDT": _mk_prov(3e8, "coingecko"),
+        "DOGEUSDT": _mk_prov(1e7, "coingecko"),
+    })
+    collector = SnapshotCollector(repository, binance, market_cap, concurrency=3)
+
+    await collector.collect_once(AS_OF)
+
+    # 只调用 1 次
+    assert market_cap.get_batch_market_caps_with_provenance.await_count == 1
+    # 传参为完整 universe
+    args = market_cap.get_batch_market_caps_with_provenance.await_args.args
+    assert set(args[0]) == {"BTCUSDT", "ETHUSDT", "DOGEUSDT"}
+    # oi_map 正确传入
+    oi_map = args[1]
+    # oi_usd = oi * price = 10 * 100 = 1000
+    for sym in ["BTCUSDT", "ETHUSDT", "DOGEUSDT"]:
+        assert oi_map[sym] == 1000.0
+
+
+@pytest.mark.asyncio
+async def test_source_mapping_complete_proxy_missing():
+    """AC-4/AC-5：不同 source → 不同 summary 计数与 is_complete 口径"""
+    repository = MagicMock()
+    repository.latest_universe = AsyncMock(
+        return_value={"BTCUSDT", "ETHUSDT", "DOGEUSDT", "NOPEUSDT"}
+    )
+    repository.store_market_snapshot = AsyncMock()
+    binance = _setup_binance_mocks()
+    market_cap = MagicMock()
+    market_cap.get_batch_market_caps_with_provenance = AsyncMock(return_value={
+        "BTCUSDT": _mk_prov(1e9, "coingecko"),
+        "ETHUSDT": _mk_prov(3e8, "cache_hit"),
+        "DOGEUSDT": _mk_prov(20_000.0, "oi_proxy", is_proxy=True),   # oi_usd*20
+        "NOPEUSDT": _mk_prov(0.0, "missing", missing_reason="no data"),
+    })
+    collector = SnapshotCollector(repository, binance, market_cap, concurrency=4)
+
+    summary = await collector.collect_once(AS_OF)
+
+    assert summary.requested == 4
+    assert summary.complete == 2    # BTCUSDT(coingecko) + ETHUSDT(cache_hit)
+    assert summary.proxy == 1      # DOGEUSDT(oi_proxy)
+    assert summary.missing == 1    # NOPEUSDT(missing)
+    assert summary.failed == 0
+
+
+@pytest.mark.asyncio
+async def test_batch_returns_empty_map_then_each_symbol_degrades():
+    """AC-6：批量返回部分 oi_proxy/missing 时，collector 仍对全部 symbol 入库、failed==0
+
+    注：真正的整批异常兜底由 shared 层 get_batch_market_caps_with_provenance 内部完成
+    （另在 test_market_cap_provenance.py 覆盖）；这里 mock 出已降级的 provenance map，
+    验证 collector 不因 provenance 来源而跳过入库、不抬高 failed 计数。
+    """
+    repository = MagicMock()
+    repository.latest_universe = AsyncMock(
+        return_value={"BTCUSDT", "ETHUSDT", "NOPEUSDT"}
+    )
+    repository.store_market_snapshot = AsyncMock()
+    binance = _setup_binance_mocks()
+    market_cap = MagicMock()
+    # 全部返回缺失/代理（模拟批量层整体失败后 shared 层降级结果）
+    market_cap.get_batch_market_caps_with_provenance = AsyncMock(return_value={
+        "BTCUSDT": _mk_prov(20_000.0, "oi_proxy", is_proxy=True),   # oi_usd*20
+        "ETHUSDT": _mk_prov(20_000.0, "oi_proxy", is_proxy=True),
+        "NOPEUSDT": _mk_prov(0.0, "missing", missing_reason="no data"),
+    })
+    collector = SnapshotCollector(repository, binance, market_cap, concurrency=3)
+
+    summary = await collector.collect_once(AS_OF)
+
+    assert summary.requested == 3
+    assert summary.complete == 0
+    assert summary.proxy == 2
+    assert summary.missing == 1
+    assert summary.failed == 0      # 批量异常不抬高 failed 计数
+    # 全部入库
+    assert repository.store_market_snapshot.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_store_failure_midway_does_not_drop_remaining_symbols():
+    """阶段三单 symbol 入库异常：其余 symbol 仍入库，failed 计 1、complete 正确
+
+    回归深度审查阻断项：_persist_phase 曾缺 per-symbol 隔离，
+    任一 symbol 入库抛错会中断整桶后续 symbol。
+    """
+    repository = MagicMock()
+    repository.latest_universe = AsyncMock(
+        return_value={"AUSDT", "BUSDT", "CUSDT"}
+    )
+    stored = []
+
+    async def store(snapshot):
+        if snapshot.symbol == "BUSDT":
+            raise RuntimeError("db write failed")
+        stored.append(snapshot.symbol)
+
+    repository.store_market_snapshot = AsyncMock(side_effect=store)
+    binance = _setup_binance_mocks()
+    market_cap = MagicMock()
+    market_cap.get_batch_market_caps_with_provenance = AsyncMock(return_value={
+        "AUSDT": _mk_prov(1e9, "coingecko"),
+        "BUSDT": _mk_prov(1e9, "coingecko"),
+        "CUSDT": _mk_prov(1e9, "coingecko"),
+    })
+    collector = SnapshotCollector(repository, binance, market_cap, concurrency=3)
+
+    summary = await collector.collect_once(AS_OF)
+
+    # BUSDT 失败但不影响 AUSDT / CUSDT 入库
+    assert set(stored) == {"AUSDT", "CUSDT"}
+    assert summary.requested == 3
+    assert summary.complete == 2
+    assert summary.failed == 1

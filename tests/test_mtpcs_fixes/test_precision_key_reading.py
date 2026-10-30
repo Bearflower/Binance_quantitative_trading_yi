@@ -4,6 +4,7 @@
 测试使用假 client，不触碰交易所或数据库。
 """
 import importlib
+import asyncio
 import os
 import sys
 from decimal import Decimal
@@ -79,6 +80,13 @@ def position_cls(strategy_ctx):
 @pytest.fixture
 def strategy(strategy_ctx):
     """构造策略实例并注入测试 mock（binance/kline/notification/db 全 mock）"""
+    created_loop = None
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        # Python 3.9 在前序 asyncio 用例清理 loop 后，策略构造中的 Lock 仍需 loop。
+        created_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(created_loop)
     s = strategy_ctx.strategy_cls(
         config=strategy_ctx.config,
         binance_client=AsyncMock(),
@@ -88,7 +96,10 @@ def strategy(strategy_ctx):
     )
     s.binance.cancel_algo_order = AsyncMock()
     s.notification.send = AsyncMock()
-    return s
+    yield s
+    if created_loop is not None:
+        asyncio.set_event_loop(None)
+        created_loop.close()
 
 
 # ============================================================================
@@ -119,6 +130,25 @@ class TestPrecisionParams:
         tick_size, step_size = await s._get_protection_precision('BTCUSDT')
         assert tick_size == Decimal('0.0001')
         assert step_size == Decimal('0.001')
+
+    async def test_api_failure_default_is_not_cached(self, strategy):
+        """临时取数失败可降级一次；下次必须重查交易所真实过滤器。"""
+        s = strategy
+        real = {
+            'quantityPrecision': 2,
+            'pricePrecision': 4,
+            'stepSize': '0.01',
+            'tickSize': Decimal('0.0001'),
+        }
+        s.binance.get_symbol_info = AsyncMock(side_effect=[RuntimeError('timeout'), real])
+
+        fallback = await s._get_symbol_precision('BNBUSDT')
+        assert fallback['stepSize'] == '0.001'
+        assert 'BNBUSDT' not in s.symbol_precision
+
+        assert await s._get_symbol_precision('BNBUSDT') == real
+        assert await s._get_symbol_precision('BNBUSDT') == real
+        assert s.binance.get_symbol_info.await_count == 2
 
 
 # ============================================================================

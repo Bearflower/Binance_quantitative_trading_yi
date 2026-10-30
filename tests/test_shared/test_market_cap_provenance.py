@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from shared.market_cap import MarketCapService
+from shared.market_cap import CoinGeckoError, MarketCapService
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +68,44 @@ class TestMarketCapProvenanceModel:
         assert prov.value == 300_000_000.0
         assert prov.source == "cache_hit"
         assert prov.is_proxy is False
+
+    @pytest.mark.asyncio
+    async def test_single_cache_hit_preserves_original_observation_time(self):
+        svc = _new_service(cache_ttl_seconds=300)
+        svc._set_cached_market_cap("ETHUSDT", 300_000_000.0)
+        observed_at = svc._market_cap_cache["ETHUSDT"][2]
+        with patch.object(svc, "_try_get_market_cap_with_source",
+                          new=AsyncMock(return_value=(300_000_000.0, "cache_hit"))):
+            with patch("shared.market_cap.time.time", return_value=observed_at + 120):
+                prov = await svc.get_market_cap_with_provenance("ETHUSDT", oi_usd=0.0)
+        assert prov.as_of == observed_at
+        assert prov.available_at == observed_at + 120
+
+    @pytest.mark.asyncio
+    async def test_batch_cache_hit_preserves_original_observation_time(self):
+        svc = _new_service(cache_ttl_seconds=300)
+        svc._set_cached_market_cap("ETHUSDT", 300_000_000.0)
+        observed_at = svc._market_cap_cache["ETHUSDT"][2]
+        with patch("shared.market_cap.time.time", return_value=observed_at + 120):
+            prov = (await svc.get_batch_market_caps_with_provenance(["ETHUSDT"]))["ETHUSDT"]
+        assert prov.source == "cache_hit"
+        assert prov.as_of == observed_at
+        assert prov.available_at == observed_at + 120
+
+    @pytest.mark.asyncio
+    async def test_batch_api_hit_uses_fetch_time_not_call_start(self):
+        svc = _new_service(cache_ttl_seconds=300)
+        times = iter([1000.0, 1010.0, 1015.0, 1015.0])
+
+        async def fake_batch(symbols):
+            svc._set_cached_market_caps({"ETHUSDT": 300_000_000.0})
+            return {"ETHUSDT": 300_000_000.0}
+
+        with patch("shared.market_cap.time.time", side_effect=lambda: next(times)):
+            with patch.object(svc, "get_batch_market_caps", new=fake_batch):
+                prov = (await svc.get_batch_market_caps_with_provenance(["ETHUSDT"]))["ETHUSDT"]
+        assert prov.as_of == 1010.0
+        assert prov.available_at == 1015.0
 
     @pytest.mark.asyncio
     async def test_api_failure_falls_back_to_oi_proxy(self):
@@ -173,6 +211,34 @@ class TestBatchProvenance:
         assert prov_map["BTCUSDT"].source == "coingecko"
         assert prov_map["ETHUSDT"].source == "coingecko"
         assert prov_map["DOGEUSDT"].source == "missing"
+
+    @pytest.mark.asyncio
+    async def test_batch_exception_fills_all_symbols_with_oi_proxy_or_missing(self):
+        """AC-6 / shared 层兜底：get_batch_market_caps 抛异常时不向上冒泡，
+        返回 map 覆盖全部传入 symbol，oi>0 → oi_proxy（value=oi*ratio）、否则 missing"""
+        svc = _new_service(fallback_ratio=25.0)
+        # 让缓存检查全部 miss → 全部 symbol 走批量接口
+        with patch.object(svc, "_get_cached_market_cap", return_value=None):
+            with patch.object(
+                svc, "get_batch_market_caps",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ):
+                prov_map = await svc.get_batch_market_caps_with_provenance(
+                    ["BTCUSDT", "ETHUSDT", "NOPEUSDT"],
+                    oi_map={"BTCUSDT": 1000.0, "ETHUSDT": 0.0},
+                )
+        # 不抛异常且覆盖全部传入 symbol
+        assert set(prov_map.keys()) == {"BTCUSDT", "ETHUSDT", "NOPEUSDT"}
+        # BTCUSDT：OI>0 → oi_proxy，value=1000*25
+        assert prov_map["BTCUSDT"].source == "oi_proxy"
+        assert prov_map["BTCUSDT"].is_proxy is True
+        assert prov_map["BTCUSDT"].value == pytest.approx(1000.0 * 25.0)
+        # ETHUSDT：OI=0 → missing
+        assert prov_map["ETHUSDT"].source == "missing"
+        assert prov_map["ETHUSDT"].value == 0.0
+        # NOPEUSDT：oi_map 未给 → missing
+        assert prov_map["NOPEUSDT"].source == "missing"
+        assert prov_map["NOPEUSDT"].value == 0.0
 
 
 # ===========================================================================
@@ -377,3 +443,301 @@ class TestStopNewEntryWhenTrueSampleTooSmall:
         long_fb = 5
         assert short_fb != 10  # 没把 sentiment/technical 权重塞过来
         assert long_fb != 10
+
+
+# ===========================================================================
+# _fetch_coins_markets 重试与 429 行为测试（AC-2 / AC-3）
+# ===========================================================================
+
+
+class _MockResp:
+    """模拟 aiohttp.ClientResponse"""
+    def __init__(self, status=200, json_data=None, raise_on_json=None):
+        self.status = status
+        self._json_data = json_data
+        self._raise_on_json = raise_on_json
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+    async def json(self):
+        if self._raise_on_json:
+            raise self._raise_on_json
+        return self._json_data
+
+
+class TestFetchCoinsMarketsRetry:
+    """AC-2 / AC-3：_fetch_coins_markets 的重试与限流语义"""
+
+    def _setup_no_throttle(self, svc):
+        """把 _enforce_request_interval 替换为 no-op，隔离节流 sleep 的干扰
+
+        返回该 mock，便于断言「每次尝试前都执行节流」的调用次数。
+        """
+        svc._last_request_time = 0
+        svc._enforce_request_interval = AsyncMock()
+        return svc._enforce_request_interval
+
+    @pytest.mark.asyncio
+    async def test_retries_on_timeout_error_then_returns_empty(self):
+        """AC-2：TimeoutError 按 retry_count 重试，耗尽返回 {}"""
+        import asyncio
+        svc = _new_service(retry_count=2, retry_interval=0.01)
+        svc.session = MagicMock()
+        self._setup_no_throttle(svc)
+
+        call_count = [0]
+
+        def raise_timeout(*args, **kwargs):
+            call_count[0] += 1
+            raise asyncio.TimeoutError("connection timed out")
+
+        svc.session.get = MagicMock(side_effect=raise_timeout)
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await svc._fetch_coins_markets(["bitcoin"])
+
+        assert result == {}
+        assert call_count[0] == 3  # retry_count + 1 = 3 次尝试
+
+    @pytest.mark.asyncio
+    async def test_retries_on_client_error(self):
+        """AC-2：aiohttp.ClientError 同样重试 retry_count + 1 次"""
+        import aiohttp
+        svc = _new_service(retry_count=1, retry_interval=0.01)
+        svc.session = MagicMock()
+        self._setup_no_throttle(svc)
+
+        call_count = [0]
+
+        def raise_client_err(*args, **kwargs):
+            call_count[0] += 1
+            raise aiohttp.ClientError("connection reset")
+
+        svc.session.get = MagicMock(side_effect=raise_client_err)
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await svc._fetch_coins_markets(["bitcoin"])
+
+        assert result == {}
+        assert call_count[0] == 2  # retry_count + 1 = 2
+
+    @pytest.mark.asyncio
+    async def test_retry_uses_constructor_params_no_hardcode(self):
+        """AC-2 禁硬编码：重试间隔复用 retry_interval 构造参数"""
+        import asyncio
+        svc = _new_service(retry_count=2, retry_interval=0.05)
+        svc.session = MagicMock()
+        self._setup_no_throttle(svc)
+
+        svc.session.get = MagicMock(side_effect=asyncio.TimeoutError)
+
+        with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            await svc._fetch_coins_markets(["bitcoin"])
+
+        # retry_count=2，前 2 次失败都 sleep（attempt=0,1），第 3 次耗尽不 sleep
+        assert mock_sleep.await_count == 2
+        # 每次间隔等于构造参数 retry_interval
+        for call in mock_sleep.await_args_list:
+            assert call.args[0] == 0.05
+
+    @pytest.mark.asyncio
+    async def test_retries_then_succeeds(self):
+        """AC-2 补充：前几次超时、最后一次成功 → 返回真实市值"""
+        import asyncio
+        svc = _new_service(retry_count=3, retry_interval=0.01)
+        svc.session = MagicMock()
+        self._setup_no_throttle(svc)
+
+        success_resp = _MockResp(
+            status=200,
+            json_data=[{"id": "bitcoin", "market_cap": 1_000_000_000.0}],
+        )
+        # side_effect 列表元素：Exception 类会被 raise，非异常值直接返回
+        svc.session.get = MagicMock(side_effect=[
+            asyncio.TimeoutError,
+            asyncio.TimeoutError,
+            success_resp,
+        ])
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await svc._fetch_coins_markets(["bitcoin"])
+
+        assert result == {"bitcoin": 1_000_000_000.0}
+        # session.get 被调用 3 次（前两次超时、第三次成功）
+        assert svc.session.get.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_429_returns_none_no_retry(self):
+        """AC-3：429 → 返回 None，_record_rate_limit 生效，不重试（只调 1 次）"""
+        svc = _new_service(retry_count=3, rate_limit_cooldown_seconds=5.0)
+        svc.session = MagicMock()
+        self._setup_no_throttle(svc)
+
+        svc._record_rate_limit = MagicMock()
+        svc.session.get = MagicMock(return_value=_MockResp(status=429))
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            result = await svc._fetch_coins_markets(["bitcoin"])
+
+        assert result is None
+        assert svc._record_rate_limit.call_count == 1
+        assert svc.session.get.call_count == 1  # 只调 1 次，不重试
+
+    @pytest.mark.asyncio
+    async def test_non_200_returns_empty_no_retry(self):
+        """约束 2：非 200（如 500）→ 返回 {}，不重试（只调 1 次）"""
+        svc = _new_service(retry_count=3)
+        svc.session = MagicMock()
+        self._setup_no_throttle(svc)
+
+        svc.session.get = MagicMock(return_value=_MockResp(status=500))
+
+        result = await svc._fetch_coins_markets(["bitcoin"])
+
+        assert result == {}
+        assert svc.session.get.call_count == 1  # 不重试
+
+    @pytest.mark.asyncio
+    async def test_other_exception_returns_empty_no_retry(self):
+        """非 TimeoutError/ClientError 的其他 Exception → 返回 {}，不重试（只调 1 次）"""
+        svc = _new_service(retry_count=3)
+        svc.session = MagicMock()
+        self._setup_no_throttle(svc)
+
+        # json() 抛 RuntimeError（非 TimeoutError/ClientError）
+        bad_resp = _MockResp(status=200, raise_on_json=RuntimeError("malformed json"))
+        svc.session.get = MagicMock(return_value=bad_resp)
+
+        result = await svc._fetch_coins_markets(["bitcoin"])
+
+        assert result == {}
+        assert svc.session.get.call_count == 1  # 不重试
+
+    @pytest.mark.asyncio
+    async def test_throttle_enforced_before_each_attempt(self):
+        """AC-3：每次尝试前都执行 _enforce_request_interval（3 次尝试 → 3 次节流）"""
+        svc = _new_service(retry_count=2, retry_interval=0.01)
+        svc.session = MagicMock()
+        throttle = self._setup_no_throttle(svc)
+
+        svc.session.get = MagicMock(side_effect=asyncio.TimeoutError)
+
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await svc._fetch_coins_markets(["bitcoin"])
+
+        assert throttle.await_count == 3  # retry_count + 1 = 3 次尝试，每次尝试前都节流
+
+    @pytest.mark.asyncio
+    async def test_pro_api_key_included_in_params_when_enabled(self):
+        """use_pro_api=True 且带 api_key → 请求参数携带 x_cg_pro_api_key"""
+        svc = _new_service(use_pro_api=True, api_key="pro-key-abc")
+        svc.session = MagicMock()
+        self._setup_no_throttle(svc)
+
+        svc.session.get = MagicMock(
+            return_value=_MockResp(status=200, json_data=[{"id": "bitcoin", "market_cap": 1.0}])
+        )
+
+        await svc._fetch_coins_markets(["bitcoin"])
+
+        params = svc.session.get.call_args.kwargs["params"]
+        assert params["x_cg_pro_api_key"] == "pro-key-abc"
+
+    @pytest.mark.asyncio
+    async def test_zero_market_cap_treated_as_missing(self):
+        """market_cap <= 0 视为缺值：不写入结果，交由上层按 oi_proxy/missing 降级"""
+        svc = _new_service()
+        svc.session = MagicMock()
+        self._setup_no_throttle(svc)
+
+        svc.session.get = MagicMock(return_value=_MockResp(
+            status=200,
+            json_data=[
+                {"id": "bitcoin", "market_cap": 0.0},
+                {"id": "ethereum", "market_cap": None},
+                {"id": "dogecoin", "market_cap": 5.0},
+            ],
+        ))
+
+        result = await svc._fetch_coins_markets(["bitcoin", "ethereum", "dogecoin"])
+
+        assert result == {"dogecoin": 5.0}
+
+
+# ===========================================================================
+# 单币 _request_market_cap 重试与限流语义（AC-7，与批量路径共用 _retry_network）
+# ===========================================================================
+
+
+class TestSingleCoinRetry:
+    """AC-7：单币 _request_market_cap 重构后语义不变"""
+
+    def _setup(self, svc):
+        """隔离 aiohttp session 创建（_init_session 内部依赖事件循环与网络栈）"""
+        svc._init_session = AsyncMock()
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_retries_on_timeout_then_returns_none(self):
+        """TimeoutError 按 retry_count 重试，耗尽返回 None，间隔取构造参数"""
+        svc = self._setup(_new_service(retry_count=2, retry_interval=0.05))
+        svc._fetch_market_cap_once = AsyncMock(
+            side_effect=asyncio.TimeoutError("connection timed out")
+        )
+
+        with patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
+            result = await svc._request_market_cap("BTCUSDT", "bitcoin")
+
+        assert result is None
+        assert svc._fetch_market_cap_once.await_count == 3  # retry_count + 1
+        assert mock_sleep.await_count == 2  # 前 2 次失败后休眠
+        for call in mock_sleep.await_args_list:
+            assert call.args[0] == 0.05
+
+    @pytest.mark.asyncio
+    async def test_rate_limited_each_attempt_returns_none_without_request(self):
+        """429 冷却期内：每次尝试前检查，命中即返回 None 且不发起请求"""
+        svc = self._setup(_new_service(retry_count=2))
+        svc._fetch_market_cap_once = AsyncMock(return_value=123.0)
+
+        with patch.object(svc, "_is_rate_limited", return_value=True):
+            result = await svc._request_market_cap("BTCUSDT", "bitcoin")
+
+        assert result is None
+        assert svc._fetch_market_cap_once.await_count == 0
+
+    @pytest.mark.asyncio
+    async def test_coingecko_error_captured_no_retry(self):
+        """CoinGeckoError（429）由外层捕获，返回 None 且不重试"""
+        svc = self._setup(_new_service(retry_count=2))
+        svc._fetch_market_cap_once = AsyncMock(side_effect=CoinGeckoError("HTTP 429"))
+
+        result = await svc._request_market_cap("BTCUSDT", "bitcoin")
+
+        assert result is None
+        assert svc._fetch_market_cap_once.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_zero_market_cap_returns_none(self):
+        """单币解析：market_cap <= 0 视为缺值，与批量路径保持一致"""
+        svc = self._setup(_new_service())
+        resp = _MockResp(
+            status=200, json_data={"market_data": {"market_cap": {"usd": 0}}}
+        )
+
+        assert await svc._parse_market_cap_response("XUSDT", "bitcoin", resp) is None
+
+    @pytest.mark.asyncio
+    async def test_other_exception_returns_none_no_retry(self):
+        """其他 Exception 记 warning 后返回 None，不重试"""
+        svc = self._setup(_new_service(retry_count=2))
+        svc._fetch_market_cap_once = AsyncMock(side_effect=RuntimeError("boom"))
+
+        result = await svc._request_market_cap("BTCUSDT", "bitcoin")
+
+        assert result is None
+        assert svc._fetch_market_cap_once.await_count == 1

@@ -2464,8 +2464,8 @@ class BTCEthStrategy:
                     f"{symbol} 获取精度信息失败",
                     error=str(e)
                 )
-                # 使用默认精度
-                self.symbol_precision[symbol] = {
+                # 临时降级不入缓存，下一次必须重查真实交易所过滤器。
+                return {
                     'quantityPrecision': 3,
                     'pricePrecision': 2,
                     'stepSize': '0.001',

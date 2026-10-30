@@ -55,6 +55,8 @@ class FakeStrategy:
 
     def __init__(self, *, execute_signal_return: bool = True) -> None:
         self.symbols = ["BTCUSDT"]
+        self.instance_id = "btc_eth_aggressive"
+        self.state_reporting_enabled = False
         self.db_manager = SimpleNamespace()
         self.frequency_controller = SimpleNamespace(
             ensure_table_exists=AsyncMock(),

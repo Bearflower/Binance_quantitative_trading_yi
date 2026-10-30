@@ -1385,14 +1385,13 @@ class BinanceClient:
                 )
                 return filters
         
-        logger.warning(f"未找到交易对{symbol}的精度信息，使用默认值")
+        logger.warning(f"未找到交易对{symbol}的精度信息，临时使用默认值并在下次重查")
         default_filters = {
             'quantityPrecision': 3,
             'pricePrecision': 2,
             'stepSize': '0.001',
             'tickSize': Decimal('0.01')
         }
-        self._symbol_precision_cache[symbol] = default_filters
         return default_filters
     
     def _adjust_quantity_precision(
