@@ -7,6 +7,7 @@
 - 生产 `trading.trade_records` 的 `TRUTHUSDT` 仅有 HRS 5 行：唯一入场 LIMIT SELL `id=4033`（2026-10-15 15:22:44.931741）、3 张条件单创建行、唯一平仓 `PNL_SUMMARY` BUY `id=4516`（2026-10-29 13:22:22.226652，金额 `-18.18079896`）。没有其他策略的该币记录，HRS 现无该币活跃持仓。
 - [受控 SQL](../../database/postgres/ops/hrs-truth-income-attribution-20261030.sql)以精确行、时间、数量、总额、交易 ID 对应关系和唯一生命周期为前置断言，仅向 `trading.hrs_income_attribution` 插入 7 条审计归属。独立复审通过；事务回滚预演显示 `INSERT 0 7 / DO / ROLLBACK`，正式执行显示 `INSERT 0 7 / DO / COMMIT`。
 - 写入后相同只读重算通过：78 笔候选 income 完整归属（其中审计覆盖 8 笔，含此前 INTCUSDT 1 笔），10 月 1 日至 29 日合计 `-14.57374796`；TRUTHUSDT 审计表 7 行合计 `-18.18079896`。月末仍需按 10 月 31 日实际任务结果验收，后续新成交也可能新增待审计事件。
+- [Run #41019573068](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/41019573068) 构建及 SSH 部署均成功；重建的 HRS、new_coin、dashboard-api 容器版本为 `c2d938c7af392f9ae69b27e20f038714f18b20f2`、`DEPLOY_ID=00008301`，均为 healthy。此次没有修改 HRS 盈亏生产算法；归属表补证已于发布前单独受控执行。
 
 ## 历史 `PNL_SUMMARY` 与看板
 
