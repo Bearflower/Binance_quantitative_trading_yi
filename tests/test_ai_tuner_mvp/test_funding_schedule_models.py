@@ -69,6 +69,36 @@ def test_hash_is_canonical_selected_field_json_for_batch_and_each_row():
     assert all(row.payload_hash == sha256(row.raw_payload) for row in rows)
 
 
+def test_returned_payload_mutation_cannot_change_retained_observation():
+    batch_hash, rows = normalize()
+    original = rows[0].raw_payload
+    original["nextFundingTime"] = 1
+    assert rows[0].raw_payload["nextFundingTime"] == ms(NOW + timedelta(hours=4))
+    assert rows[0].payload_hash == hashlib.sha256(
+        json.dumps(rows[0].raw_payload, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    assert batch_hash == hashlib.sha256(
+        json.dumps([row.raw_payload for row in rows], sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def test_selected_payload_preserves_exact_millisecond_values():
+    source_ms = ms(NOW) + 123
+    next_ms = ms(NOW + timedelta(hours=4)) + 789
+    batch_hash, rows = normalize(
+        premium_rows=[
+            {"symbol": symbol, "time": source_ms, "nextFundingTime": next_ms}
+            for symbol in ("BTCUSDT", "ETHUSDT")
+        ],
+        received_at=NOW + timedelta(seconds=3),
+    )
+    assert all(row.raw_payload["time"] == source_ms for row in rows)
+    assert all(row.raw_payload["nextFundingTime"] == next_ms for row in rows)
+    assert batch_hash == hashlib.sha256(json.dumps(
+        [row.raw_payload for row in rows], sort_keys=True, separators=(",", ":")
+    ).encode()).hexdigest()
+
+
 def test_source_delay_at_exact_limit_remains_valid():
     _, rows = normalize(received_at=NOW + timedelta(seconds=120))
     assert len(rows) == 2
@@ -106,3 +136,23 @@ def test_required_premium_response_invalidity_fails_closed(premium_rows):
 def test_invalid_envelope_or_auxiliary_response_fails_closed(changed):
     with pytest.raises(FundingScheduleDataError):
         normalize(**changed)
+
+
+@pytest.mark.parametrize(("changed", "code", "symbol"), [
+    ({"premium_rows": [premium("BTCUSDT")]}, "MISSING_SYMBOL", "ETHUSDT"),
+    ({"premium_rows": [premium("BTCUSDT"), premium("ETHUSDT"), premium("ETHUSDT")]},
+     "DUPLICATE_SYMBOL", "ETHUSDT"),
+    ({"premium_rows": [{**premium("BTCUSDT"), "time": ms(NOW - timedelta(seconds=121))},
+                       premium("ETHUSDT")]}, "STALE_SOURCE", "BTCUSDT"),
+    ({"premium_rows": [{**premium("BTCUSDT"), "time": ms(NOW + timedelta(seconds=4))},
+                       premium("ETHUSDT")]}, "FUTURE_SOURCE", "BTCUSDT"),
+    ({"funding_info_rows": [{"symbol": "BTCUSDT", "fundingIntervalHours": 0}]},
+     "INVALID_INTERVAL", "BTCUSDT"),
+    ({"received_at": NOW.replace(tzinfo=None)}, "INVALID_ENVELOPE", None),
+])
+def test_data_error_exposes_stable_code_and_optional_symbol(changed, code, symbol):
+    with pytest.raises(FundingScheduleDataError) as raised:
+        normalize(**changed)
+    assert raised.value.code == code
+    assert raised.value.symbol == symbol
+    assert str(raised.value)
