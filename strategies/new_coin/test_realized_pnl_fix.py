@@ -91,6 +91,8 @@ def strategy():
     s.trading_executor.cancel_all_algo_orders = AsyncMock(
         return_value={"failed": 0, "cancelled": 0}
     )
+    s.trading_executor._update_short_position_closed = AsyncMock(return_value=True)
+    s.trading_executor.ensure_tracking_entry = MagicMock()
 
     return s
 
@@ -130,8 +132,8 @@ class TestRealizedPnlFix:
         assert "UPDATE trading.trade_records" in sql
         assert "SET realized_pnl = $1" in sql
         assert "WHERE order_id = $2 AND strategy = $3 AND side = $4" in sql
-        # 验证参数顺序：str(realized_pnl)、order_id、strategy_name、match_side
-        assert call_args.args[1] == "100.50"
+        # 验证参数顺序：Decimal 盈亏、order_id、strategy_name、match_side
+        assert call_args.args[1] == Decimal("100.50")
         assert call_args.args[2] == "123456"
         assert call_args.args[3] == "新币做空策略"
         assert call_args.args[4] == "BUY"
@@ -283,7 +285,7 @@ class TestRealizedPnlFix:
         # mock pnl 获取成功
         strategy._get_position_pnl = AsyncMock(return_value=50.0)
         # mock 查询平仓订单（返回含 order_id 的记录）
-        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888"})
+        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888", "executed_at": datetime(2026, 6, 1, 1)})
         # mock trade_logger
         mock_trade_logger = MagicMock()
         mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
@@ -329,12 +331,12 @@ class TestRealizedPnlFix:
         mock_trade_logger = MagicMock()
         mock_trade_logger.update_realized_pnl = AsyncMock()
         strategy.binance_client.trade_logger = mock_trade_logger
-        strategy.db.fetch_one = AsyncMock()
+        strategy.db.fetch_one = AsyncMock(return_value=None)
 
         await strategy._monitor_positions()
 
-        # pnl 为 None 时不应查询 close_order，不应调用 update_realized_pnl
-        strategy.db.fetch_one.assert_not_called()
+        # pnl 为 None 时仍查询真实平仓单以判定止损，但不回写估算 pnl。
+        strategy.db.fetch_one.assert_awaited_once()
         mock_trade_logger.update_realized_pnl.assert_not_called()
         # 持仓应被删除
         assert "BTCUSDT" not in strategy.positions
@@ -356,7 +358,7 @@ class TestRealizedPnlFix:
 
         strategy.binance_client.get_position = AsyncMock(return_value=[])
         strategy._get_position_pnl = AsyncMock(return_value=50.0)
-        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888"})
+        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888", "executed_at": datetime(2026, 6, 1, 1)})
         # trade_logger 为 None
         strategy.binance_client.trade_logger = None
         # mock 其他副作用方法
@@ -512,18 +514,19 @@ class TestUpdateRealizedPnlEnhanced:
         assert "UPDATE trading.trade_records" in fallback_sql
         assert "SET realized_pnl = $1" in fallback_sql
         assert "WHERE id = (" in fallback_sql
-        assert "SELECT id FROM trading.trade_records" in fallback_sql
+        assert "SELECT tr.id FROM trading.trade_records tr" in fallback_sql
+        assert "tr.order_type NOT IN ('LIMIT', 'CONDITIONAL_ORDER')" in fallback_sql
         assert "symbol = $3" in fallback_sql
         assert "side = $4" in fallback_sql
         assert "executed_at BETWEEN" in fallback_sql
         assert "order_id IS NULL" in fallback_sql
         assert "realized_pnl IS NULL" in fallback_sql
-        assert "order_type NOT LIKE" in fallback_sql and "STOP" in fallback_sql or "STOP" in fallback_sql
-        assert "ORDER BY executed_at DESC" in fallback_sql
+        assert "tr.order_type NOT IN ('LIMIT', 'CONDITIONAL_ORDER')" in fallback_sql
+        assert "ORDER BY tr.executed_at DESC" in fallback_sql
         assert "LIMIT 1" in fallback_sql
 
         # 验证降级匹配参数：pnl, strategy, symbol, match_side, start_time, end_time
-        assert fallback_args[1] == "50.25"
+        assert fallback_args[1] == Decimal("50.25")
         assert fallback_args[2] == "新币做空策略"
         assert fallback_args[3] == "BTCUSDT"
         assert fallback_args[4] == "BUY"  # match_side 默认值
@@ -762,14 +765,12 @@ class TestNewCoinSQLFix:
         s.trading_executor.cancel_all_algo_orders = AsyncMock(
             return_value={"failed": 0, "cancelled": 0}
         )
+        s.trading_executor._update_short_position_closed = AsyncMock(return_value=True)
 
         return s
 
-    async def test_close_order_sql_has_order_id_not_null(self, strategy):
-        """平仓单查询 SQL 包含 order_id IS NOT NULL
-
-        验证：修复后的 SQL 使用 order_id IS NOT NULL 过滤掉 buy 单（开仓单）
-        """
+    async def test_close_order_sql_accepts_conditional_orders_without_order_id(self, strategy):
+        """条件单平仓可无 order_id，查询应以策略、方向和时间约束。"""
         strategy.positions = {
             "BTCUSDT": {
                 "entry_price": 100.0,
@@ -778,7 +779,7 @@ class TestNewCoinSQLFix:
         }
         strategy.binance_client.get_position = AsyncMock(return_value=[])
         strategy._get_position_pnl = AsyncMock(return_value=50.0)
-        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888"})
+        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888", "executed_at": datetime(2026, 6, 1, 1)})
         strategy.binance_client.trade_logger = MagicMock()
         strategy.binance_client.trade_logger.update_realized_pnl = AsyncMock(return_value=True)
         strategy._save_state = AsyncMock()
@@ -788,16 +789,14 @@ class TestNewCoinSQLFix:
 
         await strategy._monitor_positions()
 
-        # 验证 fetch_one SQL 包含 order_id IS NOT NULL
+        # 条件单平仓的 order_id 可能为空，不能误过滤。
         call_args = strategy.db.fetch_one.call_args
         sql = call_args.args[0]
-        assert "order_id IS NOT NULL" in sql, "SQL 应包含 order_id IS NOT NULL 过滤条件"
+        assert "order_id IS NOT NULL" not in sql
+        assert "strategy = $1 AND symbol = $2 AND side = 'BUY'" in sql
 
-    async def test_close_order_sql_has_between_and_not_null(self, strategy):
-        """平仓单查询 SQL 使用 BETWEEN 时间窗口和 order_id IS NOT NULL
-
-        验证：SQL 使用 BETWEEN 限制时间窗口避免跨交易匹配，使用 order_id IS NOT NULL 排除无条件单 ID 的记录
-        """
+    async def test_close_order_sql_has_between_and_accepts_null_order_id(self, strategy):
+        """查询限制在本次入场后 24 小时，且保留无 order_id 的条件单。"""
         strategy.positions = {
             "BTCUSDT": {
                 "entry_price": 100.0,
@@ -806,7 +805,7 @@ class TestNewCoinSQLFix:
         }
         strategy.binance_client.get_position = AsyncMock(return_value=[])
         strategy._get_position_pnl = AsyncMock(return_value=50.0)
-        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888"})
+        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888", "executed_at": datetime(2026, 6, 1, 1)})
         strategy.binance_client.trade_logger = MagicMock()
         strategy.binance_client.trade_logger.update_realized_pnl = AsyncMock(return_value=True)
         strategy._save_state = AsyncMock()
@@ -819,7 +818,7 @@ class TestNewCoinSQLFix:
         call_args = strategy.db.fetch_one.call_args
         sql = call_args.args[0]
         assert "BETWEEN" in sql, "SQL 应使用 BETWEEN 时间窗口限制跨交易匹配"
-        assert "order_id IS NOT NULL" in sql, "SQL 应要求 order_id 不为空"
+        assert "order_id IS NOT NULL" not in sql
         assert "LIMIT 1" in sql, "SQL 应使用 LIMIT 1 取最近一条记录"
 
     async def test_close_order_sql_has_limit_1(self, strategy):
@@ -835,7 +834,7 @@ class TestNewCoinSQLFix:
         }
         strategy.binance_client.get_position = AsyncMock(return_value=[])
         strategy._get_position_pnl = AsyncMock(return_value=50.0)
-        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888"})
+        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "999888", "executed_at": datetime(2026, 6, 1, 1)})
         strategy.binance_client.trade_logger = MagicMock()
         strategy.binance_client.trade_logger.update_realized_pnl = AsyncMock(return_value=True)
         strategy._save_state = AsyncMock()
@@ -863,7 +862,7 @@ class TestNewCoinSQLFix:
         strategy.binance_client.get_position = AsyncMock(return_value=[])
         strategy._get_position_pnl = AsyncMock(return_value=50.0)
         # mock 返回一条记录（fetch_one 本身只返回一条，但 SQL 有 LIMIT 1 确保）
-        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "CLOSE001"})
+        strategy.db.fetch_one = AsyncMock(return_value={"order_id": "CLOSE001", "executed_at": datetime(2026, 6, 1, 1)})
         strategy.binance_client.trade_logger = MagicMock()
         strategy.binance_client.trade_logger.update_realized_pnl = AsyncMock(return_value=True)
         strategy._save_state = AsyncMock()

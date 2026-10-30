@@ -70,6 +70,9 @@ def strategy(strategy_config):
     s.trading_executor.cancel_all_algo_orders = AsyncMock(
         return_value={"failed": 0, "cancelled": 0}
     )
+    s.trading_executor._update_short_position_closed = AsyncMock(return_value=True)
+    s.trading_executor.ensure_tracking_entry = MagicMock()
+    s._rebuild_position_baseline = AsyncMock()
 
     return s
 
