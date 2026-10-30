@@ -29,8 +29,8 @@ from . import feed as feed_mod
 from .delivery import (RESEARCH, Delivery, WebhookSingleSender)
 from .features import (MS_PER_SECOND, AggTrade, SecondSample,
                        compute_features)
-from .reference_store import (ReferenceReader, SYNC_UNCERTAIN, check_schema,
-                               connect)
+from .reference_store import (NO_ACTIVE_REFERENCE, ReferenceReader,
+                               SYNC_UNCERTAIN, check_schema, connect)
 from .replay import FactScanner
 from .rules import (DOWN, Level, ReferenceSnapshot, boundary_direction,
                     classify_region)
@@ -215,7 +215,7 @@ class RealtimeService:
         self._add_sample(mark, trades)
         if status in ("VALID", "STALE") and snap is not None:
             return self._evaluate_tracked(mark, trades, snap, status)
-        if status == SYNC_UNCERTAIN:
+        if status in (SYNC_UNCERTAIN, NO_ACTIVE_REFERENCE):
             return self._evaluate_historical(now_ms, trades)
         return []
 
@@ -363,6 +363,8 @@ class RealtimeService:
             reasons["feed_queue_overflow"] = self._queue_overflow_since_ms
         if status == SYNC_UNCERTAIN:
             reasons["sync_uncertain"] = now
+        elif status == NO_ACTIVE_REFERENCE:
+            reasons["reference_no_active"] = now
         elif status in ("MISSING", "INVALID"):
             reasons[f"reference_{status.lower()}"] = now
         if self._storage_degraded:

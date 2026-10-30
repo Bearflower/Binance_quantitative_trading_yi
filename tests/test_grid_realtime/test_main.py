@@ -149,6 +149,28 @@ async def test_sync_uncertain_with_historical_cross(conn, cfg, snap,
     assert event["event_id"] == f"hist-{expected_ref}-UP"
 
 
+async def test_no_active_reference_only_records_historical_cross(
+        conn, cfg, snap, monkeypatch):
+    base = snap.effective_at_ms
+    _publish_reference(conn, snap, base)
+    store = ExportStore(conn)
+    sid = store.begin_session(base + 100)
+    store.mark_non_numeric_sent(SessionState(sid, 0, None, None), base + 200)
+    fixed_now = base + 1000
+    monkeypatch.setattr(feed_mod, "now_ms", lambda: fixed_now)
+    service = _service(cfg, conn, lambda: fixed_now)
+    await _fill_queue(service, [make_trade(9, fixed_now - 100, "2800")])
+    await service.tick()
+    assert "reference_no_active" in service._snapshot()["health"]
+    assert "sync_uncertain" not in service._snapshot()["health"]
+    rows = conn.execute(
+        "SELECT level FROM event WHERE level='HISTORICAL_REFERENCE_CROSSED'"
+    ).fetchall()
+    assert len(rows) == 1
+    assert all(row["status"] == "SHADOW" for row in conn.execute(
+        "SELECT status FROM outbox"))
+
+
 async def test_sync_uncertain_price_stale_no_cross(conn, cfg, snap,
                                                    monkeypatch):
     base = snap.effective_at_ms
@@ -598,6 +620,8 @@ def test_reasons_reference_states(conn, cfg):
     service = _service(cfg, conn, lambda: 1)
     assert "reference_missing" in service._reasons("MISSING")
     assert "reference_invalid" in service._reasons("INVALID")
+    assert "reference_no_active" in service._reasons("NO_ACTIVE_REFERENCE")
+    assert "sync_uncertain" not in service._reasons("NO_ACTIVE_REFERENCE")
 
 
 def test_reasons_storage_degraded(conn, cfg):
