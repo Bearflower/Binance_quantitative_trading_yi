@@ -60,6 +60,10 @@ ALTER TABLE public.ai_tuner_funding_schedule_observations OWNER TO ai_tuner_fund
 
 REVOKE ALL ON public.ai_tuner_funding_schedule_runs FROM PUBLIC, trading_user;
 REVOKE ALL ON public.ai_tuner_funding_schedule_observations FROM PUBLIC, trading_user;
+REVOKE ALL ON public.ai_tuner_funding_schedule_runs FROM ai_tuner_funding_writer;
+REVOKE ALL ON public.ai_tuner_funding_schedule_observations FROM ai_tuner_funding_writer;
+REVOKE ALL ON public.ai_tuner_universe_scan_runs FROM ai_tuner_funding_writer;
+REVOKE ALL ON public.ai_tuner_universe_snapshots FROM ai_tuner_funding_writer;
 GRANT USAGE ON SCHEMA public TO ai_tuner_funding_writer;
 GRANT SELECT, INSERT ON public.ai_tuner_funding_schedule_runs TO ai_tuner_funding_writer;
 GRANT SELECT, INSERT ON public.ai_tuner_funding_schedule_observations TO ai_tuner_funding_writer;
