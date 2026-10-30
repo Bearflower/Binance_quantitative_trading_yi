@@ -46,8 +46,11 @@
 - [x] **Step 2：实现。** 新服务 `ai-tuner-funding-schedule` 复用 ai-tuner 镜像，命令 `python3 -m ai_tuner.funding_schedule.cli daemon`；仅加载独立 DB 凭据与公开行情读接口，容器重启策略 `unless-stopped`。daemon 每五分钟触发一次，时间槽与实际请求时间分开保存；失败记录/日志/飞书告警不干扰 `ai-tuner` 和 `ai-tuner-snapshot`。部署脚本创建新登录角色密码并进行只读权限断言。
 - [x] **Step 3：复测并提交。** 运行目标测试、全套 `tests/test_ai_tuner_mvp`、`docker compose config --quiet`（若本机缺生产 secret 则以静态 Compose 测试代替并报告），提交 `feat(ai-tuner): run prospective funding schedule collector separately`。
 
-## Task 5：最终审查与交付边界
+## Task 4 补充：卡住与缺槽检测
 
+- [ ] 先写失败测试：整次采集超过 90 秒须取消并返回失败，不能占住后续 UTC 槽位；一个独立于采集循环的异步监视任务应在槽位截止后按证据表检查缺槽并脱敏告警，数据库查询失败也告警，重复检查不得每分钟刷屏。监视任务重启后须检查最近已截止槽位。为监视任务写入容器内心跳，Compose 探针检查心跳新鲜度而非只看 PID；数据库连接须有启动超时。所有失败继续不得自动回填或让策略/覆盖层生效。实现后重新做规格与质量复审。注意宿主机或整个容器被人为停用时，容器内任务无法自行告警，仍须独立基础设施监控。
+
+## Task 5：最终审查与交付边界
 - [ ] 对 Task 1–4 做规格符合性复审，再做代码质量复审；修复所有重要问题。
 - [ ] 运行 `python3 -m pytest -q -p no:cacheprovider tests/test_ai_tuner_mvp`、`git diff-tree --check HEAD^ HEAD`、`git status --short`，输出提交 SHA 与证据。
 - [ ] 未经单独上线核对，不 push/deploy；即使采集器上线，90 天历史日程仍不完整，真实资格考试继续 `BLOCKED_DATA`。下一个独立计划才做离线验证与资格考试接线。
