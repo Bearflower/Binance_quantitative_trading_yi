@@ -2038,13 +2038,7 @@ class BTCEthStrategy:
                     f"{symbol} 获取精度信息失败",
                     error=str(e)
                 )
-                # 临时降级不入缓存，下一次必须重查真实交易所过滤器。
-                return {
-                    'quantityPrecision': 3,
-                    'pricePrecision': 2,
-                    'stepSize': '0.001',
-                    'tickSize': Decimal('0.01')
-                }
+                raise
         
         return self.symbol_precision[symbol]
     
@@ -2503,7 +2497,10 @@ class BTCEthStrategy:
 
     async def _add_position(self, symbol: str, position: PositionState, signal: Dict) -> bool:
         """加仓主流程（v6.28 加仓统一托管）：开新仓成交 → 取消旧单 → 合并 → 重建条件单。"""
+        entry_order = None
         try:
+            # 成交前确认重建精度，避免新增仓位后才发现无法安全重挂保护单。
+            await self._get_precision_params(symbol)
             # 顺序1：开新仓成交（复用入场下单公共逻辑）
             entry_order = await self._place_entry_order(symbol, signal)
             if entry_order is None:
@@ -2518,16 +2515,16 @@ class BTCEthStrategy:
                 )
                 return False
 
+            # 先按交易所实际总量合并内存持仓；后续撤单或重建失败也不能丢失新增仓位。
+            self._merge_position(position, signal, entry_order, sync['actual_quantity'])
+
             # 顺序3：取消旧条件单（stop_loss/tp1/tp2/trailing 逐个取消）
             if not await self._cancel_orders_for_rebuild(symbol, position):
                 position.rebuild_pending = True
                 logger.warning(f"{symbol} 加仓：取消旧条件单失败，标记重建待收敛")
                 return False
 
-            # 顺序4：合并持仓（加权均价 + 更新数量/ATR/等级，原地修改）
-            self._merge_position(position, signal, entry_order, sync['actual_quantity'])
-
-            # 顺序5：按合并后总持仓重建条件单
+            # 顺序4：按合并后总持仓重建条件单
             if not await self._rebuild_condition_orders(symbol, position):
                 position.rebuild_pending = True
                 logger.warning(f"{symbol} 加仓：重建条件单失败，标记重建待收敛")
@@ -2543,7 +2540,12 @@ class BTCEthStrategy:
             return True
 
         except Exception as e:
-            logger.error(f"{symbol} 加仓失败", error=str(e), exc_info=True)
+            if entry_order is not None:
+                position.rebuild_pending = True
+                logger.error(f"{symbol} 加仓已成交但保护单重建失败，保留待收敛标记",
+                             error=str(e), exc_info=True)
+            else:
+                logger.error(f"{symbol} 加仓失败", error=str(e), exc_info=True)
             return False
 
     @staticmethod
@@ -2683,7 +2685,7 @@ class BTCEthStrategy:
         return _core_exits.apply_limit_offset(price, offset_pct, direction)
 
     async def _get_precision_params(self, symbol: str) -> Tuple[str, Decimal]:
-        """获取交易对精度参数（stepSize/tickSize），失败返回默认值
+        """获取交易对精度参数（stepSize/tickSize），失败时停止当前下单流程
 
         Args:
             symbol: 交易对
@@ -2691,14 +2693,8 @@ class BTCEthStrategy:
         Returns:
             (step_size, tick_size) 元组
         """
-        try:
-            precision = await self._get_symbol_precision(symbol)
-            return (
-                str(precision.get('stepSize', '0.001')),
-                Decimal(str(precision.get('tickSize', '0.01')))
-            )
-        except Exception:
-            return '0.001', Decimal('0.01')
+        precision = await self._get_symbol_precision(symbol)
+        return str(precision['stepSize']), Decimal(str(precision['tickSize']))
 
     async def _is_position_profitable(self, symbol: str, position: PositionState) -> bool:
         """判断持仓是否浮盈（可加仓，v6.28）
@@ -2732,6 +2728,8 @@ class BTCEthStrategy:
         Returns:
             True = 全部取消成功（或无需取消）；False = 存在失败（交由收敛机制重试）
         """
+        # 先确认重建所需精度，避免撤掉旧保护单后才发现无法安全重挂。
+        await self._get_precision_params(symbol)
         order_refs = [
             ("stop_loss", position.stop_loss_order_id),
             ("tp1", position.tp1_order_id),
@@ -2932,13 +2930,18 @@ class BTCEthStrategy:
             if position.current_quantity <= 0:
                 position.rebuild_pending = False
                 continue
-            # 幂等取消旧条件单（已为 None 的自动跳过）
-            if not await self._cancel_orders_for_rebuild(symbol, position):
-                logger.warning(f"{symbol} 加仓重建收敛：取消旧条件单失败，下轮重试")
-                continue
-            # 按当前总持仓重建条件单
-            if not await self._rebuild_condition_orders(symbol, position):
-                logger.warning(f"{symbol} 加仓重建收敛：重建条件单失败，下轮重试")
+            try:
+                # 幂等取消旧条件单（已为 None 的自动跳过）
+                if not await self._cancel_orders_for_rebuild(symbol, position):
+                    logger.warning(f"{symbol} 加仓重建收敛：取消旧条件单失败，下轮重试")
+                    continue
+                # 按当前总持仓重建条件单
+                if not await self._rebuild_condition_orders(symbol, position):
+                    logger.warning(f"{symbol} 加仓重建收敛：重建条件单失败，下轮重试")
+                    continue
+            except Exception as e:
+                logger.error(f"{symbol} 加仓重建收敛异常，保留待重试状态",
+                             error=str(e), exc_info=True)
                 continue
             position.rebuild_pending = False
             logger.info(
@@ -2984,6 +2987,8 @@ class BTCEthStrategy:
         else:
             new_stop = current_price + position.atr * tighten_atr
 
+        # 先确认交易所精度，避免撤旧硬止损后无法安全下新单。
+        await self._get_symbol_precision(symbol)
         # 取消旧止损单，下新止损单
         if position.stop_loss_order_id:
             try:
@@ -3131,41 +3136,46 @@ class BTCEthStrategy:
         """
         try:
             for symbol, position in self.positions.items():
-                if position.current_quantity <= 0:
-                    continue
+                try:
+                    if position.current_quantity <= 0:
+                        continue
 
-                # 获取当前价格
-                current_price = await self._get_current_price(symbol)
-                if current_price is None:
-                    continue
+                    # 获取当前价格
+                    current_price = await self._get_current_price(symbol)
+                    if current_price is None:
+                        continue
 
-                # 强平预警检查（v6.16.10：先救命再减伤）
-                liq_triggered = await self._check_liquidation_warning(symbol, position)
-                if liq_triggered:
-                    continue  # 已全部平仓或减仓，跳过后续检查
+                    # 强平预警检查（v6.16.10：先救命再减伤）
+                    liq_triggered = await self._check_liquidation_warning(symbol, position)
+                    if liq_triggered:
+                        continue  # 已全部平仓或减仓，跳过后续检查
                 
-                # 极端行情检查（v6.16.10）
-                extreme_triggered = await self._check_extreme_market(symbol, position, current_price)
-                if extreme_triggered:
-                    continue  # 已处理极端行情，跳过后续检查
+                    # 极端行情检查（v6.16.10）
+                    extreme_triggered = await self._check_extreme_market(symbol, position, current_price)
+                    if extreme_triggered:
+                        continue  # 已处理极端行情，跳过后续检查
                 
-                # 更新最高/最低价
-                if position.direction == 'LONG':
-                    if position.highest_price is None or current_price > position.highest_price:
-                        position.highest_price = current_price
-                else:
-                    if position.lowest_price is None or current_price < position.lowest_price:
-                        position.lowest_price = current_price
+                    # 更新最高/最低价
+                    if position.direction == 'LONG':
+                        if position.highest_price is None or current_price > position.highest_price:
+                            position.highest_price = current_price
+                    else:
+                        if position.lowest_price is None or current_price < position.lowest_price:
+                            position.lowest_price = current_price
                 
-                # 检查分批止盈
-                await self._check_partial_take_profit(symbol, position, current_price)
+                    # 检查分批止盈
+                    await self._check_partial_take_profit(symbol, position, current_price)
                 
-                # 检查动态利润保护
-                await self._check_dynamic_trailing(symbol, position, current_price)
+                    # 检查动态利润保护
+                    await self._check_dynamic_trailing(symbol, position, current_price)
                 
-                # 检查时间止损
-                await self._check_time_stop(symbol, position)
+                    # 检查时间止损
+                    await self._check_time_stop(symbol, position)
                 
+                except Exception as e:
+                    logger.error(f"{symbol} 更新持仓状态失败，继续检查其他币种",
+                                 error=str(e), exc_info=True)
+
         except Exception as e:
             logger.error(
                 "更新持仓状态失败",
@@ -3412,6 +3422,9 @@ class BTCEthStrategy:
                 await self._mark_stop_loss_if_needed(symbol, position, close_reason, pnl)
                 return True
 
+            # 先确认精度，避免失败时先撤掉仍有效的保护单。
+            precision_info = await self._get_symbol_precision(symbol)
+
             # 下单前先取消交易所所有条件单（止盈/止损/动态追踪等）
             # 避免条件单占用仓位触发 [-4118] 或条件单已平仓触发 [-2022]
             await self._cancel_symbol_conditional_orders(symbol, close_reason)
@@ -3427,8 +3440,7 @@ class BTCEthStrategy:
                 )
                 return False
             
-            # 获取交易对精度信息
-            precision_info = await self._get_symbol_precision(symbol)
+            # 使用撤单前已确认的交易所精度。
             step_size = precision_info.get('stepSize', '0.001')
             
             # 调整平仓数量精度
@@ -4021,13 +4033,13 @@ class BTCEthStrategy:
         trailing_stop: Decimal,
     ) -> None:
         """峰值回落触发保护：取消移动止损单 + 平尾仓 + 补挂剩余保护（v6.28 拆分）"""
+        step_size, _tick_size = await self._get_precision_params(symbol)
         await self._cancel_trailing_order(symbol, position)
 
         # 平仓量 = initial_quantity × remaining_ratio（尾仓，v6.28）
         # 修复：原逻辑用 current_quantity 全平剩余，TP1 触发后价格回落即全平跳过 TP2
         partial_cfg = self._get_grade_risk(position.grade)['partial_take_profit']
         remaining_ratio = Decimal(str(partial_cfg['remaining_ratio']))
-        step_size, _tick_size = await self._get_precision_params(symbol)
         close_quantity = self._adjust_quantity_precision(
             position.initial_quantity * remaining_ratio, step_size
         )
@@ -4345,6 +4357,8 @@ class BTCEthStrategy:
         stop_side = 'SELL' if position.direction == 'LONG' else 'BUY'
         stop_offset_pct = Decimal(str(self.risk_config.get('stop_limit_order', {}).get('offset_pct', 0.002)))
         silent_error_codes = set(self.risk_config['cleanup_silent_error_codes'])
+        # 先确认精度，避免撤旧移动止损后才发现无法重挂。
+        step_size, tick_size = await self._get_precision_params(symbol)
         
         # 1. 取消旧移动止损条件单（如果存在）
         if position.trailing_stop_order_id is not None:
@@ -4383,7 +4397,6 @@ class BTCEthStrategy:
             stop_limit_price = trailing_stop * (Decimal('1') + stop_offset_pct)
         
         # 精度调整（统一走 _get_precision_params，避免下划线键读错）
-        step_size, tick_size = await self._get_precision_params(symbol)
         stop_limit_price = self._adjust_price_precision(stop_limit_price, tick_size)
         # 移动止损单数量：按尾仓比例（remaining_ratio）计算，而非全仓
         trailing_remaining_ratio = Decimal(

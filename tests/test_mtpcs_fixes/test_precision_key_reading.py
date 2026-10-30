@@ -131,8 +131,8 @@ class TestPrecisionParams:
         assert tick_size == Decimal('0.0001')
         assert step_size == Decimal('0.001')
 
-    async def test_api_failure_default_is_not_cached(self, strategy):
-        """临时取数失败可降级一次；下次必须重查交易所真实过滤器。"""
+    async def test_api_failure_blocks_precision_then_recovers(self, strategy):
+        """取数失败不得返回猜测精度；下次可重查交易所真实过滤器。"""
         s = strategy
         real = {
             'quantityPrecision': 2,
@@ -142,13 +142,70 @@ class TestPrecisionParams:
         }
         s.binance.get_symbol_info = AsyncMock(side_effect=[RuntimeError('timeout'), real])
 
-        fallback = await s._get_symbol_precision('BNBUSDT')
-        assert fallback['stepSize'] == '0.001'
+        with pytest.raises(RuntimeError, match='timeout'):
+            await s._get_symbol_precision('BNBUSDT')
         assert 'BNBUSDT' not in s.symbol_precision
 
         assert await s._get_symbol_precision('BNBUSDT') == real
         assert await s._get_symbol_precision('BNBUSDT') == real
         assert s.binance.get_symbol_info.await_count == 2
+
+    async def test_precision_params_do_not_guess_after_api_failure(self, strategy):
+        strategy.binance.get_symbol_info = AsyncMock(side_effect=RuntimeError('timeout'))
+        with pytest.raises(RuntimeError, match='timeout'):
+            await strategy._get_precision_params('BNBUSDT')
+
+    async def test_close_keeps_existing_orders_when_precision_unavailable(self, strategy, position_cls):
+        position = make_position(position_cls)
+        strategy._sync_position_with_exchange = AsyncMock(return_value={'closed': False})
+        strategy._cancel_symbol_conditional_orders = AsyncMock()
+        strategy.binance.get_symbol_info = AsyncMock(side_effect=RuntimeError('timeout'))
+
+        assert await strategy._close_position('BNBUSDT', position, Decimal('0.1'), 'TIME_STOP') is False
+        strategy._cancel_symbol_conditional_orders.assert_not_awaited()
+
+    async def test_rebuild_keeps_existing_orders_when_precision_unavailable(self, strategy, position_cls):
+        position = make_position(position_cls)
+        position.stop_loss_order_id = 123
+        strategy._cancel_single_order_with_retry = AsyncMock(return_value=True)
+        strategy.binance.get_symbol_info = AsyncMock(side_effect=RuntimeError('timeout'))
+
+        with pytest.raises(RuntimeError, match='timeout'):
+            await strategy._cancel_orders_for_rebuild('BNBUSDT', position)
+        strategy._cancel_single_order_with_retry.assert_not_awaited()
+
+    async def test_trailing_update_keeps_old_order_when_precision_unavailable(self, strategy, position_cls):
+        position = make_position(position_cls)
+        position.trailing_stop_order_id = 456
+        strategy.binance.get_symbol_info = AsyncMock(side_effect=RuntimeError('timeout'))
+        strategy.binance.cancel_algo_order = AsyncMock()
+
+        with pytest.raises(RuntimeError, match='timeout'):
+            await strategy._sync_trailing_stop_order('BNBUSDT', position, Decimal('59000'))
+        strategy.binance.cancel_algo_order.assert_not_awaited()
+        assert position.trailing_stop_order_id == 456
+
+    async def test_trailing_trigger_keeps_old_order_when_precision_unavailable(self, strategy, position_cls):
+        position = make_position(position_cls)
+        position.trailing_stop_order_id = 456
+        strategy._cancel_trailing_order = AsyncMock()
+        strategy.binance.get_symbol_info = AsyncMock(side_effect=RuntimeError('timeout'))
+
+        with pytest.raises(RuntimeError, match='timeout'):
+            await strategy._handle_trailing_trigger('BNBUSDT', position, Decimal('59000'), Decimal('58000'))
+        strategy._cancel_trailing_order.assert_not_awaited()
+
+    async def test_extreme_stop_keeps_old_order_when_precision_unavailable(self, strategy, position_cls):
+        position = make_position(position_cls)
+        position.stop_loss_order_id = 789
+        strategy.binance.get_symbol_info = AsyncMock(side_effect=RuntimeError('timeout'))
+        strategy.binance.cancel_algo_order = AsyncMock()
+        strategy.binance.place_conditional_order = AsyncMock()
+
+        with pytest.raises(RuntimeError, match='timeout'):
+            await strategy._tighten_extreme_stop('BNBUSDT', position, Decimal('59000'))
+        strategy.binance.cancel_algo_order.assert_not_awaited()
+        strategy.binance.place_conditional_order.assert_not_awaited()
 
 
 # ============================================================================

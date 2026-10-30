@@ -605,6 +605,33 @@ class TestHandleTrailingTrigger:
 # 第 8 组：_sync_position_with_exchange 加仓分支与各状态同步
 # ============================================================================
 
+class TestAddPositionPrecisionFailure:
+    async def test_unavailable_precision_blocks_entry_before_order(self, strategy, position_cls):
+        position = make_position(position_cls)
+        strategy._get_precision_params = AsyncMock(side_effect=RuntimeError('precision unavailable'))
+        strategy._place_entry_order = AsyncMock(return_value=make_fill())
+
+        assert await strategy._add_position('BTCUSDT', position, make_signal()) is False
+        strategy._place_entry_order.assert_not_awaited()
+
+    async def test_precision_loss_after_fill_keeps_old_orders_and_marks_pending(self, strategy, position_cls):
+        position = make_position(position_cls)
+        position.stop_loss_order_id = 123
+        strategy._get_precision_params = AsyncMock(side_effect=[
+            ('0.001', Decimal('0.01')), RuntimeError('precision lost'),
+        ])
+        strategy._place_entry_order = AsyncMock(return_value=make_fill())
+        strategy._sync_position_with_exchange = AsyncMock(return_value={
+            'closed': False, 'actual_quantity': Decimal('0.2'),
+        })
+        strategy._cancel_single_order_with_retry = AsyncMock(return_value=True)
+
+        assert await strategy._add_position('BTCUSDT', position, make_signal()) is False
+        assert position.current_quantity == Decimal('0.2')
+        assert position.rebuild_pending is True
+        strategy._cancel_single_order_with_retry.assert_not_awaited()
+
+
 class TestSyncPositionWithExchange:
     """_sync_position_with_exchange 加仓分支与各状态同步（v6.28）"""
 
@@ -734,6 +761,50 @@ class TestRetryRebuildPending:
         s._cancel_orders_for_rebuild.assert_awaited_once_with('BTCUSDT', pos)
         s._rebuild_condition_orders.assert_awaited_once_with('BTCUSDT', pos)
 
+    async def test_precision_failure_on_one_symbol_does_not_skip_next(self, strategy, position_cls):
+        first = make_position(position_cls, rebuild_pending=True)
+        second = make_position(position_cls, rebuild_pending=True)
+        strategy.positions = {'BTCUSDT': first, 'ETHUSDT': second}
+        async def cancel(symbol, _position):
+            if symbol == 'BTCUSDT':
+                raise RuntimeError('precision unavailable')
+            return True
+        strategy._cancel_orders_for_rebuild = AsyncMock(side_effect=cancel)
+        strategy._rebuild_condition_orders = AsyncMock(return_value=True)
+
+        await strategy._retry_rebuild_pending()
+
+        assert first.rebuild_pending is True
+        assert second.rebuild_pending is False
+        strategy._rebuild_condition_orders.assert_awaited_once_with('ETHUSDT', second)
+
+
+class TestPrecisionFailureAcrossPositions:
+    async def test_position_error_does_not_skip_next_symbol_or_cleanup(self, strategy, position_cls):
+        strategy.positions = {
+            'BTCUSDT': make_position(position_cls),
+            'ETHUSDT': make_position(position_cls),
+        }
+        strategy._get_current_price = AsyncMock(return_value=Decimal('60000'))
+        strategy._check_liquidation_warning = AsyncMock(return_value=False)
+        strategy._check_extreme_market = AsyncMock(return_value=False)
+        strategy._check_partial_take_profit = AsyncMock()
+        async def trailing(symbol, *_args):
+            if symbol == 'BTCUSDT':
+                raise RuntimeError('precision unavailable')
+        strategy._check_dynamic_trailing = AsyncMock(side_effect=trailing)
+        strategy._check_time_stop = AsyncMock()
+        strategy._retry_pending_cancellations = AsyncMock()
+        strategy._cleanup_residual_orders = AsyncMock()
+        strategy._retry_rebuild_pending = AsyncMock()
+        strategy._retry_protection_pending = AsyncMock()
+        strategy._maybe_cleanup_expired_claims = AsyncMock()
+
+        await strategy.update_positions()
+
+        strategy._check_time_stop.assert_awaited_once_with('ETHUSDT', strategy.positions['ETHUSDT'])
+        strategy._retry_protection_pending.assert_awaited_once()
+
 
 # ============================================================================
 # 第 10 组：异常路径
@@ -768,9 +839,8 @@ class TestExceptionPaths:
         assert result is None
 
     async def test_get_precision_params_exception(self, strategy, position_cls):
-        """精度查询异常 → 返回默认精度，不中断重建"""
+        """精度查询异常 → 阻断重建，不能用猜测精度下单"""
         s = strategy
         s._get_symbol_precision = AsyncMock(side_effect=RuntimeError('精度查询异常'))
-        step_size, tick_size = await s._get_precision_params('BTCUSDT')
-        assert step_size == '0.001'
-        assert tick_size == Decimal('0.01')
+        with pytest.raises(RuntimeError, match='精度查询异常'):
+            await s._get_precision_params('BTCUSDT')

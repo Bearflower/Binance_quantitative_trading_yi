@@ -1358,14 +1358,18 @@ class BinanceClient:
                 filters = {}
                 for f in s.get('filters', []):
                     if f['filterType'] == 'LOT_SIZE':
-                        step_size = f.get('stepSize', '0.001')
+                        step_size = f.get('stepSize')
+                        if step_size is None:
+                            raise ValueError(f"{symbol} LOT_SIZE 缺少 stepSize")
                         filters['stepSize'] = step_size  # v6.16.6：保存原始stepSize供精度截断
                         if '.' in step_size:
                             filters['quantityPrecision'] = len(step_size.split('.')[1].rstrip('0') or '0')
                         else:
                             filters['quantityPrecision'] = 0
                     elif f['filterType'] == 'PRICE_FILTER':
-                        tick_size = f.get('tickSize', '0.01')
+                        tick_size = f.get('tickSize')
+                        if tick_size is None:
+                            raise ValueError(f"{symbol} PRICE_FILTER 缺少 tickSize")
                         filters['tickSize'] = Decimal(tick_size)
                         if '.' in tick_size:
                             filters['pricePrecision'] = len(tick_size.split('.')[1].rstrip('0') or '0')
@@ -1374,7 +1378,16 @@ class BinanceClient:
                     elif f['filterType'] == 'MIN_NOTIONAL':
                         filters['minNotional'] = f.get('notional', '5')
                 
-                # 缓存精度信息
+                if not filters.get('stepSize') or not filters.get('tickSize'):
+                    raise ValueError(
+                        f"{symbol} 交易所精度信息缺少 LOT_SIZE 或 PRICE_FILTER"
+                    )
+                step = Decimal(str(filters['stepSize']))
+                tick = filters['tickSize']
+                if not step.is_finite() or not tick.is_finite() or step <= 0 or tick <= 0:
+                    raise ValueError(f"{symbol} 交易所精度信息步长无效")
+
+                # 仅缓存完整、有效的交易所精度信息
                 self._symbol_precision_cache[symbol] = filters
                 logger.info(
                     f"{symbol} 精度信息已缓存",
@@ -1385,14 +1398,7 @@ class BinanceClient:
                 )
                 return filters
         
-        logger.warning(f"未找到交易对{symbol}的精度信息，临时使用默认值并在下次重查")
-        default_filters = {
-            'quantityPrecision': 3,
-            'pricePrecision': 2,
-            'stepSize': '0.001',
-            'tickSize': Decimal('0.01')
-        }
-        return default_filters
+        raise ValueError(f"交易所信息中未找到交易对 {symbol}，停止使用猜测精度下单")
     
     def _adjust_quantity_precision(
         self,
