@@ -90,6 +90,11 @@ class FundingScheduleCollector:
                 "FETCH_FAILED", http_attempted=True,
             )
         received_at = self.clock()
+        if not _current_slot(scheduled_at, received_at):
+            return await self._failed(
+                scheduled_at, attempt_id, request_started_at, received_at,
+                "MISSED_SCHEDULE_SLOT", http_attempted=True,
+            )
         try:
             payload_hash, observations = normalize_observations(
                 scheduled_at=scheduled_at,

@@ -48,6 +48,9 @@ class FakeConnection:
         if "pg_advisory_xact_lock" in sql:
             return {"lock": 1}
         if "ai_tuner_universe_scan_runs" in sql:
+            if (self.db.universe_run is not None and "created_at <= $2" in sql
+                    and self.db.universe_run["created_at"] > args[1]):
+                return None
             return self.db.universe_run
         stored = self.db.runs.get(args[0])
         if stored is None:
@@ -57,6 +60,8 @@ class FakeConnection:
     async def fetch(self, sql, *args):
         self.db.sql.append(sql)
         if "ai_tuner_universe_snapshots" in sql:
+            if "created_at <= $3" in sql and self.db.universe_snapshot_created_at > args[2]:
+                return []
             return [{"symbol": s} for s in self.db.universe_symbols]
         return [dict(zip(("attempt_id", "symbol", "source_time", "received_at", "next_funding_time", "funding_interval_hours", "payload_hash", "raw_payload"), values)) for (aid, _), values in self.db.observations.items() if aid == args[0]]
 
@@ -78,8 +83,9 @@ class FakeDB:
         self.observations = {}
         self.sql = []
         self.isolation = None
-        self.universe_run = {"observed_at": SLOT - timedelta(minutes=1), "symbol_count": 1}
+        self.universe_run = {"observed_at": SLOT - timedelta(minutes=1), "symbol_count": 1, "created_at": SLOT - timedelta(minutes=1)}
         self.universe_symbols = ["SOLUSDT"]
+        self.universe_snapshot_created_at = SLOT - timedelta(minutes=1)
 
 
 def fixture():
@@ -180,7 +186,7 @@ def test_missing_universe_scan_is_different_from_proven_empty_scan():
         db.universe_run = None
         with pytest.raises(MissingHistoricalUniverse):
             await repo.latest_universe("hrs", SLOT)
-        db.universe_run = {"observed_at": SLOT, "symbol_count": 0}
+        db.universe_run = {"observed_at": SLOT, "symbol_count": 0, "created_at": SLOT}
         db.universe_symbols = []
         assert await repo.latest_universe("hrs", SLOT) == ()
     asyncio.run(exercise())
@@ -189,8 +195,26 @@ def test_missing_universe_scan_is_different_from_proven_empty_scan():
 def test_incomplete_historical_universe_snapshot_blocks_collection():
     async def exercise():
         db = FakeDB()
-        db.universe_run = {"observed_at": SLOT, "symbol_count": 2}
+        db.universe_run = {"observed_at": SLOT, "symbol_count": 2, "created_at": SLOT}
         repo = FundingScheduleRepository(db)
         with pytest.raises(MissingHistoricalUniverse):
             await repo.latest_universe("hrs", SLOT)
+    asyncio.run(exercise())
+
+
+def test_scan_created_after_slot_cannot_supply_historical_universe():
+    async def exercise():
+        db = FakeDB()
+        db.universe_run = {"observed_at": SLOT - timedelta(minutes=1), "symbol_count": 1, "created_at": SLOT + timedelta(seconds=1)}
+        with pytest.raises(MissingHistoricalUniverse):
+            await FundingScheduleRepository(db).latest_universe("hrs", SLOT)
+    asyncio.run(exercise())
+
+
+def test_snapshot_created_after_slot_cannot_supply_historical_membership():
+    async def exercise():
+        db = FakeDB()
+        db.universe_snapshot_created_at = SLOT + timedelta(seconds=1)
+        with pytest.raises(MissingHistoricalUniverse):
+            await FundingScheduleRepository(db).latest_universe("hrs", SLOT)
     asyncio.run(exercise())

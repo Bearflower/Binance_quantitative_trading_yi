@@ -115,7 +115,9 @@ class FundingScheduleRepository:
             run = await conn.fetchrow(
                 """SELECT observed_at, symbol_count
                    FROM public.ai_tuner_universe_scan_runs
-                   WHERE strategy_id = $1::varchar(64) AND observed_at <= $2::timestamptz
+                   WHERE strategy_id = $1::varchar(64)
+                     AND observed_at <= $2::timestamptz
+                     AND created_at <= $2::timestamptz
                    ORDER BY observed_at DESC LIMIT 1""",
                 strategy_id, scheduled_at,
             )
@@ -124,9 +126,11 @@ class FundingScheduleRepository:
                 raise MissingHistoricalUniverse(f"no {strategy_id} universe scan as of scheduled_at")
             rows = await conn.fetch(
                 """SELECT symbol FROM public.ai_tuner_universe_snapshots
-                   WHERE strategy_id = $1::varchar(64) AND observed_at = $2::timestamptz
+                   WHERE strategy_id = $1::varchar(64)
+                     AND observed_at = $2::timestamptz
+                     AND created_at <= $3::timestamptz
                    ORDER BY symbol""",
-                strategy_id, observed_at,
+                strategy_id, observed_at, scheduled_at,
             )
             if len(rows) != run["symbol_count"]:
                 raise MissingHistoricalUniverse(f"incomplete {strategy_id} universe scan at {observed_at}")

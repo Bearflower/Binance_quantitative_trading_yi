@@ -147,3 +147,19 @@ def test_slow_universe_lookup_fails_before_http_and_does_not_backdate_request_st
     assert attempt.received_at == late
     assert attempt.raw_payload["http_attempted"] is False
     assert observations == ()
+
+
+def test_slow_http_is_not_saved_as_current_slot_success():
+    start = SLOT + timedelta(seconds=10)
+    request_start = SLOT + timedelta(seconds=11)
+    late = SLOT + timedelta(seconds=121)
+    repo = FakeRepository()
+    client = FakeClient([row(s, request_start) for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT")])
+    ticks = iter((start, request_start, late))
+    result = asyncio.run(FundingScheduleCollector(repo, client, clock=lambda: next(ticks)).collect_once(SLOT, uuid4()))
+    assert result.status == "failed" and result.failure_code == "MISSED_SCHEDULE_SLOT"
+    assert len(client.calls) == 2
+    attempt, observations = repo.attempts[0]
+    assert attempt.request_started_at == request_start and attempt.received_at == late
+    assert attempt.raw_payload["http_attempted"] is True
+    assert observations == ()
