@@ -51,6 +51,7 @@ services:
       - .secrets/ai_tuner_snapshot.env
     environment:
       - STRATEGY_NAME=hrs
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=hrs
       - FEISHU_WEBHOOK_HRS=https://open.feishu.cn/open-apis/bot/v2/hook/e628ca79-2f0c-4e59-97b3-6c2054ccddb7
     volumes:
@@ -87,6 +88,7 @@ services:
       - .env
     environment:
       - STRATEGY_NAME=btc_eth
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=btc_eth
     volumes:
       - ./logs/btc_eth:/app/logs
@@ -121,6 +123,7 @@ services:
       - .env
     environment:
       - STRATEGY_NAME=btc_eth_aggressive
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=btc_eth_aggressive
     volumes:
       - ./logs/btc_eth_aggressive:/app/logs
@@ -253,6 +256,7 @@ services:
       - .env
     environment:
       - STRATEGY_NAME=new_coin
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=new_coin
     volumes:
       - ./logs/new_coin:/app/logs
@@ -287,6 +291,7 @@ services:
       - .env
     environment:
       - STRATEGY_NAME=grid
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=grid
     volumes:
       - ./logs/grid:/app/logs
@@ -385,6 +390,7 @@ services:
     user: "0:0"   # 使用 root，与其他策略容器一致，解决 bind mount UID 不匹配
     environment:
       - TZ=Asia/Shanghai
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT:-5432}
