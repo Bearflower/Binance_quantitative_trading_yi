@@ -5,7 +5,7 @@ export_execution_facts._maybe_open_sink / _maybe_close_sink 离线测试。
   - 开关默认关闭（环境变量未设置 → (None, None)，不构造 DatabaseManager）
   - truthy 判定：1/true/yes/on（strip+lower，大小写不敏感）；其余一律关闭
   - truthy 时 DB 连接参数从 DATABASE_* 环境变量读取
-  - connect 失败 → 降级 (None, None)，不阻塞采集、不向上抛
+  - 写入已开启但 connect 失败 → 明确报错，不得伪装成成功采集
   - _maybe_close_sink：None 空跑 / 正常 disconnect / disconnect 异常吞掉
 
 DatabaseManager 全程 monkeypatch 为假件，绝不连真实 PostgreSQL。
@@ -52,11 +52,12 @@ class FakeDatabaseManager:
 
 
 @pytest.fixture(autouse=True)
-def _reset_fake_state():
+def _reset_fake_state(monkeypatch):
     """每个用例前重置假件类状态，测试后恢复（避免类属性跨用例污染）。"""
     FakeDatabaseManager.next_connect_error = None
     FakeDatabaseManager.next_disconnect_error = None
     FakeDatabaseManager.instances = []
+    monkeypatch.setenv("DATABASE_PASSWORD", "test-secret")
     yield
     FakeDatabaseManager.next_connect_error = None
     FakeDatabaseManager.next_disconnect_error = None
@@ -124,16 +125,25 @@ def test_open_sink_reads_db_env(monkeypatch, fake_db_cls):
     assert db.kwargs["password"] == "db-pass-test"
 
 
-def test_open_sink_connect_failure_degrades(monkeypatch, fake_db_cls):
-    """connect 抛异常 → 降级 (None, None)：不向上抛、不阻塞采集。"""
+def test_open_sink_connect_failure_is_fatal(monkeypatch, fake_db_cls):
+    """显式要求落库时，连接失败必须中止，不能只输出 JSONL。"""
     monkeypatch.setenv(_ENV, "1")
+    monkeypatch.setenv("DATABASE_PASSWORD", "test-secret")
     FakeDatabaseManager.next_connect_error = RuntimeError("connect boom")
-    sink, db = asyncio.run(_maybe_open_sink())
-    assert sink is None
-    assert db is None
+    with pytest.raises(RuntimeError, match="DB sink"):
+        asyncio.run(_maybe_open_sink())
     # 构造过一次且 connect 确实被调用过（失败发生在 connect 阶段）
     assert len(fake_db_cls.instances) == 1
     assert fake_db_cls.instances[0].connect_calls == 1
+
+
+def test_open_sink_requires_explicit_database_password(monkeypatch, fake_db_cls):
+    """生产事实采集不能使用代码中的默认数据库口令。"""
+    monkeypatch.setenv(_ENV, "1")
+    monkeypatch.delenv("DATABASE_PASSWORD", raising=False)
+    with pytest.raises(RuntimeError, match="DATABASE_PASSWORD"):
+        asyncio.run(_maybe_open_sink())
+    assert fake_db_cls.instances == []
 
 
 # ══════════════════════════════════════════════════════════════════

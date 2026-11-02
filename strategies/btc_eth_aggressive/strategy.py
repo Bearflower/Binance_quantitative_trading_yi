@@ -3865,6 +3865,7 @@ class BTCEthStrategy:
         """
         try:
             # 确定平仓方向（与持仓方向相反）
+            entry_direction = position.direction
             close_side = "SELL" if position.direction == "LONG" else "BUY"
 
             # 入口持仓同步：先查交易所实际持仓量（条件单可能已部分成交）
@@ -3881,13 +3882,16 @@ class BTCEthStrategy:
                     current_price=current_price, close_quantity=close_quantity
                 )
                 # 止损打标：本次平仓若为止损（非止盈）且由条件单促成，记录止损供看板统计
-                await self._mark_stop_loss_if_needed(symbol, position, close_reason, pnl)
+                await self._mark_stop_loss_if_needed(
+                    symbol, position, close_reason, pnl, side_override=close_side
+                )
                 return True
 
             # 先确认精度，避免失败时先撤掉仍有效的保护单。
             precision_info = await self._get_symbol_precision(symbol)
 
             # 保留交易所保护单直至确认平仓；拒单时继续保留保护并下轮重试。
+            preserve_protection = close_reason in ("ALLOCATION_LIMIT", "LEGACY_TIME_STOP")
             # 确保平仓数量不超过当前持仓数量
             actual_close_quantity = min(close_quantity, position.current_quantity)
             
@@ -4077,6 +4081,12 @@ class BTCEthStrategy:
                     # [-2022] 条件单已平仓，无持仓可平
                     # [-4118] 条件单占仓，新平仓单超卖
                     if isinstance(e, BinanceAPIError) and e.code in (-2022, -4118):
+                        if preserve_protection:
+                            logger.error(
+                                f"{symbol} 平仓被现有保护单阻断，保留硬止损等待下轮处理",
+                                close_reason=close_reason, error_code=e.code,
+                            )
+                            break
                         error_code = e.code
                         logger.warning(
                             f"{symbol} ReduceOnly 被拒（{error_code}），保留条件单并同步持仓",
@@ -4098,7 +4108,9 @@ class BTCEthStrategy:
                                 current_price=current_price, close_quantity=close_quantity
                             )
                             # 止损打标：与入口 closed 分支保持一致
-                            await self._mark_stop_loss_if_needed(symbol, position, close_reason, pnl)
+                            await self._mark_stop_loss_if_needed(
+                                symbol, position, close_reason, pnl, side_override=close_side
+                            )
                             return True
                         elif sync_result['partially_closed']:
                             # 交易所持仓量 < 本地记录，调整平仓量后继续重试
@@ -4142,6 +4154,17 @@ class BTCEthStrategy:
                     last_error=str(last_error) if last_error else "超时未成交"
                 )
                 return False
+
+            if preserve_protection:
+                confirmation = await self._sync_position_with_exchange(
+                    symbol, position, close_reason
+                )
+                if not confirmation.get('closed'):
+                    logger.error(
+                        f"{symbol} 平仓订单状态未证明全仓已平，保留硬止损",
+                        close_reason=close_reason,
+                    )
+                    return False
             
             # 记录平仓成功日志
             logger.info(
@@ -4150,11 +4173,13 @@ class BTCEthStrategy:
                 order_id=order_result.get('orderId'),
                 close_quantity=float(actual_close_quantity),
                 close_price=float(order_result.get('avgPrice', 0)),
-                remaining_quantity=float(position.current_quantity - actual_close_quantity)
+                remaining_quantity=float(max(Decimal('0'), position.current_quantity - actual_close_quantity))
             )
             
             # 更新持仓数量
-            position.current_quantity -= actual_close_quantity
+            position.current_quantity = max(
+                Decimal('0'), position.current_quantity - actual_close_quantity
+            )
             
             # 计算平仓盈亏并回写 trade_records.realized_pnl
             # 注意：回写失败不影响平仓主流程，异常被内部捕获仅记日志
@@ -4167,7 +4192,7 @@ class BTCEthStrategy:
                 if exit_price > 0 and position.entry_price and position.entry_price > 0:
                     # 使用集中管理的公式计算平仓盈亏
                     pnl = TradeLogger.calculate_pnl(
-                        direction=position.direction,
+                        direction=entry_direction,
                         entry_price=position.entry_price,
                         exit_price=exit_price,
                         quantity=actual_close_quantity
@@ -4184,7 +4209,9 @@ class BTCEthStrategy:
                             executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
                         )
                         # 止损打标：平仓成交后，若本次为止损（非止盈）则记录止损供看板统计
-                        await self._mark_stop_loss_if_needed(symbol, position, close_reason, pnl)
+                        await self._mark_stop_loss_if_needed(
+                            symbol, position, close_reason, pnl, side_override=close_side
+                        )
             except Exception as pnl_error:
                 logger.warning(
                     f"{symbol} 回写平仓盈亏失败，不影响平仓流程",
@@ -4311,7 +4338,8 @@ class BTCEthStrategy:
 
     async def _mark_stop_loss_if_needed(self, symbol: str, position: PositionState,
                                         close_reason: str,
-                                        realized_pnl: Optional[Decimal] = None) -> None:
+                                        realized_pnl: Optional[Decimal] = None,
+                                        side_override: Optional[str] = None) -> None:
         """止损打标（供风控看板"最近止损次数"统计）。
 
         仅非止盈平仓（时间止损 / 条件单止损 / 强平预警 / 极端行情等保护性平仓）才打
@@ -4326,7 +4354,7 @@ class BTCEthStrategy:
         try:
             await trade_logger.log_stop_loss(
                 symbol=symbol,
-                side="SELL" if position.direction == "LONG" else "BUY",
+                side=side_override or ("SELL" if position.direction == "LONG" else "BUY"),
                 realized_pnl=realized_pnl,
             )
         except Exception as e:

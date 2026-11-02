@@ -2,6 +2,19 @@
 测试数据库管理
 """
 import pytest
+
+
+def test_database_initialization_never_logs_password_fragment(monkeypatch):
+    """连接初始化日志不包含口令，即使是部分遮盖的片段。"""
+    import shared.database as database_module
+    events = []
+    monkeypatch.setattr(database_module.logger, "info", lambda event, **fields: events.append((event, fields)))
+    database_module.DatabaseManager(
+        host="localhost", port=5432, database="test", user="test",
+        password="topsecret1234",
+    )
+    assert events
+    assert all("password" not in fields for _, fields in events)
 from shared.database import DatabaseManager, SQLInjectionError
 
 

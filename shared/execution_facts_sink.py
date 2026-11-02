@@ -57,7 +57,7 @@ _SQL_INCOME_UPSERT = (
     "INSERT INTO trading.execution_fact_income "
     "(account_id, tran_id, symbol, income_type, income, asset, info, trade_id, event_time_utc) "
     "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) "
-    "ON CONFLICT (account_id, tran_id) DO UPDATE SET "
+    "ON CONFLICT (account_id, income_type, tran_id) DO UPDATE SET "
     " income = EXCLUDED.income, asset = EXCLUDED.asset, info = EXCLUDED.info, "
     " trade_id = EXCLUDED.trade_id, event_time_utc = EXCLUDED.event_time_utc, "
     " fetched_at = now()"
@@ -240,7 +240,7 @@ class PostgresExecutionFactsSink:
                 f,
                 source=_RAW_SOURCE_INCOME,
                 entity_key=_RAW_KEY_INCOME,
-                entity_id=f"{getattr(f,'account_id','')}:{getattr(f,'tran_id','')}",
+                entity_id=f"{getattr(f,'account_id','')}:{getattr(f,'income_type','')}:{getattr(f,'tran_id','')}",
             ),
             label="upsert_income",
         )

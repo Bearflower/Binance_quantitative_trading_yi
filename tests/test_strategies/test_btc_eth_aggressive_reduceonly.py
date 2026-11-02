@@ -157,7 +157,7 @@ class TestClosePositionEntrySyncClosed:
         assert pos.current_quantity == Decimal('0')
         # 条件单已平仓：用当前价估算盈亏并回写，止损打标透传估算的 pnl
         strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
-            'BTCUSDT', pos, 'TP1', Decimal('0.0'))
+            'BTCUSDT', pos, 'TP1', Decimal('0.0'), side_override='SELL')
 
 
 # ============================================================================
@@ -189,7 +189,7 @@ class TestClosePositionReduceOnlyExcept:
         strategy.binance.cancel_all_algo_orders.assert_not_awaited()
         # 止损打标被调用一次（与入口 closed 分支一致），透传估算的 pnl
         strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
-            'BTCUSDT', pos, 'TP1', Decimal('0.0'))
+            'BTCUSDT', pos, 'TP1', Decimal('0.0'), side_override='SELL')
         # 不应再触发"平仓失败"错误通知（原缺陷：order_result 空引用）
         assert strategy.notification.send_error_notification.await_count == 0
 
@@ -208,7 +208,7 @@ class TestClosePositionReduceOnlyExcept:
         assert result is True
         assert strategy.binance.cancel_all_algo_orders.await_count == 0
         strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
-            'BTCUSDT', pos, 'TP1', Decimal('0.0'))
+            'BTCUSDT', pos, 'TP1', Decimal('0.0'), side_override='SELL')
         assert strategy.notification.send_error_notification.await_count == 0
 
     async def test_closed_take_profit_fallback_insert_pnl_summary(self, strategy):
@@ -244,7 +244,7 @@ class TestClosePositionReduceOnlyExcept:
         )
         # 止损打标：closed 分支透传估算 pnl
         strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
-            'BTCUSDT', pos, 'TP1', Decimal('0.0'))
+            'BTCUSDT', pos, 'TP1', Decimal('0.0'), side_override='SELL')
 
     async def test_partially_closed_retry_success(self, strategy):
         """用例8：-4118 → 同步 partially_closed(0.05) → 缩量 0.05 后重试成功 → True"""

@@ -158,6 +158,27 @@ jobs:
             fi
             exit 0
           fi
+          if [ "$DEPLOY_MODE" = "execution-facts-first-create" ]; then
+            if [ "$SERVICE_NAME" = "hrs" ]; then
+              echo "✅ 执行事实采集首次创建 → 仅构建 hrs 镜像"
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "⏭️ 执行事实采集首次创建 → 跳过其他镜像"
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          if [ "$DEPLOY_MODE" = "allocation-reconcile" ]; then
+            case "$SERVICE_NAME" in
+              btc-eth|btc-eth-aggr|new-coin|grid|hrs|ai-tuner)
+                echo "✅ 资金热修复归并 → 构建实盘策略及 AI Tuner 镜像"
+                echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
+              *)
+                echo "⏭️ 资金热修复归并 → 保留其他服务现状"
+                echo "should_build=false" >> "$GITHUB_OUTPUT" ;;
+            esac
+            exit 0
+          fi
 
           # 仅变更分批日志覆盖配置和本工作流时无需重建业务镜像。
           # Compose 会按 logging 配置只 recreate 本批服务；全项目 COPY 的镜像也无需重建。

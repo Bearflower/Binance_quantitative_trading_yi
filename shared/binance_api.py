@@ -129,7 +129,6 @@ class BinanceClient:
             testnet=testnet,
             base_url=self.base_url,
             use_unified_account=use_unified_account,
-            api_key=self.api_key
         )
     
     @property

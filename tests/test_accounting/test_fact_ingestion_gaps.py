@@ -726,8 +726,8 @@ async def test_run_cli_with_client_runs_selected_modes(monkeypatch, capsys):
     assert [c["endpoint"] for c in client.calls] == ["userTrades", "userTrades", "um/income"]
 
 
-async def test_run_cli_fills_mode_without_symbols_skips_fill_block(monkeypatch):
-    """mode="fills" 但 symbols 为空（L816 的 and symbols=False 子分支）：不执行采集。"""
+async def test_run_cli_fills_mode_without_symbols_rejects_empty_scope(monkeypatch):
+    """要求采集 fills 却没有币种时，不能以成功码掩盖零覆盖。"""
     import scripts.export_execution_facts as mod
 
     client = _SliceClient()
@@ -735,7 +735,8 @@ async def test_run_cli_fills_mode_without_symbols_skips_fill_block(monkeypatch):
 
     args = argparse.Namespace(mode="fills", symbols="", days=1, account_id="t",
                               income_type="REALIZED_PNL", page_limit=1000)
-    assert await _run_cli(args) == 0
+    with pytest.raises(ValueError, match="--symbols"):
+        await _run_cli(args)
     assert client.calls == []                      # 未发起任何请求
 
 
@@ -973,3 +974,46 @@ async def test_true_empty_window_returns_ok_noop():
     assert result.records == []
     # Round 4 守卫修正：无游标且初始到界不再短路，必须进翻页查一次空窗口
     assert len(client.calls) >= 1
+
+
+def test_resolve_window_accepts_exact_historical_interval_and_rejects_partial_or_future():
+    args = argparse.Namespace(days=7, symbols=" btcusdt ", start_ms=100, end_ms=200)
+    assert _resolve_window(args) == (100, 200, ["BTCUSDT"])
+    args.end_ms = None
+    with pytest.raises(ValueError, match="同时提供"):
+        _resolve_window(args)
+    args.end_ms = 100
+    with pytest.raises(ValueError, match="起点"):
+        _resolve_window(args)
+    args.end_ms = 9999999999999
+    with pytest.raises(ValueError, match="未来"):
+        _resolve_window(args)
+
+
+async def test_run_cli_closes_api_client_after_success_and_failure(monkeypatch):
+    from unittest.mock import AsyncMock
+    import scripts.export_execution_facts as mod
+
+    client = _SliceClient(income=[])
+    client.close = AsyncMock()
+    monkeypatch.setattr(mod, "_build_client_from_env", lambda: (client, 0))
+    args = argparse.Namespace(mode="income", symbols="", days=1, account_id="t",
+                              income_type="REALIZED_PNL", page_limit=1000)
+    assert await _run_cli(args) == 0
+    client.close.assert_awaited_once()
+
+    client.close.reset_mock()
+    async def fail(*_args):
+        raise RuntimeError("api failure")
+    monkeypatch.setattr(mod, "_run_cli_income", fail)
+    with pytest.raises(RuntimeError, match="api failure"):
+        await _run_cli(args)
+    client.close.assert_awaited_once()
+
+    client.close.reset_mock()
+    async def fail_sink():
+        raise RuntimeError("DB sink unavailable")
+    monkeypatch.setattr(mod, "_maybe_open_sink", fail_sink)
+    with pytest.raises(RuntimeError, match="DB sink unavailable"):
+        await _run_cli(args)
+    client.close.assert_awaited_once()

@@ -16,7 +16,7 @@ CLI 定位（本轮）：旁路纯采集 + 注入式 sink，默认**不**组装�
 
 设计要点：
   - 幂等键：fills 用 (account_id, symbol, trade_id=响应的 id)；
-           income 用 (account_id, tran_id=响应的 tranId)。
+           income 用 (account_id, income_type, tran_id=响应的 tranId)。
   - 分页：time 递增 + limit；满页时把 start_time 推进到本页最后一条 time，
           同毫秒多笔被 limit 截断时下一页会再拉同 time 的，但 Set 去重。
   - page_complete：仅当返回条数 < limit 才判定页尾；满页 (== limit) 必须继续翻。
@@ -97,7 +97,7 @@ class FillFact:
 class IncomeFact:
     """标准化收入流水行（对应 trading.execution_fact_income）"""
     account_id: str
-    tran_id: int                  # 币安 um/income 响应的 tranId
+    tran_id: int                  # 币安 um/income 响应的 tranId，同类型内唯一
     symbol: str
     income_type: str
     income: Optional[str]
@@ -488,7 +488,7 @@ class ExecutionFactExporter:
             income_type=income_type_arg, symbol=None,
             window_start_ms=window_start_ms, window_end_ms=window_end_ms,
             parse_row=lambda row: _parse_income_row(self.account_id, row),
-            dedup_key=lambda f: (f.account_id, f.tran_id),
+            dedup_key=lambda f: (f.account_id, f.income_type, f.tran_id),
             time_ms_of=lambda f: f.event_time_ms,
             event_id_of=lambda f: f.tran_id,
             last_event_id=lambda items: _last_tran_id(items),
@@ -1084,9 +1084,22 @@ def _last_tran_id(collected: List[IncomeFact]) -> Optional[int]:
 def _resolve_window(args: argparse.Namespace) -> Tuple[int, int, List[str]]:
     """解析 CLI 参数 → (窗口起点毫秒, 窗口终点毫秒, 交易对列表)。"""
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    start_ms = now_ms - args.days * 24 * 3600 * 1000
+    explicit_start = getattr(args, "start_ms", None)
+    explicit_end = getattr(args, "end_ms", None)
+    if (explicit_start is None) != (explicit_end is None):
+        raise ValueError("必须同时提供 --start-ms 和 --end-ms")
+    if explicit_start is not None:
+        start_ms, end_ms = explicit_start, explicit_end
+        if start_ms < 0 or start_ms >= end_ms:
+            raise ValueError("窗口起点必须小于终点且不能为负数")
+        if end_ms > now_ms:
+            raise ValueError("窗口终点不能位于未来")
+    else:
+        if args.days < 0:
+            raise ValueError("--days 不能为负数")
+        start_ms, end_ms = now_ms - args.days * 24 * 3600 * 1000, now_ms
     symbols = [s.strip().upper() for s in (args.symbols or "").split(",") if s.strip()]
-    return start_ms, now_ms, symbols
+    return start_ms, end_ms, symbols
 
 
 def _build_client_from_env():
@@ -1123,12 +1136,16 @@ def _build_client_from_env():
 async def _maybe_open_sink():
     """按 EXECUTION_FACTS_DB_WRITE 决定是否组装 PG sink。
 
-    truthy（1/true/yes/on，大小写不敏感）才开启；connect 失败降级
-    (None, None)，不阻塞采集。返回 (sink, db_manager)。
+    truthy（1/true/yes/on，大小写不敏感）才开启；显式要求写库时
+    缺少口令或连接失败必须报错，不能退回无持久化的 JSONL 模式。
     """
     flag = os.environ.get(_ENV_DB_WRITE, "").strip().lower()
     if flag not in {"1", "true", "yes", "on"}:
         return None, None
+    password = os.environ.get("DATABASE_PASSWORD")
+    if not password:
+        raise RuntimeError("DB sink 需要 DATABASE_PASSWORD")
+    db = None
     try:
         from shared.database import DatabaseManager
         from shared.execution_facts_sink import PostgresExecutionFactsSink
@@ -1137,18 +1154,19 @@ async def _maybe_open_sink():
             port=int(os.getenv("DATABASE_PORT", "5432")),
             database=os.getenv("DATABASE_NAME", "trading_platform"),
             user=os.getenv("DATABASE_USER", "trading_user"),
-            password=os.getenv("DATABASE_PASSWORD", "trading_password_2024"),
+            password=password,
         )
         await db.connect()
         sink = PostgresExecutionFactsSink(db)
         logger.info("DB sink 已开启，execution_facts 将落库")
         return sink, db
-    except Exception as exc:
-        logger.warning(
-            "DB sink 组装失败，降级为纯 JSONL 输出",
-            error=str(exc)[:_ERROR_DETAIL_TRUNCATE],
-        )
-        return None, None
+    except Exception:
+        if db is not None:
+            try:
+                await db.disconnect()
+            except Exception:
+                pass
+        raise RuntimeError("DB sink 组装或连接失败") from None
 
 
 async def _maybe_close_sink(db_manager: Any) -> None:
@@ -1203,16 +1221,19 @@ async def _run_cli(args: argparse.Namespace) -> int:
     否则沿用 JSONL 纯输出。finally 保证 DB 连接池释放。
     """
     start_ms, now_ms, symbols = _resolve_window(args)
+    if args.mode in ("fills", "both") and not symbols:
+        raise ValueError("采集 fills 必须提供 --symbols")
     client, code = _build_client_from_env()
     if client is None:
         return code
 
-    sink, db_manager = await _maybe_open_sink()
-    exporter = ExecutionFactExporter(
-        account_id=args.account_id, api_client=client,
-        sink=sink, page_limit=args.page_limit,
-    )
+    db_manager = None
     try:
+        sink, db_manager = await _maybe_open_sink()
+        exporter = ExecutionFactExporter(
+            account_id=args.account_id, api_client=client,
+            sink=sink, page_limit=args.page_limit,
+        )
         exit_code = 0
         if args.mode in ("fills", "both") and symbols:
             exit_code |= await _run_cli_fills(exporter, symbols, start_ms, now_ms)
@@ -1223,6 +1244,9 @@ async def _run_cli(args: argparse.Namespace) -> int:
         return exit_code
     finally:
         await _maybe_close_sink(db_manager)
+        close_client = getattr(client, "close", None)
+        if close_client is not None:
+            await close_client()
 
 
 def _emit_jsonl(kind: str, result: ExportResult, *, symbol: Optional[str] = None) -> None:
@@ -1250,12 +1274,17 @@ def main() -> None:
     parser.add_argument("--mode", choices=["fills", "income", "both"], default="both")
     parser.add_argument("--symbols", help="逗号分隔的交易对，如 BTCUSDT,ETHUSDT")
     parser.add_argument("--days", type=int, default=7, help="回看窗口天数（业务参数，默认 7）")
+    parser.add_argument("--start-ms", type=int, help="精确 UTC 窗口起点毫秒，需与 --end-ms 同时提供")
+    parser.add_argument("--end-ms", type=int, help="精确 UTC 窗口终点毫秒，不得位于未来")
     parser.add_argument("--account-id", default=os.environ.get("TRADE_ACCOUNT_ID", "default"))
     parser.add_argument("--income-type", default="REALIZED_PNL")
     parser.add_argument("--page-limit", type=int, default=_DEFAULT_PAGE_LIMIT)
     args = parser.parse_args()
 
-    exit_code = asyncio.run(_run_cli(args))
+    try:
+        exit_code = asyncio.run(_run_cli(args))
+    except ValueError as exc:
+        parser.error(str(exc))
     raise SystemExit(exit_code)
 
 
