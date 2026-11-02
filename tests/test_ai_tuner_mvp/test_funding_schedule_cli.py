@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -566,6 +567,20 @@ def test_image_and_deploy_script_include_separate_runtime_boundary():
         assert table in runtime
     for privilege in ("UPDATE", "DELETE", "TRUNCATE"):
         assert f"NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','{privilege}')" in runtime
+
+
+def test_funding_acl_probe_only_calls_sequence_privilege_for_sequences():
+    """PostgreSQL may reorder WHERE clauses and visit TOAST relations first."""
+    runtime = (ROOT / "scripts" / "remote_deploy_runtime.sh").read_text(encoding="utf-8")
+    sequence_scan = runtime.split(
+        "SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace", 1
+    )[1].split("AND NOT EXISTS (", 1)[0]
+    assert re.search(
+        r"CASE\s+WHEN\s+c\.relkind\s*=\s*'S'\s+THEN\s+"
+        r"has_sequence_privilege\([^)]*\)\s+ELSE\s+FALSE\s+END",
+        sequence_scan,
+        flags=re.IGNORECASE,
+    )
 
 
 @pytest.mark.asyncio

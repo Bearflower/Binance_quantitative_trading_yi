@@ -589,7 +589,9 @@ FUNDING_PERMISSION_BOUNDARY_OK=$(docker exec trading_system-postgres \
           AND n.nspname NOT IN ('pg_catalog','information_schema')
           AND n.nspname NOT LIKE 'pg_toast%'
           AND n.nspname NOT LIKE 'pg_temp%'
-          AND has_sequence_privilege('ai_tuner_funding_writer',c.oid,'USAGE,SELECT,UPDATE')
+          AND CASE WHEN c.relkind='S'
+                   THEN has_sequence_privilege('ai_tuner_funding_writer',c.oid,'USAGE,SELECT,UPDATE')
+                   ELSE FALSE END
       )
       AND NOT EXISTS (
         SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
