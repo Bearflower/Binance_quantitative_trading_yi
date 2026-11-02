@@ -32,6 +32,7 @@ from shared.capital_manager import CapitalManager
 from shared.position_ownership import (
     load_ownership_config,
     resolve_position_owner,
+    _open_entry_sql,
     is_symbol_owned_by_other,
     try_claim_symbol,
     release_claim,
@@ -2145,11 +2146,14 @@ class BTCEthStrategy:
                 if abs(amount) <= self.min_position_amt:
                     continue
                 symbol = item.get("symbol")
-                owner = await resolve_position_owner(
-                    self.db_manager, symbol, status_filter=False
-                )
-                if owner != self.my_record_name and symbol not in self.positions:
-                    continue
+                if symbol not in self.positions:
+                    owned = await self._owns_exchange_position(
+                        symbol, Decimal(str(item.get("positionAmt", 0) or 0))
+                    )
+                    if owned is None:
+                        raise ValueError(f"unverified exchange position owner: {symbol}")
+                    if not owned:
+                        continue
                 price = float(item.get("markPrice", 0) or 0)
                 leverage = float(item.get("leverage", 0) or 0)
                 if not all(map(math.isfinite, (amount, price, leverage))) or price <= 0 or leverage <= 0:
@@ -3315,12 +3319,14 @@ class BTCEthStrategy:
                     raise ValueError(f"invalid position amount for {symbol}")
                 if abs(amount) <= self.min_position_amt:
                     continue
-                owner = await resolve_position_owner(
-                    self.db_manager, symbol, status_filter=False
+                owned_by_me = await self._owns_exchange_position(
+                    symbol, Decimal(str(item.get("positionAmt", 0) or 0))
                 )
-                if owner != self.my_record_name:
+                if owned_by_me is None:
+                    raise ValueError(f"unverified exchange position owner: {symbol}")
+                if not owned_by_me:
                     if symbol in self.positions:
-                        raise ValueError(f"tracked position owner mismatch: {symbol}: {owner}")
+                        raise ValueError(f"tracked position owner mismatch: {symbol}")
                     continue
                 price = float(item.get("markPrice", 0) or 0)
                 leverage = float(item.get("leverage", 0) or 0)
@@ -3337,11 +3343,10 @@ class BTCEthStrategy:
         async def close(symbol: str) -> bool:
             # The ownership record can change after the snapshot. Never close
             # a shared-account position without verifying it again.
-            owner = await resolve_position_owner(
-                self.db_manager, symbol, status_filter=False
-            )
-            if owner != self.my_record_name:
-                logger.error("月度额度减仓归属变化，拒绝平仓", symbol=symbol, owner=owner)
+            if not await self._owns_exchange_position(
+                symbol, Decimal(str(owned[symbol]["positionAmt"]))
+            ):
+                logger.error("月度额度减仓归属变化，拒绝平仓", symbol=symbol)
                 return False
             latest = await self.binance.get_position(symbol)
             item = next((p for p in latest if p.get("symbol") == symbol), None)
@@ -3416,11 +3421,8 @@ class BTCEthStrategy:
         self, symbol: str, original_amount: Decimal, reason: str,
     ) -> bool:
         """Close only a still-owned position in its original direction."""
-        owner = await resolve_position_owner(
-            self.db_manager, symbol, status_filter=False
-        )
-        if owner != self.my_record_name:
-            logger.error("旧仓时间退出归属变化，拒绝平仓", symbol=symbol, owner=owner)
+        if not await self._owns_exchange_position(symbol, original_amount):
+            logger.error("旧仓时间退出归属变化，拒绝平仓", symbol=symbol)
             return False
         latest = await self.binance.get_position(symbol)
         item = next((p for p in latest if p.get("symbol") == symbol), None)
@@ -3504,6 +3506,60 @@ class BTCEthStrategy:
     def _hard_stop_covers(cls, orders, symbol: str, side: str, quantity: Decimal) -> bool:
         return cls._hard_stop_covered_qty(orders, symbol, side) >= quantity
 
+    async def _owns_exchange_position(self, symbol: str, amount: Decimal) -> Optional[bool]:
+        """Resolve a live position's owner, including an audited partially closed legacy lot.
+
+        The ordinary owner query excludes entry rows with realized PnL. For an
+        anchored legacy lot only, recover ownership from its first exchange
+        fill's exact order ID after verifying the complete, still-open lot.
+        Any competing live owner or missing evidence fails closed.
+        """
+        owner = await resolve_position_owner(
+            self.db_manager, symbol, status_filter=False
+        )
+        if owner == self.my_record_name:
+            return True
+        if owner is not None:
+            return False
+        try:
+            # The public resolver returns None both for "no owner" and query
+            # errors. Recheck with the shared SQL so an error cannot authorize
+            # the historical fallback over a competing live entry.
+            active = await self.db_manager.fetch_one(
+                _open_entry_sql(False), symbol
+            )
+            if active is not None:
+                return active.get("strategy") == self.my_record_name
+            anchor_ms = _LEGACY_ENTRY_ANCHORS.get(symbol)
+            if anchor_ms is None:
+                return None
+            fills = await fetch_lot_fills(self.binance, symbol, anchor_ms)
+            if fills is None or not verified_anchored_lot(
+                fills, amount, anchor_ms, page_limit=max(1000, len(fills) + 1)
+            ):
+                return None
+            first_order_id = fills[0].get("orderId")
+            if first_order_id is None:
+                return None
+            row = await self.db_manager.fetch_one(
+                "SELECT strategy, order_type, side FROM trading.trade_records "
+                "WHERE symbol=$1 AND order_id=$2 ORDER BY id DESC LIMIT 1",
+                symbol, str(first_order_id),
+            )
+            expected_side = "BUY" if amount > 0 else "SELL"
+            owned = bool(
+                row and row.get("strategy") == self.my_record_name
+                and row.get("order_type") in ("LIMIT", "MARKET")
+                and row.get("side") == expected_side
+            )
+            if owned:
+                logger.warning("以原始成交单恢复旧仓归属", symbol=symbol,
+                               order_id=str(first_order_id))
+            return True if owned else None
+        except Exception as exc:
+            logger.error("旧仓原始归属核验失败", symbol=symbol, error=str(exc))
+            return None
+
     async def _check_legacy_untracked_time_stop(self) -> bool:
         """Apply a conservative 120h exit only to verified 2026-11-02 legacy lots.
 
@@ -3524,10 +3580,11 @@ class BTCEthStrategy:
                 amount = Decimal(str(item.get("positionAmt", 0) or 0))
                 if abs(amount) <= Decimal(str(self.min_position_amt)):
                     continue
-                owner = await resolve_position_owner(
-                    self.db_manager, symbol, status_filter=False
-                )
-                if owner != self.my_record_name:
+                owned = await self._owns_exchange_position(symbol, amount)
+                if owned is None:
+                    logger.error("旧仓归属未核实，保留旧快照", symbol=symbol)
+                    return False
+                if not owned:
                     continue
                 anchor_ms = _LEGACY_ENTRY_ANCHORS[symbol]
                 fills = await fetch_lot_fills(self.binance, symbol, anchor_ms)
@@ -6045,8 +6102,7 @@ class BTCEthStrategy:
         existing_pos = self.positions.get(symbol)
         was_untracked = existing_pos is None
         if was_untracked:
-            owner = await resolve_position_owner(self.db_manager, symbol, status_filter=False)
-            if owner != self.my_record_name:
+            if not await self._owns_exchange_position(symbol, Decimal(str(pos_data["positionAmt"]))):
                 return
             await self._ensure_untracked_hard_stop(symbol, pos_data, current_quantity)
             return

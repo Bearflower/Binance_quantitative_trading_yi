@@ -47,7 +47,7 @@ notification_client = None
 strategy = None
 
 
-async def filter_report_owned(db_manager, my_record_name, positions, margin_dict, qty_dict):
+async def filter_report_owned(db_manager, my_record_name, positions, margin_dict, qty_dict, verified_legacy=None):
     """Use one verified ownership set for both snapshot and dashboard."""
     keep = set()
     for symbol in positions:
@@ -59,6 +59,9 @@ async def filter_report_owned(db_manager, my_record_name, positions, margin_dict
             logger.error("持仓上报归属核验失败，保留旧快照", symbol=symbol, error=str(exc))
             return None
         if owner is None:
+            if symbol in (verified_legacy or {}):
+                keep.add(symbol)
+                continue
             logger.error("持仓上报归属未知，保留旧快照", symbol=symbol)
             return None
         if owner == my_record_name:
@@ -233,6 +236,7 @@ async def run_strategy():
                             report = await filter_report_owned(
                                 strategy.db_manager, _owc['my_record_name'],
                                 positions, margin_dict, qty_dict,
+                                strategy._verified_legacy_positions,
                             )
                             if strategy.state_reporting_enabled:
                                 if report is not None and strategy.state_snapshot_safe_to_write:
@@ -368,6 +372,7 @@ async def run_strategy():
             report = await filter_report_owned(
                 strategy.db_manager, _owc['my_record_name'],
                 positions, margin_dict, qty_dict,
+                strategy._verified_legacy_positions,
             )
             if strategy.state_reporting_enabled:
                 if report is not None and strategy.state_snapshot_safe_to_write:

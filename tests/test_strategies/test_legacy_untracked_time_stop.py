@@ -131,3 +131,50 @@ async def test_legacy_expiry_full_close_path_confirms_flat_then_cleans_protectio
     strategy._cancel_symbol_conditional_orders.assert_awaited_once()
     strategy.db_manager.execute.assert_awaited_once()
     release.assert_awaited_once()
+
+@pytest.mark.asyncio
+async def test_partially_closed_sol_legacy_lot_recovers_owner_from_first_fill_order():
+    strategy = strategy_with_exchange("0.47")
+    strategy.binance.get_user_trades = AsyncMock(return_value=[
+        {"id": 1, "time": 1793347876165, "side": "BUY", "qty": "0.47",
+         "orderId": 253886663232},
+        {"id": 2, "time": 1793409091965, "side": "BUY", "qty": "0.54",
+         "orderId": 254133410855},
+        {"id": 3, "time": 1793559708166, "side": "SELL", "qty": "0.54",
+         "orderId": 254537742120},
+    ])
+    strategy.db_manager = MagicMock()
+    strategy.db_manager.fetch_one = AsyncMock(side_effect=[
+        None, {"strategy": "btc_eth_aggressive", "order_type": "LIMIT", "side": "BUY"}
+    ])
+    with patch("strategies.btc_eth_aggressive.strategy.resolve_position_owner",
+               new=AsyncMock(return_value=None)):
+        assert await strategy._owns_exchange_position(
+            "SOLUSDT", Decimal("0.47")
+        )
+    assert strategy.db_manager.fetch_one.await_args.args[1:] == (
+        "SOLUSDT", "253886663232"
+    )
+
+
+@pytest.mark.asyncio
+async def test_legacy_owner_fallback_rejects_competing_owner_or_unmatched_lot():
+    strategy = strategy_with_exchange("0.47")
+    strategy.db_manager = MagicMock()
+    strategy.db_manager.fetch_one = AsyncMock(return_value=None)
+    strategy.binance.get_user_trades = AsyncMock(return_value=[
+        {"id": 1, "time": 1793347876165, "side": "BUY", "qty": "0.47",
+         "orderId": 253886663232},
+    ])
+    with patch("strategies.btc_eth_aggressive.strategy.resolve_position_owner",
+               new=AsyncMock(return_value="btc_eth")):
+        assert not await strategy._owns_exchange_position(
+            "SOLUSDT", Decimal("0.47")
+        )
+    strategy.db_manager.fetch_one.assert_not_awaited()
+    with patch("strategies.btc_eth_aggressive.strategy.resolve_position_owner",
+               new=AsyncMock(return_value=None)):
+        assert await strategy._owns_exchange_position(
+            "SOLUSDT", Decimal("0.48")
+        ) is None
+    strategy.db_manager.fetch_one.assert_awaited_once()

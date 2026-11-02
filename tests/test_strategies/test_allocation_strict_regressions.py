@@ -247,16 +247,25 @@ async def test_mtpcs_reduces_owned_unadopted_exchange_position(strategy_type):
     strategy._close_position = AsyncMock(return_value=True)
     strategy._sync_position_with_exchange = AsyncMock(return_value={"closed": True})
     strategy._cancel_symbol_conditional_orders = AsyncMock(return_value=True)
+    if strategy_type is AggressiveStrategy:
+        strategy.binance.get_user_trades = AsyncMock(return_value=[
+            {"id": 1, "time": 1793409086845, "side": "BUY", "qty": "1"},
+        ])
+        strategy._close_untracked_exchange_position = AsyncMock(return_value=True)
     module = strategy_type.__module__
     with patch(f"{module}.resolve_position_owner", new=AsyncMock(return_value=strategy.my_record_name)) as owner:
         with patch(f"{module}.release_claim", new=AsyncMock()) as release:
             assert await strategy._enforce_allocation_holdings() is True
     assert owner.await_count >= 2  # snapshot and immediately before close
-    strategy._close_position.assert_awaited_once()
-    assert strategy._close_position.await_args.args[3] == "ALLOCATION_LIMIT"
-    strategy._cancel_symbol_conditional_orders.assert_awaited_once()
-    strategy.db_manager.execute.assert_awaited_once()
-    release.assert_awaited_once()
+    if strategy_type is AggressiveStrategy:
+        strategy._close_untracked_exchange_position.assert_awaited_once()
+        strategy._close_position.assert_not_awaited()
+    else:
+        strategy._close_position.assert_awaited_once()
+        assert strategy._close_position.await_args.args[3] == "ALLOCATION_LIMIT"
+        strategy._cancel_symbol_conditional_orders.assert_awaited_once()
+        strategy.db_manager.execute.assert_awaited_once()
+        release.assert_awaited_once()
 
 
 @pytest.mark.asyncio

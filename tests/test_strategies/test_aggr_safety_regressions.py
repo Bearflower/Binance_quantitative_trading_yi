@@ -146,3 +146,18 @@ async def test_new_entry_rejects_exchange_position_even_if_memory_is_empty():
     s.binance.set_leverage = AsyncMock()
     assert await s._place_entry_order('ETHUSDT', signal) is None
     s._place_and_wait_entry_order.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_verified_legacy_owner_fallback_keeps_snapshot_and_dashboard_row():
+    import importlib
+    main_module = importlib.import_module('strategies.btc_eth_aggressive.main')
+    with patch.object(main_module, 'resolve_position_owner',
+                      new=AsyncMock(return_value=None)):
+        report = await main_module.filter_report_owned(
+            MagicMock(), 'btc_eth_aggressive',
+            {'SOLUSDT': {'quantity': 0.47}},
+            {'SOLUSDT': 10.0}, {'SOLUSDT': 0.47},
+            {'SOLUSDT': {'entry_ms': 1793347876165}},
+        )
+    assert report[0]['SOLUSDT']['quantity'] == 0.47
+    assert report[1]['SOLUSDT'] == 10.0
