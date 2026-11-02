@@ -137,7 +137,7 @@ class AllocationConfigUpdater:
                 ON CONFLICT (month) DO NOTHING
             """
 
-            await db_manager.execute(
+            insert_result = await db_manager.execute(
                 query,
                 result.month,
                 result.total_capital,
@@ -147,6 +147,13 @@ class AllocationConfigUpdater:
                 "active",
                 created_at,
             )
+
+            # asyncpg 返回 INSERT 0 1；冲突时为 INSERT 0 0。
+            # 冲突不代表本次写入成功，不能继续更新配置或发送成功通知。
+            if insert_result != "INSERT 0 1":
+                logger.error("分配记录未插入，停止配置更新",
+                             month=result.month, insert_result=insert_result)
+                return False
 
             logger.info(
                 "分配记录已写入数据库",

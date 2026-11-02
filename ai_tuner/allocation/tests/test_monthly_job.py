@@ -105,6 +105,7 @@ class _FakeDb:
         ddl_raises=False,
         first_month_raises=False,
         first_month_cnt=2,
+        conflict_on_insert=False,
     ):
         self.pnl = pnl or {}
         self.capital = capital or {}
@@ -114,6 +115,7 @@ class _FakeDb:
         self.ddl_raises = ddl_raises
         self.first_month_raises = first_month_raises
         self.first_month_cnt = first_month_cnt
+        self.conflict_on_insert = conflict_on_insert
         self.ddl_calls = []
         self.fetch_calls = []      # (kind, args)
         self.executes = []         # (query, args)
@@ -169,10 +171,11 @@ class _FakeDb:
         norm = " ".join(query.split()).upper()
         if "INSERT INTO PUBLIC.CAPITAL_ALLOCATION" in norm:
             month = args[0]
-            if month in self.existing_months:
-                return  # 模拟 ON CONFLICT (month) DO NOTHING
+            if month in self.existing_months or self.conflict_on_insert:
+                return "INSERT 0 0"  # 模拟并发冲突的 ON CONFLICT DO NOTHING
             self.existing_months.add(month)
             self.inserts.append(args)
+            return "INSERT 0 1"
 
 
 def _make_config():
@@ -269,13 +272,13 @@ class TestMonthPureFunctions(unittest.TestCase):
         self.assertEqual(_next_month(2026, 12), (2027, 1))
 
     def test_resolve_months_september(self):
-        """AC-1.1：2026-09-30 09:30 运行 → ('2026-09', '2026-10')"""
-        now = datetime(2026, 9, 30, 9, 30, tzinfo=_CST)
+        """AC-1.1：10 月 1 日运行，结算完整的 9 月并生成 10 月分配。"""
+        now = datetime(2026, 10, 1, 9, 30, tzinfo=_CST)
         self.assertEqual(_resolve_months(now), ("2026-09", "2026-10"))
 
     def test_resolve_months_cross_year(self):
-        """AC-1.3：2026-12-31 → ('2026-12', '2027-01')"""
-        now = datetime(2026, 12, 31, 9, 30, tzinfo=_CST)
+        """AC-1.3：元旦结算完整的 12 月。"""
+        now = datetime(2027, 1, 1, 9, 30, tzinfo=_CST)
         self.assertEqual(_resolve_months(now), ("2026-12", "2027-01"))
 
     def test_month_range_september(self):
@@ -315,10 +318,10 @@ class TestResolveMonthInputs(unittest.TestCase):
 
     def setUp(self):
         self.job = _minimal_job()
-        self.now = datetime(2026, 9, 30, 9, 30, tzinfo=_CST)
+        self.now = datetime(2026, 10, 1, 9, 30, tzinfo=_CST)
 
     def test_both_none_auto_resolve(self):
-        """两者缺省：按运行时刻推导（当月/次月）"""
+        """两者缺省：按运行时刻推导（上月/当月）"""
         self.assertEqual(
             self.job._resolve_month_inputs(self.now, None, None),
             ("2026-09", "2026-10"),
@@ -359,7 +362,7 @@ class TestRunMonthlyAllocation(unittest.TestCase):
         db = _FakeDb(pnl=pnl, capital=capital, trade_count=trade_count)
         job, saved = _build_job(db)
 
-        result = self._frozen_run(job, datetime(2026, 9, 30, 9, 30, tzinfo=_CST))
+        result = self._frozen_run(job, datetime(2026, 10, 1, 9, 30, tzinfo=_CST))
 
         # 返回字典月份 = 生效月
         self.assertIsNotNone(result)
@@ -401,20 +404,35 @@ class TestRunMonthlyAllocation(unittest.TestCase):
         )
         job, _ = _build_job(db)
 
-        result = self._frozen_run(job, datetime(2026, 9, 30, 9, 30, tzinfo=_CST))
+        result = self._frozen_run(job, datetime(2026, 10, 1, 9, 30, tzinfo=_CST))
 
         self.assertIsNone(result)
         self.assertEqual(db.inserts, [])
         self.assertEqual(db.executes, [])
         self.assertEqual(job.messenger.cards, [])
 
+    def test_current_month_cannot_be_settled_before_month_end(self):
+        pnl, capital, trade_count = _default_market_data()
+        db = _FakeDb(pnl=pnl, capital=capital, trade_count=trade_count)
+        job, _ = _build_job(db)
+
+        result = self._frozen_run(
+            job, datetime(2026, 10, 31, 9, 30, tzinfo=_CST),
+            pnl_month="2026-10", effective_month="2026-11",
+        )
+
+        self.assertIsNone(result)
+        self.assertEqual(db.inserts, [])
+        self.assertEqual(self._find_calls(db, "pnl"), [])
+        self.assertEqual(job.messenger.cards, [])
+
     def test_ac13_cross_year_run(self):
-        """AC-1.3：2026-12-31 运行 → 幂等键/写库 2027-01，PnL 窗口 12 月"""
+        """AC-1.3：2027-01-01 运行 → 幂等键/写库 2027-01，PnL 窗口 12 月"""
         pnl, capital, trade_count = _default_market_data()
         db = _FakeDb(pnl=pnl, capital=capital, trade_count=trade_count)
         job, saved = _build_job(db)
 
-        result = self._frozen_run(job, datetime(2026, 12, 31, 9, 30, tzinfo=_CST))
+        result = self._frozen_run(job, datetime(2027, 1, 1, 9, 30, tzinfo=_CST))
 
         self.assertEqual(result["month"], "2027-01")
         self.assertEqual(self._find_calls(db, "idempotency"), [("2027-01",)])
@@ -424,8 +442,8 @@ class TestRunMonthlyAllocation(unittest.TestCase):
         self.assertEqual(pnl_call_args[1], datetime(2026, 12, 1))
         self.assertEqual(pnl_call_args[2], datetime(2027, 1, 1))
 
-    def test_f4_idempotency_check_exception_relies_on_conflict(self):
-        """F4：幂等检查异常时继续执行，仅一条 INSERT 且含 ON CONFLICT 兜底"""
+    def test_idempotency_check_exception_stops_before_write(self):
+        """幂等查询失败不能假设记录不存在，否则可能改配置却保留旧数据库记录。"""
         pnl, capital, trade_count = _default_market_data()
         db = _FakeDb(
             pnl=pnl, capital=capital, trade_count=trade_count,
@@ -433,13 +451,27 @@ class TestRunMonthlyAllocation(unittest.TestCase):
         )
         job, _ = _build_job(db)
 
-        result = self._frozen_run(job, datetime(2026, 9, 30, 9, 30, tzinfo=_CST))
+        result = self._frozen_run(job, datetime(2026, 10, 1, 9, 30, tzinfo=_CST))
 
-        self.assertIsNotNone(result)
-        self.assertEqual(len(db.inserts), 1)
-        insert_queries = [q for q, _ in db.executes]
-        self.assertEqual(len(insert_queries), 1)
-        self.assertIn("ON CONFLICT (month) DO NOTHING", insert_queries[0])
+        self.assertIsNone(result)
+        self.assertEqual(db.inserts, [])
+        self.assertEqual(db.executes, [])
+        self.assertEqual(job.messenger.cards, [])
+
+    def test_insert_conflict_stops_before_success_notification(self):
+        """幂等预检与 INSERT 之间发生冲突时，不得报告本次分配成功。"""
+        pnl, capital, trade_count = _default_market_data()
+        db = _FakeDb(
+            pnl=pnl, capital=capital, trade_count=trade_count,
+            conflict_on_insert=True,
+        )
+        job, _ = _build_job(db)
+
+        result = self._frozen_run(job, datetime(2026, 10, 1, 9, 30, tzinfo=_CST))
+
+        self.assertIsNone(result)
+        self.assertEqual(db.inserts, [])
+        self.assertEqual(job.messenger.cards, [])
 
     def test_ac31_ac33_explicit_months_backfill(self):
         """AC-3.1/3.3：显式 pnl=2026-09/effective=2026-10，非首月，按排名+零开仓计算"""

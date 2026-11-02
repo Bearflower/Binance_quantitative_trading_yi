@@ -20,7 +20,6 @@ StratTuneAI 多策略AI调优系统入口
 """
 
 import asyncio
-import calendar
 import os
 import signal
 import sys
@@ -46,7 +45,7 @@ from ai_tuner.engine.llm_client import LLMClient  # noqa: E402
 from ai_tuner.memory.db_handler import MemoryDBHandler  # noqa: E402
 from ai_tuner.notifier.messenger import Messenger  # noqa: E402
 from ai_tuner.scheduler.weekly_job import WeeklyTuningJob  # noqa: E402
-from ai_tuner.allocation.monthly_job import MonthlyAllocationJob  # noqa: E402
+from ai_tuner.allocation.monthly_job import CST, MonthlyAllocationJob  # noqa: E402
 from ai_tuner.allocation.profit_extraction_job import ProfitExtractionJob  # noqa: E402
 from ai_tuner.allocation.daily_refresher import DailyAllocationRefresher  # noqa: E402
 from ai_tuner.cleanup.orphan_cleanup import OrphanCleanupJob  # noqa: E402
@@ -367,8 +366,8 @@ class StratTuneAI:
             replace_existing=True,
         )
 
-        # 月度分配调度（每天执行，代码内判断是否为月末最后一天）
-        monthly_cron = scheduler_cfg.get("monthly_cron_expression", "55 23 * * *")
+        # 月度分配调度（月初 1–3 日执行；未落库的暂时故障可在次日重试）
+        monthly_cron = scheduler_cfg.get("monthly_cron_expression", "30 9 * * *")
         try:
             monthly_parts = monthly_cron.strip().split()
             if len(monthly_parts) != 5:
@@ -545,14 +544,13 @@ class StratTuneAI:
         await self.weekly_job.run_weekly_tuning()
 
     async def _scheduled_allocation(self) -> None:
-        """调度器触发的月度资金分配（每天执行，仅月末最后一天真正执行）"""
-        now = datetime.now()
-        last_day = calendar.monthrange(now.year, now.month)[1]
-        if now.day != last_day:
-            logger.debug("非月末最后一天，跳过月度资金分配", day=now.day, last_day=last_day)
+        """月初 1–3 日结算上月；仅未落库的失败可重试，已有记录由幂等键跳过。"""
+        now = datetime.now(CST)
+        if now.day > 3:
+            logger.debug("非月初结算窗口，跳过月度资金分配", day=now.day)
             return
 
-        logger.info("月末最后一天，开始月度资金分配")
+        logger.info("月初结算上月，开始月度资金分配", day=now.day)
         if self.monthly_job:
             await self.monthly_job.run_monthly_allocation()
 

@@ -1,11 +1,11 @@
 """
 月度资金分配主流程
 
-每月末自动触发，编排完整的月度资金分配流程：
+每月初在上一个自然月结束后自动触发，编排完整的月度资金分配流程：
 
 月份口径（需求 §14.1，v1.4 修复）：
-- 盈亏归属月（pnl_month）：刚结束的当月，PnL/成交行数采集范围
-- 生效月（effective_month）：次月，作为幂等键、写库 month、配置
+- 盈亏归属月（pnl_month）：刚结束的上月，PnL/成交行数采集范围
+- 生效月（effective_month）：当前月，作为幂等键、写库 month、配置
   allocation_month、通知卡片月份与返回字典月份，与消费方
   （capital_manager / daily_refresher / dashboard 按当前月查询）对齐
 
@@ -57,7 +57,7 @@ def _resolve_months(now: datetime) -> Tuple[str, str]:
     """
     依据运行时刻推导（盈亏归属月, 生效月）
 
-    月度任务在月末运行：盈亏采集归属刚结束的当月，分配记录对次月生效。
+    月度任务在月初运行：盈亏采集归属已结束的上月，分配记录对当前月生效。
 
     Args:
         now: 运行时刻
@@ -65,9 +65,9 @@ def _resolve_months(now: datetime) -> Tuple[str, str]:
     Returns:
         (pnl_month, effective_month)，格式均为 "YYYY-MM"
     """
-    pnl_month = now.strftime("%Y-%m")
-    next_year, next_month = _next_month(now.year, now.month)
-    effective_month = f"{next_year:04d}-{next_month:02d}"
+    previous_day = datetime(now.year, now.month, 1, tzinfo=now.tzinfo) - timedelta(days=1)
+    pnl_month = previous_day.strftime("%Y-%m")
+    effective_month = now.strftime("%Y-%m")
     return pnl_month, effective_month
 
 
@@ -228,13 +228,17 @@ class MonthlyAllocationJob:
                 now, pnl_month, effective_month
             )
 
+            # 未结束的自然月不能结算，包含显式月份补算入口。
+            month_start, month_end = self._calculate_month_range(pnl_month)
+            if now < month_end:
+                logger.error("盈亏归属月尚未结束，拒绝月度分配",
+                             pnl_month=pnl_month, month_end=month_end.isoformat())
+                return None
+
             # 2. 幂等性检查（生效月）
             if await self._check_idempotency(effective_month):
                 logger.info("生效月已存在分配记录，跳过", month=effective_month)
                 return None
-
-            # 3. 计算盈亏归属月时间范围（月初 00:00:00 到次月 1 日 00:00:00，左闭右开）
-            month_start, month_end = self._calculate_month_range(pnl_month)
 
             # 4. 判断是否为首月
             is_first_month = await self._check_is_first_month()
@@ -341,7 +345,7 @@ class MonthlyAllocationJob:
         """
         解析月份入参
 
-        - 两者均缺省：按运行时刻推导（盈亏归属月=当月，生效月=次月）
+        - 两者均缺省：按运行时刻推导（盈亏归属月=已结束的上月，生效月=当前月）
         - 两者均显式提供：直接使用（手动补生成历史月份场景）
         - 仅提供其一：拒绝执行，避免盈亏范围与记录月份错配（R3 资金安全）
 
@@ -384,8 +388,7 @@ class MonthlyAllocationJob:
             return False
         except Exception as e:
             logger.error("幂等性检查异常", error=str(e))
-            # 检查异常时假设不存在，继续执行（避免因检查失败而跳过）
-            return False
+            raise RuntimeError("无法确认生效月是否已有分配记录，停止本轮分配") from e
 
     async def _check_is_first_month(self) -> bool:
         """
