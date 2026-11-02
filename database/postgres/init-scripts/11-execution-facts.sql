@@ -7,13 +7,13 @@
 --
 --   幂等键语义：
 --     fill   : PRIMARY KEY (account_id, symbol, trade_id)
---     income : PRIMARY KEY (account_id, tran_id)
+--     income : PRIMARY KEY (account_id, income_type, tran_id)
 --     cursor : UNIQUE NULLS NOT DISTINCT (source, account_id, income_type, symbol, window_start_ms)
 --              account_id NOT NULL，income_type/symbol 可空，必须用 NULLS NOT DISTINCT；
 --              PG 默认 NULL 互不相等，同一 income 窗口或 fills/fills 不同账户会被允许重复插入多行游标，
 --              ON CONFLICT 必须用这 5 元组才能命中。
 --     raw    : PRIMARY KEY (source, entity_key, entity_id)
---              entity_id 折叠：fill→account_id:symbol:trade_id、income→account_id:tran_id
+--              entity_id 折叠：fill→account_id:symbol:trade_id、income→account_id:income_type:tran_id
 --
 --   脱敏口径：raw_payload 落库前必须剔除 apiKey / secret / signature 等敏感字段。
 -- ============================================
@@ -48,7 +48,7 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON trading.execution_fact_fill TO trading_u
 -- ── 收入流水事实表（um/income 采集，REALIZED_PNL / COMMISSION 等） ─
 CREATE TABLE IF NOT EXISTS trading.execution_fact_income (
     account_id      TEXT        NOT NULL,
-    tran_id         BIGINT      NOT NULL,          -- 币安 um/income 响应 tranId（事件唯一标识）
+    tran_id         BIGINT      NOT NULL,          -- 币安 um/income 响应 tranId（同收入类型内唯一）
     symbol          TEXT        NOT NULL,
     income_type     TEXT        NOT NULL,
     income          NUMERIC(20,8),
@@ -58,7 +58,7 @@ CREATE TABLE IF NOT EXISTS trading.execution_fact_income (
     event_time_utc  TIMESTAMPTZ,
     fetched_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
     schema_version  INTEGER     NOT NULL DEFAULT 1,
-    PRIMARY KEY (account_id, tran_id)
+    PRIMARY KEY (account_id, income_type, tran_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_exec_income_type_time

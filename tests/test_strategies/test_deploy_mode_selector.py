@@ -9,6 +9,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 MARKER = ".github/deploy-modes/xau-calibrated-shadow-first-create"
+EXECUTION_FACTS_MARKER = ".github/deploy-modes/execution-facts-first-create"
 RETRY_MARKER = ".github/deploy-modes/xau-calibrated-shadow-first-create-retry-1"
 
 
@@ -26,6 +27,21 @@ def test_added_retry_marker_selects_targeted_mode():
     assert select_deploy_mode("push", "abc", [("A", RETRY_MARKER)]) == (
         "calibrated-first-create"
     )
+
+
+def test_added_execution_facts_marker_selects_isolated_mode():
+    from scripts.select_deploy_mode import select_deploy_mode
+
+    assert select_deploy_mode("push", "abc", [("A", EXECUTION_FACTS_MARKER)]) == (
+        "execution-facts-first-create"
+    )
+
+
+@pytest.mark.parametrize("status", ["M", "D"])
+def test_existing_execution_facts_marker_does_not_retrigger_isolated_mode(status):
+    from scripts.select_deploy_mode import select_deploy_mode
+
+    assert select_deploy_mode("push", "abc", [(status, EXECUTION_FACTS_MARKER)]) == "full"
 
 
 @pytest.mark.parametrize("status", ["M", "D"])

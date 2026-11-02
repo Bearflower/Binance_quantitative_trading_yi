@@ -63,6 +63,33 @@ def test_conflicting_duplicate_income_is_rejected():
                                    _income(1, "FUNDING_FEE", "2")], [])
 
 
+def test_same_tran_id_across_income_types_is_not_collapsed():
+    report = build_economic_report(
+        [_fill()],
+        [_income(1, "REALIZED_PNL", "5", 11),
+         _income(1, "COMMISSION", "-0.2", 11)],
+        [_owner()],
+    )
+    assert report["income_count"] == 2
+    assert report["account_usdt_total"] == "4.8"
+    assert report["by_strategy"]["hrs"]["net_usdt"] == "4.8"
+
+
+def test_reviewed_override_matches_income_type_as_well_as_tran_id():
+    pnl = _income(1, "REALIZED_PNL", "5", 11)
+    fee = _income(1, "COMMISSION", "-0.2", 11)
+    override = {
+        "account_id": "main", "tran_id": 1, "income_type": "COMMISSION",
+        "symbol": "ABCUSDT", "income": Decimal("-0.2"), "asset": "USDT",
+        "event_time_utc": fee["event_time_utc"], "strategy": "hrs",
+        "reviewed_by": "operator", "evidence": {"order_id": 101},
+    }
+    report = build_economic_report([_fill()], [pnl, fee], [], [override])
+    assert report["income_count"] == 2
+    assert report["by_strategy"]["hrs"]["commission_usdt"] == "-0.2"
+    assert report["unattributed"][0]["income_type"] == "REALIZED_PNL"
+
+
 def test_owner_requires_matching_account_id():
     report = build_economic_report(
         [_fill()], [_income(1, "REALIZED_PNL", "5", 11)],
@@ -195,6 +222,7 @@ async def test_reader_loads_reviewed_overrides_only_when_explicitly_enabled():
     )
     assert report["by_strategy"]["hrs"]["funding_usdt"] == "-0.1"
     assert len(db.fetch_all.await_args_list) == 5
+    assert "event_time_utc" in db.fetch_all.await_args_list[0].args[0].split("FROM")[0]
 
 
 def test_cli_month_window_is_beijing_calendar_month():

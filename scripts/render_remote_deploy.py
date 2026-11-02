@@ -24,7 +24,7 @@ class RenderError(ValueError):
 
 
 def _validate(mode: str, commit_sha: str, deploy_id: str) -> None:
-    if mode not in {"full", "calibrated-first-create"}:
+    if mode not in {"full", "calibrated-first-create", "execution-facts-first-create"}:
         raise RenderError("invalid deployment mode")
     if re.fullmatch(r"[0-9a-fA-F]{40}", commit_sha) is None:
         raise RenderError("commit SHA must be exactly 40 hexadecimal characters")
