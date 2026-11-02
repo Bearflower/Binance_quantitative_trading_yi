@@ -128,6 +128,8 @@ class _FakeDb:
 
     async def fetch_one(self, query, *args):
         norm = " ".join(query.split()).upper()
+        if "FROM INFORMATION_SCHEMA.COLUMNS" in norm:
+            return {"data_type": "character varying"}
         # 幂等检查（必须最先判断：同样查 capital_allocation 表）
         if "SELECT MONTH, STATUS" in norm:
             self.fetch_calls.append(("idempotency", args))
@@ -813,7 +815,7 @@ class TestConsumerMonthContract(unittest.TestCase):
     def test_daily_refresher_queries_current_active_month(self):
         """daily_refresher SQL 按 month=$1 + active 查询当月记录"""
         sql = " ".join(DailyAllocationRefresher._FETCH_ACTIVE_QUERY.split())
-        self.assertIn("WHERE month = $1 AND status = 'active'", sql)
+        self.assertIn("WHERE left(month::text, 7) = $1 AND status = 'active'", sql)
 
     def test_capital_manager_current_month_equals_effective_month(self):
         """10 月运行时 capital_manager 当前月 = 2026-10，即 9/30 运行写入的生效月"""

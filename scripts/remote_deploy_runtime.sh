@@ -81,6 +81,152 @@ if [ "$DEPLOY_MODE" = "execution-facts-first-create" ]; then
 fi
 # execution-facts-first-create end
 
+# allocation-reconcile begin
+# Reconcile the live strategy and AI Tuner hotfixes without touching other services.
+if [ "$DEPLOY_MODE" = "allocation-reconcile" ]; then
+  OVERRIDE=docker-compose.override.yml
+  if [ ! -f "$OVERRIDE" ]; then
+    echo "❌ 生产热修复覆盖配置不存在，停止定向部署"
+    exit 1
+  fi
+  python3 - <<'PY'
+from pathlib import Path
+
+expected = """services:
+  hrs-strategy:
+    image: allocation-fix:hrs-20261102
+  btc-eth-strategy:
+    image: allocation-fix:btc-20261102c
+  btc-eth-aggressive-strategy:
+    image: allocation-fix:aggr-20261102f
+  new-coin-strategy:
+    image: allocation-fix:nc-20261102
+  ai-tuner:
+    image: allocation-fix:tuner-health-bfc9ed4-20261102
+"""
+actual = Path("docker-compose.override.yml").read_text()
+if actual.strip() != expected.strip():
+    raise SystemExit("❌ 生产镜像覆盖配置与审核时不一致，停止定向部署")
+PY
+  OVERRIDE_SHA=$(sha256sum "$OVERRIDE" | awk '{print $1}')
+  cp "$OVERRIDE" "${OVERRIDE}.pre_reconcile_${DEPLOY_ID}"
+  bash scripts/archive_container_logs.sh "log_archive/pre_allocation_reconcile_${DEPLOY_ID}"
+  SERVICES="hrs-strategy btc-eth-strategy btc-eth-aggressive-strategy new-coin-strategy grid-strategy ai-tuner"
+  mkdir -p .deploy_tmp
+  ROLLBACK_FILE=".deploy_tmp/allocation_rollback_${DEPLOY_ID}.yml"
+  echo 'services:' > "$ROLLBACK_FILE"
+  for spec in \
+    "hrs-strategy:trading_system-hrs" \
+    "btc-eth-strategy:trading_system-btc_eth" \
+    "btc-eth-aggressive-strategy:trading_system-btc_eth_aggressive" \
+    "new-coin-strategy:trading_system-new_coin" \
+    "grid-strategy:trading_system-grid" \
+    "ai-tuner:ai-tuner"; do
+    service=${spec%%:*}
+    container=${spec#*:}
+    old_image=$(docker inspect -f '{{.Image}}' "$container")
+    test -n "$old_image"
+    rollback_tag="allocation-rollback:${service}-${DEPLOY_ID}"
+    docker image tag "$old_image" "$rollback_tag"
+    printf '  %s:\n    image: %s\n' "$service" "$rollback_tag" >> "$ROLLBACK_FILE"
+  done
+  docker compose pull $SERVICES
+  ROLLBACK_REQUIRED=1
+  allocation_rollback() {
+    rc=$1
+    trap - EXIT
+    if [ "$ROLLBACK_REQUIRED" = "1" ]; then
+      echo "⚠️ 定向部署未完成，恢复全部六个服务的部署前镜像"
+      if docker compose -f docker-compose.yml -f docker-compose.logging.yml -f "$ROLLBACK_FILE" \
+          up -d --no-deps $SERVICES; then
+        for spec in \
+          "hrs-strategy:trading_system-hrs" \
+          "btc-eth-strategy:trading_system-btc_eth" \
+          "btc-eth-aggressive-strategy:trading_system-btc_eth_aggressive" \
+          "new-coin-strategy:trading_system-new_coin" \
+          "grid-strategy:trading_system-grid" \
+          "ai-tuner:ai-tuner"; do
+          service=${spec%%:*}
+          container=${spec#*:}
+          restored=0
+          for i in $(seq 1 30); do
+            state=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)
+            health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)
+            image=$(docker inspect -f '{{.Config.Image}}' "$container" 2>/dev/null || true)
+            if [ "$state" = "running" ] && [ "$health" = "healthy" ] && \
+               [ "$image" = "allocation-rollback:${service}-${DEPLOY_ID}" ]; then
+              restored=1
+              break
+            fi
+            sleep 3
+          done
+          if [ "$restored" -ne 1 ]; then
+            echo "❌ ${container} 回滚后镜像或健康状态未恢复，需人工检查 ${ROLLBACK_FILE}"
+          fi
+        done
+      else
+        echo "❌ 自动回滚失败，需按 ${ROLLBACK_FILE} 手动恢复"
+      fi
+    fi
+    exit "$rc"
+  }
+  trap 'allocation_rollback $?' EXIT
+  docker compose up -d --no-deps $SERVICES
+  for spec in \
+    "trading_system-hrs:trading-hrs" \
+    "trading_system-btc_eth:trading-btc-eth" \
+    "trading_system-btc_eth_aggressive:trading-btc-eth-aggr" \
+    "trading_system-new_coin:trading-new-coin" \
+    "trading_system-grid:trading-grid" \
+    "ai-tuner:trading-ai-tuner"; do
+    container=${spec%%:*}
+    image=${spec#*:}
+    ready=0
+    for i in $(seq 1 60); do
+      state=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)
+      health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)
+      actual_image=$(docker inspect -f '{{.Config.Image}}' "$container" 2>/dev/null || true)
+      if [ "$state" = "running" ] && [ "$health" = "healthy" ] && \
+         [ "$actual_image" = "ghcr.io/bearflower/${image}:latest" ]; then
+        ready=1
+        break
+      fi
+      sleep 3
+    done
+    if [ "$ready" -ne 1 ]; then
+      echo "❌ ${container} 未以目标镜像进入健康状态"
+      exit 1
+    fi
+    if [ "$container" != "ai-tuner" ]; then
+      docker exec "$container" python -c \
+        'import os; from shared.trade_logger import TradeLogger; expected=os.environ.get("TRADE_ACCOUNT_ID"); assert expected and TradeLogger(None, "deploy_probe").account_id == expected'
+    fi
+  done
+  if [ "$(sha256sum "$OVERRIDE" | awk '{print $1}')" != "$OVERRIDE_SHA" ]; then
+    echo "❌ 部署期间覆盖配置发生变化，停止修改"
+    exit 1
+  fi
+  cat > "${OVERRIDE}.next_${DEPLOY_ID}" <<'EOF'
+services: {}
+EOF
+  mv "${OVERRIDE}.next_${DEPLOY_ID}" "$OVERRIDE"
+  ROLLBACK_REQUIRED=0
+  trap - EXIT
+  mkdir -p deploy_logs
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] DEPLOY_SUCCESS commit=${COMMIT_SHA} deploy_id=${DEPLOY_ID} mode=${DEPLOY_MODE}" \
+    >> "deploy_logs/$(date '+%Y%m%d').log"
+  echo "✅ 五个实盘策略及 AI Tuner 热修复已归并"
+  exit 0
+fi
+# allocation-reconcile end
+
+# Remaining local allocation-fix images must be reconciled before a full
+# deployment can safely replace the production runtime.
+if [ "$DEPLOY_MODE" = "full" ] && grep -q "allocation-fix:" docker-compose.override.yml 2>/dev/null; then
+  echo "❌ 仍有未归并的生产热修复镜像，拒绝全量部署"
+  exit 1
+fi
+
 # 1.5 磁盘预检查（仅普通全量部署）。目标化首次创建不得执行全局 prune。
 echo "💾 磁盘预检查..."
 FREE_KB=$(df / | awk 'NR==2 {print $4}')

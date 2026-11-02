@@ -8,6 +8,11 @@ import pytest
 from shared.trade_logger import TradeLogger
 
 
+def test_live_logger_uses_compose_account_identity(monkeypatch):
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", "pm-primary")
+    assert TradeLogger(MagicMock(), "btc_eth").account_id == "pm-primary"
+
+
 @pytest.mark.asyncio
 async def test_order_insert_records_explicit_account_id():
     db = MagicMock()

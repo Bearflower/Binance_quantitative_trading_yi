@@ -1230,6 +1230,10 @@ class NewCoinStrategy(BaseStrategy):
         不运行、strategy_open_positions / strategy_states 停更。抽为独立方法后，
         供「有新币」「无新币」「熔断暂停」各路径统一调用。
         """
+        try:
+            await self._enforce_allocation_holdings()
+        except Exception as e:
+            logger.error("月度额度持仓检查失败，继续持仓保护", error=str(e), exc_info=True)
         # 4. 监控现有持仓（移动止盈、时间止损、平仓检测等）
         await self._monitor_positions()
 
@@ -1717,6 +1721,20 @@ class NewCoinStrategy(BaseStrategy):
                 logger.warning("未找到平仓订单记录，无法回写盈亏", symbol=symbol)
         except Exception as e:
             logger.warning("回写平仓盈亏失败", symbol=symbol, error=str(e)[:80])
+
+    async def _enforce_allocation_holdings(self) -> bool:
+        if not getattr(self, "positions", None):
+            return True
+        margins = {}
+        for symbol in self.positions:
+            margins[symbol] = await self.trading_executor.calc_current_occupied_margin({symbol})
+
+        async def close(symbol: str) -> bool:
+            return await self.trading_executor._close_position(
+                symbol, Decimal("1"), "月度分配额度超额"
+            )
+
+        return await self.trading_executor.capital_mgr.enforce_existing_positions(margins, close)
 
     async def _monitor_positions(self) -> None:
         """

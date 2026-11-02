@@ -13,7 +13,7 @@
 
 import json
 import os
-from datetime import datetime, timezone, timedelta
+from datetime import date, datetime, timezone, timedelta
 from typing import Any, Dict
 
 import structlog
@@ -63,12 +63,7 @@ class AllocationConfigUpdater:
             是否全部更新成功
         """
         try:
-            # 1. 写入数据库
-            db_success = await self._save_to_db(result, db_manager)
-            if not db_success:
-                logger.error("数据库写入失败，中断配置更新")
-                return False
-
+            # 先更新配置，成功后再发布数据库 active 记录
             # 2. 更新 ai_tuner/config.yaml
             tuner_config_success = await self._update_tuner_config(
                 result, config, config_operator
@@ -83,6 +78,11 @@ class AllocationConfigUpdater:
             )
             if not strategy_success:
                 logger.error("策略配置更新失败")
+                return False
+
+            db_success = await self._save_to_db(result, db_manager)
+            if not db_success:
+                logger.error("数据库写入失败，分配尚未发布")
                 return False
 
             logger.info("所有配置更新完成", month=result.month)
@@ -130,6 +130,19 @@ class AllocationConfigUpdater:
 
             created_at = datetime.now(CST).replace(tzinfo=None)
 
+            # Production has VARCHAR(YYYY-MM); newer bootstrap schemas use DATE.
+            # Bind the value in the column's native format so asyncpg does not
+            # compare or insert text against DATE (or DATE against VARCHAR).
+            column = await db_manager.fetch_one("""
+                SELECT data_type FROM information_schema.columns
+                WHERE table_schema = 'public' AND table_name = 'capital_allocation'
+                  AND column_name = 'month'
+            """)
+            if not column or column.get("data_type") not in ("date", "character varying", "text"):
+                raise ValueError("无法确认 capital_allocation.month 列类型")
+            year, month_number = map(int, result.month.split("-"))
+            month_value = date(year, month_number, 1) if column["data_type"] == "date" else result.month
+
             query = """
                 INSERT INTO public.capital_allocation
                     (month, total_capital, strategy_count, is_first_month, entries, status, created_at)
@@ -139,7 +152,7 @@ class AllocationConfigUpdater:
 
             insert_result = await db_manager.execute(
                 query,
-                result.month,
+                month_value,
                 result.total_capital,
                 len(result.entries),
                 result.is_first_month,
@@ -307,6 +320,7 @@ class AllocationConfigUpdater:
                         "策略配置文件路径未找到，跳过",
                         strategy_id=entry.strategy_id,
                     )
+                    all_success = False
                     continue
 
                 if not os.path.exists(config_path):
@@ -315,6 +329,7 @@ class AllocationConfigUpdater:
                         strategy_id=entry.strategy_id,
                         config_path=config_path,
                     )
+                    all_success = False
                     continue
 
                 try:
