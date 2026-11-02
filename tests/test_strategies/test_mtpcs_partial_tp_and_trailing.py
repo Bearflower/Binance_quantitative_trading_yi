@@ -114,8 +114,8 @@ class TestSyncTrailingStopOrder:
             'orderId': 12345
         })
         strategy._get_symbol_precision = AsyncMock(return_value={
-            'tick_size': '0.01',
-            'step_size': '0.001'
+            'tickSize': Decimal('0.01'),
+            'stepSize': '0.001'
         })
         strategy._adjust_price_precision = MagicMock(side_effect=lambda x, _: x)
         strategy._adjust_quantity_precision = MagicMock(side_effect=lambda x, _: x)

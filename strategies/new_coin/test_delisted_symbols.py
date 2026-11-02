@@ -48,9 +48,10 @@ async def test_delisted_symbol_first_call_caches_and_logs(detector):
         assert result == 0.0
         # 加入缓存
         assert "BTCU" in detector._delisted_symbols
-        # 打印info日志（含"币种已下架"）
+        # 打印info日志（说明该币种无效并进入跳过列表）
         mock_info.assert_called_once()
-        assert "币种已下架" in mock_info.call_args[0][0]
+        assert "币种无效" in mock_info.call_args[0][0]
+        assert "加入跳过列表" in mock_info.call_args[0][0]
         # 不打印warning
         mock_warning.assert_not_called()
 

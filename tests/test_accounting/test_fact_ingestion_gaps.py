@@ -39,7 +39,7 @@ D1 采集脚本覆盖率缺口补充测试（纯离线，不联网/不连库/不
 
   shared/binance_api 分页参数契约（mock _request，构造 client 不联网）：
     - get_user_trades：参数组装 / endpoint 选择（统一 vs 非统一账户）/ 空 symbol / 非 list 回退
-    - get_income_history：income_type 透传 / 非统一账户静默返回 [] / 非 list 回退
+    - get_income_history：income_type 透传 / 非统一账户显式报错 / 非 list 回退
 
   【R1 已修复】已完成窗口幂等重跑：
     原缺陷"已完成窗口重跑被 while-else 误判为 max_pages 超限"已通过
@@ -726,8 +726,8 @@ async def test_run_cli_with_client_runs_selected_modes(monkeypatch, capsys):
     assert [c["endpoint"] for c in client.calls] == ["userTrades", "userTrades", "um/income"]
 
 
-async def test_run_cli_fills_mode_without_symbols_skips_fill_block(monkeypatch):
-    """mode="fills" 但 symbols 为空（L816 的 and symbols=False 子分支）：不执行采集。"""
+async def test_run_cli_fills_mode_without_symbols_rejects_empty_scope(monkeypatch):
+    """要求采集 fills 却没有币种时，不能以成功码掩盖零覆盖。"""
     import scripts.export_execution_facts as mod
 
     client = _SliceClient()
@@ -735,7 +735,8 @@ async def test_run_cli_fills_mode_without_symbols_skips_fill_block(monkeypatch):
 
     args = argparse.Namespace(mode="fills", symbols="", days=1, account_id="t",
                               income_type="REALIZED_PNL", page_limit=1000)
-    assert await _run_cli(args) == 0
+    with pytest.raises(ValueError, match="--symbols"):
+        await _run_cli(args)
     assert client.calls == []                      # 未发起任何请求
 
 
@@ -864,28 +865,40 @@ async def test_api_user_trades_non_list_response_falls_back_empty(monkeypatch):
     assert rows == []
 
 
-async def test_api_income_history_non_unified_returns_empty_without_request(monkeypatch):
-    """get_income_history：非统一账户 → 静默返回 []（L1558-1560 分支）且不发请求。
-    这正是"非统一账户 income 被静默拦截"的根源（脚本侧无法区分，见 docstring 告知）。
-    """
+async def test_api_income_history_non_unified_raises_without_request(monkeypatch):
+    """非统一账户收入查询必须明确失败，且不发请求。"""
     client = _make_offline_client(use_unified_account=False)
     capture = _CaptureRequest([])
     monkeypatch.setattr(client, "_request", capture)
 
-    rows = await client.get_income_history(start_time=1, end_time=2, limit=1000)
-    assert rows == []
+    with pytest.raises(ValueError, match="统一账户"):
+        await client.get_income_history(start_time=1, end_time=2, limit=1000)
     assert capture.calls == []                    # 未发起任何请求
 
 
-async def test_api_income_history_forwards_params_and_non_list_fallback(monkeypatch):
-    """get_income_history：incomeType/limit/startTime/endTime 进入 params；非 list 回退 []。"""
+async def test_export_income_rejects_non_unified_client_before_cursor_write(monkeypatch):
+    """采集端必须把账户模式不支持与真正的空收入区分开。"""
+    client = _make_offline_client(use_unified_account=False)
+    capture = _CaptureRequest([])
+    monkeypatch.setattr(client, "_request", capture)
+    exporter = ExecutionFactExporter(account_id=_ACCOUNT, api_client=client)
+
+    with pytest.raises(ValueError, match="统一账户"):
+        await exporter.export_income(1, 2)
+
+    assert capture.calls == []
+    assert exporter._cursor_store == {}
+
+
+async def test_api_income_history_forwards_params_and_rejects_non_list(monkeypatch):
+    """get_income_history：参数照常透传；非列表响应不能伪装成空收入。"""
     client = _make_offline_client(use_unified_account=True)
     capture = _CaptureRequest({"error": True})
     monkeypatch.setattr(client, "_request", capture)
 
-    rows = await client.get_income_history(start_time=1, end_time=2, limit=1000,
-                                           income_type="FUNDING_FEE")
-    assert rows == []                             # 非 list 回退
+    with pytest.raises(TypeError, match="income.*列表"):
+        await client.get_income_history(start_time=1, end_time=2, limit=1000,
+                                        income_type="FUNDING_FEE")
     call = capture.calls[0]
     assert call["endpoint"] == "/papi/v1/um/income"
     assert call["params"] == {"incomeType": "FUNDING_FEE", "limit": 1000,
@@ -961,3 +974,46 @@ async def test_true_empty_window_returns_ok_noop():
     assert result.records == []
     # Round 4 守卫修正：无游标且初始到界不再短路，必须进翻页查一次空窗口
     assert len(client.calls) >= 1
+
+
+def test_resolve_window_accepts_exact_historical_interval_and_rejects_partial_or_future():
+    args = argparse.Namespace(days=7, symbols=" btcusdt ", start_ms=100, end_ms=200)
+    assert _resolve_window(args) == (100, 200, ["BTCUSDT"])
+    args.end_ms = None
+    with pytest.raises(ValueError, match="同时提供"):
+        _resolve_window(args)
+    args.end_ms = 100
+    with pytest.raises(ValueError, match="起点"):
+        _resolve_window(args)
+    args.end_ms = 9999999999999
+    with pytest.raises(ValueError, match="未来"):
+        _resolve_window(args)
+
+
+async def test_run_cli_closes_api_client_after_success_and_failure(monkeypatch):
+    from unittest.mock import AsyncMock
+    import scripts.export_execution_facts as mod
+
+    client = _SliceClient(income=[])
+    client.close = AsyncMock()
+    monkeypatch.setattr(mod, "_build_client_from_env", lambda: (client, 0))
+    args = argparse.Namespace(mode="income", symbols="", days=1, account_id="t",
+                              income_type="REALIZED_PNL", page_limit=1000)
+    assert await _run_cli(args) == 0
+    client.close.assert_awaited_once()
+
+    client.close.reset_mock()
+    async def fail(*_args):
+        raise RuntimeError("api failure")
+    monkeypatch.setattr(mod, "_run_cli_income", fail)
+    with pytest.raises(RuntimeError, match="api failure"):
+        await _run_cli(args)
+    client.close.assert_awaited_once()
+
+    client.close.reset_mock()
+    async def fail_sink():
+        raise RuntimeError("DB sink unavailable")
+    monkeypatch.setattr(mod, "_maybe_open_sink", fail_sink)
+    with pytest.raises(RuntimeError, match="DB sink unavailable"):
+        await _run_cli(args)
+    client.close.assert_awaited_once()

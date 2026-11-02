@@ -67,12 +67,13 @@ class FakeBinanceClient:
 class FakeDb:
     """伪造数据库管理器，记录 fetch 与 execute 调用"""
 
-    def __init__(self, row: Optional[Dict[str, Any]] = None):
+    def __init__(self, row: Optional[Dict[str, Any]] = None, update_result: str = "UPDATE 1"):
         """
         Args:
             row: fetch_one 返回值；None 表示当月无 active 记录
         """
         self.row = row
+        self.update_result = update_result
         self.fetch_one_calls: List = []
         self.execute_calls: List = []
 
@@ -84,6 +85,7 @@ class FakeDb:
     async def execute(self, query: str, *args, **kwargs):
         """记录更新调用，便于断言"""
         self.execute_calls.append(args)
+        return self.update_result
 
 
 class TestDailyAllocationRefresher(unittest.TestCase):
@@ -126,6 +128,7 @@ class TestDailyAllocationRefresher(unittest.TestCase):
         # 参数顺序：entries_json, total_capital, month
         self.assertEqual(update_args[1], 2000.0)
         self.assertTrue(isinstance(update_args[2], str) and len(update_args[2]) == 7)
+        self.assertEqual(json.loads(update_args[3]), entries)
 
         # 校验重算后的 entries
         updated_entries = json.loads(update_args[0])
@@ -158,6 +161,21 @@ class TestDailyAllocationRefresher(unittest.TestCase):
         updated_entries = json.loads(db.execute_calls[0][0])
         self.assertEqual(updated_entries[0]["allocated_amount"], 300.0)
         self.assertEqual(updated_entries[1]["allocated_amount"], 100.0)
+        self.assertEqual(json.loads(db.execute_calls[0][3]), entries)
+
+    def test_concurrent_entries_change_skips_refresh(self):
+        """月度盈亏等字段被并发修正时，日更不得报告成功或覆盖新值。"""
+        entries = [{"strategy_id": "hrs", "allocated_ratio": 0.1, "allocated_amount": 2.0}]
+        db = FakeDb(row={"entries": entries}, update_result="UPDATE 0")
+        refresher = self._make_refresher(
+            db, FakeBinanceClient(result={"totalMarginBalance": 1000})
+        )
+
+        result = asyncio.run(refresher.run_daily_refresh())
+
+        self.assertIsNone(result)
+        self.assertEqual(len(db.execute_calls), 1)
+        self.assertEqual(json.loads(db.execute_calls[0][3]), entries)
 
     # ============================================================
     # 净值查询失败

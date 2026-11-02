@@ -649,3 +649,63 @@ class TestFilterOwnedPositions:
         )
         sql_used = db.fetch_one.call_args[0][0]
         assert "status = 'FILLED'" not in sql_used
+
+
+class TestSolCrossStrategyLifecycle:
+    @pytest.mark.asyncio
+    async def test_aggressive_sol_blocks_original_until_all_entries_close(self):
+        """共享账户 SOL：对家持仓时不补单/不上报/不开仓，全平后解除互斥。"""
+        rows = [
+            {"id": 1, "strategy": "MTPCS策略", "status": "CLOSED", "realized_pnl": None},
+            {"id": 2, "strategy": "MTPCS激进策略", "status": "NEW", "realized_pnl": None},
+            {"id": 3, "strategy": "MTPCS激进策略", "status": "NEW", "realized_pnl": None},
+        ]
+        db = make_db()
+
+        async def fetch_owner(query, symbol):
+            assert symbol == "SOLUSDT"
+            open_rows = [
+                row for row in rows
+                if row["status"] not in {"CLOSED", "CANCELED", "EXPIRED"}
+                and row["realized_pnl"] is None
+            ]
+            if "status = 'FILLED'" in query:
+                open_rows = [row for row in open_rows if row["status"] == "FILLED"]
+            return max(open_rows, key=lambda row: row["id"]) if open_rows else None
+
+        async def execute(sql, symbol, strategy):
+            assert symbol == "SOLUSDT"
+            assert "SET status = 'CLOSED'" in sql
+            changed = 0
+            for row in rows:
+                if row["strategy"] == strategy and row["status"] == "NEW":
+                    row["status"] = "CLOSED"
+                    changed += 1
+            return f"UPDATE {changed}"
+
+        db.fetch_one = AsyncMock(side_effect=fetch_owner)
+        async def advisory_fetch(_lock_key, query, symbol):
+            return await fetch_owner(query, symbol)
+
+        db.fetch_one_advisory_lock = AsyncMock(side_effect=advisory_fetch)
+        db.execute = AsyncMock(side_effect=execute)
+
+        original = make_orig_strategy()
+        original.db_manager = db
+        with patch.object(original, "_get_current_price", new=AsyncMock()) as get_price:
+            await original._ensure_symbol_protection(
+                {"symbol": "SOLUSDT", "positionAmt": "-1.2"},
+                {"SOLUSDT"}, {}, None, None, None,
+            )
+        get_price.assert_not_awaited()
+        original.notification.send.assert_awaited_once()
+        margin, qty = await filter_owned_positions(
+            db, "MTPCS策略", {"SOLUSDT": 20.8}, {"SOLUSDT": 1.2}
+        )
+        assert margin == qty == {}
+        assert await is_symbol_owned_by_other(db, "SOLUSDT", "MTPCS策略")
+
+        from shared.position_ownership import release_claim
+        assert await release_claim(db, "SOLUSDT", "MTPCS激进策略", "position_closed")
+        assert [row["status"] for row in rows] == ["CLOSED", "CLOSED", "CLOSED"]
+        assert not await is_symbol_owned_by_other(db, "SOLUSDT", "MTPCS策略")

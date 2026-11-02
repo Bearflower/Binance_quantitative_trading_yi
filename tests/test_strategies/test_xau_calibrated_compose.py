@@ -278,6 +278,27 @@ def test_real_build_decision_guard_detects_hrs_mutation(tmp_path):
         _assert_only_btc_eth_builds(mutated, tmp_path)
 
 
+def test_aggressive_strategy_change_rebuilds_both_consumer_images(tmp_path):
+    repo, _ = _init_retry_marker_repo(tmp_path)
+    (repo / ".github/deploy-modes/xau-calibrated-shadow-first-create-retry-1").unlink()
+    subprocess.run(["git", "add", "-u"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "remove retry marker"], cwd=repo, check=True)
+    base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    (repo / "strategies/btc_eth_aggressive").mkdir(parents=True)
+    (repo / "strategies/btc_eth_aggressive/strategy.py").write_text("changed\n")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-qm", "aggressive change"], cwd=repo, check=True)
+    decision = _workflow_step("⏭️ 判断是否需要构建")
+    assert _run_build_decision(
+        decision.replace("${{ matrix.service.dir }}", "strategies/btc_eth_aggressive"),
+        "btc-eth-aggr", repo, base, tmp_path,
+    ) == "true"
+    assert _run_build_decision(
+        decision.replace("${{ matrix.service.dir }}", "strategies/btc_eth"),
+        "btc-eth", repo, base, tmp_path,
+    ) == "true"
+
+
 def test_first_create_remote_path_targets_only_calibrated_service():
     block = _calibrated_first_create_block()
 

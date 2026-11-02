@@ -5,10 +5,12 @@
 
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
+from zoneinfo import ZoneInfo
 
 import structlog
 
 logger = structlog.get_logger()
+BEIJING_TZ = ZoneInfo("Asia/Shanghai")
 
 
 class DailyHealthCheck:
@@ -64,45 +66,47 @@ class DailyHealthCheck:
         Returns:
             包含最近24小时交易表现的字典
         """
-        since = datetime.utcnow() - timedelta(hours=24)
+        # trade_records.executed_at 存储无时区的北京时间，查询边界须同口径。
+        until = datetime.now(BEIJING_TZ).replace(tzinfo=None)
+        since = until - timedelta(hours=24)
 
         # 查询 trade_records 汇总统计
         query = """
             SELECT
                 COUNT(*) as total_trades,
+                COUNT(*) FILTER (WHERE realized_pnl IS NOT NULL) as realized_trades,
                 COUNT(*) FILTER (WHERE realized_pnl > 0) as win_count,
                 COUNT(*) FILTER (WHERE realized_pnl <= 0) as loss_count,
                 COALESCE(SUM(realized_pnl), 0) as total_pnl
             FROM trading.trade_records
-            WHERE strategy = $1 AND executed_at >= $2
+            WHERE strategy = $1 AND executed_at >= $2 AND executed_at < $3
         """
-        row = await self.db_manager.fetch_one(query, strategy_id, since)
+        row = await self.db_manager.fetch_one(query, strategy_id, since, until)
         row = row or {}
 
-        # 查询连续亏损（使用窗口函数计算最近连续亏损笔数）
+        # 按成交时间和主键倒序，统计最近一笔盈利之后的当前连亏。
+        # 无盈亏记录不参与；盈利用作边界，不能把更早的连亏重新计入。
         query_consecutive = """
             SELECT COUNT(*) as consecutive_losses
             FROM (
                 SELECT realized_pnl,
-                       executed_at,
                        SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END)
-                           OVER (ORDER BY executed_at DESC
-                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as grp
+                           OVER (ORDER BY executed_at DESC, id DESC
+                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as wins_seen
                 FROM trading.trade_records
-                WHERE strategy = $1 AND executed_at >= $2
+                WHERE strategy = $1 AND executed_at >= $2 AND executed_at < $3
                   AND realized_pnl IS NOT NULL
-                ORDER BY executed_at DESC
             ) sub
-            WHERE realized_pnl <= 0
-            GROUP BY grp
-            ORDER BY MAX(executed_at) DESC
-            LIMIT 1
+            WHERE wins_seen = 0 AND realized_pnl <= 0
         """
-        row_consecutive = await self.db_manager.fetch_one(query_consecutive, strategy_id, since)
+        row_consecutive = await self.db_manager.fetch_one(
+            query_consecutive, strategy_id, since, until
+        )
         row_consecutive = row_consecutive or {}
 
         return {
             "total_trades": row.get("total_trades", 0) or 0,
+            "realized_trades": row.get("realized_trades", 0) or 0,
             "win_count": row.get("win_count", 0) or 0,
             "loss_count": row.get("loss_count", 0) or 0,
             "total_pnl": float(row.get("total_pnl", 0) or 0),
@@ -149,8 +153,8 @@ class DailyHealthCheck:
             )
 
         # 3. 检查胜率
-        if report["total_trades"] >= min_trades:
-            win_rate = report["win_count"] / report["total_trades"] if report["total_trades"] > 0 else 0
+        if report["realized_trades"] >= min_trades:
+            win_rate = report["win_count"] / report["realized_trades"]
             low_win_rate = self.anomaly_cfg.get("low_win_rate_threshold", 0.3)
             if win_rate < low_win_rate:
                 anomalies.append(

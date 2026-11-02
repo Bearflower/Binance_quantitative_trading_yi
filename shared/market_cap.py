@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Literal, Tuple
+from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, Tuple
 import aiohttp
 import structlog
 
@@ -43,7 +43,7 @@ class MarketCapProvenance:
     六个字段（D4 约定）：
         value:          市值（美元）；proxy/missing 时为代理值或 0.0
         source:         来源枚举（见 _MarketCapSource 注释）
-        as_of:          市值数据本身的时间戳（秒，epoch）；API 命中时约等于 now
+        as_of:          市值首次被本服务采集的时间戳（秒，epoch）；非 CoinGecko 发布时刻
         available_at:   本服务拿到此值的时间戳（秒，epoch）
         is_proxy:       是否为代理值（source == "oi_proxy"）
         missing_reason: 缺失原因（None 表示有值）
@@ -278,22 +278,33 @@ class MarketCapService:
         cached = self._market_cap_cache.get(symbol)
         if cached is None:
             return None
-        market_cap, expire_at = cached
+        market_cap, expire_at = cached[:2]
         if time.time() >= expire_at:
             del self._market_cap_cache[symbol]
             return None
         return market_cap
 
+    def _get_cached_market_cap_as_of(self, symbol: str) -> Optional[float]:
+        """返回首次采集时间；兼容进程内旧的二元缓存记录。"""
+        cached = self._market_cap_cache.get(symbol)
+        if cached is None or time.time() >= cached[1]:
+            return None
+        if len(cached) >= 3:
+            return cached[2]
+        return cached[1] - self.cache_ttl_seconds
+
     def _set_cached_market_cap(self, symbol: str, market_cap: float) -> None:
         """写入市值缓存"""
-        expire_at = time.time() + self.cache_ttl_seconds
-        self._market_cap_cache[symbol] = (market_cap, expire_at)
+        observed_at = time.time()
+        expire_at = observed_at + self.cache_ttl_seconds
+        self._market_cap_cache[symbol] = (market_cap, expire_at, observed_at)
 
     def _set_cached_market_caps(self, caps: Dict[str, float]) -> None:
         """批量写入市值缓存"""
-        expire_at = time.time() + self.cache_ttl_seconds
+        observed_at = time.time()
+        expire_at = observed_at + self.cache_ttl_seconds
         for symbol, cap in caps.items():
-            self._market_cap_cache[symbol] = (cap, expire_at)
+            self._market_cap_cache[symbol] = (cap, expire_at, observed_at)
 
     def _get_uncached_symbols(self, symbols: List[str]) -> List[str]:
         """从 symbols 中筛选出缓存未命中的部分"""
@@ -393,20 +404,62 @@ class MarketCapService:
 
         return batch_results
 
+    async def _retry_network(
+        self,
+        attempt_fn: Callable[[], Awaitable[Any]],
+        *,
+        log_label: str,
+        on_exhausted: Any,
+        **log_ctx: Any,
+    ) -> Any:
+        """网络异常通用重试封装（批量市值 + 单币市值共用）。
+
+        仅捕获 asyncio.TimeoutError / aiohttp.ClientError；attempt_fn
+        内部可自行区分 429、非 200 等 HTTP 语义并直接返回（不会被重试）。
+
+        Args:
+            attempt_fn: 单次尝试的协程；内部自行处理 API 响应语义
+            log_label: 日志前缀（"批量市值" / "获取市值"）
+            on_exhausted: 重试耗尽时的返回值
+            **log_ctx: 额外日志字段（如 symbol=...）
+        """
+        for attempt in range(self.retry_count + 1):
+            try:
+                return await attempt_fn()
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                if attempt < self.retry_count:
+                    logger.warning(
+                        f"{log_label}网络异常，准备重试",
+                        attempt=attempt + 1,
+                        max_attempts=self.retry_count + 1,
+                        error=str(e) or type(e).__name__,
+                        **log_ctx,
+                    )
+                    await asyncio.sleep(self.retry_interval)
+                else:
+                    logger.warning(
+                        f"{log_label}重试次数耗尽",
+                        error=str(e) or type(e).__name__,
+                        **log_ctx,
+                    )
+        return on_exhausted
+
     async def _fetch_coins_markets(
         self, coin_ids: List[str]
     ) -> Optional[Dict[str, float]]:
         """
         调用 CoinGecko /coins/markets 接口获取一批币种市值
 
+        对 asyncio.TimeoutError / aiohttp.ClientError 按 retry_count 重试；
+        HTTP 429：返回 None（分页 break 信号），不重试；
+        非 200 / 重试耗尽：返回空字典；其他异常也返回空字典。
+
         Args:
             coin_ids: CoinGecko coin_id 列表（最多 _BATCH_PAGE_SIZE 个）
 
         Returns:
-            {coin_id: market_cap} 字典；429 返回 None；其他异常返回空字典
+            {coin_id: market_cap} 字典；429 返回 None；重试耗尽或其他异常返回空字典
         """
-        await self._enforce_request_interval()
-
         url = f"{self._base_url}/coins/markets"
         params: Dict[str, str] = {
             "vs_currency": "usd",
@@ -419,12 +472,13 @@ class MarketCapService:
         if self.use_pro_api and self.api_key:
             params["x_cg_pro_api_key"] = self.api_key
 
-        try:
+        async def attempt() -> Optional[Dict[str, float]]:
+            await self._enforce_request_interval()
             async with self.session.get(url, params=params) as resp:
                 if resp.status == 429:
                     logger.warning("CoinGecko /coins/markets 触发 429 限流")
                     self._record_rate_limit()
-                    return None
+                    return None  # 分页 break 信号
                 if resp.status != 200:
                     logger.warning(
                         "CoinGecko /coins/markets 请求失败", status=resp.status,
@@ -432,6 +486,11 @@ class MarketCapService:
                     return {}
                 data = await resp.json()
                 return self._parse_coins_markets_response(data, coin_ids)
+
+        try:
+            return await self._retry_network(
+                attempt, log_label="批量市值", on_exhausted={}
+            )
         except Exception as e:
             logger.warning(
                 "CoinGecko /coins/markets 请求异常",
@@ -456,7 +515,8 @@ class MarketCapService:
         for item in data:
             coin_id = item.get("id")
             market_cap = item.get("market_cap")
-            if coin_id and market_cap is not None:
+            # market_cap <= 0 视为缺值：避免 source=coingecko 但 value=0 的自相矛盾
+            if coin_id and market_cap is not None and float(market_cap) > 0:
                 result[coin_id] = float(market_cap)
         if len(result) < len(requested_ids):
             missing = [cid for cid in requested_ids if cid not in result]
@@ -540,34 +600,24 @@ class MarketCapService:
         """
         await self._init_session()
 
-        for attempt in range(self.retry_count + 1):
+        async def attempt() -> Optional[float]:
             if self._is_rate_limited():
-                return None
-            try:
-                return await self._fetch_market_cap_once(symbol, coin_id)
-            except CoinGeckoError:
-                logger.warning("CoinGecko API 频率限制", symbol=symbol)
-                return None
-            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
-                if attempt < self.retry_count:
-                    logger.warning(
-                        "获取市值网络异常，准备重试", symbol=symbol,
-                        attempt=attempt + 1,
-                        error=str(e) or type(e).__name__,
-                    )
-                    await asyncio.sleep(self.retry_interval)
-                else:
-                    logger.warning(
-                        "获取市值重试次数用尽", symbol=symbol,
-                        error=str(e) or type(e).__name__,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "获取市值异常", symbol=symbol,
-                    error=str(e) or type(e).__name__,
-                )
-                return None
-        return None
+                return None  # 429 冷却期内直接返回
+            return await self._fetch_market_cap_once(symbol, coin_id)
+
+        try:
+            return await self._retry_network(
+                attempt, log_label="获取市值", on_exhausted=None, symbol=symbol
+            )
+        except CoinGeckoError:
+            logger.warning("CoinGecko API 频率限制", symbol=symbol)
+            return None
+        except Exception as e:
+            logger.warning(
+                "获取市值异常", symbol=symbol,
+                error=str(e) or type(e).__name__,
+            )
+            return None
 
     async def _parse_market_cap_response(
         self,
@@ -585,7 +635,7 @@ class MarketCapService:
             logger.warning("获取市值返回空 market_data", symbol=symbol, coin_id=coin_id)
             return None
         market_cap = (market_data.get("market_cap") or {}).get("usd")
-        if market_cap is not None:
+        if market_cap is not None and float(market_cap) > 0:
             logger.info("市值获取成功", symbol=symbol, market_cap=market_cap)
             return float(market_cap)
         return None
@@ -660,7 +710,7 @@ class MarketCapService:
             return MarketCapProvenance(
                 value=cap,
                 source=source,  # "coingecko" 或 "cache_hit"
-                as_of=now,
+                as_of=self._get_cached_market_cap_as_of(symbol) or available_at,
                 available_at=available_at,
                 is_proxy=False,
                 missing_reason=None,
@@ -728,7 +778,7 @@ class MarketCapService:
                 result[sym] = MarketCapProvenance(
                     value=cached,
                     source="cache_hit",
-                    as_of=now,
+                    as_of=self._get_cached_market_cap_as_of(sym) or now,
                     available_at=available_at,
                     is_proxy=False,
                     missing_reason=None,
@@ -736,14 +786,22 @@ class MarketCapService:
             else:
                 uncached_symbols.append(sym)
 
-        # 2. 批量 API 获取未缓存的
+        # 2. 批量 API 获取未缓存的（整批异常兜底：全部按空字典处理，
+        #    随后复用第 3 步的 oi_proxy/missing 降级逻辑）
+        batch: Dict[str, float] = {}
         if uncached_symbols:
-            batch = await self.get_batch_market_caps(uncached_symbols)
+            try:
+                batch = await self.get_batch_market_caps(uncached_symbols)
+            except Exception as e:
+                logger.error(
+                    "批量市值获取异常，全部按 OI 降级",
+                    error=str(e) or type(e).__name__,
+                )
             for sym, cap in batch.items():
                 result[sym] = MarketCapProvenance(
                     value=cap,
                     source="coingecko",
-                    as_of=now,
+                    as_of=self._get_cached_market_cap_as_of(sym) or time.time(),
                     available_at=time.time(),
                     is_proxy=False,
                     missing_reason=None,

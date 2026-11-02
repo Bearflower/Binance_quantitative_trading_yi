@@ -225,6 +225,7 @@ class TradingExecutor:
             resolved_config_path,
             db=db,
             strategy_id=config.get('strategy', {}).get('name', 'new_coin'),
+            require_current_allocation=True,
         )
 
         # 交易配置

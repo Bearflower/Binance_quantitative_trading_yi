@@ -4,7 +4,8 @@
 负责从各策略数据表查询当月已实现盈亏和策略资金基数（月收益率分母）。
 
 数据来源：
-    - trading.trade_records: 各策略的已实现盈亏记录
+    - Binance REALIZED_PNL income: HRS 月度已实现盈亏
+    - trading.trade_records: 其他策略的已实现盈亏记录及 HRS 归属证据
     - public.strategy_position_snapshot_history: 各策略资金基数（月收益率分母）
 
 分母口径（2026-10-13 建立，2026-10-15 更新）：本文件 _query_base_capital 为月粒度
@@ -25,6 +26,8 @@ allocated_amount（名义资金基数，不含杠杆），无分配额时退化�
 import structlog
 from datetime import datetime
 from typing import Any, Dict, List
+
+from ai_tuner.allocation.hrs_monthly_income import HRSMonthlyIncomeCollector
 
 # trade_records.strategy 存的是英文短名（strategy_id），直接用 strategy_id 列表查询即可
 # 例如 "btc_eth"、"btc_eth_aggressive"、"new_coin"、"hrs"、"grid"
@@ -51,7 +54,8 @@ class PnLCollector:
     #   旧实现为整表 BOOL_OR(order_type='PNL_SUMMARY')，导致「整月窗口内只要任一持仓
     #   有汇总行，就对全表只 SUM(summary)」，使「该月内真实发生、但未写 PNL_SUMMARY」
     #   的持仓明细被漏计（机制①，10 月 HRS 实测漏计 −5.2765 USDT）。
-    #   机制③（PNL_SUMMARY 累计语义跨月 carry-in，写入层，量 +3.03454）不在本任务修复。
+    #   HRS 的跨月累计问题由 HRSMonthlyIncomeCollector 按 income 事件月处理；
+    #   本 SQL 仅供其他策略使用。
     #
     # 新口径（与 dashboard 一致）：
     #   CTE grp 先按 (strategy, symbol, side) 在整月窗口内聚合出 BOOL_OR(PNL_SUMMARY)，
@@ -136,6 +140,8 @@ class PnLCollector:
         self,
         db_manager,
         strategies: List[Dict[str, Any]],
+        binance_client=None,
+        strict_hrs_income: bool = False,
     ):
         """
         初始化盈亏采集器
@@ -146,6 +152,10 @@ class PnLCollector:
         """
         self.db_manager = db_manager
         self.strategies = strategies
+        self.strict_hrs_income = strict_hrs_income
+        self.hrs_income_collector = (
+            HRSMonthlyIncomeCollector(db_manager, binance_client) if strict_hrs_income else None
+        )
 
     async def collect_all_realized_pnl(
         self,
@@ -242,6 +252,8 @@ class PnLCollector:
 
         except Exception as e:
             logger.error("策略盈亏采集异常", strategy_id=strategy_id, error=str(e))
+            if strategy_id == "hrs" and self.strict_hrs_income:
+                raise
             return {"pnl": 0.0, "capital": 0.0, "trade_count": 0, "has_trades": True}
 
     def _resolve_db_names(self, strategy_cfg: Dict[str, Any]) -> list:
@@ -294,6 +306,9 @@ class PnLCollector:
         """
         if not db_names:
             return 0.0
+
+        if self.strict_hrs_income and db_names == ["hrs"]:
+            return float(await self.hrs_income_collector.collect(month_start, month_end))
 
         # 数据库 TIMESTAMP 字段无时区，需转为 naive datetime
         naive_start = _to_naive(month_start)

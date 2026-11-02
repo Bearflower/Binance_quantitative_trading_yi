@@ -3,6 +3,9 @@
 set -e
 cd /root/trading_system
 export COMPOSE_FILE=docker-compose.yml:docker-compose.logging.yml
+mkdir -p .deploy_tmp
+exec 9>.deploy_tmp/compose_deploy.lock
+flock -n 9 || { echo "❌ 另一个受控部署正在执行，停止本次部署"; exit 1; }
 
 echo "========================================"
 echo "CI/CD 自动部署"
@@ -43,6 +46,9 @@ if [ "$(grep -c '^AI_TUNER_FUNDING_DB_USER=' "$FUNDING_SECRET_FILE")" -ne 1 ] ||
 fi
 chmod 600 "$FUNDING_SECRET_FILE"
 
+# Never activate the profiled funding collector before its migration and ACL gate.
+export COMPOSE_PROFILES=
+
 # calibrated-first-create begin
 # 一次性 changed-files 信号只用于首次创建新服务。此分支不得触碰
 # 共用 trading-btc-eth:latest 的生产策略或既有影子容器。
@@ -80,17 +86,189 @@ if [ "$DEPLOY_MODE" = "calibrated-first-create" ]; then
 fi
 # calibrated-first-create end
 
+# execution-facts-first-create begin
+# 收入事件主键迁移必须先完成；只拉取采集镜像并创建独立容器，
+# 不触发正在运行的策略服务或其本地热修复镜像。
+if [ "$DEPLOY_MODE" = "execution-facts-first-create" ]; then
+  echo "📥 仅拉取执行事实采集镜像..."
+  docker compose pull hrs-strategy
+  echo "🔄 仅创建执行事实采集器..."
+  docker compose up -d --no-deps execution-facts-collector
+  TARGET_CONTAINER="trading_system-execution-facts"
+  RUNNING=0
+  for i in $(seq 1 30); do
+    state=$(docker inspect -f '{{.State.Status}}' "$TARGET_CONTAINER" 2>/dev/null || echo missing)
+    if [ "$state" = "running" ]; then
+      RUNNING=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$RUNNING" -ne 1 ]; then
+    docker compose logs --tail=100 execution-facts-collector || true
+    exit 1
+  fi
+  mkdir -p deploy_logs
+  DEPLOY_TIME=$(date "+%Y-%m-%d %H:%M:%S")
+  echo "[${DEPLOY_TIME}] DEPLOY_SUCCESS commit=${COMMIT_SHA} deploy_id=${DEPLOY_ID} mode=${DEPLOY_MODE}" \
+    >> "deploy_logs/$(date '+%Y%m%d').log"
+  echo "✅ 执行事实采集器已创建；现有策略容器未更新"
+  exit 0
+fi
+# execution-facts-first-create end
+
+# allocation-reconcile begin
+# Reconcile the live strategy and AI Tuner hotfixes without touching other services.
+if [ "$DEPLOY_MODE" = "allocation-reconcile" ]; then
+  OVERRIDE=docker-compose.override.yml
+  if [ ! -f "$OVERRIDE" ]; then
+    echo "❌ 生产热修复覆盖配置不存在，停止定向部署"
+    exit 1
+  fi
+  python3 - <<'PY'
+from pathlib import Path
+
+expected = """services:
+  hrs-strategy:
+    image: allocation-fix:hrs-20261102
+  btc-eth-strategy:
+    image: allocation-fix:btc-20261102c
+  btc-eth-aggressive-strategy:
+    image: allocation-fix:aggr-20261102j
+  new-coin-strategy:
+    image: allocation-fix:nc-20261102
+  ai-tuner:
+    image: allocation-fix:tuner-health-bfc9ed4-20261102
+"""
+actual = Path("docker-compose.override.yml").read_text()
+if actual.strip() != expected.strip():
+    raise SystemExit("❌ 生产镜像覆盖配置与审核时不一致，停止定向部署")
+PY
+  OVERRIDE_SHA=$(sha256sum "$OVERRIDE" | awk '{print $1}')
+  cp "$OVERRIDE" "${OVERRIDE}.pre_reconcile_${DEPLOY_ID}"
+  bash scripts/archive_container_logs.sh "log_archive/pre_allocation_reconcile_${DEPLOY_ID}"
+  SERVICES="hrs-strategy btc-eth-strategy btc-eth-aggressive-strategy new-coin-strategy grid-strategy ai-tuner"
+  mkdir -p .deploy_tmp
+  ROLLBACK_FILE=".deploy_tmp/allocation_rollback_${DEPLOY_ID}.yml"
+  echo 'services:' > "$ROLLBACK_FILE"
+  for spec in \
+    "hrs-strategy:trading_system-hrs" \
+    "btc-eth-strategy:trading_system-btc_eth" \
+    "btc-eth-aggressive-strategy:trading_system-btc_eth_aggressive" \
+    "new-coin-strategy:trading_system-new_coin" \
+    "grid-strategy:trading_system-grid" \
+    "ai-tuner:ai-tuner"; do
+    service=${spec%%:*}
+    container=${spec#*:}
+    old_image=$(docker inspect -f '{{.Image}}' "$container")
+    test -n "$old_image"
+    rollback_tag="allocation-rollback:${service}-${DEPLOY_ID}"
+    docker image tag "$old_image" "$rollback_tag"
+    printf '  %s:\n    image: %s\n' "$service" "$rollback_tag" >> "$ROLLBACK_FILE"
+  done
+  docker compose pull $SERVICES
+  ROLLBACK_REQUIRED=1
+  allocation_rollback() {
+    rc=$1
+    trap - EXIT
+    if [ "$ROLLBACK_REQUIRED" = "1" ]; then
+      echo "⚠️ 定向部署未完成，恢复全部六个服务的部署前镜像"
+      if docker compose -f docker-compose.yml -f docker-compose.logging.yml -f "$ROLLBACK_FILE" \
+          up -d --no-deps $SERVICES; then
+        for spec in \
+          "hrs-strategy:trading_system-hrs" \
+          "btc-eth-strategy:trading_system-btc_eth" \
+          "btc-eth-aggressive-strategy:trading_system-btc_eth_aggressive" \
+          "new-coin-strategy:trading_system-new_coin" \
+          "grid-strategy:trading_system-grid" \
+          "ai-tuner:ai-tuner"; do
+          service=${spec%%:*}
+          container=${spec#*:}
+          restored=0
+          for i in $(seq 1 30); do
+            state=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)
+            health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)
+            image=$(docker inspect -f '{{.Config.Image}}' "$container" 2>/dev/null || true)
+            if [ "$state" = "running" ] && [ "$health" = "healthy" ] && \
+               [ "$image" = "allocation-rollback:${service}-${DEPLOY_ID}" ]; then
+              restored=1
+              break
+            fi
+            sleep 3
+          done
+          if [ "$restored" -ne 1 ]; then
+            echo "❌ ${container} 回滚后镜像或健康状态未恢复，需人工检查 ${ROLLBACK_FILE}"
+          fi
+        done
+      else
+        echo "❌ 自动回滚失败，需按 ${ROLLBACK_FILE} 手动恢复"
+      fi
+    fi
+    exit "$rc"
+  }
+  trap 'allocation_rollback $?' EXIT
+  docker compose up -d --no-deps $SERVICES
+  for spec in \
+    "trading_system-hrs:trading-hrs" \
+    "trading_system-btc_eth:trading-btc-eth" \
+    "trading_system-btc_eth_aggressive:trading-btc-eth-aggr" \
+    "trading_system-new_coin:trading-new-coin" \
+    "trading_system-grid:trading-grid" \
+    "ai-tuner:trading-ai-tuner"; do
+    container=${spec%%:*}
+    image=${spec#*:}
+    ready=0
+    for i in $(seq 1 60); do
+      state=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || true)
+      health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || true)
+      actual_image=$(docker inspect -f '{{.Config.Image}}' "$container" 2>/dev/null || true)
+      if [ "$state" = "running" ] && [ "$health" = "healthy" ] && \
+         [ "$actual_image" = "ghcr.io/bearflower/${image}:latest" ]; then
+        ready=1
+        break
+      fi
+      sleep 3
+    done
+    if [ "$ready" -ne 1 ]; then
+      echo "❌ ${container} 未以目标镜像进入健康状态"
+      exit 1
+    fi
+    if [ "$container" != "ai-tuner" ]; then
+      docker exec "$container" python -c \
+        'import os; from shared.trade_logger import TradeLogger; expected=os.environ.get("TRADE_ACCOUNT_ID"); assert expected and TradeLogger(None, "deploy_probe").account_id == expected'
+    fi
+  done
+  if [ "$(sha256sum "$OVERRIDE" | awk '{print $1}')" != "$OVERRIDE_SHA" ]; then
+    echo "❌ 部署期间覆盖配置发生变化，停止修改"
+    exit 1
+  fi
+  cat > "${OVERRIDE}.next_${DEPLOY_ID}" <<'EOF'
+services: {}
+EOF
+  mv "${OVERRIDE}.next_${DEPLOY_ID}" "$OVERRIDE"
+  ROLLBACK_REQUIRED=0
+  trap - EXIT
+  mkdir -p deploy_logs
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] DEPLOY_SUCCESS commit=${COMMIT_SHA} deploy_id=${DEPLOY_ID} mode=${DEPLOY_MODE}" \
+    >> "deploy_logs/$(date '+%Y%m%d').log"
+  echo "✅ 五个实盘策略及 AI Tuner 热修复已归并"
+  exit 0
+fi
+# allocation-reconcile end
+
+# Remaining local allocation-fix images must be reconciled before a full
+# deployment can safely replace the production runtime.
+if [ "$DEPLOY_MODE" = "full" ] && grep -q "allocation-fix:" docker-compose.override.yml 2>/dev/null; then
+  echo "❌ 仍有未归并的生产热修复镜像，拒绝全量部署"
+  exit 1
+fi
+
 # Dedicated persistent monitor alert state lives in this service's existing
 # bind mount. Provision it for the image's non-root UID before any collector
 # start; otherwise a restart could bypass the 15-minute alert cooldown.
 mkdir -p logs/ai_tuner_funding_schedule
 chown 1000:1000 logs/ai_tuner_funding_schedule
 chmod 700 logs/ai_tuner_funding_schedule
-
-# Override both inherited shell and project .env COMPOSE_PROFILES. The normal
-# global up must never activate the funding collector before the ACL gate.
-# A later explicit --profile funding-schedule up is the only start path.
-export COMPOSE_PROFILES=
 
 stop_funding_collector_if_running() {
   # Exact container only; never stop sibling AI Tuner or trading services.
@@ -210,10 +388,13 @@ docker compose run -T --rm --no-deps grid-realtime \
   python -m strategies.grid.realtime.reference_store \
   --db-path /app/data/grid_realtime.sqlite3
 
-# 4. 只更新镜像变了的容器（compose up -d 自动检测）。资金费采集器
-# 位于 funding-schedule profile，不在全局 up 中启动/重建。
+# 4. 只更新镜像变了的容器（compose up -d 自动检测）
+# Docker Compose 重建失败可能留下形如「旧容器 ID_服务名」的 Created 容器。
+# 仅在正式容器仍运行且健康、残留已超过 5 分钟时清理；否则停止部署。
+python3 scripts/cleanup_compose_created.py
+# 资金费采集器位于 funding-schedule profile，不在此全局 up 中启动/重建。
 echo "🔄 docker compose up -d..."
-docker compose up -d --remove-orphans
+docker compose --parallel 1 up -d --remove-orphans
 
 # ========== step 4.5：执行数据库 init-scripts（幂等）==========
 # 背景：postgres 官方镜像 entrypoint 仅在 PGDATA 首次为空时自动执行

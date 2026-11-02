@@ -681,6 +681,9 @@ def _build_executor(
         kline_service=None,
         config_path=_write_config(tmp_path, config),
     )
+    # Legacy cases below exercise the optional compatibility fallback chain.
+    # Live fail-closed allocation behavior is covered separately.
+    executor.capital_mgr.require_current_allocation = False
     # 生产路径由 _restore_state() → _rebuild_position_baseline() 保证基线就绪；
     # 此处默认模拟「启动完成」状态，需要验证未就绪行为的用例自行改回 False
     executor.baseline_ready = True
@@ -1048,6 +1051,12 @@ def _build_baseline_executor(own_symbols: Optional[set] = None) -> MagicMock:
     """
     executor = MagicMock()
     executor.leverage = 2
+    executor.target1_close_percent = Decimal('0.3')
+    executor.target2_close_percent = Decimal('0.4')
+    executor.qty_tolerance_ratio = 0.01
+    executor.qty_tolerance_absolute = 0.0001
+    executor._step_size_for.return_value = 0.001
+    executor._get_symbol_precision = AsyncMock(return_value=(0.001, 0.001))
     executor.baseline_ready = True
     executor.position_tracking = {}
     executor.get_contract_size_map = AsyncMock(return_value={})
@@ -1287,6 +1296,11 @@ class TestMtpcsEntryLimits:
         strategy = object.__new__(strategy_cls)
         strategy.positions = {}
         strategy.binance_config = {'leverage': {'S': 5, 'A': 4, 'B': 3, 'C': 2}}
+        strategy.binance = MagicMock()
+        strategy.binance.get_position = AsyncMock(return_value=[])
+        strategy.db_manager = MagicMock()
+        strategy.my_record_name = 'btc_eth'
+        strategy.min_position_amt = 0.00001
         strategy.capital_mgr = CapitalManager(
             _write_config(tmp_path, config), strategy_id='btc_eth'
         )
@@ -1334,6 +1348,11 @@ class TestMtpcsEntryLimits:
         strategy = object.__new__(BTCEthAggressiveStrategy)
         strategy.positions = {}
         strategy.binance_config = {'leverage': {'S': 5, 'A': 4, 'B': 3, 'C': 2}}
+        strategy.binance = MagicMock()
+        strategy.binance.get_position = AsyncMock(return_value=[])
+        strategy.db_manager = MagicMock()
+        strategy.my_record_name = 'btc_eth_aggressive'
+        strategy.min_position_amt = 0.00001
         config = _base_config({'trading': {'total_position_margin_limit': 1000.0}})
         strategy.capital_mgr = CapitalManager(
             _write_config(tmp_path, config),

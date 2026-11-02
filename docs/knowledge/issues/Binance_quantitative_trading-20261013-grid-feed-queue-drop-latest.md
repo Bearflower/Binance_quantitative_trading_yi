@@ -34,11 +34,11 @@ async def _pump_feed(self) -> None:
 
 ## 验证
 - `5137be1` 后不再丢最新成交，仅用 `get_nowait()` 逐出最旧，整秒采样价仍取真实末笔；
-- 观察项：`storage_degraded` 仍会瞬态出现（实测 ≈**4.7 次/时**，p50 持续 **32s**、max **59.4s** 后被 60s maintenance 覆写清零），属预期，非回归；
+- 当时观察到 `storage_degraded` 瞬态出现（≈**4.7 次/时**，p50 **32s**、max **59.4s**），后来证实是队列溢出被错误归类为存储容量问题，并被 60s maintenance 覆写清零；详见 2026-10-29 排查记录。此现象不应再视为正常存储降级。
 - commit `5137be1` run #65 已推送部署。
 
 ## 适用范围与修订
-`strategies/grid/realtime/main.py`（`_pump_feed`）；commit `5137be1`（run #65）已上线。无替代条目。
+`strategies/grid/realtime/main.py`（`_pump_feed`）；commit `5137be1`（run #65）已上线。2026-10-29 的后续修复另见[排查记录](../../reports/grid-realtime-shadow-queue-overflow-triage-2026-10-29.md)。
 
 ## 教训
 「队列溢出该丢哪一端，取决于消费端语义」——采样取末笔时，溢出必须丢最旧、保最新；丢错端会让「数据完整性」表面无损、实际取到滞后价。（AI 归纳，仅供参考）

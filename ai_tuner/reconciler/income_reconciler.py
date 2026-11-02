@@ -22,7 +22,7 @@
    不允许修改，故此处以类方法形式重新实现等价的增量算法并用中文注释说明。
 3. 时区约定：Binance income 的 time 字段为 UTC 毫秒时间戳；
    trade_records.executed_at 为北京时间（无时区）。匹配/过滤时统一换算。
-4. 优雅降级：任何 Binance API 调用或单条写入失败只记日志，不中断主流程；
+4. 失败不推进游标：income 拉取或批量事务回写失败时记录错误并等待下次重试；
    校准失败不影响 ai_tuner 其他任务运行。
 5. 所有可调参数（回看天数、分片大小、批处理大小、匹配窗口等）均从
    ai_tuner/config.yaml 的 reconciler: 段读取，代码内仅提供默认值兜底。
@@ -89,7 +89,7 @@ class IncomeReconciler:
             last_ts = await self._get_last_reconciled_ts()
             now_ms = _utc_now_ms()
             # 从上次进度继续，若无进度则从"最近 N 天"的偏移处开始（相对当前时间，非硬编码日期）
-            start_ms = max(last_ts, now_ms - self.lookback_days * _DAY_MS)
+            start_ms = last_ts if last_ts > 0 else now_ms - self.lookback_days * _DAY_MS
             end_ms = now_ms
             logger.info("开始 PnL 校准", start_ms=start_ms, end_ms=end_ms, last_ts=last_ts)
 
@@ -105,8 +105,9 @@ class IncomeReconciler:
                 await self._update_reconciled_ts(end_ms)
                 return
 
-            updated, total_pnl = await self._match_and_update(income, pending)
-            await self._update_reconciled_ts(end_ms)
+            updated, total_pnl = await self._match_and_update(income, pending, completed_through=end_ms)
+            if updated == 0:
+                await self._update_reconciled_ts(end_ms)
             logger.info(
                 "PnL 校准完成",
                 income_count=len(income),
@@ -147,14 +148,17 @@ class IncomeReconciler:
 
     async def _update_reconciled_ts(self, ts_ms: int) -> None:
         """更新校准进度，下次只处理该时间点之后的新数据，避免重复"""
-        sql = f"""
+        await self.db.execute(self._reconciled_ts_upsert_sql(), ts_ms)
+
+    def _reconciled_ts_upsert_sql(self) -> str:
+        """与盈亏回写事务共用的校准进度 UPSERT。"""
+        return f"""
             INSERT INTO {self.state_schema}.{self.state_table} (id, last_reconciled_ts, updated_at)
             VALUES (1, $1, NOW())
             ON CONFLICT (id) DO UPDATE
                 SET last_reconciled_ts = EXCLUDED.last_reconciled_ts,
                     updated_at = NOW()
         """
-        await self.db.execute(sql, ts_ms)
 
     # ──────────────────────────────────────────────
     # Binance 收入拉取
@@ -183,8 +187,8 @@ class IncomeReconciler:
                     limit=self.batch_size,
                 )
             except Exception as e:
-                logger.warning("Binance 收入查询失败", start_ms=cursor, error=str(e))
-                break
+                logger.error("Binance 收入查询失败，本轮不推进校准游标", start_ms=cursor, error=str(e))
+                raise
             if not batch:
                 break
             collected.extend(batch)
@@ -237,14 +241,17 @@ class IncomeReconciler:
             args.extend(self.excluded_strategies)
         return await self.db.fetch_all(sql, *args)
 
-    async def _match_and_update(self, income_records: list, pending_records: list) -> Tuple[int, Decimal]:
-        """以收入记录为主循环，匹配并回写 realized_pnl，返回（更新条数，累计盈亏）"""
+    async def _match_and_update(
+        self, income_records: list, pending_records: list,
+        completed_through: Optional[int] = None,
+    ) -> Tuple[int, Decimal]:
+        """以收入记录匹配成交；将整批盈亏与游标原子提交。"""
         records_by_symbol = defaultdict(list)
         for rec in pending_records:
             records_by_symbol[rec["symbol"]].append(rec)
 
         used_ids = set()
-        updated = 0
+        queries = []
         total_pnl = Decimal("0")
 
         for inc in income_records:
@@ -258,19 +265,23 @@ class IncomeReconciler:
             match = self._find_best_match(candidates, inc_time)
             if match is None:
                 continue
+            pnl = Decimal(str(inc.get("income", "0")))
+            queries.append((
+                f"UPDATE {self.schema}.{self.table} SET realized_pnl = $1 WHERE id = $2",
+                (pnl, match["id"]),
+            ))
+            used_ids.add(match["id"])
+            total_pnl += pnl
+
+        if queries:
+            if completed_through is not None:
+                queries.append((self._reconciled_ts_upsert_sql(), (completed_through,)))
             try:
-                pnl = Decimal(str(inc.get("income", "0")))
-                await self.db.execute(
-                    f"UPDATE {self.schema}.{self.table} SET realized_pnl = $1 WHERE id = $2",
-                    pnl,
-                    match["id"],
-                )
-                used_ids.add(match["id"])
-                updated += 1
-                total_pnl += pnl
+                await self.db.execute_transaction(queries)
             except Exception as e:
-                logger.warning("回写 realized_pnl 失败", record_id=match["id"], error=str(e))
-        return updated, total_pnl
+                logger.error("批量回写 realized_pnl 失败，本轮不推进校准游标", count=len(used_ids), error=str(e))
+                raise
+        return len(used_ids), total_pnl
 
     def _find_best_match(self, candidates: list, inc_time: int) -> Optional[dict]:
         """

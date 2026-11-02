@@ -218,6 +218,7 @@ class HRSStrategy(BaseStrategy):
         self.capital_mgr = CapitalManager(
             os.path.join(config_dir, "config.yaml"),
             strategy_id=self.strategy_name,
+            require_current_allocation=True,
         )
 
         # 候选池为空时休眠配置
@@ -710,7 +711,7 @@ class HRSStrategy(BaseStrategy):
         leverage = self.trading_executor.leverage
         records = []
         for _, pos_data in self.position_manager.get_all_positions().items():
-            pos_qty = abs(float(pos_data.get("entry_quantity", 0) or pos_data.get("quantity", 0) or 0))
+            pos_qty = abs(float(pos_data.get("remaining_quantity", pos_data.get("entry_quantity", pos_data.get("quantity", 0))) or 0))
             pos_price = float(pos_data.get("entry_price", 0) or 0)
             if pos_qty <= 0 or pos_price <= 0:
                 continue
@@ -2086,8 +2087,8 @@ class HRSStrategy(BaseStrategy):
         """
         从币安API获取该持仓的实际已实现盈亏
 
-        查询该 symbol 从开仓时刻到当前时间的全部 REALIZED_PNL 记录，
-        汇总得到实际 PnL。
+        仅在收入事件、成交明细和同账户 HRS 订单能逐笔核对时返回实盘值。
+        任一缺失、满页或共享币种歧义均返回 None，交给理论值兜底。
 
         Args:
             symbol: 交易对
@@ -2108,24 +2109,86 @@ class HRSStrategy(BaseStrategy):
                 limit=1000,
             )
 
-            # 过滤出该 symbol 的收入记录并求和
-            total_pnl = Decimal("0")
-            match_count = 0
-            for record in income_records:
-                if record.get("symbol") == symbol:
-                    income_str = record.get("income", "0")
-                    total_pnl += Decimal(str(income_str))
-                    match_count += 1
+            if not isinstance(income_records, list) or len(income_records) >= 1000:
+                logger.warning(
+                    "收入响应异常或已满页，无法证明实盘PnL完整",
+                    symbol=symbol,
+                    record_count=len(income_records) if isinstance(income_records, list) else None,
+                )
+                return None
 
-            if match_count == 0:
+            relevant = [row for row in income_records if row.get("symbol") == symbol]
+            if not relevant:
                 logger.warning("未找到该symbol的实际PnL记录", symbol=symbol)
+                return None
+
+            account_id = os.environ.get("TRADE_ACCOUNT_ID", "").strip()
+            db = getattr(self, "db", None)
+            if not account_id or db is None:
+                logger.warning("缺少账户或数据库归属证据，放弃实盘PnL", symbol=symbol)
+                return None
+
+            fills = await self.binance_client.get_user_trades(
+                symbol, start_time=start_ms, end_time=end_ms, limit=1000,
+            )
+            if not isinstance(fills, list) or len(fills) >= 1000:
+                logger.warning("成交响应异常或已满页，放弃实盘PnL", symbol=symbol)
+                return None
+            fill_by_id = {}
+            for fill in fills:
+                trade_id = fill.get("id")
+                if trade_id is None or str(trade_id) in fill_by_id:
+                    return None
+                fill_by_id[str(trade_id)] = fill
+
+            seen_tran_ids = set()
+            matched_trade_ids = set()
+            order_ids = set()
+            total_pnl = Decimal("0")
+            for record in relevant:
+                tran_id = record.get("tranId")
+                trade_id = record.get("tradeId")
+                if record.get("incomeType") != "REALIZED_PNL" or record.get("asset") != "USDT":
+                    return None
+                if (tran_id is None or str(tran_id) in seen_tran_ids
+                        or trade_id is None or str(trade_id) not in fill_by_id):
+                    return None
+                seen_tran_ids.add(str(tran_id))
+                matched_trade_ids.add(str(trade_id))
+                fill = fill_by_id[str(trade_id)]
+                if fill.get("symbol") != symbol or fill.get("orderId") is None:
+                    return None
+                amount = Decimal(str(record["income"]))
+                if amount != Decimal(str(fill["realizedPnl"])):
+                    return None
+                order_ids.add(str(fill["orderId"]))
+                total_pnl += amount
+
+            if any(
+                trade_id not in matched_trade_ids
+                and Decimal(str(fill.get("realizedPnl", "0"))) != 0
+                for trade_id, fill in fill_by_id.items()
+            ):
+                logger.warning("存在未结算成交，放弃部分实盘PnL", symbol=symbol)
+                return None
+
+            rows = await db.fetch_all(
+                "SELECT account_id, strategy, order_id FROM trading.trade_records "
+                "WHERE account_id = $1 AND symbol = $2 AND order_id = ANY($3::text[])",
+                account_id, symbol, sorted(order_ids),
+            )
+            owners = {}
+            for row in rows:
+                owners.setdefault(str(row["order_id"]), set()).add(row["strategy"])
+            if any(owners.get(order_id) != {"hrs"} for order_id in order_ids):
+                logger.warning("实盘PnL含非 HRS 或无归属订单", symbol=symbol)
                 return None
 
             logger.info(
                 "从币安获取实际PnL成功",
                 symbol=symbol,
                 total_pnl=float(total_pnl),
-                match_count=match_count,
+                match_count=len(relevant),
             )
             return total_pnl
 
@@ -2284,14 +2347,14 @@ class HRSStrategy(BaseStrategy):
                 return None
 
             pnl_value: Optional[Decimal] = None
-            pnl_source = "theoretical"
+            pnl_source = "theoretical_estimate"
 
             # 1. 优先从币安 API 获取实际 PnL（B5：取不可变开仓时刻，不受复核延期影响）
             opened_at = pos.get("opened_at")
             if isinstance(opened_at, datetime):
                 pnl_value = await self._get_actual_pnl_from_binance(symbol, opened_at)
                 if pnl_value is not None:
-                    pnl_source = "binance_api"
+                    pnl_source = "exchange_order_matched"
 
             # 2. 实际 PnL 获取失败，降级到理论计算
             if pnl_value is None:
@@ -2332,6 +2395,7 @@ class HRSStrategy(BaseStrategy):
                     trade_logger.CLOSE_REASON_STOP_LOSS if pnl_value < 0 else None
                 ),
                 since=since_dt,
+                pnl_source=pnl_source,
             )
 
             if success:
@@ -2472,8 +2536,42 @@ class HRSStrategy(BaseStrategy):
         logger.warning("获取交易所持仓量失败，跳过本轮补单", symbol=symbol, error=str(last_err))
         return None
 
+    async def _enforce_allocation_holdings(self) -> bool:
+        positions = self.position_manager.get_all_positions()
+        margins = {}
+        for symbol, pos in positions.items():
+            quantity = pos.get("remaining_quantity", pos.get("entry_quantity", 0))
+            margins[symbol] = calc_position_margin(
+                quantity, pos.get("entry_price", 0), 1.0, self.trading_executor.leverage
+            )
+
+        async def close(symbol: str) -> bool:
+            pos = positions[symbol]
+            direction = pos.get("direction")
+            ticker = await self.binance_client.get_ticker(symbol)
+            price = float(ticker.get("lastPrice", 0))
+            if price <= 0:
+                logger.error("月度额度减仓取价失败", symbol=symbol)
+                return False
+            result = await self.trading_executor.close_position(
+                symbol=symbol, direction=direction, close_percent=1.0,
+                reason="月度分配额度超额",
+            )
+            return await self._finalize_close_if_filled(
+                symbol=symbol, direction=direction, result=result,
+                entry_price=float(pos.get("entry_price", 0)), exit_price=price,
+                quantity=float(pos.get("remaining_quantity", pos.get("entry_quantity", 0))),
+                close_reason="月度分配额度超额", pos=pos,
+            )
+
+        return await self.capital_mgr.enforce_existing_positions(margins, close)
+
     async def _monitor_positions(self) -> None:
         """监控持仓：移动止盈、时间止损"""
+        try:
+            await self._enforce_allocation_holdings()
+        except Exception as e:
+            logger.error("月度额度持仓检查失败，继续持仓保护", error=str(e), exc_info=True)
         positions = self.position_manager.get_all_positions()
         if not positions:
             return
@@ -4334,6 +4432,16 @@ class HRSStrategy(BaseStrategy):
         # 计算加仓数量
         initial_qty = pos.get("entry_quantity", 0)
         add_qty = initial_qty * self.add_position_size_ratio
+
+        new_margin = calc_position_margin(
+            add_qty, current_price, 1.0, self.trading_executor.leverage
+        )
+        allowed, reject_reason = await self.capital_mgr.can_open_within_limit(
+            self._calc_current_total_margin(), new_margin
+        )
+        if not allowed:
+            logger.warning("HRS 加仓被月度额度拦截", symbol=symbol, reason=reject_reason)
+            return False
 
         # 计算ATR
         atr = await self.trading_executor.calculate_atr(symbol, klines)

@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional, Tuple
 
 _REAL_MARKET_CAP_SOURCES = frozenset({"coingecko", "cache_hit", "coingecko_cache"})
 _SENTIMENT_FORMULA_VERSION = "funding_annual_pct_v1"
+_ANNUALIZED_RATE_FACTOR = 3 * 365 * 100   # funding_rate → 年化百分比乘数
 _REL_TOLERANCE = 1e-9
 
 
@@ -70,7 +71,7 @@ class MarketSnapshot:
         return _close(
             self.oi_market_cap_ratio,
             self.open_interest_usd / self.market_cap_usd,
-        ) and _close(self.sentiment_score, self.funding_rate * 3 * 365 * 100)
+        ) and _close(self.sentiment_score, self.funding_rate * _ANNUALIZED_RATE_FACTOR)
 
     @property
     def quality_rank(self) -> int:

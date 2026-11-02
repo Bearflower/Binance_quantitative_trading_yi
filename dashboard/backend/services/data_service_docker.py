@@ -235,8 +235,8 @@ class DataService:
                     income_type=income_type,
                 )
             except Exception as e:
-                logger.warning("Binance income API 查询失败", income_type=income_type, error=str(e)[:80])
-                data = []
+                logger.error("Binance income API 查询失败", income_type=income_type, error=str(e)[:80])
+                raise
             self._income_cache[cache_key] = (data, datetime.now())
             # 清理过期条目
             now = datetime.now()
@@ -283,7 +283,7 @@ class DataService:
             slice_days: 分片窗口天数，默认取 self._precompute_income_slice_days
 
         Returns:
-            全部窗口合并后的 income 记录列表（某窗口失败仅跳过，全部失败返回 []）
+            全部窗口合并后的 income 记录列表；任一窗口失败则整次采集失败
         """
         if slice_days is None:
             slice_days = self._precompute_income_slice_days
@@ -298,12 +298,7 @@ class DataService:
         async def _fetch_window(ws: int, we: int) -> list:
             """拉取单个窗口的 income 记录（复用 _get_income_data 缓存与锁）"""
             async with sem:
-                try:
-                    return await self._get_income_data(ws, we, income_type=income_type)
-                except Exception as e:
-                    logger.warning("分页拉取 income 窗口失败，跳过该窗口",
-                                   income_type=income_type, window_ms=(ws, we), error=str(e)[:80])
-                    return []
+                return await self._get_income_data(ws, we, income_type=income_type)
 
         results = await asyncio.gather(*(_fetch_window(ws, we) for ws, we in windows))
         merged: list = []

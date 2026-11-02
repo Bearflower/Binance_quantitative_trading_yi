@@ -6,6 +6,15 @@ from decimal import Decimal
 from shared.binance_api import BinanceClient, BinanceAPIError
 
 
+def test_client_initialization_log_never_contains_api_key_fragment(monkeypatch):
+    import shared.binance_api as module
+    calls = []
+    monkeypatch.setattr(module.logger, "info", lambda *args, **kwargs: calls.append((args, kwargs)))
+    BinanceClient(api_key="abcd12345678wxyz", api_secret="secret123456")
+    assert calls and calls[0][0] == ("币安客户端初始化",)
+    assert "api_key" not in calls[0][1]
+
+
 class TestBinanceClientInitialization:
     """测试币安客户端初始化"""
     
@@ -56,12 +65,13 @@ class TestBinanceClientInitialization:
             )
     
     @pytest.mark.asyncio
-    async def test_production_url(self):
-        """测试生产环境URL"""
+    async def test_non_unified_production_url(self):
+        """普通合约账户显式关闭统一账户时使用 fapi。"""
         client = BinanceClient(
             api_key="test_api_key",
             api_secret="test_api_secret",
-            testnet=False
+            testnet=False,
+            use_unified_account=False,
         )
         
         assert client.base_url == "https://fapi.binance.com"

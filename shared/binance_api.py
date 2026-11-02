@@ -129,7 +129,6 @@ class BinanceClient:
             testnet=testnet,
             base_url=self.base_url,
             use_unified_account=use_unified_account,
-            api_key=self.api_key
         )
     
     @property
@@ -594,24 +593,19 @@ class BinanceClient:
             raise
 
     async def get_open_algo_orders(self, symbol: Optional[str] = None) -> List[Dict]:
-        """
-        获取未成交的算法条件单（止盈止损单）
-
-        Binance已于2026年6月底废弃此API端点，返回404 HTML。
-        策略已改为基于内存order_id精确管理，不再依赖查询API。
-        直接返回空列表，避免触发废弃端点的 -9999 错误日志。
-
-        Args:
-            symbol: 交易对名称（可选，不传则查询全部）
-
-        Returns:
-            始终返回空列表（API已废弃）
-        """
-        logger.debug(
-            "条件单查询API已废弃，直接返回空列表",
-            symbol=symbol
+        """读取交易所真实在挂条件单；旧 conditional 端点已被 algo 端点替代。"""
+        if not self.use_unified_account:
+            logger.warning("非统一账户条件单查询尚未接入，沿用空列表")
+            return []
+        params = {"algoType": "CONDITIONAL"}
+        if symbol:
+            params["symbol"] = symbol.strip().upper()
+        data = await self._request(
+            "GET", "/papi/v1/um/algo/openAlgoOrders", params, signed=True
         )
-        return []
+        if not isinstance(data, list):
+            raise ValueError(f"响应数据格式错误: 期望列表，实际为 {type(data).__name__}")
+        return data
     
     async def place_order(
         self,
@@ -1358,14 +1352,18 @@ class BinanceClient:
                 filters = {}
                 for f in s.get('filters', []):
                     if f['filterType'] == 'LOT_SIZE':
-                        step_size = f.get('stepSize', '0.001')
+                        step_size = f.get('stepSize')
+                        if step_size is None:
+                            raise ValueError(f"{symbol} LOT_SIZE 缺少 stepSize")
                         filters['stepSize'] = step_size  # v6.16.6：保存原始stepSize供精度截断
                         if '.' in step_size:
                             filters['quantityPrecision'] = len(step_size.split('.')[1].rstrip('0') or '0')
                         else:
                             filters['quantityPrecision'] = 0
                     elif f['filterType'] == 'PRICE_FILTER':
-                        tick_size = f.get('tickSize', '0.01')
+                        tick_size = f.get('tickSize')
+                        if tick_size is None:
+                            raise ValueError(f"{symbol} PRICE_FILTER 缺少 tickSize")
                         filters['tickSize'] = Decimal(tick_size)
                         if '.' in tick_size:
                             filters['pricePrecision'] = len(tick_size.split('.')[1].rstrip('0') or '0')
@@ -1374,7 +1372,16 @@ class BinanceClient:
                     elif f['filterType'] == 'MIN_NOTIONAL':
                         filters['minNotional'] = f.get('notional', '5')
                 
-                # 缓存精度信息
+                if not filters.get('stepSize') or not filters.get('tickSize'):
+                    raise ValueError(
+                        f"{symbol} 交易所精度信息缺少 LOT_SIZE 或 PRICE_FILTER"
+                    )
+                step = Decimal(str(filters['stepSize']))
+                tick = filters['tickSize']
+                if not step.is_finite() or not tick.is_finite() or step <= 0 or tick <= 0:
+                    raise ValueError(f"{symbol} 交易所精度信息步长无效")
+
+                # 仅缓存完整、有效的交易所精度信息
                 self._symbol_precision_cache[symbol] = filters
                 logger.info(
                     f"{symbol} 精度信息已缓存",
@@ -1385,15 +1392,7 @@ class BinanceClient:
                 )
                 return filters
         
-        logger.warning(f"未找到交易对{symbol}的精度信息，使用默认值")
-        default_filters = {
-            'quantityPrecision': 3,
-            'pricePrecision': 2,
-            'stepSize': '0.001',
-            'tickSize': Decimal('0.01')
-        }
-        self._symbol_precision_cache[symbol] = default_filters
-        return default_filters
+        raise ValueError(f"交易所信息中未找到交易对 {symbol}，停止使用猜测精度下单")
     
     def _adjust_quantity_precision(
         self,
@@ -1554,10 +1553,12 @@ class BinanceClient:
 
         Returns:
             收入记录列表，每条包含 symbol, incomeType, income, time 等字段
+
+        Raises:
+            ValueError: 非统一账户模式不支持此查询
         """
         if not self.use_unified_account:
-            logger.warning("收入查询仅支持统一账户模式")
-            return []
+            raise ValueError("收入查询仅支持统一账户模式（use_unified_account=True）")
 
         params = {
             "incomeType": income_type,
@@ -1572,7 +1573,7 @@ class BinanceClient:
         data = await self._request("GET", "/papi/v1/um/income", params, signed=True)
 
         if not isinstance(data, list):
-            return []
+            raise TypeError("income API 响应必须为列表")
 
         return data
 

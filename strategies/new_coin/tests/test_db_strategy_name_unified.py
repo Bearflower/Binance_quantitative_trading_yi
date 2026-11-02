@@ -19,7 +19,7 @@ new_coin 平仓链路策略名口径修复的功能测试（$1 绑定值统一�
 fixture 约定：所有异步依赖一律 AsyncMock（严禁 MagicMock 直接 await）；
 db 查询不 mock 掉被断言的调用本身，只 mock 返回值。
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -73,7 +73,7 @@ def wire_monitor_deps(strategy: NewCoinStrategy) -> None:
 
 def make_old_position_entry() -> dict:
     """构造一笔 2 小时前入场的做空持仓（避开 60 秒入场防抖分支）。"""
-    long_ago = (datetime.now() - timedelta(hours=2)).isoformat()
+    long_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).replace(tzinfo=None).isoformat()
     return {'entry_price': Decimal('100'), 'entry_time': long_ago}
 
 

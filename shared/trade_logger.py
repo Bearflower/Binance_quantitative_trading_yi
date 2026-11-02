@@ -89,6 +89,7 @@ class TradeLogger:
     _CREATE_TABLE_DDL = """
     CREATE TABLE IF NOT EXISTS trading.trade_records (
         id SERIAL PRIMARY KEY,
+        account_id TEXT,
         strategy VARCHAR(50) NOT NULL,
         symbol VARCHAR(20) NOT NULL,
         order_id VARCHAR(100),
@@ -99,7 +100,8 @@ class TradeLogger:
         commission DECIMAL(20,8) NOT NULL DEFAULT 0,
         status VARCHAR(20) NOT NULL DEFAULT 'NEW',
         executed_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        realized_pnl DECIMAL(20,8)
+        realized_pnl DECIMAL(20,8),
+        pnl_source VARCHAR(32)
     )
 """
 
@@ -132,6 +134,16 @@ class TradeLogger:
         ADD COLUMN IF NOT EXISTS algo_id VARCHAR(100)
     """
 
+    _ALTER_ADD_ACCOUNT_ID_DDL = """
+    ALTER TABLE trading.trade_records
+        ADD COLUMN IF NOT EXISTS account_id TEXT
+    """
+
+    _ALTER_ADD_PNL_SOURCE_DDL = """
+    ALTER TABLE trading.trade_records
+        ADD COLUMN IF NOT EXISTS pnl_source VARCHAR(32)
+    """
+
     # 佣金回填：待回填订单查询 SQL
     # 最近 N 小时、commission=0、order_id 非空，(symbol, order_id) 去重
     _PENDING_RECORDS_SQL = """
@@ -148,7 +160,10 @@ class TradeLogger:
     WHERE symbol = $2 AND order_id = $3 AND commission = 0
     """
 
-    def __init__(self, db_manager: DatabaseManager, strategy_name: str):
+    def __init__(
+        self, db_manager: DatabaseManager, strategy_name: str,
+        account_id: Optional[str] = None,
+    ):
         """
         初始化交易记录器
 
@@ -161,6 +176,8 @@ class TradeLogger:
 
         self.db = db_manager
         self.strategy_name = strategy_name.strip()
+        # 未配置账户标识时保留 NULL，历史及新记录均不可被猜测归属。
+        self.account_id = (account_id or environ.get("TRADE_ACCOUNT_ID") or "").strip() or None
 
         logger.info(
             "交易记录器初始化",
@@ -182,6 +199,8 @@ class TradeLogger:
             await self.db.execute_ddl(self._ALTER_ADD_CLOSE_REASON_DDL)
             # B3 修复：增量补齐 algo_id 列（PM 条件单返回 algoId 而非 orderId）
             await self.db.execute_ddl(self._ALTER_ADD_ALGO_ID_DDL)
+            await self.db.execute_ddl(self._ALTER_ADD_ACCOUNT_ID_DDL)
+            await self.db.execute_ddl(self._ALTER_ADD_PNL_SOURCE_DDL)
             await self.db.execute_ddl(self._CREATE_INDEX_1_DDL)
             await self.db.execute_ddl(self._CREATE_INDEX_2_DDL)
             logger.info(
@@ -241,8 +260,8 @@ class TradeLogger:
                 await self.db.execute(
                     "INSERT INTO trading.trade_records "
                     "(strategy, symbol, order_id, algo_id, side, order_type, "
-                    " quantity, price, commission, status, executed_at) "
-                    "VALUES ($1, $2, NULL, $3, $4, $5, 0, 0, 0, $6, $7)",
+                    " quantity, price, commission, status, executed_at, account_id) "
+                    "VALUES ($1, $2, NULL, $3, $4, $5, 0, 0, 0, $6, $7, $8)",
                     self.strategy_name,
                     symbol,
                     algo_id,
@@ -250,6 +269,7 @@ class TradeLogger:
                     self.ORDER_TYPE_CONDITIONAL,
                     "CREATED",
                     executed_at,
+                    self.account_id,
                 )
                 logger.info(
                     "条件单创建记录已写入（B3 修复）",
@@ -275,8 +295,8 @@ class TradeLogger:
 
             await self.db.execute(
                 "INSERT INTO trading.trade_records "
-                "(strategy, symbol, order_id, side, order_type, quantity, price, commission, status, executed_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                "(strategy, symbol, order_id, side, order_type, quantity, price, commission, status, executed_at, account_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                 self.strategy_name,
                 symbol,
                 order_id,
@@ -286,7 +306,8 @@ class TradeLogger:
                 avg_price,
                 commission,
                 status,
-                executed_at
+                executed_at,
+                self.account_id,
             )
 
             logger.info(
@@ -467,6 +488,7 @@ class TradeLogger:
         executed_at: Optional[datetime] = None,
         close_reason: Optional[str] = None,
         since: Optional[datetime] = None,
+        pnl_source: str = "unknown",
     ) -> bool:
         """
         插入一条 PnL 汇总记录（用于全部平仓场景）
@@ -488,7 +510,10 @@ class TradeLogger:
             close_reason: 平仓原因标记（如 STOP_LOSS/TAKE_PROFIT），
                           看板据此统计止损/止盈次数；None 表示未知/手动。
             since: 幂等去重起点（通常传该持仓的开仓时间）；None 表示不做去重
+            pnl_source: exchange_order_matched / theoretical_estimate / unknown
         """
+        if pnl_source not in {"exchange_order_matched", "theoretical_estimate", "unknown"}:
+            raise ValueError("不支持的 PnL 来源")
         try:
             strategy_name = strategy or self.strategy_name
             exec_time = executed_at or datetime.now(BEIJING_TZ).replace(tzinfo=None)
@@ -521,14 +546,16 @@ class TradeLogger:
             await self.db.execute(
                 "INSERT INTO trading.trade_records "
                 "(strategy, symbol, order_id, side, order_type, quantity, price, "
-                " commission, status, executed_at, realized_pnl, close_reason) "
-                "VALUES ($1, $2, '', $3, 'PNL_SUMMARY', 0, 0, 0, 'FILLED', $4, $5, $6)",
+                " commission, status, executed_at, realized_pnl, close_reason, pnl_source, account_id) "
+                "VALUES ($1, $2, '', $3, 'PNL_SUMMARY', 0, 0, 0, 'FILLED', $4, $5, $6, $7, $8)",
                 strategy_name,
                 symbol,
                 side,
                 exec_time,
                 realized_pnl,  # Decimal → asyncpg 直接编码为 numeric
                 close_reason,
+                pnl_source,
+                self.account_id,
             )
 
             logger.info(

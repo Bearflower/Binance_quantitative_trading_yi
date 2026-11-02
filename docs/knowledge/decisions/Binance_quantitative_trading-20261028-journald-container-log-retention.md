@@ -38,6 +38,8 @@ id: Binance_quantitative_trading-20261028-journald-container-log-retention
 
 适用于 2026-10-28 起本项目 15 个生产 Compose 服务。当前配置见 `docker-compose.logging.yml` 和生产机 `/etc/systemd/journald.conf.d/30-trading-log-retention.conf`。若容量、留存需求或部署架构变化，先验证磁盘余量和跨重建查询，再修订决策；暂无替代记录。
 
+2026-10-29 修订：新加入的 `mtcps-xau-calibrated-shadow` 沿用同一项目级日志策略，旧日志先归档，再通过 `74916f3` 单独重建为 journald。现覆盖 16 个服务；该服务的实际 14 天留存从 10 月 29 日起验证，其他决策口径不变。
+
 ## 关联与证据
 
 - [问题记录](../issues/Binance_quantitative_trading-20261028-container-json-logs-lost-on-recreate.md)、[运维手册](../../deployment/log-retention.md)、[日志覆盖配置](../../../docker-compose.logging.yml)、[归档脚本](../../../scripts/archive_container_logs.sh)。

@@ -12,6 +12,9 @@ MARKERS = {
     ".github/deploy-modes/xau-calibrated-shadow-first-create",
     ".github/deploy-modes/xau-calibrated-shadow-first-create-retry-1",
 }
+EXECUTION_FACTS_MARKER = ".github/deploy-modes/execution-facts-first-create"
+ALLOCATION_RECONCILE_MARKER = ".github/deploy-modes/allocation-reconcile"
+ALLOCATION_RECONCILE_RETRY_MARKER = ".github/deploy-modes/allocation-reconcile-retry-2"
 ZERO_SHA = "0" * 40
 
 
@@ -29,10 +32,14 @@ def select_deploy_mode(
     if not base or base == ZERO_SHA:
         raise DeployModeError("push base is missing or zero")
 
-    marker_changes = [(status, path) for status, path in changes if path in MARKERS]
+    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER}]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
     if marker_changes and marker_changes[0][0] == "A":
+        if marker_changes[0][1] == EXECUTION_FACTS_MARKER:
+            return "execution-facts-first-create"
+        if marker_changes[0][1] in {ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER}:
+            return "allocation-reconcile"
         return "calibrated-first-create"
     return "full"
 

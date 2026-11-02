@@ -3,8 +3,9 @@
 口径权威：需求 §3.4/§4、计划 §2.6。
 - 四表：reference（出口写）/ session（出口心跳写）/ event（实时写）/ outbox（实时写）。
 - 迁移：ensure_schema 由一次性迁移命令持有迁移锁执行；业务进程只 check_schema。
-- 读侧 current_snapshot 运行时判定五态（VALID/STALE/MISSING/INVALID/SYNC_UNCERTAIN），
-  SYNC_UNCERTAIN 条件：无会话 / 会话非 ACTIVE / 心跳超时 / 存在未决发送。
+- 读侧 current_snapshot 运行时判定六态（VALID/STALE/MISSING/INVALID/
+  SYNC_UNCERTAIN/NO_ACTIVE_REFERENCE），
+  SYNC_UNCERTAIN 条件：无会话 / 非运行会话 / 心跳超时 / 存在未决发送。
 - 任何失败都不得伪造 SENT；UNKNOWN/未决行不能作为恢复依据。
 """
 from __future__ import annotations
@@ -24,6 +25,7 @@ SCHEMA_VERSION = 1
 # 会话状态
 ACTIVE = "ACTIVE"
 SYNC_UNCERTAIN = "SYNC_UNCERTAIN"
+NO_ACTIVE_REFERENCE = "NO_ACTIVE_REFERENCE"
 CLOSED = "CLOSED"
 
 # 发送状态
@@ -224,6 +226,21 @@ class ExportStore:
         """结果未知：置 UNKNOWN 清未决（不假定成功或失败）。"""
         self._finish_unsent(reference_id, UNKNOWN, state, now_ms)
 
+    def mark_non_numeric_sent(self, state: SessionState, now_ms: int) -> None:
+        """已确认发送无边界提醒；当前会话无数值参考时显式暂停操作建议。"""
+        status = (NO_ACTIVE_REFERENCE if state.current_reference_id is None
+                  else ACTIVE)
+        cursor = self._conn.execute(
+            "UPDATE session SET status=?, updated_at_ms=? "
+            "WHERE session_id=? AND status IN (?, ?) AND pending_seq IS NULL "
+            "AND current_seq=? AND current_reference_id IS ?",
+            (status, now_ms, state.session_id, ACTIVE, NO_ACTIVE_REFERENCE,
+             state.current_seq, state.current_reference_id))
+        if cursor.rowcount != 1:
+            self._conn.rollback()
+            raise sqlite3.OperationalError("无边界提醒无法确认当前会话状态")
+        self._conn.commit()
+
     def set_sync_uncertain(self, state: SessionState, now_ms: int) -> None:
         """持久化/交接失败：会话置 SYNC_UNCERTAIN，暂停操作建议。"""
         self._write_session_row(state, SYNC_UNCERTAIN, now_ms)
@@ -244,13 +261,24 @@ class ExportStore:
         self._update_status(reference_id, status)
         cleared = SessionState(state.session_id, state.current_seq,
                                state.current_reference_id, None)
-        self._write_session_row(cleared, ACTIVE, now_ms)
+        previous = self._conn.execute(
+            "SELECT status FROM session WHERE session_id=?",
+            (state.session_id,)).fetchone()
+        restored = (SYNC_UNCERTAIN if status == UNKNOWN else
+                    NO_ACTIVE_REFERENCE if previous is not None and
+                    previous["status"] == NO_ACTIVE_REFERENCE else ACTIVE)
+        self._write_session_row(cleared, restored, now_ms)
         self._conn.commit()
 
     def _set_pending(self, state: SessionState, seq: int, now_ms: int) -> None:
         pending = SessionState(state.session_id, state.current_seq,
                                state.current_reference_id, seq)
-        self._write_session_row(pending, ACTIVE, now_ms)
+        row = self._conn.execute(
+            "SELECT status FROM session WHERE session_id=?",
+            (state.session_id,)).fetchone()
+        status = (NO_ACTIVE_REFERENCE if row is not None and
+                  row["status"] == NO_ACTIVE_REFERENCE else ACTIVE)
+        self._write_session_row(pending, status, now_ms)
         self._conn.commit()
 
     def _write_session_row(self, state: SessionState, status: str,
@@ -288,9 +316,9 @@ def write_heartbeat(conn: sqlite3.Connection, state: SessionState,
     """心跳线程/出口共用：只转嫁不可变状态并刷新更新时间。"""
     cursor = conn.execute(
         "UPDATE session SET current_seq=?, current_reference_id=?, "
-        "pending_seq=?, updated_at_ms=? WHERE session_id=? AND status=?",
+        "pending_seq=?, updated_at_ms=? WHERE session_id=? AND status IN (?, ?)",
         (state.current_seq, state.current_reference_id, state.pending_seq,
-         now_ms, state.session_id, ACTIVE))
+         now_ms, state.session_id, ACTIVE, NO_ACTIVE_REFERENCE))
     conn.commit()
     return cursor.rowcount == 1
 
@@ -298,7 +326,7 @@ def write_heartbeat(conn: sqlite3.Connection, state: SessionState,
 # ───────────────────── 实时读侧 ─────────────────────
 
 class ReferenceReader:
-    """实时进程读取端：五态判定 + 历史快照（只读 reference/session）。"""
+    """实时进程读取端：六态判定 + 历史快照（只读 reference/session）。"""
 
     def __init__(self, conn: sqlite3.Connection, cfg: Dict):
         self._conn = conn
@@ -307,17 +335,22 @@ class ReferenceReader:
     def current_snapshot(
             self, now_ms: int
     ) -> Tuple[Optional[ReferenceSnapshot], str]:
-        """运行时判定 (快照, 五态)；非 VALID/STALE 时快照为 None（STALE 保留）。"""
+        """运行时判定 (快照, 六态)；非 VALID/STALE 时快照为 None（STALE 保留）。"""
         session = self._latest_session()
         if session is None:
             return None, SYNC_UNCERTAIN
-        if session["status"] != ACTIVE:
+        if session["status"] not in (ACTIVE, NO_ACTIVE_REFERENCE):
             return None, SYNC_UNCERTAIN
         silence = self._cfg["reference_sync"]["max_silence_seconds"] * 1000
         if now_ms - session["updated_at_ms"] > silence:
             return None, SYNC_UNCERTAIN
         if session["pending_seq"] is not None:
             return None, SYNC_UNCERTAIN
+        if session["status"] == NO_ACTIVE_REFERENCE:
+            if (session["current_reference_id"] is not None or
+                    session["current_seq"] != 0):
+                return None, SYNC_UNCERTAIN
+            return None, NO_ACTIVE_REFERENCE
         row = self._latest_sent()
         if row is None:
             return None, "MISSING"

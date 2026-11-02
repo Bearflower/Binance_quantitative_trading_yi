@@ -3,7 +3,7 @@
 继承 BaseStrategy，实现新币做空的核心逻辑
 """
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple
+from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple, Union
 import asyncio
 import os
 import time
@@ -42,11 +42,12 @@ def _entry_time_to_naive_beijing(entry_time: Optional[str]) -> Optional[datetime
     """把 entry_time 解析为无时区北京时间 datetime。
 
     trade_records.executed_at 为无时区 TIMESTAMP（存北京时间），asyncpg 拒绝
-    向该列写入带时区 datetime；而 entry_time 来源既有无时区也有带时区 ISO 字符串。
-    本函数统一转成无时区北京时间，避免查询抛 DataError。
+    向该列写入带时区 datetime。旧版容器用 datetime.now() 写出的无时区
+    entry_time 是 UTC；新版带时区 ISO 串按其偏移转换。两者均归一为
+    无时区北京时间，供数据库窗口和入场 60 秒守卫使用。
 
     Args:
-        entry_time: 入场时间 ISO 字符串，可为空。
+        entry_time: 入场时间 ISO 字符串，可为空；无时区历史值按 UTC 解释。
 
     Returns:
         无时区北京时间 datetime；缺失或解析失败返回 None。
@@ -59,7 +60,7 @@ def _entry_time_to_naive_beijing(entry_time: Optional[str]) -> Optional[datetime
         return None
     if dt.tzinfo is not None:
         return dt.astimezone(BEIJING_TZ).replace(tzinfo=None)
-    return dt
+    return dt.replace(tzinfo=timezone.utc).astimezone(BEIJING_TZ).replace(tzinfo=None)
 
 
 # 预定义的跳过原因常量
@@ -784,7 +785,7 @@ class NewCoinStrategy(BaseStrategy):
                 self.positions[symbol] = {
                     'order_id': order.get('orderId'),
                     'entry_price': current_price,
-                    'entry_time': datetime.now().isoformat(),
+                    'entry_time': datetime.now(timezone.utc).isoformat(),
                     'score': score_result_dict.get('total_score')
                 }
 
@@ -1229,6 +1230,10 @@ class NewCoinStrategy(BaseStrategy):
         不运行、strategy_open_positions / strategy_states 停更。抽为独立方法后，
         供「有新币」「无新币」「熔断暂停」各路径统一调用。
         """
+        try:
+            await self._enforce_allocation_holdings()
+        except Exception as e:
+            logger.error("月度额度持仓检查失败，继续持仓保护", error=str(e), exc_info=True)
         # 4. 监控现有持仓（移动止盈、时间止损、平仓检测等）
         await self._monitor_positions()
 
@@ -1258,9 +1263,13 @@ class NewCoinStrategy(BaseStrategy):
         """
         try:
             now = datetime.now(timezone.utc)
-            # 本周一0点UTC
-            week_start = now - timedelta(days=now.weekday())
-            week_start = week_start.replace(hour=0, minute=0, second=0, microsecond=0)
+            # trade_records.executed_at 是 naive 北京时间；周一 UTC 00:00
+            # 触发时，复盘上一完整北京自然周 [上周一, 本周一)。
+            now_beijing = now.astimezone(BEIJING_TZ)
+            week_end = (now_beijing - timedelta(days=now_beijing.weekday())).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            week_start = week_end - timedelta(days=7)
 
             # 写库名从统一来源获取（position_ownership.load_ownership_config）
             strategy_name = self.my_record_name
@@ -1272,11 +1281,13 @@ class NewCoinStrategy(BaseStrategy):
                 FROM trading.trade_records 
                 WHERE strategy = $1 
                 AND executed_at >= $2
+                AND executed_at < $3
                 AND realized_pnl IS NOT NULL
                 ORDER BY executed_at
                 """,
                 strategy_name,
-                week_start.replace(tzinfo=None)  # 传入数据库需要去掉时区标记
+                week_start.replace(tzinfo=None),
+                week_end.replace(tzinfo=None),
             )
 
             if not records:
@@ -1297,7 +1308,7 @@ class NewCoinStrategy(BaseStrategy):
             # 发送周报通知
             message = (
                 f"【新币做空策略周报】\n"
-                f"周期: {week_start.strftime('%m/%d')} - {now.strftime('%m/%d')}\n"
+                f"周期: {week_start.strftime('%m/%d')} - {week_end.strftime('%m/%d')}\n"
                 f"交易笔数: {total_trades}\n"
                 f"胜率: {win_rate:.0%} ({win_count}胜/{loss_count}负)\n"
                 f"盈亏比: {profit_ratio:.2f}\n"
@@ -1711,6 +1722,20 @@ class NewCoinStrategy(BaseStrategy):
         except Exception as e:
             logger.warning("回写平仓盈亏失败", symbol=symbol, error=str(e)[:80])
 
+    async def _enforce_allocation_holdings(self) -> bool:
+        if not getattr(self, "positions", None):
+            return True
+        margins = {}
+        for symbol in self.positions:
+            margins[symbol] = await self.trading_executor.calc_current_occupied_margin({symbol})
+
+        async def close(symbol: str) -> bool:
+            return await self.trading_executor._close_position(
+                symbol, Decimal("1"), "月度分配额度超额"
+            )
+
+        return await self.trading_executor.capital_mgr.enforce_existing_positions(margins, close)
+
     async def _monitor_positions(self) -> None:
         """
         监控现有持仓
@@ -1745,18 +1770,16 @@ class NewCoinStrategy(BaseStrategy):
                     # 检查是否刚入场（60秒内），避免因币安API传播延迟误判为平仓
                     entry_time_str = position.get('entry_time')
                     if entry_time_str:
-                        try:
-                            entry_dt = datetime.fromisoformat(entry_time_str)
-                            now = datetime.now()
-                            if (now - entry_dt).total_seconds() < 60:
+                        entry_dt = _entry_time_to_naive_beijing(entry_time_str)
+                        if entry_dt is not None:
+                            elapsed = (datetime.now(BEIJING_TZ).replace(tzinfo=None) - entry_dt).total_seconds()
+                            if elapsed < 60:
                                 logger.info(
                                     f"刚入场不足60秒，跳过平仓检测（避免API传播延迟误判）: {symbol}",
                                     entry_time=entry_time_str,
-                                    seconds_since_entry=(now - entry_dt).total_seconds()
+                                    seconds_since_entry=elapsed
                                 )
                                 continue
-                        except (ValueError, TypeError):
-                            pass
 
                     # 持仓已平仓
                     logger.info(f"持仓已平仓: {symbol}")
@@ -2945,7 +2968,7 @@ class NewCoinStrategy(BaseStrategy):
         self,
         symbol: str,
         entry_price: float,
-        entry_time: datetime
+        entry_time: Union[datetime, str]
     ) -> None:
         """
         添加到止损监控列表
@@ -2955,8 +2978,10 @@ class NewCoinStrategy(BaseStrategy):
         Args:
             symbol: 交易对
             entry_price: 入场价格
-            entry_time: 入场时间
+            entry_time: 入场时间，持仓状态中的 ISO 字符串或 datetime
         """
+        if isinstance(entry_time, str):
+            entry_time = datetime.fromisoformat(entry_time)
         # 获取配置
         blacklist_config = self.config.get('trading', {}).get('blacklist', {})
         

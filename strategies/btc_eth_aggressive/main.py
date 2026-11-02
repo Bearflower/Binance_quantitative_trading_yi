@@ -18,14 +18,14 @@ from shared.notification import NotificationClient
 from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
 from shared.config_loader import load_strategy_config
-from shared.strategy_state import save_strategy_state, sync_open_positions
+from shared.strategy_state import save_strategy_state, sync_open_positions, touch_strategy_state
 from shared import condition_orders
 from shared.mtpc_signal_persistence import (
     ensure_signal_table_exists,
     persist_signal,
 )
 from strategies.btc_eth_aggressive.strategy import BTCEthStrategy
-from shared.position_ownership import load_ownership_config, filter_owned_positions
+from shared.position_ownership import load_ownership_config, resolve_position_owner
 
 # 北京时区（从环境变量读取偏移量，默认 UTC+8）
 _timezone_offset_hours = int(os.getenv("TIMEZONE_OFFSET_HOURS", "8"))
@@ -45,6 +45,29 @@ binance_client = None
 kline_service = None
 notification_client = None
 strategy = None
+
+
+async def filter_report_owned(db_manager, my_record_name, positions, margin_dict, qty_dict):
+    """Use one verified ownership set for both snapshot and dashboard."""
+    keep = set()
+    for symbol in positions:
+        try:
+            owner = await resolve_position_owner(
+                db_manager, symbol, status_filter=False
+            )
+        except Exception as exc:
+            logger.error("持仓上报归属核验失败，保留旧快照", symbol=symbol, error=str(exc))
+            return None
+        if owner is None:
+            logger.error("持仓上报归属未知，保留旧快照", symbol=symbol)
+            return None
+        if owner == my_record_name:
+            keep.add(symbol)
+    return (
+        {sym: value for sym, value in positions.items() if sym in keep},
+        {sym: value for sym, value in margin_dict.items() if sym in keep},
+        {sym: value for sym, value in qty_dict.items() if sym in keep},
+    )
 
 
 async def initialize():
@@ -207,15 +230,20 @@ async def run_strategy():
                             # 必须保存全部持仓，避免覆盖原有持仓记录导致孤儿单清理任务误判
                             positions, margin_dict, qty_dict = strategy.build_positions_report()
                             # 上报前按归属过滤：剔除被共享账户对家策略开出的持仓（方案C）
-                            margin_dict, qty_dict = await filter_owned_positions(
-                                strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
+                            report = await filter_report_owned(
+                                strategy.db_manager, _owc['my_record_name'],
+                                positions, margin_dict, qty_dict,
                             )
-                            if positions and strategy.state_reporting_enabled:
-                                await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
-                                # 同步当前持仓到看板聚合表（口径由策略侧计算，工具内部容错）
-                                await sync_open_positions(
-                                    strategy.db_manager, strategy.instance_id, margin_dict, qty_dict
-                                )
+                            if strategy.state_reporting_enabled:
+                                if report is not None and strategy.state_snapshot_safe_to_write:
+                                    positions, margin_dict, qty_dict = report
+                                    await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
+                                    await sync_open_positions(
+                                        strategy.db_manager, strategy.instance_id, margin_dict, qty_dict
+                                    )
+                                else:
+                                    await touch_strategy_state(strategy.db_manager, strategy.instance_id)
+                                    logger.warning("旧仓、入场时间或归属核验失败，仅刷新策略状态心跳")
                         else:
                             # 未执行成功的区分：预期内的拒绝/未成交（skip_reason 或资金拦截 reject_reason）
                             # 记 warning 并带原因，避免误报为 error；仅无预期原因的真实异常才记 error
@@ -337,12 +365,18 @@ async def run_strategy():
             # 保存策略状态到 strategy_states（用于 orphan_cleanup 统一检测）并同步持仓上报
             positions, margin_dict, qty_dict = strategy.build_positions_report()
             # 上报前按归属过滤：剔除被共享账户对家策略开出的持仓（方案C）
-            margin_dict, qty_dict = await filter_owned_positions(
-                strategy.db_manager, _owc['my_record_name'], margin_dict, qty_dict
+            report = await filter_report_owned(
+                strategy.db_manager, _owc['my_record_name'],
+                positions, margin_dict, qty_dict,
             )
             if strategy.state_reporting_enabled:
-                await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
-                await sync_open_positions(strategy.db_manager, strategy.instance_id, margin_dict, qty_dict)
+                if report is not None and strategy.state_snapshot_safe_to_write:
+                    positions, margin_dict, qty_dict = report
+                    await save_strategy_state(strategy.db_manager, strategy.instance_id, positions)
+                    await sync_open_positions(strategy.db_manager, strategy.instance_id, margin_dict, qty_dict)
+                else:
+                    await touch_strategy_state(strategy.db_manager, strategy.instance_id)
+                    logger.warning("旧仓、入场时间或归属核验失败，仅刷新策略状态心跳")
 
     except Exception as e:
         logger.error(

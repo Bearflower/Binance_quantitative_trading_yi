@@ -151,7 +151,7 @@ replay 复用 feed/features/rules/state（替换 Clock 与投递）
 | `features.py` | 整秒采样、滚动窗口、效率；特征不可用填 `None` | `sample_price`、`compute_features` |
 | `rules.py` | **纯规则**：不 import pandas/网络/时间/系统时钟 | `classify_region`、`evaluate_*`、`pick_state` |
 | `state.py` | 状态机、持续计时、episode/reference 去重、恢复 | `evaluate_episode`、`record_event`、`recover` |
-| `reference_store.py` | 快照合法性校验、reference_status 五态（VALID/STALE/MISSING/INVALID/SYNC_UNCERTAIN）、权威版本 | `accept_snapshot`、`current_status` |
+| `reference_store.py` | 快照合法性校验、reference_status 六态（VALID/STALE/MISSING/INVALID/SYNC_UNCERTAIN/NO_ACTIVE_REFERENCE）、权威版本 | `current_snapshot` |
 | `delivery.py` | 事件 outbox、级别优先级、TTL、异步重试 | `enqueue`、`pump`、`dispatch_fact` |
 | `main.py` | 独立进程入口，装配各层，注入 Clock | `run(cfg, clock)` |
 | `replay.py` | 读历史成交、按时间+ID 喂引擎、输出决策/指标 | `load_trades`、`run_replay` |
@@ -266,7 +266,7 @@ CREATE TABLE IF NOT EXISTS session (
   current_seq         INTEGER NOT NULL DEFAULT 0,  -- 当前递增序号（每次发送 +1）
   current_reference_id TEXT,               -- 当前确认参考
   pending_seq         INTEGER,             -- 未决发送序号（发送中置位，发送结束清空）
-  status              TEXT NOT NULL,       -- ACTIVE/SYNC_UNCERTAIN/CLOSED
+  status              TEXT NOT NULL,       -- ACTIVE/NO_ACTIVE_REFERENCE/SYNC_UNCERTAIN/CLOSED
   updated_at_ms       INTEGER NOT NULL     -- 心跳更新时间
 );
 
@@ -301,7 +301,7 @@ CREATE INDEX idx_outbox_status ON outbox(status);
 关键约束（对应需求 §4.2.7/§4.3/§8.2）：
 
 - `reference.send_status` 仅允许 PREPARED/SENDING/SENT/FAILED/UNKNOWN；不得把任何记录伪造为 SENT。恢复只认「已确认发送、无更高未决版本、经当前出口会话确认」的快照。
-- `reference_status` 五态（VALID/STALE/MISSING/INVALID/SYNC_UNCERTAIN）由 `reference_store.current_status` 运行时判定，非单独落列：MISSING=无行，STALE=按 `effective_at_ms` 对 `max_age_seconds` 派生，SYNC_UNCERTAIN=会话失联／持久化交接失败（见 `session.status`）。
+- `reference_status` 六态（VALID/STALE/MISSING/INVALID/SYNC_UNCERTAIN/NO_ACTIVE_REFERENCE）由 `reference_store.current_snapshot` 运行时判定，非单独落列：MISSING=无行，STALE=按 `effective_at_ms` 对 `max_age_seconds` 派生，SYNC_UNCERTAIN=会话失联／持久化交接失败或未决/未知发送；NO_ACTIVE_REFERENCE=当前会话已确认无边界提醒且无数值参考（见 `session.status`）。不新增表列或 schema 版本；旧会话 SENT 仍只供历史事实。
 - `session.current_seq` 单调递增，发送成功后 +1；心跳只读转嫁 `current_reference_id`/`pending_seq`，不替出口判定成功。
 - `event.event_id` 唯一键幂等；`outbox` 的 BOUNDARY_REACHED 与 HISTORICAL_REFERENCE_CROSSED 为**锁存事实**，不适用普通 TTL、不因反弹静默删除，未送达/UNKNOWN 不因年龄清理。
 
@@ -312,7 +312,7 @@ CREATE INDEX idx_outbox_status ON outbox(status);
 - **宿主文件**：小时侧新增 `strategies/grid/heartbeat.py`，由小时出口进程启动一个 daemon 线程；不改动小时调度等待逻辑。
 - **发布介质**：写 `grid_realtime.sqlite3` 的 `session` 表（§2.6）——`session_id`、`current_seq`、`current_reference_id`、`pending_seq`、`updated_at_ms`。走持久表而非进程内存，因为小时出口与实时进程是两个独立进程，内存无法跨进程共享。
 - **签名**：`def publish_heartbeat(state_snapshot, conn) -> None`，只读转嫁不可变状态快照，不在心跳线程计算指标、不判定发送成功。
-- **实时进程消费方式与轮询频率**：`realtime/main.py` 每 `reference_sync.heartbeat_seconds`（研究种子默认 1s）轮询一次 `session` 表；连续超过 `reference_sync.max_silence_seconds`（默认 5s）未更新则判 SYNC_UNCERTAIN、暂停操作建议（对应需求 §3.5 心跳周期与失联阈值）。
+- **实时进程消费方式与轮询频率**：`realtime/main.py` 每 `reference_sync.heartbeat_seconds`（研究种子默认 1s）轮询一次 `session` 表；`ACTIVE` 与 `NO_ACTIVE_REFERENCE` 均须有新鲜心跳。连续超过 `reference_sync.max_silence_seconds`（默认 5s）未更新则判 SYNC_UNCERTAIN、暂停操作建议（对应需求 §3.5 心跳周期与失联阈值）。无数值参考的时长不能拿 5s 心跳阈值判故障。
 
 ---
 

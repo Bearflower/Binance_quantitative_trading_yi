@@ -373,7 +373,7 @@ class TestR05ProtectionState:
         s._place_protection_stop = AsyncMock(return_value=None)
         s._place_missing_tp_orders = AsyncMock()
         await s._ensure_symbol_protection(
-            {'symbol': 'BTCUSDT', 'positionAmt': '0.1'},
+            {'symbol': 'BTCUSDT', 'positionAmt': '0.1', 'entryPrice': '60000'},
             {'BTCUSDT'}, {}, Decimal('0.002'), Decimal('0.0015'), Decimal('1.5'))
         assert 'BTCUSDT' in s.positions
         assert s.positions['BTCUSDT'].protection_pending is True

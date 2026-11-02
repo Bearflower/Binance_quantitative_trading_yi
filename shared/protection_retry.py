@@ -45,11 +45,15 @@ logger = structlog.get_logger()
 
 
 def protection_complete(position) -> bool:
-    """三类保护单（硬止损 / TP1 / TP2）是否全部就位（保护完整性单点判定）"""
+    """三类保护单（硬止损 / TP1 / TP2）是否全部就位（保护完整性单点判定）
+
+    N/A 集合中的 TP 腿（数量精度取整为 0、视为不可挂）不算缺失。
+    """
+    npl = getattr(position, 'not_placeable_legs', set())
     return (
         position.stop_loss_order_id is not None
-        and position.tp1_order_id is not None
-        and position.tp2_order_id is not None
+        and (position.tp1_order_id is not None or 'TP1' in npl)
+        and (position.tp2_order_id is not None or 'TP2' in npl)
     )
 
 
@@ -65,13 +69,14 @@ def apply_protection_order_ids(position, order_ids: Dict[str, Optional[int]]) ->
 
 
 def missing_protection_legs(position) -> List[str]:
-    """列出当前缺失的保护腿（用于告警）"""
+    """列出当前缺失的保护腿（用于告警）；N/A 集合中的腿不计入缺失"""
+    npl = getattr(position, 'not_placeable_legs', set())
     legs = []
     if position.stop_loss_order_id is None:
         legs.append("STOP")
-    if position.tp1_order_id is None:
+    if position.tp1_order_id is None and 'TP1' not in npl:
         legs.append("TP1")
-    if position.tp2_order_id is None:
+    if position.tp2_order_id is None and 'TP2' not in npl:
         legs.append("TP2")
     return legs
 
@@ -325,6 +330,10 @@ def merge_position(position, signal: Dict, entry_order, actual_quantity: Decimal
     position.entry_order_id = entry_order.order_id
     # highest_price/lowest_price 保留不重置；tp1_hit/tp2_hit 保持 False
     # trailing_stop_price/trailing_activated 保留（若已激活）；entry_time 保留最早入场时间
+    # 加仓后 initial_quantity 变大，之前因数量取整为 0 标记的 N/A 腿可能重新可挂 → 清空
+    npl = getattr(position, 'not_placeable_legs', None)
+    if npl is not None:
+        npl.clear()
 
 
 # ============================================================
@@ -390,18 +399,25 @@ async def place_missing_tp_level(
     strategy, symbol: str, position, level: int, step_size, tick_size: Decimal,
     stop_side: str, partial_cfg: Dict, tp_offset: Decimal,
 ) -> Optional[str]:
-    """补挂单个 TP 腿（R05 补挂；数量=initial×比例 精度截断，为0则跳过返回 None）"""
+    """补挂单个 TP 腿（R05 补挂；数量=initial×比例 精度截断，为0则标记 N/A 并跳过）"""
     tp_price = strategy._calculate_tp_price(
         position.entry_price, position.atr, position.direction, level, position.grade)
     tp_qty = strategy._adjust_quantity_precision(
         position.initial_quantity * Decimal(str(partial_cfg[f'tp{level}_close_ratio'])), step_size)
     if tp_qty <= 0:
-        logger.warning(f"{symbol} TP{level}尾仓数量精度调整后为0，跳过补挂", level=level)
+        leg = f'TP{level}'
+        npl = getattr(position, 'not_placeable_legs', None)
+        # 仅首次判定为不可挂时告警，后续重试静默
+        if npl is None or leg not in npl:
+            logger.warning(f"{symbol} TP{level}尾仓数量精度调整后为0，跳过补挂", level=level)
+        if npl is not None:
+            npl.add(leg)
         return None
     tp_limit = strategy._adjust_price_precision(
         strategy._apply_limit_offset(tp_price, tp_offset, position.direction), tick_size)
     return await strategy._place_tp_order(
-        symbol, stop_side, tp_price, tp_limit, tp_qty, None, strategy.strategy_name)
+        symbol, stop_side, tp_price, tp_limit, tp_qty, None, strategy.strategy_name,
+        tp_level=level)
 
 
 async def retry_protection_pending(strategy) -> None:

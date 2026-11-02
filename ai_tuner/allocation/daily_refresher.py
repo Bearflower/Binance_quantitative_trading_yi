@@ -14,6 +14,8 @@
 """
 
 import json
+import math
+from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
@@ -44,16 +46,16 @@ class DailyAllocationRefresher:
     _FETCH_ACTIVE_QUERY = """
         SELECT entries
         FROM public.capital_allocation
-        WHERE month = $1 AND status = 'active'
+        WHERE left(month::text, 7) = $1 AND status = 'active'
         ORDER BY created_at DESC
         LIMIT 1
     """
 
-    # 幂等更新：仅覆盖当月 active 记录的 entries 与 total_capital
+    # 仅在 entries 未被并发作业修改时更新，避免覆盖月度盈亏修正。
     _UPDATE_QUERY = """
         UPDATE public.capital_allocation
         SET entries = $1, total_capital = $2
-        WHERE month = $3 AND status = 'active'
+        WHERE left(month::text, 7) = $3 AND status = 'active' AND entries = $4::jsonb
     """
 
     def __init__(
@@ -120,23 +122,36 @@ class DailyAllocationRefresher:
             total_capital = await self._get_actual_balance()
             # 净资产为 None 或 <=0 均视为"获取失败/无可分配资金"，保留上一日旧值，
             # 口径与月度分配的 actual_balance > 0 校验保持一致
-            if total_capital is None or total_capital <= 0:
+            if total_capital is None or not math.isfinite(total_capital) or total_capital <= 0:
                 logger.warning(
                     "获取当日净资产失败或非正数，保留上一日的分配金额", month=month
                 )
                 return None
 
-            entries = self._recalculate_entries(row.get("entries"), total_capital)
+            original_entries = row.get("entries")
+            entries = self._recalculate_entries(original_entries, total_capital)
             if entries is None:
                 logger.warning("entries 非法或为空，跳过每日刷新", month=month)
                 return None
 
-            await self.db_manager.execute(
+            original_json = (
+                original_entries if isinstance(original_entries, str)
+                else json.dumps(original_entries, ensure_ascii=False)
+            )
+            update_result = await self.db_manager.execute(
                 self._UPDATE_QUERY,
                 json.dumps(entries, ensure_ascii=False),
                 round(total_capital, _ROUND_DECIMALS),
                 month,
+                original_json,
             )
+            if update_result != "UPDATE 1":
+                logger.warning(
+                    "每日分配金额刷新未写入，记录可能已并发变化",
+                    month=month,
+                    update_result=update_result,
+                )
+                return None
 
             logger.info(
                 "每日分配金额刷新完成",
@@ -185,6 +200,9 @@ class DailyAllocationRefresher:
         entries = self._parse_entries(entries_raw)
         if entries is None or not entries:
             return None
+        entries = deepcopy(entries)
+        if not math.isfinite(total_capital) or total_capital <= 0:
+            return None
 
         for item in entries:
             if not isinstance(item, dict):
@@ -195,7 +213,13 @@ class DailyAllocationRefresher:
                 logger.warning("条目缺少 allocated_ratio，保留原值",
                                strategy_id=item.get("strategy_id"))
                 continue
-            item["allocated_amount"] = round(total_capital * float(ratio), _ROUND_DECIMALS)
+            try:
+                ratio_value = float(ratio)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(ratio_value) or not 0 <= ratio_value <= 1:
+                return None
+            item["allocated_amount"] = round(total_capital * ratio_value, _ROUND_DECIMALS)
         return entries
 
     @staticmethod

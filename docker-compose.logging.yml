@@ -26,6 +26,9 @@ services:
   mtcps-xau-shadow:
     logging: !override
       driver: journald
+  mtcps-xau-calibrated-shadow:
+    logging: !override
+      driver: journald
   grid-strategy:
     logging: !override
       driver: journald

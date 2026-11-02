@@ -158,6 +158,27 @@ jobs:
             fi
             exit 0
           fi
+          if [ "$DEPLOY_MODE" = "execution-facts-first-create" ]; then
+            if [ "$SERVICE_NAME" = "hrs" ]; then
+              echo "✅ 执行事实采集首次创建 → 仅构建 hrs 镜像"
+              echo "should_build=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "⏭️ 执行事实采集首次创建 → 跳过其他镜像"
+              echo "should_build=false" >> "$GITHUB_OUTPUT"
+            fi
+            exit 0
+          fi
+          if [ "$DEPLOY_MODE" = "allocation-reconcile" ]; then
+            case "$SERVICE_NAME" in
+              btc-eth|btc-eth-aggr|new-coin|grid|hrs|ai-tuner)
+                echo "✅ 资金热修复归并 → 构建实盘策略及 AI Tuner 镜像"
+                echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
+              *)
+                echo "⏭️ 资金热修复归并 → 保留其他服务现状"
+                echo "should_build=false" >> "$GITHUB_OUTPUT" ;;
+            esac
+            exit 0
+          fi
 
           # 仅变更分批日志覆盖配置和本工作流时无需重建业务镜像。
           # Compose 会按 logging 配置只 recreate 本批服务；全项目 COPY 的镜像也无需重建。
@@ -186,6 +207,14 @@ jobs:
           DIR="${{ matrix.service.dir }}"
           if echo "$CHANGED_FILES" | grep -q "^${DIR}/"; then
             echo "✅ $DIR 下有改动 → 需要构建"
+            echo "should_build=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # btc-eth 镜像还 COPY 了激进版策略，供 XAU 影子容器 import。
+          if [ "$SERVICE_NAME" = "btc-eth" ] && \
+             echo "$CHANGED_FILES" | grep -q '^strategies/btc_eth_aggressive/'; then
+            echo "✅ 激进版策略变更 → 重建依赖它的 btc-eth 镜像"
             echo "should_build=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -388,6 +417,7 @@ jobs:
           retry_connect scp docker-compose.logging.yml 43.156.242.184:/root/trading_system/docker-compose.logging.yml
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/scripts"
           retry_connect scp scripts/archive_container_logs.sh 43.156.242.184:/root/trading_system/scripts/archive_container_logs.sh
+          retry_connect scp scripts/cleanup_compose_created.py 43.156.242.184:/root/trading_system/scripts/cleanup_compose_created.py
 
       - name: 📦 同步数据库 init-scripts
         if: steps.deployment_mode.outputs.mode == 'full'
