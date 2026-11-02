@@ -168,7 +168,7 @@ class TestClosePositionReduceOnlyExcept:
     """平仓单抛 BinanceAPIError(-2022 / -4118) 时的三分支"""
 
     async def test_4118_sync_closed_branch(self, strategy):
-        """用例6：-4118 → 取消条件单 → 同步 closed=True → 返回 True（视为成功）
+        """用例6：-4118 → 保留条件单 → 同步 closed=True → 返回 True（视为成功）
 
         修复后（L3419-3429）：closed 分支直接调用 _mark_stop_loss_if_needed
         并 return True，不再因 order_result 为空触发 AttributeError。
@@ -184,9 +184,9 @@ class TestClosePositionReduceOnlyExcept:
             'BTCUSDT', pos, Decimal('0.1'), 'TP1', Decimal('60000'))
 
         assert result is True
-        # 下单前(L3218)与 except 内(L3416)各取消一次条件单
-        assert strategy.binance.cancel_all_algo_orders.await_count == 2
-        strategy.binance.cancel_all_algo_orders.assert_awaited_with('BTCUSDT')
+        # 拒单后仍保留条件单保护
+        assert strategy.binance.cancel_all_algo_orders.await_count == 0
+        strategy.binance.cancel_all_algo_orders.assert_not_awaited()
         # 止损打标被调用一次（与入口 closed 分支一致），透传估算的 pnl
         strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
             'BTCUSDT', pos, 'TP1', Decimal('0.0'))
@@ -194,7 +194,7 @@ class TestClosePositionReduceOnlyExcept:
         assert strategy.notification.send_error_notification.await_count == 0
 
     async def test_2022_sync_closed_branch(self, strategy):
-        """用例7：-2022 → 取消条件单 → 同步 closed=True → 返回 True（视为成功）"""
+        """用例7：-2022 → 保留条件单 → 同步 closed=True → 返回 True（视为成功）"""
         strategy.binance.place_order = AsyncMock(
             side_effect=BinanceAPIError(-2022, 'ReduceOnly Order is rejected'))
         strategy.binance.get_position = make_get_position_side_effect(
@@ -206,7 +206,7 @@ class TestClosePositionReduceOnlyExcept:
             'BTCUSDT', pos, Decimal('0.1'), 'TP1', Decimal('60000'))
 
         assert result is True
-        assert strategy.binance.cancel_all_algo_orders.await_count == 2
+        assert strategy.binance.cancel_all_algo_orders.await_count == 0
         strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
             'BTCUSDT', pos, 'TP1', Decimal('0.0'))
         assert strategy.notification.send_error_notification.await_count == 0
@@ -304,8 +304,8 @@ class TestClosePositionReduceOnlyExcept:
             'BTCUSDT', pos, Decimal('0.1'), 'TP1', Decimal('60000'))
 
         assert result is False
-        # 下单前(L3218)与 except 内(L3416)各取消一次条件单
-        assert strategy.binance.cancel_all_algo_orders.await_count == 2
+        # 拒单后仍保留条件单保护
+        assert strategy.binance.cancel_all_algo_orders.await_count == 0
         # 同步未变立即 break，未继续重试
         assert strategy.binance.place_order.await_count == 1
         # 本地持仓未被错误扣减

@@ -3,6 +3,9 @@
 
 提供策略可用的「月度分配额度（保证金口径）」上限，用于约束实盘开仓。
 
+实盘策略使用 require_current_allocation=True：每次从数据库读取当月 active
+分配额；缺记录、超时或查询失败时拒绝新增仓位。下面的降级链仅供兼容调用方使用。
+
 限额优先级链（方案 D：运行时读 DB，见需求文档 R2）：
     1. DB public.capital_allocation —— 当月 status='active' 记录的 entries 中
        strategy_id 对应的 allocated_amount（单一真相来源，部署不擦除）
@@ -30,10 +33,11 @@
 
 import asyncio
 import json
+import math
 import os
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
 import structlog
 import yaml
@@ -62,11 +66,10 @@ class CapitalManager:
     """
     资金分配管理器
 
-    从 DB public.capital_allocation（主）与策略 config.yaml（兜底）读取月度分配额度，
+    从 DB public.capital_allocation 读取月度分配额度，
     对外提供唯一的保证金口径限额入口。
 
-    说明：config 类读取每次重新读文件，确保月度分配写入后立即生效；
-    DB 类读取按 TTL 缓存，避免每笔开仓都查库。
+    严格模式每次查询 DB，确保每日刷新降额立即生效；兼容模式按 TTL 缓存并支持配置兜底。
     """
 
     def __init__(
@@ -74,6 +77,7 @@ class CapitalManager:
         config_path: str,
         db: Optional[Any] = None,
         strategy_id: Optional[str] = None,
+        require_current_allocation: bool = False,
     ):
         """
         初始化资金分配管理器
@@ -82,17 +86,21 @@ class CapitalManager:
             config_path: 策略配置文件路径（相对或绝对路径）
             db: 数据库管理器（提供 fetch_one），传入后启用 DB 主来源
             strategy_id: 策略标识（用于在 capital_allocation.entries 中匹配本策略）
+            require_current_allocation: 实盘严格模式；无当月 DB 额度时拒绝新增仓位
         """
         self.config_path = config_path
         self.db = db
         self.strategy_id = strategy_id
+        self.require_current_allocation = require_current_allocation
 
         # DB 分配额缓存：值 / 时间戳
         self._db_cache_value: Optional[float] = None
         self._db_cache_ts: float = 0.0
+        self._db_cache_month: Optional[str] = None
 
         # 最近一次成功读取到的分配额（DB 异常时沿用，避免限额失效）
         self._db_last_success_value: Optional[float] = None
+        self._db_last_success_month: Optional[str] = None
 
         # 已告警过的废弃方法名，避免同步方法在循环中刷屏
         self._deprecation_warned: set = set()
@@ -113,6 +121,7 @@ class CapitalManager:
             self.strategy_id = strategy_id
         self._db_cache_value = None
         self._db_cache_ts = 0.0
+        self._db_cache_month = None
 
     # ------------------------------------------------------------------
     # 对外唯一入口（异步）
@@ -120,7 +129,7 @@ class CapitalManager:
 
     async def get_effective_margin_limit(self) -> Tuple[Optional[float], str]:
         """
-        获取生效的保证金限额（唯一对外限额入口）
+        获取生效的保证金限额（唯一对外限额入口）。实盘严格模式只取当月 DB。
 
         优先级链（取第一个可用值，不做 min）：
         1. 月度分配额（DB → config.capital_limits.monthly_limit）可用 → 直接用月度额；
@@ -134,6 +143,13 @@ class CapitalManager:
             (限额 USDT 或 None, 来源标签)：
             - 限额为 None 表示三级均不可用，调用方按 fail-open 放行
         """
+        if self.require_current_allocation:
+            db_value, db_source = await self._query_db_allocation()
+            if db_value is not None:
+                return db_value, db_source
+            logger.error("当月分配额度不可用，拒绝新增仓位", strategy_id=self.strategy_id)
+            return None, "missing_current_allocation"
+
         monthly, monthly_source = await self.resolve_monthly_limit()
         static = self._get_nested_float(
             "trading", "total_position_margin_limit",
@@ -222,6 +238,8 @@ class CapitalManager:
         """
         limit, source = await self.get_effective_margin_limit()
         if limit is None:
+            if self.require_current_allocation:
+                return False, "当月分配额度不可用"
             # 三级均不可用：fail-open 放行
             return True, ""
 
@@ -239,6 +257,50 @@ class CapitalManager:
             return False, f"总持仓保证金超限({total:.2f}/{limit:.2f})"
 
         return True, ""
+
+    async def enforce_existing_positions(
+        self,
+        margins: Mapping[str, float],
+        close_position: Callable[[str], Awaitable[bool]],
+    ) -> bool:
+        """Close whole owned positions when a newly reduced allocation is below usage.
+
+        A failed close leaves the breach visible for the next monitoring cycle.
+        The caller supplies its own positions and a reduce-only full-close
+        callback. A failed confirmation leaves the breach for the next cycle.
+        """
+        remaining = {symbol: float(margin) for symbol, margin in margins.items()
+                     if math.isfinite(float(margin)) and float(margin) > 0}
+        if not remaining:
+            return True
+        limit, source = await self.get_effective_margin_limit()
+        if limit is None:
+            return False
+        total = sum(remaining.values())
+        while total > limit + 1e-8:
+            excess = total - limit
+            covering = [(margin, symbol) for symbol, margin in remaining.items() if margin >= excess]
+            if covering:
+                margin, symbol = min(covering)
+            elif remaining:
+                symbol, margin = max(remaining.items(), key=lambda item: (item[1], item[0]))
+            else:
+                break
+            logger.warning("持仓超过月度额度，执行减仓", strategy_id=self.strategy_id,
+                           symbol=symbol, occupied=total, limit=limit, source=source)
+            try:
+                closed = await close_position(symbol)
+            except Exception as exc:
+                logger.error("月度额度超额持仓减仓异常", strategy_id=self.strategy_id,
+                             symbol=symbol, error=str(exc))
+                return False
+            if not closed:
+                logger.error("月度额度超额持仓减仓失败", strategy_id=self.strategy_id,
+                             symbol=symbol, occupied=total, limit=limit)
+                return False
+            total -= margin
+            del remaining[symbol]
+        return total <= limit + 1e-8
 
     def get_min_position_margin(self) -> Optional[float]:
         """
@@ -258,7 +320,7 @@ class CapitalManager:
 
     async def _query_db_allocation(self) -> Tuple[Optional[float], str]:
         """
-        查询 DB 当月分配额（带 TTL 缓存与异常降级）
+        查询 DB 当月分配额。严格模式不缓存、不沿用故障前旧值。
 
         Returns:
             (额度 USDT 或 None, 来源标签)
@@ -268,11 +330,10 @@ class CapitalManager:
             return None, SOURCE_NONE
 
         now = time.monotonic()
-        ttl = self._get_db_cache_ttl()
-        if self._db_cache_ts > 0 and (now - self._db_cache_ts) < ttl:
-            return self._db_cache_value, SOURCE_DB_CACHE
-
+        ttl = 0.0 if self.require_current_allocation else self._get_db_cache_ttl()
         month = self._current_month()
+        if self._db_cache_month == month and self._db_cache_ts > 0 and (now - self._db_cache_ts) < ttl:
+            return self._db_cache_value, SOURCE_DB_CACHE
         try:
             value = await asyncio.wait_for(
                 self._fetch_allocation_from_db(month),
@@ -284,7 +345,7 @@ class CapitalManager:
                 month=month,
                 strategy_id=self.strategy_id,
             )
-            return self._fallback_to_last_success()
+            return (None, SOURCE_NONE) if self.require_current_allocation else self._fallback_to_last_success()
         except Exception as e:
             logger.warning(
                 "DB 分配额查询异常，沿用最近一次成功值或降级",
@@ -292,11 +353,12 @@ class CapitalManager:
                 strategy_id=self.strategy_id,
                 error=str(e),
             )
-            return self._fallback_to_last_success()
+            return (None, SOURCE_NONE) if self.require_current_allocation else self._fallback_to_last_success()
 
         # 查询成功：写入缓存（含"无记录"结果，避免频繁查库）
         self._db_cache_value = value
         self._db_cache_ts = now
+        self._db_cache_month = month
 
         if value is None:
             logger.warning(
@@ -307,6 +369,7 @@ class CapitalManager:
             return None, SOURCE_NONE
 
         self._db_last_success_value = value
+        self._db_last_success_month = month
         logger.info(
             "读取到当月分配额（DB）",
             month=month,
@@ -329,7 +392,7 @@ class CapitalManager:
             """
             SELECT entries
             FROM public.capital_allocation
-            WHERE month = $1 AND status = 'active'
+            WHERE left(month::text, 7) = $1 AND status = 'active'
             ORDER BY created_at DESC
             LIMIT 1
             """,
@@ -350,7 +413,8 @@ class CapitalManager:
                 continue
             amount = item.get("allocated_amount")
             try:
-                return float(amount) if amount is not None else None
+                value = float(amount) if amount is not None else None
+                return value if value is not None and math.isfinite(value) and value >= 0 else None
             except (TypeError, ValueError):
                 logger.warning("分配额字段非法", month=month, allocated_amount=amount)
                 return None
@@ -369,7 +433,7 @@ class CapitalManager:
         Returns:
             (额度 USDT 或 None, 来源标签)
         """
-        if self._db_last_success_value is not None:
+        if self._db_last_success_value is not None and self._db_last_success_month == self._current_month():
             logger.warning(
                 "沿用最近一次成功读取的分配额",
                 strategy_id=self.strategy_id,

@@ -594,24 +594,19 @@ class BinanceClient:
             raise
 
     async def get_open_algo_orders(self, symbol: Optional[str] = None) -> List[Dict]:
-        """
-        获取未成交的算法条件单（止盈止损单）
-
-        Binance已于2026年6月底废弃此API端点，返回404 HTML。
-        策略已改为基于内存order_id精确管理，不再依赖查询API。
-        直接返回空列表，避免触发废弃端点的 -9999 错误日志。
-
-        Args:
-            symbol: 交易对名称（可选，不传则查询全部）
-
-        Returns:
-            始终返回空列表（API已废弃）
-        """
-        logger.debug(
-            "条件单查询API已废弃，直接返回空列表",
-            symbol=symbol
+        """读取交易所真实在挂条件单；旧 conditional 端点已被 algo 端点替代。"""
+        if not self.use_unified_account:
+            logger.warning("非统一账户条件单查询尚未接入，沿用空列表")
+            return []
+        params = {"algoType": "CONDITIONAL"}
+        if symbol:
+            params["symbol"] = symbol.strip().upper()
+        data = await self._request(
+            "GET", "/papi/v1/um/algo/openAlgoOrders", params, signed=True
         )
-        return []
+        if not isinstance(data, list):
+            raise ValueError(f"响应数据格式错误: 期望列表，实际为 {type(data).__name__}")
+        return data
     
     async def place_order(
         self,
