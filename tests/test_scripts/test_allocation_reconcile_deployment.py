@@ -36,6 +36,7 @@ def test_reconcile_branch_updates_only_live_strategies_and_tuner():
     assert "ROLLBACK_REQUIRED=1" in isolated
     assert "allocation_rollback_" in isolated
     assert "docker compose -f docker-compose.yml -f docker-compose.logging.yml" in isolated
+    assert "allocation-fix:aggr-20261102j" in isolated
 
 
 def test_full_deploy_refuses_to_replace_unreconciled_hotfix_images():
