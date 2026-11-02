@@ -788,6 +788,15 @@ class GridSignalBot:
 
     async def _send_with_export(self, signal: GridSignal) -> bool:
         """发送并走 PREPARED→SENDING→SENT/FAILED 交接；持久化故障不阻止推送。"""
+        if signal.grid_params is None:
+            sent = await self._send_notification(signal)
+            if sent and self.export_store is not None and self._state is not None:
+                try:
+                    self.export_store.mark_non_numeric_sent(self._state, _now_ms())
+                except sqlite3.Error as exc:
+                    # 通知已成功，不得因本地确认失败而重复发送。
+                    self._abort_export(exc)
+            return sent
         if not self._export_ready(signal):
             return await self._send_notification(signal)
         try:

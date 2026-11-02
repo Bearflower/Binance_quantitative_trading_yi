@@ -271,6 +271,76 @@ def test_reader_old_session_sent_sync_uncertain(store, conn, cfg, snap):
     assert reader.historical_snapshot() is not None
 
 
+def test_confirmed_non_numeric_notice_distinguishes_no_active_reference(
+        store, conn, cfg, snap):
+    _publish_sent(store, snap, 100)
+    sid = store.begin_session(200)
+    state = SessionState(sid, 0, None, None)
+    assert ReferenceReader(conn, cfg).current_snapshot(201)[1] == "SYNC_UNCERTAIN"
+    store.mark_non_numeric_sent(state, 250)
+    assert ReferenceReader(conn, cfg).current_snapshot(251) == (
+        None, "NO_ACTIVE_REFERENCE")
+    assert store.publish_heartbeat(state, 300)
+    assert ReferenceReader(conn, cfg).current_snapshot(301)[1] == "NO_ACTIVE_REFERENCE"
+
+
+def test_non_numeric_notice_retains_same_session_reference(store, conn, cfg, snap):
+    sid, ref_id = _publish_sent(store, snap, 100)
+    store.mark_non_numeric_sent(SessionState(sid, 1, ref_id, None), 200)
+    current, status = ReferenceReader(conn, cfg).current_snapshot(201)
+    assert status == "VALID" and current.reference_id == ref_id
+
+
+def test_numeric_send_restores_no_active_reference(store, conn, cfg, snap):
+    sid = store.begin_session(100)
+    state = SessionState(sid, 0, None, None)
+    store.mark_non_numeric_sent(state, 150)
+    ref_id = store.prepare(200, state, snap)
+    assert ReferenceReader(conn, cfg).current_snapshot(201)[1] == "SYNC_UNCERTAIN"
+    store.mark_sending(ref_id)
+    store.mark_sent(ref_id, 250, SessionState(sid, 0, None, 1), 250)
+    current, status = ReferenceReader(conn, cfg).current_snapshot(251)
+    assert status == "VALID" and current.reference_id == ref_id
+
+
+def test_failed_numeric_send_returns_to_no_active_reference(
+        store, conn, cfg, snap):
+    sid = store.begin_session(100)
+    state = SessionState(sid, 0, None, None)
+    store.mark_non_numeric_sent(state, 150)
+    ref_id = store.prepare(200, state, snap)
+    store.mark_failed(ref_id, SessionState(sid, 0, None, 1), 250)
+    assert ReferenceReader(conn, cfg).current_snapshot(251)[1] == "NO_ACTIVE_REFERENCE"
+
+
+def test_unknown_numeric_send_stays_uncertain_after_no_active(
+        store, conn, cfg, snap):
+    sid = store.begin_session(100)
+    state = SessionState(sid, 0, None, None)
+    store.mark_non_numeric_sent(state, 150)
+    ref_id = store.prepare(200, state, snap)
+    store.mark_unknown(ref_id, SessionState(sid, 0, None, 1), 250)
+    assert ReferenceReader(conn, cfg).current_snapshot(251)[1] == "SYNC_UNCERTAIN"
+    with pytest.raises(sqlite3.OperationalError):
+        store.mark_non_numeric_sent(state, 300)
+
+
+def test_no_active_reference_stale_heartbeat_is_uncertain(store, conn, cfg):
+    sid = store.begin_session(100)
+    store.mark_non_numeric_sent(SessionState(sid, 0, None, None), 150)
+    assert ReferenceReader(conn, cfg).current_snapshot(5151)[1] \
+        == "SYNC_UNCERTAIN"
+
+
+def test_inconsistent_no_active_reference_fails_closed(store, conn, cfg):
+    sid = store.begin_session(100)
+    store.mark_non_numeric_sent(SessionState(sid, 0, None, None), 150)
+    conn.execute("UPDATE session SET current_reference_id='unexpected' "
+                 "WHERE session_id=?", (sid,))
+    conn.commit()
+    assert ReferenceReader(conn, cfg).current_snapshot(151)[1] == "SYNC_UNCERTAIN"
+
+
 def _snap_with_symbol(symbol):
     return ReferenceSnapshot(
         reference_id="ref-other", symbol=symbol,
