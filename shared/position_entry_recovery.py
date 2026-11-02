@@ -74,3 +74,24 @@ def verified_anchored_lot(
         return net == actual
     except (KeyError, TypeError, ValueError, InvalidOperation, OverflowError):
         return False
+
+
+async def fetch_lot_fills(client, symbol: str, anchor_ms: int, now_ms: int = None):
+    """Fetch a lot in complete six-day windows; return None on any truncated page."""
+    if now_ms is None:
+        now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    if anchor_ms <= 0 or now_ms < anchor_ms:
+        return None
+    six_days_ms = 6 * 24 * 60 * 60 * 1000
+    rows = []
+    start = anchor_ms
+    while start <= now_ms:
+        end = min(start + six_days_ms - 1, now_ms)
+        page = await client.get_user_trades(
+            symbol, start_time=start, end_time=end, limit=1000
+        )
+        if not isinstance(page, list) or len(page) >= 1000:
+            return None
+        rows.extend(page)
+        start = end + 1
+    return rows

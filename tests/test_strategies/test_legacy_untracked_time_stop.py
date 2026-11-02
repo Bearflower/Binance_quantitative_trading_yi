@@ -17,11 +17,11 @@ def strategy_with_exchange(amount="1"):
     strategy.binance = MagicMock()
     strategy.binance.cancel_all_algo_orders = AsyncMock()
     strategy.binance.get_position = AsyncMock(return_value=[
-        {"symbol": "ETHUSDT", "positionAmt": amount, "entryPrice": "100"}
+        {"symbol": "ETHUSDT", "positionAmt": amount, "entryPrice": "100", "markPrice": "100", "leverage": "5"}
     ])
     strategy.binance.get_open_algo_orders = AsyncMock(return_value=[
         {"symbol": "ETHUSDT", "side": "SELL", "orderType": "STOP",
-         "reduceOnly": True, "quantity": amount}
+         "reduceOnly": True, "quantity": amount, "triggerPrice": "90"}
     ])
     strategy._close_untracked_exchange_position = AsyncMock(return_value=True)
     return strategy
@@ -42,7 +42,8 @@ async def test_expired_verified_legacy_position_uses_existing_close_path():
             assert await strategy._check_legacy_untracked_time_stop() is True
     strategy._close_untracked_exchange_position.assert_awaited_once()
     assert strategy._close_untracked_exchange_position.await_args.args[2] == "LEGACY_TIME_STOP"
-    strategy.binance.get_user_trades.assert_awaited_with("ETHUSDT", start_time=entry_ms, limit=1000)
+    assert strategy.binance.get_user_trades.await_args.args == ("ETHUSDT",)
+    assert strategy.binance.get_user_trades.await_args.kwargs["start_time"] == entry_ms
 
 
 @pytest.mark.asyncio

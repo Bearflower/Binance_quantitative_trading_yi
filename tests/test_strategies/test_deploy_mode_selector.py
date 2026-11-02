@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 MARKER = ".github/deploy-modes/xau-calibrated-shadow-first-create"
 EXECUTION_FACTS_MARKER = ".github/deploy-modes/execution-facts-first-create"
 ALLOCATION_RECONCILE_MARKER = ".github/deploy-modes/allocation-reconcile"
+ALLOCATION_RECONCILE_RETRY_MARKER = ".github/deploy-modes/allocation-reconcile-retry-1"
 RETRY_MARKER = ".github/deploy-modes/xau-calibrated-shadow-first-create-retry-1"
 
 
@@ -42,6 +43,14 @@ def test_added_allocation_reconcile_marker_selects_targeted_mode():
     from scripts.select_deploy_mode import select_deploy_mode
 
     assert select_deploy_mode("push", "abc", [("A", ALLOCATION_RECONCILE_MARKER)]) == (
+        "allocation-reconcile"
+    )
+
+
+def test_added_allocation_reconcile_retry_selects_targeted_mode():
+    from scripts.select_deploy_mode import select_deploy_mode
+
+    assert select_deploy_mode("push", "abc", [("A", ALLOCATION_RECONCILE_RETRY_MARKER)]) == (
         "allocation-reconcile"
     )
 

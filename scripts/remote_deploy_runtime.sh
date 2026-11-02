@@ -98,7 +98,7 @@ expected = """services:
   btc-eth-strategy:
     image: allocation-fix:btc-20261102c
   btc-eth-aggressive-strategy:
-    image: allocation-fix:aggr-20261102f
+    image: allocation-fix:aggr-20261102i
   new-coin-strategy:
     image: allocation-fix:nc-20261102
   ai-tuner:
