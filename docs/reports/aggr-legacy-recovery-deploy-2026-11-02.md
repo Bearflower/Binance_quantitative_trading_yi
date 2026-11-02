@@ -2,7 +2,7 @@
 
 ## 部署
 
-- 生产激进策略于北京时间 15:45 切换至 `allocation-fix:aggr-20261102i`，仅重启 `btc-eth-aggressive-strategy`。Compose 覆盖文件已备份为 `docker-compose.override.yml.before-aggr-20261102i`。
+- 生产激进策略于北京时间 15:45 切换至 `allocation-fix:aggr-20261102i`，15:54 更新至与合并主线一致的 `allocation-fix:aggr-20261102j`，仅重启 `btc-eth-aggressive-strategy`。Compose 覆盖文件已备份为 `docker-compose.override.yml.before-aggr-20261102j`。
 - 容器健康，启动首轮策略执行完成。候选镜像在切换前只读核验 SOL 与 XRP 当前 lot 和交易所硬止损覆盖。部署后只读复核仓位、条件单与数据库上报。
 - 回滚方式：恢复上述 Compose 覆盖文件并对单个服务执行 `docker compose up -d --no-deps btc-eth-aggressive-strategy`。旧镜像仍在服务器。
 
@@ -22,5 +22,10 @@
 
 ## 验证
 
-- 相关单测：62 通过；包括元数据恢复、真实成交分页、旧仓上报、归属验证、保护单覆盖与失败平仓、新开仓拦截。
+- 合并主线后相关单测：68 通过；包括元数据恢复、真实成交分页、旧仓上报、归属验证、保护单覆盖与失败平仓、新开仓拦截。
 - 宽范围测试中仍有 6 项从干净主线已有的失败（新币基线/归属 mock 与旧额度测试），与本次改动无关；本轮更改的激进版 reduce-only 测试已通过。
+
+## 后续验收
+
+- 已建立当前聊天的逐小时静默巡检“激进策略旧仓到期验收”。仅在 SOL/XRP 仓位、保护或运行状态有意义变化，以及到期结果明确时通知；两笔核验完毕后关闭巡检。
+- 合并主线提交 `dbfcc652`；GitHub 连接器创建 PR 返回 403、本机 `gh` 认证失效，故使用已授权的 SSH Git 快进主线。
