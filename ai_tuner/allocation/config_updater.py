@@ -8,7 +8,7 @@
     2. ai_tuner/config.yaml：更新 capital_limits 字段
     3. 各策略 config.yaml：
        - 更新 capital_limits 字段（月度限额）
-       - 同步更新 position_sizing.total.account_ratio_cap（总保证金比例上限，与分配比例一致）
+       - 对声明了 position_sizing 的策略同步 account_ratio_cap
 """
 
 import json
@@ -277,7 +277,7 @@ class AllocationConfigUpdater:
         config_operator,
     ) -> bool:
         """
-        更新各策略 config.yaml 的 capital_limits 字段和 position_sizing.total.account_ratio_cap
+        更新各策略 config.yaml 的 capital_limits，以及已有的 account_ratio_cap
 
         使用 ConfigOperator.apply_changes 原子写入。
 
@@ -288,9 +288,9 @@ class AllocationConfigUpdater:
           allocated_ratio: 0.36
           allocation_month: "2026-07"
           updated_at: "2026-07-31T23:55:00+08:00"
-        position_sizing:
+        position_sizing:                 # 仅声明此结构的策略
           total:
-            account_ratio_cap: 0.36    # 同步更新，与分配比例一致
+            account_ratio_cap: 0.36
         ```
 
         Args:
@@ -345,15 +345,30 @@ class AllocationConfigUpdater:
                     # 使总持仓保证金比例上限与分配比例保持一致（动态更新）
                     allocated_ratio = round(entry.allocated_ratio, 4)
 
-                    # 使用 ConfigOperator.apply_changes 原子写入
+                    # 只有声明了 position_sizing 的策略才有该保证金比例上限。
+                    # grid/new_coin 仅消费 capital_limits，不能写入不存在的路径。
+                    existing = config_operator.read_config(config_path)
+                    if not isinstance(existing, dict) or not existing:
+                        logger.error("策略配置读取失败", strategy_id=entry.strategy_id, config_path=config_path)
+                        all_success = False
+                        continue
+                    adjustments = {"capital_limits": capital_limits}
+                    if "position_sizing" in existing:
+                        position_sizing = existing["position_sizing"]
+                        total = (
+                            position_sizing.get("total")
+                            if isinstance(position_sizing, dict) else None
+                        )
+                        if not isinstance(total, dict):
+                            logger.error("持仓上限配置结构无效", strategy_id=entry.strategy_id, config_path=config_path)
+                            all_success = False
+                            continue
+                        adjustments["position_sizing.total.account_ratio_cap"] = allocated_ratio
+
                     # apply_changes 内部会：备份 → 读取 → 更新 → 原子写入
-                    # 同时更新 capital_limits 和 position_sizing.total.account_ratio_cap
                     success = config_operator.apply_changes(
                         config_path=config_path,
-                        adjustments={
-                            "capital_limits": capital_limits,
-                            "position_sizing.total.account_ratio_cap": allocated_ratio,
-                        },
+                        adjustments=adjustments,
                     )
 
                     if success:
@@ -363,7 +378,7 @@ class AllocationConfigUpdater:
                             config_path=config_path,
                             monthly_limit=entry.allocated_amount,
                             allocated_ratio=allocated_ratio,
-                            account_ratio_cap=allocated_ratio,
+                            account_ratio_cap=adjustments.get("position_sizing.total.account_ratio_cap"),
                         )
                     else:
                         logger.error(

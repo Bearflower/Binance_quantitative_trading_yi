@@ -778,6 +778,9 @@ class TestAllocationMonthPropagation(unittest.TestCase):
             def __init__(self):
                 self.calls = []
 
+            def read_config(self, config_path):
+                return {"position_sizing": {"total": {"account_ratio_cap": 0.2}}}
+
             def apply_changes(self, config_path, adjustments):
                 self.calls.append((config_path, adjustments))
                 return True
