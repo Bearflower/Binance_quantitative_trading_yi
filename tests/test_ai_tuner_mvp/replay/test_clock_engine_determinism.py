@@ -10,8 +10,8 @@ import pytest
 from ai_tuner.replay import clock
 from ai_tuner.replay.broker import SymbolFilters, VirtualBroker
 from ai_tuner.replay.data_portal import DataPortal
-from ai_tuner.replay.engine import run_replay
-from ai_tuner.replay.models import ConfigHashes, DataBlocked, EquityPoint, OrderIntent, Position, UniverseSlice
+from ai_tuner.replay.engine import _finalize_audit, run_replay
+from ai_tuner.replay.models import ConfigHashes, DataBlocked, EquityPoint, OrderIntent, Position, UniverseSlice, to_utc_z
 
 from .conftest import ScriptedAdapter, make_bars, write_snapshot
 
@@ -106,7 +106,9 @@ def _broker():
 
 def _run(portal):
     adapter = ScriptedAdapter(_universe(), _config_hashes(), _entry_once)
-    return run_replay(portal, adapter, _broker())
+    return run_replay(portal, adapter, _broker(), funding_schedule={
+        "BTCUSDT": (WINDOW_START + timedelta(hours=2), AS_OF)
+    }, funding_schedule_source="synthetic_fixture")
 
 
 def test_two_runs_produce_identical_equity_and_events(tmp_path):
@@ -184,7 +186,9 @@ def test_same_timestamp_equity_uses_both_symbols_closing_prices(tmp_path):
     broker.positions = {symbol: _open_position(symbol, start) for symbol in ("BTCUSDT", "ETHUSDT")}
     broker.last_prices = {symbol: Decimal("100") for symbol in broker.positions}
 
-    result = run_replay(portal, _cash_adapter(start, as_of, broker.positions), broker)
+    result = run_replay(portal, _cash_adapter(start, as_of, broker.positions), broker,
+                        funding_schedule={symbol: () for symbol in broker.positions},
+                        funding_schedule_source="synthetic_fixture")
 
     assert result.equity_curve[-1].marked_equity == Decimal("10030")
 
@@ -206,7 +210,9 @@ def test_funding_only_timestamp_has_equity_point(tmp_path):
     broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
     broker.last_prices["BTCUSDT"] = Decimal("100")
 
-    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker)
+    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker,
+                        funding_schedule={"BTCUSDT": (funding_time,)},
+                        funding_schedule_source="synthetic_fixture")
 
     assert funding_time in [point.ts for point in result.equity_curve]
     funding_point = next(point for point in result.equity_curve if point.ts == funding_time)
@@ -250,7 +256,9 @@ def test_open_position_without_midnight_close_blocks_daily_mark(tmp_path):
     broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
 
     with pytest.raises(DataBlocked) as error:
-        run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker)
+        run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker,
+                   funding_schedule={"BTCUSDT": (datetime(2026, 10, 22, tzinfo=UTC),)},
+                   funding_schedule_source="synthetic_fixture")
 
     assert error.value.gaps == ("daily_equity_gap:BTCUSDT:2026-10-22T00:00:00Z",)
 
@@ -294,7 +302,9 @@ def test_missing_funding_settlement_blocks_open_position(tmp_path, hour):
     broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
 
     with pytest.raises(DataBlocked) as error:
-        run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker)
+        run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker,
+                   funding_schedule={"BTCUSDT": (as_of,)},
+                   funding_schedule_source="synthetic_fixture")
 
     assert error.value.gaps == ("funding_gap:BTCUSDT:{0}".format(
         as_of.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -312,7 +322,9 @@ def test_present_funding_settlement_marks_after_funding_and_bar(tmp_path):
     broker = _broker()
     broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
 
-    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker)
+    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker,
+                        funding_schedule={"BTCUSDT": (as_of,)},
+                        funding_schedule_source="synthetic_fixture")
 
     assert result.equity_curve[-1].marked_equity == Decimal("9999")
     assert [event["type"] for event in result.audit_events].count("funding_settlement") == 1
@@ -327,6 +339,123 @@ def test_cash_only_window_does_not_require_funding_settlement(tmp_path):
     result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), _broker())
 
     assert result.equity_curve[-1].marked_equity == Decimal("10000")
+
+
+def test_position_without_independent_funding_schedule_blocks(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=1)
+    bars = make_bars("BTCUSDT", "1h", start, [("100", "100", "100", "100")])
+    portal = _window_portal(tmp_path, start, as_of,
+                            {"BTCUSDT|1h": bars}, ["BTCUSDT"])
+    broker = _broker()
+    broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
+    with pytest.raises(DataBlocked, match="funding_schedule_unattested:BTCUSDT"):
+        run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker)
+
+
+def test_new_entry_without_funding_schedule_blocks(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=2)
+    bars = make_bars("BTCUSDT", "1h", start,
+                     [("100", "100", "100", "100")] * 2)
+    portal = _window_portal(tmp_path, start, as_of,
+                            {"BTCUSDT|1h": bars}, ["BTCUSDT"])
+    adapter = _cash_adapter(start, as_of, ["BTCUSDT"])
+    adapter._script = _entry_once
+    with pytest.raises(DataBlocked, match="funding_schedule_unattested:BTCUSDT"):
+        run_replay(portal, adapter, _broker())
+
+
+def test_duplicate_schedule_time_blocks_before_replay(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=1)
+    bars = make_bars("BTCUSDT", "1h", start, [("100", "100", "100", "100")])
+    portal = _window_portal(tmp_path, start, as_of,
+                            {"BTCUSDT|1h": bars}, ["BTCUSDT"])
+    with pytest.raises(DataBlocked, match="funding_schedule_duplicate_time:BTCUSDT"):
+        run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), _broker(),
+                   funding_schedule={"BTCUSDT": (as_of, as_of)},
+                   funding_schedule_source="synthetic_fixture")
+
+
+def test_symbol_specific_four_hour_schedule_with_millisecond_offset(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=5)
+    settlement = start + timedelta(hours=4, milliseconds=4)
+    bars = make_bars("BTCUSDT", "1h", start,
+                     [("100", "100", "100", "100")] * 5)
+    portal = _window_portal(tmp_path, start, as_of,
+                            {"BTCUSDT|1h": bars}, ["BTCUSDT"],
+                            {"BTCUSDT": [(settlement, "0.01")]})
+    broker = _broker()
+    broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
+    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker,
+                        funding_schedule={"BTCUSDT": (settlement,)},
+                        funding_schedule_source="synthetic_fixture")
+    assert result.equity_curve[-1].marked_equity == Decimal("9999")
+
+
+def test_mismatched_symbol_schedule_does_not_cover_open_position(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=1)
+    bars = make_bars("BTCUSDT", "1h", start, [("100", "100", "100", "100")])
+    portal = _window_portal(tmp_path, start, as_of,
+                            {"BTCUSDT|1h": bars}, ["BTCUSDT"])
+    broker = _broker()
+    broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
+    with pytest.raises(DataBlocked, match="funding_schedule_unknown_symbol:ETHUSDT"):
+        run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker,
+                   funding_schedule={"ETHUSDT": ()},
+                   funding_schedule_source="synthetic_fixture")
+
+
+def test_millisecond_funding_time_is_not_rounded_in_diagnostics():
+    stamp = datetime(2026, 10, 22, 0, 0, 0, 4000, tzinfo=UTC)
+    assert to_utc_z(stamp) == "2026-10-22T00:00:00.004000Z"
+
+
+def test_audit_sorts_actual_datetimes_before_formatting():
+    midnight = datetime(2026, 10, 22, tzinfo=UTC)
+    events = [
+        {"ts": midnight + timedelta(milliseconds=4), "type": "late"},
+        {"ts": midnight, "type": "early"},
+    ]
+    assert [row["type"] for row in _finalize_audit(events)] == ["early", "late"]
+
+
+def test_audit_normalizes_naive_datetime_before_sorting():
+    midnight = datetime(2026, 10, 22, tzinfo=UTC)
+    events = [
+        {"ts": midnight + timedelta(milliseconds=4), "type": "late"},
+        {"ts": midnight.replace(tzinfo=None), "type": "early"},
+    ]
+    assert [row["type"] for row in _finalize_audit(events)] == ["early", "late"]
+
+
+def test_duplicate_observed_funding_is_blocked(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=1)
+    bars = make_bars("BTCUSDT", "1h", start, [("100", "100", "100", "100")])
+    portal = _window_portal(tmp_path, start, as_of,
+                            {"BTCUSDT|1h": bars}, ["BTCUSDT"],
+                            {"BTCUSDT": [(as_of, "0.01"), (as_of, "0.01")]})
+    with pytest.raises(DataBlocked, match="funding_duplicate_time:BTCUSDT"):
+        run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), _broker(),
+                   funding_schedule={"BTCUSDT": (as_of,)},
+                   funding_schedule_source="synthetic_fixture")
+
+
+def test_real_strategy_cannot_use_synthetic_schedule_as_evidence(tmp_path):
+    start = datetime(2026, 10, 21, 20, tzinfo=UTC)
+    as_of = start + timedelta(hours=1)
+    bars = make_bars("BTCUSDT", "1h", start, [("100", "100", "100", "100")])
+    portal = _window_portal(tmp_path, start, as_of,
+                            {"BTCUSDT|1h": bars}, ["BTCUSDT"])
+    adapter = _cash_adapter(start, as_of, ["BTCUSDT"])
+    adapter.strategy_id = "btc_eth_aggressive"
+    with pytest.raises(DataBlocked, match="historical_funding_schedule_unattested"):
+        run_replay(portal, adapter, _broker(), funding_schedule={"BTCUSDT": ()},
+                   funding_schedule_source="synthetic_fixture")
 
 
 def test_funding_check_does_not_change_intent_calls_or_audit_order(tmp_path):
@@ -345,7 +474,9 @@ def test_funding_check_does_not_change_intent_calls_or_audit_order(tmp_path):
 
     adapter = _cash_adapter(start, as_of, ["BTCUSDT"])
     adapter._script = script
-    result = run_replay(portal, adapter, _broker())
+    result = run_replay(portal, adapter, _broker(),
+                        funding_schedule={"BTCUSDT": (as_of,)},
+                        funding_schedule_source="synthetic_fixture")
 
     assert calls == [start + timedelta(hours=hour) for hour in (1, 2, 3, 4)]
     kinds = [event["type"] for event in result.audit_events]
@@ -406,7 +537,9 @@ def test_initial_point_is_literal_initial_equity_even_with_preloaded_position(tm
     broker.positions["BTCUSDT"] = _open_position("BTCUSDT", start)
     broker.last_prices["BTCUSDT"] = Decimal("110")
 
-    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker)
+    result = run_replay(portal, _cash_adapter(start, as_of, ["BTCUSDT"]), broker,
+                        funding_schedule={"BTCUSDT": ()},
+                        funding_schedule_source="synthetic_fixture")
 
     assert result.equity_curve[0] == EquityPoint(start, Decimal("10000"), Decimal("10000"), False)
     assert result.equity_curve[-1].marked_equity == Decimal("10010")

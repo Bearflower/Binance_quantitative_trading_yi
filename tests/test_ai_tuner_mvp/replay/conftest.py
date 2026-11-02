@@ -148,8 +148,11 @@ def write_snapshot(
     funding_rows: List[Dict[str, Any]] = []
     for symbol in sorted(funding_by_symbol or {}):
         for funding_time, rate in funding_by_symbol[symbol]:
+            funding_text = funding_time.astimezone(UTC).isoformat(
+                timespec="microseconds" if funding_time.microsecond else "seconds"
+            ).replace("+00:00", "Z")
             funding_rows.append(
-                {"symbol": symbol, "funding_time": _iso(funding_time), "funding_rate": rate}
+                {"symbol": symbol, "funding_time": funding_text, "funding_rate": rate}
             )
     add(
         "funding_rates.jsonl",

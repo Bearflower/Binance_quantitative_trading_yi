@@ -84,24 +84,20 @@ class DailyHealthCheck:
         row = await self.db_manager.fetch_one(query, strategy_id, since, until)
         row = row or {}
 
-        # 查询连续亏损（使用窗口函数计算最近连续亏损笔数）
+        # 按成交时间和主键倒序，统计最近一笔盈利之后的当前连亏。
+        # 无盈亏记录不参与；盈利用作边界，不能把更早的连亏重新计入。
         query_consecutive = """
             SELECT COUNT(*) as consecutive_losses
             FROM (
                 SELECT realized_pnl,
-                       executed_at,
                        SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END)
-                           OVER (ORDER BY executed_at DESC
-                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as grp
+                           OVER (ORDER BY executed_at DESC, id DESC
+                                 ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as wins_seen
                 FROM trading.trade_records
                 WHERE strategy = $1 AND executed_at >= $2 AND executed_at < $3
                   AND realized_pnl IS NOT NULL
-                ORDER BY executed_at DESC
             ) sub
-            WHERE realized_pnl <= 0
-            GROUP BY grp
-            ORDER BY MAX(executed_at) DESC
-            LIMIT 1
+            WHERE wins_seen = 0 AND realized_pnl <= 0
         """
         row_consecutive = await self.db_manager.fetch_one(
             query_consecutive, strategy_id, since, until

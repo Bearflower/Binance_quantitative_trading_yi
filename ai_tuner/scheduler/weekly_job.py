@@ -627,9 +627,11 @@ class WeeklyTuningJob:
         prompts_dir = os.path.join(self.project_root, "prompts")
 
         try:
-            # 加载通用规则
+            # 通用规则必须与解析器所选契约一致；旧策略不能收到新信封示例。
+            has_manifest = bool(getattr(adapter, "_strategy_cfg", {}).get("parameter_manifest"))
+            common_rules_name = "common_rules.txt" if has_manifest else "legacy_common_rules.txt"
             common_rules = self._load_template(
-                os.path.join(prompts_dir, "common_rules.txt")
+                os.path.join(prompts_dir, common_rules_name)
             )
             # 加载策略特定系统提示词
             strategy_system = self._load_template(

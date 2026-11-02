@@ -7,13 +7,14 @@
 2026-10-29 增量补充：新影子容器纳入现有日志保留决策，更新 issue 与 decision 的适用范围，新增当日变更；无新增 issue 或 decision，未重跑全库巡检。
 2026-10-29 增量补充（第二次）：MTPCS 保护单精度与微仓腿 N/A 修复已是「已解决」状态（上游 `47af6c02` / `174de235` / `925d6693` 已合并，生产容器 `925d6693` 部署后观察 18 小时两类报错均为 0 次），新增 2 条 issue + 1 条 decision，并在当日变更中合并同一任务段落；合计问题 +2、决策 +1，变更日志文件数不变；未重跑全库巡检，孤立/引用链分析沿用 2026-10-13 结论。
 2026-11-02 增量补充：激进策略旧仓恢复与 ETH 反向开仓事故新增 2 条 issue、1 条安全退出 decision 和 1 篇当日变更；已核对本轮证据与链接，未重跑全库巡检，SOL/XRP 到期实盘退出和新仓重启恢复仍待复查。
-条目统计: 问题 45 / 决策 17 / 变更日志累计 11
+2026-11-02 AI Tuner 增量归档：新旧提示词契约冲突、可选持仓上限路径误写两条独立 issue 已修复并部署；新增长期问题条目 2，沿用当日变更文件，业务任务实跑仍待验证。未重跑全库巡检。
+条目统计: 问题 47 / 决策 17 / 变更日志累计 11
 
 ## 巡检状态汇总
 | 状态   | 数量 | 判定规则              |
 |--------|------|-----------------------|
-| 正常   | 20   | 本次检查未发现需复查项，不代表重新验证全部结论（沿用旧口径：问题 45 − 待复查清单 25） |
-| 待复查 | 25   | 存在证据缺口、相关代码变化或后续跟踪项等复查提示（= 待复查清单未勾选数，增量补充后实际） |
+| 正常   | 20   | 本次检查未发现需复查项，不代表重新验证全部结论（增量口径：问题 47 − 待复查清单 27） |
+| 待复查 | 27   | 存在证据缺口、相关代码变化或后续跟踪项等复查提示（= 待复查清单未勾选数，增量补充后实际） |
 | 孤立   | 8    | 无其他知识正文条目引用；索引入口不算入链，仅作提示（沿用 2026-10-13 全量链分析；本轮未重跑，未含 2026-10-15 及之后新增条目） |
 
 > 统计口径说明（2026-11-02 增量递增）：问题模式库实际 45 行（原 43 + 本轮 2）；决策记录实际 17 行（原 16 + 本轮 1）；变更日志 11 个文件（原 10 + 本轮 1）；待复查清单未勾选 25 项（原 23 + 本轮 2）；正常沿用旧表口径计为 45 − 25 = 20。孤立仍沿用 2026-10-13 全量链分析结论 8，本轮未重跑链分析。
@@ -33,6 +34,8 @@
 ## 问题模式库
 | ID | 标题 | 标签 | 日期 | 状态 |
 |----|------|------|------|------|
+| Binance_quantitative_trading-20261102-ai-tuner-legacy-prompt-contract-mismatch | 旧契约策略收到新信封提示词，网格调优缺 reasons 和 summary | bug,ai_tuner,grid,LLM,prompt,契约不一致 | 2026-11-02 | 已修复并部署，待周度任务实跑验证 |
+| Binance_quantitative_trading-20261102-ai-tuner-optional-position-cap-path | 无 position_sizing 的策略被写入持仓比例路径，部分写入误报成功 | bug,ai_tuner,月度分配,配置路径,部分写入 | 2026-11-02 | 已修复并部署，待资金分配任务实跑验证 |
 | Binance_quantitative_trading-20261102-aggr-legacy-position-recovery | 激进策略重启后旧仓未接管且新仓退出元数据只写不读 | bug,btc_eth_aggressive,重启恢复,资金限额,持仓归属,保护单 | 2026-11-02 | 待复查 |
 | Binance_quantitative_trading-20261102-aggr-opposite-entry-nets-legacy-lot | 激进策略内存漏仓时反向新单抵消交易所旧仓 | bug,btc_eth_aggressive,共享净额账户,开仓,资金安全,ETHUSDT | 2026-11-02 | 待复查 |
 | Binance_quantitative_trading-20261029-micro-leg-zero-protection-replenish-exhausted | 微仓比例腿取整为 0 致 TP1 始终挂不出，保护补挂耗尽并告警 missing=["TP1"] | bug,保护单,微仓,精度,btc_eth_aggressive,补挂,高优先级 | 2026-10-29 | 已解决 |
@@ -103,7 +106,7 @@
 ## 每日变更（近 30 天）
 | 日期 | 变更数 | 摘要 |
 |------|--------|------|
-| 2026-11-02 | 1 | [aggr_legacy_recovery_2026-11-02] 激进策略旧仓恢复、看板上报、额度与时间退出核验，以及 ETH 反向开仓事故修复已合并主线并部署；SOL/XRP 到期实盘退出及新仓自然重启恢复待复查。详见[当日变更](./changelog/2026-11-02.md)。 |
+| 2026-11-02 | 2 | [aggr_legacy_recovery_2026-11-02] 激进策略旧仓恢复、看板上报、额度与时间退出核验，以及 ETH 反向开仓事故修复已合并主线并部署；SOL/XRP 到期实盘退出及新仓自然重启恢复待复查。详见[当日变更](./changelog/2026-11-02.md)；[ai_tuner_contract_and_allocation_2026-11-02] 网格旧契约提示词与月度分配可选持仓上限路径两项缺陷已部署，任务实跑待验证。 |
 | 2026-10-29 | 2 | [container_log_retention_2026-10-29] 新影子服务 `mtcps-xau-calibrated-shadow` 先归档旧日志，再由 `74916f3` 单独切换至 journald；09:25 部署后 16/16 健康、16/16 驱动和当前日志均核验通过。[r05_r06_precision_and_na_legs_2026-10-29] 两处线上缺陷修复**已上线并观察 18 小时无复发**：精度键名驼峰/下划线不一致致静默兜底（`47af6c02`）、微仓比例腿取整为 0 致 TP1 补挂耗尽（`174de235` + `925d6693`）；生产容器 `trading_system-btc_eth_aggressive` 运行 `925d6693`，`DEPLOY_TIME=2026-10-29 07:38:27 UTC`、`DEPLOY_ID=00008101`，部署后 `[-4003] Quantity less than zero.` 0 次、`保护单补挂达上限仍未完整` 0 次；新增 issue 2 + decision 1。详见[当日变更](./changelog/2026-10-29.md)。 |
 | 2026-10-28 | 1 | [container_log_retention_2026-10-27] 在 14:30 维护窗口内将余下 11 个服务分批切换至 journald，交易容器逐个处理、PostgreSQL 最后处理；`fe43e9e` 于 15:02 部署成功，15/15 健康且日志可查，86 份归档校验通过；新增 issue 1 + decision 1，14 天实际留存待观察。详见[当日变更](./changelog/2026-10-28.md)。 |
 | 2026-10-27 | 3 | [xau_mtcps_calibrated_shadow_2026-10-27] “MTPCS 黄金校准版（XAU）”部署前实现收口：基于 MTCPS 原版且只校准 ATR，300 USDT 独立虚拟权益，每小时第 20 分运行；新增独立 container/instance/profile/run 标识、确定性 history bootstrap、不可变快照/manifest/YAML 哈希绑定和 Compose/CI 守护；2038 根有效 1h K 线生成 2025 个 ATR 样本，P25=`0.0016161930783960743`、P50=`0.3160363742979797`；原版/激进版观察期不重置，报告按同窗口比较；**未 push / 未部署 / 观察期未开始**；新增 decision 1 条。[schema-bootstrap-and-sql-comment_2026-10-27] 本日既有变更：HRS DDL 逐条失败隔离 + universe 快照 SQL 注释校验修复，补入 issue 索引。 |
@@ -116,6 +119,8 @@
 | 2026-10-13 | 9 | [knowledge-base-build] 建立知识库样板（3 模板 + 5 样例 + INDEX）、knowledge 入 Git、修正 3 条样例证据/状态、补齐 skill 与 Claude 入口接入；[knowledge-base-expand] 第一批 11 条 + 放下时复核转「已审查」（1 条 commit 引用更正）；第二批 8 条（09-21 分配/佣金 + 10-01 补挂/部署 + 10-13 分母口径）；[hrs-pnl-dedup] HRS 盈亏双计防双计口径修复（f940a61/91e99c2，统计层，写入层待治理）；[pnl-caliber-map] 看板盈亏三口径设计确认（本期净盈亏/总盈亏/已实现+浮动，决策：维持现状不改文案） |
 
 ## 待复查清单
+- [ ] 2026-11-02 `grid` 周度调优实跑后，核对不再因缺 `reasons` / `summary` 解析失败，且执行记录结果正确；见[提示词契约冲突](./issues/Binance_quantitative_trading-20261102-ai-tuner-legacy-prompt-contract-mismatch.md)。
+- [ ] 2026-11-02 资金分配任务实跑后，核对无 `position_sizing.total.account_ratio_cap` 路径错误，并确认各策略 `capital_limits` 与发布结果一致；见[可选持仓上限路径](./issues/Binance_quantitative_trading-20261102-ai-tuner-optional-position-cap-path.md)。
 - [ ] 2026-11-02 激进策略旧仓恢复：SOL 2026-11-04 16:11:16、XRP 2026-11-05 13:13:48（北京时间）到期退出、保护单清理以及下一笔新仓自然重启后的元数据恢复，均待生产事实验收；详见[旧仓恢复问题](./issues/Binance_quantitative_trading-20261102-aggr-legacy-position-recovery.md)。
 - [ ] 2026-11-02 激进策略反向开仓拦截：ETH 事故已处理，但上线后尚无再次触发“内存空仓、交易所同币有仓”的实盘信号，待生产触发时复核拒单日志；详见[ETH 反向开仓问题](./issues/Binance_quantitative_trading-20261102-aggr-opposite-entry-nets-legacy-lot.md)。
 - [ ] 2026-10-28 新增 1 issue + 1 decision（`container-json-logs-lost-on-recreate`、`journald-container-log-retention`）「审查」字段待复核；原 15 个服务与 2026-10-29 新增的校准影子服务分别运行满 14 天后验证实际留存，容量上限可能使窗口缩短。
