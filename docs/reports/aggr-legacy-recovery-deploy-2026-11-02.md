@@ -4,7 +4,8 @@
 
 - 生产激进策略于北京时间 15:45 切换至 `allocation-fix:aggr-20261102i`，15:54 更新至与合并主线一致的 `allocation-fix:aggr-20261102j`，仅重启 `btc-eth-aggressive-strategy`。Compose 覆盖文件已备份为 `docker-compose.override.yml.before-aggr-20261102j`。
 - 容器健康，启动首轮策略执行完成。候选镜像在切换前只读核验 SOL 与 XRP 当前 lot 和交易所硬止损覆盖。部署后只读复核仓位、条件单与数据库上报。
-- 回滚方式：恢复上述 Compose 覆盖文件并对单个服务执行 `docker compose up -d --no-deps btc-eth-aggressive-strategy`。旧镜像仍在服务器。
+- 北京时间 16:05，主线 CI 自动部署 `ghcr.io/bearflower/trading-btc-eth-aggr:latest`，接替手动镜像。16:07 只读复核容器健康、首轮策略执行无 error，镜像内四个关键源码文件与主线 SHA-256 完全一致；ETH 净仓和残余条件单均为 0，SOL/XRP 仓位及硬止损覆盖保持原值。
+- 当前运行已由 CI 镜像接管。若需回滚，先核对目标镜像仍包含本次开仓拦截、旧仓退出及保护单修复；不能直接恢复修复前镜像。
 
 ## 修复范围
 
