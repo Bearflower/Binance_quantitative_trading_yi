@@ -11,10 +11,10 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from itertools import groupby
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from .broker import VirtualBroker
 from .clock import (
@@ -32,7 +32,7 @@ from .clock import (
     collect_snapshot_events,
 )
 from .data_portal import DataPortal
-from .models import DataBlocked, EquityPoint, ReplayResult, to_utc_z
+from .models import DataBlocked, EquityPoint, ReplayResult, parse_utc, to_utc_z
 
 
 def run_replay(
@@ -40,6 +40,8 @@ def run_replay(
     adapter: Any,
     broker: VirtualBroker,
     include_snapshots: bool = False,
+    funding_schedule: Optional[Mapping[str, Sequence[datetime]]] = None,
+    funding_schedule_source: Optional[str] = None,
 ) -> ReplayResult:
     """执行一次确定性回放。
 
@@ -48,6 +50,9 @@ def run_replay(
         adapter: ``ReplayAdapter`` 实现（prepare/on_bar/on_snapshot/intents）。
         broker: 统一虚拟 Broker（含成本档参数）。
         include_snapshots: 是否把外部时点快照纳入事件流（HRS=True）。
+        funding_schedule: 逐币种预期结算时间。当前只接受合成夹具；真实历史
+            日程尚无独立来源证明，因此真实策略保持 BLOCKED_DATA。
+        funding_schedule_source: 合成测试必须显式传 synthetic_fixture。
 
     Returns:
         ReplayResult（equity_curve / closed_trades / audit_events / violations）。
@@ -70,6 +75,34 @@ def run_replay(
             portal.funding_rates(symbol, portal.window_start, portal.as_of)
         )
 
+    if funding_schedule is not None and (
+        ctx.strategy_id != "fixture" or funding_schedule_source != "synthetic_fixture"
+    ):
+        raise DataBlocked(["historical_funding_schedule_unattested"])
+    expected = funding_schedule or {}
+    for symbol, times in expected.items():
+        if symbol not in ctx.universe.symbols:
+            raise DataBlocked(["funding_schedule_unknown_symbol:{0}".format(symbol)])
+        if not isinstance(times, (list, tuple)) or len(times) > 24 * 90:
+            raise DataBlocked(["funding_schedule_size_invalid:{0}".format(symbol)])
+        if any(not isinstance(t, datetime) or t.tzinfo is None or
+               t.utcoffset() is None or not (portal.window_start < t <= portal.as_of)
+               for t in times):
+            raise DataBlocked(["funding_schedule_time_invalid:{0}".format(symbol)])
+        if len(times) != len(set(times)):
+            raise DataBlocked(["funding_schedule_duplicate_time:{0}".format(symbol)])
+        observed = [time for time, _ in funding_by_symbol[symbol]]
+        if len(observed) != len(set(observed)):
+            raise DataBlocked(["funding_duplicate_time:{0}".format(symbol)])
+        missing = sorted(set(times) - set(observed))
+        unexpected = sorted(set(observed) - set(times))
+        if missing:
+            raise DataBlocked(["funding_gap:{0}:{1}".format(symbol, to_utc_z(missing[0]))])
+        if unexpected:
+            raise DataBlocked(["funding_unexpected:{0}:{1}".format(
+                symbol, to_utc_z(unexpected[0]))])
+    _require_funding_schedule(broker, expected)
+
     snapshots: List[Any] = []
     if include_snapshots and getattr(adapter, "requires_external_snapshot", False):
         for symbol in ctx.universe.symbols:
@@ -84,7 +117,7 @@ def run_replay(
     if snapshots:
         events.extend(collect_snapshot_events(snapshots))
     events.extend(collect_daily_mark_events(portal.window_start, portal.as_of))
-    events.extend(collect_funding_check_events(portal.window_start, portal.as_of))
+    events.extend(collect_funding_check_events(expected, portal.window_start, portal.as_of))
     schedule = build_schedule(events)
 
     audit: List[Dict[str, Any]] = [
@@ -116,11 +149,11 @@ def run_replay(
                 funding_received.add(event.subject)
             elif event.kind == FUNDING_CHECK:
                 missing = [
-                    "funding_gap:{0}:{1}".format(symbol, to_utc_z(timestamp))
-                    for symbol in sorted(broker.positions)
-                    if broker.positions[symbol].is_open()
-                    and broker.positions[symbol].entry_time < timestamp
-                    and symbol not in funding_received
+                    "funding_gap:{0}:{1}".format(event.subject, to_utc_z(timestamp))
+                    for position in (broker.positions.get(event.subject),)
+                    if position is not None and position.is_open()
+                    and position.entry_time < timestamp
+                    and event.subject not in funding_received
                 ]
                 if missing:
                     raise DataBlocked(missing)
@@ -136,6 +169,7 @@ def run_replay(
                 intents = adapter.intents(ctx)
                 if intents:
                     broker.submit(intents, bar, bar.close_time)
+                _require_funding_schedule(broker, expected)
                 _apply_protective_prices(broker, adapter, bar.symbol)
             elif event.kind == DAILY_MARK:
                 missing = [
@@ -159,6 +193,16 @@ def run_replay(
         audit_events=tuple(_finalize_audit(audit)),
         invariant_violations=tuple(broker.invariant_violations),
     )
+
+
+def _require_funding_schedule(
+    broker: VirtualBroker, expected: Mapping[str, Sequence[datetime]],
+) -> None:
+    missing = ["funding_schedule_unattested:{0}".format(symbol)
+               for symbol in sorted(broker.positions)
+               if broker.positions[symbol].is_open() and symbol not in expected]
+    if missing:
+        raise DataBlocked(missing)
 
 
 def _apply_protective_prices(broker: VirtualBroker, adapter: Any, symbol: str) -> None:
@@ -188,17 +232,20 @@ def _finalize_audit(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """保留发生顺序为 seq，并按 (ts, seq) 输出固定行序。"""
     prepared = [
         {
-            "ts": to_utc_z(event["ts"]) if event.get("ts") else "",
+            "ts": event.get("ts"),
             "seq": index,
             "type": event.get("type"),
             "payload": event.get("payload", {}),
         }
         for index, event in enumerate(events)
     ]
-    prepared.sort(key=lambda item: (item["ts"], item["seq"]))
+    prepared.sort(key=lambda item: (
+        parse_utc(item["ts"]) if item["ts"] is not None else datetime.min.replace(tzinfo=timezone.utc),
+        item["seq"],
+    ))
     return [
         {
-            "ts": item["ts"],
+            "ts": to_utc_z(item["ts"]) if item["ts"] is not None else "",
             "seq": position,
             "type": item["type"],
             "payload": item["payload"],

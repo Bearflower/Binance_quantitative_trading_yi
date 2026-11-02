@@ -85,7 +85,8 @@ def to_utc_z(value: datetime) -> str:
         value = value.replace(tzinfo=UTC)
     else:
         value = value.astimezone(UTC)
-    return value.strftime("%Y-%m-%dT%H:%M:%SZ")
+    timespec = "microseconds" if value.microsecond else "seconds"
+    return value.isoformat(timespec=timespec).replace("+00:00", "Z")
 
 
 def parse_utc(raw: Any) -> datetime:

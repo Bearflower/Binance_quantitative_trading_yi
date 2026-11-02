@@ -16,6 +16,39 @@ DEPLOY_ID="__DEPLOY_ID__"
 echo "模式: ${DEPLOY_MODE}"
 echo "========================================"
 
+# Compose parses every service's env_file even in target-only deployment modes.
+# Prepare the isolated funding writer secret before the first compose command.
+mkdir -p .secrets
+chmod 700 .secrets
+FUNDING_SECRET_FILE=.secrets/ai_tuner_funding_schedule.env
+if grep -q '^AI_TUNER_FUNDING_DB_PASSWORD=' "$FUNDING_SECRET_FILE" 2>/dev/null; then
+  AI_TUNER_FUNDING_DB_PASSWORD=$(sed -n 's/^AI_TUNER_FUNDING_DB_PASSWORD=//p' "$FUNDING_SECRET_FILE" | tail -n 1)
+  if ! grep -qx 'AI_TUNER_FUNDING_DB_USER=ai_tuner_funding_writer' "$FUNDING_SECRET_FILE"; then
+    echo "❌ 资金费采集角色配置不匹配，中止部署"
+    exit 1
+  fi
+else
+  AI_TUNER_FUNDING_DB_PASSWORD=$(openssl rand -hex 32)
+  printf 'AI_TUNER_FUNDING_DB_USER=ai_tuner_funding_writer\nAI_TUNER_FUNDING_DB_PASSWORD=%s\n' \
+    "$AI_TUNER_FUNDING_DB_PASSWORD" > "$FUNDING_SECRET_FILE"
+fi
+if ! [[ "$AI_TUNER_FUNDING_DB_PASSWORD" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "❌ 资金费采集数据库密钥格式无效，中止部署"
+  exit 1
+fi
+# A pre-existing env_file must not smuggle trading credentials or override DB
+# routing. The only allowed keys are the dedicated writer identity and secret.
+if [ "$(grep -c '^AI_TUNER_FUNDING_DB_USER=' "$FUNDING_SECRET_FILE")" -ne 1 ] || \
+   [ "$(grep -c '^AI_TUNER_FUNDING_DB_PASSWORD=' "$FUNDING_SECRET_FILE")" -ne 1 ] || \
+   grep -qvE '^(AI_TUNER_FUNDING_DB_USER|AI_TUNER_FUNDING_DB_PASSWORD)=' "$FUNDING_SECRET_FILE"; then
+  echo "❌ 资金费采集密钥文件存在额外或重复配置，中止部署"
+  exit 1
+fi
+chmod 600 "$FUNDING_SECRET_FILE"
+
+# Never activate the profiled funding collector before its migration and ACL gate.
+export COMPOSE_PROFILES=
+
 # calibrated-first-create begin
 # 一次性 changed-files 信号只用于首次创建新服务。此分支不得触碰
 # 共用 trading-btc-eth:latest 的生产策略或既有影子容器。
@@ -230,6 +263,28 @@ if [ "$DEPLOY_MODE" = "full" ] && grep -q "allocation-fix:" docker-compose.overr
   exit 1
 fi
 
+# Dedicated persistent monitor alert state lives in this service's existing
+# bind mount. Provision it for the image's non-root UID before any collector
+# start; otherwise a restart could bypass the 15-minute alert cooldown.
+mkdir -p logs/ai_tuner_funding_schedule
+chown 1000:1000 logs/ai_tuner_funding_schedule
+chmod 700 logs/ai_tuner_funding_schedule
+
+stop_funding_collector_if_running() {
+  # Exact container only; never stop sibling AI Tuner or trading services.
+  if docker inspect ai-tuner-funding-schedule >/dev/null 2>&1; then
+    docker stop ai-tuner-funding-schedule >/dev/null
+    if [ "$(docker inspect -f '{{.State.Status}}' ai-tuner-funding-schedule)" = "running" ]; then
+      echo "❌ 资金费采集器仍在运行，中止部署"
+      return 1
+    fi
+  fi
+}
+# Strict fail-closed: an existing profiled service must not continue collecting
+# under a new deployment before this run's migration/password/ACL gate passes.
+# Any resulting missing five-minute slots are real gaps, never backfilled.
+stop_funding_collector_if_running
+
 # 1.5 磁盘预检查（仅普通全量部署）。目标化首次创建不得执行全局 prune。
 echo "💾 磁盘预检查..."
 FREE_KB=$(df / | awk 'NR==2 {print $4}')
@@ -265,7 +320,7 @@ RESIDUAL_CANDIDATES="trading_system-postgres trading_system-hrs trading_system-b
   trading_system-btc_eth_aggressive trading_system-new_coin trading_system-grid \
   trading_system-grid-realtime trading_system-aggtrade-collector \
   trading_system-mtcps-xau-shadow trading_system-mtcps-xau-calibrated-shadow \
-  ai-tuner trading_system-kline trading_system-kline-monitor data-backend dashboard-api"
+  ai-tuner ai-tuner-funding-schedule trading_system-kline trading_system-kline-monitor data-backend dashboard-api"
 if [ -z "$PROJECT_IDS" ]; then
   # 未取到本项目容器清单（compose 异常）时不删任何容器：
   # 先删后 up 失败会导致全部服务停机且无替代，宁可让 docker compose up 自己报冲突
@@ -337,6 +392,7 @@ docker compose run -T --rm --no-deps grid-realtime \
 # Docker Compose 重建失败可能留下形如「旧容器 ID_服务名」的 Created 容器。
 # 仅在正式容器仍运行且健康、残留已超过 5 分钟时清理；否则停止部署。
 python3 scripts/cleanup_compose_created.py
+# 资金费采集器位于 funding-schedule profile，不在此全局 up 中启动/重建。
 echo "🔄 docker compose up -d..."
 docker compose --parallel 1 up -d --remove-orphans
 
@@ -437,12 +493,20 @@ printf '%s\n' \
         --set snapshot_password="$AI_TUNER_SNAPSHOT_DB_PASSWORD" \
         -U trading_migration_admin -d trading_platform \
       >/dev/null
+printf '%s\n' \
+  "ALTER ROLE ai_tuner_funding_writer LOGIN PASSWORD :'funding_password';" \
+  | docker exec -i trading_system-postgres \
+      psql --set ON_ERROR_STOP=on \
+        --set funding_password="$AI_TUNER_FUNDING_DB_PASSWORD" \
+        -U trading_migration_admin -d trading_platform \
+      >/dev/null
 # 切断业务运行时的超级用户/数据库 owner 能力，使上面的 REVOKE 真正生效。
 ROLE_MIGRATION_APPLIED=0
 rollback_role_migration() {
   rc=$?
   trap - ERR
   set +e
+  stop_funding_collector_if_running || echo "❌ 资金费采集器停止失败，需人工立即隔离"
   if [ "$ROLE_MIGRATION_REQUIRED" = "1" ] && [ "$ROLE_MIGRATION_APPLIED" = "1" ]; then
     echo "⚠️ 权限迁移后门禁失败，恢复 trading_user 原权限和数据库 owner"
     docker exec trading_system-postgres \
@@ -474,7 +538,99 @@ if [ "$PERMISSION_BOUNDARY_OK" != "1" ]; then
   echo "❌ AI Tuner 快照权限边界验证失败，中止部署"
   false
 fi
+# A prospective public-data collector must have no trading or parameter-write
+# surface, even through an inherited role or PUBLIC table grant.
+FUNDING_PERMISSION_BOUNDARY_OK=$(docker exec trading_system-postgres \
+  psql --set ON_ERROR_STOP=on -U trading_migration_admin -d trading_platform -tAc \
+    "SELECT (
+      EXISTS (SELECT 1 FROM pg_roles WHERE rolname='ai_tuner_funding_writer'
+              AND rolcanlogin AND NOT (rolsuper OR rolcreatedb OR rolcreaterole OR rolreplication))
+      AND NOT EXISTS (SELECT 1 FROM pg_auth_members
+                      WHERE member='ai_tuner_funding_writer'::regrole)
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_database d WHERE d.datname=current_database()
+          AND (d.datdba='ai_tuner_funding_writer'::regrole
+               OR has_database_privilege('ai_tuner_funding_writer',d.oid,'CREATE'))
+      )
+      AND has_schema_privilege('ai_tuner_funding_writer','public','USAGE')
+      AND NOT has_schema_privilege('ai_tuner_funding_writer','public','CREATE')
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_namespace n
+        WHERE n.nspname NOT IN ('pg_catalog','information_schema','public')
+          AND n.nspname NOT LIKE 'pg_toast%'
+          AND n.nspname NOT LIKE 'pg_temp%'
+          AND has_schema_privilege('ai_tuner_funding_writer',n.oid,'USAGE,CREATE')
+      )
+      AND has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','SELECT')
+      AND has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','INSERT')
+      AND has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','SELECT')
+      AND has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','INSERT')
+      AND has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_universe_scan_runs','SELECT')
+      AND has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_universe_snapshots','SELECT')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','UPDATE')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','DELETE')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','TRUNCATE')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_runs','REFERENCES,TRIGGER')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','UPDATE')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','DELETE')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','TRUNCATE')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_funding_schedule_observations','REFERENCES,TRIGGER')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_universe_scan_runs','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+      AND NOT has_table_privilege('ai_tuner_funding_writer','public.ai_tuner_universe_snapshots','INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_class c
+        WHERE c.oid IN ('public.ai_tuner_funding_schedule_runs'::regclass,
+                        'public.ai_tuner_funding_schedule_observations'::regclass)
+          AND c.relowner='ai_tuner_funding_writer'::regrole
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE c.relkind='S'
+          AND n.nspname NOT IN ('pg_catalog','information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+          AND n.nspname NOT LIKE 'pg_temp%'
+          AND has_sequence_privilege('ai_tuner_funding_writer',c.oid,'USAGE,SELECT,UPDATE')
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_attribute a JOIN pg_class c ON c.oid=a.attrelid
+          JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE a.attnum > 0 AND NOT a.attisdropped
+          AND c.relkind IN ('r','p','v','m','f')
+          AND n.nspname NOT IN ('pg_catalog','information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+          AND n.nspname NOT LIKE 'pg_temp%'
+          AND (
+            has_column_privilege('ai_tuner_funding_writer',c.oid,a.attnum,'UPDATE,REFERENCES')
+            OR ((n.nspname <> 'public' OR c.relname NOT IN (
+              'ai_tuner_funding_schedule_runs','ai_tuner_funding_schedule_observations'))
+              AND has_column_privilege('ai_tuner_funding_writer',c.oid,a.attnum,'INSERT'))
+            OR ((n.nspname <> 'public' OR c.relname NOT IN (
+              'ai_tuner_funding_schedule_runs','ai_tuner_funding_schedule_observations',
+              'ai_tuner_universe_scan_runs','ai_tuner_universe_snapshots'))
+              AND has_column_privilege('ai_tuner_funding_writer',c.oid,a.attnum,'SELECT'))
+          )
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE n.nspname NOT IN ('pg_catalog','information_schema')
+          AND n.nspname NOT LIKE 'pg_toast%'
+          AND n.nspname NOT LIKE 'pg_temp%'
+          AND c.relkind IN ('r','p','v','m','f')
+          AND (n.nspname <> 'public' OR c.relname NOT IN (
+            'ai_tuner_funding_schedule_runs','ai_tuner_funding_schedule_observations',
+            'ai_tuner_universe_scan_runs','ai_tuner_universe_snapshots'))
+          AND has_table_privilege('ai_tuner_funding_writer',c.oid,
+                                  'SELECT,INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER')
+      )
+    )::int" | tr -d '[:space:]')
+if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then
+  echo "❌ AI Tuner 资金费日程采集权限边界验证失败，中止部署"
+  stop_funding_collector_if_running
+  false
+fi
 docker compose restart ai-tuner-snapshot >/dev/null
+# Only now may the profiled service start. --no-deps avoids touching postgres.
+docker compose --profile funding-schedule up -d --no-deps ai-tuner-funding-schedule
 echo "✅ init-scripts 全部执行完毕"
 # ==========================================================
 
@@ -488,7 +644,7 @@ for i in $(seq 1 60); do
     trading_system-btc_eth_aggressive trading_system-mtcps-xau-shadow \
     trading_system-mtcps-xau-calibrated-shadow \
     trading_system-new_coin trading_system-grid trading_system-grid-realtime \
-    trading_system-aggtrade-collector ai-tuner ai-tuner-snapshot \
+    trading_system-aggtrade-collector ai-tuner ai-tuner-snapshot ai-tuner-funding-schedule \
     trading_system-kline trading_system-kline-monitor data-backend dashboard-api; do
     state=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo missing)
     health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || echo missing)
