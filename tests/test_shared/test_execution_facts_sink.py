@@ -176,13 +176,24 @@ def test_upsert_income_sql_safe_and_includes_raw(sink: PostgresExecutionFactsSin
         assert_sql_safe(sql)
 
     income_sql, income_args = queries[0]
-    assert "ON CONFLICT (account_id, tran_id) DO UPDATE" in income_sql
+    assert "ON CONFLICT (account_id, income_type, tran_id) DO UPDATE" in income_sql
     assert len(income_args) == 9
 
     raw_sql, raw_args = queries[1]
     assert raw_args[0] == "um/income"
     assert raw_args[1] == "income"
-    assert raw_args[2] == "main:999888777"
+    assert raw_args[2] == "main:REALIZED_PNL:999888777"
+
+
+def test_income_types_with_same_tran_id_have_distinct_raw_identity(sink):
+    pnl = _sample_income()
+    fee = _sample_income()
+    fee.income_type = "COMMISSION"
+    fee.income = "-0.1"
+    asyncio.run(sink.upsert_income([pnl, fee]))
+    raw_ids = [args[2] for sql, args in sink.db.transactions[0]
+               if "execution_fact_raw" in sql]
+    assert raw_ids == ["main:REALIZED_PNL:999888777", "main:COMMISSION:999888777"]
 
 
 def test_upsert_empty_list_is_noop(sink: PostgresExecutionFactsSink):

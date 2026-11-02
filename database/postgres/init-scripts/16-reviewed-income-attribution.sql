@@ -12,7 +12,7 @@ CREATE TABLE IF NOT EXISTS trading.reviewed_income_attribution (
     evidence        JSONB NOT NULL,
     reviewed_by     TEXT NOT NULL,
     reviewed_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (account_id, tran_id),
+    PRIMARY KEY (account_id, income_type, tran_id),
     CHECK (income_type IN ('REALIZED_PNL', 'COMMISSION', 'FUNDING_FEE')),
     CHECK (asset = 'USDT')
 );

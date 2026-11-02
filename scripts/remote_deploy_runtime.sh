@@ -50,6 +50,37 @@ if [ "$DEPLOY_MODE" = "calibrated-first-create" ]; then
 fi
 # calibrated-first-create end
 
+# execution-facts-first-create begin
+# 收入事件主键迁移必须先完成；只拉取采集镜像并创建独立容器，
+# 不触发正在运行的策略服务或其本地热修复镜像。
+if [ "$DEPLOY_MODE" = "execution-facts-first-create" ]; then
+  echo "📥 仅拉取执行事实采集镜像..."
+  docker compose pull hrs-strategy
+  echo "🔄 仅创建执行事实采集器..."
+  docker compose up -d --no-deps execution-facts-collector
+  TARGET_CONTAINER="trading_system-execution-facts"
+  RUNNING=0
+  for i in $(seq 1 30); do
+    state=$(docker inspect -f '{{.State.Status}}' "$TARGET_CONTAINER" 2>/dev/null || echo missing)
+    if [ "$state" = "running" ]; then
+      RUNNING=1
+      break
+    fi
+    sleep 2
+  done
+  if [ "$RUNNING" -ne 1 ]; then
+    docker compose logs --tail=100 execution-facts-collector || true
+    exit 1
+  fi
+  mkdir -p deploy_logs
+  DEPLOY_TIME=$(date "+%Y-%m-%d %H:%M:%S")
+  echo "[${DEPLOY_TIME}] DEPLOY_SUCCESS commit=${COMMIT_SHA} deploy_id=${DEPLOY_ID} mode=${DEPLOY_MODE}" \
+    >> "deploy_logs/$(date '+%Y%m%d').log"
+  echo "✅ 执行事实采集器已创建；现有策略容器未更新"
+  exit 0
+fi
+# execution-facts-first-create end
+
 # 1.5 磁盘预检查（仅普通全量部署）。目标化首次创建不得执行全局 prune。
 echo "💾 磁盘预检查..."
 FREE_KB=$(df / | awk 'NR==2 {print $4}')

@@ -73,7 +73,6 @@ class DatabaseManager:
             host=host,
             port=port,
             database=database,
-            password=self.password  # 使用脱敏后的属性
         )
     
     @property

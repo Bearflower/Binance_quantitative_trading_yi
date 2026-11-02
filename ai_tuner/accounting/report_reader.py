@@ -47,7 +47,7 @@ async def read_hrs_summary_provenance(
 
 
 _INCOME_SQL = (
-    "SELECT account_id, tran_id, symbol, income_type, income, asset, trade_id "
+    "SELECT account_id, tran_id, symbol, income_type, income, asset, trade_id, event_time_utc "
     "FROM trading.execution_fact_income "
     "WHERE account_id = $1 AND event_time_utc >= $2 AND event_time_utc < $3 "
     "AND income_type = ANY($4::text[])"

@@ -47,16 +47,16 @@ def build_economic_report(
         if account_id and order_id and strategy:
             order_owners[(account_id, str(trade["symbol"]), order_id)].add(str(strategy))
 
-    income_by_id: dict[tuple[str, str], dict] = {}
+    income_by_id: dict[tuple[str, str, str], dict] = {}
     for income in incomes:
-        key = (str(income["account_id"]), str(income["tran_id"]))
+        key = (str(income["account_id"]), str(income["income_type"]), str(income["tran_id"]))
         if key in income_by_id and income_by_id[key] != income:
             raise ValueError(f"冲突的 income tran_id: {key}")
         income_by_id[key] = income
 
-    overrides_by_id: dict[tuple[str, str], dict] = {}
+    overrides_by_id: dict[tuple[str, str, str], dict] = {}
     for override in reviewed_overrides:
-        key = (str(override["account_id"]), str(override["tran_id"]))
+        key = (str(override["account_id"]), str(override["income_type"]), str(override["tran_id"]))
         if key in overrides_by_id and overrides_by_id[key] != override:
             raise ValueError(f"冲突的 reviewed override tran_id: {key}")
         overrides_by_id[key] = override
@@ -126,7 +126,7 @@ def build_economic_report(
                 "order_owner_missing", "order_owner_ambiguous",
             }:
                 override = overrides_by_id.get(
-                    (str(income["account_id"]), str(income["tran_id"]))
+                    (str(income["account_id"]), kind, str(income["tran_id"]))
                 )
                 if override is not None:
                     same_event = (
@@ -173,7 +173,10 @@ def build_economic_report(
             for strategy, values in sorted(by_strategy.items())
         },
         "other_asset_totals": {asset: str(value) for asset, value in sorted(other_assets.items())},
-        "unattributed": sorted(unattributed, key=lambda row: (row["account_id"], row["tran_id"])),
+        "unattributed": sorted(
+            unattributed,
+            key=lambda row: (row["account_id"], row["income_type"], row["tran_id"]),
+        ),
         "income_count": len(income_by_id),
     }
 
