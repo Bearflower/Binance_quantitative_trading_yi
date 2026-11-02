@@ -3,6 +3,7 @@ BTC/ETH策略逻辑
 基于评分引擎的趋势跟踪策略
 """
 import asyncio
+import math
 import os
 from typing import Dict, Optional, Tuple, Any, Set
 from decimal import Decimal
@@ -23,7 +24,8 @@ from shared.notification import NotificationClient
 from shared.indicators import TechnicalIndicators
 from shared.dynamic_atr_filter import DynamicATRFilter
 from shared.condition_orders import record_condition_order, get_open_orders
-from shared.strategy_state import load_matching_position_entry_time
+from shared.strategy_state import load_matching_position_entry_time, save_strategy_state
+from shared.position_entry_recovery import verified_anchored_lot
 from shared.trade_logger import TradeLogger
 from shared.capital_manager import CapitalManager
 from shared.position_ownership import (
@@ -71,6 +73,10 @@ _MIN_LEVERAGE = 1
 
 # 止盈类平仓原因白名单：这些平仓不计入止损统计（与下方各止盈调用点 close_reason 保持一致）
 _TAKE_PROFIT_CLOSE_REASONS = {"TP1", "TP2", "TRAILING_STOP"}
+
+# Audited first fills of the 2026-11-02 legacy lots.
+_LEGACY_ENTRY_ANCHORS = {"ETHUSDT": 1793409086845, "SOLUSDT": 1793347876165, "XRPUSDT": 1793423628181}
+_LEGACY_MAX_HOLD_HOURS = 120
 
 
 def _safe_last(indicators: Dict, timeframe: str, field: str) -> Optional[float]:
@@ -682,6 +688,7 @@ class BTCEthStrategy:
             os.path.join(config_dir, "config.yaml"),
             db=self.db_manager,
             strategy_id=self.instance.capital_strategy_id,
+            require_current_allocation=bool(self.instance.capital_strategy_id),
         )
         
         # 最小持仓量阈值（v6.23.1：从配置读取，禁止硬编码）
@@ -2121,6 +2128,33 @@ class BTCEthStrategy:
             return None
         return equity
 
+    async def _owned_exchange_margin_for_allocation(self) -> Optional[float]:
+        """Read actual owned exchange positions, including ones not adopted on restart."""
+        try:
+            exchange_positions = await self.binance.get_position()
+            if not isinstance(exchange_positions, list):
+                raise ValueError("positionRisk did not return a list")
+            total = 0.0
+            for item in exchange_positions:
+                amount = float(item.get("positionAmt", 0) or 0)
+                if abs(amount) <= self.min_position_amt:
+                    continue
+                symbol = item.get("symbol")
+                owner = await resolve_position_owner(
+                    self.db_manager, symbol, status_filter=False
+                )
+                if owner != self.my_record_name and symbol not in self.positions:
+                    continue
+                price = float(item.get("markPrice", 0) or 0)
+                leverage = float(item.get("leverage", 0) or 0)
+                if not all(map(math.isfinite, (amount, price, leverage))) or price <= 0 or leverage <= 0:
+                    raise ValueError(f"invalid positionRisk margin inputs for {symbol}")
+                total += calc_position_margin(amount, price, DEFAULT_CONTRACT_SIZE, leverage)
+            return max(total, self._calc_current_total_margin())
+        except Exception as exc:
+            logger.error("交易所自有持仓保证金读取失败，拒绝开仓", error=str(exc), exc_info=True)
+            return None
+
     async def _check_total_margin_ratio(self, signal: Dict) -> bool:
         """检查总持仓保证金是否超过账户权益比例阈值（动态读取配置）
 
@@ -2130,6 +2164,21 @@ class BTCEthStrategy:
         Returns:
             bool: True 可开仓；False 超限拒绝开仓
         """
+        occupied_margin = await self._owned_exchange_margin_for_allocation()
+        if occupied_margin is None:
+            return False
+        proposed_margin = calc_position_margin(
+            signal['quantity'], signal['entry_price'], DEFAULT_CONTRACT_SIZE,
+            max(float(signal['leverage']), _MIN_LEVERAGE),
+        )
+        allowed, reason = await self.capital_mgr.can_open_within_limit(
+            occupied_margin, proposed_margin
+        )
+        if not allowed:
+            logger.warning("月度分配额度拒绝开仓", symbol=signal['symbol'], reason=reason,
+                           occupied=occupied_margin, proposed=proposed_margin)
+            return False
+
         # 1. 动态读取阈值（每次重新读取，保证配置更新立即生效）
         ratio_limit = self.capital_mgr.get_account_ratio_cap()
         if ratio_limit is None or ratio_limit <= 0:
@@ -2234,6 +2283,32 @@ class BTCEthStrategy:
 
         return positions, margin_dict, qty_dict
 
+    async def _persist_position_metadata(self, symbol: str) -> None:
+        """Keep original exit parameters under a key the main heartbeat cannot overwrite."""
+        pos = self.positions.get(symbol)
+        if not pos or pos.current_quantity <= 0 or not pos.entry_time or not pos.grade or pos.atr <= 0:
+            return
+        data = {
+            "direction": pos.direction,
+            "entry_price": str(pos.entry_price),
+            "entry_time": pos.entry_time.isoformat(),
+            "grade": pos.grade,
+            "atr": str(pos.atr),
+            "initial_quantity": str(pos.initial_quantity),
+            "current_quantity": str(pos.current_quantity),
+            "entry_order_id": pos.entry_order_id,
+            "stop_loss_order_id": pos.stop_loss_order_id,
+            "tp1_order_id": pos.tp1_order_id,
+            "tp2_order_id": pos.tp2_order_id,
+            "trailing_stop_order_id": pos.trailing_stop_order_id,
+            "tp1_hit": pos.tp1_hit,
+            "tp2_hit": pos.tp2_hit,
+        }
+        await save_strategy_state(
+            self.db_manager, self.instance_id, {symbol: data},
+            state_key=f"position:{symbol}",
+        )
+
     async def execute_signal(self, signal: Dict) -> bool:
         """执行交易信号（含加仓统一托管分派，v6.28）
 
@@ -2322,9 +2397,12 @@ class BTCEthStrategy:
 
     async def _open_new_position(self, signal: Dict) -> bool:
         """新开仓主流程（R05/R06/R07 加固；实现在 shared.protection_retry.open_new_position）"""
-        return await protection_retry.open_new_position(
+        opened = await protection_retry.open_new_position(
             self, signal,
             is_owned_fn=is_symbol_owned_by_other, try_claim_fn=try_claim_symbol)
+        if opened:
+            await self._persist_position_metadata(signal['symbol'])
+        return opened
 
     async def _place_entry_protection_orders(
         self, symbol: str, signal: Dict, actual_quantity: Decimal
@@ -2550,6 +2628,7 @@ class BTCEthStrategy:
                 entry_price=float(position.entry_price),
                 grade=position.grade
             )
+            await self._persist_position_metadata(symbol)
             return True
 
         except Exception as e:
@@ -3145,6 +3224,208 @@ class BTCEthStrategy:
         
         return True, "不在经济事件禁止窗口内"
     
+    async def _enforce_allocation_holdings(self) -> bool:
+        """Reconcile the allocation against exchange positions, including unadopted ones."""
+        try:
+            exchange_positions = await self.binance.get_position()
+            if not isinstance(exchange_positions, list):
+                raise ValueError("positionRisk did not return a list")
+            owned = {}
+            margins = {}
+            for item in exchange_positions:
+                symbol = item.get("symbol")
+                amount = float(item.get("positionAmt", 0) or 0)
+                if not math.isfinite(amount):
+                    raise ValueError(f"invalid position amount for {symbol}")
+                if abs(amount) <= self.min_position_amt:
+                    continue
+                owner = await resolve_position_owner(
+                    self.db_manager, symbol, status_filter=False
+                )
+                if owner != self.my_record_name:
+                    if symbol in self.positions:
+                        raise ValueError(f"tracked position owner mismatch: {symbol}: {owner}")
+                    continue
+                price = float(item.get("markPrice", 0) or 0)
+                leverage = float(item.get("leverage", 0) or 0)
+                if not all(map(math.isfinite, (price, leverage))) or price <= 0 or leverage <= 0:
+                    raise ValueError(f"invalid positionRisk margin inputs for {symbol}")
+                owned[symbol] = item
+                margins[symbol] = calc_position_margin(
+                    amount, price, DEFAULT_CONTRACT_SIZE, leverage
+                )
+        except Exception as exc:
+            logger.error("月度额度交易所持仓读取失败", error=str(exc), exc_info=True)
+            return False
+
+        async def close(symbol: str) -> bool:
+            # The ownership record can change after the snapshot. Never close
+            # a shared-account position without verifying it again.
+            owner = await resolve_position_owner(
+                self.db_manager, symbol, status_filter=False
+            )
+            if owner != self.my_record_name:
+                logger.error("月度额度减仓归属变化，拒绝平仓", symbol=symbol, owner=owner)
+                return False
+            latest = await self.binance.get_position(symbol)
+            item = next((p for p in latest if p.get("symbol") == symbol), None)
+            if item is None:
+                return True
+            amount = Decimal(str(item.get("positionAmt", 0) or 0))
+            if amount == 0:
+                return True
+            original = Decimal(str(owned[symbol]["positionAmt"]))
+            if (amount > 0) != (original > 0):
+                logger.error("月度额度减仓方向变化，拒绝平仓", symbol=symbol)
+                return False
+            position = self.positions.get(symbol)
+            unadopted = position is None
+            if unadopted:
+                # Management-only state: no TP/ATR/time-stop reconstruction.
+                position = PositionState()
+                position.direction = "LONG" if amount > 0 else "SHORT"
+                position.current_quantity = abs(amount)
+                position.initial_quantity = abs(amount)
+                position.entry_price = Decimal(str(item.get("entryPrice", 0) or 0))
+            submitted = await self._close_position(
+                symbol, position, position.current_quantity, "ALLOCATION_LIMIT"
+            )
+            if not submitted:
+                return False
+            confirmation = await self._sync_position_with_exchange(
+                symbol, position, "ALLOCATION_LIMIT"
+            )
+            if not confirmation.get("closed"):
+                return False
+            if unadopted:
+                # The temporary state has no order IDs. Clear any remaining
+                # exchange protection before retiring its DB records.
+                canceled = await self._cancel_symbol_conditional_orders(
+                    symbol, "ALLOCATION_LIMIT"
+                )
+                if canceled:
+                    try:
+                        await self.db_manager.execute(
+                            "UPDATE condition_orders SET status='CANCELED', updated_at=NOW() "
+                            "WHERE strategy_name=$1 AND symbol=$2 AND status='OPEN'",
+                            self.strategy_name, symbol,
+                        )
+                    except Exception as exc:
+                        logger.warning("月度额度平仓后条件单记录更新失败", symbol=symbol, error=str(exc))
+                else:
+                    logger.error("月度额度平仓后残余条件单取消失败", symbol=symbol)
+                await release_claim(
+                    self.db_manager, symbol, self.my_record_name, reason="position_closed"
+                )
+            return True
+
+        return await self.capital_mgr.enforce_existing_positions(margins, close)
+
+    async def _close_untracked_exchange_position(
+        self, symbol: str, original_amount: Decimal, reason: str,
+    ) -> bool:
+        """Close only a still-owned position in its original direction."""
+        owner = await resolve_position_owner(
+            self.db_manager, symbol, status_filter=False
+        )
+        if owner != self.my_record_name:
+            logger.error("旧仓时间退出归属变化，拒绝平仓", symbol=symbol, owner=owner)
+            return False
+        latest = await self.binance.get_position(symbol)
+        item = next((p for p in latest if p.get("symbol") == symbol), None)
+        if item is None:
+            return True
+        amount = Decimal(str(item.get("positionAmt", 0) or 0))
+        if amount == 0:
+            return True
+        if (amount > 0) != (original_amount > 0):
+            logger.error("旧仓时间退出方向变化，拒绝平仓", symbol=symbol)
+            return False
+        position = PositionState()
+        position.direction = "LONG" if amount > 0 else "SHORT"
+        position.current_quantity = abs(amount)
+        position.initial_quantity = abs(amount)
+        position.entry_price = Decimal(str(item.get("entryPrice", 0) or 0))
+        if not await self._close_position(
+            symbol, position, position.current_quantity, reason
+        ):
+            return False
+        confirmation = await self._sync_position_with_exchange(
+            symbol, position, reason
+        )
+        if not confirmation.get("closed"):
+            return False
+        canceled = await self._cancel_symbol_conditional_orders(symbol, reason)
+        if canceled:
+            try:
+                await self.db_manager.execute(
+                    "UPDATE condition_orders SET status='CANCELED', updated_at=NOW() "
+                    "WHERE strategy_name=$1 AND symbol=$2 AND status='OPEN'",
+                    self.strategy_name, symbol,
+                )
+            except Exception as exc:
+                logger.warning("旧仓平仓后条件单记录更新失败", symbol=symbol, error=str(exc))
+        else:
+            logger.error("旧仓平仓后残余条件单取消失败", symbol=symbol)
+        await release_claim(
+            self.db_manager, symbol, self.my_record_name, reason="position_closed"
+        )
+        return True
+
+    async def _check_legacy_untracked_time_stop(self) -> bool:
+        """Apply a conservative 120h exit only to verified 2026-11-02 legacy lots.
+
+        Exchange TP/SL orders remain untouched until the deadline. Software
+        TP uses unknown historical ATR/grade and is deliberately not rebuilt.
+        """
+        try:
+            exchange_positions = await self.binance.get_position()
+            if not isinstance(exchange_positions, list):
+                raise ValueError("positionRisk did not return a list")
+            for item in exchange_positions:
+                symbol = item.get("symbol")
+                if symbol not in _LEGACY_ENTRY_ANCHORS or symbol in self.positions:
+                    continue
+                amount = Decimal(str(item.get("positionAmt", 0) or 0))
+                if abs(amount) <= Decimal(str(self.min_position_amt)):
+                    continue
+                owner = await resolve_position_owner(
+                    self.db_manager, symbol, status_filter=False
+                )
+                if owner != self.my_record_name:
+                    continue
+                anchor_ms = _LEGACY_ENTRY_ANCHORS[symbol]
+                fills = await self.binance.get_user_trades(
+                    symbol, start_time=anchor_ms, limit=1000
+                )
+                if not verified_anchored_lot(fills, amount, anchor_ms):
+                    logger.error("旧仓入场时间无法核实，暂停时间退出", symbol=symbol)
+                    return False
+                orders = await self.binance.get_open_algo_orders(symbol)
+                close_side = "SELL" if amount > 0 else "BUY"
+                hard_stop = any(
+                    order.get("symbol") == symbol
+                    and order.get("side") == close_side
+                    and order.get("orderType") in ("STOP", "STOP_MARKET")
+                    and order.get("reduceOnly") is True
+                    for order in orders
+                )
+                if not hard_stop:
+                    logger.error("旧仓缺少可核实的交易所硬止损", symbol=symbol)
+                entry_time = datetime.fromtimestamp(anchor_ms / 1000, timezone.utc)
+                deadline = entry_time + timedelta(hours=_LEGACY_MAX_HOLD_HOURS)
+                if datetime.now(timezone.utc) >= deadline:
+                    logger.warning("旧仓达到保守时间上限，执行退出", symbol=symbol,
+                                   entry_time=str(entry_time), deadline=str(deadline))
+                    if not await self._close_untracked_exchange_position(
+                        symbol, amount, "LEGACY_TIME_STOP"
+                    ):
+                        return False
+            return True
+        except Exception as exc:
+            logger.error("旧仓时间退出检查失败", error=str(exc), exc_info=True)
+            return False
+
     @property
     def state_snapshot_safe_to_write(self) -> bool:
         return not self._unverified_entry_time_symbols
@@ -3161,6 +3442,13 @@ class BTCEthStrategy:
         5. 动态利润保护
         6. 时间止损
         """
+        try:
+            await self._enforce_allocation_holdings()
+        except Exception as e:
+            logger.error("月度额度持仓检查失败，继续持仓保护", error=str(e), exc_info=True)
+
+        await self._check_legacy_untracked_time_stop()
+
         try:
             for symbol, position in self.positions.items():
                 try:
@@ -3231,6 +3519,8 @@ class BTCEthStrategy:
 
         # 定时清理过期占用（R07-F7：按 claim_cleanup_interval_minutes 节流）
         await self._maybe_cleanup_expired_claims()
+        for symbol in list(self.positions):
+            await self._persist_position_metadata(symbol)
     
     async def _get_current_price(self, symbol: str) -> Optional[Decimal]:
         """
@@ -3430,6 +3720,7 @@ class BTCEthStrategy:
         """
         try:
             # 确定平仓方向（与持仓方向相反）
+            entry_direction = position.direction
             close_side = "SELL" if position.direction == "LONG" else "BUY"
 
             # 入口持仓同步：先查交易所实际持仓量（条件单可能已部分成交）
@@ -3446,15 +3737,19 @@ class BTCEthStrategy:
                     current_price=current_price, close_quantity=close_quantity
                 )
                 # 止损打标：本次平仓若为止损（非止盈）且由条件单促成，记录止损供看板统计
-                await self._mark_stop_loss_if_needed(symbol, position, close_reason, pnl)
+                await self._mark_stop_loss_if_needed(
+                    symbol, position, close_reason, pnl, side_override=close_side
+                )
                 return True
 
             # 先确认精度，避免失败时先撤掉仍有效的保护单。
             precision_info = await self._get_symbol_precision(symbol)
 
-            # 下单前先取消交易所所有条件单（止盈/止损/动态追踪等）
-            # 避免条件单占用仓位触发 [-4118] 或条件单已平仓触发 [-2022]
-            await self._cancel_symbol_conditional_orders(symbol, close_reason)
+            # 月度额度/旧仓时间退出必须保留交易所硬止损，直到确认全仓已平。
+            # 若 reduce-only 被现有条件单拒绝，保留保护并在下个周期重试。
+            preserve_protection = close_reason in ("ALLOCATION_LIMIT", "LEGACY_TIME_STOP")
+            if not preserve_protection:
+                await self._cancel_symbol_conditional_orders(symbol, close_reason)
 
             # 确保平仓数量不超过当前持仓数量
             actual_close_quantity = min(close_quantity, position.current_quantity)
@@ -3645,6 +3940,12 @@ class BTCEthStrategy:
                     # [-2022] 条件单已平仓，无持仓可平
                     # [-4118] 条件单占仓，新平仓单超卖
                     if isinstance(e, BinanceAPIError) and e.code in (-2022, -4118):
+                        if preserve_protection:
+                            logger.error(
+                                f"{symbol} 平仓被现有保护单阻断，保留硬止损等待下轮处理",
+                                close_reason=close_reason, error_code=e.code,
+                            )
+                            break
                         error_code = e.code
                         logger.warning(
                             f"{symbol} ReduceOnly 被拒（{error_code}），先取消条件单再同步持仓",
@@ -3668,7 +3969,9 @@ class BTCEthStrategy:
                                 current_price=current_price, close_quantity=close_quantity
                             )
                             # 止损打标：与入口 closed 分支保持一致
-                            await self._mark_stop_loss_if_needed(symbol, position, close_reason, pnl)
+                            await self._mark_stop_loss_if_needed(
+                                symbol, position, close_reason, pnl, side_override=close_side
+                            )
                             return True
                         elif sync_result['partially_closed']:
                             # 交易所持仓量 < 本地记录，调整平仓量后继续重试
@@ -3712,6 +4015,17 @@ class BTCEthStrategy:
                     last_error=str(last_error) if last_error else "超时未成交"
                 )
                 return False
+
+            if preserve_protection:
+                confirmation = await self._sync_position_with_exchange(
+                    symbol, position, close_reason
+                )
+                if not confirmation.get('closed'):
+                    logger.error(
+                        f"{symbol} 平仓订单状态未证明全仓已平，保留硬止损",
+                        close_reason=close_reason,
+                    )
+                    return False
             
             # 记录平仓成功日志
             logger.info(
@@ -3720,11 +4034,13 @@ class BTCEthStrategy:
                 order_id=order_result.get('orderId'),
                 close_quantity=float(actual_close_quantity),
                 close_price=float(order_result.get('avgPrice', 0)),
-                remaining_quantity=float(position.current_quantity - actual_close_quantity)
+                remaining_quantity=float(max(Decimal('0'), position.current_quantity - actual_close_quantity))
             )
             
             # 更新持仓数量
-            position.current_quantity -= actual_close_quantity
+            position.current_quantity = max(
+                Decimal('0'), position.current_quantity - actual_close_quantity
+            )
             
             # 计算平仓盈亏并回写 trade_records.realized_pnl
             # 注意：回写失败不影响平仓主流程，异常被内部捕获仅记日志
@@ -3737,7 +4053,7 @@ class BTCEthStrategy:
                 if exit_price > 0 and position.entry_price and position.entry_price > 0:
                     # 使用集中管理的公式计算平仓盈亏
                     pnl = TradeLogger.calculate_pnl(
-                        direction=position.direction,
+                        direction=entry_direction,
                         entry_price=position.entry_price,
                         exit_price=exit_price,
                         quantity=actual_close_quantity
@@ -3754,7 +4070,9 @@ class BTCEthStrategy:
                             executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
                         )
                         # 止损打标：平仓成交后，若本次为止损（非止盈）则记录止损供看板统计
-                        await self._mark_stop_loss_if_needed(symbol, position, close_reason, pnl)
+                        await self._mark_stop_loss_if_needed(
+                            symbol, position, close_reason, pnl, side_override=close_side
+                        )
             except Exception as pnl_error:
                 logger.warning(
                     f"{symbol} 回写平仓盈亏失败，不影响平仓流程",
@@ -3881,7 +4199,8 @@ class BTCEthStrategy:
 
     async def _mark_stop_loss_if_needed(self, symbol: str, position: PositionState,
                                         close_reason: str,
-                                        realized_pnl: Optional[Decimal] = None) -> None:
+                                        realized_pnl: Optional[Decimal] = None,
+                                        side_override: Optional[str] = None) -> None:
         """止损打标（供风控看板"最近止损次数"统计）。
 
         仅非止盈平仓（时间止损 / 条件单止损 / 强平预警 / 极端行情等保护性平仓）才打
@@ -3896,7 +4215,7 @@ class BTCEthStrategy:
         try:
             await trade_logger.log_stop_loss(
                 symbol=symbol,
-                side="SELL" if position.direction == "LONG" else "BUY",
+                side=side_override or ("SELL" if position.direction == "LONG" else "BUY"),
                 realized_pnl=realized_pnl,
             )
         except Exception as e:
@@ -5190,6 +5509,21 @@ class BTCEthStrategy:
                 continue
             if symbol in self.positions:
                 continue  # 已跟踪，幂等跳过
+            if symbol in _LEGACY_ENTRY_ANCHORS:
+                try:
+                    anchor_ms = _LEGACY_ENTRY_ANCHORS[symbol]
+                    fills = await self.binance.get_user_trades(
+                        symbol, start_time=anchor_ms, limit=1000
+                    )
+                    is_legacy = verified_anchored_lot(
+                        fills, Decimal(str(position_amt)), anchor_ms
+                    )
+                except Exception as exc:
+                    logger.warning("旧仓接管身份核实失败，保留交易所管理模式", symbol=symbol, error=str(exc))
+                    continue
+                if is_legacy:
+                    logger.info("旧仓由交易所保护单与保守时间退出管理，跳过软件止盈接管", symbol=symbol)
+                    continue
             ps = await self._build_adopted_position_state(
                 symbol, pos_data, orders_by_symbol.get(symbol, {}))
             if ps is None:

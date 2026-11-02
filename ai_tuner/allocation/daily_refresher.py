@@ -14,6 +14,7 @@
 """
 
 import json
+import math
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -45,7 +46,7 @@ class DailyAllocationRefresher:
     _FETCH_ACTIVE_QUERY = """
         SELECT entries
         FROM public.capital_allocation
-        WHERE month = $1 AND status = 'active'
+        WHERE left(month::text, 7) = $1 AND status = 'active'
         ORDER BY created_at DESC
         LIMIT 1
     """
@@ -54,7 +55,7 @@ class DailyAllocationRefresher:
     _UPDATE_QUERY = """
         UPDATE public.capital_allocation
         SET entries = $1, total_capital = $2
-        WHERE month = $3 AND status = 'active' AND entries = $4::jsonb
+        WHERE left(month::text, 7) = $3 AND status = 'active' AND entries = $4::jsonb
     """
 
     def __init__(
@@ -121,7 +122,7 @@ class DailyAllocationRefresher:
             total_capital = await self._get_actual_balance()
             # 净资产为 None 或 <=0 均视为"获取失败/无可分配资金"，保留上一日旧值，
             # 口径与月度分配的 actual_balance > 0 校验保持一致
-            if total_capital is None or total_capital <= 0:
+            if total_capital is None or not math.isfinite(total_capital) or total_capital <= 0:
                 logger.warning(
                     "获取当日净资产失败或非正数，保留上一日的分配金额", month=month
                 )
@@ -200,6 +201,8 @@ class DailyAllocationRefresher:
         if entries is None or not entries:
             return None
         entries = deepcopy(entries)
+        if not math.isfinite(total_capital) or total_capital <= 0:
+            return None
 
         for item in entries:
             if not isinstance(item, dict):
@@ -210,7 +213,13 @@ class DailyAllocationRefresher:
                 logger.warning("条目缺少 allocated_ratio，保留原值",
                                strategy_id=item.get("strategy_id"))
                 continue
-            item["allocated_amount"] = round(total_capital * float(ratio), _ROUND_DECIMALS)
+            try:
+                ratio_value = float(ratio)
+            except (TypeError, ValueError):
+                return None
+            if not math.isfinite(ratio_value) or not 0 <= ratio_value <= 1:
+                return None
+            item["allocated_amount"] = round(total_capital * ratio_value, _ROUND_DECIMALS)
         return entries
 
     @staticmethod

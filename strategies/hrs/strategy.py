@@ -218,6 +218,7 @@ class HRSStrategy(BaseStrategy):
         self.capital_mgr = CapitalManager(
             os.path.join(config_dir, "config.yaml"),
             strategy_id=self.strategy_name,
+            require_current_allocation=True,
         )
 
         # 候选池为空时休眠配置
@@ -710,7 +711,7 @@ class HRSStrategy(BaseStrategy):
         leverage = self.trading_executor.leverage
         records = []
         for _, pos_data in self.position_manager.get_all_positions().items():
-            pos_qty = abs(float(pos_data.get("entry_quantity", 0) or pos_data.get("quantity", 0) or 0))
+            pos_qty = abs(float(pos_data.get("remaining_quantity", pos_data.get("entry_quantity", pos_data.get("quantity", 0))) or 0))
             pos_price = float(pos_data.get("entry_price", 0) or 0)
             if pos_qty <= 0 or pos_price <= 0:
                 continue
@@ -2535,8 +2536,42 @@ class HRSStrategy(BaseStrategy):
         logger.warning("获取交易所持仓量失败，跳过本轮补单", symbol=symbol, error=str(last_err))
         return None
 
+    async def _enforce_allocation_holdings(self) -> bool:
+        positions = self.position_manager.get_all_positions()
+        margins = {}
+        for symbol, pos in positions.items():
+            quantity = pos.get("remaining_quantity", pos.get("entry_quantity", 0))
+            margins[symbol] = calc_position_margin(
+                quantity, pos.get("entry_price", 0), 1.0, self.trading_executor.leverage
+            )
+
+        async def close(symbol: str) -> bool:
+            pos = positions[symbol]
+            direction = pos.get("direction")
+            ticker = await self.binance_client.get_ticker(symbol)
+            price = float(ticker.get("lastPrice", 0))
+            if price <= 0:
+                logger.error("月度额度减仓取价失败", symbol=symbol)
+                return False
+            result = await self.trading_executor.close_position(
+                symbol=symbol, direction=direction, close_percent=1.0,
+                reason="月度分配额度超额",
+            )
+            return await self._finalize_close_if_filled(
+                symbol=symbol, direction=direction, result=result,
+                entry_price=float(pos.get("entry_price", 0)), exit_price=price,
+                quantity=float(pos.get("remaining_quantity", pos.get("entry_quantity", 0))),
+                close_reason="月度分配额度超额", pos=pos,
+            )
+
+        return await self.capital_mgr.enforce_existing_positions(margins, close)
+
     async def _monitor_positions(self) -> None:
         """监控持仓：移动止盈、时间止损"""
+        try:
+            await self._enforce_allocation_holdings()
+        except Exception as e:
+            logger.error("月度额度持仓检查失败，继续持仓保护", error=str(e), exc_info=True)
         positions = self.position_manager.get_all_positions()
         if not positions:
             return
@@ -4397,6 +4432,16 @@ class HRSStrategy(BaseStrategy):
         # 计算加仓数量
         initial_qty = pos.get("entry_quantity", 0)
         add_qty = initial_qty * self.add_position_size_ratio
+
+        new_margin = calc_position_margin(
+            add_qty, current_price, 1.0, self.trading_executor.leverage
+        )
+        allowed, reject_reason = await self.capital_mgr.can_open_within_limit(
+            self._calc_current_total_margin(), new_margin
+        )
+        if not allowed:
+            logger.warning("HRS 加仓被月度额度拦截", symbol=symbol, reason=reject_reason)
+            return False
 
         # 计算ATR
         atr = await self.trading_executor.calculate_atr(symbol, klines)

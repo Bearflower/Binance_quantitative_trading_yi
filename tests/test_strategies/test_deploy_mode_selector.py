@@ -10,6 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[2]
 MARKER = ".github/deploy-modes/xau-calibrated-shadow-first-create"
 EXECUTION_FACTS_MARKER = ".github/deploy-modes/execution-facts-first-create"
+ALLOCATION_RECONCILE_MARKER = ".github/deploy-modes/allocation-reconcile"
 RETRY_MARKER = ".github/deploy-modes/xau-calibrated-shadow-first-create-retry-1"
 
 
@@ -34,6 +35,14 @@ def test_added_execution_facts_marker_selects_isolated_mode():
 
     assert select_deploy_mode("push", "abc", [("A", EXECUTION_FACTS_MARKER)]) == (
         "execution-facts-first-create"
+    )
+
+
+def test_added_allocation_reconcile_marker_selects_targeted_mode():
+    from scripts.select_deploy_mode import select_deploy_mode
+
+    assert select_deploy_mode("push", "abc", [("A", ALLOCATION_RECONCILE_MARKER)]) == (
+        "allocation-reconcile"
     )
 
 

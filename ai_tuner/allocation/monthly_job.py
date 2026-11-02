@@ -81,7 +81,7 @@ class MonthlyAllocationJob:
     # 幂等性检查：查询当月是否已有分配记录
     _IDEMPOTENCY_CHECK_QUERY = """
         SELECT month, status FROM public.capital_allocation
-        WHERE month = $1
+        WHERE left(month::text, 7) = $1
         LIMIT 1
     """
 
