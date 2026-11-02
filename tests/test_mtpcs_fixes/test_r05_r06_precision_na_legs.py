@@ -1,7 +1,7 @@
 """精度修复 + N/A 保护腿 回归测试（MTPCS 原版 btc_eth + 激进版 btc_eth_aggressive）
 
 本文件只覆盖「精度统一走 _get_precision_params + TP/尾仓数量取整为 0 的 N/A 腿语义」
-修复项，且**两策略参数化**（同一断言对两版本各跑一遍）：
+修复项。共用行为对两策略参数化；重启恢复断言按各策略的实际接管规则分流：
 
   精度修复
     - _get_precision_params 从驼峰键字典（stepSize/tickSize）取真实值
@@ -313,6 +313,7 @@ async def test_restart_loader_keeps_tp_level(strategy, strategy_ctx, monkeypatch
     assert orders['BTCUSDT']['TAKE_PROFIT'] == [{'algo_id': 900, 'tp_level': 2}]
 
 
+@pytest.mark.parametrize('strategy_ctx', [STRATEGY_MODULES[0]], indirect=True, ids=['btc_eth'])
 @pytest.mark.asyncio
 async def test_restart_only_tp2_marks_tp1_na_without_duplicate(strategy, strategy_ctx, monkeypatch):
     s = strategy
@@ -349,6 +350,7 @@ async def test_restart_only_tp2_marks_tp1_na_without_duplicate(strategy, strateg
     s._place_tp_protection_order.assert_not_awaited()
 
 
+@pytest.mark.parametrize('strategy_ctx', [STRATEGY_MODULES[0]], indirect=True, ids=['btc_eth'])
 @pytest.mark.asyncio
 async def test_restart_only_tp2_without_matching_snapshot_does_not_reset_clock(
     strategy, strategy_ctx, monkeypatch,
@@ -381,6 +383,7 @@ async def test_restart_only_tp2_without_matching_snapshot_does_not_reset_clock(
     s.notification.send.assert_awaited_once()
 
 
+@pytest.mark.parametrize('strategy_ctx', [STRATEGY_MODULES[0]], indirect=True, ids=['btc_eth'])
 @pytest.mark.asyncio
 @pytest.mark.parametrize('has_tp1', [False, True])
 async def test_missing_stop_keeps_retry_even_without_matching_snapshot(
@@ -459,6 +462,7 @@ async def test_closed_untracked_position_clears_stop_retry_and_snapshot_hold(str
     assert strategy.state_snapshot_safe_to_write
 
 
+@pytest.mark.parametrize('strategy_ctx', [STRATEGY_MODULES[0]], indirect=True, ids=['btc_eth'])
 @pytest.mark.asyncio
 @pytest.mark.parametrize('has_stop', [False, True])
 async def test_unverified_position_does_not_adopt_when_tp2_disappears(
@@ -540,6 +544,7 @@ async def test_restart_legacy_unknown_tp_never_places_second_tp(strategy, strate
     assert symbol not in s.positions
 
 
+@pytest.mark.parametrize('strategy_ctx', [STRATEGY_MODULES[0]], indirect=True, ids=['btc_eth'])
 @pytest.mark.asyncio
 async def test_legacy_unknown_tp_without_stop_alerts_if_stop_rebuild_fails(
     strategy, strategy_ctx, monkeypatch,
@@ -564,6 +569,97 @@ async def test_legacy_unknown_tp_without_stop_alerts_if_stop_rebuild_fails(
     s._place_tp_protection_order.assert_not_awaited()
     s.notification.send.assert_awaited_once()
     assert symbol not in s.positions
+
+
+@pytest.mark.parametrize('strategy_ctx', [STRATEGY_MODULES[1]], indirect=True, ids=['btc_eth_aggressive'])
+@pytest.mark.asyncio
+async def test_aggressive_tp2_only_untracked_position_keeps_live_stop_without_software_adoption(
+    strategy, strategy_ctx, monkeypatch,
+):
+    """New aggressive recovery requires verified ownership and live stop, never guessed TP state."""
+    s = strategy
+    s.db_manager = AsyncMock()
+    monkeypatch.setattr(strategy_ctx.module, 'resolve_position_owner',
+                        AsyncMock(return_value=s.my_record_name))
+    s.binance.get_open_algo_orders = AsyncMock(return_value=[{
+        'symbol': 'BTCUSDT', 'side': 'SELL', 'orderType': 'STOP',
+        'reduceOnly': True, 'quantity': '0.03', 'triggerPrice': '89',
+    }, {
+        'symbol': 'BTCUSDT', 'side': 'SELL', 'orderType': 'TAKE_PROFIT',
+        'reduceOnly': True, 'quantity': '0.01', 'triggerPrice': '95',
+    }])
+    s._place_conditional_order_and_record = AsyncMock()
+
+    await s._ensure_symbol_protection(
+        {'symbol': 'BTCUSDT', 'positionAmt': '0.03', 'entryPrice': '90'},
+        {'BTCUSDT'},
+        {'BTCUSDT': {'STOP_LOSS': [800], 'TAKE_PROFIT': [{'algo_id': 900, 'tp_level': 2}]}},
+        Decimal('0.002'), Decimal('0.0015'), Decimal('1.5'),
+    )
+
+    assert 'BTCUSDT' not in s.positions
+    s._place_conditional_order_and_record.assert_not_awaited()
+    s.binance.get_open_algo_orders.assert_awaited_once_with('BTCUSDT')
+
+
+@pytest.mark.parametrize('strategy_ctx', [STRATEGY_MODULES[1]], indirect=True,
+                         ids=['btc_eth_aggressive'])
+@pytest.mark.parametrize('covered_qty,placement_ok', [
+    ('0', True), ('0.01', True), ('0', False), ('0.01', False),
+])
+@pytest.mark.asyncio
+async def test_aggressive_untracked_position_repairs_only_missing_hard_stop(
+    strategy, strategy_ctx, monkeypatch, covered_qty, placement_ok,
+):
+    """A TP2-only restart repairs only the stop gap, without adopting software exits."""
+    s = strategy
+    symbol = 'BTCUSDT'
+    s.db_manager = AsyncMock()
+    monkeypatch.setattr(strategy_ctx.module, 'resolve_position_owner',
+                        AsyncMock(return_value=s.my_record_name))
+    existing_orders = []
+    if covered_qty != '0':
+        existing_orders.append({
+            'symbol': symbol, 'side': 'SELL', 'orderType': 'STOP',
+            'reduceOnly': True, 'quantity': covered_qty, 'triggerPrice': '89',
+        })
+    existing_orders.append({
+        'symbol': symbol, 'side': 'SELL', 'orderType': 'TAKE_PROFIT',
+        'reduceOnly': True, 'quantity': '0.01', 'triggerPrice': '95',
+    })
+    missing_qty = Decimal('0.03') - Decimal(covered_qty)
+    repaired_orders = existing_orders + [{
+        'symbol': symbol, 'side': 'SELL', 'orderType': 'STOP',
+        'reduceOnly': True, 'quantity': str(missing_qty), 'triggerPrice': '89',
+    }]
+    s.binance.get_open_algo_orders = AsyncMock(side_effect=(
+        [existing_orders, repaired_orders] if placement_ok else [existing_orders]
+    ))
+    s._get_current_price = AsyncMock(return_value=Decimal('91'))
+    s._calc_protection_atr = AsyncMock(return_value=Decimal('1'))
+    s._get_protection_precision = AsyncMock(
+        return_value=(Decimal('0.01'), Decimal('0.01')))
+    s._calc_protection_prices = MagicMock(return_value={
+        'stop_price': Decimal('89'), 'stop_limit_price': Decimal('88'),
+    })
+    s._place_conditional_order_and_record = AsyncMock(
+        return_value=777 if placement_ok else None)
+    s._place_tp_protection_order = AsyncMock()
+    s._untracked_stop_retry_symbols.add(symbol)
+
+    await s._ensure_symbol_protection(
+        {'symbol': symbol, 'positionAmt': '0.03', 'entryPrice': '90'},
+        {symbol},
+        {symbol: {'TAKE_PROFIT': [{'algo_id': 900, 'tp_level': 2}]}},
+        Decimal('0.002'), Decimal('0.0015'), Decimal('1.5'),
+    )
+
+    assert symbol not in s.positions
+    s._place_tp_protection_order.assert_not_awaited()
+    s._place_conditional_order_and_record.assert_awaited_once()
+    assert s._place_conditional_order_and_record.await_args.args[5] == missing_qty
+    assert (symbol in s._untracked_stop_retry_symbols) is not placement_ok
+    assert s.binance.get_open_algo_orders.await_count == (2 if placement_ok else 1)
 
 
 # ============================================================================
