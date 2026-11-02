@@ -16,6 +16,7 @@ GRANT ALL PRIVILEGES ON SCHEMA trading TO trading_user;
 -- ============================================
 CREATE TABLE IF NOT EXISTS trading.trade_records (
     id SERIAL PRIMARY KEY,
+    account_id TEXT,
     strategy VARCHAR(50) NOT NULL,
     symbol VARCHAR(20) NOT NULL,
     order_id VARCHAR(100),
@@ -27,6 +28,7 @@ CREATE TABLE IF NOT EXISTS trading.trade_records (
     status VARCHAR(20) NOT NULL DEFAULT 'NEW',
     executed_at TIMESTAMP NOT NULL DEFAULT NOW(),
     realized_pnl DECIMAL(20,8),
+    pnl_source VARCHAR(32),
     close_reason VARCHAR(20)
 );
 

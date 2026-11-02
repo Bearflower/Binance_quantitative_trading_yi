@@ -1084,9 +1084,22 @@ def _last_tran_id(collected: List[IncomeFact]) -> Optional[int]:
 def _resolve_window(args: argparse.Namespace) -> Tuple[int, int, List[str]]:
     """解析 CLI 参数 → (窗口起点毫秒, 窗口终点毫秒, 交易对列表)。"""
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
-    start_ms = now_ms - args.days * 24 * 3600 * 1000
+    explicit_start = getattr(args, "start_ms", None)
+    explicit_end = getattr(args, "end_ms", None)
+    if (explicit_start is None) != (explicit_end is None):
+        raise ValueError("必须同时提供 --start-ms 和 --end-ms")
+    if explicit_start is not None:
+        start_ms, end_ms = explicit_start, explicit_end
+        if start_ms < 0 or start_ms >= end_ms:
+            raise ValueError("窗口起点必须小于终点且不能为负数")
+        if end_ms > now_ms:
+            raise ValueError("窗口终点不能位于未来")
+    else:
+        if args.days < 0:
+            raise ValueError("--days 不能为负数")
+        start_ms, end_ms = now_ms - args.days * 24 * 3600 * 1000, now_ms
     symbols = [s.strip().upper() for s in (args.symbols or "").split(",") if s.strip()]
-    return start_ms, now_ms, symbols
+    return start_ms, end_ms, symbols
 
 
 def _build_client_from_env():
@@ -1223,6 +1236,9 @@ async def _run_cli(args: argparse.Namespace) -> int:
         return exit_code
     finally:
         await _maybe_close_sink(db_manager)
+        close_client = getattr(client, "close", None)
+        if close_client is not None:
+            await close_client()
 
 
 def _emit_jsonl(kind: str, result: ExportResult, *, symbol: Optional[str] = None) -> None:
@@ -1250,12 +1266,17 @@ def main() -> None:
     parser.add_argument("--mode", choices=["fills", "income", "both"], default="both")
     parser.add_argument("--symbols", help="逗号分隔的交易对，如 BTCUSDT,ETHUSDT")
     parser.add_argument("--days", type=int, default=7, help="回看窗口天数（业务参数，默认 7）")
+    parser.add_argument("--start-ms", type=int, help="精确 UTC 窗口起点毫秒，需与 --end-ms 同时提供")
+    parser.add_argument("--end-ms", type=int, help="精确 UTC 窗口终点毫秒，不得位于未来")
     parser.add_argument("--account-id", default=os.environ.get("TRADE_ACCOUNT_ID", "default"))
     parser.add_argument("--income-type", default="REALIZED_PNL")
     parser.add_argument("--page-limit", type=int, default=_DEFAULT_PAGE_LIMIT)
     args = parser.parse_args()
 
-    exit_code = asyncio.run(_run_cli(args))
+    try:
+        exit_code = asyncio.run(_run_cli(args))
+    except ValueError as exc:
+        parser.error(str(exc))
     raise SystemExit(exit_code)
 
 
