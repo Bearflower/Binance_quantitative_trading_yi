@@ -15,12 +15,12 @@ class SqliteDb:
         self.conn.execute("ATTACH DATABASE ':memory:' AS trading")
         self.conn.execute(
             "CREATE TABLE trading.trade_records "
-            "(strategy TEXT, executed_at TIMESTAMP, realized_pnl REAL)"
+            "(id INTEGER PRIMARY KEY, strategy TEXT, executed_at TIMESTAMP, realized_pnl REAL)"
         )
 
     def add(self, executed_at, realized_pnl):
         self.conn.execute(
-            "INSERT INTO trading.trade_records VALUES (?, ?, ?)",
+            "INSERT INTO trading.trade_records (strategy, executed_at, realized_pnl) VALUES (?, ?, ?)",
             ("hrs", executed_at, realized_pnl),
         )
 
@@ -81,3 +81,32 @@ def test_loss_alerts_keep_existing_total_record_gate():
     assert any("总亏损" in item for item in anomalies)
     assert any("连续亏损" in item for item in anomalies)
     assert not any("胜率" in item for item in anomalies)
+
+
+def test_recent_profit_resets_consecutive_losses_even_after_old_loss_streak():
+    db = SqliteDb()
+    now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    for hours_ago, pnl in ((5, -1.0), (4, -1.0), (3, -1.0), (2, -1.0),
+                           (1, 2.0), (1, None)):
+        db.add(now - timedelta(hours=hours_ago), pnl)
+
+    checker = DailyHealthCheck({"anomaly_detection": {}}, db, None)
+    report = asyncio.run(checker._collect_recent_performance("hrs"))
+
+    assert report["consecutive_losses"] == 0
+    assert not any("连续亏损" in item for item in checker._detect_anomalies("hrs", report))
+
+
+def test_consecutive_losses_count_only_after_latest_profit_with_same_timestamp():
+    db = SqliteDb()
+    now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
+    earlier = now - timedelta(hours=2)
+    latest = now - timedelta(hours=1)
+    for timestamp, pnl in ((earlier, -1.0), (earlier, -1.0), (latest, 2.0),
+                           (latest, -1.0), (latest, -1.0)):
+        db.add(timestamp, pnl)
+
+    checker = DailyHealthCheck({"anomaly_detection": {}}, db, None)
+    report = asyncio.run(checker._collect_recent_performance("hrs"))
+
+    assert report["consecutive_losses"] == 2
