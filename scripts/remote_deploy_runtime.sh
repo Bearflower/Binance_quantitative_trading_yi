@@ -3,6 +3,9 @@
 set -e
 cd /root/trading_system
 export COMPOSE_FILE=docker-compose.yml:docker-compose.logging.yml
+mkdir -p .deploy_tmp
+exec 9>.deploy_tmp/compose_deploy.lock
+flock -n 9 || { echo "❌ 另一个受控部署正在执行，停止本次部署"; exit 1; }
 
 echo "========================================"
 echo "CI/CD 自动部署"
@@ -331,8 +334,11 @@ docker compose run -T --rm --no-deps grid-realtime \
   --db-path /app/data/grid_realtime.sqlite3
 
 # 4. 只更新镜像变了的容器（compose up -d 自动检测）
+# Docker Compose 重建失败可能留下形如「旧容器 ID_服务名」的 Created 容器。
+# 仅在正式容器仍运行且健康、残留已超过 5 分钟时清理；否则停止部署。
+python3 scripts/cleanup_compose_created.py
 echo "🔄 docker compose up -d..."
-docker compose up -d --remove-orphans
+docker compose --parallel 1 up -d --remove-orphans
 
 # ========== step 4.5：执行数据库 init-scripts（幂等）==========
 # 背景：postgres 官方镜像 entrypoint 仅在 PGDATA 首次为空时自动执行

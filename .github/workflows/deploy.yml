@@ -417,6 +417,7 @@ jobs:
           retry_connect scp docker-compose.logging.yml 43.156.242.184:/root/trading_system/docker-compose.logging.yml
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/scripts"
           retry_connect scp scripts/archive_container_logs.sh 43.156.242.184:/root/trading_system/scripts/archive_container_logs.sh
+          retry_connect scp scripts/cleanup_compose_created.py 43.156.242.184:/root/trading_system/scripts/cleanup_compose_created.py
 
       - name: 📦 同步数据库 init-scripts
         if: steps.deployment_mode.outputs.mode == 'full'
