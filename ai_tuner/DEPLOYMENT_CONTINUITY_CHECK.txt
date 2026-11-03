@@ -1,0 +1,11 @@
+AI Tuner funding-schedule deployment continuity canary (2026-11-03).
+
+This text file has no runtime imports or configuration effect. Its addition
+triggers an AI Tuner image build and a normal deployment while leaving the
+funding-schedule implementation and its dependencies unchanged. The expected
+deployment action is keep: preserve the funding collector and PostgreSQL
+container identities while updating unrelated services.
+
+Verification evidence: GitHub Actions run and read-only production identity
+and scheduled-slot checks, reported separately. Do not treat this file as
+funding evidence or a qualification result.
