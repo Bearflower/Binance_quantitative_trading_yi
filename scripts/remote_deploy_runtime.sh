@@ -679,6 +679,11 @@ for service in $JOURNAL_SERVICES; do
     echo "❌ $service 未使用 journald 日志驱动"
     exit 1
   fi
+  # 没有标准输出的静默容器自然也没有 journal 记录。
+  if [ -z "$(docker logs --tail 1 "$cid" 2>&1)" ]; then
+    echo "⏳ journald $service container=$cid 尚无日志输出（驱动已核对）"
+    continue
+  fi
   found=0
   for i in $(seq 1 15); do
     if [ -n "$(journalctl -q --no-pager -n 1 -o cat CONTAINER_ID_FULL="$cid")" ]; then
@@ -688,7 +693,7 @@ for service in $JOURNAL_SERVICES; do
     sleep 2
   done
   if [ "$found" -ne 1 ]; then
-    echo "❌ $service 的当前容器日志未进入 journald"
+    echo "❌ $service 已有容器日志，但当前容器日志未进入 journald"
     exit 1
   fi
   echo "✅ journald $service container=$cid"
