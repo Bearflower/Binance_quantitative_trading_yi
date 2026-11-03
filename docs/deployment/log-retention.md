@@ -14,6 +14,8 @@ journalctl -f CONTAINER_NAME=dashboard-api
 
 `journalctl` 按容器名跨重建查询，`CONTAINER_ID_FULL=<完整 ID>` 可定位某次运行。`docker logs` 只用于当前容器。业务日志可能含敏感信息，勿将原文复制到公开 CI 日志。
 
+部署后的日志验收先核对 journald 驱动。若某容器尚无任何标准输出，`docker logs` 与 `journalctl` 都为空时记录为“尚无日志输出”；若 `docker logs` 已有内容而 `journalctl` 仍为空，则验收失败。
+
 ## 容量与验证
 
 生产机使用 `/etc/systemd/journald.conf.d/30-trading-log-retention.conf`：持久化、全机 3 GB 上限、根分区保留 5 GB、最长 14 天。容量上限优先，14 天是目标而非保证。检查：
