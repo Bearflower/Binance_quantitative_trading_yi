@@ -48,3 +48,7 @@ AI 归纳，仅供参考：共享净额账户的持仓恢复需要“当前交�
 - 持久证据：[部署记录](../../reports/aggr-legacy-recovery-deploy-2026-11-02.md)、`dbfcc652`、`tests/test_strategies/test_aggr_metadata_restore.py`、`tests/test_strategies/test_aggr_safety_regressions.py`。
 - 必要证据摘要：交易所 live SOL/XRP 0.47/128.2 且止损全量覆盖；看板同步；68 项相关测试通过；到期和新仓自然重启仍待观察。
 - 相关：[共享账户持仓归属](./Binance_quantitative_trading-20260922-shared-account-position-ownership.md)、[安全退出决策](../decisions/Binance_quantitative_trading-20261102-untracked-position-safe-exit.md)。
+
+## 2026-11-03 续报
+
+SOL 部分已实现盈亏致原入场记录被通用归属查询过滤，出现交易所仍有 0.47 多仓、看板与策略状态漏报。已按[部分平仓归属问题](./Binance_quantitative_trading-20261103-partial-pnl-masks-legacy-owner.md)修复并部署。SOL 与 XRP 后续提前以 reduce-only 卖单归零；08:05 北京时间独立复核交易所净仓、在挂条件单和数据库 OPEN 条件单均为零，旧仓验收闭环。原 120 小时到期退出不再需要执行。新仓自然重启恢复仍待实盘验证。
