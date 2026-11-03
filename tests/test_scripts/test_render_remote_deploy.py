@@ -16,6 +16,7 @@ def _valid_values():
         "mode": "calibrated-first-create",
         "commit_sha": "a" * 40,
         "deploy_id": "00007801",
+        "funding_action": "rotate",
     }
 
 
@@ -31,6 +32,7 @@ def test_render_valid_runtime_is_complete_private_and_bash_valid(tmp_path):
     assert 'DEPLOY_MODE="calibrated-first-create"' in rendered
     assert f'COMMIT_SHA="{"a" * 40}"' in rendered
     assert 'DEPLOY_ID="00007801"' in rendered
+    assert 'FUNDING_DEPLOY_ACTION="rotate"' in rendered
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
     assert subprocess.run(["bash", "-n", str(output)]).returncode == 0
 
@@ -65,6 +67,7 @@ def test_render_rejects_missing_or_duplicate_placeholder(tmp_path, source_text):
         ("commit_sha", "$(touch /tmp/nope)"),
         ("deploy_id", "0000780&"),
         ("deploy_id", "deadbeef"),
+        ("funding_action", "keep;echo bad"),
     ],
 )
 def test_render_rejects_invalid_or_sed_metacharacter_input(tmp_path, field, value):

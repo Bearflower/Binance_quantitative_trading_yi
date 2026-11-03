@@ -14,6 +14,7 @@ def test_execution_facts_first_create_renders_isolated_deploy(tmp_path):
         mode="execution-facts-first-create",
         commit_sha="a" * 40,
         deploy_id="00000101",
+        funding_action="rotate",
     )
     runtime = output.read_text()
     isolated = runtime.split("# execution-facts-first-create begin", 1)[1].split(

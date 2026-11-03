@@ -342,6 +342,12 @@ jobs:
             --head HEAD)
           echo "mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
           echo "部署模式: ${DEPLOY_MODE}"
+          FUNDING_DEPLOY_ACTION=$(python3 scripts/select_funding_deploy.py \
+            --event-name "${{ github.event_name }}" \
+            --base "$BASE" \
+            --head HEAD)
+          echo "funding_action=${FUNDING_DEPLOY_ACTION}" >> "$GITHUB_OUTPUT"
+          echo "资金费采集器动作: ${FUNDING_DEPLOY_ACTION}"
 
       - name: 🔑 配置 SSH
         run: |
@@ -446,6 +452,7 @@ jobs:
             --source scripts/remote_deploy_runtime.sh \
             --output "$LOCAL_DEPLOY_SCRIPT" \
             --mode "${{ steps.deployment_mode.outputs.mode }}" \
+            --funding-action "${{ steps.deployment_mode.outputs.funding_action }}" \
             --commit-sha "${{ github.sha }}" \
             --deploy-id "$DEPLOY_ID"
           source /tmp/ci_retry.sh

@@ -2,7 +2,7 @@
 
 本清单只用于前瞻采集器的独立上线核对；它不授权历史回填、服务器回测、调优自动生效或资格考试 PASS。
 
-部署顺序：新服务位于 `funding-schedule` Compose profile。普通部署分支显式清空 `COMPOSE_PROFILES`（覆盖服务器环境与 `.env`），并先仅停止既有 `ai-tuner-funding-schedule`，因此普通 `up -d --remove-orphans` 不会提前启动它。只有 14 号 DDL、独立密码设置和 ACL 门禁全部成功后，部署脚本才用显式 profile、`--no-deps` 启动。重复部署也遵守相同顺序；ACL 失败时再次停止精确目标，不能留下未验证的采集器运行。提前停机造成的缺槽是真实数据缺口，不可伪造回填，后续资格考试按缺口处理。
+部署顺序：服务位于 `funding-schedule` Compose profile。CI 按整段推送变更范围将完整部署判为 `keep` 或 `rotate`，无法判定时安全地选 `rotate`；一次性定向部署不触碰采集器。`keep` 只用于无关变更：部署前验证既有采集器的项目/服务标签、运行健康与容器身份；清空 `COMPOSE_PROFILES`，普通服务更新排除 Postgres 与采集器，并加 `--no-deps`、不用 `--remove-orphans`，避免浮动 Postgres 镜像意外重建；14 号 DDL、独立密码设置与 ACL 门禁照常执行，门禁后核对身份与健康完全未变。`rotate` 用于采集器、共享依赖、Compose、DDL 或部署控制变更：先停止精确采集器，门禁通过后才用显式 profile 与 `--no-deps` 启动。两种路径 ACL 失败均停止精确目标。停机造成的历史缺槽是真实缺口，不可伪造回填，资格考试按缺口处理。
 
 ## 容器存活与采集成功是两件事
 
