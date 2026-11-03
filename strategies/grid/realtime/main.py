@@ -15,7 +15,9 @@ import argparse
 import asyncio
 import math
 import os
+import sqlite3
 import time
+import uuid
 from collections import deque
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -29,6 +31,7 @@ from . import feed as feed_mod
 from .delivery import (RESEARCH, Delivery, WebhookSingleSender)
 from .features import (MS_PER_SECOND, AggTrade, SecondSample,
                        compute_features)
+from .queue_audit import QueueAudit
 from .reference_store import (NO_ACTIVE_REFERENCE, ReferenceReader,
                                SYNC_UNCERTAIN, check_schema, connect)
 from .replay import FactScanner
@@ -139,6 +142,8 @@ class RealtimeService:
         self._queue_last_dropped_ms: Optional[int] = None
         self._queue_overflow_since_ms = 0
         self._queue_recovery_until_ms = 0
+        self._queue_audit: Optional[QueueAudit] = None
+        self._queue_audit_failed = False
         self._event_refs: Dict[str, tuple] = {}
         self._tick_count = 0
         self._sender = sender
@@ -161,6 +166,8 @@ class RealtimeService:
         finally:
             if feed_task is not None:
                 feed_task.cancel()
+            if self._queue_audit is not None:
+                self._queue_audit.close(self._now())
 
     async def tick(self) -> Dict:
         """单拍：drain 成交 → 处理 → 维护延迟。返回量化快照（测试用）。"""
@@ -190,7 +197,21 @@ class RealtimeService:
         reasons = self._reasons(status)
         events += self._health.update(reasons, now_ms, latest or Decimal(0))
         await self._record_and_send(events, now_ms, snap)
+        try:
+            self._audit().checkpoint(
+                now_ms, self._queue_recovery_until_ms,
+                audit_ok=not self._queue_audit_failed)
+        except sqlite3.Error as exc:
+            self._storage_degraded = True
+            self._queue_audit_failed = True
+            logger.error("队列审计 checkpoint 写入失败", error=str(exc))
         self._tick_count += 1
+
+    def _audit(self) -> QueueAudit:
+        if self._queue_audit is None:
+            self._queue_audit = QueueAudit(
+                self._conn, uuid.uuid4().hex, self._now())
+        return self._queue_audit
 
     # ─── 参考同步 ───
 
@@ -378,7 +399,12 @@ class RealtimeService:
         if self._tick_count % interval != 0:
             return
         result = self._delivery.maintenance(now_ms)
-        self._storage_degraded = result["storage_degraded"]
+        self._storage_degraded = result["storage_degraded"] or self._queue_audit_failed
+        try:
+            self._audit().prune(now_ms)
+        except sqlite3.Error as exc:
+            self._storage_degraded = True
+            logger.error("队列审计清理失败", error=str(exc))
         logger.info("实时预警运行态", **self._snapshot())
 
     # ─── feed 接入 ───
@@ -409,6 +435,14 @@ class RealtimeService:
                 self._queue_last_dropped_ms = now
                 warmup_ms = max(self._cfg["features"]["windows_seconds"]) * MS_PER_SECOND
                 self._queue_recovery_until_ms = now + warmup_ms
+                try:
+                    self._audit().drop(
+                        now, dropped.agg_trade_id,
+                        self._queue_recovery_until_ms)
+                except sqlite3.Error as exc:
+                    self._storage_degraded = True
+                    self._queue_audit_failed = True
+                    logger.error("队列逐出审计写入失败", error=str(exc))
             self._trade_queue.put_nowait(trade)
 
     def _drain_trades(self) -> List[AggTrade]:

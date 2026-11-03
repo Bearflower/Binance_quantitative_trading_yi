@@ -304,7 +304,7 @@ if [ "$FREE_GB" -lt 2 ]; then
 fi
 echo "✅ 磁盘充足 (>= 2GB)"
 
-# 任何 up/recreate 前先归档尚未切换的 json-file 容器日志。
+# 任何 up/recreate 前归档 json-file 容器及当前 grid-realtime journald 日志。
 # 即使本轮只更新一项，也保护并行部署后新产生的旧容器日志。
 bash scripts/archive_container_logs.sh "log_archive/pre_up_$(date '+%Y%m%d_%H%M%S')_${DEPLOY_ID}"
 
@@ -380,7 +380,7 @@ docker compose pull
 #   - grid-realtime 业务进程启动只 check_schema（不建表），缺表直接抛错 → crash-loop
 #   - grid-strategy 出口的 _init_export 只在构造时校验一次 schema，失败即永久停用
 #     （只 warning 不重试）→ 若此时表未建好，出口交接会一直不可用直到下次重启
-# 迁移命令幂等：ensure_schema 全 CREATE ... IF NOT EXISTS + ON CONFLICT DO NOTHING
+# 迁移命令幂等：ensure_schema 全 CREATE ... IF NOT EXISTS + 版本更新
 # 卷：与 grid-strategy / grid-realtime 共用 ./data/grid:/app/data
 # --no-deps：不拉起 depends_on（迁移不依赖任何在跑服务）
 echo "🗄️  grid_realtime schema 迁移（一次性）..."
