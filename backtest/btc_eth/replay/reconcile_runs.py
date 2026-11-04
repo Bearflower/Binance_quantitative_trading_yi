@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List
@@ -163,24 +165,34 @@ def reconcile_run_exports(
         "input_hashes": sorted(input_hashes, key=lambda item: item["run_id"]),
     }
     output = Path(output_dir)
-    if any((output / name).exists() for name in
-           ("decision_events.jsonl", "coverage.json", "run_manifest.json")):
+    if output.exists():
         raise FileExistsError(f"reconciliation output already exists: {output}")
-    output.mkdir(parents=True, exist_ok=True)
     payload = "".join(json.dumps(row, sort_keys=True, ensure_ascii=False) + "\n" for row in retained)
-    (output / "decision_events.jsonl").write_text(payload, encoding="utf-8")
-    (output / "coverage.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    coverage_text = json.dumps(summary, indent=2, ensure_ascii=False) + "\n"
+    identity = hashlib.sha256(json.dumps({
+        "events": payload, "coverage": coverage_text, "config_hash": config_hash,
+        "calibration_manifest_sha256": calibration["manifest_sha256"],
+    }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
     logical_manifest = {
-        "run_id": "xau-calibrated-reconciled-" + hashlib.sha256(payload.encode()).hexdigest()[:16],
+        "run_id": "xau-calibrated-reconciled-" + identity,
         "instance_id": INSTANCE, "symbol": "XAUUSDT", "status": "reconciled",
         "initial_virtual_equity_usdt": expected_equity,
         "data_cutoff_at": end_at.isoformat(),
         "config_hashes": {PROFILE: config_hash},
         "source_runs": [item["run_id"] for item in summary["run_segments"]],
-        "coverage_sha256": _sha256(output / "coverage.json"),
-        "decision_events_sha256": _sha256(output / "decision_events.jsonl"),
+        "coverage_sha256": hashlib.sha256(coverage_text.encode()).hexdigest(),
+        "decision_events_sha256": hashlib.sha256(payload.encode()).hexdigest(),
     }
-    (output / "run_manifest.json").write_text(json.dumps(logical_manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix=f".{output.name}-stage-", dir=output.parent) as temporary:
+        stage = Path(temporary)
+        (stage / "decision_events.jsonl").write_text(payload, encoding="utf-8")
+        (stage / "coverage.json").write_text(coverage_text, encoding="utf-8")
+        (stage / "run_manifest.json").write_text(
+            json.dumps(logical_manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        if output.exists():
+            raise FileExistsError(f"reconciliation output already exists: {output}")
+        os.replace(stage, output)
     return summary
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from unittest.mock import patch
 
 from shared.config_loader import compute_config_hash
 from strategies.btc_eth.shadow.atr_calibration import _manifest_hash
@@ -163,3 +164,41 @@ def test_reconcile_rejects_tampered_calibration_snapshot(tmp_path: Path):
         reconcile_run_exports([run], cfg, manifest, snapshot,
                               "2026-11-02T08:00:00+00:00", "2026-11-02T09:00:00+00:00", tmp_path / "out")
     assert not (tmp_path / "out").exists()
+
+
+def test_reconcile_output_is_atomic_on_write_failure(tmp_path: Path):
+    cfg, manifest, snapshot, cfg_hash = _evidence(tmp_path)
+    run = _run(tmp_path, "run-a", cfg_hash, [
+        {"scheduled_at": "2026-11-02T08:00:00+00:00", "evaluated_at": "2026-11-02T08:20:00+00:00"},
+    ])
+    destination = tmp_path / "out"
+    original = Path.write_text
+
+    def fail_coverage(path, *args, **kwargs):
+        if path.name == "coverage.json":
+            raise OSError("simulated disk failure")
+        return original(path, *args, **kwargs)
+
+    with patch.object(Path, "write_text", fail_coverage), pytest.raises(OSError, match="simulated disk failure"):
+        reconcile_run_exports([run], cfg, manifest, snapshot,
+                              "2026-11-02T08:00:00+00:00", "2026-11-02T09:00:00+00:00", destination)
+    assert not destination.exists()
+    assert not list(tmp_path.glob(".out-stage-*"))
+
+
+def test_reconciled_id_includes_source_provenance(tmp_path: Path):
+    cfg, manifest, snapshot, cfg_hash = _evidence(tmp_path)
+    run = _run(tmp_path, "run-a", cfg_hash, [
+        {"scheduled_at": "2026-11-02T08:00:00+00:00", "evaluated_at": "2026-11-02T08:20:00+00:00"},
+    ])
+    def reconcile(path):
+        reconcile_run_exports([run], cfg, manifest, snapshot,
+                              "2026-11-02T08:00:00+00:00", "2026-11-02T09:00:00+00:00", path)
+        return json.loads((path / "run_manifest.json").read_text())["run_id"]
+    first = reconcile(tmp_path / "first")
+    run_manifest = run / "run_manifest.json"
+    source = json.loads(run_manifest.read_text())
+    source["git_sha"] = "changed-provenance"
+    run_manifest.write_text(json.dumps(source))
+    second = reconcile(tmp_path / "second")
+    assert first != second

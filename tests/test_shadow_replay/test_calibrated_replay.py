@@ -2,6 +2,7 @@
 import json
 import hashlib
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import yaml
 
@@ -9,11 +10,29 @@ from shared.config_loader import compute_config_hash
 from backtest.btc_eth.replay.engine import ReplayEngine
 from backtest.btc_eth.replay.report import write_reports
 from backtest.btc_eth.replay import main as replay_main
+from backtest.btc_eth.replay.snapshot import _compute_manifest_sha256
 from tests.test_shadow_replay.test_replay_determinism import _make_fixture_dir
 
 
 ROOT = Path(__file__).resolve().parents[2]
 CALIBRATED = ROOT / "strategies/btc_eth/shadow/config/xau_calibrated.yaml"
+
+
+def test_calibrated_market_coverage_rejects_interior_minute_gap_and_missing_funding():
+    start = datetime(2026, 10, 1, 0, tzinfo=timezone.utc)
+    end = start + timedelta(hours=13)
+    bars = [{"open_time": int((start + timedelta(minutes=i)).timestamp() * 1000),
+             "close_time": int((start + timedelta(minutes=i + 1)).timestamp() * 1000) - 1}
+            for i in range(13 * 60)]
+    funding = [(start + timedelta(hours=4), "0.0001"),
+               (start + timedelta(hours=8), "0.0001"),
+               (start + timedelta(hours=12), "0.0001")]
+    assert replay_main.validate_calibrated_market_data(bars, funding, start, end) == []
+    assert "minute_gap" in replay_main.validate_calibrated_market_data(
+        bars[:30] + bars[31:], funding, start, end)
+    assert "funding_missing" in replay_main.validate_calibrated_market_data(bars, [], start, end)
+    assert "funding_gap" in replay_main.validate_calibrated_market_data(
+        bars, [funding[0]], start, end)
 
 
 def test_calibrated_only_engine_runs_with_frozen_config(tmp_path):
@@ -76,6 +95,17 @@ def test_calibrated_only_engine_runs_with_frozen_config(tmp_path):
     }))
     manifest["coverage_sha256"] = hashlib.sha256(coverage_path.read_bytes()).hexdigest()
     manifest["decision_events_sha256"] = hashlib.sha256(events_path.read_bytes()).hexdigest()
+    funding_path = Path(fixture["funding_path"])
+    funding_path.write_text(json.dumps([{
+        "fundingTime": int(datetime(2026, 10, 1, 10, 30, tzinfo=timezone.utc).timestamp() * 1000),
+        "fundingRate": "0.0001",
+    }]))
+    snapshot_manifest_path = Path(fixture["manifest_path"])
+    snapshot_manifest = json.loads(snapshot_manifest_path.read_text())
+    snapshot_manifest["files"]["funding_rates"]["sha256"] = hashlib.sha256(funding_path.read_bytes()).hexdigest()
+    snapshot_manifest["files"]["funding_rates"]["rows"] = 1
+    snapshot_manifest["sha256"] = _compute_manifest_sha256(snapshot_manifest["files"])
+    snapshot_manifest_path.write_text(json.dumps(snapshot_manifest))
     manifest_path.write_text(json.dumps(manifest))
     cli_dir = tmp_path / "cli"
     assert replay_main.main([
@@ -86,6 +116,39 @@ def test_calibrated_only_engine_runs_with_frozen_config(tmp_path):
     cli_report = json.loads((cli_dir / "report_xau-calibrated-test.json").read_text())
     assert cli_report["admission"]["admission"] == "insufficient_data"
     assert cli_report["xau_calibrated"]["n_closed_trades"] >= 1
+
+    # 文件及顶层哈希均有效时，内部缺分钟不能被伪造的 gaps=[] 掩盖。
+    kline_path = Path(fixture["klines_path"])
+    original_klines = kline_path.read_text()
+    rows = original_klines.splitlines()
+    kline_path.write_text("\n".join(rows[:30] + rows[31:]) + "\n")
+    snapshot_manifest["files"]["klines_1m"]["sha256"] = hashlib.sha256(kline_path.read_bytes()).hexdigest()
+    snapshot_manifest["files"]["klines_1m"]["rows"] -= 1
+    snapshot_manifest["sha256"] = _compute_manifest_sha256(snapshot_manifest["files"])
+    snapshot_manifest_path.write_text(json.dumps(snapshot_manifest))
+    assert replay_main.main([
+        "--events", str(events_path), "--run-manifest", str(manifest_path),
+        "--coverage", str(coverage_path), "--snapshot-dir", fixture["dir"],
+        "--profile-calibrated", str(CALIBRATED), "--output-dir", str(tmp_path / "interior-gap"),
+    ]) == 2
+    assert not (tmp_path / "interior-gap").exists()
+    kline_path.write_text(original_klines)
+    snapshot_manifest["files"]["klines_1m"]["sha256"] = hashlib.sha256(kline_path.read_bytes()).hexdigest()
+    snapshot_manifest["files"]["klines_1m"]["rows"] += 1
+    snapshot_manifest["sha256"] = _compute_manifest_sha256(snapshot_manifest["files"])
+    snapshot_manifest_path.write_text(json.dumps(snapshot_manifest))
+
+    funding_path.write_text("[]")
+    snapshot_manifest["files"]["funding_rates"]["sha256"] = hashlib.sha256(funding_path.read_bytes()).hexdigest()
+    snapshot_manifest["files"]["funding_rates"]["rows"] = 0
+    snapshot_manifest["sha256"] = _compute_manifest_sha256(snapshot_manifest["files"])
+    snapshot_manifest_path.write_text(json.dumps(snapshot_manifest))
+    assert replay_main.main([
+        "--events", str(events_path), "--run-manifest", str(manifest_path),
+        "--coverage", str(coverage_path), "--snapshot-dir", fixture["dir"],
+        "--profile-calibrated", str(CALIBRATED), "--output-dir", str(tmp_path / "no-funding"),
+    ]) == 2
+    assert not (tmp_path / "no-funding").exists()
 
     # 即使 coverage 声称小时缺口已记录，1m 快照未覆盖窗口也必须拒绝。
     longer_coverage = json.loads(coverage_path.read_text())

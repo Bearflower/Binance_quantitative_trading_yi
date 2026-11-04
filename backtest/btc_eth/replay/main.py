@@ -21,7 +21,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from datetime import timedelta
+from datetime import timedelta, datetime
 
 from .engine import ReplayEngine, _parse_ts
 from .report import write_reports
@@ -29,6 +29,46 @@ from .snapshot import verify_snapshot
 
 
 logger = logging.getLogger(__name__)
+
+
+def validate_calibrated_market_data(bars, funding_events, start_at: datetime, end_at: datetime):
+    """Check actual market rows, not only the manifest's self-reported gap count.
+
+    Funding settlements may be more frequent than eight hours; a larger gap
+    cannot be treated as zero funding without independent schedule evidence.
+    """
+    reasons = []
+    minute = timedelta(minutes=1)
+    window_bars = [bar for bar in bars if start_at <= _parse_ts(bar["open_time"]) < end_at]
+    expected_minutes = int((end_at - start_at).total_seconds() // 60)
+    if len(window_bars) != expected_minutes:
+        reasons.append("minute_gap")
+    if window_bars:
+        if (_parse_ts(window_bars[0]["open_time"]) != start_at
+                or _parse_ts(window_bars[-1]["open_time"]) != end_at - minute):
+            if "minute_gap" not in reasons:
+                reasons.append("minute_gap")
+        for previous, current in zip(window_bars, window_bars[1:]):
+            if _parse_ts(current["open_time"]) - _parse_ts(previous["open_time"]) != minute:
+                if "minute_gap" not in reasons:
+                    reasons.append("minute_gap")
+                break
+        for bar in window_bars:
+            opened = _parse_ts(bar["open_time"])
+            closed = _parse_ts(bar["close_time"])
+            if not (opened + minute - timedelta(milliseconds=1) <= closed <= opened + minute):
+                reasons.append("invalid_minute_close")
+                break
+    window_funding = [time for time, _ in funding_events if start_at <= time < end_at]
+    if not window_funding:
+        reasons.append("funding_missing")
+    else:
+        checkpoints = [start_at, *window_funding, end_at]
+        if (len(window_funding) != len(set(window_funding))
+                or any(later <= earlier or later - earlier > timedelta(hours=8)
+                       for earlier, later in zip(checkpoints, checkpoints[1:]))):
+            reasons.append("funding_gap")
+    return reasons
 
 
 def main(argv=None) -> int:
@@ -180,10 +220,10 @@ def main(argv=None) -> int:
                 or set(actual) != expected - missing or not missing.issubset(expected)):
             logger.error("校准版 coverage 与决策事件逐小时集合不一致")
             return 2
-        bars = engine.klines_1m_sorted
-        if (not bars or _parse_ts(bars[0]["open_time"]) > start_at
-                or _parse_ts(bars[-1]["close_time"]) < end_at - timedelta(milliseconds=1)):
-            logger.error("校准版 1m 快照未覆盖整个决策观察窗口")
+        market_errors = validate_calibrated_market_data(
+            engine.klines_1m_sorted, engine.funding_events, start_at, end_at)
+        if market_errors:
+            logger.error("校准版行情快照不完整：%s", market_errors)
             return 2
     engine_result = engine.run()
 
