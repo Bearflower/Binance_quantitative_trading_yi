@@ -27,7 +27,11 @@ def test_calibrated_market_coverage_rejects_interior_minute_gap_and_missing_fund
     funding = [(start + timedelta(hours=4), "0.0001"),
                (start + timedelta(hours=8), "0.0001"),
                (start + timedelta(hours=12), "0.0001")]
-    assert replay_main.validate_calibrated_market_data(bars, funding, start, end) == []
+    assert replay_main.validate_calibrated_market_data(bars, funding, start, end) == [
+        "funding_schedule_unverified"]
+    # 4h 结算时漏掉 08:00，04:00→12:00 仍只有 8h；不能据此证明完整。
+    assert "funding_schedule_unverified" in replay_main.validate_calibrated_market_data(
+        bars, [funding[0], funding[2]], start, end)
     assert "minute_gap" in replay_main.validate_calibrated_market_data(
         bars[:30] + bars[31:], funding, start, end)
     assert "funding_missing" in replay_main.validate_calibrated_market_data(bars, [], start, end)
@@ -81,6 +85,15 @@ def test_calibrated_only_engine_runs_with_frozen_config(tmp_path):
     assert report["xau_calibrated"]["n_closed_trades"] >= 1
     assert report["admission"]["admission"] == "insufficient_data"
     assert report["data_completeness"]["decision_missing_hours"] == ["2026-10-01T11:00:00+00:00"]
+    unverified = write_reports(
+        engine_result=result, run_manifest=manifest, output_dir=str(tmp_path / "unverified"),
+        data_completeness={"gaps": 0, "complete": True,
+                           "decision_coverage_complete": True,
+                           "decision_missing_hours": [],
+                           "decision_quality_degraded_hours": [],
+                           "funding_schedule_verified": False},
+    )
+    assert unverified["admission"] == "insufficient_data"
 
     events_path.write_text(json.dumps(first) + "\n")
     manifest["data_cutoff_at"] = "2026-10-01T11:00:00+00:00"

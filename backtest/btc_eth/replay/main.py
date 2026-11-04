@@ -68,6 +68,10 @@ def validate_calibrated_market_data(bars, funding_events, start_at: datetime, en
                 or any(later <= earlier or later - earlier > timedelta(hours=8)
                        for earlier, later in zip(checkpoints, checkpoints[1:]))):
             reasons.append("funding_gap")
+        # A <=8h gap does not prove completeness: one missing 4h settlement
+        # looks exactly like a legitimate 8h gap. The current snapshot format
+        # has no independently verifiable historical settlement schedule.
+        reasons.append("funding_schedule_unverified")
     return reasons
 
 
@@ -222,9 +226,14 @@ def main(argv=None) -> int:
             return 2
         market_errors = validate_calibrated_market_data(
             engine.klines_1m_sorted, engine.funding_events, start_at, end_at)
-        if market_errors:
+        hard_errors = [reason for reason in market_errors if reason != "funding_schedule_unverified"]
+        if hard_errors:
             logger.error("校准版行情快照不完整：%s", market_errors)
             return 2
+        data_completeness["funding_schedule_verified"] = False
+        data_completeness["funding_schedule_reason"] = "historical_settlement_schedule_unavailable"
+        data_completeness["complete"] = False
+        logger.warning("资金费历史结算日程不可独立核验；仅产出参考指标，准入固定为 insufficient_data")
     engine_result = engine.run()
 
     outputs = write_reports(

@@ -646,6 +646,7 @@ def _write_calibrated_report(
         and not data_completeness.get("decision_missing_hours")
         and not data_completeness.get("decision_quality_degraded_hours")
         and data_completeness.get("complete") is True
+        and data_completeness.get("funding_schedule_verified") is True
         and not meta.get("invariant_violations")
     )
     admission = "insufficient_data" if not coverage_ok else ("calibrated" if checks_passed else "none")
