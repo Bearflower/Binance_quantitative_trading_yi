@@ -1,6 +1,6 @@
-# Scoped ledger/risk release — review draft, activation blocked
+# Scoped ledger/risk release — static review passed, activation pending
 
-This change implements a separate branch inside the existing deployment workflow/runtime. It has not deployed anything. Production evidence is intentionally absent in the checked-in manifest draft. The parent must rebase onto the current main baseline, refresh the draft and independently review complete production evidence before activation.
+This change implements a separate branch inside the existing deployment workflow/runtime. The release has been rebased onto main baseline `0d004e88`; a complete read-only production snapshot has been captured and the activation manifest populated. Static review is PASS. Latest verification: scoped tests **76 passed**; the combined suite with local PostgreSQL **550 passed, 3 skipped**. No remediation images have been built or deployed, and production still runs the older strategies. Runtime preflight under the deployment lock remains unexecuted. Captured evidence must pass that fresh drift check before activation; static review is not release completion.
 
 ## Scope and order
 
@@ -18,18 +18,20 @@ Before stopping anything: verify configuration/source/container identities, pull
 - The final gate is **not read-only for report metadata**: it invokes the canonical publisher, which writes verified report rows/active pointers only when its coverage/integrity gates permit. It never writes exchange facts or places/cancels orders. Missing, stale, conflicted or mismatched reports fail the gate.
 - Active/activating pins block later generic deployments both before live Compose upload and in the locked runtime. A failed or completed existing release state cannot blindly replay. Recovery requires a reviewed successor/recovery procedure; automatic resume/rollback is deliberately unavailable. The old collector must never restart against strict immutability schema.
 
-## Required remaining preflight evidence
+## Evidence status and remaining preflight
 
-1. Rebase/fast-forward main baseline, then run `python3 scripts/prepare_ledger_risk_manifest.py --base <full-reviewed-base-SHA>` in the final source tree. This produces only a blocked draft; review its exact changed-file allowlist/checksums before commit. Do not use stale hashes after further edits.
-2. Full current production base/override/logging hashes; explicit per-service stack/effective config hashes; **every** Compose project container ID/image/StartedAt/Config+HostConfig fingerprint and required source hashes. The November 4 07:05 full deploy and 07:21 HRS-only restoration invalidate older observations. HRS restored image is `sha256:8d01db084443a8a5cd5d98efb1c8fbd75df84fbff6244faa4a6f82a56c5073db`; refresh it rather than assuming it still holds.
-3. Collector exact before fields and approved after restoration; full disk/backup capacity, NOSUPERUSER application role and existing private migration-admin secret. No new undefined env file is required.
-4. Verified account ID, four reviewed policy candidates/revision/expiry/reason/absolute ceilings and contemporaneous equity; historical account/window/source-proof SHA256 for all three independent exchange reconciliations. No guessed account or evidence hash is present in the draft.
+1. Rebase onto `0d004e88` and population of the activation manifest are complete. Review the final changed-file allowlist/checksums and refresh source hashes after subsequent edits, including this report update. The initial manifest-generation step produced a blocked draft; that earlier draft status no longer describes the populated activation manifest.
+2. The complete read-only production snapshot and populated manifest now provide the production configuration/container evidence. The November 4 07:05 full deploy and 07:21 HRS-only restoration invalidated earlier observations; the later snapshot supersedes those observations for preflight. Under the deployment lock, revalidate full base/override/logging hashes, explicit per-service stack/effective config hashes, **every** Compose project container ID/image/StartedAt/Config+HostConfig fingerprint and required source hashes. Do not assume captured identities remain current.
+3. Revalidate the captured collector before fields and approved after restoration, disk/backup capacity, NOSUPERUSER application role and existing private migration-admin secret during runtime preflight. The full pre-activation backup remains an execution requirement. No new undefined env file is required.
+4. The activation manifest has been populated with reviewed evidence. Runtime preflight must still verify account identity, four policy candidates/revision/expiry/reason/absolute ceilings and contemporaneous equity, plus historical account/window/source-proof SHA256 for all three independent exchange reconciliations. Populated evidence does not waive expiry, drift or policy CAS checks.
 5. Clean-checkout seven-image build/import proof and independent review. No local Docker builds or live activation were performed here. Collector health may wait up to 30 minutes for first successful collection.
 6. Live postflight review of startup logs/protection and any legitimate order or position transitions. A changed order ID/hash can conservatively block despite successful protection restoration; the runtime will not silently approve that difference. The separate 48-hour reliability observation remains outstanding.
 
 BTC/new coin still have their documented legacy final-price/concurrency limits; this deployment does not add reservations or alter their existing add rules/holdings enforcement. Frozen exposure ceilings are not withdrawable cash.
 
 ## Local verification
+
+Static review remains PASS. The latest scoped suite passed **76 tests**. The parent reported the combined suite with local PostgreSQL at **550 passed, 3 skipped**; the reasons for those three skips were not supplied with that result and are not inferred from earlier runs. The earlier static-review checkpoint passed 75 tests. The following results record earlier implementation-stage verification and are retained with that historical context; none demonstrates image construction or live activation.
 
 - `python3 -m pytest tests/test_scoped_release tests/test_scripts/test_render_remote_deploy.py tests/test_scripts/test_execution_facts_deployment.py tests/test_scripts/test_allocation_reconcile_deployment.py tests/test_allocation_remediation -q --tb=short`: 121 passed, 2 explicitly skipped PostgreSQL allocation tests without `ALLOCATION_TEST_DSN`.
 - `RISK_TEST_DSN=postgresql://yl@127.0.0.1:55439/risk_tests python3 -m pytest tests/test_risk tests/test_allocation_remediation/test_entry_caps.py tests/test_scoped_release -q --tb=short`: 143 passed, including real PostgreSQL four-candidate CAS/ceiling checks.
@@ -43,7 +45,7 @@ Review follow-up: image proof now explicitly inserts `/app` before shared import
 
 `scripts/capture_ledger_risk_evidence.py` emits only an `expected_production` object. It does not update the manifest, activate policy, write files, acquire/create a deployment lock, run database commands, or start/stop containers. Keep `scripts/ledger_risk_manifest.py` and `scripts/ledger_risk_runtime_config.py` beside it in the same directory layout. Supply a separately reviewed JSON map of all eight target service names to their explicit ordered Compose filenames (`docker-compose.yml`, optional production override/logging). There is no guessed stack default.
 
-After independent review, the parent may run:
+For subsequent independently reviewed evidence refreshes, the helper command is:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 scripts/capture_ledger_risk_evidence.py --root /root/trading_system --stacks-file /path/to/reviewed-stacks.json --minimum-free-bytes 5368709120
@@ -51,7 +53,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 scripts/capture_ledger_risk_evidence.py --root
 
 Only Docker `ps -a`, `inspect`, `image inspect`, `exec ... sha256sum`, and `compose ... config` JSON/hash reads are invoked. Every Compose-project container (including excluded services) is captured. Raw environment/inspect/config payloads stay in memory and only canonical hashes are emitted. Collector before fields are emitted only if they equal explicit known non-secret command/health/logging literals; an unfamiliar value blocks capture instead of being echoed. Command failures and malformed input produce a generic redacted error and no partial evidence. Two complete snapshots, including source/config hashes and identities, must match. Bytecode writes are disabled. The helper does not claim transactional consistency or approve the selected stacks; the release executor repeats drift checks under its lock.
 
-This helper has only been exercised against local fake command fixtures. Production Compose hashes and container identities are not hardcoded, so the November 4 08:01 collector recreation and later drift must be freshly captured by the parent. The new helper/test/doc changes require refreshing the blocked source manifest after review; this task intentionally did not replace its reviewed baseline or production evidence.
+At the initial helper-development stage, verification used local fake command fixtures only. Since then, a complete read-only production snapshot has been captured and the activation manifest populated. The November 4 08:01 collector recreation and later drift explain why earlier observations could not be reused. The completed capture is evidence at its observation time, not a substitute for the still-pending locked runtime preflight. Refresh source hashes after this report edit; no image build, deployment or policy activation has occurred.
 
 ### Running settings and selected stack binding
 
@@ -59,13 +61,13 @@ Capture and locked runtime both compare actual Config/HostConfig to effective Co
 
 Checks include health/logging/restart, bind mounts/propagation, networks/aliases, ports/exposed ports, labels and recognized Config/HostConfig defaults. Unknown Compose fields, unsupported mount/network options, uncovered Config fields and unknown non-default HostConfig values block capture. Only reviewed collector command/health/logging restoration may differ; before literals must pass the redaction allowlist. Error categories contain no field values.
 
-The observed tuner mapping is NanoCpus=500000000, Memory=536870912, MemoryReservation=268435456, MemorySwap=1073741824 and zero CpuShares/CpuQuota/CpuPeriod for its 0.5 CPU / 512 MiB / 256 MiB declarations. Standalone `reservations.cpus=0.1` has no CPU-reservation HostConfig field: the declaration is retained in evidence but no guaranteed CPU reservation is claimed. Unknown deploy settings block. Pull-policy/dependency declarations stay bound in the effective-config digest, not misrepresented as runtime fields. Refresh the blocked manifest for these added schema/module files after review; no production evidence was automatically filled.
+The observed tuner mapping is NanoCpus=500000000, Memory=536870912, MemoryReservation=268435456, MemorySwap=1073741824 and zero CpuShares/CpuQuota/CpuPeriod for its 0.5 CPU / 512 MiB / 256 MiB declarations. Standalone `reservations.cpus=0.1` has no CPU-reservation HostConfig field: the declaration is retained in evidence but no guaranteed CPU reservation is claimed. Unknown deploy settings block. Pull-policy/dependency declarations stay bound in the effective-config digest, not misrepresented as runtime fields. The earlier instruction to refresh the blocked draft applied before the complete read-only capture and activation-manifest population. Further source edits still require checksum refresh and review; populated evidence must pass locked runtime revalidation.
 
 ### Later production drift reported by parent
 
 At **2026-11-04 09:36 UTC**, a parallel full deployment again replaced HRS. At **09:41 UTC**, the parent restored **HRS only** to reviewed image `sha256:8d01db084443a8a5cd5d98efb1c8fbd75df84fbff6244faa4a6f82a56c5073db`. At **09:42 UTC**, the parent's signed exchange read confirmed ARIAUSDT quantity **−42** and three `NEW`, `reduceOnly` protective orders: a `closePosition=true` stop and TP quantities **12** and **16**. No prices/order IDs were supplied for this observation; earlier values are not inferred.
 
-These are release-preflight drift warnings and restoration of the older HRS safeguards, **not new-policy activation or completed remediation release**. Refresh all evidence before controlled activation. This helper has performed no production operation.
+These historical observations document drift and restoration of the older HRS safeguards, **not new-policy activation or completed remediation release**. A subsequent complete read-only snapshot now supplies the manifest evidence; production identities must still be rechecked under the deployment lock before controlled activation. Evidence capture has not changed production containers or policies.
 
 ### Review hardening: replacement-image defaults
 

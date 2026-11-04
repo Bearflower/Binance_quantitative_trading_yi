@@ -73,3 +73,28 @@ def test_compose_override_prevents_hidden_image_default_changes():
     service,row,image,networks=example();service.update(command=['fixed'],entrypoint=['fixed-entry'],user='0',working_dir='/fixed',environment={'PATH':'/fixed','SECRET':'value'},healthcheck={'test':['CMD','fixed']})
     new=copy.deepcopy(image);new['Id']='sha256:'+'c'*64;new['Config'].update(Cmd=['different'],Entrypoint=['different'],User='new',WorkingDir='/new',Env=['PATH=/new'],Healthcheck={'Test':['CMD','new']})
     assert len(verify_image_transition(service,image,new))==64
+
+
+def test_validated_bind_mount_order_does_not_change_runtime_digest():
+    from scripts.ledger_risk_runtime_config import verify_runtime_config
+    service,row,image,networks=example()
+    service['volumes']=[
+        {'type':'bind','source':'/host/config','target':'/app/config','read_only':True},
+        {'type':'bind','source':'/host/logs','target':'/app/logs'},
+    ]
+    row['Mounts']=[
+        {'Type':'bind','Source':'/host/config','Destination':'/app/config','RW':False,'Mode':'ro','Propagation':'rprivate'},
+        {'Type':'bind','Source':'/host/logs','Destination':'/app/logs','RW':True,'Mode':'rw','Propagation':'rprivate'},
+    ]
+    original=copy.deepcopy(row)
+    proof=verify_runtime_config(service,row,image,networks)
+    swapped=copy.deepcopy(row)
+    swapped['Mounts'].reverse()
+    assert verify_runtime_config(service,swapped,image,networks)==proof
+    assert row==original  # Fingerprinting must not mutate the captured evidence.
+    swapped['Config']['Env'].reverse()
+    assert verify_runtime_config(service,swapped,image,networks)!=proof
+    changed=copy.deepcopy(row)
+    changed['Mounts'][0]['Source']='/host/other'
+    with pytest.raises(ReleaseBlocked):
+        verify_runtime_config(service,changed,image,networks)

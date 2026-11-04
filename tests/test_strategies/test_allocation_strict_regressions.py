@@ -111,8 +111,11 @@ async def test_hrs_add_position_checks_allocation_before_order():
     strategy.capital_mgr = MagicMock()
     strategy.capital_mgr.can_open_within_limit = AsyncMock(return_value=(False, "超额"))
 
-    result = await strategy._handle_add_position("BTCUSDT", "short", 8, 90, [])
+    # Permit the preceding entry-policy gate so this test reaches allocation.
+    with patch("strategies.hrs.strategy.entry_allowed", new=AsyncMock(return_value=True)) as gate:
+        result = await strategy._handle_add_position("BTCUSDT", "short", 8, 90, [])
 
+    gate.assert_awaited_once_with(strategy, "hrs", adding=True)
     assert result is False
     strategy.capital_mgr.can_open_within_limit.assert_awaited_once()
     strategy.trading_executor.add_to_position.assert_not_awaited()

@@ -349,33 +349,359 @@
       "status": "M"
     },
     {
+      "path": "tests/test_strategies/test_allocation_strict_regressions.py",
+      "status": "M"
+    },
+    {
       "path": "tests/test_strategies/test_capital_allocation_enforcement.py",
       "status": "M"
     }
   ],
-  "base_revision": "c4de8794980de8a361b5dfa910cdba01dc060003",
-  "blocker": "Refresh and independently review complete production evidence before activation",
-  "expected_production": null,
+  "base_revision": "0d004e8863e359f63dcd4554fedad66345db44a7",
+  "blocker": null,
+  "expected_production": {
+    "collector_restoration": {
+      "after": {
+        "command": [
+          "/bin/sh",
+          "-c",
+          "rm -f /tmp/execution-facts-last-success; while python -m scripts.collect_execution_facts --days 2; do touch /tmp/execution-facts-last-success; sleep 3600; done; exit 1"
+        ],
+        "healthcheck": {
+          "interval": "1m0s",
+          "retries": 2,
+          "start_period": "3m0s",
+          "test": [
+            "CMD",
+            "python",
+            "-c",
+            "import os,time,sys; p='/tmp/execution-facts-last-success'; age=time.time()-os.path.getmtime(p) if os.path.isfile(p) else float('inf'); sys.exit(0 if 0 <= age < 5400 else 1)"
+          ],
+          "timeout": "5s"
+        },
+        "logging": {
+          "driver": "journald",
+          "options": {}
+        }
+      },
+      "before": {
+        "command": [
+          "/bin/sh",
+          "-c",
+          "rm -f /tmp/execution-facts-last-success; while python -m scripts.collect_execution_facts --days 2; do touch /tmp/execution-facts-last-success; sleep 3600; done; exit 1"
+        ],
+        "healthcheck": {
+          "Interval": 60000000000,
+          "Retries": 2,
+          "StartPeriod": 180000000000,
+          "Test": [
+            "CMD",
+            "python",
+            "-c",
+            "import os,time,sys; p='/tmp/execution-facts-last-success'; age=time.time()-os.path.getmtime(p) if os.path.isfile(p) else float('inf'); sys.exit(0 if 0 <= age < 5400 else 1)"
+          ],
+          "Timeout": 5000000000
+        },
+        "logging": {
+          "Config": {},
+          "Type": "journald"
+        }
+      }
+    },
+    "compose_hash_matches": {
+      "ai-tuner": true,
+      "btc-eth-aggressive-strategy": false,
+      "btc-eth-strategy": false,
+      "dashboard-api": true,
+      "data-backend": true,
+      "execution-facts-collector": false,
+      "hrs-strategy": false,
+      "new-coin-strategy": false
+    },
+    "compose_sha256": {
+      "docker-compose.logging.yml": "304914aa828ce52f43286a5cf276f7006cec07b127a4e668bcb1bd01f44eae72",
+      "docker-compose.override.yml": "2b82ebde4a6cd28fa264631119dd7ef8fbc6eedbc99979bc5174a7feec0870d4",
+      "docker-compose.yml": "64b527867d9097651edaa19a8a35eab0c47fd9d8d40f6cad407770ea82ed784c"
+    },
+    "containers": {
+      "aggtrade-collector": {
+        "config_sha256": "5e04f0aa8345514ba8d3bc9575d3c96c25d16786ab5414a1e375bce1a2f9c7ab",
+        "id": "43319a50c50bdf489fea3351b108ecce9657aa1c07227d7600663858c841e226",
+        "image_id": "sha256:3489f179d573ab3e24913196f5a920af375a9ef17ef19c93afbd27ec0cf68bcf",
+        "name": "trading_system-aggtrade-collector",
+        "source_sha256": {},
+        "started_at": "2026-11-04T07:05:41.497386151Z"
+      },
+      "ai-tuner": {
+        "config_sha256": "7d7777c50aa7fab4db90be29ad83ac3d3b5f0a1323f41131ff236d434125e8c9",
+        "id": "de1b2612fc57d96b63743bb1adbe51dde94dd032cc5d7573cc2af9b4e64bbd25",
+        "image_id": "sha256:ec831eabd3d386c4121278753e77c8edfdd7ce52080ef40735f1d0a2a795a2b9",
+        "name": "ai-tuner",
+        "source_sha256": {
+          "VERSION": "773a3714e977fc10112083a47e2a2e878340b9f845c4f700a4cfc2b478c6e4af",
+          "ai_tuner/allocation/config_updater.py": "5b156b53deb819c4b007a6577bcdb82158f5b759efa1b764f0887e45b8d2b204",
+          "ai_tuner/allocation/daily_refresher.py": "9b8616366f12b6d1b103a4a8380d0b7f395cc09e997ce1cda1e6d49c2238270c",
+          "ai_tuner/allocation/monthly_job.py": "f201267fe0989bc3e29c5d640994136745b551bd2fdf710d5f7da304b7f260b8",
+          "ai_tuner/allocation/pnl_collector.py": "0fe6485f9ba12463370159bf011f5604e6121e8db22472c9265f1cc040e15540"
+        },
+        "started_at": "2026-11-03T02:53:27.25523254Z"
+      },
+      "ai-tuner-funding-schedule": {
+        "config_sha256": "ff652c424aba8f45886376fbf3075b8fe4b4f1cd7953b50b7fe790aff68686ea",
+        "id": "e4bbb9a523ca887945db3a03435ce4e7bd1b3fcaae259f2c1ceb1a7ca14e5112",
+        "image_id": "sha256:ec831eabd3d386c4121278753e77c8edfdd7ce52080ef40735f1d0a2a795a2b9",
+        "name": "ai-tuner-funding-schedule",
+        "source_sha256": {},
+        "started_at": "2026-11-04T07:50:39.384617031Z"
+      },
+      "ai-tuner-snapshot": {
+        "config_sha256": "8fb7963ec63da2d8cdbfe889d4f0cb32ce459bb48e77dbe4914ea6ca14eb4f9e",
+        "id": "85558a66de7411209b1f31ff2fd6d0d5dd94e62fcf2bab79083466e28a307fee",
+        "image_id": "sha256:ec831eabd3d386c4121278753e77c8edfdd7ce52080ef40735f1d0a2a795a2b9",
+        "name": "ai-tuner-snapshot",
+        "source_sha256": {},
+        "started_at": "2026-11-04T09:36:21.709529208Z"
+      },
+      "btc-eth-aggressive-strategy": {
+        "config_sha256": "7eeef3287a93852c092fbb30f84cbe8b8e96142da300818485d92cf1b498f9d8",
+        "id": "5b90426e79558420d758a03b5e21a68b332ab4f1f88cba203efdc4cd621109c9",
+        "image_id": "sha256:457d5bdbcdea74e2e327ef35dd91fcf421e3262c0d195a47af720ca9a5ccb52b",
+        "name": "trading_system-btc_eth_aggressive",
+        "source_sha256": {
+          "VERSION": "9a8ae9f14ce0aab6faa86290e340cf45e172e0efbda45a1b44a4538f6ebe1b5c",
+          "shared/binance_api.py": "36868a5305401524225f262dee3b610bf2b1c580dcca5bc8800d7cd4c84645d3",
+          "shared/protection_retry.py": "7b1f4ada8f825871cac48a3dc26b760fb7aeffd9a9bb390c6a087a7550772003",
+          "strategies/btc_eth_aggressive/main.py": "2897a492fee98a39b48be79203f38b7d4998446b0f85700a00d3534000a42549",
+          "strategies/btc_eth_aggressive/strategy.py": "3fb97ac4e02436fcab8b699c6fe2d016e8bb38bdc79613e3924bdd47f1c73d2c"
+        },
+        "started_at": "2026-11-02T14:05:52.897954501Z"
+      },
+      "btc-eth-strategy": {
+        "config_sha256": "848509fa2f2b32281a82bed618f8dc26414b94f7770e75effadf76c1f721e447",
+        "id": "46cbdfb32be848929fec275cdccbdfb49405ff37224431c52313e8e4b82cf12a",
+        "image_id": "sha256:630ccb3a6077009dca25b078bf6c0b563d4add21c2c265d3bab5d8edd0b8b3e8",
+        "name": "trading_system-btc_eth",
+        "source_sha256": {
+          "VERSION": "9a8ae9f14ce0aab6faa86290e340cf45e172e0efbda45a1b44a4538f6ebe1b5c",
+          "shared/binance_api.py": "36868a5305401524225f262dee3b610bf2b1c580dcca5bc8800d7cd4c84645d3",
+          "shared/capital_manager.py": "ed39957562ccba8bebdcad1bd60b8b6006cdd57f552532c50884eddb952b00ba",
+          "strategies/btc_eth/main.py": "7f5aa49eed99364b28a0b09691bfc1f38350d8d434fca4879909a2bc81d147ba",
+          "strategies/btc_eth/strategy.py": "cc35d55b58bf1780d78f82f0366c3b90ad089f824abbbfa4f5a9f621fb2244b0"
+        },
+        "started_at": "2026-11-02T14:05:52.878145586Z"
+      },
+      "dashboard-api": {
+        "config_sha256": "a639487400741d437e9e3bf79a393f067fdc343502d788c79b81b5dc69cece8e",
+        "id": "6cc8263fb7d5841c0f4d5e9114a5f41accce0406936bcd301948314727220b3c",
+        "image_id": "sha256:941b4e41a140efd69da4b5a59d5d21f81817a851d4afc07a4b70edd030064e08",
+        "name": "dashboard-api",
+        "source_sha256": {
+          "VERSION": "7fb11b4433fa8bc89161318de45e5d4712f70b046d23a0a0d6aec60447a212d9",
+          "dashboard/backend/api/routes_docker.py": "b01e7a41934315c3f4f75e1238f63e7ffc97cd82a015fb5b3049db82e24d8222",
+          "dashboard/backend/main_docker.py": "b039c2bedd9af23a0342b4f6e6382e8920c2959c62ac2e634684f0e8fc31d273",
+          "dashboard/backend/services/data_service_docker.py": "42027ef4d9eff80513fba371ec665984f83498492408f863a37199d27156ceaa"
+        },
+        "started_at": "2026-11-04T09:36:03.708512763Z"
+      },
+      "data-backend": {
+        "config_sha256": "b5e2b9d8e9b9153b9f2c83e4e9e70395142d9d44d28b7250dadfa1297034359c",
+        "id": "de0bd7260fc899d167601dbe8dcd6b7866c644de73d67abc0e98ffdbeed896b0",
+        "image_id": "sha256:57d012f9e4f4e0a5266cbe492530a8f0579d094ea4067d94f20141efd3c47282",
+        "name": "data-backend",
+        "source_sha256": {
+          "VERSION": "5a7a172c365ea440e0157453a5c8209ec2b7a10f78a326525e1c2158f6ec1683",
+          "dashboard/backend/services/data_service_docker.py": "42027ef4d9eff80513fba371ec665984f83498492408f863a37199d27156ceaa",
+          "src/main.py": "5c0be53c502c91e2ac2c976d56039cad5f27995a3b1931ebcecda28327022269"
+        },
+        "started_at": "2026-11-02T12:52:09.905375075Z"
+      },
+      "execution-facts-collector": {
+        "config_sha256": "33c98b6f5ab20ea63df0f214f4bd43c62dbc4a75ab42411ab805b96d9f812b5f",
+        "id": "b4b9fb100e63592575f30e53dde55d5c207a49d98541853c62b42f1041b66fdf",
+        "image_id": "sha256:59f5a293f4df5793c3b33e7c036c3bc01957bd564a5e543bec70f144d09f1bf7",
+        "name": "trading_system-execution-facts",
+        "source_sha256": {
+          "VERSION": "76eefaa258746bea3c03261171086c6d988788f2003866245d54d5b83c5408a0",
+          "scripts/collect_execution_facts.py": "fb7a9e5bfbfc65f40f8ec151b8b3309e905b02c25e43e0b5545c4ee35585c810",
+          "scripts/export_execution_facts.py": "7c6b5bf7a8ac6d4ce9c6233800f7a7d261f662807c1bbb350eee5410430f6340",
+          "shared/database.py": "7d178033a12aae17f40f440f9a0e9f83be3a3bdb0b58c6983d29e2a3f7858342",
+          "shared/execution_facts_sink.py": "8a568055d6ad17d56fd6dcd08856fa3f6891c54e1c74fb77df164e0c114f124e"
+        },
+        "started_at": "2026-11-04T09:36:03.711367398Z"
+      },
+      "grid-realtime": {
+        "config_sha256": "65258c9536f5e7f47b3c6b6a35a7f60f3f13600ed7098b5943e8671017b11c4d",
+        "id": "59d02bb3ad85d3f735720484c15d9b8dcba18867744c40245876870354f604ee",
+        "image_id": "sha256:f570d93ac3464628a3296cc3a9afa7ba307e42ae21a9d5cc694bf3afe2d49e70",
+        "name": "trading_system-grid-realtime",
+        "source_sha256": {},
+        "started_at": "2026-11-04T09:36:04.091841435Z"
+      },
+      "grid-strategy": {
+        "config_sha256": "55d69f329932a3477676a50755b026965c09cd6b70e4075efe6f590d81307844",
+        "id": "262df6da0e08188490a39b80ffa645ef49498e7a3d78bf2cc406703dbdf5b094",
+        "image_id": "sha256:f570d93ac3464628a3296cc3a9afa7ba307e42ae21a9d5cc694bf3afe2d49e70",
+        "name": "trading_system-grid",
+        "source_sha256": {},
+        "started_at": "2026-11-04T09:36:03.701493336Z"
+      },
+      "hrs-strategy": {
+        "config_sha256": "b5a036fd81862c8f877c88b23890f87ff07a18e0c861632a1268874c76067294",
+        "id": "197e271aab8e9fd9b6f83d447e7cad957c6645dbfd2019bf7e2fac649d463a21",
+        "image_id": "sha256:8d01db084443a8a5cd5d98efb1c8fbd75df84fbff6244faa4a6f82a56c5073db",
+        "name": "trading_system-hrs",
+        "source_sha256": {
+          "VERSION": "035ee44b981663d4c04c58e8e5d4c00c80783430200d3a9483bbdc50e4dc776b",
+          "shared/binance_api.py": "15ef39b6411272f1130ed9244c183db90fd1b9fc1b651c01ff2bf16a4b3ebeec",
+          "shared/market_cap.py": "4f38224c0a23d68fb1b6d37e31ac89349ec0ea7bdce249522c0fad4d52e9e7b5",
+          "strategies/hrs/position_manager.py": "f07eacf155b99028ae4b323cfdc8eaa820fe664d4603320e53e43342bec3aeaa",
+          "strategies/hrs/risk_budget.py": "0a52f1c42c0501a0f047744e30d676ac92d6dd80116b30b6ddbceb0450868457",
+          "strategies/hrs/strategy.py": "af929c6336d7ec598beebeb881c3a415e078e8bb873654ab5a7d477d492dc677"
+        },
+        "started_at": "2026-11-04T09:41:16.273361481Z"
+      },
+      "kline-monitor": {
+        "config_sha256": "b54b0d4c6f9518885265f086d3f4a282f9a12ea90ab073340026a87474916190",
+        "id": "9cd1fba8bb6d0e22db85b22cdd6e5939956c27fecf292dbc9ef15fdb6733ab37",
+        "image_id": "sha256:258102510cc883b299bcd4e5ee4f97c1c6c4a907e6d920bf644c18d60c6b1246",
+        "name": "trading_system-kline-monitor",
+        "source_sha256": {},
+        "started_at": "2026-11-04T07:49:24.273059923Z"
+      },
+      "kline-service": {
+        "config_sha256": "46f4b56cf1e71c39b300b2eb8b3a66ff710c4be8c70adaa151ab5d50b29d3b0f",
+        "id": "673fa55388a4a45112dabf6da32c60fa225a8d780f961d82c6bad2b2340cb146",
+        "image_id": "sha256:b75b2a867b6d35a2e1ce91d3762f1ebdf70dcd22012bd6cb72731c201065fda6",
+        "name": "trading_system-kline",
+        "source_sha256": {},
+        "started_at": "2026-11-02T12:52:09.93189288Z"
+      },
+      "mtcps-xau-calibrated-shadow": {
+        "config_sha256": "484cbc3014d60a2682dac9b801c572b5ed51811df565abb842171e9af53a71d9",
+        "id": "316a34a81aa769e6a2f47c4978b6c9e95d5ac0fee1bc5b1e12d201cd54d860e0",
+        "image_id": "sha256:630ccb3a6077009dca25b078bf6c0b563d4add21c2c265d3bab5d8edd0b8b3e8",
+        "name": "trading_system-mtcps-xau-calibrated-shadow",
+        "source_sha256": {},
+        "started_at": "2026-11-02T14:05:52.885535758Z"
+      },
+      "mtcps-xau-shadow": {
+        "config_sha256": "ecf69964d65f50e364266a71ae76d37aac68ba2a76b47d4916c24bdbd91f876b",
+        "id": "04bb8a7b17014531c8add40b2ab2780d12c880af278640e7e2763874362e12e4",
+        "image_id": "sha256:630ccb3a6077009dca25b078bf6c0b563d4add21c2c265d3bab5d8edd0b8b3e8",
+        "name": "trading_system-mtcps-xau-shadow",
+        "source_sha256": {},
+        "started_at": "2026-11-02T14:05:52.898655215Z"
+      },
+      "new-coin-strategy": {
+        "config_sha256": "33c28a53620e7bd2061880643e5ee14a35892a76607a1bafff7d5806919f8915",
+        "id": "56d22b76aa19ef880f8029a27cd700bda1867cd7d3f3f781cf0ad23fa85ef5aa",
+        "image_id": "sha256:1d25347ba39309952e6bac9a9dcb1166dbf737185e59dcc9c6102457c25ae7bb",
+        "name": "trading_system-new_coin",
+        "source_sha256": {
+          "VERSION": "ad889fdd51d0f79066d330989080349ced7d24f3790a0559511b08a8aa57f26f",
+          "shared/capital_manager.py": "ed39957562ccba8bebdcad1bd60b8b6006cdd57f552532c50884eddb952b00ba",
+          "strategies/new_coin/executor.py": "78d91a08b57af74c6d62cdce4432f234ea42da1c28de6722172cc4972f03ec70",
+          "strategies/new_coin/strategy.py": "dc9a820f012b54c42d627b850e964030779c1cacc80752dd344e2fa3855d8e5b"
+        },
+        "started_at": "2026-11-02T12:52:22.48130151Z"
+      },
+      "postgres": {
+        "config_sha256": "1bc46ef01d5631cd3d0dd0ea49d74f999b614685488bfc12455d0a8a31193393",
+        "id": "7b5e188e6a57e1c3aafa2134a7cd941c7d17b51d2b11a32e61dbd0bd77239b35",
+        "image_id": "sha256:54e0dd8e8cddcdbb9156c2486eed5a43eccb7214d7c6828097d41ce049fb3984",
+        "name": "trading_system-postgres",
+        "source_sha256": {},
+        "started_at": "2026-10-28T07:02:09.719787952Z"
+      }
+    },
+    "minimum_free_bytes": 5368709120,
+    "project": "trading_system",
+    "service_compose_hash": {
+      "ai-tuner": "b237e0c76c9cadf6ea533645d98d2d1e2113f05f8e23ef09a07ab13a415e2eaa",
+      "btc-eth-aggressive-strategy": "4f02cdd88c4aa040556443024843f29692f7043ecbcdb2d71e9efe9948cd3302",
+      "btc-eth-strategy": "7b441d959702e643b1d26fb1a1d8d3b65a624e4a120bef10c0874e3ab4812d2e",
+      "dashboard-api": "0757e6c299b956469c300762c4f906de646003d056d5caa336adb5ffa0b4c5d5",
+      "data-backend": "a81a9eaeeb98f6c6dc5bc9f3b7af8c074683d61634c6be5524173277e421f4cd",
+      "execution-facts-collector": "6299f9b5b7267da7737e4da700c07db0d46186cbdc068a88c31d9b9daf94031d",
+      "hrs-strategy": "b25f970a128a31d680b98d1eb33c68bffae161b322d5f74fec1add96d839ad01",
+      "new-coin-strategy": "959a97a39a24ae283ee602189bbbef98e1a8110abeb1b6b0fd9b9d43a1ae29ae"
+    },
+    "service_config_sha256": {
+      "ai-tuner": "573bc8a09a283b9068c48ef3d5fa9933f68972a3980506cfa0f6ea30d52179b5",
+      "btc-eth-aggressive-strategy": "5552b26cbfe09e76e8acc5035248fdb4956cea85d8332d6d26b0c79c6d9c2bda",
+      "btc-eth-strategy": "24e104e2ac9f3813a38d7575cca07066c0ba2a353ad52d3d6424a3786e363199",
+      "dashboard-api": "0909623fc931bc0dabb8c49897728509249466585c43bde6a27e881e0644065f",
+      "data-backend": "11ae2d6ea5373585830b2bc8d395d3e5d93cef363b5f865597f2163002354e07",
+      "execution-facts-collector": "ea9e51936ee96d267fc3bcc90c4723fd8b964c3e1b1c73ac253b14fda0e5eee1",
+      "hrs-strategy": "9d861ea042d87be1f6f439fbb7af5a8ecca583b92fb1a628a4880a2ae902e0bc",
+      "new-coin-strategy": "f1074501e039ea932027ef719a82aa20762759d4dcc27beb8e72ae932518f6a2"
+    },
+    "service_runtime_sha256": {
+      "ai-tuner": "0470591784d8c137fa4d2a1e3a1ef6fed3cdf4ea742d6b98bbb3b112827ce9b4",
+      "btc-eth-aggressive-strategy": "5b1165dba765f144d4be413ab7a7f6165923cd57049bdf2d571ce04ac0208dd2",
+      "btc-eth-strategy": "406bfdecd3958dbb1cc7684071363cd21f0467217a7f29b61b233fc283f6eb7b",
+      "dashboard-api": "e7547f1f18334d2a66ab88fbea7ef41cc59e15bf75ab7d3b74f6d3db657f1fe3",
+      "data-backend": "ecf200551b9cb829f77e4f4cf70fec64cdcef4b702254771ff3fe5ca86fcf19e",
+      "execution-facts-collector": "d05bb1cfd6649220a8026322286871f6849a4ae2050b443f8576559fce193a46",
+      "hrs-strategy": "5a1439517295452d0ccf191ac53b93e6fc21f15c39c3dd88b7c7bbd0fdfd1a62",
+      "new-coin-strategy": "c1bd8cf7c1160369e46c708fa3c761f9804c6b9c62b44bf67de4f81e7354b766"
+    },
+    "stacks": {
+      "ai-tuner": [
+        "docker-compose.yml",
+        "docker-compose.logging.yml"
+      ],
+      "btc-eth-aggressive-strategy": [
+        "docker-compose.yml",
+        "docker-compose.logging.yml"
+      ],
+      "btc-eth-strategy": [
+        "docker-compose.yml",
+        "docker-compose.logging.yml"
+      ],
+      "dashboard-api": [
+        "docker-compose.yml",
+        "docker-compose.logging.yml"
+      ],
+      "data-backend": [
+        "docker-compose.yml",
+        "docker-compose.logging.yml"
+      ],
+      "execution-facts-collector": [
+        "docker-compose.yml",
+        "docker-compose.logging.yml"
+      ],
+      "hrs-strategy": [
+        "docker-compose.yml",
+        "docker-compose.override.yml",
+        "docker-compose.logging.yml"
+      ],
+      "new-coin-strategy": [
+        "docker-compose.yml",
+        "docker-compose.logging.yml"
+      ]
+    }
+  },
   "historical_reports": [
     {
-      "account_id": null,
+      "account_id": "default",
       "end_ms": 1788192000000,
       "net_usdt": "-115.45319304",
-      "source_proof_sha256": null,
+      "source_proof_sha256": "bf385292aaccd1ad68661d4cbfd435d589518650246364ab792b8e8765e89949",
       "start_ms": 1785513600000
     },
     {
-      "account_id": null,
+      "account_id": "default",
       "end_ms": 1790784000000,
       "net_usdt": "-6.65665904",
-      "source_proof_sha256": null,
+      "source_proof_sha256": "cef2dabbe6405f6a1fa2870422e8291c2414ad27468f58f5f4b3a6e419e50f12",
       "start_ms": 1788192000000
     },
     {
-      "account_id": null,
+      "account_id": "default",
       "end_ms": 1793462400000,
       "net_usdt": "5.80965338",
-      "source_proof_sha256": null,
+      "source_proof_sha256": "abd8ffb9f7c658461ee66f0e1ec2e63d8480d88a08a44ef3333fa5c739bdd0a3",
       "start_ms": 1790784000000
     }
   ],
@@ -402,7 +728,59 @@
       "sha256": "88608e450f25d3319abff87ceb266f7355dcc5c6c91510fd34149d5ad29c640d"
     }
   ],
-  "policy": null,
+  "policy": {
+    "account": "default",
+    "candidates": [
+      {
+        "account_id": "default",
+        "allow_add": false,
+        "entry_ceiling": "0",
+        "mode": "monitor_only",
+        "multiplier": "0",
+        "ratio_cap": "0",
+        "reason": "2026-11 exchange-income reconciliation: freeze allocation, HRS monitor-only, conservative entry ceilings",
+        "strategy_id": "hrs"
+      },
+      {
+        "account_id": "default",
+        "allocation_amount": "157.09",
+        "allow_add": false,
+        "entry_ceiling": "78",
+        "mode": "reduced",
+        "multiplier": "0.5",
+        "ratio_cap": "0.15",
+        "reason": "2026-11 exchange-income reconciliation: freeze allocation, HRS monitor-only, conservative entry ceilings",
+        "strategy_id": "btc_eth_aggressive"
+      },
+      {
+        "account_id": "default",
+        "allocation_amount": "104.72",
+        "allow_add": false,
+        "entry_ceiling": "104",
+        "mode": "capped",
+        "multiplier": "1",
+        "ratio_cap": "0.20",
+        "reason": "2026-11 exchange-income reconciliation: freeze allocation, HRS monitor-only, conservative entry ceilings",
+        "strategy_id": "btc_eth"
+      },
+      {
+        "account_id": "default",
+        "allocation_amount": "130.9",
+        "allow_add": false,
+        "entry_ceiling": "130",
+        "mode": "capped",
+        "multiplier": "1",
+        "ratio_cap": "0.25",
+        "reason": "2026-11 exchange-income reconciliation: freeze allocation, HRS monitor-only, conservative entry ceilings",
+        "strategy_id": "new_coin"
+      }
+    ],
+    "enable_reduced": true,
+    "expected_revision": 0,
+    "reason": "2026-11 exchange-income reconciliation: freeze allocation, HRS monitor-only, conservative entry ceilings",
+    "valid_hours": 72,
+    "verified_equity": "522.19907439"
+  },
   "release_id": "ledger-risk-remediation-20261104",
   "schema_version": 1,
   "services": [
@@ -636,7 +1014,7 @@
     "docs/reports/allocation-freeze-2026-11-04.md": "1149d5f5b7bb4ec5e83aeaedbace0782cd6a060a78d6df2bf6d3bf269ce40314",
     "docs/reports/entry-risk-remediation-2026-11-04.md": "72856ada3344cca9409a90366c74a1330e7df3ddbd7a5d21876f4de19109f515",
     "docs/reports/income-immutability-2026-11-04.md": "1cfbd55d01f7f5c18d55a96d19c675278c835f465167cc49b989833f095c196b",
-    "docs/reports/scoped-ledger-risk-release-2026-11-04.md": "1bbd85cb7e0ede94251b60f56866ae0b5cc82315a7fdf1b61cdc41d77635a435",
+    "docs/reports/scoped-ledger-risk-release-2026-11-04.md": "4bddf83bc347c339b81b4f3ebd1ea312cc39aeb508a1b8e790c1ed1ca537c5dc",
     "docs/research/code_audit_2026-10-15/verify_readonly.py": "a69fd46fb6b45a0d02b71e2976639f9ae2ff94e572abe7962c04973698a8b8f9",
     "docs/reviews/2026-09-29/binance_review_extra.py": "11fbc00cd4230a3384edef0687644a493fc36f9ef4e4e023bd9eee29c59ca67d",
     "docs/reviews/2026-09-29/binance_review_repro.py": "dba7f4198f6f46c0b6ac0a343e149b73d9d650070da840dc9c3a39ad9ad5c291",
@@ -677,7 +1055,7 @@
     "scripts/generate_xau_atr_calibration.py": "b398ba279d76dd1e4e4ae7a3be9cce064ac6a3cd23e295949fc18f07eef6e94f",
     "scripts/investigate_billusdt.py": "102e42a924acd86b88f3b30ce2bce64b33d6b0319274ca7fff307567b96e0aa1",
     "scripts/ledger_risk_manifest.py": "c6af1a9b6a8cf6b900ed3d5fb51e021a63e39f30cb9bef31b9540c497eeb30e2",
-    "scripts/ledger_risk_runtime_config.py": "dc0fa346bf186d00dc7044679d49cac17aad1c2bb16b655e909c1bbebf7fc058",
+    "scripts/ledger_risk_runtime_config.py": "244eb6f072424b8f30c71562cb86f555b3dc9b4c21e09214e765fd6e9cc6050f",
     "scripts/manual_allocation_trigger.py": "391d33a90dbb0afa0947049672a972af9edccbb64e61e397adee66ade53295ba",
     "scripts/manual_short_billusdt.py": "2c865ce357e0f29a585ee8f5aaf5db334b26838fe514fd95b4e5abde5bcb55df",
     "scripts/monitor_sl_tp_billusdt.py": "055fbf59c99ce20ff9edc4ca7bddf7ad586a0a87b9fbdd01971fafd809532f60",
@@ -820,7 +1198,7 @@
     "strategies/grid/realtime/features.py": "38a78ea13945cb13b3297e52b2b2cf3e05fc056ee9df29a15e2cdfa97a4c46b8",
     "strategies/grid/realtime/feed.py": "5850a628a016052e8c04307be7cc5ae20c7ff68bbe65db5572be49de5d996a52",
     "strategies/grid/realtime/main.py": "e1b53c152303791c02e0ed5b8e27ebdc0edeb6cec0bf0eb30ce9173af9b86d70",
-    "strategies/grid/realtime/queue_audit.py": "33ac2db1ca0f64106bef78908115bf7fafd8711df3a11b3490f074e64418fb52",
+    "strategies/grid/realtime/queue_audit.py": "e0b98273f49a02eef76d6a0ecfdf350277a0e217f4b1ce96f4b294524201da8a",
     "strategies/grid/realtime/reference_store.py": "1574b2951611a751cfa150701ab1f037882852a070927f587100795365bab799",
     "strategies/grid/realtime/replay.py": "7562b3541d46b822447d6ac73ed255fc752eb1446087c2e208a02eb215a79d6c",
     "strategies/grid/realtime/rules.py": "47acf38703562c283958b4e10232b30dc1ed4c26419d398ff37f53de3a67dccc",
@@ -957,7 +1335,7 @@
     "tests/test_ai_tuner_mvp/test_snapshot_repository_postgres.py": "67ced2eeba3d4fc97581a9ef6994da1414d05c3992a393c4d16267aefb28f43b",
     "tests/test_ai_tuner_mvp/test_universe_resolver.py": "dc2153b593cb7d5ba0c4bc89da059c462a20f30ee1b9e846be6532d28423adf0",
     "tests/test_allocation_remediation/test_allocation_freeze.py": "ca3c253d90a2d67b2ea32b4013a6bc6687987f794829ab0776f5800276388ddd",
-    "tests/test_allocation_remediation/test_entry_caps.py": "9291ba519a4349451b62b8774919de5bb24adca1658c3370183098e83a27ba45",
+    "tests/test_allocation_remediation/test_entry_caps.py": "4e8245e6046c7be23e519e9f2b10d595f2aa630dc872b1dfda0c8a90dba19f2c",
     "tests/test_allocation_remediation/test_postgres.py": "d8c30c4c4b1ecf6b42c446e4cddc6951b291775a2720c82e9164f2f4b120d7c7",
     "tests/test_allocation_remediation/test_published_pnl.py": "116e62dec56b1a13eac34e22f6bf1618d1d252cc1a0a0c7a7eb4ed6af87ac8c6",
     "tests/test_archive_container_logs.py": "8a037ec67e0847f3daf840a02ab16bd2720d831508727a8a1ed2cc6ed4a798c5",
@@ -971,7 +1349,7 @@
     "tests/test_grid_realtime/test_feed.py": "0f205591b22c8280f6824f0b768a433f7bbef040d475656cecbeaf910956aa77",
     "tests/test_grid_realtime/test_heartbeat.py": "da020ab8eb2afcf38f5c9048180e20cfbc24e69f8caf9f7a243117bfde6cec89",
     "tests/test_grid_realtime/test_main.py": "43d8362268ce997b1b101685cc5bc9ef329b1ed6a43cb8716bbb6aa6222ed3cf",
-    "tests/test_grid_realtime/test_queue_audit.py": "e0a0099743a87cae30c8f82a4160480929c899a270074ae64b5b28be55a056ed",
+    "tests/test_grid_realtime/test_queue_audit.py": "8edffc3ac484d1cb8957aca2d17155ecdcb486ca5931cfb0fc02fb7bac333290",
     "tests/test_grid_realtime/test_reference_store.py": "8baf62f4b20ad3c12258301c2ccd3f2e34dffadd687b3e8983c71758c5a9c52f",
     "tests/test_grid_realtime/test_replay.py": "5a0bdbac1299ec94e59eee1d2124f1dd3f3a5e525454856108c4341266d21579",
     "tests/test_grid_realtime/test_rules.py": "2b5a85f5295a022f244fbf5b5fc1ba725dcdefacd627ecb022e3e45958e06d97",
@@ -1014,7 +1392,7 @@
     "tests/test_scoped_release/test_manifest.py": "e04f57bc5574b6f878f6a77bf62abe39ef2cb4994710986ec1eb45c5367133cf",
     "tests/test_scoped_release/test_probes.py": "59a67e94954e0be714d23e3eb5d59d55969cb2ba2df4dac5312f896651cdbf7b",
     "tests/test_scoped_release/test_runtime.py": "6a094a535936736d6e01281ad880439f9ce3f4addafd1b6f4c9ae12afe640fae",
-    "tests/test_scoped_release/test_runtime_config.py": "0eea7a796ea1acb96976f03f25c1013d6ab5f8ca71dda937442a100f81962241",
+    "tests/test_scoped_release/test_runtime_config.py": "0f29e09502b99984ecbc8b712f0ae1dc49946251bd9999c55129963d584dfa55",
     "tests/test_scoped_release/test_selection.py": "bb3ede034b1765e7535f12670d19e88e7b7df19f4a730bff3367ca28457d6eb8",
     "tests/test_scripts/test_allocation_reconcile_deployment.py": "48f790f96fc8b80518f05f134cd089fe85ebb57fe034799d10789d4f426a4a0f",
     "tests/test_scripts/test_compose_created_cleanup.py": "af9fc77118efd7739bdf41e8698b3c2a7ffe477f91fd42591e8d87f4328fc52b",
@@ -1080,7 +1458,7 @@
     "tests/test_strategies/test_aggr_legacy_reporting.py": "dc808a886fd5ea2061751c848679fc279272b6483d93278e37e1c3c64e9b1caf",
     "tests/test_strategies/test_aggr_metadata_restore.py": "af0d26dd07589e827e23f3a6eb67384e19cc63d3c2ef746930ae8c5a4f634ab4",
     "tests/test_strategies/test_aggr_safety_regressions.py": "03be0ac5d14fcc52b27cfdcfc9542768745346aaa947b6c46e3bedff874710b0",
-    "tests/test_strategies/test_allocation_strict_regressions.py": "be5e26cd7480e88eaf5df3540d7af9eab9bda5f2df40e9f7b144da07ecf191a9",
+    "tests/test_strategies/test_allocation_strict_regressions.py": "dd9d814ca19c04e05474a39f77f1335085eb8c21ac4a7abcf476870e11ace8f2",
     "tests/test_strategies/test_bb_touch_half_zone.py": "d4d620732999c6b48e4e9f75397ec97caaf1bbf6cf338716d7b4cc78a64f0339",
     "tests/test_strategies/test_btc_eth_aggressive_adopt_positions.py": "411a3ab0193ca5a6d705838774966dffad01380ca20ddd67c07ac7328b9bed03",
     "tests/test_strategies/test_btc_eth_aggressive_core_equivalence.py": "bb2254e0c09f93332fd7262e45c2c47aaccccaf6ea5e764648cba2d331c24543",

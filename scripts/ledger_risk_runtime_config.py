@@ -151,7 +151,11 @@ def verify_runtime_config(service,row,image,networks,*,allow_collector_restorati
         if config.get(key,False):_deny('Config.'+key)
     # Bind the full actual fields in the evidence; only the image reference string
     # is ignored after independently resolving it to the identical image ID.
-    return digest({'service':service,'image_id':image['Id'],'actual_config':config,'actual_host':host,'mounts':row.get('Mounts',[]),'networks':sorted(resolved)})
+    # Mount membership/options were validated above as an unordered collection.
+    # Docker may reorder this array between reads; retain every field while
+    # canonicalizing only its order, without changing other captured arrays.
+    mounts=sorted(row.get('Mounts',[]),key=digest)
+    return digest({'service':service,'image_id':image['Id'],'actual_config':config,'actual_host':host,'mounts':mounts,'networks':sorted(resolved)})
 
 
 def _effective_image_defaults(service,image):

@@ -75,7 +75,9 @@ async def test_other_strategy_does_not_use_entry_overlay():
     assert (await obj.can_open_within_limit(0,1))[0]
     obj.entry_equity_provider.assert_not_called()
 
-def test_real_strategy_constructors_bind_equity_provider():
+@pytest.mark.asyncio
+async def test_real_strategy_constructors_bind_equity_provider():
+    # Constructors create asyncio locks; the fixture owns loop setup/cleanup.
     from pathlib import Path
     from unittest.mock import MagicMock
     import yaml
