@@ -271,6 +271,7 @@ class HealthMonitor:
 
                     self._consecutive_failures = 0
                     self._last_state = True
+                    logger.info("K 线服务健康检查通过", endpoint=HEALTH_ENDPOINT)
                 else:
                     self._consecutive_failures += 1
                     self._last_state = False
