@@ -187,6 +187,9 @@ class AfterHRSRuntime(Runtime):
         row=self.inspect('hrs-strategy')
         return json.loads(self.run(['docker','exec',row['Id'],'python','-c',code],timeout=180).splitlines()[-1])
 
+    def upgraded_services(self):
+        return ('hrs-strategy','execution-facts-collector')
+
     def validate_live(self):
         for path,sha in self.production['compose_sha256'].items():require(digest((self.root/path).read_bytes())==sha,'Compose drift')
         expected=self.approval['containers']
@@ -197,10 +200,10 @@ class AfterHRSRuntime(Runtime):
             require((row['Id'],row['Image'],row['State']['StartedAt'])==(approved['id'],approved['image_id'],approved['started_at']),'reviewed current identity drift')
             require(digest({'Config':row['Config'],'HostConfig':row['HostConfig']})==approved['config_sha256'],'reviewed current settings drift')
             old=self.before[service]
-            if service not in ('hrs-strategy','execution-facts-collector'):
+            if service not in self.upgraded_services():
                 require((row['Id'],row['Image'],row['State']['StartedAt'])==(old['Id'],old['Image'],old['State']['StartedAt']),'unexpected preceding rollout')
             require(row['State']['Status']==('exited' if service=='ai-tuner' else old['State']['Status']),'unexpected lifecycle')
-            if service in ('hrs-strategy','execution-facts-collector'):
+            if service in self.upgraded_services():
                 require(row['State'].get('Health',{}).get('Status')=='healthy','new HRS/collector unhealthy')
                 require(row['Image']==self.run(['docker','image','inspect','--format','{{.Id}}',self.images[SERVICE_IMAGES[service]]]),'new HRS/collector wrong image')
                 self.image_proof(self.images[SERVICE_IMAGES[service]],container=row['Id'])

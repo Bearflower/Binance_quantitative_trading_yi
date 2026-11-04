@@ -67,6 +67,7 @@ def verify_post_close_transition(before,after):
     return dict(missing_original_raw=True,original_raw_comparison_performed=False,post_hrs_to_post_meli_other_orders_compared=True,close=close,after_exposure=expected,after_orders_sha256=hash_rows(after['ordinary']),after_algos_sha256=hash_rows(after['algos']))
 
 class AfterMeliRuntime(AfterHRSRuntime):
+    AUDIT_DIRECTORY='after-meli-recovery'
     @classmethod
     def load(cls,root,bundle,approval):
         require(isinstance(approval.get('reason'),str) and bool(approval['reason'].strip()),'MELI recovery reason required')
@@ -74,7 +75,7 @@ class AfterMeliRuntime(AfterHRSRuntime):
         self=super().load(root,bundle,approval['pre_meli_approval'])
         require(self.approval['order_review'].get('evidence_mode')=='missing_old_raw_full_review','prior evidence gap must remain explicit')
         self.full_approval=approval
-        self.directory=self.original/'after-meli-recovery';self.state_file=self.directory/'state.json'
+        self.directory=self.original/self.AUDIT_DIRECTORY;self.state_file=self.directory/'state.json'
         require(not self.directory.exists(),'MELI recovery already attempted')
         path=Path(approval['signed_post_meli_path'])
         require(not path.is_symlink() and digest(path.read_bytes())==POST_EVIDENCE_SHA,'independent signed close evidence mismatch')
