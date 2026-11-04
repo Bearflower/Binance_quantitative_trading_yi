@@ -37,7 +37,7 @@ Fill, review and timestamp this form **before** the first independent validation
 | Normal alert false-positive ceiling and 15/30/60-minute observation window | TBD | Pending |
 | Urgent alert false-positive ceiling and observation window | TBD | Pending |
 | Minimum event count per market regime and confidence-interval width | TBD | Pending |
-| Minimum numeric-reference availability (VALID time and eligible opportunity share) | TBD; report both calendar-time and opportunity-conditioned denominators | Pending |
+| Minimum numeric-reference availability (VALID time and eligible opportunity share) | ≥90% VALID time across all independent validation days, user selected 2026-11-04; report opportunity-conditioned share separately; missing evidence and downtime remain in the full-time denominator | Product target selected; full preregistration pending |
 | Candidate profiles and selection rule | TBD | Pending |
 | Frozen at (Beijing time), author, commit hash | TBD | Pending |
 | Independent period start, next Beijing calendar day after freeze | TBD | Pending |
