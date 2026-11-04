@@ -155,9 +155,9 @@ async def get_overview(
     
     返回所有策略的汇总统计数据
     """
-    cache_key = f"overview_v2:{type}"
+    cache_key = f"exchange-income-v1:overview:{type}"
     
-    cached_data = cache.get(cache_key)
+    cached_data = None  # immutable ledger publication owns caching
     if cached_data:
         return OverviewResponse(
             code=0,
@@ -173,6 +173,7 @@ async def get_overview(
     await data_service._attach_performance_metrics(overview_data, granularity)
 
     response_data = {
+        **overview_data,
         "total_pnl": overview_data.get("total_pnl", 0),
         "total_gross_pnl": overview_data.get("total_gross_pnl", 0),
         "total_commission": overview_data.get("total_commission", 0),
@@ -193,7 +194,6 @@ async def get_overview(
     
     _ttl_map = {"daily": settings.cache_ttl_daily, "weekly": settings.cache_ttl_weekly, "monthly": settings.cache_ttl_monthly}
     ttl = _ttl_map.get(type, settings.cache_ttl_daily)
-    cache.set(cache_key, response_data, ttl_seconds=ttl)
     
     return OverviewResponse(
         code=0,
@@ -222,9 +222,9 @@ async def get_strategies(
     
     返回所有策略的统计数据
     """
-    cache_key = f"strategies_v2:{type}"
+    cache_key = f"exchange-income-v1:strategies:{type}"
     
-    cached_data = cache.get(cache_key)
+    cached_data = None  # immutable ledger publication owns caching
     if cached_data:
         return StrategiesResponse(
             code=0,
@@ -242,7 +242,6 @@ async def get_strategies(
     
     _ttl_map = {"daily": settings.cache_ttl_daily, "weekly": settings.cache_ttl_weekly, "monthly": settings.cache_ttl_monthly}
     ttl = _ttl_map.get(type, settings.cache_ttl_daily)
-    cache.set(cache_key, response_data, ttl_seconds=ttl)
     
     return StrategiesResponse(
         code=0,
@@ -272,9 +271,9 @@ async def get_strategy_detail(
     
     返回单个策略的详细统计数据
     """
-    cache_key = f"strategy:{strategy_id}:{type}"
+    cache_key = f"exchange-income-v1:strategy:{strategy_id}:{type}"
     
-    cached_data = cache.get(cache_key)
+    cached_data = None  # immutable ledger publication owns caching
     if cached_data:
         return StrategyDetail(
             code=0,
@@ -300,7 +299,6 @@ async def get_strategy_detail(
     
     _ttl_map = {"daily": settings.cache_ttl_daily, "weekly": settings.cache_ttl_weekly, "monthly": settings.cache_ttl_monthly}
     ttl = _ttl_map.get(type, settings.cache_ttl_daily)
-    cache.set(cache_key, response_data, ttl_seconds=ttl)
     
     return StrategyDetail(
         code=0,
@@ -330,9 +328,9 @@ async def get_strategy_symbols(
     
     返回策略下所有交易对的统计数据
     """
-    cache_key = f"symbols:{strategy_id}:{type}"
+    cache_key = f"exchange-income-v1:symbols:{strategy_id}:{type}"
     
-    cached_data = cache.get(cache_key)
+    cached_data = None  # immutable ledger publication owns caching
     if cached_data:
         return SymbolsResponse(
             code=0,
@@ -354,7 +352,6 @@ async def get_strategy_symbols(
     
     _ttl_map = {"daily": settings.cache_ttl_daily, "weekly": settings.cache_ttl_weekly, "monthly": settings.cache_ttl_monthly}
     ttl = _ttl_map.get(type, settings.cache_ttl_daily)
-    cache.set(cache_key, response_data, ttl_seconds=ttl)
     
     return SymbolsResponse(
         code=0,
@@ -425,9 +422,9 @@ async def get_trend(
     
     返回收益趋势数据
     """
-    cache_key = f"trend:{type}:{days}"
+    cache_key = f"exchange-income-v1:trend:{type}:{days}"
     
-    cached_data = cache.get(cache_key)
+    cached_data = None  # immutable ledger publication owns caching
     if cached_data:
         return TrendResponse(
             code=0,
@@ -448,7 +445,6 @@ async def get_trend(
     
     _ttl_map = {"daily": settings.cache_ttl_daily, "weekly": settings.cache_ttl_weekly, "monthly": settings.cache_ttl_monthly}
     ttl = _ttl_map.get(type, settings.cache_ttl_daily)
-    cache.set(cache_key, response_data, ttl_seconds=ttl)
     
     return TrendResponse(
         code=0,
@@ -464,8 +460,8 @@ async def get_trend(
 @router.get(
     "/account/returns",
     response_model=ReturnsResponse,
-    summary="获取账户收益率",
-    description="获取账户日/周/月收益率（基于净资产快照增量），期初缺失时 yield_unavailable 为 true"
+    summary="获取账户净值变动率",
+    description="账户净值变动率，基于净资产快照且未剔除出入金；不是现金流调整后的投资收益率。期初缺失时 yield_unavailable 为 true"
 )
 async def get_account_returns(
     period: Literal["daily", "weekly", "monthly", "yearly"] = Query("daily", description="周期：daily、weekly 或 monthly"),

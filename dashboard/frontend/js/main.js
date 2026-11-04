@@ -268,12 +268,28 @@ function formatEquityTime(isoStr) {
  * 更新总览
  */
 function updateOverview(data) {
-    const unrealizedValue = parseFloat(data.total_unrealized_pnl || 0);
+    const unrealizedValue = parseFloat(data.total_unrealized_pnl);
     const realizedValue = parseFloat(data.total_pnl);
 
-    // 总盈亏 = 已实现盈亏 + 浮动盈亏（账户真实盈亏）
-    const pnlValue = realizedValue + unrealizedValue;
+    // 所选期间交易所净收益（含佣金和资金费）；浮动盈亏单列。
+    const pnlValue = realizedValue;
     const totalPnl = document.querySelector('#total-pnl');
+    let quality = document.getElementById('ledger-quality');
+    if (!quality) {
+        quality = document.createElement('div');
+        quality.id = 'ledger-quality';
+        quality.className = 'stat-label';
+        totalPnl.parentElement.appendChild(quality);
+    }
+    quality.textContent = [
+        data.account_coverage_complete ? '交易所 USDT 收入已核对' : '覆盖不完整，期间收益待核对',
+        `未归属 ${data.unattributed_count ?? "—"} 笔 · 净额 ${formatNumber(data.unattributed_pnl)} / 绝对额 ${formatNumber(data.unattributed_absolute)} USDT`,
+        data.strategy_attribution_complete ? '' : '策略归属待核对',
+        data.as_of ? `数据截至 ${formatEquityTime(data.as_of)}` : '',
+        data.publication_status === 'stale' ? '刷新失败，显示上次核实报告' : '',
+        data.stale_seconds > 0 ? `落后 ${Math.ceil(data.stale_seconds / 60)} 分钟` : '',
+        Object.keys(data.other_asset_totals || {}).length ? '含非 USDT 收入，折算待核对' : ''
+    ].filter(Boolean).join(' · ');
     totalPnl.textContent = formatNumber(pnlValue);
     totalPnl.className = 'stat-value ' + (pnlValue >= 0 ? 'positive' : 'negative');
 
@@ -331,9 +347,21 @@ function formatPerfWindow(startIso, endIso, count, includeDates = true) {
  * 更新策略卡片
  */
 function updateStrategyCards(strategies) {
+    let extraOwners = document.getElementById('ledger-extra-owners');
+    if (!extraOwners) {
+        extraOwners = document.createElement('div');
+        extraOwners.id = 'ledger-extra-owners';
+        document.querySelector('.strategies-grid').insertAdjacentElement('afterend', extraOwners);
+    }
+    extraOwners.replaceChildren();
     strategies.forEach((strategy) => {
-        const card = document.querySelector(`.strategy-card[data-strategy="${strategy.id}"]`);
-        if (!card) return;
+        const card = Array.from(document.querySelectorAll('.strategy-card')).find(item => item.dataset.strategy === strategy.id);
+        if (!card) {
+            const row = document.createElement('p');
+            row.textContent = `${strategy.name} · 已核实期间净收益 ${formatNumber(strategy.total_pnl)} USDT · 已归属观察金额 ${formatNumber(strategy.observed_pnl)} USDT`;
+            extraOwners.appendChild(row);
+            return;
+        }
 
         const name = card.querySelector('.strategy-name');
         name.textContent = strategy.name;
@@ -347,7 +375,7 @@ function updateStrategyCards(strategies) {
         if (winRate) winRate.textContent = formatPercent(strategy.win_rate);
 
         const orderCount = card.querySelector('[data-metric="order_count"] .value');
-        if (orderCount) orderCount.textContent = strategy.order_count.toLocaleString();
+        if (orderCount) orderCount.textContent = strategy.order_count?.toLocaleString() ?? '—';
 
         // 持仓量 / 持仓保证金（无上报时后端回 0，展示 0 / 0.00 保持布局稳定）
         const openCount = card.querySelector('[data-metric="open_position_count"] .value');

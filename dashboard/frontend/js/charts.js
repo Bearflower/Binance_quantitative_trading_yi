@@ -143,9 +143,9 @@ function createTrendChart(containerId, data) {
         // 新格式: { trends: [{date, total_pnl, order_count, win_rate}] }
         dates = data.trends.map(t => t.date);
         series = [{
-            name: '总盈亏',
+            name: '期间交易所净收益',
             type: 'line',
-            data: data.trends.map(t => parseFloat(t.total_pnl) || 0),
+            data: data.trends.map(t => t.total_pnl == null ? null : parseFloat(t.total_pnl)),
             emphasis: { focus: 'series' },
             itemStyle: { color: DashboardConfig.chartColors[0] },
             lineStyle: {
@@ -167,7 +167,7 @@ function createTrendChart(containerId, data) {
         series = Object.entries(data.strategies || {}).map(([name, points]) => ({
             name,
             type: 'line',
-            data: points.map(p => parseFloat(p.total_pnl) || 0),
+            data: points.map(p => p.total_pnl == null ? null : parseFloat(p.total_pnl)),
             emphasis: { focus: 'series' }
         }));
     }
@@ -287,7 +287,7 @@ function createPositionUtilTrendChart(containerId, data) {
  */
 function formatNumber(value, decimals = 2) {
     const num = parseFloat(value);
-    if (isNaN(num)) return '0';
+    if (isNaN(num)) return '—';
 
     const sign = num >= 0 ? '+' : '';
     return sign + num.toLocaleString('zh-CN', {
@@ -301,6 +301,6 @@ function formatNumber(value, decimals = 2) {
  */
 function formatPercent(value) {
     const num = parseFloat(value);
-    if (isNaN(num)) return '0.0%';
+    if (isNaN(num)) return '—';
     return num.toFixed(1) + '%';
 }

@@ -320,7 +320,7 @@
           </thead>
           <tbody>
             <tr>
-              <td class="no-data" colspan="7">暂无数据</td>
+              <td class="no-data" colspan="7">暂无已核实归属明细</td>
             </tr>
           </tbody>
         </table>
@@ -371,14 +371,27 @@
 
         try {
             const detail = await api.getStrategyDetail(strategyId, type);
+            let provenance = document.getElementById('detail-ledger-quality');
+            if (!provenance) {
+                provenance = document.createElement('p');
+                provenance.id = 'detail-ledger-quality';
+                document.getElementById('detail-sub').insertAdjacentElement('afterend', provenance);
+            }
+            provenance.textContent = [
+                detail.strategy_attribution_complete ? '策略收入归属已核实' : '策略归属待核对，未知指标显示 —',
+                detail.publication_status === 'stale' ? '刷新失败，显示上次核实报告' : '',
+                detail.as_of ? `数据截至 ${new Date(detail.as_of).toLocaleString('zh-CN')}` : '尚无完整覆盖时间',
+                detail.stale_seconds > 0 ? `落后 ${Math.ceil(detail.stale_seconds / 60)} 分钟` : '',
+                detail.report_id ? `报告 ${detail.report_id.slice(0, 12)}` : ''
+            ].filter(Boolean).join(' · ');
 
             document.getElementById('detail-pnl').textContent = formatNumber(parseFloat(detail.total_pnl));
             document.getElementById('detail-pnl').className =
                 `detail-metric-value ${parseFloat(detail.total_pnl) >= 0 ? 'positive' : 'negative'}`;
 
             document.getElementById('detail-winrate').textContent = formatPercent(detail.win_rate);
-            document.getElementById('detail-closed').textContent = detail.closed_count.toLocaleString();
-            document.getElementById('detail-orders').textContent = detail.order_count.toLocaleString();
+            document.getElementById('detail-closed').textContent = detail.closed_count?.toLocaleString() ?? '—';
+            document.getElementById('detail-orders').textContent = detail.order_count?.toLocaleString() ?? '—';
 
             const commissionEl = document.getElementById('detail-commission');
             if (commissionEl) {
@@ -392,12 +405,12 @@
                 tbody.innerHTML = detail.symbols.map(sym => {
                     const pnl = parseFloat(sym.total_pnl);
                     const comm = parseFloat(sym.commission);
-                    const closedCount = (sym.wins || 0) + (sym.losses || 0);
+                    const closedCount = sym.closed_count ?? '—';
                     return `
                         <tr>
                             <td class="cell-symbol">${sym.symbol}</td>
-                            <td class="cell-number">${sym.order_count}</td>
-                            <td class="cell-number">${sym.fill_count}</td>
+                            <td class="cell-number">${sym.order_count ?? '—'}</td>
+                            <td class="cell-number">${sym.fill_count ?? '—'}</td>
                             <td class="cell-number">${closedCount}</td>
                             <td class="cell-number ${pnl >= 0 ? 'positive' : 'negative'}">${formatNumber(pnl)}</td>
                             <td class="cell-number ${comm < 0 ? 'negative' : ''}">${formatNumber(comm)}</td>
@@ -406,7 +419,7 @@
                     `;
                 }).join('');
             } else {
-                tbody.innerHTML = '<tr><td class="no-data" colspan="7">暂无数据</td></tr>';
+                tbody.innerHTML = '<tr><td class="no-data" colspan="7">暂无已核实归属明细</td></tr>';
             }
 
         } catch (error) {

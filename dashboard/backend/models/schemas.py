@@ -48,7 +48,27 @@ class ErrorResponse(BaseModel):
 # 策略相关模型
 # ========================================
 
-class StrategySummary(BaseModel):
+class LedgerMetadata(BaseModel):
+    report_id: Optional[str] = None
+    publication_status: Optional[str] = None
+    refresh_error: Optional[str] = None
+    report_version: Optional[str] = None
+    account_id: Optional[str] = None
+    start_ms: Optional[int] = None
+    end_ms: Optional[int] = None
+    requested_end_ms: Optional[int] = None
+    as_of: Optional[str] = None
+    stale_seconds: Optional[float] = None
+    account_coverage_complete: Optional[bool] = None
+    strategy_attribution_complete: Optional[bool] = None
+    coverage_gaps: List[str] = Field(default_factory=list)
+    other_asset_totals: Dict[str, str] = Field(default_factory=dict)
+    observed_pnl: Optional[str] = None
+    funding: Optional[str] = None
+    data_quality: Optional[str] = None
+
+
+class StrategySummary(LedgerMetadata):
     """策略摘要（用于总览和列表）"""
 
     id: str = Field(..., description="策略ID")
@@ -56,15 +76,15 @@ class StrategySummary(BaseModel):
     emoji: str = Field("", description="策略图标")
     open_position_count: int = Field(0, description="当前持仓数量")
     open_margin: str = Field("0", description="当前持仓保证金")
-    order_count: int = Field(0, description="订单数")
-    fill_count: int = Field(0, description="成交数")
-    closed_count: int = Field(0, description="平仓数")
-    win_count: int = Field(0, description="盈利笔数")
-    loss_count: int = Field(0, description="亏损笔数")
-    total_pnl: str = Field("0", description="总盈亏（净）")
+    order_count: Optional[int] = Field(None, description="订单数")
+    fill_count: Optional[int] = Field(None, description="成交数")
+    closed_count: Optional[int] = Field(None, description="平仓数")
+    win_count: Optional[int] = Field(None, description="盈利笔数")
+    loss_count: Optional[int] = Field(None, description="亏损笔数")
+    total_pnl: Optional[str] = Field(None, description="总盈亏（净）")
     gross_pnl: Optional[str] = Field(None, description="毛利润（不含佣金）")
     commission: Optional[str] = Field(None, description="佣金支出（负值）")
-    win_rate: float = Field(0.0, description="胜率")
+    win_rate: Optional[float] = Field(None, description="胜率")
     sharpe: Optional[float] = Field(None, description="策略年化夏普比率")
     max_drawdown: Optional[float] = Field(None, description="策略最大回撤(0~1)")
     perf_window_start: Optional[str] = Field(None, description="绩效样本窗口起点(ISO日期，滚动窗口)")
@@ -73,23 +93,23 @@ class StrategySummary(BaseModel):
     error: Optional[str] = Field(None, description="错误信息")
 
 
-class SymbolDetail(BaseModel):
+class SymbolDetail(LedgerMetadata):
     """币种明细"""
 
     symbol: str = Field(..., description="交易对")
-    order_count: int = Field(0, description="订单数")
-    fill_count: int = Field(0, description="成交数")
-    wins: int = Field(0, description="盈利笔数")
-    losses: int = Field(0, description="亏损笔数")
-    total_pnl: str = Field("0", description="总盈亏（净）")
+    order_count: Optional[int] = Field(None, description="订单数")
+    fill_count: Optional[int] = Field(None, description="成交数")
+    wins: Optional[int] = Field(None, description="盈利笔数")
+    losses: Optional[int] = Field(None, description="亏损笔数")
+    total_pnl: Optional[str] = Field(None, description="总盈亏（净）")
     gross_pnl: Optional[str] = Field(None, description="毛利润（不含佣金）")
     commission: Optional[str] = Field(None, description="佣金支出（负值）")
-    win_rate: float = Field(0.0, description="胜率")
+    win_rate: Optional[float] = Field(None, description="胜率")
     data_quality: str = Field("ok", description="数据质量")
     quality_note: str = Field("", description="质量说明")
 
 
-class StrategyDetailData(BaseModel):
+class StrategyDetailData(LedgerMetadata):
     """策略详情数据"""
 
     id: str = Field(..., description="策略ID")
@@ -97,16 +117,16 @@ class StrategyDetailData(BaseModel):
     emoji: str = Field("", description="策略图标")
     open_position_count: int = Field(0, description="当前持仓数量")
     open_margin: str = Field("0", description="当前持仓保证金")
-    order_count: int = Field(0, description="订单数")
-    fill_count: int = Field(0, description="成交数")
-    closed_count: int = Field(0, description="平仓数")
-    win_count: int = Field(0, description="盈利笔数")
-    loss_count: int = Field(0, description="亏损笔数")
-    total_pnl: str = Field("0", description="总盈亏（净）")
+    order_count: Optional[int] = Field(None, description="订单数")
+    fill_count: Optional[int] = Field(None, description="成交数")
+    closed_count: Optional[int] = Field(None, description="平仓数")
+    win_count: Optional[int] = Field(None, description="盈利笔数")
+    loss_count: Optional[int] = Field(None, description="亏损笔数")
+    total_pnl: Optional[str] = Field(None, description="总盈亏（净）")
     gross_pnl: Optional[str] = Field(None, description="毛利润（不含佣金）")
     commission: Optional[str] = Field(None, description="佣金支出（负值）")
-    win_rate: float = Field(0.0, description="胜率")
-    avg_daily_orders: float = Field(0.0, description="日均订单数")
+    win_rate: Optional[float] = Field(None, description="胜率")
+    avg_daily_orders: Optional[float] = Field(None, description="日均订单数")
     symbols: List[SymbolDetail] = Field(
         default_factory=list,
         description="币种明细"
@@ -134,17 +154,21 @@ class StrategyDetail(BaseResponse):
 # 总览相关模型
 # ========================================
 
-class OverviewData(BaseModel):
+class OverviewData(LedgerMetadata):
+    total_funding: Optional[str] = None
+    unattributed_pnl: Optional[str] = None
+    unattributed_count: Optional[int] = None
+    unattributed_absolute: Optional[str] = None
     """总览数据"""
 
-    total_pnl: str = Field(..., description="总盈亏（净）")
+    total_pnl: Optional[str] = Field(..., description="总盈亏（净）")
     total_gross_pnl: Optional[str] = Field(None, description="总毛利润（不含佣金）")
     total_commission: Optional[str] = Field(None, description="总佣金支出（负值）")
     total_unrealized_pnl: Optional[str] = Field(None, description="浮动盈亏（未实现，实时）")
-    total_orders: int = Field(..., description="总订单数")
-    total_closed: int = Field(..., description="总平仓数")
-    total_wins: int = Field(..., description="总盈利笔数")
-    win_rate: float = Field(..., description="总胜率")
+    total_orders: Optional[int] = Field(..., description="总订单数")
+    total_closed: Optional[int] = Field(..., description="总平仓数")
+    total_wins: Optional[int] = Field(..., description="总盈利笔数")
+    win_rate: Optional[float] = Field(..., description="总胜率")
     total_sharpe: Optional[float] = Field(None, description="账户级年化夏普比率")
     total_max_drawdown: Optional[float] = Field(None, description="账户级最大回撤(0~1)")
     total_perf_window_start: Optional[str] = Field(None, description="账户级绩效样本窗口起点(ISO日期)")
@@ -222,13 +246,13 @@ class EquityResponse(BaseResponse):
 # 趋势相关模型
 # ========================================
 
-class TrendDataPoint(BaseModel):
+class TrendDataPoint(LedgerMetadata):
     """趋势数据点"""
 
     date: str = Field(..., description="日期")
-    total_pnl: str = Field("0", description="总盈亏")
-    win_rate: float = Field(0.0, description="胜率")
-    order_count: int = Field(0, description="订单数")
+    total_pnl: Optional[str] = Field(None, description="总盈亏")
+    win_rate: Optional[float] = Field(None, description="胜率")
+    order_count: Optional[int] = Field(None, description="订单数")
 
 
 class TrendData(BaseModel):
@@ -282,16 +306,19 @@ class MetadataResponse(BaseResponse):
 # ========================================
 
 class ReturnsData(BaseModel):
-    """账户收益率数据"""
+    """账户未剔除现金流的净值变动数据（保留旧 API 字段名兼容）。"""
+
+    cashflow_adjusted: bool = False
+    metric_basis: str = "unadjusted_equity_change"
 
     period: str = Field(..., description="周期：daily/weekly/monthly")
     equity: str = Field("0", description="当前净资产")
     # yield 为 Python 保留字，用 alias 保持 API 字段名一致（service 返回 dict 键为 "yield"）
-    yield_: Optional[float] = Field(None, alias="yield", description="收益率（%）")
+    yield_: Optional[float] = Field(None, alias="yield", description="净值变动率（%，未剔除出入金）")
     yield_text: str = Field("--", description="收益率展示文本")
     yield_unavailable: bool = Field(False, description="收益率是否不可用")
     period_start_equity: Optional[str] = Field(None, description="期初净资产")
-    period_pnl: Optional[str] = Field(None, description="期初至今盈亏")
+    period_pnl: Optional[str] = Field(None, description="期初至今净值变动（未剔除出入金）")
     snapshot_date: str = Field(..., description="快照日期")
 
     model_config = {"populate_by_name": True}

@@ -84,15 +84,15 @@
           </div>
           <div class="equity-sub" id="account-equity-time">--</div>
         </div>
-        <!-- 收益模块：日/周/月收益率切换器 + 期初净资产 + 本期净盈亏 -->
+        <!-- 收益模块：日/周/月净值变动率切换器 + 期初净资产 + 本期净值变动 -->
         <div class="equity-returns">
           <div class="returns-header">
-            <span class="returns-title">收益率</span>
+            <span class="returns-title">净值变动率</span>
           </div>
           <div class="returns-value positive" id="returns-yield">--</div>
           <div class="returns-meta">
             <span class="returns-meta-item">期初净资产 <b id="returns-start">--</b></span>
-            <span class="returns-meta-item">本期净盈亏 <span class="tooltip" data-tip="本期净盈亏 = 期初净资产快照到当前的净资产增量，含浮动盈亏">ⓘ</span> <b id="returns-pnl">--</b></span>
+            <span class="returns-meta-item">本期净值变动 <span class="tooltip" data-tip="本期净值变动 = 期初净资产快照到当前的净资产增量，含浮动盈亏，未剔除出入金，不是现金流调整后的投资收益">ⓘ</span> <b id="returns-pnl">--</b></span>
           </div>
           <div class="returns-hint" id="returns-hint"></div>
         </div>
@@ -102,7 +102,7 @@
       <div class="stat-card pnl animate-in">
         <div class="stat-head">
           <div class="stat-icon">◆</div>
-          <div class="stat-label">记录总盈亏 <span class="tooltip" data-tip="交易记录净盈亏 + 当前浮动盈亏；交易记录可能含理论估算，不等于账户权益变动">ⓘ</span></div>
+          <div class="stat-label">期间交易所净收益 <span class="tooltip" data-tip="所选期间交易所已实现盈亏 + 佣金 + 资金费；不含当前浮动盈亏，覆盖不完整时显示待核对">ⓘ</span></div>
           <div class="stat-sub">USDT</div>
         </div>
         <div class="stat-value positive" id="total-pnl">+0.00</div>
@@ -132,7 +132,7 @@
       <div class="stat-card closed animate-in">
         <div class="stat-head">
           <div class="stat-icon">▨</div>
-          <div class="stat-label">交易记录盈亏 <span class="tooltip" data-tip="按交易记录累计并扣除已记佣金；HRS 部分平仓汇总可能采用理论估算，不代表交易所净收益">ⓘ</span></div>
+          <div class="stat-label">期间已结算净收益 <span class="tooltip" data-tip="交易所收入账本：已实现盈亏、佣金和资金费；与上方期间净收益同源">ⓘ</span></div>
           <div class="stat-sub">USDT</div>
         </div>
         <div class="stat-value gold" id="realized-pnl">0.00</div>
