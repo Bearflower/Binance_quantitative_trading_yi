@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full remote deployment runtime. Workflow injects only mode/SHA/deploy ID.
+# Full remote deployment runtime. Workflow injects validated mode/action/identity.
 set -e
 cd /root/trading_system
 export COMPOSE_FILE=docker-compose.yml:docker-compose.logging.yml
@@ -11,6 +11,7 @@ echo "========================================"
 echo "CI/CD 自动部署"
 echo "时间: $(date '+%Y-%m-%d %H:%M:%S')"
 DEPLOY_MODE="__DEPLOY_MODE__"
+FUNDING_DEPLOY_ACTION="__FUNDING_DEPLOY_ACTION__"
 COMMIT_SHA="__COMMIT_SHA__"
 DEPLOY_ID="__DEPLOY_ID__"
 echo "模式: ${DEPLOY_MODE}"
@@ -280,10 +281,35 @@ stop_funding_collector_if_running() {
     fi
   fi
 }
-# Strict fail-closed: an existing profiled service must not continue collecting
-# under a new deployment before this run's migration/password/ACL gate passes.
-# Any resulting missing five-minute slots are real gaps, never backfilled.
-stop_funding_collector_if_running
+funding_collector_identity() {
+  docker inspect -f '{{.Id}}|{{.State.StartedAt}}|{{.Image}}|{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}|{{index .Config.Labels "com.docker.compose.project"}}|{{index .Config.Labels "com.docker.compose.service"}}' ai-tuner-funding-schedule
+}
+
+FUNDING_IDENTITY_BEFORE=""
+if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then
+  FUNDING_IDENTITY_BEFORE=$(funding_collector_identity) || {
+    echo "❌ 资金费采集器不存在，不能保留；需安全轮换部署"
+    exit 1
+  }
+  IFS='|' read -r FUNDING_ID FUNDING_STARTED FUNDING_IMAGE FUNDING_STATUS FUNDING_HEALTH FUNDING_PROJECT FUNDING_SERVICE <<< "$FUNDING_IDENTITY_BEFORE"
+  if [ -z "$FUNDING_ID" ] || [ -z "$FUNDING_STARTED" ] || [ -z "$FUNDING_IMAGE" ] || \
+     [ "$FUNDING_STATUS" != "running" ] || [ "$FUNDING_HEALTH" != "healthy" ] || \
+     [ "$FUNDING_PROJECT" != "trading_system" ] || [ "$FUNDING_SERVICE" != "ai-tuner-funding-schedule" ]; then
+    echo "❌ 资金费采集器身份或健康不符，拒绝保留路径"
+    exit 1
+  fi
+  echo "✅ 保留资金费采集器 id=${FUNDING_ID} started=${FUNDING_STARTED} image=${FUNDING_IMAGE}"
+elif [ "$FUNDING_DEPLOY_ACTION" = "rotate" ]; then
+  # Sensitive changes: stop before migration/password/ACL gate. Missing slots
+  # remain factual gaps and must never be backfilled.
+  FUNDING_IDENTITY_BEFORE=$(funding_collector_identity 2>/dev/null || true)
+  echo "🔄 安全轮换资金费采集器 before=${FUNDING_IDENTITY_BEFORE:-absent}"
+  FUNDING_STOPPED_AT=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+  stop_funding_collector_if_running
+else
+  echo "❌ 非法资金费采集器部署动作"
+  exit 1
+fi
 
 # 1.5 磁盘预检查（仅普通全量部署）。目标化首次创建不得执行全局 prune。
 echo "💾 磁盘预检查..."
@@ -304,7 +330,7 @@ if [ "$FREE_GB" -lt 2 ]; then
 fi
 echo "✅ 磁盘充足 (>= 2GB)"
 
-# 任何 up/recreate 前先归档尚未切换的 json-file 容器日志。
+# 任何 up/recreate 前归档 json-file 容器及当前 grid-realtime journald 日志。
 # 即使本轮只更新一项，也保护并行部署后新产生的旧容器日志。
 bash scripts/archive_container_logs.sh "log_archive/pre_up_$(date '+%Y%m%d_%H%M%S')_${DEPLOY_ID}"
 
@@ -320,7 +346,7 @@ RESIDUAL_CANDIDATES="trading_system-postgres trading_system-hrs trading_system-b
   trading_system-btc_eth_aggressive trading_system-new_coin trading_system-grid \
   trading_system-grid-realtime trading_system-aggtrade-collector \
   trading_system-mtcps-xau-shadow trading_system-mtcps-xau-calibrated-shadow \
-  ai-tuner ai-tuner-funding-schedule trading_system-kline trading_system-kline-monitor data-backend dashboard-api"
+  ai-tuner trading_system-kline trading_system-kline-monitor data-backend dashboard-api"
 if [ -z "$PROJECT_IDS" ]; then
   # 未取到本项目容器清单（compose 异常）时不删任何容器：
   # 先删后 up 失败会导致全部服务停机且无替代，宁可让 docker compose up 自己报冲突
@@ -380,7 +406,7 @@ docker compose pull
 #   - grid-realtime 业务进程启动只 check_schema（不建表），缺表直接抛错 → crash-loop
 #   - grid-strategy 出口的 _init_export 只在构造时校验一次 schema，失败即永久停用
 #     （只 warning 不重试）→ 若此时表未建好，出口交接会一直不可用直到下次重启
-# 迁移命令幂等：ensure_schema 全 CREATE ... IF NOT EXISTS + ON CONFLICT DO NOTHING
+# 迁移命令幂等：ensure_schema 全 CREATE ... IF NOT EXISTS + 版本更新
 # 卷：与 grid-strategy / grid-realtime 共用 ./data/grid:/app/data
 # --no-deps：不拉起 depends_on（迁移不依赖任何在跑服务）
 echo "🗄️  grid_realtime schema 迁移（一次性）..."
@@ -392,9 +418,31 @@ docker compose run -T --rm --no-deps grid-realtime \
 # Docker Compose 重建失败可能留下形如「旧容器 ID_服务名」的 Created 容器。
 # 仅在正式容器仍运行且健康、残留已超过 5 分钟时清理；否则停止部署。
 python3 scripts/cleanup_compose_created.py
-# 资金费采集器位于 funding-schedule profile，不在此全局 up 中启动/重建。
+# 保留路径不得用 --remove-orphans 清理未启用 profile 的采集器。
 echo "🔄 docker compose up -d..."
-docker compose --parallel 1 up -d --remove-orphans
+if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then
+  # Keep the database container stable too. A floating postgres:15-alpine
+  # digest change could otherwise interrupt collection without changing the
+  # collector's own ID/start time. Do not start dependencies implicitly.
+  KEEP_SERVICE_LIST=$(docker compose config --services) || {
+    echo "❌ Compose 服务清单不可用，拒绝保留路径"
+    exit 1
+  }
+  KEEP_SERVICES=()
+  while IFS= read -r service; do
+    case "$service" in
+      postgres|ai-tuner-funding-schedule) ;;
+      *) KEEP_SERVICES+=("$service") ;;
+    esac
+  done <<< "$KEEP_SERVICE_LIST"
+  if [ "${#KEEP_SERVICES[@]}" -eq 0 ]; then
+    echo "❌ 无可安全更新的服务，拒绝保留路径"
+    exit 1
+  fi
+  docker compose --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"
+else
+  docker compose --parallel 1 up -d --remove-orphans
+fi
 
 # ========== step 4.5：执行数据库 init-scripts（幂等）==========
 # 背景：postgres 官方镜像 entrypoint 仅在 PGDATA 首次为空时自动执行
@@ -632,7 +680,20 @@ if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then
 fi
 docker compose restart ai-tuner-snapshot >/dev/null
 # Only now may the profiled service start. --no-deps avoids touching postgres.
-docker compose --profile funding-schedule up -d --no-deps ai-tuner-funding-schedule
+if [ "$FUNDING_DEPLOY_ACTION" = "rotate" ]; then
+  docker compose --profile funding-schedule up -d --no-deps ai-tuner-funding-schedule
+  echo "✅ 资金费采集器轮换窗口 ${FUNDING_STOPPED_AT}..$(date -u '+%Y-%m-%dT%H:%M:%SZ') after=$(funding_collector_identity)"
+else
+  FUNDING_IDENTITY_AFTER=$(funding_collector_identity) || {
+    echo "❌ 资金费采集器在部署后消失"
+    exit 1
+  }
+  if [ "$FUNDING_IDENTITY_AFTER" != "$FUNDING_IDENTITY_BEFORE" ]; then
+    echo "❌ 资金费采集器身份或健康变化，拒绝宣称连续性"
+    exit 1
+  fi
+  echo "✅ 资金费采集器身份与健康保持不变"
+fi
 echo "✅ init-scripts 全部执行完毕"
 # ==========================================================
 
@@ -679,6 +740,11 @@ for service in $JOURNAL_SERVICES; do
     echo "❌ $service 未使用 journald 日志驱动"
     exit 1
   fi
+  # 没有标准输出的静默容器自然也没有 journal 记录。
+  if [ -z "$(docker logs --tail 1 "$cid" 2>&1)" ]; then
+    echo "⏳ journald $service container=$cid 尚无日志输出（驱动已核对）"
+    continue
+  fi
   found=0
   for i in $(seq 1 15); do
     if [ -n "$(journalctl -q --no-pager -n 1 -o cat CONTAINER_ID_FULL="$cid")" ]; then
@@ -688,7 +754,7 @@ for service in $JOURNAL_SERVICES; do
     sleep 2
   done
   if [ "$found" -ne 1 ]; then
-    echo "❌ $service 的当前容器日志未进入 journald"
+    echo "❌ $service 已有容器日志，但当前容器日志未进入 journald"
     exit 1
   fi
   echo "✅ journald $service container=$cid"

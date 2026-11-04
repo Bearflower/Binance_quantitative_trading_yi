@@ -20,7 +20,7 @@ from typing import Dict, Optional, Tuple
 
 from .rules import ReferenceSnapshot, validate_snapshot
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 # 会话状态
 ACTIVE = "ACTIVE"
@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS event (
   direction     TEXT NOT NULL,
   level         TEXT NOT NULL,
   first_held_ms INTEGER,
+  decision_ms   INTEGER,
   sent_ms       INTEGER,
   config_hash   TEXT,
   payload       TEXT NOT NULL
@@ -95,6 +96,39 @@ CREATE TABLE IF NOT EXISTS outbox (
   payload        TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_outbox_status ON outbox(status);
+
+-- queue audit：进程、逐出 episode、逐拍覆盖证据；与业务四表分离。
+CREATE TABLE IF NOT EXISTS queue_audit_instance (
+  instance_id TEXT PRIMARY KEY,
+  started_at_ms INTEGER NOT NULL,
+  stopped_at_ms INTEGER
+);
+CREATE TABLE IF NOT EXISTS queue_overflow_episode (
+  episode_id INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id TEXT NOT NULL,
+  first_dropped_ms INTEGER NOT NULL,
+  last_dropped_ms INTEGER NOT NULL,
+  first_dropped_id INTEGER NOT NULL,
+  last_dropped_id INTEGER NOT NULL,
+  dropped_count INTEGER NOT NULL,
+  recovery_until_ms INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('OPEN','RECOVERED','INTERRUPTED'))
+);
+CREATE INDEX IF NOT EXISTS idx_queue_episode_window
+  ON queue_overflow_episode(first_dropped_ms, recovery_until_ms);
+CREATE TABLE IF NOT EXISTS queue_audit_checkpoint (
+  instance_id TEXT NOT NULL,
+  observed_at_ms INTEGER NOT NULL,
+  dropped_total INTEGER NOT NULL,
+  recovery_until_ms INTEGER NOT NULL,
+  audit_ok INTEGER NOT NULL CHECK(audit_ok IN (0,1)),
+  reference_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+  feed_healthy INTEGER NOT NULL DEFAULT 0 CHECK(feed_healthy IN (0,1)),
+  storage_degraded INTEGER NOT NULL DEFAULT 1 CHECK(storage_degraded IN (0,1)),
+  PRIMARY KEY(instance_id, observed_at_ms)
+);
+CREATE INDEX IF NOT EXISTS idx_queue_checkpoint_time
+  ON queue_audit_checkpoint(observed_at_ms);
 """
 
 
@@ -122,10 +156,29 @@ def connect(path: str, busy_timeout_ms: int) -> sqlite3.Connection:
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
     """一次性迁移：建表/索引并登记版本（由迁移命令在业务进程启动前调用）。"""
+    exists = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
+    old = (conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
+           if exists else None)
+    if old is not None and old[0] not in ("1", "2", str(SCHEMA_VERSION)):
+        raise RuntimeError(f"不支持的 schema 版本: {old[0]}")
     conn.executescript(SCHEMA_SQL)
+    event_columns = {row[1] for row in conn.execute("PRAGMA table_info(event)")}
+    if "decision_ms" not in event_columns:
+        conn.execute("ALTER TABLE event ADD COLUMN decision_ms INTEGER")
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(queue_audit_checkpoint)")}
+    for name, definition in (
+        ("reference_status", "TEXT NOT NULL DEFAULT 'UNKNOWN'"),
+        ("feed_healthy", "INTEGER NOT NULL DEFAULT 0"),
+        ("storage_degraded", "INTEGER NOT NULL DEFAULT 1"),
+    ):
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE queue_audit_checkpoint ADD COLUMN {name} {definition}")
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('version', ?) "
-        "ON CONFLICT(key) DO NOTHING", (str(SCHEMA_VERSION),))
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),))
     conn.commit()
 
 
@@ -141,12 +194,25 @@ def check_schema(conn: sqlite3.Connection) -> None:
         raise RuntimeError(
             f"schema 版本不符：实际 {row['value'] if row else None}，"
             f"预期 {SCHEMA_VERSION}；请先执行迁移命令")
-    required = ("reference", "session", "event", "outbox")
+    required = ("reference", "session", "event", "outbox",
+                "queue_audit_instance", "queue_overflow_episode",
+                "queue_audit_checkpoint")
     tables = {r["name"] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'")}
     missing = [name for name in required if name not in tables]
     if missing:
         raise RuntimeError(f"持久化缺少表: {', '.join(missing)}；请先执行迁移命令")
+    checkpoint_columns = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(queue_audit_checkpoint)")}
+    required_columns = {
+        "reference_status", "feed_healthy", "storage_degraded"}
+    missing_columns = sorted(required_columns - checkpoint_columns)
+    if missing_columns:
+        raise RuntimeError(
+            f"队列审计缺少列: {', '.join(missing_columns)}；请先执行迁移命令")
+    event_columns = {r["name"] for r in conn.execute("PRAGMA table_info(event)")}
+    if "decision_ms" not in event_columns:
+        raise RuntimeError("事件表缺少 decision_ms；请先执行迁移命令")
 
 
 def make_reference_id(calculated_at_ms: int, grid_lower: Decimal,

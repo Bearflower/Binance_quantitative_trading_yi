@@ -259,6 +259,9 @@ async def test_pump_feed_queue_full_evicts_oldest_keeps_newest(conn, cfg):
     assert service._storage_degraded is False
     assert service._snapshot()["queue_dropped_total"] == 1
     assert service._snapshot()["queue_last_dropped_id"] == 1
+    durable = conn.execute("SELECT first_dropped_id, dropped_count FROM "
+                           "queue_overflow_episode").fetchone()
+    assert (durable["first_dropped_id"], durable["dropped_count"]) == (1, 1)
     queued = service._trade_queue.get_nowait()
     assert queued.agg_trade_id == 2  # 最旧 id=1 被逐出，最新 id=2 保留
 
@@ -295,6 +298,10 @@ async def test_queue_overflow_clears_samples_and_holds_until_rewarm(conn, cfg, s
     clock[0] += 2_000
     await service.tick()
     assert "feed_queue_overflow" not in service._snapshot()["health"]
+    episode = conn.execute("SELECT status, dropped_count FROM "
+                           "queue_overflow_episode").fetchone()
+    assert (episode["status"], episode["dropped_count"]) == ("RECOVERED", 1)
+    assert conn.execute("SELECT COUNT(*) FROM queue_audit_checkpoint").fetchone()[0] == 3
 
 
 async def test_queue_overflow_repeated_episode_is_audited(conn, cfg, snap):

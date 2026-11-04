@@ -33,3 +33,15 @@ CREATE TABLE IF NOT EXISTS price_samples_1s (
 
 CREATE INDEX IF NOT EXISTS idx_samples_symbol_time
   ON price_samples_1s(symbol, sample_ms);
+
+-- 每次清理前保留当时的滚动逐笔 ID 连续性证据；逐笔删除后仍可审计。
+CREATE TABLE IF NOT EXISTS aggtrade_integrity_checkpoint (
+  checked_at_ms INTEGER PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  first_id INTEGER,
+  last_id INTEGER,
+  trade_count INTEGER NOT NULL,
+  first_trade_ms INTEGER,
+  last_trade_ms INTEGER,
+  id_contiguous INTEGER NOT NULL CHECK(id_contiguous IN (0,1))
+);

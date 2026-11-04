@@ -16,6 +16,7 @@ def test_reconcile_mode_is_renderable(tmp_path):
         mode="allocation-reconcile",
         commit_sha="a" * 40,
         deploy_id="ABCDEF12",
+        funding_action="rotate",
     )
     assert 'DEPLOY_MODE="allocation-reconcile"' in output.read_text()
 

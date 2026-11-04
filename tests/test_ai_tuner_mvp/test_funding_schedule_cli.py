@@ -545,6 +545,8 @@ def test_image_and_deploy_script_include_separate_runtime_boundary():
     assert "FUNDING_PERMISSION_BOUNDARY_OK" in runtime
     gate = runtime.index('if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then')
     assert runtime.index("docker compose --parallel 1 up -d --remove-orphans") < gate
+    assert 'if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then' in runtime
+    assert 'docker compose --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"' in runtime
     # Clear inherited profiles before any one-off Compose call; only stop the
     # existing collector on the normal deployment path after one-off modes exit.
     assert runtime.index("export COMPOSE_PROFILES=") < runtime.index(
@@ -552,7 +554,8 @@ def test_image_and_deploy_script_include_separate_runtime_boundary():
     )
     normal_branch = runtime.index("# allocation-reconcile end")
     first_normal_compose = runtime.index("PROJECT_IDS=$(docker compose ps", normal_branch)
-    assert normal_branch < runtime.index("\nstop_funding_collector_if_running\n") < first_normal_compose
+    assert normal_branch < runtime.index('if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then') < first_normal_compose
+    assert normal_branch < runtime.index("\n  stop_funding_collector_if_running\n") < first_normal_compose
     assert runtime.index("docker compose --profile funding-schedule up -d --no-deps ai-tuner-funding-schedule") > gate
     assert "docker compose restart ai-tuner-funding-schedule" not in runtime
     assert "docker stop ai-tuner-funding-schedule" in runtime

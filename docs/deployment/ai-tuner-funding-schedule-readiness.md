@@ -2,7 +2,11 @@
 
 本清单只用于前瞻采集器的独立上线核对；它不授权历史回填、服务器回测、调优自动生效或资格考试 PASS。
 
-部署顺序：新服务位于 `funding-schedule` Compose profile。普通部署分支显式清空 `COMPOSE_PROFILES`（覆盖服务器环境与 `.env`），并先仅停止既有 `ai-tuner-funding-schedule`，因此普通 `up -d --remove-orphans` 不会提前启动它。只有 14 号 DDL、独立密码设置和 ACL 门禁全部成功后，部署脚本才用显式 profile、`--no-deps` 启动。重复部署也遵守相同顺序；ACL 失败时再次停止精确目标，不能留下未验证的采集器运行。提前停机造成的缺槽是真实数据缺口，不可伪造回填，后续资格考试按缺口处理。
+部署顺序：服务位于 `funding-schedule` Compose profile。CI 按整段推送变更范围将完整部署判为 `keep` 或 `rotate`，无法判定时安全地选 `rotate`；一次性定向部署不触碰采集器。`keep` 只用于无关变更：部署前验证既有采集器的项目/服务标签、运行健康与容器身份；清空 `COMPOSE_PROFILES`，普通服务更新排除 Postgres 与采集器，并加 `--no-deps`、不用 `--remove-orphans`，避免浮动 Postgres 镜像意外重建；14 号 DDL、独立密码设置与 ACL 门禁照常执行，门禁后核对身份与健康完全未变。`rotate` 用于采集器、共享依赖、Compose、DDL 或部署控制变更：先停止精确采集器，门禁通过后才用显式 profile 与 `--no-deps` 启动。两种路径 ACL 失败均停止精确目标。停机造成的历史缺槽是真实缺口，不可伪造回填，资格考试按缺口处理。
+
+2026-11-03 首次上线记录：Run [#151](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/41566220084) / `630d0068` 因部署控制文件变更正确判为 `rotate`，停启窗口为 02:29:54–02:31:02 UTC。只读验收确认 02:30、02:35、02:40 UTC 三个已截止槽位均有 `success` run，`request_started_at` 与 `received_at` 均位于各自槽位开始后约 0.2 秒内；这只能证明本次轮换后的连续性，不能代替下一次 `keep` 的身份不变验证。此前 11-02 14:05 和 11-03 01:50 UTC 的真实缺槽仍保留，不回填。
+
+`keep` 实测：Run [#152](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/41568496366) / `35f5a49b` 仅增加无运行逻辑的 `ai_tuner/DEPLOYMENT_CONTINUITY_CHECK.txt`，CI 实际构建并更新 AI Tuner 镜像，部署日志明确为 `keep`。部署前后资金费采集器容器 ID 均为 `ab3946909665…`、启动时间均为 `2026-11-03T02:31:02.659655888Z`；Postgres 容器 ID 均为 `7b5e188e6a57…`、启动时间均为 `2026-10-28T07:02:09.719787952Z`，两者始终 `running/healthy`。只读核验 02:55、03:00、03:05 UTC 三个连续已截止槽位全部 `success`、每槽 17 条逐币种观测，采集器近期日志未出现新的缺槽/查询失败。采集器继续使用先前镜像是 `keep` 的预期；下次采集器敏感变更仍须走 `rotate`。
 
 ## 容器存活与采集成功是两件事
 

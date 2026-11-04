@@ -107,10 +107,11 @@ class Delivery:
         try:
             self._conn.execute(
                 "INSERT INTO event(event_id, episode_id, reference_id, direction, "
-                "level, first_held_ms, config_hash, payload) "
-                "VALUES(?,?,?,?,?,?,?,?)",
+                "level, first_held_ms, decision_ms, config_hash, payload) "
+                "VALUES(?,?,?,?,?,?,?,?,?)",
                 (event.event_id, event.episode_id, event.reference_id,
                  event.direction, event.level, event.first_held_ms,
+                 event.decision_ms,
                  config_hash, payload))
             self._conn.commit()
             return True

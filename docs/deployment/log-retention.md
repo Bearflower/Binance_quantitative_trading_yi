@@ -14,6 +14,8 @@ journalctl -f CONTAINER_NAME=dashboard-api
 
 `journalctl` 按容器名跨重建查询，`CONTAINER_ID_FULL=<完整 ID>` 可定位某次运行。`docker logs` 只用于当前容器。业务日志可能含敏感信息，勿将原文复制到公开 CI 日志。
 
+部署后的日志验收先核对 journald 驱动。若某容器尚无任何标准输出，`docker logs` 与 `journalctl` 都为空时记录为“尚无日志输出”；若 `docker logs` 已有内容而 `journalctl` 仍为空，则验收失败。
+
 ## 容量与验证
 
 生产机使用 `/etc/systemd/journald.conf.d/30-trading-log-retention.conf`：持久化、全机 3 GB 上限、根分区保留 5 GB、最长 14 天。容量上限优先，14 天是目标而非保证。检查：
@@ -27,7 +29,15 @@ journalctl -q --no-pager -n 1 CONTAINER_NAME=dashboard-api
 
 当前可恢复的旧 `json-file` 日志已导出到服务器 `/root/trading_system/log_archive/pre_journald_20261027_122204/`，目录权限 700，文件权限 600；`manifest.tsv` 含服务、容器 ID、时间范围、字节数和 SHA-256。这个快照只覆盖导出时仍可读取的日志。
 
-从部署 `b1ead61` 起，CI 在每次 `docker compose up` 前调用 `scripts/archive_container_logs.sh`，把仍使用 `json-file` 的本项目容器日志保存到 `log_archive/pre_up_<时间>_<DEPLOY_ID>/`。归档目录只供 root 访问，清单含容器 ID、日志起止时间、字节数和 SHA-256；已切换到 journald 的服务不会重复归档。归档失败会中止部署。
+CI 在每次 `docker compose up` 前调用 `scripts/archive_container_logs.sh`，归档仍使用 `json-file` 的容器，以及使用 journald 的 `trading_system-grid-realtime` 当前容器日志。归档目录只供 root 访问，清单含容器 ID、日志起止时间、字节数和 SHA-256；归档失败会中止部署。`docker logs` 只能导出当前容器可读的日志，已经从 journal 中被清理的旧记录无法借此恢复。网格队列的权威审计已改为 `grid_realtime.sqlite3`；日志仅为辅助证据。
+
+网格队列审计的只读报告：
+
+```bash
+python3 scripts/audit_grid_queue_window.py --db-path /root/trading_system/data/grid/grid_realtime.sqlite3 --hours 72
+```
+
+实际数据库路径以 `strategies/grid/config.yaml` 的 `realtime_alert.storage.path` 为准。报告中 `queue_window_eligible=true` 只证明队列审计时间轴连续且无逐出；M3 研究仍须独立核对聚合成交完整性、参考同步、shadow 边界等。部署后须从首个审计 checkpoint 重新累计 72 小时。`unclean_instances`、`failed_checkpoints_ms`、`gaps` 或溢出 episode 均使相应窗口不可用于研究。
 
 2026-10-28 15:02（北京时间），全部 15 个服务已分批切换并通过健康、驱动、当前 journal 记录和旧日志归档检查；交易策略逐个切换，数据库最后切换。11:09 的一次业务部署已重建先行切换的 4 个服务，`dashboard-api` 等服务的 journal 仍可按容器名查到新旧两个容器 ID，证明跨重建查询有效。最终复核：15/15 健康、15/15 journald、86 份部署前归档文件的字节数和 SHA-256 均匹配；根分区剩余 25 GB，journal 占用约 637 MB。14 天实际留存窗口尚需运行满 14 天后验证，容量上限仍可能使窗口缩短。每日 09:00 的只读自动检查监控日志驱动、记录、journal 容量、磁盘余量和容器健康；正常状态保持安静。
 

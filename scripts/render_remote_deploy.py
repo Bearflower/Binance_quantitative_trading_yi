@@ -15,6 +15,7 @@ PLACEHOLDERS = {
     "__DEPLOY_MODE__": "mode",
     "__COMMIT_SHA__": "commit_sha",
     "__DEPLOY_ID__": "deploy_id",
+    "__FUNDING_DEPLOY_ACTION__": "funding_action",
 }
 UNRESOLVED_PLACEHOLDER = re.compile(r"__[A-Z][A-Z0-9_]*__")
 
@@ -23,13 +24,15 @@ class RenderError(ValueError):
     """The template or supplied deployment identity is unsafe."""
 
 
-def _validate(mode: str, commit_sha: str, deploy_id: str) -> None:
+def _validate(mode: str, commit_sha: str, deploy_id: str, funding_action: str) -> None:
     if mode not in {"full", "calibrated-first-create", "execution-facts-first-create", "allocation-reconcile"}:
         raise RenderError("invalid deployment mode")
     if re.fullmatch(r"[0-9a-fA-F]{40}", commit_sha) is None:
         raise RenderError("commit SHA must be exactly 40 hexadecimal characters")
     if re.fullmatch(r"[0-9A-F]{8}", deploy_id) is None:
         raise RenderError("deploy ID must be exactly 8 uppercase hexadecimal characters")
+    if funding_action not in {"keep", "rotate"}:
+        raise RenderError("invalid funding deployment action")
 
 
 def render_remote_deploy(
@@ -39,8 +42,9 @@ def render_remote_deploy(
     mode: str,
     commit_sha: str,
     deploy_id: str,
+    funding_action: str,
 ) -> None:
-    _validate(mode, commit_sha, deploy_id)
+    _validate(mode, commit_sha, deploy_id, funding_action)
     source_path = Path(source)
     output_path = Path(output)
     template = source_path.read_text(encoding="utf-8")
@@ -49,6 +53,7 @@ def render_remote_deploy(
         "mode": mode,
         "commit_sha": commit_sha,
         "deploy_id": deploy_id,
+        "funding_action": funding_action,
     }
     rendered = template
     for placeholder, field in PLACEHOLDERS.items():
@@ -92,6 +97,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mode", required=True)
     parser.add_argument("--commit-sha", required=True)
     parser.add_argument("--deploy-id", required=True)
+    parser.add_argument("--funding-action", required=True)
     return parser.parse_args(argv)
 
 
@@ -104,6 +110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode=args.mode,
             commit_sha=args.commit_sha,
             deploy_id=args.deploy_id,
+            funding_action=args.funding_action,
         )
     except (OSError, RenderError) as exc:
         print(f"remote deploy render failed: {exc}", file=sys.stderr)

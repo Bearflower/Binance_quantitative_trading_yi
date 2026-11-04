@@ -517,4 +517,5 @@ def test_ordinary_deploy_keeps_full_compose_path_outside_first_create_block():
     ordinary = _remote_deploy_script().replace(_calibrated_first_create_block(), "")
 
     assert "docker compose pull\n" in ordinary
-    assert "docker compose up -d --remove-orphans" in ordinary
+    assert "docker compose --parallel 1 up -d --remove-orphans" in ordinary
+    assert 'docker compose --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"' in ordinary

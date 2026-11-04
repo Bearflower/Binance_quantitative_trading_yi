@@ -22,7 +22,11 @@ fi
 count=0
 for name in $names; do
   driver=$(docker inspect -f '{{.HostConfig.LogConfig.Type}}' "$name")
-  [ "$driver" = json-file ] || continue
+  # grid shadow 的内存队列审计曾依赖日志；重建前保留当前 journald 容器日志。
+  if [ "$driver" != json-file ] &&
+     { [ "$name" != trading_system-grid-realtime ] || [ "$driver" != journald ]; }; then
+    continue
+  fi
   id=$(docker inspect -f '{{.Id}}' "$name")
   log_file="$archive_dir/$name.log"
   docker logs --timestamps "$name" > "$log_file" 2>&1
@@ -35,4 +39,4 @@ for name in $names; do
 done
 
 chmod 600 "$archive_dir"/*
-printf 'archive=%s json_file_containers=%s\n' "$archive_dir" "$count"
+printf 'archive=%s containers=%s\n' "$archive_dir" "$count"

@@ -119,6 +119,39 @@ def test_materialize_and_cleanup_single_transaction(conn):
     assert rows and all(r[1] <= r[0] for r in rows)
 
 
+def test_cleanup_persists_raw_id_integrity_before_retention_delete(conn):
+    with conn:
+        repo.upsert_agg_trades(conn, [
+            make_trade(10, 1000, "100"),
+            make_trade(11, 2000, "101"),
+            make_trade(12, 3000, "102")])
+    repo.materialize_and_cleanup(conn, SYMBOL, 1, 3_600_500)
+    row = conn.execute(
+        "SELECT first_id,last_id,trade_count,id_contiguous,first_trade_ms,"
+        "last_trade_ms FROM aggtrade_integrity_checkpoint "
+        "ORDER BY checked_at_ms DESC LIMIT 1").fetchone()
+    assert tuple(row) == (10, 12, 3, 1, 1000, 3000)
+
+    with conn:
+        conn.execute("DELETE FROM agg_trades")
+    preserved = conn.execute(
+        "SELECT id_contiguous FROM aggtrade_integrity_checkpoint "
+        "ORDER BY checked_at_ms DESC LIMIT 1").fetchone()
+    assert preserved[0] == 1
+
+
+def test_cleanup_records_gap_instead_of_claiming_continuity(conn):
+    with conn:
+        repo.upsert_agg_trades(conn, [
+            make_trade(10, 1000, "100"),
+            make_trade(12, 2000, "101")])
+    repo.materialize_and_cleanup(conn, SYMBOL, 1, 3_600_500)
+    row = conn.execute(
+        "SELECT id_contiguous FROM aggtrade_integrity_checkpoint "
+        "ORDER BY checked_at_ms DESC LIMIT 1").fetchone()
+    assert row[0] == 0
+
+
 def test_has_gap_detects_id_hole(conn):
     with conn:
         repo.upsert_agg_trades(conn, [make_trade(1, 1000, "1"),
