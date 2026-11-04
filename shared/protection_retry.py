@@ -556,6 +556,10 @@ async def place_and_wait_entry_order(strategy, symbol: str, signal: Dict) -> Opt
     Returns:
         有成交（完全/部分）返回 OrderFillResult；无成交返回 None（已撤单）
     """
+    aggressive = getattr(strategy, 'my_record_name', None) == 'btc_eth_aggressive'
+    if aggressive and not signal.get('_risk_client_id'):
+        signal['skip_reason'] = 'missing durable entry risk reservation'
+        return None
     entry_side = "BUY" if signal['direction'] == "LONG" else "SELL"
     logger.info(
         f"{symbol} 下限价单开仓",
@@ -563,13 +567,17 @@ async def place_and_wait_entry_order(strategy, symbol: str, signal: Dict) -> Opt
         quantity=float(signal['quantity']),
         entry_price=float(signal['entry_price'])
     )
-    entry_order = await strategy.binance.place_order(
-        symbol=symbol,
-        side=entry_side,
-        quantity=signal['quantity'],
-        price=signal['entry_price'],
-        order_type="LIMIT"
-    )
+    if aggressive:
+        from shared.entry_risk_policy import submit_aggressive_entry
+        entry_order = await submit_aggressive_entry(strategy, symbol, signal)
+    else:
+        entry_order = await strategy.binance.place_order(
+            symbol=symbol,
+            side=entry_side,
+            quantity=signal['quantity'],
+            price=signal['entry_price'],
+            order_type="LIMIT"
+        )
     entry_order_id = entry_order.get('orderId')
     logger.info(
         f"{symbol} 开仓订单已下单",
@@ -579,7 +587,12 @@ async def place_and_wait_entry_order(strategy, symbol: str, signal: Dict) -> Opt
 
     # 等待限价单至终态（超时时间从配置读取；撤单/重读由 wait_order_final_state 负责）
     entry_timeout = strategy.risk_config.get('position_sizing', {}).get('entry_order_timeout_seconds', 60)
-    result = await strategy._wait_for_order_fill(symbol, entry_order_id, entry_timeout)
+    if aggressive:
+        from shared.order_fill_waiter import wait_order_final_state
+        result = await wait_order_final_state(strategy.binance,symbol,order_id=entry_order_id,
+            client_order_id=signal['_risk_client_id'],timeout_seconds=entry_timeout,preserve_confirmed=True,initial_order=entry_order)
+    else:
+        result = await strategy._wait_for_order_fill(symbol, entry_order_id, entry_timeout)
     if result is None or not result.has_fill:
         # 无成交（含超时撤单后确认未成交、未知终态）：与修复前一致，放弃开仓
         logger.warning(
@@ -656,6 +669,9 @@ async def open_new_position(
 
     except Exception as e:
         logger.error(f"执行交易信号失败: {symbol}", error=str(e), exc_info=True)
+        if getattr(strategy, 'my_record_name', None) == 'btc_eth_aggressive':
+            from shared.entry_risk_policy import recover_reserved_protection
+            await recover_reserved_protection(strategy)
         await strategy._send_signal_error_notification(symbol, e)
         await strategy._release_claim_if_no_position(symbol, reason="open_exception")
         return False

@@ -158,6 +158,8 @@ async def wait_order_final_state(
     check_interval: Optional[float] = None,
     visibility_delay: Optional[float] = None,
     final_read_retries: Optional[int] = None,
+    preserve_confirmed: bool = False,
+    initial_order: Optional[Dict] = None,
 ) -> OrderFillResult:
     """等待订单至终态并返回结构化结果（R06）
 
@@ -186,13 +188,23 @@ async def wait_order_final_state(
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(float(timeout_seconds), 0.0)
+    confirmed = OrderFillResult(status=STATUS_UNKNOWN,order_id=order_id,client_order_id=client_order_id)
+    if preserve_confirmed and initial_order is not None:
+        confirmed = _build_result(initial_order)
     while loop.time() < deadline:
-        order = await _read_order_or_none(client, symbol, order_id, client_order_id)
+        try:
+            order = await _read_order_or_none(client, symbol, order_id, client_order_id)
+        except Exception:
+            if preserve_confirmed:
+                return confirmed
+            raise
         if order is None:
             # -2013 不可见：循环内消化重试（受 deadline 限制），不落外层判“未成交”
             await asyncio.sleep(max(interval, 0.0))
             continue
         result = _build_result(order)
+        if result.executed_qty > confirmed.executed_qty:
+            confirmed = result
         if result.status != STATUS_UNKNOWN:
             return result
         await asyncio.sleep(max(interval, 0.0))
@@ -205,15 +217,20 @@ async def wait_order_final_state(
         client_order_id=client_order_id,
         timeout_seconds=timeout_seconds,
     )
-    await _cancel_quietly(client, symbol, order_id, client_order_id)
-    return await read_order_final_state(
-        client,
-        symbol,
-        order_id=order_id,
-        client_order_id=client_order_id,
-        read_retries=read_retries,
-        retry_interval=interval,
-    )
+    try:
+        await _cancel_quietly(client, symbol, order_id, client_order_id)
+        final = await read_order_final_state(
+            client, symbol, order_id=order_id, client_order_id=client_order_id,
+            read_retries=read_retries, retry_interval=interval)
+        if preserve_confirmed and final.executed_qty < confirmed.executed_qty:
+            confirmed.status = STATUS_UNKNOWN
+            return confirmed
+        return final
+    except Exception:
+        if preserve_confirmed:
+            confirmed.status = STATUS_UNKNOWN
+            return confirmed
+        raise
 
 
 async def read_order_final_state(

@@ -1356,6 +1356,9 @@ class BinanceClient:
                         if step_size is None:
                             raise ValueError(f"{symbol} LOT_SIZE 缺少 stepSize")
                         filters['stepSize'] = step_size  # v6.16.6：保存原始stepSize供精度截断
+                        min_qty = f.get('minQty')
+                        if min_qty is not None:
+                            filters['minQty'] = min_qty
                         if '.' in step_size:
                             filters['quantityPrecision'] = len(step_size.split('.')[1].rstrip('0') or '0')
                         else:
@@ -1370,7 +1373,9 @@ class BinanceClient:
                         else:
                             filters['pricePrecision'] = 0
                     elif f['filterType'] == 'MIN_NOTIONAL':
-                        filters['minNotional'] = f.get('notional', '5')
+                        notional = f.get('notional')
+                        if notional is not None:
+                            filters['minNotional'] = notional
                 
                 if not filters.get('stepSize') or not filters.get('tickSize'):
                     raise ValueError(

@@ -2,6 +2,7 @@
 BTC/ETH策略逻辑
 基于评分引擎的趋势跟踪策略
 """
+from shared.entry_risk_policy import entry_allowed, prepare_aggressive_entry, recover_reserved_protection
 import asyncio
 import json
 import math
@@ -2379,6 +2380,9 @@ class BTCEthStrategy:
         Returns:
             是否执行成功
         """
+        if not await entry_allowed(self, 'btc_eth_aggressive'):
+            signal['skip_reason'] = 'entry risk policy denies new risk'
+            return False
         symbol = signal['symbol']
 
         # 组合级熔断闸门：任何开仓/加仓决策前统一否决性拦截（覆盖新开仓与浮盈加仓路径）
@@ -2580,6 +2584,11 @@ class BTCEthStrategy:
             有成交（完全/部分）返回 OrderFillResult；可预期失败返回 None（已记日志），
             意外异常向上抛
         """
+        if not await entry_allowed(self, 'btc_eth_aggressive'):
+            return None
+        if not await prepare_aggressive_entry(self, symbol, signal):
+            return None
+
         # New entries must never net an exchange position missing from memory.
         # This also covers an opposite signal while an old protected lot is unadopted.
         if symbol not in self.positions:
@@ -2656,6 +2665,9 @@ class BTCEthStrategy:
 
     async def _add_position(self, symbol: str, position: PositionState, signal: Dict) -> bool:
         """加仓主流程（v6.28 加仓统一托管）：开新仓成交 → 取消旧单 → 合并 → 重建条件单。"""
+        # Remediation is entry-only; never cancel existing protection for an add.
+        if not await entry_allowed(self, 'btc_eth_aggressive', adding=True):
+            return False
         if position.rebuild_pending:
             signal['skip_reason'] = "保护单重建待完成，暂缓加仓"
             logger.warning(f"{symbol} 保护单重建待完成，暂缓加仓")
@@ -3644,6 +3656,8 @@ class BTCEthStrategy:
         5. 动态利润保护
         6. 时间止损
         """
+        # Uncertain orders may fill later even with no local position or retry marker.
+        await recover_reserved_protection(self)
         try:
             await self._enforce_allocation_holdings()
         except Exception as e:
@@ -5983,6 +5997,7 @@ class BTCEthStrategy:
         防重复创建（v6.20.5）：创建新条件单前先查询 condition_orders 表
         该 symbol 是否已有 OPEN 条件单，若有则跳过创建，避免容器重启后重复创建。
         """
+        await recover_reserved_protection(self)
         logger.info("开始持仓保护检查...")
         try:
             exchange_positions = await self.binance.get_position()

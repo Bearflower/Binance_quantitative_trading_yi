@@ -12,6 +12,7 @@ from typing import Dict, Any, Optional, List, Set, Tuple
 
 import structlog
 
+from shared.entry_risk_policy import entry_allowed
 from shared.base_strategy import BaseStrategy
 from shared.capital_manager import CapitalManager
 from shared.circuit_breaker import (
@@ -33,6 +34,7 @@ from .market_data import MarketDataProvider
 from .pattern import PatternRecognizer
 from .position_manager import PositionManager
 from .risk_manager import RiskManager
+from .risk_budget import RiskDecision, assess_entry, calculate_open_position_risk
 from .scoring_engine import ScoringEngine, ScoringResult
 
 
@@ -70,6 +72,7 @@ _POSITION_LIFECYCLE_COLUMNS = {
     "entry_config_hash": "TEXT",      # 入场期配置指纹
     "opening_time_uncertain": "BOOLEAN",  # 开仓时刻不可信（仅恢复出被重置的旧时间）
     "entry_mode_unknown": "BOOLEAN",      # 入场模式缺失（存量仓）
+    "risk_stop_price": "DOUBLE PRECISION",  # 入场时的止损风险预算依据
 }
 
 
@@ -175,7 +178,7 @@ class HRSStrategy(BaseStrategy):
 
         # P2-3: 加仓配置
         add_pos_config = config.get("trading", {}).get("add_position", {})
-        self.add_position_enabled = add_pos_config.get("enabled", True)
+        self.add_position_enabled = False  # 加仓尚无合并仓位预算，禁止绕过新仓限制
         self.add_position_profit_threshold = add_pos_config.get("profit_threshold", 0.05)
         self.add_position_size_ratio = add_pos_config.get("size_ratio", 0.5)
         self.add_position_max_times = add_pos_config.get("max_times", 1)
@@ -733,6 +736,8 @@ class HRSStrategy(BaseStrategy):
         Returns:
             是否执行成功
         """
+        if not await entry_allowed(self, 'hrs'):
+            return False
         try:
             symbol = signal.get("symbol")
             direction = signal.get("direction")
@@ -832,23 +837,26 @@ class HRSStrategy(BaseStrategy):
             account_info = await self.binance_client.get_account_info()
             balance = float(account_info.get("totalMarginBalance", 0))
 
-            # 计算止损幅度（委托给 executor 统一计算）
+            # 使用与实际保护单相同的模式参数计算预设止损。
             tick_size, _ = await self.trading_executor._get_symbol_precision(symbol)
-            if direction == "short":
-                stop_loss_price = self.trading_executor.calculate_short_stop_loss(
-                    current_price, atr, tick_size
-                )
-                stop_loss_percent = (stop_loss_price - current_price) / current_price
-            else:
-                stop_loss_price = self.trading_executor.calculate_long_stop_loss(
-                    current_price, atr, tick_size
-                )
-                stop_loss_percent = (current_price - stop_loss_price) / current_price
-
-            # 计算仓位
-            quantity = self.risk_manager.calculate_position_size(
-                balance, stop_loss_percent, self.trading_executor.leverage, current_price
+            params = self.trading_executor._get_lv_rm_params(entry_mode)
+            stop_loss_price = self.trading_executor._calc_sl_price(
+                direction, current_price, atr, tick_size, params
             )
+            current_total_margin = self._calc_current_total_margin()
+            risk_decision = await self._size_entry_with_hrs_budget(
+                symbol=symbol, direction=direction, entry_price=current_price,
+                stop_price=stop_loss_price, occupied_margin=current_total_margin,
+                take_profit_ratios=(
+                    params["target1_close_percent"], params["target2_close_percent"]
+                ),
+            )
+            if not risk_decision.allowed:
+                logger.warning("HRS 单笔风险预算拒绝开仓", symbol=symbol,
+                               reason=risk_decision.reason,
+                               risk_limit=str(risk_decision.risk_limit))
+                return False
+            quantity = float(risk_decision.quantity)
 
             # 开仓前检查：总持仓保证金不超过生效限额
             # 口径统一为保证金（R3）：允许开仓 ⟺ 当前占用 + 新开仓保证金 ≤ 生效限额
@@ -857,7 +865,6 @@ class HRSStrategy(BaseStrategy):
             new_margin = calc_position_margin(
                 quantity, current_price, 1.0, self.trading_executor.leverage
             )
-            current_total_margin = self._calc_current_total_margin()
             allowed, reject_reason = await self.capital_mgr.can_open_within_limit(
                 current_total_margin, new_margin
             )
@@ -950,6 +957,7 @@ class HRSStrategy(BaseStrategy):
                     quantity=result.filled_quantity,
                     atr=atr,
                     entry_mode=entry_mode,
+                    risk_stop_price=stop_loss_price,
                 )
 
                 # 记录风控
@@ -973,6 +981,63 @@ class HRSStrategy(BaseStrategy):
         except Exception as e:
             logger.error("执行信号失败", error=str(e))
             return False
+
+    async def _size_entry_with_hrs_budget(
+        self, *, symbol: str, direction: str, entry_price: float,
+        stop_price: float, occupied_margin: float,
+        take_profit_ratios: tuple = (0.30, 0.40),
+    ) -> RiskDecision:
+        """Size a new entry from current HRS allocation and live symbol filters."""
+        allocation, _ = await self.capital_mgr.get_effective_margin_limit()
+        if allocation is None:
+            return RiskDecision(False, "invalid_allocation")
+        try:
+            info = await self.binance_client.get_symbol_info(symbol)
+            required = ("stepSize", "minQty", "minNotional")
+            if any(info.get(key) is None for key in required):
+                return RiskDecision(False, "exchange_filters_unavailable")
+            risk_cfg = getattr(self, "config", {}).get("trading", {}).get("risk_budget", {})
+            fee_rate = max(
+                Decimal(str(getattr(self, "config", {}).get("trading", {}).get("fee_rate", 0))),
+                Decimal(str(risk_cfg.get("fee_rate_pressure", "0.0005"))),
+            )
+            pressure_slippage = max(
+                Decimal("0.02"),
+                Decimal(str(risk_cfg.get("slippage_pressure", "0.02"))),
+            )
+            position_manager = getattr(self, "position_manager", None)
+            if position_manager is None:
+                return RiskDecision(False, "open_position_risk_unknown")
+            existing_open_risk = calculate_open_position_risk(
+                position_manager.get_all_positions(), fee_rate=fee_rate,
+                pressure_slippage=pressure_slippage,
+            )
+            if existing_open_risk is None:
+                return RiskDecision(False, "open_position_risk_unknown")
+            return assess_entry(
+                allocation=Decimal(str(allocation)),
+                entry_price=Decimal(str(entry_price)), stop_price=Decimal(str(stop_price)),
+                direction=direction, existing_open_risk=existing_open_risk,
+                leverage=Decimal(str(self.trading_executor.leverage)),
+                remaining_margin=Decimal(str(allocation)) - Decimal(str(occupied_margin)),
+                qty_step=Decimal(str(info["stepSize"])),
+                min_qty=Decimal(str(info["minQty"])),
+                min_notional=Decimal(str(info["minNotional"])),
+                fee_rate=fee_rate,
+                pressure_slippage=pressure_slippage,
+                single_risk_ratio=min(
+                    Decimal("0.01"),
+                    Decimal(str(risk_cfg.get("single_loss_ratio", "0.01"))),
+                ),
+                portfolio_risk_ratio=min(
+                    Decimal("0.03"),
+                    Decimal(str(risk_cfg.get("portfolio_loss_ratio", "0.03"))),
+                ),
+                take_profit_ratios=tuple(Decimal(str(ratio)) for ratio in take_profit_ratios),
+            )
+        except (ValueError, TypeError, ArithmeticError) as exc:
+            logger.warning("HRS 风险预算输入无效", symbol=symbol, error=str(exc))
+            return RiskDecision(False, "invalid_risk_inputs")
 
     async def run(self) -> None:
         """运行策略主循环"""
@@ -3314,6 +3379,7 @@ class HRSStrategy(BaseStrategy):
             atr=0.0,  # ATR 后续分析时更新
             entry_mode=entry_mode,
             opened_at=opened_at,
+            risk_stop_price=row.get("risk_stop_price"),
         )
         pos = pm.get_position(symbol)
         if pos is None:
@@ -3361,7 +3427,8 @@ class HRSStrategy(BaseStrategy):
                 "SELECT symbol, direction, entry_price, quantity, entry_time, opened_at, "
                 "next_review_at, entry_mode, entry_config_hash, position_id, "
                 "opening_time_uncertain, entry_mode_unknown, algo_ids, "
-                "remaining_quantity, target1_reached, target2_reached FROM hrs.hrs_positions"
+                "remaining_quantity, target1_reached, target2_reached, risk_stop_price "
+                "FROM hrs.hrs_positions"
             )
             blacklist_rows = await self.db.fetch_all(
                 "SELECT symbol, reason FROM hrs.hrs_blacklist"
@@ -3770,13 +3837,15 @@ class HRSStrategy(BaseStrategy):
             INSERT INTO hrs.hrs_positions
                 (symbol, direction, entry_price, quantity, entry_time, opened_at, next_review_at,
                  entry_mode, entry_config_hash, position_id, opening_time_uncertain,
-                 entry_mode_unknown, algo_ids, remaining_quantity, target1_reached, target2_reached)
-            VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15)
+                 entry_mode_unknown, algo_ids, remaining_quantity, target1_reached,
+                 target2_reached, risk_stop_price)
+            VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16)
             ON CONFLICT (symbol, direction) DO UPDATE
             SET entry_price = $3, quantity = $4, entry_time = $5, opened_at = $5,
                 next_review_at = $6, entry_mode = $7, entry_config_hash = $8, position_id = $9,
                 opening_time_uncertain = $10, entry_mode_unknown = $11, algo_ids = $12::jsonb,
-                remaining_quantity = $13, target1_reached = $14, target2_reached = $15
+                remaining_quantity = $13, target1_reached = $14, target2_reached = $15,
+                risk_stop_price = $16
             """,
             symbol,
             pos.get("direction", ""),
@@ -3793,6 +3862,7 @@ class HRSStrategy(BaseStrategy):
             remaining_quantity,
             bool(pos.get("target1_reached", False)),
             bool(pos.get("target2_reached", False)),
+            pos.get("risk_stop_price"),
         )
 
     async def _save_state(self) -> None:
@@ -4393,6 +4463,8 @@ class HRSStrategy(BaseStrategy):
         Returns:
             True: 加仓成功；False: 不满足条件或失败
         """
+        if not await entry_allowed(self, 'hrs', adding=True):
+            return False
         pos = self.position_manager.get_position(symbol)
         if not pos:
             return False

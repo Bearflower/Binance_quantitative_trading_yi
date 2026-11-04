@@ -125,6 +125,7 @@ class PositionManager:
         atr: float,
         entry_mode: Optional[str] = None,
         opened_at: Optional[datetime] = None,
+        risk_stop_price: Optional[float] = None,
     ) -> None:
         """
         添加持仓跟踪
@@ -149,6 +150,7 @@ class PositionManager:
             "target2_reached": False,
             "best_price": entry_price,  # 做空记录最低价，做多记录最高价
             "remaining_quantity": quantity,
+            "risk_stop_price": risk_stop_price,
             # FR-01: 合并开仓阶段暂存的 pending algoId（保护单创建早于 add_position）
             "algo_ids": self._pending_algo_ids.pop(symbol, {}),  # role -> algoId, role: "sl"/"tp1"/"tp2"
             **lifecycle,

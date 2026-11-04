@@ -2,6 +2,7 @@
 交易执行模块
 负责 HRS 策略的订单执行：开仓、止损、止盈、平仓、开仓延迟处理
 """
+from shared.entry_risk_policy import entry_allowed
 import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
@@ -333,6 +334,8 @@ class TradingExecutor:
         Returns:
             开仓执行结果（OpenResult）
         """
+        if not await entry_allowed(self, 'hrs', adding=False):
+            return _empty_fill_result(None)
         try:
             logger.info(
                 "准备做空",
@@ -439,6 +442,8 @@ class TradingExecutor:
         Returns:
             开仓执行结果（OpenResult）
         """
+        if not await entry_allowed(self, 'hrs', adding=False):
+            return _empty_fill_result(None)
         try:
             logger.info(
                 "准备做多",
@@ -1523,6 +1528,8 @@ class TradingExecutor:
         Returns:
             订单信息，失败返回 None
         """
+        if not await entry_allowed(self, 'hrs', adding=True):
+            return None
         try:
             logger.info(
                 "准备加仓",
