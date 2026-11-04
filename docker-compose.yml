@@ -523,10 +523,7 @@ services:
       postgres:
         condition: service_healthy
     logging:
-      driver: "json-file"
-      options:
-        max-size: "10m"
-        max-file: "3"
+      driver: journald
     # Successful persisted-slot monitor DB checks must remain fresh. This does
     # not prove collection succeeded; see the separate deployment readiness gate.
     healthcheck:
