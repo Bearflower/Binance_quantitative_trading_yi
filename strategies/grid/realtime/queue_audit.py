@@ -166,10 +166,27 @@ def summarize_shadow_window(conn: sqlite3.Connection, *, start_ms: int,
         "FROM queue_audit_checkpoint WHERE observed_at_ms BETWEEN ? AND ? "
         "ORDER BY observed_at_ms", (start_ms, end_ms))
     statuses: Counter = Counter()
+    status_observed_ms: Counter = Counter()
     periods: List[Dict] = []
     gaps: List[Dict[str, int]] = []
     first = last = None
     eligible_count = 0
+    eligible_time_ms = 0
+    previous_status = None
+    previous_eligible = False
+
+    def account_interval(next_ms: int) -> None:
+        nonlocal eligible_time_ms
+        if last is None:
+            return
+        span = next_ms - last
+        # A long checkpoint gap cannot inherit the last observed state.
+        observed = span if span <= max_gap_ms else min(span, 1000)
+        if observed > 0:
+            status_observed_ms[previous_status] += observed
+            if previous_eligible:
+                eligible_time_ms += observed
+
     for row in rows:
         at, status, feed_ok, storage_bad, audit_ok, recovery_until = row
         eligible = (status == "VALID" and bool(feed_ok) and
@@ -177,6 +194,7 @@ def summarize_shadow_window(conn: sqlite3.Connection, *, start_ms: int,
                     recovery_until <= at)
         statuses[status] += 1
         eligible_count += int(eligible)
+        account_interval(at)
         if first is None:
             first = at
             if at - start_ms > max_gap_ms:
@@ -193,6 +211,9 @@ def summarize_shadow_window(conn: sqlite3.Connection, *, start_ms: int,
                 "start_ms": at, "end_ms": at, "status": status,
                 "eligible": eligible, "observations": 1})
         last = at
+        previous_status = status
+        previous_eligible = eligible
+    account_interval(end_ms)
     if last is None:
         gaps.append({"from_ms": start_ms, "to_ms": end_ms})
     elif end_ms - last > max_gap_ms:
@@ -218,11 +239,18 @@ def summarize_shadow_window(conn: sqlite3.Connection, *, start_ms: int,
         else:
             excluded_events += 1
     complete = first is not None and not gaps
+    total_ms = end_ms - start_ms
+    unobserved_ms = total_ms - sum(status_observed_ms.values())
     return {
         "start_ms": start_ms, "end_ms": end_ms,
         "first_checkpoint_ms": first, "last_checkpoint_ms": last,
         "coverage_complete": complete, "gaps": gaps,
         "status_observations": dict(statuses),
+        "status_observed_ms": dict(status_observed_ms),
+        "unobserved_ms": unobserved_ms,
+        "numeric_reference_availability":
+            status_observed_ms["VALID"] / total_ms,
+        "eligible_time_ms": eligible_time_ms,
         "eligible_observations": eligible_count,
         "periods": periods,
         "eligible_event_count": eligible_events,
@@ -230,6 +258,6 @@ def summarize_shadow_window(conn: sqlite3.Connection, *, start_ms: int,
         "unlocated_legacy_event_count": conn.execute(
             "SELECT COUNT(*) FROM event WHERE level<>'HEALTH' "
             "AND decision_ms IS NULL").fetchone()[0],
-        "research_window_eligible": complete and
+        "research_window_eligible": complete and unobserved_ms == 0 and
         eligible_count == sum(statuses.values()),
     }

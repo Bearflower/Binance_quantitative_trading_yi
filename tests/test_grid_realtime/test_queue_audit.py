@@ -73,6 +73,9 @@ def test_shadow_window_separates_valid_stale_and_evaluable_events(tmp_path):
         conn, start_ms=0, end_ms=9000, max_gap_ms=1000)
     assert report["status_observations"]["VALID"] == 6
     assert report["status_observations"]["STALE"] == 4
+    assert report["status_observed_ms"] == {"VALID": 6000, "STALE": 3000}
+    assert report["numeric_reference_availability"] == 6 / 9
+    assert report["unobserved_ms"] == 0
     assert report["eligible_event_count"] == 2
     assert report["excluded_event_count"] == 1
     assert report["research_window_eligible"] is False
@@ -109,6 +112,25 @@ def test_shadow_window_distinguishes_no_active_and_sync_uncertain(tmp_path):
         "NO_ACTIVE_REFERENCE": 1, "SYNC_UNCERTAIN": 1}
     assert report["eligible_observations"] == 0
     assert report["coverage_complete"] is True
+    assert report["research_window_eligible"] is False
+
+
+def test_shadow_availability_uses_elapsed_time_and_exposes_unknown_gap(tmp_path):
+    conn = connect(str(tmp_path / "grid.sqlite3"), 1000)
+    ensure_schema(conn)
+    audit = QueueAudit(conn, "one", 0)
+    for at, status in ((0, "VALID"), (1000, "VALID"),
+                       (4000, "STALE"), (5000, "STALE")):
+        audit.checkpoint(
+            at, 0, reference_status=status,
+            feed_healthy=True, storage_degraded=False)
+
+    report = summarize_shadow_window(
+        conn, start_ms=0, end_ms=6000, max_gap_ms=2000)
+    assert report["status_observed_ms"] == {"VALID": 2000, "STALE": 2000}
+    assert report["unobserved_ms"] == 2000
+    assert report["numeric_reference_availability"] == 2 / 6
+    assert report["eligible_time_ms"] == 2000
     assert report["research_window_eligible"] is False
 
 
