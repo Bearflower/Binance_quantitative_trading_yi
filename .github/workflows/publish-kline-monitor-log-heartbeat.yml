@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - kline-monitor-log-heartbeat-20261104
+      - kline-monitor-log-heartbeat-latest-20261104
 
 permissions:
   contents: read
@@ -25,4 +26,6 @@ jobs:
           file: .github/dockerfiles/kline-monitor-log-heartbeat.Dockerfile
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/bearflower/trading-kline-monitor:log-heartbeat-20261104
+          tags: |
+            ghcr.io/bearflower/trading-kline-monitor:log-heartbeat-20261104
+            ghcr.io/bearflower/trading-kline-monitor:latest
