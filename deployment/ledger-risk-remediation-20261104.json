@@ -117,11 +117,19 @@
       "status": "A"
     },
     {
+      "path": "scripts/capture_ledger_risk_evidence.py",
+      "status": "A"
+    },
+    {
       "path": "scripts/export_execution_facts.py",
       "status": "M"
     },
     {
       "path": "scripts/ledger_risk_manifest.py",
+      "status": "A"
+    },
+    {
+      "path": "scripts/ledger_risk_runtime_config.py",
       "status": "A"
     },
     {
@@ -313,6 +321,10 @@
       "status": "A"
     },
     {
+      "path": "tests/test_scoped_release/test_evidence_capture.py",
+      "status": "A"
+    },
+    {
       "path": "tests/test_scoped_release/test_manifest.py",
       "status": "A"
     },
@@ -322,6 +334,10 @@
     },
     {
       "path": "tests/test_scoped_release/test_runtime.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_scoped_release/test_runtime_config.py",
       "status": "A"
     },
     {
@@ -620,7 +636,7 @@
     "docs/reports/allocation-freeze-2026-11-04.md": "1149d5f5b7bb4ec5e83aeaedbace0782cd6a060a78d6df2bf6d3bf269ce40314",
     "docs/reports/entry-risk-remediation-2026-11-04.md": "72856ada3344cca9409a90366c74a1330e7df3ddbd7a5d21876f4de19109f515",
     "docs/reports/income-immutability-2026-11-04.md": "1cfbd55d01f7f5c18d55a96d19c675278c835f465167cc49b989833f095c196b",
-    "docs/reports/scoped-ledger-risk-release-2026-11-04.md": "08b29e869ae7e0c2989d4a0ed95f676535f5c2d4ab6ba8fb533108c17c515cee",
+    "docs/reports/scoped-ledger-risk-release-2026-11-04.md": "1bbd85cb7e0ede94251b60f56866ae0b5cc82315a7fdf1b61cdc41d77635a435",
     "docs/research/code_audit_2026-10-15/verify_readonly.py": "a69fd46fb6b45a0d02b71e2976639f9ae2ff94e572abe7962c04973698a8b8f9",
     "docs/reviews/2026-09-29/binance_review_extra.py": "11fbc00cd4230a3384edef0687644a493fc36f9ef4e4e023bd9eee29c59ca67d",
     "docs/reviews/2026-09-29/binance_review_repro.py": "dba7f4198f6f46c0b6ac0a343e149b73d9d650070da840dc9c3a39ad9ad5c291",
@@ -638,6 +654,7 @@
     "scripts/backfill_klines.py": "90d0b10e9b54b3b461409a974d2607fa3714f46bd1668166cd8a2142c209f6be",
     "scripts/backfill_pnl.py": "defb5fda2103e11446b8e4006d8ec39f72043a7c8edbc3abd1b1f68fa2385758",
     "scripts/backfill_realized_pnl.py": "44b4f386a056720da7d16b78a0d776ef023a08fdc3bec7b533071d9f827131a4",
+    "scripts/capture_ledger_risk_evidence.py": "ceaed1e513e64a819ad6b5f8e96cb086de117f77083eea7de65c311452c71536",
     "scripts/check_commission.py": "870e691422c27d655731fc97ecdfb0094f4056cf37ce4a704a16993376b73d54",
     "scripts/check_commission_detail.py": "e0f67daebfb5e5113d5e02e90fd02cfb9259b89366fec07ab55e41745656a855",
     "scripts/check_market_vs_positions.py": "7963986cbffab4be7d12c9eb596e9f8198a696149f8291ad6f4cdeaee25517ed",
@@ -659,18 +676,19 @@
     "scripts/fix_sl_tp_billusdt.py": "201699bf38396621b54990f05c5288cfb2cd50a5da6561a0d174758adeb44e90",
     "scripts/generate_xau_atr_calibration.py": "b398ba279d76dd1e4e4ae7a3be9cce064ac6a3cd23e295949fc18f07eef6e94f",
     "scripts/investigate_billusdt.py": "102e42a924acd86b88f3b30ce2bce64b33d6b0319274ca7fff307567b96e0aa1",
-    "scripts/ledger_risk_manifest.py": "b99f03f8876786b570af2ba6117a9b111dc796e06856e07e74880f0e93f7e7ed",
+    "scripts/ledger_risk_manifest.py": "c6af1a9b6a8cf6b900ed3d5fb51e021a63e39f30cb9bef31b9540c497eeb30e2",
+    "scripts/ledger_risk_runtime_config.py": "dc0fa346bf186d00dc7044679d49cac17aad1c2bb16b655e909c1bbebf7fc058",
     "scripts/manual_allocation_trigger.py": "391d33a90dbb0afa0947049672a972af9edccbb64e61e397adee66ade53295ba",
     "scripts/manual_short_billusdt.py": "2c865ce357e0f29a585ee8f5aaf5db334b26838fe514fd95b4e5abde5bcb55df",
     "scripts/monitor_sl_tp_billusdt.py": "055fbf59c99ce20ff9edc4ca7bddf7ad586a0a87b9fbdd01971fafd809532f60",
-    "scripts/package_ledger_risk_release.py": "2a9bb52ec036f081e43536a36f01a0585de2bec921b0fe3e98888e4d1c58683c",
+    "scripts/package_ledger_risk_release.py": "d6332e5d690935e31463a78d6863c261176e6f121d2495b0305705aa460e8303",
     "scripts/prepare_ledger_risk_manifest.py": "fdc39d23df34742dbd0b0d7fbb7cdf800fbb9bc034d2324d735831be965f8751",
     "scripts/query_mtpcs_trades.py": "cf092bc3f1832bc82e4e6c8db3334e2735f50bb2fae335e45ba2467042fedb7a",
     "scripts/quick_check.py": "9c032bc7fccb86c02f3250086cf30ab4fd0644890e6be73bf78b0237f7f7fdab",
     "scripts/remote_deploy_runtime.sh": "da3441f8918ae298db0455580598c479d34becc84866f8dc0b885e03b7f4b95d",
     "scripts/render_remote_deploy.py": "9d6dd3212e6522a916a7fe65b01faac1bbbd4ab59161ddb7d2c108d9def0fec9",
     "scripts/report_economic_ledger.py": "19ebb59296c946cdef871a6bc36ccf18fe7bb795b771b2f82f76b065fd81f8c3",
-    "scripts/scoped_ledger_risk_release.py": "12248a49ad129da0d502463f6502990a0de46d6e3609b1025afc0bca5dfe2570",
+    "scripts/scoped_ledger_risk_release.py": "df79c59830f33f164e6688551721c2ff43f6d7c76a97d9bc578a64c420ba3590",
     "scripts/select_deploy_mode.py": "4c24e9f22b8897eaeaaa86baaa7878f0b01e32eba7432f1eeef18193b8ba5e37",
     "scripts/select_funding_deploy.py": "f204deba048dd65ca91079a962fb196849ea5905d647ee87078a7016a9031641",
     "scripts/set_sl_tp_billusdt.py": "329feb249ab56a70874c89603964b7cea80fd84f40840a19473798c148121ae4",
@@ -992,9 +1010,11 @@
     "tests/test_risk/test_risk_branches.py": "b41c1deca0182c5716d688c651205dafd3bc4b2f458d2d30b886687354b832c8",
     "tests/test_scoped_release/test_bundle.py": "1e92d0b9a66f26554e0b9d0feaf7b69d043b33b146e2b14acc1947edc8e6e0f2",
     "tests/test_scoped_release/test_dashboard_http.py": "b346d6670c15f5440971a5fbd26c95b0f07271fb5ef36315ab2b5ec23fdf8917",
+    "tests/test_scoped_release/test_evidence_capture.py": "2d460f36db20e45610cc41d89fa051cb3b012accf047b83c627d72c50836d332",
     "tests/test_scoped_release/test_manifest.py": "e04f57bc5574b6f878f6a77bf62abe39ef2cb4994710986ec1eb45c5367133cf",
     "tests/test_scoped_release/test_probes.py": "59a67e94954e0be714d23e3eb5d59d55969cb2ba2df4dac5312f896651cdbf7b",
-    "tests/test_scoped_release/test_runtime.py": "163ed29ee9da28278751b5a61a7e3b2c59218f59832d5d58a8a200b67cadff17",
+    "tests/test_scoped_release/test_runtime.py": "6a094a535936736d6e01281ad880439f9ce3f4addafd1b6f4c9ae12afe640fae",
+    "tests/test_scoped_release/test_runtime_config.py": "0eea7a796ea1acb96976f03f25c1013d6ab5f8ca71dda937442a100f81962241",
     "tests/test_scoped_release/test_selection.py": "bb3ede034b1765e7535f12670d19e88e7b7df19f4a730bff3367ca28457d6eb8",
     "tests/test_scripts/test_allocation_reconcile_deployment.py": "48f790f96fc8b80518f05f134cd089fe85ebb57fe034799d10789d4f426a4a0f",
     "tests/test_scripts/test_compose_created_cleanup.py": "af9fc77118efd7739bdf41e8698b3c2a7ffe477f91fd42591e8d87f4328fc52b",
