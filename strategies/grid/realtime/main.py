@@ -200,7 +200,10 @@ class RealtimeService:
         try:
             self._audit().checkpoint(
                 now_ms, self._queue_recovery_until_ms,
-                audit_ok=not self._queue_audit_failed)
+                audit_ok=not self._queue_audit_failed,
+                reference_status=status,
+                feed_healthy=self._feed_healthy,
+                storage_degraded=self._storage_degraded)
         except sqlite3.Error as exc:
             self._storage_degraded = True
             self._queue_audit_failed = True
