@@ -2955,6 +2955,9 @@ class HRSStrategy(BaseStrategy):
             concurrency_limit=concurrency_limit,
         )
 
+        # 每轮 LV-RM 扫描先批量刷新真实市值，避免缓存过期后并发逐币请求。
+        await self.market_data.preload_market_caps(low_vol_symbols)
+
         # 并发检查所有低波动币种
         semaphore = asyncio.Semaphore(concurrency_limit)
 

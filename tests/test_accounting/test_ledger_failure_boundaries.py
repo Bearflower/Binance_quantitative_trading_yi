@@ -21,7 +21,7 @@ async def test_fresh_verified_run_reused_without_reading_or_writing_facts():
     assert result['publication_status']=='published'
     reader.assert_not_awaited()
     db.connection.fetch.assert_not_awaited()
-    db.connection.execute.assert_not_awaited()
+    assert all(call.args[0].startswith("SELECT pg_advisory_") for call in db.connection.execute.call_args_list)
 
 
 @pytest.mark.asyncio
@@ -35,14 +35,14 @@ async def test_invalid_cached_identity_never_becomes_verified_fallback(changed):
     with patch('shared.accounting.published_report.read_monthly_economic_report', AsyncMock(side_effect=RuntimeError('refresh failed'))):
         with pytest.raises(RuntimeError,match='refresh failed'):
             await read_published_report(db,'main',1000,2000,'month:1970-01')
-    db.connection.execute.assert_not_awaited()
+    assert all(call.args[0].startswith("SELECT pg_advisory_") for call in db.connection.execute.call_args_list)
 
 
 @pytest.mark.asyncio
 async def test_losing_activation_returns_newer_winner_not_its_older_candidate():
     winner=report();winner.update(report_id='newer',end_ms=2500,account_usdt_total='7',as_of='1970-01-01T00:00:02.500000+00:00')
     db=DB();db.connection.fetchrow.side_effect=[None,{'report':json.dumps(winner)}]
-    db.connection.execute.side_effect=['INSERT 0 1','INSERT 0 0']
+    db.connection.execute.side_effect=['SELECT 1','INSERT 0 1','INSERT 0 0','SELECT 1']
     with patch('shared.accounting.published_report.read_monthly_economic_report', AsyncMock(return_value=report())):
         result=await read_published_report(db,'main',1000,3000,'month:1970-01',current=True)
     assert result['report_id']=='newer'
@@ -63,7 +63,7 @@ async def test_serialization_conflict_retries_whole_snapshot_before_publication(
     assert result['publication_status']=='published'
     assert db.connection.fetchrow.await_count==2
     assert reader.await_count==1
-    assert db.connection.execute.await_count==2
+    assert db.connection.execute.await_count==6
 
 
 @pytest.mark.asyncio
@@ -72,7 +72,7 @@ async def test_serialization_retry_limit_never_publishes_unread_report():
     with pytest.raises(SerializationConflict):
         await read_published_report(db,'main',1000,2000,'month:1970-01')
     assert db.connection.fetchrow.await_count==3
-    db.connection.execute.assert_not_awaited()
+    assert all(call.args[0].startswith("SELECT pg_advisory_") for call in db.connection.execute.call_args_list)
 
 
 @pytest.mark.asyncio

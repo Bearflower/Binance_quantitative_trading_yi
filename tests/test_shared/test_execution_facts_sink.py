@@ -10,6 +10,7 @@ execution_facts_sink 离线测试（T1/T2/T3）。
 """
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 import asyncio
 import re
 from decimal import Decimal
@@ -41,12 +42,17 @@ class FakeDb:
     """
 
     def __init__(self) -> None:
+        self.pool = self
         self.transactions: List[List[tuple]] = []   # 每次 execute_transaction 的 [(sql,args), ...]
         self.executes: List[tuple] = []              # execute(sql, *args) 的记录
         self.fetch_args: List[tuple] = []            # fetch_one(sql, *args) 的记录
         self.store: Dict[tuple, Dict[str, Any]] = {}  # cursor key → row
 
-    async def execute_transaction(self, queries: List[tuple]) -> bool:
+    @asynccontextmanager
+    async def acquire(self):
+        yield self
+
+    async def execute_transaction(self, queries: List[tuple], **kwargs) -> bool:
         self.transactions.append(list(queries))
         return True
 
@@ -169,8 +175,8 @@ def test_upsert_income_sql_safe_and_includes_raw(sink: PostgresExecutionFactsSin
     asyncio.run(sink.upsert_income([fact]))
 
     db: FakeDb = sink.db
-    assert len(db.transactions) == 1
-    queries = db.transactions[0]
+    assert len(db.transactions) == 2
+    queries = db.transactions[1][:-1]
 
     for sql, _ in queries:
         assert_sql_safe(sql)
@@ -191,7 +197,7 @@ def test_income_types_with_same_tran_id_have_distinct_raw_identity(sink):
     fee.income_type = "COMMISSION"
     fee.income = "-0.1"
     asyncio.run(sink.upsert_income([pnl, fee]))
-    raw_ids = [args[2] for sql, args in sink.db.transactions[0]
+    raw_ids = [args[2] for sql, args in sink.db.transactions[1]
                if "execution_fact_raw" in sql]
     assert raw_ids == ["main:REALIZED_PNL:999888777", "main:COMMISSION:999888777"]
 
@@ -342,8 +348,8 @@ def test_save_cursor_exception_raised(sink: PostgresExecutionFactsSink):
 
 def test_upsert_exception_raised(sink: PostgresExecutionFactsSink):
     """db 抛异常时 upsert_fills/upsert_income 必须上抛（新契约）。"""
-    class BoomDb:
-        async def execute_transaction(self, queries):
+    class BoomDb(FakeDb):
+        async def execute_transaction(self, queries, **kwargs):
             raise RuntimeError("boom")
 
     sink.db = BoomDb()

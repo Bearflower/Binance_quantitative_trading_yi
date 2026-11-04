@@ -9,6 +9,7 @@ class Connection:
     def __init__(self, previous=None):
         self.fetchrow=AsyncMock(return_value=previous)
         self.fetch=AsyncMock(return_value=[])
+        self.fetchval=AsyncMock(return_value=0)
         self.execute=AsyncMock()
         self.transaction_args=None
     @asynccontextmanager
@@ -36,7 +37,7 @@ async def test_publish_verified_snapshot_and_activate_in_one_transaction():
         result=await read_published_report(db,'main',1000,2000,'month:1970-01')
     assert result['publication_status']=='published'
     assert db.connection.transaction_args['isolation']=='repeatable_read'
-    queries=[call.args[0] for call in db.connection.execute.call_args_list]
+    queries=[call.args[0] for call in db.connection.execute.call_args_list if not call.args[0].startswith("SELECT pg_advisory_")]
     assert 'ledger_report_run' in queries[0]
     assert 'ledger_report_active' in queries[1]
     assert 'WHERE' in queries[1]  # concurrent refresh cannot move watermark backwards
@@ -52,7 +53,7 @@ async def test_failed_refresh_retains_last_verified_run_explicitly_stale():
     assert result['publication_status']=='stale'
     assert result['refresh_error']
     assert result['stale_seconds']==1
-    db.connection.execute.assert_not_awaited()
+    assert all(call.args[0].startswith("SELECT pg_advisory_") for call in db.connection.execute.call_args_list)
 
 @pytest.mark.asyncio
 async def test_incomplete_refresh_cannot_replace_verified_snapshot():
@@ -61,7 +62,7 @@ async def test_incomplete_refresh_cannot_replace_verified_snapshot():
         result=await read_published_report(db,'main',1000,3000,'month:1970-01',current=True)
     assert result['publication_status']=='stale'
     assert result['account_coverage_complete'] is True
-    db.connection.execute.assert_not_awaited()
+    assert all(call.args[0].startswith("SELECT pg_advisory_") for call in db.connection.execute.call_args_list)
 
 @pytest.mark.asyncio
 async def test_no_coverage_has_no_fresh_as_of_or_published_run():
@@ -70,7 +71,7 @@ async def test_no_coverage_has_no_fresh_as_of_or_published_run():
         result=await read_published_report(db,'main',1000,2000,'month:1970-01')
     assert result['as_of'] is None
     assert result['publication_status']=='unverified'
-    db.connection.execute.assert_not_awaited()
+    assert all(call.args[0].startswith("SELECT pg_advisory_") for call in db.connection.execute.call_args_list)
 
 @pytest.mark.asyncio
 async def test_read_error_without_verified_snapshot_propagates():

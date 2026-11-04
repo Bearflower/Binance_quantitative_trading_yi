@@ -28,6 +28,7 @@ async def test_atomic_publish_rollback_immutable_run_and_concurrent_readers():
     try:
         async with pool.acquire() as conn:
             await conn.execute('DROP SCHEMA IF EXISTS trading CASCADE; CREATE SCHEMA trading')
+            await conn.execute('CREATE TABLE trading.income_ingestion_attempt(account_id text,state text)')
             await conn.execute(Path('database/postgres/migrations/2026-11-04-ledger-report-publication.sql').read_text())
             await conn.execute('''CREATE TABLE trading.execution_fact_cursor (
                 source text, account_id text, income_type text, symbol text,
@@ -70,6 +71,7 @@ async def test_real_reader_current_watermark_funding_and_unknown_historical_owne
     try:
         async with pool.acquire() as conn:
             await conn.execute('DROP SCHEMA IF EXISTS trading CASCADE; CREATE SCHEMA trading')
+            await conn.execute('CREATE TABLE trading.income_ingestion_attempt(account_id text,state text)')
             await conn.execute(Path('database/postgres/migrations/2026-11-04-ledger-report-publication.sql').read_text())
             await conn.execute('''
                 CREATE TABLE trading.execution_fact_income(account_id text,tran_id bigint,symbol text,
@@ -120,6 +122,7 @@ async def test_publication_under_non_superuser_application_role():
     try:
         await owner.execute("DO $$ BEGIN IF NOT EXISTS(SELECT FROM pg_roles WHERE rolname='trading_user') THEN CREATE ROLE trading_user NOSUPERUSER NOLOGIN; END IF; END $$")
         await owner.execute('DROP SCHEMA IF EXISTS trading CASCADE; CREATE SCHEMA trading')
+        await owner.execute('CREATE TABLE trading.income_ingestion_attempt(account_id text,state text); GRANT SELECT ON trading.income_ingestion_attempt TO trading_user')
         await owner.execute(Path('database/postgres/migrations/2026-11-04-ledger-report-publication.sql').read_text())
         await owner.execute('''CREATE TABLE trading.execution_fact_cursor (
             source text, account_id text, income_type text, symbol text,

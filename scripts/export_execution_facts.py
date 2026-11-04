@@ -472,6 +472,7 @@ class ExecutionFactExporter:
         income_type: Optional[str] = None,
     ) -> ExportResult:
         """拉取给定时间窗内的全部收入流水。"""
+        from shared.income_ingestion import income_observation_digest
         if getattr(self.api_client, "use_unified_account", True) is False:
             raise ValueError("income 采集要求统一账户客户端（use_unified_account=True）")
         source = "um/income"
@@ -488,7 +489,8 @@ class ExecutionFactExporter:
             income_type=income_type_arg, symbol=None,
             window_start_ms=window_start_ms, window_end_ms=window_end_ms,
             parse_row=lambda row: _parse_income_row(self.account_id, row),
-            dedup_key=lambda f: (f.account_id, f.income_type, f.tran_id),
+            dedup_key=lambda f: (f.account_id, f.income_type, f.tran_id,
+                                 income_observation_digest(f.raw_payload)),
             time_ms_of=lambda f: f.event_time_ms,
             event_id_of=lambda f: f.tran_id,
             last_event_id=lambda items: _last_tran_id(items),

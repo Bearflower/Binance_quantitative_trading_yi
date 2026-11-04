@@ -404,7 +404,8 @@ class DatabaseManager:
 
     async def execute_transaction(
         self,
-        queries: List[tuple]
+        queries: List[tuple],
+        *, connection=None,
     ) -> bool:
         """
         执行事务
@@ -427,13 +428,18 @@ class DatabaseManager:
         for query, _ in queries:
             self._validate_sql(query)
 
-        if not self.pool:
-            await self.connect()
-
-        async with self.pool.acquire() as conn:
+        async def run(conn):
             async with conn.transaction():
                 for query, args in queries:
                     await conn.execute(query, *args)
+
+        if connection is not None:
+            await run(connection)
+        else:
+            if not self.pool:
+                await self.connect()
+            async with self.pool.acquire() as conn:
+                await run(conn)
 
         logger.info(
             "事务执行成功",

@@ -209,6 +209,8 @@ class MarketCapService:
 
         await self._init_session()
         await self._enforce_request_interval()
+        if self._is_rate_limited():
+            return
 
         url = f"{self._base_url}/coins/list"
         params: Dict[str, str] = {}
@@ -474,6 +476,8 @@ class MarketCapService:
 
         async def attempt() -> Optional[Dict[str, float]]:
             await self._enforce_request_interval()
+            if self._is_rate_limited():
+                return None
             async with self.session.get(url, params=params) as resp:
                 if resp.status == 429:
                     logger.warning("CoinGecko /coins/markets 触发 429 限流")
@@ -582,6 +586,8 @@ class MarketCapService:
             params["x_cg_pro_api_key"] = self.api_key
 
         await self._enforce_request_interval()
+        if self._is_rate_limited():
+            return None
 
         async with self.session.get(url, params=params) as resp:
             if resp.status == 429:

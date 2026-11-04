@@ -4,8 +4,8 @@ D1｜execution_facts PostgreSQL sink 实现。
 由 export_execution_facts.py 在 EXECUTION_FACTS_DB_WRITE 开关开启时注入。
 负责把采集到的成交明细 / 收入流水 / 原始响应 / 游标落库到 trading schema。
 
-错误策略：四个方法各自 try/except 全吞，structlog 打中文 warning，
-绝不向上抛——上游脚本已在 sink 调用点包 try/except，这里形成双保险。
+错误策略：写入失败上抛，由上游标记游标未完成；income 矛盾写入持久隔离证据，
+系统故障或取消保留 pending gate，禁止发布或复用 fresh 报表。
 
 SQL 安全：串不含 -- 注释、/* 块注释、; 分号、CREATE/GRANT/ALTER 等危险词，
 与 shared/database.py::_validate_sql 口径一致。
@@ -21,6 +21,8 @@ from decimal import Decimal, InvalidOperation
 from typing import Any, Callable, List, Optional
 
 import structlog
+
+from shared.income_ingestion import commit_income_observations
 
 logger = structlog.get_logger()
 
@@ -58,7 +60,7 @@ _SQL_INCOME_UPSERT = (
     "(account_id, tran_id, symbol, income_type, income, asset, info, trade_id, event_time_utc) "
     "VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) "
     "ON CONFLICT (account_id, income_type, tran_id) DO UPDATE SET "
-    " income = EXCLUDED.income, asset = EXCLUDED.asset, info = EXCLUDED.info, "
+    " symbol = EXCLUDED.symbol, income = EXCLUDED.income, asset = EXCLUDED.asset, info = EXCLUDED.info, "
     " trade_id = EXCLUDED.trade_id, event_time_utc = EXCLUDED.event_time_utc, "
     " fetched_at = now()"
 )
@@ -230,20 +232,23 @@ class PostgresExecutionFactsSink:
         )
 
     async def upsert_income(self, facts: List[Any]) -> None:
-        """批量 upsert 收入流水；顺带写 execution_fact_raw（同事务）。"""
-        await self._bulk_upsert_with_raw(
-            facts,
-            _SQL_INCOME_UPSERT,
-            _SQL_RAW_UPSERT,
-            self._build_income_args,
-            lambda f: self._build_raw_args(
-                f,
-                source=_RAW_SOURCE_INCOME,
-                entity_key=_RAW_KEY_INCOME,
-                entity_id=f"{getattr(f,'account_id','')}:{getattr(f,'income_type','')}:{getattr(f,'tran_id','')}",
-            ),
-            label="upsert_income",
-        )
+        """Income-only immutable page write with a durable unresolved-attempt gate."""
+        if not facts:
+            return
+        accounts = {getattr(fact, "account_id") for fact in facts}
+        if len(accounts) != 1 or not next(iter(accounts)):
+            raise ValueError("Income batch requires exactly one nonempty account")
+        queries = []
+        observations = []
+        fields = ("account_id", "tran_id", "symbol", "income_type", "income", "asset", "info", "trade_id", "event_time_utc")
+        for fact in facts:
+            args = self._build_income_args(fact)
+            raw = self._build_raw_args(fact, source=_RAW_SOURCE_INCOME, entity_key=_RAW_KEY_INCOME,
+                entity_id=f"{fact.account_id}:{fact.income_type}:{fact.tran_id}")
+            queries.extend([(_SQL_INCOME_UPSERT, args), (_SQL_RAW_UPSERT, raw)])
+            observations.append({"fact": dict(zip(fields, args)), "raw": getattr(fact, "raw_payload", {}),
+                                 "payload_sha256": getattr(fact, "payload_sha256", "")})
+        await commit_income_observations(self.db, next(iter(accounts)), queries, observations)
 
     # ── args 构造器（鸭子类型字段访问；getattr 带默认值） ───────────
 

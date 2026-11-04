@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 
+from .income_integrity import income_account_lock, require_income_integrity
 from .economic_ledger import INCOME_TYPES
 from .report_reader import read_monthly_economic_report, _CURSOR_SQL
 
@@ -68,46 +69,49 @@ async def read_published_report(db, account_id, start_ms, end_ms, window_key,
     previous = None
     try:
         async with db.pool.acquire() as connection:
-            async with connection.transaction(isolation='repeatable_read'):
-                prior = await connection.fetchrow(_ACTIVE_SQL, account_id, window_key, REPORT_VERSION)
-                if prior:
-                    previous = prior['report']
-                    if isinstance(previous, str): previous = json.loads(previous)
-                    # Reject corrupted/mismatched cached bodies rather than treating them as evidence.
-                    if (previous.get('account_id') != account_id or previous.get('start_ms') != start_ms
-                            or previous.get('report_version') != REPORT_VERSION
-                            or not previous.get('account_coverage_complete')
-                            or previous.get('end_ms', end_ms+1) > end_ms
-                            or (not current and previous.get('end_ms') != end_ms)):
-                        previous = None
-                    elif (datetime.now(timezone.utc)-prior['created_at']).total_seconds() < refresh_seconds:
+            async with income_account_lock(connection, account_id):
+                async with connection.transaction(isolation='repeatable_read'):
+                    prior = await connection.fetchrow(_ACTIVE_SQL, account_id, window_key, REPORT_VERSION)
+                    if prior:
+                        previous = prior['report']
+                        if isinstance(previous, str): previous = json.loads(previous)
+                        # Reject corrupted/mismatched cached bodies rather than treating them as evidence.
+                        if (previous.get('account_id') != account_id or previous.get('start_ms') != start_ms
+                                or previous.get('report_version') != REPORT_VERSION
+                                or not previous.get('account_coverage_complete')
+                                or previous.get('end_ms', end_ms+1) > end_ms
+                                or (not current and previous.get('end_ms') != end_ms)):
+                            previous = None
+                    # Check the durable latch even for a newly cached verified run.
+                    await require_income_integrity(connection, account_id)
+                    if previous and (datetime.now(timezone.utc)-prior['created_at']).total_seconds() < refresh_seconds:
                         return _served(previous, end_ms, 'published')
-                adapter = _SnapshotDB(connection)
-                cursors = await adapter.fetch_all(_CURSOR_SQL, account_id, start_ms, end_ms)
-                cutoff = coverage_cutoff(cursors, account_id, start_ms, end_ms)
-                effective_end = cutoff if current and cutoff > start_ms else end_ms
-                report = await read_monthly_economic_report(adapter, account_id, start_ms, effective_end,
-                                                           include_reviewed_overrides=True)
-                report.update(window_key=window_key, requested_end_ms=end_ms,
-                              as_of=datetime.fromtimestamp(effective_end/1000,timezone.utc).isoformat()
-                              if report['account_coverage_complete'] else None)
-                report.pop('report_id', None)
-                report['report_id'] = hashlib.sha256(json.dumps(report,sort_keys=True,separators=(',',':')).encode()).hexdigest()
-                if not report['account_coverage_complete']:
-                    if previous: return _served(previous, end_ms, 'stale', 'income_coverage_incomplete')
-                    return _served(report, end_ms, 'unverified', 'income_coverage_incomplete')
-                await connection.execute(_RUN_SQL, report['report_id'], account_id, window_key,
-                                         REPORT_VERSION, start_ms, effective_end,
-                                         json.dumps(report,sort_keys=True,separators=(',',':')))
-                activation = await connection.execute(_ACTIVATE_SQL, account_id, window_key,
-                                                       REPORT_VERSION, report['report_id'], effective_end)
-                if activation == 'INSERT 0 0':
-                    # A newer watermark already won. Never serve the losing older run.
-                    winner = await connection.fetchrow(_ACTIVE_SQL, account_id, window_key, REPORT_VERSION)
-                    body = winner['report']
-                    if isinstance(body,str): body=json.loads(body)
-                    return _served(body,end_ms,'published')
-                return _served(report, end_ms, 'published')
+                    adapter = _SnapshotDB(connection)
+                    cursors = await adapter.fetch_all(_CURSOR_SQL, account_id, start_ms, end_ms)
+                    cutoff = coverage_cutoff(cursors, account_id, start_ms, end_ms)
+                    effective_end = cutoff if current and cutoff > start_ms else end_ms
+                    report = await read_monthly_economic_report(adapter, account_id, start_ms, effective_end,
+                                                               include_reviewed_overrides=True)
+                    report.update(window_key=window_key, requested_end_ms=end_ms,
+                                  as_of=datetime.fromtimestamp(effective_end/1000,timezone.utc).isoformat()
+                                  if report['account_coverage_complete'] else None)
+                    report.pop('report_id', None)
+                    report['report_id'] = hashlib.sha256(json.dumps(report,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+                    if not report['account_coverage_complete']:
+                        if previous: return _served(previous, end_ms, 'stale', 'income_coverage_incomplete')
+                        return _served(report, end_ms, 'unverified', 'income_coverage_incomplete')
+                    await connection.execute(_RUN_SQL, report['report_id'], account_id, window_key,
+                                             REPORT_VERSION, start_ms, effective_end,
+                                             json.dumps(report,sort_keys=True,separators=(',',':')))
+                    activation = await connection.execute(_ACTIVATE_SQL, account_id, window_key,
+                                                           REPORT_VERSION, report['report_id'], effective_end)
+                    if activation == 'INSERT 0 0':
+                        # A newer watermark already won. Never serve the losing older run.
+                        winner = await connection.fetchrow(_ACTIVE_SQL, account_id, window_key, REPORT_VERSION)
+                        body = winner['report']
+                        if isinstance(body,str): body=json.loads(body)
+                        return _served(body,end_ms,'published')
+                    return _served(report, end_ms, 'published')
     except Exception as exc:
         if getattr(exc, 'sqlstate', None) == '40001' and _retry < 2:
             return await read_published_report(db, account_id, start_ms, end_ms, window_key,

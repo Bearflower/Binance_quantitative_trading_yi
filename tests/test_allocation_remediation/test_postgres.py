@@ -25,7 +25,8 @@ async def setup():
     await conn.execute('CREATE SCHEMA IF NOT EXISTS trading')
     await conn.execute('''CREATE TABLE IF NOT EXISTS trading.position_claims(id bigserial primary key,
        symbol text,strategy text,claim_state text,expires_at timestamptz,released_at timestamptz,reason text)''')
-    for name in ('2026-11-04-entry-risk-policy.sql','2026-11-04-ledger-report-publication.sql'):
+    await conn.execute((ROOT/'database/postgres/init-scripts/11-execution-facts.sql').read_text())
+    for name in ('2026-11-04-entry-risk-policy.sql','2026-11-04-ledger-report-publication.sql','2026-11-04-income-immutability.sql'):
         await conn.execute((ROOT/'database/postgres/migrations'/name).read_text())
     await conn.execute('TRUNCATE trading.strategy_risk_active,trading.strategy_risk_policy,trading.entry_risk_reservation,trading.strategy_risk_audit CASCADE')
     await conn.execute('TRUNCATE trading.ledger_report_active,trading.ledger_report_run CASCADE')
