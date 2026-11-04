@@ -20,6 +20,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+from shared.entry_risk_policy import allocation_frozen
+
 import structlog
 from apscheduler.triggers.cron import CronTrigger
 
@@ -107,6 +109,10 @@ class DailyAllocationRefresher:
         Returns: 刷新结果字典，跳过或失败返回 None
         """
         try:
+            if await allocation_frozen(self.db_manager):
+                logger.warning("整改期间资金分配冻结，保留现有额度及配置")
+                return None
+
             # 未启用资金分配时直接跳过，与月度分配（monthly_job）的 enabled 门控对齐
             if not self.allocation_cfg.get("enabled", False):
                 logger.info("月度资金分配未启用，跳过每日刷新")

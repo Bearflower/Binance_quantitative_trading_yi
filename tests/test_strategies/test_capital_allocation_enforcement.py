@@ -622,11 +622,12 @@ class TestCanOpenWithinLimit:
         assert reason == "总持仓保证金超限(299.30/150.00)"
 
     @pytest.mark.asyncio
-    async def test_fail_open_when_no_limit(self, tmp_path):
+    async def test_capped_entry_denied_when_no_limit(self, tmp_path):
         config = {'strategy': {'name': 'new_coin'}, 'trading': {'leverage': 2}}
         mgr = CapitalManager(_write_config(tmp_path, config), strategy_id='new_coin')
         allowed, reason = await mgr.can_open_within_limit(999.0, 999.0)
-        assert (allowed, reason) == (True, "")
+        assert allowed is False
+        assert reason == "新开仓风险政策或额度不可验证"
 
     def test_min_position_margin_read(self, tmp_path):
         mgr = CapitalManager(_write_config(tmp_path, _base_config()), strategy_id='new_coin')
@@ -816,8 +817,8 @@ class TestNewCoinEntryLimit:
         executor.binance_api.place_order.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_fail_open_allows_open_without_limit(self, tmp_path):
-        """决策 D2：三级限额均不可用 → fail-open 放行，按单笔保证金全额开仓"""
+    async def test_capped_entry_rejects_without_limit(self, tmp_path):
+        """Capped entry requires a verifiable existing limit; no fail-open fallback."""
         config = _base_config({'trading': {'total_position_margin_limit': None}})
         executor = _build_executor(tmp_path, overrides=config)
         _stub_entry_checks(executor)
@@ -825,10 +826,9 @@ class TestNewCoinEntryLimit:
 
         order, reason = await executor.execute_short('HUTUSDT', {'total_score': 7.4}, 100.0)
 
-        assert reason == ""
-        assert order is not None
-        placed_quantity = executor._place_short_order.await_args.args[1]
-        assert float(placed_quantity) == pytest.approx(1.0)   # 50 × 2 / 100
+        assert reason == "新开仓风险政策或额度不可验证"
+        assert order is None
+        executor._place_short_order.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_can_open_within_limit_reject_reason_passthrough(self, tmp_path):
@@ -1477,11 +1477,11 @@ class TestLimitChainGaps:
         assert await mgr.get_effective_margin_limit() == (pytest.approx(150.0), 'static')
 
     @pytest.mark.asyncio
-    async def test_missing_config_path_is_fail_open(self):
-        """A4：配置路径为空（读不到任何配置）→ fail-open，不误判超限"""
+    async def test_missing_config_path_denies_capped_entry(self):
+        """A4: holdings getter retains its contract; capped entry fails closed."""
         mgr = CapitalManager('', db=None, strategy_id='new_coin')
         assert await mgr.get_effective_margin_limit() == (None, 'none')
-        assert await mgr.can_open_within_limit(999.0, 999.0) == (True, "")
+        assert (await mgr.can_open_within_limit(999.0, 999.0))[0] is False
 
 
 class TestCanOpenBoundaries:
@@ -1537,10 +1537,6 @@ class TestCanOpenBoundaries:
         assert await mgr.can_open_within_limit(150.0, 0.0) == (True, "")
 
     @pytest.mark.asyncio
-    @pytest.mark.xfail(
-        strict=True,
-        reason="已知防御缺口：负 new_margin 会抵消已超限占用而误放行（实际调用方由 calc_position_margin 保证非负）",
-    )
     async def test_negative_new_margin_does_not_bypass_limit(self, tmp_path):
         """B9：占用已超限（249.30 > 150）时，负数 new_margin 不得使其误放行"""
         mgr = CapitalManager(_write_config(tmp_path, _base_config()), strategy_id='new_coin')
@@ -1723,12 +1719,11 @@ class TestIncidentRegressionExecutorLevel:
 
         order, reason = await executor.execute_short('HUTUSDT', {'total_score': 7.4}, 100.0)
 
-        assert reason == ""
-        assert order is not None
-        placed_quantity = executor._place_short_order.await_args.args[1]
-        # 缩仓后数量 = 36.33 × 2 / 100 = 0.7266，按 step_size 0.001 向下取整为 0.726
-        # （若被静态 150 压制则缩到 30 → 0.6，两者可区分）
-        assert float(placed_quantity) == pytest.approx(0.726, abs=1e-4)
+        # Legacy float sizing yields 36.33000000000001 margin. The Decimal entry
+        # gate conservatively rejects the tiny excess, never adds an epsilon budget.
+        assert reason == "总持仓保证金超限(156.33/156.33)"
+        assert order is None
+        executor._place_short_order.assert_not_called()
 
 
 # ============================================================================
@@ -1895,3 +1890,19 @@ class TestOpenMarginBudgetDecomposition:
         assert TradingExecutor._match_exchange_short_qty('HUTUSDT', positions) is None
         assert TradingExecutor._match_exchange_short_qty('PATHUSDT', positions) == pytest.approx(7.33)
         assert TradingExecutor._match_exchange_short_qty('NONEUSDT', positions) is None
+
+@pytest.fixture(autouse=True)
+def verified_entry_policy_for_legacy_downstream_tests(monkeypatch):
+    """Retain downstream limit tests with explicit synthetic entry prerequisites.
+
+    Missing/expired policy and equity paths are covered without this fixture in
+    tests/test_allocation_remediation. Holdings limits are not replaced here.
+    """
+    from types import SimpleNamespace
+    original = CapitalManager.__init__
+    def initialize(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.entry_equity_provider = AsyncMock(return_value={'totalMarginBalance': 1000000})
+    monkeypatch.setattr(CapitalManager, '__init__', initialize)
+    monkeypatch.setattr('shared.entry_risk_policy.RiskPolicyStore', lambda db: SimpleNamespace(
+        policy=AsyncMock(return_value={'mode':'capped','ratio_cap':'.2','entry_ceiling':100000})))

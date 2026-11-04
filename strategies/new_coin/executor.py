@@ -226,6 +226,7 @@ class TradingExecutor:
             db=db,
             strategy_id=config.get('strategy', {}).get('name', 'new_coin'),
             require_current_allocation=True,
+            entry_equity_provider=self.binance_api.get_account_info,
         )
 
         # 交易配置

@@ -702,6 +702,7 @@ class BTCEthStrategy:
             db=self.db_manager,
             strategy_id=self.instance.capital_strategy_id,
             require_current_allocation=bool(self.instance.capital_strategy_id),
+            entry_equity_provider=self.binance.get_account_info,
         )
         
         # 最小持仓量阈值（v6.23.1：从配置读取，禁止硬编码）

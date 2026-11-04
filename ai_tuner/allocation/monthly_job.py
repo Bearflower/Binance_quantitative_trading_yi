@@ -19,7 +19,10 @@
 """
 
 from datetime import datetime, timezone, timedelta
+import math
 from typing import Any, Dict, List, Optional, Tuple
+
+from shared.entry_risk_policy import allocation_frozen
 
 import structlog
 
@@ -178,7 +181,7 @@ class MonthlyAllocationJob:
 
         委托公共模块 balance_provider.get_actual_balance 实现，保持对外
         方法签名不变，行为等价。有 binance_client 且查询成功返回净资产；
-        查询失败或没有 binance_client 返回 None（使用配置值兜底）。
+        查询失败或没有 binance_client 返回 None（拒绝本轮分配）。
 
         Returns:
             净资产（USDT），失败返回 None
@@ -214,6 +217,10 @@ class MonthlyAllocationJob:
         logger.info("月度资金分配开始")
 
         try:
+            if await allocation_frozen(self.db_manager):
+                logger.warning("整改期间资金分配冻结，保留现有额度及配置")
+                return None
+
             # 0. 确保表存在（幂等）
             await self._ensure_table()
 
@@ -253,21 +260,12 @@ class MonthlyAllocationJob:
                 logger.warning("没有采集到任何策略盈亏数据，跳过分配")
                 return None
 
-            # 6. 获取实际可用余额（优先从交易所查询，兜底使用配置值）
+            # Unavailable equity is not a configured bankroll. Never fall back to 1000/config.
             actual_balance = await self._get_actual_balance()
-            if actual_balance is not None and actual_balance > 0:
-                total_capital = actual_balance
-                logger.info(
-                    "使用交易所实际可用余额",
-                    total_capital=total_capital,
-                    config_value=self.allocation_cfg.get("total_capital"),
-                )
-            else:
-                total_capital = float(self.allocation_cfg["total_capital"])
-                logger.info(
-                    "使用配置值作为总资金",
-                    total_capital=total_capital,
-                )
+            if actual_balance is None or not math.isfinite(actual_balance) or actual_balance <= 0:
+                logger.error("账户净资产无法验证，拒绝资金分配")
+                return None
+            total_capital = actual_balance
             reserve_ratio = float(self.allocation_cfg["reserve_ratio"])
             rank_ratios = self.allocation_cfg["rank_ratios"]
             fallback_ratios = self.allocation_cfg.get("fallback", {}).get("ratios", {})

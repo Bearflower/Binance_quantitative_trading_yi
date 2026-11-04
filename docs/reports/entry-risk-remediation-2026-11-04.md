@@ -23,7 +23,8 @@ makes no exchange calls. Aggressive defaults to monitor_only; `--enable-reduced`
 explicitly selects reduced mode. HRS runtime remains monitor_only. Grid receives candidate metadata only; this
 release adds no grid runtime gate. btc_eth and
 new_coin candidates are capped at 20% and 25%; their CapitalManager entry-only
-consumers are the next allocation implementation stage and are not implemented here.
+consumers are now implemented with live equity and frozen absolute ceilings; see
+[allocation remediation](allocation-freeze-2026-11-04.md) for scope and limitations.
 
 Default validity is 72 hours. Missing, expired, unreadable, or changed policies deny
 new risk. Expiry never resumes trading. Renew by reviewing a new dry run and

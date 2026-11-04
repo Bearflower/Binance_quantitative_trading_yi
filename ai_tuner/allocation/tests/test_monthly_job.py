@@ -210,6 +210,20 @@ def _default_market_data(*, zero_trade_strategies=()):
     return pnl, capital, trade_count
 
 
+def _stub_verified_inputs(job, db):
+    # Explicit synthetic verified evidence for downstream-only orchestration tests.
+    async def collect(month_start, month_end):
+        left, right = month_start, month_end
+        ids = [row["strategy_id"] for row in job._strategy_configs]
+        for sid in ids:
+            db.fetch_calls.append(("pnl", ([sid], left.replace(tzinfo=None), right.replace(tzinfo=None))))
+            db.fetch_calls.append(("trade_count", ([sid], left.replace(tzinfo=None), right.replace(tzinfo=None))))
+        return {sid: {"pnl": db.pnl.get(sid, 0), "capital": db.capital.get(sid, 0),
+                      "has_trades": db.trade_count.get(sid, 0) > 0} for sid in ids}
+    job.pnl_collector.collect_all_realized_pnl = AsyncMock(side_effect=collect)
+    job.binance_client = SimpleNamespace(get_account_info=AsyncMock(return_value={"totalMarginBalance": "1000"}))
+
+
 def _build_job(db, *, config=None, update_fails=False):
     """构造挂接伪造 DB/通知、复用真实 _save_to_db 的 MonthlyAllocationJob"""
     job = MonthlyAllocationJob(
@@ -221,11 +235,7 @@ def _build_job(db, *, config=None, update_fails=False):
         rollback_manager=None,
         binance_client=None,
     )
-    # 月度编排测试的既有金额由 _FakeDb 提供；HRS income 归属细节由
-    # test_hrs_monthly_income.py 覆盖，此处仅固定其结果以检验后续分配流程。
-    job.pnl_collector.hrs_income_collector.collect = AsyncMock(
-        return_value=Decimal(str(db.pnl.get("hrs", 0)))
-    )
+    _stub_verified_inputs(job, db)
     real_updater = AllocationConfigUpdater()
     saved_results = []
 
@@ -590,7 +600,7 @@ class TestRunMonthlyAllocation(unittest.TestCase):
     def test_outer_exception_returns_none(self):
         """主流程异常（如缺少 total_capital 配置）被捕获并返回 None"""
         config = _make_config()
-        del config["capital_allocation"]["total_capital"]
+        del config["capital_allocation"]["reserve_ratio"]
         pnl, capital, trade_count = _default_market_data()
         db = _FakeDb(pnl=pnl, capital=capital, trade_count=trade_count)
         job, _ = _build_job(db, config=config)
@@ -651,8 +661,8 @@ class TestRunMonthlyAllocation(unittest.TestCase):
 
         self.assertEqual(len(result["entries"]), 4)
         pnl_sids = {args[0][0] for args in self._find_calls(db, "pnl")}
-        self.assertEqual(pnl_sids, set(_STRATEGY_IDS) - {"hrs"})
-        job.pnl_collector.hrs_income_collector.collect.assert_awaited_once()
+        self.assertEqual(pnl_sids, set(_STRATEGY_IDS))
+        job.pnl_collector.collect_all_realized_pnl.assert_awaited_once()
         self.assertNotIn("grid", pnl_sids)
 
     def test_uses_exchange_balance_when_available(self):
@@ -706,9 +716,7 @@ class TestRunMonthlyAllocation(unittest.TestCase):
             rollback_manager=None,
             binance_client=None,
         )
-        job.pnl_collector.hrs_income_collector.collect = AsyncMock(
-            return_value=Decimal(str(db.pnl["hrs"]))
-        )
+        _stub_verified_inputs(job, db)
         saved = []
         real_updater = AllocationConfigUpdater()
 
@@ -863,3 +871,13 @@ class TestManualTriggerArgparse(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# These are isolated tests of retained downstream orchestration. Production freeze
+# is exercised without bypass in tests/test_allocation_remediation.
+import pytest
+@pytest.fixture(autouse=True)
+def downstream_only_unfreeze(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr('ai_tuner.allocation.daily_refresher.allocation_frozen', AsyncMock(return_value=False))
+    monkeypatch.setattr('ai_tuner.allocation.monthly_job.allocation_frozen', AsyncMock(return_value=False))

@@ -78,6 +78,7 @@ class CapitalManager:
         db: Optional[Any] = None,
         strategy_id: Optional[str] = None,
         require_current_allocation: bool = False,
+        entry_equity_provider: Optional[Callable[[], Awaitable[Mapping[str, Any]]]] = None,
     ):
         """
         初始化资金分配管理器
@@ -92,6 +93,7 @@ class CapitalManager:
         self.db = db
         self.strategy_id = strategy_id
         self.require_current_allocation = require_current_allocation
+        self.entry_equity_provider = entry_equity_provider
 
         # DB 分配额缓存：值 / 时间戳
         self._db_cache_value: Optional[float] = None
@@ -236,7 +238,29 @@ class CapitalManager:
         Returns:
             (是否允许开仓, 拒绝原因；允许时原因为空串)
         """
-        limit, source = await self.get_effective_margin_limit()
+        if self.strategy_id in ('btc_eth', 'new_coin'):
+            # Entry-only overlay: never feed this smaller limit to holdings enforcement.
+            from shared.entry_risk_policy import RiskPolicyStore, number
+            try:
+                occupied_margin = number(occupied_margin, zero=True)
+                new_margin = number(new_margin, zero=True)
+                limit, source = await self.get_effective_margin_limit()
+                equity_info = await self.entry_equity_provider()
+                equity = number(equity_info['totalMarginBalance'])
+                # Read validity after network I/O so waiting cannot reuse an expired policy.
+                policy = await RiskPolicyStore(self.db).policy(self.strategy_id)
+                if policy['mode'] != 'capped':
+                    return False, "新开仓风险政策不允许新增风险"
+                ratio = number(policy['ratio_cap'])
+                if ratio > 1:
+                    raise ValueError('invalid entry ratio cap')
+                limit = min(number(limit, zero=True), number(policy['entry_ceiling'], zero=True),
+                            equity * ratio)
+            except Exception as exc:
+                logger.warning("新开仓风险政策或额度不可验证，拒绝新增风险", strategy_id=self.strategy_id, error=str(exc))
+                return False, "新开仓风险政策或额度不可验证"
+        else:
+            limit, source = await self.get_effective_margin_limit()
         if limit is None:
             if self.require_current_allocation:
                 return False, "当月分配额度不可用"

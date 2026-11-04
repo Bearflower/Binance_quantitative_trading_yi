@@ -110,7 +110,8 @@ async def test_monthly_allocator_cannot_fall_back_to_summary_when_income_unavail
         binance_client=None, strict_hrs_income=True,
     )
 
-    with pytest.raises(HRSIncomeAttributionError, match="Binance 客户端"):
+    from ai_tuner.allocation.pnl_collector import AllocationInputUnavailable
+    with pytest.raises(AllocationInputUnavailable, match="published_report_unavailable"):
         await collector.collect_all_realized_pnl(
             datetime(2026, 10, 1, tzinfo=BJ), datetime(2026, 11, 1, tzinfo=BJ)
         )

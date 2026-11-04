@@ -390,3 +390,13 @@ class TestDailyAllocationRefresher(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# These are isolated tests of retained downstream orchestration. Production freeze
+# is exercised without bypass in tests/test_allocation_remediation.
+import pytest
+@pytest.fixture(autouse=True)
+def downstream_only_unfreeze(monkeypatch):
+    from unittest.mock import AsyncMock
+    monkeypatch.setattr('ai_tuner.allocation.daily_refresher.allocation_frozen', AsyncMock(return_value=False))
+    monkeypatch.setattr('ai_tuner.allocation.monthly_job.allocation_frozen', AsyncMock(return_value=False))

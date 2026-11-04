@@ -16,6 +16,8 @@ import os
 from datetime import date, datetime, timezone, timedelta
 from typing import Any, Dict
 
+from shared.entry_risk_policy import allocation_frozen
+
 import structlog
 
 from ai_tuner.allocation.allocation_calculator import AllocationResult
@@ -63,6 +65,10 @@ class AllocationConfigUpdater:
             是否全部更新成功
         """
         try:
+            if await allocation_frozen(db_manager):
+                logger.warning("整改期间资金分配冻结，保留现有额度及配置")
+                return False
+
             # 先更新配置，成功后再发布数据库 active 记录
             # 2. 更新 ai_tuner/config.yaml
             tuner_config_success = await self._update_tuner_config(
