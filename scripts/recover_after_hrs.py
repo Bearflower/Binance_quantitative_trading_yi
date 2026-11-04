@@ -208,13 +208,17 @@ class AfterHRSRuntime(Runtime):
             effective=json.loads(self.run(self.compose(service)+['config','--format','json']))['services'][service]
             require(effective==json.loads((self.original/(service+'-effective.json')).read_text()),'effective configuration drift')
         proof=self.probe('policy')
+        inventory=self.signed_inventory()
+        self.verify_live_economics(proof,inventory)
+        row=self.inspect('hrs-strategy');logs=self.run(['docker','logs','--since',row['State']['StartedAt'],row['Id']],include_stderr=True)
+        require_startup(logs,'hrs-strategy');self.fresh['hrs_startup_logs']=logs
+
+    def verify_live_economics(self,proof,inventory):
         require(proof['position_exposure']==self.capture['position_exposure'] and proof['allocation_sha256']==self.capture['allocation_sha256'],'original economic baseline changed')
-        inventory=self.signed_inventory();review=self.approval['order_review']
+        review=self.approval['order_review']
         require(hash_rows(inventory['orders'])==proof['ordinary_orders_sha256'] and hash_rows(inventory['algos'])==proof['algo_orders_sha256'],'exchange inventory changed during verification')
         transition=verify_gap_review(inventory['positions'],inventory['orders'],inventory['algos'],review) if review.get('evidence_mode')=='missing_old_raw_full_review' else verify_reviewed_rebuild(inventory['positions'],self.approval['before_orders'],self.approval['before_algos'],inventory['orders'],inventory['algos'],review)
         self.fresh['signed_inventory']=inventory;self.fresh['approved_transition']=transition
-        row=self.inspect('hrs-strategy');logs=self.run(['docker','logs','--since',row['State']['StartedAt'],row['Id']],include_stderr=True)
-        require_startup(logs,'hrs-strategy');self.fresh['hrs_startup_logs']=logs
 
     def action(self,name,*args):
         if name=='strategy_gate':
