@@ -290,11 +290,11 @@ profiles:
 
 > 判定依据：`research.shadow_decision_events.data_quality_reason` 为空即视为该 profile 该周期无降级；两个 profile 同周期均无降级即为上述「第一次」起点。
 
-**（3）注册有效期 `duration_days=30` 与第 25 天续期**
+**（3）注册有效期 `duration_days=30` 与人工重复续期**
 - kline-service `/register` 接口 `duration_days` 上限 **30 天**（`RegisterRequest.duration_days: ge=1, le=30`；DB 侧 `CHECK (duration_days BETWEEN 1 AND 30)`）。XAUUSDT 本次以 `XAUUSDT + intervals=[1h,4h,1d] + duration_days=30` 注册（`expires_at≈2026-11-19`）。
-- 8 周（56 天）观察期需在 **第 25 天**用**相同注册接口**再次提交 `XAUUSDT + intervals=[1h,4h,1d] + duration_days=30` 续期、覆盖剩余观察期：因 `/register` 对已 `active` 标的走 `_update_registration`，取 `max(now+30, 现 expires_at)`，等效续期。
+- 临近实际到期时，经用户人工授权后用**相同注册接口**再次提交 `XAUUSDT + intervals=[1h,4h,1d] + duration_days=30`；`/register` 对已 `active` 标的走 `_update_registration`，取 `max(now+30, 现 expires_at)`。该行为**不保证一次续期覆盖完整观察期**。每次续期后必须重读 `expires_at`，不足观察终点则继续跟踪并在下次临近到期时再次请求授权。原版/激进版终点为 2026-12-15 08:00 UTC，校准版终点为 2026-12-23 09:00 UTC，以较晚者为覆盖目标。
 - **暂不使用 `PUT /renew`**：`RegisteredSymbolConfig.renew()` 实现为 `expires_at += additional_days` 与 `duration_days += additional_days`，会把 `duration_days` 累加至 >30 从而撞 DB `duration_days<=30` 约束而失败。
-- 第 25 天续期步骤须**写入运行手册/提醒**（落地见实施计划 [2026-10-19-xau-mtcps-shadow-implementation-plan.md](../plans/2026-10-19-xau-mtcps-shadow-implementation-plan.md) §9.4）。
+- 巡检仅提醒，不自动续期；本地操作说明见 [XAU 校准版离线多 run 回放](../../xau-calibrated-local-replay.md)。
 
 **（4）行情补采（kline-service 容器内执行）**
 `services/kline_service/scripts/fetch_history_bulk.py` 已支持 `--intervals` 参数与周期真实上限（`1d` cap **200**、`4h`=30、`1h`=15）；三周期数据验收依赖此命令补采（命令与前置条件见实施计划 §9.4）。

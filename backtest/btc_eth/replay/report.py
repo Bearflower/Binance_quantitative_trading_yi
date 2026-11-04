@@ -558,6 +558,12 @@ def write_reports(
     except Exception as e:
         logger.warning("回放 config 加载失败（使用空 dict）：%s", e)
 
+    if set(run_manifest.get("config_hashes", {})) == {"xau_calibrated"}:
+        return _write_calibrated_report(
+            engine_result, run_manifest, output_dir, replay_cfg,
+            data_completeness or {},
+        )
+
     metrics_orig = compute_metrics(
         engine_result["xau_original"], engine_meta, replay_cfg,
         decision_stats=engine_meta.get("decision_summary", {}).get("per_profile", {}).get("xau_original", {}),
@@ -620,6 +626,66 @@ def write_reports(
 
     logger.info("报告已写入：%s, %s", md_path, json_path)
     return {"md_path": md_path, "json_path": json_path, "admission": admission_result["admission"]}
+
+
+def _write_calibrated_report(
+    engine_result: Dict[str, Any], run_manifest: Dict[str, Any], output_dir: str,
+    replay_cfg: Dict[str, Any], data_completeness: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Calibrated profile has its own admission; never compare it with ETH baselines."""
+    import os
+
+    meta = engine_result["engine_metadata"]
+    metrics = compute_metrics(
+        engine_result["xau_calibrated"], meta, replay_cfg,
+        decision_stats=meta.get("decision_summary", {}).get("per_profile", {}).get("xau_calibrated", {}),
+    )
+    checks_passed = all(item["pass"] for item in metrics["admission_checks"].values())
+    coverage_ok = (
+        data_completeness.get("decision_coverage_complete") is True
+        and not data_completeness.get("decision_missing_hours")
+        and not data_completeness.get("decision_quality_degraded_hours")
+        and data_completeness.get("complete") is True
+        and not meta.get("invariant_violations")
+    )
+    admission = "insufficient_data" if not coverage_ok else ("calibrated" if checks_passed else "none")
+    result = {
+        "run_id": run_manifest.get("run_id", "unknown"),
+        "replay_run_id": meta["replay_run_id"],
+        "engine_version": meta["engine_version"],
+        "manifest_sha256": meta["manifest_sha256"],
+        "input_cutoff_at": meta["input_cutoff_at"],
+        "initial_equity": meta["initial_equity"],
+        "symbol_filters": meta["symbol_filters"],
+        "invariant_violations": meta["invariant_violations"],
+        "data_completeness": data_completeness,
+        "snapshot_gaps": meta.get("snapshot_gaps", 0),
+        "trailing": meta.get("trailing", {}),
+        "decision_summary": meta.get("decision_summary", {}),
+        "xau_calibrated": metrics,
+        "admission": {"admission": admission, "calibrated_passed": bool(checks_passed and coverage_ok)},
+    }
+    os.makedirs(output_dir, exist_ok=True)
+    json_path = os.path.join(output_dir, f"report_{result['run_id']}.json")
+    md_path = os.path.join(output_dir, f"report_{result['run_id']}.md")
+    with open(json_path, "w", encoding="utf-8") as stream:
+        json.dump(result, stream, indent=2, ensure_ascii=False)
+    with open(md_path, "w", encoding="utf-8") as stream:
+        coverage = data_completeness.get("decision_coverage", {})
+        stream.write("# XAUUSDT MTCPS 黄金校准版影子回放报告\n\n")
+        stream.write(f"- run_id: `{result['run_id']}`\n")
+        stream.write(f"- replay_run_id: `{result['replay_run_id']}`\n")
+        stream.write(f"- 准入结论: **{admission}**\n")
+        stream.write(f"- 决策小时缺口: {len(data_completeness.get('decision_missing_hours', []))}\n")
+        stream.write(f"- 跨 run 去重事件: {coverage.get('duplicates_removed', '未提供')}\n")
+        stream.write(f"- 物理 run 数: {len(coverage.get('run_segments', []))}\n")
+        stream.write(f"- 已结虚拟交易: {metrics['n_closed_trades']}\n")
+        stream.write(f"- 净盈亏: {metrics['net_pnl']} USDT\n")
+        stream.write(f"- 最大回撤: {metrics['max_drawdown_pct']:.2f}%\n\n")
+        stream.write("## 准入门槛\n\n")
+        for name, check in metrics["admission_checks"].items():
+            stream.write(f"- {name}: {'通过' if check['pass'] else '未通过'}\n")
+    return {"md_path": md_path, "json_path": json_path, "admission": admission}
 
 
 def _build_markdown(report: Dict[str, Any]) -> str:

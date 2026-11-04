@@ -110,14 +110,31 @@ class ReplayEngine:
         # run manifest（dict 或文件路径）
         run_manifest: Dict[str, Any],
         engine_version: str = ENGINE_VERSION,
+        profile_config_path_calibrated: str = "",
     ):
         # -------- 加载 config --------
         with open(replay_config_path, "r", encoding="utf-8") as f:
             self.cfg = yaml.safe_load(f)
-        with open(profile_config_path_original, "r", encoding="utf-8") as f:
-            self.profile_cfg_orig = yaml.safe_load(f)
-        with open(profile_config_path_aggressive, "r", encoding="utf-8") as f:
-            self.profile_cfg_aggr = yaml.safe_load(f)
+        profile_paths = {
+            "xau_original": profile_config_path_original,
+            "xau_aggressive": profile_config_path_aggressive,
+            "xau_calibrated": profile_config_path_calibrated,
+        }
+        manifest_profile_ids = list(run_manifest.get("config_hashes") or {})
+        if set(manifest_profile_ids) not in ({"xau_original", "xau_aggressive"}, {"xau_calibrated"}):
+            if "xau_original" in manifest_profile_ids and "xau_aggressive" not in manifest_profile_ids:
+                raise ValueError("run_manifest.config_hashes 缺少 pid=xau_aggressive")
+            raise ValueError("run_manifest.config_hashes 必须为原版+激进版或单独校准版")
+        self.profile_configs = {}
+        for pid in manifest_profile_ids:
+            path = profile_paths[pid]
+            if not path:
+                raise ValueError(f"缺少 profile 配置路径 pid={pid}")
+            with open(path, "r", encoding="utf-8") as f:
+                self.profile_configs[pid] = yaml.safe_load(f)
+        self.profile_ids = list(self.profile_configs)
+        self.profile_cfg_orig = self.profile_configs.get("xau_original")
+        self.profile_cfg_aggr = self.profile_configs.get("xau_aggressive")
 
         self.run_manifest = run_manifest
         self.engine_version = engine_version
@@ -130,10 +147,7 @@ class ReplayEngine:
             raise ValueError(
                 "run_manifest 缺少 config_hashes 键（profile 配置哈希校验未通过）"
             )
-        for pid, cfg in (
-            ("xau_original", self.profile_cfg_orig),
-            ("xau_aggressive", self.profile_cfg_aggr),
-        ):
+        for pid, cfg in self.profile_configs.items():
             expected = manifest_hashes.get(pid)
             if not expected:
                 raise ValueError(
@@ -169,8 +183,7 @@ class ReplayEngine:
 
         # pilot 约束（从各自 profile 冻结配置读取——跨 profile 独立，禁止互相泄漏）
         self.pilot_cfg: Dict[str, Dict[str, Any]] = {
-            "xau_original": self.profile_cfg_orig.get("pilot"),
-            "xau_aggressive": self.profile_cfg_aggr.get("pilot"),
+            pid: cfg.get("pilot") for pid, cfg in self.profile_configs.items()
         }
         # fail-closed：每个 profile 必须有 pilot 段
         for _pid, _pilot_cfg in self.pilot_cfg.items():
@@ -213,32 +226,22 @@ class ReplayEngine:
         ))
 
         # 阻断 #5：per-profile 开仓序列计数器（position_id 确定性派生用）
-        self._open_seq: Dict[str, int] = {
-            "xau_original": 0,
-            "xau_aggressive": 0,
-        }
+        self._open_seq: Dict[str, int] = {pid: 0 for pid in self.profile_ids}
 
         # 两个 profile 的状态（独立）
         initial_equity = Decimal(str(
             self.run_manifest.get("initial_virtual_equity_usdt")
-            or self.profile_cfg_orig.get("instance", {}).get("initial_virtual_equity_usdt", 300)
+            or next(iter(self.profile_configs.values())).get("instance", {}).get("initial_virtual_equity_usdt", 300)
         ))
         self.states: Dict[str, VirtualState] = {
-            "xau_original": self._make_state(self.profile_cfg_orig, initial_equity),
-            "xau_aggressive": self._make_state(self.profile_cfg_aggr, initial_equity),
+            pid: self._make_state(cfg, initial_equity) for pid, cfg in self.profile_configs.items()
         }
 
         # 交易明细（per-profile 列表）
-        self.replay_trades: Dict[str, List[Dict[str, Any]]] = {
-            "xau_original": [],
-            "xau_aggressive": [],
-        }
+        self.replay_trades: Dict[str, List[Dict[str, Any]]] = {pid: [] for pid in self.profile_ids}
 
         # 未成交订单跟踪（per-profile）
-        self.pending_limit_orders: Dict[str, List[Dict[str, Any]]] = {
-            "xau_original": [],
-            "xau_aggressive": [],
-        }
+        self.pending_limit_orders: Dict[str, List[Dict[str, Any]]] = {pid: [] for pid in self.profile_ids}
 
         # 事件源 K 线时间戳 → 索引映射（快速查找）
         self._kline_index_by_open_time = {k["open_time"]: i for i, k in enumerate(self.klines_1m)}
@@ -358,7 +361,7 @@ class ReplayEngine:
         全程确定性：输入 self.events 已按 stable_sort_key 稳定排序，
         所有聚合用 dict 保证顺序、samples 列表按 scheduled_at 排序。
         """
-        PER_PROFILES = ["xau_original", "xau_aggressive"]
+        PER_PROFILES = getattr(self, "profile_ids", ["xau_original", "xau_aggressive"])
 
         # per-profile 基础计数
         per_profile: Dict[str, Dict[str, Any]] = {}
@@ -429,8 +432,8 @@ class ReplayEngine:
             }
 
         # —— same_timestamp_decision_diff ——
-        orig_ts_map = per_profile["xau_original"]["events_by_ts"]
-        aggr_ts_map = per_profile["xau_aggressive"]["events_by_ts"]
+        orig_ts_map = per_profile.get("xau_original", {}).get("events_by_ts", {})
+        aggr_ts_map = per_profile.get("xau_aggressive", {}).get("events_by_ts", {})
         common_ts = sorted(set(orig_ts_map.keys()) & set(aggr_ts_map.keys()))
         common_count = len(common_ts)
         differing_samples: List[Dict[str, Any]] = []
@@ -476,7 +479,13 @@ class ReplayEngine:
                 line = line.strip()
                 if not line:
                     continue
-                events.append(json.loads(line))
+                event = json.loads(line)
+                if self.profile_ids == ["xau_calibrated"]:
+                    if (event.get("profile_id") != "xau_calibrated"
+                            or event.get("symbol") != self.run_manifest.get("symbol")
+                            or event.get("config_hash") != self.run_manifest["config_hashes"]["xau_calibrated"]):
+                        raise ValueError("校准版决策事件身份或配置哈希不匹配")
+                events.append(event)
         self.events = sorted(events, key=stable_sort_key)
         logger.info("事件加载完成，共 %d 条", len(self.events))
 
@@ -489,7 +498,7 @@ class ReplayEngine:
             "engine_metadata": {...},
         }
         """
-        if not self.events:
+        if not self.events and self.profile_ids != ["xau_calibrated"]:
             raise RuntimeError("尚未 load_events")
 
         # 数据截止时间：以 run_manifest 为准；若缺失则取最后一个 scheduled_at
@@ -499,7 +508,12 @@ class ReplayEngine:
         cutoff_at = _parse_ts(cutoff_ts) if not isinstance(cutoff_ts, datetime) else cutoff_ts
         self.input_cutoff_at = cutoff_at
 
-        replay_run_id = compute_replay_run_id(self.manifest_sha256, self.engine_version, cutoff_at)
+        replay_input_hash = self.manifest_sha256
+        if self.profile_ids == ["xau_calibrated"]:
+            replay_input_hash += ":" + ":".join(str(self.run_manifest.get(key, "")) for key in
+                                                  ("coverage_sha256", "decision_events_sha256"))
+            replay_input_hash += ":" + self.run_manifest["config_hashes"]["xau_calibrated"]
+        replay_run_id = compute_replay_run_id(replay_input_hash, self.engine_version, cutoff_at)
 
         # K 线窗口按 cutoff 截断
         cutoff_idx = None
@@ -526,7 +540,7 @@ class ReplayEngine:
         # 顺序：先结算挂单 → 再跑持仓退出到 cutoff → 最后强平
         # （使被结算挂单新开的仓位也能被纳入退出扫描与最终强平；
         #   _run_position_exit_up_to 内置游标机制，不会与事件循环已扫描区间重复）
-        for pid in ("xau_original", "xau_aggressive"):
+        for pid in self.profile_ids:
             self._settle_pending_limit_orders(pid, cutoff_at, usable_klines)
             self._run_position_exit_up_to(pid, cutoff_at, usable_klines, cutoff_at)
 
@@ -538,7 +552,7 @@ class ReplayEngine:
         # 并从 pending_limit_orders 中移除；剩下的全是 cutoff_at < expiry_at 仍未过期的，
         # 它们既没撮合也没进入结果——这里补记 reason="pending_at_cutoff"，避免报告漏样本。
         pending_at_cutoff_count = 0
-        for pid in ("xau_original", "xau_aggressive"):
+        for pid in self.profile_ids:
             still_pending = self.pending_limit_orders[pid]
             for order in still_pending:
                 opened_at = _parse_ts(order["opened_at"])
@@ -600,8 +614,7 @@ class ReplayEngine:
                 # Round4 修复（P2）：截止时仍未过期的 pending 挂单数量（两 profile 合计）
                 "pending_at_cutoff_count": pending_at_cutoff_count,
             },
-            "xau_original": results["xau_original"],
-            "xau_aggressive": results["xau_aggressive"],
+            **results,
         }
 
     # ---------------- 单个事件处理 ----------------
@@ -1350,7 +1363,9 @@ class ReplayEngine:
             return
 
         # 从 profile 冻结配置读退出规则
-        profile_cfg = self.profile_cfg_orig if profile_id == "xau_original" else self.profile_cfg_aggr
+        profile_cfg = (self.profile_configs[profile_id] if hasattr(self, "profile_configs")
+                       else self.profile_cfg_orig if profile_id == "xau_original"
+                       else self.profile_cfg_aggr)
         level_cfg = self._get_risk_level(profile_cfg, grade)
         if level_cfg is None:
             # grade 不在 S/A/B/C 里 → 用 A 作为 fallback
@@ -1450,7 +1465,7 @@ class ReplayEngine:
         # 阻断 #5：生成确定性 position_id —— per-profile 序列计数器 + fill 时间 + direction
         # 安全访问：hasattr 兼容测试用 __new__ 绕过 __init__ 的场景
         if not hasattr(self, "_open_seq"):
-            self._open_seq = {"xau_original": 0, "xau_aggressive": 0}
+            self._open_seq = {pid: 0 for pid in getattr(self, "profile_ids", ["xau_original", "xau_aggressive"])}
         self._open_seq[profile_id] = self._open_seq.get(profile_id, 0) + 1
         open_seq = self._open_seq[profile_id]
         position_id = f"{profile_id}@{scheduled_at.strftime('%Y%m%dT%H%M%S')}@{direction}@{open_seq}"

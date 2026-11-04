@@ -21,8 +21,9 @@ import logging
 import os
 import sys
 from pathlib import Path
+from datetime import timedelta
 
-from .engine import ReplayEngine
+from .engine import ReplayEngine, _parse_ts
 from .report import write_reports
 from .snapshot import verify_snapshot
 
@@ -36,8 +37,10 @@ def main(argv=None) -> int:
     parser.add_argument("--run-manifest", required=True, help="run manifest JSON 文件")
     parser.add_argument("--snapshot-dir", required=True,
                         help="快照目录（含 1m K 线 / funding / exchangeInfo / manifest.json）")
-    parser.add_argument("--profile-orig", required=True, help="原版 profile 冻结配置 (xau_original.yaml)")
-    parser.add_argument("--profile-aggr", required=True, help="激进版 profile 冻结配置 (xau_aggressive.yaml)")
+    parser.add_argument("--profile-orig", default="", help="原版 profile 冻结配置 (xau_original.yaml)")
+    parser.add_argument("--profile-aggr", default="", help="激进版 profile 冻结配置 (xau_aggressive.yaml)")
+    parser.add_argument("--profile-calibrated", default="", help="校准版 profile 冻结配置 (xau_calibrated.yaml)")
+    parser.add_argument("--coverage", default="", help="校准版 reconcile_runs 生成的 coverage.json")
     parser.add_argument("--replay-config", default=None, help="回放 config.yaml；缺省用 replay/config.yaml")
     parser.add_argument("--output-dir", required=True, help="报告输出目录")
     parser.add_argument("--skip-snapshot-verify", action="store_true", help="跳过 manifest 文件 SHA-256 校验")
@@ -119,6 +122,38 @@ def main(argv=None) -> int:
     with open(args.run_manifest, "r", encoding="utf-8") as f:
         run_manifest = json.load(f)
 
+    is_calibrated = set(run_manifest.get("config_hashes", {})) == {"xau_calibrated"}
+    if is_calibrated:
+        if not args.profile_calibrated or not args.coverage or args.skip_snapshot_verify:
+            logger.error("校准版必须提供 --profile-calibrated 与 --coverage，且不能跳过快照校验")
+            return 2
+        import hashlib
+        coverage_path = Path(args.coverage)
+        events_path = Path(args.events)
+        if (hashlib.sha256(coverage_path.read_bytes()).hexdigest() != run_manifest.get("coverage_sha256")
+                or hashlib.sha256(events_path.read_bytes()).hexdigest() != run_manifest.get("decision_events_sha256")):
+            logger.error("校准版 coverage 或事件文件哈希不匹配")
+            return 2
+        coverage = json.loads(coverage_path.read_text(encoding="utf-8"))
+        if (coverage.get("profile_id") != "xau_calibrated"
+                or coverage.get("symbol") != "XAUUSDT"
+                or _parse_ts(run_manifest.get("data_cutoff_at")) != _parse_ts(coverage["window_end"])):
+            logger.error("校准版 coverage 身份不匹配")
+            return 2
+        data_completeness["decision_missing_hours"] = coverage.get("missing_hours", [])
+        data_completeness["decision_quality_degraded_hours"] = coverage.get("quality_degraded_hours", [])
+        data_completeness["decision_coverage"] = coverage
+        data_completeness["decision_coverage_complete"] = (
+            coverage.get("window_start") == "2026-10-28T09:00:00+00:00"
+            and coverage.get("window_end") == "2026-12-23T09:00:00+00:00"
+            and not coverage.get("missing_hours")
+            and not coverage.get("quality_degraded_hours")
+            and coverage.get("events_written") == coverage.get("expected_hours")
+        )
+    elif not (args.profile_orig and args.profile_aggr):
+        logger.error("原版/激进版回放必须同时提供 --profile-orig 和 --profile-aggr")
+        return 2
+
     engine = ReplayEngine(
         replay_config_path=replay_cfg,
         profile_config_path_original=args.profile_orig,
@@ -128,8 +163,28 @@ def main(argv=None) -> int:
         exchange_info_json_path=str(exchange_info_path),
         snapshot_manifest_path=str(manifest_path),
         run_manifest=run_manifest,
+        profile_config_path_calibrated=args.profile_calibrated,
     )
     engine.load_events(args.events)
+    if is_calibrated:
+        start_at = _parse_ts(coverage["window_start"])
+        end_at = _parse_ts(coverage["window_end"])
+        expected = set()
+        cursor = start_at
+        while cursor < end_at:
+            expected.add(cursor)
+            cursor += timedelta(hours=1)
+        actual = [_parse_ts(row["scheduled_at"]) for row in engine.events]
+        missing = {_parse_ts(value) for value in coverage["missing_hours"]}
+        if (len(actual) != coverage.get("events_written") or len(actual) != len(set(actual))
+                or set(actual) != expected - missing or not missing.issubset(expected)):
+            logger.error("校准版 coverage 与决策事件逐小时集合不一致")
+            return 2
+        bars = engine.klines_1m_sorted
+        if (not bars or _parse_ts(bars[0]["open_time"]) > start_at
+                or _parse_ts(bars[-1]["close_time"]) < end_at - timedelta(milliseconds=1)):
+            logger.error("校准版 1m 快照未覆盖整个决策观察窗口")
+            return 2
     engine_result = engine.run()
 
     outputs = write_reports(
