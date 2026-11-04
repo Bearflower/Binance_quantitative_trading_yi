@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from scripts.ledger_risk_manifest import MANIFEST,IMAGES,MIGRATIONS,SHA,ReleaseBlocked,validate_tree
 
-SCRIPTS=['scripts/scoped_ledger_risk_release.py','scripts/ledger_risk_manifest.py']
+SCRIPTS=['scripts/scoped_ledger_risk_release.py','scripts/ledger_risk_manifest.py','scripts/ledger_risk_runtime_config.py']
 
 def read_digests(directory):
     directory=Path(directory)

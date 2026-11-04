@@ -53,12 +53,15 @@ def validate_manifest(m,*,activation=False):
     if activation:
         p=m['expected_production'];policy=m['policy']
         if not p or not policy or m['blocker']:raise ReleaseBlocked('reviewed production evidence required')
-        if set(p)!={'compose_sha256','containers','service_config_sha256','stacks','project','minimum_free_bytes','collector_restoration'}:raise ReleaseBlocked('production evidence schema')
+        if set(p)!={'compose_sha256','containers','service_config_sha256','stacks','project','minimum_free_bytes','collector_restoration','service_compose_hash','service_runtime_sha256','compose_hash_matches'}:raise ReleaseBlocked('production evidence schema')
         if set(p['collector_restoration'])!={'before','after'}:raise ReleaseBlocked('collector restoration evidence required')
         validate_collector_restoration(p['collector_restoration']['after'])
         if p['project']!='trading_system' or set(p['compose_sha256'])!=set(COMPOSE):raise ReleaseBlocked('production project/config')
         if any(not HEX64.fullmatch(x) for x in p['compose_sha256'].values()):raise ReleaseBlocked('full config hashes required')
         if set(p['service_config_sha256'])!=set(SERVICES) or any(not HEX64.fullmatch(x) for x in p['service_config_sha256'].values()):raise ReleaseBlocked('effective service hashes required')
+        if set(p['service_compose_hash'])!=set(SERVICES) or any(not HEX64.fullmatch(x) for x in p['service_compose_hash'].values()):raise ReleaseBlocked('running/effective Compose binding hashes required')
+        if set(p['service_runtime_sha256'])!=set(SERVICES) or any(not HEX64.fullmatch(x) for x in p['service_runtime_sha256'].values()):raise ReleaseBlocked('actual runtime semantic evidence required')
+        if set(p['compose_hash_matches'])!=set(SERVICES) or any(type(x) is not bool for x in p['compose_hash_matches'].values()):raise ReleaseBlocked('Compose label comparison evidence required')
         if set(p['stacks'])!=set(SERVICES):raise ReleaseBlocked('explicit stacks required')
         for stack in p['stacks'].values():
             if not isinstance(stack,list) or not stack or stack[0]!=COMPOSE[0] or len(stack)!=len(set(stack)) or not set(stack)<=set(COMPOSE):raise ReleaseBlocked('unsafe compose stack')
@@ -109,3 +112,9 @@ def validate_collector_restoration(config):
             normalized['healthcheck'][key]={'60s':'1m0s','1m':'1m0s','180s':'3m0s','3m':'3m0s'}.get(value,value)
     if isinstance(normalized.get('logging'),dict):normalized['logging'].setdefault('options',{})
     if normalized!=COLLECTOR_RESTORATION:raise ReleaseBlocked('collector command/health/logging differs from approved restoration')
+
+
+def effective_compose_hash(service,output):
+    parts=output.strip().split()
+    if len(parts)!=2 or parts[0]!=service or not HEX64.fullmatch(parts[1]):raise ReleaseBlocked('invalid effective Compose hash output: '+service)
+    return parts[1]

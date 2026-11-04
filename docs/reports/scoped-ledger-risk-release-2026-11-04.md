@@ -38,3 +38,37 @@ BTC/new coin still have their documented legacy final-price/concurrency limits; 
 These are local unit/integration/command-contract tests, not a Docker/production release simulation or proof that all external failure branches are covered. All ordered release steps have injected-prefix failure assertions; command-level tests verify target/no-deps/migration checksum behavior and active/partial replay blocking. Full seven-image and live application verification remain required.
 
 Review follow-up: image proof now explicitly inserts `/app` before shared imports, covering dashboard's `/app/dashboard/backend` WORKDIR without PYTHONPATH. A subprocess regression reproduces that runtime shape. The production `main_docker.app` ASGI test confirms `/api/trend` resolves to `api.routes_docker.get_trend`, returns `data.trends`, preserves ledger identity/coverage/unknown fields and ignores the obsolete mutable cache. The unrelated legacy `routes.py` was not changed. The updated affected suite passed 121 tests with 2 explicit DB skips; a sandbox-only pytest cache-write warning did not affect results.
+
+## Read-only production evidence helper
+
+`scripts/capture_ledger_risk_evidence.py` emits only an `expected_production` object. It does not update the manifest, activate policy, write files, acquire/create a deployment lock, run database commands, or start/stop containers. Keep `scripts/ledger_risk_manifest.py` and `scripts/ledger_risk_runtime_config.py` beside it in the same directory layout. Supply a separately reviewed JSON map of all eight target service names to their explicit ordered Compose filenames (`docker-compose.yml`, optional production override/logging). There is no guessed stack default.
+
+After independent review, the parent may run:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/capture_ledger_risk_evidence.py --root /root/trading_system --stacks-file /path/to/reviewed-stacks.json --minimum-free-bytes 5368709120
+```
+
+Only Docker `ps -a`, `inspect`, `image inspect`, `exec ... sha256sum`, and `compose ... config` JSON/hash reads are invoked. Every Compose-project container (including excluded services) is captured. Raw environment/inspect/config payloads stay in memory and only canonical hashes are emitted. Collector before fields are emitted only if they equal explicit known non-secret command/health/logging literals; an unfamiliar value blocks capture instead of being echoed. Command failures and malformed input produce a generic redacted error and no partial evidence. Two complete snapshots, including source/config hashes and identities, must match. Bytecode writes are disabled. The helper does not claim transactional consistency or approve the selected stacks; the release executor repeats drift checks under its lock.
+
+This helper has only been exercised against local fake command fixtures. Production Compose hashes and container identities are not hardcoded, so the November 4 08:01 collector recreation and later drift must be freshly captured by the parent. The new helper/test/doc changes require refreshing the blocked source manifest after review; this task intentionally did not replace its reviewed baseline or production evidence.
+
+### Running settings and selected stack binding
+
+Capture and locked runtime both compare actual Config/HostConfig to effective Compose, resolving inherited/null command, entrypoint, environment, user, workdir and health defaults through local image inspect. Image aliases require the identical running image ID. Every target is checked even when config-hash labels match. `service_runtime_sha256` binds validated runtime/effective inputs; `service_compose_hash` and `compose_hash_matches` explicitly record label differences. A label mismatch alone is not approval or rejection: the parent observed HRS retaining a different label hash even after same-stack recreation.
+
+Checks include health/logging/restart, bind mounts/propagation, networks/aliases, ports/exposed ports, labels and recognized Config/HostConfig defaults. Unknown Compose fields, unsupported mount/network options, uncovered Config fields and unknown non-default HostConfig values block capture. Only reviewed collector command/health/logging restoration may differ; before literals must pass the redaction allowlist. Error categories contain no field values.
+
+The observed tuner mapping is NanoCpus=500000000, Memory=536870912, MemoryReservation=268435456, MemorySwap=1073741824 and zero CpuShares/CpuQuota/CpuPeriod for its 0.5 CPU / 512 MiB / 256 MiB declarations. Standalone `reservations.cpus=0.1` has no CPU-reservation HostConfig field: the declaration is retained in evidence but no guaranteed CPU reservation is claimed. Unknown deploy settings block. Pull-policy/dependency declarations stay bound in the effective-config digest, not misrepresented as runtime fields. Refresh the blocked manifest for these added schema/module files after review; no production evidence was automatically filled.
+
+### Later production drift reported by parent
+
+At **2026-11-04 09:36 UTC**, a parallel full deployment again replaced HRS. At **09:41 UTC**, the parent restored **HRS only** to reviewed image `sha256:8d01db084443a8a5cd5d98efb1c8fbd75df84fbff6244faa4a6f82a56c5073db`. At **09:42 UTC**, the parent's signed exchange read confirmed ARIAUSDT quantity **−42** and three `NEW`, `reduceOnly` protective orders: a `closePosition=true` stop and TP quantities **12** and **16**. No prices/order IDs were supplied for this observation; earlier values are not inferred.
+
+These are release-preflight drift warnings and restoration of the older HRS safeguards, **not new-policy activation or completed remediation release**. Refresh all evidence before controlled activation. This helper has performed no production operation.
+
+### Review hardening: replacement-image defaults
+
+After pulling/proving all seven immutable images and **before capture/pins or any stop**, the runtime resolves old and replacement image Config under each target's reviewed effective Compose service. Cmd, Entrypoint, User, WorkingDir, merged Env, healthcheck, exposed ports, labels, volumes, stop/shell settings and platform must produce identical effective defaults. A raw image default change that is completely overridden by Compose is harmless and permitted; an effective change is blocked with field categories only. Evidence stores hashes for all eight targets in `image-default-transitions.json`, never raw environments. This closes the gap left by import checks that override the image entrypoint with Python.
+
+HostConfig now uses explicit known field/default allowlists. Unknown fields are rejected even when their values are `false`, `0`, `null`, an empty string, list or map. Future Docker API fields require review rather than being silently treated as neutral. Fault-injection tests prove default drift stops the ordered release in `pull_and_verify` before capture/stop, and tests cover all unknown empty-value shapes.

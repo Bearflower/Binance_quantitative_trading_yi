@@ -15,7 +15,8 @@ import sys
 import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from scripts.ledger_risk_manifest import (MODE,SERVICES,SERVICE_IMAGES,IMAGES,MIGRATIONS,COMPOSE,
-    MANIFEST,RELEASE,SHA,digest,validate_manifest,require_image_only,validate_collector_restoration,ReleaseBlocked)
+    MANIFEST,RELEASE,SHA,digest,validate_manifest,require_image_only,validate_collector_restoration,effective_compose_hash,ReleaseBlocked)
+from scripts.ledger_risk_runtime_config import verify_runtime_config,verify_image_transition
 
 STRATEGIES=['hrs-strategy','btc-eth-aggressive-strategy','btc-eth-strategy','new-coin-strategy']
 
@@ -88,7 +89,7 @@ class Runtime:
         self.manifest=validate_manifest(manifest,activation=True)
         if not SHA.fullmatch(sha):raise ReleaseBlocked('invalid release SHA')
         if (self.bundle/'release-sha').read_text().strip()!=sha:raise ReleaseBlocked('bundle SHA mismatch')
-        for path in ['scripts/scoped_ledger_risk_release.py','scripts/ledger_risk_manifest.py']:
+        for path in ['scripts/scoped_ledger_risk_release.py','scripts/ledger_risk_manifest.py','scripts/ledger_risk_runtime_config.py']:
             if digest((self.bundle/path).read_bytes())!=manifest['source_checksums'].get(path):raise ReleaseBlocked('runtime bundle checksum mismatch')
         self.production=manifest['expected_production'];self.images={}
         if set(digests)!=set(IMAGES):raise ReleaseBlocked('all seven CI image digests required')
@@ -203,7 +204,14 @@ class Runtime:
             atomic_json(self.directory/'manifest.json',self.manifest)
             atomic_json(self.overlay,{'services':{s:{'image':self.images[SERVICE_IMAGES[s]]} for s in SERVICES}})
             for service in SERVICES:
-                before=json.loads(self.run(self.compose(service,release=False)+['config','--format','json']))['services'][service]
+                label=self.before[service]['Config'].get('Labels',{}).get('com.docker.compose.config-hash')
+                bound=effective_compose_hash(service,self.run(self.compose(service,release=False)+['config','--hash',service]))
+                if bound!=self.production['service_compose_hash'][service]:raise ReleaseBlocked('reviewed Compose binding drift: '+service)
+                full=json.loads(self.run(self.compose(service,release=False)+['config','--format','json']));before=full['services'][service]
+                image=json.loads(self.run(['docker','image','inspect',before['image']]))
+                if len(image)!=1:raise ReleaseBlocked('ambiguous selected image')
+                semantic=verify_runtime_config(before,self.before[service],image[0],full.get('networks',{}),allow_collector_restoration=service=='execution-facts-collector')
+                if semantic!=self.production['service_runtime_sha256'][service] or (bound==label)!=self.production['compose_hash_matches'][service]:raise ReleaseBlocked('reviewed actual runtime binding drift: '+service)
                 after=json.loads(self.run(self.compose(service)+['config','--format','json']))['services'][service]
                 if digest(before)!=self.production['service_config_sha256'][service]:raise ReleaseBlocked('effective production config drift: '+service)
                 require_image_only(before,after)
@@ -219,6 +227,14 @@ class Runtime:
         elif name=='pull_and_verify':
             for image in self.images.values():self.run(['docker','pull',image],timeout=600)
             for image in self.images.values():self.image_proof(image)
+            transitions={}
+            for service in SERVICES:
+                effective=json.loads((self.directory/(service+'-effective.json')).read_text())
+                old=json.loads(self.run(['docker','image','inspect',self.before[service]['Image']]))
+                new=json.loads(self.run(['docker','image','inspect',self.images[SERVICE_IMAGES[service]]]))
+                if len(old)!=1 or len(new)!=1:raise ReleaseBlocked('ambiguous image defaults')
+                transitions[service]=verify_image_transition(effective,old[0],new[0])
+            atomic_json(self.directory/'image-default-transitions.json',transitions)
         elif name=='capture':
             backup=self.directory/'database-before.dump'
             with open(backup,'xb') as stream:

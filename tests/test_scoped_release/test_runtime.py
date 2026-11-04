@@ -80,7 +80,7 @@ def test_partial_or_completed_state_never_replays(tmp_path,monkeypatch):
     from scripts.ledger_risk_manifest import IMAGES,ReleaseBlocked,RELEASE,digest
     bundle=tmp_path/'bundle';bundle.mkdir();(bundle/'release-sha').write_text('a'*40)
     checksums={}
-    for name in ('scripts/scoped_ledger_risk_release.py','scripts/ledger_risk_manifest.py'):
+    for name in ('scripts/scoped_ledger_risk_release.py','scripts/ledger_risk_manifest.py','scripts/ledger_risk_runtime_config.py'):
         path=bundle/name;path.parent.mkdir(exist_ok=True);path.write_text('reviewed')
         checksums[name]=digest(path.read_bytes())
     manifest={'source_checksums':checksums,'expected_production':{}}
@@ -104,3 +104,34 @@ def test_image_probe_handles_dashboard_workdir_without_pythonpath(tmp_path):
     result=subprocess.run([sys.executable,'-c',image_probe_code(str(root))],cwd=workdir,env=env,capture_output=True,text=True)
     assert result.returncode==0,result.stderr
     assert json.loads(result.stdout)['version']=='GIT_SHA='+'a'*40
+
+@pytest.mark.parametrize('drift',[False,True])
+def test_pull_stage_checks_default_behavior_before_any_stop(tmp_path,drift):
+    import copy,json
+    from scripts.scoped_ledger_risk_release import Runtime,execute_release
+    from scripts.ledger_risk_manifest import SERVICE_IMAGES,IMAGES,SERVICES,ReleaseBlocked
+    r=object.__new__(Runtime);r.directory=tmp_path;r.images={key:'registry/'+key for key in IMAGES}
+    r.before={service:{'Image':'sha256:old'} for service in SERVICES}
+    for service in SERVICES:(tmp_path/(service+'-effective.json')).write_text(json.dumps({'image':r.images[SERVICE_IMAGES[service]]}))
+    commands=[]
+    def run(args,**kwargs):
+        commands.append(args)
+        if args[:2]==['docker','pull']:return ''
+        assert args[:3]==['docker','image','inspect']
+        config={'Cmd':['python','main.py'],'Env':['PATH=/bin'],'User':''}
+        if drift and args[-1]==r.images['hrs']:config['Cmd']=['unexpected-startup']
+        return json.dumps([{'Config':config}])
+    r.run=run;r.image_proof=lambda *a:None;r.record=lambda *a:None
+    if not drift:
+        r.action('pull_and_verify')
+        assert len(json.loads((tmp_path/'image-default-transitions.json').read_text()))==8
+        assert len([c for c in commands if c[:2]==['docker','pull']])==7
+    else:
+        steps=[]
+        class Backend:
+            def action(self,name,*args):
+                steps.append(name)
+                if name=='pull_and_verify':r.action(name)
+        with pytest.raises(ReleaseBlocked,match='effective defaults Cmd'):execute_release(Backend())
+        assert steps==['preflight','pull_and_verify']
+        assert not (tmp_path/'image-default-transitions.json').exists()
