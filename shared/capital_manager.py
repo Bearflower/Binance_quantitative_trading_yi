@@ -246,7 +246,7 @@ class CapitalManager:
                 new_margin = number(new_margin, zero=True)
                 limit, source = await self.get_effective_margin_limit()
                 equity_info = await self.entry_equity_provider()
-                equity = number(equity_info['totalMarginBalance'])
+                equity = number(equity_info.get('accountEquity', equity_info.get('totalMarginBalance')))
                 # Read validity after network I/O so waiting cannot reuse an expired policy.
                 policy = await RiskPolicyStore(self.db).policy(self.strategy_id)
                 if policy['mode'] != 'capped':

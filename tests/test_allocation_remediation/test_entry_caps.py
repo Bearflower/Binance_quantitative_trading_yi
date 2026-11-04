@@ -88,3 +88,17 @@ def test_real_strategy_constructors_bind_equity_provider():
     assert btc.capital_mgr.entry_equity_provider is api.get_account_info
     assert new.capital_mgr.entry_equity_provider is api.get_account_info
     api.get_account_info.assert_not_called()
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('account_info,allowed',[
+ ({'accountEquity':'523.67799237','totalAvailableBalance':'399.76623463'},True),
+ ({'totalMarginBalance':'523.67799237'},True),
+ ({'totalAvailableBalance':'399.76623463'},False),
+ ({'accountEquity':None,'totalMarginBalance':'1000'},False),
+ ({'accountEquity':'NaN','totalMarginBalance':'1000'},False),
+])
+async def test_actual_pm_equity_shape_and_nonpm_compatibility(account_info,allowed):
+    obj=manager();obj.entry_equity_provider=AsyncMock(return_value=account_info)
+    with patch('shared.entry_risk_policy.RiskPolicyStore') as store:
+        store.return_value.policy=AsyncMock(return_value={'mode':'capped','entry_ceiling':100,'ratio_cap':'.2'})
+        assert (await obj.can_open_within_limit(90,10))[0] is allowed

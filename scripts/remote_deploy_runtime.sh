@@ -17,6 +17,19 @@ DEPLOY_ID="__DEPLOY_ID__"
 echo "模式: ${DEPLOY_MODE}"
 echo "========================================"
 
+# Scoped release exits before secrets, full cleanup, init SQL replay or broad up.
+if [ "$DEPLOY_MODE" = "ledger-risk-remediation" ]; then
+  [ "$FUNDING_DEPLOY_ACTION" = "keep" ] || { echo "funding rotation forbidden"; exit 2; }
+  unset COMPOSE_FILE
+  BUNDLE="/root/trading_system/.deploy_tmp/ledger-risk-${COMMIT_SHA}"
+  python3 "$BUNDLE/scripts/scoped_ledger_risk_release.py" --bundle "$BUNDLE" --sha "$COMMIT_SHA"
+  exit $?
+fi
+if [ -f .deploy_tmp/ledger-risk-active.json ]; then
+  echo "Active ledger/risk image pins require reviewed successor; generic deploy blocked"
+  exit 2
+fi
+
 # Compose parses every service's env_file even in target-only deployment modes.
 # Prepare the isolated funding writer secret before the first compose command.
 mkdir -p .secrets

@@ -23,6 +23,12 @@ on:
       - '.trae/**'
       - '*.md'
   workflow_dispatch:
+    inputs:
+      deploy_mode:
+        type: choice
+        options: [auto, ledger-risk-remediation]
+        default: auto
+        description: Explicit remediation selection is required for the release tree
 
 concurrency:
   group: deploy-${{ github.ref }}
@@ -51,11 +57,27 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       has_changes: ${{ steps.filter.outputs.changes }}
+      mode: ${{ steps.selection.outputs.mode }}
+      funding_action: ${{ steps.selection.outputs.funding_action }}
     steps:
       - uses: actions/checkout@v4
         with:
           # 全量历史：判定需要 before..sha 整段推送范围的 diff
           fetch-depth: 0
+
+      - name: 🎯 Select one deployment mode for every job
+        id: selection
+        env:
+          MANUAL_MODE: ${{ inputs.deploy_mode || 'auto' }}
+        run: |
+          MODE=$(python3 scripts/select_deploy_mode.py --event-name "${{ github.event_name }}" --base "${{ github.event.before }}" --head "${{ github.sha }}" --manual-mode "$MANUAL_MODE")
+          if [ "$MODE" = "ledger-risk-remediation" ]; then
+            FUNDING_ACTION=keep
+          else
+            FUNDING_ACTION=$(python3 scripts/select_funding_deploy.py --event-name "${{ github.event_name }}" --base "${{ github.event.before }}" --head "${{ github.sha }}")
+          fi
+          echo "mode=$MODE" >> "$GITHUB_OUTPUT"
+          echo "funding_action=$FUNDING_ACTION" >> "$GITHUB_OUTPUT"
 
       - name: 🔍 路径过滤
         id: filter
@@ -121,6 +143,15 @@ jobs:
         id: decide
         run: |
           echo "=== 构建判断: ${{ matrix.service.name }} ==="
+          DEPLOY_MODE="${{ needs.detect.outputs.mode }}"
+          if [ "$DEPLOY_MODE" = "ledger-risk-remediation" ]; then
+            case "${{ matrix.service.name }}" in
+              btc-eth|btc-eth-aggr|new-coin|hrs|ai-tuner|data-backend|dashboard-api) echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
+              *) echo "should_build=false" >> "$GITHUB_OUTPUT" ;;
+            esac
+            exit 0
+          fi
+
 
           # 1) 取本次推送范围 before..HEAD
           #    before 为全 0（首次推送/新建分支）时无从比对，回退到 HEAD~1
@@ -144,10 +175,6 @@ jobs:
           # 首次创建/规范 retry marker 是一次性部署事务：失败 Run 的镜像不可复用。
           # 本次只强制重建 calibrated 共用的 btc-eth 镜像，其他矩阵服务跳过。
           SERVICE_NAME="${{ matrix.service.name }}"
-          DEPLOY_MODE=$(python3 scripts/select_deploy_mode.py \
-            --event-name "${{ github.event_name }}" \
-            --base "$BASE" \
-            --head HEAD)
           if [ "$DEPLOY_MODE" = "calibrated-first-create" ]; then
             if [ "$SERVICE_NAME" = "btc-eth" ]; then
               echo "✅ calibrated 首次创建事务 → 强制重建 btc-eth 镜像"
@@ -302,8 +329,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Choose isolated image tag
+        id: image_tag
+        run: |
+          if [ "${{ needs.detect.outputs.mode }}" = "ledger-risk-remediation" ]; then
+            echo "value=remediation-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            REF="${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:remediation-${{ github.sha }}"
+            if docker buildx imagetools inspect "$REF" > "$RUNNER_TEMP/existing-image.txt" 2>/dev/null; then
+              EXISTING=$(awk '/^Digest:/ {print $2; exit}' "$RUNNER_TEMP/existing-image.txt")
+              [[ "$EXISTING" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 2
+              echo "existing_digest=$EXISTING" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "value=latest" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: 🐳 Build + Push trading-${{ matrix.service.name }}
-        if: steps.decide.outputs.should_build == 'true'
+        id: image_build
+        if: steps.decide.outputs.should_build == 'true' && steps.image_tag.outputs.existing_digest == ''
         uses: docker/build-push-action@v5
         with:
           context: .
@@ -311,7 +354,18 @@ jobs:
           platforms: linux/amd64
           push: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:latest
+            ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:${{ steps.image_tag.outputs.value }}
+
+      - name: Record immutable image digest
+        if: needs.detect.outputs.mode == 'ledger-risk-remediation' && steps.decide.outputs.should_build == 'true'
+        run: |
+          mkdir -p image-digests
+          printf '%s\n' '${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}@${{ steps.image_tag.outputs.existing_digest || steps.image_build.outputs.digest }}' > 'image-digests/${{ matrix.service.name }}.txt'
+      - uses: actions/upload-artifact@v4
+        if: needs.detect.outputs.mode == 'ledger-risk-remediation' && steps.decide.outputs.should_build == 'true'
+        with:
+          name: ledger-risk-digest-${{ matrix.service.name }}
+          path: image-digests/*.txt
 
   # ============================================
   # Job 2: SSH 服务器部署
@@ -331,23 +385,6 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: 🎯 选择部署模式
-        id: deployment_mode
-        run: |
-          BASE="${{ github.event.before }}"
-          DEPLOY_MODE=$(python3 scripts/select_deploy_mode.py \
-            --event-name "${{ github.event_name }}" \
-            --base "$BASE" \
-            --head HEAD)
-          echo "mode=${DEPLOY_MODE}" >> "$GITHUB_OUTPUT"
-          echo "部署模式: ${DEPLOY_MODE}"
-          FUNDING_DEPLOY_ACTION=$(python3 scripts/select_funding_deploy.py \
-            --event-name "${{ github.event_name }}" \
-            --base "$BASE" \
-            --head HEAD)
-          echo "funding_action=${FUNDING_DEPLOY_ACTION}" >> "$GITHUB_OUTPUT"
-          echo "资金费采集器动作: ${FUNDING_DEPLOY_ACTION}"
 
       - name: 🔑 配置 SSH
         run: |
@@ -416,17 +453,31 @@ jobs:
           echo "❌ GHCR 登录连接重试 3 次仍失败"
           exit 255
 
+      - name: Block generic uploads when active release pins exist
+        if: needs.detect.outputs.mode != 'ledger-risk-remediation'
+        run: ssh 43.156.242.184 'test ! -f /root/trading_system/.deploy_tmp/ledger-risk-active.json'
+
       - name: 📤 上传 docker-compose.yml（scp）
+        if: needs.detect.outputs.mode != 'ledger-risk-remediation'
         run: |
           source /tmp/ci_retry.sh
-          retry_connect scp docker-compose.yml 43.156.242.184:/root/trading_system/docker-compose.yml
-          retry_connect scp docker-compose.logging.yml 43.156.242.184:/root/trading_system/docker-compose.logging.yml
+          retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp/full-${{ github.run_id }}"
+          retry_connect scp docker-compose.yml docker-compose.logging.yml 43.156.242.184:/root/trading_system/.deploy_tmp/full-${{ github.run_id }}/
+          ssh 43.156.242.184 bash -s -- '${{ github.run_id }}' <<'INSTALL_COMPOSE'
+          set -e
+          cd /root/trading_system
+          exec 9>.deploy_tmp/compose_deploy.lock
+          flock -n 9
+          test ! -f .deploy_tmp/ledger-risk-active.json
+          cp ".deploy_tmp/full-$1/docker-compose.yml" docker-compose.yml
+          cp ".deploy_tmp/full-$1/docker-compose.logging.yml" docker-compose.logging.yml
+          INSTALL_COMPOSE
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/scripts"
           retry_connect scp scripts/archive_container_logs.sh 43.156.242.184:/root/trading_system/scripts/archive_container_logs.sh
           retry_connect scp scripts/cleanup_compose_created.py 43.156.242.184:/root/trading_system/scripts/cleanup_compose_created.py
 
       - name: 📦 同步数据库 init-scripts
-        if: steps.deployment_mode.outputs.mode == 'full'
+        if: needs.detect.outputs.mode == 'full'
         run: |
           source /tmp/ci_retry.sh
           # 空目录安全：git checkout 可能因 sparse/fetch-depth 漏拉 database/，此时跳过
@@ -441,6 +492,20 @@ jobs:
           echo "✅ init-scripts 已同步，文件清单："
           ls -1 database/postgres/init-scripts/
 
+      - uses: actions/download-artifact@v4
+        if: needs.detect.outputs.mode == 'ledger-risk-remediation'
+        with:
+          pattern: ledger-risk-digest-*
+          path: ${{ runner.temp }}/ledger-risk-digests
+          merge-multiple: true
+      - name: Upload SHA-scoped release bundle only
+        if: needs.detect.outputs.mode == 'ledger-risk-remediation'
+        run: |
+          python3 scripts/package_ledger_risk_release.py --sha "${{ github.sha }}" --digests "${RUNNER_TEMP}/ledger-risk-digests" --output "${RUNNER_TEMP}/ledger-risk-${{ github.sha }}"
+          source /tmp/ci_retry.sh
+          retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp && chmod 700 /root/trading_system/.deploy_tmp"
+          retry_connect scp -r "${RUNNER_TEMP}/ledger-risk-${{ github.sha }}" 43.156.242.184:/root/trading_system/.deploy_tmp/
+
       - name: 🚀 生成并上传远程部署脚本
         run: |
           LOCAL_DEPLOY_SCRIPT="${RUNNER_TEMP}/deploy-${{ github.run_id }}-${{ github.run_attempt }}.sh"
@@ -451,8 +516,8 @@ jobs:
           python3 scripts/render_remote_deploy.py \
             --source scripts/remote_deploy_runtime.sh \
             --output "$LOCAL_DEPLOY_SCRIPT" \
-            --mode "${{ steps.deployment_mode.outputs.mode }}" \
-            --funding-action "${{ steps.deployment_mode.outputs.funding_action }}" \
+            --mode "${{ needs.detect.outputs.mode }}" \
+            --funding-action "${{ needs.detect.outputs.funding_action }}" \
             --commit-sha "${{ github.sha }}" \
             --deploy-id "$DEPLOY_ID"
           source /tmp/ci_retry.sh

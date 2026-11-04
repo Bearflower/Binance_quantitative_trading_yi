@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
+import json
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 from collections.abc import Iterable, Sequence
 
 
@@ -15,6 +19,7 @@ MARKERS = {
 EXECUTION_FACTS_MARKER = ".github/deploy-modes/execution-facts-first-create"
 ALLOCATION_RECONCILE_MARKER = ".github/deploy-modes/allocation-reconcile"
 ALLOCATION_RECONCILE_RETRY_MARKER = ".github/deploy-modes/allocation-reconcile-retry-2"
+REMEDIATION_MARKER = ".github/deploy-modes/ledger-risk-remediation-20261104"
 ZERO_SHA = "0" * 40
 
 
@@ -32,9 +37,13 @@ def select_deploy_mode(
     if not base or base == ZERO_SHA:
         raise DeployModeError("push base is missing or zero")
 
-    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER}]
+    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER}]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
+    if any(path == REMEDIATION_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", REMEDIATION_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
+            raise DeployModeError("remediation requires one added marker and an exact push base")
+        return "ledger-risk-remediation"
     if marker_changes and marker_changes[0][0] == "A":
         if marker_changes[0][1] == EXECUTION_FACTS_MARKER:
             return "execution-facts-first-create"
@@ -76,6 +85,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
+    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation"])
     return parser.parse_args(argv)
 
 
@@ -83,7 +93,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     try:
         if args.event_name != "push":
-            mode = select_deploy_mode(args.event_name, args.base, [])
+            from scripts.ledger_risk_manifest import MANIFEST
+            exists = subprocess.run(["git","cat-file","-e",f"{args.head}:{MANIFEST}"],capture_output=True).returncode == 0
+            if exists and args.manual_mode != "ledger-risk-remediation":
+                raise DeployModeError("manual remediation selection required for this release tree")
+            mode = "ledger-risk-remediation" if args.manual_mode == "ledger-risk-remediation" else "full"
         else:
             if not args.base or args.base == ZERO_SHA:
                 raise DeployModeError("push base is missing or zero")
@@ -94,6 +108,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 args.base,
                 _read_changes(args.base, args.head),
             )
+        if mode == "ledger-risk-remediation":
+            from scripts.ledger_risk_manifest import MANIFEST,validate_tree,ReleaseBlocked
+            try:
+                manifest=json.loads(_git("show",f"{args.head}:{MANIFEST}"))
+                base=args.base if args.event_name=="push" else manifest['base_revision']
+                if not re.fullmatch(r"[0-9a-f]{40}",base):raise DeployModeError("invalid remediation base")
+                _git("merge-base","--is-ancestor",base,args.head)
+                validate_tree(manifest,_read_changes(base,args.head),lambda path:_git("show",f"{args.head}:{path}").encode(),base)
+            except (ValueError,KeyError,TypeError) as exc:
+                raise DeployModeError(str(exc)) from exc
     except DeployModeError as exc:
         print(f"deploy mode selection failed closed: {exc}", file=sys.stderr)
         return 2

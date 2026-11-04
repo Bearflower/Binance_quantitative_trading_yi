@@ -290,7 +290,7 @@ async def test_activation_input_validation_and_allocation_cas():
 
 @PG
 @pytest.mark.asyncio
-async def test_cli_dry_run_then_atomic_five_candidate_activation(monkeypatch):
+async def test_cli_dry_run_then_atomic_four_candidate_activation(monkeypatch):
     from scripts.activate_entry_risk_policy import parser,run
     pool=await setup();await pool.close()
     admin=await asyncpg.connect(DSN)
@@ -301,19 +301,21 @@ async def test_cli_dry_run_then_atomic_five_candidate_activation(monkeypatch):
         original=await admin.fetchval('SELECT entries FROM public.capital_allocation')
         monkeypatch.setenv('RISK_POLICY_ADMIN_DSN',DSN)
         args=parser().parse_args(['--verified-equity','1000','--reason','local test only','--expected-revision','0'])
+        args.approved_ceilings=json.dumps({'hrs':'0','btc_eth_aggressive':'50','btc_eth':'100','new_coin':'120'})
         assert not args.activate and not args.enable_reduced
         result=await run(args)
-        assert result['dry_run'] and len(result['candidates'])==5
+        assert result['dry_run'] and len(result['candidates'])==4
+        assert {p['strategy_id']:p['entry_ceiling'] for p in result['candidates']}=={'hrs':'0','btc_eth_aggressive':'50','btc_eth':'100','new_coin':'120'}
         assert next(p for p in result['candidates'] if p['strategy_id']=='btc_eth_aggressive')['mode']=='monitor_only'
         assert await admin.fetchval('SELECT count(*) FROM trading.strategy_risk_policy')==0
         args.activate=True;args.enable_reduced=True
         result=await run(args)
         assert result['active_revision']==1
-        assert await admin.fetchval('SELECT count(*) FROM trading.strategy_risk_active')==5
-        assert await admin.fetchval('SELECT count(*) FROM trading.strategy_risk_audit')==5
+        assert await admin.fetchval('SELECT count(*) FROM trading.strategy_risk_active')==4
+        assert await admin.fetchval('SELECT count(*) FROM trading.strategy_risk_audit')==4
         assert await admin.fetchval('SELECT entries FROM public.capital_allocation')==original
         with pytest.raises(EntryDenied):await run(args)
-        assert await admin.fetchval('SELECT count(*) FROM trading.strategy_risk_policy')==5
+        assert await admin.fetchval('SELECT count(*) FROM trading.strategy_risk_policy')==4
         # A conflict in the second candidate must roll back the already inserted first one.
         await admin.execute("UPDATE trading.strategy_risk_active SET revision=1 WHERE strategy_id='hrs'")
         args.expected_revision=1
