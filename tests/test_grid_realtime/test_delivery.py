@@ -44,6 +44,7 @@ def test_record_inserts_event_and_outbox(conn, cfg):
     assert delivery.record(make_event(), "payload", 1000) is True
     event = conn.execute("SELECT * FROM event WHERE event_id='e-1'").fetchone()
     assert event is not None and event["payload"] == "payload"
+    assert event["decision_ms"] == 1000
     row = conn.execute("SELECT * FROM outbox WHERE event_id='e-1'").fetchone()
     assert row["status"] == PENDING
     assert row["ttl_deadline_ms"] == 1000 + cfg["delivery"]["event_ttl_seconds"] * 1000

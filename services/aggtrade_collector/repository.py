@@ -187,6 +187,20 @@ def materialize_and_cleanup(conn: sqlite3.Connection, symbol: str,
     with conn:
         materialized = materialize_closed_seconds(conn, symbol, now_ms)
         cutoff_ms = now_ms - retention_hours * _MS_PER_HOUR
+        first_id, last_id, count, first_ms, last_ms = conn.execute(
+            "SELECT MIN(agg_trade_id), MAX(agg_trade_id), COUNT(*), "
+            "MIN(trade_time_ms), MAX(trade_time_ms) FROM agg_trades "
+            "WHERE symbol=? AND trade_time_ms>=?",
+            (symbol, cutoff_ms)).fetchone()
+        contiguous = int(
+            count > 0 and count == last_id - first_id + 1)
+        conn.execute(
+            "INSERT OR REPLACE INTO aggtrade_integrity_checkpoint "
+            "(checked_at_ms,symbol,first_id,last_id,trade_count,"
+            "first_trade_ms,last_trade_ms,id_contiguous) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (now_ms, symbol, first_id, last_id, count, first_ms, last_ms,
+             contiguous))
         before = conn.execute("SELECT total_changes()").fetchone()[0]
         conn.execute(
             "DELETE FROM agg_trades WHERE symbol = ? AND trade_time_ms < ?",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import sqlite3
+from collections import Counter
 from typing import Dict, List, Optional
 
 
@@ -48,7 +49,9 @@ class QueueAudit:
         self._recovery_until = recovery_until_ms
 
     def checkpoint(self, now_ms: int, recovery_until_ms: int,
-                   audit_ok: bool = True) -> None:
+                   audit_ok: bool = True, reference_status: str = "UNKNOWN",
+                   feed_healthy: bool = False,
+                   storage_degraded: bool = True) -> None:
         """逐拍持久化总数与预热；只有持续 checkpoint 才构成覆盖证据。"""
         if self._episode_id is not None:
             status = "RECOVERED" if now_ms >= recovery_until_ms else "OPEN"
@@ -58,10 +61,12 @@ class QueueAudit:
                 self._episode_count = 0
         self.conn.execute(
             "INSERT OR REPLACE INTO queue_audit_checkpoint("
-            "instance_id, observed_at_ms, dropped_total, recovery_until_ms, audit_ok) "
-            "VALUES(?,?,?,?,?)",
+            "instance_id, observed_at_ms, dropped_total, recovery_until_ms, "
+            "audit_ok, reference_status, feed_healthy, storage_degraded) "
+            "VALUES(?,?,?,?,?,?,?,?)",
             (self.instance_id, now_ms, self.dropped_total, recovery_until_ms,
-             int(audit_ok)))
+             int(audit_ok), reference_status, int(feed_healthy),
+             int(storage_degraded)))
         self.conn.commit()
 
     def close(self, now_ms: int) -> None:
@@ -72,8 +77,8 @@ class QueueAudit:
             (now_ms, self.instance_id))
         self.conn.commit()
 
-    def prune(self, now_ms: int, retention_days: int = 5) -> None:
-        """保留至少 72 小时加缓冲；episode 保留较长以便事件追溯。"""
+    def prune(self, now_ms: int, retention_days: int = 35) -> None:
+        """覆盖 30 个完整自然日验证段和跨日审计缓冲。"""
         cutoff = now_ms - retention_days * 86400000
         self.conn.execute(
             "DELETE FROM queue_audit_checkpoint WHERE observed_at_ms<?", (cutoff,))
@@ -96,20 +101,24 @@ def summarize_window(conn: sqlite3.Connection, *, start_ms: int,
     rows = conn.execute(
         "SELECT observed_at_ms, audit_ok FROM queue_audit_checkpoint "
         "WHERE observed_at_ms BETWEEN ? AND ? ORDER BY observed_at_ms",
-        (start_ms, end_ms)).fetchall()
-    times = [r[0] for r in rows]
-    failed_checkpoints = [r[0] for r in rows if not r[1]]
+        (start_ms, end_ms))
+    first = last = None
+    failed_checkpoints: List[int] = []
     gaps: List[Dict[str, int]] = []
-    if not times:
+    for at, audit_ok in rows:
+        if first is None:
+            first = at
+            if at - start_ms > max_gap_ms:
+                gaps.append({"from_ms": start_ms, "to_ms": at})
+        elif at - last > max_gap_ms:
+            gaps.append({"from_ms": last, "to_ms": at})
+        if not audit_ok:
+            failed_checkpoints.append(at)
+        last = at
+    if first is None:
         gaps.append({"from_ms": start_ms, "to_ms": end_ms})
-    else:
-        if times[0] - start_ms > max_gap_ms:
-            gaps.append({"from_ms": start_ms, "to_ms": times[0]})
-        gaps.extend({"from_ms": left, "to_ms": right}
-                    for left, right in zip(times, times[1:])
-                    if right - left > max_gap_ms)
-        if end_ms - times[-1] > max_gap_ms:
-            gaps.append({"from_ms": times[-1], "to_ms": end_ms})
+    elif end_ms - last > max_gap_ms:
+        gaps.append({"from_ms": last, "to_ms": end_ms})
     episodes = [dict(r) for r in conn.execute(
         "SELECT instance_id, first_dropped_ms, last_dropped_ms, "
         "first_dropped_id, last_dropped_id, dropped_count, "
@@ -130,11 +139,11 @@ def summarize_window(conn: sqlite3.Connection, *, start_ms: int,
         (latest_instance[0] if latest_instance else "", end_ms,
          start_ms, start_ms)).fetchall()]
     overflow = sum(r["dropped_count"] for r in episodes)
-    complete = not gaps and not failed_checkpoints and not unclean and bool(times)
+    complete = not gaps and not failed_checkpoints and not unclean and first is not None
     return {
         "start_ms": start_ms, "end_ms": end_ms,
-        "first_checkpoint_ms": times[0] if times else None,
-        "last_checkpoint_ms": times[-1] if times else None,
+        "first_checkpoint_ms": first,
+        "last_checkpoint_ms": last,
         "max_gap_ms": max_gap_ms, "gaps": gaps,
         "coverage_complete": complete,
         "failed_checkpoints_ms": failed_checkpoints,
@@ -143,4 +152,84 @@ def summarize_window(conn: sqlite3.Connection, *, start_ms: int,
         "overflow_count_is_lower_bound": uncertain,
         "episodes": episodes,
         "queue_window_eligible": complete and not episodes,
+    }
+
+
+def summarize_shadow_window(conn: sqlite3.Connection, *, start_ms: int,
+                            end_ms: int, max_gap_ms: int = 5000) -> Dict:
+    """逐拍汇总参考和行情资格；缺证据、旧版 UNKNOWN 均不可评估。"""
+    if end_ms <= start_ms or max_gap_ms <= 0:
+        raise ValueError("窗口和最大间隔必须为正")
+    rows = conn.execute(
+        "SELECT observed_at_ms, reference_status, feed_healthy, "
+        "storage_degraded, audit_ok, recovery_until_ms "
+        "FROM queue_audit_checkpoint WHERE observed_at_ms BETWEEN ? AND ? "
+        "ORDER BY observed_at_ms", (start_ms, end_ms))
+    statuses: Counter = Counter()
+    periods: List[Dict] = []
+    gaps: List[Dict[str, int]] = []
+    first = last = None
+    eligible_count = 0
+    for row in rows:
+        at, status, feed_ok, storage_bad, audit_ok, recovery_until = row
+        eligible = (status == "VALID" and bool(feed_ok) and
+                    not storage_bad and bool(audit_ok) and
+                    recovery_until <= at)
+        statuses[status] += 1
+        eligible_count += int(eligible)
+        if first is None:
+            first = at
+            if at - start_ms > max_gap_ms:
+                gaps.append({"from_ms": start_ms, "to_ms": at})
+        elif at - last > max_gap_ms:
+            gaps.append({"from_ms": last, "to_ms": at})
+        if (periods and periods[-1]["status"] == status and
+                periods[-1]["eligible"] == eligible and
+                last is not None and at - last <= max_gap_ms):
+            periods[-1]["end_ms"] = at
+            periods[-1]["observations"] += 1
+        else:
+            periods.append({
+                "start_ms": at, "end_ms": at, "status": status,
+                "eligible": eligible, "observations": 1})
+        last = at
+    if last is None:
+        gaps.append({"from_ms": start_ms, "to_ms": end_ms})
+    elif end_ms - last > max_gap_ms:
+        gaps.append({"from_ms": last, "to_ms": end_ms})
+
+    events = conn.execute(
+        "SELECT event_id, decision_ms FROM event "
+        "WHERE decision_ms BETWEEN ? AND ? AND level<>'HEALTH'",
+        (start_ms, end_ms))
+    eligible_events = excluded_events = 0
+    for _, event_ms in events:
+        checkpoint = conn.execute(
+            "SELECT observed_at_ms, reference_status, feed_healthy, "
+            "storage_degraded, audit_ok, recovery_until_ms "
+            "FROM queue_audit_checkpoint WHERE observed_at_ms>=? "
+            "ORDER BY observed_at_ms LIMIT 1", (event_ms,)).fetchone()
+        if (checkpoint is not None and
+                checkpoint[0] - event_ms <= max_gap_ms and
+                checkpoint[1] == "VALID" and checkpoint[2] and
+                not checkpoint[3] and checkpoint[4] and
+                checkpoint[5] <= checkpoint[0]):
+            eligible_events += 1
+        else:
+            excluded_events += 1
+    complete = first is not None and not gaps
+    return {
+        "start_ms": start_ms, "end_ms": end_ms,
+        "first_checkpoint_ms": first, "last_checkpoint_ms": last,
+        "coverage_complete": complete, "gaps": gaps,
+        "status_observations": dict(statuses),
+        "eligible_observations": eligible_count,
+        "periods": periods,
+        "eligible_event_count": eligible_events,
+        "excluded_event_count": excluded_events,
+        "unlocated_legacy_event_count": conn.execute(
+            "SELECT COUNT(*) FROM event WHERE level<>'HEALTH' "
+            "AND decision_ms IS NULL").fetchone()[0],
+        "research_window_eligible": complete and
+        eligible_count == sum(statuses.values()),
     }

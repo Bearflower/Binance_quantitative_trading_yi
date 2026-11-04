@@ -20,7 +20,7 @@ from typing import Dict, Optional, Tuple
 
 from .rules import ReferenceSnapshot, validate_snapshot
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 会话状态
 ACTIVE = "ACTIVE"
@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS event (
   direction     TEXT NOT NULL,
   level         TEXT NOT NULL,
   first_held_ms INTEGER,
+  decision_ms   INTEGER,
   sent_ms       INTEGER,
   config_hash   TEXT,
   payload       TEXT NOT NULL
@@ -121,6 +122,9 @@ CREATE TABLE IF NOT EXISTS queue_audit_checkpoint (
   dropped_total INTEGER NOT NULL,
   recovery_until_ms INTEGER NOT NULL,
   audit_ok INTEGER NOT NULL CHECK(audit_ok IN (0,1)),
+  reference_status TEXT NOT NULL DEFAULT 'UNKNOWN',
+  feed_healthy INTEGER NOT NULL DEFAULT 0 CHECK(feed_healthy IN (0,1)),
+  storage_degraded INTEGER NOT NULL DEFAULT 1 CHECK(storage_degraded IN (0,1)),
   PRIMARY KEY(instance_id, observed_at_ms)
 );
 CREATE INDEX IF NOT EXISTS idx_queue_checkpoint_time
@@ -156,9 +160,22 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_meta'").fetchone()
     old = (conn.execute("SELECT value FROM schema_meta WHERE key='version'").fetchone()
            if exists else None)
-    if old is not None and old[0] not in ("1", str(SCHEMA_VERSION)):
+    if old is not None and old[0] not in ("1", "2", str(SCHEMA_VERSION)):
         raise RuntimeError(f"不支持的 schema 版本: {old[0]}")
     conn.executescript(SCHEMA_SQL)
+    event_columns = {row[1] for row in conn.execute("PRAGMA table_info(event)")}
+    if "decision_ms" not in event_columns:
+        conn.execute("ALTER TABLE event ADD COLUMN decision_ms INTEGER")
+    columns = {row[1] for row in conn.execute(
+        "PRAGMA table_info(queue_audit_checkpoint)")}
+    for name, definition in (
+        ("reference_status", "TEXT NOT NULL DEFAULT 'UNKNOWN'"),
+        ("feed_healthy", "INTEGER NOT NULL DEFAULT 0"),
+        ("storage_degraded", "INTEGER NOT NULL DEFAULT 1"),
+    ):
+        if name not in columns:
+            conn.execute(
+                f"ALTER TABLE queue_audit_checkpoint ADD COLUMN {name} {definition}")
     conn.execute(
         "INSERT INTO schema_meta(key, value) VALUES('version', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (str(SCHEMA_VERSION),))
@@ -185,6 +202,17 @@ def check_schema(conn: sqlite3.Connection) -> None:
     missing = [name for name in required if name not in tables]
     if missing:
         raise RuntimeError(f"持久化缺少表: {', '.join(missing)}；请先执行迁移命令")
+    checkpoint_columns = {r["name"] for r in conn.execute(
+        "PRAGMA table_info(queue_audit_checkpoint)")}
+    required_columns = {
+        "reference_status", "feed_healthy", "storage_degraded"}
+    missing_columns = sorted(required_columns - checkpoint_columns)
+    if missing_columns:
+        raise RuntimeError(
+            f"队列审计缺少列: {', '.join(missing_columns)}；请先执行迁移命令")
+    event_columns = {r["name"] for r in conn.execute("PRAGMA table_info(event)")}
+    if "decision_ms" not in event_columns:
+        raise RuntimeError("事件表缺少 decision_ms；请先执行迁移命令")
 
 
 def make_reference_id(calculated_at_ms: int, grid_lower: Decimal,

@@ -301,7 +301,7 @@ CREATE INDEX idx_outbox_status ON outbox(status);
 关键约束（对应需求 §4.2.7/§4.3/§8.2）：
 
 - `reference.send_status` 仅允许 PREPARED/SENDING/SENT/FAILED/UNKNOWN；不得把任何记录伪造为 SENT。恢复只认「已确认发送、无更高未决版本、经当前出口会话确认」的快照。
-- `reference_status` 六态（VALID/STALE/MISSING/INVALID/SYNC_UNCERTAIN/NO_ACTIVE_REFERENCE）由 `reference_store.current_snapshot` 运行时判定，非单独落列：MISSING=无行，STALE=按 `effective_at_ms` 对 `max_age_seconds` 派生，SYNC_UNCERTAIN=会话失联／持久化交接失败或未决/未知发送；NO_ACTIVE_REFERENCE=当前会话已确认无边界提醒且无数值参考（见 `session.status`）。不新增表列或 schema 版本；旧会话 SENT 仍只供历史事实。
+- `reference_status` 六态（VALID/STALE/MISSING/INVALID/SYNC_UNCERTAIN/NO_ACTIVE_REFERENCE）由 `reference_store.current_snapshot` 运行时判定：MISSING=无行，STALE=按 `effective_at_ms` 对 `max_age_seconds` 派生，SYNC_UNCERTAIN=会话失联／持久化交接失败或未决/未知发送；NO_ACTIVE_REFERENCE=当前会话已确认无边界提醒且无数值参考（见 `session.status`）。schema v3 从升级后的逐秒 `queue_audit_checkpoint` 记录该状态及 feed/storage 健康标记，旧行统一为 UNKNOWN，不能追溯填充；旧会话 SENT 仍只供历史事实。
 - `session.current_seq` 单调递增，发送成功后 +1；心跳只读转嫁 `current_reference_id`/`pending_seq`，不替出口判定成功。
 - `event.event_id` 唯一键幂等；`outbox` 的 BOUNDARY_REACHED 与 HISTORICAL_REFERENCE_CROSSED 为**锁存事实**，不适用普通 TTL、不因反弹静默删除，未送达/UNKNOWN 不因年龄清理。
 
@@ -371,6 +371,8 @@ stride=1s → 300 点/窗（原口径）；stride=3s → 100 点；stride=5s →
 - **开发段**：2026-10-07 20min + 轨道A REST 1~2 天（标「已参与选参」，不可称样本外）。
 - **数据积累段**：原计划自 2026-10-08（UTC+8）起算；实际常驻进程 10-09 上线并回溯补得 10-08 数据。M3 先核对 ≥30 完整自然日、秒序列与聚合成交 ID 连续性、缺失行情类型；稠密秒行不能单独证明每笔成交完整。
 - **独立验证段**：可接受告警负担上限、扣 60s 后可操作覆盖率目标、普通/紧急误报比例上限及行情类型事件数目标，须在看验证段结果前定值、带时间戳冻结。仓库截至 2026-10-27 尚无这些定值的冻结记录；此前已积累并可被观察的数据只能用于开发/描述性分析，不能追认为预注册样本外验证。冻结后的下一个北京时间自然日起累计 ≥30 完整自然日，并单列容器故障缺失日；不足的行情类型或事件数仍须继续观察，不能只按日历放行。
+- **资格证据**：`scripts/audit_grid_shadow_window.py` 只读汇总队列逐秒覆盖、VALID/STALE/NO_ACTIVE_REFERENCE/SYNC_UNCERTAIN/UNKNOWN 时段、可评估风险事件数、秒采样完整性及聚合成交 ID 连续性。风险事件以新增 `event.decision_ms` 计入实际决策时刻，旧事件缺该值则列为无法定位，不能用 `first_held_ms` 代替。旧 checkpoint 无参考状态时记 UNKNOWN；逐笔超过 72h 清理后，只能用持续衔接的 `aggtrade_integrity_checkpoint` 证明聚合成交 ID 连续，不能把稠密秒采样直接等同于逐笔完整。队列审计起点为 2026-11-03 09:42（北京时间）；参考资格和聚合成交 ID 持久化证据须分别从本版部署后的第一条新检查点起算，不能补造历史。
+- **日检与 M3 报告**：同时列各参考状态时段、健康/队列排除时段、可评估风险事件数及研究资格，不能仅凭 ACTIVE、心跳与 `health={}` 判为可预警。数值参考超过 `reference.max_age_seconds` 即为 STALE，提前终止建议暂停；这符合防陈旧参考的规则，不能放宽 6 小时阈值制造覆盖率。
 
 ---
 
