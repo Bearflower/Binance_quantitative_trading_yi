@@ -155,3 +155,28 @@ async def test_止损打标_trade_logger缺失_静默跳过():
     strategy.positions['NEWCOINUSDT'] = make_position_entry()
 
     await strategy._monitor_positions()
+
+
+async def test_真实订单两笔成交合计盈亏且排除撤单():
+    strategy = make_strategy()
+    symbol = 'PFEUSDT'
+    strategy.positions[symbol] = make_position_entry()
+    strategy.db.fetch_all = AsyncMock(return_value=[
+        {'order_id': '678808'}, {'order_id': '678821'},
+    ])
+    strategy.binance_client.get_user_trades = AsyncMock(return_value=[
+        {'id': 58293, 'orderId': 678821, 'realizedPnl': '-1.53967682'},
+        {'id': 58294, 'orderId': 678821, 'realizedPnl': '-0.18982317'},
+    ])
+    async def fills_for_order(_symbol, *, order_id, limit):
+        if order_id == '678808':
+            return []
+        return [
+            {'id': 58293, 'orderId': 678821, 'realizedPnl': '-1.53967682'},
+            {'id': 58294, 'orderId': 678821, 'realizedPnl': '-0.18982317'},
+        ]
+    strategy.binance_client.get_user_trades.side_effect = fills_for_order
+    pnl = await NewCoinStrategy._get_position_pnl(strategy, symbol, Decimal('100'))
+    assert pnl == Decimal('-1.72949999')
+    assert 'order_id IS NOT NULL' in strategy.db.fetch_all.await_args.args[0]
+    assert strategy.binance_client.get_user_trades.await_count == 2

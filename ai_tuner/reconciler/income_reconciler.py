@@ -16,10 +16,8 @@
 1. 增量校准：借助 public.pnl_reconcile_state 表记录上次校准进度
    （last_reconciled_ts，UTC 毫秒），下次运行只处理该时间点之后的新数据，
    避免重复拉取 Binance 收入。
-2. 匹配算法复用 scripts/backfill_realized_pnl.py 的思路：以 Binance 收入记录
-   为主循环，对同 symbol 下尚未匹配的 trade_records，优先匹配出口单
-   （STOP/TAKE_PROFIT），并选择时间差最小者。该脚本为一次性离线脚本且
-   不允许修改，故此处以类方法形式重新实现等价的增量算法并用中文注释说明。
+2. 只用交易所 tradeId 对应的成交事实确定 orderId；同币种和时间不能证明
+   收入属于哪张订单。多笔成交按同一真实订单汇总，证据缺失时停止推进游标。
 3. 时区约定：Binance income 的 time 字段为 UTC 毫秒时间戳；
    trade_records.executed_at 为北京时间（无时区）。匹配/过滤时统一换算。
 4. 失败不推进游标：income 拉取或批量事务回写失败时记录错误并等待下次重试；
@@ -28,8 +26,8 @@
    ai_tuner/config.yaml 的 reconciler: 段读取，代码内仅提供默认值兜底。
 """
 
+import os
 import structlog
-from collections import defaultdict
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Dict, Optional, Tuple
@@ -78,6 +76,7 @@ class IncomeReconciler:
         self.state_schema = self.cfg.get("state_schema", "public")
         self.state_table = self.cfg.get("state_table", "pnl_reconcile_state")
         self.excluded_strategies = list(self.cfg.get("excluded_strategies", []))
+        self.account_id = self.cfg.get("account_id") or os.environ.get("TRADE_ACCOUNT_ID", "default")
 
     async def run_once(self) -> None:
         """执行一次校准任务：拉取 Binance 权威盈亏，补齐缺失的 realized_pnl"""
@@ -99,19 +98,12 @@ class IncomeReconciler:
                 await self._update_reconciled_ts(end_ms)
                 return
 
-            pending = await self._fetch_pending_records(start_ms, end_ms)
-            if not pending:
-                logger.info("无可校准的缺失盈亏记录", income_count=len(income))
-                await self._update_reconciled_ts(end_ms)
-                return
-
-            updated, total_pnl = await self._match_and_update(income, pending, completed_through=end_ms)
+            updated, total_pnl = await self._match_and_update(income, completed_through=end_ms)
             if updated == 0:
                 await self._update_reconciled_ts(end_ms)
             logger.info(
                 "PnL 校准完成",
                 income_count=len(income),
-                pending_count=len(pending),
                 updated=updated,
                 total_pnl=str(total_pnl),
             )
@@ -176,37 +168,37 @@ class IncomeReconciler:
         return self._dedupe_income(collected)
 
     async def _fetch_income_chunk(self, chunk_start: int, chunk_end: int, collected: list) -> None:
-        """拉取单个时间分片内的收入记录并追加，含分页游标推进"""
-        cursor = chunk_start
-        while cursor < chunk_end:
-            try:
-                batch = await self.binance.get_income_history(
-                    start_time=cursor,
-                    end_time=chunk_end,
-                    income_type="REALIZED_PNL",
-                    limit=self.batch_size,
-                )
-            except Exception as e:
-                logger.error("Binance 收入查询失败，本轮不推进校准游标", start_ms=cursor, error=str(e))
-                raise
-            if not batch:
-                break
+        """满页时二分时间窗口；同一毫秒仍满页则失败，不静默丢记录。"""
+        try:
+            batch = await self.binance.get_income_history(
+                start_time=chunk_start,
+                end_time=chunk_end,
+                income_type="REALIZED_PNL",
+                limit=self.batch_size,
+            )
+        except Exception as e:
+            logger.error("Binance 收入查询失败，本轮不推进校准游标", start_ms=chunk_start, error=str(e))
+            raise
+        if len(batch) < self.batch_size:
             collected.extend(batch)
-            if len(batch) < self.batch_size:
-                break
-            # 已取满一页：用最后一条记录的 time 前移游标继续下一页
-            last_time = max(int(r.get("time") or 0) for r in batch)
-            if last_time <= cursor:
-                break
-            cursor = last_time + 1
+            return
+        if chunk_end - chunk_start <= 1:
+            raise ValueError("income 同一毫秒达到单页上限，无法证明数据完整")
+        midpoint = (chunk_start + chunk_end) // 2
+        await self._fetch_income_chunk(chunk_start, midpoint, collected)
+        await self._fetch_income_chunk(midpoint, chunk_end, collected)
 
     @staticmethod
     def _dedupe_income(records: list) -> list:
-        """对分片边界可能重复的收入记录去重（symbol + time + income 唯一）"""
+        """以交易所 tranId 去重；同毫秒、同金额的不同成交必须保留。"""
         seen = set()
         result = []
         for rec in records:
-            key = (rec.get("symbol", ""), rec.get("time", 0), rec.get("income", "0"))
+            tran_id = rec.get("tranId")
+            key = ("tranId", str(tran_id)) if tran_id is not None else (
+                "legacy", rec.get("symbol", ""), rec.get("time", 0),
+                rec.get("income", "0"), rec.get("tradeId"),
+            )
             if key not in seen:
                 seen.add(key)
                 result.append(rec)
@@ -218,18 +210,20 @@ class IncomeReconciler:
 
     async def _fetch_pending_records(self, start_ms: int, end_ms: int) -> list:
         """
-        查询待校准的 trade_records（realized_pnl 为空、时间贴近校准窗口）
+        查询时间窗口内的真实订单记录（包括需要纠正的部分盈亏）
 
         executed_at 为北京时间，故将 UTC 毫秒窗口换算为北京时间后再过滤。
         """
         bj_start = _to_beijing_naive(start_ms - self.match_window_ms)
         bj_end = _to_beijing_naive(end_ms + self.match_window_ms)
         sql = f"""
-            SELECT id, symbol, order_type, executed_at
+            SELECT id, account_id, symbol, order_id, side, status, order_type,
+                   executed_at, realized_pnl
             FROM {self.schema}.{self.table}
-            WHERE realized_pnl IS NULL
-              AND executed_at >= $1
+            WHERE executed_at >= $1
               AND executed_at <= $2
+              AND order_id IS NOT NULL
+              AND order_type <> 'PNL_SUMMARY'
         """
         args: list = [bj_start, bj_end]
         if self.excluded_strategies:
@@ -242,15 +236,12 @@ class IncomeReconciler:
         return await self.db.fetch_all(sql, *args)
 
     async def _match_and_update(
-        self, income_records: list, pending_records: list,
+        self, income_records: list, pending_records: Optional[list] = None,
         completed_through: Optional[int] = None,
     ) -> Tuple[int, Decimal]:
-        """以收入记录匹配成交；将整批盈亏与游标原子提交。"""
-        records_by_symbol = defaultdict(list)
-        for rec in pending_records:
-            records_by_symbol[rec["symbol"]].append(rec)
-
-        used_ids = set()
+        """仅按成交 ID → 交易所订单号 → 唯一订单记录归属；整批原子提交。"""
+        order_totals = {}
+        used_record_ids = {}
         queries = []
         total_pnl = Decimal("0")
 
@@ -258,19 +249,71 @@ class IncomeReconciler:
             symbol = inc.get("symbol", "")
             inc_time = int(inc.get("time") or 0)
             if not symbol or inc_time <= 0:
+                raise ValueError("REALIZED_PNL income 缺少 symbol 或有效 time")
+            trade_id = inc.get("tradeId")
+            if trade_id in (None, "", 0):
+                raise ValueError(f"{symbol} income 缺少 tradeId，停止推游标")
+            tran_id = inc.get("tranId")
+            if tran_id in (None, "", 0):
+                raise ValueError(f"{symbol} income 缺少 tranId，停止推游标")
+            income_facts = await self.db.fetch_all(
+                "SELECT account_id, trade_id, income FROM trading.execution_fact_income "
+                "WHERE account_id = $1 AND symbol = $2 AND tran_id = $3 "
+                "AND income_type = 'REALIZED_PNL'",
+                self.account_id, symbol, int(tran_id),
+            )
+            if len(income_facts) != 1 or int(income_facts[0]["trade_id"] or 0) != int(trade_id) \
+                    or Decimal(str(income_facts[0]["income"])) != Decimal(str(inc["income"])):
+                raise ValueError(f"{symbol} tranId={tran_id} 收入事实缺失或不一致")
+            fills = await self.db.fetch_all(
+                "SELECT account_id, order_id, side, realized_pnl "
+                "FROM trading.execution_fact_fill WHERE account_id = $1 "
+                "AND symbol = $2 AND trade_id = $3",
+                self.account_id, symbol, int(trade_id),
+            )
+            if len(fills) != 1 or fills[0]["order_id"] is None:
+                raise ValueError(f"{symbol} tradeId={trade_id} 成交事实缺失或不唯一")
+            fill = fills[0]
+            if Decimal(str(fill["realized_pnl"])) != Decimal(str(inc["income"])):
+                raise ValueError(f"{symbol} tradeId={trade_id} 收入与成交盈亏不一致")
+            order_id = str(fill["order_id"])
+            sql = f"""SELECT id, account_id, order_id, side, realized_pnl, pnl_source
+                FROM {self.schema}.{self.table}
+                WHERE symbol = $1 AND order_id = $2 AND side = $3
+                  AND account_id = $4 AND order_type <> 'PNL_SUMMARY'"""
+            args = [symbol, order_id, fill["side"], fill["account_id"]]
+            if self.excluded_strategies:
+                placeholders = ", ".join(f"${i}" for i in range(5, 5 + len(self.excluded_strategies)))
+                sql += f" AND strategy NOT IN ({placeholders})"
+                args.extend(self.excluded_strategies)
+            matches = await self.db.fetch_all(sql, *args)
+            if len(matches) != 1:
+                raise ValueError(f"{symbol} orderId={order_id} 有效订单记录缺失或不唯一")
+            match = matches[0]
+            order_key = (fill["account_id"], symbol, order_id)
+            previous_order = used_record_ids.setdefault(match["id"], order_key)
+            if previous_order != order_key:
+                raise ValueError(f"{symbol} record={match['id']} 对应多个交易所订单")
+            if order_key in order_totals:
                 continue
-            candidates = [
-                r for r in records_by_symbol.get(symbol, []) if r["id"] not in used_ids
-            ]
-            match = self._find_best_match(candidates, inc_time)
-            if match is None:
+            all_fills = await self.db.fetch_all(
+                "SELECT realized_pnl FROM trading.execution_fact_fill "
+                "WHERE account_id = $1 AND symbol = $2 AND order_id = $3",
+                fill["account_id"], symbol, fill["order_id"],
+            )
+            if not all_fills or any(row["realized_pnl"] is None for row in all_fills):
+                raise ValueError(f"{symbol} orderId={order_id} 成交盈亏不完整")
+            pnl = sum((Decimal(str(row["realized_pnl"])) for row in all_fills), Decimal("0"))
+            order_totals[order_key] = pnl
+            if match["realized_pnl"] is not None and Decimal(str(match["realized_pnl"])) == pnl \
+                    and match.get("pnl_source") == "exchange_fill":
                 continue
-            pnl = Decimal(str(inc.get("income", "0")))
             queries.append((
-                f"UPDATE {self.schema}.{self.table} SET realized_pnl = $1 WHERE id = $2",
-                (pnl, match["id"]),
+                f"UPDATE {self.schema}.{self.table} SET realized_pnl = $1, pnl_source = 'exchange_fill' "
+                "WHERE id = $2 AND order_id = $3 AND account_id = $4",
+                (pnl, match["id"], order_id, fill["account_id"]),
+                1,
             ))
-            used_ids.add(match["id"])
             total_pnl += pnl
 
         if queries:
@@ -279,9 +322,9 @@ class IncomeReconciler:
             try:
                 await self.db.execute_transaction(queries)
             except Exception as e:
-                logger.error("批量回写 realized_pnl 失败，本轮不推进校准游标", count=len(used_ids), error=str(e))
+                logger.error("批量回写 realized_pnl 失败，本轮不推进校准游标", count=len(queries), error=str(e))
                 raise
-        return len(used_ids), total_pnl
+        return len(queries) - (1 if completed_through is not None and queries else 0), total_pnl
 
     def _find_best_match(self, candidates: list, inc_time: int) -> Optional[dict]:
         """

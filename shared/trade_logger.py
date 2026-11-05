@@ -661,6 +661,7 @@ class TradeLogger:
                 "    SELECT id FROM trading.trade_records"
                 "    WHERE strategy = $3 AND symbol = $4 AND side = $5"
                 "    AND order_type <> 'PNL_SUMMARY'"
+                "    AND (status <> 'CANCELED' OR quantity > 0)"
                 "    AND executed_at BETWEEN $6 AND $7"
                 "    AND (close_reason IS NULL OR close_reason = '')"
                 "    ORDER BY executed_at DESC"

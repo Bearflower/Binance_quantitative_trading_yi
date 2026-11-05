@@ -2,6 +2,7 @@
 测试数据库管理
 """
 import pytest
+from unittest.mock import AsyncMock, MagicMock
 
 
 def test_database_initialization_never_logs_password_fragment(monkeypatch):
@@ -175,3 +176,17 @@ class TestTransactionValidation:
         """测试空查询列表"""
         with pytest.raises(ValueError, match="查询列表不能为空"):
             await db.execute_transaction([])
+
+    @pytest.mark.asyncio
+    async def test_expected_update_rowcount_rolls_back_cursor_on_zero_rows(self, db):
+        """订单并发变化导致 UPDATE 0 时，不执行后续游标 SQL。"""
+        conn = MagicMock()
+        conn.execute = AsyncMock(return_value="UPDATE 0")
+        conn.transaction.return_value.__aenter__ = AsyncMock()
+        conn.transaction.return_value.__aexit__ = AsyncMock(return_value=False)
+        with pytest.raises(RuntimeError, match="更新行数不符"):
+            await db.execute_transaction([
+                ("UPDATE trading.trade_records SET realized_pnl=$1 WHERE id=$2", (1, 2), 1),
+                ("UPDATE public.pnl_reconcile_state SET last_reconciled_ts=$1", (3,)),
+            ], connection=conn)
+        assert conn.execute.await_count == 1
