@@ -425,13 +425,19 @@ class DatabaseManager:
             raise ValueError("查询列表不能为空")
 
         # SQL安全检查
-        for query, _ in queries:
+        for item in queries:
+            query = item[0]
             self._validate_sql(query)
 
         async def run(conn):
             async with conn.transaction():
-                for query, args in queries:
-                    await conn.execute(query, *args)
+                for item in queries:
+                    query, args = item[:2]
+                    result = await conn.execute(query, *args)
+                    if len(item) == 3 and result != f"UPDATE {item[2]}":
+                        raise RuntimeError(
+                            f"事务更新行数不符: expected={item[2]}, actual={result}"
+                        )
 
         if connection is not None:
             await run(connection)

@@ -132,6 +132,31 @@ class TestDedupeIncome:
         result = reconciler._dedupe_income(records)
         assert len(result) == 2
 
+    def test_distinct_tran_ids_at_same_time_and_amount_kept(self, reconciler):
+        rows = [
+            {"tranId": 101, "tradeId": 1, "symbol": "PFEUSDT", "time": 1, "income": "-1"},
+            {"tranId": 102, "tradeId": 2, "symbol": "PFEUSDT", "time": 1, "income": "-1"},
+        ]
+        assert reconciler._dedupe_income(rows) == rows
+
+
+def exact_fact_rows(sql, *args):
+    if "FROM trading.execution_fact_income" in sql:
+        trade_id = 58293 if args[2] == 1 else 58294
+        return [{"account_id": "pm", "trade_id": trade_id,
+                 "income": Decimal("-1.53967682" if trade_id == 58293 else "-0.18982317")}]
+    if "FROM trading.execution_fact_fill WHERE account_id = $1" in sql and "trade_id = $3" in sql:
+        trade_id = args[2]
+        return [{"account_id": "pm", "order_id": 678821, "side": "BUY",
+                 "realized_pnl": Decimal("-1.53967682" if trade_id == 58293 else "-0.18982317")}]
+    if "FROM trading.execution_fact_fill" in sql and "order_id = $3" in sql:
+        return [{"realized_pnl": Decimal("-1.53967682")},
+                {"realized_pnl": Decimal("-0.18982317")}]
+    if "FROM trading.trade_records" in sql and args[1] == "678821":
+        return [{"id": 4672, "account_id": "pm", "order_id": "678821",
+                 "side": "BUY", "realized_pnl": Decimal("-1.53967682"), "pnl_source": None}]
+    return []
+
 
 # ============================================================
 # 测试 3：出口单判定
@@ -243,20 +268,17 @@ class TestRunOnce:
 
     @pytest.mark.asyncio
     async def test_full_flow_writes_back_and_updates_progress(self, mock_db, mock_binance, base_config):
-        """有 income 有 pending 时成功回写 realized_pnl 并更新进度"""
-        rec = IncomeReconciler(mock_db, mock_binance, base_config)
+        """两笔成交只归属真实订单，已取消订单不接收收入。"""
+        rec = IncomeReconciler(mock_db, mock_binance, {"reconciler": {"account_id": "pm"}})
         fixed_now = 1700000000000
-        # Binance 返回一条权威盈亏记录
         mock_binance.get_income_history.return_value = [
-            {"symbol": "BTCUSDT", "time": fixed_now, "income": "12.34"},
+            {"tranId": 1, "tradeId": 58293, "symbol": "PFEUSDT", "time": fixed_now,
+             "income": "-1.53967682"},
+            {"tranId": 2, "tradeId": 58294, "symbol": "PFEUSDT", "time": fixed_now,
+             "income": "-0.18982317"},
         ]
-        # 无历史校准进度
         mock_db.fetch_one.return_value = {"last_reconciled_ts": 0}
-        # 待校准记录：与收入时间完全对齐（北京 naive）
-        mock_db.fetch_all.return_value = [
-            {"id": 1, "symbol": "BTCUSDT", "order_type": "STOP",
-             "executed_at": datetime(2023, 11, 15, 6, 13, 20)},
-        ]
+        mock_db.fetch_all.side_effect = exact_fact_rows
         with patch.object(rec, "_update_reconciled_ts", new=AsyncMock()) as mock_update:
             with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=fixed_now):
                 await rec.run_once()
@@ -266,7 +288,7 @@ class TestRunOnce:
         queries = mock_db.execute_transaction.await_args.args[0]
         assert len(queries) == 2
         assert "UPDATE trading.trade_records SET realized_pnl" in queries[0][0]
-        assert queries[0][1] == (Decimal("12.34"), 1)
+        assert queries[0][1] == (Decimal("-1.72949999"), 4672, "678821", "pm")
         assert "last_reconciled_ts" in queries[1][0]
         assert queries[1][1] == (fixed_now,)
 
@@ -286,10 +308,10 @@ class TestRunOnce:
 
     @pytest.mark.asyncio
     async def test_no_pending_updates_progress_only(self, mock_db, mock_binance, base_config):
-        """有 income 但无待校准记录时，仅更新进度，不执行回写"""
+        """有 income 但无精确订单记录时，不推进游标。"""
         rec = IncomeReconciler(mock_db, mock_binance, base_config)
         mock_binance.get_income_history.return_value = [
-            {"symbol": "BTCUSDT", "time": 1700000000000, "income": "1.0"},
+            {"symbol": "BTCUSDT", "tradeId": 123, "time": 1700000000000, "income": "1.0"},
         ]
         mock_db.fetch_one.return_value = {"last_reconciled_ts": 0}
         mock_db.fetch_all.return_value = []  # 无待校准记录
@@ -297,8 +319,54 @@ class TestRunOnce:
             with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=1700000000000):
                 await rec.run_once()
 
-        mock_update.assert_awaited_once()
-        # 不应存在 UPDATE realized_pnl 的回写调用
+        mock_update.assert_not_awaited()
+        mock_db.execute_transaction.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_full_income_page_keeps_cursor(self, mock_db, mock_binance):
+        rec = IncomeReconciler(mock_db, mock_binance, {"reconciler": {"batch_size": 2}})
+        mock_db.fetch_one.return_value = {"last_reconciled_ts": 0}
+        mock_binance.get_income_history.return_value = [
+            {"tranId": 1, "time": 1700000000000},
+            {"tranId": 2, "time": 1700000000000},
+        ]
+        with patch.object(rec, "_update_reconciled_ts", new=AsyncMock()) as update:
+            with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=1700000001000):
+                await rec.run_once()
+        mock_db.execute_transaction.assert_not_awaited()
+        update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_full_income_page_splits_window_and_preserves_same_time_events(self, mock_db, mock_binance):
+        rec = IncomeReconciler(mock_db, mock_binance, {"reconciler": {"batch_size": 2}})
+        rows = [
+            {"tranId": 11, "symbol": "PFEUSDT", "time": 100, "income": "-1"},
+            {"tranId": 12, "symbol": "PFEUSDT", "time": 104, "income": "-1"},
+        ]
+
+        async def fetch(*, start_time, end_time, **_):
+            return [r for r in rows if start_time <= r["time"] <= end_time]
+
+        mock_binance.get_income_history.side_effect = fetch
+        assert await rec._fetch_income_records(99, 106) == rows
+
+    @pytest.mark.asyncio
+    async def test_account_mismatch_keeps_cursor(self, mock_db, mock_binance):
+        rec = IncomeReconciler(mock_db, mock_binance, {"reconciler": {}})
+        mock_db.fetch_one.return_value = {"last_reconciled_ts": 0}
+        mock_binance.get_income_history.return_value = [
+            {"tranId": 1, "tradeId": 58293, "symbol": "PFEUSDT",
+             "time": 1700000000000, "income": "-1.53967682"},
+        ]
+
+        def wrong_account(sql, *args):
+            if "FROM trading.trade_records" in sql:
+                return []
+            return exact_fact_rows(sql, *args)
+
+        mock_db.fetch_all.side_effect = wrong_account
+        with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=1700000001000):
+            await rec.run_once()
         mock_db.execute_transaction.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -332,16 +400,14 @@ class TestRunOnce:
     @pytest.mark.asyncio
     async def test_writeback_failure_does_not_advance_cursor(self, mock_db, mock_binance, base_config):
         """匹配到收入后，DB 回写失败不能把该窗口标成已校准。"""
-        rec = IncomeReconciler(mock_db, mock_binance, base_config)
+        rec = IncomeReconciler(mock_db, mock_binance, {"reconciler": {"account_id": "pm"}})
         now_ms = 1700000000000
         mock_db.fetch_one.return_value = {"last_reconciled_ts": 0}
-        mock_db.fetch_all.return_value = [
-            {"id": 1, "symbol": "BTCUSDT", "order_type": "STOP",
-             "executed_at": datetime(2023, 11, 15, 6, 13, 20)},
-        ]
+        mock_db.fetch_all.side_effect = exact_fact_rows
         mock_db.execute_transaction.side_effect = RuntimeError("database write failed")
         mock_binance.get_income_history.return_value = [
-            {"symbol": "BTCUSDT", "time": now_ms, "income": "12.34"},
+            {"tranId": 1, "tradeId": 58293, "symbol": "PFEUSDT", "time": now_ms,
+             "income": "-1.53967682"},
         ]
 
         with patch.object(rec, "_ensure_state_table", new=AsyncMock()):
@@ -355,18 +421,15 @@ class TestRunOnce:
     @pytest.mark.asyncio
     async def test_two_income_matches_retry_as_one_atomic_batch(self, mock_db, mock_binance, base_config):
         """第二笔更新失败后整批回滚；重试仍以两笔原收入与原成交匹配。"""
-        rec = IncomeReconciler(mock_db, mock_binance, base_config)
+        rec = IncomeReconciler(mock_db, mock_binance, {"reconciler": {"account_id": "pm"}})
         now_ms = 1700000000000
         mock_db.fetch_one.return_value = {"last_reconciled_ts": 0}
-        mock_db.fetch_all.return_value = [
-            {"id": 1, "symbol": "BTCUSDT", "order_type": "STOP",
-             "executed_at": datetime(2023, 11, 15, 6, 13, 20)},
-            {"id": 2, "symbol": "BTCUSDT", "order_type": "STOP",
-             "executed_at": datetime(2023, 11, 15, 6, 13, 21)},
-        ]
+        mock_db.fetch_all.side_effect = exact_fact_rows
         mock_binance.get_income_history.return_value = [
-            {"symbol": "BTCUSDT", "time": now_ms, "income": "1.00"},
-            {"symbol": "BTCUSDT", "time": now_ms + 1000, "income": "2.00"},
+            {"tranId": 1, "tradeId": 58293, "symbol": "PFEUSDT", "time": now_ms,
+             "income": "-1.53967682"},
+            {"tranId": 2, "tradeId": 58294, "symbol": "PFEUSDT", "time": now_ms,
+             "income": "-0.18982317"},
         ]
         mock_db.execute_transaction.side_effect = [RuntimeError("second update failed"), True]
 
@@ -382,7 +445,7 @@ class TestRunOnce:
         first = mock_db.execute_transaction.await_args_list[0].args[0]
         second = mock_db.execute_transaction.await_args_list[1].args[0]
         assert first == second
-        assert [args[1] for _, args in second[:-1]] == [1, 2]
+        assert [item[1][1] for item in second[:-1]] == [4672]
         assert "last_reconciled_ts" in second[-1][0]
 
     @pytest.mark.asyncio
@@ -417,7 +480,7 @@ class TestFetchPendingRecords:
         sql, bj_start, bj_end = call.args
         # 不包含 NOT IN 子句，且查询条件完整
         assert "NOT IN" not in sql
-        assert "realized_pnl IS NULL" in sql
+        assert "order_id IS NOT NULL" in sql
         # 北京时间窗口换算正确（start 前移 / end 后移各一个 match_window_ms）
         assert bj_start == _to_beijing_naive(start_ms - 60000)
         assert bj_end == _to_beijing_naive(end_ms + 60000)

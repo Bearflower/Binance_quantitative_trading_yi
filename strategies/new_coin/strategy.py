@@ -1815,13 +1815,14 @@ class NewCoinStrategy(BaseStrategy):
                         close_rec = None
                         entry_time_obj = _entry_time_to_naive_beijing(entry_time)
                         if entry_time_obj:
-                            upper_time = entry_time_obj + timedelta(hours=24)
+                            upper_time = datetime.now(BEIJING_TZ).replace(tzinfo=None)
                             close_rec = await self.db.fetch_one(
                                 """
                                 SELECT order_id, realized_pnl
                                 FROM trading.trade_records
                                 WHERE strategy = $1 AND symbol = $2 AND side = 'BUY'
                                 AND executed_at BETWEEN $3 AND $4
+                                AND status <> 'CANCELED'
                                 ORDER BY executed_at DESC
                                 LIMIT 1
                                 """,
@@ -1859,10 +1860,21 @@ class NewCoinStrategy(BaseStrategy):
                     # 只需要把平仓单传给它，让它自己判断走哪个模式。
                     try:
                         entry_time_obj = _entry_time_to_naive_beijing(entry_time)
-
-                        if entry_time_obj:
-                            # 使用 entry_time 后 24 小时作为时间窗口上限，避免跨交易匹配
-                            upper_time = entry_time_obj + timedelta(hours=24)
+                        verified_pnls = getattr(self, '_verified_close_pnl_by_order', {}).pop(symbol, None)
+                        if verified_pnls:
+                            trade_logger = getattr(self.binance_client, 'trade_logger', None)
+                            if trade_logger:
+                                for order_id, order_pnl in verified_pnls.items():
+                                    await trade_logger.update_realized_pnl(
+                                        order_id=order_id,
+                                        realized_pnl=order_pnl,
+                                        side='BUY',
+                                        symbol=symbol,
+                                    )
+                            else:
+                                logger.warning("trade_logger 未挂载，跳过逐订单盈亏回写", symbol=symbol)
+                        elif entry_time_obj:
+                            upper_time = datetime.now(BEIJING_TZ).replace(tzinfo=None)
                             # 查询本笔平仓订单（做多/做空平仓方向取决于策略侧的 side='BUY'/side='SELL'
                             # 这里 new_coin 是做空，平仓方向固定 BUY）
                             close_order = await self.db.fetch_one(
@@ -1871,6 +1883,7 @@ class NewCoinStrategy(BaseStrategy):
                                 FROM trading.trade_records
                                 WHERE strategy = $1 AND symbol = $2 AND side = 'BUY'
                                 AND executed_at BETWEEN $3 AND $4
+                                AND status <> 'CANCELED'
                                 ORDER BY executed_at DESC
                                 LIMIT 1
                                 """,
@@ -2946,7 +2959,7 @@ class NewCoinStrategy(BaseStrategy):
 
     async def _get_position_pnl(self, symbol: str, entry_price: float) -> Optional[float]:
         """
-        获取持仓盈亏
+        从真实平仓订单的 userTrades 汇总已实现盈亏。
 
         Args:
             symbol: 交易对
@@ -2956,44 +2969,54 @@ class NewCoinStrategy(BaseStrategy):
             盈亏金额（USDT）；查不到平仓记录时返回 None
         """
         try:
-            # 从数据库获取最近的平仓记录
-            order = await self.db.fetch_one(
-                """
-                SELECT quantity, price, side
-                FROM orders
-                WHERE symbol = $1 AND strategy = $2 AND side = 'BUY'
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                symbol,
-                self.strategy_name
+            entry_time = _entry_time_to_naive_beijing(
+                self.positions.get(symbol, {}).get('entry_time')
             )
-
-            if not order:
+            if entry_time is None:
+                return None
+            orders = await self.db.fetch_all(
+                """
+                SELECT order_id
+                FROM trading.trade_records
+                WHERE symbol = $1 AND strategy = $2 AND side = 'BUY'
+                  AND executed_at >= $3 AND order_id IS NOT NULL
+                  AND order_type <> 'PNL_SUMMARY'
+                ORDER BY executed_at DESC, id DESC
+                """,
+                symbol, self.my_record_name, entry_time,
+            )
+            if not orders:
                 logger.warning(f"未找到平仓记录: {symbol}")
                 return None
-
-            # 计算盈亏（使用集中管理的公式）
-            quantity = Decimal(str(order.get('quantity', 0)))
-            exit_price = Decimal(str(order.get('price', 0)))
-            entry_price_dec = Decimal(str(entry_price))
-
-            pnl = TradeLogger.calculate_pnl(
-                direction='SHORT',
-                entry_price=entry_price_dec,
-                exit_price=exit_price,
-                quantity=quantity
-            )
-
-            logger.debug(
-                f"计算盈亏: {symbol}",
-                entry_price=entry_price,
-                exit_price=exit_price,
-                quantity=quantity,
-                pnl=pnl
-            )
-
-            return pnl
+            pnl = Decimal('0')
+            order_pnls = {}
+            seen_order_ids = set()
+            matched = False
+            for order in orders:
+                order_id = str(order.get('order_id') or '')
+                if not order_id or order_id in seen_order_ids:
+                    continue
+                seen_order_ids.add(order_id)
+                fills = await self.binance_client.get_user_trades(
+                    symbol, order_id=order_id, limit=1000,
+                )
+                if len(fills) >= 1000:
+                    logger.warning("平仓成交达到分页上限，暂不判定盈亏", symbol=symbol, order_id=order_id)
+                    return None
+                if any(str(fill.get('orderId')) != order_id or fill.get('realizedPnl') is None
+                       for fill in fills):
+                    logger.warning("平仓成交与订单号不一致或盈亏缺失", symbol=symbol, order_id=order_id)
+                    return None
+                if fills:
+                    matched = True
+                    order_pnl = sum((Decimal(str(fill['realizedPnl'])) for fill in fills), Decimal('0'))
+                    order_pnls[order_id] = order_pnl
+                    pnl += order_pnl
+            if matched:
+                if not hasattr(self, '_verified_close_pnl_by_order'):
+                    self._verified_close_pnl_by_order = {}
+                self._verified_close_pnl_by_order[symbol] = order_pnls
+            return pnl if matched else None
 
         except Exception as e:
             logger.error(f"获取持仓盈亏失败: {symbol}, 错误: {e}")

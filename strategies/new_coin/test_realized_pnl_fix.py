@@ -1153,8 +1153,8 @@ class TestEntryTimeToNaiveBeijingEndToEnd:
             "aware +00:00 应转成无时区北京时间，期望 %s，实际 %s"
             % (expected_entry, entry_arg)
         )
-        assert upper_arg == expected_entry + timedelta(hours=24), (
-            "upper_time 应为 entry_time_obj + 24h"
+        assert upper_arg >= expected_entry + timedelta(hours=24), (
+            "平仓查询上限应覆盖持仓超过 24 小时的订单"
         )
 
     async def test_fetch_one_args_tzinfo_none_when_pnl_missing(
