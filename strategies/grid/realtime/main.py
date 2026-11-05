@@ -134,6 +134,8 @@ class RealtimeService:
         self._scanner: Optional[FactScanner] = None
         self._trade_queue: Optional[asyncio.Queue] = None
         self._feed_healthy = True
+        self._feed_unhealthy_since_ms: Optional[int] = None
+        self._default_feed = trade_feed is None
         self._feed_recovery_until_ms = 0
         self._storage_degraded = False
         self._queue_dropped_total = 0
@@ -161,11 +163,13 @@ class RealtimeService:
         period = self._cfg["features"]["sample_seconds"]
         try:
             while True:
+                feed_task = await self._ensure_feed_task(feed_task)
                 await self.tick()
                 await self._sleep(period)
         finally:
             if feed_task is not None:
                 feed_task.cancel()
+                await asyncio.gather(feed_task, return_exceptions=True)
             if self._queue_audit is not None:
                 self._queue_audit.close(self._now())
 
@@ -202,7 +206,8 @@ class RealtimeService:
                 now_ms, self._queue_recovery_until_ms,
                 audit_ok=not self._queue_audit_failed,
                 reference_status=status,
-                feed_healthy=self._feed_healthy,
+                feed_healthy=(self._feed_healthy
+                              and now_ms >= self._feed_recovery_until_ms),
                 storage_degraded=self._storage_degraded)
         except sqlite3.Error as exc:
             self._storage_degraded = True
@@ -420,6 +425,41 @@ class RealtimeService:
             maxsize=self._cfg["delivery"]["queue_capacity"])
         return asyncio.create_task(self._pump_feed())
 
+    async def _ensure_feed_task(self, task: asyncio.Task) -> asyncio.Task:
+        """后台行情任务退出或持续失活时，开启新的观察段并重新接入。"""
+        now = self._now()
+        timeout_ms = max(
+            60_000,
+            int((self._cfg["transport"]["heartbeat_seconds"]
+                 + self._cfg["transport"]["reconnect_max_seconds"] + 10)
+                * MS_PER_SECOND))
+        stalled = (not self._feed_healthy
+                   and self._feed_unhealthy_since_ms is not None
+                   and now - self._feed_unhealthy_since_ms >= timeout_ms)
+        if not task.done() and not stalled:
+            return task
+        if task.done():
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                reason = "行情任务意外取消"
+            except Exception as exc:
+                reason = f"行情任务异常退出: {type(exc).__name__}: {exc}"
+            else:
+                reason = "行情任务意外结束"
+        else:
+            reason = f"行情任务持续未恢复超过 {timeout_ms // MS_PER_SECOND} 秒"
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+        pending = self._trade_queue.qsize() if self._trade_queue else 0
+        logger.error("行情任务重新接入", reason=reason,
+                     abandoned_pending_trades=pending)
+        await self._on_feed_health(False, reason)
+        self._feed_unhealthy_since_ms = now
+        if self._default_feed:
+            self._feed = None
+        return await self._start_feed()
+
     async def _pump_feed(self) -> None:
         """从 feed 搬运成交入队；队列满时逐出最旧一笔，保住最新成交。
 
@@ -462,7 +502,11 @@ class RealtimeService:
             getattr(logger, level)("行情连接状态变化", healthy=healthy,
                                    reason=reason)
         self._feed_healthy = healthy
-        if not healthy:
+        if healthy:
+            self._feed_unhealthy_since_ms = None
+        else:
+            if self._feed_unhealthy_since_ms is None:
+                self._feed_unhealthy_since_ms = self._now()
             self._samples.clear()
             warmup_ms = max(self._cfg["features"]["windows_seconds"]) * MS_PER_SECOND
             self._feed_recovery_until_ms = self._now() + warmup_ms
