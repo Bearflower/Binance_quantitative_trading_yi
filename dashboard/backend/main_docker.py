@@ -218,7 +218,7 @@ app.add_middleware(
 async def add_no_cache_header(request: Request, call_next):
     """为 API 响应添加 Cache-Control: no-cache 头"""
     response = await call_next(request)
-    if request.url.path.startswith("/api"):
+    if request.url.path.startswith("/api") or request.url.path in ("/", "/index.html", "/detail.html", "/js/config.js"):
         response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
         response.headers["Pragma"] = "no-cache"
         response.headers["Expires"] = "0"
