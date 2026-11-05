@@ -5,6 +5,7 @@
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple, Union
 import asyncio
+import math
 import os
 import time
 from datetime import datetime, timedelta, timezone
@@ -2365,6 +2366,12 @@ class NewCoinStrategy(BaseStrategy):
             return
 
         executor.baseline_ready = False
+        # Restore-time entries may already exist from condition-order recovery.
+        # Gate them before any I/O: exchange failure must not leave the old time
+        # exit path authorized while the periodic baseline retry is pending.
+        for entry in executor.position_tracking.values():
+            entry['time_exit_status'] = 'unknown'
+            entry.setdefault('emergency_entry_time', to_aware_utc(entry.get('entry_time')) or datetime.now(timezone.utc))
         contract_sizes = await executor.get_contract_size_map()
         result = await rebuild_from_exchange(
             self.binance_client, executor.leverage, contract_sizes
@@ -2464,10 +2471,9 @@ class NewCoinStrategy(BaseStrategy):
     ) -> None:
         """将重建后的持仓基线同步写入 executor.position_tracking（R4 / AC-3 + AC-A §3.4）。
 
-        除既有同步职责外，本轮新增两项（AC-A 锚点方案配套）：
-        1. 从 short_positions 表查询初始开仓量，回填 tp_anchor_quantity（§3.4 第2点）。
-           同 symbol 多条 open 记录取 ORDER BY opened_at DESC LIMIT 1（§3.4 第5点 T8），
-           命中多条打 warning；open 记录缺失则 tp_anchor_quantity 留空（fail-closed）。
+        除既有同步职责外，恢复两个互相关联的证据：
+        1. 唯一匹配的 short_positions open 记录提供候选 UTC 开仓时间与初始量。
+           DB 行不是成交链，全部恢复仓位均禁止自动时间退出；不以重启时间冒充。
            entry_quantity 语义保持「交易所当前剩余量」不变（§2.2 前提修正）。
         2. 基线重建后做档位回填自愈（§3.4 第3点）：await executor._get_symbol_precision
            预热 step_size 缓存 → 用 derive_reached_targets 回填 target1/2_reached，
@@ -2480,9 +2486,9 @@ class NewCoinStrategy(BaseStrategy):
         """
         missing_atr: List[str] = []
         for symbol, pos in rebuilt.items():
-            # entry_time 源为 ISO 字符串，必须统一转 aware datetime，
-            # 转换失败时以当前 UTC 时间兜底（否则重启后时间止损会抛 TypeError）
-            entry_time = to_aware_utc(pos['entry_time']) or datetime.now(timezone.utc)
+            # A restart is not an entry. Local time is retained for other management
+            # paths. DB evidence alone never authorizes a recovered time exit.
+            entry_time = to_aware_utc(pos.get('entry_time'))
             entry = executor.ensure_tracking_entry(
                 symbol,
                 entry_price=pos['entry_price'],
@@ -2492,15 +2498,23 @@ class NewCoinStrategy(BaseStrategy):
             entry['entry_price'] = pos['entry_price']
             entry['entry_quantity'] = pos['quantity']  # 保持「当前剩余量」语义
             entry['entry_time'] = entry_time
+            # Preserve the prior emergency-price window independently of the
+            # unknown economic opening time. Never use this clock for time exits.
+            entry.setdefault('emergency_entry_time', entry_time or datetime.now(timezone.utc))
             # 交易所当前在仓数量即真实剩余量，重启后可安全作为初值
             entry['remaining_quantity'] = pos['quantity']
+            entry['time_exit_status'] = 'unknown'
+            entry['tp_anchor_quantity'] = None
+            entry.pop('recovery_position_id', None)
+            entry.pop('recovery_target1_candidate', None)
+            entry.pop('recovery_target2_candidate', None)
             self._backfill_tracking_atr(entry, atr_map.get(symbol) if atr_map else None)
             # 回填后仍无有效 ATR（K 线不可用等），汇总告警一次，避免逐币刷屏
             if float(entry.get('atr', 0) or 0) <= 0:
                 missing_atr.append(symbol)
 
             # AC-A §3.4 第2点：从 short_positions 回填 tp_anchor_quantity（初始开仓量）
-            await self._backfill_anchor_quantity(executor, symbol, entry)
+            await self._restore_recovery_evidence(executor, symbol, entry, pos)
 
         if missing_atr:
             logger.warning(
@@ -2511,58 +2525,60 @@ class NewCoinStrategy(BaseStrategy):
 
         # AC-A §3.4 第3点：档位回填自愈（预热精度缓存 + derive_reached_targets）
         await self._backfill_target_statuses(executor, list(rebuilt.keys()))
+        for symbol, pos in rebuilt.items():
+            pos['time_exit_status'] = executor.position_tracking[symbol]['time_exit_status']
 
         if rebuilt:
             logger.info("持仓基线已同步到 position_tracking", symbols=list(rebuilt.keys()))
 
-    async def _backfill_anchor_quantity(
-        self, executor: Any, symbol: str, entry: Dict[str, Any]
+    async def _restore_recovery_evidence(
+        self, executor: Any, symbol: str, entry: Dict[str, Any], pos: Dict[str, Any]
     ) -> None:
-        """从 short_positions 表回填 tp_anchor_quantity（§3.4 第2点 + 第5点 T8）。
+        """Recover candidate UTC clock/initial quantity from one matching open row.
 
-        取初始开仓量的唯一权威来源（_insert_short_position 写入、_update_short_position_closed
-        不覆盖 quantity，已在 §3.4 核实），替换 position_tracking 里被重启路径覆盖为「当前量」
-        的 entry_quantity，使档位判定锚点恢复正确。
-
-        Args:
-            executor: 交易执行器（提供 db）
-            symbol: 交易对
-            entry: 该 symbol 的 tracking 条目（原地写 tp_anchor_quantity）
+        opened_at is naive UTC in the existing writer contract. Never choose a
+        latest row among ambiguous opens or substitute the restart time. This
+        method reads evidence only; it cannot submit/cancel orders or prove the
+        current exchange position is continuous with that database record.
         """
-        # 已有值（非 None 且 > 0）则不覆盖（fail-closed）
-        existing = entry.get('tp_anchor_quantity')
-        if existing is not None and float(existing) > 0:
-            return
         try:
             rows = await executor.db.fetch_all(
                 """
-                SELECT quantity, opened_at FROM short_positions
+                SELECT symbol, position_id, status, quantity, entry_price, opened_at
+                FROM new_coin.short_positions
                 WHERE symbol=$1 AND status='open'
-                ORDER BY opened_at DESC
                 """,
                 symbol,
             )
-        except Exception as e:
-            logger.warning(
-                "回填 tp_anchor_quantity 查询 short_positions 失败（忽略，留空 fail-closed）",
-                symbol=symbol, error=str(e),
-            )
+            if len(rows) != 1:
+                raise ValueError('open record is not unique')
+            row = rows[0]
+            if row.get('symbol') != symbol or row.get('status') != 'open' or not row.get('position_id'):
+                raise ValueError('open record identity missing')
+            opened = to_aware_utc(row.get('opened_at'))
+            if opened is None or opened > datetime.now(timezone.utc):
+                raise ValueError('opening time unavailable/future')
+            anchor = Decimal(str(row.get('quantity')))
+            price = Decimal(str(row.get('entry_price')))
+            remaining = Decimal(str(pos['quantity']))
+            actual_price = Decimal(str(pos.get('exchange_entry_price', pos['entry_price'])))
+            local_price = Decimal(str(pos['entry_price']))
+            if any(not value.is_finite() or value <= 0 or not math.isfinite(float(value))
+                   for value in (anchor, price, remaining, actual_price, local_price)):
+                raise ValueError('invalid position amount/price')
+            tolerance = actual_price * Decimal('0.000001')
+            if remaining > anchor or abs(price - actual_price) > tolerance or abs(local_price - actual_price) > tolerance:
+                raise ValueError('open record differs from exchange position')
+        except Exception as exc:
+            logger.warning('重启持仓时间退出证据不足，仅提醒不自动时间平仓', symbol=symbol,
+                           reason=type(exc).__name__)
+            pos['time_exit_status'] = 'unknown'
             return
-        if not rows:
-            logger.warning(
-                "short_positions 无 open 记录，tp_anchor_quantity 留空（fail-closed）",
-                symbol=symbol,
-            )
-            return
-        # §3.4 第5点 T8：取最新一条 open；命中多条打 warning
-        if len(rows) > 1:
-            logger.warning(
-                "short_positions 同 symbol 存在多条 open 记录，取最新一条",
-                symbol=symbol, open_count=len(rows),
-            )
-        anchor = float(rows[0].get('quantity', 0) or 0)
-        if anchor > 0:
-            entry['tp_anchor_quantity'] = anchor
+        entry['entry_time'] = opened
+        entry['tp_anchor_quantity'] = float(anchor)
+        entry['recovery_position_id'] = row['position_id']
+        pos['entry_time'] = opened.isoformat()
+        pos['recovery_position_id'] = row['position_id']
 
     async def _backfill_target_statuses(
         self, executor: Any, symbols: List[str]
@@ -2580,7 +2596,17 @@ class NewCoinStrategy(BaseStrategy):
             try:
                 await executor._get_symbol_precision(symbol)
             except Exception:
-                pass
+                continue
+            if tracking.get('recovery_position_id'):
+                # The precision API returns defaults on failure. A successful await
+                # alone is not proof; only a populated, finite positive cache counts.
+                cached = executor._precision_cache.get(symbol)
+                try:
+                    step = Decimal(str(cached[1])) if cached else Decimal('0')
+                    if not step.is_finite() or step <= 0:
+                        continue
+                except (ValueError, TypeError, IndexError, ArithmeticError):
+                    continue
             anchor = tracking.get('tp_anchor_quantity')
             if anchor is None or float(anchor) <= 0:
                 # 锚点缺失：已预热精度（为后续 detect 做准备），跳过本轮自愈（fail-closed）
@@ -2597,6 +2623,14 @@ class NewCoinStrategy(BaseStrategy):
                 tolerance_absolute=executor.qty_tolerance_absolute,
                 step_size=executor._step_size_for(symbol),
             )
+            if tracking.get('recovery_position_id'):
+                # A quantity reduction can be a stop/manual close, not a TP fill.
+                # Keep diagnostics separate from the flags that activate exits.
+                tracking['recovery_target1_candidate'] = hit1
+                tracking['recovery_target2_candidate'] = hit2
+                tracking['time_exit_status'] = 'review_required'
+                logger.warning('重启仓位仅有数据库候选证据，时间退出待人工复核', symbol=symbol)
+                continue
             if hit1 and not tracking.get('target1_reached'):
                 tracking['target1_reached'] = True
                 logger.info(
@@ -2654,7 +2688,8 @@ class NewCoinStrategy(BaseStrategy):
             merged[symbol] = {
                 'order_id': local.get('order_id'),
                 'entry_price': local_entry if local_entry > 0 else pos.entry_price,
-                'entry_time': local.get('entry_time') or datetime.now(timezone.utc).isoformat(),
+                'entry_time': local.get('entry_time'),
+                'exchange_entry_price': None if pos.estimated_entry_price else pos.entry_price,
                 'score': local.get('score'),
                 # 数量与占用保证金以交易所为准（统一保证金口径）
                 'quantity': pos.quantity,

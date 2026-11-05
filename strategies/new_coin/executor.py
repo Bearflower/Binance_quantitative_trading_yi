@@ -2337,7 +2337,7 @@ class TradingExecutor:
 
             # 2.5 检查紧急止损
             if self.emergency_stop_enabled:
-                await self._check_emergency_stop(symbol, entry_time)
+                await self._check_emergency_stop(symbol, tracking.get('emergency_entry_time', entry_time))
 
             # 3. 检查动态利润保护（仅在 TP2 到达后激活）
             if tracking.get('target2_reached') and current_price is not None:
@@ -2469,6 +2469,11 @@ class TradingExecutor:
             entry_time: 入场时间
         """
         try:
+            tracking = self.position_tracking.get(symbol, {})
+            if tracking.get('time_exit_status') in ('unknown', 'review_required'):
+                if self.should_notify(('time_exit_unknown', symbol), self.alert_throttle_seconds):
+                    logger.warning('持仓时间退出证据未确认，仅提醒不自动时间平仓', symbol=symbol)
+                return
             # 防御性规范化：entry_time 可能来自 ISO 字符串（如重启后的持仓重建流程），
             # 统一转为 aware datetime 后再相减，避免 TypeError 导致止损检查失效
             normalized_entry_time = self._normalize_entry_time(symbol, entry_time, "时间止损")

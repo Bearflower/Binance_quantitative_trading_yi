@@ -223,7 +223,8 @@ class TestTrackingEntryFactory:
 class TestSyncBaselineToTracking:
     """_sync_baseline_to_tracking 经 ensure_tracking_entry 建 / 补条目"""
 
-    def test_sync_sets_remaining_and_preserves_existing_state(self):
+    @pytest.mark.asyncio
+    async def test_sync_sets_remaining_and_preserves_existing_state(self):
         """写入真实剩余量；已恢复的 algo_ids 与 atr 保留；entry_time 转 aware datetime"""
         executor = create_executor()
         # 模拟重启时已从 condition_orders 恢复的条件单
@@ -240,7 +241,9 @@ class TestSyncBaselineToTracking:
             }
         }
 
-        strategy._sync_baseline_to_tracking(executor, rebuilt)
+        executor.db.fetch_all = AsyncMock(return_value=[])
+        executor._get_symbol_precision = AsyncMock()
+        await strategy._sync_baseline_to_tracking(executor, rebuilt)
 
         entry = executor.position_tracking["APLDUSDT"]
         assert entry['remaining_quantity'] == 200.0
@@ -251,7 +254,8 @@ class TestSyncBaselineToTracking:
         assert isinstance(entry['entry_time'], datetime)
         assert entry['entry_time'].tzinfo is not None  # 必须为 aware datetime
 
-    def test_sync_does_not_overwrite_valid_restored_atr(self):
+    @pytest.mark.asyncio
+    async def test_sync_does_not_overwrite_valid_restored_atr(self):
         """b) 条件单恢复已写入有效 atr 时，基线同步传入的 atr_map 不得覆盖它"""
         executor = create_executor()
         executor.position_tracking["APLDUSDT"] = {
@@ -267,7 +271,9 @@ class TestSyncBaselineToTracking:
             }
         }
 
-        strategy._sync_baseline_to_tracking(executor, rebuilt, {"APLDUSDT": Decimal('2')})
+        executor.db.fetch_all = AsyncMock(return_value=[])
+        executor._get_symbol_precision = AsyncMock()
+        await strategy._sync_baseline_to_tracking(executor, rebuilt, {"APLDUSDT": Decimal('2')})
 
         assert executor.position_tracking["APLDUSDT"]['atr'] == 3.0
 
