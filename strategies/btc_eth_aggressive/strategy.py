@@ -158,6 +158,7 @@ class FrequencyController:
             strategy_name: 策略名称
         """
         self.config = config
+        self.state_ready = False
         self.db_manager = db_manager
         self.strategy_name = strategy_name
         self.daily_trades: Dict[str, int] = {}
@@ -167,6 +168,7 @@ class FrequencyController:
         self.pause_until: Optional[datetime] = None  # 连续亏损暂停截止时间
         self.weekly_pause_until: Optional[datetime] = None  # 单周亏损暂停截止时间（v6.16.10）
         self.daily_pnl: Dict[str, Decimal] = {}
+        self._restored_daily_pnl: Dict[str, Decimal] = {}
         self.weekly_pnl: Dict[str, Decimal] = {}  # 按周聚合盈亏 {"2026-W25": Decimal}
     
     async def ensure_table_exists(self):
@@ -216,76 +218,79 @@ class FrequencyController:
         except Exception as e:
             logger.warning(f"创建频率控制状态表失败: {e}")
     
+    @staticmethod
+    def utc_time(value: datetime) -> datetime:
+        """Naive runtime clocks are local wall time; never strip a DB UTC offset."""
+        return value.astimezone(timezone.utc)
+
     async def load_state(self):
-        """从数据库加载状态"""
+        """Publish a complete, deterministic snapshot; failures revoke entry readiness."""
+        self.state_ready = False
         if not self.db_manager:
             return
-        
         try:
-            today = datetime.now().date().isoformat()
-            
             rows = await self.db_manager.fetch_all(
-                """SELECT symbol, last_trade_time, daily_trade_count, daily_pnl, 
+                """SELECT symbol, last_trade_time, daily_trade_count, daily_pnl,
                           trade_date, consecutive_losses, pause_until,
                           weekly_pnl, weekly_pause_until
-                   FROM frequency_control_state 
-                   WHERE strategy_name = $1""",
-                self.strategy_name
-            )
-            
-            if not rows:
-                return
-            
+                   FROM frequency_control_state WHERE strategy_name = $1""",
+                self.strategy_name)
+            if not isinstance(rows, list):
+                raise ValueError("frequency history query did not return rows")
+            snapshot = FrequencyController(self.config, self.db_manager, self.strategy_name)
+            today = datetime.now().date().isoformat()
             for row in rows:
-                symbol = row['symbol']
-                trade_date = row['trade_date']
-                
-                if row['last_trade_time']:
-                    self.symbol_last_trade_time[symbol] = row['last_trade_time']
-                
-                if trade_date and trade_date.isoformat() == today:
-                    self.daily_trades[today] = self.daily_trades.get(today, 0) + (row['daily_trade_count'] or 0)
-                    
-                    if symbol not in self.symbol_daily_trades:
-                        self.symbol_daily_trades[symbol] = {}
-                    self.symbol_daily_trades[symbol][today] = row['daily_trade_count'] or 0
-                    
-                    if row['daily_pnl'] is not None:
-                        self.daily_pnl[today] = self.daily_pnl.get(today, Decimal('0')) + Decimal(str(row['daily_pnl']))
-                
-                if row['consecutive_losses'] is not None:
-                    self.consecutive_losses = max(self.consecutive_losses, row['consecutive_losses'] or 0)
-                
-                if row['pause_until']:
-                    if self.pause_until is None or row['pause_until'] > self.pause_until:
-                        self.pause_until = row['pause_until']
-                
-                # v6.16.10：恢复单周亏损状态
-                if row.get('weekly_pnl') is not None:
-                    # 取第一个非空值（所有行应相同）
-                    try:
-                        week_key = self._get_week_key(row['trade_date'])
-                        self.weekly_pnl[week_key] = Decimal(str(row['weekly_pnl']))
-                    except Exception:
-                        pass
-                
-                if row.get('weekly_pause_until'):
-                    if self.weekly_pause_until is None or row['weekly_pause_until'] > self.weekly_pause_until:
-                        self.weekly_pause_until = row['weekly_pause_until']
-            
-            logger.info(
-                "频率控制状态已从数据库恢复",
-                symbols_in_cooldown=len(self.symbol_last_trade_time),
-                consecutive_losses=self.consecutive_losses,
-                pause_until=str(self.pause_until) if self.pause_until else None
-            )
-            
+                symbol, trade_date = row['symbol'], row['trade_date']
+                if not symbol or trade_date is None:
+                    raise ValueError("invalid frequency identity")
+                last = row['last_trade_time']
+                if last is not None:
+                    if last.tzinfo is None:
+                        raise ValueError("persisted frequency time has no timezone")
+                    last = self.utc_time(last)
+                    previous = snapshot.symbol_last_trade_time.get(symbol)
+                    snapshot.symbol_last_trade_time[symbol] = max(last, previous) if previous else last
+                count = row['daily_trade_count']
+                losses = row['consecutive_losses']
+                if not isinstance(count, int) or count < 0 or not isinstance(losses, int) or losses < 0:
+                    raise ValueError("invalid frequency count")
+                daily = Decimal(str(row['daily_pnl']))
+                weekly = Decimal(str(row['weekly_pnl']))
+                if not daily.is_finite() or not weekly.is_finite():
+                    raise ValueError("invalid frequency PnL")
+                if trade_date.isoformat() == today:
+                    if symbol in snapshot.symbol_daily_trades:
+                        raise ValueError("duplicate frequency identity")
+                    snapshot.symbol_daily_trades[symbol] = {today: count}
+                    snapshot.daily_trades[today] = snapshot.daily_trades.get(today, 0) + count
+                    snapshot.daily_pnl[today] = snapshot.daily_pnl.get(today, Decimal('0')) + daily
+                snapshot.consecutive_losses = max(snapshot.consecutive_losses, losses)
+                week = self._get_week_key(trade_date)
+                # Legacy rows duplicate global snapshots. Never let row order pick
+                # a more permissive weekly loss value; verified exits need a new ledger.
+                snapshot.weekly_pnl[week] = min(snapshot.weekly_pnl.get(week, weekly), weekly)
+                for field in ('pause_until', 'weekly_pause_until'):
+                    value = row[field]
+                    if value is not None:
+                        if value.tzinfo is None:
+                            raise ValueError("persisted pause has no timezone")
+                        value = self.utc_time(value)
+                        old = getattr(snapshot, field)
+                        setattr(snapshot, field, max(value, old) if old else value)
+            for field in ('daily_trades', 'symbol_daily_trades', 'symbol_last_trade_time',
+                          'consecutive_losses', 'pause_until', 'weekly_pause_until',
+                          'daily_pnl', 'weekly_pnl'):
+                setattr(self, field, getattr(snapshot, field))
+            self._restored_daily_pnl = dict(snapshot.daily_pnl)
+            self.state_ready = True
+            logger.info("频率控制状态已从数据库恢复", symbols_in_cooldown=len(self.symbol_last_trade_time))
         except Exception as e:
-            logger.warning(f"加载频率控制状态失败: {e}")
-    
+            logger.warning(f"加载频率控制状态失败，新入场保持阻断: {e}")
+
     async def _save_state(self, symbol: str):
         """保存单个品种的状态到数据库"""
         if not self.db_manager:
+            self.state_ready = False
             return
         
         try:
@@ -330,7 +335,8 @@ class FrequencyController:
             )
             
         except Exception as e:
-            logger.warning(f"保存频率控制状态失败: {e}")
+            self.state_ready = False
+            logger.warning(f"保存频率控制状态失败，新入场保持阻断: {e}")
     
     def can_trade(self, symbol: str, current_time: datetime) -> Tuple[bool, str]:
         """
@@ -343,6 +349,10 @@ class FrequencyController:
         Returns:
             (是否可以交易, 原因说明)
         """
+        if not self.state_ready:
+            return False, "frequency state unavailable"
+        # Preserve local trading-date keys while comparing absolute instants.
+        current_time = current_time.astimezone()
         # 检查是否在暂停期（连续亏损暂停）
         if self.pause_until and current_time < self.pause_until:
             remaining = self.pause_until - current_time
@@ -397,6 +407,7 @@ class FrequencyController:
             current_time: 当前时间
             pnl: 盈亏金额（None表示开仓，有值表示平仓）
         """
+        current_time = current_time.astimezone()
         today = current_time.date().isoformat()
         
         self.daily_trades[today] = self.daily_trades.get(today, 0) + 1
@@ -405,7 +416,7 @@ class FrequencyController:
             self.symbol_daily_trades[symbol] = {}
         self.symbol_daily_trades[symbol][today] = self.symbol_daily_trades[symbol].get(today, 0) + 1
         
-        self.symbol_last_trade_time[symbol] = current_time
+        self.symbol_last_trade_time[symbol] = self.utc_time(current_time)
         
         if pnl is not None:
             if today not in self.daily_pnl:
@@ -523,7 +534,7 @@ class FrequencyController:
         """
         计算指定周的累计盈亏
         
-        从 daily_pnl 中筛选属于该周的所有日盈亏，求和。
+        汇总该周内存日盈亏；有恢复快照时叠加恢复后变化量，取更保守值。
         
         Args:
             week_key: 周标识，如 "2026-W25"
@@ -543,6 +554,12 @@ class FrequencyController:
             except ValueError:
                 continue
         
+        restored = self.weekly_pnl.get(week_key)
+        if restored is not None:
+            baseline = sum((pnl for day, pnl in self._restored_daily_pnl.items()
+                            if self._get_week_key(datetime.strptime(day, "%Y-%m-%d")) == week_key), Decimal('0'))
+            adjusted = restored + total - baseline
+            return min(total, adjusted) if has_data else adjusted
         return total if has_data else None
 
 
@@ -879,12 +896,9 @@ class BTCEthStrategy:
                 last_trade_time = self.frequency_controller.symbol_last_trade_time[symbol]
                 
                 # 处理时区问题
-                check_time = current_time
-                if last_trade_time.tzinfo is not None and check_time.tzinfo is None:
-                    last_trade_time = last_trade_time.replace(tzinfo=None)
-                elif last_trade_time.tzinfo is None and check_time.tzinfo is not None:
-                    check_time = check_time.replace(tzinfo=None)
-                
+                check_time = FrequencyController.utc_time(current_time)
+                last_trade_time = FrequencyController.utc_time(last_trade_time)
+
                 time_since_last = check_time - last_trade_time
                 if time_since_last < timedelta(hours=cooldown_hours):
                     remaining = timedelta(hours=cooldown_hours) - time_since_last
@@ -1208,11 +1222,8 @@ class BTCEthStrategy:
                 cooldown_hours = symbol_cfg['ranging_cooldown_hours']
             last_trade_time = self.frequency_controller.symbol_last_trade_time[symbol]
 
-            check_time = current_time
-            if last_trade_time.tzinfo is not None and check_time.tzinfo is None:
-                last_trade_time = last_trade_time.replace(tzinfo=None)
-            elif last_trade_time.tzinfo is None and check_time.tzinfo is not None:
-                check_time = check_time.replace(tzinfo=None)
+            check_time = FrequencyController.utc_time(current_time)
+            last_trade_time = FrequencyController.utc_time(last_trade_time)
 
             time_since_last = check_time - last_trade_time
             if time_since_last < timedelta(hours=cooldown_hours):
@@ -2380,6 +2391,9 @@ class BTCEthStrategy:
         Returns:
             是否执行成功
         """
+        if getattr(getattr(self, 'frequency_controller', None), 'state_ready', False) is not True:
+            signal['skip_reason'] = 'frequency state unavailable'
+            return False
         if not await entry_allowed(self, 'btc_eth_aggressive'):
             signal['skip_reason'] = 'entry risk policy denies new risk'
             return False
@@ -2584,6 +2598,8 @@ class BTCEthStrategy:
             有成交（完全/部分）返回 OrderFillResult；可预期失败返回 None（已记日志），
             意外异常向上抛
         """
+        if getattr(getattr(self, 'frequency_controller', None), 'state_ready', False) is not True:
+            return None
         if not await entry_allowed(self, 'btc_eth_aggressive'):
             return None
         if not await prepare_aggressive_entry(self, symbol, signal):

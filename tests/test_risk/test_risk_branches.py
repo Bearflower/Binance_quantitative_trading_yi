@@ -30,7 +30,7 @@ def signal():
 
 
 def strategy(pool):
-    return NS(db_manager=NS(pool=pool),positions={},risk_config={},
+    return NS(frequency_controller=NS(state_ready=True),db_manager=NS(pool=pool),positions={},risk_config={},
         binance=NS(get_position=AsyncMock(return_value=[]),get_open_orders=AsyncMock(return_value=[]),place_order=AsyncMock(return_value={'orderId':123})),
         _get_symbol_precision=AsyncMock(return_value=copy.deepcopy(FILTERS)),
         _get_grade_risk=lambda grade:{'partial_take_profit':copy.deepcopy(PARTIAL)},

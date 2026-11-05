@@ -319,6 +319,8 @@ async def prepare_aggressive_entry(strategy, symbol, signal):
 
 async def submit_aggressive_entry(strategy,symbol,signal):
     """Only new entry orders pass here. All protective/reduce-only paths stay intact."""
+    if getattr(getattr(strategy, 'frequency_controller', None), 'state_ready', False) is not True:
+        raise EntryDenied('frequency state unavailable')
     store=RiskPolicyStore(strategy.db_manager)
     client_id=signal.get('_risk_client_id')
     if not client_id or signal.get('_risk_stop')!=str(signal.get('initial_stop_loss')):
@@ -333,6 +335,8 @@ async def submit_aggressive_entry(strategy,symbol,signal):
             raise EntryDenied('reserved stop/TP geometry or filters changed')
         if reservation['symbol']!=symbol:
             raise EntryDenied('reservation symbol mismatch')
+        if getattr(getattr(strategy, 'frequency_controller', None), 'state_ready', False) is not True:
+            raise EntryDenied('frequency state unavailable')
         return await strategy.binance.place_order(symbol=symbol,
             side='BUY' if signal['direction']=='LONG' else 'SELL',
             quantity=reservation['quantity'],price=reservation['price'],order_type='LIMIT',client_order_id=client_id)
