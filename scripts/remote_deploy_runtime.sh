@@ -25,6 +25,13 @@ if [ "$DEPLOY_MODE" = "ledger-risk-remediation" ]; then
   python3 "$BUNDLE/scripts/scoped_ledger_risk_release.py" --bundle "$BUNDLE" --sha "$COMMIT_SHA"
   exit $?
 fi
+if [ "$DEPLOY_MODE" = "strategy-risk-successor" ]; then
+  [ "$FUNDING_DEPLOY_ACTION" = "keep" ] || { echo "funding rotation forbidden"; exit 2; }
+  unset COMPOSE_FILE
+  BUNDLE="/root/trading_system/.deploy_tmp/strategy-successor-${COMMIT_SHA}"
+  python3 "$BUNDLE/scripts/scoped_strategy_successor.py" --bundle "$BUNDLE" --sha "$COMMIT_SHA"
+  exit $?
+fi
 if [ -f .deploy_tmp/ledger-risk-active.json ]; then
   echo "Active ledger/risk image pins require reviewed successor; generic deploy blocked"
   exit 2

@@ -26,7 +26,7 @@ on:
     inputs:
       deploy_mode:
         type: choice
-        options: [auto, ledger-risk-remediation]
+        options: [auto, ledger-risk-remediation, strategy-risk-successor]
         default: auto
         description: Explicit remediation selection is required for the release tree
 
@@ -71,7 +71,7 @@ jobs:
           MANUAL_MODE: ${{ inputs.deploy_mode || 'auto' }}
         run: |
           MODE=$(python3 scripts/select_deploy_mode.py --event-name "${{ github.event_name }}" --base "${{ github.event.before }}" --head "${{ github.sha }}" --manual-mode "$MANUAL_MODE")
-          if [ "$MODE" = "ledger-risk-remediation" ]; then
+          if [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ]; then
             FUNDING_ACTION=keep
           else
             FUNDING_ACTION=$(python3 scripts/select_funding_deploy.py --event-name "${{ github.event_name }}" --base "${{ github.event.before }}" --head "${{ github.sha }}")
@@ -147,6 +147,13 @@ jobs:
           if [ "$DEPLOY_MODE" = "ledger-risk-remediation" ]; then
             case "${{ matrix.service.name }}" in
               btc-eth|btc-eth-aggr|new-coin|hrs|ai-tuner|data-backend|dashboard-api) echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
+              *) echo "should_build=false" >> "$GITHUB_OUTPUT" ;;
+            esac
+            exit 0
+          fi
+          if [ "$DEPLOY_MODE" = "strategy-risk-successor" ]; then
+            case "${{ matrix.service.name }}" in
+              btc-eth-aggr|new-coin) echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
               *) echo "should_build=false" >> "$GITHUB_OUTPUT" ;;
             esac
             exit 0
@@ -332,9 +339,11 @@ jobs:
       - name: Choose isolated image tag
         id: image_tag
         run: |
-          if [ "${{ needs.detect.outputs.mode }}" = "ledger-risk-remediation" ]; then
-            echo "value=remediation-${{ github.sha }}" >> "$GITHUB_OUTPUT"
-            REF="${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:remediation-${{ github.sha }}"
+          MODE="${{ needs.detect.outputs.mode }}"
+          if [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ]; then
+            if [ "$MODE" = "ledger-risk-remediation" ]; then PREFIX=remediation; else PREFIX=strategy-successor; fi
+            echo "value=${PREFIX}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
+            REF="${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:${PREFIX}-${{ github.sha }}"
             if docker buildx imagetools inspect "$REF" > "$RUNNER_TEMP/existing-image.txt" 2>/dev/null; then
               EXISTING=$(awk '/^Digest:/ {print $2; exit}' "$RUNNER_TEMP/existing-image.txt")
               [[ "$EXISTING" =~ ^sha256:[0-9a-f]{64}$ ]] || exit 2
@@ -357,14 +366,14 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:${{ steps.image_tag.outputs.value }}
 
       - name: Record immutable image digest
-        if: needs.detect.outputs.mode == 'ledger-risk-remediation' && steps.decide.outputs.should_build == 'true'
+        if: (needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor') && steps.decide.outputs.should_build == 'true'
         run: |
           mkdir -p image-digests
           printf '%s\n' '${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}@${{ steps.image_tag.outputs.existing_digest || steps.image_build.outputs.digest }}' > 'image-digests/${{ matrix.service.name }}.txt'
       - uses: actions/upload-artifact@v4
-        if: needs.detect.outputs.mode == 'ledger-risk-remediation' && steps.decide.outputs.should_build == 'true'
+        if: (needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor') && steps.decide.outputs.should_build == 'true'
         with:
-          name: ledger-risk-digest-${{ matrix.service.name }}
+          name: ${{ needs.detect.outputs.mode }}-digest-${{ matrix.service.name }}
           path: image-digests/*.txt
 
   # ============================================
@@ -454,11 +463,11 @@ jobs:
           exit 255
 
       - name: Block generic uploads when active release pins exist
-        if: needs.detect.outputs.mode != 'ledger-risk-remediation'
+        if: needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor'
         run: ssh 43.156.242.184 'test ! -f /root/trading_system/.deploy_tmp/ledger-risk-active.json'
 
       - name: 📤 上传 docker-compose.yml（scp）
-        if: needs.detect.outputs.mode != 'ledger-risk-remediation'
+        if: needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor'
         run: |
           source /tmp/ci_retry.sh
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp/full-${{ github.run_id }}"
@@ -495,7 +504,7 @@ jobs:
       - uses: actions/download-artifact@v4
         if: needs.detect.outputs.mode == 'ledger-risk-remediation'
         with:
-          pattern: ledger-risk-digest-*
+          pattern: ledger-risk-remediation-digest-*
           path: ${{ runner.temp }}/ledger-risk-digests
           merge-multiple: true
       - name: Upload SHA-scoped release bundle only
@@ -505,6 +514,20 @@ jobs:
           source /tmp/ci_retry.sh
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp && chmod 700 /root/trading_system/.deploy_tmp"
           retry_connect scp -r "${RUNNER_TEMP}/ledger-risk-${{ github.sha }}" 43.156.242.184:/root/trading_system/.deploy_tmp/
+
+      - uses: actions/download-artifact@v4
+        if: needs.detect.outputs.mode == 'strategy-risk-successor'
+        with:
+          pattern: strategy-risk-successor-digest-*
+          path: ${{ runner.temp }}/strategy-successor-digests
+          merge-multiple: true
+      - name: Upload two-image successor bundle
+        if: needs.detect.outputs.mode == 'strategy-risk-successor'
+        run: |
+          python3 scripts/package_strategy_successor.py --sha "${{ github.sha }}" --digests "${RUNNER_TEMP}/strategy-successor-digests" --output "${RUNNER_TEMP}/strategy-successor-${{ github.sha }}"
+          source /tmp/ci_retry.sh
+          retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp && chmod 700 /root/trading_system/.deploy_tmp"
+          retry_connect scp -r "${RUNNER_TEMP}/strategy-successor-${{ github.sha }}" 43.156.242.184:/root/trading_system/.deploy_tmp/
 
       - name: 🚀 生成并上传远程部署脚本
         run: |

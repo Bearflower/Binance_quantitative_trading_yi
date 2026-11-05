@@ -1,0 +1,109 @@
+{
+  "allowed_changes": [
+    {
+      "path": ".github/deploy-modes/strategy-risk-successor-20261105",
+      "status": "A"
+    },
+    {
+      "path": ".github/workflows/deploy.yml",
+      "status": "M"
+    },
+    {
+      "path": "deployment/strategy-risk-successor-20261105.json",
+      "status": "A"
+    },
+    {
+      "path": "docs/reports/aggressive-frequency-recovery-2026-11-05.md",
+      "status": "A"
+    },
+    {
+      "path": "docs/reports/new-coin-recovery-audit-2026-11-05.md",
+      "status": "A"
+    },
+    {
+      "path": "docs/reports/strategy-risk-actions-2026-11-05.md",
+      "status": "A"
+    },
+    {
+      "path": "scripts/package_strategy_successor.py",
+      "status": "A"
+    },
+    {
+      "path": "scripts/remote_deploy_runtime.sh",
+      "status": "M"
+    },
+    {
+      "path": "scripts/render_remote_deploy.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/scoped_strategy_successor.py",
+      "status": "A"
+    },
+    {
+      "path": "scripts/select_deploy_mode.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/strategy_successor_manifest.py",
+      "status": "A"
+    },
+    {
+      "path": "shared/entry_risk_policy.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/strategy.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/new_coin/executor.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/new_coin/strategy.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_aggressive_frequency_readiness.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_risk/test_policy_postgres.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_risk/test_risk_branches.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_scoped_release/test_strategy_successor.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_strategies/test_new_coin_recovery_evidence.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_strategies/test_new_coin_tracking_entry.py",
+      "status": "M"
+    }
+  ],
+  "base_revision": "d77c232881d75f65ae13ee4fcad33946b6c8413a",
+  "expected_pin_overlay_sha256": "2240ce1371ba46cc9999497a480d8d09ebb9fa85ec684dfb97aec41ceb865abe",
+  "release_id": "strategy-risk-successor-20261105",
+  "schema_version": 1,
+  "source_checksums": {
+    ".github/workflows/deploy.yml": "61b13b60a7e124c53bce9bf6f65ae39a73353f8756f5013735605697b690469f",
+    "scripts/package_strategy_successor.py": "8a4f713002893f80585e2abfa138eea99dc1d169966c4fc8edf62a9e3eb75f89",
+    "scripts/remote_deploy_runtime.sh": "75d3d299ca8e41d8f236a710a1e68e0cff32d0e81176e5f5af873bfb9284157a",
+    "scripts/render_remote_deploy.py": "a98262b81f7d76ef0de2ec1e9c537f34a8f5355191fec8fec2a63cf916795e72",
+    "scripts/scoped_strategy_successor.py": "42e3afa9c8827a576c4b6ece95fa55c24054665a2b6d646fa9cfb479051b07cf",
+    "scripts/select_deploy_mode.py": "598b9104d34e76766baee81e6244f3e76e62a8be893a1f02565c6e66f5961ce2",
+    "scripts/strategy_successor_manifest.py": "81b7b90d0eae57409f8b6d3560efe9d1e145d8e418e8c6126d4f0c9edc986d67",
+    "shared/entry_risk_policy.py": "1cf7f041110d4efccddbcfcfa2ce77a62cc6cd8816bd4bc32116995a588b7c53",
+    "strategies/btc_eth_aggressive/strategy.py": "ad21ff9b543b72732fd18551fa15e49eea69786dbd67edf2cc24f50c47514f64",
+    "strategies/new_coin/executor.py": "21416706f0228bdbdc9f8b7cd563d4e3bb7ca2442e5c0942f79941502f8ce7a2",
+    "strategies/new_coin/strategy.py": "37363def6a93157c250164c154bf7d42d3b5d3bf4a23818d156657801ac551bc"
+  }
+}

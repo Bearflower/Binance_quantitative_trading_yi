@@ -20,6 +20,7 @@ EXECUTION_FACTS_MARKER = ".github/deploy-modes/execution-facts-first-create"
 ALLOCATION_RECONCILE_MARKER = ".github/deploy-modes/allocation-reconcile"
 ALLOCATION_RECONCILE_RETRY_MARKER = ".github/deploy-modes/allocation-reconcile-retry-2"
 REMEDIATION_MARKER = ".github/deploy-modes/ledger-risk-remediation-20261104"
+SUCCESSOR_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105"
 ZERO_SHA = "0" * 40
 
 
@@ -37,13 +38,17 @@ def select_deploy_mode(
     if not base or base == ZERO_SHA:
         raise DeployModeError("push base is missing or zero")
 
-    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER}]
+    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER}]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
     if any(path == REMEDIATION_MARKER for _, path in marker_changes):
         if marker_changes != [("A", REMEDIATION_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
             raise DeployModeError("remediation requires one added marker and an exact push base")
         return "ledger-risk-remediation"
+    if any(path == SUCCESSOR_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", SUCCESSOR_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
+            raise DeployModeError("successor requires one added marker and an exact push base")
+        return "strategy-risk-successor"
     if marker_changes and marker_changes[0][0] == "A":
         if marker_changes[0][1] == EXECUTION_FACTS_MARKER:
             return "execution-facts-first-create"
@@ -85,7 +90,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation"])
+    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor"])
     return parser.parse_args(argv)
 
 
@@ -95,9 +100,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.event_name != "push":
             from scripts.ledger_risk_manifest import MANIFEST
             exists = subprocess.run(["git","cat-file","-e",f"{args.head}:{MANIFEST}"],capture_output=True).returncode == 0
-            if exists and args.manual_mode != "ledger-risk-remediation":
+            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor"):
                 raise DeployModeError("manual remediation selection required for this release tree")
-            mode = "ledger-risk-remediation" if args.manual_mode == "ledger-risk-remediation" else "full"
+            mode = args.manual_mode if args.manual_mode != "auto" else "full"
         else:
             if not args.base or args.base == ZERO_SHA:
                 raise DeployModeError("push base is missing or zero")
@@ -117,6 +122,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _git("merge-base","--is-ancestor",base,args.head)
                 validate_tree(manifest,_read_changes(base,args.head),lambda path:_git("show",f"{args.head}:{path}").encode(),base)
             except (ValueError,KeyError,TypeError) as exc:
+                raise DeployModeError(str(exc)) from exc
+        if mode == "strategy-risk-successor":
+            from scripts.strategy_successor_manifest import BASE, MANIFEST, validate_tree
+            try:
+                if args.event_name == "push" and args.base != BASE:
+                    raise DeployModeError("successor push must start from pinned predecessor SHA")
+                manifest = json.loads(_git("show", f"{args.head}:{MANIFEST}"))
+                _git("merge-base", "--is-ancestor", BASE, args.head)
+                validate_tree(manifest, _read_changes(BASE, args.head), lambda path: _git("show", f"{args.head}:{path}").encode())
+            except (ValueError, KeyError, TypeError) as exc:
                 raise DeployModeError(str(exc)) from exc
     except DeployModeError as exc:
         print(f"deploy mode selection failed closed: {exc}", file=sys.stderr)
