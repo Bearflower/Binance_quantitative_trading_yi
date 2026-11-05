@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from scripts.strategy_successor_manifest import BASE, IMAGES, MANIFEST, MARKER, SHA, ReleaseBlocked, validate_tree
+from scripts.strategy_successor_manifest import BASE, IMAGES, MANIFEST, MARKER, RECOVERY_MARKER, SHA, ReleaseBlocked, validate_tree
 from scripts.select_deploy_mode import _read_changes
 
 SCRIPTS = ["scripts/scoped_strategy_successor.py", "scripts/strategy_successor_manifest.py"]
@@ -34,7 +34,7 @@ def package(sha: str, digest_dir: Path, output: Path) -> None:
             raise ReleaseBlocked("invalid immutable image digest: " + name)
         digests[name] = value
     output.mkdir(parents=True, exist_ok=False)
-    for path in [MANIFEST, MARKER, *SCRIPTS]:
+    for path in [MANIFEST, MARKER, RECOVERY_MARKER, *SCRIPTS]:
         dest = output / path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(git("show", sha + ":" + path))

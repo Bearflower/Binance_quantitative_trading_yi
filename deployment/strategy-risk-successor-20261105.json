@@ -5,6 +5,10 @@
       "status": "A"
     },
     {
+      "path": ".github/deploy-modes/strategy-risk-successor-20261105-recovery-1",
+      "status": "A"
+    },
+    {
       "path": ".github/workflows/deploy.yml",
       "status": "M"
     },
@@ -95,12 +99,12 @@
   "schema_version": 1,
   "source_checksums": {
     ".github/workflows/deploy.yml": "61b13b60a7e124c53bce9bf6f65ae39a73353f8756f5013735605697b690469f",
-    "scripts/package_strategy_successor.py": "8a4f713002893f80585e2abfa138eea99dc1d169966c4fc8edf62a9e3eb75f89",
+    "scripts/package_strategy_successor.py": "6ec81de88960f3bcea7208cdc96df13ff66495562cc93ccae487d7ed2305644f",
     "scripts/remote_deploy_runtime.sh": "75d3d299ca8e41d8f236a710a1e68e0cff32d0e81176e5f5af873bfb9284157a",
     "scripts/render_remote_deploy.py": "a98262b81f7d76ef0de2ec1e9c537f34a8f5355191fec8fec2a63cf916795e72",
-    "scripts/scoped_strategy_successor.py": "42e3afa9c8827a576c4b6ece95fa55c24054665a2b6d646fa9cfb479051b07cf",
-    "scripts/select_deploy_mode.py": "598b9104d34e76766baee81e6244f3e76e62a8be893a1f02565c6e66f5961ce2",
-    "scripts/strategy_successor_manifest.py": "81b7b90d0eae57409f8b6d3560efe9d1e145d8e418e8c6126d4f0c9edc986d67",
+    "scripts/scoped_strategy_successor.py": "5bc0a4981482d4e1589f6cf175e268baeccfbcaf6a8597c3b6bb8a3712c38420",
+    "scripts/select_deploy_mode.py": "75d6e5e377a58498cb16ab6a0b90b450dea9b936d6a188ec73944f82ba3732a7",
+    "scripts/strategy_successor_manifest.py": "1e40e83a3d60e366a14e169bff7b92fdba9481d0bdcb9e9237125b4ed0989f83",
     "shared/entry_risk_policy.py": "1cf7f041110d4efccddbcfcfa2ce77a62cc6cd8816bd4bc32116995a588b7c53",
     "strategies/btc_eth_aggressive/strategy.py": "ad21ff9b543b72732fd18551fa15e49eea69786dbd67edf2cc24f50c47514f64",
     "strategies/new_coin/executor.py": "21416706f0228bdbdc9f8b7cd563d4e3bb7ca2442e5c0942f79941502f8ce7a2",

@@ -9,6 +9,7 @@ from pathlib import PurePosixPath
 RELEASE = "strategy-risk-successor-20261105"
 MODE = "strategy-risk-successor"
 MARKER = f".github/deploy-modes/{RELEASE}"
+RECOVERY_MARKER = f".github/deploy-modes/{RELEASE}-recovery-1"
 MANIFEST = f"deployment/{RELEASE}.json"
 BASE = "d77c232881d75f65ae13ee4fcad33946b6c8413a"
 PIN_OVERLAY_SHA256 = "2240ce1371ba46cc9999497a480d8d09ebb9fa85ec684dfb97aec41ceb865abe"
@@ -65,8 +66,9 @@ def validate_tree(manifest: dict, changes: list[tuple[str, str]], read) -> None:
     expected = sorted((row["status"], row["path"]) for row in manifest["allowed_changes"])
     if sorted(changes) != expected:
         raise ReleaseBlocked("push contains changes outside reviewed successor scope")
-    if ("A", MARKER) not in changes or read(MARKER).decode().strip() != MANIFEST:
-        raise ReleaseBlocked("successor marker missing or invalid")
+    for marker in (MARKER, RECOVERY_MARKER):
+        if ("A", marker) not in changes or read(marker).decode().strip() != MANIFEST:
+            raise ReleaseBlocked("successor marker missing or invalid: " + marker)
     if ("A", MANIFEST) not in changes:
         raise ReleaseBlocked("successor manifest must be added in this push")
     for path, expected_hash in manifest["source_checksums"].items():

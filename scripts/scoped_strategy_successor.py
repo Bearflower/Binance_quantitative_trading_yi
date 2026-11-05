@@ -35,6 +35,9 @@ CONTAINERS = {
 }
 STACK_FILES = {"docker-compose.yml", "docker-compose.override.yml", "docker-compose.logging.yml"}
 IMAGE_RE = re.compile(r"ghcr\.io/bearflower/trading-(btc-eth-aggr|new-coin)@sha256:[0-9a-f]{64}\Z")
+PARTIAL_SHA = "9d6c6c61da1e42ea378095ce6065ba463b2fb686"
+PARTIAL_AGGR = "ghcr.io/bearflower/trading-btc-eth-aggr@sha256:415ad8eca74934a21628fd0edeee5e594dec1b28c5476bedad7ee74dfebf31f0"
+PARTIAL_NEW_COIN = "ghcr.io/bearflower/trading-new-coin@sha256:55c801163c3d1d8503a1f117aefe713bdbf0ad7abd50f9c2d370770de0ba3de6"
 
 
 def atomic_json(path: Path, value: dict) -> None:
@@ -56,6 +59,21 @@ def unchanged_exchange(before: dict, after: dict) -> None:
     for key in ("position_exposure", "ordinary_orders_sha256", "algo_orders_sha256", "allocation_sha256"):
         if after.get(key) != before.get(key):
             raise ReleaseBlocked("exchange/allocation transition requires manual review: " + key)
+
+
+def startup_marker_present(logs: str, marker: str) -> bool:
+    return marker in logs or json.dumps(marker, ensure_ascii=True)[1:-1] in logs
+
+
+def validate_partial_state(pin: dict, state: dict) -> None:
+    if pin.get("sha") != BASE or pin.get("status") != "activating" or pin.get("successor_sha") != PARTIAL_SHA:
+        raise ReleaseBlocked("expected failed predecessor attempt not pinned")
+    if state.get("sha") != PARTIAL_SHA or state.get("status") != "failed" or state.get("step") != "ReleaseBlocked":
+        raise ReleaseBlocked("prior failed attempt evidence drift")
+    if state.get("changed") != ["btc-eth-aggressive-strategy"] or state.get("images") != {
+        "btc-eth-aggr": PARTIAL_AGGR, "new-coin": PARTIAL_NEW_COIN,
+    }:
+        raise ReleaseBlocked("prior failed attempt scope/image drift")
 
 
 class Runtime:
@@ -138,8 +156,10 @@ class Runtime:
 
     def preflight(self) -> None:
         self.pin = json.loads(self.pin_file.read_text())
-        if self.pin.get("sha") != BASE or self.pin.get("status") != "active":
-            raise ReleaseBlocked("expected active predecessor pin missing")
+        prior_state = self.root / ".releases" / RELEASE / PARTIAL_SHA / "state.json"
+        if not prior_state.is_file():
+            raise ReleaseBlocked("failed predecessor attempt state missing")
+        validate_partial_state(self.pin, json.loads(prior_state.read_text()))
         if set(self.pin.get("stacks", {})) != {"ai-tuner", "btc-eth-aggressive-strategy", "btc-eth-strategy",
                                               "dashboard-api", "data-backend", "execution-facts-collector", "hrs-strategy", "new-coin-strategy"}:
             raise ReleaseBlocked("pinned service inventory drift")
@@ -166,7 +186,7 @@ class Runtime:
         for service, row in self.all_before.items():
             if row["State"]["Status"] != "running" or row["State"].get("Health", {}).get("Status") != "healthy":
                 raise ReleaseBlocked("predecessor not healthy: " + service)
-            expected_image = original["services"][service]["image"]
+            expected_image = PARTIAL_AGGR if service == "btc-eth-aggressive-strategy" else original["services"][service]["image"]
             image_id = self.run(["docker", "image", "inspect", "--format", "{{.Id}}", expected_image])
             if row["Image"] != image_id:
                 raise ReleaseBlocked("running image differs from active pin: " + service)
@@ -227,7 +247,7 @@ class Runtime:
                 logs = self.run(["docker", "logs", "--since", current["State"]["StartedAt"], current["Id"]], include_stderr=True)
                 if "Traceback (most recent call last)" in logs or "策略执行失败" in logs:
                     raise ReleaseBlocked("strategy startup failed: " + service)
-                if marker in logs:
+                if startup_marker_present(logs, marker):
                     break
                 if time.monotonic() >= startup_deadline:
                     raise ReleaseBlocked("strategy startup evidence missing: " + service)
