@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly dashboard exchange fact coverage maintenance
+
+[Timer]
+OnCalendar=*-*-* *:35:00
+Persistent=true
+RandomizedDelaySec=0
+Unit=dashboard-monthly-facts.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Backfill dashboard exchange facts for current Beijing month
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/flock -n /run/lock/dashboard-monthly-facts.lock /usr/bin/python3 /root/trading_system/.deploy_tmp/dashboard-monthly-facts-host.py
+TimeoutStartSec=35min

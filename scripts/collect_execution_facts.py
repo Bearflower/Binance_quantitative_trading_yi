@@ -42,6 +42,25 @@ def _windows(start_ms: int, end_ms: int):
         left = right
 
 
+def calendar_collection_windows(now: datetime) -> list[tuple[int, int]]:
+    """Cover the active Beijing month and close the prior month after rollover.
+
+    The fixed month starts let the exporter reuse persisted cursors across runs.
+    """
+    if now.tzinfo is None:
+        raise ValueError("now 必须带时区")
+    local_now = now.astimezone(BEIJING)
+    current_start = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    current_start_ms = int(current_start.timestamp() * 1000)
+    end_ms = int(now.timestamp() * 1000)
+    result = []
+    if local_now.day <= 2:
+        previous_start = (current_start - timedelta(days=1)).replace(day=1)
+        result.append((int(previous_start.timestamp() * 1000), current_start_ms))
+    result.append((current_start_ms, end_ms))
+    return result
+
+
 async def collect_window(
     exporter, db, start_ms: int, end_ms: int, *, pause_seconds: float = 0.5,
 ) -> dict:
@@ -98,16 +117,21 @@ async def collect_window(
 
 
 async def _run(args) -> int:
-    now_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    now = datetime.now(timezone.utc)
+    now_ms = int(now.timestamp() * 1000)
     if (args.start_ms is None) != (args.end_ms is None):
         raise ValueError("必须同时提供 --start-ms 和 --end-ms")
-    if args.start_ms is None:
+    if args.calendar_months:
+        if args.start_ms is not None:
+            raise ValueError("--calendar-months 不能与显式窗口同时使用")
+        windows = calendar_collection_windows(now)
+    elif args.start_ms is None:
         if args.days <= 0:
             raise ValueError("--days 必须大于零")
-        start_ms, end_ms = now_ms - args.days * 24 * 60 * 60 * 1000, now_ms
+        windows = [(now_ms - args.days * 24 * 60 * 60 * 1000, now_ms)]
     else:
-        start_ms, end_ms = args.start_ms, args.end_ms
-        if end_ms > now_ms:
+        windows = [(args.start_ms, args.end_ms)]
+        if args.end_ms > now_ms:
             raise ValueError("窗口终点不能位于未来")
     if os.environ.get("EXECUTION_FACTS_DB_WRITE", "").strip().lower() not in {"1", "true", "yes", "on"}:
         raise RuntimeError("持续采集要求 EXECUTION_FACTS_DB_WRITE=true")
@@ -122,11 +146,14 @@ async def _run(args) -> int:
             account_id=args.account_id, api_client=client, sink=sink,
             page_limit=args.page_limit,
         )
-        report = await collect_window(
-            exporter, db, start_ms, end_ms, pause_seconds=args.pause_seconds,
-        )
-        print(json.dumps(report, ensure_ascii=False))
-        return 0 if report["complete"] else 2
+        reports = []
+        for start_ms, end_ms in windows:
+            report = await collect_window(
+                exporter, db, start_ms, end_ms, pause_seconds=args.pause_seconds,
+            )
+            print(json.dumps(report, ensure_ascii=False))
+            reports.append(report)
+        return 0 if all(report["complete"] for report in reports) else 2
     finally:
         if client is not None:
             await client.close()
@@ -138,6 +165,8 @@ def main() -> None:
     parser.add_argument("--start-ms", type=int)
     parser.add_argument("--end-ms", type=int)
     parser.add_argument("--days", type=int, default=2)
+    parser.add_argument("--calendar-months", action="store_true",
+                        help="覆盖北京时间当月；月初两天同时补齐上月末尾")
     parser.add_argument("--account-id", default=os.environ.get("TRADE_ACCOUNT_ID", "default"))
     parser.add_argument("--page-limit", type=int, default=1000)
     parser.add_argument("--pause-seconds", type=float, default=0.5)

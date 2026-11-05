@@ -58,7 +58,7 @@ services:
     command:
       - /bin/sh
       - -c
-      - 'rm -f /tmp/execution-facts-last-success; while python -m scripts.collect_execution_facts --days 2; do touch /tmp/execution-facts-last-success; sleep 3600; done; exit 1'
+      - 'rm -f /tmp/execution-facts-last-success; while python -m scripts.collect_execution_facts --calendar-months; do touch /tmp/execution-facts-last-success; sleep 3600; done; exit 1'
     networks:
       - trading-network
     depends_on:

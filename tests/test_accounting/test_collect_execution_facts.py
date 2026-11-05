@@ -1,8 +1,33 @@
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 import pytest
 
-from scripts.collect_execution_facts import collect_window, MAX_CHUNK_MS
+from scripts.collect_execution_facts import collect_window, calendar_collection_windows, MAX_CHUNK_MS
+from scripts.maintain_monthly_facts_host import windows as host_windows
+
+
+def test_calendar_collection_windows_cover_month_start_in_beijing():
+    now = datetime(2026, 11, 5, 2, 0, tzinfo=timezone.utc)
+    assert calendar_collection_windows(now) == [
+        (1793462400000, int(now.timestamp() * 1000)),
+    ]
+
+
+def test_calendar_collection_windows_finalize_previous_month_after_rollover():
+    now = datetime(2026, 12, 1, 16, 30, tzinfo=timezone.utc)
+    assert calendar_collection_windows(now) == [
+        (1793462400000, 1796054400000),
+        (1796054400000, int(now.timestamp() * 1000)),
+    ]
+
+
+def test_host_bridge_uses_same_calendar_boundaries_with_safe_end():
+    now = datetime(2026, 12, 1, 16, 30, tzinfo=timezone.utc)
+    assert host_windows(now) == [
+        (1793462400000, 1796054400000),
+        (1796054400000, int(now.timestamp() * 1000) - 1000),
+    ]
 
 
 class FakeDb:
