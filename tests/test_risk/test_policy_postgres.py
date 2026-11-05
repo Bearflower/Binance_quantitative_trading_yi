@@ -254,7 +254,7 @@ async def test_reduced_prepare_retry_and_final_submit_uses_exact_reserved_quanti
         filters=dict(stepSize='.1',tickSize='.05',minQty='.1',minNotional='5')
         partial=dict(tp1_close_ratio='.3',tp2_close_ratio='.3')
         exchange=SimpleNamespace(get_position=AsyncMock(return_value=[]),get_open_orders=AsyncMock(return_value=[]),place_order=AsyncMock(return_value={'orderId':123}))
-        strategy=SimpleNamespace(db_manager=SimpleNamespace(pool=pool),positions={},binance=exchange,
+        strategy=SimpleNamespace(frequency_controller=SimpleNamespace(state_ready=True),db_manager=SimpleNamespace(pool=pool),positions={},binance=exchange,
             _get_symbol_precision=AsyncMock(return_value=filters),_get_grade_risk=lambda grade:{'partial_take_profit':partial},risk_config={},
             _owned_exchange_margin_for_allocation=AsyncMock(return_value=0),_get_account_equity=AsyncMock(return_value=1000))
         signal=dict(symbol='AAA',quantity=D('10.03'),entry_price=D('100.034'),leverage=10,initial_stop_loss=95,direction='LONG',tp1_price=110,tp2_price=120,grade='A',timestamp=datetime(2026,11,4))
