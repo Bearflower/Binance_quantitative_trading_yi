@@ -97,7 +97,9 @@ async def test_partial_fill_unknown_keeps_claim_until_terminal_flat():
             status='PARTIALLY_FILLED'; qty='2'
             async def get_order_by_client_id(self,*args):return {'symbol':'AAA','clientOrderId':cid,'status':self.status,'executedQty':'2'}
             async def get_position(self,*args):return [{'symbol':'AAA','positionAmt':self.qty}]
-            async def get_open_orders(self):return [{'clientOrderId':cid}]
+            async def get_um_account_positions(self):return [{'symbol':'AAA','positionAmt':self.qty}]
+            async def get_open_orders(self,symbol=None):return [] if self.status=='CANCELED' else [{'clientOrderId':cid}]
+            async def get_open_algo_orders(self,symbol=None):return []
         exchange=Exchange()
         await store.reconcile('btc_eth_aggressive',exchange)
         async with pool.acquire() as c:
@@ -113,8 +115,30 @@ async def test_partial_fill_unknown_keeps_claim_until_terminal_flat():
             assert await c.fetchval("SELECT claim_state FROM trading.position_claims WHERE symbol='AAA'")=='RELEASED'
     finally:await pool.close()
 
+
 @pytest.mark.asyncio
-async def test_pm_empty_symbol_response_proves_flat_but_invalid_evidence_does_not():
+async def test_zero_symbol_row_cannot_override_nonzero_account_inventory():
+    pool=await setup()
+    try:
+        store=RiskPolicyStore(SimpleNamespace(pool=pool))
+        async def snapshot():return 0,1000,100
+        cid=await store.reserve('btc_eth_aggressive','AAA','zero-row-disagrees',SizedEntry(D(10),D(5),D(100),D(10),D(50),D(25),D(50)),1,snapshot)
+        class Exchange:
+            async def get_order_by_client_id(self,*args):
+                return {'symbol':'AAA','clientOrderId':cid,'status':'FILLED','executedQty':'5'}
+            async def get_position(self,symbol=None):
+                return [{'symbol':'AAA','positionAmt':'0'}]
+            async def get_um_account_positions(self):
+                return [{'symbol':'AAA','positionAmt':'1'}]
+            async def get_open_orders(self,symbol=None):return []
+            async def get_open_algo_orders(self,symbol=None):return []
+        await store.reconcile('btc_eth_aggressive',Exchange())
+        async with pool.acquire() as conn:
+            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation')=='reserved'
+    finally:await pool.close()
+
+@pytest.mark.asyncio
+async def test_pm_empty_symbol_response_needs_independent_flat_evidence():
     pool=await setup()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
@@ -125,7 +149,9 @@ async def test_pm_empty_symbol_response_proves_flat_but_invalid_evidence_does_no
             order_symbol='AAA'; order_client_id=cid
             async def get_order_by_client_id(self,*args):return {'symbol':self.order_symbol,'clientOrderId':self.order_client_id,'status':'CANCELED','executedQty':'0'}
             async def get_position(self,*args):return self.positions
-            async def get_open_orders(self):return []
+            async def get_um_account_positions(self):return []
+            async def get_open_orders(self,*args):return []
+            async def get_open_algo_orders(self,*args):return []
         exchange=Exchange()
         for positions in ([{'symbol':'WRONG','positionAmt':'0'}],[{'symbol':'AAA','positionAmt':'NaN'}]):
             exchange.positions=positions
@@ -142,6 +168,40 @@ async def test_pm_empty_symbol_response_proves_flat_but_invalid_evidence_does_no
         await store.reconcile('btc_eth_aggressive',exchange)
         async with pool.acquire() as c:
             assert await c.fetchval('SELECT state FROM trading.entry_risk_reservation')=='released'
+    finally:await pool.close()
+
+
+@pytest.mark.asyncio
+async def test_empty_symbol_response_releases_only_with_independent_account_proof():
+    pool=await setup()
+    try:
+        store=RiskPolicyStore(SimpleNamespace(pool=pool))
+        async def snapshot():return 0,1000,100
+        cid=await store.reserve('btc_eth_aggressive','AAA','flat-confirmed',SizedEntry(D(10),D(5),D(100),D(10),D(50),D(25),D(50)),1,snapshot)
+        class Exchange:
+            account_positions=[{'symbol':'AAA','positionAmt':'1'}]
+            symbol_orders=[]
+            async def get_order_by_client_id(self,*args):
+                return {'symbol':'AAA','clientOrderId':cid,'status':'FILLED','executedQty':'5'}
+            async def get_position(self,symbol=None):return []
+            async def get_um_account_positions(self):return self.account_positions
+            async def get_open_orders(self,symbol=None):
+                return self.symbol_orders if symbol else []
+            async def get_open_algo_orders(self,symbol=None):return []
+        exchange=Exchange()
+        await store.reconcile('btc_eth_aggressive',exchange)
+        async with pool.acquire() as conn:
+            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation')=='reserved'
+        exchange.account_positions=[]
+        exchange.symbol_orders=[{'orderId':123}]
+        await store.reconcile('btc_eth_aggressive',exchange)
+        async with pool.acquire() as conn:
+            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation')=='reserved'
+        exchange.symbol_orders=[]
+        await store.reconcile('btc_eth_aggressive',exchange)
+        async with pool.acquire() as conn:
+            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation')=='released'
+            assert await conn.fetchval("SELECT claim_state FROM trading.position_claims WHERE symbol='AAA'")=='RELEASED'
     finally:await pool.close()
 
 @pytest.mark.asyncio

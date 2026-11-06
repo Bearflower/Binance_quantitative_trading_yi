@@ -199,9 +199,29 @@ class RiskPolicyStore:
                     if any(p.get('symbol') != row['symbol'] for p in positions):
                         continue
                     matching = [p for p in positions if p.get('symbol') == row['symbol']]
-                    # PM positionRisk omits a symbol after it becomes flat. A
-                    # successful symbol-scoped empty response is therefore flat.
-                    zero = all(number(abs(Decimal(str(p['positionAmt']))),zero=True)==0 for p in matching)
+                    zero = bool(matching) and all(number(abs(Decimal(str(p['positionAmt']))),zero=True)==0 for p in matching)
+                    if terminal and (positions == [] or zero):
+                        # PM positionRisk can omit a flat symbol. An empty filtered
+                        # response alone is not proof; require the independent UM
+                        # account inventory and unfiltered risk inventory to agree,
+                        # with no orders left that could create/reduce a position.
+                        account_positions = await exchange.get_um_account_positions()
+                        all_positions = await exchange.get_position()
+                        ordinary = await exchange.get_open_orders(row['symbol'])
+                        algos = await exchange.get_open_algo_orders(row['symbol'])
+                        zero = False
+                        if all(isinstance(value,list) for value in
+                               (account_positions,all_positions,ordinary,algos)):
+                            flat_inventories = all(
+                                not any(p.get('symbol') == row['symbol'] and
+                                        number(abs(Decimal(str(p['positionAmt']))),zero=True) != 0
+                                        for p in inventory)
+                                for inventory in (account_positions,all_positions)
+                            )
+                            # Both calls are symbol-scoped. Even an order lacking a
+                            # symbol field must block release rather than be ignored.
+                            no_orders = not ordinary and not algos
+                            zero = flat_inventories and no_orders
                     executed = number(order['executedQty'],zero=True)
                     # Filled orders only release after position is proven flat. Until then
                     # reserve full margin plus actual holdings (conservative double count).

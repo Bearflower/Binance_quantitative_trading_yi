@@ -1041,6 +1041,15 @@ class BinanceClient:
         
         endpoint = "/papi/v1/um/positionRisk" if self.use_unified_account else "/fapi/v2/positionRisk"
         return await self._request("GET", endpoint, params)
+
+    async def get_um_account_positions(self) -> List[Dict]:
+        """Return the complete PM UM account position array for flat-state checks."""
+        if not self.use_unified_account:
+            raise ValueError("UM account V2 positions require Portfolio Margin")
+        account = await self._request("GET", "/papi/v2/um/account", {})
+        if not isinstance(account, dict) or not isinstance(account.get("positions"), list):
+            raise ValueError("UM account V2 positions response is incomplete")
+        return account["positions"]
     
     async def cancel_order(
         self,
