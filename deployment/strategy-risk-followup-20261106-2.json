@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "release_id": "strategy-risk-followup-20261106-2",
+  "base_revision": "8f9b4e534b226821284b3802d701819a255952a2",
+  "active_pin_sha": "5ddc9cd77d9d473402d1565cbc38f92b61a21f16",
+  "expected_pin_overlay_sha256": "66a10eed531119ccf766e235b185e980187b8cb428355bd49e9b5a8864c80a1a",
+  "allowed_changes": [
+    {
+      "status": "A",
+      "path": ".github/deploy-modes/strategy-risk-followup-20261106-2"
+    },
+    {
+      "status": "A",
+      "path": "deployment/strategy-risk-followup-20261106-2.json"
+    },
+    {
+      "status": "M",
+      "path": "scripts/risk_followup_manifest.py"
+    },
+    {
+      "status": "M",
+      "path": "scripts/scoped_risk_followup.py"
+    },
+    {
+      "status": "M",
+      "path": "scripts/select_deploy_mode.py"
+    },
+    {
+      "status": "M",
+      "path": "tests/test_scoped_release/test_risk_followup.py"
+    }
+  ],
+  "source_checksums": {
+    ".github/workflows/deploy.yml": "c70397d8a1118c454f4830daa96512e3cfa2b54aea18476cf62f962769ad4e3c",
+    "scripts/package_risk_followup.py": "51f695a8ccff42b6ed27dabbb37f6faad14cb73e9142b640bb334e139c723a58",
+    "scripts/remote_deploy_runtime.sh": "c44b680bbea455c1c24d3a10b731e71c462b82766a5c761f2ae1f2dba5087be6",
+    "scripts/render_remote_deploy.py": "21358274a01befcd3b3be4daa9e8ff214692fc499da45e3a847ea5dfe37e0091",
+    "scripts/risk_followup_manifest.py": "17a351cd95152db71c5bea2f7c36aa6a8e073b9f571c0237314bdfebfcd4e104",
+    "scripts/scoped_risk_followup.py": "cce9ffe12f7c7c1fd2f085370efb4b038c1d721cd3ac05365c65f09dc6e45f06",
+    "scripts/select_deploy_mode.py": "1d45e2fcffeb92a563c0c017d9f7fc1aa78b6c98b2920bb6c959efd307540d47",
+    "scripts/verify_ledger_risk_release.py": "81f4aec744df4590e05ba3659ef6921a95cbdc93e621e0471467dfd28a634df3",
+    "shared/entry_risk_policy.py": "b1da7761df7b3ea379522274a6575d4e1a2f8f81d4fbf248a6829e7b2337f9c8",
+    "strategies/btc_eth_aggressive/strategy.py": "d16f4c4f396b02c1a7d46003608f5dcdf5c95b7b460079054c042d2f5772d53e"
+  }
+}

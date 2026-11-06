@@ -1,17 +1,20 @@
-"""Fixed scope for the 2026-11-06 successor to the active image pin."""
+"""Fixed scope for the 2026-11-06 second followup release, advancing the
+active pin placed by the manual followup script (sha=5ddc9cd) to a new
+reviewed successor commit.  Only hrs and btc-eth-aggr images are rebuilt
+and activated."""
 from __future__ import annotations
 
 import hashlib
 import re
 from pathlib import PurePosixPath
 
-RELEASE = "strategy-risk-followup-20261106"
+RELEASE = "strategy-risk-followup-20261106-2"
 MODE = "strategy-risk-followup"
 MARKER = f".github/deploy-modes/{RELEASE}"
 MANIFEST = f"deployment/{RELEASE}.json"
-BASE = "4ca5230a591f52742d737ac82f12947db4fd809c"
-ACTIVE_PIN_SHA = "4ca5230a591f52742d737ac82f12947db4fd809c"
-PIN_OVERLAY_SHA256 = "d8be15cda5f632c8c755e8fd6954ab96f62423bcdb5676bc777594f3d39327a1"
+BASE = "8f9b4e534b226821284b3802d701819a255952a2"
+ACTIVE_PIN_SHA = "5ddc9cd77d9d473402d1565cbc38f92b61a21f16"
+PIN_OVERLAY_SHA256 = "66a10eed531119ccf766e235b185e980187b8cb428355bd49e9b5a8864c80a1a"
 IMAGES = {
     "hrs": "hrs-strategy",
     "btc-eth-aggr": "btc-eth-aggressive-strategy",

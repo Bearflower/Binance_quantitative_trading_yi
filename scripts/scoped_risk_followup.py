@@ -67,7 +67,13 @@ def validate_active_state(pin: dict, state: dict) -> None:
         raise ReleaseBlocked("expected active predecessor pin changed")
     if state.get("sha") != ACTIVE_PIN_SHA or state.get("status") != "complete":
         raise ReleaseBlocked("active predecessor completion evidence drift")
-    if state.get("exchange_after", {}).get("ok") is not True:
+    # 兼容：服务器上人工后继脚本写入的 state.json 只有 gate_before/gate_after
+    # （gate_after.ok=true, read_only=true），没有 exchange_after；后续正式发布由
+    # 本脚本激活，其自己的前后置门仍由 live gate 校验（run-time 会生成 exchange-after.json）。
+    exchange = state.get("exchange_after")
+    if not isinstance(exchange, dict) or exchange.get("ok") is not True:
+        exchange = state.get("gate_after")
+    if not isinstance(exchange, dict) or exchange.get("ok") is not True:
         raise ReleaseBlocked("predecessor exchange gate did not complete")
 
 

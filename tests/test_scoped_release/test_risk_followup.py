@@ -59,6 +59,36 @@ def test_followup_requires_completed_active_predecessor_and_exchange_proof():
             validate_active_state(changed_pin, changed_state)
 
 
+def test_followup_accepts_gate_after_when_exchange_after_absent():
+    """兼容人工后继脚本写入的 state.json：只有 gate_after 没有 exchange_after。"""
+    pin = {"sha": ACTIVE_PIN_SHA, "status": "active"}
+    # 只有 gate_after.ok=True 时通过
+    validate_active_state(
+        pin,
+        {"sha": ACTIVE_PIN_SHA, "status": "complete", "gate_after": {"ok": True}},
+    )
+    # exchange_after 优先于 gate_after
+    validate_active_state(
+        pin,
+        {"sha": ACTIVE_PIN_SHA, "status": "complete",
+         "exchange_after": {"ok": True}, "gate_after": {"ok": False}},
+    )
+
+
+def test_followup_rejects_invalid_gate_after_forms():
+    pin = {"sha": ACTIVE_PIN_SHA, "status": "active"}
+    base_state = {"sha": ACTIVE_PIN_SHA, "status": "complete"}
+    for bad_state in [
+        dict(base_state, gate_after={"ok": False}),
+        dict(base_state, gate_after={}),
+        dict(base_state, gate_after=True),
+        dict(base_state, gate_after="not-a-dict"),
+        dict(base_state, exchange_after={"ok": False}, gate_after={"ok": False}),
+    ]:
+        with pytest.raises(ReleaseBlocked):
+            validate_active_state(pin, bad_state)
+
+
 def test_followup_preserves_config_exchange_inventory_and_startup_marker():
     before = {"image": "old", "environment": ["A=1"]}
     assert image_only(before, dict(before, image="new"))
