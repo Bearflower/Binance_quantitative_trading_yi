@@ -2683,6 +2683,12 @@ class BTCEthStrategy:
         """加仓主流程（v6.28 加仓统一托管）：开新仓成交 → 取消旧单 → 合并 → 重建条件单。"""
         # Remediation is entry-only; never cancel existing protection for an add.
         if not await entry_allowed(self, 'btc_eth_aggressive', adding=True):
+            logger.info(
+                f"{symbol} 入场风控禁止加仓，跳过",
+                direction=signal.get('direction'),
+                grade=signal.get('grade'),
+            )
+            signal['skip_reason'] = "入场风控禁止加仓（当前风控策略仅允许新开仓）"
             return False
         if position.rebuild_pending:
             signal['skip_reason'] = "保护单重建待完成，暂缓加仓"
