@@ -2238,13 +2238,19 @@ class NewCoinStrategy(BaseStrategy):
         6. 止损监控列表
         """
         try:
-            state = await self.db.fetch_one(
+            row = await self.db.fetch_one(
                 "SELECT state_data FROM strategy_states WHERE strategy_name = $1 AND state_key = $2",
                 self.strategy_name,
                 'main'
             )
 
-            if state:
+            if row:
+                import json
+                state = row.get('state_data')
+                if isinstance(state, str):
+                    state = json.loads(state)
+                if not isinstance(state, dict):
+                    raise ValueError("new_coin state_data is not a JSON object")
                 # 恢复持仓
                 self.positions = state.get('positions', {})
                 
@@ -2358,6 +2364,8 @@ class NewCoinStrategy(BaseStrategy):
             self.cumulative_pnl = Decimal('0')
             self.peak_pnl = None
             self.drawdown_pause_until = None
+            # 不能在持久状态读取失败后按零连亏数启动交易。
+            raise
 
         # 基线重建（R4）：与交易所对账后重建持仓基线，完成前禁止开新仓
         await self._rebuild_position_baseline()
