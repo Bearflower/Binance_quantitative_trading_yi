@@ -22,6 +22,7 @@ ALLOCATION_RECONCILE_RETRY_MARKER = ".github/deploy-modes/allocation-reconcile-r
 REMEDIATION_MARKER = ".github/deploy-modes/ledger-risk-remediation-20261104"
 SUCCESSOR_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105"
 SUCCESSOR_RECOVERY_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105-recovery-1"
+RISK_FOLLOWUP_MARKER = ".github/deploy-modes/strategy-risk-followup-20261106"
 ZERO_SHA = "0" * 40
 
 
@@ -39,7 +40,7 @@ def select_deploy_mode(
     if not base or base == ZERO_SHA:
         raise DeployModeError("push base is missing or zero")
 
-    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER}]
+    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER}]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
     if any(path == REMEDIATION_MARKER for _, path in marker_changes):
@@ -50,6 +51,10 @@ def select_deploy_mode(
         if marker_changes not in ([("A", SUCCESSOR_MARKER)], [("A", SUCCESSOR_RECOVERY_MARKER)]) or not re.fullmatch(r"[0-9a-f]{40}", base):
             raise DeployModeError("successor requires one added marker and an exact push base")
         return "strategy-risk-successor"
+    if any(path == RISK_FOLLOWUP_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", RISK_FOLLOWUP_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
+            raise DeployModeError("risk followup requires one added marker and an exact push base")
+        return "strategy-risk-followup"
     if marker_changes and marker_changes[0][0] == "A":
         if marker_changes[0][1] == EXECUTION_FACTS_MARKER:
             return "execution-facts-first-create"
@@ -91,7 +96,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor"])
+    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup"])
     return parser.parse_args(argv)
 
 
@@ -101,7 +106,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.event_name != "push":
             from scripts.ledger_risk_manifest import MANIFEST
             exists = subprocess.run(["git","cat-file","-e",f"{args.head}:{MANIFEST}"],capture_output=True).returncode == 0
-            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor"):
+            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup"):
                 raise DeployModeError("manual remediation selection required for this release tree")
             mode = args.manual_mode if args.manual_mode != "auto" else "full"
         else:
@@ -131,6 +136,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                     raise DeployModeError("successor push must start from reviewed predecessor or failed attempt")
                 manifest = json.loads(_git("show", f"{args.head}:{MANIFEST}"))
                 _git("merge-base", "--is-ancestor", BASE, args.head)
+                validate_tree(manifest, _read_changes(BASE, args.head), lambda path: _git("show", f"{args.head}:{path}").encode())
+            except (ValueError, KeyError, TypeError) as exc:
+                raise DeployModeError(str(exc)) from exc
+        if mode == "strategy-risk-followup":
+            from scripts.risk_followup_manifest import BASE, MANIFEST, validate_tree
+            try:
+                if args.event_name == "push" and args.base != BASE:
+                    raise DeployModeError("risk followup push must start from reviewed base")
+                manifest = json.loads(_git("show", f"{args.head}:{MANIFEST}"))
                 validate_tree(manifest, _read_changes(BASE, args.head), lambda path: _git("show", f"{args.head}:{path}").encode())
             except (ValueError, KeyError, TypeError) as exc:
                 raise DeployModeError(str(exc)) from exc
