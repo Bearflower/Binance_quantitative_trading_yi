@@ -52,6 +52,32 @@ def verify_exchange(positions,orders,algos):
 
 def hash_rows(rows):return hashlib.sha256(json.dumps(rows,sort_keys=True,default=str,separators=(',',':')).encode()).hexdigest()
 
+async def verify_reservations(rows,positions,client):
+    """An occupied reservation is valid only while its proven fill is still open.
+
+    Reconciliation deliberately retains full margin until flat. Do not treat a
+    protected live position as a stale reservation, or release one here.
+    """
+    for row in rows:
+        if row['state']!='submitting' or row['strategy_id']!='btc_eth_aggressive':
+            raise GateError('unresolved entry reservation requires reconciliation')
+        symbol=row['symbol'];client_id=row['client_order_id']
+        order=await client.get_order_by_client_id(symbol,client_id)
+        if not isinstance(order,dict) or order.get('symbol')!=symbol or order.get('clientOrderId')!=client_id:
+            raise GateError('entry reservation exchange order unverified')
+        if order.get('status') not in ('FILLED','CANCELED','EXPIRED','EXPIRED_IN_MATCH') or true(order.get('reduceOnly')):
+            raise GateError('entry reservation order is not terminal fill')
+        reserved=positive(row['quantity']);original=positive(order.get('origQty'))
+        executed=positive(order.get('executedQty'))
+        if reserved!=original or executed>reserved:
+            raise GateError('entry reservation order quantity mismatch')
+        matching=[p for p in positions if p.get('symbol')==symbol and Decimal(str(p.get('positionAmt','0')))!=0]
+        if len(matching)!=1:
+            raise GateError('unresolved entry reservation requires reconciliation')
+        amount=Decimal(str(matching[0]['positionAmt']))
+        if not amount.is_finite() or abs(amount)>executed or order.get('side')!=('BUY' if amount>0 else 'SELL'):
+            raise GateError('entry reservation position mismatch')
+
 def verify_reports(rows,account):
     from shared.accounting.published_report import REPORT_VERSION
     result=[]
@@ -98,6 +124,7 @@ async def check(args):
     client=None
     try:
         reports={'status':'not_checked','reports':[]}
+        reservations=[]
         async with pool.acquire() as conn:
             allocations=[dict(r) for r in await conn.fetch('SELECT * FROM public.capital_allocation ORDER BY month')]
             if args.stage not in ('preflight',):
@@ -110,7 +137,7 @@ async def check(args):
                     if not await conn.fetchval("SELECT has_table_privilege(current_user,$1,'SELECT')",'trading.'+table):raise GateError('missing runtime table permission')
                 for trigger in ['ledger_report_immutable','immutable_risk_policy','immutable_risk_audit','immutable_income','immutable_income_raw','income_attempt_guard','income_attempt_audit','income_conflict_immutable','income_attempt_event_immutable','protect_reserved_entry_claim']:
                     if not await conn.fetchval("SELECT count(*) FROM pg_trigger t JOIN pg_class c ON c.oid=t.tgrelid JOIN pg_namespace n ON n.oid=c.relnamespace WHERE tgname=$1 AND tgenabled IN ('O','A') AND n.nspname='trading'",trigger):raise GateError('missing enabled integrity trigger')
-                if await conn.fetchval("SELECT count(*) FROM trading.entry_risk_reservation WHERE account_id=$1 AND state<>'released'",args.account):raise GateError('unresolved entry reservation requires reconciliation')
+                reservations=[dict(r) for r in await conn.fetch("SELECT client_order_id,strategy_id,symbol,state,quantity FROM trading.entry_risk_reservation WHERE account_id=$1 AND state<>'released'",args.account)]
         if args.stage not in ('preflight','schema','pre_activation'):
             store=RiskPolicyStore(SimpleNamespace(pool=pool),args.account)
             for strategy,mode in [('hrs','monitor_only'),('btc_eth_aggressive','reduced' if args.require_reduced else 'monitor_only'),('btc_eth','capped'),('new_coin','capped')]:
@@ -126,6 +153,7 @@ async def check(args):
         if code or client is None:raise GateError('exchange client unavailable')
         positions=await client.get_position();orders=await client.get_open_orders();algos=await client.get_open_algo_orders()
         verify_exchange(positions,orders,algos)
+        await verify_reservations(reservations,positions,client)
         info=await client.get_account_info()
         equity=positive(info.get('accountEquity',info.get('totalMarginBalance')))
         return dict(ok=True,stage=args.stage,account=args.account,allocation_sha256=hash_rows(allocations),

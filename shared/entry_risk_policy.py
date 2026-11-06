@@ -196,8 +196,12 @@ class RiskPolicyStore:
                     if order.get('symbol') != row['symbol'] or order.get('clientOrderId') != row['client_order_id']:
                         continue
                     terminal = order.get('status') in ('FILLED','CANCELED','EXPIRED','REJECTED','EXPIRED_IN_MATCH')
+                    if any(p.get('symbol') != row['symbol'] for p in positions):
+                        continue
                     matching = [p for p in positions if p.get('symbol') == row['symbol']]
-                    zero = bool(matching) and all(number(abs(Decimal(str(p['positionAmt']))),zero=True)==0 for p in matching)
+                    # PM positionRisk omits a symbol after it becomes flat. A
+                    # successful symbol-scoped empty response is therefore flat.
+                    zero = all(number(abs(Decimal(str(p['positionAmt']))),zero=True)==0 for p in matching)
                     executed = number(order['executedQty'],zero=True)
                     # Filled orders only release after position is proven flat. Until then
                     # reserve full margin plus actual holdings (conservative double count).

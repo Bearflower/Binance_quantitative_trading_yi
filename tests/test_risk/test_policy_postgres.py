@@ -114,7 +114,7 @@ async def test_partial_fill_unknown_keeps_claim_until_terminal_flat():
     finally:await pool.close()
 
 @pytest.mark.asyncio
-async def test_empty_or_wrong_symbol_never_proves_flat():
+async def test_pm_empty_symbol_response_proves_flat_but_invalid_evidence_does_not():
     pool=await setup()
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
@@ -127,17 +127,21 @@ async def test_empty_or_wrong_symbol_never_proves_flat():
             async def get_position(self,*args):return self.positions
             async def get_open_orders(self):return []
         exchange=Exchange()
-        for positions in ([],[{'symbol':'WRONG','positionAmt':'0'}],[{'symbol':'AAA','positionAmt':'NaN'}]):
+        for positions in ([{'symbol':'WRONG','positionAmt':'0'}],[{'symbol':'AAA','positionAmt':'NaN'}]):
             exchange.positions=positions
             await store.reconcile('btc_eth_aggressive',exchange)
             async with pool.acquire() as c:
                 assert await c.fetchval('SELECT state FROM trading.entry_risk_reservation')=='reserved'
-        exchange.positions=[{'symbol':'AAA','positionAmt':'0'}]
+        exchange.positions=[]
         for order_symbol,order_client_id in [('WRONG',cid),('AAA','WRONG')]:
             exchange.order_symbol,exchange.order_client_id=order_symbol,order_client_id
             await store.reconcile('btc_eth_aggressive',exchange)
             async with pool.acquire() as c:
                 assert await c.fetchval('SELECT state FROM trading.entry_risk_reservation')=='reserved'
+        exchange.order_symbol,exchange.order_client_id='AAA',cid
+        await store.reconcile('btc_eth_aggressive',exchange)
+        async with pool.acquire() as c:
+            assert await c.fetchval('SELECT state FROM trading.entry_risk_reservation')=='released'
     finally:await pool.close()
 
 @pytest.mark.asyncio

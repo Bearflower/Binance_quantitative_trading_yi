@@ -1,0 +1,85 @@
+{
+  "active_pin_sha": "4ca5230a591f52742d737ac82f12947db4fd809c",
+  "allowed_changes": [
+    {
+      "path": ".github/deploy-modes/strategy-risk-followup-20261106",
+      "status": "A"
+    },
+    {
+      "path": ".github/workflows/deploy.yml",
+      "status": "M"
+    },
+    {
+      "path": "deployment/strategy-risk-followup-20261106.json",
+      "status": "A"
+    },
+    {
+      "path": "docs/reports/strategy-risk-followup-2026-11-06.md",
+      "status": "A"
+    },
+    {
+      "path": "scripts/package_risk_followup.py",
+      "status": "A"
+    },
+    {
+      "path": "scripts/remote_deploy_runtime.sh",
+      "status": "M"
+    },
+    {
+      "path": "scripts/render_remote_deploy.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/risk_followup_manifest.py",
+      "status": "A"
+    },
+    {
+      "path": "scripts/scoped_risk_followup.py",
+      "status": "A"
+    },
+    {
+      "path": "scripts/select_deploy_mode.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/verify_ledger_risk_release.py",
+      "status": "M"
+    },
+    {
+      "path": "shared/entry_risk_policy.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_risk/test_policy_postgres.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_scoped_release/test_probes.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_scoped_release/test_risk_followup.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_shared/test_entry_risk_reconcile_flat.py",
+      "status": "A"
+    }
+  ],
+  "base_revision": "4ca5230a591f52742d737ac82f12947db4fd809c",
+  "expected_pin_overlay_sha256": "d8be15cda5f632c8c755e8fd6954ab96f62423bcdb5676bc777594f3d39327a1",
+  "release_id": "strategy-risk-followup-20261106",
+  "schema_version": 1,
+  "source_checksums": {
+    ".github/workflows/deploy.yml": "c70397d8a1118c454f4830daa96512e3cfa2b54aea18476cf62f962769ad4e3c",
+    "scripts/package_risk_followup.py": "51f695a8ccff42b6ed27dabbb37f6faad14cb73e9142b640bb334e139c723a58",
+    "scripts/remote_deploy_runtime.sh": "c44b680bbea455c1c24d3a10b731e71c462b82766a5c761f2ae1f2dba5087be6",
+    "scripts/render_remote_deploy.py": "21358274a01befcd3b3be4daa9e8ff214692fc499da45e3a847ea5dfe37e0091",
+    "scripts/risk_followup_manifest.py": "11f59b9e4e35a11544aac0cbec66d8b9e882b3a8bfe74b048fac9806c1efee26",
+    "scripts/scoped_risk_followup.py": "bd2338a458eca44224cdc9400acb2df54631ddf1f2fb41c7145a641b354666ed",
+    "scripts/select_deploy_mode.py": "371f7a6e30837e80e41a4763e1fa42dec61dee48cc1d87802ea1f54d5e5abdfc",
+    "scripts/verify_ledger_risk_release.py": "81f4aec744df4590e05ba3659ef6921a95cbdc93e621e0471467dfd28a634df3",
+    "shared/entry_risk_policy.py": "2f891a76f151603f38eb1a336881ae59a6b06f70fa99e8d2eb9667dc47d4074a",
+    "strategies/btc_eth_aggressive/strategy.py": "ad21ff9b543b72732fd18551fa15e49eea69786dbd67edf2cc24f50c47514f64"
+  }
+}
