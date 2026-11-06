@@ -1,5 +1,35 @@
 import pytest
 
+
+@pytest.mark.asyncio
+async def test_filled_open_entry_reservation_is_valid_release_evidence():
+    from scripts.verify_ledger_risk_release import verify_reservations, GateError
+
+    row = dict(client_order_id='risk_test', account_id='default',
+               strategy_id='btc_eth_aggressive', symbol='SOLUSDT',
+               state='submitting', quantity='0.34')
+    position = dict(symbol='SOLUSDT', positionSide='BOTH', positionAmt='-0.34',
+                    entryPrice='100', markPrice='100')
+    order = dict(symbol='SOLUSDT', clientOrderId='risk_test', status='FILLED',
+                 side='SELL', origQty='0.34', executedQty='0.34')
+
+    class Exchange:
+        async def get_order_by_client_id(self, symbol, client_id):
+            return order
+
+    await verify_reservations([row], [position], Exchange())
+    for changed in (dict(order, status='NEW'), dict(order, executedQty='0'),
+                    dict(order, clientOrderId='wrong'), dict(order, origQty='0.68')):
+        order = changed
+        with pytest.raises(GateError):
+            await verify_reservations([row], [position], Exchange())
+    order = dict(symbol='SOLUSDT', clientOrderId='risk_test', status='FILLED',
+                 side='SELL', origQty='0.34', executedQty='0.34')
+    for positions in ([], [dict(position, positionAmt='-0.68')],
+                      [dict(position, positionAmt='0.34')]):
+        with pytest.raises(GateError):
+            await verify_reservations([row], positions, Exchange())
+
 def test_unknown_or_unprotected_position_blocks_and_close_position_stop_counts():
     from scripts.verify_ledger_risk_release import verify_exchange,GateError
     position={'symbol':'ARIAUSDT','positionAmt':'-42','entryPrice':'1','positionSide':'BOTH'}
