@@ -410,11 +410,13 @@ class FrequencyController:
         current_time = current_time.astimezone()
         today = current_time.date().isoformat()
         
-        self.daily_trades[today] = self.daily_trades.get(today, 0) + 1
-        
-        if symbol not in self.symbol_daily_trades:
-            self.symbol_daily_trades[symbol] = {}
-        self.symbol_daily_trades[symbol][today] = self.symbol_daily_trades[symbol].get(today, 0) + 1
+        # Exit PnL updates loss controls and cooldown time, but it is not a
+        # second entry for daily trade-count limits.
+        if pnl is None:
+            self.daily_trades[today] = self.daily_trades.get(today, 0) + 1
+            if symbol not in self.symbol_daily_trades:
+                self.symbol_daily_trades[symbol] = {}
+            self.symbol_daily_trades[symbol][today] = self.symbol_daily_trades[symbol].get(today, 0) + 1
         
         self.symbol_last_trade_time[symbol] = self.utc_time(current_time)
         

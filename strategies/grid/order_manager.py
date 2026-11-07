@@ -61,6 +61,7 @@ class OrderManager:
         # 交易配置
         trading_config = config.get('trading', {})
         self.time_in_force = trading_config.get('time_in_force', 'GTC')
+        self.semi_mode = config.get('signal_bot', {}).get('mode') == 'semi'
 
         logger.info(
             "订单管理器初始化",
@@ -86,6 +87,9 @@ class OrderManager:
         Raises:
             ValueError: 参数验证失败
         """
+        if self.semi_mode:
+            logger.warning("半自动信号模式禁止直接挂网格实盘单", symbol=symbol)
+            return None
         # 参数验证
         if not symbol or not isinstance(symbol, str):
             raise ValueError(f"交易对必须是非空字符串，实际为 {symbol}")

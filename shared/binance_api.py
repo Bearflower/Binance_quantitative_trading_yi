@@ -606,6 +606,23 @@ class BinanceClient:
         if not isinstance(data, list):
             raise ValueError(f"响应数据格式错误: 期望列表，实际为 {type(data).__name__}")
         return data
+
+    async def get_algo_order(self, algo_id: int) -> Dict:
+        """Read one PM UM conditional order, including its actualOrderId after trigger.
+
+        A triggered STOP is not evidence of a fill; callers must separately verify
+        the ordinary order and userTrades before treating it as an exit.
+        """
+        if not self.use_unified_account:
+            raise NotImplementedError("PM UM algo order lookup requires a unified account")
+        if isinstance(algo_id, bool) or not isinstance(algo_id, int) or algo_id <= 0:
+            raise ValueError("algoId 必须为正整数")
+        data = await self._request(
+            "GET", "/papi/v1/um/algo/algoOrder", {"algoId": algo_id}, signed=True
+        )
+        if not isinstance(data, dict) or str(data.get("algoId")) != str(algo_id):
+            raise ValueError("algoId 查询响应身份不匹配")
+        return data
     
     async def place_order(
         self,

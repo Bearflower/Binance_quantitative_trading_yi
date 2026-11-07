@@ -72,7 +72,9 @@ class GridStrategy(BaseStrategy):
         self.position_manager: Optional[PositionManager] = None
         self.risk_manager: Optional[RiskManager] = None
         self.signal_bot: Optional[GridSignalBot] = None
-        self.is_signal_mode: bool = False
+        # The configured mode controls live order permission even when the
+        # optional signal bot is disabled or fails to initialize.
+        self.is_signal_mode: bool = config.get('signal_bot', {}).get('mode') == 'semi'
 
         logger.info(
             "网格策略初始化",

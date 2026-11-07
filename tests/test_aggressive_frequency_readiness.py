@@ -215,6 +215,22 @@ async def test_post_restore_new_loss_accumulates_on_restored_week():
     assert fc._calculate_weekly_pnl(fc._get_week_key(datetime.now())) == Decimal('-80')
     assert not fc.can_trade('AAA', datetime.now())[0]
 
+
+@pytest.mark.asyncio
+async def test_exit_pnl_does_not_count_as_another_entry():
+    now = datetime.now().astimezone()
+    db = SimpleNamespace(fetch_all=AsyncMock(return_value=[]), execute=AsyncMock())
+    fc = FrequencyController(dict(CONFIG, consecutive_loss_pause=99, pause_duration_hours=24), db)
+    await fc.load_state()
+    await fc.record_trade('AAA', now)
+    await fc.record_trade('AAA', now + timedelta(minutes=3), Decimal('-1'))
+
+    today = now.date().isoformat()
+    assert fc.daily_trades[today] == 1
+    assert fc.symbol_daily_trades['AAA'][today] == 1
+    assert fc.daily_pnl[today] == Decimal('-1')
+    assert fc.symbol_last_trade_time['AAA'] == (now + timedelta(minutes=3)).astimezone(timezone.utc)
+
 @pytest.mark.asyncio
 async def test_ready_entry_paths_continue_to_policy_gate(monkeypatch):
     import strategies.btc_eth_aggressive.strategy as module
