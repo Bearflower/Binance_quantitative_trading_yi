@@ -1,5 +1,6 @@
 -- Existing database migration for evidence-backed, insert-only income ownership.
 CREATE SCHEMA IF NOT EXISTS trading;
+ALTER TABLE IF EXISTS btc_eth.condition_orders ADD COLUMN IF NOT EXISTS account_id TEXT;
 
 CREATE TABLE IF NOT EXISTS trading.order_strategy_evidence (
     account_id TEXT NOT NULL,
