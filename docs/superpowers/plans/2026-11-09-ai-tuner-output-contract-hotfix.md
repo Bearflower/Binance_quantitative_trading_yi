@@ -36,3 +36,12 @@
 **审查补项：** 独立审查发现真实 §15 `diagnosis` 对象列表在周度流程中被当作字符串拼接。已先添加双候选、`HOLD`/`PROPOSE` 四组失败测试，再把对象无损序列化为下游通知与记忆可用的文字；重新验证 `ai_tuner/tests` 237 passed、`tests/test_ai_tuner_mvp` 757 passed / 5 skipped。
 
 **Production guard:** 本次改动即使部署，也仍维持 `audit + selected_strategy=null`。部署成功不能等同于回放、金样对账或资格考试通过，真实数据结论继续 `BLOCKED_DATA`。
+
+## 2026-11-09 发布阻断与后续任务
+
+- 修复提交 `dc8c911e`、`6bfc5df4` 已快进推送至 `main`；隔离分支重放前的本地 SHA 为 `5df43707`、`5ecd863c`。
+- [Actions Run 42558894513](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/42558894513) 的 `ai-tuner`、`hrs`、`dashboard-api` 镜像构建成功；服务器部署 job 在 `Block generic uploads when active release pins exist` 步骤以 exit 1 退出。该步骤只检查 `/root/trading_system/.deploy_tmp/ledger-risk-active.json` 是否存在；失败发生在 compose 上传、数据库脚本同步和远端部署脚本执行之前。**本次没有生产上线证据。**
+- 活动的 ledger/risk 发布 pin 是保护当前策略镜像与风控状态的门禁，不能为这次热修删除、改写或临时绕过。镜像构建成功也不能视为生产容器已更新。
+- [ ] 设计并审查 AI Tuner 单服务的受控后继发布：使用本次提交对应的不可变镜像 digest，读取并校验活动 pin、原有 overlay、完整容器清单与健康状态；只允许 `ai-tuner` 镜像引用变化，保留其他服务的容器身份与 compose 有效配置。
+- [ ] 发布前后核验交易所持仓/挂单、活动风险政策与资金分配证据不变；在同一部署锁下只重建 `ai-tuner`，校验 `VERSION.GIT_SHA`、两个修复文件 SHA、容器健康与启动日志；失败时保持可审计状态，不自动回滚到未经验证的版本。
+- [ ] 受控发布完成后只读确认生产 `purpose_driven_mvp.mode=audit`、`selected_strategy=null`，再观察下一次候选周度输出是否通过新信封解析；正式资格考试与自动生效仍受原门禁约束。
