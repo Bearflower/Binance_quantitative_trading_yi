@@ -30,6 +30,7 @@ def _id(value: Any) -> str | None:
 def build_economic_report(
     fills: Iterable[dict], incomes: Iterable[dict], trade_records: Iterable[dict],
     reviewed_overrides: Iterable[dict] = (),
+    derived_attributions: Iterable[dict] = (),
 ) -> dict:
     """用唯一成交和订单标识归属；收入事件是金额唯一来源。"""
     fill_by_id: dict[tuple[str, str, str], dict] = {}
@@ -61,6 +62,21 @@ def build_economic_report(
             raise ValueError(f"冲突的 reviewed override tran_id: {key}")
         overrides_by_id[key] = override
 
+    derived_by_id: dict[tuple[str, str, str], dict] = {}
+    for derived in derived_attributions:
+        key = (str(derived["account_id"]), str(derived["income_type"]), str(derived["tran_id"]))
+        if key in derived_by_id and derived_by_id[key] != derived:
+            raise ValueError(f"冲突的 derived attribution tran_id: {key}")
+        derived_by_id[key] = derived
+
+    def matching(row: dict, income: dict, amount: Decimal, symbol: str, kind: str, asset: str) -> bool:
+        return (
+            row.get("symbol") == symbol and row.get("income_type") == kind
+            and row.get("asset") == asset
+            and row.get("event_time_utc") == income.get("event_time_utc")
+            and row.get("income") is not None and _decimal(row["income"]) == amount
+        )
+
     account_usdt = Decimal("0")
     unattributed_usdt = Decimal("0")
     by_strategy: dict[str, dict[str, Decimal]] = defaultdict(
@@ -71,6 +87,7 @@ def build_economic_report(
     other_assets: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     unattributed = []
     events = []
+    attribution_conflicts = []
     components = {"realized_pnl_usdt": Decimal("0"), "commission_usdt": Decimal("0"), "funding_usdt": Decimal("0"), "net_usdt": Decimal("0")}
 
     for income in income_by_id.values():
@@ -127,27 +144,33 @@ def build_economic_report(
                         else:
                             owner = next(iter(owners))
 
+            key = (str(income["account_id"]), kind, str(income["tran_id"]))
+            override = overrides_by_id.get(key)
+            derived = derived_by_id.get(key)
+            valid_override = bool(override and matching(override, income, amount, symbol, kind, asset)
+                                  and override.get("reviewed_by") and override.get("evidence")
+                                  and override.get("strategy"))
+            valid_derived = bool(derived and matching(derived, income, amount, symbol, kind, asset)
+                                 and derived.get("method") and derived.get("evidence")
+                                 and derived.get("algorithm_version") and derived.get("strategy"))
+            if valid_override and valid_derived and override["strategy"] != derived["strategy"]:
+                attribution_conflicts.append({
+                    "account_id": key[0], "income_type": kind, "tran_id": key[2],
+                    "manual_strategy": str(override["strategy"]),
+                    "derived_strategy": str(derived["strategy"]),
+                })
             if owner is None and reason in {
                 "funding_owner_unproven", "missing_trade_id", "fill_not_found",
                 "order_owner_missing", "order_owner_ambiguous",
             }:
-                override = overrides_by_id.get(
-                    (str(income["account_id"]), str(income["income_type"]), str(income["tran_id"]))
-                )
-                if override is not None:
-                    same_event = (
-                        override.get("symbol") == symbol
-                        and override.get("income_type") == kind
-                        and override.get("asset") == asset
-                        and override.get("event_time_utc") == income.get("event_time_utc")
-                        and override.get("income") is not None
-                        and _decimal(override.get("income")) == amount
-                    )
-                    reviewed = bool(override.get("reviewed_by")) and bool(override.get("evidence"))
-                    if same_event and reviewed and override.get("strategy"):
-                        owner = str(override["strategy"])
-                    else:
-                        reason = "override_identity_mismatch"
+                if valid_override:
+                    owner = str(override["strategy"])
+                elif override is not None:
+                    reason = "override_identity_mismatch"
+                elif valid_derived:
+                    owner = str(derived["strategy"])
+                elif derived is not None:
+                    reason = "derived_identity_mismatch"
 
         events.append({
             "account_id": str(income["account_id"]), "tran_id": str(income["tran_id"]),
@@ -183,6 +206,7 @@ def build_economic_report(
         "attributed_usdt_total": str(allocated_total),
         "unattributed_usdt_total": str(unattributed_usdt),
         "unattributed_count": len(unattributed),
+        "attribution_conflicts": attribution_conflicts,
         "unattributed_usdt_absolute": str(sum((abs(Decimal(row["amount"])) for row in unattributed if row["asset"] == "USDT"), Decimal("0"))),
         "by_strategy": {
             strategy: {key: str(value) for key, value in values.items()}
