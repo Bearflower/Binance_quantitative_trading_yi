@@ -144,6 +144,15 @@ def test_derived_funding_matches_identity_and_manual_conflict_fails_closed():
     assert report["attribution_conflicts"][0]["derived_strategy"] == "hrs"
 
 
+def test_direct_order_owner_conflict_with_derived_is_visible():
+    income = _income(1, "REALIZED_PNL", "5", 11)
+    derived = {**income, "strategy": "btc_eth", "method": "exact_order",
+               "evidence": {"trade_id": "11"}, "algorithm_version": 1}
+    report = build_economic_report([_fill()], [income], [_owner()],
+                                   derived_attributions=[derived])
+    assert report["attribution_conflicts"][0]["reason"] == "direct_owner_conflict"
+
+
 def test_non_usdt_income_is_separate_from_usdt_bridge():
     report = build_economic_report(
         [_fill()], [_income(1, "COMMISSION", "-0.2", 11, "BNB")],

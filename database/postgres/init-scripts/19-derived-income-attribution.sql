@@ -52,3 +52,19 @@ CREATE INDEX IF NOT EXISTS idx_derived_income_window
 GRANT SELECT, INSERT ON trading.order_strategy_evidence TO trading_user;
 GRANT SELECT, INSERT ON trading.position_flat_baseline TO trading_user;
 GRANT SELECT, INSERT ON trading.derived_income_attribution TO trading_user;
+
+CREATE OR REPLACE FUNCTION trading.reject_attribution_evidence_mutation()
+RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'attribution evidence is insert-only';
+END;
+$$;
+DROP TRIGGER IF EXISTS order_evidence_insert_only ON trading.order_strategy_evidence;
+CREATE TRIGGER order_evidence_insert_only BEFORE UPDATE OR DELETE ON trading.order_strategy_evidence
+FOR EACH ROW EXECUTE FUNCTION trading.reject_attribution_evidence_mutation();
+DROP TRIGGER IF EXISTS flat_baseline_insert_only ON trading.position_flat_baseline;
+CREATE TRIGGER flat_baseline_insert_only BEFORE UPDATE OR DELETE ON trading.position_flat_baseline
+FOR EACH ROW EXECUTE FUNCTION trading.reject_attribution_evidence_mutation();
+DROP TRIGGER IF EXISTS derived_income_insert_only ON trading.derived_income_attribution;
+CREATE TRIGGER derived_income_insert_only BEFORE UPDATE OR DELETE ON trading.derived_income_attribution
+FOR EACH ROW EXECUTE FUNCTION trading.reject_attribution_evidence_mutation();

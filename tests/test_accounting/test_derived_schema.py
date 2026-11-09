@@ -23,3 +23,6 @@ def test_schema_has_complete_income_identity_and_immutable_evidence(path):
     assert "evidence jsonb not null" in sql
     assert "grant update" not in sql
     assert "grant delete" not in sql
+    assert "before update or delete on trading.derived_income_attribution" in sql
+    assert "before update or delete on trading.order_strategy_evidence" in sql
+    assert "before update or delete on trading.position_flat_baseline" in sql

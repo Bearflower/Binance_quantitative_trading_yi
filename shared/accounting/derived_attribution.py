@@ -32,10 +32,14 @@ def derive_income(income, fills_by_trade_id, order_evidence, replay):
         if strategy is None:
             return None, reason
         method = "verified_position_interval"
+        interval = next(row for row in replay.intervals
+                        if row.strategy == strategy and row.start < event_time < row.end)
         proof = {"baseline_at": replay.flat_at.isoformat(),
-                 "coverage_end": replay.coverage_end.isoformat(),
-                 "final_qty": str(replay.final_qty),
-                 "fill_times": sorted(stamp.isoformat() for stamp in replay.fill_times)}
+                 "owner_interval_start": interval.start.isoformat(),
+                 "fill_ids_before_event": [trade_id for trade_id, stamp in replay.fill_trace
+                                           if stamp < event_time],
+                 "verification_cutoff": replay.coverage_end.isoformat(),
+                 "verification_qty": str(replay.final_qty)}
     elif kind in {"REALIZED_PNL", "COMMISSION"}:
         trade_id = income.get("trade_id")
         if trade_id is None:

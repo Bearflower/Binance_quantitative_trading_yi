@@ -21,6 +21,8 @@ class ReplayResult:
     reason: str | None
     intervals: tuple[OwnerInterval, ...]
     fill_times: frozenset[datetime]
+    fill_ids: tuple[str, ...]
+    fill_trace: tuple[tuple[str, datetime], ...]
     flat_at: datetime
     coverage_end: datetime
     final_qty: Decimal
@@ -51,11 +53,14 @@ def replay_position(baseline, fills, order_evidence, coverage_end, exchange_qty,
     qty = Decimal(0)
     intervals = []
     fill_times = set()
+    fill_ids = []
+    fill_trace = []
 
     def result(reason=None):
         return ReplayResult(reason is None, reason,
                             tuple(intervals) if reason is None else (),
-                            frozenset(fill_times), flat_at, coverage_end, qty)
+                            frozenset(fill_times), tuple(fill_ids), tuple(fill_trace),
+                            flat_at, coverage_end, qty)
 
     if _decimal(baseline["exchange_qty"]) != 0:
         return result("baseline_not_flat")
@@ -77,6 +82,8 @@ def replay_position(baseline, fills, order_evidence, coverage_end, exchange_qty,
         if trade_id in seen_ids:
             return result("duplicate_trade_id")
         seen_ids.add(trade_id)
+        fill_ids.append(trade_id)
+        fill_trace.append((trade_id, stamp))
         fill_times.add(stamp)
         side = str(fill.get("side") or "").upper()
         amount = _decimal(fill.get("qty"))

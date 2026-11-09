@@ -52,4 +52,5 @@ def test_funding_uses_only_verified_position_interval():
     assert reason is None
     assert row["method"] == "verified_position_interval"
     assert row["strategy"] == "hrs"
+    assert row["evidence"]["fill_ids_before_event"] == ["7"]
     assert derive_income(income("FUNDING_FEE", "-0.1", None), {}, {}, None)[1] == "position_unverified"

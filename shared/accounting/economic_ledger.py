@@ -153,9 +153,25 @@ def build_economic_report(
             valid_derived = bool(derived and matching(derived, income, amount, symbol, kind, asset)
                                  and derived.get("method") and derived.get("evidence")
                                  and derived.get("algorithm_version") and derived.get("strategy"))
+            direct_owner = owner
+            if direct_owner and valid_derived and direct_owner != str(derived["strategy"]):
+                attribution_conflicts.append({
+                    "account_id": key[0], "income_type": kind, "tran_id": key[2],
+                    "reason": "direct_owner_conflict", "direct_strategy": direct_owner,
+                    "derived_strategy": str(derived["strategy"]),
+                })
+            if direct_owner and valid_override:
+                if direct_owner != str(override["strategy"]):
+                    attribution_conflicts.append({
+                        "account_id": key[0], "income_type": kind, "tran_id": key[2],
+                        "reason": "direct_owner_conflict", "direct_strategy": direct_owner,
+                        "manual_strategy": str(override["strategy"]),
+                    })
+                owner = str(override["strategy"])
             if valid_override and valid_derived and override["strategy"] != derived["strategy"]:
                 attribution_conflicts.append({
                     "account_id": key[0], "income_type": kind, "tran_id": key[2],
+                    "reason": "manual_derived_conflict",
                     "manual_strategy": str(override["strategy"]),
                     "derived_strategy": str(derived["strategy"]),
                 })
