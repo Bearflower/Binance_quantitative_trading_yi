@@ -4,17 +4,19 @@ Migration is explicit. The signal producer and executor refuse incompatible sche
 """
 
 import argparse
+import fcntl
 import hashlib
 import json
 import sqlite3
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import Mapping, Optional
 
 from strategies.grid.market_state import MarketState
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -49,6 +51,69 @@ def migrate(path) -> None:
             id INTEGER PRIMARY KEY CHECK(id=1), decision_id TEXT REFERENCES decisions(decision_id)
         )""")
         conn.execute("INSERT OR IGNORE INTO execution_cursor(id,decision_id) VALUES(1,NULL)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS grid_epoch (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'ACTIVE',
+            created_at_ms INTEGER NOT NULL
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS order_intent (
+            client_order_id TEXT PRIMARY KEY,
+            epoch_id INTEGER NOT NULL REFERENCES grid_epoch(id),
+            level_index INTEGER NOT NULL,
+            role TEXT NOT NULL,
+            side TEXT NOT NULL,
+            price TEXT NOT NULL,
+            quantity TEXT NOT NULL,
+            status TEXT NOT NULL,
+            exchange_order_id TEXT,
+            executed_qty TEXT NOT NULL DEFAULT '0',
+            created_at_ms INTEGER NOT NULL
+        )""")
+        conn.execute("""CREATE UNIQUE INDEX IF NOT EXISTS active_grid_level
+            ON order_intent(epoch_id,level_index,role)
+            WHERE status IN ('PREPARED','SENT','NEW','PARTIALLY_FILLED','UNKNOWN')""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS fill (
+            exchange_order_id TEXT NOT NULL,
+            trade_id TEXT NOT NULL,
+            client_order_id TEXT NOT NULL REFERENCES order_intent(client_order_id),
+            quantity TEXT NOT NULL,
+            price TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL,
+            PRIMARY KEY(exchange_order_id,trade_id)
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS pair (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            epoch_id INTEGER NOT NULL REFERENCES grid_epoch(id),
+            source_client_order_id TEXT NOT NULL,
+            reverse_client_order_id TEXT NOT NULL UNIQUE,
+            quantity TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'PREPARED'
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS protection (
+            client_algo_id TEXT PRIMARY KEY,
+            epoch_id INTEGER NOT NULL REFERENCES grid_epoch(id),
+            side TEXT NOT NULL,
+            trigger_price TEXT NOT NULL,
+            status TEXT NOT NULL,
+            exchange_algo_id TEXT
+        )""")
+        conn.execute("""CREATE TABLE IF NOT EXISTS engine_state (
+            id INTEGER PRIMARY KEY CHECK(id=1),
+            state TEXT NOT NULL,
+            lock_reason TEXT,
+            updated_at_ms INTEGER NOT NULL
+        )""")
+        conn.execute("INSERT OR IGNORE INTO engine_state VALUES(1,'FLAT',NULL,?)",
+                     (int(time.time() * 1000),))
+        conn.execute("""CREATE TABLE IF NOT EXISTS equity_checkpoint (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            day_beijing TEXT NOT NULL,
+            equity TEXT NOT NULL,
+            peak_equity TEXT NOT NULL,
+            transfer_fingerprint TEXT NOT NULL,
+            created_at_ms INTEGER NOT NULL
+        )""")
         conn.execute("COMMIT")
     except Exception:
         conn.execute("ROLLBACK")
@@ -138,6 +203,114 @@ class DecisionStore:
         if next_item is None or next_item["decision_id"] != decision_id:
             raise ValueError("decision is not next")
         self.conn.execute("UPDATE execution_cursor SET decision_id=? WHERE id=1", (decision_id,))
+
+    def create_epoch(self, decision_id: str) -> int:
+        if not decision_id:
+            raise ValueError("decision ID required")
+        row = self.conn.execute("INSERT INTO grid_epoch(decision_id,created_at_ms) VALUES(?,?)",
+                                (decision_id, int(time.time() * 1000)))
+        return row.lastrowid
+
+    def prepare_order(self, epoch_id: int, level_index: int, role: str,
+                      side: str, price, quantity, client_order_id: str) -> dict:
+        if not client_order_id.startswith("eg-") or side not in ("BUY", "SELL"):
+            raise ValueError("invalid order intent")
+        if Decimal(str(quantity)) <= 0 or Decimal(str(price)) <= 0:
+            raise ValueError("invalid order amount")
+        try:
+            self.conn.execute("""INSERT INTO order_intent
+                (client_order_id,epoch_id,level_index,role,side,price,quantity,status,created_at_ms)
+                VALUES(?,?,?,?,?,?,?,'PREPARED',?)""",
+                (client_order_id, epoch_id, level_index, role, side, str(price),
+                 str(quantity), int(time.time() * 1000)))
+        except sqlite3.IntegrityError as exc:
+            raise ValueError("duplicate active order intent") from exc
+        return self.get_order(client_order_id)
+
+    def get_order(self, client_order_id: str) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM order_intent WHERE client_order_id=?",
+                                (client_order_id,)).fetchone()
+        return dict(row) if row else None
+
+    def active_orders(self) -> list:
+        rows = self.conn.execute("""SELECT * FROM order_intent
+            WHERE status IN ('PREPARED','SENT','NEW','PARTIALLY_FILLED','UNKNOWN')""").fetchall()
+        return [dict(row) for row in rows]
+
+    def record_order(self, client_order_id: str, exchange_order_id: str,
+                     status: str, executed_qty) -> None:
+        if status not in ("PREPARED", "SENT", "NEW", "PARTIALLY_FILLED",
+                          "FILLED", "CANCELED", "EXPIRED", "UNKNOWN"):
+            raise ValueError("invalid order status")
+        if Decimal(str(executed_qty)) < 0:
+            raise ValueError("negative executed quantity")
+        row = self.conn.execute("""UPDATE order_intent SET exchange_order_id=?,
+            status=?,executed_qty=? WHERE client_order_id=?""",
+            (str(exchange_order_id), status, str(executed_qty), client_order_id))
+        if row.rowcount != 1:
+            raise ValueError("unknown order intent")
+
+    def record_fill(self, client_order_id: str, exchange_order_id: str,
+                    trade_id: str, quantity, price) -> bool:
+        if Decimal(str(quantity)) <= 0 or Decimal(str(price)) <= 0:
+            raise ValueError("invalid fill")
+        row = self.conn.execute("""INSERT OR IGNORE INTO fill
+            (exchange_order_id,trade_id,client_order_id,quantity,price,created_at_ms)
+            VALUES(?,?,?,?,?,?)""", (str(exchange_order_id), str(trade_id),
+                client_order_id, str(quantity), str(price), int(time.time() * 1000)))
+        return row.rowcount == 1
+
+    def fills(self, client_order_id: str) -> list:
+        rows = self.conn.execute("SELECT * FROM fill WHERE client_order_id=?",
+                                 (client_order_id,)).fetchall()
+        return [dict(row) for row in rows]
+
+    def all_fills(self) -> list:
+        rows = self.conn.execute("""SELECT fill.*,order_intent.side
+            FROM fill JOIN order_intent USING(client_order_id)""").fetchall()
+        return [dict(row) for row in rows]
+
+    def engine_state(self) -> dict:
+        return dict(self.conn.execute("SELECT * FROM engine_state WHERE id=1").fetchone())
+
+    def set_engine_state(self, state: str, reason: Optional[str] = None) -> None:
+        if state not in ("FLAT", "ACTIVE", "PAUSED", "EXITING", "LOCKED"):
+            raise ValueError("invalid engine state")
+        current = self.engine_state()
+        if current["state"] == "LOCKED" and state != "LOCKED":
+            raise RuntimeError("locked state requires explicit operator unlock")
+        self.conn.execute("""UPDATE engine_state SET state=?,lock_reason=?,updated_at_ms=?
+            WHERE id=1""", (state, reason, int(time.time() * 1000)))
+
+    def active_protections(self) -> list:
+        rows = self.conn.execute("""SELECT * FROM protection
+            WHERE status IN ('PREPARED','NEW','UNKNOWN')""").fetchall()
+        return [dict(row) for row in rows]
+
+
+class ExecutionLock:
+    """OS file lock held for the executor's entire lifetime."""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.file = None
+
+    def __enter__(self):
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = self.path.open("a+")
+        try:
+            fcntl.flock(self.file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            self.file.close()
+            self.file = None
+            raise RuntimeError("execution lock is held") from exc
+        return self
+
+    def __exit__(self, *_):
+        if self.file is not None:
+            fcntl.flock(self.file.fileno(), fcntl.LOCK_UN)
+            self.file.close()
+            self.file = None
 
 
 if __name__ == "__main__":
