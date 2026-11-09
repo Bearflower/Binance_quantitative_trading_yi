@@ -82,6 +82,14 @@
       "status": "M"
     },
     {
+      "path": "shared/entry_risk_policy.py",
+      "status": "M"
+    },
+    {
+      "path": "shared/protection_retry.py",
+      "status": "M"
+    },
+    {
       "path": "strategies/btc_eth_aggressive/main.py",
       "status": "M"
     },
@@ -120,6 +128,10 @@
     {
       "path": "tests/test_accounting/test_stop_intent_recovery.py",
       "status": "A"
+    },
+    {
+      "path": "tests/test_risk/test_entry_policy.py",
+      "status": "M"
     },
     {
       "path": "tests/test_scoped_release/test_stop_followup.py",
@@ -162,7 +174,7 @@
     "scripts/render_remote_deploy.py": "5ec8022ed71979b8aa0b6d7abfcdcf48546ba7924dd70465b86c409ee10030c0",
     "scripts/scoped_stop_followup.py": "d1dde0bdf50a6885cc1b582a22fe5202532c8be194839bc20a716af783391129",
     "scripts/select_deploy_mode.py": "c7d583f2829cbe21412c27042e3b9e71671da49495cfa920f845f072e7217162",
-    "scripts/stop_followup_manifest.py": "13b01aa6dd844165a37d035858176706aea6f733c66781e52ddbe689e074d61f",
+    "scripts/stop_followup_manifest.py": "f69c7803feac26d46461e9ce508fdc5090e1efed2d69b56f0fa5d563619ed69e",
     "shared/accounting/stop_binding.py": "629b66ad5646ed12433b2675dbc510776c7815434acdc7db374d67be42b5f70d",
     "shared/accounting/stop_episode_evidence.py": "fbffd7bce4da2690f3111321cac71a0a306acccc1e50c36a237a3e55aa3befb4",
     "shared/accounting/stop_exit_audit.py": "c266064da71af241bf656cb2c8c24831b9313a6c7a7c6da8c2d3fdb8bed6b47f",
@@ -171,8 +183,9 @@
     "shared/accounting/stop_intent_journal.py": "f350ab303eb18dbc664082337f89a3321d91b5edfbd7bb8a69b782f7b684bb4e",
     "shared/accounting/stop_intent_recovery.py": "9815d4323e74ccd39f171b58de8f4a0261767e9704ec1a4b8a6bd716a8cbe58b",
     "shared/binance_api.py": "ca57fcfb322fe2b9dc94dc461d12b7b7d72fdac41377a515730b26389eb5cefa",
-    "shared/entry_risk_policy.py": "b1da7761df7b3ea379522274a6575d4e1a2f8f81d4fbf248a6829e7b2337f9c8",
+    "shared/entry_risk_policy.py": "f8bc23a7edcbe3445c62e3cfb3a3892beb3e50f40dd37ca6569a2e49f37243fa",
+    "shared/protection_retry.py": "de39632f04b648e6293e8e967bee5a84bfca3711ed9ebc7acbb5ee92af404b3c",
     "strategies/btc_eth_aggressive/main.py": "6d5c0de2a9b8c67ce51e8d92964a4bd428584ed8074f7dfd0b7ca129c1ba9cb1",
-    "strategies/btc_eth_aggressive/strategy.py": "81283d9cf039c63a8a913161f615da167388795c0b2810b35f0ff00db28afb58"
+    "strategies/btc_eth_aggressive/strategy.py": "10682a6865eae714b0fceb3ea2b038aa27a475ce7843d88b48c3686ef61d3c06"
   }
 }

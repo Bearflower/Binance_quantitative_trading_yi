@@ -7,7 +7,7 @@ import asyncio
 import json
 import math
 import os
-from typing import Dict, Optional, Tuple, Any, Set
+from typing import Dict, Optional, Tuple, Any, Set, List
 from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 import pandas as pd
@@ -151,6 +151,7 @@ class PositionState:
         self.protection_pending: bool = False
         self.protection_retry_count: int = 0  # 保护补挂累计尝试次数（达配置上限触发 on_exhausted）
         self.not_placeable_legs: Set[str] = set()  # 数量精度取整为 0 的 TP 腿
+        self.exit_ratios: Optional[Tuple[Decimal, Decimal]] = None
 
 
 class FrequencyController:
@@ -2391,6 +2392,7 @@ class BTCEthStrategy:
             "highest_price": str(pos.highest_price) if pos.highest_price else None,
             "lowest_price": str(pos.lowest_price) if pos.lowest_price else None,
             "time_stop_review_done": pos.time_stop_review_done,
+            "exit_ratios": [str(x) for x in pos.exit_ratios] if pos.exit_ratios else None,
         }
         await save_strategy_state(
             self.db_manager, self.instance_id, {symbol: data},
@@ -2525,7 +2527,8 @@ class BTCEthStrategy:
                 saved = state["positions"][symbol]
                 if (saved.get("episode_entry_order_id") is None
                         and saved.get("stop_loss_order_id") is not None):
-                    return False, "legacy STOP episode unverified"
+                    if not await self._cancelled_legacy_stop_is_flat(symbol, saved):
+                        return False, "legacy STOP episode unverified"
                 saved_flags = {str(value) for value in saved.get("unbound_stop_algo_ids", [])}
             local_flags = getattr(self, "_unbound_stop_algo_ids", {}).get(symbol, set())
             for flag in saved_flags | local_flags:
@@ -2559,6 +2562,43 @@ class BTCEthStrategy:
         except Exception as exc:
             logger.error("STOP 新入场门禁读取失败", symbol=symbol, error=str(exc))
             return False, "STOP evidence unavailable"
+
+    async def _cancelled_legacy_stop_is_flat(self, symbol: str, saved: Dict) -> bool:
+        """Only a cancelled, never triggered legacy STOP on a flat symbol is harmless.
+
+        The stale snapshot is retained for audit. Unknown exchange responses fail
+        closed; this does not clear a filled STOP or waive its cooldown.
+        """
+        algo_id = saved.get('stop_loss_order_id')
+        direction = saved.get('direction')
+        if not isinstance(algo_id, int) or algo_id <= 0 or direction not in ('LONG', 'SHORT'):
+            return False
+        algo = await self.binance.get_algo_order(algo_id)
+        if (not isinstance(algo, dict) or algo.get('symbol') != symbol
+                or int(algo.get('algoId', 0)) != algo_id
+                or algo.get('orderType') not in ('STOP', 'STOP_MARKET')
+                or algo.get('side') != ('SELL' if direction == 'LONG' else 'BUY')
+                or algo.get('reduceOnly') is not True
+                or algo.get('algoStatus') != 'CANCELED'
+                or algo.get('actualOrderId') not in ('', '0', 0)
+                or Decimal(str(algo['actualQty'])) != 0
+                or int(algo['triggerTime']) != 0):
+            return False
+        positions = await self.binance.get_position(symbol)
+        all_positions = await self.binance.get_position()
+        account_positions = await self.binance.get_um_account_positions()
+        orders = await self.binance.get_open_orders(symbol)
+        algos = await self.binance.get_open_algo_orders(symbol)
+        if not all(isinstance(rows, list) for rows in
+                   (positions, all_positions, account_positions, orders, algos)):
+            return False
+        if any(pos.get('symbol') != symbol for pos in positions):
+            return False
+        return (not orders and not algos and all(
+            Decimal(str(pos['positionAmt'])) == 0
+            for inventory in (positions, all_positions, account_positions)
+            for pos in inventory if pos.get('symbol') == symbol
+        ))
 
     async def _open_new_position(self, signal: Dict) -> bool:
         """新开仓主流程（R05/R06/R07 加固；实现在 shared.protection_retry.open_new_position）"""
@@ -3180,6 +3220,15 @@ class BTCEthStrategy:
                 ok = False
         return ok
 
+    def _partial_config_for_position(self, position: PositionState) -> Dict:
+        config = dict(self._get_grade_risk(position.grade)['partial_take_profit'])
+        ratios = position.exit_ratios
+        if ratios is not None:
+            config['tp1_close_ratio'] = ratios[0]
+            config['tp2_close_ratio'] = ratios[1]
+            config['remaining_ratio'] = Decimal(1) - sum(ratios)
+        return config
+
     async def _load_order_rebuild_params(
         self, symbol: str, position: PositionState
     ) -> Tuple[Decimal, Decimal, str, Dict, Decimal, Decimal]:
@@ -3190,7 +3239,7 @@ class BTCEthStrategy:
         """
         step_size, tick_size = await self._get_precision_params(symbol)
         stop_side = 'SELL' if position.direction == 'LONG' else 'BUY'
-        partial_cfg = self._get_grade_risk(position.grade)['partial_take_profit']
+        partial_cfg = self._partial_config_for_position(position)
         stop_offset = Decimal(str(self.risk_config.get('stop_limit_order', {}).get('offset_pct', 0.002)))
         tp_offset = Decimal(str(self.risk_config.get('tp_limit_order', {}).get('offset_pct', 0.0015)))
         return step_size, tick_size, stop_side, partial_cfg, stop_offset, tp_offset
@@ -4756,7 +4805,7 @@ class BTCEthStrategy:
             current_price: 当前价格
         """
         grade_risk = self._get_grade_risk(position.grade)
-        partial_config = grade_risk['partial_take_profit']
+        partial_config = self._partial_config_for_position(position)
         tp1_ratio = Decimal(str(partial_config['tp1_close_ratio']))
         remaining_ratio = Decimal(str(partial_config['remaining_ratio']))
 
@@ -4827,7 +4876,8 @@ class BTCEthStrategy:
                     logger.error(f"{symbol} TP1平仓失败，保持持仓状态")
         
         # 检查TP2（仓位可能已被TP1全部清空）
-        if position.tp1_hit and not position.tp2_hit and position.current_quantity > 0:
+        if (position.tp1_hit and not position.tp2_hit and position.current_quantity > 0
+                and Decimal(str(partial_config['tp2_close_ratio'])) > 0):
             tp2_price = self._calculate_tp_price(
                 position.entry_price,
                 position.atr,
@@ -4900,7 +4950,7 @@ class BTCEthStrategy:
 
         # 平仓量 = initial_quantity × remaining_ratio（尾仓，v6.28）
         # 修复：原逻辑用 current_quantity 全平剩余，TP1 触发后价格回落即全平跳过 TP2
-        partial_cfg = self._get_grade_risk(position.grade)['partial_take_profit']
+        partial_cfg = self._partial_config_for_position(position)
         remaining_ratio = Decimal(str(partial_cfg['remaining_ratio']))
         close_quantity = self._adjust_quantity_precision(
             position.initial_quantity * remaining_ratio, step_size
@@ -5262,7 +5312,7 @@ class BTCEthStrategy:
         stop_limit_price = self._adjust_price_precision(stop_limit_price, tick_size)
         # 移动止损单数量：按尾仓比例（remaining_ratio）计算，而非全仓
         trailing_remaining_ratio = Decimal(
-            str(self._get_grade_risk(position.grade)['partial_take_profit']['remaining_ratio'])
+            str(self._partial_config_for_position(position)['remaining_ratio'])
         )
         close_quantity = self._adjust_quantity_precision(
             position.initial_quantity * trailing_remaining_ratio, step_size
@@ -6122,11 +6172,18 @@ class BTCEthStrategy:
             stop = live_id("stop_loss_order_id", ("STOP", "STOP_MARKET"))
             if stop is None or Decimal(str(stop.get("quantity", 0))) < abs(amount):
                 return None
-            if not data.get("tp1_hit") and live_id(
+            restored_tp1_hit = bool(data.get('tp1_hit'))
+            if not restored_tp1_hit and live_id(
                 "tp1_order_id", ("TAKE_PROFIT", "TAKE_PROFIT_MARKET")
             ) is None:
-                return None
-            if not data.get("tp2_hit") and live_id(
+                restored_tp1_hit = await self._verified_restored_tp1_fill(
+                    symbol, data, amount, close_side, anchor_ms, fills)
+                if not restored_tp1_hit:
+                    return None
+            saved_ratios = data.get('exit_ratios')
+            tp2_optional = (isinstance(saved_ratios, list) and len(saved_ratios) == 2
+                            and Decimal(str(saved_ratios[1])) == 0)
+            if not data.get("tp2_hit") and not tp2_optional and live_id(
                 "tp2_order_id", ("TAKE_PROFIT", "TAKE_PROFIT_MARKET")
             ) is None:
                 return None
@@ -6149,7 +6206,16 @@ class BTCEthStrategy:
             ps.stop_loss_order_id = data.get("stop_loss_order_id")
             ps.tp1_order_id = data.get("tp1_order_id")
             ps.tp2_order_id = data.get("tp2_order_id")
-            ps.tp1_hit = bool(data.get("tp1_hit"))
+            ratios = data.get("exit_ratios")
+            if ratios is not None:
+                parsed = tuple(Decimal(str(x)) for x in ratios)
+                if (len(parsed) != 2 or parsed[0] <= 0 or parsed[1] < 0
+                        or sum(parsed) >= 1):
+                    return None
+                ps.exit_ratios = parsed
+                if parsed[1] == 0:
+                    ps.not_placeable_legs.add('TP2')
+            ps.tp1_hit = restored_tp1_hit
             ps.tp2_hit = bool(data.get("tp2_hit"))
             ps.trailing_activated = bool(data.get("trailing_activated"))
             ps.trailing_stop_order_id = data.get("trailing_stop_order_id")
@@ -6162,6 +6228,52 @@ class BTCEthStrategy:
         except Exception as exc:
             logger.warning("持仓元数据核验失败，拒绝软件接管", symbol=symbol, error=str(exc))
             return None
+
+    async def _verified_restored_tp1_fill(
+        self, symbol: str, data: Dict, amount: Decimal, close_side: str,
+        anchor_ms: int, lot_fills: List[Dict],
+    ) -> bool:
+        """Recover a missed TP1 state only from the same lot's exact exchange fill."""
+        ratios = data.get('exit_ratios')
+        if (not isinstance(ratios, list) or len(ratios) != 2
+                or Decimal(str(ratios[1])) != 0):
+            return False
+        initial = Decimal(str(data['initial_quantity']))
+        expected = initial - abs(amount)
+        step_size, _ = await self._get_precision_params(symbol)
+        step = Decimal(str(step_size))
+        if step <= 0:
+            return False
+        planned = (initial * Decimal(str(ratios[0])) // step) * step
+        if expected <= 0 or expected != planned:
+            return False
+        algo_id = data.get('tp1_order_id')
+        if not isinstance(algo_id, int) or algo_id <= 0:
+            return False
+        algo = await self.binance.get_algo_order(algo_id)
+        if (not isinstance(algo, dict) or algo.get('algoId') != algo_id
+                or algo.get('symbol') != symbol or algo.get('side') != close_side
+                or algo.get('orderType') not in ('TAKE_PROFIT', 'TAKE_PROFIT_MARKET')
+                or algo.get('reduceOnly') is not True
+                or algo.get('algoStatus') != 'FINISHED'
+                or int(algo.get('createTime', 0)) < anchor_ms
+                or Decimal(str(algo.get('actualQty', '-1'))) != expected):
+            return False
+        order_id = algo.get('actualOrderId')
+        if not str(order_id).isdigit() or int(order_id) <= 0:
+            return False
+        order = await self.binance.get_order(symbol, int(order_id))
+        if (not isinstance(order, dict) or order.get('symbol') != symbol
+                or int(order.get('orderId', 0)) != int(order_id)
+                or order.get('side') != close_side or order.get('reduceOnly') is not True
+                or order.get('status') != 'FILLED'
+                or Decimal(str(order.get('executedQty', '-1'))) != expected):
+            return False
+        matching = [row for row in lot_fills if str(row.get('orderId')) == str(order_id)]
+        return (bool(matching)
+                and all(row.get('side') == close_side and int(row['time']) >= anchor_ms
+                        for row in matching)
+                and sum((Decimal(str(row['qty'])) for row in matching), Decimal(0)) == expected)
 
     async def _build_adopted_position_state(
         self, symbol: str, pos_data: Dict, symbol_orders: Dict[str, list],
@@ -6611,7 +6723,8 @@ class BTCEthStrategy:
         """检查该持仓已有保护单（self.positions + condition_orders 表，v6.28 拆分子函数）"""
         has_stop = existing_pos and existing_pos.stop_loss_order_id is not None
         has_tp1 = existing_pos and existing_pos.tp1_order_id is not None
-        has_tp2 = existing_pos and existing_pos.tp2_order_id is not None
+        has_tp2 = existing_pos and (existing_pos.tp2_order_id is not None
+                                    or 'TP2' in existing_pos.not_placeable_legs)
         existing_orders = existing_open_orders.get(symbol, {})
         stop_orders = existing_orders.get('STOP_LOSS', [])
         tp_orders = existing_orders.get('TAKE_PROFIT', [])

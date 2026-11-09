@@ -35,6 +35,37 @@ class SizedEntry:
     margin: Decimal
     risk: Decimal
     original_risk: Decimal
+    exit_ratios: tuple[Decimal, Decimal] = (Decimal('0.3'), Decimal('0.3'))
+
+
+def executable_exit_ratios(quantity, step, minimum, notional, prices, requested):
+    """Keep a risk-reduced lot tradable with one TP and a viable remainder.
+
+    Never round the entry or an exit leg up. Below two exchange lots, deny entry.
+    """
+    ratios = tuple(number(r, zero=True) for r in requested)
+    if len(ratios) != 2 or sum(ratios) >= 1 or sum(ratios) <= 0:
+        raise EntryDenied('invalid take profit ratios')
+    def viable(q, price):
+        return q >= minimum and q * price >= notional
+    def floor(q):
+        return (q / step).to_integral_value(rounding=ROUND_DOWN) * step
+    legs = (floor(quantity * ratios[0]), floor(quantity * ratios[1]))
+    if all(viable(q, p) for q, p in zip((*legs, quantity-sum(legs)), prices)):
+        return ratios
+    # A two-leg exit uses the first target and leaves one exchange-valid lot
+    # for the trailing/stop path. The hard stop still covers the whole entry.
+    first = floor(quantity / 2)
+    if viable(first, prices[0]) and viable(quantity-first, prices[2]):
+        ratio = first / quantity
+        # Decimal division may round a recurring fraction just below the
+        # executable lot (e.g. 0.01 / 0.03). Raise the representation by one
+        # ULP until the downstream floor exactly reproduces the chosen lot.
+        for _ in range(3):
+            if floor(quantity * ratio) == first:
+                return (ratio, Decimal(0))
+            ratio = ratio.next_plus()
+    raise EntryDenied('take profit or remainder infeasible without rounding up')
 
 
 def size_reduced_entry(signal, filters, multiplier, stop_offset, tp_ratios, *, tp_offset=None):
@@ -68,10 +99,7 @@ def size_reduced_entry(signal, filters, multiplier, stop_offset, tp_ratios, *, t
     quantity = (q0*mult/step).to_integral_value(rounding=ROUND_DOWN)*step
     if quantity < minimum or quantity*price < notional:
         raise EntryDenied('reduced quantity below exchange minimum')
-    ratios = [number(r) for r in tp_ratios]
-    if not ratios or sum(ratios) >= 1:
-        raise EntryDenied('invalid take profit ratios')
-    leg_prices = [min(price, stop)] * len(ratios)
+    leg_prices = [min(price, stop)] * 2
     if tp_offset is not None:
         offset_tp = number(tp_offset, zero=True)
         if offset_tp >= 1:
@@ -83,12 +111,10 @@ def size_reduced_entry(signal, filters, multiplier, stop_offset, tp_ratios, *, t
                 raise EntryDenied('TP on wrong side of entry')
             limit = target*(1-offset_tp if direction=='LONG' else 1+offset_tp)
             leg_prices.append((limit/tick).quantize(Decimal(1),rounding=ROUND_HALF_UP)*tick)
-    for ratio, leg_price in zip(ratios + [1-sum(ratios)], leg_prices + [adverse]):
-        leg = (quantity*ratio/step).to_integral_value(rounding=ROUND_DOWN)*step
-        if leg < minimum or leg*leg_price < notional:
-            raise EntryDenied('take profit or remainder infeasible without rounding up')
+    ratios = executable_exit_ratios(quantity,step,minimum,notional,
+                                    leg_prices+[adverse],tp_ratios)
     return SizedEntry(q0,quantity,price,leverage,quantity*price/leverage,
-                      quantity*per_unit,q0*per_unit)
+                      quantity*per_unit,q0*per_unit,ratios)
 
 
 def account_id():
@@ -293,6 +319,9 @@ async def prepare_aggressive_entry(strategy, symbol, signal):
                 row=await conn.fetchrow('SELECT * FROM trading.entry_risk_reservation WHERE client_order_id=$1',signal['_risk_client_id'])
                 if not row or row['state']!='reserved' or row['revision']!=policy['revision'] or row['symbol']!=symbol:
                     raise EntryDenied('intent already submitted or changed')
+                geometry = row['geometry']
+                if isinstance(geometry, str): geometry = json.loads(geometry)
+                signal['_risk_exit_ratios'] = geometry['exit_ratios']
                 signal['quantity'],signal['entry_price']=row['quantity'],row['price']
                 return True
         await store.reconcile('btc_eth_aggressive',strategy.binance)
@@ -302,6 +331,7 @@ async def prepare_aggressive_entry(strategy, symbol, signal):
             strategy.risk_config.get('stop_limit_order',{}).get('offset_pct',.002),
             [partial['tp1_close_ratio'],partial['tp2_close_ratio']],
             tp_offset=strategy.risk_config.get('tp_limit_order',{}).get('offset_pct',.0015))
+        signal['_risk_exit_ratios'] = [str(value) for value in sized.exit_ratios]
         # Identity must come from the original signal, never generated on each retry.
         identity=signal.get('signal_id') or signal.get('timestamp')
         if identity is None:
@@ -369,6 +399,8 @@ async def submit_aggressive_entry(strategy,symbol,signal):
 def entry_geometry(signal,filters,risk_config,partial):
     return {"signal": {key:str(signal[key]) for key in ('direction','initial_stop_loss','tp1_price','tp2_price','leverage','grade')},
             "partial_take_profit": {key:str(partial[key]) for key in ("tp1_close_ratio","tp2_close_ratio")},
+            "exit_ratios": [str(value) for value in signal.get('_risk_exit_ratios',
+                (partial['tp1_close_ratio'],partial['tp2_close_ratio']))],
             "filters": {key:str(filters[key]) for key in ('stepSize','tickSize','minQty','minNotional')},
             "stop_offset": str(risk_config.get('stop_limit_order',{}).get('offset_pct',.002)),
             "tp_offset": str(risk_config.get('tp_limit_order',{}).get('offset_pct',.0015))}

@@ -33,6 +33,7 @@ SOURCE = {
     "shared/accounting/stop_intent_journal.py",
     "shared/accounting/stop_intent_recovery.py",
     "shared/entry_risk_policy.py",
+    "shared/protection_retry.py",
     "strategies/btc_eth_aggressive/main.py",
     "strategies/btc_eth_aggressive/strategy.py",
 }

@@ -131,6 +131,44 @@ async def test_legacy_snapshot_with_stop_blocks_new_entry_without_lot_proof():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_untriggered_legacy_stop_allows_bnb_only_when_exchange_flat():
+    strategy = object.__new__(BTCEthStrategy)
+    strategy.db_manager = AsyncMock()
+    strategy.db_manager.fetch_one.return_value = {
+        "state_data": {"positions": {"BNBUSDT": {
+            "direction": "SHORT", "episode_entry_order_id": None,
+            "stop_loss_order_id": 2001,
+        }}}
+    }
+    strategy.instance_id = strategy.strategy_name = "btc_eth_aggressive"
+    strategy.binance = AsyncMock()
+    strategy.binance.get_algo_order.return_value = {
+        'algoId': 2001, 'symbol': 'BNBUSDT', 'orderType': 'STOP',
+        'side': 'BUY', 'reduceOnly': True, 'algoStatus': 'CANCELED',
+        'actualOrderId': '', 'actualQty': '0', 'triggerTime': 0,
+    }
+    strategy.binance.get_position.return_value = []
+    strategy.binance.get_um_account_positions.return_value = []
+    strategy.binance.get_open_orders.return_value = []
+    strategy.binance.get_open_algo_orders.return_value = []
+    with patch.dict("os.environ", {"TRADE_ACCOUNT_ID": "default"}), patch(
+        "strategies.btc_eth_aggressive.strategy.unresolved_stop_binding_exists",
+        new=AsyncMock(return_value=False),
+    ), patch(
+        "strategies.btc_eth_aggressive.strategy.latest_verified_stop_time_ms",
+        new=AsyncMock(return_value=None),
+    ):
+        assert await strategy._stop_entry_gate('BNBUSDT') == (True, '')
+        strategy.binance.get_algo_order.return_value['actualOrderId'] = '12345'
+        assert await strategy._stop_entry_gate('BNBUSDT') == (
+            False, 'legacy STOP episode unverified')
+        strategy.binance.get_algo_order.return_value['actualOrderId'] = ''
+        strategy.binance.get_position.return_value = [{'positionAmt': '0.01'}]
+        assert await strategy._stop_entry_gate('BNBUSDT') == (
+            False, 'legacy STOP episode unverified')
+
+
+@pytest.mark.asyncio
 async def test_bound_stop_clears_stale_memory_and_saved_block():
     strategy = object.__new__(BTCEthStrategy)
     strategy.db_manager = AsyncMock()

@@ -210,6 +210,7 @@ async def fill_entry_protection_orders(
     direction = signal['direction']
     stop_side = "SELL" if direction == "LONG" else "BUY"
     partial_cfg = strategy._get_grade_risk(signal.get('grade', 'A'))['partial_take_profit']
+    exit_ratios = signal.get('_risk_exit_ratios')
     stop_offset = Decimal(str(strategy.risk_config.get('stop_limit_order', {}).get('offset_pct', 0.002)))
     tp_offset = Decimal(str(strategy.risk_config.get('tp_limit_order', {}).get('offset_pct', 0.0015)))
     step_size, _tick_size = await strategy._get_precision_params(symbol)
@@ -218,7 +219,9 @@ async def fill_entry_protection_orders(
     order_ids['stop'] = await _place_entry_stop_order(
         strategy, symbol, signal, actual_quantity, direction, stop_side, stop_offset, step_size)
     for level, ratio_key in ((1, 'tp1_close_ratio'), (2, 'tp2_close_ratio')):
-        ratio = Decimal(str(partial_cfg[ratio_key]))
+        ratio = Decimal(str(exit_ratios[level-1] if exit_ratios is not None else partial_cfg[ratio_key]))
+        if ratio == 0:
+            continue
         order_ids[f'tp{level}'] = await _place_entry_tp_order(
             strategy, symbol, signal, actual_quantity, level, ratio,
             direction, stop_side, tp_offset, step_size)
@@ -300,6 +303,10 @@ def build_position_state(position_cls, signal: Dict, entry, actual_quantity: Dec
     position.grade = signal.get('grade', 'A')
     position.entry_order_id = entry.order_id
     position.protection_pending = True
+    if signal.get('_risk_exit_ratios') is not None:
+        position.exit_ratios = tuple(Decimal(str(x)) for x in signal['_risk_exit_ratios'])
+        if position.exit_ratios[1] == 0:
+            position.not_placeable_legs.add('TP2')
     return position
 
 
@@ -334,6 +341,8 @@ def merge_position(position, signal: Dict, entry_order, actual_quantity: Decimal
     npl = getattr(position, 'not_placeable_legs', None)
     if npl is not None:
         npl.clear()
+    if hasattr(position, 'exit_ratios'):
+        position.exit_ratios = None
 
 
 # ============================================================
@@ -402,8 +411,9 @@ async def place_missing_tp_level(
     """补挂单个 TP 腿（R05 补挂；数量=initial×比例 精度截断，为0则标记 N/A 并跳过）"""
     tp_price = strategy._calculate_tp_price(
         position.entry_price, position.atr, position.direction, level, position.grade)
-    tp_qty = strategy._adjust_quantity_precision(
-        position.initial_quantity * Decimal(str(partial_cfg[f'tp{level}_close_ratio'])), step_size)
+    exit_ratios = getattr(position, 'exit_ratios', None)
+    ratio = Decimal(str(exit_ratios[level-1] if exit_ratios is not None else partial_cfg[f'tp{level}_close_ratio']))
+    tp_qty = strategy._adjust_quantity_precision(position.initial_quantity * ratio, step_size)
     if tp_qty <= 0:
         leg = f'TP{level}'
         npl = getattr(position, 'not_placeable_legs', None)
@@ -749,6 +759,39 @@ async def _establish_position(strategy, symbol: str, signal: Dict, entry):
     if actual_qty is None:
         await strategy._release_claim_if_no_position(symbol, reason="micro_zeroed")
         return None
+    if signal.get('_risk_exit_ratios') is not None:
+        step_size, _ = await strategy._get_precision_params(symbol)
+        if actual_qty < Decimal(str(step_size)) * 2:
+            # A partially filled single lot cannot support a TP and a residual.
+            # Flatten it with reduceOnly; if that fails, retain the position and
+            # install its hard STOP rather than silently losing the live lot.
+            from .reduce_only_close import close_remaining
+            try:
+                outcome = await close_remaining(strategy.binance, symbol, actual_qty)
+            except Exception as exc:
+                logger.error('单步进部分成交清零失败，继续建立硬止损', symbol=symbol, error=str(exc))
+                outcome = None
+            if outcome is not None and outcome.success:
+                try:
+                    scoped = await strategy.binance.get_position(symbol)
+                    all_positions = await strategy.binance.get_position()
+                    account_positions = await strategy.binance.get_um_account_positions()
+                    ordinary = await strategy.binance.get_open_orders(symbol)
+                    algos = await strategy.binance.get_open_algo_orders(symbol)
+                    inventories = (scoped, all_positions, account_positions)
+                    flat = (all(isinstance(rows, list) for rows in
+                                (*inventories, ordinary, algos))
+                            and not ordinary and not algos
+                            and all(p.get('symbol') == symbol for p in scoped)
+                            and all(Decimal(str(p['positionAmt'])) == 0
+                                    for rows in inventories for p in rows
+                                    if p.get('symbol') == symbol))
+                except Exception:
+                    flat = False
+                if flat:
+                    await strategy._release_claim_if_no_position(symbol, reason="single_lot_flattened")
+                    signal['skip_reason'] = 'single-lot partial fill flattened'
+                    return None
     position = strategy._build_position_state(signal, entry, actual_qty)
     strategy.positions[symbol] = position
     # 下硬止损/TP1/TP2 保护单（失败保留已成功 ID，不丢仓位）
