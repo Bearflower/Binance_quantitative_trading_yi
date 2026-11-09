@@ -25,13 +25,13 @@ class RenderError(ValueError):
 
 
 def _validate(mode: str, commit_sha: str, deploy_id: str, funding_action: str) -> None:
-    if mode not in {"full", "calibrated-first-create", "execution-facts-first-create", "allocation-reconcile", "ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup"}:
+    if mode not in {"full", "calibrated-first-create", "execution-facts-first-create", "allocation-reconcile", "ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup"}:
         raise RenderError("invalid deployment mode")
     if re.fullmatch(r"[0-9a-fA-F]{40}", commit_sha) is None:
         raise RenderError("commit SHA must be exactly 40 hexadecimal characters")
     if re.fullmatch(r"[0-9A-F]{8}", deploy_id) is None:
         raise RenderError("deploy ID must be exactly 8 uppercase hexadecimal characters")
-    if mode in {"ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup"} and funding_action != "keep":
+    if mode in {"ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup"} and funding_action != "keep":
         raise RenderError("scoped release must preserve funding collector")
     if funding_action not in {"keep", "rotate"}:
         raise RenderError("invalid funding deployment action")

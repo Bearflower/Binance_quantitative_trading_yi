@@ -39,6 +39,16 @@ def get_beijing_time() -> datetime:
 
 logger = structlog.get_logger()
 
+
+def signal_execution_status(result: dict) -> str:
+    """Show the same entry rejection reason that the execution path recorded."""
+    if result.get('trade_success'):
+        return "✅已开仓"
+    reason = result.get('reject_reason') or result.get('skip_reason')
+    if reason == 'take profit or remainder infeasible without rounding up':
+        reason = '缩量后止盈或剩余仓位不足交易所最小下单量'
+    return f"⛔被拦截({reason})" if reason else "⏳未开仓"
+
 # 全局变量，保存客户端和策略实例
 config = None
 binance_client = None
@@ -312,13 +322,7 @@ async def run_strategy():
                     
                     # 根据实际成交结果区分展示：✅已开仓 ⛔被拦截(原因) / 其他失败
                     trade_success = result.get('trade_success', False)
-                    reject_reason = result.get('reject_reason', '')
-                    if trade_success:
-                        status_label = "✅已开仓"
-                    elif reject_reason:
-                        status_label = f"⛔被拦截({reject_reason})"
-                    else:
-                        status_label = "⏳未开仓"
+                    status_label = signal_execution_status(result)
 
                     summary_message += f"{symbol}: 评分 {score} ({grade}级) - {direction} {status_label}\n"
                     if trade_success:

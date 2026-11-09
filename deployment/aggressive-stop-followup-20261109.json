@@ -1,0 +1,178 @@
+{
+  "active_pin_sha": "6279ded829c8013062d24b3841f912d1b340fe9c",
+  "allowed_changes": [
+    {
+      "path": ".github/deploy-modes/aggressive-stop-followup-20261109",
+      "status": "A"
+    },
+    {
+      "path": ".github/workflows/deploy.yml",
+      "status": "M"
+    },
+    {
+      "path": "database/postgres/init-scripts/16-aggressive-stop-bindings.sql",
+      "status": "A"
+    },
+    {
+      "path": "deployment/aggressive-stop-followup-20261109.json",
+      "status": "A"
+    },
+    {
+      "path": "docs/reports/strategy-remediation-tracker.md",
+      "status": "M"
+    },
+    {
+      "path": "findings.md",
+      "status": "A"
+    },
+    {
+      "path": "progress.md",
+      "status": "A"
+    },
+    {
+      "path": "scripts/package_stop_followup.py",
+      "status": "A"
+    },
+    {
+      "path": "scripts/remote_deploy_runtime.sh",
+      "status": "M"
+    },
+    {
+      "path": "scripts/render_remote_deploy.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/scoped_stop_followup.py",
+      "status": "A"
+    },
+    {
+      "path": "scripts/select_deploy_mode.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/stop_followup_manifest.py",
+      "status": "A"
+    },
+    {
+      "path": "shared/accounting/stop_binding.py",
+      "status": "A"
+    },
+    {
+      "path": "shared/accounting/stop_episode_evidence.py",
+      "status": "A"
+    },
+    {
+      "path": "shared/accounting/stop_exit_audit.py",
+      "status": "A"
+    },
+    {
+      "path": "shared/accounting/stop_exit_ledger.py",
+      "status": "A"
+    },
+    {
+      "path": "shared/accounting/stop_intent_journal.py",
+      "status": "A"
+    },
+    {
+      "path": "shared/accounting/stop_intent_recovery.py",
+      "status": "A"
+    },
+    {
+      "path": "shared/binance_api.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/main.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/strategy.py",
+      "status": "M"
+    },
+    {
+      "path": "task_plan.md",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_accounting/test_stop_binding.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_accounting/test_stop_episode_evidence.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_accounting/test_stop_exit_audit.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_accounting/test_stop_exit_ledger.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_accounting/test_stop_exit_postgres.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_accounting/test_stop_intent_journal.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_accounting/test_stop_intent_recovery.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_scoped_release/test_stop_followup.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_shared/test_open_algo_orders.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_shared/test_pm_client_algo_id.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_strategies/test_aggr_episode_identity.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_strategies/test_aggr_metadata_restore.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_strategies/test_aggr_signal_notification.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_strategies/test_position_metadata_persistence.py",
+      "status": "M"
+    }
+  ],
+  "base_revision": "7da9a4983cd626dd6b2bfe9a9c3f2a70df706aa1",
+  "expected_pin_overlay_sha256": "bd568038225f492c4b744e3da516db9d1ee293ef4a85a8e06774d68200536ccf",
+  "release_id": "aggressive-stop-followup-20261109",
+  "schema_version": 1,
+  "source_checksums": {
+    ".github/workflows/deploy.yml": "47adb988049d1184f8ae09b8d72bbd62e084d7748de41005a41d45c28c08bdd3",
+    "database/postgres/init-scripts/16-aggressive-stop-bindings.sql": "c6927857422d08741fafd055e08f13c2238bdf52f5c4e50a578b6e6de0478099",
+    "scripts/package_stop_followup.py": "5769d737d4f746737b6b611684cc03829e8a4940fd57322776876c6504f71210",
+    "scripts/remote_deploy_runtime.sh": "99436ee94a7026d0774dba537a50c86fbf6b75a49c695c70f349a5ab9ef17b51",
+    "scripts/render_remote_deploy.py": "5ec8022ed71979b8aa0b6d7abfcdcf48546ba7924dd70465b86c409ee10030c0",
+    "scripts/scoped_stop_followup.py": "d6dcce6f5f5a34529d29e84c3fe55b65cd3183a821b2741c6ce7b24f98d6cbea",
+    "scripts/select_deploy_mode.py": "c7d583f2829cbe21412c27042e3b9e71671da49495cfa920f845f072e7217162",
+    "scripts/stop_followup_manifest.py": "13b01aa6dd844165a37d035858176706aea6f733c66781e52ddbe689e074d61f",
+    "shared/accounting/stop_binding.py": "629b66ad5646ed12433b2675dbc510776c7815434acdc7db374d67be42b5f70d",
+    "shared/accounting/stop_episode_evidence.py": "fbffd7bce4da2690f3111321cac71a0a306acccc1e50c36a237a3e55aa3befb4",
+    "shared/accounting/stop_exit_audit.py": "c266064da71af241bf656cb2c8c24831b9313a6c7a7c6da8c2d3fdb8bed6b47f",
+    "shared/accounting/stop_exit_evidence.py": "63c8e89025e99e82a30ad7d8c6301a6662bc6c64bd68ff460580408cd1b3a045",
+    "shared/accounting/stop_exit_ledger.py": "918434d5eb0165b74d29d440437db3d985449cf9c591e2b50c3fc3e9e4da3f19",
+    "shared/accounting/stop_intent_journal.py": "f350ab303eb18dbc664082337f89a3321d91b5edfbd7bb8a69b782f7b684bb4e",
+    "shared/accounting/stop_intent_recovery.py": "9815d4323e74ccd39f171b58de8f4a0261767e9704ec1a4b8a6bd716a8cbe58b",
+    "shared/binance_api.py": "ca57fcfb322fe2b9dc94dc461d12b7b7d72fdac41377a515730b26389eb5cefa",
+    "shared/entry_risk_policy.py": "b1da7761df7b3ea379522274a6575d4e1a2f8f81d4fbf248a6829e7b2337f9c8",
+    "strategies/btc_eth_aggressive/main.py": "6d5c0de2a9b8c67ce51e8d92964a4bd428584ed8074f7dfd0b7ca129c1ba9cb1",
+    "strategies/btc_eth_aggressive/strategy.py": "81283d9cf039c63a8a913161f615da167388795c0b2810b35f0ff00db28afb58"
+  }
+}
