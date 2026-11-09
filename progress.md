@@ -1,0 +1,25 @@
+# 七项整改进度
+
+## 2026-11-07
+
+- 阅读既有整改方案、七项清单及相关技能；确认主工作区有大量未提交改动。
+- 在 `/private/tmp/strategy-seven-gaps` 建立独立工作树 `codex/seven-strategy-gaps`，基于 `origin/main` 8991d03d。
+- 只读检查生产活动 pin 为 8991d03d，相关七个容器均健康。
+- 下一步：运行针对性基线测试，追溯 STOP 成交链和七项具体代码边界。
+- 基线定向测试：146 passed、2 skipped。旧网格集成套件 14 passed、1 failed，失败是既有 mock 价格类型错误。
+- 网格 direct-order 与 disabled-bot 两项用例先失败；已加半自动模式双层拒单，定向 4 passed。尚未发布。
+- 生产只读 `strategy_gate` 通过；当前 SOLUSDT 多仓 0.27，持仓保护门禁通过。不得沿用前日空仓判断。
+- 激进版退出计数错误先以失败测试复现，修复后频控/网格定向测试 36 passed。
+- 新增 PM UM 按 algoId 只读查询，要求响应身份匹配；测试先因方法缺失失败，修复后 38 passed。
+- 新增 STOP order/fills 纯校验器；测试先红后绿，区分触发、实际普通订单、reduceOnly、重复/缺失成交。它只给订单级事实，尚不授权 lot 归属或启动冷却。
+- 新增订单级只读查询编排：algoId → actualOrderId → 普通订单 → userTrades；1000 条满页时拒绝宣称完整。测试先因函数缺失失败，再通过。
+- 七项现状、整改边界和验收门槛写入 `docs/reports/seven-strategy-gaps-2026-11-07.md`。
+- 综合定向验证：173 passed、2 skipped、1 deselected；deselected 是已确认的旧网格 mock 价格类型故障。`git diff --check` 通过。
+
+## 2026-11-09
+
+- 七项持续跟踪清单已提交并推送主线；活动生产 pin 为 `6279ded8`，风险政策版本 2 到 11 月 12 日 10:54 北京时间。
+- 激进版新增稳定 `episode_entry_order_id`，加仓保留首单，元数据持久化和恢复保留该字段；旧快照缺字段时不倒推。
+- 新增 `trading.aggressive_stop_bindings` 候选归属表和写入函数，重复写入仅在身份完全一致时接受；所有新 STOP 的通用下单路径与极端行情直写路径尝试绑定。绑定失败只影响归属证据，不阻断已挂交易所保护单。
+- 定向测试 18 passed。旧大套件组合 130 passed、18 failed，失败集中于旧开仓 mock/频控构造，需要基线核对；不能宣称全回归通过。
+- 下一步：退出事件幂等事务、逐笔成交唯一性与数量守恒、冷却门禁、数据库集成和受控发布。当前代码未部署。

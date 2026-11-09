@@ -26,6 +26,7 @@ from shared.notification import NotificationClient
 from shared.indicators import TechnicalIndicators
 from shared.dynamic_atr_filter import DynamicATRFilter
 from shared.condition_orders import record_condition_order, get_open_orders
+from shared.accounting.stop_binding import record_stop_binding
 from shared.strategy_state import load_matching_position_entry_time, save_strategy_state
 from shared.position_entry_recovery import fetch_lot_fills, verified_anchored_lot
 from shared.trade_logger import TradeLogger
@@ -106,6 +107,7 @@ class PositionState:
         
         # 订单ID跟踪
         self.entry_order_id: Optional[int] = None  # 入场订单ID
+        self.episode_entry_order_id: Optional[int] = None  # 本轮持仓首笔入场订单；加仓不覆盖
         self.stop_loss_order_id: Optional[int] = None  # 止损订单ID
         self.tp1_order_id: Optional[int] = None  # TP1订单ID
         self.tp2_order_id: Optional[int] = None  # TP2订单ID
@@ -2360,6 +2362,7 @@ class BTCEthStrategy:
             "initial_quantity": str(pos.initial_quantity),
             "current_quantity": str(pos.current_quantity),
             "entry_order_id": pos.entry_order_id,
+            "episode_entry_order_id": pos.episode_entry_order_id,
             "stop_loss_order_id": pos.stop_loss_order_id,
             "tp1_order_id": pos.tp1_order_id,
             "tp2_order_id": pos.tp2_order_id,
@@ -2493,7 +2496,9 @@ class BTCEthStrategy:
         signal: Dict, entry: OrderFillResult, actual_quantity: Decimal
     ) -> PositionState:
         """根据信号与成交结果构建新持仓状态（R05；实现在 shared.protection_retry）"""
-        return protection_retry.build_position_state(PositionState, signal, entry, actual_quantity)
+        position = protection_retry.build_position_state(PositionState, signal, entry, actual_quantity)
+        position.episode_entry_order_id = position.entry_order_id
+        return position
 
     @staticmethod
     def _apply_protection_order_ids(
@@ -2812,6 +2817,8 @@ class BTCEthStrategy:
                     self.db_manager, strategy_name, symbol,
                     order_type=order_kind, tp_level=tp_level, **record_kwargs
                 )
+            if order_kind == "STOP_LOSS" and order.get("algoId"):
+                await self._record_stop_binding(symbol, side, quantity, order["algoId"])
             return order_id
         except Exception as e:
             logger.error(
@@ -2821,6 +2828,29 @@ class BTCEthStrategy:
                 exc_info=True
             )
             return None
+
+    async def _record_stop_binding(
+        self, symbol: str, stop_side: str, quantity: Decimal, algo_id,
+    ) -> None:
+        """Best-effort provenance for a known episode; never delays protection."""
+        position = getattr(self, "positions", {}).get(symbol)
+        entry_id = getattr(position, "episode_entry_order_id", None)
+        if entry_id is None or not self.db_manager:
+            return
+        try:
+            bound = await record_stop_binding(
+                self.db_manager,
+                account_id=os.environ.get("TRADE_ACCOUNT_ID"),
+                strategy=self.strategy_name, symbol=symbol,
+                episode_entry_order_id=entry_id, algo_id=algo_id,
+                stop_side=stop_side, stop_quantity=quantity,
+            )
+            if not bound:
+                logger.warning("STOP 归属绑定冲突；该订单不进入自动冷却证据链",
+                               symbol=symbol, algo_id=algo_id)
+        except Exception as exc:
+            logger.warning("STOP 归属绑定未落库；该订单不进入自动冷却证据链",
+                           symbol=symbol, algo_id=algo_id, error=str(exc))
 
     async def _place_tp_order(
         self,
@@ -3225,13 +3255,18 @@ class BTCEthStrategy:
             stop_limit_price = new_stop * (Decimal('1') + stop_offset_pct)
         # 极端行情收紧止损单：保持直写 place_conditional_order，不复用 _place_conditional_order_and_record。
         # 原因：该封装会落库 condition_orders 且参数签名/返回值不同；此场景是极端行情临时收紧单，
-        # 原逻辑不落库（由 _close_position 统一清理），复用会引入落库副作用，改变业务行为。
+        # 原逻辑不写 condition_orders（由 _close_position 统一清理）；仅补记 STOP 候选归属。
         new_stop_order = await self.binance.place_conditional_order(
             symbol, 'SELL' if position.direction == 'LONG' else 'BUY',
             new_stop, position.current_quantity, order_type='STOP', price=stop_limit_price,
             reduce_only=True
         )
         position.stop_loss_order_id = new_stop_order.get('algoId') or new_stop_order.get('orderId')
+        if new_stop_order.get('algoId'):
+            await self._record_stop_binding(
+                symbol, 'SELL' if position.direction == 'LONG' else 'BUY',
+                position.current_quantity, new_stop_order['algoId'],
+            )
         logger.info(f"{symbol} 极端行情止损已收紧至{float(new_stop):.4f}")
     
     async def _check_liquidation_warning(
@@ -5858,6 +5893,8 @@ class BTCEthStrategy:
             ps.grade = data["grade"]
             ps.atr = atr
             ps.entry_order_id = data.get("entry_order_id")
+            # 旧快照没有首单身份时保持未知，不能把可能已被加仓覆盖的 ID 倒推成首单。
+            ps.episode_entry_order_id = data.get("episode_entry_order_id")
             ps.stop_loss_order_id = data.get("stop_loss_order_id")
             ps.tp1_order_id = data.get("tp1_order_id")
             ps.tp2_order_id = data.get("tp2_order_id")

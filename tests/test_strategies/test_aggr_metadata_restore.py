@@ -20,16 +20,17 @@ def make_strategy(order_id=101):
         "direction": "LONG", "entry_price": "2200", "grade": "B", "atr": "18",
         "entry_time": "2026-10-31T01:11:20", "entry_fill_time_ms": ANCHOR,
         "initial_quantity": "0.03", "current_quantity": "0.023",
-        "entry_order_id": 100, "stop_loss_order_id": 101,
+        "entry_order_id": 100, "episode_entry_order_id": 100,
+        "stop_loss_order_id": 101,
         "tp1_order_id": 102, "tp2_order_id": 103,
         "tp1_hit": False, "tp2_hit": False,
         "trailing_activated": False,
     }}}
     strategy.db_manager.fetch_one = AsyncMock(return_value={"state_data": json.dumps(state)})
-    strategy.binance.get_user_trades = AsyncMock(return_value=[
+    strategy.binance.get_user_trades = AsyncMock(side_effect=[[
         {"id": 1, "time": ANCHOR, "side": "BUY", "qty": "0.03"},
         {"id": 2, "time": ANCHOR + 1000, "side": "SELL", "qty": "0.007"},
-    ])
+    ], []])
     strategy.binance.get_open_algo_orders = AsyncMock(return_value=[
         {"algoId": order_id, "symbol": "ETHUSDT", "side": "SELL", "orderType": "STOP", "reduceOnly": True, "quantity": "0.023"},
         {"algoId": 102, "symbol": "ETHUSDT", "side": "SELL", "orderType": "TAKE_PROFIT", "reduceOnly": True, "quantity": "0.006"},
@@ -49,11 +50,13 @@ async def test_restores_original_grade_atr_and_fill_time_when_exchange_matches()
     assert pos.atr == Decimal("18")
     assert pos.current_quantity == Decimal("0.023")
     assert pos.entry_fill_time_ms == ANCHOR
+    assert pos.episode_entry_order_id == 100
     assert pos.stop_loss_order_id == 101
     assert pos.entry_time.isoformat() == "2026-10-31T01:11:26.845000"
-    assert s.binance.get_user_trades.await_args.args == ("ETHUSDT",)
-    assert s.binance.get_user_trades.await_args.kwargs["start_time"] == ANCHOR
-    assert s.binance.get_user_trades.await_args.kwargs["limit"] == 1000
+    first_call = s.binance.get_user_trades.await_args_list[0]
+    assert first_call.args == ("ETHUSDT",)
+    assert first_call.kwargs["start_time"] == ANCHOR
+    assert all(call.kwargs["limit"] == 1000 for call in s.binance.get_user_trades.await_args_list)
 
 
 @pytest.mark.asyncio
@@ -64,11 +67,11 @@ async def test_rejects_stale_order_or_reopened_lot():
             "ETHUSDT", {"symbol": "ETHUSDT", "positionAmt": "0.023", "entryPrice": "2200"}, Decimal("2300")
         ) is None
     s = make_strategy()
-    s.binance.get_user_trades.return_value = [
+    s.binance.get_user_trades.side_effect = [[
         {"id": 1, "time": ANCHOR, "side": "BUY", "qty": "0.03"},
         {"id": 2, "time": ANCHOR + 1000, "side": "SELL", "qty": "0.03"},
         {"id": 3, "time": ANCHOR + 2000, "side": "BUY", "qty": "0.023"},
-    ]
+    ], []]
     with patch("strategies.btc_eth_aggressive.strategy.resolve_position_owner", new=AsyncMock(return_value="btc_eth_aggressive")):
         assert await s._load_verified_position_metadata(
             "ETHUSDT", {"symbol": "ETHUSDT", "positionAmt": "0.023", "entryPrice": "2200"}, Decimal("2300")

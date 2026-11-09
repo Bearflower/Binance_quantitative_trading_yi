@@ -21,6 +21,7 @@ async def test_aggressive_persists_full_position_metadata_under_independent_key(
     position.initial_quantity = Decimal("1")
     position.current_quantity = Decimal("0.8")
     position.entry_order_id = 123
+    position.episode_entry_order_id = 123
     position.stop_loss_order_id = 456
     position.tp1_order_id = 789
     position.tp2_order_id = 790
@@ -38,6 +39,7 @@ async def test_aggressive_persists_full_position_metadata_under_independent_key(
     assert data["entry_time"] == "2026-11-02T12:00:00"
     assert data["tp1_hit"] is True
     assert data["entry_order_id"] == 123
+    assert data["episode_entry_order_id"] == 123
 
 
 @pytest.mark.asyncio
