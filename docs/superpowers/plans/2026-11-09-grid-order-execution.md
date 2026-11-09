@@ -29,6 +29,8 @@
 
 Global invariants for every task: only `ETHUSDT`; `BOTH` one-way and isolated USDT-M; all exchange writes require a persisted intent with stable client ID; no order on stale/unknown signal; no new exposure while exiting or locked; never infer order fill from disappearance from open-order list; never parse notification text; user data stream events are reconciled against REST before restart or completion claims.
 
+Knowledge-base constraints reviewed before implementation (`docs/knowledge/`): quantities and exchange filters use ETH units (`min_quantity=0.01 ETH`), never contract counts; do not silently increase margin to force a feasible plan; the ordinary-account `get_income_history()` returns `[]` without requesting Binance, so daily-loss evidence must use a direct, verified ordinary USD-M source or stop as unknown; persist fills before any event cursor; account-wide positions/orders require explicit ownership checks even on the dedicated subaccount; a silent WebSocket is unhealthy even without an exception, and queue overflow must preserve the latest event. A gap in raw trade IDs alone is not evidence of missing fills. See the dated knowledge records for the original incidents.
+
 Keep these public contracts stable across tasks (implement the bodies in their listed modules):
 
 ```python
