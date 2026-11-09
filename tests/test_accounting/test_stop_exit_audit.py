@@ -69,6 +69,21 @@ async def test_triggered_without_complete_proof_enters_review_after_retry():
 
 
 @pytest.mark.asyncio
+async def test_review_binding_is_scanned_again_when_late_fills_arrive():
+    db = AsyncMock()
+    db.fetch_all.return_value = [binding(2, "FINISHED")]
+    client = AsyncMock()
+    with patch("shared.accounting.stop_exit_audit.fetch_verified_closed_stop_episode",
+               new=AsyncMock(return_value={"proof_kind": "closed_stop_episode_v1"})), patch(
+               "shared.accounting.stop_exit_audit.persist_verified_stop_exit",
+               new=AsyncMock(return_value=True)):
+        result = await audit_due_stop_bindings(db, client, "default", "btc_eth_aggressive")
+    assert result["verified"] == 1
+    assert "audit_state IN ('pending','review')" in db.fetch_all.await_args.args[0]
+    assert "audit_state IN ('pending','review')" in db.execute.await_args.args[0]
+
+
+@pytest.mark.asyncio
 async def test_unresolved_gate_rejects_missing_read():
     db = AsyncMock()
     db.fetch_one.return_value = {"unresolved": True}

@@ -50,7 +50,7 @@ class StopIntentJournal:
         self.pending()
 
     def prepare(self, *, account_id, strategy, symbol, episode_entry_order_id,
-                stop_side, stop_quantity):
+                stop_side, stop_quantity, stop_slot="hard", previous_stop_algo_id=None):
         try:
             quantity = Decimal(str(stop_quantity))
         except (InvalidOperation, TypeError, ValueError):
@@ -61,16 +61,27 @@ class StopIntentJournal:
                     or isinstance(episode_entry_order_id, bool)
                     or episode_entry_order_id <= 0))
                 or stop_side not in ("BUY", "SELL")
+                or stop_slot not in ("hard", "trailing")
+                or (previous_stop_algo_id is not None and (
+                    not isinstance(previous_stop_algo_id, int) or previous_stop_algo_id <= 0))
                 or quantity is None or not quantity.is_finite() or quantity <= 0):
             raise StopJournalError("STOP intent identity invalid")
         client_algo_id = "sa" + uuid4().hex[:30]
         self._append({
-            "kind": "intent", "client_algo_id": client_algo_id,
+            "kind": "intent", "journal_version": 2, "client_algo_id": client_algo_id,
             "account_id": account_id, "strategy": strategy, "symbol": symbol,
             "episode_entry_order_id": episode_entry_order_id,
             "stop_side": stop_side, "stop_quantity": str(stop_quantity),
+            "stop_slot": stop_slot,
+            "previous_stop_algo_id": previous_stop_algo_id,
         })
         return client_algo_id
+
+    def start_post(self, client_algo_id):
+        """Durably mark that a POST can now occur; absence proves it cannot have."""
+        if not client_algo_id:
+            raise StopJournalError("STOP POST identity invalid")
+        self._append({"kind": "post_started", "client_algo_id": client_algo_id})
 
     def resolve(self, client_algo_id, algo_id):
         if not client_algo_id or not isinstance(algo_id, int) or algo_id <= 0:
@@ -78,12 +89,21 @@ class StopIntentJournal:
         self._append({"kind": "resolved", "client_algo_id": client_algo_id,
                       "algo_id": algo_id})
 
+    def reject(self, client_algo_id, code):
+        """Close an intent only after a definite local or exchange rejection."""
+        if not client_algo_id or not isinstance(code, int):
+            raise StopJournalError("STOP rejection invalid")
+        self._append({"kind": "rejected", "client_algo_id": client_algo_id,
+                      "code": code})
+
     def pending(self, symbol=None):
         """Return unresolved intents; malformed or conflicting lines fail closed."""
         if not self.path.exists():
             return []
         intents = {}
         resolved = {}
+        rejected = {}
+        post_started = set()
         with self.path.open("rb") as handle:
             fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
             try:
@@ -107,6 +127,11 @@ class StopIntentJournal:
                                     or event["episode_entry_order_id"] <= 0))
                                 or event.get("stop_side") not in ("BUY", "SELL")):
                             raise StopJournalError("STOP journal intent invalid")
+                        if event.get("stop_slot", "hard") not in ("hard", "trailing"):
+                            raise StopJournalError("STOP journal slot invalid")
+                        old = event.get("previous_stop_algo_id")
+                        if old is not None and (not isinstance(old, int) or old <= 0):
+                            raise StopJournalError("STOP journal previous algo invalid")
                         if client_id in intents and intents[client_id] != event:
                             raise StopJournalError("STOP journal intent conflict")
                         intents[client_id] = event
@@ -118,11 +143,25 @@ class StopIntentJournal:
                         if client_id in resolved and resolved[client_id] != event.get("algo_id"):
                             raise StopJournalError("STOP journal resolution conflict")
                         resolved[client_id] = event.get("algo_id")
+                    elif kind == "rejected":
+                        if not isinstance(event.get("code"), int):
+                            raise StopJournalError("STOP journal rejection invalid")
+                        if client_id in rejected and rejected[client_id] != event["code"]:
+                            raise StopJournalError("STOP journal rejection conflict")
+                        rejected[client_id] = event["code"]
+                    elif kind == "post_started":
+                        post_started.add(client_id)
                     else:
                         raise StopJournalError("STOP journal event type invalid")
             finally:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        if any(client_id not in intents for client_id in resolved):
-            raise StopJournalError("STOP journal resolution has no intent")
-        return [event for client_id, event in intents.items()
-                if client_id not in resolved and (symbol is None or event["symbol"] == symbol)]
+        if any(client_id not in intents for client_id in
+               resolved.keys() | rejected.keys() | post_started):
+            raise StopJournalError("STOP journal closure has no intent")
+        if resolved.keys() & rejected.keys():
+            raise StopJournalError("STOP journal conflicting closure")
+        return [{**event, "post_started": (
+                    event.get("journal_version") != 2 or client_id in post_started)}
+                for client_id, event in intents.items()
+                if client_id not in resolved and client_id not in rejected
+                and (symbol is None or event["symbol"] == symbol)]

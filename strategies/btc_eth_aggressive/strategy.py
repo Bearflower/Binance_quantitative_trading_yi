@@ -14,7 +14,9 @@ import pandas as pd
 import numpy as np
 import structlog
 
-from shared.binance_api import BinanceClient, BinanceAPIError
+from shared.binance_api import (
+    BinanceClient, BinanceAPIError, LocalOrderValidationError, PreSubmissionError,
+)
 from shared.circuit_breaker import (
     CircuitBreaker,
     compute_1h_return,
@@ -75,6 +77,8 @@ from strategies.btc_eth_aggressive.core import exits as _core_exits
 
 
 logger = structlog.get_logger()
+
+_DEFINITE_STOP_REJECT_CODES = {-2019, -2021, -2022, -4136, -4507} | set(range(-1139, -1099))
 
 
 # 保证金计算防除零兜底（杠杆缺失/无效时的保守默认，非业务阈值）
@@ -2505,8 +2509,6 @@ class BTCEthStrategy:
             except Exception as exc:
                 logger.error("STOP 持久日志不可用", symbol=symbol, error=str(exc))
                 return False, "STOP journal unavailable"
-        if getattr(self, "_unbound_stop_algo_ids", {}).get(symbol):
-            return False, "STOP binding missing"
         if not account_id or not self.db_manager:
             return False, "STOP evidence identity unavailable"
         try:
@@ -2515,13 +2517,28 @@ class BTCEthStrategy:
                 "WHERE strategy_name=$1 AND state_key=$2",
                 self.instance_id, f"position:{symbol}",
             )
+            saved_flags = set()
             if row:
                 state = row.get("state_data")
                 if isinstance(state, str):
                     state = json.loads(state)
                 saved = state["positions"][symbol]
-                if saved.get("unbound_stop_algo_ids"):
-                    return False, "STOP binding missing in saved position"
+                if (saved.get("episode_entry_order_id") is None
+                        and saved.get("stop_loss_order_id") is not None):
+                    return False, "legacy STOP episode unverified"
+                saved_flags = {str(value) for value in saved.get("unbound_stop_algo_ids", [])}
+            local_flags = getattr(self, "_unbound_stop_algo_ids", {}).get(symbol, set())
+            for flag in saved_flags | local_flags:
+                if not flag.isdecimal() or int(flag) <= 0:
+                    return False, "STOP binding missing"
+                bound = await self.db_manager.fetch_one(
+                    "SELECT EXISTS(SELECT 1 FROM trading.aggressive_stop_bindings "
+                    "WHERE account_id=$1 AND strategy=$2 AND symbol=$3 AND algo_id=$4) AS bound",
+                    account_id, self.strategy_name, symbol, int(flag),
+                )
+                if not bound or bound.get("bound") is not True:
+                    return False, "STOP binding missing"
+                local_flags.discard(flag)
             if await unresolved_stop_binding_exists(
                 self.db_manager, account_id, self.strategy_name, symbol,
             ):
@@ -2858,13 +2875,23 @@ class BTCEthStrategy:
         order_kind: str,
         strategy_name: str,
         tp_level: Optional[int] = None,
+        *, stop_slot: str = "hard",
     ) -> Optional[str]:
         """统一封装条件单下单+落库：统一账户 algoId、普通账户 orderId，失败返回 None（v6.28）"""
+        client_algo_id = None
         try:
+            if order_kind == "STOP_LOSS":
+                journal = getattr(self, "_stop_journal", None)
+                flags = getattr(self, "_unbound_stop_algo_ids", {}).get(symbol, set())
+                if (journal is not None and journal.pending(symbol)) or "journal-unavailable" in flags:
+                    logger.error("STOP 意图尚未核实，禁止再次补挂", symbol=symbol)
+                    return None
             client_algo_id = (
-                self._prepare_stop_intent(symbol, side, quantity)
+                self._prepare_stop_intent(symbol, side, quantity, stop_slot=stop_slot)
                 if order_kind == "STOP_LOSS" else None
             )
+            if client_algo_id:
+                self._stop_journal.start_post(client_algo_id)
             order = await self.binance.place_conditional_order(
                 symbol=symbol,
                 side=side,
@@ -2915,6 +2942,7 @@ class BTCEthStrategy:
                                  symbol=symbol, algo_id=order["algoId"], error=str(exc))
             return order_id
         except Exception as e:
+            self._close_definitely_rejected_stop_intent(client_algo_id, e)
             logger.error(
                 f"{symbol} 创建条件单失败",
                 order_type=order_kind,
@@ -2923,7 +2951,23 @@ class BTCEthStrategy:
             )
             return None
 
-    def _prepare_stop_intent(self, symbol: str, side: str, quantity: Decimal) -> Optional[str]:
+    def _close_definitely_rejected_stop_intent(self, client_algo_id, error) -> None:
+        if not client_algo_id:
+            return
+        if isinstance(error, (LocalOrderValidationError, PreSubmissionError)):
+            code = 0
+        elif isinstance(error, BinanceAPIError) and error.code in _DEFINITE_STOP_REJECT_CODES:
+            code = error.code
+        else:
+            return
+        try:
+            self._stop_journal.reject(client_algo_id, code)
+        except Exception as exc:
+            logger.error("STOP 确定拒单但持久日志无法关闭，保持补挂阻断", error=str(exc))
+
+    def _prepare_stop_intent(self, symbol: str, side: str, quantity: Decimal,
+                             *, stop_slot: str = "hard",
+                             previous_stop_algo_id=None) -> Optional[str]:
         position = getattr(self, "positions", {}).get(symbol)
         entry_id = getattr(position, "episode_entry_order_id", None)
         journal = getattr(self, "_stop_journal", None)
@@ -2934,7 +2978,8 @@ class BTCEthStrategy:
             return journal.prepare(
                 account_id=account_id, strategy=self.strategy_name, symbol=symbol,
                 episode_entry_order_id=int(entry_id) if entry_id is not None else None,
-                stop_side=side, stop_quantity=quantity,
+                stop_side=side, stop_quantity=quantity, stop_slot=stop_slot,
+                previous_stop_algo_id=previous_stop_algo_id,
             )
         except Exception as exc:
             self._unbound_stop_algo_ids.setdefault(symbol, set()).add("journal-unavailable")
@@ -2971,6 +3016,39 @@ class BTCEthStrategy:
             logger.warning("STOP 归属绑定未落库；该订单不进入自动冷却证据链",
                            symbol=symbol, algo_id=algo_id, error=str(exc))
             return False
+
+    async def _on_stop_intent_resolved(self, intent: Dict, algo: Dict) -> None:
+        """Restore the acknowledged STOP ID before releasing its durable intent."""
+        symbol = intent["symbol"]
+        algo_id = int(algo["algoId"])
+        getattr(self, "_unbound_stop_algo_ids", {}).get(symbol, set()).discard(str(algo_id))
+        position = getattr(self, "positions", {}).get(symbol)
+        if position is not None and (
+            getattr(position, "episode_entry_order_id", None)
+            == intent["episode_entry_order_id"]
+        ):
+            slot_attr = ("trailing_stop_order_id" if intent.get("stop_slot", "hard") == "trailing"
+                         else "stop_loss_order_id")
+            if (getattr(position, slot_attr) is None
+                    and algo.get("algoStatus") not in
+                    ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED")):
+                setattr(position, slot_attr, algo_id)
+            await self._persist_position_metadata(symbol)
+
+    async def _on_prepost_intent_reconciled(self, intent: Dict, old_algo: Optional[Dict]) -> None:
+        """Repair a canceled old STOP only after a conclusive exchange observation."""
+        symbol = intent["symbol"]
+        position = getattr(self, "positions", {}).get(symbol)
+        old_id = intent.get("previous_stop_algo_id")
+        if (position is None or old_id is None
+                or getattr(position, "episode_entry_order_id", None)
+                != intent["episode_entry_order_id"]):
+            return
+        if old_algo and old_algo.get("algoStatus") in ("CANCELED", "CANCELLED", "EXPIRED", "REJECTED"):
+            if position.stop_loss_order_id == old_id:
+                position.stop_loss_order_id = None
+                position.protection_pending = True
+                await self._persist_position_metadata(symbol)
 
     async def _place_tp_order(
         self,
@@ -3224,7 +3302,7 @@ class BTCEthStrategy:
             self._apply_limit_offset(position.trailing_stop_price, stop_offset, position.direction), tick_size)
         trail_id = await self._place_conditional_order_and_record(
             symbol, stop_side, "STOP", position.trailing_stop_price, trail_limit,
-            trail_qty, "STOP_LOSS", self.strategy_name
+            trail_qty, "STOP_LOSS", self.strategy_name, stop_slot="trailing"
         )
         if trail_id is None:
             return False
@@ -3361,18 +3439,26 @@ class BTCEthStrategy:
 
         # 先确认交易所精度，避免撤旧硬止损后无法安全下新单。
         await self._get_symbol_precision(symbol)
+        journal = getattr(self, "_stop_journal", None)
+        if journal is not None and journal.pending(symbol):
+            logger.error("极端行情 STOP 意图尚未核实，保留现有保护单", symbol=symbol)
+            return
         stop_side = 'SELL' if position.direction == 'LONG' else 'BUY'
-        client_algo_id = self._prepare_stop_intent(symbol, stop_side, position.current_quantity)
-        if (getattr(position, "episode_entry_order_id", None) is not None
-                and client_algo_id is None):
+        client_algo_id = self._prepare_stop_intent(
+            symbol, stop_side, position.current_quantity,
+            previous_stop_algo_id=position.stop_loss_order_id,
+        )
+        if client_algo_id is None:
             logger.error("极端行情 STOP 持久意图未写入，保留原保护单", symbol=symbol)
             return
         # 取消旧止损单，下新止损单
         if position.stop_loss_order_id:
             try:
                 await self.binance.cancel_algo_order(symbol, position.stop_loss_order_id)
+                position.stop_loss_order_id = None
             except Exception as e:
-                logger.warning(f"{symbol} 取消旧止损单失败: {e}")
+                logger.warning(f"{symbol} 取消旧止损单结果未知，等待持久意图恢复: {e}")
+                return
         # 使用止损限价单（v6.21：从STOP_MARKET改为STOP）
         stop_offset_pct = Decimal(str(self.risk_config.get('stop_limit_order', {}).get('offset_pct', 0.002)))
         if position.direction == 'LONG':
@@ -3382,12 +3468,17 @@ class BTCEthStrategy:
         # 极端行情收紧止损单：保持直写 place_conditional_order，不复用 _place_conditional_order_and_record。
         # 原因：该封装会落库 condition_orders 且参数签名/返回值不同；此场景是极端行情临时收紧单，
         # 原逻辑不写 condition_orders（由 _close_position 统一清理）；仅补记 STOP 候选归属。
-        new_stop_order = await self.binance.place_conditional_order(
-            symbol, stop_side,
-            new_stop, position.current_quantity, order_type='STOP', price=stop_limit_price,
-            reduce_only=True,
-            **({'clientAlgoId': client_algo_id} if client_algo_id else {}),
-        )
+        try:
+            self._stop_journal.start_post(client_algo_id)
+            new_stop_order = await self.binance.place_conditional_order(
+                symbol, stop_side,
+                new_stop, position.current_quantity, order_type='STOP', price=stop_limit_price,
+                reduce_only=True,
+                **({'clientAlgoId': client_algo_id} if client_algo_id else {}),
+            )
+        except Exception as exc:
+            self._close_definitely_rejected_stop_intent(client_algo_id, exc)
+            raise
         position.stop_loss_order_id = new_stop_order.get('algoId') or new_stop_order.get('orderId')
         if new_stop_order.get('algoId'):
             try:
@@ -3862,6 +3953,8 @@ class BTCEthStrategy:
                 await reconcile_stop_intents(
                     self._stop_journal, self.db_manager, self.binance,
                     account_id, self.strategy_name,
+                    on_resolved=self._on_stop_intent_resolved,
+                    on_prepost=self._on_prepost_intent_reconciled,
                 )
                 await audit_due_stop_bindings(
                     self.db_manager, self.binance, account_id, self.strategy_name,
@@ -5194,7 +5287,7 @@ class BTCEthStrategy:
         )
         new_order_id = await self._place_conditional_order_and_record(
             symbol, stop_side, "STOP", trailing_stop, stop_limit_price,
-            close_quantity, "STOP_LOSS", self.strategy_name
+            close_quantity, "STOP_LOSS", self.strategy_name, stop_slot="trailing"
         )
         if new_order_id:
             position.trailing_stop_order_id = new_order_id

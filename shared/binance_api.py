@@ -37,6 +37,14 @@ class BinanceAPIError(Exception):
         super().__init__(f"[{code}] {message}")
 
 
+class LocalOrderValidationError(ValueError):
+    """Order arguments rejected before an exchange write is attempted."""
+
+
+class PreSubmissionError(Exception):
+    """Conditional order failed before the exchange POST was attempted."""
+
+
 class UnknownOrderResultError(Exception):
     """写请求结果未知异常（R02-F3）
 
@@ -815,48 +823,54 @@ class BinanceClient:
         """
         # 参数验证
         if not symbol or not symbol.strip():
-            raise ValueError("交易对不能为空")
+            raise LocalOrderValidationError("交易对不能为空")
         
         symbol = symbol.strip().upper()
         
         if side not in ["BUY", "SELL"]:
-            raise ValueError(f"无效的订单方向: {side}")
+            raise LocalOrderValidationError(f"无效的订单方向: {side}")
         
         valid_types = ["STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET", "TRAILING_STOP_MARKET"]
         if order_type not in valid_types:
-            raise ValueError(f"无效的条件单类型: {order_type}，有效类型: {', '.join(valid_types)}")
+            raise LocalOrderValidationError(f"无效的条件单类型: {order_type}，有效类型: {', '.join(valid_types)}")
         
         if working_type not in ["CONTRACT_PRICE", "MARK_PRICE"]:
-            raise ValueError(f"无效的触发价格类型: {working_type}，有效类型: CONTRACT_PRICE, MARK_PRICE")
+            raise LocalOrderValidationError(f"无效的触发价格类型: {working_type}，有效类型: CONTRACT_PRICE, MARK_PRICE")
         
         if stop_price <= 0:
-            raise ValueError(f"触发价格必须大于0: {stop_price}")
+            raise LocalOrderValidationError(f"触发价格必须大于0: {stop_price}")
         
         # 限价类型需要提供价格
         if order_type in ("STOP", "TAKE_PROFIT") and price is None:
-            raise ValueError(f"{order_type} 类型必须提供限价 price")
+            raise LocalOrderValidationError(f"{order_type} 类型必须提供限价 price")
         
         # 检查是否平仓单
         close_position = str(kwargs.get("closePosition", "")).lower() == "true"
         
         if not close_position and quantity is None:
-            raise ValueError("非平仓条件单必须提供数量")
+            raise LocalOrderValidationError("非平仓条件单必须提供数量")
         
         if not close_position and quantity is not None and quantity <= 0:
-            raise ValueError(f"数量必须大于0: {quantity}")
+            raise LocalOrderValidationError(f"数量必须大于0: {quantity}")
         
         # 市价条件单（STOP_MARKET/TAKE_PROFIT_MARKET/TRAILING_STOP_MARKET）不需要限价 price，
         # 跳过 price > 0 验证；仅限价条件单（STOP/TAKE_PROFIT）需要有效 price
         if order_type in ("STOP", "TAKE_PROFIT") and price is not None and price <= 0:
-            raise ValueError(f"限价条件单价格必须大于0: {price}")
+            raise LocalOrderValidationError(f"限价条件单价格必须大于0: {price}")
         
         # 获取交易对精度信息
-        precision_info = await self.get_symbol_info(symbol)
+        try:
+            precision_info = await self.get_symbol_info(symbol)
+        except Exception as exc:
+            raise PreSubmissionError("conditional order symbol lookup failed before POST") from exc
         step_size = precision_info.get('stepSize', '0.001')
         tick_size = precision_info.get('tickSize', Decimal('0.01'))
         
         # 自动调整触发价格精度
-        adjusted_stop_price = self._adjust_price_precision(stop_price, tick_size)
+        try:
+            adjusted_stop_price = self._adjust_price_precision(stop_price, tick_size)
+        except Exception as exc:
+            raise PreSubmissionError("conditional order stop precision failed before POST") from exc
 
         # 价格合理性校验：防止 stop_price 距离当前价格太近导致 -2021 错误 ⭐
         # 场景：止损单已触发但限价未成交，重新补单时当前价格已越过 stop_price
@@ -893,7 +907,10 @@ class BinanceClient:
         # 自动调整数量精度
         adjusted_quantity = None
         if quantity is not None:
-            adjusted_quantity = self._adjust_quantity_precision(quantity, step_size)
+            try:
+                adjusted_quantity = self._adjust_quantity_precision(quantity, step_size)
+            except Exception as exc:
+                raise PreSubmissionError("conditional order quantity precision failed before POST") from exc
             logger.debug(
                 f"{symbol} 数量精度调整",
                 original_quantity=float(quantity),
@@ -904,7 +921,10 @@ class BinanceClient:
         # 自动调整限价精度
         adjusted_price = None
         if price is not None:
-            adjusted_price = self._adjust_price_precision(price, tick_size)
+            try:
+                adjusted_price = self._adjust_price_precision(price, tick_size)
+            except Exception as exc:
+                raise PreSubmissionError("conditional order limit precision failed before POST") from exc
             logger.debug(
                 f"{symbol} 限价精度调整",
                 original_price=float(price),

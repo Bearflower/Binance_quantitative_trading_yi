@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import pytest
 
 from strategies.btc_eth_aggressive.strategy import BTCEthStrategy
+from shared.binance_api import BinanceAPIError
 from shared.protection_retry import merge_position
 from shared.accounting.stop_intent_journal import StopIntentJournal
 
@@ -44,7 +45,11 @@ async def test_stop_binding_requires_known_episode_and_does_not_block_protection
         await strategy._record_stop_binding("ETHUSDT", "SELL", Decimal("0.3"), 2001)
         bind.assert_awaited_once()
         assert strategy._unbound_stop_algo_ids == {"ETHUSDT": {"2001"}}
-        assert await strategy._stop_entry_gate("ETHUSDT") == (False, "STOP binding missing")
+        strategy.db_manager = AsyncMock()
+        strategy.db_manager.fetch_one.return_value = None
+        strategy.instance_id = "btc_eth_aggressive"
+        with patch.dict("os.environ", {"TRADE_ACCOUNT_ID": "default"}):
+            assert await strategy._stop_entry_gate("ETHUSDT") == (False, "STOP binding missing")
 
 
 @pytest.mark.asyncio
@@ -104,8 +109,47 @@ async def test_restart_gate_reads_persisted_unbound_stop_flag():
     strategy.strategy_name = "btc_eth_aggressive"
     with patch.dict("os.environ", {"TRADE_ACCOUNT_ID": "default"}):
         assert await strategy._stop_entry_gate("ETHUSDT") == (
-            False, "STOP binding missing in saved position",
+            False, "STOP binding missing",
         )
+
+
+@pytest.mark.asyncio
+async def test_legacy_snapshot_with_stop_blocks_new_entry_without_lot_proof():
+    strategy = object.__new__(BTCEthStrategy)
+    strategy.db_manager = AsyncMock()
+    strategy.db_manager.fetch_one.return_value = {
+        "state_data": {"positions": {"SOLUSDT": {
+            "episode_entry_order_id": None, "stop_loss_order_id": 2001,
+        }}}
+    }
+    strategy.instance_id = "btc_eth_aggressive"
+    strategy.strategy_name = "btc_eth_aggressive"
+    with patch.dict("os.environ", {"TRADE_ACCOUNT_ID": "default"}):
+        assert await strategy._stop_entry_gate("SOLUSDT") == (
+            False, "legacy STOP episode unverified",
+        )
+
+
+@pytest.mark.asyncio
+async def test_bound_stop_clears_stale_memory_and_saved_block():
+    strategy = object.__new__(BTCEthStrategy)
+    strategy.db_manager = AsyncMock()
+    strategy.db_manager.fetch_one.side_effect = [
+        {"state_data": {"positions": {"ETHUSDT": {"unbound_stop_algo_ids": [2001]}}}},
+        {"bound": True},
+    ]
+    strategy.instance_id = "btc_eth_aggressive"
+    strategy.strategy_name = "btc_eth_aggressive"
+    strategy._unbound_stop_algo_ids = {"ETHUSDT": {"2001"}}
+    with patch.dict("os.environ", {"TRADE_ACCOUNT_ID": "default"}), patch(
+        "strategies.btc_eth_aggressive.strategy.unresolved_stop_binding_exists",
+        new=AsyncMock(return_value=False),
+    ), patch(
+        "strategies.btc_eth_aggressive.strategy.latest_verified_stop_time_ms",
+        new=AsyncMock(return_value=None),
+    ):
+        assert await strategy._stop_entry_gate("ETHUSDT") == (True, "")
+    assert strategy._unbound_stop_algo_ids["ETHUSDT"] == set()
 
 
 @pytest.mark.asyncio
@@ -166,6 +210,12 @@ async def test_unknown_stop_post_leaves_durable_intent_and_blocks_reentry(tmp_pa
             Decimal("0.3"), "STOP_LOSS", "btc_eth_aggressive",
         )
     assert result is None
+    with patch.dict("os.environ", {"TRADE_ACCOUNT_ID": "default"}):
+        assert await strategy._place_conditional_order_and_record(
+            "ETHUSDT", "SELL", "STOP", Decimal("98"), Decimal("97"),
+            Decimal("0.3"), "STOP_LOSS", "btc_eth_aggressive",
+        ) is None
+    strategy.binance.place_conditional_order.assert_awaited_once()
     restarted = object.__new__(BTCEthStrategy)
     restarted._stop_journal = StopIntentJournal(strategy._stop_journal.path)
     restarted.strategy_name = "btc_eth_aggressive"
@@ -173,6 +223,86 @@ async def test_unknown_stop_post_leaves_durable_intent_and_blocks_reentry(tmp_pa
         assert await restarted._stop_entry_gate("ETHUSDT") == (
             False, "STOP journal intent unresolved",
         )
+
+
+@pytest.mark.asyncio
+async def test_definite_exchange_rejection_allows_a_new_protection_attempt(tmp_path):
+    strategy = object.__new__(BTCEthStrategy)
+    strategy.db_manager = None
+    strategy.strategy_name = "btc_eth_aggressive"
+    strategy.positions = {"ETHUSDT": SimpleNamespace(episode_entry_order_id=100)}
+    strategy._unbound_stop_algo_ids = {}
+    strategy._stop_journal = StopIntentJournal(tmp_path / "stop-intents.jsonl")
+    strategy.binance = AsyncMock()
+    strategy.binance.place_conditional_order.side_effect = BinanceAPIError(-2021, "triggered")
+    with patch.dict("os.environ", {"TRADE_ACCOUNT_ID": "default"}):
+        for _ in range(2):
+            assert await strategy._place_conditional_order_and_record(
+                "ETHUSDT", "SELL", "STOP", Decimal("98"), Decimal("97"),
+                Decimal("0.3"), "STOP_LOSS", "btc_eth_aggressive",
+            ) is None
+            assert strategy._stop_journal.pending("ETHUSDT") == []
+    assert strategy.binance.place_conditional_order.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_extreme_tightening_retains_old_stop_while_intent_unknown(tmp_path):
+    strategy = object.__new__(BTCEthStrategy)
+    strategy.risk_config = {"extreme_market": {"tighten_stop_atr": 1}}
+    strategy._get_symbol_precision = AsyncMock()
+    strategy._stop_journal = StopIntentJournal(tmp_path / "stop-intents.jsonl")
+    strategy._stop_journal.prepare(
+        account_id="default", strategy="btc_eth_aggressive", symbol="ETHUSDT",
+        episode_entry_order_id=100, stop_side="SELL", stop_quantity="1",
+    )
+    strategy.binance = AsyncMock()
+    position = SimpleNamespace(direction="LONG", atr=Decimal("2"),
+                               current_quantity=Decimal("1"), stop_loss_order_id=77,
+                               episode_entry_order_id=100)
+    await strategy._tighten_extreme_stop("ETHUSDT", position, Decimal("100"))
+    strategy.binance.cancel_algo_order.assert_not_awaited()
+    strategy.binance.place_conditional_order.assert_not_awaited()
+    assert position.stop_loss_order_id == 77
+
+
+@pytest.mark.asyncio
+async def test_extreme_cancel_failure_keeps_prepost_intent_for_reconciliation(tmp_path):
+    strategy = object.__new__(BTCEthStrategy)
+    strategy.risk_config = {"extreme_market": {"tighten_stop_atr": 1}}
+    strategy._get_symbol_precision = AsyncMock()
+    strategy._stop_journal = StopIntentJournal(tmp_path / "stop-intents.jsonl")
+    strategy.strategy_name = "btc_eth_aggressive"
+    strategy.positions = {"ETHUSDT": SimpleNamespace(episode_entry_order_id=100)}
+    strategy._unbound_stop_algo_ids = {}
+    strategy.binance = AsyncMock()
+    strategy.binance.cancel_algo_order.side_effect = TimeoutError("unknown cancel")
+    position = SimpleNamespace(direction="LONG", atr=Decimal("2"),
+                               current_quantity=Decimal("1"), stop_loss_order_id=77,
+                               episode_entry_order_id=100)
+    with patch.dict("os.environ", {"TRADE_ACCOUNT_ID": "default"}):
+        await strategy._tighten_extreme_stop("ETHUSDT", position, Decimal("100"))
+    strategy.binance.place_conditional_order.assert_not_awaited()
+    pending = strategy._stop_journal.pending("ETHUSDT")
+    assert len(pending) == 1
+    assert pending[0]["post_started"] is False
+    assert pending[0]["previous_stop_algo_id"] == 77
+
+
+@pytest.mark.asyncio
+async def test_trailing_recovery_restores_trailing_slot_without_overwriting_hard_stop():
+    strategy = object.__new__(BTCEthStrategy)
+    position = SimpleNamespace(episode_entry_order_id=100, stop_loss_order_id=77,
+                               trailing_stop_order_id=None)
+    strategy.positions = {"ETHUSDT": position}
+    strategy._unbound_stop_algo_ids = {"ETHUSDT": {"200"}}
+    strategy._persist_position_metadata = AsyncMock()
+    await strategy._on_stop_intent_resolved(
+        {"symbol": "ETHUSDT", "episode_entry_order_id": 100, "stop_slot": "trailing"},
+        {"algoId": 200, "algoStatus": "NEW"},
+    )
+    assert position.stop_loss_order_id == 77
+    assert position.trailing_stop_order_id == 200
+    assert strategy._unbound_stop_algo_ids["ETHUSDT"] == set()
 
 
 @pytest.mark.asyncio
