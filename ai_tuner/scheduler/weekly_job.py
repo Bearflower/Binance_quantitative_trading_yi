@@ -9,6 +9,7 @@
 """
 
 import importlib
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -468,7 +469,10 @@ class WeeklyTuningJob:
         # --- 契约适配层：把新/旧契约字段统一成下游（save_memory、通知卡片）使用的格式 ---
         if contract_mode == "new":
             # 新契约：decision / objective / diagnosis(list) / target_metrics / adjustments / expected_impact
-            reasons_text = "\n".join(parsed.get("diagnosis", [])) if isinstance(parsed.get("diagnosis"), list) else str(parsed.get("diagnosis", ""))
+            reasons_text = "\n".join(
+                item if isinstance(item, str) else json.dumps(item, ensure_ascii=False, sort_keys=True)
+                for item in parsed.get("diagnosis", [])
+            )
             summary_text = parsed.get("objective", "")
         else:
             reasons_text = parsed.get("reasons", "")

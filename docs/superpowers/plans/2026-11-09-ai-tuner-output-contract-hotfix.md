@@ -31,6 +31,8 @@
 
 - [x] 分别运行相关契约套件：解析器与提示词 48 passed；审计模式与双契约 60 passed。
 - [x] 运行 `git diff --check`，核对 diff 仅限契约提示词、重试文案、测试和本计划。
-- [ ] 独立审查：确认未放宽解析器、未改 `auto_apply` 或 `purpose_driven_mvp.mode`；本地提交后再决定合并和部署。
+- [x] 独立审查：发现并修复非空结构化 `diagnosis` 的下游拼接异常；未放宽解析器、未改 `auto_apply` 或 `purpose_driven_mvp.mode`。
+
+**审查补项：** 独立审查发现真实 §15 `diagnosis` 对象列表在周度流程中被当作字符串拼接。已先添加双候选、`HOLD`/`PROPOSE` 四组失败测试，再把对象无损序列化为下游通知与记忆可用的文字；重新验证 `ai_tuner/tests` 237 passed、`tests/test_ai_tuner_mvp` 757 passed / 5 skipped。
 
 **Production guard:** 本次改动即使部署，也仍维持 `audit + selected_strategy=null`。部署成功不能等同于回放、金样对账或资格考试通过，真实数据结论继续 `BLOCKED_DATA`。
