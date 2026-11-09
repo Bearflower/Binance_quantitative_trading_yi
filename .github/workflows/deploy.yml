@@ -160,7 +160,7 @@ jobs:
           fi
           if [ "$DEPLOY_MODE" = "strategy-risk-followup" ]; then
             case "${{ matrix.service.name }}" in
-              btc-eth-aggr|hrs) echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
+              btc-eth-aggr|grid) echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
               *) echo "should_build=false" >> "$GITHUB_OUTPUT" ;;
             esac
             exit 0

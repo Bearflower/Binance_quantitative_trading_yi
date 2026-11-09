@@ -6,7 +6,7 @@ from scripts.risk_followup_manifest import (
     RELEASE, SOURCE, ReleaseBlocked, sha256, validate_manifest, validate_tree,
 )
 from scripts.scoped_risk_followup import (
-    image_only, startup_marker_present, unchanged_exchange,
+    Runtime, image_only, startup_marker_present, unchanged_exchange,
     validate_active_state,
 )
 from scripts.select_deploy_mode import DeployModeError, select_deploy_mode
@@ -25,7 +25,7 @@ def manifest():
 
 
 def test_followup_selects_only_exact_added_marker_and_two_images():
-    assert IMAGES == {"hrs": "hrs-strategy", "btc-eth-aggr": "btc-eth-aggressive-strategy"}
+    assert IMAGES == {"grid": "grid-strategy", "btc-eth-aggr": "btc-eth-aggressive-strategy"}
     assert select_deploy_mode("push", BASE, [("A", MARKER)]) == "strategy-risk-followup"
     for changes in [[("M", MARKER)], [("A", MARKER), ("A", ".github/deploy-modes/strategy-risk-successor-20261105")]]:
         with pytest.raises(DeployModeError):
@@ -104,3 +104,11 @@ def test_followup_never_rotates_funding_credentials():
     _validate("strategy-risk-followup", "a" * 40, "12345678", "keep")
     with pytest.raises(RenderError):
         _validate("strategy-risk-followup", "a" * 40, "12345678", "rotate")
+
+
+def test_expired_policy_release_uses_read_only_pre_activation_gate():
+    runtime = Runtime.__new__(Runtime)
+    calls = []
+    runtime.run = lambda argv, **kwargs: calls.append(argv) or '{"ok":true,"read_only":true}'
+    assert runtime.gate()["ok"] is True
+    assert calls[0][calls[0].index("--stage") + 1] == "pre_activation"

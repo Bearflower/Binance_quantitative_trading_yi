@@ -22,7 +22,7 @@ ALLOCATION_RECONCILE_RETRY_MARKER = ".github/deploy-modes/allocation-reconcile-r
 REMEDIATION_MARKER = ".github/deploy-modes/ledger-risk-remediation-20261104"
 SUCCESSOR_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105"
 SUCCESSOR_RECOVERY_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105-recovery-1"
-RISK_FOLLOWUP_MARKER = ".github/deploy-modes/strategy-risk-followup-20261106-2"
+RISK_FOLLOWUP_MARKER = ".github/deploy-modes/strategy-code-followup-20261108"
 ZERO_SHA = "0" * 40
 
 

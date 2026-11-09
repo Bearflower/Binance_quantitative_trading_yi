@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One-shot successor for the active risk pin: HRS verifier and aggressive entry.
+"""One-shot code-only successor: grid semi order gate and aggressive evidence.
 
 The workflow holds compose_deploy.lock before invoking this file. A failed partial
 activation remains pinned for manual exchange/order reconciliation; it is never
@@ -30,11 +30,12 @@ CONTAINERS = {
     "dashboard-api": "dashboard-api",
     "data-backend": "data-backend",
     "execution-facts-collector": "trading_system-execution-facts",
+    "grid-strategy": "trading_system-grid",
     "hrs-strategy": "trading_system-hrs",
     "new-coin-strategy": "trading_system-new_coin",
 }
 STACK_FILES = {"docker-compose.yml", "docker-compose.override.yml", "docker-compose.logging.yml"}
-IMAGE_RE = re.compile(r"ghcr\.io/bearflower/trading-(hrs|btc-eth-aggr)@sha256:[0-9a-f]{64}\Z")
+IMAGE_RE = re.compile(r"ghcr\.io/bearflower/trading-(grid|btc-eth-aggr)@sha256:[0-9a-f]{64}\Z")
 
 
 def atomic_json(path: Path, value: dict) -> None:
@@ -114,7 +115,7 @@ class Runtime:
         return (result.stdout + result.stderr if include_stderr else result.stdout).strip()
 
     def compose(self, service: str, *, overlay: Path) -> list[str]:
-        stacks = self.pin["stacks"][service]
+        stacks = self.stacks[service]
         args = ["docker", "compose", "--project-directory", str(self.root), "-p", "trading_system"]
         for stack in stacks:
             args.extend(["-f", str(self.root / stack)])
@@ -149,11 +150,23 @@ class Runtime:
 
     def gate(self) -> dict:
         output = self.run(["docker", "exec", "trading_system-hrs", "python", "/app/scripts/verify_ledger_risk_release.py",
-                           "--stage", "strategy_gate", "--account", "default", "--revision", "1", "--require-reduced"], timeout=180)
+                           "--stage", "pre_activation", "--account", "default", "--revision", "1", "--require-reduced"], timeout=180)
         result = json.loads(output.splitlines()[-1])
         if result.get("ok") is not True or result.get("read_only") is not True:
             raise ReleaseBlocked("read-only exchange/policy gate failed")
         return result
+
+    def policy_snapshot(self) -> str:
+        """Read both immutable policy rows and active pointers without credentials."""
+        sql = ("SELECT (SELECT md5(COALESCE(json_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'[]')) "
+               "FROM trading.strategy_risk_policy t) || ':' || "
+               "(SELECT md5(COALESCE(json_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text)::text,'[]')) "
+               "FROM trading.strategy_risk_active t)")
+        value = self.run(["docker", "exec", "trading_system-postgres", "psql", "-U", "trading_user",
+                          "-d", "trading_platform", "-At", "-c", sql])
+        if not re.fullmatch(r"[0-9a-f]{32}:[0-9a-f]{32}", value):
+            raise ReleaseBlocked("risk policy snapshot unavailable")
+        return value
 
     def preflight(self) -> None:
         self.pin = json.loads(self.pin_file.read_text())
@@ -164,6 +177,7 @@ class Runtime:
         if set(self.pin.get("stacks", {})) != {"ai-tuner", "btc-eth-aggressive-strategy", "btc-eth-strategy",
                                               "dashboard-api", "data-backend", "execution-facts-collector", "hrs-strategy", "new-coin-strategy"}:
             raise ReleaseBlocked("pinned service inventory drift")
+        self.stacks = dict(self.pin["stacks"], **{"grid-strategy": ["docker-compose.yml", "docker-compose.logging.yml"]})
         for stacks in self.pin["stacks"].values():
             if not isinstance(stacks, list) or not stacks or stacks[0] != "docker-compose.yml" or not set(stacks) <= STACK_FILES or len(stacks) != len(set(stacks)):
                 raise ReleaseBlocked("unsafe pinned compose stack")
@@ -180,23 +194,25 @@ class Runtime:
                 raise ReleaseBlocked("invalid predecessor image pin: " + service)
         self.release_dir.mkdir(parents=True, exist_ok=False)
         os.chmod(self.release_dir, 0o700)
-        self.all_before = {service: self.inspect(service) for service in self.pin["stacks"]}
+        self.all_before = {service: self.inspect(service) for service in self.stacks}
         self.inventory_before = self.project_inventory()
         if not set(CONTAINERS.values()) <= set(self.inventory_before):
             raise ReleaseBlocked("pinned containers absent from project inventory")
         for service, row in self.all_before.items():
             if row["State"]["Status"] != "running" or row["State"].get("Health", {}).get("Status") != "healthy":
                 raise ReleaseBlocked("predecessor not healthy: " + service)
-            expected_image = original["services"][service]["image"]
+            expected_image = (row["Config"]["Image"] if service == "grid-strategy"
+                              else original["services"][service]["image"])
             image_id = self.run(["docker", "image", "inspect", "--format", "{{.Id}}", expected_image])
             if row["Image"] != image_id:
                 raise ReleaseBlocked("running image differs from active pin: " + service)
         self.before = {service: self.all_before[service] for service in SERVICES}
         successor = json.loads(json.dumps(original))
+        successor["services"]["grid-strategy"] = {"image": self.all_before["grid-strategy"]["Config"]["Image"]}
         for image, service in IMAGES.items():
             successor["services"][service]["image"] = self.images[image]
         atomic_json(self.overlay, successor)
-        for service in self.pin["stacks"]:
+        for service in self.stacks:
             old = json.loads(self.run(self.compose(service, overlay=predecessor) + ["config", "--format", "json"]))["services"][service]
             new = json.loads(self.run(self.compose(service, overlay=self.overlay) + ["config", "--format", "json"]))["services"][service]
             if not image_only(old, new) or (service not in SERVICES and old != new):
@@ -206,12 +222,15 @@ class Runtime:
                      for service, row in self.all_before.items()})
         self.pre = self.gate()
         atomic_json(self.release_dir / "exchange-before.json", self.pre)
+        self.policy_before = self.policy_snapshot()
         self.record("in_progress", "preflight")
 
     def pull_and_verify(self) -> None:
         for name, image in self.images.items():
             self.run(["docker", "pull", image], timeout=600)
-            paths = ["shared/entry_risk_policy.py"] + (["strategies/btc_eth_aggressive/strategy.py"] if name == "btc-eth-aggr" else ["scripts/verify_ledger_risk_release.py"])
+            paths = ["shared/binance_api.py", "shared/accounting/stop_exit_evidence.py"]
+            paths += (["strategies/btc_eth_aggressive/strategy.py"] if name == "btc-eth-aggr"
+                      else ["strategies/grid/order_manager.py", "strategies/grid/strategy.py"])
             code = "import hashlib,json,pathlib; p=pathlib.Path('/app'); print(json.dumps({'version':(p/'VERSION').read_text(),'hashes':{x:hashlib.sha256((p/x).read_bytes()).hexdigest() for x in " + repr(paths) + "}}))"
             proof = json.loads(self.run(["docker", "run", "--rm", "--network", "none", "--entrypoint", "python", image, "-c", code], timeout=180))
             if "GIT_SHA=" + self.sha not in proof["version"].splitlines():
@@ -242,7 +261,7 @@ class Runtime:
             expected_id = self.run(["docker", "image", "inspect", "--format", "{{.Id}}", target_image])
             if current["Image"] != expected_id or self.identity(current) == self.identity(old):
                 raise ReleaseBlocked("successor container image/identity mismatch: " + service)
-            marker = "调度器已启动" if service == "btc-eth-aggressive-strategy" else "策略初始化完成，开始运行"
+            marker = "调度器已启动" if service == "btc-eth-aggressive-strategy" else "网格策略资源初始化完成"
             startup_deadline = time.monotonic() + 300
             while True:
                 logs = self.run(["docker", "logs", "--since", current["State"]["StartedAt"], current["Id"]], include_stderr=True)
@@ -260,6 +279,8 @@ class Runtime:
         after = self.gate()
         atomic_json(self.release_dir / "exchange-after.json", after)
         unchanged_exchange(self.pre, after)
+        if self.policy_snapshot() != self.policy_before:
+            raise ReleaseBlocked("risk policy changed during code-only release")
         for service, before in self.all_before.items():
             current = self.inspect(service)
             if service not in SERVICES and self.identity(current) != self.identity(before):
@@ -272,7 +293,8 @@ class Runtime:
         if set(inventory_after) != set(self.inventory_before):
             raise ReleaseBlocked("project container inventory changed")
         atomic_json(self.pin_file, dict(self.pin, sha=self.sha, status="active", overlay=str(self.overlay),
-                                        state=str(self.state), predecessor_sha=ACTIVE_PIN_SHA))
+                                        state=str(self.state), predecessor_sha=ACTIVE_PIN_SHA,
+                                        stacks=self.stacks))
         self.record("complete", "success")
 
 

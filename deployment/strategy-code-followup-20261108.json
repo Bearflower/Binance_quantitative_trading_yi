@@ -1,0 +1,91 @@
+{
+  "active_pin_sha": "8991d03d3c4625612b4d42d2014e829aa6750f4f",
+  "allowed_changes": [
+    {
+      "path": ".github/deploy-modes/strategy-code-followup-20261108",
+      "status": "A"
+    },
+    {
+      "path": ".github/workflows/deploy.yml",
+      "status": "M"
+    },
+    {
+      "path": "deployment/strategy-code-followup-20261108.json",
+      "status": "A"
+    },
+    {
+      "path": "docs/reports/seven-strategy-gaps-2026-11-07.md",
+      "status": "A"
+    },
+    {
+      "path": "scripts/risk_followup_manifest.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/scoped_risk_followup.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/select_deploy_mode.py",
+      "status": "M"
+    },
+    {
+      "path": "shared/accounting/stop_exit_evidence.py",
+      "status": "A"
+    },
+    {
+      "path": "shared/binance_api.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/strategy.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/grid/order_manager.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/grid/strategy.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_accounting/test_stop_exit_evidence.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_aggressive_frequency_readiness.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_grid_semi_order_gate.py",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_scoped_release/test_risk_followup.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_shared/test_open_algo_orders.py",
+      "status": "M"
+    }
+  ],
+  "base_revision": "8991d03d3c4625612b4d42d2014e829aa6750f4f",
+  "expected_pin_overlay_sha256": "31c4595c9800e3605fda2af799b21dbc4e68c08cc1630f8c797baf34d39fd1cd",
+  "release_id": "strategy-code-followup-20261108",
+  "schema_version": 1,
+  "source_checksums": {
+    ".github/workflows/deploy.yml": "971358f0ac842ea40046cf365afd2f1d9345d975a89725573be20c777431982b",
+    "scripts/package_risk_followup.py": "51f695a8ccff42b6ed27dabbb37f6faad14cb73e9142b640bb334e139c723a58",
+    "scripts/remote_deploy_runtime.sh": "c44b680bbea455c1c24d3a10b731e71c462b82766a5c761f2ae1f2dba5087be6",
+    "scripts/render_remote_deploy.py": "21358274a01befcd3b3be4daa9e8ff214692fc499da45e3a847ea5dfe37e0091",
+    "scripts/risk_followup_manifest.py": "96e17704f2e3ec621dccce1f296643bde2c941111ad40fd041a46aa4195d2273",
+    "scripts/scoped_risk_followup.py": "83545c85d045bfe5f81ff3c513ce61f3b77316238df5097984378e6244490ce0",
+    "scripts/select_deploy_mode.py": "4adf403562c7fa9213c87a681739f4ada153c96a27ce3ee13b071d1fae890809",
+    "shared/accounting/stop_exit_evidence.py": "63c8e89025e99e82a30ad7d8c6301a6662bc6c64bd68ff460580408cd1b3a045",
+    "shared/binance_api.py": "83d7361b79fef8055049d1ae96192213520ec325cc5cf5f138c28ada94efb804",
+    "strategies/btc_eth_aggressive/strategy.py": "324070bcdc644b793175ab20825a535f6ddb50dcd0597100505445fadf460445",
+    "strategies/grid/order_manager.py": "16dc05406961abba29a167fed8fc6542826a028bfc249a4b571d7876e8f63ad8",
+    "strategies/grid/strategy.py": "3498d3a702d61d4ad1ffedcf51ce577aed28d2434b4d28d1a018f9c510551175"
+  }
+}
