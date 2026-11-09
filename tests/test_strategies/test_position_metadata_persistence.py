@@ -27,6 +27,7 @@ async def test_aggressive_persists_full_position_metadata_under_independent_key(
     position.tp2_order_id = 790
     position.tp1_hit = True
     strategy.positions = {"ETHUSDT": position}
+    strategy._unbound_stop_algo_ids = {"ETHUSDT": {"987"}}
 
     with patch("strategies.btc_eth_aggressive.strategy.save_strategy_state",
                new=AsyncMock()) as save:
@@ -40,6 +41,7 @@ async def test_aggressive_persists_full_position_metadata_under_independent_key(
     assert data["tp1_hit"] is True
     assert data["entry_order_id"] == 123
     assert data["episode_entry_order_id"] == 123
+    assert data["unbound_stop_algo_ids"] == ["987"]
 
 
 @pytest.mark.asyncio

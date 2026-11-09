@@ -14,6 +14,7 @@ def make_strategy(order_id=101):
     strategy = object.__new__(BTCEthStrategy)
     strategy.instance_id = "btc_eth_aggressive"
     strategy.my_record_name = "btc_eth_aggressive"
+    strategy._unbound_stop_algo_ids = {}
     strategy.db_manager = MagicMock()
     strategy.binance = MagicMock()
     state = {"positions": {"ETHUSDT": {
@@ -89,3 +90,20 @@ async def test_adoption_prefers_verified_metadata_even_when_db_order_rows_are_st
     assert pos is not None
     assert pos.grade == "B"
     assert pos.atr == Decimal("18")
+
+
+@pytest.mark.asyncio
+async def test_restart_keeps_unbound_stop_flag_from_verified_position_snapshot():
+    s = make_strategy()
+    row = await s.db_manager.fetch_one("ignored")
+    state = json.loads(row["state_data"])
+    state["positions"]["ETHUSDT"]["unbound_stop_algo_ids"] = [2001]
+    s.db_manager.fetch_one.return_value = {"state_data": json.dumps(state)}
+    with patch("strategies.btc_eth_aggressive.strategy.resolve_position_owner",
+               new=AsyncMock(return_value="btc_eth_aggressive")):
+        pos = await s._load_verified_position_metadata(
+            "ETHUSDT", {"symbol": "ETHUSDT", "positionAmt": "0.023", "entryPrice": "2200"},
+            Decimal("2300"),
+        )
+    assert pos is not None
+    assert s._unbound_stop_algo_ids == {"ETHUSDT": {"2001"}}

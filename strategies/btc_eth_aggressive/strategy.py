@@ -27,6 +27,10 @@ from shared.indicators import TechnicalIndicators
 from shared.dynamic_atr_filter import DynamicATRFilter
 from shared.condition_orders import record_condition_order, get_open_orders
 from shared.accounting.stop_binding import record_stop_binding
+from shared.accounting.stop_exit_audit import (
+    audit_due_stop_bindings, unresolved_stop_binding_exists,
+)
+from shared.accounting.stop_exit_ledger import latest_verified_stop_time_ms
 from shared.strategy_state import load_matching_position_entry_time, save_strategy_state
 from shared.position_entry_recovery import fetch_lot_fills, verified_anchored_lot
 from shared.trade_logger import TradeLogger
@@ -684,6 +688,7 @@ class BTCEthStrategy:
         
         # 持仓状态管理
         self.positions: Dict[str, PositionState] = {}
+        self._unbound_stop_algo_ids: Dict[str, Set[str]] = {}
         self._verified_legacy_positions: Dict[str, Dict] = {}
         self._legacy_verification_ok = True
         # 入场时间无法核实时不接管；缺硬止损时另行重试，保留旧快照供核对。
@@ -2364,6 +2369,9 @@ class BTCEthStrategy:
             "entry_order_id": pos.entry_order_id,
             "episode_entry_order_id": pos.episode_entry_order_id,
             "stop_loss_order_id": pos.stop_loss_order_id,
+            "unbound_stop_algo_ids": sorted(
+                getattr(self, "_unbound_stop_algo_ids", {}).get(symbol, set())
+            ),
             "tp1_order_id": pos.tp1_order_id,
             "tp2_order_id": pos.tp2_order_id,
             "trailing_stop_order_id": pos.trailing_stop_order_id,
@@ -2428,6 +2436,10 @@ class BTCEthStrategy:
 
         # ① 无持仓（或已清仓）→ 新开仓路径（原 execute_signal 逻辑主体拆分）
         if pos is None or pos.current_quantity <= 0:
+            allowed, reason = await self._stop_entry_gate(symbol)
+            if not allowed:
+                signal['skip_reason'] = reason
+                return False
             return await self._open_new_position(signal)
 
         # ② 决策1：反向信号拒绝加仓
@@ -2471,6 +2483,47 @@ class BTCEthStrategy:
 
         # ⑤ 浮盈同向 → 加仓统一托管
         return await self._add_position(symbol, pos, signal)
+
+    async def _stop_entry_gate(self, symbol: str, now: Optional[datetime] = None) -> Tuple[bool, str]:
+        """Block a fresh entry on unresolved STOP evidence or its verified cooldown."""
+        if getattr(self, "_unbound_stop_algo_ids", {}).get(symbol):
+            return False, "STOP binding missing"
+        account_id = os.environ.get("TRADE_ACCOUNT_ID")
+        if not account_id or not self.db_manager:
+            return False, "STOP evidence identity unavailable"
+        try:
+            row = await self.db_manager.fetch_one(
+                "SELECT state_data FROM public.strategy_states "
+                "WHERE strategy_name=$1 AND state_key=$2",
+                self.instance_id, f"position:{symbol}",
+            )
+            if row:
+                state = row.get("state_data")
+                if isinstance(state, str):
+                    state = json.loads(state)
+                saved = state["positions"][symbol]
+                if saved.get("unbound_stop_algo_ids"):
+                    return False, "STOP binding missing in saved position"
+            if await unresolved_stop_binding_exists(
+                self.db_manager, account_id, self.strategy_name, symbol,
+            ):
+                return False, "STOP evidence pending review"
+            last_ms = await latest_verified_stop_time_ms(
+                self.db_manager, account_id, self.strategy_name, symbol,
+            )
+            if last_ms is None:
+                return True, ""
+            hours = float(self.risk_config["frequency_control"]["symbol_cooldown_hours"])
+            if not math.isfinite(hours) or hours <= 0:
+                raise ValueError("STOP cooldown configuration invalid")
+            clock = FrequencyController.utc_time(now or datetime.now(timezone.utc))
+            last = datetime.fromtimestamp(last_ms / 1000, timezone.utc)
+            if clock < last + timedelta(hours=hours):
+                return False, f"verified STOP cooldown ({hours:g}h)"
+            return True, ""
+        except Exception as exc:
+            logger.error("STOP 新入场门禁读取失败", symbol=symbol, error=str(exc))
+            return False, "STOP evidence unavailable"
 
     async def _open_new_position(self, signal: Dict) -> bool:
         """新开仓主流程（R05/R06/R07 加固；实现在 shared.protection_retry.open_new_position）"""
@@ -2846,9 +2899,13 @@ class BTCEthStrategy:
                 stop_side=stop_side, stop_quantity=quantity,
             )
             if not bound:
+                self._unbound_stop_algo_ids.setdefault(symbol, set()).add(str(algo_id))
                 logger.warning("STOP 归属绑定冲突；该订单不进入自动冷却证据链",
                                symbol=symbol, algo_id=algo_id)
+            else:
+                self._unbound_stop_algo_ids.setdefault(symbol, set()).discard(str(algo_id))
         except Exception as exc:
+            self._unbound_stop_algo_ids.setdefault(symbol, set()).add(str(algo_id))
             logger.warning("STOP 归属绑定未落库；该订单不进入自动冷却证据链",
                            symbol=symbol, algo_id=algo_id, error=str(exc))
 
@@ -3715,6 +3772,16 @@ class BTCEthStrategy:
         5. 动态利润保护
         6. 时间止损
         """
+        # Audit due STOP candidates before the main loop can generate fresh entries.
+        account_id = os.environ.get("TRADE_ACCOUNT_ID")
+        if account_id and self.db_manager:
+            try:
+                await audit_due_stop_bindings(
+                    self.db_manager, self.binance, account_id, self.strategy_name,
+                )
+            except Exception as exc:
+                logger.error("STOP 退出审计失败；新入场门禁仍按未核证据拒绝",
+                             error=str(exc))
         # Uncertain orders may fill later even with no local position or retry marker.
         await recover_reserved_protection(self)
         try:
@@ -5895,6 +5962,10 @@ class BTCEthStrategy:
             ps.entry_order_id = data.get("entry_order_id")
             # 旧快照没有首单身份时保持未知，不能把可能已被加仓覆盖的 ID 倒推成首单。
             ps.episode_entry_order_id = data.get("episode_entry_order_id")
+            if data.get("unbound_stop_algo_ids"):
+                self._unbound_stop_algo_ids.setdefault(symbol, set()).update(
+                    str(value) for value in data["unbound_stop_algo_ids"]
+                )
             ps.stop_loss_order_id = data.get("stop_loss_order_id")
             ps.tp1_order_id = data.get("tp1_order_id")
             ps.tp2_order_id = data.get("tp2_order_id")
