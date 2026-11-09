@@ -157,6 +157,11 @@ class TestCandidateAuditMode:
 
         assert result == "error"
         assert job.llm_client.call_llm.await_count == 2  # 重试一次
+        retry_prompt = job.llm_client.call_llm.await_args_list[1].kwargs["user_prompt"]
+        assert "diagnosis 必须是列表" in retry_prompt
+        assert "target_metrics 必须是字典" in retry_prompt
+        assert "expected_impact 必须是字典" in retry_prompt
+        assert "HOLD / DATA_ERROR" in retry_prompt
         job.messenger.send_error_notification.assert_awaited_once()
 
     async def test_candidate_hold_sends_no_change_notification_without_write(self):
@@ -171,6 +176,39 @@ class TestCandidateAuditMode:
 
         assert result == "skip"
         job.messenger.send_no_changes_notification.assert_awaited_once()
+        job.config_operator.apply_overrides.assert_not_called()
+        job.db_handler.mark_applied.assert_not_called()
+
+    @pytest.mark.parametrize("strategy_id", ["btc_eth_aggressive", "hrs"])
+    @pytest.mark.parametrize("decision", ["HOLD", "PROPOSE"])
+    async def test_candidate_structured_diagnosis_reaches_memory_and_notification(
+        self, strategy_id, decision
+    ):
+        """The §15 diagnosis object must survive the full audit pipeline."""
+        config = make_job_config([strategy_id])
+        job = build_job(config)
+        adapter = make_mock_adapter(strategy_id, VALID_PROPOSAL if decision == "PROPOSE" else {}, manifest=True)
+        job._load_adapter.return_value = adapter
+        diagnosis = [{
+            "metric": "expectancy",
+            "observation": "样本期望值下降",
+            "evidence": "最近 8 周已完成交易",
+        }]
+        job.llm_client.call_llm.return_value = dump_envelope(
+            decision=decision,
+            diagnosis=diagnosis,
+            adjustments=VALID_PROPOSAL if decision == "PROPOSE" else {},
+        )
+
+        result = await job._tune_single_strategy(config["strategies"][0])
+
+        assert result == ("success" if decision == "PROPOSE" else "skip")
+        suggestions = job.db_handler.save_memory.await_args.kwargs["ai_suggestions"]
+        assert all(value in suggestions["reasons"] for value in diagnosis[0].values())
+        if decision == "PROPOSE":
+            assert job.messenger.send_tuning_card.await_args.kwargs["ai_reasons"] == suggestions["reasons"]
+        else:
+            assert job.messenger.send_no_changes_notification.await_args.kwargs["reason"] == suggestions["reasons"]
         job.config_operator.apply_overrides.assert_not_called()
         job.db_handler.mark_applied.assert_not_called()
 

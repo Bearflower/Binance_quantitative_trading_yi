@@ -9,6 +9,7 @@
 """
 
 import importlib
+import json
 import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -418,7 +419,11 @@ class WeeklyTuningJob:
                 retry_instruction = (
                     "\n\n【重要】请严格只输出 JSON 格式，不要包含任何其他文字。"
                     "不要用 markdown 代码块包裹。不要有 __REASONING__ 前缀。"
-                    "输出必须包含以下字段：decision, objective, diagnosis, target_metrics, adjustments, expected_impact。"
+                    "输出必须包含八个字段：decision, objective, diagnosis, target_metrics, "
+                    "adjustments, applicable_market_regimes, expected_impact, confidence。"
+                    "diagnosis 必须是列表，target_metrics 必须是字典，expected_impact 必须是字典。"
+                    "decision 只能为 PROPOSE、HOLD、DATA_ERROR；HOLD / DATA_ERROR 的 adjustments 必须是 {}。"
+                    "PROPOSE 的 adjustments 必须按参数路径给出 from 当前值和 to 目标值。"
                 )
             else:
                 retry_instruction = (
@@ -464,7 +469,10 @@ class WeeklyTuningJob:
         # --- 契约适配层：把新/旧契约字段统一成下游（save_memory、通知卡片）使用的格式 ---
         if contract_mode == "new":
             # 新契约：decision / objective / diagnosis(list) / target_metrics / adjustments / expected_impact
-            reasons_text = "\n".join(parsed.get("diagnosis", [])) if isinstance(parsed.get("diagnosis"), list) else str(parsed.get("diagnosis", ""))
+            reasons_text = "\n".join(
+                item if isinstance(item, str) else json.dumps(item, ensure_ascii=False, sort_keys=True)
+                for item in parsed.get("diagnosis", [])
+            )
             summary_text = parsed.get("objective", "")
         else:
             reasons_text = parsed.get("reasons", "")

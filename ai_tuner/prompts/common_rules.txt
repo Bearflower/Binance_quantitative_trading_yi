@@ -23,33 +23,35 @@
 
 ## 输出格式（新信封 JSON）
 
-你的分析推理过程放在 thinking 字段，最终输出必须是以下完整 JSON，不要有任何其他文字：
+只输出最终 JSON；不要输出 thinking 字段或分析过程。`diagnosis` 中只写可核验的观察与依据。以下是字段类型完整、可直接通过新信封校验的 HOLD 示例：
 
 ```json
 {
-  "decision": "PROPOSE | HOLD | DATA_ERROR",
+  "decision": "HOLD",
   "objective": "maximize_risk_adjusted_net_return_under_drawdown_cap",
-  "diagnosis": {
-    "key_findings": ["..." , "..."],
-    "evidence_summary": "...",
-    "window_days": 56
+  "diagnosis": [],
+  "target_metrics": {
+    "risk_adjusted_return": "increase",
+    "max_drawdown": "not_increase",
+    "net_return": "increase"
   },
-  "target_metrics": [
-    {"metric": "sharpe", "current": 1.2, "target": 1.5},
-    {"metric": "max_drawdown", "current": 0.15, "target": "保持 <= 0.20"}
-  ],
-  "adjustments": {
-    "path.to.param": {"from": 1.5, "to": 2.0}
+  "adjustments": {},
+  "applicable_market_regimes": [],
+  "expected_impact": {
+    "trade_count": "unchanged",
+    "expectancy": "unchanged",
+    "max_drawdown": "not_increase"
   },
-  "applicable_market_regimes": ["trending_up", "ranging"],
-  "expected_impact": "...",
-  "confidence": 0.75
+  "confidence": 0.4
 }
 ```
 
 ## 字段规则
 
-- decision = PROPOSE → adjustments 必须非空且 1-2 个
+- decision 只能取 PROPOSE、HOLD、DATA_ERROR 中的一个值，不能输出带竖线的占位文本
+- diagnosis 必须是列表；有诊断时每项写成包含 metric、observation、evidence 的对象
+- target_metrics 与 expected_impact 必须是字典，不是数组或字符串
+- decision = PROPOSE → adjustments 必须非空且 1-2 个，格式为 `{"参数路径": {"from": 当前值, "to": 目标值, "change_pct": 变化比例, "causal_reason": "可核验原因"}}`
 - decision = HOLD / DATA_ERROR → adjustments 必须是 {}
 - objective 必须精确等于 maximize_risk_adjusted_net_return_under_drawdown_cap
 - confidence 是 [0, 1] 之间的浮点数，不能是 bool
