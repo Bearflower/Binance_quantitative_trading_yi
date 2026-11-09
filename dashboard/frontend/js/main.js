@@ -363,12 +363,9 @@ function updateStrategyCards(strategies) {
         if (!card) {
             const row = document.createElement('p');
             const pnlText = strategy.total_pnl == null
-                ? '期间净收益待归属'
-                : `期间交易所净收益 ${formatNumber(strategy.total_pnl)} USDT`;
-            const observedText = strategy.observed_pnl == null
-                ? ''
-                : ` · 已归属观察金额 ${formatNumber(strategy.observed_pnl)} USDT`;
-            row.textContent = `${strategy.name} · ${pnlText}${observedText}`;
+                ? `已归属部分 ${strategy.observed_pnl == null ? '无样本' : formatNumber(strategy.observed_pnl)} USDT`
+                : `已核实净收益 ${formatNumber(strategy.total_pnl)} USDT`;
+            row.textContent = `${strategy.name} · ${pnlText}`;
             extraOwners.appendChild(row);
             return;
         }
@@ -377,10 +374,14 @@ function updateStrategyCards(strategies) {
         name.textContent = strategy.name;
 
         const pnl = card.querySelector('[data-metric="pnl"] .value');
-        const pnlValue = parseFloat(strategy.total_pnl);
-        pnl.textContent = strategy.total_pnl == null ? '待归属' : formatNumber(pnlValue);
-        pnl.className = 'value' + (strategy.total_pnl == null ? '' : ' ' + (pnlValue >= 0 ? 'positive' : 'negative'));
-        pnl.title = strategy.total_pnl == null ? '交易所收入尚未完成策略归属；未归属金额保留在账户总收益中' : '';
+        const partial = strategy.total_pnl == null;
+        const shownPnl = partial ? strategy.observed_pnl : strategy.total_pnl;
+        const pnlValue = shownPnl == null ? null : parseFloat(shownPnl);
+        const label = card.querySelector('[data-metric="pnl"] .label');
+        if (label) label.textContent = partial ? '已归属部分' : '已核实净收益';
+        pnl.textContent = pnlValue == null || isNaN(pnlValue) ? '无样本' : formatNumber(pnlValue);
+        pnl.className = 'value' + (pnlValue == null || isNaN(pnlValue) ? '' : ' ' + (pnlValue >= 0 ? 'positive' : 'negative'));
+        pnl.title = partial ? '仅含已明确归属的交易所收入；未归属金额保留在账户总收益中' : '';
 
         const winRate = card.querySelector('[data-metric="win_rate"] .value');
         if (winRate) {
