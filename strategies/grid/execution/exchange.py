@@ -57,7 +57,7 @@ class GridExchange:
         if side not in ("BUY", "SELL") or qty <= 0 or price <= 0:
             raise ValueError("invalid grid limit order")
         params = {"symbol": "ETHUSDT", "side": side, "positionSide": "BOTH",
-                  "type": "LIMIT", "timeInForce": "GTC", "quantity": str(qty),
+                  "type": "LIMIT", "timeInForce": "GTX", "quantity": str(qty),
                   "price": str(price), "newClientOrderId": client_id}
         return await self._post_once("/fapi/v1/order", params, client_id)
 
@@ -120,20 +120,73 @@ class GridExchange:
             raise ValueError("invalid position response")
         return result
 
+    async def income(self, start_ms: int, end_ms: int):
+        """Read ordinary USD-M income directly; a full page is incomplete evidence.
+
+        The shared client's non-unified helper returns [] without a request.
+        A full 1000-row page cannot be safely advanced by timestamp because
+        multiple facts can share a millisecond; fail closed instead.
+        """
+        if not 0 < start_ms <= end_ms:
+            raise ValueError("invalid income window")
+        result = await self.client._request("GET", "/fapi/v1/income",
+                                            {"startTime": start_ms,
+                                             "endTime": end_ms, "limit": 1000})
+        if not isinstance(result, list) or len(result) >= 1000:
+            raise ValueError("income page incomplete")
+        return result
+
+    async def order_trades(self, order_id: int):
+        if order_id <= 0:
+            raise ValueError("invalid exchange order ID")
+        result = await self.client._request("GET", "/fapi/v1/userTrades",
+                                            {"symbol": "ETHUSDT", "orderId": order_id,
+                                             "limit": 1000})
+        if not isinstance(result, list) or len(result) >= 1000:
+            raise ValueError("order trade page incomplete")
+        if any(not isinstance(row, dict) or row.get("orderId") != order_id
+               for row in result):
+            raise ValueError("trade response contains another order")
+        return result
+
+    async def start_user_stream(self) -> str:
+        result = await self.client._request_once("POST", "/fapi/v1/listenKey",
+                                                 signed=False)
+        key = result.get("listenKey") if isinstance(result, dict) else None
+        if not isinstance(key, str) or not key:
+            raise ValueError("missing user stream listen key")
+        return key
+
+    async def keepalive_user_stream(self) -> str:
+        result = await self.client._request_once("PUT", "/fapi/v1/listenKey",
+                                                 signed=False)
+        key = result.get("listenKey") if isinstance(result, dict) else None
+        if not isinstance(key, str) or not key:
+            raise ValueError("user stream renewal unconfirmed")
+        return key
+
+    async def account_info(self):
+        result = await self.client._request("GET", "/fapi/v3/account")
+        if not isinstance(result, dict) or result.get("canTrade") is not True:
+            raise AccountModeError("futures account cannot trade")
+        return result
+
     async def verify_account(self, leverage: int) -> ExchangeFilters:
         mode = await self.client._request("GET", "/fapi/v1/positionSide/dual")
         assets = await self.client._request("GET", "/fapi/v1/multiAssetsMargin")
         if mode.get("dualSidePosition") is not False or assets.get("multiAssetsMargin") is not False:
             raise AccountModeError("one-way single-asset mode required")
-        positions = await self.position()
-        matching = [p for p in positions if p.get("symbol") == "ETHUSDT"
-                    and p.get("positionSide") == "BOTH"]
+        configurations = await self.client._request(
+            "GET", "/fapi/v1/symbolConfig", {"symbol": "ETHUSDT"})
+        if not isinstance(configurations, list):
+            raise AccountModeError("invalid symbol configuration response")
+        matching = [p for p in configurations if p.get("symbol") == "ETHUSDT"]
         if len(matching) != 1:
-            raise AccountModeError("cannot confirm ETHUSDT BOTH position")
-        position = matching[0]
-        if position.get("marginType", "").lower() != "isolated":
+            raise AccountModeError("cannot confirm ETHUSDT symbol configuration")
+        config = matching[0]
+        if config.get("marginType", "").lower() != "isolated":
             raise AccountModeError("isolated margin required")
-        if int(position.get("leverage", 0)) != leverage:
+        if int(config.get("leverage", 0)) != leverage:
             raise AccountModeError("leverage mismatch")
         info = await self.client._request("GET", "/fapi/v1/exchangeInfo", signed=False)
         symbols = [item for item in info.get("symbols", []) if item.get("symbol") == "ETHUSDT"]

@@ -16,7 +16,7 @@ from typing import Mapping, Optional
 from strategies.grid.market_state import MarketState
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 5
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -54,6 +54,10 @@ def migrate(path) -> None:
         conn.execute("""CREATE TABLE IF NOT EXISTS grid_epoch (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             decision_id TEXT NOT NULL,
+            plan_digest TEXT NOT NULL,
+            levels_json TEXT,
+            stop_loss_low TEXT,
+            stop_loss_high TEXT,
             status TEXT NOT NULL DEFAULT 'ACTIVE',
             created_at_ms INTEGER NOT NULL
         )""")
@@ -109,6 +113,8 @@ def migrate(path) -> None:
         conn.execute("""CREATE TABLE IF NOT EXISTS equity_checkpoint (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             day_beijing TEXT NOT NULL,
+            baseline_equity TEXT NOT NULL,
+            baseline_verified INTEGER NOT NULL,
             equity TEXT NOT NULL,
             peak_equity TEXT NOT NULL,
             transfer_fingerprint TEXT NOT NULL,
@@ -148,6 +154,9 @@ class DecisionStore:
         except sqlite3.Error as exc:
             self.conn.close()
             raise RuntimeError("execution schema missing; run migration") from exc
+        except Exception:
+            self.conn.close()
+            raise
 
     def close(self):
         self.conn.close()
@@ -204,12 +213,36 @@ class DecisionStore:
             raise ValueError("decision is not next")
         self.conn.execute("UPDATE execution_cursor SET decision_id=? WHERE id=1", (decision_id,))
 
-    def create_epoch(self, decision_id: str) -> int:
+    def create_epoch(self, decision_id: str, plan_digest: str = "", *,
+                     levels=None, stop_loss_low=None, stop_loss_high=None) -> int:
         if not decision_id:
             raise ValueError("decision ID required")
-        row = self.conn.execute("INSERT INTO grid_epoch(decision_id,created_at_ms) VALUES(?,?)",
-                                (decision_id, int(time.time() * 1000)))
+        row = self.conn.execute("""INSERT INTO grid_epoch
+            (decision_id,plan_digest,levels_json,stop_loss_low,stop_loss_high,
+             created_at_ms) VALUES(?,?,?,?,?,?)""",
+            (decision_id, plan_digest,
+             json.dumps([str(level) for level in levels]) if levels else None,
+             str(stop_loss_low) if stop_loss_low is not None else None,
+             str(stop_loss_high) if stop_loss_high is not None else None,
+             int(time.time() * 1000)))
         return row.lastrowid
+
+    def active_epoch_id(self) -> Optional[int]:
+        rows = self.conn.execute("""SELECT id FROM grid_epoch
+            WHERE status='ACTIVE' ORDER BY id DESC""").fetchall()
+        if len(rows) > 1:
+            raise RuntimeError("multiple active grid epochs")
+        return rows[0][0] if rows else None
+
+    def close_epoch(self, epoch_id: int) -> None:
+        row = self.conn.execute("""UPDATE grid_epoch SET status='CLOSED'
+            WHERE id=? AND status='ACTIVE'""", (epoch_id,))
+        if row.rowcount != 1:
+            raise ValueError("epoch not active")
+
+    def epoch(self, epoch_id: int) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM grid_epoch WHERE id=?", (epoch_id,)).fetchone()
+        return dict(row) if row else None
 
     def prepare_order(self, epoch_id: int, level_index: int, role: str,
                       side: str, price, quantity, client_order_id: str) -> dict:
@@ -235,6 +268,10 @@ class DecisionStore:
     def active_orders(self) -> list:
         rows = self.conn.execute("""SELECT * FROM order_intent
             WHERE status IN ('PREPARED','SENT','NEW','PARTIALLY_FILLED','UNKNOWN')""").fetchall()
+        return [dict(row) for row in rows]
+
+    def all_orders(self) -> list:
+        rows = self.conn.execute("SELECT * FROM order_intent ORDER BY created_at_ms,rowid").fetchall()
         return [dict(row) for row in rows]
 
     def record_order(self, client_order_id: str, exchange_order_id: str,
@@ -286,6 +323,32 @@ class DecisionStore:
         rows = self.conn.execute("""SELECT * FROM protection
             WHERE status IN ('PREPARED','NEW','UNKNOWN')""").fetchall()
         return [dict(row) for row in rows]
+
+    def record_protection(self, client_algo_id: str, status: str,
+                          exchange_algo_id: Optional[str] = None) -> None:
+        if status not in ("PREPARED", "NEW", "CANCELED", "TRIGGERED", "UNKNOWN"):
+            raise ValueError("invalid protection status")
+        row = self.conn.execute("""UPDATE protection SET status=?,exchange_algo_id=?
+            WHERE client_algo_id=?""", (status, exchange_algo_id, client_algo_id))
+        if row.rowcount != 1:
+            raise ValueError("unknown protection intent")
+
+    def latest_equity_checkpoint(self, day_beijing: str) -> Optional[dict]:
+        row = self.conn.execute("""SELECT * FROM equity_checkpoint
+            WHERE day_beijing=? ORDER BY id DESC LIMIT 1""", (day_beijing,)).fetchone()
+        return dict(row) if row else None
+
+    def record_equity_checkpoint(self, day_beijing: str, baseline_equity,
+                                 equity, peak_equity, observed_at_ms: int,
+                                 *, verified: bool, transfer_fingerprint: str) -> None:
+        for value in (baseline_equity, equity, peak_equity):
+            if Decimal(str(value)) <= 0:
+                raise ValueError("invalid equity checkpoint")
+        self.conn.execute("""INSERT INTO equity_checkpoint
+            (day_beijing,baseline_equity,baseline_verified,equity,peak_equity,
+             transfer_fingerprint,created_at_ms) VALUES(?,?,?,?,?,?,?)""",
+            (day_beijing, str(baseline_equity), int(verified), str(equity),
+             str(peak_equity), transfer_fingerprint, observed_at_ms))
 
 
 class ExecutionLock:

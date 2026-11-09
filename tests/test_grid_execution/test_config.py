@@ -20,6 +20,7 @@ def test_executor_is_off_by_default():
     "GRID_MAX_DAILY_LOSS_USDT",
     "GRID_MAX_DRAWDOWN_USDT",
     "GRID_MAX_OPEN_ORDERS",
+    "GRID_EXPECTED_LEVERAGE",
 ])
 def test_live_requires_every_explicit_limit_and_credential(missing):
     values = {
@@ -31,6 +32,7 @@ def test_live_requires_every_explicit_limit_and_credential(missing):
         "GRID_MAX_DAILY_LOSS_USDT": "10",
         "GRID_MAX_DRAWDOWN_USDT": "20",
         "GRID_MAX_OPEN_ORDERS": "12",
+        "GRID_EXPECTED_LEVERAGE": "10",
     }
     values.pop(missing)
     with pytest.raises(ValueError, match=missing):
@@ -47,6 +49,7 @@ def test_live_limits_are_positive_and_not_inferred_from_strategy_config():
         "GRID_MAX_DAILY_LOSS_USDT": "10",
         "GRID_MAX_DRAWDOWN_USDT": "20",
         "GRID_MAX_OPEN_ORDERS": "12",
+        "GRID_EXPECTED_LEVERAGE": "10",
     }
     with pytest.raises(ValueError, match="GRID_MAX_MARGIN_USDT"):
         ExecutionSettings.from_env(values)

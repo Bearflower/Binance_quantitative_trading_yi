@@ -26,6 +26,9 @@ class FakeExchange:
     async def query_order(self, client_id):
         return self.exact.get(client_id)
 
+    async def order_trades(self, order_id):
+        return self.trades.get(order_id, [])
+
 
 @pytest.mark.asyncio
 async def test_reconcile_repairs_accepted_order(tmp_path):
@@ -42,6 +45,28 @@ async def test_reconcile_repairs_accepted_order(tmp_path):
     assert await engine.reconcile() is True
     assert store.get_order("eg-a")["exchange_order_id"] == "42"
     assert store.get_order("eg-a")["status"] == "NEW"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_restart_backfills_exact_trades_before_position_check(tmp_path):
+    path = tmp_path / "journal.sqlite3"
+    migrate(path)
+    store = DecisionStore(path)
+    epoch = store.create_epoch("decision-1")
+    store.prepare_order(epoch, 1, "ENTRY", "BUY", Decimal("1900"),
+                        Decimal("0.02"), "eg-a")
+    exchange = FakeExchange()
+    exchange.trades = {42: [{"symbol": "ETHUSDT", "side": "BUY", "orderId": 42,
+                             "id": 98765, "qty": "0.02", "price": "1900"}]}
+    exchange.exact["eg-a"] = {"symbol": "ETHUSDT", "clientOrderId": "eg-a",
+                              "orderId": 42, "status": "FILLED", "executedQty": "0.02"}
+    exchange.position_amt = Decimal("0.02")
+    # A filled position without exchange protection still blocks openings, but
+    # the exact fill fact must survive for later exit/reconciliation.
+    assert await GridEngine(store, exchange).reconcile() is False
+    assert len(store.fills("eg-a")) == 1
+    assert store.engine_state()["state"] == "LOCKED"
     store.close()
 
 
