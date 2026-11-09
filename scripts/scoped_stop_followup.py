@@ -59,6 +59,11 @@ def unchanged_exchange(before: dict, after: dict) -> None:
             raise ReleaseBlocked("exchange/allocation transition requires manual review: " + key)
 
 
+def require_flat_release_gate(proof: dict) -> None:
+    if proof.get("position_exposure") != [] or proof.get("protected_positions") != 0:
+        raise ReleaseBlocked("STOP release requires a flat account")
+
+
 def startup_marker_present(logs: str, marker: str) -> bool:
     return marker in logs or json.dumps(marker, ensure_ascii=True)[1:-1] in logs
 
@@ -201,6 +206,8 @@ class Runtime:
         for service, image in original["services"].items():
             if set(image) != {"image"} or not re.fullmatch(r"ghcr\.io/bearflower/trading-[a-z0-9-]+@sha256:[0-9a-f]{64}", image["image"]):
                 raise ReleaseBlocked("invalid predecessor image pin: " + service)
+        self.pre = self.gate()
+        require_flat_release_gate(self.pre)
         self.release_dir.mkdir(parents=True, exist_ok=False)
         os.chmod(self.release_dir, 0o700)
         self.all_before = {service: self.inspect(service) for service in self.stacks}
@@ -227,7 +234,6 @@ class Runtime:
         atomic_json(self.release_dir / "preflight-containers.json",
                     {service: {"identity": self.identity(row), "health": row["State"].get("Health", {}).get("Status")}
                      for service, row in self.all_before.items()})
-        self.pre = self.gate()
         atomic_json(self.release_dir / "exchange-before.json", self.pre)
         self.policy_before = self.policy_snapshot()
         self.record("in_progress", "preflight")
@@ -306,7 +312,9 @@ class Runtime:
         self.record("in_progress", "schema_verified")
 
     def activate(self) -> None:
-        unchanged_exchange(self.pre, self.gate())
+        current = self.gate()
+        require_flat_release_gate(current)
+        unchanged_exchange(self.pre, current)
         atomic_json(self.pin_file, dict(self.pin, status="activating", successor_sha=self.sha))
         self.record("in_progress", "activation_started")
         for service in SERVICES:

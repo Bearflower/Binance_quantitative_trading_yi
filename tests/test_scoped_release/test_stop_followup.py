@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from scripts.render_remote_deploy import RenderError, _validate
-from scripts.scoped_stop_followup import Runtime, validate_active_state
+from scripts.scoped_stop_followup import Runtime, require_flat_release_gate, validate_active_state
 from scripts.select_deploy_mode import DeployModeError, select_deploy_mode
 from scripts.stop_followup_manifest import (
     ACTIVE_PIN_SHA, BASE, IMAGES, MANIFEST, MARKER, PIN_OVERLAY_SHA256,
@@ -62,6 +62,13 @@ def test_stop_release_uses_revision_two_and_preserves_funding():
     runtime.run = lambda argv, **kwargs: calls.append(argv) or '{"ok":true,"read_only":true}'
     runtime.gate()
     assert calls[0][calls[0].index("--revision") + 1] == "2"
+
+
+def test_stop_release_refuses_to_restart_aggressive_with_live_position():
+    require_flat_release_gate({"position_exposure": [], "protected_positions": 0})
+    with pytest.raises(ReleaseBlocked, match="flat account"):
+        require_flat_release_gate({"position_exposure": [{"symbol": "SOLUSDT"}],
+                                   "protected_positions": 1})
 
 
 def test_schema_stage_backups_before_atomic_migration(tmp_path):

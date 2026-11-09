@@ -160,7 +160,7 @@
     "scripts/package_stop_followup.py": "5769d737d4f746737b6b611684cc03829e8a4940fd57322776876c6504f71210",
     "scripts/remote_deploy_runtime.sh": "99436ee94a7026d0774dba537a50c86fbf6b75a49c695c70f349a5ab9ef17b51",
     "scripts/render_remote_deploy.py": "5ec8022ed71979b8aa0b6d7abfcdcf48546ba7924dd70465b86c409ee10030c0",
-    "scripts/scoped_stop_followup.py": "d6dcce6f5f5a34529d29e84c3fe55b65cd3183a821b2741c6ce7b24f98d6cbea",
+    "scripts/scoped_stop_followup.py": "d1dde0bdf50a6885cc1b582a22fe5202532c8be194839bc20a716af783391129",
     "scripts/select_deploy_mode.py": "c7d583f2829cbe21412c27042e3b9e71671da49495cfa920f845f072e7217162",
     "scripts/stop_followup_manifest.py": "13b01aa6dd844165a37d035858176706aea6f733c66781e52ddbe689e074d61f",
     "shared/accounting/stop_binding.py": "629b66ad5646ed12433b2675dbc510776c7815434acdc7db374d67be42b5f70d",
