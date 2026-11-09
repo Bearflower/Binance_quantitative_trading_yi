@@ -23,7 +23,7 @@
 | `strategy.py` | 旧自动模式有初始化、轮询、反向挂单入口 | 半自动模式跳过执行；旧自动路径未消费 `GridSignal`，风险停止只撤单，不执行用户要求的终止平仓 |
 | `order_manager.py` | 限价下单、撤单、轮询成交的原型 | 订单与成交集合只在内存，数据库写入被注释；无部分成交配对、幂等恢复或交易所账本对账 |
 | `position_manager.py`、`risk_manager.py` | 本地仓位与风险计算原型 | 持久化代码未接通；不能作为子账号实盘仓位或已实现盈亏的权威依据 |
-| `shared/binance_api.py` | 下单、按客户端单号查单、撤单、查挂单/仓位及条件单接口已有基础封装 | 需核实子账号普通合约模式、订单结果未知和保护单参数；缺本策略专属的用户数据流消费与订单事件账本 |
+| `shared/binance_api.py` | 普通下单、按客户端单号查单、撤单、查普通挂单/仓位已有基础封装 | 普通合约条件单仍走旧 `/fapi/v1/order`，`get_open_algo_orders()` 恒返回空列表；须接当前 `/fapi/v1/algoOrder` 与 `/fapi/v1/openAlgoOrders`，补条件单查询/撤单，并核验子账号普通合约模式；缺用户数据流消费与订单事件账本 |
 | `realtime/` | V2.5.4 实时行情与参考快照影子设施 | 当前 `mode: shadow`，不得接实盘平仓动作 |
 
 ## 3. 决策与执行契约
@@ -79,4 +79,4 @@
 ## 8. 资料依据
 
 - 本仓库：`strategies/grid/signal_bot.py`、`grid_calculator.py`、`market_state.py`、`order_manager.py`、`strategy.py`、`config.yaml`；V2.5、V2.5.4 和 V2.5.5 需求文档。
-- 币安官方：[USDⓈ-M 合约交易 API](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade)、[用户数据流](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-api/user-data-streams)、[中性网格订单机制](https://www.binance.com/en/support/faq/detail/904e47602a3941b99e960a31e152a986)、[网格单向持仓规则](https://www.binance.com/en/support/faq/detail/408ab63b852e47748a9554501669bce5)。
+- 币安官方：[USDⓈ-M 合约交易 API（含新条件单与条件单查询）](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/trade)、[用户数据流](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/ws-api/user-data-streams)、[中性网格订单机制](https://www.binance.com/en/support/faq/detail/904e47602a3941b99e960a31e152a986)、[网格单向持仓规则](https://www.binance.com/en/support/faq/detail/408ab63b852e47748a9554501669bce5)。
