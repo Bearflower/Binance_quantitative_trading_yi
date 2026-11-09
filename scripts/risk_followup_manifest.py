@@ -9,7 +9,7 @@ import hashlib
 import re
 from pathlib import PurePosixPath
 
-RELEASE = "strategy-code-followup-20261108"
+RELEASE = "strategy-code-followup-20261109-retry-1"
 MODE = "strategy-risk-followup"
 MARKER = f".github/deploy-modes/{RELEASE}"
 MANIFEST = f"deployment/{RELEASE}.json"

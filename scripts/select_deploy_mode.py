@@ -22,7 +22,7 @@ ALLOCATION_RECONCILE_RETRY_MARKER = ".github/deploy-modes/allocation-reconcile-r
 REMEDIATION_MARKER = ".github/deploy-modes/ledger-risk-remediation-20261104"
 SUCCESSOR_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105"
 SUCCESSOR_RECOVERY_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105-recovery-1"
-RISK_FOLLOWUP_MARKER = ".github/deploy-modes/strategy-code-followup-20261108"
+RISK_FOLLOWUP_MARKER = ".github/deploy-modes/strategy-code-followup-20261109-retry-1"
 ZERO_SHA = "0" * 40
 
 
@@ -142,8 +142,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if mode == "strategy-risk-followup":
             from scripts.risk_followup_manifest import BASE, MANIFEST, validate_tree
             try:
-                if args.event_name == "push" and args.base != BASE:
-                    raise DeployModeError("risk followup push must start from reviewed base")
+                if args.event_name == "push" and args.base not in {BASE, "a79a3d78e9de10bf1c181a056c82852d687d19d7"}:
+                    raise DeployModeError("risk followup push must start from reviewed base or failed attempt")
                 manifest = json.loads(_git("show", f"{args.head}:{MANIFEST}"))
                 validate_tree(manifest, _read_changes(BASE, args.head), lambda path: _git("show", f"{args.head}:{path}").encode())
             except (ValueError, KeyError, TypeError) as exc:

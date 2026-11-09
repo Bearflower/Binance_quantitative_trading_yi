@@ -63,7 +63,7 @@ def startup_marker_present(logs: str, marker: str) -> bool:
     return marker in logs or json.dumps(marker, ensure_ascii=True)[1:-1] in logs
 
 
-def validate_active_state(pin: dict, state: dict) -> None:
+def validate_active_state(pin: dict, state: dict, exchange_after: dict | None = None) -> None:
     if pin.get("sha") != ACTIVE_PIN_SHA or pin.get("status") != "active":
         raise ReleaseBlocked("expected active predecessor pin changed")
     if state.get("sha") != ACTIVE_PIN_SHA or state.get("status") != "complete":
@@ -71,7 +71,10 @@ def validate_active_state(pin: dict, state: dict) -> None:
     # 兼容：服务器上人工后继脚本写入的 state.json 只有 gate_before/gate_after
     # （gate_after.ok=true, read_only=true），没有 exchange_after；后续正式发布由
     # 本脚本激活，其自己的前后置门仍由 live gate 校验（run-time 会生成 exchange-after.json）。
-    exchange = state.get("exchange_after")
+    if exchange_after is not None and (exchange_after.get("ok") is not True
+                                       or exchange_after.get("read_only") is not True):
+        raise ReleaseBlocked("external predecessor exchange proof invalid")
+    exchange = exchange_after if exchange_after is not None else state.get("exchange_after")
     if not isinstance(exchange, dict) or exchange.get("ok") is not True:
         exchange = state.get("gate_after")
     if not isinstance(exchange, dict) or exchange.get("ok") is not True:
@@ -173,7 +176,11 @@ class Runtime:
         prior_state = Path(self.pin.get("state", ""))
         if not prior_state.is_file() or not prior_state.resolve().is_relative_to(self.root / ".releases"):
             raise ReleaseBlocked("active predecessor state missing or outside release tree")
-        validate_active_state(self.pin, json.loads(prior_state.read_text()))
+        prior_exchange = prior_state.parent / "exchange-after.json"
+        if not prior_exchange.is_file() or not prior_exchange.resolve().is_relative_to(self.root / ".releases"):
+            raise ReleaseBlocked("active predecessor exchange proof missing")
+        validate_active_state(self.pin, json.loads(prior_state.read_text()),
+                              json.loads(prior_exchange.read_text()))
         if set(self.pin.get("stacks", {})) != {"ai-tuner", "btc-eth-aggressive-strategy", "btc-eth-strategy",
                                               "dashboard-api", "data-backend", "execution-facts-collector", "hrs-strategy", "new-coin-strategy"}:
             raise ReleaseBlocked("pinned service inventory drift")

@@ -75,6 +75,14 @@ def test_followup_accepts_gate_after_when_exchange_after_absent():
     )
 
 
+def test_current_predecessor_uses_separate_read_only_exchange_proof():
+    pin = {"sha": ACTIVE_PIN_SHA, "status": "active"}
+    state = {"sha": ACTIVE_PIN_SHA, "status": "complete", "step": "success"}
+    validate_active_state(pin, state, {"ok": True, "read_only": True})
+    with pytest.raises(ReleaseBlocked, match="external predecessor"):
+        validate_active_state(pin, state, {"ok": True, "read_only": False})
+
+
 def test_followup_rejects_invalid_gate_after_forms():
     pin = {"sha": ACTIVE_PIN_SHA, "status": "active"}
     base_state = {"sha": ACTIVE_PIN_SHA, "status": "complete"}
