@@ -12,6 +12,10 @@ class RiskDecision:
     quantity: Decimal = Decimal("0")
     worst_loss: Decimal = Decimal("0")
     risk_limit: Decimal = Decimal("0")
+    exit_ratios: Tuple[Decimal, Decimal] = (Decimal("0"), Decimal("0"))
+    policy_revision: int = 0
+    client_order_id: str = ""
+    effective_allocation: Decimal = Decimal("0")
 
 
 def _valid_positive(value: Optional[Decimal]) -> bool:
@@ -58,6 +62,7 @@ def assess_entry(
     single_risk_ratio: Decimal = Decimal("0.01"),
     portfolio_risk_ratio: Decimal = Decimal("0.03"),
     take_profit_ratios: Tuple[Decimal, Decimal] = (Decimal("0.30"), Decimal("0.40")),
+    take_profit_prices: Optional[Tuple[Decimal, Decimal]] = None,
 ) -> RiskDecision:
     """Return a rounded order size whose stressed stop loss fits both budgets.
 
@@ -102,9 +107,23 @@ def assess_entry(
     ).to_integral_value(rounding=ROUND_FLOOR) * qty_step
     if quantity < min_qty or quantity * entry_price < min_notional:
         return RiskDecision(False, "minimum_order_exceeds_risk_budget", risk_limit=risk_limit)
-    for ratio in take_profit_ratios:
-        tp_quantity = (quantity * ratio / qty_step).to_integral_value(rounding=ROUND_FLOOR) * qty_step
-        if tp_quantity < min_qty:
-            return RiskDecision(False, "take_profit_quantity_unavailable", risk_limit=risk_limit)
+    from shared.entry_risk_policy import EntryDenied, executable_exit_ratios
+    tp_prices = take_profit_prices or (entry_price, entry_price)
+    if len(tp_prices) != 2 or any(not _valid_positive(price) for price in tp_prices):
+        return RiskDecision(False, "invalid_inputs")
+    try:
+        exit_ratios = executable_exit_ratios(
+            quantity, qty_step, min_qty, min_notional,
+            [*tp_prices, adverse_stop], take_profit_ratios,
+        )
+        if exit_ratios != tuple(take_profit_ratios):
+            # HRS has no software tail exit for a missing TP2. Use one full
+            # TP1 instead of carrying a residual whose intended TP2 is absent.
+            if quantity < min_qty or quantity * tp_prices[0] < min_notional:
+                return RiskDecision(False, "take_profit_quantity_unavailable", risk_limit=risk_limit)
+            exit_ratios = (Decimal(1), Decimal(0))
+    except EntryDenied:
+        return RiskDecision(False, "take_profit_quantity_unavailable", risk_limit=risk_limit)
     return RiskDecision(True, "allowed", quantity=quantity,
-                        worst_loss=quantity * per_unit_loss, risk_limit=risk_limit)
+                        worst_loss=quantity * per_unit_loss, risk_limit=risk_limit,
+                        exit_ratios=exit_ratios)

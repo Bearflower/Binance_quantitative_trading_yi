@@ -761,7 +761,8 @@ async def _establish_position(strategy, symbol: str, signal: Dict, entry):
         return None
     if signal.get('_risk_exit_ratios') is not None:
         step_size, _ = await strategy._get_precision_params(symbol)
-        if actual_qty < Decimal(str(step_size)) * 2:
+        ratios = tuple(Decimal(str(value)) for value in signal['_risk_exit_ratios'])
+        if sum(ratios) < 1 and actual_qty < Decimal(str(step_size)) * 2:
             # A partially filled single lot cannot support a TP and a residual.
             # Flatten it with reduceOnly; if that fails, retain the position and
             # install its hard STOP rather than silently losing the live lot.

@@ -29,10 +29,18 @@ def test_invalid_signal_rejected(field,value):
         size_reduced_entry(signal, dict(stepSize='.1',tickSize='.01',minQty='.1',minNotional='5'), D('.5'), D('.002'),[D('.3'),D('.3')])
 
 
-def test_small_tp_leg_rejected_without_roundup():
+def test_minimum_lot_exception_never_exceeds_original_signal():
     from shared.entry_risk_policy import size_reduced_entry, EntryDenied
+    filters = dict(stepSize='1', tickSize='.01', minQty='1', minNotional='5')
+    signal = dict(quantity='1', entry_price='100', leverage=5,
+                  initial_stop_loss='95', direction='LONG')
+    sized = size_reduced_entry(signal, filters, D('.5'), D('.002'), [D('.3'), D('.3')])
+    assert sized.quantity == D(1)
+    assert sized.exit_ratios == (D(1), D(0))
+    assert sized.risk == sized.original_risk
     with pytest.raises(EntryDenied):
-        size_reduced_entry(dict(quantity='1',entry_price='100',leverage=5,initial_stop_loss='95',direction='LONG'),dict(stepSize='1',tickSize='.01',minQty='1',minNotional='5'),D('.5'),D('.002'),[D('.3'),D('.3')])
+        size_reduced_entry(dict(signal, quantity='0.8'), filters, D('.5'),
+                           D('.002'), [D('.3'), D('.3')])
 
 
 def test_bnb_reduced_two_lots_keeps_single_tp_and_remainder():
@@ -85,6 +93,27 @@ async def test_bnb_single_tp_protection_uses_actual_risk_plan():
     position.stop_loss_order_id=ids['stop'];position.tp1_order_id=ids['tp1']
     assert position.exit_ratios == (D('.5'),D('0'))
     assert protection_complete(position)
+
+
+@pytest.mark.asyncio
+async def test_full_tp_single_lot_keeps_position_and_hard_stop():
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from shared.protection_retry import _establish_position
+    position = SimpleNamespace(protection_pending=False)
+    strategy = SimpleNamespace(
+        _resolve_entry_quantity=AsyncMock(return_value=D('.01')),
+        _get_precision_params=AsyncMock(return_value=(D('.01'), D('.01'))),
+        _build_position_state=lambda signal, entry, qty: position,
+        _place_entry_protection_orders=AsyncMock(return_value={'stop': 1, 'tp1': 2, 'tp2': None}),
+        _apply_protection_order_ids=lambda pos, ids: None,
+        positions={},
+    )
+    signal = {'_risk_exit_ratios': ['1', '0']}
+    result = await _establish_position(strategy, 'BTCUSDT', signal, SimpleNamespace())
+    assert result is position
+    assert strategy.positions['BTCUSDT'] is position
+    strategy._place_entry_protection_orders.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -166,7 +195,40 @@ async def test_shared_final_gate_cannot_be_bypassed():
 def test_short_actual_tp_limit_notional_is_checked():
     from shared.entry_risk_policy import size_reduced_entry, EntryDenied
     with pytest.raises(EntryDenied):
-        size_reduced_entry(dict(quantity='10',entry_price='100',leverage=5,initial_stop_loss='105',direction='SHORT',tp1_price='1',tp2_price='2'),dict(stepSize='.1',tickSize='.01',minQty='.1',minNotional='5'),D('.5'),D('.002'),[D('.3'),D('.3')],tp_offset=D('.0015'))
+        size_reduced_entry(dict(quantity='10',entry_price='100',leverage=5,initial_stop_loss='105',direction='SHORT',tp1_price='.8',tp2_price='2'),dict(stepSize='.1',tickSize='.01',minQty='.1',minNotional='5'),D('.5'),D('.002'),[D('.3'),D('.3')],tp_offset=D('.0015'))
+
+
+@pytest.mark.parametrize('quantity,entry,step,min_notional,stop,tp1',[
+    ('0.002','74500','0.001','50','73000','76000'),
+    ('0.030','2120','0.001','20','2070','2180'),
+])
+def test_aggressive_btc_eth_small_lot_uses_full_tp1(quantity,entry,step,min_notional,stop,tp1):
+    from shared.entry_risk_policy import size_reduced_entry
+    sized=size_reduced_entry(dict(quantity=quantity,entry_price=entry,leverage=5,
+                                  initial_stop_loss=stop,direction='LONG',
+                                  tp1_price=tp1,tp2_price=str(D(tp1)*D('1.02'))),
+                            dict(stepSize=step,tickSize='.01',minQty=step,
+                                 minNotional=min_notional),D('.5'),D('.002'),
+                            [D('.3'),D('.3')],tp_offset=D('.0015'))
+    assert sized.exit_ratios == (D(1),D(0))
+    assert sized.risk <= sized.original_risk * D('.5')
+
+
+@pytest.mark.parametrize('quantity,entry,step,min_notional,stop,tp1', [
+    ('0.001', '74500', '0.001', '50', '73000', '76000'),
+    ('0.010', '2120', '0.001', '20', '2070', '2180'),
+])
+def test_aggressive_one_exchange_lot_keeps_exact_original_size(quantity,entry,step,min_notional,stop,tp1):
+    from shared.entry_risk_policy import size_reduced_entry
+    sized = size_reduced_entry(
+        dict(quantity=quantity, entry_price=entry, leverage=5,
+             initial_stop_loss=stop, direction='LONG', tp1_price=tp1,
+             tp2_price=str(D(tp1)*D('1.02'))),
+        dict(stepSize=step, tickSize='.01', minQty=step, minNotional=min_notional),
+        D('.5'), D('.002'), [D('.3'), D('.3')], tp_offset=D('.0015'))
+    assert sized.quantity == D(quantity)
+    assert sized.exit_ratios == (D(1), D(0))
+    assert sized.risk == sized.original_risk
 
 @pytest.mark.asyncio
 async def test_hrs_executor_direct_writers_deny():

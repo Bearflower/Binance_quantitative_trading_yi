@@ -4990,6 +4990,8 @@ class BTCEthStrategy:
         """检查并执行动态利润保护：计算动态止损价，突破即平仓，改善则同步交易所条件单"""
         if position.current_quantity <= 0:
             return
+        if position.exit_ratios == (Decimal('1'), Decimal('0')):
+            return
 
         # 保存旧止损价，用于判断是否改善
         old_trailing_stop = position.trailing_stop_price
@@ -6210,7 +6212,7 @@ class BTCEthStrategy:
             if ratios is not None:
                 parsed = tuple(Decimal(str(x)) for x in ratios)
                 if (len(parsed) != 2 or parsed[0] <= 0 or parsed[1] < 0
-                        or sum(parsed) >= 1):
+                        or sum(parsed) > 1):
                     return None
                 ps.exit_ratios = parsed
                 if parsed[1] == 0:

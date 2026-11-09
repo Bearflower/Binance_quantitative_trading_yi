@@ -283,6 +283,20 @@ class TradingExecutor:
             "max_holding_hours": self.max_holding_hours,
         }
 
+    @staticmethod
+    def _params_for_exit_ratios(params: Dict[str, Any], ratios) -> Dict[str, Any]:
+        if ratios is None or len(ratios) != 2:
+            raise ValueError('HRS exit geometry missing')
+        first, second = (Decimal(str(value)) for value in ratios)
+        if (not first.is_finite() or not second.is_finite() or first <= 0
+                or second < 0 or first + second > 1
+                or (second == 0 and first != 1)):
+            raise ValueError('HRS exit geometry invalid')
+        result = dict(params)
+        result['target1_close_percent'] = first
+        result['target2_close_percent'] = second
+        return result
+
     def _resolve_actual_fill(
         self, symbol: str, order, step_size, direction_label: str
     ) -> Optional[Tuple[Decimal, float, Optional[float]]]:
@@ -308,6 +322,23 @@ class TradingExecutor:
         actual_qty = self._format_quantity(Decimal(str(filled_qty)), step_size)
         return actual_qty, filled_qty, avg_price
 
+    async def _submit_reserved_hrs_entry(self, symbol, side, quantity, price, decision):
+        """Persist submitting before the only HRS new-risk exchange write."""
+        from shared.entry_risk_policy import EntryDenied, RiskPolicyStore
+        if decision is None or not decision.client_order_id:
+            raise EntryDenied('HRS durable reservation missing')
+        store = RiskPolicyStore(self.db)
+        async with store.submitting('hrs', decision.client_order_id) as row:
+            if (row['symbol'] != symbol or Decimal(str(row['quantity'])) != quantity
+                    or Decimal(str(row['price'])) != price
+                    or row['revision'] != decision.policy_revision):
+                raise EntryDenied('HRS reserved order geometry changed')
+            return await self.binance_api.place_order(
+                symbol=symbol, side=side, order_type=self.order_type_entry,
+                quantity=quantity, price=price, timeInForce='GTC',
+                client_order_id=decision.client_order_id,
+            )
+
     async def execute_short(
         self,
         symbol: str,
@@ -316,6 +347,7 @@ class TradingExecutor:
         quantity: Decimal,
         score: float,
         entry_mode: str = "standard",
+        risk_decision=None,
     ) -> OpenResult:
         """
         执行做空交易
@@ -334,7 +366,8 @@ class TradingExecutor:
         Returns:
             开仓执行结果（OpenResult）
         """
-        if not await entry_allowed(self, 'hrs', adding=False):
+        if not await entry_allowed(self, 'hrs', adding=False, stage='submit',
+                                   risk_decision=risk_decision, quantity=quantity):
             return _empty_fill_result(None)
         try:
             logger.info(
@@ -346,18 +379,14 @@ class TradingExecutor:
             )
             tick_size, step_size = await self._get_symbol_precision(symbol)
             quantity = self._format_quantity(quantity, step_size)
+            params = self._params_for_exit_ratios(
+                self._get_lv_rm_params(entry_mode), risk_decision.exit_ratios)
 
             await self._set_leverage(symbol)
 
             # 限价做空（使用当前价格作为最优限价）
-            order = await self.binance_api.place_order(
-                symbol=symbol,
-                side="SELL",
-                order_type=self.order_type_entry,
-                quantity=quantity,
-                price=Decimal(str(entry_price)),
-                timeInForce="GTC",
-            )
+            order = await self._submit_reserved_hrs_entry(
+                symbol, 'SELL', quantity, Decimal(str(entry_price)), risk_decision)
 
             if not order:
                 logger.error("做空下单失败", symbol=symbol)
@@ -378,7 +407,6 @@ class TradingExecutor:
             actual_qty, filled_qty, avg_price = resolved
 
             # 根据入场模式获取止损止盈参数
-            params = self._get_lv_rm_params(entry_mode)
             # 计算止损价格（做空：取三者最大值），用于通知与日志
             stop_loss_price = self._calc_sl_price("short", entry_price, atr, tick_size, params)
 
@@ -424,6 +452,7 @@ class TradingExecutor:
         quantity: Decimal,
         score: float,
         entry_mode: str = "standard",
+        risk_decision=None,
     ) -> OpenResult:
         """
         执行做多交易
@@ -442,7 +471,8 @@ class TradingExecutor:
         Returns:
             开仓执行结果（OpenResult）
         """
-        if not await entry_allowed(self, 'hrs', adding=False):
+        if not await entry_allowed(self, 'hrs', adding=False, stage='submit',
+                                   risk_decision=risk_decision, quantity=quantity):
             return _empty_fill_result(None)
         try:
             logger.info(
@@ -454,18 +484,14 @@ class TradingExecutor:
             )
             tick_size, step_size = await self._get_symbol_precision(symbol)
             quantity = self._format_quantity(quantity, step_size)
+            params = self._params_for_exit_ratios(
+                self._get_lv_rm_params(entry_mode), risk_decision.exit_ratios)
 
             await self._set_leverage(symbol)
 
             # 限价做多（使用当前价格作为最优限价）
-            order = await self.binance_api.place_order(
-                symbol=symbol,
-                side="BUY",
-                order_type=self.order_type_entry,
-                quantity=quantity,
-                price=Decimal(str(entry_price)),
-                timeInForce="GTC",
-            )
+            order = await self._submit_reserved_hrs_entry(
+                symbol, 'BUY', quantity, Decimal(str(entry_price)), risk_decision)
 
             if not order:
                 logger.error("做多下单失败", symbol=symbol)
@@ -486,7 +512,6 @@ class TradingExecutor:
             actual_qty, filled_qty, avg_price = resolved
 
             # 根据入场模式获取止损止盈参数
-            params = self._get_lv_rm_params(entry_mode)
             # 计算止损价格（做多：取三者最小值），用于通知与日志
             stop_loss_price = self._calc_sl_price("long", entry_price, atr, tick_size, params)
 
@@ -862,6 +887,8 @@ class TradingExecutor:
 
         # 2/3. 止盈单（TP1/TP2 共用子函数，消除重复）
         for target in ("tp1", "tp2"):
+            if Decimal(str(params[f"target{target[-1]}_close_percent"])) == 0:
+                continue
             if not await self._place_tp_order(
                 symbol, direction, target, entry_price, atr,
                 quantity, tick_size, step_size, params,
@@ -941,6 +968,8 @@ class TradingExecutor:
         Returns:
             是否下单成功
         """
+        if Decimal(str(params[f"target{target[-1]}_close_percent"])) == 0:
+            return True
         tp_price = self._calc_tp_price(direction, target, entry_price, atr, tick_size, params)
         tp_qty = self._calc_tp_qty(
             quantity, params[f"target{target[-1]}_close_percent"], step_size
@@ -1097,6 +1126,7 @@ class TradingExecutor:
         target1_reached: bool = False,
         target2_reached: bool = False,
         best_price: float = 0,
+        exit_ratios=None,
     ) -> ReplenishResult:
         """
         补充持仓缺失的止损止盈条件单
@@ -1123,6 +1153,8 @@ class TradingExecutor:
 
         tick_size, step_size = await self._get_symbol_precision(symbol)
         params = self._get_lv_rm_params("standard")
+        if exit_ratios is not None:
+            params = self._params_for_exit_ratios(params, exit_ratios)
 
         # FR-07/FR-09: 补单前先批量取消清场，随后全量重建
         await self._cancel_old_orders_for_replenish(symbol)
@@ -1294,6 +1326,8 @@ class TradingExecutor:
         - TP2 需检查当前价格是否已过目标价（price_past_tp2）
         - V2.7: TP2 已成交时（target_reached=True & target="tp2"），使用 best_price 下移动止盈单
         """
+        if Decimal(str(params[f"target{target[-1]}_close_percent"])) == 0:
+            return 0, [], None
         # V2.7: TP2 已成交 → 下移动止盈 STOP_LOSS 单保护剩余仓位
         if target_reached and target == "tp2" and best_price > 0 and atr > 0:
             return await self._place_trailing_stop_order(
