@@ -1,7 +1,8 @@
-"""Fixed scope for the 2026-11-08 code-only successor to the active pin.
+"""Fixed scope for the 2026-11-10 small-position successor to the active pin.
 
-Only grid and btc-eth-aggr images are rebuilt and activated. Risk policy and
-allocation rows are never written by this release.
+Only HRS and btc-eth-aggr images are rebuilt. This code release preserves the
+active risk policy and allocation; HRS remains monitor-only until a separate
+audited policy activation.
 """
 from __future__ import annotations
 
@@ -9,16 +10,16 @@ import hashlib
 import re
 from pathlib import PurePosixPath
 
-RELEASE = "strategy-code-followup-20261109-retry-1"
+RELEASE = "strategy-small-position-followup-20261110"
 MODE = "strategy-risk-followup"
 MARKER = f".github/deploy-modes/{RELEASE}"
 MANIFEST = f"deployment/{RELEASE}.json"
-BASE = "8991d03d3c4625612b4d42d2014e829aa6750f4f"
+BASE = "af8d99bae9d639fa13d1feece34264e8695e60aa"
 ACTIVE_PIN_SHA = BASE
-PIN_OVERLAY_SHA256 = "31c4595c9800e3605fda2af799b21dbc4e68c08cc1630f8c797baf34d39fd1cd"
+PIN_OVERLAY_SHA256 = "a48b5468399ee89981b656c6c0fe297e41ed5268dfdfe20919dafc693760e661"
 IMAGES = {
     "btc-eth-aggr": "btc-eth-aggressive-strategy",
-    "grid": "grid-strategy",
+    "hrs": "hrs-strategy",
 }
 SOURCE = {
     ".github/workflows/deploy.yml",
@@ -28,11 +29,14 @@ SOURCE = {
     "scripts/risk_followup_manifest.py",
     "scripts/package_risk_followup.py",
     "scripts/scoped_risk_followup.py",
-    "shared/binance_api.py",
-    "shared/accounting/stop_exit_evidence.py",
+    "database/postgres/migrations/2026-11-10-hrs-exit-ratios.sql",
+    "shared/entry_risk_policy.py",
+    "shared/protection_retry.py",
     "strategies/btc_eth_aggressive/strategy.py",
-    "strategies/grid/order_manager.py",
-    "strategies/grid/strategy.py",
+    "strategies/hrs/strategy.py",
+    "strategies/hrs/executor.py",
+    "strategies/hrs/position_manager.py",
+    "strategies/hrs/risk_budget.py",
 }
 SHA = re.compile(r"[0-9a-f]{40}\Z")
 HEX64 = re.compile(r"[0-9a-f]{64}\Z")

@@ -917,20 +917,21 @@ def mock_notification():
 
 
 @pytest.fixture
-def hrs_env(mock_db, mock_notification):
+def hrs_env(mock_db, mock_notification, monkeypatch):
     """构建真实 HRSStrategy + 真实 TradingExecutor + mock 外部依赖
 
     交易所、风控、资金、K线/费率前置检查均 mock，禁止真实网络调用；
     execute_signal 会真实走完 开仓 → 保护单 → 记录持仓 全链路。
     """
     from strategies.hrs.strategy import HRSStrategy
+    from strategies.hrs.risk_budget import RiskDecision
 
     api = MagicMock()
     api.use_unified_account = False
     api.get_ticker = AsyncMock(return_value={"lastPrice": "50000.0"})
     api.get_symbol_info = AsyncMock(return_value={"tickSize": "0.1", "stepSize": "0.001"})
     api.set_leverage = AsyncMock(return_value=None)
-    api.get_account_info = AsyncMock(return_value={"totalMarginBalance": "1000.0"})
+    api.get_account_info = AsyncMock(return_value={"totalMarginBalance": "100000.0"})
     api.place_order = AsyncMock(return_value={
         "orderId": 100, "executedQty": "0.1", "origQty": "0.1", "status": "FILLED",
     })
@@ -942,12 +943,41 @@ def hrs_env(mock_db, mock_notification):
     executor = TradingExecutor(CONFIG, api, mock_db, mock_notification, pm)
     executor.calculate_atr = AsyncMock(return_value=1000.0)
 
+    # This legacy suite tests post-admission execution and protection behavior.
+    # Admission, policy revision, durable reservation and sizing are exercised
+    # by the dedicated risk tests; provide a valid decision here explicitly.
+    decision = RiskDecision(
+        True, 'allowed', quantity=Decimal('0.1'), worst_loss=Decimal('1'),
+        risk_limit=Decimal('10'), exit_ratios=(Decimal('.3'), Decimal('.4')),
+        policy_revision=3, client_order_id='risk_legacy_test',
+        effective_allocation=Decimal('10000'))
+    monkeypatch.setattr('strategies.hrs.strategy.entry_allowed', AsyncMock(return_value=True))
+    monkeypatch.setattr('strategies.hrs.executor.entry_allowed', AsyncMock(return_value=True))
+
+    async def submit_legacy(symbol, side, quantity, price, risk_decision):
+        return await api.place_order(symbol=symbol, side=side, order_type='LIMIT',
+                                     quantity=quantity, price=price, timeInForce='GTC')
+    executor._submit_reserved_hrs_entry = AsyncMock(side_effect=submit_legacy)
+    execute_short = executor.execute_short
+    execute_long = executor.execute_long
+    async def short_with_decision(*args, **kwargs):
+        kwargs.setdefault('risk_decision', decision)
+        return await execute_short(*args, **kwargs)
+    async def long_with_decision(*args, **kwargs):
+        kwargs.setdefault('risk_decision', decision)
+        return await execute_long(*args, **kwargs)
+    executor.execute_short = short_with_decision
+    executor.execute_long = long_with_decision
+
     strategy = HRSStrategy(CONFIG)
     strategy.binance_client = api
     strategy.position_manager = pm
     strategy.trading_executor = executor
     strategy.db = mock_db
     strategy.notification_client = mock_notification
+    strategy.circuit_breaker = None
+    strategy._size_entry_with_hrs_budget = AsyncMock(return_value=decision)
+    strategy._reserve_hrs_entry = AsyncMock(return_value=decision)
 
     risk = MagicMock()
     risk.can_open_position = MagicMock(return_value=True)
@@ -958,6 +988,7 @@ def hrs_env(mock_db, mock_notification):
 
     capital = MagicMock()
     capital.can_open_position = MagicMock(return_value=True)
+    capital.can_open_within_limit = AsyncMock(return_value=(True, 'allowed'))
     capital.get_allocated_capital = MagicMock(return_value=10000.0)
     strategy.capital_mgr = capital
 
@@ -1304,10 +1335,11 @@ class TestClosePosition:
 # ============================================================
 
 class TestAddToPosition:
-    """测试 add_to_position() 的数量校验/取消清场/保护单重建"""
+    """缩量政策下，所有加仓入口都应在交易所写入前终止。"""
 
     @pytest.fixture
-    def executor(self, mock_binance_api):
+    def executor(self, mock_binance_api, monkeypatch):
+        monkeypatch.setattr('strategies.hrs.executor.entry_allowed', AsyncMock(return_value=False))
         pm = PositionManager(CONFIG, mock_binance_api)
         return TradingExecutor(CONFIG, mock_binance_api, MagicMock(), MagicMock(), pm)
 
@@ -1318,8 +1350,8 @@ class TestAddToPosition:
         )) is None
         executor.binance_api.place_order.assert_not_called()
 
-    def test_加仓成功_取消旧单并重下保护单(self, executor):
-        """加仓成交 → 取消旧条件单 → 基于交易所最新总量重下 3 个保护单"""
+    def test_缩量政策禁止加仓_不更改订单(self, executor):
+        """当前策略政策禁止加仓，保留旧保护单且不提交订单。"""
         pm = executor.position_manager
         pm.add_position("BTCUSDT", "short", 50000.0, 1.0, 1000.0)
         pm.add_algo_id("BTCUSDT", "sl", 10001)
@@ -1339,11 +1371,9 @@ class TestAddToPosition:
             "BTCUSDT", "short", 50000.0, 1000.0, Decimal("0.5"), 0.8,
         ))
 
-        assert order == {"orderId": 300}
-        # 取消旧单 1 个
-        assert executor.binance_api.cancel_algo_order.call_count == 1
-        # 保护单重建 3 个
-        assert executor.binance_api.place_conditional_order.call_count == 3
+        assert order is None
+        executor.binance_api.place_order.assert_not_awaited()
+        executor.binance_api.cancel_algo_order.assert_not_awaited()
 
     def test_加仓取消旧单失败_中止重下(self, executor):
         """取消旧条件单失败 → 中止重下保护单，返回 None"""
@@ -1514,14 +1544,15 @@ class TestExecutorEdgeBranches:
 
 
 class TestAddToPositionExtra:
-    """补充 add_to_position 边界分支"""
+    """补充加仓入口在缩量政策下的拒绝验证。"""
 
     @pytest.fixture
-    def executor(self, mock_binance_api):
+    def executor(self, mock_binance_api, monkeypatch):
+        monkeypatch.setattr('strategies.hrs.executor.entry_allowed', AsyncMock(return_value=False))
         pm = PositionManager(CONFIG, mock_binance_api)
         return TradingExecutor(CONFIG, mock_binance_api, MagicMock(), MagicMock(), pm)
 
-    def test_加仓下单失败_返回None(self, executor):
+    def test_加仓不提交订单_返回None(self, executor):
         executor.binance_api.get_symbol_info = AsyncMock(
             return_value={"tickSize": "0.1", "stepSize": "0.001"}
         )
@@ -1529,6 +1560,7 @@ class TestAddToPositionExtra:
         assert asyncio.run(executor.add_to_position(
             "BTCUSDT", "short", 50000.0, 1000.0, Decimal("0.5"), 0.8,
         )) is None
+        executor.binance_api.place_order.assert_not_awaited()
 
 
 # ============================================================

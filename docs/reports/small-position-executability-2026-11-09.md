@@ -17,6 +17,8 @@
 ## 验证与发布状态
 
 - 针对性测试：`tests/test_risk/test_entry_policy.py`、`tests/test_risk/test_hrs_small_lots.py`、HRS 风险管理、持仓恢复与持仓管理测试，合计 91 通过。
-- HRS 历史 `test_fix_verification.py` 有 11 项假设无政策门禁即可开仓，与当前生产长期存在的 `monitor_only`/强制预留门禁冲突；其中两项已在未修改的主工作区复现同样失败。应更新这些旧夹具并补端到端预留测试，之后才能把完整测试作为发布门槛。
-- `tests/test_risk/test_policy_postgres.py` 的 15 项数据库测试因本地未配置对应 Postgres 测试库而跳过；持久预留的集成验证仍未完成。
-- 本文件所述代码仅在隔离分支，尚未部署。生产 HRS 仍为 `monitor_only`；激进版仍运行上次部署的 BNB 两份额处理。发布需限定镜像与文件范围，并在新镜像验证后单独把 HRS 政策从观察态切换到有期限的缩量态；切换前后检查政策 revision、资金分配哈希、持仓、订单和保护单。不得从测试通过直接推断实盘盈利。
+- 2026-11-10：旧 HRS 测试的夹具已明确隔离入场政策，专注测试成交后的保护与补单；加仓断言已按现行禁加仓政策修订。HRS 相关 110 项通过。
+- 2026-11-10：在独立本地 `risk_tests` PostgreSQL 中完成持久预留、revision 绑定、HRS 整笔 TP1 出场几何和 `exit_ratios` JSONB 迁移幂等验证；数据库风险测试 74 项通过。
+- 全量 HRS 历史套件在本分支为 10 failed、446 passed、15 errors；未修改主工作区为 21 failed、372 passed、15 errors。余下错误集中于旧形态/市场数据夹具及本机 Python 3.9 事件循环行为；不能把全量套件称为通过。与本次变更直接相关的 HRS 执行、持仓恢复、风险和发布测试已单独通过。
+- 生产 ONUSDT 7.23 分是 `semi_emm` 的 `shadow_scoring` 信号，原设计不会下单。现有 HRS 全局 `monitor_only` 又在影子状态记录之前拒绝，导致 `hrs_signals.resolution` 留空；已调整为先归类影子，再对实盘入场执行政策门禁，并在周期通知区分“评分信号 / 实盘开仓 / 影子不下单 / 其他未开仓”。
+- 本文件所述代码仅在隔离分支，尚未部署。生产 HRS 仍为 `monitor_only`；激进版仍运行上次部署的 BNB 两份额处理。新的 `strategy-risk-followup` CLCI 路径限定激进版和 HRS 两个镜像、当前生产 pin、出场比例列迁移、发布前后只读交易所门禁和资金分配哈希。镜像部署后仍须单独把 HRS 政策从观察态切换到有期限的缩量态；切换前后检查政策 revision、持仓、订单和保护单。`semi_emm` 影子模式仍不下单。不得从测试通过直接推断实盘盈利。

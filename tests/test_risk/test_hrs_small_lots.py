@@ -58,6 +58,41 @@ def test_hrs_invalid_persisted_exit_ratios_refused():
 
 
 @pytest.mark.asyncio
+async def test_hrs_shadow_signal_is_recordable_even_when_live_entry_paused(monkeypatch):
+    from types import SimpleNamespace
+    from strategies.hrs.strategy import HRSStrategy
+    gate = AsyncMock(return_value=False)
+    monkeypatch.setattr('strategies.hrs.strategy.entry_allowed', gate)
+    strategy = object.__new__(HRSStrategy)
+    strategy.binance_client = SimpleNamespace(
+        get_ticker=AsyncMock(return_value={'lastPrice': '0.24'}))
+    strategy._is_shadow_entry_mode = lambda mode, origin: mode == 'semi_emm'
+    signal = dict(symbol='ONUSDT', direction='short', score=7.23,
+                  current_price=0.24, entry_mode='semi_emm',
+                  signal_origin='shadow_scoring', klines=[])
+    assert await strategy.execute_signal(signal)
+    assert signal['shadow_blocked'] is True
+    gate.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hrs_summary_distinguishes_shadow_from_real_entry():
+    from types import SimpleNamespace
+    from strategies.hrs.strategy import HRSStrategy
+    strategy = object.__new__(HRSStrategy)
+    strategy._should_notify = lambda name: True
+    strategy._is_shadow_entry_mode = lambda mode, origin: mode == 'semi_emm'
+    strategy.notification_client = SimpleNamespace(send=AsyncMock())
+    signal = dict(symbol='ONUSDT', direction='short', score=7.23,
+                  entry_mode='semi_emm', signal_origin='shadow_scoring')
+    await strategy._send_cycle_summary([signal], [], ['ONUSDT'])
+    message = strategy.notification_client.send.await_args.kwargs['message']
+    assert '实盘开仓 0' in message
+    assert '影子不下单 1' in message
+    assert 'ONUSDT: 评分 7.2（影子，不下单）' in message
+
+
+@pytest.mark.asyncio
 async def test_hrs_submit_requires_matching_reduced_policy_and_reservation(monkeypatch):
     from types import SimpleNamespace
     from shared.entry_risk_policy import entry_allowed

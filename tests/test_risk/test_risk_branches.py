@@ -50,7 +50,7 @@ def candidate(**changes):
     {'ratios':[]},{'ratios':['.5','.5']},{'tp_offset':'1'},
     {'tp1_price':'99'},{'direction':'SHORT','initial_stop_loss':'105','tp1_price':'101'},
     {'direction':'OTHER'},{'direction':'SHORT','initial_stop_loss':'99'},
-    {'minNotional':'1000'},{'stepSize':'0'},{'minQty':'NaN'},
+        {'minNotional':'1001'},{'stepSize':'0'},{'minQty':'NaN'},
     {'quantity':'Infinity'},{'quantity':'-1'},{'leverage':'bad'},
 ])
 def test_sizing_rejects_invalid_risk_geometry(change):

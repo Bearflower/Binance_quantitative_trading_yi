@@ -1,5 +1,6 @@
 """Real local PostgreSQL only. Never uses production or ledger_tests."""
 import asyncio
+import json
 import os
 from urllib.parse import urlsplit
 from pathlib import Path
@@ -16,10 +17,30 @@ if DSN:
     if parsed.hostname not in ('127.0.0.1','localhost','::1') or parsed.path!='/risk_tests':
         raise ValueError('RISK_TEST_DSN must name local isolated database risk_tests; production/ledger databases forbidden')
 MIGRATION=Path(__file__).parents[2]/'database/postgres/migrations/2026-11-04-entry-risk-policy.sql'
+HRS_EXIT_MIGRATION=Path(__file__).parents[2]/'database/postgres/migrations/2026-11-10-hrs-exit-ratios.sql'
 
 
 def test_migration_exists():
     assert MIGRATION.exists()
+
+
+@pytest.mark.asyncio
+async def test_hrs_exit_ratio_migration_is_idempotent_and_persists_geometry():
+    admin = await asyncpg.connect(DSN)
+    try:
+        await admin.execute('CREATE SCHEMA IF NOT EXISTS hrs')
+        await admin.execute('DROP TABLE IF EXISTS hrs.hrs_positions')
+        await admin.execute('CREATE TABLE hrs.hrs_positions(symbol text PRIMARY KEY)')
+        sql = HRS_EXIT_MIGRATION.read_text()
+        await admin.execute(sql)
+        await admin.execute(sql)
+        await admin.execute('''INSERT INTO hrs.hrs_positions(symbol, exit_ratios)
+                               VALUES('ONUSDT', $1::jsonb)''', '["1", "0"]')
+        row = await admin.fetchrow('SELECT exit_ratios FROM hrs.hrs_positions WHERE symbol=$1', 'ONUSDT')
+        assert json.loads(row['exit_ratios']) == ['1', '0']
+    finally:
+        await admin.execute('DROP TABLE IF EXISTS hrs.hrs_positions')
+        await admin.close()
 
 
 async def setup():
@@ -48,6 +69,46 @@ async def setup():
     async def runtime_role(conn):await conn.execute('SET ROLE risk_runtime')
     pool=await asyncpg.create_pool(DSN,min_size=2,max_size=3,setup=runtime_role)
     return pool
+
+
+@pytest.mark.asyncio
+async def test_hrs_small_lot_reservation_is_durable_and_revision_bound():
+    pool = await setup()
+    try:
+        admin = await asyncpg.connect(DSN)
+        try:
+            await admin.execute('''UPDATE public.capital_allocation SET entries=$1::jsonb''',
+                                '[{"strategy_id":"hrs","allocated_amount":52.36}]')
+            await admin.execute('''INSERT INTO trading.strategy_risk_policy
+                (account_id,strategy_id,revision,effective_at,expires_at,mode,
+                 allow_add,multiplier,ratio_cap,entry_ceiling,reason)
+                VALUES('default','hrs',3,now()-interval '1 hour',
+                       now()+interval '1 day','reduced',false,.5,.15,26.18,'test')''')
+            await admin.execute("INSERT INTO trading.strategy_risk_active VALUES('default','hrs',3)")
+            await admin.execute('''INSERT INTO trading.position_claims
+                (symbol,strategy,claim_state,expires_at)
+                VALUES('ONUSDT','hrs','PENDING',now()+interval '30 minutes')''')
+        finally:
+            await admin.close()
+        store = RiskPolicyStore(SimpleNamespace(pool=pool))
+        sized = SizedEntry(D(30), D(30), D('.24'), D(2), D('3.6'),
+                           D('.5'), D('.5'), (D(1), D(0)))
+        async def snapshot():
+            return D(0), D(1000), D('26.18'), set(), 3
+        cid = await store.reserve('hrs', 'ONUSDT', 'signal-1', sized, 3,
+                                  snapshot, geometry={'exit_ratios':['1','0']})
+        async with store.submitting('hrs', cid) as row:
+            assert row['symbol'] == 'ONUSDT'
+            assert row['quantity'] == D(30)
+            assert json.loads(row['geometry'])['exit_ratios'] == ['1','0']
+        async with pool.acquire() as conn:
+            assert await conn.fetchval(
+                'SELECT state FROM trading.entry_risk_reservation WHERE client_order_id=$1',
+                cid) == 'submitting'
+        with pytest.raises(EntryDenied):
+            await store.reserve('hrs', 'ONUSDT', 'signal-2', sized, 2, snapshot)
+    finally:
+        await pool.close()
 
 
 @pytest.mark.asyncio

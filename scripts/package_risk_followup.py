@@ -13,7 +13,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from scripts.risk_followup_manifest import BASE, IMAGES, MANIFEST, MARKER, SHA, ReleaseBlocked, validate_tree
 from scripts.select_deploy_mode import _read_changes
 
-SCRIPTS = ["scripts/scoped_risk_followup.py", "scripts/risk_followup_manifest.py"]
+SCRIPTS = ["scripts/scoped_risk_followup.py", "scripts/risk_followup_manifest.py",
+           "database/postgres/migrations/2026-11-10-hrs-exit-ratios.sql"]
 
 
 def package(sha: str, digest_dir: Path, output: Path) -> None:

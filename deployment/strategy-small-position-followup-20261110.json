@@ -1,0 +1,118 @@
+{
+  "active_pin_sha": "af8d99bae9d639fa13d1feece34264e8695e60aa",
+  "allowed_changes": [
+    {
+      "path": ".github/deploy-modes/strategy-small-position-followup-20261110",
+      "status": "A"
+    },
+    {
+      "path": "database/postgres/migrations/2026-11-10-hrs-exit-ratios.sql",
+      "status": "A"
+    },
+    {
+      "path": "deployment/strategy-small-position-followup-20261110.json",
+      "status": "A"
+    },
+    {
+      "path": "docs/reports/small-position-executability-2026-11-09.md",
+      "status": "A"
+    },
+    {
+      "path": "tests/test_risk/test_hrs_small_lots.py",
+      "status": "A"
+    },
+    {
+      "path": ".github/workflows/deploy.yml",
+      "status": "M"
+    },
+    {
+      "path": "docs/reports/strategy-remediation-tracker.md",
+      "status": "M"
+    },
+    {
+      "path": "scripts/package_risk_followup.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/risk_followup_manifest.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/scoped_risk_followup.py",
+      "status": "M"
+    },
+    {
+      "path": "scripts/select_deploy_mode.py",
+      "status": "M"
+    },
+    {
+      "path": "shared/entry_risk_policy.py",
+      "status": "M"
+    },
+    {
+      "path": "shared/protection_retry.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/btc_eth_aggressive/strategy.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/hrs/executor.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/hrs/position_manager.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/hrs/risk_budget.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/hrs/strategy.py",
+      "status": "M"
+    },
+    {
+      "path": "strategies/hrs/tests/test_fix_verification.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_risk/test_entry_policy.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_risk/test_policy_postgres.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_risk/test_risk_branches.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_scoped_release/test_risk_followup.py",
+      "status": "M"
+    }
+  ],
+  "base_revision": "af8d99bae9d639fa13d1feece34264e8695e60aa",
+  "expected_pin_overlay_sha256": "a48b5468399ee89981b656c6c0fe297e41ed5268dfdfe20919dafc693760e661",
+  "release_id": "strategy-small-position-followup-20261110",
+  "schema_version": 1,
+  "source_checksums": {
+    ".github/workflows/deploy.yml": "930d3486577d22ef5e0d6dff4671c25b703477023723d0e6e0bea06ab88d22ea",
+    "database/postgres/migrations/2026-11-10-hrs-exit-ratios.sql": "de6bcab39324f486ac13ba62725b1b5b26df97bf23fad0b823f5fd1e4386699a",
+    "scripts/package_risk_followup.py": "8be067c068aecec203b8ea0f72385e7f5b8c6087286ae38de1067afc1f9810b2",
+    "scripts/remote_deploy_runtime.sh": "99436ee94a7026d0774dba537a50c86fbf6b75a49c695c70f349a5ab9ef17b51",
+    "scripts/render_remote_deploy.py": "5ec8022ed71979b8aa0b6d7abfcdcf48546ba7924dd70465b86c409ee10030c0",
+    "scripts/risk_followup_manifest.py": "d11a42b5e4abc648edc56d871ca003bcd40daf6969b7a3da656dfde324918f5c",
+    "scripts/scoped_risk_followup.py": "21fa568472608cdac891fcb84c8bf9d15b53a3ffef6baf0566d2bd55bea4e281",
+    "scripts/select_deploy_mode.py": "09a1cfb7c38a1cb840a55abca5b1f332be5d04d2c9afbfbcc2f0389e1c98e8b9",
+    "shared/entry_risk_policy.py": "e5d19df070d6032427d9b5c9e1a8255bf7cafe9afd569ec4faf7a2c339491e10",
+    "shared/protection_retry.py": "982537ebcf51dff708d5547e58ba3186ad20758536eb546201b3385567c76c75",
+    "strategies/btc_eth_aggressive/strategy.py": "5800312c86d88d9c4e3030a80c505234ffdf8661fa12baeaf50230ab4f7a0750",
+    "strategies/hrs/executor.py": "306cd6dd08bb09627d1612e0735838511c7ba6525ac9aef9a0c5ade247f45765",
+    "strategies/hrs/position_manager.py": "e5fec86e665bc7afc097ae38ae87d829b48246412bbad8cede59a7d9a03be2ae",
+    "strategies/hrs/risk_budget.py": "aa55e0264a435f501ccb51e5ccc86d732abbc05fc7ed133c41a439e46056442e",
+    "strategies/hrs/strategy.py": "4f1b92fe066dcc94c0e598eb259c7b6f33da977ddc67023566db2de0e7d73bb4"
+  }
+}

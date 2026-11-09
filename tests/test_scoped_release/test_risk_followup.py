@@ -1,4 +1,7 @@
 import pytest
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from scripts.render_remote_deploy import RenderError, _validate
 from scripts.risk_followup_manifest import (
@@ -6,7 +9,7 @@ from scripts.risk_followup_manifest import (
     RELEASE, SOURCE, ReleaseBlocked, sha256, validate_manifest, validate_tree,
 )
 from scripts.scoped_risk_followup import (
-    Runtime, image_only, startup_marker_present, unchanged_exchange,
+    Runtime, image_only, require_flat_release_gate, startup_marker_present, unchanged_exchange,
     validate_active_state,
 )
 from scripts.select_deploy_mode import DeployModeError, select_deploy_mode
@@ -25,7 +28,7 @@ def manifest():
 
 
 def test_followup_selects_only_exact_added_marker_and_two_images():
-    assert IMAGES == {"grid": "grid-strategy", "btc-eth-aggr": "btc-eth-aggressive-strategy"}
+    assert IMAGES == {"hrs": "hrs-strategy", "btc-eth-aggr": "btc-eth-aggressive-strategy"}
     assert select_deploy_mode("push", BASE, [("A", MARKER)]) == "strategy-risk-followup"
     for changes in [[("M", MARKER)], [("A", MARKER), ("A", ".github/deploy-modes/strategy-risk-successor-20261105")]]:
         with pytest.raises(DeployModeError):
@@ -120,3 +123,41 @@ def test_expired_policy_release_uses_read_only_pre_activation_gate():
     runtime.run = lambda argv, **kwargs: calls.append(argv) or '{"ok":true,"read_only":true}'
     assert runtime.gate()["ok"] is True
     assert calls[0][calls[0].index("--stage") + 1] == "pre_activation"
+    assert calls[0][calls[0].index("--revision") + 1] == "2"
+
+
+def test_small_position_release_requires_flat_account():
+    require_flat_release_gate({'position_exposure': [], 'protected_positions': 0})
+    with pytest.raises(ReleaseBlocked, match='flat account'):
+        require_flat_release_gate({'position_exposure': [{'symbol':'ONUSDT'}],
+                                   'protected_positions': 1})
+
+
+def test_hrs_schema_backup_precedes_atomic_migration(tmp_path):
+    runtime = Runtime.__new__(Runtime)
+    runtime.root = tmp_path
+    runtime.release_dir = tmp_path / 'release'
+    runtime.release_dir.mkdir()
+    runtime.bundle = tmp_path / 'bundle'
+    migration = runtime.bundle / 'database/postgres/migrations/2026-11-10-hrs-exit-ratios.sql'
+    migration.parent.mkdir(parents=True)
+    migration.write_text('ALTER TABLE hrs.hrs_positions ADD COLUMN exit_ratios JSONB;')
+    calls = []
+    def fake_dump(argv, **kwargs):
+        calls.append('backup')
+        kwargs['stdout'].write(b'backup')
+        return SimpleNamespace(returncode=0)
+    def fake_run(argv, **kwargs):
+        if kwargs.get('input'):
+            calls.append('migration')
+        elif "NOT EXISTS" in argv[-1]:
+            calls.append('preflight')
+        else:
+            calls.append('verify')
+        return 't'
+    runtime.run = fake_run
+    runtime.record = lambda *args: calls.append('record')
+    with patch('scripts.scoped_risk_followup.subprocess.run', side_effect=fake_dump):
+        runtime.apply_schema()
+    assert calls == ['preflight', 'backup', 'migration', 'verify', 'record']
+    assert (runtime.release_dir / 'database-before.dump').read_bytes() == b'backup'

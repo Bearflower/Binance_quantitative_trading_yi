@@ -738,8 +738,6 @@ class HRSStrategy(BaseStrategy):
         Returns:
             是否执行成功
         """
-        if not await entry_allowed(self, 'hrs', stage='analysis'):
-            return False
         try:
             symbol = signal.get("symbol")
             direction = signal.get("direction")
@@ -777,6 +775,10 @@ class HRSStrategy(BaseStrategy):
                 )
                 signal["shadow_blocked"] = True
                 return True
+
+            if not await entry_allowed(self, 'hrs', stage='analysis'):
+                signal['skip_reason'] = 'HRS entry risk policy blocks new positions'
+                return False
 
             # 组合级熔断闸门：开仓决策前统一否决性拦截（含 LV-RM 等所有信号来源）
             # 组合级独立生效（与单币涨幅无关）；单币涨幅缺失时仅单币级 fail-open（guard 内处理）
@@ -2157,6 +2159,8 @@ class HRSStrategy(BaseStrategy):
                 # B1/B2: 影子模式返回 True，但从未真实成交，必须落库为 'shadow'。
                 # 若写 'executed' 会把「未发生的成交」写成事实证据（证据幻觉）。
                 resolution = "shadow" if signal.get("shadow_blocked") else "executed"
+                if resolution == 'executed':
+                    signal['executed'] = True
                 # R9: 按 signal_id 精准更新，杜绝宽范围污染
                 await self._update_signal_resolution(
                     signal.get("signal_id"), resolution,
@@ -2944,24 +2948,36 @@ class HRSStrategy(BaseStrategy):
 
         try:
             lines = ["【HRS策略周期汇总】"]
-            lines.append(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+            lines.append(f"时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
             lines.append(f"活跃候选币种: {len(active_symbols)}")
             if short_candidates:
                 lines.append(f"做空候选 ({len(short_candidates)}): {', '.join(short_candidates)}")
             if long_candidates:
                 lines.append(f"做多候选 ({len(long_candidates)}): {', '.join(long_candidates)}")
-            lines.append(f"做空信号: {len(short_signals)}，做多信号: {len(long_signals)}")
+            all_signals = short_signals + long_signals
+            shadow_count = sum(self._is_shadow_entry_mode(
+                s.get('entry_mode', 'standard'), s.get('signal_origin')) for s in all_signals)
+            executed_count = sum(bool(s.get('executed')) for s in all_signals)
+            lines.append(f"评分信号: 做空 {len(short_signals)}，做多 {len(long_signals)}")
+            lines.append(f"本轮结果: 实盘开仓 {executed_count}，影子不下单 {shadow_count}，"
+                         f"其他未开仓 {len(all_signals)-executed_count-shadow_count}")
             lines.append("")
 
             if short_signals:
                 lines.append("--- 做空信号 ---")
                 for s in short_signals:
-                    lines.append(f"  {s['symbol']}: 评分 {s['score']:.1f}")
+                    status = ('影子，不下单' if self._is_shadow_entry_mode(
+                        s.get('entry_mode', 'standard'), s.get('signal_origin'))
+                        else '已开仓' if s.get('executed') else '未开仓')
+                    lines.append(f"  {s['symbol']}: 评分 {s['score']:.1f}（{status}）")
 
             if long_signals:
                 lines.append("--- 做多信号 ---")
                 for s in long_signals:
-                    lines.append(f"  {s['symbol']}: 评分 {s['score']:.1f}")
+                    status = ('影子，不下单' if self._is_shadow_entry_mode(
+                        s.get('entry_mode', 'standard'), s.get('signal_origin'))
+                        else '已开仓' if s.get('executed') else '未开仓')
+                    lines.append(f"  {s['symbol']}: 评分 {s['score']:.1f}（{status}）")
 
             if not short_signals and not long_signals:
                 lines.append("本轮无开仓信号")
