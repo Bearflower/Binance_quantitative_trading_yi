@@ -157,6 +157,11 @@ class TestCandidateAuditMode:
 
         assert result == "error"
         assert job.llm_client.call_llm.await_count == 2  # 重试一次
+        retry_prompt = job.llm_client.call_llm.await_args_list[1].kwargs["user_prompt"]
+        assert "diagnosis 必须是列表" in retry_prompt
+        assert "target_metrics 必须是字典" in retry_prompt
+        assert "expected_impact 必须是字典" in retry_prompt
+        assert "HOLD / DATA_ERROR" in retry_prompt
         job.messenger.send_error_notification.assert_awaited_once()
 
     async def test_candidate_hold_sends_no_change_notification_without_write(self):

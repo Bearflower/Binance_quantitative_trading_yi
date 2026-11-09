@@ -418,7 +418,11 @@ class WeeklyTuningJob:
                 retry_instruction = (
                     "\n\n【重要】请严格只输出 JSON 格式，不要包含任何其他文字。"
                     "不要用 markdown 代码块包裹。不要有 __REASONING__ 前缀。"
-                    "输出必须包含以下字段：decision, objective, diagnosis, target_metrics, adjustments, expected_impact。"
+                    "输出必须包含八个字段：decision, objective, diagnosis, target_metrics, "
+                    "adjustments, applicable_market_regimes, expected_impact, confidence。"
+                    "diagnosis 必须是列表，target_metrics 必须是字典，expected_impact 必须是字典。"
+                    "decision 只能为 PROPOSE、HOLD、DATA_ERROR；HOLD / DATA_ERROR 的 adjustments 必须是 {}。"
+                    "PROPOSE 的 adjustments 必须按参数路径给出 from 当前值和 to 目标值。"
                 )
             else:
                 retry_instruction = (
