@@ -90,6 +90,7 @@ class MarketAnalysis:
     atr_peak: Decimal = Decimal('0')
     is_volatility_alarm_active: bool = False
     adx_prev_1h: Decimal = Decimal('0')
+    last_closed_kline_ms: Optional[Dict[str, int]] = None
 
     def __post_init__(self):
         """参数验证"""
@@ -372,7 +373,8 @@ class MarketStateDetector:
                 atr_abnormal_count=atr_abnormal_count,
                 atr_peak=atr_peak,
                 is_volatility_alarm_active=is_vol_alarm_active,
-                adx_prev_1h=adx_prev_1h
+                adx_prev_1h=adx_prev_1h,
+                last_closed_kline_ms=self._last_closed_times(tf_data),
             )
 
             logger.info(
@@ -436,6 +438,24 @@ class MarketStateDetector:
         )
 
         return tf_data
+
+    @staticmethod
+    def _last_closed_times(tf_data: Dict[str, List[Dict]]) -> Dict[str, int]:
+        """Record the actual close time, without treating an unfinished candle as closed."""
+        import time
+        now_ms = int(time.time() * 1000)
+        result = {}
+        for interval in ("15m", "1h", "4h"):
+            times = []
+            for candle in tf_data[interval]:
+                try:
+                    close_ms = int(candle["close_time"])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if 0 < close_ms <= now_ms:
+                    times.append(close_ms)
+            result[interval] = max(times) if times else 0
+        return result
 
     def _calculate_indicators(self, klines: List[Dict], use_tail_ema: bool = False, adx_period: int = None) -> Dict[str, Decimal]:
         """
