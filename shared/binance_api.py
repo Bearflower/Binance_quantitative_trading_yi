@@ -607,7 +607,9 @@ class BinanceClient:
             raise ValueError(f"响应数据格式错误: 期望列表，实际为 {type(data).__name__}")
         return data
 
-    async def get_algo_order(self, algo_id: int) -> Dict:
+    async def get_algo_order(
+        self, algo_id: Optional[int] = None, *, client_algo_id: Optional[str] = None,
+    ) -> Dict:
         """Read one PM UM conditional order, including its actualOrderId after trigger.
 
         A triggered STOP is not evidence of a fill; callers must separately verify
@@ -615,13 +617,25 @@ class BinanceClient:
         """
         if not self.use_unified_account:
             raise NotImplementedError("PM UM algo order lookup requires a unified account")
-        if isinstance(algo_id, bool) or not isinstance(algo_id, int) or algo_id <= 0:
+        if (algo_id is None) == (client_algo_id is None):
+            raise ValueError("必须且只能提供 algoId 或 clientAlgoId")
+        if algo_id is not None and (
+            isinstance(algo_id, bool) or not isinstance(algo_id, int) or algo_id <= 0
+        ):
             raise ValueError("algoId 必须为正整数")
+        if client_algo_id is not None and (
+            not isinstance(client_algo_id, str) or not client_algo_id.strip()
+        ):
+            raise ValueError("clientAlgoId 必须为非空字符串")
+        params = ({"algoId": algo_id} if algo_id is not None
+                  else {"clientAlgoId": client_algo_id})
         data = await self._request(
-            "GET", "/papi/v1/um/algo/algoOrder", {"algoId": algo_id}, signed=True
+            "GET", "/papi/v1/um/algo/algoOrder", params, signed=True
         )
-        if not isinstance(data, dict) or str(data.get("algoId")) != str(algo_id):
-            raise ValueError("algoId 查询响应身份不匹配")
+        expected_key = "algoId" if algo_id is not None else "clientAlgoId"
+        expected_value = algo_id if algo_id is not None else client_algo_id
+        if not isinstance(data, dict) or str(data.get(expected_key)) != str(expected_value):
+            raise ValueError(f"{expected_key} 查询响应身份不匹配")
         return data
     
     async def place_order(
@@ -906,8 +920,9 @@ class BinanceClient:
         }
 
         # R02-F5：条件单同样为“非幂等写请求”，结果未知时不得盲重发。
-        # 普通合约账户支持 newClientOrderId 幂等标识；PM 账户条件单走 algo 端点
-        # （不支持 newClientOrderId，传入可能报 -1106），故仅在普通账户下生成/透传。
+        # 普通合约账户使用 newClientOrderId；PM algo 端点使用独立的
+        # clientAlgoId（由上层预写持久日志后经 kwargs 传入）。不可把后者
+        # 送到普通订单的 idempotency_key 核验路径。
         client_order_id = client_order_id or kwargs.pop("newClientOrderId", None)
         if not self.use_unified_account and not client_order_id:
             client_order_id = self._generate_client_order_id()

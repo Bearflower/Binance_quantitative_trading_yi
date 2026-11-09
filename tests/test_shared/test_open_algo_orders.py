@@ -54,3 +54,17 @@ async def test_pm_query_algo_order_rejects_identity_mismatch():
 
     with pytest.raises(ValueError, match="algoId"):
         await client.get_algo_order(123)
+
+
+@pytest.mark.asyncio
+async def test_pm_query_algo_order_by_client_algo_id_for_restart_recovery():
+    client = object.__new__(BinanceClient)
+    client.use_unified_account = True
+    client._request = AsyncMock(return_value={"algoId": 123, "clientAlgoId": "sa123"})
+
+    result = await client.get_algo_order(client_algo_id="sa123")
+
+    assert result["algoId"] == 123
+    client._request.assert_awaited_once_with(
+        "GET", "/papi/v1/um/algo/algoOrder", {"clientAlgoId": "sa123"}, signed=True,
+    )

@@ -17,3 +17,6 @@
 - 新挂 STOP 有通用 `_place_conditional_order_and_record` 路径，极端行情 `_tighten_extreme_stop` 直接调用交易所；两条路径均需记录候选绑定。仅有候选绑定不足以认定 STOP 成交或启动冷却。
 - `fetch_lot_fills` 以六天窗口分页。旧恢复测试假设 2026-10-31 至当前日期始终只需一次查询，11 月 9 日开始失效；改成首窗返回成交、次窗为空，并检查首次调用参数。
 - STOP 订单本身 FILLED 且逐笔数量相等，仍不足以证明它平的是同一批次；从首入场成交时间到 STOP 最后一笔成交的完整 userTrades 历史必须显示同向持仓持续不归零、STOP 后归零。闭合批次证明已作为只读函数实现，未核证据不入退出事件表。
+- 币安当前 PM UM algo 下单支持 `clientAlgoId`，查询接口也可按该 ID 查订单；无成交撤销/过期单 3 天、所有单 90 天后可能不可查。先在策略持久卷 fsync 该 ID 与批次，再 POST，可覆盖响应未知和数据库中断重启后的恢复。查询不到不能当作未成交，意图保持待核并阻断新入场。
+- 激进版 Docker Compose 将 `./data/btc_eth_aggressive` 挂到 `/app/data`；持久意图日志使用此卷，入场门禁在新开仓前执行写入与读取探针。
+- 生产 2026-11-09 午后只读 `strategy_gate` 版本 2 通过，账户空仓、无普通/条件单。激进版 `public.strategy_states` 四条历史 `position:*` 快照都缺 `episode_entry_order_id`；不能凭快照的最后入场单或旧 algoId 补认闭合批次，需单独核交易所成交链。
