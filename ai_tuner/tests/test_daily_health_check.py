@@ -48,6 +48,23 @@ def test_win_rate_excludes_records_without_realized_pnl():
     assert any("20.0%" in item for item in checker._detect_anomalies("hrs", report))
 
 
+def test_reduced_trial_strategies_are_excluded_from_legacy_pnl_alerts():
+    class DB:
+        calls = 0
+
+        async def fetch_one(self, *args):
+            self.calls += 1
+            return {}
+
+    config = {
+        "strategies": [{"strategy_id": "hrs"}, {"strategy_id": "btc_eth_aggressive"}],
+        "reduced_trial": {"enabled": True, "strategies": ["hrs", "btc_eth_aggressive"]},
+    }
+    db = DB()
+    asyncio.run(DailyHealthCheck(config, db, None).run_check())
+    assert db.calls == 0
+
+
 def test_window_is_previous_24_beijing_hours():
     db = SqliteDb()
     now = datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)

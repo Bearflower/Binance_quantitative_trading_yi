@@ -40,9 +40,15 @@ class DailyHealthCheck:
     async def run_check(self) -> None:
         """执行所有策略的健康检查"""
         strategies = self.config.get("strategies", [])
+        trial_cfg = self.config.get("reduced_trial", {})
+        trial_owned = (set(trial_cfg.get("strategies", []))
+                       if trial_cfg.get("enabled") is True else set())
         for strategy in strategies:
             strategy_id = strategy.get("strategy_id", "")
             if not strategy.get("enabled", True):
+                continue
+            if strategy_id in trial_owned:
+                logger.info("缩量策略由交易所证据日巡检负责", strategy_id=strategy_id)
                 continue
 
             try:

@@ -1,6 +1,21 @@
 # StratTuneAI 多策略AI调优系统配置
 # 所有参数从环境变量或此配置文件读取，禁止硬编码
 
+# HRS 与激进版缩量试跑：只读证据、日巡检与周评估。
+# 不续期、不提额、不下单；缺少完整权益曲线和冻结阈值时周结论为 BLOCKED_DATA。
+reduced_trial:
+  enabled: true
+  strategies: [btc_eth_aggressive, hrs]
+  cohort_start_utc:
+    btc_eth_aggressive: "2026-11-09T02:54:46.815839+00:00"
+    hrs: "2026-11-10T01:10:55.475009+00:00"
+  cohort_ceiling_usdt:
+    btc_eth_aggressive: "77.7417240630"
+    hrs: "26.18"
+  timezone: Asia/Shanghai
+  daily_cron: "15 10 * * *"
+  weekly_cron: "15 11 * * mon"
+
 # ============================================================
 # 目的驱动型 MVP 模式（阶段一：参数安全 + 准备度审计）
 # 仅 btc_eth_aggressive 和 hrs 走新契约；其他策略保持旧契约

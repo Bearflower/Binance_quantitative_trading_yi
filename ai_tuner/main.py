@@ -24,6 +24,8 @@ import os
 import signal
 import sys
 from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
 
 import structlog
 import yaml
@@ -50,8 +52,12 @@ from ai_tuner.allocation.profit_extraction_job import ProfitExtractionJob  # noq
 from ai_tuner.allocation.daily_refresher import DailyAllocationRefresher  # noqa: E402
 from ai_tuner.cleanup.orphan_cleanup import OrphanCleanupJob  # noqa: E402
 from ai_tuner.monitor.daily_health_check import DailyHealthCheck  # noqa: E402
+from ai_tuner.monitor.reduced_trial import (  # noqa: E402
+    ReducedTrialEvaluator, TRIAL_STRATEGIES, register_reduced_trial_jobs,
+)
 from ai_tuner.reconciler.income_reconciler import IncomeReconciler  # noqa: E402
 from shared.binance_api import BinanceClient  # noqa: E402
+from shared.readonly_client import ReadOnlyBinanceClient  # noqa: E402
 from shared.utils import resolve_env_var  # noqa: E402
 
 # 配置 structlog
@@ -101,6 +107,8 @@ class StratTuneAI:
         self.daily_refresher: DailyAllocationRefresher = None
         self.orphan_cleanup_job: OrphanCleanupJob = None
         self.health_checker: DailyHealthCheck = None
+        self.reduced_trial_evaluator: ReducedTrialEvaluator = None
+        self.reduced_trial_exchange: ReadOnlyBinanceClient = None
         self.reconciler: IncomeReconciler = None
         self._running = False
         self.app: web.Application = None
@@ -327,6 +335,41 @@ class StratTuneAI:
         else:
             logger.info("PnL 校准器已禁用")
 
+        trial_cfg = self.config.get("reduced_trial", {})
+        if trial_cfg.get("enabled") is True:
+            if set(trial_cfg.get("strategies", [])) != set(TRIAL_STRATEGIES):
+                raise ValueError("reduced_trial strategies must match supported trial policies")
+            raw_starts = trial_cfg.get("cohort_start_utc", {})
+            if set(raw_starts) != set(TRIAL_STRATEGIES):
+                raise ValueError("reduced_trial cohort starts must cover both strategies")
+            raw_ceilings = trial_cfg.get("cohort_ceiling_usdt", {})
+            if set(raw_ceilings) != set(TRIAL_STRATEGIES):
+                raise ValueError("reduced_trial cohort ceilings must cover both strategies")
+            trial_starts = {}
+            cohort_ceilings = {}
+            for strategy, value in raw_starts.items():
+                stamp = datetime.fromisoformat(str(value))
+                if stamp.tzinfo is None or stamp.utcoffset() is None:
+                    raise ValueError("reduced_trial cohort start must include timezone")
+                trial_starts[strategy] = stamp
+                ceiling = Decimal(str(raw_ceilings[strategy]))
+                if not ceiling.is_finite() or ceiling <= 0:
+                    raise ValueError("reduced_trial cohort ceiling invalid")
+                cohort_ceilings[strategy] = ceiling
+            if binance_api_key and binance_api_secret:
+                self.reduced_trial_exchange = ReadOnlyBinanceClient(
+                    binance_api_key, binance_api_secret, testnet=binance_testnet,
+                    instance_id="ai-tuner-reduced-trial",
+                )
+            self.reduced_trial_evaluator = ReducedTrialEvaluator(
+                self.db_manager, self.reduced_trial_exchange, self.messenger,
+                Path("/app/logs/reduced_trial"),
+                account=os.getenv("TRADE_ACCOUNT_ID", "default"),
+                trial_starts=trial_starts,
+                cohort_ceilings=cohort_ceilings,
+            )
+            logger.info("缩量试跑只读评估器已初始化")
+
         # 10. 初始化调度器
         scheduler_cfg = self.config.get("scheduler", {})
         self.scheduler = AsyncIOScheduler(
@@ -482,6 +525,12 @@ class StratTuneAI:
         )
         logger.info("每日健康检查任务已注册", cron_expression=health_check_cron)
 
+        if self.reduced_trial_evaluator:
+            register_reduced_trial_jobs(
+                self.scheduler, self.reduced_trial_evaluator,
+                self.config["reduced_trial"],
+            )
+
         # 11. 初始化 HTTP 服务器（飞书审批回调 + 管理 API）
         self._setup_http_server()
 
@@ -530,6 +579,9 @@ class StratTuneAI:
         # 关闭通知客户端
         if self.notification_client:
             await self.notification_client.close()
+
+        if self.reduced_trial_exchange:
+            await self.reduced_trial_exchange.close()
 
         # 关闭数据库连接
         if self.db_manager:
