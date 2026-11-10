@@ -75,3 +75,22 @@ async def test_backlog_without_exit_pauses_before_skipping(tmp_path):
         epoch, stop_loss_low=Decimal("1800"), stop_loss_high=Decimal("2100"))
     assert store.next_decision()["state"] == "OSCILLATION"
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_locked_state_alerts_once_per_reason_and_ignores_send_failure(tmp_path):
+    path = tmp_path / "alerts.sqlite3"
+    migrate(path)
+    store = DecisionStore(path)
+    service = ExecutorService.__new__(ExecutorService)
+    service.store = store
+    service.alert_sender = AsyncMock(side_effect=[False, RuntimeError("webhook down")])
+    service._last_alert_token = None
+    store.set_engine_state("LOCKED", "foreign order")
+    await service._alert_if_needed()
+    await service._alert_if_needed()
+    service.alert_sender.assert_awaited_once()
+    store.set_engine_state("LOCKED", "risk unknown")
+    await service._alert_if_needed()
+    assert service.alert_sender.await_count == 2
+    store.close()

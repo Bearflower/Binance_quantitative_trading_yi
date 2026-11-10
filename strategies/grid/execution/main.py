@@ -23,6 +23,7 @@ from .risk import RiskLimits, RiskStatus
 from .risk_tracker import RiskTracker
 from .store import DecisionStore, ExecutionLock
 from .stream import UserStream
+from strategies.grid.realtime.delivery import WebhookSingleSender
 
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,9 @@ class ExecutorService:
             testnet_base=env.get("GRID_TESTNET_WS_BASE"))
         self._risk_result = None
         self._last_risk_ms = 0
+        self.alert_sender = WebhookSingleSender()
+        self._last_alert_token = None
+        self._last_alert_at = 0.0
 
     async def _on_reconnect(self):
         async with self.guard:
@@ -162,6 +166,23 @@ class ExecutorService:
         self.store.acknowledge_through(target["decision_id"])
         return True
 
+    async def _alert_if_needed(self):
+        state = self.store.engine_state()
+        if state["state"] != "LOCKED":
+            self._last_alert_token = None
+            return
+        token = state.get("lock_reason") or "unknown reason"
+        now = time.monotonic()
+        if token == self._last_alert_token and now - self._last_alert_at < 60:
+            return
+        self._last_alert_token = token
+        self._last_alert_at = now
+        logger.error("grid executor locked: %s", token)
+        try:
+            await self.alert_sender("⚠️ ETHUSDT 订单网格执行器已锁定\n原因：%s\n已禁止新开仓，请核查子账号订单、仓位与保护单。" % token)
+        except Exception:
+            logger.exception("grid executor alert delivery failed")
+
     async def tick(self):
         now_ms = int(time.time() * 1000)
         async with self.guard:
@@ -215,6 +236,7 @@ class ExecutorService:
                     await stream_task
                     raise RuntimeError("user stream task stopped")
                 await self.tick()
+                await self._alert_if_needed()
                 await asyncio.sleep(5)
         finally:
             stream_task.cancel()

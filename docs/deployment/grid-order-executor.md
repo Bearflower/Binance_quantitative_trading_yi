@@ -4,7 +4,7 @@
 
 ## 本地验证（2026-11-10）
 
-- `python3 -m pytest -q tests/test_grid_execution tests/test_strategies/test_grid_kline.py tests/test_strategies/test_grid_capital_linkage.py tests/integration/test_grid_strategy.py`：204 passed。
+- `python3 -m pytest -q tests/test_grid_execution tests/test_strategies/test_grid_kline.py tests/test_strategies/test_grid_capital_linkage.py tests/integration/test_grid_strategy.py`：205 passed。
 - 模拟交易所完整周期覆盖建网格、BUY 成交、相邻价位 SELL、预警暂停、强趋势退出、清零及新信号自动重建。
 - 故障用例覆盖丢失下单响应、平仓 ACK 后精确查询、重启交易补录、保护单失败、静默 WebSocket 对账、积压信号优先退出、测试网普通接口路由、账户外订单及 REST 失败锁定。
 - `git diff --check`：通过。Compose 与工作流 YAML 使用 PyYAML 成功解析。本机 Docker Compose 插件不可用，因此未能运行 `docker compose --profile grid-executor config`。

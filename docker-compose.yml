@@ -399,6 +399,7 @@ services:
       - GRID_MAX_OPEN_ORDERS=${GRID_MAX_OPEN_ORDERS:-}
       - GRID_EXPECTED_LEVERAGE=${GRID_EXPECTED_LEVERAGE:-}
       - GRID_TESTNET_WS_BASE=${GRID_TESTNET_WS_BASE:-}
+      - FEISHU_WEBHOOK_GRID=${FEISHU_WEBHOOK_GRID:-}
       - GRID_EXECUTION_DB=/app/data/grid_execution.sqlite3
       - GRID_EXECUTION_LOCK=/app/data/grid_execution.lock
       - GRID_EXECUTION_HEARTBEAT=/app/data/grid_execution_heartbeat.json
