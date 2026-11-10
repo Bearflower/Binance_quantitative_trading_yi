@@ -9,7 +9,7 @@ def test_executor_is_off_by_default():
     settings = ExecutionSettings.from_env({})
     assert settings.mode == "off"
     assert settings.symbol == "ETHUSDT"
-    assert settings.use_unified_account is False
+    assert settings.use_unified_account is True
 
 
 @pytest.mark.parametrize("missing", [
@@ -57,6 +57,7 @@ def test_live_limits_are_positive_and_not_inferred_from_strategy_config():
     settings = ExecutionSettings.from_env(values)
     assert settings.max_margin_usdt == Decimal("100")
     assert settings.max_notional_usdt == Decimal("500")
+    assert settings.use_unified_account is True
 
 
 def test_rejects_unknown_mode_and_symbol():
@@ -64,3 +65,5 @@ def test_rejects_unknown_mode_and_symbol():
         ExecutionSettings.from_env({"GRID_EXECUTION_MODE": "paper"})
     with pytest.raises(ValueError, match="GRID_SYMBOL"):
         ExecutionSettings.from_env({"GRID_SYMBOL": "BTCUSDT"})
+    with pytest.raises(ValueError, match="GRID_EXECUTION_MODE"):
+        ExecutionSettings.from_env({"GRID_EXECUTION_MODE": "testnet"})

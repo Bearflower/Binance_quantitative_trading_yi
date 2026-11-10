@@ -26,7 +26,7 @@ class FakeExchange:
     async def query_order(self, client_id):
         return self.exact.get(client_id)
 
-    async def order_trades(self, order_id):
+    async def order_trades(self, order_id, start_ms, end_ms):
         return self.trades.get(order_id, [])
 
 

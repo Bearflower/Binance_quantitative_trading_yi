@@ -3,8 +3,8 @@ import pytest
 from strategies.grid.execution.stream import user_stream_url
 
 
-def test_live_stream_url_uses_usdm_listen_key_path():
-    assert user_stream_url("live", "abc123") == "wss://fstream.binance.com/ws/abc123"
+def test_live_stream_url_uses_pm_listen_key_path():
+    assert user_stream_url("live", "abc123") == "wss://fstream.binance.com/pm/ws/abc123"
 
 
 def test_testnet_requires_explicit_verified_endpoint():

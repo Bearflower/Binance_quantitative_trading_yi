@@ -18,7 +18,7 @@ class CycleExchange:
         return object()
 
     async def account_info(self):
-        return {"availableBalance": "100", "canTrade": True}
+        return {"totalAvailableBalance": "100", "accountStatus": "NORMAL"}
 
     async def position(self):
         return [{"symbol": "ETHUSDT", "positionSide": "BOTH", "positionAmt": "0"}]

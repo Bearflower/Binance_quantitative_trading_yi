@@ -13,8 +13,8 @@ class FakeRiskExchange:
         self.income_rows = []
 
     async def account_info(self):
-        return {"canTrade": True, "totalMarginBalance": self.equity,
-                "availableBalance": self.equity}
+        return {"accountStatus": "NORMAL", "accountEquity": self.equity,
+                "totalAvailableBalance": self.equity}
 
     async def income(self, start_ms, end_ms):
         return list(self.income_rows)

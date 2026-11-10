@@ -1,4 +1,4 @@
-"""USD-M user data stream with explicit reconnect and REST reconciliation hooks."""
+"""PM user data stream with explicit reconnect and REST reconciliation hooks."""
 
 import asyncio
 import json
@@ -13,7 +13,7 @@ def user_stream_url(mode: str, listen_key: str,
     if not isinstance(listen_key, str) or not listen_key.isalnum():
         raise ValueError("invalid user stream listen key")
     if mode == "live":
-        base = "wss://fstream.binance.com"
+        base = "wss://fstream.binance.com/pm"
     elif mode == "testnet":
         if not testnet_base or not testnet_base.startswith("wss://"):
             raise ValueError("testnet WebSocket endpoint must be verified and explicit")

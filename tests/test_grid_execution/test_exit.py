@@ -51,7 +51,7 @@ class ExitExchange:
                 "status": "NEW" if self.ack_close else "FILLED",
                 "executedQty": "0" if self.ack_close else str(qty)}
 
-    async def order_trades(self, order_id):
+    async def order_trades(self, order_id, start_ms, end_ms):
         return self.trades.get(order_id, [])
 
     async def cancel_stop(self, client_id):

@@ -1,8 +1,7 @@
 """Pure, fail-closed equity risk check for the ETHUSDT order executor.
 
-The caller must fetch account equity and complete transfer evidence from the
-ordinary USD-M endpoints. This module never calls the shared client's
-``get_income_history`` method, which silently returns [] for ordinary accounts.
+The caller must fetch account equity and complete transfer evidence from PM.
+Missing income history is never replaced with an empty list.
 """
 
 from dataclasses import dataclass

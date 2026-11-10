@@ -7,6 +7,7 @@ transitions are added after the reconciliation contract is tested.
 from decimal import Decimal
 import asyncio
 import hashlib
+import time
 
 from .policy import Action, decide
 from .risk import RiskStatus
@@ -149,7 +150,7 @@ class GridEngine:
         try:
             await self.exchange.verify_account(leverage)
             account = await self.exchange.account_info()
-            if Decimal(str(account["availableBalance"])) < plan.max_margin_usdt:
+            if Decimal(str(account["totalAvailableBalance"])) < plan.max_margin_usdt:
                 return self._lock("insufficient free balance")
             if not await self.reconcile():
                 return False
@@ -338,7 +339,9 @@ class GridEngine:
             if not hasattr(self.exchange, "order_trades"):
                 return self._lock("trade backfill unavailable")
             try:
-                trades = await self.exchange.order_trades(int(intent["exchange_order_id"]))
+                trades = await self.exchange.order_trades(
+                    int(intent["exchange_order_id"]), int(intent["created_at_ms"]),
+                    int(time.time() * 1000))
                 for trade in trades:
                     if trade.get("symbol") != "ETHUSDT" or trade.get("side") != intent["side"]:
                         return self._lock("trade ownership mismatch")

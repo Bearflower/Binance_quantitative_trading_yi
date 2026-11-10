@@ -22,7 +22,7 @@ class FakeExchange:
                                Decimal("0.01"), Decimal("5"))
 
     async def account_info(self):
-        return {"canTrade": True, "availableBalance": "100"}
+        return {"accountStatus": "NORMAL", "totalAvailableBalance": "100"}
 
     async def open_orders(self):
         return [dict(row) for row in self.orders.values()

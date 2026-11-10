@@ -28,7 +28,7 @@ class StartExchange:
         return object()
 
     async def account_info(self):
-        return {"canTrade": True, "availableBalance": "100"}
+        return {"accountStatus": "NORMAL", "totalAvailableBalance": "100"}
 
     async def place_limit(self, side, qty, price, client_id):
         self.sent.append(client_id)
@@ -67,6 +67,30 @@ async def test_start_journals_before_exchange_write_and_acks_last(tmp_path):
     assert store.engine_state()["state"] == "ACTIVE"
     assert len(exchange.sent) == 1
     assert store.get_order(exchange.sent[0])["status"] == "NEW"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_pm_zero_available_collateral_blocks_opening(tmp_path):
+    path = tmp_path / "no_collateral.sqlite3"
+    migrate(path)
+    store = DecisionStore(path)
+    exchange = StartExchange()
+
+    async def no_collateral():
+        return {"accountStatus": "NORMAL", "accountEquity": "0",
+                "totalAvailableBalance": "0"}
+
+    exchange.account_info = no_collateral
+    now = 1_800_000_000_000
+    decision = _decision(store, now)
+    plan = GridPlan((PlannedOrder(0, "BUY", Decimal("1900"), Decimal("0.02")),),
+                    (Decimal("1900"), Decimal("1950")), Decimal("38"), Decimal("3.8"))
+    assert await GridEngine(store, exchange).start_grid(
+        decision, plan, RiskAssessment(RiskStatus.ALLOW, ()),
+        leverage=10, now_ms=now) is False
+    assert exchange.sent == []
+    assert store.engine_state()["state"] == "LOCKED"
     store.close()
 
 

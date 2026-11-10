@@ -12,7 +12,7 @@ from strategies.grid.grid_calculator import (CapitalFeasibility, DynamicGridPara
 class ExecutionSettings:
     mode: str = "off"
     symbol: str = "ETHUSDT"
-    use_unified_account: bool = False
+    use_unified_account: bool = True
     api_key: Optional[str] = None
     api_secret: Optional[str] = None
     max_margin_usdt: Optional[Decimal] = None
@@ -25,8 +25,8 @@ class ExecutionSettings:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "ExecutionSettings":
         mode = env.get("GRID_EXECUTION_MODE", "off").strip().lower()
-        if mode not in ("off", "testnet", "live"):
-            raise ValueError("GRID_EXECUTION_MODE must be off, testnet or live")
+        if mode not in ("off", "live"):
+            raise ValueError("GRID_EXECUTION_MODE must be off or live for PM")
         symbol = env.get("GRID_SYMBOL", "ETHUSDT").strip().upper()
         if symbol != "ETHUSDT":
             raise ValueError("GRID_SYMBOL must be ETHUSDT")
@@ -69,7 +69,7 @@ class ExecutionSettings:
             raise ValueError("GRID_EXPECTED_LEVERAGE must be positive") from exc
         if leverage <= 0:
             raise ValueError("GRID_EXPECTED_LEVERAGE must be positive")
-        return cls(mode, symbol, False, key, secret, margin, notional,
+        return cls(mode, symbol, True, key, secret, margin, notional,
                    daily_loss, drawdown, orders, leverage)
 
 

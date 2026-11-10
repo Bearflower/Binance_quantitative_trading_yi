@@ -1,4 +1,4 @@
-"""Build complete ordinary USD-M evidence for the pure risk guard."""
+"""Build complete PM account evidence for the pure risk guard."""
 
 from decimal import Decimal
 
@@ -17,7 +17,7 @@ class RiskTracker:
         start_ms = beijing_day_start_ms(now_ms)
         try:
             account = await self.exchange.account_info()
-            equity = Decimal(str(account["totalMarginBalance"]))
+            equity = Decimal(str(account["accountEquity"]))
             income = await self.exchange.income(start_ms, now_ms)
             if any((not isinstance(row, dict) or row.get("asset") != "USDT"
                     or not isinstance(row.get("time"), int)
