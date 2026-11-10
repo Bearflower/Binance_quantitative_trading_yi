@@ -43,6 +43,16 @@ async def test_publish_verified_snapshot_and_activate_in_one_transaction():
     assert 'WHERE' in queries[1]  # concurrent refresh cannot move watermark backwards
     assert result['report_id'] != 'old'
 
+
+@pytest.mark.asyncio
+async def test_derived_reader_is_enabled_only_by_release_flag(monkeypatch):
+    db = DB()
+    monkeypatch.setenv('LEDGER_DERIVED_ATTRIBUTION_ENABLED', '1')
+    with patch('shared.accounting.published_report.read_monthly_economic_report', AsyncMock(return_value=report())) as reader:
+        result = await read_published_report(db, 'main', 1000, 2000, 'month:1970-01')
+    assert reader.await_args.kwargs['include_derived_attribution'] is True
+    assert result['report_version'] == 'exchange-income-v1-derived-v1'
+
 @pytest.mark.asyncio
 async def test_failed_refresh_retains_last_verified_run_explicitly_stale():
     prior=report(); prior.update(report_id='verified',as_of='1970-01-01T00:00:02+00:00')

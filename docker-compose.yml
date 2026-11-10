@@ -73,6 +73,31 @@ services:
     logging:
       driver: journald
 
+  income-attribution:
+    image: ghcr.io/bearflower/trading-hrs:latest
+    container_name: trading_system-income-attribution
+    profiles: ["attribution"]
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_NAME=trading_platform
+      - DATABASE_USER=trading_user
+    command:
+      - /bin/sh
+      - -c
+      - 'while true; do python -m scripts.reconcile_income_attribution --current-month --apply; sleep 3600; done'
+    networks:
+      - trading-network
+    depends_on:
+      execution-facts-collector:
+        condition: service_healthy
+    logging:
+      driver: journald
+
   hrs-strategy:
     image: ghcr.io/bearflower/trading-hrs:latest
     container_name: trading_system-hrs

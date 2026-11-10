@@ -30,7 +30,9 @@ def month_window_ms(month: str) -> tuple[int, int]:
 
 async def _run(
     month: str, account_id: str, *, include_reviewed_overrides: bool = False,
+    include_derived_attribution: bool = False,
     include_hrs_provenance: bool = False,
+    end_ms_override: int | None = None,
 ) -> int:
     from shared.database import DatabaseManager
 
@@ -38,6 +40,10 @@ async def _run(
     if not password:
         raise RuntimeError("缺少 DATABASE_PASSWORD，未连接数据库")
     start_ms, end_ms = month_window_ms(month)
+    if end_ms_override is not None:
+        if not start_ms < end_ms_override <= end_ms:
+            raise ValueError("end-ms 必须在所选月份内")
+        end_ms = end_ms_override
     db = DatabaseManager(
         host=os.environ.get("DATABASE_HOST", "localhost"),
         port=int(os.environ.get("DATABASE_PORT", "5432")),
@@ -50,6 +56,7 @@ async def _run(
         report = await read_monthly_economic_report(
             db, account_id, start_ms, end_ms,
             include_reviewed_overrides=include_reviewed_overrides,
+            include_derived_attribution=include_derived_attribution,
         )
         if include_hrs_provenance:
             report["hrs_summary_provenance"] = await read_hrs_summary_provenance(
@@ -65,8 +72,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="只读核对收入、手续费与策略归属；不会修改月度分配")
     parser.add_argument("--month", required=True, help="北京时间自然月，YYYY-MM")
     parser.add_argument("--account-id", default=os.environ.get("TRADE_ACCOUNT_ID", "default"))
+    parser.add_argument("--end-ms", type=int, help="只核对至此交易所采集水位（半开区间）")
     parser.add_argument("--use-reviewed-overrides", action="store_true",
                         help="读取已复核的逐事件归属表；需要先部署对应表")
+    parser.add_argument("--use-derived-attribution", action="store_true",
+                        help="读取证据推导的逐事件归属表；需要先部署对应表")
     parser.add_argument("--include-hrs-provenance", action="store_true",
                         help="附加 HRS 汇总来源分布；需要先部署 pnl_source 列")
     args = parser.parse_args()
@@ -74,7 +84,9 @@ def main() -> None:
         code = asyncio.run(_run(
             args.month, args.account_id,
             include_reviewed_overrides=args.use_reviewed_overrides,
+            include_derived_attribution=args.use_derived_attribution,
             include_hrs_provenance=args.include_hrs_provenance,
+            end_ms_override=args.end_ms,
         ))
     except (ValueError, RuntimeError) as exc:
         print(f"核对失败：{exc}", file=sys.stderr)

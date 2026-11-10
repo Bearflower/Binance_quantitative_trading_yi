@@ -294,7 +294,9 @@ function updateOverview(data) {
     totalPnl.className = 'stat-value ' + (pnlValue >= 0 ? 'positive' : 'negative');
 
     const winRate = document.querySelector('#win-rate');
-    if (winRate) winRate.textContent = formatPercent(data.win_rate);
+    if (winRate) winRate.textContent = data.win_rate == null ? '待核算' : formatPercent(data.win_rate);
+    const winRateSub = document.querySelector('#win-rate-sub');
+    if (winRateSub) winRateSub.textContent = data.win_rate == null ? '平仓序列未核对' : '已核对平仓';
 
     const realized = document.querySelector('#realized-pnl');
     if (realized) {
@@ -308,18 +310,20 @@ function updateOverview(data) {
         unrealized.className = 'stat-value ' + (unrealizedValue >= 0 ? 'positive' : 'negative');
     }
 
-    // 年化夏普率（可为 null → '--'）
+    // 绩效序列尚未按交易所口径核对时，明确说明原因，不把旧口径数值混入。
     const sharpeEl = document.querySelector('#total-sharpe');
     if (sharpeEl) {
         const v = data.total_sharpe;
-        sharpeEl.textContent = (v == null || Number.isNaN(v)) ? '--' : Number(v).toFixed(2);
+        sharpeEl.textContent = (v == null || Number.isNaN(Number(v))) ? '待核算' : Number(v).toFixed(2);
         sharpeEl.className = 'stat-value' + ((v != null && !Number.isNaN(v) && v > 0) ? ' positive' : '');
     }
-    // 最大回撤（可为 null → '--'；非 null 时显示负百分比）
+    const sharpeSub = document.querySelector('#sharpe-sub');
+    if (sharpeSub) sharpeSub.textContent = data.total_sharpe == null ? '净值序列未核对' : 'Sharpe';
+    // 最大回撤非 null 时显示负百分比。
     const ddEl = document.querySelector('#total-max-drawdown');
     if (ddEl) {
         const v = data.total_max_drawdown;
-        ddEl.textContent = (v == null || Number.isNaN(v)) ? '--' : `-${(Number(v) * 100).toFixed(1)}%`;
+        ddEl.textContent = (v == null || Number.isNaN(Number(v))) ? '待核算' : `-${(Number(v) * 100).toFixed(1)}%`;
         ddEl.className = 'stat-value negative';
     }
     // 回撤/夏普的统计窗口（滚动回溯窗口，澄清"月度≠本自然月"）
@@ -327,7 +331,7 @@ function updateOverview(data) {
     if (ddSub) {
         ddSub.textContent = formatPerfWindow(
             data.total_perf_window_start, data.total_perf_window_end, data.total_perf_sample_count
-        ) || 'Max DD';
+        ) || (data.total_max_drawdown == null ? '净值序列未核对' : 'Max DD');
     }
 }
 
@@ -358,7 +362,10 @@ function updateStrategyCards(strategies) {
         const card = Array.from(document.querySelectorAll('.strategy-card')).find(item => item.dataset.strategy === strategy.id);
         if (!card) {
             const row = document.createElement('p');
-            row.textContent = `${strategy.name} · 已核实期间净收益 ${formatNumber(strategy.total_pnl)} USDT · 已归属观察金额 ${formatNumber(strategy.observed_pnl)} USDT`;
+            const pnlText = strategy.total_pnl == null
+                ? `已归属部分 ${strategy.observed_pnl == null ? '无样本' : formatNumber(strategy.observed_pnl)} USDT`
+                : `已核实净收益 ${formatNumber(strategy.total_pnl)} USDT`;
+            row.textContent = `${strategy.name} · ${pnlText}`;
             extraOwners.appendChild(row);
             return;
         }
@@ -367,15 +374,26 @@ function updateStrategyCards(strategies) {
         name.textContent = strategy.name;
 
         const pnl = card.querySelector('[data-metric="pnl"] .value');
-        const pnlValue = parseFloat(strategy.total_pnl);
-        pnl.textContent = formatNumber(pnlValue);
-        pnl.className = 'value ' + (pnlValue >= 0 ? 'positive' : 'negative');
+        const partial = strategy.total_pnl == null;
+        const shownPnl = partial ? strategy.observed_pnl : strategy.total_pnl;
+        const pnlValue = shownPnl == null ? null : parseFloat(shownPnl);
+        const label = card.querySelector('[data-metric="pnl"] .label');
+        if (label) label.textContent = partial ? '已归属部分' : '已核实净收益';
+        pnl.textContent = pnlValue == null || isNaN(pnlValue) ? '无样本' : formatNumber(pnlValue);
+        pnl.className = 'value' + (pnlValue == null || isNaN(pnlValue) ? '' : ' ' + (pnlValue >= 0 ? 'positive' : 'negative'));
+        pnl.title = partial ? '仅含已明确归属的交易所收入；未归属金额保留在账户总收益中' : '';
 
         const winRate = card.querySelector('[data-metric="win_rate"] .value');
-        if (winRate) winRate.textContent = formatPercent(strategy.win_rate);
+        if (winRate) {
+            winRate.textContent = strategy.win_rate == null ? '待核算' : formatPercent(strategy.win_rate);
+            winRate.title = strategy.win_rate == null ? '缺少已核对的完整平仓交易序列' : '';
+        }
 
         const orderCount = card.querySelector('[data-metric="order_count"] .value');
-        if (orderCount) orderCount.textContent = strategy.order_count?.toLocaleString() ?? '—';
+        if (orderCount) {
+            orderCount.textContent = strategy.order_count?.toLocaleString() ?? '待核对';
+            orderCount.title = strategy.order_count == null ? '策略订单归属尚未核对完整' : '';
+        }
 
         // 持仓量 / 持仓保证金（无上报时后端回 0，展示 0 / 0.00 保持布局稳定）
         const openCount = card.querySelector('[data-metric="open_position_count"] .value');
@@ -394,14 +412,16 @@ function updateStrategyCards(strategies) {
         const strSharpe = card.querySelector('[data-metric="sharpe"] .value');
         if (strSharpe) {
             const v = strategy.sharpe;
-            strSharpe.textContent = (v == null || Number.isNaN(v)) ? '--' : Number(v).toFixed(2);
+            strSharpe.textContent = (v == null || Number.isNaN(Number(v))) ? '待核算' : Number(v).toFixed(2);
+            strSharpe.title = v == null ? '策略净值序列尚未按交易所口径核对' : '';
             strSharpe.className = 'value' + ((v != null && !Number.isNaN(v) && v > 0) ? ' positive' : '');
         }
         // 策略级最大回撤
         const strDD = card.querySelector('[data-metric="max_drawdown"] .value');
         if (strDD) {
             const v = strategy.max_drawdown;
-            strDD.textContent = (v == null || Number.isNaN(v)) ? '--' : `-${(Number(v) * 100).toFixed(1)}%`;
+            strDD.textContent = (v == null || Number.isNaN(Number(v))) ? '待核算' : `-${(Number(v) * 100).toFixed(1)}%`;
+            strDD.title = v == null ? '策略净值序列尚未按交易所口径核对' : '';
             strDD.className = 'value negative';
         }
         // 策略级回撤的统计窗口（滚动回溯窗口，仅显示"近N天"，不展示具体日期）
