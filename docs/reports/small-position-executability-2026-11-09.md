@@ -21,4 +21,4 @@
 - 2026-11-10：在独立本地 `risk_tests` PostgreSQL 中完成持久预留、revision 绑定、HRS 整笔 TP1 出场几何和 `exit_ratios` JSONB 迁移幂等验证；数据库风险测试 74 项通过。
 - 全量 HRS 历史套件在本分支为 10 failed、446 passed、15 errors；未修改主工作区为 21 failed、372 passed、15 errors。余下错误集中于旧形态/市场数据夹具及本机 Python 3.9 事件循环行为；不能把全量套件称为通过。与本次变更直接相关的 HRS 执行、持仓恢复、风险和发布测试已单独通过。
 - 生产 ONUSDT 7.23 分是 `semi_emm` 的 `shadow_scoring` 信号，原设计不会下单。现有 HRS 全局 `monitor_only` 又在影子状态记录之前拒绝，导致 `hrs_signals.resolution` 留空；已调整为先归类影子，再对实盘入场执行政策门禁，并在周期通知区分“评分信号 / 实盘开仓 / 影子不下单 / 其他未开仓”。
-- 本文件所述代码仅在隔离分支，尚未部署。生产 HRS 仍为 `monitor_only`；激进版仍运行上次部署的 BNB 两份额处理。新的 `strategy-risk-followup` CLCI 路径限定激进版和 HRS 两个镜像、当前生产 pin、出场比例列迁移、发布前后只读交易所门禁和资金分配哈希。镜像部署后仍须单独把 HRS 政策从观察态切换到有期限的缩量态；切换前后检查政策 revision、持仓、订单和保护单。`semi_emm` 影子模式仍不下单。不得从测试通过直接推断实盘盈利。
+- 2026-11-10 已通过 `strategy-risk-followup` 限定 CLCI 路径发布激进版和 HRS 两镜像，并单独以审计事务将 HRS 激活为有期限 `reduced`；详见 `hrs-small-position-release-2026-11-10.md`。`semi_emm` 影子模式仍不下单。实际成交与收益效果仍待未来样本验收。
