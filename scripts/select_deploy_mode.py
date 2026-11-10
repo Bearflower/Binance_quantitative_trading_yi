@@ -24,6 +24,7 @@ SUCCESSOR_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105"
 SUCCESSOR_RECOVERY_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105-recovery-1"
 RISK_FOLLOWUP_MARKER = ".github/deploy-modes/strategy-small-position-followup-20261110"
 STOP_FOLLOWUP_MARKER = ".github/deploy-modes/aggressive-stop-followup-20261109"
+AI_TUNER_TRIAL_MARKER = ".github/deploy-modes/ai-tuner-trial-20261110"
 ZERO_SHA = "0" * 40
 
 
@@ -41,9 +42,12 @@ def select_deploy_mode(
     if not base or base == ZERO_SHA:
         raise DeployModeError("push base is missing or zero")
 
-    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER}]
+    marker_changes = [(status, path) for status, path in changes
+                      if path.startswith(".github/deploy-modes/")]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER}:
+        raise DeployModeError("unrecognized deployment marker")
     if any(path == REMEDIATION_MARKER for _, path in marker_changes):
         if marker_changes != [("A", REMEDIATION_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
             raise DeployModeError("remediation requires one added marker and an exact push base")
@@ -60,6 +64,10 @@ def select_deploy_mode(
         if marker_changes != [("A", STOP_FOLLOWUP_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
             raise DeployModeError("STOP followup requires one added marker and an exact push base")
         return "strategy-stop-followup"
+    if any(path == AI_TUNER_TRIAL_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", AI_TUNER_TRIAL_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
+            raise DeployModeError("AI Tuner trial requires one added marker and an exact push base")
+        return "ai-tuner-trial"
     if marker_changes and marker_changes[0][0] == "A":
         if marker_changes[0][1] == EXECUTION_FACTS_MARKER:
             return "execution-facts-first-create"
@@ -101,7 +109,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup"])
+    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup","ai-tuner-trial"])
     return parser.parse_args(argv)
 
 
@@ -111,7 +119,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.event_name != "push":
             from scripts.ledger_risk_manifest import MANIFEST
             exists = subprocess.run(["git","cat-file","-e",f"{args.head}:{MANIFEST}"],capture_output=True).returncode == 0
-            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup"):
+            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup", "ai-tuner-trial"):
                 raise DeployModeError("manual remediation selection required for this release tree")
             mode = args.manual_mode if args.manual_mode != "auto" else "full"
         else:
@@ -158,6 +166,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             try:
                 if args.event_name == "push" and args.base != BASE:
                     raise DeployModeError("STOP followup push must start from reviewed base")
+                manifest = json.loads(_git("show", f"{args.head}:{MANIFEST}"))
+                validate_tree(manifest, _read_changes(BASE, args.head),
+                              lambda path: _git("show", f"{args.head}:{path}").encode())
+            except (ValueError, KeyError, TypeError) as exc:
+                raise DeployModeError(str(exc)) from exc
+        if mode == "ai-tuner-trial":
+            from scripts.ai_tuner_trial_manifest import BASE, MANIFEST, validate_tree
+            try:
+                if args.event_name == "push" and args.base != BASE:
+                    raise DeployModeError("AI Tuner trial push must start from reviewed base")
                 manifest = json.loads(_git("show", f"{args.head}:{MANIFEST}"))
                 validate_tree(manifest, _read_changes(BASE, args.head),
                               lambda path: _git("show", f"{args.head}:{path}").encode())
