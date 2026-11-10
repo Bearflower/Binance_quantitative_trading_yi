@@ -19,7 +19,7 @@
 
 先只读核验生产子账号：确认账号身份、API 权限和服务器 IP 限制；读取 `exchangeInfo`、单向/逐仓/杠杆、余额、ETHUSDT 仓位、普通挂单、条件单及近期成交。任何账户事实、权限或数据响应与预期不符时，不开启执行器。
 
-2026-11-10 首次只读核验：本机及现有交易服务器访问普通 U 本位合约账户接口均返回 `-2015`。服务器访问 API 权限接口成功，显示 `enableReading=true`、`ipRestrict=true`、`enableFutures=false`、`enablePortfolioMarginTrading=true`、`enableWithdrawals=false`。因此当前密钥与执行器要求的普通 U 本位合约账户模式不符；未核实合约余额、仓位和订单，也未提交任何交易请求。后续需先确认使用普通合约子账号，还是重新设计组合保证金适配器。
+2026-11-10 首次只读核验：本机及现有交易服务器访问普通 U 本位合约账户接口均返回 `-2015`。服务器访问 API 权限接口成功，显示 `enableReading=true`、`ipRestrict=true`、`enableFutures=false`、`enablePortfolioMarginTrading=true`、`enableWithdrawals=false`。因此当前密钥与执行器要求的普通 U 本位合约账户模式不符；未核实合约余额、仓位和订单，也未提交任何交易请求。用户已确认继续使用普通 U 本位合约子账号，等待该账号的新 API；核验时需确认起步资金确实位于该子账号的 U 本位合约钱包。
 
 只读核验通过后，再按单独确认的资金与损失硬限额，进行有人值守的小额实盘验收。逐项记录脱敏的请求时间、订单 ID、交易所回执和账本状态，验证 GTX 挂单、成交配对、保护单可见性、撤单竞争、`reduceOnly` 平仓、用户数据流与 REST 一致性，以及重连后的精确成交补录。任一环节结果不确定时停止新增敞口并按账本对账。
 
