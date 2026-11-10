@@ -4,13 +4,13 @@
 
 ## 当前生产边界
 
-- 代码发布 pin：`0c62740bb8c82c7003fbf71d688c8222951b1a0d`。HRS 和激进版小仓位修复已通过限定 CI 上线；两容器健康，生产发布与数据库迁移证据见 `hrs-small-position-release-2026-11-10.md`。
-- 风险政策：激进版活动 revision 2、HRS revision 3，均为 `reduced`、乘数 0.5、禁加仓；原版与新币为 revision 2 `capped`，自动分配冻结。四项政策到期时间均为 2026-11-12 10:54:46 北京时间。2026-11-10 再次只读核对激进版与 HRS 生产政策，模式、revision 和截止时间一致。
+- 代码发布 pin：`503f7e562c9123eac14b6dfaba9028cd20fef247`（AI Tuner 限定镜像发布）；HRS 和激进版小仓位修复仍来自前驱 pin `0c62740bb8c82c7003fbf71d688c8222951b1a0d`。AI Tuner 发布仅更新其自身容器，发布 state 为 `complete`、pin 为 `active`；HRS 和激进版容器健康，交易所只读门禁通过。
+- 风险政策：2026-11-10 11:37:20 北京时间原额度续期后，激进版 revision 3、HRS revision 4，均为 `reduced`、乘数 0.5、禁加仓；原版与新币 revision 3 `capped`，自动分配冻结。四项新到期时间均为 **2026-11-13 11:37:20 北京时间**。生产签名交易所门禁、数据库活动指针及审计行已复核，详情见 `entry-risk-policy-renewal-2026-11-10.md`。
 - 127 笔未归属收入事件由账户所有者另行处理；本整改不猜测归属。
 
 ## 未完成的七项
 
-### AI Tuner 缩量试跑考核交接（未完成）
+### AI Tuner 缩量试跑考核交接（定时任务已上线，完整评估仍未完成）
 
 用户已决定由 AI Tuner 执行 HRS 与激进版的每日巡检、每周实盘评估。设计与数据缺口见 [2026-11-10 设计稿](../superpowers/specs/2026-11-10-ai-tuner-reduced-trial-evaluation-design.md)。**只读评估器已由限定 CI `42769827440` 发布**，生产 pin `503f7e56` active、state complete，只有 AI Tuner 容器重建且 healthy；生产无通知影子运行已生成两策略报告，证据见 [发布验收](ai-tuner-reduced-trial-release-2026-11-10.md)。旧 `trade_records.realized_pnl` 健康提醒已对这两策略让位。真实信号到成交的完整漏斗、PM 持仓保证金审计、策略权益与现金流曲线、压力损失及冻结的放宽阈值仍缺失，周结论保持 `BLOCKED_DATA`，绝不自动放宽。首次真实日周定时执行及飞书送达尚待验收；现有 Codex 日巡检继续负责政策到期告警，直到送达验收完成。
 
@@ -48,3 +48,6 @@
 - 2026-11-09 21:45 北京时间：提交 `af8d99ba` 已经 CI `42627325772` 成功发布；生产 pin `active`、发布 state `complete`，只变更激进版容器，数据库 STOP 两张证据表存在。发布后交易所/政策只读门禁 `ok=true`，空仓零挂单，资金分配哈希未变。已部署代码对 BNB 旧 STOP 的只读真实核验返回 `true`。定向测试 103 passed、52 skipped；旧大套件 6 个历史 mock 失败未作为发布通过依据。下一次 BNB 合格信号是否成交，以及真实 STOP 冷却行为，仍待未来生产样本验收。
 - 2026-11-10 早间：ONUSDT 7.23 分信号经生产日志核实为 `semi_emm` 的 `shadow_scoring`，设计上不下单；生产 HRS 政策仍为 `monitor_only`。旧入口先执行全局政策返回，致影子信号 `resolution` 为空且推送只写“做空信号: 1”。隔离分支已调整影子分类顺序及周期结果展示。激进版与 HRS 的全币种小仓位可执行性修复、HRS 整笔 TP1 持久出场方案已提交 `87de83ec`；旧测试夹具修正后 HRS 110 passed，独立本地 PostgreSQL 风险/迁移测试 74 passed。新的双镜像限定 CI 发布及生产验收进行中，HRS 仍未解封。
 - 2026-11-10 09:11 北京时间左右：`0c62740b` 经 CLCI `42724545653` 成功上线，生产 pin `active`、state `complete`，仅激进版/HRS 两容器更新且 healthy；生产 `hrs.hrs_positions.exit_ratios` 为 JSONB，前后交易所只读门禁空仓零挂单，资金分配哈希未变。随后经本地预演与哈希核对的原子事务把 HRS 从 revision 2 `monitor_only` 激活为 revision 3 `reduced`：乘数 0.5、总保证金上限 26.18 USDT、禁加仓，到期沿用 2026-11-12 10:54:46 北京时间；其他三策略政策与资金分配未改，审计行齐全。用户所示 ONUSDT 22:35 UTC 信号 `id=5682` 确认为 `semi_emm` 影子且同窗无交易记录，已按精确条件改为 `resolved/shadow`。剩余 202 条历史同类未结案影子行待核；真实非影子小仓位成交、保护单与盈亏效果尚无新样本，继续待验收。
+- 2026-11-10 11:37:20 北京时间：四策略按原模式、原绝对额度与 72 小时有效期受控续期，激进版变 revision 3、HRS 变 revision 4、原版和新币变 revision 3。预演曾因新的 ETH 真实仓位预留被拦下；交易所门禁核实 0.012 ETH 仓位有全量 STOP 后，仅允许该精确旧版预留继续占用，未释放或改写。数据库备份、回滚预演、CAS 提交、四条审计和提交后交易所验收详见 `entry-risk-policy-renewal-2026-11-10.md`。真实成交后的保护、平仓与收益效果仍待未来证据。
+- 2026-11-10 14:40 北京时间：AI Tuner 只读试跑评估经限定 CI `42769827440` 上线；生产发布 state `complete`、pin `active`，仅 AI Tuner 容器更新且健康。调度器注册“缩量试跑日巡检”和“缩量试跑周评估”；影子验收给激进版/HRS 的结论均为 `BLOCKED_DATA`。发布后签名交易所门禁 `ok=true`，当时 ETHUSDT 0.012 与新出现的 SOLUSDT 0.3 仓位均有保护，资金分配哈希不变。该记录不证明未来定时通知送达或策略盈利。
+- 2026-11-10：生产只读盘点 `hrs.hrs_signals` 未结案行：`semi_emm/shadow_scoring` 202 条，`emm/shadow_scoring` 2 条，`standard` 76 条，更早缺来源字段 2218 条。`trading.trade_records` 无 `signal_id` 外键，不能仅凭同币种或时间窗断言某信号已交易或未交易；这次未批量改写 202 条历史状态。后续需建立稳定信号到订单/批次关联，或逐条核对可证明无订单的闭合窗口，再结案。
