@@ -39,3 +39,9 @@
 需要停止自动写入时：`systemctl disable --now income-attribution-20261110.timer`。需要回退看板读模型时，在 `/root/trading_system` 执行 `flock -n .deploy_tmp/compose_deploy.lock docker compose -f docker-compose.yml -f .releases/funding-auto-attribution-20261109/dde4b068/dashboard-rollback.yml up -d --no-deps --pull never dashboard-api`。仅在旧容器账户过渡方案不再适用时，以迁移管理员执行 `ALTER TABLE btc_eth.condition_orders ALTER COLUMN account_id DROP DEFAULT`。已产生的交易所事实、人工归属和有效自动证据不通过删除回退。
 
 看板本次使用固定镜像与发布目录挂载。未来标准 CI/CD 若不包含本分支文件和归属开关，重新部署看板会回到旧读模型；合并代码到主干及更新标准部署配置是后续常规发布必须完成的持久化步骤。当前 systemd 定时任务独立于看板容器重建，但仍依赖上述发布目录和旧采集镜像摘要。
+
+## 主干归并准备（待审核合并）
+
+集成分支 `codex/funding-auto-attribution-main` 已将看板开关写入主 compose，并加入 `income-attribution` 定向部署模式。该模式要求本次专用标记和固定的已审核主干基点；仅构建 `hrs` 与 `dashboard-api` 两份按提交 SHA 命名的镜像，发布时以不可变摘要切换看板和由仓库维护的每小时 systemd 任务。发布脚本在 `compose_deploy.lock` 内执行，核对原有发布覆盖文件与策略镜像锁，检查新看板月度账本版本以及五个交易策略容器 ID；失败时恢复旧看板覆盖配置和旧定时任务。它不会启动 `income-attribution` Compose profile，也不会重建交易策略容器。
+
+主干合并前须审核本次推送基点、GitHub Actions 构建决策、两份镜像摘要及定向发布脚本。合并后检查定向发布记录、看板月度 API、两套定时任务的启停状态和策略容器 ID。此段描述的是准备好的发布流程；本报告前文的生产验收仍对应旧的临时发布，不能据此声称主干流程已在线执行。

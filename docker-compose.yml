@@ -697,6 +697,7 @@ services:
       - DB_NAME=${DB_NAME:-trading_platform}
       - DB_USER=${DB_USER:-trading_user}
       - DB_PASSWORD=${DB_PASSWORD:-trading_password_2024}
+      - LEDGER_DERIVED_ATTRIBUTION_ENABLED=1
     networks:
       - trading-network
     depends_on:

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run verified exchange income attribution hourly
+
+[Timer]
+OnCalendar=*:15
+Persistent=true
+Unit=income-attribution.service
+
+[Install]
+WantedBy=timers.target
