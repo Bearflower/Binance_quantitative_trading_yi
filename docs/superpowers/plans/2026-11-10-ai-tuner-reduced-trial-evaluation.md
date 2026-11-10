@@ -42,5 +42,5 @@
 
 - [x] Run full relevant unit tests, syntax check, and diff check; live database contract validation remains pending.
 - [x] Read the current production pin and predecessor completion state before any release.
-- [ ] Use the scoped CLCI path if an active release pin blocks generic deployment; verify exact image, scheduler jobs, health, one manual dry run, report provenance, and no policy or allocation change.
+- [x] Use the scoped CLCI path; verify exact image, scheduler startup, health, one read-only shadow run, report provenance, and no policy or allocation change. See `docs/reports/ai-tuner-reduced-trial-release-2026-11-10.md`.
 - [ ] Keep existing Codex expiry patrol until the new AI Tuner alert is proven delivered, then update tracker and handoff.

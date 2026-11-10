@@ -12,7 +12,7 @@
 
 ### AI Tuner 缩量试跑考核交接（未完成）
 
-用户已决定由 AI Tuner 执行 HRS 与激进版的每日巡检、每周实盘评估。设计与数据缺口见 [2026-11-10 设计稿](../superpowers/specs/2026-11-10-ai-tuner-reduced-trial-evaluation-design.md)。隔离分支已实现只读评估器、北京时间日周定时、交易所收入核对、政策/预留/保护单检查、报告落盘与通知去重；旧 `trade_records.realized_pnl` 健康提醒对这两策略让位。**该实现尚未发布到生产**：当前活动 release pin 阻断通用 CI，需单独限定发布 AI Tuner 镜像并验收。真实信号到成交的完整漏斗、策略权益与现金流曲线、压力损失及冻结的放宽阈值仍缺失，周结论保持 `BLOCKED_DATA`，绝不自动放宽。现有 Codex 日巡检继续负责政策到期告警，直到 AI Tuner 影子运行和通知送达验收完成。
+用户已决定由 AI Tuner 执行 HRS 与激进版的每日巡检、每周实盘评估。设计与数据缺口见 [2026-11-10 设计稿](../superpowers/specs/2026-11-10-ai-tuner-reduced-trial-evaluation-design.md)。**只读评估器已由限定 CI `42769827440` 发布**，生产 pin `503f7e56` active、state complete，只有 AI Tuner 容器重建且 healthy；生产无通知影子运行已生成两策略报告，证据见 [发布验收](ai-tuner-reduced-trial-release-2026-11-10.md)。旧 `trade_records.realized_pnl` 健康提醒已对这两策略让位。真实信号到成交的完整漏斗、PM 持仓保证金审计、策略权益与现金流曲线、压力损失及冻结的放宽阈值仍缺失，周结论保持 `BLOCKED_DATA`，绝不自动放宽。首次真实日周定时执行及飞书送达尚待验收；现有 Codex 日巡检继续负责政策到期告警，直到送达验收完成。
 
 | 编号 | 事项 | 状态 | 已有证据或已上线内容 | 下一步 | 完成条件 |
 |---|---|---|---|---|---|
