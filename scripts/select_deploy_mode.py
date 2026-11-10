@@ -24,6 +24,8 @@ SUCCESSOR_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105"
 SUCCESSOR_RECOVERY_MARKER = ".github/deploy-modes/strategy-risk-successor-20261105-recovery-1"
 RISK_FOLLOWUP_MARKER = ".github/deploy-modes/strategy-small-position-followup-20261110"
 STOP_FOLLOWUP_MARKER = ".github/deploy-modes/aggressive-stop-followup-20261109"
+INCOME_ATTRIBUTION_MARKER = ".github/deploy-modes/income-attribution-20261110"
+INCOME_ATTRIBUTION_BASE = "6821072aef1a021f3f2920e7c84fc07b09d21454"
 ZERO_SHA = "0" * 40
 
 
@@ -41,9 +43,13 @@ def select_deploy_mode(
     if not base or base == ZERO_SHA:
         raise DeployModeError("push base is missing or zero")
 
-    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER}]
+    marker_changes = [(status, path) for status, path in changes if path in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, INCOME_ATTRIBUTION_MARKER}]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
+    if any(path == INCOME_ATTRIBUTION_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", INCOME_ATTRIBUTION_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
+            raise DeployModeError("income attribution requires one added marker and an exact push base")
+        return "income-attribution"
     if any(path == REMEDIATION_MARKER for _, path in marker_changes):
         if marker_changes != [("A", REMEDIATION_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
             raise DeployModeError("remediation requires one added marker and an exact push base")
@@ -96,6 +102,32 @@ def _read_changes(base: str, head: str) -> list[tuple[str, str]]:
     return changes
 
 
+def _validate_income_scope(base: str, changes: list[tuple[str, str]]) -> None:
+    if base != INCOME_ATTRIBUTION_BASE:
+        raise DeployModeError("income attribution push must start from reviewed main")
+    exact = {
+        INCOME_ATTRIBUTION_MARKER, ".github/workflows/deploy.yml", "docker-compose.yml",
+        "dashboard/frontend/js/main.js", "shared/condition_orders.py",
+        "database/postgres/init-scripts/19-derived-income-attribution.sql",
+        "database/postgres/migrations/2026-11-09-derived-income-attribution.sql",
+        "scripts/audit_algo_attribution.py", "scripts/reconcile_income_attribution.py",
+        "scripts/report_economic_ledger.py", "scripts/select_deploy_mode.py",
+        "scripts/render_remote_deploy.py", "scripts/remote_deploy_runtime.sh",
+        "scripts/package_income_attribution_release.py",
+        "scripts/scoped_income_attribution_release.py", "scripts/run_income_attribution.sh",
+        "deployment/systemd/income-attribution.service",
+        "deployment/systemd/income-attribution.timer",
+    }
+    if ("A", INCOME_ATTRIBUTION_MARKER) not in changes:
+        raise DeployModeError("income attribution marker not added")
+    for status, path in changes:
+        if status not in {"A", "M"} or not (
+            path in exact or path.startswith("shared/accounting/")
+            or path.startswith("tests/") or path.startswith("docs/")
+        ):
+            raise DeployModeError("income attribution scope contains unreviewed path: " + path)
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--event-name", required=True)
@@ -119,11 +151,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise DeployModeError("push base is missing or zero")
             _require_commit(args.base)
             _require_commit(args.head)
-            mode = select_deploy_mode(
-                args.event_name,
-                args.base,
-                _read_changes(args.base, args.head),
-            )
+            changes = _read_changes(args.base, args.head)
+            mode = select_deploy_mode(args.event_name, args.base, changes)
+            if mode == "income-attribution":
+                _validate_income_scope(args.base, changes)
         if mode == "ledger-risk-remediation":
             from scripts.ledger_risk_manifest import MANIFEST,validate_tree,ReleaseBlocked
             try:

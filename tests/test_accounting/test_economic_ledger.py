@@ -125,6 +125,34 @@ def test_reviewed_funding_override_requires_exact_event_identity():
     assert report["unattributed"][0]["reason"] == "override_identity_mismatch"
 
 
+def test_derived_funding_matches_identity_and_manual_conflict_fails_closed():
+    income = _income(3, "FUNDING_FEE", "-0.1")
+    derived = {**income, "strategy": "hrs", "method": "position_replay",
+               "evidence": {"baseline": "flat-1"}, "algorithm_version": "v1"}
+    report = build_economic_report([], [income], [], derived_attributions=[derived])
+    assert report["by_strategy"]["hrs"]["funding_usdt"] == "-0.1"
+    assert report["unattributed"] == []
+    bad = {**derived, "income": Decimal("-0.2")}
+    report = build_economic_report([], [income], [], derived_attributions=[bad])
+    assert report["unattributed"][0]["reason"] == "derived_identity_mismatch"
+    manual = {**income, "strategy": "btc_eth", "reviewed_by": "operator",
+              "evidence": {"workbook": "reviewed"}}
+    report = build_economic_report([], [income], [], [manual], [derived])
+    assert report["by_strategy"]["btc_eth"]["funding_usdt"] == "-0.1"
+    assert report["attribution_conflicts"][0]["tran_id"] == "3"
+    assert report["attribution_conflicts"][0]["manual_strategy"] == "btc_eth"
+    assert report["attribution_conflicts"][0]["derived_strategy"] == "hrs"
+
+
+def test_direct_order_owner_conflict_with_derived_is_visible():
+    income = _income(1, "REALIZED_PNL", "5", 11)
+    derived = {**income, "strategy": "btc_eth", "method": "exact_order",
+               "evidence": {"trade_id": "11"}, "algorithm_version": 1}
+    report = build_economic_report([_fill()], [income], [_owner()],
+                                   derived_attributions=[derived])
+    assert report["attribution_conflicts"][0]["reason"] == "direct_owner_conflict"
+
+
 def test_non_usdt_income_is_separate_from_usdt_bridge():
     report = build_economic_report(
         [_fill()], [_income(1, "COMMISSION", "-0.2", 11, "BNB")],
@@ -223,6 +251,23 @@ async def test_reader_loads_reviewed_overrides_only_when_explicitly_enabled():
     assert report["by_strategy"]["hrs"]["funding_usdt"] == "-0.1"
     assert len(db.fetch_all.await_args_list) == 5
     assert "event_time_utc" in db.fetch_all.await_args_list[0].args[0].split("FROM")[0]
+
+
+@pytest.mark.asyncio
+async def test_reader_derived_conflict_blocks_complete_report():
+    db = type("DB", (), {})()
+    income = _income(3, "FUNDING_FEE", "-0.1")
+    manual = {**income, "strategy": "hrs", "reviewed_by": "operator", "evidence": {"id": 1}}
+    derived = {**income, "strategy": "btc_eth", "method": "position_replay",
+               "algorithm_version": "v1", "evidence": {"id": 2}}
+    db.fetch_all = AsyncMock(side_effect=[[income], [], [], [], [manual], [derived]])
+    report = await read_monthly_economic_report(
+        db, "main", 0, 100, include_reviewed_overrides=True,
+        include_derived_attribution=True,
+    )
+    assert report["attribution_conflicts"]
+    assert report["strategy_attribution_complete"] is False
+    assert report["id_match_and_coverage_complete"] is False
 
 
 def test_cli_month_window_is_beijing_calendar_month():

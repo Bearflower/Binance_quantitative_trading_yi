@@ -42,10 +42,16 @@ class Exchange:
         return dict(symbol=symbol, clientOrderId=client_id, status=self.status,
                     executedQty='0.34')
 
-    async def get_position(self, symbol):
+    async def get_position(self, symbol=None):
         return self.positions
 
-    async def get_open_orders(self):
+    async def get_um_account_positions(self):
+        return self.positions
+
+    async def get_open_orders(self, symbol=None):
+        return []
+
+    async def get_open_algo_orders(self, symbol):
         return []
 
 

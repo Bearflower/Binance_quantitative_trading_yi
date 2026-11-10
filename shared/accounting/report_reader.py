@@ -80,11 +80,18 @@ _OVERRIDE_SQL = (
     "FROM trading.reviewed_income_attribution "
     "WHERE account_id = $1 AND tran_id = ANY($2::bigint[])"
 )
+_DERIVED_SQL = (
+    "SELECT account_id, tran_id, strategy, symbol, income_type, income, asset, "
+    "event_time_utc, method, evidence, algorithm_version "
+    "FROM trading.derived_income_attribution "
+    "WHERE account_id = $1 AND tran_id = ANY($2::bigint[])"
+)
 
 
 async def read_monthly_economic_report(
     db: Any, account_id: str, start_ms: int, end_ms: int,
     *, include_reviewed_overrides: bool = False,
+    include_derived_attribution: bool = False,
 ) -> dict:
     """只执行 SELECT；缺游标或未归属时报告不具备策略净额验收资格。"""
     if start_ms >= end_ms:
@@ -114,7 +121,13 @@ async def read_monthly_economic_report(
         overrides = [dict(row) for row in await db.fetch_all(
             _OVERRIDE_SQL, account_id, tran_ids,
         )]
-    report = build_economic_report(fills, incomes, owners, overrides)
+    derived = []
+    if include_derived_attribution:
+        tran_ids = sorted({int(row["tran_id"]) for row in incomes})
+        derived = [dict(row) for row in await db.fetch_all(
+            _DERIVED_SQL, account_id, tran_ids,
+        )]
+    report = build_economic_report(fills, incomes, owners, overrides, derived)
     income_keys = {
         (str(row["symbol"]), str(row["trade_id"]), str(row["income_type"]))
         for row in incomes if row.get("trade_id") is not None
@@ -144,12 +157,13 @@ async def read_monthly_economic_report(
         "start_ms": start_ms,
         "end_ms": end_ms,
         "account_coverage_complete": account_complete,
-        "strategy_attribution_complete": account_complete and not gaps and not report["unattributed"],
+        "strategy_attribution_complete": account_complete and not gaps and not report["unattributed"] and not report["attribution_conflicts"],
         "coverage_gaps": gaps,
         "missing_income_fills": missing_income_fills,
-        "id_match_and_coverage_complete": not gaps and not report["unattributed"] and not missing_income_fills,
+        "id_match_and_coverage_complete": not gaps and not report["unattributed"] and not missing_income_fills and not report["attribution_conflicts"],
         "caliber": "observed_usdt_income_only",
         "reviewed_overrides_enabled": include_reviewed_overrides,
+        "derived_attribution_enabled": include_derived_attribution,
         "limitations": [
             "不含未实现盈亏、划转和账户权益；不是权益守恒报告",
             "历史 trade_records 的 account_id 可能为空，未标识的订单保留未归属",

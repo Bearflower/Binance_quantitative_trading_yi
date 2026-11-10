@@ -1,0 +1,12 @@
+[Unit]
+Description=Verified exchange income attribution
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/trading_system
+Environment=ATTRIBUTION_IMAGE=@ATTRIBUTION_IMAGE@
+Environment=ATTRIBUTION_OUTPUT=@RELEASE_DIR@/latest-auto.json
+ExecStart=/bin/sh @RELEASE_DIR@/scripts/run_income_attribution.sh --current-month --apply
+TimeoutStartSec=900
