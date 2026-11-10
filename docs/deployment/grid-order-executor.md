@@ -13,7 +13,7 @@
 
 ## 本地验证
 
-- `python3 -m pytest -q tests/test_grid_execution`：104 passed（2026-11-10 PM 适配阶段）。
+- `python3 -m pytest -q tests/test_grid_execution tests/test_strategies/test_grid_kline.py tests/test_strategies/test_grid_capital_linkage.py tests/integration/test_grid_strategy.py`：213 passed（2026-11-10，最新主线隔离分支）。
 - 模拟交易所周期覆盖建网格、成交与相邻格配对、暂停、退出及自动重建。PM 契约测试覆盖 `/papi` 路由、单向模式门禁、空仓 `positionRisk=[]`、PM 权益字段、条件单取消回执及按时间窗口回补成交。
 - 本地模拟和只读 API 核验不能证明真实写接口已通过。
 
@@ -23,7 +23,7 @@
 
 生产配置需显式提供 `GRID_SUBACCOUNT_API_KEY`、`GRID_SUBACCOUNT_API_SECRET`、`GRID_MAX_MARGIN_USDT`、`GRID_MAX_NOTIONAL_USDT`、`GRID_MAX_DAILY_LOSS_USDT`、`GRID_MAX_DRAWDOWN_USDT`、`GRID_MAX_OPEN_ORDERS`、`GRID_EXPECTED_LEVERAGE`；所有资金与亏损限额必须是独立确定的正值，不能从策略建议保证金推导。密钥仅经服务器私有环境注入，不写入代码、日志或文档。
 
-`GRID_EXECUTOR_DEPLOY_ENABLED` 保持 `false`，直到账号模式、资金和限额均确认，且有人值守的小额实盘验收通过。验收应记录脱敏订单事实，验证 PM `GTX` 挂单、真实成交配对、PM `STOP_MARKET closePosition` 保护、撤单竞争、`BOTH/reduceOnly` 平仓、PM 用户流和 REST 对账、重连后的成交补录。任一写请求结果未知时，按客户端订单号查询，不能直接重发。
+`GRID_EXECUTOR_DEPLOY_ENABLED` 保持 `false`，直到账号模式、资金和限额均确认，且有人值守的小额实盘验收通过。部署脚本会先迁移 `grid_execution.sqlite3`；只有开关为 `true` 才附加 `grid-executor` Compose profile 并检查容器健康。验收应记录脱敏订单事实，验证 PM `GTX` 挂单、真实成交配对、PM `STOP_MARKET closePosition` 保护、撤单竞争、`BOTH/reduceOnly` 平仓、PM 用户流和 REST 对账、重连后的成交补录。任一写请求结果未知时，按客户端订单号查询，不能直接重发。
 
 ## 自动运行门禁
 
