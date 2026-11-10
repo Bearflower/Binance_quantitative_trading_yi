@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 
 from .income_integrity import income_account_lock, require_income_integrity
 from .economic_ledger import INCOME_TYPES
@@ -66,18 +67,20 @@ async def read_published_report(db, account_id, start_ms, end_ms, window_key,
     DB errors never fall back to trade_records or legacy metric snapshots.
     """
     if start_ms >= end_ms: raise ValueError('Invalid report window')
+    derived_enabled = os.environ.get('LEDGER_DERIVED_ATTRIBUTION_ENABLED') == '1'
+    version = REPORT_VERSION + '-derived-v1' if derived_enabled else REPORT_VERSION
     previous = None
     try:
         async with db.pool.acquire() as connection:
             async with income_account_lock(connection, account_id):
                 async with connection.transaction(isolation='repeatable_read'):
-                    prior = await connection.fetchrow(_ACTIVE_SQL, account_id, window_key, REPORT_VERSION)
+                    prior = await connection.fetchrow(_ACTIVE_SQL, account_id, window_key, version)
                     if prior:
                         previous = prior['report']
                         if isinstance(previous, str): previous = json.loads(previous)
                         # Reject corrupted/mismatched cached bodies rather than treating them as evidence.
                         if (previous.get('account_id') != account_id or previous.get('start_ms') != start_ms
-                                or previous.get('report_version') != REPORT_VERSION
+                                or previous.get('report_version') != version
                                 or not previous.get('account_coverage_complete')
                                 or previous.get('end_ms', end_ms+1) > end_ms
                                 or (not current and previous.get('end_ms') != end_ms)):
@@ -91,7 +94,9 @@ async def read_published_report(db, account_id, start_ms, end_ms, window_key,
                     cutoff = coverage_cutoff(cursors, account_id, start_ms, end_ms)
                     effective_end = cutoff if current and cutoff > start_ms else end_ms
                     report = await read_monthly_economic_report(adapter, account_id, start_ms, effective_end,
-                                                               include_reviewed_overrides=True)
+                                                               include_reviewed_overrides=True,
+                                                               include_derived_attribution=derived_enabled)
+                    report['report_version'] = version
                     report.update(window_key=window_key, requested_end_ms=end_ms,
                                   as_of=datetime.fromtimestamp(effective_end/1000,timezone.utc).isoformat()
                                   if report['account_coverage_complete'] else None)
@@ -101,13 +106,13 @@ async def read_published_report(db, account_id, start_ms, end_ms, window_key,
                         if previous: return _served(previous, end_ms, 'stale', 'income_coverage_incomplete')
                         return _served(report, end_ms, 'unverified', 'income_coverage_incomplete')
                     await connection.execute(_RUN_SQL, report['report_id'], account_id, window_key,
-                                             REPORT_VERSION, start_ms, effective_end,
+                                             version, start_ms, effective_end,
                                              json.dumps(report,sort_keys=True,separators=(',',':')))
                     activation = await connection.execute(_ACTIVATE_SQL, account_id, window_key,
-                                                           REPORT_VERSION, report['report_id'], effective_end)
+                                                           version, report['report_id'], effective_end)
                     if activation == 'INSERT 0 0':
                         # A newer watermark already won. Never serve the losing older run.
-                        winner = await connection.fetchrow(_ACTIVE_SQL, account_id, window_key, REPORT_VERSION)
+                        winner = await connection.fetchrow(_ACTIVE_SQL, account_id, window_key, version)
                         body = winner['report']
                         if isinstance(body,str): body=json.loads(body)
                         return _served(body,end_ms,'published')

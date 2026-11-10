@@ -25,7 +25,7 @@ async def test_record_tp2_persists_level_with_algo_id():
     )
     sql, *args = db.execute.await_args.args
     assert 'tp_level' in sql
-    assert args == ['btc_eth', 'BTCUSDT', 900, 'TAKE_PROFIT', 2]
+    assert args == ['btc_eth', 'BTCUSDT', 900, 'TAKE_PROFIT', 2, None]
 
 
 @pytest.mark.asyncio
