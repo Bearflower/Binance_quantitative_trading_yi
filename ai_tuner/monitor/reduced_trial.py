@@ -204,6 +204,7 @@ async def read_trial_income(db: Any, account: str, start_ms: int, end_ms: int,
                 return await read_monthly_economic_report(
                     _SnapshotDB(connection), account, start_ms, end_ms,
                     include_reviewed_overrides=include_reviewed_overrides,
+                    include_derived_attribution=True,
                 )
 
 

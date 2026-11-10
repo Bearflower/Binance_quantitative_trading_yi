@@ -349,6 +349,7 @@ def test_income_reader_uses_one_read_only_repeatable_snapshot(tmp_path, monkeypa
 
     async def reader(snapshot_db, account, start_ms, end_ms, **kwargs):
         assert snapshot_db.connection is conn
+        assert kwargs["include_derived_attribution"] is True
         return {"report_id": "same-snapshot"}
 
     monkeypatch.setattr("ai_tuner.monitor.reduced_trial.read_monthly_economic_report", reader)

@@ -21,6 +21,7 @@ from scripts.scoped_stop_followup import (  # noqa: E402
 )
 
 SERVICE = "ai-tuner"
+INCOME_RELEASE_SHA = "97fb429a4c7f288e7f9506e54233f37d15cd780f"
 IMAGE_RE = re.compile(r"ghcr\.io/bearflower/trading-ai-tuner@sha256:[0-9a-f]{64}\Z")
 IMAGE_SOURCES = (
     "ai_tuner/config.yaml", "ai_tuner/main.py",
@@ -28,6 +29,20 @@ IMAGE_SOURCES = (
     "ai_tuner/monitor/reduced_trial.py",
     "shared/accounting/report_reader.py", "shared/readonly_client.py",
 )
+
+
+def validated_dashboard_image(state: dict, overlay: str) -> str:
+    if state.get("sha") != INCOME_RELEASE_SHA or state.get("status") != "active":
+        raise ReleaseBlocked("independent income attribution release not active")
+    images = state.get("images")
+    if (not isinstance(images, dict) or set(images) != {"dashboard-api", "hrs"}
+            or not re.fullmatch(r"ghcr\.io/bearflower/trading-dashboard-api@sha256:[0-9a-f]{64}",
+                                images["dashboard-api"])):
+        raise ReleaseBlocked("independent dashboard image proof invalid")
+    if (images["dashboard-api"] not in overlay
+            or "LEDGER_DERIVED_ATTRIBUTION_ENABLED=1" not in overlay):
+        raise ReleaseBlocked("independent dashboard overlay proof invalid")
+    return images["dashboard-api"]
 
 
 class Runtime(BaseRuntime):
@@ -89,6 +104,12 @@ class Runtime(BaseRuntime):
                     r"ghcr\.io/bearflower/trading-[a-z0-9-]+@sha256:[0-9a-f]{64}", image["image"])):
                 raise ReleaseBlocked("invalid predecessor image pin: " + service)
         self.pre = self.gate()
+        income_release = self.root / ".releases" / "income-attribution" / INCOME_RELEASE_SHA
+        income_state = json.loads((income_release / "state.json").read_text())
+        income_overlay = (income_release / "dashboard-overlay.yml").read_text()
+        dashboard_image = validated_dashboard_image(income_state, income_overlay)
+        if self.run(["systemctl", "is-active", "income-attribution.timer"]) != "active":
+            raise ReleaseBlocked("independent income attribution timer not active")
         self.release_dir.mkdir(parents=True, exist_ok=False)
         os.chmod(self.release_dir, 0o700)
         self.all_before = {service: self.inspect(service) for service in self.stacks}
@@ -98,7 +119,8 @@ class Runtime(BaseRuntime):
         for service, row in self.all_before.items():
             if row["State"]["Status"] != "running" or row["State"].get("Health", {}).get("Status") != "healthy":
                 raise ReleaseBlocked("predecessor not healthy: " + service)
-            expected = original["services"][service]["image"]
+            expected = (dashboard_image if service == "dashboard-api"
+                        else original["services"][service]["image"])
             if row["Image"] != self.run(["docker", "image", "inspect", "--format", "{{.Id}}", expected]):
                 raise ReleaseBlocked("running image differs from active pin: " + service)
         successor = json.loads(json.dumps(original))

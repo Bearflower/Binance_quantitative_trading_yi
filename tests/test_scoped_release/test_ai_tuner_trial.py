@@ -7,7 +7,7 @@ from scripts.ai_tuner_trial_manifest import (
     RELEASE, SOURCE, ReleaseBlocked, sha256, validate_manifest, validate_tree,
 )
 from scripts.render_remote_deploy import RenderError, _validate
-from scripts.scoped_ai_tuner_trial import Runtime
+from scripts.scoped_ai_tuner_trial import Runtime, INCOME_RELEASE_SHA, validated_dashboard_image
 from scripts.select_deploy_mode import DeployModeError, select_deploy_mode
 
 
@@ -94,3 +94,15 @@ def test_workflow_routes_only_ai_tuner_image_to_scoped_release():
     assert "pattern: ai-tuner-trial-digest-*" in workflow
     assert "scripts/package_ai_tuner_trial.py" in workflow
     assert "ai-tuner-trial-${{ github.sha }}" in workflow
+
+
+def test_external_dashboard_overlay_requires_completed_income_release():
+    image = "ghcr.io/bearflower/trading-dashboard-api@sha256:" + "a" * 64
+    state = {"sha": INCOME_RELEASE_SHA, "status": "active",
+             "images": {"dashboard-api": image, "hrs": "unused"}}
+    overlay = "services:\n  dashboard-api:\n    image: " + image + "\n    environment:\n      - LEDGER_DERIVED_ATTRIBUTION_ENABLED=1\n"
+    assert validated_dashboard_image(state, overlay) == image
+    with pytest.raises(ReleaseBlocked):
+        validated_dashboard_image({**state, "status": "failed"}, overlay)
+    with pytest.raises(ReleaseBlocked):
+        validated_dashboard_image(state, overlay.replace(image, "latest"))
