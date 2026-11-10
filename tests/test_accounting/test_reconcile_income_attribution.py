@@ -7,7 +7,7 @@ import pytest
 
 from scripts.reconcile_income_attribution import (
     plan_reconciliation, apply_plan, verified_position_at_cutoff,
-    build_replay_by_symbol,
+    build_replay_by_symbol, _BASELINE_SQL,
     verified_fact_cutoff,
 )
 
@@ -81,6 +81,10 @@ def test_safe_cutoff_uses_earliest_income_or_fill_watermark():
                     "covered_until_ms": 70, "page_complete": True,
                     "request_status": "ok"})
     assert verified_fact_cutoff(cursors, "main", 0, 100, {"ABCUSDT"}) == 70
+
+
+def test_baseline_query_includes_exact_cutoff_for_idempotent_rerun():
+    assert "flat_at <= $3" in _BASELINE_SQL
 
 
 @pytest.mark.asyncio

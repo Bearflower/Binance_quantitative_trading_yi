@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 from collections import defaultdict
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from decimal import Decimal
@@ -51,7 +52,7 @@ FROM trading.derived_income_attribution WHERE account_id=$1
 AND event_time_utc >= $2 AND event_time_utc < $3"""
 _BASELINE_SQL = """SELECT account_id, symbol, flat_at, exchange_qty, evidence
 FROM trading.position_flat_baseline WHERE account_id=$1
-AND symbol=ANY($2::text[]) AND flat_at < $3
+AND symbol=ANY($2::text[]) AND flat_at <= $3
 ORDER BY symbol, flat_at DESC"""
 _CURSOR_SQL = """SELECT source, account_id, income_type, symbol, window_start_ms,
 covered_until_ms, page_complete, request_status
@@ -396,7 +397,7 @@ async def _run(month, account_id, apply, requested_end_ms=None):
                                           "flat_at": end, "exchange_qty": Decimal(0),
                                           "evidence": proof})
         replay_baselines = {symbol: row for symbol, row in baselines.items()
-                            if symbol in position_qty}
+                            if symbol in position_qty and row["flat_at"] < end}
         fill_coverage = {
             symbol: "fills:" + symbol not in coverage_gaps(
                 cursors, account_id,
@@ -448,8 +449,10 @@ def main():
     args = parser.parse_args()
     try:
         month = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m") if args.current_month else args.month
-        print(json.dumps(asyncio.run(_run(month, args.account_id, args.apply,
-                                         args.end_ms)),
+        with redirect_stdout(sys.stderr):
+            result = asyncio.run(_run(month, args.account_id, args.apply,
+                                      args.end_ms))
+        print(json.dumps(result,
                          ensure_ascii=False, sort_keys=True, indent=2, default=str))
     except (RuntimeError, ValueError) as exc:
         parser.exit(1, f"reconciliation failed: {exc}\n")
