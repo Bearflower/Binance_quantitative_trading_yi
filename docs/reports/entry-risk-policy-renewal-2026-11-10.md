@@ -7,7 +7,7 @@
 - 北京时间约 10:35，生产签名只读门禁 `pre_activation` 返回 `ok=true`、权益 518.45165312 USDT、空仓、零普通/条件挂单、分配哈希 `d7398bee4c57fc6c55e75023b244bc394c0c5de9deefd9eb0a2eb62bc33ea057`。
 - 预演时激进版产生新的 ETHUSDT 真实入场，原信号 0.025 ETH 缩量为 0.012 ETH，保证金预留 6.36372 USDT、压力风险 0.603261060 USDT。最初的零预留预演被安全条件拒绝，未提交。随后只读交易所门禁确认该仓位 0.012 ETH 有全量 STOP；预留保持 `submitting`，未人工释放。新的 SQL 仅允许这个精确身份的旧修订版预留继续占用额度，其他未核预留会拒绝事务。
 - 北京时间约 11:26，完整数据库备份保存到服务器 `/root/trading_system/.releases/policy-renew-20261110/database-before.dump`，大小 33,060,410 字节。
-- 最终事务 SQL 为 `database/postgres/ops/renew-reduced-trial-20261110.sql`，SHA-256 `4530d7754bd982dfc0b391465a54d532699f402551e5928f23366ec1fdb62818`。使用最新只读权益 518.39241038 USDT 校验四策略原绝对上限均低于当前分配和权益比例上限。事务先以 `ROLLBACK` 预演通过，后以相同 SQL 和 `COMMIT` 执行；CAS 要求原活动 revision、模式、乘数、额度、禁加仓、冻结分配和到期时间完全匹配。
+- 已执行事务 SQL 归档为 `docs/reports/ops/renew-reduced-trial-20261110.sql`，SHA-256 `4530d7754bd982dfc0b391465a54d532699f402551e5928f23366ec1fdb62818`。使用最新只读权益 518.39241038 USDT 校验四策略原绝对上限均低于当前分配和权益比例上限。事务先以 `ROLLBACK` 预演通过，后以相同 SQL 和 `COMMIT` 执行；CAS 要求原活动 revision、模式、乘数、额度、禁加仓、冻结分配和到期时间完全匹配。此 SQL 只作历史取证，旧 revision 已失效，不应再次执行。
 - SQL 中审计 `reason` 的 “flat-account review” 指最初空仓取证；最终提交时 ETH 仓位已经存在，执行依据是后续签名交易所门禁和精确预留匹配，不能把该文本理解为提交瞬间空仓。
 
 ## 生产结果
