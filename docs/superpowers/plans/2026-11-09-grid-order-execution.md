@@ -137,13 +137,13 @@ class Decision:
 - [ ] Run fake-exchange fault cases for WS loss, REST timeout, duplicate/reordered events, process crash between journal write/API reply, partial fill during cancel, rejected stop, rate limit, stale Kline, balance change and foreign order. Assert each case either reconciles or locks openings; no case creates duplicate net exposure.
 - [ ] Run `python3 -m pytest -q tests/test_grid_execution tests/test_strategies/test_grid_kline.py tests/test_strategies/test_grid_capital_linkage.py tests/integration/test_grid_strategy.py`, `git diff --check`, and `docker compose --profile grid-executor config`. Save exact counts and failures to `docs/deployment/grid-order-executor.md`; commit `feat(grid): wire disabled subaccount executor service`.
 
-## Task 9: Simulated exchange acceptance and live activation gate
+## Task 9: Simulated exchange acceptance and production subaccount gate
 
 **Files:** Extend `docs/deployment/grid-order-executor.md`; create `tests/test_grid_execution/test_end_to_end.py`.
 
 - [ ] Reproduce at least one full oscillation→BUY fill→SELL pair→warning pause→strong-trend exit→flat→tradable rebuild cycle with a deterministic fake exchange; compare journal, exchange position, ordinary and algo orders after every transition.
-- [ ] On Binance futures testnet with a separate testnet key, verify symbol filters, one-way/isolated account checks, normal and algo endpoint response shapes, cancellation/fill race and stop order visibility. Record sanitized order IDs, timestamps and results; no production credentials or orders.
-- [ ] Before any production activation, obtain the user's actual subaccount ID, approved positive hard limits, API IP allowlist and explicit authorization to enable the `live` profile. Confirm the code image and migration version, run a read-only account/order reconciliation, then begin supervised small-capital validation. Activation is a distinct later action and is not implied by this plan's approval.
+- [ ] Per the user's 2026-11-10 direction, use a dedicated production subaccount rather than futures testnet. After the new subaccount API is supplied through a private configuration path, confirm account identity, permissions, IP restriction, symbol filters, one-way/isolated mode, leverage, balance, position, ordinary orders, algo orders and recent trades using read-only requests. Record sanitized timestamps and response shapes. Do not send an order during this step.
+- [ ] Obtain the user's actual subaccount identity and approved positive capital/loss/order limits. Confirm the code image and migration version; then run supervised small-capital production acceptance for order, algo-stop, cancellation/fill race, reduce-only close and restart reconciliation. Keep automated execution disabled until the acceptance evidence is complete. The later API handoff and hard limits are required inputs, not inferred from the earlier design approval.
 
 ## Self-review checklist
 
