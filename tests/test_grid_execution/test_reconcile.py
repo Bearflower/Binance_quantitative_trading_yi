@@ -90,3 +90,19 @@ async def test_foreign_order_or_unmatched_position_locks(tmp_path):
     assert await GridEngine(store, exchange).reconcile() is False
     assert store.engine_state()["state"] == "LOCKED"
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_rest_failure_during_reconcile_locks_openings(tmp_path):
+    path = tmp_path / "rest-failure.sqlite3"
+    migrate(path)
+    store = DecisionStore(path)
+    exchange = FakeExchange()
+
+    async def failed_orders():
+        raise TimeoutError("orders unavailable")
+
+    exchange.open_orders = failed_orders
+    assert await GridEngine(store, exchange).reconcile() is False
+    assert store.engine_state()["state"] == "LOCKED"
+    store.close()

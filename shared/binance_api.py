@@ -364,7 +364,9 @@ class BinanceClient:
                     # 无映射关系（如 exchangeInfo），回退到 fapi 域名
                     base_url = "https://fapi.binance.com"
             else:
-                base_url = "https://fapi.binance.com"
+                # 普通 USD-M 测试网的公开接口和 listenKey 也必须走测试网。
+                # 与签名请求使用同一已选 base_url，避免行情/账户跨环境混用。
+                base_url = self.base_url
         
         url = f"{base_url}{endpoint}"
         

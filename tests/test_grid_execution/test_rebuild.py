@@ -93,3 +93,29 @@ async def test_warning_pause_then_confirmed_exit_then_auto_rebuild(tmp_path):
     assert store.active_epoch_id() != first_epoch
     assert len(exchange.ordinary) == 1
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_changed_stop_boundary_is_not_acked_as_unchanged_plan(tmp_path):
+    path = tmp_path / "stops.sqlite3"
+    migrate(path)
+    store = DecisionStore(path)
+    exchange = CycleExchange()
+    engine = GridEngine(store, exchange)
+    plan = GridPlan((PlannedOrder(0, "BUY", Decimal("1900"), Decimal("0.02")),),
+                    (Decimal("1900"), Decimal("1950")), Decimal("38"), Decimal("3.8"))
+    risk = RiskAssessment(RiskStatus.ALLOW, ())
+    now = 1_800_000_000_000
+    first = _publish(store, now, "OSCILLATION")
+    first["grid_params"] = {"stop_loss_low": "1850", "stop_loss_high": "2150"}
+    assert await engine.apply_decision(first, plan, risk, leverage=10,
+        now_ms=now + 1000, stop_loss_low=Decimal("1850"),
+        stop_loss_high=Decimal("2150"))
+    old_epoch = store.active_epoch_id()
+    changed = _publish(store, now + 60_000, "OSCILLATION")
+    changed["grid_params"] = {"stop_loss_low": "1840", "stop_loss_high": "2150"}
+    assert await engine.apply_decision(changed, plan, risk, leverage=10,
+        now_ms=now + 61_000, stop_loss_low=Decimal("1840"),
+        stop_loss_high=Decimal("2150"))
+    assert store.active_epoch_id() != old_epoch
+    store.close()

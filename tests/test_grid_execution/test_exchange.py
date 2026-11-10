@@ -43,6 +43,7 @@ async def test_order_and_protection_use_current_endpoints():
     assert ("GET", "/fapi/v1/algoOrder") in paths
     assert ("DELETE", "/fapi/v1/algoOrder") in paths
     assert client.calls[1][2]["reduceOnly"] == "true"
+    assert client.calls[1][2]["newOrderRespType"] == "RESULT"
     assert client.calls[2][2]["closePosition"] == "true"
     assert client.calls[2][2]["algoType"] == "CONDITIONAL"
 

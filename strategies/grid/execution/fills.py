@@ -212,6 +212,23 @@ class ProtectionCoordinator:
                      stop_loss_low: Decimal, stop_loss_high: Decimal) -> bool:
         """Confirm a close-all stop for the current exchange net position."""
         if position == 0:
+            known = {row["client_algo_id"]: row for row in self.store.active_protections()}
+            try:
+                open_rows = await self.exchange.open_stops()
+                if any(row.get("symbol") != "ETHUSDT" or
+                       row.get("clientAlgoId") not in known for row in open_rows):
+                    return self._exit("foreign stop while flat")
+                for row in open_rows:
+                    client_id = row["clientAlgoId"]
+                    await self.exchange.cancel_stop(client_id)
+                    self.store.conn.execute("""UPDATE protection SET status='CANCELED'
+                        WHERE client_algo_id=?""", (client_id,))
+                if any(row["client_algo_id"] not in
+                       {item["clientAlgoId"] for item in open_rows}
+                       for row in known.values()):
+                    return self._exit("unresolved stop intent while flat")
+            except Exception:
+                return self._exit("flat stop cleanup uncertain")
             return True
         if stop_loss_low <= 0 or stop_loss_high <= stop_loss_low:
             return self._exit("invalid stop boundaries")

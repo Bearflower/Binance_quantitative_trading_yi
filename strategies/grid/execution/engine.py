@@ -158,7 +158,10 @@ class GridEngine:
 
         grid_params = decision.get("grid_params") or {}
         epoch_id = self.store.create_epoch(
-            decision["decision_id"], self._plan_digest(plan), levels=plan.levels,
+            decision["decision_id"],
+            self._plan_digest(plan, grid_params.get("stop_loss_low"),
+                              grid_params.get("stop_loss_high")),
+            levels=plan.levels,
             stop_loss_low=grid_params.get("stop_loss_low"),
             stop_loss_high=grid_params.get("stop_loss_high"))
         for order in plan.orders:
@@ -190,10 +193,11 @@ class GridEngine:
         return True
 
     @staticmethod
-    def _plan_digest(plan) -> str:
+    def _plan_digest(plan, stop_loss_low=None, stop_loss_high=None) -> str:
         value = repr((tuple(str(level) for level in plan.levels),
                       tuple((o.level_index, o.side, str(o.price), str(o.quantity))
-                            for o in plan.orders)))
+                            for o in plan.orders),
+                      str(stop_loss_low), str(stop_loss_high)))
         return hashlib.sha256(value.encode()).hexdigest()
 
     async def apply_decision(self, decision: dict, plan, risk_assessment, *,
@@ -255,7 +259,8 @@ class GridEngine:
         if action in (Action.START, Action.REPLAN):
             if epoch_id is not None:
                 epoch = self.store.epoch(epoch_id)
-                if (state == "ACTIVE" and epoch["plan_digest"] == self._plan_digest(plan)):
+                if (state == "ACTIVE" and epoch["plan_digest"] ==
+                        self._plan_digest(plan, stop_loss_low, stop_loss_high)):
                     self.store.acknowledge(decision["decision_id"])
                     return True
                 if not await self.exit_all(epoch_id):
@@ -264,9 +269,15 @@ class GridEngine:
                                          leverage=leverage, now_ms=now_ms)
         return False
 
-    async def reconcile(self) -> bool:
+    async def reconcile(self, *, allow_locked: bool = False) -> bool:
         """Compare account-wide ETHUSDT facts with owned, durable intents."""
-        if self.store.engine_state()["state"] == "LOCKED":
+        try:
+            return await self._reconcile_facts(allow_locked=allow_locked)
+        except Exception:
+            return self._lock("exchange reconciliation failed")
+
+    async def _reconcile_facts(self, *, allow_locked: bool = False) -> bool:
+        if self.store.engine_state()["state"] == "LOCKED" and not allow_locked:
             return False
         ordinary = await self.exchange.open_orders()
         algo = await self.exchange.open_stops()
@@ -359,7 +370,21 @@ class GridEngine:
         was_locked = self.store.engine_state()["state"] == "LOCKED"
         if not was_locked:
             self.store.set_engine_state("EXITING")
+        # A prior MARKET close can survive a process restart. Query it first;
+        # canceling it as though it were a resting grid order is unsafe.
         for intent in self.store.active_orders():
+            if intent["role"] != "EXIT":
+                continue
+            client_id = intent["client_order_id"]
+            response = await self._resolve_close(client_id)
+            if response is None:
+                return self._lock("previous market close unresolved: %s" % client_id)
+            self.store.record_order(client_id, str(response["orderId"]),
+                                    response["status"],
+                                    Decimal(str(response.get("executedQty", "0"))))
+        for intent in self.store.active_orders():
+            if intent["role"] == "EXIT":
+                return self._lock("active market close remains")
             client_id = intent["client_order_id"]
             try:
                 response = await self.exchange.cancel_order(client_id)
@@ -376,7 +401,14 @@ class GridEngine:
             except Exception:
                 return self._lock("cancel result unknown: %s" % client_id)
 
-        for attempt in range(3):
+        previous_closes = sum(1 for row in self.store.all_orders()
+                              if row["epoch_id"] == epoch_id and row["role"] == "EXIT")
+        if previous_closes >= 3:
+            rows = await self.exchange.position()
+            if (len(rows) != 1 or
+                    Decimal(str(rows[0]["positionAmt"])) != 0):
+                return self._lock("too many market close attempts")
+        for attempt in range(previous_closes, 3):
             try:
                 positions = await self.exchange.position()
                 if len(positions) != 1 or positions[0].get("positionSide") != "BOTH":
@@ -394,23 +426,26 @@ class GridEngine:
                                          Decimal(1), abs(amount), client_id)
                 response = await self.exchange.close_position(side, abs(amount), client_id)
             except Exception:
-                try:
-                    response = await self.exchange.query_order(client_id)
-                except Exception:
-                    response = None
-                if not response or response.get("status") != "FILLED":
-                    return self._lock("market close result unknown: %s" % client_id)
-            if response.get("status") not in ("FILLED", "PARTIALLY_FILLED"):
-                return self._lock("market close not complete: %s" % client_id)
+                response = None
+            response = await self._resolve_close(client_id, response)
+            if response is None:
+                return self._lock("market close result unknown: %s" % client_id)
             self.store.record_order(client_id, str(response["orderId"]),
                                     response["status"],
                                     Decimal(str(response.get("executedQty", "0"))))
-            # A partially filled close may still be open. Do not send another.
-            if response["status"] == "PARTIALLY_FILLED":
-                return self._lock("partial market close needs reconciliation")
-            await asyncio.sleep(0)
+            if response["status"] != "FILLED":
+                return self._lock("market close did not fill")
+            # Permit exchange position propagation before considering any
+            # confirmed residual. Repeating against a stale position is unsafe.
+            for _ in range(5):
+                rows = await self.exchange.position()
+                if len(rows) == 1 and Decimal(str(rows[0]["positionAmt"])) == 0:
+                    break
+                await asyncio.sleep(0.2)
         else:
-            return self._lock("residual position after close attempts")
+            rows = await self.exchange.position()
+            if len(rows) != 1 or Decimal(str(rows[0]["positionAmt"])) != 0:
+                return self._lock("residual position after close attempts")
 
         for protection in self.store.active_protections():
             client_id = protection["client_algo_id"]
@@ -429,7 +464,20 @@ class GridEngine:
                 return self._lock("exchange not flat after exit")
         except Exception:
             return self._lock("flat verification failed")
+        if not await self.reconcile(allow_locked=True):
+            return False
         if not was_locked:
             self.store.set_engine_state("FLAT")
         self.store.close_epoch(epoch_id)
         return True
+
+    async def _resolve_close(self, client_id: str, response=None):
+        for _ in range(5):
+            if response and response.get("status") in ("FILLED", "CANCELED", "EXPIRED"):
+                return response
+            try:
+                response = await self.exchange.query_order(client_id)
+            except Exception:
+                response = None
+            await asyncio.sleep(0.2)
+        return None

@@ -461,7 +461,12 @@ class GridSignalBot:
                     for symbol in self.symbols:
                         try:
                             signal = await self.run_once(symbol)
-                            self._publish_decision(signal)
+                            try:
+                                self._publish_decision(signal)
+                            except (sqlite3.Error, RuntimeError, ValueError) as exc:
+                                # A failed handoff makes execution stale, but
+                                # must not suppress the existing human alert.
+                                logger.error("网格执行决策落库失败", error=str(exc))
 
                             # 检查是否需要推送
                             if self._should_notify(signal):

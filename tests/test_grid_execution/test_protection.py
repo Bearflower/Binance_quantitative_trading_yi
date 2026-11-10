@@ -94,3 +94,16 @@ async def test_flip_back_creates_new_client_id_after_old_stop_canceled(tmp_path)
     assert old_long_id != new_long_id
     assert len(exchange.placed) == 3
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_flat_position_retires_owned_stop(tmp_path):
+    store, epoch = _store(tmp_path)
+    exchange = FakeExchange()
+    protection = ProtectionCoordinator(store, exchange)
+    assert await protection.ensure(epoch, Decimal("0.02"), Decimal("1850"), Decimal("2150"))
+    old_id = exchange.open[0]["clientAlgoId"]
+    assert await protection.ensure(epoch, Decimal("0"), Decimal("1850"), Decimal("2150"))
+    assert exchange.canceled == [old_id]
+    assert store.active_protections() == []
+    store.close()

@@ -52,3 +52,23 @@ def test_rejects_malformed_and_nonmonotonic_decisions(tmp_path):
     with pytest.raises(ValueError):
         store.publish({**base, "symbol": "BTCUSDT", "calculated_at_ms": 1001}, "hash")
     store.close()
+
+
+def test_pending_backlog_can_be_advanced_only_to_a_published_decision(tmp_path):
+    path = tmp_path / "execution.sqlite3"
+    migrate(path)
+    store = DecisionStore(path)
+    ids = []
+    for i, state in enumerate(("OSCILLATION", "NORMAL_STRONG_TREND", "OSCILLATION")):
+        ids.append(store.publish({"symbol": "ETHUSDT", "state": state,
+            "calculated_at_ms": 1000 + i,
+            "last_closed_kline_ms": {"15m": 900, "1h": 900, "4h": 900}}, "hash"))
+    assert [row["decision_id"] for row in store.pending_decisions()] == ids
+    with pytest.raises(ValueError):
+        store.acknowledge_through("missing")
+    store.acknowledge_through(ids[1])
+    assert store.cursor() == ids[1]
+    assert store.next_decision()["decision_id"] == ids[2]
+    with pytest.raises(ValueError):
+        store.acknowledge_through(ids[0])
+    store.close()

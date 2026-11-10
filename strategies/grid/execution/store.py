@@ -188,17 +188,8 @@ class DecisionStore:
         return row[0]
 
     def next_decision(self) -> Optional[dict]:
-        cursor = self.cursor()
-        if cursor is None:
-            row = self.conn.execute("""SELECT * FROM decisions
-                ORDER BY rowid LIMIT 1""").fetchone()
-        else:
-            current = self.conn.execute("SELECT rowid FROM decisions WHERE decision_id=?",
-                                        (cursor,)).fetchone()
-            if current is None:
-                raise RuntimeError("execution cursor has no decision")
-            row = self.conn.execute("""SELECT * FROM decisions WHERE rowid>?
-                ORDER BY rowid LIMIT 1""", (current[0],)).fetchone()
+        rows = self._pending_rows(limit=1)
+        row = rows[0] if rows else None
         if row is None:
             return None
         payload = json.loads(row["payload_json"])
@@ -206,6 +197,39 @@ class DecisionStore:
         payload["decision_id"] = row["decision_id"]
         payload["config_hash"] = row["config_hash"]
         return payload
+
+    def _pending_rows(self, limit=None):
+        cursor = self.cursor()
+        if cursor is None:
+            cursor_rowid = 0
+        else:
+            current = self.conn.execute("SELECT rowid FROM decisions WHERE decision_id=?",
+                                        (cursor,)).fetchone()
+            if current is None:
+                raise RuntimeError("execution cursor has no decision")
+            cursor_rowid = current[0]
+        sql = "SELECT * FROM decisions WHERE rowid>? ORDER BY rowid"
+        if limit is not None:
+            return self.conn.execute(sql + " LIMIT ?", (cursor_rowid, limit)).fetchall()
+        return self.conn.execute(sql, (cursor_rowid,)).fetchall()
+
+    def pending_decisions(self) -> list[dict]:
+        result = []
+        for row in self._pending_rows():
+            payload = json.loads(row["payload_json"])
+            _validate(payload)
+            payload["decision_id"] = row["decision_id"]
+            payload["config_hash"] = row["config_hash"]
+            result.append(payload)
+        return result
+
+    def acknowledge_through(self, decision_id: str) -> None:
+        """Advance past superseded signals only after caller made the account safe."""
+        rows = self._pending_rows()
+        if decision_id not in {row["decision_id"] for row in rows}:
+            raise ValueError("decision is not pending")
+        self.conn.execute("UPDATE execution_cursor SET decision_id=? WHERE id=1",
+                          (decision_id,))
 
     def acknowledge(self, decision_id: str) -> None:
         next_item = self.next_decision()

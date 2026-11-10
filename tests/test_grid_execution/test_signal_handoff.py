@@ -1,5 +1,9 @@
 from datetime import datetime
 from decimal import Decimal
+import asyncio
+from unittest.mock import AsyncMock, Mock
+
+import pytest
 
 from strategies.grid.execution.store import DecisionStore, migrate
 from strategies.grid.market_state import MarketAnalysis, MarketState
@@ -59,3 +63,23 @@ def test_stale_or_missing_kline_is_nonexecutable(tmp_path, monkeypatch):
         ).fetchone()
         assert '"executable":false' in row[0]
     bot._decision_store.close()
+
+
+@pytest.mark.asyncio
+async def test_handoff_write_failure_does_not_suppress_existing_notification():
+    bot = GridSignalBot.__new__(GridSignalBot)
+    bot.check_interval_minutes = 60
+    bot.run_at_minute = 5
+    bot.symbols = ["ETHUSDT"]
+    bot.last_signals = {}
+    bot._decision_store = None
+    bot._start_export = Mock()
+    bot._shutdown_export = Mock()
+    bot._wait_until_next_run = AsyncMock(side_effect=[None, asyncio.CancelledError()])
+    bot.run_once = AsyncMock(return_value=_signal(0, {}))
+    bot._publish_decision = Mock(side_effect=RuntimeError("disk unavailable"))
+    bot._should_notify = Mock(return_value=True)
+    bot._send_with_export = AsyncMock(return_value=True)
+    with pytest.raises(asyncio.CancelledError):
+        await bot.run_loop()
+    bot._send_with_export.assert_awaited_once()

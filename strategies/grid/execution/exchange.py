@@ -67,7 +67,7 @@ class GridExchange:
             raise ValueError("invalid close order")
         params = {"symbol": "ETHUSDT", "side": side, "positionSide": "BOTH",
                   "type": "MARKET", "reduceOnly": "true", "quantity": str(qty),
-                  "newClientOrderId": client_id}
+                  "newClientOrderId": client_id, "newOrderRespType": "RESULT"}
         return await self._post_once("/fapi/v1/order", params, client_id)
 
     async def place_stop(self, side: str, trigger_price: Decimal,
@@ -119,6 +119,16 @@ class GridExchange:
         if not isinstance(result, list):
             raise ValueError("invalid position response")
         return result
+
+    async def ticker_price(self) -> Decimal:
+        result = await self.client._request("GET", "/fapi/v2/ticker/price",
+                                            {"symbol": "ETHUSDT"}, signed=False)
+        if result.get("symbol") != "ETHUSDT":
+            raise ValueError("wrong ticker symbol")
+        price = Decimal(str(result["price"]))
+        if not price.is_finite() or price <= 0:
+            raise ValueError("invalid ticker price")
+        return price
 
     async def income(self, start_ms: int, end_ms: int):
         """Read ordinary USD-M income directly; a full page is incomplete evidence.
