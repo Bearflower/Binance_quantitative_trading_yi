@@ -42,6 +42,18 @@ def test_pm_algo_requires_unique_exact_link_and_account_scoped_condition():
         None, "condition_owner_missing")
 
 
+def test_later_matching_trade_record_does_not_change_pm_algo_proof():
+    links = [{"account_id": "pm-main", "symbol": "SOLUSDT", "actual_order_id": "901",
+              "algo_id": "123", "payload_sha256": "abc"}]
+    conditions = [{"account_id": "pm-main", "symbol": "SOLUSDT", "algo_id": "123",
+                   "strategy_name": "btc_eth_aggressive"}]
+    before = resolve_order_owner("pm-main", "SOLUSDT", "901", [], links, conditions)
+    records = [{"account_id": "pm-main", "symbol": "SOLUSDT", "order_id": "901",
+                "strategy": "btc_eth_aggressive", "id": 4718}]
+    after = resolve_order_owner("pm-main", "SOLUSDT", "901", records, links, conditions)
+    assert after == before
+
+
 def test_conflicting_direct_and_algo_owner_is_rejected():
     records = [{"account_id": "pm-main", "symbol": "SOLUSDT", "order_id": "901",
                 "strategy": "btc_eth", "id": 7}]

@@ -63,6 +63,56 @@ def test_existing_derived_identity_is_immutable():
     assert plan["conflicts"][0]["reason"] == "derived_evidence_conflict"
 
 
+def test_late_matching_trade_record_preserves_existing_algo_derivation():
+    links = [{"account_id": "main", "symbol": "ABCUSDT", "actual_order_id": "10",
+              "algo_id": "123", "payload_sha256": "abc"}]
+    conditions = [{"account_id": "main", "symbol": "ABCUSDT", "algo_id": "123",
+                   "strategy_name": "hrs"}]
+    before = plan_reconciliation([_income()], [_fill()], [], links, conditions, [], [], {})
+    old = dict(before["derived_rows"][0])
+    after = plan_reconciliation([_income()], [_fill()], [_trade()], links, conditions,
+                                [], [old], {})
+    assert after["conflicts"] == []
+    assert after["derived_rows"] == []
+
+
+@pytest.mark.asyncio
+async def test_writer_accepts_late_matching_trade_record_without_rewriting_order_proof():
+    class Transaction:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return False
+
+    class Connection:
+        def __init__(self):
+            self.writes = 0
+
+        def transaction(self, **_):
+            return Transaction()
+
+        async def execute(self, *_):
+            self.writes += 1
+
+        async def fetchrow(self, *_):
+            return {"strategy": "hrs", "source_kind": "pm_algo_link", "source_id": "123",
+                    "evidence": {"source_kind": "pm_algo_link", "algo_id": "123",
+                                 "payload_sha256": "abc", "actual_order_id": "10"}}
+
+    connection = Connection()
+    proof = {"source_kind": "pm_algo_link", "algo_id": "123",
+             "payload_sha256": "abc", "actual_order_id": "10",
+             "trade_record_ids": ["1"]}
+    plan = {"conflicts": [], "baseline_rows": [], "derived_rows": [],
+            "order_rows": [{"account_id": "main", "symbol": "ABCUSDT", "order_id": 10,
+                            "strategy": "hrs", "source_kind": "pm_algo_link",
+                            "source_id": "123", "evidence": proof}]}
+    result = await apply_plan(connection, plan, coverage_complete=True)
+    assert result["order_rows_seen"] == 1
+    assert connection.writes == 1
+
+
 def test_apply_requires_full_coverage_before_any_write():
     plan = plan_reconciliation([_income()], [_fill()], [_trade()], [], [], [], [], {})
     with pytest.raises(ValueError, match="coverage"):

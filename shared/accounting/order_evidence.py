@@ -60,8 +60,8 @@ def resolve_order_owner(account_id, symbol, order_id, trade_records, algo_links,
     if direct_owner and algo_owner and direct_owner != algo_owner:
         return None, "order_owner_conflict"
     if algo_owner:
-        if direct:
-            algo_evidence["trade_record_ids"] = sorted(str(row["id"]) for row in direct)
+        # The PM link is the immutable proof. Matching trade records may arrive
+        # later and must not change the proof for an already attributed order.
         return algo_owner, algo_evidence
     if direct_owner:
         return direct_owner, {"source_kind": "trade_record",

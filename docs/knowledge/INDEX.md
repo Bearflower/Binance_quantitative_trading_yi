@@ -36,7 +36,7 @@
 ## 问题模式库
 | ID | 标题 | 标签 | 日期 | 状态 |
 |----|------|------|------|------|
-| Binance_quantitative_trading-20261111-dashboard-closure-gaps | 交易所收益已对齐，但看板绩效指标缺失且自动归属任务因证据冲突失败 | bug,dashboard,收益口径,绩效指标,自动归属,证据冲突 | 2026-11-11 | 待修复 |
+| Binance_quantitative_trading-20261111-dashboard-closure-gaps | 交易所收益已对齐，但看板绩效指标缺失且自动归属任务因证据冲突失败 | bug,dashboard,收益口径,绩效指标,自动归属,证据冲突 | 2026-11-11 | 部分修复，待复查 |
 | Binance_quantitative_trading-20261103-partial-pnl-masks-legacy-owner | 部分止盈写入入场记录 realized_pnl 后，未平旧仓归属查询返回空 | bug,btc_eth_aggressive,持仓归属,资金限额,部分平仓,旧仓 | 2026-11-03 | 已解决 |
 | Binance_quantitative_trading-20261102-ai-tuner-legacy-prompt-contract-mismatch | 旧契约策略收到新信封提示词，网格调优缺 reasons 和 summary | bug,ai_tuner,grid,LLM,prompt,契约不一致 | 2026-11-02 | 已修复并部署，待周度任务实跑验证 |
 | Binance_quantitative_trading-20261102-ai-tuner-optional-position-cap-path | 无 position_sizing 的策略被写入持仓比例路径，部分写入误报成功 | bug,ai_tuner,月度分配,配置路径,部分写入 | 2026-11-02 | 已修复并部署，待资金分配任务实跑验证 |
