@@ -26,6 +26,8 @@ RISK_FOLLOWUP_MARKER = ".github/deploy-modes/strategy-small-position-followup-20
 STOP_FOLLOWUP_MARKER = ".github/deploy-modes/aggressive-stop-followup-20261109"
 AI_TUNER_TRIAL_MARKER = ".github/deploy-modes/ai-tuner-trial-20261110"
 INCOME_ATTRIBUTION_MARKER = ".github/deploy-modes/income-attribution-20261110"
+GRID_PM_MARKER = ".github/deploy-modes/grid-pm-oneway-20261111"
+GRID_PM_BASE = "35dee97d72a487fb52943ab76fb49f9ec75ce3ca"
 INCOME_ATTRIBUTION_BASE = "6821072aef1a021f3f2920e7c84fc07b09d21454"
 ZERO_SHA = "0" * 40
 
@@ -48,8 +50,12 @@ def select_deploy_mode(
                       if path.startswith(".github/deploy-modes/")]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
-    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER}:
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, GRID_PM_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
+    if any(path == GRID_PM_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", GRID_PM_MARKER)]:
+            raise DeployModeError("grid PM release requires one added marker")
+        return "grid-pm-oneway"
     if any(path == INCOME_ATTRIBUTION_MARKER for _, path in marker_changes):
         if marker_changes != [("A", INCOME_ATTRIBUTION_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
             raise DeployModeError("income attribution requires one added marker and an exact push base")
@@ -136,12 +142,34 @@ def _validate_income_scope(base: str, changes: list[tuple[str, str]]) -> None:
             raise DeployModeError("income attribution scope contains unreviewed path: " + path)
 
 
+def _validate_grid_scope(base: str, changes: list[tuple[str, str]]) -> None:
+    if base != GRID_PM_BASE:
+        raise DeployModeError("grid PM push must start from reviewed main")
+    exact = {
+        GRID_PM_MARKER, ".env.example", "docker-compose.yml", ".github/workflows/deploy.yml",
+        "scripts/preflight_grid_scoped_release.py", "scripts/scoped_grid_release.py",
+        "scripts/package_grid_release.py", "scripts/grid_account_readonly.py",
+        "scripts/prepare_grid_subaccount.py", "scripts/set_grid_leverage.py",
+        "scripts/select_deploy_mode.py",
+        "scripts/render_remote_deploy.py", "scripts/remote_deploy_runtime.sh",
+        "shared/binance_api.py",
+    }
+    if ("A", GRID_PM_MARKER) not in changes:
+        raise DeployModeError("grid PM marker not added")
+    for status, path in changes:
+        if status not in {"A", "M"} or not (
+            path in exact or path.startswith("strategies/grid/")
+            or path.startswith("tests/") or path.startswith("docs/")
+        ):
+            raise DeployModeError("grid PM scope contains unreviewed path: " + path)
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup","ai-tuner-trial","income-attribution"])
+    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup","ai-tuner-trial","income-attribution","grid-pm-oneway"])
     return parser.parse_args(argv)
 
 
@@ -151,7 +179,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.event_name != "push":
             from scripts.ledger_risk_manifest import MANIFEST
             exists = subprocess.run(["git","cat-file","-e",f"{args.head}:{MANIFEST}"],capture_output=True).returncode == 0
-            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup", "ai-tuner-trial", "income-attribution"):
+            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup", "ai-tuner-trial", "income-attribution", "grid-pm-oneway"):
                 raise DeployModeError("manual remediation selection required for this release tree")
             mode = args.manual_mode if args.manual_mode != "auto" else "full"
         else:
@@ -163,6 +191,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode = select_deploy_mode(args.event_name, args.base, changes)
             if mode == "income-attribution":
                 _validate_income_scope(args.base, changes)
+            if mode == "grid-pm-oneway":
+                _validate_grid_scope(args.base, changes)
         if mode == "ledger-risk-remediation":
             from scripts.ledger_risk_manifest import MANIFEST,validate_tree,ReleaseBlocked
             try:
