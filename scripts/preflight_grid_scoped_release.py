@@ -65,6 +65,23 @@ def validate_delta(before: dict, after: dict) -> None:
         raise GateError("candidate image missing or unchanged")
 
 
+def require_execution_disabled(text: str, process_env: dict[str, str]) -> None:
+    values = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        values[key.strip()] = value.strip().strip("\"'").lower()
+    for key in ("GRID_EXECUTION_MODE", "GRID_EXECUTOR_DEPLOY_ENABLED"):
+        if key in process_env:
+            values[key] = process_env[key].strip().strip("\"'").lower()
+    if values.get("GRID_EXECUTION_MODE", "off") != "off":
+        raise GateError("grid execution mode must be off")
+    if values.get("GRID_EXECUTOR_DEPLOY_ENABLED", "false") not in {"false", "0", ""}:
+        raise GateError("grid executor deploy switch must be off")
+
+
 def preflight(root: Path, overlay: Path) -> None:
     root = root.resolve()
     overlay = overlay.resolve()
@@ -79,10 +96,7 @@ def preflight(root: Path, overlay: Path) -> None:
         raise GateError("production logging Compose changed")
     if not overlay.is_file():
         raise GateError("candidate overlay missing")
-    env = (root / ".env").read_text()
-    if any(line.strip() in {"GRID_EXECUTION_MODE=live", "GRID_EXECUTOR_DEPLOY_ENABLED=true",
-                             "GRID_EXECUTOR_DEPLOY_ENABLED=1"} for line in env.splitlines()):
-        raise GateError("grid execution is already enabled")
+    require_execution_disabled((root / ".env").read_text(), os.environ)
     result = subprocess.run(["docker", "inspect", "trading_system-grid-executor"],
                             capture_output=True)
     if result.returncode == 0:

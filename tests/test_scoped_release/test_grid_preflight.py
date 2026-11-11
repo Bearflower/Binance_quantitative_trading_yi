@@ -1,6 +1,7 @@
 import pytest
 
-from scripts.preflight_grid_scoped_release import GateError, validate_delta
+from scripts.preflight_grid_scoped_release import (GateError, require_execution_disabled,
+                                                  validate_delta)
 
 
 def _config(image, *, handoff=False, other=None):
@@ -25,3 +26,13 @@ def test_only_grid_image_and_handoff_are_accepted():
 def test_unreviewed_compose_change_blocks(after):
     with pytest.raises(GateError):
         validate_delta(_config("old-grid"), after)
+
+
+@pytest.mark.parametrize("env_text,process_env", [
+    ('GRID_EXECUTION_MODE = "live"', {}),
+    ("GRID_EXECUTOR_DEPLOY_ENABLED=true", {}),
+    ("GRID_EXECUTION_MODE=off", {"GRID_EXECUTION_MODE": "live"}),
+])
+def test_live_setting_blocks_even_with_whitespace_or_process_override(env_text, process_env):
+    with pytest.raises(GateError):
+        require_execution_disabled(env_text, process_env)
