@@ -27,8 +27,10 @@ STOP_FOLLOWUP_MARKER = ".github/deploy-modes/aggressive-stop-followup-20261109"
 AI_TUNER_TRIAL_MARKER = ".github/deploy-modes/ai-tuner-trial-20261110"
 INCOME_ATTRIBUTION_MARKER = ".github/deploy-modes/income-attribution-20261110"
 GRID_PM_MARKER = ".github/deploy-modes/grid-pm-oneway-20261111"
-GRID_PM_BASE = "c1da221999b84ac9f81095950b8394db5490d15c"
+GRID_PM_BASE = "ae9c7e5949586b54e96043eb18ebc1533e6b0203"
+INCOME_ATTRIBUTION_REFRESH_MARKER = ".github/deploy-modes/income-attribution-refresh-20261111"
 INCOME_ATTRIBUTION_BASE = "6821072aef1a021f3f2920e7c84fc07b09d21454"
+INCOME_ATTRIBUTION_REFRESH_BASE = "2f9231f47a5654b4feecbbe997b952bdcd8e09fa"
 ZERO_SHA = "0" * 40
 
 
@@ -50,12 +52,16 @@ def select_deploy_mode(
                       if path.startswith(".github/deploy-modes/")]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
-    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, GRID_PM_MARKER}:
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
     if any(path == GRID_PM_MARKER for _, path in marker_changes):
         if marker_changes != [("A", GRID_PM_MARKER)]:
             raise DeployModeError("grid PM release requires one added marker")
         return "grid-pm-oneway"
+    if any(path == INCOME_ATTRIBUTION_REFRESH_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", INCOME_ATTRIBUTION_REFRESH_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
+            raise DeployModeError("income attribution refresh requires one added marker and an exact push base")
+        return "income-attribution"
     if any(path == INCOME_ATTRIBUTION_MARKER for _, path in marker_changes):
         if marker_changes != [("A", INCOME_ATTRIBUTION_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
             raise DeployModeError("income attribution requires one added marker and an exact push base")
@@ -117,6 +123,17 @@ def _read_changes(base: str, head: str) -> list[tuple[str, str]]:
 
 
 def _validate_income_scope(base: str, changes: list[tuple[str, str]]) -> None:
+    if ("A", INCOME_ATTRIBUTION_REFRESH_MARKER) in changes:
+        if base != INCOME_ATTRIBUTION_REFRESH_BASE:
+            raise DeployModeError("income attribution refresh must start from reviewed main")
+        allowed = {INCOME_ATTRIBUTION_REFRESH_MARKER,
+                   "scripts/select_deploy_mode.py", "scripts/reconcile_income_attribution.py",
+                   "scripts/scoped_income_attribution_release.py"}
+        for status, path in changes:
+            if status not in {"A", "M"} or not (path in allowed or path.startswith("shared/accounting/")
+                                                  or path.startswith("tests/") or path.startswith("docs/")):
+                raise DeployModeError("income attribution refresh scope contains unreviewed path: " + path)
+        return
     if base != INCOME_ATTRIBUTION_BASE:
         raise DeployModeError("income attribution push must start from reviewed main")
     exact = {
