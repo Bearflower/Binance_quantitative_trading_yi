@@ -27,7 +27,7 @@ STOP_FOLLOWUP_MARKER = ".github/deploy-modes/aggressive-stop-followup-20261109"
 AI_TUNER_TRIAL_MARKER = ".github/deploy-modes/ai-tuner-trial-20261110"
 INCOME_ATTRIBUTION_MARKER = ".github/deploy-modes/income-attribution-20261110"
 GRID_PM_MARKER = ".github/deploy-modes/grid-pm-oneway-20261111"
-GRID_PM_BASE = "35dee97d72a487fb52943ab76fb49f9ec75ce3ca"
+GRID_PM_BASE = "c1da221999b84ac9f81095950b8394db5490d15c"
 INCOME_ATTRIBUTION_BASE = "6821072aef1a021f3f2920e7c84fc07b09d21454"
 ZERO_SHA = "0" * 40
 
