@@ -2,11 +2,11 @@
 id: Binance_quantitative_trading-20261111-dashboard-closure-gaps
 类型: issue
 项目: Binance_quantitative_trading
-标题: 交易所收益已对齐，但看板绩效指标缺失且自动归属任务因证据冲突失败
+标题: 交易所收益已对齐、自动归属已恢复，但看板绩效指标仍缺失
 日期: 2026-11-11
 标签: [bug, dashboard, 收益口径, 绩效指标, 自动归属, 证据冲突]
 任务标识: dashboard_exchange_caliber_repair_2026-11
-状态: 部分修复，待复查
+状态: 自动归属已验收，绩效指标待修复
 审查: 已审查
 ---
 
@@ -27,13 +27,12 @@ id: Binance_quantitative_trading-20261111-dashboard-closure-gaps
 
 已定位 6 条冲突来自两张 PM 条件单：同策略 `trade_records` 在初次自动归属之后才补入，原订单证明中的 PM 算法单 ID、关联成交单 ID 和载荷摘要均未变化。修复使 PM 算法单证明保持稳定，同时仅在兼容旧的补充 `trade_record_ids` 字段时忽略该字段；策略、订单、算法单和摘要变化仍会被拦截。代码与测试记录见[本次修复报告](../../reports/income-attribution-proof-stability-hotfix-2026-11-11.md)。
 
-生产只读影子对账检查 209 条收入，冲突 0、覆盖缺口 0，找到 2 条新候选；补丁挂载写入成功后，自动归属 53→55 条，重跑候选 0。16:49 北京时间 `income-attribution.service` 手动运行返回 `Result=success`、`ExecMainStatus=0`，定时器仍 active。现行补丁为服务器 release 目录的只读源码挂载和 systemd drop-in；修复源码已推送至远端分支，下一次计划触发及正式镜像发布仍待验收。
+生产只读影子对账检查 209 条收入，冲突 0、覆盖缺口 0，找到 2 条新候选；补丁挂载写入成功后，自动归属 53→55 条，重跑候选 0。16:49 手动与 17:15 计划周期均成功。现有定时器的 CI 更新路径已加入主干，提交 `ae9c7e5949586b54e96043eb18ebc1533e6b0203` 经 [CI/CD 运行](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/42999571345) 正式部署成功。18:00 新镜像运行成功，209 条收入、候选 0、冲突 0、覆盖缺口 0；定时器 active，临时 drop-in 已移除。具体证据见[修复报告](../../reports/income-attribution-proof-stability-hotfix-2026-11-11.md)。
 
 ## 待处理
 
 1. 为绩效指标建立由交易所成交与收入事件推导的仓位生命周期数据，明确总胜率、夏普率、最大回撤的样本、时间窗和资金基数；样本不足时明确展示原因。
-2. 将已推送的自动归属代码修复并入主干和标准部署镜像，撤销临时 drop-in；确认新镜像仍通过影子对账。
-3. 验证归属定时任务连续至少两个计划周期成功，候选事件被幂等处理，历史不可变记录没有被改写。
+2. 继续观察正式镜像的后续计划周期，并对新增收入的自动归属做持续抽查。
 
 ## 归档验收
 
@@ -44,7 +43,7 @@ id: Binance_quantitative_trading-20261111-dashboard-closure-gaps
 
 ## 适用范围与修订
 
-本条是 2026-11-11 的生产状态快照，不宣称代码修复已完成。修复及生产验收完成后更新状态，再考虑归档看板修复任务。
+自动归属故障及正式发布已完成验收。看板绩效字段仍为 `null`，因此整体看板修复任务暂不归档。
 
 ## 关联
 

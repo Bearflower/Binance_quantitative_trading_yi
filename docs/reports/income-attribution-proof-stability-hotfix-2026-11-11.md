@@ -18,12 +18,14 @@
 
 已安装 `/etc/systemd/system/income-attribution.service.d/20261111-proof-stability.conf`，只替换 `ExecStart` 为带只读挂载的脚本，保留原镜像摘要、环境和输出路径。16:49 手动 `systemctl start income-attribution.service` 返回 `Result=success`、`ExecMainStatus=0`；任务产物显示候选 0、冲突 0、覆盖缺口 0；timer 为 active。
 
-17:15 的首个计划周期自动执行也返回 `Result=success`、`ExecMainStatus=0`；任务产物仍为 209 条收入、候选 0、冲突 0、覆盖缺口 0。下一计划周期为 18:15。
+17:15 的首个计划周期自动执行也返回 `Result=success`、`ExecMainStatus=0`；任务产物仍为 209 条收入、候选 0、冲突 0、覆盖缺口 0。18:00 的正式发布启动再次成功。
 
-## 后续验收与回退
+## 正式发布与验收
 
-需观察至少两次计划定时执行均成功；代码并入主干且新镜像部署后，移除上述 drop-in 与临时挂载，再复核同口径影子对账。修复源码已通过现有 SSH 代理转发推送至远端分支 `codex/dashboard-closure-audit-20261111`，尚待 PR 合并和正式镜像发布。临时脚本对当前 HRS 镜像摘要做精确校验，未来镜像变更前须先移除临时覆盖并发布正式修复。
+首次迁移脚本原先只接受旧 `income-attribution-20261110.timer` 为 active，已有 `income-attribution.timer` 时会被前置检查拦截。本次增加现有定时器的更新路径：保留策略容器和看板进程，拉取固定摘要的 HRS 镜像，备份原 systemd 单元和临时 drop-in，停用现有定时器并等待服务退出，替换单元、移除临时 drop-in、启动新服务及定时器；若启动或健康检查失败，则恢复原单元和 drop-in。发布模式仍按审定的主干基点和文件范围选择定向部署。相关发布测试包含成功更新和失败回退；会计及发布相关回归共 `205 passed, 5 skipped`，5 项跳过因缺少专用 PostgreSQL 测试 DSN。
 
-若热修复异常，可停止 timer，移除上述 drop-in，执行 `systemctl daemon-reload` 恢复原服务定义；原镜像和不可变证据均保留。恢复原定义会重新触发本次证据冲突，须在正式镜像修复上线后再启用。
+代码提交 `ae9c7e5949586b54e96043eb18ebc1533e6b0203` 已进入主干，通过 [GitHub Actions CI/CD](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/42999571345) 构建和 SSH 定向部署，部署任务成功。生产 `income-attribution.service` 指向该提交的 release 目录和 HRS 镜像 `sha256:da579e5727fcccc34e6011d991bcbd36f672e44e7a815ae0f207901c3c3cbfb0`；`income-attribution.timer` 为 active，临时 drop-in 已移除。18:00 部署时运行 `Result=success`、`ExecMainStatus=0`，处理 209 条收入，候选 0、冲突 0、覆盖缺口 0。release 状态为 `active`；看板 `/api/overview?type=monthly` 返回已发布的 `exchange-income-v1-derived-v1`、未归属 0。16:49、17:15 的热修复运行与 18:00 的正式镜像运行均成功。
+
+发布器在更新失败时从内存中的副本恢复此前单元和 drop-in；正式发布后若需人工回退，应以此前已验证的 release 及 CI 部署记录为依据，先停止定时器并确认服务退出，再恢复对应版本。不要单独恢复旧镜像而继续运行有冲突的归属逻辑。
 
 看板的胜率、夏普率和最大回撤仍为 `null`，属于独立的绩效序列建设与口径验收问题；本次修复不改变这些指标。
