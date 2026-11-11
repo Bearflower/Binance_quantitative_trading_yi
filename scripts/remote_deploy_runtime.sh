@@ -462,17 +462,30 @@ docker compose run -T --rm --no-deps grid-realtime \
   python -m strategies.grid.realtime.reference_store \
   --db-path /app/data/grid_realtime.sqlite3
 
+# The grid signal producer opens this journal during startup when its handoff
+# path is configured. Initialize it before any grid container is recreated.
+echo "🗄️  grid_execution schema 迁移（一次性）..."
+docker compose run -T --rm --no-deps grid-strategy \
+  python -m strategies.grid.execution.store \
+  --db-path /app/data/grid_execution.sqlite3
+
 # 4. 只更新镜像变了的容器（compose up -d 自动检测）
 # Docker Compose 重建失败可能留下形如「旧容器 ID_服务名」的 Created 容器。
 # 仅在正式容器仍运行且健康、残留已超过 5 分钟时清理；否则停止部署。
 python3 scripts/cleanup_compose_created.py
 # 保留路径不得用 --remove-orphans 清理未启用 profile 的采集器。
 echo "🔄 docker compose up -d..."
+GRID_COMPOSE_PROFILE=()
+GRID_EXTRA_HEALTH=""
+if grep -Eq '^GRID_EXECUTOR_DEPLOY_ENABLED=(true|1)$' .env; then
+  GRID_COMPOSE_PROFILE=(--profile grid-executor)
+  GRID_EXTRA_HEALTH="trading_system-grid-executor"
+fi
 if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then
   # Keep the database container stable too. A floating postgres:15-alpine
   # digest change could otherwise interrupt collection without changing the
   # collector's own ID/start time. Do not start dependencies implicitly.
-  KEEP_SERVICE_LIST=$(docker compose config --services) || {
+  KEEP_SERVICE_LIST=$(docker compose "${GRID_COMPOSE_PROFILE[@]}" config --services) || {
     echo "❌ Compose 服务清单不可用，拒绝保留路径"
     exit 1
   }
@@ -487,9 +500,9 @@ if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then
     echo "❌ 无可安全更新的服务，拒绝保留路径"
     exit 1
   fi
-  docker compose --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"
+  docker compose "${GRID_COMPOSE_PROFILE[@]}" --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"
 else
-  docker compose --parallel 1 up -d --remove-orphans
+  docker compose "${GRID_COMPOSE_PROFILE[@]}" --parallel 1 up -d --remove-orphans
 fi
 
 # ========== step 4.5：执行数据库 init-scripts（幂等）==========
@@ -756,7 +769,8 @@ for i in $(seq 1 60); do
     trading_system-mtcps-xau-calibrated-shadow \
     trading_system-new_coin trading_system-grid trading_system-grid-realtime \
     trading_system-aggtrade-collector ai-tuner ai-tuner-snapshot ai-tuner-funding-schedule \
-    trading_system-kline trading_system-kline-monitor data-backend dashboard-api; do
+    trading_system-kline trading_system-kline-monitor data-backend dashboard-api \
+    $GRID_EXTRA_HEALTH; do
     state=$(docker inspect -f '{{.State.Status}}' "$container" 2>/dev/null || echo missing)
     health=$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$container" 2>/dev/null || echo missing)
     if [ "$state" != "running" ] || { [ "$health" != "healthy" ] && [ "$health" != "none" ]; }; then
@@ -781,9 +795,9 @@ docker ps --format "table {{.Names}}\t{{.Status}}" | grep -E "trading_system|ai-
 
 # 验证本批 journald 服务的实际驱动与可查询记录。
 # 只打印服务名和容器 ID，不在 Actions 日志中输出业务日志内容。
-JOURNAL_SERVICES=$(docker compose config --format json | python3 -c 'import json,sys; services=json.load(sys.stdin)["services"]; print(" ".join(name for name,config in services.items() if config.get("logging",{}).get("driver")=="journald"))')
+JOURNAL_SERVICES=$(docker compose "${GRID_COMPOSE_PROFILE[@]}" config --format json | python3 -c 'import json,sys; services=json.load(sys.stdin)["services"]; print(" ".join(name for name,config in services.items() if config.get("logging",{}).get("driver")=="journald"))')
 for service in $JOURNAL_SERVICES; do
-  cid=$(docker compose ps -q "$service")
+  cid=$(docker compose "${GRID_COMPOSE_PROFILE[@]}" ps -q "$service")
   if [ -z "$cid" ] || [ "$(docker inspect -f '{{.HostConfig.LogConfig.Type}}' "$cid")" != "journald" ]; then
     echo "❌ $service 未使用 journald 日志驱动"
     exit 1

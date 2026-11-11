@@ -355,16 +355,22 @@ class BinanceClient:
         else:
             # 公共端点：PM账户优先使用 papi 域名和映射，无映射时回退到 fapi 域名
             if self.use_unified_account:
-                mapped_endpoint = self._get_endpoint(endpoint)
+                if endpoint.startswith("/papi/"):
+                    base_url = self.base_url
+                    mapped_endpoint = endpoint
+                else:
+                    mapped_endpoint = self._get_endpoint(endpoint)
                 if mapped_endpoint != endpoint:
                     # 有映射关系，使用 papi 域名
                     base_url = self.base_url  # https://papi.binance.com
                     endpoint = mapped_endpoint
-                else:
+                elif not endpoint.startswith("/papi/"):
                     # 无映射关系（如 exchangeInfo），回退到 fapi 域名
                     base_url = "https://fapi.binance.com"
             else:
-                base_url = "https://fapi.binance.com"
+                # 普通 USD-M 测试网的公开接口和 listenKey 也必须走测试网。
+                # 与签名请求使用同一已选 base_url，避免行情/账户跨环境混用。
+                base_url = self.base_url
         
         url = f"{base_url}{endpoint}"
         

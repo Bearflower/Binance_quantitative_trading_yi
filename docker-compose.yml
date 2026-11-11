@@ -348,6 +348,7 @@ services:
     environment:
       - STRATEGY_NAME=grid
       - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
+      - GRID_EXECUTION_HANDOFF_DB=/app/data/grid_execution.sqlite3
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=grid
     volumes:
       - ./logs/grid:/app/logs
@@ -404,6 +405,46 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  # 独立子账号 ETHUSDT 订单网格；双重门禁：Compose profile + MODE=off 默认值。
+  grid-executor:
+    profiles: ["grid-executor"]
+    image: ghcr.io/bearflower/trading-grid:latest
+    container_name: trading_system-grid-executor
+    restart: unless-stopped
+    command: ["python", "-m", "strategies.grid.execution.main"]
+    environment:
+      - GRID_EXECUTION_MODE=${GRID_EXECUTION_MODE:-off}
+      - GRID_SUBACCOUNT_API_KEY=${GRID_SUBACCOUNT_API_KEY:-}
+      - GRID_SUBACCOUNT_API_SECRET=${GRID_SUBACCOUNT_API_SECRET:-}
+      - GRID_MAX_MARGIN_USDT=${GRID_MAX_MARGIN_USDT:-}
+      - GRID_MAX_NOTIONAL_USDT=${GRID_MAX_NOTIONAL_USDT:-}
+      - GRID_MAX_DAILY_LOSS_USDT=${GRID_MAX_DAILY_LOSS_USDT:-}
+      - GRID_MAX_DRAWDOWN_USDT=${GRID_MAX_DRAWDOWN_USDT:-}
+      - GRID_MAX_OPEN_ORDERS=${GRID_MAX_OPEN_ORDERS:-}
+      - GRID_EXPECTED_LEVERAGE=${GRID_EXPECTED_LEVERAGE:-}
+      - GRID_TESTNET_WS_BASE=${GRID_TESTNET_WS_BASE:-}
+      - FEISHU_WEBHOOK_GRID=${FEISHU_WEBHOOK_GRID:-}
+      - GRID_EXECUTION_DB=/app/data/grid_execution.sqlite3
+      - GRID_EXECUTION_LOCK=/app/data/grid_execution.lock
+      - GRID_EXECUTION_HEARTBEAT=/app/data/grid_execution_heartbeat.json
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data/grid:/app/data
+      - ./logs/grid:/app/logs
+    networks:
+      - trading-network
+    depends_on:
+      grid-strategy:
+        condition: service_started
+    logging:
+      driver: "journald"
+    healthcheck:
+      test: ["CMD", "python", "-m", "strategies.grid.execution.main", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
 
   # ============================================
   # aggTrades 常驻落库器（grid V2.5.4 轨道B：攒 30 天统计样本，2026-10-08 起算）

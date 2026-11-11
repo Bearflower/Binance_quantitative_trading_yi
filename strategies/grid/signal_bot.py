@@ -3,10 +3,13 @@
 半自动信号灯系统，自动分析市场状态并推送网格参数
 """
 import asyncio
+import hashlib
+import json
 import os
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from enum import Enum
 from datetime import datetime
 from decimal import Decimal
 from typing import Dict, Optional
@@ -26,6 +29,7 @@ from .margin_advisor import MarginAdvisor, MarginAdvice, DANGEROUS_STATES
 from .realtime.reference_store import (ExportStore, SessionState, check_schema,
                                         connect, make_reference_id)
 from .realtime.rules import ReferenceSnapshot
+from .execution.store import DecisionStore
 
 
 logger = structlog.get_logger()
@@ -220,6 +224,11 @@ class GridSignalBot:
         self._state: Optional[SessionState] = None
         self._metadata: Dict = {}
         self._init_export()
+        self._decision_store: Optional[DecisionStore] = None
+        decision_db = os.environ.get("GRID_EXECUTION_HANDOFF_DB", "").strip()
+        if decision_db:
+            # A configured handoff is a safety dependency. Migration must run first.
+            self._decision_store = DecisionStore(decision_db)
 
         logger.info(
             "网格信号灯机器人初始化完成",
@@ -452,6 +461,12 @@ class GridSignalBot:
                     for symbol in self.symbols:
                         try:
                             signal = await self.run_once(symbol)
+                            try:
+                                self._publish_decision(signal)
+                            except (sqlite3.Error, RuntimeError, ValueError) as exc:
+                                # A failed handoff makes execution stale, but
+                                # must not suppress the existing human alert.
+                                logger.error("网格执行决策落库失败", error=str(exc))
 
                             # 检查是否需要推送
                             if self._should_notify(signal):
@@ -477,6 +492,47 @@ class GridSignalBot:
                     await asyncio.sleep(60)
         finally:
             self._shutdown_export()
+            if self._decision_store is not None:
+                self._decision_store.close()
+
+    def _publish_decision(self, signal: GridSignal) -> Optional[str]:
+        """Persist every structured decision before notification/cooldown logic."""
+        if self._decision_store is None or signal.symbol != "ETHUSDT":
+            return None
+        calculated_at_ms = _now_ms()
+        times = signal.market_analysis.last_closed_kline_ms or {
+            "15m": 0, "1h": 0, "4h": 0,
+        }
+        limits = {"15m": 30 * 60 * 1000, "1h": 90 * 60 * 1000,
+                  "4h": 5 * 60 * 60 * 1000}
+        fresh = all(0 < calculated_at_ms - times[tf] <= age
+                    for tf, age in limits.items())
+
+        def encode(value):
+            if isinstance(value, Decimal):
+                return str(value)
+            if isinstance(value, Enum):
+                return value.name
+            if isinstance(value, dict):
+                return {key: encode(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [encode(item) for item in value]
+            return value
+
+        payload = {
+            "symbol": signal.symbol,
+            "state": signal.market_analysis.state.name,
+            "calculated_at_ms": calculated_at_ms,
+            "last_closed_kline_ms": times,
+            "executable": fresh,
+            "market_analysis": encode(asdict(signal.market_analysis)),
+            "grid_params": encode(asdict(signal.grid_params)) if signal.grid_params else None,
+            "feasibility": encode(asdict(signal.capital_feasibility)) if signal.capital_feasibility else None,
+            "margin_used": str(signal.margin_used) if signal.margin_used is not None else None,
+        }
+        config_hash = self._metadata.get("config_hash") or hashlib.sha256(
+            json.dumps(self.config, sort_keys=True, default=str).encode()).hexdigest()
+        return self._decision_store.publish(payload, config_hash)
 
     def _select_margin_for_feasibility(self, advice: Optional[MarginAdvice]) -> Decimal:
         """

@@ -256,7 +256,7 @@ class TestGridStrategy:
     def mock_clients(self):
         """创建模拟客户端"""
         mock_binance = Mock(spec=BinanceClient)
-        mock_binance.get_ticker_price = AsyncMock(return_value={'price': '60000'})
+        mock_binance.get_ticker_price = AsyncMock(return_value=Decimal('60000'))
         mock_binance.get_account_balance = AsyncMock(return_value={'USDT': 10000})
         mock_binance.place_order = AsyncMock(return_value={'orderId': 12345})
         mock_binance.cancel_order = AsyncMock(return_value={})
