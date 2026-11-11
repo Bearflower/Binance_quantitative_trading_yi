@@ -74,6 +74,10 @@ def test_late_matching_trade_record_preserves_existing_algo_derivation():
                                 [], [old], {})
     assert after["conflicts"] == []
     assert after["derived_rows"] == []
+    changed_link = [{**links[0], "payload_sha256": "different"}]
+    changed = plan_reconciliation([_income()], [_fill()], [_trade()],
+                                  changed_link, conditions, [], [old], {})
+    assert changed["conflicts"][0]["reason"] == "derived_evidence_conflict"
 
 
 @pytest.mark.asyncio
