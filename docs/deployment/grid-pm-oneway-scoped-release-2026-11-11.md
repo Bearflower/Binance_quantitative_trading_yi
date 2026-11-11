@@ -9,6 +9,7 @@
 - 服务器独立构建候选镜像 `grid-stage:8966ab0f`（image ID `sha256:a17e721ab608f5feed64c5dc1c987acfa9197ddb67bafa739e68f006a9fef4a2`）。镜像内 `VERSION` 与五个关键源码校验和均与本地提交一致。
 - 候选镜像在 `--network none`、`GRID_EXECUTION_MODE=off` 下启动并正常退出；独立临时目录中的执行账本迁移成功。生产 `./data/grid` 未被迁移或改写。
 - 生产 `trading_system-grid` 仍运行原固定镜像 `ghcr.io/bearflower/trading-grid@sha256:148deaca0d6242c9507f3648ebb5ef6ea8411b3482eba2a09b55bf37cf7ab6c5`；`grid-executor` 容器不存在，执行模式为 `off` 或未设置。
+- `scripts/preflight_grid_scoped_release.py` 在生产以只读方式通过：以当前 pin、原 Compose 和临时网格覆盖文件渲染有效配置，变化仅为 `grid-strategy` 的镜像与决策交接环境项。该脚本不执行发布。
 
 ## 当前不能直接激活候选镜像的原因
 
