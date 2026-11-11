@@ -6,7 +6,7 @@ id: Binance_quantitative_trading-20261111-dashboard-closure-gaps
 日期: 2026-11-11
 标签: [bug, dashboard, 收益口径, 绩效指标, 自动归属, 证据冲突]
 任务标识: dashboard_exchange_caliber_repair_2026-11
-状态: 待修复
+状态: 部分修复，待复查
 审查: 已审查
 ---
 
@@ -23,11 +23,17 @@ id: Binance_quantitative_trading-20261111-dashboard-closure-gaps
 - `dashboard/backend/services/exchange_ledger.py` 当前有意将上述绩效字段置为 `null`，尚未以可信的仓位生命周期样本重新计算。不能把旧策略本地统计直接填回交易所口径看板。
 - `scripts/reconcile_income_attribution.py` 对既有不可变归属记录使用完整证据 JSON 比较，任何变化均产生冲突并阻止整批写入。冲突记录的原归属均为 `btc_eth_aggressive`，`exact_order`；相关订单现在各有一条同策略 `trade_records`。新增成交记录使证明材料变丰富，是目前最可能的冲突触发原因；修复前须比较新旧证据逐字段确认，并检查没有真实归属变更。不得直接覆写原证据或跳过冲突。
 
+## 2026-11-11 修复进展
+
+已定位 6 条冲突来自两张 PM 条件单：同策略 `trade_records` 在初次自动归属之后才补入，原订单证明中的 PM 算法单 ID、关联成交单 ID 和载荷摘要均未变化。修复使 PM 算法单证明保持稳定，同时仅在兼容旧的补充 `trade_record_ids` 字段时忽略该字段；策略、订单、算法单和摘要变化仍会被拦截。代码与测试记录见[本次修复报告](../../reports/income-attribution-proof-stability-hotfix-2026-11-11.md)。
+
+生产只读影子对账检查 209 条收入，冲突 0、覆盖缺口 0，找到 2 条新候选；补丁挂载写入成功后，自动归属 53→55 条，重跑候选 0。16:49 北京时间 `income-attribution.service` 手动运行返回 `Result=success`、`ExecMainStatus=0`，定时器仍 active。现行补丁为服务器 release 目录的只读源码挂载和 systemd drop-in；主仓库推送及下一次计划触发验收仍待完成。
+
 ## 待处理
 
 1. 为绩效指标建立由交易所成交与收入事件推导的仓位生命周期数据，明确总胜率、夏普率、最大回撤的样本、时间窗和资金基数；样本不足时明确展示原因。
-2. 对 6 条冲突逐项比较原证据与新证据。仅在归属、订单和原证据完全可验证且变化属于单调补充时，设计可审计的证据升级或稳定比较规则；真实冲突仍须阻断写入。
-3. 修复后部署，并验证归属定时任务连续至少两个计划周期成功，候选事件被幂等处理，历史不可变记录无无证据改写。
+2. 将本次自动归属代码修复推送并纳入标准部署镜像，撤销临时 drop-in；确认新镜像仍通过影子对账。
+3. 验证归属定时任务连续至少两个计划周期成功，候选事件被幂等处理，历史不可变记录没有被改写。
 
 ## 归档验收
 
@@ -42,4 +48,4 @@ id: Binance_quantitative_trading-20261111-dashboard-closure-gaps
 
 ## 关联
 
-[自动归属发布记录](../../reports/exchange-auto-attribution-release-2026-11-10.md)、[收益看板适配器](../../../dashboard/backend/services/exchange_ledger.py)、[自动归属对账器](../../../scripts/reconcile_income_attribution.py)、[订单归属证据](../../../shared/accounting/order_evidence.py)。
+[自动归属发布记录](https://github.com/Bearflower/Binance_quantitative_trading_yi/blob/main/docs/reports/exchange-auto-attribution-release-2026-11-10.md)、[收益看板适配器](https://github.com/Bearflower/Binance_quantitative_trading_yi/blob/main/dashboard/backend/services/exchange_ledger.py)、[自动归属对账器](https://github.com/Bearflower/Binance_quantitative_trading_yi/blob/main/scripts/reconcile_income_attribution.py)、[订单归属证据](https://github.com/Bearflower/Binance_quantitative_trading_yi/blob/main/shared/accounting/order_evidence.py)。

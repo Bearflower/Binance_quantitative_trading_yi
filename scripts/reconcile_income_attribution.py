@@ -80,12 +80,23 @@ def _json_equal(left, right):
     return left == right
 
 
+def _stable_order_evidence(proof):
+    if isinstance(proof, str):
+        proof = json.loads(proof)
+    if isinstance(proof, dict) and proof.get("source_kind") == "pm_algo_link":
+        return {key: value for key, value in proof.items() if key != "trade_record_ids"}
+    return proof
+
+
 def _same_derivation(old, new):
     if old.get("method") != new["method"] or old.get("algorithm_version") != new["algorithm_version"]:
         return False
     left, right = old.get("evidence"), new["evidence"]
     if isinstance(left, str):
         left = json.loads(left)
+    if new["method"] == "exact_order" and isinstance(left, dict):
+        left = {**left, "order_evidence": _stable_order_evidence(left.get("order_evidence"))}
+        right = {**right, "order_evidence": _stable_order_evidence(right.get("order_evidence"))}
     if new["method"] == "verified_position_interval" and isinstance(left, dict):
         left = {key: value for key, value in left.items()
                 if key not in {"verification_cutoff", "verification_qty"}}
@@ -268,7 +279,8 @@ def apply_plan(connection, plan, *, coverage_complete):
                 if (not saved or saved["strategy"] != row["strategy"]
                         or saved["source_kind"] != row["source_kind"]
                         or saved["source_id"] != row["source_id"]
-                        or not _json_equal(saved["evidence"], row["evidence"])):
+                        or not _json_equal(_stable_order_evidence(saved["evidence"]),
+                                           _stable_order_evidence(row["evidence"]))):
                     raise ValueError("immutable order evidence conflict")
             for row in plan["derived_rows"]:
                 fact = await connection.fetchrow(
