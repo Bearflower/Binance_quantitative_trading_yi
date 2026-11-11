@@ -18,6 +18,8 @@
 
 已安装 `/etc/systemd/system/income-attribution.service.d/20261111-proof-stability.conf`，只替换 `ExecStart` 为带只读挂载的脚本，保留原镜像摘要、环境和输出路径。16:49 手动 `systemctl start income-attribution.service` 返回 `Result=success`、`ExecMainStatus=0`；任务产物显示候选 0、冲突 0、覆盖缺口 0；timer 为 active。
 
+17:15 的首个计划周期自动执行也返回 `Result=success`、`ExecMainStatus=0`；任务产物仍为 209 条收入、候选 0、冲突 0、覆盖缺口 0。下一计划周期为 18:15。
+
 ## 后续验收与回退
 
 需观察至少两次计划定时执行均成功；代码并入主干且新镜像部署后，移除上述 drop-in 与临时挂载，再复核同口径影子对账。修复源码已通过现有 SSH 代理转发推送至远端分支 `codex/dashboard-closure-audit-20261111`，尚待 PR 合并和正式镜像发布。临时脚本对当前 HRS 镜像摘要做精确校验，未来镜像变更前须先移除临时覆盖并发布正式修复。
