@@ -5,6 +5,7 @@
 from dataclasses import dataclass
 from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple, Union
 import asyncio
+import json
 import math
 import os
 import time
@@ -2527,6 +2528,8 @@ class NewCoinStrategy(BaseStrategy):
             entry['time_exit_status'] = 'unknown'
             entry['tp_anchor_quantity'] = None
             entry.pop('recovery_position_id', None)
+            entry.pop('recovery_entry_order_id', None)
+            entry.pop('recovery_tp1_algo_id', None)
             entry.pop('recovery_target1_candidate', None)
             entry.pop('recovery_target2_candidate', None)
             self._backfill_tracking_atr(entry, atr_map.get(symbol) if atr_map else None)
@@ -2565,7 +2568,7 @@ class NewCoinStrategy(BaseStrategy):
         try:
             rows = await executor.db.fetch_all(
                 """
-                SELECT symbol, position_id, status, quantity, entry_price, opened_at
+                SELECT symbol, position_id, status, quantity, entry_price, opened_at, metadata
                 FROM new_coin.short_positions
                 WHERE symbol=$1 AND status='open'
                 """,
@@ -2576,6 +2579,19 @@ class NewCoinStrategy(BaseStrategy):
             row = rows[0]
             if row.get('symbol') != symbol or row.get('status') != 'open' or not row.get('position_id'):
                 raise ValueError('open record identity missing')
+            metadata = row.get('metadata')
+            if isinstance(metadata, str):
+                metadata = json.loads(metadata)
+            if metadata is not None:
+                if not isinstance(metadata, dict):
+                    raise ValueError('invalid open record metadata')
+                entry_order_id = metadata.get('entry_order_id')
+                tp1_algo_id = metadata.get('tp1_algo_id')
+                if (type(entry_order_id) is not int or entry_order_id <= 0
+                        or row['position_id'] != f'{symbol}_{entry_order_id}'
+                        or (tp1_algo_id is not None and
+                            (type(tp1_algo_id) is not int or tp1_algo_id <= 0))):
+                    raise ValueError('open record exchange identity mismatch')
             opened = to_aware_utc(row.get('opened_at'))
             if opened is None or opened > datetime.now(timezone.utc):
                 raise ValueError('opening time unavailable/future')
@@ -2598,6 +2614,10 @@ class NewCoinStrategy(BaseStrategy):
         entry['entry_time'] = opened
         entry['tp_anchor_quantity'] = float(anchor)
         entry['recovery_position_id'] = row['position_id']
+        if metadata is not None:
+            entry['recovery_entry_order_id'] = entry_order_id
+            if tp1_algo_id is not None:
+                entry['recovery_tp1_algo_id'] = tp1_algo_id
         pos['entry_time'] = opened.isoformat()
         pos['recovery_position_id'] = row['position_id']
 

@@ -345,6 +345,7 @@ class TestNewCoinFillFacts:
         assert call_kwargs['symbol'] == 'BTCUSDT'
         assert call_kwargs['quantity'] == Decimal('0.4')
         assert call_kwargs['entry_price'] == Decimal('49500')
+        assert call_kwargs['entry_order_id'] == 1001
         # _save_order 应该收到显式 symbol= 参数（B6b 签名变化）
         executor._save_order.assert_called_once()
         save_kwargs = executor._save_order.call_args[1]

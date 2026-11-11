@@ -35,3 +35,10 @@
 - 同日 15:49–15:57 北京时间：独立复审三轮反馈已修复。STOP 意图日志 v2 记录预写/准备 POST，明确拒单关闭，未知响应保留；极端行情撤单不确定时以旧 algo 状态恢复；硬止损与移动止损分别回填；人工复核事件可继续重扫。四条旧快照缺批次身份时新开仓拒绝。最新 53 个 STOP 定向测试通过，语法和 diff 检查通过；提交 `54fa0195`，未发布。
 - 生产只读 `strategy_gate --revision 2 --require-reduced` 再次通过，权益约 518.2783 USDT、空仓无普通/条件挂单、分配哈希不变。旧 BNB/ETH STOP 撤销无实际订单，SOL/XRP STOP 有实际成交，但均缺首单身份，不推定批次归属。
 - 发布路径调查：CI 仅 main 推送自动部署，普通模式会受活动 scoped pin 阻断；既有 `strategy-risk-followup` manifest 绑定旧基线 `8991d03d` 和旧发布范围，不能复用。需要为当前 pin `6279ded8` 新建限定发布模式和 manifest，不能直接推本隔离分支或走全量部署。
+
+## 2026-11-11 代码续修
+
+- 隔离分支 `codex/seven-code-gaps-20261111` 基于主线 2f9231f4；主工作区的其他未提交改动未动。
+- 新币首单/TP1 身份持久化、恢复证据和实时重验、失败平仓保留跟踪均已实现。TDD 先红后绿；新币相关定向 63 passed、6 deselected。
+- AI Tuner 增加不可执行入场信号计数与全窗安全提示，自动分配增加只读影子预览，现金流 ROI 增加严格桥接计算和看板未知态。
+- 扩大回归：AI Tuner/分配 89 passed；现金流/看板 14 passed；新币排除既有失效文件与 HRS 旧 mock 后 301 passed、6 deselected。新币完整目录 301 passed、16 failed、6 deselected；16 个失败均来自主线已失效的 `_backfill_anchor_quantity` 测试。尚未发布。

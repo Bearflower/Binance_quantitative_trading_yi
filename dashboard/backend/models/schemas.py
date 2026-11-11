@@ -310,6 +310,11 @@ class ReturnsData(BaseModel):
 
     cashflow_adjusted: bool = False
     metric_basis: str = "unadjusted_equity_change"
+    investment_return_yield: Optional[float] = Field(
+        None, description="现金流调整后的投资收益率（百分比）；缺资金流水和时点估值时为 null")
+    investment_return_unavailable: bool = True
+    investment_return_unavailable_reasons: list[str] = Field(
+        default_factory=lambda: ["cashflow_events_unavailable", "event_time_equity_unavailable"])
 
     period: str = Field(..., description="周期：daily/weekly/monthly")
     equity: str = Field("0", description="当前净资产")

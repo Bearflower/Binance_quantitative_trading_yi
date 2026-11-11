@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from typing import Awaitable, Callable, Dict, Any, Optional, List, Tuple, TYPE_CHECKING
 import asyncio
+import json
 import os
 import time
 from decimal import Decimal, InvalidOperation
@@ -64,6 +65,7 @@ from shared.position_baseline import (
     calc_position_margin,
 )
 from shared.utils import to_aware_utc
+from .recovery_evidence import verify_unreduced_short
 # B6b: 真实成交均价解析（avg_price / avgPrice / 对象属性统一入口）
 # 说明：该助手属 B6c 工作流、尚未提交进 shared/protection_retry（HEAD 中不存在）。
 # 若此处直接 import，则镜像内 shared 为旧版 → ImportError → 容器崩溃重启（2026-10-15 已发生一次）。
@@ -624,6 +626,7 @@ class TradingExecutor:
                 entry_quantity=quantity,
                 atr=atr,
             )
+            self.position_tracking[symbol]['entry_order_id'] = entry_order_id
 
             # 记录初始持仓数量（用于止盈成交检测）
             self._last_tracked_qty[symbol] = float(quantity)
@@ -633,6 +636,7 @@ class TradingExecutor:
                 symbol=symbol,
                 quantity=quantity,
                 entry_price=entry_price_decimal,
+                entry_order_id=entry_order_id,
             )
 
             # 14. 设置止损止盈（根据配置选择策略）
@@ -1694,6 +1698,7 @@ class TradingExecutor:
         quantity: Decimal,
         entry_price: Decimal,
         position_id: Optional[str] = None,
+        entry_order_id: Optional[int] = None,
     ) -> None:
         """
         开仓成功后，往 new_coin.short_positions 表插入一条记录。
@@ -1706,18 +1711,22 @@ class TradingExecutor:
             symbol: 交易对
             quantity: 开仓数量（正数）
             entry_price: 入场价格
-            position_id: 可选手工指定的 position_id，默认使用 symbol + 时间戳生成
+            position_id: 可选手工指定的 position_id，默认使用 symbol + 首单号生成
+            entry_order_id: 交易所返回的首单号，恢复时用于绑定逐笔成交
         """
+        if type(entry_order_id) is not int or entry_order_id <= 0:
+            logger.warning('首单号缺失，跳过恢复身份记录但继续设置保护单', symbol=symbol)
+            return
         try:
             # opened_at 列为 TIMESTAMP（无时区），必须绑定 naive datetime
             # 容器时区为 UTC，datetime.now() 即为 naive UTC（与项目其他落库代码一致）
             now = datetime.now()
-            pid = position_id or f"{symbol}_{int(now.timestamp())}"
+            pid = position_id or f"{symbol}_{entry_order_id}"
             await self.db.execute(
                 """
                 INSERT INTO new_coin.short_positions (
-                    symbol, position_id, quantity, entry_price, status, opened_at
-                ) VALUES ($1, $2, $3, $4, 'open', $5)
+                    symbol, position_id, quantity, entry_price, status, opened_at, metadata
+                ) VALUES ($1, $2, $3, $4, 'open', $5, $6::jsonb)
                 ON CONFLICT (position_id) DO NOTHING
                 """,
                 symbol,
@@ -1725,6 +1734,7 @@ class TradingExecutor:
                 str(quantity),
                 str(entry_price),
                 now,
+                json.dumps({'schema': 1, 'entry_order_id': entry_order_id}),
             )
             logger.info(
                 "short_positions 持仓记录已写入",
@@ -1739,6 +1749,30 @@ class TradingExecutor:
                 symbol=symbol,
                 error=str(e),
             )
+
+    async def _persist_tp1_identity(self, symbol: str, algo_id: int) -> bool:
+        """Bind the initial TP1 to its exact open entry for later read-only recovery."""
+        entry_order_id = self.position_tracking.get(symbol, {}).get('entry_order_id')
+        if (type(entry_order_id) is not int or entry_order_id <= 0
+                or type(algo_id) is not int or algo_id <= 0):
+            return False
+        try:
+            result = await self.db.execute(
+                """
+                UPDATE new_coin.short_positions
+                SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb),
+                                         '{tp1_algo_id}', to_jsonb($2::bigint), true)
+                WHERE position_id=$1 AND status='open'
+                  AND metadata->>'entry_order_id'=$3
+                  AND NOT (metadata ? 'tp1_algo_id')
+                """,
+                f"{symbol}_{entry_order_id}", algo_id, str(entry_order_id),
+            )
+            return result == 'UPDATE 1'
+        except Exception as exc:
+            logger.warning('TP1 身份未能持久绑定，恢复仓保持待核',
+                           symbol=symbol, reason=type(exc).__name__)
+            return False
 
     async def _update_short_position_closed(
         self,
@@ -2208,8 +2242,10 @@ class TradingExecutor:
                     await record_condition_order(
                         self.db, "new_coin", symbol,
                         algo_id=tp1_result['algoId'],
-                        order_type="TAKE_PROFIT"
+                        order_type="TAKE_PROFIT",
+                        tp_level=1,
                     )
+                    await self._persist_tp1_identity(symbol, tp1_result['algoId'])
 
                 logger.info(
                     f"设置第一目标止盈: {symbol}",
@@ -2470,19 +2506,38 @@ class TradingExecutor:
         """
         try:
             tracking = self.position_tracking.get(symbol, {})
-            if tracking.get('time_exit_status') in ('unknown', 'review_required'):
-                if self.should_notify(('time_exit_unknown', symbol), self.alert_throttle_seconds):
-                    logger.warning('持仓时间退出证据未确认，仅提醒不自动时间平仓', symbol=symbol)
-                return
             # 防御性规范化：entry_time 可能来自 ISO 字符串（如重启后的持仓重建流程），
             # 统一转为 aware datetime 后再相减，避免 TypeError 导致止损检查失效
             normalized_entry_time = self._normalize_entry_time(symbol, entry_time, "时间止损")
             if normalized_entry_time is None:
                 return
+            now = datetime.now(timezone.utc)
+            holding_hours = (now - normalized_entry_time).total_seconds() / 3600
+            if holding_hours < self.max_holding_hours:
+                return
+            if tracking.get('time_exit_status') in ('unknown', 'review_required'):
+                # A recovered lot is allowed only after a fresh signed proof on
+                # the exact, unreduced entry. Never cache this authorization.
+                verified = False
+                if (tracking.get('time_exit_status') == 'review_required'
+                        and tracking.get('recovery_position_id')
+                        == f"{symbol}_{tracking.get('recovery_entry_order_id')}"
+                        and not tracking.get('target1_reached')):
+                    verified = await verify_unreduced_short(
+                        self.binance_api, symbol=symbol,
+                        entry_order_id=tracking.get('recovery_entry_order_id'),
+                        tp1_algo_id=tracking.get('recovery_tp1_algo_id'),
+                        opened_at=normalized_entry_time,
+                        anchor=Decimal(str(tracking.get('tp_anchor_quantity'))),
+                        entry_price=Decimal(str(tracking.get('entry_price'))),
+                        remaining=Decimal(str(tracking.get('remaining_quantity'))),
+                        now=now,
+                    )
+                if not verified:
+                    if self.should_notify(('time_exit_unknown', symbol), self.alert_throttle_seconds):
+                        logger.warning('持仓时间退出证据未确认，仅提醒不自动时间平仓', symbol=symbol)
+                    return
 
-            # 计算持仓时长
-            holding_hours = (datetime.now(timezone.utc) - normalized_entry_time).total_seconds() / 3600
-            
             if holding_hours >= self.max_holding_hours:
                 # 检查是否达到第一目标
                 tracking = self.position_tracking.get(symbol, {})
@@ -2509,7 +2564,10 @@ class TradingExecutor:
                     )
                     
                     # 平仓100%
-                    await self._close_position(symbol, self.close_percent, "时间止损")
+                    closed = await self._close_position(symbol, self.close_percent, "时间止损")
+                    if not closed:
+                        logger.warning('时间止损平仓未确认，保留持仓跟踪以便重试', symbol=symbol)
+                        return
                     
                     # 清除持仓跟踪（幂等）
                     self.clear_position_tracking(symbol)

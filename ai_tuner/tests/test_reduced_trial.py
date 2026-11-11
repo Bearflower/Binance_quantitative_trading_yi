@@ -171,6 +171,16 @@ def test_real_signal_without_order_funnel_evidence_blocks_health_claim():
     assert "execution_funnel_unverified" in result["reasons"]
 
 
+def test_all_aggressive_signals_infeasible_requires_safety_review():
+    evidence = snapshot()
+    evidence["strategy_id"] = "btc_eth_aggressive"
+    evidence["signals"]["real_signals"] = 2
+    evidence["signals"]["infeasible_entry_signals"] = 2
+    result = assess_snapshot(evidence, now=NOW, weekly=False)
+    assert result["status"] == "SAFETY_REVIEW"
+    assert "all_signals_entry_infeasible" in result["reasons"]
+
+
 def test_claimed_position_needs_full_adverse_stop():
     positions = [{"symbol": "ONUSDT", "positionAmt": "3", "positionSide": "BOTH",
                   "entryPrice": "1", "markPrice": "1"}]

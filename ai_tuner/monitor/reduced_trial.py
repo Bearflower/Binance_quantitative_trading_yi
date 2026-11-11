@@ -172,6 +172,10 @@ WHERE claim_state IN ('PENDING','ACTIVE')"""
 _AGGRESSIVE_SIGNALS_SQL = """SELECT count(*) AS real_signals,
 count(*) FILTER (WHERE status='executed') AS executed_signals,
 count(*) FILTER (WHERE status='cancelled') AS unresolved_signals,
+count(*) FILTER (WHERE status='cancelled' AND
+  (metadata->>'skip_reason' ILIKE '%take profit or remainder infeasible%'
+   OR metadata->>'reject_reason' ILIKE '%take profit or remainder infeasible%'))
+  AS infeasible_entry_signals,
 0::bigint AS shadow_signals
 FROM btc_eth_aggressive.trade_signals WHERE created_at >= $1 AND created_at < $2"""
 _HRS_SIGNALS_SQL = """SELECT
@@ -390,6 +394,12 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
         missing.append("signals_unverified")
     elif signals["real_signals"] > 0 and evidence.get("execution_funnel_verified") is not True:
         missing.append("execution_funnel_unverified")
+    if (isinstance(signals, Mapping) and evidence.get('strategy_id') == 'btc_eth_aggressive'
+            and isinstance(signals.get('real_signals'), int)
+            and isinstance(signals.get('infeasible_entry_signals'), int)
+            and signals['real_signals'] > 0
+            and signals['infeasible_entry_signals'] >= signals['real_signals']):
+        safety.append('all_signals_entry_infeasible')
 
     income = evidence.get("income")
     net = None

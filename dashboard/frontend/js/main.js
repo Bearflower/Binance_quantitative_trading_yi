@@ -442,12 +442,19 @@ async function loadReturns(period) {
     const startEl = document.querySelector('#returns-start');
     const pnlEl = document.querySelector('#returns-pnl');
     const hintEl = document.querySelector('#returns-hint');
+    const investmentEl = document.querySelector('#returns-investment');
     if (!yieldEl) return;
 
     yieldEl.classList.add('updating');
 
     try {
         const data = await api.getAccountReturns(period);
+        if (investmentEl) {
+            investmentEl.textContent = data.investment_return_unavailable === false &&
+                Number.isFinite(data.investment_return_yield)
+                ? `现金流调整投资收益率：${formatSignedNumber(data.investment_return_yield)}`
+                : '现金流调整投资收益率：待资金流水核对';
+        }
         if (data.yield_unavailable) {
             // 历史快照积累中：收益率与期初/盈亏一律 "--"，并提示积累中
             yieldEl.textContent = '--';
@@ -465,6 +472,7 @@ async function loadReturns(period) {
         }
     } catch (error) {
         console.warn('收益率加载失败:', error);
+        if (investmentEl) investmentEl.textContent = '现金流调整投资收益率：待资金流水核对';
         yieldEl.textContent = '--';
         yieldEl.className = 'returns-value';
         if (startEl) startEl.textContent = '--';
