@@ -26,7 +26,10 @@ class _FakeStore:
         self.owner_by_symbol = {}    # trade_records 权威归属：symbol -> strategy
         self.raise_on_claim = False  # 置 True 时模拟占用写入异常（DB 不可用）
         self.set_config_values = []  # 记录 set_config（lock_timeout）入参，供断言
-        self.lock = asyncio.Lock()   # 模拟 pg_advisory_xact_lock 串行化
+        # Construct the lock when an async transaction first enters. Creating it
+        # in this synchronous fixture fails on Python 3.9 after another test has
+        # closed the current event loop.
+        self.lock = None
         self.on_enter = None         # 事务进入钩子（AC4：锁持有期断言）
         self.on_exit = None          # 事务退出钩子
 
@@ -48,6 +51,8 @@ class _FakeTxn:
         self._store = store
 
     async def __aenter__(self):
+        if self._store.lock is None:
+            self._store.lock = asyncio.Lock()
         await self._store.lock.acquire()
         if self._store.on_enter:
             self._store.on_enter()

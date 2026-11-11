@@ -34,19 +34,30 @@ class Pool:
 
 
 class Exchange:
-    def __init__(self, positions, status='FILLED'):
+    def __init__(self, positions, status='FILLED', *, account_positions=None,
+                 all_positions=None, open_orders=None, algo_orders=None):
         self.positions = positions
         self.status = status
+        self.account_positions = [] if account_positions is None else account_positions
+        self.all_positions = positions if all_positions is None else all_positions
+        self.open_orders = [] if open_orders is None else open_orders
+        self.algo_orders = [] if algo_orders is None else algo_orders
 
     async def get_order_by_client_id(self, symbol, client_id):
         return dict(symbol=symbol, clientOrderId=client_id, status=self.status,
                     executedQty='0.34')
 
-    async def get_position(self, symbol):
-        return self.positions
+    async def get_position(self, symbol=None):
+        return self.positions if symbol is not None else self.all_positions
 
-    async def get_open_orders(self):
-        return []
+    async def get_um_account_positions(self):
+        return self.account_positions
+
+    async def get_open_orders(self, symbol=None):
+        return self.open_orders if symbol is not None else []
+
+    async def get_open_algo_orders(self, symbol=None):
+        return self.algo_orders
 
 
 @pytest.mark.asyncio
@@ -56,6 +67,21 @@ async def test_terminal_filled_order_releases_when_pm_omits_flat_symbol():
     store.lock = lambda conn, strategy: _noop()
     await store.reconcile('btc_eth_aggressive', Exchange([]))
     assert connection.released == ['risk_test']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('inventory', [
+    {'account_positions': [dict(symbol='SOLUSDT', positionAmt='0.34')]},
+    {'all_positions': [dict(symbol='SOLUSDT', positionAmt='-0.34')]},
+    {'open_orders': [dict(clientOrderId='pending')]},
+    {'algo_orders': [dict(algoId='pending')]},
+])
+async def test_flat_filtered_position_does_not_release_with_other_exposure(inventory):
+    connection = Connection()
+    store = RiskPolicyStore(type('DB', (), {'pool': Pool(connection)})(), 'default')
+    store.lock = lambda conn, strategy: _noop()
+    await store.reconcile('btc_eth_aggressive', Exchange([], **inventory))
+    assert connection.released == []
 
 
 @pytest.mark.asyncio

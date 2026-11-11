@@ -66,11 +66,21 @@ class TestQueryUnrealizedPnl:
 
 
 class TestOverviewMetricPathUnrealized:
-    """测试 get_overview 命中快照路径时仍补上实时浮动盈亏"""
+    """测试交易所流水概览附加实时浮动盈亏，保持已实现盈亏口径。"""
+
+    @staticmethod
+    def _report(net):
+        return {
+            "account_components": {"net_usdt": net, "realized_pnl_usdt": net,
+                                   "commission_usdt": "0", "funding_usdt": "0"},
+            "account_usdt_total": net, "unattributed_usdt_total": "0",
+            "by_strategy": {}, "events": [], "account_coverage_complete": True,
+            "strategy_attribution_complete": False,
+        }
 
     @pytest.mark.asyncio
     async def test_metric_path_adds_unrealized(self):
-        """快照路径返回的 metric dict 应包含实时浮动盈亏字段"""
+        """流水概览应附加实时浮动盈亏，同时保留流水的已实现盈亏。"""
         svc = DataService()
         client = MagicMock()
         client.get_position = AsyncMock(return_value=[
@@ -78,28 +88,25 @@ class TestOverviewMetricPathUnrealized:
             {"symbol": "ETHUSDT", "unrealizedProfit": "3.25"},
         ])
         svc._binance_client = client
-        svc._ensure_initialized = AsyncMock()  # 跳过真实 DB/币安初始化
-        # mock 命中快照：metric 为不含 total_unrealized_pnl 的固定字段 dict
-        svc.get_overview_from_metric = AsyncMock(return_value={
-            "total_pnl": "-1.0000", "total_closed": 10, "total_orders": 20,
-        })
+        svc._ledger_report = AsyncMock(return_value=self._report("-1.0000"))
+        svc.get_open_positions_summary = AsyncMock(return_value={})
 
         result = await svc.get_overview("daily")
 
         # 应补上实时未实现盈亏：-10.5 + 3.25 = -7.25
-        assert result["total_unrealized_pnl"] == "-7.2500"
+        assert result["total_unrealized_pnl"] == "-7.25"
         assert result["total_pnl"] == "-1.0000"
 
     @pytest.mark.asyncio
     async def test_metric_path_no_unrealized_when_empty_positions(self):
-        """快照路径下无持仓时浮动盈亏为 0.00"""
+        """无持仓时流水概览的浮动盈亏为零。"""
         svc = DataService()
         client = MagicMock()
         client.get_position = AsyncMock(return_value=[])
         svc._binance_client = client
-        svc._ensure_initialized = AsyncMock()  # 跳过真实 DB/币安初始化
-        svc.get_overview_from_metric = AsyncMock(return_value={"total_pnl": "0.0000"})
+        svc._ledger_report = AsyncMock(return_value=self._report("0.0000"))
+        svc.get_open_positions_summary = AsyncMock(return_value={})
 
         result = await svc.get_overview("daily")
 
-        assert result["total_unrealized_pnl"] == "0.0000"
+        assert result["total_unrealized_pnl"] == "0.0"
