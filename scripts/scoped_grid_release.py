@@ -93,6 +93,7 @@ class Runtime(BaseRuntime):
         self.pin_file = self.root / ".deploy_tmp/ledger-risk-active.json"
         self.release_dir = self.root / ".releases" / RELEASE / sha
         self.overlay = self.release_dir / "images.json"
+        self.executor_overlay = self.release_dir / "executor.json"
         self.state = self.release_dir / "state.json"
         self.changed: list[str] = []
         if self.release_dir.exists():
@@ -162,6 +163,38 @@ class Runtime(BaseRuntime):
             "environment": {"GRID_EXECUTION_HANDOFF_DB": "/app/data/grid_execution.sqlite3"},
         }
         atomic_json(self.overlay, successor)
+        atomic_json(self.executor_overlay, {"services": {"grid-executor": {
+            "profiles": ["grid-executor"],
+            "image": self.image["grid"],
+            "container_name": "trading_system-grid-executor",
+            "restart": "unless-stopped",
+            "command": ["python", "-m", "strategies.grid.execution.main"],
+            "env_file": [str(self.root / ".secrets/grid-subaccount.env"),
+                         str(self.root / ".secrets/grid-limits.env")],
+            "environment": {
+                "GRID_EXECUTION_DB": "/app/data/grid_execution.sqlite3",
+                "GRID_EXECUTION_LOCK": "/app/data/grid_execution.lock",
+                "GRID_EXECUTION_HEARTBEAT": "/app/data/grid_execution_heartbeat.json",
+                "TZ": "Asia/Shanghai",
+            },
+            "volumes": [str(self.root / "data/grid") + ":/app/data",
+                        str(self.root / "logs/grid") + ":/app/logs"],
+            "networks": ["trading-network"],
+            "depends_on": {"grid-strategy": {"condition": "service_started"}},
+            "logging": {"driver": "journald"},
+            "healthcheck": {
+                "test": ["CMD", "python", "-m", "strategies.grid.execution.main", "--healthcheck"],
+                "interval": "30s", "timeout": "10s", "retries": 3, "start_period": "90s",
+            },
+        }}})
+        executor_config = json.loads(self.run(
+            self.compose(SERVICE, overlay=self.overlay)[:]
+            + ["-f", str(self.executor_overlay), "--profile", "grid-executor",
+               "config", "--format", "json"]))["services"]
+        if ("grid-executor" not in executor_config
+                or executor_config["grid-executor"].get("image") != self.image["grid"]
+                or executor_config["grid-executor"].get("environment", {}).get("GRID_EXECUTION_MODE") != "off"):
+            raise ReleaseBlocked("disabled executor Compose overlay invalid")
         for service in self.stacks:
             old = json.loads(self.run(self.compose(service, overlay=predecessor) + ["config", "--format", "json"]))["services"][service]
             new = json.loads(self.run(self.compose(service, overlay=self.overlay) + ["config", "--format", "json"]))["services"][service]
