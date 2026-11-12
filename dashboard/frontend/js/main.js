@@ -105,7 +105,7 @@
 })();
 
 // 当前数据类型（daily/weekly/monthly/yearly）
-let currentType = 'daily';
+let currentType = 'monthly';
 
 // 图表实例
 let trendChart = null;

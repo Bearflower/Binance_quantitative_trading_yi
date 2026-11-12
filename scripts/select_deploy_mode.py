@@ -30,6 +30,8 @@ GRID_PM_MARKER = ".github/deploy-modes/grid-pm-oneway-20261111"
 SEVEN_GAPS_MARKER = ".github/deploy-modes/seven-code-gaps-20261112"
 DASHBOARD_PERFORMANCE_MARKER = ".github/deploy-modes/dashboard-performance-20261112"
 DASHBOARD_PERFORMANCE_BASE = "61c91a8fb128822bf0c0a8d388566089ccd35375"
+DASHBOARD_DEFAULT_MARKER = ".github/deploy-modes/dashboard-default-monthly-20261112"
+DASHBOARD_DEFAULT_BASE = "46f0c417591a8ed445d6576de6cf012574edb90c"
 SEVEN_GAPS_BASE = "caa0f1b2509774d28b765dd128a79f37482f4c9f"
 GRID_PM_BASE = "ae9c7e5949586b54e96043eb18ebc1533e6b0203"
 INCOME_ATTRIBUTION_REFRESH_MARKER = ".github/deploy-modes/income-attribution-refresh-20261111"
@@ -56,8 +58,12 @@ def select_deploy_mode(
                       if path.startswith(".github/deploy-modes/")]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
-    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER}:
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
+    if any(path == DASHBOARD_DEFAULT_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", DASHBOARD_DEFAULT_MARKER)]:
+            raise DeployModeError("dashboard default release requires one added marker")
+        return "dashboard-performance"
     if any(path == DASHBOARD_PERFORMANCE_MARKER for _, path in marker_changes):
         if marker_changes != [("A", DASHBOARD_PERFORMANCE_MARKER)]:
             raise DeployModeError("dashboard performance release requires one added marker")
@@ -172,10 +178,12 @@ def _validate_income_scope(base: str, changes: list[tuple[str, str]]) -> None:
 
 
 def _validate_dashboard_scope(base: str, changes: list[tuple[str, str]]) -> None:
-    if base != DASHBOARD_PERFORMANCE_BASE or ("A", DASHBOARD_PERFORMANCE_MARKER) not in changes:
+    reviewed = ((base == DASHBOARD_PERFORMANCE_BASE and ("A", DASHBOARD_PERFORMANCE_MARKER) in changes)
+                or (base == DASHBOARD_DEFAULT_BASE and ("A", DASHBOARD_DEFAULT_MARKER) in changes))
+    if not reviewed:
         raise DeployModeError("dashboard performance release must start from reviewed main")
     allowed = {
-        DASHBOARD_PERFORMANCE_MARKER, ".github/workflows/deploy.yml",
+        DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, ".github/workflows/deploy.yml",
         "dashboard/backend/services/exchange_ledger.py", "dashboard/backend/models/schemas.py",
         "dashboard/frontend/index.html", "dashboard/frontend/js/main.js",
         "shared/accounting/dashboard_performance.py", "scripts/select_deploy_mode.py",

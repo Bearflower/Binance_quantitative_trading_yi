@@ -16,8 +16,8 @@ from scripts.scoped_stop_followup import (  # noqa: E402
     Runtime as BaseRuntime, CONTAINERS, STACK_FILES, atomic_json, image_only,
 )
 
-PREDECESSOR_SHA = "5d121335d2a57e61959065f274b3c1063f8d390f"
-PREDECESSOR_OVERLAY_SHA256 = "ecc0017faf5983363284fcd716fc7475cbe790f278b505ffeb5853dffa4a3297"
+PREDECESSOR_SHA = "46f0c417591a8ed445d6576de6cf012574edb90c"
+PREDECESSOR_OVERLAY_SHA256 = "735d4b180f1948518a1b5e472fb237dd09a47c8e45c22b751baf47142a3913aa"
 SERVICE = "dashboard-api"
 SOURCE_PATHS = (
     "dashboard/backend/services/exchange_ledger.py",

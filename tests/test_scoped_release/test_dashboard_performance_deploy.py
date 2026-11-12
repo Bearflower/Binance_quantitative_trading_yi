@@ -5,6 +5,7 @@ import pytest
 
 from scripts.select_deploy_mode import (
     DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_PERFORMANCE_BASE,
+    DASHBOARD_DEFAULT_MARKER, DASHBOARD_DEFAULT_BASE,
     DeployModeError, _validate_dashboard_scope, select_deploy_mode,
 )
 from scripts.scoped_dashboard_performance_release import build_overlay
@@ -25,6 +26,17 @@ def test_dashboard_marker_selects_only_reviewed_single_image_scope():
     _validate('dashboard-performance', 'a' * 40, '12345678', 'keep')
     with pytest.raises(RenderError):
         _validate('dashboard-performance', 'a' * 40, '12345678', 'rotate')
+
+
+def test_default_monthly_successor_selects_scoped_release():
+    changes = [('A', DASHBOARD_DEFAULT_MARKER),
+               ('M', 'dashboard/frontend/index.html'),
+               ('M', 'dashboard/frontend/js/main.js'),
+               ('M', 'scripts/scoped_dashboard_performance_release.py')]
+    assert select_deploy_mode('push', DASHBOARD_DEFAULT_BASE, changes) == 'dashboard-performance'
+    _validate_dashboard_scope(DASHBOARD_DEFAULT_BASE, changes)
+    with pytest.raises(DeployModeError):
+        _validate_dashboard_scope(DASHBOARD_PERFORMANCE_BASE, changes)
 
 
 def test_dashboard_overlay_changes_only_dashboard_image():
