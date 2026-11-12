@@ -30,6 +30,7 @@ from models.schemas import (
     RiskData,
 )
 from services.data_service_docker import DataService
+from services.grid_subaccount import read_grid_snapshot
 from core.cache import CacheService
 from core.config import strategy_config, settings
 
@@ -38,6 +39,11 @@ logger = structlog.get_logger()
 
 # 创建路由器
 router = APIRouter()
+
+
+@router.get("/grid-subaccount", summary="独立网格子账户实盘快照")
+async def grid_subaccount_snapshot():
+    return {"code": 0, "message": "网格子账户快照", "data": read_grid_snapshot()}
 
 # 北京时区
 BEIJING_TZ = timezone(timedelta(hours=settings.timezone_offset))

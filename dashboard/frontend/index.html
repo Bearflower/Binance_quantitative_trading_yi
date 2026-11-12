@@ -364,6 +364,28 @@
       </div>
     </div>
 
+    <!-- 独立 PM 子账户：不计入上方主账户汇总 -->
+    <div class="section-header">
+      <h2>ETHUSDT 自动网格 · 子账户</h2>
+      <span class="grid-scope">独立 PM 账户，盈亏不计入上方主账户合计</span>
+    </div>
+    <section class="grid-live-card animate-in" aria-label="网格子账户执行概览">
+      <div class="grid-live-head">
+        <strong id="grid-live-state">读取中</strong>
+        <span id="grid-live-time">--</span>
+      </div>
+      <div class="grid-live-metrics">
+        <div><span>当前净仓</span><strong id="grid-live-position">--</strong></div>
+        <div><span>未成交委托</span><strong id="grid-live-orders">--</strong></div>
+        <div><span>已核实成交</span><strong id="grid-live-fills">--</strong></div>
+        <div><span>最近成交</span><strong id="grid-live-last-trade">--</strong></div>
+        <div><span>持仓浮盈亏</span><strong id="grid-live-unrealized">--</strong></div>
+        <div><span>当前阶段盈亏</span><strong id="grid-live-phase">--</strong></div>
+        <div><span>执行器累计盈亏</span><strong id="grid-live-cumulative">--</strong></div>
+      </div>
+      <p id="grid-live-note">按子账户实际成交已实现盈亏－手续费＋ETHUSDT 资金费＋当前净仓未实现盈亏；仅统计自动网格执行器。</p>
+    </section>
+
     <!-- ===== AI 监控 ===== -->
     <div class="section-header">
       <h2>AI 监控</h2>
@@ -473,8 +495,8 @@
   </div>
 
   <!-- 脚本 -->
-  <script src="js/api.js?v=20260913"></script>
+  <script src="js/api.js?v=20261112grid"></script>
   <script src="js/charts.js?v=20260913"></script>
-  <script src="js/main.js?v=20261112c"></script>
+  <script src="js/main.js?v=20261112grid"></script>
 </body>
 </html>

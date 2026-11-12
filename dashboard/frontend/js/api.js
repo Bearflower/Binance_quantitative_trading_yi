@@ -81,6 +81,10 @@ class DashboardAPI {
         return this.request(`/overview?type=${type}`);
     }
 
+    async getGridSubaccount() {
+        return this.request('/grid-subaccount');
+    }
+
     /**
      * 获取策略列表
      */

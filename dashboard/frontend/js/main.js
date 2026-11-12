@@ -126,6 +126,7 @@ async function init() {
     // 独立板块：AI 监控 / 风控（与 overview 并行加载，失败仅该卡回退 "--"）
     loadAiMonitor();
     loadRisk();
+    loadGridSubaccount();
 }
 
 /**
@@ -373,6 +374,51 @@ function formatPerfWindow(startIso, endIso, count, includeDates = true) {
     return `${span ? span + ' ' : ''}${mmdd(startIso)}~${mmdd(endIso)}`;
 }
 
+async function loadGridSubaccount() {
+    const set = (id, value) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    };
+    try {
+        const data = await api.getGridSubaccount();
+        if (data.status !== 'ok') {
+            const reasons = {snapshot_missing: '尚无子账户快照',
+                snapshot_stale: '子账户快照已过期', snapshot_invalid: '子账户快照校验失败'};
+            set('grid-live-state', reasons[data.reason] || '子账户数据暂不可用');
+            for (const id of ['grid-live-position', 'grid-live-orders', 'grid-live-fills',
+                               'grid-live-last-trade', 'grid-live-unrealized',
+                               'grid-live-phase', 'grid-live-cumulative']) set(id, '--');
+            set('grid-live-time', '--');
+            return;
+        }
+        const state = data.engine_state === 'FLAT' ? '空仓待机'
+            : data.engine_state === 'ACTIVE' ? '网格运行中' : data.engine_state;
+        set('grid-live-state', `${state} · 风控 ${data.risk_status}`);
+        set('grid-live-time', `PM 快照 ${formatEquityTime(new Date(data.as_of_ms).toISOString())}`);
+        const qty = Number(data.net_qty);
+        set('grid-live-position', qty === 0 ? '空仓' : `${qty > 0 ? '多' : '空'} ${Math.abs(qty)} ETH`);
+        set('grid-live-orders', String(data.open_order_count));
+        set('grid-live-fills', `${data.fill_count} 笔`);
+        set('grid-live-last-trade', data.last_trade
+            ? `${data.last_trade.side === 'BUY' ? '买' : '卖'} ${data.last_trade.quantity} @ ${data.last_trade.price}`
+            : '尚无成交');
+        const showPnl = (id, value) => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.textContent = `${formatNumber(value)} USDT`;
+            el.className = Number(value) >= 0 ? 'positive' : 'negative';
+        };
+        showPnl('grid-live-phase', data.stage_pnl_usdt);
+        showPnl('grid-live-cumulative', data.cumulative_pnl_usdt);
+        showPnl('grid-live-unrealized', data.unrealized_pnl_usdt);
+        set('grid-live-note', data.fill_count === 0
+            ? '尚无自动网格成交。初始划转和上线前人工验收交易不计入网格成绩。'
+            : '口径：执行器成交已实现盈亏－手续费＋ETHUSDT 资金费＋当前净仓未实现盈亏；不含初始划转和人工验收交易。');
+    } catch (error) {
+        set('grid-live-state', '子账户接口暂不可用');
+    }
+}
+
 /**
  * 更新策略卡片
  */
@@ -385,13 +431,14 @@ function updateStrategyCards(strategies) {
     }
     extraOwners.replaceChildren();
     strategies.forEach((strategy) => {
+        if (strategy.id === 'grid' && (strategy.total_pnl == null || Number(strategy.total_pnl) === 0)) return;
         const card = Array.from(document.querySelectorAll('.strategy-card')).find(item => item.dataset.strategy === strategy.id);
         if (!card) {
             const row = document.createElement('p');
             const pnlText = strategy.total_pnl == null
                 ? `已归属部分 ${strategy.observed_pnl == null ? '无样本' : formatNumber(strategy.observed_pnl)} USDT`
                 : `已核实净收益 ${formatNumber(strategy.total_pnl)} USDT`;
-            row.textContent = `${strategy.name} · ${pnlText}`;
+            row.textContent = `${strategy.id === 'grid' ? '旧主账户网格记录' : strategy.name} · ${pnlText}`;
             extraOwners.appendChild(row);
             return;
         }
@@ -734,7 +781,7 @@ async function refreshOnCycleEnd() {
     suppressCountdownReset = true;
     try {
         await loadData();                                    // 总览/趋势/策略卡/净资产/时间戳
-        await Promise.all([loadAiMonitor(), loadRisk()]);    // AI 监控 / 风控
+        await Promise.all([loadAiMonitor(), loadRisk(), loadGridSubaccount()]);
     } finally {
         cycleRefreshInFlight = false;
         suppressCountdownReset = false;

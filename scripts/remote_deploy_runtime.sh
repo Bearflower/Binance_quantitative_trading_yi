@@ -81,6 +81,13 @@ if [ "$DEPLOY_MODE" = "dashboard-performance" ]; then
   python3 "$BUNDLE/scripts/scoped_dashboard_performance_release.py" --bundle "$BUNDLE" --sha "$COMMIT_SHA"
   exit $?
 fi
+if [ "$DEPLOY_MODE" = "grid-subaccount-dashboard" ]; then
+  [ "$FUNDING_DEPLOY_ACTION" = "keep" ] || { echo "funding rotation forbidden"; exit 2; }
+  unset COMPOSE_FILE
+  BUNDLE="/root/trading_system/.deploy_tmp/grid-subaccount-dashboard-${COMMIT_SHA}"
+  python3 "$BUNDLE/scripts/scoped_grid_dashboard_release.py" --bundle "$BUNDLE" --sha "$COMMIT_SHA"
+  exit $?
+fi
 if [ -f .deploy_tmp/ledger-risk-active.json ]; then
   echo "Active ledger/risk image pins require reviewed successor; generic deploy blocked"
   exit 2

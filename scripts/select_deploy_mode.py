@@ -34,6 +34,8 @@ DASHBOARD_DEFAULT_MARKER = ".github/deploy-modes/dashboard-default-monthly-20261
 DASHBOARD_DEFAULT_BASE = "46f0c417591a8ed445d6576de6cf012574edb90c"
 DASHBOARD_CACHE_MARKER = ".github/deploy-modes/dashboard-cache-refresh-20261112"
 DASHBOARD_CACHE_BASE = "1d0a71a94f8ca1a4a9d77594899db0aa250d8fe1"
+GRID_DASHBOARD_MARKER = ".github/deploy-modes/grid-subaccount-dashboard-20261112"
+GRID_DASHBOARD_BASE = "834f111703aa6bcf92487f66d277c467acab78d9"
 SEVEN_GAPS_BASE = "caa0f1b2509774d28b765dd128a79f37482f4c9f"
 GRID_PM_BASE = "ae9c7e5949586b54e96043eb18ebc1533e6b0203"
 INCOME_ATTRIBUTION_REFRESH_MARKER = ".github/deploy-modes/income-attribution-refresh-20261111"
@@ -60,8 +62,12 @@ def select_deploy_mode(
                       if path.startswith(".github/deploy-modes/")]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
-    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER}:
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, GRID_DASHBOARD_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
+    if any(path == GRID_DASHBOARD_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", GRID_DASHBOARD_MARKER)]:
+            raise DeployModeError("grid dashboard release requires one added marker")
+        return "grid-subaccount-dashboard"
     if any(path == DASHBOARD_CACHE_MARKER for _, path in marker_changes):
         if marker_changes != [("A", DASHBOARD_CACHE_MARKER)]:
             raise DeployModeError("dashboard cache release requires one added marker")
@@ -206,6 +212,25 @@ def _validate_dashboard_scope(base: str, changes: list[tuple[str, str]]) -> None
             raise DeployModeError("dashboard performance scope contains unreviewed path: " + path)
 
 
+def _validate_grid_dashboard_scope(base: str, changes: list[tuple[str, str]]) -> None:
+    if base != GRID_DASHBOARD_BASE or ("A", GRID_DASHBOARD_MARKER) not in changes:
+        raise DeployModeError("grid dashboard release must start from reviewed main")
+    allowed = {GRID_DASHBOARD_MARKER, ".github/workflows/deploy.yml",
+               "dashboard/backend/api/routes_docker.py",
+               "dashboard/backend/services/grid_subaccount.py",
+               "dashboard/frontend/index.html", "dashboard/frontend/css/style.css",
+               "dashboard/frontend/js/api.js", "dashboard/frontend/js/main.js",
+               "strategies/grid/execution/dashboard_snapshot.py",
+               "scripts/select_deploy_mode.py", "scripts/render_remote_deploy.py",
+               "scripts/remote_deploy_runtime.sh",
+               "scripts/package_grid_dashboard_release.py",
+               "scripts/scoped_grid_dashboard_release.py"}
+    for status, path in changes:
+        if status not in {"A", "M"} or not (path in allowed or path.startswith("tests/test_grid_dashboard/")
+                                          or path.startswith("docs/")):
+            raise DeployModeError("grid dashboard scope contains unreviewed path: " + path)
+
+
 def _validate_grid_scope(base: str, changes: list[tuple[str, str]]) -> None:
     if base != GRID_PM_BASE:
         raise DeployModeError("grid PM push must start from reviewed main")
@@ -255,7 +280,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup","ai-tuner-trial","income-attribution","grid-pm-oneway","seven-code-gaps","dashboard-performance"])
+    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup","ai-tuner-trial","income-attribution","grid-pm-oneway","seven-code-gaps","dashboard-performance","grid-subaccount-dashboard"])
     return parser.parse_args(argv)
 
 
@@ -265,7 +290,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.event_name != "push":
             from scripts.ledger_risk_manifest import MANIFEST
             exists = subprocess.run(["git","cat-file","-e",f"{args.head}:{MANIFEST}"],capture_output=True).returncode == 0
-            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup", "ai-tuner-trial", "income-attribution", "grid-pm-oneway", "seven-code-gaps", "dashboard-performance"):
+            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup", "ai-tuner-trial", "income-attribution", "grid-pm-oneway", "seven-code-gaps", "dashboard-performance", "grid-subaccount-dashboard"):
                 raise DeployModeError("manual remediation selection required for this release tree")
             mode = args.manual_mode if args.manual_mode != "auto" else "full"
         else:
@@ -279,6 +304,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _validate_income_scope(args.base, changes)
             if mode == "dashboard-performance":
                 _validate_dashboard_scope(args.base, changes)
+            if mode == "grid-subaccount-dashboard":
+                _validate_grid_dashboard_scope(args.base, changes)
             if mode == "grid-pm-oneway":
                 _validate_grid_scope(args.base, changes)
             if mode == "seven-code-gaps":
