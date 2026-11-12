@@ -181,6 +181,26 @@ def test_all_aggressive_signals_infeasible_requires_safety_review():
     assert "all_signals_entry_infeasible" in result["reasons"]
 
 
+def test_executed_aggressive_signal_without_order_identity_blocks_funnel():
+    evidence = snapshot()
+    evidence["strategy_id"] = "btc_eth_aggressive"
+    evidence["signals"]["real_signals"] = 1
+    evidence["signals"]["executed_signals"] = 1
+    evidence["signals"]["executed_without_order_id"] = 1
+    result = assess_snapshot(evidence, now=NOW, weekly=False)
+    assert "executed_signal_order_identity_missing" in result["reasons"]
+
+
+def test_executed_hrs_signal_without_reservation_identity_blocks_funnel():
+    evidence = snapshot()
+    evidence["strategy_id"] = "hrs"
+    evidence["signals"]["real_signals"] = 1
+    evidence["signals"]["executed_signals"] = 1
+    evidence["signals"]["executed_without_reservation"] = 1
+    result = assess_snapshot(evidence, now=NOW, weekly=False)
+    assert "executed_signal_reservation_identity_missing" in result["reasons"]
+
+
 def test_claimed_position_needs_full_adverse_stop():
     positions = [{"symbol": "ONUSDT", "positionAmt": "3", "positionSide": "BOTH",
                   "entryPrice": "1", "markPrice": "1"}]
@@ -229,14 +249,16 @@ def test_collector_uses_policy_claims_and_exchange_income_reader_without_writes(
         async def fetch_one(self, query, *args):
             if "strategy_risk_policy" in query:
                 return snapshot()["policy"]
+            if "hrs.hrs_signals" in query:
+                assert "resolution='executed'" in query
+                assert args[-1] == "default"
+                return {"real_signals": 1, "shadow_signals": 2,
+                        "executed_signals": 0, "unresolved_signals": 1,
+                        "executed_without_reservation": 0}
             if "entry_risk_reservation" in query:
                 return {"count": 0, "margin": Decimal("0")}
             if "income_ingestion_attempt" in query:
                 return {"unresolved": 0}
-            if "hrs.hrs_signals" in query:
-                assert "resolution='executed'" in query
-                return {"real_signals": 1, "shadow_signals": 2,
-                        "executed_signals": 0, "unresolved_signals": 1}
             raise AssertionError(query)
 
         async def fetch_all(self, query, *args):

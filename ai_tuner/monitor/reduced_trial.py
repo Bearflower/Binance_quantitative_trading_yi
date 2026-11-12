@@ -172,6 +172,8 @@ WHERE claim_state IN ('PENDING','ACTIVE')"""
 _AGGRESSIVE_SIGNALS_SQL = """SELECT count(*) AS real_signals,
 count(*) FILTER (WHERE status='executed') AS executed_signals,
 count(*) FILTER (WHERE status='cancelled') AS unresolved_signals,
+count(*) FILTER (WHERE status='executed' AND
+  NOT (metadata ? 'entry_order_id')) AS executed_without_order_id,
 count(*) FILTER (WHERE status='cancelled' AND
   (metadata->>'skip_reason' ILIKE '%take profit or remainder infeasible%'
    OR metadata->>'reject_reason' ILIKE '%take profit or remainder infeasible%'))
@@ -186,6 +188,12 @@ count(*) FILTER (WHERE resolution='shadow' OR signal_origin='shadow_scoring' OR
   entry_mode IN ('emm','semi_emm') OR
   (entry_mode='lv_rm' AND signal_origin IS DISTINCT FROM 'nonempty_pool')) AS shadow_signals,
 count(*) FILTER (WHERE resolution='executed') AS executed_signals,
+count(*) FILTER (WHERE resolution='executed' AND NOT EXISTS (
+  SELECT 1 FROM trading.entry_risk_reservation r
+  WHERE r.account_id=$3 AND r.strategy_id='hrs'
+    AND r.symbol=hrs.hrs_signals.symbol
+    AND r.geometry->>'signal_id'=hrs.hrs_signals.id::text
+)) AS executed_without_reservation,
 count(*) FILTER (WHERE resolution IS NULL AND entry_mode='standard') AS unresolved_signals
 FROM hrs.hrs_signals WHERE triggered_at >= $1 AND triggered_at < $2"""
 
@@ -242,7 +250,8 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
     if has_window:
         try:
             if strategy == "hrs":
-                evidence["signals"] = await db.fetch_one(_HRS_SIGNALS_SQL, _utc(start), _utc(end))
+                evidence["signals"] = await db.fetch_one(
+                    _HRS_SIGNALS_SQL, _utc(start), _utc(end), account)
             else:
                 # The MTPCS signal table uses a PostgreSQL DEFAULT CURRENT_TIMESTAMP
                 # on a timestamp-without-time-zone column. Production PostgreSQL runs
@@ -400,6 +409,14 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
             and signals['real_signals'] > 0
             and signals['infeasible_entry_signals'] >= signals['real_signals']):
         safety.append('all_signals_entry_infeasible')
+    if (isinstance(signals, Mapping) and evidence.get('strategy_id') == 'btc_eth_aggressive'
+            and isinstance(signals.get('executed_without_order_id'), int)
+            and signals['executed_without_order_id'] > 0):
+        missing.append('executed_signal_order_identity_missing')
+    if (isinstance(signals, Mapping) and evidence.get('strategy_id') == 'hrs'
+            and isinstance(signals.get('executed_without_reservation'), int)
+            and signals['executed_without_reservation'] > 0):
+        missing.append('executed_signal_reservation_identity_missing')
 
     income = evidence.get("income")
     net = None

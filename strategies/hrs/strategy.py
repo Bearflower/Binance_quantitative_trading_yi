@@ -1047,7 +1047,8 @@ class HRSStrategy(BaseStrategy):
                             symbols, int(self.config.get('trading', {}).get('max_positions', 3)))
                 client_id = await store.reserve('hrs', symbol, str(identity), sized,
                                                 decision.policy_revision, snapshot,
-                                                geometry={'exit_ratios':[str(x) for x in decision.exit_ratios],
+                                                geometry={'signal_id': identity,
+                                                          'exit_ratios':[str(x) for x in decision.exit_ratios],
                                                           'entry_price':str(price),
                                                           'quantity':str(quantity)})
                 reserved = True

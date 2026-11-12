@@ -28,3 +28,4 @@
 - 自动分配资本和自有成交活动历史来源缺失；本轮只提供影子预览的严格输入门禁，不启用实盘写入。
 - 现金流 ROI 缺原始流水和事件时点权益；新增纯计算与看板显式未知态，不发布伪造收益率。
 - 旧 `strategies/new_coin/tests/test_baseline_backfill_methods.py` 的 16 例引用主线早已不存在的 `_backfill_anchor_quantity`，属既有失效测试，不能作为本轮回归通过证明。
+- 激进版 `persist_signal` 会原样保存 signal 的扩展 metadata，但此前成功新仓未回填 `entry_order_id`；HRS 的风险预留 `clientOrderId` 由 `signal_id` 确定性计算，但 geometry 未直接保留该 ID。两处已补稳定关联，供后续成交漏斗只读核验。

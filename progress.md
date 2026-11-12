@@ -42,3 +42,4 @@
 - 新币首单/TP1 身份持久化、恢复证据和实时重验、失败平仓保留跟踪均已实现。TDD 先红后绿；新币相关定向 63 passed、6 deselected。
 - AI Tuner 增加不可执行入场信号计数与全窗安全提示，自动分配增加只读影子预览，现金流 ROI 增加严格桥接计算和看板未知态。
 - 扩大回归：AI Tuner/分配 89 passed；现金流/看板 14 passed；新币排除既有失效文件与 HRS 旧 mock 后 301 passed、6 deselected。新币完整目录 301 passed、16 failed、6 deselected；16 个失败均来自主线已失效的 `_backfill_anchor_quantity` 测试。尚未发布。
+- 继续补信号身份：激进版成功新仓将首单号写入 signal metadata，HRS 风险预留 geometry 存 signal_id；AI Tuner 报告缺身份计数。新增测试先红后绿。HRS 相关 6 passed；旧 `test_lv_rm_empty_pool_execution.py` 3 例仍有历史 mock/信号链失败，未作本轮通过依据。GitHub SSH/API 在本轮提交后出现传输错误，远端同步未完成。

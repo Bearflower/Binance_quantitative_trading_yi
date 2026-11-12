@@ -2609,6 +2609,11 @@ class BTCEthStrategy:
             position = self.positions.get(signal['symbol'])
             if position:
                 position.entry_fill_capture_pending = True
+                entry_id = getattr(position, 'episode_entry_order_id', None)
+                if type(entry_id) is int and entry_id > 0:
+                    # persist_signal runs after execute_signal; this gives the
+                    # signal an exact exchange order to audit, not a time guess.
+                    signal['entry_order_id'] = entry_id
             await self._persist_position_metadata(signal['symbol'])
         return opened
 
