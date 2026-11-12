@@ -28,6 +28,7 @@ class PositionSnapshot:
 
 @dataclass(frozen=True)
 class ReportTotals:
+    phase_epoch_id: int
     phase: Decimal
     cumulative: Decimal
     phase_realized: Decimal
@@ -53,7 +54,8 @@ def summarize(facts: Iterable[TradeFact], epoch_id: int,
                           for fact in facts if fact.epoch_id == epoch_id), Decimal(0))
     cumulative_realized = sum((fact.realized_pnl - fact.commission
                                for fact in facts), Decimal(0))
-    return ReportTotals(phase_realized + phase_funding + position.unrealized_pnl,
+    return ReportTotals(epoch_id,
+                        phase_realized + phase_funding + position.unrealized_pnl,
                         cumulative_realized + cumulative_funding + position.unrealized_pnl,
                         phase_realized, cumulative_realized,
                         phase_funding, cumulative_funding)
@@ -70,7 +72,7 @@ def render_report(fact: TradeFact, position: PositionSnapshot,
     action = "买入" if fact.side == "BUY" else "卖出"
     return (
         "📋 【ETHUSDT 自动网格】实际成交与持仓\n"
-        f"网格阶段: #{fact.epoch_id}\n"
+        f"成交所属阶段: #{fact.epoch_id}；当前网格阶段: #{totals.phase_epoch_id}\n"
         f"成交: {action} {fact.quantity:f} ETH @ {fact.price:f} USDT\n"
         f"交易所成交 ID: {fact.trade_id}\n"
         f"本笔已实现盈亏: {_money(fact.realized_pnl)} USDT\n"
