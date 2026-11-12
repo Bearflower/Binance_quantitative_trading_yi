@@ -45,6 +45,8 @@ id: Binance_quantitative_trading-20261111-dashboard-closure-gaps
 
 交易所口径的已实现收益夏普、回撤和严格核实仓位样本胜率已由提交 `46f0c417` 通过 [CI/CD 运行 43136111534](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/43136111534) 发布。月度 11 个完整日账户夏普 −9.8249、已实现收益回撤 5.978%；两笔完整核实平仓样本胜率 0%，明确标记为非期间全量。月度收益 −31.68756469 USDT 与同水位交易所收入事实 212 条求和及策略合计一致，未归属 0。日、周、月、年 API 均正常返回；归属定时器仍 active，最近一次执行成功。详见[生产验收报告](../../reports/dashboard-performance-exchange-income-repair-2026-11-12.md)。
 
+首屏默认“日”导致当日无完整样本的展示空值，已通过提交 `1d0a71a9` 改为默认“月”；随后提交 `7825607c` 更新脚本缓存版本号。两次后继 [CI/CD 运行](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/43137427675) 均成功。服务器返回的首页与脚本已验证为新版本，最终看板 active pin 指向 `7825607c`。
+
 ## 适用范围与修订
 
 月度展示及自动归属故障已验收。年视图缺 2026 年 1–6 月交易所收入覆盖，网格缺资金快照，部分策略缺可验证平仓样本；这些指标按证据边界展示原因。历史全量胜率不能从两笔新样本推断，因此本 issue 保留以跟踪长期证据覆盖，不作为本次上线失败。
