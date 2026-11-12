@@ -109,11 +109,11 @@
         <div class="stat-value positive" id="total-pnl">+0.00</div>
       </div>
 
-      <!-- 总胜率 -->
+      <!-- 已核实仓位样本胜率 -->
       <div class="stat-card winrate animate-in">
         <div class="stat-head">
           <div class="stat-icon">✚</div>
-          <div class="stat-label">总胜率</div>
+          <div class="stat-label">已核实仓位胜率 <span class="tooltip" data-tip="只统计有交易所空仓基线、完整成交覆盖、明确订单归属和成交收入金额核对的完整平仓仓位。样本可能晚于所选期间起点。">ⓘ</span></div>
           <div class="stat-sub" id="win-rate-sub">--</div>
         </div>
         <div class="stat-value gold" id="win-rate">0.0%</div>
@@ -143,7 +143,7 @@
       <div class="stat-card sharpe animate-in">
         <div class="stat-head">
           <div class="stat-icon">α</div>
-          <div class="stat-label">年化夏普率 <span class="tooltip" data-tip="按当前 tab 对应的滚动回溯窗口（日≈30天/周≈90天/月≈180天/年≈365天）内的日收益率年化计算。日卡样本不足时显示--。通常夏普率大于1算优秀，0.5~1算尚可，0或负数说明承担了风险却没赚到钱。">ⓘ</span></div>
+          <div class="stat-label">已实现收益夏普 <span class="tooltip" data-tip="所选期间内完整北京自然日的交易所 USDT 已实现盈亏、佣金和资金费，除以对应期初资金快照，计算日收益率并按 365 天年化。未实现盈亏和划转不在收益分子内；不足两日或日收益无波动时不计算。">ⓘ</span></div>
           <div class="stat-sub" id="sharpe-sub">Sharpe</div>
         </div>
         <div class="stat-value" id="total-sharpe">--</div>
@@ -153,7 +153,7 @@
       <div class="stat-card drawdown animate-in">
         <div class="stat-head">
           <div class="stat-icon">∇</div>
-          <div class="stat-label">最大回撤 <span class="tooltip" data-tip="按当前 tab 对应的滚动回溯窗口（日≈30天/周≈90天/月≈180天/年≈365天）内，净值曲线从峰值到谷值的最大跌幅比例（0~1）。注意月度 tab 统计的是「近 180 天滚动窗口」，而非本自然月。">ⓘ</span></div>
+          <div class="stat-label">已实现收益回撤 <span class="tooltip" data-tip="所选期间内完整北京自然日，按交易所 USDT 已实现净收入和期初资金快照构造净值序列，从基准 1.0 到期间峰谷计算最大回撤。仅反映已实现收入，不包含持仓期浮亏。">ⓘ</span></div>
           <div class="stat-sub" id="drawdown-sub">Max DD</div>
         </div>
         <div class="stat-value negative" id="total-max-drawdown">--</div>

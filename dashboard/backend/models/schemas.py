@@ -66,6 +66,12 @@ class LedgerMetadata(BaseModel):
     observed_pnl: Optional[str] = None
     funding: Optional[str] = None
     data_quality: Optional[str] = None
+    perf_caliber: Optional[str] = None
+    perf_reason: Optional[str] = None
+    win_rate_caliber: Optional[str] = None
+    win_rate_reason: Optional[str] = None
+    win_sample_start: Optional[str] = None
+    win_sample_partial: Optional[bool] = None
 
 
 class StrategySummary(LedgerMetadata):
@@ -126,6 +132,11 @@ class StrategyDetailData(LedgerMetadata):
     gross_pnl: Optional[str] = Field(None, description="毛利润（不含佣金）")
     commission: Optional[str] = Field(None, description="佣金支出（负值）")
     win_rate: Optional[float] = Field(None, description="胜率")
+    sharpe: Optional[float] = Field(None, description="已实现收益年化夏普")
+    max_drawdown: Optional[float] = Field(None, description="已实现收益最大回撤")
+    perf_window_start: Optional[str] = None
+    perf_window_end: Optional[str] = None
+    perf_sample_count: Optional[int] = None
     avg_daily_orders: Optional[float] = Field(None, description="日均订单数")
     symbols: List[SymbolDetail] = Field(
         default_factory=list,
@@ -169,11 +180,17 @@ class OverviewData(LedgerMetadata):
     total_closed: Optional[int] = Field(..., description="总平仓数")
     total_wins: Optional[int] = Field(..., description="总盈利笔数")
     win_rate: Optional[float] = Field(..., description="总胜率")
+    win_rate_caliber: Optional[str] = Field(None, description="胜率样本口径")
+    win_rate_reason: Optional[str] = Field(None, description="胜率样本状态或不可计算原因")
+    win_sample_start: Optional[str] = Field(None, description="可验证仓位样本起点")
+    win_sample_partial: Optional[bool] = Field(None, description="样本是否仅覆盖报告窗口的一部分")
     total_sharpe: Optional[float] = Field(None, description="账户级年化夏普比率")
     total_max_drawdown: Optional[float] = Field(None, description="账户级最大回撤(0~1)")
     total_perf_window_start: Optional[str] = Field(None, description="账户级绩效样本窗口起点(ISO日期)")
     total_perf_window_end: Optional[str] = Field(None, description="账户级绩效样本窗口终点(ISO日期)")
     total_perf_sample_count: Optional[int] = Field(None, description="账户级绩效样本数(天数)")
+    total_perf_caliber: Optional[str] = Field(None, description="账户绩效计算口径")
+    total_perf_reason: Optional[str] = Field(None, description="绩效不可计算原因")
     strategies: List[StrategySummary] = Field(
         ...,
         description="策略列表"

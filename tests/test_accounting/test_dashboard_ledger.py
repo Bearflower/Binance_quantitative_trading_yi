@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from unittest.mock import AsyncMock
 import pytest
 from dashboard.backend.services.exchange_ledger import ExchangeLedgerDashboardMixin, period_windows
@@ -60,6 +61,21 @@ def test_api_schema_preserves_unknowns_and_coverage_metadata():
     assert data.unattributed_pnl=='5'
 
 
+def test_api_schema_preserves_realized_metric_provenance():
+    from dashboard.backend.models.schemas import OverviewData, StrategySummary
+    strategy = StrategySummary(id='hrs', name='HRS', perf_caliber='exchange_income_realized_daily_v1',
+                               perf_reason='opening_capital_missing',
+                               win_rate_reason='verified_sample_only', win_sample_partial=True)
+    data = OverviewData(total_pnl='1', total_orders=None, total_closed=None, total_wins=None,
+                        win_rate=None, strategies=[strategy], report_type='monthly', updated_at='now',
+                        total_perf_caliber='exchange_income_realized_daily_v1',
+                        total_perf_reason='zero_return_variance')
+    payload = data.model_dump()
+    assert payload['total_perf_reason'] == 'zero_return_variance'
+    assert payload['strategies'][0]['perf_reason'] == 'opening_capital_missing'
+    assert payload['strategies'][0]['win_sample_partial'] is True
+
+
 def test_frontend_does_not_add_live_unrealized_or_zero_unknowns():
     from pathlib import Path
     root=Path.cwd()
@@ -68,3 +84,111 @@ def test_frontend_does_not_add_live_unrealized_or_zero_unknowns():
     assert 'const pnlValue = realizedValue + unrealizedValue' not in main
     assert "if (isNaN(num)) return '0'" not in charts
     assert 'parseFloat(t.total_pnl) || 0' not in charts
+
+
+@pytest.mark.asyncio
+async def test_overview_attaches_exchange_income_performance_from_capital_snapshots():
+    from datetime import date
+    class DB:
+        async def fetch_all(self, sql, *args):
+            if 'public.equity_snapshot' in sql:
+                return [{'snapshot_date': date(2026, 10, 31), 'total_equity': Decimal('100')},
+                        {'snapshot_date': date(2026, 11, 1), 'total_equity': Decimal('100')},
+                        {'snapshot_date': date(2026, 11, 2), 'total_equity': Decimal('100')}]
+            if 'public.strategy_position_snapshot_history' in sql:
+                return [{'strategy_id': 'hrs', 'snapshot_hour': datetime(2026, 11, day),
+                         'allocated_amount': Decimal('50')} for day in (1, 2, 3)]
+            raise AssertionError(sql)
+    svc = Service()
+    svc._db_manager = DB()
+    svc._get_date_range = lambda _: (datetime(2026, 11, 1), datetime(2026, 11, 4))
+    r = report()
+    r.update(start_ms=1793462400000, end_ms=1793721600000,
+             publication_status='published', strategy_attribution_complete=True,
+             events=[{'asset': 'USDT', 'amount': amount, 'strategy': 'hrs',
+                      'symbol': 'ETHUSDT', 'income_type': 'REALIZED_PNL',
+                      'event_time_utc': datetime(2026, 11, day, 4, tzinfo=timezone.utc).isoformat()}
+                     for day, amount in ((1, '5'), (2, '-10'), (3, '2'))])
+    svc._ledger_report = AsyncMock(return_value=r)
+    result = await svc.get_overview('monthly')
+    assert result['total_perf_sample_count'] == 3
+    assert result['total_max_drawdown'] is not None
+    assert result['total_sharpe'] is not None
+    assert result['strategies'][0]['perf_sample_count'] == 3
+    assert result['strategies'][0]['max_drawdown'] is not None
+    detail = await svc.get_strategy_detail('hrs', 'monthly')
+    assert detail['sharpe'] == result['strategies'][0]['sharpe']
+    assert detail['max_drawdown'] == result['strategies'][0]['max_drawdown']
+
+
+@pytest.mark.asyncio
+async def test_overview_counts_only_verified_post_baseline_closed_positions():
+    from datetime import date
+    base = datetime(2026, 11, 1, tzinfo=timezone.utc)
+    open_time = datetime(2026, 11, 2, 1, tzinfo=timezone.utc)
+    close_time = datetime(2026, 11, 2, 2, tzinfo=timezone.utc)
+    class DB:
+        async def fetch_all(self, sql, *args):
+            if 'public.equity_snapshot' in sql: return []
+            if 'public.strategy_position_snapshot_history' in sql: return []
+            if 'position_flat_baseline' in sql:
+                return [{'account_id': 'default', 'symbol': 'ETHUSDT', 'flat_at': base,
+                         'exchange_qty': Decimal(0)}]
+            if 'execution_fact_fill' in sql:
+                return [{'account_id': 'default', 'symbol': 'ETHUSDT', 'trade_id': tid,
+                         'order_id': tid, 'side': side, 'qty': Decimal(1),
+                         'realized_pnl': Decimal(gross), 'commission': Decimal('0.01'),
+                         'commission_asset': 'USDT', 'trade_time_utc': stamp}
+                        for tid, side, gross, stamp in ((1, 'BUY', '0', open_time),
+                                                       (2, 'SELL', '2', close_time))]
+            if 'order_strategy_evidence' in sql:
+                return [{'account_id': 'default', 'symbol': 'ETHUSDT', 'order_id': tid,
+                         'strategy': 'hrs'} for tid in (1, 2)]
+            if 'execution_fact_income' in sql:
+                return [{'symbol': 'ETHUSDT', 'trade_id': tid, 'tran_id': tid * 10 + (1 if kind == 'COMMISSION' else 2),
+                         'income_type': kind, 'income': Decimal(amount)}
+                        for tid, kind, amount in ((1, 'COMMISSION', '-0.01'),
+                                                  (2, 'COMMISSION', '-0.01'),
+                                                  (2, 'REALIZED_PNL', '2'))]
+            if 'execution_fact_cursor' in sql:
+                return [{'account_id': 'default', 'source': 'userTrades',
+                         'income_type': None, 'symbol': 'ETHUSDT',
+                         'window_start_ms': 1793462400000,
+                         'covered_until_ms': 1793721600000,
+                         'page_complete': True, 'request_status': 'ok'}]
+            raise AssertionError(sql)
+    svc = Service(); svc._db_manager = DB()
+    r = report()
+    r.update(start_ms=1793462400000, end_ms=1793721600000,
+             account_id='default', publication_status='published',
+             strategy_attribution_complete=True,
+             events=[{'asset': 'USDT', 'symbol': 'ETHUSDT',
+                      'tran_id': tid * 10 + (1 if kind == 'COMMISSION' else 2),
+                      'income_type': kind, 'amount': amount, 'strategy': 'hrs'}
+                     for tid, kind, amount in ((1, 'COMMISSION', '-0.01'),
+                                               (2, 'COMMISSION', '-0.01'),
+                                               (2, 'REALIZED_PNL', '2'))])
+    svc._ledger_report = AsyncMock(return_value=r)
+    result = await svc.get_overview('monthly')
+    assert result['total_closed'] == 1
+    assert result['total_orders'] == 2
+    assert result['total_wins'] == 1
+    assert result['win_rate'] == 100
+    assert result['win_sample_partial'] is True
+    assert result['strategies'][0]['closed_count'] == 1
+
+
+@pytest.mark.asyncio
+async def test_capital_query_failure_is_visible_without_hiding_exchange_pnl():
+    class DB:
+        async def fetch_all(self, *_):
+            raise RuntimeError('database unavailable')
+    svc = Service(); svc._db_manager = DB()
+    r = report()
+    r.update(start_ms=1793462400000, end_ms=1793721600000,
+             publication_status='published', strategy_attribution_complete=True)
+    svc._ledger_report = AsyncMock(return_value=r)
+    result = await svc.get_overview('monthly')
+    assert result['total_pnl'] == '5.80965338'
+    assert result['total_perf_reason'] == 'capital_source_unavailable'
+    assert result['win_rate_reason'] == 'lifecycle_source_unavailable'

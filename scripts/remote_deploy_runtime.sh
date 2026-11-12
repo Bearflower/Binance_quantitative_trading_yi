@@ -74,6 +74,13 @@ if [ "$DEPLOY_MODE" = "seven-code-gaps" ]; then
   python3 "$BUNDLE/scripts/scoped_seven_gaps_release.py" --bundle "$BUNDLE" --sha "$COMMIT_SHA"
   exit $?
 fi
+if [ "$DEPLOY_MODE" = "dashboard-performance" ]; then
+  [ "$FUNDING_DEPLOY_ACTION" = "keep" ] || { echo "funding rotation forbidden"; exit 2; }
+  unset COMPOSE_FILE
+  BUNDLE="/root/trading_system/.deploy_tmp/dashboard-performance-${COMMIT_SHA}"
+  python3 "$BUNDLE/scripts/scoped_dashboard_performance_release.py" --bundle "$BUNDLE" --sha "$COMMIT_SHA"
+  exit $?
+fi
 if [ -f .deploy_tmp/ledger-risk-active.json ]; then
   echo "Active ledger/risk image pins require reviewed successor; generic deploy blocked"
   exit 2

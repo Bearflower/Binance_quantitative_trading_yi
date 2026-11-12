@@ -28,6 +28,8 @@ AI_TUNER_TRIAL_MARKER = ".github/deploy-modes/ai-tuner-trial-20261110"
 INCOME_ATTRIBUTION_MARKER = ".github/deploy-modes/income-attribution-20261110"
 GRID_PM_MARKER = ".github/deploy-modes/grid-pm-oneway-20261111"
 SEVEN_GAPS_MARKER = ".github/deploy-modes/seven-code-gaps-20261112"
+DASHBOARD_PERFORMANCE_MARKER = ".github/deploy-modes/dashboard-performance-20261112"
+DASHBOARD_PERFORMANCE_BASE = "61c91a8fb128822bf0c0a8d388566089ccd35375"
 SEVEN_GAPS_BASE = "caa0f1b2509774d28b765dd128a79f37482f4c9f"
 GRID_PM_BASE = "ae9c7e5949586b54e96043eb18ebc1533e6b0203"
 INCOME_ATTRIBUTION_REFRESH_MARKER = ".github/deploy-modes/income-attribution-refresh-20261111"
@@ -54,8 +56,12 @@ def select_deploy_mode(
                       if path.startswith(".github/deploy-modes/")]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
-    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER}:
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
+    if any(path == DASHBOARD_PERFORMANCE_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", DASHBOARD_PERFORMANCE_MARKER)]:
+            raise DeployModeError("dashboard performance release requires one added marker")
+        return "dashboard-performance"
     if any(path == SEVEN_GAPS_MARKER for _, path in marker_changes):
         if marker_changes != [("A", SEVEN_GAPS_MARKER)]:
             raise DeployModeError("seven gaps release requires one added marker")
@@ -165,6 +171,25 @@ def _validate_income_scope(base: str, changes: list[tuple[str, str]]) -> None:
             raise DeployModeError("income attribution scope contains unreviewed path: " + path)
 
 
+def _validate_dashboard_scope(base: str, changes: list[tuple[str, str]]) -> None:
+    if base != DASHBOARD_PERFORMANCE_BASE or ("A", DASHBOARD_PERFORMANCE_MARKER) not in changes:
+        raise DeployModeError("dashboard performance release must start from reviewed main")
+    allowed = {
+        DASHBOARD_PERFORMANCE_MARKER, ".github/workflows/deploy.yml",
+        "dashboard/backend/services/exchange_ledger.py", "dashboard/backend/models/schemas.py",
+        "dashboard/frontend/index.html", "dashboard/frontend/js/main.js",
+        "shared/accounting/dashboard_performance.py", "scripts/select_deploy_mode.py",
+        "scripts/render_remote_deploy.py", "scripts/remote_deploy_runtime.sh",
+        "scripts/package_dashboard_performance_release.py",
+        "scripts/scoped_dashboard_performance_release.py",
+        "scripts/dashboard_release_exchange_snapshot.py",
+    }
+    for status, path in changes:
+        if status not in {"A", "M"} or not (path in allowed or path.startswith("tests/")
+                                          or path.startswith("docs/")):
+            raise DeployModeError("dashboard performance scope contains unreviewed path: " + path)
+
+
 def _validate_grid_scope(base: str, changes: list[tuple[str, str]]) -> None:
     if base != GRID_PM_BASE:
         raise DeployModeError("grid PM push must start from reviewed main")
@@ -214,7 +239,7 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup","ai-tuner-trial","income-attribution","grid-pm-oneway","seven-code-gaps"])
+    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup","ai-tuner-trial","income-attribution","grid-pm-oneway","seven-code-gaps","dashboard-performance"])
     return parser.parse_args(argv)
 
 
@@ -224,7 +249,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.event_name != "push":
             from scripts.ledger_risk_manifest import MANIFEST
             exists = subprocess.run(["git","cat-file","-e",f"{args.head}:{MANIFEST}"],capture_output=True).returncode == 0
-            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup", "ai-tuner-trial", "income-attribution", "grid-pm-oneway", "seven-code-gaps"):
+            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup", "ai-tuner-trial", "income-attribution", "grid-pm-oneway", "seven-code-gaps", "dashboard-performance"):
                 raise DeployModeError("manual remediation selection required for this release tree")
             mode = args.manual_mode if args.manual_mode != "auto" else "full"
         else:
@@ -236,6 +261,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             mode = select_deploy_mode(args.event_name, args.base, changes)
             if mode == "income-attribution":
                 _validate_income_scope(args.base, changes)
+            if mode == "dashboard-performance":
+                _validate_dashboard_scope(args.base, changes)
             if mode == "grid-pm-oneway":
                 _validate_grid_scope(args.base, changes)
             if mode == "seven-code-gaps":

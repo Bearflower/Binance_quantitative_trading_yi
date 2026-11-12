@@ -267,6 +267,25 @@ function formatEquityTime(isoStr) {
 /**
  * 更新总览
  */
+function metricReasonText(reason) {
+    const reasons = {
+        ledger_not_published: '收益报告未发布',
+        income_coverage_incomplete: '交易所收入覆盖不足',
+        strategy_attribution_incomplete: '策略归属未核全',
+        no_completed_days: '所选期间无完整日',
+        opening_capital_missing: '缺少期初资金快照',
+        opening_capital_invalid: '期初资金基数无效',
+        capital_source_unavailable: '资金快照暂不可用',
+        sample_below_two_days: '日样本不足两天',
+        zero_return_variance: '日收益无波动，夏普不可定义',
+        verified_flat_baseline_missing: '缺少交易所空仓基线',
+        fill_coverage_incomplete: '交易所成交覆盖不足',
+        no_verified_closures: '暂无完整核实的平仓仓位',
+        lifecycle_source_unavailable: '仓位核对数据暂不可用'
+    };
+    return reasons[reason] || '样本待核实';
+}
+
 function updateOverview(data) {
     const unrealizedValue = parseFloat(data.total_unrealized_pnl);
     const realizedValue = parseFloat(data.total_pnl);
@@ -296,7 +315,9 @@ function updateOverview(data) {
     const winRate = document.querySelector('#win-rate');
     if (winRate) winRate.textContent = data.win_rate == null ? '待核算' : formatPercent(data.win_rate);
     const winRateSub = document.querySelector('#win-rate-sub');
-    if (winRateSub) winRateSub.textContent = data.win_rate == null ? '平仓序列未核对' : '已核对平仓';
+    if (winRateSub) winRateSub.textContent = data.win_rate == null
+        ? metricReasonText(data.win_rate_reason)
+        : `${data.total_closed} 笔已核实${data.win_sample_partial ? ' · 非期间全量' : ''}`;
 
     const realized = document.querySelector('#realized-pnl');
     if (realized) {
@@ -318,30 +339,35 @@ function updateOverview(data) {
         sharpeEl.className = 'stat-value' + ((v != null && !Number.isNaN(v) && v > 0) ? ' positive' : '');
     }
     const sharpeSub = document.querySelector('#sharpe-sub');
-    if (sharpeSub) sharpeSub.textContent = data.total_sharpe == null ? '净值序列未核对' : 'Sharpe';
+    if (sharpeSub) sharpeSub.textContent = data.total_sharpe == null
+        ? metricReasonText(data.total_perf_reason)
+        : formatPerfWindow(data.total_perf_window_start, data.total_perf_window_end,
+                           data.total_perf_sample_count);
     // 最大回撤非 null 时显示负百分比。
     const ddEl = document.querySelector('#total-max-drawdown');
     if (ddEl) {
         const v = data.total_max_drawdown;
-        ddEl.textContent = (v == null || Number.isNaN(Number(v))) ? '待核算' : `-${(Number(v) * 100).toFixed(1)}%`;
+        ddEl.textContent = (v == null || Number.isNaN(Number(v))) ? '待核算'
+            : `${Number(v) > 0 ? '-' : ''}${(Number(v) * 100).toFixed(1)}%`;
         ddEl.className = 'stat-value negative';
     }
     // 回撤/夏普的统计窗口（滚动回溯窗口，澄清"月度≠本自然月"）
     const ddSub = document.querySelector('#drawdown-sub');
     if (ddSub) {
-        ddSub.textContent = formatPerfWindow(
-            data.total_perf_window_start, data.total_perf_window_end, data.total_perf_sample_count
-        ) || (data.total_max_drawdown == null ? '净值序列未核对' : 'Max DD');
+        ddSub.textContent = data.total_max_drawdown == null
+            ? metricReasonText(data.total_perf_reason)
+            : formatPerfWindow(data.total_perf_window_start, data.total_perf_window_end,
+                               data.total_perf_sample_count);
     }
 }
 
 /**
- * 格式化绩效样本窗口：如 "近180天 07/12~10/09"；includeDates=false 时仅返回 "近180天"
+ * 格式化绩效样本窗口：如 "11个完整日 11/01~11/11"。
  * 无窗口数据时返回空串（调用方自行兜底）
  */
 function formatPerfWindow(startIso, endIso, count, includeDates = true) {
     if (!startIso || !endIso) return '';
-    const span = count ? `近${count}天` : '';
+    const span = count ? `${count}个完整日` : '';
     if (!includeDates) return span;
     const mmdd = (s) => String(s).slice(5, 10).replace('-', '/');
     return `${span ? span + ' ' : ''}${mmdd(startIso)}~${mmdd(endIso)}`;
@@ -386,14 +412,22 @@ function updateStrategyCards(strategies) {
         const winRate = card.querySelector('[data-metric="win_rate"] .value');
         if (winRate) {
             winRate.textContent = strategy.win_rate == null ? '待核算' : formatPercent(strategy.win_rate);
-            winRate.title = strategy.win_rate == null ? '缺少已核对的完整平仓交易序列' : '';
+            winRate.title = strategy.win_rate == null
+                ? metricReasonText(strategy.win_rate_reason)
+                : `${strategy.closed_count} 笔交易所仓位已完整核实；仅代表已核实样本`;
         }
+        const winLabel = card.querySelector('[data-metric="win_rate"] .label');
+        if (winLabel) winLabel.textContent = '已核实仓位胜率';
 
         const orderCount = card.querySelector('[data-metric="order_count"] .value');
         if (orderCount) {
             orderCount.textContent = strategy.order_count?.toLocaleString() ?? '待核对';
-            orderCount.title = strategy.order_count == null ? '策略订单归属尚未核对完整' : '';
+            orderCount.title = strategy.order_count == null
+                ? metricReasonText(strategy.win_rate_reason)
+                : '仅统计已核实完整平仓仓位关联的交易所委托；不是期间全部委托';
         }
+        const orderLabel = card.querySelector('[data-metric="order_count"] .label');
+        if (orderLabel) orderLabel.textContent = '已核实委托数';
 
         // 持仓量 / 持仓保证金（无上报时后端回 0，展示 0 / 0.00 保持布局稳定）
         const openCount = card.querySelector('[data-metric="open_position_count"] .value');
@@ -408,28 +442,36 @@ function updateStrategyCards(strategies) {
             });
         }
 
-        // 策略级年化夏普率
+        // 策略级已实现收益夏普
+        const sharpeLabel = card.querySelector('[data-metric="sharpe"] .label');
+        if (sharpeLabel) sharpeLabel.textContent = '已实现收益夏普';
         const strSharpe = card.querySelector('[data-metric="sharpe"] .value');
         if (strSharpe) {
             const v = strategy.sharpe;
             strSharpe.textContent = (v == null || Number.isNaN(Number(v))) ? '待核算' : Number(v).toFixed(2);
-            strSharpe.title = v == null ? '策略净值序列尚未按交易所口径核对' : '';
+            strSharpe.title = v == null ? metricReasonText(strategy.perf_reason)
+                : '交易所已实现净收入 / 期初资金快照；不含持仓浮盈亏';
             strSharpe.className = 'value' + ((v != null && !Number.isNaN(v) && v > 0) ? ' positive' : '');
         }
-        // 策略级最大回撤
+        // 策略级已实现收益回撤
+        const ddLabel = card.querySelector('[data-metric="max_drawdown"] .label');
+        if (ddLabel) ddLabel.textContent = '已实现收益回撤';
         const strDD = card.querySelector('[data-metric="max_drawdown"] .value');
         if (strDD) {
             const v = strategy.max_drawdown;
-            strDD.textContent = (v == null || Number.isNaN(Number(v))) ? '待核算' : `-${(Number(v) * 100).toFixed(1)}%`;
-            strDD.title = v == null ? '策略净值序列尚未按交易所口径核对' : '';
+            strDD.textContent = (v == null || Number.isNaN(Number(v))) ? '待核算'
+                : `${Number(v) > 0 ? '-' : ''}${(Number(v) * 100).toFixed(1)}%`;
+            strDD.title = v == null ? metricReasonText(strategy.perf_reason)
+                : '交易所已实现净收入回撤；不含持仓期浮亏';
             strDD.className = 'value negative';
         }
-        // 策略级回撤的统计窗口（滚动回溯窗口，仅显示"近N天"，不展示具体日期）
+        // 策略级完整日样本窗口
         const strWin = card.querySelector('[data-metric="max_drawdown"] .metric-window');
         if (strWin) {
-            strWin.textContent = formatPerfWindow(
-                strategy.perf_window_start, strategy.perf_window_end, strategy.perf_sample_count, false
-            );
+            strWin.textContent = strategy.max_drawdown == null
+                ? metricReasonText(strategy.perf_reason)
+                : formatPerfWindow(strategy.perf_window_start, strategy.perf_window_end,
+                                   strategy.perf_sample_count, false);
         }
     });
 }
