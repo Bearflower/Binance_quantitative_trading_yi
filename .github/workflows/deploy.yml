@@ -26,7 +26,7 @@ on:
     inputs:
       deploy_mode:
         type: choice
-        options: [auto, ledger-risk-remediation, strategy-risk-successor, strategy-risk-followup, strategy-stop-followup, income-attribution, ai-tuner-trial, grid-pm-oneway]
+        options: [auto, ledger-risk-remediation, strategy-risk-successor, strategy-risk-followup, strategy-stop-followup, income-attribution, ai-tuner-trial, grid-pm-oneway, seven-code-gaps]
         default: auto
         description: Explicit remediation selection is required for the release tree
 
@@ -71,7 +71,7 @@ jobs:
           MANUAL_MODE: ${{ inputs.deploy_mode || 'auto' }}
         run: |
           MODE=$(python3 scripts/select_deploy_mode.py --event-name "${{ github.event_name }}" --base "${{ github.event.before }}" --head "${{ github.sha }}" --manual-mode "$MANUAL_MODE")
-          if [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ] || [ "$MODE" = "strategy-risk-followup" ] || [ "$MODE" = "strategy-stop-followup" ] || [ "$MODE" = "income-attribution" ] || [ "$MODE" = "ai-tuner-trial" ] || [ "$MODE" = "grid-pm-oneway" ]; then
+          if [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ] || [ "$MODE" = "strategy-risk-followup" ] || [ "$MODE" = "strategy-stop-followup" ] || [ "$MODE" = "income-attribution" ] || [ "$MODE" = "ai-tuner-trial" ] || [ "$MODE" = "grid-pm-oneway" ] || [ "$MODE" = "seven-code-gaps" ]; then
             FUNDING_ACTION=keep
           else
             FUNDING_ACTION=$(python3 scripts/select_funding_deploy.py --event-name "${{ github.event_name }}" --base "${{ github.event.before }}" --head "${{ github.sha }}")
@@ -189,6 +189,13 @@ jobs:
           if [ "$DEPLOY_MODE" = "grid-pm-oneway" ]; then
             case "${{ matrix.service.name }}" in
               grid) echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
+              *) echo "should_build=false" >> "$GITHUB_OUTPUT" ;;
+            esac
+            exit 0
+          fi
+          if [ "$DEPLOY_MODE" = "seven-code-gaps" ]; then
+            case "${{ matrix.service.name }}" in
+              btc-eth-aggr|new-coin|hrs|ai-tuner|dashboard-api) echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
               *) echo "should_build=false" >> "$GITHUB_OUTPUT" ;;
             esac
             exit 0
@@ -375,8 +382,8 @@ jobs:
         id: image_tag
         run: |
           MODE="${{ needs.detect.outputs.mode }}"
-          if [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ] || [ "$MODE" = "strategy-risk-followup" ] || [ "$MODE" = "strategy-stop-followup" ] || [ "$MODE" = "income-attribution" ] || [ "$MODE" = "ai-tuner-trial" ] || [ "$MODE" = "grid-pm-oneway" ]; then
-            if [ "$MODE" = "ledger-risk-remediation" ]; then PREFIX=remediation; elif [ "$MODE" = "strategy-risk-successor" ]; then PREFIX=strategy-successor; elif [ "$MODE" = "strategy-risk-followup" ]; then PREFIX=risk-followup; elif [ "$MODE" = "income-attribution" ]; then PREFIX=income-attribution; elif [ "$MODE" = "strategy-stop-followup" ]; then PREFIX=stop-followup; elif [ "$MODE" = "grid-pm-oneway" ]; then PREFIX=grid-pm-oneway; else PREFIX=ai-tuner-trial; fi
+          if [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ] || [ "$MODE" = "strategy-risk-followup" ] || [ "$MODE" = "strategy-stop-followup" ] || [ "$MODE" = "income-attribution" ] || [ "$MODE" = "ai-tuner-trial" ] || [ "$MODE" = "grid-pm-oneway" ] || [ "$MODE" = "seven-code-gaps" ]; then
+            if [ "$MODE" = "ledger-risk-remediation" ]; then PREFIX=remediation; elif [ "$MODE" = "strategy-risk-successor" ]; then PREFIX=strategy-successor; elif [ "$MODE" = "strategy-risk-followup" ]; then PREFIX=risk-followup; elif [ "$MODE" = "income-attribution" ]; then PREFIX=income-attribution; elif [ "$MODE" = "strategy-stop-followup" ]; then PREFIX=stop-followup; elif [ "$MODE" = "grid-pm-oneway" ]; then PREFIX=grid-pm-oneway; elif [ "$MODE" = "seven-code-gaps" ]; then PREFIX=seven-code-gaps; else PREFIX=ai-tuner-trial; fi
             echo "value=${PREFIX}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
             REF="${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:${PREFIX}-${{ github.sha }}"
             if docker buildx imagetools inspect "$REF" > "$RUNNER_TEMP/existing-image.txt" 2>/dev/null; then
@@ -401,12 +408,12 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:${{ steps.image_tag.outputs.value }}
 
       - name: Record immutable image digest
-        if: (needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor' || needs.detect.outputs.mode == 'strategy-risk-followup' || needs.detect.outputs.mode == 'strategy-stop-followup' || needs.detect.outputs.mode == 'income-attribution' || needs.detect.outputs.mode == 'ai-tuner-trial' || needs.detect.outputs.mode == 'grid-pm-oneway') && steps.decide.outputs.should_build == 'true'
+        if: (needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor' || needs.detect.outputs.mode == 'strategy-risk-followup' || needs.detect.outputs.mode == 'strategy-stop-followup' || needs.detect.outputs.mode == 'income-attribution' || needs.detect.outputs.mode == 'ai-tuner-trial' || needs.detect.outputs.mode == 'grid-pm-oneway' || needs.detect.outputs.mode == 'seven-code-gaps') && steps.decide.outputs.should_build == 'true'
         run: |
           mkdir -p image-digests
           printf '%s\n' '${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}@${{ steps.image_tag.outputs.existing_digest || steps.image_build.outputs.digest }}' > 'image-digests/${{ matrix.service.name }}.txt'
       - uses: actions/upload-artifact@v4
-        if: (needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor' || needs.detect.outputs.mode == 'strategy-risk-followup' || needs.detect.outputs.mode == 'strategy-stop-followup' || needs.detect.outputs.mode == 'income-attribution' || needs.detect.outputs.mode == 'ai-tuner-trial' || needs.detect.outputs.mode == 'grid-pm-oneway') && steps.decide.outputs.should_build == 'true'
+        if: (needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor' || needs.detect.outputs.mode == 'strategy-risk-followup' || needs.detect.outputs.mode == 'strategy-stop-followup' || needs.detect.outputs.mode == 'income-attribution' || needs.detect.outputs.mode == 'ai-tuner-trial' || needs.detect.outputs.mode == 'grid-pm-oneway' || needs.detect.outputs.mode == 'seven-code-gaps') && steps.decide.outputs.should_build == 'true'
         with:
           name: ${{ needs.detect.outputs.mode }}-digest-${{ matrix.service.name }}
           path: image-digests/*.txt
@@ -498,11 +505,11 @@ jobs:
           exit 255
 
       - name: Block generic uploads when active release pins exist
-        if: needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor' && needs.detect.outputs.mode != 'strategy-risk-followup' && needs.detect.outputs.mode != 'strategy-stop-followup' && needs.detect.outputs.mode != 'income-attribution' && needs.detect.outputs.mode != 'ai-tuner-trial' && needs.detect.outputs.mode != 'grid-pm-oneway'
+        if: needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor' && needs.detect.outputs.mode != 'strategy-risk-followup' && needs.detect.outputs.mode != 'strategy-stop-followup' && needs.detect.outputs.mode != 'income-attribution' && needs.detect.outputs.mode != 'ai-tuner-trial' && needs.detect.outputs.mode != 'grid-pm-oneway' && needs.detect.outputs.mode != 'seven-code-gaps'
         run: ssh 43.156.242.184 'test ! -f /root/trading_system/.deploy_tmp/ledger-risk-active.json'
 
       - name: 📤 上传 docker-compose.yml（scp）
-        if: needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor' && needs.detect.outputs.mode != 'strategy-risk-followup' && needs.detect.outputs.mode != 'strategy-stop-followup' && needs.detect.outputs.mode != 'income-attribution' && needs.detect.outputs.mode != 'ai-tuner-trial' && needs.detect.outputs.mode != 'grid-pm-oneway'
+        if: needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor' && needs.detect.outputs.mode != 'strategy-risk-followup' && needs.detect.outputs.mode != 'strategy-stop-followup' && needs.detect.outputs.mode != 'income-attribution' && needs.detect.outputs.mode != 'ai-tuner-trial' && needs.detect.outputs.mode != 'grid-pm-oneway' && needs.detect.outputs.mode != 'seven-code-gaps'
         run: |
           source /tmp/ci_retry.sh
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp/full-${{ github.run_id }}"
@@ -633,6 +640,20 @@ jobs:
           source /tmp/ci_retry.sh
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp && chmod 700 /root/trading_system/.deploy_tmp"
           retry_connect scp -r "${RUNNER_TEMP}/grid-pm-oneway-${{ github.sha }}" 43.156.242.184:/root/trading_system/.deploy_tmp/
+
+      - uses: actions/download-artifact@v4
+        if: needs.detect.outputs.mode == 'seven-code-gaps'
+        with:
+          pattern: seven-code-gaps-digest-*
+          path: ${{ runner.temp }}/seven-code-gaps-digests
+          merge-multiple: true
+      - name: Upload pinned seven gaps bundle
+        if: needs.detect.outputs.mode == 'seven-code-gaps'
+        run: |
+          python3 scripts/package_seven_gaps_release.py --sha "${{ github.sha }}" --digests "${RUNNER_TEMP}/seven-code-gaps-digests" --output "${RUNNER_TEMP}/seven-code-gaps-${{ github.sha }}"
+          source /tmp/ci_retry.sh
+          retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp && chmod 700 /root/trading_system/.deploy_tmp"
+          retry_connect scp -r "${RUNNER_TEMP}/seven-code-gaps-${{ github.sha }}" 43.156.242.184:/root/trading_system/.deploy_tmp/
 
       - name: 🚀 生成并上传远程部署脚本
         run: |

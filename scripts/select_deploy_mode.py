@@ -27,6 +27,8 @@ STOP_FOLLOWUP_MARKER = ".github/deploy-modes/aggressive-stop-followup-20261109"
 AI_TUNER_TRIAL_MARKER = ".github/deploy-modes/ai-tuner-trial-20261110"
 INCOME_ATTRIBUTION_MARKER = ".github/deploy-modes/income-attribution-20261110"
 GRID_PM_MARKER = ".github/deploy-modes/grid-pm-oneway-20261111"
+SEVEN_GAPS_MARKER = ".github/deploy-modes/seven-code-gaps-20261112"
+SEVEN_GAPS_BASE = "caa0f1b2509774d28b765dd128a79f37482f4c9f"
 GRID_PM_BASE = "ae9c7e5949586b54e96043eb18ebc1533e6b0203"
 INCOME_ATTRIBUTION_REFRESH_MARKER = ".github/deploy-modes/income-attribution-refresh-20261111"
 INCOME_ATTRIBUTION_BASE = "6821072aef1a021f3f2920e7c84fc07b09d21454"
@@ -52,8 +54,12 @@ def select_deploy_mode(
                       if path.startswith(".github/deploy-modes/")]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
-    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER}:
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, STOP_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
+    if any(path == SEVEN_GAPS_MARKER for _, path in marker_changes):
+        if marker_changes != [("A", SEVEN_GAPS_MARKER)]:
+            raise DeployModeError("seven gaps release requires one added marker")
+        return "seven-code-gaps"
     if any(path == GRID_PM_MARKER for _, path in marker_changes):
         if marker_changes != [("A", GRID_PM_MARKER)]:
             raise DeployModeError("grid PM release requires one added marker")
@@ -181,12 +187,34 @@ def _validate_grid_scope(base: str, changes: list[tuple[str, str]]) -> None:
             raise DeployModeError("grid PM scope contains unreviewed path: " + path)
 
 
+def _validate_seven_gaps_scope(base: str, changes: list[tuple[str, str]]) -> None:
+    if base != SEVEN_GAPS_BASE:
+        raise DeployModeError("seven gaps push must start from reviewed main")
+    exact = {
+        SEVEN_GAPS_MARKER, ".github/workflows/deploy.yml",
+        "scripts/select_deploy_mode.py", "scripts/render_remote_deploy.py",
+        "scripts/remote_deploy_runtime.sh", "scripts/package_seven_gaps_release.py",
+        "scripts/scoped_seven_gaps_release.py", "dashboard/frontend/index.html",
+        "dashboard/frontend/js/main.js", "dashboard/backend/models/schemas.py",
+        "shared/accounting/cashflow_roi.py", "task_plan.md", "findings.md", "progress.md",
+        "strategies/btc_eth_aggressive/strategy.py", "strategies/hrs/strategy.py",
+        "strategies/new_coin/executor.py", "strategies/new_coin/strategy.py",
+        "strategies/new_coin/recovery_evidence.py", "ai_tuner/monitor/reduced_trial.py",
+        "ai_tuner/allocation/shadow_allocation.py",
+    }
+    for status, path in changes:
+        if status not in {"A", "M"} or not (path in exact or path.startswith("tests/")
+            or path.startswith("docs/") or path.startswith("strategies/") and "/tests/" in path
+            or path.startswith("ai_tuner/") and "/tests/" in path):
+            raise DeployModeError("seven gaps scope contains unreviewed path: " + path)
+
+
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--event-name", required=True)
     parser.add_argument("--base", default="")
     parser.add_argument("--head", default="HEAD")
-    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup","ai-tuner-trial","income-attribution","grid-pm-oneway"])
+    parser.add_argument("--manual-mode", default="auto", choices=["auto","ledger-risk-remediation","strategy-risk-successor","strategy-risk-followup","strategy-stop-followup","ai-tuner-trial","income-attribution","grid-pm-oneway","seven-code-gaps"])
     return parser.parse_args(argv)
 
 
@@ -196,7 +224,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.event_name != "push":
             from scripts.ledger_risk_manifest import MANIFEST
             exists = subprocess.run(["git","cat-file","-e",f"{args.head}:{MANIFEST}"],capture_output=True).returncode == 0
-            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup", "ai-tuner-trial", "income-attribution", "grid-pm-oneway"):
+            if exists and args.manual_mode not in ("ledger-risk-remediation", "strategy-risk-successor", "strategy-risk-followup", "strategy-stop-followup", "ai-tuner-trial", "income-attribution", "grid-pm-oneway", "seven-code-gaps"):
                 raise DeployModeError("manual remediation selection required for this release tree")
             mode = args.manual_mode if args.manual_mode != "auto" else "full"
         else:
@@ -210,6 +238,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _validate_income_scope(args.base, changes)
             if mode == "grid-pm-oneway":
                 _validate_grid_scope(args.base, changes)
+            if mode == "seven-code-gaps":
+                _validate_seven_gaps_scope(args.base, changes)
         if mode == "ledger-risk-remediation":
             from scripts.ledger_risk_manifest import MANIFEST,validate_tree,ReleaseBlocked
             try:
