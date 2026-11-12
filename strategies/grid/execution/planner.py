@@ -39,6 +39,10 @@ class GridPlan:
     max_margin_usdt: Decimal
 
 
+class PlanLimitExceeded(ValueError):
+    """A valid grid signal cannot fit the configured execution budget."""
+
+
 def _round(value: Decimal, step: Decimal, rounding) -> Decimal:
     return (value / step).to_integral_value(rounding=rounding) * step
 
@@ -90,11 +94,11 @@ def build_plan(params: DynamicGridParams, feasibility: CapitalFeasibility,
             raise ValueError("order notional below minimum")
         orders.append(PlannedOrder(index, side, price, qty))
     if not orders or len(orders) > hard_limits.max_open_orders:
-        raise ValueError("open order count exceeds limit")
+        raise PlanLimitExceeded("open order count exceeds limit")
     total_notional = sum((order.price * order.quantity for order in orders), Decimal(0))
     margin = total_notional / Decimal(hard_limits.leverage)
     if total_notional > hard_limits.max_notional_usdt:
-        raise ValueError("whole-plan notional exceeds limit")
+        raise PlanLimitExceeded("whole-plan notional exceeds limit")
     if margin > hard_limits.max_margin_usdt:
-        raise ValueError("whole-plan margin exceeds limit")
+        raise PlanLimitExceeded("whole-plan margin exceeds limit")
     return GridPlan(tuple(orders), levels, total_notional, margin)

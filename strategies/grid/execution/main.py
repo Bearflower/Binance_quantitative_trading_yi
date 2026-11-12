@@ -17,7 +17,7 @@ from .contracts import ExecutionSettings, decode_feasibility, decode_grid_params
 from .engine import GridEngine
 from .exchange import GridExchange
 from .fills import FillCoordinator
-from .planner import HardLimits, build_plan
+from .planner import HardLimits, PlanLimitExceeded, build_plan
 from .policy import EXIT_STATES, TRADABLE_STATES
 from .risk import RiskLimits, RiskStatus
 from .risk_tracker import RiskTracker
@@ -209,16 +209,22 @@ class ExecutorService:
                 return
             context = self.store.epoch(epoch) if epoch is not None else None
             try:
-                plan = await self._plan(decision) if tradable else None
                 params = decision.get("grid_params") or {}
                 stop_low = Decimal(str(params.get("stop_loss_low") or
                                        (context or {}).get("stop_loss_low") or "1"))
                 stop_high = Decimal(str(params.get("stop_loss_high") or
                                         (context or {}).get("stop_loss_high") or "2"))
+                plan = await self._plan(decision) if tradable else None
                 await self.engine.apply_decision(
                     decision, plan, risk,
                     leverage=self.settings.expected_leverage, now_ms=now_ms,
                     stop_loss_low=stop_low, stop_loss_high=stop_high)
+            except PlanLimitExceeded as exc:
+                logger.info("grid plan skipped: %s", exc)
+                if epoch is None or await self.engine.pause(
+                        epoch, stop_loss_low=stop_low,
+                        stop_loss_high=stop_high):
+                    self.store.acknowledge(decision["decision_id"])
             except Exception as exc:
                 logger.exception("grid decision failed: %s", type(exc).__name__)
                 self.engine._lock("decision handling failed")
