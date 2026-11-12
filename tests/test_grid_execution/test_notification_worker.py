@@ -109,6 +109,37 @@ async def test_unknown_delivery_retries_same_trade_without_new_fact(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_failed_earlier_report_blocks_newer_report_until_retry(tmp_path):
+    execution = tmp_path / "execution.sqlite3"
+    journal_with_fill(execution)
+    trades = [{"symbol": "ETHUSDT", "orderId": 101, "id": 501,
+               "side": "BUY", "qty": "0.01", "price": "2000",
+               "realizedPnl": "0", "commission": "0.01",
+               "commissionAsset": "USDT"},
+              {"symbol": "ETHUSDT", "orderId": 102, "id": 502,
+               "side": "SELL", "qty": "0.01", "price": "2010",
+               "realizedPnl": "0.1", "commission": "0.01",
+               "commissionAsset": "USDT"}]
+    sender = AsyncMock(side_effect=[None, True, True])
+    worker = NotificationWorker(execution, tmp_path / "notices.sqlite3",
+                                FakeExchange(trades), sender)
+    now = int(time.time() * 1000)
+    assert await worker.run_once(now_ms=now) == 0
+    store = DecisionStore(execution)
+    store.prepare_order(1, 1, "ENTRY", "SELL", Decimal("2010"),
+                        Decimal("0.01"), "eg-test-2")
+    store.record_order("eg-test-2", "102", "FILLED", Decimal("0.01"))
+    store.record_fill("eg-test-2", "102", "502", Decimal("0.01"),
+                      Decimal("2010"))
+    store.close()
+    assert await worker.run_once(now_ms=now + 1000) == 0
+    assert sender.await_count == 1
+    assert await worker.run_once(now_ms=now + 31_000) == 2
+    assert sender.await_count == 3
+    worker.close()
+
+
+@pytest.mark.asyncio
 async def test_funding_is_included_once_and_foreign_asset_fails_closed(tmp_path):
     execution = tmp_path / "execution.sqlite3"
     journal_with_fill(execution)

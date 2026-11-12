@@ -171,11 +171,13 @@ class NotificationWorker:
         epochs = self._epochs()
         if not epochs:
             return 0
-        pending = self.notices.execute("""SELECT order_id,trade_id FROM fact
-            WHERE sent_at_ms IS NULL AND next_attempt_ms<=?
-            ORDER BY created_at_ms,order_id,trade_id""", (now_ms,)).fetchall()
+        pending = self.notices.execute("""SELECT order_id,trade_id,next_attempt_ms FROM fact
+            WHERE sent_at_ms IS NULL
+            ORDER BY created_at_ms,order_id,trade_id""").fetchall()
         delivered = 0
         for row in pending:
+            if row["next_attempt_ms"] > now_ms:
+                break
             facts = self._facts()
             fact = next(f for f in facts if f.order_id == row["order_id"]
                         and f.trade_id == row["trade_id"])
@@ -196,6 +198,7 @@ class NotificationWorker:
                     self.notices.execute("""UPDATE fact SET next_attempt_ms=?
                         WHERE order_id=? AND trade_id=? AND sent_at_ms IS NULL""",
                         (now_ms + 30_000, fact.order_id, fact.trade_id))
+                    break
         return delivered
 
 
