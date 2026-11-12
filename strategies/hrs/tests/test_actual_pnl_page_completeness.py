@@ -103,3 +103,68 @@ async def test_unsettled_extra_fill_prevents_partial_actual_pnl(monkeypatch):
         "ABCUSDT", datetime.now(timezone.utc) - timedelta(days=1)
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_finished_hrs_tp_algo_attributes_its_actual_order(monkeypatch):
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", "main")
+    strategy = object.__new__(HRSStrategy)
+    strategy.binance_client = MagicMock()
+    strategy.binance_client.get_income_history = AsyncMock(return_value=[
+        {"symbol": "ARIAUSDT", "tranId": 9, "asset": "USDT", "income": "0.17484",
+         "tradeId": 22, "incomeType": "REALIZED_PNL"}
+    ])
+    strategy.binance_client.get_user_trades = AsyncMock(return_value=[
+        {"symbol": "ARIAUSDT", "id": 22, "orderId": 200, "realizedPnl": "0.17484",
+         "qty": "31", "side": "BUY"}
+    ])
+    strategy.binance_client.get_algo_order = AsyncMock(return_value={
+        "algoId": 100, "symbol": "ARIAUSDT", "algoStatus": "FINISHED",
+        "actualOrderId": "200", "side": "BUY", "actualQty": "31",
+        "orderType": "TAKE_PROFIT_MARKET",
+    })
+    strategy.binance_client.get_order = AsyncMock(return_value={
+        "orderId": 200, "symbol": "ARIAUSDT", "side": "BUY", "status": "FILLED",
+        "reduceOnly": True, "executedQty": "31",
+    })
+    strategy.db = MagicMock()
+    strategy.db.fetch_all = AsyncMock(side_effect=[
+        [], [{"account_id": "main", "strategy": "hrs", "algo_id": "100",
+              "side": "BUY"}],
+    ])
+    result = await strategy._get_actual_pnl_from_binance(
+        "ARIAUSDT", datetime.now(timezone.utc) - timedelta(hours=1)
+    )
+    assert result == Decimal("0.17484")
+
+
+@pytest.mark.asyncio
+async def test_foreign_tp_algo_cannot_attribute_hrs_pnl(monkeypatch):
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", "main")
+    strategy = object.__new__(HRSStrategy)
+    strategy.binance_client = MagicMock()
+    strategy.binance_client.get_income_history = AsyncMock(return_value=[
+        {"symbol": "ARIAUSDT", "tranId": 9, "asset": "USDT", "income": "1",
+         "tradeId": 22, "incomeType": "REALIZED_PNL"}
+    ])
+    strategy.binance_client.get_user_trades = AsyncMock(return_value=[
+        {"symbol": "ARIAUSDT", "id": 22, "orderId": 200,
+         "realizedPnl": "1", "qty": "31", "side": "BUY"}
+    ])
+    strategy.binance_client.get_algo_order = AsyncMock(return_value={
+        "algoId": 100, "symbol": "ARIAUSDT", "algoStatus": "FINISHED",
+        "actualOrderId": "200", "side": "BUY", "actualQty": "31",
+        "orderType": "TAKE_PROFIT_MARKET",
+    })
+    strategy.binance_client.get_order = AsyncMock(return_value={
+        "orderId": 200, "symbol": "ARIAUSDT", "side": "BUY", "status": "FILLED",
+        "reduceOnly": True, "executedQty": "31",
+    })
+    strategy.db = MagicMock()
+    strategy.db.fetch_all = AsyncMock(side_effect=[
+        [], [{"account_id": "main", "strategy": "new_coin", "algo_id": "100",
+              "side": "BUY"}],
+    ])
+    assert await strategy._get_actual_pnl_from_binance(
+        "ARIAUSDT", datetime.now(timezone.utc) - timedelta(hours=1)
+    ) is None

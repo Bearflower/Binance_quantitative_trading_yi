@@ -217,12 +217,15 @@ class RiskPolicyStore:
                 raise EntryDenied('policy changed immediately before submission')
             yield dict(row)
 
-    async def reconcile(self, strategy, exchange):
+    async def reconcile(self, strategy, exchange, *, enforce_legacy_orders=True,
+                        eligible_symbols=None):
         """Read only exchange reconciliation; no cancels, closes, or TTL releases."""
         async with self.pool.acquire() as conn, conn.transaction():
             await self.lock(conn,strategy)
             rows = await conn.fetch('''SELECT * FROM trading.entry_risk_reservation
                 WHERE account_id=$1 AND strategy_id=$2 AND state <> 'released' ''',self.account,strategy)
+            if eligible_symbols is not None:
+                rows = [row for row in rows if row['symbol'] in eligible_symbols]
             for row in rows:
                 try:
                     order = await exchange.get_order_by_client_id(row['symbol'],row['client_order_id'])
@@ -266,6 +269,8 @@ class RiskPolicyStore:
                         await conn.execute("UPDATE trading.position_claims SET claim_state='RELEASED',released_at=now(),reason='risk_reconciled_flat' WHERE symbol=$1 AND strategy=$2 AND claim_state IN ('PENDING','ACTIVE')",row['symbol'],strategy)
                 except Exception:
                     continue  # Unknown order/transport/cancel result stays occupied indefinitely.
+            if not enforce_legacy_orders:
+                return
             known = {r['client_order_id'] for r in rows}
             orders = await exchange.get_open_orders()
             if not isinstance(orders,list):
