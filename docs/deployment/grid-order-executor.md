@@ -10,6 +10,7 @@
 - 服务器私密风控配置：最大保证金 240 USDT、最大名义本金 2400 USDT、单日亏损 15 USDT、最大回撤 30 USDT、最多 7 笔挂单、账户杠杆 5 倍。在 5 倍和 240 USDT 保证金上限下，实际名义敞口还受约 1200 USDT 的更紧约束。
 - 独立执行器已用修复镜像 `grid-executor:814af508` 启用，实际容器环境 `GRID_EXECUTION_MODE=live`。容器健康、用户流就绪、风险为 `ALLOW`、账本为 `FLAT`。服务器 `.secrets/grid-limits.env` 的默认模式仍为 `off`，以避免普通 Compose 操作误启用；本次受控激活覆盖文件和证据保存在 `.releases/grid-executor-activation-20261112/814af50855623dd93d8abdd29cef0f566d1011c8/`。
 - 2026-11-12 发现执行器最初未注入 `FEISHU_WEBHOOK_GRID`，已有锁定告警因此不能投递。核对原网格信号和实时提醒容器使用同一地址后，将该地址写入服务器仅 root 可读的 `.secrets/grid-notifications.env`，按完成状态的当前生产 pin 重新创建执行器。配置和结果在 `.releases/grid-executor-webhook-20261112/814af50855623dd93d8abdd29cef0f566d1011c8/`；复核执行器容器健康、Webhook 与原网格相同、风险 `ALLOW`、账本 `FLAT`。成交与持仓通知功能尚未实现，此项只修复已有锁定告警的投递配置。
+- 独立成交与持仓报告随后在同一飞书地址启用，见 [2026-11-12 执行报告发布记录](grid-execution-feishu-report-2026-11-12.md)。它不改变原 V2.5.5 信号文案或发送节奏；仅在本执行器实际成交经 PM 核实后另发一条。
 
 执行器要求单向持仓 `dualSidePosition=false`，且 PM 有足额可用抵押权益；模式不符或资金不足时锁定新增敞口。执行器不会自动切换持仓模式、改变杠杆、划转现货资金或补足限额。V2.5.5 原计划超出硬限额时跳过该决策；已有网格先暂停新增委托。当前市场为强趋势退出信号，执行器保持空仓。
 
