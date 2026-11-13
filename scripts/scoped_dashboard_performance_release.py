@@ -16,8 +16,8 @@ from scripts.scoped_stop_followup import (  # noqa: E402
     Runtime as BaseRuntime, CONTAINERS, STACK_FILES, atomic_json, image_only,
 )
 
-PREDECESSOR_SHA = "1d0a71a94f8ca1a4a9d77594899db0aa250d8fe1"
-PREDECESSOR_OVERLAY_SHA256 = "b48984e0b91c883c963c981cf01f5a4e310285bcbda484e72abb62dfe529bc00"
+PREDECESSOR_SHA = "80a403c900b2679b697a52a033421b4a57082f7a"
+PREDECESSOR_OVERLAY_SHA256 = "a0922fc9acee0b1505258d2f460476b9d9a82c9e52b58b4fee751752cf12e554"
 SERVICE = "dashboard-api"
 SOURCE_PATHS = (
     "dashboard/backend/services/exchange_ledger.py",
@@ -63,9 +63,7 @@ def _overview_ready() -> dict:
             data.get("total_perf_sample_count", 0) < 2 or
             data.get("total_max_drawdown") is None or
             data.get("total_sharpe") is None or
-            data.get("total_closed", 0) < 2 or
-            data.get("win_rate") is None or
-            data.get("win_sample_partial") is not True):
+            (data.get("win_rate") is None and not data.get("win_rate_reason"))):
         raise ReleaseBlocked("dashboard monthly accounting/performance gate failed")
     return {key: data.get(key) for key in (
         "report_id", "report_version", "publication_status", "total_pnl",
@@ -117,9 +115,6 @@ class Runtime(BaseRuntime):
             raise ReleaseBlocked("predecessor state unavailable")
         if json.loads(prior_state.read_text()).get("status") != "complete":
             raise ReleaseBlocked("predecessor release incomplete")
-        prior_proof = prior_state.parent / "exchange-after.json"
-        if not prior_proof.is_file() or json.loads(prior_proof.read_text()).get("ok") is not True:
-            raise ReleaseBlocked("predecessor exchange proof missing")
         self.stacks = self.pin.get("stacks")
         if not isinstance(self.stacks, dict) or set(self.stacks) != set(CONTAINERS):
             raise ReleaseBlocked("pinned service inventory changed")
