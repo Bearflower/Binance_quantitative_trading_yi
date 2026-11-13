@@ -6,13 +6,17 @@ id: Binance_quantitative_trading-20261015-income-history-silent-empty-non-unifie
 日期: 2026-10-15
 标签: [bug, 静默失效, binance_api, 统一账户, income, 数据采集]
 任务标识: c1_d1_evidence_contract_2026-10-15
-状态: 待复查
-审查: 待审查
+状态: 已解决
+审查: 已复核
 ---
 
 # get_income_history 非统一账户静默返回 []，调用方无法区分「真无收入」与「被拦截」
 
-## 现象
+## 2026-11-13 代码与测试复核
+
+非统一账户调用现在会在发送请求前抛出 ValueError，采集端拒绝该客户端且不写游标。已复跑 tests/test_accounting/test_fact_ingestion_gaps.py，覆盖拒绝请求、游标和真实空窗口。
+
+## 登记时的现象
 在非统一账户模式（`use_unified_account=False`）下调用 `BinanceClient.get_income_history`，方法**不发任何 HTTP 请求、直接返回空列表 `[]`，仅打一条 warning**。于 D1 只读采集脚本（`scripts/export_execution_facts.py` 的 `export_income`）而言，这一空结果与「该账户在该时间窗内确实没有任何收入流水」**在返回值层面完全同形**，脚本无从区分二者；其 while 循环把空数组判为 `page_complete=TRUE` 正常收尾、不抛异常，**采集结果可能被静默丢弃而看似成功**。
 
 ## 根因
