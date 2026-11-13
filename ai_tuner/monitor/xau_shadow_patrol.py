@@ -5,12 +5,20 @@ The patrol never mutates research/trading data and never triggers a replay.
 
 import json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+from apscheduler.triggers.cron import CronTrigger
 
 
 UTC = timezone.utc
 PROFILES = ("xau_calibrated", "xau_original", "xau_aggressive")
 OBSERVATION_START = datetime(2026, 10, 28, 9, tzinfo=UTC)
 OBSERVATION_END = datetime(2026, 12, 23, 9, tzinfo=UTC)
+
+
+def daily_patrol_trigger():
+    """Run once each day at 07:45 China time, after the HH:20 decision."""
+    return CronTrigger(hour=7, minute=45, timezone=ZoneInfo("Asia/Shanghai"))
 
 
 class XAUShadowPatrol:
@@ -21,9 +29,9 @@ class XAUShadowPatrol:
 
     async def run_once(self):
         now = self.now().astimezone(UTC)
-        expected = now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1)
+        expected = now.replace(minute=0, second=0, microsecond=0)
         issues = []
-        lines = [f"【XAU 影子巡检】{now:%Y-%m-%d %H:%M} UTC（四小时巡检）"]
+        lines = [f"【XAU 影子巡检】{now:%Y-%m-%d %H:%M} UTC（每日巡检）"]
 
         events = await self.db.fetch_all(
             "SELECT DISTINCT ON (profile_id) profile_id, run_id, scheduled_at, "

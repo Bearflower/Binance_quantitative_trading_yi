@@ -56,7 +56,7 @@ from ai_tuner.monitor.reduced_trial import (  # noqa: E402
     ReducedTrialEvaluator, TRIAL_STRATEGIES, register_reduced_trial_jobs,
 )
 from ai_tuner.reconciler.nightly_exit import nightly_exit_repair
-from ai_tuner.monitor.xau_shadow_patrol import XAUShadowPatrol  # noqa: E402
+from ai_tuner.monitor.xau_shadow_patrol import XAUShadowPatrol, daily_patrol_trigger  # noqa: E402
 from ai_tuner.reconciler.income_reconciler import IncomeReconciler  # noqa: E402
 from shared.binance_api import BinanceClient  # noqa: E402
 from shared.readonly_client import ReadOnlyBinanceClient  # noqa: E402
@@ -557,16 +557,14 @@ class StratTuneAI:
         if self.xau_patrol:
             self.scheduler.add_job(
                 self._scheduled_xau_patrol,
-                "cron",
-                minute=35,
-                hour="*/4",
+                trigger=daily_patrol_trigger(),
                 id="xau_shadow_patrol",
-                name="XAU 影子四小时只读巡检",
+                name="XAU 影子每日只读巡检",
                 replace_existing=True,
                 coalesce=True,
                 misfire_grace_time=1800,
             )
-            logger.info("XAU 影子四小时巡检任务已注册")
+            logger.info("XAU 影子每日巡检任务已注册", schedule="07:45 Asia/Shanghai")
 
         # 11. 初始化 HTTP 服务器（飞书审批回调 + 管理 API）
         self._setup_http_server()
@@ -668,7 +666,7 @@ class StratTuneAI:
             await self.health_checker.run_check()
 
     async def _scheduled_xau_patrol(self) -> None:
-        """每四小时汇报 XAU 影子观察状态。"""
+        """每天北京时间 07:45 汇报 XAU 影子观察状态。"""
         if not self.xau_patrol:
             return
         try:

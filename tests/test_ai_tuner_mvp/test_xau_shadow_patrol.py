@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta, timezone
 import json
 from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from ai_tuner.monitor.xau_shadow_patrol import XAUShadowPatrol
+from ai_tuner.monitor.xau_shadow_patrol import XAUShadowPatrol, daily_patrol_trigger
 
 
 UTC = timezone.utc
@@ -14,12 +15,13 @@ class FakeDB:
     def __init__(self, now):
         self.now = now
         self.queries = []
+        self.calls = []
 
     async def fetch_all(self, query, *args):
         self.queries.append(query)
         if "shadow_decision_events" in query:
             return [
-                dict(profile_id=profile, run_id="run-1", scheduled_at=self.now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1),
+                dict(profile_id=profile, run_id="run-1", scheduled_at=self.now.replace(minute=0, second=0, microsecond=0),
                      data_quality_reason=None, decision="no_signal", feature_snapshot=json.dumps({"atr_filter": {"history_count": 100, "final_threshold": 0.01}}))
                 for profile in ("xau_calibrated", "xau_original", "xau_aggressive")
             ]
@@ -29,6 +31,7 @@ class FakeDB:
 
     async def fetch_one(self, query, *args):
         self.queries.append(query)
+        self.calls.append((query, args))
         if "registered_symbols" in query:
             return dict(expires_at=(self.now + timedelta(days=6)).replace(tzinfo=None), status="active", intervals=["1h", "4h", "1d"])
         if "kline_xauusdt_" in query:
@@ -76,3 +79,23 @@ async def test_missing_event_or_quality_degradation_is_reported():
     assert result["ok"] is False
     assert "缺失" in result["message"]
     assert "missing_4h" in result["message"]
+
+
+def test_daily_patrol_fires_at_0745_beijing_only():
+    cst = ZoneInfo("Asia/Shanghai")
+    trigger = daily_patrol_trigger()
+    before = datetime(2026, 11, 13, 7, 44, tzinfo=cst)
+    after = datetime(2026, 11, 13, 7, 46, tzinfo=cst)
+    assert trigger.get_next_fire_time(None, before) == datetime(2026, 11, 13, 7, 45, tzinfo=cst)
+    assert trigger.get_next_fire_time(None, after) == datetime(2026, 11, 14, 7, 45, tzinfo=cst)
+
+
+@pytest.mark.asyncio
+async def test_daily_patrol_checks_current_due_hour():
+    now = datetime(2026, 11, 13, 23, 45, tzinfo=UTC)
+    db = FakeDB(now)
+    notifier = AsyncMock()
+    notifier.send.return_value = True
+    await XAUShadowPatrol(db, notifier, now=lambda: now).run_once()
+    gap_call = next(call for call in db.calls if "generate_series" in call[0])
+    assert gap_call[1][-1] == now.replace(minute=0)

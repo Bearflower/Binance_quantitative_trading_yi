@@ -1,5 +1,5 @@
 {
-  "active_pin_sha": "ccf34745a9f87aeece99a95b8cc03c1aee817fe8",
+  "active_pin_sha": "f77365882f343a9d7f2b6e38430ca5bee1953654",
   "allowed_changes": [
     {
       "path": ".github/deploy-modes/xau-ai-tuner-patrol-20261113",
@@ -10,7 +10,15 @@
       "status": "A"
     },
     {
-      "path": "scripts/select_deploy_mode.py",
+      "path": "ai_tuner/main.py",
+      "status": "M"
+    },
+    {
+      "path": "ai_tuner/monitor/xau_shadow_patrol.py",
+      "status": "M"
+    },
+    {
+      "path": "docs/ops/xau-ai-tuner-patrol.md",
       "status": "M"
     },
     {
@@ -22,7 +30,7 @@
       "status": "M"
     },
     {
-      "path": "ai_tuner/monitor/xau_shadow_patrol.py",
+      "path": "scripts/select_deploy_mode.py",
       "status": "M"
     },
     {
@@ -31,21 +39,21 @@
     }
   ],
   "base_revision": "7a320a59daacbc960c0b732abc417b1025082d3d",
-  "expected_pin_overlay_sha256": "11c01737e11bf58289d1da71b65f4d0acbfbeac2f834ec9db2716380a566d472",
+  "expected_pin_overlay_sha256": "535658d68c315bb7bc7433c1601b94f3904e8668e71611682061e653b0837882",
   "release_id": "xau-ai-tuner-patrol-20261113",
   "schema_version": 1,
   "source_checksums": {
     ".github/workflows/deploy.yml": "0bc145436cb4527801b4b8aec8968a775ba449b7b368d20f6fce3dbd1ab81e0b",
     "ai_tuner/config.yaml": "e78eb25ea8c185f59551a4a0c6d399e225a784531c28d3c76d46b44949189cb0",
-    "ai_tuner/main.py": "7a30a5aaaddef976355fa2a045607eeb159456de10500e7731c5473a6139c8e3",
+    "ai_tuner/main.py": "274ab8f2e543824a1eec49dd114d34e5304bb6b7e60edbd228e44928e6cca837",
     "ai_tuner/monitor/daily_health_check.py": "16526c710083067e87fa8e72eb92cfdef6b7e4da2aa7111df536e8e98820bca2",
     "ai_tuner/monitor/reduced_trial.py": "23488ef7122530fe4b6af128380285a7bee27982c0017e83b8871263ad098b21",
-    "ai_tuner/monitor/xau_shadow_patrol.py": "db5b6fb48f2c07a713b85a5707640dfb0d21bc40f6cd7868fde4e1e04320d289",
-    "scripts/ai_tuner_trial_manifest.py": "0b2b3d7ebe885c4ccffddd980aa559c00cd102b7bec79eb731f8100f95230cea",
+    "ai_tuner/monitor/xau_shadow_patrol.py": "d79d01b1f7e06dfcc11dea97cbd950660f17aa2c968c30dd42d49119b12c87f6",
+    "scripts/ai_tuner_trial_manifest.py": "38fc90ae1087c50f35a022f627c6ae8f198bc9a7b3f4f5ede7029e45ac649b0f",
     "scripts/package_ai_tuner_trial.py": "3b8021edd73fa3957edc9320940ab83a84e9be34e8017163584bbe7b885053de",
     "scripts/remote_deploy_runtime.sh": "bb75352efdcbb3857cb028a04f7007fe1b74b4bff44d5854154e3582879a68ea",
     "scripts/render_remote_deploy.py": "e55fc5f7cb51cbe9917abbe2a153c9b8c88ed641fbbb3e160de049c414ffda49",
-    "scripts/scoped_ai_tuner_trial.py": "ad7d4e1d4d4cc51c324e513f5cff902b2e9a02b6c115bec159273755a74d0467",
+    "scripts/scoped_ai_tuner_trial.py": "3e6bf1ab908fc92d672beeb47818ed56a0a1b6e21614c9e68aa2df3cdb311ab4",
     "scripts/scoped_stop_followup.py": "d1dde0bdf50a6885cc1b582a22fe5202532c8be194839bc20a716af783391129",
     "scripts/select_deploy_mode.py": "8e62a77cd22e8baca659d1bc48594d52067a075b7deb67fa658e4aede2cf854a",
     "scripts/stop_followup_manifest.py": "f69c7803feac26d46461e9ce508fdc5090e1efed2d69b56f0fa5d563619ed69e",

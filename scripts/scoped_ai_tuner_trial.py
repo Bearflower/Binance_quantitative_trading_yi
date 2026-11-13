@@ -200,7 +200,7 @@ class Runtime(BaseRuntime):
             logs = self.run(["docker", "logs", "--since", current["State"]["StartedAt"], current["Id"]], include_stderr=True)
             if "Traceback (most recent call last)" in logs:
                 raise ReleaseBlocked("AI Tuner startup traceback")
-            if (startup_marker_present(logs, "XAU 影子四小时巡检任务已注册")
+            if (startup_marker_present(logs, "XAU 影子每日巡检任务已注册")
                     and startup_marker_present(logs, "调度器已启动")):
                 break
             if time.monotonic() >= startup_deadline:
