@@ -101,8 +101,10 @@ class Runtime(BaseRuntime):
         if set(original) != {"services"} or set(original["services"]) != set(self.stacks):
             raise ReleaseBlocked("incomplete predecessor image pins")
         for service, image in original["services"].items():
-            if (set(image) != {"image"} or not re.fullmatch(
-                    r"ghcr\.io/bearflower/trading-[a-z0-9-]+@sha256:[0-9a-f]{64}", image["image"])):
+            # The pinned overlay also carries reviewed dashboard/grid settings.
+            # Its exact bytes are checked above; validate each image field here.
+            if (not isinstance(image, dict) or not re.fullmatch(
+                    r"ghcr\.io/bearflower/trading-[a-z0-9-]+@sha256:[0-9a-f]{64}", image.get("image", ""))):
                 raise ReleaseBlocked("invalid predecessor image pin: " + service)
         self.pre = self.gate()
         if self.run(["systemctl", "is-active", "income-attribution.timer"]) != "active":
@@ -117,6 +119,15 @@ class Runtime(BaseRuntime):
             if row["State"]["Status"] != "running" or row["State"].get("Health", {}).get("Status") != "healthy":
                 raise ReleaseBlocked("predecessor not healthy: " + service)
             expected = original["services"][service]["image"]
+            # grid-strategy has an independently pinned executor/subaccount release;
+            # its image may legitimately differ from the ledger overlay. Require
+            # that release to be active, then preserve its exact container identity.
+            if service == "grid-strategy":
+                grid_pin_path = self.root / ".deploy_tmp/grid-executor-active.json"
+                grid_pin = json.loads(grid_pin_path.read_text())
+                if grid_pin.get("status") != "active":
+                    raise ReleaseBlocked("independent grid release not active")
+                continue
             if row["Image"] != self.run(["docker", "image", "inspect", "--format", "{{.Id}}", expected]):
                 raise ReleaseBlocked("running image differs from active pin: " + service)
         successor = json.loads(json.dumps(original))
