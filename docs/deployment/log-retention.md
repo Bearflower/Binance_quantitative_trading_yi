@@ -1,5 +1,20 @@
 # 容器日志跨部署保留
 
+## 每日巡检与通知
+
+巡检代码位于 `ai_tuner/ops/log_retention_check.py`，由生产主机的 `trading-log-retention.timer` 每天北京时间 09:00 调用。它以只读方式核对启用全部 profile 的基础 Compose 服务与实际项目容器、日志驱动、健康状态、每个服务最早和最近的 journal 记录、journal 占用和根分区剩余空间；每日向专用飞书机器人发送完整结果。附加发布文件创建的服务会单独列在报告中。Webhook 保存在生产主机 `.secrets/log_retention_webhook`，权限 600，不进入 Git。
+
+巡检不重启或删除容器。检查命令：
+
+```bash
+systemctl status trading-log-retention.timer
+systemctl list-timers trading-log-retention.timer
+python3 /root/trading_system/ai_tuner/ops/log_retention_check.py --dry-run
+journalctl -u trading-log-retention.service -n 30 --no-pager
+```
+
+2026-11-13 已手动运行并收到飞书接口成功响应，生产定时器下一次执行为 11 月 14 日 09:00；原 Codex 本机自动任务 `automation-2` 已删除。当前实际日志窗口约 1 天，未达到 14 天目标，需独立排查 journal 清理原因。
+
 本项目生产容器的标准输出由 Docker 记录。`docker-compose.logging.yml` 为全部 16 个服务启用宿主机持久化 journald。生产部署脚本显式设置 `COMPOSE_FILE=docker-compose.yml:docker-compose.logging.yml`，因此手动执行 Compose 命令时也必须使用同一变量或两个 `-f` 参数。
 
 ## 查询
