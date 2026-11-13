@@ -40,6 +40,7 @@ GRID_DASHBOARD_MARKER = ".github/deploy-modes/grid-subaccount-dashboard-20261112
 GRID_DASHBOARD_BASE = "834f111703aa6bcf92487f66d277c467acab78d9"
 SEVEN_GAPS_BASE = "caa0f1b2509774d28b765dd128a79f37482f4c9f"
 GRID_PM_BASE = "ae9c7e5949586b54e96043eb18ebc1533e6b0203"
+HISTORICAL_MARKER = ".github/deploy-modes/historical-funding-20261113"
 INCOME_ATTRIBUTION_REFRESH_MARKER = ".github/deploy-modes/income-attribution-refresh-20261111"
 INCOME_ATTRIBUTION_BASE = "6821072aef1a021f3f2920e7c84fc07b09d21454"
 INCOME_ATTRIBUTION_REFRESH_BASE = "2f9231f47a5654b4feecbbe997b952bdcd8e09fa"
@@ -64,7 +65,7 @@ def select_deploy_mode(
                       if path.startswith(".github/deploy-modes/")]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
-    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, GRID_DASHBOARD_MARKER}:
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, HISTORICAL_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, GRID_DASHBOARD_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
     if any(path == GRID_DASHBOARD_MARKER for _, path in marker_changes):
         if marker_changes != [("A", GRID_DASHBOARD_MARKER)]:
@@ -92,6 +93,8 @@ def select_deploy_mode(
         if marker_changes != [("A", GRID_PM_MARKER)]:
             raise DeployModeError("grid PM release requires one added marker")
         return "grid-pm-oneway"
+    if marker_changes == [("A", HISTORICAL_MARKER)]:
+        return "income-attribution"
     if any(path == INCOME_ATTRIBUTION_REFRESH_MARKER for _, path in marker_changes):
         if marker_changes != [("A", INCOME_ATTRIBUTION_REFRESH_MARKER)] or not re.fullmatch(r"[0-9a-f]{40}", base):
             raise DeployModeError("income attribution refresh requires one added marker and an exact push base")
@@ -157,10 +160,11 @@ def _read_changes(base: str, head: str) -> list[tuple[str, str]]:
 
 
 def _validate_income_scope(base: str, changes: list[tuple[str, str]]) -> None:
-    if ("A", INCOME_ATTRIBUTION_REFRESH_MARKER) in changes:
-        if base != INCOME_ATTRIBUTION_REFRESH_BASE:
+    if ("A", INCOME_ATTRIBUTION_REFRESH_MARKER) in changes or ("A", HISTORICAL_MARKER) in changes:
+        expected = "d7e30a92b06db38e951e04259fff351cbed9c22a" if ("A", HISTORICAL_MARKER) in changes else INCOME_ATTRIBUTION_REFRESH_BASE
+        if base != expected:
             raise DeployModeError("income attribution refresh must start from reviewed main")
-        allowed = {INCOME_ATTRIBUTION_REFRESH_MARKER,
+        allowed = {INCOME_ATTRIBUTION_REFRESH_MARKER, HISTORICAL_MARKER,
                    "scripts/select_deploy_mode.py", "scripts/reconcile_income_attribution.py",
                    "scripts/scoped_income_attribution_release.py"}
         for status, path in changes:

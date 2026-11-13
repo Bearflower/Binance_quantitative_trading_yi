@@ -233,7 +233,7 @@ def plan_reconciliation(incomes, fills, trade_records, algo_links,
             if not _identity_matches(old, derived) or str(old["strategy"]) != derived["strategy"]:
                 conflicts.append({"account_id": account, "income_type": key[1],
                                   "tran_id": key[2], "reason": "derived_owner_conflict"})
-            elif not _same_derivation(old, derived):
+            elif old["method"] != "verified_position_interval" and not _same_derivation(old, derived):
                 conflicts.append({"account_id": account, "income_type": key[1],
                                   "tran_id": key[2], "reason": "derived_evidence_conflict"})
             continue
@@ -317,6 +317,66 @@ def apply_plan(connection, plan, *, coverage_complete):
         return {"order_rows_seen": len(plan["order_rows"]),
                 "income_rows_seen": len(plan["derived_rows"])}
     return commit()
+
+
+async def historical_funding(connection, account, end):
+    """Retry outstanding funding across calendar months using immutable local facts."""
+    from shared.accounting.historical_funding import recover
+    events = await connection.fetch("""
+        SELECT i.* FROM trading.execution_fact_income i
+        WHERE i.account_id=$1 AND i.event_time_utc<$2 AND i.income_type='FUNDING_FEE'
+          AND i.asset='USDT'
+          AND NOT EXISTS (SELECT 1 FROM trading.reviewed_income_attribution r
+              WHERE (r.account_id,r.income_type,r.tran_id)=(i.account_id,i.income_type,i.tran_id))
+          AND NOT EXISTS (SELECT 1 FROM trading.derived_income_attribution d
+              WHERE (d.account_id,d.income_type,d.tran_id)=(i.account_id,i.income_type,i.tran_id))
+          AND NOT EXISTS (SELECT 1 FROM trading.hrs_income_attribution h
+              WHERE (h.account_id,h.tran_id)=(i.account_id,i.tran_id))
+        ORDER BY i.event_time_utc""", account, end)
+    result, pending = [], []
+    for event in events:
+        symbol, stamp = event['symbol'], event['event_time_utc']
+        anchor = await connection.fetchrow("""
+            SELECT * FROM trading.position_flat_baseline WHERE account_id=$1 AND symbol=$2
+            AND flat_at>$3 AND flat_at<=$4 AND exchange_qty=0 ORDER BY flat_at LIMIT 1""",
+            account, symbol, stamp, end)
+        reason = 'later_flat_anchor_missing'
+        if anchor:
+            stop = anchor['flat_at']
+            fills = await connection.fetch("""SELECT * FROM trading.execution_fact_fill
+                WHERE account_id=$1 AND symbol=$2 AND trade_time_utc<=$3 ORDER BY trade_time_utc,trade_id""",
+                account, symbol, stop)
+            reason = 'anchor_fill_collision'
+            if fills and fills[-1]['trade_time_utc'] != stop:
+                owners = await connection.fetch("""SELECT * FROM trading.order_strategy_evidence
+                    WHERE account_id=$1 AND symbol=$2""", account, symbol)
+                cursors = await connection.fetch(_CURSOR_SQL, account,
+                    int(fills[0]['trade_time_utc'].timestamp()*1000), int(stop.timestamp()*1000))
+                row, reason = recover(event, anchor, fills, {str(o['order_id']):o for o in owners}, cursors)
+                earlier = await connection.fetchrow("""SELECT * FROM trading.position_flat_baseline
+                    WHERE account_id=$1 AND symbol=$2 AND flat_at<$3 ORDER BY flat_at DESC LIMIT 1""",
+                    account, symbol, stamp)
+                if earlier:
+                    begin = earlier['flat_at']
+                    forward_fills = [f for f in fills if begin < f['trade_time_utc'] < stop]
+                    owner_map = {str(o['order_id']): o for o in owners}
+                    complete = 'fills:' + symbol not in coverage_gaps(cursors, account,
+                        int(begin.timestamp()*1000), int(stop.timestamp()*1000), {symbol})
+                    if complete and all(str(f['order_id']) in owner_map for f in forward_fills):
+                        forward = replay_position(earlier, forward_fills, owner_map, stop, 0)
+                        candidate, forward_reason = derive_income(event, {}, owner_map, forward)
+                        if candidate and row and candidate['strategy'] != row['strategy']:
+                            raise ValueError('independent funding replays disagree')
+                        if not forward.verified:
+                            row, reason = None, forward.reason
+                        elif candidate:
+                            row = candidate
+                if row:
+                    result.append(row)
+                    continue
+        pending.append(dict(symbol=symbol, tran_id=str(event['tran_id']), reason=reason,
+                            event_time=stamp.isoformat(), anchor=anchor['flat_at'].isoformat() if anchor else None))
+    return result, pending
 
 
 async def _run(month, account_id, apply, requested_end_ms=None):
@@ -421,6 +481,19 @@ async def _run(month, account_id, apply, requested_end_ms=None):
                                         end, fill_coverage)
         plan = plan_reconciliation(incomes, fills, trades, links, conditions,
                                    manual, existing, replay)
+        async with db.pool.acquire() as connection:
+            async with connection.transaction(isolation="repeatable_read", readonly=True):
+                historical, pending = await historical_funding(connection, account_id, end)
+        known = {_key(r): r for r in plan["derived_rows"]}
+        for row in historical:
+            previous = known.get(_key(row))
+            if previous is None:
+                plan["derived_rows"].append(row)
+            elif previous["strategy"] != row["strategy"]:
+                plan["conflicts"].append({"tran_id": str(row["tran_id"]), "reason": "replay_owner_conflict"})
+        solved = {str(row["tran_id"]) for row in historical}
+        plan["rejected"] = [r for r in plan["rejected"] if not (
+            r["income_type"] == "FUNDING_FEE" and r["tran_id"] in solved)]
         plan["baseline_rows"] = new_baselines
         result = {"account_id": account_id, "month": month,
                   "start_ms": start_ms, "end_ms": end_ms,
@@ -434,7 +507,7 @@ async def _run(month, account_id, apply, requested_end_ms=None):
                                    "method": row["method"],
                                    "income": str(row["income"])}
                                   for row in plan["derived_rows"]],
-                  "position_rejections": position_rejections,
+                  "historical_pending": pending, "position_rejections": position_rejections,
                   "new_flat_baselines": len(new_baselines),
                   "income_candidates": len(plan["derived_rows"]),
                   "rejected": plan["rejected"], "conflicts": plan["conflicts"],
