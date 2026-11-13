@@ -339,7 +339,7 @@ async def historical_funding(connection, account, end):
         anchor = await connection.fetchrow("""
             SELECT * FROM trading.position_flat_baseline WHERE account_id=$1 AND symbol=$2
             AND flat_at>$3 AND flat_at<=$4 AND exchange_qty=0 ORDER BY flat_at LIMIT 1""",
-            account, symbol, stamp, end)
+            account, symbol, stamp, datetime.now(timezone.utc))
         reason = 'later_flat_anchor_missing'
         if anchor:
             stop = anchor['flat_at']
