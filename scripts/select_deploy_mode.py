@@ -40,7 +40,7 @@ GRID_DASHBOARD_MARKER = ".github/deploy-modes/grid-subaccount-dashboard-20261112
 GRID_DASHBOARD_BASE = "834f111703aa6bcf92487f66d277c467acab78d9"
 SEVEN_GAPS_BASE = "caa0f1b2509774d28b765dd128a79f37482f4c9f"
 GRID_PM_BASE = "ae9c7e5949586b54e96043eb18ebc1533e6b0203"
-HISTORICAL_MARKER = ".github/deploy-modes/historical-funding-20261113"
+HISTORICAL_MARKER = ".github/deploy-modes/historical-funding-anchors-20261113"
 INCOME_ATTRIBUTION_REFRESH_MARKER = ".github/deploy-modes/income-attribution-refresh-20261111"
 INCOME_ATTRIBUTION_BASE = "6821072aef1a021f3f2920e7c84fc07b09d21454"
 INCOME_ATTRIBUTION_REFRESH_BASE = "2f9231f47a5654b4feecbbe997b952bdcd8e09fa"
@@ -161,7 +161,7 @@ def _read_changes(base: str, head: str) -> list[tuple[str, str]]:
 
 def _validate_income_scope(base: str, changes: list[tuple[str, str]]) -> None:
     if ("A", INCOME_ATTRIBUTION_REFRESH_MARKER) in changes or ("A", HISTORICAL_MARKER) in changes:
-        expected = "d7e30a92b06db38e951e04259fff351cbed9c22a" if ("A", HISTORICAL_MARKER) in changes else INCOME_ATTRIBUTION_REFRESH_BASE
+        expected = "fe347c51fcd9bdfcae4e0705fd95deab68877930" if ("A", HISTORICAL_MARKER) in changes else INCOME_ATTRIBUTION_REFRESH_BASE
         if base != expected:
             raise DeployModeError("income attribution refresh must start from reviewed main")
         allowed = {INCOME_ATTRIBUTION_REFRESH_MARKER, HISTORICAL_MARKER,
