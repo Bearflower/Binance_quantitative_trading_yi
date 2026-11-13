@@ -5,13 +5,13 @@ import hashlib
 from pathlib import PurePosixPath
 import re
 
-RELEASE = "ai-tuner-trial-20261110"
+RELEASE = "xau-ai-tuner-patrol-20261113"
 MODE = "ai-tuner-trial"
 MARKER = f".github/deploy-modes/{RELEASE}"
 MANIFEST = f"deployment/{RELEASE}.json"
-BASE = "97fb429a4c7f288e7f9506e54233f37d15cd780f"
-ACTIVE_PIN_SHA = "0c62740bb8c82c7003fbf71d688c8222951b1a0d"
-PIN_OVERLAY_SHA256 = "945cda89a6a798f7551dff79a09f1ae9886b1674dc983bb011fcbdd776488377"
+BASE = "7a320a59daacbc960c0b732abc417b1025082d3d"
+ACTIVE_PIN_SHA = "4a9d8ce7f923456ceb4dc7639b70314bf2ceed86"
+PIN_OVERLAY_SHA256 = "1f4f5abea149c14324278286ecbdfbb691e14e6964c8eabe7c2495c5a8781da7"
 IMAGES = {"ai-tuner": "ai-tuner"}
 SOURCE = {
     ".github/workflows/deploy.yml",
@@ -27,6 +27,7 @@ SOURCE = {
     "ai_tuner/main.py",
     "ai_tuner/monitor/daily_health_check.py",
     "ai_tuner/monitor/reduced_trial.py",
+    "ai_tuner/monitor/xau_shadow_patrol.py",
     "shared/accounting/report_reader.py",
     "shared/readonly_client.py",
 }

@@ -27,6 +27,7 @@ IMAGE_SOURCES = (
     "ai_tuner/config.yaml", "ai_tuner/main.py",
     "ai_tuner/monitor/daily_health_check.py",
     "ai_tuner/monitor/reduced_trial.py",
+    "ai_tuner/monitor/xau_shadow_patrol.py",
     "shared/accounting/report_reader.py", "shared/readonly_client.py",
 )
 
@@ -104,10 +105,6 @@ class Runtime(BaseRuntime):
                     r"ghcr\.io/bearflower/trading-[a-z0-9-]+@sha256:[0-9a-f]{64}", image["image"])):
                 raise ReleaseBlocked("invalid predecessor image pin: " + service)
         self.pre = self.gate()
-        income_release = self.root / ".releases" / "income-attribution" / INCOME_RELEASE_SHA
-        income_state = json.loads((income_release / "state.json").read_text())
-        income_overlay = (income_release / "dashboard-overlay.yml").read_text()
-        dashboard_image = validated_dashboard_image(income_state, income_overlay)
         if self.run(["systemctl", "is-active", "income-attribution.timer"]) != "active":
             raise ReleaseBlocked("independent income attribution timer not active")
         self.release_dir.mkdir(parents=True, exist_ok=False)
@@ -119,8 +116,7 @@ class Runtime(BaseRuntime):
         for service, row in self.all_before.items():
             if row["State"]["Status"] != "running" or row["State"].get("Health", {}).get("Status") != "healthy":
                 raise ReleaseBlocked("predecessor not healthy: " + service)
-            expected = (dashboard_image if service == "dashboard-api"
-                        else original["services"][service]["image"])
+            expected = original["services"][service]["image"]
             if row["Image"] != self.run(["docker", "image", "inspect", "--format", "{{.Id}}", expected]):
                 raise ReleaseBlocked("running image differs from active pin: " + service)
         successor = json.loads(json.dumps(original))
@@ -190,7 +186,7 @@ class Runtime(BaseRuntime):
             logs = self.run(["docker", "logs", "--since", current["State"]["StartedAt"], current["Id"]], include_stderr=True)
             if "Traceback (most recent call last)" in logs:
                 raise ReleaseBlocked("AI Tuner startup traceback")
-            if (startup_marker_present(logs, "缩量试跑只读评估器已初始化")
+            if (startup_marker_present(logs, "XAU 影子四小时巡检任务已注册")
                     and startup_marker_present(logs, "调度器已启动")):
                 break
             if time.monotonic() >= startup_deadline:
