@@ -56,6 +56,7 @@ from ai_tuner.monitor.reduced_trial import (  # noqa: E402
     ReducedTrialEvaluator, TRIAL_STRATEGIES, register_reduced_trial_jobs,
 )
 from ai_tuner.reconciler.nightly_exit import nightly_exit_repair
+from ai_tuner.monitor.xau_shadow_patrol import XAUShadowPatrol  # noqa: E402
 from ai_tuner.reconciler.income_reconciler import IncomeReconciler  # noqa: E402
 from shared.binance_api import BinanceClient  # noqa: E402
 from shared.readonly_client import ReadOnlyBinanceClient  # noqa: E402
@@ -110,6 +111,7 @@ class StratTuneAI:
         self.health_checker: DailyHealthCheck = None
         self.reduced_trial_evaluator: ReducedTrialEvaluator = None
         self.reduced_trial_exchange: ReadOnlyBinanceClient = None
+        self.xau_patrol: XAUShadowPatrol = None
         self.reconciler: IncomeReconciler = None
         self._running = False
         self.app: web.Application = None
@@ -197,6 +199,20 @@ class StratTuneAI:
         # 通过公开方法注册 tuner 项目的 webhook
         if feishu_webhook and not self.notification_client.has_webhook("tuner"):
             self.notification_client.register_webhook("tuner", feishu_webhook)
+
+        # 独立 XAU 巡检机器人。密钥仅在服务器已有的 ai-tuner 日志挂载中，
+        # 不进入镜像、仓库或其他调优消息的 webhook 路由。
+        xau_hook_path = os.getenv("XAU_MONITOR_WEBHOOK_FILE", "/app/logs/xau_monitor_webhook")
+        try:
+            with open(xau_hook_path, encoding="utf-8") as hook_file:
+                xau_hook = hook_file.read().strip()
+        except FileNotFoundError:
+            xau_hook = ""
+        if xau_hook:
+            self.notification_client.register_webhook("xau_monitor", xau_hook)
+            self.xau_patrol = XAUShadowPatrol(self.db_manager, self.notification_client)
+        else:
+            logger.warning("XAU 巡检 webhook 密钥缺失，巡检未启用")
 
         logger.info("通知客户端初始化完成")
 
@@ -538,6 +554,20 @@ class StratTuneAI:
                 self.config["reduced_trial"],
             )
 
+        if self.xau_patrol:
+            self.scheduler.add_job(
+                self._scheduled_xau_patrol,
+                "cron",
+                minute=35,
+                hour="*/4",
+                id="xau_shadow_patrol",
+                name="XAU 影子四小时只读巡检",
+                replace_existing=True,
+                coalesce=True,
+                misfire_grace_time=1800,
+            )
+            logger.info("XAU 影子四小时巡检任务已注册")
+
         # 11. 初始化 HTTP 服务器（飞书审批回调 + 管理 API）
         self._setup_http_server()
 
@@ -636,6 +666,21 @@ class StratTuneAI:
         if self.health_checker:
             logger.info("触发每日健康检查")
             await self.health_checker.run_check()
+
+    async def _scheduled_xau_patrol(self) -> None:
+        """每四小时汇报 XAU 影子观察状态。"""
+        if not self.xau_patrol:
+            return
+        try:
+            result = await self.xau_patrol.run_once()
+            logger.info("XAU 巡检完成", ok=result["ok"], sent=result["sent"])
+        except Exception as exc:
+            logger.error("XAU 巡检失败", error=str(exc))
+            await self.notification_client.send(
+                message=f"【XAU 影子巡检失败】只读检查未完成：{type(exc).__name__}: {exc}",
+                level="error",
+                project="xau_monitor",
+            )
 
     async def _scheduled_pnl_reconcile(self) -> None:
         """调度器触发的统一 PnL 校准（interval 根据 config 间隔执行）"""
