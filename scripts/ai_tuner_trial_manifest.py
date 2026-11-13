@@ -10,8 +10,8 @@ MODE = "ai-tuner-trial"
 MARKER = f".github/deploy-modes/{RELEASE}"
 MANIFEST = f"deployment/{RELEASE}.json"
 BASE = "7a320a59daacbc960c0b732abc417b1025082d3d"
-ACTIVE_PIN_SHA = "4a9d8ce7f923456ceb4dc7639b70314bf2ceed86"
-PIN_OVERLAY_SHA256 = "1f4f5abea149c14324278286ecbdfbb691e14e6964c8eabe7c2495c5a8781da7"
+ACTIVE_PIN_SHA = "ccf34745a9f87aeece99a95b8cc03c1aee817fe8"
+PIN_OVERLAY_SHA256 = "11c01737e11bf58289d1da71b65f4d0acbfbeac2f834ec9db2716380a566d472"
 IMAGES = {"ai-tuner": "ai-tuner"}
 SOURCE = {
     ".github/workflows/deploy.yml",

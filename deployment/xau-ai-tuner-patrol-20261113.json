@@ -1,5 +1,5 @@
 {
-  "active_pin_sha": "4a9d8ce7f923456ceb4dc7639b70314bf2ceed86",
+  "active_pin_sha": "ccf34745a9f87aeece99a95b8cc03c1aee817fe8",
   "allowed_changes": [
     {
       "path": ".github/deploy-modes/xau-ai-tuner-patrol-20261113",
@@ -20,10 +20,18 @@
     {
       "path": "scripts/scoped_ai_tuner_trial.py",
       "status": "M"
+    },
+    {
+      "path": "ai_tuner/monitor/xau_shadow_patrol.py",
+      "status": "M"
+    },
+    {
+      "path": "tests/test_ai_tuner_mvp/test_xau_shadow_patrol.py",
+      "status": "M"
     }
   ],
   "base_revision": "7a320a59daacbc960c0b732abc417b1025082d3d",
-  "expected_pin_overlay_sha256": "1f4f5abea149c14324278286ecbdfbb691e14e6964c8eabe7c2495c5a8781da7",
+  "expected_pin_overlay_sha256": "11c01737e11bf58289d1da71b65f4d0acbfbeac2f834ec9db2716380a566d472",
   "release_id": "xau-ai-tuner-patrol-20261113",
   "schema_version": 1,
   "source_checksums": {
@@ -32,8 +40,8 @@
     "ai_tuner/main.py": "7a30a5aaaddef976355fa2a045607eeb159456de10500e7731c5473a6139c8e3",
     "ai_tuner/monitor/daily_health_check.py": "16526c710083067e87fa8e72eb92cfdef6b7e4da2aa7111df536e8e98820bca2",
     "ai_tuner/monitor/reduced_trial.py": "23488ef7122530fe4b6af128380285a7bee27982c0017e83b8871263ad098b21",
-    "ai_tuner/monitor/xau_shadow_patrol.py": "d47cc5018d536d2ea06aae1e25ecbbcc9cb643a8389031aacf5c299b427ea905",
-    "scripts/ai_tuner_trial_manifest.py": "713d385d2f7feda20d045fe45a088e55d73b4668f965bb6452de8f4bf1f38deb",
+    "ai_tuner/monitor/xau_shadow_patrol.py": "db5b6fb48f2c07a713b85a5707640dfb0d21bc40f6cd7868fde4e1e04320d289",
+    "scripts/ai_tuner_trial_manifest.py": "0b2b3d7ebe885c4ccffddd980aa559c00cd102b7bec79eb731f8100f95230cea",
     "scripts/package_ai_tuner_trial.py": "3b8021edd73fa3957edc9320940ab83a84e9be34e8017163584bbe7b885053de",
     "scripts/remote_deploy_runtime.sh": "bb75352efdcbb3857cb028a04f7007fe1b74b4bff44d5854154e3582879a68ea",
     "scripts/render_remote_deploy.py": "e55fc5f7cb51cbe9917abbe2a153c9b8c88ed641fbbb3e160de049c414ffda49",

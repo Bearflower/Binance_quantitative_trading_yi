@@ -3,6 +3,7 @@
 The patrol never mutates research/trading data and never triggers a replay.
 """
 
+import json
 from datetime import datetime, timedelta, timezone
 
 
@@ -51,7 +52,10 @@ class XAUShadowPatrol:
                 f"quality={quality or '正常'}"
             )
             if profile == "xau_calibrated":
-                atr = (row.get("feature_snapshot") or {}).get("atr_filter") or {}
+                snapshot = row.get("feature_snapshot") or {}
+                if isinstance(snapshot, str):
+                    snapshot = json.loads(snapshot)
+                atr = snapshot.get("atr_filter") or {}
                 history = atr.get("history_count")
                 threshold = atr.get("final_threshold")
                 lines.append(f"ATR: history_count={history}, final_threshold={threshold}")

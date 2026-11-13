@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 from unittest.mock import AsyncMock
 
 import pytest
@@ -19,7 +20,7 @@ class FakeDB:
         if "shadow_decision_events" in query:
             return [
                 dict(profile_id=profile, run_id="run-1", scheduled_at=self.now.replace(minute=0, second=0, microsecond=0) - timedelta(hours=1),
-                     data_quality_reason=None, decision="no_signal", feature_snapshot={"atr_filter": {"history_count": 100, "final_threshold": 0.01}})
+                     data_quality_reason=None, decision="no_signal", feature_snapshot=json.dumps({"atr_filter": {"history_count": 100, "final_threshold": 0.01}}))
                 for profile in ("xau_calibrated", "xau_original", "xau_aggressive")
             ]
         if "shadow_runs" in query:
