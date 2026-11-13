@@ -33,8 +33,6 @@ def recover(event, anchor, fills, owners, cursors):
                                  int(stop.timestamp()*1000), {symbol})
             if 'fills:' + symbol in gaps:
                 return None, 'fill_coverage_incomplete'
-            if any(str(f['order_id']) not in owners for f in window):
-                return None, 'order_owner_missing'
             replay = replay_position(dict(anchor, flat_at=start), window, owners, stop, 0)
             row, reason = derive_income(event, {}, owners, replay)
             if row:

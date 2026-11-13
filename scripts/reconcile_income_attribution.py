@@ -362,7 +362,7 @@ async def historical_funding(connection, account, end):
                     owner_map = {str(o['order_id']): o for o in owners}
                     complete = 'fills:' + symbol not in coverage_gaps(cursors, account,
                         int(begin.timestamp()*1000), int(stop.timestamp()*1000), {symbol})
-                    if complete and all(str(f['order_id']) in owner_map for f in forward_fills):
+                    if complete:
                         forward = replay_position(earlier, forward_fills, owner_map, stop, 0)
                         candidate, forward_reason = derive_income(event, {}, owner_map, forward)
                         if candidate and row and candidate['strategy'] != row['strategy']:

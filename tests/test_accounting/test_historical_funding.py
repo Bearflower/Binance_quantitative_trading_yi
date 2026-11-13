@@ -21,5 +21,10 @@ def test_handover_isolated_by_account_and_time():
     assert check(6)[0]['strategy']=='aggressive'
     assert check(5)[0] is None
     assert check(2, [dict(coverage[0],account_id='grid')])[0] is None
+    del owners['2']
+    assert check(2)[0]['strategy']=='original'
+    owners['2'] = dict(fills[1], strategy='aggressive')
+    assert check(2)[0] is None
+    del owners['2']
     del owners['1']
     assert check(2)[0] is None
