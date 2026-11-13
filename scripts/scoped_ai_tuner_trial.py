@@ -113,7 +113,10 @@ class Runtime(BaseRuntime):
         os.chmod(self.release_dir, 0o700)
         self.all_before = {service: self.inspect(service) for service in self.stacks}
         self.inventory_before = self.project_inventory()
-        if not set(CONTAINERS.values()) <= set(self.inventory_before):
+        # The standalone grid release removed grid-strategy's compose project
+        # label; it remains covered by all_before identity checks below.
+        project_services = set(CONTAINERS.values()) - {CONTAINERS["grid-strategy"]}
+        if not project_services <= set(self.inventory_before):
             raise ReleaseBlocked("pinned containers absent from project inventory")
         for service, row in self.all_before.items():
             if row["State"]["Status"] != "running" or row["State"].get("Health", {}).get("Status") != "healthy":
