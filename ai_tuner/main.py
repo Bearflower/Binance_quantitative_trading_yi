@@ -55,6 +55,7 @@ from ai_tuner.monitor.daily_health_check import DailyHealthCheck  # noqa: E402
 from ai_tuner.monitor.reduced_trial import (  # noqa: E402
     ReducedTrialEvaluator, TRIAL_STRATEGIES, register_reduced_trial_jobs,
 )
+from ai_tuner.reconciler.nightly_exit import nightly_exit_repair
 from ai_tuner.reconciler.income_reconciler import IncomeReconciler  # noqa: E402
 from shared.binance_api import BinanceClient  # noqa: E402
 from shared.readonly_client import ReadOnlyBinanceClient  # noqa: E402
@@ -480,6 +481,12 @@ class StratTuneAI:
 
         # PnL 校准调度（interval，间隔从 config.reconciler.interval_minutes 读取）
         if self.reconciler:
+            self.scheduler.add_job(
+                nightly_exit_repair, "cron", hour=3, minute=15, timezone="Asia/Shanghai",
+                args=[self.reconciler], id="nightly_exit_repair", replace_existing=True,
+                coalesce=True, max_instances=1, misfire_grace_time=3600,
+            )
+            logger.info("凌晨成交补录已注册", schedule="03:15 Asia/Shanghai")
             reconciler_interval = reconciler_cfg.get("interval_minutes", 30)
             self.scheduler.add_job(
                 self._scheduled_pnl_reconcile,
