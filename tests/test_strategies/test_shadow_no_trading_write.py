@@ -58,7 +58,7 @@ class TestRepositoryNoTradingWrite:
     def mock_db(self):
         """返回一个 execute/fetch_one 均为 AsyncMock 的 db"""
         db = AsyncMock()
-        db.execute = AsyncMock(return_value="OK")
+        db.execute = AsyncMock(return_value="INSERT 0 1")
         db.fetch_one = AsyncMock(return_value=None)
         db.fetch_all = AsyncMock(return_value=[])
         return db
@@ -180,7 +180,7 @@ class TestRepositoryReadFailureRaises:
     @pytest.fixture
     def mock_db(self):
         db = AsyncMock()
-        db.execute = AsyncMock(return_value="OK")
+        db.execute = AsyncMock(return_value="INSERT 0 1")
         db.fetch_one = AsyncMock(return_value=None)
         return db
 

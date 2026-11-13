@@ -65,6 +65,8 @@ def select_deploy_mode(
                       if path.startswith(".github/deploy-modes/")]
     if len(marker_changes) > 1:
         raise DeployModeError("ambiguous marker changes")
+    if marker_changes == [("A", ".github/deploy-modes/xau-review-20261113")]:
+        return "xau-review"
     if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, HISTORICAL_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, GRID_DASHBOARD_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
     if any(path == GRID_DASHBOARD_MARKER for _, path in marker_changes):

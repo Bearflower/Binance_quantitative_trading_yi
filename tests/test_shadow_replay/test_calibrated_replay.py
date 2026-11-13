@@ -143,7 +143,7 @@ def test_calibrated_only_engine_runs_with_frozen_config(tmp_path):
         "--events", str(events_path), "--run-manifest", str(manifest_path),
         "--coverage", str(coverage_path), "--snapshot-dir", fixture["dir"],
         "--profile-calibrated", str(CALIBRATED), "--output-dir", str(tmp_path / "interior-gap"),
-    ]) == 2
+    ]) == 3
     assert not (tmp_path / "interior-gap").exists()
     kline_path.write_text(original_klines)
     snapshot_manifest["files"]["klines_1m"]["sha256"] = hashlib.sha256(kline_path.read_bytes()).hexdigest()

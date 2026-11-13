@@ -154,14 +154,19 @@ def compute_metrics(
     n_unfilled = len([t for t in trades if not t.get("filled")])
     # 虚拟订单统计（P2 增强）：
     # n_filled_orders = 聚合后的已成交仓位数（= 真实"完成一次开-关仓"的次数）
-    # n_unfilled 保持原有语义（含 pending_at_cutoff）
+    # n_unfilled 保持原有语义（含门槛拒绝与 pending_at_cutoff）
     # n_pending_at_cutoff 单独拎出，方便渲染"截止未到期挂单"
     n_filled_orders = n_closed
     n_pending_at_cutoff = len([
         t for t in trades
         if not t.get("filled") and t.get("unfilled_reason") == "pending_at_cutoff"
     ])
-    n_total_virtual_orders = n_filled_orders + n_unfilled
+    n_rejected_candidates = len([
+        t for t in trades
+        if not t.get("filled")
+        and str(t.get("unfilled_reason", "")).startswith("rejected:")
+    ])
+    n_total_virtual_orders = n_filled_orders + n_unfilled - n_rejected_candidates
     if n_total_virtual_orders > 0:
         fill_rate = float(n_filled_orders) / float(n_total_virtual_orders)
         fill_rate_computable = True
@@ -318,6 +323,7 @@ def compute_metrics(
         "n_unfilled": n_unfilled,
         # P2 增强：虚拟订单总数 / 成交率 / 截止未到期挂单数
         "n_filled_orders": n_filled_orders,
+        "n_rejected_candidates": n_rejected_candidates,
         "n_pending_at_cutoff": n_pending_at_cutoff,
         "n_total_virtual_orders": n_total_virtual_orders,
         "fill_rate": fill_rate,
@@ -728,10 +734,11 @@ def _build_markdown(report: Dict[str, Any]) -> str:
         lines.append(f"| 指标 | 值 |")
         lines.append(f"|------|----|")
         lines.append(f"| 有效已结交易 | {m['n_closed_trades']} |")
-        lines.append(f"| 未成交 | {m['n_unfilled']} |")
+        lines.append(f"| 未成交或门槛拒绝 | {m['n_unfilled']} |")
         # P2 增强：虚拟订单总数 / 成交率 / 截止未到期挂单数
         if "n_total_virtual_orders" in m:
             lines.append(f"| 虚拟订单总数 | {m['n_total_virtual_orders']} |")
+            lines.append(f"| 门槛拒绝候选 | {m.get('n_rejected_candidates', 0)} |")
             # 成交率 None → 分母为 0，不可计算
             if m.get("fill_rate_computable") and m.get("fill_rate") is not None:
                 lines.append(f"| 成交率 | {m['fill_rate']:.1%} |")

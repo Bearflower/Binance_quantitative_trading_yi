@@ -75,9 +75,15 @@ def _parse_ts(raw: Any) -> datetime:
     return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt
 
 
+def _event_available_at(event: Dict[str, Any]) -> datetime:
+    scheduled = _parse_ts(event["scheduled_at"])
+    evaluated = event.get("evaluated_at")
+    return max(scheduled, _parse_ts(evaluated)) if evaluated else scheduled
+
+
 def stable_sort_key(event: Dict[str, Any]) -> Tuple:
-    """稳定排序：scheduled_at → profile_id → symbol。"""
-    scheduled_at = _parse_ts(event.get("scheduled_at") or event.get("evaluated_at"))
+    """按信号实际可用时刻稳定排序，兼容只有周期时间的历史事件。"""
+    scheduled_at = _event_available_at(event)
     return (
         scheduled_at,
         str(event.get("profile_id", "")),
@@ -341,7 +347,9 @@ class ReplayEngine:
                 min_notional_filter = filters.get("MIN_NOTIONAL", {})
                 tick = Decimal(str(pf.get("tickSize", "0")))
                 step = Decimal(str(lot.get("stepSize", "0")))
-                min_not = Decimal(str(min_notional_filter.get("minNotional", "0")))
+                min_not = Decimal(str(min_notional_filter.get(
+                    "notional", min_notional_filter.get("minNotional", "0")
+                )))
                 if tick <= 0 or step <= 0 or min_not <= 0:
                     raise ValueError(
                         f"exchangeInfo symbol={manifest_symbol} 的 tickSize/stepSize/minNotional "
@@ -625,7 +633,9 @@ class ReplayEngine:
           - 再按 profile 分别处理 candidate / no_signal / analysis_error
           - 最后让已持仓者检查当前这根 K 线的止损/止盈/移动止损/时间止损
         """
-        scheduled_at = _parse_ts(event["scheduled_at"])
+        scheduled_at = _event_available_at(event)
+        if scheduled_at >= cutoff_at:
+            return
         profile_id = event["profile_id"]
 
         # 先处理该 profile 的 limit order：在 [上次处理时间, scheduled_at) 区间内撮合
@@ -1419,7 +1429,10 @@ class ReplayEngine:
         # 我们先用 quantity 来自 config.symbol_config.position_ratio_s * available_margin（简化）
         available = state.available_margin()
         # per-profile pilot 约束（禁止跨 profile 共用）
-        margin = min(self._profile_max_margin[profile_id], available)
+        # 已持仓时仍用目标保证金进入资格检查，以留下 position_limit
+        # 拒绝记录；available_margin 此时为 0，不能提前静默丢掉候选。
+        margin = (self._profile_max_margin[profile_id] if state.has_open_position()
+                  else min(self._profile_max_margin[profile_id], available))
         if margin <= 0:
             return
 

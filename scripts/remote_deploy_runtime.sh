@@ -17,6 +17,14 @@ DEPLOY_ID="__DEPLOY_ID__"
 echo "模式: ${DEPLOY_MODE}"
 echo "========================================"
 
+if [ "$DEPLOY_MODE" = "xau-review" ]; then
+  [ "$FUNDING_DEPLOY_ACTION" = "keep" ] || exit 2
+  unset COMPOSE_FILE
+  python3 ".deploy_tmp/xau-review-${COMMIT_SHA}/deploy_xau_review.py" \
+    --sha "$COMMIT_SHA" --digests ".deploy_tmp/xau-review-${COMMIT_SHA}/images.json"
+  exit $?
+fi
+
 # Scoped release exits before secrets, full cleanup, init SQL replay or broad up.
 if [ "$DEPLOY_MODE" = "ledger-risk-remediation" ]; then
   [ "$FUNDING_DEPLOY_ACTION" = "keep" ] || { echo "funding rotation forbidden"; exit 2; }

@@ -101,7 +101,7 @@ def parse_symbol_filters(exchange_info_symbol: Dict[str, Any]) -> Dict[str, Deci
     Binance USDⓈ-M 合约 exchangeInfo 里：
       - PRICE_FILTER -> tickSize
       - LOT_SIZE -> stepSize
-      - MIN_NOTIONAL -> minNotional（名义价值下限，USDT）
+      - MIN_NOTIONAL -> notional（名义价值下限，USDT；兼容旧快照的 minNotional）
     """
     filters = {f["filterType"]: f for f in exchange_info_symbol.get("filters", [])}
     pf = filters.get("PRICE_FILTER", {})
@@ -110,7 +110,9 @@ def parse_symbol_filters(exchange_info_symbol: Dict[str, Any]) -> Dict[str, Deci
     return {
         "tickSize": Decimal(str(pf.get("tickSize", "0.01"))),
         "stepSize": Decimal(str(lot.get("stepSize", "0.001"))),
-        "minNotional": Decimal(str(min_notional_filter.get("minNotional", "5.0"))),
+        "minNotional": Decimal(str(min_notional_filter.get(
+            "notional", min_notional_filter.get("minNotional", "5.0")
+        ))),
     }
 
 

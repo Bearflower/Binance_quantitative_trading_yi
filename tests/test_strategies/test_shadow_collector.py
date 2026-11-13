@@ -51,7 +51,7 @@ def _make_profile_configs():
 
 def _make_mock_db():
     db = AsyncMock()
-    db.execute = AsyncMock(return_value="OK")
+    db.execute = AsyncMock(return_value="INSERT 0 1")
     db.fetch_one = AsyncMock(return_value=None)
     db.fetch_all = AsyncMock(return_value=[])
     return db

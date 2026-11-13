@@ -71,7 +71,7 @@ jobs:
           MANUAL_MODE: ${{ inputs.deploy_mode || 'auto' }}
         run: |
           MODE=$(python3 scripts/select_deploy_mode.py --event-name "${{ github.event_name }}" --base "${{ github.event.before }}" --head "${{ github.sha }}" --manual-mode "$MANUAL_MODE")
-          if [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ] || [ "$MODE" = "strategy-risk-followup" ] || [ "$MODE" = "strategy-stop-followup" ] || [ "$MODE" = "income-attribution" ] || [ "$MODE" = "ai-tuner-trial" ] || [ "$MODE" = "grid-pm-oneway" ] || [ "$MODE" = "seven-code-gaps" ] || [ "$MODE" = "dashboard-performance" ] || [ "$MODE" = "grid-subaccount-dashboard" ]; then
+          if [ "$MODE" = "xau-review" ] || [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ] || [ "$MODE" = "strategy-risk-followup" ] || [ "$MODE" = "strategy-stop-followup" ] || [ "$MODE" = "income-attribution" ] || [ "$MODE" = "ai-tuner-trial" ] || [ "$MODE" = "grid-pm-oneway" ] || [ "$MODE" = "seven-code-gaps" ] || [ "$MODE" = "dashboard-performance" ] || [ "$MODE" = "grid-subaccount-dashboard" ]; then
             FUNDING_ACTION=keep
           else
             FUNDING_ACTION=$(python3 scripts/select_funding_deploy.py --event-name "${{ github.event_name }}" --base "${{ github.event.before }}" --head "${{ github.sha }}")
@@ -147,6 +147,13 @@ jobs:
           DEPLOY_MODE="${{ needs.detect.outputs.mode }}"
           if [ "${{ matrix.service.name }}" = "grid-dashboard-exporter" ] && [ "$DEPLOY_MODE" != "grid-subaccount-dashboard" ]; then
             echo "should_build=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$DEPLOY_MODE" = "xau-review" ]; then
+            case "${{ matrix.service.name }}" in
+              btc-eth|ai-tuner) echo "should_build=true" >> "$GITHUB_OUTPUT" ;;
+              *) echo "should_build=false" >> "$GITHUB_OUTPUT" ;;
+            esac
             exit 0
           fi
           if [ "$DEPLOY_MODE" = "grid-subaccount-dashboard" ]; then
@@ -401,8 +408,8 @@ jobs:
         id: image_tag
         run: |
           MODE="${{ needs.detect.outputs.mode }}"
-          if [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ] || [ "$MODE" = "strategy-risk-followup" ] || [ "$MODE" = "strategy-stop-followup" ] || [ "$MODE" = "income-attribution" ] || [ "$MODE" = "ai-tuner-trial" ] || [ "$MODE" = "grid-pm-oneway" ] || [ "$MODE" = "seven-code-gaps" ] || [ "$MODE" = "dashboard-performance" ] || [ "$MODE" = "grid-subaccount-dashboard" ]; then
-            if [ "$MODE" = "ledger-risk-remediation" ]; then PREFIX=remediation; elif [ "$MODE" = "strategy-risk-successor" ]; then PREFIX=strategy-successor; elif [ "$MODE" = "strategy-risk-followup" ]; then PREFIX=risk-followup; elif [ "$MODE" = "income-attribution" ]; then PREFIX=income-attribution; elif [ "$MODE" = "strategy-stop-followup" ]; then PREFIX=stop-followup; elif [ "$MODE" = "grid-pm-oneway" ]; then PREFIX=grid-pm-oneway; elif [ "$MODE" = "seven-code-gaps" ]; then PREFIX=seven-code-gaps; elif [ "$MODE" = "dashboard-performance" ]; then PREFIX=dashboard-performance; elif [ "$MODE" = "grid-subaccount-dashboard" ]; then PREFIX=grid-subaccount-dashboard; else PREFIX=ai-tuner-trial; fi
+          if [ "$MODE" = "xau-review" ] || [ "$MODE" = "ledger-risk-remediation" ] || [ "$MODE" = "strategy-risk-successor" ] || [ "$MODE" = "strategy-risk-followup" ] || [ "$MODE" = "strategy-stop-followup" ] || [ "$MODE" = "income-attribution" ] || [ "$MODE" = "ai-tuner-trial" ] || [ "$MODE" = "grid-pm-oneway" ] || [ "$MODE" = "seven-code-gaps" ] || [ "$MODE" = "dashboard-performance" ] || [ "$MODE" = "grid-subaccount-dashboard" ]; then
+            if [ "$MODE" = "xau-review" ] || [ "$MODE" = "ledger-risk-remediation" ]; then PREFIX=remediation; elif [ "$MODE" = "strategy-risk-successor" ]; then PREFIX=strategy-successor; elif [ "$MODE" = "strategy-risk-followup" ]; then PREFIX=risk-followup; elif [ "$MODE" = "income-attribution" ]; then PREFIX=income-attribution; elif [ "$MODE" = "strategy-stop-followup" ]; then PREFIX=stop-followup; elif [ "$MODE" = "grid-pm-oneway" ]; then PREFIX=grid-pm-oneway; elif [ "$MODE" = "seven-code-gaps" ]; then PREFIX=seven-code-gaps; elif [ "$MODE" = "dashboard-performance" ]; then PREFIX=dashboard-performance; elif [ "$MODE" = "grid-subaccount-dashboard" ]; then PREFIX=grid-subaccount-dashboard; else PREFIX=ai-tuner-trial; fi
             echo "value=${PREFIX}-${{ github.sha }}" >> "$GITHUB_OUTPUT"
             REF="${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:${PREFIX}-${{ github.sha }}"
             if docker buildx imagetools inspect "$REF" > "$RUNNER_TEMP/existing-image.txt" 2>/dev/null; then
@@ -427,12 +434,12 @@ jobs:
             ${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}:${{ steps.image_tag.outputs.value }}
 
       - name: Record immutable image digest
-        if: (needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor' || needs.detect.outputs.mode == 'strategy-risk-followup' || needs.detect.outputs.mode == 'strategy-stop-followup' || needs.detect.outputs.mode == 'income-attribution' || needs.detect.outputs.mode == 'ai-tuner-trial' || needs.detect.outputs.mode == 'grid-pm-oneway' || needs.detect.outputs.mode == 'seven-code-gaps' || needs.detect.outputs.mode == 'dashboard-performance' || needs.detect.outputs.mode == 'grid-subaccount-dashboard') && steps.decide.outputs.should_build == 'true'
+        if: (needs.detect.outputs.mode == 'xau-review' || needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor' || needs.detect.outputs.mode == 'strategy-risk-followup' || needs.detect.outputs.mode == 'strategy-stop-followup' || needs.detect.outputs.mode == 'income-attribution' || needs.detect.outputs.mode == 'ai-tuner-trial' || needs.detect.outputs.mode == 'grid-pm-oneway' || needs.detect.outputs.mode == 'seven-code-gaps' || needs.detect.outputs.mode == 'dashboard-performance' || needs.detect.outputs.mode == 'grid-subaccount-dashboard') && steps.decide.outputs.should_build == 'true'
         run: |
           mkdir -p image-digests
           printf '%s\n' '${{ env.REGISTRY }}/${{ env.IMAGE_OWNER }}/trading-${{ matrix.service.name }}@${{ steps.image_tag.outputs.existing_digest || steps.image_build.outputs.digest }}' > 'image-digests/${{ matrix.service.name }}.txt'
       - uses: actions/upload-artifact@v4
-        if: (needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor' || needs.detect.outputs.mode == 'strategy-risk-followup' || needs.detect.outputs.mode == 'strategy-stop-followup' || needs.detect.outputs.mode == 'income-attribution' || needs.detect.outputs.mode == 'ai-tuner-trial' || needs.detect.outputs.mode == 'seven-code-gaps' || needs.detect.outputs.mode == 'grid-pm-oneway' || needs.detect.outputs.mode == 'dashboard-performance' || needs.detect.outputs.mode == 'grid-subaccount-dashboard') && steps.decide.outputs.should_build == 'true'
+        if: (needs.detect.outputs.mode == 'xau-review' || needs.detect.outputs.mode == 'ledger-risk-remediation' || needs.detect.outputs.mode == 'strategy-risk-successor' || needs.detect.outputs.mode == 'strategy-risk-followup' || needs.detect.outputs.mode == 'strategy-stop-followup' || needs.detect.outputs.mode == 'income-attribution' || needs.detect.outputs.mode == 'ai-tuner-trial' || needs.detect.outputs.mode == 'seven-code-gaps' || needs.detect.outputs.mode == 'grid-pm-oneway' || needs.detect.outputs.mode == 'dashboard-performance' || needs.detect.outputs.mode == 'grid-subaccount-dashboard') && steps.decide.outputs.should_build == 'true'
         with:
           name: ${{ needs.detect.outputs.mode }}-digest-${{ matrix.service.name }}
           path: image-digests/*.txt
@@ -524,11 +531,11 @@ jobs:
           exit 255
 
       - name: Block generic uploads when active release pins exist
-        if: needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor' && needs.detect.outputs.mode != 'strategy-risk-followup' && needs.detect.outputs.mode != 'strategy-stop-followup' && needs.detect.outputs.mode != 'income-attribution' && needs.detect.outputs.mode != 'ai-tuner-trial' && needs.detect.outputs.mode != 'grid-pm-oneway' && needs.detect.outputs.mode != 'seven-code-gaps' && needs.detect.outputs.mode != 'dashboard-performance' && needs.detect.outputs.mode != 'grid-subaccount-dashboard'
+        if: needs.detect.outputs.mode != 'xau-review' && needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor' && needs.detect.outputs.mode != 'strategy-risk-followup' && needs.detect.outputs.mode != 'strategy-stop-followup' && needs.detect.outputs.mode != 'income-attribution' && needs.detect.outputs.mode != 'ai-tuner-trial' && needs.detect.outputs.mode != 'grid-pm-oneway' && needs.detect.outputs.mode != 'seven-code-gaps' && needs.detect.outputs.mode != 'dashboard-performance' && needs.detect.outputs.mode != 'grid-subaccount-dashboard'
         run: ssh 43.156.242.184 'test ! -f /root/trading_system/.deploy_tmp/ledger-risk-active.json'
 
       - name: 📤 上传 docker-compose.yml（scp）
-        if: needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor' && needs.detect.outputs.mode != 'strategy-risk-followup' && needs.detect.outputs.mode != 'strategy-stop-followup' && needs.detect.outputs.mode != 'income-attribution' && needs.detect.outputs.mode != 'ai-tuner-trial' && needs.detect.outputs.mode != 'grid-pm-oneway' && needs.detect.outputs.mode != 'seven-code-gaps' && needs.detect.outputs.mode != 'dashboard-performance' && needs.detect.outputs.mode != 'grid-subaccount-dashboard'
+        if: needs.detect.outputs.mode != 'xau-review' && needs.detect.outputs.mode != 'ledger-risk-remediation' && needs.detect.outputs.mode != 'strategy-risk-successor' && needs.detect.outputs.mode != 'strategy-risk-followup' && needs.detect.outputs.mode != 'strategy-stop-followup' && needs.detect.outputs.mode != 'income-attribution' && needs.detect.outputs.mode != 'ai-tuner-trial' && needs.detect.outputs.mode != 'grid-pm-oneway' && needs.detect.outputs.mode != 'seven-code-gaps' && needs.detect.outputs.mode != 'dashboard-performance' && needs.detect.outputs.mode != 'grid-subaccount-dashboard'
         run: |
           source /tmp/ci_retry.sh
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp/full-${{ github.run_id }}"
@@ -563,13 +570,13 @@ jobs:
           ls -1 database/postgres/init-scripts/
 
       - uses: actions/download-artifact@v4
-        if: needs.detect.outputs.mode == 'ledger-risk-remediation'
+        if: needs.detect.outputs.mode == 'xau-review' || needs.detect.outputs.mode == 'ledger-risk-remediation'
         with:
           pattern: ledger-risk-remediation-digest-*
           path: ${{ runner.temp }}/ledger-risk-digests
           merge-multiple: true
       - name: Upload SHA-scoped release bundle only
-        if: needs.detect.outputs.mode == 'ledger-risk-remediation'
+        if: needs.detect.outputs.mode == 'xau-review' || needs.detect.outputs.mode == 'ledger-risk-remediation'
         run: |
           python3 scripts/package_ledger_risk_release.py --sha "${{ github.sha }}" --digests "${RUNNER_TEMP}/ledger-risk-digests" --output "${RUNNER_TEMP}/ledger-risk-${{ github.sha }}"
           source /tmp/ci_retry.sh
@@ -701,6 +708,31 @@ jobs:
           source /tmp/ci_retry.sh
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp && chmod 700 /root/trading_system/.deploy_tmp"
           retry_connect scp -r "${RUNNER_TEMP}/grid-subaccount-dashboard-${{ github.sha }}" 43.156.242.184:/root/trading_system/.deploy_tmp/
+
+      - uses: actions/download-artifact@v4
+        if: needs.detect.outputs.mode == 'xau-review'
+        with:
+          pattern: xau-review-digest-*
+          path: ${{ runner.temp }}/xau-digests
+          merge-multiple: true
+
+      - name: Package XAU reviewed deployment
+        if: needs.detect.outputs.mode == 'xau-review'
+        env:
+          XAU_DIGEST_DIR: ${{ runner.temp }}/xau-digests
+        run: |
+          mkdir -p /tmp/xau-review-bundle
+          cp scripts/deploy_xau_review.py scripts/capture_xau_runtime.py /tmp/xau-review-bundle/
+          python3 - <<'PYCODE'
+          import json, os
+          from pathlib import Path
+          folder = Path(os.environ["XAU_DIGEST_DIR"])
+          images = {name: (folder / (name + ".txt")).read_text().strip() for name in ("btc-eth", "ai-tuner")}
+          Path("/tmp/xau-review-bundle/images.json").write_text(json.dumps(images))
+          PYCODE
+          source /tmp/ci_retry.sh
+          retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp/xau-review-${{ github.sha }}"
+          retry_connect scp /tmp/xau-review-bundle/* 43.156.242.184:/root/trading_system/.deploy_tmp/xau-review-${{ github.sha }}/
 
       - name: 🚀 生成并上传远程部署脚本
         run: |
