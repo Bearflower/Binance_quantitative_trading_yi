@@ -40,8 +40,11 @@ id: Binance_quantitative_trading-20261028-journald-container-log-retention
 
 2026-10-29 修订：新加入的 `mtcps-xau-calibrated-shadow` 沿用同一项目级日志策略，旧日志先归档，再通过 `74916f3` 单独重建为 journald。现覆盖 16 个服务；该服务的实际 14 天留存从 10 月 29 日起验证，其他决策口径不变。
 
+2026-11-13 修订：每日巡检归入 `ai_tuner/ops/log_retention_check.py`，由生产主机 `trading-log-retention.timer` 每天北京时间 09:00 运行，并向专用飞书 Webhook 发送完整报告。脚本需要宿主机 Docker/journal 数据，因此运行在主机，不向 ai-tuner 业务容器挂载 Docker socket。Webhook 仅存于主机 `.secrets/log_retention_webhook`（600）。原本机 Codex 自动任务 `automation-2` 已删除。2026-11-13 手动执行成功并收到飞书接口成功响应；下一次定时执行为 11 月 14 日 09:00。实际可查日志仅约 1 天，14 天目标未达成，仍须排查 journal 清理原因。
+
 ## 关联与证据
 
 - [问题记录](../issues/Binance_quantitative_trading-20261028-container-json-logs-lost-on-recreate.md)、[运维手册](../../deployment/log-retention.md)、[日志覆盖配置](../../../docker-compose.logging.yml)、[归档脚本](../../../scripts/archive_container_logs.sh)。
 - 关键部署：`c5857b0` 首批、`e4aff94` 第二批、`fe43e9e` 全量完成（`DEPLOY_ID=00007701`）；最终生产复核 15/15 健康、15/15 journald、86 份归档校验通过、根分区余量约 25 GB。
 - 14 天实际留存窗口属于待观察结果，不以配置项本身作为达标证据。
+- 2026-11-13 巡检迁移与生产验收见[当日变更](../changelog/2026-11-13.md)。
