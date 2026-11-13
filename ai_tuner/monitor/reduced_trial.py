@@ -181,13 +181,14 @@ count(*) FILTER (WHERE status='cancelled' AND
 0::bigint AS shadow_signals
 FROM btc_eth_aggressive.trade_signals WHERE created_at >= $1 AND created_at < $2"""
 _HRS_SIGNALS_SQL = """SELECT
-count(*) FILTER (WHERE signal_origin IS DISTINCT FROM 'shadow_scoring' AND
+count(*) FILTER (WHERE resolution='executed' OR (signal_origin IS DISTINCT FROM 'shadow_scoring' AND
   (entry_mode='standard' OR
-   (entry_mode='lv_rm' AND signal_origin='nonempty_pool'))) AS real_signals,
-count(*) FILTER (WHERE resolution='shadow' OR signal_origin='shadow_scoring' OR
+   (entry_mode='lv_rm' AND signal_origin='nonempty_pool')))) AS real_signals,
+count(*) FILTER (WHERE resolution IS DISTINCT FROM 'executed' AND (resolution='shadow' OR signal_origin='shadow_scoring' OR
   entry_mode IN ('emm','semi_emm') OR
-  (entry_mode='lv_rm' AND signal_origin IS DISTINCT FROM 'nonempty_pool')) AS shadow_signals,
+  (entry_mode='lv_rm' AND signal_origin IS DISTINCT FROM 'nonempty_pool'))) AS shadow_signals,
 count(*) FILTER (WHERE resolution='executed') AS executed_signals,
+count(*) FILTER (WHERE resolution='executed' AND signal_origin='shadow_scoring') AS executed_from_shadow_source,
 count(*) FILTER (WHERE resolution='executed' AND NOT EXISTS (
   SELECT 1 FROM trading.entry_risk_reservation r
   WHERE r.account_id=$3 AND r.strategy_id='hrs'
@@ -401,7 +402,7 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
         for key in ("real_signals", "shadow_signals", "executed_signals", "unresolved_signals")
     ):
         missing.append("signals_unverified")
-    elif signals["real_signals"] > 0 and evidence.get("execution_funnel_verified") is not True:
+    elif (signals["real_signals"] > 0 or signals["executed_signals"] > 0) and evidence.get("execution_funnel_verified") is not True:
         missing.append("execution_funnel_unverified")
     if (isinstance(signals, Mapping) and evidence.get('strategy_id') == 'btc_eth_aggressive'
             and isinstance(signals.get('real_signals'), int)

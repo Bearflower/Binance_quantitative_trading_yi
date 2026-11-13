@@ -869,6 +869,7 @@ class TradeLogger:
         Returns:
             dict: {"queried_orders": n, "matched_orders": n, "total_commission": Decimal}
         """
+        await self.reconcile_entry_fills(binance_client, lookback_hours)
         summary = {
             "queried_orders": 0,
             "matched_orders": 0,
@@ -906,6 +907,38 @@ class TradeLogger:
         except Exception as e:
             logger.error("佣金回填异常", error=str(e))
         return summary
+
+    async def reconcile_entry_fills(self, client, lookback_hours: int = 24) -> None:
+        """Restore zero-valued entry records from terminal, complete exchange fills."""
+        from shared.entry_fill_evidence import verified_fill
+        start = datetime.now(BEIJING_TZ).replace(tzinfo=None) - timedelta(hours=lookback_hours)
+        try:
+            rows = await self.db.fetch_all(
+                "SELECT id, symbol, order_id, side FROM trading.trade_records "
+                "WHERE account_id=$1 AND executed_at >= $2 "
+                "AND order_type IN ('LIMIT','MARKET') AND (quantity=0 OR price=0) "
+                "AND order_id IS NOT NULL AND order_id<>'' ORDER BY id LIMIT 100",
+                self.account_id, start,
+            )
+            for row in rows:
+                try:
+                    order = await client.get_order(row["symbol"], int(row["order_id"]))
+                    trades = await client.get_user_trades(
+                        row["symbol"], order_id=row["order_id"], limit=1000)
+                    quantity, price = verified_fill(row, order, trades)
+                    await self.db.execute(
+                        "UPDATE trading.trade_records SET quantity=$1, price=$2, status='FILLED' "
+                        "WHERE id=$3 AND account_id=$4 AND symbol=$5 AND order_id=$6 "
+                        "AND side=$7 AND order_type IN ('LIMIT','MARKET') "
+                        "AND (quantity=0 OR price=0)",
+                        quantity, price, row["id"], self.account_id, row["symbol"],
+                        row["order_id"], row["side"],
+                    )
+                except Exception as exc:
+                    logger.warning("入场成交证据回填跳过", order_id=row["order_id"],
+                                   error_type=type(exc).__name__)
+        except Exception as exc:
+            logger.warning("入场成交证据读取失败", error_type=type(exc).__name__)
 
     async def _fetch_pending_trade_keys(self, lookback_hours: int) -> List:
         """查询待回填的 (symbol, order_id) 去重组合
