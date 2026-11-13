@@ -177,22 +177,27 @@ function setupEventListeners() {
 /**
  * 加载数据
  */
+let loadGeneration = 0;
 async function loadData() {
+    const generation = ++loadGeneration;
+    const period = currentType;
     try {
         // 显示加载状态
         showLoading();
 
         // 并行加载数据
         const [overview, trend] = await Promise.all([
-            api.getOverview(currentType),
-            api.getTrend(currentType, DashboardConfig.trend.defaultDays)
+            api.getOverview(period),
+            api.getTrend(period, DashboardConfig.trend.defaultDays)
         ]);
 
         // 更新合约账户净资产（实时快照，不随日/周/月切换）
         await loadAccountEquity();
 
         // 更新收益率（跟随顶部日/周/月/年切换）
-        await loadReturns(currentType);
+        if (generation !== loadGeneration) return;
+        await loadReturns(period, generation);
+        if (generation !== loadGeneration) return;
 
         // 更新总览
         updateOverview(overview);
@@ -213,6 +218,7 @@ async function loadData() {
         hideLoading();
 
     } catch (error) {
+        if (generation !== loadGeneration) return;
         console.error('数据加载失败:', error);
         showError(error.message);
     }
@@ -303,7 +309,7 @@ function updateOverview(data) {
     }
     quality.textContent = [
         data.account_coverage_complete ? '交易所 USDT 收入已核对' : '覆盖不完整，期间收益待核对',
-        `未归属 ${data.unattributed_count ?? "—"} 笔 · 净额 ${formatNumber(data.unattributed_pnl)} / 绝对额 ${formatNumber(data.unattributed_absolute)} USDT`,
+        `未归属 ${data.unattributed_count ?? "—"} 笔 · 净额 ${formatNumber(data.unattributed_pnl, 8)} / 绝对额 ${formatNumber(data.unattributed_absolute, 8)} USDT`,
         data.strategy_attribution_complete ? '' : '策略归属待核对',
         data.as_of ? `数据截至 ${formatEquityTime(data.as_of)}` : '',
         data.publication_status === 'stale' ? '刷新失败，显示上次核实报告' : '',
@@ -379,16 +385,20 @@ async function loadGridSubaccount() {
         const el = document.getElementById(id);
         if (el) el.textContent = value;
     };
+    const clearSnapshot = () => {
+        for (const id of ['grid-live-position', 'grid-live-orders', 'grid-live-fills',
+                           'grid-live-last-trade', 'grid-live-unrealized',
+                           'grid-live-phase', 'grid-live-cumulative']) set(id, '--');
+        set('grid-live-time', '--');
+        set('grid-live-note', '等待新的子账户快照');
+    };
     try {
         const data = await api.getGridSubaccount();
         if (data.status !== 'ok') {
             const reasons = {snapshot_missing: '尚无子账户快照',
                 snapshot_stale: '子账户快照已过期', snapshot_invalid: '子账户快照校验失败'};
             set('grid-live-state', reasons[data.reason] || '子账户数据暂不可用');
-            for (const id of ['grid-live-position', 'grid-live-orders', 'grid-live-fills',
-                               'grid-live-last-trade', 'grid-live-unrealized',
-                               'grid-live-phase', 'grid-live-cumulative']) set(id, '--');
-            set('grid-live-time', '--');
+            clearSnapshot();
             return;
         }
         const state = data.engine_state === 'FLAT' ? '空仓待机'
@@ -415,6 +425,7 @@ async function loadGridSubaccount() {
             ? '尚无自动网格成交。初始划转和上线前人工验收交易不计入网格成绩。'
             : '口径：执行器成交已实现盈亏－手续费＋ETHUSDT 资金费＋当前净仓未实现盈亏；不含初始划转和人工验收交易。');
     } catch (error) {
+        clearSnapshot();
         set('grid-live-state', '子账户接口暂不可用');
     }
 }
@@ -431,7 +442,7 @@ function updateStrategyCards(strategies) {
     }
     extraOwners.replaceChildren();
     strategies.forEach((strategy) => {
-        if (strategy.id === 'grid' && (strategy.total_pnl == null || Number(strategy.total_pnl) === 0)) return;
+        if (strategy.id === 'grid' && Number(strategy.total_pnl ?? strategy.observed_pnl ?? 0) === 0) return;
         const card = Array.from(document.querySelectorAll('.strategy-card')).find(item => item.dataset.strategy === strategy.id);
         if (!card) {
             const row = document.createElement('p');
@@ -526,7 +537,7 @@ function updateStrategyCards(strategies) {
 /**
  * 加载并展示账户收益率（随周期联动：收益率 / 期初净资产 / 本期净盈亏）
  */
-async function loadReturns(period) {
+async function loadReturns(period, generation) {
     const yieldEl = document.querySelector('#returns-yield');
     const startEl = document.querySelector('#returns-start');
     const pnlEl = document.querySelector('#returns-pnl');
@@ -538,6 +549,7 @@ async function loadReturns(period) {
 
     try {
         const data = await api.getAccountReturns(period);
+        if (generation !== loadGeneration) return;
         if (investmentEl) {
             investmentEl.textContent = data.investment_return_unavailable === false &&
                 Number.isFinite(data.investment_return_yield)
@@ -560,6 +572,7 @@ async function loadReturns(period) {
             if (hintEl) hintEl.textContent = data.snapshot_date ? `快照日期 ${data.snapshot_date}` : '';
         }
     } catch (error) {
+        if (generation !== loadGeneration) return;
         console.warn('收益率加载失败:', error);
         if (investmentEl) investmentEl.textContent = '现金流调整投资收益率：待资金流水核对';
         yieldEl.textContent = '--';
@@ -568,7 +581,7 @@ async function loadReturns(period) {
         if (pnlEl) pnlEl.textContent = '--';
         if (hintEl) hintEl.textContent = '';
     } finally {
-        yieldEl.classList.remove('updating');
+        if (generation === loadGeneration) yieldEl.classList.remove('updating');
     }
 }
 
