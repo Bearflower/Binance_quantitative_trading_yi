@@ -4,7 +4,8 @@
 """
 import asyncio
 from datetime import datetime, timedelta, timezone
-from typing import Dict, Any, Optional, List
+from decimal import Decimal
+from typing import Dict, Any, Optional, List, Tuple
 
 import structlog
 
@@ -126,6 +127,7 @@ class PositionManager:
         entry_mode: Optional[str] = None,
         opened_at: Optional[datetime] = None,
         risk_stop_price: Optional[float] = None,
+        exit_ratios: Optional[Tuple[Decimal, Decimal]] = None,
     ) -> None:
         """
         添加持仓跟踪
@@ -151,6 +153,8 @@ class PositionManager:
             "best_price": entry_price,  # 做空记录最低价，做多记录最高价
             "remaining_quantity": quantity,
             "risk_stop_price": risk_stop_price,
+            "exit_ratios": ([str(value) for value in exit_ratios]
+                            if exit_ratios is not None else None),
             # FR-01: 合并开仓阶段暂存的 pending algoId（保护单创建早于 add_position）
             "algo_ids": self._pending_algo_ids.pop(symbol, {}),  # role -> algoId, role: "sl"/"tp1"/"tp2"
             **lifecycle,

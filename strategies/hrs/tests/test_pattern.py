@@ -31,10 +31,10 @@ class TestPatternRecognizerInit:
     def test_从配置正确加载参数(self):
         recognizer = PatternRecognizer(CONFIG)
         assert recognizer.window_size == 5
-        assert recognizer.short_three_tops["min_deviation"] == 0.002
+        assert recognizer.short_three_tops["min_deviation"] == CONFIG["pattern"]["short"]["three_tops"]["min_deviation"]
         assert recognizer.short_three_tops["score_full"] == 4.0
         assert recognizer.short_three_tops["score_partial"] == 2.0
-        assert recognizer.short_long_shadow["ratio_threshold"] == 2.0
+        assert recognizer.short_long_shadow["ratio_threshold"] == CONFIG["pattern"]["short"]["long_upper_shadow"]["ratio_threshold"]
         assert recognizer.long_three_bottoms["min_deviation"] == 0.002
 
     def test_空配置使用默认值(self):
@@ -297,7 +297,7 @@ class TestVolumeStagnation:
             make_kline(100, 105, 95, 100, 100),
             make_kline(100, 105, 95, 100, 100),
             make_kline(100, 105, 95, 100, 100),
-            make_kline(100, 103, 97, 99, 120),  # 量120 < 150
+            make_kline(100, 103, 97, 99, 119),  # 低于配置的 1.2 倍均量
         ]
         result = recognizer._detect_volume_stagnation(klines)
         assert result[0] is False
@@ -362,6 +362,8 @@ class TestDetectShortPatterns:
             "three_tops": (False, 0.0),
             "long_upper_shadow": (False, 0.0),
             "volume_stagnation": (False, 0.0),
+            "double_top": (False, 0.0),
+            "v_reversal_short": (False, 0.0),
         }
 
     def test_K线不足5根返回全False(self, recognizer):
@@ -399,6 +401,8 @@ class TestDetectLongPatterns:
             "three_bottoms": (False, 0.0),
             "long_lower_shadow": (False, 0.0),
             "volume_reversal": (False, 0.0),
+            "double_bottom": (False, 0.0),
+            "v_reversal_long": (False, 0.0),
         }
 
     def test_完整做多场景(self, recognizer):

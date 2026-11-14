@@ -21,6 +21,26 @@ with open(CONFIG_PATH, "r") as f:
 
 from strategies.hrs.position_manager import PositionManager
 from strategies.hrs.executor import TradingExecutor
+from shared.reduce_only_close import CloseOutcome
+
+
+@pytest.fixture(autouse=True)
+def execution_policy_boundary(monkeypatch):
+    # These executor tests exercise order handling after policy admission.
+    monkeypatch.setattr("strategies.hrs.strategy.entry_allowed", AsyncMock(return_value=True))
+    monkeypatch.setattr("strategies.hrs.executor.entry_allowed", AsyncMock(return_value=True))
+    from types import SimpleNamespace
+    for name in ("execute_short", "execute_long"):
+        original = getattr(TradingExecutor, name)
+        async def admitted(self, *args, _original=original, **kwargs):
+            kwargs.setdefault("risk_decision", SimpleNamespace(exit_ratios=(Decimal('.3'), Decimal('.4'))))
+            if not isinstance(self._submit_reserved_hrs_entry, AsyncMock):
+                async def submit(*a):
+                    return await self.binance_api.place_order()
+                self._submit_reserved_hrs_entry = AsyncMock(side_effect=submit)
+            return await _original(self, *args, **kwargs)
+        monkeypatch.setattr(TradingExecutor, name, admitted)
+
 
 
 # ============================================================
@@ -31,7 +51,10 @@ from strategies.hrs.executor import TradingExecutor
 def mock_binance_api():
     """创建模拟的币安API客户端"""
     api = MagicMock()
+    api.get_order_by_client_id = AsyncMock(return_value=None)
     api.use_unified_account = False
+    api.get_open_orders = AsyncMock(return_value=[])
+    api.get_order = AsyncMock(side_effect=lambda sym, oid: {"orderId": oid, "status": "NEW"})
     api.get_open_algo_orders = AsyncMock(return_value=[])
     api.cancel_algo_order = AsyncMock(return_value={"status": "CANCELED"})
     api.get_position = AsyncMock(return_value=[])
@@ -181,6 +204,8 @@ class TestReplenishPositionOrdersE2E:
     def mock_api(self):
         """创建完整的 mock API"""
         api = MagicMock()
+        api.get_order_by_client_id = AsyncMock(return_value=None)
+        api.get_open_orders = AsyncMock(return_value=[{"orderId": 10001}, {"orderId": 10002}, {"orderId": 10003}])
         api.use_unified_account = False
         api.get_ticker = AsyncMock(return_value={"lastPrice": "50000.0"})
         api.place_conditional_order = AsyncMock(return_value={"algoId": 99999})
@@ -212,43 +237,16 @@ class TestReplenishPositionOrdersE2E:
         return TradingExecutor(CONFIG, mock_api, mock_db, mock_notification, pm)
 
     @pytest.mark.asyncio
-    async def test_已有全部algo_id时先取消清场再全量重建(self, mock_api, executor, pm):
-        """
-        FR-07/09：即使本地已有全部 algo_id，补单仍先批量取消清场，再全量重建，
-        避免依赖「可能失效的本地记录」跳过导致保护单缺失。
-        """
+    async def test_已有全部algo_id时保留保护单(self, mock_api, executor, pm):
         pm.add_position("BTCUSDT", "short", 50000.0, 1.0, 1000.0)
-        pm.add_algo_id("BTCUSDT", "sl", 10001)
-        pm.add_algo_id("BTCUSDT", "tp1", 10002)
-        pm.add_algo_id("BTCUSDT", "tp2", 10003)
-
-        # 重置调用计数
-        mock_api.place_conditional_order.reset_mock()
-        mock_api.cancel_algo_order.reset_mock()
-
+        for role, algo_id in (("sl", 10001), ("tp1", 10002), ("tp2", 10003)):
+            pm.add_algo_id("BTCUSDT", role, algo_id)
         result = await executor.replenish_position_orders(
-            symbol="BTCUSDT",
-            direction="short",
-            entry_price=50000.0,
-            entry_quantity=1.0,
-            atr=1000.0,
-            target1_reached=False,
-            target2_reached=False,
-        )
-
-        # ReplenishResult 整体成功，三类保护单全部重建
+            "BTCUSDT", "short", 50000.0, 1.0, 1000.0)
         assert result.success is True
-        assert result.failed_roles == []
-        assert result.placed == 3
-
-        # 先取消旧单（3 个旧 algo_id），再全量重建（3 次下单）
-        assert mock_api.cancel_algo_order.call_count == 3, \
-            f"应取消 3 个旧条件单，实际取消 {mock_api.cancel_algo_order.call_count} 个"
-        assert mock_api.place_conditional_order.call_count == 3, \
-            f"应重建 3 个保护单，实际下单 {mock_api.place_conditional_order.call_count} 次"
-
-        # 重建后本地 algo_ids 重新写入
-        assert len(pm.get_algo_ids("BTCUSDT")) == 3
+        assert result.placed == 0
+        mock_api.cancel_algo_order.assert_not_called()
+        mock_api.place_conditional_order.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_无algo_id时正常下单(self, mock_api, executor, pm):
@@ -282,9 +280,9 @@ class TestReplenishPositionOrdersE2E:
             f"应重建 3 个保护单，实际下单 {mock_api.place_conditional_order.call_count} 次"
 
     @pytest.mark.asyncio
-    async def test_部分algo_id存在时也全量重建(self, mock_api, executor, pm):
+    async def test_部分algo_id存在时仅补缺失角色(self, mock_api, executor, pm):
         """
-        FR-07/09：部分 algo_id 存在时，取消残留后全量重建（不依赖本地记录跳过）
+        保留已有 SL，仅补 TP1 和 TP2。
         """
         pm.add_position("BTCUSDT", "short", 50000.0, 1.0, 1000.0)
         pm.add_algo_id("BTCUSDT", "sl", 10001)
@@ -304,10 +302,10 @@ class TestReplenishPositionOrdersE2E:
 
         assert result.success is True
         assert result.failed_roles == []
-        assert result.placed == 3
-        # 取消残留的 sl 后全量重建 sl + tp1 + tp2
-        assert mock_api.cancel_algo_order.call_count == 1
-        assert mock_api.place_conditional_order.call_count == 3
+        assert result.placed == 2
+        # 保留 SL
+        assert mock_api.cancel_algo_order.call_count == 0
+        assert mock_api.place_conditional_order.call_count == 2
 
     @pytest.mark.asyncio
     async def test_target1已成交时跳过TP1补单(self, mock_api, executor, pm):
@@ -386,6 +384,7 @@ class TestReconcilePositionsNoTakeover:
 
         # 创建策略实例（仅用于测试 _reconcile_positions）
         strategy = HRSStrategy(CONFIG)
+        strategy.circuit_breaker = None
         strategy.binance_client = mock_api
         strategy.position_manager = pm
         strategy.db = mock_db
@@ -432,6 +431,7 @@ class TestReconcilePositionsNoTakeover:
         from strategies.hrs.strategy import HRSStrategy
 
         strategy = HRSStrategy(CONFIG)
+        strategy.circuit_breaker = None
         strategy.binance_client = mock_api
         strategy.position_manager = pm
         strategy.db = mock_db
@@ -459,6 +459,7 @@ class TestReconcilePositionsNoTakeover:
         from strategies.hrs.strategy import HRSStrategy
 
         strategy = HRSStrategy(CONFIG)
+        strategy.circuit_breaker = None
         strategy.binance_client = mock_api
         strategy.position_manager = pm
         strategy.db = mock_db
@@ -635,6 +636,7 @@ class TestPlaceProtectionOrder:
     @pytest.fixture
     def executor(self, mock_binance_api):
         pm = PositionManager(CONFIG, mock_binance_api)
+        pm.add_position("BTCUSDT", "short", 50000, 1, 1000)
         return TradingExecutor(CONFIG, mock_binance_api, MagicMock(), MagicMock(), pm)
 
     def test_数量小于等于0_跳过(self, executor):
@@ -698,8 +700,7 @@ class TestPlaceProtectionOrder:
         assert result["success"] is True
         assert result["skipped"] is False
         assert result["algo_id"] == 12345
-        # 持仓未建立 → 写入 pending 缓冲，add_position 时合并
-        assert executor.position_manager._pending_algo_ids["BTCUSDT"]["tp1"] == 12345
+        assert executor.position_manager.get_algo_id("BTCUSDT", "tp1") == 12345
 
 
 # ============================================================
@@ -928,9 +929,9 @@ def hrs_env(mock_db, mock_notification):
     api = MagicMock()
     api.use_unified_account = False
     api.get_ticker = AsyncMock(return_value={"lastPrice": "50000.0"})
-    api.get_symbol_info = AsyncMock(return_value={"tickSize": "0.1", "stepSize": "0.001"})
+    api.get_symbol_info = AsyncMock(return_value={"tickSize": "0.1", "stepSize": "0.001", "minQty": "0.001", "minNotional": "5"})
     api.set_leverage = AsyncMock(return_value=None)
-    api.get_account_info = AsyncMock(return_value={"totalMarginBalance": "1000.0"})
+    api.get_account_info = AsyncMock(return_value={"totalMarginBalance": "100000.0"})
     api.place_order = AsyncMock(return_value={
         "orderId": 100, "executedQty": "0.1", "origQty": "0.1", "status": "FILLED",
     })
@@ -943,6 +944,7 @@ def hrs_env(mock_db, mock_notification):
     executor.calculate_atr = AsyncMock(return_value=1000.0)
 
     strategy = HRSStrategy(CONFIG)
+    strategy.circuit_breaker = None
     strategy.binance_client = api
     strategy.position_manager = pm
     strategy.trading_executor = executor
@@ -957,6 +959,16 @@ def hrs_env(mock_db, mock_notification):
     strategy.risk_manager = risk
 
     capital = MagicMock()
+    capital.get_effective_margin_limit = AsyncMock(return_value=(2000, "test"))
+    capital.can_open_within_limit = AsyncMock(return_value=(True, "test"))
+    executor.timeout_recovery.pending = AsyncMock(return_value=[])
+    strategy._reserve_hrs_entry = AsyncMock(side_effect=lambda signal, decision, *args: decision)
+    async def submit(*args):
+        return await api.place_order()
+    executor._submit_reserved_hrs_entry = AsyncMock(side_effect=submit)
+    from strategies.hrs.risk_budget import RiskDecision
+    strategy._size_entry_with_hrs_budget = AsyncMock(return_value=RiskDecision(
+        True, "test", quantity=Decimal('.1'), risk_limit=Decimal('10'), worst_loss=Decimal('5'), exit_ratios=(Decimal(".3"), Decimal(".4"))))
     capital.can_open_position = MagicMock(return_value=True)
     capital.get_allocated_capital = MagicMock(return_value=10000.0)
     strategy.capital_mgr = capital
@@ -1146,6 +1158,7 @@ class TestReplenishChainBoundary:
     @pytest.fixture
     def executor(self, mock_binance_api):
         pm = PositionManager(CONFIG, mock_binance_api)
+        pm.add_position("BTCUSDT", "short", 50000, 1, 1000)
         return TradingExecutor(CONFIG, mock_binance_api, MagicMock(), MagicMock(), pm)
 
     def test_atr无效_返回invalid_atr(self, executor):
@@ -1459,8 +1472,8 @@ class TestExecutorEdgeBranches:
         ))
         assert result.order_filled is False
 
-    def test_execute_short_订单无ID_信任订单结果(self, hrs_env):
-        """订单无 orderId → 无法检查成交状态，信任订单结果继续"""
+    def test_execute_short_订单无ID_拒绝确认成交(self, hrs_env):
+        """订单缺少可追溯标识时不能确认开仓完成"""
         hrs_env["api"].place_order = AsyncMock(return_value={
             "executedQty": "0.1", "origQty": "0.1",
         })
@@ -1468,7 +1481,7 @@ class TestExecutorEdgeBranches:
             symbol="BTCUSDT", entry_price=50000.0, atr=1000.0,
             quantity=Decimal("0.1"), score=0.9,
         ))
-        assert result.order_filled is True
+        assert result.order_filled is False
 
     def test_execute_short_使用lv_rm入场模式(self, hrs_env):
         """lv_rm 模式走独立止损止盈参数分支"""
@@ -1536,50 +1549,18 @@ class TestAddToPositionExtra:
 # ============================================================
 
 class TestHandleEntryTimeout:
-    """测试开仓超时的取消与反向平仓分支"""
-
-    @pytest.fixture
-    def executor(self, mock_binance_api):
+    @pytest.mark.asyncio
+    async def test_timeout_is_persisted_before_reconciliation(self, mock_binance_api):
         pm = PositionManager(CONFIG, mock_binance_api)
-        return TradingExecutor(CONFIG, mock_binance_api, MagicMock(), MagicMock(), pm)
-
-    def test_部分成交_反向限价平仓(self, executor):
-        """部分成交且价格有效 → 限价反向平仓（做空回补 BUY）"""
-        executor.binance_api.cancel_order = AsyncMock(return_value={"status": "CANCELED"})
-        executor.binance_api.get_ticker = AsyncMock(return_value={"lastPrice": "51000.0"})
-        executor.binance_api.place_order = AsyncMock(return_value={"orderId": 400})
-
-        asyncio.run(executor._handle_entry_timeout("BTCUSDT", 100, "short", 0.5, Decimal("0.001")))
-
-        assert executor.binance_api.cancel_order.await_args.args == ("BTCUSDT", 100)
-        call_kwargs = executor.binance_api.place_order.await_args.kwargs
-        assert call_kwargs["side"] == "BUY"
-        assert call_kwargs["order_type"] == "LIMIT"
-
-    def test_无部分成交_不反向平仓(self, executor):
-        """无部分成交 → 仅取消，不下反向平仓单"""
-        executor.binance_api.cancel_order = AsyncMock(return_value={"status": "CANCELED"})
-        asyncio.run(executor._handle_entry_timeout("BTCUSDT", 100, "short", 0.0, Decimal("0.001")))
-        executor.binance_api.place_order.assert_not_called()
-
-    def test_当前价格无效_市价反向平仓(self, executor):
-        """价格无效 → 市价反向平仓"""
-        executor.binance_api.cancel_order = AsyncMock(return_value={"status": "CANCELED"})
-        executor.binance_api.get_ticker = AsyncMock(return_value={"lastPrice": "0.0"})
-        executor.binance_api.place_order = AsyncMock(return_value={"orderId": 401})
-
-        asyncio.run(executor._handle_entry_timeout("BTCUSDT", 100, "short", 0.5, Decimal("0.001")))
-
-        assert executor.binance_api.place_order.await_args.kwargs["order_type"] == "MARKET"
-
-    def test_取消订单异常_忽略不抛出(self, executor):
-        """取消订单抛异常 → 仅 debug 日志，不抛出"""
-        executor.binance_api.cancel_order = AsyncMock(side_effect=RuntimeError("取消失败"))
-        asyncio.run(executor._handle_entry_timeout("BTCUSDT", 100, "short", 0.0, Decimal("0.001")))
-        executor.binance_api.place_order.assert_not_called()
+        executor = TradingExecutor(CONFIG, mock_binance_api, MagicMock(), MagicMock(), pm)
+        recovery = AsyncMock()
+        recovery.begin.return_value = ('key', {'order_id': '100'})
+        executor.timeout_recovery = recovery
+        await executor._handle_entry_timeout('BTCUSDT', 100, 'short', .5, Decimal('.001'), 10, 'lv_rm')
+        recovery.begin.assert_awaited_once_with('BTCUSDT', 100, 'short', .5, 10, 'lv_rm', None)
+        recovery.reconcile.assert_awaited_once_with('key', {'order_id': '100'})
 
 
-# ============================================================
 # 测试20: 平仓做多/异常分支
 # ============================================================
 
@@ -1627,6 +1608,7 @@ class TestReplenishChainBoundaryExtra:
     @pytest.fixture
     def executor(self, mock_binance_api):
         pm = PositionManager(CONFIG, mock_binance_api)
+        pm.add_position("BTCUSDT", "short", 50000, 1, 1000)
         return TradingExecutor(CONFIG, mock_binance_api, MagicMock(), MagicMock(), pm)
 
     def test_补单止损单失败_收集sl角色(self, executor):
@@ -1709,7 +1691,7 @@ class TestReplenishChainBoundaryExtra:
         ))
 
         assert result.success is True
-        assert result.placed == 3  # 即使取消失败仍全量重建
+        assert result.placed == 1  # 保留已有 SL/TP1，仅补 TP2
 
 
 # ============================================================

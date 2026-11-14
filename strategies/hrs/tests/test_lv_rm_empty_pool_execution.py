@@ -23,6 +23,11 @@ with open(CONFIG_PATH, "r") as f:
     CONFIG = yaml.safe_load(f)
 
 
+@pytest.fixture(autouse=True)
+def execution_policy_boundary(monkeypatch):
+    monkeypatch.setattr("strategies.hrs.strategy.entry_allowed", AsyncMock(return_value=True))
+
+
 # ---------- 测试辅助：构造 HRSStrategy + 最小依赖集 ----------
 
 def _make_klines(n: int, base_close: float = 100.0, slope: float = 0.1) -> list:
@@ -130,6 +135,7 @@ def _setup_strategy(klines_for_symbol: str = "TESTUSDT"):
     # DB / 通知：让 execute_signal 内部不崩
     strategy.db = MagicMock()
     strategy.db.execute = AsyncMock(return_value=None)
+    strategy.db.fetch_one = AsyncMock(return_value={"id": 1})
     strategy.capital_mgr = MagicMock()
     strategy.capital_mgr.can_open_within_limit = AsyncMock(return_value=(True, None))
 
@@ -138,8 +144,20 @@ def _setup_strategy(klines_for_symbol: str = "TESTUSDT"):
     strategy.trading_executor.leverage = 5
     strategy.trading_executor.calculate_atr = AsyncMock(return_value=0.5)
     strategy.trading_executor._get_symbol_precision = AsyncMock(return_value=(0.01, 3))
+    strategy.trading_executor.timeout_recovery.pending = AsyncMock(return_value=[])
+    strategy.market_data.preload_market_caps = AsyncMock(return_value=None)
     strategy.trading_executor.execute_short = AsyncMock()
     strategy.trading_executor.execute_long = AsyncMock()
+    strategy.trading_executor._get_lv_rm_params.return_value = {
+        "target1_close_percent": .3, "target2_close_percent": .4}
+    strategy.trading_executor._calc_sl_price.return_value = 105
+    from strategies.hrs.risk_budget import RiskDecision
+    from decimal import Decimal
+    strategy._reserve_hrs_entry = AsyncMock(side_effect=lambda signal, decision, *args: decision)
+    strategy.trading_executor._calc_tp_price.return_value = 95
+    strategy._size_entry_with_hrs_budget = AsyncMock(
+        return_value=RiskDecision(True, "test admission", quantity=Decimal("100")))
+
 
     # 通知（_send_cycle_summary 会调 send，真实方法内 await notification_client.send）
     strategy.notification_client = MagicMock()

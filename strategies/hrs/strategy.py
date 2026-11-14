@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Set, Tuple
@@ -25,7 +26,7 @@ from shared.notification import NotificationClient
 from shared.strategy_state import save_strategy_state, sync_open_positions
 from shared.trade_logger import TradeLogger
 from shared.position_baseline import calc_occupied_margin, calc_position_margin
-from shared.position_ownership import release_claim
+from shared.position_ownership import release_claim, try_claim_symbol
 from ai_tuner.snapshots.repository import SnapshotRepository
 
 from .candidate_pool import CandidatePool
@@ -73,6 +74,7 @@ _POSITION_LIFECYCLE_COLUMNS = {
     "opening_time_uncertain": "BOOLEAN",  # 开仓时刻不可信（仅恢复出被重置的旧时间）
     "entry_mode_unknown": "BOOLEAN",      # 入场模式缺失（存量仓）
     "risk_stop_price": "DOUBLE PRECISION",  # 入场时的止损风险预算依据
+    "exit_ratios": "JSONB",  # 小仓位精度自适应出场比例，重启后必须原样恢复
 }
 
 
@@ -289,6 +291,7 @@ class HRSStrategy(BaseStrategy):
             self.position_manager,
             should_notify_callback=self._should_notify,
         )
+        self.trading_executor.persist_fill = self._persist_entry_before_protection
         # P1-8: 传入通知回调，使风控模块能在暂停/熔断时发送通知
         self.risk_manager = RiskManager(
             self.config,
@@ -736,8 +739,6 @@ class HRSStrategy(BaseStrategy):
         Returns:
             是否执行成功
         """
-        if not await entry_allowed(self, 'hrs'):
-            return False
         try:
             symbol = signal.get("symbol")
             direction = signal.get("direction")
@@ -776,6 +777,10 @@ class HRSStrategy(BaseStrategy):
                 signal["shadow_blocked"] = True
                 return True
 
+            if not await entry_allowed(self, 'hrs', stage='analysis'):
+                signal['skip_reason'] = 'HRS entry risk policy blocks new positions'
+                return False
+
             # 组合级熔断闸门：开仓决策前统一否决性拦截（含 LV-RM 等所有信号来源）
             # 组合级独立生效（与单币涨幅无关）；单币涨幅缺失时仅单币级 fail-open（guard 内处理）
             # HRS 整点执行时 T 时刻指数尚未生成（03 分才写），与预过滤一致读 T-1 指数
@@ -796,6 +801,10 @@ class HRSStrategy(BaseStrategy):
                         pool_index_12h=pool_index_12h,
                     )
                     return False
+
+            if await self.trading_executor.timeout_recovery.pending():
+                logger.warning("存在待核对的超时开仓，暂缓新增风险")
+                return False
 
             # 风控检查
             if not self.risk_manager.can_open_position(direction):
@@ -843,6 +852,9 @@ class HRSStrategy(BaseStrategy):
             stop_loss_price = self.trading_executor._calc_sl_price(
                 direction, current_price, atr, tick_size, params
             )
+            tp_prices = tuple(self.trading_executor._calc_tp_price(
+                direction, role, current_price, atr, tick_size, params
+            ) for role in ('tp1', 'tp2'))
             current_total_margin = self._calc_current_total_margin()
             risk_decision = await self._size_entry_with_hrs_budget(
                 symbol=symbol, direction=direction, entry_price=current_price,
@@ -850,6 +862,8 @@ class HRSStrategy(BaseStrategy):
                 take_profit_ratios=(
                     params["target1_close_percent"], params["target2_close_percent"]
                 ),
+                take_profit_prices=tp_prices,
+                account_equity=balance,
             )
             if not risk_decision.allowed:
                 logger.warning("HRS 单笔风险预算拒绝开仓", symbol=symbol,
@@ -905,6 +919,11 @@ class HRSStrategy(BaseStrategy):
 
             # 影子闸门已在 execute_signal 入口处前置（L747-762），此处不再重复判定。
 
+            risk_decision = await self._reserve_hrs_entry(
+                signal, risk_decision, current_price, balance)
+            if risk_decision is None:
+                return False
+
             # 执行开仓（FR-01: 返回 OpenResult，分离「成交」与「保护单完整性」信号）
             result: Optional[OpenResult] = None
             if direction == "short":
@@ -912,18 +931,20 @@ class HRSStrategy(BaseStrategy):
                     symbol=symbol,
                     entry_price=current_price,
                     atr=atr,
-                    quantity=Decimal(str(quantity)),
+                    quantity=risk_decision.quantity,
                     score=score,
                     entry_mode=entry_mode,
+                    risk_decision=risk_decision,
                 )
             else:
                 result = await self.trading_executor.execute_long(
                     symbol=symbol,
                     entry_price=current_price,
                     atr=atr,
-                    quantity=Decimal(str(quantity)),
+                    quantity=risk_decision.quantity,
                     score=score,
                     entry_mode=entry_mode,
+                    risk_decision=risk_decision,
                 )
 
             if result.order_filled:
@@ -950,15 +971,15 @@ class HRSStrategy(BaseStrategy):
 
                 # 记录持仓（B5：带上入场模式，供时间止损按模式选择持仓时限；
                 # B6a：quantity 用真实成交量，entry_price 用真实成交均价）
-                self.position_manager.add_position(
-                    symbol=symbol,
-                    direction=direction,
-                    entry_price=actual_entry_price,
-                    quantity=result.filled_quantity,
-                    atr=atr,
-                    entry_mode=entry_mode,
-                    risk_stop_price=stop_loss_price,
-                )
+                position = self.position_manager.get_position(symbol)
+                if not position:
+                    await self._persist_entry_before_protection(
+                        symbol, direction, actual_entry_price, result.filled_quantity, atr,
+                        entry_mode, stop_loss_price, f"hrs:{symbol}:{result.order['orderId']}", risk_decision.exit_ratios)
+                    position = self.position_manager.get_position(symbol)
+                if result.order.get("recovery_key") and result.protection_complete:
+                    await self._persist_position_row(symbol, position, int(datetime.now(timezone.utc).timestamp() * 1000))
+                    await self.trading_executor.timeout_recovery.finish(result.order["recovery_key"])
 
                 # 记录风控
                 self.risk_manager.record_open(direction)
@@ -982,16 +1003,89 @@ class HRSStrategy(BaseStrategy):
             logger.error("执行信号失败", error=str(e))
             return False
 
+    async def _reserve_hrs_entry(
+        self, signal: Dict[str, Any], decision: RiskDecision,
+        entry_price: float, equity: float,
+    ) -> Optional[RiskDecision]:
+        """Bind one HRS order to a durable risk reservation and symbol claim."""
+        from shared.entry_risk_policy import RiskPolicyStore, SizedEntry
+        symbol = signal.get('symbol')
+        identity = signal.get('signal_id')
+        if not isinstance(identity, int) or identity <= 0 or not symbol:
+            logger.warning('HRS 信号缺持久身份，拒绝下单', symbol=symbol)
+            return None
+        store = RiskPolicyStore(self.db)
+        try:
+            await store.reconcile('hrs', self.binance_client)
+            claim = await try_claim_symbol(self.db, symbol, 'hrs',
+                                           intent_id=f'hrs:{identity}')
+            if not claim.get('claimed') or not claim.get('claim_id'):
+                logger.warning('HRS 互斥占位失败，拒绝下单', symbol=symbol)
+                return None
+            reserved = False
+            try:
+                price = Decimal(str(entry_price))
+                leverage = Decimal(str(self.trading_executor.leverage))
+                quantity = decision.quantity
+                sized = SizedEntry(quantity, quantity, price, leverage,
+                                   quantity * price / leverage,
+                                   decision.worst_loss, decision.worst_loss,
+                                   decision.exit_ratios)
+                async def snapshot():
+                    positions = await self.binance_client.get_position()
+                    if not isinstance(positions, list):
+                        raise ValueError('exchange position inventory unavailable')
+                    holdings = Decimal(0)
+                    symbols = set()
+                    for pos in positions:
+                        amount = Decimal(str(pos['positionAmt']))
+                        if amount == 0:
+                            continue
+                        mark = Decimal(str(pos['markPrice']))
+                        lev = Decimal(str(pos['leverage']))
+                        if not all(x.is_finite() and x > 0 for x in (abs(amount), mark, lev)):
+                            raise ValueError('exchange position exposure invalid')
+                        holdings += abs(amount) * mark / lev
+                        symbols.add(pos['symbol'])
+                    return (holdings, Decimal(str(equity)), decision.effective_allocation,
+                            symbols, int(self.config.get('trading', {}).get('max_positions', 3)))
+                client_id = await store.reserve('hrs', symbol, str(identity), sized,
+                                                decision.policy_revision, snapshot,
+                                                geometry={'signal_id': identity,
+                                                          'exit_ratios':[str(x) for x in decision.exit_ratios],
+                                                          'entry_price':str(price),
+                                                          'quantity':str(quantity)})
+                reserved = True
+                return replace(decision, client_order_id=client_id)
+            finally:
+                if not reserved:
+                    await release_claim(self.db, symbol, 'hrs', reason='reservation_failed')
+        except Exception as exc:
+            logger.warning('HRS 风险预留失败，拒绝下单', symbol=symbol, error=str(exc))
+            return None
+
     async def _size_entry_with_hrs_budget(
         self, *, symbol: str, direction: str, entry_price: float,
         stop_price: float, occupied_margin: float,
         take_profit_ratios: tuple = (0.30, 0.40),
+        take_profit_prices: Optional[tuple] = None,
+        account_equity: Optional[float] = None,
     ) -> RiskDecision:
         """Size a new entry from current HRS allocation and live symbol filters."""
         allocation, _ = await self.capital_mgr.get_effective_margin_limit()
         if allocation is None:
             return RiskDecision(False, "invalid_allocation")
         try:
+            from shared.entry_risk_policy import RiskPolicyStore
+            policy = await RiskPolicyStore(self.db).policy('hrs')
+            if policy['mode'] != 'reduced' or policy['allow_add']:
+                return RiskDecision(False, 'risk_policy_not_reduced')
+            equity = Decimal(str(account_equity))
+            effective_allocation = min(
+                Decimal(str(allocation)) * Decimal(str(policy['multiplier'])),
+                equity * Decimal(str(policy['ratio_cap'])),
+                Decimal(str(policy['entry_ceiling'])),
+            )
             info = await self.binance_client.get_symbol_info(symbol)
             required = ("stepSize", "minQty", "minNotional")
             if any(info.get(key) is None for key in required):
@@ -1014,12 +1108,12 @@ class HRSStrategy(BaseStrategy):
             )
             if existing_open_risk is None:
                 return RiskDecision(False, "open_position_risk_unknown")
-            return assess_entry(
+            decision = assess_entry(
                 allocation=Decimal(str(allocation)),
                 entry_price=Decimal(str(entry_price)), stop_price=Decimal(str(stop_price)),
                 direction=direction, existing_open_risk=existing_open_risk,
                 leverage=Decimal(str(self.trading_executor.leverage)),
-                remaining_margin=Decimal(str(allocation)) - Decimal(str(occupied_margin)),
+                remaining_margin=effective_allocation - Decimal(str(occupied_margin)),
                 qty_step=Decimal(str(info["stepSize"])),
                 min_qty=Decimal(str(info["minQty"])),
                 min_notional=Decimal(str(info["minNotional"])),
@@ -1034,10 +1128,68 @@ class HRSStrategy(BaseStrategy):
                     Decimal(str(risk_cfg.get("portfolio_loss_ratio", "0.03"))),
                 ),
                 take_profit_ratios=tuple(Decimal(str(ratio)) for ratio in take_profit_ratios),
+                take_profit_prices=(tuple(Decimal(str(price)) for price in take_profit_prices)
+                                    if take_profit_prices is not None else None),
             )
+            return replace(decision, policy_revision=int(policy['revision']),
+                           effective_allocation=effective_allocation)
         except (ValueError, TypeError, ArithmeticError) as exc:
             logger.warning("HRS 风险预算输入无效", symbol=symbol, error=str(exc))
             return RiskDecision(False, "invalid_risk_inputs")
+
+    async def _persist_entry_before_protection(self, symbol, direction, price, quantity,
+                                               atr, mode, stop, identity, exit_ratios=None):
+        self.position_manager.add_position(symbol, direction, price, quantity, atr,
+                                           entry_mode=mode, risk_stop_price=stop, exit_ratios=exit_ratios)
+        position = self.position_manager.get_position(symbol)
+        position["position_id"] = identity
+        await self._persist_position_row(symbol, position, int(datetime.now(timezone.utc).timestamp() * 1000))
+
+    async def _recover_timeout_entries(self):
+        recovery = self.trading_executor.timeout_recovery
+        for row in await recovery.pending():
+            key = row["key"]
+            try:
+                data = json.loads(row["value"])
+                symbol = data["symbol"]
+                identity = f"hrs:{symbol}:{data['order_id']}"
+                pos = self.position_manager.get_position(symbol)
+                if pos and pos["position_id"] != identity:
+                    raise ValueError("持仓归属冲突")
+                if not pos:
+                    order = await recovery.reconcile(key, data)
+                    if not order:
+                        continue
+                    price = float(order["avgPrice"])
+                    if price <= 0 or data["atr"] <= 0:
+                        raise ValueError("恢复保护缺少入场价或 ATR")
+                    self.position_manager.add_position(symbol, data["direction"], price,
+                        float(order["executedQty"]), data["atr"], entry_mode=data["entry_mode"], exit_ratios=data.get("exit_ratios"))
+                    pos = self.position_manager.get_position(symbol)
+                    pos["position_id"] = identity
+                if not pos.get("atr"):
+                    pos["atr"] = data["atr"]
+                await self._persist_position_row(symbol, pos, int(datetime.now(timezone.utc).timestamp() * 1000))
+                result = await self._replenish_single_position(symbol)
+                if not result or not result.success or not self.position_manager.has_algo_id(symbol, "sl"):
+                    raise ValueError("恢复仓位止损待确认")
+                await recovery.finish(key)
+            except Exception as exc:
+                logger.warning("超时订单保留待核对记录", key=key, error=str(exc))
+
+    async def _wait_with_timeout_recovery(self, seconds):
+        """在等待下一次扫描时继续核对待处理订单。"""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + seconds
+        while self._running:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                return
+            await asyncio.sleep(min(remaining, 15))
+            try:
+                await self._recover_timeout_entries()
+            except Exception as exc:
+                logger.warning("待处理订单读取失败", error=str(exc))
 
     async def run(self) -> None:
         """运行策略主循环"""
@@ -1045,6 +1197,7 @@ class HRSStrategy(BaseStrategy):
         self._running = True
 
         try:
+            await self._recover_timeout_entries()
             # 对齐到整点
             await self._align_to_hour()
 
@@ -1055,7 +1208,7 @@ class HRSStrategy(BaseStrategy):
                         logger.debug("策略暂停中，仅维护K线数据和持仓监控")
                         await self._monitor_positions()
                         await self._report_positions_to_dashboard()
-                        await asyncio.sleep(self.check_interval)
+                        await self._wait_with_timeout_recovery(self.check_interval)
                         continue
 
                     # V2.5: 候选池为空时，仅跳过标准模式/EMM，LV-RM 继续运行
@@ -1064,11 +1217,11 @@ class HRSStrategy(BaseStrategy):
                         await self._run_lv_rm_only_cycle()
                         await self._monitor_positions()
                         await self._report_positions_to_dashboard()
-                        await asyncio.sleep(self.check_interval)
+                        await self._wait_with_timeout_recovery(self.check_interval)
                         continue
 
                     await self._execute_cycle()
-                    await asyncio.sleep(self.check_interval)
+                    await self._wait_with_timeout_recovery(self.check_interval)
                 except Exception as e:
                     logger.error("执行周期异常", error=str(e))
                     await asyncio.sleep(self.retry_delay)
@@ -2066,6 +2219,8 @@ class HRSStrategy(BaseStrategy):
                 # B1/B2: 影子模式返回 True，但从未真实成交，必须落库为 'shadow'。
                 # 若写 'executed' 会把「未发生的成交」写成事实证据（证据幻觉）。
                 resolution = "shadow" if signal.get("shadow_blocked") else "executed"
+                if resolution == 'executed':
+                    signal['executed'] = True
                 # R9: 按 signal_id 精准更新，杜绝宽范围污染
                 await self._update_signal_resolution(
                     signal.get("signal_id"), resolution,
@@ -2853,24 +3008,36 @@ class HRSStrategy(BaseStrategy):
 
         try:
             lines = ["【HRS策略周期汇总】"]
-            lines.append(f"时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} UTC")
+            lines.append(f"时间: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S')} UTC")
             lines.append(f"活跃候选币种: {len(active_symbols)}")
             if short_candidates:
                 lines.append(f"做空候选 ({len(short_candidates)}): {', '.join(short_candidates)}")
             if long_candidates:
                 lines.append(f"做多候选 ({len(long_candidates)}): {', '.join(long_candidates)}")
-            lines.append(f"做空信号: {len(short_signals)}，做多信号: {len(long_signals)}")
+            all_signals = short_signals + long_signals
+            shadow_count = sum(self._is_shadow_entry_mode(
+                s.get('entry_mode', 'standard'), s.get('signal_origin')) for s in all_signals)
+            executed_count = sum(bool(s.get('executed')) for s in all_signals)
+            lines.append(f"评分信号: 做空 {len(short_signals)}，做多 {len(long_signals)}")
+            lines.append(f"本轮结果: 实盘开仓 {executed_count}，影子不下单 {shadow_count}，"
+                         f"其他未开仓 {len(all_signals)-executed_count-shadow_count}")
             lines.append("")
 
             if short_signals:
                 lines.append("--- 做空信号 ---")
                 for s in short_signals:
-                    lines.append(f"  {s['symbol']}: 评分 {s['score']:.1f}")
+                    status = ('影子，不下单' if self._is_shadow_entry_mode(
+                        s.get('entry_mode', 'standard'), s.get('signal_origin'))
+                        else '已开仓' if s.get('executed') else '未开仓')
+                    lines.append(f"  {s['symbol']}: 评分 {s['score']:.1f}（{status}）")
 
             if long_signals:
                 lines.append("--- 做多信号 ---")
                 for s in long_signals:
-                    lines.append(f"  {s['symbol']}: 评分 {s['score']:.1f}")
+                    status = ('影子，不下单' if self._is_shadow_entry_mode(
+                        s.get('entry_mode', 'standard'), s.get('signal_origin'))
+                        else '已开仓' if s.get('executed') else '未开仓')
+                    lines.append(f"  {s['symbol']}: 评分 {s['score']:.1f}（{status}）")
 
             if not short_signals and not long_signals:
                 lines.append("本轮无开仓信号")
@@ -3090,7 +3257,7 @@ class HRSStrategy(BaseStrategy):
         wait_seconds = (next_run - now).total_seconds()
         if wait_seconds > 0:
             logger.info(f"对齐到每小时第{target_minute}分钟，等待 {wait_seconds:.0f} 秒")
-            await asyncio.sleep(wait_seconds)
+            await self._wait_with_timeout_recovery(wait_seconds)
 
     async def _execute_ddl_safe(self, sql: str) -> bool:
         """安全执行单条幂等 DDL：失败仅记日志，绝不抛异常中断后续 DDL
@@ -3374,6 +3541,23 @@ class HRSStrategy(BaseStrategy):
         # D9: 优先读 opened_at；缺失时回退 entry_time（旧行可能已被旧版 reset 覆盖，需标不确定）
         opened_at = _ms_to_datetime(row.get("opened_at")) or _ms_to_datetime(row.get("entry_time"))
         entry_mode = row.get("entry_mode") or None
+        raw_exit_ratios = row.get('exit_ratios')
+        exit_ratios = None
+        if raw_exit_ratios is not None:
+            try:
+                values = json.loads(raw_exit_ratios) if isinstance(raw_exit_ratios, str) else raw_exit_ratios
+                if not isinstance(values, (list, tuple)) or len(values) != 2:
+                    raise ValueError('invalid exit ratio shape')
+                exit_ratios = tuple(Decimal(str(value)) for value in values)
+                first, second = exit_ratios
+                if (not first.is_finite() or not second.is_finite() or first <= 0
+                        or second < 0 or first + second > 1
+                        or (second == 0 and first != 1)):
+                    raise ValueError('invalid exit ratio values')
+            except (ValueError, TypeError, ArithmeticError) as exc:
+                logger.error('HRS 持仓出场方案无效，保留原保护单并拒绝自动重建',
+                             symbol=symbol, error=str(exc))
+                exit_ratios = (Decimal('NaN'), Decimal('NaN'))
         pm.add_position(
             symbol=symbol,
             direction=row["direction"],
@@ -3383,6 +3567,7 @@ class HRSStrategy(BaseStrategy):
             entry_mode=entry_mode,
             opened_at=opened_at,
             risk_stop_price=row.get("risk_stop_price"),
+            exit_ratios=exit_ratios,
         )
         pos = pm.get_position(symbol)
         if pos is None:
@@ -3430,7 +3615,7 @@ class HRSStrategy(BaseStrategy):
                 "SELECT symbol, direction, entry_price, quantity, entry_time, opened_at, "
                 "next_review_at, entry_mode, entry_config_hash, position_id, "
                 "opening_time_uncertain, entry_mode_unknown, algo_ids, "
-                "remaining_quantity, target1_reached, target2_reached, risk_stop_price "
+                "remaining_quantity, target1_reached, target2_reached, risk_stop_price, exit_ratios "
                 "FROM hrs.hrs_positions"
             )
             blacklist_rows = await self.db.fetch_all(
@@ -3841,14 +4026,14 @@ class HRSStrategy(BaseStrategy):
                 (symbol, direction, entry_price, quantity, entry_time, opened_at, next_review_at,
                  entry_mode, entry_config_hash, position_id, opening_time_uncertain,
                  entry_mode_unknown, algo_ids, remaining_quantity, target1_reached,
-                 target2_reached, risk_stop_price)
-            VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16)
+                 target2_reached, risk_stop_price, exit_ratios)
+            VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17::jsonb)
             ON CONFLICT (symbol, direction) DO UPDATE
             SET entry_price = $3, quantity = $4, entry_time = $5, opened_at = $5,
                 next_review_at = $6, entry_mode = $7, entry_config_hash = $8, position_id = $9,
                 opening_time_uncertain = $10, entry_mode_unknown = $11, algo_ids = $12::jsonb,
                 remaining_quantity = $13, target1_reached = $14, target2_reached = $15,
-                risk_stop_price = $16
+                risk_stop_price = $16, exit_ratios = $17::jsonb
             """,
             symbol,
             pos.get("direction", ""),
@@ -3866,6 +4051,7 @@ class HRSStrategy(BaseStrategy):
             bool(pos.get("target1_reached", False)),
             bool(pos.get("target2_reached", False)),
             pos.get("risk_stop_price"),
+            json.dumps(pos.get('exit_ratios')) if pos.get('exit_ratios') is not None else None,
         )
 
     async def _save_state(self) -> None:
@@ -4419,6 +4605,7 @@ class HRSStrategy(BaseStrategy):
 
             # 补单清场由 replenish_position_orders 内部统一执行（FR-09），此处不重复取消
             best_price = pos.get("best_price", 0)
+            previous_sl_id = self.position_manager.get_algo_id(symbol, "sl")
             result = await self.trading_executor.replenish_position_orders(
                 symbol=symbol,
                 direction=direction,
@@ -4428,12 +4615,25 @@ class HRSStrategy(BaseStrategy):
                 target1_reached=target1_reached,
                 target2_reached=target2_reached,
                 best_price=best_price,
+                entry_mode=pos.get("entry_mode", "standard"),
+                exit_ratios=pos.get('exit_ratios'),
             )
+
+            current_sl_id = self.position_manager.get_algo_id(symbol, "sl")
+            if current_sl_id and current_sl_id != previous_sl_id:
+                tick_size, _ = await self.trading_executor._get_symbol_precision(symbol)
+                params = self.trading_executor._get_lv_rm_params(pos.get("entry_mode", "standard"))
+                pos["risk_stop_price"] = self.trading_executor._calc_sl_price(
+                    direction, entry_price, atr, tick_size, params
+                )
+                await self._save_state()
 
             # 价格已过TP2目标，标记target2_reached以激活移动止盈（FR-09: 适配 ReplenishResult.note）
             if getattr(result, "note", "") == "price_past_tp2":
                 pos["target2_reached"] = True
                 logger.info("价格已过TP2目标，已标记target2_reached，激活移动止盈", symbol=symbol)
+
+            return result
 
         except Exception as e:
             logger.warning("补充持仓保护订单失败", symbol=symbol, error=str(e))

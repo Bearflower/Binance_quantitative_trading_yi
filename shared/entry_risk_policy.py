@@ -6,7 +6,7 @@ are proven. This deliberately overcounts partial/complete fills alongside holdin
 """
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 import hashlib
 import json
 import os
@@ -41,7 +41,7 @@ class SizedEntry:
 def executable_exit_ratios(quantity, step, minimum, notional, prices, requested):
     """Keep a risk-reduced lot tradable with one TP and a viable remainder.
 
-    Never round the entry or an exit leg up. Below two exchange lots, deny entry.
+    Never round the entry or an exit leg up. A single viable lot exits at TP1.
     """
     ratios = tuple(number(r, zero=True) for r in requested)
     if len(ratios) != 2 or sum(ratios) >= 1 or sum(ratios) <= 0:
@@ -65,6 +65,10 @@ def executable_exit_ratios(quantity, step, minimum, notional, prices, requested)
             if floor(quantity * ratio) == first:
                 return (ratio, Decimal(0))
             ratio = ratio.next_plus()
+    # The smallest executable entry has no divisible remainder. Close the
+    # entire lot at TP1; the hard STOP still protects the entire lot.
+    if viable(quantity, prices[0]):
+        return (Decimal(1), Decimal(0))
     raise EntryDenied('take profit or remainder infeasible without rounding up')
 
 
@@ -98,7 +102,13 @@ def size_reduced_entry(signal, filters, multiplier, stop_offset, tp_ratios, *, t
     per_unit = distance + (price+adverse)*Decimal('.0005') + price*Decimal('.002')
     quantity = (q0*mult/step).to_integral_value(rounding=ROUND_DOWN)*step
     if quantity < minimum or quantity*price < notional:
-        raise EntryDenied('reduced quantity below exchange minimum')
+        # A small original signal cannot be halved into an exchange-valid
+        # order. Keep its minimum executable lot only when it does not exceed
+        # the original signal; the durable margin ceiling still applies.
+        required = max(minimum, (notional/price/step).to_integral_value(rounding=ROUND_UP)*step)
+        if required > q0:
+            raise EntryDenied('reduced quantity below exchange minimum')
+        quantity = required
     leg_prices = [min(price, stop)] * 2
     if tp_offset is not None:
         offset_tp = number(tp_offset, zero=True)
@@ -276,11 +286,31 @@ async def allocation_frozen(db, account=None):
     return True
 
 
-async def entry_allowed(strategy, strategy_id, *, adding=False):
+async def entry_allowed(strategy, strategy_id, *, adding=False, stage='submit', risk_decision=None, quantity=None):
     try:
         store = RiskPolicyStore(getattr(strategy,'db_manager',None) or getattr(strategy,'db',None))
         policy = await store.policy(strategy_id)
-        return policy['mode'] == 'reduced' and strategy_id == 'btc_eth_aggressive' and not adding
+        if policy['mode'] != 'reduced' or adding:
+            return False
+        if strategy_id == 'btc_eth_aggressive':
+            return True
+        if strategy_id != 'hrs' or stage not in ('analysis','submit'):
+            return False
+        if stage == 'analysis':
+            return True
+        if risk_decision is None or risk_decision.allowed is not True or quantity is None:
+            return False
+        try:
+            qty = number(quantity)
+            limit = number(risk_decision.risk_limit)
+            loss = number(risk_decision.worst_loss)
+            planned = number(risk_decision.quantity)
+            return (qty == planned and loss <= limit and policy['allow_add'] is False
+                    and risk_decision.policy_revision == policy['revision']
+                    and isinstance(risk_decision.client_order_id, str)
+                    and risk_decision.client_order_id.startswith('risk_'))
+        except EntryDenied:
+            return False
     except Exception:
         return False
 

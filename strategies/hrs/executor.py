@@ -4,6 +4,8 @@
 """
 from shared.entry_risk_policy import entry_allowed
 import asyncio
+import hashlib
+from .timeout_recovery import TimeoutRecovery
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
@@ -12,7 +14,7 @@ from typing import Dict, Any, Optional, List, Callable, Tuple
 import pandas as pd
 import structlog
 
-from shared.binance_api import BinanceClient
+from shared.binance_api import BinanceClient, BinanceAPIError
 from shared.database import DatabaseManager
 from shared.indicators import TechnicalIndicators
 from shared.notification import NotificationClient
@@ -136,6 +138,9 @@ class TradingExecutor:
         self.config = config
         self.binance_api = binance_api
         self.db = db
+        self.timeout_recovery = TimeoutRecovery(db, binance_api)
+        self._entry_identities = {}
+        self.persist_fill = None
         self.notification = notification
         self.position_manager = position_manager
         self._should_notify = should_notify_callback
@@ -283,6 +288,20 @@ class TradingExecutor:
             "max_holding_hours": self.max_holding_hours,
         }
 
+    @staticmethod
+    def _params_for_exit_ratios(params: Dict[str, Any], ratios) -> Dict[str, Any]:
+        if ratios is None or len(ratios) != 2:
+            raise ValueError('HRS exit geometry missing')
+        first, second = (Decimal(str(value)) for value in ratios)
+        if (not first.is_finite() or not second.is_finite() or first <= 0
+                or second < 0 or first + second > 1
+                or (second == 0 and first != 1)):
+            raise ValueError('HRS exit geometry invalid')
+        result = dict(params)
+        result['target1_close_percent'] = first
+        result['target2_close_percent'] = second
+        return result
+
     def _resolve_actual_fill(
         self, symbol: str, order, step_size, direction_label: str
     ) -> Optional[Tuple[Decimal, float, Optional[float]]]:
@@ -308,6 +327,23 @@ class TradingExecutor:
         actual_qty = self._format_quantity(Decimal(str(filled_qty)), step_size)
         return actual_qty, filled_qty, avg_price
 
+    async def _submit_reserved_hrs_entry(self, symbol, side, quantity, price, decision):
+        """Persist submitting before the only HRS new-risk exchange write."""
+        from shared.entry_risk_policy import EntryDenied, RiskPolicyStore
+        if decision is None or not decision.client_order_id:
+            raise EntryDenied('HRS durable reservation missing')
+        store = RiskPolicyStore(self.db)
+        async with store.submitting('hrs', decision.client_order_id) as row:
+            if (row['symbol'] != symbol or Decimal(str(row['quantity'])) != quantity
+                    or Decimal(str(row['price'])) != price
+                    or row['revision'] != decision.policy_revision):
+                raise EntryDenied('HRS reserved order geometry changed')
+            return await self.binance_api.place_order(
+                symbol=symbol, side=side, order_type=self.order_type_entry,
+                quantity=quantity, price=price, timeInForce='GTC',
+                client_order_id=decision.client_order_id,
+            )
+
     async def execute_short(
         self,
         symbol: str,
@@ -316,6 +352,7 @@ class TradingExecutor:
         quantity: Decimal,
         score: float,
         entry_mode: str = "standard",
+        risk_decision=None,
     ) -> OpenResult:
         """
         执行做空交易
@@ -334,7 +371,8 @@ class TradingExecutor:
         Returns:
             开仓执行结果（OpenResult）
         """
-        if not await entry_allowed(self, 'hrs', adding=False):
+        if not await entry_allowed(self, 'hrs', adding=False, stage='submit',
+                                   risk_decision=risk_decision, quantity=quantity):
             return _empty_fill_result(None)
         try:
             logger.info(
@@ -346,18 +384,14 @@ class TradingExecutor:
             )
             tick_size, step_size = await self._get_symbol_precision(symbol)
             quantity = self._format_quantity(quantity, step_size)
+            params = self._params_for_exit_ratios(
+                self._get_lv_rm_params(entry_mode), risk_decision.exit_ratios)
 
             await self._set_leverage(symbol)
 
             # 限价做空（使用当前价格作为最优限价）
-            order = await self.binance_api.place_order(
-                symbol=symbol,
-                side="SELL",
-                order_type=self.order_type_entry,
-                quantity=quantity,
-                price=Decimal(str(entry_price)),
-                timeInForce="GTC",
-            )
+            order = await self._submit_reserved_hrs_entry(
+                symbol, 'SELL', quantity, Decimal(str(entry_price)), risk_decision)
 
             if not order:
                 logger.error("做空下单失败", symbol=symbol)
@@ -365,22 +399,28 @@ class TradingExecutor:
 
             # 开仓延迟检查：15分钟内未完全成交则取消并反向平仓
             order = await self._check_order_fill_with_timeout(
-                symbol, order, "short", quantity, step_size
+                symbol, order, "short", quantity, step_size, atr, entry_mode, risk_decision.exit_ratios
             )
             if not order:
                 logger.warning("做空开仓超时，信号已放弃", symbol=symbol)
                 return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
             # B6a：解析终态订单真实成交事实；零成交不建档
+            self._entry_identities[symbol] = f"hrs:{symbol}:{order['orderId']}"
             resolved = self._resolve_actual_fill(symbol, order, step_size, "做空")
             if resolved is None:
                 return _empty_fill_result(order)
             actual_qty, filled_qty, avg_price = resolved
 
             # 根据入场模式获取止损止盈参数
-            params = self._get_lv_rm_params(entry_mode)
             # 计算止损价格（做空：取三者最大值），用于通知与日志
             stop_loss_price = self._calc_sl_price("short", entry_price, atr, tick_size, params)
+            if self.persist_fill:
+                try:
+                    await self.persist_fill(symbol, "short", avg_price or entry_price, filled_qty, atr,
+                                            entry_mode, stop_loss_price, self._entry_identities[symbol], risk_decision.exit_ratios)
+                except Exception as exc:
+                    logger.error("成交状态保存失败，继续建立仓位保护", symbol=symbol, error=str(exc))
 
             # FR-01: 统一入口创建 SL/TP1/TP2 三类保护单，收集失败角色
             failed_roles = await self._create_protection_orders(
@@ -424,6 +464,7 @@ class TradingExecutor:
         quantity: Decimal,
         score: float,
         entry_mode: str = "standard",
+        risk_decision=None,
     ) -> OpenResult:
         """
         执行做多交易
@@ -442,7 +483,8 @@ class TradingExecutor:
         Returns:
             开仓执行结果（OpenResult）
         """
-        if not await entry_allowed(self, 'hrs', adding=False):
+        if not await entry_allowed(self, 'hrs', adding=False, stage='submit',
+                                   risk_decision=risk_decision, quantity=quantity):
             return _empty_fill_result(None)
         try:
             logger.info(
@@ -454,18 +496,14 @@ class TradingExecutor:
             )
             tick_size, step_size = await self._get_symbol_precision(symbol)
             quantity = self._format_quantity(quantity, step_size)
+            params = self._params_for_exit_ratios(
+                self._get_lv_rm_params(entry_mode), risk_decision.exit_ratios)
 
             await self._set_leverage(symbol)
 
             # 限价做多（使用当前价格作为最优限价）
-            order = await self.binance_api.place_order(
-                symbol=symbol,
-                side="BUY",
-                order_type=self.order_type_entry,
-                quantity=quantity,
-                price=Decimal(str(entry_price)),
-                timeInForce="GTC",
-            )
+            order = await self._submit_reserved_hrs_entry(
+                symbol, 'BUY', quantity, Decimal(str(entry_price)), risk_decision)
 
             if not order:
                 logger.error("做多下单失败", symbol=symbol)
@@ -473,22 +511,28 @@ class TradingExecutor:
 
             # 开仓延迟检查：15分钟内未完全成交则取消并反向平仓
             order = await self._check_order_fill_with_timeout(
-                symbol, order, "long", quantity, step_size
+                symbol, order, "long", quantity, step_size, atr, entry_mode, risk_decision.exit_ratios
             )
             if not order:
                 logger.warning("做多开仓超时，信号已放弃", symbol=symbol)
                 return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
             # B6a：解析终态订单真实成交事实；零成交不建档
+            self._entry_identities[symbol] = f"hrs:{symbol}:{order['orderId']}"
             resolved = self._resolve_actual_fill(symbol, order, step_size, "做多")
             if resolved is None:
                 return _empty_fill_result(order)
             actual_qty, filled_qty, avg_price = resolved
 
             # 根据入场模式获取止损止盈参数
-            params = self._get_lv_rm_params(entry_mode)
             # 计算止损价格（做多：取三者最小值），用于通知与日志
             stop_loss_price = self._calc_sl_price("long", entry_price, atr, tick_size, params)
+            if self.persist_fill:
+                try:
+                    await self.persist_fill(symbol, "long", avg_price or entry_price, filled_qty, atr,
+                                            entry_mode, stop_loss_price, self._entry_identities[symbol], risk_decision.exit_ratios)
+                except Exception as exc:
+                    logger.error("成交状态保存失败，继续建立仓位保护", symbol=symbol, error=str(exc))
 
             # FR-01: 统一入口创建 SL/TP1/TP2 三类保护单，收集失败角色
             failed_roles = await self._create_protection_orders(
@@ -767,6 +811,7 @@ class TradingExecutor:
                 symbol=symbol, side=side, order_type=order_type,
                 stop_price=stop_price, limit_price=limit_price,
                 quantity=quantity, close_position=close_position,
+                client_id=self._protection_client_id(symbol, role),
                 reduce_only=reduce_only,
             )
         except Exception as e:
@@ -782,6 +827,13 @@ class TradingExecutor:
         self.position_manager.add_algo_id(symbol, role, algo_id)
         return {"success": True, "skipped": False, "algo_id": algo_id, "error": None}
 
+    def _protection_client_id(self, symbol, role):
+        pos = self.position_manager.get_position(symbol)
+        identity = pos.get("position_id") if pos else self._entry_identities.get(symbol)
+        if not identity:
+            raise ValueError("缺少保护单持仓标识")
+        return "hrp" + hashlib.sha256(f"{identity}:{role}".encode()).hexdigest()[:30]
+
     async def _submit_conditional_order(
         self,
         symbol: str,
@@ -791,6 +843,7 @@ class TradingExecutor:
         limit_price: Decimal,
         quantity: Decimal,
         close_position: bool,
+        client_id: str,
         reduce_only: bool = False,
     ) -> Tuple[Optional[Dict[str, Any]], Optional[int]]:
         """
@@ -811,7 +864,8 @@ class TradingExecutor:
         """
         # PM 账户约束：同方向只能有一个 closePosition 条件单（SL 已占用），
         # notional<20 的 TP 兜底改用 reduceOnly+quantity，避免 -4130 冲突
-        kwargs = {}
+        pm = self.binance_api.use_unified_account
+        kwargs = {"clientAlgoId" if pm else "client_order_id": client_id}
         if close_position:
             kwargs["closePosition"] = "true"
         if reduce_only:
@@ -825,7 +879,7 @@ class TradingExecutor:
             quantity=quantity,
             **kwargs,
         )
-        return order, (order.get("algoId") if order else None)
+        return order, ((order.get("algoId") or order.get("orderId")) if order else None)
 
     async def _create_protection_orders(
         self,
@@ -862,6 +916,8 @@ class TradingExecutor:
 
         # 2/3. 止盈单（TP1/TP2 共用子函数，消除重复）
         for target in ("tp1", "tp2"):
+            if Decimal(str(params[f"target{target[-1]}_close_percent"])) == 0:
+                continue
             if not await self._place_tp_order(
                 symbol, direction, target, entry_price, atr,
                 quantity, tick_size, step_size, params,
@@ -941,6 +997,8 @@ class TradingExecutor:
         Returns:
             是否下单成功
         """
+        if Decimal(str(params[f"target{target[-1]}_close_percent"])) == 0:
+            return True
         tp_price = self._calc_tp_price(direction, target, entry_price, atr, tick_size, params)
         tp_qty = self._calc_tp_qty(
             quantity, params[f"target{target[-1]}_close_percent"], step_size
@@ -976,6 +1034,7 @@ class TradingExecutor:
         direction: str,
         close_percent: float = 1.0,
         reason: str = "",
+        force_market: bool = False,
     ) -> CloseOutcome:
         """
         平仓（R04：返回结构化 CloseOutcome，杜绝「NEW 回执即成功」）
@@ -1006,12 +1065,15 @@ class TradingExecutor:
                 return CloseOutcome(
                     CLOSE_FILLED, Decimal("0"), Decimal("0"), True, "当前无持仓，无需减仓"
                 )
-            order_type, price = await self._resolve_close_order(symbol, tick_size)
+            if force_market:
+                order_type, price = "MARKET", None
+            else:
+                order_type, price = await self._resolve_close_order(symbol, tick_size)
             outcome = await close_remaining(
                 self.binance_api, symbol, target_qty,
                 side=self._get_close_side(direction),
                 order_type=order_type, price=price,
-                reduce_only=cfg.get("reduce_only", True),
+                reduce_only=True if force_market else cfg.get("reduce_only", True),
                 sync_before_reduce_only=cfg.get("sync_before_reduce_only", True),
                 step_size=str(step_size),
                 max_retries=cfg.get("max_retries", trading_cfg.get("retry_count", 3)),
@@ -1097,12 +1159,14 @@ class TradingExecutor:
         target1_reached: bool = False,
         target2_reached: bool = False,
         best_price: float = 0,
+        entry_mode: str = "standard",
+        exit_ratios=None,
     ) -> ReplenishResult:
         """
         补充持仓缺失的止损止盈条件单
 
         用于策略重启后恢复保护，以及TP1成交后确保TP2存在。
-        FR-02/FR-09: 入口先批量取消清场，随后 SL/TP1/TP2 全量重建；下单失败不再静默忽略。
+        按持仓入场模式补充缺失角色，保留仍有效的保护单。
 
         Args:
             symbol: 交易对
@@ -1122,10 +1186,69 @@ class TradingExecutor:
             return ReplenishResult(success=False, failed_roles=[], note="invalid_atr")
 
         tick_size, step_size = await self._get_symbol_precision(symbol)
-        params = self._get_lv_rm_params("standard")
-
-        # FR-07/FR-09: 补单前先批量取消清场，随后全量重建
-        await self._cancel_old_orders_for_replenish(symbol)
+        params = self._get_lv_rm_params(entry_mode)
+        if exit_ratios is not None:
+            params = self._params_for_exit_ratios(params, exit_ratios)
+        # 仅重建交易所已确认缺失的角色，保留有效止损。
+        pm = self.binance_api.use_unified_account
+        try:
+            orders = await (self.binance_api.get_open_algo_orders(symbol) if pm
+                            else self.binance_api.get_open_orders(symbol))
+            id_field, client_field = ("algoId", "clientAlgoId") if pm else ("orderId", "clientOrderId")
+            if not isinstance(orders, list) or any(not o.get(id_field) for o in orders):
+                raise ValueError("挂单列表缺少订单标识")
+            active = {str(o[id_field]) for o in orders}
+            known = {str(i) for i in self.position_manager.get_algo_ids(symbol)}
+            tags = {self._protection_client_id(symbol, role) for role in ("sl", "tp1", "tp2", "tp2_trailing")}
+            for order in orders:
+                if (order.get("side") == self._get_close_side(direction)
+                        and (order.get("orderType") or order.get("type")) in
+                        {"STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET", "TRAILING_STOP_MARKET"}
+                        and str(order[id_field]) not in known and order.get(client_field) not in tags):
+                    raise ValueError("存在归属未确认的旧保护单")
+            for role in ("sl", "tp1", "tp2", "tp2_trailing"):
+                client_id = self._protection_client_id(symbol, role)
+                matches = [o for o in orders if o.get(client_field) == client_id]
+                local = self.position_manager.get_algo_id(symbol, role)
+                reached = (role == "tp1" and target1_reached) or (role == "tp2" and target2_reached)
+                if reached and not matches and str(local) not in active:
+                    self.position_manager.remove_algo_id(symbol, role)
+                    continue
+                if len(matches) > 1:
+                    raise ValueError("保护角色存在重复订单")
+                if matches and str(matches[0][id_field]) != str(local):
+                    self.position_manager.add_algo_id(symbol, role, int(matches[0][id_field]))
+                elif local and str(local) not in active:
+                    if pm:
+                        previous = await self.binance_api.get_algo_order(algo_id=int(local))
+                        if not previous or str(previous.get("algoId")) != str(local):
+                            raise ValueError("无法确认保护单")
+                        if previous.get("algoStatus") not in {"CANCELED", "EXPIRED", "REJECTED"}:
+                            raise ValueError("保护单可能已触发，需先核对实际订单")
+                    else:
+                        previous = await self.binance_api.get_order(symbol, int(local))
+                        if not previous or str(previous.get("orderId")) != str(local):
+                            raise ValueError("无法确认普通账户保护单")
+                        if previous.get("status") == "NEW":
+                            continue
+                        if previous.get("status") not in {"CANCELED", "EXPIRED", "REJECTED"}:
+                            raise ValueError("普通账户保护单终态未知")
+                    self.position_manager.remove_algo_id(symbol, role)
+                elif not local and not matches:
+                    try:
+                        previous = await (self.binance_api.get_algo_order(client_algo_id=client_id) if pm
+                                          else self.binance_api.get_order_by_client_id(symbol, client_id))
+                    except BinanceAPIError as exc:
+                        if exc.code != -2013:
+                            raise
+                        previous = None
+                    if previous:
+                        status = previous.get("algoStatus") if pm else previous.get("status")
+                        if status not in {"CANCELED", "EXPIRED", "REJECTED"}:
+                            raise ValueError("角色订单可能已触发，需核对成交后再补单")
+        except Exception as exc:
+            logger.warning("保护单状态待确认", symbol=symbol, error=str(exc))
+            return ReplenishResult(False, [], note="protection_unconfirmed")
 
         # 依次补充 SL/TP1/TP2 并汇总结果
         return await self._replenish_all_roles(
@@ -1133,20 +1256,6 @@ class TradingExecutor:
             tick_size, step_size, params, target1_reached, target2_reached,
             best_price,
         )
-
-    async def _cancel_old_orders_for_replenish(self, symbol: str) -> None:
-        """
-        补单前批量取消旧条件单（子函数，供 replenish_position_orders 调用）
-
-        FR-07/FR-09: 取消失败仅告警不阻断，等待下一轮补单兜底恢复。
-        """
-        cancel_result = await self.position_manager.cancel_all_orders(symbol)
-        if cancel_result["failed"] > 0:
-            logger.warning(
-                "补单前取消旧条件单部分失败，仍继续重建",
-                symbol=symbol,
-                result=cancel_result,
-            )
 
     async def _replenish_all_roles(
         self,
@@ -1173,10 +1282,12 @@ class TradingExecutor:
         note = ""
 
         # 止损单（closePosition 平仓单）
-        sl_placed, sl_failed = await self._replenish_sl_role(
-            symbol, direction, entry_price, entry_quantity, atr, tick_size,
-            params, target1_reached, target2_reached,
-        )
+        sl_placed, sl_failed = (0, [])
+        if not self.position_manager.has_algo_id(symbol, "sl"):
+            sl_placed, sl_failed = await self._replenish_sl_role(
+                symbol, direction, entry_price, entry_quantity, atr, tick_size,
+                params, target1_reached, target2_reached,
+            )
         placed += sl_placed
         failed_roles.extend(sl_failed)
 
@@ -1185,6 +1296,8 @@ class TradingExecutor:
             ("tp1", target1_reached, False),
             ("tp2", target2_reached, True),
         ):
+            if self.position_manager.has_algo_id(symbol, target):
+                continue
             tp_placed, tp_failed, tp_note = await self._replenish_tp_role(
                 symbol, direction, target, entry_price, entry_quantity, atr,
                 tick_size, step_size, params, reached, check_price_past=check_past,
@@ -1294,6 +1407,8 @@ class TradingExecutor:
         - TP2 需检查当前价格是否已过目标价（price_past_tp2）
         - V2.7: TP2 已成交时（target_reached=True & target="tp2"），使用 best_price 下移动止盈单
         """
+        if Decimal(str(params[f"target{target[-1]}_close_percent"])) == 0:
+            return 0, [], None
         # V2.7: TP2 已成交 → 下移动止盈 STOP_LOSS 单保护剩余仓位
         if target_reached and target == "tp2" and best_price > 0 and atr > 0:
             return await self._place_trailing_stop_order(
@@ -1653,7 +1768,7 @@ class TradingExecutor:
         order: Dict[str, Any],
         direction: str,
         original_quantity: Decimal,
-        step_size: Decimal,
+        step_size: Decimal, atr=0.0, entry_mode="standard", exit_ratios=None,
     ) -> Optional[Dict[str, Any]]:
         """
         检查市价订单是否在超时时间内完全成交
@@ -1684,7 +1799,7 @@ class TradingExecutor:
         if orig_qty <= 0:
             orig_qty = float(original_quantity)
 
-        if executed_qty >= orig_qty * self.fill_tolerance:
+        if order.get("status") == "FILLED":
             # 已完全成交，直接返回
             logger.info("订单已完全成交", symbol=symbol, executed_qty=executed_qty, orig_qty=orig_qty)
             return order
@@ -1709,7 +1824,7 @@ class TradingExecutor:
                     executed_qty = float(order_status.get("executedQty", 0))
                     status = order_status.get("status", "")
 
-                    if status == "FILLED" or executed_qty >= orig_qty * self.fill_tolerance:
+                    if status == "FILLED":
                         logger.info("订单在超时前完全成交", symbol=symbol, executed_qty=executed_qty)
                         return order_status
 
@@ -1728,105 +1843,15 @@ class TradingExecutor:
                 logger.warning("查询订单状态失败", symbol=symbol, order_id=order_id, error=str(e))
 
         # 超时或订单异常，处理取消和反向平仓
-        await self._handle_entry_timeout(symbol, order_id, direction, executed_qty, step_size)
-        return None
+        return await self._handle_entry_timeout(symbol, order_id, direction, executed_qty, step_size, atr, entry_mode, exit_ratios)
 
     async def _handle_entry_timeout(
-        self,
-        symbol: str,
-        order_id: int,
-        direction: str,
-        executed_qty: float,
-        step_size: Decimal,
-    ) -> None:
-        """
-        处理开仓超时：取消未成交部分，若有部分成交则反向平仓
-
-        需求 4.3 节放弃条件 2：必须取消未成交部分，并将部分成交反向平仓恢复零敞口。
-
-        Args:
-            symbol: 交易对
-            order_id: 订单ID
-            direction: 方向
-            executed_qty: 已成交数量
-            step_size: 数量精度
-        """
-        logger.warning(
-            "开仓超时，执行取消和反向平仓",
-            symbol=symbol,
-            order_id=order_id,
-            direction=direction,
-            executed_qty=executed_qty,
-            timeout_minutes=self.entry_timeout_minutes,
-        )
-
-        # 1. 取消未成交部分
-        try:
-            cancel_result = await self.binance_api.cancel_order(symbol, order_id)
-            if cancel_result:
-                logger.info("未成交订单已取消", symbol=symbol, order_id=order_id)
-        except Exception as e:
-            # 订单可能已经成交或不存在，忽略错误
-            logger.debug("取消订单失败（可能已成交）", symbol=symbol, order_id=order_id, error=str(e))
-
-        # 2. 若有部分成交，立即反向平仓
-        if executed_qty > 0:
-            # 使用更大的容差阈值，确保足够覆盖滑点导致的价格变动
-            close_qty = self._format_quantity(Decimal(str(executed_qty)), step_size)
-            if float(close_qty) <= 0:
-                logger.warning(
-                    "部分成交数量过小，无法反向平仓",
-                    symbol=symbol,
-                    executed_qty=executed_qty,
-                )
-                return
-
-            close_side = self._get_close_side(direction)
-            try:
-                # 获取当前价格用于限价反向平仓
-                ticker = await self.binance_api.get_ticker(symbol)
-                reverse_price = float(ticker.get("lastPrice", 0))
-                if reverse_price <= 0:
-                    close_order = await self.binance_api.place_order(
-                        symbol=symbol,
-                        side=close_side,
-                        order_type="MARKET",
-                        quantity=close_qty,
-                    )
-                else:
-                    close_order = await self.binance_api.place_order(
-                        symbol=symbol,
-                        side=close_side,
-                        order_type=self.order_type_close,
-                        quantity=close_qty,
-                        price=Decimal(str(reverse_price)),
-                        timeInForce="GTC",
-                    )
-                if close_order:
-                    logger.warning(
-                        "开仓超时，部分成交已反向平仓",
-                        symbol=symbol,
-                        direction=direction,
-                        executed_qty=executed_qty,
-                        close_qty=float(close_qty),
-                    )
-                else:
-                    logger.error(
-                        "反向平仓下单失败，存在未平仓风险",
-                        symbol=symbol,
-                        direction=direction,
-                        executed_qty=executed_qty,
-                    )
-            except Exception as e:
-                logger.error(
-                    "反向平仓异常，存在未平仓风险",
-                    symbol=symbol,
-                    direction=direction,
-                    executed_qty=executed_qty,
-                    error=str(e),
-                )
-        else:
-            logger.info("无部分成交，无需反向平仓", symbol=symbol)
+        self, symbol: str, order_id: int, direction: str,
+        executed_qty: float, step_size: Decimal, atr=0.0, entry_mode="standard", exit_ratios=None,
+    ) -> Optional[Dict[str, Any]]:
+        """撤单后确认最终成交，再用只减仓流程清理实际持仓。"""
+        key, data = await self.timeout_recovery.begin(symbol, order_id, direction, executed_qty, atr, entry_mode, exit_ratios)
+        return await self.timeout_recovery.reconcile(key, data)
 
     async def _get_symbol_precision(self, symbol: str) -> tuple:
         """获取交易对精度"""
