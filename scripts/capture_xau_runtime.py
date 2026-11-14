@@ -14,9 +14,14 @@ def capture(output):
     for item in json.loads(raw.stdout):
         state = item["State"]
         environment = dict(value.split("=", 1) for value in item["Config"].get("Env", []) if "=" in value)
+        version_result = subprocess.run(
+            ["docker", "exec", item["Name"].lstrip("/"), "cat", "/app/VERSION"],
+            check=False, capture_output=True, text=True, timeout=15,
+        )
+        version = dict(line.split("=", 1) for line in version_result.stdout.splitlines() if "=" in line)
         containers[item["Name"].lstrip("/")] = dict(
             id=item["Id"], started_at=state["StartedAt"], image=item["Image"],
-            git_sha=environment.get("GIT_SHA", (item["Config"].get("Labels") or {}).get("org.opencontainers.image.revision")),
+            git_sha=version.get("GIT_SHA") or environment.get("GIT_SHA") or (item["Config"].get("Labels") or {}).get("org.opencontainers.image.revision"),
             status=state["Status"], health=state.get("Health", {}).get("Status"),
             restart_count=item["RestartCount"],
         )
