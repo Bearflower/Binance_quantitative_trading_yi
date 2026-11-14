@@ -70,7 +70,7 @@ def empty_history_db():
         # universe 历史查询的 SQL 子串（observed_at 列 data_type 探测）
         "FROM information_schema.columns": None,  # 让探测返回 None → 降级 naive
         # universe 历史查询 fetch_all（空结果）
-        "FROM public.ai_tuner_universe_snapshots": [],
+        "FROM public.ai_tuner_universe_scan_runs": [],
     }
     return FakeDB(responses=responses)
 
@@ -82,7 +82,7 @@ def populated_history_db(as_of):
     observed_2 = as_of - timedelta(days=10)
     responses = {
         "FROM information_schema.columns": None,  # 探测走 naive 降级
-        "FROM public.ai_tuner_universe_snapshots": [
+        "FROM public.ai_tuner_universe_scan_runs": [
             {
                 "observed_at": observed_1.replace(tzinfo=None),
                 "symbol": "BTCUSDT",

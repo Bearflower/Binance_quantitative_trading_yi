@@ -217,7 +217,7 @@ async def mark_open_orders_canceled(db, strategy_name, symbol):
         return ""
 
 
-async def get_open_orders(db, strategy_name=None):
+async def get_open_orders(db, strategy_name=None, *, account_id=None):
     """
     查询所有或指定策略的 OPEN 状态条件单
 
@@ -228,6 +228,12 @@ async def get_open_orders(db, strategy_name=None):
     Returns:
         list[dict]: 条件单记录列表
     """
+    if account_id is not None:
+        return await db.fetch_all(
+            "SELECT * FROM condition_orders WHERE status='OPEN' AND account_id=$1 "
+            "AND ($2::text IS NULL OR strategy_name=$2) ORDER BY created_at",
+            account_id, strategy_name,
+        )
     if strategy_name:
         return await db.fetch_all(
             "SELECT * FROM condition_orders WHERE status='OPEN' AND strategy_name=$1 ORDER BY created_at",

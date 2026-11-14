@@ -60,3 +60,30 @@ async def test_entry_fill_mismatch_never_updates_database():
     client.get_user_trades.return_value=t
     await TradeLogger(db,'Dashboard采集器',account_id='test-account').reconcile_entry_fills(client)
     db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_backfill_continues_after_page_of_open_orders_and_targets_old_records():
+    from unittest.mock import AsyncMock
+    from shared.trade_logger import TradeLogger
+
+    record, order, trades = evidence()
+    record["id"] = 101
+    db, client = AsyncMock(), AsyncMock()
+    db.fetch_all.side_effect = [
+        [dict(record, id=i) for i in range(1, 101)], [record], [record]
+    ]
+    logger = TradeLogger(db, "test", account_id="pm")
+    client.get_order.return_value = {"status": "NEW"}
+    await logger.reconcile_entry_fills(client)
+    client.get_user_trades.assert_not_awaited()
+    client.get_order.return_value = order
+    client.get_user_trades.return_value = trades
+    await logger.reconcile_entry_fills(client)
+    assert db.fetch_all.await_args.args[-1] == 100
+    db.execute.assert_awaited_once()
+    preview = await logger.reconcile_entry_fills(client, record_ids=[101], dry_run=True)
+    query, account, ids = db.fetch_all.await_args.args
+    assert "executed_at" not in query and account == "pm" and ids == [101]
+    assert preview[0]["quantity"] == Decimal(39)
+    db.execute.assert_awaited_once()

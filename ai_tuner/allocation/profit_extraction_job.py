@@ -90,8 +90,6 @@ class ProfitExtractionJob:
 
             # 4. 创新高，更新持久化 ATH
             old_ath = self._ath_balance
-            self._ath_balance = total_equity
-            await self._save_ath_balance(total_equity)
 
             # 5. 计算盈利
             initial_capital = Decimal(str(self.extraction_cfg.get("initial_capital_usdt", 500)))
@@ -117,10 +115,9 @@ class ProfitExtractionJob:
             if self._last_notified_week == current_week:
                 return {"action": "skip", "reason": "already_notified_this_week"}
 
-            self._last_notified_week = current_week
 
             # 8. 发送飞书通知
-            await self._send_notification(
+            delivered = await self._send_notification(
                 total_equity=total_equity,
                 initial_capital=initial_capital,
                 profit=profit,
@@ -129,6 +126,11 @@ class ProfitExtractionJob:
                 old_ath=old_ath,
             )
 
+            if not delivered:
+                return {"action": "error", "reason": "notification_undelivered"}
+            self._last_notified_week = current_week
+            self._ath_balance = total_equity
+            await self._save_ath_balance(total_equity)
             logger.info(
                 "利润提取提醒已发送",
                 equity=float(total_equity),
@@ -215,7 +217,7 @@ class ProfitExtractionJob:
         extract_amount: Decimal,
         extract_ratio: Decimal,
         old_ath: Decimal,
-    ) -> None:
+    ) -> bool:
         """发送利润提取通知"""
         message = (
             f"💰 利润提取提醒\n"
@@ -227,10 +229,11 @@ class ProfitExtractionJob:
             f"上次最高：{float(old_ath):.2f} U → 当前：{float(total_equity):.2f} U"
         )
         try:
-            await self.notification_client.send(
+            return await self.notification_client.send(
                 message=message,
                 level="info",
-                title="利润提取提醒",
+                project="tuner",
             )
         except Exception as e:
             logger.error("发送利润提取通知失败", error=str(e))
+            return False

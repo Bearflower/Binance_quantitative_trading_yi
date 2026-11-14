@@ -3,6 +3,7 @@
 在两次周度调优之间，检查各策略是否出现异常
 """
 
+import os
 from datetime import datetime, timedelta
 from typing import Any, Dict, List
 from zoneinfo import ZoneInfo
@@ -57,6 +58,8 @@ class DailyHealthCheck:
                 anomalies = self._detect_anomalies(strategy_id, report)
                 if anomalies:
                     await self._notify_anomalies(strategy_id, anomalies)
+                elif report["realized_trades"] < self.anomaly_cfg.get("min_trades_for_anomaly", 5):
+                    logger.info("已核实平仓样本不足", strategy_id=strategy_id, count=report["realized_trades"])
                 else:
                     logger.info("健康检查通过", strategy_id=strategy_id)
             except Exception as e:
@@ -86,8 +89,9 @@ class DailyHealthCheck:
                 COALESCE(SUM(realized_pnl), 0) as total_pnl
             FROM trading.trade_records
             WHERE strategy = $1 AND executed_at >= $2 AND executed_at < $3
+              AND account_id = $4 AND pnl_source = 'exchange_fill' AND order_type <> 'PNL_SUMMARY'
         """
-        row = await self.db_manager.fetch_one(query, strategy_id, since, until)
+        row = await self.db_manager.fetch_one(query, strategy_id, since, until, os.getenv("TRADE_ACCOUNT_ID", "default"))
         row = row or {}
 
         # 按成交时间和主键倒序，统计最近一笔盈利之后的当前连亏。
@@ -101,12 +105,13 @@ class DailyHealthCheck:
                                  ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) as wins_seen
                 FROM trading.trade_records
                 WHERE strategy = $1 AND executed_at >= $2 AND executed_at < $3
+              AND account_id = $4 AND pnl_source = 'exchange_fill' AND order_type <> 'PNL_SUMMARY'
                   AND realized_pnl IS NOT NULL
             ) sub
             WHERE wins_seen = 0 AND realized_pnl <= 0
         """
         row_consecutive = await self.db_manager.fetch_one(
-            query_consecutive, strategy_id, since, until
+            query_consecutive, strategy_id, since, until, os.getenv("TRADE_ACCOUNT_ID", "default")
         )
         row_consecutive = row_consecutive or {}
 

@@ -97,6 +97,7 @@ async def _run(args) -> None:
             logger.info("HRS可支持历史快照回填完成", **summary.__dict__)
         else:
             consecutive_failures = 0
+            delivered = False
             schedule_minute = int(config.get("schedule_minute", 20))
             notify_after = int(config.get("notify_after_consecutive_failures", 3))
             while True:
@@ -113,9 +114,11 @@ async def _run(args) -> None:
                     missing=summary.missing, failed=summary.failed,
                     consecutive_failures=consecutive_failures,
                 )
-                if consecutive_failures == notify_after:
+                if not consecutive_failures:
+                    delivered = False
+                if consecutive_failures >= notify_after and not delivered:
                     try:
-                        await notifier.send(
+                        delivered = await notifier.send(
                             f"AI Tuner HRS 外部快照已连续 {notify_after} 个时间桶全部采集失败",
                             level="error", project="tuner",
                         )

@@ -195,6 +195,7 @@ class TestTuningOverridesHallucination(unittest.TestCase):
         """.active 指向不存在的文件 → 降级为基础配置"""
         with open(os.path.join(self.override_dir, ".active"), "w") as f:
             f.write("V99999999\n")
+        self.addCleanup(os.remove, os.path.join(self.override_dir, ".active"))
 
         config = load_strategy_config(self.strategy_dir)
         self.assertEqual(config["scoring"]["min_score"], 75)  # 基础值

@@ -548,15 +548,22 @@ async def _collect_pair_rows(
 ) -> list[SymbolCoverage]:
     """按切片裁剪窗口后逐个 (symbol, interval) 计算覆盖"""
     rows: list[SymbolCoverage] = []
+    periods = {}
     for sl, symbol, interval in _iter_pairs(resolution):
         slice_start = max(audit_start, _as_utc(sl.valid_from))
         slice_end = min(audit_end, _as_utc(sl.valid_to))
         if slice_start >= slice_end:
             continue
-        rows.append(await _single_pair_coverage(
-            db, symbol, interval,
-            window_start=slice_start, window_end=slice_end,
-        ))
+        spans = periods.setdefault((symbol, interval), [])
+        if spans and spans[-1][1] == slice_start:
+            spans[-1] = (spans[-1][0], slice_end)
+        else:
+            spans.append((slice_start, slice_end))
+    for (symbol, interval), spans in periods.items():
+        for start, end in spans:
+            rows.append(await _single_pair_coverage(
+                db, symbol, interval, window_start=start, window_end=end,
+            ))
     return rows
 
 

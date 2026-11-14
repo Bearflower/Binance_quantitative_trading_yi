@@ -567,7 +567,8 @@ async def test_same_symbol_across_slices_is_aggregated(monkeypatch):
         return resolution
 
     async def fake_pair(db, symbol, interval, window_start, window_end):
-        return kc.SymbolCoverage(symbol, interval, expected=24, actual=23)
+        assert (window_start, window_end) == (start, end)
+        return kc.SymbolCoverage(symbol, interval, expected=48, actual=46)
 
     monkeypatch.setattr("ai_tuner.readiness.universe.UniverseResolver.resolve", fake_resolve)
     monkeypatch.setattr(kc, "_single_pair_coverage", fake_pair)

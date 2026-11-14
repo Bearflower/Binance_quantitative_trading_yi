@@ -50,7 +50,7 @@ def _digest(payload):
 @pytest.mark.skipif(not os.getenv(DSN_ENV) or os.getenv(ACK_ENV) != "disposable", reason="dedicated disposable local PostgreSQL not explicitly configured")
 def test_actual_postgres_sql_is_atomic_idempotent_and_conflict_closed():
     parsed = urlparse(os.environ[DSN_ENV])
-    if parsed.scheme not in ("postgresql", "postgres") or parsed.hostname not in ("127.0.0.1", "localhost") or not parsed.path.endswith("_test"):
+    if parsed.scheme not in ("postgresql", "postgres") or parsed.hostname not in ("127.0.0.1", "localhost") or parsed.query or not parsed.path.endswith("_test"):
         pytest.fail("funding schedule SQL test requires localhost and a database name ending _test")
 
     async def exercise():

@@ -15,7 +15,8 @@ class SqliteDb:
         self.conn.execute("ATTACH DATABASE ':memory:' AS trading")
         self.conn.execute(
             "CREATE TABLE trading.trade_records "
-            "(id INTEGER PRIMARY KEY, strategy TEXT, executed_at TIMESTAMP, realized_pnl REAL)"
+            "(id INTEGER PRIMARY KEY, strategy TEXT, executed_at TIMESTAMP, realized_pnl REAL, "
+            "account_id TEXT DEFAULT 'default', pnl_source TEXT DEFAULT 'exchange_fill', order_type TEXT DEFAULT 'EXCHANGE_FILL')"
         )
 
     def add(self, executed_at, realized_pnl):
@@ -26,7 +27,7 @@ class SqliteDb:
 
     async def fetch_one(self, query, *args):
         row = self.conn.execute(
-            query.replace("$1", "?").replace("$2", "?").replace("$3", "?"), args
+            query.replace("$1", "?").replace("$2", "?").replace("$3", "?").replace("$4", "?"), args
         ).fetchone()
         return dict(row) if row else None
 

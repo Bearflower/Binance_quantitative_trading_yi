@@ -203,7 +203,7 @@ async def fetch_income_sharded(cfg: HRSReconcileConfig) -> IncomeFetchResult:
 
         cursor = chunk_start
         chunk_has_truncation_risk = False
-        while cursor < chunk_end:
+        while cursor <= chunk_end:
             batch = await client.get_income_history(
                 start_time=cursor,
                 end_time=chunk_end,
@@ -229,7 +229,7 @@ async def fetch_income_sharded(cfg: HRSReconcileConfig) -> IncomeFetchResult:
                     last_time=last_time,
                 )
                 break
-            cursor = last_time + 1
+            cursor = last_time  # 重读边界毫秒，无法推进时标为截断
 
         if chunk_has_truncation_risk:
             truncated_chunks.append(chunk_label)
@@ -259,17 +259,21 @@ async def fetch_income_sharded(cfg: HRSReconcileConfig) -> IncomeFetchResult:
 
 def _dedupe_income(records: List[Dict]) -> List[Dict]:
     """对分片边界可能重复的 income 记录去重（symbol + time + income 唯一）"""
-    seen: Set[Tuple] = set()
+    seen = {}
     result: List[Dict] = []
     for rec in records:
-        key = (
-            rec.get("symbol", ""),
-            int(rec.get("time") or 0),
-            str(rec.get("income", "0")),
-        )
-        if key not in seen:
-            seen.add(key)
-            result.append(rec)
+        signature = (rec.get("symbol", ""), int(rec.get("time") or 0),
+                     str(rec.get("income", "0")), str(rec.get("tradeId") or ""))
+        if rec.get("tranId") is not None:
+            key = ("exchange", str(rec["tranId"]), rec.get("incomeType"), rec.get("asset"))
+        else:
+            key = ("legacy", *signature)
+        if key in seen:
+            if seen[key] != signature:
+                raise ValueError("同一收入流水身份对应冲突金额或交易")
+            continue
+        seen[key] = signature
+        result.append(rec)
     return result
 
 

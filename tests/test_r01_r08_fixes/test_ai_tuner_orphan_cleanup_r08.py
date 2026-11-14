@@ -138,7 +138,7 @@ async def test_r08_ac3_unknown_positions_keeps_stop_loss():
 # R08-AC4：超时分支不回归
 # ============================================================
 
-async def test_r08_ac4_stale_branch_unchanged():
+async def test_r08_ac4_stale_state_with_live_record_keeps_protection():
     job, db, binance, notification = _make_job(stale_hours_threshold=2.0)
     stale_updated = datetime.utcnow() - timedelta(hours=5)
     states = {"btc_eth": {"symbols": {"BTCUSDT"}, "updated_at": stale_updated}}
@@ -154,7 +154,7 @@ async def test_r08_ac4_stale_branch_unchanged():
             patch.object(job, "_cancel_order", cancel_mock):
         await job.execute()
 
-    cancel_mock.assert_awaited_once()
+    cancel_mock.assert_not_awaited()
 
 
 # ============================================================
@@ -184,8 +184,8 @@ async def test_r08_ac5_scenario_b_unchanged():
 # 开关关闭时回退既有行为（保证可配置、灰度）
 # ============================================================
 
-async def test_require_exchange_confirmation_disabled_restores_legacy_behavior():
-    """require_exchange_confirmation=False 时，无状态分支回退为直接判孤儿。"""
+async def test_legacy_flag_cannot_cancel_live_position():
+    """即使旧开关关闭也不能撤销持仓保护。"""
     job, db, binance, notification = _make_job(require_exchange_confirmation=False)
     patches = _patch_execute(
         job,
@@ -199,4 +199,42 @@ async def test_require_exchange_confirmation_disabled_restores_legacy_behavior()
             patch.object(job, "_cancel_order", cancel_mock):
         await job.execute()
 
-    cancel_mock.assert_awaited_once()
+    cancel_mock.assert_not_awaited()
+
+
+async def test_stale_state_exchange_unknown_keeps_protection():
+    from datetime import datetime, timedelta
+    job, *_ = _make_job()
+    patches = _patch_execute(job, orders=[_stop_loss_order()], positions=None,
+                             states={"btc_eth": {"symbols": {"BTCUSDT"},
+                                                 "updated_at": datetime.utcnow() - timedelta(hours=4)}},
+                             has_position=True)
+    with patches[0], patches[1], patches[2], patches[3], patches[4], patch.object(job, "_cancel_order", AsyncMock()) as cancel:
+        await job.execute()
+    cancel.assert_not_awaited()
+
+
+async def test_cancel_rechecks_pm_inventory_and_rejects_other_account():
+    job, db, exchange, _ = _make_job()
+    exchange.use_unified_account = True
+    exchange.get_position = AsyncMock(return_value=[])
+    exchange.get_um_account_positions = AsyncMock(return_value=[{"symbol": "BTCUSDT", "positionAmt": "0.000001"}])
+    exchange.cancel_algo_order = AsyncMock()
+    row = dict(_stop_loss_order(), id=5, account_id="other-account")
+    assert not (await job._cancel_order(row))[0]
+    exchange.get_position.assert_not_awaited()
+    row["account_id"] = job.account_id
+    assert not (await job._cancel_order(row))[0]
+    exchange.get_um_account_positions.assert_awaited_once()
+    exchange.cancel_algo_order.assert_not_awaited()
+
+
+async def test_unknown_algo_terminal_keeps_local_row_open():
+    job, db, exchange, _ = _make_job()
+    job._get_exchange_positions = AsyncMock(return_value=set())
+    exchange.cancel_algo_order = AsyncMock()
+    exchange.get_algo_order = AsyncMock(return_value={"symbol": "BTCUSDT", "algoId": 111, "algoStatus": "FINISHED"})
+    db.execute = AsyncMock()
+    row = dict(_stop_loss_order(), id=5, account_id=job.account_id)
+    assert not (await job._cancel_order(row))[0]
+    db.execute.assert_not_awaited()

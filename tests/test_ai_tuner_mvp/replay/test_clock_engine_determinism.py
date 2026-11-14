@@ -523,7 +523,7 @@ def test_pre_window_external_snapshots_are_context_only(tmp_path):
 
     assert adapter.available_at_prepare == snapshot_times
     assert adapter.seen_snapshots == [snapshot_times[1]]
-    assert [point.ts for point in result.equity_curve] == [start, snapshot_times[1], as_of]
+    assert [point.ts for point in result.equity_curve] == [start, as_of]
     assert result.closed_trades == ()
     assert [event["type"] for event in result.audit_events] == ["run_start"]
 

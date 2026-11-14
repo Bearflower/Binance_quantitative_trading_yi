@@ -9,7 +9,7 @@ character varying」导致的
 本文件在真实 PostgreSQL 上执行仓储 SQL，专门守护上述参数类型推定回归。
 默认跳过，需显式提供专用测试库连接串后运行：
 
-    AI_TUNER_SNAPSHOT_TEST_DSN=postgresql://user:pass@127.0.0.1:5432/db \
+    AI_TUNER_SNAPSHOT_TEST_DSN=postgresql://user:pass@127.0.0.1:5432/snapshot_test AI_TUNER_SNAPSHOT_TEST_DB_ACK=disposable \
         python3 -m pytest tests/test_ai_tuner_mvp/test_snapshot_repository_postgres.py -q
 
 测试会在该库中重建并最终删除 public.ai_tuner_universe_* 两张表，
@@ -17,6 +17,8 @@ character varying」导致的
 """
 
 import os
+from contextlib import asynccontextmanager
+from urllib.parse import urlsplit
 from datetime import datetime, timedelta, timezone
 
 import asyncpg
@@ -90,6 +92,11 @@ class _PoolDatabase:
 
 @pytest.fixture
 async def repository_and_pool():
+    parsed = urlsplit(os.environ[TEST_DSN_ENV])
+    if (parsed.scheme not in {"postgresql", "postgres"} or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}
+            or not parsed.path.endswith("_test") or parsed.query
+            or os.getenv("AI_TUNER_SNAPSHOT_TEST_DB_ACK") != "disposable"):
+        pytest.fail("snapshot tests require a disposable local *_test database and explicit ACK")
     pool = await asyncpg.create_pool(dsn=os.environ[TEST_DSN_ENV], min_size=1, max_size=2)
     try:
         async with pool.acquire() as conn:
@@ -198,4 +205,169 @@ async def test_latest_universe_reads_back_written_snapshot(repository_and_pool):
         config_hash="e" * 64,
     )
 
-    assert await repository.latest_universe("hrs", AS_OF) == {"BTCUSDT", "ETHUSDT"}
+    with pytest.raises(ValueError, match="missing or incomplete"):
+        await repository.latest_universe("hrs", AS_OF)
+    assert await repository.latest_universe("hrs", datetime.now(timezone.utc)) == {"BTCUSDT", "ETHUSDT"}
+
+
+@asynccontextmanager
+async def _isolated_connection(pool):
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            yield conn
+        finally:
+            await tx.rollback()
+
+
+async def test_real_auditor_prepares_hour_buckets(repository_and_pool):
+    """Use real PostgreSQL overload resolution and a known one-day denominator."""
+    from pathlib import Path
+    from ai_tuner.readiness.auditor import ReadinessAuditor
+
+    repository, pool = repository_and_pool
+    ddl = (Path(__file__).resolve().parents[2] / "database/postgres/init-scripts/13-ai-tuner-market-snapshots.sql").read_text()
+    table_sql = next(stmt for stmt in ddl.split(";") if "CREATE TABLE IF NOT EXISTS public.ai_tuner_market_snapshots" in stmt)
+    start = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=1)
+    await repository.store_universe("hrs", start, ["BTCUSDT"], [], "audit-run", "a" * 64)
+    async with _isolated_connection(pool) as conn:
+        await conn.execute(table_sql)
+        class Query:
+            fetch_one = conn.fetchrow
+
+        auditor = ReadinessAuditor.__new__(ReadinessAuditor)
+        auditor.db = Query()
+        result = await auditor._query_external_snapshot("hrs", start, end)
+        assert result.expected == 24
+        assert result.complete == 0
+        assert result.gaps == []
+
+        # Partial or wrong-identity members cannot shrink the denominator and
+        # turn a genuinely incomplete run into a qualified universe.
+        await conn.execute("UPDATE public.ai_tuner_universe_scan_runs SET symbol_count = 2")
+        partial = await auditor._query_external_snapshot("hrs", start, end)
+        assert partial.coverage == 0 and partial.gaps == ["historical_universe_missing_members"]
+        await conn.execute("UPDATE public.ai_tuner_universe_scan_runs SET symbol_count = 1")
+        await conn.execute(
+            """INSERT INTO public.ai_tuner_market_snapshots (
+                   strategy_id, symbol, observed_at, bucket_start, open_interest_usd,
+                   funding_rate, market_cap_usd, oi_market_cap_ratio, sentiment_score,
+                   sentiment_formula_version, oi_source, funding_source, market_cap_source,
+                   source_observed_at, collected_at, payload_hash, raw_payload)
+               VALUES ('hrs','BTCUSDT',$1,$1,10,0,100,0.1,0,'funding_annual_pct_v1',
+                       'binance','binance','coingecko',$1,$2,repeat('a',64),'{}')""",
+            start, start + timedelta(hours=1),
+        )
+        late = await auditor._query_external_snapshot("hrs", start, end)
+        assert late.expected == 24 and late.complete == 0
+        await conn.execute(
+            "UPDATE public.ai_tuner_market_snapshots SET collected_at = $1",
+            start + timedelta(minutes=59),
+        )
+        timely = await auditor._query_external_snapshot("hrs", start, end)
+        assert timely.complete == 1
+
+
+async def test_closed_trade_count_requires_unambiguous_order_evidence(repository_and_pool, monkeypatch):
+    from pathlib import Path
+    from ai_tuner.readiness.auditor import ReadinessAuditor
+
+    _, pool = repository_and_pool
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", "default")
+    ddl = (Path(__file__).resolve().parents[2] / "database/postgres/init-scripts/03-create-trade-records.sql").read_text()
+    table_sql = next(stmt for stmt in ddl.split(";") if "CREATE TABLE IF NOT EXISTS trading.trade_records" in stmt)
+    async with _isolated_connection(pool) as conn:
+        await conn.execute("CREATE SCHEMA IF NOT EXISTS trading")
+        await conn.execute(table_sql)
+        await conn.execute(
+            """INSERT INTO trading.trade_records (
+                   account_id, strategy, symbol, order_id, side, order_type, quantity,
+                   price, status, executed_at, realized_pnl, pnl_source)
+               SELECT 'default','hrs','BTCUSDT',proof.id,'SELL','MARKET',1,10,
+                      'FILLED',TIMESTAMP '2026-10-26 08:00:00',1,proof.source
+               FROM (VALUES ('dup','exchange_fill'),('dup','exchange_fill'),
+                            ('one','exchange_fill'),('entry',NULL),('  ','exchange_fill'))
+                    AS proof(id,source)"""
+        )
+
+        class Query:
+            fetch_one = conn.fetchrow
+
+        auditor = ReadinessAuditor.__new__(ReadinessAuditor)
+        auditor.db = Query()
+        start = datetime(2026, 10, 26, tzinfo=timezone.utc)
+        assert await auditor._query_trade_records("hrs", start, start + timedelta(hours=1)) == (1, 1, 0)
+
+
+async def test_aggressive_signal_requires_matching_account_fill(repository_and_pool):
+    from ai_tuner.monitor.reduced_trial import _AGGRESSIVE_SIGNALS_SQL
+
+    _, pool = repository_and_pool
+    async with _isolated_connection(pool) as conn:
+        await conn.execute("""
+            CREATE SCHEMA btc_eth_aggressive;
+            CREATE SCHEMA trading;
+            CREATE TABLE btc_eth_aggressive.trade_signals
+                (symbol text, direction text, metadata jsonb, status text, created_at timestamp);
+            CREATE TABLE trading.trade_records
+                (symbol text, strategy text, account_id text, order_id text, order_type text,
+                 status text, quantity numeric, price numeric, side text);
+            CREATE TABLE trading.execution_fact_fill
+                (account_id text, symbol text, order_id bigint, side text, qty numeric, trade_time_utc timestamptz);
+            INSERT INTO btc_eth_aggressive.trade_signals
+            SELECT 'BTCUSDT', 'LONG', jsonb_build_object('entry_order_id', id), 'executed',
+                   timestamp '2026-11-01' FROM generate_series(1,6) AS id;
+            INSERT INTO trading.trade_records VALUES
+                ('BTCUSDT','btc_eth_aggressive','mine','1','LIMIT','FILLED',1,100,'BUY'),
+                ('BTCUSDT','btc_eth_aggressive','other','2','MARKET','FILLED',1,100,'BUY'),
+                ('ETHUSDT','btc_eth_aggressive','mine','3','MARKET','FILLED',1,100,'BUY'),
+                ('BTCUSDT','btc_eth_aggressive','mine','4','MARKET','FILLED',1,100,'BUY'),
+                ('BTCUSDT','btc_eth_aggressive','mine','5','MARKET','FILLED',1,100,'BUY'),
+                ('BTCUSDT','btc_eth_aggressive','mine','6','MARKET','FILLED',1,100,'BUY');
+            INSERT INTO trading.execution_fact_fill VALUES
+                ('mine','BTCUSDT',1,'BUY',1,'2026-11-01 00:00+00'),
+                ('mine','BTCUSDT',2,'BUY',1,'2026-11-01 00:00+00'),
+                ('mine','BTCUSDT',3,'BUY',1,'2026-11-01 00:00+00'),
+                ('mine','BTCUSDT',4,'SELL',1,'2026-11-01 00:00+00'),
+                ('mine','BTCUSDT',5,'BUY',1,'2026-11-03 00:00+00')
+        """)
+        counts = await conn.fetchrow(
+            _AGGRESSIVE_SIGNALS_SQL, datetime(2026, 11, 1), datetime(2026, 11, 2), "mine"
+        )
+        assert counts["executed_signals"] == 6
+        assert counts["executed_without_order_id"] == 5
+
+
+async def test_weekly_claim_blocks_duplicate_and_interrupted_publication(repository_and_pool):
+    from ai_tuner.memory.db_handler import MemoryDBHandler
+
+    _, pool = repository_and_pool
+    async with _isolated_connection(pool) as conn:
+        class LocalDB:
+            execute_ddl = conn.execute
+            execute = conn.execute
+            fetch_one = conn.fetchrow
+
+        await conn.execute("CREATE SCHEMA weekly_claim_test")
+        memory = MemoryDBHandler(LocalDB())
+        await memory.ensure_table_exists("weekly_claim_test")
+        week = datetime(2026, 11, 9).date()
+        assert await memory.claim_week("grid", week, False)
+        assert not await memory.claim_week("grid", week, True)
+        await memory.finish_week("grid", week, "error")
+        assert await memory.claim_week("grid", week, False)
+        await memory.finish_week("grid", week, "success")
+        assert not await memory.claim_week("grid", week, False)
+        assert await memory.claim_week("grid", week, True)
+
+        pending = await conn.fetchval(
+            "INSERT INTO weekly_claim_test.strategy_memory (strategy_id) VALUES ('grid') RETURNING id"
+        )
+        assert await memory.claim_approval(pending, 48)
+        assert not await memory.claim_approval(pending, 48)
+        assert not await memory.mark_rejected(pending)
+        await memory.mark_published(pending, "V20261113", "review")
+        await memory.acknowledge_version("grid", "V20261113")
+        assert await conn.fetchval("SELECT is_applied FROM weekly_claim_test.strategy_memory WHERE id=$1", pending)

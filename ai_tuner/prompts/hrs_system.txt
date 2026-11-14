@@ -26,7 +26,7 @@ HRS 是新币种反转交易策略，当市场出现极端行情（24h 大幅涨
 
 - 信号过多 → 提高 entry_threshold 和 min_total_score，收紧入场条件
 - 信号过少 → 放宽两个阈值
-- 做空方向表现差 → 降低 short_entry_threshold / short_min_total_score（让做空更难触发）
+- 做空方向表现差 → 提高 short_entry_threshold / short_min_total_score（让做空更难触发）
 - 做多方向表现差 → 保持或提高 entry_threshold / min_total_score
 - 回撤过大 → 收紧做空阈值（short_*）过滤质量
 - 表现良好 → HOLD（维持不变）

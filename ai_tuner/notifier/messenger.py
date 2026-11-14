@@ -107,11 +107,11 @@ class Messenger:
             是否发送成功
         """
         message = (
-            f"【调优已生效】\n"
+            f"【调优覆盖层已写入】\n"
             f"策略：{strategy_name}\n"
             f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
             f"{diff_text}\n\n"
-            f"以上参数变更已确认并生效。"
+            f"以上参数已写入，等待策略加载确认。"
         )
 
         try:
@@ -145,11 +145,11 @@ class Messenger:
             是否发送成功
         """
         message = (
-            f"【调优已自动应用】\n"
+            f"【调优覆盖层已写入】\n"
             f"策略：{strategy_name}\n"
             f"时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
             f"{diff_text}\n\n"
-            f"以上参数变更已由 AI 自动生效。（如需回滚，请使用回滚接口）"
+            f"以上参数已写入，等待策略加载确认。（如需回滚，请使用回滚接口）"
         )
 
         try:

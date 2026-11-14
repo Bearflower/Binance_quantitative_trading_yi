@@ -739,3 +739,11 @@ class TestEdgeCases:
         results, summary = match_income_to_trades([], [trade], small_window_cfg)
         assert summary.matched_count == 0
         assert summary.total_income_count == 0
+
+
+def test_income_identity_preserves_same_time_and_rejects_conflicts():
+    first = dict(symbol="BTCUSDT", time=1000, income="1", tranId=1)
+    second = dict(first, tranId=2)
+    assert _dedupe_income([first, second, first]) == [first, second]
+    with pytest.raises(ValueError):
+        _dedupe_income([first, dict(first, income="2")])

@@ -17,7 +17,7 @@ from shared.kline_service import KLineService
 from shared.notification import NotificationClient
 from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
-from shared.config_loader import load_strategy_config
+from shared.config_loader import load_strategy_config_with_metadata, record_loaded_version
 from shared.strategy_state import save_strategy_state, sync_open_positions, touch_strategy_state
 from shared import condition_orders
 from shared.mtpc_signal_persistence import (
@@ -92,7 +92,7 @@ async def initialize():
     logger.info("初始化MTPCS激进版策略（主流币种趋势回调确认策略）...")
     
     # 加载配置（合并基础配置 + AI 调优覆盖层）
-    config = load_strategy_config(os.path.dirname(__file__))
+    config, tuner_metadata = load_strategy_config_with_metadata(os.path.dirname(__file__))
     logger.info("配置加载成功（含覆盖层合并）", strategy_dir=os.path.dirname(__file__))
     
     # 验证必要的环境变量
@@ -154,6 +154,7 @@ async def initialize():
         notification_client=notification_client,
         db_manager=db_manager
     )
+    record_loaded_version("btc_eth_aggressive", tuner_metadata)
     
     # 初始化条件单记录表（用于孤儿条件单清理和订单追踪）
     await condition_orders.ensure_table(db_manager)

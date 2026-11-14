@@ -8,7 +8,7 @@ from datetime import datetime
 import structlog
 
 from shared.binance_api import BinanceClient
-from shared.config_loader import load_strategy_config
+from shared.config_loader import load_strategy_config_with_metadata, record_loaded_version
 from shared.database import DatabaseManager
 from shared.kline_service import KLineService
 from shared.notification import NotificationClient
@@ -36,7 +36,7 @@ async def main():
 
     try:
         # 加载配置（合并基础配置 + AI 调优覆盖层）
-        config = load_strategy_config(os.path.dirname(__file__))
+        config, tuner_metadata = load_strategy_config_with_metadata(os.path.dirname(__file__))
         logger.info("配置加载成功（含覆盖层合并）", strategy_dir=os.path.dirname(__file__))
 
         # 验证必要的环境变量
@@ -91,6 +91,7 @@ async def main():
 
         # 创建策略实例
         strategy = GridStrategy(config=config)
+        record_loaded_version("grid", tuner_metadata)
 
         # 设置客户端
         await strategy.set_binance_client(binance_client)

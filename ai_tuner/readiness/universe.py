@@ -221,11 +221,14 @@ class StaticConfigUniverseResolver:
 # 查询模板：只用 observed_at <= $1 单条件，
 # 禁止任何对 public.strategy_states 的回退查询（计划 §4.1 强制）
 _SNAPSHOT_SQL = """
-SELECT observed_at, symbol, config_hash
-FROM public.ai_tuner_universe_snapshots
-WHERE strategy_id = $1
-  AND observed_at <= $2
-ORDER BY observed_at ASC, symbol ASC
+SELECT r.observed_at, u.symbol, r.config_hash, r.symbol_count,
+       count(u.symbol) OVER (PARTITION BY r.observed_at) AS actual_count
+FROM public.ai_tuner_universe_scan_runs r
+LEFT JOIN public.ai_tuner_universe_snapshots u
+  ON u.strategy_id=r.strategy_id AND u.observed_at=r.observed_at
+ AND u.config_hash=r.config_hash AND u.source_run_id=r.source_run_id AND u.created_at <= $2
+WHERE r.strategy_id=$1 AND r.observed_at <= $2 AND r.created_at <= $2
+ORDER BY r.observed_at, u.symbol
 """
 
 
@@ -263,6 +266,8 @@ class HistoricalSnapshotUniverseResolver:
             )
             return self._empty_resolution(gap)
 
+        if any(row.get("symbol_count") != row.get("actual_count") for row in rows):
+            return self._empty_resolution("historical_universe_missing_members")
         groups = self._group_snapshots(rows)
         earliest = groups[0][0]
         slices = self._build_slices(strategy_id, groups, valid_from, valid_to)
@@ -304,7 +309,8 @@ class HistoricalSnapshotUniverseResolver:
             if current_at != observed_at:
                 current_at = observed_at
                 current_hash = str(row["config_hash"] or "")
-            current_symbols.append(str(row["symbol"]))
+            if row["symbol"] is not None:
+                current_symbols.append(str(row["symbol"]))
         if current_at is not None:
             groups.append((current_at, tuple(current_symbols), current_hash))
         return groups

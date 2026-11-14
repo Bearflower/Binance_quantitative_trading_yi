@@ -13,7 +13,9 @@ LEFT JOIN trading.execution_fact_fill f USING (account_id,symbol,trade_id)
 WHERE i.account_id=$1 AND i.income_type='REALIZED_PNL'
 AND i.event_time_utc >= least(now()-interval '7 days',
     coalesce((SELECT to_timestamp(nullif(last_reconciled_ts,0)/1000.0)
-              FROM public.pnl_reconcile_state WHERE id=1), now()))
+              FROM {state_table} WHERE account_id=$1), now()),
+    coalesce((SELECT to_timestamp(min(event_ms)/1000.0)
+              FROM {state_table}_gaps WHERE account_id=$1), now()))
 AND NOT EXISTS (SELECT 1 FROM trading.trade_records t WHERE t.account_id=i.account_id
                 AND t.symbol=i.symbol AND t.order_id=f.order_id::text AND t.order_type<>'PNL_SUMMARY')
 """
@@ -104,7 +106,9 @@ async def repair_order(rec, gap):
 
 async def nightly_exit_repair(rec):
     inserted = unresolved = 0
-    for gap in await rec.db.fetch_all(GAPS, rec.account_id):
+    await rec._ensure_state_table()
+    query = GAPS.format(state_table=f"{rec.state_schema}.{rec.state_table}")
+    for gap in await rec.db.fetch_all(query, rec.account_id):
         try:
             inserted += await repair_order(rec, gap)
         except Exception as exc:

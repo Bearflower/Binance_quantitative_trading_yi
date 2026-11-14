@@ -62,6 +62,7 @@ class MetricsCalculator:
         initial_capital: float,
         final_equity: float,
         symbol: str = "ETHUSDT",
+        regime_map=None,
     ) -> Dict[str, Any]:
         """
         计算所有回测指标
@@ -95,7 +96,7 @@ class MetricsCalculator:
         capital_utilization = self._calc_capital_utilization(equity_curve, final_state, initial_capital)
 
         # 市况细分
-        segmented = self._calc_segmented_returns(fills, equity_curve, initial_capital)
+        segmented = self._calc_segmented_returns(regime_map or {}, equity_curve, initial_capital)
 
         # 构建结果字典
         result = {
@@ -327,43 +328,14 @@ class MetricsCalculator:
     # ============================================================
 
     @staticmethod
-    def _calc_segmented_returns(
-        fills: List[FillRecord],
-        equity_curve: List[float],
-        initial_capital: float,
-    ) -> Dict[str, float]:
-        """
-        按市况分别统计收益率
-
-        将成交按市况分组，分别计算每种市况下的收益率。
-
-        Args:
-            fills: 所有成交记录
-            equity_curve: 权益曲线
-            initial_capital: 初始资金
-
-        Returns:
-            {"上涨": uptrend_return_pct, "下跌": downtrend_return_pct, "横盘": sideways_return_pct}
-        """
-        if not fills or initial_capital <= 0:
-            return {"上涨": 0.0, "下跌": 0.0, "横盘": 0.0}
-
-        # 按市况分组计算净现金流
-        regime_pnl: Dict[str, float] = {"上涨": 0.0, "下跌": 0.0, "横盘": 0.0}
-
-        for f in fills:
-            regime = f.regime if f.regime in regime_pnl else "横盘"
-            if f.direction == "buy":
-                regime_pnl[regime] -= f.notional + f.fee
-            else:
-                regime_pnl[regime] += f.notional - f.fee
-
-        # 转换为百分比
-        result = {}
-        for regime, pnl in regime_pnl.items():
-            result[regime] = (pnl / initial_capital) * 100
-
-        return result
+    def _calc_segmented_returns(regime_map, equity_curve, initial_capital):
+        """Attribute each marked-to-market equity change to the corresponding bar."""
+        returns = {"上涨": 0.0, "下跌": 0.0, "横盘": 0.0}
+        if initial_capital > 0:
+            for index, (before, after) in enumerate(zip(equity_curve, equity_curve[1:])):
+                regime = regime_map.get(index, "横盘")
+                returns[regime] += (after - before) / initial_capital * 100
+        return returns
 
     # ============================================================
     # 综合评分

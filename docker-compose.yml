@@ -112,6 +112,7 @@ services:
       - FEISHU_WEBHOOK_HRS=${FEISHU_WEBHOOK_HRS:-}
     volumes:
       - ./logs/hrs:/app/logs
+      - ./strategies/hrs/tuning_overrides:/app/strategies/hrs/tuning_overrides:ro
       - ./data/hrs:/app/data
       - ./strategies/hrs/config.yaml:/app/strategies/hrs/config.yaml:rw
     networks:
@@ -148,6 +149,7 @@ services:
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=btc_eth
     volumes:
       - ./logs/btc_eth:/app/logs
+      - ./strategies/btc_eth/tuning_overrides:/app/strategies/btc_eth/tuning_overrides:ro
       - ./data/btc_eth:/app/data
     networks:
       - trading-network
@@ -183,6 +185,7 @@ services:
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=btc_eth_aggressive
     volumes:
       - ./logs/btc_eth_aggressive:/app/logs
+      - ./strategies/btc_eth_aggressive/tuning_overrides:/app/strategies/btc_eth_aggressive/tuning_overrides:ro
       - ./data/btc_eth_aggressive:/app/data
     networks:
       - trading-network
@@ -316,6 +319,7 @@ services:
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=new_coin
     volumes:
       - ./logs/new_coin:/app/logs
+      - ./strategies/new_coin/tuning_overrides:/app/strategies/new_coin/tuning_overrides:ro
       - ./data/new_coin:/app/data
     networks:
       - trading-network
@@ -352,6 +356,7 @@ services:
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=grid
     volumes:
       - ./logs/grid:/app/logs
+      - ./strategies/grid/tuning_overrides:/app/strategies/grid/tuning_overrides:ro
       - ./data/grid:/app/data
     networks:
       - trading-network
@@ -488,6 +493,7 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
+      - AI_TUNER_WRITE_TOKEN=${AI_TUNER_WRITE_TOKEN:-}
       - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
       - DB_HOST=${DB_HOST}
       - DB_PORT=${DB_PORT:-5432}
@@ -501,6 +507,11 @@ services:
     volumes:
       - ./strategies:/app/strategies:rw
       - ./logs/ai_tuner:/app/logs
+      - ./logs/hrs:/app/consumer_receipts/hrs:ro
+      - ./logs/grid:/app/consumer_receipts/grid:ro
+      - ./logs/new_coin:/app/consumer_receipts/new_coin:ro
+      - ./logs/btc_eth:/app/consumer_receipts/btc_eth:ro
+      - ./logs/btc_eth_aggressive:/app/consumer_receipts/btc_eth_aggressive:ro
     ports:
       - "127.0.0.1:8777:8777"
     networks:

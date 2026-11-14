@@ -11,6 +11,8 @@
 - 幂等性检查：已填充的 post_* 字段不重复计算
 """
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -18,8 +20,18 @@ import pytest
 
 sys.path.insert(0, ".")
 
-from ai_tuner.adapters.base_adapter import PerformanceMetrics, RiskMetrics, StrategyReport
+from ai_tuner.adapters.base_adapter import PerformanceMetrics, RiskMetrics, StrategyReport, StrategyMeta
 from ai_tuner.feedback.effect_tracker import EffectSummary, EffectTracker
+
+
+@pytest.fixture(autouse=True)
+def shanghai_clock(monkeypatch):
+    def freeze(local_time):
+        now = datetime.fromisoformat(local_time).replace(tzinfo=ZoneInfo("Asia/Shanghai"))
+        monkeypatch.setattr("ai_tuner.feedback.effect_tracker._now_shanghai", lambda: now)
+
+    freeze("2025-09-08T00:00:00")
+    return freeze
 
 
 @pytest.fixture
@@ -61,7 +73,7 @@ def mock_adapter():
         is_circuit_breaker_active=False,
         max_drawdown_pct=0.08,
     )
-    adapter.collect = AsyncMock(return_value=StrategyReport(performance=perf, risk=risk))
+    adapter.collect = AsyncMock(return_value=StrategyReport(meta=StrategyMeta(week_start="2025-09-01", week_end="2025-09-08"), performance=perf, risk=risk))
     return adapter
 
 
@@ -98,6 +110,7 @@ class TestNormalTracking:
             "id": 42,
             "strategy_id": "btc_eth_grid_v1",
             "active_version": "V20260804",
+            "approved_at": datetime(2025, 8, 31),
             "post_win_rate": None,
             "post_total_pnl": None,
             "effect_notes": None,
@@ -145,6 +158,7 @@ class TestNormalTracking:
             "id": 1,
             "strategy_id": "btc_eth_grid_v1",
             "active_version": "V20260804",
+            "approved_at": datetime(2025, 8, 31),
             "post_win_rate": None,
             "post_total_pnl": None,
             "effect_notes": None,
@@ -171,7 +185,7 @@ class TestNormalTracking:
         risk = RiskMetrics(max_drawdown_pct=0.05)
         adapter = MagicMock()
         adapter.config_path = "strategies/btc_eth/config.yaml"
-        adapter.collect = AsyncMock(return_value=StrategyReport(performance=perf, risk=risk))
+        adapter.collect = AsyncMock(return_value=StrategyReport(meta=StrategyMeta(week_start="2025-09-01", week_end="2025-09-08"), performance=perf, risk=risk))
 
         tracker = EffectTracker(base_config, version_manager=mock_version_manager)
         result = await tracker.track_and_fill(
@@ -241,6 +255,7 @@ class TestCollectException:
             "id": 1,
             "strategy_id": "btc_eth_grid_v1",
             "active_version": "V20260804",
+            "approved_at": datetime(2025, 8, 31),
             "post_win_rate": None,
             "post_total_pnl": None,
             "effect_notes": None,
@@ -320,7 +335,8 @@ class TestMultipleHistoryRecords:
                 "id": 99,
                 "strategy_id": "btc_eth_grid_v1",
                 "active_version": "V20260804",
-                "post_win_rate": None,
+                "approved_at": datetime(2025, 8, 31),
+            "post_win_rate": None,
                 "post_total_pnl": None,
                 "effect_notes": None,
                 "full_report": {
@@ -496,3 +512,28 @@ class TestBuildEffectNotes:
         assert "胜率变化" not in notes
         assert "盈亏变化" not in notes
         assert "交易笔数" not in notes
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("now,start,end,approved,offset,eligible", [
+    ("2025-09-14T23:59", "2025-09-01", "2025-09-08", "2025-09-01T00:00", -1, True),
+    ("2025-09-14T23:59", "2025-09-08", "2025-09-15", "2025-09-08T00:00", -1, False),
+    ("2025-09-15T00:00", "2025-09-08", "2025-09-15", "2025-09-07T16:00+00:00", 0, True),
+    ("2025-09-16T12:00", "2025-09-08", "2025-09-15", "2025-09-08T00:01", 0, False),
+    ("2025-09-16T12:00", "2025-09-08", "2025-09-14", "2025-09-08T00:00", 0, False),
+])
+async def test_only_complete_post_approval_week_is_rated(
+    now, start, end, approved, offset, eligible, shanghai_clock,
+    base_config, mock_adapter, mock_db_handler, mock_version_manager,
+):
+    shanghai_clock(now)
+    mock_db_handler.find_memory_by_version.return_value = {
+        "id": 1, "approved_at": datetime.fromisoformat(approved),
+    }
+    meta = mock_adapter.collect.return_value.meta
+    meta.week_start, meta.week_end = start, end
+    result = await EffectTracker(base_config, mock_version_manager).track_and_fill(
+        "btc_eth", mock_adapter, mock_db_handler,
+    )
+    assert result.has_data is eligible
+    mock_adapter.collect.assert_awaited_once_with(week_offset=offset)
+    assert mock_db_handler.update_effect_tracking.await_count == int(eligible)

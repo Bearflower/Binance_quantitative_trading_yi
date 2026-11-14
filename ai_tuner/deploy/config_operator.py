@@ -12,6 +12,10 @@
 - 支持嵌套键路径读写
 """
 
+import fcntl
+import re
+from pathlib import Path
+from shared.config_loader import deep_merge
 import os
 import tempfile
 from datetime import datetime
@@ -141,11 +145,15 @@ class ConfigOperator:
             logger.error("应用配置变更异常", config_path=config_path, error=str(e))
             return False
 
-    def apply_overrides(
+    def apply_overrides(self, config_path, adjustments) -> bool:
+        return bool(self.publish_overrides(config_path, adjustments))
+
+    def publish_overrides(
         self,
         config_path: str,
         adjustments: Dict[str, Any],
-    ) -> bool:
+        *, expected_version: str | None = None,
+    ) -> str | bool:
         """
         应用 AI 调优参数到 tuning_overrides 覆盖层
 
@@ -180,47 +188,43 @@ class ConfigOperator:
 
             # 创建覆盖层目录（如果不存在）
             os.makedirs(override_dir, exist_ok=True)
-            # 确保目录可写（volume 挂载可能导致权限问题，如宿主 UID 501 vs 容器 UID 1000）
-            try:
-                # 先尝试 chmod 目录本身
-                st = os.stat(override_dir)
-                current_mode = st.st_mode & 0o777
-                if current_mode != 0o777:
-                    os.chmod(override_dir, 0o777)
-                    logger.info("覆盖层目录权限已修复", override_dir=override_dir, mode=oct(current_mode))
-            except PermissionError:
-                logger.warning(
-                    "无法修改覆盖层目录权限（容器用户非目录所有者），"
-                    "请确保部署时使用 chmod 777 预置目录权限",
-                    override_dir=override_dir,
-                    owner_uid=os.stat(override_dir).st_uid,
-                    container_uid=os.getuid(),
-                )
-            except Exception as e:
-                logger.warning("修改覆盖层目录权限异常", override_dir=override_dir, error=str(e))
+            with open(os.path.join(override_dir, ".write.lock"), "a") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                return self._publish_overlay(config_path, override_dir, adjustments, expected_version)
+        except Exception as error:
+            logger.error("覆盖层写入失败", error=str(error))
+            return False
 
-            # 生成版本号
-            version = self._generate_version(override_dir)
-
-            # 将扁平参数路径转为嵌套字典结构
-            override_config = self._flat_to_nested(adjustments)
-
-            # 写入覆盖层文件
-            override_path = os.path.join(override_dir, f"{version}.yaml")
-            self._atomic_write(override_path, override_config)
-
-            # 备份当前 .active（如果存在）
+    def _publish_overlay(self, config_path, override_dir, adjustments, expected_version):
+        strategy_dir = os.path.dirname(config_path)
+        try:
             active_path = os.path.join(override_dir, ".active")
             old_active = None
+            prior = {}
             if os.path.exists(active_path):
-                try:
-                    with open(active_path, "r", encoding="utf-8") as f:
-                        old_active = f.read().strip()
-                except Exception:
-                    pass
-
+                old_active = Path(active_path).read_text().strip()
+                if not re.fullmatch(r"V[0-9]{8}(?:[_-][0-9]+)?", old_active):
+                    raise ValueError("invalid active version")
+                prior = yaml.safe_load((Path(override_dir) / (old_active + ".yaml")).read_text())
+                if not isinstance(prior, dict):
+                    raise ValueError("invalid active overlay")
+            if expected_version is not None and (old_active or "base") != expected_version:
+                raise ValueError("proposal baseline version changed")
+            effective = deep_merge(self.read_config(config_path), prior)
+            clean = {}
+            for key, value in adjustments.items():
+                if isinstance(value, dict) and {"from", "to"} <= value.keys():
+                    if self.get_nested_value(effective, key) != value["from"]:
+                        raise ValueError(f"proposal baseline changed for {key}")
+                    value = value["to"]
+                clean[key] = value
+            override_config = deep_merge(prior, self._flat_to_nested(clean))
+            version = self._generate_version(override_dir)
+            override_path = os.path.join(override_dir, f"{version}.yaml")
+            self._atomic_write(override_path, override_config)
             # 写入 .active
             try:
+                self._atomic_write_text(override_path + ".parent", old_active or "base")
                 self._atomic_write_text(active_path, version)
             except Exception:
                 # 回滚：删除已创建的覆盖层文件
@@ -241,7 +245,7 @@ class ConfigOperator:
                 changes_count=len(adjustments),
                 previous_active=old_active,
             )
-            return True
+            return version
 
         except Exception as e:
             logger.error(
@@ -250,6 +254,31 @@ class ConfigOperator:
                 error=str(e),
             )
             return False
+
+    def rollback_overlay(self, config_path: str, requested: str = "", *, expected_current=None) -> str:
+        """Activate an existing version, or restore the recorded parent."""
+        directory = Path(config_path).parent / "tuning_overrides"
+        with (directory / ".write.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            active = directory / ".active"
+            current = active.read_text().strip()
+            pattern = r"V[0-9]{8}(?:[_-][0-9]+)?"
+            if expected_current is not None and current != expected_current:
+                raise ValueError("rollback baseline changed")
+            if not re.fullmatch(pattern, current):
+                raise ValueError("invalid current version")
+            target = requested or (directory / (current + ".yaml.parent")).read_text().strip()
+            if target == current:
+                raise ValueError("rollback target already active")
+            if target == "base":
+                active.unlink()
+            else:
+                if not re.fullmatch(pattern, target):
+                    raise ValueError("invalid rollback version")
+                if not isinstance(yaml.safe_load((directory / (target + ".yaml")).read_text()), dict):
+                    raise ValueError("invalid rollback overlay")
+                self._atomic_write_text(str(active), target)
+            return target
 
     def get_nested_value(self, config: Dict[str, Any], key_path: str) -> Any:
         """

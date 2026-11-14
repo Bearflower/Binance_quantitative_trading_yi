@@ -425,7 +425,8 @@ def test_aggressive_signal_window_uses_database_utc_naive_created_at():
     class DB:
         async def fetch_one(self, query, *args):
             if "btc_eth_aggressive.trade_signals" in query:
-                assert args == (start.replace(tzinfo=None), end.replace(tzinfo=None))
+                assert args == (start.replace(tzinfo=None), end.replace(tzinfo=None), "default")
+                assert "trading.execution_fact_fill" in query and "t.account_id=$3" in query
                 return {"real_signals": 0, "shadow_signals": 0,
                         "executed_signals": 0, "unresolved_signals": 0}
             return None

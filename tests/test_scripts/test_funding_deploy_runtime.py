@@ -1,6 +1,8 @@
 """Deployment continuity guards without touching Docker or production."""
 
 import subprocess
+
+import pytest
 from pathlib import Path
 
 
@@ -47,9 +49,9 @@ def test_keep_and_rotate_compose_commands_are_disjoint_and_ordered():
         "# ========== step 4.5", 1
     )[0]
     assert 'if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then' in normal_up
-    assert 'docker compose --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"' in normal_up
+    assert '--parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"' in normal_up
     assert 'postgres|ai-tuner-funding-schedule) ;;' in normal_up
-    assert "docker compose --parallel 1 up -d --remove-orphans" in normal_up
+    assert "--parallel 1 up -d --remove-orphans" in normal_up
     after_gate = RUNTIME.split('if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then', 1)[1]
     assert 'if [ "$FUNDING_DEPLOY_ACTION" = "rotate" ]; then' in after_gate
     assert "FUNDING_IDENTITY_AFTER=$(funding_collector_identity)" in after_gate
@@ -59,32 +61,34 @@ def test_keep_and_rotate_compose_commands_are_disjoint_and_ordered():
 def test_workflow_passes_validated_action_to_renderer():
     workflow = (ROOT / ".github" / "workflows" / "deploy.yml").read_text()
     assert "python3 scripts/select_funding_deploy.py" in workflow
-    assert 'echo "funding_action=${FUNDING_DEPLOY_ACTION}" >> "$GITHUB_OUTPUT"' in workflow
-    assert '--funding-action "${{ steps.deployment_mode.outputs.funding_action }}"' in workflow
+    assert 'echo "funding_action=$FUNDING_ACTION" >> "$GITHUB_OUTPUT"' in workflow
+    assert '--funding-action "${{ needs.detect.outputs.funding_action }}"' in workflow
 
 
-def test_compose_update_excludes_database_and_collector_on_keep():
+@pytest.mark.parametrize("grid_enabled", [False, True])
+def test_compose_update_excludes_database_and_collector_on_keep(tmp_path, grid_enabled):
     block = RUNTIME.split('echo "🔄 docker compose up -d..."', 1)[1].split(
         "# ========== step 4.5", 1
     )[0]
+    (tmp_path / ".env").write_text(f"GRID_EXECUTOR_DEPLOY_ENABLED={str(grid_enabled).lower()}\n")
     stub = """docker() {
-  if [ "$1 $2 $3" = "compose config --services" ]; then
-    printf 'postgres\\nai-tuner\\nhrs-strategy\\n'
-  else
-    printf 'CALL:%s\\n' "$*"
-  fi
+  case "$*" in
+    *"config --services")
+      printf '%s\\n' postgres ai-tuner-funding-schedule ai-tuner hrs-strategy
+      if [[ "$*" == *"--profile grid-executor"* ]]; then echo grid-executor; fi ;;
+    *) echo "CALL:$*" ;;
+  esac
 }
 """
-    keep = subprocess.run(["bash", "-c", 'set -e\nFUNDING_DEPLOY_ACTION=keep\n' + stub + block],
-                          capture_output=True, text=True)
-    assert keep.returncode == 0
-    assert "CALL:compose --parallel 1 up -d --no-deps ai-tuner hrs-strategy" in keep.stdout
-    assert "--remove-orphans" not in keep.stdout
-    assert " postgres" not in keep.stdout
-    rotate = subprocess.run(["bash", "-c", 'set -e\nFUNDING_DEPLOY_ACTION=rotate\n' + stub + block],
-                            capture_output=True, text=True)
-    assert rotate.returncode == 0
-    assert "CALL:compose --parallel 1 up -d --remove-orphans" in rotate.stdout
+    prefix = "CALL:compose " + ("--profile grid-executor " if grid_enabled else "")
+    services = "ai-tuner hrs-strategy" + (" grid-executor" if grid_enabled else "")
+    for action, args in (("keep", f"--no-deps {services}"), ("rotate", "--remove-orphans")):
+        result = subprocess.run(
+            ["bash", "-c", f"set -e\nFUNDING_DEPLOY_ACTION={action}\n" + stub + block],
+            cwd=tmp_path, capture_output=True, text=True, check=True,
+        )
+        calls = [line for line in result.stdout.splitlines() if line.startswith("CALL:")]
+        assert calls == [f"{prefix}--parallel 1 up -d {args}"]
 
 
 def test_acl_failure_stops_exact_collector_and_postflight_rejects_change():

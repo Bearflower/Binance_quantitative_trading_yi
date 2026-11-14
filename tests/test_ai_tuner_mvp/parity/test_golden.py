@@ -226,3 +226,11 @@ def test_missing_golden_file_is_no_baseline(tmp_path):
     replay_path.write_text(json.dumps(snapshot()), encoding="utf-8")
     report = compare_golden(tmp_path / "missing.json", replay_path, CONFIG)
     assert (report["parity_status"], report["status"]) == ("no_baseline", "BLOCKED_DATA")
+
+
+def test_duplicate_live_trade_cannot_satisfy_sample_threshold(tmp_path):
+    evidence = snapshot()
+    evidence["trades"] *= 20
+    report = compare(tmp_path, golden=evidence, config=dict(CONFIG, min_golden_trades=20))
+    assert report["sample_count"] == 1
+    assert report["status"] == "BLOCKED_DATA"

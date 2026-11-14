@@ -290,7 +290,7 @@ class TestRunOnce:
         assert "UPDATE trading.trade_records SET realized_pnl" in queries[0][0]
         assert queries[0][1] == (Decimal("-1.72949999"), 4672, "678821", "pm")
         assert "last_reconciled_ts" in queries[1][0]
-        assert queries[1][1] == (fixed_now,)
+        assert queries[1][1] == (fixed_now, "pm")
 
     @pytest.mark.asyncio
     async def test_no_income_updates_progress_only(self, mock_db, mock_binance, base_config):
@@ -507,3 +507,37 @@ class TestFetchPendingRecords:
         assert call.args[2] == _to_beijing_naive(end_ms + 60000)
         assert call.args[3] == "网格交易策略"
         assert call.args[4] == "高频策略"
+
+
+@pytest.mark.asyncio
+async def test_unowned_income_does_not_discard_verified_updates(mock_db, mock_binance):
+    rec = IncomeReconciler(mock_db, mock_binance, {"reconciler": {"account_id": "pm"}})
+    def rows(sql, *args):
+        if "trade_records" in sql and args[0] == "OTHER":
+            return []
+        return exact_fact_rows(sql, *args)
+    mock_db.fetch_all.side_effect = rows
+    inc = dict(tranId=1, tradeId=58293, symbol="PFEUSDT", time=1000, income="-1.53967682")
+    with pytest.raises(ValueError, match="保留游标"):
+        await rec._match_and_update([dict(inc, symbol="OTHER"), inc], completed_through=2000)
+    updates = mock_db.execute_transaction.await_args.args[0]
+    assert len(updates) == 1 and "UPDATE trading.trade_records" in updates[0][0]
+    assert any("_gaps" in call.args[0] and "INSERT" in call.args[0] for call in mock_db.execute.await_args_list)
+
+
+@pytest.mark.asyncio
+async def test_resolved_gap_is_removed_in_same_transaction_as_update(mock_db, mock_binance):
+    rec = IncomeReconciler(mock_db, mock_binance, {"reconciler": {"account_id": "pm"}})
+    def rows(sql, *args):
+        result = exact_fact_rows(sql, *args)
+        if "FROM trading.trade_records" in sql:
+            result[0]["had_gap"] = True
+        return result
+    mock_db.fetch_all.side_effect = rows
+    inc = dict(tranId=1, tradeId=58293, symbol="PFEUSDT", time=1000, income="-1.53967682")
+    await rec._match_and_update([inc], completed_through=2000)
+    update, clear, progress = mock_db.execute_transaction.await_args.args[0]
+    assert "UPDATE trading.trade_records" in update[0]
+    assert "DELETE FROM" in clear[0] and clear[1] == ("pm", "PFEUSDT", 58293)
+    assert progress[1] == (2000, "pm")
+    mock_db.execute.assert_not_awaited()

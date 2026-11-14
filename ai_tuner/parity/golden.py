@@ -138,7 +138,11 @@ def compare_golden(golden_snapshot_path, replay_snapshot_path, config):
     report["golden_snapshot_ref"] = golden.get("snapshot_ref", "")
     trades = golden.get("trades", [])
     is_live = golden.get("source_kind") == "live" and golden.get("is_synthetic") is False
-    report["sample_count"] = len(trades) if is_live else 0
+    identities = [str(trade.get("trade_id") or "") for trade in trades]
+    report["sample_count"] = len(set(identities) - {""}) if is_live else 0
+    if "" in identities or len(set(identities)) != len(identities):
+        report["parity_status"] = "partial_parity"
+        return report
 
     try:
         golden_as_of = parse_utc(golden["as_of"])

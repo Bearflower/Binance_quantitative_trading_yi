@@ -70,6 +70,16 @@ class MemoryDBHandler:
         """
         await self.db_manager.execute_ddl(ddl)
 
+        await self.db_manager.execute_ddl(f"""
+            CREATE TABLE IF NOT EXISTS {self._schema}.weekly_run_claims (
+                strategy_id VARCHAR(32) NOT NULL,
+                week_start DATE NOT NULL,
+                state TEXT NOT NULL CHECK (state IN ('started','success','skip','error')),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (strategy_id, week_start)
+            )
+        """)
+
         # 创建索引
         index_ddl = f"""
             CREATE INDEX IF NOT EXISTS idx_memory_strategy_date
@@ -171,7 +181,7 @@ class MemoryDBHandler:
                    is_applied, post_win_rate, post_total_pnl
             FROM {self._schema}.strategy_memory
             WHERE strategy_id = $1
-              AND is_applied = TRUE
+              AND is_applied = TRUE AND NOT is_rolled_back
             ORDER BY created_at DESC
             LIMIT $2
         """
@@ -196,10 +206,10 @@ class MemoryDBHandler:
         """
         query = f"""
             SELECT id, strategy_id, active_version, post_win_rate, post_total_pnl,
-                   effect_notes, full_report, ai_suggestions, created_at
+                   effect_notes, full_report, ai_suggestions, created_at, approved_at
             FROM {self._schema}.strategy_memory
             WHERE strategy_id = $1
-              AND is_applied = TRUE
+              AND is_applied = TRUE AND NOT is_rolled_back
               AND active_version = $2
             ORDER BY created_at DESC
             LIMIT 1
@@ -236,7 +246,7 @@ class MemoryDBHandler:
             SELECT id, strategy_id, ai_suggestions, created_at
             FROM {self._schema}.strategy_memory
             WHERE strategy_id = $1
-              AND is_applied = TRUE
+              AND is_applied = TRUE AND NOT is_rolled_back
             ORDER BY created_at DESC
             LIMIT $2
         """
@@ -250,6 +260,31 @@ class MemoryDBHandler:
                 error=str(e),
             )
             return []
+
+    async def claim_approval(self, memory_id, timeout_hours):
+        row = await self.db_manager.fetch_one(
+            f"UPDATE {self._schema}.strategy_memory SET approved_by='publishing', updated_at=NOW() "
+            "WHERE id=$1 AND approved_by IS NULL AND NOT is_applied AND NOT is_expired AND NOT is_rejected "
+            "AND ai_suggestions->>'manual_approval_allowed' IS DISTINCT FROM 'false' "
+            "AND created_at >= LOCALTIMESTAMP - ($2::integer * INTERVAL '1 hour') RETURNING id",
+            memory_id, timeout_hours,
+        )
+        return bool(row)
+
+    async def mark_published(self, memory_id, version, approved_by):
+        await self.db_manager.execute(
+            f"UPDATE {self._schema}.strategy_memory SET active_version=$2, approved_by=$3, "
+            "updated_at=NOW() WHERE id=$1 AND NOT is_applied",
+            memory_id, version, approved_by,
+        )
+
+    async def acknowledge_version(self, strategy_id, version):
+        await self.db_manager.execute(
+            f"UPDATE {self._schema}.strategy_memory SET is_applied=TRUE, approved_at=NOW() AT TIME ZONE 'Asia/Shanghai', "
+            "updated_at=NOW() WHERE strategy_id=$1 AND active_version=$2 AND approved_by IS NOT NULL "
+            "AND NOT is_applied AND NOT is_rejected AND NOT is_rolled_back",
+            strategy_id, version,
+        )
 
     async def mark_applied(self, memory_id: int, approved_by: str = "") -> bool:
         """
@@ -288,11 +323,11 @@ class MemoryDBHandler:
             UPDATE {self._schema}.strategy_memory
             SET is_rejected = TRUE,
                 updated_at = NOW()
-            WHERE id = $1
+            WHERE id = $1 AND approved_by IS NULL AND NOT is_applied AND NOT is_expired AND NOT is_rejected RETURNING id
         """
-        await self.db_manager.execute(query, memory_id)
+        row = await self.db_manager.fetch_one(query, memory_id)
         logger.info("记忆已标记为拒绝", memory_id=memory_id)
-        return True
+        return bool(row)
 
     async def mark_expired(self, memory_id: int) -> bool:
         """
@@ -313,6 +348,16 @@ class MemoryDBHandler:
         await self.db_manager.execute(query, memory_id)
         logger.info("记忆已标记为过期", memory_id=memory_id)
         return True
+
+    async def record_overlay_rollback(self, strategy_id, previous, target):
+        """Close the reverted observation and await a fresh receipt for the restored version."""
+        await self.db_manager.execute(
+            f"UPDATE {self._schema}.strategy_memory SET is_rolled_back=(active_version=$2), "
+            "is_applied=FALSE, approved_at=NULL, post_win_rate=NULL, post_total_pnl=NULL, effect_notes=NULL, "
+            "rollback_reason=CASE WHEN active_version=$2 THEN 'manual overlay rollback' ELSE NULL END, "
+            "updated_at=NOW() WHERE strategy_id=$1 AND active_version IN ($2,$3) AND approved_by IS NOT NULL",
+            strategy_id, previous, target,
+        )
 
     async def mark_rolled_back(self, memory_id: int, reason: str = "") -> bool:
         """
@@ -371,6 +416,34 @@ class MemoryDBHandler:
             logger.error("效果追踪更新异常", memory_id=memory_id, error=str(e))
             return False
 
+    async def claim_week(self, strategy_id, week_start, force):
+        # An interrupted started claim may have moved the filesystem pointer.
+        # Keep it for reconciliation rather than repeating the publication.
+        row = await self.db_manager.fetch_one(
+            f"INSERT INTO {self._schema}.weekly_run_claims AS claim (strategy_id,week_start,state) "
+            "VALUES ($1,$2,'started') ON CONFLICT (strategy_id,week_start) DO UPDATE "
+            "SET state='started', updated_at=NOW() WHERE claim.state='error' OR "
+            "($3 AND claim.state IN ('success','skip')) RETURNING strategy_id",
+            strategy_id, week_start, force,
+        )
+        return bool(row)
+
+    async def finish_week(self, strategy_id, week_start, state):
+        await self.db_manager.execute(
+            f"UPDATE {self._schema}.weekly_run_claims SET state=$3, updated_at=NOW() "
+            "WHERE strategy_id=$1 AND week_start=$2 AND state='started'",
+            strategy_id, week_start, state,
+        )
+
+    async def completed_this_week(self, strategy_id: str) -> bool:
+        row = await self.db_manager.fetch_one(
+            "SELECT EXISTS (SELECT 1 FROM public.ai_tuner_runs WHERE strategy_id=$1 "
+            "AND status IN ('success','skip') AND executed_at >= "
+            "date_trunc('week', NOW() AT TIME ZONE 'Asia/Shanghai')) AS done",
+            strategy_id,
+        )
+        return bool(row and row["done"])
+
     async def get_pending_approvals(self) -> List[Dict[str, Any]]:
         """
         获取所有待审批记录
@@ -382,7 +455,8 @@ class MemoryDBHandler:
             SELECT id, strategy_id, strategy_name, summary, ai_suggestions,
                    created_at
             FROM {self._schema}.strategy_memory
-            WHERE is_applied = FALSE
+            WHERE is_applied = FALSE AND approved_by IS NULL
+              AND ai_suggestions->>'manual_approval_allowed' IS DISTINCT FROM 'false'
               AND is_rejected = FALSE
               AND is_expired = FALSE
             ORDER BY created_at DESC
@@ -405,7 +479,7 @@ class MemoryDBHandler:
                 UPDATE {self._schema}.strategy_memory
                 SET is_expired = TRUE,
                     updated_at = NOW()
-                WHERE is_applied = FALSE
+                WHERE is_applied = FALSE AND approved_by IS NULL
                   AND is_rejected = FALSE
                   AND is_expired = FALSE
                   AND created_at < $1

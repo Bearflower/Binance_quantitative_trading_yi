@@ -112,9 +112,9 @@ def test_coverage_report_reports_kline_ratio_and_gaps(tmp_path):
     assert report["kline_coverage"] == "100.0000"
     assert report["missing_symbol_intervals"] == []
     assert report["funding_gaps"] == []
-    # 合成夹具无完整外部快照 → 覆盖率 0 且判 BLOCKED_DATA（fail-closed）
+    # MTPCS manifest 不依赖外部快照，仍报告实际覆盖率。
     assert report["external_snapshot_coverage"] == "0.0000"
-    assert report["data_complete"] is False
+    assert report["data_complete"] is True
 
 
 def test_kline_shortfall_is_reported_as_gap(tmp_path):
@@ -134,3 +134,32 @@ def test_kline_shortfall_is_reported_as_gap(tmp_path):
         {"symbol": "BTCUSDT", "interval": "1h", "expected": 4, "actual": 2}
     ]
     assert report["data_complete"] is False
+
+
+def test_hash_checked_on_first_read_and_unlisted_files_rejected(tmp_path):
+    portal = _portal(tmp_path)
+    original = portal.snapshot_dir / "klines/BTCUSDT_1h.jsonl"
+    (original.parent / "EXTRA_1h.jsonl").write_bytes(original.read_bytes())
+    with pytest.raises(DataBlocked, match="dataset_missing"):
+        portal.bars("EXTRA", "1h")
+    original.write_text("")
+    with pytest.raises(DataBlocked, match="snapshot_tampered"):
+        portal.bars("BTCUSDT", "1h")
+
+
+def test_config_not_effective_at_earlier_cutoff(tmp_path):
+    with pytest.raises(DataBlocked, match="config_version_not_effective"):
+        _portal(tmp_path).config_version(WINDOW_START)
+
+
+def test_snapshot_not_available_before_collection(tmp_path):
+    import json
+
+    collected = WINDOW_START + timedelta(hours=2)
+    row = dict(symbol="BTCUSDT", observed_at=WINDOW_START.isoformat(),
+               bucket_start=WINDOW_START.isoformat(),
+               bucket_end=(WINDOW_START + timedelta(hours=1)).isoformat(),
+               collected_at=collected.isoformat())
+    portal = _portal(tmp_path, extra_files={"market_snapshots.jsonl": json.dumps(row)})
+    assert not portal.external_snapshot("BTCUSDT", as_of=collected - timedelta(seconds=1))
+    assert portal.external_snapshot("BTCUSDT", as_of=collected)[0].available_at == collected

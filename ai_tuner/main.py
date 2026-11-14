@@ -19,6 +19,7 @@ StratTuneAI 多策略AI调优系统入口
 14. 优雅关闭：捕获 SIGTERM/SIGINT，关闭调度器和数据库连接
 """
 
+import json
 import asyncio
 import os
 import signal
@@ -235,6 +236,8 @@ class StratTuneAI:
         self.llm_client.set_usage_callback(self._on_llm_usage)
 
         # 7. 初始化配置管理模块
+        if self.config.get("rollback", {}).get("auto_trigger_enabled"):
+            raise ValueError("rollback.auto_trigger_enabled 暂无自动回滚执行器")
         self.rollback_manager = RollbackManager(
             max_backups=self.config.get("rollback", {}).get("max_backups", 10)
         )
@@ -413,6 +416,8 @@ class StratTuneAI:
                 f"cron 表达式解析失败: {cron_expr!r}，错误: {e}"
             ) from e
 
+        self.scheduler.add_job(self._collect_overlay_receipts, "interval", minutes=1,
+                               id="overlay_receipts", max_instances=1, coalesce=True)
         self.scheduler.add_job(
             self._scheduled_tuning,
             "cron",
@@ -625,6 +630,24 @@ class StratTuneAI:
 
         logger.info("StratTuneAI 系统已关闭")
 
+    async def _collect_overlay_receipts(self):
+        from shared.config_loader import load_strategy_config_with_metadata
+
+        for strategy in self.config.get("strategies", []):
+            sid = strategy["strategy_id"]
+            receipt = Path("/app/consumer_receipts") / sid / "tuning-loaded.json"
+            try:
+                evidence = json.loads(receipt.read_text())
+                _, current = load_strategy_config_with_metadata(str(Path(strategy["config_path"]).parent))
+                version = current["applied_overrides_version"]
+                if (version and evidence["strategy"] == sid and evidence["version"] == version
+                        and evidence["config_hash"] == current["config_hash"]):
+                    await self.db_handler.acknowledge_version(sid, version)
+            except FileNotFoundError:
+                continue
+            except Exception as error:
+                logger.warning("策略配置确认读取失败", strategy=sid, error_type=type(error).__name__)
+
     async def _scheduled_tuning(self) -> None:
         """调度器触发的周度调优"""
         logger.info("定时调优触发")
@@ -752,7 +775,20 @@ class StratTuneAI:
 
     def _setup_http_server(self) -> None:
         """初始化 HTTP 服务器，注册路由"""
-        self.app = web.Application()
+        import hmac
+
+        @web.middleware
+        async def authorize_write(request, handler):
+            if request.method == "POST":
+                expected = os.getenv("AI_TUNER_WRITE_TOKEN", "")
+                supplied = request.headers.get("Authorization", "")
+                if not expected or not hmac.compare_digest(
+                    supplied.encode(), ("Bearer " + expected).encode()
+                ):
+                    raise web.HTTPUnauthorized()
+            return await handler(request)
+
+        self.app = web.Application(middlewares=[authorize_write])
         self.app.router.add_get("/api/v1/health", self._handle_health)
         self.app.router.add_post("/api/v1/approval", self._handle_approval)
         self.app.router.add_post("/api/v1/trigger", self._handle_trigger)
@@ -798,6 +834,7 @@ class StratTuneAI:
         Returns:
             匹配的记忆记录，未找到返回 None
         """
+        await self.db_handler.expire_stale_approvals(int(self.config.get("approval", {}).get("timeout_hours", 48)))
         pending = await self.db_handler.get_pending_approvals()
         for p in pending:
             if p["strategy_id"] == strategy_id and p.get("created_at"):
@@ -863,7 +900,12 @@ class StratTuneAI:
                     )
 
                 # 应用变更
-                adjustments = matched.get("ai_suggestions", {}).get("adjustments", {})
+                if strategy_id in self.config.get("purpose_driven_mvp", {}).get("candidates", []):
+                    return web.json_response({"status": "blocked", "message": "候选策略须通过资格考试发布"}, status=409)
+                suggestions = matched.get("ai_suggestions") or {}
+                if isinstance(suggestions, str):
+                    suggestions = json.loads(suggestions)
+                adjustments = suggestions.get("adjustments", {})
                 config_path = strategy_cfg["config_path"]
                 from ai_tuner.deploy.diff_generator import DiffGenerator
                 diff_gen = DiffGenerator()
@@ -879,27 +921,26 @@ class StratTuneAI:
                                    config_path=config_path, error=str(e))
                 diff_text = diff_gen.generate_diff(strategy_name, adjustments, current_params)
 
-                # 先应用配置变更到覆盖层，成功后再标记数据库状态（保证一致性）
-                # 使用 apply_overrides 写入 tuning_overrides 目录，不修改 config.yaml
-                # 注意：adjustments 来自 AI 响应，格式为 {param_path: {"from": old, "to": new}}
-                # 需要提取 to 值，避免写入 {from: old, to: new} 结构破坏 YAML 标量类型
-                clean_adjustments = {}
-                for param_path, adj in adjustments.items():
-                    if isinstance(adj, dict) and "to" in adj:
-                        clean_adjustments[param_path] = adj["to"]
-                    else:
-                        clean_adjustments[param_path] = adj
-                success = self.config_operator.apply_overrides(config_path, clean_adjustments)
-                if not success:
+                baseline = suggestions.get("baseline_version")
+                if baseline is None and (not adjustments or any(
+                    not isinstance(change, dict) or not {"from", "to"} <= change.keys()
+                    for change in adjustments.values()
+                )):
+                    return web.json_response({"status": "blocked", "message": "历史提案缺少基线，请重新生成"}, status=409)
+                timeout = int(self.config.get("approval", {}).get("timeout_hours", 48))
+                if not await self.db_handler.claim_approval(matched["id"], timeout):
+                    return web.json_response({"status": "blocked", "message": "审批已处理或过期"}, status=409)
+                published = self.config_operator.publish_overrides(config_path, adjustments, expected_version=baseline)
+                if not published:
                     return web.json_response({
                         "status": "error",
                         "message": "配置变更应用失败，请查看服务端日志",
                     }, status=500)
 
-                await self.db_handler.mark_applied(matched["id"], approved_by="feishu_callback")
+                await self.db_handler.mark_published(matched["id"], published, "feishu_callback")
                 await self.messenger.send_applied_notification(strategy_name, strategy_id, diff_text)
 
-                logger.info("审批通过并应用", strategy_id=strategy_id, date=date)
+                logger.info("审批通过并发布覆盖层", strategy_id=strategy_id, date=date)
                 return web.json_response({
                     "status": "ok",
                     "message": f"已确认应用 {strategy_id} 的调优建议",
@@ -916,8 +957,8 @@ class StratTuneAI:
                             mem_date = p["created_at"].strftime("%Y-%m-%d") if isinstance(p["created_at"], datetime) else ""
                             if mem_date != date:
                                 continue
-                        await self.db_handler.mark_rejected(p["id"])
-                        rejected_count += 1
+                        if await self.db_handler.mark_rejected(p["id"]):
+                            rejected_count += 1
 
                 if rejected_count == 0:
                     return web.json_response(
@@ -1013,25 +1054,30 @@ class StratTuneAI:
                 )
 
             config_path = strategy_cfg["config_path"]
-            if backup_file:
-                # 防止路径穿越攻击：仅保留文件名部分
-                safe_backup_file = os.path.basename(backup_file)
-                backup_path = os.path.join(os.path.dirname(config_path), safe_backup_file)
-                logger.info(
-                    "回滚路径已构建",
-                    original=backup_file,
-                    safe=safe_backup_file,
-                    backup_path=backup_path,
-                )
-            else:
-                # 使用最新备份（列表按时间倒序，backups[0] 即最新）
-                backups = self.rollback_manager.list_backups(config_path)
-                if not backups:
-                    return web.json_response(
-                        {"status": "error", "message": f"未找到 {strategy_id} 的备份文件"},
-                        status=404,
-                    )
-                backup_path = backups[0]
+            if strategy_id in self.config.get("purpose_driven_mvp", {}).get("candidates", []):
+                return web.json_response({"status":"blocked","message":"候选策略需经资格发布流程回滚"}, status=409)
+            active = Path(config_path).parent / "tuning_overrides" / ".active"
+            if active.exists():
+                if not data.get("expected_version"):
+                    return web.json_response({"status": "error", "message": "请指定要撤销的 expected_version"}, status=409)
+                if backup_file:
+                    return web.json_response({"status": "error", "message": "覆盖层回滚请指定 version"}, status=409)
+                previous = data["expected_version"]
+                try:
+                    version = self.config_operator.rollback_overlay(config_path, data.get("version", ""), expected_current=previous)
+                except (ValueError, FileNotFoundError):
+                    return web.json_response({"status": "error", "message": "覆盖层版本已变化或目标不可用"}, status=409)
+                await self.db_handler.record_overlay_rollback(strategy_id, previous, version)
+                await self.messenger.send_rollback_notification(strategy_cfg.get("name", strategy_id), strategy_id, version)
+                return web.json_response({"status": "ok", "active_version": version})
+            if data.get("version") or data.get("expected_version"):
+                return web.json_response({"status": "error", "message": "没有生效覆盖层"}, status=409)
+            if not backup_file:
+                return web.json_response({"status": "error", "message": "基础配置回滚需指定 backup_file"}, status=409)
+            safe_backup_file = os.path.basename(backup_file)
+            backup_path = os.path.join(os.path.dirname(config_path), safe_backup_file)
+            if backup_path not in self.rollback_manager.list_backups(config_path):
+                return web.json_response({"status": "error", "message": "未找到指定的配置备份"}, status=404)
 
             success = self.rollback_manager.rollback(config_path, backup_path)
             if success:

@@ -8,6 +8,7 @@
 3. 记录 Token 用量和成本
 """
 
+import asyncio
 import importlib
 import json
 import os
@@ -80,6 +81,7 @@ class WeeklyTuningJob:
             config_operator: ConfigOperator 实例
             rollback_manager: RollbackManager 实例
         """
+        self._weekly_lock = asyncio.Lock()
         self.config = config
         self.db_manager = db_manager
         self.notification_client = notification_client
@@ -121,13 +123,18 @@ class WeeklyTuningJob:
             strategy_ids: 可选，指定需要调优的策略ID列表；为 None 时遍历所有已注册策略
             force: 是否强制调优（跳过"本周已调优"检查）
         """
+        async with self._weekly_lock:
+            await self._run_weekly_tuning(strategy_ids, force)
+
+    async def _run_weekly_tuning(self, strategy_ids, force):
         strategies = self.config.get("strategies", [])
         if not strategies:
             logger.warning("没有注册任何策略，跳过调优")
             return
 
         # 按 strategy_ids 过滤
-        if strategy_ids:
+        strategies = [s for s in strategies if s.get("enabled", True)]
+        if strategy_ids is not None:
             strategy_ids_set = set(strategy_ids)
             strategies = [s for s in strategies if s.get("strategy_id") in strategy_ids_set]
             if not strategies:
@@ -142,7 +149,9 @@ class WeeklyTuningJob:
         strategy_details = []
 
         # 本次调优批次标识（北京当前日期，作为 ai_tuner_runs.run_key）
-        run_key = datetime.now(BEIJING_TZ).strftime("%Y-%m-%d")
+        today = datetime.now(BEIJING_TZ).date()
+        run_key = today.isoformat()
+        week_start = today - timedelta(days=today.weekday())
 
         # 预先算好 MVP 候选集合，循环内复用（避免每个策略重算一次 config.get）
         mvp_candidates = set(
@@ -152,19 +161,32 @@ class WeeklyTuningJob:
         for strategy_cfg in strategies:
             strategy_id = strategy_cfg.get("strategy_id", "")
             strategy_name = strategy_cfg.get("name", "")
-            is_mvp_candidate = strategy_id in mvp_candidates
+            mvp = self.config.get("purpose_driven_mvp", {})
+            is_mvp_candidate = strategy_id in mvp_candidates and (
+                mvp.get("mode") != "live" or mvp.get("selected_strategy") != strategy_id
+            )
 
             try:
+                if not force and await self.db_handler.completed_this_week(strategy_id):
+                    logger.info("已完成本周调优", strategy_id=strategy_id)
+                    continue
+                if not await self.db_handler.claim_week(strategy_id, week_start, force):
+                    logger.warning("周度批次已有执行记录，请核对尚未完成的执行", strategy_id=strategy_id)
+                    continue
                 result = await self._tune_single_strategy(strategy_cfg, force=force)
+                status = result if result in ("success", "skip") else "error"
+                await self._record_run(run_key, strategy_id, strategy_cfg, status, result)
+                await self.db_handler.finish_week(strategy_id, week_start, status)
                 if result == "success":
                     total_success += 1
                     if is_mvp_candidate:
                         strategy_details.append(
                             f"🛡️ {strategy_name}：审计模式 — 已生成建议并推送飞书，未写入覆盖层"
                         )
+                    elif self.config.get("approval", {}).get("auto_apply", {}).get("enabled"):
+                        strategy_details.append(f"✅ {strategy_name}：覆盖层已写入，等待读取确认")
                     else:
-                        strategy_details.append(f"✅ {strategy_name}：已调整")
-                    await self._record_run(run_key, strategy_id, strategy_cfg, "success", result)
+                        strategy_details.append(f"📝 {strategy_name}：已生成建议，等待审批")
                 elif result == "skip":
                     total_skip += 1
                     if is_mvp_candidate:
@@ -173,11 +195,9 @@ class WeeklyTuningJob:
                         )
                     else:
                         strategy_details.append(f"⏸️ {strategy_name}：无需调整")
-                    await self._record_run(run_key, strategy_id, strategy_cfg, "skip", result)
                 else:
                     total_error += 1
                     strategy_details.append(f"❌ {strategy_name}：异常")
-                    await self._record_run(run_key, strategy_id, strategy_cfg, "error", result)
             except Exception as e:
                 total_error += 1
                 strategy_details.append(f"❌ {strategy_name}：异常 ({str(e)})")
@@ -187,7 +207,6 @@ class WeeklyTuningJob:
                     strategy_name=strategy_name,
                     error=str(e),
                 )
-                await self._record_run(run_key, strategy_id, strategy_cfg, "error", str(e))
                 await self.messenger.send_error_notification(
                     strategy_name=strategy_name,
                     strategy_id=strategy_id,
@@ -263,6 +282,7 @@ class WeeklyTuningJob:
                 status=status,
                 error=str(e),
             )
+            raise
 
     async def _tune_single_strategy(
         self, strategy_cfg: Dict[str, Any], force: bool = False
@@ -307,6 +327,8 @@ class WeeklyTuningJob:
         adapter_class_path = strategy_cfg["adapter_class"]
         config_path = strategy_cfg["config_path"]
 
+        baseline_version = (self.version_manager.get_active_version(config_path) if config_path else None) or "base"
+
         # 步骤1：动态导入并实例化适配器
         adapter = self._load_adapter(adapter_class_path, strategy_cfg)
         if not adapter:
@@ -340,11 +362,15 @@ class WeeklyTuningJob:
 
         if report.performance.total_trades == 0:
             # 方案D：检查适配器是否允许无交易调优
-            if getattr(adapter, "allow_tuning_without_trades", False):
+            if getattr(adapter, "allow_tuning_without_trades", False) and report.simulation:
                 logger.info(
                     "策略本周无真实成交，但允许基于回测数据继续调优",
                     strategy_id=strategy_id,
                 )
+            elif strategy_id == "grid":
+                await self.messenger.send_error_notification(strategy_name=strategy_name, strategy_id=strategy_id,
+                                                            error_message="DATA_ERROR：缺少网格回测证据")
+                return "error"
             else:
                 logger.info("策略本周无交易，跳过调优", strategy_id=strategy_id)
                 return "skip"
@@ -369,9 +395,6 @@ class WeeklyTuningJob:
             db_handler=self.db_handler,
             current_report=report_dict,
         )
-
-        # [新增] 生成新版本号（用于 save_memory 的 active_version）
-        new_version = self.version_manager.generate_new_version(config_path)
 
         # 步骤3：构建历史上下文
         context = await self.context_builder.build_context(
@@ -460,11 +483,18 @@ class WeeklyTuningJob:
             await self.messenger.send_error_notification(
                 strategy_name=strategy_name,
                 strategy_id=strategy_id,
-                error_detail="参数校验失败：" + "; ".join(validation["errors"]),
+                error_message="参数校验失败：" + "; ".join(validation["errors"]),
             )
             return "error"
 
         adjustments = validation["validated"]
+
+        if strategy_id == "grid" and adjustments:
+            evidence = await adapter.validate_grid_proposal(adjustments)
+            if not evidence["passed"]:
+                await self.messenger.send_error_notification(strategy_name=strategy_name, strategy_id=strategy_id,
+                                                            error_message=evidence["reason"])
+                return "error"
 
         # --- 契约适配层：把新/旧契约字段统一成下游（save_memory、通知卡片）使用的格式 ---
         if contract_mode == "new":
@@ -483,9 +513,16 @@ class WeeklyTuningJob:
             "reasons": reasons_text,
             "summary": summary_text,
             "adjustments": adjustments,
+            "baseline_version": baseline_version,
+            "manual_approval_allowed": strategy_id not in candidates and not (
+                self.config.get("approval", {}).get("auto_apply", {}).get("enabled", False)
+            ),
             "expected_impact": parsed.get("expected_impact", ""),
             "confidence": parsed.get("confidence", 0),
         }
+
+        if contract_mode == "new":
+            ai_suggestions["decision"] = parsed.get("decision")
 
         memory_id = await self.db_handler.save_memory(
             strategy_id=strategy_id,
@@ -493,10 +530,13 @@ class WeeklyTuningJob:
             report=report_dict,
             ai_suggestions=ai_suggestions,
             summary=summary_text,
-            active_version=new_version,
+            active_version="",
         )
 
         # 步骤9：如果 AI 建议"维持不变"，发送通知告知用户
+        if parsed.get("decision") == "DATA_ERROR":
+            await self.messenger.send_error_notification(strategy_name=strategy_name, strategy_id=strategy_id, error_message=reasons_text or "调优数据不足")
+            return "error"
         if not adjustments:
             # 新契约下 decision 字段能直接判断 HOLD/DATA_ERROR，旧契约下靠 adjustments 为空
             no_change_reason = reasons_text or "当前参数配置经过评估无需调整，已维持现有配置不变。"
@@ -528,20 +568,27 @@ class WeeklyTuningJob:
 
         # 步骤12：自动应用配置（MVP 审计模式下拦截写入）
         auto_apply_cfg = self.config.get("approval", {}).get("auto_apply", {})
+        if strategy_id in candidates and not is_mvp_blocked and auto_apply_cfg.get("enabled", False):
+            # The current offline scorecard is evidence only. It does not issue
+            # a release credential bound to this proposal and active baseline.
+            await self.messenger.send_error_notification(
+                strategy_name=strategy_name, strategy_id=strategy_id,
+                error_message="缺少绑定本次提案及基线版本的资格凭据",
+            )
+            return "error"
         if auto_apply_cfg.get("enabled", False) and not is_mvp_blocked:
             if config_path:
                 # 调用 ConfigOperator 写入覆盖层（同步方法，不用 await）
-                success = self.config_operator.apply_overrides(config_path, adjustments)
-                if success:
-                    # 标记数据库为已应用
-                    await self.db_handler.mark_applied(memory_id, approved_by="auto_apply")
+                published = self.config_operator.publish_overrides(config_path, adjustments, expected_version=baseline_version)
+                if published:
+                    await self.db_handler.mark_published(memory_id, published, "auto_apply")
                     # 发送自动应用通知
                     await self.messenger.send_auto_applied_notification(
                         strategy_name=strategy_name,
                         strategy_id=strategy_id,
                         diff_text=diff_text,
                     )
-                    logger.info("调优建议已自动应用", strategy_id=strategy_id, memory_id=memory_id)
+                    logger.info("调优建议已写入覆盖层", strategy_id=strategy_id, memory_id=memory_id)
                 else:
                     logger.error("自动应用配置失败", strategy_id=strategy_id, memory_id=memory_id)
                     await self.messenger.send_error_notification(
@@ -549,8 +596,10 @@ class WeeklyTuningJob:
                         strategy_id=strategy_id,
                         error_message="自动应用配置失败，请查看日志",
                     )
+                    return "error"
             else:
                 logger.warning("策略缺少 config_path，无法自动应用", strategy_id=strategy_id)
+                return "error"
         elif is_mvp_blocked and auto_apply_cfg.get("enabled", False):
             # MVP 审计模式：完整流水线已跑，仅拦截写入；info 日志说明未写入的原因
             logger.info(

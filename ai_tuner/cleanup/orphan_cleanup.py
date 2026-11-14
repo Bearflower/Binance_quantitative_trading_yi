@@ -14,12 +14,13 @@
   彻底解决因 strategy_states 数据延迟或解析异常导致的误判问题。
 """
 
-import asyncio
+import os
+from decimal import Decimal
 import structlog
 from datetime import datetime, timedelta, timezone
 from typing import Set, Optional
 
-from shared.condition_orders import get_open_orders, mark_order_canceled, mark_order_executed, ensure_table
+from shared.condition_orders import get_open_orders, ensure_table
 from shared.binance_api import BinanceClient, BinanceAPIError
 from shared.notification import NotificationClient
 
@@ -56,6 +57,7 @@ class OrphanCleanupJob:
                                            （True 时无法确认或无仓才清理；False 时回退到既有行为）
             alert_on_missing_state: R08 开关：状态缺失而保守保留保护单时是否发送告警
         """
+        self.account_id = os.environ.get("TRADE_ACCOUNT_ID") or "default"
         self.db = db
         self.binance = binance_client
         self.notification_client = notification_client
@@ -105,10 +107,19 @@ class OrphanCleanupJob:
         """
         try:
             positions = await self.binance.get_position()
+            if not isinstance(positions, list):
+                return None
+            if self.binance.use_unified_account:
+                account_positions = await self.binance.get_um_account_positions()
+                if not isinstance(account_positions, list):
+                    return None
+                positions = positions + account_positions
             result = set()
             for pos in positions:
-                amt = float(pos.get('positionAmt', 0))
-                if abs(amt) > 0.0001:  # 过滤掉持仓量为 0 的币种
+                amt = Decimal(str(pos['positionAmt']))
+                if not amt.is_finite() or not pos['symbol']:
+                    return None
+                if amt != 0:  # 过滤掉持仓量为 0 的币种
                     result.add(pos['symbol'])
             if result:
                 logger.info("交易所实时持仓获取成功", symbols=list(result), count=len(result))
@@ -186,10 +197,10 @@ class OrphanCleanupJob:
             entry_rows = await self.db.fetch_all(
                 """
                 SELECT id FROM condition_orders
-                WHERE strategy_name = $1 AND symbol = $2 AND order_type = 'ENTRY' AND status = 'OPEN'
+                WHERE strategy_name = $1 AND symbol = $2 AND order_type = 'ENTRY' AND status = 'OPEN' AND account_id=$3
                 LIMIT 1
                 """,
-                strategy_name, symbol,
+                strategy_name, symbol, self.account_id,
             )
             if entry_rows:
                 logger.debug(
@@ -206,12 +217,12 @@ class OrphanCleanupJob:
                 """
                 SELECT id FROM trading.trade_records
                 WHERE strategy = $1 AND symbol = $2
-                AND executed_at >= $3
+                AND executed_at >= $3 AND account_id=$4
                 AND realized_pnl IS NULL
                 AND order_type <> 'PNL_SUMMARY'
                 LIMIT 1
                 """,
-                strategy_name, symbol, window_start,
+                strategy_name, symbol, window_start, self.account_id,
             )
             if open_pos_rows:
                 logger.debug(
@@ -243,167 +254,47 @@ class OrphanCleanupJob:
         symbol = order['symbol']
         algo_id = order.get('algo_id')
         order_id = order.get('order_id')
-        order_type = order.get('order_type', '')
 
+        if order.get("account_id") != self.account_id or not order.get("id"):
+            return False, "缺少可核验的账户或记录身份"
         try:
-            if algo_id is not None:
-                # 条件单用 cancel_algo_order
-                await self.binance.cancel_algo_order(symbol, int(algo_id))
-                logger.info("孤儿条件单已取消（首次调用）", strategy=strategy_name, symbol=symbol,
-                            algo_id=algo_id, type=order_type)
-
-                # 验证：再次取消同一订单，确认是否真的已取消
-                # 如果第二次返回 -2011（订单不存在），说明第一次取消成功
-                # 如果第二次也返回成功，说明 API 可能返回了虚假成功，订单未实际取消
-                await asyncio.sleep(self._VERIFY_INTERVAL_SECONDS)  # 等待后验证
-                try:
-                    await self.binance.cancel_algo_order(symbol, int(algo_id))
-                    # 第二次调用也返回成功（无异常）—— 异常情况！
-                    # 说明 API 可能返回了虚假的"成功"响应，订单未实际取消
-                    logger.warning("条件单取消验证失败：API 再次返回成功，订单可能未实际取消",
-                                  strategy=strategy_name, symbol=symbol,
-                                  algo_id=algo_id, type=order_type)
-                    # 不标记为已取消，留待下次清理周期重试
-                    return False, "API 返回虚假成功，订单未实际取消，等待下次重试"
-                except BinanceAPIError as v:
-                    if v.code == -2011:
-                        # -2011 表示订单已不存在，确认取消成功
-                        logger.info("条件单取消验证通过：订单已不存在",
-                                    strategy=strategy_name, symbol=symbol, algo_id=algo_id)
-                    else:
-                        # 其他错误，重新抛出
-                        raise
-            elif order_id is not None:
-                # 普通订单用 cancel_order
-                await self.binance.cancel_order(symbol, str(order_id))
-                logger.info("孤儿普通订单已取消", strategy=strategy_name, symbol=symbol,
-                            order_id=order_id, type=order_type)
-            else:
-                logger.warning("订单无 ID，跳过", strategy=strategy_name, symbol=symbol)
+            if algo_id is None and order_id is None:
                 return False, "无订单ID"
-
-            # 标记为已取消
-            await mark_order_canceled(self.db, order_id=order_id, algo_id=algo_id)
-            return True, None
-
-        except BinanceAPIError as e:
-            if e.code == -2011:
-                # 订单已不存在（-2011）视为取消成功
-                await mark_order_canceled(self.db, order_id=order_id, algo_id=algo_id)
-                return True, None
-            if e.code == -2021:
-                # 条件单已执行（algo 已不存在或已触发）
-                await mark_order_executed(self.db, algo_id=algo_id, order_id=order_id)
-                return True, "订单已执行"
-            logger.warning("取消失败", strategy=strategy_name, symbol=symbol,
-                           error_code=e.code, error=e.message)
-            return False, f"[{e.code}] {e.message}"
-        except Exception as e:
-            error_str = str(e)
-            # 兜底：字符串匹配方式处理非 BinanceAPIError 异常
-            if "-2011" in error_str or "Order does not exist" in error_str:
-                await mark_order_canceled(self.db, order_id=order_id, algo_id=algo_id)
-                return True, None
-            if "algo" in error_str.lower() and (
-                "not exist" in error_str.lower() or "invalid" in error_str.lower()
-            ):
-                await mark_order_executed(self.db, algo_id=algo_id, order_id=order_id)
-                return True, "订单已执行"
-            logger.warning("取消失败", strategy=strategy_name, symbol=symbol, error=error_str)
-            return False, error_str
-
-    async def _bulk_cancel_orders(
-        self,
-        symbol: str,
-        orders: list,
-        canceled: list,
-        failed: list,
-        scenario: str,
-    ) -> bool:
-        """
-        批量取消指定交易对的所有条件单，并更新数据库状态
-
-        使用 DELETE /papi/v1/um/algo/allOpenOrders 端点，一次取消该币种的所有 OPEN 条件单。
-        相比逐个取消，此端点更可靠，不会出现"API 返回成功但订单未实际取消"的问题，
-        同时也能清理数据库中未记录的条件单（如容器重启后丢失跟踪的订单）。
-
-        Args:
-            symbol: 交易对名称
-            orders: 该交易对在 condition_orders 表中的 OPEN 订单列表
-            canceled: 成功取消的列表（追加）
-            failed: 取消失败的列表（追加）
-            scenario: 场景描述（用于通知消息）
-
-        Returns:
-            bool: 是否成功
-        """
-        try:
-            await self.binance.cancel_all_algo_orders(symbol)
-            logger.info("批量取消条件单成功", symbol=symbol, scenario=scenario, db_order_count=len(orders))
-
-            # 验证：逐个确认条件单是否真的已取消
-            # 先收集验证通过的订单，再统一处理，避免验证失败时回滚 canceled 列表
-            verified_canceled = []
-            for order in orders:
-                algo_id = order.get('algo_id')
-                order_id = order.get('order_id')
+            # Re-check immediately before mutation; earlier inventory can be stale
+            # by the time this order is reached in a multi-symbol cleanup.
+            positions = await self._get_exchange_positions()
+            if not self._is_confirmed_no_position(symbol, positions):
+                return False, "撤单前持仓未确认空仓"
+            try:
                 if algo_id is not None:
-                    await asyncio.sleep(self._VERIFY_INTERVAL_SECONDS)  # 等待后验证
-                    try:
-                        await self.binance.cancel_algo_order(symbol, int(algo_id))
-                        # 第二次调用也返回成功（无异常）—— 异常情况！
-                        # 说明批量取消可能未实际生效，该订单仍存在
-                        logger.warning(
-                            "批量取消后订单仍存在，标记为未取消",
-                            symbol=symbol, algo_id=algo_id, type=order.get('order_type', '')
-                        )
-                        # 标记为验证失败，加入 failed 列表，不加入 verified_canceled
-                        failed.append(
-                            f"{order['strategy_name']} | {symbol} | {order['order_type']} "
-                            f"(algoId:{algo_id}) | {scenario}失败: 批量取消未实际生效"
-                        )
-                    except BinanceAPIError as v:
-                        if v.code == -2011:
-                            # -2011 表示订单已不存在，确认取消成功
-                            logger.debug("验证通过：订单已取消", symbol=symbol, algo_id=algo_id)
-                            verified_canceled.append(order)
-                        else:
-                            # 其他错误，标记为失败
-                            logger.warning("验证异常", symbol=symbol, algo_id=algo_id,
-                                           error_code=v.code, error=v.message)
-                            failed.append(
-                                f"{order['strategy_name']} | {symbol} | {order['order_type']} "
-                                f"(algoId:{algo_id}) | {scenario}失败: [{v.code}] {v.message}"
-                            )
+                    await self.binance.cancel_algo_order(symbol, int(algo_id))
                 else:
-                    # 没有 algo_id 的订单（普通订单），无法用此方式验证，直接视为成功
-                    verified_canceled.append(order)
-
-            # 统一处理验证通过的订单：标记数据库状态 + 加入 canceled 列表
-            for order in verified_canceled:
-                sn = order['strategy_name']
-                algo_id = order.get('algo_id')
-                order_id = order.get('order_id')
-                await mark_order_canceled(self.db, order_id=order_id, algo_id=algo_id)
-                canceled.append(
-                    f"{sn} | {symbol} | {order['order_type']} "
-                    f"(algoId:{algo_id or order_id}) | {scenario}"
-                )
-
-            # 验证失败的订单，不回滚数据库状态，留待下次清理周期发现并处理
-            # 额外记录：即使数据库中没有该币种的订单，批量取消也清理了交易所上的残留订单
-            if not orders:
-                canceled.append(f"(无DB记录) | {symbol} | 批量清理 | {scenario}")
-
-            return True
-        except BinanceAPIError as e:
-            logger.warning("批量取消条件单失败", symbol=symbol, error_code=e.code, error=e.message)
-            failed.append(f"批量取消 | {symbol} | 全部 | {scenario}失败: [{e.code}] {e.message}")
-            return False
-        except Exception as e:
-            logger.warning("批量取消条件单失败", symbol=symbol, error=str(e))
-            failed.append(f"批量取消 | {symbol} | 全部 | {scenario}失败: {str(e)}")
-            return False
+                    await self.binance.cancel_order(symbol, str(order_id))
+            except BinanceAPIError as exc:
+                if exc.code != -2011:
+                    raise
+            if algo_id is not None:
+                terminal = await self.binance.get_algo_order(int(algo_id))
+                if str(terminal.get("algoId")) != str(algo_id):
+                    return False, "条件单身份不符"
+                status = terminal.get("algoStatus")
+            else:
+                terminal = await self.binance.get_order(symbol, int(order_id))
+                if str(terminal.get("orderId")) != str(order_id):
+                    return False, "订单身份不符"
+                status = terminal.get("status")
+            if terminal.get("symbol") != symbol or status not in {"CANCELED", "CANCELLED", "FILLED"}:
+                return False, "订单终态未确认"
+            state = "EXECUTED" if status == "FILLED" else "CANCELED"
+            affected = await self.db.execute(
+                "UPDATE condition_orders SET status=$1, updated_at=NOW() "
+                "WHERE id=$2 AND account_id=$3 AND symbol=$4 AND status='OPEN'",
+                state, order["id"], self.account_id, symbol,
+            )
+            return (True, None) if affected == "UPDATE 1" else (False, "订单状态已变化")
+        except Exception as exc:
+            logger.warning("取消终态未确认", strategy=strategy_name, symbol=symbol, error=str(exc))
+            return False, str(exc)
 
     async def execute(self):
         """执行清理检查并取消孤儿条件单"""
@@ -414,12 +305,12 @@ class OrphanCleanupJob:
             await self._ensure_table()
 
             # 2. 查询所有 OPEN 状态的条件单
-            open_orders = await get_open_orders(self.db)
+            open_orders = await get_open_orders(self.db, account_id=self.account_id)
 
             # 3. 获取交易所实时持仓（作为最终判断依据）
             exchange_positions = await self._get_exchange_positions()
             if exchange_positions is None:
-                logger.warning("交易所实时持仓获取失败，回退到 strategy_states 快照数据")
+                logger.warning("交易所实时持仓获取失败，保留保护单")
             else:
                 logger.info("交易所实时持仓已获取，将作为最终判断依据", count=len(exchange_positions))
 
@@ -451,7 +342,7 @@ class OrphanCleanupJob:
                 # 场景A: 策略无状态记录
                 # R08-F1/F2/F3：无状态分支必须先经交易所持仓前置检查，禁止仅凭「状态缺失」判孤儿
                 if not state:
-                    if self.require_exchange_confirmation:
+                    if self.require_exchange_confirmation or not self._is_confirmed_no_position(symbol, exchange_positions):
                         if not self._is_confirmed_no_position(symbol, exchange_positions):
                             reason = "无法确认持仓" if exchange_positions is None else "交易所确认有持仓"
                             skipped.append(
@@ -481,12 +372,14 @@ class OrphanCleanupJob:
                     # 统一为 naive datetime（asyncpg 从 timestamptz 返回 aware，
                     # 需要 strip tzinfo 才能与 naive utcnow() 做减法）
                     if updated_at.tzinfo is not None:
-                        updated_at = updated_at.replace(tzinfo=None)
+                        updated_at = updated_at.astimezone(timezone.utc).replace(tzinfo=None)
                     hours_since = (now - updated_at).total_seconds() / 3600
                     if hours_since > self.stale_hours_threshold:
                         # 如果交易所确认有持仓，跳过
-                        if exchange_positions is not None and symbol in exchange_positions:
-                            skipped.append(f"{sn} | {symbol} | {order['order_type']} | 场景A跳过: 交易所确认有持仓（策略{hours_since:.1f}h未更新，但持仓有效）")
+                        if (not self._is_confirmed_no_position(symbol, exchange_positions)
+                                or await self._strategy_has_position(sn, symbol)):
+                            no_state_alerts.append(f"{sn} | {symbol} | 陈旧状态下缺少空仓确认")
+                            skipped.append(f"{sn} | {symbol} | {order['order_type']} | 场景A跳过: 未确认可清理（策略{hours_since:.1f}h未更新）")
                             continue
                         stale_orders.append(order)
                         continue

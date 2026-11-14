@@ -98,7 +98,7 @@ def _create_job(config, apply_overrides_return=True, adjustments=None):
 
     # 将异步方法设为 AsyncMock
     job.db_handler.save_memory = AsyncMock(return_value=42)
-    job.db_handler.mark_applied = AsyncMock(return_value=True)
+    job.db_handler.mark_published = AsyncMock(return_value=True)
     job.messenger.send_tuning_card = AsyncMock(return_value=True)
     job.messenger.send_auto_applied_notification = AsyncMock(return_value=True)
     job.messenger.send_error_notification = AsyncMock(return_value=True)
@@ -135,13 +135,14 @@ def _create_job(config, apply_overrides_return=True, adjustments=None):
     job.diff_generator.generate_diff = MagicMock(return_value="+ param1: 0.3 -> 0.5")
 
     # 模拟 version_manager
+    job.version_manager.get_active_version = MagicMock(return_value=None)
     job.version_manager.generate_new_version = MagicMock(return_value="v1.1")
 
     # 模拟 context_enhancer
     job.context_enhancer.build_feedback_context = MagicMock(return_value="")
 
-    # 设置 config_operator.apply_overrides 的返回值
-    job.config_operator.apply_overrides = MagicMock(
+    # 设置 config_operator.publish_overrides 的返回值
+    job.config_operator.publish_overrides = MagicMock(
         return_value=apply_overrides_return
     )
 
@@ -174,7 +175,7 @@ class TestAutoApply:
         - apply_overrides 返回 True
         - 验证：mark_applied 被调用且参数为 approved_by="auto_apply"
         - 验证：send_auto_applied_notification 被调用
-        - 验证：日志记录"调优建议已自动应用"
+        - 验证：日志记录"调优建议已写入覆盖层"
         """
         job, mocks = _create_job(base_config)
 
@@ -192,13 +193,13 @@ class TestAutoApply:
         assert result == "success"
 
         # 验证 apply_overrides 被调用
-        mocks["config_operator"].apply_overrides.assert_called_once_with(
-            "strategies/btc_eth/config.yaml", {"param1": 0.5}
+        mocks["config_operator"].publish_overrides.assert_called_once_with(
+            "strategies/btc_eth/config.yaml", {"param1": 0.5}, expected_version="base"
         )
 
         # 验证 mark_applied 被调用且参数为 approved_by="auto_apply"
-        mocks["db_handler"].mark_applied.assert_called_once_with(
-            42, approved_by="auto_apply"
+        mocks["db_handler"].mark_published.assert_called_once_with(
+            42, True, "auto_apply"
         )
 
         # 验证 send_auto_applied_notification 被调用
@@ -208,9 +209,9 @@ class TestAutoApply:
             diff_text="+ param1: 0.3 -> 0.5",
         )
 
-        # 验证日志记录"调优建议已自动应用"
+        # 验证日志记录"调优建议已写入覆盖层"
         mock_logger.info.assert_any_call(
-            "调优建议已自动应用", strategy_id="btc_eth", memory_id=42
+            "调优建议已写入覆盖层", strategy_id="btc_eth", memory_id=42
         )
 
     @pytest.mark.asyncio
@@ -237,13 +238,13 @@ class TestAutoApply:
             result = await job._tune_single_strategy(strategy_cfg)
 
         # 验证返回 success（整体流程不中断）
-        assert result == "success"
+        assert result == "error"
 
         # 验证 apply_overrides 被调用
-        mocks["config_operator"].apply_overrides.assert_called_once()
+        mocks["config_operator"].publish_overrides.assert_called_once()
 
         # 验证 mark_applied 不被调用
-        mocks["db_handler"].mark_applied.assert_not_called()
+        mocks["db_handler"].mark_published.assert_not_called()
 
         # 验证 send_auto_applied_notification 不被调用
         mocks["messenger"].send_auto_applied_notification.assert_not_called()
@@ -289,10 +290,10 @@ class TestAutoApply:
         assert result == "success"
 
         # 验证 apply_overrides 不被调用
-        mocks["config_operator"].apply_overrides.assert_not_called()
+        mocks["config_operator"].publish_overrides.assert_not_called()
 
         # 验证 mark_applied 不被调用
-        mocks["db_handler"].mark_applied.assert_not_called()
+        mocks["db_handler"].mark_published.assert_not_called()
 
         # 验证 send_auto_applied_notification 不被调用
         mocks["messenger"].send_auto_applied_notification.assert_not_called()
@@ -323,13 +324,13 @@ class TestAutoApply:
             result = await job._tune_single_strategy(strategy_cfg)
 
         # 验证返回 success
-        assert result == "success"
+        assert result == "error"
 
         # 验证 apply_overrides 不被调用
-        mocks["config_operator"].apply_overrides.assert_not_called()
+        mocks["config_operator"].publish_overrides.assert_not_called()
 
         # 验证 mark_applied 不被调用
-        mocks["db_handler"].mark_applied.assert_not_called()
+        mocks["db_handler"].mark_published.assert_not_called()
 
         # 验证 send_auto_applied_notification 不被调用
         mocks["messenger"].send_auto_applied_notification.assert_not_called()
@@ -362,10 +363,10 @@ class TestAutoApply:
             result = await job._tune_single_strategy(strategy_cfg)
 
         # 验证返回 success
-        assert result == "success"
+        assert result == "error"
 
         # 验证 apply_overrides 不被调用
-        mocks["config_operator"].apply_overrides.assert_not_called()
+        mocks["config_operator"].publish_overrides.assert_not_called()
 
         # 验证日志记录"策略缺少 config_path，无法自动应用"
         mock_logger.warning.assert_any_call(
@@ -409,8 +410,8 @@ class TestSendAutoAppliedNotification:
         """
         验证消息内容格式正确
 
-        - 包含"【调优已自动应用】"
-        - 包含"AI 自动生效"
+        - 包含"【调优覆盖层已写入】"
+        - 包含"等待策略加载确认"
         - 包含策略名称
         - 包含变更清单
         """
@@ -425,8 +426,8 @@ class TestSendAutoAppliedNotification:
         message = call_args[1]["message"] if "message" in call_args[1] else call_args[0][0]
 
         # 验证关键文本
-        assert "【调优已自动应用】" in message
-        assert "AI 自动生效" in message
+        assert "【调优覆盖层已写入】" in message
+        assert "等待策略加载确认" in message
         assert "MTPCS策略" in message
         assert "+ param1: 0.3 -> 0.5" in message
 

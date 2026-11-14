@@ -263,3 +263,32 @@ def test_position_requires_symbol_filters(tmp_path):
         item["type"] == "reject" and item["payload"]["reason"] == "SYMBOL_FILTERS_MISSING"
         for item in broker.audit
     )
+
+
+def test_late_decision_cannot_fill_on_predecision_open():
+    broker = make_broker()
+    signal = make_bar("100", "101", "99", "100", 0)
+    broker.submit((entry_intent(),), signal, signal.close_time)
+    broker.on_bar("BTCUSDT", signal, signal.close_time)
+    assert not broker.positions
+
+
+def test_minimum_notional_respects_fractional_step():
+    from ai_tuner.replay.broker import clamp_notional
+
+    assert clamp_notional(Decimal("0.00001"), Decimal(60000), Decimal(5),
+                          Decimal("0.001")) == Decimal("0.001")
+
+
+def test_initial_stop_is_working_on_market_entry_bar():
+    from dataclasses import replace
+    from ai_tuner.replay.models import EntryProtection
+
+    broker = make_broker()
+    protection = EntryProtection(*(Decimal(x) for x in ("2", "-3", "5", "10", "0.3", "0.4")))
+    signal = make_bar("100", "101", "99", "100", 0)
+    broker.submit((replace(entry_intent(), protection=protection),), signal, signal.close_time)
+    entry = make_bar("101", "102", "90", "95", 1)
+    broker.on_bar("BTCUSDT", entry, entry.close_time)
+    assert broker.closed_trades[0].exit_reason == "STOP_LOSS"
+    assert broker.closed_trades[0].exit_price == Decimal("97.80")

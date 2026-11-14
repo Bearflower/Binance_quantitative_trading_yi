@@ -163,6 +163,7 @@ class GridBacktestEngine:
             kline_count=len(klines),
             initial_capital=initial_capital,
             final_equity=final_equity,
+            regime_map=regime_map,
         )
 
         logger.info(
@@ -308,13 +309,24 @@ class GridBacktestEngine:
 
         # 更新状态
         state.last_price = close
+        # 检查止损（如果持仓不为0）
+        if state.position != 0 and state.entry_price > 0:
+            self._check_stop_loss(state, close, kline_index, open_time, current_regime)
+
         equity = state.cash + state.position * close
         state.equity_curve.append(equity)
         state.peak_equity = max(state.peak_equity, equity)
 
-        # 检查止损（如果持仓不为0）
-        if state.position != 0 and state.entry_price > 0:
-            self._check_stop_loss(state, close, kline_index, open_time, current_regime)
+    @staticmethod
+    def _update_position(state: BacktestState, delta: float, price: float) -> None:
+        previous = state.position
+        state.position = previous + delta
+        if previous * delta >= 0:
+            state.entry_price = (previous * state.entry_price + delta * price) / state.position
+        elif not state.position:
+            state.entry_price = 0
+        elif previous * state.position < 0:
+            state.entry_price = price
 
     def _execute_buy(
         self,
@@ -345,15 +357,7 @@ class GridBacktestEngine:
         state.cash -= notional + fee
         state.total_fee += fee
 
-        # 更新持仓和开仓均价
-        if state.position == 0:
-            state.position = qty
-            state.entry_price = slippage_price
-        else:
-            # 加仓：更新开仓均价
-            total_value = state.position * state.entry_price + qty * slippage_price
-            state.position += qty
-            state.entry_price = total_value / state.position if state.position > 0 else 0
+        self._update_position(state, qty, slippage_price)
 
         # 记录成交
         self._record_fill(state, "buy", slippage_price, qty, fee, "maker", notional, kline_index, open_time, regime)
@@ -393,7 +397,7 @@ class GridBacktestEngine:
         state.total_fee += fee
 
         # 更新持仓
-        state.position -= qty
+        self._update_position(state, -qty, slippage_price)
 
         # 记录成交
         self._record_fill(state, "sell", slippage_price, qty, fee, "maker", notional, kline_index, open_time, regime)
@@ -427,7 +431,8 @@ class GridBacktestEngine:
         if state.entry_price <= 0:
             return
 
-        pnl_pct = (close - state.entry_price) / state.entry_price
+        direction = 1 if state.position > 0 else -1
+        pnl_pct = direction * (close - state.entry_price) / state.entry_price
 
         # 硬止损
         hard_stop = self._cached_hard_stop_loss

@@ -20,7 +20,7 @@ if DSN:
         raise ValueError('Only isolated local allocation_tests is permitted')
 ROOT=Path(__file__).parents[2]
 
-async def setup():
+async def create_test_pool():
     conn=await asyncpg.connect(DSN)
     await conn.execute('CREATE SCHEMA IF NOT EXISTS trading')
     await conn.execute('''CREATE TABLE IF NOT EXISTS trading.position_claims(id bigserial primary key,
@@ -36,7 +36,7 @@ async def setup():
 
 @pytest.mark.asyncio
 async def test_real_published_reader_same_cost_inclusive_report(monkeypatch):
-    monkeypatch.setenv('TRADE_ACCOUNT_ID','test-account');pool=await setup()
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test-account');pool=await create_test_pool()
     try:
         body=report();body['by_strategy']['hrs'].update(realized_pnl='2',commission='-3',funding_fee='-.25')
         async with pool.acquire() as conn:
@@ -52,7 +52,7 @@ async def test_real_published_reader_same_cost_inclusive_report(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_real_capped_policy_and_expiry_during_equity_wait(monkeypatch):
-    monkeypatch.setenv('TRADE_ACCOUNT_ID','test-account');pool=await setup()
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test-account');pool=await create_test_pool()
     admin=await asyncpg.connect(DSN)
     try:
         await admin.execute("""INSERT INTO trading.strategy_risk_policy(account_id,strategy_id,revision,effective_at,expires_at,mode,multiplier,ratio_cap,entry_ceiling,reason)

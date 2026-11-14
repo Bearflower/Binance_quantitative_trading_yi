@@ -173,13 +173,22 @@ _AGGRESSIVE_SIGNALS_SQL = """SELECT count(*) AS real_signals,
 count(*) FILTER (WHERE status='executed') AS executed_signals,
 count(*) FILTER (WHERE status='cancelled') AS unresolved_signals,
 count(*) FILTER (WHERE status='executed' AND
-  NOT (metadata ? 'entry_order_id')) AS executed_without_order_id,
+  (COALESCE(s.metadata->>'entry_order_id','') !~ '^[1-9][0-9]*$' OR NOT EXISTS (
+    SELECT 1 FROM trading.trade_records t
+    JOIN trading.execution_fact_fill f ON f.account_id=t.account_id AND f.symbol=t.symbol
+      AND f.order_id::text=t.order_id AND f.side=t.side AND f.qty>0
+    WHERE t.account_id=$3 AND t.strategy='btc_eth_aggressive' AND t.symbol=s.symbol
+      AND t.side=CASE UPPER(s.direction) WHEN 'LONG' THEN 'BUY' WHEN 'SHORT' THEN 'SELL' END
+      AND f.trade_time_utc < ($2::timestamp AT TIME ZONE 'UTC')
+      AND t.order_id=s.metadata->>'entry_order_id' AND t.order_type IN ('MARKET','LIMIT')
+      AND t.status='FILLED' AND t.price>0 AND t.quantity>0
+  ))) AS executed_without_order_id,
 count(*) FILTER (WHERE status='cancelled' AND
   (metadata->>'skip_reason' ILIKE '%take profit or remainder infeasible%'
    OR metadata->>'reject_reason' ILIKE '%take profit or remainder infeasible%'))
   AS infeasible_entry_signals,
 0::bigint AS shadow_signals
-FROM btc_eth_aggressive.trade_signals WHERE created_at >= $1 AND created_at < $2"""
+FROM btc_eth_aggressive.trade_signals s WHERE created_at >= $1 AND created_at < $2"""
 _HRS_SIGNALS_SQL = """SELECT
 count(*) FILTER (WHERE resolution='executed' OR (signal_origin IS DISTINCT FROM 'shadow_scoring' AND
   (entry_mode='standard' OR
@@ -259,7 +268,7 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                 # in UTC; only executed_at is written as Beijing-naive by the app.
                 left = _utc(start).replace(tzinfo=None)
                 right = _utc(end).replace(tzinfo=None)
-                evidence["signals"] = await db.fetch_one(_AGGRESSIVE_SIGNALS_SQL, left, right)
+                evidence["signals"] = await db.fetch_one(_AGGRESSIVE_SIGNALS_SQL, left, right, account)
         except Exception as exc:
             evidence["source_errors"].append("signals:" + type(exc).__name__)
     if exchange is not None:

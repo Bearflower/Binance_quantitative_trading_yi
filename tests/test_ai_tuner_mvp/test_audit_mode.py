@@ -2,7 +2,7 @@
 """功能矩阵 3：audit 模式行为（关键决策：生成 + 推送，仅阻断写入）
 
 - 候选策略（btc_eth_aggressive / hrs）mode=audit 下走完整流水线（采集→LLM→校验→飞书推送），
-  但不调用 config_operator.apply_overrides、不调用 db_handler.mark_applied
+  但不调用 config_operator.publish_overrides、不调用 db_handler.mark_published
 - 非候选策略行为不变（auto_apply 启用时正常写入覆盖层）
 """
 
@@ -60,6 +60,10 @@ def build_job(config):
         config_operator=MagicMock(),
         rollback_manager=MagicMock(),
     )
+    job.db_manager.execute = AsyncMock()
+    job.db_handler.claim_week = AsyncMock(return_value=True)
+    job.db_handler.finish_week = AsyncMock()
+    job.db_handler.completed_this_week = AsyncMock(return_value=False)
     # db_manager.fetch_one 抛错 → 统一绩效读取走"失败不阻断"分支
     job.db_manager.fetch_one = AsyncMock(side_effect=RuntimeError("测试桩：跳过绩效读取"))
     # 反馈闭环组件替换为 mock（它们是实例属性）
@@ -75,7 +79,7 @@ def build_job(config):
     job._load_adapter = MagicMock()
     # 记忆库与通知
     job.db_handler.save_memory = AsyncMock(return_value=42)
-    job.db_handler.mark_applied = AsyncMock()
+    job.db_handler.mark_published = AsyncMock()
     job.messenger.send_tuning_card = AsyncMock()
     job.messenger.send_no_changes_notification = AsyncMock()
     job.messenger.send_auto_applied_notification = AsyncMock()
@@ -126,8 +130,8 @@ class TestCandidateAuditMode:
         job.db_handler.save_memory.assert_awaited_once()
         job.messenger.send_tuning_card.assert_awaited_once()
         # 关键：写入层一律未触碰
-        job.config_operator.apply_overrides.assert_not_called()
-        job.db_handler.mark_applied.assert_not_called()
+        job.config_operator.publish_overrides.assert_not_called()
+        job.db_handler.mark_published.assert_not_called()
         job.messenger.send_auto_applied_notification.assert_not_called()
 
     async def test_candidate_contract_mode_is_new(self):
@@ -176,8 +180,8 @@ class TestCandidateAuditMode:
 
         assert result == "skip"
         job.messenger.send_no_changes_notification.assert_awaited_once()
-        job.config_operator.apply_overrides.assert_not_called()
-        job.db_handler.mark_applied.assert_not_called()
+        job.config_operator.publish_overrides.assert_not_called()
+        job.db_handler.mark_published.assert_not_called()
 
     @pytest.mark.parametrize("strategy_id", ["btc_eth_aggressive", "hrs"])
     @pytest.mark.parametrize("decision", ["HOLD", "PROPOSE"])
@@ -209,8 +213,8 @@ class TestCandidateAuditMode:
             assert job.messenger.send_tuning_card.await_args.kwargs["ai_reasons"] == suggestions["reasons"]
         else:
             assert job.messenger.send_no_changes_notification.await_args.kwargs["reason"] == suggestions["reasons"]
-        job.config_operator.apply_overrides.assert_not_called()
-        job.db_handler.mark_applied.assert_not_called()
+        job.config_operator.publish_overrides.assert_not_called()
+        job.db_handler.mark_published.assert_not_called()
 
     async def test_candidate_validation_rejects_bad_proposal_blocks_writes(self):
         """manifest 校验拒绝非法提案 → 提前 return 'error' + 推 error 通知，不写覆盖层"""
@@ -232,8 +236,8 @@ class TestCandidateAuditMode:
         # 校验错误 → 提前返回 error，不是走 HOLD 分支
         assert result == "error"
         job.messenger.send_error_notification.assert_awaited_once()
-        job.config_operator.apply_overrides.assert_not_called()
-        job.db_handler.mark_applied.assert_not_called()
+        job.config_operator.publish_overrides.assert_not_called()
+        job.db_handler.mark_published.assert_not_called()
 
 
 # ===========================================================================
@@ -249,14 +253,14 @@ class TestNonCandidateUnchanged:
         adapter = make_mock_adapter("btc_eth", {"scoring.min_score": 62}, manifest=False)
         job._load_adapter.return_value = adapter
         job.llm_client.call_llm.return_value = json.dumps(make_legacy_payload())
-        job.config_operator.apply_overrides.return_value = True
+        job.config_operator.publish_overrides.return_value = True
 
         result = await job._tune_single_strategy(config["strategies"][0])
 
         assert result == "success"
         # 旧契约完整链路照常
-        job.config_operator.apply_overrides.assert_called_once()
-        job.db_handler.mark_applied.assert_awaited_once()
+        job.config_operator.publish_overrides.assert_called_once()
+        job.db_handler.mark_published.assert_awaited_once()
         job.messenger.send_auto_applied_notification.assert_awaited_once()
 
     async def test_non_candidate_auto_apply_failure_notifies_error(self):
@@ -266,11 +270,11 @@ class TestNonCandidateUnchanged:
         adapter = make_mock_adapter("btc_eth", {"scoring.min_score": 62}, manifest=False)
         job._load_adapter.return_value = adapter
         job.llm_client.call_llm.return_value = json.dumps(make_legacy_payload())
-        job.config_operator.apply_overrides.return_value = False
+        job.config_operator.publish_overrides.return_value = False
 
         result = await job._tune_single_strategy(config["strategies"][0])
 
-        assert result == "success"
+        assert result == "error"
         job.messenger.send_error_notification.assert_awaited_once()
 
 
@@ -334,15 +338,13 @@ class TestCandidateLiveMode:
         adapter = make_mock_adapter("btc_eth_aggressive", VALID_PROPOSAL, manifest=True)
         job._load_adapter.return_value = adapter
         job.llm_client.call_llm.return_value = dump_envelope()
-        job.config_operator.apply_overrides.return_value = True
+        job.config_operator.publish_overrides.return_value = True
 
         result = await job._tune_single_strategy(config["strategies"][0])
 
-        assert result == "success"
-        # 被选中 → 写入层不被拦截
-        job.config_operator.apply_overrides.assert_called_once()
-        job.db_handler.mark_applied.assert_awaited_once()
-        job.messenger.send_auto_applied_notification.assert_awaited_once()
+        assert result == "error"
+        job.config_operator.publish_overrides.assert_not_called()
+        job.db_handler.mark_published.assert_not_awaited()
 
     async def test_live_unselected_candidate_still_blocked(self):
         """live 模式 + selected=aggressive + strategy=hrs → 候选但未选中，仍被拦截写入"""
@@ -367,5 +369,29 @@ class TestCandidateLiveMode:
         # 未被选中 → is_mvp_blocked=True → 完整流水线跑但拦截写入
         assert result == "success"
         job.messenger.send_tuning_card.assert_awaited_once()  # 推送照常
-        job.config_operator.apply_overrides.assert_not_called()  # 拦截写入
-        job.db_handler.mark_applied.assert_not_called()
+        job.config_operator.publish_overrides.assert_not_called()  # 拦截写入
+        job.db_handler.mark_published.assert_not_called()
+
+
+async def test_durable_claim_blocks_reentry_and_record_failure_alerts():
+    job = build_job(make_job_config(["hrs"]))
+    job._tune_single_strategy = AsyncMock(return_value="success")
+    job.db_manager.execute.side_effect = RuntimeError("run audit unavailable")
+    job.db_handler.claim_week.side_effect = [True, False]
+    job.messenger.send_weekly_summary = AsyncMock()
+
+    await job.run_weekly_tuning()
+    await job.run_weekly_tuning(force=True)
+    job._tune_single_strategy.assert_awaited_once()
+    job.db_handler.finish_week.assert_not_awaited()
+    job.messenger.send_error_notification.assert_awaited_once()
+
+
+async def test_proposal_only_summary_for_selected_live_and_legacy():
+    cfg = make_job_config(["hrs", "btc_eth"], "live", "hrs")
+    cfg["approval"]["auto_apply"]["enabled"] = False
+    job = build_job(cfg)
+    job._tune_single_strategy = AsyncMock(return_value="success")
+    job.messenger.send_weekly_summary = AsyncMock()
+    await job.run_weekly_tuning()
+    assert job.messenger.send_weekly_summary.await_args.kwargs["details"].count("等待审批") == 2

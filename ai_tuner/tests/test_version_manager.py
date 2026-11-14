@@ -168,7 +168,7 @@ class TestInvalidSuffixCharacters:
 
         version = version_manager.generate_new_version(strategy_config_path)
         # _abc 是非法后缀，被跳过，新版本应为 _01
-        assert version == "V20260811_01"
+        assert version == "V20260811_02"
 
 
 # ============================================================

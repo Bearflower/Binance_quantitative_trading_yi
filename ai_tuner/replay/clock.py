@@ -101,7 +101,7 @@ def collect_snapshot_events(snapshots: Iterable[Any]) -> List[Event]:
     for index, snap in enumerate(snapshots):
         events.append(
             Event(
-                time=snap.bucket_start,
+                time=snap.available_at,
                 kind=SNAPSHOT,
                 subject=snap.symbol,
                 seq=index,

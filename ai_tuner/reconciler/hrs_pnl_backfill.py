@@ -178,6 +178,8 @@ class BackfillGroup:
 
     def build_sql(self, batch_id: str) -> str:
         """生成单条 INSERT SQL（dry-run 用）"""
+        if not self.income_truths or self.undecided:
+            raise ValueError("缺少已归属的收入证据")
         ex_time = self.last_executed_at
         ex_time_str = ex_time.strftime("%Y-%m-%d %H:%M:%S") if ex_time else "NOW()"
         reason = "'STOP_LOSS'" if self.has_stop_loss else "NULL"
@@ -290,6 +292,11 @@ def run_income_attribution(
 
     # 1. 加载 income + trade_records（reconcile 模块的完整模型）
     income_result = load_income_from_json(str(income_json_path))
+    if income_result.truncated_chunks:
+        for group in candidates:
+            group.undecided = True
+            group.undecided_reason = "收入缓存记录不完整"
+        return [], candidates
     full_trade_records = load_trade_records_csv(str(trade_records_csv_path))
 
     # 2. 跑匹配（使用 cfg 默认 match_window_ms=7 天，与对账脚本一致）
@@ -401,11 +408,11 @@ def main() -> int:
     if not income_path.exists():
         print(
             f"[回填工具] 警告：income JSON 不存在 {income_path}，跳过真值校验，"
-            f"直接用明细 SUM 作为金额来源（可能含开仓错行 pnl）",
+            f"缺少收入证据，全部列为未决",
             file=sys.stderr,
         )
-        to_fill = candidates
-        undecided: list[BackfillGroup] = []
+        to_fill = []
+        undecided = candidates
     else:
         print(f"[回填工具] Step 3: 调 reconcile.match_income_to_trades 跑归属裁决 ...")
         try:
@@ -415,11 +422,11 @@ def main() -> int:
         except ImportError as e:
             print(
                 f"[回填工具] 警告：reconcile 模块不可导入 ({e})，"
-                f"退化为明细 SUM（可能含开仓错行）",
+                f"缺少归属证据，全部列为未决",
                 file=sys.stderr,
             )
-            to_fill = candidates
-            undecided = []
+            to_fill = []
+            undecided = candidates
 
     # --- Step 4: 输出 ---
     today_str = datetime.now().strftime("%Y%m%d")

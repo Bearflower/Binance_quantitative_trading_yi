@@ -4,6 +4,8 @@ import json
 from datetime import datetime
 from typing import Tuple
 
+import structlog
+
 from .models import MarketSnapshot
 
 
@@ -183,22 +185,32 @@ class SnapshotRepository:
     async def latest_universe(self, strategy_id: str, as_of: datetime):
         rows = await self.db.fetch_all(
             """
-            SELECT u.symbol
+            SELECT u.symbol, r.symbol_count, r.observed_at
             FROM public.ai_tuner_universe_scan_runs r
             LEFT JOIN public.ai_tuner_universe_snapshots u
-              ON u.strategy_id = r.strategy_id AND u.observed_at = r.observed_at
+              ON u.strategy_id = r.strategy_id AND u.observed_at = r.observed_at AND u.created_at <= $2
+             AND u.source_run_id = r.source_run_id AND u.config_hash = r.config_hash
             WHERE r.strategy_id = $1
+              AND r.created_at <= $2
               AND r.observed_at = (
                   SELECT MAX(observed_at)
                   FROM public.ai_tuner_universe_scan_runs
-                  WHERE strategy_id = $1 AND observed_at <= $2
+                  WHERE strategy_id = $1 AND observed_at <= $2 AND created_at <= $2
               )
             ORDER BY u.symbol
             """,
             strategy_id,
             as_of,
         )
-        return {row["symbol"] for row in rows if row.get("symbol")}
+        symbols = {row["symbol"] for row in rows if row.get("symbol")}
+        if not rows or len(symbols) != rows[0]["symbol_count"]:
+            raise ValueError("missing or incomplete historical universe scan")
+        observed_at = rows[0]["observed_at"]
+        structlog.get_logger().info(
+            "HRS候选池扫描时间", strategy_id=strategy_id, observed_at=observed_at.isoformat(),
+            scan_age_seconds=(as_of - observed_at).total_seconds(), symbol_count=len(symbols),
+        )
+        return symbols
 
     async def latest_market_snapshots(self, strategy_id: str, as_of: datetime):
         return await self.db.fetch_all(
@@ -207,6 +219,7 @@ class SnapshotRepository:
             FROM public.ai_tuner_market_snapshots
             WHERE strategy_id = $1
               AND bucket_start <= $2
+              AND observed_at <= $2
               AND source_observed_at <= $2
               AND collected_at <= $2
             ORDER BY symbol, bucket_start DESC

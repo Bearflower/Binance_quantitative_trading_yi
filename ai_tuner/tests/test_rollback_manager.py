@@ -70,7 +70,7 @@ class TestCreateBackup:
         assert "config.yaml.backup." in backup_path
         # 验证时间戳格式（YYYYMMDD_HHMMSS）
         import re
-        assert re.search(r"backup\.\d{8}_\d{6}$", backup_path)
+        assert re.search(r"backup\.\d{8}_\d{6}_\d{6}\.[\w-]+$", backup_path)
 
 
 # ============================================================
@@ -112,8 +112,7 @@ class TestRestoreFromBackup:
         with open(config_path, "w") as f:
             f.write("modified: value\n")
 
-        # 从备份恢复（等待 1 秒确保备份文件名时间戳不同）
-        time.sleep(1)
+        # 同秒回滚仍应恢复原内容
         result = rollback_manager.rollback(config_path, backup_path)
         assert result is True
 

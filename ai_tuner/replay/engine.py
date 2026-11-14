@@ -31,7 +31,7 @@ from .clock import (
     collect_funding_events,
     collect_snapshot_events,
 )
-from .data_portal import DataPortal
+from .data_portal import DataPortal, INTERVAL_MINUTES
 from .models import DataBlocked, EquityPoint, ReplayResult, parse_utc, to_utc_z
 
 
@@ -62,17 +62,21 @@ def run_replay(
     bars_by_subject: Dict[str, List[Any]] = {}
     for symbol in ctx.universe.symbols:
         for interval in ctx.universe.intervals:
-            bars = portal.bars(symbol, interval)
+            bars = [bar for bar in portal.bars(symbol, interval)
+                    if portal.window_start < bar.close_time <= portal.window_end]
             if not bars:
                 raise DataBlocked(["kline_empty:{0}:{1}".format(symbol, interval)])
-            bars_by_subject["{0}|{1}".format(symbol, interval)] = [
-                bar for bar in bars if bar.close_time > portal.window_start
-            ]
+            bars_by_subject["{0}|{1}".format(symbol, interval)] = bars
 
+    if not bars_by_subject:
+        raise DataBlocked(["window_has_no_market_stream"])
+    if any(interval not in INTERVAL_MINUTES for interval in ctx.universe.intervals):
+        raise DataBlocked(["unknown_execution_interval"])
+    execution_interval = min(ctx.universe.intervals, key=INTERVAL_MINUTES.__getitem__)
     funding_by_symbol: Dict[str, List[Tuple[datetime, Decimal]]] = {}
     for symbol in ctx.universe.symbols:
         funding_by_symbol[symbol] = list(
-            portal.funding_rates(symbol, portal.window_start, portal.as_of)
+            portal.funding_rates(symbol, portal.window_start, portal.window_end)
         )
 
     if funding_schedule is not None and (
@@ -86,7 +90,7 @@ def run_replay(
         if not isinstance(times, (list, tuple)) or len(times) > 24 * 90:
             raise DataBlocked(["funding_schedule_size_invalid:{0}".format(symbol)])
         if any(not isinstance(t, datetime) or t.tzinfo is None or
-               t.utcoffset() is None or not (portal.window_start < t <= portal.as_of)
+               t.utcoffset() is None or not (portal.window_start < t <= portal.window_end)
                for t in times):
             raise DataBlocked(["funding_schedule_time_invalid:{0}".format(symbol)])
         if len(times) != len(set(times)):
@@ -108,7 +112,7 @@ def run_replay(
         for symbol in ctx.universe.symbols:
             snapshots.extend(
                 snap for snap in portal.external_snapshot(symbol)
-                if portal.window_start < snap.bucket_start <= portal.as_of
+                if portal.window_start < snap.available_at <= portal.window_end
             )
 
     events: List[Event] = []
@@ -116,8 +120,8 @@ def run_replay(
     events.extend(collect_funding_events(funding_by_symbol))
     if snapshots:
         events.extend(collect_snapshot_events(snapshots))
-    events.extend(collect_daily_mark_events(portal.window_start, portal.as_of))
-    events.extend(collect_funding_check_events(expected, portal.window_start, portal.as_of))
+    events.extend(collect_daily_mark_events(portal.window_start, portal.window_end))
+    events.extend(collect_funding_check_events(expected, portal.window_start, portal.window_end))
     schedule = build_schedule(events)
 
     audit: List[Dict[str, Any]] = [
@@ -162,8 +166,9 @@ def run_replay(
                 adapter.on_snapshot(event.payload, ctx)
             elif event.kind == BAR_CLOSE:
                 bar = event.payload
-                broker.on_bar(bar.symbol, bar, bar.close_time)
-                last_bar_close[bar.symbol] = bar.close_time
+                if bar.interval == execution_interval:
+                    broker.on_bar(bar.symbol, bar, bar.close_time)
+                    last_bar_close[bar.symbol] = bar.close_time
                 ctx.portfolio = broker.view()
                 adapter.on_bar(bar, ctx)
                 intents = adapter.intents(ctx)
@@ -183,7 +188,7 @@ def run_replay(
             _drain_broker_audit(broker, audit, event.time)
         equity[timestamp] = broker.mark(timestamp)
 
-    equity[portal.as_of] = broker.mark(portal.as_of)
+    equity[portal.window_end] = broker.mark(portal.window_end)
 
     return ReplayResult(
         manifest_ref=portal.manifest_sha256,

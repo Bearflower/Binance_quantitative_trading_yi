@@ -117,10 +117,10 @@ class TestLegacyAdapters:
     def test_mtpcs_valid_adjustment_passes(self):
         """btc_eth 旧 JSON 经 normalize 后的 dict 格式仍走通白名单/范围校验"""
         adapter = MTPCSAdapter(db_manager=None)
-        result = adapter.validate_params({"scoring.min_score": {"from": 60, "to": 62}})
+        result = adapter.validate_params({"strategy.scoring.min_score": {"from": 60, "to": 62}})
         assert result["valid"] is True
         # 旧契约 validated 格式为 {path: new_value}
-        assert result["validated"]["scoring.min_score"] == 62
+        assert result["validated"]["strategy.scoring.min_score"] == 62
 
     def test_mtpcs_rejects_not_in_whitelist(self):
         adapter = MTPCSAdapter(db_manager=None)
@@ -138,26 +138,26 @@ class TestLegacyAdapters:
     def test_mtpcs_clamps_to_range_with_warning(self):
         """旧契约：超范围值截断到边界并记警告（不阻断）"""
         adapter = MTPCSAdapter(db_manager=None)
-        result = adapter.validate_params({"scoring.min_score": 200})
+        result = adapter.validate_params({"strategy.scoring.min_score": 200})
         assert result["valid"] is True
-        assert result["validated"]["scoring.min_score"] == 95
+        assert result["validated"]["strategy.scoring.min_score"] == 95
         assert any("截断" in w for w in result["warnings"])
 
     def test_mtpcs_clamps_below_min(self):
         adapter = MTPCSAdapter(db_manager=None)
-        result = adapter.validate_params({"scoring.min_score": 1})
-        assert result["validated"]["scoring.min_score"] == 60
+        result = adapter.validate_params({"strategy.scoring.min_score": 1})
+        assert result["validated"]["strategy.scoring.min_score"] == 60
 
     def test_mtpcs_change_rate_warning(self):
         """旧契约：大变化率（>200%）记警告（截断后仍计算）"""
         adapter = MTPCSAdapter(db_manager=None)
-        result = adapter.validate_params({"scoring.min_score": {"from": 1, "to": 95}})
+        result = adapter.validate_params({"strategy.scoring.min_score": {"from": 1, "to": 95}})
         assert result["valid"] is True
         assert any("变化率" in w for w in result["warnings"])
 
     def test_mtpcs_missing_target_value_rejected(self):
         adapter = MTPCSAdapter(db_manager=None)
-        result = adapter.validate_params({"scoring.min_score": {"from": 60}})
+        result = adapter.validate_params({"strategy.scoring.min_score": {"from": 60}})
         assert result["valid"] is False
         assert any("缺少目标值" in e for e in result["errors"])
 
@@ -187,7 +187,7 @@ class TestLegacyAdapters:
     def test_legacy_whitelist_from_config(self):
         """legacy 策略白名单来自 config.yaml param_whitelist"""
         adapter = MTPCSAdapter(db_manager=None)
-        assert "scoring.min_score" in adapter.get_param_whitelist()
+        assert "strategy.scoring.min_score" in adapter.get_param_whitelist()
 
     def test_missing_ranges_logs_warning_but_continues(self):
         """策略缺少 param_ranges 时旧契约降级为仅白名单检查（不崩溃）"""

@@ -30,6 +30,8 @@ def extract_features(
     if len({(bar.symbol, bar.interval) for bar in bars}) > 1:
         raise DataBlocked(["regime_mixed_symbol_or_interval"])
     ordered = sorted(bars, key=lambda bar: bar.close_time)
+    if len({bar.close_time for bar in ordered}) != len(ordered):
+        raise DataBlocked(["regime_duplicate_bar"])
     if len(ordered) < min_segment_length:
         raise DataBlocked(["regime_closed_bars_insufficient"])
     segment = ordered[-min_segment_length:]

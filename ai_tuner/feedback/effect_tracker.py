@@ -2,10 +2,12 @@
 效果追踪器
 
 在每周调优前，计算"上周实际表现"，回填到"上上周AI建议记录"的 post_* 字段。
-通过复用 adapter.collect(week_offset=-1) 计算绩效，避免重复实现绩效计算逻辑。
+通过复用 adapter.collect() 计算绩效，避免重复实现绩效计算逻辑。
 """
 
 import os
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional
 
 import structlog
@@ -16,6 +18,10 @@ from ai_tuner.deploy.version_manager import VersionManager
 from ai_tuner.memory.db_handler import MemoryDBHandler
 
 logger = structlog.get_logger()
+
+
+def _now_shanghai() -> datetime:
+    return datetime.now(ZoneInfo("Asia/Shanghai"))
 
 
 class EffectSummary(BaseModel):
@@ -41,7 +47,7 @@ class EffectTracker:
     效果追踪器
 
     在每周调优前，计算"上周实际表现"，回填到"上上周AI建议记录"的 post_* 字段。
-    通过复用 adapter.collect(week_offset=-1) 计算绩效，避免重复实现。
+    通过复用 adapter.collect() 计算绩效，避免重复实现。
 
     异常降级：
     - 所有异常在 track_and_fill() 内部捕获，返回 EffectSummary(has_data=False)
@@ -90,7 +96,7 @@ class EffectTracker:
         1. 读取 tuning_overrides/.active 获取版本号
         2. 在 strategy_memory 表中查找匹配记录
         3. 幂等性检查：post_* 字段已填充则跳过
-        4. 调用 adapter.collect(week_offset=-1) 计算上周绩效
+        4. 调用 adapter.collect() 计算上周绩效
         5. 回填 post_win_rate, post_total_pnl, effect_notes
         6. 计算评级并返回 EffectSummary
 
@@ -140,8 +146,22 @@ class EffectTracker:
                 )
                 return self._build_summary_from_record(memory_record, active_version)
 
-            # 步骤4：调用 adapter.collect(week_offset=-1) 计算上周绩效
-            post_report = await adapter.collect(week_offset=-1)
+            # 适配器仅在周日以当前（未结束的）周为基准，其余日期默认取上一周。
+            now = _now_shanghai()
+            approved = memory_record.get("approved_at")
+            if not isinstance(approved, datetime):
+                return EffectSummary(has_data=False)
+            if approved.tzinfo is None:
+                approved = approved.replace(tzinfo=now.tzinfo)
+            post_report = await adapter.collect(week_offset=-1 if now.weekday() == 6 else 0)
+            expected_end = now.date() - timedelta(days=now.weekday())
+            expected_start = expected_end - timedelta(weeks=1)
+            if (
+                date.fromisoformat(post_report.meta.week_start) != expected_start
+                or date.fromisoformat(post_report.meta.week_end) != expected_end
+                or datetime.combine(expected_start, time.min, tzinfo=now.tzinfo) < approved
+            ):
+                return EffectSummary(has_data=False)
             post_perf = post_report.performance
             post_risk = post_report.risk
 

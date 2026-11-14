@@ -175,6 +175,7 @@ class NewCoinAdapter(BaseAdapter):
             PerformanceMetrics: 绩效指标
         """
         metrics = PerformanceMetrics()
+        trades = [trade for trade in trades if trade.get("realized_pnl") is not None]
         metrics.total_trades = len(trades)
 
         if metrics.total_trades == 0:

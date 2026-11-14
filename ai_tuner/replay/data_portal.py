@@ -103,7 +103,7 @@ def compute_manifest_envelope_sha256(manifest: Dict[str, Any]) -> str:
 def resolve_snapshot_dir(root: Any, strategy_id: str, as_of: datetime) -> Path:
     """解析快照目录：支持 ``20261022T000000Z`` 与 ``2026-10-22T00:00:00Z`` 两种命名。"""
     base = Path(root) / strategy_id
-    compact = as_of.strftime("%Y%m%dT%H%M%SZ")
+    compact = to_utc_z(as_of).replace("-", "").replace(":", "")
     iso = to_utc_z(as_of)
     for candidate in (base / compact, base / iso, base / as_of.isoformat()):
         if candidate.is_dir():
@@ -240,6 +240,13 @@ class DataPortal:
     # ------------------------------------------------------------------
     # 原始读取（带缓存）
     # ------------------------------------------------------------------
+    def _verified_bytes(self, rel_path: str) -> bytes:
+        self._require_dataset(rel_path)
+        data = (self.snapshot_dir / rel_path).read_bytes()
+        if hashlib.sha256(data).hexdigest() != self.manifest["files"][rel_path]["sha256"]:
+            raise DataBlocked(["snapshot_tampered:" + rel_path])
+        return data
+
     def _read_jsonl(self, rel_path: str) -> List[Dict[str, Any]]:
         if rel_path in self._jsonl_cache:
             return self._jsonl_cache[rel_path]
@@ -247,11 +254,9 @@ class DataPortal:
         if not path.is_file():
             raise DataBlocked(["file_missing:{0}".format(rel_path)])
         rows: List[Dict[str, Any]] = []
-        with open(path, "r", encoding="utf-8") as handle:
-            for line in handle:
-                text = line.strip()
-                if text:
-                    rows.append(json.loads(text))
+        for line in self._verified_bytes(rel_path).splitlines():
+            if line.strip():
+                rows.append(json.loads(line))
         self._jsonl_cache[rel_path] = rows
         return rows
 
@@ -263,8 +268,7 @@ class DataPortal:
             if optional:
                 return None
             raise DataBlocked(["file_missing:{0}".format(rel_path)])
-        with open(path, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
+        payload = json.loads(self._verified_bytes(rel_path))
         self._json_cache[rel_path] = payload
         return payload
 
@@ -319,7 +323,11 @@ class DataPortal:
         for index, item in enumerate(raw):
             observed_raw = item.get("observed_at") or item.get("created_at") or item.get("valid_from")
             observed_at = parse_utc(observed_raw)
-            self.guard(observed_at, "universe", "observed_at", cutoff)
+            self.guard(observed_at, "universe", "observed_at", self.as_of)
+            if observed_at > cutoff:
+                continue
+            if item.get("strategy_id") != self.strategy_id:
+                raise DataBlocked(["universe_strategy_mismatch"])
             valid_from = parse_utc(item["valid_from"])
             valid_to = parse_utc(item["valid_to"])
             slice_ = UniverseSlice(
@@ -331,17 +339,14 @@ class DataPortal:
                 source=item["source"],
                 config_hash=item["config_hash"],
             )
-            if valid_from < cutoff:
+            if valid_from <= cutoff < valid_to:
                 candidates.append((valid_from, index, slice_))
 
         if not candidates:
             raise DataBlocked(["{0}_universe_not_effective".format(self.strategy_id)])
 
         candidates.sort(key=lambda entry: (entry[0], entry[1]))
-        picked = candidates[-1][2]
-        if picked.valid_to <= self.window_start:
-            raise DataBlocked(["{0}_universe_not_covering_window".format(self.strategy_id)])
-        return picked
+        return candidates[-1][2]
 
     def external_snapshot(
         self,
@@ -355,7 +360,9 @@ class DataPortal:
         for row in rows:
             bucket_start = parse_utc(row["bucket_start"])
             bucket_end = parse_utc(row["bucket_end"])
-            self.guard(bucket_end, "external_snapshot", "bucket_end", cutoff)
+            self.guard(bucket_end, "external_snapshot", "bucket_end", self.as_of)
+            if bucket_end > cutoff:
+                continue
             if row.get("symbol") != symbol:
                 continue
             source_observed_at = parse_utc(
@@ -376,9 +383,12 @@ class DataPortal:
                 funding_source=row.get("funding_source", "missing"),
                 market_cap_source=row.get("market_cap_source", "missing"),
                 payload_hash=row.get("payload_hash", ""),
-                is_complete=bool(row.get("is_complete")) and source_ok,
+                is_complete=row.get("is_complete") is True and source_ok,
+                bucket_end=bucket_end,
+                collected_at=parse_utc(row["collected_at"]) if row.get("collected_at") else None,
             )
-            result.append(snap)
+            if snap.available_at <= cutoff:
+                result.append(snap)
         return tuple(result)
 
     def funding_rates(
@@ -416,7 +426,7 @@ class DataPortal:
 
     def config_version(self, as_of: Optional[datetime] = None) -> ConfigHashes:
         """返回生效配置身份三件套；任一缺失即 BLOCKED_DATA（版本兼容门禁）。"""
-        self.cutoff(as_of, "config_version")
+        cutoff = self.cutoff(as_of, "config_version")
         raw = self._read_json("config_hashes.json")
         missing = [
             key
@@ -425,6 +435,10 @@ class DataPortal:
         ]
         if missing:
             raise DataBlocked(["config_hash_missing:{0}".format("|".join(missing))])
+        if raw.get("strategy_id") != self.strategy_id or not raw.get("as_of"):
+            raise DataBlocked(["config_identity_missing_or_mismatched"])
+        if parse_utc(raw["as_of"]) > cutoff:
+            raise DataBlocked(["config_version_not_effective"])
         return ConfigHashes(
             strategy_id=raw.get("strategy_id", self.strategy_id),
             as_of=parse_utc(raw.get("as_of") or self.as_of),
@@ -443,11 +457,15 @@ class DataPortal:
                 price_filter = filters.get("PRICE_FILTER", {})
                 lot_size = filters.get("LOT_SIZE", {})
                 min_notional = filters.get("MIN_NOTIONAL", {})
-                return {
-                    "tick_size": dec(price_filter.get("tickSize", "0.01")),
-                    "step_size": dec(lot_size.get("stepSize", "0.001")),
-                    "min_notional": dec(min_notional.get("notional") or min_notional.get("minNotional") or "5"),
-                }
+                raw_values = (price_filter.get("tickSize"), lot_size.get("stepSize"),
+                              min_notional.get("notional", min_notional.get("minNotional")))
+                try:
+                    values = [Decimal(str(value)) for value in raw_values]
+                    if not all(value.is_finite() and value > ZERO for value in values):
+                        raise ValueError
+                except (ValueError, ArithmeticError):
+                    raise DataBlocked(["exchange_info_filters_invalid:" + symbol])
+                return dict(zip(("tick_size", "step_size", "min_notional"), values))
         raise DataBlocked(["exchange_info_symbol_missing:{0}".format(symbol)])
 
     # ------------------------------------------------------------------
@@ -475,9 +493,15 @@ class DataPortal:
 
         for symbol in universe.symbols:
             for interval in universe.intervals:
+                if interval not in INTERVAL_MINUTES:
+                    raise DataBlocked(["unknown_interval:" + interval])
                 expected = self._expected_bar_count(interval)
                 try:
-                    actual = len(self.bars(symbol, interval))
+                    duration = timedelta(minutes=INTERVAL_MINUTES[interval])
+                    actual = len({bar.open_time for bar in self.bars(symbol, interval)
+                                  if self.window_start <= bar.open_time < bar.close_time <= self.window_end
+                                  and bar.close_time - bar.open_time in (duration, duration - timedelta(milliseconds=1))
+                                  and bar.open_time.timestamp() % duration.total_seconds() == 0})
                 except DataBlocked:
                     actual = 0
                 ratio = (
@@ -508,7 +532,7 @@ class DataPortal:
         data_complete = (
             not missing_symbol_intervals
             and kline_coverage >= Decimal("1")
-            and not external_gaps
+            and (not external_gaps or self.strategy_id == "btc_eth_aggressive")
             and not funding_gaps
             and all(name in (self.manifest.get("files") or {}) for name in self.required_datasets)
         )
@@ -551,16 +575,25 @@ class DataPortal:
             except DataBlocked:
                 gaps.append("external_snapshot_missing:{0}".format(symbol))
                 continue
+            complete_hours = set()
             for snap in snaps:
+                if not self.window_start <= snap.bucket_start < snap.available_at <= self.window_end:
+                    continue
                 if snap.oi_source in ("oi_proxy", "missing") or snap.funding_source == "missing":
                     proxy_ignored += 1
                     continue
-                if snap.market_cap_source not in ("coingecko", "cache_hit"):
+                if snap.market_cap_source not in ("coingecko", "cache_hit", "coingecko_cache"):
                     proxy_ignored += 1
                     continue
-                if snap.is_complete:
-                    complete += 1
-            if len(snaps) < expected_per_symbol:
+                amounts = (snap.open_interest_usd, snap.funding_rate, snap.market_cap_usd,
+                           snap.oi_market_cap_ratio, snap.sentiment_score)
+                if (snap.is_complete and all(n is not None and n.is_finite() for n in amounts)
+                        and snap.open_interest_usd > 0 and snap.market_cap_usd > 0
+                        and snap.bucket_start.timestamp() % 3600 == 0
+                        and snap.bucket_end == snap.bucket_start + timedelta(hours=1)):
+                    complete_hours.add(snap.bucket_start)
+            complete += len(complete_hours)
+            if len(complete_hours) < expected_per_symbol:
                 gaps.append("external_snapshot_rows_short:{0}".format(symbol))
 
         ratio = Decimal("0") if expected_total <= 0 else Decimal(complete) / Decimal(expected_total)
@@ -586,6 +619,8 @@ class DataPortal:
     # ------------------------------------------------------------------
     @staticmethod
     def _parse_bar(symbol: str, interval: str, row: Dict[str, Any]) -> Bar:
+        if row.get("symbol", symbol) != symbol or row.get("interval", interval) != interval:
+            raise DataBlocked(["kline_stream_identity_mismatch"])
         return Bar(
             symbol=row.get("symbol", symbol),
             interval=row.get("interval", interval),

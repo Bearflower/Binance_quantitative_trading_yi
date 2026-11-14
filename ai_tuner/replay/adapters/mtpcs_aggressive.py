@@ -22,7 +22,7 @@ from strategies.btc_eth_aggressive.core import direction as direction_mod
 from strategies.btc_eth_aggressive.core import exits, filters, scoring
 
 from ..broker import PortfolioView
-from ..models import ZERO, Bar, DataBlocked, OrderIntent, QualificationBlocked
+from ..models import EntryProtection, ZERO, Bar, DataBlocked, OrderIntent, QualificationBlocked
 from .base import PreparedContext
 
 __all__ = [
@@ -182,6 +182,16 @@ class MtpcsAggressiveAdapter:
             quantity_dec = Decimal(str(quantity))
             if quantity_dec <= ZERO:
                 continue
+            partial = exits.get_grade_risk(decision["grade"], self._risk_config)["partial_take_profit"]
+            price = decision["entry_price"]
+            if "tp1_close_ratio" not in partial or "tp2_close_ratio" not in partial:
+                raise QualificationBlocked(["partial_exit_ratios_missing"])
+            protection = EntryProtection(
+                atr=decision["atr"], stop_offset=decision["stop_loss_price"] - price,
+                tp1_offset=decision["tp1_price"] - price, tp2_offset=decision["tp2_price"] - price,
+                tp1_ratio=Decimal(str(partial["tp1_close_ratio"])),
+                tp2_ratio=Decimal(str(partial["tp2_close_ratio"])),
+            )
             seq += 1
             intents.append(
                 OrderIntent(
@@ -193,7 +203,7 @@ class MtpcsAggressiveAdapter:
                     quantity=quantity_dec,
                     reason="{0}级信号".format(decision["grade"]),
                     grade=decision["grade"],
-                    reference_price=decision["entry_price"],
+                    reference_price=price, protection=protection,
                 )
             )
         return tuple(intents)
@@ -307,6 +317,16 @@ class MtpcsAggressiveAdapter:
                     symbol, market_state_name, "过热降级后低于最低允许等级，禁开", score
                 )
             grade = downgraded
+
+        state_cfg = self._risk_config.get("market_state", {})
+        behavior = state_cfg.get("fallback", {})
+        if state_cfg.get("enabled", True):
+            state_key = "STRONG_TREND" if market_state_name == MARKET_STATE_TREND else market_state_name
+            behavior = state_cfg.get("behaviors", {}).get(state_key, behavior)
+        grades = ("S", "A", "B", "C")
+        minimum = behavior.get("min_grade", "C")
+        if minimum not in grades or grade not in grades or grades.index(grade) > grades.index(minimum):
+            return self._reject(symbol, market_state_name, "market_min_grade", score)
 
         vol_pass, vol_reason = filters.check_volume_filter(
             symbol,

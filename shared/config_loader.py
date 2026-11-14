@@ -65,6 +65,21 @@ def load_shared_config(yaml_name: str) -> Dict[str, Any]:
     return data
 
 
+def record_loaded_version(strategy_id, metadata):
+    """Record the config actually supplied to the initialized strategy."""
+    import tempfile
+    from pathlib import Path
+    version = metadata.get("applied_overrides_version")
+    folder = Path("/app/logs")
+    try:
+        with tempfile.NamedTemporaryFile(dir=folder, mode="w", delete=False) as handle:
+            json.dump({"strategy": strategy_id, "version": version,
+                       "config_hash": metadata["config_hash"]}, handle)
+        os.replace(handle.name, folder / "tuning-loaded.json")
+    except OSError as error:
+        logger.warning("策略配置确认写入失败", strategy_id=strategy_id, error_type=type(error).__name__)
+
+
 def load_strategy_config(strategy_dir: str) -> Dict[str, Any]:
     """
     加载策略的合并配置（基础配置 + AI 调优覆盖层）

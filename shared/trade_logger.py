@@ -177,6 +177,7 @@ class TradeLogger:
         self.db = db_manager
         self.strategy_name = strategy_name.strip()
         # 未配置账户标识时保留 NULL，历史及新记录均不可被猜测归属。
+        self._entry_fill_cursor = 0
         self.account_id = (account_id or environ.get("TRADE_ACCOUNT_ID") or "").strip() or None
 
         logger.info(
@@ -908,24 +909,43 @@ class TradeLogger:
             logger.error("佣金回填异常", error=str(e))
         return summary
 
-    async def reconcile_entry_fills(self, client, lookback_hours: int = 24) -> None:
-        """Restore zero-valued entry records from terminal, complete exchange fills."""
+    async def reconcile_entry_fills(self, client, lookback_hours: int = 24, *,
+                                    record_ids=None, dry_run: bool = False) -> list:
+        """Scan one rotating page or reconcile explicit account-owned historical IDs.
+
+        For a historical repair pass the same record_ids twice: preview verified
+        values using dry_run=True, then apply after reviewing the differences.
+        """
         from shared.entry_fill_evidence import verified_fill
+        if record_ids is not None and (not self.account_id or not 1 <= len(record_ids) <= 100
+                or any(type(i) is not int or i <= 0 for i in record_ids)):
+            raise ValueError("explicit account and 1-100 positive record IDs required")
+        evidence = []
         start = datetime.now(BEIJING_TZ).replace(tzinfo=None) - timedelta(hours=lookback_hours)
+        targeted = record_ids is not None
+        predicate = "id = ANY($2::bigint[])" if targeted else "executed_at >= $2 AND id > $3"
+        args = (self.account_id, record_ids) if targeted else (self.account_id, start, self._entry_fill_cursor)
         try:
             rows = await self.db.fetch_all(
                 "SELECT id, symbol, order_id, side FROM trading.trade_records "
-                "WHERE account_id=$1 AND executed_at >= $2 "
+                f"WHERE account_id=$1 AND {predicate} "
                 "AND order_type IN ('LIMIT','MARKET') AND (quantity=0 OR price=0) "
                 "AND order_id IS NOT NULL AND order_id<>'' ORDER BY id LIMIT 100",
-                self.account_id, start,
+                *args,
             )
+            if not targeted:
+                self._entry_fill_cursor = rows[-1]["id"] if len(rows) == 100 else 0
             for row in rows:
                 try:
                     order = await client.get_order(row["symbol"], int(row["order_id"]))
+                    if not isinstance(order, dict) or order.get("status") != "FILLED":
+                        continue
                     trades = await client.get_user_trades(
                         row["symbol"], order_id=row["order_id"], limit=1000)
                     quantity, price = verified_fill(row, order, trades)
+                    evidence.append({"id": row["id"], "quantity": quantity, "price": price})
+                    if dry_run:
+                        continue
                     await self.db.execute(
                         "UPDATE trading.trade_records SET quantity=$1, price=$2, status='FILLED' "
                         "WHERE id=$3 AND account_id=$4 AND symbol=$5 AND order_id=$6 "
@@ -939,6 +959,9 @@ class TradeLogger:
                                    error_type=type(exc).__name__)
         except Exception as exc:
             logger.warning("入场成交证据读取失败", error_type=type(exc).__name__)
+            if targeted:
+                raise
+        return evidence
 
     async def _fetch_pending_trade_keys(self, lookback_hours: int) -> List:
         """查询待回填的 (symbol, order_id) 去重组合

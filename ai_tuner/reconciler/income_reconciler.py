@@ -74,7 +74,7 @@ class IncomeReconciler:
         self.schema = self.cfg.get("schema", "trading")
         self.table = self.cfg.get("table", "trade_records")
         self.state_schema = self.cfg.get("state_schema", "public")
-        self.state_table = self.cfg.get("state_table", "pnl_reconcile_state")
+        self.state_table = self.cfg.get("state_table", "pnl_reconcile_state") + "_by_account"
         self.excluded_strategies = list(self.cfg.get("excluded_strategies", []))
         self.account_id = self.cfg.get("account_id") or os.environ.get("TRADE_ACCOUNT_ID", "default")
 
@@ -118,37 +118,43 @@ class IncomeReconciler:
         """确保校准进度表存在（用 execute_ddl 绕过 ALTER/CREATE 拦截）"""
         ddl = f"""
             CREATE TABLE IF NOT EXISTS {self.state_schema}.{self.state_table} (
-                id INT PRIMARY KEY,
+                account_id TEXT PRIMARY KEY,
                 last_reconciled_ts BIGINT NOT NULL DEFAULT 0,
                 updated_at TIMESTAMP DEFAULT NOW()
             )
         """
-        seed = f"""
-            INSERT INTO {self.state_schema}.{self.state_table} (id, last_reconciled_ts)
-            VALUES (1, 0)
-            ON CONFLICT (id) DO NOTHING
-        """
         await self.db.execute_ddl(ddl)
-        await self.db.execute(seed)
+        await self.db.execute_ddl(f"""
+            CREATE TABLE IF NOT EXISTS {self.state_schema}.{self.state_table}_gaps (
+                account_id TEXT NOT NULL, symbol TEXT NOT NULL, trade_id BIGINT NOT NULL,
+                order_id TEXT NOT NULL, event_ms BIGINT NOT NULL,
+                PRIMARY KEY (account_id, symbol, trade_id)
+            )
+        """)
 
     async def _get_last_reconciled_ts(self) -> int:
         """读取上次校准进度（毫秒时间戳），无记录返回 0"""
         row = await self.db.fetch_one(
-            f"SELECT last_reconciled_ts FROM {self.state_schema}.{self.state_table} WHERE id = 1"
+            f"""SELECT LEAST(
+                (SELECT NULLIF(last_reconciled_ts,0) FROM {self.state_schema}.{self.state_table}
+                 WHERE account_id=$1),
+                (SELECT min(event_ms) FROM {self.state_schema}.{self.state_table}_gaps
+                 WHERE account_id=$1)
+            ) AS last_reconciled_ts""", self.account_id
         )
         return int(row["last_reconciled_ts"] or 0) if row else 0
 
     async def _update_reconciled_ts(self, ts_ms: int) -> None:
         """更新校准进度，下次只处理该时间点之后的新数据，避免重复"""
-        await self.db.execute(self._reconciled_ts_upsert_sql(), ts_ms)
+        await self.db.execute(self._reconciled_ts_upsert_sql(), ts_ms, self.account_id)
 
     def _reconciled_ts_upsert_sql(self) -> str:
         """与盈亏回写事务共用的校准进度 UPSERT。"""
         return f"""
-            INSERT INTO {self.state_schema}.{self.state_table} (id, last_reconciled_ts, updated_at)
-            VALUES (1, $1, NOW())
-            ON CONFLICT (id) DO UPDATE
-                SET last_reconciled_ts = EXCLUDED.last_reconciled_ts,
+            INSERT INTO {self.state_schema}.{self.state_table} AS progress (account_id, last_reconciled_ts, updated_at)
+            VALUES ($2, $1, NOW())
+            ON CONFLICT (account_id) DO UPDATE
+                SET last_reconciled_ts = GREATEST(progress.last_reconciled_ts, EXCLUDED.last_reconciled_ts),
                     updated_at = NOW()
         """
 
@@ -243,6 +249,8 @@ class IncomeReconciler:
         order_totals = {}
         used_record_ids = {}
         queries = []
+        resolved_gaps = []
+        unresolved = False
         total_pnl = Decimal("0")
 
         for inc in income_records:
@@ -277,19 +285,32 @@ class IncomeReconciler:
             if Decimal(str(fill["realized_pnl"])) != Decimal(str(inc["income"])):
                 raise ValueError(f"{symbol} tradeId={trade_id} 收入与成交盈亏不一致")
             order_id = str(fill["order_id"])
-            sql = f"""SELECT id, account_id, order_id, side, realized_pnl, pnl_source
+            sql = f"""SELECT id, strategy, account_id, order_id, side, realized_pnl, pnl_source,
+                    EXISTS (SELECT 1 FROM {self.state_schema}.{self.state_table}_gaps
+                            WHERE account_id=$4 AND symbol=$1 AND trade_id=$5) AS had_gap
                 FROM {self.schema}.{self.table}
                 WHERE symbol = $1 AND order_id = $2 AND side = $3
                   AND account_id = $4 AND order_type <> 'PNL_SUMMARY'"""
-            args = [symbol, order_id, fill["side"], fill["account_id"]]
-            if self.excluded_strategies:
-                placeholders = ", ".join(f"${i}" for i in range(5, 5 + len(self.excluded_strategies)))
-                sql += f" AND strategy NOT IN ({placeholders})"
-                args.extend(self.excluded_strategies)
+            args = [symbol, order_id, fill["side"], fill["account_id"], int(trade_id)]
             matches = await self.db.fetch_all(sql, *args)
             if len(matches) != 1:
-                raise ValueError(f"{symbol} orderId={order_id} 有效订单记录缺失或不唯一")
+                await self.db.execute(
+                    f"INSERT INTO {self.state_schema}.{self.state_table}_gaps "
+                    "(account_id,symbol,trade_id,order_id,event_ms) VALUES ($1,$2,$3,$4,$5) "
+                    "ON CONFLICT (account_id,symbol,trade_id) DO NOTHING",
+                    self.account_id, symbol, int(trade_id), order_id, inc_time,
+                )
+                unresolved = True
+                continue
             match = matches[0]
+            if match.get("had_gap"):
+                resolved_gaps.append((
+                    f"DELETE FROM {self.state_schema}.{self.state_table}_gaps "
+                    "WHERE account_id=$1 AND symbol=$2 AND trade_id=$3",
+                    (self.account_id, symbol, int(trade_id)),
+                ))
+            if match.get("strategy") in self.excluded_strategies:
+                continue
             order_key = (fill["account_id"], symbol, order_id)
             previous_order = used_record_ids.setdefault(match["id"], order_key)
             if previous_order != order_key:
@@ -316,15 +337,19 @@ class IncomeReconciler:
             ))
             total_pnl += pnl
 
+        updated_count = len(queries)
+        queries.extend(resolved_gaps)
         if queries:
-            if completed_through is not None:
-                queries.append((self._reconciled_ts_upsert_sql(), (completed_through,)))
+            if completed_through is not None and not unresolved:
+                queries.append((self._reconciled_ts_upsert_sql(), (completed_through, self.account_id)))
             try:
                 await self.db.execute_transaction(queries)
             except Exception as e:
                 logger.error("批量回写 realized_pnl 失败，本轮不推进校准游标", count=len(queries), error=str(e))
                 raise
-        return len(queries) - (1 if completed_through is not None and queries else 0), total_pnl
+        if unresolved:
+            raise ValueError("部分收入的订单归属尚未确认；已保存可核实项，保留游标重试")
+        return updated_count, total_pnl
 
     def _find_best_match(self, candidates: list, inc_time: int) -> Optional[dict]:
         """

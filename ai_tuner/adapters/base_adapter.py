@@ -82,6 +82,9 @@ class SimulationMetrics(BaseModel):
     price_range_low: float = Field(default=0.0, description="价格区间下限")
     price_range_high: float = Field(default=0.0, description="价格区间上限")
     profit_rate_per_fill: float = Field(default=0.0, description="每格利润率")
+    composite_score: float = 0.0
+    max_drawdown_pct: float = 0.0
+    sharpe_ratio: float = 0.0
     estimated_fills_weekly: int = Field(default=0, description="预估周填充次数")
     estimated_profit_weekly: float = Field(default=0.0, description="预估周利润（USDT）")
     confidence: float = Field(default=0.0, description="模拟置信度 0-1")
@@ -346,9 +349,8 @@ class BaseAdapter(ABC):
         if not full_path.exists():
             logger.warning("策略配置文件不存在", strategy_id=self.strategy_id, path=str(full_path))
             return {}
-        import yaml as _yaml
-        with open(full_path, "r", encoding="utf-8") as f:
-            return _yaml.safe_load(f) or {}
+        from shared.config_loader import load_strategy_config
+        return load_strategy_config(str(full_path.parent))
 
     # ---------------------------------------------------------------
     # 统一参数校验入口（双契约分流）
@@ -427,6 +429,7 @@ class BaseAdapter(ABC):
             logger.warning("策略配置缺少 param_ranges，参数校验将跳过范围检查",
                            strategy_id=self.strategy_id)
 
+        effective = self.get_current_params() if self.strategy_id == "btc_eth" else None
         for param_path, adjustment in adjustments.items():
             # 1. 白名单检查
             if param_path not in whitelist:
@@ -436,6 +439,10 @@ class BaseAdapter(ABC):
             # 2. 红线参数检查
             if param_path in redline:
                 errors.append(f"参数 {param_path} 属于红线参数，禁止修改，已拒绝")
+                continue
+
+            if effective is not None and param_path not in effective:
+                errors.append(f"当前策略配置不存在参数 {param_path}")
                 continue
 
             # 提取新旧值

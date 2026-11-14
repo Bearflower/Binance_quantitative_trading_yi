@@ -182,7 +182,7 @@ class VersionManager:
                         basename = item[:-5] if item.endswith(".yaml") else item
                         rest = basename[len(base_version):]
                         if rest == "":
-                            suffix = max(suffix, 1)
+                            suffix = max(suffix, 2)
                         elif rest.startswith("_") or rest.startswith("-"):
                             try:
                                 num = int(rest[1:])

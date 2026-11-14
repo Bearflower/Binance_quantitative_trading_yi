@@ -99,7 +99,9 @@ class GridAdapter(BaseAdapter):
 
             # ========== 第二部分：模拟推演 ==========
             symbols = config.get("symbols", ["ETHUSDT"])
-            sim_results = await self._simulate(week_start, week_end, symbols)
+            # Sunday's 23:55 schedule precedes the close of the 23:00 hourly candle.
+            closed_end = min(week_end, now.replace(minute=0, second=0, microsecond=0))
+            sim_results = await self._simulate(week_start, closed_end, symbols)
             report.simulation = sim_results
 
             # 如果模拟推演发现当前参数与市场状态不匹配，加入异常
@@ -309,6 +311,7 @@ class GridAdapter(BaseAdapter):
             SimulationMetrics 列表
         """
         results: List[SimulationMetrics] = []
+        self._comparison_input = None
 
         try:
             # 1. 获取K线数据
@@ -318,10 +321,15 @@ class GridAdapter(BaseAdapter):
                 return results
 
             # 2. 计算市场统计指标
-            market_stats = self._calc_market_stats(klines)
+            warmup = await self._fetch_klines_from_pg(week_start - timedelta(hours=24), week_start)
+            if not self._covers_hours(warmup, week_start - timedelta(hours=24), week_start):
+                return results
+            market_stats = self._calc_market_stats(warmup)
 
             # 3. 提取当前网格参数
             current_params = self._extract_grid_params(market_stats)
+
+            self._comparison_input = (klines, current_params)
 
             # 4. 构建多场景参数组合
             scenarios = self._build_scenarios(current_params)
@@ -511,6 +519,9 @@ class GridAdapter(BaseAdapter):
             price_range_low=round(price_range_low, 2),
             price_range_high=round(price_range_high, 2),
             profit_rate_per_fill=round(profit_rate * 100, 2),
+            composite_score=result.get("composite_score", 0.0),
+            max_drawdown_pct=result.get("max_drawdown_pct", 0.0),
+            sharpe_ratio=result.get("sharpe_ratio", 0.0),
             estimated_fills_weekly=result.get("fill_count", 0),
             estimated_profit_weekly=round(result.get("total_pnl", 0.0), 2),
             confidence=confidence,
@@ -542,7 +553,7 @@ class GridAdapter(BaseAdapter):
         # 尝试从 PostgreSQL 读取
         klines = await self._fetch_klines_from_pg(week_start, week_end)
         min_kline_count = self._system_config.get("backtest", {}).get("min_kline_count", 24)
-        if klines and len(klines) >= min_kline_count:
+        if len(klines or []) >= min_kline_count and self._covers_hours(klines, week_start, week_end):
             logger.info(
                 "从PostgreSQL获取K线数据",
                 count=len(klines),
@@ -568,7 +579,7 @@ class GridAdapter(BaseAdapter):
         for symbol in symbols:
             try:
                 api_klines = await self._fetch_klines(kline_url, symbol, week_start, week_end)
-                if api_klines and len(api_klines) >= min_kline_count:
+                if len(api_klines or []) >= min_kline_count and self._covers_hours(api_klines, week_start, week_end):
                     logger.info(
                         "从K线服务API获取K线数据",
                         symbol=symbol,
@@ -584,6 +595,18 @@ class GridAdapter(BaseAdapter):
 
         logger.error("所有K线数据源均不可用，无法执行回测")
         return []
+
+    @staticmethod
+    def _covers_hours(bars, start, end):
+        expected_count = int((end - start).total_seconds() // 3600)
+        if expected_count <= 0 or len(bars or []) != expected_count:
+            return False
+        for index, bar in enumerate(bars):
+            expected = start + timedelta(hours=index)
+            value = bar.get("open_time")
+            if value != expected and value != int(expected.timestamp() * 1000):
+                return False
+        return True
 
     async def _fetch_klines_from_pg(
         self, week_start: datetime, week_end: datetime
@@ -627,6 +650,19 @@ class GridAdapter(BaseAdapter):
                 strategy_id=self.strategy_id,
             )
             return []
+
+    async def validate_grid_proposal(self, adjustments):
+        from dataclasses import replace
+
+        source = getattr(self, "_comparison_input", None)
+        supported = {"grid.base_grid_count": "base_grid_count",
+                     "grid.grid_spacing_atr_multiplier": "grid_spacing_atr_multiplier"}
+        if not source or not adjustments.keys() <= supported.keys():
+            return {"passed": False, "reason": "缺少同窗口行情或建议涉及回测无法验证的参数"}
+        klines, current = source
+        changes = {supported[key]: value for key, value in adjustments.items()}
+        proposed = replace(current, **changes)
+        return await self._validate_new_params(current, proposed, klines)
 
     async def _validate_new_params(
         self,
@@ -776,7 +812,10 @@ class GridAdapter(BaseAdapter):
         import aiohttp
 
         hours_needed = int((week_end - week_start).total_seconds() / 3600) + 24
-        limit = min(hours_needed, 200)
+        if hours_needed > 100:
+            logger.warning("latest 接口无法覆盖历史窗口", symbol=symbol)
+            return []
+        limit = hours_needed
 
         url = f"{base_url.rstrip('/')}/klines/latest"
         params = {
@@ -801,7 +840,9 @@ class GridAdapter(BaseAdapter):
                 if not isinstance(klines_data, list):
                     return []
 
-                return self._convert_kline_rows(klines_data)
+                bars = self._convert_kline_rows(klines_data)
+                return [bar for bar in bars if isinstance(bar["open_time"], int)
+                        and week_start.timestamp() * 1000 <= bar["open_time"] < week_end.timestamp() * 1000]
 
     @staticmethod
     def _convert_kline_rows(rows: List[Any]) -> List[Dict[str, Any]]:

@@ -55,7 +55,7 @@ def round_quantity(quantity: Decimal, step_size: Decimal) -> Decimal:
     return q_round(quantity, step_size, rounding=ROUND_DOWN)
 
 
-def clamp_notional(quantity: Decimal, price: Decimal, min_notional: Decimal) -> Decimal:
+def clamp_notional(quantity: Decimal, price: Decimal, min_notional: Decimal, step_size: Decimal = Decimal("0.001")) -> Decimal:
     """名义价值低于 minNotional 时，返回使其恰好达标的最小数量（向上取整）。"""
     if min_notional <= ZERO:
         return quantity
@@ -64,7 +64,7 @@ def clamp_notional(quantity: Decimal, price: Decimal, min_notional: Decimal) -> 
         return quantity
     if price <= ZERO:
         return quantity
-    return (min_notional / price).to_integral_value(rounding=ROUND_UP)
+    return q_round(min_notional / price, step_size, ROUND_UP)
 
 
 def price_crosses_limit(
@@ -251,8 +251,9 @@ class VirtualBroker:
 
     def on_bar(self, symbol: str, bar: Any, ts: datetime) -> None:
         """推进一根 K 线：先按开盘价执行待成交入场，再按固定优先级处理退出。"""
-        self.last_prices[symbol] = bar.close
+        self.last_prices[symbol] = bar.open
         self._execute_pending_entries(symbol, bar, ts)
+        self.last_prices[symbol] = bar.close
         self._evaluate_exits(symbol, bar, ts)
         self._update_mae_mfe(symbol, bar)
 
@@ -362,20 +363,28 @@ class VirtualBroker:
         orders = self._pending_entries.pop(symbol, [])
         for order in sorted(orders, key=lambda o: o.intent.seq):
             intent = order.intent
+            if bar.open_time < order.created_at:
+                self._pending_entries.setdefault(symbol, []).append(order)
+                continue
             if intent.order_type == "MARKET":
-                self._open_market_position(order, bar.open, ts)
+                self._open_market_position(order, bar.open, ts, activated_at=bar.open_time)
             elif intent.order_type in ("LIMIT", "STOP"):
                 trigger = intent.limit_price if intent.order_type == "LIMIT" else intent.trigger_price
-                if trigger is not None and price_crosses_limit(
-                    trigger, bar.high, bar.low, intent.side
-                ):
-                    self._open_market_position(order, trigger, ts)
+                direction = intent.side
+                if intent.order_type == "STOP":
+                    direction = "SHORT" if intent.side == "LONG" else "LONG"
+                if trigger is not None and price_crosses_limit(trigger, bar.high, bar.low, direction):
+                    price = trigger
+                    if intent.order_type == "STOP":
+                        price = max(trigger, bar.open) if intent.side == "LONG" else min(trigger, bar.open)
+                    self._open_market_position(order, price, ts)
                 else:
                     self._pending_entries.setdefault(symbol, []).append(order)
             else:
                 self._reject(order, ts, "ENTRY_ORDER_TYPE_UNSUPPORTED")
 
-    def _open_market_position(self, order: Order, reference_price: Decimal, ts: datetime) -> None:
+    def _open_market_position(self, order: Order, reference_price: Decimal, ts: datetime,
+                              activated_at: Optional[datetime] = None) -> None:
         intent = order.intent
         symbol = intent.symbol
         if symbol in self.positions and self.positions[symbol].is_open():
@@ -389,7 +398,8 @@ class VirtualBroker:
 
         fill_price = round_price(reference_price, symbol_filters.tick_size)
         quantity = round_quantity(
-            clamp_notional(intent.quantity, fill_price, symbol_filters.min_notional),
+            clamp_notional(round_quantity(intent.quantity, symbol_filters.step_size), fill_price,
+                           symbol_filters.min_notional, symbol_filters.step_size),
             symbol_filters.step_size,
         )
         if quantity <= ZERO:
@@ -397,7 +407,9 @@ class VirtualBroker:
             return
 
         notional = quantity * fill_price
-        if self.max_leverage > ZERO and notional > self.realized_equity * self.max_leverage:
+        exposure = sum((p.current_quantity * self.last_prices.get(p.symbol, p.entry_price)
+                        for p in self.positions.values() if p.is_open()), ZERO)
+        if self.max_leverage > ZERO and exposure + notional > self.mark(ts).marked_equity * self.max_leverage:
             self._reject(order, ts, "LEVERAGE_LIMIT")
             return
 
@@ -406,17 +418,35 @@ class VirtualBroker:
         self.realized_equity += fee + slip
 
         position = Position(
-            position_id="{0}.{1:06d}".format(intent.strategy_id, self._order_seq),
+            position_id=order.order_id,
             symbol=symbol,
             direction=intent.side,
             entry_price=fill_price,
             entry_quantity=quantity,
             current_quantity=quantity,
-            atr=ZERO,
+            atr=intent.protection.atr if intent.protection else ZERO,
             grade=intent.grade or "",
             entry_time=ts,
         )
         self.positions[symbol] = position
+        protection = intent.protection
+        if protection is not None:
+            self.set_protective_prices(symbol, fill_price + protection.stop_offset,
+                                       fill_price + protection.tp1_offset, fill_price + protection.tp2_offset)
+            for reason, offset, ratio in (
+                ("STOP_LOSS", protection.stop_offset, Decimal(1)),
+                ("TP1", protection.tp1_offset, protection.tp1_ratio),
+                ("TP2", protection.tp2_offset, protection.tp2_ratio),
+            ):
+                if ratio <= ZERO:
+                    continue
+                protective_intent = OrderIntent(
+                    strategy_id=intent.strategy_id, symbol=symbol, seq=intent.seq,
+                    side=intent.side, order_type="STOP" if reason == "STOP_LOSS" else "TAKE_PROFIT",
+                    trigger_price=fill_price + offset, quantity=quantity, reason=reason,
+                    reduce_only=True, close_ratio=ratio, fraction_of_entry=True,
+                )
+                self._register_working_exit(self._new_order(protective_intent, activated_at or ts))
         self._entry_fee[position.position_id] = fee
         self._entry_slip[position.position_id] = slip
         self._funding_acc.setdefault(position.position_id, ZERO)
@@ -466,6 +496,8 @@ class VirtualBroker:
             current = self.positions.get(symbol)
             if current is None or not current.is_open():
                 return
+            if bar.open_time < order.created_at:
+                continue
             trigger = order.intent.trigger_price
             if trigger is None:
                 continue
@@ -478,7 +510,7 @@ class VirtualBroker:
 
     def _trigger_crossed(self, intent: OrderIntent, trigger: Decimal, bar: Any) -> bool:
         """保守穿越判定：止损看不利方向极值，止盈看有利方向极值。"""
-        if intent.reason == "STOP_LOSS":
+        if intent.reason in ("STOP_LOSS", "TRAILING_STOP"):
             if intent.side == "LONG":
                 return bar.low <= trigger
             return bar.high >= trigger
@@ -496,7 +528,7 @@ class VirtualBroker:
 
     def _exit_fill_price(self, intent: OrderIntent, trigger: Decimal) -> Decimal:
         """止损向不利方向偏移、止盈向有利方向偏移（保证触发后必成交）。"""
-        if intent.reason == "STOP_LOSS":
+        if intent.reason in ("STOP_LOSS", "TRAILING_STOP"):
             if intent.side == "LONG":
                 return trigger * (Decimal("1") - self.stop_offset_pct)
             return trigger * (Decimal("1") + self.stop_offset_pct)
@@ -524,9 +556,10 @@ class VirtualBroker:
 
         exit_price = round_price(reference_price, symbol_filters.tick_size)
         ratio = intent.close_ratio
-        if intent.reason == "TP1" and intent.close_ratio == Decimal("1"):
+        if intent.reason == "TP1" and not intent.fraction_of_entry and intent.close_ratio == Decimal("1"):
             ratio = self.tp1_close_ratio
-        close_qty = round_quantity(position.current_quantity * ratio, symbol_filters.step_size)
+        base_quantity = position.entry_quantity if intent.fraction_of_entry else position.current_quantity
+        close_qty = round_quantity(base_quantity * ratio, symbol_filters.step_size)
         if close_qty <= ZERO:
             self._event(
                 ts,

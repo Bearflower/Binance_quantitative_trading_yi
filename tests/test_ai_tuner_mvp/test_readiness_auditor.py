@@ -12,6 +12,7 @@ v2 修复说明（2026-10-18）：
 - 时间列类型探测 + 绑定值转换（naive 去 tzinfo / aware 保留 UTC）消除 asyncpg 冲突
 """
 
+from datetime import timedelta, timezone
 import pytest
 
 from ai_tuner.readiness.auditor import ReadinessAuditor
@@ -97,7 +98,7 @@ class TestConfigDrivenThresholds:
         config["purpose_driven_mvp"]["readiness"]["min_regime_count"] = 6
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         failures = result.candidates["btc_eth_aggressive"].failures
-        assert any("regime_count(proxy) 5 < 6" in f for f in failures)
+        assert any("regime_count 3 < 6" in f for f in failures)
 
     async def test_window_days_drives_kline_expectation(self, config, as_of):
         """window_days 真实生效：同样 actual=100，窗口 1 天达标、90 天不达标。
@@ -121,13 +122,13 @@ class TestConfigDrivenThresholds:
         fail_result = await ReadinessAuditor(FakeDB(responses_long), config).run(as_of=as_of)
         assert any("K线覆盖" in f for f in fail_result.candidates["btc_eth_aggressive"].failures)
 
-    async def test_identity_baseline_from_config_not_hardcoded(self, config, fake_db, as_of):
-        """M2：identity baseline 来自 config（改 baseline 即改门禁结果）"""
+    async def test_identity_uses_measured_records_independently_of_baseline(self, config, fake_db, as_of):
+        """修改旧基线不改变窗口内已测的身份覆盖率。"""
         config["purpose_driven_mvp"]["identity_ratio_baseline"] = 0.5
         config["purpose_driven_mvp"]["readiness"]["min_config_identity_coverage"] = 0.6
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         failures = result.candidates["btc_eth_aggressive"].failures
-        assert any("配置身份覆盖 50.00% < 60.00%" in f for f in failures)
+        assert not any("配置身份覆盖" in f for f in failures)
 
     async def test_window_start_passed_to_sql(self, auditor, fake_db, as_of):
         """窗口以绑定变量 $2/$3 传入 SQL（参数化，无字面量拼接）"""
@@ -161,6 +162,7 @@ class TestTimezoneBinding:
         # args[0] = strategy_id, args[1] = window_start（应 naive）, args[2] = window_end（应 naive）
         ws, we = args[1], args[2]
         assert ws.tzinfo is None, f"naive 列应收到 naive 值，实际 tzinfo={ws.tzinfo}"
+        assert we == as_of.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None)
         assert we.tzinfo is None, f"naive 列应收到 naive 值，实际 tzinfo={we.tzinfo}"
 
     async def test_aware_column_receives_aware_utc(self, config, as_of):
@@ -203,8 +205,8 @@ class TestHrsGapReporting:
                 or "historical_universe_missing" in g
                 for g in cr.gaps
             ), cr.gaps
-            assert any("regime_count 是 proxy" in g for g in cr.gaps)
-            assert any("inferred" in g for g in cr.gaps)
+            assert not any("proxy" in g and "regime_count" in g for g in cr.gaps)
+            assert any("配置哈希" in g for g in cr.gaps)
         # aggressive 快照 not_required → gap 含 not_required 文案
         aggr = result.candidates["btc_eth_aggressive"]
         assert any("not_required_for_current_manifest" in g for g in aggr.gaps)
@@ -364,13 +366,13 @@ class TestKlineDominantSymbol:
 
 class TestOtherQueryBranches:
     async def test_trade_records_row_none_defaults(self, config, as_of):
-        """trade_records 查询返回 None → (0, 1.0)（新库无数据视为字段完整）"""
+        """无记录时没有字段完整性证据。"""
         responses = dict(BASELINE_RESPONSES)
         responses["AS closed_trades"] = None
         result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
         cr = result.candidates["btc_eth_aggressive"]
         assert cr.closed_trades == 0
-        assert cr.complete_trade_ratio == 1.0
+        assert cr.complete_trade_ratio == 0.0
 
     async def test_trade_records_null_fields_coerced(self, config, as_of):
         """行内字段为 NULL 时按 0 兜底"""
@@ -379,7 +381,7 @@ class TestOtherQueryBranches:
         result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
         cr = result.candidates["btc_eth_aggressive"]
         assert cr.closed_trades == 0
-        assert cr.complete_trade_ratio == 1.0
+        assert cr.complete_trade_ratio == 0.0
 
     async def test_trade_records_query_failure_zeros_and_fails(self, config, as_of):
         """trade_records 查询异常 → (0, 0.0) → 触发 trades 与完整度两项失败"""
@@ -393,13 +395,13 @@ class TestOtherQueryBranches:
 
     async def test_regime_query_failure_silent_zero(self, config, as_of):
         """regime 查询异常 → 静默记 0（不阻断）"""
-        db = FakeDB(errors={"COUNT(DISTINCT symbol) AS syms": RuntimeError("boom")})
+        db = FakeDB(errors={"AS regimes": RuntimeError("boom")})
         result = await ReadinessAuditor(db, config).run(as_of=as_of)
         assert result.candidates["btc_eth_aggressive"].regime_count == 0
 
     async def test_regime_row_none_zero(self, config, as_of):
         responses = dict(BASELINE_RESPONSES)
-        responses["COUNT(DISTINCT symbol) AS syms"] = None
+        responses["AS regimes"] = None
         result = await ReadinessAuditor(FakeDB(responses), config).run(as_of=as_of)
         assert result.candidates["btc_eth_aggressive"].regime_count == 0
 
@@ -474,7 +476,7 @@ class TestGapsBuilding:
         result = await ReadinessAuditor(fake_db, config).run(as_of=as_of)
         cr = result.candidates["btc_eth_aggressive"]
         assert not any("inferred" in g for g in cr.gaps)
-        assert any("regime_count 是 proxy" in g for g in cr.gaps)
+        assert not any("proxy" in g and "regime_count" in g for g in cr.gaps)
 
     async def test_gap_order_signals_kline_snapshot(self, config, as_of):
         """gaps 顺序：signal → kline → snapshot → identity → proxy"""
@@ -597,7 +599,7 @@ class TestEffectiveSignalsExcludesCancelled:
         await ReadinessAuditor(custom_db, config).run(as_of=as_of)
         signal_sqls = [
             s for s in custom_db.sql_log
-            if "FROM btc_eth_aggressive.trade_signals" in s
+            if "FROM btc_eth_aggressive.trade_signals" in s and "AS cnt" in s
         ]
         assert signal_sqls, "应至少有一条 aggressive 信号计数 SQL"
         for sql in signal_sqls:

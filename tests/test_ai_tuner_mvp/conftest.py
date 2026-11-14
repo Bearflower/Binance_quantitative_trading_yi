@@ -206,10 +206,10 @@ BASELINE_RESPONSES = {
 
     # ============ 主业务查询（SQL 模板唯一，纯子串匹配）============
     # trade_records 完整度查询
-    "AS closed_trades": {"closed_trades": 100, "complete_ratio": 1.0},
+    "AS closed_trades": {"closed_trades": 100, "complete_ratio": 1.0, "identity_ratio": 0.9},
 
-    # regime proxy（COUNT DISTINCT symbol）
-    "COUNT(DISTINCT symbol) AS syms": {"syms": 5},
+    # 信号记录中实际观测到的不同市场状态
+    "AS regimes": {"regimes": 3},
 
     # 主力合约查询（GROUP BY symbol + COUNT(*) DESC LIMIT 1）
     # 用于 K 线表定位；所有策略共享同一模板 → 返回同一 BTCUSDT

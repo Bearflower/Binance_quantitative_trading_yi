@@ -8,6 +8,7 @@
 
 import os
 import shutil
+import tempfile
 from datetime import datetime
 from typing import List
 
@@ -33,7 +34,7 @@ class RollbackManager:
         """
         self.max_backups = max_backups
 
-    def create_backup(self, config_path: str) -> str:
+    def create_backup(self, config_path: str, *, cleanup=True) -> str:
         """
         创建配置文件备份
 
@@ -50,9 +51,12 @@ class RollbackManager:
             return ""
 
         try:
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = f"{config_path}.backup.{timestamp}"
-            shutil.copy2(config_path, backup_path)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            with tempfile.NamedTemporaryFile(prefix=f"{os.path.basename(config_path)}.backup.{timestamp}.",
+                                             dir=os.path.dirname(config_path) or ".", delete=False) as dest:
+                backup_path = dest.name
+                with open(config_path, "rb") as source:
+                    shutil.copyfileobj(source, dest)
 
             logger.info(
                 "配置备份已创建",
@@ -61,7 +65,8 @@ class RollbackManager:
             )
 
             # 清理旧备份
-            self.cleanup_old_backups(config_path)
+            if cleanup:
+                self.cleanup_old_backups(config_path)
 
             return backup_path
 
@@ -86,9 +91,11 @@ class RollbackManager:
 
         try:
             # 恢复前先备份当前配置（防止误操作）
-            current_backup = self.create_backup(config_path)
+            if not self.create_backup(config_path, cleanup=False):
+                return False
 
             shutil.copy2(backup_path, config_path)
+            self.cleanup_old_backups(config_path)
 
             logger.info(
                 "配置已从备份恢复",

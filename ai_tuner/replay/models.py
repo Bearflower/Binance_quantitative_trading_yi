@@ -10,7 +10,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, Optional, Tuple
 
@@ -199,6 +199,13 @@ class ExternalSnapshot:
     market_cap_source: str
     payload_hash: str
     is_complete: bool
+    bucket_end: Optional[datetime] = None
+    collected_at: Optional[datetime] = None
+
+    @property
+    def available_at(self) -> datetime:
+        return max(self.observed_at, self.collected_at or self.observed_at,
+                   self.bucket_end or self.bucket_start + timedelta(hours=1))
 
 
 @dataclass(frozen=True)
@@ -242,6 +249,16 @@ EXIT_PRIORITY = {
 
 
 @dataclass(frozen=True)
+class EntryProtection:
+    atr: Decimal
+    stop_offset: Decimal
+    tp1_offset: Decimal
+    tp2_offset: Decimal
+    tp1_ratio: Decimal
+    tp2_ratio: Decimal
+
+
+@dataclass(frozen=True)
 class OrderIntent:
     """适配器产出的「想做什么」。由 Broker 负责撮合，适配器不得自行撮合。"""
 
@@ -258,6 +275,8 @@ class OrderIntent:
     close_ratio: Decimal = Decimal("1")
     grade: Optional[str] = None
     reference_price: Optional[Decimal] = None
+    protection: Optional[EntryProtection] = None
+    fraction_of_entry: bool = False
 
     def __post_init__(self) -> None:
         if self.side not in SIDES:

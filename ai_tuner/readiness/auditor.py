@@ -14,12 +14,13 @@
 - K 线覆盖度改为按"主力合约"取表（该策略在窗口内 symbol 出现次数最多者），
   避免任意取第一张 K 线表（经常取到无关小币）
 - 外部快照表不存在时 coverage=0 并在 gaps 列表里说明（预期行为）
-- 配置身份覆盖度：从 config purpose_driven_mvp.identity_ratio_baseline 读取（强制键）
+- 配置身份覆盖度来自平仓记录中的版本及配置哈希
 - 策略选择优先序：读 config candidates 顺序
 - min_external_snapshot_coverage 无兜底，由 config 决定
-- regime_count = COUNT(DISTINCT symbol) 是 proxy，非真实市场状态数
+- 市场状态使用信号当时记录的标签
 """
 
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -457,14 +458,13 @@ class ReadinessAuditor:
         window_end: datetime,
     ) -> CandidateReadiness:
         """对单个候选策略执行全部门禁检查（调度子步骤）"""
-        closed_trades, complete_ratio = await self._query_trade_records(
+        closed_trades, complete_ratio, identity_ratio = await self._query_trade_records(
             strategy_id, window_start, window_end
         )
         signals_count, signal_gaps = await self._query_signal_count(
             strategy_id, window_start, window_end
         )
-        # M6 标注：regime_count 当前是 proxy，TODO(阶段二)
-        regime_proxy, regime_gaps = await self._query_regime_coverage(
+        regime_count, regime_gaps = await self._query_regime_coverage(
             strategy_id, window_start, window_end
         )
         kline_coverage, kline_gaps, kline_symbols = await self._query_kline_coverage(
@@ -475,9 +475,9 @@ class ReadinessAuditor:
         )
         return self._build_candidate(
             strategy_id=strategy_id,
-            closed_trades=closed_trades, complete_ratio=complete_ratio,
+            closed_trades=closed_trades, complete_ratio=complete_ratio, identity_ratio=identity_ratio,
             signals_count=signals_count, signal_gaps=signal_gaps,
-            regime_proxy=regime_proxy, regime_gaps=regime_gaps,
+            regime_count=regime_count, regime_gaps=regime_gaps,
             kline_coverage=kline_coverage, kline_gaps=kline_gaps,
             kline_symbols=kline_symbols,
             snapshot_coverage=snapshot_result.coverage,
@@ -489,22 +489,21 @@ class ReadinessAuditor:
         self,
         *,
         strategy_id: str,
-        closed_trades: int, complete_ratio: float,
+        closed_trades: int, complete_ratio: float, identity_ratio: float,
         signals_count: int, signal_gaps: List[str],
-        regime_proxy: int, regime_gaps: List[str],
+        regime_count: int, regime_gaps: List[str],
         kline_coverage: float, kline_gaps: List[str],
         kline_symbols: list,
         snapshot_coverage: float, snapshot_gaps: List[str],
         snapshot_result: Optional[SnapshotCoverage] = None,
     ) -> CandidateReadiness:
         """把各查询结果组装成 CandidateReadiness（门禁判定 + gaps 汇总 + 返回）"""
-        identity_ratio = self.identity_baseline
         snap_threshold, snap_requirement = self._resolve_snapshot_policy(strategy_id)
 
         failures, snap_reason = self._apply_gate_thresholds(
             closed_trades, signals_count, complete_ratio,
             identity_ratio, kline_coverage, snapshot_coverage,
-            regime_proxy, snap_threshold, snap_requirement,
+            regime_count, snap_threshold, snap_requirement,
         )
         gaps = self._build_gaps_list(
             signal_gaps, kline_gaps, snapshot_gaps, regime_gaps,
@@ -514,7 +513,7 @@ class ReadinessAuditor:
             strategy_id=strategy_id,
             closed_trades=closed_trades,
             effective_signals=signals_count,
-            regime_count=regime_proxy,
+            regime_count=regime_count,
             complete_trade_ratio=round(complete_ratio, 4),
             config_identity_ratio=round(identity_ratio, 4),
             kline_coverage=round(kline_coverage, 4),
@@ -574,7 +573,7 @@ class ReadinessAuditor:
         else:
             snap_reason = "snapshot_coverage_ok"
         if regime_count < cfg["min_regime_count"]:
-            failures.append(f"regime_count(proxy) {regime_count} < {cfg['min_regime_count']}")
+            failures.append(f"regime_count {regime_count} < {cfg['min_regime_count']}")
         return failures, snap_reason
 
     @staticmethod
@@ -599,14 +598,7 @@ class ReadinessAuditor:
             gaps.extend(snapshot_gaps)
         gaps += list(regime_gaps)
         if identity_ratio < 1.0:
-            gaps.append(
-                f"配置身份用 inferred（无版本列），当前 baseline={identity_ratio:.2f}，"
-                f"实际覆盖度可能被高估；TODO(阶段二): 补齐 identity 列后改为动态计算"
-            )
-        gaps.append(
-            "regime_count 是 proxy（COUNT DISTINCT symbol），非真实市场状态覆盖数；"
-            "TODO(阶段二): 引入 market_regime 表后改为真实计数"
-        )
+            gaps.append("部分或全部已核实平仓缺少覆盖层版本及配置哈希")
         return gaps
 
     # ---------------------------------------------------------------
@@ -620,9 +612,13 @@ class ReadinessAuditor:
         """按 executed_at 列类型绑定窗口后查询 trading.trade_records"""
         ws, we = await db_probe.bind_bounds(
             self.db, "trading", "trade_records", "executed_at",
-            window_start, window_end,
+            window_start.astimezone(timezone.utc), window_end.astimezone(timezone.utc),
         )
-        return await self.db.fetch_one(sql, strategy_id, ws, we)
+        if ws.tzinfo is None:
+            beijing = timezone(timedelta(hours=8))
+            ws, we = (bound.replace(tzinfo=timezone.utc).astimezone(beijing).replace(tzinfo=None)
+                      for bound in (ws, we))
+        return await self.db.fetch_one(sql, strategy_id, ws, we, os.getenv("TRADE_ACCOUNT_ID", "default"))
 
     async def _query_trade_records(
         self,
@@ -632,26 +628,38 @@ class ReadinessAuditor:
     ) -> tuple:
         """查询 trade_records 中的已平仓交易数和必填字段完整度"""
         sql = """
+        WITH attributed AS (
+            SELECT t.*,
+                   COUNT(*) OVER (PARTITION BY symbol, order_id) AS proofs
+            FROM trading.trade_records t
+            WHERE strategy = $1 AND account_id = $4
+              AND executed_at >= $2 AND executed_at < $3
+              AND status = 'FILLED' AND order_type <> 'PNL_SUMMARY'
+              AND pnl_source = 'exchange_fill' AND NULLIF(TRIM(order_id), '') IS NOT NULL
+        )
         SELECT COUNT(*) AS closed_trades,
                AVG(CASE WHEN symbol IS NOT NULL AND side IS NOT NULL
                              AND quantity > 0 AND price > 0
                              AND realized_pnl IS NOT NULL AND executed_at IS NOT NULL
-                        THEN 1.0 ELSE 0.0 END) AS complete_ratio
-        FROM trading.trade_records
-        WHERE strategy = $1
-          AND executed_at >= $2
-          AND executed_at <  $3
-          AND side IS NOT NULL
+                        THEN 1.0 ELSE 0.0 END) AS complete_ratio,
+               AVG(CASE WHEN NULLIF(to_jsonb(t)->>'overlay_version','') IS NOT NULL
+                        AND to_jsonb(t)->>'config_hash' ~ '^[a-f0-9]{64}$'
+                        THEN 1.0 ELSE 0.0 END) AS identity_ratio
+        FROM attributed t WHERE proofs = 1
         """
         try:
             row = await self._fetch_trading_window(sql, strategy_id, window_start, window_end)
             if row is None:
-                return 0, 1.0
-            return int(row["closed_trades"] or 0), float(row["complete_ratio"] or 1.0)
+                return 0, 0.0, 0.0
+            return (
+                int(row["closed_trades"] or 0),
+                float(row["complete_ratio"] or 0.0),
+                float(row.get("identity_ratio") or 0.0),
+            )
         except Exception as exc:
             logger.warning("trade_records 查询失败", strategy_id=strategy_id,
                            error=str(exc))
-            return 0, 0.0
+            return 0, 0.0, 0.0
 
     async def _query_regime_coverage(
         self,
@@ -659,21 +667,27 @@ class ReadinessAuditor:
         window_start: datetime,
         window_end: datetime,
     ) -> tuple:
-        """查询窗口内覆盖的"市场状态数"（proxy：COUNT DISTINCT symbol）"""
+        """按当时记录的市场状态计数，缺少标签时保留证据缺口。"""
+        if strategy_id != "btc_eth_aggressive":
+            return 0, ["当前策略尚无可验证的历史行情状态标签"]
         sql = """
-        SELECT COUNT(DISTINCT symbol) AS syms
-        FROM trading.trade_records
-        WHERE strategy = $1
-          AND executed_at >= $2
-          AND executed_at <  $3
+        SELECT COUNT(DISTINCT metadata->>'market_state') AS regimes
+        FROM btc_eth_aggressive.trade_signals
+        WHERE created_at >= $1 AND created_at < $2
+          AND metadata->>'market_state' IN ('STRONG_TREND','WEAK_TREND','RANGING')
         """
         try:
-            row = await self._fetch_trading_window(sql, strategy_id, window_start, window_end)
-            return int((row or {}).get("syms") or 0), []
+            start, end = await db_probe.bind_bounds(
+                self.db, strategy_id, "trade_signals", "created_at", window_start, window_end,
+            )
+            row = await self.db.fetch_one(sql, start, end)
+            count = int((row or {}).get("regimes") or 0)
+            gaps = [] if count else ["信号中无已识别的市场状态"]
+            if count < self.readiness_cfg["min_regime_count"] and self.readiness_cfg["min_regime_count"] > 2:
+                gaps.append("激进版当前仅产生 STRONG_TREND/RANGING 两类状态，当前配置的门禁无法仅靠积累新信号达到")
+            return count, gaps
         except Exception as exc:
-            logger.warning("regime_count 查询失败", strategy=strategy_id,
-                           error=str(exc))
-            return 0, [f"regime_count(proxy) 查询失败，覆盖度记 0：{exc}"]
+            return 0, [f"市场状态查询失败：{exc}"]
 
     async def _query_external_snapshot(
         self, strategy_id: str, window_start: datetime, window_end: datetime
@@ -681,28 +695,31 @@ class ReadinessAuditor:
         """按历史 universe 的 symbol-hour 计算完整外部快照覆盖率。"""
         sql = """
         WITH scan_runs AS (
-            SELECT observed_at,
+            SELECT observed_at, created_at, config_hash, source_run_id, symbol_count,
                    LEAD(observed_at, 1, $3) OVER (ORDER BY observed_at) AS valid_until
             FROM public.ai_tuner_universe_scan_runs
             WHERE strategy_id = $1 AND observed_at < $3 AND created_at <= $3
         ), revisions AS (
-            SELECT u.strategy_id, u.symbol, u.observed_at, r.valid_until
+            SELECT u.strategy_id, u.symbol, u.observed_at, r.valid_until,
+                   GREATEST(u.created_at, r.created_at) AS known_at
             FROM public.ai_tuner_universe_snapshots
             AS u
             JOIN scan_runs r ON r.observed_at = u.observed_at
+             AND r.config_hash = u.config_hash AND r.source_run_id = u.source_run_id
             WHERE u.strategy_id = $1 AND u.observed_at < $3 AND u.created_at <= $3
         ), universe_hours AS (
-            SELECT DISTINCT r.symbol, hour.bucket_start
+            SELECT r.symbol, hour.bucket_start, MIN(r.known_at) AS known_at
             FROM revisions r
             CROSS JOIN LATERAL generate_series(
-                GREATEST(date_trunc('hour', r.observed_at), date_trunc('hour', $2)),
+                GREATEST(date_trunc('hour', r.observed_at), date_trunc('hour', $2::timestamptz)),
                 LEAST(
                     date_trunc('hour', r.valid_until - interval '1 microsecond'),
-                    date_trunc('hour', $3 - interval '1 microsecond')
+                    date_trunc('hour', $3::timestamptz - interval '1 microsecond')
                 ),
                 interval '1 hour'
             ) AS hour(bucket_start)
             WHERE r.valid_until > $2
+            GROUP BY r.symbol, hour.bucket_start
         ), evidence AS (
             SELECT u.symbol, u.bucket_start,
                    m.oi_source, m.funding_source, m.market_cap_source,
@@ -725,7 +742,11 @@ class ReadinessAuditor:
                                   1.0, ABS(m.funding_rate * 3 * 365 * 100)
                               )
                               AND m.market_cap_source IN ('coingecko', 'cache_hit', 'coingecko_cache')
-                              AND m.source_observed_at <= u.bucket_start + interval '1 hour'
+                              AND u.known_at < u.bucket_start + interval '1 hour'
+                              AND m.observed_at < u.bucket_start + interval '1 hour'
+                              AND m.observed_at <= $3
+                              AND m.collected_at < u.bucket_start + interval '1 hour'
+                              AND m.source_observed_at < u.bucket_start + interval '1 hour'
                               AND m.source_observed_at <= $3
                         THEN 1 ELSE 0 END AS complete
             FROM universe_hours u
@@ -737,6 +758,12 @@ class ReadinessAuditor:
         SELECT COUNT(*) AS symbol_hours_expected,
                COALESCE(SUM(complete), 0) AS complete,
                MIN(bucket_start) AS evidence_start,
+               EXISTS(
+                   SELECT 1 FROM scan_runs r
+                   WHERE r.valid_until > $2 AND r.symbol_count <> (
+                       SELECT COUNT(*) FROM revisions v WHERE v.observed_at = r.observed_at
+                   )
+               ) AS incomplete_scan,
                EXISTS(
                    SELECT 1 FROM scan_runs WHERE observed_at <= $2
                ) AS has_window_start_universe,
@@ -759,6 +786,11 @@ class ReadinessAuditor:
             )
             first_scan_at = (row or {}).get("first_scan_at")
             sources = sorted(set((row or {}).get("sources") or []))
+            if (row or {}).get("incomplete_scan"):
+                return SnapshotCoverage(
+                    expected, complete, 0.0, (row or {}).get("evidence_start"), sources,
+                    ["historical_universe_missing_members"],
+                )
             if expected == 0 or not has_window_start_universe:
                 missing_marker = (
                     f"historical_universe_missing_before={first_scan_at.isoformat()}"

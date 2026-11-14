@@ -37,8 +37,7 @@ purpose_driven_mvp:
   min_score_advantage: 5.0
   max_switches_in_days: 7
 
-  # 配置身份覆盖 baseline（强制键，由 auditor 在 __init__ 时校验存在性）
-  # 用于"配置是否有版本列"推断的 baseline 比例（阶段二补齐 identity 列后动态计算）
+  # 兼容旧配置的必填键；审计使用平仓记录逐行实测的版本身份覆盖率。
   identity_ratio_baseline: 0.90
 
   # 资格考试成本压力红线；其余未校准门禁仍须由实测数据校准后显式配置。
@@ -123,61 +122,60 @@ strategies:
       - "binance.position_ratio.A"
       - "binance.position_ratio.B"
       - "binance.position_ratio.C"
-      - "risk.stop_loss_atr_multiplier"
-      - "risk.chandelier_stop.activation_atr"
-      - "risk.chandelier_stop.trailing_atr"
+      - "strategy.risk.stop_loss_atr_multiplier"
+      - "strategy.risk.chandelier_stop.activation_atr"
+      - "strategy.risk.chandelier_stop.trailing_atr"
     # 变化率告警阈值：超过此变化率（200%）触发告警
     change_rate_threshold: 2.0
     param_whitelist:
       # 评分参数
-      - "scoring.min_score"
-      - "scoring.weights.trend_strength"
-      - "scoring.weights.pattern_quality"
-      - "scoring.weights.momentum_divergence"
+      - "strategy.scoring.min_score"
+      - "strategy.scoring.weights.trend_strength"
+      - "strategy.scoring.weights.pattern_quality"
+      - "strategy.scoring.weights.momentum_divergence"
       # 信号等级止盈止损参数（v6.24+）
-      - "risk.signal_levels.S.stop_loss_atr_multiplier"
-      - "risk.signal_levels.A.stop_loss_atr_multiplier"
-      - "risk.signal_levels.B.stop_loss_atr_multiplier"
-      - "risk.signal_levels.C.stop_loss_atr_multiplier"
-      - "risk.signal_levels.S.partial_take_profit.tp1_atr_multiplier"
-      - "risk.signal_levels.A.partial_take_profit.tp1_atr_multiplier"
-      - "risk.signal_levels.B.partial_take_profit.tp1_atr_multiplier"
-      - "risk.signal_levels.C.partial_take_profit.tp1_atr_multiplier"
-      - "risk.signal_levels.S.partial_take_profit.tp2_atr_multiplier"
-      - "risk.signal_levels.A.partial_take_profit.tp2_atr_multiplier"
-      - "risk.signal_levels.B.partial_take_profit.tp2_atr_multiplier"
-      - "risk.signal_levels.C.partial_take_profit.tp2_atr_multiplier"
-      - "risk.signal_levels.S.partial_take_profit.tp1_close_ratio"
-      - "risk.signal_levels.A.partial_take_profit.tp1_close_ratio"
-      - "risk.signal_levels.B.partial_take_profit.tp1_close_ratio"
-      - "risk.signal_levels.C.partial_take_profit.tp1_close_ratio"
-      - "risk.signal_levels.S.partial_take_profit.tp2_close_ratio"
-      - "risk.signal_levels.A.partial_take_profit.tp2_close_ratio"
-      - "risk.signal_levels.B.partial_take_profit.tp2_close_ratio"
-      - "risk.signal_levels.C.partial_take_profit.tp2_close_ratio"
-      - "risk.signal_levels.S.partial_take_profit.remaining_ratio"
-      - "risk.signal_levels.A.partial_take_profit.remaining_ratio"
-      - "risk.signal_levels.B.partial_take_profit.remaining_ratio"
-      - "risk.signal_levels.C.partial_take_profit.remaining_ratio"
-      - "risk.signal_levels.S.dynamic_trailing.activation.min_profit_pct"
-      - "risk.signal_levels.A.dynamic_trailing.activation.min_profit_pct"
-      - "risk.signal_levels.B.dynamic_trailing.activation.min_profit_pct"
-      - "risk.signal_levels.C.dynamic_trailing.activation.min_profit_pct"
-      - "risk.signal_levels.S.time_stop.max_holding_hours"
-      - "risk.signal_levels.A.time_stop.max_holding_hours"
-      - "risk.signal_levels.B.time_stop.max_holding_hours"
-      - "risk.signal_levels.C.time_stop.max_holding_hours"
-      - "risk.signal_levels.S.time_stop.close_ratio"
-      - "risk.signal_levels.A.time_stop.close_ratio"
-      - "risk.signal_levels.B.time_stop.close_ratio"
-      - "risk.signal_levels.C.time_stop.close_ratio"
+      - "strategy.risk.signal_levels.S.stop_loss_atr_multiplier"
+      - "strategy.risk.signal_levels.A.stop_loss_atr_multiplier"
+      - "strategy.risk.signal_levels.B.stop_loss_atr_multiplier"
+      - "strategy.risk.signal_levels.C.stop_loss_atr_multiplier"
+      - "strategy.risk.signal_levels.S.partial_take_profit.tp1_atr_multiplier"
+      - "strategy.risk.signal_levels.A.partial_take_profit.tp1_atr_multiplier"
+      - "strategy.risk.signal_levels.B.partial_take_profit.tp1_atr_multiplier"
+      - "strategy.risk.signal_levels.C.partial_take_profit.tp1_atr_multiplier"
+      - "strategy.risk.signal_levels.S.partial_take_profit.tp2_atr_multiplier"
+      - "strategy.risk.signal_levels.A.partial_take_profit.tp2_atr_multiplier"
+      - "strategy.risk.signal_levels.B.partial_take_profit.tp2_atr_multiplier"
+      - "strategy.risk.signal_levels.C.partial_take_profit.tp2_atr_multiplier"
+      - "strategy.risk.signal_levels.S.partial_take_profit.tp1_close_ratio"
+      - "strategy.risk.signal_levels.A.partial_take_profit.tp1_close_ratio"
+      - "strategy.risk.signal_levels.B.partial_take_profit.tp1_close_ratio"
+      - "strategy.risk.signal_levels.C.partial_take_profit.tp1_close_ratio"
+      - "strategy.risk.signal_levels.S.partial_take_profit.tp2_close_ratio"
+      - "strategy.risk.signal_levels.A.partial_take_profit.tp2_close_ratio"
+      - "strategy.risk.signal_levels.B.partial_take_profit.tp2_close_ratio"
+      - "strategy.risk.signal_levels.C.partial_take_profit.tp2_close_ratio"
+      - "strategy.risk.signal_levels.S.partial_take_profit.remaining_ratio"
+      - "strategy.risk.signal_levels.A.partial_take_profit.remaining_ratio"
+      - "strategy.risk.signal_levels.B.partial_take_profit.remaining_ratio"
+      - "strategy.risk.signal_levels.C.partial_take_profit.remaining_ratio"
+      - "strategy.risk.signal_levels.S.dynamic_trailing.activation.min_profit_pct"
+      - "strategy.risk.signal_levels.A.dynamic_trailing.activation.min_profit_pct"
+      - "strategy.risk.signal_levels.B.dynamic_trailing.activation.min_profit_pct"
+      - "strategy.risk.signal_levels.C.dynamic_trailing.activation.min_profit_pct"
+      - "strategy.risk.signal_levels.S.time_stop.max_holding_hours"
+      - "strategy.risk.signal_levels.A.time_stop.max_holding_hours"
+      - "strategy.risk.signal_levels.B.time_stop.max_holding_hours"
+      - "strategy.risk.signal_levels.C.time_stop.max_holding_hours"
+      - "strategy.risk.signal_levels.S.time_stop.close_ratio"
+      - "strategy.risk.signal_levels.A.time_stop.close_ratio"
+      - "strategy.risk.signal_levels.B.time_stop.close_ratio"
+      - "strategy.risk.signal_levels.C.time_stop.close_ratio"
       # 频率控制参数
-      - "risk.frequency_control.max_daily_total_trades"
-      - "risk.frequency_control.max_daily_symbol_trades"
-      - "risk.frequency_control.symbol_cooldown_hours"
-      - "risk.frequency_control.consecutive_loss_pause"
-      - "risk.frequency_control.pause_duration_hours"
-      - "risk.frequency_control.max_daily_loss_usdt"
+      - "strategy.risk.frequency_control.max_daily_symbol_trades"
+      - "strategy.risk.frequency_control.symbol_cooldown_hours"
+      - "strategy.risk.frequency_control.consecutive_loss_pause"
+      - "strategy.risk.frequency_control.pause_duration_hours"
+      - "strategy.risk.frequency_control.max_daily_loss_usdt"
       # 仓位与杠杆参数
       - "binance.leverage.S"
       - "binance.leverage.A"
@@ -190,24 +188,23 @@ strategies:
 
     # AI 可调参数的有效范围（用于 validate_params 校验）
     param_ranges:
-      scoring.min_score: [60, 95]
-      scoring.weights.trend_strength: [0.20, 0.60]
-      scoring.weights.pattern_quality: [0.20, 0.50]
-      scoring.weights.momentum_divergence: [0.10, 0.40]
-      risk.stop_loss_atr_multiplier: [1.5, 3.0]
-      risk.partial_take_profit.tp1_atr_multiplier: [1.5, 4.0]
-      risk.partial_take_profit.tp2_atr_multiplier: [2.5, 6.0]
-      risk.partial_take_profit.tp1_close_ratio: [0.15, 0.40]
-      risk.partial_take_profit.tp2_close_ratio: [0.15, 0.40]
-      risk.chandelier_stop.activation_atr: [1.2, 2.5]
-      risk.chandelier_stop.trailing_atr: [0.8, 2.0]
-      risk.time_stop.max_holding_hours: [24, 120]
-      risk.frequency_control.max_daily_total_trades: [2, 8]
-      risk.frequency_control.max_daily_symbol_trades: [1, 4]
-      risk.frequency_control.symbol_cooldown_hours: [4, 24]
-      risk.frequency_control.consecutive_loss_pause: [3, 8]
-      risk.frequency_control.pause_duration_hours: [6, 48]
-      risk.frequency_control.max_daily_loss_usdt: [15, 50]
+      strategy.scoring.min_score: [60, 95]
+      strategy.scoring.weights.trend_strength: [0.20, 0.60]
+      strategy.scoring.weights.pattern_quality: [0.20, 0.50]
+      strategy.scoring.weights.momentum_divergence: [0.10, 0.40]
+      strategy.risk.stop_loss_atr_multiplier: [1.5, 3.0]
+      strategy.risk.partial_take_profit.tp1_atr_multiplier: [1.5, 4.0]
+      strategy.risk.partial_take_profit.tp2_atr_multiplier: [2.5, 6.0]
+      strategy.risk.partial_take_profit.tp1_close_ratio: [0.15, 0.40]
+      strategy.risk.partial_take_profit.tp2_close_ratio: [0.15, 0.40]
+      strategy.risk.chandelier_stop.activation_atr: [1.2, 2.5]
+      strategy.risk.chandelier_stop.trailing_atr: [0.8, 2.0]
+      strategy.risk.time_stop.max_holding_hours: [24, 120]
+      strategy.risk.frequency_control.max_daily_symbol_trades: [1, 4]
+      strategy.risk.frequency_control.symbol_cooldown_hours: [4, 24]
+      strategy.risk.frequency_control.consecutive_loss_pause: [3, 8]
+      strategy.risk.frequency_control.pause_duration_hours: [6, 48]
+      strategy.risk.frequency_control.max_daily_loss_usdt: [15, 50]
       binance.leverage.S: [3, 10]
       binance.leverage.A: [2, 8]
       binance.leverage.B: [2, 6]
@@ -600,7 +597,7 @@ approval:
 # 回滚配置
 # ============================================================
 rollback:
-  auto_trigger_enabled: true               # 是否启用自动回滚
+  auto_trigger_enabled: false               # 是否启用自动回滚
   consecutive_loss_threshold: 3            # 连续亏损触发阈值
   loss_percent_threshold: 0.02             # 亏损百分比触发阈值（2%）
   monitor_hours: 24                        # 监控时间窗口（小时）
