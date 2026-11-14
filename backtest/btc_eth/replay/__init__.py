@@ -5,4 +5,4 @@
 不重算 score/direction；全程 Decimal 运算保证确定性。
 """
 
-ENGINE_VERSION = "replay-v1.0.0"
+ENGINE_VERSION = "replay-v1.1.0"

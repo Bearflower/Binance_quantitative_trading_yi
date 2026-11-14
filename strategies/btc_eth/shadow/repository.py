@@ -185,7 +185,7 @@ class ShadowRepository:
         会被序列化为 JSONB。所有值允许 None（除带 NOT NULL 的列外由调用方保证）。
         """
         try:
-            await self.db.execute(
+            result = await self.db.execute(
                 _INSERT_EVENT_SQL,
                 event.get("run_id"),
                 event.get("profile_id"),
@@ -211,7 +211,7 @@ class ShadowRepository:
                 event.get("git_commit"),
                 _json_or_none(event.get("source_kline_close_times")),
             )
-            return True
+            return result == "INSERT 0 1"
         except Exception as exc:
             logger.error(
                 "shadow_decision_events 写入失败（已降级，不阻断采集）",

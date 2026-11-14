@@ -167,6 +167,20 @@ def test_attempt_entry_atr_drives_stop_proportionally():
     assert len(trades) >= 1
     assert trades[0]["unfilled_reason"] == "no_klines"
 
+    # 已有仓位时，候选必须留下执行门槛拒绝记录，不能静默消失。
+    engine.replay_trades["xau_original"].clear()
+    engine.states["xau_original"].open_position = {
+        "symbol": "XAUUSDT", "margin": "30"
+    }
+    engine._attempt_entry(
+        profile_id="xau_original",
+        event=event,
+        scheduled_at=datetime(2026, 10, 1, 11, 0, tzinfo=UTC),
+        klines=[],
+    )
+    assert len(engine.replay_trades["xau_original"]) == 1
+    assert "position_limit" in engine.replay_trades["xau_original"][0]["unfilled_reason"]
+
 
 # ---- 验证 atr 缺失时 fail-closed ----
 def test_attempt_entry_skips_when_atr_missing():

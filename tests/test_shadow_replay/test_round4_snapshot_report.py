@@ -287,6 +287,17 @@ def test_compute_metrics_virtual_order_counts_and_fill_rate():
     assert rej.get("pending_at_cutoff") == 1
     assert rej.get("expired_unfilled") == 1
 
+    # 执行门槛拒绝的候选没有形成挂单，不能降低订单成交率。
+    profile["trades"] = [
+        *trades,
+        {"filled": False, "unfilled_reason": "rejected:['symbol_cooldown']"},
+    ]
+    rejected_m = compute_metrics(profile, _mk_engine_meta(), replay_cfg=replay_cfg)
+    assert rejected_m["n_unfilled"] == 3  # 保留旧口径，供拒绝原因统计
+    assert rejected_m["n_rejected_candidates"] == 1
+    assert rejected_m["n_total_virtual_orders"] == 3
+    assert rejected_m["fill_rate"] == m["fill_rate"]
+
 
 def test_compute_metrics_fill_rate_zero_total():
     """分母为 0 → fill_rate=None, fill_rate_computable=False。"""

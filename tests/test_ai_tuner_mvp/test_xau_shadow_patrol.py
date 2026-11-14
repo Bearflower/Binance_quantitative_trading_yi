@@ -35,7 +35,7 @@ class FakeDB:
         if "registered_symbols" in query:
             return dict(expires_at=(self.now + timedelta(days=6)).replace(tzinfo=None), status="active", intervals=["1h", "4h", "1d"])
         if "kline_xauusdt_" in query:
-            return {"n": 100}
+            return {"n": 100, "latest_open_time": self.now}
         return {"n": 0}
 
 
@@ -49,7 +49,8 @@ async def test_patrol_reads_only_and_sends_full_report():
 
     result = await patrol.run_once()
 
-    assert result["ok"] is True
+    assert result["ok"] is False
+    assert "运行身份未核验" in result["message"]
     assert result["sent"] is True
     assert "xau_calibrated" in result["message"]
     assert "续期" in result["message"]

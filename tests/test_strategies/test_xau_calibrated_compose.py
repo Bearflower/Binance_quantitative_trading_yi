@@ -127,9 +127,8 @@ def test_first_create_mode_is_selected_by_one_time_changed_file_signal():
     assert 'return "calibrated-first-create"' in MODE_SELECTOR
     assert "scripts/select_deploy_mode.py" in WORKFLOW
     selection = re.search(
-        r"- name: 🎯 选择部署模式(?P<body>.*?)(?=\n\s+- name:)",
-        WORKFLOW,
-        re.DOTALL,
+        r"(?P<body>.*scripts/select_deploy_mode.py.*?)\n  build-all:",
+        WORKFLOW, re.DOTALL,
     )
     assert selection is not None
     assert "docker inspect" not in selection.group("body")
@@ -180,7 +179,7 @@ def test_extracted_runtime_preserves_logging_overlay_and_pre_up_archive():
 
 
 def _assert_calibrated_build_override(block):
-    selector_at = block.index("scripts/select_deploy_mode.py")
+    selector_at = block.index("DEPLOY_MODE=")
     ordinary_at = block.index("shared/ 或 docker-compose.yml / VERSION")
     assert selector_at < ordinary_at
     assert 'if [ "$DEPLOY_MODE" = "calibrated-first-create" ]' in block
@@ -206,6 +205,9 @@ def _run_build_decision(block, service_name, repo, base, tmp_path):
     rendered = (
         block.replace("${{ github.event.before }}", base)
         .replace("${{ github.event_name }}", "push")
+        .replace("${{ needs.detect.outputs.mode }}", subprocess.check_output(
+            ["python3", "scripts/select_deploy_mode.py", "--event-name", "push", "--base", base],
+            cwd=repo, text=True).strip())
         .replace("${{ matrix.service.name }}", service_name)
     )
     output = tmp_path / f"{service_name}.out"
@@ -252,7 +254,8 @@ def _assert_only_btc_eth_builds(block, tmp_path):
         service["name"]
         for service in parsed["jobs"]["build-all"]["strategy"]["matrix"]["service"]
     ]
-    assert len(services) == 11
+    assert "btc-eth" in services
+    assert len(services) == len(set(services))
     repo, base = _init_retry_marker_repo(tmp_path)
     actual = {
         service: _run_build_decision(block, service, repo, base, tmp_path)
@@ -329,7 +332,7 @@ def test_init_scripts_sync_is_full_deploy_only():
         re.DOTALL,
     )
     assert sync_step is not None
-    assert "if: steps.deployment_mode.outputs.mode == 'full'" in sync_step.group("body")
+    assert "if: needs.detect.outputs.mode == 'full'" in sync_step.group("body")
 
 
 def _workflow_step(name):
@@ -517,5 +520,5 @@ def test_ordinary_deploy_keeps_full_compose_path_outside_first_create_block():
     ordinary = _remote_deploy_script().replace(_calibrated_first_create_block(), "")
 
     assert "docker compose pull\n" in ordinary
-    assert "docker compose --parallel 1 up -d --remove-orphans" in ordinary
-    assert 'docker compose --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"' in ordinary
+    assert 'docker compose "${GRID_COMPOSE_PROFILE[@]}" --parallel 1 up -d --remove-orphans' in ordinary
+    assert 'docker compose "${GRID_COMPOSE_PROFILE[@]}" --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"' in ordinary

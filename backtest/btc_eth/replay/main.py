@@ -122,13 +122,13 @@ def main(argv=None) -> int:
     # 快照文件路径解析：Binance USDⓈ-M TradFi 合约符号含斜杠变体；snapshot 里存的是原始符号
     symbol = manifest["symbol"]
     # snapshot.py 里落盘用 symbol.lower() + "_1m.jsonl" 等
-    klines_path = snapshot_dir / f"{symbol.lower()}_1m.jsonl"
-    funding_path = snapshot_dir / f"{symbol.lower()}_funding.json"
-    exchange_info_path = snapshot_dir / f"{symbol.lower()}_exchange_info.json"
+    klines_path = snapshot_dir / Path(manifest["files"]["klines_1m"]["path"]).name
+    funding_path = snapshot_dir / Path(manifest["files"]["funding_rates"]["path"]).name
+    exchange_info_path = snapshot_dir / Path(manifest["files"]["exchange_info"]["path"]).name
 
     # data_completeness：记录快照数据质量，传递给 write_reports 决定 admission 契约
     # 默认 complete=True；仅当 verify 跑完后覆盖。
-    data_completeness = {"gaps": 0, "complete": True}
+    data_completeness = {"gaps": None, "complete": False}
 
     if not args.skip_snapshot_verify:
         verify = verify_snapshot(str(manifest_path))

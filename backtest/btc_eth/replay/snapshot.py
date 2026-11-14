@@ -12,6 +12,7 @@ import json
 import logging
 import time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.request import Request, urlopen
 from urllib.parse import urlencode
@@ -224,7 +225,7 @@ def verify_snapshot(manifest_path: str) -> Dict[str, Any]:
         manifest = json.load(f)
     result = {"manifest_path": manifest_path, "files_ok": True, "mismatches": []}
     for key, info in manifest["files"].items():
-        path = info["path"]
+        path = str(Path(manifest_path).resolve().parent / Path(info["path"]).name)
         if not os.path.exists(path):
             result["files_ok"] = False
             result["mismatches"].append({"file": key, "error": "missing"})
@@ -249,5 +250,22 @@ def verify_snapshot(manifest_path: str) -> Dict[str, Any]:
             "actual": actual_top,
         })
 
-    result["gaps"] = len(manifest.get("gaps", []))
+    result["gaps"] = max(1, len(manifest.get("gaps", [])))
+    if result["files_ok"]:
+        path = Path(manifest_path).resolve().parent / Path(manifest["files"]["klines_1m"]["path"]).name
+        try:
+            rows = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+            gaps = _check_gaps(rows)
+            start_ms = int(datetime.fromisoformat(manifest["start"]).timestamp() * 1000)
+            end_ms = int(datetime.fromisoformat(manifest["end"]).timestamp() * 1000)
+            times = [row["open_time"] for row in rows]
+            # end is exclusive. Require ordered, unique minutes and both boundaries.
+            expected_count = (end_ms - start_ms + 59999) // 60000
+            boundaries_ok = bool(times) and times[0] == start_ms and times[-1] == end_ms - 60000
+            result["gaps"] = max(len(manifest.get("gaps", [])), len(gaps), int(
+                not boundaries_ok or len(times) != expected_count
+                or any(t % 60000 for t in times)))
+        except (KeyError, ValueError, TypeError):
+            result["files_ok"] = False
+            result["mismatches"].append({"file": "klines_1m", "error": "invalid_coverage"})
     return result

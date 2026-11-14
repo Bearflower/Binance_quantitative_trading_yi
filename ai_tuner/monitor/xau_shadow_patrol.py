@@ -4,10 +4,14 @@ The patrol never mutates research/trading data and never triggers a replay.
 """
 
 import json
+import math
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from apscheduler.triggers.cron import CronTrigger
+
+
+from .xau_runtime import runtime_issues
 
 
 UTC = timezone.utc
@@ -29,8 +33,8 @@ class XAUShadowPatrol:
 
     async def run_once(self):
         now = self.now().astimezone(UTC)
-        expected = now.replace(minute=0, second=0, microsecond=0)
-        issues = []
+        expected = min(now.replace(minute=0, second=0, microsecond=0), OBSERVATION_END - timedelta(hours=1))
+        issues = runtime_issues(now)
         lines = [f"【XAU 影子巡检】{now:%Y-%m-%d %H:%M} UTC（每日巡检）"]
 
         events = await self.db.fetch_all(
@@ -50,7 +54,7 @@ class XAUShadowPatrol:
                 continue
             scheduled = row["scheduled_at"].astimezone(UTC)
             quality = row.get("data_quality_reason")
-            if scheduled < expected - timedelta(hours=1):
+            if scheduled < expected - timedelta(hours=2):
                 issues.append(f"{profile} 事件延迟超过两周期")
             if quality:
                 issues.append(f"{profile} 数据质量降级: {quality}")
@@ -67,17 +71,38 @@ class XAUShadowPatrol:
                 history = atr.get("history_count")
                 threshold = atr.get("final_threshold")
                 lines.append(f"ATR: history_count={history}, final_threshold={threshold}")
-                if history is None or threshold is None:
+                if (not isinstance(history, (int, float)) or history <= 0
+                        or not isinstance(threshold, (int, float))
+                        or not math.isfinite(threshold) or threshold <= 0):
                     issues.append("ATR 计算字段缺失")
+
+        degraded = await self.db.fetch_one(
+            "SELECT COUNT(*) AS n FROM research.shadow_decision_events "
+            "WHERE symbol = 'XAUUSDT' AND profile_id = ANY($1::text[]) "
+            "AND evaluated_at >= $2 AND evaluated_at < $3 "
+            "AND NULLIF(data_quality_reason, '') IS NOT NULL",
+            list(PROFILES), now - timedelta(days=1), now,
+        )
+        if int((degraded or {}).get("n") or 0):
+            issues.append("过去24小时存在数据质量降级，需核对期间事件")
 
         for interval in ("1h", "4h", "1d"):
             # Fixed interval tuple only; table names cannot be influenced by input.
             row = await self.db.fetch_one(
-                f"SELECT COUNT(*) AS n FROM (SELECT open_time FROM btc_eth.kline_xauusdt_{interval} "
+                f"SELECT COUNT(*) AS n, MAX(open_time) AS latest_open_time FROM (SELECT open_time FROM btc_eth.kline_xauusdt_{interval} "
                 "ORDER BY open_time DESC LIMIT 100) recent"
             )
             count = int(row["n"]) if row else 0
             lines.append(f"K线 {interval}: {count}/100")
+            latest = (row or {}).get("latest_open_time")
+            lines.append(f"K线 {interval} 最新开盘时间: {latest}")
+            if latest is None:
+                issues.append(f"{interval} 行情新鲜度未核验")
+            else:
+                latest_at = latest if isinstance(latest, datetime) else datetime.fromtimestamp(float(latest) / 1000, UTC)
+                # Weekend closures can span several days. Alert after a full four-day outage.
+                if now - latest_at.replace(tzinfo=UTC) > timedelta(days=4):
+                    issues.append(f"{interval} 行情超过四天未更新")
             if count < 100:
                 issues.append(f"{interval} K线不足 100 根")
 
@@ -85,12 +110,22 @@ class XAUShadowPatrol:
             "SELECT run_id, instance_id, status, started_at, ended_at "
             "FROM research.shadow_runs WHERE symbol = 'XAUUSDT' "
             "AND instance_id IN ('mtcps_xau_shadow', 'mtcps_xau_calibrated_shadow') "
-            "ORDER BY started_at DESC LIMIT 30"
+            "ORDER BY started_at DESC"
         )
         active = [r for r in runs if r["status"] == "active"]
         lines.append(f"run 分段: active={len(active)}, closed={len(runs)-len(active)}")
         if not any(r["instance_id"] == "mtcps_xau_calibrated_shadow" for r in active):
             issues.append("校准版没有 active run")
+
+        switches = await self.db.fetch_one(
+            "SELECT COUNT(*) AS n FROM (SELECT profile_id FROM research.shadow_decision_events "
+            "WHERE symbol = 'XAUUSDT' AND profile_id = ANY($1::text[]) "
+            "AND evaluated_at >= $2 AND evaluated_at < $3 "
+            "GROUP BY profile_id HAVING COUNT(DISTINCT run_id) > 1) switched",
+            list(PROFILES), now - timedelta(days=1), now,
+        )
+        if int((switches or {}).get("n") or 0):
+            issues.append("过去24小时存在 run 切换")
 
         continuity = await self.db.fetch_one(
             "SELECT COUNT(*) FILTER (WHERE n > 1) AS duplicate_hours, "
@@ -98,8 +133,8 @@ class XAUShadowPatrol:
             "FROM (SELECT profile_id, scheduled_at, COUNT(*) AS n "
             "FROM research.shadow_decision_events WHERE symbol = 'XAUUSDT' "
             "AND profile_id = 'xau_calibrated' AND scheduled_at >= $1 "
-            "GROUP BY profile_id, scheduled_at) grouped",
-            OBSERVATION_START,
+            "AND scheduled_at < $2 GROUP BY profile_id, scheduled_at) grouped",
+            OBSERVATION_START, OBSERVATION_END,
         )
         dup = int((continuity or {}).get("duplicate_hours") or 0)
         lines.append(f"校准版跨 run 重复小时: {dup}（历史基线 6）")
