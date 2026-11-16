@@ -90,14 +90,14 @@ def verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fi
         return None
     if (_positive_id(rows[0].get("orderId")) != entry_id
             or _positive_id(rows[0].get("time")) != anchor
-            or _positive_id(rows[-1].get("orderId")) != order_id
-            or _positive_id(rows[-1].get("time")) != stop_time):
+            or (_positive_id(rows[-1].get("time")) or 0) < stop_time):
         return None
     net = Decimal(0)
     seen = set()
     seen_entry = set()
     seen_stop = set()
     stop_sum = Decimal(0)
+    stop_last = 0
     direction = Decimal(1) if entry_order["side"] == "BUY" else Decimal(-1)
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -108,7 +108,8 @@ def verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fi
         row_side = row.get("side")
         row_order = _positive_id(row.get("orderId"))
         if (trade_id is None or trade_id in seen or time_ms is None
-                or time_ms < anchor or time_ms > stop_time or qty is None
+                or time_ms < anchor or qty is None
+                or (time_ms > stop_time and row_side != side)
                 or row.get("symbol") != symbol or row_side not in ("BUY", "SELL")
                 or row_order is None):
             return None
@@ -118,13 +119,14 @@ def verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fi
         if row_order == order_id:
             seen_stop.add(trade_id)
             stop_sum += qty
-            if row_side != side:
+            stop_last = max(stop_last, time_ms)
+            if row_side != side or time_ms > stop_time:
                 return None
         net += qty if row_side == "BUY" else -qty
         if index < len(rows) - 1 and net * direction <= 0:
             return None
     if (net != 0 or seen_entry != entry_trade_ids
-            or seen_stop != expected_stop_ids or stop_sum != stop_qty):
+            or seen_stop != expected_stop_ids or stop_sum != stop_qty or stop_last != stop_time):
         return None
     try:
         realized = Decimal(str(stop["realized_pnl"]))
@@ -168,4 +170,22 @@ async def fetch_verified_closed_stop_episode(client, binding):
     lot_fills = await fetch_lot_fills(
         client, symbol, anchor, now_ms=stop["last_fill_time_ms"],
     )
-    return verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fills)
+    proof = verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fills)
+    if proof is not None:
+        return proof
+    # A partial STOP can leave a remainder closed later by the strategy. Require
+    # two independent flat inventories and no outstanding orders before fetching
+    # the extended episode. The validator rejects intervening flats and adds.
+    for inventory in (await client.get_position(), await client.get_um_account_positions()):
+        if not isinstance(inventory, list):
+            return None
+        try:
+            if any(row.get("symbol") == symbol and Decimal(str(row["positionAmt"])) != 0
+                   for row in inventory):
+                return None
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            return None
+    if await client.get_open_orders(symbol) != [] or await client.get_open_algo_orders(symbol) != []:
+        return None
+    extended = await fetch_lot_fills(client, symbol, anchor)
+    return verified_closed_stop_episode(binding, stop, entry_order, entry_fills, extended)

@@ -114,3 +114,42 @@ async def test_fetch_orchestrates_exact_algo_order_and_episode_window():
     assert client.get_user_trades.await_args.kwargs == {
         "start_time": 1000, "end_time": 4000, "limit": 1000,
     }
+
+def test_partial_stop_then_same_episode_remaining_exit():
+    args = list(deepcopy(sample()))
+    args[4][1]["qty"] = "0.2"
+    args[4].append({"id": 5, "orderId": 40, "symbol": "ETHUSDT",
+                    "side": "SELL", "qty": "0.1", "time": 5000})
+    proof = verified_closed_stop_episode(*args)
+    assert proof is not None
+    assert proof["last_fill_time_ms"] == 4000
+    assert proof["quantity"] == "0.7"
+    # A later add cannot be attributed to the same closed STOP episode.
+    args[4].insert(-1, {"id": 6, "orderId": 41, "symbol": "ETHUSDT",
+                       "side": "BUY", "qty": "0.1", "time": 4500})
+    args[4][-1]["qty"] = "0.2"
+    assert verified_closed_stop_episode(*args) is None
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('blocked', [False, True])
+async def test_extended_episode_requires_flat_inventory(blocked):
+    from unittest.mock import patch
+    binding, stop, entry_order, entry_fills, lot = deepcopy(sample())
+    lot[1]["qty"] = "0.2"
+    extended = lot + [{"id": 5, "orderId": 40, "symbol": "ETHUSDT",
+                       "side": "SELL", "qty": "0.1", "time": 5000}]
+    client = AsyncMock()
+    client.get_order.return_value = entry_order
+    client.get_user_trades.return_value = entry_fills
+    client.get_position.return_value = []
+    client.get_um_account_positions.return_value = (
+        [{"symbol": "ETHUSDT", "positionAmt": ".1"}] if blocked else [])
+    client.get_open_orders.return_value = []
+    client.get_open_algo_orders.return_value = []
+    with patch("shared.accounting.stop_episode_evidence.fetch_verified_stop_execution",
+               new=AsyncMock(return_value=stop)), patch(
+                   "shared.accounting.stop_episode_evidence.fetch_lot_fills",
+                   new=AsyncMock(side_effect=[lot, extended])) as fetch:
+        proof = await fetch_verified_closed_stop_episode(client, binding)
+    assert (proof is None) == blocked
+    assert fetch.await_count == (1 if blocked else 2)
