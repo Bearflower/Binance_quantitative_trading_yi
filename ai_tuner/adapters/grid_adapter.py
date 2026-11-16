@@ -658,7 +658,7 @@ class GridAdapter(BaseAdapter):
         supported = {"grid.base_grid_count": "base_grid_count",
                      "grid.grid_spacing_atr_multiplier": "grid_spacing_atr_multiplier"}
         if not source or not adjustments.keys() <= supported.keys():
-            return {"passed": False, "reason": "缺少同窗口行情或建议涉及回测无法验证的参数"}
+            return {"passed": False, "reason": "缺少同窗口行情或建议涉及回测无法验证的参数", "status": "blocked"}
         klines, current = source
         changes = {supported[key]: value for key, value in adjustments.items()}
         proposed = replace(current, **changes)
@@ -700,6 +700,7 @@ class GridAdapter(BaseAdapter):
             if new_score > old_score:
                 return {
                     "passed": True,
+                    "status": "accepted",
                     "reason": (
                         f"新参数综合评分({new_score}) > 旧参数({old_score})，采纳建议"
                     ),
@@ -709,6 +710,7 @@ class GridAdapter(BaseAdapter):
             else:
                 return {
                     "passed": False,
+                    "status": "rejected",
                     "reason": (
                         f"新参数综合评分({new_score}) <= 旧参数({old_score})，拒绝采纳"
                     ),
@@ -720,6 +722,7 @@ class GridAdapter(BaseAdapter):
             return {
                 "passed": False,
                 "reason": f"参数验证回测异常: {str(e)}",
+                "status": "error",
                 "old_score": 0,
                 "new_score": 0,
             }
