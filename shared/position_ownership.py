@@ -15,6 +15,7 @@ binance.get_position() 返回整个共享账户的全部持仓。此前策略补
 
 所有 DB 异常/缺参均优雅降级返回 None / False，禁止抛异常中断主循环。
 """
+import os
 import structlog
 import zlib
 from typing import Optional, Dict, List, Any
@@ -175,10 +176,17 @@ def _open_entry_sql(status_filter: bool) -> str:
         f" AND status NOT IN ({', '.join(repr(s) for s in _TERMINAL_ENTRY_STATUSES)})"
     )
     status_clause = " AND status = 'FILLED'" if status_filter else ""
+    # NULL account IDs predate account-aware writers and belong to default.
+    # Quote the deployment account as a SQL literal to preserve the existing
+    # symbol-only parameter contract used by ownership and fallback callers.
+    account = (os.environ.get("TRADE_ACCOUNT_ID") or "default").replace("'", "''")
+    account_clause = f" AND COALESCE(account_id, 'default') = '{account}'"
+
     return (
         f"SELECT strategy FROM {_TRADE_RECORDS_TABLE} "
         "WHERE symbol = $1 AND order_type IN ('LIMIT','MARKET') "
         "AND realized_pnl IS NULL"
+        + account_clause
         + terminal_clause
         + status_clause
         + " ORDER BY executed_at DESC, id DESC LIMIT 1"
