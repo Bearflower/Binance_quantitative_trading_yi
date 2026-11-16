@@ -8,4 +8,4 @@
 
 发布后正常自动审计将 algo 2000001699647175 转 verified，旧取消 STOP 2000001698385204 转 no_fill。STOP 账本为 quantity=0.10、net_pnl=0.084388500000、last_fill_time_ms=1794788138191。SOL 入场预留已 released。后续新入场继续执行既有冷却规则。
 
-服务器证据与源码 bundle 归档 /root/trading_system/.releases/aggr-reconcile-20261116。GitHub 网络连接此前失败，远端推送与合并仍须完成。
+服务器证据与源码 bundle 归档 /root/trading_system/.releases/aggr-reconcile-20261116。源码已推送 codex/aggr-flat-reconcile-20261116 分支，远端合并待完成。
