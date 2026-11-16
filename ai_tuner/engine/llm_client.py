@@ -18,6 +18,10 @@ from shared.utils import resolve_env_var
 logger = structlog.get_logger()
 
 
+class LLMBalanceError(RuntimeError):
+    """The provider rejected the request for insufficient account balance."""
+
+
 class LLMClient:
     """
     DeepSeek LLM 客户端
@@ -50,6 +54,7 @@ class LLMClient:
         self.client = AsyncOpenAI(
             api_key=api_key,
             base_url=self.base_url,
+            max_retries=0,
         )
 
         # Token 用量回调（可选，由 cost_tracker 设置）
@@ -163,6 +168,8 @@ class LLMClient:
                 return content
 
             except Exception as e:
+                if getattr(e, "status_code", None) == 402:
+                    raise LLMBalanceError("LLM API 余额不足（HTTP 402），补充额度后可重试") from e
                 base_wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
                 jitter = random.uniform(0, 0.5)  # 0~0.5s 随机抖动
                 wait_time = base_wait + jitter

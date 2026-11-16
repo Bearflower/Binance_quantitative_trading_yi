@@ -249,3 +249,19 @@ class TestEnvVarResolution:
         from shared.utils import resolve_env_var
         result = resolve_env_var("plain-value")
         assert result == "plain-value"
+
+@pytest.mark.asyncio
+async def test_balance_error_stops_after_first_request(llm_client):
+    from ai_tuner.engine.llm_client import LLMBalanceError
+
+    class BalanceStatusError(Exception):
+        status_code = 402
+
+    llm_client.client.chat.completions.create = AsyncMock(
+        side_effect=BalanceStatusError('Insufficient Balance')
+    )
+    with patch('ai_tuner.engine.llm_client.asyncio.sleep', new_callable=AsyncMock) as sleep:
+        with pytest.raises(LLMBalanceError, match='余额不足'):
+            await llm_client.call_llm('system', 'user')
+    assert llm_client.client.chat.completions.create.await_count == 1
+    sleep.assert_not_awaited()
