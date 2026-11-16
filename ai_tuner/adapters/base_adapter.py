@@ -82,6 +82,7 @@ class SimulationMetrics(BaseModel):
     price_range_low: float = Field(default=0.0, description="价格区间下限")
     price_range_high: float = Field(default=0.0, description="价格区间上限")
     profit_rate_per_fill: float = Field(default=0.0, description="每格利润率")
+    score_version: str = ""
     composite_score: float = 0.0
     max_drawdown_pct: float = 0.0
     sharpe_ratio: float = 0.0
@@ -125,7 +126,7 @@ class BacktestResult(BaseModel):
     sideways_return_pct: float = Field(default=0.0, description="横盘市况收益率（%）")
 
     # === 综合评分 ===
-    composite_score: float = Field(default=0.0, description="综合评分（0-100）")
+    composite_score: float = Field(default=0.0, description="综合评分（网格 v2 可为负值，越高越好）")
 
 
 class UnifiedPerformanceMetrics(BaseModel):

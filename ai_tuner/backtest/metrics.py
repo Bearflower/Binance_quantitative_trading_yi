@@ -118,7 +118,12 @@ class MetricsCalculator:
         }
 
         # 综合评分
-        result["composite_score"] = round(self._calc_composite_score(result), 1)
+        result["score_version"] = "grid_signed_v2"
+        result["composite_score"] = self._calc_composite_score({
+            "total_return_pct": total_return_pct,
+            "max_drawdown_pct": max_drawdown_pct,
+            "sharpe_ratio": sharpe_ratio,
+        })
 
         return result
 
@@ -342,42 +347,21 @@ class MetricsCalculator:
     # ============================================================
 
     def _calc_composite_score(self, result: Dict[str, Any]) -> float:
+        """Signed score v2, higher is better. Drawdown admission is checked separately.
+
+        Return and Sharpe contributions retain negative values. Drawdown contributes
+        a penalty relative to the configured cap. Compare only identical model
+        versions and windows, using the unrounded score.
         """
-        计算综合评分（0-100）
-
-        综合评分 = 收益率得分 × 收益率权重 + 回撤得分 × 回撤权重 + 夏普得分 × 夏普权重
-
-        各子分数计算：
-        - 收益率得分 = min(100, max(0, total_return_pct × return_score_scale))
-        - 回撤得分 = min(100, max(0, (1 - max_drawdown_pct / drawdown_cap) × 100))
-        - 夏普得分 = min(100, max(0, sharpe_ratio × sharpe_score_scale))
-
-        Args:
-            result: 已计算各项指标的结果字典
-
-        Returns:
-            综合评分（0-100）
-        """
-        # 收益率得分
-        total_return_pct = result.get("total_return_pct", 0.0)
-        return_score = min(100.0, max(0.0, total_return_pct * self._return_score_scale))
-
-        # 回撤得分
-        max_drawdown_pct = result.get("max_drawdown_pct", 0.0)
-        if self._drawdown_cap > 0:
-            drawdown_score = min(100.0, max(0.0, (1 - max_drawdown_pct / self._drawdown_cap) * 100))
-        else:
-            drawdown_score = 100.0
-
-        # 夏普得分
-        sharpe_ratio = result.get("sharpe_ratio", 0.0)
-        sharpe_score = min(100.0, max(0.0, sharpe_ratio * self._sharpe_score_scale))
-
-        # 综合评分
-        composite = (
-            self._return_weight * return_score
-            + self._drawdown_weight * drawdown_score
-            + self._sharpe_weight * sharpe_score
+        total_return_pct = float(result["total_return_pct"])
+        max_drawdown = float(result["max_drawdown_pct"])
+        sharpe = float(result["sharpe_ratio"])
+        if not all(math.isfinite(value) for value in (total_return_pct, max_drawdown, sharpe)):
+            raise ValueError("grid scoring metrics must be finite")
+        if self._drawdown_cap <= 0 or max_drawdown < 0:
+            raise ValueError("invalid grid drawdown configuration or evidence")
+        return (
+            self._return_weight * total_return_pct * self._return_score_scale
+            - self._drawdown_weight * max_drawdown / self._drawdown_cap * 100
+            + self._sharpe_weight * sharpe * self._sharpe_score_scale
         )
-
-        return min(100.0, max(0.0, composite))
