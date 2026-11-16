@@ -706,7 +706,8 @@ class StratTuneAI:
     async def _scheduled_pnl_reconcile(self) -> None:
         """调度器触发的统一 PnL 校准（interval 根据 config 间隔执行）"""
         if self.reconciler:
-            logger.info("触发统一 PnL 校准")
+            logger.info("触发统一 PnL 校准，先核实缺失的保护单成交归属")
+            await nightly_exit_repair(self.reconciler)
             await self.reconciler.run_once()
 
     async def _check_catch_up(self) -> None:
