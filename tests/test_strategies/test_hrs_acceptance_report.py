@@ -223,7 +223,7 @@ def lifecycle_sources(count=1):
             trade_id = n*10+leg+1
             at = START+timedelta(minutes=n*10+leg)
             fills.append(dict(account_id=ACCOUNT, symbol=symbol, trade_id=trade_id,
-                order_id=trade_id, side=side, qty=Decimal(qty), realized_pnl=Decimal(pnl),
+                order_id=n*10+1 if leg == 0 else n*10+2, side=side, qty=Decimal(qty), realized_pnl=Decimal(pnl),
                 price=Decimal('100')+leg,
                 commission=Decimal('.1'), commission_asset='USDT', trade_time_utc=at))
             owners.append(dict(account_id=ACCOUNT, symbol=symbol, order_id=str(trade_id), strategy='hrs'))
@@ -270,14 +270,14 @@ def test_absent_closures_are_pending_not_zero_profit():
     assert all(s['net_income_usdt'] is None for s in report['samples'])
 
 
-def engineering_evidence(count=1):
+def engineering_evidence(count=1, *, lineage=True):
     rows = []
     for n in range(count):
         symbol, order = f'S{n}USDT', n*10+1
         at = START+timedelta(minutes=n*10)
         client = f'risk_{n}'
         decision = dict(allowed=True, quantity='10', worst_loss='12', risk_limit='20',
-            policy_revision=1, client_order_id=client, effective_allocation='2000', exit_ratios=['.4', '.4'])
+            policy_revision=1, client_order_id=client, effective_allocation='2000', exit_ratios=['1', '0'])
         rows += [event(str(n), 'scan_start', at-timedelta(seconds=3), {
             'financial_context': {'entry_policy': {'account_id': ACCOUNT}}}),
             event(str(n), 'entry_budget_reserved', at-timedelta(seconds=2), dict(
@@ -285,11 +285,13 @@ def engineering_evidence(count=1):
             take_profit_prices=['101', '102'], account_equity='3000', occupied_margin='0', entry_mode='standard'), symbol),
             event(str(n), 'order_execution_result', at+timedelta(seconds=1), dict(
                 outcome={'order': {'symbol': symbol, 'orderId': order, 'clientOrderId': client}}), symbol)]
-        for role, qty, price in [('sl', '10', '99'), ('tp1', '4', '101'), ('tp2', '4', '102')]:
+        for role, qty, price in [('sl', '10', '99'), ('tp1', '10', '101')]:
             request = dict(symbol=symbol, side='SELL', stop_price=price, quantity=qty,
                 close_position=False, reduce_only=True, client_id=client+'_'+role)
             response = dict(symbol=symbol, side='SELL', quantity=qty, triggerPrice=price,
                 reduceOnly=True, clientAlgoId=request['client_id'], algoId=f'{order}-{role}')
+            if lineage and role == 'tp1':
+                response['actualOrderId'] = order+1
             rows.append(event(str(n), 'protection_order_ack', at+timedelta(seconds=2),
                 dict(position_id=f'hrs:{symbol}:{order}', role=role, request=request,
                      response=response, algo_id=response['algoId']), symbol))
@@ -301,6 +303,12 @@ def test_real_acknowledgments_and_reserved_client_identity_close_engineering_che
     assert result['engineering_status'] == 'READY'
     assert result['samples'][0]['engineering_checks']['budget']['status'] == 'RECONCILED'
     assert result['samples'][0]['engineering_checks']['protection_quantity_and_price']['status'] == 'RECONCILED'
+    assert result['samples'][0]['engineering_checks']['exit_role_reconciliation']['status'] == 'RECONCILED'
+
+
+def test_unlinked_exit_fills_do_not_prove_tp_execution_from_algo_id_alone():
+    result = financial(5, decision_evidence=engineering_evidence(5, lineage=False))
+    assert result['engineering_status'] == 'PENDING'
 
 
 @pytest.mark.parametrize('problem', ['missing_exchange_fields', 'wrong_client', 'oversized', 'request_price_only', 'hash', 'wrong_account'])

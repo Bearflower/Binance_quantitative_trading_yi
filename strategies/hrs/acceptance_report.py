@@ -420,7 +420,8 @@ def _apply_verified_funding(economic, archive, *, account_id, inception, through
 def _engineering_checks(lifecycle, evidence, through, account_id):
     """Join source identities; request fields never fill missing exchange fields."""
     checks = {'budget': {'status': 'NOT_CAPTURED'},
-              'protection_quantity_and_price': {'status': 'NOT_CAPTURED'}}
+              'protection_quantity_and_price': {'status': 'NOT_CAPTURED'},
+              'exit_role_reconciliation': {'status': 'NOT_CAPTURED'}}
     records, invalid = [], False
     contexts = defaultdict(set)
     for raw in evidence:
@@ -474,6 +475,8 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
                 first_exit = _time(leg['at'])
                 break
             entry_legs.append(leg)
+        if any(leg['side'] == first_side for leg in lifecycle['fill_legs'][len(entry_legs):]):
+            raise ValueError('entry_added_after_reduction')
         original = sum((_number(leg['quantity']) for leg in entry_legs), Decimal(0))
         planned = _number(d['quantity'])
         allocation, loss, limit = (_number(d['effective_allocation']),
@@ -529,12 +532,33 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
             proven[role] = dict(exchange_order_id=str(response.get('algoId', response.get('orderId'))),
                 actual_quantity=str(actual_qty) if actual_qty is not None else None,
                 close_position=close_all, actual_stop_price=str(actual_price))
+            child = response.get('actualOrderId')
+            if child is None and response.get('algoId') is None:
+                child = response.get('orderId')
+            if child is not None and _number(child) > 0:
+                proven[role]['actual_fill_order_id'] = str(child)
         except (ValueError, KeyError, TypeError, ArithmeticError):
             continue
     checks['protection_quantity_and_price'] = dict(
         status='RECONCILED' if set(proven) == set(required) else 'PENDING',
         required_roles=sorted(required), actual_acknowledgments=proven,
         missing_actual_acknowledgments=sorted(set(required)-set(proven)))
+    fill_roles, consumed, unknown = {}, defaultdict(Decimal), []
+    for leg in lifecycle['fill_legs'][len(entry_legs):]:
+        roles = [role for role, proof in proven.items() if proof.get('actual_fill_order_id') == leg['order_id']]
+        if len(roles) != 1:
+            unknown.append(leg['trade_id'])
+            continue
+        role = roles[0]
+        consumed[role] += _number(leg['quantity'])
+        limit = original if proven[role]['close_position'] else _number(proven[role]['actual_quantity'])
+        if consumed[role] > limit:
+            unknown.append(leg['trade_id'])
+        else:
+            fill_roles[leg['trade_id']] = role
+    checks['exit_role_reconciliation'] = dict(status='RECONCILED' if not unknown else 'PENDING',
+        actual_fill_roles=fill_roles, unlinked_exit_trade_ids=unknown,
+        caliber='actual_exchange_conditional_child_order_identity_only')
     return checks
 
 
