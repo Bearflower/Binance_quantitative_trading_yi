@@ -3,12 +3,16 @@
 The service owns no exchange credentials or API lifetime. ``refresh`` first uses
 ExecutionFactExporter/PostgresExecutionFactsSink/collect_window, with a fresh
 exporter so completed old windows cannot hide late events. It then holds exactly
-one lease: income session guard -> repeatable-read transaction -> account policy
-lock -> loss lock -> checkpoint/evidence/projection writes. API requests and the
+one lease: income session guard -> account policy session lock -> repeatable-read
+transaction -> loss lock -> checkpoint/evidence/projection writes. API requests and the
 optional recorder happen outside that transaction. The caller owns task creation.
 
-A segment starts once from current DB allocation and genuinely flat HRS inventory,
-with no unresolved HRS entry. No startup, deposit or allocation change reseeds it.
+A segment starts once from current DB allocation and two genuinely flat account
+inventories, with no unresolved HRS entry. Pre-existing positions need a separately
+certified opening inventory; cached partial fills are never that proof. No startup,
+deposit or allocation change reseeds a segment. An administrator must install the
+allocation mutation journal before a new segment begins. Every later committed
+allocation delta is replayed; uncertain commit-time NAV fails closed.
 Daily and rolling boundary NAVs are reconstructed only when the complete fill path
 proves HRS flat there; nonflat historical marks are deliberately not synthesized.
 Derived attribution is not silently promoted to human review; unsupported funding
@@ -37,7 +41,7 @@ from shared.accounting.report_reader import read_monthly_economic_report
 from shared.execution_facts_sink import PostgresExecutionFactsSink
 
 from .equity_evidence import (
-    EvidenceBlocked, allocation_evidence, attributed_incomes, canonical,
+    EvidenceBlocked, allocation_evidence, allocation_event_changes, attributed_incomes, canonical,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
@@ -84,7 +88,7 @@ class HrsEquityService:
         value = self.clock()
         if value.tzinfo is None:
             raise EvidenceBlocked('collector_clock_naive')
-        return datetime.fromtimestamp(int(value.timestamp()*1000)/1000, timezone.utc)
+        return value.astimezone(timezone.utc)
 
     async def close(self):
         self._closed.set()
@@ -146,24 +150,35 @@ class HrsEquityService:
     async def _locked(self):
         async with self.db.pool.acquire() as connection:
             async with income_account_lock(connection, self.account):
-                async with connection.transaction(isolation='repeatable_read'):
-                    await connection.execute("SELECT set_config('lock_timeout','5000ms',true)")
-                    await connection.execute('SELECT pg_advisory_xact_lock(hashtextextended($1,7183))', self.account)
-                    key = int.from_bytes(hashlib.sha256(f'hrs-loss-gate:{self.account}'.encode()).digest()[:8], 'big', signed=True)
-                    await connection.execute('SELECT pg_advisory_xact_lock($1)', key)
-                    await require_income_integrity(connection, self.account)
-                    yield connection
+                # Session acquisition must precede BEGIN: a waiting SELECT inside
+                # repeatable-read freezes an old snapshot before the prior policy
+                # holder commits its reservation.
+                try:
+                    await connection.execute("SELECT set_config('lock_timeout','5000ms',false)")
+                    await connection.execute('SELECT pg_advisory_lock(hashtextextended($1,7183))',self.account)
+                    async with connection.transaction(isolation='repeatable_read'):
+                        key = int.from_bytes(hashlib.sha256(f'hrs-loss-gate:{self.account}'.encode()).digest()[:8], 'big', signed=True)
+                        await connection.execute('SELECT pg_advisory_xact_lock($1)', key)
+                        await require_income_integrity(connection, self.account)
+                        yield connection
+                finally:
+                    # An interrupted acquisition can still have obtained the
+                    # session lock server-side. Always release it before pooling.
+                    cleanup=asyncio.create_task(connection.execute(
+                        'SELECT pg_advisory_unlock(hashtextextended($1,7183))',self.account))
+                    try:
+                        await asyncio.shield(cleanup)
+                    except asyncio.CancelledError:
+                        await cleanup
+                        raise
 
     async def _read_source(self, connection, start_ms, end_ms, snapshot):
         start = datetime.fromtimestamp(start_ms/1000, timezone.utc)
         end = datetime.fromtimestamp(end_ms/1000, timezone.utc)
         report = await read_monthly_economic_report(_SnapshotDB(connection), self.account, start_ms, end_ms + 1,
                                                    include_reviewed_overrides=True)
-        nonzero_symbols = [row['symbol'] for row in snapshot['inventory'] if isinstance(row, dict)
-                           and number(row.get('positionAmt'), 'position_quantity_missing') != 0]
         fills = [dict(row) for row in await connection.fetch('''SELECT * FROM trading.execution_fact_fill
-            WHERE account_id=$1 AND trade_time_utc <= $3
-            AND (trade_time_utc >= $2 OR symbol=ANY($4::text[]))''', self.account, start, end, nonzero_symbols)]
+            WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc <= $3''', self.account, start, end)]
         orders = [dict(row) for row in await connection.fetch('''SELECT account_id,symbol,order_id,strategy,side,status,order_type,
             realized_pnl,executed_at FROM trading.trade_records WHERE account_id=$1 AND order_id IS NOT NULL''', self.account)]
         pending = await connection.fetchval("SELECT count(*) FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs' AND state<>'released'", self.account)
@@ -188,6 +203,74 @@ class HrsEquityService:
                 if (row['strategy'] == 'hrs' and row.get('order_type') in ('LIMIT', 'MARKET')
                         and row.get('realized_pnl') is None and row.get('status') not in ('CANCELED', 'EXPIRED', 'CLOSED')):
                     raise EvidenceBlocked('bootstrap_open_hrs_identity')
+
+    async def _allocation_audit(self, connection, bootstrap, as_of):
+        control=await connection.fetchrow('SELECT version,installed_at FROM trading.hrs_allocation_audit_control WHERE singleton')
+        triggers=await connection.fetchval("""SELECT count(*) FROM pg_trigger
+            WHERE tgrelid='public.capital_allocation'::regclass AND tgenabled='O'
+            AND ((tgname='hrs_allocation_serialize' AND tgfoid='trading.hrs_serialize_allocation_change()'::regprocedure)
+              OR (tgname='hrs_allocation_capture' AND tgfoid='trading.hrs_capture_allocation_event()'::regprocedure)
+              OR (tgname='hrs_allocation_no_truncate' AND tgfoid='trading.hrs_reject_allocation_history_change()'::regprocedure))""")
+        if not control or control['version']!=1 or triggers!=3 or control['installed_at']>as_of:
+            raise EvidenceBlocked('allocation_event_history_missing')
+        raw=await connection.fetchval("SELECT COALESCE(jsonb_agg(to_jsonb(a) ORDER BY id),'[]'::jsonb) FROM public.capital_allocation a")
+        def decode(value):
+            return json.loads(value,parse_float=Decimal) if isinstance(value,str) else value
+        current_rows=decode(raw)
+        last=await connection.fetchrow('SELECT COALESCE(max(event_id),0) AS id,max(statement_at) AS latest FROM trading.hrs_allocation_event')
+        if last['latest'] is not None and last['latest']>as_of:
+            raise EvidenceBlocked('allocation_event_after_observation')
+        if bootstrap is None:
+            # Validates selected identity too; a tied latest active row is not a
+            # trustworthy baseline even if LIMIT 1 happened to choose one.
+            allocation_event_changes(current_rows,(),current_rows,as_of,as_of)
+            return dict(version=1,event_id=last['id'],baseline=current_rows,baseline_json=raw,journal=[],changes=())
+        if (bootstrap['allocation_audit_version']!=1 or bootstrap['allocation_audit_event_id'] is None
+                or bootstrap['allocation_audit_baseline'] is None or control['installed_at']>bootstrap['inception']):
+            raise EvidenceBlocked('allocation_event_history_missing')
+        baseline=decode(bootstrap['allocation_audit_baseline'])
+        journal=[]
+        for row in await connection.fetch('SELECT * FROM trading.hrs_allocation_event WHERE event_id>$1 ORDER BY event_id',bootstrap['allocation_audit_event_id']):
+            event=dict(row)
+            event['old_row']=decode(event['old_row'])
+            event['new_row']=decode(event['new_row'])
+            journal.append(event)
+        changes=allocation_event_changes(baseline,journal,current_rows,bootstrap['inception'],as_of)
+        return dict(version=1,event_id=last['id'],baseline=baseline,journal=journal,changes=changes)
+
+    def _allocation_flows(self,state,changes,events,fills,orders,as_of):
+        existing={flow.event_id:flow for flow in state.cash_flows}
+        owners=order_owners(self.account,orders)
+        flows=[]
+        valuation_state=state
+        for change in changes:
+            identity='allocation:'+change.event_id
+            if identity in existing:
+                if existing[identity].amount!=change.delta or existing[identity].occurred_at!=change.occurred_at:
+                    raise EvidenceBlocked('allocation_event_history_conflict')
+                continue
+            if change.occurred_at<=valuation_state.as_of:
+                raise EvidenceBlocked('late_allocation_requires_reconciliation')
+            # Trigger time is a lower bound on commit visibility, not an invented
+            # commit timestamp. NAV must be invariant across the uncertainty
+            # interval before we can unitize this event without guessing.
+            if change.transaction_id is not None:
+                economic_change=any(change.not_before<=event.occurred_at<=as_of for event in events)
+                exposure_change=any(change.not_before<=row['trade_time_utc']<=as_of
+                    and 'hrs' in owners.get((row['symbol'],str(row['order_id'])),set()) for row in fills)
+                if economic_change or exposure_change:
+                    raise EvidenceBlocked('allocation_effective_nav_unproven')
+            try:
+                before=flat_boundary_observation(valuation_state,change.occurred_at,self._now(),fills,orders,events,coverage_complete=True)
+            except EvidenceBlocked:
+                raise EvidenceBlocked('allocation_nav_nonflat_unproven') from None
+            before_state=reconcile_ledger(valuation_state,before)
+            flow=CashFlow(identity,change.delta,change.occurred_at,state.segment_id,
+                          before_state.nav,change.evidence_sha256)
+            applied=LedgerObservation(before.as_of,state.segment_id,before.incomes,(flow,),(),before.as_of,before.as_of,True,True)
+            valuation_state=reconcile_ledger(valuation_state,applied)
+            flows.append(flow)
+        return tuple(flows)
 
     async def _policy_revision(self, connection):
         row = await connection.fetchrow('''SELECT p.revision FROM trading.strategy_risk_policy p
@@ -229,7 +312,7 @@ class HrsEquityService:
         return True
 
     async def _commit(self, connection, bootstrap, snapshot, collection, start_ms, end_ms):
-        as_of = datetime.fromtimestamp(end_ms/1000, timezone.utc)
+        as_of = snapshot['captured_at']
         if not timedelta(0) <= self._now()-as_of < timedelta(seconds=120):
             raise EvidenceBlocked('source_observation_stale')
         report, fills, orders, pending = await self._read_source(connection, start_ms, end_ms, snapshot)
@@ -240,6 +323,11 @@ class HrsEquityService:
         actual_bootstrap = await connection.fetchrow('SELECT * FROM trading.hrs_equity_segment WHERE account_id=$1 FOR UPDATE', self.account)
         if (bootstrap is None) != (actual_bootstrap is None) or (bootstrap and actual_bootstrap['segment_id'] != bootstrap['segment_id']):
             raise EvidenceBlocked('bootstrap_changed_retry_collection')
+        if actual_bootstrap:
+            anchor=json.loads(actual_bootstrap['opening_evidence']) if isinstance(actual_bootstrap['opening_evidence'],str) else actual_bootstrap['opening_evidence']
+            if anchor.get('account_flat_anchor_certified') is not True:
+                raise EvidenceBlocked('opening_inventory_anchor_unproven')
+        audit=await self._allocation_audit(connection,actual_bootstrap,as_of)
         segment = actual_bootstrap['segment_id'] if actual_bootstrap else f'hrs-{uuid.uuid4().hex}'
         session = LossGateSession(connection, self.account, segment)
         stored = await session.load()
@@ -250,21 +338,24 @@ class HrsEquityService:
                                 inception=actual_bootstrap['inception'] if actual_bootstrap else None)
         evidence = dict(account_id=self.account, segment_id=segment, as_of=as_of, available_at=self._now(),
                         capture=snapshot, source_collection=collection, income_report=report,
-                        fills=fills, order_owners=orders, allocation=allocation.source, reconstructed_boundaries=[])
+                        fills=fills, order_owners=orders, allocation=allocation.source,
+                        allocation_audit=dict(version=audit['version'],through_event_id=audit['event_id'],journal=audit['journal']),
+                        reconstructed_boundaries=[])
         if actual_bootstrap is None:
             if stored is not None or events:
                 raise EvidenceBlocked('bootstrap_existing_economics_unreconciled')
             # A fill anywhere in the inventory capture interval defeats a flat
             # point proof even if it roundtripped back to zero before the response.
-            owners = order_owners(self.account, orders)
-            if any('hrs' in owners.get((row['symbol'],str(row['order_id'])),set()) for row in fills):
-                raise EvidenceBlocked('bootstrap_capture_contains_hrs_fills')
+            if fills:
+                raise EvidenceBlocked('bootstrap_capture_contains_account_fills')
+            evidence['account_flat_anchor_certified']=True
             obs = LedgerObservation(as_of, segment, (), (), marks, as_of, snapshot['captured_at'], True, True)
             state = initialize_ledger(segment, allocation.amount, obs)
             await connection.execute('''INSERT INTO trading.hrs_equity_segment
-                (account_id,segment_id,inception,opening_cash,opening_allocation_sha256,opening_evidence)
-                VALUES($1,$2,$3,$4,$5,$6::jsonb)''', self.account, segment, as_of, allocation.amount,
-                allocation.identity, canonical(evidence)[0])
+                (account_id,segment_id,inception,opening_cash,opening_allocation_sha256,opening_evidence,
+                 allocation_audit_event_id,allocation_audit_baseline,allocation_audit_version)
+                VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8::jsonb,1)''', self.account, segment, as_of, allocation.amount,
+                allocation.identity, canonical(evidence)[0],audit['event_id'],audit['baseline_json'])
             gate = evaluate_loss_gate(None, state.checkpoint, GateHistory((state.checkpoint,),as_of,as_of,True),
                                       allow_inception_segment=self.allow_inception)
             stored = await session.commit(state,gate.state,expected_version=None,checkpoint_id=f'{segment}:{end_ms}')
@@ -274,18 +365,11 @@ class HrsEquityService:
             state = stored.ledger
             if as_of <= state.as_of:
                 raise EvidenceBlocked('observation_not_advanced')
-            if allocation.amount != state.cash_allocation:
-                # Flow valuation requires an actual effective-time flat checkpoint;
-                # never treat a late administrative allocation as today's income.
-                if not state.as_of < allocation.effective_at <= as_of:
-                    raise EvidenceBlocked('late_allocation_requires_reconciliation')
-                before = flat_boundary_observation(state,allocation.effective_at,self._now(),fills,orders,events,coverage_complete=True)
-                before_state = reconcile_ledger(state,before)
-                flow = CashFlow(f'allocation:{allocation.identity}',allocation.amount-state.cash_allocation,
-                                allocation.effective_at,segment,before_state.nav,canonical(allocation.source)[1])
-                events_flow = (flow,)
-            else:
-                events_flow = ()
+            if actual_bootstrap['opening_cash']+sum((change.delta for change in audit['changes']),Decimal(0))!=allocation.amount:
+                raise EvidenceBlocked('allocation_event_history_amount_mismatch')
+            events_flow=self._allocation_flows(state,audit['changes'],events,fills,orders,as_of)
+            if state.cash_allocation+sum((flow.amount for flow in events_flow),Decimal(0))!=allocation.amount:
+                raise EvidenceBlocked('allocation_event_history_unrecorded_flow')
             checkpoints = list(await session.checkpoints())
             midnight = datetime.combine(state.as_of.astimezone(SHANGHAI).date()+timedelta(days=1),time.min,SHANGHAI)
             while midnight < as_of:

@@ -169,9 +169,14 @@ def prove_positions(account, segment, as_of, inventory, account_inventory, local
     independent = _inventory(account_inventory)
     if actual != independent:
         raise EvidenceBlocked('position_quantity_inventory_conflict')
-    # All fills supplied here must have complete collection proof. For an HRS
-    # segment, its initial position is zero; other strategies may predate it.
-    positions = owned_fill_positions(account, fills, orders, through=as_of)
+    # Without a certified opening inventory, a partial cached historical sum
+    # cannot establish who owns any pre-existing account quantity. This service
+    # conservatively opens its first segment only from two empty account views.
+    if bootstrap and actual:
+        raise EvidenceBlocked('bootstrap_opening_inventory_unproven')
+    # The service certifies a zero account anchor and collects EVERY relevant
+    # symbol continuously from it. Facts preceding that anchor are irrelevant.
+    positions = owned_fill_positions(account, fills, orders, through=as_of, after=inception)
     hrs_positions = owned_fill_positions(account, fills, orders, through=as_of, after=inception) if inception else positions
     if bootstrap and local:
         raise EvidenceBlocked('bootstrap_hrs_not_flat')
@@ -225,3 +230,109 @@ def flat_boundary_observation(state, boundary, available_at, fills, orders, inco
     # Effective inventory is reconstructed at boundary; acquisition time is kept
     # separately in the immutable service evidence, never claimed as live capture.
     return LedgerObservation(boundary, state.segment_id, events, (), (), boundary, boundary, True, True)
+
+
+@dataclass(frozen=True)
+class AllocationChange:
+    event_id: str
+    delta: Decimal
+    occurred_at: datetime
+    not_before: datetime
+    transaction_id: int | None
+    evidence_sha256: str
+
+
+def _selected_allocation(rows, at):
+    active=[]
+    for raw in rows:
+        if raw.get('status')!='active' or str(raw.get('month',''))[:7]!=at.astimezone(SHANGHAI).strftime('%Y-%m'):
+            continue
+        row=dict(raw)
+        if isinstance(row.get('created_at'),str):
+            row['created_at']=datetime.fromisoformat(row['created_at'])
+        proof=allocation_evidence(row,at)
+        active.append((proof.effective_at,proof))
+    if not active:
+        raise EvidenceBlocked('allocation_active_gap')
+    active.sort(key=lambda item:item[0],reverse=True)
+    if len(active)>1 and active[0][0]==active[1][0]:
+        raise EvidenceBlocked('allocation_active_identity_ambiguous')
+    return active[0][1]
+
+
+def allocation_event_changes(baseline_rows, journal, current_rows, inception, as_of):
+    """Replay raw row mutations in serialized COMMIT order, not latest-minus-first.
+
+    The database audit trigger serializes every modifying transaction. Statements
+    inside ONE transaction are applied together: intermediate rows were never an
+    externally visible allocation. Distinct committed transactions remain distinct
+    deltas even when their final amount nets to zero. Calendar month selection is
+    deterministic from the complete baseline plus mutations and gets an exact
+    month-boundary event of its own.
+    """
+    rows={str(row['id']):dict(row) for row in baseline_rows}
+    if len(rows)!=len(baseline_rows):
+        raise EvidenceBlocked('allocation_event_chain_duplicate_baseline')
+    previous=_selected_allocation(rows.values(),inception).amount
+    changes=[]
+    month_start=datetime.combine(inception.astimezone(SHANGHAI).date().replace(day=1),datetime.min.time(),SHANGHAI)
+    def next_month(value):
+        return value.replace(year=value.year+1,month=1) if value.month==12 else value.replace(month=value.month+1)
+    boundary=next_month(month_start)
+
+    def calendar_until(end):
+        nonlocal previous,boundary
+        while boundary<=end:
+            value=_selected_allocation(rows.values(),boundary).amount
+            if value!=previous:
+                digest=canonical(dict(source=list(rows.values()),effective_at=boundary))[1]
+                changes.append(AllocationChange('calendar:'+boundary.isoformat(),value-previous,boundary,boundary,None,digest))
+            previous=value
+            boundary=next_month(boundary)
+
+    ordered=sorted(journal,key=lambda item:item['event_id'])
+    groups=[]
+    for event in ordered:
+        if groups and groups[-1][0]['transaction_id']==event['transaction_id']:
+            groups[-1].append(event)
+        else:
+            groups.append([event])
+    seen_transactions=set()
+    last_statement=inception
+    for group in groups:
+        txid=group[0]['transaction_id']
+        if txid in seen_transactions:
+            raise EvidenceBlocked('allocation_event_chain_transaction_order')
+        seen_transactions.add(txid)
+        first=min(aware(event['statement_at'],'allocation_event') for event in group)
+        last=max(event['statement_at'] for event in group)
+        if first<last_statement or last>as_of:
+            raise EvidenceBlocked('allocation_event_chain_time_unproven')
+        calendar_until(first)
+        if boundary<=last:
+            raise EvidenceBlocked('allocation_calendar_transaction_boundary_unproven')
+        for event in group:
+            old,event_new=event.get('old_row'),event.get('new_row')
+            identity=str((event_new or old or {}).get('id'))
+            if event['operation']=='INSERT':
+                if old is not None or identity in rows or event_new is None:
+                    raise EvidenceBlocked('allocation_event_chain_insert_conflict')
+            elif event['operation'] in ('UPDATE','DELETE'):
+                if old is None or rows.get(identity)!=old:
+                    raise EvidenceBlocked('allocation_event_chain_missing')
+            else:
+                raise EvidenceBlocked('allocation_event_chain_operation')
+            if event_new is None:
+                rows.pop(identity,None)
+            else:
+                rows[identity]=dict(event_new)
+        value=_selected_allocation(rows.values(),last).amount
+        if value!=previous:
+            digest=canonical(group)[1]
+            changes.append(AllocationChange('journal:'+str(group[-1]['event_id']),value-previous,last,first,txid,digest))
+        previous=value
+        last_statement=last
+    calendar_until(as_of)
+    if rows!={str(row['id']):dict(row) for row in current_rows}:
+        raise EvidenceBlocked('allocation_event_chain_current_mismatch')
+    return tuple(changes)

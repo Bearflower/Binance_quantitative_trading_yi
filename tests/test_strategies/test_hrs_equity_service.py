@@ -44,6 +44,7 @@ async def setup(monkeypatch):
              asset text,event_time_utc timestamptz,evidence jsonb,reviewed_by text)''')
         await c.execute('''CREATE TABLE IF NOT EXISTS public.capital_allocation
             (id serial PRIMARY KEY, month text,entries jsonb,status text,created_at timestamp)''')
+        await c.execute('ALTER TABLE public.capital_allocation ADD COLUMN IF NOT EXISTS total_capital numeric')
         await c.execute('''CREATE TABLE IF NOT EXISTS trading.strategy_risk_policy
             (account_id text,strategy_id text,revision bigint,effective_at timestamptz,expires_at timestamptz,
              PRIMARY KEY(account_id,strategy_id,revision))''')
@@ -52,7 +53,8 @@ async def setup(monkeypatch):
         await c.execute('''CREATE TABLE IF NOT EXISTS trading.entry_risk_reservation
             (client_order_id text PRIMARY KEY,account_id text,strategy_id text,state text,symbol text)''')
         for path in ('database/postgres/migrations/2026-11-17-hrs-risk-ledger-loss-gates.sql',
-                     'database/postgres/migrations/2026-11-17-hrs-equity-service.sql'):
+                     'database/postgres/migrations/2026-11-17-hrs-equity-service.sql',
+                     'database/postgres/migrations/2026-11-17-hrs-allocation-event-audit.sql'):
             sql = Path(path).read_text()
             await c.execute(sql)
             await c.execute(sql)
@@ -224,3 +226,114 @@ async def test_projection_denial_and_final_authorization_share_account_lock(setu
     async with pool.acquire() as c:
         with pytest.raises(EquityGateDenied):
             await enforce_equity_gate(c,'hrs',account,1)
+
+
+@pytest.mark.asyncio
+async def test_waiting_collector_snapshot_sees_reservation_committed_by_lock_holder(setup):
+    service, account, pool, api, clock = setup
+    async with pool.acquire() as holder:
+        transaction = holder.transaction()
+        await transaction.start()
+        await holder.execute('SELECT pg_advisory_xact_lock(hashtextextended($1,7183))',account)
+        pid = await holder.fetchval('SELECT pg_backend_pid()')
+        async def reader():
+            async with service._locked() as c:
+                return await c.fetchval("SELECT count(*) FROM trading.entry_risk_reservation WHERE account_id=$1 AND state<>'released'",account)
+        task=asyncio.create_task(reader())
+        try:
+            async with pool.acquire() as observer:
+                for _ in range(100):
+                    blocked=await observer.fetchval('SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE $1=ANY(pg_blocking_pids(pid)))',pid)
+                    if blocked:
+                        break
+                    await asyncio.sleep(.01)
+                assert blocked
+            await holder.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,state,symbol) VALUES ($1,$2,'hrs','reserved','BTCUSDT')",uuid.uuid4().hex,account)
+            await transaction.commit()
+            assert await task == 1
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.gather(task,return_exceptions=True)
+            if holder.is_in_transaction():
+                await transaction.rollback()
+
+
+@pytest.mark.asyncio
+async def test_allocation_deposit_and_withdrawal_are_two_flows_even_when_net_zero(setup):
+    service, account, pool, api, clock=setup
+    # Use actual source time so the database trigger's causal timestamps and the
+    # observation clock describe the same prospective segment.
+    async with pool.acquire() as c:
+        now=await c.fetchval('SELECT clock_timestamp()')
+        await c.execute("UPDATE public.capital_allocation SET created_at=$1,total_capital=1000.12345678 WHERE status='active'",(now-timedelta(minutes=1)).astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+    service.clock=lambda:datetime.now(timezone.utc)
+    opening=await service.refresh()
+    assert 'daily_origin_missing' in opening['reasons']
+    async with pool.acquire() as c:
+        await c.execute("UPDATE public.capital_allocation SET entries='[{\"strategy_id\":\"hrs\",\"allocated_amount\":\"2000\"}]'::jsonb WHERE status='active'")
+        await c.execute("UPDATE public.capital_allocation SET entries='[{\"strategy_id\":\"hrs\",\"allocated_amount\":\"1000\"}]'::jsonb WHERE status='active'")
+    result=await service.refresh()
+    assert 'allocation_event_history_missing' not in result['reasons']
+    async with pool.acquire() as c:
+        raw=await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account)
+        state=json.loads(raw) if isinstance(raw,str) else raw
+        assert [D(event['amount']) for event in state['cash_flows']]==[D('1000'),D('-1000')]
+        assert D(state['units'])==D('1000')
+        assert D(state['nav'])==D('1')
+
+
+@pytest.mark.asyncio
+async def test_cancelled_collection_releases_policy_and_income_session_locks(setup):
+    service,account,pool,api,clock=setup
+    entered=asyncio.Event()
+    async def work():
+        async with service._locked():
+            entered.set()
+            await asyncio.Event().wait()
+    async with pool.acquire() as observer:
+        task=asyncio.create_task(work())
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert await observer.fetchval('SELECT pg_try_advisory_xact_lock(hashtextextended($1,7183))',account)
+        key='income-integrity-v1:'+account
+        assert await observer.fetchval('SELECT pg_try_advisory_lock(hashtextextended($1,0))',key)
+        await observer.execute('SELECT pg_advisory_unlock(hashtextextended($1,0))',key)
+
+
+@pytest.mark.asyncio
+async def test_allocation_trigger_records_inplace_activation_and_history_is_immutable(setup):
+    service,account,pool,api,clock=setup
+    async with pool.acquire() as c:
+        maximum=await c.fetchval('SELECT COALESCE(max(event_id),0) FROM trading.hrs_allocation_event')
+        await c.execute("UPDATE public.capital_allocation SET status='draft' WHERE status='active'")
+        await c.execute("UPDATE public.capital_allocation SET status='active' WHERE status='draft'")
+        events=await c.fetch('SELECT * FROM trading.hrs_allocation_event WHERE event_id>$1 ORDER BY event_id',maximum)
+        assert len(events)==2
+        assert events[0]['transaction_id']!=events[1]['transaction_id']
+        first=json.loads(events[0]['new_row'])
+        second=json.loads(events[1]['new_row'])
+        assert first['status']=='draft' and second['status']=='active'
+        for query in ('DELETE FROM trading.hrs_allocation_event',
+                      'UPDATE trading.hrs_allocation_audit_control SET version=1',
+                      'TRUNCATE public.capital_allocation'):
+            with pytest.raises(Exception,match='immutable'):
+                await c.execute(query)
+        assert await c.fetchval("SELECT count(*) FROM public.capital_allocation WHERE status='active'")==1
+
+
+@pytest.mark.asyncio
+async def test_existing_segment_without_prospective_audit_origin_cannot_restart_clean(setup):
+    service,account,pool,api,clock=setup
+    await service.refresh()
+    async with pool.acquire() as c:
+        await c.execute('UPDATE trading.hrs_equity_segment SET allocation_audit_event_id=NULL WHERE account_id=$1',account)
+        version=await c.fetchval('SELECT version FROM trading.hrs_loss_gate_state WHERE account_id=$1',account)
+    clock[0]+=timedelta(seconds=30)
+    result=await service.refresh()
+    assert result['allowed'] is False
+    assert result['reasons']==['allocation_event_history_missing']
+    async with pool.acquire() as c:
+        assert await c.fetchval('SELECT version FROM trading.hrs_loss_gate_state WHERE account_id=$1',account)==version

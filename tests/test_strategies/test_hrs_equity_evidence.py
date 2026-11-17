@@ -76,8 +76,9 @@ def test_bootstrap_rejects_nonflat_hrs_and_unknown_account_positions():
 
 def test_other_strategy_position_needs_exact_fill_proof_and_never_enters_hrs_nav():
     inventory = [dict(symbol='BTCUSDT', positionAmt='2', entryPrice='100')]
-    assert prove_positions('test', 'seg', T, inventory, inventory, {}, [fill()],
-                           [owner(strategy='btc_eth')], {}, bootstrap=True) == ()
+    with pytest.raises(EvidenceBlocked,match='opening_inventory'):
+        prove_positions('test', 'seg', T, inventory, inventory, {}, [fill()],
+                        [owner(strategy='btc_eth')], {}, bootstrap=True)
     with pytest.raises(EvidenceBlocked):
         prove_positions('test', 'seg', T, inventory, inventory, {}, [],
                         [owner(strategy='btc_eth')], {}, bootstrap=True)
@@ -107,3 +108,55 @@ def test_unattributed_non_usdt_or_stale_mark_never_becomes_zero():
     with pytest.raises(EvidenceBlocked, match='mark_stale'):
         prove_positions('test', 'seg', T, inventory, inventory, local, [fill()], [owner()],
                         {'BTCUSDT': dict(symbol='BTCUSDT', markPrice='98', time=int((T-timedelta(minutes=3)).timestamp()*1000))}, bootstrap=False)
+
+
+def test_partial_cached_other_owner_fills_cannot_certify_a_new_flat_hrs_anchor():
+    # Missing historical HRS entry/exit facts can leave a misleading exact-looking
+    # other-strategy subtotal. No certified opening point exists for this stream.
+    inventory=[dict(symbol='BTCUSDT',positionAmt='2',entryPrice='100')]
+    with pytest.raises(EvidenceBlocked,match='opening_inventory'):
+        prove_positions('test','seg',T,inventory,inventory,{},[fill()],
+                        [owner(strategy='btc_eth')],{},bootstrap=True)
+
+
+def test_allocation_journal_replays_each_committed_delta_and_checks_full_chain():
+    from strategies.hrs.equity_evidence import allocation_event_changes
+    base=dict(id=1,month='2026-11',status='active',created_at='2026-11-01T00:00:00',
+              entries=[dict(strategy_id='hrs',allocated_amount='1000')])
+    deposit=dict(base,entries=[dict(strategy_id='hrs',allocated_amount='2000')])
+    events=[dict(event_id=1,transaction_id=10,statement_at=T+timedelta(seconds=1),operation='UPDATE',old_row=base,new_row=deposit),
+            dict(event_id=2,transaction_id=11,statement_at=T+timedelta(seconds=2),operation='UPDATE',old_row=deposit,new_row=base)]
+    changes=allocation_event_changes([base],events,[base],T,T+timedelta(seconds=3))
+    assert [change.delta for change in changes]==[D('1000'),D('-1000')]
+    with pytest.raises(EvidenceBlocked,match='allocation_event_chain'):
+        allocation_event_changes([base],events[1:],[base],T,T+timedelta(seconds=3))
+    # One atomic transaction exposes only its final selected allocation.
+    atomic=[dict(event,transaction_id=10) for event in events]
+    assert allocation_event_changes([base],atomic,[base],T,T+timedelta(seconds=3))==()
+
+
+def test_allocation_status_activation_cannot_hide_a_material_selected_balance():
+    from strategies.hrs.equity_evidence import allocation_event_changes
+    base=dict(id=1,month='2026-11',status='active',created_at='2026-11-01T00:00:00',
+              entries=[dict(strategy_id='hrs',allocated_amount='1000')])
+    future=dict(base,id=2,status='draft',created_at='2026-11-02T00:00:00',
+                entries=[dict(strategy_id='hrs',allocated_amount='2000')])
+    active=dict(future,status='active')
+    events=[dict(event_id=1,transaction_id=10,statement_at=T+timedelta(seconds=1),operation='UPDATE',old_row=future,new_row=active),
+            dict(event_id=2,transaction_id=11,statement_at=T+timedelta(seconds=2),operation='UPDATE',old_row=active,new_row=future)]
+    result=allocation_event_changes([base,future],events,[base,future],T,T+timedelta(seconds=3))
+    assert [change.delta for change in result]==[D('1000'),D('-1000')]
+
+
+def test_allocation_transaction_crossing_calendar_selection_boundary_is_not_backdated():
+    from strategies.hrs.equity_evidence import allocation_event_changes
+    before=datetime(2026,11,30,15,tzinfo=timezone.utc)
+    midnight=datetime(2026,11,30,16,tzinfo=timezone.utc)
+    november=dict(id=1,month='2026-11',status='active',created_at='2026-11-01T00:00:00',entries=[dict(strategy_id='hrs',allocated_amount='1000')])
+    december=dict(id=2,month='2026-12',status='draft',created_at='2026-11-01T00:00:00',entries=[dict(strategy_id='hrs',allocated_amount='2000')])
+    active=dict(december,status='active')
+    retired=dict(november,status='draft')
+    events=[dict(event_id=1,transaction_id=10,statement_at=midnight-timedelta(minutes=1),operation='UPDATE',old_row=december,new_row=active),
+            dict(event_id=2,transaction_id=10,statement_at=midnight+timedelta(minutes=1),operation='UPDATE',old_row=november,new_row=retired)]
+    with pytest.raises(EvidenceBlocked,match='allocation_calendar_transaction'):
+        allocation_event_changes([november,december],events,[retired,active],before,midnight+timedelta(minutes=2))
