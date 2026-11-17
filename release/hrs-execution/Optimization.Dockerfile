@@ -13,5 +13,6 @@ COPY services/market_cap/ /app/services/market_cap/
 FROM hrs AS test
 RUN pip install --no-cache-dir pytest pytest-asyncio
 COPY tests/ /app/tests/
+COPY release/hrs-execution/deploy_optimization.py /app/release/hrs-execution/deploy_optimization.py
 COPY database/postgres/migrations/ /app/database/postgres/migrations/
 COPY pytest.ini /app/pytest.ini
