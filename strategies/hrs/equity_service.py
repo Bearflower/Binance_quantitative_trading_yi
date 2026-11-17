@@ -44,6 +44,7 @@ from .equity_evidence import (
     EvidenceBlocked, allocation_evidence, allocation_event_changes, attributed_incomes, canonical,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
+from .equity_reconciliation import ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
 from .loss_gate_repository import LossGateSession, RepositoryConflict
 from .risk_ledger import CashFlow, LedgerNotReady, LedgerObservation, initialize_ledger, reconcile_ledger
@@ -181,6 +182,10 @@ class HrsEquityService:
             WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc <= $3''', self.account, start, end)]
         orders = [dict(row) for row in await connection.fetch('''SELECT account_id,symbol,order_id,strategy,side,status,order_type,
             realized_pnl,executed_at FROM trading.trade_records WHERE account_id=$1 AND order_id IS NOT NULL''', self.account)]
+        for order in orders:
+            at=order.get('executed_at')
+            if isinstance(at,datetime) and at.tzinfo is None:
+                order['executed_at']=at.replace(tzinfo=SHANGHAI)
         pending = await connection.fetchval("SELECT count(*) FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs' AND state<>'released'", self.account)
         return report, fills, orders, pending
 
@@ -367,10 +372,35 @@ class HrsEquityService:
                 raise EvidenceBlocked('observation_not_advanced')
             if actual_bootstrap['opening_cash']+sum((change.delta for change in audit['changes']),Decimal(0))!=allocation.amount:
                 raise EvidenceBlocked('allocation_event_history_amount_mismatch')
+            known={event.event_id for event in state.incomes}
+            late=[event for event in events if event.event_id not in known and event.occurred_at<=state.as_of]
+            if late:
+                existing_flows={flow.event_id for flow in state.cash_flows}
+                if any('allocation:'+change.event_id not in existing_flows for change in audit['changes']):
+                    raise EvidenceBlocked('reconciliation_allocation_changes_unsettled')
+                captures=[]
+                for archived in await connection.fetch('SELECT as_of,evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND segment_id=$2 AND as_of<=$3 ORDER BY available_at DESC',self.account,segment,as_of):
+                    payload=json.loads(archived['payload']) if isinstance(archived['payload'],str) else archived['payload']
+                    if 'capture' in payload and payload.get('result',{}).get('ledger_version') is not None:
+                        captures.append(dict(as_of=archived['as_of'],capture=payload['capture'],evidence_sha256=archived['evidence_sha256']))
+                source=ReconciliationSource(self.account,segment,state.inception,actual_bootstrap['opening_cash'],
+                    LedgerObservation(as_of,segment,events,(),marks,as_of,snapshot['captured_at'],True,True),
+                    state.cash_flows,await effective_checkpoints(connection,self.account,segment),tuple(captures),
+                    tuple(fills),tuple(orders),self._now(),canonical(evidence)[1])
+                rebuilt=rebuild_history(stored,source,allow_inception_segment=self.allow_inception)
+                stored=await activate_reconciliation(connection,self.account,stored,rebuilt)
+                gate=rebuilt.gate
+                receipt_sha=canonical(rebuilt.receipt)[1]
+                result=dict(ready=gate.ready,allowed=gate.allow_new_risk,reasons=list(gate.reasons),
+                    window_label=gate.window_label,qualified_30_day=gate.qualified_30_day,ledger_version=stored.version,
+                    reconciliation_receipt_sha256=receipt_sha)
+                evidence['result']=result
+                evidence['reconciliation_receipt_sha256']=receipt_sha
+                return await self._projection(connection,revision,result,evidence)
             events_flow=self._allocation_flows(state,audit['changes'],events,fills,orders,as_of)
             if state.cash_allocation+sum((flow.amount for flow in events_flow),Decimal(0))!=allocation.amount:
                 raise EvidenceBlocked('allocation_event_history_unrecorded_flow')
-            checkpoints = list(await session.checkpoints())
+            checkpoints = list(await effective_checkpoints(connection,self.account,segment))
             midnight = datetime.combine(state.as_of.astimezone(SHANGHAI).date()+timedelta(days=1),time.min,SHANGHAI)
             while midnight < as_of:
                 boundary = flat_boundary_observation(state,midnight,self._now(),fills,orders,events,coverage_complete=True)

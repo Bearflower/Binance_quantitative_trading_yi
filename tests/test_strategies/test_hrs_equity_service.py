@@ -54,7 +54,8 @@ async def setup(monkeypatch):
             (client_order_id text PRIMARY KEY,account_id text,strategy_id text,state text,symbol text)''')
         for path in ('database/postgres/migrations/2026-11-17-hrs-risk-ledger-loss-gates.sql',
                      'database/postgres/migrations/2026-11-17-hrs-equity-service.sql',
-                     'database/postgres/migrations/2026-11-17-hrs-allocation-event-audit.sql'):
+                     'database/postgres/migrations/2026-11-17-hrs-allocation-event-audit.sql',
+                     'database/postgres/migrations/2026-11-17-hrs-equity-reconciliation.sql'):
             sql = Path(path).read_text()
             await c.execute(sql)
             await c.execute(sql)
@@ -337,3 +338,43 @@ async def test_existing_segment_without_prospective_audit_origin_cannot_restart_
     assert result['reasons']==['allocation_event_history_missing']
     async with pool.acquire() as c:
         assert await c.fetchval('SELECT version FROM trading.hrs_loss_gate_state WHERE account_id=$1',account)==version
+
+
+@pytest.mark.asyncio
+async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup):
+    from strategies.hrs.equity_reconciliation import effective_checkpoints
+    service,account,pool,api,clock=setup
+    await service.refresh()
+    clock[0]=T+timedelta(seconds=30)
+    await service.refresh()
+    async with pool.acquire() as c:
+        for order_id,side in ((71,'BUY'),(72,'SELL')):
+            await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT',$2,'hrs',$3,'FILLED','LIMIT',$4)",account,str(order_id),side,T.replace(tzinfo=None))
+    records=[dict(symbol='BTCUSDT',id=71,orderId=71,side='BUY',qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((T+timedelta(seconds=10)).timestamp()*1000)),
+             dict(symbol='BTCUSDT',id=72,orderId=72,side='SELL',qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((T+timedelta(seconds=20)).timestamp()*1000))]
+    api.get_user_trades.return_value=records
+    api.get_income_history.side_effect=lambda **kw: ([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-1',asset='USDT',tranId=r['id'],tradeId=str(r['id']),time=r['time'],info='') for r in records] if kw['income_type']=='COMMISSION' else [])
+    clock[0]=T+timedelta(seconds=60)
+    result=await service.refresh()
+    assert 'late_income_requires_reconciliation' not in result['reasons']
+    assert result.get('reconciliation_receipt_sha256')
+    async with pool.acquire() as c:
+        original=await c.fetchval('SELECT nav FROM trading.hrs_risk_equity_checkpoints WHERE account_id=$1 AND as_of=$2',account,T+timedelta(seconds=30))
+        assert original==D('1')
+        segment=await c.fetchval('SELECT segment_id FROM trading.hrs_equity_segment WHERE account_id=$1',account)
+        effective={cp.as_of:cp for cp in await effective_checkpoints(c,account,segment)}
+        assert effective[T+timedelta(seconds=30)].nav==D('.998')
+        earlier={cp.as_of:cp for cp in await effective_checkpoints(c,account,segment,known_at=T+timedelta(seconds=45))}
+        assert earlier[T+timedelta(seconds=30)].nav==D('1')
+        row=await c.fetchrow('SELECT * FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)
+        assert row['available_at']==clock[0]
+        assert row['before_state_version']==2 and row['after_state_version']==3
+        with pytest.raises(Exception,match='immutable'):
+            await c.execute('DELETE FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)
+    clock[0]+=timedelta(seconds=30)
+    again=await service.refresh()
+    assert 'reconciliation_receipt_sha256' not in again
+    async with pool.acquire() as c:
+        assert await c.fetchval('SELECT count(*) FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)==1
+        ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+        assert D(ledger['nav'])==D('.998')
