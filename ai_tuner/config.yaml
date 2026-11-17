@@ -1,3 +1,17 @@
+# User-approved Nov 17: default PM account only; grid is assessed separately.
+# decision_at_ms is budget registration time, not an invented user-click timestamp.
+account_risk:
+  enabled: true
+  budget:
+    account_id: default
+    account_identity: default-pm
+    budget_id: default-pm-5pct-20261117-v1
+    decision_date: "2026-11-17"
+    decision_at_ms: 1794927191000
+    max_drawdown_ratio: "0.05"
+    max_sample_gap_ms: 300000
+    max_snapshot_age_ms: 120000
+
 # StratTuneAI 多策略AI调优系统配置
 # 所有参数从环境变量或此配置文件读取，禁止硬编码
 
@@ -668,7 +682,8 @@ profit_extraction:
 # 月度资金分配配置
 # ============================================================
 capital_allocation:
-  enabled: true                            # 是否启用月度资金分配
+  mode: shadow_only
+  enabled: false                            # 是否启用月度资金分配
   total_capital: 1000.0                    # 总资金池（USDT）
   reserve_ratio: 0.15                      # 风险备用金比例（15%）
   rank_ratios: [0.30, 0.25, 0.20, 0.10]   # 排名分配比例（按收益率从高到低，总和 0.85 = 1 - 0.15 备用金）

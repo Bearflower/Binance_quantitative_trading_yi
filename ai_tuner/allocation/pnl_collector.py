@@ -9,8 +9,10 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List
 
-from shared.accounting.published_report import REPORT_VERSION, read_published_report
+from shared.accounting.published_report import REPORT_VERSIONS, read_published_report
 from shared.entry_risk_policy import account_id
+from .capital_evidence import read_capital_evidence
+from .activity_evidence import read_activity_evidence
 
 _CST = timezone(timedelta(hours=8))
 
@@ -45,9 +47,9 @@ class PnLCollector:
         if not isinstance(report, dict):
             raise AllocationInputUnavailable('invalid_report')
         expected = dict(account_id=account, start_ms=start_ms, end_ms=end_ms,
-                        requested_end_ms=end_ms, window_key=window_key,
-                        report_version=REPORT_VERSION)
-        if any(report.get(key) != value for key, value in expected.items()):
+                        requested_end_ms=end_ms, window_key=window_key)
+        if (any(report.get(key) != value for key, value in expected.items())
+                or report.get('report_version') not in REPORT_VERSIONS):
             raise AllocationInputUnavailable('report_identity_mismatch')
         report_id = report.get('report_id')
         if not isinstance(report_id, str) or not report_id.strip():
@@ -69,11 +71,45 @@ class PnLCollector:
                 nets[strategy_id] = net
         except (KeyError, TypeError, ValueError, ArithmeticError) as exc:
             raise AllocationInputUnavailable('strategy_net_unavailable', report_id=report_id) from exc
-        # Current mutable allocations and hourly snapshots cannot prove historical
-        # capital constancy. Income rows also do not prove owned fill activity.
-        # Never turn either missing proof into 0%, zero trades, or a partial ranking.
-        raise AllocationInputUnavailable('missing_capital_evidence', 'missing_activity_evidence',
-                                         report_id=report_id, verified_net_pnl=nets)
+        if not nets:
+            raise AllocationInputUnavailable('strategy_identity_missing', report_id=report_id)
+        readers = ((read_capital_evidence, 'missing_capital_evidence'),
+                   (read_activity_evidence, 'missing_activity_evidence'))
+        sources, reasons = [], []
+        for reader, reason in readers:
+            try:
+                rows = await reader(self.db_manager, account, start_ms, end_ms, tuple(nets))
+            except Exception:
+                rows = {}
+            sources.append(rows)
+            for sid in nets:
+                row = rows.get(sid) if isinstance(rows, dict) else None
+                if (not isinstance(row, dict) or row.get('coverage_complete') is not True
+                        or row.get('account_id') != account or row.get('start_ms') != start_ms
+                        or row.get('end_ms') != end_ms or not row.get('source_id')):
+                    reasons.append(reason)
+        capital, activity = sources
+        result = {}
+        for sid, net in nets.items():
+            try:
+                basis = Decimal(str(capital[sid]['average_capital_usdt']))
+                fills = activity[sid]['owned_entry_fills']
+                if not basis.is_finite() or basis <= 0:
+                    reasons.append('missing_capital_evidence')
+                if type(fills) is not int or fills < 0:
+                    reasons.append('missing_activity_evidence')
+                if not reasons:
+                    result[sid] = {'pnl': float(net), 'capital': float(basis),
+                                   'has_trades': fills > 0,
+                                   'report_id': report_id,
+                                   'capital_source_id': capital[sid]['source_id'],
+                                   'activity_source_id': activity[sid]['source_id']}
+            except (KeyError, TypeError, ValueError, ArithmeticError):
+                reasons.extend(('missing_capital_evidence', 'missing_activity_evidence'))
+        if reasons:
+            raise AllocationInputUnavailable(*dict.fromkeys(reasons), report_id=report_id,
+                                             verified_net_pnl=nets)
+        return result
 
     @staticmethod
     def _completed_month_window(month_start, month_end):

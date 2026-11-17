@@ -1,0 +1,82 @@
+name: Release AI Tuner evidence and 5 percent PM budget
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+  queue: max
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: evidence-test-only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      ALLOCATION_TEST_DSN: postgresql://postgres:evidence-test-only@127.0.0.1/allocation_tests
+      CAPITAL_HISTORY_TEST_DSN: postgresql://postgres:evidence-test-only@127.0.0.1/capital_history_tests
+      ACCOUNT_RISK_TEST_DSN: postgresql://postgres:evidence-test-only@127.0.0.1/account_risk_tests
+      ENTRY_ACTIVITY_TEST_DSN: postgresql://postgres:evidence-test-only@127.0.0.1/entry_activity_tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Verify evidence contracts on isolated PostgreSQL
+        run: |
+          pip install -r ai_tuner/requirements.txt pytest pytest-asyncio
+          PGPASSWORD=evidence-test-only psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE allocation_tests'
+          PGPASSWORD=evidence-test-only psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE capital_history_tests'
+          PGPASSWORD=evidence-test-only psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE account_risk_tests'
+          PGPASSWORD=evidence-test-only psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE entry_activity_tests'
+          python -m pytest -q tests/test_allocation_remediation ai_tuner/allocation/tests/test_shadow_allocation.py ai_tuner/tests/test_account_risk.py ai_tuner/tests/test_evidence_jobs.py ai_tuner/tests/test_reduced_trial.py tests/test_accounting/test_ledger_publication.py ai_tuner/allocation/tests/test_monthly_job.py
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Record immutable release revision
+        run: echo "GIT_SHA=$GITHUB_SHA" >> VERSION
+      - uses: docker/build-push-action@v5
+        id: image
+        with:
+          context: .
+          file: ai_tuner/Dockerfile
+          push: true
+          tags: ghcr.io/bearflower/trading-ai-tuner:trial-evidence-${{ github.sha }}
+      - name: Package source proofs and additive migrations
+        run: |
+          python - <<'PY'
+          import hashlib,json,os,pathlib,shutil
+          root=pathlib.Path('.')
+          target=pathlib.Path(os.environ['RUNNER_TEMP'])/'trial-evidence'
+          paths=[p for folder in ('ai_tuner','shared') for p in pathlib.Path(folder).rglob('*') if p.is_file() and p.suffix in ('.py','.yaml') and '__pycache__' not in p.parts]
+          paths+=list(pathlib.Path('database/postgres/migrations').glob('2026-11-17-*.sql'))
+          paths+=[pathlib.Path('deployment/trial-evidence/activate.py')]
+          files={}
+          for path in paths:
+              dest=target/path
+              dest.parent.mkdir(parents=True,exist_ok=True)
+              shutil.copyfile(path,dest)
+              files[str(path)]=hashlib.sha256(path.read_bytes()).hexdigest()
+          (target/'manifest.json').write_text(json.dumps({'sha':os.environ['GITHUB_SHA'],'files':files},sort_keys=True))
+          PY
+      - name: Activate only reviewed AI Tuner image
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 43.156.242.184 >> ~/.ssh/known_hosts
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA"
+          scp -o ConnectTimeout=15 -r "$RUNNER_TEMP/trial-evidence/." "root@43.156.242.184:/root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA/"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 python3 - "$GITHUB_SHA" "$DIGEST" "/root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA" < deployment/trial-evidence/activate.py

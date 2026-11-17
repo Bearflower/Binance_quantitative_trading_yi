@@ -14,6 +14,7 @@ from .economic_ledger import INCOME_TYPES
 from .report_reader import read_monthly_economic_report, _CURSOR_SQL
 
 REPORT_VERSION = 'exchange-income-v1'
+REPORT_VERSIONS = (REPORT_VERSION, REPORT_VERSION + '-derived-v1')
 _ACTIVE_SQL = '''SELECT r.report, r.created_at FROM trading.ledger_report_active a
 JOIN trading.ledger_report_run r ON r.report_id = a.report_id
 WHERE a.account_id = $1 AND a.asset = 'USDT' AND a.window_key = $2

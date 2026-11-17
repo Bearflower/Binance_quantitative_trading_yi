@@ -217,6 +217,9 @@ class MonthlyAllocationJob:
         logger.info("月度资金分配开始")
 
         try:
+            if self.allocation_cfg.get("mode") == "shadow_only":
+                logger.info("资金分配只生成影子结果；实盘恢复须另行审阅批准")
+                return None
             if await allocation_frozen(self.db_manager):
                 logger.warning("整改期间资金分配冻结，保留现有额度及配置")
                 return None

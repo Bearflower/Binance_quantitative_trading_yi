@@ -41,6 +41,15 @@ def test_preview_never_writes_or_activates_allocation():
     assert result["allocation"]["entries"][1]["strategy_id"] == "hrs"
 
 
+def test_formal_derived_report_is_accepted_without_accepting_unknown_versions():
+    data = inputs()
+    data['report']['report_version'] = REPORT_VERSION + '-derived-v1'
+    data['report']['derived_attribution_enabled'] = True
+    assert preview_monthly_allocation(**data)['status'] == 'PREVIEW'
+    data['report']['report_version'] += '-unsupported'
+    assert preview_monthly_allocation(**data)['status'] == 'BLOCKED_DATA'
+
+
 def test_missing_capital_or_activity_blocks_all_rankings():
     data = inputs()
     del data["capital"]["hrs"]
@@ -70,3 +79,18 @@ def test_malformed_or_nonfinite_inputs_block_without_exception():
     result = preview_monthly_allocation(**data)
     assert result["status"] == "BLOCKED_DATA"
     assert result["allocation"] is None
+
+
+def test_losing_strategys_shadow_budget_stays_cash_instead_of_rewarding_relative_rank():
+    result = preview_monthly_allocation(**inputs())
+    assert result['allocation']['reserve_amount'] == 60
+    assert result['allocation']['entries'][1]['allocated_amount'] == 0
+    assert result['allocation']['entries'][1]['eligibility_reason'] == 'nonpositive_net_income'
+
+
+def test_all_losing_or_no_entry_strategies_keep_whole_pool_in_cash():
+    data = inputs()
+    data['activity']['btc_eth_aggressive']['owned_entry_fills'] = 0
+    result = preview_monthly_allocation(**data)
+    assert result['allocation']['reserve_amount'] == 100
+    assert all(entry['allocated_amount'] == 0 for entry in result['allocation']['entries'])

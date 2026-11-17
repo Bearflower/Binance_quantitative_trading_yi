@@ -15,7 +15,7 @@ from typing import Any, Mapping
 
 from apscheduler.triggers.cron import CronTrigger
 from shared.accounting.income_integrity import income_account_lock, require_income_integrity
-from shared.accounting.published_report import REPORT_VERSION
+from shared.accounting.published_report import REPORT_VERSIONS
 from shared.accounting.report_reader import read_monthly_economic_report
 
 
@@ -300,7 +300,7 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                     or report.get("account_id") != account
                     or report.get("start_ms") != start_ms
                     or report.get("end_ms") != end_ms
-                    or report.get("report_version") != REPORT_VERSION
+                    or report.get("report_version") not in REPORT_VERSIONS
                     or not isinstance(report.get("report_id"), str)
                     or not report["report_id"]):
                 raise ValueError("exchange income report identity mismatch")
@@ -443,6 +443,16 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
         else:
             net = str(parsed)
 
+    account_risk = evidence.get("account_risk")
+    if account_risk is not None:
+        if (not isinstance(account_risk, Mapping)
+                or account_risk.get("account_id") != evidence.get("account_id")):
+            missing.append("account_risk_identity_unverified")
+        elif account_risk.get("status") == "SAFETY_REVIEW":
+            safety.append("account_drawdown_budget_breached")
+        elif account_risk.get("status") != "VERIFIED":
+            missing.append("account_drawdown_unverified")
+
     if weekly:
         # No verified per-strategy equity curve, cash-flow bridge, or frozen
         # live-trial thresholds exists yet. These are mandatory for relaxation.
@@ -470,7 +480,8 @@ class ReducedTrialEvaluator:
     def __init__(self, db: Any, exchange: Any, messenger: Any, state_dir: Path,
                  *, account: str = "default",
                  trial_starts: Mapping[str, datetime] | None = None,
-                 cohort_ceilings: Mapping[str, Decimal] | None = None) -> None:
+                 cohort_ceilings: Mapping[str, Decimal] | None = None,
+                 account_risk_provider=None) -> None:
         self.db = db
         self.exchange = exchange
         self.messenger = messenger
@@ -478,6 +489,7 @@ class ReducedTrialEvaluator:
         self.account = account
         self.trial_starts = dict(trial_starts or {})
         self.cohort_ceilings = dict(cohort_ceilings or {})
+        self.account_risk_provider = account_risk_provider
 
     def _write_report(self, period: str, strategy: str, end: datetime,
                       assessment: dict, evidence: dict) -> None:
@@ -502,6 +514,7 @@ class ReducedTrialEvaluator:
             "income_gaps": income.get("coverage_gaps"),
             "unattributed_count": income.get("unattributed_count"),
             "source_errors": evidence.get("source_errors", []),
+            "account_risk": evidence.get("account_risk"),
             "decision_scope": "evidence_only_no_policy_write",
         }
         try:
@@ -524,6 +537,8 @@ class ReducedTrialEvaluator:
             evidence["cohort_ceiling"] = self.cohort_ceilings.get(
                 strategy, evidence.get("cohort_ceiling")
             )
+            if self.account_risk_provider is not None:
+                evidence["account_risk"] = self.account_risk_provider()
             assessment = assess_snapshot(evidence, now=now, weekly=period == "weekly")
             self._write_report(period, strategy, end, assessment, evidence)
             results.append(assessment)
@@ -558,6 +573,9 @@ class ReducedTrialEvaluator:
                        f"无全量止损: {exchange.get('unprotected_symbols', 'UNKNOWN')}\n"
                        f"报告 ID: {assessment['report_id'] or 'UNKNOWN'}\n"
                        f"证据/问题: {', '.join(assessment['reasons']) or '无'}\n"
+                       f"主账户回撤考核: {(evidence.get('account_risk') or {}).get('status', 'UNKNOWN')}；"
+                       f"最大采样回撤: {(evidence.get('account_risk') or {}).get('max_drawdown_ratio', 'UNKNOWN')}；"
+                       "预算 5%，网格另评。\n"
                        "仅供复审，不可自动放宽、续期或下单。")
             title = "【AI Tuner 缩量试跑" + ("周评估" if period == "weekly" else "日巡检") + "】"
             level = "error" if assessment["status"] == "SAFETY_REVIEW" else "warning"

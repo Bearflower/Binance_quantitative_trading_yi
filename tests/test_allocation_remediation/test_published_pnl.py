@@ -26,6 +26,17 @@ def collector():
 
 
 @pytest.mark.asyncio
+async def test_formal_derived_report_reaches_the_actual_capital_evidence_gate(monkeypatch):
+    monkeypatch.setenv('TRADE_ACCOUNT_ID', 'test-account')
+    body = report()
+    body.update(report_version=REPORT_VERSION + '-derived-v1', derived_attribution_enabled=True)
+    with patch.object(module, 'read_published_report', AsyncMock(return_value=body)):
+        with pytest.raises(module.AllocationInputUnavailable) as failure:
+            await collector().collect_all_realized_pnl(START, END)
+    assert failure.value.reasons == ('missing_capital_evidence', 'missing_activity_evidence')
+
+
+@pytest.mark.asyncio
 async def test_one_same_published_report_then_explicit_missing_evidence(monkeypatch):
     monkeypatch.setenv('TRADE_ACCOUNT_ID','test-account')
     assert hasattr(module,'AllocationInputUnavailable')
@@ -80,3 +91,48 @@ async def test_strategy_identity_or_missing_evidence_is_never_rankable(strategie
 def test_invalid_period(left,right):
     with pytest.raises(module.AllocationInputUnavailable,match='invalid_month_window'):
         module.PnLCollector._completed_month_window(left,right)
+
+
+@pytest.fixture(autouse=True)
+def evidence_readers(monkeypatch):
+    monkeypatch.setattr(module, 'read_capital_evidence', AsyncMock(return_value={}))
+    monkeypatch.setattr(module, 'read_activity_evidence', AsyncMock(return_value={}))
+
+
+def complete_sources():
+    common = dict(account_id='test-account', start_ms=START_MS, end_ms=END_MS,
+                  coverage_complete=True, source_id='immutable-source')
+    return ({sid: dict(common, average_capital_usdt='25') for sid in ('hrs', 'btc_eth')},
+            {sid: dict(common, owned_entry_fills=n) for sid,n in (('hrs',0),('btc_eth',2))})
+
+
+@pytest.mark.asyncio
+async def test_complete_immutable_evidence_produces_rankable_input(monkeypatch):
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test-account')
+    capital, activity = complete_sources()
+    monkeypatch.setattr(module,'read_capital_evidence',AsyncMock(return_value=capital))
+    monkeypatch.setattr(module,'read_activity_evidence',AsyncMock(return_value=activity))
+    with patch.object(module,'read_published_report',AsyncMock(return_value=report())):
+        rows = await collector().collect_all_realized_pnl(START,END)
+    assert rows['hrs']['pnl'] == -1.25
+    assert rows['hrs']['capital'] == 25
+    assert rows['hrs']['has_trades'] is False
+    assert rows['btc_eth']['has_trades'] is True
+    assert rows['hrs']['report_id'] == 'verified-id'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('source,change',[
+    ('capital',{'average_capital_usdt':'NaN'}),('capital',{'average_capital_usdt':'0'}),
+    ('capital',{'coverage_complete':False}),('activity',{'owned_entry_fills':False}),
+    ('activity',{'owned_entry_fills':-1}),('activity',{'account_id':'other'}),
+    ('activity',{'source_id':None})])
+async def test_partial_or_invalid_evidence_never_returns_partial_rankings(source,change,monkeypatch):
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test-account')
+    capital, activity = complete_sources()
+    (capital if source=='capital' else activity)['hrs'].update(change)
+    monkeypatch.setattr(module,'read_capital_evidence',AsyncMock(return_value=capital))
+    monkeypatch.setattr(module,'read_activity_evidence',AsyncMock(return_value=activity))
+    with patch.object(module,'read_published_report',AsyncMock(return_value=report())):
+        with pytest.raises(module.AllocationInputUnavailable):
+            await collector().collect_all_realized_pnl(START,END)

@@ -11,7 +11,7 @@ import math
 from typing import Any, Mapping
 
 from .allocation_calculator import AllocationCalculator
-from shared.accounting.published_report import REPORT_VERSION
+from shared.accounting.published_report import REPORT_VERSIONS
 
 
 def _amount(value: Any) -> Decimal | None:
@@ -39,7 +39,7 @@ def preview_monthly_allocation(
             or report.get('window_key') != f'monthly:{start_ms}'
             or report.get('publication_status') != 'published'
             or report.get('refresh_error') is not None
-            or report.get('report_version') != REPORT_VERSION
+            or report.get('report_version') not in REPORT_VERSIONS
             or report.get('account_coverage_complete') is not True
             or report.get('strategy_attribution_complete') is not True
             or not isinstance(report.get('report_id'), str) or not report['report_id']):
@@ -97,16 +97,21 @@ def preview_monthly_allocation(
         strategy_names={strategy: strategy for strategy in strategy_ids},
         month=effective_month,
     )
+    entries = []
+    allocated = Decimal(0)
+    for entry in result.entries:
+        facts = pnl_data[entry.strategy_id]
+        reason = ('nonpositive_net_income' if facts['pnl'] <= 0 else
+                  'no_owned_entry_fills' if not facts['has_trades'] else None)
+        amount = Decimal(str(entry.allocated_amount)) if reason is None else Decimal(0)
+        allocated += amount
+        entries.append(dict(strategy_id=entry.strategy_id, rank=entry.rank,
+                            return_rate=entry.return_rate,
+                            allocated_ratio=entry.allocated_ratio if reason is None else 0,
+                            allocated_amount=float(amount), eligibility_reason=reason))
     return {
         'status': 'PREVIEW', 'mode': 'shadow_only', 'reasons': [],
         'report_id': report['report_id'],
-        'allocation': {
-            'month': result.month,
-            'reserve_amount': result.reserve_amount,
-            'entries': [dict(strategy_id=entry.strategy_id, rank=entry.rank,
-                             return_rate=entry.return_rate,
-                             allocated_ratio=entry.allocated_ratio,
-                             allocated_amount=entry.allocated_amount)
-                        for entry in result.entries],
-        },
+        'allocation': {'month': result.month,
+                       'reserve_amount': float(total - allocated), 'entries': entries},
     }

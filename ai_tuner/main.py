@@ -52,6 +52,7 @@ from ai_tuner.allocation.monthly_job import CST, MonthlyAllocationJob  # noqa: E
 from ai_tuner.allocation.profit_extraction_job import ProfitExtractionJob  # noqa: E402
 from ai_tuner.allocation.daily_refresher import DailyAllocationRefresher  # noqa: E402
 from ai_tuner.cleanup.orphan_cleanup import OrphanCleanupJob  # noqa: E402
+from ai_tuner.monitor.evidence_jobs import EvidenceJobs, register_evidence_jobs
 from ai_tuner.monitor.daily_health_check import DailyHealthCheck  # noqa: E402
 from ai_tuner.monitor.reduced_trial import (  # noqa: E402
     ReducedTrialEvaluator, TRIAL_STRATEGIES, register_reduced_trial_jobs,
@@ -112,6 +113,8 @@ class StratTuneAI:
         self.health_checker: DailyHealthCheck = None
         self.reduced_trial_evaluator: ReducedTrialEvaluator = None
         self.reduced_trial_exchange: ReadOnlyBinanceClient = None
+        self.evidence_wallet: ReadOnlyBinanceClient = None
+        self.evidence_jobs: EvidenceJobs = None
         self.xau_patrol: XAUShadowPatrol = None
         self.reconciler: IncomeReconciler = None
         self._running = False
@@ -355,6 +358,23 @@ class StratTuneAI:
         else:
             logger.info("PnL 校准器已禁用")
 
+        risk_cfg = self.config.get("account_risk", {})
+        if risk_cfg.get("enabled") is True:
+            if os.getenv("TRADE_ACCOUNT_ID", "default") != "default":
+                raise ValueError("account risk budget is bound to default PM")
+            if binance_api_key and binance_api_secret and not binance_testnet:
+                self.reduced_trial_exchange = ReadOnlyBinanceClient(
+                    binance_api_key, binance_api_secret, instance_id="ai-tuner-evidence-pm")
+                self.reduced_trial_exchange.entry_activity_account_id = "default"
+                self.evidence_wallet = ReadOnlyBinanceClient(
+                    binance_api_key, binance_api_secret, base_url="https://api.binance.com",
+                    use_unified_account=False, instance_id="ai-tuner-evidence-wallet")
+                self.evidence_jobs = EvidenceJobs(
+                    self.db_manager, self.reduced_trial_exchange, self.evidence_wallet,
+                    self.messenger, self.config, Path("/app/logs/trial_evidence"))
+            else:
+                logger.error("主账户考核缺少生产只读凭据，自动分配仍冻结")
+
         trial_cfg = self.config.get("reduced_trial", {})
         if trial_cfg.get("enabled") is True:
             if set(trial_cfg.get("strategies", [])) != set(TRIAL_STRATEGIES):
@@ -376,7 +396,7 @@ class StratTuneAI:
                 if not ceiling.is_finite() or ceiling <= 0:
                     raise ValueError("reduced_trial cohort ceiling invalid")
                 cohort_ceilings[strategy] = ceiling
-            if binance_api_key and binance_api_secret:
+            if binance_api_key and binance_api_secret and self.reduced_trial_exchange is None:
                 self.reduced_trial_exchange = ReadOnlyBinanceClient(
                     binance_api_key, binance_api_secret, testnet=binance_testnet,
                     instance_id="ai-tuner-reduced-trial",
@@ -387,6 +407,7 @@ class StratTuneAI:
                 account=os.getenv("TRADE_ACCOUNT_ID", "default"),
                 trial_starts=trial_starts,
                 cohort_ceilings=cohort_ceilings,
+                account_risk_provider=(self.evidence_jobs.latest_risk if self.evidence_jobs else None),
             )
             logger.info("缩量试跑只读评估器已初始化")
 
@@ -553,6 +574,9 @@ class StratTuneAI:
         )
         logger.info("每日健康检查任务已注册", cron_expression=health_check_cron)
 
+        if self.evidence_jobs:
+            register_evidence_jobs(self.scheduler, self.evidence_jobs)
+
         if self.reduced_trial_evaluator:
             register_reduced_trial_jobs(
                 self.scheduler, self.reduced_trial_evaluator,
@@ -622,6 +646,8 @@ class StratTuneAI:
 
         if self.reduced_trial_exchange:
             await self.reduced_trial_exchange.close()
+        if self.evidence_wallet:
+            await self.evidence_wallet.close()
 
         # 关闭数据库连接
         if self.db_manager:
@@ -706,7 +732,8 @@ class StratTuneAI:
     async def _scheduled_pnl_reconcile(self) -> None:
         """调度器触发的统一 PnL 校准（interval 根据 config 间隔执行）"""
         if self.reconciler:
-            logger.info("触发统一 PnL 校准")
+            logger.info("触发统一 PnL 校准，先核实缺失的保护单成交归属")
+            await nightly_exit_repair(self.reconciler)
             await self.reconciler.run_once()
 
     async def _check_catch_up(self) -> None:
