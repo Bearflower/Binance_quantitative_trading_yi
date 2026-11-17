@@ -1,4 +1,4 @@
-name: HRS shared market cap candidate
+name: CMC authenticated market cap candidate
 on:
   workflow_dispatch:
 permissions:
@@ -18,11 +18,9 @@ jobs:
         run: |
           docker build --target test -f release/hrs-execution/MarketCap.Dockerfile -t market-cap-test .
           docker run --rm --network none market-cap-test python -m pytest -q strategies/hrs/tests tests/test_shared/test_market_cap_hub.py tests/test_ai_tuner_mvp/test_snapshot_collector.py tests/test_ai_tuner_mvp/test_snapshot_repository.py
-      - name: Publish isolated candidates
+      - name: Publish shared service candidate
         run: |
-          for TARGET in hrs snapshot hub; do
-            IMAGE=ghcr.io/bearflower/trading-hrs:market-cap-$TARGET-${{ github.sha }}
-            docker build --target "$TARGET" -f release/hrs-execution/MarketCap.Dockerfile -t "$IMAGE" .
-            docker push "$IMAGE"
-            docker inspect "$IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"
-          done
+          IMAGE=ghcr.io/bearflower/trading-hrs:market-cap-hub-${{ github.sha }}
+          docker build --target hub -f release/hrs-execution/MarketCap.Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+          docker inspect "$IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"

@@ -121,3 +121,99 @@ async def test_shared_service_outage_does_not_serialize_symbol_timeouts():
         cap=await client.get_market_cap_with_provenance(symbol)
         assert cap.source=='missing' and cap.missing_reason=='shared_service_unavailable'
     assert client.session.post.call_count==1
+
+
+class ProviderSession:
+    def __init__(self, status=200):
+        self.status = status
+        self.calls = []
+
+    def get(self, url, **kwargs):
+        self.calls.append((url, kwargs))
+        status = self.status
+
+        class Response:
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def json(self):
+                from datetime import datetime, timezone
+                return {'data': [{'id': 1, 'symbol': 'BTC', 'quote': [{
+                    'symbol': 'USD', 'market_cap': 100,
+                    'last_updated': datetime.now(timezone.utc).isoformat(),
+                }]}]}
+
+        response = Response()
+        response.status = status
+        return response
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('key', [None, '', '  ', '  test-cmc-secret  '])
+async def test_cmc_authentication_selects_endpoint_and_caches_verified_quote(tmp_path, monkeypatch, key):
+    monkeypatch.delenv('COINMARKETCAP_API_KEY', raising=False)
+    monkeypatch.setenv('COINGECKO_API_KEY', 'separate-cg-secret')
+    if key is not None:
+        monkeypatch.setenv('COINMARKETCAP_API_KEY', key)
+    hub = MarketCapHub(tmp_path/'cache.db', {'BTCUSDT': {'cg_id': 'bitcoin', 'cmc_id': 1, 'symbol': 'BTC'}})
+    session = ProviderSession()
+    hub.session = session
+    # A persisted primary outage sends the entire collection through the fallback.
+    hub.db.execute('INSERT INTO backoff VALUES (?, ?)', ('coingecko', time.time()+600))
+    hub.db.commit()
+    try:
+        result = await hub.collect(['BTCUSDT', 'BTCUSDT', 'UNVERIFIEDUSDT'])
+        assert result['BTCUSDT']['provider'] == 'coinmarketcap'
+        assert result['BTCUSDT']['value'] == 100
+        assert result['UNVERIFIEDUSDT']['source'] == 'missing'
+        await hub.collect(['BTCUSDT'])
+        assert len(session.calls) == 1
+        url, kwargs = session.calls[0]
+        authenticated = bool(key and key.strip())
+        path = '/v3/cryptocurrency/quotes/latest' if authenticated else '/public-api/v3/cryptocurrency/quotes/latest'
+        assert url == 'https://pro-api.coinmarketcap.com' + path
+        assert kwargs['headers'] == ({'X-CMC_PRO_API_KEY': 'test-cmc-secret'} if authenticated else {})
+        assert kwargs['params'] == {'id': '1'}
+    finally:
+        hub.close()
+
+
+@pytest.mark.asyncio
+async def test_cmc_key_is_never_sent_to_coingecko(tmp_path, monkeypatch):
+    monkeypatch.setenv('COINMARKETCAP_API_KEY', 'test-cmc-secret')
+    monkeypatch.setenv('COINGECKO_API_KEY', 'separate-cg-secret')
+    hub = MarketCapHub(tmp_path/'cache.db', {'BTCUSDT': {'cg_id': 'bitcoin', 'cmc_id': 1, 'symbol': 'BTC'}})
+    session = ProviderSession()
+    hub.session = session
+    try:
+        await hub.fetch('coingecko', ['BTCUSDT'])
+        assert session.calls[0][1]['headers'] == {'x-cg-demo-api-key': 'separate-cg-secret'}
+    finally:
+        hub.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status', [401, 429])
+async def test_cmc_auth_failure_is_redacted_and_backoff_survives_restart(tmp_path, monkeypatch, capsys, status):
+    monkeypatch.setenv('COINMARKETCAP_API_KEY', 'test-cmc-secret')
+    path = tmp_path/'cache.db'
+    registry = {'BTCUSDT': {'cg_id': 'bitcoin', 'cmc_id': 1, 'symbol': 'BTC'}}
+    session = ProviderSession(status)
+    hub = MarketCapHub(path, registry)
+    hub.session = session
+    assert await hub.fetch('coinmarketcap', ['BTCUSDT']) == {}
+    assert hub.read(['BTCUSDT'])['BTCUSDT']['source'] == 'missing'
+    hub.close()
+    restarted = MarketCapHub(path, registry)
+    restarted.session = session
+    try:
+        assert await restarted.fetch('coinmarketcap', ['BTCUSDT']) == {}
+        assert len(session.calls) == 1
+        assert session.calls[0][1]['headers'] == {'X-CMC_PRO_API_KEY': 'test-cmc-secret'}
+        captured = capsys.readouterr()
+        assert 'test-cmc-secret' not in captured.out + captured.err
+    finally:
+        restarted.close()

@@ -120,7 +120,12 @@ class MarketCapHub:
             url = 'https://api.coingecko.com/api/v3/coins/markets'
             params = dict(vs_currency='usd', ids=','.join(self.registry[s]['cg_id'] for s in symbols), per_page=250)
         else:
-            url = 'https://pro-api.coinmarketcap.com/public-api/v3/cryptocurrency/quotes/latest'
+            key = os.getenv('COINMARKETCAP_API_KEY', '').strip()
+            if key:
+                headers['X-CMC_PRO_API_KEY'] = key
+                url = 'https://pro-api.coinmarketcap.com/v3/cryptocurrency/quotes/latest'
+            else:
+                url = 'https://pro-api.coinmarketcap.com/public-api/v3/cryptocurrency/quotes/latest'
             params = dict(id=','.join(str(self.registry[s]['cmc_id']) for s in symbols))
         self.stats[provider+'_calls'] += 1
         try:
