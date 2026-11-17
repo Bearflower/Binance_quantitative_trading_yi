@@ -20,11 +20,15 @@ def validate_exit_plan(value):
             if not number.is_finite() or number <= 0:
                 raise ValueError()
             result[key] = float(number)
+            if not math.isfinite(result[key]) or result[key] <= 0:
+                raise ValueError()
         for key in PARAMETERS:
             number = Decimal(str(params[key]))
             if not number.is_finite() or number < 0 or (number == 0 and key != 'target2_close_percent'):
                 raise ValueError()
             result['params'][key] = float(number)
+            if not math.isfinite(result['params'][key]) or (number > 0 and result['params'][key] <= 0):
+                raise ValueError()
         p = result['params']
         if p['emergency_percent'] >= 1 or p['min_absolute_percent'] >= 1:
             raise ValueError()

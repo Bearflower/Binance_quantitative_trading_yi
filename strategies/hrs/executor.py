@@ -296,8 +296,7 @@ class TradingExecutor:
             raise ValueError('HRS exit geometry missing')
         first, second = (Decimal(str(value)) for value in ratios)
         if (not first.is_finite() or not second.is_finite() or first <= 0
-                or second < 0 or first + second > 1
-                or (second == 0 and first != 1)):
+                or second < 0 or first + second > 1):
             raise ValueError('HRS exit geometry invalid')
         result = dict(params)
         result['target1_close_percent'] = first

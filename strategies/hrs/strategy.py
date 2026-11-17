@@ -3553,8 +3553,7 @@ class HRSStrategy(BaseStrategy):
                 exit_ratios = tuple(Decimal(str(value)) for value in values)
                 first, second = exit_ratios
                 if (not first.is_finite() or not second.is_finite() or first <= 0
-                        or second < 0 or first + second > 1
-                        or (second == 0 and first != 1)):
+                        or second < 0 or first + second > 1):
                     raise ValueError('invalid exit ratio values')
             except (ValueError, TypeError, ArithmeticError) as exc:
                 logger.error('HRS 持仓出场方案无效，保留原保护单并拒绝自动重建',

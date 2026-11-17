@@ -21,8 +21,12 @@ SECRET_KEYS = frozenset({'api_key', 'api_secret', 'password', 'secret', 'authori
 
 
 def _secret_key(value):
-    key = str(value).lower()
-    return key in SECRET_KEYS or key.endswith(('_api_key', '_api_secret', '_password', '_token'))
+    key = str(value).lower().replace('-', '_')
+    # Match the shared config hash's credential substrings, plus common key
+    # spellings. Public provenance keys such as provider_asset_id stay intact.
+    return key in SECRET_KEYS or any(part in key for part in (
+        'webhook', 'secret', 'password', 'token', 'api_key', 'apikey',
+        'authorization', 'private_key', 'privatekey'))
 
 
 def _normalize(value):

@@ -240,6 +240,15 @@ class RiskPolicyStore:
                 if not row or policy['mode'] != 'reduced':
                     if row:
                         await self._release_proven_unsent(conn,strategy,client_id,row,'submitting')
+                    else:
+                        # A revision change can prevent the UPDATE from matching.
+                        # Only a still-reserved row proves no HTTP was attempted;
+                        # submitting/unknown rows must retain their occupancy.
+                        unsent = await conn.fetchrow("""SELECT * FROM trading.entry_risk_reservation
+                            WHERE client_order_id=$1 AND account_id=$2 AND strategy_id=$3
+                              AND state='reserved' FOR UPDATE""",client_id,self.account,strategy)
+                        if unsent:
+                            await self._release_proven_unsent(conn,strategy,client_id,unsent,'reserved')
                     early_error = EntryDenied('submission is not authorized')
         if early_error is not None:
             raise early_error
