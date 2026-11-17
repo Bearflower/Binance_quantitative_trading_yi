@@ -99,3 +99,19 @@ def test_existing_position_anchor_reconciliation_keeps_original_marked_unit_base
     rebuilt=rebuild_history(old,data,allow_inception_segment=True)
     assert rebuilt.ledger.units==D('999')
     assert rebuilt.ledger.nav==D('998')/D('999')
+
+
+def test_opening_credit_revision_preserves_latches_and_rejects_fact_replacement():
+    start,old=prior()
+    old=replace(old,gate=replace(old.gate,daily_latched=True,rolling_latched=True,rolling_latch_scope='inception_segment'))
+    credit=dict(event_id='COMMISSION:old',kind='fee',amount='-2',occurred_at=(T-timedelta(seconds=10)).isoformat())
+    revision=dict(old_credits={},new_credits={credit['event_id']:credit},old_opening_cash='1000',new_opening_cash='998')
+    data=ReconciliationSource('test','seg',T,D('998'),observation(T+timedelta(seconds=60)),(),
+        (start.checkpoint,old.ledger.checkpoint),(),(),(),T+timedelta(seconds=61),'a'*64,opening_revision=revision)
+    rebuilt=rebuild_history(old,data,allow_inception_segment=True)
+    assert rebuilt.ledger.units==D('998') and rebuilt.ledger.nav==D('1')
+    assert rebuilt.gate.state.daily_latched and rebuilt.gate.state.rolling_latched
+    assert rebuilt.receipt['opening_anchor_revision']==revision
+    conflict=dict(revision,old_credits={credit['event_id']:dict(credit,amount='-1')})
+    with pytest.raises(EvidenceBlocked,match='opening_credit_conflict'):
+        rebuild_history(old,replace(data,opening_revision=conflict),allow_inception_segment=True)

@@ -215,3 +215,35 @@ def test_nonflat_midnight_uses_actual_closed_historical_mark_with_real_timestamp
     with pytest.raises(EvidenceBlocked,match='historical_mark'):
         historical_boundary_observation(state,boundary,boundary+timedelta(seconds=30),[],[],(),
             coverage_complete=True,opening_inventory=opening,historical_bars={},account='test')
+
+
+def test_known_held_funding_deadline_blocks_empty_published_page_until_receipt_or_proven_zero():
+    from strategies.hrs.equity_evidence import require_funding_publication
+    due=T+timedelta(seconds=30)
+    now=T+timedelta(seconds=60)
+    inventory=(dict(strategy='hrs',symbol='BTCUSDT',quantity='1',entry_price='100'),)
+    forecasts=[dict(symbol='BTCUSDT',source_time=T,received_at=T,next_funding_time=due),
+               dict(symbol='BTCUSDT',source_time=now,received_at=now,next_funding_time=now+timedelta(hours=1))]
+    report=dict(events=[])
+    with pytest.raises(EvidenceBlocked,match='funding_settlement_pending'):
+        require_funding_publication('test',T,now,[],[],inventory,forecasts,{},report)
+    published={'BTCUSDT':[dict(fundingTime=int(due.timestamp()*1000),fundingRate='0',markPrice='100')]}
+    proof=require_funding_publication('test',T,now,[],[],inventory,forecasts,published,report)
+    assert proof[0]['resolution']=='authoritative_zero_rate'
+    nonzero={'BTCUSDT':[dict(fundingTime=int(due.timestamp()*1000),fundingRate='.001',markPrice='100')]}
+    with pytest.raises(EvidenceBlocked,match='funding_settlement_pending'):
+        require_funding_publication('test',T,now,[],[],inventory,forecasts,nonzero,report)
+    receipt=dict(account_id='test',symbol='BTCUSDT',income_type='FUNDING_FEE',tran_id='55',strategy='hrs',asset='USDT',amount='-.1',event_time_utc=(due+timedelta(milliseconds=27)).isoformat())
+    assert require_funding_publication('test',T,now,[],[],inventory,forecasts,nonzero,dict(events=[receipt]))[0]['resolution']=='income_receipt'
+
+
+def test_independent_pm_account_quantity_inventory_does_not_invent_missing_entry_price():
+    from strategies.hrs.equity_evidence import certify_opening_inventory
+    inventory=[dict(symbol='BTCUSDT',positionAmt='2',entryPrice='100')]
+    independent=[dict(symbol='BTCUSDT',positionAmt='2',positionSide='BOTH')]
+    _,opening=certify_opening_inventory('test','seg',T,inventory,independent,{},[fill()],
+        [owner(strategy='btc_eth')],{},[dict(id=1,symbol='BTCUSDT',strategy='btc_eth')],covered_symbols={'BTCUSDT'})
+    assert opening[0]['entry_price']=='100'
+    with pytest.raises(EvidenceBlocked,match='inventory_conflict'):
+        certify_opening_inventory('test','seg',T,inventory,[dict(independent[0],positionAmt='1')],{},[fill()],
+            [owner(strategy='btc_eth')],{},[dict(id=1,symbol='BTCUSDT',strategy='btc_eth')],covered_symbols={'BTCUSDT'})

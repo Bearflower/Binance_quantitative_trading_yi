@@ -55,10 +55,14 @@ async def setup(monkeypatch):
         for path in ('database/postgres/migrations/2026-11-17-hrs-risk-ledger-loss-gates.sql',
                      'database/postgres/migrations/2026-11-17-hrs-equity-service.sql',
                      'database/postgres/migrations/2026-11-17-hrs-allocation-event-audit.sql',
-                     'database/postgres/migrations/2026-11-17-hrs-equity-reconciliation.sql'):
+                     'database/postgres/migrations/2026-11-17-hrs-equity-reconciliation.sql',
+                     'database/postgres/migrations/2026-11-17-hrs-funding-publication.sql'):
             sql = Path(path).read_text()
             await c.execute(sql)
             await c.execute(sql)
+        await c.execute('''CREATE TABLE IF NOT EXISTS public.ai_tuner_funding_schedule_observations
+            (attempt_id uuid,symbol text,source_time timestamptz,received_at timestamptz,next_funding_time timestamptz,
+             funding_interval_hours int,payload_hash text,raw_payload jsonb)''')
         allocation_id = await c.fetchval('''INSERT INTO public.capital_allocation(month,entries,status,created_at)
             VALUES ('2026-11',$1::jsonb,'active',$2) RETURNING id''', json.dumps([dict(strategy_id='hrs', allocated_amount='1000')]),
             T.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
@@ -80,6 +84,7 @@ async def setup(monkeypatch):
     api.get_open_orders.return_value = []
     api.get_income_history.return_value = []
     api.get_user_trades.return_value = []
+    api.get_funding_rate_history.return_value = []
     pm = SimpleNamespace(get_all_positions=lambda: {})
     service = HrsEquityService(db, api, SimpleNamespace(strategy_id='hrs'), pm)
     clock = [T]
@@ -341,7 +346,8 @@ async def test_existing_segment_without_prospective_audit_origin_cannot_restart_
 
 
 @pytest.mark.asyncio
-async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup):
+@pytest.mark.parametrize('pre_anchor',[False,True])
+async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,pre_anchor):
     from strategies.hrs.equity_reconciliation import effective_checkpoints
     service,account,pool,api,clock=setup
     await service.refresh()
@@ -350,8 +356,10 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
     async with pool.acquire() as c:
         for order_id,side in ((71,'BUY'),(72,'SELL')):
             await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT',$2,'hrs',$3,'FILLED','LIMIT',$4)",account,str(order_id),side,T.replace(tzinfo=None))
-    records=[dict(symbol='BTCUSDT',id=71,orderId=71,side='BUY',qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((T+timedelta(seconds=10)).timestamp()*1000)),
-             dict(symbol='BTCUSDT',id=72,orderId=72,side='SELL',qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((T+timedelta(seconds=20)).timestamp()*1000))]
+    async with pool.acquire() as c:
+        await c.execute('''INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash,raw_payload) VALUES($1,'BTCUSDT',$2,$2,$3,24,'test','{}')''',uuid.uuid4(),T-timedelta(minutes=1),T+timedelta(days=1))
+    records=[dict(symbol='BTCUSDT',id=71,orderId=71,side='BUY',qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((T+timedelta(seconds=-20 if pre_anchor else 10)).timestamp()*1000)),
+             dict(symbol='BTCUSDT',id=72,orderId=72,side='SELL',qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((T+timedelta(seconds=-10 if pre_anchor else 20)).timestamp()*1000))]
     api.get_user_trades.return_value=records
     api.get_income_history.side_effect=lambda **kw: ([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-1',asset='USDT',tranId=r['id'],tradeId=str(r['id']),time=r['time'],info='') for r in records] if kw['income_type']=='COMMISSION' else [])
     clock[0]=T+timedelta(seconds=60)
@@ -363,12 +371,17 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
         assert original==D('1')
         segment=await c.fetchval('SELECT segment_id FROM trading.hrs_equity_segment WHERE account_id=$1',account)
         effective={cp.as_of:cp for cp in await effective_checkpoints(c,account,segment)}
-        assert effective[T+timedelta(seconds=30)].nav==D('.998')
+        assert effective[T+timedelta(seconds=30)].nav==(D('1') if pre_anchor else D('.998'))
+        assert effective[T+timedelta(seconds=30)].units==(D('998') if pre_anchor else D('1000'))
         earlier={cp.as_of:cp for cp in await effective_checkpoints(c,account,segment,known_at=T+timedelta(seconds=45))}
         assert earlier[T+timedelta(seconds=30)].nav==D('1')
         row=await c.fetchrow('SELECT * FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)
         assert row['available_at']==clock[0]
         assert row['before_state_version']==2 and row['after_state_version']==3
+        if pre_anchor:
+            receipt=json.loads(row['receipt'])
+            assert receipt['opening_anchor_revision']['new_opening_cash']=='998.00000000'
+            assert await c.fetchval('SELECT opening_cash FROM trading.hrs_equity_segment WHERE account_id=$1',account)==D('1000')
         with pytest.raises(Exception,match='immutable'):
             await c.execute('DELETE FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)
     clock[0]+=timedelta(seconds=30)
@@ -377,21 +390,26 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
     async with pool.acquire() as c:
         assert await c.fetchval('SELECT count(*) FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)==1
         ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
-        assert D(ledger['nav'])==D('.998')
+        assert D(ledger['nav'])==(D('1') if pre_anchor else D('.998'))
+        assert D(ledger['cash_allocation'])==(D('998') if pre_anchor else D('1000'))
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('legacy_owner',[False,True])
-async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,legacy_owner):
+@pytest.mark.parametrize('funding_pending',[False,True])
+async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,legacy_owner,funding_pending):
     service,account,pool,api,clock=setup
     entered=T-timedelta(days=1)
     clock[0]=T+timedelta(minutes=59,seconds=30)
     order_id=81
+    due=T+timedelta(hours=1) if funding_pending else T+timedelta(days=1)
     client='entry-'+uuid.uuid4().hex
     async with pool.acquire() as c:
         await c.execute('''CREATE TABLE IF NOT EXISTS trading.position_claims
             (id serial PRIMARY KEY,symbol text,strategy text,claim_state text,expires_at timestamptz)''')
         await c.execute('ALTER TABLE trading.entry_risk_reservation ADD COLUMN IF NOT EXISTS quantity numeric')
+        schedule_id=uuid.uuid4()
+        await c.execute('''INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash,raw_payload) VALUES($1,'BTCUSDT',$2,$2,$3,24,'test','{}')''',schedule_id,entered,due)
         claim=await c.fetchval("INSERT INTO trading.position_claims(symbol,strategy,claim_state,expires_at) VALUES ('BTCUSDT','hrs','ACTIVE','infinity') RETURNING id")
         await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT','81','hrs','BUY','NEW','LIMIT',$2)",None if legacy_owner else account,entered.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
         await c.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,state,symbol,quantity) VALUES ($1,$2,'hrs','submitting','BTCUSDT',2)",client,account)
@@ -402,7 +420,7 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
         service.position_manager=SimpleNamespace(get_all_positions=lambda:{'BTCUSDT':dict(direction='long',remaining_quantity='2',position_id='p81')})
         def market_request(method,path,params=None,**kwargs):
             if path=='/fapi/v1/premiumIndex':
-                return dict(symbol='BTCUSDT',markPrice='99',time=int(clock[0].timestamp()*1000))
+                return dict(symbol='BTCUSDT',markPrice='99',time=int(clock[0].timestamp()*1000),nextFundingTime=int((due if clock[0]<due else due+timedelta(days=1)).timestamp()*1000))
             assert path=='/fapi/v1/markPriceKlines'
             return [[params['startTime'],'100','100','99','99','0',params['endTime']]]
         api._request.side_effect=market_request
@@ -416,8 +434,21 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
             assert await c.fetchval('SELECT opening_cash FROM trading.hrs_equity_segment WHERE account_id=$1',account)==D('999')
             ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
             assert D(ledger['equity'])==D('997') and D(ledger['income_total'])==0
+        if funding_pending:
+            async with pool.acquire() as c:
+                await c.execute('DELETE FROM public.ai_tuner_funding_schedule_observations WHERE attempt_id=$1',schedule_id)
+                with pytest.raises(Exception,match='append-only'):
+                    await c.execute('DELETE FROM trading.hrs_funding_observation WHERE account_id=$1',account)
+            restarted=HrsEquityService(service.db,api,service.capital_mgr,service.position_manager)
+            restarted.clock=service.clock
+            service=restarted
         clock[0]+=timedelta(seconds=60)
         again=await service.refresh()
+        if funding_pending:
+            assert not again['ready'] and not again['allowed']
+            assert 'funding_settlement_pending' in again['reasons']
+            api.get_funding_rate_history.return_value=[dict(symbol='BTCUSDT',fundingTime=int(due.timestamp()*1000),fundingRate='0',markPrice='99')]
+            again=await service.refresh()
         assert again['ready'] and again['allowed']
         assert 'bootstrap_opening_inventory_unproven' not in again['reasons']
         async with pool.acquire() as c:
@@ -429,3 +460,32 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
     finally:
         async with pool.acquire() as c:
             await c.execute('DELETE FROM trading.position_claims WHERE id=$1',claim)
+            await c.execute('DELETE FROM public.ai_tuner_funding_schedule_observations WHERE attempt_id=$1',schedule_id)
+
+
+def test_held_gap_that_aged_out_of_actual_rolling_window_does_not_block_forever():
+    from strategies.hrs.risk_ledger import EquityCheckpoint
+    service=HrsEquityService(None,None,None,None)
+    now=T+timedelta(days=40)
+    inception=now-timedelta(days=32)
+    service._anchor_inventory=(dict(strategy='hrs',symbol='BTCUSDT',quantity='1',entry_price='100'),)
+    def cp(at):return EquityCheckpoint('seg',at,D('1000'),D('1000'),D('1'))
+    samples=[cp(inception),cp(inception+timedelta(days=1))]
+    begin=now-timedelta(days=30)
+    samples.extend(cp(begin+timedelta(minutes=i)) for i in range(30*24*60+1))
+    assert service._history_complete(samples,[],[],inception)
+    # The same missing held interval is still a blocker before it ages out.
+    assert not service._history_complete(samples[:3],[],[],inception)
+
+
+@pytest.mark.asyncio
+async def test_ready_projection_expires_at_known_held_settlement_before_refresh(setup):
+    service,account,pool,api,clock=setup
+    due=T+timedelta(seconds=30)
+    evidence=dict(account_id=account,as_of=T,available_at=T,capture=dict(local={'BTCUSDT':{}},
+        funding_publication=dict(forecasts=[dict(symbol='BTCUSDT',source_time=T,received_at=T,next_funding_time=due)])))
+    async with service._locked() as c:
+        result=await service._projection(c,1,dict(ready=True,allowed=True,reasons=[]),evidence)
+    assert result['valid_until']==due
+    async with pool.acquire() as c:
+        assert await c.fetchval('SELECT valid_until FROM trading.strategy_equity_gate WHERE account_id=$1',account)==due

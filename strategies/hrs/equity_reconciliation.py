@@ -32,6 +32,7 @@ class ReconciliationSource:
     source_sha256:str
     opening_positions:tuple=()
     opening_inventory:tuple=()
+    opening_revision:object=None
 
 
 @dataclass(frozen=True)
@@ -80,6 +81,19 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
             or source.available_at<source.current.as_of or source.current.as_of<=previous.ledger.as_of
             or source.current.income_complete is not True or source.current.positions_complete is not True):
         raise EvidenceBlocked('reconciliation_source_invalid')
+    if source.opening_revision is not None:
+        revision=source.opening_revision
+        old_credits=revision['old_credits']
+        new_credits=revision['new_credits']
+        if any(new_credits.get(key)!=value for key,value in old_credits.items()):
+            raise EvidenceBlocked('reconciliation_opening_credit_conflict')
+        additions=[value for key,value in new_credits.items() if key not in old_credits]
+        previous_cash=previous.ledger.cash_allocation-sum((flow.amount for flow in previous.ledger.cash_flows),Decimal(0))
+        if (not additions or Decimal(revision['old_opening_cash'])!=previous_cash
+                or Decimal(revision['new_opening_cash'])!=source.opening_cash
+                or source.opening_cash!=previous_cash+sum((decimal_value(Decimal(credit['amount']),'opening_credit') for credit in additions),Decimal(0))
+                or any(datetime.fromisoformat(value['occurred_at'])>source.inception for value in additions)):
+            raise EvidenceBlocked('reconciliation_opening_revision_invalid')
     incoming={event.event_id:event for event in source.current.incomes}
     old={event.event_id:event for event in previous.ledger.incomes}
     if any(incoming.get(key)!=event for key,event in old.items()):
@@ -118,12 +132,14 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
     proof=[]
     for at in times[1:]:
         marks,kind,reference=_positions_at(source,at)
-        if at-state.as_of>timedelta(seconds=120):
-            held=owned_fill_positions(source.account,source.fills,source.orders,through=state.as_of,after=source.inception,opening_inventory=source.opening_inventory)
+        required=max(source.inception,source.current.as_of-timedelta(days=30))
+        left_at=max(state.as_of,required)
+        if at>required and at-left_at>timedelta(seconds=120):
+            held=owned_fill_positions(source.account,source.fills,source.orders,through=left_at,after=source.inception,opening_inventory=source.opening_inventory)
             if any(owner=='hrs' and qty!=0 for (owner,_),(qty,_) in held.items()):
                 raise EvidenceBlocked('reconciliation_mark_coverage_gap')
             owners={(row['symbol'],str(row['order_id'])):row['strategy'] for row in source.orders}
-            if any(state.as_of<row['trade_time_utc']<=at and owners.get((row['symbol'],str(row['order_id'])))=='hrs' for row in source.fills):
+            if any(left_at<row['trade_time_utc']<=at and owners.get((row['symbol'],str(row['order_id'])))=='hrs' for row in source.fills):
                 raise EvidenceBlocked('reconciliation_mark_coverage_gap')
         incomes=tuple(event for event in incoming.values() if event.occurred_at<=at)
         before=LedgerObservation(at,source.segment_id,incomes,(),marks,at,at,True,True)
@@ -138,7 +154,7 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
                                    old_nav_before=str(flow.nav_before),new_nav_before=str(preflow.nav)))
         state=reconcile_ledger(state,replace(before,cash_flows=tuple(current_flows)))
         samples.append(state.checkpoint)
-        gate=evaluate_loss_gate(gate.state,state.checkpoint,GateHistory(tuple(samples),source.inception,at,True),allow_inception_segment=allow_inception_segment)
+        gate=evaluate_loss_gate(gate.state,state.checkpoint,GateHistory(tuple(samples),max(source.inception,at-timedelta(days=30)),at,True),allow_inception_segment=allow_inception_segment)
         proof.append(dict(as_of=at,nav=str(state.nav),source_kind=kind,evidence_sha256=reference))
     daily=gate.state.daily_latched or (previous.gate.daily_latched and previous.gate.day==gate.state.day)
     rolling=gate.state.rolling_latched or previous.gate.rolling_latched
@@ -156,6 +172,9 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
         before_ledger_sha256=canonical(ledger_to_dict(previous.ledger))[1],after_ledger_sha256=canonical(ledger_to_dict(state))[1],
         before_gate_sha256=canonical(previous.gate.to_dict())[1],after_gate_sha256=canonical(state_gate.to_dict())[1],
         checkpoints=proof,flow_valuations=valuations)
+    if source.opening_revision is not None:
+        receipt['opening_anchor_revision']=source.opening_revision
+        receipt['kind']='opening_anchor_and_late_income_reconciliation_v1'
     return RebuiltHistory(state,gate,tuple(samples),receipt)
 
 

@@ -147,7 +147,7 @@ def owned_fill_positions(account, fills, orders, *, through=None, after=None, op
     return result
 
 
-def _inventory(rows):
+def _inventory(rows,*,basis_required=True):
     if not isinstance(rows, list):
         raise EvidenceBlocked('position_inventory_missing')
     result = {}
@@ -159,15 +159,23 @@ def _inventory(rows):
             continue
         if row.get('positionSide', 'BOTH') != 'BOTH' or row['symbol'] in result:
             raise EvidenceBlocked('hedged_or_duplicate_position')
-        result[row['symbol']] = (qty, number(row.get('entryPrice'), 'position_entry_missing', positive=True))
+        result[row['symbol']] = (qty, number(row.get('entryPrice'), 'position_entry_missing', positive=True) if basis_required or row.get('entryPrice') is not None else None)
     return result
+
+
+def _inventory_agrees(primary,independent):
+    # PM account V2 provides a complete quantity inventory, not cost basis.
+    # No basis is synthesized. PositionRisk basis still needs exact full-fill
+    # proof; an independently supplied basis must also agree if present.
+    return set(primary)==set(independent) and all(primary[symbol][0]==qty and
+        (basis is None or primary[symbol][1]==basis) for symbol,(qty,basis) in independent.items())
 
 
 def prove_positions(account, segment, as_of, inventory, account_inventory, local, fills, orders,
                     marks, *, bootstrap, inception=None, opening_inventory=()):
     actual = _inventory(inventory)
-    independent = _inventory(account_inventory)
-    if actual != independent:
+    independent = _inventory(account_inventory,basis_required=False)
+    if not _inventory_agrees(actual,independent):
         raise EvidenceBlocked('position_quantity_inventory_conflict')
     # Without a certified opening inventory, a partial cached historical sum
     # cannot establish who owns any pre-existing account quantity. This service
@@ -347,7 +355,7 @@ def certify_opening_inventory(account,segment,as_of,inventory,independent,local,
     relevant symbol, exact order owners and its durable active claim.
     """
     actual=_inventory(inventory)
-    if actual!=_inventory(independent):
+    if not _inventory_agrees(actual,_inventory(independent,basis_required=False)):
         raise EvidenceBlocked('opening_inventory_conflict')
     if not set(actual)<=set(covered_symbols):
         raise EvidenceBlocked('opening_fill_coverage_missing')
@@ -481,3 +489,80 @@ def historical_boundary_observation(state,boundary,available_at,fills,orders,inc
                                   number(bar[4],'historical_mark_price',positive=True),marked,True))
     return LedgerObservation(boundary,state.segment_id,tuple(event for event in incomes if event.occurred_at<=boundary),
                              (),tuple(marks),boundary,boundary,True,True)
+
+
+def require_funding_publication(account,start,as_of,fills,orders,current_inventory,forecasts,published,report):
+    """Separate published-page completeness from expected economic settlement.
+
+    Deadlines come only from independently observed venue forecasts. A missing
+    receipt remains pending even if the income API returned a complete empty
+    page. Published zero rates require the venue's actual settlement mark.
+    No fixed interval or deadline is inferred from an income event.
+    """
+    owners=order_owners(account,orders)
+    def balances_at(at,strict=False):
+        balances={(row['strategy'],row['symbol']):number(row['quantity'],'funding_quantity') for row in current_inventory}
+        for row in fills:
+            when=aware(row['trade_time_utc'],'funding_fill')
+            if not at<=when<=as_of:
+                continue
+            choices=owners.get((row['symbol'],str(row['order_id'])),set())
+            if len(choices)!=1 or None in choices or row['side'] not in ('BUY','SELL'):
+                raise EvidenceBlocked('funding_inventory_history_unproven')
+            if when==at:
+                if strict:
+                    raise EvidenceBlocked('funding_same_time_fill_ambiguous')
+                continue
+            key=(next(iter(choices)),row['symbol'])
+            balances[key]=balances.get(key,Decimal(0))-number(row['qty'],'funding_fill_quantity',positive=True)*(1 if row['side']=='BUY' else -1)
+        return balances
+    relevant={symbol for (owner,symbol),qty in balances_at(start).items() if owner=='hrs' and qty!=0}
+    for row in fills:
+        if start<row['trade_time_utc']<=as_of and 'hrs' in owners.get((row['symbol'],str(row['order_id'])),set()):
+            relevant.add(row['symbol'])
+    valid=[]
+    for row in forecasts:
+        source=aware(row['source_time'],'funding_forecast')
+        received=aware(row['received_at'],'funding_forecast_available')
+        due=aware(row['next_funding_time'],'funding_deadline')
+        if not source<=received<=as_of or received-source>timedelta(seconds=120) or not source<due or received>due:
+            continue
+        valid.append(dict(row,source_time=source,received_at=received,next_funding_time=due))
+    for symbol in relevant:
+        # At least one real predeadline schedule must cover the opening of each
+        # held episode. Retrospective rate pages cannot manufacture forecasts.
+        held=balances_at(start).get(('hrs',symbol),Decimal(0))
+        first=start if held else min(row['trade_time_utc'] for row in fills if row['symbol']==symbol and start<row['trade_time_utc']<=as_of and 'hrs' in owners.get((symbol,str(row['order_id'])),set()))
+        if not any(row['symbol']==symbol and row['source_time']<=first<=row['next_funding_time'] for row in valid):
+            raise EvidenceBlocked('funding_schedule_opening_coverage_missing')
+        if balances_at(as_of).get(('hrs',symbol),Decimal(0)) and not any(row['symbol']==symbol and row['source_time']<=as_of<row['next_funding_time'] for row in valid):
+            raise EvidenceBlocked('funding_schedule_current_coverage_missing')
+    proofs=[]
+    known={(row['symbol'],row['next_funding_time']) for row in valid}
+    for symbol,rows in published.items():
+        for row in rows:
+            known.add((symbol,datetime.fromtimestamp(int(row['fundingTime'])/1000,timezone.utc)))
+    deadlines=sorted((symbol,due) for symbol,due in known if start<due<=as_of)
+    used=set()
+    for symbol,due in deadlines:
+        qty=balances_at(due,strict=True).get(('hrs',symbol),Decimal(0))
+        if qty==0:
+            continue
+        active=[(owner,q) for (owner,sym),q in balances_at(due,strict=True).items() if sym==symbol and q!=0]
+        if active!=[('hrs',qty)]:
+            raise EvidenceBlocked('funding_settlement_owner_ambiguous')
+        next_due=min((at for sym,at in known if sym==symbol and at>due),default=as_of+timedelta(microseconds=1))
+        rates=[row for row in published.get(symbol,()) if int(row.get('fundingTime',0))==int(due.timestamp()*1000)]
+        if len(rates)>1:
+            raise EvidenceBlocked('funding_rate_identity_conflict')
+        receipts=[row for row in report.get('events',()) if row.get('account_id')==account and row.get('symbol')==symbol and row.get('income_type')=='FUNDING_FEE' and row.get('strategy')=='hrs' and row.get('asset')=='USDT' and not row.get('reason') and row.get('tran_id') is not None and due<=datetime.fromisoformat(row['event_time_utc'])<next_due]
+        if len(receipts)==1 and str(receipts[0]['tran_id']) not in used:
+            used.add(str(receipts[0]['tran_id']))
+            proof=dict(symbol=symbol,deadline=due,quantity=str(qty),resolution='income_receipt',income_identity=str(receipts[0]['tran_id']))
+        elif rates and number(rates[0].get('fundingRate'),'funding_rate_invalid')==0:
+            number(rates[0].get('markPrice'),'funding_zero_mark_missing',positive=True)
+            proof=dict(symbol=symbol,deadline=due,quantity=str(qty),resolution='authoritative_zero_rate',published_rate=rates[0])
+        else:
+            raise EvidenceBlocked('funding_settlement_pending')
+        proofs.append(proof)
+    return proofs
