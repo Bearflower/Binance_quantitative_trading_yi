@@ -8,7 +8,7 @@ import hashlib
 from .timeout_recovery import TimeoutRecovery
 from dataclasses import dataclass
 from .position_exit_plan import validate_exit_plan
-from .decision_capture import capture_open_execution
+from .decision_capture import capture_open_execution, safe_record
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Callable, Tuple
@@ -766,6 +766,21 @@ class TradingExecutor:
         except Exception as e:
             logger.error("保护单下单失败", symbol=symbol, role=role, error=str(e))
             return {"success": False, "skipped": False, "algo_id": None, "error": str(e)}
+
+        recorder = getattr(self, 'decision_recorder', None)
+        if recorder is not None:
+            from datetime import datetime, timezone
+            observed = datetime.now(timezone.utc)
+            position = self.position_manager.get_position(symbol)
+            identity = position.get('position_id') if position else self._entry_identities.get(symbol)
+            await safe_record(recorder, recorder.run_id, 'protection_order_ack', {
+                'position_id': identity, 'role': role,
+                'request': dict(symbol=symbol, side=side, order_type=order_type,
+                    stop_price=stop_price, limit_price=limit_price, quantity=quantity,
+                    close_position=close_position, reduce_only=reduce_only,
+                    client_id=self._protection_client_id(symbol, role)),
+                'response': order, 'algo_id': algo_id,
+            }, as_of=observed, available_at=observed, symbol=symbol)
 
         if algo_id is None:
             # 下单成功但未返回 algoId → 视为失败（FR-05）

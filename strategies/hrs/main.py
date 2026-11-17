@@ -16,6 +16,7 @@ from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
 from shared import condition_orders
 from strategies.hrs.strategy import HRSStrategy
+from strategies.hrs.decision_context import capture_configuration_identity
 from strategies.hrs.equity_service import HrsEquityService
 from ai_tuner.snapshots.repository import SnapshotRepository
 
@@ -157,6 +158,10 @@ async def main():
         strategy = HRSStrategy(config=config)
         strategy.loaded_config_metadata = tuner_metadata
         strategy.release_sha = os.getenv('HRS_RELEASE_SHA')
+        if os.getenv('HRS_EVIDENCE_CAPTURE_ENABLED') == '1':
+            identity = capture_configuration_identity(os.path.dirname(__file__), config, tuner_metadata)
+            strategy.configuration_evidence = identity
+            strategy.config_hashes = identity['config_hashes']
         record_loaded_version("hrs", tuner_metadata)
 
         await strategy.set_binance_client(binance_client)

@@ -279,6 +279,7 @@ class HRSStrategy(BaseStrategy):
 
         # 组合级熔断器（池=hrs 候选池；enabled=false 时置 None，不拦截任何开仓）
         cb_cfg = load_circuit_breaker_config()
+        self._market_guard_config = cb_cfg if cb_cfg.get('enabled') else None
         if cb_cfg.get("enabled"):
             self.circuit_breaker = CircuitBreaker(cb_cfg, self.db, pool="hrs")
         else:
@@ -721,6 +722,10 @@ class HRSStrategy(BaseStrategy):
                 index_hour = floor_index_hour() - timedelta(hours=1)
                 pool_index = await self.circuit_breaker.load_index(index_hour)
                 pool_index_12h = await self.circuit_breaker.load_index_12h(index_hour)
+                await record_stage(self, 'entry_stage_inputs', {
+                    'stage': 'pool_circuit', 'index_hour': index_hour,
+                    'pool_index': pool_index, 'pool_index_12h': pool_index_12h,
+                }, symbol=symbol)
                 allow, level = self.circuit_breaker.guard(
                     direction, symbol, signal.get("price_change_1h"), pool_index, pool_index_12h
                 )
@@ -802,6 +807,11 @@ class HRSStrategy(BaseStrategy):
                 take_profit_prices=tp_prices,
                 account_equity=balance,
             )
+            await record_stage(self, 'entry_budget_assessment', {
+                'decision': risk_decision, 'entry_price': current_price, 'stop_price': stop_loss_price,
+                'take_profit_prices': tp_prices, 'account_equity': balance,
+                'occupied_margin': current_total_margin, 'entry_mode': entry_mode,
+            }, symbol=symbol)
             if not risk_decision.allowed:
                 signal['_audit_denial'] = risk_decision.reason
                 logger.warning("HRS 单笔风险预算拒绝开仓", symbol=symbol,
@@ -861,6 +871,12 @@ class HRSStrategy(BaseStrategy):
                 signal, risk_decision, current_price, balance)
             if risk_decision is None:
                 return False
+            signal['_risk_client_order_id'] = risk_decision.client_order_id
+            await record_stage(self, 'entry_budget_reserved', {
+                'decision': risk_decision, 'entry_price': current_price, 'stop_price': stop_loss_price,
+                'take_profit_prices': tp_prices, 'account_equity': balance,
+                'occupied_margin': current_total_margin, 'entry_mode': entry_mode,
+            }, symbol=symbol)
 
             # 执行开仓（FR-01: 返回 OpenResult，分离「成交」与「保护单完整性」信号）
             result: Optional[OpenResult] = None
@@ -960,6 +976,8 @@ class HRSStrategy(BaseStrategy):
         store = RiskPolicyStore(self.db)
         try:
             await store.reconcile('hrs', self.binance_client)
+            raw_claims = await self.db.fetch_all('SELECT * FROM trading.position_claims WHERE symbol=$1', symbol)
+            await record_stage(self, 'entry_stage_inputs', {'stage': 'claims', 'claims': raw_claims}, symbol=symbol)
             claim = await try_claim_symbol(self.db, symbol, 'hrs',
                                            intent_id=f'hrs:{identity}')
             if not claim.get('claimed') or not claim.get('claim_id'):
@@ -978,6 +996,9 @@ class HRSStrategy(BaseStrategy):
                     positions = await self.binance_client.get_position()
                     if not isinstance(positions, list):
                         raise ValueError('exchange position inventory unavailable')
+                    await record_stage(self, 'entry_stage_inputs', {
+                        'stage': 'reservation_inventory', 'exchange_positions': positions,
+                    }, symbol=symbol)
                     holdings = Decimal(0)
                     symbols = set()
                     for pos in positions:
@@ -4443,6 +4464,9 @@ class HRSStrategy(BaseStrategy):
         """
         try:
             oi_usd = await self.market_data.get_oi_usd(symbol)
+            await record_stage(self, 'entry_stage_inputs', {
+                'stage': 'pre_entry_oi', 'pre_entry_oi_usd': oi_usd,
+            }, symbol=symbol)
             pool_config = self.config.get("candidate_pool", {})
             liquidity_config = pool_config.get("liquidity", {})
             min_oi = liquidity_config.get("min_oi_usd", 10000000)
@@ -4482,6 +4506,9 @@ class HRSStrategy(BaseStrategy):
         try:
             # 获取最新资金费率
             funding_rate = await self.market_data.get_funding_rate(symbol)
+            await record_stage(self, 'entry_stage_inputs', {
+                'stage': 'pre_entry_funding', 'pre_entry_funding_rate': funding_rate,
+            }, symbol=symbol)
             threshold = self.abandon_funding_rate_reversal_threshold
 
             if direction == "short" and funding_rate <= threshold:
@@ -4794,6 +4821,9 @@ class HRSStrategy(BaseStrategy):
         """
         try:
             positions = await self.binance_client.get_position(symbol)
+            await record_stage(self, 'entry_stage_inputs', {
+                'stage': 'exchange_position', 'exchange_positions': positions,
+            }, symbol=symbol)
             for pos in positions:
                 pos_amt = float(pos.get("positionAmt", 0))
                 if pos_amt == 0:

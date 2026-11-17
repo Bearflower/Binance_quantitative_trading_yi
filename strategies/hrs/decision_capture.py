@@ -5,6 +5,8 @@ from decimal import Decimal
 import hashlib
 import json
 import uuid
+import time
+import os
 from functools import wraps
 from contextvars import ContextVar
 import structlog
@@ -70,6 +72,7 @@ class DecisionRecorder:
         self._run_context = ContextVar('hrs_evidence_run', default='startup-' + uuid.uuid4().hex)
         self.failed = False
         self.context_provider = None
+        self.incomplete_runs = set()
 
     @property
     def run_id(self):
@@ -182,7 +185,8 @@ class DecisionRecorder:
 
     async def begin(self, snapshot, as_of):
         self.run_id = uuid.uuid4().hex
-        await self.record(self.run_id, 'scan_start', snapshot, as_of=as_of, available_at=as_of)
+        available = datetime.now(timezone.utc)
+        await self.record(self.run_id, 'scan_start', snapshot, as_of=as_of, available_at=available)
         return self.run_id
 
 
@@ -202,6 +206,8 @@ async def record_stage(strategy, kind, payload, *, symbol=None):
     recorder = getattr(strategy, 'decision_recorder', None)
     if recorder is not None:
         now = datetime.now(timezone.utc)
+        if kind == 'entry_stage_inputs':
+            payload = dict(payload, observed_at=now)
         await safe_record(recorder, recorder.run_id, kind, payload,
                           as_of=now, available_at=now, symbol=symbol)
 
@@ -215,6 +221,8 @@ def strategy_snapshot(strategy):
     return {
         'config': getattr(strategy, 'config', {}),
         'loaded_config_metadata': getattr(strategy, 'loaded_config_metadata', None),
+        'configuration_evidence': getattr(strategy, 'configuration_evidence', None),
+        'config_hashes': getattr(strategy, 'config_hashes', None),
         'release_sha': getattr(strategy, 'release_sha', None),
         'runtime': {
             'signal_timestamps': {f'{symbol}:{direction}': stamp
@@ -234,6 +242,13 @@ def strategy_snapshot(strategy):
             'eliminated_symbols': getattr(pool, '_eliminated_symbols', []),
         },
         'positions': positions.get_all_positions() if positions else {},
+        'market_circuit_breaker_config': getattr(strategy, '_market_guard_config', None),
+        'market_circuit_breaker_state': {
+            'cooldown_until_local': {symbol: stamp.isoformat() for symbol, stamp in
+                getattr(getattr(strategy, 'circuit_breaker', None), '_cooldown_until', {}).items()},
+            'process_timezone': list(time.tzname), 'process_utc_offset_seconds': -time.timezone,
+            'index_cache': getattr(getattr(strategy, 'circuit_breaker', None), '_index_cache', {}),
+        },
         'signal_timestamps': getattr(strategy, '_signal_timestamps', {}),
         'risk_state': {k: getattr(risk, k, None) for k in ('pause_until', 'drawdown_pause_until', 'blacklist', 'consecutive_losses')},
         'universe_audit': getattr(market, 'universe_audit', {}),
@@ -253,10 +268,24 @@ def capture_cycle(function):
             provider = getattr(recorder, 'context_provider', None)
             if callable(provider):
                 snapshot['financial_context'] = await provider()
+        except Exception as exc:
+            failed_at = datetime.now(timezone.utc)
+            await safe_record(recorder, 'context-' + uuid.uuid4().hex, 'scan_context_failure',
+                {'parent_run': previous_run, 'cycle': function.__name__, 'error_type': type(exc).__name__},
+                as_of=now, available_at=failed_at)
+            incomplete = getattr(recorder, 'incomplete_runs', None)
+            if isinstance(incomplete, set):
+                incomplete.add(previous_run)
+            try:
+                await strategy._monitor_positions()
+            finally:
+                recorder.run_id = previous_run
+            raise
+        try:
             await recorder.begin(snapshot, now)
         except Exception:
             recorder.failed = True
-            # Evidence collection cannot suppress maintenance of existing risk.
+            # A persistence outage cannot suppress existing position protection.
             try:
                 await strategy._monitor_positions()
             finally:
@@ -265,7 +294,8 @@ def capture_cycle(function):
         status = 'failed'
         try:
             result = await function(strategy, *args, **kwargs)
-            status = 'incomplete' if recorder.failed else 'complete'
+            incomplete = getattr(recorder, 'incomplete_runs', set())
+            status = 'incomplete' if recorder.failed or recorder.run_id in incomplete else 'complete'
             return result
         finally:
             finished = datetime.now(timezone.utc)
@@ -273,7 +303,18 @@ def capture_cycle(function):
                 await safe_record(recorder, recorder.run_id, 'scan_end',
                     {'state': strategy_snapshot(strategy), 'status': status}, as_of=finished, available_at=finished)
             finally:
+                incomplete = getattr(recorder, 'incomplete_runs', None)
+                if isinstance(incomplete, set):
+                    incomplete.discard(recorder.run_id)
                 recorder.run_id = previous_run
+            if os.getenv('HRS_ACCEPTANCE_REPORT_ENABLED') == '1':
+                try:
+                    from .acceptance_report import build_report, write_report_atomic
+                    from shared.entry_risk_policy import account_id
+                    report = await build_report(strategy.db, account_id=account_id())
+                    write_report_atomic(report, os.getenv('HRS_ACCEPTANCE_REPORT_PATH', '/app/logs/hrs-acceptance.json'))
+                except Exception as exc:
+                    log.warning('hrs_acceptance_report_unavailable', error_type=type(exc).__name__)
     return wrapped
 
 

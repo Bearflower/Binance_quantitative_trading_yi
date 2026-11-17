@@ -374,3 +374,103 @@ async def test_settlement_cycle_retains_explicit_denial_reason():
     await strategy._execute_cycle()
     rows = [c.args[2] for c in recorder.record.await_args_list if c.args[1] == 'scan_denial']
     assert rows == [{'reason': 'settlement_window'}]
+
+
+@pytest.mark.asyncio
+async def test_actual_protection_ack_is_recorded_without_blocking_existing_risk_on_record_failure():
+    from strategies.hrs.executor import TradingExecutor
+    from strategies.hrs.position_manager import PositionManager
+    from strategies.hrs.decision_capture import DecisionRecorder
+    pm = PositionManager({}, AsyncMock())
+    pm.add_position('TESTUSDT', 'long', 100, 10, 2)
+    executor = TradingExecutor({}, AsyncMock(), AsyncMock(), AsyncMock(), pm)
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    executor.decision_recorder = recorder
+    actual = {'algoId': 987, 'symbol': 'TESTUSDT', 'quantity': '10', 'triggerPrice': '95'}
+    executor._submit_conditional_order = AsyncMock(return_value=(actual, 987))
+    result = await executor._place_protection_order('TESTUSDT', 'sl', 'SELL', 'STOP_MARKET',
+        Decimal('95'), Decimal('94.8'), Decimal('10'), close_position=True)
+    assert result['success'] is True
+    payload = recorder.record.await_args.args[2]
+    assert payload['response'] is actual
+    assert payload['role'] == 'sl' and payload['algo_id'] == 987
+    assert payload['position_id'] == pm.get_position('TESTUSDT')['position_id']
+    recorder.record.side_effect = RuntimeError('evidence store offline')
+    result = await executor._place_protection_order('TESTUSDT', 'sl', 'SELL', 'STOP_MARKET',
+        Decimal('95'), Decimal('94.8'), Decimal('10'), close_position=True)
+    assert result['success'] is True
+    assert recorder.failed
+
+
+@pytest.mark.asyncio
+async def test_scan_available_time_follows_slow_context_collection():
+    import asyncio
+    from types import SimpleNamespace
+    from strategies.hrs.decision_capture import DecisionRecorder, capture_cycle
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    available = None
+    async def context():
+        nonlocal available
+        await asyncio.sleep(.001)
+        available = datetime.now(timezone.utc)
+        return {'available_at': available}
+    recorder.context_provider = context
+    strategy = SimpleNamespace(decision_recorder=recorder, config={}, candidate_pool=None,
+        position_manager=None, risk_manager=None, _signal_timestamps={})
+    @capture_cycle
+    async def cycle(self):
+        pass
+    await cycle(strategy)
+    start = recorder.record.await_args_list[0]
+    assert start.args[1] == 'scan_start'
+    assert start.kwargs['as_of'] < available <= start.kwargs['available_at']
+
+
+@pytest.mark.asyncio
+async def test_context_fetch_outage_blocks_one_cycle_then_recovers_with_durable_failure_evidence():
+    from types import SimpleNamespace
+    from strategies.hrs.decision_capture import DecisionRecorder, capture_cycle
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    recorder.context_provider = AsyncMock(side_effect=[TimeoutError('private source unavailable'), {}])
+    maintenance = AsyncMock()
+    strategy = SimpleNamespace(decision_recorder=recorder, config={}, candidate_pool=None,
+        position_manager=None, risk_manager=None, _signal_timestamps={}, _monitor_positions=maintenance)
+    body = AsyncMock()
+    @capture_cycle
+    async def cycle(self):
+        await body()
+    with pytest.raises(TimeoutError):
+        await cycle(strategy)
+    assert recorder.failed is False
+    assert recorder.record.await_args.args[1] == 'scan_context_failure'
+    body.assert_not_awaited()
+    maintenance.assert_awaited_once()
+    await cycle(strategy)
+    body.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_completed_cycle_updates_continuous_acceptance_report(monkeypatch):
+    from types import SimpleNamespace
+    from strategies.hrs.decision_capture import DecisionRecorder, capture_cycle
+    import strategies.hrs.acceptance_report as reports
+    monkeypatch.setenv('HRS_ACCEPTANCE_REPORT_ENABLED', '1')
+    monkeypatch.setenv('TRADE_ACCOUNT_ID', 'test-account')
+    report = {'technical': 'COLLECTING', 'performance_accepted': False}
+    build = AsyncMock(return_value=report)
+    writer = __import__('unittest.mock', fromlist=['MagicMock']).MagicMock()
+    monkeypatch.setattr(reports, 'build_report', build)
+    monkeypatch.setattr(reports, 'write_report_atomic', writer)
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    strategy = SimpleNamespace(decision_recorder=recorder, db=object(), config={}, candidate_pool=None,
+        position_manager=None, risk_manager=None, _signal_timestamps={})
+    @capture_cycle
+    async def cycle(self):
+        pass
+    await cycle(strategy)
+    build.assert_awaited_once_with(strategy.db, account_id='test-account')
+    writer.assert_called_once_with(report, '/app/logs/hrs-acceptance.json')
