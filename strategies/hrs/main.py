@@ -16,10 +16,65 @@ from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
 from shared import condition_orders
 from strategies.hrs.strategy import HRSStrategy
+from strategies.hrs.equity_service import HrsEquityService
 from ai_tuner.snapshots.repository import SnapshotRepository
 
 
 logger = structlog.get_logger()
+
+
+def validate_equity_gate_configuration():
+    value=os.getenv('HRS_EQUITY_GATE_ENABLED','').strip().lower()
+    if value not in ('','0','false','no','off','1','true','yes','on'):
+        raise ValueError('invalid HRS_EQUITY_GATE_ENABLED')
+    enabled=value in ('1','true','yes','on')
+    guarded={item.strip() for item in os.getenv('ENTRY_EQUITY_GATE_STRATEGIES','').split(',') if item.strip()}
+    if enabled and 'hrs' not in guarded:
+        raise ValueError('HRS_EQUITY_GATE_ENABLED requires hrs in ENTRY_EQUITY_GATE_STRATEGIES')
+    return enabled
+
+
+async def run_with_equity_service(strategy,db_manager,binance_client):
+    """Refresh before entries; a denied projection keeps normal exit monitoring.
+
+    Fatal background termination is supervised. Shutdown joins both tasks before
+    the caller releases database/API resources, including cancellation paths.
+    """
+    if not validate_equity_gate_configuration():
+        return await strategy.run()
+    service=HrsEquityService(db_manager,binance_client,strategy.capital_mgr,
+                             strategy.position_manager,recorder=getattr(strategy,'decision_recorder',None))
+    strategy.equity_service=service
+    tasks=[]
+    try:
+        result=await service.refresh()
+        logger.info('HRS equity projection initialized',ready=result['ready'],allowed=result['allowed'],reasons=result['reasons'])
+        collector=asyncio.create_task(service.run(),name='hrs-equity-collector')
+        trading=asyncio.create_task(strategy.run(),name='hrs-strategy')
+        tasks=[collector,trading]
+        done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+        if collector in done:
+            if collector.cancelled():
+                raise RuntimeError('HRS equity collector stopped unexpectedly')
+            failure=collector.exception()
+            raise RuntimeError('HRS equity collector stopped unexpectedly') from failure
+        return await trading
+    finally:
+        async def shutdown():
+            try:
+                await service.close()
+            finally:
+                for task in tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*tasks,return_exceptions=True)
+                strategy.equity_service=None
+        cleanup=asyncio.create_task(shutdown())
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            raise
 
 
 async def main():
@@ -31,6 +86,7 @@ async def main():
     logger.info("HRS策略启动", timestamp=datetime.now().isoformat())
 
     try:
+        validate_equity_gate_configuration()
         # 加载配置（合并基础配置 + AI 调优覆盖层）
         config, tuner_metadata = load_strategy_config_with_metadata(os.path.dirname(__file__))
         logger.info("配置加载成功（含覆盖层合并）", strategy_dir=os.path.dirname(__file__))
@@ -122,7 +178,7 @@ async def main():
             logger.info("交易记录器初始化完成", strategy="HRS策略")
 
             try:
-                await strategy.run()
+                await run_with_equity_service(strategy,db_manager,binance_client)
             finally:
                 if snapshot_db_manager is not None:
                     await snapshot_db_manager.disconnect()
