@@ -2,8 +2,8 @@
 
 GateHistory.complete certifies continuous, reconciled observations, not just two
 endpoints. The collector must establish the exact Asia/Shanghai midnight NAV;
-an intraday first sample is never a substitute. A rolling window is the current
-local calendar day plus the previous 30 completed days, so qualification
+an intraday first sample is never a substitute. A rolling window is the exact
+preceding 30 * 24 hours of observed NAV checkpoints, so qualification
 requires at least 30 elapsed days of actual coverage. An explicitly enabled inception
 segment uses its genuine first NAV and is always labelled separately from 30d.
 
@@ -156,7 +156,7 @@ def evaluate_loss_gate(previous: LossGateState | None, current: EquityCheckpoint
     daily_return = current.nav / origin_nav - Decimal("1") if daily_valid else None
     if daily_return is not None and daily_return <= -DAILY_LIMIT:
         daily_latched = True
-    window_start = origin_at - timedelta(days=30)
+    window_start = current.as_of - timedelta(days=30)
     qualified = (coverage_valid and history.complete_from <= window_start and window_start in by_time)
     label = None
     window_samples = ()

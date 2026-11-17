@@ -83,9 +83,9 @@ def test_exact_rolling_six_percent_survives_restart_day_and_deposit():
     assert not result2.allow_new_risk
 
 
-def test_30_calendar_days_need_boundary_and_explicit_complete_coverage():
+def test_30_elapsed_days_need_boundary_and_explicit_complete_coverage():
     current = cp(T + timedelta(days=30, hours=12), "1")
-    result = evaluate_loss_gate(None, current, history([cp(), cp(T + timedelta(days=30)), current]))
+    result = evaluate_loss_gate(None, current, history([cp(), cp(T + timedelta(hours=12)), cp(T + timedelta(days=30)), current]))
     assert result.qualified_30_day
     assert result.window_label == "rolling_30_day"
     assert result.allow_new_risk
@@ -100,6 +100,15 @@ def test_rolling_window_excludes_old_peak_after_it_expires():
     result = evaluate_loss_gate(None, samples[-1], history(samples))
     assert not result.state.rolling_latched
     assert result.rolling_drawdown == D("0")
+
+
+def test_intraday_rolling_window_does_not_retain_a_peak_older_than_thirty_days():
+    current = cp(T + timedelta(days=30, hours=12))
+    samples = [cp(T, '1.1'), cp(T + timedelta(hours=12)), cp(T + timedelta(days=30)), current]
+    result = evaluate_loss_gate(None, current, history(samples))
+    assert result.qualified_30_day
+    assert result.allow_new_risk
+    assert result.rolling_drawdown == D('0')
 
 
 def test_controlled_reset_requires_reason_evidence_and_expected_version():

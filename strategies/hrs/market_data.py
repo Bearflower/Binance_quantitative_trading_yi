@@ -103,23 +103,26 @@ class MarketDataProvider:
         try:
             tickers = await self.binance_api.get_all_tickers()
             from .asset_universe import filter_crypto_tickers
-            if time.time() - self._exchange_metadata_at >= 3600:
+            refresh = time.time() - self._exchange_metadata_at >= 3600
+            metadata_rows = self._exchange_metadata
+            if refresh:
                 metadata = await self.binance_api.get_exchange_info()
                 if not isinstance(metadata, dict) or not isinstance(metadata.get('symbols'), list):
                     raise ValueError('exchange metadata unavailable')
-                self._exchange_metadata = metadata['symbols']
+                metadata_rows = metadata['symbols']
+            eligible, self.universe_audit = filter_crypto_tickers(tickers, metadata_rows)
+            if refresh:
+                self._exchange_metadata = metadata_rows
                 self._exchange_metadata_at = time.time()
-            eligible, self.universe_audit = filter_crypto_tickers(tickers, self._exchange_metadata)
             self.universe_audit['observed_at'] = time.time()
             logger.info("HRS 交易范围元数据核验", raw_count=len(tickers), eligible_count=len(eligible),
                         classifications=self.universe_audit['counts'])
             return eligible
         except Exception as e:
-            from .asset_universe import filter_crypto_tickers
-            if isinstance(tickers, list):
-                _, self.universe_audit = filter_crypto_tickers(tickers, [])
-            else:
-                self.universe_audit = dict(raw_count=None, eligible_count=0, counts={}, rows={})
+            # Failure auditing must itself accept malformed/duplicate source rows.
+            raw_count = len(tickers) if isinstance(tickers, list) else None
+            self.universe_audit = dict(raw_count=raw_count, eligible_count=0,
+                                       counts={'metadata_unverified': raw_count} if raw_count is not None else {}, rows={})
             self.universe_audit.update(observed_at=time.time(), error_type=type(e).__name__)
             logger.error("获取所有交易对行情失败", error=str(e))
             return []

@@ -67,3 +67,39 @@ def test_verified_six_crypto_mappings_do_not_silently_enable_cmc():
         assert registry[symbol]['cmc_enabled'] is False
         assert registry[symbol]['evidence']
     assert 'XAUUSDT' not in registry
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('bad', [[{'symbol': 'RAREUSDT'}, {'symbol': 'RAREUSDT'}], [None], [{}], [{'symbol': 1}]])
+async def test_malformed_tickers_leave_a_fresh_nonthrowing_failure_audit(bad):
+    from strategies.hrs.market_data import MarketDataProvider
+    api = AsyncMock()
+    api.get_all_tickers.return_value = [{'symbol': 'RAREUSDT'}]
+    api.get_exchange_info.return_value = {'symbols': [contract()]}
+    provider = MarketDataProvider(api, AsyncMock(), {})
+    try:
+        assert await provider.get_all_tickers()
+        previous = provider.universe_audit['observed_at']
+        api.get_all_tickers.return_value = bad
+        assert await provider.get_all_tickers() == []
+        assert provider.universe_audit['raw_count'] == len(bad)
+        assert provider.universe_audit['eligible_count'] == 0
+        assert provider.universe_audit['observed_at'] >= previous
+        assert provider.universe_audit['error_type']
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_bad_exchange_metadata_does_not_poison_next_refresh():
+    from strategies.hrs.market_data import MarketDataProvider
+    api = AsyncMock()
+    api.get_all_tickers.return_value = [{'symbol': 'RAREUSDT'}]
+    api.get_exchange_info.side_effect = [{'symbols': [contract(), contract()]}, {'symbols': [contract()]}]
+    provider = MarketDataProvider(api, AsyncMock(), {})
+    try:
+        assert await provider.get_all_tickers() == []
+        assert await provider.get_all_tickers() == [{'symbol': 'RAREUSDT'}]
+        assert api.get_exchange_info.await_count == 2
+    finally:
+        await provider.close()
