@@ -152,3 +152,16 @@ def test_shared_hrs_risk_core_allows_only_legal_explicit_full_tp1():
         assert not assess_entry(**arguments,take_profit_ratios=tuple(D(str(value)) for value in ratios)).allowed
     arguments['take_profit_prices']=(D(1),D(107))
     assert not assess_entry(**arguments,take_profit_ratios=(D(1),D(0))).allowed
+
+
+def test_risk_decision_reports_the_full_allocation_used_for_loss_budget():
+    from dataclasses import replace
+    from strategies.hrs.risk_budget import assess_entry
+    D=Decimal
+    decision=assess_entry(allocation=D('52.31'),entry_price=D('.1'),stop_price=D('.105'),direction='short',
+        existing_open_risk=D(0),leverage=D(2),remaining_margin=D('26.155'),qty_step=D(1),min_qty=D(1),
+        min_notional=D(5),fee_rate=D('.0005'),pressure_slippage=D('.02'),take_profit_prices=(D('.097'),D('.093')))
+    assert decision.allowed
+    assert decision.risk_allocation==D('52.31')
+    reduced=replace(decision,effective_allocation=D('26.155'))
+    assert reduced.risk_allocation==D('52.31') and reduced.risk_limit==D('.5231')

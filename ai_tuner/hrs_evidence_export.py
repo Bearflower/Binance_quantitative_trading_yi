@@ -274,7 +274,7 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
                 raise DataBlocked(['market_guard_index_inputs_missing:'+symbol])
             event_available=max(available,released)
             _require(event_available<=end,'decision_inputs_after_window:'+run+':'+symbol)
-            inputs.append(dict(symbol=symbol,decision_at=_iso(decided),score_available_at=_iso(analysis['available_at']),observed_at=_iso(available),available_at=_iso(available),complete=True,candidate_scan=scan,market=market,risk=risk,config_hashes=hashes,
+            inputs.append(dict(symbol=symbol,decision_at=_iso(decided),score_available_at=_iso(analysis['available_at']),observed_at=_iso(available),available_at=_iso(available),complete=True,candidate_scan=scan,market=market,risk=risk,config_hashes=hashes,analysis_klines_1h=payload['klines_1h'],analysis_klines_4h=payload['klines_4h'],
                 evidence_ids=[r['evidence_id'] for r in [analysis,*values.values(),*stages]]))
             calendar.append(dict(symbol=symbol,decision_at=_iso(decided),available_at=_iso(event_available),batch_available_at=_iso(released),batch_id=run,sequence=sequence))
             sequence+=1

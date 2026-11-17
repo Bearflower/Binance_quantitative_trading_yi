@@ -16,6 +16,7 @@ class RiskDecision:
     policy_revision: int = 0
     client_order_id: str = ""
     effective_allocation: Decimal = Decimal("0")
+    risk_allocation: Optional[Decimal] = None
 
 
 def _valid_positive(value: Optional[Decimal]) -> bool:
@@ -136,4 +137,4 @@ def assess_entry(
         return RiskDecision(False, "take_profit_quantity_unavailable", risk_limit=risk_limit)
     return RiskDecision(True, "allowed", quantity=quantity,
                         worst_loss=quantity * per_unit_loss, risk_limit=risk_limit,
-                        exit_ratios=exit_ratios)
+                        exit_ratios=exit_ratios, risk_allocation=allocation)

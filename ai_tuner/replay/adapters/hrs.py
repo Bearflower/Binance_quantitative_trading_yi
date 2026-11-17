@@ -205,7 +205,11 @@ class HrsAdapter:
                     raise ValueError('exit_ratios_invalid')
                 params=dict(row['exit_parameters'])
                 for key in exits.mode_exit_parameters(self.config,row['entry_mode']):
-                    _positive(params[key])
+                    if key=='target2_close_percent' and Decimal(str(params[key]))==0:
+                        if ratios!=(Decimal(1),ZERO) or Decimal(str(params['target1_close_percent']))!=1:
+                            raise ValueError('initial_full_tp1_params_invalid')
+                    else:
+                        _positive(params[key])
                 protective={key:_positive(row[key]) for key in ('stop_loss_price','tp1_price','tp2_price')}
                 position=Position(position_id=row['position_id'],symbol=symbol,direction=direction,
                     entry_price=_positive(row['entry_price']),entry_quantity=entry,current_quantity=current,
@@ -423,11 +427,19 @@ class HrsAdapter:
         if not other_equity.is_finite():
             raise DataBlocked(['hrs_other_account_equity_invalid'])
         self._account_equity=_positive(other_equity+self._marked_equity(ctx.portfolio,as_of=now))
-        klines = [_kline(item) for item in self._bars[(symbol,'1h')]]
-        klines4 = [_kline(item) for item in self._bars[(symbol,'4h')]]
+        score_at=parse_utc(raw.get('score_available_at',raw['decision_at']))
+        if not decision_at<=score_at<=now or parse_utc(scan['as_of'])>score_at:
+            raise DataBlocked(['hrs_score_input_availability_invalid:'+symbol])
+        klines = [_kline(item) for item in self._bars[(symbol,'1h')] if item.close_time<=score_at]
+        klines4 = [_kline(item) for item in self._bars[(symbol,'4h')] if item.close_time<=score_at]
+        if 'analysis_klines_1h' in raw or 'analysis_klines_4h' in raw:
+            if not isinstance(raw.get('analysis_klines_1h'),list) or not isinstance(raw.get('analysis_klines_4h'),list):
+                raise DataBlocked(['hrs_captured_score_history_incomplete:'+symbol])
+            klines=raw['analysis_klines_1h']
+            klines4=raw['analysis_klines_4h']
         if not klines4:
             raise DataBlocked(['hrs_4h_warmup_missing:'+symbol])
-        self._scorer.set_dynamic_thresholds(_Thresholds(scan['dynamic_thresholds'],now)
+        self._scorer.set_dynamic_thresholds(_Thresholds(scan['dynamic_thresholds'],score_at)
             if scan['dynamic_thresholds'] is not None else None)
         has_cap = (market['has_market_cap'] is True and
                    market['market_cap_source'] in ('coingecko','coinmarketcap','cache_hit') and
@@ -437,7 +449,7 @@ class HrsAdapter:
         try:
             arguments = dict(symbol=symbol,klines_1h=klines,klines_4h=klines4,
                 oi_market_cap_ratio=ratio,funding_rate=float(market['funding_rate']),
-                has_market_cap=has_cap,decision_at=now,config=self.config,scoring_engine=self._scorer)
+                has_market_cap=has_cap,decision_at=score_at,config=self.config,scoring_engine=self._scorer)
             if directions:
                 analysis = core.analyze_standard(**arguments,directions=directions,pattern_recognizer=self._recognizer)
                 origin = 'nonempty_pool'
@@ -731,7 +743,7 @@ class HrsAdapter:
                 params=position.exit_parameters
                 filters=self._portal.symbol_filters(position.symbol)
                 trigger=exits.trailing_stop_price(direction,best,position.atr,filters['tick_size'],params,self.config)
-                software_multiplier=Decimal(str(self.config.get('trading',{}).get('trailing',{}).get('atr_multiplier',1.5)))
+                software_multiplier=Decimal(str(params['trailing_atr_multiplier']))
                 retracement=current-best if direction=='short' else best-current
                 if retracement>=position.atr*software_multiplier:
                     result.append(self._intent(position.symbol,direction,position.current_quantity,'TRAILING_STOP',

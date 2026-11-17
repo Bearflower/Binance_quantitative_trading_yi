@@ -548,7 +548,7 @@ class VirtualBroker:
 
         fill_price = round_price(reference_price, symbol_filters.tick_size)
         quantity = round_quantity(
-            intent.quantity if intent.execution_model is not None else clamp_notional(intent.quantity, fill_price, symbol_filters.min_notional),
+            intent.quantity if intent.execution_model is not None or intent.strategy_id=="hrs" else clamp_notional(intent.quantity, fill_price, symbol_filters.min_notional),
             symbol_filters.step_size,
         )
         if quantity <= ZERO:
@@ -556,6 +556,9 @@ class VirtualBroker:
             return
 
         notional = quantity * fill_price
+        if intent.strategy_id=='hrs' and intent.execution_model is None and notional<symbol_filters.min_notional:
+            self._reject(order,ts,'MIN_NOTIONAL')
+            return
         if self.max_leverage > ZERO and notional > self.realized_equity * self.max_leverage:
             self._reject(order, ts, "LEVERAGE_LIMIT")
             return

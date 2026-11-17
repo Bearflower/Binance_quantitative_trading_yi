@@ -383,3 +383,85 @@ def test_replay_declares_software_limit_close_approximation(tmp_path):
     assert assumptions['configured_close_type']=='LIMIT'
     assert assumptions['software_close_model']=='observed_quote_market_proxy_v1'
     assert assumptions['exact_exchange_parity'] is False
+
+
+def test_score_bar_boundary_is_frozen_before_delayed_batch_release(tmp_path,monkeypatch):
+    from strategies.hrs import core_decision
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    row=json.loads((portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()[0])
+    scored=AT+timedelta(hours=2,seconds=-5);released=AT+timedelta(hours=2,seconds=5)
+    row.update(decision_at=scored.isoformat(),observed_at=scored.isoformat(),available_at=released.isoformat(),score_available_at=scored.isoformat())
+    row['market'].update(source_observed_at=scored.isoformat(),expires_at=(released+timedelta(hours=1)).isoformat())
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl([row]),'hrs_decision_calendar.jsonl':jsonl([dict(symbol='A',decision_at=scored.isoformat(),available_at=released.isoformat(),batch_available_at=released.isoformat(),sequence=0)])})
+    original=core_decision.analyze_standard;seen=[]
+    def score(**kwargs):
+        seen.append(kwargs)
+        return original(**kwargs)
+    monkeypatch.setattr(core_decision,'analyze_standard',score)
+    run_replay(portal,adapter,broker())
+    assert seen[0]['decision_at']==scored
+    assert max(k['open_time']+3600000 for k in seen[0]['klines_1h'])<=int(scored.timestamp()*1000)
+
+
+def test_frozen_software_trailing_multiplier_survives_global_config_change(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,initial_position=True,entry_type='LIMIT',subbars=True,config_patch={'cycle':{'check_interval_seconds':60}})
+    states=adapter._state_loader(AT)
+    row=states['hrs_positions']['rows'][0]
+    row.update(remaining_quantity='3',target1_reached=True,target2_reached=True)
+    row['exit_parameters']['trailing_atr_multiplier']=3.5
+    minutes=[json.loads(line) for line in (portal.snapshot_dir/'klines/A_1m.jsonl').read_text().splitlines()]
+    minutes[0].update(open='100',high='110',low='99',close='110')
+    minutes[1].update(open='110',high='110',low='106',close='106')
+    # Continue above the legitimate 103 trailing stop; no retracement of 7.
+    for minute in minutes[2:]:minute.update(open='106',high='106',low='106',close='106')
+    portal=refreeze(portal,{'klines/A_1m.jsonl':jsonl(minutes)})
+    result=run_replay(portal,adapter,broker())
+    assert not any(t.position_id=='initial-1' and t.exit_reason=='TRAILING_STOP' and t.exit_time==AT+timedelta(minutes=2) for t in result.closed_trades)
+
+
+def test_opening_equity_point_uses_restored_marks_and_actual_exposure(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,initial_position=True,entry_type='LIMIT',subbars=True)
+    adapter._state_loader(AT)['hrs_positions']['rows'][0]['mark_price']='110'
+    bootstrap=json.loads((portal.snapshot_dir/'hrs_replay_state.json').read_text())
+    bootstrap['ledger']['history'][-1].update(equity='10100',nav='1.01')
+    portal=refreeze(portal,{'hrs_replay_state.json':json.dumps(bootstrap)})
+    opening=run_replay(portal,adapter,broker()).equity_curve[0]
+    assert opening.marked_equity==D('10100')
+    assert opening.realized_equity==D('10000') and opening.has_open_position is True
+
+
+def test_hrs_market_matching_never_increases_the_risk_sized_quantity():
+    b=broker()
+    b.submit((OrderIntent('hrs','A',1,'LONG','MARKET',D('.05'),'ENTRY',reference_price=D(100)),),bar(),AT)
+    minute=replace(bar(),open=D(50),high=D(51),low=D(49),close=D(50))
+    b.on_bar('A',minute,minute.close_time)
+    assert not b.positions or b.positions['A'].entry_quantity<=D('.05')
+    assert any(e['type']=='reject' and e['payload']['reason']=='MIN_NOTIONAL' for e in b.audit)
+
+
+def test_initial_full_tp1_frozen_plan_is_a_supported_position(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,initial_position=True)
+    row=adapter._state_loader(AT)['hrs_positions']['rows'][0]
+    row['exit_ratios']=['1','0'];row['exit_parameters'].update(target1_close_percent=1,target2_close_percent=0)
+    ctx=adapter.prepare(portal);adapter.configure_execution(ctx)
+    restored=adapter.initial_positions(ctx)
+    assert restored[0]['position'].exit_ratios==(D(1),D(0))
+
+
+def test_captured_score_history_is_used_when_a_new_bar_closes_before_capture_finishes(tmp_path,monkeypatch):
+    from strategies.hrs import core_decision
+    from ai_tuner.replay.adapters.hrs import _kline
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    raw=json.loads((portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()[0])
+    at=AT+timedelta(hours=2,seconds=5)
+    raw.update(decision_at=at.isoformat(),observed_at=at.isoformat(),score_available_at=at.isoformat())
+    raw['market'].update(source_observed_at=at.isoformat(),expires_at=(at+timedelta(hours=1)).isoformat())
+    raw['analysis_klines_1h']=[_kline(b) for b in portal.bars('A','1h') if b.close_time<=AT+timedelta(hours=1)]
+    raw['analysis_klines_4h']=[_kline(b) for b in portal.bars('A','4h') if b.close_time<=at]
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl([raw]),'hrs_decision_calendar.jsonl':jsonl([dict(symbol='A',decision_at=at.isoformat(),available_at=at.isoformat(),batch_available_at=at.isoformat(),sequence=0)])})
+    original=core_decision.analyze_standard;seen=[]
+    def score(**kwargs):
+        seen.append(kwargs);return original(**kwargs)
+    monkeypatch.setattr(core_decision,'analyze_standard',score)
+    run_replay(portal,adapter,broker())
+    assert seen[0]['klines_1h']==raw['analysis_klines_1h']

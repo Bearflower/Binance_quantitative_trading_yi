@@ -172,11 +172,11 @@ def run_replay(
             },
         }
     ]
-    equity: Dict[datetime, EquityPoint] = {
-        portal.window_start: EquityPoint(
-            portal.window_start, broker.initial_equity, broker.initial_equity, False
-        )
-    }
+    # Restored historical inventories carry real opening exposure/marks. Legacy
+    # adapters retain their original literal initial-capital curve contract.
+    opening=(broker.mark(portal.window_start) if hasattr(adapter,'initial_positions') else
+        EquityPoint(portal.window_start,broker.initial_equity,broker.initial_equity,False))
+    equity: Dict[datetime, EquityPoint] = {portal.window_start:opening}
     last_bar_close: Dict[str, datetime] = {}
 
     for timestamp, simultaneous_events in groupby(schedule, key=lambda event: event.time):
