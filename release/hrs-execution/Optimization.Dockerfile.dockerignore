@@ -1,0 +1,17 @@
+.git
+.env
+.env.*
+.secrets
+**/*.pem
+**/*.key
+**/__pycache__
+**/*.pyc
+data
+logs
+out
+docs
+.coverage
+.pytest_cache
+.venv
+venv
+node_modules

@@ -1,0 +1,22 @@
+{
+  "strategies/hrs/timeout_recovery.py": "46aba53e13f59a74626a345f493b75b04336a36b4236312b04946a2d4050707b",
+  "strategies/hrs/requirements.txt": "1b931eff39854329b3a417545d8293f86b4c51bc6899ae76aea6b9dc95c81f8c",
+  "strategies/hrs/Dockerfile": "fbf0961db3daed3be1563da9b53820ee281f6a9f09c8a2435f88d78e530d19ad",
+  "strategies/hrs/config.yaml": "80c3cdfe3181a32493722cd282ed24a9a3e7c13b1e2e86fc8ed53c74f61b33d5",
+  "strategies/hrs/__init__.py": "bb07dcc43a9053f29f8846faccc7693d7b1fcc4587c23d28d377a91caac424d3",
+  "strategies/hrs/strategy.py": "3b6e4cc141947b178a88b719a0527cb6a485ddaa19a4ac5067009275e438f135",
+  "strategies/hrs/pattern.py": "89ff9db4634db6fefe2637f0f7cef732a5d713bcb5d4c9f56bbf7830153f0c2b",
+  "strategies/hrs/position_manager.py": "e5fec86e665bc7afc097ae38ae87d829b48246412bbad8cede59a7d9a03be2ae",
+  "strategies/hrs/market_data.py": "63c0613aba351530ea42464978e7eb79e28226090c3f9b4ca147c96e0d4013bd",
+  "strategies/hrs/candidate_pool.py": "4af26456674454ee3ed6b0193fd9cb1f3a66c5579f688a31be185522ffd13365",
+  "strategies/hrs/risk_budget.py": "aa55e0264a435f501ccb51e5ccc86d732abbc05fc7ed133c41a439e46056442e",
+  "strategies/hrs/main.py": "9fcae7de282e4a9a5c0522cca3970177272018834f20cdc811d4f8afcc7d6f33",
+  "strategies/hrs/risk_manager.py": "c8af481655198da868d485f4da7e9d915670d28d40988b4ac03ae759a4fe7197",
+  "strategies/hrs/scoring_engine.py": "a0b49dc53881d6e5e4fb834b27bbf48d293484ee3dfe6b200a3e7065652a5e99",
+  "strategies/hrs/executor.py": "09d44acfcb0da823580429eba7630ca402c969cc792e3e60c45ce9969beeea49",
+  "shared/trade_logger.py": "7287585987bb1387f37704838305cad4cf685418ad3b78108d92a02476062e3e",
+  "shared/config_loader.py": "fca46088f27fb5ccc79480148a02f10691a4b23f43f48f5d4c1d0cfaa23b137f",
+  "shared/entry_risk_policy.py": "e5d19df070d6032427d9b5c9e1a8255bf7cafe9afd569ec4faf7a2c339491e10",
+  "shared/circuit_breaker.py": "84615782209b22a81a88a10620b2e6838b432b363e7abdd10c407b9926f20193",
+  "shared/condition_orders.py": "9ce9a1ce73c70d758e7872711a8755845c64141c9d20bf1bfea60b0d81e59d3b"
+}
