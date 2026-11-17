@@ -117,7 +117,7 @@ class EvidenceJobs:
         risk = self.latest_risk()
         try:
             report = await read_published_report(self.db, account, start, end,
-                                                 f'monthly:{start}', current=False)
+                                                 f'monthly:{start}', current=False, include_derived_attribution=True)
             capital = await read_capital_evidence(self.db, account, start, end, strategies)
             activity = await read_activity_evidence(self.db, account, start, end, strategies)
             # Actual signed PM economic equity, never the stale configured 1000 USDT.

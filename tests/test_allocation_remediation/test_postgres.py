@@ -38,7 +38,7 @@ async def create_test_pool():
 async def test_real_published_reader_same_cost_inclusive_report(monkeypatch):
     monkeypatch.setenv('TRADE_ACCOUNT_ID','test-account');pool=await create_test_pool()
     try:
-        body=report();body['by_strategy']['hrs'].update(realized_pnl='2',commission='-3',funding_fee='-.25')
+        body=report();body.update(report_version=body['report_version']+'-derived-v1',derived_attribution_enabled=True);body['by_strategy']['hrs'].update(realized_pnl='2',commission='-3',funding_fee='-.25')
         async with pool.acquire() as conn:
             assert not await conn.fetchval('SELECT rolsuper FROM pg_roles WHERE rolname=current_user')
             await conn.execute('INSERT INTO trading.ledger_report_run(report_id,account_id,asset,window_key,report_version,start_ms,end_ms,report) VALUES($1,$2,\'USDT\',$3,$4,$5,$6,$7::jsonb)',body['report_id'],body['account_id'],body['window_key'],body['report_version'],START_MS,END_MS,json.dumps(body))

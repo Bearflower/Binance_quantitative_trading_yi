@@ -60,7 +60,8 @@ def _served(report, requested_end, status, error=None):
 
 
 async def read_published_report(db, account_id, start_ms, end_ms, window_key,
-                                *, current=False, refresh_seconds=60, _retry=0):
+                                *, current=False, refresh_seconds=60, _retry=0,
+                                include_derived_attribution=None):
     """Read or refresh a durable verified run for a fixed calendar window key.
 
     ``current`` explicitly permits shortening an open period to its contiguous
@@ -68,7 +69,10 @@ async def read_published_report(db, account_id, start_ms, end_ms, window_key,
     DB errors never fall back to trade_records or legacy metric snapshots.
     """
     if start_ms >= end_ms: raise ValueError('Invalid report window')
-    derived_enabled = os.environ.get('LEDGER_DERIVED_ATTRIBUTION_ENABLED') == '1'
+    if include_derived_attribution is not None and type(include_derived_attribution) is not bool:
+        raise ValueError('derived attribution selection must be boolean')
+    derived_enabled = (os.environ.get('LEDGER_DERIVED_ATTRIBUTION_ENABLED') == '1'
+                       if include_derived_attribution is None else include_derived_attribution)
     version = REPORT_VERSION + '-derived-v1' if derived_enabled else REPORT_VERSION
     previous = None
     try:
@@ -122,7 +126,8 @@ async def read_published_report(db, account_id, start_ms, end_ms, window_key,
         if getattr(exc, 'sqlstate', None) == '40001' and _retry < 2:
             return await read_published_report(db, account_id, start_ms, end_ms, window_key,
                                                current=current, refresh_seconds=refresh_seconds,
-                                               _retry=_retry+1)
+                                               _retry=_retry+1,
+                                               include_derived_attribution=include_derived_attribution)
         if previous:
             return _served(previous, end_ms, 'stale', type(exc).__name__)
         raise

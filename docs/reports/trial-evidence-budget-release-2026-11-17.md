@@ -27,7 +27,9 @@
 
 验收必须确认：迁移的真实 PostgreSQL 权限/并发/回滚测试通过；其他容器身份、风险政策及资金分配未变；AI Tuner 健康；新容器启动后由真实分钟调度产生主账户基线和订单采集批次；旧持久缓存不能充数。发生部分激活失败时停止并保留现场，不自动回滚或重复执行。
 
-本地验收：生产版本 Python 3.10 合跑 **305 passed**，包含四个隔离 PostgreSQL 数据库；独立审查批准只读观察器范围。发布状态：待专用 CI/CLCI 上线验收，尚不能称为已经上线。
+初次上线：[CI 44111372221](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44111372221) 成功，pin `2233e449` active/state complete，199 份源码吻合；只重建 AI Tuner，其他容器、风险政策和分配未变。资本和账户基线各 1，首基线北京时间 23:18:09，actualEquity 515.38314227 USD。真实分钟任务已连续执行，22 个意图全部取得签名订单观察；捕获协议完整性仍 false，不能冒充历史完整。生产影子验收为 BLOCKED_DATA、live_activation_eligible=false。
+
+线上补验发现本服务未设置派生环境标志，因此新增显式派生报告选择，避免依赖环境造成与看板口径分离。新增无环境标志回归后，生产 Python 3.10 合跑 **306 passed**，含四个隔离 PostgreSQL 数据库。后继限定发布待验收，复用当前依赖镜像，不重装依赖。
 
 ## 仍未完成
 

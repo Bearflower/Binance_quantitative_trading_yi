@@ -282,7 +282,7 @@ def test_collector_uses_policy_claims_and_exchange_income_reader_without_writes(
     async def income_reader(db, account, start_ms, end_ms, **kwargs):
         assert db.__class__ is DB
         assert account == "default"
-        assert kwargs == {"include_reviewed_overrides": True}
+        assert kwargs == {"include_reviewed_overrides": True,"include_derived_attribution":True}
         assert start_ms < end_ms
         return {**snapshot()["income"], "account_id": account,
                 "start_ms": start_ms, "end_ms": end_ms,

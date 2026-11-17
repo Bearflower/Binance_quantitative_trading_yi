@@ -48,7 +48,7 @@ jobs:
         id: image
         with:
           context: .
-          file: ai_tuner/Dockerfile
+          file: deployment/trial-evidence/Dockerfile
           push: true
           tags: ghcr.io/bearflower/trading-ai-tuner:trial-evidence-${{ github.sha }}
       - name: Package source proofs and additive migrations
@@ -78,5 +78,7 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H 43.156.242.184 >> ~/.ssh/known_hosts
           ssh -o ConnectTimeout=15 root@43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA"
-          scp -o ConnectTimeout=15 -r "$RUNNER_TEMP/trial-evidence/." "root@43.156.242.184:/root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA/"
+          tar -C "$RUNNER_TEMP/trial-evidence" -czf "$RUNNER_TEMP/trial-evidence.tar.gz" .
+          scp -o ConnectTimeout=15 "$RUNNER_TEMP/trial-evidence.tar.gz" "root@43.156.242.184:/root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA/bundle.tar.gz"
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "tar -xzf /root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA/bundle.tar.gz -C /root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA"
           ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 python3 - "$GITHUB_SHA" "$DIGEST" "/root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA" < deployment/trial-evidence/activate.py

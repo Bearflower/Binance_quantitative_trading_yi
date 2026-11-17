@@ -45,7 +45,7 @@ async def test_one_same_published_report_then_explicit_missing_evidence(monkeypa
     with patch.object(module,'read_published_report',reader):
         with pytest.raises(module.AllocationInputUnavailable) as failure:
             await obj.collect_all_realized_pnl(START,END)
-    reader.assert_awaited_once_with(obj.db_manager,'test-account',START_MS,END_MS,f'monthly:{START_MS}',current=False)
+    reader.assert_awaited_once_with(obj.db_manager,'test-account',START_MS,END_MS,f'monthly:{START_MS}',current=False,include_derived_attribution=True)
     assert failure.value.reasons==('missing_capital_evidence','missing_activity_evidence')
     assert failure.value.report_id=='verified-id'
     assert failure.value.verified_net_pnl=={'hrs':Decimal('-1.25'),'btc_eth':Decimal('2.35')}

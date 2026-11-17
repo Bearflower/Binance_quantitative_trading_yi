@@ -41,7 +41,7 @@ class PnLCollector:
         window_key = f'monthly:{start_ms}'
         try:
             report = await read_published_report(self.db_manager, account, start_ms,
-                                                 end_ms, window_key, current=False)
+                                                 end_ms, window_key, current=False, include_derived_attribution=True)
         except Exception as exc:
             raise AllocationInputUnavailable('published_report_unavailable') from exc
         if not isinstance(report, dict):

@@ -96,3 +96,14 @@ def test_contiguous_watermark_requires_every_income_type():
           for kind,end in [('REALIZED_PNL',2900),('COMMISSION',2800),('FUNDING_FEE',2700)]]
     assert coverage_cutoff(rows,'main',1000,3000)==2700
     assert coverage_cutoff(rows[:-1],'main',1000,3000)==1000
+
+
+@pytest.mark.asyncio
+async def test_explicit_reviewed_consumer_selects_canonical_derived_report_without_environment_flag(monkeypatch):
+    monkeypatch.delenv('LEDGER_DERIVED_ATTRIBUTION_ENABLED',raising=False)
+    db=DB()
+    with patch('shared.accounting.published_report.read_monthly_economic_report',AsyncMock(return_value=report())) as reader:
+        result=await read_published_report(db,'main',1000,2000,'month:1970-01',include_derived_attribution=True)
+    assert result['report_version']=='exchange-income-v1-derived-v1'
+    assert db.connection.fetchrow.await_args.args[-1]=='exchange-income-v1-derived-v1'
+    assert reader.await_args.kwargs['include_derived_attribution'] is True
