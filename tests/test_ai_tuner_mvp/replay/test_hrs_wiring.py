@@ -110,6 +110,8 @@ def _hrs_fixture(tmp_path, *, missing=None, entry_type='MARKET', subbars=False, 
                    'circuit_breakers':{},'daily_open_count':{'short':0,'long':0},
                    'daily_reset_date':AT.date().isoformat(),'consecutive_losses':0,
                    'drawdown_pause_until':None,'stop_loss_monitor':{},'market_cooldowns':{},'total_pnl':'0'}}
+    bootstrap['monitoring_model']={'version':'hrs_cycle_monitor_v1',
+        'cadence_seconds':config.get('cycle',{}).get('check_interval_seconds',3600),'anchor_at':start.isoformat()}
     if subbars:
         bootstrap['execution_model']={'version':'hrs_1m_volume_v1','participation_rate':'.01','timeout_minutes':15}
     inputs=[]
@@ -126,6 +128,7 @@ def _hrs_fixture(tmp_path, *, missing=None, entry_type='MARKET', subbars=False, 
                        'pre_entry_oi_usd':'20000000','pre_entry_funding_rate':'-.001'},
              'risk':{'pool_index':None,'pool_index_12h':None,'exchange_position_clear':True,'claims_clear':True,
                      'allocation':'10000','entry_policy':bootstrap['entry_policy'],'account_equity_excluding_hrs':'0'}}
+        row['config_hashes']=dict(bootstrap['config_hashes'])
         if market_patch:
             row['market'].update(market_patch)
         if omit_preentry:

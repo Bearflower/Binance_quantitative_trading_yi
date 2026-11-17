@@ -70,6 +70,7 @@ class HrsAdapter:
         self._protection = {}
         self._best = {}
         self._reviews = {}
+        self._last_monitor = {}
         self._seq = 0
         self._income_seq = 0
         self._pending_income = []
@@ -179,7 +180,7 @@ class HrsAdapter:
                     atr=_positive(row['atr']),grade='',entry_time=opened,entry_mode=row['entry_mode'],
                     exit_ratios=ratios,exit_parameters=params,tp1_hit=row['target1_reached'],tp2_hit=row['target2_reached'],
                     **protective)
-                restored={'position':position,'mark_price':_positive(row['mark_price'])}
+                restored={'position':position,'mark_price':_positive(row['mark_price']),'mark_observed_at':mark_at}
                 for key in ('entry_fee_remaining','entry_slippage_remaining','funding_accrued','mae','mfe'):
                     value=Decimal(str(row[key]))
                     if not value.is_finite() or (key in ('entry_fee_remaining','entry_slippage_remaining') and value>0):
@@ -204,7 +205,7 @@ class HrsAdapter:
         return tuple(result)
 
     def initialize_portfolio(self,ctx):
-        equity=self._marked_equity(ctx.portfolio)
+        equity=self._marked_equity(ctx.portfolio,as_of=self._start)
         current=next((sample for sample in self._history if sample.as_of==self._start),None)
         if current is None or current.equity!=equity or current.units!=self._units:
             raise DataBlocked(['hrs_opening_equity_checkpoint_mismatch'])
@@ -215,13 +216,16 @@ class HrsAdapter:
         return self._portal.hrs_cash_flows()
 
     @staticmethod
-    def _marked_equity(portfolio):
+    def _marked_equity(portfolio, *, as_of=None):
         equity=portfolio.realized_equity
         for position in portfolio.positions:
             if position.is_open():
                 mark=portfolio.last_prices.get(position.symbol)
                 if mark is None:
                     raise DataBlocked(['hrs_position_mark_missing:'+position.symbol])
+                marked_at=portfolio.last_price_times.get(position.symbol)
+                if as_of is not None and (marked_at is None or not timedelta(0)<=as_of-marked_at<=timedelta(seconds=120)):
+                    raise DataBlocked(['hrs_stale_position_mark:'+position.symbol])
                 equity+=position.current_quantity*(mark-position.entry_price)*(1 if position.direction=='LONG' else -1)
         return equity
 
@@ -231,7 +235,7 @@ class HrsAdapter:
         amount=Decimal(str(row['amount']))
         if not amount.is_finite():
             raise DataBlocked(['hrs_cashflow_amount_invalid'])
-        nav=self._marked_equity(ctx.portfolio)/self._units
+        nav=self._marked_equity(ctx.portfolio,as_of=parse_utc(row["occurred_at"]))/self._units
         self._units+=amount/nav
         if self._units<=0:
             raise DataBlocked(['hrs_cashflow_units_nonpositive'])
@@ -260,6 +264,23 @@ class HrsAdapter:
                     raise DataBlocked(['hrs_execution_subbar_coverage_gap:'+symbol])
         elif entry_type != 'MARKET':
             raise DataBlocked(['hrs_entry_order_type_unsupported'])
+        model=self._portal.hrs_replay_state(self._start).get('monitoring_model')
+        try:
+            if not isinstance(model,dict) or model.get('version')!='hrs_cycle_monitor_v1':
+                raise ValueError('version_missing_or_unsupported')
+            cadence=model['cadence_seconds']
+            configured=self.config.get('cycle',{}).get('check_interval_seconds',3600)
+            anchor=parse_utc(model['anchor_at'])
+            if type(cadence) is not int or cadence<=0 or cadence%60 or cadence!=configured:
+                raise ValueError('cadence_config_or_resolution_mismatch')
+            if anchor>self._start or anchor.second or anchor.microsecond:
+                raise ValueError('anchor_not_on_execution_boundary')
+            if self.execution_interval=='1h' and cadence%3600:
+                raise ValueError('cadence_requires_one_minute_execution')
+        except (KeyError,TypeError,ValueError) as exc:
+            raise DataBlocked(['hrs_monitoring_model_invalid:'+str(exc)]) from exc
+        self._monitor_cadence=cadence
+        self._monitor_anchor=anchor
 
     def on_bar(self,bar,ctx):
         key = (bar.symbol,bar.interval)
@@ -296,6 +317,10 @@ class HrsAdapter:
             return ()
         self._bootstrap(ctx)
         raw = self._portal.hrs_inputs(symbol,now)
+        if 'config_hashes' not in raw:
+            raise DataBlocked(['hrs_decision_config_identity_missing'])
+        if raw['config_hashes']!=ctx.config_hashes.as_dict():
+            raise DataBlocked(['hrs_config_change_requires_partition'])
         try:
             scan, market, risk = raw['candidate_scan'],raw['market'],raw['risk']
             if scan['complete'] is not True or parse_utc(scan['as_of']) > now:
@@ -319,12 +344,20 @@ class HrsAdapter:
                     raise DataBlocked(['hrs_risk_inputs_missing:'+key])
         except (KeyError,TypeError,ValueError) as exc:
             raise DataBlocked(['hrs_decision_inputs_invalid:'+str(exc)]) from exc
-        self._allocation=_positive(risk['allocation'])
+        allocation=Decimal(str(risk['allocation']))
+        if not allocation.is_finite() or allocation<0:
+            raise DataBlocked(['hrs_allocation_invalid'])
+        if allocation<self._allocation:
+            leverage=_positive(self.config.get('trading',{}).get('leverage',2))
+            occupied=sum((p.current_quantity*p.entry_price/leverage for p in ctx.portfolio.positions if p.is_open()),ZERO)
+            if occupied>allocation+Decimal('0.00000001'):
+                raise DataBlocked(['hrs_allocation_cut_liquidation_not_wired'])
+        self._allocation=allocation
         self._policy=risk['entry_policy']
         other_equity=Decimal(str(risk['account_equity_excluding_hrs']))
         if not other_equity.is_finite():
             raise DataBlocked(['hrs_other_account_equity_invalid'])
-        self._account_equity=_positive(other_equity+self._marked_equity(ctx.portfolio))
+        self._account_equity=_positive(other_equity+self._marked_equity(ctx.portfolio,as_of=now))
         klines = [_kline(item) for item in self._bars[(symbol,'1h')]]
         klines4 = [_kline(item) for item in self._bars[(symbol,'4h')]]
         if not klines4:
@@ -545,13 +578,7 @@ class HrsAdapter:
         return None
 
     def _loss_gate_denial(self,now,ctx):
-        equity=ctx.portfolio.realized_equity
-        for p in ctx.portfolio.positions:
-            if p.is_open():
-                mark=ctx.portfolio.last_prices.get(p.symbol)
-                if mark is None:
-                    raise DataBlocked(['hrs_position_mark_missing:'+p.symbol])
-                equity += p.current_quantity*(mark-p.entry_price)*(1 if p.direction=='LONG' else -1)
+        equity=self._marked_equity(ctx.portfolio,as_of=now)
         current=EquityCheckpoint(self._segment,now,equity,self._units,equity/self._units)
         self._history=[p for p in self._history if p.as_of!=now]+[current]
         gate=evaluate_loss_gate(self._gate,current,GateHistory(tuple(self._history),self._history_from,now,True),
@@ -593,6 +620,46 @@ class HrsAdapter:
                     trigger_price=self._protection[position.symbol][role+'_price'],reduce_only=True,close_quantity=quantity))
         return tuple(result)
 
+    def on_execution_bar(self,bar,ctx):
+        """Poll trailing state only on the declared, versioned monitor schedule.
+
+        Minute-close quotes are a stated sampling model, not intraminute peaks.
+        New native protection becomes active after this close for future bars.
+        """
+        now=bar.close_time
+        elapsed=(now-self._monitor_anchor).total_seconds()
+        if elapsed<0 or elapsed%self._monitor_cadence or self._last_monitor.get(bar.symbol)==now:
+            return ()
+        self._last_monitor[bar.symbol]=now
+        result=[]
+        for position in ctx.portfolio.positions:
+            if position.symbol!=bar.symbol or not position.is_open() or not position.entry_complete:
+                continue
+            if position.position_id not in self._protected:
+                raise DataBlocked(['hrs_position_protection_not_initialized:'+position.symbol])
+            direction=position.direction.lower()
+            current=bar.close
+            best=self._best[position.position_id]
+            best=min(best,current) if direction=='short' else max(best,current)
+            self._best[position.position_id]=best
+            if position.tp2_hit:
+                params=position.exit_parameters
+                filters=self._portal.symbol_filters(position.symbol)
+                trigger=exits.trailing_stop_price(direction,best,position.atr,filters['tick_size'],params,self.config)
+                software_multiplier=Decimal(str(self.config.get('trading',{}).get('trailing',{}).get('atr_multiplier',1.5)))
+                retracement=current-best if direction=='short' else best-current
+                if retracement>=position.atr*software_multiplier:
+                    result.append(self._intent(position.symbol,direction,position.current_quantity,'TRAILING_STOP',
+                        reduce_only=True,reference_price=current,close_quantity=position.current_quantity))
+                else:
+                    self._protection[position.symbol]['stop_loss_price']=trigger
+                    result.append(self._intent(position.symbol,direction,position.current_quantity,'STOP_LOSS',
+                        order_type='STOP',trigger_price=trigger,reduce_only=True))
+                self._record(now,'hrs_monitor',{'symbol':position.symbol,'position_id':position.position_id,
+                    'model':'hrs_cycle_monitor_v1','cadence_seconds':self._monitor_cadence,
+                    'quote':str(current),'best_price':str(best),'trailing_price':str(trigger)})
+        return tuple(result)
+
     def _exit_intents(self,symbol,now,analysis,ctx,market):
         result=[]
         for position in ctx.portfolio.positions:
@@ -602,16 +669,6 @@ class HrsAdapter:
                 raise DataBlocked(['hrs_position_protection_not_initialized:'+symbol])
             direction=position.direction.lower()
             current=Decimal(str(market['entry_price']))
-            best=self._best[position.position_id]
-            best=min(best,current) if direction=='short' else max(best,current)
-            self._best[position.position_id]=best
-            if position.tp2_hit:
-                params=position.exit_parameters
-                filters=self._portal.symbol_filters(symbol)
-                trigger=exits.trailing_stop_price(direction,best,position.atr,filters['tick_size'],params,self.config)
-                self._protection[symbol]['stop_loss_price']=trigger
-                result.append(self._intent(symbol,direction,position.current_quantity,'STOP_LOSS',order_type='STOP',
-                    trigger_price=trigger,reduce_only=True))
             if not position.tp1_hit and now>=self._reviews[position.position_id]:
                 cfg=self.config.get('trading',{}).get('time_stop',{}).get('reanalyze',{})
                 held=None
@@ -682,11 +739,11 @@ class HrsAdapter:
 
     def on_portfolio_mark(self,at,ctx):
         self._bootstrap(ctx)
-        equity=self._marked_equity(ctx.portfolio)
+        equity=self._marked_equity(ctx.portfolio,as_of=at)
         if hasattr(self,'_ledger_state'):
             marks=tuple(PositionMark(p.position_id,self._segment,
                 p.current_quantity*(1 if p.direction=='LONG' else -1),p.entry_price,
-                ctx.portfolio.last_prices[p.symbol],at,True) for p in ctx.portfolio.positions if p.is_open())
+                ctx.portfolio.last_prices[p.symbol],ctx.portfolio.last_price_times[p.symbol],True) for p in ctx.portfolio.positions if p.is_open())
             observation=LedgerObservation(at,self._segment,tuple(self._pending_income),tuple(self._pending_flows),
                 marks,at,at,True,True)
             try:

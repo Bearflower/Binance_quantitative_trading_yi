@@ -174,10 +174,18 @@ def run_replay(
                     ctx.portfolio = broker.view()
                     adapter.on_bar(pending_event.payload, ctx)
                     if pending_event.payload.interval == execution_interval:
-                        broker.last_prices[pending_event.payload.symbol]=pending_event.payload.close
+                        broker.set_mark_price(pending_event.payload.symbol,pending_event.payload.close,pending_event.payload.close_time)
         for event in simultaneous_events:
             if event.kind == FUNDING:
-                broker.settle_funding(event.subject, event.payload, event.time)
+                position=broker.positions.get(event.subject)
+                if (getattr(adapter,'requires_attested_funding',False) and position is not None and position.is_open()):
+                    mark=portal.funding_mark_at(event.subject,event.time)
+                    broker.set_mark_price(event.subject,mark['price'],mark['marked_at'])
+                    provenance={key:str(value) for key,value in mark.items() if key!='price'}
+                    broker.settle_funding(event.subject,event.payload,event.time,
+                        mark_price=mark['price'],mark_provenance=provenance)
+                else:
+                    broker.settle_funding(event.subject, event.payload, event.time)
                 funding_received.add(event.subject)
             elif event.kind == FUNDING_CHECK:
                 missing = [
@@ -213,6 +221,12 @@ def run_replay(
                             entry_ts=bar.close_time if execution_interval == '1m' else bar.open_time)
                     else:
                         broker.on_bar(bar.symbol, bar, bar.close_time)
+                    if hasattr(adapter,'on_execution_bar'):
+                        ctx.portfolio=broker.view()
+                        maintenance=adapter.on_execution_bar(bar,ctx)
+                        if maintenance:
+                            broker.submit(maintenance,bar,bar.close_time)
+                        _apply_protective_prices(broker,adapter,bar.symbol)
                     last_bar_close[bar.symbol] = bar.close_time
                 ctx.portfolio = broker.view()
                 if not batch_bars:

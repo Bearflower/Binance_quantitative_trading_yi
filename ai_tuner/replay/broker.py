@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import ROUND_DOWN, ROUND_HALF_UP, ROUND_UP, Decimal
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -182,6 +182,7 @@ class PortfolioView:
     positions: Tuple[Position, ...]
     last_prices: Dict[str, Decimal]
     realized_equity: Decimal
+    last_price_times: Dict[str, datetime] = field(default_factory=dict)
 
 
 class VirtualBroker:
@@ -210,6 +211,7 @@ class VirtualBroker:
         self.realized_equity = initial_equity
         self.positions: Dict[str, Position] = {}
         self.last_prices: Dict[str, Decimal] = {}
+        self.last_price_times: Dict[str, datetime] = {}
         self._pending_entries: Dict[str, List[Order]] = {}
         self._working_exits: Dict[str, List[Order]] = {}
 
@@ -239,7 +241,7 @@ class VirtualBroker:
             if position.symbol in self.positions or not position.is_open():
                 raise DataBlocked(['initial_position_duplicate_or_closed:'+position.symbol])
             self.positions[position.symbol]=position
-            self.last_prices[position.symbol]=item['mark_price']
+            self.set_mark_price(position.symbol,item['mark_price'],item['mark_observed_at'])
             self._entry_fee[position.position_id]=item['entry_fee_remaining']
             self._entry_slip[position.position_id]=item['entry_slippage_remaining']
             self._funding_acc[position.position_id]=item['funding_accrued']
@@ -271,20 +273,31 @@ class VirtualBroker:
                after_entries: Optional[Callable[[], None]] = None,
                entry_ts: Optional[datetime] = None) -> None:
         """推进一根 K 线：先按开盘价执行待成交入场，再按固定优先级处理退出。"""
-        self.last_prices[symbol] = bar.close
+        self.set_mark_price(symbol,bar.close,bar.close_time)
         self._execute_pending_entries(symbol, bar, entry_ts or ts)
         if after_entries is not None:
             after_entries()
         self._evaluate_exits(symbol, bar, ts)
         self._update_mae_mfe(symbol, bar)
 
-    def settle_funding(self, symbol: str, rate: Decimal, ts: datetime) -> None:
+    def set_mark_price(self, symbol: str, price: Decimal, observed_at: datetime) -> None:
+        """Retain the actual source time; viewing/valuing never refreshes it."""
+        if not price.is_finite() or price <= ZERO or observed_at.tzinfo is None:
+            raise DataBlocked(['position_mark_invalid:'+symbol])
+        previous=self.last_price_times.get(symbol)
+        if previous is None or observed_at>=previous:
+            self.last_prices[symbol]=price
+            self.last_price_times[symbol]=observed_at
+
+    def settle_funding(self, symbol: str, rate: Decimal, ts: datetime, *,
+                       mark_price: Optional[Decimal] = None,
+                       mark_provenance: Optional[dict] = None) -> None:
         """计提一次资金费结算（mark_price 用 entry_price 近似）。"""
         position = self.positions.get(symbol)
         if position is None or not position.is_open():
             return
         contribution = sum_funding_fee(
-            position.current_quantity, position.entry_price, position.direction, (rate,)
+            position.current_quantity, mark_price if mark_price is not None else position.entry_price, position.direction, (rate,)
         )
         self._funding_acc[position.position_id] = (
             self._funding_acc.get(position.position_id, ZERO) + contribution
@@ -298,6 +311,8 @@ class VirtualBroker:
                 "position_id": position.position_id,
                 "funding_rate": str(rate),
                 "contribution": str(contribution),
+                **({"mark_price":str(mark_price),"mark_provenance":mark_provenance}
+                   if mark_price is not None else {}),
             },
         )
 
@@ -332,6 +347,7 @@ class VirtualBroker:
             positions=tuple(self.positions[symbol] for symbol in sorted(self.positions)),
             last_prices=dict(self.last_prices),
             realized_equity=self.realized_equity,
+            last_price_times=dict(self.last_price_times),
         )
 
     def final_position(self) -> Optional[Position]:
@@ -580,6 +596,12 @@ class VirtualBroker:
                 return
             trigger = order.intent.trigger_price
             if trigger is None:
+                continue
+            if (order.intent.strategy_id=='hrs' and order.intent.reason in ('TP1','TP2')
+                    and order.created_at>=bar.close_time):
+                # The bracket became available at this close. The earlier high/
+                # low cannot prove a favorable post-fill path. Adverse stops
+                # retain the conservative same-bar priority.
                 continue
             if not self._trigger_crossed(order.intent, trigger, bar):
                 continue
