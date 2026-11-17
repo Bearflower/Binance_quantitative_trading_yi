@@ -91,7 +91,7 @@ def _portal(tmp_path: Path, include_4h_file: bool = True, empty_4h: bool = False
 def _snapshot(
     rows: Any = (),
     complete: bool = True,
-    as_of: Any = AS_OF,
+    as_of: Any = WINDOW_START,
 ) -> Dict[str, Any]:
     """构造一条历史快照记录（``as_of`` 支持 datetime 或 ISO 字符串）。"""
     return {"as_of": as_of, "complete": complete, "rows": list(rows)}
@@ -137,13 +137,13 @@ def test_prepare_succeeds_when_all_state_tables_present(tmp_path):
     adapter = HrsAdapter(loader)
     ctx = adapter.prepare(portal)
 
-    assert seen == [AS_OF]
+    assert seen == [WINDOW_START]
     assert ctx.strategy_id == "hrs"
     assert ctx.as_of == AS_OF
     assert ctx.universe.strategy_id == "hrs"
     assert ctx.extras["state"] == state
     assert ctx.extras["state"]["hrs_blacklist"] == {
-        "as_of": AS_OF,
+        "as_of": WINDOW_START,
         "complete": True,
         "rows": [],
     }
@@ -173,9 +173,9 @@ def test_snapshot_accepts_iso8601_as_of(tmp_path):
     """快照 as_of 允许 ISO 字符串，与 portal.as_of 统一转 datetime 后相等即通过。"""
     portal = _portal(tmp_path)
     state = _full_state()
-    state["hrs_blacklist"] = _snapshot([], as_of="2026-10-22T00:00:00Z")
+    state["hrs_blacklist"] = _snapshot([], as_of=WINDOW_START.isoformat())
     ctx = HrsAdapter(lambda as_of: state).prepare(portal)
-    assert ctx.extras["state"]["hrs_blacklist"]["as_of"] == "2026-10-22T00:00:00Z"
+    assert ctx.extras["state"]["hrs_blacklist"]["as_of"] == WINDOW_START.isoformat()
 
 
 @pytest.mark.parametrize("missing_table", HrsAdapter.REQUIRED_STATE_TABLES)
@@ -261,23 +261,21 @@ def test_empty_4h_kline_rows_raise_data_blocked(tmp_path):
     assert "kline_empty:{0}:4h".format(SYMBOL) in excinfo.value.gaps
 
 
-def test_intents_raise_qualification_blocked(tmp_path):
-    """决策未接线时 intents 必须显式阻断，绝不返回空意图。"""
+def test_intents_block_when_raw_historical_runtime_is_missing(tmp_path):
+    """Wired strategy requires actual raw bootstrap facts, not fabricated zeros."""
     adapter = HrsAdapter(lambda as_of: _full_state())
-    ctx = adapter.prepare(_portal(tmp_path))
-
-    with pytest.raises(QualificationBlocked) as excinfo:
+    portal = _portal(tmp_path)
+    ctx = adapter.prepare(portal)
+    adapter.on_bar(portal.bars(SYMBOL, '1h')[0], ctx)
+    with pytest.raises(DataBlocked, match='hrs_replay_state'):
         adapter.intents(ctx)
-    assert "hrs_decision_not_wired" in excinfo.value.reasons
 
 
 def test_run_replay_blocks_instead_of_zero_trade_result(tmp_path):
-    """端到端：接线前 run_replay 抛 QualificationBlocked，而不是产出零交易成功结果。"""
+    """Missing historical raw inputs must not become a successful zero-trade run."""
     adapter = HrsAdapter(lambda as_of: _full_state())
-
-    with pytest.raises(QualificationBlocked) as excinfo:
+    with pytest.raises(DataBlocked, match='hrs_replay_state'):
         run_replay(_portal(tmp_path), adapter, _broker())
-    assert "hrs_decision_not_wired" in excinfo.value.reasons
 
 
 def _call_names(source: str) -> List[str]:
@@ -321,8 +319,11 @@ def test_source_import_whitelist():
             module in ALLOWED_ABSOLUTE
             or module == "ai_tuner.replay"
             or module.startswith("ai_tuner.replay.")
+            or module in {"strategies.hrs", "strategies.hrs.scoring_engine",
+                          "strategies.hrs.pattern", "strategies.hrs.risk_budget",
+                          "strategies.hrs.loss_gate", "strategies.hrs.risk_ledger"}
         ), "非法绝对 import：{0}".format(module)
 
     for target in import_targets(path):
-        assert not target.lstrip(".").startswith("strategies"), "不得 import {0}".format(target)
+        assert not target.lstrip(".").startswith("strategies.hrs.strategy"), "不得 import {0}".format(target)
         assert not target.lstrip(".").startswith("backtest"), "不得 import {0}".format(target)

@@ -358,6 +358,7 @@ class DataPortal:
             self.guard(bucket_end, "external_snapshot", "bucket_end", cutoff)
             if row.get("symbol") != symbol:
                 continue
+            self.guard(parse_utc(row["observed_at"]), "external_snapshot", "observed_at", cutoff)
             source_observed_at = parse_utc(
                 row.get("source_observed_at") or row.get("observed_at") or bucket_end
             )
@@ -377,6 +378,7 @@ class DataPortal:
                 market_cap_source=row.get("market_cap_source", "missing"),
                 payload_hash=row.get("payload_hash", ""),
                 is_complete=bool(row.get("is_complete")) and source_ok,
+                bucket_end=bucket_end,
             )
             result.append(snap)
         return tuple(result)
@@ -433,6 +435,53 @@ class DataPortal:
             overlay_hash=raw["overlay_hash"],
         )
 
+    def hrs_replay_state(self, as_of: datetime) -> Dict[str, Any]:
+        """Manifest-bound bootstrap facts; never substitute terminal/current state."""
+        cutoff = self.cutoff(as_of, "hrs_replay_state")
+        self._require_dataset("hrs_replay_state.json")
+        raw = self._read_json("hrs_replay_state.json")
+        if not isinstance(raw, dict) or raw.get("complete") is not True:
+            raise DataBlocked(["hrs_bootstrap_incomplete"])
+        if parse_utc(raw["as_of"]) != cutoff:
+            raise DataBlocked(["hrs_bootstrap_as_of_mismatch"])
+        return raw
+
+    def hrs_inputs(self, symbol: str, as_of: datetime) -> Dict[str, Any]:
+        """Return one complete raw-input envelope available at this decision."""
+        cutoff = self.cutoff(as_of, "hrs_inputs")
+        self._require_dataset("hrs_decision_inputs.jsonl")
+        rows = [row for row in self._read_jsonl("hrs_decision_inputs.jsonl")
+                if row.get("symbol") == symbol and parse_utc(row["decision_at"]) == cutoff]
+        if len(rows) != 1:
+            raise DataBlocked(["hrs_decision_inputs_missing_or_duplicate:"+symbol])
+        raw = rows[0]
+        self.guard(parse_utc(raw["observed_at"]), "hrs_inputs", "observed_at", cutoff)
+        if raw.get("complete") is not True:
+            raise DataBlocked(["hrs_decision_inputs_incomplete:"+symbol])
+        return raw
+
+    def hrs_cash_flows(self) -> Tuple[Dict[str, Any], ...]:
+        """Explicit complete external cashflow inventory, including certified empty."""
+        self._require_dataset('hrs_cash_flows.jsonl')
+        result=[]
+        seen=set()
+        for row in self._read_jsonl('hrs_cash_flows.jsonl'):
+            at=parse_utc(row['occurred_at'])
+            observed=parse_utc(row['observed_at'])
+            if row.get('verified') is not True or not row.get('event_id') or row['event_id'] in seen:
+                raise DataBlocked(['hrs_cashflow_unverified_or_duplicate'])
+            if observed>at:
+                raise DataBlocked(['hrs_cashflow_not_available_at_event'])
+            self.guard(at,'hrs_cash_flows','occurred_at',self.as_of)
+            seen.add(row['event_id'])
+            if self.window_start<at<=self.as_of:
+                result.append(dict(row))
+        return tuple(sorted(result,key=lambda row:(parse_utc(row['occurred_at']),row['event_id'])))
+
+    def funding_schedule_evidence(self) -> Dict[str, Any]:
+        self._require_dataset("funding_schedule_evidence.json")
+        return self._read_json("funding_schedule_evidence.json")
+
     def symbol_filters(self, symbol: str) -> Dict[str, Decimal]:
         """返回 ``{tick_size, step_size, min_notional}``（来自 exchangeInfo 快照）。"""
         raw = self._read_json("exchange_info.json")
@@ -446,6 +495,7 @@ class DataPortal:
                 return {
                     "tick_size": dec(price_filter.get("tickSize", "0.01")),
                     "step_size": dec(lot_size.get("stepSize", "0.001")),
+                    "min_qty": _optional_dec(lot_size.get("minQty")),
                     "min_notional": dec(min_notional.get("notional") or min_notional.get("minNotional") or "5"),
                 }
         raise DataBlocked(["exchange_info_symbol_missing:{0}".format(symbol)])

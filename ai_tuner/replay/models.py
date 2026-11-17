@@ -199,6 +199,7 @@ class ExternalSnapshot:
     market_cap_source: str
     payload_hash: str
     is_complete: bool
+    bucket_end: Optional[datetime] = None
 
 
 @dataclass(frozen=True)
@@ -258,8 +259,18 @@ class OrderIntent:
     close_ratio: Decimal = Decimal("1")
     grade: Optional[str] = None
     reference_price: Optional[Decimal] = None
+    close_quantity: Optional[Decimal] = None
+    atr: Decimal = ZERO
+    entry_mode: str = "standard"
+    geometry_reference_price: Optional[Decimal] = None
+    exit_ratios: Optional[Tuple[Decimal, Decimal]] = None
+    exit_parameters: Optional[dict] = None
+    execution_model: Optional[dict] = None
+    expires_at: Optional[datetime] = None
 
     def __post_init__(self) -> None:
+        if self.close_quantity is not None and (not self.close_quantity.is_finite() or self.close_quantity <= ZERO):
+            raise ValueError("close_quantity must be finite and positive")
         if self.side not in SIDES:
             raise ValueError("OrderIntent.side 非法：{0}".format(self.side))
         if self.order_type not in ORDER_TYPES:
@@ -318,6 +329,12 @@ class Position:
     trailing_activated: bool = False
     tp1_hit: bool = False
     tp2_hit: bool = False
+    entry_mode: str = "standard"
+    geometry_reference_price: Optional[Decimal] = None
+    exit_ratios: Optional[Tuple[Decimal, Decimal]] = None
+    exit_parameters: Optional[dict] = None
+
+    entry_complete: bool = True
 
     def is_open(self) -> bool:
         return self.current_quantity > ZERO

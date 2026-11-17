@@ -13,10 +13,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import ROUND_DOWN, ROUND_HALF_UP, ROUND_UP, Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.trade_logger import TradeLogger
 
@@ -27,6 +27,7 @@ from .models import (
     Fill,
     Order,
     OrderIntent,
+    DataBlocked,
     Position,
     ZERO,
 )
@@ -224,10 +225,27 @@ class VirtualBroker:
         self._mfe: Dict[str, Decimal] = {}
         self._order_seq = 0
         self._trade_seq = 0
+        self._partial_entries: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # 对外：提交意图 / 推进 K 线 / 资金费 / 盯市
     # ------------------------------------------------------------------
+    def restore_initial_positions(self, restorations) -> None:
+        """Restore attested opening inventory and unallocated lifecycle costs."""
+        if self.positions or self.fills or self._pending_entries:
+            raise DataBlocked(['initial_broker_state_not_empty'])
+        for item in restorations:
+            position=item['position']
+            if position.symbol in self.positions or not position.is_open():
+                raise DataBlocked(['initial_position_duplicate_or_closed:'+position.symbol])
+            self.positions[position.symbol]=position
+            self.last_prices[position.symbol]=item['mark_price']
+            self._entry_fee[position.position_id]=item['entry_fee_remaining']
+            self._entry_slip[position.position_id]=item['entry_slippage_remaining']
+            self._funding_acc[position.position_id]=item['funding_accrued']
+            self._mae[position.position_id]=item['mae']
+            self._mfe[position.position_id]=item['mfe']
+
     def submit(self, intents: Tuple[OrderIntent, ...], bar: Any, ts: datetime) -> None:
         """接收适配器意图。
 
@@ -249,10 +267,14 @@ class VirtualBroker:
                 else:
                     self._pending_entries.setdefault(intent.symbol, []).append(order)
 
-    def on_bar(self, symbol: str, bar: Any, ts: datetime) -> None:
+    def on_bar(self, symbol: str, bar: Any, ts: datetime, *,
+               after_entries: Optional[Callable[[], None]] = None,
+               entry_ts: Optional[datetime] = None) -> None:
         """推进一根 K 线：先按开盘价执行待成交入场，再按固定优先级处理退出。"""
         self.last_prices[symbol] = bar.close
-        self._execute_pending_entries(symbol, bar, ts)
+        self._execute_pending_entries(symbol, bar, entry_ts or ts)
+        if after_entries is not None:
+            after_entries()
         self._evaluate_exits(symbol, bar, ts)
         self._update_mae_mfe(symbol, bar)
 
@@ -278,6 +300,12 @@ class VirtualBroker:
                 "contribution": str(contribution),
             },
         )
+
+    def apply_cash_flow(self, amount: Decimal, ts: datetime, event_id: str) -> None:
+        if not amount.is_finite() or self.realized_equity+amount<=ZERO:
+            raise DataBlocked(['cashflow_invalid'])
+        self.realized_equity+=amount
+        self._event(ts,'cash_flow',dict(event_id=event_id,amount=str(amount)))
 
     def mark(self, ts: datetime) -> EquityPoint:
         """生成盯市权益点。"""
@@ -340,6 +368,11 @@ class VirtualBroker:
             trailing_activated=position.trailing_activated,
             tp1_hit=position.tp1_hit,
             tp2_hit=position.tp2_hit,
+            entry_mode=position.entry_mode,
+            geometry_reference_price=position.geometry_reference_price,
+            exit_ratios=position.exit_ratios,
+            exit_parameters=position.exit_parameters,
+            entry_complete=position.entry_complete,
         )
 
     # ------------------------------------------------------------------
@@ -362,7 +395,9 @@ class VirtualBroker:
         orders = self._pending_entries.pop(symbol, [])
         for order in sorted(orders, key=lambda o: o.intent.seq):
             intent = order.intent
-            if intent.order_type == "MARKET":
+            if intent.execution_model is not None:
+                self._execute_hrs_limit_entry(order, bar, ts)
+            elif intent.order_type == "MARKET":
                 self._open_market_position(order, bar.open, ts)
             elif intent.order_type in ("LIMIT", "STOP"):
                 trigger = intent.limit_price if intent.order_type == "LIMIT" else intent.trigger_price
@@ -375,7 +410,78 @@ class VirtualBroker:
             else:
                 self._reject(order, ts, "ENTRY_ORDER_TYPE_UNSUPPORTED")
 
-    def _open_market_position(self, order: Order, reference_price: Decimal, ts: datetime) -> None:
+    def _execute_hrs_limit_entry(self, order: Order, bar: Any, ts: datetime) -> None:
+        """Declared conservative 1m participation model, not an exchange fill claim."""
+        intent, model = order.intent, order.intent.execution_model
+        try:
+            participation = Decimal(str(model['participation_rate']))
+            timeout = model['timeout_minutes']
+            if (model['version'] != 'hrs_1m_volume_v1' or not participation.is_finite()
+                    or not ZERO < participation <= Decimal('1') or type(timeout) is not int or timeout <= 0
+                    or bar.interval != '1m' or intent.order_type != 'LIMIT' or intent.expires_at is None):
+                raise ValueError('invalid_execution_model')
+            if (intent.expires_at-order.created_at).total_seconds() != timeout*60:
+                raise ValueError('execution_timeout_mismatch')
+            if not bar.volume.is_finite() or bar.volume < ZERO:
+                raise ValueError('execution_volume_invalid')
+        except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
+            raise DataBlocked(['hrs_execution_model_invalid:'+str(exc)]) from exc
+        symbol = intent.symbol
+        if bar.open_time < order.created_at:
+            self._pending_entries.setdefault(symbol,[]).append(order)
+            return
+        filters = self.filters[symbol]
+        existing = self.positions.get(symbol)
+        owned = self._partial_entries.get(order.order_id)
+        if existing is not None and existing.is_open() and owned != existing.position_id:
+            self._reject(order,ts,'POSITION_EXISTS')
+            return
+        filled = ZERO
+        if bar.open_time < intent.expires_at and price_crosses_limit(intent.limit_price,bar.high,bar.low,intent.side):
+            filled = min(intent.quantity,round_quantity(bar.volume*participation,filters.step_size))
+        remaining = intent.quantity-filled
+        if filled > ZERO:
+            fill_intent=replace(intent,quantity=filled)
+            fill_order=replace(order,intent=fill_intent)
+            if owned is None:
+                self._open_market_position(fill_order,intent.limit_price,ts,complete=remaining<=ZERO)
+                position=self.positions.get(symbol)
+                if position is None or not position.is_open():
+                    return
+                self._partial_entries[order.order_id]=position.position_id
+            else:
+                position=self.positions[symbol]
+                fill_price=round_price(intent.limit_price,filters.tick_size)
+                notional=filled*fill_price
+                fee,slip=taker_fee_notional(notional,self.fee_bps),slippage_cost(notional,self.slippage_bps)
+                self.realized_equity += fee+slip
+                total=position.entry_quantity+filled
+                average=(position.entry_price*position.entry_quantity+fill_price*filled)/total
+                self.positions[symbol]=replace(position,entry_price=average,entry_quantity=total,
+                    current_quantity=position.current_quantity+filled,entry_complete=remaining<=ZERO)
+                self._entry_fee[position.position_id]+=fee
+                self._entry_slip[position.position_id]+=slip
+                self.fills.append(Fill(order.order_id,fill_price,filled,fee,slip,ts))
+                self._event(ts,'fill',dict(order_id=order.order_id,symbol=symbol,side='OPEN_'+intent.side,
+                    price=str(fill_price),quantity=str(filled),fee=str(fee),slippage=str(slip),reason=intent.reason))
+        if remaining<=ZERO:
+            self._partial_entries.pop(order.order_id,None)
+            self._event(ts,'entry_complete',dict(symbol=symbol,order_id=order.order_id,
+                execution_model=model['version']))
+            return
+        if bar.close_time>=intent.expires_at:
+            position=self.positions.get(symbol)
+            if position is not None and position.is_open() and self._partial_entries.get(order.order_id)==position.position_id:
+                close_intent=replace(intent,quantity=position.current_quantity,reason='ENTRY_TIMEOUT',order_type='MARKET',
+                    reduce_only=True,close_quantity=position.current_quantity,execution_model=None)
+                self._close_position(replace(order,intent=close_intent),bar.close,ts)
+            self._partial_entries.pop(order.order_id,None)
+            self._event(ts,'entry_timeout',dict(symbol=symbol,order_id=order.order_id,remaining=str(remaining),
+                execution_model=model['version']))
+            return
+        self._pending_entries.setdefault(symbol,[]).append(replace(order,intent=replace(intent,quantity=remaining)))
+
+    def _open_market_position(self, order: Order, reference_price: Decimal, ts: datetime, *, complete: bool = True) -> None:
         intent = order.intent
         symbol = intent.symbol
         if symbol in self.positions and self.positions[symbol].is_open():
@@ -389,7 +495,7 @@ class VirtualBroker:
 
         fill_price = round_price(reference_price, symbol_filters.tick_size)
         quantity = round_quantity(
-            clamp_notional(intent.quantity, fill_price, symbol_filters.min_notional),
+            intent.quantity if intent.execution_model is not None else clamp_notional(intent.quantity, fill_price, symbol_filters.min_notional),
             symbol_filters.step_size,
         )
         if quantity <= ZERO:
@@ -406,15 +512,20 @@ class VirtualBroker:
         self.realized_equity += fee + slip
 
         position = Position(
-            position_id="{0}.{1:06d}".format(intent.strategy_id, self._order_seq),
+            position_id=order.order_id if intent.strategy_id == "hrs" else "{0}.{1:06d}".format(intent.strategy_id, self._order_seq),
             symbol=symbol,
             direction=intent.side,
             entry_price=fill_price,
             entry_quantity=quantity,
             current_quantity=quantity,
-            atr=ZERO,
+            atr=intent.atr,
             grade=intent.grade or "",
             entry_time=ts,
+            entry_mode=intent.entry_mode,
+            geometry_reference_price=intent.geometry_reference_price,
+            exit_ratios=intent.exit_ratios,
+            exit_parameters=dict(intent.exit_parameters) if intent.exit_parameters is not None else None,
+            entry_complete=complete,
         )
         self.positions[symbol] = position
         self._entry_fee[position.position_id] = fee
@@ -432,7 +543,8 @@ class VirtualBroker:
                 ts=ts,
             )
         )
-        self._check_invariants(quantity, fill_price, symbol_filters, "open")
+        if complete:
+            self._check_invariants(quantity, fill_price, symbol_filters, "open")
         self._event(
             ts,
             "fill",
@@ -473,7 +585,10 @@ class VirtualBroker:
                 continue
             if order.intent.reason in ("TP1", "TP2") and self._tp_already_hit(current, order.intent.reason):
                 continue
-            fill_price = self._exit_fill_price(order.intent, trigger)
+            reference = trigger
+            if order.intent.strategy_id == 'hrs' and order.intent.reason == 'STOP_LOSS':
+                reference = min(trigger,bar.open) if order.intent.side == 'LONG' else max(trigger,bar.open)
+            fill_price = self._exit_fill_price(order.intent, reference)
             self._close_position(order, fill_price, ts)
 
     def _trigger_crossed(self, intent: OrderIntent, trigger: Decimal, bar: Any) -> bool:
@@ -500,6 +615,10 @@ class VirtualBroker:
             if intent.side == "LONG":
                 return trigger * (Decimal("1") - self.stop_offset_pct)
             return trigger * (Decimal("1") + self.stop_offset_pct)
+        if intent.strategy_id == 'hrs':
+            # HRS sell limit is below trigger; buy-to-close limit is above it.
+            return trigger * (Decimal('1')-self.tp_offset_pct if intent.side == 'LONG'
+                              else Decimal('1')+self.tp_offset_pct)
         if intent.side == "LONG":
             return trigger * (Decimal("1") + self.tp_offset_pct)
         return trigger * (Decimal("1") - self.tp_offset_pct)
@@ -524,9 +643,10 @@ class VirtualBroker:
 
         exit_price = round_price(reference_price, symbol_filters.tick_size)
         ratio = intent.close_ratio
-        if intent.reason == "TP1" and intent.close_ratio == Decimal("1"):
+        if intent.close_quantity is None and intent.reason == "TP1" and intent.close_ratio == Decimal("1"):
             ratio = self.tp1_close_ratio
-        close_qty = round_quantity(position.current_quantity * ratio, symbol_filters.step_size)
+        close_qty = round_quantity(intent.close_quantity if intent.close_quantity is not None
+                                   else position.current_quantity * ratio, symbol_filters.step_size)
         if close_qty <= ZERO:
             self._event(
                 ts,
@@ -587,6 +707,11 @@ class VirtualBroker:
             trailing_activated=position.trailing_activated,
             tp1_hit=position.tp1_hit or intent.reason == "TP1",
             tp2_hit=position.tp2_hit or intent.reason == "TP2",
+            entry_mode=position.entry_mode,
+            geometry_reference_price=position.geometry_reference_price,
+            exit_ratios=position.exit_ratios,
+            exit_parameters=position.exit_parameters,
+            entry_complete=position.entry_complete,
         )
 
         self._trade_seq += 1
@@ -635,6 +760,7 @@ class VirtualBroker:
                 "slippage": str(slip),
                 "reason": intent.reason,
                 "net_pnl": str(net_pnl),
+                "realized_pnl": str(realized_pnl),
             },
         )
         if remaining <= ZERO:

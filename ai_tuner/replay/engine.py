@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from .broker import VirtualBroker
 from .clock import (
     BAR_CLOSE,
+    CASH_FLOW,
     DAILY_MARK,
     FUNDING,
     FUNDING_CHECK,
@@ -50,18 +51,29 @@ def run_replay(
         adapter: ``ReplayAdapter`` 实现（prepare/on_bar/on_snapshot/intents）。
         broker: 统一虚拟 Broker（含成本档参数）。
         include_snapshots: 是否把外部时点快照纳入事件流（HRS=True）。
-        funding_schedule: 逐币种预期结算时间。当前只接受合成夹具；真实历史
-            日程尚无独立来源证明，因此真实策略保持 BLOCKED_DATA。
-        funding_schedule_source: 合成测试必须显式传 synthetic_fixture。
+        funding_schedule: 逐币种预期结算时间。HRS 必须匹配 manifest 内独立的
+            前瞻资金费日程观测；其他适配器保留显式合成夹具接口。
+        funding_schedule_source: 合成测试必须显式传 synthetic_fixture；单独改标签
+            不能把真实历史日程升级为已证明。
 
     Returns:
         ReplayResult（equity_curve / closed_trades / audit_events / violations）。
     """
     ctx = adapter.prepare(portal)
 
+    if hasattr(adapter, 'configure_execution'):
+        adapter.configure_execution(ctx)
+    if hasattr(adapter, 'initial_positions'):
+        broker.restore_initial_positions(adapter.initial_positions(ctx))
+        ctx.portfolio = broker.view()
+        broker.submit(adapter.initial_orders(ctx), None, portal.window_start)
+        adapter.initialize_portfolio(ctx)
+    execution_interval = getattr(adapter, 'execution_interval', None)
+    batch_bars = getattr(adapter, 'batch_bar_updates', False)
+
     bars_by_subject: Dict[str, List[Any]] = {}
     for symbol in ctx.universe.symbols:
-        for interval in ctx.universe.intervals:
+        for interval in tuple(dict.fromkeys((*ctx.universe.intervals, *getattr(adapter, "extra_intervals", ())))):
             bars = portal.bars(symbol, interval)
             if not bars:
                 raise DataBlocked(["kline_empty:{0}:{1}".format(symbol, interval)])
@@ -75,7 +87,15 @@ def run_replay(
             portal.funding_rates(symbol, portal.window_start, portal.as_of)
         )
 
-    if funding_schedule is not None and (
+    if getattr(adapter, 'requires_attested_funding', False):
+        from .funding_history import attested_funding_schedule
+        attested = attested_funding_schedule(portal.funding_schedule_evidence(),
+            ctx.universe.symbols, portal.window_start, portal.as_of)
+        if funding_schedule is not None and {k:tuple(v) for k,v in funding_schedule.items()} != attested:
+            raise DataBlocked(['funding_schedule_evidence_mismatch'])
+        funding_schedule = attested
+        funding_schedule_source = 'prospective_exchange_forecast'
+    if funding_schedule is not None and not getattr(adapter, 'requires_attested_funding', False) and (
         ctx.strategy_id != "fixture" or funding_schedule_source != "synthetic_fixture"
     ):
         raise DataBlocked(["historical_funding_schedule_unattested"])
@@ -108,10 +128,13 @@ def run_replay(
         for symbol in ctx.universe.symbols:
             snapshots.extend(
                 snap for snap in portal.external_snapshot(symbol)
-                if portal.window_start < snap.bucket_start <= portal.as_of
+                if portal.window_start < max(snap.observed_at, snap.bucket_end or snap.bucket_start) <= portal.as_of
             )
 
     events: List[Event] = []
+    if hasattr(adapter,'cash_flow_events'):
+        for row in adapter.cash_flow_events(ctx):
+            events.append(Event(parse_utc(row['occurred_at']),CASH_FLOW,row['event_id'],len(events),row))
     events.extend(collect_bar_events(bars_by_subject))
     events.extend(collect_funding_events(funding_by_symbol))
     if snapshots:
@@ -142,7 +165,16 @@ def run_replay(
     last_bar_close: Dict[str, datetime] = {}
 
     for timestamp, simultaneous_events in groupby(schedule, key=lambda event: event.time):
+        simultaneous_events = tuple(simultaneous_events)
         funding_received: set[str] = set()
+        if batch_bars:
+            # All trend bars ending now are visible before any same-hour scoring.
+            for pending_event in simultaneous_events:
+                if pending_event.kind == BAR_CLOSE:
+                    ctx.portfolio = broker.view()
+                    adapter.on_bar(pending_event.payload, ctx)
+                    if pending_event.payload.interval == execution_interval:
+                        broker.last_prices[pending_event.payload.symbol]=pending_event.payload.close
         for event in simultaneous_events:
             if event.kind == FUNDING:
                 broker.settle_funding(event.subject, event.payload, event.time)
@@ -157,20 +189,39 @@ def run_replay(
                 ]
                 if missing:
                     raise DataBlocked(missing)
+            elif event.kind == CASH_FLOW:
+                ctx.portfolio=broker.view()
+                adapter.on_cash_flow(event.payload,ctx)
+                broker.apply_cash_flow(Decimal(str(event.payload['amount'])),event.time,event.payload['event_id'])
             elif event.kind == SNAPSHOT:
                 ctx.portfolio = broker.view()
                 adapter.on_snapshot(event.payload, ctx)
             elif event.kind == BAR_CLOSE:
                 bar = event.payload
-                broker.on_bar(bar.symbol, bar, bar.close_time)
-                last_bar_close[bar.symbol] = bar.close_time
+                if execution_interval is None or bar.interval == execution_interval:
+                    if batch_bars:
+                        def after_entries():
+                            ctx.portfolio = broker.view()
+                            position = broker.positions.get(bar.symbol)
+                            if position is not None and position.is_open():
+                                brackets = adapter.on_entry_fill(position, ctx)
+                                if brackets:
+                                    broker.submit(brackets, bar, bar.close_time)
+                                _apply_protective_prices(broker, adapter, bar.symbol)
+                        broker.on_bar(bar.symbol, bar, bar.close_time,
+                            after_entries=after_entries,
+                            entry_ts=bar.close_time if execution_interval == '1m' else bar.open_time)
+                    else:
+                        broker.on_bar(bar.symbol, bar, bar.close_time)
+                    last_bar_close[bar.symbol] = bar.close_time
                 ctx.portfolio = broker.view()
-                adapter.on_bar(bar, ctx)
-                intents = adapter.intents(ctx)
-                if intents:
-                    broker.submit(intents, bar, bar.close_time)
+                if not batch_bars:
+                    adapter.on_bar(bar, ctx)
+                    intents = adapter.intents(ctx)
+                    if intents:
+                        broker.submit(intents, bar, bar.close_time)
+                    _apply_protective_prices(broker, adapter, bar.symbol)
                 _require_funding_schedule(broker, expected)
-                _apply_protective_prices(broker, adapter, bar.symbol)
             elif event.kind == DAILY_MARK:
                 missing = [
                     "daily_equity_gap:{0}:{1}".format(symbol, to_utc_z(timestamp))
@@ -180,7 +231,34 @@ def run_replay(
                 ]
                 if missing:
                     raise DataBlocked(missing)
+            ctx.portfolio=broker.view()
+            if hasattr(adapter,'on_execution_events'):
+                adapter.on_execution_events(tuple(broker.audit),ctx,at=event.time)
             _drain_broker_audit(broker, audit, event.time)
+            if getattr(adapter, 'audit', None):
+                audit.extend(adapter.audit)
+                adapter.audit = []
+        if batch_bars:
+            # Match all subbars and external cashflows before the hourly scan.
+            for decision_event in simultaneous_events:
+                if decision_event.kind != BAR_CLOSE or decision_event.payload.interval != '1h':
+                    continue
+                bar=decision_event.payload
+                ctx.portfolio=broker.view()
+                adapter.on_bar(bar,ctx)
+                intents=adapter.intents(ctx)
+                if intents:
+                    broker.submit(intents,bar,bar.close_time)
+                ctx.portfolio=broker.view()
+                adapter.on_execution_events(tuple(broker.audit),ctx,at=timestamp)
+                _require_funding_schedule(broker,expected)
+                _apply_protective_prices(broker,adapter,bar.symbol)
+                _drain_broker_audit(broker,audit,timestamp)
+                audit.extend(adapter.audit)
+                adapter.audit=[]
+        ctx.portfolio = broker.view()
+        if hasattr(adapter, 'on_portfolio_mark'):
+            adapter.on_portfolio_mark(timestamp, ctx)
         equity[timestamp] = broker.mark(timestamp)
 
     equity[portal.as_of] = broker.mark(portal.as_of)
