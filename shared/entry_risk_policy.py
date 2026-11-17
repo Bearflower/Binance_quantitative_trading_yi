@@ -5,6 +5,7 @@ outcomes retain their entire original margin until terminal order AND zero posit
 are proven. This deliberately overcounts partial/complete fills alongside holdings.
 """
 from contextlib import asynccontextmanager
+import asyncio
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 import hashlib
@@ -14,6 +15,19 @@ import os
 
 class EntryDenied(RuntimeError):
     """New risk could not be proven safe; monitoring must continue."""
+
+
+async def _finish_shielded(operation):
+    """Finish one held-connection transaction before propagating cancellation."""
+    task = asyncio.create_task(operation)
+    cancelled = None
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            cancelled = exc
+    task.result()
+    return cancelled
 
 
 def number(value, *, zero=False):
@@ -138,7 +152,7 @@ class RiskPolicyStore:
         if self.pool is None:
             raise EntryDenied('risk policy database unavailable')
 
-    async def policy(self, strategy, connection=None):
+    async def policy(self, strategy, connection=None, *, submitting_client_id=None):
         async def read(conn):
             row = await conn.fetchrow('''SELECT p.* FROM trading.strategy_risk_policy p
                 JOIN trading.strategy_risk_active a USING(account_id,strategy_id,revision)
@@ -148,7 +162,8 @@ class RiskPolicyStore:
                 raise EntryDenied('missing or expired risk policy')
             from shared.equity_entry_gate import enforce_equity_gate, EquityGateDenied
             try:
-                await enforce_equity_gate(conn, strategy, self.account, row['revision'])
+                await enforce_equity_gate(conn, strategy, self.account, row['revision'],
+                                         submitting_client_id=submitting_client_id)
             except EquityGateDenied as exc:
                 raise EntryDenied(str(exc)) from exc
             return dict(row)
@@ -234,7 +249,8 @@ class RiskPolicyStore:
                     await self._release_proven_unsent(conn,strategy,client_id,unsent,'reserved')
                 early_error = exc
             else:
-                row = await conn.fetchrow("""UPDATE trading.entry_risk_reservation SET state='submitting'
+                row = await conn.fetchrow("""UPDATE trading.entry_risk_reservation
+                    SET state='submitting',updated_at=clock_timestamp()
                     WHERE client_order_id=$1 AND account_id=$2 AND strategy_id=$3
                     AND revision=$4 AND state='reserved' RETURNING *""",client_id,self.account,strategy,policy['revision'])
                 if not row or policy['mode'] != 'reduced':
@@ -253,31 +269,48 @@ class RiskPolicyStore:
         if early_error is not None:
             raise early_error
         # Final authorize with activation lock held through exchange submit.
-        pre_http_error = None
-        async with self.pool.acquire() as conn, conn.transaction():
-            await self.lock(conn,strategy)
-            async def final_authorization():
-                current = await self.policy(strategy, conn)
-                if current['revision'] != row['revision'] or current['mode'] != 'reduced':
-                    raise EntryDenied('policy changed at HTTP submission')
-            from shared.order_submission_authorization import bind_submission_authorization
-            with bind_submission_authorization(final_authorization) as attempt:
-                body_started = False
-                try:
-                    policy = await self.policy(strategy,conn)
-                    if policy['revision'] != row['revision'] or policy['mode'] != 'reduced':
-                        raise EntryDenied('policy changed immediately before submission')
-                    body_started = True
-                    yield dict(row)
-                except Exception as exc:
-                    denied = attempt.denied_before_transport or (not body_started and isinstance(exc,EntryDenied))
-                    if not denied or attempt.transport_started:
-                        raise  # An earlier ambiguous HTTP attempt must keep occupancy.
-                    await self._release_proven_unsent(conn,strategy,client_id,row,'submitting')
-                    pre_http_error = exc
-        # Commit the proven no-send resolution before propagating the denial.
-        if pre_http_error is not None:
-            raise pre_http_error
+        pending_error = None
+        async with self.pool.acquire() as conn:
+            transaction = conn.transaction()
+            await transaction.__aenter__()
+            finished = False
+            try:
+                await self.lock(conn,strategy)
+                async def final_authorization():
+                    current = await self.policy(strategy, conn, submitting_client_id=client_id)
+                    if current['revision'] != row['revision'] or current['mode'] != 'reduced':
+                        raise EntryDenied('policy changed at HTTP submission')
+                from shared.order_submission_authorization import bind_submission_authorization
+                with bind_submission_authorization(final_authorization) as attempt:
+                    body_started = False
+                    try:
+                        policy = await self.policy(strategy,conn,submitting_client_id=client_id)
+                        if policy['revision'] != row['revision'] or policy['mode'] != 'reduced':
+                            raise EntryDenied('policy changed immediately before submission')
+                        body_started = True
+                        yield dict(row)
+                    except BaseException as exc:
+                        # Unknown HTTP and cancellation must not roll back a
+                        # consumer invalidation. Re-raise only after its commit.
+                        pending_error = exc
+                    async def complete():
+                        if attempt.transport_started:
+                            from shared.equity_entry_gate import invalidate_after_submission
+                            await invalidate_after_submission(conn,strategy,self.account)
+                        elif (attempt.denied_before_transport
+                              or (not body_started and isinstance(pending_error,EntryDenied))):
+                            await self._release_proven_unsent(conn,strategy,client_id,row,'submitting')
+                        await transaction.__aexit__(None,None,None)
+                    cancelled = await _finish_shielded(complete())
+                    finished = True
+                    if cancelled is not None:
+                        pending_error = cancelled
+            except BaseException as exc:
+                if not finished:
+                    await _finish_shielded(transaction.__aexit__(type(exc),exc,exc.__traceback__))
+                raise
+        if pending_error is not None:
+            raise pending_error
 
     async def reconcile(self, strategy, exchange):
         """Read only exchange reconciliation; no cancels, closes, or TTL releases."""

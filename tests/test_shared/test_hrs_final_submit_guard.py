@@ -54,8 +54,9 @@ async def test_policy_is_rechecked_after_rate_limit_wait(reduce_only):
     db = MagicMock(pool=pool)
     store = RiskPolicyStore(db)
     valid = True
-    async def policy(strategy, held_connection=None):
+    async def policy(strategy, held_connection=None, *, submitting_client_id=None):
         assert held_connection is connection
+        assert submitting_client_id in (None, 'test-intent')
         if not valid:
             raise EntryDenied('equity_gate_stale_or_invalid')
         return {'revision': 6, 'mode': 'reduced'}
@@ -96,7 +97,7 @@ async def test_proven_pre_http_denial_releases_only_when_no_attempt_was_ever_sen
         yield conn
     store = RiskPolicyStore(MagicMock(pool=MagicMock(acquire=MagicMock(side_effect=acquire))))
     valid = True
-    async def policy(*args):
+    async def policy(*args, **kwargs):
         if not valid:
             raise EntryDenied('equity_gate_stale_or_invalid')
         return {'revision': 6, 'mode': 'reduced'}
@@ -157,7 +158,7 @@ async def test_policy_denial_before_yield_does_not_strand_proven_unsent_reservat
         yield conn
     store = RiskPolicyStore(MagicMock(pool=MagicMock(acquire=MagicMock(side_effect=acquire))))
     reads = 0
-    async def policy(*args):
+    async def policy(*args, **kwargs):
         nonlocal reads
         reads += 1
         if reads == denied_policy_read:
@@ -209,7 +210,7 @@ async def test_pre_http_denial_resolution_commits_in_real_postgres():
                 INSERT INTO {schema}.position_claims VALUES ('TESTUSDT','hrs','PENDING',NULL,NULL);''')
         store = RiskPolicyStore(SimpleNamespace(pool=Pool()), account='test-account')
         valid = True
-        async def policy(*args):
+        async def policy(*args, **kwargs):
             if not valid: raise EntryDenied('equity_gate_stale_or_invalid')
             return {'revision': 6, 'mode': 'reduced'}
         store.policy = policy

@@ -28,7 +28,8 @@ async def test_valid_equity_projection_requires_income_integrity(monkeypatch):
     conn.fetchrow.return_value = projection()
     conn.fetchval.return_value = 0
     await enforce_equity_gate(conn, 'hrs', 'test-account', 6)
-    conn.fetchval.assert_awaited_once()
+    assert any('income_ingestion_attempt' in call.args[0] for call in conn.fetchval.await_args_list)
+    assert any('entry_risk_reservation' in call.args[0] for call in conn.fetchval.await_args_list)
     conn.fetchrow.assert_awaited_once()
 
 
