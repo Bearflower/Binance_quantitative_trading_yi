@@ -251,6 +251,11 @@ class HrsEquityService:
             linked=[]
             if evidence_table and evidence_table['name']:
                 linked=await self.db.fetch_all("SELECT symbol,order_id,strategy,source_kind,evidence FROM trading.order_strategy_evidence WHERE account_id=$1 AND order_id=ANY($2::bigint[])",self.account,[int(item) for item in identifiers])
+            retained=[]
+            table=await self.db.fetch_one("SELECT to_regclass('btc_eth.condition_orders') AS name")
+            if table and table['name']:
+                retained=await self.db.fetch_all('SELECT id,strategy_name,account_id,symbol,algo_id,order_id,order_type,status,created_at,updated_at FROM btc_eth.condition_orders WHERE symbol=ANY($1::text[]) AND (account_id=$2 OR account_id IS NULL) ORDER BY created_at DESC NULLS LAST,id DESC',sorted({symbol for symbol,_ in missing}),self.account)
+            algo_responses={}
             for symbol,identity in sorted(missing):
                 cache=self._order_source_cache.get((symbol,identity))
                 candidates=[row for row in legacy if row['symbol']==symbol and str(row['order_id'])==identity]
@@ -292,6 +297,33 @@ class HrsEquityService:
                     # A method label, cached digest, API failure or ambiguous link
                     # is never promoted to ownership. The shared reader will deny.
                     proof=None
+                if proof is None:
+                    # Explicit approved legacy table, independently authenticated
+                    # PM child link. No symbol-wide ownership inference and no
+                    # order_strategy_evidence backfill is performed.
+                    for row in retained:
+                        if row['symbol']!=symbol or row['algo_id'] is None:
+                            continue
+                        group=[item for item in retained if item['symbol']==symbol and item['algo_id']==row['algo_id']]
+                        choices={item['strategy_name'] for item in group}
+                        if len(choices)!=1 or not choices<={'btc_eth','btc_eth_aggressive'}:
+                            continue
+                        algo=int(row['algo_id'])
+                        if algo not in algo_responses:
+                            try:
+                                algo_responses[algo]=(await self.api.get_algo_order(algo_id=algo),self._now())
+                            except Exception:
+                                algo_responses[algo]=(None,self._now())
+                        response,available=algo_responses[algo]
+                        if (not isinstance(response,dict) or str(response.get('algoId'))!=str(algo)
+                                or str(response.get('actualOrderId'))!=identity or response.get('symbol')!=symbol
+                                or expected_sides!={response.get('side')} or response.get('algoStatus')!='FINISHED'):
+                            continue
+                        source_rows=[dict(table='btc_eth.condition_orders',row={key:(value.isoformat() if isinstance(value,datetime) else value) for key,value in dict(item).items()}) for item in group]
+                        proof=dict(account_id=self.account,symbol=symbol,order_id=identity,strategy=next(iter(choices)),
+                            source_kind='authenticated_retained_pm_condition_owner',source_ids=[str(item['id']) for item in group],source_rows=source_rows,
+                            response={key:response.get(key) for key in ('algoId','actualOrderId','symbol','side','algoStatus','quantity')},available_at=available)
+                        break
                 if proof:
                     self._order_source_cache[(symbol,identity)]=proof
                     proofs.append(proof)
@@ -361,6 +393,14 @@ class HrsEquityService:
     async def _read_source(self, connection, start_ms, end_ms, snapshot):
         start = datetime.fromtimestamp(start_ms/1000, timezone.utc)
         end = datetime.fromtimestamp(end_ms/1000, timezone.utc)
+        for proof in snapshot.get('authenticated_order_owners',()):
+            if proof.get('source_kind')!='authenticated_retained_pm_condition_owner':
+                continue
+            fields=('id','strategy_name','account_id','symbol','algo_id')
+            expected=[{key:item['row'][key] for key in fields} for item in proof['source_rows'] if item['table']=='btc_eth.condition_orders']
+            actual=[dict(row) for row in await connection.fetch('SELECT id,strategy_name,account_id,symbol,algo_id FROM btc_eth.condition_orders WHERE id=ANY($1::bigint[])',[row['id'] for row in expected])]
+            if sorted(expected,key=lambda row:row['id'])!=sorted(actual,key=lambda row:row['id']) or not expected:
+                raise EvidenceBlocked('authenticated_condition_source_changed')
         report = await read_monthly_economic_report(_SnapshotDB(connection,snapshot.get('authenticated_order_owners',())), self.account, start_ms, end_ms + 1,
                                                    include_reviewed_overrides=True)
         fills = [dict(row) for row in await connection.fetch('''SELECT * FROM trading.execution_fact_fill

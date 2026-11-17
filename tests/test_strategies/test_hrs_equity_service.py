@@ -52,6 +52,7 @@ async def setup(monkeypatch):
             (account_id text,strategy_id text,revision bigint,PRIMARY KEY(account_id,strategy_id))''')
         await c.execute('''CREATE TABLE IF NOT EXISTS trading.entry_risk_reservation
             (client_order_id text PRIMARY KEY,account_id text,strategy_id text,state text,symbol text)''')
+        await c.execute('ALTER TABLE trading.entry_risk_reservation ADD COLUMN IF NOT EXISTS updated_at timestamptz DEFAULT now()')
         for path in ('database/postgres/migrations/2026-11-17-hrs-risk-ledger-loss-gates.sql',
                      'database/postgres/migrations/2026-11-17-hrs-equity-service.sql',
                      'database/postgres/migrations/2026-11-17-hrs-allocation-event-audit.sql',
@@ -220,7 +221,7 @@ async def test_projection_denial_and_final_authorization_share_account_lock(setu
             entered.set()
             await release.wait()
     reader=asyncio.create_task(authorization())
-    await entered.wait()
+    await asyncio.wait_for(entered.wait(),timeout=2)
     writer=asyncio.create_task(service._deny('bad_source'))
     await asyncio.sleep(.05)
     assert not writer.done()
@@ -489,3 +490,43 @@ async def test_ready_projection_expires_at_known_held_settlement_before_refresh(
     assert result['valid_until']==due
     async with pool.acquire() as c:
         assert await c.fetchval('SELECT valid_until FROM trading.strategy_equity_gate WHERE account_id=$1',account)==due
+
+
+@pytest.mark.asyncio
+async def test_exact_legacy_condition_row_and_signed_child_order_prove_owner_without_link_table(setup):
+    service,account,pool,api,clock=setup
+    algo=9123456700000+int(uuid.uuid4().hex[:6],16)
+    async with pool.acquire() as c:
+        await c.execute('CREATE SCHEMA IF NOT EXISTS btc_eth')
+        await c.execute('''CREATE TABLE IF NOT EXISTS btc_eth.condition_orders
+            (id bigserial PRIMARY KEY,strategy_name text,account_id text,symbol text,algo_id bigint,order_id bigint,
+             order_type text,status text,created_at timestamp,updated_at timestamp)''')
+        source=await c.fetchval("INSERT INTO btc_eth.condition_orders(strategy_name,account_id,symbol,algo_id,order_type,status) VALUES('btc_eth_aggressive',$1,'BNBUSDT',$2,'STOP_LOSS','CANCELED') RETURNING id",account,algo)
+        await c.execute("INSERT INTO trading.execution_fact_fill(account_id,symbol,trade_id,order_id,side,qty,price,trade_time_utc) VALUES($1,'BNBUSDT',101,202,'SELL',.06,690,$2)",account,T)
+    try:
+        api.get_algo_order.return_value=dict(algoId=algo,actualOrderId='202',symbol='BNBUSDT',side='SELL',algoStatus='FINISHED',quantity='.06')
+        snapshot={}
+        await service._authenticate_order_owners(snapshot,int((T-timedelta(seconds=1)).timestamp()*1000),int(T.timestamp()*1000))
+        proofs=snapshot['authenticated_order_owners']
+        assert len(proofs)==1 and proofs[0]['strategy']=='btc_eth_aggressive'
+        assert proofs[0]['source_rows'][0]['table']=='btc_eth.condition_orders'
+        assert proofs[0]['source_rows'][0]['row']['id']==source
+        assert proofs[0]['response']['actualOrderId']=='202'
+        assert proofs[0]['available_at']==T
+        from strategies.hrs.equity_evidence import canonical,EvidenceBlocked
+        canonical(snapshot)
+        async with pool.acquire() as c:
+            await c.execute("UPDATE btc_eth.condition_orders SET strategy_name='btc_eth' WHERE id=$1",source)
+        async with service._locked() as c:
+            with pytest.raises(EvidenceBlocked,match='authenticated_condition_source_changed'):
+                await service._read_source(c,int((T-timedelta(seconds=1)).timestamp()*1000),int(T.timestamp()*1000),snapshot)
+        async with pool.acquire() as c:
+            await c.execute("UPDATE btc_eth.condition_orders SET strategy_name='btc_eth_aggressive' WHERE id=$1",source)
+        api.get_algo_order.return_value=dict(algoId=algo,actualOrderId='999',symbol='BNBUSDT',side='SELL',algoStatus='FINISHED')
+        await service._authenticate_order_owners(snapshot,int((T-timedelta(seconds=1)).timestamp()*1000),int(T.timestamp()*1000))
+        assert snapshot['authenticated_order_owners']==[]
+        async with pool.acquire() as c:
+            assert not await c.fetchval("SELECT 1 FROM trading.trade_records WHERE account_id=$1 AND order_id='202'",account)
+    finally:
+        async with pool.acquire() as c:
+            await c.execute('DELETE FROM btc_eth.condition_orders WHERE id=$1',source)
