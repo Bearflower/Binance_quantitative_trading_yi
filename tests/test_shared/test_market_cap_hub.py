@@ -107,3 +107,17 @@ async def test_comparison_failed_secondary_cannot_be_used(tmp_path):
     assert not hub.valid('BTCUSDT',quote())
     assert await hub.fetch('coinmarketcap',['BTCUSDT'])=={}
     hub.close()
+
+
+@pytest.mark.asyncio
+async def test_shared_service_outage_does_not_serialize_symbol_timeouts():
+    from unittest.mock import MagicMock
+    import aiohttp
+    from shared.market_cap_client import SharedMarketCapClient
+    client=SharedMarketCapClient('http://unavailable')
+    client.session=MagicMock()
+    client.session.post.side_effect=aiohttp.ClientError('unavailable')
+    for symbol in ['BTCUSDT','ETHUSDT','AAVEUSDT']:
+        cap=await client.get_market_cap_with_provenance(symbol)
+        assert cap.source=='missing' and cap.missing_reason=='shared_service_unavailable'
+    assert client.session.post.call_count==1

@@ -17,6 +17,7 @@ class SharedMarketCapClient:
         self.url = url.rstrip('/')
         self.session = None
         self.rows = {}
+        self.retry_after = 0.0
 
     async def close(self):
         if self.session:
@@ -24,6 +25,8 @@ class SharedMarketCapClient:
             self.session = None
 
     async def request(self, route, symbols):
+        if time.time() < self.retry_after:
+            return {symbol:self.provenance(symbol) for symbol in symbols}
         if self.session is None:
             self.session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=45))
         try:
@@ -33,10 +36,12 @@ class SharedMarketCapClient:
             if not isinstance(rows, dict):
                 raise ValueError('invalid shared cache response')
             self.rows.update(rows)
+            self.retry_after = 0.0
         except (aiohttp.ClientError, TimeoutError, ValueError) as exc:
             log.warning('shared_market_cap_unavailable', error=type(exc).__name__)
+            self.retry_after = time.time()+60
             for symbol in symbols:
-                self.rows[symbol] = {'missing_reason':'shared_service_unavailable'}
+                self.rows.setdefault(symbol, {'missing_reason':'shared_service_unavailable'})
         return {symbol:self.provenance(symbol) for symbol in symbols}
 
     def provenance(self, symbol):
@@ -49,7 +54,7 @@ class SharedMarketCapClient:
             value=float(row.get('value',0)) if real else 0,
             source=row['source'] if real else 'missing', as_of=observed,
             available_at=time.time(), is_proxy=False,
-            missing_reason=None if real else row.get('missing_reason','not_preloaded_or_expired'))
+            missing_reason=None if real else row.get('missing_reason') or ('shared_service_unavailable' if time.time()<self.retry_after else 'not_preloaded_or_expired'))
         prov.provider = row.get('provider')
         prov.provider_asset_id = row.get('asset_id')
         return prov
