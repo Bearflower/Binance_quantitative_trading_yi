@@ -31,6 +31,7 @@ from ai_tuner.snapshots.repository import SnapshotRepository
 
 from .candidate_pool import CandidatePool
 from .executor import TradingExecutor, OpenResult, CloseOutcome
+from .position_exit_plan import validate_exit_plan
 from .market_data import MarketDataProvider
 from .pattern import PatternRecognizer
 from .position_manager import PositionManager
@@ -302,6 +303,7 @@ class HRSStrategy(BaseStrategy):
             should_notify_callback=self._should_notify,
         )
         self.trading_executor.persist_fill = self._persist_entry_before_protection
+        self.trading_executor.decision_recorder = getattr(self, 'decision_recorder', None)
         # P1-8: 传入通知回调，使风控模块能在暂停/熔断时发送通知
         self.risk_manager = RiskManager(
             self.config,
@@ -908,7 +910,8 @@ class HRSStrategy(BaseStrategy):
                 if not position:
                     await self._persist_entry_before_protection(
                         symbol, direction, actual_entry_price, result.filled_quantity, atr,
-                        entry_mode, stop_loss_price, f"hrs:{symbol}:{result.order['orderId']}", risk_decision.exit_ratios)
+                        entry_mode, stop_loss_price, f"hrs:{symbol}:{result.order['orderId']}", risk_decision.exit_ratios,
+                        exit_plan={'version': 1, 'reference_price': current_price, 'atr': atr, 'params': params})
                     position = self.position_manager.get_position(symbol)
                 if result.order.get("recovery_key") and result.protection_complete:
                     await self._persist_position_row(symbol, position, int(datetime.now(timezone.utc).timestamp() * 1000))
@@ -1075,9 +1078,9 @@ class HRSStrategy(BaseStrategy):
             return RiskDecision(False, "invalid_risk_inputs")
 
     async def _persist_entry_before_protection(self, symbol, direction, price, quantity,
-                                               atr, mode, stop, identity, exit_ratios=None):
+                                               atr, mode, stop, identity, exit_ratios=None, exit_plan=None):
         self.position_manager.add_position(symbol, direction, price, quantity, atr,
-                                           entry_mode=mode, risk_stop_price=stop, exit_ratios=exit_ratios)
+                                           entry_mode=mode, risk_stop_price=stop, exit_ratios=exit_ratios, exit_plan=exit_plan)
         position = self.position_manager.get_position(symbol)
         position["position_id"] = identity
         await self._persist_position_row(symbol, position, int(datetime.now(timezone.utc).timestamp() * 1000))
@@ -2152,8 +2155,16 @@ class HRSStrategy(BaseStrategy):
                         )
                         logger.info("双向信号冲突且无法区分，放弃", symbol=symbol)
 
+        # Capture the actual batch boundary and insertion order. Scoring a symbol
+        # earlier does not mean its order existed before conflict resolution.
+        ordered_signals = list(short_by_symbol.values()) + list(long_by_symbol.values())
+        recorder = getattr(self, 'decision_recorder', None)
+        if recorder is not None:
+            observed = datetime.now(timezone.utc)
+            await safe_record(recorder, recorder.run_id, 'execution_batch',
+                {'ordered_signals': ordered_signals}, as_of=observed, available_at=observed)
         # 执行无冲突的信号
-        for signal in list(short_by_symbol.values()) + list(long_by_symbol.values()):
+        for signal in ordered_signals:
             success = await self.execute_signal(signal)
             # P2-1: 更新信号结果
             if success:
@@ -3064,6 +3075,12 @@ class HRSStrategy(BaseStrategy):
             concurrency_limit=concurrency_limit,
         )
 
+        recorder = getattr(self, 'decision_recorder', None)
+        if recorder is not None:
+            observed = datetime.now(timezone.utc)
+            await safe_record(recorder, recorder.run_id, 'lv_rm_scan_scope',
+                {'symbols': list(low_vol_symbols), 'signal_origin': signal_origin},
+                as_of=observed, available_at=observed)
         # 每轮 LV-RM 扫描先批量刷新真实市值，避免缓存过期后并发逐币请求。
         await self.market_data.preload_market_caps(low_vol_symbols)
 
@@ -3524,6 +3541,15 @@ class HRSStrategy(BaseStrategy):
                 logger.error('HRS 持仓出场方案无效，保留原保护单并拒绝自动重建',
                              symbol=symbol, error=str(exc))
                 exit_ratios = (Decimal('NaN'), Decimal('NaN'))
+        frozen = row.get('exit_plan')
+        plan_invalid = False
+        if frozen is not None:
+            try:
+                frozen = json.loads(frozen) if isinstance(frozen, str) else frozen
+                frozen = validate_exit_plan(frozen)
+            except (ValueError, TypeError):
+                plan_invalid = True
+                logger.error('HRS 持仓退出参数损坏，保留跟踪及现有保护，拒绝默认参数重建', symbol=symbol)
         pm.add_position(
             symbol=symbol,
             direction=row["direction"],
@@ -3534,10 +3560,14 @@ class HRSStrategy(BaseStrategy):
             opened_at=opened_at,
             risk_stop_price=row.get("risk_stop_price"),
             exit_ratios=exit_ratios,
+            exit_plan=frozen if not plan_invalid else None,
         )
         pos = pm.get_position(symbol)
         if pos is None:
             return
+        if plan_invalid:
+            pos['exit_plan'] = frozen
+            pos['exit_plan_invalid'] = True
         # 真实开仓时刻或入场模式缺失 → 打标记，不编造
         pos["opening_time_uncertain"] = (
             bool(row.get("opening_time_uncertain")) or row.get("opened_at") is None
@@ -3992,14 +4022,14 @@ class HRSStrategy(BaseStrategy):
                 (symbol, direction, entry_price, quantity, entry_time, opened_at, next_review_at,
                  entry_mode, entry_config_hash, position_id, opening_time_uncertain,
                  entry_mode_unknown, algo_ids, remaining_quantity, target1_reached,
-                 target2_reached, risk_stop_price, exit_ratios)
-            VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17::jsonb)
+                 target2_reached, risk_stop_price, exit_ratios, exit_plan)
+            VALUES ($1, $2, $3, $4, $5, $5, $6, $7, $8, $9, $10, $11, $12::jsonb, $13, $14, $15, $16, $17::jsonb, $18::jsonb)
             ON CONFLICT (symbol, direction) DO UPDATE
             SET entry_price = $3, quantity = $4, entry_time = $5, opened_at = $5,
                 next_review_at = $6, entry_mode = $7, entry_config_hash = $8, position_id = $9,
                 opening_time_uncertain = $10, entry_mode_unknown = $11, algo_ids = $12::jsonb,
                 remaining_quantity = $13, target1_reached = $14, target2_reached = $15,
-                risk_stop_price = $16, exit_ratios = $17::jsonb
+                risk_stop_price = $16, exit_ratios = $17::jsonb, exit_plan = $18::jsonb
             """,
             symbol,
             pos.get("direction", ""),
@@ -4018,6 +4048,7 @@ class HRSStrategy(BaseStrategy):
             bool(pos.get("target2_reached", False)),
             pos.get("risk_stop_price"),
             json.dumps(pos.get('exit_ratios')) if pos.get('exit_ratios') is not None else None,
+            json.dumps(pos.get('exit_plan')) if pos.get('exit_plan') is not None else None,
         )
 
     async def _save_state(self) -> None:
@@ -4583,14 +4614,18 @@ class HRSStrategy(BaseStrategy):
                 best_price=best_price,
                 entry_mode=pos.get("entry_mode", "standard"),
                 exit_ratios=pos.get('exit_ratios'),
+                exit_plan=pos.get('exit_plan'),
             )
 
             current_sl_id = self.position_manager.get_algo_id(symbol, "sl")
             if current_sl_id and current_sl_id != previous_sl_id:
                 tick_size, _ = await self.trading_executor._get_symbol_precision(symbol)
-                params = self.trading_executor._get_lv_rm_params(pos.get("entry_mode", "standard"))
+                frozen = validate_exit_plan(pos['exit_plan']) if pos.get('exit_plan') is not None else None
+                params = frozen['params'] if frozen else self.trading_executor._get_lv_rm_params(pos.get("entry_mode", "standard"))
+                reference = frozen['reference_price'] if frozen else entry_price
+                reference_atr = frozen['atr'] if frozen else atr
                 pos["risk_stop_price"] = self.trading_executor._calc_sl_price(
-                    direction, entry_price, atr, tick_size, params
+                    direction, reference, reference_atr, tick_size, params
                 )
                 await self._save_state()
 

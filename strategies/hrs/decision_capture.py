@@ -262,6 +262,28 @@ def capture_signal(function):
     return wrapped
 
 
+def capture_open_execution(function):
+    @wraps(function)
+    async def wrapped(executor, symbol, *args, **kwargs):
+        recorder = getattr(executor, 'decision_recorder', None)
+        try:
+            result = await function(executor, symbol, *args, **kwargs)
+        except Exception as exc:
+            if recorder is not None:
+                now = datetime.now(timezone.utc)
+                await safe_record(recorder, recorder.run_id, 'order_execution_failure',
+                    {'operation': function.__name__, 'error_type': type(exc).__name__},
+                    as_of=now, available_at=now, symbol=symbol)
+            raise
+        if recorder is not None:
+            now = datetime.now(timezone.utc)
+            await safe_record(recorder, recorder.run_id, 'order_execution_result',
+                {'operation': function.__name__, 'outcome': result},
+                as_of=now, available_at=now, symbol=symbol)
+        return result
+    return wrapped
+
+
 SCHEMA_SQL = '''CREATE TABLE IF NOT EXISTS hrs.hrs_decision_evidence (
  evidence_id text PRIMARY KEY, run_id text NOT NULL, kind text NOT NULL,
  symbol text, event_time timestamptz NOT NULL, available_at timestamptz NOT NULL,

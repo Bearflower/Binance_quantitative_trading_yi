@@ -12,6 +12,7 @@ import structlog
 from shared.binance_api import BinanceClient
 from shared.config_loader import compute_config_hash
 from shared.utils import to_aware_utc
+from .position_exit_plan import validate_exit_plan
 
 
 logger = structlog.get_logger()
@@ -128,6 +129,7 @@ class PositionManager:
         opened_at: Optional[datetime] = None,
         risk_stop_price: Optional[float] = None,
         exit_ratios: Optional[Tuple[Decimal, Decimal]] = None,
+        exit_plan: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         添加持仓跟踪
@@ -142,7 +144,10 @@ class PositionManager:
                 （不编造模式，时间止损按标准时限复核）
             opened_at: 真实开仓时刻（tz-aware UTC）；未提供则取当前时刻
         """
+        frozen = validate_exit_plan(exit_plan) if exit_plan is not None else None
         lifecycle = self._build_lifecycle_metadata(symbol, direction, entry_mode, opened_at)
+        if frozen is not None:
+            lifecycle['next_review_at'] = lifecycle['opened_at'] + timedelta(hours=frozen['params']['max_holding_hours'])
         self._positions[symbol] = {
             "direction": direction,
             "entry_price": entry_price,
@@ -153,6 +158,7 @@ class PositionManager:
             "best_price": entry_price,  # 做空记录最低价，做多记录最高价
             "remaining_quantity": quantity,
             "risk_stop_price": risk_stop_price,
+            "exit_plan": frozen,
             "exit_ratios": ([str(value) for value in exit_ratios]
                             if exit_ratios is not None else None),
             # FR-01: 合并开仓阶段暂存的 pending algoId（保护单创建早于 add_position）
@@ -171,6 +177,11 @@ class PositionManager:
             entry_mode=lifecycle["entry_mode"],
             position_id=lifecycle["position_id"],
         )
+
+    def _position_holding_hours(self, pos):
+        frozen = pos.get('exit_plan')
+        return (validate_exit_plan(frozen)['params']['max_holding_hours'] if frozen is not None
+                else self._resolve_holding_hours(pos.get('entry_mode')))
 
     def _resolve_holding_hours(self, entry_mode: Optional[str]) -> float:
         """按入场模式解析持仓时限（小时）：仅 lv_rm 用独立时限，其余（含未知）用标准时限。"""
@@ -294,11 +305,17 @@ class PositionManager:
         if not pos or not pos["target2_reached"]:
             return False
 
+        frozen = pos.get('exit_plan')
         atr = pos.get("atr", 0)
-        if atr <= 0:
+        if frozen is None and atr <= 0:
             return False
 
-        threshold = atr * self.trailing_stop_atr_multiplier
+        frozen = pos.get('exit_plan')
+        if frozen is not None:
+            frozen = validate_exit_plan(frozen)
+            atr = frozen['atr']
+        multiplier = frozen['params']['trailing_atr_multiplier'] if frozen else self.trailing_stop_atr_multiplier
+        threshold = atr * multiplier
 
         if pos["direction"] == "short":
             # 做空：从最低价反弹超过阈值
@@ -314,7 +331,7 @@ class PositionManager:
         opened = to_aware_utc(pos.get("opened_at"))
         if opened is None:
             return None
-        return opened + timedelta(hours=self._resolve_holding_hours(pos.get("entry_mode")))
+        return opened + timedelta(hours=self._position_holding_hours(pos))
 
     def check_time_stop(self, symbol: str) -> bool:
         """
@@ -353,7 +370,7 @@ class PositionManager:
         pos = self._positions.get(symbol)
         if not pos:
             return
-        hours = self._resolve_holding_hours(pos.get("entry_mode"))
+        hours = self._position_holding_hours(pos)
         pos["next_review_at"] = datetime.now(timezone.utc) + timedelta(hours=hours)
         logger.info(
             "时间止损已重置",
@@ -805,7 +822,7 @@ class PositionManager:
             p["opened_at"] = opened
             p["next_review_at"] = (
                 to_aware_utc(p.get("next_review_at"))
-                or opened + timedelta(hours=self._resolve_holding_hours(p.get("entry_mode")))
+                or opened + timedelta(hours=self._position_holding_hours(p))
             )
             p.setdefault("position_id", self._build_position_id(
                 symbol, p.get("direction", ""), opened))

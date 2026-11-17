@@ -7,6 +7,8 @@ import asyncio
 import hashlib
 from .timeout_recovery import TimeoutRecovery
 from dataclasses import dataclass
+from .position_exit_plan import validate_exit_plan
+from .decision_capture import capture_open_execution
 from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Dict, Any, Optional, List, Callable, Tuple
@@ -344,6 +346,7 @@ class TradingExecutor:
                 client_order_id=decision.client_order_id,
             )
 
+    @capture_open_execution
     async def execute_short(
         self,
         symbol: str,
@@ -418,7 +421,8 @@ class TradingExecutor:
             if self.persist_fill:
                 try:
                     await self.persist_fill(symbol, "short", avg_price or entry_price, filled_qty, atr,
-                                            entry_mode, stop_loss_price, self._entry_identities[symbol], risk_decision.exit_ratios)
+                                            entry_mode, stop_loss_price, self._entry_identities[symbol], risk_decision.exit_ratios,
+                                            exit_plan={'version': 1, 'reference_price': entry_price, 'atr': atr, 'params': params})
                 except Exception as exc:
                     logger.error("成交状态保存失败，继续建立仓位保护", symbol=symbol, error=str(exc))
 
@@ -456,6 +460,7 @@ class TradingExecutor:
             logger.error("做空执行失败", symbol=symbol, error=str(e))
             return OpenResult(order_filled=False, protection_complete=False, failed_roles=[], order=None)
 
+    @capture_open_execution
     async def execute_long(
         self,
         symbol: str,
@@ -530,7 +535,8 @@ class TradingExecutor:
             if self.persist_fill:
                 try:
                     await self.persist_fill(symbol, "long", avg_price or entry_price, filled_qty, atr,
-                                            entry_mode, stop_loss_price, self._entry_identities[symbol], risk_decision.exit_ratios)
+                                            entry_mode, stop_loss_price, self._entry_identities[symbol], risk_decision.exit_ratios,
+                                            exit_plan={'version': 1, 'reference_price': entry_price, 'atr': atr, 'params': params})
                 except Exception as exc:
                     logger.error("成交状态保存失败，继续建立仓位保护", symbol=symbol, error=str(exc))
 
@@ -1105,6 +1111,7 @@ class TradingExecutor:
         best_price: float = 0,
         entry_mode: str = "standard",
         exit_ratios=None,
+        exit_plan=None,
     ) -> ReplenishResult:
         """
         补充持仓缺失的止损止盈条件单
@@ -1125,12 +1132,15 @@ class TradingExecutor:
         Returns:
             补单执行结果（ReplenishResult）
         """
+        frozen = validate_exit_plan(exit_plan) if exit_plan is not None else None
+        if frozen is not None:
+            entry_price, atr = frozen['reference_price'], frozen['atr']
         if atr <= 0:
             logger.warning("ATR无效，跳过补单", symbol=symbol, atr=atr)
             return ReplenishResult(success=False, failed_roles=[], note="invalid_atr")
 
         tick_size, step_size = await self._get_symbol_precision(symbol)
-        params = self._get_lv_rm_params(entry_mode)
+        params = frozen['params'] if frozen is not None else self._get_lv_rm_params(entry_mode)
         if exit_ratios is not None:
             params = self._params_for_exit_ratios(params, exit_ratios)
         # 仅重建交易所已确认缺失的角色，保留有效止损。

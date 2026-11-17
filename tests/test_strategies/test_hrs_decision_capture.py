@@ -264,3 +264,39 @@ async def test_lv_early_veto_is_retained_per_symbol(reason):
     assert len(terminal) == 1
     assert terminal[0].kwargs['symbol'] == 'TESTUSDT'
     assert terminal[0].args[2]['reason'] == reason
+
+
+@pytest.mark.asyncio
+async def test_order_evidence_preserves_partial_fill_unknown_average_and_failed_protection():
+    from types import SimpleNamespace
+    from strategies.hrs.decision_capture import capture_open_execution
+    from strategies.hrs.executor import OpenResult
+    recorder = SimpleNamespace(record=AsyncMock(), failed=False, run_id='actual-order')
+    actual = OpenResult(True, False, ['sl'], {'orderId': 123, 'status': 'CANCELED'},
+                        filled_quantity=2, avg_fill_price=None)
+    executor = SimpleNamespace(decision_recorder=recorder)
+    @capture_open_execution
+    async def execute(self, symbol):
+        return actual
+    assert await execute(executor, 'TESTUSDT') is actual
+    payload = recorder.record.await_args.args[2]
+    assert payload['outcome'] is actual
+    assert actual.avg_fill_price is None
+    assert recorder.record.await_args.kwargs['symbol'] == 'TESTUSDT'
+
+
+@pytest.mark.asyncio
+async def test_surviving_batch_preserves_live_short_then_long_execution_order():
+    from types import SimpleNamespace
+    from strategies.hrs.strategy import HRSStrategy
+    recorder = SimpleNamespace(record=AsyncMock(), failed=False, run_id='batch')
+    strategy = object.__new__(HRSStrategy)
+    strategy.decision_recorder = recorder
+    strategy.execute_signal = AsyncMock(return_value=False)
+    short = [{'symbol': 'ZUSDT', 'direction': 'short', 'score': 80},
+             {'symbol': 'AUSDT', 'direction': 'short', 'score': 90}]
+    long = [{'symbol': 'BUSDT', 'direction': 'long', 'score': 70}]
+    await strategy._resolve_conflicts(short, long)
+    call = recorder.record.await_args
+    assert call.args[1] == 'execution_batch'
+    assert [row['symbol'] for row in call.args[2]['ordered_signals']] == ['ZUSDT', 'AUSDT', 'BUSDT']
