@@ -37,6 +37,7 @@ from .position_manager import PositionManager
 from .risk_manager import RiskManager
 from .risk_budget import RiskDecision, assess_entry, calculate_open_position_risk
 from .scoring_engine import ScoringEngine, ScoringResult
+from .decision_capture import DecisionRecorder, capture_analysis, capture_cycle
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -282,6 +283,14 @@ class HRSStrategy(BaseStrategy):
 
         # 初始化各模块
         self.market_data = MarketDataProvider(self.binance_client, self.kline_service, self.config)
+        if os.getenv('HRS_EVIDENCE_CAPTURE_ENABLED') == '1':
+            repository = getattr(self, 'snapshot_repository', None)
+            if repository is None:
+                raise RuntimeError('HRS evidence requires independent snapshot writer credentials')
+            await repository.db.fetch_all('SELECT evidence_id FROM hrs.hrs_decision_evidence LIMIT 0')
+            self.decision_recorder = DecisionRecorder(repository.db)
+            self.decision_recorder.attach_public_transport(self.binance_client)
+            self.decision_recorder.attach_market_provider(self.market_data)
         self.candidate_pool = CandidatePool(self.config, self.market_data, self.db)
         self.scoring_engine = ScoringEngine(self.config)
         self.pattern_recognizer = PatternRecognizer(self.config)
@@ -554,6 +563,7 @@ class HRSStrategy(BaseStrategy):
         # emm / semi_emm：按 config 判定（不看 signal_origin）
         return mode_cfg.get("execution_mode") == "shadow"
 
+    @capture_analysis
     async def analyze(self, symbol: str) -> Dict[str, Any]:
         """
         分析单个币种的做空和做多机会
@@ -740,6 +750,10 @@ class HRSStrategy(BaseStrategy):
             是否执行成功
         """
         try:
+            recorder = getattr(self, 'decision_recorder', None)
+            if recorder is not None and recorder.failed:
+                logger.warning('HRS 决策证据未完整保存，拒绝新增风险')
+                return False
             symbol = signal.get("symbol")
             direction = signal.get("direction")
             score = signal.get("score", 0)
@@ -1356,6 +1370,7 @@ class HRSStrategy(BaseStrategy):
 
         return False
 
+    @capture_cycle
     async def _execute_cycle(self) -> None:
         """
         执行一个周期
@@ -3057,6 +3072,7 @@ class HRSStrategy(BaseStrategy):
 
     # ==================== V2.5: LV-RM 独立运行 ====================
 
+    @capture_cycle
     async def _run_lv_rm_only_cycle(self) -> None:
         """
         V2.5: 候选池为空时的轻量级循环
