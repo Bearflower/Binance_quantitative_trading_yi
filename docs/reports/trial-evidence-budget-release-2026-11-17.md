@@ -29,7 +29,9 @@
 
 初次上线：[CI 44111372221](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44111372221) 成功，pin `2233e449` active/state complete，199 份源码吻合；只重建 AI Tuner，其他容器、风险政策和分配未变。资本和账户基线各 1，首基线北京时间 23:18:09，actualEquity 515.38314227 USD。真实分钟任务已连续执行，22 个意图全部取得签名订单观察；捕获协议完整性仍 false，不能冒充历史完整。生产影子验收为 BLOCKED_DATA、live_activation_eligible=false。
 
-线上补验发现本服务未设置派生环境标志，因此新增显式派生报告选择，避免依赖环境造成与看板口径分离。新增无环境标志回归后，生产 Python 3.10 合跑 **306 passed**，含四个隔离 PostgreSQL 数据库。后继限定发布待验收，复用当前依赖镜像，不重装依赖。
+线上补验发现本服务未设置派生环境标志，因此新增显式派生报告选择，避免依赖环境造成与看板口径分离。新增无环境标志回归后，生产 Python 3.10 合跑 **306 passed**，含四个隔离 PostgreSQL 数据库。[后继 CI 44114091746](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44114091746) 再次通过全部306项并成功发布，最终 pin `98cdf0424462023ed2ff7244f2da769a73d44bb6` active/state complete，镜像 `sha256:2ad590b8bf71853c0a5c996a040cc23b422af4cdda9d0de5f6a70f1f1fdcf027`。只改变AI Tuner，199份源码吻合，复用已审依赖镜像并保持1000:1000所有权，未重装依赖。
+
+23:28 北京时间生产再次调用正常影子入口，实读 `explicit_derived=true`、`report_version=exchange-income-v1-derived-v1`，报告ID `2953e1ac4df495d0599bdaa12d84efa17101f2bf458ffc0a68b138d8edeae5fc`。仍是BLOCKED_DATA而非虚构资格；完整历史资本、归属和活动不足照实保留。后继容器真实分钟采集成功，账户基线仍为 `1794928689592`，重启没有重新起点；现存22个意图观察齐全，后续批次remaining=0，协议资格仍未完成。两次生产影子调用是本轮人工CLI验收，不能冒认未来10:05自动任务已经执行；10:05影子、10:15日巡检及周一11:15周评估的实际定时送达仍按未来日志验收。
 
 ## 仍未完成
 
