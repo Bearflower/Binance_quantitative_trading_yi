@@ -195,6 +195,8 @@ class SnapshotCollector:
             "market_cap_as_of": cap.as_of,
             "market_cap_available_at": cap.available_at,
             "market_cap_missing_reason": cap.missing_reason,
+            "market_cap_provider": getattr(cap, "provider", None),
+            "market_cap_provider_asset_id": getattr(cap, "provider_asset_id", None),
             "oi_market_cap_ratio": ratio,
             "sentiment_score": datum.funding * _ANNUALIZED_RATE_FACTOR,
             "sentiment_formula_version": _SENTIMENT_FORMULA_VERSION,

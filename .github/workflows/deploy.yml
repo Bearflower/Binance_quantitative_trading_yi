@@ -1,4 +1,4 @@
-name: HRS execution repair candidate
+name: HRS shared market cap candidate
 on:
   workflow_dispatch:
 permissions:
@@ -14,13 +14,15 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Test exact production successor with Python 3.11
+      - name: Offline integration and regression tests
         run: |
-          docker build --target test -f release/hrs-execution/Dockerfile -t hrs-execution-test .
-          docker run --rm --network none hrs-execution-test python -m pytest -q strategies/hrs/tests
-      - name: Publish isolated HRS candidate
+          docker build --target test -f release/hrs-execution/MarketCap.Dockerfile -t market-cap-test .
+          docker run --rm --network none market-cap-test python -m pytest -q strategies/hrs/tests tests/test_shared/test_market_cap_hub.py tests/test_ai_tuner_mvp/test_snapshot_collector.py tests/test_ai_tuner_mvp/test_snapshot_repository.py
+      - name: Publish isolated candidates
         run: |
-          IMAGE=ghcr.io/bearflower/trading-hrs:hrs-repair-${{ github.sha }}
-          docker build --target runtime -f release/hrs-execution/Dockerfile -t "$IMAGE" .
-          docker push "$IMAGE"
-          docker inspect "$IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"
+          for TARGET in hrs snapshot hub; do
+            IMAGE=ghcr.io/bearflower/trading-hrs:market-cap-$TARGET-${{ github.sha }}
+            docker build --target "$TARGET" -f release/hrs-execution/MarketCap.Dockerfile -t "$IMAGE" .
+            docker push "$IMAGE"
+            docker inspect "$IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"
+          done

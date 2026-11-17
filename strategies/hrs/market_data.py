@@ -10,6 +10,7 @@ import structlog
 
 from shared.binance_api import BinanceClient
 from shared.market_cap import MarketCapService, MarketCapProvenance
+from shared.market_cap_client import market_cap_from_env
 from shared.kline_service import KLineService
 
 
@@ -51,7 +52,7 @@ class MarketDataProvider:
         # B4 (D4): fallback_ratio —— OI×市值代理系数；历史硬编码 20.0，现从配置读取
         # 与 candidate_pool.long.oi_market_cap_max=0.05 是同一件事的倒数（1/0.05=20）
         fallback_ratio = market_cap_config.get("fallback_ratio", 20.0)
-        self.market_cap_service = MarketCapService(
+        self.market_cap_service = market_cap_from_env(
             timeout=market_cap_config.get("timeout", 10),
             retry_count=market_cap_config.get("retry_count", 2),
             retry_interval=market_cap_config.get("retry_interval", 1.0),
@@ -248,11 +249,12 @@ class MarketDataProvider:
         Returns:
             MarketCapProvenance
         """
-        return await self.market_cap_service.get_market_cap_with_provenance(
-            symbol=symbol,
-            oi_usd=oi_usd,
-            _volume_24h_usd=volume_24h_usd,
+        cap = await self.market_cap_service.get_market_cap_with_provenance(
+            symbol=symbol, oi_usd=oi_usd, _volume_24h_usd=volume_24h_usd,
         )
+        if cap.source == "missing":
+            logger.info("真实市值缺失原因", symbol=symbol, reason=cap.missing_reason)
+        return cap
 
     async def preload_market_caps(self, symbols: List[str]) -> None:
         """

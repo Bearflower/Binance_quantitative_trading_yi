@@ -1,0 +1,933 @@
+{
+  "BTCUSDT": {
+    "symbol": "BTC",
+    "cg_id": "bitcoin",
+    "cmc_id": 1,
+    "name": "Bitcoin",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/bitcoin",
+      "https://coinmarketcap.com/currencies/bitcoin/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000236,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ETHUSDT": {
+    "symbol": "ETH",
+    "cg_id": "ethereum",
+    "cmc_id": 1027,
+    "name": "Ethereum",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/ethereum",
+      "https://coinmarketcap.com/currencies/ethereum/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000454,
+      "max_relative_difference": 0.05
+    }
+  },
+  "INJUSDT": {
+    "symbol": "INJ",
+    "cg_id": "injective-protocol",
+    "cmc_id": 7226,
+    "name": "Injective",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/injective-protocol",
+      "https://coinmarketcap.com/currencies/injective/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.001818,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ENAUSDT": {
+    "symbol": "ENA",
+    "cg_id": "ethena",
+    "cmc_id": 30171,
+    "name": "Ethena",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/ethena",
+      "https://coinmarketcap.com/currencies/ethena/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000752,
+      "max_relative_difference": 0.05
+    }
+  },
+  "DOGEUSDT": {
+    "symbol": "DOGE",
+    "cg_id": "dogecoin",
+    "cmc_id": 74,
+    "name": "Dogecoin",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/dogecoin",
+      "https://coinmarketcap.com/currencies/dogecoin/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 3.5e-05,
+      "max_relative_difference": 0.05
+    }
+  },
+  "LTCUSDT": {
+    "symbol": "LTC",
+    "cg_id": "litecoin",
+    "cmc_id": 2,
+    "name": "Litecoin",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/litecoin",
+      "https://coinmarketcap.com/currencies/litecoin/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 8.8e-05,
+      "max_relative_difference": 0.05
+    }
+  },
+  "HYPEUSDT": {
+    "symbol": "HYPE",
+    "cg_id": "hyperliquid",
+    "cmc_id": 32196,
+    "name": "Hyperliquid",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/hyperliquid",
+      "https://coinmarketcap.com/currencies/hyperliquid/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.062587,
+      "max_relative_difference": 0.05
+    }
+  },
+  "AVAXUSDT": {
+    "symbol": "AVAX",
+    "cg_id": "avalanche-2",
+    "cmc_id": 5805,
+    "name": "Avalanche",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/avalanche-2",
+      "https://coinmarketcap.com/currencies/avalanche/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000399,
+      "max_relative_difference": 0.05
+    }
+  },
+  "PAXGUSDT": {
+    "symbol": "PAXG",
+    "cg_id": "pax-gold",
+    "cmc_id": 4705,
+    "name": "PAX Gold",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/pax-gold",
+      "https://coinmarketcap.com/currencies/pax-gold/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000227,
+      "max_relative_difference": 0.05
+    }
+  },
+  "XAUTUSDT": {
+    "symbol": "XAUT",
+    "cg_id": "tether-gold",
+    "cmc_id": 5176,
+    "name": "Tether Gold",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/tether-gold",
+      "https://coinmarketcap.com/currencies/tether-gold/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.073782,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ONDOUSDT": {
+    "symbol": "ONDO",
+    "cg_id": "ondo-finance",
+    "cmc_id": 21159,
+    "name": "Ondo",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/ondo-finance",
+      "https://coinmarketcap.com/currencies/ondo-finance/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000352,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ARIAUSDT": {
+    "symbol": "ARIA",
+    "cg_id": "aria-ai",
+    "cmc_id": 38102,
+    "name": "AriaAI",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/aria-ai",
+      "https://coinmarketcap.com/currencies/aria-ai/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 1.405678,
+      "max_relative_difference": 0.05
+    }
+  },
+  "AAVEUSDT": {
+    "symbol": "AAVE",
+    "cg_id": "aave",
+    "cmc_id": 7278,
+    "name": "Aave",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/aave",
+      "https://coinmarketcap.com/currencies/aave/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000277,
+      "max_relative_difference": 0.05
+    }
+  },
+  "SOLUSDT": {
+    "symbol": "SOL",
+    "cg_id": "solana",
+    "cmc_id": 5426,
+    "name": "Solana",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/solana",
+      "https://coinmarketcap.com/currencies/solana/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 6e-05,
+      "max_relative_difference": 0.05
+    }
+  },
+  "LINKUSDT": {
+    "symbol": "LINK",
+    "cg_id": "chainlink",
+    "cmc_id": 1975,
+    "name": "Chainlink",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/chainlink",
+      "https://coinmarketcap.com/currencies/chainlink/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.024679,
+      "max_relative_difference": 0.05
+    }
+  },
+  "XRPUSDT": {
+    "symbol": "XRP",
+    "cg_id": "ripple",
+    "cmc_id": 52,
+    "name": "XRP",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/ripple",
+      "https://coinmarketcap.com/currencies/xrp/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000252,
+      "max_relative_difference": 0.05
+    }
+  },
+  "BNBUSDT": {
+    "symbol": "BNB",
+    "cg_id": "binancecoin",
+    "cmc_id": 1839,
+    "name": "BNB",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/binancecoin",
+      "https://coinmarketcap.com/currencies/bnb/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 3e-06,
+      "max_relative_difference": 0.05
+    }
+  },
+  "SUIUSDT": {
+    "symbol": "SUI",
+    "cg_id": "sui",
+    "cmc_id": 20947,
+    "name": "Sui",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/sui",
+      "https://coinmarketcap.com/currencies/sui/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 6.8e-05,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ADAUSDT": {
+    "symbol": "ADA",
+    "cg_id": "cardano",
+    "cmc_id": 2010,
+    "name": "Cardano",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/cardano",
+      "https://coinmarketcap.com/currencies/cardano/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.020297,
+      "max_relative_difference": 0.05
+    }
+  },
+  "BCHUSDT": {
+    "symbol": "BCH",
+    "cg_id": "bitcoin-cash",
+    "cmc_id": 1831,
+    "name": "Bitcoin Cash",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/bitcoin-cash",
+      "https://coinmarketcap.com/currencies/bitcoin-cash/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000335,
+      "max_relative_difference": 0.05
+    }
+  },
+  "TRXUSDT": {
+    "symbol": "TRX",
+    "cg_id": "tron",
+    "cmc_id": 1958,
+    "name": "TRON",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/tron",
+      "https://coinmarketcap.com/currencies/tron/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.00046,
+      "max_relative_difference": 0.05
+    }
+  },
+  "DOTUSDT": {
+    "symbol": "DOT",
+    "cg_id": "polkadot",
+    "cmc_id": 6636,
+    "name": "Polkadot",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/polkadot",
+      "https://coinmarketcap.com/currencies/polkadot-new/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 8.1e-05,
+      "max_relative_difference": 0.05
+    }
+  },
+  "UNIUSDT": {
+    "symbol": "UNI",
+    "cg_id": "uniswap",
+    "cmc_id": 7083,
+    "name": "Uniswap",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/uniswap",
+      "https://coinmarketcap.com/currencies/uniswap/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.026487,
+      "max_relative_difference": 0.05
+    }
+  },
+  "NEARUSDT": {
+    "symbol": "NEAR",
+    "cg_id": "near",
+    "cmc_id": 6535,
+    "name": "NEAR Protocol",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/near",
+      "https://coinmarketcap.com/currencies/near-protocol/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000454,
+      "max_relative_difference": 0.05
+    }
+  },
+  "APTUSDT": {
+    "symbol": "APT",
+    "cg_id": "aptos",
+    "cmc_id": 21794,
+    "name": "Aptos",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/aptos",
+      "https://coinmarketcap.com/currencies/aptos/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 6.2e-05,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ARBUSDT": {
+    "symbol": "ARB",
+    "cg_id": "arbitrum",
+    "cmc_id": 11841,
+    "name": "Arbitrum",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/arbitrum",
+      "https://coinmarketcap.com/currencies/arbitrum/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000482,
+      "max_relative_difference": 0.05
+    }
+  },
+  "OPUSDT": {
+    "symbol": "OP",
+    "cg_id": "optimism",
+    "cmc_id": 11840,
+    "name": "Optimism",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/optimism",
+      "https://coinmarketcap.com/currencies/optimism-ethereum/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000102,
+      "max_relative_difference": 0.05
+    }
+  },
+  "WIFUSDT": {
+    "symbol": "WIF",
+    "cg_id": "dogwifcoin",
+    "cmc_id": 28752,
+    "name": "dogwifhat",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/dogwifcoin",
+      "https://coinmarketcap.com/currencies/dogwifhat/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 6.9e-05,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ETCUSDT": {
+    "symbol": "ETC",
+    "cg_id": "ethereum-classic",
+    "cmc_id": 1321,
+    "name": "Ethereum Classic",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/ethereum-classic",
+      "https://coinmarketcap.com/currencies/ethereum-classic/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000353,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ICPUSDT": {
+    "symbol": "ICP",
+    "cg_id": "internet-computer",
+    "cmc_id": 8916,
+    "name": "Internet Computer",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/internet-computer",
+      "https://coinmarketcap.com/currencies/internet-computer/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000847,
+      "max_relative_difference": 0.05
+    }
+  },
+  "FILUSDT": {
+    "symbol": "FIL",
+    "cg_id": "filecoin",
+    "cmc_id": 2280,
+    "name": "Filecoin",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/filecoin",
+      "https://coinmarketcap.com/currencies/filecoin/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000216,
+      "max_relative_difference": 0.05
+    }
+  },
+  "WLDUSDT": {
+    "symbol": "WLD",
+    "cg_id": "worldcoin-wld",
+    "cmc_id": 13502,
+    "name": "Worldcoin",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/worldcoin-wld",
+      "https://coinmarketcap.com/currencies/worldcoin-org/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000285,
+      "max_relative_difference": 0.05
+    }
+  },
+  "POLUSDT": {
+    "symbol": "POL",
+    "cg_id": "polygon-ecosystem-token",
+    "cmc_id": 28321,
+    "name": "Polygon (prev. MATIC)",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/polygon-ecosystem-token",
+      "https://coinmarketcap.com/currencies/polygon-ecosystem-token/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000482,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ALGOUSDT": {
+    "symbol": "ALGO",
+    "cg_id": "algorand",
+    "cmc_id": 4030,
+    "name": "Algorand",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/algorand",
+      "https://coinmarketcap.com/currencies/algorand/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.00098,
+      "max_relative_difference": 0.05
+    }
+  },
+  "TAOUSDT": {
+    "symbol": "TAO",
+    "cg_id": "bittensor",
+    "cmc_id": 22974,
+    "name": "Bittensor",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/bittensor",
+      "https://coinmarketcap.com/currencies/bittensor/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000171,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ZECUSDT": {
+    "symbol": "ZEC",
+    "cg_id": "zcash",
+    "cmc_id": 1437,
+    "name": "Zcash",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/zcash",
+      "https://coinmarketcap.com/currencies/zcash/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.005006,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ATOMUSDT": {
+    "symbol": "ATOM",
+    "cg_id": "cosmos",
+    "cmc_id": 3794,
+    "name": "Cosmos",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/cosmos",
+      "https://coinmarketcap.com/currencies/cosmos/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.004041,
+      "max_relative_difference": 0.05
+    }
+  },
+  "CRVUSDT": {
+    "symbol": "CRV",
+    "cg_id": "curve-dao-token",
+    "cmc_id": 6538,
+    "name": "Curve DAO Token",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/curve-dao-token",
+      "https://coinmarketcap.com/currencies/curve-dao-token/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000799,
+      "max_relative_difference": 0.05
+    }
+  },
+  "JUPUSDT": {
+    "symbol": "JUP",
+    "cg_id": "jupiter-exchange-solana",
+    "cmc_id": 29210,
+    "name": "Jupiter",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/jupiter-exchange-solana",
+      "https://coinmarketcap.com/currencies/jupiter-ag/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000345,
+      "max_relative_difference": 0.05
+    }
+  },
+  "TRUMPUSDT": {
+    "symbol": "TRUMP",
+    "cg_id": "official-trump",
+    "cmc_id": 35336,
+    "name": "OFFICIAL TRUMP",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/official-trump",
+      "https://coinmarketcap.com/currencies/official-trump/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.00186,
+      "max_relative_difference": 0.05
+    }
+  },
+  "LDOUSDT": {
+    "symbol": "LDO",
+    "cg_id": "lido-dao",
+    "cmc_id": 8000,
+    "name": "Lido DAO",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/lido-dao",
+      "https://coinmarketcap.com/currencies/lido-dao/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000399,
+      "max_relative_difference": 0.05
+    }
+  },
+  "STXUSDT": {
+    "symbol": "STX",
+    "cg_id": "blockstack",
+    "cmc_id": 4847,
+    "name": "Stacks",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/blockstack",
+      "https://coinmarketcap.com/currencies/stacks/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000684,
+      "max_relative_difference": 0.05
+    }
+  },
+  "SEIUSDT": {
+    "symbol": "SEI",
+    "cg_id": "sei-network",
+    "cmc_id": 23149,
+    "name": "Sei",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/sei-network",
+      "https://coinmarketcap.com/currencies/sei/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.162357,
+      "max_relative_difference": 0.05
+    }
+  },
+  "HBARUSDT": {
+    "symbol": "HBAR",
+    "cg_id": "hedera-hashgraph",
+    "cmc_id": 4642,
+    "name": "Hedera",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/hedera-hashgraph",
+      "https://coinmarketcap.com/currencies/hedera/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 2e-06,
+      "max_relative_difference": 0.05
+    }
+  },
+  "FETUSDT": {
+    "symbol": "FET",
+    "cg_id": "fetch-ai",
+    "cmc_id": 3773,
+    "name": "Artificial Superintelligence Alliance",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/fetch-ai",
+      "https://coinmarketcap.com/currencies/artificial-superintelligence-alliance/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.051443,
+      "max_relative_difference": 0.05
+    }
+  },
+  "RENDERUSDT": {
+    "symbol": "RENDER",
+    "cg_id": "render-token",
+    "cmc_id": 5690,
+    "name": "Render",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/render-token",
+      "https://coinmarketcap.com/currencies/render/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000214,
+      "max_relative_difference": 0.05
+    }
+  },
+  "RUNEUSDT": {
+    "symbol": "RUNE",
+    "cg_id": "thorchain",
+    "cmc_id": 4157,
+    "name": "THORChain",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/thorchain",
+      "https://coinmarketcap.com/currencies/thorchain/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000813,
+      "max_relative_difference": 0.05
+    }
+  },
+  "1000PEPEUSDT": {
+    "symbol": "PEPE",
+    "cg_id": "pepe",
+    "cmc_id": 24478,
+    "cmc_enabled": true,
+    "name": "PEPE",
+    "verified_at": "2026-11-17",
+    "contract_multiplier": 1000,
+    "evidence": [
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.015783,
+      "max_relative_difference": 0.05
+    }
+  },
+  "1000SHIBUSDT": {
+    "symbol": "SHIB",
+    "cg_id": "shiba-inu",
+    "cmc_id": 5994,
+    "cmc_enabled": true,
+    "name": "SHIB",
+    "verified_at": "2026-11-17",
+    "contract_multiplier": 1000,
+    "evidence": [
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000554,
+      "max_relative_difference": 0.05
+    }
+  },
+  "XMRUSDT": {
+    "symbol": "XMR",
+    "cg_id": "monero",
+    "cmc_id": 328,
+    "name": "Monero",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/monero",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000608,
+      "max_relative_difference": 0.05
+    }
+  },
+  "ASTERUSDT": {
+    "symbol": "ASTER",
+    "cg_id": "aster-2",
+    "cmc_id": 36341,
+    "name": "Aster",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/aster-2",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.076967,
+      "max_relative_difference": 0.05
+    }
+  },
+  "PUMPUSDT": {
+    "symbol": "PUMP",
+    "cg_id": "pump-fun",
+    "cmc_id": 36507,
+    "name": "Pump.fun",
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://www.coingecko.com/en/coins/pump-fun",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-17",
+      "relative_difference": 0.000251,
+      "max_relative_difference": 0.05
+    }
+  }
+}

@@ -347,7 +347,7 @@ class HRSStrategy(BaseStrategy):
         cap_prov = await self.market_data.get_market_cap_provenance(
             symbol, oi_usd, volume_24h_usd,
         )
-        is_true = cap_prov.source in ("coingecko", "cache_hit")
+        is_true = cap_prov.source in ("coingecko", "coinmarketcap", "cache_hit")
 
         if require_true_for_entry:
             # 开仓侧（D4）：只用真实市值
@@ -1411,6 +1411,9 @@ class HRSStrategy(BaseStrategy):
                 # B2: 空池分支只跑 LV-RM（含统一收尾链），持仓监控/上报交由 finally 统一调度
                 await self._run_lv_rm_only_cycle()
                 return
+
+            scan_symbols = await self.candidate_pool.get_lv_rm_scan_range()
+            await self.market_data.preload_market_caps(sorted(set(active_symbols) | set(scan_symbols)))
 
             logger.info("开始评分周期", symbols=list(active_symbols)[:10])
 
@@ -2685,7 +2688,7 @@ class HRSStrategy(BaseStrategy):
             ) = await self._fetch_market_cap_ratio(
                 symbol, oi_usd, volume_24h, require_true_for_entry=False,
             )
-            if _mc_source != "coingecko" and _mc_source != "cache_hit":
+            if _mc_source not in ("coingecko", "coinmarketcap", "cache_hit"):
                 logger.info(
                     "时间止损重新分析：市值来源非真实值，记录但不阻断退出",
                     symbol=symbol, source=_mc_source,

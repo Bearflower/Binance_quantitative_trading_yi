@@ -15,6 +15,7 @@ orphan_cleanup 根据此表判断并清理孤儿条件单。
 - created_at/updated_at: 时间戳
 """
 
+import os
 import structlog
 
 logger = structlog.get_logger()
@@ -24,6 +25,7 @@ _CREATE_TABLE_DDL = """
 CREATE TABLE IF NOT EXISTS condition_orders (
     id SERIAL PRIMARY KEY,
     strategy_name VARCHAR(50) NOT NULL,
+    account_id TEXT,
     symbol VARCHAR(20) NOT NULL,
     algo_id BIGINT,
     order_id BIGINT,
@@ -41,6 +43,7 @@ CREATE INDEX IF NOT EXISTS idx_co_status ON condition_orders(status)
 """
 
 _ADD_TP_LEVEL_DDL = "ALTER TABLE condition_orders ADD COLUMN IF NOT EXISTS tp_level SMALLINT"
+_ADD_ACCOUNT_ID_DDL = "ALTER TABLE condition_orders ADD COLUMN IF NOT EXISTS account_id TEXT"
 
 _CREATE_INDEX_STRATEGY_DDL = """
 CREATE INDEX IF NOT EXISTS idx_co_strategy ON condition_orders(strategy_name)
@@ -67,6 +70,7 @@ async def ensure_table(db):
     try:
         await db.execute_ddl(_CREATE_TABLE_DDL)
         await db.execute_ddl(_ADD_TP_LEVEL_DDL)
+        await db.execute_ddl(_ADD_ACCOUNT_ID_DDL)
         await db.execute_ddl(_CREATE_INDEX_STATUS_DDL)
         await db.execute_ddl(_CREATE_INDEX_STRATEGY_DDL)
         # B5 修复：高频查询联合索引
@@ -79,7 +83,7 @@ async def ensure_table(db):
         raise
 
 
-async def record_condition_order(db, strategy_name, symbol, algo_id=None, order_id=None, order_type="STOP_LOSS", tp_level=None):
+async def record_condition_order(db, strategy_name, symbol, algo_id=None, order_id=None, order_type="STOP_LOSS", tp_level=None, account_id=None):
     """
     记录条件单到数据库，状态为 OPEN
 
@@ -95,28 +99,29 @@ async def record_condition_order(db, strategy_name, symbol, algo_id=None, order_
         order_type: 类型 (STOP_LOSS/TAKE_PROFIT/ENTRY)
     """
     try:
+        account_id = (account_id or os.environ.get("TRADE_ACCOUNT_ID") or "").strip() or None
         if tp_level is not None and (order_type != 'TAKE_PROFIT' or tp_level not in (1, 2)):
             raise ValueError('tp_level 只能用于 TAKE_PROFIT，值为 1 或 2')
         if algo_id is not None:
             # 条件单：使用 INSERT ON CONFLICT 避免 SELECT+INSERT 竞态条件
             await db.execute(
                 """
-                INSERT INTO condition_orders (strategy_name, symbol, algo_id, order_type, tp_level, status)
-                VALUES ($1, $2, $3, $4, $5, 'OPEN')
+                INSERT INTO condition_orders (strategy_name, symbol, algo_id, order_type, tp_level, account_id, status)
+                VALUES ($1, $2, $3, $4, $5, $6, 'OPEN')
                 ON CONFLICT (strategy_name, algo_id) WHERE algo_id IS NOT NULL AND status = 'OPEN' DO NOTHING
                 """,
-                strategy_name, symbol, algo_id, order_type, tp_level
+                strategy_name, symbol, algo_id, order_type, tp_level, account_id
             )
             logger.debug("条件单已记录", strategy=strategy_name, symbol=symbol, algo_id=algo_id)
         elif order_id is not None:
             # 普通订单：使用 INSERT ON CONFLICT 避免 SELECT+INSERT 竞态条件
             await db.execute(
                 """
-                INSERT INTO condition_orders (strategy_name, symbol, order_id, order_type, tp_level, status)
-                VALUES ($1, $2, $3, $4, $5, 'OPEN')
+                INSERT INTO condition_orders (strategy_name, symbol, order_id, order_type, tp_level, account_id, status)
+                VALUES ($1, $2, $3, $4, $5, $6, 'OPEN')
                 ON CONFLICT (strategy_name, order_id) WHERE order_id IS NOT NULL AND status = 'OPEN' DO NOTHING
                 """,
-                strategy_name, symbol, order_id, order_type, tp_level
+                strategy_name, symbol, order_id, order_type, tp_level, account_id
             )
             logger.debug("普通订单已记录", strategy=strategy_name, symbol=symbol, order_id=order_id)
         else:
@@ -212,7 +217,7 @@ async def mark_open_orders_canceled(db, strategy_name, symbol):
         return ""
 
 
-async def get_open_orders(db, strategy_name=None):
+async def get_open_orders(db, strategy_name=None, *, account_id=None):
     """
     查询所有或指定策略的 OPEN 状态条件单
 
@@ -223,6 +228,12 @@ async def get_open_orders(db, strategy_name=None):
     Returns:
         list[dict]: 条件单记录列表
     """
+    if account_id is not None:
+        return await db.fetch_all(
+            "SELECT * FROM condition_orders WHERE status='OPEN' AND account_id=$1 "
+            "AND ($2::text IS NULL OR strategy_name=$2) ORDER BY created_at",
+            account_id, strategy_name,
+        )
     if strategy_name:
         return await db.fetch_all(
             "SELECT * FROM condition_orders WHERE status='OPEN' AND strategy_name=$1 ORDER BY created_at",
