@@ -20,6 +20,7 @@ from .broker import VirtualBroker
 from .clock import (
     BAR_CLOSE,
     CASH_FLOW,
+    DECISION,
     DAILY_MARK,
     FUNDING,
     FUNDING_CHECK,
@@ -135,6 +136,9 @@ def run_replay(
     if hasattr(adapter,'cash_flow_events'):
         for row in adapter.cash_flow_events(ctx):
             events.append(Event(parse_utc(row['occurred_at']),CASH_FLOW,row['event_id'],len(events),row))
+    if hasattr(adapter,'decision_events'):
+        for row in adapter.decision_events(ctx):
+            events.append(Event(parse_utc(row['available_at']),DECISION,row['symbol'],len(events),row))
     events.extend(collect_bar_events(bars_by_subject))
     events.extend(collect_funding_events(funding_by_symbol))
     if snapshots:
@@ -236,6 +240,18 @@ def run_replay(
                         broker.submit(intents, bar, bar.close_time)
                     _apply_protective_prices(broker, adapter, bar.symbol)
                 _require_funding_schedule(broker, expected)
+            elif event.kind == DECISION:
+                ctx.portfolio=broker.view()
+                adapter.on_decision(event.payload,ctx)
+                intents=adapter.intents(ctx)
+                if intents:
+                    latest=next((candidate for candidate in reversed(bars_by_subject.get(event.subject+'|'+execution_interval,[]))
+                                 if candidate.close_time<=event.time),None)
+                    if latest is None:
+                        raise DataBlocked(['hrs_decision_execution_bar_missing:'+event.subject])
+                    broker.submit(intents,latest,event.time)
+                _require_funding_schedule(broker,expected)
+                _apply_protective_prices(broker,adapter,event.subject)
             elif event.kind == DAILY_MARK:
                 missing = [
                     "daily_equity_gap:{0}:{1}".format(symbol, to_utc_z(timestamp))
@@ -252,8 +268,8 @@ def run_replay(
             if getattr(adapter, 'audit', None):
                 audit.extend(adapter.audit)
                 adapter.audit = []
-        if batch_bars:
-            # Match all subbars and external cashflows before the hourly scan.
+        if batch_bars and not getattr(adapter,'requires_decision_calendar',False):
+            # Legacy batch adapters retain their explicit bar-driven contract.
             for decision_event in simultaneous_events:
                 if decision_event.kind != BAR_CLOSE or decision_event.payload.interval != '1h':
                     continue

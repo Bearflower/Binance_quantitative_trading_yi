@@ -152,3 +152,110 @@ def test_unrepresented_configuration_change_requires_window_partition(tmp_path):
     portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(inputs)})
     with pytest.raises(DataBlocked,match='config_change_requires_partition'):
         run_replay(portal,adapter,broker())
+
+
+def test_off_hour_decision_uses_inputs_when_available_then_fills_next_minute(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    rows=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()][:2]
+    calendar=[]
+    for index,row in enumerate(rows,1):
+        decided=AT+timedelta(hours=index,minutes=21)
+        available=decided+timedelta(seconds=5)
+        row.update(decision_at=decided.isoformat(),observed_at=available.isoformat())
+        row['market'].update(source_observed_at=available.isoformat(),expires_at=(available+timedelta(hours=1)).isoformat())
+        calendar.append(dict(symbol='A',decision_at=decided.isoformat(),available_at=available.isoformat(),
+                             batch_available_at=available.isoformat(),sequence=index))
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(rows),'hrs_decision_calendar.jsonl':jsonl(calendar)})
+    result=run_replay(portal,adapter,broker())
+    first_score=next(event for event in result.audit_events if event['type']=='hrs_score')
+    assert first_score['ts']=='2026-11-17T01:21:05Z'
+    # The 01:21-01:22 bar began before submission, so its unknown partial path
+    # cannot prove a fill. Use the next complete minute instead.
+    assert result.final_position.entry_time==AT+timedelta(hours=1,minutes=23)
+    assert not result.invariant_violations
+
+
+def test_real_hrs_engine_requires_explicit_decision_calendar(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path)
+    manifest=json.loads((portal.snapshot_dir/'manifest.json').read_text())
+    manifest['files'].pop('hrs_decision_calendar.jsonl',None)
+    manifest['sha256']=compute_manifest_sha256(manifest['files'])
+    (portal.snapshot_dir/'manifest.json').write_text(json.dumps(manifest))
+    portal=DataPortal(portal.snapshot_dir,'hrs',portal.as_of,portal.window_start)
+    with pytest.raises(DataBlocked,match='decision_calendar'):
+        run_replay(portal,adapter,broker())
+
+
+def test_calendar_cannot_expose_raw_inputs_before_they_are_available(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path)
+    inputs=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    calendar=[dict(symbol='A',decision_at=row['decision_at'],available_at=row['observed_at'],
+                   batch_available_at=row['observed_at'],sequence=index) for index,row in enumerate(inputs)]
+    inputs[0]['observed_at']=(AT+timedelta(hours=1,seconds=1)).isoformat()
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(inputs),'hrs_decision_calendar.jsonl':jsonl(calendar)})
+    with pytest.raises(DataBlocked,match='decision_calendar'):
+        run_replay(portal,adapter,broker())
+
+
+def test_calendar_cannot_omit_a_captured_decision_to_hide_its_trade(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path)
+    inputs=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    calendar=[dict(symbol='A',decision_at=row['decision_at'],available_at=row['observed_at'],
+                   batch_available_at=row['observed_at'],sequence=index) for index,row in enumerate(inputs)][1:]
+    portal=refreeze(portal,{'hrs_decision_calendar.jsonl':jsonl(calendar)})
+    with pytest.raises(DataBlocked,match='decision_calendar'):
+        run_replay(portal,adapter,broker())
+
+
+def test_empty_calendar_cannot_turn_missing_scans_into_successful_zero_trades(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path)
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':'','hrs_decision_calendar.jsonl':''})
+    with pytest.raises(DataBlocked,match='decision_calendar_empty'):
+        run_replay(portal,adapter,broker())
+
+
+def test_monitor_phase_may_begin_after_window_start_without_backdating_it(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    bootstrap=json.loads((portal.snapshot_dir/'hrs_replay_state.json').read_text())
+    bootstrap['monitoring_model']['anchor_at']=(AT+timedelta(minutes=21)).isoformat()
+    portal=refreeze(portal,{'hrs_replay_state.json':json.dumps(bootstrap)})
+    ctx=adapter.prepare(portal)
+    adapter.configure_execution(ctx)
+    assert adapter._monitor_anchor==AT+timedelta(minutes=21)
+
+
+def test_calendar_keeps_explicit_source_sequence_instead_of_symbol_sort(tmp_path):
+    portal,_,_=_hrs_fixture(tmp_path)
+    inputs=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()][:1]
+    other=json.loads(json.dumps(inputs[0]));other['symbol']='Z'
+    inputs.append(other)
+    calendar=[dict(symbol='Z',decision_at=other['decision_at'],available_at=other['observed_at'],batch_available_at=other['observed_at'],sequence=0),
+              dict(symbol='A',decision_at=inputs[0]['decision_at'],available_at=inputs[0]['observed_at'],batch_available_at=inputs[0]['observed_at'],sequence=1)]
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(inputs),'hrs_decision_calendar.jsonl':jsonl(calendar)})
+    assert [row['symbol'] for row in portal.hrs_decision_calendar(('A','Z'))]==['Z','A']
+
+
+def test_experiment_exit_overrides_keep_source_config_and_initial_positions_frozen(tmp_path):
+    from ai_tuner.replay.adapters.hrs import HrsAdapter
+    assert 'exit_parameter_overrides' in inspect.signature(HrsAdapter).parameters
+    portal,original,_=_hrs_fixture(tmp_path,initial_position=True)
+    source=json.loads((portal.snapshot_dir/'hrs_replay_state.json').read_text())
+    adapter=HrsAdapter(original._state_loader,exit_parameter_overrides={'standard':{'target1_atr_multiplier':3}},experiment_id='registered-test')
+    ctx=adapter.prepare(portal);adapter.configure_execution(ctx)
+    assert adapter.config==source['config']
+    restored=adapter.initial_positions(ctx)
+    assert restored[0]['position'].exit_parameters['target1_atr_multiplier']==1.5
+    assert adapter.exit_parameters('standard')['target1_atr_multiplier']==D(3)
+    assert isinstance(adapter.equity_checkpoints(),tuple)
+
+
+def test_experiment_cost_pressure_covers_actual_scenario_fee(tmp_path):
+    from ai_tuner.replay.adapters.hrs import HrsAdapter
+    assert 'execution_costs' in inspect.signature(HrsAdapter).parameters
+    portal,original,_=_hrs_fixture(tmp_path)
+    adapter=HrsAdapter(original._state_loader,experiment_id='cost-2x',execution_costs={'fee_rate':D('.001'),'slippage':D('.0004')})
+    ctx=adapter.prepare(portal);adapter.configure_execution(ctx)
+    fee,slippage=adapter._pressure()
+    assert fee==D('.001') and slippage>=D('.02')
+    with pytest.raises(ValueError):
+        HrsAdapter(original._state_loader,experiment_id='bad',exit_parameter_overrides={'standard':{'entry_threshold':0}})

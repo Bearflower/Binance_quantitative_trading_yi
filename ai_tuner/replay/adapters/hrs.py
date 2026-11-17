@@ -49,18 +49,42 @@ class HrsAdapter:
     strategy_id = 'hrs'
     requires_external_snapshot = True
     requires_attested_funding = True
+    requires_decision_calendar = True
     execution_interval = '1h'
     extra_intervals = ()
     batch_bar_updates = True
     REQUIRED_STATE_TABLES = ('hrs_positions','hrs_blacklist','hrs_active_symbols')
     REQUIRED_INTERVALS = ('1h','4h')
+    EXIT_OVERRIDE_FIELDS = frozenset(exits.mode_exit_parameters({},'standard'))
 
-    def __init__(self, state_loader: StateLoader):
+    def __init__(self, state_loader: StateLoader, *, exit_parameter_overrides=None,
+                 experiment_id=None, execution_costs=None):
+        self._exit_overrides={}
+        if exit_parameter_overrides and (not isinstance(experiment_id,str) or not experiment_id.strip()):
+            raise ValueError('exit_override_requires_experiment_identity')
+        for mode,values in (exit_parameter_overrides or {}).items():
+            if mode not in ('standard','lv_rm') or not isinstance(values,Mapping) or set(values)-self.EXIT_OVERRIDE_FIELDS:
+                raise ValueError('unsupported_exit_override')
+            normalized={key:Decimal(str(value)) for key,value in values.items()}
+            for key,value in normalized.items():
+                if not value.is_finite() or value<0 or (key!='atr_multiplier' and not key.endswith('_percent') and value==0):
+                    raise ValueError('invalid_exit_override')
+                if key.endswith('_percent') and value>=1:
+                    raise ValueError('invalid_exit_percentage')
+            self._exit_overrides[mode]=normalized
+        self.experiment_id=experiment_id
+        costs=execution_costs or {}
+        if set(costs)-{'fee_rate','slippage'}:
+            raise ValueError('unsupported_execution_cost')
+        self._execution_costs={key:Decimal(str(value)) for key,value in costs.items()}
+        if any(not value.is_finite() or not ZERO<=value<1 for value in self._execution_costs.values()):
+            raise ValueError('invalid_execution_cost')
         self._state_loader = state_loader
         self._state = {}
         self._bars = {}
         self._latest_bars = {}
         self._event_bar = None
+        self._decision_event = None
         self._latest_snapshot = None
         self._runtime_ready = False
         self._last_decisions = {}
@@ -273,9 +297,9 @@ class HrsAdapter:
             anchor=parse_utc(model['anchor_at'])
             if type(cadence) is not int or cadence<=0 or cadence%60 or cadence!=configured:
                 raise ValueError('cadence_config_or_resolution_mismatch')
-            if anchor>self._start or anchor.second or anchor.microsecond:
+            if anchor.second or anchor.microsecond:
                 raise ValueError('anchor_not_on_execution_boundary')
-            if self.execution_interval=='1h' and cadence%3600:
+            if self.execution_interval=='1h' and (cadence%3600 or anchor.minute):
                 raise ValueError('cadence_requires_one_minute_execution')
         except (KeyError,TypeError,ValueError) as exc:
             raise DataBlocked(['hrs_monitoring_model_invalid:'+str(exc)]) from exc
@@ -290,6 +314,13 @@ class HrsAdapter:
         self._latest_bars[bar.symbol+'|'+bar.interval] = bar
         self._event_bar = bar if bar.interval == '1h' else None
         self._portfolio = ctx.portfolio
+
+    def decision_events(self,ctx):
+        return self._portal.hrs_decision_calendar(ctx.universe.symbols)
+
+    def on_decision(self,event,ctx):
+        self._decision_event=event
+        self._portfolio=ctx.portfolio
 
     def on_snapshot(self,snap,ctx):
         self._latest_snapshot = snap
@@ -309,14 +340,29 @@ class HrsAdapter:
             raise DataBlocked(['hrs_decision_inputs_invalid:'+str(exc)]) from exc
 
     def _intents(self,ctx):
-        bar = self._event_bar
-        if bar is None:
-            return ()
-        now, symbol = bar.close_time,bar.symbol
-        if self._last_decisions.get(symbol) == now:
+        event=self._decision_event
+        self._decision_event=None
+        if event is not None:
+            now=parse_utc(event['available_at'])
+            symbol=event['symbol']
+            decision_at=parse_utc(event['decision_at'])
+            identity=(decision_at,now)
+            history=self._bars.get((symbol,'1h'),[])
+            if not history:
+                raise DataBlocked(['hrs_decision_kline_history_missing:'+symbol])
+        else:
+            # Direct adapter contract tests can consume an explicit bar. The
+            # unified HRS engine exclusively drives the attested calendar.
+            bar=self._event_bar
+            if bar is None:
+                return ()
+            now,symbol=bar.close_time,bar.symbol
+            decision_at=now
+            identity=now
+        if self._last_decisions.get(symbol)==identity:
             return ()
         self._bootstrap(ctx)
-        raw = self._portal.hrs_inputs(symbol,now)
+        raw=self._portal.hrs_inputs(symbol,now,decision_at=decision_at)
         if 'config_hashes' not in raw:
             raise DataBlocked(['hrs_decision_config_identity_missing'])
         if raw['config_hashes']!=ctx.config_hashes.as_dict():
@@ -384,7 +430,7 @@ class HrsAdapter:
                 origin = 'nonempty_pool'
         except core.DecisionInputsUnavailable as exc:
             raise DataBlocked(['hrs_'+str(exc)+':'+symbol]) from exc
-        self._last_decisions[symbol] = now
+        self._last_decisions[symbol] = identity
         self._portfolio = ctx.portfolio
         result = self._exit_intents(symbol,now,analysis,ctx,market)
         candidates = []
@@ -426,7 +472,7 @@ class HrsAdapter:
                 self._record(now,'hrs_reject',dict(signal,reason=denial))
                 continue
             mode = signal['entry_mode']
-            params = exits.mode_exit_parameters(self.config,mode)
+            params = self.exit_parameters(mode)
             atr = exits.calculate_atr(klines,self.config.get('atr',{}).get('period',14))
             if atr <= 0:
                 raise DataBlocked(['hrs_atr_unavailable:'+symbol])
@@ -458,8 +504,11 @@ class HrsAdapter:
                 portfolio_risk_ratio=min(Decimal('.03'),Decimal(str(budget.get('portfolio_loss_ratio','.03')))),
                 take_profit_ratios=tuple(Decimal(str(params[k])) for k in ('target1_close_percent','target2_close_percent')),
                 take_profit_prices=targets)
-            self._record(now,'hrs_budget',dict(symbol=symbol,allowed=decision.allowed,reason=decision.reason,
-                quantity=str(decision.quantity),worst_loss=str(decision.worst_loss),exit_ratios=list(map(str,decision.exit_ratios))))
+            self._record(now,'hrs_budget',dict(symbol=symbol,direction=signal['direction'],entry_mode=mode,
+                experiment_id=self.experiment_id,allowed=decision.allowed,reason=decision.reason,
+                quantity=str(decision.quantity),worst_loss=str(decision.worst_loss),risk_limit=str(decision.risk_limit),
+                allocation=str(self._allocation),planned_stop=str(stop),geometry_reference_price=str(price),
+                pressure_fee_rate=str(fee),pressure_slippage=str(slip),exit_ratios=list(map(str,decision.exit_ratios))))
             if not decision.allowed:
                 continue
             entry_type = self.config.get('trading',{}).get('order_type',{}).get('entry','LIMIT')
@@ -482,11 +531,26 @@ class HrsAdapter:
                                         'direction':signal['direction']}
         return tuple(result)
 
+    def exit_parameters(self,entry_mode):
+        """Experiment overlays affect new entries, never captured source config."""
+        parameters=exits.mode_exit_parameters(self.config,entry_mode)
+        parameters.update(self._exit_overrides.get('lv_rm' if entry_mode=='lv_rm' else 'standard',{}))
+        first,second=(Decimal(str(parameters[key])) for key in ('target1_close_percent','target2_close_percent'))
+        if not (ZERO<first<1 and ZERO<second<1 and first+second<=1):
+            raise ValueError('invalid_exit_ratios')
+        return parameters
+
+    def equity_checkpoints(self):
+        """Read-only NAV history for the qualified experiment report."""
+        return tuple(sorted(getattr(self,'_history',()),key=lambda sample:sample.as_of))
+
     def _pressure(self):
         trading = self.config.get('trading',{})
         budget = trading.get('risk_budget',{})
-        return (max(Decimal(str(trading.get('fee_rate',0))),Decimal(str(budget.get('fee_rate_pressure','.0005')))),
-                max(Decimal('.02'),Decimal(str(budget.get('slippage_pressure','.02')))))
+        return (max(Decimal(str(trading.get('fee_rate',0))),Decimal(str(budget.get('fee_rate_pressure','.0005'))),
+                    self._execution_costs.get('fee_rate',ZERO)),
+                max(Decimal('.02'),Decimal(str(budget.get('slippage_pressure','.02'))),
+                    self._execution_costs.get('slippage',ZERO)))
 
     def _risk_positions(self,portfolio):
         result={}

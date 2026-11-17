@@ -149,7 +149,9 @@ def _hrs_fixture(tmp_path, *, missing=None, entry_type='MARKET', subbars=False, 
            'hrs_cash_flows.jsonl':(json.dumps(cash_flow)+'\n' if cash_flow else ''),
            'funding_schedule_evidence.json':json.dumps(evidence),
            'hrs_replay_state.json':json.dumps(bootstrap),
-           'hrs_decision_inputs.jsonl':''.join(json.dumps(row)+'\n' for row in inputs)}
+           'hrs_decision_inputs.jsonl':''.join(json.dumps(row)+'\n' for row in inputs),
+           'hrs_decision_calendar.jsonl':''.join(json.dumps(dict(symbol=row['symbol'],decision_at=row['decision_at'],
+               available_at=row['observed_at'],batch_available_at=row['observed_at'],sequence=index))+'\n' for index,row in enumerate(inputs))}
     directory=str(tmp_path/'hrs')
     all_bars={'A|1h':bars1,'A|4h':bars4}
     if subbars:

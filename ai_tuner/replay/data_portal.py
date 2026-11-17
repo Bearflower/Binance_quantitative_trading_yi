@@ -473,16 +473,90 @@ class DataPortal:
             raise DataBlocked(["hrs_bootstrap_as_of_mismatch"])
         return raw
 
-    def hrs_inputs(self, symbol: str, as_of: datetime) -> Dict[str, Any]:
+    def hrs_decision_calendar(self, symbols: Iterable[str]) -> Tuple[Dict[str, Any], ...]:
+        """Manifest-bound batch release and actual controller order, not bar time.
+
+        Every scanned/vetoed input needs an entry. Batch release follows score
+        completion; consumption also waits for later entry-stage inputs. Explicit
+        sequence preserves the live shorts-then-longs control flow at equal times.
+        """
+        self._require_dataset('hrs_decision_calendar.jsonl')
+        self._require_dataset('hrs_decision_inputs.jsonl')
+        allowed=set(symbols)
+        def timestamp(value):
+            parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+            if parsed.tzinfo is None:
+                raise ValueError('timezone_missing')
+            return parse_utc(parsed)
+        try:
+            raw_by_key={}
+            for raw in self._read_jsonl('hrs_decision_inputs.jsonl'):
+                decided=timestamp(raw['decision_at'])
+                observed=timestamp(raw['observed_at'])
+                supplied=timestamp(raw.get('available_at',raw['observed_at']))
+                scored=timestamp(raw.get('score_available_at',raw['decision_at']))
+                if supplied<observed or scored<decided:
+                    raise ValueError('input_availability_before_observation')
+                available=max(decided,supplied)
+                key=(raw['symbol'],decided)
+                if key in raw_by_key or raw['symbol'] not in allowed:
+                    raise ValueError('duplicate_or_unknown_input')
+                self.guard(available,'hrs_decision_calendar','available_at',self.as_of)
+                raw_by_key[key]=(available,scored)
+            rows=[]
+            seen=set()
+            sequences=set()
+            batches={}
+            all_rows=[]
+            for row in self._read_jsonl('hrs_decision_calendar.jsonl'):
+                decided=timestamp(row['decision_at'])
+                available=timestamp(row['available_at'])
+                released=timestamp(row['batch_available_at'])
+                sequence=row['sequence']
+                key=(row['symbol'],decided)
+                if type(sequence) is not int or sequence<0 or sequence in sequences:
+                    raise ValueError('sequence_missing_or_duplicate')
+                if key in seen or key not in raw_by_key:
+                    raise ValueError('duplicate_or_missing_input')
+                input_available,score_available=raw_by_key[key]
+                if released<score_available or available!=max(input_available,released):
+                    raise ValueError('batch_or_input_availability_mismatch')
+                batch_id=row.get('batch_id',released.isoformat())
+                if not isinstance(batch_id,str) or not batch_id or batches.setdefault(batch_id,released)!=released:
+                    raise ValueError('batch_identity_conflict')
+                self.guard(available,'hrs_decision_calendar','available_at',self.as_of)
+                seen.add(key)
+                sequences.add(sequence)
+                normalized=dict(symbol=row['symbol'],decision_at=decided,available_at=available,
+                                batch_available_at=released,batch_id=batch_id,sequence=sequence)
+                all_rows.append(normalized)
+                if self.window_start<available<=self.as_of:
+                    rows.append(normalized)
+            if seen!=set(raw_by_key):
+                raise ValueError('input_calendar_inventory_mismatch')
+            by_sequence=sorted(all_rows,key=lambda row:row['sequence'])
+            if any(left['available_at']>right['available_at'] for left,right in zip(by_sequence,by_sequence[1:])):
+                raise ValueError('sequence_availability_conflict')
+        except (KeyError,TypeError,ValueError) as exc:
+            raise DataBlocked(['hrs_decision_calendar_invalid:'+str(exc)]) from exc
+        if not rows:
+            raise DataBlocked(['hrs_decision_calendar_empty'])
+        return tuple(sorted(rows,key=lambda row:(row['available_at'],row['sequence'])))
+
+    def hrs_inputs(self, symbol: str, as_of: datetime, *, decision_at: Optional[datetime] = None) -> Dict[str, Any]:
         """Return one complete raw-input envelope available at this decision."""
         cutoff = self.cutoff(as_of, "hrs_inputs")
+        identity=parse_utc(decision_at) if decision_at is not None else cutoff
+        self.guard(identity,"hrs_inputs","decision_at",cutoff)
         self._require_dataset("hrs_decision_inputs.jsonl")
         rows = [row for row in self._read_jsonl("hrs_decision_inputs.jsonl")
-                if row.get("symbol") == symbol and parse_utc(row["decision_at"]) == cutoff]
+                if row.get("symbol") == symbol and parse_utc(row["decision_at"]) == identity]
         if len(rows) != 1:
             raise DataBlocked(["hrs_decision_inputs_missing_or_duplicate:"+symbol])
         raw = rows[0]
         self.guard(parse_utc(raw["observed_at"]), "hrs_inputs", "observed_at", cutoff)
+        if "available_at" in raw:
+            self.guard(parse_utc(raw["available_at"]),"hrs_inputs","available_at",cutoff)
         if raw.get("complete") is not True:
             raise DataBlocked(["hrs_decision_inputs_incomplete:"+symbol])
         return raw

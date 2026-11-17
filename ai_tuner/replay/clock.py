@@ -16,6 +16,7 @@ FUNDING_CHECK = "funding_check"
 SNAPSHOT = "external_snapshot"
 DAILY_MARK = "daily_mark"
 CASH_FLOW = "cash_flow"
+DECISION = "decision"
 
 # 同一时刻的事件处理次序（数字小者先）：资金费、资金费检查/外部快照、K 线、日界线盯市。
 EVENT_PRIORITY: Dict[str, int] = {
@@ -24,7 +25,8 @@ EVENT_PRIORITY: Dict[str, int] = {
     SNAPSHOT: 1,
     BAR_CLOSE: 2,
     CASH_FLOW: 3,
-    DAILY_MARK: 4,
+    DECISION: 4,
+    DAILY_MARK: 5,
 }
 
 
@@ -47,7 +49,7 @@ def sort_key(event: Event) -> Tuple[datetime, int, str, int]:
     return (
         event.time,
         EVENT_PRIORITY.get(event.kind, 99),
-        event.subject,
+        "" if event.kind == DECISION else event.subject,
         event.seq,
     )
 
