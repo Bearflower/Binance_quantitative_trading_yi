@@ -7,16 +7,19 @@ one lease: income session guard -> account policy session lock -> repeatable-rea
 transaction -> loss lock -> checkpoint/evidence/projection writes. API requests and the
 optional recorder happen outside that transaction. The caller owns task creation.
 
-A segment starts once from current DB allocation and two genuinely flat account
-inventories, with no unresolved HRS entry. Pre-existing positions need a separately
-certified opening inventory; cached partial fills are never that proof. No startup,
+A segment starts once from current DB allocation plus exact current-period HRS
+net income. Existing positions require complete fresh fill coverage, exact owners,
+active claims and two agreeing account inventories; cached partial sums never
+prove ownership. A filled reservation needs authenticated terminal/full-fill proof.
+Opening marked equity establishes NAV 1 and makes no pre-activation return claim.
+No startup,
 deposit or allocation change reseeds a segment. An administrator must install the
 allocation mutation journal before a new segment begins. Every later committed
 allocation delta is replayed; uncertain commit-time NAV fails closed.
-Daily and rolling boundary NAVs are reconstructed only when the complete fill path
-proves HRS flat there; nonflat historical marks are deliberately not synthesized.
-Derived attribution is not silently promoted to human review; unsupported funding
-or missing exact orders remain a concrete readiness barrier.
+Daily/rolling boundaries use reconstructed inventory plus actual closed historical
+mark-price bars when needed, retaining true mark and availability timestamps.
+Funding owners are independently reconstructed backwards from verified current
+inventory and complete fills; derived labels alone are never human review.
 
 Environment: TRADE_ACCOUNT_ID; HRS_EQUITY_ALLOW_INCEPTION=true explicitly permits
 labelled inception protection; HRS_EQUITY_REFRESH_SECONDS defaults to 30. The
@@ -24,6 +27,7 @@ projection always expires by source as_of+120s, regardless of collection duratio
 """
 import asyncio
 import copy
+from dataclasses import asdict
 from contextlib import asynccontextmanager
 from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
@@ -37,17 +41,18 @@ import structlog
 from scripts.collect_execution_facts import collect_window
 from scripts.export_execution_facts import ExecutionFactExporter
 from shared.accounting.income_integrity import income_account_lock, require_income_integrity
-from shared.accounting.report_reader import read_monthly_economic_report
+from shared.accounting.report_reader import read_monthly_economic_report,_OWNER_SQL
 from shared.execution_facts_sink import PostgresExecutionFactsSink
 
 from .equity_evidence import (
     EvidenceBlocked, allocation_evidence, allocation_event_changes, attributed_incomes, canonical,
+    certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
 from .equity_reconciliation import ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
 from .loss_gate_repository import LossGateSession, RepositoryConflict
-from .risk_ledger import CashFlow, LedgerNotReady, LedgerObservation, initialize_ledger, reconcile_ledger
+from .risk_ledger import CashFlow, LedgerNotReady, LedgerObservation, PositionMark, initialize_ledger, reconcile_ledger
 
 log = structlog.get_logger()
 
@@ -65,11 +70,15 @@ class _FreshSink:
 
 
 class _SnapshotDB:
-    def __init__(self, connection):
+    def __init__(self, connection, owners=()):
         self.connection = connection
+        self.owners=owners
 
     async def fetch_all(self, query, *args):
-        return await self.connection.fetch(query, *args)
+        rows=list(await self.connection.fetch(query,*args))
+        if query==_OWNER_SQL:
+            rows.extend(row for row in self.owners if row['account_id']==args[0] and str(row['order_id']) in args[1] and row['symbol'] in args[2])
+        return rows
 
 
 class HrsEquityService:
@@ -84,6 +93,9 @@ class HrsEquityService:
             raise ValueError('equity_refresh_interval_invalid')
         self._closed = asyncio.Event()
         self._refresh_lock = asyncio.Lock()
+        self._anchor_inventory=()
+        self._order_source_cache={}
+        self._mark_bar_cache={}
 
     def _now(self):
         value = self.clock()
@@ -116,11 +128,22 @@ class HrsEquityService:
         for symbol in sorted(local):
             marks[symbol] = await self.api._request('GET', '/fapi/v1/premiumIndex',
                                                    params={'symbol': symbol}, signed=False)
+        settled={}
+        pending=await self.db.fetch_all("SELECT * FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs' AND state<>'released'",self.account)
+        for row in pending:
+            if row.get('quantity') is None:
+                continue
+            order=await self.api.get_order_by_client_id(row['symbol'],row['client_order_id'])
+            if (isinstance(order,dict) and order.get('symbol')==row['symbol']
+                    and order.get('clientOrderId')==row['client_order_id'] and order.get('status')=='FILLED'
+                    and number(order.get('executedQty'),'settled_entry_quantity')==number(row['quantity'],'reservation_quantity')
+                    and number(order.get('origQty'),'settled_entry_original_quantity')==number(row['quantity'],'reservation_quantity')):
+                settled[row['client_order_id']]={key:order.get(key) for key in ('symbol','orderId','clientOrderId','status','executedQty','origQty','side')}
         captured = self._now()
         if not timedelta(0) <= captured-started <= timedelta(seconds=120):
             raise EvidenceBlocked('inventory_capture_stale')
         return copy.deepcopy(dict(started_at=started, captured_at=captured, inventory=inventory,
-                    independent=independent, open_orders=open_orders, local=local, marks=marks))
+                    independent=independent, open_orders=open_orders, local=local, marks=marks,settled_reservations=settled))
 
     async def _collect(self, start, end, snapshot):
         exporter = ExecutionFactExporter(self.account, self.api, _FreshSink(self.db))
@@ -145,7 +168,102 @@ class HrsEquityService:
                 left = right
         if result['gaps']:
             raise EvidenceBlocked('source_collection_incomplete')
+        result['position_symbols_covered']=sorted(symbols)
         return result
+
+    async def _authenticate_order_owners(self,snapshot,start_ms,end_ms):
+        fills=await self.db.fetch_all('SELECT account_id,symbol,order_id,side FROM trading.execution_fact_fill WHERE account_id=$1 AND trade_time_utc>=$2 AND trade_time_utc<=$3',self.account,datetime.fromtimestamp(start_ms/1000,timezone.utc),datetime.fromtimestamp(end_ms/1000,timezone.utc))
+        native=await self.db.fetch_all('SELECT account_id,symbol,order_id,strategy FROM trading.trade_records WHERE account_id=$1 AND order_id IS NOT NULL',self.account)
+        known=order_owners(self.account,native)
+        missing={(row['symbol'],str(row['order_id'])) for row in fills if known.get((row['symbol'],str(row['order_id']))) is None}
+        proofs=[]
+        if missing:
+            identifiers=sorted({identity for _,identity in missing})
+            legacy=await self.db.fetch_all('SELECT id,account_id,symbol,order_id,strategy,side FROM trading.trade_records WHERE order_id=ANY($1::text[]) AND (account_id=$2 OR account_id IS NULL)',identifiers,self.account)
+            evidence_table=await self.db.fetch_one("SELECT to_regclass('trading.order_strategy_evidence') AS name")
+            linked=[]
+            if evidence_table and evidence_table['name']:
+                linked=await self.db.fetch_all("SELECT symbol,order_id,strategy,source_kind,evidence FROM trading.order_strategy_evidence WHERE account_id=$1 AND order_id=ANY($2::bigint[])",self.account,[int(item) for item in identifiers])
+            for symbol,identity in sorted(missing):
+                cache=self._order_source_cache.get((symbol,identity))
+                candidates=[row for row in legacy if row['symbol']==symbol and str(row['order_id'])==identity]
+                owners={row['strategy'] for row in candidates}
+                if (cache and cache['source_kind']=='authenticated_exchange_order_and_durable_record'
+                        and owners=={cache['strategy']} and {str(row['id']) for row in candidates}==set(cache['source_ids'])
+                        and {row['side'] for row in candidates}=={cache['response']['side']}):
+                    proofs.append(cache)
+                    continue
+                expected_sides={row['side'] for row in fills if row['symbol']==symbol and str(row['order_id'])==identity}
+                proof=None
+                try:
+                    if len(owners)==1 and None not in owners:
+                        response=await self.api.get_order(symbol,int(identity))
+                        if (isinstance(response,dict) and str(response.get('orderId'))==identity and response.get('symbol')==symbol
+                                and expected_sides=={response.get('side')} and {row['side'] for row in candidates}==expected_sides):
+                            proof=dict(account_id=self.account,symbol=symbol,order_id=identity,strategy=next(iter(owners)),
+                                source_kind='authenticated_exchange_order_and_durable_record',source_ids=[str(row['id']) for row in candidates],
+                                response={key:response.get(key) for key in ('orderId','symbol','side','status','time','updateTime')},available_at=self._now())
+                    if proof is None:
+                        for link in linked:
+                            if link['symbol']!=symbol or str(link['order_id'])!=identity or link['source_kind']!='pm_algo_link':
+                                continue
+                            details=json.loads(link['evidence']) if isinstance(link['evidence'],str) else link['evidence']
+                            algo=details.get('algo_id')
+                            if algo is None:
+                                continue
+                            condition=await self.db.fetch_all('SELECT id,strategy_name FROM public.condition_orders WHERE symbol=$1 AND algo_id=$2 AND (account_id=$3 OR account_id IS NULL)',symbol,int(algo),self.account)
+                            choices={row['strategy_name'] for row in condition}
+                            response=await self.api.get_algo_order(algo_id=int(algo))
+                            if (len(choices)==1 and choices=={link['strategy']} and isinstance(response,dict)
+                                    and str(response.get('algoId'))==str(algo) and str(response.get('actualOrderId'))==identity
+                                    and response.get('symbol')==symbol and expected_sides=={response.get('side')}):
+                                proof=dict(account_id=self.account,symbol=symbol,order_id=identity,strategy=next(iter(choices)),
+                                    source_kind='authenticated_pm_algo_link_and_durable_owner',source_ids=[str(row['id']) for row in condition],
+                                    response={key:response.get(key) for key in ('algoId','actualOrderId','symbol','side','algoStatus')},available_at=self._now())
+                                break
+                except Exception:
+                    # A method label, cached digest, API failure or ambiguous link
+                    # is never promoted to ownership. The shared reader will deny.
+                    proof=None
+                if proof:
+                    self._order_source_cache[(symbol,identity)]=proof
+                    proofs.append(proof)
+        snapshot['authenticated_order_owners']=proofs
+
+    async def _historical_marks(self,bootstrap,snapshot):
+        snapshot['historical_mark_bars']={}
+        if bootstrap is None:
+            return
+        raw=await self.db.fetch_one('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',self.account)
+        if raw is None:
+            return
+        ledger=json.loads(raw['ledger_state']) if isinstance(raw['ledger_state'],str) else raw['ledger_state']
+        last=datetime.fromisoformat(ledger['as_of'])
+        boundary=datetime.combine(last.astimezone(SHANGHAI).date()+timedelta(days=1),time.min,SHANGHAI)
+        points=[]
+        while boundary<snapshot['captured_at']:
+            points.append(boundary)
+            boundary+=timedelta(days=1)
+        rolling=snapshot['captured_at']-timedelta(days=30)
+        if rolling>=bootstrap['inception']:
+            points.append(rolling)
+        opening=json.loads(bootstrap['opening_evidence']) if isinstance(bootstrap['opening_evidence'],str) else bootstrap['opening_evidence']
+        symbols={row['symbol'] for row in opening.get('opening_inventory',()) if row['strategy']=='hrs'}|set(snapshot['local'])
+        rows=await self.db.fetch_all("SELECT DISTINCT symbol FROM trading.trade_records WHERE account_id=$1 AND strategy='hrs' AND executed_at>=$2",self.account,bootstrap['inception'].astimezone(SHANGHAI).replace(tzinfo=None))
+        symbols.update(row['symbol'] for row in rows if row.get('symbol'))
+        for point in points:
+            for symbol in sorted(symbols):
+                key=f'{symbol}:{int(point.timestamp()*1000)}'
+                if key not in self._mark_bar_cache:
+                    start=(int(point.timestamp()*1000)//60000)*60000-60000
+                    bars=await self.api._request('GET','/fapi/v1/markPriceKlines',params=dict(symbol=symbol,interval='1m',startTime=start,endTime=start+59999,limit=1),signed=False)
+                    if not isinstance(bars,list) or len(bars)!=1 or not isinstance(bars[0],list) or len(bars[0])<7:
+                        raise EvidenceBlocked('historical_mark_bar_unavailable')
+                    if int(bars[0][0])!=start or int(bars[0][6])!=start+59999:
+                        raise EvidenceBlocked('historical_mark_bar_identity_conflict')
+                    number(bars[0][4],'historical_mark_price',positive=True)
+                    self._mark_bar_cache[key]=dict(bar=bars[0],available_at=self._now(),source='/fapi/v1/markPriceKlines')
+                snapshot['historical_mark_bars'][key]=self._mark_bar_cache[key]
 
     @asynccontextmanager
     async def _locked(self):
@@ -176,20 +294,21 @@ class HrsEquityService:
     async def _read_source(self, connection, start_ms, end_ms, snapshot):
         start = datetime.fromtimestamp(start_ms/1000, timezone.utc)
         end = datetime.fromtimestamp(end_ms/1000, timezone.utc)
-        report = await read_monthly_economic_report(_SnapshotDB(connection), self.account, start_ms, end_ms + 1,
+        report = await read_monthly_economic_report(_SnapshotDB(connection,snapshot.get('authenticated_order_owners',())), self.account, start_ms, end_ms + 1,
                                                    include_reviewed_overrides=True)
         fills = [dict(row) for row in await connection.fetch('''SELECT * FROM trading.execution_fact_fill
             WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc <= $3''', self.account, start, end)]
         orders = [dict(row) for row in await connection.fetch('''SELECT account_id,symbol,order_id,strategy,side,status,order_type,
             realized_pnl,executed_at FROM trading.trade_records WHERE account_id=$1 AND order_id IS NOT NULL''', self.account)]
+        orders.extend(snapshot.get('authenticated_order_owners',()))
         for order in orders:
             at=order.get('executed_at')
             if isinstance(at,datetime) and at.tzinfo is None:
                 order['executed_at']=at.replace(tzinfo=SHANGHAI)
-        pending = await connection.fetchval("SELECT count(*) FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs' AND state<>'released'", self.account)
+        pending = [dict(row) for row in await connection.fetch("SELECT * FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs' AND state<>'released'", self.account)]
         return report, fills, orders, pending
 
-    def _entries_clear(self, snapshot, orders, pending, *, bootstrap):
+    def _entries_clear(self, snapshot, orders, pending, *, bootstrap,fills=()):
         owners = order_owners(self.account, orders)
         for row in snapshot['open_orders']:
             if not isinstance(row, dict) or not row.get('symbol'):
@@ -201,13 +320,14 @@ class HrsEquityService:
                 raise EvidenceBlocked('outstanding_entry_owner_unproven')
             if 'hrs' in choices:
                 raise EvidenceBlocked('outstanding_hrs_entry')
-        if pending:
-            raise EvidenceBlocked('outstanding_hrs_reservation')
-        if bootstrap:
-            for row in orders:
-                if (row['strategy'] == 'hrs' and row.get('order_type') in ('LIMIT', 'MARKET')
-                        and row.get('realized_pnl') is None and row.get('status') not in ('CANCELED', 'EXPIRED', 'CLOSED')):
-                    raise EvidenceBlocked('bootstrap_open_hrs_identity')
+        for row in pending:
+            proof=snapshot.get('settled_reservations',{}).get(row['client_order_id'])
+            if proof is None:
+                raise EvidenceBlocked('outstanding_hrs_reservation')
+            exact=[fill for fill in fills if fill['symbol']==row['symbol'] and str(fill['order_id'])==str(proof['orderId'])]
+            if (not exact or sum((number(fill['qty'],'settled_fill_quantity') for fill in exact),Decimal(0))!=number(proof['executedQty'],'settled_entry_quantity')
+                    or order_owners(self.account,orders).get((row['symbol'],str(proof['orderId'])))!={'hrs'}):
+                raise EvidenceBlocked('settled_reservation_fill_proof_missing')
 
     async def _allocation_audit(self, connection, bootstrap, as_of):
         control=await connection.fetchrow('SELECT version,installed_at FROM trading.hrs_allocation_audit_control WHERE singleton')
@@ -266,7 +386,7 @@ class HrsEquityService:
                 if economic_change or exposure_change:
                     raise EvidenceBlocked('allocation_effective_nav_unproven')
             try:
-                before=flat_boundary_observation(valuation_state,change.occurred_at,self._now(),fills,orders,events,coverage_complete=True)
+                before=flat_boundary_observation(valuation_state,change.occurred_at,self._now(),fills,orders,events,coverage_complete=True,opening_inventory=self._anchor_inventory)
             except EvidenceBlocked:
                 raise EvidenceBlocked('allocation_nav_nonflat_unproven') from None
             before_state=reconcile_ledger(valuation_state,before)
@@ -276,6 +396,17 @@ class HrsEquityService:
             valuation_state=reconcile_ledger(valuation_state,applied)
             flows.append(flow)
         return tuple(flows)
+
+    def _opening_marks(self,anchor):
+        marks=[]
+        for raw in anchor.get('opening_hrs_marks',()):
+            if raw.get('verified') is not True:
+                raise EvidenceBlocked('opening_mark_proof_missing')
+            at=raw['marked_at']
+            marks.append(PositionMark(raw['position_id'],raw['segment_id'],number(raw['quantity'],'opening_quantity'),
+                number(raw['entry_price'],'opening_entry'),number(raw['mark_price'],'opening_mark'),
+                datetime.fromisoformat(at) if isinstance(at,str) else at,True))
+        return tuple(marks)
 
     async def _policy_revision(self, connection):
         row = await connection.fetchrow('''SELECT p.revision FROM trading.strategy_risk_policy p
@@ -307,7 +438,7 @@ class HrsEquityService:
         for left, right in zip(checkpoints, checkpoints[1:]):
             if right.as_of - left.as_of <= timedelta(seconds=120):
                 continue
-            positions = owned_fill_positions(self.account, fills, orders, through=left.as_of, after=inception)
+            positions = owned_fill_positions(self.account, fills, orders, through=left.as_of, after=inception,opening_inventory=self._anchor_inventory)
             if any(owner == 'hrs' and qty != 0 for (owner, _), (qty, _) in positions.items()):
                 return False
             owners = order_owners(self.account, orders)
@@ -330,36 +461,66 @@ class HrsEquityService:
             raise EvidenceBlocked('bootstrap_changed_retry_collection')
         if actual_bootstrap:
             anchor=json.loads(actual_bootstrap['opening_evidence']) if isinstance(actual_bootstrap['opening_evidence'],str) else actual_bootstrap['opening_evidence']
-            if anchor.get('account_flat_anchor_certified') is not True:
+            if anchor.get('account_flat_anchor_certified') is not True and anchor.get('opening_inventory_certified') is not True:
                 raise EvidenceBlocked('opening_inventory_anchor_unproven')
         audit=await self._allocation_audit(connection,actual_bootstrap,as_of)
         segment = actual_bootstrap['segment_id'] if actual_bootstrap else f'hrs-{uuid.uuid4().hex}'
         session = LossGateSession(connection, self.account, segment)
         stored = await session.load()
-        self._entries_clear(snapshot, orders, pending, bootstrap=actual_bootstrap is None)
-        events = attributed_incomes(report, self.account, segment)
-        marks = prove_positions(self.account, segment, as_of, snapshot['inventory'], snapshot['independent'],
-                                snapshot['local'], fills, orders, snapshot['marks'], bootstrap=actual_bootstrap is None,
-                                inception=actual_bootstrap['inception'] if actual_bootstrap else None)
+        self._entries_clear(snapshot, orders, pending, bootstrap=actual_bootstrap is None,fills=fills)
+        if actual_bootstrap is None:
+            symbols=[row['symbol'] for row in snapshot['inventory'] if number(row.get('positionAmt'),'position_quantity')!=0]
+            claims=[dict(row) for row in await connection.fetch("SELECT id,symbol,strategy FROM trading.position_claims WHERE symbol=ANY($1::text[]) AND claim_state IN ('ACTIVE','PENDING') AND expires_at>clock_timestamp()",symbols)] if symbols else []
+            marks,opening_inventory=certify_opening_inventory(self.account,segment,as_of,snapshot['inventory'],snapshot['independent'],
+                snapshot['local'],fills,orders,snapshot['marks'],claims,covered_symbols=collection.get('position_symbols_covered',()))
+            self._anchor_inventory=opening_inventory
+            current_inventory=opening_inventory
+        else:
+            self._anchor_inventory=tuple(anchor.get('opening_inventory',()))
+            marks=prove_positions(self.account,segment,as_of,snapshot['inventory'],snapshot['independent'],snapshot['local'],
+                fills,orders,snapshot['marks'],bootstrap=False,inception=actual_bootstrap['inception'],opening_inventory=self._anchor_inventory)
+            current=owned_fill_positions(self.account,fills,orders,through=as_of,after=actual_bootstrap['inception'],opening_inventory=self._anchor_inventory)
+            current_inventory=tuple(dict(strategy=owner,symbol=symbol,quantity=str(qty),entry_price=str(basis)) for (owner,symbol),(qty,basis) in current.items() if qty!=0)
+        report=attribute_funding_from_inventory(report,self.account,as_of,fills,orders,current_inventory,
+            coverage_complete=not report.get('coverage_gaps') and not report.get('missing_income_fills') and report.get('account_coverage_complete') is True,available_at=self._now())
+        all_events=attributed_incomes(report,self.account,segment)
+        if actual_bootstrap is None:
+            period=datetime.combine(as_of.astimezone(SHANGHAI).date().replace(day=1),time.min,SHANGHAI)
+            credited=tuple(event for event in all_events if event.occurred_at>=period)
+            events=()
+        else:
+            old_credits={row['event_id']:row for row in anchor.get('credited_opening_income',())}
+            credit_start=datetime.combine(actual_bootstrap['inception'].astimezone(SHANGHAI).date().replace(day=1),time.min,SHANGHAI)
+            credited=tuple(event for event in all_events if credit_start<=event.occurred_at<=actual_bootstrap['inception'])
+            actual_credits={event.event_id:dict(event_id=event.event_id,kind=event.kind,amount=str(event.amount),occurred_at=event.occurred_at.isoformat()) for event in credited}
+            if actual_credits!=old_credits:
+                raise EvidenceBlocked('opening_income_revision_required')
+            events=tuple(event for event in all_events if event.occurred_at>actual_bootstrap['inception'])
         evidence = dict(account_id=self.account, segment_id=segment, as_of=as_of, available_at=self._now(),
                         capture=snapshot, source_collection=collection, income_report=report,
                         fills=fills, order_owners=orders, allocation=allocation.source,
                         allocation_audit=dict(version=audit['version'],through_event_id=audit['event_id'],journal=audit['journal']),
                         reconstructed_boundaries=[])
         if actual_bootstrap is None:
-            if stored is not None or events:
+            if stored is not None:
                 raise EvidenceBlocked('bootstrap_existing_economics_unreconciled')
             # A fill anywhere in the inventory capture interval defeats a flat
             # point proof even if it roundtripped back to zero before the response.
-            if fills:
+            if any(snapshot['started_at']<=row['trade_time_utc']<=as_of for row in fills):
                 raise EvidenceBlocked('bootstrap_capture_contains_account_fills')
-            evidence['account_flat_anchor_certified']=True
+            evidence['account_flat_anchor_certified']=not opening_inventory
+            evidence['opening_inventory_certified']=True
+            evidence['opening_inventory']=opening_inventory
+            evidence['opening_hrs_marks']=[asdict(mark) for mark in marks]
+            evidence['source_start_ms']=start_ms
+            evidence['credited_opening_income']=[dict(event_id=event.event_id,kind=event.kind,amount=str(event.amount),occurred_at=event.occurred_at.isoformat()) for event in credited]
+            evidence['opening_cash_definition']='current_allocation_plus_exact_current_period_hrs_net_income'
             obs = LedgerObservation(as_of, segment, (), (), marks, as_of, snapshot['captured_at'], True, True)
-            state = initialize_ledger(segment, allocation.amount, obs)
+            state = initialize_ledger(segment, allocation.amount+sum((event.amount for event in credited),Decimal(0)), obs)
             await connection.execute('''INSERT INTO trading.hrs_equity_segment
                 (account_id,segment_id,inception,opening_cash,opening_allocation_sha256,opening_evidence,
                  allocation_audit_event_id,allocation_audit_baseline,allocation_audit_version)
-                VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8::jsonb,1)''', self.account, segment, as_of, allocation.amount,
+                VALUES($1,$2,$3,$4,$5,$6::jsonb,$7,$8::jsonb,1)''', self.account, segment, as_of, state.cash_allocation,
                 allocation.identity, canonical(evidence)[0],audit['event_id'],audit['baseline_json'])
             gate = evaluate_loss_gate(None, state.checkpoint, GateHistory((state.checkpoint,),as_of,as_of,True),
                                       allow_inception_segment=self.allow_inception)
@@ -370,7 +531,7 @@ class HrsEquityService:
             state = stored.ledger
             if as_of <= state.as_of:
                 raise EvidenceBlocked('observation_not_advanced')
-            if actual_bootstrap['opening_cash']+sum((change.delta for change in audit['changes']),Decimal(0))!=allocation.amount:
+            if number(anchor['allocation']['allocated_amount'],'opening_allocation')+sum((change.delta for change in audit['changes']),Decimal(0))!=allocation.amount:
                 raise EvidenceBlocked('allocation_event_history_amount_mismatch')
             known={event.event_id for event in state.incomes}
             late=[event for event in events if event.event_id not in known and event.occurred_at<=state.as_of]
@@ -386,7 +547,7 @@ class HrsEquityService:
                 source=ReconciliationSource(self.account,segment,state.inception,actual_bootstrap['opening_cash'],
                     LedgerObservation(as_of,segment,events,(),marks,as_of,snapshot['captured_at'],True,True),
                     state.cash_flows,await effective_checkpoints(connection,self.account,segment),tuple(captures),
-                    tuple(fills),tuple(orders),self._now(),canonical(evidence)[1])
+                    tuple(fills),tuple(orders),self._now(),canonical(evidence)[1],opening_positions=self._opening_marks(anchor),opening_inventory=self._anchor_inventory)
                 rebuilt=rebuild_history(stored,source,allow_inception_segment=self.allow_inception)
                 stored=await activate_reconciliation(connection,self.account,stored,rebuilt)
                 gate=rebuilt.gate
@@ -398,14 +559,14 @@ class HrsEquityService:
                 evidence['reconciliation_receipt_sha256']=receipt_sha
                 return await self._projection(connection,revision,result,evidence)
             events_flow=self._allocation_flows(state,audit['changes'],events,fills,orders,as_of)
-            if state.cash_allocation+sum((flow.amount for flow in events_flow),Decimal(0))!=allocation.amount:
+            if state.cash_allocation+sum((flow.amount for flow in events_flow),Decimal(0))!=actual_bootstrap['opening_cash']+sum((change.delta for change in audit['changes']),Decimal(0)):
                 raise EvidenceBlocked('allocation_event_history_unrecorded_flow')
             checkpoints = list(await effective_checkpoints(connection,self.account,segment))
             midnight = datetime.combine(state.as_of.astimezone(SHANGHAI).date()+timedelta(days=1),time.min,SHANGHAI)
             while midnight < as_of:
-                boundary = flat_boundary_observation(state,midnight,self._now(),fills,orders,events,coverage_complete=True)
+                boundary = historical_boundary_observation(state,midnight,self._now(),fills,orders,events,coverage_complete=True,opening_inventory=self._anchor_inventory,historical_bars=snapshot.get('historical_mark_bars'),account=self.account)
                 boundary = LedgerObservation(boundary.as_of,segment,boundary.incomes,
-                    tuple(flow for flow in events_flow if flow.occurred_at <= midnight),(),midnight,midnight,True,True)
+                    tuple(flow for flow in events_flow if flow.occurred_at <= midnight),boundary.positions,midnight,midnight,True,True)
                 state = reconcile_ledger(state,boundary)
                 history = GateHistory(tuple(checkpoints+[state.checkpoint]),stored.ledger.inception,midnight,
                                       self._history_complete(checkpoints+[state.checkpoint],fills,orders,state.inception))
@@ -413,7 +574,7 @@ class HrsEquityService:
                 stored = await session.commit(state,boundary_gate.state,expected_version=stored.version,
                                               checkpoint_id=f'{segment}:{int(midnight.timestamp()*1000)}')
                 checkpoints.append(state.checkpoint)
-                evidence['reconstructed_boundaries'].append(dict(effective_at=midnight,available_at=self._now(),source='complete_flat_fill_income_path'))
+                evidence['reconstructed_boundaries'].append(dict(effective_at=midnight,available_at=self._now(),source='complete_fill_inventory_and_actual_mark_bar' if boundary.positions else 'complete_flat_fill_income_path'))
                 midnight += timedelta(days=1)
             obs = LedgerObservation(as_of,segment,events,events_flow,marks,as_of,snapshot['captured_at'],True,True)
             state = reconcile_ledger(state,obs)
@@ -422,15 +583,15 @@ class HrsEquityService:
             # flat segment, with all already-certified cash flows preserved.
             rolling_start = as_of-timedelta(days=30)
             if rolling_start >= state.inception and not any(cp.as_of==rolling_start for cp in samples):
-                base_obs=LedgerObservation(state.inception,segment,(),(),(),state.inception,state.inception,True,True)
+                base_obs=LedgerObservation(state.inception,segment,(),(),self._opening_marks(anchor),state.inception,state.inception,True,True)
                 base=initialize_ledger(segment,actual_bootstrap['opening_cash'],base_obs)
                 try:
-                    historical=flat_boundary_observation(base,rolling_start,self._now(),fills,orders,events,coverage_complete=True)
+                    historical=historical_boundary_observation(base,rolling_start,self._now(),fills,orders,events,coverage_complete=True,opening_inventory=self._anchor_inventory,historical_bars=snapshot.get('historical_mark_bars'),account=self.account)
                     historical=LedgerObservation(rolling_start,segment,historical.incomes,
-                        tuple(flow for flow in state.cash_flows if flow.occurred_at<=rolling_start),(),rolling_start,rolling_start,True,True)
+                        tuple(flow for flow in state.cash_flows if flow.occurred_at<=rolling_start),historical.positions,rolling_start,rolling_start,True,True)
                     samples.append(reconcile_ledger(base,historical).checkpoint)
                     samples.sort(key=lambda cp:cp.as_of)
-                    evidence['reconstructed_boundaries'].append(dict(effective_at=rolling_start,available_at=self._now(),source='complete_flat_fill_income_path'))
+                    evidence['reconstructed_boundaries'].append(dict(effective_at=rolling_start,available_at=self._now(),source='complete_fill_inventory_and_actual_mark_bar' if historical.positions else 'complete_flat_fill_income_path'))
                 except EvidenceBlocked:
                     pass  # Full qualification stays false; no historical mark is invented.
             history = GateHistory(tuple(samples),state.inception,as_of,self._history_complete(samples,fills,orders,state.inception))
@@ -459,8 +620,24 @@ class HrsEquityService:
                 bootstrap=await self.db.fetch_one('SELECT * FROM trading.hrs_equity_segment WHERE account_id=$1',self.account)
                 snapshot=await self._capture()
                 end_ms=int(snapshot['captured_at'].timestamp()*1000)
-                start_ms=int(bootstrap['inception'].timestamp()*1000) if bootstrap else min(int(snapshot['started_at'].timestamp()*1000),end_ms-1)
+                if bootstrap:
+                    saved=json.loads(bootstrap['opening_evidence']) if isinstance(bootstrap['opening_evidence'],str) else bootstrap['opening_evidence']
+                    start_ms=saved.get('source_start_ms',int(bootstrap['inception'].timestamp()*1000))
+                else:
+                    period=datetime.combine(snapshot['captured_at'].astimezone(SHANGHAI).date().replace(day=1),time.min,SHANGHAI)
+                    start_ms=int(period.timestamp()*1000)
+                    symbols=[row['symbol'] for row in snapshot['inventory'] if number(row.get('positionAmt'),'position_quantity')!=0]
+                    if symbols:
+                        rows=await self.db.fetch_all("SELECT executed_at FROM trading.trade_records WHERE account_id=$1 AND symbol=ANY($2::text[]) AND order_type IN ('LIMIT','MARKET') AND realized_pnl IS NULL AND status NOT IN ('CANCELED','EXPIRED','CLOSED')",self.account,symbols)
+                        for row in rows:
+                            at=row['executed_at']
+                            if at is None:
+                                raise EvidenceBlocked('opening_entry_bound_missing')
+                            at=at.replace(tzinfo=SHANGHAI) if at.tzinfo is None else at
+                            start_ms=min(start_ms,int(at.timestamp()*1000))
                 collection=await self._collect(start_ms,end_ms,snapshot)
+                await self._authenticate_order_owners(snapshot,start_ms,end_ms)
+                await self._historical_marks(bootstrap,snapshot)
                 async with self._locked() as connection:
                     result=await self._commit(connection,bootstrap,snapshot,collection,start_ms,end_ms)
                 if self.recorder is not None:

@@ -10,7 +10,7 @@ from datetime import datetime,timedelta,time
 from decimal import Decimal
 import json
 
-from .equity_evidence import EvidenceBlocked,canonical,owned_fill_positions,prove_positions
+from .equity_evidence import EvidenceBlocked,canonical,owned_fill_positions,prove_positions,historical_boundary_observation
 from .loss_gate import GateHistory,GateEvaluation,SHANGHAI,evaluate_loss_gate
 from .loss_gate_repository import StoredRiskState,RepositoryConflict,ledger_to_dict,ledger_from_dict
 from .risk_ledger import LedgerObservation,CashFlow,EquityCheckpoint,initialize_ledger,reconcile_ledger,decimal_value
@@ -31,6 +31,7 @@ class ReconciliationSource:
     available_at:datetime
     source_sha256:str
     opening_positions:tuple=()
+    opening_inventory:tuple=()
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ class RebuiltHistory:
 
 
 def _positions_at(source,at):
-    positions=owned_fill_positions(source.account,source.fills,source.orders,through=at,after=source.inception)
+    positions=owned_fill_positions(source.account,source.fills,source.orders,through=at,after=source.inception,opening_inventory=source.opening_inventory)
     if at==source.inception:
         return source.opening_positions,'certified_opening',None
     if at==source.current.as_of:
@@ -55,10 +56,22 @@ def _positions_at(source,at):
         capture=archived['capture']
         try:
             marks=prove_positions(source.account,source.segment_id,at,capture['inventory'],capture['independent'],
-                capture['local'],source.fills,source.orders,capture['marks'],bootstrap=False,inception=source.inception)
+                capture['local'],source.fills,source.orders,capture['marks'],bootstrap=False,inception=source.inception,opening_inventory=source.opening_inventory)
         except Exception:
             continue
         return marks,'saved_capture',archived['evidence_sha256']
+    bars={}
+    for archived in source.captures:
+        bars.update(archived['capture'].get('historical_mark_bars',{}))
+    if bars:
+        initial=LedgerObservation(source.inception,source.segment_id,(),(),source.opening_positions,source.inception,source.inception,True,True)
+        base=initialize_ledger(source.segment_id,source.opening_cash,initial)
+        try:
+            observed=historical_boundary_observation(base,at,source.available_at,source.fills,source.orders,source.current.incomes,
+                coverage_complete=True,opening_inventory=source.opening_inventory,historical_bars=bars,account=source.account)
+            return observed.positions,'saved_historical_mark_bar',None
+        except EvidenceBlocked:
+            pass
     raise EvidenceBlocked('reconciliation_historical_mark_missing')
 
 
@@ -90,7 +103,7 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
         boundary+=timedelta(days=1)
     # Exact flat income points make realized jumps visible in the rebuilt peak.
     for event in incoming.values():
-        positions=owned_fill_positions(source.account,source.fills,source.orders,through=event.occurred_at,after=source.inception)
+        positions=owned_fill_positions(source.account,source.fills,source.orders,through=event.occurred_at,after=source.inception,opening_inventory=source.opening_inventory)
         if not any(owner=='hrs' and qty!=0 for (owner,_),(qty,_) in positions.items()):
             times.add(event.occurred_at)
     times=sorted(times)
@@ -106,7 +119,7 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
     for at in times[1:]:
         marks,kind,reference=_positions_at(source,at)
         if at-state.as_of>timedelta(seconds=120):
-            held=owned_fill_positions(source.account,source.fills,source.orders,through=state.as_of,after=source.inception)
+            held=owned_fill_positions(source.account,source.fills,source.orders,through=state.as_of,after=source.inception,opening_inventory=source.opening_inventory)
             if any(owner=='hrs' and qty!=0 for (owner,_),(qty,_) in held.items()):
                 raise EvidenceBlocked('reconciliation_mark_coverage_gap')
             owners={(row['symbol'],str(row['order_id'])):row['strategy'] for row in source.orders}

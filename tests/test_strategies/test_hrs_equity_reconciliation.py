@@ -78,3 +78,24 @@ def test_missing_historical_nonflat_mark_blocks_without_using_current_mark():
     data=replace(source(start,old,event),fills=(filled,),orders=(owner,))
     with pytest.raises(EvidenceBlocked,match='historical_mark'):
         rebuild_history(old,data,allow_inception_segment=True)
+
+
+def test_existing_position_anchor_reconciliation_keeps_original_marked_unit_base():
+    from strategies.hrs.risk_ledger import PositionMark
+    opening_mark=PositionMark('p','seg',D('1'),D('100'),D('99'),T,True)
+    base=initialize_ledger('seg',D('1000'),replace(observation(T),positions=(opening_mark,)))
+    old_mark=replace(opening_mark,marked_at=T+timedelta(seconds=30))
+    old_ledger=reconcile_ledger(base,replace(observation(T+timedelta(seconds=30)),positions=(old_mark,)))
+    old_gate=evaluate_loss_gate(None,old_ledger.checkpoint,GateHistory((base.checkpoint,old_ledger.checkpoint),T,old_ledger.as_of,True),allow_inception_segment=True).state
+    old=StoredRiskState(2,old_ledger,old_gate)
+    event=IncomeEvent('FUNDING_FEE:1','funding',D('-1'),T+timedelta(seconds=10),'seg',True)
+    current=replace(observation(T+timedelta(seconds=60),(event,)),positions=(replace(opening_mark,marked_at=T+timedelta(seconds=60)),))
+    inventory=[dict(symbol='BTCUSDT',positionAmt='1',entryPrice='100')]
+    capture=dict(inventory=inventory,independent=inventory,local={'BTCUSDT':dict(direction='long',remaining_quantity='1',position_id='p')},
+                 marks={'BTCUSDT':dict(symbol='BTCUSDT',markPrice='99',time=int(old_ledger.as_of.timestamp()*1000))})
+    data=ReconciliationSource('test','seg',T,D('1000'),current,(),(base.checkpoint,old_ledger.checkpoint),
+        (dict(as_of=old_ledger.as_of,capture=capture,evidence_sha256='b'*64),),(),(),current.as_of,'a'*64,
+        opening_positions=(opening_mark,),opening_inventory=(dict(strategy='hrs',symbol='BTCUSDT',quantity='1',entry_price='100'),))
+    rebuilt=rebuild_history(old,data,allow_inception_segment=True)
+    assert rebuilt.ledger.units==D('999')
+    assert rebuilt.ledger.nav==D('998')/D('999')

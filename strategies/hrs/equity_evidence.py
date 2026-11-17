@@ -107,9 +107,9 @@ def order_owners(account, rows):
     return result
 
 
-def owned_fill_positions(account, fills, orders, *, through=None, after=None):
+def owned_fill_positions(account, fills, orders, *, through=None, after=None, opening_inventory=()):
     owners = order_owners(account, orders)
-    result = {}
+    result = {(row['strategy'],row['symbol']):(number(row['quantity'],'opening_quantity'),number(row['entry_price'],'opening_basis',positive=True)) for row in opening_inventory}
     seen = {}
     for row in sorted(fills, key=lambda item: (item.get('trade_time_utc'), str(item.get('trade_id')))):
         if row.get('account_id') != account:
@@ -164,7 +164,7 @@ def _inventory(rows):
 
 
 def prove_positions(account, segment, as_of, inventory, account_inventory, local, fills, orders,
-                    marks, *, bootstrap, inception=None):
+                    marks, *, bootstrap, inception=None, opening_inventory=()):
     actual = _inventory(inventory)
     independent = _inventory(account_inventory)
     if actual != independent:
@@ -176,8 +176,8 @@ def prove_positions(account, segment, as_of, inventory, account_inventory, local
         raise EvidenceBlocked('bootstrap_opening_inventory_unproven')
     # The service certifies a zero account anchor and collects EVERY relevant
     # symbol continuously from it. Facts preceding that anchor are irrelevant.
-    positions = owned_fill_positions(account, fills, orders, through=as_of, after=inception)
-    hrs_positions = owned_fill_positions(account, fills, orders, through=as_of, after=inception) if inception else positions
+    positions = owned_fill_positions(account, fills, orders, through=as_of, after=inception,opening_inventory=opening_inventory)
+    hrs_positions = owned_fill_positions(account, fills, orders, through=as_of, after=inception,opening_inventory=opening_inventory) if inception else positions
     if bootstrap and local:
         raise EvidenceBlocked('bootstrap_hrs_not_flat')
     output = []
@@ -217,13 +217,13 @@ def prove_positions(account, segment, as_of, inventory, account_inventory, local
     return tuple(output)
 
 
-def flat_boundary_observation(state, boundary, available_at, fills, orders, incomes, *, coverage_complete):
+def flat_boundary_observation(state, boundary, available_at, fills, orders, incomes, *, coverage_complete,opening_inventory=()):
     """Value a historically flat boundary from a genuine segment, not today's state."""
     if (coverage_complete is not True or boundary < state.inception or boundary > available_at
             or boundary < state.as_of):
         raise EvidenceBlocked('boundary_coverage_missing')
     positions = owned_fill_positions(next(iter({row['account_id'] for row in fills}), ''), fills, orders,
-                                    through=boundary, after=state.inception)
+                                    through=boundary, after=state.inception,opening_inventory=opening_inventory)
     if any(owner == 'hrs' and qty != 0 for (owner, _), (qty, _) in positions.items()):
         raise EvidenceBlocked('boundary_not_flat')
     events = tuple(event for event in incomes if event.occurred_at <= boundary)
@@ -336,3 +336,148 @@ def allocation_event_changes(baseline_rows, journal, current_rows, inception, as
     if rows!={str(row['id']):dict(row) for row in current_rows}:
         raise EvidenceBlocked('allocation_event_chain_current_mismatch')
     return tuple(changes)
+
+
+def certify_opening_inventory(account,segment,as_of,inventory,independent,local,fills,orders,marks,claims,*,covered_symbols):
+    """Prove current owners from a complete interval ending at actual inventory.
+
+    For every current symbol P_now == sum(all signed fills) proves that its
+    position was zero at that interval's lower bound. A cached partial subtotal
+    is insufficient: the caller must supply fresh continuous coverage for each
+    relevant symbol, exact order owners and its durable active claim.
+    """
+    actual=_inventory(inventory)
+    if actual!=_inventory(independent):
+        raise EvidenceBlocked('opening_inventory_conflict')
+    if not set(actual)<=set(covered_symbols):
+        raise EvidenceBlocked('opening_fill_coverage_missing')
+    selected=[row for row in fills if row['symbol'] in actual]
+    positions=owned_fill_positions(account,selected,orders,through=as_of)
+    owners={}
+    for symbol,(qty,basis) in actual.items():
+        matches=[(owner,amount,entry) for (owner,sym),(amount,entry) in positions.items() if sym==symbol and amount!=0]
+        if len(matches)!=1 or matches[0][1:]!=(qty,basis):
+            raise EvidenceBlocked('opening_position_order_fill_proof_missing')
+        choices={row['strategy'] for row in claims if row.get('symbol')==symbol and row.get('id') is not None}
+        if choices!={matches[0][0]}:
+            raise EvidenceBlocked('opening_owner_claim_unproven')
+        owners[symbol]=matches[0][0]
+    hrs=prove_positions(account,segment,as_of,inventory,independent,local,selected,orders,marks,bootstrap=False)
+    opening=tuple(dict(strategy=owners[symbol],symbol=symbol,quantity=str(qty),entry_price=str(entry))
+                  for symbol,(qty,entry) in sorted(actual.items()))
+    return hrs,opening
+
+
+def attribute_funding_from_inventory(report,account,as_of,fills,orders,opening_inventory,*,coverage_complete,available_at=None):
+    """Independent event-time owner proof, never a human-review override.
+
+    Start from a verified CURRENT inventory, reverse every complete intervening
+    signed fill, and require a unique strategy position matching the account net
+    at settlement. Current ownership by itself is never a funding attribution.
+    """
+    if coverage_complete is not True:
+        raise EvidenceBlocked('funding_fill_coverage_missing')
+    owners=order_owners(account,orders)
+    events=[dict(row) for row in report.get('events',())]
+    changed=set()
+    proofs=[]
+    for event in events:
+        if event.get('strategy') or event.get('income_type')!='FUNDING_FEE' or event.get('reason')!='funding_owner_unproven':
+            continue
+        if event.get('account_id')!=account or event.get('asset')!='USDT' or not event.get('event_time_utc'):
+            continue
+        at=datetime.fromisoformat(event['event_time_utc'])
+        if at>as_of:
+            raise EvidenceBlocked('funding_event_future')
+        symbol=event['symbol']
+        balances={row['strategy']:number(row['quantity'],'funding_anchor_quantity') for row in opening_inventory if row['symbol']==symbol}
+        net=sum(balances.values(),Decimal(0))
+        used=[]
+        ambiguous=False
+        for row in fills:
+            when=aware(row['trade_time_utc'],'funding_fill')
+            if row['symbol']!=symbol or not at<=when<=as_of:
+                continue
+            if when==at:
+                ambiguous=True
+                break
+            choices=owners.get((symbol,str(row['order_id'])),set())
+            if len(choices)!=1 or None in choices or row['side'] not in ('BUY','SELL'):
+                ambiguous=True
+                break
+            owner=next(iter(choices))
+            qty=number(row['qty'],'funding_fill_quantity',positive=True)*(1 if row['side']=='BUY' else -1)
+            net-=qty
+            balances[owner]=balances.get(owner,Decimal(0))-qty
+            used.append(str(row['trade_id']))
+        active=[(owner,qty) for owner,qty in balances.items() if qty!=0]
+        if ambiguous or len(active)!=1 or active[0][1]!=net or net==0:
+            continue
+        event['strategy']=active[0][0]
+        event['reason']=None
+        event['attribution_source']='verified_fill_inventory_interval_v1'
+        key=(event['account_id'],event['income_type'],str(event['tran_id']))
+        changed.add(key)
+        proofs.append(dict(event_identity=key,as_of=at,available_at=available_at or as_of,current_inventory=opening_inventory,
+                           reversed_fill_ids=sorted(used),strategy=active[0][0],quantity_at_event=str(net)))
+    if not changed:
+        return report
+    result=dict(report,events=events)
+    result['unattributed']=[row for row in report.get('unattributed',()) if (row['account_id'],row['income_type'],str(row['tran_id'])) not in changed]
+    totals={}
+    for event in events:
+        if not event.get('strategy'):
+            continue
+        bucket=totals.setdefault(event['strategy'],dict(realized_pnl_usdt=Decimal(0),commission_usdt=Decimal(0),funding_usdt=Decimal(0),net_usdt=Decimal(0)))
+        component={'REALIZED_PNL':'realized_pnl_usdt','COMMISSION':'commission_usdt','FUNDING_FEE':'funding_usdt'}[event['income_type']]
+        amount=number(event['amount'],'funding_income_amount')
+        bucket[component]+=amount
+        bucket['net_usdt']+=amount
+    result['by_strategy']={owner:{key:str(value) for key,value in values.items()} for owner,values in totals.items()}
+    result['attributed_usdt_total']=str(sum((values['net_usdt'] for values in totals.values()),Decimal(0)))
+    result['unattributed_count']=len(result['unattributed'])
+    result['unattributed_usdt_total']=str(sum((number(row['amount'],'unattributed_amount') for row in result['unattributed'] if row['asset']=='USDT'),Decimal(0)))
+    result['unattributed_usdt_absolute']=str(sum((abs(number(row['amount'],'unattributed_amount')) for row in result['unattributed'] if row['asset']=='USDT'),Decimal(0)))
+    ready=not result.get('coverage_gaps') and not result.get('missing_income_fills') and not result['unattributed'] and result.get('account_coverage_complete') is True
+    result['id_match_and_coverage_complete']=ready
+    result['strategy_attribution_complete']=ready
+    result['verified_funding_proofs']=proofs
+    result['source_report_id']=report.get('report_id')
+    result['attribution_extension_version']='verified-fill-inventory-v1'
+    result.pop('report_id',None)
+    result['report_id']=canonical(result)[1]
+    return result
+
+
+def historical_boundary_observation(state,boundary,available_at,fills,orders,incomes,*,coverage_complete,
+                                    opening_inventory=(),historical_bars=None,account):
+    """Reconstruct inventory and use the last fully CLOSED source mark-price bar.
+
+    The mark retains the real bar close timestamp before the boundary. Availability
+    is the real later collection time; neither a current price nor an open bar is
+    labelled historical. This follows the ledger's existing <=120s mark-age rule.
+    """
+    if coverage_complete is not True or not state.as_of<=boundary<=available_at:
+        raise EvidenceBlocked('boundary_coverage_missing')
+    positions=owned_fill_positions(account,fills,orders,through=boundary,after=state.inception,opening_inventory=opening_inventory)
+    marks=[]
+    for (owner,symbol),(qty,basis) in positions.items():
+        if owner!='hrs' or qty==0:
+            continue
+        key=f'{symbol}:{int(boundary.timestamp()*1000)}'
+        evidence=(historical_bars or {}).get(key)
+        bar=evidence.get('bar') if isinstance(evidence,dict) else None
+        if not isinstance(bar,list) or len(bar)<7:
+            raise EvidenceBlocked('historical_mark_bar_missing')
+        start=(int(boundary.timestamp()*1000)//60000)*60000-60000
+        if int(bar[0])!=start or int(bar[6])!=start+59999:
+            raise EvidenceBlocked('historical_mark_bar_identity_conflict')
+        received=evidence.get('available_at')
+        received=datetime.fromisoformat(received) if isinstance(received,str) else received
+        marked=datetime.fromtimestamp(int(bar[6])/1000,timezone.utc)
+        if received is None or received>available_at or not timedelta(0)<=boundary-marked<=timedelta(seconds=120):
+            raise EvidenceBlocked('historical_mark_bar_availability_invalid')
+        marks.append(PositionMark('reconstructed:'+state.segment_id+':'+symbol,state.segment_id,qty,basis,
+                                  number(bar[4],'historical_mark_price',positive=True),marked,True))
+    return LedgerObservation(boundary,state.segment_id,tuple(event for event in incomes if event.occurred_at<=boundary),
+                             (),tuple(marks),boundary,boundary,True,True)

@@ -7,7 +7,7 @@ from strategies.hrs.equity_evidence import (
     EvidenceBlocked, allocation_evidence, attributed_incomes, prove_positions,
     flat_boundary_observation,
 )
-from strategies.hrs.risk_ledger import LedgerObservation, initialize_ledger
+from strategies.hrs.risk_ledger import LedgerObservation, initialize_ledger,reconcile_ledger
 
 T = datetime(2026, 11, 17, 15, tzinfo=timezone.utc)
 
@@ -160,3 +160,58 @@ def test_allocation_transaction_crossing_calendar_selection_boundary_is_not_back
             dict(event_id=2,transaction_id=10,statement_at=midnight+timedelta(minutes=1),operation='UPDATE',old_row=november,new_row=retired)]
     with pytest.raises(EvidenceBlocked,match='allocation_calendar_transaction'):
         allocation_event_changes([november,december],events,[retired,active],before,midnight+timedelta(minutes=2))
+
+
+def test_certified_existing_positions_require_fresh_complete_fills_and_claims():
+    from strategies.hrs.equity_evidence import certify_opening_inventory
+    inventory=[dict(symbol='BTCUSDT',positionAmt='2',entryPrice='100')]
+    claims=[dict(id=1,symbol='BTCUSDT',strategy='btc_eth')]
+    marks,opening=certify_opening_inventory('test','seg',T,inventory,inventory,{},[fill()],
+        [owner(strategy='btc_eth')],{},claims,covered_symbols={'BTCUSDT'})
+    assert marks==()
+    assert opening[0]['strategy']=='btc_eth'
+    assert opening[0]['quantity']=='2'
+    with pytest.raises(EvidenceBlocked,match='opening_fill_coverage'):
+        certify_opening_inventory('test','seg',T,inventory,inventory,{},[fill()],
+            [owner(strategy='btc_eth')],{},claims,covered_symbols=set())
+    with pytest.raises(EvidenceBlocked,match='opening_owner_claim'):
+        certify_opening_inventory('test','seg',T,inventory,inventory,{},[fill()],
+            [owner(strategy='btc_eth')],{},[],covered_symbols={'BTCUSDT'})
+
+
+def test_funding_ownership_is_reconstructed_backwards_from_current_verified_inventory():
+    from strategies.hrs.equity_evidence import attribute_funding_from_inventory
+    event=dict(account_id='test',tran_id='1',income_type='FUNDING_FEE',symbol='BTCUSDT',asset='USDT',
+               amount='-2',strategy=None,reason='funding_owner_unproven',event_time_utc=T.isoformat())
+    report=dict(events=[event],unattributed=[dict(event)],coverage_gaps=[],missing_income_fills=[],account_coverage_complete=True,
+                id_match_and_coverage_complete=False)
+    # The current position is flat. Its exact HRS close AFTER funding proves the
+    # prior owned quantity when the intervening full fill stream is complete.
+    close=fill(trade_id=2,order_id=11,side='SELL',at=T+timedelta(minutes=1))
+    result=attribute_funding_from_inventory(report,'test',T+timedelta(minutes=2),[close],[owner(11)],(),coverage_complete=True)
+    assert result['events'][0]['strategy']=='hrs'
+    assert result['events'][0]['attribution_source']=='verified_fill_inventory_interval_v1'
+    assert result['id_match_and_coverage_complete']
+    assert result['by_strategy']['hrs']['funding_usdt']=='-2'
+    assert 'reviewed_by' not in result['events'][0]
+    with pytest.raises(EvidenceBlocked,match='funding_fill_coverage'):
+        attribute_funding_from_inventory(report,'test',T+timedelta(minutes=2),[close],[owner(11)],(),coverage_complete=False)
+
+
+def test_nonflat_midnight_uses_actual_closed_historical_mark_with_real_timestamp():
+    from strategies.hrs.equity_evidence import historical_boundary_observation
+    from strategies.hrs.risk_ledger import PositionMark
+    initial=LedgerObservation(T,'seg',(),(),(PositionMark('p','seg',D('2'),D('100'),D('100'),T,True),),T,T,True,True)
+    state=initialize_ledger('seg',D('1000'),initial)
+    boundary=T+timedelta(hours=1)
+    end=int(boundary.timestamp()*1000)-1
+    bars={f'BTCUSDT:{int(boundary.timestamp()*1000)}':dict(bar=[end-59999,'100','100','99','99','0',end],available_at=boundary+timedelta(seconds=30))}
+    opening=(dict(strategy='hrs',symbol='BTCUSDT',quantity='2',entry_price='100'),)
+    obs=historical_boundary_observation(state,boundary,boundary+timedelta(seconds=30),[],[],(),
+        coverage_complete=True,opening_inventory=opening,historical_bars=bars,account='test')
+    assert obs.positions[0].marked_at==boundary-timedelta(milliseconds=1)
+    assert obs.positions[0].mark_price==D('99')
+    assert reconcile_ledger(state,obs).equity==D('998')
+    with pytest.raises(EvidenceBlocked,match='historical_mark'):
+        historical_boundary_observation(state,boundary,boundary+timedelta(seconds=30),[],[],(),
+            coverage_complete=True,opening_inventory=opening,historical_bars={},account='test')

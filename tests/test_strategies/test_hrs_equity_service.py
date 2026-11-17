@@ -378,3 +378,54 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
         assert await c.fetchval('SELECT count(*) FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)==1
         ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
         assert D(ledger['nav'])==D('.998')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('legacy_owner',[False,True])
+async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,legacy_owner):
+    service,account,pool,api,clock=setup
+    entered=T-timedelta(days=1)
+    clock[0]=T+timedelta(minutes=59,seconds=30)
+    order_id=81
+    client='entry-'+uuid.uuid4().hex
+    async with pool.acquire() as c:
+        await c.execute('''CREATE TABLE IF NOT EXISTS trading.position_claims
+            (id serial PRIMARY KEY,symbol text,strategy text,claim_state text,expires_at timestamptz)''')
+        await c.execute('ALTER TABLE trading.entry_risk_reservation ADD COLUMN IF NOT EXISTS quantity numeric')
+        claim=await c.fetchval("INSERT INTO trading.position_claims(symbol,strategy,claim_state,expires_at) VALUES ('BTCUSDT','hrs','ACTIVE','infinity') RETURNING id")
+        await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT','81','hrs','BUY','NEW','LIMIT',$2)",None if legacy_owner else account,entered.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+        await c.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,state,symbol,quantity) VALUES ($1,$2,'hrs','submitting','BTCUSDT',2)",client,account)
+    try:
+        inventory=[dict(symbol='BTCUSDT',positionAmt='2',entryPrice='100',positionSide='BOTH')]
+        api.get_position.return_value=inventory
+        api.get_um_account_positions.return_value=inventory
+        service.position_manager=SimpleNamespace(get_all_positions=lambda:{'BTCUSDT':dict(direction='long',remaining_quantity='2',position_id='p81')})
+        def market_request(method,path,params=None,**kwargs):
+            if path=='/fapi/v1/premiumIndex':
+                return dict(symbol='BTCUSDT',markPrice='99',time=int(clock[0].timestamp()*1000))
+            assert path=='/fapi/v1/markPriceKlines'
+            return [[params['startTime'],'100','100','99','99','0',params['endTime']]]
+        api._request.side_effect=market_request
+        api.get_order.return_value=dict(symbol='BTCUSDT',orderId=order_id,side='BUY',status='FILLED')
+        api.get_order_by_client_id.return_value=dict(symbol='BTCUSDT',orderId=order_id,clientOrderId=client,status='FILLED',executedQty='2',origQty='2',side='BUY')
+        api.get_user_trades.return_value=[dict(symbol='BTCUSDT',id=81,orderId=81,side='BUY',qty='2',price='100',quoteQty='200',commission='1',commissionAsset='USDT',realizedPnl='0',time=int(entered.timestamp()*1000))]
+        api.get_income_history.side_effect=lambda **kw: ([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-1',asset='USDT',tranId=81,tradeId='81',time=int(entered.timestamp()*1000),info='')] if kw['income_type']=='COMMISSION' else [])
+        result=await service.refresh()
+        assert result['reasons']==['daily_origin_missing']
+        async with pool.acquire() as c:
+            assert await c.fetchval('SELECT opening_cash FROM trading.hrs_equity_segment WHERE account_id=$1',account)==D('999')
+            ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+            assert D(ledger['equity'])==D('997') and D(ledger['income_total'])==0
+        clock[0]+=timedelta(seconds=60)
+        again=await service.refresh()
+        assert again['ready'] and again['allowed']
+        assert 'bootstrap_opening_inventory_unproven' not in again['reasons']
+        async with pool.acquire() as c:
+            ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+            assert D(ledger['nav'])==1
+        api.get_order_by_client_id.return_value=dict(symbol='BTCUSDT',orderId=81,clientOrderId=client,status='NEW',executedQty='0',origQty='2',side='BUY')
+        clock[0]+=timedelta(seconds=30)
+        assert (await service.refresh())['allowed'] is False
+    finally:
+        async with pool.acquire() as c:
+            await c.execute('DELETE FROM trading.position_claims WHERE id=$1',claim)
