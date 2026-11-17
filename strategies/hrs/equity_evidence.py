@@ -491,28 +491,38 @@ def historical_boundary_observation(state,boundary,available_at,fills,orders,inc
                              (),tuple(marks),boundary,boundary,True,True)
 
 
-def require_funding_publication(account,start,as_of,fills,orders,current_inventory,forecasts,published,report):
-    """Separate published-page completeness from expected economic settlement.
+FUNDING_SOURCE_CONTRACT = dict(
+    version='binance-usdm-crypto-minimum-hour-v1',verified_on='2026-11-17',
+    scope='USD-M crypto perpetuals only',minimum_interval_seconds=3600,eligibility_deviation_seconds=15,
+    schema_url='https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data',
+    policy_url='https://www.binance.com/en/support/faq/detail/360033525031')
 
-    Deadlines come only from independently observed venue forecasts. A missing
-    receipt remains pending even if the income API returned a complete empty
-    page. Published zero rates require the venue's actual settlement mark.
-    No fixed interval or deadline is inferred from an income event.
+
+def require_funding_publication(account,start,as_of,fills,orders,current_inventory,forecasts,published,report,
+                                *,live_start=None,published_coverage=None,funding_info=None,available_at=None):
+    """Prove settled retrospective sources and continuous prospective schedules.
+
+    Before activation, actual independently paginated published rate history is
+    retrospective evidence known NOW. After activation, real forecast intervals
+    must cover every held episode. Only a <=120s gap AFTER a resolved settlement
+    may use the documented crypto integer-hour minimum, backed by complete fresh
+    fundingInfo and recognized actual contract metadata. It never generates a
+    future deadline. Income pages alone are never economic finality.
     """
+    live_start=live_start or start
+    known_at=available_at or as_of
+    if not start<=live_start<=as_of or known_at<as_of:
+        raise EvidenceBlocked('funding_source_interval_invalid')
     owners=order_owners(account,orders)
-    def balances_at(at,strict=False):
+    def balances_at(at):
         balances={(row['strategy'],row['symbol']):number(row['quantity'],'funding_quantity') for row in current_inventory}
         for row in fills:
             when=aware(row['trade_time_utc'],'funding_fill')
-            if not at<=when<=as_of:
+            if not at<when<=as_of:
                 continue
             choices=owners.get((row['symbol'],str(row['order_id'])),set())
             if len(choices)!=1 or None in choices or row['side'] not in ('BUY','SELL'):
                 raise EvidenceBlocked('funding_inventory_history_unproven')
-            if when==at:
-                if strict:
-                    raise EvidenceBlocked('funding_same_time_fill_ambiguous')
-                continue
             key=(next(iter(choices)),row['symbol'])
             balances[key]=balances.get(key,Decimal(0))-number(row['qty'],'funding_fill_quantity',positive=True)*(1 if row['side']=='BUY' else -1)
         return balances
@@ -520,6 +530,14 @@ def require_funding_publication(account,start,as_of,fills,orders,current_invento
     for row in fills:
         if start<row['trade_time_utc']<=as_of and 'hrs' in owners.get((row['symbol'],str(row['order_id'])),set()):
             relevant.add(row['symbol'])
+    if live_start>start:
+        for symbol in relevant:
+            point=int(start.timestamp()*1000)
+            for window in sorted((published_coverage or {}).get(symbol,()),key=lambda row:row['start_ms']):
+                if window.get('page_complete') is True and window['start_ms']<=point:
+                    point=max(point,window['end_ms'])
+            if point<int(live_start.timestamp()*1000):
+                raise EvidenceBlocked('funding_published_history_coverage_missing')
     valid=[]
     for row in forecasts:
         source=aware(row['source_time'],'funding_forecast')
@@ -528,43 +546,118 @@ def require_funding_publication(account,start,as_of,fills,orders,current_invento
         if not source<=received<=as_of or received-source>timedelta(seconds=120) or not source<due or received>due:
             continue
         valid.append(dict(row,source_time=source,received_at=received,next_funding_time=due))
-    for symbol in relevant:
-        # At least one real predeadline schedule must cover the opening of each
-        # held episode. Retrospective rate pages cannot manufacture forecasts.
-        held=balances_at(start).get(('hrs',symbol),Decimal(0))
-        first=start if held else min(row['trade_time_utc'] for row in fills if row['symbol']==symbol and start<row['trade_time_utc']<=as_of and 'hrs' in owners.get((symbol,str(row['order_id'])),set()))
-        if not any(row['symbol']==symbol and row['source_time']<=first<=row['next_funding_time'] for row in valid):
-            raise EvidenceBlocked('funding_schedule_opening_coverage_missing')
-        if balances_at(as_of).get(('hrs',symbol),Decimal(0)) and not any(row['symbol']==symbol and row['source_time']<=as_of<row['next_funding_time'] for row in valid):
-            raise EvidenceBlocked('funding_schedule_current_coverage_missing')
-    proofs=[]
     known={(row['symbol'],row['next_funding_time']) for row in valid}
+    published_times=set()
     for symbol,rows in published.items():
         for row in rows:
-            known.add((symbol,datetime.fromtimestamp(int(row['fundingTime'])/1000,timezone.utc)))
-    deadlines=sorted((symbol,due) for symbol,due in known if start<due<=as_of)
-    used=set()
-    for symbol,due in deadlines:
-        qty=balances_at(due,strict=True).get(('hrs',symbol),Decimal(0))
+            key=(symbol,datetime.fromtimestamp(int(row['fundingTime'])/1000,timezone.utc))
+            known.add(key);published_times.add(key)
+    aliases={key:{key[1]} for key in published_times}
+    canonical_known=set(published_times)
+    for symbol,due in known-published_times:
+        nearby=[at for sym,at in published_times if sym==symbol and abs(at-due)<=timedelta(seconds=15)]
+        if len(nearby)>1:
+            raise EvidenceBlocked('funding_deadline_mapping_ambiguous')
+        target=(symbol,nearby[0] if nearby else due)
+        canonical_known.add(target)
+        aliases.setdefault(target,set()).add(due)
+    known=canonical_known
+    # A newer independent predeadline forecast can explicitly supersede a
+    # forecast when the venue changes interval. Keep published settlements.
+    active=set()
+    for symbol,due in known:
+        prior=[row for row in valid if row['symbol']==symbol and row['received_at']<=due]
+        if prior and (symbol,due) not in published_times:
+            latest=max(prior,key=lambda row:(row['source_time'],row['received_at']))
+            if latest['source_time']<due<latest['next_funding_time']:
+                continue
+        active.add((symbol,due))
+    proofs=[];used=set();resolved=set()
+    deviation=timedelta(seconds=15)
+    for symbol,due in sorted((symbol,due) for symbol,due in active if start<due<=as_of):
+        candidates=aliases.get((symbol,due),{due})|{due}
+        left=min(candidates)-deviation;right=max(candidates)+deviation
+        # Fee eligibility can differ from nominal schedule by up to15seconds.
+        # Never assign the scheduled quantity across an opening/closing fill.
+        affected=[row for row in fills if row['symbol']==symbol and left<=row['trade_time_utc']<=min(right,as_of)]
+        hrs_near=any(balances_at(at).get(('hrs',symbol),Decimal(0))!=0 for at in (max(start,left),due,min(right,as_of)))
+        hrs_near=hrs_near or any('hrs' in owners.get((symbol,str(row['order_id'])),set()) for row in affected)
+        if affected and hrs_near:
+            raise EvidenceBlocked('funding_eligibility_inventory_ambiguous')
+        qty=balances_at(due).get(('hrs',symbol),Decimal(0))
         if qty==0:
             continue
-        active=[(owner,q) for (owner,sym),q in balances_at(due,strict=True).items() if sym==symbol and q!=0]
-        if active!=[('hrs',qty)]:
+        if right>as_of:
+            raise EvidenceBlocked('funding_eligibility_window_incomplete')
+        held=[(owner,q) for (owner,sym),q in balances_at(due).items() if sym==symbol and q!=0]
+        if held!=[('hrs',qty)]:
             raise EvidenceBlocked('funding_settlement_owner_ambiguous')
-        next_due=min((at for sym,at in known if sym==symbol and at>due),default=as_of+timedelta(microseconds=1))
         rates=[row for row in published.get(symbol,()) if int(row.get('fundingTime',0))==int(due.timestamp()*1000)]
         if len(rates)>1:
             raise EvidenceBlocked('funding_rate_identity_conflict')
-        receipts=[row for row in report.get('events',()) if row.get('account_id')==account and row.get('symbol')==symbol and row.get('income_type')=='FUNDING_FEE' and row.get('strategy')=='hrs' and row.get('asset')=='USDT' and not row.get('reason') and row.get('tran_id') is not None and due<=datetime.fromisoformat(row['event_time_utc'])<next_due]
+        receipts=[row for row in report.get('events',()) if row.get('account_id')==account and row.get('symbol')==symbol and row.get('income_type')=='FUNDING_FEE' and row.get('strategy')=='hrs' and row.get('asset')=='USDT' and not row.get('reason') and row.get('tran_id') is not None and left<=datetime.fromisoformat(row['event_time_utc'])<=right]
         if len(receipts)==1 and str(receipts[0]['tran_id']) not in used:
+            amount=number(receipts[0]['amount'],'funding_receipt_amount_invalid')
+            if rates:
+                rate=number(rates[0].get('fundingRate'),'funding_rate_invalid')
+                if (rate==0 and amount!=0) or amount*qty*rate>0:
+                    raise EvidenceBlocked('funding_receipt_rate_or_direction_conflict')
             used.add(str(receipts[0]['tran_id']))
-            proof=dict(symbol=symbol,deadline=due,quantity=str(qty),resolution='income_receipt',income_identity=str(receipts[0]['tran_id']))
-        elif rates and number(rates[0].get('fundingRate'),'funding_rate_invalid')==0:
+            proof=dict(symbol=symbol,deadline=due,quantity=str(qty),resolution='income_receipt',income_identity=str(receipts[0]['tran_id']),income_amount=str(amount))
+        elif not receipts and rates and number(rates[0].get('fundingRate'),'funding_rate_invalid')==0:
             number(rates[0].get('markPrice'),'funding_zero_mark_missing',positive=True)
             proof=dict(symbol=symbol,deadline=due,quantity=str(qty),resolution='authoritative_zero_rate',published_rate=rates[0])
         else:
             raise EvidenceBlocked('funding_settlement_pending')
+        proof['source_deadline_times']=sorted(candidates)
+        proof.update(scope='retrospective_settled_sources' if due<=live_start else 'prospective_schedule_and_receipt',known_at=known_at)
         proofs.append(proof)
+        resolved.update((symbol,at) for at in candidates)
+    def minimum_contract(symbol):
+        info=funding_info or {}
+        if info.get('source_contract')!=FUNDING_SOURCE_CONTRACT or not isinstance(info.get('response'),list):
+            raise EvidenceBlocked('funding_minimum_contract_proof_missing')
+        at=info.get('available_at');metadata_at=info.get('metadata_available_at')
+        if not isinstance(at,datetime) or not isinstance(metadata_at,datetime) or not timedelta(0)<=known_at-at<=timedelta(seconds=120) or not timedelta(0)<=known_at-metadata_at<=timedelta(seconds=120):
+            raise EvidenceBlocked('funding_minimum_contract_proof_stale')
+        metadata=info.get('contract_symbols',{}).get(symbol,{})
+        if (metadata.get('symbol')!=symbol or metadata.get('underlyingType')!='COIN' or metadata.get('contractType')!='PERPETUAL'
+                or metadata.get('quoteAsset')!='USDT' or metadata.get('marginAsset')!='USDT'):
+            raise EvidenceBlocked('funding_contract_scope_unsupported')
+        rows=[row for row in info['response'] if row.get('symbol')==symbol]
+        if len(rows)>1 or any(type(row.get('fundingIntervalHours')) is not int or row['fundingIntervalHours']<1 for row in rows):
+            raise EvidenceBlocked('funding_interval_metadata_unsupported')
+        return info['source_contract']
+    bridges=[]
+    def covers(symbol,left,right):
+        if left==right:return
+        minimum_contract(symbol)
+        point=left
+        intervals=sorted((row['source_time'],row['next_funding_time']) for row in valid if row['symbol']==symbol)
+        for begin,end in intervals:
+            if end<=point:continue
+            if begin>point:
+                if (symbol,point) not in resolved or begin-point>timedelta(seconds=120):
+                    break
+                bridges.append(dict(symbol=symbol,start=point,end=begin,source_contract=FUNDING_SOURCE_CONTRACT))
+            point=max(point,end)
+            if point>=right:return
+        raise EvidenceBlocked('funding_schedule_coverage_gap')
+    held_intervals=[]
+    previous=live_start
+    timeline=sorted({row['trade_time_utc'] for row in fills if live_start<row['trade_time_utc']<=as_of}|{as_of})
+    for at in timeline:
+        for (owner,symbol),qty in balances_at(previous).items():
+            if owner=='hrs' and qty!=0:
+                covers(symbol,previous,at)
+                if previous<at:held_intervals.append(dict(symbol=symbol,start=previous,end=at,quantity=str(qty)))
+        previous=at
+    if bridges:
+        proofs.append(dict(kind='verified_poll_sliver_bridges',bridges=bridges,known_at=known_at))
+    if held_intervals:
+        proofs.append(dict(kind='live_schedule_coverage',intervals=held_intervals,forecast_sha256=canonical(valid)[1],source_contract=FUNDING_SOURCE_CONTRACT,known_at=known_at))
+    if live_start>start and relevant:
+        proofs.append(dict(kind='retrospective_history_coverage',start=start,through=live_start,scope='retrospective_settled_sources',published_coverage_sha256=canonical(published_coverage)[1],known_at=known_at))
     return proofs
 
 

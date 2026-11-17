@@ -217,6 +217,12 @@ def test_nonflat_midnight_uses_actual_closed_historical_mark_with_real_timestamp
             coverage_complete=True,opening_inventory=opening,historical_bars={},account='test')
 
 
+def funding_contract_proof(at):
+    from strategies.hrs.equity_evidence import FUNDING_SOURCE_CONTRACT
+    return dict(source_contract=FUNDING_SOURCE_CONTRACT,response=[],available_at=at,metadata_available_at=at,
+        contract_symbols={'BTCUSDT':dict(symbol='BTCUSDT',underlyingType='COIN',contractType='PERPETUAL',quoteAsset='USDT',marginAsset='USDT')})
+
+
 def test_known_held_funding_deadline_blocks_empty_published_page_until_receipt_or_proven_zero():
     from strategies.hrs.equity_evidence import require_funding_publication
     due=T+timedelta(seconds=30)
@@ -226,15 +232,15 @@ def test_known_held_funding_deadline_blocks_empty_published_page_until_receipt_o
                dict(symbol='BTCUSDT',source_time=now,received_at=now,next_funding_time=now+timedelta(hours=1))]
     report=dict(events=[])
     with pytest.raises(EvidenceBlocked,match='funding_settlement_pending'):
-        require_funding_publication('test',T,now,[],[],inventory,forecasts,{},report)
+        require_funding_publication('test',T,now,[],[],inventory,forecasts,{},report,funding_info=funding_contract_proof(now))
     published={'BTCUSDT':[dict(fundingTime=int(due.timestamp()*1000),fundingRate='0',markPrice='100')]}
-    proof=require_funding_publication('test',T,now,[],[],inventory,forecasts,published,report)
+    proof=require_funding_publication('test',T,now,[],[],inventory,forecasts,published,report,funding_info=funding_contract_proof(now))
     assert proof[0]['resolution']=='authoritative_zero_rate'
     nonzero={'BTCUSDT':[dict(fundingTime=int(due.timestamp()*1000),fundingRate='.001',markPrice='100')]}
     with pytest.raises(EvidenceBlocked,match='funding_settlement_pending'):
-        require_funding_publication('test',T,now,[],[],inventory,forecasts,nonzero,report)
+        require_funding_publication('test',T,now,[],[],inventory,forecasts,nonzero,report,funding_info=funding_contract_proof(now))
     receipt=dict(account_id='test',symbol='BTCUSDT',income_type='FUNDING_FEE',tran_id='55',strategy='hrs',asset='USDT',amount='-.1',event_time_utc=(due+timedelta(milliseconds=27)).isoformat())
-    assert require_funding_publication('test',T,now,[],[],inventory,forecasts,nonzero,dict(events=[receipt]))[0]['resolution']=='income_receipt'
+    assert require_funding_publication('test',T,now,[],[],inventory,forecasts,nonzero,dict(events=[receipt]),funding_info=funding_contract_proof(now))[0]['resolution']=='income_receipt'
 
 
 def test_independent_pm_account_quantity_inventory_does_not_invent_missing_entry_price():
@@ -264,3 +270,65 @@ def test_reduce_only_close_owner_requires_complete_zero_anchor_and_unique_owned_
         certify_reduce_only_lifecycle('test','BTCUSDT',D('0'),[closed],orders,{11:response},T-timedelta(days=2),T,coverage_complete=True)
     with pytest.raises(EvidenceBlocked,match='lifecycle_reduce_only'):
         certify_reduce_only_lifecycle('test','BTCUSDT',D('0'),[entered,closed],orders,{11:dict(response,reduceOnly=False)},T-timedelta(days=2),T,coverage_complete=True)
+
+
+def test_retrospective_baseline_uses_published_history_but_live_forecast_gap_denies():
+    from strategies.hrs.equity_evidence import require_funding_publication
+    end=T+timedelta(hours=12)
+    due=T+timedelta(hours=4)
+    inventory=(dict(strategy='hrs',symbol='BTCUSDT',quantity='1',entry_price='100'),)
+    rates={'BTCUSDT':[dict(fundingTime=int(due.timestamp()*1000),fundingRate='.001',markPrice='100')]}
+    receipt=dict(account_id='test',symbol='BTCUSDT',income_type='FUNDING_FEE',tran_id='55',strategy='hrs',asset='USDT',amount='-.1',event_time_utc=(due+timedelta(milliseconds=27)).isoformat())
+    coverage={'BTCUSDT':[dict(start_ms=int(T.timestamp()*1000),end_ms=int(end.timestamp()*1000),page_complete=True)]}
+    historical=require_funding_publication('test',T,end,[],[],inventory,[],rates,dict(events=[receipt]),live_start=end,published_coverage=coverage,available_at=end)
+    assert historical[0]['scope']=='retrospective_settled_sources' and historical[0]['known_at']==end
+    forecasts=[dict(symbol='BTCUSDT',source_time=T,received_at=T,next_funding_time=due),dict(symbol='BTCUSDT',source_time=end,received_at=end,next_funding_time=end+timedelta(hours=4))]
+    with pytest.raises(EvidenceBlocked,match='funding_schedule_coverage_gap'):
+        require_funding_publication('test',T,end,[],[],inventory,forecasts,rates,dict(events=[receipt]),live_start=T,published_coverage=coverage,available_at=end,funding_info=funding_contract_proof(end))
+
+
+def test_funding_eligibility_deviation_does_not_assign_scheduled_quantity_across_fill():
+    from strategies.hrs.equity_evidence import require_funding_publication
+    due=T+timedelta(minutes=1);end=T+timedelta(minutes=2)
+    opened=fill(trade_id=3,order_id=10,side='BUY',at=due+timedelta(seconds=5))
+    inventory=(dict(strategy='hrs',symbol='BTCUSDT',quantity='2',entry_price='100'),)
+    rates={'BTCUSDT':[dict(fundingTime=int(due.timestamp()*1000),fundingRate='0',markPrice='100')]}
+    coverage={'BTCUSDT':[dict(start_ms=int(T.timestamp()*1000),end_ms=int(end.timestamp()*1000),page_complete=True)]}
+    with pytest.raises(EvidenceBlocked,match='funding_eligibility_inventory_ambiguous'):
+        require_funding_publication('test',T,end,[opened],[owner(10)],inventory,[],rates,dict(events=[]),live_start=end,published_coverage=coverage,available_at=end)
+
+
+@pytest.mark.parametrize('sliver_seconds',[120,121])
+def test_live_schedule_sliver_is_bounded_and_requires_actual_crypto_metadata(sliver_seconds):
+    from strategies.hrs.equity_evidence import require_funding_publication
+    due=T+timedelta(minutes=1);end=due+timedelta(seconds=sliver_seconds)
+    inventory=(dict(strategy='hrs',symbol='BTCUSDT',quantity='1',entry_price='100'),)
+    forecasts=[dict(symbol='BTCUSDT',source_time=T,received_at=T,next_funding_time=due),dict(symbol='BTCUSDT',source_time=end,received_at=end,next_funding_time=end+timedelta(hours=1))]
+    rates={'BTCUSDT':[dict(fundingTime=int(due.timestamp()*1000),fundingRate='0',markPrice='100')]}
+    args=('test',T,end,[],[],inventory,forecasts,rates,dict(events=[]))
+    if sliver_seconds==121:
+        with pytest.raises(EvidenceBlocked,match='funding_schedule_coverage_gap'):
+            require_funding_publication(*args,funding_info=funding_contract_proof(end))
+    else:
+        result=require_funding_publication(*args,funding_info=funding_contract_proof(end))
+        assert any(row.get('kind')=='verified_poll_sliver_bridges' for row in result)
+        unsupported=funding_contract_proof(end)
+        unsupported['contract_symbols']['BTCUSDT']['underlyingType']='INDEX'
+        with pytest.raises(EvidenceBlocked,match='funding_contract_scope_unsupported'):
+            require_funding_publication(*args,funding_info=unsupported)
+        fractional=funding_contract_proof(end)
+        fractional['response']=[dict(symbol='BTCUSDT',fundingIntervalHours=.5)]
+        with pytest.raises(EvidenceBlocked,match='funding_interval_metadata_unsupported'):
+            require_funding_publication(*args,funding_info=fractional)
+
+
+def test_nominal_forecast_and_actual_published_millisecond_share_one_receipt():
+    from strategies.hrs.equity_evidence import require_funding_publication
+    due=T+timedelta(seconds=30);end=T+timedelta(seconds=60)
+    forecasts=[dict(symbol='BTCUSDT',source_time=T,received_at=T,next_funding_time=due),dict(symbol='BTCUSDT',source_time=end,received_at=end,next_funding_time=end+timedelta(hours=1))]
+    inventory=(dict(strategy='hrs',symbol='BTCUSDT',quantity='1',entry_price='100'),)
+    rate=dict(fundingTime=int(due.timestamp()*1000)+1,fundingRate='.001',markPrice='100')
+    receipt=dict(account_id='test',symbol='BTCUSDT',income_type='FUNDING_FEE',tran_id='55',strategy='hrs',asset='USDT',amount='-.1',event_time_utc=(due+timedelta(milliseconds=344)).isoformat())
+    proof=require_funding_publication('test',T,end,[],[],inventory,forecasts,{'BTCUSDT':[rate]},dict(events=[receipt]),funding_info=funding_contract_proof(end))
+    assert len([item for item in proof if item.get('resolution')=='income_receipt'])==1
+    assert proof[0]['deadline']==due+timedelta(milliseconds=1)

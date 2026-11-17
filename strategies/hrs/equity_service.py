@@ -51,7 +51,7 @@ from shared.execution_facts_sink import PostgresExecutionFactsSink
 
 from .equity_evidence import (
     EvidenceBlocked, allocation_evidence, allocation_event_changes, attributed_incomes, canonical,
-    certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,certify_reduce_only_lifecycle,
+    certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,certify_reduce_only_lifecycle,FUNDING_SOURCE_CONTRACT,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
 from .equity_reconciliation import ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
@@ -184,7 +184,8 @@ class HrsEquityService:
         erase a deadline. Source availability is retained, never backdated.
         """
         symbols=set(snapshot['local'])
-        rows=await self.db.fetch_all("SELECT DISTINCT symbol FROM trading.trade_records WHERE (account_id=$1 OR account_id IS NULL) AND strategy='hrs' AND symbol IS NOT NULL",self.account)
+        symbols.update(row['symbol'] for row in snapshot.get('authenticated_order_owners',()) if row['strategy']=='hrs')
+        rows=await self.db.fetch_all("SELECT DISTINCT symbol FROM trading.trade_records WHERE account_id=$1 AND strategy='hrs' AND symbol IS NOT NULL",self.account)
         symbols.update(row['symbol'] for row in rows)
         forecasts=[]
         for symbol,mark in snapshot['marks'].items():
@@ -208,13 +209,31 @@ class HrsEquityService:
             for item in payload['forecasts']:
                 forecasts.append(dict(item,**{key:datetime.fromisoformat(item[key]) for key in ('source_time','received_at','next_funding_time')}))
         unique={canonical(row)[1]:row for row in forecasts}
+        info=None
+        if symbols:
+            response=await self.api._request('GET','/fapi/v1/fundingInfo',params={},signed=False)
+            info_at=self._now()
+            metadata=await self.api._request('GET','/fapi/v1/exchangeInfo',params={},signed=False)
+            if not isinstance(response,list) or not isinstance(metadata,dict) or not isinstance(metadata.get('symbols'),list):
+                raise EvidenceBlocked('funding_contract_source_missing')
+            selected={}
+            for row in metadata['symbols']:
+                if isinstance(row,dict) and row.get('symbol') in symbols:
+                    if row['symbol'] in selected:
+                        raise EvidenceBlocked('funding_contract_metadata_duplicate')
+                    selected[row['symbol']]=row
+            info=dict(response=response,available_at=info_at,metadata_available_at=self._now(),contract_symbols=selected,
+                metadata_response_sha256=canonical(metadata)[1],source_contract=FUNDING_SOURCE_CONTRACT)
         published={}
+        published_coverage={}
         for symbol in sorted(symbols):
             left=start_ms
             rates={}
+            windows=[]
             while left<=end_ms:
                 right=min(left+7*24*3600*1000-1,end_ms)
                 result=await self.api.get_funding_rate_history(symbol,start_time=left,end_time=right,limit=1000)
+                received=self._now()
                 if not isinstance(result,list):
                     raise EvidenceBlocked('published_funding_rate_source_missing')
                 for row in result:
@@ -232,11 +251,14 @@ class HrsEquityService:
                     last=max((int(row['fundingTime']) for row in result),default=left-1)
                     if not left<=last<=right:
                         raise EvidenceBlocked('published_funding_rate_pagination_unproven')
+                    windows.append(dict(start_ms=left,end_ms=last+1,requested_end_ms_inclusive=right,page_complete=True,available_at=received,returned_count=len(result),response_sha256=canonical(result)[1]))
                     left=last+1
                 else:
+                    windows.append(dict(start_ms=left,end_ms=right+1,requested_end_ms_inclusive=right,page_complete=True,available_at=received,returned_count=len(result),response_sha256=canonical(result)[1]))
                     left=right+1
             published[symbol]=[rates[key] for key in sorted(rates)]
-        snapshot['funding_publication']=dict(forecasts=list(unique.values()),published_rates=published,available_at=self._now())
+            published_coverage[symbol]=windows
+        snapshot['funding_publication']=dict(forecasts=list(unique.values()),published_rates=published,published_coverage=published_coverage,funding_info=info,available_at=self._now())
 
     async def _authenticate_order_owners(self,snapshot,start_ms,end_ms):
         fills=await self.db.fetch_all('SELECT account_id,symbol,order_id,side FROM trading.execution_fact_fill WHERE account_id=$1 AND trade_time_utc>=$2 AND trade_time_utc<=$3',self.account,datetime.fromtimestamp(start_ms/1000,timezone.utc),datetime.fromtimestamp(end_ms/1000,timezone.utc))
@@ -491,7 +513,7 @@ class HrsEquityService:
             actual=[dict(row) for row in await connection.fetch('SELECT id,strategy_name,account_id,symbol,algo_id FROM btc_eth.condition_orders WHERE symbol=$1 AND algo_id=$2 AND (account_id=$3 OR account_id IS NULL)',proof['symbol'],int(proof['response']['algoId']),self.account)]
             if sorted(expected,key=lambda row:row['id'])!=sorted(actual,key=lambda row:row['id']) or not expected:
                 raise EvidenceBlocked('authenticated_condition_source_changed')
-        report = await read_monthly_economic_report(_SnapshotDB(connection,snapshot.get('authenticated_order_owners',())), self.account, start_ms, end_ms + 1,
+        report = await read_monthly_economic_report(_SnapshotDB(connection,snapshot.get('authenticated_order_owners',())), self.account, snapshot.get('income_start_ms',start_ms), end_ms + 1,
                                                    include_reviewed_overrides=False)
         fills = [dict(row) for row in await connection.fetch('''SELECT * FROM trading.execution_fact_fill
             WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc <= $3''', self.account, start, end)]
@@ -710,8 +732,10 @@ class HrsEquityService:
         report=attribute_funding_from_inventory(report,self.account,as_of,fills,orders,current_inventory,
             coverage_complete=not report.get('coverage_gaps') and not report.get('missing_income_fills') and report.get('account_coverage_complete') is True,available_at=self._now())
         publication=snapshot.get('funding_publication',{})
-        funding_proofs=require_funding_publication(self.account,datetime.fromtimestamp(start_ms/1000,timezone.utc),as_of,
-            fills,orders,current_inventory,publication.get('forecasts',()),publication.get('published_rates',{}),report)
+        funding_proofs=require_funding_publication(self.account,datetime.fromtimestamp(snapshot.get('income_start_ms',start_ms)/1000,timezone.utc),as_of,
+            fills,orders,current_inventory,publication.get('forecasts',()),publication.get('published_rates',{}),report,
+            live_start=actual_bootstrap['inception'] if actual_bootstrap else as_of,published_coverage=publication.get('published_coverage'),
+            funding_info=publication.get('funding_info'),available_at=self._now())
         all_events=attributed_incomes(report,self.account,segment)
         if actual_bootstrap is None:
             period=datetime.combine(as_of.astimezone(SHANGHAI).date().replace(day=1),time.min,SHANGHAI)
@@ -750,6 +774,8 @@ class HrsEquityService:
             evidence['source_start_ms']=start_ms
             evidence['credited_opening_income']=[dict(event_id=event.event_id,kind=event.kind,amount=str(event.amount),occurred_at=event.occurred_at.isoformat()) for event in credited]
             evidence['opening_cash_definition']='current_allocation_plus_exact_current_period_hrs_net_income'
+            evidence['funding_baseline_method']='retrospective_settled_sources'
+            evidence['funding_baseline_known_at']=self._now()
             obs = LedgerObservation(as_of, segment, (), (), marks, as_of, snapshot['captured_at'], True, True)
             state = initialize_ledger(segment, allocation.amount+sum((event.amount for event in credited),Decimal(0)), obs)
             await connection.execute('''INSERT INTO trading.hrs_equity_segment
@@ -870,9 +896,12 @@ class HrsEquityService:
                                 raise EvidenceBlocked('opening_entry_bound_missing')
                             at=at.replace(tzinfo=SHANGHAI) if at.tzinfo is None else at
                             start_ms=min(start_ms,int(at.timestamp()*1000))
+                origin=bootstrap['inception'] if bootstrap else snapshot['captured_at']
+                credit_period=datetime.combine(origin.astimezone(SHANGHAI).date().replace(day=1),time.min,SHANGHAI)
+                snapshot['income_start_ms']=int(credit_period.timestamp()*1000)
                 collection=await self._collect(start_ms,end_ms,snapshot)
                 await self._authenticate_order_owners(snapshot,start_ms,end_ms)
-                await self._funding_publication_evidence(snapshot,start_ms,end_ms)
+                await self._funding_publication_evidence(snapshot,snapshot['income_start_ms'],end_ms)
                 await self._historical_marks(bootstrap,snapshot)
                 async with self._locked() as connection:
                     result=await self._commit(connection,bootstrap,snapshot,collection,start_ms,end_ms)

@@ -15,7 +15,16 @@ from strategies.hrs.equity_service import HrsEquityService
 
 DSN = os.environ.get('HRS_TEST_POSTGRES_DSN')
 pytestmark = pytest.mark.skipif(not DSN, reason='isolated PostgreSQL DSN required')
-T = datetime(2026, 11, 17, 15, tzinfo=timezone.utc)
+# Synthetic observations stay after real trigger installation, independent of
+# wall-clock run date. The17th keeps preperiod/period fixtures well defined.
+T = (datetime.now(timezone.utc).replace(day=28)+timedelta(days=4)).replace(day=17,hour=15,minute=0,second=0,microsecond=0)
+
+
+def funding_source_response(path):
+    if path=='/fapi/v1/fundingInfo':return []
+    if path=='/fapi/v1/exchangeInfo':
+        return dict(symbols=[dict(symbol='BTCUSDT',underlyingType='COIN',contractType='PERPETUAL',quoteAsset='USDT',marginAsset='USDT')])
+    raise AssertionError(path)
 
 
 @pytest_asyncio.fixture
@@ -65,8 +74,8 @@ async def setup(monkeypatch):
             (attempt_id uuid,symbol text,source_time timestamptz,received_at timestamptz,next_funding_time timestamptz,
              funding_interval_hours int,payload_hash text,raw_payload jsonb)''')
         allocation_id = await c.fetchval('''INSERT INTO public.capital_allocation(month,entries,status,created_at)
-            VALUES ('2026-11',$1::jsonb,'active',$2) RETURNING id''', json.dumps([dict(strategy_id='hrs', allocated_amount='1000')]),
-            T.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+            VALUES ($3,$1::jsonb,'active',$2) RETURNING id''', json.dumps([dict(strategy_id='hrs', allocated_amount='1000')]),
+            T.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None),T.strftime('%Y-%m'))
         # Schema may have the full risk policy columns from another acceptance test.
         cols = {r['column_name'] for r in await c.fetch("SELECT column_name FROM information_schema.columns WHERE table_schema='trading' AND table_name='strategy_risk_policy'")}
         if 'mode' in cols:
@@ -86,10 +95,12 @@ async def setup(monkeypatch):
     api.get_income_history.return_value = []
     api.get_user_trades.return_value = []
     api.get_funding_rate_history.return_value = []
+    api._request.side_effect=lambda method,path,**kw:funding_source_response(path)
     pm = SimpleNamespace(get_all_positions=lambda: {})
     service = HrsEquityService(db, api, SimpleNamespace(strategy_id='hrs'), pm)
     clock = [T]
     service.clock = lambda: clock[0]
+    service._test_schedule_ids=[]
     try:
         yield service, account, pool, api, clock
     finally:
@@ -102,6 +113,7 @@ async def setup(monkeypatch):
                           'entry_risk_reservation','strategy_risk_active'):
                 await c.execute(f'DELETE FROM trading.{table} WHERE account_id=$1', account)
             await c.execute('DELETE FROM public.capital_allocation WHERE id=$1',allocation_id)
+            await c.execute('DELETE FROM public.ai_tuner_funding_schedule_observations WHERE attempt_id=ANY($1::uuid[])',service._test_schedule_ids)
         await pool.close()
 
 
@@ -273,7 +285,8 @@ async def test_allocation_deposit_and_withdrawal_are_two_flows_even_when_net_zer
     # observation clock describe the same prospective segment.
     async with pool.acquire() as c:
         now=await c.fetchval('SELECT clock_timestamp()')
-        await c.execute("UPDATE public.capital_allocation SET created_at=$1,total_capital=1000.12345678 WHERE status='active'",(now-timedelta(minutes=1)).astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+        await c.execute("UPDATE public.capital_allocation SET created_at=$1,total_capital=1000.12345678,month=$2 WHERE status='active'",(now-timedelta(minutes=1)).astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None),now.astimezone(timezone(timedelta(hours=8))).strftime('%Y-%m'))
+        await c.execute("UPDATE trading.strategy_risk_policy SET effective_at=$2,expires_at=$3 WHERE account_id=$1",account,now-timedelta(days=1),now+timedelta(days=2))
     service.clock=lambda:datetime.now(timezone.utc)
     opening=await service.refresh()
     assert 'daily_origin_missing' in opening['reasons']
@@ -358,7 +371,8 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
         for order_id,side in ((71,'BUY'),(72,'SELL')):
             await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT',$2,'hrs',$3,'FILLED','LIMIT',$4)",account,str(order_id),side,T.replace(tzinfo=None))
     async with pool.acquire() as c:
-        await c.execute('''INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash,raw_payload) VALUES($1,'BTCUSDT',$2,$2,$3,24,'test','{}')''',uuid.uuid4(),T-timedelta(minutes=1),T+timedelta(days=1))
+        schedule_id=uuid.uuid4();service._test_schedule_ids.append(schedule_id)
+        await c.execute('''INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash,raw_payload) VALUES($1,'BTCUSDT',$2,$2,$3,24,'test','{}')''',schedule_id,T-timedelta(minutes=1),T+timedelta(days=1))
     records=[dict(symbol='BTCUSDT',id=71,orderId=71,side='BUY',qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((T+timedelta(seconds=-20 if pre_anchor else 10)).timestamp()*1000)),
              dict(symbol='BTCUSDT',id=72,orderId=72,side='SELL',qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((T+timedelta(seconds=-10 if pre_anchor else 20)).timestamp()*1000))]
     api.get_user_trades.return_value=records
@@ -423,7 +437,7 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
         await c.execute('''CREATE TABLE IF NOT EXISTS trading.position_claims
             (id serial PRIMARY KEY,symbol text,strategy text,claim_state text,expires_at timestamptz)''')
         await c.execute('ALTER TABLE trading.entry_risk_reservation ADD COLUMN IF NOT EXISTS quantity numeric')
-        schedule_id=uuid.uuid4()
+        schedule_id=uuid.uuid4();service._test_schedule_ids.append(schedule_id)
         await c.execute('''INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash,raw_payload) VALUES($1,'BTCUSDT',$2,$2,$3,24,'test','{}')''',schedule_id,entered,due)
         claim=await c.fetchval("INSERT INTO trading.position_claims(symbol,strategy,claim_state,expires_at) VALUES ('BTCUSDT','hrs','ACTIVE','infinity') RETURNING id")
         await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT','81','hrs','BUY','NEW','LIMIT',$2)",None if legacy_owner else account,entered.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
@@ -436,6 +450,7 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
         def market_request(method,path,params=None,**kwargs):
             if path=='/fapi/v1/premiumIndex':
                 return dict(symbol='BTCUSDT',markPrice='99',time=int(clock[0].timestamp()*1000),nextFundingTime=int((due if clock[0]<due else due+timedelta(days=1)).timestamp()*1000))
+            if path in ('/fapi/v1/fundingInfo','/fapi/v1/exchangeInfo'):return funding_source_response(path)
             assert path=='/fapi/v1/markPriceKlines'
             return [[params['startTime'],'100','100','99','99','0',params['endTime']]]
         api._request.side_effect=market_request
@@ -558,9 +573,9 @@ async def test_exact_legacy_condition_row_and_signed_child_order_prove_owner_wit
 @pytest.mark.asyncio
 async def test_preperiod_new_coin_entry_proves_reduce_only_close_without_crediting_prior_income(setup):
     service,account,pool,api,clock=setup
-    entered=datetime(2026,10,30,14,tzinfo=timezone.utc)
-    closed=datetime(2026,11,4,14,tzinfo=timezone.utc)
-    funding=datetime(2026,11,2,0,tzinfo=timezone.utc)
+    entered=T.replace(day=1,hour=14)-timedelta(days=2)
+    closed=T.replace(day=4,hour=14)
+    funding=T.replace(day=2,hour=0)
     entry_id=9000000+int(uuid.uuid4().hex[:6],16);close_id=entry_id+1
     async with pool.acquire() as c:
         await c.execute('CREATE SCHEMA IF NOT EXISTS new_coin')
@@ -609,3 +624,13 @@ async def test_formal_gate_does_not_promote_manual_initialization_without_source
     finally:
         async with pool.acquire() as c:
             await c.execute('DELETE FROM trading.reviewed_income_attribution WHERE account_id=$1',account)
+
+
+@pytest.mark.asyncio
+async def test_funding_history_covers_authenticated_closed_hrs_symbols(setup):
+    service,account,pool,api,clock=setup
+    snapshot=dict(local={},marks={},captured_at=T,authenticated_order_owners=[dict(symbol='IDOLUSDT',strategy='hrs')])
+    start=int((T-timedelta(days=1)).timestamp()*1000);end=int(T.timestamp()*1000)
+    await service._funding_publication_evidence(snapshot,start,end)
+    assert 'IDOLUSDT' in snapshot['funding_publication']['published_coverage']
+    assert api.get_funding_rate_history.await_args.kwargs['start_time']==start
