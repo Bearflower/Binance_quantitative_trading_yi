@@ -277,7 +277,8 @@ def engineering_evidence(count=1, *, lineage=True):
         at = START+timedelta(minutes=n*10)
         client = f'risk_{n}'
         decision = dict(allowed=True, quantity='10', worst_loss='12', risk_limit='20',
-            policy_revision=1, client_order_id=client, effective_allocation='2000', exit_ratios=['1', '0'])
+            policy_revision=1, client_order_id=client, effective_allocation='2000',
+            risk_allocation='2000', exit_ratios=['1', '0'])
         rows += [event(str(n), 'scan_start', at-timedelta(seconds=3), {
             'financial_context': {'entry_policy': {'account_id': ACCOUNT}}}),
             event(str(n), 'entry_budget_reserved', at-timedelta(seconds=2), dict(
@@ -309,6 +310,28 @@ def test_real_acknowledgments_and_reserved_client_identity_close_engineering_che
 def test_unlinked_exit_fills_do_not_prove_tp_execution_from_algo_id_alone():
     result = financial(5, decision_evidence=engineering_evidence(5, lineage=False))
     assert result['engineering_status'] == 'PENDING'
+
+
+@pytest.mark.parametrize('limit,expected', [('.5231','RECONCILED'), ('.5231001','PENDING')])
+def test_budget_one_percent_uses_explicit_risk_allocation_not_reduced_margin(limit,expected):
+    rows = engineering_evidence(5)
+    changed(rows, 'entry_budget_reserved', lambda p: p['decision'].update(
+        risk_allocation='52.31', effective_allocation='26.155', risk_limit=limit, worst_loss='.5'))
+    result = financial(5, decision_evidence=rows)
+    check = result['samples'][0]['engineering_checks']['budget']
+    assert check['status'] == expected
+    if expected == 'RECONCILED':
+        assert check['risk_allocation'] == '52.31'
+        assert check['effective_allocation'] == '26.155'
+
+
+def test_missing_original_risk_allocation_source_remains_pending():
+    rows = engineering_evidence(5)
+    changed(rows, 'entry_budget_reserved', lambda p: p['decision'].pop('risk_allocation'))
+    result = financial(5, decision_evidence=rows)
+    check = result['samples'][0]['engineering_checks']['budget']
+    assert check['status'] == 'PENDING'
+    assert check['reason'] == 'risk_allocation_not_captured'
 
 
 @pytest.mark.parametrize('problem', ['missing_exchange_fields', 'wrong_client', 'oversized', 'request_price_only', 'hash', 'wrong_account'])

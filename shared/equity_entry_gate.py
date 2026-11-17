@@ -33,7 +33,7 @@ async def enforce_equity_gate(connection, strategy, account, policy_revision, *,
         raise EquityGateDenied('equity_gate_stale_or_invalid')
     newer = await connection.fetchval('''SELECT EXISTS(SELECT 1 FROM trading.entry_risk_reservation
         WHERE account_id=$1 AND strategy_id=$2 AND state='submitting'
-          AND (updated_at IS NULL OR updated_at>$3)
+          AND (updated_at IS NULL OR updated_at>=$3)
           AND client_order_id IS DISTINCT FROM $4::text)''',
         account, strategy, as_of, submitting_client_id)
     if newer:

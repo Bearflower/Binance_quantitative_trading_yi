@@ -466,6 +466,9 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
         return checks
     p, at = budgets[0]
     d = p['decision']
+    if d.get('risk_allocation') is None:
+        checks['budget'] = dict(status='PENDING', reason='risk_allocation_not_captured')
+        return checks
     try:
         first_side = lifecycle['fill_legs'][0]['side']
         entry_legs = []
@@ -481,11 +484,13 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
         planned = _number(d['quantity'])
         allocation, loss, limit = (_number(d['effective_allocation']),
             _number(d.get('worst_loss', d.get('stressed_loss'))), _number(d['risk_limit']))
+        risk_allocation = _number(d['risk_allocation'])
         stop, entry = _number(p['stop_price']), _number(p['entry_price'])
         ratios = tuple(_number(r) for r in d['exit_ratios'])
         targets = tuple(_number(r) for r in p['take_profit_prices'])
         if not (d.get('allowed') is True and type(d.get('policy_revision')) is int and d['policy_revision'] > 0
-            and allocation > 0 and 0 < original <= planned and 0 < loss <= limit <= allocation*Decimal('.01')
+            and allocation > 0 and risk_allocation > 0 and 0 < original <= planned
+            and 0 < loss <= limit <= risk_allocation*Decimal('.01')
             and entry > 0 and stop > 0 and (stop < entry if first_side == 'BUY' else stop > entry)
             and len(ratios) == len(targets) == 2 and ratios[0] > 0 and ratios[1] >= 0
             and (sum(ratios) < 1 or ratios == (Decimal(1), Decimal(0)))
@@ -495,7 +500,7 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
         checks['budget'] = dict(status='RECONCILED', client_order_id=client,
             policy_revision=d['policy_revision'], reserved_quantity=str(planned),
             actual_original_quantity=str(original), worst_loss=str(loss), risk_limit=str(limit),
-            effective_allocation=str(allocation), entry_mode=p.get('entry_mode'),
+            effective_allocation=str(allocation), risk_allocation=str(risk_allocation), entry_mode=p.get('entry_mode'),
             entry_price=str(entry), stop_price=str(stop), exit_ratios=[str(r) for r in ratios])
     except (ValueError, KeyError, TypeError, ArithmeticError):
         checks['budget'] = dict(status='PENDING', reason='budget_or_fill_geometry_unproven')

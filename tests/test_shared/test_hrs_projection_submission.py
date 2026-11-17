@@ -151,6 +151,17 @@ async def test_other_submitting_marker_blocks_stale_projection_with_exact_scope(
 
 
 @pytest.mark.asyncio
+async def test_equal_microsecond_submission_cannot_be_proven_in_projection(setup):
+    store, wrapped, _, _ = setup
+    async with wrapped.acquire() as c:
+        await c.execute("""INSERT INTO trading.entry_risk_reservation
+            SELECT 'same-instant','audit','hrs',6,'submitting','OTHERUSDT',as_of,'{}'
+            FROM trading.strategy_equity_gate WHERE account_id='audit' AND strategy_id='hrs'""")
+    with pytest.raises(EntryDenied,match='equity_gate_unreconciled_submission'):
+        await store.policy('hrs')
+
+
+@pytest.mark.asyncio
 async def test_only_explicit_current_submission_gets_self_exclusion(setup):
     store, wrapped, _, _ = setup
     async with store.submitting('hrs','intent'):
