@@ -234,6 +234,7 @@ async def test_failed_provider_does_not_appear_as_observed_zero():
     recorder.record = AsyncMock()
     provider = SimpleNamespace(**{key: AsyncMock(side_effect=ValueError('secret')) for key in (
         'get_market_cap_provenance', 'get_oi_usd', 'get_funding_rate', 'get_24h_volume')})
+    provider.preload_market_caps = AsyncMock(return_value={})
     recorder.attach_market_provider(provider)
     with pytest.raises(ValueError):
         await provider.get_oi_usd('BTCUSDT')
@@ -300,3 +301,76 @@ async def test_surviving_batch_preserves_live_short_then_long_execution_order():
     call = recorder.record.await_args
     assert call.args[1] == 'execution_batch'
     assert [row['symbol'] for row in call.args[2]['ordered_signals']] == ['ZUSDT', 'AUSDT', 'BUSDT']
+
+
+def test_capture_retains_provider_identity_attached_to_market_cap_dataclass():
+    import json
+    from shared.market_cap import MarketCapProvenance
+    from strategies.hrs.decision_capture import canonical_payload
+    prov = MarketCapProvenance(value=123, source='coinmarketcap')
+    prov.provider = 'coinmarketcap'
+    prov.provider_asset_id = '74'
+    payload = json.loads(canonical_payload(prov)[0])
+    assert payload['provider'] == 'coinmarketcap'
+    assert payload['provider_asset_id'] == '74'
+
+
+@pytest.mark.asyncio
+async def test_market_cap_preload_records_full_requested_denominator_and_missing_identity():
+    from types import SimpleNamespace
+    from shared.market_cap import MarketCapProvenance
+    from strategies.hrs.market_data import MarketDataProvider
+    from strategies.hrs.decision_capture import DecisionRecorder
+    provider = MarketDataProvider(AsyncMock(), AsyncMock(), {})
+    quotes = {'BTCUSDT': MarketCapProvenance(value=10, source='coingecko'),
+              'UNKNOWNUSDT': MarketCapProvenance(missing_reason='identity_not_verified')}
+    provider.market_cap_service = SimpleNamespace(get_batch_market_caps_with_provenance=AsyncMock(return_value=quotes))
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    recorder.attach_market_provider(provider)
+    await provider.preload_market_caps(['BTCUSDT', 'UNKNOWNUSDT'])
+    call = recorder.record.await_args
+    assert call.args[1] == 'market_cap_batch'
+    assert call.args[2]['requested_symbols'] == ['BTCUSDT', 'UNKNOWNUSDT']
+    assert call.args[2]['quotes']['UNKNOWNUSDT'].missing_reason == 'identity_not_verified'
+
+
+@pytest.mark.asyncio
+async def test_standard_preanalysis_circuit_veto_is_not_silently_lost():
+    from strategies.hrs.decision_capture import DecisionRecorder
+    from strategies.hrs.tests.test_lv_rm_empty_pool_execution import _setup_strategy
+    from unittest.mock import MagicMock
+    strategy = _setup_strategy()[0]
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    strategy.decision_recorder = recorder
+    strategy._is_settlement_skip_window = MagicMock(return_value=False)
+    strategy._check_candidate_update = AsyncMock()
+    strategy.candidate_pool.get_active_symbols.return_value = ['TESTUSDT']
+    strategy.candidate_pool.get_lv_rm_scan_range = AsyncMock(return_value=[])
+    strategy.risk_manager.is_circuit_breaker_active.return_value = True
+    strategy._finalize_and_execute_signals = AsyncMock()
+    strategy._monitor_positions = AsyncMock()
+    strategy._report_positions_to_dashboard = AsyncMock()
+    strategy._cleanup_orphan_orders = AsyncMock()
+    await strategy._execute_cycle()
+    rows = [c.args[2] for c in recorder.record.await_args_list if c.args[1] == 'standard_candidate_outcome']
+    assert len(rows) == 1 and rows[0]['reason'] == 'symbol_circuit_breaker'
+
+
+@pytest.mark.asyncio
+async def test_settlement_cycle_retains_explicit_denial_reason():
+    from strategies.hrs.strategy import HRSStrategy
+    from strategies.hrs.decision_capture import DecisionRecorder
+    from unittest.mock import MagicMock
+    strategy = HRSStrategy({'strategy': {'name': 'hrs'}})
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    strategy.decision_recorder = recorder
+    strategy._is_settlement_skip_window = MagicMock(return_value=True)
+    strategy._monitor_positions = AsyncMock()
+    strategy._report_positions_to_dashboard = AsyncMock()
+    strategy._cleanup_orphan_orders = AsyncMock()
+    await strategy._execute_cycle()
+    rows = [c.args[2] for c in recorder.record.await_args_list if c.args[1] == 'scan_denial']
+    assert rows == [{'reason': 'settlement_window'}]

@@ -44,7 +44,13 @@ def _normalize(value):
     if hasattr(value, 'to_dict'):
         return _normalize(value.to_dict())
     if is_dataclass(value):
-        return _normalize(asdict(value))
+        fields = asdict(value)
+        # Shared-market consumers attach these stable IDs dynamically to the
+        # legacy six-field provenance dataclass. asdict alone discards them.
+        for name in ('provider', 'provider_asset_id'):
+            if hasattr(value, name):
+                fields[name] = getattr(value, name)
+        return _normalize(fields)
     return value
 
 
@@ -59,6 +65,7 @@ class DecisionRecorder:
         self.db = db
         self._run_context = ContextVar('hrs_evidence_run', default='startup-' + uuid.uuid4().hex)
         self.failed = False
+        self.context_provider = None
 
     @property
     def run_id(self):
@@ -133,6 +140,7 @@ class DecisionRecorder:
         client._request = request
 
     def attach_market_provider(self, provider):
+        self.attach_market_batches(provider)
         for name in ('get_market_cap_provenance', 'get_oi_usd', 'get_funding_rate', 'get_24h_volume'):
             original = getattr(provider, name)
 
@@ -156,6 +164,18 @@ class DecisionRecorder:
 
             setattr(provider, name, wrap(original, name))
 
+    def attach_market_batches(self, provider):
+        original = provider.preload_market_caps
+        async def preload(symbols):
+            result = await original(symbols)
+            now = datetime.now(timezone.utc)
+            await safe_record(self, self.run_id, 'market_cap_batch',
+                {'requested_symbols': list(symbols), 'coverage_scope': 'requested_scan_batch',
+                 'universe_audit': getattr(provider, 'universe_audit', None),
+                 'quotes': result, 'captured_at': now}, as_of=now, available_at=now)
+            return result
+        provider.preload_market_caps = preload
+
     async def begin(self, snapshot, as_of):
         self.run_id = uuid.uuid4().hex
         await self.record(self.run_id, 'scan_start', snapshot, as_of=as_of, available_at=as_of)
@@ -174,6 +194,14 @@ async def safe_record(recorder, *args, **kwargs):
         return False
 
 
+async def record_stage(strategy, kind, payload, *, symbol=None):
+    recorder = getattr(strategy, 'decision_recorder', None)
+    if recorder is not None:
+        now = datetime.now(timezone.utc)
+        await safe_record(recorder, recorder.run_id, kind, payload,
+                          as_of=now, available_at=now, symbol=symbol)
+
+
 def strategy_snapshot(strategy):
     pool = getattr(strategy, 'candidate_pool', None)
     positions = getattr(strategy, 'position_manager', None)
@@ -182,6 +210,17 @@ def strategy_snapshot(strategy):
     dynamic = getattr(pool, '_dynamic_thresholds', None)
     return {
         'config': getattr(strategy, 'config', {}),
+        'loaded_config_metadata': getattr(strategy, 'loaded_config_metadata', None),
+        'release_sha': getattr(strategy, 'release_sha', None),
+        'runtime': {
+            'signal_timestamps': {f'{symbol}:{direction}': stamp
+                for symbol, directions in getattr(strategy, '_signal_timestamps', {}).items()
+                for direction, stamp in directions.items()},
+            'daily_reset_date': (risk._daily_reset_date.date().isoformat()
+                if risk and getattr(risk, '_daily_reset_date', None) else None),
+            'risk_manager': risk.to_dict() if risk else None,
+            'total_pnl': getattr(strategy, '_total_pnl', None),
+        },
         'candidate_scan': {
             'short_candidates': pool.get_short_candidates() if pool else [],
             'long_candidates': pool.get_long_candidates() if pool else [],
@@ -206,7 +245,11 @@ def capture_cycle(function):
         previous_run = recorder.run_id
         now = datetime.now(timezone.utc)
         try:
-            await recorder.begin(strategy_snapshot(strategy), now)
+            snapshot = strategy_snapshot(strategy)
+            provider = getattr(recorder, 'context_provider', None)
+            if callable(provider):
+                snapshot['financial_context'] = await provider()
+            await recorder.begin(snapshot, now)
         except Exception:
             recorder.failed = True
             # Evidence collection cannot suppress maintenance of existing risk.

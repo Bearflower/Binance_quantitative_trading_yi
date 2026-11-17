@@ -32,13 +32,14 @@ from ai_tuner.snapshots.repository import SnapshotRepository
 from .candidate_pool import CandidatePool
 from .executor import TradingExecutor, OpenResult, CloseOutcome
 from .position_exit_plan import validate_exit_plan
+from .decision_context import capture_financial_context
 from .market_data import MarketDataProvider
 from .pattern import PatternRecognizer
 from .position_manager import PositionManager
 from .risk_manager import RiskManager
 from .risk_budget import RiskDecision, assess_entry, calculate_open_position_risk
 from .scoring_engine import ScoringEngine, ScoringResult
-from .decision_capture import DecisionRecorder, capture_analysis, capture_cycle, capture_signal, safe_record
+from .decision_capture import DecisionRecorder, capture_analysis, capture_cycle, capture_signal, safe_record, record_stage
 from .core_decision import analyze_standard, analyze_lv_rm, is_shadow_entry_mode
 
 
@@ -304,6 +305,8 @@ class HRSStrategy(BaseStrategy):
         )
         self.trading_executor.persist_fill = self._persist_entry_before_protection
         self.trading_executor.decision_recorder = getattr(self, 'decision_recorder', None)
+        if getattr(self, 'decision_recorder', None) is not None:
+            self.decision_recorder.context_provider = lambda: capture_financial_context(self)
         # P1-8: 传入通知回调，使风控模块能在暂停/熔断时发送通知
         self.risk_manager = RiskManager(
             self.config,
@@ -1315,6 +1318,7 @@ class HRSStrategy(BaseStrategy):
             # Fix #8: 资金费率结算时间安全检查
             if self._is_settlement_skip_window():
                 logger.info("资金费率结算窗口，跳过本周期评分")
+                await record_stage(self, 'scan_denial', {'reason': 'settlement_window'})
                 return
 
             # 检查回撤熔断
@@ -1323,6 +1327,7 @@ class HRSStrategy(BaseStrategy):
                 balance = float(account_info.get("totalMarginBalance", 0))
                 if balance > 0 and not await self.risk_manager.check_drawdown(self._total_pnl, balance):
                     logger.warning("回撤熔断触发，跳过本周期")
+                    await record_stage(self, 'scan_denial', {'reason': 'legacy_drawdown_pause'})
                     return
             except Exception as e:
                 logger.warning("回撤检查失败，继续执行", error=str(e))
@@ -1340,6 +1345,7 @@ class HRSStrategy(BaseStrategy):
                     )
                 else:
                     logger.info("策略暂停中，跳过本周期")
+                await record_stage(self, 'scan_denial', {'reason': 'legacy_pause', 'pause_info': pause_info})
                 return
 
             # 检查是否需要在8:05更新候选池
@@ -1362,10 +1368,13 @@ class HRSStrategy(BaseStrategy):
             short_signals = []
             long_signals = []
 
+            await record_stage(self, 'standard_scan_scope', {'symbols': list(active_symbols)})
             for symbol in list(active_symbols):
+                terminal_reason = 'analysis_error'
                 try:
                     # P2-6: 检查极端行情熔断
                     if self.risk_manager.is_circuit_breaker_active(symbol):
+                        terminal_reason = 'symbol_circuit_breaker'
                         cb_info = self.risk_manager.get_circuit_breaker_info(symbol)
                         logger.debug(
                             "熔断中，跳过评分",
@@ -1381,11 +1390,14 @@ class HRSStrategy(BaseStrategy):
                     if price_change_1h is not None:
                         if not self.risk_manager.check_price_change(symbol, price_change_1h):
                             # 触发熔断，跳过评分
+                            terminal_reason = 'price_change_circuit_breaker'
                             continue
 
                     analysis = await self.analyze(symbol)
                     if analysis.get("skip") or analysis.get("error"):
+                        terminal_reason = analysis.get('reason') or ('analysis_error' if analysis.get('error') else 'analysis_skip')
                         continue
+                    terminal_reason = 'scored'
 
                     # 处理做空信号
                     short_data = analysis.get("short")
@@ -1494,6 +1506,11 @@ class HRSStrategy(BaseStrategy):
 
                 except Exception as e:
                     logger.error("分析失败", symbol=symbol, error=str(e))
+                finally:
+                    await record_stage(self, 'standard_candidate_outcome', {
+                        'reason': terminal_reason, 'klines_1h': self._klines_cache.get(symbol, []),
+                        'klines_4h': self._klines_4h_cache.get(symbol, []),
+                    }, symbol=symbol)
 
             # B2: 统一收尾链（超时过滤 → 落库 → LV-RM 追加 → 组合级熔断预过滤 →
             # 冲突解析 → 周期汇总）；空池路径复用同一收尾链，禁止各自复制一份。
@@ -3018,6 +3035,7 @@ class HRSStrategy(BaseStrategy):
         lv_rm_config = self.config.get("lv_rm", {})
         if not lv_rm_config.get("enabled", True):
             logger.debug("LV-RM 未启用，跳过")
+            await record_stage(self, 'scan_denial', {'reason': 'lv_rm_disabled'})
             return
 
         # B2: 用具名列表承接 LV-RM 信号，并进入统一收尾链
@@ -3035,6 +3053,7 @@ class HRSStrategy(BaseStrategy):
                 )
             else:
                 logger.debug("LV-RM 无低波动候选币种")
+                await record_stage(self, 'scan_denial', {'reason': 'lv_rm_empty_scan_range'})
         except Exception as e:
             logger.error("LV-RM 独立检查失败", error=str(e))
 
@@ -3566,7 +3585,7 @@ class HRSStrategy(BaseStrategy):
         if pos is None:
             return
         if plan_invalid:
-            pos['exit_plan'] = frozen
+            pos['exit_plan'] = frozen if frozen is not None else {'invalid_exit_plan': True}
             pos['exit_plan_invalid'] = True
         # 真实开仓时刻或入场模式缺失 → 打标记，不编造
         pos["opening_time_uncertain"] = (

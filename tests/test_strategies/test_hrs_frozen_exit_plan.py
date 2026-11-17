@@ -89,3 +89,28 @@ def test_bad_persisted_plan_keeps_position_tracked_and_refuses_default_geometry(
     assert pos is not None
     assert pos['exit_plan_invalid'] is True
     assert pos['exit_plan'] == row['exit_plan']
+
+
+def test_json_null_corruption_cannot_reenable_default_geometry():
+    from strategies.hrs.strategy import HRSStrategy
+    strategy = object.__new__(HRSStrategy)
+    strategy.position_manager = PositionManager({}, AsyncMock())
+    strategy._apply_position_row(dict(symbol='TESTUSDT', direction='long', entry_price=100,
+        quantity=10, opened_at=1794918147895, entry_mode='standard', exit_plan='null'))
+    pos = strategy.position_manager.get_position('TESTUSDT')
+    assert pos['exit_plan_invalid'] is True
+    with pytest.raises(ValueError, match='exit_plan'):
+        strategy.position_manager._position_holding_hours(pos)
+
+
+@pytest.mark.parametrize('field,value', [('reference_price','1e1000'), ('atr','1e1000'),
+    ('max_holding_hours','1e300')])
+def test_finite_decimal_cannot_become_infinite_float_or_overflow_deadline(field, value):
+    from strategies.hrs.position_exit_plan import validate_exit_plan
+    frozen = plan()
+    if field in frozen:
+        frozen[field] = value
+    else:
+        frozen['params'][field] = value
+    with pytest.raises(ValueError, match='exit_plan'):
+        validate_exit_plan(frozen)

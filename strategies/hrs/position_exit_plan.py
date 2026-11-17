@@ -1,5 +1,6 @@
 """Persist the exact entry-time exit geometry; legacy positions retain legacy rules."""
 from decimal import Decimal
+import math
 
 PARAMETERS = frozenset({'atr_multiplier', 'emergency_percent', 'min_absolute_percent',
     'target1_atr_multiplier', 'target1_close_percent', 'target2_atr_multiplier',
@@ -28,6 +29,11 @@ def validate_exit_plan(value):
         if p['emergency_percent'] >= 1 or p['min_absolute_percent'] >= 1:
             raise ValueError()
         if p['target1_close_percent'] + p['target2_close_percent'] > 1:
+            raise ValueError()
+        if not all(math.isfinite(value) for value in (result['reference_price'], result['atr'], *p.values())):
+            raise ValueError()
+        # Supported exit horizons must also fit runtime datetime arithmetic.
+        if p['max_holding_hours'] > 24 * 366 * 10:
             raise ValueError()
         return result
     except (KeyError, TypeError, ValueError, ArithmeticError) as exc:

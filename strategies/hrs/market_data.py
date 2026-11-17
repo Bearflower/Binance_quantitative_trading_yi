@@ -280,7 +280,7 @@ class MarketDataProvider:
             logger.info("真实市值缺失原因", symbol=symbol, reason=cap.missing_reason)
         return cap
 
-    async def preload_market_caps(self, symbols: List[str]) -> None:
+    async def preload_market_caps(self, symbols: List[str]) -> Dict:
         """
         批量预加载市值缓存（推荐在候选池扫描开始时调用一次）
 
@@ -292,8 +292,8 @@ class MarketDataProvider:
             symbols: 需要预加载市值的交易对列表
         """
         if not symbols:
-            return
-        await self.market_cap_service.get_batch_market_caps(symbols)
+            return {}
+        return await self.market_cap_service.get_batch_market_caps_with_provenance(symbols)
 
     def _get_4h_slot(self, timestamp_ms: int) -> int:
         """

@@ -203,30 +203,72 @@ class RiskPolicyStore:
                 sized.quantity,sized.original_quantity,sized.price,sized.leverage,sized.margin,json.dumps(geometry or {},sort_keys=True),sized.risk,sized.original_risk)
         return client_id
 
+    async def _release_proven_unsent(self, conn, strategy, client_id, row, state):
+        await conn.execute("""UPDATE trading.entry_risk_reservation
+            SET state='released',updated_at=clock_timestamp(),
+                geometry=COALESCE(geometry,'{}'::jsonb) || '{"submission_resolution":"denied_before_http"}'::jsonb
+            WHERE client_order_id=$1 AND account_id=$2 AND strategy_id=$3 AND state=$4""",
+            client_id, self.account, strategy, state)
+        await conn.execute("""UPDATE trading.position_claims
+            SET claim_state='RELEASED',released_at=clock_timestamp(),reason='risk_denied_before_http'
+            WHERE symbol=$1 AND strategy=$2 AND claim_state='PENDING'
+              AND NOT EXISTS(SELECT 1 FROM trading.entry_risk_reservation
+                WHERE account_id=$3 AND symbol=$1 AND state<>'released')""",
+            row['symbol'], strategy, self.account)
+
     @asynccontextmanager
     async def submitting(self, strategy, client_id):
         # Persist submitting BEFORE network write; crash/timeout retains occupancy.
+        early_error, row = None, None
         async with self.pool.acquire() as conn, conn.transaction():
             await self.lock(conn,strategy)
-            policy = await self.policy(strategy,conn)
-            row = await conn.fetchrow('''UPDATE trading.entry_risk_reservation SET state='submitting'
-                WHERE client_order_id=$1 AND account_id=$2 AND strategy_id=$3
-                AND revision=$4 AND state='reserved' RETURNING *''',client_id,self.account,strategy,policy['revision'])
-            if not row or policy['mode'] != 'reduced':
-                raise EntryDenied('submission is not authorized')
+            try:
+                policy = await self.policy(strategy,conn)
+            except EntryDenied as exc:
+                # A reserved row has never entered the submitting state, hence
+                # cannot have reached HTTP under this state machine.
+                unsent = await conn.fetchrow("""SELECT * FROM trading.entry_risk_reservation
+                    WHERE client_order_id=$1 AND account_id=$2 AND strategy_id=$3
+                      AND state='reserved' FOR UPDATE""",client_id,self.account,strategy)
+                if unsent:
+                    await self._release_proven_unsent(conn,strategy,client_id,unsent,'reserved')
+                early_error = exc
+            else:
+                row = await conn.fetchrow("""UPDATE trading.entry_risk_reservation SET state='submitting'
+                    WHERE client_order_id=$1 AND account_id=$2 AND strategy_id=$3
+                    AND revision=$4 AND state='reserved' RETURNING *""",client_id,self.account,strategy,policy['revision'])
+                if not row or policy['mode'] != 'reduced':
+                    if row:
+                        await self._release_proven_unsent(conn,strategy,client_id,row,'submitting')
+                    early_error = EntryDenied('submission is not authorized')
+        if early_error is not None:
+            raise early_error
         # Final authorize with activation lock held through exchange submit.
+        pre_http_error = None
         async with self.pool.acquire() as conn, conn.transaction():
             await self.lock(conn,strategy)
-            policy = await self.policy(strategy,conn)
-            if policy['revision'] != row['revision'] or policy['mode'] != 'reduced':
-                raise EntryDenied('policy changed immediately before submission')
             async def final_authorization():
                 current = await self.policy(strategy, conn)
                 if current['revision'] != row['revision'] or current['mode'] != 'reduced':
                     raise EntryDenied('policy changed at HTTP submission')
             from shared.order_submission_authorization import bind_submission_authorization
-            with bind_submission_authorization(final_authorization):
-                yield dict(row)
+            with bind_submission_authorization(final_authorization) as attempt:
+                body_started = False
+                try:
+                    policy = await self.policy(strategy,conn)
+                    if policy['revision'] != row['revision'] or policy['mode'] != 'reduced':
+                        raise EntryDenied('policy changed immediately before submission')
+                    body_started = True
+                    yield dict(row)
+                except Exception as exc:
+                    denied = attempt.denied_before_transport or (not body_started and isinstance(exc,EntryDenied))
+                    if not denied or attempt.transport_started:
+                        raise  # An earlier ambiguous HTTP attempt must keep occupancy.
+                    await self._release_proven_unsent(conn,strategy,client_id,row,'submitting')
+                    pre_http_error = exc
+        # Commit the proven no-send resolution before propagating the denial.
+        if pre_http_error is not None:
+            raise pre_http_error
 
     async def reconcile(self, strategy, exchange):
         """Read only exchange reconciliation; no cancels, closes, or TTL releases."""

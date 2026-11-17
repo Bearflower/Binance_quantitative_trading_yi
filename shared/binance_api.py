@@ -381,11 +381,17 @@ class BinanceClient:
         # Strategy-specific final authorization runs AFTER the last awaited
         # preparation and before the HTTP write. Reduce-only policy belongs to
         # the injected guard; clients without a guard retain existing behavior.
-        from shared.order_submission_authorization import authorize_submission
+        from shared.order_submission_authorization import (
+            authorize_submission, reject_before_transport, mark_transport_started)
         await authorize_submission(method, endpoint, params)
         submit_guard = getattr(self, '_new_risk_submit_guard', None)
-        if submit_guard is not None:
-            submit_guard(method, endpoint, params)
+        try:
+            if submit_guard is not None:
+                submit_guard(method, endpoint, params)
+        except Exception:
+            reject_before_transport(method, endpoint, params)
+            raise
+        mark_transport_started(method, endpoint, params)
         async with self.session.request(method, url, params=params) as response:
             try:
                 data = await response.json()

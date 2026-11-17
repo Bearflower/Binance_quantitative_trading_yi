@@ -155,6 +155,8 @@ async def main():
 
         # 创建策略实例
         strategy = HRSStrategy(config=config)
+        strategy.loaded_config_metadata = tuner_metadata
+        strategy.release_sha = os.getenv('HRS_RELEASE_SHA')
         record_loaded_version("hrs", tuner_metadata)
 
         await strategy.set_binance_client(binance_client)
