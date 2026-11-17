@@ -35,8 +35,7 @@ async def test_public_transport_capture_failure_blocks_further_entry_evidence():
     client = AsyncMock()
     client._request.return_value = {'openInterest': '10'}
     recorder.attach_public_transport(client)
-    with pytest.raises(RuntimeError):
-        await client._request('GET', '/fapi/v1/openInterest', params={'symbol': 'BTCUSDT'}, signed=False)
+    assert await client._request('GET', '/fapi/v1/openInterest', params={'symbol': 'BTCUSDT'}, signed=False) == {'openInterest': '10'}
     assert recorder.failed
 
 
@@ -134,3 +133,134 @@ async def test_capture_postgres_idempotency_and_envelope_conflicts():
         assert recorder.failed
     finally:
         await connection.close()
+
+
+@pytest.mark.asyncio
+async def test_nested_capture_scans_restore_outer_id_and_never_clear_failure():
+    from types import SimpleNamespace
+    from strategies.hrs.decision_capture import DecisionRecorder, capture_cycle
+    recorder = DecisionRecorder(AsyncMock())
+    events = []
+
+    async def record(run_id, kind, *args, **kwargs):
+        events.append((run_id, kind))
+
+    recorder.record = record
+    strategy = SimpleNamespace(decision_recorder=recorder, config={}, candidate_pool=None,
+        position_manager=None, risk_manager=None, _signal_timestamps={})
+
+    @capture_cycle
+    async def inner(self):
+        assert recorder.failed
+
+    @capture_cycle
+    async def outer(self):
+        recorder.failed = True
+        await inner(self)
+
+    await outer(strategy)
+    assert recorder.failed
+    assert events[0][0] == events[-1][0]
+    assert events[1][0] == events[2][0]
+    assert events[0][0] != events[1][0]
+
+
+@pytest.mark.asyncio
+async def test_caught_capture_failure_cannot_produce_complete_scan():
+    from types import SimpleNamespace
+    from strategies.hrs.decision_capture import DecisionRecorder, capture_cycle
+    recorder = DecisionRecorder(AsyncMock())
+    events = []
+
+    async def record(run_id, kind, payload, **kwargs):
+        events.append((kind, payload))
+
+    recorder.record = record
+    strategy = SimpleNamespace(decision_recorder=recorder, config={}, candidate_pool=None,
+        position_manager=None, risk_manager=None, _signal_timestamps={})
+
+    @capture_cycle
+    async def cycle(self):
+        recorder.failed = True
+
+    await cycle(strategy)
+    assert events[-1][1]['status'] == 'incomplete'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('veto', [False, True])
+async def test_real_lv_path_persists_eligible_and_vetoed_scores(veto):
+    from strategies.hrs.decision_capture import DecisionRecorder
+    from strategies.hrs.tests.test_lv_rm_empty_pool_execution import _setup_strategy
+    strategy = _setup_strategy()[0]
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    strategy.decision_recorder = recorder
+    if veto:
+        strategy.scoring_engine.should_entry.return_value = False
+        strategy.scoring_engine.should_entry.side_effect = None
+    short, long = [], []
+    await strategy._check_lv_rm_entries(['TESTUSDT'], short, long)
+    analyses = [call for call in recorder.record.await_args_list if call.args[1] == 'lv_rm_analysis']
+    assert len(analyses) == 1
+    assert analyses[0].args[2]['market_cap'] > 0
+    assert analyses[0].args[2]['short_should_entry'] is (not veto)
+    assert len(short) == (0 if veto else 1)
+
+
+@pytest.mark.asyncio
+async def test_failed_public_response_retains_unavailable_provenance_without_error_secrets():
+    from strategies.hrs.decision_capture import DecisionRecorder
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    client = AsyncMock()
+    client._request.side_effect = TimeoutError('url?signature=credential')
+    recorder.attach_public_transport(client)
+    with pytest.raises(TimeoutError):
+        await client._request('GET', '/fapi/v1/openInterest', params={'symbol': 'BTCUSDT'}, signed=False)
+    call = recorder.record.await_args
+    assert call is not None
+    assert call.args[1] == 'public_market_failure'
+    assert call.args[2]['error_type'] == 'TimeoutError'
+    assert call.args[2]['available'] is False
+    assert 'credential' not in str(call.args)
+
+
+@pytest.mark.asyncio
+async def test_failed_provider_does_not_appear_as_observed_zero():
+    from types import SimpleNamespace
+    from strategies.hrs.decision_capture import DecisionRecorder
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    provider = SimpleNamespace(**{key: AsyncMock(side_effect=ValueError('secret')) for key in (
+        'get_market_cap_provenance', 'get_oi_usd', 'get_funding_rate', 'get_24h_volume')})
+    recorder.attach_market_provider(provider)
+    with pytest.raises(ValueError):
+        await provider.get_oi_usd('BTCUSDT')
+    call = recorder.record.await_args
+    assert call.args[1] == 'market_input_failure'
+    assert call.args[2]['operation'] == 'get_oi_usd'
+    assert call.args[2]['available'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reason', ['standard_candidate_overlap', 'symbol_circuit_breaker', 'insufficient_klines'])
+async def test_lv_early_veto_is_retained_per_symbol(reason):
+    from strategies.hrs.decision_capture import DecisionRecorder
+    from strategies.hrs.tests.test_lv_rm_empty_pool_execution import _setup_strategy
+    strategy = _setup_strategy()[0]
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    strategy.decision_recorder = recorder
+    if reason == 'standard_candidate_overlap':
+        strategy.candidate_pool.get_short_candidates.return_value = ['TESTUSDT']
+    elif reason == 'symbol_circuit_breaker':
+        strategy.risk_manager.is_circuit_breaker_active.return_value = True
+    else:
+        strategy._klines_cache = {}
+        strategy._warmup_klines = AsyncMock(return_value=[])
+    await strategy._check_lv_rm_entries(['TESTUSDT'], [], [])
+    terminal = [c for c in recorder.record.await_args_list if c.args[1] == 'lv_rm_candidate_outcome']
+    assert len(terminal) == 1
+    assert terminal[0].kwargs['symbol'] == 'TESTUSDT'
+    assert terminal[0].args[2]['reason'] == reason

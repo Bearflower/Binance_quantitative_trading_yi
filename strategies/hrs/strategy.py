@@ -37,7 +37,8 @@ from .position_manager import PositionManager
 from .risk_manager import RiskManager
 from .risk_budget import RiskDecision, assess_entry, calculate_open_position_risk
 from .scoring_engine import ScoringEngine, ScoringResult
-from .decision_capture import DecisionRecorder, capture_analysis, capture_cycle
+from .decision_capture import DecisionRecorder, capture_analysis, capture_cycle, capture_signal, safe_record
+from .core_decision import analyze_standard, analyze_lv_rm, is_shadow_entry_mode
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -526,42 +527,7 @@ class HRSStrategy(BaseStrategy):
         return (current_price - price_1h_ago) / price_1h_ago
 
     def _is_shadow_entry_mode(self, entry_mode: str, signal_origin: Optional[str] = None) -> bool:
-        """
-        B1/B2 (R1): 判断某入场模式当前是否处于影子执行模式
-
-        EMM / 半EMM / LV-RM 三类延伸入场模式受各自 config 段 execution_mode 控制；
-        取值为 "shadow" 时只跑决策链、不真实下单。标准模式不受本开关影响。
-
-        R1 扩展：lv_rm 需结合 signal_origin 区分来源——
-          - empty_pool（_run_lv_rm_only_cycle 空池路径）：按 config.lv_rm.execution_mode 判定（D8 影子）
-          - nonempty_pool（_finalize_and_execute_signals 非空池路径）：保持原政策，不影子化
-          - signal_origin 缺失（防御）：fail-closed 返回 True（影子）并告警
-
-        Args:
-            entry_mode: 入场模式（"standard"/"emm"/"semi_emm"/"lv_rm"）
-            signal_origin: lv_rm 信号来源，None 时对非 lv_rm 不影响；
-                          lv_rm 缺失则 fail-closed 视为影子
-
-        Returns:
-            True 表示该模式处于影子（不真实下单）状态
-        """
-        if entry_mode not in SHADOW_CAPABLE_ENTRY_MODES:
-            return False
-        mode_cfg = self.config.get(entry_mode, {}) or {}
-        if entry_mode == "lv_rm":
-            # R1: lv_rm 按 signal_origin 区分影子范围
-            if signal_origin is None:
-                logger.warning(
-                    "lv_rm 信号缺 signal_origin，fail-closed 判为影子",
-                )
-                return True
-            if signal_origin == "nonempty_pool":
-                # 非空池 LV-RM：保持原政策，不影子化
-                return False
-            # empty_pool（或未来扩展来源）：按 config 判定
-            return mode_cfg.get("execution_mode") == "shadow"
-        # emm / semi_emm：按 config 判定（不看 signal_origin）
-        return mode_cfg.get("execution_mode") == "shadow"
+        return is_shadow_entry_mode(self.config, entry_mode, signal_origin)
 
     @capture_analysis
     async def analyze(self, symbol: str) -> Dict[str, Any]:
@@ -632,79 +598,25 @@ class HRSStrategy(BaseStrategy):
                     symbol=symbol, source=_mc_source,
                 )
 
-            # 检查做空候选
+            directions = []
             if symbol in self.candidate_pool.get_short_candidates():
-                # P0-3: 进场前形态失效检查
-                if self._check_pattern_expiry(symbol, "short", current_close, klines):
-                    result["short"] = {
-                        "score_result": {},
-                        "patterns": {},
-                        "current_price": current_close,
-                        "oi_usd": oi_usd,
-                        "funding_rate": funding_rate,
-                        "market_cap": market_cap,
-                        "should_entry": False,
-                        "veto_reason": "形态失效：价格突破反向极值",
-                    }
-                else:
-                    short_patterns = self.pattern_recognizer.detect_short_patterns(klines)
-                    short_score = self.scoring_engine.score(
-                        symbol=symbol,
-                        direction="short",
-                        oi_market_cap_ratio=oi_market_cap_ratio,
-                        patterns=short_patterns,
-                        funding_rate=funding_rate,
-                        has_market_cap=has_market_cap,
-                        price_change_24h=price_change_24h,
-                        klines_4h=klines_4h,
-                    )
-                    result["short"] = {
-                        "score_result": short_score.to_dict(),
-                        "_scoring_result": short_score,  # R1: 原始 ScoringResult，供 shadows 遍历
-                        "patterns": short_patterns,
-                        "current_price": current_close,
-                        "oi_usd": oi_usd,
-                        "funding_rate": funding_rate,
-                        "market_cap": market_cap,
-                        "should_entry": self.scoring_engine.should_entry(short_score),
-                    }
-
-            # 检查做多候选
+                directions.append('short')
             if symbol in self.candidate_pool.get_long_candidates():
-                # P0-3: 进场前形态失效检查
-                if self._check_pattern_expiry(symbol, "long", current_close, klines):
-                    result["long"] = {
-                        "score_result": {},
-                        "patterns": {},
-                        "current_price": current_close,
-                        "oi_usd": oi_usd,
-                        "funding_rate": funding_rate,
-                        "market_cap": market_cap,
-                        "should_entry": False,
-                        "veto_reason": "形态失效：价格突破反向极值",
-                    }
-                else:
-                    long_patterns = self.pattern_recognizer.detect_long_patterns(klines)
-                    long_score = self.scoring_engine.score(
-                        symbol=symbol,
-                        direction="long",
-                        oi_market_cap_ratio=oi_market_cap_ratio,
-                        patterns=long_patterns,
-                        funding_rate=funding_rate,
-                        has_market_cap=has_market_cap,
-                        price_change_24h=price_change_24h,
-                        klines_4h=klines_4h,
-                    )
-                    result["long"] = {
-                        "score_result": long_score.to_dict(),
-                        "_scoring_result": long_score,  # R1: 原始 ScoringResult，供 shadows 遍历
-                        "patterns": long_patterns,
-                        "current_price": current_close,
-                        "oi_usd": oi_usd,
-                        "funding_rate": funding_rate,
-                        "market_cap": market_cap,
-                        "should_entry": self.scoring_engine.should_entry(long_score),
-                    }
+                directions.append('long')
+            analysis_config = dict(self.config)
+            analysis_config['kline'] = dict(self.config.get('kline', {}), min_klines_for_analysis=self.min_klines)
+            result = analyze_standard(
+                symbol=symbol, klines_1h=klines, klines_4h=klines_4h,
+                oi_market_cap_ratio=oi_market_cap_ratio, funding_rate=funding_rate,
+                has_market_cap=has_market_cap, directions=directions,
+                decision_at=datetime.now(timezone.utc), config=analysis_config,
+                scoring_engine=self.scoring_engine, pattern_recognizer=self.pattern_recognizer,
+            )
+            for direction in directions:
+                result[direction].update(oi_usd=oi_usd, market_cap=market_cap)
+            result['_audit_market'] = dict(oi_usd=oi_usd, funding_rate=funding_rate,
+                volume_24h=volume_24h, market_cap=market_cap, market_cap_source=_mc_source,
+                has_market_cap=has_market_cap)
 
             return result
 
@@ -735,6 +647,7 @@ class HRSStrategy(BaseStrategy):
             records.append({"positionAmt": pos_qty, "markPrice": pos_price, "contractSize": 1.0})
         return calc_occupied_margin(records, leverage)
 
+    @capture_signal
     async def execute_signal(self, signal: Dict[str, Any]) -> bool:
         """
         执行交易信号
@@ -750,6 +663,7 @@ class HRSStrategy(BaseStrategy):
             是否执行成功
         """
         try:
+            signal['_audit_stage'] = 'evidence_precheck'
             recorder = getattr(self, 'decision_recorder', None)
             if recorder is not None and recorder.failed:
                 logger.warning('HRS 决策证据未完整保存，拒绝新增风险')
@@ -820,6 +734,7 @@ class HRSStrategy(BaseStrategy):
                 logger.warning("存在待核对的超时开仓，暂缓新增风险")
                 return False
 
+            signal['_audit_stage'] = 'legacy_risk_gate'
             # 风控检查
             if not self.risk_manager.can_open_position(direction):
                 return False
@@ -845,10 +760,12 @@ class HRSStrategy(BaseStrategy):
             ):
                 return False
 
+            signal['_audit_stage'] = 'pre_entry_oi'
             # P1-2: 进场前OI二次确认（流动性降级放弃）
             if not await self._check_oi_before_entry(symbol, direction):
                 return False
 
+            signal['_audit_stage'] = 'pre_entry_funding'
             # P1-3: 进场前资金费率方向检查（费率逆转放弃）
             if not await self._check_funding_rate_before_entry(symbol, direction):
                 return False
@@ -870,6 +787,7 @@ class HRSStrategy(BaseStrategy):
                 direction, role, current_price, atr, tick_size, params
             ) for role in ('tp1', 'tp2'))
             current_total_margin = self._calc_current_total_margin()
+            signal['_audit_stage'] = 'entry_risk_budget'
             risk_decision = await self._size_entry_with_hrs_budget(
                 symbol=symbol, direction=direction, entry_price=current_price,
                 stop_price=stop_loss_price, occupied_margin=current_total_margin,
@@ -880,6 +798,7 @@ class HRSStrategy(BaseStrategy):
                 account_equity=balance,
             )
             if not risk_decision.allowed:
+                signal['_audit_denial'] = risk_decision.reason
                 logger.warning("HRS 单笔风险预算拒绝开仓", symbol=symbol,
                                reason=risk_decision.reason,
                                risk_limit=str(risk_decision.risk_limit))
@@ -1027,6 +946,10 @@ class HRSStrategy(BaseStrategy):
         identity = signal.get('signal_id')
         if not isinstance(identity, int) or identity <= 0 or not symbol:
             logger.warning('HRS 信号缺持久身份，拒绝下单', symbol=symbol)
+            return None
+        recorder = getattr(self, 'decision_recorder', None)
+        if recorder is not None and recorder.failed:
+            signal['_audit_denial'] = 'decision_evidence_incomplete'
             return None
         store = RiskPolicyStore(self.db)
         try:
@@ -3149,14 +3072,17 @@ class HRSStrategy(BaseStrategy):
 
         async def check_symbol(symbol: str):
             async with semaphore:
+                terminal_reason = 'analysis_error'
                 try:
                     # 已在标准模式中检查过的币种跳过
                     if symbol in self.candidate_pool.get_short_candidates() or \
                        symbol in self.candidate_pool.get_long_candidates():
+                        terminal_reason = 'standard_candidate_overlap'
                         return
 
                     # 检查熔断
                     if self.risk_manager.is_circuit_breaker_active(symbol):
+                        terminal_reason = 'symbol_circuit_breaker'
                         return
 
                     # 获取K线
@@ -3164,6 +3090,7 @@ class HRSStrategy(BaseStrategy):
                     if len(klines) < self.min_klines:
                         klines = await self._warmup_klines(symbol)
                         if len(klines) < self.min_klines:
+                            terminal_reason = 'insufficient_klines'
                             return
                         self._klines_cache[symbol] = klines
 
@@ -3214,6 +3141,17 @@ class HRSStrategy(BaseStrategy):
                         klines_4h=klines_4h,
                     )
                     should_entry_long = self.scoring_engine.should_entry(score_long)
+                    terminal_reason = 'scored'
+                    recorder = getattr(self, 'decision_recorder', None)
+                    if recorder is not None:
+                        observed = datetime.now(timezone.utc)
+                        await safe_record(recorder, recorder.run_id, 'lv_rm_analysis', {
+                            'signal_origin': signal_origin, 'klines_1h': klines, 'klines_4h': klines_4h,
+                            'oi_usd': oi_usd, 'funding_rate': funding_rate, 'volume_24h': volume_24h,
+                            'market_cap': _mc_value, 'market_cap_source': _mc_source,
+                            'short_score': score.to_dict(), 'long_score': score_long.to_dict(),
+                            'short_should_entry': should_entry_short, 'long_should_entry': should_entry_long,
+                        }, as_of=observed, available_at=observed, symbol=symbol)
 
                     if should_entry_short:
                         # P2-6: 已有持仓时不产生新信号（不加仓）
@@ -3263,6 +3201,15 @@ class HRSStrategy(BaseStrategy):
 
                 except Exception as e:
                     logger.error("LV-RM分析失败", symbol=symbol, error=str(e))
+                finally:
+                    recorder = getattr(self, 'decision_recorder', None)
+                    if recorder is not None:
+                        observed = datetime.now(timezone.utc)
+                        await safe_record(recorder, recorder.run_id, 'lv_rm_candidate_outcome', {
+                            'reason': terminal_reason, 'signal_origin': signal_origin,
+                            'klines_1h': self._klines_cache.get(symbol, []),
+                            'klines_4h': self._klines_4h_cache.get(symbol, []),
+                        }, as_of=observed, available_at=observed, symbol=symbol)
 
         await asyncio.gather(*[check_symbol(s) for s in low_vol_symbols])
 

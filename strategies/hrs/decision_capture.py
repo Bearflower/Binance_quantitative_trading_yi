@@ -7,6 +7,9 @@ import json
 import uuid
 from functools import wraps
 from contextvars import ContextVar
+import structlog
+
+log = structlog.get_logger()
 
 PUBLIC_INPUT_PATHS = frozenset({
     '/fapi/v1/openInterest', '/fapi/v1/premiumIndex', '/fapi/v1/fundingRate',
@@ -91,15 +94,38 @@ class DecisionRecorder:
 
     def attach_public_transport(self, client):
         original = client._request
+        previous_guard = getattr(client, '_new_risk_submit_guard', None)
+
+        def submit_guard(method, endpoint, params):
+            if previous_guard is not None:
+                previous_guard(method, endpoint, params)
+            reducing = str(params.get('reduceOnly', False)).lower() == 'true'
+            closing = str(params.get('closePosition', False)).lower() == 'true'
+            if (self.failed and method.upper() == 'POST'
+                    and endpoint in ('/fapi/v1/order', '/papi/v1/um/order')
+                    and not reducing and not closing):
+                raise RuntimeError('hrs_decision_evidence_incomplete')
+
+        client._new_risk_submit_guard = submit_guard
 
         async def request(method, endpoint, params=None, signed=True, **kwargs):
-            result = await original(method, endpoint, params=params, signed=signed, **kwargs)
+            try:
+                result = await original(method, endpoint, params=params, signed=signed, **kwargs)
+            except Exception as exc:
+                if method.upper() == 'GET' and endpoint in PUBLIC_INPUT_PATHS and signed is False:
+                    now = datetime.now(timezone.utc)
+                    public_params = params or {}
+                    await safe_record(self, self.run_id, 'public_market_failure',
+                        {'path': endpoint, 'params': public_params, 'available': False,
+                         'error_type': type(exc).__name__}, as_of=now, available_at=now,
+                        symbol=public_params.get('symbol') if isinstance(public_params, dict) else None)
+                raise
             # Transport replay data is restricted to public GET inputs. No headers,
             # signing arguments or private account/order payloads are intercepted.
             if method.upper() == 'GET' and endpoint in PUBLIC_INPUT_PATHS and signed is False:
                 now = datetime.now(timezone.utc)
                 public_params = params or {}
-                await self.record(self.run_id, 'public_market_response',
+                await safe_record(self, self.run_id, 'public_market_response',
                     {'path': endpoint, 'params': public_params, 'response': result}, as_of=now,
                     available_at=now, symbol=public_params.get('symbol') if isinstance(public_params, dict) else None)
             return result
@@ -112,9 +138,17 @@ class DecisionRecorder:
 
             def wrap(function, operation):
                 async def observed(*args, **kwargs):
-                    result = await function(*args, **kwargs)
+                    try:
+                        result = await function(*args, **kwargs)
+                    except Exception as exc:
+                        now = datetime.now(timezone.utc)
+                        await safe_record(self, self.run_id, 'market_input_failure',
+                            {'operation': operation, 'arguments': args, 'options': kwargs,
+                             'available': False, 'error_type': type(exc).__name__},
+                            as_of=now, available_at=now, symbol=args[0] if args else kwargs.get('symbol'))
+                        raise
                     now = datetime.now(timezone.utc)
-                    await self.record(self.run_id, 'market_input',
+                    await safe_record(self, self.run_id, 'market_input',
                         {'operation': operation, 'arguments': args, 'options': kwargs, 'result': result},
                         as_of=now, available_at=now, symbol=args[0] if args else kwargs.get('symbol'))
                     return result
@@ -124,9 +158,20 @@ class DecisionRecorder:
 
     async def begin(self, snapshot, as_of):
         self.run_id = uuid.uuid4().hex
-        self.failed = False
         await self.record(self.run_id, 'scan_start', snapshot, as_of=as_of, available_at=as_of)
         return self.run_id
+
+
+async def safe_record(recorder, *args, **kwargs):
+    try:
+        await recorder.record(*args, **kwargs)
+        return True
+    except Exception:
+        # A durable-evidence outage blocks entries, never delivery of already
+        # fetched public data needed to maintain existing stops/positions.
+        recorder.failed = True
+        log.warning('hrs_evidence_unavailable', kind=args[1] if len(args) > 1 else 'unknown')
+        return False
 
 
 def strategy_snapshot(strategy):
@@ -158,23 +203,30 @@ def capture_cycle(function):
         recorder = getattr(strategy, 'decision_recorder', None)
         if recorder is None:
             return await function(strategy, *args, **kwargs)
+        previous_run = recorder.run_id
         now = datetime.now(timezone.utc)
         try:
             await recorder.begin(strategy_snapshot(strategy), now)
         except Exception:
             recorder.failed = True
             # Evidence collection cannot suppress maintenance of existing risk.
-            await strategy._monitor_positions()
+            try:
+                await strategy._monitor_positions()
+            finally:
+                recorder.run_id = previous_run
             raise
         status = 'failed'
         try:
             result = await function(strategy, *args, **kwargs)
-            status = 'complete'
+            status = 'incomplete' if recorder.failed else 'complete'
             return result
         finally:
             finished = datetime.now(timezone.utc)
-            await recorder.record(recorder.run_id, 'scan_end', {'state': strategy_snapshot(strategy), 'status': status},
-                                  as_of=finished, available_at=finished)
+            try:
+                await safe_record(recorder, recorder.run_id, 'scan_end',
+                    {'state': strategy_snapshot(strategy), 'status': status}, as_of=finished, available_at=finished)
+            finally:
+                recorder.run_id = previous_run
     return wrapped
 
 
@@ -185,10 +237,27 @@ def capture_analysis(function):
         recorder = getattr(strategy, 'decision_recorder', None)
         if recorder is not None:
             now = datetime.now(timezone.utc)
-            await recorder.record(recorder.run_id, 'analysis', {
+            await safe_record(recorder, recorder.run_id, 'analysis', {
                 'result': result, 'klines_1h': strategy._klines_cache.get(symbol, []),
                 'klines_4h': strategy._klines_4h_cache.get(symbol, []),
             }, as_of=now, available_at=now, symbol=symbol)
+        return result
+    return wrapped
+
+
+def capture_signal(function):
+    @wraps(function)
+    async def wrapped(strategy, signal, *args, **kwargs):
+        recorder = getattr(strategy, 'decision_recorder', None)
+        if recorder is not None:
+            now = datetime.now(timezone.utc)
+            await safe_record(recorder, recorder.run_id, 'signal_pre_execution', signal,
+                              as_of=now, available_at=now, symbol=signal.get('symbol'))
+        result = await function(strategy, signal, *args, **kwargs)
+        if recorder is not None:
+            now = datetime.now(timezone.utc)
+            await safe_record(recorder, recorder.run_id, 'signal_execution_outcome',
+                {'signal': signal, 'result': result}, as_of=now, available_at=now, symbol=signal.get('symbol'))
         return result
     return wrapped
 

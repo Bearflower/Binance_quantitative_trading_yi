@@ -378,6 +378,14 @@ class BinanceClient:
         if not signed and 'openInterest' in endpoint:
             logger.debug(f"API请求URL: {url}", symbol=params.get('symbol', ''), base_url=base_url, endpoint=endpoint)
         
+        # Strategy-specific final authorization runs AFTER the last awaited
+        # preparation and before the HTTP write. Reduce-only policy belongs to
+        # the injected guard; clients without a guard retain existing behavior.
+        from shared.order_submission_authorization import authorize_submission
+        await authorize_submission(method, endpoint, params)
+        submit_guard = getattr(self, '_new_risk_submit_guard', None)
+        if submit_guard is not None:
+            submit_guard(method, endpoint, params)
         async with self.session.request(method, url, params=params) as response:
             try:
                 data = await response.json()

@@ -29,10 +29,11 @@ def test_invalid_signal_rejected(field,value):
         size_reduced_entry(signal, dict(stepSize='.1',tickSize='.01',minQty='.1',minNotional='5'), D('.5'), D('.002'),[D('.3'),D('.3')])
 
 
-def test_small_tp_leg_rejected_without_roundup():
-    from shared.entry_risk_policy import size_reduced_entry, EntryDenied
-    with pytest.raises(EntryDenied):
-        size_reduced_entry(dict(quantity='1',entry_price='100',leverage=5,initial_stop_loss='95',direction='LONG'),dict(stepSize='1',tickSize='.01',minQty='1',minNotional='5'),D('.5'),D('.002'),[D('.3'),D('.3')])
+def test_smallest_valid_lot_uses_whole_tp_without_rounding_above_original():
+    from shared.entry_risk_policy import size_reduced_entry
+    sized = size_reduced_entry(dict(quantity='1',entry_price='100',leverage=5,initial_stop_loss='95',direction='LONG'),dict(stepSize='1',tickSize='.01',minQty='1',minNotional='5'),D('.5'),D('.002'),[D('.3'),D('.3')])
+    assert sized.quantity == sized.original_quantity == D('1')
+    assert sized.exit_ratios == (D('1'), D('0'))
 
 
 def test_bnb_reduced_two_lots_keeps_single_tp_and_remainder():
@@ -163,10 +164,15 @@ async def test_shared_final_gate_cannot_be_bypassed():
     strategy.binance.place_order.assert_not_called()
 
 
-def test_short_actual_tp_limit_notional_is_checked():
+def test_short_low_tp_uses_valid_whole_lot_or_rejects_insufficient_notional():
     from shared.entry_risk_policy import size_reduced_entry, EntryDenied
+    signal = dict(quantity='10',entry_price='100',leverage=5,initial_stop_loss='105',direction='SHORT',tp1_price='1',tp2_price='2')
+    filters = dict(stepSize='.1',tickSize='.01',minQty='.1',minNotional='5')
+    sized = size_reduced_entry(signal, filters, D('.5'), D('.002'), [D('.3'), D('.3')], tp_offset=D('.0015'))
+    assert sized.exit_ratios == (D('1'), D('0'))
+    assert sized.quantity * D('1.00') >= D(filters['minNotional'])
     with pytest.raises(EntryDenied):
-        size_reduced_entry(dict(quantity='10',entry_price='100',leverage=5,initial_stop_loss='105',direction='SHORT',tp1_price='1',tp2_price='2'),dict(stepSize='.1',tickSize='.01',minQty='.1',minNotional='5'),D('.5'),D('.002'),[D('.3'),D('.3')],tp_offset=D('.0015'))
+        size_reduced_entry(dict(signal, tp1_price='0.50'), filters, D('.5'), D('.002'), [D('.3'), D('.3')], tp_offset=D('.0015'))
 
 @pytest.mark.asyncio
 async def test_hrs_executor_direct_writers_deny():

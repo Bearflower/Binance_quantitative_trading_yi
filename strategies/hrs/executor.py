@@ -670,69 +670,13 @@ class TradingExecutor:
 
         return float(self._format_price(Decimal(str(stop_loss)), tick_size))
 
-    def _calc_sl_price(
-        self,
-        direction: str,
-        entry_price: float,
-        atr: float,
-        tick_size: Decimal,
-        params: Dict[str, Any],
-    ) -> float:
-        """
-        计算止损价格（纯函数，供开仓/补单/加仓共用，避免重复逻辑）
+    def _calc_sl_price(self, direction, entry_price, atr, tick_size, params):
+        from .exit_geometry import stop_loss_price
+        return float(stop_loss_price(direction, entry_price, atr, tick_size, params, self.config))
 
-        Args:
-            direction: 方向 ('short'/'long')
-            entry_price: 开仓价
-            atr: ATR值
-            tick_size: 价格精度
-            params: 止损止盈参数（含 atr_multiplier/emergency_percent/min_absolute_percent）
-
-        Returns:
-            止损价
-        """
-        if direction == "short":
-            return self.calculate_short_stop_loss(
-                entry_price, atr, tick_size,
-                atr_multiplier=params["atr_multiplier"],
-                emergency_percent=params["emergency_percent"],
-                min_absolute_percent=params["min_absolute_percent"],
-            )
-        return self.calculate_long_stop_loss(
-            entry_price, atr, tick_size,
-            atr_multiplier=params["atr_multiplier"],
-            emergency_percent=params["emergency_percent"],
-            min_absolute_percent=params["min_absolute_percent"],
-        )
-
-    def _calc_tp_price(
-        self,
-        direction: str,
-        target: str,
-        entry_price: float,
-        atr: float,
-        tick_size: Decimal,
-        params: Dict[str, Any],
-    ) -> Decimal:
-        """
-        计算止盈触发价（纯函数）
-
-        Args:
-            direction: 方向 ('short'/'long')
-            target: 止盈目标 ("tp1"/"tp2")
-            entry_price: 开仓价
-            atr: ATR值
-            tick_size: 价格精度
-            params: 止损止盈参数（含 target1/2_atr_multiplier）
-
-        Returns:
-            止盈触发价
-        """
-        key = {"tp1": "target1_atr_multiplier", "tp2": "target2_atr_multiplier"}[target]
-        multiplier = Decimal(str(params[key]))
-        if direction == "short":
-            return self._format_price(Decimal(str(entry_price)) - (Decimal(str(atr)) * multiplier), tick_size)
-        return self._format_price(Decimal(str(entry_price)) + (Decimal(str(atr)) * multiplier), tick_size)
+    def _calc_tp_price(self, direction, target, entry_price, atr, tick_size, params):
+        from .exit_geometry import take_profit_price
+        return take_profit_price(direction, target, entry_price, atr, tick_size, params, self.config)
 
     def _calc_tp_qty(self, quantity: Decimal, close_percent: float, step_size: Decimal) -> Decimal:
         """

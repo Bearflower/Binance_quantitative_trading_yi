@@ -98,6 +98,9 @@ class LossGateRepository:
         async with self.db.pool.acquire() as connection:
             async with connection.transaction():
                 await connection.execute("SELECT set_config('lock_timeout', $1, true)", f"{self.lock_timeout_ms}ms")
+                # Same first lock as policy activation and final order submission.
+                # Never acquire the policy lock after holding the loss lock.
+                await connection.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 7183))", account_id)
                 await connection.execute("SELECT pg_advisory_xact_lock($1)", key)
                 session = LossGateSession(connection, account_id, segment_id)
                 await session.load()  # Reject a conflicting active segment immediately.

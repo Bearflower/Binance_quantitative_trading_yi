@@ -40,7 +40,8 @@ def _make_klines(
     for i, c in enumerate(closes):
         klines.append({
             "open_time": base_open_time_ms + i * interval_ms,
-            "close": float(c),
+            "open": float(c), "high": float(c)*1.01, "low": float(c)*.99,
+            "close": float(c), "volume": 100.0,
         })
     return klines
 
@@ -231,7 +232,7 @@ class TestAnalyzePassesPriceChange24h:
             "volume_pattern": {"score": 0.5},
         }
         strategy.pattern_recognizer.detect_long_patterns.return_value = {}
-        strategy._klines_4h_cache["TESTUSDT"] = []
+        strategy._klines_4h_cache["TESTUSDT"] = _make_klines([100.0], _utc_now_ms()-4*3600000, interval_ms=4*3600000)
         strategy._check_pattern_expiry = MagicMock(return_value=False)
 
         # 执行 analyze
@@ -287,7 +288,7 @@ class TestAnalyzePassesPriceChange24h:
         strategy.pattern_recognizer.detect_long_patterns.return_value = {
             "primary_pattern": {"score": 3.5},
         }
-        strategy._klines_4h_cache["TESTUSDT"] = []
+        strategy._klines_4h_cache["TESTUSDT"] = _make_klines([100.0], _utc_now_ms()-4*3600000, interval_ms=4*3600000)
         strategy._check_pattern_expiry = MagicMock(return_value=False)
 
         result = await strategy.analyze("TESTUSDT")
@@ -338,7 +339,7 @@ class TestAnalyzePassesPriceChange24h:
         strategy.candidate_pool.get_long_candidates.return_value = set()
         strategy.pattern_recognizer = MagicMock()
         strategy.pattern_recognizer.detect_short_patterns.return_value = {}
-        strategy._klines_4h_cache["TESTUSDT"] = []
+        strategy._klines_4h_cache["TESTUSDT"] = _make_klines([100.0], _utc_now_ms()-4*3600000, interval_ms=4*3600000)
         strategy._check_pattern_expiry = MagicMock(return_value=False)
 
         await strategy.analyze("TESTUSDT")

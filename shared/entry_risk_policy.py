@@ -146,6 +146,11 @@ class RiskPolicyStore:
                 AND p.effective_at <= clock_timestamp() AND p.expires_at > clock_timestamp()''', self.account,strategy)
             if not row:
                 raise EntryDenied('missing or expired risk policy')
+            from shared.equity_entry_gate import enforce_equity_gate, EquityGateDenied
+            try:
+                await enforce_equity_gate(conn, strategy, self.account, row['revision'])
+            except EquityGateDenied as exc:
+                raise EntryDenied(str(exc)) from exc
             return dict(row)
         if connection is not None:
             return await read(connection)
@@ -215,7 +220,13 @@ class RiskPolicyStore:
             policy = await self.policy(strategy,conn)
             if policy['revision'] != row['revision'] or policy['mode'] != 'reduced':
                 raise EntryDenied('policy changed immediately before submission')
-            yield dict(row)
+            async def final_authorization():
+                current = await self.policy(strategy, conn)
+                if current['revision'] != row['revision'] or current['mode'] != 'reduced':
+                    raise EntryDenied('policy changed at HTTP submission')
+            from shared.order_submission_authorization import bind_submission_authorization
+            with bind_submission_authorization(final_authorization):
+                yield dict(row)
 
     async def reconcile(self, strategy, exchange):
         """Read only exchange reconciliation; no cancels, closes, or TTL releases."""
