@@ -1,7 +1,7 @@
 """Actual HRS scoring/risk/exit orchestration from frozen point-in-time facts.
 
 Historical decision inputs are required. Recorded chosen actions are never an
-input. Unsupported limit/partial-fill execution resolution remains blocked.
+input. Entries use the manifest-bound execution model and its declared assumptions.
 """
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from strategies.hrs.risk_ledger import (EquityCheckpoint, LedgerState, LedgerObs
     IncomeEvent, CashFlow, PositionMark, reconcile_ledger, LedgerNotReady)
 
 from ..broker import PortfolioView
-from ..models import Bar, DataBlocked, OrderIntent, Position, parse_utc
+from ..models import Bar, DataBlocked, EquityPoint, OrderIntent, Position, parse_utc
 from .base import PreparedContext
 
 SNAPSHOT_REQUIRED_KEYS = ("as_of", "complete", "rows")
@@ -69,7 +69,7 @@ class HrsAdapter:
             for key,value in normalized.items():
                 if not value.is_finite() or value<0 or (key!='atr_multiplier' and not key.endswith('_percent') and value==0):
                     raise ValueError('invalid_exit_override')
-                if key.endswith('_percent') and value>=1:
+                if key.endswith('_percent') and (value>1 if key.startswith('target') else value>=1):
                     raise ValueError('invalid_exit_percentage')
             self._exit_overrides[mode]=normalized
         self.experiment_id=experiment_id
@@ -99,6 +99,14 @@ class HrsAdapter:
         self._income_seq = 0
         self._pending_income = []
         self._pending_flows = []
+        self._pending_funding = {}
+        self._known_funding = {}
+        self._funding_marks = {}
+        self._funding_gaps = []
+        self._deferred_marks = []
+        self._deferred_flows = []
+        self._deferred_outcomes = {}
+        self._reconciled_points = []
         self.audit = []
 
     def prepare(self, portal):
@@ -259,6 +267,9 @@ class HrsAdapter:
         amount=Decimal(str(row['amount']))
         if not amount.is_finite():
             raise DataBlocked(['hrs_cashflow_amount_invalid'])
+        if self._pending_funding or self._deferred_marks:
+            self._deferred_flows.append((row,ctx.portfolio,tuple(self._pending_funding)))
+            return
         nav=self._marked_equity(ctx.portfolio,as_of=parse_utc(row["occurred_at"]))/self._units
         self._units+=amount/nav
         if self._units<=0:
@@ -305,6 +316,14 @@ class HrsAdapter:
             raise DataBlocked(['hrs_monitoring_model_invalid:'+str(exc)]) from exc
         self._monitor_cadence=cadence
         self._monitor_anchor=anchor
+        self._record(self._start,'hrs_execution_assumptions',dict(
+            entry_model='hrs_1m_volume_v1' if entry_type=='LIMIT' else 'next_bar_open_market_v1',
+            monitoring_model='hrs_cycle_monitor_v1',cadence_seconds=cadence,
+            funding_model='economic_exposure_receipt_reconciliation_v1',
+            software_close_model='observed_quote_market_proxy_v1',
+            configured_close_type=self.config.get('trading',{}).get('order_type',{}).get('close','LIMIT'),
+            exact_exchange_parity=False,
+            limitations=['Software closes execute at the observed quote with modeled costs; live LIMIT close matching, retry timing and order-book priority are not reproduced.']))
 
     def on_bar(self,bar,ctx):
         key = (bar.symbol,bar.interval)
@@ -536,7 +555,7 @@ class HrsAdapter:
         parameters=exits.mode_exit_parameters(self.config,entry_mode)
         parameters.update(self._exit_overrides.get('lv_rm' if entry_mode=='lv_rm' else 'standard',{}))
         first,second=(Decimal(str(parameters[key])) for key in ('target1_close_percent','target2_close_percent'))
-        if not (ZERO<first<1 and ZERO<second<1 and first+second<=1):
+        if not ((first==1 and second==0) or (ZERO<first<1 and ZERO<second<1 and first+second<1)):
             raise ValueError('invalid_exit_ratios')
         return parameters
 
@@ -564,6 +583,8 @@ class HrsAdapter:
 
     def _entry_denial(self,signal,now,ctx,market,risk,klines):
         symbol,direction = signal['symbol'],signal['direction']
+        if self._pending_funding or self._deferred_marks:
+            return 'funding_pending'
         if symbol in self._pending or any(p.symbol==symbol and p.is_open() for p in ctx.portfolio.positions):
             return 'position_or_entry_exists'
         if self._policy.get('mode') != 'reduced' or self._policy.get('allow_add') is not False:
@@ -765,6 +786,10 @@ class HrsAdapter:
                     amounts.append(('realized_pnl',Decimal(str(payload['realized_pnl']))))
             elif event.get('type')=='funding_settlement':
                 amounts=[('funding',Decimal(str(payload['contribution'])))]
+                position_id=payload['position_id']
+                closed=Decimal(str(payload.get('closed_contribution','0')))
+                if closed:
+                    self._closed_pnl[position_id]=self._closed_pnl.get(position_id,ZERO)+closed
             for kind,amount in amounts:
                 if amount!=ZERO:
                     self._income_seq+=1
@@ -787,22 +812,113 @@ class HrsAdapter:
             if position.is_open() or payload['reason']=='ENTRY_TIMEOUT':
                 continue
             now=event['ts']
+            if self._pending_funding:
+                self._deferred_outcomes[position.position_id]=(symbol,position.entry_price,payload['reason'],now)
+                continue
             total=accumulated.pop(position.position_id)
-            if total>ZERO:
-                self._runtime['consecutive_losses']=0
-            elif total<ZERO:
-                self._runtime['consecutive_losses']+=1
-                loss=self.config.get('trading',{}).get('consecutive_loss',{})
-                if self._runtime['consecutive_losses']>=loss.get('max_count',3):
-                    self._runtime['pause_until']=(now+timedelta(days=loss.get('pause_days',2))).isoformat()
-                hours=self.config.get('trading',{}).get('blacklist',{}).get('check_hours',24)
-                self._runtime['stop_loss_monitor'][symbol]={'entry_price':str(position.entry_price),
-                    'monitor_until':(now+timedelta(hours=hours)).isoformat()}
-            if payload['reason']=='TIME_STOP':
-                self._runtime['total_pnl']=str(Decimal(str(self._runtime['total_pnl']))+total)
+            self._apply_closed_outcome(symbol,position.entry_price,payload['reason'],total,now)
+
+    def _apply_closed_outcome(self,symbol,entry_price,reason,total,now):
+        if total>ZERO:
+            self._runtime['consecutive_losses']=0
+        elif total<ZERO:
+            self._runtime['consecutive_losses']+=1
+            loss=self.config.get('trading',{}).get('consecutive_loss',{})
+            if self._runtime['consecutive_losses']>=loss.get('max_count',3):
+                self._runtime['pause_until']=(now+timedelta(days=loss.get('pause_days',2))).isoformat()
+            hours=self.config.get('trading',{}).get('blacklist',{}).get('check_hours',24)
+            self._runtime['stop_loss_monitor'][symbol]={'entry_price':str(entry_price),
+                'monitor_until':(now+timedelta(hours=hours)).isoformat()}
+        if reason=='TIME_STOP':
+            self._runtime['total_pnl']=str(Decimal(str(self._runtime['total_pnl']))+total)
+
+    def on_funding_due(self,key,economic_time):
+        if not self._pending_funding:
+            self._deferred_units=self._units
+        self._pending_funding[key]=economic_time
+        self._record(economic_time,'hrs_funding_pending',dict(settlement_id=key))
+
+    def funding_is_pending(self,key):
+        return key in self._pending_funding
+
+    def on_funding_unproven(self,key,error):
+        self._funding_gaps.append(str(error))
+
+    def on_funding_received(self,key,payload,mark,received_at):
+        self._pending_funding.pop(key)
+        self._known_funding[key]=Decimal(str(payload['contribution']))
+        self._funding_marks[payload['symbol']]=mark
+
+    def _funding_adjusted_equity(self,portfolio,at,unpaid):
+        # Reconstruct an economic valuation only after the missing amount is known.
+        # Source times remain unchanged; receipt time never freshens an old quote.
+        prices=dict(portfolio.last_prices); times=dict(portfolio.last_price_times)
+        for position in portfolio.positions:
+            if not position.is_open():
+                continue
+            marked_at=times.get(position.symbol)
+            if marked_at is None or not timedelta(0)<=at-marked_at<=timedelta(seconds=120):
+                mark=self._funding_marks.get(position.symbol)
+                if mark is not None and timedelta(0)<=at-mark['marked_at']<=timedelta(seconds=120):
+                    prices[position.symbol]=mark['price']; times[position.symbol]=mark['marked_at']
+        view=PortfolioView(portfolio.positions,prices,portfolio.realized_equity,times)
+        return self._marked_equity(view,as_of=at)+sum((self._known_funding[key] for key in unpaid),ZERO)
+
+    def _reconcile_funding_valuations(self,received_at):
+        units=self._deferred_units
+        flow_index=0
+        flows=sorted(self._deferred_flows,key=lambda item:parse_utc(item[0]['occurred_at']))
+        for at,portfolio,unpaid in self._deferred_marks:
+            while flow_index<len(flows) and parse_utc(flows[flow_index][0]['occurred_at'])<=at:
+                row,before,flow_unpaid=flows[flow_index]
+                flow_at=parse_utc(row['occurred_at'])
+                nav=self._funding_adjusted_equity(before,flow_at,flow_unpaid)/units
+                amount=Decimal(str(row['amount']))
+                units+=amount/nav
+                if units<=ZERO:
+                    raise DataBlocked(['hrs_cashflow_units_nonpositive'])
+                self._pending_flows.append(CashFlow(row['event_id'],amount,flow_at,self._segment,
+                    nav_before=nav,valuation_evidence='funding_receipt:'+received_at.isoformat()))
+                flow_index+=1
+            equity=self._funding_adjusted_equity(portfolio,at,unpaid)
+            self._append_checkpoint(at,equity,units)
+            realized=portfolio.realized_equity+sum((self._known_funding[key] for key in unpaid),ZERO)
+            self._reconciled_points.append(EquityPoint(at,realized,equity,any(p.is_open() for p in portfolio.positions)))
+            self._record(received_at,'hrs_funding_valuation_reconciled',dict(economic_as_of=at.isoformat(),
+                equity=str(equity),units=str(units),settlement_ids=list(unpaid)))
+        if flow_index!=len(flows):
+            raise DataBlocked(['hrs_pending_funding_cashflow_valuation_missing'])
+        self._units=units
+        self._deferred_marks=[]; self._deferred_flows=[]
+        for position_id,(symbol,entry_price,reason,_closed_at) in self._deferred_outcomes.items():
+            total=self._closed_pnl.pop(position_id)
+            self._apply_closed_outcome(symbol,entry_price,reason,total,received_at)
+        self._deferred_outcomes={}
+
+    def reconciled_equity_points(self):
+        points=tuple(self._reconciled_points)
+        self._reconciled_points=[]
+        return points
+
+    def finalize_funding(self):
+        if self._pending_funding:
+            raise DataBlocked(['hrs_funding_pending_or_unproven:'+','.join(self._pending_funding),*self._funding_gaps])
+
+    def _append_checkpoint(self,at,equity,units):
+        current=EquityCheckpoint(self._segment,at,equity,units,equity/units)
+        self._history=[sample for sample in self._history if sample.as_of!=at]+[current]
+        evaluation=evaluate_loss_gate(self._gate,current,
+            GateHistory(tuple(self._history),self._history_from,at,True),allow_inception_segment=self._allow_inception)
+        self._gate=evaluation.state
 
     def on_portfolio_mark(self,at,ctx):
         self._bootstrap(ctx)
+        if self._pending_funding:
+            self._deferred_marks.append((at,ctx.portfolio,tuple(self._pending_funding)))
+            return False
+        if self._deferred_marks:
+            self._deferred_marks.append((at,ctx.portfolio,()))
+            self._reconcile_funding_valuations(at)
         equity=self._marked_equity(ctx.portfolio,as_of=at)
         if hasattr(self,'_ledger_state'):
             marks=tuple(PositionMark(p.position_id,self._segment,
@@ -819,11 +935,8 @@ class HrsAdapter:
             self._units=self._ledger_state.units
             self._pending_income=[]
             self._pending_flows=[]
-        current=EquityCheckpoint(self._segment,at,equity,self._units,equity/self._units)
-        self._history=[sample for sample in self._history if sample.as_of!=at]+[current]
-        evaluation=evaluate_loss_gate(self._gate,current,
-            GateHistory(tuple(self._history),self._history_from,at,True),allow_inception_segment=self._allow_inception)
-        self._gate=evaluation.state
+        self._append_checkpoint(at,equity,self._units)
+        return True
 
     def protective_prices(self,symbol):
         return self._protection.get(symbol)

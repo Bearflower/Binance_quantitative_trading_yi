@@ -223,6 +223,7 @@ class VirtualBroker:
         self._entry_fee: Dict[str, Decimal] = {}
         self._entry_slip: Dict[str, Decimal] = {}
         self._funding_acc: Dict[str, Decimal] = {}
+        self._funding_exposures: Dict[str, dict] = {}
         self._mae: Dict[str, Decimal] = {}
         self._mfe: Dict[str, Decimal] = {}
         self._order_seq = 0
@@ -288,6 +289,42 @@ class VirtualBroker:
         if previous is None or observed_at>=previous:
             self.last_prices[symbol]=price
             self.last_price_times[symbol]=observed_at
+
+    def begin_funding(self, symbol: str, economic_time: datetime) -> Optional[str]:
+        """Freeze the position actually exposed at settlement, before any same-time fill."""
+        position=self.positions.get(symbol)
+        if position is None or not position.is_open() or position.entry_time>=economic_time:
+            return None
+        key=symbol+'|'+economic_time.isoformat()
+        if key in self._funding_exposures:
+            raise DataBlocked(['funding_exposure_duplicate:'+key])
+        self._funding_exposures[key]=dict(symbol=symbol,position_id=position.position_id,
+            quantity=position.current_quantity,remaining_quantity=position.current_quantity,closed_quantities={},
+            direction=position.direction,economic_time=economic_time)
+        return key
+
+    def receive_funding(self, key: str, rate: Decimal, received_at: datetime, mark: dict) -> dict:
+        exposure=self._funding_exposures.pop(key)
+        quantity=exposure['quantity']; position_id=exposure['position_id']
+        contribution=sum_funding_fee(quantity,mark['price'],exposure['direction'],(rate,))
+        closed_quantity=ZERO; closed_contribution=ZERO
+        for index,trade in enumerate(self.closed_trades):
+            if trade.trade_id not in exposure['closed_quantities']:
+                continue
+            exposed_quantity=exposure['closed_quantities'][trade.trade_id]
+            share=contribution*exposed_quantity/quantity
+            closed_quantity+=exposed_quantity; closed_contribution+=share
+            self.closed_trades[index]=replace(trade,funding_fee=trade.funding_fee+share,net_pnl=trade.net_pnl+share)
+        if closed_quantity+exposure['remaining_quantity']!=quantity:
+            raise DataBlocked(['funding_exposure_quantity_changed:'+key])
+        self._funding_acc[position_id]=self._funding_acc.get(position_id,ZERO)+contribution-closed_contribution
+        self.realized_equity+=contribution
+        payload=dict(symbol=exposure['symbol'],position_id=position_id,funding_rate=str(rate),
+            contribution=str(contribution),closed_contribution=str(closed_contribution),
+            quantity_at_settlement=str(quantity),exposure_allocation_model='blended_position_pro_rata_v1',economic_time=exposure['economic_time'].isoformat().replace('+00:00','Z'),
+            mark_price=str(mark['price']),mark_provenance={k:str(v) for k,v in mark.items() if k!='price'})
+        self._event(received_at,'funding_settlement',payload)
+        return payload
 
     def settle_funding(self, symbol: str, rate: Decimal, ts: datetime, *,
                        mark_price: Optional[Decimal] = None,
@@ -758,6 +795,11 @@ class VirtualBroker:
                 mfe=self._mfe.get(position.position_id, ZERO),
             )
         )
+        for exposure in self._funding_exposures.values():
+            if exposure['position_id']==position.position_id:
+                exposed_closed=exposure['remaining_quantity']*share
+                exposure['remaining_quantity']-=exposed_closed
+                exposure['closed_quantities'][self.closed_trades[-1].trade_id]=exposed_closed
         self.fills.append(
             Fill(
                 order_id=order.order_id,

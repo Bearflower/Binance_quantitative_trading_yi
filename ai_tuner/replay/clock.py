@@ -12,6 +12,8 @@ from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 BAR_CLOSE = "bar_close"
 FUNDING = "funding_settlement"
+FUNDING_DUE = "funding_due"
+FUNDING_RECEIPT = "funding_receipt"
 FUNDING_CHECK = "funding_check"
 SNAPSHOT = "external_snapshot"
 DAILY_MARK = "daily_mark"
@@ -20,6 +22,8 @@ DECISION = "decision"
 
 # 同一时刻的事件处理次序（数字小者先）：资金费、资金费检查/外部快照、K 线、日界线盯市。
 EVENT_PRIORITY: Dict[str, int] = {
+    FUNDING_DUE: -1,
+    FUNDING_RECEIPT: 0,
     FUNDING: 0,
     FUNDING_CHECK: 1,
     SNAPSHOT: 1,

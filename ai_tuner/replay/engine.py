@@ -23,6 +23,8 @@ from .clock import (
     DECISION,
     DAILY_MARK,
     FUNDING,
+    FUNDING_DUE,
+    FUNDING_RECEIPT,
     FUNDING_CHECK,
     SNAPSHOT,
     Event,
@@ -140,7 +142,16 @@ def run_replay(
         for row in adapter.decision_events(ctx):
             events.append(Event(parse_utc(row['available_at']),DECISION,row['symbol'],len(events),row))
     events.extend(collect_bar_events(bars_by_subject))
-    events.extend(collect_funding_events(funding_by_symbol))
+    delayed_funding=getattr(adapter,'requires_attested_funding',False)
+    if delayed_funding:
+        for symbol,rows in funding_by_symbol.items():
+            for economic_time,rate in rows:
+                events.append(Event(economic_time,FUNDING_DUE,symbol,len(events),economic_time))
+                received_at=max(economic_time,portal.funding_receipt_time(symbol,economic_time))
+                if received_at<=portal.as_of:
+                    events.append(Event(received_at,FUNDING_RECEIPT,symbol,len(events),(economic_time,rate)))
+    else:
+        events.extend(collect_funding_events(funding_by_symbol))
     if snapshots:
         events.extend(collect_snapshot_events(snapshots))
     events.extend(collect_daily_mark_events(portal.window_start, portal.as_of))
@@ -180,16 +191,25 @@ def run_replay(
                     if pending_event.payload.interval == execution_interval:
                         broker.set_mark_price(pending_event.payload.symbol,pending_event.payload.close,pending_event.payload.close_time)
         for event in simultaneous_events:
-            if event.kind == FUNDING:
-                position=broker.positions.get(event.subject)
-                if (getattr(adapter,'requires_attested_funding',False) and position is not None and position.is_open()):
-                    mark=portal.funding_mark_at(event.subject,event.time)
-                    broker.set_mark_price(event.subject,mark['price'],mark['marked_at'])
-                    provenance={key:str(value) for key,value in mark.items() if key!='price'}
-                    broker.settle_funding(event.subject,event.payload,event.time,
-                        mark_price=mark['price'],mark_provenance=provenance)
-                else:
-                    broker.settle_funding(event.subject, event.payload, event.time)
+            if event.kind == FUNDING_DUE:
+                key=broker.begin_funding(event.subject,event.time)
+                if key is not None:
+                    adapter.on_funding_due(key,event.time)
+                funding_received.add(event.subject)
+            elif event.kind == FUNDING_RECEIPT:
+                economic_time,rate=event.payload
+                key=event.subject+'|'+economic_time.isoformat()
+                if adapter.funding_is_pending(key):
+                    try:
+                        mark=portal.funding_mark_at(event.subject,economic_time,as_of=event.time)
+                    except DataBlocked as exc:
+                        adapter.on_funding_unproven(key,exc)
+                    else:
+                        payload=broker.receive_funding(key,rate,event.time,mark)
+                        broker.set_mark_price(event.subject,mark['price'],mark['marked_at'])
+                        adapter.on_funding_received(key,payload,mark,event.time)
+            elif event.kind == FUNDING:
+                broker.settle_funding(event.subject,event.payload,event.time)
                 funding_received.add(event.subject)
             elif event.kind == FUNDING_CHECK:
                 missing = [
@@ -287,10 +307,19 @@ def run_replay(
                 audit.extend(adapter.audit)
                 adapter.audit=[]
         ctx.portfolio = broker.view()
+        qualified=True
         if hasattr(adapter, 'on_portfolio_mark'):
-            adapter.on_portfolio_mark(timestamp, ctx)
-        equity[timestamp] = broker.mark(timestamp)
+            qualified=adapter.on_portfolio_mark(timestamp, ctx) is not False
+        if qualified:
+            equity[timestamp] = broker.mark(timestamp)
+        if hasattr(adapter,'reconciled_equity_points'):
+            equity.update({point.ts:point for point in adapter.reconciled_equity_points()})
+        if getattr(adapter,'audit',None):
+            audit.extend(adapter.audit)
+            adapter.audit=[]
 
+    if hasattr(adapter,'finalize_funding'):
+        adapter.finalize_funding()
     equity[portal.as_of] = broker.mark(portal.as_of)
 
     return ReplayResult(

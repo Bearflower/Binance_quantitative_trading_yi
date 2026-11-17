@@ -96,7 +96,7 @@ def test_hrs_funding_uses_proven_settlement_mark_instead_of_entry_price(tmp_path
     assert event['payload']['mark_price']=='150'
 
 
-@pytest.mark.parametrize('mark,offset',[(False,0),(True,1)])
+@pytest.mark.parametrize('mark,offset',[(False,0),(True,-1)])
 def test_hrs_funding_missing_or_unavailable_mark_blocks(tmp_path,mark,offset):
     portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
     portal=funding_rows(portal,mark=mark,available_offset=offset)
@@ -259,3 +259,127 @@ def test_experiment_cost_pressure_covers_actual_scenario_fee(tmp_path):
     assert fee==D('.001') and slippage>=D('.02')
     with pytest.raises(ValueError):
         HrsAdapter(original._state_loader,experiment_id='bad',exit_parameter_overrides={'standard':{'entry_threshold':0}})
+
+
+def pending_funding_fixture(tmp_path,*,delay=90,crash=False,flow=False,missing_mark=False):
+    economic=AT+timedelta(hours=1,minutes=30)
+    cash_flow=(dict(event_id='funding-period-flow',amount='1000',occurred_at=(economic+timedelta(seconds=30)).isoformat(),
+                    observed_at=(economic+timedelta(seconds=30)).isoformat(),segment_id='test',verified=True) if flow else None)
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True,cash_flow=cash_flow)
+    portal=funding_rows(portal,mark=not missing_mark,available_offset=delay)
+    updates={}
+    if crash:
+        bars=[json.loads(line) for line in (portal.snapshot_dir/'klines/A_1m.jsonl').read_text().splitlines()]
+        bars[90]['low']='94'
+        updates['klines/A_1m.jsonl']=jsonl(bars)
+        hours=[json.loads(line) for line in (portal.snapshot_dir/'klines/A_1h.jsonl').read_text().splitlines()]
+        hours[31]['low']='94'
+        updates['klines/A_1h.jsonl']=jsonl(hours)
+    inputs=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    decision=economic+timedelta(seconds=70)
+    inputs[1].update(decision_at=decision.isoformat(),observed_at=decision.isoformat())
+    inputs[1]['market'].update(source_observed_at=decision.isoformat(),expires_at=(decision+timedelta(hours=1)).isoformat())
+    updates['hrs_decision_inputs.jsonl']=jsonl(inputs)
+    updates['hrs_decision_calendar.jsonl']=jsonl([dict(symbol=row['symbol'],decision_at=row['decision_at'],
+        available_at=row['observed_at'],batch_available_at=row['observed_at'],sequence=index)
+        for index,row in enumerate(inputs)])
+    return refreeze(portal,updates),adapter,economic
+
+
+def test_delayed_funding_receipt_keeps_economic_quantity_and_blocks_entries_while_exits_continue(tmp_path):
+    portal,adapter,economic=pending_funding_fixture(tmp_path,delay=90,crash=True)
+    b=broker();result=run_replay(portal,adapter,b)
+    settlement=next(event for event in result.audit_events if event['type']=='funding_settlement')
+    assert settlement['ts']=='2026-11-17T01:31:30Z'
+    assert settlement['payload']['economic_time']=='2026-11-17T01:30:00Z'
+    trade=result.closed_trades[0]
+    assert trade.exit_time==economic+timedelta(minutes=1)
+    assert trade.funding_fee==-trade.quantity*D(150)*D('.01')
+    assert any(event['type']=='hrs_reject' and event['payload']['reason']=='funding_pending' for event in result.audit_events)
+    assert adapter._ledger_state.equity==result.equity_curve[-1].marked_equity
+
+
+def test_cashflow_during_pending_funding_is_unitized_after_truthful_reconciliation(tmp_path):
+    portal,adapter,economic=pending_funding_fixture(tmp_path,delay=90,flow=True)
+    result=run_replay(portal,adapter,broker())
+    contribution=next(event for event in result.audit_events if event['type']=='funding_settlement')['payload']['contribution']
+    expected=(D(10000)+D(contribution))/D(10000)
+    assert abs(adapter._ledger_state.nav-expected)<D('1e-24')
+    assert any(point.ts==economic for point in result.equity_curve)
+    assert any(event['type']=='hrs_funding_valuation_reconciled' for event in result.audit_events)
+
+
+def test_unproven_funding_blocks_final_qualification_but_native_stop_still_executes(tmp_path):
+    portal,adapter,_=pending_funding_fixture(tmp_path,crash=True,missing_mark=True)
+    b=broker()
+    with pytest.raises(DataBlocked,match='funding'):
+        run_replay(portal,adapter,b)
+    assert b.closed_trades and b.closed_trades[0].exit_reason=='STOP_LOSS'
+
+
+def test_explicit_full_tp1_override_uses_shared_risk_budget(tmp_path):
+    from ai_tuner.replay.adapters.hrs import HrsAdapter
+    portal,original,_=_hrs_fixture(tmp_path)
+    adapter=HrsAdapter(original._state_loader,experiment_id='full-tp1',
+        exit_parameter_overrides={'standard':{'target1_close_percent':1,'target2_close_percent':0}})
+    ctx=adapter.prepare(portal);ctx.portfolio=broker().view()
+    adapter.on_bar(portal.bars('A','1h')[-3],ctx)
+    intents=adapter.intents(ctx)
+    assert intents and intents[0].exit_ratios==(D(1),D(0))
+
+
+def test_funding_mark_cannot_be_read_before_publication(tmp_path):
+    portal,_,economic=pending_funding_fixture(tmp_path,delay=90)
+    with pytest.raises(DataBlocked,match='funding_mark'):
+        portal.funding_mark_at('A',economic,as_of=economic+timedelta(seconds=89))
+    assert portal.funding_mark_at('A',economic,as_of=economic+timedelta(seconds=90))['price']==D(150)
+
+
+def test_funding_receipt_after_window_never_qualifies_a_window(tmp_path):
+    portal,adapter,_=pending_funding_fixture(tmp_path,delay=4*3600,crash=True)
+    b=broker()
+    with pytest.raises(DataBlocked,match='funding_pending'):
+        run_replay(portal,adapter,b)
+    assert b.closed_trades[0].exit_reason=='STOP_LOSS'
+
+
+def test_cashflow_at_funding_receipt_uses_reconciled_units(tmp_path):
+    portal,adapter,economic=pending_funding_fixture(tmp_path,delay=90,flow=True)
+    flows=[json.loads(line) for line in (portal.snapshot_dir/'hrs_cash_flows.jsonl').read_text().splitlines()]
+    received_at=economic+timedelta(seconds=90)
+    flows.append(dict(event_id='receipt-flow',amount='1000',occurred_at=received_at.isoformat(),
+        observed_at=received_at.isoformat(),segment_id='test',verified=True))
+    portal=refreeze(portal,{'hrs_cash_flows.jsonl':jsonl(flows)})
+    result=run_replay(portal,adapter,broker())
+    contribution=D(next(e for e in result.audit_events if e['type']=='funding_settlement')['payload']['contribution'])
+    assert abs(adapter._ledger_state.nav-(D(10000)+contribution)/D(10000))<D('1e-24')
+    assert len(adapter._ledger_state.cash_flows)==2
+
+
+def test_delayed_funding_does_not_charge_partial_entry_fills_after_settlement():
+    b=broker();model={'version':'hrs_1m_volume_v1','participation_rate':'.1','timeout_minutes':15}
+    first=replace(bar(),interval='1m',open_time=AT,close_time=AT+timedelta(minutes=1),volume=D(10))
+    b.submit((OrderIntent('hrs','A',1,'LONG','LIMIT',D(3),'ENTRY',trigger_price=D(100),limit_price=D(100),
+        execution_model=model,expires_at=AT+timedelta(minutes=15)),),first,AT)
+    b.on_bar('A',first,first.close_time,entry_ts=first.close_time)
+    economic=AT+timedelta(seconds=90)
+    key=b.begin_funding('A',economic)
+    for minute in (2,3):
+        later=replace(first,open_time=AT+timedelta(minutes=minute-1),close_time=AT+timedelta(minutes=minute))
+        b.on_bar('A',later,later.close_time,entry_ts=later.close_time)
+    assert b.positions['A'].current_quantity==3
+    b.submit((OrderIntent('hrs','A',2,'LONG','MARKET',D(3),'TIME_STOP',reduce_only=True,
+        reference_price=D(100),close_quantity=D(3)),),later,later.close_time)
+    mark=dict(price=D(150),marked_at=economic,available_at=later.close_time,source='fixture')
+    b.receive_funding(key,D('.01'),later.close_time,mark)
+    assert b.closed_trades[0].funding_fee==D('-1.5')
+    assert b.realized_equity==D('9998.5')
+
+
+def test_replay_declares_software_limit_close_approximation(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    result=run_replay(portal,adapter,broker())
+    assumptions=next(e['payload'] for e in result.audit_events if e['type']=='hrs_execution_assumptions')
+    assert assumptions['configured_close_type']=='LIMIT'
+    assert assumptions['software_close_model']=='observed_quote_market_proxy_v1'
+    assert assumptions['exact_exchange_parity'] is False

@@ -404,9 +404,21 @@ class DataPortal:
         result.sort(key=lambda item: item[0])
         return tuple(result)
 
-    def funding_mark_at(self, symbol: str, funding_time: datetime) -> Dict[str, Any]:
+    def funding_receipt_time(self, symbol: str, funding_time: datetime) -> datetime:
+        """Scheduling metadata only; no settlement value is exposed before receipt."""
+        rows=[row for row in self._read_jsonl('funding_rates.jsonl')
+              if row.get('symbol')==symbol and parse_utc(row['funding_time'])==funding_time]
+        if len(rows)!=1:
+            raise DataBlocked(['funding_mark_missing_or_duplicate:'+symbol])
+        try:
+            return parse_utc(rows[0].get('mark_available_at',funding_time))
+        except (ValueError,TypeError) as exc:
+            raise DataBlocked(['funding_mark_invalid:'+symbol]) from exc
+
+    def funding_mark_at(self, symbol: str, funding_time: datetime, *, as_of=None) -> Dict[str, Any]:
         """HRS requires the recorded settlement mark, not an entry-price proxy."""
-        self.guard(funding_time,'funding_mark','funding_time',self.as_of)
+        cutoff=self.cutoff(as_of or funding_time,'funding_mark')
+        self.guard(funding_time,'funding_mark','funding_time',cutoff)
         self._require_dataset('funding_rates.jsonl')
         rows=[row for row in self._read_jsonl('funding_rates.jsonl')
               if row.get('symbol')==symbol and parse_utc(row['funding_time'])==funding_time]
@@ -418,7 +430,7 @@ class DataPortal:
             marked_at=parse_utc(row['mark_time'])
             available_at=parse_utc(row['mark_available_at'])
             if (not price.is_finite() or price<=ZERO or marked_at!=funding_time
-                    or available_at>funding_time or available_at<marked_at
+                    or available_at>cutoff or available_at<marked_at
                     or row['mark_source'] not in ('binance_um_funding_rate','binance_um_mark_price')):
                 raise ValueError('invalid_source_time_price_or_availability')
             selected=dict(symbol=symbol,funding_time=row['funding_time'],mark_price=str(row['mark_price']),

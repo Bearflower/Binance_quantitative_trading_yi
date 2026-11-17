@@ -80,7 +80,10 @@ def assess_entry(
                    for value in nonnegative)
             or pressure_slippage >= 1
             or len(take_profit_ratios) != 2
-            or any(not _valid_positive(ratio) or ratio >= 1 for ratio in take_profit_ratios)):
+            or any(ratio is None or not ratio.is_finite() or ratio < 0 for ratio in take_profit_ratios)
+            or not ((take_profit_ratios == (Decimal(1), Decimal(0)))
+                    or (all(0 < ratio < 1 for ratio in take_profit_ratios)
+                        and sum(take_profit_ratios) < 1))):
         return RiskDecision(False, "invalid_inputs")
     if (direction == "short" and stop_price <= entry_price) or (
         direction == "long" and stop_price >= entry_price
@@ -112,10 +115,17 @@ def assess_entry(
     if len(tp_prices) != 2 or any(not _valid_positive(price) for price in tp_prices):
         return RiskDecision(False, "invalid_inputs")
     try:
-        exit_ratios = executable_exit_ratios(
-            quantity, qty_step, min_qty, min_notional,
-            [*tp_prices, adverse_stop], take_profit_ratios,
-        )
+        if tuple(take_profit_ratios) == (Decimal(1), Decimal(0)):
+            # Explicit full TP1 is already a supported HRS executable fallback.
+            # Do not ask the shared split/tail planner to manufacture a tail.
+            if quantity < min_qty or quantity * tp_prices[0] < min_notional:
+                return RiskDecision(False, "take_profit_quantity_unavailable", risk_limit=risk_limit)
+            exit_ratios = (Decimal(1), Decimal(0))
+        else:
+            exit_ratios = executable_exit_ratios(
+                quantity, qty_step, min_qty, min_notional,
+                [*tp_prices, adverse_stop], take_profit_ratios,
+            )
         if exit_ratios != tuple(take_profit_ratios):
             # HRS has no software tail exit for a missing TP2. Use one full
             # TP1 instead of carrying a residual whose intended TP2 is absent.

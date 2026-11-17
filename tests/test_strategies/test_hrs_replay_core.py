@@ -137,3 +137,18 @@ def test_shared_core_rejects_future_4h_trend_input():
         core.analyze_standard(symbol='TESTUSDT',klines_1h=_bars(),klines_4h=trend,
             oi_market_cap_ratio=.2,funding_rate=.001,has_market_cap=True,
             directions=('short',),decision_at=AT,config={})
+
+
+def test_shared_hrs_risk_core_allows_only_legal_explicit_full_tp1():
+    from strategies.hrs.risk_budget import assess_entry
+    D=Decimal
+    arguments=dict(allocation=D(1000),entry_price=D(100),stop_price=D(95),direction='long',
+        existing_open_risk=D(0),leverage=D(2),remaining_margin=D(500),qty_step=D('.001'),
+        min_qty=D('.001'),min_notional=D(5),fee_rate=D('.0005'),pressure_slippage=D('.02'),
+        take_profit_prices=(D(103),D(107)))
+    result=assess_entry(**arguments,take_profit_ratios=(D(1),D(0)))
+    assert result.allowed and result.exit_ratios==(D(1),D(0))
+    for ratios in ((0,0),('.3',0),(-1,'.4'),(1,'.1'),('.5','.5')):
+        assert not assess_entry(**arguments,take_profit_ratios=tuple(D(str(value)) for value in ratios)).allowed
+    arguments['take_profit_prices']=(D(1),D(107))
+    assert not assess_entry(**arguments,take_profit_ratios=(D(1),D(0))).allowed
