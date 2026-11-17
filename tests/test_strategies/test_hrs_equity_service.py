@@ -388,11 +388,25 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
     clock[0]+=timedelta(seconds=30)
     again=await service.refresh()
     assert 'reconciliation_receipt_sha256' not in again
+    assert again['reasons']==['daily_origin_missing']
+    assert again['ledger_version']==4
     async with pool.acquire() as c:
         assert await c.fetchval('SELECT count(*) FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)==1
         ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
         assert D(ledger['nav'])==(D('1') if pre_anchor else D('.998'))
         assert D(ledger['cash_allocation'])==(D('998') if pre_anchor else D('1000'))
+        assert datetime.fromisoformat(ledger['as_of'])==clock[0]
+    restarted=HrsEquityService(service.db,api,service.capital_mgr,service.position_manager)
+    restarted.clock=service.clock
+    clock[0]+=timedelta(seconds=30)
+    resumed=await restarted.refresh()
+    assert resumed['ledger_version']==5 and resumed['reasons']==['daily_origin_missing']
+    async with pool.acquire() as c:
+        assert await c.fetchval('SELECT count(*) FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)==1
+        ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
+        assert datetime.fromisoformat(ledger['as_of'])==clock[0]
+        assert D(ledger['cash_allocation'])==(D('998') if pre_anchor else D('1000'))
+    await restarted.close()
 
 
 @pytest.mark.asyncio
@@ -516,6 +530,15 @@ async def test_exact_legacy_condition_row_and_signed_child_order_prove_owner_wit
         from strategies.hrs.equity_evidence import canonical,EvidenceBlocked
         canonical(snapshot)
         async with pool.acquire() as c:
+            conflict=await c.fetchval("INSERT INTO btc_eth.condition_orders(strategy_name,account_id,symbol,algo_id) VALUES('hrs',$1,'BNBUSDT',$2) RETURNING id",account,algo)
+        try:
+            async with service._locked() as c:
+                with pytest.raises(EvidenceBlocked,match='authenticated_condition_source_changed'):
+                    await service._read_source(c,int((T-timedelta(seconds=1)).timestamp()*1000),int(T.timestamp()*1000),snapshot)
+        finally:
+            async with pool.acquire() as c:
+                await c.execute('DELETE FROM btc_eth.condition_orders WHERE id=$1',conflict)
+        async with pool.acquire() as c:
             await c.execute("UPDATE btc_eth.condition_orders SET strategy_name='btc_eth' WHERE id=$1",source)
         async with service._locked() as c:
             with pytest.raises(EvidenceBlocked,match='authenticated_condition_source_changed'):
@@ -530,3 +553,59 @@ async def test_exact_legacy_condition_row_and_signed_child_order_prove_owner_wit
     finally:
         async with pool.acquire() as c:
             await c.execute('DELETE FROM btc_eth.condition_orders WHERE id=$1',source)
+
+
+@pytest.mark.asyncio
+async def test_preperiod_new_coin_entry_proves_reduce_only_close_without_crediting_prior_income(setup):
+    service,account,pool,api,clock=setup
+    entered=datetime(2026,10,30,14,tzinfo=timezone.utc)
+    closed=datetime(2026,11,4,14,tzinfo=timezone.utc)
+    funding=datetime(2026,11,2,0,tzinfo=timezone.utc)
+    entry_id=9000000+int(uuid.uuid4().hex[:6],16);close_id=entry_id+1
+    async with pool.acquire() as c:
+        await c.execute('CREATE SCHEMA IF NOT EXISTS new_coin')
+        await c.execute('''CREATE TABLE IF NOT EXISTS new_coin.orders(id bigserial PRIMARY KEY,order_id text,symbol text,
+            strategy text,side text,type text,quantity numeric,status text,created_at timestamp)''')
+        source=await c.fetchval("INSERT INTO new_coin.orders(order_id,symbol,strategy,side,type,quantity,status,created_at) VALUES($1,'MELIUSDT','new_coin','SELL','LIMIT',.06,'FILLED',$2) RETURNING id",str(entry_id),entered.replace(tzinfo=None))
+    try:
+        records=[dict(symbol='MELIUSDT',id=1,orderId=entry_id,side='SELL',qty='.06',price='1600',quoteQty='96',commission='0',commissionAsset='USDT',realizedPnl='0',time=int(entered.timestamp()*1000)),
+            dict(symbol='MELIUSDT',id=2,orderId=close_id,side='BUY',qty='.06',price='1500',quoteQty='90',commission='0',commissionAsset='USDT',realizedPnl='0',time=int(closed.timestamp()*1000))]
+        api.get_user_trades.side_effect=lambda symbol,**kw:[r for r in records if (kw.get('start_time') is None or r['time']>=kw['start_time']) and (kw.get('end_time') is None or r['time']<=kw['end_time'])]
+        api.get_income_history.side_effect=lambda **kw:([dict(symbol='MELIUSDT',incomeType='FUNDING_FEE',income='-.01',asset='USDT',tranId=44,tradeId='',time=int(funding.timestamp()*1000),info='')] if kw['income_type']=='FUNDING_FEE' else [])
+        api.get_order.side_effect=lambda symbol,identity:dict(orderId=identity,symbol=symbol,side='SELL' if identity==entry_id else 'BUY',status='FILLED',reduceOnly=identity!=entry_id,executedQty='.06',origQty='.06',time=int((entered if identity==entry_id else closed).timestamp()*1000))
+        result=await service.refresh()
+        assert result['reasons']==['daily_origin_missing']
+        async with pool.acquire() as c:
+            row=await c.fetchrow('SELECT opening_cash,opening_evidence FROM trading.hrs_equity_segment WHERE account_id=$1',account)
+            assert row['opening_cash']==D('1000')
+            evidence=json.loads(row['opening_evidence'])
+            assert evidence['credited_opening_income']==[]
+            assert len(evidence['income_report']['events'])==1
+            assert evidence['income_report']['events'][0]['strategy']=='new_coin'
+            assert len(evidence['fills'])==2
+            assert evidence['capture']['extended_fill_coverage'][0]['start_ms']==int(entered.timestamp()*1000)-1
+            inherited=[r for r in evidence['order_owners'] if r.get('source_kind')=='certified_unique_inventory_reduce_only_close']
+            assert len(inherited)==1 and inherited[0]['order_id']==str(close_id)
+            assert not await c.fetchval('SELECT 1 FROM trading.trade_records WHERE account_id=$1',account)
+    finally:
+        async with pool.acquire() as c:
+            await c.execute('DELETE FROM new_coin.orders WHERE id=$1',source)
+
+
+@pytest.mark.asyncio
+async def test_formal_gate_does_not_promote_manual_initialization_without_source_proof(setup):
+    service,account,pool,api,clock=setup
+    ms=int(T.timestamp()*1000)
+    api.get_income_history.side_effect=lambda **kw:([dict(symbol='BTCUSDT',incomeType='FUNDING_FEE',income='-1',asset='USDT',tranId=300,tradeId='',time=ms,info='')] if kw['income_type']=='FUNDING_FEE' else [])
+    async with pool.acquire() as c:
+        await c.execute("INSERT INTO trading.reviewed_income_attribution(account_id,income_type,tran_id,strategy,symbol,income,asset,event_time_utc,evidence,reviewed_by) VALUES($1,'FUNDING_FEE',300,'hrs','BTCUSDT',-1,'USDT',$2,$3::jsonb,'user_manual_initialization')",account,T,json.dumps(dict(source='manual_workbook_initialization',evidence_status='not_provided',evidence_ref='')))
+    try:
+        snapshot=await service._capture()
+        await service._collect(ms-1,ms,snapshot)
+        async with service._locked() as c:
+            report,*_=await service._read_source(c,ms-1,ms,snapshot)
+        assert report['events'][0]['strategy'] is None
+        assert report['events'][0]['reason']=='funding_owner_unproven'
+    finally:
+        async with pool.acquire() as c:
+            await c.execute('DELETE FROM trading.reviewed_income_attribution WHERE account_id=$1',account)

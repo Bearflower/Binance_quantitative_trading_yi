@@ -51,7 +51,7 @@ from shared.execution_facts_sink import PostgresExecutionFactsSink
 
 from .equity_evidence import (
     EvidenceBlocked, allocation_evidence, allocation_event_changes, attributed_incomes, canonical,
-    certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,
+    certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,certify_reduce_only_lifecycle,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
 from .equity_reconciliation import ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
@@ -306,7 +306,7 @@ class HrsEquityService:
                             continue
                         group=[item for item in retained if item['symbol']==symbol and item['algo_id']==row['algo_id']]
                         choices={item['strategy_name'] for item in group}
-                        if len(choices)!=1 or not choices<={'btc_eth','btc_eth_aggressive'}:
+                        if len(choices)!=1 or not choices<={'btc_eth','btc_eth_aggressive','hrs','new_coin'}:
                             continue
                         algo=int(row['algo_id'])
                         if algo not in algo_responses:
@@ -327,6 +327,90 @@ class HrsEquityService:
                 if proof:
                     self._order_source_cache[(symbol,identity)]=proof
                     proofs.append(proof)
+        snapshot['authenticated_order_owners']=proofs
+        await self._new_coin_lifecycle(snapshot,start_ms,end_ms,native,proofs)
+
+    async def _new_coin_lifecycle(self,snapshot,start_ms,end_ms,native,proofs):
+        """Extend fill proof only; current-allocation income starts unchanged.
+
+        Exact retained new_coin entry identity + signed order establishes its
+        owner. Complete fills from its actual creation time and current account
+        inventory establish a zero lower bound. Only authenticated reduce-only
+        closes of the unique owned position may inherit that owner.
+        """
+        if not all(key in snapshot for key in ('inventory','independent')):
+            return
+        owners=order_owners(self.account,native+proofs)
+        current_fills=await self.db.fetch_all('SELECT symbol,order_id FROM trading.execution_fact_fill WHERE account_id=$1 AND trade_time_utc>=$2 AND trade_time_utc<=$3',self.account,datetime.fromtimestamp(start_ms/1000,timezone.utc),datetime.fromtimestamp(end_ms/1000,timezone.utc))
+        missing={row['symbol'] for row in current_fills if owners.get((row['symbol'],str(row['order_id']))) is None}
+        if not missing:
+            return
+        table=await self.db.fetch_one("SELECT to_regclass('new_coin.orders') AS name")
+        if not table or not table['name']:
+            return
+        sources=await self.db.fetch_all("SELECT id,order_id,symbol,strategy,side,type,quantity,status,created_at FROM new_coin.orders WHERE symbol=ANY($1::text[]) AND strategy='new_coin'",sorted(missing))
+        for symbol in sorted({row['symbol'] for row in sources}):
+            entries=[]
+            for row in sources:
+                if row['symbol']!=symbol or row['order_id'] is None or row['side'] not in ('BUY','SELL'):
+                    continue
+                response=await self.api.get_order(symbol,int(row['order_id']))
+                if (not isinstance(response,dict) or str(response.get('orderId'))!=str(row['order_id'])
+                        or response.get('symbol')!=symbol or response.get('side')!=row['side'] or response.get('status')!='FILLED'
+                        or response.get('reduceOnly') is not False or response.get('time') is None
+                        or number(response.get('executedQty'),'legacy_entry_executed')!=number(row['quantity'],'legacy_entry_quantity',positive=True)):
+                    continue
+                source_row={key:(value.isoformat() if isinstance(value,datetime) else value) for key,value in dict(row).items()}
+                entries.append(dict(account_id=self.account,symbol=symbol,order_id=str(row['order_id']),strategy='new_coin',
+                    source_kind='authenticated_legacy_new_coin_entry',source_ids=[str(row['id'])],source_rows=[dict(table='new_coin.orders',row=source_row)],
+                    response={key:response.get(key) for key in ('orderId','symbol','side','status','reduceOnly','executedQty','origQty','time')},available_at=self._now()))
+            if not entries:
+                continue
+            left=min(int(row['response']['time'])-1 for row in entries)
+            if left>end_ms:
+                raise EvidenceBlocked('legacy_entry_after_observation')
+            bound=left
+            exporter=ExecutionFactExporter(self.account,self.api,_FreshSink(self.db))
+            coverage=[]
+            while left<end_ms+1:
+                right=min(left+7*24*3600*1000,end_ms+1)
+                result=await exporter.export_fills(symbol,left,right)
+                if result.errors or not result.page_complete:
+                    raise EvidenceBlocked('legacy_lifecycle_fill_collection_incomplete')
+                coverage.append(dict(symbol=symbol,start_ms=left,end_ms=right,page_complete=True))
+                left=right
+            interval_fills=[dict(row) for row in await self.db.fetch_all('SELECT * FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND trade_time_utc>=$3 AND trade_time_utc<=$4',self.account,symbol,datetime.fromtimestamp(bound/1000,timezone.utc),datetime.fromtimestamp(end_ms/1000,timezone.utc))]
+            for entry in entries:
+                actual=sum((number(row['qty'],'legacy_entry_fill_quantity',positive=True) for row in interval_fills if str(row['order_id'])==entry['order_id']),Decimal(0))
+                if actual!=number(entry['response']['executedQty'],'legacy_entry_executed'):
+                    raise EvidenceBlocked('legacy_entry_full_fill_proof_missing')
+            known=native+proofs+entries
+            signed={}
+            availability={}
+            choices=order_owners(self.account,known)
+            for row in interval_fills:
+                if (symbol,str(row['order_id'])) not in choices and row['order_id'] not in signed:
+                    signed[row['order_id']]=await self.api.get_order(symbol,int(row['order_id']))
+                    availability[row['order_id']]=self._now()
+            quantities=[]
+            for inventory in (snapshot['inventory'],snapshot['independent']):
+                if not isinstance(inventory,list):
+                    raise EvidenceBlocked('legacy_current_inventory_missing')
+                matches=[row for row in inventory if row.get('symbol')==symbol]
+                if len(matches)>1 or any(row.get('positionSide','BOTH')!='BOTH' for row in matches):
+                    raise EvidenceBlocked('legacy_current_inventory_ambiguous')
+                quantities.append(number(matches[0]['positionAmt'],'legacy_current_quantity') if matches else Decimal(0))
+            if quantities[0]!=quantities[1]:
+                raise EvidenceBlocked('legacy_current_inventory_conflict')
+            inherited=certify_reduce_only_lifecycle(self.account,symbol,quantities[0],interval_fills,known,signed,
+                datetime.fromtimestamp(bound/1000,timezone.utc),snapshot['captured_at'],coverage_complete=True)
+            for proof in inherited:
+                proof['available_at']=availability[int(proof['order_id'])]
+                proof['opening_owner_proofs']=entries
+                proof['source_coverage']=coverage
+            proofs.extend(entries)
+            proofs.extend(inherited)
+            snapshot.setdefault('extended_fill_coverage',[]).append(dict(symbol=symbol,start_ms=bound,end_ms=end_ms,source_coverage=coverage))
         snapshot['authenticated_order_owners']=proofs
 
     async def _historical_marks(self,bootstrap,snapshot):
@@ -394,17 +478,27 @@ class HrsEquityService:
         start = datetime.fromtimestamp(start_ms/1000, timezone.utc)
         end = datetime.fromtimestamp(end_ms/1000, timezone.utc)
         for proof in snapshot.get('authenticated_order_owners',()):
+            if proof.get('source_kind')=='authenticated_legacy_new_coin_entry':
+                fields=('id','order_id','symbol','strategy','side','quantity')
+                expected=[{key:item['row'][key] for key in fields} for item in proof['source_rows'] if item['table']=='new_coin.orders']
+                actual=[dict(row) for row in await connection.fetch('SELECT id,order_id,symbol,strategy,side,quantity FROM new_coin.orders WHERE symbol=$1 AND order_id=$2',proof['symbol'],proof['order_id'])]
+                if canonical(sorted(expected,key=lambda row:row['id']))[1]!=canonical(sorted(actual,key=lambda row:row['id']))[1] or not expected:
+                    raise EvidenceBlocked('authenticated_legacy_entry_source_changed')
             if proof.get('source_kind')!='authenticated_retained_pm_condition_owner':
                 continue
             fields=('id','strategy_name','account_id','symbol','algo_id')
             expected=[{key:item['row'][key] for key in fields} for item in proof['source_rows'] if item['table']=='btc_eth.condition_orders']
-            actual=[dict(row) for row in await connection.fetch('SELECT id,strategy_name,account_id,symbol,algo_id FROM btc_eth.condition_orders WHERE id=ANY($1::bigint[])',[row['id'] for row in expected])]
+            actual=[dict(row) for row in await connection.fetch('SELECT id,strategy_name,account_id,symbol,algo_id FROM btc_eth.condition_orders WHERE symbol=$1 AND algo_id=$2 AND (account_id=$3 OR account_id IS NULL)',proof['symbol'],int(proof['response']['algoId']),self.account)]
             if sorted(expected,key=lambda row:row['id'])!=sorted(actual,key=lambda row:row['id']) or not expected:
                 raise EvidenceBlocked('authenticated_condition_source_changed')
         report = await read_monthly_economic_report(_SnapshotDB(connection,snapshot.get('authenticated_order_owners',())), self.account, start_ms, end_ms + 1,
-                                                   include_reviewed_overrides=True)
+                                                   include_reviewed_overrides=False)
         fills = [dict(row) for row in await connection.fetch('''SELECT * FROM trading.execution_fact_fill
             WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc <= $3''', self.account, start, end)]
+        for interval in snapshot.get('extended_fill_coverage',()):
+            additional=await connection.fetch('SELECT * FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND trade_time_utc>=$3 AND trade_time_utc<=$4',self.account,interval['symbol'],datetime.fromtimestamp(interval['start_ms']/1000,timezone.utc),end)
+            existing={(row['symbol'],row['trade_id']) for row in fills}
+            fills.extend(dict(row) for row in additional if (row['symbol'],row['trade_id']) not in existing)
         orders = [dict(row) for row in await connection.fetch('''SELECT account_id,symbol,order_id,strategy,side,status,order_type,
             realized_pnl,executed_at FROM trading.trade_records WHERE account_id=$1 AND order_id IS NOT NULL''', self.account)]
         orders.extend(snapshot.get('authenticated_order_owners',()))
@@ -700,7 +794,7 @@ class HrsEquityService:
                 evidence['reconciliation_receipt_sha256']=receipt_sha
                 return await self._projection(connection,revision,result,evidence)
             events_flow=self._allocation_flows(state,audit['changes'],events,fills,orders,as_of)
-            if state.cash_allocation+sum((flow.amount for flow in events_flow),Decimal(0))!=actual_bootstrap['opening_cash']+sum((change.delta for change in audit['changes']),Decimal(0)):
+            if state.cash_allocation+sum((flow.amount for flow in events_flow),Decimal(0))!=effective_opening_cash+sum((change.delta for change in audit['changes']),Decimal(0)):
                 raise EvidenceBlocked('allocation_event_history_unrecorded_flow')
             checkpoints = list(await effective_checkpoints(connection,self.account,segment))
             midnight = datetime.combine(state.as_of.astimezone(SHANGHAI).date()+timedelta(days=1),time.min,SHANGHAI)
@@ -725,7 +819,7 @@ class HrsEquityService:
             rolling_start = as_of-timedelta(days=30)
             if rolling_start >= state.inception and not any(cp.as_of==rolling_start for cp in samples):
                 base_obs=LedgerObservation(state.inception,segment,(),(),self._opening_marks(anchor),state.inception,state.inception,True,True)
-                base=initialize_ledger(segment,actual_bootstrap['opening_cash'],base_obs)
+                base=initialize_ledger(segment,effective_opening_cash,base_obs)
                 try:
                     historical=historical_boundary_observation(base,rolling_start,self._now(),fills,orders,events,coverage_complete=True,opening_inventory=self._anchor_inventory,historical_bars=snapshot.get('historical_mark_bars'),account=self.account)
                     historical=LedgerObservation(rolling_start,segment,historical.incomes,

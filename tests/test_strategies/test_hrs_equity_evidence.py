@@ -247,3 +247,20 @@ def test_independent_pm_account_quantity_inventory_does_not_invent_missing_entry
     with pytest.raises(EvidenceBlocked,match='inventory_conflict'):
         certify_opening_inventory('test','seg',T,inventory,[dict(independent[0],positionAmt='1')],{},[fill()],
             [owner(strategy='btc_eth')],{},[dict(id=1,symbol='BTCUSDT',strategy='btc_eth')],covered_symbols={'BTCUSDT'})
+
+
+def test_reduce_only_close_owner_requires_complete_zero_anchor_and_unique_owned_lifecycle():
+    from strategies.hrs.equity_evidence import certify_reduce_only_lifecycle
+    entered=fill(trade_id=1,order_id=10,side='SELL',at=T-timedelta(days=1))
+    closed=fill(trade_id=2,order_id=11,side='BUY',at=T-timedelta(hours=1))
+    orders=[owner(10,strategy='new_coin')]
+    response=dict(orderId=11,symbol='BTCUSDT',side='BUY',status='FILLED',reduceOnly=True,executedQty='2',origQty='2')
+    proof=certify_reduce_only_lifecycle('test','BTCUSDT',D('0'),[entered,closed],orders,{11:response},T-timedelta(days=2),T,coverage_complete=True)
+    assert proof[0]['strategy']=='new_coin' and proof[0]['order_id']=='11'
+    assert proof[0]['certified_start_quantity']=='0'
+    with pytest.raises(EvidenceBlocked,match='lifecycle_fill_coverage'):
+        certify_reduce_only_lifecycle('test','BTCUSDT',D('0'),[entered,closed],orders,{11:response},T-timedelta(days=2),T,coverage_complete=False)
+    with pytest.raises(EvidenceBlocked,match='lifecycle_zero_anchor'):
+        certify_reduce_only_lifecycle('test','BTCUSDT',D('0'),[closed],orders,{11:response},T-timedelta(days=2),T,coverage_complete=True)
+    with pytest.raises(EvidenceBlocked,match='lifecycle_reduce_only'):
+        certify_reduce_only_lifecycle('test','BTCUSDT',D('0'),[entered,closed],orders,{11:dict(response,reduceOnly=False)},T-timedelta(days=2),T,coverage_complete=True)

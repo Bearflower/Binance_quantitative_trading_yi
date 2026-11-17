@@ -566,3 +566,63 @@ def require_funding_publication(account,start,as_of,fills,orders,current_invento
             raise EvidenceBlocked('funding_settlement_pending')
         proofs.append(proof)
     return proofs
+
+
+def certify_reduce_only_lifecycle(account,symbol,current_quantity,fills,orders,signed_orders,start,as_of,*,coverage_complete):
+    """Infer only a reducing order's owner from a fully proved unique position.
+
+    Complete signed fills plus current inventory establish actual zero quantity
+    at the lower bound. Every increasing fill requires an independent durable
+    owner. An unowned reducing order additionally needs its authenticated venue
+    reduceOnly flag, exact terminal executed quantity and unique owned inventory
+    at every constituent fill. A ticker, review label or net subtotal is not an
+    ownership proof.
+    """
+    if coverage_complete is not True:
+        raise EvidenceBlocked('lifecycle_fill_coverage_missing')
+    seen={}
+    for row in fills:
+        if row.get('account_id')!=account or row.get('symbol')!=symbol or not start<=aware(row['trade_time_utc'],'lifecycle_fill')<=as_of:
+            raise EvidenceBlocked('lifecycle_fill_identity_or_range')
+        key=str(row.get('trade_id'))
+        if key in seen and seen[key]!=row:
+            raise EvidenceBlocked('lifecycle_fill_conflict')
+        seen[key]=row
+    rows=sorted(seen.values(),key=lambda row:(row['trade_time_utc'],int(row['trade_id'])))
+    def signed(row):
+        if row.get('side') not in ('BUY','SELL'):
+            raise EvidenceBlocked('lifecycle_fill_side_missing')
+        return number(row['qty'],'lifecycle_fill_quantity',positive=True)*(1 if row['side']=='BUY' else -1)
+    total=sum((signed(row) for row in rows),Decimal(0))
+    if total!=number(current_quantity,'lifecycle_current_quantity'):
+        raise EvidenceBlocked('lifecycle_zero_anchor_unproven')
+    owners=order_owners(account,orders)
+    balances={}
+    proofs={}
+    for row in rows:
+        identity=str(row['order_id']);qty=signed(row)
+        choices=owners.get((symbol,identity),set())
+        if len(choices)>1 or None in choices:
+            raise EvidenceBlocked('lifecycle_owner_conflict')
+        if choices:
+            owner=next(iter(choices))
+        else:
+            response=signed_orders.get(row['order_id']) or signed_orders.get(identity)
+            active=[(owner,held) for owner,held in balances.items() if held!=0]
+            if (not isinstance(response,dict) or str(response.get('orderId'))!=identity or response.get('symbol')!=symbol
+                    or response.get('side')!=row['side'] or response.get('reduceOnly') is not True
+                    or response.get('status')!='FILLED' or len(active)!=1 or active[0][1]*qty>=0 or abs(qty)>abs(active[0][1])):
+                raise EvidenceBlocked('lifecycle_reduce_only_owner_unproven')
+            executed=sum((abs(signed(item)) for item in rows if str(item['order_id'])==identity),Decimal(0))
+            if executed!=number(response.get('executedQty'),'lifecycle_executed_quantity',positive=True) or executed>number(response.get('origQty'),'lifecycle_original_quantity',positive=True):
+                raise EvidenceBlocked('lifecycle_terminal_fill_quantity_unproven')
+            owner=active[0][0]
+            old=proofs.get(identity)
+            if old and old['strategy']!=owner:
+                raise EvidenceBlocked('lifecycle_owner_changed_during_fill')
+            proofs[identity]=dict(account_id=account,symbol=symbol,order_id=identity,strategy=owner,
+                source_kind='certified_unique_inventory_reduce_only_close',certified_start_quantity='0',coverage_start=start,coverage_through=as_of,
+                full_fill_ids=[str(item['trade_id']) for item in rows],prior_owned_order_ids=sorted({str(item['order_id']) for item in rows if item['trade_time_utc']<row['trade_time_utc'] and (symbol,str(item['order_id'])) in owners}),
+                response={key:response.get(key) for key in ('orderId','symbol','side','status','reduceOnly','executedQty','origQty')})
+        balances[owner]=balances.get(owner,Decimal(0))+qty
+    return tuple(proofs.values())
