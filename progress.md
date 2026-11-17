@@ -43,3 +43,13 @@
 - AI Tuner 增加不可执行入场信号计数与全窗安全提示，自动分配增加只读影子预览，现金流 ROI 增加严格桥接计算和看板未知态。
 - 扩大回归：AI Tuner/分配 89 passed；现金流/看板 14 passed；新币排除既有失效文件与 HRS 旧 mock 后 301 passed、6 deselected。新币完整目录 301 passed、16 failed、6 deselected；16 个失败均来自主线已失效的 `_backfill_anchor_quantity` 测试。尚未发布。
 - 继续补信号身份：激进版成功新仓将首单号写入 signal metadata，HRS 风险预留 geometry 存 signal_id；AI Tuner 报告缺身份计数。新增测试先红后绿。HRS 相关 6 passed；旧 `test_lv_rm_empty_pool_execution.py` 3 例仍有历史 mock/信号链失败，未作本轮通过依据。GitHub SSH/API 在本轮提交后出现传输错误，远端同步未完成。
+
+## 2026-11-17
+
+开始按第 3、5、6 项顺序推进。已读取历史计划并建立独立工作树，生产只读确认归属表与成交事实表存在。
+
+- 只读数据库快照已保存到私有 data/review_exports/closure-20261117/snapshot.json，SHA-256 013cb36b78095246730f33aa3d4e1d14c7159b30403e28135481f0840ac9bfc9。
+- 新增只维护归属证据的 recover_proven_order_income 命令，默认预览，写入要求审核后的计划校验和，复用既有派生函数和 serializable/insert-only 写入。22 项针对性测试通过。
+- 执行第一批 187 笔后再次执行新增为 0，交易所收入总数与金额守恒。
+- 第二批首次 SSH 连接在取得结果前关闭。独立查询确认 33 个新订单均未入库，随后使用相同计划校验和重试，并将输出保存在服务器受限目录，避免误判未知执行结果。
+- 调查命令出现一次 GROUP BY 列序号笔误，已改正。docker exec 不支持 -v，已改为只传输 CSV 数据文件到维护临时路径。
