@@ -1,0 +1,811 @@
+{
+  "observed_at": "2026-11-17T09:36:00.248552+00:00",
+  "scope": "Unique asset_identity_unverified symbols in HRS standard/LV-RM scoring logs for 2026-11-17T09:21 UTC; not the full LV-RM universe",
+  "exchange_server_time_ms": 1794905818640,
+  "log_window": "2026-11-17T09:21 UTC",
+  "counts": {
+    "crypto": 6,
+    "tradfi": 29
+  },
+  "unverified_symbol_count": 35,
+  "lv_rm_logged_scan_range_count": 52,
+  "lv_rm_count_timestamp": "2026-11-17T09:21:56.501780Z",
+  "full_lv_rm_symbol_list_available": false,
+  "rows": [
+    {
+      "symbol": "AKEUSDT",
+      "baseAsset": "AKE",
+      "contractType": "PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COIN",
+      "underlyingSubType": [
+        "Alpha",
+        "Crypto"
+      ],
+      "classification": "crypto",
+      "crypto_eligible": true,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://www.coingecko.com/en/coins/akedo",
+        "https://coinmarketcap.com/currencies/akedo/"
+      ],
+      "cg_id": "akedo",
+      "cmc_id": 38127,
+      "cmc_fallback_qualified": false
+    },
+    {
+      "symbol": "AMDUSDT",
+      "baseAsset": "AMD",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "ANTHROPICUSDT",
+      "baseAsset": "ANTHROPIC",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING_HALT",
+      "underlyingType": "PREMARKET",
+      "underlyingSubType": [
+        "Pre-IPO",
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "BLESSUSDT",
+      "baseAsset": "BLESS",
+      "contractType": "PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COIN",
+      "underlyingSubType": [
+        "Alpha",
+        "Crypto"
+      ],
+      "classification": "crypto",
+      "crypto_eligible": true,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://www.coingecko.com/en/coins/bless",
+        "https://coinmarketcap.com/currencies/bless/"
+      ],
+      "cg_id": "bless-2",
+      "cmc_id": 38466,
+      "cmc_fallback_qualified": false
+    },
+    {
+      "symbol": "BZUSDT",
+      "baseAsset": "BZ",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COMMODITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "CLUSDT",
+      "baseAsset": "CL",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COMMODITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "DRAMUSDT",
+      "baseAsset": "DRAM",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "EVAAUSDT",
+      "baseAsset": "EVAA",
+      "contractType": "PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COIN",
+      "underlyingSubType": [
+        "DeFi",
+        "Crypto",
+        "Alpha"
+      ],
+      "classification": "crypto",
+      "crypto_eligible": true,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://www.coingecko.com/en/coins/evaa-protocol",
+        "https://coinmarketcap.com/currencies/evaa-protocol/"
+      ],
+      "cg_id": "evaa-protocol",
+      "cmc_id": 38376,
+      "cmc_fallback_qualified": false
+    },
+    {
+      "symbol": "EWYUSDT",
+      "baseAsset": "EWY",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "GOOGLUSDT",
+      "baseAsset": "GOOGL",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "INTCUSDT",
+      "baseAsset": "INTC",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "JCTUSDT",
+      "baseAsset": "JCT",
+      "contractType": "PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COIN",
+      "underlyingSubType": [
+        "Alpha",
+        "Crypto"
+      ],
+      "classification": "crypto",
+      "crypto_eligible": true,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://www.coingecko.com/en/coins/janction",
+        "https://coinmarketcap.com/currencies/janction/"
+      ],
+      "cg_id": "janction",
+      "cmc_id": 38909,
+      "cmc_fallback_qualified": false
+    },
+    {
+      "symbol": "KORUUSDT",
+      "baseAsset": "KORU",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "LITEUSDT",
+      "baseAsset": "LITE",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "METAUSDT",
+      "baseAsset": "META",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "MRVLUSDT",
+      "baseAsset": "MRVL",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "MSTRUSDT",
+      "baseAsset": "MSTR",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "MUUSDT",
+      "baseAsset": "MU",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "NATGASUSDT",
+      "baseAsset": "NATGAS",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COMMODITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "NBISUSDT",
+      "baseAsset": "NBIS",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "NVDAUSDT",
+      "baseAsset": "NVDA",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "QQQUSDT",
+      "baseAsset": "QQQ",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "RAREUSDT",
+      "baseAsset": "RARE",
+      "contractType": "PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COIN",
+      "underlyingSubType": [
+        "NFT",
+        "Crypto"
+      ],
+      "classification": "crypto",
+      "crypto_eligible": true,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://www.coingecko.com/en/coins/superrare",
+        "https://coinmarketcap.com/currencies/superrare/"
+      ],
+      "cg_id": "superrare",
+      "cmc_id": 11294,
+      "cmc_fallback_qualified": false
+    },
+    {
+      "symbol": "SAMSUNGUSDT",
+      "baseAsset": "SAMSUNG",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "KR_EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "SKHYNIXUSDT",
+      "baseAsset": "SKHYNIX",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "KR_EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "SKHYUSDT",
+      "baseAsset": "SKHY",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "SNDKUSDT",
+      "baseAsset": "SNDK",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "SPCXUSDT",
+      "baseAsset": "SPCX",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "SPYUSDT",
+      "baseAsset": "SPY",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "SQQQUSDT",
+      "baseAsset": "SQQQ",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "TQQQUSDT",
+      "baseAsset": "TQQQ",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "XAGUSDT",
+      "baseAsset": "XAG",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COMMODITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "XAUUSDT",
+      "baseAsset": "XAU",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COMMODITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "ZHONGJIUSDT",
+      "baseAsset": "ZHONGJI",
+      "contractType": "TRADIFI_PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "HK_EQUITY",
+      "underlyingSubType": [
+        "TradFi"
+      ],
+      "classification": "tradfi",
+      "crypto_eligible": false,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      ]
+    },
+    {
+      "symbol": "龙虾USDT",
+      "baseAsset": "龙虾",
+      "contractType": "PERPETUAL",
+      "status": "TRADING",
+      "underlyingType": "COIN",
+      "underlyingSubType": [
+        "Chinese",
+        "Crypto",
+        "Alpha"
+      ],
+      "classification": "crypto",
+      "crypto_eligible": true,
+      "evidence": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://www.coingecko.com/en/coins/lobster-2"
+      ],
+      "cg_id": "lobster-2",
+      "cmc_id": null,
+      "cmc_fallback_qualified": false
+    }
+  ],
+  "source_differences": [
+    {
+      "symbol": "ARIAUSDT",
+      "cg_id": "aria-ai",
+      "cmc_id": 38102,
+      "cmc_enabled": false,
+      "registry_relative_difference": 1.405678,
+      "cg_current": {
+        "current_price": 0.228602,
+        "market_cap": 41834236,
+        "circulating_supply": 183000000.0,
+        "total_supply": 1000000000.0,
+        "last_updated": "2026-11-17T09:34:52.000Z"
+      },
+      "cmc_website_circulating_supply_approx": 439999667,
+      "cmc_website_supply_timestamp": "not exposed; same-day web observation, not aligned quote",
+      "evidence": [
+        "https://www.coingecko.com/en/coins/aria-ai",
+        "https://coinmarketcap.com/currencies/aria-ai/"
+      ],
+      "diagnosis": "Provider circulating-supply divergence supports observed cap divergence; exact original calculation cannot be reconstructed without original price and supply fields. Keep fallback disabled.",
+      "original_comparison": {
+        "cg_market_cap": 41083663,
+        "cmc_market_cap": 98834074.56648526,
+        "cg_observed_at": 1794900116.0,
+        "cmc_observed_at": 1794900123.0,
+        "cmc_to_cg_ratio": 2.405678251388764
+      }
+    },
+    {
+      "symbol": "SEIUSDT",
+      "cg_id": "sei-network",
+      "cmc_id": 23149,
+      "cmc_enabled": false,
+      "registry_relative_difference": 0.162357,
+      "cg_current": {
+        "current_price": 0.03862974,
+        "market_cap": 260106890,
+        "circulating_supply": 6733333333.0,
+        "total_supply": 10000000000.0,
+        "last_updated": "2026-11-17T09:34:52.000Z"
+      },
+      "cmc_website_circulating_supply_approx": 7819583333,
+      "cmc_website_supply_timestamp": "not exposed; same-day web observation, not aligned quote",
+      "evidence": [
+        "https://www.coingecko.com/en/coins/sei-network",
+        "https://coinmarketcap.com/currencies/sei/"
+      ],
+      "diagnosis": "Provider circulating-supply divergence supports observed cap divergence; exact original calculation cannot be reconstructed without original price and supply fields. Keep fallback disabled.",
+      "original_comparison": {
+        "cg_market_cap": 261748226,
+        "cmc_market_cap": 304244816.0202242,
+        "cg_observed_at": 1794900116.0,
+        "cmc_observed_at": 1794900123.0,
+        "cmc_to_cg_ratio": 1.1623567451426555
+      }
+    },
+    {
+      "symbol": "XAUTUSDT",
+      "cg_id": "tether-gold",
+      "cmc_id": 5176,
+      "cmc_enabled": false,
+      "registry_relative_difference": 0.073782,
+      "cg_current": {
+        "current_price": 3845.44,
+        "market_cap": 3110938690,
+        "circulating_supply": 808994.63,
+        "total_supply": 827417.63,
+        "last_updated": "2026-11-17T09:34:52.000Z"
+      },
+      "cmc_website_circulating_supply_approx": 749420,
+      "cmc_website_supply_timestamp": "not exposed; same-day web observation, not aligned quote",
+      "evidence": [
+        "https://www.coingecko.com/en/coins/tether-gold",
+        "https://coinmarketcap.com/currencies/tether-gold/"
+      ],
+      "diagnosis": "Provider circulating-supply divergence supports observed cap divergence; exact original calculation cannot be reconstructed without original price and supply fields. Keep fallback disabled.",
+      "original_comparison": {
+        "cg_market_cap": 3123412484,
+        "cmc_market_cap": 2892960476.7916746,
+        "cg_observed_at": 1794900116.0,
+        "cmc_observed_at": 1794900123.0,
+        "cmc_to_cg_ratio": 0.9262178759965777
+      }
+    },
+    {
+      "symbol": "HYPEUSDT",
+      "cg_id": "hyperliquid",
+      "cmc_id": 32196,
+      "cmc_enabled": false,
+      "registry_relative_difference": 0.062587,
+      "cg_current": {
+        "current_price": 68.7,
+        "market_cap": 16331131272,
+        "circulating_supply": 237713007.48911202,
+        "total_supply": 949844466.029112,
+        "last_updated": "2026-11-17T09:34:52.000Z"
+      },
+      "cmc_website_circulating_supply_approx": 252560000,
+      "cmc_website_supply_timestamp": "not exposed; same-day web observation, not aligned quote",
+      "evidence": [
+        "https://www.coingecko.com/en/coins/hyperliquid",
+        "https://coinmarketcap.com/currencies/hyperliquid/"
+      ],
+      "diagnosis": "Provider circulating-supply divergence supports observed cap divergence; exact original calculation cannot be reconstructed without original price and supply fields. Keep fallback disabled.",
+      "original_comparison": {
+        "cg_market_cap": 16554884434,
+        "cmc_market_cap": 17591007702.958782,
+        "cg_observed_at": 1794900116.0,
+        "cmc_observed_at": 1794900123.0,
+        "cmc_to_cg_ratio": 1.062587164113983
+      }
+    },
+    {
+      "symbol": "FETUSDT",
+      "cg_id": "fetch-ai",
+      "cmc_id": 3773,
+      "cmc_enabled": false,
+      "registry_relative_difference": 0.051443,
+      "cg_current": {
+        "current_price": 0.13095,
+        "market_cap": 302691234,
+        "circulating_supply": 2311508384.055814,
+        "total_supply": 2714384546.672,
+        "last_updated": "2026-11-17T09:34:52.000Z"
+      },
+      "cmc_website_circulating_supply_approx": 2420000000,
+      "cmc_website_supply_timestamp": "not exposed; same-day web observation, not aligned quote",
+      "evidence": [
+        "https://www.coingecko.com/en/coins/fetch-ai",
+        "https://coinmarketcap.com/currencies/artificial-superintelligence-alliance/"
+      ],
+      "diagnosis": "Provider circulating-supply divergence supports observed cap divergence; exact original calculation cannot be reconstructed without original price and supply fields. Keep fallback disabled.",
+      "original_comparison": {
+        "cg_market_cap": 304463359,
+        "cmc_market_cap": 320125741.94149107,
+        "cg_observed_at": 1794900116.0,
+        "cmc_observed_at": 1794900123.0,
+        "cmc_to_cg_ratio": 1.0514425873541358
+      }
+    },
+    {
+      "symbol": "ASTERUSDT",
+      "cg_id": "aster-2",
+      "cmc_id": 36341,
+      "cmc_enabled": false,
+      "registry_relative_difference": 0.076967,
+      "cg_current": {
+        "current_price": 0.590473,
+        "market_cap": 1518614046,
+        "circulating_supply": 2571858486.443178,
+        "total_supply": 7783823322.20332,
+        "last_updated": "2026-11-17T09:34:52.000Z"
+      },
+      "cmc_website_circulating_supply_approx": 2770158486.443178,
+      "cmc_website_supply_timestamp": "not exposed; same-day web observation, not aligned quote",
+      "evidence": [
+        "https://www.coingecko.com/en/coins/aster-2",
+        "https://coinmarketcap.com/currencies/aster/"
+      ],
+      "diagnosis": "Provider circulating-supply divergence supports observed cap divergence; exact original calculation cannot be reconstructed without original price and supply fields. Keep fallback disabled.",
+      "original_comparison": null
+    }
+  ],
+  "new_crypto_current_cg_quotes": [
+    {
+      "id": "akedo",
+      "symbol": "ake",
+      "name": "Akedo",
+      "current_price": 0.01044662,
+      "market_cap": 238143824,
+      "circulating_supply": 22796250000.0,
+      "last_updated": "2026-11-17T09:34:52.000Z"
+    },
+    {
+      "id": "evaa-protocol",
+      "symbol": "evaa",
+      "name": "EVAA Protocol",
+      "current_price": 4.13,
+      "market_cap": 27313518,
+      "circulating_supply": 6617972.0,
+      "last_updated": "2026-11-17T09:34:52.000Z"
+    },
+    {
+      "id": "janction",
+      "symbol": "jct",
+      "name": "Janction",
+      "current_price": 0.00216921,
+      "market_cap": 24932254,
+      "circulating_supply": 11493687500.0,
+      "last_updated": "2026-11-17T09:34:52.000Z"
+    },
+    {
+      "id": "bless-2",
+      "symbol": "bless",
+      "name": "Bless",
+      "current_price": 0.01049964,
+      "market_cap": 19336838,
+      "circulating_supply": 1841666667.0,
+      "last_updated": "2026-11-17T09:34:52.000Z"
+    },
+    {
+      "id": "lobster-2",
+      "symbol": "龙虾",
+      "name": "龙虾 (Lobster)",
+      "current_price": 0.01630457,
+      "market_cap": 16304571,
+      "circulating_supply": 1000000000.0,
+      "last_updated": "2026-11-17T09:34:52.000Z"
+    },
+    {
+      "id": "superrare",
+      "symbol": "rare",
+      "name": "SuperRare",
+      "current_price": 0.01427333,
+      "market_cap": 11710521,
+      "circulating_supply": 820447741.8297726,
+      "last_updated": "2026-11-17T09:34:52.000Z"
+    }
+  ],
+  "limitations": [
+    "No exact original32-symbol artifact available; universe changes over time.",
+    "35 is logged scoring missing-symbol union, not a known subset cardinality of LV-RM52.",
+    "No credentials accessed, no live cache/config/orders mutated.",
+    "CMC public API returned429; identity IDs came from provider UCID pages. None of the six new mappings is fallback-qualified by this audit."
+  ]
+}

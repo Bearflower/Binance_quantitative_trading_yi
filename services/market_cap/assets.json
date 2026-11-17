@@ -929,5 +929,106 @@
       "relative_difference": 0.000251,
       "max_relative_difference": 0.05
     }
+  },
+  "AKEUSDT": {
+    "symbol": "AKE",
+    "cg_id": "akedo",
+    "cmc_id": 38127,
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://www.coingecko.com/en/coins/akedo",
+      "https://coinmarketcap.com/currencies/akedo/"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "BLESSUSDT": {
+    "symbol": "BLESS",
+    "cg_id": "bless-2",
+    "cmc_id": 38466,
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://www.coingecko.com/en/coins/bless",
+      "https://coinmarketcap.com/currencies/bless/"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "EVAAUSDT": {
+    "symbol": "EVAA",
+    "cg_id": "evaa-protocol",
+    "cmc_id": 38376,
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://www.coingecko.com/en/coins/evaa-protocol",
+      "https://coinmarketcap.com/currencies/evaa-protocol/"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "JCTUSDT": {
+    "symbol": "JCT",
+    "cg_id": "janction",
+    "cmc_id": 38909,
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://www.coingecko.com/en/coins/janction",
+      "https://coinmarketcap.com/currencies/janction/"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "RAREUSDT": {
+    "symbol": "RARE",
+    "cg_id": "superrare",
+    "cmc_id": 11294,
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://www.coingecko.com/en/coins/superrare",
+      "https://coinmarketcap.com/currencies/superrare/"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "龙虾USDT": {
+    "symbol": "龙虾",
+    "cg_id": "lobster-2",
+    "cmc_id": null,
+    "verified_at": "2026-11-17",
+    "evidence": [
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://www.coingecko.com/en/coins/lobster-2"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
   }
 }

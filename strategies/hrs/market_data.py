@@ -6,6 +6,7 @@ V2: B4 —— 新增市值 Provenance 接口（get_market_cap_provenance），
 """
 from typing import Dict, Any, Optional, List, Set
 from datetime import datetime, timedelta, timezone
+import time
 import structlog
 
 from shared.binance_api import BinanceClient
@@ -71,6 +72,9 @@ class MarketDataProvider:
         self._funding_rate_cache: Dict[str, Dict[int, float]] = {}
         # 无效合约缓存（-4108 交割/结算/盘前、-9999 未知端点），避免重复请求产生告警日志
         self._invalid_contracts: Set[str] = set()
+        self._exchange_metadata_at = 0
+        self._exchange_metadata = []
+        self.universe_audit = {}
         # 从配置读取缓存TTL
         funding_config = config.get("funding_rate", {})
         self._funding_rate_cache_ttl = funding_config.get("cache_ttl_seconds", 28800)
@@ -95,11 +99,28 @@ class MarketDataProvider:
         Returns:
             所有交易对的24h统计列表
         """
+        tickers = None
         try:
             tickers = await self.binance_api.get_all_tickers()
-            logger.info("获取所有交易对行情", count=len(tickers))
-            return tickers
+            from .asset_universe import filter_crypto_tickers
+            if time.time() - self._exchange_metadata_at >= 3600:
+                metadata = await self.binance_api.get_exchange_info()
+                if not isinstance(metadata, dict) or not isinstance(metadata.get('symbols'), list):
+                    raise ValueError('exchange metadata unavailable')
+                self._exchange_metadata = metadata['symbols']
+                self._exchange_metadata_at = time.time()
+            eligible, self.universe_audit = filter_crypto_tickers(tickers, self._exchange_metadata)
+            self.universe_audit['observed_at'] = time.time()
+            logger.info("HRS 交易范围元数据核验", raw_count=len(tickers), eligible_count=len(eligible),
+                        classifications=self.universe_audit['counts'])
+            return eligible
         except Exception as e:
+            from .asset_universe import filter_crypto_tickers
+            if isinstance(tickers, list):
+                _, self.universe_audit = filter_crypto_tickers(tickers, [])
+            else:
+                self.universe_audit = dict(raw_count=None, eligible_count=0, counts={}, rows={})
+            self.universe_audit.update(observed_at=time.time(), error_type=type(e).__name__)
             logger.error("获取所有交易对行情失败", error=str(e))
             return []
 
