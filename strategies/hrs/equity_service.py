@@ -192,11 +192,16 @@ class HrsEquityService:
                 forecasts.append(dict(symbol=symbol,source_time=datetime.fromtimestamp(int(mark['time'])/1000,timezone.utc),
                     received_at=snapshot['captured_at'],next_funding_time=datetime.fromtimestamp(int(mark['nextFundingTime'])/1000,timezone.utc),source='authenticated_premium_index'))
         if symbols:
-            rows=await self.db.fetch_all("SELECT symbol,source_time,received_at,next_funding_time,payload_hash,raw_payload FROM public.ai_tuner_funding_schedule_observations WHERE symbol=ANY($1::text[]) AND next_funding_time >= $2 AND received_at <= $3",sorted(symbols),datetime.fromtimestamp(start_ms/1000,timezone.utc),snapshot['captured_at'])
+            rows=await self.db.fetch_all("SELECT DISTINCT ON(symbol,next_funding_time) symbol,source_time,received_at,next_funding_time,payload_hash,raw_payload FROM public.ai_tuner_funding_schedule_observations WHERE symbol=ANY($1::text[]) AND next_funding_time >= $2 AND received_at <= $3 ORDER BY symbol,next_funding_time,source_time,received_at",sorted(symbols),datetime.fromtimestamp(start_ms/1000,timezone.utc),snapshot['captured_at'])
             forecasts.extend(dict(row,source='independent_funding_schedule') for row in rows)
         if forecasts:
-            payload,digest=canonical(dict(forecasts=forecasts))
-            await self.db.execute("INSERT INTO trading.hrs_funding_observation(account_id,evidence_sha256,available_at,payload) VALUES($1,$2,$3,$4::jsonb) ON CONFLICT DO NOTHING",self.account,digest,self._now(),payload)
+            # Archive each source observation once; a fresh premium response
+            # must not duplicate the whole month of timetable rows every cycle.
+            batch=[]
+            for forecast in forecasts:
+                payload,digest=canonical(dict(forecasts=[forecast]))
+                batch.append(dict(evidence_sha256=digest,payload=json.loads(payload)))
+            await self.db.execute("INSERT INTO trading.hrs_funding_observation(account_id,evidence_sha256,available_at,payload) SELECT $1,x.evidence_sha256,$2,x.payload FROM jsonb_to_recordset($3::jsonb) AS x(evidence_sha256 text,payload jsonb) ON CONFLICT DO NOTHING",self.account,self._now(),json.dumps(batch))
         archived=await self.db.fetch_all('SELECT payload FROM trading.hrs_funding_observation WHERE account_id=$1 AND available_at<=$2',self.account,self._now())
         for row in archived:
             payload=json.loads(row['payload']) if isinstance(row['payload'],str) else row['payload']
