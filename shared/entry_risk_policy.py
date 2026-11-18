@@ -344,6 +344,13 @@ async def prepare_aggressive_entry(strategy, symbol, signal):
         policy=await store.policy('btc_eth_aggressive')
         if policy['mode']!='reduced' or policy['allow_add']:
             raise EntryDenied('reduced entry unavailable')
+        # The same identity is persisted in the reservation and the terminal
+        # signal row, including retries. Never mint a new identity on retry.
+        identity_value=signal.get('signal_id') or signal.get('timestamp')
+        if identity_value is None:
+            raise EntryDenied('signal lacks stable identity')
+        identity=f"{symbol}:{signal['direction']}:{identity_value}"
+        signal['entry_decision_identity']=identity
         if signal.get('_risk_client_id'):
             async with store.pool.acquire() as conn:
                 row=await conn.fetchrow('SELECT * FROM trading.entry_risk_reservation WHERE client_order_id=$1',signal['_risk_client_id'])
@@ -351,6 +358,8 @@ async def prepare_aggressive_entry(strategy, symbol, signal):
                     raise EntryDenied('intent already submitted or changed')
                 geometry = row['geometry']
                 if isinstance(geometry, str): geometry = json.loads(geometry)
+                if geometry.get('signal',{}).get('entry_decision_identity') != identity:
+                    raise EntryDenied('reserved signal identity changed')
                 signal['_risk_exit_ratios'] = geometry['exit_ratios']
                 signal['quantity'],signal['entry_price']=row['quantity'],row['price']
                 return True
@@ -363,10 +372,6 @@ async def prepare_aggressive_entry(strategy, symbol, signal):
             tp_offset=strategy.risk_config.get('tp_limit_order',{}).get('offset_pct',.0015))
         signal['_risk_exit_ratios'] = [str(value) for value in sized.exit_ratios]
         # Identity must come from the original signal, never generated on each retry.
-        identity=signal.get('signal_id') or signal.get('timestamp')
-        if identity is None:
-            raise EntryDenied('signal lacks stable identity')
-        identity=f"{symbol}:{signal['direction']}:{identity}"
         async def snapshot():
             # Already established production recovery/ownership verifier; unknown => deny.
             holdings=await strategy._owned_exchange_margin_for_allocation()
@@ -427,7 +432,10 @@ async def submit_aggressive_entry(strategy,symbol,signal):
 
 
 def entry_geometry(signal,filters,risk_config,partial):
-    return {"signal": {key:str(signal[key]) for key in ('direction','initial_stop_loss','tp1_price','tp2_price','leverage','grade')},
+    identity=signal.get('entry_decision_identity')
+    if not isinstance(identity,str) or not identity:
+        raise EntryDenied('signal identity missing from entry geometry')
+    return {"signal": {key:str(signal[key]) for key in ('direction','initial_stop_loss','tp1_price','tp2_price','leverage','grade','entry_decision_identity')},
             "partial_take_profit": {key:str(partial[key]) for key in ("tp1_close_ratio","tp2_close_ratio")},
             "exit_ratios": [str(value) for value in signal.get('_risk_exit_ratios',
                 (partial['tp1_close_ratio'],partial['tp2_close_ratio']))],
