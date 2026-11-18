@@ -33,6 +33,7 @@ from ai_tuner.replay.data_portal import DataPortal
 from ai_tuner.replay.engine import run_replay
 from ai_tuner.replay.models import DataBlocked, FutureDataAccess, parse_utc
 from strategies.hrs.exit_geometry import mode_exit_parameters
+from ai_tuner.hrs_evidence_export import resolve_scan_start
 
 CST = ZoneInfo('Asia/Shanghai')
 D = Decimal
@@ -54,6 +55,7 @@ def fingerprint(value):
 # commit annotation or a clean/dirty worktree assumption. Include shared helpers
 # called lazily by scoring/risk and the runner/report implementation itself.
 ENGINE_MODULES = (
+    'ai_tuner.hrs_evidence_export',
     'ai_tuner.replay.adapters.hrs', 'ai_tuner.replay.adapters.base',
     'ai_tuner.replay.engine', 'ai_tuner.replay.broker', 'ai_tuner.replay.models',
     'ai_tuner.replay.data_portal', 'ai_tuner.replay.clock',
@@ -221,6 +223,19 @@ def validate_registration(registration):
     for window in windows:
         if _time(window['start']) >= _time(window['end']):
             raise ValueError('invalid_window')
+        for field in ('start_policy','end_policy'):
+            policy=window.get(field)
+            if policy is not None and (not isinstance(policy,dict) or policy.get('version')!='first_scan_start_v1'
+                    or type(policy.get('max_delay_seconds')) is not int or not 0<policy['max_delay_seconds']<=3600):
+                raise ValueError('scan_boundary_policy_invalid')
+        model=window.get('observation_model','full_calendar_month')
+        if model not in ('full_calendar_month','scan_aligned_month_v1'):
+            raise ValueError('unknown_observation_model')
+        if model=='scan_aligned_month_v1' and (not window.get('start_policy') or
+                window.get('start_policy')!=window.get('end_policy') or
+                type(window.get('minimum_duration_seconds')) is not int or
+                not 28*86400<=window['minimum_duration_seconds']<=(_time(window['end'])-_time(window['start'])).total_seconds()):
+            raise ValueError('scan_aligned_month_contract_invalid')
     for window in holdouts:
         start, end = (_time(window[key]).astimezone(CST) for key in ('start', 'end'))
         next_month = (start.replace(year=start.year+1, month=1) if start.month == 12
@@ -230,6 +245,11 @@ def validate_registration(registration):
     ordered = research + holdouts
     if any(_time(a['end']) > _time(b['start']) for a, b in zip(ordered, ordered[1:])):
         raise ValueError('chronological_windows_overlap')
+    if any(w.get('observation_model')=='scan_aligned_month_v1' for w in holdouts):
+        if any(w.get('observation_model')!='scan_aligned_month_v1' for w in holdouts) or any(
+                _time(a['end'])!=_time(b['start']) or a.get('end_policy')!=b.get('start_policy')
+                for a,b in zip(ordered,ordered[1:])):
+            raise ValueError('scan_aligned_month_shared_boundaries_required')
     if type(registration.get('minimum_closed_lifecycles')) is not int or registration['minimum_closed_lifecycles'] < 20:
         raise ValueError('minimum_sample_must_be_preregistered')
     model = registration['cost_model']
@@ -355,13 +375,54 @@ def select_mode_trades(trades, entry_modes, mode):
     return tuple(trade for trade in trades if entry_modes.get(trade.position_id) in family)
 
 
+def _boundary_summary(window,start,end,start_resolution,end_resolution):
+    nominal_start,nominal_end=_time(window['start']),_time(window['end'])
+    full=start==nominal_start and end==nominal_end
+    duration=(end-start).total_seconds()
+    model=window.get('observation_model','full_calendar_month')
+    eligible=full if model=='full_calendar_month' else duration>=window['minimum_duration_seconds']
+    return dict(registered_start=nominal_start.isoformat(),registered_end=nominal_end.isoformat(),
+        actual_start=start.isoformat(),actual_end=end.isoformat(),end=end.isoformat(),
+        delay_seconds=(start-nominal_start).total_seconds(),end_delay_seconds=(end-nominal_end).total_seconds(),
+        nominal_duration_seconds=(nominal_end-nominal_start).total_seconds(),actual_duration_seconds=duration,
+        full_registered_span=full,qualification_model=model,monthly_window_eligible=eligible,
+        start_resolution=start_resolution,end_resolution=end_resolution)
+
+
+def _window_portal(directory,window):
+    start,end=_time(window['start']),_time(window['end'])
+    start_resolution=end_resolution=None
+    if window.get('start_policy') is not None or window.get('end_policy') is not None:
+        # Read the declared boundary only to instantiate the verifier. It gains
+        # authority from manifest validation and independent raw re-resolution.
+        manifest=json.loads((Path(directory)/'manifest.json').read_text())
+        actual=_time(manifest['window_start']);actual_end=_time(manifest['as_of'])
+        portal=DataPortal(directory,'hrs',actual_end,actual,required_datasets=REQUIRED_FILES)
+        for name in ('hrs_export_receipt.json','raw_hrs_evidence.json'):
+            portal._require_dataset(name)
+        receipt=portal._read_json('hrs_export_receipt.json')
+        raw=portal._read_json('raw_hrs_evidence.json')
+        if window.get('start_policy') is not None:
+            start_resolution=resolve_scan_start(raw['decision_evidence'],start,end,window['start_policy'])
+            start=_time(start_resolution['actual_start'])
+        if window.get('end_policy') is not None:
+            end_resolution=resolve_scan_start(raw['decision_evidence'],end,end+timedelta(hours=1,microseconds=1),window['end_policy'])
+            end=_time(end_resolution['actual_start'])
+        if (receipt.get('boundary_resolution')!=start_resolution or receipt.get('end_boundary_resolution')!=end_resolution
+                or start!=actual or end!=actual_end):
+            raise DataBlocked(['scan_boundary_resolution_mismatch'])
+    else:
+        portal=DataPortal(directory,'hrs',end,start,required_datasets=REQUIRED_FILES)
+    return portal,_boundary_summary(window,start,end,start_resolution,end_resolution)
+
+
 def _run_candidate(registration, candidate, window, directory, on_engine_run=None, *, expected_engine_identity=None):
     expected_engine_identity = expected_engine_identity or engine_identity()
     _require_runtime_identity(expected_engine_identity, 'engine_identity_changed_before_run')
-    start, end = _time(window['start']), _time(window['end'])
     tiers = {}; all_gaps = []
     for tier, multiplier in TIERS.items():
-        portal = DataPortal(directory, 'hrs', end, start, required_datasets=REQUIRED_FILES)
+        portal,boundary = _window_portal(directory,window)
+        start,end=portal.window_start,portal.as_of
         for name in sorted(REQUIRED_FILES):
             portal._require_dataset(name)
         raw = portal.hrs_replay_state(start)
@@ -402,6 +463,8 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
             minimum=registration['minimum_closed_lifecycles'])
         portfolio_lifecycles = lifecycle_metrics(replay.closed_trades, risks, minimum=1)
         gaps = list(nav['blocked_reasons'])+list(lifecycles['blocked_reasons'])
+        if window['role']=='holdout' and not boundary['monthly_window_eligible']:
+            gaps.append('monthly_observation_window_not_qualified')
         gaps.extend(portfolio_lifecycles['blocked_reasons'])
         if any(entry_modes.get(trade.position_id) not in {'standard', 'emm', 'semi_emm', 'lv_rm'} for trade in replay.closed_trades):
             gaps.append('entry_mode_attribution_missing')
@@ -418,7 +481,7 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
             future_data_accesses=0, blocked_reasons=gaps)
     return dict(candidate_id=candidate['candidate_id'], mode=candidate['mode'], window_id=window['window_id'],
         is_baseline=not candidate['exit_parameters'], candidate_sha256=fingerprint(candidate), status='BLOCKED_DATA' if all_gaps else 'AVAILABLE',
-        tiers=tiers, engine_identity=expected_engine_identity, blocked_reasons=all_gaps)
+        tiers=tiers, window_boundary=boundary, engine_identity=expected_engine_identity, blocked_reasons=all_gaps)
 
 
 def _selection_candidates(registration, selection, research_report, *, current_engine_identity):
@@ -448,10 +511,29 @@ def _selection_candidates(registration, selection, research_report, *, current_e
     return candidates
 
 
+def _shared_boundary_gaps(registration,boundaries,research_report):
+    holdouts=sorted((w for w in registration['windows'] if w['role']=='holdout'),key=lambda w:_time(w['start']))
+    if not any(w.get('observation_model')=='scan_aligned_month_v1' for w in holdouts):return []
+    research=next(w for w in registration['windows'] if w['role']=='research')
+    previous=(research_report or {}).get('window_boundaries',{}).get(research['window_id'])
+    gaps=[]
+    for window in holdouts:
+        current=boundaries.get(window['window_id'])
+        if not previous or not current:
+            gaps.append('shared_scan_boundary_missing:'+window['window_id'])
+        elif (previous['actual_end']!=current['actual_start'] or
+              previous.get('end_resolution') is None or
+              previous['end_resolution'].get('selected_evidence_id')!=current.get('start_resolution',{}).get('selected_evidence_id') or
+              previous['end_resolution'].get('selected_payload_sha256')!=current.get('start_resolution',{}).get('selected_payload_sha256')):
+            gaps.append('shared_scan_boundary_mismatch:'+window['window_id'])
+        previous=current
+    return gaps
+
+
 def run_experiment(registration, *, snapshot_roots=(), output=None, stage='research', selection=None, research_report=None):
     report = dict(schema_version=1, status='BLOCKED_DATA', stage=stage, performance_accepted=False,
         registration_sha256=None, engine_identity=engine_identity(), selected_candidates={}, evaluations=[], engine_runs=0,
-        blocked_reasons=[], snapshot_inventory=[], boundary_policy='flat_start_no_open_end',
+        blocked_reasons=[], snapshot_inventory=[], window_boundaries={},boundary_policy='flat_start_no_open_end',
         qualification='two complete independent holdout months required; no automatic production admission')
     report['discovery_roots'] = [dict(path=str(Path(root).expanduser().resolve()), exists=Path(root).expanduser().is_dir())
                                  for root in snapshot_roots]
@@ -464,6 +546,8 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
         report['registered_candidates'] = [dict(candidate, candidate_sha256=fingerprint(candidate))
                                             for candidate in registration['candidates']]
         report['registered_windows'] = registration['windows']
+        if any(w.get('observation_model')=='scan_aligned_month_v1' for w in registration['windows']):
+            report['qualification']='two preregistered scan-aligned observation months, each at least 28 days, with shared captured boundaries; not complete natural months or automatic production admission'
         report['cost_model'] = registration['cost_model']
         if stage not in ('research', 'holdout'):
             raise ValueError('unknown_stage')
@@ -484,6 +568,9 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
                         report['engine_runs'] += 1
                     evaluation = _run_candidate(registration, candidate, window, choices[0]['snapshot_dir'], counted_run, expected_engine_identity=report['engine_identity'])
                     report['evaluations'].append(evaluation)
+                    previous=report['window_boundaries'].setdefault(window['window_id'],evaluation['window_boundary'])
+                    if previous!=evaluation['window_boundary']:
+                        raise DataBlocked(['candidate_window_boundary_changed'])
                     report['blocked_reasons'].extend(window['window_id']+':'+candidate['candidate_id']+':'+gap
                                                       for gap in evaluation['blocked_reasons'])
                 except FutureDataAccess:
@@ -491,6 +578,8 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
                     report['blocked_reasons'].append('future_data_access:'+window['window_id'])
                 except DataBlocked as error:
                     report['blocked_reasons'].extend(window['window_id']+':'+str(gap) for gap in error.gaps)
+        if stage=='holdout':
+            report['blocked_reasons'].extend(_shared_boundary_gaps(registration,report['window_boundaries'],research_report))
         if not report['blocked_reasons'] and report['evaluations']:
             report['status'] = 'AVAILABLE'
         if stage == 'holdout' and report['status'] == 'AVAILABLE':
@@ -526,7 +615,9 @@ def compare_holdouts(evaluations, selected):
             a, b = candidate['tiers']['baseline'], reference['tiers']['baseline']
             sample_a, sample_b = a['lifecycles'].get('lifecycle_r', []), b['lifecycles'].get('lifecycle_r', [])
             ci = _difference_ci(sample_a, sample_b, fingerprint([identity, candidate['window_id']]))
-            passed = (D(a['lifecycles']['net_pnl_per_entry_risk']) >= D(b['lifecycles']['net_pnl_per_entry_risk'])
+            passed = (candidate.get('window_boundary',{}).get('monthly_window_eligible',True)
+                and reference.get('window_boundary',{}).get('monthly_window_eligible',True)
+                and D(a['lifecycles']['net_pnl_per_entry_risk']) >= D(b['lifecycles']['net_pnl_per_entry_risk'])
                 and D(a['nav']['max_drawdown']) <= D(b['nav']['max_drawdown'])
                 and D(a['lifecycles']['worst_lifecycle_r']) >= D(b['lifecycles']['worst_lifecycle_r'])
                 and D(a['lifecycles']['without_best_lifecycle_net_pnl']) >= D(b['lifecycles']['without_best_lifecycle_net_pnl'])
@@ -536,6 +627,7 @@ def compare_holdouts(evaluations, selected):
                     and D(candidate['tiers'][tier]['lifecycles']['worst_lifecycle_r']) >= D(reference['tiers'][tier]['lifecycles']['worst_lifecycle_r'])
                     for tier in TIERS))
             results.append(dict(window_id=candidate['window_id'], stable_improvement=passed,
+                window_boundary=candidate.get('window_boundary'),
                 mean_lifecycle_r_difference_ci95=ci, trade_retention=str(D(len(sample_a))/D(len(sample_b))) if sample_b else None))
         comparisons.append(dict(mode=mode, candidate_id=identity, windows=results,
                                 stable_improvement=len(results) == 2 and all(row['stable_improvement'] for row in results)))

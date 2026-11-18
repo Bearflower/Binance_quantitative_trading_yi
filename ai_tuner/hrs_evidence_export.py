@@ -84,6 +84,35 @@ def _equity(rows):
     return result
 
 
+def _scan_delay(policy):
+    _require(isinstance(policy,dict) and policy.get('version')=='first_scan_start_v1'
+        and type(policy.get('max_delay_seconds')) is int and 0<policy['max_delay_seconds']<=3600,
+        'scan_boundary_policy_invalid')
+    return policy['max_delay_seconds']
+
+
+def resolve_scan_start(records,registered_start,window_end,policy):
+    """Select by time alone: an unusable first scan must never be skipped."""
+    start,end=_time(registered_start),_time(window_end)
+    delay=_scan_delay(policy)
+    rows=_records(records)
+    candidates=[r for r in rows if r['kind']=='scan_start' and
+        start<=r['event_time']<=start+timedelta(seconds=delay) and r['event_time']<end]
+    _require(candidates,'first_scan_boundary_missing')
+    first=min(r['event_time'] for r in candidates)
+    selected=[r for r in candidates if r['event_time']==first]
+    _require(len(selected)==1,'first_scan_boundary_ambiguous')
+    row=selected[0]
+    endings=[r for r in rows if r['run_id']==row['run_id'] and r['kind']=='scan_end']
+    _require(len(endings)==1 and endings[0]['payload'].get('status')=='complete',
+        'first_scan_boundary_incomplete')
+    return dict(policy=dict(policy),registered_start=_iso(start),actual_start=_iso(first),end=_iso(end),
+        delay_seconds=(first-start).total_seconds(),full_registered_span=first==start,
+        selected_evidence_id=row['evidence_id'],selected_payload_sha256=row['payload_sha256'],
+        candidate_inventory=[dict(evidence_id=r['evidence_id'],event_time=_iso(r['event_time']),
+            payload_sha256=r['payload_sha256']) for r in sorted(candidates,key=lambda r:(r['event_time'],r['evidence_id']))])
+
+
 def _config(snapshot):
     config=snapshot['config'];hashes=snapshot['config_hashes']
     _require(set(hashes)==set(HASHES) and all(re.fullmatch('[0-9a-f]{64}',str(hashes[k])) for k in HASHES),'config_identity_missing_or_invalid')
@@ -222,6 +251,7 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
     for run,rows in sorted(groups.items(),key=lambda pair:min(r['event_time'] for r in pair[1])):
         starts=[r for r in rows if r['kind']=='scan_start'];ends=[r for r in rows if r['kind']=='scan_end']
         if not starts or max(r['available_at'] for r in rows)<=start:continue
+        if min(r['event_time'] for r in starts)>=end:continue
         _require(len(starts)==1 and len(ends)==1 and ends[0]['payload'].get('status')=='complete','scan_incomplete:'+run)
         if starts[0]['event_time']>end:continue
         snapshot=starts[0]['payload'];final=ends[0]['payload']['state']
@@ -385,7 +415,7 @@ def _cash_flows(source,records,terminal,start,end,segment):
     return result
 
 
-def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_model=None,monitoring_model=None,allow_inception_segment=False):
+def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_model=None,monitoring_model=None,allow_inception_segment=False,start_policy=None,end_policy=None):
     """Read raw facts, validate actual adapter/engine contract, then seal once.
 
     Sources retain the SQL row envelopes and original hashes. The exporter never
@@ -402,6 +432,14 @@ def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_mo
             if not sources.get(name):missing.append(gap)
         if missing:raise DataBlocked(missing)
         records=_records(sources.get('decision_evidence'))
+        boundary=None
+        end_boundary=None
+        if end_policy is not None:
+            end_boundary=resolve_scan_start(records,end,end+timedelta(hours=1,microseconds=1),end_policy)
+            end=_time(end_boundary['actual_start'])
+        if start_policy is not None:
+            boundary=resolve_scan_start(records,start,_time(as_of),start_policy)
+            start=_time(boundary['actual_start'])
         equity_rows=list(sources.get('equity_evidence') or [])
         equity_rows.extend(archive for row in records if row['kind']=='scan_start'
             for archive in row['payload'].get('financial_context',{}).get('equity_source_archives',[]))
@@ -438,7 +476,7 @@ def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_mo
                 'config_hashes.json':dict(strategy_id='hrs',as_of=_iso(end),**bootstrap['config_hashes']),
                 'universe_slices.json':[dict(strategy_id='hrs',valid_from=_iso(start),valid_to=_iso(end+timedelta(microseconds=1)),observed_at=_iso(start),symbols=symbols,intervals=['1h','4h'],source='decision_evidence',config_hash=compute_config_hash(bootstrap['config']))],
                 'exchange_info.json':exchange,'funding_schedule_evidence.json':forecasts,
-                'hrs_export_receipt.json':dict(version=VERSION,qualification_available_at=terminal['available_at'],source_age_distribution=distribution,mark_synchrony=False,exact_exchange_parity=False,qualification_limitations=['ledger_sample_120s_v1 preserves asynchronous source points; optimistic differences alone do not establish performance qualification.'],bootstrap_available_at=_iso(available),capture_coverage=coverage,source_attested=False,
+                'hrs_export_receipt.json':dict(version=VERSION,boundary_resolution=boundary,end_boundary_resolution=end_boundary,qualification_available_at=terminal['available_at'],source_age_distribution=distribution,mark_synchrony=False,exact_exchange_parity=False,qualification_limitations=['ledger_sample_120s_v1 preserves asynchronous source points; optimistic differences alone do not establish performance qualification.'],bootstrap_available_at=_iso(available),capture_coverage=coverage,source_attested=False,
                     decision_payload_hashes={r['evidence_id']:r['payload_sha256'] for r in records},equity_payload_hashes=[e['sha256'] for e in equities]),
                 'raw_hrs_evidence.json':sources}
             for name,value in files.items():_write(staging/name,value)
@@ -500,7 +538,7 @@ def read_market_export(directory):
     return batches
 
 
-async def read_evidence_sources(connection,account_id,*,window_start,as_of):
+async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_policy=None):
     """Bounded extraction on an acquired SELECT-only connection, one snapshot.
 
     No secret lookup, connection ownership, DDL or writes. The caller supplies an
@@ -508,7 +546,10 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of):
     or captured public klines; arbitrary SQL/table names are never interpolated.
     """
     start,end=_time(window_start),_time(as_of)
+    nominal_end=end
     _require(start<end and end-start<=timedelta(days=90),'invalid_or_excessive_window')
+    if end_policy is not None:
+        end+=timedelta(seconds=_scan_delay(end_policy))
     limit=MAX_ROWS+1
     specs=[('decision_evidence',"""SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload
         FROM hrs.hrs_decision_evidence WHERE run_id IN (
@@ -534,7 +575,7 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of):
                     FROM trading.hrs_equity_evidence WHERE account_id=$1 AND
                     (evidence_sha256=ANY($2::text[]) OR as_of=ANY($3::timestamptz[])
                      OR (as_of >= $4 AND as_of <= $5)) ORDER BY available_at,evidence_sha256 LIMIT $6'''
-                args=(account_id,sorted(referenced),sorted(ledger_points),end,end+timedelta(seconds=120),limit)
+                args=(account_id,sorted(referenced),sorted(ledger_points),nominal_end,end+timedelta(seconds=120),limit)
             elif name=='funding_observations':
                 query='''SELECT symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash
                     FROM public.ai_tuner_funding_schedule_observations WHERE received_at >= $1 AND received_at <= $2
@@ -573,6 +614,8 @@ def main(argv=None):
     parser.add_argument('--monitor-cadence-seconds',type=int)
     parser.add_argument('--monitor-anchor')
     parser.add_argument('--allow-inception-segment',action='store_true')
+    parser.add_argument('--first-scan-max-delay-seconds',type=int,help='Preregistered first-scan lower-bound policy, at most 3600 seconds')
+    parser.add_argument('--end-first-scan-max-delay-seconds',type=int,help='Preregistered terminal scan lower-bound policy; requires source facts through that actual scan')
     args=parser.parse_args(argv)
     if args.sources and args.sources.stat().st_size>MAX_BYTES:parser.error('source_byte_limit')
     sources=json.loads(args.sources.read_text()) if args.sources else {}
@@ -581,7 +624,11 @@ def main(argv=None):
         sources.setdefault('market_bars',[]).extend(read_market_export(args.raw_market_export))
     execution=(dict(version='hrs_1m_volume_v1',participation_rate=args.participation_rate,timeout_minutes=15) if args.participation_rate else None)
     monitor=(dict(version='hrs_cycle_monitor_v1',cadence_seconds=args.monitor_cadence_seconds,anchor_at=args.monitor_anchor) if args.monitor_cadence_seconds and args.monitor_anchor else None)
-    result=export_evidence_bundle(sources,args.output_root,window_start=_time(args.window_start),as_of=_time(args.as_of),execution_model=execution,monitoring_model=monitor,allow_inception_segment=args.allow_inception_segment)
+    policy=(dict(version='first_scan_start_v1',max_delay_seconds=args.first_scan_max_delay_seconds)
+        if args.first_scan_max_delay_seconds is not None else None)
+    end_policy=(dict(version='first_scan_start_v1',max_delay_seconds=args.end_first_scan_max_delay_seconds)
+        if args.end_first_scan_max_delay_seconds is not None else None)
+    result=export_evidence_bundle(sources,args.output_root,window_start=_time(args.window_start),as_of=_time(args.as_of),execution_model=execution,monitoring_model=monitor,allow_inception_segment=args.allow_inception_segment,start_policy=policy,end_policy=end_policy)
     print(canonical_payload(result)[0])
     return 0 if result.get('status')=='SEALED' else 2
 

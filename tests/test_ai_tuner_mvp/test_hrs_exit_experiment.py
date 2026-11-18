@@ -100,6 +100,47 @@ def test_holdouts_are_two_complete_nonoverlapping_cst_months_after_research():
         m.validate_registration(r)
 
 
+def test_scan_aligned_month_is_distinct_and_requires_bounded_shared_windows():
+    m=module();r=registration();policy=dict(version='first_scan_start_v1',max_delay_seconds=3600)
+    for window in r['windows']:
+        window.update(start_policy=policy,end_policy=policy)
+        if window['role']=='holdout':
+            window.update(observation_model='scan_aligned_month_v1',minimum_duration_seconds=28*86400)
+    m.validate_registration(r)
+    r['windows'][1]['minimum_duration_seconds']=27*86400
+    with pytest.raises(ValueError,match='scan_aligned_month'):
+        m.validate_registration(r)
+
+
+def test_observed_month_boundary_qualification_preserves_actual_span_and_shared_capture():
+    m=module();r=registration();window=r['windows'][1]
+    window.update(observation_model='scan_aligned_month_v1',minimum_duration_seconds=28*86400)
+    start=m._time(window['start'])+timedelta(minutes=21)
+    end=m._time(window['end'])+timedelta(minutes=22)
+    boundary=m._boundary_summary(window,start,end,{'selected_evidence_id':'a','selected_payload_sha256':'a'*64},
+        {'selected_evidence_id':'b','selected_payload_sha256':'b'*64})
+    assert boundary['monthly_window_eligible'] is True
+    assert boundary['full_registered_span'] is False
+    assert boundary['actual_duration_seconds']==31*86400+60
+    assert boundary['qualification_model']=='scan_aligned_month_v1'
+    assert m._boundary_summary(window,start,start+timedelta(days=27),{}, {})['monthly_window_eligible'] is False
+
+
+def test_observed_months_must_share_exact_captured_boundary_with_research():
+    m=module();r=registration()
+    for w in r['windows'][1:]:w['observation_model']='scan_aligned_month_v1'
+    def edge(identity):return dict(selected_evidence_id=identity,selected_payload_sha256=identity*64)
+    previous=dict(actual_end='2026-10-01T00:21:00+08:00',end_resolution=edge('a'))
+    first=dict(actual_start=previous['actual_end'],actual_end='2026-11-01T00:21:00+08:00',
+        start_resolution=edge('a'),end_resolution=edge('b'))
+    second=dict(actual_start=first['actual_end'],start_resolution=edge('b'))
+    research={'window_boundaries':{'research':previous}}
+    boundaries={'month1':first,'month2':second}
+    assert m._shared_boundary_gaps(r,boundaries,research)==[]
+    second['start_resolution']=edge('c')
+    assert m._shared_boundary_gaps(r,boundaries,research)==['shared_scan_boundary_mismatch:month2']
+
+
 def test_holdout_refuses_unfrozen_selection_before_touching_snapshots(tmp_path):
     m = module()
     result = m.run_experiment(registration(), snapshot_roots=[tmp_path], stage='holdout')
@@ -170,7 +211,8 @@ def test_cli_real_discovery_without_registration_cannot_report_winner(tmp_path):
     assert result['selected_candidates'] == {} and result['evaluations'] == []
 
 
-def test_real_engine_executes_manifest_bound_raw_fixture_without_relabeling_history(tmp_path):
+@pytest.mark.parametrize('first_scan_policy',[False,True])
+def test_real_engine_executes_manifest_bound_raw_fixture_without_relabeling_history(tmp_path,first_scan_policy):
     from .replay.test_hrs_wiring import _hrs_fixture, AT
     m = module()
     portal, original_adapter, _ = _hrs_fixture(tmp_path, candidate_drop_after=2, config_patch={
@@ -191,11 +233,30 @@ def test_real_engine_executes_manifest_bound_raw_fixture_without_relabeling_hist
     r['baseline']['effective_config_sha256'] = digest(raw['config'])
     r['candidates'][1]['exit_parameters']['min_absolute_percent'] = '.06'
     r['windows'][0].update(start=AT.isoformat(), end=portal.as_of.isoformat(), snapshot_dir=str(portal.snapshot_dir))
+    if first_scan_policy:
+        from ai_tuner.hrs_evidence_export import resolve_scan_start
+        from .test_hrs_evidence_export import envelope
+        records=[envelope('opening','scan_start',{'fixture':True},AT),
+                 envelope('opening','scan_end',{'status':'complete'},AT)]
+        lower=AT-timedelta(minutes=21)
+        policy=dict(version='first_scan_start_v1',max_delay_seconds=3600)
+        r['windows'][0].update(start=lower.isoformat(),start_policy=policy)
+        boundary=resolve_scan_start(records,lower,portal.as_of,policy)
+        for name,data in [('raw_hrs_evidence.json',{'decision_evidence':records}),
+                          ('hrs_export_receipt.json',{'boundary_resolution':boundary})]:
+            path=portal.snapshot_dir/name;path.write_text(json.dumps(data))
+            manifest['files'][name]={'path':name,'sha256':sha256_file(str(path))}
+        manifest['sha256']=compute_manifest_sha256(manifest['files'])
+        manifest_path.write_text(json.dumps(manifest))
+        portal=DataPortal(portal.snapshot_dir,'hrs',portal.as_of,AT)
     # Research is deliberately before the holdout dates used by this fixture.
     r['windows'][1].update(start='2026-12-01T00:00:00+08:00', end='2027-01-01T00:00:00+08:00')
     r['windows'][2].update(start='2027-01-01T00:00:00+08:00', end='2027-02-01T00:00:00+08:00')
     result = m.run_experiment(r, snapshot_roots=[portal.snapshot_dir], stage='research')
     assert result['evaluations'] and result['engine_runs'] == 6, result['blocked_reasons']
+    if first_scan_policy:
+        assert result['evaluations'][0]['window_boundary']['delay_seconds']==1260
+        assert result['evaluations'][0]['window_boundary']['full_registered_span'] is False
     assert result['evaluations'][0]['tiers']['baseline']['score_events'] > 0
     assert result['evaluations'][0]['tiers']['baseline']['source_manifest_sha256'] == portal.manifest_sha256
     reference = result['evaluations'][0]['tiers']['baseline']

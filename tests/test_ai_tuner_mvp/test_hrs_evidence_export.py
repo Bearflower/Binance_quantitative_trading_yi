@@ -1,6 +1,7 @@
 """Raw-capture conversion contracts; engineering fixtures are never live evidence."""
 import copy
 import json
+import pytest
 from datetime import timedelta
 from pathlib import Path
 
@@ -90,6 +91,117 @@ def test_raw_captures_roundtrip_into_actual_strategy_engine(tmp_path):
     assert replay.final_position and replay.final_position.entry_mode=='standard'
     assert any(e['type']=='hrs_budget' for e in replay.audit_events)
     assert result['source_attested'] is False
+
+
+def test_registered_lower_bound_resolves_first_actual_scan_without_backdating(tmp_path):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    sources,bootstrap=captured_sources(tmp_path)
+    lower=AT-timedelta(minutes=21)
+    result=export_evidence_bundle(sources,tmp_path/'output',window_start=lower,as_of=AT+timedelta(hours=3),
+        start_policy=dict(version='first_scan_start_v1',max_delay_seconds=3600),
+        execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('status')=='SEALED',result
+    path=Path(result['snapshot_dir'])
+    receipt=json.loads((path/'hrs_export_receipt.json').read_text())
+    assert receipt['boundary_resolution']['actual_start']=='2026-11-17T00:00:00Z'
+    assert receipt['boundary_resolution']['delay_seconds']==1260
+    assert json.loads((path/'manifest.json').read_text())['window_start']=='2026-11-17T00:00:00Z'
+
+
+def test_boundary_selection_cannot_skip_a_nonflat_first_scan(tmp_path):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    sources,bootstrap=captured_sources(tmp_path)
+    first=sources['decision_evidence'][0]
+    first['payload']['positions']={'A':{'remaining_quantity':'1'}}
+    first['payload_sha256']=canonical_payload(first['payload'])[1]
+    result=export_evidence_bundle(sources,tmp_path/'output',window_start=AT-timedelta(minutes=1),as_of=AT+timedelta(hours=3),
+        start_policy=dict(version='first_scan_start_v1',max_delay_seconds=3600))
+    assert result['decision']=='BLOCKED_DATA'
+    assert 'nonflat_opening_cost_mae_funding_proof_missing' in result['gaps']
+
+
+def test_boundary_selection_cannot_skip_an_incomplete_first_scan(tmp_path):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    sources,_=captured_sources(tmp_path)
+    sources['decision_evidence']=[r for r in sources['decision_evidence'] if not (r['run_id']=='bootstrap' and r['kind']=='scan_end')]
+    result=export_evidence_bundle(sources,tmp_path/'output',window_start=AT-timedelta(minutes=1),as_of=AT+timedelta(hours=3),
+        start_policy=dict(version='first_scan_start_v1',max_delay_seconds=3600))
+    assert result['decision']=='BLOCKED_DATA'
+    assert 'first_scan_boundary_incomplete' in result['gaps']
+
+
+def test_boundary_resolver_rejects_late_or_ambiguous_first_scan():
+    from ai_tuner.hrs_evidence_export import resolve_scan_start
+    from ai_tuner.replay.models import DataBlocked
+    policy=dict(version='first_scan_start_v1',max_delay_seconds=3600)
+    with pytest.raises(DataBlocked,match='first_scan_boundary_missing'):
+        resolve_scan_start([envelope('late','scan_start',{},AT+timedelta(hours=1,seconds=1))],AT,AT+timedelta(days=1),policy)
+    with pytest.raises(DataBlocked,match='first_scan_boundary_ambiguous'):
+        resolve_scan_start([envelope('a','scan_start',{},AT),envelope('b','scan_start',{},AT)],AT,AT+timedelta(days=1),policy)
+
+
+@pytest.mark.parametrize('delayed_availability',[False,True])
+def test_both_preregistered_boundaries_resolve_real_scans_and_exclude_terminal_cycle(tmp_path,delayed_availability):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    sources,bootstrap=captured_sources(tmp_path)
+    if delayed_availability:
+        for row in sources['decision_evidence']:
+            at=AT if row['run_id']=='bootstrap' else AT+timedelta(hours=1)
+            if row['run_id']=='bootstrap' and row['kind']=='scan_start':
+                row['available_at']=(at+timedelta(seconds=5,microseconds=123456)).isoformat()
+                row['payload']['financial_context']['available_at']=(at+timedelta(seconds=4,microseconds=123456)).isoformat()
+            elif row['run_id']=='cycle-0':
+                seconds={'scan_start':0,'analysis':6,'market_input':2,'entry_stage_inputs':7,
+                         'execution_batch':8,'scan_end':10}.get(row['kind'],1)
+                row['event_time']=(at+timedelta(seconds=seconds,microseconds=123456)).isoformat()
+                row['available_at']=(at+timedelta(seconds=seconds+1,microseconds=123456)).isoformat()
+                if row['kind']=='scan_start':
+                    row['available_at']=(at+timedelta(seconds=5,microseconds=123456)).isoformat()
+                    row['payload']['financial_context']['available_at']=(at+timedelta(seconds=4,microseconds=123456)).isoformat()
+                if row['kind']=='scan_end':
+                    row['payload']['state']['financial_context']['available_at']=(at+timedelta(seconds=4,microseconds=123456)).isoformat()
+            row['payload_sha256']=canonical_payload(row['payload'])[1]
+    end=AT+timedelta(hours=3)
+    # The end scan is also the next window's first scan; its decision belongs
+    # to that next window, and no synthetic decision is added to this one.
+    policy=dict(version='first_scan_start_v1',max_delay_seconds=3600)
+    result=export_evidence_bundle(sources,tmp_path/'output',window_start=AT-timedelta(minutes=21),as_of=end-timedelta(minutes=15),
+        start_policy=policy,end_policy=policy,execution_model=bootstrap['execution_model'],
+        monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('status')=='SEALED',result
+    path=Path(result['snapshot_dir']);receipt=json.loads((path/'hrs_export_receipt.json').read_text())
+    if delayed_availability:
+        assert receipt['bootstrap_available_at']=='2026-11-17T00:00:05.123456Z'
+        calendar=[json.loads(line) for line in (path/'hrs_decision_calendar.jsonl').read_text().splitlines()]
+        assert calendar[0]['decision_at']=='2026-11-17T01:00:06.123456Z'
+        assert calendar[0]['available_at']=='2026-11-17T01:00:09.123456Z'
+    assert receipt['end_boundary_resolution']['actual_start']=='2026-11-17T03:00:00Z'
+    assert json.loads((path/'manifest.json').read_text())['as_of']=='2026-11-17T03:00:00Z'
+    from .test_hrs_exit_experiment import registration
+    from ai_tuner import hrs_exit_experiment as experiment
+    registered=registration();registered['baseline'].update(config=bootstrap['config'],
+        effective_config_sha256=experiment.fingerprint(bootstrap['config']))
+    registered['windows'][0].update(start=(AT-timedelta(minutes=21)).isoformat(),end=(end-timedelta(minutes=15)).isoformat(),
+        start_policy=policy,end_policy=policy,snapshot_dir=str(path))
+    registered['windows'][1].update(start='2026-12-01T00:00:00+08:00',end='2027-01-01T00:00:00+08:00')
+    registered['windows'][2].update(start='2027-01-01T00:00:00+08:00',end='2027-02-01T00:00:00+08:00')
+    report=experiment.run_experiment(registered,snapshot_roots=[path])
+    assert report['engine_runs']==6,report['blocked_reasons']
+    assert report['window_boundaries']['research']['end_delay_seconds']==900
+    assert report['window_boundaries']['research']['actual_duration_seconds']==3*3600
+    # Integrity-preserving re-sealing of a false resolution must still fail the
+    # independent raw inventory re-computation before any strategy execution.
+    from ai_tuner.replay.data_portal import compute_manifest_envelope_sha256,compute_manifest_sha256,sha256_file
+    receipt['boundary_resolution']['selected_evidence_id']='later-chosen-scan'
+    (path/'hrs_export_receipt.json').write_text(json.dumps(receipt))
+    manifest=json.loads((path/'manifest.json').read_text())
+    manifest['files']['hrs_export_receipt.json']['sha256']=sha256_file(str(path/'hrs_export_receipt.json'))
+    manifest['sha256']=compute_manifest_sha256(manifest['files'])
+    manifest['envelope_sha256']=compute_manifest_envelope_sha256(manifest)
+    (path/'manifest.json').write_text(json.dumps(manifest))
+    blocked=experiment.run_experiment(registered,snapshot_roots=[path])
+    assert blocked['engine_runs']==0
+    assert any('scan_boundary_resolution_mismatch' in gap for gap in blocked['blocked_reasons'])
 
 
 def test_tampered_payload_and_incomplete_scan_are_not_exportable(tmp_path):
