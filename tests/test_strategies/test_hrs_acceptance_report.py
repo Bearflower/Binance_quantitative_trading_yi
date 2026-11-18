@@ -145,6 +145,18 @@ def test_background_equity_and_candidate_refresh_are_not_phantom_scans():
     assert all(slot['scan_count'] == 0 for slot in technical(only_background)['hourly_slots'])
 
 
+@pytest.mark.parametrize('mutation,reason', [
+    (lambda row: row['payload'].update(ready='tampered'), 'payload_hash_mismatch'),
+    (lambda row: row.update(available_at=row['event_time']-timedelta(seconds=1)), 'noncausal_evidence'),
+])
+def test_background_filter_preserves_integrity_failures(mutation, reason):
+    row = event('startup-collector', 'equity_gate', START+timedelta(minutes=10), {'ready': True})
+    mutation(row)
+    report = technical(evidence()+[row])
+    assert report['status'] == 'NOT_READY'
+    assert reason in report['hourly_slots'][0]['reasons']
+
+
 def test_partial_scan_and_context_failure_still_invalidate_an_hour():
     at = START + timedelta(minutes=15)
     for kind, payload in [('scan_end', {'status': 'failed'}),
