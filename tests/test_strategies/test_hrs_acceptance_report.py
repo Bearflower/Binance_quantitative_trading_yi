@@ -126,6 +126,36 @@ def test_complete_consecutive_closed_hours_keep_all_denominators():
     assert slot['modes']['emm']['eligible'] == 0
 
 
+def test_background_equity_and_candidate_refresh_are_not_phantom_scans():
+    rows = evidence()
+    for hour in range(24):
+        at = START + timedelta(hours=hour, minutes=10)
+        rows.append(event('startup-collector', 'equity_gate', at,
+                          {'ready': False, 'allowed': False, 'reasons': ['daily_origin_missing']}))
+        batch = next(r['payload'] for r in rows
+                     if r['kind'] == 'market_cap_batch' and r['run_id'] == str(hour))
+        rows.append(event('startup-candidate-timer', 'market_cap_batch', at, batch))
+    report = technical(rows)
+    assert report['status'] == 'PASS'
+    assert report['consecutive_complete_hours'] == 24
+    assert all(slot['scan_count'] == 1 for slot in report['hourly_slots'])
+    # Heartbeats and background refreshes cannot manufacture a trading scan.
+    only_background = [r for r in rows if r['run_id'].startswith('startup-')]
+    assert technical(only_background)['status'] == 'NOT_READY'
+    assert all(slot['scan_count'] == 0 for slot in technical(only_background)['hourly_slots'])
+
+
+def test_partial_scan_and_context_failure_still_invalidate_an_hour():
+    at = START + timedelta(minutes=15)
+    for kind, payload in [('scan_end', {'status': 'failed'}),
+                          ('standard_scan_scope', {'symbols': ['BTCUSDT']}),
+                          ('scan_context_failure', {'error_type': 'TimeoutError'})]:
+        rows = evidence() + [event('broken-trading-scan', kind, at, payload)]
+        report = technical(rows)
+        assert report['status'] == 'NOT_READY'
+        assert 'scan_start_unproven' in report['hourly_slots'][0]['reasons']
+
+
 @pytest.mark.parametrize('mutation,reason', [
     (lambda p: p['quotes'].pop('ETHUSDT'), 'quote_inventory_incomplete'),
     (lambda p: p['quotes']['ETHUSDT'].update(as_of=START.timestamp()-7200), 'fresh_coverage_below_95_percent'),

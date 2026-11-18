@@ -39,6 +39,10 @@ REAL_CAP_SOURCES = {'coingecko', 'coinmarketcap', 'cache_hit', 'coingecko_cache'
 DEFAULT_OUTPUT = '/app/logs/hrs-acceptance.json'
 # Large public API bodies are unnecessary here; retain every decision/failure kind.
 EXCLUDED_KINDS = ['public_market_response', 'market_input']
+# Independent equity refresh and the daily candidate timer share startup run
+# context; their observations are inputs/heartbeats, not trading scan cycles.
+BACKGROUND_KINDS = frozenset({'equity_gate', 'market_cap_batch',
+    'public_market_response', 'market_input', 'public_market_failure', 'market_input_failure'})
 
 
 def _time(value):
@@ -192,6 +196,8 @@ def _summarize_evidence(rows, *, as_of, account_id, fills=(), orders=()):
     slots, slot_runs = [], defaultdict(list)
     for run, records in runs.items():
         starts = [r for r in records if r['kind'] == 'scan_start']
+        if not starts and all(r['kind'] in BACKGROUND_KINDS for r in records):
+            continue
         if len(starts) == 1:
             source_account = starts[0]['payload'].get('financial_context', {}).get('entry_policy', {}).get('account_id')
             if source_account and source_account != account_id:
