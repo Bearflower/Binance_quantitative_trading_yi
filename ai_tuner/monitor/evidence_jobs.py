@@ -8,7 +8,10 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from ai_tuner.allocation.activity_evidence import collect_entry_activity, read_activity_evidence
+from ai_tuner.allocation.activity_evidence import (
+    collect_entry_activity, collect_flat_anchors, read_activity_evidence,
+)
+from ai_tuner.monitor.trial_risk_evidence import account_initial_margin
 from ai_tuner.allocation.capital_evidence import read_capital_evidence
 from ai_tuner.allocation.shadow_allocation import preview_monthly_allocation
 from ai_tuner.monitor.account_risk import collect_account_risk
@@ -82,6 +85,8 @@ class EvidenceJobs:
                 os.fsync(handle.fileno())
         # Immutable detailed facts live in PostgreSQL; this pointer is a report cache.
         summary = {key: value for key, value in result.items() if key != 'evidence'}
+        summary['exchange_account_initial_margin_usd'] = account_initial_margin(
+            result.get('evidence'), result.get('as_of_ms'))
         atomic_report(self.state_dir / 'account-risk-latest.json', summary)
         signature = json.dumps([summary['status'], sorted({str(r).split(':')[0]
                                  for r in summary.get('reasons', [])})], sort_keys=True)
@@ -102,6 +107,12 @@ class EvidenceJobs:
     async def sample_activity(self):
         result = await collect_entry_activity(self.db, self.pm, self.budget['account_id'],
                                               max_requests=20)
+        try:
+            result['flat_anchors_observed'] = await collect_flat_anchors(
+                self.db, self.pm, self.budget['account_id'])
+        except Exception as exc:
+            result['flat_anchors_observed'] = None
+            result['flat_anchor_error'] = type(exc).__name__
         atomic_report(self.state_dir / 'entry-activity-latest.json', result)
         return result
 

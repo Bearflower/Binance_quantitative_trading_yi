@@ -103,11 +103,12 @@ def test_incomplete_income_blocks_net_and_relaxation():
     assert result["net_usdt"] is None
 
 
-def test_weekly_with_missing_drawdown_and_thresholds_never_recommends_relaxation():
+def test_weekly_exposes_frozen_criteria_even_when_monthly_evidence_is_missing():
     result = assess_snapshot(snapshot(), now=NOW, weekly=True)
     assert result["status"] == "BLOCKED_DATA"
     assert "drawdown_unavailable" in result["reasons"]
-    assert "thresholds_unfrozen" in result["reasons"]
+    assert "two_holdout_months_unverified" in result["reasons"]
+    assert result["review_criteria"]["min_independent_closed_lots_per_month"] == 20
     assert result["net_usdt"] == "-1.25"
 
 
