@@ -332,3 +332,13 @@ def test_nominal_forecast_and_actual_published_millisecond_share_one_receipt():
     proof=require_funding_publication('test',T,end,[],[],inventory,forecasts,{'BTCUSDT':[rate]},dict(events=[receipt]),funding_info=funding_contract_proof(end))
     assert len([item for item in proof if item.get('resolution')=='income_receipt'])==1
     assert proof[0]['deadline']==due+timedelta(milliseconds=1)
+
+
+def test_protection_manager_cannot_create_a_split_owner_orphan_path():
+    from strategies.hrs.equity_evidence import certify_owned_inventory_paths
+    entered=fill(trade_id=1,order_id=10,side='SELL',at=T-timedelta(minutes=2))
+    closed=fill(trade_id=2,order_id=11,side='BUY',at=T-timedelta(minutes=1))
+    with pytest.raises(EvidenceBlocked,match='inventory_owner_path_conflict'):
+        certify_owned_inventory_paths('test',{},[entered,closed],[owner(10,strategy='new_coin'),owner(11,strategy='hrs')],coverage_complete=True)
+    result=certify_owned_inventory_paths('test',{},[entered,closed],[owner(10,strategy='hrs'),owner(11,strategy='hrs')],coverage_complete=True)
+    assert result[0]['symbol']=='BTCUSDT' and result[0]['verified_zero_to_current_path'] is True

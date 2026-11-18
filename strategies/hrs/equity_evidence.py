@@ -719,3 +719,44 @@ def certify_reduce_only_lifecycle(account,symbol,current_quantity,fills,orders,s
                 response={key:response.get(key) for key in ('orderId','symbol','side','status','reduceOnly','executedQty','origQty')})
         balances[owner]=balances.get(owner,Decimal(0))+qty
     return tuple(proofs.values())
+
+
+def certify_owned_inventory_paths(account,current_quantities,fills,orders,*,coverage_complete):
+    """Require an economic owner at EVERY fill boundary, including flat points.
+
+    A protection manager's label cannot override a conflicting entry owner.
+    Complete fills and the actual current inventory must prove zero at each
+    source lower bound; every intermediate account position must have exactly
+    one matching strategy vector. Opposing orphan vectors fail even if their
+    account net is zero at the final observation.
+    """
+    if coverage_complete is not True:
+        raise EvidenceBlocked('inventory_owner_path_coverage_missing')
+    seen={};by_symbol={}
+    for row in fills:
+        if row.get('account_id')!=account or row.get('side') not in ('BUY','SELL'):
+            raise EvidenceBlocked('inventory_owner_path_fill_invalid')
+        key=(row['symbol'],str(row['trade_id']))
+        if key in seen and seen[key]!=row:
+            raise EvidenceBlocked('inventory_owner_path_fill_conflict')
+        seen[key]=row
+    for row in seen.values():by_symbol.setdefault(row['symbol'],[]).append(row)
+    owners=order_owners(account,orders);proofs=[]
+    for symbol in sorted(set(by_symbol)|set(current_quantities)):
+        rows=sorted(by_symbol.get(symbol,()),key=lambda row:(aware(row['trade_time_utc'],'owner_path_fill'),int(row['trade_id'])))
+        quantities=[number(row['qty'],'owner_path_quantity',positive=True)*(1 if row['side']=='BUY' else -1) for row in rows]
+        current=number(current_quantities.get(symbol,0),'owner_path_current_quantity')
+        if sum(quantities,Decimal(0))!=current:
+            raise EvidenceBlocked('inventory_owner_path_zero_anchor_unproven')
+        balance={};net=Decimal(0);sources=[]
+        for row,qty in zip(rows,quantities):
+            choices=owners.get((symbol,str(row['order_id'])),set())
+            if len(choices)!=1 or None in choices:
+                raise EvidenceBlocked('inventory_owner_path_order_unproven')
+            owner=next(iter(choices));net+=qty;balance[owner]=balance.get(owner,Decimal(0))+qty
+            active=[(strategy,value) for strategy,value in balance.items() if value!=0]
+            if (net==0 and active) or (net!=0 and (len(active)!=1 or active[0][1]!=net)):
+                raise EvidenceBlocked('inventory_owner_path_conflict')
+            sources.append(dict(trade_id=str(row['trade_id']),order_id=str(row['order_id']),strategy=owner,quantity=str(qty),occurred_at=row['trade_time_utc']))
+        proofs.append(dict(symbol=symbol,verified_zero_to_current_path=True,current_quantity=str(current),fill_count=len(rows),path_sha256=canonical(sources)[1]))
+    return proofs

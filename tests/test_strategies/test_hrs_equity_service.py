@@ -634,3 +634,41 @@ async def test_funding_history_covers_authenticated_closed_hrs_symbols(setup):
     await service._funding_publication_evidence(snapshot,start,end)
     assert 'IDOLUSDT' in snapshot['funding_publication']['published_coverage']
     assert api.get_funding_rate_history.await_args.kwargs['start_time']==start
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('entry_owner',['hrs','new_coin'])
+async def test_preperiod_economic_entry_owner_must_agree_with_protection_manager(setup,entry_owner):
+    service,account,pool,api,clock=setup
+    entered=T.replace(day=1,hour=12)-timedelta(days=1)
+    closed=T.replace(day=2,hour=12);funding=T.replace(day=1,hour=8)
+    entry_id=50000000+int(uuid.uuid4().hex[:6],16);close_id=entry_id+1;algo=entry_id+80000000
+    async with pool.acquire() as c:
+        await c.execute('CREATE SCHEMA IF NOT EXISTS btc_eth')
+        await c.execute('''CREATE TABLE IF NOT EXISTS btc_eth.condition_orders(id bigserial PRIMARY KEY,strategy_name text,account_id text,symbol text,algo_id bigint,order_id bigint,order_type text,status text,created_at timestamp,updated_at timestamp)''')
+        entry=await c.fetchval("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,quantity,executed_at) VALUES(NULL,'SRCUSDT',$1,$2,'SELL','NEW','LIMIT',0,$3) RETURNING id",str(entry_id),entry_owner,entered.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+        manager=await c.fetchval("INSERT INTO btc_eth.condition_orders(strategy_name,account_id,symbol,algo_id,order_type,status) VALUES('hrs',$1,'SRCUSDT',$2,'TAKE_PROFIT','CANCELED') RETURNING id",account,algo)
+    try:
+        records=[dict(symbol='SRCUSDT',id=1,orderId=entry_id,side='SELL',qty='2',price='100',quoteQty='200',commission='0',commissionAsset='USDT',realizedPnl='0',time=int(entered.timestamp()*1000)),dict(symbol='SRCUSDT',id=2,orderId=close_id,side='BUY',qty='2',price='100',quoteQty='200',commission='0',commissionAsset='USDT',realizedPnl='0',time=int(closed.timestamp()*1000))]
+        api.get_user_trades.side_effect=lambda symbol,**kw:[r for r in records if (kw.get('start_time') is None or r['time']>=kw['start_time']) and (kw.get('end_time') is None or r['time']<=kw['end_time'])]
+        api.get_income_history.side_effect=lambda **kw:([dict(symbol='SRCUSDT',incomeType='FUNDING_FEE',income='.2',asset='USDT',tranId=301,tradeId='',time=int(funding.timestamp()*1000),info='')] if kw['income_type']=='FUNDING_FEE' else [])
+        api.get_order.return_value=dict(orderId=entry_id,symbol='SRCUSDT',side='SELL',status='FILLED',reduceOnly=False,executedQty='2',origQty='2',time=int(entered.timestamp()*1000))
+        api.get_algo_order.return_value=dict(algoId=algo,actualOrderId=str(close_id),symbol='SRCUSDT',side='BUY',algoStatus='FINISHED',quantity='2')
+        api.get_funding_rate_history.return_value=[dict(symbol='SRCUSDT',fundingTime=int(funding.timestamp()*1000),fundingRate='.001',markPrice='100')]
+        result=await service.refresh()
+        if entry_owner=='new_coin':
+            assert result['reasons']==['inventory_owner_path_conflict']
+            async with pool.acquire() as c:
+                assert not await c.fetchval('SELECT 1 FROM trading.hrs_equity_segment WHERE account_id=$1',account)
+        else:
+            assert result['reasons']==['daily_origin_missing']
+            async with pool.acquire() as c:
+                row=await c.fetchrow('SELECT opening_cash,opening_evidence FROM trading.hrs_equity_segment WHERE account_id=$1',account)
+                assert row['opening_cash']==D('1000.2')
+                evidence=json.loads(row['opening_evidence'])
+                assert len(evidence['fills'])==2 and evidence['inventory_owner_path_proofs'][0]['verified_zero_to_current_path'] is True
+                assert len(evidence['income_report']['events'])==1
+    finally:
+        async with pool.acquire() as c:
+            await c.execute('DELETE FROM btc_eth.condition_orders WHERE id=$1',manager)
+            await c.execute('DELETE FROM trading.trade_records WHERE id=$1',entry)

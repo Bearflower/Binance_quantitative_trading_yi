@@ -51,7 +51,7 @@ from shared.execution_facts_sink import PostgresExecutionFactsSink
 
 from .equity_evidence import (
     EvidenceBlocked, allocation_evidence, allocation_event_changes, attributed_incomes, canonical,
-    certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,certify_reduce_only_lifecycle,FUNDING_SOURCE_CONTRACT,
+    certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,certify_reduce_only_lifecycle,FUNDING_SOURCE_CONTRACT,certify_owned_inventory_paths,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
 from .equity_reconciliation import ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
@@ -260,12 +260,83 @@ class HrsEquityService:
             published_coverage[symbol]=windows
         snapshot['funding_publication']=dict(forecasts=list(unique.values()),published_rates=published,published_coverage=published_coverage,funding_info=info,available_at=self._now())
 
-    async def _authenticate_order_owners(self,snapshot,start_ms,end_ms):
-        fills=await self.db.fetch_all('SELECT account_id,symbol,order_id,side FROM trading.execution_fact_fill WHERE account_id=$1 AND trade_time_utc>=$2 AND trade_time_utc<=$3',self.account,datetime.fromtimestamp(start_ms/1000,timezone.utc),datetime.fromtimestamp(end_ms/1000,timezone.utc))
-        native=await self.db.fetch_all('SELECT account_id,symbol,order_id,strategy FROM trading.trade_records WHERE account_id=$1 AND order_id IS NOT NULL',self.account)
-        known=order_owners(self.account,native)
-        missing={(row['symbol'],str(row['order_id'])) for row in fills if known.get((row['symbol'],str(row['order_id']))) is None}
+    async def _fill_rows(self,fetch,start_ms,end_ms,snapshot):
+        rows=[dict(row) for row in await fetch('SELECT * FROM trading.execution_fact_fill WHERE account_id=$1 AND trade_time_utc>=$2 AND trade_time_utc<=$3',self.account,datetime.fromtimestamp(start_ms/1000,timezone.utc),datetime.fromtimestamp(end_ms/1000,timezone.utc))]
+        seen={(row['symbol'],row['trade_id']) for row in rows}
+        for interval in snapshot.get('extended_fill_coverage',()):
+            additional=await fetch('SELECT * FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND trade_time_utc>=$3 AND trade_time_utc<=$4',self.account,interval['symbol'],datetime.fromtimestamp(interval['start_ms']/1000,timezone.utc),datetime.fromtimestamp(end_ms/1000,timezone.utc))
+            for row in additional:
+                if (row['symbol'],row['trade_id']) not in seen:
+                    rows.append(dict(row));seen.add((row['symbol'],row['trade_id']))
+        return rows
+
+    async def _opening_fill_prefixes(self,snapshot,start_ms,end_ms):
+        """Prove actual zero-to-current paths, not protection-manager ownership.
+
+        If the current-period stream begins with an already-open position, use
+        retained exact entry identities and signed order creation times to fetch
+        the necessary earlier COMPLETE fill prefix. Income credit boundaries do
+        not move. A missing entry/prefix leaves the later path check blocked.
+        """
+        if not isinstance(snapshot['inventory'],list) or not isinstance(snapshot['independent'],list):
+            raise EvidenceBlocked('opening_path_inventory_missing')
+        current={row['symbol']:number(row['positionAmt'],'opening_path_current_quantity') for row in snapshot['inventory'] if number(row['positionAmt'],'opening_path_current_quantity')!=0}
+        independent={row['symbol']:number(row['positionAmt'],'opening_path_independent_quantity') for row in snapshot['independent'] if number(row['positionAmt'],'opening_path_independent_quantity')!=0}
+        if current!=independent:raise EvidenceBlocked('opening_path_inventory_conflict')
+        fills=await self._fill_rows(self.db.fetch_all,start_ms,end_ms,snapshot)
+        totals={}
+        for row in fills:
+            if row['side'] not in ('BUY','SELL'):raise EvidenceBlocked('opening_path_fill_side_missing')
+            totals[row['symbol']]=totals.get(row['symbol'],Decimal(0))+number(row['qty'],'opening_path_fill_quantity',positive=True)*(1 if row['side']=='BUY' else -1)
+        needed=[symbol for symbol in set(totals)|set(current) if totals.get(symbol,Decimal(0))!=current.get(symbol,Decimal(0))]
         proofs=[]
+        for symbol in sorted(needed):
+            candidates=await self.db.fetch_all("SELECT id,account_id,strategy,symbol,order_id,side,order_type,executed_at FROM trading.trade_records WHERE symbol=$1 AND (account_id=$2 OR account_id IS NULL) AND order_type IN ('LIMIT','MARKET') AND order_id IS NOT NULL AND realized_pnl IS NULL AND executed_at<=$3 ORDER BY executed_at DESC,id DESC",symbol,self.account,datetime.fromtimestamp(start_ms/1000,timezone.utc).astimezone(SHANGHAI).replace(tzinfo=None))
+            attempted=set()
+            for row in candidates:
+                identity=str(row['order_id'])
+                if identity in attempted:continue
+                attempted.add(identity)
+                group=[item for item in candidates if str(item['order_id'])==identity]
+                choices={item['strategy'] for item in group};sides={item['side'] for item in group}
+                if len(choices)!=1 or None in choices or len(sides)!=1 or not sides<={'BUY','SELL'}:
+                    raise EvidenceBlocked('preperiod_entry_owner_conflict')
+                response=await self.api.get_order(symbol,int(identity))
+                if (not isinstance(response,dict) or str(response.get('orderId'))!=identity or response.get('symbol')!=symbol
+                        or {response.get('side')}!=sides or response.get('status')!='FILLED' or response.get('reduceOnly') is not False
+                        or response.get('time') is None or number(response.get('executedQty'),'preperiod_entry_executed')<=0):
+                    continue
+                left=int(response['time'])-1
+                if left>=start_ms:continue
+                proof=dict(account_id=self.account,symbol=symbol,order_id=identity,strategy=next(iter(choices)),
+                    source_kind='authenticated_exchange_order_and_durable_record',source_ids=[str(item['id']) for item in group],
+                    source_rows=[dict(table='trading.trade_records',row={key:(value.isoformat() if isinstance(value,datetime) else value) for key,value in dict(item).items()}) for item in group],
+                    response={key:response.get(key) for key in ('orderId','symbol','side','status','time','updateTime','executedQty','origQty','reduceOnly')},available_at=self._now())
+                proofs.append(proof)
+                bound=left;windows=[]
+                exporter=ExecutionFactExporter(self.account,self.api,_FreshSink(self.db))
+                while left<end_ms+1:
+                    right=min(left+7*24*3600*1000,end_ms+1)
+                    page=await exporter.export_fills(symbol,left,right)
+                    if page.errors or not page.page_complete:raise EvidenceBlocked('opening_fill_prefix_coverage_missing')
+                    windows.append(dict(symbol=symbol,start_ms=left,end_ms=right,page_complete=True))
+                    left=right
+                prefix=await self.db.fetch_all('SELECT * FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND trade_time_utc>=$3 AND trade_time_utc<=$4',self.account,symbol,datetime.fromtimestamp(bound/1000,timezone.utc),datetime.fromtimestamp(end_ms/1000,timezone.utc))
+                entry_filled=sum((number(item['qty'],'opening_prefix_entry_quantity',positive=True) for item in prefix if str(item['order_id'])==identity),Decimal(0))
+                if entry_filled!=number(response['executedQty'],'opening_prefix_entry_executed'):
+                    raise EvidenceBlocked('opening_entry_full_fill_proof_missing')
+                net=sum((number(item['qty'],'opening_prefix_quantity',positive=True)*(1 if item['side']=='BUY' else -1) for item in prefix),Decimal(0))
+                if net==current.get(symbol,Decimal(0)):
+                    snapshot.setdefault('extended_fill_coverage',[]).append(dict(symbol=symbol,start_ms=bound,end_ms=end_ms,source_coverage=windows,verified_start_quantity='0',available_at=self._now()))
+                    break
+        snapshot['preperiod_order_proofs']=proofs
+
+    async def _authenticate_order_owners(self,snapshot,start_ms,end_ms):
+        fills=await self._fill_rows(self.db.fetch_all,start_ms,end_ms,snapshot)
+        native=await self.db.fetch_all('SELECT account_id,symbol,order_id,strategy FROM trading.trade_records WHERE account_id=$1 AND order_id IS NOT NULL',self.account)
+        known=order_owners(self.account,native+snapshot.get('preperiod_order_proofs',[]))
+        missing={(row['symbol'],str(row['order_id'])) for row in fills if known.get((row['symbol'],str(row['order_id']))) is None}
+        proofs=list(snapshot.get('preperiod_order_proofs',()))
         if missing:
             identifiers=sorted({identity for _,identity in missing})
             legacy=await self.db.fetch_all('SELECT id,account_id,symbol,order_id,strategy,side FROM trading.trade_records WHERE order_id=ANY($1::text[]) AND (account_id=$2 OR account_id IS NULL)',identifiers,self.account)
@@ -500,6 +571,10 @@ class HrsEquityService:
         start = datetime.fromtimestamp(start_ms/1000, timezone.utc)
         end = datetime.fromtimestamp(end_ms/1000, timezone.utc)
         for proof in snapshot.get('authenticated_order_owners',()):
+            if proof.get('source_kind')=='authenticated_exchange_order_and_durable_record':
+                source=await connection.fetch('SELECT id,strategy,side FROM trading.trade_records WHERE symbol=$1 AND order_id=$2 AND (account_id=$3 OR account_id IS NULL)',proof['symbol'],proof['order_id'],self.account)
+                if ({str(row['id']) for row in source}!=set(proof['source_ids']) or {row['strategy'] for row in source}!={proof['strategy']} or {row['side'] for row in source}!={proof['response']['side']}):
+                    raise EvidenceBlocked('authenticated_trade_record_source_changed')
             if proof.get('source_kind')=='authenticated_legacy_new_coin_entry':
                 fields=('id','order_id','symbol','strategy','side','quantity')
                 expected=[{key:item['row'][key] for key in fields} for item in proof['source_rows'] if item['table']=='new_coin.orders']
@@ -515,12 +590,7 @@ class HrsEquityService:
                 raise EvidenceBlocked('authenticated_condition_source_changed')
         report = await read_monthly_economic_report(_SnapshotDB(connection,snapshot.get('authenticated_order_owners',())), self.account, snapshot.get('income_start_ms',start_ms), end_ms + 1,
                                                    include_reviewed_overrides=False)
-        fills = [dict(row) for row in await connection.fetch('''SELECT * FROM trading.execution_fact_fill
-            WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc <= $3''', self.account, start, end)]
-        for interval in snapshot.get('extended_fill_coverage',()):
-            additional=await connection.fetch('SELECT * FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND trade_time_utc>=$3 AND trade_time_utc<=$4',self.account,interval['symbol'],datetime.fromtimestamp(interval['start_ms']/1000,timezone.utc),end)
-            existing={(row['symbol'],row['trade_id']) for row in fills}
-            fills.extend(dict(row) for row in additional if (row['symbol'],row['trade_id']) not in existing)
+        fills=await self._fill_rows(connection.fetch,start_ms,end_ms,snapshot)
         orders = [dict(row) for row in await connection.fetch('''SELECT account_id,symbol,order_id,strategy,side,status,order_type,
             realized_pnl,executed_at FROM trading.trade_records WHERE account_id=$1 AND order_id IS NOT NULL''', self.account)]
         orders.extend(snapshot.get('authenticated_order_owners',()))
@@ -691,6 +761,8 @@ class HrsEquityService:
         if not timedelta(0) <= self._now()-as_of < timedelta(seconds=120):
             raise EvidenceBlocked('source_observation_stale')
         report, fills, orders, pending = await self._read_source(connection, start_ms, end_ms, snapshot)
+        physical={row['symbol']:number(row['positionAmt'],'owner_path_inventory') for row in snapshot['inventory'] if number(row['positionAmt'],'owner_path_inventory')!=0}
+        path_proofs=certify_owned_inventory_paths(self.account,physical,fills,orders,coverage_complete=not report.get('coverage_gaps') and not report.get('missing_income_fills') and report.get('account_coverage_complete') is True)
         allocation_row = await connection.fetchrow('''SELECT id,month,entries,created_at FROM public.capital_allocation
             WHERE left(month::text,7)=$1 AND status='active' ORDER BY created_at DESC LIMIT 1''', as_of.astimezone(SHANGHAI).strftime('%Y-%m'))
         allocation = allocation_evidence(dict(allocation_row) if allocation_row else None, as_of)
@@ -757,7 +829,7 @@ class HrsEquityService:
             events=tuple(event for event in all_events if event.occurred_at>actual_bootstrap['inception'])
         evidence = dict(account_id=self.account, segment_id=segment, as_of=as_of, available_at=self._now(),
                         capture=snapshot, source_collection=collection, income_report=report,
-                        fills=fills, order_owners=orders, allocation=allocation.source,funding_publication_proofs=funding_proofs,
+                        fills=fills, order_owners=orders, inventory_owner_path_proofs=path_proofs,allocation=allocation.source,funding_publication_proofs=funding_proofs,
                         allocation_audit=dict(version=audit['version'],through_event_id=audit['event_id'],journal=audit['journal']),
                         reconstructed_boundaries=[])
         if actual_bootstrap is None:
@@ -900,6 +972,7 @@ class HrsEquityService:
                 credit_period=datetime.combine(origin.astimezone(SHANGHAI).date().replace(day=1),time.min,SHANGHAI)
                 snapshot['income_start_ms']=int(credit_period.timestamp()*1000)
                 collection=await self._collect(start_ms,end_ms,snapshot)
+                await self._opening_fill_prefixes(snapshot,start_ms,end_ms)
                 await self._authenticate_order_owners(snapshot,start_ms,end_ms)
                 await self._funding_publication_evidence(snapshot,snapshot['income_start_ms'],end_ms)
                 await self._historical_marks(bootstrap,snapshot)
