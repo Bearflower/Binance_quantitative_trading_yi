@@ -220,20 +220,24 @@ async def test_cmc_auth_failure_is_redacted_and_backoff_survives_restart(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_natural_scan_missing_assets_use_verified_original_cg_rows(tmp_path,monkeypatch):
+@pytest.mark.parametrize('capture_file,symbols',[
+    ('cg_three_assets_20261118.json',['ICNTUSDT','PIPPINUSDT','PIEVERSEUSDT']),
+    ('cg_two_assets_20261119.json',['ZILUSDT','ZKPUSDT']),
+    ('cg_zkc_20261119.json',['ZKCUSDT']),
+])
+async def test_natural_scan_missing_assets_use_verified_original_cg_rows(tmp_path,monkeypatch,capture_file,symbols):
     """Replay the actual public response at its real receipt time, without network."""
     import hashlib
     import json
     from pathlib import Path
     from datetime import datetime
     from unittest.mock import Mock
-    capture=json.loads(Path('tests/fixtures/market_cap/cg_three_assets_20261118.json').read_text())
+    capture=json.loads((Path('tests/fixtures/market_cap')/capture_file).read_text())
     assert hashlib.sha256(capture['body_utf8'].encode()).hexdigest()==capture['body_sha256']
     assert capture['http_status']==200
     body=json.loads(capture['body_utf8'])
     monkeypatch.setattr('services.market_cap.hub.time.time',lambda:datetime.fromisoformat(capture['available_at']).timestamp())
     registry=json.loads(Path('services/market_cap/assets.json').read_text())
-    symbols=['ICNTUSDT','PIPPINUSDT','PIEVERSEUSDT']
     expected={row['symbol'].upper()+'USDT':row for row in body}
     class Response:
         status=200
