@@ -186,3 +186,40 @@ class TestGridAdapterCore:
         assert sim.price_range_low == 1800.0
         assert sim.price_range_high == 1800.0
         assert sim.profit_rate_per_fill == 0
+
+@pytest.mark.asyncio
+async def test_weekly_grid_fills_use_dedicated_account_and_beijing_week(monkeypatch):
+    from datetime import timezone
+    from decimal import Decimal
+    from unittest.mock import AsyncMock, MagicMock
+
+    monkeypatch.delenv("GRID_ACCOUNT_ID", raising=False)
+    db = MagicMock()
+    db.fetch_all = AsyncMock(return_value=[
+        {"symbol": "ETHUSDT", "side": "SELL", "profit": Decimal("-0.01830400"), "verified": True},
+        {"symbol": "ETHUSDT", "side": "BUY", "profit": Decimal("-0.04125775"), "verified": True},
+    ])
+    adapter = GridAdapter(db)
+
+    trades = await adapter._query_weekly_trades(datetime(2026, 11, 9), datetime(2026, 11, 16))
+
+    query, account, start, end = db.fetch_all.await_args.args
+    assert account == "grid_pm_ethusdt_01"
+    assert start == datetime(2026, 11, 8, 16, tzinfo=timezone.utc)
+    assert end == datetime(2026, 11, 15, 16, tzinfo=timezone.utc)
+    assert "trading.execution_fact_fill" in query
+    assert "grid.grid_trades" not in query
+    assert adapter._calc_performance(trades).total_pnl == pytest.approx(-0.05956175)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("verified", [False, None])
+async def test_weekly_grid_fills_do_not_turn_unverified_fact_into_zero_trades(verified):
+    from unittest.mock import AsyncMock, MagicMock
+
+    db = MagicMock()
+    db.fetch_all = AsyncMock(return_value=[{"symbol": "ETHUSDT", "verified": verified}])
+    adapter = GridAdapter(db)
+
+    with pytest.raises(ValueError, match="网格成交事实未通过核验"):
+        await adapter._query_weekly_trades(datetime(2026, 11, 9), datetime(2026, 11, 16))
