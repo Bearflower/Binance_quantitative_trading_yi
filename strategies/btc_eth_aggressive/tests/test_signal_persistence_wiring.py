@@ -116,7 +116,10 @@ def patched_deps(monkeypatch):
     strategy_holder: Dict[str, Any] = {}
 
     monkeypatch.setattr(main_mod, "load_strategy_config_with_metadata", lambda _dir: (
-        config_holder["config"], {"config_hash": "a" * 64, "applied_overrides_version": None},
+        config_holder["config"], {
+            "config_hash": "a" * 64, "applied_overrides_version": None,
+            "requested_overrides_version": "V20260910",
+        },
     ))
     monkeypatch.setattr(main_mod, "record_loaded_version", lambda *_args: None)
 
@@ -125,7 +128,7 @@ def patched_deps(monkeypatch):
     fake_db_cls = MagicMock(name="DatabaseManager", return_value=fake_db_instance)
     monkeypatch.setattr(main_mod, "DatabaseManager", fake_db_cls)
 
-    fake_trade_logger = MagicMock(name="trade_logger")
+    fake_trade_logger = MagicMock(name="trade_logger", account_id="default")
     fake_trade_logger.ensure_table_exists = AsyncMock()
     monkeypatch.setattr(main_mod, "TradeLogger", MagicMock(return_value=fake_trade_logger))
 
@@ -197,6 +200,13 @@ def test_initialize_calls_ensure_signal_table_exists(patched_deps, clean_env):
     call_args = patched_deps.ensure_signal.call_args.args
     assert call_args[0] is patched_deps.db_instance
     assert call_args[1] == "btc_eth_aggressive"
+    assert main_mod.strategy.loaded_config_identity == {
+        "account_id": "default",
+        "config_hash": "a" * 64,
+        "applied_overrides_version": None,
+        "requested_overrides_version": "V20260910",
+        "effective_version": "base",
+    }
 
 
 # ══════════════════════════════════════════════════════════════════
