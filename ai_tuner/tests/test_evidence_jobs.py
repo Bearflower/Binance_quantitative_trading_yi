@@ -76,7 +76,7 @@ async def test_repeated_risk_failure_notifies_only_once_and_omits_raw_evidence(t
 def test_scheduler_registers_independent_minute_collectors_and_daily_shadow(tmp_path):
     calls=[]
     m.register_evidence_jobs(SimpleNamespace(add_job=lambda *a,**kw:calls.append((a,kw))),job(tmp_path))
-    assert {kwargs['id'] for _,kwargs in calls}=={'account_risk','entry_activity','allocation_shadow'}
+    assert {kwargs['id'] for _,kwargs in calls}=={'account_risk','entry_activity','pm_equity_valuation','allocation_shadow'}
     assert all(kwargs['max_instances']==1 for _,kwargs in calls)
 
 
@@ -115,3 +115,26 @@ async def test_deployed_shadow_mode_still_blocks_live_job_after_policy_unfreeze(
     obj=MonthlyAllocationJob(cfg,db,None,None,None,None)
     assert await obj.run_monthly_allocation() is None
     db.execute.assert_not_called(); db.execute_ddl.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_valuation_observations_keep_valid_and_failed_evidence(tmp_path, monkeypatch):
+    obj = job(tmp_path)
+    obj.budget['account_identity'] = 'default-pm'
+    capture = AsyncMock(side_effect=[
+        dict(status='VERIFIED_POINT', index_time_ms=123, reconstructed_usd='500.00'),
+        TimeoutError(),
+    ])
+    monkeypatch.setattr(m, 'observe_pm_equity', capture)
+    await obj.sample_equity_valuation()
+    await obj.sample_equity_valuation()
+
+    samples = [json.loads(p.read_text()) for p in (tmp_path / 'pm-equity').rglob('*.json')]
+    assert len(samples) == 2
+    assert {sample['status'] for sample in samples} == {'BLOCKED_DATA', 'VERIFIED_POINT'}
+    assert {sample['account_scope'] for sample in samples} == {'default'}
+    assert {sample['account_identity'] for sample in samples} == {'default-pm'}
+    assert all(sample['method'] == 'pm-usdt-equity-bridge-v1' for sample in samples)
+    assert all(p.stat().st_mode & 0o777 == 0o600
+               for p in (tmp_path / 'pm-equity').rglob('*.json'))
+    obj.messenger.send_alert.assert_not_awaited()

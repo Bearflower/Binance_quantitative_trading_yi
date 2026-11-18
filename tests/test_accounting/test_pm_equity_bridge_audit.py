@@ -1,6 +1,6 @@
 from copy import deepcopy
 
-from scripts.audit_pm_equity_bridge import audit_usdt_bridge
+from shared.accounting.pm_equity_bridge import audit_usdt_bridge
 
 
 def evidence():

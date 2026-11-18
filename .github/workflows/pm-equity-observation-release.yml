@@ -1,0 +1,31 @@
+name: Release PM equity observation to AI Tuner
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Verify equity and scheduling boundaries
+        run: |
+          pip install -r ai_tuner/requirements.txt pytest pytest-asyncio
+          python -m pytest -q ai_tuner/tests/test_evidence_jobs.py tests/test_accounting/test_pm_equity_bridge_audit.py
+      - name: Activate source-only AI Tuner image
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 43.156.242.184 >> ~/.ssh/known_hosts
+          staging="/root/trading_system/.deploy_tmp/pm-equity-observation-$GITHUB_SHA"
+          jobs_sha="$(sha256sum ai_tuner/monitor/evidence_jobs.py | cut -d ' ' -f 1)"
+          bridge_sha="$(sha256sum shared/accounting/pm_equity_bridge.py | cut -d ' ' -f 1)"
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "install -d -m 700 $staging"
+          scp -o ConnectTimeout=15 ai_tuner/monitor/evidence_jobs.py shared/accounting/pm_equity_bridge.py deployment/pm-equity-observation/Dockerfile "root@43.156.242.184:$staging/"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 python3 - "$GITHUB_SHA" "$jobs_sha" "$bridge_sha" "$staging" < deployment/pm-equity-observation/activate.py
