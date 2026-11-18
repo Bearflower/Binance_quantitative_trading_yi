@@ -1377,6 +1377,7 @@ class HRSStrategy(BaseStrategy):
             if not active_symbols:
                 logger.debug("无活跃候选币种，仅执行 LV-RM 检查")
                 # B2: 空池分支只跑 LV-RM（含统一收尾链），持仓监控/上报交由 finally 统一调度
+                await record_stage(self, 'scan_denial', {'reason': 'empty_standard_pool_lv_rm_delegated'})
                 await self._run_lv_rm_only_cycle()
                 return
 

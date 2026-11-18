@@ -412,6 +412,30 @@ async def test_standard_preanalysis_circuit_veto_is_not_silently_lost():
 
 
 @pytest.mark.asyncio
+async def test_empty_standard_pool_delegation_has_terminal_evidence():
+    from strategies.hrs.decision_capture import DecisionRecorder
+    from strategies.hrs.tests.test_lv_rm_empty_pool_execution import _setup_strategy
+    from unittest.mock import MagicMock
+    strategy = _setup_strategy()[0]
+    recorder = DecisionRecorder(AsyncMock())
+    recorder.record = AsyncMock()
+    strategy.decision_recorder = recorder
+    strategy._is_settlement_skip_window = MagicMock(return_value=False)
+    strategy._check_candidate_update = AsyncMock()
+    strategy.candidate_pool.get_active_symbols.return_value = []
+    strategy._run_lv_rm_only_cycle = AsyncMock()
+    strategy._monitor_positions = AsyncMock()
+    strategy._report_positions_to_dashboard = AsyncMock()
+    strategy._cleanup_orphan_orders = AsyncMock()
+    await strategy._execute_cycle()
+    strategy._run_lv_rm_only_cycle.assert_awaited_once()
+    rows = [c.args[2] for c in recorder.record.await_args_list if c.args[1] == 'scan_denial']
+    assert rows == [{'reason': 'empty_standard_pool_lv_rm_delegated'}]
+    assert [c.args[2]['status'] for c in recorder.record.await_args_list
+            if c.args[1] == 'scan_end'] == ['complete']
+
+
+@pytest.mark.asyncio
 async def test_settlement_cycle_retains_explicit_denial_reason():
     from strategies.hrs.strategy import HRSStrategy
     from strategies.hrs.decision_capture import DecisionRecorder
