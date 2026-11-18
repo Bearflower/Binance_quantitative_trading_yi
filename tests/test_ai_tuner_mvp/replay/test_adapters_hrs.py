@@ -47,6 +47,7 @@ ALLOWED_ABSOLUTE = {
     "dataclasses",
     "datetime",
     "decimal",
+    "re",
     "collections",
     "collections.abc",
 }

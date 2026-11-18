@@ -72,9 +72,26 @@ separate. Missing forecast coverage or marks blocks export. A cash-flow label
 and their real availability. Late flows needing unsupported receipt accounting
 remain blocked rather than being backdated.
 
-Current explicit policy limitations are captured non-HRS account inventory and
-unreleased durable reservations, whose account-wide occupancy model is being
-integrated separately. These return named qualification gaps. Software LIMIT
+Account occupancy uses `hrs_account_occupancy_v1`: actual external position
+quantity, mark and leverage, with positive owner/source evidence, count toward
+account slots and marked margin. Virtual HRS original margin reservations remain
+after full fills; pending stop risk is cleared separately. Margin releases only
+after terminal entry and confirmed flat/no-order inventory. Unproven owners,
+initial unresolved reservations or stale samples return explicit gaps.
+
+Captured policy `effective_at` and `expires_at` are required and preserved. The
+adapter normally denies entries before effectiveness or at/after expiration; the
+exporter never extends validity to fit a research window or renews production
+policy.
+
+`hrs_marked_equity_observation` supports the explicit `ledger_sample_120s_v1`
+normalization model: exact source hash, ledger version and original as-of must
+match, its real availability cannot follow the account observation, and sample
+age cannot exceed 120 seconds. The receipt reports min/median/p95/max source age,
+`mark_synchrony: false` and `exact_exchange_parity: false`. Optimistic differences
+under sampled marks alone cannot establish performance qualification.
+
+Software LIMIT
 close matching, retry timing and order-book priority also retain the replay's
 declared `observed_quote_market_proxy_v1` approximation; no exact exchange parity
 is claimed.
@@ -104,3 +121,5 @@ research qualification. Exit 2 means `BLOCKED_DATA`; inspect `gap_bundle`.
 Without raw sources the CLI writes a gap bundle and no replay manifest. Current
 configuration files, summary PnL and exchange-info snapshots cannot reconstruct
 missing August–September decisions or certify complete historical performance.
+
+Resource limits are explicit: at most 50,000 rows per source, 64 MiB of source JSON and 90 elapsed days. Exceeding a limit is `BLOCKED_DATA`; it is not evidence of a missing historical fact or qualified performance. Read-only extraction selects referenced equity proofs and funding observations for scanned symbols rather than copying every account archive.

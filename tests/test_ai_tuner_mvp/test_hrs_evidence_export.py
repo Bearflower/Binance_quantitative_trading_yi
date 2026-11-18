@@ -131,6 +131,9 @@ def test_actual_off_hour_availability_survives_export(tmp_path):
         if row['run_id']=='cycle-0':
             row['event_time']=(AT+timedelta(hours=1,minutes=21)).isoformat()
             row['available_at']=(AT+timedelta(hours=1,minutes=21,seconds=5)).isoformat()
+            if row['kind']=='scan_start':
+                row['payload']['financial_context']['available_at']=row['available_at']
+                row['payload_sha256']=canonical_payload(row['payload'])[1]
     result=export_evidence_bundle(sources,tmp_path/'output',window_start=AT,as_of=AT+timedelta(hours=3),
         execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
     assert result.get('status')=='SEALED',result
@@ -276,3 +279,87 @@ def test_cashflow_with_contemporaneous_retained_ledger_source_is_emitted(tmp_pat
     assert result.get('status')=='SEALED',result
     exported=json.loads((Path(result['snapshot_dir'])/'hrs_cash_flows.jsonl').read_text())
     assert exported['event_id']==flow['event_id'] and exported['observed_at']=='2026-11-17T01:00:00Z'
+
+
+def test_complete_other_position_ownership_exports_actual_global_slot_rejection(tmp_path):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    sources,bootstrap=captured_sources(tmp_path)
+    symbols=['BTCUSDT','BNBUSDT','ETHUSDT']
+    inventory=[dict(symbol=s,positionAmt='1',entryPrice='100',markPrice='100',leverage='2') for s in symbols]
+    fills=[dict(account_id='test',symbol=s,trade_id=i,order_id=i,qty='1',price='100',side='BUY',trade_time_utc=(AT-timedelta(hours=1)).isoformat()) for i,s in enumerate(symbols,1)]
+    owners=[dict(account_id='test',symbol=s,order_id=i,strategy='btc_eth') for i,s in enumerate(symbols,1)]
+    for row in sources['decision_evidence']:
+        if row['kind']!='scan_start':continue
+        finance=row['payload']['financial_context']
+        finance.update(exchange_positions=inventory,independent_positions=[dict(symbol=p['symbol'],positionAmt=p['positionAmt']) for p in inventory],
+            claims=[dict(symbol=s,strategy='btc_eth',claim_state='ACTIVE',expires_at=(AT+timedelta(days=1)).isoformat()) for s in symbols])
+        row['payload_sha256']=canonical_payload(row['payload'])[1]
+        at=finance['available_at']
+        proof=dict(account_id='test',segment_id='test',as_of=at,available_at=at,capture=dict(local={},inventory=inventory,independent=finance['independent_positions']),
+            fills=fills,order_owners=owners,source_collection=dict(complete=True,gaps=[]),income_report=dict(id_match_and_coverage_complete=True,events=[],coverage_gaps=[]),
+            allocation_audit=dict(version=1,journal=[]))
+        sources['equity_evidence'].append(dict(payload=proof,evidence_sha256=canonical_payload(proof)[1]))
+    result=export_evidence_bundle(sources,tmp_path/'output',window_start=AT,as_of=AT+timedelta(hours=3),execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('status')=='SEALED',result
+    row=json.loads((Path(result['snapshot_dir'])/'hrs_decision_inputs.jsonl').read_text().splitlines()[0])
+    assert len(row['risk']['account_occupancy']['other_positions'])==3
+
+
+def test_sampled_ledger_component_retains_source_clock_and_age_distribution(tmp_path):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    sources,bootstrap=captured_sources(tmp_path)
+    for index,row in enumerate(r for r in sources['decision_evidence'] if r['kind']=='scan_start' and r['run_id'].startswith('cycle-')):
+        finance=row['payload']['financial_context'];at=AT+timedelta(hours=index+1);source_at=at-timedelta(seconds=30)
+        proof=dict(account_id='test',segment_id='test',as_of=source_at.isoformat(),available_at=(source_at+timedelta(seconds=1)).isoformat(),result=dict(ledger_version=index+2),source_collection=dict(complete=True,gaps=[]),income_report=dict(id_match_and_coverage_complete=True,events=[],coverage_gaps=[]),allocation_audit=dict(version=1,journal=[]))
+        digest=canonical_payload(proof)[1];sources['equity_evidence'].append(dict(payload=proof,evidence_sha256=digest))
+        finance.pop('hrs_marked_equity')
+        finance['ledger_state']['version']=index+2
+        finance['ledger_state']['ledger_state']['as_of']=source_at.isoformat()
+        finance['hrs_marked_equity_observation']=dict(value='10000',as_of=source_at.isoformat(),available_at=proof['available_at'],evidence_sha256=digest,ledger_version=index+2)
+        row['payload_sha256']=canonical_payload(row['payload'])[1]
+    result=export_evidence_bundle(sources,tmp_path/'output',window_start=AT,as_of=AT+timedelta(hours=3),execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('status')=='SEALED',result
+    receipt=json.loads((Path(result['snapshot_dir'])/'hrs_export_receipt.json').read_text())
+    assert receipt['source_age_distribution']['max_seconds']==30
+    assert receipt['mark_synchrony'] is False and receipt['exact_exchange_parity'] is False
+
+
+def test_actual_stage_specific_capture_packets_are_combined_without_inventing_later_inputs(tmp_path):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    sources,bootstrap=captured_sources(tmp_path)
+    retained=[]
+    for row in sources['decision_evidence']:
+        if row['kind']!='entry_stage_inputs':retained.append(row);continue
+        facts=row['payload'];at=AT+timedelta(hours=int(row['run_id'][-1])+1)
+        stages=[dict(stage='exchange_position',exchange_positions=[]),dict(stage='claims',claims=[]),
+            dict(stage='pool_circuit',pool_index=None,pool_index_12h=None),
+            dict(stage='pre_entry_oi',pre_entry_oi_usd=facts['pre_entry_oi_usd']),
+            dict(stage='pre_entry_funding',pre_entry_funding_rate=facts['pre_entry_funding_rate']),
+            dict(stage='reservation_inventory',exchange_positions=[])]
+        retained.extend(envelope(row['run_id'],'entry_stage_inputs',p,at,'A') for p in stages)
+    sources['decision_evidence']=retained
+    result=export_evidence_bundle(sources,tmp_path/'output',window_start=AT,as_of=AT+timedelta(hours=3),execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('status')=='SEALED',result
+
+
+async def test_database_export_selects_referenced_equity_and_scanned_funding_only():
+    from ai_tuner.hrs_evidence_export import read_evidence_sources
+    class Transaction:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+    class DB:
+        queries=[]
+        def transaction(self,**kwargs):return Transaction()
+        async def fetch(self,query,*args):
+            self.queries.append((query,args))
+            if 'FROM hrs.hrs_decision_evidence' in query:
+                return [dict(kind='scan_start',payload=dict(financial_context=dict(available_at=AT.isoformat(),
+                    ledger_state=dict(segment_id='test',version=5,ledger_state=dict(as_of=AT.isoformat())),
+                    equity_source_archives=[dict(evidence_sha256='a'*64)]))),
+                    dict(kind='standard_scan_scope',payload=dict(symbols=['A']))]
+            return []
+    db=DB();await read_evidence_sources(db,'test',window_start=AT,as_of=AT+timedelta(hours=3))
+    equity=next(query for query,_ in db.queries if 'FROM trading.hrs_equity_evidence' in query)
+    funding=next(query for query,_ in db.queries if 'FROM public.ai_tuner_funding_schedule_observations' in query)
+    assert 'evidence_sha256=ANY' in equity
+    assert 'symbol=ANY' in funding

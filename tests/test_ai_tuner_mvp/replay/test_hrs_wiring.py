@@ -100,8 +100,8 @@ def _hrs_fixture(tmp_path, *, missing=None, entry_type='MARKET', subbars=False, 
         config.update(config_patch)
     bootstrap={'as_of':start.isoformat(),'complete':True,'config':config,
         'config_hashes':{'base_config_hash':'b'*64,'params_manifest_hash':'c'*64,'overlay_hash':'d'*64},
-        'market_circuit_breaker_config':None,'allocation':'10000','account_equity':'10000','entry_policy':{'mode':'reduced','multiplier':'1',
-            'ratio_cap':'1','entry_ceiling':'10000','revision':1,'allow_add':False},
+        'margin_reservations':[], 'market_circuit_breaker_config':None,'allocation':'10000','account_equity':'10000','entry_policy':{'mode':'reduced','multiplier':'1',
+            'ratio_cap':'1','entry_ceiling':'10000','revision':1,'allow_add':False,'effective_at':(start-timedelta(days=1)).isoformat(),'expires_at':(end+timedelta(days=1)).isoformat()},
         'ledger':{'segment_id':'test','units':'10000','history_complete_from':(AT-timedelta(hours=8)).isoformat(),
                   'history':[{'as_of':(AT-timedelta(hours=8)).isoformat(),'equity':'10000','units':'10000','nav':'1'},
                              {'as_of':AT.isoformat(),'equity':'10000','units':'10000','nav':'1'}],
@@ -126,7 +126,7 @@ def _hrs_fixture(tmp_path, *, missing=None, entry_type='MARKET', subbars=False, 
                        'market_cap_source':'coingecko','source_observed_at':decision.isoformat(),
                        'expires_at':(decision+timedelta(hours=1)).isoformat(),
                        'pre_entry_oi_usd':'20000000','pre_entry_funding_rate':'-.001'},
-             'risk':{'pool_index':None,'pool_index_12h':None,'exchange_position_clear':True,'claims_clear':True,
+             'risk':{'account_occupancy':{'version':'hrs_account_occupancy_v1','observed_at':decision.isoformat(),'other_positions':[]},'pool_index':None,'pool_index_12h':None,'exchange_position_clear':True,'claims_clear':True,
                      'allocation':'10000','entry_policy':bootstrap['entry_policy'],'account_equity_excluding_hrs':'0'}}
         row['config_hashes']=dict(bootstrap['config_hashes'])
         if market_patch:

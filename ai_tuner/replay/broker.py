@@ -183,6 +183,8 @@ class PortfolioView:
     last_prices: Dict[str, Decimal]
     realized_equity: Decimal
     last_price_times: Dict[str, datetime] = field(default_factory=dict)
+    pending_entry_symbols: frozenset[str] = frozenset()
+    working_exit_symbols: frozenset[str] = frozenset()
 
 
 class VirtualBroker:
@@ -385,6 +387,8 @@ class VirtualBroker:
             last_prices=dict(self.last_prices),
             realized_equity=self.realized_equity,
             last_price_times=dict(self.last_price_times),
+            pending_entry_symbols=frozenset(symbol for symbol,orders in self._pending_entries.items() if orders),
+            working_exit_symbols=frozenset(symbol for symbol,orders in self._working_exits.items() if orders),
         )
 
     def final_position(self) -> Optional[Position]:

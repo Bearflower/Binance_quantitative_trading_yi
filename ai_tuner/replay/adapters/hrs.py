@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from decimal import Decimal
+import re
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from strategies.hrs import core_decision as core
@@ -90,6 +91,7 @@ class HrsAdapter:
         self._last_decisions = {}
         self._pending = set()
         self._reservations = {}
+        self._durable_margin_reservations = {}
         self._protected = set()
         self._protection = {}
         self._best = {}
@@ -175,6 +177,21 @@ class HrsAdapter:
                           if ledger['gate_state'] is not None else None)
             self._scorer = ScoringEngine(self.config)
             self._recognizer = PatternRecognizer(self.config)
+            reservations=raw['margin_reservations']
+            if not isinstance(reservations,list):
+                raise DataBlocked(['hrs_initial_margin_reservation_inventory_missing'])
+            for reservation in reservations:
+                if reservation['state']=='released':continue
+                symbol=reservation['symbol'];terminal=reservation['terminal_order']
+                quantity=_positive(reservation['quantity'])
+                positions=[p for p in self._state['hrs_positions']['rows'] if p['symbol']==symbol]
+                if (symbol in self._durable_margin_reservations or terminal.get('status')!='FILLED'
+                        or terminal.get('symbol')!=symbol or _positive(terminal['executedQty'])!=quantity
+                        or _positive(terminal['origQty'])!=quantity or len(positions)!=1
+                        or _positive(positions[0]['entry_quantity'])!=quantity):
+                    raise DataBlocked(['hrs_initial_margin_reservation_unproven:'+symbol])
+                self._durable_margin_reservations[symbol]=dict(margin=_positive(reservation['margin']),
+                    terminal=True,position_id=positions[0]['position_id'])
         except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
             raise DataBlocked(['hrs_bootstrap_invalid:'+str(exc)]) from exc
         self._runtime_ready = True
@@ -522,7 +539,6 @@ class HrsAdapter:
             open_risk += sum((item["risk"] for item in self._reservations.values()),ZERO)
             leverage = Decimal(str(self.config.get('trading',{}).get('leverage',2)))
             occupied = sum((p.current_quantity*p.entry_price/leverage for p in ctx.portfolio.positions if p.is_open()),ZERO)
-            occupied += sum((item["margin"] for item in self._reservations.values()),ZERO)
             policy = self._policy
             effective = min(self._allocation*Decimal(str(policy['multiplier'])),
                 self._account_equity*Decimal(str(policy['ratio_cap'])),Decimal(str(policy['entry_ceiling'])))
@@ -542,6 +558,10 @@ class HrsAdapter:
                 pressure_fee_rate=str(fee),pressure_slippage=str(slip),exit_ratios=list(map(str,decision.exit_ratios))))
             if not decision.allowed:
                 continue
+            reservation_denial=self._reservation_denial(symbol,decision.quantity,price,ctx,now,risk,effective)
+            if reservation_denial:
+                self._record(now,'hrs_reject',dict(signal,reason=reservation_denial))
+                continue
             entry_type = self.config.get('trading',{}).get('order_type',{}).get('entry','LIMIT')
             extra = {}
             if entry_type == 'LIMIT':
@@ -557,10 +577,62 @@ class HrsAdapter:
                 raise DataBlocked(['hrs_entry_order_type_unsupported'])
             result.append(self._intent(symbol,signal['direction'],decision.quantity,'ENTRY',atr=Decimal(str(atr)),
                 entry_mode=mode,geometry_reference_price=price,exit_ratios=decision.exit_ratios,exit_parameters=params,**extra))
+            self._durable_margin_reservations[symbol]=dict(margin=decision.quantity*price/leverage,terminal=False,position_id=None)
             self._pending.add(symbol)
             self._reservations[symbol]={'risk':decision.worst_loss,'margin':decision.quantity*price/leverage,
                                         'direction':signal['direction']}
         return tuple(result)
+
+    def _reservation_denial(self,symbol,quantity,price,ctx,now,risk,effective):
+        """The live final store rejects after sizing; it never shrinks the order."""
+        try:
+            occupancy=risk['account_occupancy']
+            observed=parse_utc(occupancy['observed_at'])
+            if (occupancy.get('version')!='hrs_account_occupancy_v1'
+                    or not timedelta(0)<=now-observed<=timedelta(seconds=120)
+                    or not isinstance(occupancy['other_positions'],list)):
+                raise ValueError('missing_or_stale_inventory')
+            other_margin=ZERO;other_symbols=set()
+            for row in occupancy['other_positions']:
+                amount=Decimal(str(row['positionAmt']))
+                if not amount.is_finite():raise ValueError('nonfinite_quantity')
+                if amount==ZERO:continue
+                if (not row['strategy_id'] or row['strategy_id']=='hrs' or row['symbol'] in other_symbols
+                        or not re.fullmatch('[0-9a-f]{64}',row['ownership_evidence_sha256'])):
+                    raise ValueError('owner_missing_or_duplicate')
+                other_symbols.add(row['symbol'])
+                other_margin+=abs(amount)*_positive(row['markPrice'])/_positive(row['leverage'])
+        except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
+            raise DataBlocked(['hrs_account_occupancy_unproven:'+str(exc)]) from exc
+        current_symbols={p.symbol for p in ctx.portfolio.positions if p.is_open()}
+        if current_symbols & other_symbols:
+            raise DataBlocked(['hrs_account_occupancy_owner_conflict'])
+        occupied=current_symbols|other_symbols|set(self._durable_margin_reservations)
+        maximum=int(self.config.get('trading',{}).get('max_positions',3))
+        if maximum<=0:raise DataBlocked(['hrs_max_positions_invalid'])
+        if len(occupied|{symbol})>maximum:
+            return 'position_slots_include_account_and_reservations'
+        leverage=_positive(self.config.get('trading',{}).get('leverage',2))
+        self._marked_equity(ctx.portfolio,as_of=now)  # Actual mark freshness, never now-stamped cache.
+        hrs_margin=sum((p.current_quantity*ctx.portfolio.last_prices[p.symbol]/leverage for p in ctx.portfolio.positions if p.is_open()),ZERO)
+        retained=sum((r['margin'] for r in self._durable_margin_reservations.values()),ZERO)
+        requested=quantity*price/leverage
+        self._record(now,'hrs_account_reservation',dict(symbol=symbol,hrs_marked_margin=str(hrs_margin),
+            other_margin=str(other_margin),retained_margin=str(retained),requested_margin=str(requested),
+            effective_cap=str(effective),occupied_symbols=sorted(occupied),source_observed_at=observed.isoformat()))
+        if hrs_margin+other_margin+retained+requested>effective:
+            return 'entry_ceiling_includes_account_and_durable_reservations'
+        return None
+
+    def _release_margin_reservations(self,ctx,at):
+        held={p.symbol for p in ctx.portfolio.positions if p.is_open()}
+        pending=ctx.portfolio.pending_entry_symbols
+        working=ctx.portfolio.working_exit_symbols
+        for symbol,reservation in tuple(self._durable_margin_reservations.items()):
+            if reservation['terminal'] and symbol not in held|set(pending)|set(working):
+                self._durable_margin_reservations.pop(symbol)
+                self._record(at,'hrs_margin_reservation_released',dict(symbol=symbol,
+                    margin=str(reservation['margin']),reason='proven_virtual_flat_without_orders'))
 
     def exit_parameters(self,entry_mode):
         """Experiment overlays affect new entries, never captured source config."""
@@ -601,6 +673,20 @@ class HrsAdapter:
             return 'position_or_entry_exists'
         if self._policy.get('mode') != 'reduced' or self._policy.get('allow_add') is not False:
             return 'risk_policy_not_reduced'
+        try:
+            bounds=[]
+            for key in ('effective_at','expires_at'):
+                value=self._policy[key]
+                instant=datetime.fromisoformat(value.replace('Z','+00:00')) if isinstance(value,str) else value
+                if not isinstance(instant,datetime) or instant.tzinfo is None or instant.utcoffset() is None:
+                    raise ValueError('timezone_missing')
+                bounds.append(parse_utc(instant))
+            effective,expires=bounds
+            if expires<=effective:raise ValueError('invalid_interval')
+        except (KeyError,TypeError,ValueError) as exc:
+            raise DataBlocked(['hrs_entry_policy_timebounds_missing_or_invalid:'+str(exc)]) from exc
+        if now<effective:return 'risk_policy_not_effective'
+        if now>=expires:return 'risk_policy_expired'
         gate_denial=self._loss_gate_denial(now,ctx)
         if gate_denial:
             return gate_denial
@@ -693,6 +779,8 @@ class HrsAdapter:
             return ()
         self._pending.discard(position.symbol)
         self._reservations.pop(position.symbol,None)
+        if position.symbol in self._durable_margin_reservations:
+            self._durable_margin_reservations[position.symbol].update(terminal=True,position_id=position.position_id)
         if position.exit_parameters is None or position.exit_ratios is None or position.atr<=0:
             raise DataBlocked(['hrs_filled_entry_geometry_missing:'+position.symbol])
         params=position.exit_parameters
@@ -807,6 +895,10 @@ class HrsAdapter:
                     self._income_seq+=1
                     self._pending_income.append(IncomeEvent('replay-'+str(self._income_seq),kind,amount,
                         at or event['ts'],self._segment,True))
+            if event.get('type') in ('entry_timeout','reject') and payload['symbol'] in self._durable_margin_reservations:
+                self._durable_margin_reservations[payload['symbol']]['terminal']=True
+                self._pending.discard(payload['symbol'])
+                self._reservations.pop(payload['symbol'],None)
             if event.get('type') == 'entry_timeout':
                 self._pending.discard(event['payload']['symbol'])
                 self._reservations.pop(event['payload']['symbol'],None)
@@ -829,6 +921,7 @@ class HrsAdapter:
                 continue
             total=accumulated.pop(position.position_id)
             self._apply_closed_outcome(symbol,position.entry_price,payload['reason'],total,now)
+        self._release_margin_reservations(ctx,at)
 
     def _apply_closed_outcome(self,symbol,entry_price,reason,total,now):
         if total>ZERO:

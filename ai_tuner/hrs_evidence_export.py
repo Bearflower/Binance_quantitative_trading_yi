@@ -17,7 +17,7 @@ import re
 import tempfile
 
 from strategies.hrs.decision_capture import canonical_payload
-from strategies.hrs.equity_evidence import canonical as equity_canonical, prove_positions
+from strategies.hrs.equity_evidence import canonical as equity_canonical, prove_positions, owned_fill_positions
 from strategies.hrs.risk_ledger import LedgerNotReady
 from shared.config_loader import compute_config_hash
 from .replay.data_portal import DataPortal, sha256_file
@@ -169,6 +169,7 @@ def _bootstrap(snapshot,start,equities,checkpoints,records,execution_model,monit
     for name in TABLES:
         _require(financial['state_tables'][name].get('database_snapshot_coherent') is True,'bootstrap_state_table_incoherent:'+name)
     _require(not tables['hrs_positions']['rows'] and not snapshot.get('positions'),'nonflat_opening_cost_mae_funding_proof_missing')
+    _require(_time(financial['entry_policy']['effective_at'])<_time(financial['entry_policy']['expires_at']),'entry_policy_timebounds_invalid')
     raw=financial['ledger_state'];ledger=_decoded(raw['ledger_state']);gate=_decoded(raw['gate_state'])
     state_at=_time(ledger['as_of']);bridge=None
     _require(state_at<=start,'bootstrap_ledger_from_future')
@@ -186,9 +187,32 @@ def _bootstrap(snapshot,start,equities,checkpoints,records,execution_model,monit
     cooldown=snapshot['market_circuit_breaker_state']
     offset=timedelta(seconds=cooldown['process_utc_offset_seconds'])
     runtime['market_cooldowns']={symbol:_iso(datetime.fromisoformat(at).replace(tzinfo=timezone(offset))) for symbol,at in cooldown['cooldown_until_local'].items()}
-    result=dict(as_of=_iso(start),complete=True,config=config,config_hashes=hashes,allocation=financial['allocation'],account_equity=financial['account_equity'],entry_policy=financial['entry_policy'],market_circuit_breaker_config=snapshot['market_circuit_breaker_config'],runtime=runtime,
+    result=dict(as_of=_iso(start),complete=True,margin_reservations=financial.get('reservations',[]),config=config,config_hashes=hashes,allocation=financial['allocation'],account_equity=financial['account_equity'],entry_policy=financial['entry_policy'],market_circuit_breaker_config=snapshot['market_circuit_breaker_config'],runtime=runtime,
         ledger=dict(segment_id=ledger['segment_id'],units=ledger['units'],history_complete_from=ledger['inception'],history=history,allow_inception_segment=allow_inception,gate_state=gate),bootstrap_available_at=_iso(available),bootstrap_bridge=bridge,execution_model=execution_model,monitoring_model=monitoring_model)
     return result,tables,available
+
+
+def _account_occupancy(inventory,snapshot,financial,observed,equities):
+    """Observed external holdings; HRS counterfactual holdings are modeled separately."""
+    _require(isinstance(inventory,list),'account_occupancy_inventory_missing')
+    others=[p for p in inventory if Decimal(str(p['positionAmt']))!=0 and p['symbol'] not in snapshot.get('positions',{})]
+    result=[]
+    if others:
+        sources=[e for e in equities if e['payload'].get('source_collection',{}).get('complete') is True
+            and e['payload'].get('income_report',{}).get('id_match_and_coverage_complete') is True
+            and 'fills' in e['payload'] and 'order_owners' in e['payload']
+            and timedelta(0)<=observed-_time(e['payload']['as_of'])<=timedelta(seconds=120)
+            and _time(e['payload']['available_at'])<=observed]
+        _require(sources,'hrs_exogenous_inventory_owner_unproven')
+        source=max(sources,key=lambda e:_time(e['payload']['as_of']));p=source['payload']
+        fills=[dict(row,trade_time_utc=_time(row['trade_time_utc'])) for row in p['fills']]
+        owned=owned_fill_positions(p['account_id'],fills,p['order_owners'],through=_time(p['as_of']))
+        for row in others:
+            choices=[owner for (owner,symbol),(qty,basis) in owned.items() if symbol==row['symbol'] and qty==Decimal(str(row['positionAmt'])) and basis==Decimal(str(row['entryPrice']))]
+            claims={c['strategy'] for c in financial['claims'] if c['symbol']==row['symbol'] and c.get('claim_state') in ('ACTIVE','PENDING') and (not c.get('expires_at') or _time(c['expires_at'])>observed)}
+            _require(len(choices)==1 and choices[0]!='hrs' and claims=={choices[0]},'hrs_exogenous_inventory_owner_unproven:'+row['symbol'])
+            result.append(dict(row,strategy_id=choices[0],ownership_evidence_sha256=source['sha256'],owner_source_as_of=p['as_of']))
+    return dict(version='hrs_account_occupancy_v1',observed_at=_iso(observed),other_positions=result)
 
 
 def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
@@ -224,11 +248,30 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
         order=[s for s in symbols if s not in chosen]+chosen
         financial=snapshot['financial_context']
         _require(isinstance(financial.get('exchange_positions'),list) and isinstance(financial.get('reservations'),list),'account_occupancy_inventory_missing:'+run)
-        _require(not any(Decimal(str(p['positionAmt']))!=0 and p['symbol'] not in snapshot.get('positions',{}) for p in financial.get('exchange_positions',[])),'hrs_exogenous_inventory_occupancy_not_wired:'+run)
-        _require(not any(r.get('state')!='released' for r in financial.get('reservations',[])),'hrs_retained_reservation_occupancy_not_wired:'+run)
+        for reservation in financial['reservations']:
+            if reservation.get('state')=='released':continue
+            _require(reservation.get('created_at') is not None,'hrs_retained_reservation_source_time_missing:'+run)
+            if _time(reservation['created_at'])>start:
+                _require(any(r['kind']=='entry_budget_reserved' and r['payload'].get('decision',{}).get('client_order_id')==reservation.get('client_order_id') for r in records),'hrs_retained_reservation_origin_unproven:'+run)
+        policy=financial['entry_policy']
+        _require(_time(policy['effective_at'])<_time(policy['expires_at']),'entry_policy_timebounds_invalid:'+run)
         raw_ledger=_decoded(financial['ledger_state']['ledger_state'])
-        if 'hrs_marked_equity' in financial:
+        component=financial.get('hrs_marked_equity_observation')
+        component_source=None
+        if component is not None:
+            hrs_equity=Decimal(str(component['value']))
+            source=[e for e in equities if e['sha256']==component['evidence_sha256']]
+            age=(_time(financial['available_at'])-_time(component['as_of'])).total_seconds()
+            _require(len(source)>=1 and component['ledger_version']==financial['ledger_state']['version']
+                and source[0]['payload'].get('result',{}).get('ledger_version')==component['ledger_version']
+                and _time(component['as_of'])==_time(raw_ledger['as_of'])==_time(source[0]['payload']['as_of'])
+                and hrs_equity==Decimal(str(raw_ledger['equity'])) and 0<=age<=120
+                and _time(component['available_at'])==_time(source[0]['payload']['available_at'])<=_time(financial['available_at']),
+                'account_equity_component_observation_unproven:'+run)
+            component_source=dict(component,model='ledger_sample_120s_v1',source_age_seconds=age,mark_synchrony=False)
+        elif 'hrs_marked_equity' in financial:
             hrs_equity=Decimal(str(financial['hrs_marked_equity']))
+            component_source=dict(model='captured_component_v1',as_of=financial['available_at'],available_at=financial['available_at'],source_age_seconds=0,mark_synchrony=False)
         else:
             _require(not snapshot.get('positions') and not financial['state_tables']['hrs_positions']['rows'],'nonflat_account_equity_component_unproven:'+run)
             ledger_at=_time(raw_ledger['as_of']);financial_at=_time(financial['available_at'])
@@ -257,21 +300,30 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
                 market_cap_source=cap['source'],source_observed_at=_iso(max(r['available_at'] for r in values.values())),expires_at=_iso(expiry),provenance=cap)
             if market['has_market_cap']:
                 _require(cap.get('provider') and cap.get('provider_asset_id'),'market_cap_provider_identity_missing:'+symbol)
-            risk=dict(allocation=financial['allocation'],entry_policy=financial['entry_policy'],account_equity_excluding_hrs=str(Decimal(str(financial['account_equity']))-hrs_equity))
+            risk=dict(allocation=financial['allocation'],entry_policy=financial['entry_policy'],account_equity_excluding_hrs=str(Decimal(str(financial['account_equity']))-hrs_equity),account_equity_component_source=component_source,baseline_margin_reservations=financial['reservations'])
             stages=[r for r in rows if r['kind']=='entry_stage_inputs' and r['symbol']==symbol]
-            if stages:
-                _require(len(stages)==1,'entry_stage_input_ambiguous:'+symbol)
-                stage=stages[0];facts=stage['payload'];available=max(available,stage['available_at'])
-                positions=facts['exchange_positions'];claims=facts['claims']
-                _require(isinstance(positions,list) and isinstance(claims,list),'entry_stage_inventory_missing:'+symbol)
-                risk.update(exchange_position_clear=not any(p['symbol']==symbol and Decimal(str(p['positionAmt']))!=0 for p in positions),
-                    claims_clear=not any(c['symbol']==symbol and c.get('claim_state') in ('ACTIVE','PENDING') for c in claims),
-                    pool_index=facts['pool_index'],pool_index_12h=facts['pool_index_12h'])
-                market.update(pre_entry_oi_usd=facts['pre_entry_oi_usd'],pre_entry_funding_rate=facts['pre_entry_funding_rate'])
-            elif bootstrap['market_circuit_breaker_config'] is None:
-                risk.update(pool_index=None,pool_index_12h=None)
-            else:
-                raise DataBlocked(['market_guard_index_inputs_missing:'+symbol])
+            facts={}
+            for stage in stages:
+                available=max(available,stage['available_at'])
+                facts.update({k:v for k,v in stage['payload'].items() if k!='stage'})
+            if 'exchange_positions' in facts:
+                positions=facts['exchange_positions']
+                _require(isinstance(positions,list),'entry_stage_inventory_missing:'+symbol)
+                risk['exchange_position_clear']=not any(p['symbol']==symbol and Decimal(str(p['positionAmt']))!=0 for p in positions)
+            if 'claims' in facts:
+                claims=facts['claims'];_require(isinstance(claims,list),'entry_claim_inventory_missing:'+symbol)
+                risk['claims_clear']=not any(c['symbol']==symbol and c.get('strategy')!='hrs' and c.get('claim_state') in ('ACTIVE','PENDING') and
+                    (not c.get('expires_at') or _time(c['expires_at'])>available) for c in claims)
+            for key in ('pool_index','pool_index_12h'):
+                if key in facts:risk[key]=facts[key]
+                elif bootstrap['market_circuit_breaker_config'] is None:risk[key]=None
+                else:raise DataBlocked(['market_guard_index_inputs_missing:'+symbol])
+            for key in ('pre_entry_oi_usd','pre_entry_funding_rate'):
+                if key in facts:market[key]=facts[key]
+            inventory_stage=next((r for r in reversed(stages) if r['payload'].get('stage')=='reservation_inventory'),None)
+            occupancy_at=inventory_stage['available_at'] if inventory_stage else _time(financial['available_at'])
+            inventory=inventory_stage['payload']['exchange_positions'] if inventory_stage else financial['exchange_positions']
+            risk['account_occupancy']=_account_occupancy(inventory,snapshot,financial,occupancy_at,equities)
             event_available=max(available,released)
             _require(event_available<=end,'decision_inputs_after_window:'+run+':'+symbol)
             inputs.append(dict(symbol=symbol,decision_at=_iso(decided),score_available_at=_iso(analysis['available_at']),observed_at=_iso(available),available_at=_iso(available),complete=True,candidate_scan=scan,market=market,risk=risk,config_hashes=hashes,analysis_klines_1h=payload['klines_1h'],analysis_klines_4h=payload['klines_4h'],
@@ -375,11 +427,18 @@ def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_mo
         exchange=exchanges[-1]['payload']['response']
         with tempfile.TemporaryDirectory(prefix='hrs-evidence-conversion-') as temp:
             staging=Path(temp).resolve()
+            ages=sorted(row['risk']['account_equity_component_source']['source_age_seconds'] for row in inputs
+                if row['risk'].get('account_equity_component_source',{} ) is not None
+                and row['risk'].get('account_equity_component_source',{}).get('model')=='ledger_sample_120s_v1')
+            distribution=dict(count=len(ages),min_seconds=ages[0] if ages else None,
+                median_seconds=ages[len(ages)//2] if ages else None,
+                p95_seconds=ages[max(0,(len(ages)*95+99)//100-1)] if ages else None,
+                max_seconds=ages[-1] if ages else None)
             files={'hrs_replay_state.json':bootstrap,'hrs_state_tables.json':tables,
                 'config_hashes.json':dict(strategy_id='hrs',as_of=_iso(end),**bootstrap['config_hashes']),
                 'universe_slices.json':[dict(strategy_id='hrs',valid_from=_iso(start),valid_to=_iso(end+timedelta(microseconds=1)),observed_at=_iso(start),symbols=symbols,intervals=['1h','4h'],source='decision_evidence',config_hash=compute_config_hash(bootstrap['config']))],
                 'exchange_info.json':exchange,'funding_schedule_evidence.json':forecasts,
-                'hrs_export_receipt.json':dict(version=VERSION,bootstrap_available_at=_iso(available),capture_coverage=coverage,source_attested=False,
+                'hrs_export_receipt.json':dict(version=VERSION,qualification_available_at=terminal['available_at'],source_age_distribution=distribution,mark_synchrony=False,exact_exchange_parity=False,qualification_limitations=['ledger_sample_120s_v1 preserves asynchronous source points; optimistic differences alone do not establish performance qualification.'],bootstrap_available_at=_iso(available),capture_coverage=coverage,source_attested=False,
                     decision_payload_hashes={r['evidence_id']:r['payload_sha256'] for r in records},equity_payload_hashes=[e['sha256'] for e in equities]),
                 'raw_hrs_evidence.json':sources}
             for name,value in files.items():_write(staging/name,value)
@@ -467,9 +526,20 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of):
         FROM public.ai_tuner_funding_schedule_observations WHERE received_at >= $1 AND received_at <= $2
         ORDER BY received_at,symbol LIMIT $3""",(start-timedelta(seconds=420),end,limit))]
     result={'source_query_version':VERSION,'source_account_id':account_id,'source_window_start':_iso(start),'source_as_of':_iso(end)}
-    estimated=0
+    estimated=0;referenced=set();ledger_points=set();scanned=set()
     async with connection.transaction(readonly=True,isolation='repeatable_read'):
         for name,query,args in specs:
+            if name=='equity_evidence':
+                query='''SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
+                    FROM trading.hrs_equity_evidence WHERE account_id=$1 AND
+                    (evidence_sha256=ANY($2::text[]) OR as_of=ANY($3::timestamptz[])
+                     OR (as_of >= $4 AND as_of <= $5)) ORDER BY available_at,evidence_sha256 LIMIT $6'''
+                args=(account_id,sorted(referenced),sorted(ledger_points),end,end+timedelta(seconds=120),limit)
+            elif name=='funding_observations':
+                query='''SELECT symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash
+                    FROM public.ai_tuner_funding_schedule_observations WHERE received_at >= $1 AND received_at <= $2
+                    AND symbol=ANY($3::text[]) ORDER BY received_at,symbol LIMIT $4'''
+                args=(start-timedelta(seconds=420),end,sorted(scanned),limit)
             rows=[dict(row) for row in await connection.fetch(query,*args)]
             _require(len(rows)<=MAX_ROWS,'source_row_limit:'+name)
             # The same canonical encoder used by the recorder preserves values
@@ -478,6 +548,17 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of):
             estimated+=len(encoded.encode())
             _require(estimated<=MAX_BYTES,'source_byte_limit')
             result[name]=json.loads(encoded)
+            if name=='decision_evidence':
+                for row in rows:
+                    payload=_decoded(row['payload'])
+                    if row['kind'] in ('standard_scan_scope','lv_rm_scan_scope'):
+                        scanned.update(payload['symbols'])
+                    financial=payload.get('financial_context',{})
+                    referenced.update(r['evidence_sha256'] for r in financial.get('equity_source_archives',[]))
+                    component=financial.get('hrs_marked_equity_observation')
+                    if component:referenced.add(component['evidence_sha256'])
+                    raw=financial.get('ledger_state')
+                    if raw:ledger_points.add(_time(_decoded(raw['ledger_state'])['as_of']))
     return result
 
 

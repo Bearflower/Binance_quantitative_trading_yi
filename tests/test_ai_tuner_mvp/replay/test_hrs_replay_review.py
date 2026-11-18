@@ -162,6 +162,7 @@ def test_off_hour_decision_uses_inputs_when_available_then_fills_next_minute(tmp
         decided=AT+timedelta(hours=index,minutes=21)
         available=decided+timedelta(seconds=5)
         row.update(decision_at=decided.isoformat(),observed_at=available.isoformat())
+        row['risk']['account_occupancy']['observed_at']=available.isoformat()
         row['market'].update(source_observed_at=available.isoformat(),expires_at=(available+timedelta(hours=1)).isoformat())
         calendar.append(dict(symbol='A',decision_at=decided.isoformat(),available_at=available.isoformat(),
                              batch_available_at=available.isoformat(),sequence=index))
@@ -391,6 +392,7 @@ def test_score_bar_boundary_is_frozen_before_delayed_batch_release(tmp_path,monk
     row=json.loads((portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()[0])
     scored=AT+timedelta(hours=2,seconds=-5);released=AT+timedelta(hours=2,seconds=5)
     row.update(decision_at=scored.isoformat(),observed_at=scored.isoformat(),available_at=released.isoformat(),score_available_at=scored.isoformat())
+    row['risk']['account_occupancy']['observed_at']=scored.isoformat()
     row['market'].update(source_observed_at=scored.isoformat(),expires_at=(released+timedelta(hours=1)).isoformat())
     portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl([row]),'hrs_decision_calendar.jsonl':jsonl([dict(symbol='A',decision_at=scored.isoformat(),available_at=released.isoformat(),batch_available_at=released.isoformat(),sequence=0)])})
     original=core_decision.analyze_standard;seen=[]
@@ -455,6 +457,7 @@ def test_captured_score_history_is_used_when_a_new_bar_closes_before_capture_fin
     raw=json.loads((portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()[0])
     at=AT+timedelta(hours=2,seconds=5)
     raw.update(decision_at=at.isoformat(),observed_at=at.isoformat(),score_available_at=at.isoformat())
+    raw['risk']['account_occupancy']['observed_at']=at.isoformat()
     raw['market'].update(source_observed_at=at.isoformat(),expires_at=(at+timedelta(hours=1)).isoformat())
     raw['analysis_klines_1h']=[_kline(b) for b in portal.bars('A','1h') if b.close_time<=AT+timedelta(hours=1)]
     raw['analysis_klines_4h']=[_kline(b) for b in portal.bars('A','4h') if b.close_time<=at]
@@ -465,3 +468,114 @@ def test_captured_score_history_is_used_when_a_new_bar_closes_before_capture_fin
     monkeypatch.setattr(core_decision,'analyze_standard',score)
     run_replay(portal,adapter,broker())
     assert seen[0]['klines_1h']==raw['analysis_klines_1h']
+
+
+def occupancy_rows(symbols,at):
+    return dict(version='hrs_account_occupancy_v1',observed_at=at.isoformat(),other_positions=[
+        dict(symbol=s,positionAmt='1',markPrice='100',leverage='2',strategy_id='btc_eth',ownership_evidence_sha256='a'*64) for s in symbols])
+
+
+def test_account_slots_include_observed_other_strategies(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    rows=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    for row in rows:row['risk']['account_occupancy']=occupancy_rows(['BTCUSDT','BNBUSDT','ETHUSDT'],AT+timedelta(hours=rows.index(row)+1))
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(rows)})
+    result=run_replay(portal,adapter,broker())
+    assert result.final_position is None
+    assert any(e['type']=='hrs_reject' and e['payload']['reason']=='position_slots_include_account_and_reservations' for e in result.audit_events)
+
+
+def test_final_margin_guard_rejects_without_resizing_for_other_strategy_holdings(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    rows=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    for row in rows:
+        row['risk']['entry_policy']['entry_ceiling']='2000'
+        row['risk']['account_occupancy']=occupancy_rows(['BTCUSDT'],AT+timedelta(hours=rows.index(row)+1))
+        row['risk']['account_occupancy']['other_positions'][0]['positionAmt']='30'
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(rows)})
+    result=run_replay(portal,adapter,broker())
+    assert result.final_position is None
+    assert any(e['type']=='hrs_reject' and e['payload']['reason']=='entry_ceiling_includes_account_and_durable_reservations' for e in result.audit_events)
+
+
+def test_full_fill_releases_pending_risk_but_retains_original_margin(tmp_path):
+    from types import SimpleNamespace
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    b=broker();run_replay(portal,adapter,b)
+    assert not adapter._reservations
+    retained=adapter._durable_margin_reservations['A']
+    assert retained['margin']==b.positions['A'].entry_quantity*D(100)/D(2)
+    adapter._policy['entry_ceiling']='1500'
+    reason=adapter._reservation_denial('B',b.positions['A'].entry_quantity,D(100),SimpleNamespace(portfolio=b.view()),
+        portal.as_of,dict(account_occupancy=occupancy_rows([],portal.as_of)),D(1500))
+    assert reason=='entry_ceiling_includes_account_and_durable_reservations'
+
+
+def test_proven_full_close_releases_durable_margin_after_native_orders_clear(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    minutes=[json.loads(line) for line in (portal.snapshot_dir/'klines/A_1m.jsonl').read_text().splitlines()]
+    minutes[61]['low']='94'
+    portal=refreeze(portal,{'klines/A_1m.jsonl':jsonl(minutes)})
+    result=run_replay(portal,adapter,broker())
+    releases=[e for e in result.audit_events if e['type']=='hrs_margin_reservation_released']
+    assert releases and releases[0]['ts']=='2026-11-17T01:02:00Z'
+    assert releases[0]['payload']['reason']=='proven_virtual_flat_without_orders'
+
+
+def test_missing_or_stale_account_occupancy_proof_blocks_new_risk(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    rows=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    for row in rows:row['risk']['account_occupancy']=occupancy_rows([],AT)
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(rows)})
+    with pytest.raises(DataBlocked,match='account_occupancy'):
+        run_replay(portal,adapter,broker())
+
+
+def test_initial_filled_reservation_requires_terminal_proof_and_retains_original_margin(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,initial_position=True,entry_type='LIMIT',subbars=True)
+    state=json.loads((portal.snapshot_dir/'hrs_replay_state.json').read_text())
+    state['margin_reservations']=[dict(state='submitting',symbol='A',quantity='10',margin='500',
+        terminal_order=dict(symbol='A',status='FILLED',executedQty='10',origQty='10'))]
+    portal=refreeze(portal,{'hrs_replay_state.json':json.dumps(state)})
+    run_replay(portal,adapter,broker())
+    assert adapter._durable_margin_reservations['A']['margin']==D(500)
+
+
+def test_current_hrs_position_and_two_other_symbols_fill_all_three_slots(tmp_path):
+    from types import SimpleNamespace
+    portal,adapter,_=_hrs_fixture(tmp_path,initial_position=True,entry_type='LIMIT',subbars=True)
+    b=broker();run_replay(portal,adapter,b)
+    reason=adapter._reservation_denial('NEW',D(1),D(100),SimpleNamespace(portfolio=b.view()),portal.as_of,
+        dict(account_occupancy=occupancy_rows(['BTCUSDT','BNBUSDT'],portal.as_of)),D(10000))
+    assert reason=='position_slots_include_account_and_reservations'
+
+
+def test_expired_captured_policy_denies_entries_without_renewing_validity(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    rows=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    for row in rows:
+        row['risk']['entry_policy'].update(effective_at=AT.isoformat(),expires_at=(AT+timedelta(hours=1)).isoformat())
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(rows)})
+    result=run_replay(portal,adapter,broker())
+    assert result.final_position is None
+    assert any(e['type']=='hrs_reject' and e['payload']['reason']=='risk_policy_expired' for e in result.audit_events)
+
+
+def test_captured_policy_not_effective_yet_is_a_normal_denial(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    rows=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    for row in rows:row['risk']['entry_policy'].update(effective_at=(AT+timedelta(hours=2)).isoformat(),expires_at=(AT+timedelta(hours=4)).isoformat())
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(rows)})
+    result=run_replay(portal,adapter,broker())
+    assert result.final_position.entry_time==AT+timedelta(hours=2,minutes=1)
+    assert any(e['type']=='hrs_reject' and e['payload']['reason']=='risk_policy_not_effective' for e in result.audit_events)
+
+
+def test_missing_policy_timebounds_cannot_be_window_attested_implicitly(tmp_path):
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True)
+    rows=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    for row in rows:
+        row['risk']['entry_policy'].pop('effective_at',None);row['risk']['entry_policy'].pop('expires_at',None)
+    portal=refreeze(portal,{'hrs_decision_inputs.jsonl':jsonl(rows)})
+    with pytest.raises(DataBlocked,match='policy_timebounds'):
+        run_replay(portal,adapter,broker())
