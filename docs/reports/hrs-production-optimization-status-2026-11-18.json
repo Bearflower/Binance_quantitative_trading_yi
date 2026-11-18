@@ -33,7 +33,13 @@
   "runtime_permissions": {
     "segment_account_id_lock_column_update": true,
     "segment_opening_cash_update": false,
-    "decision_evidence_main_role_select_only": true
+    "decision_evidence_main_role_select_only": true,
+    "acceptance_reader_funding_source": {
+      "nosuper": true,
+      "readonly": true,
+      "can_select": true,
+      "can_mutate": false
+    }
   },
   "continuous_acceptance": {
     "observed_at": "2026-11-18T08:03:16.203444+00:00",
@@ -147,5 +153,11 @@
     "raw_parent_shape_bypass_fixed": true,
     "linear_5000_ref_probe": true
   },
-  "final_discovery_report": "hrs-exit-experiment-discovery-2026-11-18-final.json"
+  "final_discovery_report": "hrs-exit-experiment-discovery-2026-11-18-final.json",
+  "review_close_scope": {
+    "reviewable_files": 59,
+    "reviewed_files": 59,
+    "skipped_files": 0,
+    "includes_final_discovery_and_workflow_move": true
+  }
 }

@@ -1,8 +1,8 @@
 # HRS 最终 OCR delegate 审查覆盖（2026-11-18）
 
-审查范围：`954ee5f26b05e7ffffe83bf411389087f64cff1b` → `441559ae8d549c9d242dc79df0f945f8539fe6a9`。使用 `ocr delegate preview --format json` 与 `ocr delegate rule --format json` 解析文件/规则，宿主及领域代理执行实际审查，未调用外部 LLM 端点。
+审查范围：`954ee5f26b05e7ffffe83bf411389087f64cff1b` → `bfcef846088d2efc4fc2ec79d38c172a2873c555`。使用 `ocr delegate preview --format json` 与 `ocr delegate rule --format json` 解析文件/规则，宿主及领域代理执行实际审查，未调用外部 LLM 端点。
 
-- total_files：108；reviewable_files：58；reviewed_files：58；skipped_files：0；coverage_rate：100%。
+- total_files：109；reviewable_files：59；reviewed_files：59；skipped_files：0；coverage_rate：100%。
 - OCR自动排除50项，理由逐项列于下方；相关测试另有实际执行，不能把此覆盖率称为整仓每行独立双审。
 - 旧风险/锁/提交/采集/回放/市值/发布代码的审查记录保留。新增归档、资金费引用与离线来源闭包逐文件复审；最终独立293项、实现域459项通过，额外真实PG两种字段删除探针与5000refs单次source遍历验证通过。修复已确认的完整性和复杂度缺陷后再发布。
 - 合成大体积和真实隔离PG用例属于工程证据，不能替代生产收益。云端候选与实盘核验以发布记录为准。
@@ -28,11 +28,13 @@
 
 当前审查范围无已确认且未修复的代码缺陷。8–9月反事实、SL/TP参数胜出及未来24小时/五个自然闭合仓位仍未通过，不能以工程测试代替绩效。
 
+封存后的新增最终发现JSON已逐字段核对：真实28个runtime source身份AVAILABLE、BLOCKED_DATA、0 engine runs、无选择、未接受绩效。候选workflow仅改文件名、原deploy恢复分支基线；YAML和原始字节核对通过，441559ae已测试运行源码未改。
+
 ## 逐文件覆盖
 
 | 路径 | OCR状态 | 审查状态 |
 | --- | --- | --- |
-| `.github/workflows/deploy.yml` | modified | reviewed |
+| `.github/workflows/hrs-optimization-candidate.yml` | added | reviewed |
 | `ai_tuner/hrs_evidence_export.py` | added | reviewed |
 | `ai_tuner/hrs_exit_experiment.py` | added | reviewed |
 | `ai_tuner/hrs_forecast_sources.py` | added | reviewed |
@@ -54,6 +56,7 @@
 | `database/postgres/migrations/2026-11-17-hrs-risk-ledger-loss-gates.sql` | added | reviewed |
 | `docs/reports/hrs-aug-sep-final-input-audit-2026-11-18.json` | added | reviewed |
 | `docs/reports/hrs-exit-experiment-2026-11-17.json` | added | reviewed |
+| `docs/reports/hrs-exit-experiment-discovery-2026-11-18-final.json` | added | reviewed |
 | `docs/reports/hrs-exit-experiment-discovery-2026-11-18-v2.json` | added | reviewed |
 | `docs/reports/hrs-exit-experiment-discovery-2026-11-18-v3.json` | added | reviewed |
 | `docs/reports/hrs-exit-experiment-registration-2026-11-17.json` | added | reviewed |
