@@ -219,7 +219,8 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
                 if f.get('account_id') == account_id and f.get('kind') == 'capture_boundary'}
     for sid in ids:
         windows = []
-        protocol_symbols = set()
+        verified_intervals = []
+        symbol_intervals = []
         for fact in facts:
             if fact.get('account_id') != account_id or fact.get('kind') != 'protocol_window':
                 continue
@@ -228,24 +229,33 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
             if (b and fact.get('created_by') not in (None, 'trading_user')
                     and p.get('all_entry_paths_before_submit') is True
                     and sid in p.get('strategy_ids', []) and p.get('reviewed_by') and p.get('source_id')
-                    and isinstance(p.get('start_ms'), int) and isinstance(p.get('end_ms'), int)
-                    and p['start_ms'] >= _ms(b['observed_at'])):
-                windows.append((p['start_ms'], p['end_ms']))
+                    and type(p.get('start_ms')) is int and type(p.get('end_ms')) is int
+                    and _ms(b['observed_at']) <= p['start_ms'] < p['end_ms']):
+                left, right = max(start_ms, p['start_ms']), min(end_ms, p['end_ms'])
+                if left >= right:
+                    continue
+                windows.append((left, right))
                 symbols = p.get('symbols')
-                if p.get('symbol_universe_complete') is True and isinstance(symbols, list) and symbols:
-                    protocol_symbols.update(str(symbol) for symbol in symbols)
-        covered = start_ms
-        for left, right in sorted(windows):
-            if left <= covered:
+                if (p.get('symbol_universe_complete') is True and isinstance(symbols, list)
+                        and symbols and all(isinstance(symbol, str) and symbol.strip() for symbol in symbols)):
+                    symbol_intervals.append((left, right))
+                    if all(_covered(cursors, account_id, symbol, left, right) for symbol in symbols):
+                        verified_intervals.append((left, right))
+
+        def covers_window(intervals):
+            covered = start_ms
+            for left, right in sorted(intervals):
+                if left > covered:
+                    return False
                 covered = max(covered, right)
-        if covered < end_ms:
+            return covered >= end_ms
+
+        if not covers_window(windows):
             gap('missing_protocol_cutover', (sid,))
-        elif not protocol_symbols:
+        elif not covers_window(symbol_intervals):
             gap('entry_symbol_universe_missing', (sid,))
-        else:
-            for symbol in protocol_symbols:
-                if not _covered(cursors, account_id, symbol, start_ms, end_ms):
-                    gap('user_trades_coverage_incomplete', (sid,))
+        elif not covers_window(verified_intervals):
+            gap('user_trades_coverage_incomplete', (sid,))
     intents = defaultdict(list)
     for r in reservations:
         if r.get('account_id') == account_id:
