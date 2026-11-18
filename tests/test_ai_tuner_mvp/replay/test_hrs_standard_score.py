@@ -120,3 +120,60 @@ def test_frozen_candidate_blocks_late_publication(snapshot):
             memberships=[frozen_member(scan, created_at=AS_OF + timedelta(seconds=1))],
             bars_1h=(), bars_4h=(),
         )
+
+
+def test_dynamic_candidate_blocks_uncaptured_history(snapshot):
+    scan = frozen_scan()
+    config = {"candidate_pool": {"dynamic_thresholds": {"enabled": True}}}
+    kwargs = dict(as_of=AS_OF, snapshot=snapshot, memberships=[frozen_member(scan)],
+                  bars_1h=bars("1h", 1), bars_4h=bars("4h", 4))
+    with pytest.raises(DataBlocked, match="hrs_dynamic_thresholds_history_missing"):
+        HrsAdapter.score_frozen_candidate(config, scan=scan, **kwargs)
+    fixed = {"kind": "frozen_dynamic_thresholds_v1", "mode": "fixed"}
+    assert set(HrsAdapter.score_frozen_candidate(config, scan={**scan, "dynamic_thresholds": fixed},
+                                                  **kwargs)) == {"long", "short"}
+
+
+def test_dynamic_candidate_rejects_threshold_computed_after_scan(snapshot):
+    from strategies.hrs.candidate_pool import DynamicThresholds
+
+    scan = frozen_scan()
+    latest = DynamicThresholds()
+    latest.sample_count = latest.funding_sample_count = latest.oi_market_cap_sample_count = 15
+    record = {**latest.to_dict(), "kind": "frozen_dynamic_thresholds_v1", "mode": "dynamic",
+              "computed_at": (scan["observed_at"] + timedelta(seconds=1)).isoformat()}
+    config = {"candidate_pool": {"dynamic_thresholds": {"enabled": True}}}
+    with pytest.raises(FutureDataAccess):
+        HrsAdapter.score_frozen_candidate(
+            config, as_of=AS_OF, snapshot=snapshot,
+            scan={**scan, "dynamic_thresholds": record}, memberships=[frozen_member(scan)],
+            bars_1h=bars("1h", 1), bars_4h=bars("4h", 4),
+        )
+
+
+def test_dynamic_candidate_restores_recorded_threshold_state(snapshot, monkeypatch):
+    from strategies.hrs.candidate_pool import DynamicThresholds
+
+    scan = frozen_scan()
+    latest = DynamicThresholds()
+    latest.sample_count = latest.funding_sample_count = latest.oi_market_cap_sample_count = 15
+    latest.funding_rate_emm_short = 17.5
+    scan["dynamic_thresholds"] = {
+        **latest.to_dict(), "kind": "frozen_dynamic_thresholds_v1", "mode": "dynamic",
+        "computed_at": scan["observed_at"].isoformat(),
+    }
+    received = []
+
+    def score(*_args, dynamic_thresholds, **_kwargs):
+        received.append(dynamic_thresholds)
+        return None, False
+
+    monkeypatch.setattr(HrsAdapter, "score_frozen_standard", staticmethod(score))
+    config = {"candidate_pool": {"dynamic_thresholds": {"enabled": True}}}
+    HrsAdapter.score_frozen_candidate(
+        config, as_of=AS_OF, snapshot=snapshot, scan=scan,
+        memberships=[frozen_member(scan, membership="short")],
+        bars_1h=bars("1h", 1), bars_4h=bars("4h", 4),
+    )
+    assert len(received) == 1 and received[0].is_valid()
+    assert received[0].funding_rate_emm_short == 17.5

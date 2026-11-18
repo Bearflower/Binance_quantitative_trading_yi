@@ -130,6 +130,7 @@ class HrsAdapter:
     def score_frozen_standard(
         config: Mapping[str, Any], *, as_of: datetime, direction: str,
         snapshot: ExternalSnapshot, bars_1h: Tuple[Bar, ...], bars_4h: Tuple[Bar, ...],
+        dynamic_thresholds: Any = None,
     ) -> Tuple[Any, bool]:
         """Reuse the live standard score for offline parity, before entry orchestration."""
         from strategies.hrs.pattern import PatternRecognizer
@@ -172,6 +173,8 @@ class HrsAdapter:
             raise DataBlocked(["hrs_standard_score_insufficient_pattern_bars"])
         detect = recognizer.detect_long_patterns if direction == "long" else recognizer.detect_short_patterns
         engine = ScoringEngine(dict(config))
+        if dynamic_thresholds is not None:
+            engine.set_dynamic_thresholds(dynamic_thresholds)
         result = engine.score(
             symbol=snapshot.symbol, direction=direction, oi_market_cap_ratio=float(ratio),
             patterns=detect(hourly), funding_rate=float(funding), has_market_cap=True,
@@ -191,13 +194,16 @@ class HrsAdapter:
             raise FutureDataAccess("hrs.score_frozen_candidate", cutoff, "available_at", snapshot.available_at)
         if snapshot.strategy_id != cls.strategy_id:
             raise DataBlocked(["hrs_candidate_snapshot_strategy_mismatch"])
-        sides = _scan_memberships(scan, memberships, cutoff)
+        sides = _scan_memberships(scan, memberships, cutoff).get(snapshot.symbol, ())
+        if not sides:
+            return {}
+        thresholds = _restore_dynamic_thresholds(config, scan, cutoff)
         return {
             direction: cls.score_frozen_standard(
                 config, as_of=as_of, direction=direction, snapshot=snapshot,
-                bars_1h=bars_1h, bars_4h=bars_4h,
+                bars_1h=bars_1h, bars_4h=bars_4h, dynamic_thresholds=thresholds,
             )
-            for direction in sides.get(snapshot.symbol, ())
+            for direction in sides
         }
 
     def intents(self, ctx: PreparedContext) -> Tuple[Any, ...]:
@@ -264,6 +270,40 @@ def _scan_memberships(
             raise DataBlocked(["hrs_candidate_scan_invalid:membership"])
         symbols[symbol] = _SIDES_BY_MEMBERSHIP[membership]
     return symbols
+
+
+def _restore_dynamic_thresholds(
+    config: Mapping[str, Any], scan: Mapping[str, Any], cutoff: datetime,
+) -> Any:
+    if not config.get("candidate_pool", {}).get("dynamic_thresholds", {}).get("enabled"):
+        return None
+    evidence = scan.get("dynamic_thresholds")
+    if not isinstance(evidence, Mapping) or evidence.get("kind") != "frozen_dynamic_thresholds_v1":
+        raise DataBlocked(["hrs_dynamic_thresholds_history_missing"])
+    if evidence.get("mode") == "fixed":
+        return None
+    if evidence.get("mode") != "dynamic":
+        raise DataBlocked(["hrs_dynamic_thresholds_mode_invalid"])
+    from strategies.hrs.candidate_pool import DynamicThresholds
+
+    observed = _scan_timestamp(scan, "observed_at", cutoff)
+    restored = DynamicThresholds()
+    restored.computed_at = _scan_timestamp(evidence, "computed_at", observed)
+    for field, default in restored.to_dict().items():
+        value = evidence.get(field)
+        if type(default) is int:
+            valid = type(value) is int and value >= 0
+        else:
+            try:
+                valid = type(value) in (int, float) and abs(value) < float("inf")
+            except OverflowError:
+                valid = False
+        if not valid:
+            raise DataBlocked([f"hrs_dynamic_thresholds_invalid:{field}"])
+        setattr(restored, field, value)
+    if not restored.funding_sample_count or not restored.oi_market_cap_sample_count or not restored.is_valid():
+        raise DataBlocked(["hrs_dynamic_thresholds_sample_invalid"])
+    return restored
 
 
 def _validate_snapshot(

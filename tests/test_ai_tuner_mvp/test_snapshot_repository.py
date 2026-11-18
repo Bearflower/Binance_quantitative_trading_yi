@@ -288,3 +288,18 @@ def test_validate_sql_rejects_double_dash_comment_neg_guard():
     # 额外覆盖 /* */ 注释
     with pytest.raises(SQLInjectionError, match="注释注入"):
         validator._validate_sql("SELECT 1 /* x */")
+
+
+@pytest.mark.asyncio
+async def test_universe_scan_keeps_dynamic_threshold_evidence_in_same_transaction():
+    repository = SnapshotRepository(db := FakeDatabase())
+    thresholds = {"kind": "frozen_dynamic_thresholds_v1", "computed_at": AS_OF.isoformat(),
+                  "funding_sample_count": 15, "oi_market_cap_sample_count": 14}
+    await repository.store_universe(
+        "hrs", AS_OF, ["BTCUSDT"], [], "run-thresholds", "a" * 64,
+        dynamic_thresholds=thresholds,
+    )
+    [(scan_sql, scan_args), (membership_sql, _)] = db.transactions[0]
+    assert "dynamic_thresholds" in scan_sql
+    assert json.loads(scan_args[-1]) == thresholds
+    assert "ai_tuner_universe_snapshots" in membership_sql

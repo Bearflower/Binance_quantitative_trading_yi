@@ -22,7 +22,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .snapshot_sealer import _has_symlink_ancestor
 
 
-SQL_VERSION = "raw-export-v2"
+SQL_VERSION = "raw-export-v3"
 MAX_WINDOW_DAYS = 90
 MAX_KLINE_PAIRS = 64
 MAX_ROWS_PER_SOURCE = 50_000
@@ -217,6 +217,10 @@ async def _extract_one(db, spec, start, end, bindings):
     missing = sorted(set(columns) - set(types))
     if missing:
         return None, None, "columns_missing:{0}:{1}".format(name, ",".join(missing))
+    if name == "public.ai_tuner_universe_scan_runs" and "dynamic_thresholds" in types:
+        if types["dynamic_thresholds"] != "jsonb":
+            raise ValueError("unexpected_hrs_dynamic_thresholds_type")
+        columns += ("dynamic_thresholds",)
     time_columns = (time_col, *cutoff_cols)
     if name == "public.ai_tuner_market_snapshots":
         time_columns += ("bucket_start",)
@@ -229,6 +233,14 @@ async def _extract_one(db, spec, start, end, bindings):
         return None, None, "dataset_empty:{0}".format(name)
     # Fake DBs and drivers may return extra fields; only approved columns leave this boundary.
     projected = [{column: row[column] for column in columns} for row in fetched]
+    if "dynamic_thresholds" in columns:
+        for row in projected:
+            value = row["dynamic_thresholds"]
+            if isinstance(value, str):
+                value = json.loads(value)
+            if value is not None and not isinstance(value, dict):
+                raise ValueError("invalid_hrs_dynamic_thresholds_payload")
+            row["dynamic_thresholds"] = value
     rows = _canonical_rows(projected, time_col, cutoff_cols, sort_cols, start, end, zones, name)
     times = [row[time_col] for row in rows]
     evidence = {
