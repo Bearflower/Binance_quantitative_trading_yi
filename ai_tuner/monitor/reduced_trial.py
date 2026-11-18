@@ -100,12 +100,12 @@ def inspect_exchange(positions: Any, orders: Any, algos: Any,
                      owned_symbols: set[str]) -> dict:
     """Check a strategy's claimed live positions against full adverse STOP size."""
     empty = {"verified": False, "owned_positions": [], "unprotected_symbols": [],
-             "owned_margin": None}
+             "owned_margin": None, "estimated_notional_over_leverage": None}
     if not all(isinstance(rows, list) for rows in (positions, orders, algos)):
         return empty
     owned: list[str] = []
     unprotected: list[str] = []
-    owned_margin: Decimal | None = Decimal(0)
+    estimated_margin: Decimal | None = Decimal(0)
     for position in positions:
         if not isinstance(position, Mapping):
             return empty
@@ -122,9 +122,9 @@ def inspect_exchange(positions: Any, orders: Any, algos: Any,
         leverage = _amount(position.get("leverage"))
         contract_size = _amount(position.get("contractSize"))
         if leverage is None or leverage <= 0 or contract_size is None or contract_size <= 0:
-            owned_margin = None
-        elif owned_margin is not None:
-            owned_margin += abs(amount) * mark * contract_size / leverage
+            estimated_margin = None
+        elif estimated_margin is not None:
+            estimated_margin += abs(amount) * mark * contract_size / leverage
         covered = Decimal(0)
         close_all = False
         seen: set[str] = set()
@@ -156,7 +156,8 @@ def inspect_exchange(positions: Any, orders: Any, algos: Any,
         if not close_all and covered < abs(amount):
             unprotected.append(symbol)
     return {"verified": True, "owned_positions": sorted(owned),
-            "unprotected_symbols": sorted(unprotected), "owned_margin": owned_margin}
+            "unprotected_symbols": sorted(unprotected), "owned_margin": None,
+            "estimated_notional_over_leverage": estimated_margin}
 
 
 _POLICY_SQL = """SELECT p.* FROM trading.strategy_risk_policy p
@@ -396,14 +397,10 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
         if not isinstance(owned_positions, list):
             missing.append("owned_positions_unverified")
         elif owned_positions:
-            holdings_margin = _amount(exchange.get("owned_margin"))
-            if holdings_margin is None or holdings_margin < 0:
-                missing.append("holdings_margin_unverified")
-            elif isinstance(reservations, Mapping) and isinstance(policy, Mapping):
-                reserved = _amount(reservations.get("margin"))
-                ceiling = _amount(policy.get("entry_ceiling"))
-                if reserved is not None and ceiling is not None and holdings_margin + reserved > ceiling:
-                    safety.append("exposure_exceeds_ceiling")
+            # PM positionRisk has no exchange-attested strategy margin. The
+            # reservation may already be the same live lot; adding its margin
+            # to notional/leverage would double count that exposure.
+            missing.append("holdings_margin_unverified")
 
     signals = evidence.get("signals")
     if not isinstance(signals, Mapping) or any(
