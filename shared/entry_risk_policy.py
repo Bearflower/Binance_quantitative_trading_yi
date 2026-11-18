@@ -526,5 +526,9 @@ async def recover_reserved_protection(strategy):
                 if not oid:raise EntryDenied('reserved fill hard-stop placement failed')
             except Exception as exc:
                 log.error('reserved fill protection requires retry',symbol=row['symbol'],error=str(exc))
+        # This runs on each position-management cycle, including an empty local
+        # position book. Release proved-flat reservations without waiting for a
+        # new entry signal. Complete protective recovery before reconciliation.
+        await store.reconcile('btc_eth_aggressive', strategy.binance)
     except Exception as exc:
         log.warning('reserved fill recovery unavailable; normal protection continues',error=str(exc))
