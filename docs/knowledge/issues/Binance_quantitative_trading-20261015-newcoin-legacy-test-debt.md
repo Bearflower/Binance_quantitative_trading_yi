@@ -6,13 +6,17 @@ id: Binance_quantitative_trading-20261015-newcoin-legacy-test-debt
 日期: 2026-10-15
 标签: [测试债, new_coin, 测试, AsyncMock, 断言脱节]
 任务标识: newcoin_legacy_test_debt_2026-10-15
-状态: 待复查
-审查: 待审查
+状态: 已解决
+审查: 已复核
 ---
 
 # new_coin 既有测试 25 项长期失败（测试债）：MagicMock fixture 被 await + 3 处陈旧断言
 
-## 现象
+## 2026-11-13 代码与测试复核
+
+按原工单范围重跑 strategies/new_coin/，修订前为 23 failed、316 passed。更新重启持仓、订单成交与状态恢复测试，使其使用当前接口与数据格式。该目录及 tests/test_accounting/test_fact_ingestion_gaps.py 合计 380 passed。
+
+## 登记时的现象
 `strategies/new_coin/` 测试套件存在 **25 个长期失败的既有用例**，与任何单次修复无关，属存量「测试债」。
 
 - HEAD 干净副本（`fce42bf`）跑 `pytest strategies/new_coin/ -q` → `25 failed, 163 passed`

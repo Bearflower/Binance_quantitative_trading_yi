@@ -270,49 +270,29 @@ class TestDrawdownFix:
         修复前的 bug：返回 0.0 会导致 cumulative_pnl 被错误累加。
         修复后：返回 None，调用方据此跳过回撤检查。
         """
-        strategy.db.fetch_one = AsyncMock(return_value=None)
+        strategy.positions["BTCUSDT"] = {"entry_time": datetime.now(timezone.utc).isoformat()}
+        strategy.db.fetch_all.return_value = []
+        assert await strategy._get_position_pnl("BTCUSDT", 100.0) is None
+        strategy.db.fetch_all.assert_awaited_once()
+        strategy.binance_client.get_user_trades.assert_not_awaited()
 
-        result = await strategy._get_position_pnl("BTCUSDT", 100.0)
-
-        assert result is None  # 必须是 None，不能是 0.0
-
-    async def test_get_position_pnl_normal_returns_pnl(self, strategy):
-        """验证: 正常情况返回盈亏金额
-
-        做空盈亏 = (入场价 - 出场价) * 数量
-        入场价 100，出场价 80，数量 2 → (100-80)*2 = 40
-        """
-        strategy.db.fetch_one = AsyncMock(
-            return_value={"quantity": 2, "price": 80, "side": "BUY"}
+    @pytest.mark.parametrize(("fills", "expected"), [(["15", "25"], 40), (["-25", "5"], -20)])
+    async def test_get_position_pnl_sums_order_fills(self, strategy, fills, expected):
+        strategy.positions["BTCUSDT"] = {"entry_time": datetime.now(timezone.utc).isoformat()}
+        strategy.db.fetch_all.return_value = [{"order_id": 123}]
+        strategy.binance_client.get_user_trades.return_value = [
+            {"orderId": 123, "realizedPnl": value} for value in fills
+        ]
+        assert await strategy._get_position_pnl("BTCUSDT", 100.0) == expected
+        strategy.binance_client.get_user_trades.assert_awaited_once_with(
+            "BTCUSDT", order_id="123", limit=1000
         )
-
-        result = await strategy._get_position_pnl("BTCUSDT", 100.0)
-
-        assert result == 40.0
-
-    async def test_get_position_pnl_loss_returns_negative(self, strategy):
-        """补充: 亏损情况返回负数盈亏
-
-        入场价 100，出场价 110，数量 2 → (100-110)*2 = -20
-        """
-        strategy.db.fetch_one = AsyncMock(
-            return_value={"quantity": 2, "price": 110, "side": "BUY"}
-        )
-
-        result = await strategy._get_position_pnl("BTCUSDT", 100.0)
-
-        assert result == -20.0
 
     async def test_get_position_pnl_exception_returns_none(self, strategy):
-        """验证: 异常情况返回 None
-
-        数据库异常时不应抛出，而应返回 None 由调用方处理。
-        """
-        strategy.db.fetch_one = AsyncMock(side_effect=Exception("DB connection error"))
-
-        result = await strategy._get_position_pnl("BTCUSDT", 100.0)
-
-        assert result is None
+        strategy.positions["BTCUSDT"] = {"entry_time": datetime.now(timezone.utc).isoformat()}
+        strategy.db.fetch_all.side_effect = RuntimeError("DB connection error")
+        assert await strategy._get_position_pnl("BTCUSDT", 100.0) is None
+        strategy.db.fetch_all.assert_awaited_once()
 
     # ==================== 4. 平仓后处理逻辑测试 ====================
 
@@ -447,7 +427,7 @@ class TestDrawdownFix:
             "peak_equity": "200",  # 旧字段名（基于错误公式）
             # 无 state_version 字段 → 默认为 1
         }
-        strategy.db.fetch_one = AsyncMock(return_value=old_state)
+        strategy.db.fetch_one = AsyncMock(return_value={"state_data": old_state})
 
         await strategy._restore_state()
 
@@ -466,7 +446,7 @@ class TestDrawdownFix:
             "peak_pnl": "150",
             "state_version": 2,
         }
-        strategy.db.fetch_one = AsyncMock(return_value=new_state)
+        strategy.db.fetch_one = AsyncMock(return_value={"state_data": new_state})
 
         await strategy._restore_state()
 
@@ -487,7 +467,7 @@ class TestDrawdownFix:
             "peak_equity": "300",  # 旧字段名
             "state_version": 1,  # 显式旧版本
         }
-        strategy.db.fetch_one = AsyncMock(return_value=old_state)
+        strategy.db.fetch_one = AsyncMock(return_value={"state_data": old_state})
 
         # 不应抛出异常（兼容旧字段名）
         await strategy._restore_state()
@@ -506,7 +486,7 @@ class TestDrawdownFix:
             "peak_pnl": None,
             "state_version": 2,
         }
-        strategy.db.fetch_one = AsyncMock(return_value=new_state)
+        strategy.db.fetch_one = AsyncMock(return_value={"state_data": new_state})
 
         await strategy._restore_state()
 
@@ -525,7 +505,7 @@ class TestDrawdownFix:
             "state_version": 2,
             "drawdown_pause_until": pause_time.isoformat(),
         }
-        strategy.db.fetch_one = AsyncMock(return_value=new_state)
+        strategy.db.fetch_one = AsyncMock(return_value={"state_data": new_state})
 
         await strategy._restore_state()
 
