@@ -32,7 +32,7 @@ from ai_tuner.snapshots.repository import SnapshotRepository
 from .candidate_pool import CandidatePool
 from .executor import TradingExecutor, OpenResult, CloseOutcome
 from .position_exit_plan import validate_exit_plan
-from .decision_context import capture_financial_context
+from .decision_context import capture_financial_context, CLAIM_EVIDENCE_SELECT, decode_claim_evidence
 from .market_data import MarketDataProvider
 from .pattern import PatternRecognizer
 from .position_manager import PositionManager
@@ -976,8 +976,9 @@ class HRSStrategy(BaseStrategy):
         store = RiskPolicyStore(self.db)
         try:
             await store.reconcile('hrs', self.binance_client)
-            raw_claims = await self.db.fetch_all('SELECT * FROM trading.position_claims WHERE symbol=$1', symbol)
-            await record_stage(self, 'entry_stage_inputs', {'stage': 'claims', 'claims': raw_claims}, symbol=symbol)
+            raw_claims = decode_claim_evidence(await self.db.fetch_all(
+                CLAIM_EVIDENCE_SELECT + ' WHERE c.symbol=$1', symbol))
+            await record_stage(self, 'entry_stage_inputs', {'stage': 'claims', 'claims': raw_claims, 'claim_source_format': 'postgresql_to_jsonb_v1'}, symbol=symbol)
             claim = await try_claim_symbol(self.db, symbol, 'hrs',
                                            intent_id=f'hrs:{identity}')
             if not claim.get('claimed') or not claim.get('claim_id'):

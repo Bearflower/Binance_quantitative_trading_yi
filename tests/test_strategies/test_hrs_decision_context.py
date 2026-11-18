@@ -87,3 +87,54 @@ def test_hrs_marked_component_retains_source_time_instead_of_receipt_time():
     assert result['evidence_sha256'] == digest
     source['payload'] = dict(payload, result={'ledger_version': 7})
     assert ledger_equity_observation(ledger, [source]) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not __import__('os').getenv('HRS_TEST_POSTGRES_DSN'), reason='isolated PostgreSQL required')
+async def test_real_legacy_claim_timestamps_capture_without_inventing_timezone():
+    import asyncpg
+    import os
+    from strategies.hrs.decision_context import capture_financial_context
+    from strategies.hrs.decision_capture import canonical_payload
+    connection = await asyncpg.connect(os.environ['HRS_TEST_POSTGRES_DSN'])
+    try:
+        await connection.execute('''CREATE TEMP TABLE legacy_claim (
+            symbol text, strategy text, claim_state text, created_at timestamp,
+            expires_at timestamp, released_at timestamp);
+            INSERT INTO legacy_claim VALUES ('TESTUSDT','other','ACTIVE',
+                '2026-11-15 10:20:30.123456','infinity',NULL)''')
+        class ClaimsDB:
+            async def fetch_all(self, query, *args):
+                if 'trading.position_claims' in query:
+                    rows = await connection.fetch(query.replace('trading.position_claims', 'pg_temp.legacy_claim'), *args)
+                    return [dict(row) for row in rows]
+                if 'strategy_risk_policy' in query:
+                    return [{'revision': 6}]
+                return []
+        strategy = SimpleNamespace(binance_client=SimpleNamespace(
+            get_account_info=AsyncMock(return_value={'totalMarginBalance': '123'}),
+            get_position=AsyncMock(return_value=[]), get_um_account_positions=AsyncMock(return_value=[])),
+            capital_mgr=SimpleNamespace(get_effective_margin_limit=AsyncMock(return_value=(52, 'db'))),
+            trading_executor=SimpleNamespace(timeout_recovery=SimpleNamespace(pending=AsyncMock(return_value=[]))),
+            db=ClaimsDB())
+        result = await capture_financial_context(strategy)
+        canonical_payload(result)
+        assert result['claims'][0]['created_at'] == '2026-11-15T10:20:30.123456'
+        assert result['claims'][0]['expires_at'] == 'infinity'
+        assert result['claims'][0]['released_at'] is None
+        assert result['claim_source_format'] == 'postgresql_to_jsonb_v1'
+        from strategies.hrs.decision_context import CLAIM_EVIDENCE_SELECT, decode_claim_evidence
+        at_entry = await connection.fetch(
+            CLAIM_EVIDENCE_SELECT.replace('trading.position_claims', 'pg_temp.legacy_claim') + ' WHERE c.symbol=$1', 'TESTUSDT')
+        captured = decode_claim_evidence(at_entry)
+        canonical_payload({'stage': 'claims', 'claims': captured})
+        assert captured == result['claims']
+    finally:
+        await connection.close()
+
+
+def test_claim_evidence_does_not_relax_other_aware_clock_requirements():
+    from datetime import datetime
+    from strategies.hrs.decision_capture import canonical_payload
+    with pytest.raises(ValueError, match='naive_evidence_timestamp'):
+        canonical_payload({'available_at': datetime(2026, 11, 18)})

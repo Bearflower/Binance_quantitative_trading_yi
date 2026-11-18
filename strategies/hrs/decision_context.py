@@ -3,8 +3,24 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal
 import os
+import json
 
 TABLES = ('hrs_positions', 'hrs_blacklist', 'hrs_active_symbols')
+# JSON is rendered by PostgreSQL before asyncpg converts a naive timestamp or
+# infinity into Python datetime. Preserve the original database text; a snapshot
+# of an ACTIVE claim does not infer its creation/expiry timezone.
+CLAIM_EVIDENCE_SELECT = 'SELECT to_jsonb(c) AS evidence_row FROM trading.position_claims c'
+
+
+def decode_claim_evidence(rows):
+    result = []
+    for row in rows:
+        value = row['evidence_row']
+        value = json.loads(value) if isinstance(value, str) else value
+        if not isinstance(value, dict):
+            raise ValueError('claim_evidence_row_invalid')
+        result.append(value)
+    return result
 
 
 async def _database_context(db, account):
@@ -15,7 +31,7 @@ async def _database_context(db, account):
     queries += [(f'SELECT * FROM hrs.{table}', ()) for table in TABLES]
     queries += [
         ("SELECT * FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs'", (account,)),
-        ("SELECT * FROM trading.position_claims WHERE claim_state IN ('PENDING','ACTIVE')", ()),
+        (CLAIM_EVIDENCE_SELECT + " WHERE c.claim_state IN ('PENDING','ACTIVE')", ()),
         ('''SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
             FROM trading.hrs_equity_evidence WHERE account_id=$1 AND segment_id IS NOT NULL
             ORDER BY as_of DESC,available_at DESC LIMIT 2''', (account,))]
@@ -78,7 +94,7 @@ async def capture_financial_context(strategy):
         account_equity_source=('papi/v1/account.accountEquity' if getattr(strategy.binance_client, 'use_unified_account', False) is True
                                else 'fapi/v2/account.totalMarginBalance'),
         exchange_positions=inventory, independent_positions=independent,
-        reservations=[dict(row) for row in reservations], claims=[dict(row) for row in claims],
+        reservations=[dict(row) for row in reservations], claims=decode_claim_evidence(claims), claim_source_format='postgresql_to_jsonb_v1',
         equity_source_archives=[dict(row) for row in sources],
         hrs_marked_equity_observation=ledger_equity_observation(dict(ledger[0]) if len(ledger)==1 else None, sources),
 
