@@ -1266,5 +1266,73 @@
       "ethereum": "0x0e63b9c287e32a05e6b9ab8ee8df88a2760225a9",
       "binance-smart-chain": "0x0e63b9c287e32a05e6b9ab8ee8df88a2760225a9"
     }
+  },
+  "ZILUSDT": {
+    "cmc_id": null,
+    "verified_at": "2026-11-19",
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "symbol": "ZIL",
+    "cg_id": "zilliqa",
+    "name": "Zilliqa",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/cb824f4cc2684487ac66fdcdd7ab3232",
+      "https://www.binance.com/en/support/announcement/detail/343ad3d991c64b27842482f1fb1fe11c",
+      "https://www.coingecko.com/en/coins/zilliqa",
+      "https://api.coingecko.com/api/v3/coins/zilliqa",
+      "https://www.zilliqa.com/zil.html",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "identity_notes": "Native ZIL issuer market cap. Binance confirms the Zilliqa/ZILEVM migration is 1:1 and does not affect futures. Do not identify a wrapped BSC token contract as the native ZIL coin."
+  },
+  "ZKPUSDT": {
+    "cmc_id": null,
+    "verified_at": "2026-11-19",
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "symbol": "ZKP",
+    "cg_id": "zkpass",
+    "name": "zkPass",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/9e90affc1f364000b4ed299a64f3f5bc",
+      "https://www.coingecko.com/en/coins/zkpass",
+      "https://api.coingecko.com/api/v3/coins/zkpass",
+      "https://docs.zkpass.org/zkpass-dao/zkp",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "contracts": {
+      "ethereum": "0xe1be424f442d0687129128c6c38aace44f8c8dbc",
+      "binance-smart-chain": "0xd89b7dd376e671c124352267516bef1c2cc231a3"
+    }
+  },
+  "ZKCUSDT": {
+    "symbol": "ZKC",
+    "cg_id": "boundless",
+    "cmc_id": null,
+    "name": "Boundless",
+    "verified_at": "2026-11-19",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/9392fb82cd584776aa673b8272da0d54",
+      "https://www.binance.com/en/support/announcement/detail/51d8b9b9675a4bbdb5f963a09accd9e6",
+      "https://www.coingecko.com/en/coins/boundless",
+      "https://api.coingecko.com/api/v3/coins/boundless",
+      "https://github.com/boundless-xyz/zkc",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "contracts": {
+      "ethereum": "0x000006c2a22ff4a44ff1f5d0f2ed65f781f55555",
+      "binance-smart-chain": "0x15247e6e23d3923a853ccf15940a20ccdf16e94a"
+    }
   }
 }
