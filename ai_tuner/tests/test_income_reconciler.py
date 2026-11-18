@@ -142,8 +142,8 @@ class TestDedupeIncome:
 
 def exact_fact_rows(sql, *args):
     if "FROM trading.execution_fact_income" in sql:
-        trade_id = 58293 if args[2] == 1 else 58294
-        return [{"account_id": "pm", "trade_id": trade_id,
+        trade_id = 58293 if args[1] == 1 else 58294
+        return [{"symbol": "PFEUSDT", "account_id": "pm", "trade_id": trade_id,
                  "income": Decimal("-1.53967682" if trade_id == 58293 else "-0.18982317")}]
     if "FROM trading.execution_fact_fill WHERE account_id = $1" in sql and "trade_id = $3" in sql:
         trade_id = args[2]
@@ -395,7 +395,7 @@ class TestRunOnce:
         with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=now_ms):
             await rec.run_once()
 
-        assert mock_binance.get_income_history.await_args_list[0].kwargs["start_time"] == last_ts
+        assert mock_binance.get_income_history.await_args_list[0].kwargs["start_time"] == last_ts - rec.fact_wait_minutes * 60_000
 
     @pytest.mark.asyncio
     async def test_writeback_failure_does_not_advance_cursor(self, mock_db, mock_binance, base_config):
@@ -515,11 +515,14 @@ async def test_unowned_income_does_not_discard_verified_updates(mock_db, mock_bi
     def rows(sql, *args):
         if "trade_records" in sql and args[0] == "OTHER":
             return []
-        return exact_fact_rows(sql, *args)
+        result = exact_fact_rows(sql, *args)
+        if "execution_fact_income" in sql and args[1] == 3:
+            result[0].update(symbol="OTHER", trade_id=58293, income=Decimal("-1.53967682"))
+        return result
     mock_db.fetch_all.side_effect = rows
     inc = dict(tranId=1, tradeId=58293, symbol="PFEUSDT", time=1000, income="-1.53967682")
     with pytest.raises(ValueError, match="保留游标"):
-        await rec._match_and_update([dict(inc, symbol="OTHER"), inc], completed_through=2000)
+        await rec._match_and_update([dict(inc, symbol="OTHER", tranId=3), inc], completed_through=2000)
     updates = mock_db.execute_transaction.await_args.args[0]
     assert len(updates) == 1 and "UPDATE trading.trade_records" in updates[0][0]
     assert any("_gaps" in call.args[0] and "INSERT" in call.args[0] for call in mock_db.execute.await_args_list)
@@ -541,3 +544,35 @@ async def test_resolved_gap_is_removed_in_same_transaction_as_update(mock_db, mo
     assert "DELETE FROM" in clear[0] and clear[1] == ("pm", "PFEUSDT", 58293)
     assert progress[1] == (2000, "pm")
     mock_db.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_missing_later_fill_holds_order_total_until_replay(mock_db, mock_binance):
+    from ai_tuner.reconciler.income_reconciler import ExecutionFactsPending
+
+    rec = IncomeReconciler(mock_db, mock_binance, {"reconciler": {"account_id": "pm"}})
+    second_fill_arrived = False
+
+    def rows(sql, *args):
+        result = exact_fact_rows(sql, *args)
+        if "execution_fact_fill" in sql and not second_fill_arrived:
+            if "trade_id = $3" in sql and args[2] == 58294:
+                return []
+            if "order_id = $3" in sql:
+                return result[:1]
+        return result
+
+    mock_db.fetch_all.side_effect = rows
+    first = dict(tranId=1, tradeId=58293, symbol="PFEUSDT", time=1000, income="-1.53967682")
+    second = dict(first, tranId=2, tradeId=58294, income="-0.18982317")
+    with patch("ai_tuner.reconciler.income_reconciler._utc_now_ms", return_value=2000):
+        with pytest.raises(ExecutionFactsPending):
+            await rec._match_and_update([first, second], completed_through=2000)
+        mock_db.execute_transaction.assert_not_awaited()
+        second_fill_arrived = True
+        assert await rec._match_and_update([first, second], completed_through=2000) == (
+            1, Decimal("-1.72949999"),
+        )
+    update, progress = mock_db.execute_transaction.await_args.args[0]
+    assert update[1][0] == Decimal("-1.72949999")
+    assert progress[1] == (2000, "pm")
