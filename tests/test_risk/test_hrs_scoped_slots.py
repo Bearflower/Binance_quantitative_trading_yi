@@ -73,15 +73,23 @@ async def runtime(monkeypatch):
 @pytest.mark.asyncio
 async def test_foreign_positions_do_not_consume_hrs_slots_but_all_account_margin_remains(runtime):
     r=runtime
+    assert r.store.reservation_audit is None
     client=await r.store.reserve('hrs','SUIUSDT','sui',r.sized,1,r.snapshot)
     async with r.pool.acquire() as c:
         geometry=json.loads(await c.fetchval('SELECT geometry FROM trading.entry_risk_reservation WHERE client_order_id=$1',client))
     assert geometry['slot_occupancy_proof']['hrs_symbols']==['WLDUSDT']
     assert geometry['slot_occupancy_proof']['account_symbols']==['BNBUSDT','SOLUSDT','WLDUSDT']
+    from datetime import datetime,timezone
+    context=geometry['slot_context']
+    assert context['strategy_id']=='hrs' and context['policy_revision']==1
+    assert datetime.fromisoformat(context['as_of'])==r.at
+    assert r.at<=datetime.fromisoformat(context['checked_at'])<=datetime.now(timezone.utc)
+    assert r.store.reservation_audit==dict(client_order_id=client,slot_occupancy_proof=geometry['slot_occupancy_proof'],slot_context=context)
     with pytest.raises(EntryDenied) as caught:
         await r.store.reserve('hrs','B','expensive',r.sized,1,lambda:r.snapshot(margin=991))
     assert caught.value.reason_code=='entry_margin_ceiling'
     assert caught.value.context['account_margin']=='991'
+    assert r.store.reservation_audit is None
 
 
 @pytest.mark.asyncio
@@ -120,6 +128,10 @@ async def test_unknown_owner_is_denied_under_lock_without_reservation_or_claim_w
     await r.admin.execute('UPDATE trading.strategy_equity_gate SET evidence_sha256=$1',digest)
     with pytest.raises(EntryDenied) as caught:await r.store.reserve('hrs','SUIUSDT','unknown',r.sized,1,r.snapshot)
     assert caught.value.reason_code=='hrs_slot_ownership_unproven'
+    assert caught.value.context['strategy_id']=='hrs'
+    assert caught.value.context['policy_revision']==1
+    assert caught.value.context['as_of']==r.at.isoformat()
+    assert caught.value.context['checked_at']
     assert await r.admin.fetchval('SELECT count(*) FROM trading.entry_risk_reservation')==0
 
 
@@ -159,3 +171,38 @@ async def test_claim_change_while_waiting_for_policy_lock_is_not_hidden_by_earli
     assert caught.value.context['hrs_symbols'] is None
     assert caught.value.context['reservation_symbols']==[]
     assert await r.admin.fetchval('SELECT count(*) FROM trading.entry_risk_reservation')==0
+
+
+@pytest.mark.asyncio
+async def test_reservation_audit_is_not_published_when_transaction_commit_fails(runtime):
+    import asyncpg
+    r=runtime
+    await r.admin.execute("""CREATE FUNCTION trading.reject_test_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+        BEGIN RAISE EXCEPTION 'test deferred commit failure'; END $$;
+        CREATE CONSTRAINT TRIGGER reject_test_commit AFTER INSERT ON trading.entry_risk_reservation
+        DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION trading.reject_test_commit()""")
+    with pytest.raises(asyncpg.RaiseError,match='test deferred commit failure'):
+        await r.store.reserve('hrs','SUIUSDT','commit-failed',r.sized,1,r.snapshot)
+    assert r.store.reservation_audit is None
+    assert await r.admin.fetchval('SELECT count(*) FROM trading.entry_risk_reservation')==0
+
+
+@pytest.mark.asyncio
+async def test_newer_authorized_parent_clock_denial_keeps_exact_locked_gate_metadata(runtime):
+    from datetime import datetime
+    r=runtime
+    earlier=await r.snapshot()
+    new_at=await r.admin.fetchval('SELECT clock_timestamp()')
+    payload=dict(r.payload,as_of=new_at,available_at=new_at)
+    encoded,digest=canonical(payload)
+    await r.admin.execute('INSERT INTO trading.hrs_equity_evidence VALUES($1,$2,$3,$4,$4,$5::jsonb)','test',digest,'seg',new_at,encoded)
+    await r.admin.execute("UPDATE trading.strategy_equity_gate SET as_of=$1,valid_until=$1::timestamptz+interval '120 seconds',evidence_sha256=$2",new_at,digest)
+    async def fixed():return earlier
+    with pytest.raises(EntryDenied) as caught:await r.store.reserve('hrs','SUIUSDT','new-parent',r.sized,1,fixed)
+    assert caught.value.reason_code=='hrs_slot_source_stale_or_future'
+    context=caught.value.context
+    assert context['evidence_sha256']==digest and context['as_of']==new_at.isoformat()
+    assert context['strategy_id']=='hrs' and context['policy_revision']==1
+    assert datetime.fromisoformat(context['checked_at'])>=new_at
+    assert context['hrs_symbols'] is None
+    assert r.store.reservation_audit is None

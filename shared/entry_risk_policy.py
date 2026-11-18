@@ -6,6 +6,7 @@ are proven. This deliberately overcounts partial/complete fills alongside holdin
 """
 from contextlib import asynccontextmanager
 import asyncio
+import copy
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
@@ -165,6 +166,7 @@ class RiskPolicyStore:
     def __init__(self, db, account=None):
         self.pool = getattr(db, 'pool', None)
         self.account = account or account_id()
+        self.reservation_audit = None
         if self.pool is None:
             raise EntryDenied('risk policy database unavailable')
 
@@ -194,6 +196,7 @@ class RiskPolicyStore:
 
     async def reserve(self, strategy, symbol, identity, sized, revision, snapshot, *, geometry=None):
         """Snapshot precedes lock; retained reservations cover concurrent submitted fills."""
+        self.reservation_audit = None
         client_id = 'risk_' + hashlib.sha256(f'{self.account}:{strategy}:{identity}'.encode()).hexdigest()[:30]
         # No pool connection is held while snapshot helpers perform DB/exchange reads.
         # Full retained reservations account for all intervening authorized fills.
@@ -230,9 +233,11 @@ class RiskPolicyStore:
                     raise EntryDenied('current HRS equity ownership evidence unavailable',reason_code='hrs_slot_equity_unavailable')
                 pending_symbols=await conn.fetch("SELECT DISTINCT symbol FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs' AND state<>'released'",self.account)
                 reservations={r['symbol'] for r in pending_symbols}
+                metadata=dict(checked_at=row['checked_at'].isoformat(),as_of=row['as_of'].isoformat(),
+                    policy_revision=row['policy_revision'],strategy_id='hrs')
                 context=dict(slot_scope=SLOT_SCOPE,account_id=self.account,account_symbols=None,hrs_symbols=None,
                     reservation_symbols=sorted(reservations),occupied_symbols=None,observed_slots=None,requested_slots=None,
-                    max_slots=values.max_slots,evidence_sha256=row['evidence_sha256'])
+                    max_slots=values.max_slots,evidence_sha256=row['evidence_sha256'],**metadata)
                 claims=await conn.fetch("SELECT id,symbol,strategy,claim_state FROM trading.position_claims WHERE claim_state IN ('PENDING','ACTIVE') AND expires_at>clock_timestamp()")
                 try:
                     proof=prove_hrs_slot_ownership(self.account,dict(account_id=self.account,evidence_sha256=row['evidence_sha256'],payload=row['payload']),values.slot_evidence,claims,checked_at=row['checked_at'])
@@ -250,7 +255,7 @@ class RiskPolicyStore:
                 context=dict(slot_scope=SLOT_SCOPE,account_id=self.account,account_symbols=proof['account_symbols'],hrs_symbols=proof['hrs_symbols'],
                     reservation_symbols=sorted(reservations),occupied_symbols=sorted(occupied),observed_slots=len(occupied),
                     requested_slots=len(occupied|{symbol}),max_slots=values.max_slots,
-                    evidence_sha256=row['evidence_sha256'],observed_at=proof['observed_at'],account_margin=str(holdings))
+                    evidence_sha256=row['evidence_sha256'],observed_at=proof['observed_at'],account_margin=str(holdings),**metadata)
                 if symbol in proof['account_symbols']:
                     raise EntryDenied('existing account holding forbids additions',reason_code='entry_no_additions',context=context)
                 if len(occupied|{symbol})>values.max_slots:
@@ -280,6 +285,11 @@ class RiskPolicyStore:
                 (client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,geometry,pressure_risk,original_pressure_risk)
                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'reserved',$11::jsonb,$12,$13)''',client_id,self.account,strategy,revision,symbol,
                 sized.quantity,sized.original_quantity,sized.price,sized.leverage,sized.margin,json.dumps(saved_geometry,sort_keys=True),sized.risk,sized.original_risk)
+        if scoped:
+            # Expose only a durably committed result to this call's HRS capture.
+            # Live HRS owns one store instance per invocation, without reuse.
+            self.reservation_audit=copy.deepcopy(dict(client_order_id=client_id,
+                slot_occupancy_proof=saved_geometry['slot_occupancy_proof'],slot_context=saved_geometry['slot_context']))
         return client_id
 
     async def _release_proven_unsent(self, conn, strategy, client_id, row, state):
