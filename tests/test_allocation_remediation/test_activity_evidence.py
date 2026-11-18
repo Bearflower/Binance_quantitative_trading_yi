@@ -434,3 +434,26 @@ def test_protocol_without_symbol_universe_or_all_symbol_cursors_cannot_prove_zer
     assert not row['coverage_complete']
     assert row['owned_entry_fills'] is None
     assert 'user_trades_coverage_incomplete' in row['reasons']
+
+
+def test_protocol_incomplete_symbol_interval_cannot_borrow_adjacent_universe():
+    boundary, first = protocol_facts()
+    first['payload']['end_ms'] = 200
+    second = dict(first, id=4, payload=dict(first['payload'], start_ms=200, end_ms=300,
+                                             symbol_universe_complete=False))
+    row = project(facts=[boundary, first, second, batch([])], cursors=[cursor()])
+    assert not row['coverage_complete']
+    assert row['owned_entry_fills'] is None
+    assert 'entry_symbol_universe_missing' in row['reasons']
+
+
+def test_protocol_requires_cursors_only_during_each_certified_symbol_interval():
+    boundary, first = protocol_facts()
+    first['payload']['end_ms'] = 200
+    second = dict(first, id=4, payload=dict(first['payload'], start_ms=200, end_ms=300,
+                                             symbols=['BBBUSDT']))
+    cursors = [dict(cursor(), covered_until_ms=200),
+               dict(cursor(), symbol='BBBUSDT', window_start_ms=200)]
+    row = project(facts=[boundary, first, second, batch([])], cursors=cursors)
+    assert row['coverage_complete']
+    assert row['owned_entry_fills'] == 0
