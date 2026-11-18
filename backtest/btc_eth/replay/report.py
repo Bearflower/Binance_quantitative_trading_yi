@@ -684,6 +684,10 @@ def _write_calibrated_report(
         stream.write(f"- replay_run_id: `{result['replay_run_id']}`\n")
         stream.write(f"- 准入结论: **{admission}**\n")
         stream.write(f"- 决策小时缺口: {len(data_completeness.get('decision_missing_hours', []))}\n")
+        audit = data_completeness.get("funding_schedule_audit")
+        if audit is not None:
+            detail = "通过" if audit["verified"] else "、".join(audit["reasons"])
+            stream.write(f"- 资金费日程核验: {detail}，已匹配 {len(audit.get('matches', []))} 笔\n")
         stream.write(f"- 跨 run 去重事件: {coverage.get('duplicates_removed', '未提供')}\n")
         stream.write(f"- 物理 run 数: {len(coverage.get('run_segments', []))}\n")
         stream.write(f"- 已结虚拟交易: {metrics['n_closed_trades']}\n")

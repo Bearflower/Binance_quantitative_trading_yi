@@ -521,6 +521,9 @@ class ReplayEngine:
             replay_input_hash += ":" + ":".join(str(self.run_manifest.get(key, "")) for key in
                                                   ("coverage_sha256", "decision_events_sha256"))
             replay_input_hash += ":" + self.run_manifest["config_hashes"]["xau_calibrated"]
+            evidence_hash = self.run_manifest.get("funding_schedule_evidence_sha256")
+            if evidence_hash:
+                replay_input_hash += ":" + evidence_hash
         replay_run_id = compute_replay_run_id(replay_input_hash, self.engine_version, cutoff_at)
 
         # K 线窗口按 cutoff 截断

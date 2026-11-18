@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
 import os
@@ -24,6 +25,7 @@ from pathlib import Path
 from datetime import timedelta, datetime
 
 from .engine import ReplayEngine, _parse_ts
+from .funding_verification import audit_funding_files
 from .report import write_reports
 from .snapshot import verify_snapshot
 
@@ -85,6 +87,8 @@ def main(argv=None) -> int:
     parser.add_argument("--profile-aggr", default="", help="激进版 profile 冻结配置 (xau_aggressive.yaml)")
     parser.add_argument("--profile-calibrated", default="", help="校准版 profile 冻结配置 (xau_calibrated.yaml)")
     parser.add_argument("--coverage", default="", help="校准版 reconcile_runs 生成的 coverage.json")
+    parser.add_argument("--funding-schedule-evidence", type=Path,
+                        help="校准版事前结算日程观测 JSONL，可从只读证据库导出")
     parser.add_argument("--replay-config", default=None, help="回放 config.yaml；缺省用 replay/config.yaml")
     parser.add_argument("--output-dir", required=True, help="报告输出目录")
     parser.add_argument("--skip-snapshot-verify", action="store_true", help="跳过 manifest 文件 SHA-256 校验")
@@ -167,11 +171,21 @@ def main(argv=None) -> int:
         run_manifest = json.load(f)
 
     is_calibrated = set(run_manifest.get("config_hashes", {})) == {"xau_calibrated"}
+    funding_evidence = None
+    run_manifest.pop("funding_schedule_evidence_sha256", None)
+    if args.funding_schedule_evidence:
+        if not is_calibrated:
+            parser.error("--funding-schedule-evidence 仅支持校准版")
+        try:
+            funding_evidence = args.funding_schedule_evidence.read_bytes()
+        except OSError as exc:
+            logger.error("资金费日程观测文件读取失败：%s", exc)
+            return 2
+        run_manifest["funding_schedule_evidence_sha256"] = hashlib.sha256(funding_evidence).hexdigest()
     if is_calibrated:
         if not args.profile_calibrated or not args.coverage or args.skip_snapshot_verify:
             logger.error("校准版必须提供 --profile-calibrated 与 --coverage，且不能跳过快照校验")
             return 2
-        import hashlib
         coverage_path = Path(args.coverage)
         events_path = Path(args.events)
         if (hashlib.sha256(coverage_path.read_bytes()).hexdigest() != run_manifest.get("coverage_sha256")
@@ -230,10 +244,20 @@ def main(argv=None) -> int:
         if hard_errors:
             logger.error("校准版行情快照不完整：%s", market_errors)
             return 2
-        data_completeness["funding_schedule_verified"] = False
-        data_completeness["funding_schedule_reason"] = "historical_settlement_schedule_unavailable"
-        data_completeness["complete"] = False
-        logger.warning("资金费历史结算日程不可独立核验；仅产出参考指标，准入固定为 insufficient_data")
+        if funding_evidence is None:
+            audit = {"verified": False, "reasons": ["historical_settlement_schedule_unavailable"]}
+        else:
+            audit = audit_funding_files(
+                funding_evidence, funding_path.read_text(encoding="utf-8"),
+                start_at=start_at, end_at=end_at, symbol=symbol,
+            )
+            audit["evidence_sha256"] = run_manifest["funding_schedule_evidence_sha256"]
+        data_completeness["funding_schedule_audit"] = audit
+        data_completeness["funding_schedule_verified"] = audit["verified"]
+        data_completeness["funding_schedule_reason"] = next(iter(audit["reasons"]), None)
+        data_completeness["complete"] = data_completeness["complete"] and audit["verified"]
+        if not audit["verified"]:
+            logger.warning("资金费结算日程核验未通过，仅产出参考指标：%s", audit["reasons"])
     engine_result = engine.run()
 
     outputs = write_reports(

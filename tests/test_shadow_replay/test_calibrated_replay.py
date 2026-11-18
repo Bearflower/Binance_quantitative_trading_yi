@@ -111,7 +111,7 @@ def test_calibrated_only_engine_runs_with_frozen_config(tmp_path):
     funding_path = Path(fixture["funding_path"])
     funding_path.write_text(json.dumps([{
         "fundingTime": int(datetime(2026, 10, 1, 10, 30, tzinfo=timezone.utc).timestamp() * 1000),
-        "fundingRate": "0.0001",
+        "fundingRate": "0.0001", "symbol": "XAUUSDT",
     }]))
     snapshot_manifest_path = Path(fixture["manifest_path"])
     snapshot_manifest = json.loads(snapshot_manifest_path.read_text())
@@ -129,6 +129,35 @@ def test_calibrated_only_engine_runs_with_frozen_config(tmp_path):
     cli_report = json.loads((cli_dir / "report_xau-calibrated-test.json").read_text())
     assert cli_report["admission"]["admission"] == "insufficient_data"
     assert cli_report["xau_calibrated"]["n_closed_trades"] >= 1
+
+    evidence_path = tmp_path / "funding-evidence.jsonl"
+    rows = []
+    window_start = datetime(2026, 10, 1, 10, tzinfo=timezone.utc)
+    settlement = window_start + timedelta(minutes=30)
+    for step in range(-1, 12):
+        slot = window_start + timedelta(minutes=5 * step)
+        moment = int(slot.timestamp() * 1000)
+        next_settlement = settlement if slot < settlement else settlement + timedelta(hours=4)
+        payload = {"symbol": "XAUUSDT", "time": moment,
+                   "nextFundingTime": int(next_settlement.timestamp() * 1000), "fundingIntervalHours": 4}
+        rows.append({
+            "scheduled_at_ms": moment, "request_started_at_ms": moment, "received_at_ms": moment,
+            "raw_payload": payload,
+            "payload_hash": hashlib.sha256(json.dumps(
+                payload, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+        })
+    evidence_path.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    with_evidence = tmp_path / "with-evidence"
+    assert replay_main.main([
+        "--events", str(events_path), "--run-manifest", str(manifest_path),
+        "--coverage", str(coverage_path), "--snapshot-dir", fixture["dir"],
+        "--profile-calibrated", str(CALIBRATED), "--output-dir", str(with_evidence),
+        "--funding-schedule-evidence", str(evidence_path),
+    ]) == 0
+    verified_report = json.loads((with_evidence / "report_xau-calibrated-test.json").read_text())
+    assert verified_report["data_completeness"]["funding_schedule_verified"] is True
+    assert verified_report["admission"]["admission"] == "insufficient_data"
+    assert verified_report["replay_run_id"] != cli_report["replay_run_id"]
 
     # 文件及顶层哈希均有效时，内部缺分钟不能被伪造的 gaps=[] 掩盖。
     kline_path = Path(fixture["klines_path"])
