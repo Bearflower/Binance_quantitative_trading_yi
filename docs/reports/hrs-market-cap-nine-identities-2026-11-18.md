@@ -1,6 +1,6 @@
 # HRS 首次自然扫描缺失的九项资产身份
 
-核验日：2026-11-18。新增九项仅启用 CoinGecko 身份，`cmc_enabled=false`、`cmc_id=null`；尚未做同一时刻的流通供应量/市值口径对照，不启用 CMC。现有注册表条目、原始 ticker 分母、crypto 资格规则均未更改；未部署。
+核验日：2026-11-18。新增九项仅启用 CoinGecko 身份，`cmc_enabled=false`、`cmc_id=null`；尚未做同一时刻的流通供应量/市值口径对照，不启用 CMC。现有注册表条目、原始 ticker 分母、crypto 资格规则均未更改。已随441559ae于2026-11-18 15:58 CST受控发布；16:00 CST诊断请求9/9返回可信CoinGecko市值，provider ID与本表一致、is_proxy=false、missing_reason=null。此为显式诊断取数，不冒称自然扫描覆盖验收。
 
 | Binance 合约 | 项目身份与 Binance 原始来源 | CoinGecko 页面 / 已验证 API ID |
 |---|---|---|

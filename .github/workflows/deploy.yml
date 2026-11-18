@@ -1,4 +1,4 @@
-name: HRS optimization candidate
+name: CMC authenticated market cap candidate
 on:
   workflow_dispatch:
 permissions:
@@ -7,30 +7,20 @@ permissions:
 jobs:
   candidate:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+      - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build immutable candidate and offline tests
+      - name: Offline integration and regression tests
         run: |
-          docker build --build-arg RELEASE_SHA=${{ github.sha }} --target test -f release/hrs-execution/Optimization.Dockerfile -t hrs-optimization-test .
-          docker network create --internal hrs-test-net
-          trap 'docker rm -f hrs-test-pg >/dev/null 2>&1 || true; docker network rm hrs-test-net >/dev/null 2>&1 || true' EXIT
-          docker run -d --name hrs-test-pg --network hrs-test-net -e POSTGRES_PASSWORD=isolated-test-password -e POSTGRES_DB=hrs_test postgres:16
-          for attempt in $(seq 1 30); do
-            if docker exec hrs-test-pg pg_isready -U postgres -d hrs_test; then break; fi
-            sleep 1
-          done
-          docker run --rm --network hrs-test-net -e HRS_TEST_POSTGRES_DSN=postgresql://postgres:isolated-test-password@hrs-test-pg/hrs_test hrs-optimization-test python -m pytest -q strategies/hrs/tests tests/test_strategies/test_hrs_*.py tests/test_shared/test_equity_entry_gate.py tests/test_shared/test_hrs_final_submit_guard.py tests/test_shared/test_hrs_projection_submission.py tests/test_shared/test_market_cap_hub.py tests/test_shared/test_entry_risk_reconcile_flat.py tests/test_risk/test_entry_policy.py tests/test_ai_tuner_mvp/replay tests/test_ai_tuner_mvp/test_hrs_exit_experiment.py tests/test_ai_tuner_mvp/test_hrs_evidence_export.py tests/test_ai_tuner_mvp/test_hrs_evidence_archive.py tests/test_ai_tuner_mvp/test_hrs_forecast_closure.py tests/test_release/test_hrs_optimization_deploy.py tests/test_ai_tuner_mvp/test_snapshot_collector.py tests/test_ai_tuner_mvp/test_snapshot_repository.py
-      - name: Publish immutable candidates
+          docker build --target test -f release/hrs-execution/MarketCap.Dockerfile -t market-cap-test .
+          docker run --rm --network none market-cap-test python -m pytest -q strategies/hrs/tests tests/test_shared/test_market_cap_hub.py tests/test_ai_tuner_mvp/test_snapshot_collector.py tests/test_ai_tuner_mvp/test_snapshot_repository.py
+      - name: Publish shared service candidate
         run: |
-          for target in hrs hub; do
-            IMAGE=ghcr.io/bearflower/trading-hrs:optimization-${target}-${{ github.sha }}
-            docker build --build-arg RELEASE_SHA=${{ github.sha }} --target "$target" -f release/hrs-execution/Optimization.Dockerfile -t "$IMAGE" .
-            docker push "$IMAGE"
-            docker inspect "$IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"
-          done
+          IMAGE=ghcr.io/bearflower/trading-hrs:market-cap-hub-${{ github.sha }}
+          docker build --target hub -f release/hrs-execution/MarketCap.Dockerfile -t "$IMAGE" .
+          docker push "$IMAGE"
+          docker inspect "$IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"

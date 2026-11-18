@@ -53,6 +53,18 @@
 - 日亏 3%、精确滚动 30×24h 回撤 6% 必须依赖真实原点与持久权益证据。盘中首次启用可能因 `daily_origin_missing` 拒新风险；不能伪造当天午夜或把初始段称为完整 30 天验收。
 - 24 个连续完整小时与前 5 个自然闭合仓位是未来生产效果验收。报告容器运行健康不等于技术覆盖、交易绩效或 SL/TP 已验收通过。
 
+## 最终合并发布与上线核验
+
+- 最终实盘源码 **441559ae8d549c9d242dc79df0f945f8539fe6a9**，2026-11-18 **15:58:36 CST** 发布状态 complete。[Python 3.11 + 全新 PostgreSQL 16 候选 CI](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44260954948) **1288 passed**，独立最终复审293项通过；实现领域459项通过。OCR发布源码范围58/58 reviewable，后续仅文档/workflow收尾。
+- 36个运行源码文件、8个加法迁移的哈希及冻结配置通过；HRS/reporter镜像 `sha256:6aa43ec2d7d17e4437b03d2141d7f893fd0089b47f79914a45df4ce0f7b107b6`，hub `sha256:e789a1699664c15a7b18273ff2bd867125b13e842d819a0dc6bb7eff141fb799`。三个服务healthy、重启计数0；三个pin指向最终发布，无关容器ID不变。
+- actual WLDUSDT 28两套库存仍一致，原STOP_MARKET closePosition编号 `2000001724190866`、价格0.2533未变；实际配置hash不变，挂载几何未变。没有人工交易或修改保护单。
+- 市值注册表67项，hash `c7da9c8cab95c884bd744a44fdbc18ede55bc188c7f2aeb3a7b2193c08e675b0`；16:00 CST显式诊断请求新增9项全部取得可信CoinGecko市值，provider/asset_id正确、is_proxy=false、missing_reason=null。未把诊断请求说成自然扫描95%覆盖；这也不保证未来永不429。新9项CMC仍禁用，不能绕过独立口径对照。
+- 新权益parent已使用628bytes forecasts_ref，16:00 CST实际525条source/forecast闭包通过、原parent hash正确且没有inline forecasts；旧证据未回写。消除forecast累计复制的二次存储项，仍有每次前缀读取/哈希及其他字段线性增长，不声称无限容量或恒定CPU。
+- 历史reconciliation与离线export共用一次增量prefix校验；独立5000父/5000源只读一遍。修复删除capture或ledger_version可绕过原hash检查的问题，原始parent在任何筛选前验证。两个独立真实PG删除探针均拒绝、source查询0、ledger版本不前进。
+- 16:03 CST报告快照coherent、source_error_type=null、financial reasons空；仍0完整小时/0闭合样本、NOT_READY/PENDING、performance_accepted=false。权益门禁仅daily_origin_missing，当前不允许新风险；下一CST午夜仍须真实数据及所有门禁通过，不承诺到点开仓。
+- 独立归档/导出/CLI已支持完整inventory、无损CAS、COUNT/cursor、月窗固定预算和真实首扫描边界。新[最终发现报告](hrs-exit-experiment-discovery-2026-11-18-final.json)绑定实际28个引擎源码依赖，仍BLOCKED_DATA、0次实际实验运行、无参数选择；旧v1/v2/v3登记与发现事实未覆盖。
+- 手工候选workflow搬到独立 `hrs-optimization-candidate.yml`；旧deploy.yml恢复为分支基线原字节，分支差异不覆盖现有main生产CI。测试过的运行源码字节未改变。隔离分支及工作树保留，未将用户原脏工作区覆盖或自动合并main。
+
 ## 当前结论
 
-本轮风险门禁、真实留证、市值范围修复和持续报告已于 2026-11-18 12:00 北京时间发布。SL/TP 参数未变；历史反事实和未来效果仍未通过。另发现未来实验窗口与实际第 21 分钟扫描的边界不匹配，离线工具正在补齐确定性边界解析，不以伪造午夜快照绕过。
+这轮工程修复和受控部署完成，实际采集、原始source闭包、9项市值诊断及现仓保护已核验。SL/TP经济参数保持，8–9月缺失原始输入仍不能完成反事实收益验收；前瞻合格窗口、24个完整小时及五个自然闭合仓位仍待真实事件。不能归档为“收益/回撤已改善”。

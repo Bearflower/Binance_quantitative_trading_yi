@@ -1,12 +1,12 @@
 {
   "status": "deployed",
-  "release_sha": "3436656d698f037fc51e4fa950bd02868e4079be",
-  "deployed_at": "2026-11-18T05:07:11.796544+00:00",
-  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44240820228",
-  "tests_passed": 1157,
+  "release_sha": "441559ae8d549c9d242dc79df0f945f8539fe6a9",
+  "deployed_at": "2026-11-18T07:58:36.029168+00:00",
+  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44260954948",
+  "tests_passed": 1288,
   "images": {
-    "hrs": "ghcr.io/bearflower/trading-hrs@sha256:84fc109b554509c0c947585f2c2a7e4e34a3826ee9a10d16ab58b4098574e189",
-    "hub": "ghcr.io/bearflower/trading-hrs@sha256:3b90bc1a5c5f7d5f560bd21e8dbe8856fc15d501508382ce6fc70fa7a461f930"
+    "hrs": "ghcr.io/bearflower/trading-hrs@sha256:6aa43ec2d7d17e4437b03d2141d7f893fd0089b47f79914a45df4ce0f7b107b6",
+    "hub": "ghcr.io/bearflower/trading-hrs@sha256:e789a1699664c15a7b18273ff2bd867125b13e842d819a0dc6bb7eff141fb799"
   },
   "configuration_hash": "39e90a4d1b1cc526f42d14fb3248a9b292c0aa500a36e4df76159efda25fbb5e",
   "configuration_mounts_read_only": true,
@@ -19,8 +19,8 @@
     "reasons": [
       "daily_origin_missing"
     ],
-    "observed_as_of": "2026-11-18T05:21:47.139880+00:00",
-    "available_at": "2026-11-18T05:22:07.149901+00:00",
+    "observed_as_of": "2026-11-18T07:59:24.360149+00:00",
+    "available_at": "2026-11-18T07:59:45.054049+00:00",
     "inception_protection_only": true,
     "qualified_full_30_days": false
   },
@@ -36,6 +36,7 @@
     "decision_evidence_main_role_select_only": true
   },
   "continuous_acceptance": {
+    "observed_at": "2026-11-18T08:03:16.203444+00:00",
     "database_snapshot_coherent": true,
     "source_error_type": null,
     "consecutive_complete_hours": 0,
@@ -50,12 +51,13 @@
     "sltp_parameter_selection": "BLOCKED_DATA",
     "forward_window_boundary_tool": "implemented_tested_not_performance_qualified",
     "natural_24_hours_and_5_closed_lifecycles": "PENDING",
-    "monthly_evidence_capacity": "archive_implemented_independently_reviewed_actual_window_not_qualified",
+    "monthly_evidence_capacity": "archive_and_source_closure_implemented_tested_actual_window_not_qualified",
     "new_market_asset_identity_count": 9,
-    "funding_evidence_storage": "confirmed_quadratic_copy_fix_in_progress",
-    "new_market_asset_identity_status": "verified_tested_hub_deployment_pending"
+    "funding_evidence_storage": "deployed_new_parent_constant_reference_original_receipts_retained",
+    "new_market_asset_identity_status": "deployed_nine_of_nine_diagnostic_quotes_verified",
+    "post_release_natural_scan": "PENDING"
   },
-  "previous_release_sha": "6bde184ce57679ec0c475d93173ea17c58369e02",
+  "previous_release_sha": "3436656d698f037fc51e4fa950bd02868e4079be",
   "evidence_context_serializable": true,
   "first_natural_scan": {
     "checked_at": "2026-11-18T05:22:16.923590+00:00",
@@ -116,5 +118,34 @@
     "independent_tests_passed": 119,
     "read_only_postgresql_count_cursor_probe": true,
     "actual_financial_window_qualified": false
-  }
+  },
+  "funding_reference": {
+    "checked_at": "2026-11-18T08:00:16.277991+00:00",
+    "raw_parent_hash_valid": true,
+    "inline_forecasts_absent": true,
+    "reference_bytes": 628,
+    "closure": {
+      "row_count": 525,
+      "forecast_count": 525,
+      "ordered_sha256": "6790dccb8b8172ab282ef97852827de2bbcc2313e4a9ece74b54b17e6c516821"
+    },
+    "stored_logical_bytes": 515545
+  },
+  "market_cap_release": {
+    "registry_count": 67,
+    "registry_sha256": "c7da9c8cab95c884bd744a44fdbc18ede55bc188c7f2aeb3a7b2193c08e675b0",
+    "diagnostic_verified_quotes": 9,
+    "diagnostic_requested_quotes": 9,
+    "diagnostic_only": true,
+    "new_identity_gap_closed": true,
+    "cmc_for_new_assets_enabled": false
+  },
+  "independent_final_review": {
+    "status": "PASS",
+    "tests_passed": 293,
+    "target": "441559ae8d549c9d242dc79df0f945f8539fe6a9",
+    "raw_parent_shape_bypass_fixed": true,
+    "linear_5000_ref_probe": true
+  },
+  "final_discovery_report": "hrs-exit-experiment-discovery-2026-11-18-final.json"
 }

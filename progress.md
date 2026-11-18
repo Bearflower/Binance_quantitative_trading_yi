@@ -9,6 +9,8 @@
 
 # 进展
 
+2026-11-18 16:06 CST：最终441559ae于15:58:36部署完成，CI1288/独立293/领域459通过。实际新parent628B引用525source闭包、67项registry及9/9可信CG诊断通过；WLD28原硬SL、配置hash/挂载、无关容器不变，三个服务healthy/restarts0。reporter读新ref快照coherent/source_error空，0小时/0闭合、性能未验收；权益门禁daily_origin_missing拒新风险。最后parent shape绕过与批量O(n²)读取均已独立红绿修复。当前发布后的下一自然扫描尚待发生；不伪造95%覆盖、历史反事实或SL/TP参数胜出。
+
 2026-11-18 14:34 CST：3436656d热修已于13:07实际上线，13:21自然扫描complete且payload/envelope/财务上下文完整；配置、WLD28原始硬止损和无关容器保持。门禁仍仅daily_origin_missing拒新仓。离线17c3411a+fff8f040已416项领域测试、119项独立复审和真实只读PG COUNT/cursor探针通过；v3仍BLOCKED_DATA/0运行/无参数选择。九项市值身份0431f49c已核实，hotfix候选51803df6正在CI构建。另已确认equity每刷新累计复制forecast的O(n²)存储增长，正在最小引用化修复及export来源闭包；不删除或回写旧记录。
 
 2026-11-18 12:51 CST：首轮自然扫描发现claims.created_at/expires_at为生产legacy timestamp without timezone，begin记录因naive_evidence_timestamp拒绝；当前6bde权益门禁仍拒新仓、持仓维护与原硬SL保留。e2b6cdc1保留Postgres JSONB原始时间/infinity（不猜UTC），132321d4新增实际DB上下文就绪检查，36项独立PG检查通过；从6bde建隔离热修分支codex/hrs-capture-clock-20261118，候选3436656d CI44240820228成功，等待读取digest后受控替换。并行只离线补月窗容量：现870公开响应/26min已48.8MB decoded，旧64MB/50k不适用月度；risk_ledger_gate实现archive CAS/shards，replay_design集成streaming转换，asset_audit独立审查。不得将“已部署”说成实际扫描已验收通过。
