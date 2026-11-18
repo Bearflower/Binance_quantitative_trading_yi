@@ -1030,5 +1030,172 @@
       "status": "not_qualified",
       "reason": "provider_supply_comparison_required"
     }
+  },
+  "BTWUSDT": {
+    "symbol": "BTW",
+    "cg_id": "bitway",
+    "cmc_id": null,
+    "name": "Bitway",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/es-MX/support/announcement/detail/61e41ce0e4b74dc7a794cc6bf9c57d38",
+      "https://www.coingecko.com/en/coins/bitway",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "LITUSDT": {
+    "symbol": "LIT",
+    "cg_id": "lighter",
+    "cmc_id": null,
+    "name": "Lighter",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/6a33be00231c4539b3a4a625538e4d1e",
+      "https://www.coingecko.com/en/coins/lighter",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/en-AE/support/announcement/detail/2a9feaa556f74dcdaa2192366f0e247c"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "MMTUSDT": {
+    "symbol": "MMT",
+    "cg_id": "momentum-3",
+    "cmc_id": null,
+    "name": "Momentum",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/c18b1bfd706648189e9f7ac9097351cc",
+      "https://www.coingecko.com/en/coins/momentum-2",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "identity_notes": "CoinGecko web slug momentum-2 displays API ID momentum-3; API coins/list independently confirms id momentum-3, symbol mmt, name Momentum."
+  },
+  "BREVUSDT": {
+    "symbol": "BREV",
+    "cg_id": "brevis",
+    "cmc_id": null,
+    "name": "Brevis",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en/price/brevis",
+      "https://www.coingecko.com/en/coins/brevis",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "HUMAUSDT": {
+    "symbol": "HUMA",
+    "cg_id": "huma-finance",
+    "cmc_id": null,
+    "name": "Huma Finance",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/e3840e610d3c4b4db5816e0abfc33f9e",
+      "https://www.coingecko.com/en/coins/huma-finance",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "KAVAUSDT": {
+    "symbol": "KAVA",
+    "cg_id": "kava",
+    "cmc_id": null,
+    "name": "Kava",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en-GB/trade/KAVA_USDT?type=isolated",
+      "https://www.coingecko.com/en/coins/kava",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "CROSSUSDT": {
+    "symbol": "ONE",
+    "cg_id": "cross-2",
+    "cmc_id": null,
+    "name": "ONEchain (Binance CROSS)",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/54c97e398f6d4390a3daefea4ec6ee68",
+      "https://www.coingecko.com/en/coins/onechain",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/en/alpha/bsc/0x6bf62ca91e397b5a7d1d6bce97d9092065d7a510"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "identity_notes": "Binance CROSS contract and CoinGecko ONEchain share BSC token 0x6bf62ca91e397b5a7d1d6bce97d9092065d7a510. Registry symbol ONE is the provider response symbol, not a change to Binance contract eligibility."
+  },
+  "PENGUUSDT": {
+    "symbol": "PENGU",
+    "cg_id": "pudgy-penguins",
+    "cmc_id": null,
+    "name": "Pudgy Penguins",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/c669e07a85214c55a4f15af7717675c6",
+      "https://www.coingecko.com/en/coins/pudgy-penguins",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    }
+  },
+  "1000LUNCUSDT": {
+    "symbol": "LUNC",
+    "cg_id": "terra-luna",
+    "cmc_id": null,
+    "name": "Terra Luna Classic",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en-ZA/support/announcement/detail/5b9bc7ef56834de895cf829af859207e",
+      "https://www.coingecko.com/en/coins/terra-luna-classic",
+      "https://api.coingecko.com/api/v3/coins/list",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "identity_notes": "1000LUNC is the Binance quote-unit multiplier for LUNC. Use the whole Terra Luna Classic issuer market cap without multiplying by 1000; do not use terra-luna-2."
   }
 }
