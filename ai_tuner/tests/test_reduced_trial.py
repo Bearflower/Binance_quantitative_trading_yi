@@ -672,7 +672,12 @@ async def test_aggressive_signed_fill_proves_signal_despite_closed_placeholder()
         assert result["executed_signals"] == 1
         assert result["executed_without_order_id"] == 0
 
+        # Historical signals may predate writing entry_order_id into metadata.
+        await conn.execute("UPDATE signals SET metadata = metadata - 'entry_order_id'")
+        assert (await conn.fetchrow(sql, *args))["executed_without_order_id"] == 0
+
         gaps = (
+            """UPDATE signals SET metadata = metadata || '{"entry_order_id":"222"}'""",
             "UPDATE observations SET raw_payload = raw_payload || '{\"reduceOnly\":true}'",
             "UPDATE reservations SET strategy_id='hrs'",
             "UPDATE fills SET qty=0.0005",

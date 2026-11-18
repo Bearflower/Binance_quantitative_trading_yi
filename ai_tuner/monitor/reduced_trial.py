@@ -176,11 +176,12 @@ _AGGRESSIVE_SIGNALS_SQL = """SELECT count(*) AS real_signals,
 count(*) FILTER (WHERE status='executed') AS executed_signals,
 count(*) FILTER (WHERE status='cancelled') AS unresolved_signals,
 count(*) FILTER (WHERE status='executed' AND
-  (COALESCE(s.metadata->>'entry_order_id','') !~ '^[1-9][0-9]*$' OR NOT EXISTS (
+  NOT EXISTS (
     SELECT 1 FROM trading.trade_records t
     JOIN trading.execution_fact_fill f ON f.account_id=t.account_id AND f.symbol=t.symbol
       AND f.order_id::text=t.order_id AND f.side=t.side AND f.qty>0
-    WHERE t.account_id=$3 AND t.strategy='btc_eth_aggressive' AND t.symbol=s.symbol
+    WHERE s.metadata->>'entry_order_id' ~ '^[1-9][0-9]*$'
+      AND t.account_id=$3 AND t.strategy='btc_eth_aggressive' AND t.symbol=s.symbol
       AND t.side=CASE UPPER(s.direction) WHEN 'LONG' THEN 'BUY' WHEN 'SHORT' THEN 'SELL' END
       AND f.trade_time_utc < ($2::timestamp AT TIME ZONE 'UTC')
       AND t.order_id=s.metadata->>'entry_order_id' AND t.order_type IN ('MARKET','LIMIT')
@@ -193,7 +194,7 @@ count(*) FILTER (WHERE status='executed' AND
       AND f.order_id::text=o.order_id AND f.side=o.side AND f.qty>0
     WHERE r.account_id=$3 AND r.strategy_id='btc_eth_aggressive' AND r.symbol=s.symbol
       AND r.client_order_id=s.metadata->>'_risk_client_id'
-      AND o.order_id=s.metadata->>'entry_order_id'
+      AND (s.metadata->>'entry_order_id' IS NULL OR o.order_id=s.metadata->>'entry_order_id')
       AND o.side=CASE UPPER(s.direction) WHEN 'LONG' THEN 'BUY' WHEN 'SHORT' THEN 'SELL' END
       AND o.outcome='ok' AND o.source='signed_pm_get_order_v1' AND o.status='FILLED'
       AND o.raw_payload->>'positionSide'='BOTH' AND o.raw_payload->'reduceOnly'='false'::jsonb
@@ -201,7 +202,7 @@ count(*) FILTER (WHERE status='executed' AND
       AND f.trade_time_utc >= r.created_at AND f.trade_time_utc < ($2::timestamp AT TIME ZONE 'UTC')
     GROUP BY o.id, o.executed_qty
     HAVING SUM(f.qty)=o.executed_qty
-  ))) AS executed_without_order_id,
+  )) AS executed_without_order_id,
 count(*) FILTER (WHERE status='cancelled' AND
   (metadata->>'skip_reason' ILIKE '%take profit or remainder infeasible%'
    OR metadata->>'reject_reason' ILIKE '%take profit or remainder infeasible%'))
