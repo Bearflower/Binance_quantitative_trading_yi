@@ -1,8 +1,10 @@
 # 发现与约束
 
+- 2026-11-18 发布暴露真实权限差异：非管理员 trading_user 虽具权益段 SELECT/INSERT，SELECT FOR UPDATE 仍需某列 UPDATE 权限；不得以管理员测试代替运行角色验收。首次候选自动回滚，正按最小权限和权益段不可变性补齐。
+
 - 当前生产 HRS 镜像 2cf4f020…，共享市值镜像 4fa94f38…；认证发布 SHA 386e4330。配置挂载是 AI Tuner 冻结版本，发布必须保留真实挂载。
 - HRS 原始工作区不等于生产源码。新分支从认证发布分支 954ee5f2 建立；先导出实际 HRS 模块再开始整合。
-- 当前通用 HRS replay adapter 的 intents 明确抛 hrs_decision_not_wired，不得以零交易假装回放成功。
+- 初始通用 HRS replay adapter 的 intents 曾明确抛 hrs_decision_not_wired；本轮已接通共享实盘决策核心并完成因果成交回放。历史输入仍须实际快照，不能以零交易假装回放成功。
 - 历史 Aug/Sep 缺候选、决策、外部快照；可闭合交易只用于退出方案探索，不能等同完整反事实回放。
 - 认证 Key 已在服务器 secrets 文件，禁止带回仓库、构建参数或普通输出。
 
