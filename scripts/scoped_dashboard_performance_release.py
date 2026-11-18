@@ -16,14 +16,14 @@ from scripts.scoped_stop_followup import (  # noqa: E402
     Runtime as BaseRuntime, CONTAINERS, STACK_FILES, atomic_json, image_only,
 )
 
-PREDECESSOR_SHA = "55c10c90c47e35fbb41d461e30c5581404701fb3"
-PREDECESSOR_OVERLAY_SHA256 = "da525ad0dde4643e00d46488b4a4c3b175d7003300dc313b9b1721a143639612"
+PREDECESSOR_SHA = "e8821fb61dc2fcbb62016b9a94a8079ad36c2fa6"
+PREDECESSOR_OVERLAY_SHA256 = "d00dc9834a3ec5ac3034795a75017d0e1d6f68d0042d6181c7859e864c610402"
 SERVICE = "dashboard-api"
 LIVE_GRID_REPAIR_REF = "local/grid-repair-dashboard-api:ab38fbc7"
 LIVE_GRID_REPAIR_IMAGE = "sha256:ba4fe00c485190b33dc29fb6c55b20c61023304b16fa19b859c013ab10b009a5"
-ARCHIVE = Path(".releases/dashboard-audit-20261118/pm-h1-strategy-proof-v1.json")
-ARCHIVE_TARGET = "/app/annual-income/pm-h1-strategy-proof-v1.json"
-ARCHIVE_HASH = "4b25e412a90f62a74595ec95f7bd0a4f1850a340d353d33ae58d913c258ada4f"
+ARCHIVE = Path(".releases/dashboard-audit-20261118/pm-h1-strategy-proof-v2.json")
+ARCHIVE_TARGET = "/app/annual-income/pm-h1-strategy-proof-v2.json"
+ARCHIVE_HASH = "e26e26d769d6a8f472ea7a63fe2c8c29604bd21616246d626f5c65c8e5770686"
 SOURCE_PATHS = (
     "dashboard/backend/services/exchange_ledger.py",
     "dashboard/backend/services/grid_subaccount.py",
@@ -245,17 +245,18 @@ class Runtime(BaseRuntime):
                         year = payload.get("data") or {}
                         if (year.get("publication_status") != "published"
                                 or year.get("income_archive_end_ms") != 1782835200000
-                                or year.get("report_version") != "exchange-income-v1-pm-archive-v2"
+                                or year.get("report_version") != "exchange-income-v1-pm-archive-v3"
                                 or year.get("total_pnl") is None
-                                or year.get("archive_attribution_count") != 378
-                                or year.get("total_closed") != 1
-                                or year.get("win_rate_reason") != "archive_verified_sample_only"
+                                or year.get("archive_attribution_count") != 435
+                                or year.get("win_archive_sample_count") != 1
+                                or (year.get("win_live_sample_count") or 0) < 1
+                                or year.get("win_rate_reason") != "annual_verified_sample_only"
                                 or year.get("strategy_attribution_complete") is not False):
                             raise ReleaseBlocked("annual exchange income verification failed")
                         atomic_json(self.release_dir / "annual-proof.json", {
                             key: year[key] for key in ("report_id", "start_ms", "end_ms", "total_pnl",
                                                        "income_archive_end_ms", "archive_attribution_count",
-                                                       "total_closed", "total_perf_reason")})
+                                                       "total_closed", "win_live_sample_count", "total_perf_reason")})
             if self.run(["systemctl", "is-active", "income-attribution.timer"]) != "active":
                 raise ReleaseBlocked("income attribution timer changed")
             for service, before in self.all_before.items():

@@ -19,9 +19,9 @@ END_MS = 1782835200000  # 2026-07-01 00:00 Asia/Shanghai, exclusive
 ARCHIVE_PATH = Path("/app/annual-income/pm-income-2026-H1.zip")
 ARCHIVE_SHA256 = "618e581db1714f6d98b3641d67d68076c6b4dbb4381828f4a9519e38c3c01fdf"
 ARCHIVE_VERSION = "exchange-income-v1-pm-archive-v1"
-PROOF_VERSION = "exchange-income-v1-pm-archive-v2"
-PROOF_PATH = Path("/app/annual-income/pm-h1-strategy-proof-v1.json")
-PROOF_SHA256 = "4b25e412a90f62a74595ec95f7bd0a4f1850a340d353d33ae58d913c258ada4f"
+PROOF_VERSION = "exchange-income-v1-pm-archive-v3"
+PROOF_PATH = Path("/app/annual-income/pm-h1-strategy-proof-v2.json")
+PROOF_SHA256 = "e26e26d769d6a8f472ea7a63fe2c8c29604bd21616246d626f5c65c8e5770686"
 STRATEGIES = frozenset(("btc_eth", "btc_eth_aggressive", "hrs", "new_coin"))
 
 
@@ -159,3 +159,24 @@ def combine_archive(prefix, suffix):
     result["report_id"] = hashlib.sha256(
         f"{result['report_version']}:{ARCHIVE_SHA256}:{PROOF_SHA256}:{suffix['report_id']}".encode()).hexdigest()
     return result
+
+
+def combine_lifecycle_samples(archive, live, strategy_ids):
+    """Combine unique closed positions from disjoint H1 and H2 windows."""
+    def summary(first, second):
+        first_count = first["closed_count"] or 0
+        second_count = second["closed_count"] or 0
+        count = first_count + second_count
+        if not count:
+            return second
+        fields = ("order_count", "fill_count", "closed_count", "win_count", "loss_count")
+        total = {key: (first[key] or 0) + (second[key] or 0) for key in fields}
+        return dict(total, win_rate=round(100 * total["win_count"] / count, 2),
+                    sample_start=min(x["sample_start"] for x in (first, second) if x["sample_start"]),
+                    sample_partial=True, reason="annual_verified_sample_only",
+                    caliber="exchange_verified_annual_position_sample_v1",
+                    archive_count=first_count, live_count=second_count)
+
+    return dict(account=summary(archive["account"], live["account"]),
+                strategies={sid: summary(archive["strategies"][sid], live["strategies"][sid])
+                            for sid in strategy_ids})

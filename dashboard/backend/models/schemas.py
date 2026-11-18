@@ -74,6 +74,8 @@ class LedgerMetadata(BaseModel):
     win_rate_reason: Optional[str] = None
     win_sample_start: Optional[str] = None
     win_sample_partial: Optional[bool] = None
+    win_archive_sample_count: Optional[int] = None
+    win_live_sample_count: Optional[int] = None
 
 
 class StrategySummary(LedgerMetadata):

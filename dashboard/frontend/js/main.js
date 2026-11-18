@@ -325,7 +325,9 @@ function updateOverview(data) {
     const winRateSub = document.querySelector('#win-rate-sub');
     if (winRateSub) winRateSub.textContent = data.win_rate == null
         ? metricReasonText(data.win_rate_reason)
-        : `${data.total_closed} 笔已核实${data.win_rate_reason === 'archive_verified_sample_only' ? ' · 上半年样本' : data.win_sample_partial ? ' · 非期间全量' : ''}`;
+        : data.win_rate_reason === 'annual_verified_sample_only'
+            ? `已核实样本 · 上半年 ${data.win_archive_sample_count} 笔 / 下半年 ${data.win_live_sample_count} 笔`
+            : `${data.total_closed} 笔已核实${data.win_rate_reason === 'archive_verified_sample_only' ? ' · 上半年样本' : data.win_sample_partial ? ' · 非期间全量' : ''}`;
 
     const realized = document.querySelector('#realized-pnl');
     if (realized) {

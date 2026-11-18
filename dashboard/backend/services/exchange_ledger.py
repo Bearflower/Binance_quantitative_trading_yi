@@ -42,9 +42,19 @@ def _ms(value):
 class ExchangeLedgerDashboardMixin:
     async def _verified_lifecycles(self, report, strategy_ids):
         if "archive_closures" in report and report.get("publication_status") == "published":
-            return annual_income_archive.archive_lifecycle_stats(report, strategy_ids)
-        if report.get('publication_status') != 'published' or not report.get('strategy_attribution_complete'):
-            return verified_lifecycle_stats(report, [], [], [], [], set(), strategy_ids)
+            archive_stats = annual_income_archive.archive_lifecycle_stats(report, strategy_ids)
+            live_window = dict(report, start_ms=annual_income_archive.END_MS)
+            live_stats = await self._verified_live_lifecycles(live_window, strategy_ids, verified_sample=True)
+            return annual_income_archive.combine_lifecycle_samples(archive_stats, live_stats, strategy_ids)
+        return await self._verified_live_lifecycles(report, strategy_ids)
+
+    async def _verified_live_lifecycles(self, report, strategy_ids, *, verified_sample=False):
+        def stats(baselines, fills, owners, incomes, covered):
+            return verified_lifecycle_stats(report, baselines, fills, owners, incomes,
+                                            covered, strategy_ids, verified_sample=verified_sample)
+        if (report.get('publication_status') != 'published'
+                or (not report.get('strategy_attribution_complete') and not verified_sample)):
+            return stats([], [], [], [], set())
         account = report.get('account_id', 'default')
         start_ms, end_ms = report['start_ms'], report['end_ms']
         start = datetime.fromtimestamp(start_ms / 1000, timezone.utc)
@@ -55,9 +65,12 @@ class ExchangeLedgerDashboardMixin:
                 'FROM trading.position_flat_baseline WHERE account_id=$1 '
                 'AND flat_at >= $2 AND flat_at < $3 ORDER BY symbol,flat_at',
                 account, start, end)]
-            symbols = sorted({row['symbol'] for row in baselines})
+            anchors = {}
+            for row in baselines:
+                anchors.setdefault(row["symbol"], _ms(row["flat_at"]))
+            symbols = sorted(anchors)
             if not symbols:
-                return verified_lifecycle_stats(report, [], [], [], [], set(), strategy_ids)
+                return stats([], [], [], [], set())
             fills = [dict(row) for row in await self._db_manager.fetch_all(
                 'SELECT account_id,symbol,trade_id,order_id,side,qty,commission,commission_asset,'
                 'realized_pnl,trade_time_utc FROM trading.execution_fact_fill '
@@ -87,14 +100,13 @@ class ExchangeLedgerDashboardMixin:
                                    and row.get('symbol') == symbol and row.get('page_complete') is True
                                    and row.get('request_status') == 'ok'
                                    and row.get('covered_until_ms') is not None)
-                cursor = start_ms
+                cursor = anchors[symbol] if verified_sample else start_ms
                 for left, right in intervals:
                     if left <= cursor:
                         cursor = max(cursor, right)
                 if cursor >= end_ms:
                     covered.add(symbol)
-            return verified_lifecycle_stats(report, baselines, fills, owners, incomes,
-                                            covered, strategy_ids)
+            return stats(baselines, fills, owners, incomes, covered)
         except Exception:
             return unavailable_lifecycle_stats('lifecycle_source_unavailable', strategy_ids)
 
@@ -198,7 +210,9 @@ class ExchangeLedgerDashboardMixin:
                             loss_count=lifecycle['loss_count'], win_rate=lifecycle['win_rate'],
                             win_sample_start=lifecycle['sample_start'],
                             win_sample_partial=lifecycle['sample_partial'],
-                            win_rate_reason=lifecycle['reason'], win_rate_caliber=lifecycle['caliber'])
+                            win_rate_reason=lifecycle['reason'], win_rate_caliber=lifecycle['caliber'],
+                            win_archive_sample_count=lifecycle.get('archive_count'),
+                            win_live_sample_count=lifecycle.get('live_count'))
         account_metric = performance['account']
         account_lifecycle = lifecycles['account']
         return dict(total_pnl=components['net_usdt'] if complete else None,
@@ -215,6 +229,8 @@ class ExchangeLedgerDashboardMixin:
                     win_sample_start=account_lifecycle['sample_start'],
                     win_sample_partial=account_lifecycle['sample_partial'],
                     win_rate_reason=account_lifecycle['reason'],
+                    win_archive_sample_count=account_lifecycle.get('archive_count'),
+                    win_live_sample_count=account_lifecycle.get('live_count'),
                     win_rate_caliber=account_lifecycle['caliber'],
                     total_sharpe=account_metric['sharpe'], total_max_drawdown=account_metric['max_drawdown'],
                     total_perf_sample_count=account_metric['sample_count'],
@@ -260,7 +276,9 @@ class ExchangeLedgerDashboardMixin:
                       loss_count=lifecycle['loss_count'], win_rate=lifecycle['win_rate'],
                       win_sample_start=lifecycle['sample_start'],
                       win_sample_partial=lifecycle['sample_partial'],
-                      win_rate_reason=lifecycle['reason'], win_rate_caliber=lifecycle['caliber'])
+                      win_rate_reason=lifecycle['reason'], win_rate_caliber=lifecycle['caliber'],
+                            win_archive_sample_count=lifecycle.get('archive_count'),
+                            win_live_sample_count=lifecycle.get('live_count'))
         return dict(**detail,
                     symbols=self._symbol_projections(report, strategy_id),
                     daily_counts={}, avg_daily_orders=None, data_source='exchange_income',

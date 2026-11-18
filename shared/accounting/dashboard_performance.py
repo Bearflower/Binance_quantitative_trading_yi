@@ -115,7 +115,7 @@ def unavailable_lifecycle_stats(reason, strategy_ids):
 
 
 def verified_lifecycle_stats(report, baselines, fills, owners, incomes,
-                             covered_symbols, strategy_ids):
+                             covered_symbols, strategy_ids, *, verified_sample=False):
     """Count completed net positions from immutable flat anchors and matched fills.
 
     An unverified symbol contributes no trades. The result is always marked a
@@ -125,7 +125,7 @@ def verified_lifecycle_stats(report, baselines, fills, owners, incomes,
         reason = "ledger_not_published"
     elif not report.get("account_coverage_complete"):
         reason = "income_coverage_incomplete"
-    elif not report.get("strategy_attribution_complete"):
+    elif not report.get("strategy_attribution_complete") and not verified_sample:
         reason = "strategy_attribution_incomplete"
     else:
         reason = None
@@ -239,14 +239,26 @@ def verified_lifecycle_stats(report, baselines, fills, owners, incomes,
         if valid:
             closures.extend(symbol_closures)
 
+    verified_closures = []
     for closure in closures:
+        funding_unverified = False
         for event in report.get("events", []):
-            if (event.get("asset") == "USDT" and event.get("income_type") == "FUNDING_FEE"
-                    and event.get("symbol") == closure["symbol"]
-                    and event.get("strategy") == closure["owner"]
-                    and event.get("event_time_utc")
-                    and closure["start"] < datetime.fromisoformat(event["event_time_utc"]) < closure["end"]):
-                closure["net"] += Decimal(str(event["amount"]))
+            if (event.get("income_type") != "FUNDING_FEE" or event.get("symbol") != closure["symbol"]
+                    or not event.get("event_time_utc")):
+                continue
+            event_time = datetime.fromisoformat(event["event_time_utc"])
+            if not closure["start"] <= event_time <= closure["end"]:
+                continue
+            if (event.get("asset") != "USDT" or event.get("strategy") != closure["owner"]
+                    or event_time in (closure["start"], closure["end"])):
+                if verified_sample:
+                    funding_unverified = True
+                    break
+                continue
+            closure["net"] += Decimal(str(event["amount"]))
+        if not funding_unverified:
+            verified_closures.append(closure)
+    closures = verified_closures
 
     def summary(rows):
         if not rows:

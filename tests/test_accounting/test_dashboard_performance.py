@@ -96,6 +96,18 @@ def test_verified_lifecycles_count_positions_not_partial_closing_fills():
     assert result["account"]["sample_partial"] is True
     assert result["strategies"]["btc_eth_aggressive"]["closed_count"] == 2
     assert result["strategies"]["hrs"]["reason"] == "no_verified_closures"
+    report = _report(report_events, end_ms=end_ms)
+    report["strategy_attribution_complete"] = False
+    report_events.append({"asset": "USDT", "symbol": "ETHUSDT",
+                          "income_type": "FUNDING_FEE", "strategy": None,
+                          "event_time_utc": "2026-11-10T04:30:00+00:00",
+                          "amount": "1.0", "tran_id": "funding-unverified"})
+    sample = verified_lifecycle_stats(report, baselines, fills, owners, incomes,
+                                      {"ETHUSDT", "SOLUSDT"}, ["btc_eth_aggressive"],
+                                      verified_sample=True)
+    assert sample["account"]["closed_count"] == 1
+    assert sample["account"]["win_count"] == 0
+    report_events.pop()
     report_events[0]["strategy"] = "new_coin"
     conflicted = verified_lifecycle_stats(_report(report_events, end_ms=end_ms),
                                           baselines, fills, owners, incomes,
