@@ -18,6 +18,8 @@
 
 ### AI Tuner 缩量试跑考核交接（定时任务已上线，完整评估仍未完成）
 
+2026-11-18 新增的身份链和保证金口径受控部署、线上前后置门禁，以及尚未通过的成交漏斗、策略权益、压力和放宽门槛，见[证据工程验收记录](trial-evidence-acceptance-2026-11-18.md)。
+
 用户已决定由 AI Tuner 执行 HRS 与激进版的每日巡检、每周实盘评估。设计与数据缺口见 [2026-11-10 设计稿](../superpowers/specs/2026-11-10-ai-tuner-reduced-trial-evaluation-design.md)。只读评估器已上线；2026-11-11 首个真实日任务、2026-11-16 11:15 北京时间首个真实周任务均生成两策略报告，周通知状态均记有送达时间。周报两策略均为 `BLOCKED_DATA`；周窗收入归属及真实信号到成交的完整漏斗、PM 持仓保证金审计、策略权益与现金流曲线、压力损失、冻结的放宽阈值和两个留出月仍待验收。2026-11-18 10:15 日报发生 `income:TypeError`；接口参数修复经限定 [CI 44223035435](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44223035435) 发布，生产 pin `6d69ffa4` active、state complete，仅 AI Tuner 重建且 healthy，运行源码哈希已匹配。修复后的首次真实日窗仍待验收。旧 `trade_records.realized_pnl` 健康提醒已对这两策略让位。**整个考核交接未完成，不归档，也不自动放宽。**现有 Codex 到期巡检及独立“AI Tuner 准备度复审”任务继续运行；后者有效信号数以最新 90 天滚动窗口重新核对，不再沿用 74/100 旧值。
 
 | 编号 | 事项 | 状态 | 已有证据或已上线内容 | 下一步 | 完成条件 |
