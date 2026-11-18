@@ -294,8 +294,7 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
         try:
             start_ms, end_ms = int(_utc(start).timestamp() * 1000), int(_utc(end).timestamp() * 1000)
             report = await income_reader(
-                db, account, start_ms, end_ms, include_reviewed_overrides=True,
-                include_derived_attribution=True
+                db, account, start_ms, end_ms, include_reviewed_overrides=True
             )
             if (not isinstance(report, Mapping)
                     or report.get("account_id") != account

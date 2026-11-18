@@ -1,4 +1,4 @@
-"""Scoped CI activation: one AI Tuner image and three append-only evidence migrations."""
+"""Scoped CI activation: one AI Tuner image with existing evidence migrations."""
 from __future__ import annotations
 import fcntl
 import hashlib
@@ -12,11 +12,10 @@ import time
 from datetime import datetime
 
 ROOT = Path('/root/trading_system')
-PIN_SHA = '2233e44947b3e5b274c9f49e0fd4881d2cbfef94'
-OVERLAY_SHA = 'ab9858b5446b5e69102644d785fd0c9f1f4ff77bb5b45df13cbb0cefe97e31b7'
-BASE_IMAGE = 'sha256:e691e575b0fd9272ffa3ff691404d905fcd5e4d8d9d0929d5bf317fe3ee3cd7c'
-MIGRATIONS = ('2026-11-17-capital-history.sql', '2026-11-17-account-risk-facts.sql',
-              '2026-11-17-entry-activity.sql')
+PIN_SHA = '4dff7e68'
+OVERLAY_SHA = '53e42bb32b6a740a7d4e9bd6ea7381fa46a4d4b2f66e53eeb14d14ff3aa578b2'
+BASE_IMAGE = 'sha256:b0ab683671e3b9caf1ad20d8d2f96516633ab1a8f73aeef6c34c8a8c61fa5b48'
+MIGRATIONS = ()
 
 
 def run(args, *, input=None, timeout=180):

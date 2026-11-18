@@ -12,7 +12,6 @@ from ai_tuner.monitor.reduced_trial import (
     NotificationState,
     ReducedTrialEvaluator,
     register_reduced_trial_jobs,
-    read_trial_income,
 )
 
 
@@ -282,7 +281,7 @@ def test_collector_uses_policy_claims_and_exchange_income_reader_without_writes(
     async def income_reader(db, account, start_ms, end_ms, **kwargs):
         assert db.__class__ is DB
         assert account == "default"
-        assert kwargs == {"include_reviewed_overrides": True,"include_derived_attribution":True}
+        assert kwargs == {"include_reviewed_overrides": True}
         assert start_ms < end_ms
         return {**snapshot()["income"], "account_id": account,
                 "start_ms": start_ms, "end_ms": end_ms,
@@ -348,7 +347,7 @@ def test_collector_missing_exchange_stays_unknown():
     assert assess_snapshot(evidence, now=NOW, weekly=False)["status"] == "BLOCKED_DATA"
 
 
-def test_income_reader_uses_one_read_only_repeatable_snapshot(tmp_path, monkeypatch):
+def test_income_reader_uses_one_read_only_repeatable_snapshot(monkeypatch):
     from contextlib import asynccontextmanager
 
     class Connection:
@@ -379,16 +378,21 @@ def test_income_reader_uses_one_read_only_repeatable_snapshot(tmp_path, monkeypa
         def __init__(self, conn):
             self.pool = Pool(conn)
 
+        async def fetch_one(self, query, *args):
+            return None
+
     async def reader(snapshot_db, account, start_ms, end_ms, **kwargs):
         assert snapshot_db.connection is conn
         assert kwargs["include_derived_attribution"] is True
-        return {"report_id": "same-snapshot"}
+        return {"report_id": "same-snapshot", "account_id": account,
+                "start_ms": start_ms, "end_ms": end_ms,
+                "report_version": "exchange-income-v1-derived-v1"}
 
     monkeypatch.setattr("ai_tuner.monitor.reduced_trial.read_monthly_economic_report", reader)
     conn = Connection()
-    result = asyncio.run(read_trial_income(DB(conn), "default", 1, 2,
-                                           include_reviewed_overrides=True))
-    assert result == {"report_id": "same-snapshot"}
+    evidence = asyncio.run(collect_snapshot(DB(conn), None, "default", "hrs", *daily_window(NOW)))
+    assert evidence["source_errors"] == []
+    assert evidence["income"]["report_id"] == "same-snapshot"
     assert conn.transaction_args == {"isolation": "repeatable_read", "readonly": True}
     assert len(conn.lock_calls) == 2
 
