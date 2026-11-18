@@ -23,7 +23,7 @@ from ai_tuner.adapters.base_adapter import UnifiedPerformanceMetrics
 from ai_tuner.deploy.diff_generator import DiffGenerator
 from ai_tuner.deploy.version_manager import VersionManager
 from ai_tuner.engine.cost_tracker import CostTracker
-from ai_tuner.engine.llm_client import LLMClient
+from ai_tuner.engine.llm_client import LLMClient, LLMBalanceError
 from ai_tuner.engine.response_parser import ResponseParser
 from ai_tuner.feedback.context_enhancer import ContextEnhancer
 from ai_tuner.feedback.effect_tracker import EffectTracker
@@ -198,6 +198,14 @@ class WeeklyTuningJob:
                 else:
                     total_error += 1
                     strategy_details.append(f"❌ {strategy_name}：异常")
+            except LLMBalanceError as e:
+                total_error += 1
+                strategy_details.append(f"❌ {strategy_name}：LLM API 余额不足")
+                await self._record_run(run_key, strategy_id, strategy_cfg, "error", "llm_insufficient_balance")
+                await self.db_handler.finish_week(strategy_id, week_start, "error")
+                await self.messenger.send_error_notification(
+                    strategy_name=strategy_name, strategy_id=strategy_id, error_message=str(e),
+                )
             except Exception as e:
                 total_error += 1
                 strategy_details.append(f"❌ {strategy_name}：异常 ({str(e)})")
@@ -492,6 +500,14 @@ class WeeklyTuningJob:
         if strategy_id == "grid" and adjustments:
             evidence = await adapter.validate_grid_proposal(adjustments)
             if not evidence["passed"]:
+                if evidence.get("status") == "rejected":
+                    logger.info("网格候选未优于基线，保留当前建议参数", strategy_id=strategy_id,
+                                reason=evidence["reason"], adjustments=adjustments,
+                                old_score=evidence.get("old_score"), new_score=evidence.get("new_score"))
+                    return "skip"
+                logger.error("网格候选验证未完成", strategy_id=strategy_id,
+                             reason=evidence["reason"], adjustments=adjustments,
+                             validation_status=evidence.get("status", "unknown"))
                 await self.messenger.send_error_notification(strategy_name=strategy_name, strategy_id=strategy_id,
                                                             error_message=evidence["reason"])
                 return "error"

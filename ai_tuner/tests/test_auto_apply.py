@@ -492,3 +492,38 @@ class TestSendAutoAppliedNotification:
 
             # 验证时间格式
             assert "2026-08-12 15:30" in message
+
+
+@pytest.mark.asyncio
+async def test_weekly_balance_failure_is_retryable_without_publication():
+    from ai_tuner.engine.llm_client import LLMBalanceError
+
+    config = {'strategies': [{'strategy_id': 'grid', 'name': '网格'}]}
+    job, _ = _create_job(config)
+    job.db_handler.completed_this_week = AsyncMock(return_value=False)
+    job.db_handler.claim_week = AsyncMock(return_value=True)
+    job.db_handler.finish_week = AsyncMock()
+    job._record_run = AsyncMock()
+    job._tune_single_strategy = AsyncMock(side_effect=LLMBalanceError('余额不足'))
+    job.messenger.send_weekly_summary = AsyncMock()
+    await job.run_weekly_tuning()
+    assert job._record_run.await_args.args[-2:] == ('error', 'llm_insufficient_balance')
+    assert job.db_handler.finish_week.await_args.args[-1] == 'error'
+    job.messenger.send_error_notification.assert_awaited_once()
+    job.config_operator.publish_overrides.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('status,expected', [('rejected', 'skip'), ('blocked', 'error'), ('error', 'error')])
+async def test_grid_validation_distinguishes_rejection_from_execution_error(status, expected):
+    config = {'strategies': [{'strategy_id': 'grid', 'name': '网格', 'adapter_class': 'grid', 'config_path': 'grid.yaml'}]}
+    job, _ = _create_job(config)
+    adapter = job._load_adapter.return_value
+    adapter.validate_grid_proposal = AsyncMock(return_value={
+        'passed': False, 'status': status, 'reason': 'test evidence', 'old_score': 10, 'new_score': 5,
+    })
+    result = await job._tune_single_strategy(config['strategies'][0])
+    assert result == expected
+    job.config_operator.publish_overrides.assert_not_called()
+    job.db_handler.save_memory.assert_not_awaited()
+    assert job.messenger.send_error_notification.await_count == (status != 'rejected')
