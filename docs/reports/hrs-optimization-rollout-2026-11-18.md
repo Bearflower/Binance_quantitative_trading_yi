@@ -65,6 +65,12 @@
 - 独立归档/导出/CLI已支持完整inventory、无损CAS、COUNT/cursor、月窗固定预算和真实首扫描边界。新[最终发现报告](hrs-exit-experiment-discovery-2026-11-18-final.json)绑定实际28个引擎源码依赖，仍BLOCKED_DATA、0次实际实验运行、无参数选择；旧v1/v2/v3登记与发现事实未覆盖。
 - 手工候选workflow搬到独立 `hrs-optimization-candidate.yml`；旧deploy.yml恢复为分支基线原字节，分支差异不覆盖现有main生产CI。测试过的运行源码字节未改变。隔离分支及工作树保留，未将用户原脏工作区覆盖或自动合并main。
 
+## 最终发布后的首轮自然扫描
+
+2026-11-18 **16:21:00.001355 CST**实际开始，16:21:59核验已完整结束，release_sha=441559ae、配置hash相同、财务快照coherent，全部payload/envelope完整性通过。6条标准分析、25条LV分析、27条LV终止记录和真实执行批次均保留。三批真实市值请求为35/35、31/31、27/27 present，原始ticker分母809未删改；这些批次有重复标的，不能合计成93个独立标的。按实际报告的event_time口径进一步验证：三批fresh_count分别35/31/27、fresh_coverage=1.0、reasons空，原始universe inventory完整；只代表requested_scan_batch，不代表809合约或518个crypto已全部取得市值。扫描捕获的两份权益parent在原hash先验后，经549条原始source的一次prefix闭包验证通过。权益门禁仍仅daily_origin_missing，ready/allowed均false。此为自然扫描的实际结果，不是此前9项诊断请求，也不等于未来24个完整小时或自然成交样本验收。
+
+另对最近10条实际新parent按原始hash及不同cutoff核对，一次source读取校验542条源，10份ref均628bytes；没有新自然收入修订事件，不把真实PG工程用例冒称生产修订事件。
+
 ## 当前结论
 
 这轮工程修复和受控部署完成，实际采集、原始source闭包、9项市值诊断及现仓保护已核验。SL/TP经济参数保持，8–9月缺失原始输入仍不能完成反事实收益验收；前瞻合格窗口、24个完整小时及五个自然闭合仓位仍待真实事件。不能归档为“收益/回撤已改善”。

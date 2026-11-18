@@ -19,8 +19,8 @@
     "reasons": [
       "daily_origin_missing"
     ],
-    "observed_as_of": "2026-11-18T07:59:24.360149+00:00",
-    "available_at": "2026-11-18T07:59:45.054049+00:00",
+    "observed_as_of": "2026-11-18T08:20:49.568832+00:00",
+    "available_at": "2026-11-18T08:21:10.587573+00:00",
     "inception_protection_only": true,
     "qualified_full_30_days": false
   },
@@ -61,7 +61,7 @@
     "new_market_asset_identity_count": 9,
     "funding_evidence_storage": "deployed_new_parent_constant_reference_original_receipts_retained",
     "new_market_asset_identity_status": "deployed_nine_of_nine_diagnostic_quotes_verified",
-    "post_release_natural_scan": "PENDING"
+    "post_release_natural_scan": "complete_and_integrity_verified"
   },
   "previous_release_sha": "3436656d698f037fc51e4fa950bd02868e4079be",
   "evidence_context_serializable": true,
@@ -135,7 +135,22 @@
       "forecast_count": 525,
       "ordered_sha256": "6790dccb8b8172ab282ef97852827de2bbcc2313e4a9ece74b54b17e6c516821"
     },
-    "stored_logical_bytes": 515545
+    "stored_logical_bytes": 515545,
+    "successive_prefix_observation": {
+      "checked_at": "2026-11-18T08:14:59.807577+00:00",
+      "parents": 10,
+      "oldest_as_of": "2026-11-18T08:06:16.221234+00:00",
+      "newest_as_of": "2026-11-18T08:13:57.750418+00:00",
+      "proof": {
+        "verified_prefix_count": 10,
+        "source_row_count": 542
+      },
+      "reference_byte_range": [
+        628,
+        628
+      ],
+      "natural_correction_rows_since_release": 0
+    }
   },
   "market_cap_release": {
     "registry_count": 67,
@@ -159,5 +174,121 @@
     "reviewed_files": 59,
     "skipped_files": 0,
     "includes_final_discovery_and_workflow_move": true
+  },
+  "post_release_natural_scan": {
+    "checked_at": "2026-11-18T08:21:59.060814+00:00",
+    "scan": {
+      "run_id": "d3f286aff0784292bd710a7779ff1e4a",
+      "started_at": "2026-11-18T08:21:00.001355+00:00",
+      "config_hash": "39e90a4d1b1cc526f42d14fb3248a9b292c0aa500a36e4df76159efda25fbb5e",
+      "release_sha": "441559ae8d549c9d242dc79df0f945f8539fe6a9",
+      "financial_coherent": true
+    },
+    "status": "complete",
+    "payload_and_envelope_integrity": true,
+    "counts": {
+      "equity_gate": 26,
+      "scan_start": 1,
+      "market_cap_batch": 3,
+      "standard_scan_scope": 1,
+      "analysis": 6,
+      "standard_candidate_outcome": 6,
+      "lv_rm_scan_scope": 1,
+      "lv_rm_analysis": 25,
+      "lv_rm_candidate_outcome": 27,
+      "execution_batch": 1,
+      "scan_end": 1
+    },
+    "market_cap_batches": [
+      {
+        "requested_count": 35,
+        "quote_count": 35,
+        "raw_universe_count": 809,
+        "reasons": {
+          "present": 35
+        }
+      },
+      {
+        "requested_count": 31,
+        "quote_count": 31,
+        "raw_universe_count": 809,
+        "reasons": {
+          "present": 31
+        }
+      },
+      {
+        "requested_count": 27,
+        "quote_count": 27,
+        "raw_universe_count": 809,
+        "reasons": {
+          "present": 27
+        }
+      }
+    ],
+    "strict_acceptance": {
+      "batches": [
+        {
+          "coverage_scope": "requested_scan_batch",
+          "requested_count": 35,
+          "quote_inventory_complete": true,
+          "fresh_count": 35,
+          "fresh_coverage": 1.0,
+          "failures": {},
+          "raw_universe_count": 809,
+          "raw_universe_inventory_proven": true,
+          "metadata_eligible_count": 518,
+          "raw_classifications": {
+            "crypto": 518,
+            "inapplicable_tradfi": 238,
+            "metadata_unverified": 53
+          },
+          "raw_universe_observed_at": "2026-11-18T08:21:00.832515+00:00",
+          "full_ticker_cap_coverage": null,
+          "reasons": []
+        },
+        {
+          "coverage_scope": "requested_scan_batch",
+          "requested_count": 31,
+          "quote_inventory_complete": true,
+          "fresh_count": 31,
+          "fresh_coverage": 1.0,
+          "failures": {},
+          "raw_universe_count": 809,
+          "raw_universe_inventory_proven": true,
+          "metadata_eligible_count": 518,
+          "raw_classifications": {
+            "crypto": 518,
+            "inapplicable_tradfi": 238,
+            "metadata_unverified": 53
+          },
+          "raw_universe_observed_at": "2026-11-18T08:21:30.428039+00:00",
+          "full_ticker_cap_coverage": null,
+          "reasons": []
+        },
+        {
+          "coverage_scope": "requested_scan_batch",
+          "requested_count": 27,
+          "quote_inventory_complete": true,
+          "fresh_count": 27,
+          "fresh_coverage": 1.0,
+          "failures": {},
+          "raw_universe_count": 809,
+          "raw_universe_inventory_proven": true,
+          "metadata_eligible_count": 518,
+          "raw_classifications": {
+            "crypto": 518,
+            "inapplicable_tradfi": 238,
+            "metadata_unverified": 53
+          },
+          "raw_universe_observed_at": "2026-11-18T08:21:32.737162+00:00",
+          "full_ticker_cap_coverage": null,
+          "reasons": []
+        }
+      ],
+      "captured_parent_prefix_closure": {
+        "verified_prefix_count": 2,
+        "source_row_count": 549
+      }
+    }
   }
 }
