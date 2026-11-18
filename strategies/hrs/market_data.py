@@ -414,33 +414,17 @@ class MarketDataProvider:
         Returns:
             4h K线数据列表，每个元素包含 open_time, open, high, low, close, volume
         """
-        from collections import defaultdict
+        from .kline_repair import complete_four_hour_bars
+        return complete_four_hour_bars(klines_1h)
 
-        groups = defaultdict(list)
-        for k in klines_1h:
-            ot = k.get("open_time", 0)
-            if isinstance(ot, (int, float)):
-                slot = self._get_4h_slot(int(ot))
-                groups[slot].append(k)
-
-        klines_4h = []
-        for slot in sorted(groups.keys()):
-            group = groups[slot]
-            open_price = float(group[0].get("open", 0))
-            close_price = float(group[-1].get("close", 0))
-            high_price = max(float(k.get("high", 0)) for k in group)
-            low_price = min(float(k.get("low", 0)) for k in group)
-            volume = sum(float(k.get("volume", 0)) for k in group)
-            klines_4h.append({
-                "open_time": slot,
-                "open": open_price,
-                "high": high_price,
-                "low": low_price,
-                "close": close_price,
-                "volume": volume,
-            })
-
-        return klines_4h
+    async def prepare_decision_klines(self, symbol, cached_1h, cached_4h, *, decision_at):
+        """Repair full original history before selecting normal scoring windows."""
+        from .kline_repair import prepare_klines
+        config = self.config.get('kline', {})
+        return await prepare_klines(self.binance_api, symbol, cached_1h, cached_4h,
+            decision_at=decision_at, keep_count=config.get('keep_count', 168),
+            four_hour_count=config.get('synthetic_4h_count', 50),
+            minimum=config.get('min_klines_for_analysis', 24), page_limit=self.max_api_limit)
 
     async def get_klines_1h(
         self,
