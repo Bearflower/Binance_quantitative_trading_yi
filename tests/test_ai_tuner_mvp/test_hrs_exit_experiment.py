@@ -383,6 +383,19 @@ def test_runtime_identity_detects_loaded_code_changes_even_if_source_bytes_are_u
     assert before['sha256']!=after['sha256']
 
 
+def test_runtime_identity_binds_canonical_normalizer_globals(monkeypatch):
+    from strategies.hrs import decision_capture
+    m=module();before=m.engine_identity()
+    original=decision_capture._normalize
+    def changed(value):
+        return float(value) if isinstance(value,D) else original(value)
+    old_payload=decision_capture.canonical_payload(dict(volume=D('3')))[1]
+    monkeypatch.setattr(decision_capture,'_normalize',changed)
+    assert decision_capture.canonical_payload(dict(volume=D('3')))[1]!=old_payload
+    after=m.engine_identity()
+    assert before['sha256']!=after['sha256']
+
+
 def test_unreadable_runtime_source_blocks_traceability_and_engine_execution(monkeypatch):
     m=module();original=m.inspect.getsourcefile
     monkeypatch.setattr(m.inspect,'getsourcefile',lambda item:None if item.__name__=='ai_tuner.replay.broker' else original(item))

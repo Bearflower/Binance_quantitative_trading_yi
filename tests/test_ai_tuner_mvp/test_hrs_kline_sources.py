@@ -66,10 +66,14 @@ def test_runtime_cannot_strip_repair_reference_from_derived_inputs():
     repair,analysis,public,config=fixture()
     portal=SimpleNamespace(_hrs_archive_sources_cache=dict(decision_evidence=[repair,analysis,*public]),
         window_start=datetime(2026,11,17,tzinfo=timezone.utc),hrs_replay_state=lambda at:dict(config=config))
-    raw=dict(symbol='A',evidence_ids=[analysis['evidence_id']],decision_at=analysis['event_time'])
+    raw=dict(symbol='A',evidence_ids=[analysis['evidence_id']],decision_at=analysis['event_time'],
+        analysis_klines_1h=copy.deepcopy(analysis['payload']['klines_1h']),analysis_klines_4h=copy.deepcopy(analysis['payload']['klines_4h']))
     complete=dict(raw,kline_repair_evidence_id=repair['evidence_id'],kline_repair_payload_sha256=repair['payload_sha256'],
         kline_repair_source_ids=[row['evidence_id'] for row in public])
     verify_runtime_kline_repair(portal,complete,datetime.now(timezone.utc))
+    tampered=copy.deepcopy(complete);tampered['analysis_klines_1h'][-1]['close']='100.5'
+    with pytest.raises(DataBlocked,match='hrs_analysis_raw_arrays_mismatch'):
+        verify_runtime_kline_repair(portal,tampered,datetime.now(timezone.utc))
     with pytest.raises(DataBlocked,match='kline_repair'):
         verify_runtime_kline_repair(portal,raw,datetime.now(timezone.utc))
 

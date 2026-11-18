@@ -579,6 +579,11 @@ def verify_runtime_kline_repair(portal,raw,checked_at):
     from .hrs_kline_sources import verify_kline_repair
     sources=snapshot_evidence_sources(portal)
     analysis=_raw_decision(sources,raw['evidence_ids'][0],checked_at)
+    _require(analysis['symbol']==raw['symbol'] and analysis['event_time']==_time(raw['decision_at']),
+        'hrs_analysis_raw_identity_mismatch')
+    _require(all(canonical_payload(raw.get('analysis_klines_'+interval))[1]==
+        canonical_payload(analysis['payload']['klines_'+interval])[1] for interval in ('1h','4h')),
+        'hrs_analysis_raw_arrays_mismatch')
     records=_records(sources.get('decision_evidence'))
     if isinstance(records,_ArchiveFamily):
         repairs=list(records.select(kind='kline_repair',run_id=analysis['run_id'],symbol=raw['symbol'],available_before=analysis['available_at']))
