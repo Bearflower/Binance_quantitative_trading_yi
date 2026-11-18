@@ -136,14 +136,15 @@ def test_open_position_without_verified_margin_blocks_budget_conclusion():
     assert "holdings_margin_unverified" in result["reasons"]
 
 
-def test_verified_holdings_plus_reservation_above_ceiling_requires_review():
+def test_estimated_holdings_and_existing_reservation_do_not_prove_ceiling_breach():
     evidence = snapshot()
     evidence["exchange"]["owned_positions"] = ["ONUSDT"]
     evidence["exchange"]["owned_margin"] = Decimal("20")
     evidence["reservations"]["margin"] = Decimal("7")
     result = assess_snapshot(evidence, now=NOW, weekly=False)
-    assert result["status"] == "SAFETY_REVIEW"
-    assert "exposure_exceeds_ceiling" in result["reasons"]
+    assert result["status"] == "BLOCKED_DATA"
+    assert "holdings_margin_unverified" in result["reasons"]
+    assert "exposure_exceeds_ceiling" not in result["reasons"]
 
 
 def test_missing_policy_is_safety_review():
@@ -223,15 +224,30 @@ def test_partial_stop_does_not_count_as_full_protection():
     assert result["unprotected_symbols"] == ["ONUSDT"]
 
 
-def test_exchange_margin_only_verified_with_complete_contract_fields():
+def test_exchange_position_notional_over_leverage_is_diagnostic_not_pm_margin():
     position = {"symbol": "ONUSDT", "positionAmt": "3", "positionSide": "BOTH",
                 "entryPrice": "1", "markPrice": "2", "leverage": "3", "contractSize": "1"}
     stop = {"symbol": "ONUSDT", "side": "SELL", "positionSide": "BOTH",
             "type": "STOP", "stopPrice": "1", "closePosition": "true", "orderId": 125}
     result = inspect_exchange([position], [stop], [], {"ONUSDT"})
-    assert result["owned_margin"] == Decimal("2")
+    assert result["owned_margin"] is None
+    assert result["estimated_notional_over_leverage"] == Decimal("2")
     del position["contractSize"]
     assert inspect_exchange([position], [stop], [], {"ONUSDT"})["owned_margin"] is None
+
+
+def test_reservation_and_live_position_are_not_added_as_independent_margin():
+    evidence = snapshot()
+    evidence["policy"]["entry_ceiling"] = Decimal("21")
+    evidence["cohort_ceiling"] = Decimal("21")
+    evidence["reservations"] = {"count": 1, "margin": Decimal("20"),
+                                "pressure_missing": 0, "pressure_risk": Decimal("1")}
+    evidence["exchange"] = {"verified": True, "owned_positions": ["ONUSDT"],
+                            "unprotected_symbols": [], "ownership_complete": True,
+                            "owned_margin": Decimal("2")}
+    result = assess_snapshot(evidence, now=NOW, weekly=False)
+    assert "exposure_exceeds_ceiling" not in result["reasons"]
+    assert "holdings_margin_unverified" in result["reasons"]
 
 
 def test_exchange_inventory_missing_never_reports_verified():
