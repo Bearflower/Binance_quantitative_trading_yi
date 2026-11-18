@@ -30,6 +30,11 @@ def make_strategy() -> HRSStrategy:
     tl.CLOSE_REASON_STOP_LOSS = "STOP_LOSS"
     strategy.binance_client = MagicMock()
     strategy.binance_client.trade_logger = tl
+    strategy.db = MagicMock()
+    strategy.db.fetch_all = AsyncMock(return_value=[{
+        'account_id': 'default', 'realized_pnl': Decimal('-30'),
+        'pnl_source': 'exchange_order_matched',
+    }])
 
     # 实际 PnL 来自币安 API：亏损 -30
     strategy._get_actual_pnl_from_binance = AsyncMock(return_value=Decimal('-30'))
@@ -101,11 +106,11 @@ async def test_做空平仓方向映射为BUY():
 
 
 async def test_无opened_at时since为空且不报错():
-    """持仓缺少 opened_at（或类型异常）时 since 传 None，不做去重但不应报错。"""
+    """持仓缺少 opened_at 时不能把理论值写成最终盈亏。"""
     strategy = make_strategy()
     # pos 无 opened_at → 跳过币安 API 路径，降级到理论 PnL 计算
     strategy._calculate_theoretical_total_pnl = AsyncMock(return_value=Decimal('-30'))
-    await strategy._writeback_pnl_for_full_close(
+    result = await strategy._writeback_pnl_for_full_close(
         symbol='SUIUSDT',
         direction='long',
         entry_price=1.0,
@@ -114,7 +119,8 @@ async def test_无opened_at时since为空且不报错():
         current_price=0.98,
         pos={},
     )
-    assert strategy.binance_client.trade_logger.insert_pnl_summary.await_args.kwargs['since'] is None
+    assert result is None
+    strategy.binance_client.trade_logger.insert_pnl_summary.assert_not_awaited()
 
 
 async def test_全部平仓PnL回写失败_不影响主流程():
@@ -132,3 +138,40 @@ async def test_全部平仓PnL回写失败_不影响主流程():
         pos={'opened_at': datetime.now(timezone.utc)},
     )
     strategy.binance_client.trade_logger.log_stop_loss.assert_not_awaited()
+
+
+async def test_已有理论汇总不能作为实盘核验成功():
+    strategy = make_strategy()
+    strategy._get_actual_pnl_from_binance = AsyncMock(return_value=Decimal('0.17484'))
+    strategy.db.fetch_all = AsyncMock(return_value=[{
+        'account_id': 'default', 'realized_pnl': Decimal('0.60636'),
+        'pnl_source': 'theoretical_estimate',
+    }])
+    result = await strategy._writeback_pnl_for_full_close(
+        symbol='ARIAUSDT', direction='short', entry_price=.23276,
+        entry_quantity=31, atr=.01, current_price=.22712,
+        pos={'opened_at': datetime.now(timezone.utc)},
+    )
+    assert result is None
+
+
+async def test_实盘盈亏待证据时保留持仓和占用(monkeypatch):
+    from strategies.hrs.executor import CloseOutcome
+
+    strategy = make_strategy()
+    strategy.position_manager = MagicMock()
+    strategy.position_manager.cancel_all_orders = AsyncMock()
+    strategy._writeback_pnl_for_full_close = AsyncMock(return_value=None)
+    strategy._save_state = AsyncMock()
+    strategy._reconcile_hrs_reservations = AsyncMock()
+    pos = {'opened_at': datetime.now(timezone.utc), 'entry_quantity': 31, 'atr': .01}
+    result = CloseOutcome(status='FILLED', closed_qty=Decimal('31'),
+                          target_qty=Decimal('31'), success=True)
+    completed = await strategy._finalize_close_if_filled(
+        'ARIAUSDT', 'short', result, entry_price=.23276,
+        exit_price=.22712, quantity=31, close_reason='时间止损', pos=pos,
+    )
+    assert completed is False
+    strategy.position_manager.remove_position.assert_not_called()
+    strategy._reconcile_hrs_reservations.assert_not_awaited()
+    strategy._save_state.assert_awaited_once()

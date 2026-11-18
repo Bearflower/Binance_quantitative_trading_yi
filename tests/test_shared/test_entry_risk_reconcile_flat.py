@@ -70,6 +70,30 @@ async def test_terminal_filled_order_releases_when_pm_omits_flat_symbol():
 
 
 @pytest.mark.asyncio
+async def test_maintenance_release_ignores_unrelated_pending_entry():
+    class SharedAccountExchange(Exchange):
+        async def get_open_orders(self, symbol=None):
+            return [] if symbol else [dict(symbol='BTCUSDT', reduceOnly=False,
+                                           clientOrderId='other_strategy_entry')]
+
+    connection = Connection()
+    store = RiskPolicyStore(type('DB', (), {'pool': Pool(connection)})(), 'default')
+    store.lock = lambda conn, strategy: _noop()
+    await store.reconcile('hrs', SharedAccountExchange([]), enforce_legacy_orders=False)
+    assert connection.released == ['risk_test']
+
+
+@pytest.mark.asyncio
+async def test_maintenance_release_keeps_other_flat_pending_symbol():
+    connection = Connection()
+    store = RiskPolicyStore(type('DB', (), {'pool': Pool(connection)})(), 'default')
+    store.lock = lambda conn, strategy: _noop()
+    await store.reconcile('hrs', Exchange([]), enforce_legacy_orders=False,
+                          eligible_symbols={'ARIAUSDT'})
+    assert connection.released == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize('inventory', [
     {'account_positions': [dict(symbol='SOLUSDT', positionAmt='0.34')]},
     {'all_positions': [dict(symbol='SOLUSDT', positionAmt='-0.34')]},

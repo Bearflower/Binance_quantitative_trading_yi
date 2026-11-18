@@ -2167,79 +2167,6 @@ class HRSStrategy(BaseStrategy):
                     signal.get("signal_id"), resolution,
                 )
 
-    async def _writeback_pnl(
-        self,
-        symbol: str,
-        direction: str,
-        entry_price: float,
-        exit_price: float,
-        quantity: float,
-        close_order: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """
-        回写平仓盈亏到 trade_records
-
-        计算平仓盈亏并调用 TradeLogger.update_realized_pnl 写入数据库。
-        写入失败不影响主流程。
-
-        Args:
-            symbol: 交易对
-            direction: 方向 ('short'/'long')
-            entry_price: 入场价格
-            exit_price: 出场价格（用于 PnL 计算）
-            quantity: 平仓数量
-            close_order: 平仓订单结果（含 orderId），用于精确匹配
-        """
-        try:
-            if entry_price <= 0 or exit_price <= 0 or quantity <= 0:
-                logger.warning(
-                    "PnL回写参数无效，跳过",
-                    symbol=symbol,
-                    entry_price=entry_price,
-                    exit_price=exit_price,
-                    quantity=quantity,
-                )
-                return
-
-            # 计算 PnL
-            direction_upper = "LONG" if direction == "long" else "SHORT"
-            close_side = "SELL" if direction == "long" else "BUY"
-
-            pnl = TradeLogger.calculate_pnl(
-                direction=direction_upper,
-                entry_price=Decimal(str(entry_price)),
-                exit_price=Decimal(str(exit_price)),
-                quantity=Decimal(str(quantity)),
-            )
-
-            # 获取 trade_logger 实例
-            trade_logger = getattr(self.binance_client, 'trade_logger', None)
-            if not trade_logger:
-                logger.warning("trade_logger 未设置，跳过PnL回写", symbol=symbol)
-                return
-
-            order_id = str(close_order.get("orderId", "")) if close_order else ""
-
-            await trade_logger.update_realized_pnl(
-                order_id=order_id,
-                realized_pnl=pnl,
-                side=close_side,
-                symbol=symbol,
-                executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None),
-            )
-
-            logger.info(
-                "PnL回写成功",
-                symbol=symbol,
-                direction=direction,
-                pnl=float(pnl),
-                quantity=quantity,
-                order_id=order_id or "fallback",
-            )
-
-        except Exception as e:
-            logger.warning("PnL回写失败，不影响主流程", symbol=symbol, error=str(e))
-
     async def _get_actual_pnl_from_binance(
         self,
         symbol: str,
@@ -2249,7 +2176,7 @@ class HRSStrategy(BaseStrategy):
         从币安API获取该持仓的实际已实现盈亏
 
         仅在收入事件、成交明细和同账户 HRS 订单能逐笔核对时返回实盘值。
-        任一缺失、满页或共享币种歧义均返回 None，交给理论值兜底。
+        任一缺失、满页或共享币种歧义均返回 None，保留持仓待证据重试。
 
         Args:
             symbol: 交易对
@@ -2341,6 +2268,57 @@ class HRSStrategy(BaseStrategy):
             owners = {}
             for row in rows:
                 owners.setdefault(str(row["order_id"]), set()).add(row["strategy"])
+            if any(owners.get(order_id) and owners[order_id] != {"hrs"} for order_id in order_ids):
+                logger.warning("成交订单已有冲突归属", symbol=symbol)
+                return None
+            unmatched = {order_id for order_id in order_ids if owners.get(order_id) != {"hrs"}}
+            if unmatched:
+                algo_rows = await db.fetch_all(
+                    "SELECT strategy, algo_id, side FROM trading.trade_records "
+                    "WHERE account_id = $1 AND symbol = $2 AND algo_id IS NOT NULL "
+                    "AND order_type = 'CONDITIONAL_ORDER' AND executed_at >= $3",
+                    account_id, symbol,
+                    opened_at.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None),
+                )
+                if len(algo_rows) > 100:
+                    return None
+                for order_id in unmatched:
+                    matches = []
+                    order_fills = [fill for fill in fills if str(fill.get("orderId")) == order_id]
+                    for row in algo_rows:
+                        try:
+                            algo_id = int(str(row["algo_id"]))
+                            if algo_id <= 0:
+                                continue
+                            algo = await self.binance_client.get_algo_order(algo_id)
+                            if (not isinstance(algo, dict)
+                                    or str(algo.get("algoId")) != str(algo_id)
+                                    or algo.get("symbol") != symbol
+                                    or algo.get("algoStatus") != "FINISHED"
+                                    or algo.get("orderType") not in (
+                                        "STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET")
+                                    or str(algo.get("actualOrderId")) != order_id
+                                    or algo.get("side") != row["side"]):
+                                continue
+                            order = await self.binance_client.get_order(symbol, int(order_id))
+                            if (not isinstance(order, dict)
+                                    or str(order.get("orderId")) != order_id
+                                    or order.get("symbol") != symbol
+                                    or order.get("status") != "FILLED"
+                                    or order.get("side") != algo["side"]
+                                    or order.get("reduceOnly") not in (True, "true")
+                                    or Decimal(str(order["executedQty"]))
+                                    != Decimal(str(algo["actualQty"]))
+                                    or sum(Decimal(str(fill["qty"])) for fill in order_fills)
+                                    != Decimal(str(order["executedQty"]))):
+                                continue
+                            matches.append(row["strategy"])
+                        except (TypeError, ValueError, KeyError, ArithmeticError):
+                            continue
+                    if matches != ["hrs"]:
+                        logger.warning("条件单实际成交归属不唯一", symbol=symbol, order_id=order_id)
+                        return None
+                    owners[order_id] = {"hrs"}
             if any(owners.get(order_id) != {"hrs"} for order_id in order_ids):
                 logger.warning("实盘PnL含非 HRS 或无归属订单", symbol=symbol)
                 return None
@@ -2478,11 +2456,11 @@ class HRSStrategy(BaseStrategy):
         pos: Dict[str, Any],
     ) -> Optional[Decimal]:
         """
-        全部平仓时回写完整 PnL（优先从币安API获取实际值，降级到理论计算）
+        全部平仓时仅在币安成交和收入证据完整时回写实盘 PnL。
 
         当 detect_take_profit_fills 检测到全部平仓（tp_result == 0）时，
-        优先从币安API获取该持仓的实际已实现盈亏，写入 trade_records。
-        API 失败时降级到理论计算（合并 TP1+TP2+剩余为 1 个总值，只写入 1 次）。
+        从币安API逐笔核实该持仓已实现盈亏；证据暂缺时不写入汇总，
+        由调用方保留本地持仓及占用并在后续监控轮次重试。
 
         B6a: 返回本次回写使用的已实现盈亏（Decimal），让调用方复用同一值判定
         胜负计数，避免"全平=止盈/止损"的事件名预判错误。
@@ -2517,20 +2495,9 @@ class HRSStrategy(BaseStrategy):
                 if pnl_value is not None:
                     pnl_source = "exchange_order_matched"
 
-            # 2. 实际 PnL 获取失败，降级到理论计算
+            # 无逐笔证据时保留待核验，不能将理论估算记为最终盈亏。
             if pnl_value is None:
-                pnl_value = await self._calculate_theoretical_total_pnl(
-                    symbol=symbol,
-                    direction=direction,
-                    entry_price=entry_price,
-                    entry_quantity=entry_quantity,
-                    atr=atr,
-                    current_price=current_price,
-                    pos=pos,
-                )
-
-            if pnl_value is None:
-                logger.warning("PnL计算失败，无法回写", symbol=symbol)
+                logger.warning("缺少逐笔成交归属，HRS盈亏待核验", symbol=symbol)
                 return None
 
             # 3. 直接插入一条 PnL 汇总记录（条件单成交无 trade_records 可 UPDATE）
@@ -2560,6 +2527,22 @@ class HRSStrategy(BaseStrategy):
             )
 
             if success:
+                account_id = getattr(trade_logger, "account_id", None)
+                if not isinstance(account_id, str):
+                    account_id = os.environ.get("TRADE_ACCOUNT_ID", "default")
+                summaries = await self.db.fetch_all(
+                    "SELECT account_id, realized_pnl, pnl_source FROM trading.trade_records "
+                    "WHERE account_id = $1 AND strategy = 'hrs' AND symbol = $2 "
+                    "AND side = $3 AND order_type = 'PNL_SUMMARY' AND executed_at >= $4 "
+                    "ORDER BY id DESC LIMIT 2",
+                    account_id, symbol, close_side, since_dt,
+                )
+                if (len(summaries) != 1
+                        or summaries[0]["account_id"] != account_id
+                        or summaries[0]["pnl_source"] != "exchange_order_matched"
+                        or Decimal(str(summaries[0]["realized_pnl"])) != pnl_value):
+                    logger.warning("HRS实盘汇总未唯一核实，保留持仓占用", symbol=symbol)
+                    return None
                 logger.info(
                     "全部平仓PnL回写成功",
                     symbol=symbol,
@@ -2576,6 +2559,7 @@ class HRSStrategy(BaseStrategy):
                     pnl=float(pnl_value),
                     source=pnl_source,
                 )
+                return None
 
             return pnl_value
 
@@ -2709,6 +2693,10 @@ class HRSStrategy(BaseStrategy):
         async def close(symbol: str) -> bool:
             pos = positions[symbol]
             direction = pos.get("direction")
+            exchange_qty = await self._get_exchange_position_qty(symbol)
+            if exchange_qty is None or exchange_qty <= 0:
+                logger.warning("额度检查跳过无可证明持仓的平仓", symbol=symbol)
+                return False
             ticker = await self.binance_client.get_ticker(symbol)
             price = float(ticker.get("lastPrice", 0))
             if price <= 0:
@@ -2726,6 +2714,27 @@ class HRSStrategy(BaseStrategy):
             )
 
         return await self.capital_mgr.enforce_existing_positions(margins, close)
+
+    async def _reconcile_hrs_reservations(self, symbol: str) -> bool:
+        """Release only exchange-proven flat HRS entries through the risk store."""
+        from shared.entry_risk_policy import RiskPolicyStore
+
+        try:
+            store = RiskPolicyStore(self.db)
+            await store.reconcile(
+                "hrs", self.binance_client, enforce_legacy_orders=False,
+                eligible_symbols={symbol},
+            )
+            pending = await self.db.fetch_one(
+                "SELECT client_order_id FROM trading.entry_risk_reservation "
+                "WHERE account_id = $1 AND strategy_id = 'hrs' AND symbol = $2 "
+                "AND state <> 'released' LIMIT 1",
+                store.account, symbol,
+            )
+            return pending is None
+        except Exception as e:
+            logger.warning("HRS入场预留对账未完成，保留占用", error=str(e))
+            return False
 
     async def _monitor_positions(self) -> None:
         """监控持仓：移动止盈、时间止损"""
@@ -2777,6 +2786,12 @@ class HRSStrategy(BaseStrategy):
                             pos=pos,
                         )
                         await self.position_manager.cancel_all_orders(symbol)
+                        if close_pnl is None:
+                            await self._save_state()
+                            continue
+                        if not await self._reconcile_hrs_reservations(symbol):
+                            await self._save_state()
+                            continue
                         self.position_manager.remove_position(symbol)
                         await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
 
@@ -3773,8 +3788,8 @@ class HRSStrategy(BaseStrategy):
         try:
             # 获取交易所所有持仓
             exchange_positions = await self.binance_client.get_position()
-            if not exchange_positions:
-                logger.info("交易所无持仓，跳过对账")
+            if exchange_positions is None:
+                logger.warning("交易所持仓未知，保留本地持仓待对账")
                 return
 
             # 构建交易所持仓映射：{symbol: {"direction": str, "positionAmt": float, "entryPrice": float}}
@@ -3817,8 +3832,27 @@ class HRSStrategy(BaseStrategy):
                         symbol=symbol,
                         direction=local_positions[symbol].get("direction"),
                     )
+                    pos = local_positions[symbol]
+                    pnl = await self._writeback_pnl_for_full_close(
+                        symbol=symbol, direction=pos.get("direction"),
+                        entry_price=float(pos.get("entry_price", 0)),
+                        entry_quantity=float(pos.get("entry_quantity", 0)),
+                        atr=float(pos.get("atr", 0)), current_price=float(pos.get("entry_price", 0)),
+                        pos=pos,
+                    )
+                    if pnl is None:
+                        logger.warning("本地平仓待交易所盈亏证据，保留持仓占用", symbol=symbol)
+                        continue
+                    ordinary = await self.binance_client.get_open_orders(symbol)
+                    algos = await self.binance_client.get_open_algo_orders(symbol)
+                    if not isinstance(ordinary, list) or not isinstance(algos, list) or ordinary or algos:
+                        logger.warning("本地已平仓仍有未核清订单，保留持仓占用", symbol=symbol)
+                        continue
+                    if not await self._reconcile_hrs_reservations(symbol):
+                        continue
                     self.position_manager.remove_position(symbol)
                     await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
+                    await self._save_state()
                     # 清理K线服务
                     if self._should_unregister(symbol):
                         await self._unregister_single_symbol(symbol)
@@ -4497,11 +4531,16 @@ class HRSStrategy(BaseStrategy):
                 except Exception as e:
                     ghost_price = entry_price  # 取价失败时以开仓价兜底（理论 PnL 趋近 0）
                     logger.warning("取价失败，幽灵平仓以开仓价兜底", symbol=symbol, error=str(e))
-                await self._writeback_pnl_for_full_close(
+                await self.position_manager.cancel_all_orders(symbol)
+                if await self._writeback_pnl_for_full_close(
                     symbol=symbol, direction=direction, entry_price=entry_price,
                     entry_quantity=entry_quantity, atr=atr, current_price=ghost_price, pos=pos,
-                )
-                await self.position_manager.cancel_all_orders(symbol)
+                ) is None:
+                    await self._save_state()
+                    return
+                if not await self._reconcile_hrs_reservations(symbol):
+                    await self._save_state()
+                    return
                 self.position_manager.remove_position(symbol)
                 await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
                 await self._save_state()
@@ -4793,14 +4832,11 @@ class HRSStrategy(BaseStrategy):
         R04 守卫 + H6 修复：依据平仓结构化结果决定是否执行清理
         （时间止损/移动止盈共用单点，**全平场景补 PNL_SUMMARY 汇总写入**）
 
-        修复根因（H6）：时间止损/移动止盈经本路径平仓后，只调 _writeback_pnl
-        做明细 UPDATE + remove_position，从不调 insert_pnl_summary 做汇总 INSERT。
-        remove_position 后主循环持仓已为 None，永不再触发全平回写。
-        修复方式：remove_position 前复用 _writeback_pnl_for_full_close 的
-        "实际值优先→理论兜底→since 去重"取值链，补一条 PNL_SUMMARY。
+        时间止损/移动止盈按交易所收入及成交证据写入 PNL_SUMMARY；
+        证据暂缺时保留本地持仓供后续重试。
 
-        - 完全成交（result.success）：closed_qty>0 时按「实际减仓量」回写明细 PnL →
-          补 PNL_SUMMARY 汇总（全平场景） → 撤保护单 → 删持仓 → 返回 True；
+        - 完全成交（result.success）：逐笔验证交易所收入与成交后写 PNL_SUMMARY；
+          证据或预留释放暂缺时保留本地持仓以重试；全部核实后清理。
           closed_qty<=0 时跳过回写，仅幂等清理并告警；
         - 部分成交：保留仓位，按剩余量重建保护（先撤旧单再重建），告警，返回 False；
         - 失败/仅受理：保留仓位与保护单，不撤单不删仓，告警，返回 False。
@@ -4822,17 +4858,7 @@ class HRSStrategy(BaseStrategy):
         """
         if result is not None and result.success:
             closed_qty = float(result.closed_qty)
-            if closed_qty > 0:
-                # 按「交易所确认的实际减仓量」回写，避免 closed_qty=0 时按入参数量虚增盈亏
-                await self._writeback_pnl(
-                    symbol=symbol,
-                    direction=direction,
-                    entry_price=entry_price,
-                    exit_price=exit_price,
-                    quantity=closed_qty,
-                    close_order=result.raw,
-                )
-            else:
+            if closed_qty <= 0:
                 logger.warning(
                     "平仓成功但实际已减仓量为 0，跳过盈亏回写",
                     symbol=symbol,
@@ -4842,19 +4868,13 @@ class HRSStrategy(BaseStrategy):
                 )
 
             # ── H6 修复：全平场景补 PNL_SUMMARY 汇总写入 ─────────────────────────────
-            # 复用 _writeback_pnl_for_full_close 的取值链（实际值优先→理论兜底），
-            # 避免重复实现。pos 为 None 时跳过（单测兼容）。
-            #
-            # 设计限制说明：income 结算延迟（P50=377min，极端 847min）场景下，
-            # _writeback_pnl_for_full_close 的"实际值优先"分支从 Binance 拉 income
-            # 可能尚未结算 → 退回理论值（entry/exit/quantity 计算）兜底。
-            # 回填脚本 hrs_pnl_backfill.py 以 reconcile.match_income_to_trades 归属
-            # 的 income 真值为锚，后续可覆盖更新理论值汇总行（通过 close_reason/
-            # order_id=backfill- 识别批次）。两阶段保证：实时兜底 + 离线校准。
+            # 证据暂缺时保留持仓、claim 和 reservation，后续轮次重试。
+            # pos 为 None 时跳过汇总（仅供旧调用方兼容）。
             #
             # B6a: 接住 pnl_value 存到 pos 里（可变引用透传），让调用方复用同一值
             # 判定胜负计数，不再"时间止损=亏损"无条件预判。
             if pos is not None:
+                pnl_from_finalize = None
                 try:
                     pnl_from_finalize = await self._writeback_pnl_for_full_close(
                         symbol=symbol,
@@ -4868,7 +4888,7 @@ class HRSStrategy(BaseStrategy):
                     if pnl_from_finalize is not None:
                         pos["_last_close_pnl"] = pnl_from_finalize
                 except Exception as e:
-                    # 汇总写入失败不影响主流程（明细已回写），H4 设计：记 ERROR 供后续追踪
+                    # 汇总写入异常会保留本地持仓和占用，供后续追踪重试。
                     logger.error(
                         "H6 修复：PNL_SUMMARY 汇总写入异常，明细已回填不受影响",
                         symbol=symbol,
@@ -4878,6 +4898,13 @@ class HRSStrategy(BaseStrategy):
                     )
 
             await self.position_manager.cancel_all_orders(symbol)
+            if pos is not None and pnl_from_finalize is None:
+                await self._save_state()
+                logger.warning("平仓盈亏待证据，保留本地持仓及占用重试", symbol=symbol)
+                return False
+            if not await self._reconcile_hrs_reservations(symbol):
+                await self._save_state()
+                return False
             self.position_manager.remove_position(symbol)
             await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
             return True
