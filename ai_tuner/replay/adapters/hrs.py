@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from decimal import Decimal
-from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Sequence, Tuple
 
 from ..broker import PortfolioView
 from ..models import (
@@ -179,6 +179,27 @@ class HrsAdapter:
         )
         return result, engine.should_entry(result)
 
+    @classmethod
+    def score_frozen_candidate(
+        cls, config: Mapping[str, Any], *, as_of: datetime, snapshot: ExternalSnapshot,
+        scan: Mapping[str, Any], memberships: Sequence[Mapping[str, Any]],
+        bars_1h: Tuple[Bar, ...], bars_4h: Tuple[Bar, ...],
+    ) -> Dict[str, Tuple[Any, bool]]:
+        """Score standard paths for the recorded sides in one frozen, complete scan."""
+        cutoff = parse_utc(as_of)
+        if snapshot.available_at > cutoff:
+            raise FutureDataAccess("hrs.score_frozen_candidate", cutoff, "available_at", snapshot.available_at)
+        if snapshot.strategy_id != cls.strategy_id:
+            raise DataBlocked(["hrs_candidate_snapshot_strategy_mismatch"])
+        sides = _scan_memberships(scan, memberships, cutoff)
+        return {
+            direction: cls.score_frozen_standard(
+                config, as_of=as_of, direction=direction, snapshot=snapshot,
+                bars_1h=bars_1h, bars_4h=bars_4h,
+            )
+            for direction in sides.get(snapshot.symbol, ())
+        }
+
     def intents(self, ctx: PreparedContext) -> Tuple[Any, ...]:
         """产出意图：决策尚未接线，**无条件**抛 ``QualificationBlocked``。
 
@@ -195,6 +216,54 @@ class HrsAdapter:
         K 线就抛 ``QualificationBlocked``）。
         """
         return None
+
+
+_SIDES_BY_MEMBERSHIP = {"long": ("long",), "short": ("short",), "both": ("short", "long")}
+
+
+def _scan_timestamp(row: Mapping[str, Any], field: str, cutoff: datetime) -> datetime:
+    raw = row.get(field)
+    try:
+        time = raw if isinstance(raw, datetime) else datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+        if time.utcoffset() is None:
+            raise ValueError("timezone required")
+    except (TypeError, ValueError) as error:
+        raise DataBlocked([f"hrs_candidate_scan_invalid:{field}"]) from error
+    if time > cutoff:
+        raise FutureDataAccess("hrs.score_frozen_candidate", cutoff, field, time)
+    return time
+
+
+def _scan_memberships(
+    scan: Mapping[str, Any], memberships: Sequence[Mapping[str, Any]], as_of: datetime,
+) -> Dict[str, Tuple[str, ...]]:
+    cutoff = parse_utc(as_of)
+    observed = _scan_timestamp(scan, "observed_at", cutoff)
+    created = _scan_timestamp(scan, "created_at", cutoff)
+    run_id = scan.get("source_run_id")
+    config_hash = scan.get("config_hash")
+    if (scan.get("strategy_id") != "hrs" or created < observed
+            or not isinstance(run_id, str) or not run_id.strip()
+            or not isinstance(config_hash, str) or len(config_hash) != 64
+            or any(char not in "0123456789abcdef" for char in config_hash)):
+        raise DataBlocked(["hrs_candidate_scan_invalid:identity"])
+    count = scan.get("symbol_count")
+    if type(count) is not int or count != len(memberships):
+        raise DataBlocked(["hrs_candidate_scan_incomplete"])
+
+    symbols = {}
+    for row in memberships:
+        row_observed = _scan_timestamp(row, "observed_at", cutoff)
+        row_created = _scan_timestamp(row, "created_at", cutoff)
+        symbol, membership = row.get("symbol"), row.get("membership")
+        if (row.get("strategy_id") != "hrs" or row_observed != observed or row_created < observed
+                or row.get("source_run_id") != run_id or row.get("config_hash") != config_hash):
+            raise DataBlocked(["hrs_candidate_scan_mixed_identity"])
+        if (not isinstance(symbol, str) or not symbol or symbol in symbols
+                or not isinstance(membership, str) or membership not in _SIDES_BY_MEMBERSHIP):
+            raise DataBlocked(["hrs_candidate_scan_invalid:membership"])
+        symbols[symbol] = _SIDES_BY_MEMBERSHIP[membership]
+    return symbols
 
 
 def _validate_snapshot(

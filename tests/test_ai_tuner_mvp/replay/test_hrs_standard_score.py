@@ -63,3 +63,60 @@ def test_offline_score_rejects_missing_hour(snapshot):
             {}, as_of=AS_OF, direction="long", snapshot=snapshot,
             bars_1h=hourly[:12] + hourly[13:], bars_4h=bars("4h", 4),
         )
+
+
+def frozen_scan(symbol_count=1):
+    return dict(
+        strategy_id="hrs", observed_at=AS_OF - timedelta(hours=1),
+        created_at=AS_OF - timedelta(minutes=59), source_run_id="scan-1",
+        config_hash="b" * 64, symbol_count=symbol_count,
+    )
+
+
+def frozen_member(scan, **overrides):
+    return {**scan, "symbol": "BTCUSDT", "membership": "both", **overrides}
+
+
+def test_frozen_candidate_scores_only_recorded_directions(snapshot):
+    scan = frozen_scan()
+    scores = HrsAdapter.score_frozen_candidate(
+        {}, as_of=AS_OF, snapshot=snapshot, scan=scan,
+        memberships=[frozen_member(scan, membership="short")],
+        bars_1h=bars("1h", 1), bars_4h=bars("4h", 4),
+    )
+    assert tuple(scores) == ("short",)
+    assert scores["short"][0] == HrsAdapter.score_frozen_standard(
+        {}, as_of=AS_OF, direction="short", snapshot=snapshot,
+        bars_1h=bars("1h", 1), bars_4h=bars("4h", 4),
+    )[0]
+
+
+def test_frozen_empty_scan_is_distinct_from_incomplete_scan(snapshot):
+    kwargs = dict(as_of=AS_OF, snapshot=snapshot, memberships=[], bars_1h=(), bars_4h=())
+    assert HrsAdapter.score_frozen_candidate({}, scan=frozen_scan(0), **kwargs) == {}
+    with pytest.raises(DataBlocked, match="hrs_candidate_scan_incomplete"):
+        HrsAdapter.score_frozen_candidate({}, scan=frozen_scan(), **kwargs)
+
+
+@pytest.mark.parametrize("override", [
+    {"source_run_id": "other"}, {"config_hash": "c" * 64},
+    {"membership": "unknown"}, {"observed_at": AS_OF},
+])
+def test_frozen_candidate_blocks_mixed_scan_identity(snapshot, override):
+    scan = frozen_scan()
+    with pytest.raises(DataBlocked):
+        HrsAdapter.score_frozen_candidate(
+            {}, as_of=AS_OF, snapshot=snapshot, scan=scan,
+            memberships=[frozen_member(scan, **override)],
+            bars_1h=(), bars_4h=(),
+        )
+
+
+def test_frozen_candidate_blocks_late_publication(snapshot):
+    scan = frozen_scan()
+    with pytest.raises(FutureDataAccess):
+        HrsAdapter.score_frozen_candidate(
+            {}, as_of=AS_OF, snapshot=snapshot, scan=scan,
+            memberships=[frozen_member(scan, created_at=AS_OF + timedelta(seconds=1))],
+            bars_1h=(), bars_4h=(),
+        )

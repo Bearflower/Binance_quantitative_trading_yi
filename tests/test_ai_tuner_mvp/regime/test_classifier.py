@@ -33,7 +33,7 @@ def test_future_bar_is_rejected_instead_of_used():
 
 
 def test_missing_threshold_blocks_classification():
-    bars = tuple(_bar(i, 100 + i) for i in range(8))
+    bars = tuple(_bar(i, 100 + i) for i in range(1, 9))
     features = extract_features(bars, AS_OF, min_segment_length=8)
     with pytest.raises(DataBlocked):
         classify_regime(features, {"trend_return_pct": "2"})
@@ -81,3 +81,10 @@ def test_missing_hour_cannot_contribute_market_state():
     bars = tuple(_bar(i, 100 + i) for i in (0, 1, 2, 3, 5, 6, 7, 8))
     with pytest.raises(DataBlocked, match="regime_discontinuous_bars"):
         extract_features(bars, AS_OF, min_segment_length=8)
+
+
+def test_market_state_rejects_stale_complete_segment():
+    fresh = tuple(_bar(i, 100 + i) for i in range(1, 9))
+    assert extract_features(fresh, AS_OF, min_segment_length=8).bar_count == 8
+    with pytest.raises(DataBlocked, match="regime_stale_closed_bar"):
+        extract_features(fresh, AS_OF + timedelta(hours=1), min_segment_length=8)
