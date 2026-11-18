@@ -82,6 +82,8 @@ async def test_foreign_positions_do_not_consume_hrs_slots_but_all_account_margin
     from datetime import datetime,timezone
     context=geometry['slot_context']
     assert context['strategy_id']=='hrs' and context['policy_revision']==1
+    assert {'BNBUSDT','SOLUSDT','WLDUSDT','SUIUSDT'}<=set(row['symbol'] for row in context['ownership_claims'])
+    assert all(set(row)=={'id','symbol','strategy','claim_state'} for row in context['ownership_claims'])
     assert datetime.fromisoformat(context['as_of'])==r.at
     assert r.at<=datetime.fromisoformat(context['checked_at'])<=datetime.now(timezone.utc)
     assert r.store.reservation_audit==dict(client_order_id=client,slot_occupancy_proof=geometry['slot_occupancy_proof'],slot_context=context)
@@ -132,6 +134,7 @@ async def test_unknown_owner_is_denied_under_lock_without_reservation_or_claim_w
     assert caught.value.context['policy_revision']==1
     assert caught.value.context['as_of']==r.at.isoformat()
     assert caught.value.context['checked_at']
+    assert {'BNBUSDT','SOLUSDT','WLDUSDT'}<=set(row['symbol'] for row in caught.value.context['ownership_claims'])
     assert await r.admin.fetchval('SELECT count(*) FROM trading.entry_risk_reservation')==0
 
 

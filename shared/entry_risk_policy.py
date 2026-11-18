@@ -239,6 +239,8 @@ class RiskPolicyStore:
                     reservation_symbols=sorted(reservations),occupied_symbols=None,observed_slots=None,requested_slots=None,
                     max_slots=values.max_slots,evidence_sha256=row['evidence_sha256'],**metadata)
                 claims=await conn.fetch("SELECT id,symbol,strategy,claim_state FROM trading.position_claims WHERE claim_state IN ('PENDING','ACTIVE') AND expires_at>clock_timestamp()")
+                ownership_claims=[dict(row) for row in claims]
+                context['ownership_claims']=ownership_claims
                 try:
                     proof=prove_hrs_slot_ownership(self.account,dict(account_id=self.account,evidence_sha256=row['evidence_sha256'],payload=row['payload']),values.slot_evidence,claims,checked_at=row['checked_at'])
                 except HrsOccupancyDenied as exc:
@@ -255,7 +257,7 @@ class RiskPolicyStore:
                 context=dict(slot_scope=SLOT_SCOPE,account_id=self.account,account_symbols=proof['account_symbols'],hrs_symbols=proof['hrs_symbols'],
                     reservation_symbols=sorted(reservations),occupied_symbols=sorted(occupied),observed_slots=len(occupied),
                     requested_slots=len(occupied|{symbol}),max_slots=values.max_slots,
-                    evidence_sha256=row['evidence_sha256'],observed_at=proof['observed_at'],account_margin=str(holdings),**metadata)
+                    evidence_sha256=row['evidence_sha256'],observed_at=proof['observed_at'],account_margin=str(holdings),ownership_claims=ownership_claims,**metadata)
                 if symbol in proof['account_symbols']:
                     raise EntryDenied('existing account holding forbids additions',reason_code='entry_no_additions',context=context)
                 if len(occupied|{symbol})>values.max_slots:
