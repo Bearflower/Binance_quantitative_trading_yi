@@ -14,6 +14,12 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from decimal import Decimal
 import hashlib
+import importlib
+from importlib import metadata
+import inspect
+from types import CodeType
+import platform
+import sys
 import json
 from pathlib import Path
 import random
@@ -42,6 +48,108 @@ REQUIRED_FILES = frozenset({'hrs_replay_state.json', 'hrs_decision_inputs.jsonl'
 def fingerprint(value):
     encoded = json.dumps(to_jsonable(value), sort_keys=True, separators=(',', ':'), ensure_ascii=False, allow_nan=False)
     return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+# Loaded-module paths bind the code this interpreter imports, rather than a Git
+# commit annotation or a clean/dirty worktree assumption. Include shared helpers
+# called lazily by scoring/risk and the runner/report implementation itself.
+ENGINE_MODULES = (
+    'ai_tuner.replay.adapters.hrs', 'ai_tuner.replay.adapters.base',
+    'ai_tuner.replay.engine', 'ai_tuner.replay.broker', 'ai_tuner.replay.models',
+    'ai_tuner.replay.data_portal', 'ai_tuner.replay.clock',
+    'ai_tuner.replay.funding_history', 'ai_tuner.replay.artifacts',
+    'ai_tuner.funding_schedule.models', 'strategies.hrs.core_decision',
+    'strategies.hrs.scoring_engine', 'strategies.hrs.pattern',
+    'strategies.hrs.exit_geometry', 'strategies.hrs.risk_budget',
+    'strategies.hrs.risk_ledger', 'strategies.hrs.loss_gate',
+    'shared.entry_risk_policy', 'shared.circuit_breaker', 'shared.config_loader',
+    'shared.trade_logger',
+)
+ENGINE_DEPENDENCIES = ('structlog', 'asyncpg', 'PyYAML', 'numpy', 'pandas', 'tzdata')
+
+
+def _loaded_code_digest(module):
+    # Remove checkout paths while preserving the actual loaded bytecode. This
+    # distinguishes a cached/monkey-patched interpreter from fresh source bytes.
+    def constant(value):
+        if isinstance(value,CodeType):return normalized(value)
+        if value is None or type(value) in (bool,int,str):return value
+        if isinstance(value,bytes):return {'bytes':value.hex()}
+        if isinstance(value,float):return {'float':value.hex()}
+        if isinstance(value,complex):return {'complex':[value.real.hex(),value.imag.hex()]}
+        if isinstance(value,tuple):return {'tuple':[constant(item) for item in value]}
+        if isinstance(value,frozenset):return {'frozenset':sorted((constant(item) for item in value),key=fingerprint)}
+        if value is Ellipsis:return {'ellipsis':True}
+        raise TypeError('unsupported_runtime_code_constant')
+    def normalized(code):
+        # marshal reference/intern flags can change after first execution even
+        # when code is unchanged. Hash semantic code fields instead of those
+        # serialization details; CPython exposes de-specialized co_code here.
+        return dict(bytecode=code.co_code.hex(),constants=[constant(item) for item in code.co_consts],
+            names=code.co_names,varnames=code.co_varnames,freevars=code.co_freevars,cellvars=code.co_cellvars,
+            argcount=code.co_argcount,posonlyargcount=code.co_posonlyargcount,kwonlyargcount=code.co_kwonlyargcount,
+            nlocals=code.co_nlocals,stacksize=code.co_stacksize,flags=code.co_flags,
+            exceptiontable=getattr(code,'co_exceptiontable',b'').hex())
+    functions={}
+    def collect(name,value):
+        if isinstance(value,(classmethod,staticmethod)):value=value.__func__
+        if inspect.isfunction(value):
+            functions[name]=fingerprint(normalized(value.__code__))
+        elif isinstance(value,property):
+            for role in ('fget','fset','fdel'):
+                if getattr(value,role) is not None:collect(name+'.'+role,getattr(value,role))
+    for name,value in vars(module).items():
+        collect(name,value)
+        if inspect.isclass(value) and value.__module__==module.__name__:
+            for method,descriptor in vars(value).items():collect(name+'.'+method,descriptor)
+    return fingerprint(functions)
+
+
+def engine_identity():
+    """Content identity of actual runtime sources and relevant environment.
+
+    Identity is engineering traceability, never source/performance acceptance.
+    A missing source file remains an explicit unavailable identity; no Git hash
+    or installed package version is substituted for missing runtime source.
+    """
+    files = {}; loaded_code = {}; gaps = []
+    for name in ENGINE_MODULES:
+        try:
+            loaded = importlib.import_module(name)
+            loaded_code[name] = _loaded_code_digest(loaded)
+            source = inspect.getsourcefile(loaded)
+            if source is None:
+                raise ValueError('source_file_missing')
+            files[name.replace('.', '/')+'.py'] = hashlib.sha256(Path(source).read_bytes()).hexdigest()
+        except (ImportError, OSError, TypeError, ValueError) as error:
+            gaps.append('engine_source_unavailable:'+name+':'+type(error).__name__)
+    try:
+        files['ai_tuner/hrs_exit_experiment.py'] = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
+        loaded_code['ai_tuner.hrs_exit_experiment'] = _loaded_code_digest(sys.modules[__name__])
+    except OSError as error:
+        gaps.append('engine_source_unavailable:runner:'+type(error).__name__)
+    dependencies = {}
+    for name in ENGINE_DEPENDENCIES:
+        try:
+            dependencies[name] = metadata.version(name)
+        except metadata.PackageNotFoundError:
+            dependencies[name] = None  # Absence is an identity fact, never version 0.
+    identity = dict(schema_version=1, model='hrs_engine_runtime_v1',
+        status='UNAVAILABLE' if gaps else 'AVAILABLE', source_files=files, loaded_code_sha256=loaded_code,
+        python=dict(implementation=platform.python_implementation(), version=sys.version,
+            cache_tag=sys.implementation.cache_tag, optimization=sys.flags.optimize,
+            machine=platform.machine(), system=platform.system()),
+        dependencies=dependencies, blocked_reasons=gaps)
+    identity['sha256'] = fingerprint(identity)
+    return identity
+
+
+def _require_runtime_identity(expected, reason):
+    current = engine_identity()
+    if current['status'] != 'AVAILABLE':
+        raise DataBlocked(current['blocked_reasons'] or ['engine_identity_unavailable'])
+    if current != expected:
+        raise DataBlocked([reason])
 
 
 def _decimal(value, *, positive=False):
@@ -247,7 +355,9 @@ def select_mode_trades(trades, entry_modes, mode):
     return tuple(trade for trade in trades if entry_modes.get(trade.position_id) in family)
 
 
-def _run_candidate(registration, candidate, window, directory, on_engine_run=None):
+def _run_candidate(registration, candidate, window, directory, on_engine_run=None, *, expected_engine_identity=None):
+    expected_engine_identity = expected_engine_identity or engine_identity()
+    _require_runtime_identity(expected_engine_identity, 'engine_identity_changed_before_run')
     start, end = _time(window['start']), _time(window['end'])
     tiers = {}; all_gaps = []
     for tier, multiplier in TIERS.items():
@@ -280,9 +390,11 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
         broker = VirtualBroker(filters, _decimal(model['fee_bps'])*multiplier,
             _decimal(model['slippage_bps'])*multiplier, _decimal(model['stop_offset_pct']),
             _decimal(model['tp_offset_pct']), cash, _decimal(model['max_leverage'], positive=True), D('.3'))
+        _require_runtime_identity(expected_engine_identity, 'engine_identity_changed_before_run')
         if on_engine_run is not None:
             on_engine_run()
         replay = run_replay(portal, adapter, broker, include_snapshots=True)
+        _require_runtime_identity(expected_engine_identity, 'engine_identity_changed_during_run')
         checkpoints = adapter.equity_checkpoints() if hasattr(adapter, 'equity_checkpoints') else tuple(adapter._history)
         nav = nav_metrics(checkpoints, start, end)
         risks, entry_modes = _risk_inventory(replay.audit_events)
@@ -306,10 +418,10 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
             future_data_accesses=0, blocked_reasons=gaps)
     return dict(candidate_id=candidate['candidate_id'], mode=candidate['mode'], window_id=window['window_id'],
         is_baseline=not candidate['exit_parameters'], candidate_sha256=fingerprint(candidate), status='BLOCKED_DATA' if all_gaps else 'AVAILABLE',
-        tiers=tiers, blocked_reasons=all_gaps)
+        tiers=tiers, engine_identity=expected_engine_identity, blocked_reasons=all_gaps)
 
 
-def _selection_candidates(registration, selection, research_report):
+def _selection_candidates(registration, selection, research_report, *, current_engine_identity):
     if not selection or not research_report:
         raise DataBlocked(['frozen_research_selection_required'])
     if (selection.get('registration_sha256') != fingerprint(registration)
@@ -318,6 +430,10 @@ def _selection_candidates(registration, selection, research_report):
             or research_report.get('stage') != 'research'
             or research_report.get('status') != 'AVAILABLE'):
         raise DataBlocked(['frozen_research_selection_identity_invalid'])
+    if not research_report.get('engine_identity'):
+        raise DataBlocked(['research_engine_identity_missing'])
+    if research_report['engine_identity'] != current_engine_identity:
+        raise DataBlocked(['research_engine_identity_mismatch'])
     selected = selection.get('candidate_by_mode', {})
     groups = {c['mode'] for c in registration['candidates']}
     if set(selected) != groups:
@@ -334,12 +450,14 @@ def _selection_candidates(registration, selection, research_report):
 
 def run_experiment(registration, *, snapshot_roots=(), output=None, stage='research', selection=None, research_report=None):
     report = dict(schema_version=1, status='BLOCKED_DATA', stage=stage, performance_accepted=False,
-        registration_sha256=None, selected_candidates={}, evaluations=[], engine_runs=0,
+        registration_sha256=None, engine_identity=engine_identity(), selected_candidates={}, evaluations=[], engine_runs=0,
         blocked_reasons=[], snapshot_inventory=[], boundary_policy='flat_start_no_open_end',
         qualification='two complete independent holdout months required; no automatic production admission')
     report['discovery_roots'] = [dict(path=str(Path(root).expanduser().resolve()), exists=Path(root).expanduser().is_dir())
                                  for root in snapshot_roots]
     try:
+        if report['engine_identity']['status'] != 'AVAILABLE':
+            raise DataBlocked(report['engine_identity']['blocked_reasons'] or ['engine_identity_unavailable'])
         report['registration_sha256'] = validate_registration(registration)
         report['baseline_identity'] = {key: registration['baseline'][key] for key in
             ('effective_config_sha256', 'config_hashes', 'code_commit', 'source')}
@@ -349,7 +467,7 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
         report['cost_model'] = registration['cost_model']
         if stage not in ('research', 'holdout'):
             raise ValueError('unknown_stage')
-        candidates = (_selection_candidates(registration, selection, research_report) if stage == 'holdout'
+        candidates = (_selection_candidates(registration, selection, research_report, current_engine_identity=report['engine_identity']) if stage == 'holdout'
                       else registration['candidates'])
         report['snapshot_inventory'] = discover_snapshots(snapshot_roots)
         if not report['snapshot_inventory']:
@@ -364,7 +482,7 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
                 try:
                     def counted_run():
                         report['engine_runs'] += 1
-                    evaluation = _run_candidate(registration, candidate, window, choices[0]['snapshot_dir'], counted_run)
+                    evaluation = _run_candidate(registration, candidate, window, choices[0]['snapshot_dir'], counted_run, expected_engine_identity=report['engine_identity'])
                     report['evaluations'].append(evaluation)
                     report['blocked_reasons'].extend(window['window_id']+':'+candidate['candidate_id']+':'+gap
                                                       for gap in evaluation['blocked_reasons'])
@@ -445,7 +563,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.registration is None:
         report = dict(schema_version=1, status='BLOCKED_DATA', stage=args.stage, performance_accepted=False,
-            registration_sha256=None, selected_candidates={}, evaluations=[], engine_runs=0,
+            registration_sha256=None, engine_identity=engine_identity(), selected_candidates={}, evaluations=[], engine_runs=0,
             blocked_reasons=['frozen_production_baseline_and_candidate_registration_missing'],
             snapshot_inventory=discover_snapshots(args.snapshot_root))
         report['discovery_roots'] = [dict(path=str(Path(root).expanduser().resolve()), exists=Path(root).expanduser().is_dir())

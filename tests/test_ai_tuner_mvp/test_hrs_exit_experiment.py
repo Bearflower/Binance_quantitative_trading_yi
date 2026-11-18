@@ -206,3 +206,80 @@ def test_real_engine_executes_manifest_bound_raw_fixture_without_relabeling_hist
     assert result['selected_candidates'] == {}
     assert raw['config'] == r['baseline']['config']
     assert result['evaluations'][0]['candidate_sha256'] != result['evaluations'][1]['candidate_sha256']
+
+
+def frozen_research(m,r,identity):
+    research=dict(stage='research',status='AVAILABLE',registration_sha256=m.fingerprint(r))
+    if identity is not None:research['engine_identity']=identity
+    selection=dict(registration_sha256=m.fingerprint(r),research_report_sha256=m.fingerprint(research),candidate_by_mode={'standard':'floor-4'})
+    return research,selection
+
+
+def test_every_report_records_actual_runtime_source_and_environment_identity(tmp_path):
+    m=module();report=m.run_experiment(registration(),snapshot_roots=[tmp_path/'missing'])
+    identity=report['engine_identity']
+    assert identity['status']=='AVAILABLE'
+    for name in ('ai_tuner/replay/adapters/hrs.py','ai_tuner/replay/engine.py','ai_tuner/replay/broker.py',
+                 'strategies/hrs/core_decision.py','strategies/hrs/scoring_engine.py','strategies/hrs/pattern.py',
+                 'strategies/hrs/exit_geometry.py','strategies/hrs/risk_budget.py','strategies/hrs/risk_ledger.py',
+                 'strategies/hrs/loss_gate.py','ai_tuner/replay/data_portal.py'):
+        source=Path(m.__file__).resolve().parents[1]/name
+        assert identity['source_files'][name]==hashlib.sha256(source.read_bytes()).hexdigest()
+    assert identity['python']['version']
+    assert 'structlog' in identity['dependencies']
+    assert report['performance_accepted'] is False
+    out=tmp_path/'missing-registration.json'
+    m.main(['--output',str(out)])
+    assert json.loads(out.read_text())['engine_identity']==identity
+
+
+def test_holdout_without_research_runtime_identity_blocks_before_discovery_or_engine(tmp_path,monkeypatch):
+    m=module();r=registration();research,selection=frozen_research(m,r,None)
+    def forbidden(*args,**kwargs):raise AssertionError('holdout drift must block before discovery or engine')
+    monkeypatch.setattr(m,'discover_snapshots',forbidden)
+    monkeypatch.setattr(m,'run_replay',forbidden)
+    result=m.run_experiment(r,snapshot_roots=[tmp_path],stage='holdout',selection=selection,research_report=research)
+    assert result['status']=='BLOCKED_DATA'
+    assert result['blocked_reasons']==['research_engine_identity_missing']
+    assert result['engine_runs']==0
+
+
+def test_holdout_source_or_dependency_drift_blocks_before_any_engine_run(tmp_path,monkeypatch):
+    m=module();r=registration()
+    old=m.engine_identity()
+    research,selection=frozen_research(m,r,old)
+    current=copy.deepcopy(old);current['dependencies']['structlog']='different-runtime'
+    monkeypatch.setattr(m,'engine_identity',lambda:current)
+    def forbidden(*args,**kwargs):raise AssertionError('runtime mismatch must block before replay')
+    monkeypatch.setattr(m,'discover_snapshots',forbidden)
+    monkeypatch.setattr(m,'run_replay',forbidden)
+    result=m.run_experiment(r,snapshot_roots=[tmp_path],stage='holdout',selection=selection,research_report=research)
+    assert result['status']=='BLOCKED_DATA'
+    assert result['blocked_reasons']==['research_engine_identity_mismatch']
+    assert result['engine_runs']==0 and result['engine_identity']==current
+
+
+def test_matching_frozen_runtime_identity_passes_the_code_gate_only(tmp_path):
+    m=module();r=registration();research,selection=frozen_research(m,r,m.engine_identity())
+    result=m.run_experiment(r,snapshot_roots=[tmp_path/'missing'],stage='holdout',selection=selection,research_report=research)
+    assert result['blocked_reasons']==['historical_hrs_snapshots_missing']
+    assert result['performance_accepted'] is False and result['engine_runs']==0
+
+
+def test_runtime_identity_detects_loaded_code_changes_even_if_source_bytes_are_unchanged(monkeypatch):
+    from strategies.hrs import core_decision
+    m=module();before=m.engine_identity()
+    monkeypatch.setattr(core_decision,'analyze_standard',lambda **kwargs:None)
+    after=m.engine_identity()
+    assert before['source_files']==after['source_files']
+    assert before['loaded_code_sha256']!=after['loaded_code_sha256']
+    assert before['sha256']!=after['sha256']
+
+
+def test_unreadable_runtime_source_blocks_traceability_and_engine_execution(monkeypatch):
+    m=module();original=m.inspect.getsourcefile
+    monkeypatch.setattr(m.inspect,'getsourcefile',lambda item:None if item.__name__=='ai_tuner.replay.broker' else original(item))
+    report=m.run_experiment(registration())
+    assert report['status']=='BLOCKED_DATA' and report['engine_runs']==0
+    assert report['engine_identity']['status']=='UNAVAILABLE'
+    assert any('engine_source_unavailable:ai_tuner.replay.broker' in gap for gap in report['blocked_reasons'])
