@@ -104,6 +104,14 @@ continues to have no source mutation privileges or exchange credentials.
   expected_count=..., collect=True)` first verifies the **raw original parent**
   canonical hash, then validates/resolves the reference. An inline legacy parent
   remains supported without replacing its stored payload/hash.
+- `evidence_forecasts_ref` validates the full raw parent and returns only its
+  compact reference, or None for a validated legacy inline parent.
+- `ForecastPrefixState.add` / `.reference` implement the same contract in a
+  reusable incremental pass; `verify_forecasts_prefixes` validates all ordered
+  cutoff checkpoints and the independent maximum-prefix count. Historical
+  consumers share this implementation instead of reimplementing the digest.
+- `verify_stored_prefixes` reads the maximum prefix once for all already validated
+  raw parent references; empty reference sets perform no source query.
 - `read_forecasts_prefix` / `load_forecasts_ref` / `verify_stored_evidence` use
   the caller's existing consistent connection, never acquire another lease.
 
@@ -114,8 +122,18 @@ prefix for each parent and independently count it. Extra rows are not silently
 ignored by the resolver. Unknown reference versions/contracts/fields fail closed.
 An expanded view must never be passed off as the original parent for hash checks.
 
-Reconciliation validates raw parent hash and reference closure before reusing
-saved captures. It still reconstructs positions from retained inventory/marks and
+Reconciliation streams historical raw parents through a cursor (prefetch 10).
+Every consumed parent's full original hash and reference availability is checked
+before any source-prefix read. Only compact references and the reconstruction's
+actual fields (`inventory`, `independent`, `local`, `marks`,
+`historical_mark_bars`) plus original as_of/evidence hash remain in memory. These
+are evaluated views, never replacements for stored parents. All referenced
+cutoffs are then verified by one shared incremental `ForecastPrefixState`: one
+independent COUNT and one fetch of the maximum source prefix, one validation/hash
+per source row, and exact count/forecast-count/digest/first/last checkpoints at
+every parent cutoff. It does not COUNT/fetch or hash the whole source prefix
+again for each historical parent. Single-parent projection semantics are
+unchanged. It still reconstructs positions from retained inventory/marks and
 actual fills, without changing historical marks or clocks. The acceptance reader
 validates the raw parent and closure in its existing read-only snapshot before
 using its inventory-based funding proof; missing closure cannot promote unknown
@@ -136,7 +154,14 @@ full service refresh/restart, idempotent migrations and no new grants. They also
 apply the actual release reader allowlist to a restricted role and prove source
 SELECT succeeds while INSERT/UPDATE/DELETE/TRUNCATE privileges remain absent.
 Funding expiry stays at its actual deadline; late reconciliation retains normal
-advance/restart behavior and refuses damaged parent/ref histories.
+advance/restart behavior and refuses damaged parent/ref histories. Instrumented
+real-PG late reconciliation proves exactly one historical COUNT/fetch regardless
+of parent count (plus the unchanged separate single-projection validation), and
+proves a damaged oldest parent's unused field is rejected before any source
+query, even when newer valid parents were encountered first. Iterator-counting
+pure tests verify each source row is consumed once across many cutoff references,
+including repeated cutoffs, and that an invalid early prefix cannot be hidden by
+a valid final prefix.
 
 Missing historical source receipts cannot be manufactured. A deleted or changed
 source prefix fails closed, and append-only rows referenced by an equity parent

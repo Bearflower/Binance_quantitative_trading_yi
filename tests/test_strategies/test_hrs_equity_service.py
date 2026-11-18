@@ -387,7 +387,7 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
     if damaged_history:
         from strategies.hrs.equity_evidence import canonical
         async with pool.acquire() as c:
-            old=await c.fetchrow('SELECT evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1 ORDER BY available_at DESC LIMIT 1',account)
+            old=await c.fetchrow('SELECT evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1 ORDER BY available_at LIMIT 1',account)
             payload=json.loads(old['payload'])
             payload['capture']['funding_publication']['forecasts_ref']['ordered_sha256']='0'*64
             encoded,digest=canonical(payload)
@@ -732,3 +732,65 @@ async def test_referenced_forecasts_preserve_funding_deadline_expiry_and_raw_par
         evidence['capture']['funding_publication']['forecasts']=[]
         with pytest.raises(Exception,match='runtime_mismatch'):
             await service._projection(c,1,dict(ready=True,allowed=True,reasons=[]),evidence)
+
+
+@pytest.mark.asyncio
+async def test_late_reconciliation_reads_funding_source_prefix_once_not_per_parent(setup,monkeypatch):
+    from contextlib import asynccontextmanager
+    from strategies.hrs.funding_reference import COUNT_SQL,ROWS_SQL
+    service,*_=setup
+    import strategies.hrs.equity_service as module
+    rebuild=module.rebuild_history
+    def retained_only(previous,source,**kwargs):
+        assert source.captures
+        for captured in source.captures:
+            assert set(captured['capture'])<=set(('inventory','independent','local','marks','historical_mark_bars'))
+            assert captured['evidence_sha256']
+        return rebuild(previous,source,**kwargs)
+    monkeypatch.setattr(module,'rebuild_history',retained_only)
+    locked=service._locked
+    calls=[]
+    @asynccontextmanager
+    async def traced():
+        async with locked() as connection:
+            queries=[]
+            def record(query):
+                if query.query in (COUNT_SQL,ROWS_SQL):queries.append(query.query)
+            connection.add_query_logger(record)
+            try:yield connection
+            finally:
+                await asyncio.sleep(0)
+                connection.remove_query_logger(record)
+                calls.append(queries)
+    service._locked=traced
+    await test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,False,None)
+    # Two saved parents are both checked, but read only one maximum prefix.
+    # One additional read validates the new single projection, as before.
+    assert calls[2].count(COUNT_SQL)==2
+    assert calls[2].count(ROWS_SQL)==2
+
+
+@pytest.mark.asyncio
+async def test_all_reconciliation_raw_parents_are_checked_before_source_prefix_read(setup):
+    from contextlib import asynccontextmanager
+    from strategies.hrs.funding_reference import COUNT_SQL,ROWS_SQL
+    service,*_=setup
+    locked=service._locked
+    calls=[]
+    @asynccontextmanager
+    async def traced():
+        async with locked() as connection:
+            queries=[]
+            def record(query):
+                if query.query in (COUNT_SQL,ROWS_SQL):queries.append(query.query)
+            connection.add_query_logger(record)
+            try:yield connection
+            finally:
+                await asyncio.sleep(0)
+                connection.remove_query_logger(record)
+                calls.append(queries)
+    service._locked=traced
+    # The oldest parent has damage in an otherwise-unused funding field. A
+    # newer valid parent is encountered first; neither may trigger prefix IO.
+    await test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,False,'parent_hash')
+    assert calls[2]==[]

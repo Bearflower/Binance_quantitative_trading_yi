@@ -72,42 +72,97 @@ def validate_forecasts_ref(ref,*,account_id):
     return cutoff
 
 
-def _summary(account_id,cutoff,rows,expected_count,*,collect=True):
-    _require(isinstance(account_id,str) and bool(account_id),'account_mismatch')
-    _require(type(expected_count) is int and expected_count>=0,'independent_count_invalid')
-    cutoff=_time(cutoff)
-    digest=hashlib.sha256();first=last=None;count=forecast_count=0;forecasts=[];seen=set()
-    for raw in rows:
+class ForecastPrefixState:
+    """One-pass original-row validation and digest; never replay an old prefix."""
+    def __init__(self,account_id,*,collect=False):
+        _require(isinstance(account_id,str) and bool(account_id),'account_mismatch')
+        self.account_id=account_id
+        self.collect=collect
+        self.forecasts=[]
+        self.row_count=self.forecast_count=0
+        self.first=self.last=None
+        self.digest=hashlib.sha256()
+        self.seen=set()
+
+    def add(self,raw):
         row=dict(raw)
         _require(set(row)=={'account_id','evidence_sha256','available_at','payload'},'source_shape_invalid')
-        _require(row['account_id']==account_id,'account_mismatch')
+        _require(row['account_id']==self.account_id,'account_mismatch')
         at=_time(row['available_at'])
-        _require(at<=cutoff,'source_after_cutoff')
         payload=_decoded(row['payload'])
         _require(isinstance(payload,dict) and set(payload)=={'forecasts'} and isinstance(payload['forecasts'],list)
                  and bool(payload['forecasts']),'source_payload_invalid')
-        encoded,source_hash=canonical(payload)
+        _,source_hash=canonical(payload)
         _require(isinstance(row['evidence_sha256'],str) and row['evidence_sha256']==source_hash,'source_hash_mismatch')
-        key=[at.isoformat(),source_hash]
         order_key=(at,source_hash)
-        _require(last is None or last<order_key,'source_order_or_duplicate')
-        _require(source_hash not in seen,'source_identity_duplicate');seen.add(source_hash)
-        if first is None:first=key
-        last=order_key
-        complete=dict(account_id=account_id,evidence_sha256=source_hash,available_at=at.isoformat(),payload=payload)
-        framed=canonical(complete)[0].encode('utf-8')
-        digest.update(len(framed).to_bytes(8,'big'));digest.update(framed)
+        _require(self.last is None or self.last<order_key,'source_order_or_duplicate')
+        _require(source_hash not in self.seen,'source_identity_duplicate')
+        # Validate the entire receipt before updating any accepted digest state.
         for forecast in payload['forecasts']:
             _require(isinstance(forecast,dict) and isinstance(forecast.get('symbol'),str) and bool(forecast['symbol']),'forecast_invalid')
             for name in ('source_time','received_at','next_funding_time'):_time(forecast.get(name))
             _require(_time(forecast['source_time'])<=_time(forecast['received_at'])<=at,'source_availability_invalid')
-            if collect:forecasts.append(dict(forecast))
-        forecast_count+=len(payload['forecasts']);count+=1
-    _require(count==expected_count,'independent_count_mismatch')
-    ref=dict(version=VERSION,table=TABLE,account_id=account_id,available_through=cutoff.isoformat(),row_count=count,
-        forecast_count=forecast_count,order=ORDER,ordered_sha256=digest.hexdigest(),first_key=first,
-        last_key=[last[0].isoformat(),last[1]] if last is not None else None,canonical_contract=CONTRACT)
-    return ref,forecasts
+        if self.first is None:self.first=[at.isoformat(),source_hash]
+        self.last=order_key
+        self.seen.add(source_hash)
+        complete=dict(account_id=self.account_id,evidence_sha256=source_hash,available_at=at.isoformat(),payload=payload)
+        framed=canonical(complete)[0].encode('utf-8')
+        self.digest.update(len(framed).to_bytes(8,'big'));self.digest.update(framed)
+        if self.collect:self.forecasts.extend(dict(forecast) for forecast in payload['forecasts'])
+        self.forecast_count+=len(payload['forecasts']);self.row_count+=1
+
+    def reference(self,cutoff,*,expected_count=None):
+        cutoff=_time(cutoff)
+        _require(self.last is None or self.last[0]<=cutoff,'source_after_cutoff')
+        if expected_count is not None:
+            _require(type(expected_count) is int and expected_count>=0,'independent_count_invalid')
+            _require(self.row_count==expected_count,'independent_count_mismatch')
+        return dict(version=VERSION,table=TABLE,account_id=self.account_id,available_through=cutoff.isoformat(),
+            row_count=self.row_count,forecast_count=self.forecast_count,order=ORDER,
+            ordered_sha256=self.digest.hexdigest(),first_key=copy.deepcopy(self.first),
+            last_key=[self.last[0].isoformat(),self.last[1]] if self.last is not None else None,canonical_contract=CONTRACT)
+
+
+def _summary(account_id,cutoff,rows,expected_count,*,collect=True):
+    _require(type(expected_count) is int and expected_count>=0,'independent_count_invalid')
+    state=ForecastPrefixState(account_id,collect=collect)
+    for row in rows:state.add(row)
+    return state.reference(cutoff,expected_count=expected_count),state.forecasts
+
+
+def verify_forecasts_prefixes(refs,rows,*,account_id,expected_count):
+    """Check every cutoff in one source pass, with one independent maximum COUNT.
+
+    Every parent must already have its RAW hash/availability checked. Each
+    declared row_count is checked against the actual incremental prefix count;
+    the whole maximum source prefix is independently counted by its caller.
+    """
+    _require(type(expected_count) is int and expected_count>=0,'independent_count_invalid')
+    ordered=sorted(((validate_forecasts_ref(ref,account_id=account_id),ref) for ref in refs),key=lambda pair:pair[0])
+    state=ForecastPrefixState(account_id,collect=False)
+    stream=iter(rows)
+    end=object()
+    pending=next(stream,end)
+    for cutoff,ref in ordered:
+        while pending is not end:
+            _require(pending is not None,'source_shape_invalid')
+            if _time(pending['available_at'])>cutoff:break
+            state.add(pending)
+            pending=next(stream,end)
+        actual=state.reference(cutoff,expected_count=ref['row_count'])
+        _require(actual==ref,'closure_mismatch')
+    _require(pending is end,'source_after_cutoff')
+    _require(state.row_count==expected_count,'independent_count_mismatch')
+    return dict(verified_prefix_count=len(ordered),source_row_count=state.row_count)
+
+
+async def verify_stored_prefixes(connection,refs,*,account_id):
+    """One COUNT/fetch for all validated parent references on the existing lease."""
+    if not refs:return dict(verified_prefix_count=0,source_row_count=0)
+    cutoff=max(validate_forecasts_ref(ref,account_id=account_id) for ref in refs)
+    expected=await connection.fetchval(COUNT_SQL,account_id,cutoff)
+    rows=await connection.fetch(ROWS_SQL,account_id,cutoff)
+    return verify_forecasts_prefixes(refs,rows,account_id=account_id,expected_count=expected)
 
 
 def build_forecasts_ref(account_id,available_through,rows,*,expected_count):
@@ -123,12 +178,8 @@ def resolve_forecasts_ref(ref,rows,*,account_id,expected_count,collect=True):
     return forecasts if collect else {key:actual[key] for key in ('row_count','forecast_count','ordered_sha256')}
 
 
-def resolve_evidence_forecasts(parent,source_rows,*,account_id,expected_count,collect=True):
-    """Validate RAW parent first, return a separate forecast view without mutation.
-
-    source_rows must be the exact account/cutoff prefix, not a larger export's
-    whole union. The caller independently counts that prefix in its source/index.
-    """
+def evidence_forecasts_ref(parent,*,account_id):
+    """Check RAW parent first; return only a compact ref (None for old inline)."""
     payload=_decoded(parent['payload'])
     _require(canonical(payload)[1]==parent['evidence_sha256'],'parent_hash_mismatch')
     _require(payload.get('account_id')==account_id and parent.get('account_id',account_id)==account_id,'account_mismatch')
@@ -137,9 +188,18 @@ def resolve_evidence_forecasts(parent,source_rows,*,account_id,expected_count,co
         _require('forecasts' not in publication,'ambiguous_inline_and_ref')
         cutoff=validate_forecasts_ref(publication['forecasts_ref'],account_id=account_id)
         _require(cutoff<=_time(payload.get('available_at')),'parent_availability_invalid')
-        return resolve_forecasts_ref(publication['forecasts_ref'],source_rows,account_id=account_id,expected_count=expected_count,collect=collect)
+        return copy.deepcopy(publication['forecasts_ref'])
     _require('forecasts' in publication and isinstance(publication['forecasts'],list),'missing')
-    return copy.deepcopy(publication['forecasts']) if collect else dict(forecast_count=len(publication['forecasts']),legacy_inline=True)
+    return None
+
+
+def resolve_evidence_forecasts(parent,source_rows,*,account_id,expected_count,collect=True):
+    """Validate RAW parent before resolving its exact prefix, without mutation."""
+    ref=evidence_forecasts_ref(parent,account_id=account_id)
+    if ref is not None:
+        return resolve_forecasts_ref(ref,source_rows,account_id=account_id,expected_count=expected_count,collect=collect)
+    forecasts=_decoded(parent['payload'])['capture']['funding_publication']['forecasts']
+    return copy.deepcopy(forecasts) if collect else dict(forecast_count=len(forecasts),legacy_inline=True)
 
 
 async def read_forecasts_prefix(connection,account_id,available_through):
@@ -158,15 +218,8 @@ async def load_forecasts_ref(connection,ref,*,account_id,collect=True):
 
 
 async def verify_stored_evidence(connection,parent,*,account_id):
-    """Validate the raw stored parent before reading its exact source closure."""
-    payload=_decoded(parent['payload'])
-    _require(canonical(payload)[1]==parent['evidence_sha256'],'parent_hash_mismatch')
-    _require(payload.get('account_id')==account_id and parent.get('account_id',account_id)==account_id,'account_mismatch')
-    publication=payload.get('capture',{}).get('funding_publication',{})
-    if 'forecasts_ref' in publication:
-        _require('forecasts' not in publication,'ambiguous_inline_and_ref')
-        cutoff=validate_forecasts_ref(publication['forecasts_ref'],account_id=account_id)
-        _require(cutoff<=_time(payload.get('available_at')),'parent_availability_invalid')
-        return await load_forecasts_ref(connection,publication['forecasts_ref'],account_id=account_id,collect=False)
-    _require('forecasts' in publication and isinstance(publication['forecasts'],list),'missing')
-    return dict(forecast_count=len(publication['forecasts']),legacy_inline=True)
+    """Validate one raw stored parent and source closure; batch historical callers."""
+    ref=evidence_forecasts_ref(parent,account_id=account_id)
+    if ref is not None:return await load_forecasts_ref(connection,ref,account_id=account_id,collect=False)
+    forecasts=_decoded(parent['payload'])['capture']['funding_publication']['forecasts']
+    return dict(forecast_count=len(forecasts),legacy_inline=True)

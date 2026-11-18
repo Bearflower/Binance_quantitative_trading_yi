@@ -55,7 +55,7 @@ from .equity_evidence import (
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
 from .equity_reconciliation import ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
-from .funding_reference import read_forecasts_prefix,load_forecasts_ref,verify_stored_evidence
+from .funding_reference import read_forecasts_prefix,load_forecasts_ref,evidence_forecasts_ref,verify_stored_prefixes
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
 from .loss_gate_repository import LossGateSession, RepositoryConflict
 from .risk_ledger import CashFlow, LedgerNotReady, LedgerObservation, PositionMark, initialize_ledger, reconcile_ledger
@@ -891,11 +891,19 @@ class HrsEquityService:
                 if any('allocation:'+change.event_id not in existing_flows for change in audit['changes']):
                     raise EvidenceBlocked('reconciliation_allocation_changes_unsettled')
                 captures=[]
-                for archived in await connection.fetch('SELECT as_of,evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND segment_id=$2 AND as_of<=$3 ORDER BY available_at DESC',self.account,segment,as_of):
+                forecast_refs=[]
+                query='SELECT as_of,evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND segment_id=$2 AND as_of<=$3 ORDER BY available_at DESC'
+                async for archived in connection.cursor(query,self.account,segment,as_of,prefetch=10):
                     payload=json.loads(archived['payload']) if isinstance(archived['payload'],str) else archived['payload']
                     if 'capture' in payload and payload.get('result',{}).get('ledger_version') is not None:
-                        await verify_stored_evidence(connection,archived,account_id=self.account)
-                        captures.append(dict(as_of=archived['as_of'],capture=payload['capture'],evidence_sha256=archived['evidence_sha256']))
+                        ref=evidence_forecasts_ref(archived,account_id=self.account)
+                        if ref is not None:forecast_refs.append(ref)
+                        # Rebuild uses only these captured inventories/marks.
+                        # Hash the entire original parent before retaining this
+                        # smaller evaluated view; the stored parent is untouched.
+                        retained={key:payload['capture'][key] for key in ('inventory','independent','local','marks','historical_mark_bars') if key in payload['capture']}
+                        captures.append(dict(as_of=archived['as_of'],capture=retained,evidence_sha256=archived['evidence_sha256']))
+                await verify_stored_prefixes(connection,forecast_refs,account_id=self.account)
                 source=ReconciliationSource(self.account,segment,state.inception,effective_opening_cash,
                     LedgerObservation(as_of,segment,events,(),marks,as_of,snapshot['captured_at'],True,True),
                     state.cash_flows,await effective_checkpoints(connection,self.account,segment),tuple(captures),

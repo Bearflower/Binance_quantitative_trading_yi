@@ -110,3 +110,36 @@ def test_reference_cannot_claim_source_available_after_original_parent_receipt()
     parent=dict(account_id='test',payload=json.loads(encoded),evidence_sha256=digest)
     with pytest.raises(EvidenceBlocked,match='parent_availability'):
         resolve_evidence_forecasts(parent,rows,account_id='test',expected_count=1)
+
+
+def test_batch_prefix_verification_reads_each_source_once_for_many_parent_cutoffs():
+    from strategies.hrs.funding_reference import verify_forecasts_prefixes,ForecastPrefixState
+    rows=[source(T+timedelta(seconds=i),received=T+timedelta(seconds=i)) for i in range(30)]
+    refs=[build(rows[:i],T+timedelta(seconds=i-1))[0] for i in range(1,31)]
+    reads=[]
+    def once():
+        for row in rows:
+            reads.append(row['evidence_sha256']);yield row
+    summaries=verify_forecasts_prefixes(list(reversed(refs))+[refs[0]],once(),account_id='test',expected_count=30)
+    assert len(reads)==30
+    assert summaries['verified_prefix_count']==31 and summaries['source_row_count']==30
+    state=ForecastPrefixState('test',collect=False)
+    for row in rows:state.add(row)
+    assert state.reference(T+timedelta(seconds=29),expected_count=30)==refs[-1]
+    assert state.forecasts==[]
+
+
+@pytest.mark.parametrize('damage',['prefix_digest','prefix_count','missing','extra','late_cutoff','unsorted','last_key','null'])
+def test_incremental_batch_checks_every_prefix_not_only_latest(damage):
+    from strategies.hrs.funding_reference import verify_forecasts_prefixes
+    rows=[source(T+timedelta(seconds=i),received=T+timedelta(seconds=i)) for i in range(3)]
+    refs=[build(rows[:i],T+timedelta(seconds=i-1))[0] for i in range(1,4)]
+    if damage=='prefix_digest':refs[0]['ordered_sha256']='0'*64
+    elif damage=='prefix_count':refs[0]['row_count']=0
+    elif damage=='last_key':refs[0]['last_key']=refs[-1]['last_key']
+    elif damage=='missing':rows.pop(0)
+    elif damage=='extra':rows.append(source(T+timedelta(seconds=3),received=T+timedelta(seconds=3)))
+    elif damage=='late_cutoff':refs[-1]['available_through']=(T+timedelta(seconds=1)).isoformat()
+    elif damage=='unsorted':rows.reverse()
+    elif damage=='null':rows.append(None)
+    with pytest.raises(EvidenceBlocked):verify_forecasts_prefixes(refs,iter(rows),account_id='test',expected_count=3)
