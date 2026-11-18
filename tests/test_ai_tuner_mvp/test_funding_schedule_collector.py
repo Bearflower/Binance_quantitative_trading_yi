@@ -57,12 +57,18 @@ def row(symbol, now):
 
 def test_collects_required_union_using_only_unsigned_public_gets():
     now = SLOT + timedelta(seconds=10)
-    client = FakeClient([row(s, now) for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT")])
+    client = FakeClient(
+        [row(s, now) for s in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XAUUSDT")],
+        [{"symbol": "XAUUSDT", "fundingIntervalHours": 4}],
+    )
     repo = FakeRepository(("SOLUSDT", "BTCUSDT"))
     ticks = iter((now, now + timedelta(seconds=1), now + timedelta(seconds=2)))
     result = asyncio.run(FundingScheduleCollector(repo, client, clock=lambda: next(ticks)).collect_once(SLOT, uuid4()))
     assert result.status == "success"
-    assert [item.symbol for item in repo.attempts[0][1]] == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    observations = repo.attempts[0][1]
+    assert [item.symbol for item in observations] == ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XAUUSDT"]
+    assert observations[-1].funding_interval_hours == 4
+    assert observations[-1].next_funding_time == now + timedelta(hours=4)
     assert client.calls == [
         ("GET", "/fapi/v1/premiumIndex", None, False),
         ("GET", "/fapi/v1/fundingInfo", None, False),
@@ -163,3 +169,16 @@ def test_slow_http_is_not_saved_as_current_slot_success():
     assert attempt.request_started_at == request_start and attempt.received_at == late
     assert attempt.raw_payload["http_attempted"] is True
     assert observations == ()
+
+
+@pytest.mark.parametrize("xau_rows", [[], [{"symbol": "XAUUSDT", "time": 0, "nextFundingTime": 0}]])
+def test_xau_evidence_failure_preserves_existing_schedule_batch(xau_rows, caplog):
+    now = SLOT + timedelta(seconds=10)
+    client = FakeClient([row(symbol, now) for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT")] + xau_rows)
+    repo = FakeRepository()
+
+    result = asyncio.run(FundingScheduleCollector(repo, client, clock=lambda: now).collect_once(SLOT, uuid4()))
+
+    assert result.status == "success"
+    assert [item.symbol for item in repo.attempts[0][1]] == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    assert "XAUUSDT" in caplog.text

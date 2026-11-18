@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 from typing import Callable, Optional
 from uuid import UUID
 
@@ -13,7 +14,9 @@ from .models import FundingScheduleDataError, normalize_observations
 from .repository import FundingScheduleAttempt, MissingHistoricalUniverse
 
 
+logger = logging.getLogger(__name__)
 _REQUIRED_MTPCS_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT"})
+_XAU_SYMBOL = "XAUUSDT"
 
 
 @dataclass(frozen=True)
@@ -96,13 +99,26 @@ class FundingScheduleCollector:
                 "MISSED_SCHEDULE_SLOT", http_attempted=True,
             )
         try:
-            payload_hash, observations = normalize_observations(
-                scheduled_at=scheduled_at,
-                received_at=received_at,
-                required_symbols=required_symbols,
-                premium_rows=premium_rows,
-                funding_info_rows=funding_info_rows,
-            )
+            try:
+                payload_hash, observations = normalize_observations(
+                    scheduled_at=scheduled_at,
+                    received_at=received_at,
+                    required_symbols=required_symbols | {_XAU_SYMBOL},
+                    premium_rows=premium_rows,
+                    funding_info_rows=funding_info_rows,
+                )
+            except FundingScheduleDataError as error:
+                if error.symbol != _XAU_SYMBOL or _XAU_SYMBOL in required_symbols:
+                    raise
+                logger.warning("XAUUSDT funding schedule unavailable for %s: %s",
+                               scheduled_at.isoformat(), error.code)
+                payload_hash, observations = normalize_observations(
+                    scheduled_at=scheduled_at,
+                    received_at=received_at,
+                    required_symbols=required_symbols,
+                    premium_rows=premium_rows,
+                    funding_info_rows=funding_info_rows,
+                )
         except FundingScheduleDataError as error:
             return await self._failed(
                 scheduled_at, attempt_id, request_started_at, received_at,
