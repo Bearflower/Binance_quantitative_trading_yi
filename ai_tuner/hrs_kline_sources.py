@@ -3,7 +3,8 @@ from datetime import datetime,timezone
 
 from strategies.hrs.decision_capture import canonical_payload
 from strategies.hrs.kline_repair import (HOUR_MS,MAX_HISTORY_HOURS,MAX_REQUESTS,
-    _normalized,_decode_response,complete_four_hour_bars)
+    _normalized,_decode_response,complete_four_hour_bars,validate_repair_response_scope,
+    FOUR_HOUR_AGGREGATION_CONTRACT)
 from strategies.hrs.core_decision import validate_klines
 from .replay.models import DataBlocked
 
@@ -37,7 +38,8 @@ def verify_kline_repair(repair,analysis,public_rows,config):
         _require(repair['kind']=='kline_repair' and analysis['kind'] in ('analysis','lv_rm_analysis')
             and repair['run_id']==analysis['run_id'] and repair['symbol']==analysis['symbol']==receipt['symbol'],'identity_mismatch')
         _require(receipt['version']=='hrs_kline_repair_v1' and receipt['status']=='complete'
-            and receipt['hash_algorithm']=='decision_capture.canonical_payload/sha256','version_or_status_invalid')
+            and receipt['hash_algorithm']=='decision_capture.canonical_payload/sha256'
+            and receipt.get('aggregation_contract')==FOUR_HOUR_AGGREGATION_CONTRACT,'version_or_status_invalid')
         decision=_time(receipt['decision_at']);started=_time(receipt['started_at']);available=_time(receipt['available_at'])
         _require(decision<=available and started<=available<=_time(repair['available_at'])<=_time(analysis['available_at']),
             'not_available_at_analysis')
@@ -85,6 +87,7 @@ def verify_kline_repair(repair,analysis,public_rows,config):
                 and all(t in missing for t in range(begin,end+1,HOUR_MS)),'request_scope_invalid')
             raw=row['payload']['response'];decoded=_decode_response(raw,{})
             _require(len(decoded)==request['received_count'],'response_count_mismatch')
+            validate_repair_response_scope(decoded,begin,end,{})
             received,_=_normalized(decoded,HOUR_MS,decision,{})
             _require(set(received)==set(range(begin,end+1,HOUR_MS)),'response_scope_incomplete')
             one.update(received);used.append(row['evidence_id'])

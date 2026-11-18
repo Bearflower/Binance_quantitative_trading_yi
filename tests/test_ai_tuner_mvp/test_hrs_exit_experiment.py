@@ -73,11 +73,15 @@ def test_registered_v2_admission_requires_complete_matching_snapshot_inputs(tmp_
     assert report['performance_accepted'] is False
 
 
-def test_registered_admission_checks_every_input_before_engine(tmp_path):
+@pytest.mark.parametrize('bad',['old','missing','null_proof'])
+def test_registered_admission_checks_every_input_before_engine(tmp_path,bad):
     scope='hrs_owned_and_unreleased_reservations_v2'
     v2=dict(risk=dict(account_occupancy=dict(version='hrs_account_occupancy_v2',slot_scope=scope,
         slot_ownership_proof=dict(slot_scope=scope))))
     v1=dict(risk=dict(account_occupancy=dict(version='hrs_account_occupancy_v1')))
+    if bad=='missing':v1=None
+    elif bad=='null_proof':
+        v1=copy.deepcopy(v2);v1['risk']['account_occupancy']['slot_ownership_proof']=None
     (tmp_path/'hrs_decision_inputs.jsonl').write_text(json.dumps(v2)+'\n'+json.dumps(v1)+'\n')
     from ai_tuner.replay.models import DataBlocked
     with pytest.raises(DataBlocked,match='registered_runtime_admission_scope_mismatch:input'):

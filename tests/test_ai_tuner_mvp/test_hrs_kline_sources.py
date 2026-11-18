@@ -40,7 +40,7 @@ def test_repair_receipt_reconstructs_original_full_span_before_final_window():
     assert analysis['event_time']>repair['payload']['receipt']['available_at']
 
 
-@pytest.mark.parametrize('damage',['missing','params','response','input','output','unavailable','full_hash','version'])
+@pytest.mark.parametrize('damage',['missing','params','response','input','output','unavailable','full_hash','version','aggregation_missing','aggregation_unknown'])
 def test_missing_changed_or_future_repair_facts_fail_closed(damage):
     from ai_tuner.hrs_kline_sources import verify_kline_repair
     repair,analysis,public,config=fixture()
@@ -52,6 +52,8 @@ def test_missing_changed_or_future_repair_facts_fail_closed(damage):
     elif damage=='unavailable':repair['payload']['receipt']['available_at']=datetime.now(timezone.utc)+timedelta(hours=1)
     elif damage=='full_hash':repair['payload']['receipt']['full_1h_sha256']='0'*64
     elif damage=='version':repair['payload']['receipt']['version']='unknown'
+    elif damage=='aggregation_missing':repair['payload']['receipt'].pop('aggregation_contract')
+    elif damage=='aggregation_unknown':repair['payload']['receipt']['aggregation_contract']='unknown'
     # An internally consistent new envelope must not bypass the source closure.
     for row in [repair,analysis,*public]:row['payload_sha256']=canonical_payload(row['payload'])[1]
     with pytest.raises(DataBlocked,match='kline_repair'):
@@ -70,3 +72,17 @@ def test_runtime_cannot_strip_repair_reference_from_derived_inputs():
     verify_runtime_kline_repair(portal,complete,datetime.now(timezone.utc))
     with pytest.raises(DataBlocked,match='kline_repair'):
         verify_runtime_kline_repair(portal,raw,datetime.now(timezone.utc))
+
+
+def test_repair_get_must_reject_future_extra_before_normalization_drops_it():
+    from ai_tuner.hrs_kline_sources import verify_kline_repair
+    repair,analysis,public,config=fixture()
+    extra=copy.deepcopy(public[0]['payload']['response'][0])
+    extra[0]+=365*86400*1000;extra[6]+=365*86400*1000
+    public[0]['payload']['response'].append(extra)
+    request=repair['payload']['receipt']['requests'][0]
+    request['response_sha256']=canonical_payload(public[0]['payload']['response'])[1]
+    request['received_count']=2
+    for row in [repair,*public]:row['payload_sha256']=canonical_payload(row['payload'])[1]
+    with pytest.raises(DataBlocked,match='kline_repair'):
+        verify_kline_repair(repair,analysis,public,config)

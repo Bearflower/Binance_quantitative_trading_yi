@@ -451,9 +451,12 @@ def _registered_admission_validation(registration,portal,bootstrap):
     with (portal.snapshot_dir/'hrs_decision_inputs.jsonl').open(encoding='utf-8') as handle:
         for line in handle:
             if not line.strip():continue
-            row=json.loads(line);occupancy=row.get('risk',{}).get('account_occupancy',{})
-            if (occupancy.get('version')!='hrs_account_occupancy_v2' or occupancy.get('slot_scope')!=scope
-                    or occupancy.get('slot_ownership_proof',{}).get('slot_scope')!=scope):
+            row=json.loads(line);risk=row.get('risk') if isinstance(row,dict) else None
+            occupancy=risk.get('account_occupancy') if isinstance(risk,dict) else None
+            proof=occupancy.get('slot_ownership_proof') if isinstance(occupancy,dict) else None
+            if (not isinstance(occupancy,dict) or not isinstance(proof,dict)
+                    or occupancy.get('version')!='hrs_account_occupancy_v2' or occupancy.get('slot_scope')!=scope
+                    or proof.get('slot_scope')!=scope):
                 raise DataBlocked(['registered_runtime_admission_scope_mismatch:input'])
             count+=1
     if not count:raise DataBlocked(['registered_runtime_admission_scope_inputs_missing'])
