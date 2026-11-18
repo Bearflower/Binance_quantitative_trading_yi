@@ -175,6 +175,8 @@ FROM trading.entry_risk_reservation
 WHERE account_id=$1 AND strategy_id=$2 AND state<>'released'"""
 _CLAIMS_SQL = """SELECT symbol,strategy FROM trading.position_claims
 WHERE claim_state IN ('PENDING','ACTIVE')"""
+# Closed legacy records can leave a zero-quantity placeholder. In that case
+# the exact reservation, signed order and its full fills can prove the identity.
 _AGGRESSIVE_SIGNALS_SQL = """SELECT count(*) AS real_signals,
 count(*) FILTER (WHERE status='executed') AS executed_signals,
 count(*) FILTER (WHERE status='cancelled') AS unresolved_signals,
@@ -188,6 +190,22 @@ count(*) FILTER (WHERE status='executed' AND
       AND f.trade_time_utc < ($2::timestamp AT TIME ZONE 'UTC')
       AND t.order_id=s.metadata->>'entry_order_id' AND t.order_type IN ('MARKET','LIMIT')
       AND t.status='FILLED' AND t.price>0 AND t.quantity>0
+  ) AND NOT EXISTS (
+    SELECT 1 FROM trading.entry_risk_reservation r
+    JOIN trading.entry_order_observation o ON o.account_id=r.account_id
+      AND o.symbol=r.symbol AND o.client_order_id=r.client_order_id
+    JOIN trading.execution_fact_fill f ON f.account_id=o.account_id AND f.symbol=o.symbol
+      AND f.order_id::text=o.order_id AND f.side=o.side AND f.qty>0
+    WHERE r.account_id=$3 AND r.strategy_id='btc_eth_aggressive' AND r.symbol=s.symbol
+      AND r.client_order_id=s.metadata->>'_risk_client_id'
+      AND o.order_id=s.metadata->>'entry_order_id'
+      AND o.side=CASE UPPER(s.direction) WHEN 'LONG' THEN 'BUY' WHEN 'SHORT' THEN 'SELL' END
+      AND o.outcome='ok' AND o.source='signed_pm_get_order_v1' AND o.status='FILLED'
+      AND o.raw_payload->>'positionSide'='BOTH' AND o.raw_payload->'reduceOnly'='false'::jsonb
+      AND COALESCE(o.raw_payload->'closePosition','false'::jsonb)='false'::jsonb
+      AND f.trade_time_utc >= r.created_at AND f.trade_time_utc < ($2::timestamp AT TIME ZONE 'UTC')
+    GROUP BY o.id, o.executed_qty
+    HAVING SUM(f.qty)=o.executed_qty
   ))) AS executed_without_order_id,
 count(*) FILTER (WHERE status='cancelled' AND
   (metadata->>'skip_reason' ILIKE '%take profit or remainder infeasible%'
