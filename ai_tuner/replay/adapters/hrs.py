@@ -17,12 +17,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from ..broker import PortfolioView
-from ..models import Bar, DataBlocked, QualificationBlocked, parse_utc
+from ..models import (
+    Bar, DataBlocked, ExternalSnapshot, FutureDataAccess, QualificationBlocked, parse_utc,
+)
 from .base import PreparedContext
 
 
@@ -123,6 +125,59 @@ class HrsAdapter:
     def on_snapshot(self, snap: Any, ctx: PreparedContext) -> None:
         """保存最新外部时点快照引用（HRS 依赖外部数据），不做任何补值。"""
         self._latest_snapshot = snap
+
+    @staticmethod
+    def score_frozen_standard(
+        config: Mapping[str, Any], *, as_of: datetime, direction: str,
+        snapshot: ExternalSnapshot, bars_1h: Tuple[Bar, ...], bars_4h: Tuple[Bar, ...],
+    ) -> Tuple[Any, bool]:
+        """Reuse the live standard score for offline parity, before entry orchestration."""
+        from strategies.hrs.pattern import PatternRecognizer
+        from strategies.hrs.scoring_engine import ScoringEngine
+
+        cutoff = parse_utc(as_of)
+        if direction not in ("long", "short"):
+            raise ValueError("HRS direction must be long or short")
+        if snapshot.available_at > cutoff:
+            raise FutureDataAccess("hrs.score_frozen_standard", cutoff, "available_at", snapshot.available_at)
+        ratio, funding = snapshot.oi_market_cap_ratio, snapshot.funding_rate
+        cap = snapshot.market_cap_usd
+        if (snapshot.strategy_id != "hrs" or not snapshot.is_complete
+                or snapshot.market_cap_source not in ("coingecko", "cache_hit", "coingecko_cache")
+                or cap is None or not cap.is_finite() or cap <= 0
+                or ratio is None or not ratio.is_finite() or ratio <= 0
+                or funding is None or not funding.is_finite()):
+            raise DataBlocked(["hrs_standard_score_snapshot_incomplete"])
+
+        def score_bars(bars: Tuple[Bar, ...], interval: str) -> List[dict]:
+            if not bars or any(bar.symbol != snapshot.symbol or bar.interval != interval for bar in bars):
+                raise DataBlocked([f"hrs_standard_score_bars_missing:{interval}"])
+            for bar in bars:
+                if bar.close_time > cutoff:
+                    raise FutureDataAccess("hrs.score_frozen_standard", cutoff, "close_time", bar.close_time)
+            if any(
+                current.open_time - previous.close_time not in (timedelta(0), timedelta(milliseconds=1))
+                for previous, current in zip(bars, bars[1:])
+            ):
+                raise DataBlocked([f"hrs_standard_score_discontinuous_bars:{interval}"])
+            return [
+                {key: str(getattr(bar, key)) for key in ("open", "high", "low", "close", "volume")}
+                for bar in bars
+            ]
+
+        recognizer = PatternRecognizer(dict(config))
+        hourly = score_bars(bars_1h, "1h")
+        trend = score_bars(bars_4h, "4h")
+        if len(hourly) < recognizer.window_size:
+            raise DataBlocked(["hrs_standard_score_insufficient_pattern_bars"])
+        detect = recognizer.detect_long_patterns if direction == "long" else recognizer.detect_short_patterns
+        engine = ScoringEngine(dict(config))
+        result = engine.score(
+            symbol=snapshot.symbol, direction=direction, oi_market_cap_ratio=float(ratio),
+            patterns=detect(hourly), funding_rate=float(funding), has_market_cap=True,
+            klines_4h=trend,
+        )
+        return result, engine.should_entry(result)
 
     def intents(self, ctx: PreparedContext) -> Tuple[Any, ...]:
         """产出意图：决策尚未接线，**无条件**抛 ``QualificationBlocked``。

@@ -75,3 +75,9 @@ def test_mixed_symbol_bars_block_market_state():
     bars[-1] = Bar(**{**bars[-1].__dict__, "symbol": "ETHUSDT"})
     with pytest.raises(DataBlocked):
         extract_features(bars, AS_OF, min_segment_length=8)
+
+
+def test_missing_hour_cannot_contribute_market_state():
+    bars = tuple(_bar(i, 100 + i) for i in (0, 1, 2, 3, 5, 6, 7, 8))
+    with pytest.raises(DataBlocked, match="regime_discontinuous_bars"):
+        extract_features(bars, AS_OF, min_segment_length=8)
