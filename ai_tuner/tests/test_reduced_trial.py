@@ -303,7 +303,7 @@ def test_collector_rejects_income_report_for_wrong_account():
         async def fetch_one(self, query, *args):
             if "strategy_risk_policy" in query:
                 return snapshot()["policy"]
-            if "entry_risk_reservation" in query:
+            if "SELECT count(*) AS count" in query:
                 return {"count": 0, "margin": Decimal(0)}
             return {"real_signals": 0, "shadow_signals": 0,
                     "executed_signals": 0, "unresolved_signals": 0}
@@ -345,6 +345,60 @@ def test_collector_missing_exchange_stays_unknown():
     ))
     assert evidence["exchange"]["verified"] is False
     assert assess_snapshot(evidence, now=NOW, weekly=False)["status"] == "BLOCKED_DATA"
+
+
+def test_trial_report_carries_verified_entry_activity_identity_without_claiming_full_funnel():
+    start, end = daily_window(NOW)
+    calls = []
+
+    class DB:
+        async def fetch_one(self, query, *args):
+            if "strategy_risk_policy" in query:
+                return snapshot()["policy"]
+            if "SELECT count(*) AS count" in query:
+                return {"count": 0, "margin": Decimal(0)}
+            return {"real_signals": 1, "shadow_signals": 0,
+                    "executed_signals": 1, "unresolved_signals": 0}
+
+    async def income_reader(*args, **kwargs):
+        return snapshot()["income"]
+
+    async def activity_reader(db, account, start_ms, end_ms, strategies):
+        calls.append((account, start_ms, end_ms, strategies))
+        return {"hrs": {"account_id": "default", "start_ms": start_ms,
+                        "end_ms": end_ms, "owned_entry_fills": 1,
+                        "coverage_complete": True,
+                        "source_id": "entry-activity:sha256:test", "reasons": []}}
+
+    evidence = asyncio.run(collect_snapshot(
+        DB(), None, "default", "hrs", start, end,
+        income_reader=income_reader, activity_reader=activity_reader,
+    ))
+    assert calls == [("default", int(start.timestamp() * 1000),
+                      int(end.timestamp() * 1000), ("hrs",))]
+    assert evidence["entry_activity"]["owned_entry_fills"] == 1
+    assert "execution_funnel_unverified" in assess_snapshot(
+        evidence, now=NOW, weekly=False)["reasons"]
+
+
+def test_trial_activity_wrong_window_is_not_accepted():
+    start, end = daily_window(NOW)
+
+    class DB:
+        async def fetch_one(self, query, *args):
+            return None
+
+    async def wrong_activity(db, account, start_ms, end_ms, strategies):
+        return {"hrs": {"account_id": account, "start_ms": start_ms - 1,
+                        "end_ms": end_ms, "owned_entry_fills": 0,
+                        "coverage_complete": True, "source_id": "wrong", "reasons": []}}
+
+    evidence = asyncio.run(collect_snapshot(
+        DB(), None, "default", "hrs", start, end,
+        income_reader=lambda *a, **k: None, activity_reader=wrong_activity,
+    ))
+    assert evidence["entry_activity"] is None
+    assert "entry_activity:ValueError" in evidence["source_errors"]
 
 
 def test_income_reader_uses_one_read_only_repeatable_snapshot(monkeypatch):

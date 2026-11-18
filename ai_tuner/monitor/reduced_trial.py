@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 from apscheduler.triggers.cron import CronTrigger
+from ai_tuner.allocation.activity_evidence import read_activity_evidence
 from shared.accounting.income_integrity import income_account_lock, require_income_integrity
 from shared.accounting.published_report import REPORT_VERSIONS
 from shared.accounting.report_reader import read_monthly_economic_report
@@ -233,7 +234,8 @@ async def read_trial_income(db: Any, account: str, start_ms: int, end_ms: int,
 async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                            start: datetime, end: datetime,
                            *, trial_start: datetime | None = None,
-                           income_reader=read_trial_income) -> dict:
+                           income_reader=read_trial_income,
+                           activity_reader=None) -> dict:
     """Collect one fixed trial window. All database statements are SELECTs."""
     if strategy not in TRIAL_STRATEGIES or not account or _utc(start) >= _utc(end):
         raise ValueError("invalid trial identity or window")
@@ -241,7 +243,9 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
         "account_id": account, "strategy_id": strategy,
         "window_start": _utc(start).isoformat(), "window_end": _utc(end).isoformat(),
         "policy": None, "reservations": None, "exchange": {"verified": False},
-        "income": None, "signals": None, "source_errors": [],
+        "income": None, "signals": None, "entry_activity": None,
+        "entry_activity_required": activity_reader is not None,
+        "source_errors": [],
     }
     try:
         evidence["policy"] = await db.fetch_one(_POLICY_SQL, account, strategy)
@@ -307,6 +311,26 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             evidence["income"] = report
         except Exception as exc:
             evidence["source_errors"].append("income:" + type(exc).__name__)
+        if activity_reader is not None:
+            try:
+                rows = await activity_reader(db, account, start_ms, end_ms, (strategy,))
+                activity = rows.get(strategy) if isinstance(rows, Mapping) else None
+                if (not isinstance(activity, Mapping)
+                        or activity.get("account_id") != account
+                        or activity.get("start_ms") != start_ms
+                        or activity.get("end_ms") != end_ms
+                        or not isinstance(activity.get("source_id"), str)
+                        or not activity["source_id"].startswith("entry-activity:")
+                        or activity.get("coverage_complete") not in (True, False)
+                        or (activity["coverage_complete"] is True and
+                            not activity["source_id"].startswith("entry-activity:sha256:"))
+                        or (activity.get("owned_entry_fills") is not None and
+                            (type(activity["owned_entry_fills"]) is not int or
+                             activity["owned_entry_fills"] < 0))):
+                    raise ValueError("entry activity evidence identity mismatch")
+                evidence["entry_activity"] = dict(activity)
+            except Exception as exc:
+                evidence["source_errors"].append("entry_activity:" + type(exc).__name__)
     return evidence
 
 
@@ -406,6 +430,10 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
                     safety.append("exposure_exceeds_ceiling")
 
     signals = evidence.get("signals")
+    if evidence.get("entry_activity_required") is True:
+        activity = evidence.get("entry_activity")
+        if not isinstance(activity, Mapping) or activity.get("coverage_complete") is not True:
+            missing.append("entry_activity_unverified")
     if not isinstance(signals, Mapping) or any(
         not isinstance(signals.get(key), int) or signals[key] < 0
         for key in ("real_signals", "shadow_signals", "executed_signals", "unresolved_signals")
@@ -515,6 +543,7 @@ class ReducedTrialEvaluator:
             "unattributed_count": income.get("unattributed_count"),
             "source_errors": evidence.get("source_errors", []),
             "account_risk": evidence.get("account_risk"),
+            "entry_activity": evidence.get("entry_activity"),
             "decision_scope": "evidence_only_no_policy_write",
         }
         try:
@@ -533,7 +562,8 @@ class ReducedTrialEvaluator:
         for strategy in TRIAL_STRATEGIES:
             evidence = await collect_snapshot(self.db, self.exchange, self.account,
                                               strategy, start, end,
-                                              trial_start=self.trial_starts.get(strategy))
+                                              trial_start=self.trial_starts.get(strategy),
+                                              activity_reader=read_activity_evidence)
             evidence["cohort_ceiling"] = self.cohort_ceilings.get(
                 strategy, evidence.get("cohort_ceiling")
             )
@@ -558,6 +588,7 @@ class ReducedTrialEvaluator:
                     continue
             net = assessment["net_usdt"] if assessment["net_usdt"] is not None else "UNKNOWN"
             signals = assessment.get("signals") or {}
+            activity = evidence.get("entry_activity") or {}
             reservations = evidence.get("reservations") or {}
             exchange = evidence.get("exchange") or {}
             content = (f"策略: {strategy}\n政策 revision: {assessment['policy_revision']}\n"
@@ -566,6 +597,8 @@ class ReducedTrialEvaluator:
                        f"实盘/影子信号: {signals.get('real_signals', 'UNKNOWN')}/"
                        f"{signals.get('shadow_signals', 'UNKNOWN')}；记录为已执行: "
                        f"{signals.get('executed_signals', 'UNKNOWN')}\n"
+                       f"已核入场逐笔成交: {activity.get('owned_entry_fills', 'UNKNOWN')}；"
+                       f"入场事实覆盖完整: {activity.get('coverage_complete', 'UNKNOWN')}\n"
                        f"未释放预留: {reservations.get('count', 'UNKNOWN')}；"
                        f"保证金: {reservations.get('margin', 'UNKNOWN')} USDT；"
                        f"压力风险: {reservations.get('pressure_risk', 'UNKNOWN')}\n"
