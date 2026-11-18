@@ -162,6 +162,7 @@ async def test_real_postgres_readonly_probe_serializes_legacy_claim_timestamps_a
             CREATE TABLE trading.strategy_risk_policy(account_id text,strategy_id text,revision bigint);
             CREATE TABLE trading.strategy_risk_active(account_id text,strategy_id text,revision bigint);
             CREATE TABLE trading.hrs_loss_gate_state(account_id text);
+            CREATE TABLE trading.strategy_equity_gate(account_id text,strategy_id text);
             CREATE TABLE hrs.hrs_positions(created_at timestamptz);
             CREATE TABLE hrs.hrs_blacklist(symbol text);
             CREATE TABLE hrs.hrs_active_symbols(symbol text);
@@ -467,3 +468,19 @@ def test_reader_grants_cover_append_only_forecast_reference_sources():
     assert 'trading.hrs_funding_observation' in grants
     assert 'GRANT SELECT ON ' in grants
     assert not any(action in grants for action in ('INSERT','UPDATE','DELETE','TRUNCATE'))
+
+
+def test_scoped_admission_release_audit_does_not_claim_economic_equivalence():
+    mod=module()
+    manifest={'source_hashes':{'strategies/hrs/entry_occupancy.py':'a'*64},
+              'runtime_admission_scope':'hrs_owned_and_unreleased_reservations_v2'}
+    result=mod.admission_change_metadata(manifest)
+    assert result['admission_scope_changed'] is True
+    assert result['economic_parameters_changed'] is True
+    assert result['sltp_parameters_changed'] is False
+    assert result['risk_budget_percentages_changed'] is False
+    assert result['runtime_admission_scope']==manifest['runtime_admission_scope']
+    for scope in (None,'unknown'):
+        with pytest.raises(ValueError,match='runtime_admission_scope_missing_or_invalid'):
+            mod.admission_change_metadata(dict(manifest,runtime_admission_scope=scope))
+    assert mod.admission_change_metadata({'source_hashes':{'legacy.py':'b'*64}})['economic_parameters_changed'] is False

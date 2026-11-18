@@ -63,6 +63,15 @@ def _setup_strategy(klines_for_symbol: str = "TESTUSDT"):
 
     # market_data 末端 mock
     strategy.market_data = MagicMock()
+    # This fixture exercises signal/execution routing; raw-history repair is a
+    # separate async boundary with dedicated real-source/continuity tests.
+    from strategies.hrs.kline_repair import PreparedKlines, KlineHistoryUnavailable
+    from datetime import datetime, timezone
+    async def prepare_history(symbol, one, four, *, decision_at):
+        if len(one) < strategy.min_klines:
+            raise KlineHistoryUnavailable('kline_warmup_insufficient', {'status':'unavailable','reason':'kline_warmup_insufficient'})
+        return PreparedKlines(one, four, datetime.now(timezone.utc), {'status':'complete','requests':[]})
+    strategy.market_data.prepare_decision_klines = AsyncMock(side_effect=prepare_history)
     strategy.market_data.get_oi_usd = AsyncMock(return_value=1e11)   # 高于 execute_signal 里 min_oi 门槛
     strategy.market_data.get_funding_rate = AsyncMock(return_value=0.0001)
     strategy.market_data.get_24h_volume = AsyncMock(return_value=1e9)

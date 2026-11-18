@@ -322,12 +322,14 @@ def capture_analysis(function):
     @wraps(function)
     async def wrapped(strategy, symbol, *args, **kwargs):
         result = await function(strategy, symbol, *args, **kwargs)
+        inputs = result.pop('_audit_input_klines', None) if isinstance(result, dict) else None
         recorder = getattr(strategy, 'decision_recorder', None)
         if recorder is not None:
             now = datetime.now(timezone.utc)
             await safe_record(recorder, recorder.run_id, 'analysis', {
-                'result': result, 'klines_1h': strategy._klines_cache.get(symbol, []),
-                'klines_4h': strategy._klines_4h_cache.get(symbol, []),
+                'result': result,
+                'klines_1h': inputs['klines_1h'] if inputs is not None else strategy._klines_cache.get(symbol, []),
+                'klines_4h': inputs['klines_4h'] if inputs is not None else strategy._klines_4h_cache.get(symbol, []),
             }, as_of=now, available_at=now, symbol=symbol)
         return result
     return wrapped

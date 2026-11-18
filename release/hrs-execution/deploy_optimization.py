@@ -438,6 +438,18 @@ def rollback(root,folder,plan,candidate_image):
                 failures=sorted(set(errors)),database_changes='additive_migrations_retained')
 
 
+def admission_change_metadata(manifest):
+    """Record approved admission behavior separately from unchanged numeric knobs."""
+    scoped = 'strategies/hrs/entry_occupancy.py' in manifest['source_hashes']
+    scope = manifest.get('runtime_admission_scope')
+    if scoped and scope != 'hrs_owned_and_unreleased_reservations_v2':
+        raise ValueError('runtime_admission_scope_missing_or_invalid')
+    return dict(economic_parameters_changed=scoped, admission_scope_changed=scoped,
+                sltp_parameters_changed=False, risk_budget_percentages_changed=False,
+                runtime_admission_scope=scope if scoped else None)
+
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--sha',required=True)
@@ -455,6 +467,7 @@ def main():
     if (folder/'state.json').exists() and json.loads((folder/'state.json').read_text()).get('status')=='complete':
         raise RuntimeError('release_already_completed')
     manifest=json.loads(Path(args.manifest).read_text())
+    change_metadata=admission_change_metadata(manifest)
     expected=manifest['source_hashes']
     if not isinstance(expected,dict) or not expected:
         raise ValueError('source_hash_inventory_missing')
@@ -516,7 +529,7 @@ def main():
         logging={'driver':'json-file','options':{'max-size':'10m','max-file':'3'}})
     newfile=folder/'images.json';atomic(newfile,overlay)
     if not args.apply:
-        print(json.dumps(dict(status='prepared',overlay=str(newfile),preflight=facts)))
+        print(json.dumps(dict(status='prepared',overlay=str(newfile),preflight=facts,**change_metadata)))
         return
     for image in (args.hrs_image,args.hub_image):run(['docker','pull',image],timeout=300)
     probe="import hashlib;from pathlib import Path;expected="+repr(expected)+";assert all(hashlib.sha256((Path('/app')/p).read_bytes()).hexdigest()==h for p,h in expected.items());from strategies.hrs.main import main;print('CANDIDATE_SOURCES_OK')"
@@ -552,7 +565,7 @@ def main():
         state=dict(status=status,sha=args.sha,phase=phase,completed_steps=list(steps),
             images=wanted,source_hashes=expected,migration_hashes=manifest['migration_hashes'],
             observations=list(observations),
-            economic_parameters_changed=False,performance_qualified=False,
+            performance_qualified=False,**change_metadata,
             recorded_at=datetime.now(timezone.utc).isoformat(),**extra)
         atomic(folder/'state.json',state)
         return state

@@ -11,15 +11,22 @@ async def test_capture_financial_context_keeps_actual_values_and_unready_ledger_
     strategy = SimpleNamespace(binance_client=SimpleNamespace(get_account_info=AsyncMock(
         return_value={'totalMarginBalance': '123.456', 'totalWalletBalance': '123', 'api_key': 'hidden'}),
         get_position=AsyncMock(return_value=[]), get_um_account_positions=AsyncMock(return_value=[])),
+        position_manager=SimpleNamespace(get_all_positions=lambda:{}),
         capital_mgr=SimpleNamespace(get_effective_margin_limit=AsyncMock(return_value=(52.31, 'db'))),
         trading_executor=SimpleNamespace(timeout_recovery=SimpleNamespace(pending=AsyncMock(return_value=[]))),
-        db=SimpleNamespace(fetch_all=AsyncMock(side_effect=[[{'revision': 6}], [], [], [], [], [], [], []])))
+        db=SimpleNamespace(fetch_all=AsyncMock(side_effect=[[{'revision': 6}], [], [], [], [], [], [], [], [{'account_id':'default','strategy_id':'hrs','evidence_sha256':'a'*64,'checked_at':'2026-11-18T10:00:00+00:00'}]])))
     result = await capture_financial_context(strategy)
     assert result['account_equity'] == '123.456'
     assert result['allocation'] == '52.31'
     assert result['ledger_state'] is None
     assert result['replay_bootstrap_ready'] is False
     assert result['pending_timeout_entries'] == []
+    assert result['equity_gate']['evidence_sha256']=='a'*64
+    assert result['equity_gate']['checked_at']=='2026-11-18T10:00:00+00:00'
+    assert result['runtime_slot_scope']=='hrs_owned_and_unreleased_reservations_v2'
+    assert result['hrs_slot_inputs']['inventory']==result['hrs_slot_inputs']['independent']==[]
+    assert result['hrs_slot_inputs']['local']=={}
+    assert result['hrs_slot_inputs']['observed_at']==result['available_at']
     assert 'hidden' not in str(result)
     assert set(result['state_tables']) == {'hrs_positions', 'hrs_blacklist', 'hrs_active_symbols'}
 
@@ -29,9 +36,10 @@ async def test_missing_account_equity_is_not_filled_with_zero():
     from strategies.hrs.decision_context import capture_financial_context
     strategy = SimpleNamespace(binance_client=SimpleNamespace(get_account_info=AsyncMock(return_value={}),
         get_position=AsyncMock(return_value=[]), get_um_account_positions=AsyncMock(return_value=[])),
+        position_manager=SimpleNamespace(get_all_positions=lambda:{}),
         capital_mgr=SimpleNamespace(get_effective_margin_limit=AsyncMock(return_value=(52.31, 'db'))),
         trading_executor=SimpleNamespace(timeout_recovery=SimpleNamespace(pending=AsyncMock(return_value=[]))),
-        db=SimpleNamespace(fetch_all=AsyncMock(side_effect=[[{'revision': 6}], [], [], [], [], [], [], []])))
+        db=SimpleNamespace(fetch_all=AsyncMock(side_effect=[[{'revision': 6}], [], [], [], [], [], [], [], [{'account_id':'default','strategy_id':'hrs','evidence_sha256':'a'*64,'checked_at':'2026-11-18T10:00:00+00:00'}]])))
     with pytest.raises(ValueError, match='account_equity_missing'):
         await capture_financial_context(strategy)
 
@@ -114,6 +122,7 @@ async def test_real_legacy_claim_timestamps_capture_without_inventing_timezone()
         strategy = SimpleNamespace(binance_client=SimpleNamespace(
             get_account_info=AsyncMock(return_value={'totalMarginBalance': '123'}),
             get_position=AsyncMock(return_value=[]), get_um_account_positions=AsyncMock(return_value=[])),
+            position_manager=SimpleNamespace(get_all_positions=lambda:{}),
             capital_mgr=SimpleNamespace(get_effective_margin_limit=AsyncMock(return_value=(52, 'db'))),
             trading_executor=SimpleNamespace(timeout_recovery=SimpleNamespace(pending=AsyncMock(return_value=[]))),
             db=ClaimsDB())

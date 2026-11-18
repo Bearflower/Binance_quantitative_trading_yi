@@ -3,6 +3,7 @@
 继承 BaseStrategy，实现做空和做多双向反转交易逻辑
 """
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -41,6 +42,7 @@ from .risk_budget import RiskDecision, assess_entry, calculate_open_position_ris
 from .scoring_engine import ScoringEngine, ScoringResult
 from .decision_capture import DecisionRecorder, capture_analysis, capture_cycle, capture_signal, safe_record, record_stage
 from .core_decision import analyze_standard, analyze_lv_rm, is_shadow_entry_mode
+from .kline_repair import KlineHistoryUnavailable
 
 
 class DecimalEncoder(json.JSONEncoder):
@@ -535,6 +537,23 @@ class HRSStrategy(BaseStrategy):
     def _is_shadow_entry_mode(self, entry_mode: str, signal_origin: Optional[str] = None) -> bool:
         return is_shadow_entry_mode(self.config, entry_mode, signal_origin)
 
+    async def _prepare_decision_klines(self, symbol):
+        original_1h = copy.deepcopy(self._klines_cache.get(symbol, []))
+        original_4h = copy.deepcopy(self._klines_4h_cache.get(symbol, []))
+        try:
+            prepared = await self.market_data.prepare_decision_klines(
+                symbol, original_1h, original_4h, decision_at=datetime.now(timezone.utc))
+        except KlineHistoryUnavailable as exc:
+            await record_stage(self, 'kline_repair', {'receipt': exc.receipt,
+                'input_klines_1h': original_1h, 'input_klines_4h': original_4h}, symbol=symbol)
+            raise
+        await record_stage(self, 'kline_repair', {'receipt': prepared.receipt,
+            'input_klines_1h': original_1h, 'input_klines_4h': original_4h}, symbol=symbol)
+        # The scoring view is separate from caches updated by background work.
+        self._klines_cache[symbol] = copy.deepcopy(prepared.klines_1h)
+        self._klines_4h_cache[symbol] = copy.deepcopy(prepared.klines_4h)
+        return prepared.klines_1h, prepared.klines_4h
+
     @capture_analysis
     async def analyze(self, symbol: str) -> Dict[str, Any]:
         """
@@ -547,21 +566,11 @@ class HRSStrategy(BaseStrategy):
             分析结果
         """
         result = {"symbol": symbol, "short": None, "long": None}
+        audit_inputs = None
 
         try:
-            # 获取K线数据
-            klines = self._klines_cache.get(symbol, [])
-            if len(klines) < self.min_klines:
-                # 尝试预热K线
-                klines = await self._warmup_klines(symbol)
-                if len(klines) < self.min_klines:
-                    result["skip"] = True
-                    result["reason"] = f"K线数据不足 ({len(klines)} < {self.min_klines})"
-                    return result
-                self._klines_cache[symbol] = klines
-
-            # V2.8: 获取 4h K 线数据用于趋势过滤（EMA 斜率检查）
-            klines_4h = self._klines_4h_cache.get(symbol, [])
+            klines, klines_4h = await self._prepare_decision_klines(symbol)
+            audit_inputs = {'klines_1h': klines, 'klines_4h': klines_4h}
 
             current_close = float(klines[-1].get("close", 0))
             # P0-4: 资金费率时间对齐，使用K线收盘时间（open_time + 1h）而非开盘时间
@@ -626,10 +635,17 @@ class HRSStrategy(BaseStrategy):
 
             return result
 
+        except KlineHistoryUnavailable as exc:
+            logger.warning('HRS 分析数据未就绪', symbol=symbol, reason=exc.reason)
+            result.update(skip=True, reason=exc.reason)
+            return result
         except Exception as e:
             logger.error("分析失败", symbol=symbol, error=str(e))
             result["error"] = str(e)
             return result
+        finally:
+            if audit_inputs is not None:
+                result["_audit_input_klines"] = audit_inputs
 
     def _calc_current_total_margin(self) -> float:
         """
@@ -963,7 +979,8 @@ class HRSStrategy(BaseStrategy):
         entry_price: float, equity: float,
     ) -> Optional[RiskDecision]:
         """Bind one HRS order to a durable risk reservation and symbol claim."""
-        from shared.entry_risk_policy import RiskPolicyStore, SizedEntry
+        from shared.entry_risk_policy import RiskPolicyStore, SizedEntry, ScopedRiskSnapshot, EntryDenied
+        from .entry_occupancy import SLOT_SCOPE, capture_hrs_slot_inputs
         symbol = signal.get('symbol')
         identity = signal.get('signal_id')
         if not isinstance(identity, int) or identity <= 0 or not symbol:
@@ -997,11 +1014,15 @@ class HRSStrategy(BaseStrategy):
                     positions = await self.binance_client.get_position()
                     if not isinstance(positions, list):
                         raise ValueError('exchange position inventory unavailable')
+                    independent = await self.binance_client.get_um_account_positions()
+                    local = self.position_manager.get_all_positions()
+                    slot_inputs = capture_hrs_slot_inputs(inventory=positions, independent=independent,
+                        local=local, observed_at=datetime.now(timezone.utc))
                     await record_stage(self, 'entry_stage_inputs', {
                         'stage': 'reservation_inventory', 'exchange_positions': positions,
+                        'slot_scope': SLOT_SCOPE, 'slot_inputs': slot_inputs,
                     }, symbol=symbol)
                     holdings = Decimal(0)
-                    symbols = set()
                     for pos in positions:
                         amount = Decimal(str(pos['positionAmt']))
                         if amount == 0:
@@ -1011,9 +1032,10 @@ class HRSStrategy(BaseStrategy):
                         if not all(x.is_finite() and x > 0 for x in (abs(amount), mark, lev)):
                             raise ValueError('exchange position exposure invalid')
                         holdings += abs(amount) * mark / lev
-                        symbols.add(pos['symbol'])
-                    return (holdings, Decimal(str(equity)), decision.effective_allocation,
-                            symbols, int(self.config.get('trading', {}).get('max_positions', 3)))
+                    return ScopedRiskSnapshot(account_margin=holdings, equity=Decimal(str(equity)),
+                        allocation=decision.effective_allocation,
+                        max_slots=self.config.get('trading', {}).get('max_positions', 3),
+                        slot_scope=SLOT_SCOPE, slot_evidence=slot_inputs)
                 client_id = await store.reserve('hrs', symbol, str(identity), sized,
                                                 decision.policy_revision, snapshot,
                                                 geometry={'signal_id': identity,
@@ -1021,10 +1043,24 @@ class HRSStrategy(BaseStrategy):
                                                           'entry_price':str(price),
                                                           'quantity':str(quantity)})
                 reserved = True
+                audit = getattr(store, 'reservation_audit', None)
+                if not isinstance(audit, dict) or audit.get('client_order_id') != client_id:
+                    raise ValueError('reservation_audit_missing')
+                await record_stage(self, 'entry_stage_inputs',
+                    dict(stage='reservation_success', **audit), symbol=symbol)
                 return replace(decision, client_order_id=client_id)
             finally:
                 if not reserved:
                     await release_claim(self.db, symbol, 'hrs', reason='reservation_failed')
+        except EntryDenied as exc:
+            await record_stage(self, 'entry_stage_inputs', {
+                'stage': 'reservation_denial', 'reason_code': exc.reason_code,
+                'reason': str(exc), 'risk_context': exc.context,
+            }, symbol=symbol)
+            signal['_audit_denial'] = exc.reason_code
+            logger.info('HRS 风控拒绝开仓', symbol=symbol, reason=str(exc),
+                        reason_code=exc.reason_code, risk_context=exc.context)
+            return None
         except Exception as exc:
             logger.warning('HRS 风险预留失败，拒绝下单', symbol=symbol, error=str(exc))
             return None
@@ -3132,6 +3168,7 @@ class HRSStrategy(BaseStrategy):
         async def check_symbol(symbol: str):
             async with semaphore:
                 terminal_reason = 'analysis_error'
+                audit_inputs = None
                 try:
                     # 已在标准模式中检查过的币种跳过
                     if symbol in self.candidate_pool.get_short_candidates() or \
@@ -3144,17 +3181,8 @@ class HRSStrategy(BaseStrategy):
                         terminal_reason = 'symbol_circuit_breaker'
                         return
 
-                    # 获取K线
-                    klines = self._klines_cache.get(symbol, [])
-                    if len(klines) < self.min_klines:
-                        klines = await self._warmup_klines(symbol)
-                        if len(klines) < self.min_klines:
-                            terminal_reason = 'insufficient_klines'
-                            return
-                        self._klines_cache[symbol] = klines
-
-                    # 合成4h K线
-                    klines_4h = self._klines_4h_cache.get(symbol, [])
+                    klines, klines_4h = await self._prepare_decision_klines(symbol)
+                    audit_inputs = {'klines_1h': klines, 'klines_4h': klines_4h}
 
                     current_close = float(klines[-1].get("close", 0))
                     current_open_time = klines[-1].get("open_time", 0)
@@ -3258,6 +3286,9 @@ class HRSStrategy(BaseStrategy):
                     else:
                         self._clear_signal_timestamp(symbol, "long")
 
+                except KlineHistoryUnavailable as exc:
+                    terminal_reason = exc.reason
+                    logger.warning('HRS LV-RM数据未就绪', symbol=symbol, reason=exc.reason)
                 except Exception as e:
                     logger.error("LV-RM分析失败", symbol=symbol, error=str(e))
                 finally:
@@ -3266,8 +3297,8 @@ class HRSStrategy(BaseStrategy):
                         observed = datetime.now(timezone.utc)
                         await safe_record(recorder, recorder.run_id, 'lv_rm_candidate_outcome', {
                             'reason': terminal_reason, 'signal_origin': signal_origin,
-                            'klines_1h': self._klines_cache.get(symbol, []),
-                            'klines_4h': self._klines_4h_cache.get(symbol, []),
+                            'klines_1h': audit_inputs['klines_1h'] if audit_inputs is not None else self._klines_cache.get(symbol, []),
+                            'klines_4h': audit_inputs['klines_4h'] if audit_inputs is not None else self._klines_4h_cache.get(symbol, []),
                         }, as_of=observed, available_at=observed, symbol=symbol)
 
         await asyncio.gather(*[check_symbol(s) for s in low_vol_symbols])

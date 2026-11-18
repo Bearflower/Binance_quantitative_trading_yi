@@ -298,7 +298,7 @@ async def test_failed_provider_does_not_appear_as_observed_zero():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('reason', ['standard_candidate_overlap', 'symbol_circuit_breaker', 'insufficient_klines'])
+@pytest.mark.parametrize('reason', ['standard_candidate_overlap', 'symbol_circuit_breaker', 'kline_warmup_insufficient'])
 async def test_lv_early_veto_is_retained_per_symbol(reason):
     from strategies.hrs.decision_capture import DecisionRecorder
     from strategies.hrs.tests.test_lv_rm_empty_pool_execution import _setup_strategy

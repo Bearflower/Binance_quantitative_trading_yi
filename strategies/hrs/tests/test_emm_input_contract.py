@@ -216,6 +216,11 @@ class TestAnalyzePassesPriceChange24h:
         # mock 其他 analyze 依赖
         strategy._warmup_klines = AsyncMock(return_value=klines)
         strategy.market_data = MagicMock()
+        # Factor-contract tests mock the asynchronous history boundary; repair
+        # continuity and availability are checked by dedicated source tests.
+        from strategies.hrs.kline_repair import PreparedKlines
+        strategy.market_data.prepare_decision_klines = AsyncMock(side_effect=lambda symbol,one,four,**kw:
+            PreparedKlines(one,four,datetime.now(timezone.utc),{'status':'complete','requests':[]}))
         strategy.market_data.get_oi_usd = AsyncMock(return_value=1000.0)
         strategy.market_data.get_funding_rate = AsyncMock(return_value=0.0001)
         strategy.market_data.get_24h_volume = AsyncMock(return_value=50000.0)
@@ -274,6 +279,11 @@ class TestAnalyzePassesPriceChange24h:
 
         strategy._warmup_klines = AsyncMock(return_value=klines)
         strategy.market_data = MagicMock()
+        # Factor-contract tests mock the asynchronous history boundary; repair
+        # continuity and availability are checked by dedicated source tests.
+        from strategies.hrs.kline_repair import PreparedKlines
+        strategy.market_data.prepare_decision_klines = AsyncMock(side_effect=lambda symbol,one,four,**kw:
+            PreparedKlines(one,four,datetime.now(timezone.utc),{'status':'complete','requests':[]}))
         strategy.market_data.get_oi_usd = AsyncMock(return_value=800.0)
         strategy.market_data.get_funding_rate = AsyncMock(return_value=-0.0002)
         strategy.market_data.get_24h_volume = AsyncMock(return_value=40000.0)
@@ -328,6 +338,11 @@ class TestAnalyzePassesPriceChange24h:
 
         strategy._warmup_klines = AsyncMock(return_value=klines)
         strategy.market_data = MagicMock()
+        # Factor-contract tests mock the asynchronous history boundary; repair
+        # continuity and availability are checked by dedicated source tests.
+        from strategies.hrs.kline_repair import PreparedKlines
+        strategy.market_data.prepare_decision_klines = AsyncMock(side_effect=lambda symbol,one,four,**kw:
+            PreparedKlines(one,four,datetime.now(timezone.utc),{'status':'complete','requests':[]}))
         strategy.market_data.get_oi_usd = AsyncMock(return_value=1000.0)
         strategy.market_data.get_funding_rate = AsyncMock(return_value=0.0001)
         strategy.market_data.get_24h_volume = AsyncMock(return_value=50000.0)
