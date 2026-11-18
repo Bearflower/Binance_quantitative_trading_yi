@@ -620,3 +620,71 @@ def test_scheduler_failure_sends_error_alert_without_forging_report(tmp_path, mo
     assert "ValueError" in messenger.alerts[0][1]
     assert "secret-details" not in messenger.alerts[0][1]
     assert not (tmp_path / "reports").exists()
+
+
+@pytest.mark.asyncio
+async def test_aggressive_signed_fill_proves_signal_despite_closed_placeholder():
+    import os
+
+    import asyncpg
+    from ai_tuner.monitor.reduced_trial import _AGGRESSIVE_SIGNALS_SQL
+
+    dsn = os.environ.get("ENTRY_ACTIVITY_TEST_DSN")
+    if not dsn:
+        pytest.skip("ENTRY_ACTIVITY_TEST_DSN is required for this PostgreSQL test")
+    conn = await asyncpg.connect(dsn)
+    try:
+        await conn.execute("""
+            CREATE TEMP TABLE signals (symbol text, direction text, status text,
+                                       created_at timestamp, metadata jsonb);
+            CREATE TEMP TABLE records (account_id text, strategy text, symbol text,
+                order_id text, side text, order_type text, status text, price numeric, quantity numeric);
+            CREATE TEMP TABLE fills (account_id text, symbol text, order_id bigint, side text,
+                                     qty numeric, trade_time_utc timestamptz);
+            CREATE TEMP TABLE reservations (account_id text, strategy_id text, client_order_id text,
+                                            symbol text, created_at timestamptz);
+            CREATE TEMP TABLE observations (id bigint, account_id text, symbol text, client_order_id text,
+                order_id text, side text, status text, outcome text, source text,
+                executed_qty numeric, raw_payload jsonb);
+            INSERT INTO signals VALUES ('BTCUSDT','LONG','executed','2026-11-17 06:10:19',
+                '{"entry_order_id":"111","_risk_client_id":"abc"}');
+            INSERT INTO records VALUES ('default','btc_eth_aggressive','BTCUSDT',
+                '111','BUY','LIMIT','CLOSED',0,0);
+            INSERT INTO reservations VALUES ('default','btc_eth_aggressive','abc','BTCUSDT',
+                                             '2026-11-17 06:10:03+00');
+            INSERT INTO observations VALUES (1,'default','BTCUSDT','abc','111','BUY','FILLED',
+                'ok','signed_pm_get_order_v1',0.001,'{"reduceOnly":false,"positionSide":"BOTH"}');
+            INSERT INTO fills VALUES ('default','BTCUSDT',111,'BUY',0.001,'2026-11-17 06:10:17+00');
+        """)
+        tables = {
+            "btc_eth_aggressive.trade_signals": "signals",
+            "trading.trade_records": "records",
+            "trading.execution_fact_fill": "fills",
+            "trading.entry_risk_reservation": "reservations",
+            "trading.entry_order_observation": "observations",
+        }
+        sql = _AGGRESSIVE_SIGNALS_SQL
+        for qualified, name in tables.items():
+            sql = sql.replace(qualified, f"pg_temp.{name}")
+        args = (datetime(2026, 11, 17), datetime(2026, 11, 18), "default")
+
+        result = await conn.fetchrow(sql, *args)
+        assert result["executed_signals"] == 1
+        assert result["executed_without_order_id"] == 0
+
+        gaps = (
+            "UPDATE observations SET raw_payload = raw_payload || '{\"reduceOnly\":true}'",
+            "UPDATE reservations SET strategy_id='hrs'",
+            "UPDATE fills SET qty=0.0005",
+            "UPDATE fills SET trade_time_utc='2026-11-17 05:00:00+00'",
+        )
+        for change in gaps:
+            tx = conn.transaction()
+            await tx.start()
+            try:
+                await conn.execute(change)
+                assert (await conn.fetchrow(sql, *args))["executed_without_order_id"] == 1
+            finally:
+                await tx.rollback()
+    finally:
+        await conn.close()
