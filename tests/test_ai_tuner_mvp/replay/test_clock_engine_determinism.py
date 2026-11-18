@@ -122,6 +122,28 @@ def test_two_runs_produce_identical_equity_and_events(tmp_path):
     assert first.invariant_violations == ()
 
 
+def test_mtpc_replay_does_not_import_hrs_modules_when_cleaning_up(tmp_path,monkeypatch):
+    import builtins
+    from ai_tuner.replay.adapters.mtpcs_aggressive import MtpcsAggressiveAdapter
+    from tests.test_strategies.fixtures import btc_eth_aggressive_golden
+    config=btc_eth_aggressive_golden.config_dict()
+    start=AS_OF-timedelta(days=1)
+    intervals=config['strategy']['timeframes']
+    directory=str(tmp_path/'mtpc')
+    write_snapshot(directory,'btc_eth_aggressive',AS_OF,start,
+        {'BTCUSDT|'+interval:make_bars('BTCUSDT',interval,start,PRICES[:1],step_minutes={'1h':60,'4h':240,'1d':1440}[interval]) for interval in intervals},
+        ['BTCUSDT'],intervals)
+    original=builtins.__import__
+    def guarded(name,*args,**kwargs):
+        if name.startswith('strategies.hrs') or name=='ai_tuner.hrs_evidence_export':
+            raise ModuleNotFoundError('HRS modules are absent from generic ai-tuner image')
+        return original(name,*args,**kwargs)
+    monkeypatch.setattr(builtins,'__import__',guarded)
+    result=run_replay(DataPortal(directory,'btc_eth_aggressive',AS_OF,start),
+        MtpcsAggressiveAdapter(config,quantity_for=lambda *_:Decimal('1'),market_state='TREND'),_broker())
+    assert result.equity_curve
+
+
 def test_audit_events_are_ordered_and_contain_run_start(tmp_path):
     result = _run(_portal(tmp_path))
     assert result.audit_events[0]["type"] == "run_start"

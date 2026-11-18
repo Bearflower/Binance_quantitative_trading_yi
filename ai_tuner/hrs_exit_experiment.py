@@ -33,7 +33,7 @@ from ai_tuner.replay.data_portal import DataPortal
 from ai_tuner.replay.engine import run_replay
 from ai_tuner.replay.models import DataBlocked, FutureDataAccess, parse_utc
 from strategies.hrs.exit_geometry import mode_exit_parameters
-from ai_tuner.hrs_evidence_export import resolve_scan_start
+from ai_tuner.hrs_evidence_export import resolve_scan_start,snapshot_evidence_sources
 
 CST = ZoneInfo('Asia/Shanghai')
 D = Decimal
@@ -56,6 +56,7 @@ def fingerprint(value):
 # called lazily by scoring/risk and the runner/report implementation itself.
 ENGINE_MODULES = (
     'ai_tuner.hrs_evidence_export',
+    'ai_tuner.replay.hrs_evidence_archive','ai_tuner.replay.raw_export',
     'ai_tuner.replay.adapters.hrs', 'ai_tuner.replay.adapters.base',
     'ai_tuner.replay.engine', 'ai_tuner.replay.broker', 'ai_tuner.replay.models',
     'ai_tuner.replay.data_portal', 'ai_tuner.replay.clock',
@@ -389,7 +390,20 @@ def _boundary_summary(window,start,end,start_resolution,end_resolution):
         start_resolution=start_resolution,end_resolution=end_resolution)
 
 
-def _window_portal(directory,window):
+def _bind_source_cache(portal,directory,source_cache):
+    key=str(Path(directory).resolve())
+    if source_cache is not None and key in source_cache:
+        portal._hrs_archive_sources_cache=source_cache[key]
+        portal._hrs_archive_shared=True
+    if 'raw_hrs_evidence.json' in portal.manifest['files']:
+        raw=portal._read_json('raw_hrs_evidence.json')
+        if raw.get('evidence_archive'):
+            sources=snapshot_evidence_sources(portal)
+            if source_cache is not None:
+                source_cache[key]=sources;portal._hrs_archive_shared=True
+
+
+def _window_portal(directory,window,source_cache=None):
     start,end=_time(window['start']),_time(window['end'])
     start_resolution=end_resolution=None
     if window.get('start_policy') is not None or window.get('end_policy') is not None:
@@ -398,30 +412,32 @@ def _window_portal(directory,window):
         manifest=json.loads((Path(directory)/'manifest.json').read_text())
         actual=_time(manifest['window_start']);actual_end=_time(manifest['as_of'])
         portal=DataPortal(directory,'hrs',actual_end,actual,required_datasets=REQUIRED_FILES)
+        _bind_source_cache(portal,directory,source_cache)
         for name in ('hrs_export_receipt.json','raw_hrs_evidence.json'):
             portal._require_dataset(name)
         receipt=portal._read_json('hrs_export_receipt.json')
-        raw=portal._read_json('raw_hrs_evidence.json')
+        raw=snapshot_evidence_sources(portal)
         if window.get('start_policy') is not None:
-            start_resolution=resolve_scan_start(raw['decision_evidence'],start,end,window['start_policy'])
+            start_resolution=resolve_scan_start(raw.get('decision_evidence'),start,end,window['start_policy'])
             start=_time(start_resolution['actual_start'])
         if window.get('end_policy') is not None:
-            end_resolution=resolve_scan_start(raw['decision_evidence'],end,end+timedelta(hours=1,microseconds=1),window['end_policy'])
+            end_resolution=resolve_scan_start(raw.get('decision_evidence'),end,end+timedelta(hours=1,microseconds=1),window['end_policy'])
             end=_time(end_resolution['actual_start'])
         if (receipt.get('boundary_resolution')!=start_resolution or receipt.get('end_boundary_resolution')!=end_resolution
                 or start!=actual or end!=actual_end):
             raise DataBlocked(['scan_boundary_resolution_mismatch'])
     else:
         portal=DataPortal(directory,'hrs',end,start,required_datasets=REQUIRED_FILES)
+        _bind_source_cache(portal,directory,source_cache)
     return portal,_boundary_summary(window,start,end,start_resolution,end_resolution)
 
 
-def _run_candidate(registration, candidate, window, directory, on_engine_run=None, *, expected_engine_identity=None):
+def _run_candidate(registration, candidate, window, directory, on_engine_run=None, *, expected_engine_identity=None,source_cache=None):
     expected_engine_identity = expected_engine_identity or engine_identity()
     _require_runtime_identity(expected_engine_identity, 'engine_identity_changed_before_run')
     tiers = {}; all_gaps = []
     for tier, multiplier in TIERS.items():
-        portal,boundary = _window_portal(directory,window)
+        portal,boundary = _window_portal(directory,window,source_cache)
         start,end=portal.window_start,portal.as_of
         for name in sorted(REQUIRED_FILES):
             portal._require_dataset(name)
@@ -531,6 +547,7 @@ def _shared_boundary_gaps(registration,boundaries,research_report):
 
 
 def run_experiment(registration, *, snapshot_roots=(), output=None, stage='research', selection=None, research_report=None):
+    source_cache={}
     report = dict(schema_version=1, status='BLOCKED_DATA', stage=stage, performance_accepted=False,
         registration_sha256=None, engine_identity=engine_identity(), selected_candidates={}, evaluations=[], engine_runs=0,
         blocked_reasons=[], snapshot_inventory=[], window_boundaries={},boundary_policy='flat_start_no_open_end',
@@ -566,7 +583,7 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
                 try:
                     def counted_run():
                         report['engine_runs'] += 1
-                    evaluation = _run_candidate(registration, candidate, window, choices[0]['snapshot_dir'], counted_run, expected_engine_identity=report['engine_identity'])
+                    evaluation = _run_candidate(registration, candidate, window, choices[0]['snapshot_dir'], counted_run, expected_engine_identity=report['engine_identity'],source_cache=source_cache)
                     report['evaluations'].append(evaluation)
                     previous=report['window_boundaries'].setdefault(window['window_id'],evaluation['window_boundary'])
                     if previous!=evaluation['window_boundary']:
@@ -594,6 +611,8 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
         report['blocked_reasons'].extend(error.gaps)
     except (KeyError, ValueError, TypeError, ArithmeticError) as error:
         report['blocked_reasons'].append('registration_or_snapshot_invalid:'+str(error))
+    finally:
+        for sources in source_cache.values():sources.__exit__(None,None,None)
     if output is not None:
         write_report(output, report)
     return report

@@ -502,7 +502,8 @@ class DataPortal:
             return parse_utc(parsed)
         try:
             raw_by_key={}
-            for raw in self._read_jsonl('hrs_decision_inputs.jsonl'):
+            from ai_tuner.hrs_evidence_export import indexed_hrs_inputs
+            for raw in indexed_hrs_inputs(self):
                 decided=timestamp(raw['decision_at'])
                 observed=timestamp(raw['observed_at'])
                 supplied=timestamp(raw.get('available_at',raw['observed_at']))
@@ -561,16 +562,26 @@ class DataPortal:
         identity=parse_utc(decision_at) if decision_at is not None else cutoff
         self.guard(identity,"hrs_inputs","decision_at",cutoff)
         self._require_dataset("hrs_decision_inputs.jsonl")
-        rows = [row for row in self._read_jsonl("hrs_decision_inputs.jsonl")
-                if row.get("symbol") == symbol and parse_utc(row["decision_at"]) == identity]
-        if len(rows) != 1:
+        from ai_tuner.hrs_evidence_export import indexed_hrs_inputs,snapshot_evidence_sources
+        raw=indexed_hrs_inputs(self).get(symbol,identity)
+        if raw is None:
             raise DataBlocked(["hrs_decision_inputs_missing_or_duplicate:"+symbol])
-        raw = rows[0]
         self.guard(parse_utc(raw["observed_at"]), "hrs_inputs", "observed_at", cutoff)
         if "available_at" in raw:
             self.guard(parse_utc(raw["available_at"]),"hrs_inputs","available_at",cutoff)
         if raw.get("complete") is not True:
             raise DataBlocked(["hrs_decision_inputs_incomplete:"+symbol])
+        if raw.get('analysis_evidence_id'):
+            sources=snapshot_evidence_sources(self)
+            row=sources.archive.get_record('decision_evidence',raw['analysis_evidence_id'])
+            if (row is None or row['payload_sha256']!=raw['analysis_payload_sha256'] or row['symbol']!=symbol
+                    or row['kind'] not in ('analysis','lv_rm_analysis')
+                    or parse_utc(row['event_time'])!=identity
+                    or parse_utc(row['available_at'])!=parse_utc(raw['score_available_at'])):
+                raise DataBlocked(['hrs_analysis_archive_identity_mismatch'])
+            self.guard(parse_utc(row['available_at']),'hrs_inputs','analysis_available_at',cutoff)
+            payload=row['payload'] if isinstance(row['payload'],dict) else json.loads(row['payload'])
+            raw=dict(raw,analysis_klines_1h=payload['klines_1h'],analysis_klines_4h=payload['klines_4h'])
         return raw
 
     def hrs_cash_flows(self) -> Tuple[Dict[str, Any], ...]:
@@ -593,7 +604,12 @@ class DataPortal:
 
     def funding_schedule_evidence(self) -> Dict[str, Any]:
         self._require_dataset("funding_schedule_evidence.json")
-        return self._read_json("funding_schedule_evidence.json")
+        raw=self._read_json("funding_schedule_evidence.json")
+        if raw.get('observations_archive_family'):
+            from ai_tuner.hrs_evidence_export import snapshot_evidence_sources
+            sources=snapshot_evidence_sources(self)
+            raw=dict(raw,observations=sources.get(raw['observations_archive_family']))
+        return raw
 
     def symbol_filters(self, symbol: str) -> Dict[str, Decimal]:
         """返回 ``{tick_size, step_size, min_notional}``（来自 exchangeInfo 快照）。"""

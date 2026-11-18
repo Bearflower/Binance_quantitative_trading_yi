@@ -324,6 +324,174 @@ async def test_readonly_database_extraction_bounds_rows_and_preserves_availabili
     assert all(query.lstrip().startswith('SELECT') and 'LIMIT' in query for query,_ in db.queries)
 
 
+async def test_archive_database_extraction_streams_beyond_legacy_whole_window_caps(tmp_path):
+    from ai_tuner.hrs_evidence_export import read_evidence_sources
+    from ai_tuner.replay.hrs_evidence_archive import EvidenceArchive
+    class Transaction:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+    class DB:
+        def transaction(self,**options):
+            assert options==dict(readonly=True,isolation='repeatable_read')
+            return Transaction()
+        async def fetch(self,*args):raise AssertionError('whole source fetch is forbidden')
+        async def fetchrow(self,query,*args):
+            assert 'count(*)' in query
+            return dict(expected_count=50001,first_event=AT,last_event=AT+timedelta(seconds=50000)) if 'FROM hrs.hrs_decision_evidence' in query else dict(expected_count=0,first_event=None,last_event=None)
+        def cursor(self,query,*args,**options):
+            async def rows():
+                if 'FROM hrs.hrs_decision_evidence' not in query:return
+                payload=dict(path='/fapi/v1/exchangeInfo',params={},response=dict(repeated='x'*1536))
+                digest=canonical_payload(payload)[1]
+                for index in range(50001):
+                    at=AT+timedelta(seconds=index)
+                    yield dict(evidence_id=str(index),run_id='background',kind='public_market_response',symbol=None,
+                        event_time=at,available_at=at,payload_sha256=digest,payload=payload)
+            return rows()
+    source=await read_evidence_sources(DB(),'test',window_start=AT,as_of=AT+timedelta(days=31),archive_root=tmp_path/'archive')
+    with EvidenceArchive.open(source['evidence_archive']['path']) as archive:
+        assert archive.counts['decision_evidence']==50001
+        rows=archive.iter_records('decision_evidence')
+        assert next(rows)['available_at']==AT.isoformat()
+        assert sum(1 for _ in rows)==50000
+
+
+def test_large_lossless_archive_roundtrips_to_real_engine_and_causal_cli(tmp_path):
+    from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter,EvidenceArchive
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle,MAX_BYTES
+    from ai_tuner.replay.data_portal import DataPortal
+    from ai_tuner.replay.adapters.hrs import HrsAdapter
+    from ai_tuner.replay.engine import run_replay
+    from .test_hrs_exit_experiment import registration
+    from ai_tuner import hrs_exit_experiment as experiment
+    sources,bootstrap=captured_sources(tmp_path)
+    payload=dict(path='/fapi/v1/fundingInfo',params={},response=[dict(symbol='A',fundingIntervalHours=8,
+        engineering_padding='x'*1536)])
+    digest=canonical_payload(payload)[1]
+    archive_root=tmp_path/'archive'
+    with EvidenceArchiveWriter(archive_root,source_metadata={}) as writer:
+        for family,rows in sources.items():
+            first=AT-timedelta(days=31)
+            writer.declare_source(family,dict(expected_count=len(rows)+(50001 if family=='decision_evidence' else 0),
+                query_scope='independent engineering generator cardinality v1',account_id='test',
+                window_start=first.isoformat(),window_end=(AT+timedelta(hours=3)).isoformat()))
+            for row in rows:writer.write_row(family,row)
+            if family=='decision_evidence':
+                for index in range(50001):
+                    at=AT+timedelta(microseconds=index+1)
+                    writer.write_row(family,dict(evidence_id='receipt-'+str(index),run_id='background',kind='public_market_response',
+                        symbol=None,event_time=at.isoformat(),available_at=at.isoformat(),payload_sha256=digest,payload=payload))
+        descriptor=writer.finish()
+    with EvidenceArchive.open(descriptor['path']) as archive:
+        assert archive.counts['decision_evidence']>50000
+    assert 50001*len(canonical_payload(payload)[0].encode())>MAX_BYTES
+    policy=dict(version='first_scan_start_v1',max_delay_seconds=3600)
+    result=export_evidence_bundle(dict(evidence_archive=descriptor),tmp_path/'output',
+        window_start=AT-timedelta(minutes=21),as_of=AT+timedelta(hours=2,minutes=45),start_policy=policy,end_policy=policy,
+        execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('status')=='SEALED',result
+    path=Path(result['snapshot_dir']);states=json.loads((path/'hrs_state_tables.json').read_text())
+    replay=run_replay(DataPortal(path,'hrs',AT+timedelta(hours=3),AT),HrsAdapter(lambda at:states),broker())
+    assert any(row['type']=='hrs_score' for row in replay.audit_events)
+    assert any(row['type']=='hrs_budget' for row in replay.audit_events)
+    assert all('analysis_klines_1h' not in row['payload']['inputs'] for row in replay.audit_events if row['type']=='hrs_score')
+    r=registration();r['baseline'].update(config=bootstrap['config'],effective_config_sha256=experiment.fingerprint(bootstrap['config']))
+    r['windows'][0].update(start=(AT-timedelta(minutes=21)).isoformat(),end=(AT+timedelta(hours=2,minutes=45)).isoformat(),
+        start_policy=policy,end_policy=policy,snapshot_dir=str(path))
+    r['windows'][1].update(start='2026-12-01T00:00:00+08:00',end='2027-01-01T00:00:00+08:00')
+    r['windows'][2].update(start='2027-01-01T00:00:00+08:00',end='2027-02-01T00:00:00+08:00')
+    report=experiment.run_experiment(r,snapshot_roots=[path])
+    assert report['engine_runs']==6,report['blocked_reasons']
+    assert report['window_boundaries']['research']['actual_duration_seconds']==10800
+
+
+async def test_market_cursor_supports_52_symbols_and_all_three_intervals_without_legacy_pair_cap(tmp_path):
+    from ai_tuner.hrs_evidence_export import _stream_market_tables,MAX_EXECUTION_BARS,MAX_DERIVED_EVENTS
+    from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter,EvidenceArchive
+    import re
+    names=('id','open_time','close_time','open_price','high_price','low_price','close_price','volume','quote_volume','trade_count')
+    def size(query):return 1001 if '_1m' in query else 25 if '_1h' in query else 7
+    class DB:
+        async def fetch(self,query,*args):
+            assert 'information_schema.columns' in query
+            return [dict(column_name=name,data_type='timestamp with time zone' if name.endswith('_time') else 'numeric') for name in names]
+        async def fetchrow(self,query,*args):
+            assert 'count(*)' in query
+            return dict(expected_count=size(query),first_event=AT,last_event=AT+timedelta(days=2))
+        def cursor(self,query,*args,**kwargs):
+            async def rows():
+                interval=re.search(r'_(1m|1h|4h) AS',query).group(1)
+                minutes={'1m':1,'1h':60,'4h':240}[interval]
+                for i in range(size(query)):
+                    yield dict(id=i,open_time=AT+timedelta(minutes=i*minutes),close_time=AT+timedelta(minutes=(i+1)*minutes),
+                        open_price='100',high_price='101',low_price='99',close_price='100',volume='1',quote_volume='100',trade_count=1)
+            return rows()
+    pairs=[('T'+str(i),interval) for i in range(52) for interval in ('1m','1h','4h')]
+    with EvidenceArchiveWriter(tmp_path/'market',source_metadata={}) as writer:
+        await _stream_market_tables(DB(),writer,pairs,AT,AT+timedelta(days=31),{})
+        descriptor=writer.finish()
+    with EvidenceArchive.open(descriptor['path']) as archive:
+        assert archive.source_metadata['market_bars']['expected_item_count']==52*(1001+25+7)
+        assert archive.counts['market_bars']==52*4
+    assert MAX_EXECUTION_BARS>=31*52*1440
+    assert MAX_DERIVED_EVENTS>31*52*(1440+24+6)
+
+
+def test_streamed_funding_schedule_matches_legacy_and_retains_gap_denial(tmp_path):
+    from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter
+    from ai_tuner.hrs_evidence_export import _ArchiveSources
+    from ai_tuner.replay.funding_history import attested_funding_schedule
+    from ai_tuner.replay.models import DataBlocked
+    sources,_=captured_sources(tmp_path)
+    end=AT+timedelta(hours=3)
+    for missing in (False,True):
+        rows=[row for row in sources['funding_observations'] if not missing or row['received_at']!=(AT+timedelta(minutes=5)).isoformat()]
+        with EvidenceArchiveWriter(tmp_path/('funding-'+str(missing)),source_metadata={}) as writer:
+            writer.declare_source('funding_observations',dict(expected_count=len(rows),query_scope='engineering independent inventory',
+                account_id=None,window_start=(AT-timedelta(minutes=10)).isoformat(),window_end=end.isoformat()))
+            for row in reversed(rows):writer.write_row('funding_observations',row)
+            descriptor=writer.finish()
+        with _ArchiveSources(dict(evidence_archive=descriptor)) as stream:
+            legacy=dict(source='prospective_exchange_forecast',complete=True,observations=rows)
+            archived=dict(legacy,observations=stream.get('funding_observations'))
+            if missing:
+                with pytest.raises(DataBlocked,match='coverage_gap'):attested_funding_schedule(archived,('A',),AT,end)
+            else:
+                assert attested_funding_schedule(archived,('A',),AT,end)==attested_funding_schedule(legacy,('A',),AT,end)
+
+
+@pytest.mark.parametrize('embedded_market',[False,True])
+def test_export_cli_accepts_archive_inventory_and_streamed_legacy_market_merge(tmp_path,embedded_market):
+    from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter
+    from ai_tuner.hrs_evidence_export import main
+    import hashlib
+    sources,bootstrap=captured_sources(tmp_path)
+    with EvidenceArchiveWriter(tmp_path/'archive',source_metadata={}) as writer:
+        for family,rows in sources.items():
+            if family=='market_bars' and not embedded_market:continue
+            writer.declare_source(family,dict(expected_count=len(rows),query_scope='engineering independently sized fixture',account_id=None,
+                window_start=(AT-timedelta(days=31)).isoformat(),window_end=(AT+timedelta(hours=3)).isoformat()))
+            for row in rows:writer.write_row(family,row)
+        descriptor=writer.finish()
+    options=[]
+    if not embedded_market:
+        market=tmp_path/'legacy_market';market.mkdir();queries={}
+        for batch in sources['market_bars']:
+            name='bars_'+batch['interval']+'.jsonl';body=''.join(json.dumps(row)+'\n' for row in batch['rows'])
+            (market/name).write_text(body)
+            queries['btc_eth.kline_a_'+batch['interval']]=dict(file=name,sha256=hashlib.sha256(body.encode()).hexdigest(),
+                row_count=len(batch['rows']),min_time=min(r['open_time'] for r in batch['rows']),max_time=max(r['open_time'] for r in batch['rows']))
+        (market/'raw_manifest.json').write_text(json.dumps(dict(strategy_id='hrs',queries=queries)))
+        options=['--raw-market-export',str(market)]
+    monitor=bootstrap['monitoring_model']
+    code=main(['--sources',descriptor['path'],'--output-root',str(tmp_path/'output'),
+        '--window-start',AT.isoformat(),'--as-of',(AT+timedelta(hours=3)).isoformat(),
+        '--participation-rate',str(bootstrap['execution_model']['participation_rate']),
+        '--monitor-cadence-seconds',str(monitor['cadence_seconds']),'--monitor-anchor',monitor['anchor_at'],
+        '--allow-inception-segment',*options])
+    assert code==0
+
+
 def test_delayed_published_settlement_is_exported_at_actual_receipt(tmp_path):
     from ai_tuner.hrs_evidence_export import export_evidence_bundle
     from tests.test_ai_tuner_mvp.replay.test_hrs_replay_review import funding_rows

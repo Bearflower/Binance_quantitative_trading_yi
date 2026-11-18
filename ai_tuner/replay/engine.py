@@ -47,6 +47,23 @@ def run_replay(
     funding_schedule: Optional[Mapping[str, Sequence[datetime]]] = None,
     funding_schedule_source: Optional[str] = None,
 ) -> ReplayResult:
+    try:
+        return _run_replay(portal,adapter,broker,include_snapshots,funding_schedule,funding_schedule_source)
+    finally:
+        if (getattr(portal,'_hrs_input_index',None) is not None
+                or getattr(portal,'_hrs_archive_sources_cache',None) is not None):
+            from ai_tuner.hrs_evidence_export import close_portal_indexes
+            close_portal_indexes(portal)
+
+
+def _run_replay(
+    portal: DataPortal,
+    adapter: Any,
+    broker: VirtualBroker,
+    include_snapshots: bool = False,
+    funding_schedule: Optional[Mapping[str, Sequence[datetime]]] = None,
+    funding_schedule_source: Optional[str] = None,
+) -> ReplayResult:
     """执行一次确定性回放。
 
     Args:

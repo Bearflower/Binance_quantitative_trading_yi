@@ -487,7 +487,9 @@ class HrsAdapter:
             if scored_data is None:
                 continue
             scored = scored_data.get('_scoring_result')
-            self._record(now,'hrs_score',{'symbol':symbol,'direction':direction,'inputs':raw,
+            audit_inputs=({key:value for key,value in raw.items() if key not in ('analysis_klines_1h','analysis_klines_4h')}
+                if raw.get('analysis_evidence_id') else raw)
+            self._record(now,'hrs_score',{'symbol':symbol,'direction':direction,'inputs':audit_inputs,
                 'result':scored.to_dict() if scored else scored_data,'should_entry':scored_data['should_entry']})
             if not scored_data['should_entry']:
                 self._runtime['signal_timestamps'].pop(symbol+':'+direction,None)

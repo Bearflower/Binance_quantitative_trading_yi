@@ -241,6 +241,40 @@ def attested_funding_schedule(evidence, symbols, window_start, as_of):
     if not isinstance(evidence, Mapping) or evidence.get('source') != 'prospective_exchange_forecast' or evidence.get('complete') is not True:
         raise DataBlocked(['historical_funding_schedule_unattested'])
     rows = evidence.get('observations')
+    if (getattr(rows,'_hrs_verified_archive_family',False) is True
+            and getattr(rows,'family',None)=='funding_observations'):
+        schedule={}
+        for symbol in symbols:
+            seed=previous=None;events=set()
+            try:
+                for raw in rows.for_symbol(symbol,available_before=as_of,order_by_available=True):
+                    observation=FundingScheduleObservation(symbol,parse_utc(raw['source_time']),parse_utc(raw['received_at']),
+                        parse_utc(raw['next_funding_time']),raw.get('funding_interval_hours'),raw['payload_hash'])
+                    selected=observation.raw_payload
+                    digest=hashlib.sha256(json.dumps(selected,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+                    if digest!=observation.payload_hash:raise ValueError('payload_hash_mismatch')
+                    if not observation.source_time<=observation.received_at<observation.next_funding_time:raise ValueError('forecast_not_prospective')
+                    if (observation.received_at-observation.source_time).total_seconds()>120:raise ValueError('forecast_source_stale')
+                    interval=observation.funding_interval_hours
+                    if interval is not None and (type(interval) is not int or interval<=0):raise ValueError('interval_invalid')
+                    if observation.received_at<=window_start:seed=observation;continue
+                    if previous is None:
+                        if seed is None:raise DataBlocked(['funding_schedule_start_missing:'+symbol])
+                        previous=seed
+                        if window_start<seed.next_funding_time<=as_of:events.add(seed.next_funding_time)
+                    if (observation.received_at-previous.received_at).total_seconds()>420:raise DataBlocked(['funding_schedule_coverage_gap:'+symbol])
+                    previous=observation
+                    if window_start<observation.next_funding_time<=as_of:events.add(observation.next_funding_time)
+            except (KeyError,TypeError,ValueError,OverflowError) as exc:
+                raise DataBlocked(['funding_schedule_evidence_invalid:'+str(exc)]) from exc
+            if seed is None:raise DataBlocked(['funding_schedule_start_missing:'+symbol])
+            if previous is None:
+                previous=seed
+                if window_start<seed.next_funding_time<=as_of:events.add(seed.next_funding_time)
+            if window_start-seed.received_at>timedelta(seconds=420) or as_of-previous.received_at>timedelta(seconds=420):
+                raise DataBlocked(['funding_schedule_coverage_gap:'+symbol])
+            schedule[symbol]=tuple(sorted(events))
+        return schedule
     if not isinstance(rows, (tuple, list)):
         raise DataBlocked(['funding_schedule_observations_missing'])
     by_symbol = {symbol: [] for symbol in symbols}

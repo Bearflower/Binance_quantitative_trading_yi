@@ -15,6 +15,9 @@ import json
 from pathlib import Path
 import re
 import tempfile
+from contextlib import ExitStack
+import sqlite3
+import shutil
 
 from strategies.hrs.decision_capture import canonical_payload
 from strategies.hrs.equity_evidence import canonical as equity_canonical, prove_positions, owned_fill_positions
@@ -30,6 +33,172 @@ TABLES=('hrs_positions','hrs_blacklist','hrs_active_symbols')
 HASHES=('base_config_hash','params_manifest_hash','overlay_hash')
 MAX_ROWS=50_000
 MAX_BYTES=64*1024*1024
+MAX_EXECUTION_BARS=3_000_000
+MAX_DERIVED_EVENTS=4_000_000
+
+
+class _ArchiveFamily:
+    """Restartable indexed stream; never a reconstructed whole-window list."""
+    _hrs_verified_archive_family=True
+    def __init__(self,sources,family):self.sources,self.family=sources,family
+    def __len__(self):return self.sources.archive.counts.get(self.family,0)
+    def __iter__(self):return self.select()
+    def select(self,**filters):
+        if filters.get('event_end') is not None:
+            filters['event_end']=_time(filters['event_end'])+timedelta(microseconds=1)
+        for row in self.sources.archive.iter_records(self.family,**filters):
+            if self.family=='decision_evidence':
+                row=dict(row);row['payload']=_decoded(row['payload'])
+                _require(canonical_payload(row['payload'])[1]==row['payload_sha256'],'decision_payload_hash_mismatch')
+                row['event_time']=_time(row['event_time']);row['available_at']=_time(row['available_at'])
+                _require(row['event_time']<=row['available_at'],'decision_availability_before_event')
+            yield row
+    def runs(self):
+        for run in self.sources.archive.iter_runs():
+            if next(self.select(kind='scan_start',run_id=run),None) is not None:
+                yield run,_RunRows(self,run)
+    def for_symbol(self,symbol,*,available_before=None,order_by_available=False):
+        return self.select(symbol=symbol,available_before=available_before,order_by_available=order_by_available)
+
+
+class _RunRows:
+    def __init__(self,records,run):self.records,self.run=records,run
+    def __iter__(self):return self.select()
+    def select(self,**filters):return self.records.select(run_id=self.run,**filters)
+
+
+def _run_rows(rows,*,kind=None,symbol=None,available_before=None):
+    if isinstance(rows,_RunRows):return rows.select(kind=kind,symbol=symbol,available_before=available_before)
+    return (row for row in rows if (kind is None or row['kind']==kind) and
+        (symbol is None or row['symbol']==symbol) and (available_before is None or row['available_at']<=available_before))
+
+
+class _ArchiveSources:
+    def __init__(self,source):
+        from .replay.hrs_evidence_archive import EvidenceArchive,ArchiveError
+        _require(len(canonical_payload(source)[0].encode())<=MAX_BYTES,'archive_descriptor_byte_limit')
+        _require(not any(name in source for name in ('decision_evidence','equity_evidence','equity_checkpoints','funding_observations','market_bars','cash_flows')),
+            'archive_uninventoried_source_family')
+        self.metadata=dict(source);descriptor=source['evidence_archive']
+        try:
+            self.archive=EvidenceArchive.open(descriptor['path'],expected_manifest_sha256=descriptor.get('manifest_sha256'))
+        except ArchiveError as exc:
+            raise DataBlocked(['evidence_archive_invalid:'+str(exc)]) from exc
+    def __enter__(self):return self
+    def __exit__(self,*args):self.archive.close()
+    def get(self,key,default=None):
+        if key in self.archive.counts:return _ArchiveFamily(self,key)
+        return self.metadata.get(key,default)
+    def items(self):return self.metadata.items()
+    def copy_to(self,staging):
+        target=staging/'hrs_evidence_archive';target.mkdir()
+        for source in self.archive.files():
+            relative=source.relative_to(self.archive.root)
+            destination=target/relative;destination.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copyfile(source,destination)
+        descriptor=dict(self.archive.descriptor())
+        descriptor['path']=(target/self.archive.inventory_path.relative_to(self.archive.root)).relative_to(staging).as_posix()
+        return dict(self.metadata,version='hrs-archive-sources-v2',evidence_archive=descriptor)
+
+
+def snapshot_evidence_sources(portal):
+    """Resolve only manifest-bound archive files; cache belongs to this portal."""
+    existing=getattr(portal,'_hrs_archive_sources_cache',None)
+    if existing is not None:return existing
+    portal._require_dataset('raw_hrs_evidence.json')
+    raw=portal._read_json('raw_hrs_evidence.json')
+    if not raw.get('evidence_archive'):return raw
+    descriptor=dict(raw['evidence_archive']);relative=Path(descriptor['path'])
+    _require(not relative.is_absolute() and '..' not in relative.parts,'archive_descriptor_path_escape')
+    portal._require_dataset(relative.as_posix())
+    descriptor['path']=str(portal.snapshot_dir/relative)
+    sources=_ArchiveSources(dict(raw,evidence_archive=descriptor))
+    try:
+        for path in sources.archive.files():
+            portal._require_dataset(path.relative_to(portal.snapshot_dir).as_posix())
+    except Exception:
+        sources.__exit__(None,None,None);raise
+    portal._hrs_archive_sources_cache=sources
+    return sources
+
+
+class _InputIndex:
+    def __init__(self,path):
+        self.temp=tempfile.TemporaryDirectory(prefix='hrs-input-index-')
+        self.db=sqlite3.connect(Path(self.temp.name)/'inputs.sqlite')
+        self.db.execute('CREATE TABLE inputs(symbol TEXT, decided TEXT, body TEXT, PRIMARY KEY(symbol,decided))')
+        with path.open(encoding='utf-8') as handle:
+            for line in handle:
+                if not line.strip():continue
+                row=json.loads(line)
+                try:self.db.execute('INSERT INTO inputs VALUES(?,?,?)',(row['symbol'],_iso(row['decision_at']),line))
+                except sqlite3.IntegrityError as exc:raise DataBlocked(['hrs_decision_inputs_duplicate']) from exc
+        self.db.commit()
+    def __iter__(self):
+        for body, in self.db.execute('SELECT body FROM inputs ORDER BY decided,symbol'):yield json.loads(body)
+    def get(self,symbol,at):
+        result=self.db.execute('SELECT body FROM inputs WHERE symbol=? AND decided=?',(symbol,_iso(at))).fetchone()
+        return json.loads(result[0]) if result else None
+    def close(self):self.db.close();self.temp.cleanup()
+
+
+def indexed_hrs_inputs(portal):
+    index=getattr(portal,'_hrs_input_index',None)
+    if index is None:
+        portal._require_dataset('hrs_decision_inputs.jsonl')
+        index=portal._hrs_input_index=_InputIndex(portal.snapshot_dir/'hrs_decision_inputs.jsonl')
+    return index
+
+
+def close_portal_indexes(portal):
+    index=getattr(portal,'_hrs_input_index',None)
+    if index is not None:index.close();portal._hrs_input_index=None
+    source=getattr(portal,'_hrs_archive_sources_cache',None)
+    if source is not None and not getattr(portal,'_hrs_archive_shared',False):
+        source.__exit__(None,None,None);portal._hrs_archive_sources_cache=None
+
+
+class _EquityView:
+    def __init__(self,sources):
+        self.sources=sources;self.embedded={}
+        for row in sources.get('decision_evidence').select(kind='scan_start'):
+            for index,archive in enumerate(row['payload'].get('financial_context',{}).get('equity_source_archives',[])):
+                payload=_decoded(archive['payload'])
+                self.embedded.setdefault(archive['evidence_sha256'],(row['evidence_id'],index,_time(payload['as_of'])))
+    def _checked(self,row):
+        payload=_decoded(row['payload']);digest=row['evidence_sha256']
+        _require(equity_canonical(payload)[1]==digest,'equity_payload_hash_mismatch')
+        return dict(payload=payload,sha256=digest)
+    def get(self,digest):
+        row=self.sources.archive.get_record('equity_evidence',digest)
+        if row is None and digest in self.embedded:
+            identity,index,_at=self.embedded[digest]
+            parent=self.sources.archive.get_record('decision_evidence',identity)
+            row=_decoded(parent['payload'])['financial_context']['equity_source_archives'][index]
+        return self._checked(row) if row is not None else None
+    def select(self,after=None,before=None):
+        seen=set()
+        for row in self.sources.archive.iter_records('equity_evidence',event_start=after,event_end=before+timedelta(microseconds=1) if before is not None else None):
+            seen.add(row['evidence_sha256']);yield self._checked(row)
+        for digest,(_identity,_index,at) in self.embedded.items():
+            if digest not in seen and (after is None or at>=after) and (before is None or at<=before):yield self.get(digest)
+    def __iter__(self):return self.select()
+
+
+def _decision_rows(records,**filters):
+    if isinstance(records,_ArchiveFamily):return records.select(**filters)
+    return (r for r in records if
+        (filters.get('kind') is None or r['kind']==filters['kind']) and
+        (filters.get('event_start') is None or r['event_time']>=filters['event_start']) and
+        (filters.get('event_end') is None or r['event_time']<=filters['event_end']) and
+        (filters.get('available_before') is None or r['available_at']<=filters['available_before']) and
+        (filters.get('path') is None or r['payload'].get('path')==filters['path']))
+
+
+def _equity_rows(equities,after=None,before=None):
+    if isinstance(equities,_EquityView):return equities.select(after,before)
+    return (e for e in equities if (after is None or _time(e['payload']['as_of'])>=after)
+        and (before is None or _time(e['payload']['as_of'])<=before))
 
 
 def _time(value):
@@ -50,7 +219,44 @@ def _decoded(value):
 def _write(path,value,*,jsonl=False):
     path.parent.mkdir(parents=True,exist_ok=True)
     rows=value if jsonl else [value]
-    path.write_text(''.join(canonical_payload(row)[0]+'\n' for row in rows),encoding='utf-8')
+    with path.open('w',encoding='utf-8') as handle:
+        for row in rows:handle.write(canonical_payload(row)[0]+'\n')
+
+
+class _RowSpool:
+    def __init__(self,path):self.path,self.count=path,0;self.handle=path.open('w',encoding='utf-8')
+    def append(self,row):self.handle.write(canonical_payload(row)[0]+'\n');self.count+=1
+    def __len__(self):return self.count
+    def __iter__(self):
+        self.handle.flush()
+        with self.path.open(encoding='utf-8') as rows:
+            for line in rows:yield json.loads(line)
+    def close(self):self.handle.close()
+
+
+class _BarSpool:
+    def __init__(self,path):
+        self.db=sqlite3.connect(path)
+        self.db.execute('CREATE TABLE bars(symbol TEXT, interval TEXT, opened TEXT, body TEXT, PRIMARY KEY(symbol,interval,opened))')
+    def put(self,row):
+        key=(row['symbol'],row['interval'],row['open_time'])
+        prior=self.db.execute('SELECT body FROM bars WHERE symbol=? AND interval=? AND opened=?',key).fetchone()
+        if prior:
+            old=json.loads(prior[0]);_require(all(Decimal(str(old[k]))==Decimal(str(row[k])) for k in ('open','high','low','close','volume')),'kline_source_conflict:'+row['symbol']+':'+row['interval'])
+        else:self.db.execute('INSERT INTO bars VALUES(?,?,?,?)',(*key,canonical_payload(row)[0]))
+    def __contains__(self,key):return self.db.execute('SELECT 1 FROM bars WHERE symbol=? AND interval=? LIMIT 1',key).fetchone() is not None
+    def items(self):
+        for symbol,interval in self.db.execute('SELECT DISTINCT symbol,interval FROM bars ORDER BY symbol,interval'):
+            def rows(s=symbol,i=interval):
+                for body, in self.db.execute('SELECT body FROM bars WHERE symbol=? AND interval=? ORDER BY opened',(s,i)):yield json.loads(body)
+            yield (symbol,interval),rows()
+    def count(self,interval=None,*,after=None,through=None):
+        clauses=[];args=[]
+        if interval is not None:clauses.append('interval=?');args.append(interval)
+        if after is not None:clauses.append("json_extract(body,'$.close_time')>?");args.append(_time(after).isoformat())
+        if through is not None:clauses.append("json_extract(body,'$.close_time')<=?");args.append(_time(through).isoformat())
+        return self.db.execute('SELECT count(*) FROM bars'+(' WHERE '+' AND '.join(clauses) if clauses else ''),args).fetchone()[0]
+    def close(self):self.db.close()
 
 
 def _require(condition,gap):
@@ -59,6 +265,7 @@ def _require(condition,gap):
 
 
 def _records(rows):
+    if isinstance(rows,_ArchiveFamily):return rows
     _require(isinstance(rows,list) and bool(rows),'decision_evidence_missing')
     _require(len(rows)<=MAX_ROWS,'decision_evidence_row_limit')
     result=[];seen={}
@@ -96,14 +303,14 @@ def resolve_scan_start(records,registered_start,window_end,policy):
     start,end=_time(registered_start),_time(window_end)
     delay=_scan_delay(policy)
     rows=_records(records)
-    candidates=[r for r in rows if r['kind']=='scan_start' and
+    candidates=[r for r in _decision_rows(rows,kind='scan_start',event_start=start,event_end=start+timedelta(seconds=delay)) if
         start<=r['event_time']<=start+timedelta(seconds=delay) and r['event_time']<end]
     _require(candidates,'first_scan_boundary_missing')
     first=min(r['event_time'] for r in candidates)
     selected=[r for r in candidates if r['event_time']==first]
     _require(len(selected)==1,'first_scan_boundary_ambiguous')
     row=selected[0]
-    endings=[r for r in rows if r['run_id']==row['run_id'] and r['kind']=='scan_end']
+    endings=list(rows.select(kind='scan_end',run_id=row['run_id'])) if isinstance(rows,_ArchiveFamily) else [r for r in rows if r['run_id']==row['run_id'] and r['kind']=='scan_end']
     _require(len(endings)==1 and endings[0]['payload'].get('status')=='complete',
         'first_scan_boundary_incomplete')
     return dict(policy=dict(policy),registered_start=_iso(start),actual_start=_iso(first),end=_iso(end),
@@ -125,7 +332,7 @@ def _config(snapshot):
     return config,hashes
 
 
-def _closed_bars(source,records,as_of):
+def _closed_bars(source,records,as_of,*,spool=None):
     grouped={}
     def add(symbol,interval,row):
         _require(isinstance(symbol,str) and re.fullmatch('[A-Z0-9]{1,32}',symbol) and interval in ('1m','1h','4h'),'market_bar_identity_invalid')
@@ -148,6 +355,8 @@ def _closed_bars(source,records,as_of):
         normalized={k:data[k] for k in ('open_time','close_time','open','high','low','close','volume','quote_volume','trades')}
         normalized.update(symbol=symbol,interval=interval)
         normalized=json.loads(canonical_payload(normalized)[0])
+        if spool is not None:
+            spool.put(normalized);return
         key=(symbol,interval);instant=normalized['open_time']
         prior=grouped.setdefault(key,{}).setdefault(instant,normalized)
         # Numeric representation may differ across raw providers; actual OHLCV may not.
@@ -156,7 +365,9 @@ def _closed_bars(source,records,as_of):
         _require(batch.get('source') in ('postgres_klines','public_klines'),'market_bar_source_unknown')
         _require(canonical_payload(batch['rows'])[1]==batch['payload_sha256'],'market_bar_payload_hash_mismatch')
         for row in batch['rows']:add(batch['symbol'],batch['interval'],row)
-    for row in records:
+    relevant=(row for kind in ('analysis','lv_rm_analysis','standard_candidate_outcome','lv_rm_candidate_outcome','public_market_response')
+        for row in _decision_rows(records,kind=kind)) if isinstance(records,_ArchiveFamily) else records
+    for row in relevant:
         if row['kind'] in ('analysis','lv_rm_analysis','standard_candidate_outcome','lv_rm_candidate_outcome'):
             for interval in ('1h','4h'):
                 for bar in row['payload'].get('klines_'+interval,[]):add(row['symbol'],interval,bar)
@@ -164,14 +375,15 @@ def _closed_bars(source,records,as_of):
             params=row['payload']['params'];interval=params.get('interval')
             if interval in ('1m','1h','4h'):
                 for bar in row['payload']['response']:add(params['symbol'],interval,bar)
-    return {key:[rows[k] for k in sorted(rows)] for key,rows in grouped.items()}
+    return spool if spool is not None else {key:[rows[k] for k in sorted(rows)] for key,rows in grouped.items()}
 
 
 def _flat_unchanged_proof(equities,state_at,boundary,records):
-    anchors=[e for e in equities if _time(e['payload']['as_of'])==state_at and e['payload'].get('capture',{}).get('local')=={} and e['payload'].get('source_collection',{}).get('complete') is True]
-    proofs=[e for e in equities if _time(e['payload']['as_of'])>=boundary and e['payload'].get('source_collection',{}).get('complete') is True and e['payload'].get('capture',{}).get('local')=={}]
-    _require(anchors and proofs,'bootstrap_ledger_boundary_unproven')
-    proof=min(proofs,key=lambda e:_time(e['payload']['available_at']));p=proof['payload']
+    anchors=[e for e in _equity_rows(equities,state_at,state_at) if e['payload'].get('capture',{}).get('local')=={} and e['payload'].get('source_collection',{}).get('complete') is True]
+    proofs=(e for e in _equity_rows(equities,boundary) if e['payload'].get('source_collection',{}).get('complete') is True and e['payload'].get('capture',{}).get('local')=={})
+    proof=min(proofs,key=lambda e:_time(e['payload']['available_at']),default=None)
+    _require(anchors and proof,'bootstrap_ledger_boundary_unproven')
+    p=proof['payload']
     for source in (anchors[0]['payload'],p):
         capture=source['capture']
         _require(source['income_report'].get('id_match_and_coverage_complete') is True and not source['income_report'].get('coverage_gaps'),'bootstrap_bridge_income_incomplete')
@@ -184,7 +396,7 @@ def _flat_unchanged_proof(equities,state_at,boundary,records):
     for row in p['order_owners']:owners.setdefault((row['symbol'],str(row['order_id'])),set()).add(row['strategy'])
     _require(not any(state_at<_time(f['trade_time_utc'])<=boundary and 'hrs' in owners.get((f['symbol'],str(f['order_id'])),set()) for f in p['fills']),'bootstrap_bridge_hrs_fills')
     _require(not any(state_at<_time(e['event_time_utc'])<=boundary and e.get('strategy')=='hrs' for e in p['income_report']['events']),'bootstrap_bridge_hrs_income')
-    _require(not any(state_at<r['event_time']<=boundary and r['kind'] in ('entry_budget_reserved','order_execution_result','order_execution_failure') for r in records),'bootstrap_bridge_risk_intent')
+    _require(not any(state_at<r['event_time']<=boundary for kind in ('entry_budget_reserved','order_execution_result','order_execution_failure') for r in _decision_rows(records,kind=kind,event_start=state_at,event_end=boundary)),'bootstrap_bridge_risk_intent')
     _require(not any(state_at<_time(event['statement_at'])<=boundary for event in p.get('allocation_audit',{}).get('journal',[])),'bootstrap_bridge_allocation_changes_unsettled')
     return proof,anchors[0]
 
@@ -227,7 +439,7 @@ def _account_occupancy(inventory,snapshot,financial,observed,equities):
     others=[p for p in inventory if Decimal(str(p['positionAmt']))!=0 and p['symbol'] not in snapshot.get('positions',{})]
     result=[]
     if others:
-        sources=[e for e in equities if e['payload'].get('source_collection',{}).get('complete') is True
+        sources=[e for e in _equity_rows(equities,observed-timedelta(seconds=120),observed) if e['payload'].get('source_collection',{}).get('complete') is True
             and e['payload'].get('income_report',{}).get('id_match_and_coverage_complete') is True
             and 'fills' in e['payload'] and 'order_owners' in e['payload']
             and timedelta(0)<=observed-_time(e['payload']['as_of'])<=timedelta(seconds=120)
@@ -244,26 +456,32 @@ def _account_occupancy(inventory,snapshot,financial,observed,equities):
     return dict(version='hrs_account_occupancy_v1',observed_at=_iso(observed),other_positions=result)
 
 
-def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
-    groups={}
-    for row in records:groups.setdefault(row['run_id'],[]).append(row)
-    inputs=[];calendar=[];used=[];sequence=0
-    for run,rows in sorted(groups.items(),key=lambda pair:min(r['event_time'] for r in pair[1])):
-        starts=[r for r in rows if r['kind']=='scan_start'];ends=[r for r in rows if r['kind']=='scan_end']
-        if not starts or max(r['available_at'] for r in rows)<=start:continue
+def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=None):
+    if isinstance(records,_ArchiveFamily):groups=records.runs()
+    else:
+        grouped={}
+        for row in records:grouped.setdefault(row['run_id'],[]).append(row)
+        groups=sorted(grouped.items(),key=lambda pair:min(r['event_time'] for r in pair[1]))
+    inputs,calendar,used=spools if spools is not None else ([],[],[])
+    sequence=0
+    for run,rows in groups:
+        starts=list(_run_rows(rows,kind='scan_start'));ends=list(_run_rows(rows,kind='scan_end'))
+        if not starts:continue
+        if all(r['available_at']<=start for r in (*starts,*ends)) and max(r['available_at'] for r in rows)<=start:continue
         if min(r['event_time'] for r in starts)>=end:continue
         _require(len(starts)==1 and len(ends)==1 and ends[0]['payload'].get('status')=='complete','scan_incomplete:'+run)
         if starts[0]['event_time']>end:continue
         snapshot=starts[0]['payload'];final=ends[0]['payload']['state']
         config,hashes=_config(snapshot)
         _require(hashes==bootstrap['config_hashes'] and config==bootstrap['config'],'config_change_requires_partition:'+run)
-        scopes=[r for r in rows if r['kind'] in ('standard_scan_scope','lv_rm_scan_scope')]
+        scopes=sorted((r for kind in ('standard_scan_scope','lv_rm_scan_scope') for r in _run_rows(rows,kind=kind)),key=lambda r:(r['available_at'],r['event_time'],r['evidence_id']))
         symbols=list(dict.fromkeys(s for r in scopes for s in r['payload']['symbols']))
         if not symbols:
-            _require(any(r['kind']=='scan_denial' for r in rows),'scan_scope_missing:'+run)
-            used.append(dict(run_id=run,scope=[],denial_evidence=[r['evidence_id'] for r in rows if r['kind']=='scan_denial']))
+            denials=list(_run_rows(rows,kind='scan_denial'))
+            _require(denials,'scan_scope_missing:'+run)
+            used.append(dict(run_id=run,scope=[],denial_evidence=[r['evidence_id'] for r in denials]))
             continue
-        batches=[r for r in rows if r['kind']=='execution_batch']
+        batches=list(_run_rows(rows,kind='execution_batch'))
         _require(len(batches)==1,'execution_batch_missing_or_duplicate:'+run)
         batch=batches[0];released=batch['available_at']
         _require(released<=end,'execution_batch_after_window:'+run)
@@ -282,7 +500,7 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
             if reservation.get('state')=='released':continue
             _require(reservation.get('created_at') is not None,'hrs_retained_reservation_source_time_missing:'+run)
             if _time(reservation['created_at'])>start:
-                _require(any(r['kind']=='entry_budget_reserved' and r['payload'].get('decision',{}).get('client_order_id')==reservation.get('client_order_id') for r in records),'hrs_retained_reservation_origin_unproven:'+run)
+                _require(any(r['payload'].get('decision',{}).get('client_order_id')==reservation.get('client_order_id') for r in _decision_rows(records,kind='entry_budget_reserved')),'hrs_retained_reservation_origin_unproven:'+run)
         policy=financial['entry_policy']
         _require(_time(policy['effective_at'])<_time(policy['expires_at']),'entry_policy_timebounds_invalid:'+run)
         raw_ledger=_decoded(financial['ledger_state']['ledger_state'])
@@ -290,7 +508,8 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
         component_source=None
         if component is not None:
             hrs_equity=Decimal(str(component['value']))
-            source=[e for e in equities if e['sha256']==component['evidence_sha256']]
+            source=[equities.get(component['evidence_sha256'])] if isinstance(equities,_EquityView) else [e for e in equities if e['sha256']==component['evidence_sha256']]
+            source=[e for e in source if e is not None]
             age=(_time(financial['available_at'])-_time(component['as_of'])).total_seconds()
             _require(len(source)>=1 and component['ledger_version']==financial['ledger_state']['version']
                 and source[0]['payload'].get('result',{}).get('ledger_version')==component['ledger_version']
@@ -311,11 +530,11 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
                 _require(_time(proof['payload']['available_at'])<=released,'account_equity_component_proof_unavailable:'+run)
             hrs_equity=Decimal(str(raw_ledger['equity']))
         for symbol in order:
-            analyses=[r for r in rows if r['symbol']==symbol and r['kind'] in ('analysis','lv_rm_analysis')]
+            analyses=[r for kind in ('analysis','lv_rm_analysis') for r in _run_rows(rows,kind=kind,symbol=symbol)]
             _require(len(analyses)==1,'raw_analysis_missing_or_duplicate:'+run+':'+symbol)
             analysis=analyses[0];decided=analysis['event_time'];payload=analysis['payload']
             _require(payload.get('klines_1h') and payload.get('klines_4h'),'analysis_bar_history_missing:'+symbol)
-            providers=[r for r in rows if r['symbol']==symbol and r['kind']=='market_input' and r['available_at']<=analysis['available_at']]
+            providers=sorted(_run_rows(rows,kind='market_input',symbol=symbol,available_before=analysis['available_at']),key=lambda r:(r['available_at'],r['event_time'],r['evidence_id']))
             values={r['payload']['operation']:r for r in providers}
             operations={'oi_usd':'get_oi_usd','funding_rate':'get_funding_rate','volume_24h':'get_24h_volume','cap':'get_market_cap_provenance'}
             _require(all(op in values for op in operations.values()),'market_input_missing:'+run+':'+symbol)
@@ -331,7 +550,7 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
             if market['has_market_cap']:
                 _require(cap.get('provider') and cap.get('provider_asset_id'),'market_cap_provider_identity_missing:'+symbol)
             risk=dict(allocation=financial['allocation'],entry_policy=financial['entry_policy'],account_equity_excluding_hrs=str(Decimal(str(financial['account_equity']))-hrs_equity),account_equity_component_source=component_source,baseline_margin_reservations=financial['reservations'])
-            stages=[r for r in rows if r['kind']=='entry_stage_inputs' and r['symbol']==symbol]
+            stages=sorted(_run_rows(rows,kind='entry_stage_inputs',symbol=symbol),key=lambda r:(r['available_at'],r['event_time'],r['evidence_id']))
             facts={}
             for stage in stages:
                 available=max(available,stage['available_at'])
@@ -356,7 +575,9 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
             risk['account_occupancy']=_account_occupancy(inventory,snapshot,financial,occupancy_at,equities)
             event_available=max(available,released)
             _require(event_available<=end,'decision_inputs_after_window:'+run+':'+symbol)
-            inputs.append(dict(symbol=symbol,decision_at=_iso(decided),score_available_at=_iso(analysis['available_at']),observed_at=_iso(available),available_at=_iso(available),complete=True,candidate_scan=scan,market=market,risk=risk,config_hashes=hashes,analysis_klines_1h=payload['klines_1h'],analysis_klines_4h=payload['klines_4h'],
+            history=(dict(analysis_evidence_id=analysis['evidence_id'],analysis_payload_sha256=analysis['payload_sha256'])
+                if isinstance(records,_ArchiveFamily) else dict(analysis_klines_1h=payload['klines_1h'],analysis_klines_4h=payload['klines_4h']))
+            inputs.append(dict(symbol=symbol,decision_at=_iso(decided),score_available_at=_iso(analysis['available_at']),observed_at=_iso(available),available_at=_iso(available),complete=True,candidate_scan=scan,market=market,risk=risk,config_hashes=hashes,**history,
                 evidence_ids=[r['evidence_id'] for r in [analysis,*values.values(),*stages]]))
             calendar.append(dict(symbol=symbol,decision_at=_iso(decided),available_at=_iso(event_available),batch_available_at=_iso(released),batch_id=run,sequence=sequence))
             sequence+=1
@@ -366,10 +587,15 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities):
 
 
 def _funding(records,source,symbols,start,end):
-    evidence=dict(source='prospective_exchange_forecast',complete=True,observations=source.get('funding_observations',[]))
-    schedule=attested_funding_schedule(evidence,symbols,start,end)
+    observations=source.get('funding_observations',[])
+    if isinstance(observations,_ArchiveFamily):
+        evidence=dict(source='prospective_exchange_forecast',complete=True,observations_archive_family='funding_observations')
+        schedule=attested_funding_schedule(dict(source='prospective_exchange_forecast',complete=True,observations=observations),symbols,start,end)
+    else:
+        evidence=dict(source='prospective_exchange_forecast',complete=True,observations=observations)
+        schedule=attested_funding_schedule(evidence,symbols,start,end)
     published={}
-    for row in records:
+    for row in _decision_rows(records,kind='public_market_response',path='/fapi/v1/fundingRate'):
         payload=row['payload']
         if row['kind']!='public_market_response' or payload['path']!='/fapi/v1/fundingRate':continue
         response=payload['response']
@@ -390,7 +616,7 @@ def _funding(records,source,symbols,start,end):
 
 def _cash_flows(source,records,terminal,start,end,segment):
     retained={}
-    for record in records:
+    for record in _decision_rows(records,kind='scan_start'):
         if record['kind']!='scan_start':continue
         raw=record['payload'].get('financial_context',{}).get('ledger_state')
         if not raw:continue
@@ -425,8 +651,12 @@ def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_mo
     output=Path(output_root);start,end=_time(window_start),_time(as_of)
     _require(start<end and end-start<=timedelta(days=90),'invalid_or_excessive_window')
     _require(not _has_symlink_ancestor(output) and _repo_destination_is_ignored(output/'gap_bundle'),'output_not_private_or_symlink')
+    cleanup=ExitStack()
     try:
-        _require(len(canonical_payload(sources)[0].encode())<=MAX_BYTES,'source_byte_limit')
+        if isinstance(sources,dict) and sources.get('evidence_archive'):
+            sources=cleanup.enter_context(_ArchiveSources(sources))
+        archived=isinstance(sources,_ArchiveSources)
+        if not archived:_require(len(canonical_payload(sources)[0].encode())<=MAX_BYTES,'source_byte_limit')
         missing=[]
         for name,gap in (('decision_evidence','decision_evidence_missing'),('funding_observations','funding_schedule_observations_missing'),('equity_checkpoints','bootstrap_checkpoint_history_missing')):
             if not sources.get(name):missing.append(gap)
@@ -440,31 +670,48 @@ def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_mo
         if start_policy is not None:
             boundary=resolve_scan_start(records,start,_time(as_of),start_policy)
             start=_time(boundary['actual_start'])
-        equity_rows=list(sources.get('equity_evidence') or [])
-        equity_rows.extend(archive for row in records if row['kind']=='scan_start'
-            for archive in row['payload'].get('financial_context',{}).get('equity_source_archives',[]))
-        equities=_equity(equity_rows)
-        openings=[r for r in records if r['kind']=='scan_start' and r['event_time']==start]
+        if archived:equities=_EquityView(sources)
+        else:
+            equity_rows=list(sources.get('equity_evidence') or [])
+            equity_rows.extend(archive for row in records if row['kind']=='scan_start'
+                for archive in row['payload'].get('financial_context',{}).get('equity_source_archives',[]))
+            equities=_equity(equity_rows)
+        openings=[r for r in _decision_rows(records,kind='scan_start',event_start=start,event_end=start) if r['event_time']==start]
         _require(len(openings)==1,'bootstrap_capture_boundary_missing_or_duplicate')
         opening=copy.deepcopy(openings[0]['payload']);opening['_available_at']=openings[0]['available_at']
         bootstrap,tables,available=_bootstrap(opening,start,equities,sources.get('equity_checkpoints',[]),records,execution_model,monitoring_model,allow_inception_segment)
-        inputs,calendar,coverage=_cycles(records,bootstrap,available,start,end,equities)
+        scratch=Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix='hrs-conversion-spools-')))
+        spools=None
+        if archived:
+            spools=tuple(_RowSpool(scratch/name) for name in ('inputs.jsonl','calendar.jsonl','coverage.jsonl'))
+            for spool in spools:cleanup.callback(spool.close)
+        inputs,calendar,coverage=_cycles(records,bootstrap,available,start,end,equities,spools=spools)
         symbols=tuple(sorted({r['symbol'] for r in inputs}))
-        bars=_closed_bars(sources,records,end)
+        bar_spool=_BarSpool(scratch/'bars.sqlite') if archived else None
+        if bar_spool is not None:cleanup.callback(bar_spool.close)
+        bars=_closed_bars(sources,records,end,spool=bar_spool)
         for symbol in symbols:
             for interval in ('1h','4h','1m'):
                 _require((symbol,interval) in bars,'market_bars_missing:'+symbol+':'+interval)
         forecasts,funding=_funding(records,sources,symbols,start,end)
-        complete=[e for e in equities if _time(e['payload']['as_of'])>=end and e['payload'].get('source_collection',{}).get('complete') is True and e['payload'].get('income_report',{}).get('id_match_and_coverage_complete') is True]
-        _require(complete,'cashflow_and_income_inventory_through_end_unproven')
-        terminal=max(complete,key=lambda e:_time(e['payload']['as_of']))['payload']
+        complete=(e for e in _equity_rows(equities,end) if e['payload'].get('source_collection',{}).get('complete') is True and e['payload'].get('income_report',{}).get('id_match_and_coverage_complete') is True)
+        terminal_source=max(complete,key=lambda e:_time(e['payload']['as_of']),default=None)
+        _require(terminal_source is not None,'cashflow_and_income_inventory_through_end_unproven')
+        terminal=terminal_source['payload']
         _require(terminal.get('allocation_audit',{}).get('version')==1,'allocation_journal_inventory_missing')
         flows=_cash_flows(sources,records,terminal,start,end,bootstrap['ledger']['segment_id'])
-        exchanges=[r for r in records if r['kind']=='public_market_response' and r['payload']['path']=='/fapi/v1/exchangeInfo' and r['available_at']<=available]
-        _require(exchanges,'exchange_info_at_bootstrap_missing')
-        exchange=exchanges[-1]['payload']['response']
+        exchange_row=max(_decision_rows(records,kind='public_market_response',path='/fapi/v1/exchangeInfo',available_before=available),key=lambda r:r['available_at'],default=None)
+        _require(exchange_row is not None,'exchange_info_at_bootstrap_missing')
+        exchange=exchange_row['payload']['response']
         with tempfile.TemporaryDirectory(prefix='hrs-evidence-conversion-') as temp:
             staging=Path(temp).resolve()
+            execution_count=bars.count('1m',after=start,through=end) if archived else sum(1 for (symbol,interval),rows in bars.items() if interval=='1m' for row in rows if start<_time(row['close_time'])<=end)
+            bar_events=bars.count(after=start,through=end) if archived else sum(1 for rows in bars.values() for row in rows if start<_time(row['close_time'])<=end)
+            from .replay.clock import collect_daily_mark_events
+            event_count=bar_events+len(calendar)+len(flows)+3*len(funding)+len(collect_daily_mark_events(start,end))
+            _require(execution_count<=MAX_EXECUTION_BARS,'execution_bar_budget_exceeded:'+str(execution_count))
+            _require(event_count<=MAX_DERIVED_EVENTS,'derived_event_budget_exceeded:'+str(event_count))
+            raw_sources=sources.copy_to(staging) if archived else sources
             ages=sorted(row['risk']['account_equity_component_source']['source_age_seconds'] for row in inputs
                 if row['risk'].get('account_equity_component_source',{} ) is not None
                 and row['risk'].get('account_equity_component_source',{}).get('model')=='ledger_sample_120s_v1')
@@ -476,9 +723,9 @@ def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_mo
                 'config_hashes.json':dict(strategy_id='hrs',as_of=_iso(end),**bootstrap['config_hashes']),
                 'universe_slices.json':[dict(strategy_id='hrs',valid_from=_iso(start),valid_to=_iso(end+timedelta(microseconds=1)),observed_at=_iso(start),symbols=symbols,intervals=['1h','4h'],source='decision_evidence',config_hash=compute_config_hash(bootstrap['config']))],
                 'exchange_info.json':exchange,'funding_schedule_evidence.json':forecasts,
-                'hrs_export_receipt.json':dict(version=VERSION,boundary_resolution=boundary,end_boundary_resolution=end_boundary,qualification_available_at=terminal['available_at'],source_age_distribution=distribution,mark_synchrony=False,exact_exchange_parity=False,qualification_limitations=['ledger_sample_120s_v1 preserves asynchronous source points; optimistic differences alone do not establish performance qualification.'],bootstrap_available_at=_iso(available),capture_coverage=coverage,source_attested=False,
-                    decision_payload_hashes={r['evidence_id']:r['payload_sha256'] for r in records},equity_payload_hashes=[e['sha256'] for e in equities]),
-                'raw_hrs_evidence.json':sources}
+                'hrs_export_receipt.json':dict(version=VERSION,boundary_resolution=boundary,end_boundary_resolution=end_boundary,qualification_available_at=terminal['available_at'],source_age_distribution=distribution,execution_budget=dict(one_minute_bars=execution_count,total_derived_events=event_count,max_execution_bars=MAX_EXECUTION_BARS,max_derived_events=MAX_DERIVED_EVENTS),mark_synchrony=False,exact_exchange_parity=False,qualification_limitations=['ledger_sample_120s_v1 preserves asynchronous source points; optimistic differences alone do not establish performance qualification.','The replay engine materializes derived bars/events; declared count budgets do not establish constant RAM for arbitrary universes.'],bootstrap_available_at=_iso(available),capture_coverage=list(coverage),source_attested=False,
+                    decision_payload_hashes=raw_sources['evidence_archive'] if archived else {r['evidence_id']:r['payload_sha256'] for r in records},equity_payload_hashes=None if archived else [e['sha256'] for e in equities]),
+                'raw_hrs_evidence.json':raw_sources}
             for name,value in files.items():_write(staging/name,value)
             for name,value in [('hrs_decision_inputs.jsonl',inputs),('hrs_decision_calendar.jsonl',calendar),('hrs_cash_flows.jsonl',flows),('funding_rates.jsonl',funding),('trade_signals.jsonl',[]),('market_snapshots.jsonl',[])]:_write(staging/name,value,jsonl=True)
             for (symbol,interval),rows in bars.items():_write(staging/f'klines/{symbol}_{interval}.jsonl',rows,jsonl=True)
@@ -499,6 +746,8 @@ def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_mo
         result=dict(decision='BLOCKED_DATA',version=VERSION,source_provenance='unverified',source_attested=False,window_start=_iso(start),as_of=_iso(end),gaps=gaps,gap_bundle=str(path),performance_qualified=False,source_inventory={key:len(value) for key,value in sources.items() if isinstance(value,list)},source_artifact=sources.get('source_artifact'))
         _write(path,result)
         return result
+    finally:
+        cleanup.close()
 
 
 def _preflight(directory,start,end,tables):
@@ -512,19 +761,25 @@ def _preflight(directory,start,end,tables):
     run_replay(portal,HrsAdapter(lambda at:tables),broker)
 
 
-def read_market_export(directory):
+def _market_inventory(directory):
+    root=Path(directory)
+    _require(root.is_dir() and not _has_symlink_ancestor(root),'raw_market_export_path_invalid')
+    manifest=json.loads((root/'raw_manifest.json').read_text())
+    _require(manifest.get('strategy_id')=='hrs','raw_market_export_strategy_mismatch')
+    selected={name:query for name,query in manifest['queries'].items()
+        if re.fullmatch(r'btc_eth\.kline_([a-z0-9]{1,32})_(1m|1h|4h)',name)}
+    return root,selected
+
+
+def iter_market_export(directory):
     """Read only kline rows from the existing raw_export hash inventory.
 
     Its BLOCKED_DATA label is expected: raw_export alone never qualified HRS.
     Timestamp bindings were applied by that exporter; ambiguous naive rows still
     fail this converter. Existing historical-revision limitations remain visible.
     """
-    root=Path(directory)
-    _require(root.is_dir() and not _has_symlink_ancestor(root),'raw_market_export_path_invalid')
-    manifest=json.loads((root/'raw_manifest.json').read_text())
-    _require(manifest.get('strategy_id')=='hrs','raw_market_export_strategy_mismatch')
-    batches=[]
-    for name,query in manifest['queries'].items():
+    root,queries=_market_inventory(directory)
+    for name,query in queries.items():
         match=re.fullmatch(r'btc_eth\.kline_([a-z0-9]{1,32})_(1m|1h|4h)',name)
         if not match:continue
         relative=Path(query['file'])
@@ -533,12 +788,81 @@ def read_market_export(directory):
         _require(not _has_symlink_ancestor(path) and path.is_file() and sha256_file(str(path))==query['sha256'],'raw_market_export_hash_mismatch:'+name)
         rows=[json.loads(line) for line in path.read_text().splitlines() if line.strip()]
         _require(len(rows)==query['row_count'] and len(rows)<=MAX_ROWS,'raw_market_export_row_count_mismatch')
-        batches.append(dict(symbol=match[1].upper(),interval=match[2],source='postgres_klines',rows=rows,
-            payload_sha256=canonical_payload(rows)[1],raw_export_query=query))
-    return batches
+        yield dict(symbol=match[1].upper(),interval=match[2],source='postgres_klines',rows=rows,
+            payload_sha256=canonical_payload(rows)[1],raw_export_query=query)
 
 
-async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_policy=None):
+def read_market_export(directory):
+    return list(iter_market_export(directory))
+
+
+def _archive_market_source(writer,directory,start,end):
+    _root,queries=_market_inventory(directory)
+    # Rows are independently counted by raw_export's retained query inventory.
+    writer.declare_source('market_bars',dict(expected_count=len(queries),
+        expected_item_count=sum(q['row_count'] for q in queries.values()),item_field='rows',
+        query_scope=dict(source='hash_bound_raw_export',queries=queries),account_id=None,
+        window_start=min((q.get('min_time',q.get('window_start',_iso(start-timedelta(days=31)))) for q in queries.values()),default=_iso(start)),
+        window_end=max((q.get('max_time',q.get('as_of',_iso(end))) for q in queries.values()),default=_iso(end))))
+    for batch in iter_market_export(directory):writer.write_row('market_bars',batch)
+
+
+async def _stream_market_tables(connection,writer,pairs,start,end,timezones):
+    """Reuse raw_export's guarded identifiers and explicit naive-time bindings.
+
+    The archive counts source items independently, then emits <=1000-bar
+    receipts. Neither the legacy 64-pair nor whole-export byte cap is reused.
+    """
+    from .replay.raw_export import _query_specs,_zone_for,_select_sql_and_args,_canonical_rows,_as_utc,SQL_VERSION
+    pairs=tuple(pairs)
+    _require(0<len(pairs)<=192 and all(interval in ('1m','1h','4h') for _,interval in pairs),'archive_market_pairs_invalid')
+    lower=start-timedelta(hours=240)
+    specs=[spec for spec in _query_specs('hrs',pairs) if spec[0]=='btc_eth']
+    prepared=[];expected=items=0
+    first,last=lower,end
+    for schema,table,time_col,columns,cutoffs,sorting in specs:
+        name=schema+'.'+table
+        meta=await connection.fetch('SELECT column_name,data_type FROM information_schema.columns WHERE table_schema=$1 AND table_name=$2',schema,table)
+        types={r['column_name']:r['data_type'] for r in meta}
+        _require(set(columns)<=set(types),'archive_market_columns_missing:'+name)
+        zones={column:_zone_for(name,column,types[column],timezones) for column in (time_col,*cutoffs)}
+        sql,args=_select_sql_and_args(name,time_col,columns,cutoffs,sorting,types,zones,lower,end)
+        sql=re.sub(r'\s+LIMIT\s+\$\d+\s*$','',sql,flags=re.IGNORECASE);args=args[:-1]
+        inventory=await connection.fetchrow('SELECT count(*) AS expected_count,min('+time_col+') AS first_event,max('+time_col+') AS last_event FROM ('+sql+') AS source_inventory',*args)
+        count=inventory['expected_count']
+        _require(count>0,'archive_market_source_empty:'+name)
+        first=min(first,_as_utc(inventory['first_event'],zones[time_col]));last=max(last,_as_utc(inventory['last_event'],zones[time_col]))
+        expected+=(count+999)//1000;items+=count
+        prepared.append((name,time_col,columns,cutoffs,sorting,zones,sql,args,count))
+    writer.declare_source('market_bars',dict(expected_count=expected,expected_item_count=items,item_field='rows',
+        query_scope=dict(sql_version=SQL_VERSION,queries=[dict(table=p[0],sql=p[6],arguments=p[7],expected_items=p[8]) for p in prepared],timezone_bindings=timezones),
+        account_id=None,window_start=_iso(first),window_end=_iso(last)))
+    for name,time_col,columns,cutoffs,sorting,zones,sql,args,count in prepared:
+        symbol,interval=re.fullmatch(r'btc_eth\.kline_([a-z0-9]+)_(1m|1h|4h)',name).groups()
+        buffer=[]
+        def emit():
+            rows=_canonical_rows(buffer,time_col,cutoffs,sorting,lower,end,zones,name)
+            writer.write_row('market_bars',dict(symbol=symbol.upper(),interval=interval,source='postgres_klines',rows=rows,
+                payload_sha256=canonical_payload(rows)[1],source_query=name))
+        async for record in connection.cursor(sql,*args,prefetch=128):
+            buffer.append({column:record[column] for column in columns})
+            if len(buffer)==1000:emit();buffer=[]
+        if buffer:emit()
+
+
+def merge_market_archive(sources,directory,archive_root,*,window_start,as_of):
+    from .replay.hrs_evidence_archive import EvidenceArchiveWriter
+    with _ArchiveSources(sources) as original:
+        _require('market_bars' not in original.archive.counts,'archive_market_source_already_present')
+        with EvidenceArchiveWriter(archive_root,source_metadata={}) as writer:
+            for family,metadata in original.archive.source_metadata.items():
+                writer.declare_source(family,metadata)
+                for row in original.archive.iter_records(family):writer.write_row(family,row)
+            _archive_market_source(writer,directory,_time(window_start),_time(as_of)+timedelta(hours=1))
+            return dict(sources,evidence_archive=writer.finish())
+
+
+async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_policy=None,archive_root=None,raw_market_export=None,market_pairs=None,timezone_bindings=None):
     """Bounded extraction on an acquired SELECT-only connection, one snapshot.
 
     No secret lookup, connection ownership, DDL or writes. The caller supplies an
@@ -568,39 +892,73 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
         ORDER BY received_at,symbol LIMIT $3""",(start-timedelta(seconds=420),end,limit))]
     result={'source_query_version':VERSION,'source_account_id':account_id,'source_window_start':_iso(start),'source_as_of':_iso(end)}
     estimated=0;referenced=set();ledger_points=set();scanned=set()
-    async with connection.transaction(readonly=True,isolation='repeatable_read'):
-        for name,query,args in specs:
-            if name=='equity_evidence':
-                query='''SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
-                    FROM trading.hrs_equity_evidence WHERE account_id=$1 AND
-                    (evidence_sha256=ANY($2::text[]) OR as_of=ANY($3::timestamptz[])
-                     OR (as_of >= $4 AND as_of <= $5)) ORDER BY available_at,evidence_sha256 LIMIT $6'''
-                args=(account_id,sorted(referenced),sorted(ledger_points),nominal_end,end+timedelta(seconds=120),limit)
-            elif name=='funding_observations':
-                query='''SELECT symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash
-                    FROM public.ai_tuner_funding_schedule_observations WHERE received_at >= $1 AND received_at <= $2
-                    AND symbol=ANY($3::text[]) ORDER BY received_at,symbol LIMIT $4'''
-                args=(start-timedelta(seconds=420),end,sorted(scanned),limit)
-            rows=[dict(row) for row in await connection.fetch(query,*args)]
-            _require(len(rows)<=MAX_ROWS,'source_row_limit:'+name)
-            # The same canonical encoder used by the recorder preserves values
-            # and awareness while preventing credentials from entering an export.
-            encoded=canonical_payload(rows)[0]
-            estimated+=len(encoded.encode())
-            _require(estimated<=MAX_BYTES,'source_byte_limit')
-            result[name]=json.loads(encoded)
-            if name=='decision_evidence':
-                for row in rows:
-                    payload=_decoded(row['payload'])
-                    if row['kind'] in ('standard_scan_scope','lv_rm_scan_scope'):
-                        scanned.update(payload['symbols'])
-                    financial=payload.get('financial_context',{})
-                    referenced.update(r['evidence_sha256'] for r in financial.get('equity_source_archives',[]))
-                    component=financial.get('hrs_marked_equity_observation')
-                    if component:referenced.add(component['evidence_sha256'])
-                    raw=financial.get('ledger_state')
-                    if raw:ledger_points.add(_time(_decoded(raw['ledger_state'])['as_of']))
+    with ExitStack() as cleanup:
+        writer=None
+        if archive_root is not None:
+            from .replay.hrs_evidence_archive import EvidenceArchiveWriter
+            writer=cleanup.enter_context(EvidenceArchiveWriter(archive_root,source_metadata={}))
+        async with connection.transaction(readonly=True,isolation='repeatable_read'):
+            for name,query,args in specs:
+                if name=='equity_evidence':
+                    query='''SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
+                        FROM trading.hrs_equity_evidence WHERE account_id=$1 AND
+                        (evidence_sha256=ANY($2::text[]) OR as_of=ANY($3::timestamptz[])
+                         OR (as_of >= $4 AND as_of <= $5)) ORDER BY available_at,evidence_sha256 LIMIT $6'''
+                    args=(account_id,sorted(referenced),sorted(ledger_points),nominal_end,end+timedelta(seconds=120),limit)
+                elif name=='funding_observations':
+                    query='''SELECT symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash
+                        FROM public.ai_tuner_funding_schedule_observations WHERE received_at >= $1 AND received_at <= $2
+                        AND symbol=ANY($3::text[]) ORDER BY received_at,symbol LIMIT $4'''
+                    args=(start-timedelta(seconds=420),end,sorted(scanned),limit)
+                if writer is not None:
+                    streamed_query=re.sub(r'\s+LIMIT\s+\$\d+\s*$','',query,flags=re.IGNORECASE)
+                    streamed_args=args[:-1]
+                    event_column={'decision_evidence':'event_time','equity_evidence':'as_of','equity_checkpoints':'as_of','funding_observations':'source_time'}[name]
+                    inventory=await connection.fetchrow('SELECT count(*) AS expected_count,min('+event_column+') AS first_event,max('+event_column+') AS last_event FROM ('+streamed_query+') AS source_inventory',*streamed_args)
+                    writer.declare_source(name,dict(expected_count=inventory['expected_count'],query_scope=dict(sql=streamed_query,arguments=streamed_args),
+                        account_id=account_id,window_start=_iso(inventory['first_event'] or start),window_end=_iso(inventory['last_event'] or end),
+                        requested_window_start=_iso(start),requested_window_end=_iso(end)))
+                    async for source_row in connection.cursor(streamed_query,*streamed_args,prefetch=128):
+                        row=dict(source_row)
+                        if name in ('decision_evidence','equity_evidence'):
+                            row['payload']=_decoded(row['payload'])
+                        writer.write_row(name,row)
+                        if name=='decision_evidence':
+                            _source_references(row,referenced,ledger_points,scanned)
+                    continue
+                rows=[dict(row) for row in await connection.fetch(query,*args)]
+                _require(len(rows)<=MAX_ROWS,'source_row_limit:'+name)
+                # The same canonical encoder used by the recorder preserves values
+                # and awareness while preventing credentials from entering an export.
+                encoded=canonical_payload(rows)[0]
+                estimated+=len(encoded.encode())
+                _require(estimated<=MAX_BYTES,'source_byte_limit')
+                result[name]=json.loads(encoded)
+                if name=='decision_evidence':
+                    for row in rows:
+                        _source_references(row,referenced,ledger_points,scanned)
+            if writer is not None:
+                if market_pairs is not None:
+                    _require(raw_market_export is None,'archive_market_source_duplicate')
+                    pairs=tuple((symbol,interval) for symbol in sorted(scanned) for interval in ('1m','1h','4h')) if market_pairs=='scanned' else market_pairs
+                    await _stream_market_tables(connection,writer,pairs,start,end,timezone_bindings or {})
+                if raw_market_export is not None:_archive_market_source(writer,raw_market_export,start,end)
+        if writer is not None:
+            result['evidence_archive']=writer.finish()
+        elif raw_market_export is not None:result['market_bars']=read_market_export(raw_market_export)
     return result
+
+
+def _source_references(row,referenced,ledger_points,scanned):
+    payload=_decoded(row['payload'])
+    if row['kind'] in ('standard_scan_scope','lv_rm_scan_scope'):
+        scanned.update(payload['symbols'])
+    financial=payload.get('financial_context',{})
+    referenced.update(r['evidence_sha256'] for r in financial.get('equity_source_archives',[]))
+    component=financial.get('hrs_marked_equity_observation')
+    if component:referenced.add(component['evidence_sha256'])
+    raw=financial.get('ledger_state')
+    if raw:ledger_points.add(_time(_decoded(raw['ledger_state'])['as_of']))
 
 
 def main(argv=None):
@@ -619,8 +977,14 @@ def main(argv=None):
     args=parser.parse_args(argv)
     if args.sources and args.sources.stat().st_size>MAX_BYTES:parser.error('source_byte_limit')
     sources=json.loads(args.sources.read_text()) if args.sources else {}
+    if sources.get('version')=='hrs-evidence-archive-v2':
+        sources=dict(evidence_archive=dict(path=str(args.sources.resolve()),manifest_sha256=sha256_file(str(args.sources))))
+    elif sources.get('evidence_archive') and args.sources:
+        descriptor=sources['evidence_archive']
+        if not Path(descriptor['path']).is_absolute():
+            descriptor['path']=str((args.sources.parent/descriptor['path']).resolve())
     if args.sources:sources['source_artifact']=dict(path=str(args.sources),sha256=sha256_file(str(args.sources)))
-    if args.raw_market_export:
+    if args.raw_market_export and not sources.get('evidence_archive'):
         sources.setdefault('market_bars',[]).extend(read_market_export(args.raw_market_export))
     execution=(dict(version='hrs_1m_volume_v1',participation_rate=args.participation_rate,timeout_minutes=15) if args.participation_rate else None)
     monitor=(dict(version='hrs_cycle_monitor_v1',cadence_seconds=args.monitor_cadence_seconds,anchor_at=args.monitor_anchor) if args.monitor_cadence_seconds and args.monitor_anchor else None)
@@ -628,7 +992,11 @@ def main(argv=None):
         if args.first_scan_max_delay_seconds is not None else None)
     end_policy=(dict(version='first_scan_start_v1',max_delay_seconds=args.end_first_scan_max_delay_seconds)
         if args.end_first_scan_max_delay_seconds is not None else None)
-    result=export_evidence_bundle(sources,args.output_root,window_start=_time(args.window_start),as_of=_time(args.as_of),execution_model=execution,monitoring_model=monitor,allow_inception_segment=args.allow_inception_segment,start_policy=policy,end_policy=end_policy)
+    with ExitStack() as cleanup:
+        if args.raw_market_export and sources.get('evidence_archive'):
+            combined=Path(cleanup.enter_context(tempfile.TemporaryDirectory(prefix='hrs-merged-archive-'))).resolve()/'archive'
+            sources=merge_market_archive(sources,args.raw_market_export,combined,window_start=args.window_start,as_of=args.as_of)
+        result=export_evidence_bundle(sources,args.output_root,window_start=_time(args.window_start),as_of=_time(args.as_of),execution_model=execution,monitoring_model=monitor,allow_inception_segment=args.allow_inception_segment,start_policy=policy,end_policy=end_policy)
     print(canonical_payload(result)[0])
     return 0 if result.get('status')=='SEALED' else 2
 
