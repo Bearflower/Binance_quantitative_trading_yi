@@ -296,13 +296,14 @@ def test_unified_real_hrs_limit_model_opens_from_manifest_one_minute_inputs(tmp_
     assert not result.invariant_violations
 
 
-def test_unified_real_hrs_limit_timeout_records_partial_owned_close(tmp_path):
+@pytest.mark.parametrize(('volume','filled_quantity'), [('1','.15'),('.1','.015')])
+def test_unified_real_hrs_limit_timeout_records_partial_owned_close(tmp_path,volume,filled_quantity):
     from ai_tuner.replay.engine import run_replay
-    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True,subbar_volume='1')
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True,subbar_volume=volume)
     result=run_replay(portal,adapter,broker(),include_snapshots=True)
     assert len(result.closed_trades)==2
     assert all(trade.exit_reason=='ENTRY_TIMEOUT' for trade in result.closed_trades)
-    assert all(trade.quantity==D('.15') for trade in result.closed_trades)
+    assert all(trade.quantity==D(filled_quantity) for trade in result.closed_trades)
     assert result.final_position is None
     assert not result.invariant_violations
 

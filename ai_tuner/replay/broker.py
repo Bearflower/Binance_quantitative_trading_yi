@@ -817,7 +817,8 @@ class VirtualBroker:
                 ts=ts,
             )
         )
-        self._check_invariants(close_qty, exit_price, symbol_filters, "close")
+        self._check_invariants(close_qty, exit_price, symbol_filters, "close",
+                               enforce_min_notional=not (intent.strategy_id == 'hrs' and intent.reduce_only))
         self._event(
             ts,
             "fill",
@@ -850,10 +851,14 @@ class VirtualBroker:
         price: Decimal,
         symbol_filters: SymbolFilters,
         label: str,
+        *,
+        enforce_min_notional: bool = True,
     ) -> None:
         for message in (
             check_quantity_in_range(quantity, symbol_filters.step_size),
-            check_notional_above_min(quantity, price, symbol_filters.min_notional),
+            # Binance UM -4164 exempts reduce-only closes from MIN_NOTIONAL;
+            # quantity precision still applies, including small partial fills.
+            check_notional_above_min(quantity, price, symbol_filters.min_notional) if enforce_min_notional else None,
         ):
             if message:
                 self.invariant_violations.append("[{0}] {1}".format(label, message))
