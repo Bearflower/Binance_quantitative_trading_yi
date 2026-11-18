@@ -1,4 +1,4 @@
-name: Release New Coin restart ownership fix
+name: Release New Coin restart recovery evidence
 on:
   workflow_dispatch:
 permissions:
@@ -25,6 +25,7 @@ jobs:
           ssh-keyscan -H 43.156.242.184 >> ~/.ssh/known_hosts
           staging="/root/trading_system/.deploy_tmp/new-coin-ownership-$GITHUB_SHA"
           checksum="$(sha256sum strategies/new_coin/strategy.py | cut -d ' ' -f 1)"
+          evidence_checksum="$(sha256sum strategies/new_coin/recovery_evidence.py | cut -d ' ' -f 1)"
           ssh -o ConnectTimeout=15 root@43.156.242.184 "install -d -m 700 $staging"
-          scp -o ConnectTimeout=15 strategies/new_coin/strategy.py deployment/new-coin-ownership/Dockerfile "root@43.156.242.184:$staging/"
-          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 python3 - "$GITHUB_SHA" "$checksum" "$staging" < deployment/new-coin-ownership/activate.py
+          scp -o ConnectTimeout=15 strategies/new_coin/{strategy.py,recovery_evidence.py} deployment/new-coin-ownership/Dockerfile "root@43.156.242.184:$staging/"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 python3 - "$GITHUB_SHA" "$checksum" "$evidence_checksum" "$staging" < deployment/new-coin-ownership/activate.py

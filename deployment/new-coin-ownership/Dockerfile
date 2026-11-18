@@ -1,2 +1,2 @@
-FROM local/ai-tuner-review-trading_system-new_coin:c0ad0c99
-COPY strategy.py /app/strategies/new_coin/strategy.py
+FROM local/new-coin-ownership:41d86ea15bb1509ee0178f09dde9b432b80202bc
+COPY strategy.py recovery_evidence.py /app/strategies/new_coin/

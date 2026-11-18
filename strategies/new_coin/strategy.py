@@ -28,6 +28,7 @@ from shared.utils import to_aware_utc
 from .scoring_engine import ScoringEngine, ScoringResult
 from .pattern import PatternRecognizer
 from .detector import ListingDetector
+from .recovery_evidence import verify_tp1_tail
 from .executor import (
     TradingExecutor, derive_reached_targets, _PRICE_FRESH_DEFAULT_SECONDS,
 )
@@ -2532,6 +2533,7 @@ class NewCoinStrategy(BaseStrategy):
             entry.pop('recovery_position_id', None)
             entry.pop('recovery_entry_order_id', None)
             entry.pop('recovery_tp1_algo_id', None)
+            entry.pop('recovery_tp1_evidence', None)
             entry.pop('recovery_target1_candidate', None)
             entry.pop('recovery_target2_candidate', None)
             self._backfill_tracking_atr(entry, atr_map.get(symbol) if atr_map else None)
@@ -2552,7 +2554,10 @@ class NewCoinStrategy(BaseStrategy):
         # AC-A §3.4 第3点：档位回填自愈（预热精度缓存 + derive_reached_targets）
         await self._backfill_target_statuses(executor, list(rebuilt.keys()))
         for symbol, pos in rebuilt.items():
-            pos['time_exit_status'] = executor.position_tracking[symbol]['time_exit_status']
+            tracking = executor.position_tracking[symbol]
+            pos['time_exit_status'] = tracking['time_exit_status']
+            if 'recovery_tp1_evidence' in tracking:
+                pos['recovery_tp1_evidence'] = tracking['recovery_tp1_evidence']
 
         if rebuilt:
             logger.info("持仓基线已同步到 position_tracking", symbols=list(rebuilt.keys()))
@@ -2672,7 +2677,12 @@ class NewCoinStrategy(BaseStrategy):
                 tracking['recovery_target1_candidate'] = hit1
                 tracking['recovery_target2_candidate'] = hit2
                 tracking['time_exit_status'] = 'review_required'
-                logger.warning('重启仓位仅有数据库候选证据，时间退出待人工复核', symbol=symbol)
+                if remaining < anchor:
+                    tracking['recovery_tp1_evidence'] = await self._audit_recovered_tp1(
+                        executor, symbol, tracking, anchor, remaining)
+                logger.info('重启仓位退出证据', symbol=symbol,
+                            tp1_evidence=tracking.get('recovery_tp1_evidence'),
+                            time_exit_status=tracking['time_exit_status'])
                 continue
             if hit1 and not tracking.get('target1_reached'):
                 tracking['target1_reached'] = True
@@ -2686,6 +2696,27 @@ class NewCoinStrategy(BaseStrategy):
                     "基线回填自愈：target2_reached=True（移动止损可接管）",
                     symbol=symbol, remaining=remaining, anchor=float(anchor),
                 )
+
+    @staticmethod
+    async def _audit_recovered_tp1(executor, symbol, tracking, anchor, remaining):
+        keys = ('recovery_entry_order_id', 'recovery_tp1_algo_id', 'entry_time')
+        if not all(tracking.get(key) for key in keys):
+            return 'missing_batch_identity'
+        try:
+            verified = await asyncio.wait_for(
+                verify_tp1_tail(
+                    executor.binance_api, symbol=symbol,
+                    entry_order_id=tracking['recovery_entry_order_id'],
+                    tp1_algo_id=tracking['recovery_tp1_algo_id'],
+                    opened_at=tracking['entry_time'], anchor=Decimal(str(anchor)),
+                    entry_price=Decimal(str(tracking['entry_price'])),
+                    remaining=Decimal(str(remaining)), now=datetime.now(timezone.utc),
+                ),
+                timeout=8,
+            )
+        except Exception:
+            return 'exchange_query_failed'
+        return 'verified_tail' if verified else 'batch_or_protection_unverified'
 
     @staticmethod
     def _backfill_tracking_atr(entry: Dict[str, Any], atr: Optional[Decimal]) -> None:

@@ -136,3 +136,50 @@ async def test_failed_time_close_keeps_recovered_tracking(monkeypatch):
 
     assert "PFEUSDT" in executor.position_tracking
     executor.notification.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("gap", [None, "foreign_fill", "missing_stop", "wrong_actual",
+                                  "wrong_amount", "before_entry", "hedge_mode",
+                                  "ambiguous_same_ms"])
+async def test_recovered_tp1_requires_exact_filled_batch_and_tail_stop(gap):
+    from strategies.new_coin.recovery_evidence import verify_tp1_tail
+
+    api = exchange()
+    entry = {**ENTRY, "positionSide": "BOTH", "reduceOnly": False}
+    fill = {**FILL, "positionSide": "BOTH"}
+    close = {**entry, "orderId": 141975, "side": "BUY", "executedQty": "0.98",
+             "reduceOnly": True}
+    close_fill = {**fill, "id": 9002, "orderId": 141975, "side": "BUY",
+                  "qty": "0.98", "time": FILL["time"] + 1000}
+    tp1 = {**TP1, "algoStatus": "FINISHED", "actualOrderId": "141975",
+           "positionSide": "BOTH"}
+    stop = {**STOP, "quantity": "2.30", "positionSide": "BOTH"}
+    api.get_position.return_value[0].update(positionAmt="-2.30", positionSide="BOTH")
+    extras = []
+    if gap == "foreign_fill":
+        extras.append({**close_fill, "id": 9003, "orderId": 777})
+    if gap == "missing_stop":
+        stop["quantity"] = "2.29"
+    if gap == "wrong_actual":
+        tp1["actualOrderId"] = "141976"
+    if gap == "wrong_amount":
+        close_fill["qty"] = "0.97"
+    if gap == "before_entry":
+        close_fill["time"] = FILL["time"] - 1
+    if gap == "hedge_mode":
+        close_fill["positionSide"] = "SHORT"
+    if gap == "ambiguous_same_ms":
+        close_fill["time"] = FILL["time"]
+    api.get_order.side_effect = [entry, close]
+    api.get_user_trades.side_effect = [[fill], [close_fill], [fill, close_fill, *extras]]
+    api.get_algo_order.return_value = tp1
+    api.get_open_algo_orders.return_value = [stop]
+
+    result = await verify_tp1_tail(
+        api, symbol="PFEUSDT", entry_order_id=141970, tp1_algo_id=TP1["algoId"],
+        opened_at=OPENED, anchor=Decimal("3.28"), entry_price=Decimal("30.41271340"),
+        remaining=Decimal("2.30"), now=NOW,
+    )
+
+    assert result == (gap is None)

@@ -151,3 +151,115 @@ async def verify_unreduced_short(
         return tp1_seen and (stop_all or stop_covered >= remaining)
     except Exception:
         return False
+
+
+async def _filled_order(exchange, symbol, order_id, side, reduce_only, quantity):
+    order = await exchange.get_order(symbol, order_id)
+    if (order.get('symbol') != symbol or _id(order.get('orderId')) != order_id
+            or order.get('side') != side or order.get('positionSide') != 'BOTH'
+            or order.get('reduceOnly') is not reduce_only or order.get('status') != 'FILLED'
+            or _positive(order.get('executedQty')) != quantity):
+        raise ValueError('order identity or quantity mismatch')
+    rows = await exchange.get_user_trades(symbol, order_id=str(order_id), limit=1000)
+    if not isinstance(rows, list) or not 0 < len(rows) < 1000:
+        raise ValueError('order fills incomplete')
+    fills = _fill_facts(rows, symbol)
+    if (any(fact[:2] != (order_id, side) for fact in fills.values())
+            or sum(fact[2] for fact in fills.values()) != quantity):
+        raise ValueError('order fills do not reconcile')
+    return order, fills
+
+
+def _fill_facts(rows, symbol):
+    facts = {}
+    for row in rows:
+        fill_id = _id(row.get('id'))
+        if (row.get('symbol') != symbol or row.get('positionSide') != 'BOTH'
+                or fill_id in facts):
+            raise ValueError('fill identity mismatch')
+        facts[fill_id] = (_id(row.get('orderId')), row.get('side'),
+                          _positive(row.get('qty')), _id(row.get('time')))
+    return facts
+
+
+async def verify_tp1_tail(
+    exchange: Any, *, symbol: str, entry_order_id: int, tp1_algo_id: int,
+    opened_at: datetime, anchor: Decimal, entry_price: Decimal,
+    remaining: Decimal, now: datetime,
+) -> bool:
+    """Prove one completed TP1 and an exchange-protected remaining short.
+
+    This is recovery evidence only. No order or exit state is modified.
+    """
+    try:
+        if not symbol.endswith('USDT') or _id(entry_order_id) != entry_order_id:
+            return False
+        if (opened_at.tzinfo is None or now.tzinfo is None
+                or not timedelta(0) <= now - opened_at <= timedelta(days=6)):
+            return False
+        anchor, remaining = _positive(anchor), _positive(remaining)
+        closed = anchor - remaining
+        if closed <= 0 or _id(tp1_algo_id) != tp1_algo_id:
+            return False
+        algo = await exchange.get_algo_order(tp1_algo_id)
+        if (algo.get('symbol') != symbol or _id(algo.get('algoId')) != tp1_algo_id
+                or algo.get('side') != 'BUY' or algo.get('positionSide') != 'BOTH'
+                or algo.get('orderType') != 'TAKE_PROFIT' or algo.get('algoStatus') != 'FINISHED'
+                or algo.get('reduceOnly') is not True or algo.get('closePosition') is True
+                or _positive(algo.get('quantity')) != closed):
+            return False
+        exit_id = _id(algo.get('actualOrderId'))
+        if exit_id == entry_order_id:
+            return False
+        entry, entry_fills = await _filled_order(
+            exchange, symbol, entry_order_id, 'SELL', False, anchor)
+        _, exit_fills = await _filled_order(exchange, symbol, exit_id, 'BUY', True, closed)
+        first = min(fact[3] for fact in entry_fills.values())
+        opened_ms = int(opened_at.timestamp() * 1000)
+        now_ms = int(now.timestamp() * 1000)
+        if (abs(first - opened_ms) > 3_600_000 or entry_fills.keys() & exit_fills.keys()
+                or max(fact[3] for fact in entry_fills.values()) >= min(fact[3] for fact in exit_fills.values())
+                or max(fact[3] for fact in exit_fills.values()) > now_ms):
+            return False
+        all_fills = await exchange.get_user_trades(
+            symbol, start_time=first, end_time=now_ms, limit=1000)
+        if (not isinstance(all_fills, list) or len(all_fills) >= 1000
+                or _fill_facts(all_fills, symbol) != entry_fills | exit_fills):
+            return False
+        entry_price = _positive(entry_price)
+        tolerance = entry_price * Decimal('0.000001')
+        if abs(_positive(entry.get('avgPrice')) - entry_price) > tolerance:
+            return False
+        positions = await exchange.get_position(symbol)
+        if not isinstance(positions, list):
+            return False
+        live = [row for row in positions if row.get('symbol') == symbol
+                and Decimal(str(row.get('positionAmt'))) != 0]
+        if len(live) != 1:
+            return False
+        position = live[0]
+        if (position.get('positionSide') != 'BOTH'
+                or Decimal(str(position.get('positionAmt'))) != -remaining
+                or abs(_positive(position.get('entryPrice')) - entry_price) > tolerance):
+            return False
+        mark = _positive(position.get('markPrice'))
+        ordinary = await exchange.get_open_orders(symbol)
+        if not isinstance(ordinary, list) or ordinary:
+            return False
+        active = await exchange.get_open_algo_orders(symbol)
+        if not isinstance(active, list):
+            return False
+        active_ids = {_id(order.get('algoId')) for order in active}
+        if tp1_algo_id in active_ids or len(active_ids) != len(active):
+            return False
+        return any(
+            order.get('symbol') == symbol and order.get('side') == 'BUY'
+            and order.get('positionSide') == 'BOTH' and order.get('algoStatus') == 'NEW'
+            and order.get('orderType') in ('STOP', 'STOP_MARKET')
+            and _positive(order.get('triggerPrice')) > mark
+            and (order.get('closePosition') is True
+                 or (order.get('reduceOnly') is True and _positive(order.get('quantity')) >= remaining))
+            for order in active
+        )
+    except (AttributeError, TypeError, ValueError, ArithmeticError):
+        return False

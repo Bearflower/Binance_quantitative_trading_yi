@@ -13,10 +13,13 @@ ROOT = Path('/root/trading_system')
 PIN = ROOT / '.deploy_tmp/ledger-risk-active.json'
 SERVICE = 'new-coin-strategy'
 CONTAINER = 'trading_system-new_coin'
-BASE_TAG = 'local/ai-tuner-review-trading_system-new_coin:c0ad0c99'
-BASE_ID = 'sha256:0a46faa85b506230565394a4ad2094d886621fe570f8264c4bb977744184af09'
-BASE_SOURCE = 'f1a53b4de2ee604a1993a02192a664c742175e5d055d3264207bd47f22e83e6e'
-SOURCE = '/app/strategies/new_coin/strategy.py'
+BASE_TAG = 'local/new-coin-ownership:41d86ea15bb1509ee0178f09dde9b432b80202bc'
+BASE_ID = 'sha256:1cb0ec6d90d0f56ca33cbdb7b438e8abc081697d3919a3df0ec307be33cfce65'
+SOURCES = {
+    'strategy.py': '821ec2cde04abf278a4f0547da30c6dac4d24fc0086b94ab01697f5110c4b2ee',
+    'recovery_evidence.py': '8473ff581dd15f519d5df8355cb4aeb4b1f499e7f083734c22ce582d72fa9a2b',
+}
+SOURCE_DIR = '/app/strategies/new_coin'
 
 
 def run(*args, timeout=90):
@@ -50,13 +53,15 @@ def idle():
                '-U','trading_user','-d','trading_platform','-c',sql) == '0'
 
 
-def main(revision, checksum, staging):
-    if not re.fullmatch(r'[0-9a-f]{40}', revision) or not re.fullmatch(r'[0-9a-f]{64}',checksum):
+def main(revision, strategy_sha, evidence_sha, staging):
+    checksums = dict(zip(SOURCES, (strategy_sha, evidence_sha)))
+    if not re.fullmatch(r'[0-9a-f]{40}', revision) or any(not re.fullmatch(r'[0-9a-f]{64}', checksum) for checksum in checksums.values()):
         raise ValueError('invalid release identity')
     staging = Path(staging).resolve()
     if staging != ROOT / '.deploy_tmp' / f'new-coin-ownership-{revision}':
         raise ValueError('invalid staging directory')
-    if hashlib.sha256((staging/'strategy.py').read_bytes()).hexdigest() != checksum:
+    if any(hashlib.sha256((staging/name).read_bytes()).hexdigest() != checksum
+           for name, checksum in checksums.items()):
         raise ValueError('staged source checksum mismatch')
     pin = json.loads(PIN.read_text())
     old_overlay, old_state = (Path(pin[key]).resolve() for key in ('overlay','state'))
@@ -72,7 +77,8 @@ def main(revision, checksum, staging):
         raise RuntimeError('running New Coin image changed')
     if run('docker','image','inspect',BASE_TAG,'--format','{{.Id}}') != BASE_ID:
         raise RuntimeError('New Coin base tag drift')
-    if run('docker','exec',CONTAINER,'sha256sum',SOURCE).split()[0] != BASE_SOURCE:
+    if any(run('docker','exec',CONTAINER,'sha256sum',f'{SOURCE_DIR}/{name}').split()[0] != checksum
+           for name, checksum in SOURCES.items()):
         raise RuntimeError('running New Coin source changed')
     if not idle():
         raise RuntimeError('New Coin has active exposure or entry intents')
@@ -106,10 +112,11 @@ def main(revision, checksum, staging):
             time.sleep(3)
         else:
             raise RuntimeError('New Coin health or image verification failed')
-        if run('docker','exec',CONTAINER,'sha256sum',SOURCE).split()[0] != checksum:
+        if any(run('docker','exec',CONTAINER,'sha256sum',f'{SOURCE_DIR}/{name}').split()[0] != checksum
+               for name, checksum in checksums.items()):
             raise RuntimeError('running New Coin source checksum mismatch')
         state = release/'state.json'
-        write(state, dict(sha=revision,status='complete',changed=[SERVICE],image=image,source_sha256=checksum))
+        write(state, dict(sha=revision,status='complete',changed=[SERVICE],image=image,source_sha256=checksums))
         write(PIN, dict(pin,sha=revision,status='active',predecessor_sha=pin['sha'],
                         successor_sha=revision,overlay=str(overlay),state=str(state)))
         print('Verified New Coin recovery source and container health')
