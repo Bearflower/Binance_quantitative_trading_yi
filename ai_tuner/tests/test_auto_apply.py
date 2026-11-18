@@ -527,3 +527,17 @@ async def test_grid_validation_distinguishes_rejection_from_execution_error(stat
     job.config_operator.publish_overrides.assert_not_called()
     job.db_handler.save_memory.assert_not_awaited()
     assert job.messenger.send_error_notification.await_count == (status != 'rejected')
+
+
+@pytest.mark.asyncio
+async def test_valid_grid_proposal_is_saved_and_sent_without_writing_execution_config(base_config):
+    strategy = {'strategy_id': 'grid', 'name': '网格', 'adapter_class': 'grid', 'config_path': 'grid.yaml'}
+    job, _ = _create_job({**base_config, 'strategies': [strategy]})
+    job._load_adapter.return_value.validate_grid_proposal = AsyncMock(return_value={
+        'passed': True, 'status': 'passed', 'reason': 'verified',
+    })
+    assert await job._tune_single_strategy(strategy) == 'success'
+    job.db_handler.save_memory.assert_awaited_once()
+    job.messenger.send_tuning_card.assert_awaited_once()
+    job.config_operator.publish_overrides.assert_not_called()
+    job.db_handler.mark_published.assert_not_awaited()

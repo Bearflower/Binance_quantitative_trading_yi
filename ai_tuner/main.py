@@ -918,6 +918,11 @@ class StratTuneAI:
             strategy_name = strategy_cfg.get("name", strategy_id)
 
             if action == "confirm":
+                if strategy_id == "grid":
+                    return web.json_response(
+                        {"status": "blocked", "message": "网格调优建议禁止写入交易配置"},
+                        status=409,
+                    )
                 # 查找待审批的记忆记录（公共方法）
                 matched = await self._find_pending_approval(strategy_id, date)
                 if not matched:
