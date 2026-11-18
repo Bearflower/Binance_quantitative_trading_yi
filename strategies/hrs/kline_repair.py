@@ -8,7 +8,7 @@ import asyncio
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import Context, Decimal, Inexact, InvalidOperation, ROUND_HALF_EVEN, localcontext
 
 import aiohttp
 
@@ -21,6 +21,7 @@ MAX_HISTORY_HOURS = 4096
 MAX_REQUESTS = 64
 REPAIR_TIMEOUT_SECONDS = 30.0
 PRICE_FIELDS = ('open', 'high', 'low', 'close', 'volume')
+FOUR_HOUR_AGGREGATION_CONTRACT = 'utc_4x1h_ohlcv_decimal128_volume_v1'
 
 
 class KlineHistoryUnavailable(DecisionInputsUnavailable):
@@ -93,9 +94,9 @@ def complete_four_hour_bars(rows):
     """Only four contiguous UTC children establish a full synthetic candle."""
     by_time = {}
     for row in rows:
-        timestamp = row['open_time']
-        if not isinstance(timestamp, int) or timestamp % HOUR_MS:
+        if not isinstance(row, dict) or type(row.get('open_time')) is not int or row['open_time'] % HOUR_MS:
             raise DecisionInputsUnavailable('kline_timestamp_invalid')
+        timestamp = row['open_time']
         previous = by_time.get(timestamp)
         if previous is not None and any(Decimal(str(previous[k])) != Decimal(str(row[k])) for k in PRICE_FIELDS):
             raise DecisionInputsUnavailable('kline_timestamp_conflict')
@@ -105,9 +106,18 @@ def complete_four_hour_bars(rows):
         children = [by_time.get(slot+i*HOUR_MS) for i in range(4)]
         if any(child is None for child in children):
             continue
+        # Python 3.12 changed float sum's accumulation algorithm. Sum the
+        # original decimal values exactly in an explicit context, then convert
+        # once to the existing float output schema on every runtime.
+        with localcontext(Context(prec=128, rounding=ROUND_HALF_EVEN)) as context:
+            context.traps[Inexact] = True
+            try:
+                volume = float(sum((Decimal(str(c['volume'])) for c in children), Decimal(0)))
+            except (Inexact, InvalidOperation) as exc:
+                raise DecisionInputsUnavailable('kline_ohlcv_invalid') from exc
         result.append(dict(open_time=slot, open=float(children[0]['open']),
             high=max(float(c['high']) for c in children), low=min(float(c['low']) for c in children),
-            close=float(children[-1]['close']), volume=sum(float(c['volume']) for c in children)))
+            close=float(children[-1]['close']), volume=volume))
     return result
 
 
@@ -127,6 +137,20 @@ def _decode_response(raw, receipt):
     return rows
 
 
+def validate_repair_response_scope(decoded, begin, end, receipt):
+    """Validate every raw GET timestamp before unclosed-cache filtering.
+
+    A closed bounded request cannot legitimately return a future/older item,
+    even when a valid item also satisfies its requested range.
+    """
+    for row in decoded:
+        timestamp = row.get('open_time') if isinstance(row, dict) else None
+        if type(timestamp) is not int or timestamp % HOUR_MS:
+            _fail('kline_timestamp_invalid', receipt)
+        if not begin <= timestamp <= end:
+            _fail('kline_repair_response_out_of_bounds', receipt)
+
+
 async def prepare_klines(client, symbol, cached_1h, cached_4h, *, decision_at,
                          keep_count, four_hour_count, minimum, page_limit):
     """Return actual decision windows plus a receipt of the full-span proof.
@@ -141,6 +165,7 @@ async def prepare_klines(client, symbol, cached_1h, cached_4h, *, decision_at,
     receipt = dict(version='hrs_kline_repair_v1', symbol=symbol, decision_at=decision_at,
         started_at=datetime.now(timezone.utc),
         hash_algorithm='decision_capture.canonical_payload/sha256',
+        aggregation_contract=FOUR_HOUR_AGGREGATION_CONTRACT,
         input_1h_sha256=canonical_payload(cached_1h)[1], input_4h_sha256=canonical_payload(cached_4h)[1],
         input_1h_count=len(cached_1h), input_4h_count=len(cached_4h), requests=[])
     _check_deadline(deadline, receipt)
@@ -193,6 +218,7 @@ async def prepare_klines(client, symbol, cached_1h, cached_4h, *, decision_at,
         decoded = _decode_response(raw, receipt)
         _check_deadline(deadline, receipt)
         request['received_count'] = len(decoded)
+        validate_repair_response_scope(decoded, begin, end, receipt)
         rows, _ = _normalized(decoded, HOUR_MS, decision_at, receipt)
         _check_deadline(deadline, receipt)
         if any(t < begin or t > end for t in rows):

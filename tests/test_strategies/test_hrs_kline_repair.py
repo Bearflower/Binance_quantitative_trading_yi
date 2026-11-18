@@ -162,6 +162,7 @@ async def test_receipt_binds_raw_responses_and_final_windows_with_capture_hashes
     p=provider()
     result=await p.prepare_decision_klines('BTCUSDT',original,[],decision_at=AT)
     receipt=result.receipt
+    assert receipt['aggregation_contract']=='utc_4x1h_ohlcv_decimal128_volume_v1'
     assert receipt['input_1h_sha256']==canonical_payload(original)[1]
     assert receipt['output_1h_sha256']==canonical_payload(result.klines_1h)[1]
     assert receipt['output_4h_sha256']==canonical_payload(result.klines_4h)[1]
@@ -250,3 +251,49 @@ async def test_invalid_window_and_page_configuration_fails_closed(field,value):
         await p.prepare_decision_klines('BTCUSDT',source,[],decision_at=AT)
     assert err.value.receipt['status']=='unavailable'
     p.binance_api._request.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('damaged',[{},None,{'open_time':False},{'open_time':True},{'open_time':HOUR+1}])
+async def test_synthesis_timestamp_failure_is_typed_and_never_defaults_epoch(damaged):
+    from strategies.hrs.core_decision import DecisionInputsUnavailable
+    with pytest.raises(DecisionInputsUnavailable,match='kline_timestamp_invalid'):
+        await provider().synthesize_4h_klines([damaged])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('extra_offset',[-HOUR,365*24*HOUR])
+async def test_raw_repair_get_rejects_past_or_future_extra_before_closed_filter(extra_offset):
+    from strategies.hrs.kline_repair import KlineHistoryUnavailable
+    async def wrong(method,path,params,signed):
+        timestamp=params['startTime']
+        assert params['limit']==1
+        return [raw(timestamp),raw(timestamp+extra_offset)]
+    source=[bar(ms('2026-11-11T08:00')+i*HOUR) for i in range(168)]
+    source.pop(10)
+    with pytest.raises(KlineHistoryUnavailable,match='kline_repair_response_out_of_bounds') as err:
+        await provider(wrong).prepare_decision_klines('BTCUSDT',source,[],decision_at=AT)
+    assert err.value.receipt['requests'][0]['received_count']==2
+    assert err.value.receipt['status']=='unavailable'
+
+
+def test_real_evaa_volume_aggregation_has_stable_capture_hash_across_python_versions():
+    from strategies.hrs.kline_repair import complete_four_hour_bars
+    from strategies.hrs.decision_capture import canonical_payload
+    # Actual raw-retaining GET closure: Py3.11 sum=997264.7, Py3.12
+    # compensated float sum=997264.7000000001. Neither float sum is our contract.
+    values=['123414.2','192910.1','465724.9','215215.5']
+    source=[dict(bar(ms('2026-11-17T20:00')+i*HOUR),volume=Decimal(value)) for i,value in enumerate(values)]
+    expected=[dict(open_time=ms('2026-11-17T20:00'),open=1.,high=2.,low=.5,close=1.5,volume=997264.7)]
+    actual=complete_four_hour_bars(source)
+    assert actual==expected
+    assert canonical_payload(actual)[1]==canonical_payload(expected)[1]
+
+
+def test_aggregation_precision_does_not_depend_on_ambient_decimal_context():
+    from decimal import localcontext
+    from strategies.hrs.kline_repair import complete_four_hour_bars
+    source=[dict(bar(ms('2026-11-17T20:00')+i*HOUR),volume=Decimal(value)) for i,value in enumerate(['123414.2','192910.1','465724.9','215215.5'])]
+    with localcontext() as context:
+        context.prec=5
+        assert complete_four_hour_bars(source)[0]['volume']==997264.7
