@@ -69,6 +69,55 @@ def test_verified_six_crypto_mappings_do_not_silently_enable_cmc():
     assert 'XAUUSDT' not in registry
 
 
+@pytest.mark.parametrize('symbol,cg_id,provider_symbol',[
+    ('BTWUSDT','bitway','BTW'),('LITUSDT','lighter','LIT'),
+    ('MMTUSDT','momentum-3','MMT'),('BREVUSDT','brevis','BREV'),
+    ('HUMAUSDT','huma-finance','HUMA'),('KAVAUSDT','kava','KAVA'),
+    ('CROSSUSDT','cross-2','ONE'),('PENGUUSDT','pudgy-penguins','PENGU'),
+    ('1000LUNCUSDT','terra-luna','LUNC'),
+])
+def test_natural_scan_missing_assets_use_verified_provider_identity_only(symbol,cg_id,provider_symbol):
+    registry=json.loads((Path(__file__).parents[3]/'services/market_cap/assets.json').read_text())
+    row=registry[symbol]
+    assert row['cg_id']==cg_id and row['symbol']==provider_symbol
+    assert row['cmc_enabled'] is False and row['cmc_id'] is None
+    assert row['comparison']['reason']=='provider_supply_comparison_required'
+    assert any(url.startswith('https://www.binance.com/') for url in row['evidence'])
+    assert any(url.startswith('https://www.coingecko.com/') for url in row['evidence'])
+    # Quote-unit multipliers do not multiply the issuer's whole market cap.
+    assert cg_id not in {'litentry','momentum','momentum-2','terra-luna-2','harmony'}
+
+
+@pytest.mark.asyncio
+async def test_renamed_and_multiplied_contracts_keep_provider_cap_and_missing_denominator(tmp_path):
+    from datetime import datetime,timezone
+    from services.market_cap.hub import MarketCapHub
+    registry=json.loads((Path(__file__).parents[3]/'services/market_cap/assets.json').read_text())
+    class Session:
+        calls=0
+        def get(self,url,**kwargs):
+            assert url=='https://api.coingecko.com/api/v3/coins/markets'
+            self.calls+=1
+            class Response:
+                status=200
+                async def __aenter__(self):return self
+                async def __aexit__(self,*args):pass
+                async def json(self):
+                    return [dict(id='cross-2',symbol='one',market_cap=123,last_updated=datetime.now(timezone.utc).isoformat()),
+                            dict(id='terra-luna',symbol='lunc',market_cap=456,last_updated=datetime.now(timezone.utc).isoformat())]
+            return Response()
+    hub=MarketCapHub(tmp_path/'assets.db',registry);hub.session=Session()
+    try:
+        assert await hub.fetch('coinmarketcap',['CROSSUSDT','1000LUNCUSDT'])=={}
+        assert hub.session.calls==0
+        result=await hub.collect(['CROSSUSDT','1000LUNCUSDT','UNKNOWNUSDT'])
+        assert len(result)==3
+        assert result['CROSSUSDT']['value']==123
+        assert result['1000LUNCUSDT']['value']==456
+        assert result['UNKNOWNUSDT']['missing_reason']=='asset_identity_unverified'
+    finally:hub.close()
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize('bad', [[{'symbol': 'RAREUSDT'}, {'symbol': 'RAREUSDT'}], [None], [{}], [{'symbol': 1}]])
 async def test_malformed_tickers_leave_a_fresh_nonthrowing_failure_audit(bad):
