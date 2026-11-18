@@ -342,6 +342,9 @@
     "failure": "one inherited base-image test absent from current tracked checkout used a stale reservation mock; 1408 current tests passed",
     "fix": "test stage clears inherited test directories then copies all current tracked tests; HRS/hub runtime stages unchanged",
     "independent_review": "PASS; actual prior production image confirms stale file; tracked test collection and Docker ignore inventory verified",
-    "new_ci": "44314458303"
+    "new_ci": "44314458303",
+    "new_ci_status": "success",
+    "new_ci_tests": "1408 passed in 210.18s",
+    "image": "ghcr.io/bearflower/trading-hrs@sha256:50ada1148dc0adab906d650a7337dcc97fce03e4cc858a0b68d633035826c550"
   }
 }

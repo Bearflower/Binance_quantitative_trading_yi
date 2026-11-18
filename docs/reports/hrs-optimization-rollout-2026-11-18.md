@@ -83,3 +83,15 @@
 当前权益门禁仍daily_origin_missing。另在16:21扫描发现ARIAUSDT、BTWUSDT、PUMPUSDT、EVAAUSDT、MMTUSDT的分析日志为error/kline_history_discontinuous；数据缺口尚未修复并重新验收。此前“扫描完整”验证流程留证闭环及真实市值覆盖，不能解释为每个标的K线均健康。1288项测试和发布成功也不能替代这些生产条件。
 
 因此整体状态明确为INCOMPLETE：已发布一批工程修复；仓位上限口径、告警分类、五项K线连续性、真实日初权益就绪、8–9月跨月反事实、SL/TP参数优选及24小时/五个自然闭合样本仍未全部闭环。
+
+## 21:38 CST follow-up release — 3aa32e9e
+
+User-authorized independent HRS slot admission and full original-span candle repair are deployed. The immutable HRS/reporter image is `ghcr.io/bearflower/trading-hrs@sha256:50ada1148dc0adab906d650a7337dcc97fce03e4cc858a0b68d633035826c550`; the existing hub digest `e789a1699664c15a7b18273ff2bd867125b13e842d819a0dc6bb7eff141fb799` was reused and its container ID remained unchanged. CI [44314458303](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44314458303) passed 1408 tests with Python 3.11 and fresh PostgreSQL 16. The first failed run remains recorded: one obsolete inherited base-image test used a stale mock. Cleaning the test stage and copying the entire tracked test inventory resolved it without skipping repository tests or changing runtime stages.
+
+Production state reached complete at `2026-11-18T13:38:05.028913+00:00`. All 39 bound source hashes, effective configuration, read-only mounts, collector and independent writer initialization passed. Other container IDs were compared against this deployment's actual rollback plan, not a stale earlier snapshot, and remained unchanged. Real post-release GET/readonly-RR proof at 13:40 UTC establishes account BNB/SOL/WLD=3, HRS WLD=1, retained HRS reservation union=1/3, full-account margin 14.636942408625 USDT. WLD remains28 and its original hard stop at0.2533 is intact. Its actual FILLED submitting reservation remains retained, and timeout count is0. These are component diagnostics, not an attempted entry.
+
+The raw equity gate remains denied solely for `daily_origin_missing`. No midnight NAV or historical profit is manufactured. The reporter is fresh/coherent; zero consecutive complete hours and zero eligible closed lifecycles remain below24/five. Its aggregate mode counts span multiple releases and must not be represented as new-release failures or fills. First new natural scan is expected at22:21 CST and is still pending at this journal entry.
+
+The new v4 preregistration explicitly binds v2 admission before future research inputs. Twenty-four exit candidates, costs, minimum20 lifecycles and original windows remain; the original production baseline provenance is retained. Current discovery is BLOCKED_DATA with zero engine runs. Actual source closure for the five repaired symbols passed across production Python3.11 and local3.12; old failed receipts remain untouched. Exact current gate SHA/real clock/full claims and actual consumed arrays are source-bound in replay. Missing facts block rather than permit older-parent fallback.
+
+Overall financial optimization remains INCOMPLETE. See the current JSON status, v4 registration and follow-up review; do not archive this as completed performance acceptance.

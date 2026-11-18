@@ -1,5 +1,9 @@
 # 发现与约束
 
+- 当前生产3aa32e9e（21:38 CST），云端1408测试通过。槽位v2是用户批准的准入行为变化，不能写成经济等价；单笔1%/组合3%、全账户保证金约束和SL/TP数字保持。成功预留仅事务commit后留本次audit，并即时捕获actualgate/fullclaims；score-only先完成双库存GET再读同RR gate DBclock，拒旧parent fallback和candidate-only归属替代。
+- 真实五标的完整rawGET来源包跨Python3.11/3.12闭包通过；float sum跨版本1ulp已由decimal128一次转换修复。未来/过去越界raw响应在过滤前拒绝；实际scorer输入在成功和异常时均独立于并发cache。新版本自然整轮仍待实际发生。
+- 云端基础镜像残留一份当前Git不存在的31行identity旧测试，导致第一次1408pass/1fail；test stage先清理继承测试再COPY完整当前测试，独审确认无skip/运行stage变化，第二轮1408pass。
+
 - 当前生产441559ae（15:58 CST），1288云端测试及293独立复审；新增九项身份实际9/9可信CG诊断，新parent525条源闭包通过。历史不足与未来窗口仍不标绩效通过。
 
 - 3436656d已于13:07 CST上线，13:21与14:21自然扫描均complete且原始hash/配置/财务上下文一致。九项新crypto身份已核验，尚待合并受控发布。

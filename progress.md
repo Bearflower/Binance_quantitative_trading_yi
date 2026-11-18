@@ -9,6 +9,8 @@
 
 # 进展
 
+2026-11-18 21:38 CST：3aa32e9e实盘部署complete，云端1408测试通过。新增HRS独立槽位（最多3、外仓全margin保留）、预期风控INFO reason/context、完整真实K线补取与确定性4h聚合、成功/异常评分数组留证、actual gate SHA/DB clock/fullownerclaims闭包全部上线；独立213项组合通过。第一次云端1408pass+1 inherited stale test已定位并修复test stage inventory，未跳过tracked测试。39运行源码/配置/collector/writer/原保护/无关容器已核验；新自然扫描约22:21，仍待实际验证。daily_origin_missing仍拒新仓，收益/SLTP/24h与自然样本不宣称通过。
+
 2026-11-18 16:22 CST：最终441559ae首个自然扫描16:21完整结束，原hash/envelope、配置及财务context一致。三批市值35/35、31/31、27/27实际present，原分母809保留（批次间重复不能当93个独立标的）。权益门禁仍daily_origin_missing。十次实际parent的542条source批量闭包通过、ref均628B，无自然收入修订事件。24h/5自然闭合和历史收益仍未验收。
 
 2026-11-18 16:06 CST：最终441559ae于15:58:36部署完成，CI1288/独立293/领域459通过。实际新parent628B引用525source闭包、67项registry及9/9可信CG诊断通过；WLD28原硬SL、配置hash/挂载、无关容器不变，三个服务healthy/restarts0。reporter读新ref快照coherent/source_error空，0小时/0闭合、性能未验收；权益门禁daily_origin_missing拒新风险。最后parent shape绕过与批量O(n²)读取均已独立红绿修复。当前发布后的下一自然扫描尚待发生；不伪造95%覆盖、历史反事实或SL/TP参数胜出。
