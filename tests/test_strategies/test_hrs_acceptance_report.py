@@ -601,7 +601,8 @@ async def test_real_postgres_full_financial_contract_and_integrity_latch(initial
     finally:
         async with pool.acquire() as c:
             await c.execute('SET default_transaction_read_only=off')
-            for table in ('hrs_equity_segment','hrs_loss_gate_state','execution_fact_fill','execution_fact_income',
+            # Keep the UUID-account segment: production makes this proof immutable.
+            for table in ('hrs_loss_gate_state','execution_fact_fill','execution_fact_income',
                           'execution_fact_cursor','trade_records','income_ingestion_attempt'):
                 await c.execute(f'DELETE FROM trading.{table} WHERE account_id=$1', account)
             await c.execute('DELETE FROM hrs.hrs_decision_evidence WHERE evidence_id=ANY($1::text[])', [r['evidence_id'] for r in captures])
