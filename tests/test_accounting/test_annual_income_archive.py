@@ -43,3 +43,30 @@ def test_archive_splice_uses_real_income_ids_without_fabricating_attribution(tmp
             archive.combine_archive(h1, overlap)
     finally:
         archive.load_archive.cache_clear()
+
+
+def test_proof_corrects_owner_totals_and_exposes_only_verified_sample():
+    time = datetime(2026, 6, 8, tzinfo=timezone.utc)
+    income = dict(account_id="default", income_type="FUNDING_FEE", tran_id="10", symbol="BTCUSDT",
+                  asset="USDT", income=Decimal("0.25"), event_time_utc=time)
+    row = dict(income, strategy="btc_eth", event_time_utc=time.isoformat(), income="0.25")
+    closure = dict(strategy="btc_eth", pnl="-1.00", start=time.isoformat(),
+                   fill_ids=["1", "2"], order_ids=["1", "2"])
+    proof = dict(version=1, archive_sha256=archive.ARCHIVE_SHA256, attributions=[row],
+                 closures=[closure])
+    prefix = archive.apply_proof([income], proof)
+    suffix = build_economic_report([], [], [])
+    suffix.update(account_id="default", start_ms=archive.END_MS, end_ms=archive.END_MS + 1000,
+                  account_coverage_complete=True, publication_status="published",
+                  report_id="tail", coverage_gaps=[])
+    report = archive.combine_archive(prefix, suffix)
+    assert report["by_strategy"]["btc_eth"]["net_usdt"] == "0.25"
+    assert report["unattributed_count"] == 0
+    assert report["strategy_attribution_complete"] is False
+    stats = archive.archive_lifecycle_stats(report, ["btc_eth", "new_coin"])
+    assert stats["account"]["closed_count"] == 1
+    assert stats["account"]["win_rate"] == 0
+    assert stats["account"]["reason"] == "archive_verified_sample_only"
+    assert stats["strategies"]["new_coin"]["win_rate"] is None
+    with pytest.raises(ValueError, match="does not match"):
+        archive.apply_proof([income], dict(proof, attributions=[dict(row, income="0.35")]))

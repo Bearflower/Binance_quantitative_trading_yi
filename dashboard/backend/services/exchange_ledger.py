@@ -41,6 +41,8 @@ def _ms(value):
 
 class ExchangeLedgerDashboardMixin:
     async def _verified_lifecycles(self, report, strategy_ids):
+        if "archive_closures" in report and report.get("publication_status") == "published":
+            return annual_income_archive.archive_lifecycle_stats(report, strategy_ids)
         if report.get('publication_status') != 'published' or not report.get('strategy_attribution_complete'):
             return verified_lifecycle_stats(report, [], [], [], [], set(), strategy_ids)
         account = report.get('account_id', 'default')
@@ -156,7 +158,7 @@ class ExchangeLedgerDashboardMixin:
             'report_id', 'report_version', 'account_id', 'start_ms', 'end_ms',
             'requested_end_ms', 'as_of', 'stale_seconds', 'account_coverage_complete',
             'strategy_attribution_complete', 'coverage_gaps', 'other_asset_totals',
-            'publication_status', 'refresh_error', 'income_archive_end_ms')}
+            'publication_status', 'refresh_error', 'income_archive_end_ms', 'archive_attribution_count')}
 
     def _strategy_projection(self, report, strategy_id):
         complete = report['strategy_attribution_complete']
