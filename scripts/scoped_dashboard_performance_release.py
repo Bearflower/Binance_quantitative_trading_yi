@@ -19,11 +19,14 @@ from scripts.scoped_stop_followup import (  # noqa: E402
 PREDECESSOR_SHA = "c02b045654c73c8c5cb7e89c5735e9e72eb1b392"
 PREDECESSOR_OVERLAY_SHA256 = "d961341a4585454d2f8fd18a8c88c0522c30977d05333be329a1536fc8af1eee"
 SERVICE = "dashboard-api"
+LIVE_GRID_REPAIR_REF = "local/grid-repair-dashboard-api:ab38fbc7"
+LIVE_GRID_REPAIR_IMAGE = "sha256:ba4fe00c485190b33dc29fb6c55b20c61023304b16fa19b859c013ab10b009a5"
 ARCHIVE = Path(".releases/dashboard-audit-20261118/pm-income-2026-H1.zip")
 ARCHIVE_TARGET = "/app/annual-income/pm-income-2026-H1.zip"
 ARCHIVE_HASH = "618e581db1714f6d98b3641d67d68076c6b4dbb4381828f4a9519e38c3c01fdf"
 SOURCE_PATHS = (
     "dashboard/backend/services/exchange_ledger.py",
+    "dashboard/backend/services/grid_subaccount.py",
     "dashboard/backend/models/schemas.py",
     "dashboard/frontend/index.html",
     "dashboard/frontend/js/main.js",
@@ -141,8 +144,20 @@ class Runtime(BaseRuntime):
                 self.before["State"].get("Health", {}).get("Status") != "healthy"):
             raise ReleaseBlocked("dashboard predecessor unhealthy")
         old_ref = original["services"][SERVICE]["image"]
-        if self.before["Image"] != self.run(["docker", "image", "inspect", "--format", "{{.Id}}", old_ref]):
+        confirmed_image = self.run(["docker", "image", "inspect", "--format", "{{.Id}}", old_ref])
+        local_grid_repair = self.before["Image"] != confirmed_image
+        if local_grid_repair and (
+                self.before["Image"] != LIVE_GRID_REPAIR_IMAGE
+                or self.before["Config"]["Image"] != LIVE_GRID_REPAIR_REF
+                or self.run(["docker", "image", "inspect", "--format", "{{.Id}}",
+                             LIVE_GRID_REPAIR_REF]) != LIVE_GRID_REPAIR_IMAGE):
             raise ReleaseBlocked("dashboard predecessor image drift")
+        if local_grid_repair:
+            grid_source = "dashboard/backend/services/grid_subaccount.py"
+            live_hash = self.run(["docker", "exec", CONTAINERS[SERVICE], "sha256sum",
+                                  "/app/" + grid_source]).split()[0]
+            if live_hash != self.hashes[grid_source]:
+                raise ReleaseBlocked("dashboard image does not preserve live grid repair source")
         if self.run(["systemctl", "is-active", "income-attribution.timer"]) != "active":
             raise ReleaseBlocked("income attribution timer inactive")
         self.all_before = {name: self.inspect(name) for name in self.stacks}
@@ -151,6 +166,11 @@ class Runtime(BaseRuntime):
         self.pre = self.gate()
         self.release_dir.mkdir(parents=True, exist_ok=False)
         self.overlay.parent.mkdir(parents=True, exist_ok=True)
+        if local_grid_repair:
+            rollback = json.loads(self.previous_overlay.read_text())
+            rollback["services"][SERVICE]["image"] = LIVE_GRID_REPAIR_REF
+            self.previous_overlay = self.release_dir / "rollback-images.json"
+            atomic_json(self.previous_overlay, rollback)
         archive = self.root / ARCHIVE
         if sha256(archive.read_bytes()) != ARCHIVE_HASH:
             raise ReleaseBlocked("annual income archive digest mismatch")
@@ -211,6 +231,10 @@ class Runtime(BaseRuntime):
                     or self.identity(row) == self.identity(self.before)):
                 raise ReleaseBlocked("dashboard image/identity mismatch")
             proof = _overview_ready()
+            with urlopen("http://127.0.0.1:8767/api/grid-subaccount", timeout=20) as response:
+                grid = json.load(response)
+            if grid.get("code") != 0 or not isinstance((grid.get("data") or {}).get("status"), str):
+                raise ReleaseBlocked("grid subaccount endpoint failed")
             for report_type in ("daily", "weekly", "yearly"):
                 with urlopen("http://127.0.0.1:8767/api/overview?type=" + report_type,
                              timeout=20) as response:
