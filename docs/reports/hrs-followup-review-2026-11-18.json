@@ -3,12 +3,19 @@
   "base_commit": "441559ae8d549c9d242dc79df0f945f8539fe6a9",
   "source_commit": "dec6efbd29e97f20bfa7a5b60cea20af6a6422b9",
   "mode": "open-code-review-delegate: OCR deterministic preview/rules, host semantic review, independent domain review",
-  "total_files": 45,
-  "reviewable_files": 19,
-  "reviewed_files": 19,
+  "total_files": 48,
+  "reviewable_files": 20,
+  "reviewed_files": 20,
   "skipped_files": 0,
   "coverage_rate": 1.0,
   "excluded_files": [
+    {
+      "path": "docs/reports/hrs-followup-review-2026-11-18.md",
+      "status": "added",
+      "insertions": 10,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
     {
       "path": "docs/reports/hrs-market-cap-nine-identities-2026-11-18.md",
       "status": "modified",
@@ -62,6 +69,13 @@
       "path": "progress.md",
       "status": "modified",
       "insertions": 4,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "release/hrs-execution/Optimization.Dockerfile",
+      "status": "modified",
+      "insertions": 3,
       "deletions": 0,
       "exclude_reason": "unsupported_ext"
     },
@@ -244,6 +258,11 @@
       "review": "reviewed"
     },
     {
+      "path": "docs/reports/hrs-followup-review-2026-11-18.json",
+      "status": "added",
+      "review": "reviewed"
+    },
+    {
       "path": "docs/reports/hrs-production-optimization-status-2026-11-18.json",
       "status": "modified",
       "review": "reviewed"
@@ -315,5 +334,14 @@
     "24 complete consecutive hours and five eligible natural closed lifecycles still required",
     "v2 exact gate identity/clock/full-claims missing blocks replay; no proven-clock-denial model",
     "nonflat opening without complete original protection/cost/MAE/funding proof remains blocked"
-  ]
+  ],
+  "ci_followup": {
+    "reviewed_at": "2026-11-18T13:33:10.591859+00:00",
+    "commit": "b9ff68e6",
+    "failed_ci": "44313448820",
+    "failure": "one inherited base-image test absent from current tracked checkout used a stale reservation mock; 1408 current tests passed",
+    "fix": "test stage clears inherited test directories then copies all current tracked tests; HRS/hub runtime stages unchanged",
+    "independent_review": "PASS; actual prior production image confirms stale file; tracked test collection and Docker ignore inventory verified",
+    "new_ci": "44314458303"
+  }
 }
