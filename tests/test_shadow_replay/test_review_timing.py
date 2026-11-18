@@ -36,12 +36,18 @@ def test_real_market_fills_follow_evaluation():
     for event in events:
         scheduled = datetime.fromisoformat(event["scheduled_at"])
         event["evaluated_at"] = (scheduled + timedelta(minutes=20)).isoformat()
-    events[0].update(decision="candidate", direction="LONG", grade="A",
-                     reference_price="2000", intended_order_type="MARKET",
-                     intended_entry_price="2000", stop_loss_rule={"atr_value": "10"})
+    candidate = min((row for row in events if row["profile_id"] == "xau_original"),
+                    key=lambda row: row["scheduled_at"])
+    evaluated_at = datetime.fromisoformat(candidate["evaluated_at"]) + timedelta(seconds=12)
+    candidate.update(
+        evaluated_at=evaluated_at.isoformat(), decision="candidate", direction="LONG",
+        grade="A", reference_price="2000", intended_order_type="MARKET",
+        intended_entry_price="2000", stop_loss_rule={"atr_value": "10"},
+    )
     path.write_text("".join(json.dumps(event) + "\n" for event in events))
     result = _run_engine_once(fixture)
     filled = [trade for pid in ("xau_original", "xau_aggressive") for trade in result[pid]["trades"] if trade.get("filled")]
     assert filled
+    expected_fill = evaluated_at.replace(second=0) + timedelta(minutes=1)
     for trade in filled:
-        assert datetime.fromisoformat(trade["entry_time"]).minute >= 20
+        assert datetime.fromisoformat(trade["entry_time"]) == expected_fill
