@@ -142,12 +142,13 @@ def main(revision, digest, bundle_name):
         if current['Image'] != run(['docker', 'image', 'inspect', '-f', '{{.Id}}', image]):
             raise RuntimeError('running image mismatch')
         after = inventory()
-        same_exchange(exchange, gate(bundle))
+        exchange_after = gate(bundle)
+        same_exchange(exchange, exchange_after)
         if (set(before) != set(after) or any(after[n] != v for n, v in before.items() if n != CONTAINER)
                 or policy_hash() != policies):
             raise RuntimeError('excluded state changed')
         atomic(release / 'exchange-before.json', exchange)
-        atomic(release / 'exchange-after.json', gate(bundle))
+        atomic(release / 'exchange-after.json', exchange_after)
         atomic(release / 'state.json', {'sha': revision, 'status': 'complete', 'changed': [SERVICE],
                                       'source_proof': proof, 'policy_unchanged': True,
                                       'other_containers_unchanged': True})
