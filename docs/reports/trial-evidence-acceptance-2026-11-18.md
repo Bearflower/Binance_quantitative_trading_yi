@@ -42,4 +42,4 @@
 | 等待实盘 | 下一次真实日巡检单独核对报告落地和通知；待新仓、部分成交、退出和保护单样本完成后实盘验收跨层链路。 |
 | 等待完整月份 | 等两个符合版本与覆盖要求的完整留出月。月度样本不足或数据不全时，保持 `BLOCKED_DATA` 或继续缩量评估。 |
 
-部署和回归测试见 [CI 44260829755](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44260829755)。
+首轮 CI 通过数据库和回归测试，生产发布基线已变化，门禁在替换容器前停止。重试先合并最新 PM 权益采集代码。测试和部署记录见 [CI 44261274347](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44261274347)。
