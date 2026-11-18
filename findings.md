@@ -1,3 +1,21 @@
+# 发现与约束
+
+- 当前生产 HRS 镜像 2cf4f020…，共享市值镜像 4fa94f38…；认证发布 SHA 386e4330。配置挂载是 AI Tuner 冻结版本，发布必须保留真实挂载。
+- HRS 原始工作区不等于生产源码。新分支从认证发布分支 954ee5f2 建立；先导出实际 HRS 模块再开始整合。
+- 当前通用 HRS replay adapter 的 intents 明确抛 hrs_decision_not_wired，不得以零交易假装回放成功。
+- 历史 Aug/Sep 缺候选、决策、外部快照；可闭合交易只用于退出方案探索，不能等同完整反事实回放。
+- 认证 Key 已在服务器 secrets 文件，禁止带回仓库、构建参数或普通输出。
+
+
+- 关键新增发现：通用broker曾对HRS TP2按剩余量分配、首根成交bar无保护、4h误撮合；agent正在补HRS能力路径并保持MTPC旧行为。完整历史资金费timetable需manifest证明，不可用当前8h假设。
+- Collector事务锁统一建议：income_account session guard -> account policy advisory lock(hashtextextended(account,7183)) -> loss-gate lock，不能nested pool leases。生产确有 derived_income_attribution 表（schema只读核对），仓库旧source可能无定义；不能混淆不存在。收入按(account,income_type,tranId)识别，fee/funding不能漏或重复加fill盈亏。
+- 当前loss gate严格每日00:00CST；初次intraday不就绪。未来可从真实flat起点+完整fill/income/allocation重建flat midnight，effective_time和available_time分开。不能把当前flat伪造历史flat。无30d新历史只标inception protection，不标已通过30d。
+- SL/TP最新用户授权已给，不需要例行确认；不宣称现有/缺失窗口已通过，不为凑样本下真实单。
+
+
+---
+## 先前七项整改记录（保留，不属于本次 HRS 状态）
+
 # 七项整改调查发现
 
 - 隔离基线：`origin/main` 的 `8991d03d3c4625612b4d42d2014e829aa6750f4f`；生产活动 pin 同 SHA，状态 active。

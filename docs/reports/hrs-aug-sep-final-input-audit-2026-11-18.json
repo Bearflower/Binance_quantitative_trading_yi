@@ -1,0 +1,143 @@
+{
+  "observed_at": "2026-11-17T23:29:54.849592+00:00",
+  "timezone": "Asia/Shanghai",
+  "read_only": true,
+  "income_scope": "whole_trade_account; not HRS returns",
+  "historical_performance_accepted": false,
+  "queries": {
+    "account_fills": [
+      {
+        "month": "2026-08",
+        "n": 591,
+        "first_at": "2026-08-03 03:23:00.835000+00:00",
+        "last_at": "2026-08-31 06:57:33.641000+00:00"
+      },
+      {
+        "month": "2026-09",
+        "n": 542,
+        "first_at": "2026-09-01 01:59:40.146000+00:00",
+        "last_at": "2026-09-30 14:11:32.718000+00:00"
+      }
+    ],
+    "account_income": [
+      {
+        "month": "2026-08",
+        "income_type": "COMMISSION",
+        "n": 541,
+        "amount": "-10.92938921"
+      },
+      {
+        "month": "2026-08",
+        "income_type": "FUNDING_FEE",
+        "n": 543,
+        "amount": "8.53793386"
+      },
+      {
+        "month": "2026-08",
+        "income_type": "REALIZED_PNL",
+        "n": 332,
+        "amount": "-113.06173769"
+      },
+      {
+        "month": "2026-09",
+        "income_type": "COMMISSION",
+        "n": 510,
+        "amount": "-9.27610987"
+      },
+      {
+        "month": "2026-09",
+        "income_type": "FUNDING_FEE",
+        "n": 489,
+        "amount": "6.87744702"
+      },
+      {
+        "month": "2026-09",
+        "income_type": "REALIZED_PNL",
+        "n": 342,
+        "amount": "-4.25799619"
+      }
+    ],
+    "hrs_legacy_summaries": [
+      {
+        "month": "2026-08",
+        "n": 31,
+        "amount": "-29.08929973"
+      },
+      {
+        "month": "2026-09",
+        "n": 45,
+        "amount": "-31.62251805"
+      }
+    ],
+    "derived_labels_not_formal_acceptance": [
+      {
+        "month": "2026-08",
+        "strategy": "btc_eth",
+        "method": "exact_order",
+        "n": 32,
+        "amount": "-2.25996427"
+      },
+      {
+        "month": "2026-08",
+        "strategy": "btc_eth",
+        "method": "verified_position_interval",
+        "n": 145,
+        "amount": "-84.20033339"
+      },
+      {
+        "month": "2026-08",
+        "strategy": "hrs",
+        "method": "exact_order",
+        "n": 164,
+        "amount": "4.21297247"
+      },
+      {
+        "month": "2026-08",
+        "strategy": "hrs",
+        "method": "verified_position_interval",
+        "n": 154,
+        "amount": "2.37954970"
+      },
+      {
+        "month": "2026-08",
+        "strategy": "new_coin",
+        "method": "exact_order",
+        "n": 35,
+        "amount": "-5.43627254"
+      },
+      {
+        "month": "2026-08",
+        "strategy": "new_coin",
+        "method": "verified_position_interval",
+        "n": 11,
+        "amount": "-0.77528017"
+      },
+      {
+        "month": "2026-09",
+        "strategy": "btc_eth_aggressive",
+        "method": "verified_position_interval",
+        "n": 1,
+        "amount": "-0.00405128"
+      },
+      {
+        "month": "2026-09",
+        "strategy": "hrs",
+        "method": "verified_position_interval",
+        "n": 155,
+        "amount": "0.70274708"
+      },
+      {
+        "month": "2026-09",
+        "strategy": "new_coin",
+        "method": "verified_position_interval",
+        "n": 15,
+        "amount": "0.35450796"
+      }
+    ],
+    "old_raw_decisions_exist": [
+      {
+        "decisions": null
+      }
+    ]
+  }
+}

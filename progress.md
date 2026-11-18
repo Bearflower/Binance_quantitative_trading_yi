@@ -1,3 +1,29 @@
+## 2026-11-17 HRS 持续实施补充
+
+- 实际生产已出现 DOGE 标准多仓：两独立库存一致，STOP_MARKET closePosition 和全量 TP1 均存在；不主动交易或平仓凑验收。新发布保留旧仓已有保护和原退出参数。
+- 真实进程 `/app/logs/tuning-loaded.json` 配置哈希为 `39e90a4d1b1cc526f42d14fb3248a9b292c0aa500a36e4df76159efda25fbb5e`，与封存 effective_config 一致；V20260819.yaml 仅注释，因此实际 fallback 并非取错挂载。
+- 完成最终 HTTP 风险复核、ContextVar 任务/生命周期隔离、所有原始市值 provider ID 留证、标准/LV 各级早退原因、真实执行结果、开仓时冻结退出计划；复审发现 JSON null/浮点溢出后已复现修复。
+- 无 HTTP 尝试的门禁否决预留现在可提交释放；先前发送结果不明则不释放。实际 PostgreSQL 检查已证明异常抛出后释放事务仍提交，避免误回滚。
+- 回放不借用成交前分钟高点，不使用未公布结算标记价；延迟资金费保持经济发生时刻/信息获得时刻分离，未知时停新风险并继续退出。
+- 957 项完整定向测试通过；现存持仓账本启动证明与持续验收报告正在完成独立复审。未进行本轮生产发布。
+
+# 进展
+
+2026-11-17：用户批准完整落地，已建立隔离工作树，读取设计和分任务开发技能，开始生产基线核对。
+
+
+- 生产 HRS Python+相关共享模块共20文件已导出 `/tmp/hrs-opt-production`，哈希清单 `docs/reports/hrs-production-source-baseline-2026-11-17.json`；与分支逐字节一致。基线464测试通过。
+- 市值任务：19f8aeaf补6个CG唯一映射（CMC全部仍禁用），交易所元数据筛除TradFi；两轮审查修复失效统计和坏元数据缓存，最终6b3a55e9。原始缺市值35为6crypto/29TradFi，非LV52完整清单。
+- 风险核心：fff0c4a2提供risk_ledger/loss_gate/repository及SQL，45测试含8真实PG；根代理按审查修正精确滚动30*24h窗口到6b3a55e9，联合55测试通过。边界仍要求真实午夜与滚动端点，不能造历史。
+- 采集：a7eac1b1新增decision_capture/append-only表+独立snapshotwriter+strategy装饰器。7测试含真实PG通过；spec审查发现nestedID、failure跨scan清零、采集失败阻碍维护、LV/执行否决缺覆盖、伪complete等5项。根代理已修主要项未提交，目前9capture+HRS共441测试通过；需复审并继续补完整上下文/导出器。Sticky failed不得begin清除，public采集失败返回已取得公开价格，靠entryguard拒新仓。
+- 回放由agent /root/replay_design实现中，自己拥有core_decision/exit_geometry/scoring sync接口和replay子系统/测试，根代理不得覆盖其文件；待其提交后spec/code审查。已有273回归通过、1m LIMIT15m超时模型和资金费证据，但未最终提交。
+- 活跃PG unix-only：`postgresql://yl@/postgres?host=/tmp/hrs-opt-pg&port=55441`，data=/tmp/hrs-opt-pg/data。Python=/tmp/hrs-test-venv/bin/python(3.12)。
+- 未做任何本轮生产部署。当前prod仍认证市值386e4330 / HRS2cf4f020。下一步根代理：完成capture复审、权益采集/新门禁串行接入、live共享core/exits和每仓退出参数、SLTP实验CLI、历史窗口审计、云端构建+部署+持续验收。
+
+
+---
+## 先前七项整改记录（保留，不属于本次 HRS 状态）
+
 # 七项整改进度
 
 ## 2026-11-07
