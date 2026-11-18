@@ -25,6 +25,16 @@ parent. The portal reproduces this proof before replay entry. Original full
 account inventory remains available for margin validation. A change of runtime
 slot scope requires a separate exported window; old captures are not relabelled.
 
+New prospective registrations can explicitly set
+`runtime_admission_scope: hrs_owned_and_unreleased_reservations_v2`. The runner
+then requires the opening runtime and every input's occupancy/proof scope to
+match before any research or holdout engine run. Its formal report records that
+scope and each tier's checked input count. This is a newly approved admission
+model; the old baseline commit still identifies its original production
+configuration source and does not assert that v2 was deployed at that time.
+Existing registrations without the field remain unchanged and report the
+admission constraint as `NOT_REGISTERED`. Candidate economics are unchanged.
+
 Kline repair receipts additionally bind the complete old arrays and each actual
 public request body. The offline consumer rebuilds the full span with the shared
 normalizer and four-hour aggregator, verifies the full-span hashes, and only then

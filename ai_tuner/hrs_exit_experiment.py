@@ -180,6 +180,10 @@ def validate_registration(registration):
     """Validate without mutating the actual baseline or candidate registration."""
     if not isinstance(registration, dict) or registration.get('schema_version') != 1 or not registration.get('experiment_id'):
         raise ValueError('experiment_identity_required')
+    if 'runtime_admission_scope' in registration:
+        from strategies.hrs.entry_occupancy import SLOT_SCOPE
+        if registration['runtime_admission_scope']!=SLOT_SCOPE:
+            raise ValueError('registered_runtime_admission_scope_unknown')
     baseline = registration['baseline']
     if baseline.get('source') != 'production_effective' or not isinstance(baseline.get('config'), dict):
         raise ValueError('actual_baseline_required')
@@ -435,6 +439,27 @@ def _window_portal(directory,window,source_cache=None):
     return portal,_boundary_summary(window,start,end,start_resolution,end_resolution)
 
 
+def _registered_admission_validation(registration,portal,bootstrap):
+    """A declared admission model is part of the experiment, not config prose."""
+    scope=registration.get('runtime_admission_scope')
+    if scope is None:return dict(status='NOT_REGISTERED',scope=None,input_rows_checked=0)
+    if bootstrap.get('runtime_slot_scope')!=scope:
+        raise DataBlocked(['registered_runtime_admission_scope_mismatch:bootstrap'])
+    count=0
+    # Stream this independent inventory before any engine run, including inputs
+    # that would later be vetoed or occur near a window boundary.
+    with (portal.snapshot_dir/'hrs_decision_inputs.jsonl').open(encoding='utf-8') as handle:
+        for line in handle:
+            if not line.strip():continue
+            row=json.loads(line);occupancy=row.get('risk',{}).get('account_occupancy',{})
+            if (occupancy.get('version')!='hrs_account_occupancy_v2' or occupancy.get('slot_scope')!=scope
+                    or occupancy.get('slot_ownership_proof',{}).get('slot_scope')!=scope):
+                raise DataBlocked(['registered_runtime_admission_scope_mismatch:input'])
+            count+=1
+    if not count:raise DataBlocked(['registered_runtime_admission_scope_inputs_missing'])
+    return dict(status='VERIFIED',scope=scope,input_rows_checked=count)
+
+
 def _run_candidate(registration, candidate, window, directory, on_engine_run=None, *, expected_engine_identity=None,source_cache=None):
     expected_engine_identity = expected_engine_identity or engine_identity()
     _require_runtime_identity(expected_engine_identity, 'engine_identity_changed_before_run')
@@ -448,6 +473,7 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
         baseline = registration['baseline']
         if raw['config'] != baseline['config'] or raw['config_hashes'] != baseline['config_hashes']:
             raise DataBlocked(['registered_production_baseline_mismatch'])
+        admission=_registered_admission_validation(registration,portal,raw)
         states = raw.get('state_tables')
         if not isinstance(states, dict):
             # Exported opening state is an independent immutable dataset.
@@ -493,6 +519,7 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
             gaps.extend('replay_invariant:'+value for value in replay.invariant_violations)
         all_gaps.extend(tier+':'+value for value in gaps)
         tiers[tier] = dict(source_manifest_sha256=replay.manifest_ref, nav=nav, lifecycles=lifecycles,
+            runtime_admission_scope_validation=admission,
             portfolio_lifecycles=portfolio_lifecycles,
             score_events=sum(event['type'] == 'hrs_score' for event in replay.audit_events),
             audit_sha256=fingerprint(replay.audit_events),
@@ -561,6 +588,7 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
         if report['engine_identity']['status'] != 'AVAILABLE':
             raise DataBlocked(report['engine_identity']['blocked_reasons'] or ['engine_identity_unavailable'])
         report['registration_sha256'] = validate_registration(registration)
+        report['runtime_admission_scope']=registration.get('runtime_admission_scope')
         report['baseline_identity'] = {key: registration['baseline'][key] for key in
             ('effective_config_sha256', 'config_hashes', 'code_commit', 'source')}
         report['registered_candidates'] = [dict(candidate, candidate_sha256=fingerprint(candidate))

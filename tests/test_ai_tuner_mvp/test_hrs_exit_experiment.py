@@ -46,6 +46,48 @@ def test_missing_real_data_writes_blocked_bundle_without_candidate_scores(tmp_pa
     assert json.loads(out.read_text())['registration_sha256']
 
 
+@pytest.mark.parametrize('scoped',[False,True])
+def test_registered_v2_admission_requires_complete_matching_snapshot_inputs(tmp_path,scoped):
+    from .test_hrs_evidence_export import captured_sources
+    from .replay.test_hrs_slot_scope import scoped_sources
+    from .replay.test_hrs_wiring import AT
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    m=module();sources,bootstrap=(scoped_sources(tmp_path) if scoped else captured_sources(tmp_path))
+    exported=export_evidence_bundle(sources,tmp_path/'out',window_start=AT,as_of=AT+timedelta(hours=3),
+        execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert exported.get('status')=='SEALED',exported
+    r=registration();r['runtime_admission_scope']='hrs_owned_and_unreleased_reservations_v2'
+    r['baseline']['config']=bootstrap['config'];r['baseline']['effective_config_sha256']=digest(bootstrap['config'])
+    r['windows'][0].update(start=AT.isoformat(),end=(AT+timedelta(hours=3)).isoformat(),snapshot_dir=exported['snapshot_dir'])
+    r['windows'][1].update(start='2026-12-01T00:00:00+08:00',end='2027-01-01T00:00:00+08:00')
+    r['windows'][2].update(start='2027-01-01T00:00:00+08:00',end='2027-02-01T00:00:00+08:00')
+    report=m.run_experiment(r,snapshot_roots=[exported['snapshot_dir']])
+    assert report['runtime_admission_scope']==r['runtime_admission_scope']
+    if scoped:
+        assert report['engine_runs']==6,report['blocked_reasons']
+        validation=report['evaluations'][0]['tiers']['baseline']['runtime_admission_scope_validation']
+        assert validation==dict(status='VERIFIED',scope=r['runtime_admission_scope'],input_rows_checked=2)
+    else:
+        assert report['engine_runs']==0
+        assert any('registered_runtime_admission_scope_mismatch' in reason for reason in report['blocked_reasons'])
+    assert report['performance_accepted'] is False
+
+
+def test_registered_admission_checks_every_input_before_engine(tmp_path):
+    scope='hrs_owned_and_unreleased_reservations_v2'
+    v2=dict(risk=dict(account_occupancy=dict(version='hrs_account_occupancy_v2',slot_scope=scope,
+        slot_ownership_proof=dict(slot_scope=scope))))
+    v1=dict(risk=dict(account_occupancy=dict(version='hrs_account_occupancy_v1')))
+    (tmp_path/'hrs_decision_inputs.jsonl').write_text(json.dumps(v2)+'\n'+json.dumps(v1)+'\n')
+    from ai_tuner.replay.models import DataBlocked
+    with pytest.raises(DataBlocked,match='registered_runtime_admission_scope_mismatch:input'):
+        module()._registered_admission_validation(dict(runtime_admission_scope=scope),
+            SimpleNamespace(snapshot_dir=tmp_path),dict(runtime_slot_scope=scope))
+    r=registration();r['runtime_admission_scope']='unknown'
+    with pytest.raises(ValueError,match='registered_runtime_admission_scope_unknown'):
+        module().validate_registration(r)
+
+
 def test_registration_bounds_one_factor_candidates_and_immutable_baseline():
     m = module()
     r = registration(); original = copy.deepcopy(r)
