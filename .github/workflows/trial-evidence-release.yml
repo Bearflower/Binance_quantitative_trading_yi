@@ -59,7 +59,7 @@ jobs:
           target=pathlib.Path(os.environ['RUNNER_TEMP'])/'trial-evidence'
           paths=[pathlib.Path(p) for p in ('ai_tuner/allocation/activity_evidence.py',
                  'ai_tuner/monitor/evidence_jobs.py', 'ai_tuner/monitor/reduced_trial.py',
-                 'ai_tuner/monitor/trial_risk_evidence.py')]
+                 'ai_tuner/monitor/trial_risk_evidence.py', 'shared/accounting/pm_equity_bridge.py')]
           paths+=[pathlib.Path('deployment/trial-evidence/activate.py')]
           files={}
           for path in paths:
