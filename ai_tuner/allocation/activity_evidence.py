@@ -23,6 +23,7 @@ import asyncio
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 import hashlib
+import re
 import json
 import uuid
 
@@ -50,6 +51,10 @@ def _obj(value):
 
 def _ms(value):
     if isinstance(value, str):
+        # PostgreSQL JSON timestamps omit trailing zeros. Python 3.10's
+        # fromisoformat accepts only three or six digits after the seconds.
+        value = re.sub(r'(?<=\d{2}:\d{2}:\d{2}\.)[0-9]{1,6}(?=Z|[+-]|$)',
+                       lambda match: match[0].ljust(6, '0'), value)
         value = datetime.fromisoformat(value.replace('Z', '+00:00'))
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError('timezone-aware evidence required')
