@@ -457,3 +457,11 @@ def test_protocol_requires_cursors_only_during_each_certified_symbol_interval():
     row = project(facts=[boundary, first, second, batch([])], cursors=cursors)
     assert row['coverage_complete']
     assert row['owned_entry_fills'] == 0
+
+
+def test_postgres_json_timestamp_with_trimmed_microseconds_keeps_positive_fill():
+    legacy = reservation()
+    legacy['created_at'] = '1970-01-01T00:00:00.00123+00:00'
+    fact = dict(id=9, account_id='default', kind='legacy_intent', payload=json.dumps(legacy))
+    row = project([], [observation()], [fill()], [fact])
+    assert row['owned_entry_fills'] == 1
