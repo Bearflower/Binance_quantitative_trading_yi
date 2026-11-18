@@ -48,6 +48,10 @@ _EXIT_ORDER_TYPES = (
 )
 
 
+class ExecutionFactsPending(ValueError):
+    """Exchange evidence has not arrived within the collection interval yet."""
+
+
 class IncomeReconciler:
     """统一 PnL 校准器：从 Binance 拉取权威盈亏，补齐 trade_records 缺失的 realized_pnl"""
 
@@ -76,6 +80,9 @@ class IncomeReconciler:
         self.state_schema = self.cfg.get("state_schema", "public")
         self.state_table = self.cfg.get("state_table", "pnl_reconcile_state") + "_by_account"
         self.excluded_strategies = list(self.cfg.get("excluded_strategies", []))
+        self.fact_wait_minutes = int(self.cfg.get("fact_wait_minutes", 90))
+        if self.fact_wait_minutes <= 0:
+            raise ValueError("fact_wait_minutes must be positive")
         self.account_id = self.cfg.get("account_id") or os.environ.get("TRADE_ACCOUNT_ID", "default")
 
     async def run_once(self) -> None:
@@ -107,6 +114,8 @@ class IncomeReconciler:
                 updated=updated,
                 total_pnl=str(total_pnl),
             )
+        except ExecutionFactsPending as e:
+            logger.warning("PnL 校准等待事实采集，保留游标", reason=str(e))
         except Exception as e:
             logger.error("PnL 校准任务失败", error=str(e), exc_info=True)
 
@@ -241,6 +250,15 @@ class IncomeReconciler:
             args.extend(self.excluded_strategies)
         return await self.db.fetch_all(sql, *args)
 
+    def _require_arrived_facts(self, rows, symbol, identity, event_ms):
+        if rows:
+            return
+        age_ms = _utc_now_ms() - event_ms
+        detail = f"{symbol} {identity} 事实尚未采集，事件年龄 {age_ms // 60000} 分钟"
+        if 0 <= age_ms < self.fact_wait_minutes * 60000:
+            raise ExecutionFactsPending(detail)
+        raise ValueError(detail + f"，超过等待上限 {self.fact_wait_minutes} 分钟或事件时间无效")
+
     async def _match_and_update(
         self, income_records: list, pending_records: Optional[list] = None,
         completed_through: Optional[int] = None,
@@ -270,6 +288,7 @@ class IncomeReconciler:
                 "AND income_type = 'REALIZED_PNL'",
                 self.account_id, symbol, int(tran_id),
             )
+            self._require_arrived_facts(income_facts, symbol, f"tranId={tran_id}", inc_time)
             if len(income_facts) != 1 or int(income_facts[0]["trade_id"] or 0) != int(trade_id) \
                     or Decimal(str(income_facts[0]["income"])) != Decimal(str(inc["income"])):
                 raise ValueError(f"{symbol} tranId={tran_id} 收入事实缺失或不一致")
@@ -279,6 +298,7 @@ class IncomeReconciler:
                 "AND symbol = $2 AND trade_id = $3",
                 self.account_id, symbol, int(trade_id),
             )
+            self._require_arrived_facts(fills, symbol, f"tradeId={trade_id}", inc_time)
             if len(fills) != 1 or fills[0]["order_id"] is None:
                 raise ValueError(f"{symbol} tradeId={trade_id} 成交事实缺失或不唯一")
             fill = fills[0]
