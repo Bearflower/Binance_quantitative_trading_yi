@@ -167,9 +167,9 @@ async def test_real_postgres_readonly_probe_serializes_legacy_claim_timestamps_a
             CREATE TABLE hrs.hrs_blacklist(symbol text);
             CREATE TABLE hrs.hrs_active_symbols(symbol text);
             CREATE TABLE trading.entry_risk_reservation(account_id text,strategy_id text);
-            CREATE TABLE trading.position_claims(claim_state text,created_at timestamp,updated_at timestamp,expires_at timestamp);
+            CREATE TABLE trading.position_claims(claim_state text,created_at timestamp,updated_at timestamp,expires_at timestamp,id bigint,symbol text,strategy text);
             CREATE TABLE trading.hrs_equity_evidence(account_id text,evidence_sha256 text,segment_id text,as_of timestamptz,available_at timestamptz,payload jsonb);
-            INSERT INTO trading.position_claims VALUES('ACTIVE','2026-11-18 12:00:00','2026-11-18 12:01:00','infinity');
+            INSERT INTO trading.position_claims(claim_state,created_at,updated_at,expires_at) VALUES('ACTIVE','2026-11-18 12:00:00','2026-11-18 12:01:00','infinity');
             INSERT INTO hrs.hrs_positions VALUES('2026-11-18 12:00:00+08')''')
         await admin.execute(f'GRANT USAGE ON SCHEMA trading,hrs TO {role}; GRANT SELECT ON ALL TABLES IN SCHEMA trading,hrs TO {role}')
         app=await asyncpg.connect(dsn,database=name,server_settings={'default_transaction_read_only':'on'})

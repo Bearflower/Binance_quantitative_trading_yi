@@ -26,7 +26,7 @@ async def test_capture_financial_context_keeps_actual_values_and_unready_ledger_
     assert result['runtime_slot_scope']=='hrs_owned_and_unreleased_reservations_v2'
     assert result['hrs_slot_inputs']['inventory']==result['hrs_slot_inputs']['independent']==[]
     assert result['hrs_slot_inputs']['local']=={}
-    assert result['hrs_slot_inputs']['observed_at']==result['available_at']
+    assert result['hrs_slot_inputs']['observed_at']<=result['available_at']
     assert 'hidden' not in str(result)
     assert set(result['state_tables']) == {'hrs_positions', 'hrs_blacklist', 'hrs_active_symbols'}
 
@@ -113,6 +113,8 @@ async def test_real_legacy_claim_timestamps_capture_without_inventing_timezone()
                 '2026-11-15 10:20:30.123456','infinity',NULL)''')
         class ClaimsDB:
             async def fetch_all(self, query, *args):
+                if 'trading.strategy_equity_gate' in query:
+                    return []
                 if 'trading.position_claims' in query:
                     rows = await connection.fetch(query.replace('trading.position_claims', 'pg_temp.legacy_claim'), *args)
                     return [dict(row) for row in rows]
@@ -147,3 +149,27 @@ def test_claim_evidence_does_not_relax_other_aware_clock_requirements():
     from strategies.hrs.decision_capture import canonical_payload
     with pytest.raises(ValueError, match='naive_evidence_timestamp'):
         canonical_payload({'available_at': datetime(2026, 11, 18)})
+
+@pytest.mark.asyncio
+async def test_gate_snapshot_follows_inventory_observation_and_captures_exact_claims(monkeypatch):
+    import asyncio
+    import strategies.hrs.decision_context as module
+    completed=[]
+    async def inventory():
+        await asyncio.sleep(0)
+        completed.append(True)
+        return []
+    async def database(db,account):
+        assert len(completed)==2,'gate clock must follow both actual inventory responses'
+        from datetime import datetime,timezone
+        gate={'account_id':account,'strategy_id':'hrs','checked_at':datetime.now(timezone.utc),
+              'ownership_claims':'[{"id":1,"symbol":"OTHER","strategy":"foreign","claim_state":"ACTIVE"}]'}
+        return [[{'revision':6}],[],[],[],[],[],[],[],[gate]],True
+    monkeypatch.setattr(module,'_database_context',database)
+    strategy=SimpleNamespace(binance_client=SimpleNamespace(get_account_info=AsyncMock(return_value={'totalMarginBalance':'100'}),
+        get_position=inventory,get_um_account_positions=inventory),position_manager=SimpleNamespace(get_all_positions=lambda:{}),
+        capital_mgr=SimpleNamespace(get_effective_margin_limit=AsyncMock(return_value=(50,'db'))),
+        trading_executor=SimpleNamespace(timeout_recovery=SimpleNamespace(pending=AsyncMock(return_value=[]))),db=object())
+    result=await module.capture_financial_context(strategy)
+    assert result['hrs_slot_inputs']['observed_at']<=result['equity_gate']['checked_at']<=result['available_at']
+    assert result['ownership_claims']==[{'id':1,'symbol':'OTHER','strategy':'foreign','claim_state':'ACTIVE'}]

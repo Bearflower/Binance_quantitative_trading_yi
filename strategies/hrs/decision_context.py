@@ -35,7 +35,13 @@ async def _database_context(db, account):
         ('''SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
             FROM trading.hrs_equity_evidence WHERE account_id=$1 AND segment_id IS NOT NULL
             ORDER BY as_of DESC,available_at DESC LIMIT 2''', (account,)),
-        ("SELECT g.*,clock_timestamp() AS checked_at FROM trading.strategy_equity_gate g WHERE g.account_id=$1 AND g.strategy_id='hrs'", (account,))]
+        ("""WITH observation AS (SELECT clock_timestamp() AS checked_at)
+            SELECT g.*,o.checked_at,COALESCE((SELECT jsonb_agg(jsonb_build_object(
+                'id',c.id,'symbol',c.symbol,'strategy',c.strategy,'claim_state',c.claim_state))
+                FROM trading.position_claims c WHERE c.claim_state IN ('PENDING','ACTIVE')
+                AND c.expires_at>o.checked_at),'[]'::jsonb) AS ownership_claims
+            FROM trading.strategy_equity_gate g CROSS JOIN observation o
+            WHERE g.account_id=$1 AND g.strategy_id='hrs'""", (account,))]
 
     pool = getattr(db, 'pool', None)
     if pool is None:
@@ -71,30 +77,37 @@ def ledger_equity_observation(ledger, archives):
 
 async def capture_financial_context(strategy):
     started = datetime.now(timezone.utc)
-    account, allocation, pending, database, inventory, independent = await asyncio.gather(
+    account, allocation, pending, inventory, independent = await asyncio.gather(
         strategy.binance_client.get_account_info(),
         strategy.capital_mgr.get_effective_margin_limit(),
         strategy.trading_executor.timeout_recovery.pending(),
-        _database_context(strategy.db, os.getenv('TRADE_ACCOUNT_ID', 'default')),
         strategy.binance_client.get_position(), strategy.binance_client.get_um_account_positions())
     equity = account.get('totalMarginBalance') if isinstance(account, dict) else None
     if equity is None or not Decimal(str(equity)).is_finite() or Decimal(str(equity)) <= 0:
         raise ValueError('account_equity_missing_or_invalid')
     amount, source = allocation
-    rows, coherent = database
+    from .entry_occupancy import SLOT_SCOPE, capture_hrs_slot_inputs
+    local = strategy.position_manager.get_all_positions()
+    if not isinstance(local, dict):
+        raise ValueError('local_position_inventory_missing')
+    observed = datetime.now(timezone.utc)
+    slot_inputs = capture_hrs_slot_inputs(inventory=inventory, independent=independent,
+        local=local, observed_at=observed)
+    # Gate checked_at is a real DB clock after these GETs, never backdated.
+    rows, coherent = await _database_context(strategy.db, os.getenv('TRADE_ACCOUNT_ID', 'default'))
     policies, ledger = rows[:2]
     tables = rows[2:5]
     reservations, claims, sources = rows[5:8]
     gates = rows[8]
     if len(policies) != 1:
         raise ValueError('entry_policy_missing_or_ambiguous')
-    from .entry_occupancy import SLOT_SCOPE, capture_hrs_slot_inputs
-    local = strategy.position_manager.get_all_positions()
-    if not isinstance(local, dict):
-        raise ValueError('local_position_inventory_missing')
+    gate = dict(gates[0]) if len(gates) == 1 else None
+    ownership_claims = gate.get('ownership_claims') if gate else None
+    if isinstance(ownership_claims, str):
+        ownership_claims = json.loads(ownership_claims)
+    if ownership_claims is not None and not isinstance(ownership_claims, list):
+        raise ValueError('ownership_claims_invalid')
     available = datetime.now(timezone.utc)
-    slot_inputs = capture_hrs_slot_inputs(inventory=inventory, independent=independent,
-        local=local, observed_at=available)
     return dict(runtime_slot_scope=SLOT_SCOPE, hrs_slot_inputs=slot_inputs, started_at=started, available_at=available, account_equity=str(equity),
         account_balances={key: account[key] for key in (
             ('totalMarginBalance', 'availableBalance') if getattr(strategy.binance_client, 'use_unified_account', False) is True
@@ -104,7 +117,7 @@ async def capture_financial_context(strategy):
         exchange_positions=inventory, independent_positions=independent,
         reservations=[dict(row) for row in reservations], claims=decode_claim_evidence(claims), claim_source_format='postgresql_to_jsonb_v1',
         equity_source_archives=[dict(row) for row in sources],
-        equity_gate=dict(gates[0]) if len(gates) == 1 else None,
+        equity_gate=gate, ownership_claims=ownership_claims,
         hrs_marked_equity_observation=ledger_equity_observation(dict(ledger[0]) if len(ledger)==1 else None, sources),
 
         allocation=str(amount) if amount is not None else None, allocation_source=source,
