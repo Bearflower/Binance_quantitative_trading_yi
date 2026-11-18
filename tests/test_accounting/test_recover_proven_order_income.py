@@ -184,3 +184,22 @@ def test_reversal_fill_is_excluded_and_subsequent_reduction_uses_new_owner():
                  event_time_utc=fills[-1]['trade_time_utc'])
     plan, _, _ = closed_lot_plan('default', [events[0], event], fills, owners, anchors, cursors, [], [])
     assert [r['tran_id'] for r in plan['derived_rows']] == [40]
+
+
+def test_closed_lot_scope_requires_exact_signed_anchor_and_no_trade_in_snapshot_gap():
+    from scripts.recover_proven_order_income import validate_closed_lot_anchors
+
+    point = datetime(2026, 11, 13, 9, 17, 51, 27000, tzinfo=timezone.utc)
+    cutoff = int(point.timestamp() * 1000)
+    evidence = dict(cutoff_ms=cutoff, snapshot_observed_ms=cutoff+50,
+                    position_side='BOTH', gap_trade_count=0, position_payload_sha256='a'*64)
+    row = dict(account_id='default', symbol='WLDUSDT', flat_at=point,
+               exchange_qty=Decimal('0'), evidence=evidence)
+    validate_closed_lot_anchors([row], 'default', ['WLDUSDT'], point)
+    for bad in ([row, row], [], [dict(row, account_id='other')], [dict(row, symbol='ETHUSDT')],
+                [dict(row, evidence=dict(evidence, gap_trade_count=1))],
+                [dict(row, evidence=dict(evidence, cutoff_ms=cutoff-1))],
+                [dict(row, evidence=dict(evidence, position_payload_sha256='invalid'))],
+                [dict(row, flat_at=datetime(2026, 11, 12, tzinfo=timezone.utc))]):
+        with pytest.raises(ValueError):
+            validate_closed_lot_anchors(bad, 'default', ['WLDUSDT'], point)

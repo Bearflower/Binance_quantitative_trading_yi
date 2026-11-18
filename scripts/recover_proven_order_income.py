@@ -16,6 +16,7 @@ from decimal import Decimal
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 from itertools import groupby
 from zoneinfo import ZoneInfo
@@ -196,6 +197,30 @@ class Reader:
         return await self.connection.fetch(sql, *args)
 
 
+def validate_closed_lot_anchors(anchors, account, symbols, anchor_at):
+    """Require one signed, zero-position checkpoint per requested symbol."""
+    if anchor_at.tzinfo is None or anchor_at.utcoffset() is None:
+        raise ValueError('flat anchor requires an explicit timezone')
+    if len(anchors) != len(symbols) or {row['symbol'] for row in anchors} != set(symbols):
+        raise ValueError('requested flat anchors missing or duplicated')
+    cutoff = int(anchor_at.timestamp() * 1000)
+    for row in anchors:
+        evidence = row['evidence']
+        if isinstance(evidence, str):
+            evidence = json.loads(evidence)
+        if (row['account_id'] != account or row['flat_at'] != anchor_at
+                or Decimal(str(row['exchange_qty'])) != 0
+                or not isinstance(evidence, dict)
+                or evidence.get('position_side') != 'BOTH'
+                or type(evidence.get('gap_trade_count')) is not int
+                or evidence['gap_trade_count'] != 0
+                or evidence.get('cutoff_ms') != cutoff
+                or type(evidence.get('snapshot_observed_ms')) is not int
+                or evidence['snapshot_observed_ms'] < cutoff
+                or not re.fullmatch(r'[0-9a-f]{64}', str(evidence.get('position_payload_sha256')))):
+            raise ValueError('signed zero-position checkpoint invalid')
+
+
 def closed_lot_plan(account, incomes, fills, owners, anchors, cursors, reviewed, existing):
     """Attribute only fully verified closed lots ending before a signed flat anchor."""
     manual = {_key(row): row for row in reviewed}
@@ -321,6 +346,8 @@ async def run(args):
     start_ms, end_ms = month_window_ms(args.month)
     start = datetime.fromtimestamp(start_ms / 1000, timezone.utc)
     end = datetime.fromtimestamp(end_ms / 1000, timezone.utc)
+    if args.symbols and not args.closed_lots:
+        raise ValueError('--symbols is only valid with --closed-lots')
     account = args.account_id
     if os.environ.get('TRADE_ACCOUNT_ID') != account:
         raise ValueError('credential account binding mismatch')
@@ -355,11 +382,12 @@ async def run(args):
             if args.closed_lots:
                 if args.order_archive or not args.anchor_at:
                     raise ValueError('closed-lot recovery requires a fixed anchor and separate order-evidence recovery')
-                symbols = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']
+                symbols = args.symbols or ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'SOLUSDT', 'XRPUSDT']
+                if len(set(symbols)) != len(symbols) or any(not s.endswith('USDT') or not s[:-4].isalnum() for s in symbols):
+                    raise ValueError('closed-lot symbol scope invalid')
                 anchor_at = datetime.fromisoformat(args.anchor_at)
                 anchors = await connection.fetch('SELECT * FROM trading.position_flat_baseline WHERE account_id=$1 AND symbol=ANY($2::text[]) AND flat_at=$3', account, symbols, anchor_at)
-                if len(anchors) != len(symbols):
-                    raise ValueError('reviewed flat anchors missing')
+                validate_closed_lot_anchors(anchors, account, symbols, anchor_at)
                 lot_fills = await connection.fetch('SELECT * FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=ANY($2::text[]) AND trade_time_utc <= $3 ORDER BY trade_time_utc,trade_id', account, symbols, anchor_at)
                 cursors = await connection.fetch('SELECT * FROM trading.execution_fact_cursor WHERE account_id=$1 AND source=$2 AND symbol=ANY($3::text[])', account, 'userTrades', symbols)
                 plan, digest, lot_rejections = closed_lot_plan(account, incomes, lot_fills, owners,
@@ -398,4 +426,5 @@ if __name__ == '__main__':
     parser.add_argument('--download-id')
     parser.add_argument('--closed-lots', action='store_true')
     parser.add_argument('--anchor-at')
+    parser.add_argument('--symbols', nargs='+', help='Explicit symbol scope for verified closed-lot recovery')
     print(json.dumps(asyncio.run(run(parser.parse_args())), default=json_value, sort_keys=True))
