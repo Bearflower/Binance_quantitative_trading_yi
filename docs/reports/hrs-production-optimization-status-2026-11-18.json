@@ -61,7 +61,10 @@
     "new_market_asset_identity_count": 9,
     "funding_evidence_storage": "deployed_new_parent_constant_reference_original_receipts_retained",
     "new_market_asset_identity_status": "deployed_nine_of_nine_diagnostic_quotes_verified",
-    "post_release_natural_scan": "complete_and_integrity_verified"
+    "post_release_natural_scan": "complete_and_integrity_verified",
+    "position_slot_scope": "account_wide_plus_hrs_reservations_existing_rule_not_adjusted",
+    "risk_warning_alarm_classification": "warning_reported_as_error_monitor_not_changed",
+    "kline_history_continuity": "five_symbols_observed_in_last_scan_not_repaired_and_reverified"
   },
   "previous_release_sha": "3436656d698f037fc51e4fa950bd02868e4079be",
   "evidence_context_serializable": true,
@@ -290,5 +293,34 @@
         "source_row_count": 549
       }
     }
+  },
+  "optimization_status": "INCOMPLETE",
+  "subsequent_read_only_audit": {
+    "checked_at": "2026-11-18T08:42:36.155501+00:00",
+    "release_sha": "441559ae8d549c9d242dc79df0f945f8539fe6a9",
+    "hrs_position_count": 1,
+    "account_position_symbols": [
+      "BNBUSDT",
+      "SOLUSDT",
+      "WLDUSDT"
+    ],
+    "max_positions": 3,
+    "sui_would_use_slots": 4,
+    "pending_timeout_count": 0,
+    "equity_gate_ready": false,
+    "equity_gate_allowed": false,
+    "equity_gate_reasons": [
+      "daily_origin_missing"
+    ],
+    "kline_error_observed_at": "2026-11-18T08:21:30Z",
+    "kline_error": "kline_history_discontinuous",
+    "kline_symbols": [
+      "ARIAUSDT",
+      "BTWUSDT",
+      "PUMPUSDT",
+      "EVAAUSDT",
+      "MMTUSDT"
+    ],
+    "risk_configuration_changed": false
   }
 }
