@@ -217,3 +217,41 @@ async def test_cmc_auth_failure_is_redacted_and_backoff_survives_restart(tmp_pat
         assert 'test-cmc-secret' not in captured.out + captured.err
     finally:
         restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_natural_scan_missing_assets_use_verified_original_cg_rows(tmp_path,monkeypatch):
+    """Replay the actual public response at its real receipt time, without network."""
+    import hashlib
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    from unittest.mock import Mock
+    capture=json.loads(Path('tests/fixtures/market_cap/cg_three_assets_20261118.json').read_text())
+    assert hashlib.sha256(capture['body_utf8'].encode()).hexdigest()==capture['body_sha256']
+    assert capture['http_status']==200
+    body=json.loads(capture['body_utf8'])
+    monkeypatch.setattr('services.market_cap.hub.time.time',lambda:datetime.fromisoformat(capture['available_at']).timestamp())
+    registry=json.loads(Path('services/market_cap/assets.json').read_text())
+    symbols=['ICNTUSDT','PIPPINUSDT','PIEVERSEUSDT']
+    expected={row['symbol'].upper()+'USDT':row for row in body}
+    class Response:
+        status=200
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def json(self):return body
+    session=Mock();session.get.return_value=Response()
+    hub=MarketCapHub(tmp_path/'cache.db',registry);hub.session=session
+    try:
+        result=await hub.collect(symbols+['UNKNOWNUSDT'])
+        for symbol in symbols:
+            assert result[symbol]['source']=='cache_hit',result[symbol]
+            assert result[symbol]['provider']=='coingecko'
+            assert result[symbol]['asset_id']==expected[symbol]['id']
+            assert result[symbol]['value']==expected[symbol]['market_cap']>0
+            assert result[symbol]['is_proxy'] is False
+            assert registry[symbol]['cmc_enabled'] is False and registry[symbol]['cmc_id'] is None
+        assert result['UNKNOWNUSDT']['missing_reason']=='asset_identity_unverified'
+        assert hub.stats['coingecko_calls']==1 and hub.stats['coinmarketcap_calls']==0
+        assert set(session.get.call_args.kwargs['params']['ids'].split(','))=={row['id'] for row in body}
+    finally:hub.close()
