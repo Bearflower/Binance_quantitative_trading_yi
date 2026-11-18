@@ -26,7 +26,7 @@ def test_overlay_preserves_other_pins_and_actual_frozen_mounts():
     before = deepcopy(previous)
     mounts = [{'Type': 'bind', 'Source': '/root/frozen/config.yaml',
                'Destination': '/app/strategies/hrs/config.yaml', 'RW': False}]
-    overlay = mod.release_overlay(previous, 'hrs-image', 'hub-image', mounts)
+    overlay = mod.release_overlay(previous, 'hrs-image', 'hub-image', mounts, 'a'*40)
     assert previous == before
     assert overlay['services']['btc-eth-aggressive']['image'] == 'other-pinned'
     assert overlay['services']['hrs-strategy']['volumes'][0]['read_only'] is True
@@ -90,7 +90,7 @@ def test_named_actual_volumes_are_declared_external_without_changing_other_pins(
     mod=module()
     result=mod.release_overlay({'services':{}},'hrs','hub',[
         dict(Type='volume',Name='trading_system_actual_logs',Source='/var/lib/docker/volumes/x',
-             Destination='/app/logs',RW=True)])
+             Destination='/app/logs',RW=True)],'a'*40)
     source=result['services']['hrs-strategy']['volumes'][0]['source']
     assert result['volumes'][source]=={'external':True,'name':'trading_system_actual_logs'}
 
@@ -104,6 +104,26 @@ def test_environment_comparison_includes_removed_and_image_inherited_values():
     assert mod.environment_drift({'PATH':'/usr/bin'}, {'PATH':'/usr/bin','HRS_RELEASE_SHA':sha},
                                  {'HRS_EVIDENCE_CAPTURE_ENABLED':'1'},sha)==[]
     assert 'HRS_RELEASE_SHA' in mod.environment_drift({}, {'HRS_RELEASE_SHA':'wrong'}, {}, sha)
+
+
+@pytest.mark.parametrize('previous_sha',[None,'b'*40])
+def test_overlay_binds_candidate_sha_after_rollback_without_relaxing_other_environment(previous_sha):
+    mod=module();sha='a'*40
+    previous={'services':{'hrs-strategy':{'environment':{
+        'HRS_RELEASE_SHA':previous_sha,'DATABASE_PASSWORD':'synthetic-private-value',
+        'UNCHANGED_SETTING':'retained'}}}}
+    original=deepcopy(previous)
+    overlay=mod.release_overlay(previous,'candidate-hrs','candidate-hub',[],sha)
+    proposed=overlay['services']['hrs-strategy']['environment']
+    assert proposed['HRS_RELEASE_SHA']==sha
+    assert proposed['DATABASE_PASSWORD']=='synthetic-private-value'
+    assert proposed['UNCHANGED_SETTING']=='retained'
+    assert previous==original
+    actual={'HRS_RELEASE_SHA':previous_sha,'DATABASE_PASSWORD':'synthetic-private-value',
+            'UNCHANGED_SETTING':'retained'}
+    assert mod.environment_drift(actual,{'HRS_RELEASE_SHA':sha},proposed,sha)==[]
+    proposed['DATABASE_PASSWORD']='different-synthetic-value'
+    assert mod.environment_drift(actual,{'HRS_RELEASE_SHA':sha},proposed,sha)==['DATABASE_PASSWORD']
 
 
 def initialization(now,sha,config):

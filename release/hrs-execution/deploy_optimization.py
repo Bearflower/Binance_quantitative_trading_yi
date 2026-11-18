@@ -122,7 +122,7 @@ def actual_volumes(overlay, mounts):
     return volumes
 
 
-def release_overlay(previous, hrs_image, hub_image, mounts):
+def release_overlay(previous, hrs_image, hub_image, mounts, release_sha):
     overlay = deepcopy(previous)
     services = overlay.setdefault('services', {})
     service = services.setdefault('hrs-strategy', {})
@@ -130,7 +130,7 @@ def release_overlay(previous, hrs_image, hub_image, mounts):
     service.setdefault('environment', {}).update(HRS_EVIDENCE_CAPTURE_ENABLED='1',
         HRS_EQUITY_GATE_ENABLED='1', ENTRY_EQUITY_GATE_STRATEGIES='hrs',
         HRS_EQUITY_ALLOW_INCEPTION='true', HRS_EQUITY_REFRESH_SECONDS='30',
-        HRS_ACCEPTANCE_REPORT_ENABLED='0')
+        HRS_ACCEPTANCE_REPORT_ENABLED='0',HRS_RELEASE_SHA=release_sha)
     service['volumes'] = actual_volumes(overlay,mounts)
     services.setdefault('market-cap-service', {})['image'] = hub_image
     return overlay
@@ -475,7 +475,7 @@ def main():
             targets={name:dict(image=c['Config']['Image'],mounts=c.get('Mounts',[])) for name,c in before.items()})
         atomic(planpath,plan)
     previous=json.loads(Path(pin['overlay']).read_text())
-    overlay=release_overlay(previous,args.hrs_image,args.hub_image,plan['targets']['trading_system-hrs']['mounts'])
+    overlay=release_overlay(previous,args.hrs_image,args.hub_image,plan['targets']['trading_system-hrs']['mounts'],args.sha)
     actual_networks=set(before['trading_system-hrs']['NetworkSettings']['Networks']) & set(inspect('trading_system-postgres')['NetworkSettings']['Networks'])
     if not actual_networks:raise RuntimeError('shared_database_network_missing')
     network=sorted(actual_networks)[0]
