@@ -12,6 +12,9 @@ ARG RELEASE_SHA
 LABEL org.opencontainers.image.revision=$RELEASE_SHA
 COPY services/market_cap/ /app/services/market_cap/
 FROM hrs AS test
+# Base images may retain tests removed from the current tracked checkout.
+RUN rm -rf /app/tests /app/strategies/hrs/tests
+COPY strategies/hrs/tests/ /app/strategies/hrs/tests/
 RUN pip install --no-cache-dir pytest pytest-asyncio APScheduler==3.10.4
 COPY services/market_cap/ /app/services/market_cap/
 COPY tests/ /app/tests/
