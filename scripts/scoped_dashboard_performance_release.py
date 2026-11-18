@@ -51,7 +51,7 @@ def sha256(data: bytes) -> str:
 def build_overlay(predecessor: dict, image: str, archive: Path | None = None) -> dict:
     if not re.fullmatch(r"ghcr\.io/bearflower/trading-dashboard-api@sha256:[0-9a-f]{64}", image):
         raise ReleaseBlocked("invalid immutable dashboard image")
-    if set(predecessor) != {"services"} or SERVICE not in predecessor["services"]:
+    if set(predecessor) - {"services", "networks"} or SERVICE not in predecessor.get("services", {}):
         raise ReleaseBlocked("predecessor overlay missing dashboard")
     result = json.loads(json.dumps(predecessor))
     service = result["services"][SERVICE]
@@ -137,7 +137,7 @@ class Runtime(BaseRuntime):
                 sha256(self.previous_overlay.read_bytes()) != PREDECESSOR_OVERLAY_SHA256):
             raise ReleaseBlocked("predecessor overlay drift")
         original = json.loads(self.previous_overlay.read_text())
-        if set(original) != {"services"} or set(original["services"]) != set(self.stacks):
+        if set(original) - {"services", "networks"} or not set(self.stacks) <= set(original.get("services", {})):
             raise ReleaseBlocked("predecessor image inventory drift")
         self.before = self.inspect(SERVICE)
         if (self.before["State"]["Status"] != "running" or
