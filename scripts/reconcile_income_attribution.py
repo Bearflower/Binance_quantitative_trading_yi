@@ -410,10 +410,13 @@ async def _run(month, account_id, apply, requested_end_ms=None):
                     preliminary_symbols = {str(row["symbol"]) for row in preliminary if row.get("symbol")}
                     preliminary_cursors = [dict(row) for row in await connection.fetch(
                         _CURSOR_SQL, account_id, start_ms, target_ms)]
-                    preliminary_symbols.update(str(row["symbol"]) for row in preliminary_cursors
-                                               if row.get("source") == "userTrades"
-                                               and row.get("symbol")
-                                               and row.get("window_start_ms", 0) >= start_ms)
+                    # A completed backfill cursor can belong to a symbol with
+                    # no activity this month. Only observed account facts define
+                    # which symbol streams have to reach the common watermark.
+                    preliminary_symbols.update(row["symbol"] for row in await connection.fetch(
+                        "SELECT DISTINCT symbol FROM trading.execution_fact_fill "
+                        "WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc < $3",
+                        account_id, start, target))
             end_ms = verified_fact_cutoff(preliminary_cursors, account_id,
                                           start_ms, target_ms, preliminary_symbols)
         else:
