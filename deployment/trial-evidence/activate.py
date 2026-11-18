@@ -12,9 +12,9 @@ import time
 from datetime import datetime
 
 ROOT = Path('/root/trading_system')
-PIN_SHA = '41d86ea15bb1509ee0178f09dde9b432b80202bc'
-OVERLAY_SHA = 'c92068c96fd8fa855ac080fb7346c6bc1f7da270b120779ff509d4cf635bba90'
-BASE_IMAGE = 'sha256:8cc131057bd8130231fb5a2f7defb040bbd5c5f94f8449f81e27b2bda4c46316'
+PIN_SHA = '3436656d698f037fc51e4fa950bd02868e4079be'
+OVERLAY_SHA = 'e6a7f28e6a28a8d813d6e12735eb7fc3e6753be0c14ceba3d35f191a45c7b409'
+BASE_IMAGE = 'sha256:72afe1ac5cb7ffc0c73d60b20ccb8699d64fc3776ec157a09c3065d5a657fd48'
 MIGRATIONS = ()
 
 
