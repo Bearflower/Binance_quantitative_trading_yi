@@ -250,3 +250,127 @@ def test_failed_rollback_is_explicit_and_does_not_claim_old_pin_active(tmp_path,
     state=json.loads((folder/'state.json').read_text())
     assert state['status']=='failed' and state['rollback']['status']=='incomplete'
     assert json.loads(pin.read_text())['status']=='rollback_failed'
+
+
+def test_initialization_probe_reports_permission_failure_without_exception_text(monkeypatch,capsys):
+    from types import SimpleNamespace
+    mod=module()
+    class InsufficientPrivilegeError(Exception):pass
+    async def connect(**kwargs):raise InsufficientPrivilegeError('PASSWORD=synthetic-private-value')
+    monkeypatch.setitem(sys.modules,'asyncpg',SimpleNamespace(connect=connect))
+    for key in ('DATABASE_HOST','DATABASE_NAME','DATABASE_USER','DATABASE_PASSWORD'):
+        monkeypatch.setenv(key,'synthetic-private-value')
+    exec(compile(mod.INITIALIZATION,'initialization-probe','exec'),{})
+    output=capsys.readouterr().out
+    data=json.loads(next(line.split('=',1)[1] for line in output.splitlines() if line.startswith('HRS_INITIALIZATION=')))
+    assert data['status']=='error'
+    assert data['stage']=='collector_connect'
+    assert data['error_code']=='database_permission_denied'
+    assert 'synthetic-private-value' not in output
+
+
+def test_initialization_attempts_are_saved_before_rollback_with_only_allowlisted_fields(tmp_path,monkeypatch):
+    mod,containers,calls,folder,pin=fake_rollout(tmp_path,monkeypatch)
+    monkeypatch.setattr(mod,'read_initialization',lambda:dict(status='error',stage='collector_projection_read',
+        error_code='database_permission_denied',stderr='PASSWORD=synthetic-private-value',
+        gate={'ready':False,'allowed':False,'reasons':['InsufficientPrivilegeError','secret=synthetic-private-value']},
+        environment={'SECRET':'synthetic-private-value'}))
+    original=mod.rollback
+    def rollback(*args):
+        pending=json.loads((folder/'state.json').read_text())
+        assert pending['status']=='failing'
+        assert pending['error_code']=='candidate_initialization_timeout'
+        observations=pending['observations']
+        assert len(observations)==90
+        assert observations[-1]['initialization']['stage']=='collector_projection_read'
+        assert observations[-1]['initialization']['error_code']=='database_permission_denied'
+        assert observations[-1]['initialization']['gate']=={
+            'ready':False,'allowed':False,'reasons':['InsufficientPrivilegeError'],'unknown_reason_count':1}
+        assert observations[-1]['containers']['trading_system-hrs']['health']=='healthy'
+        assert 'synthetic-private-value' not in json.dumps(pending)
+        return original(*args)
+    monkeypatch.setattr(mod,'rollback',rollback)
+    with pytest.raises(RuntimeError,match='rollout_failed_rollback_complete'):mod.main()
+    state=json.loads((folder/'state.json').read_text())
+    assert state['error_code']=='candidate_initialization_timeout'
+    assert state['observations'][-1]['initialization']['error_code']=='database_permission_denied'
+
+
+def test_failed_process_health_is_saved_without_docker_logs_or_raw_errors(tmp_path,monkeypatch):
+    mod,containers,calls,folder,pin=fake_rollout(tmp_path,monkeypatch)
+    inspect=mod.inspect
+    def failed(name):
+        data=inspect(name)
+        if name=='trading_system-hrs' and data['Config']['Image'].startswith('ghcr.io/'):
+            data['State'].update(Status='exited',ExitCode=17,Error='synthetic-private-value',
+                Health={'Status':'unhealthy','Log':[{'Output':'synthetic-private-value'}]})
+        return data
+    monkeypatch.setattr(mod,'inspect',failed)
+    with pytest.raises(RuntimeError,match='rollout_failed'):mod.main()
+    state=json.loads((folder/'state.json').read_text())
+    assert state['error_code']=='candidate_process_failed'
+    observed=state['observations'][-1]['containers']['trading_system-hrs']
+    assert observed['status']=='exited' and observed['health']=='unhealthy' and observed['exit_code']==17
+    assert 'synthetic-private-value' not in json.dumps(state)
+
+
+def test_each_initialization_exec_failure_is_retained_without_arbitrary_exception_text(tmp_path,monkeypatch):
+    mod,containers,calls,folder,pin=fake_rollout(tmp_path,monkeypatch)
+    count=0
+    def read():
+        nonlocal count
+        count+=1
+        if count==1:raise RuntimeError('docker failed with exit 137')
+        raise RuntimeError('PASSWORD=synthetic-private-value')
+    monkeypatch.setattr(mod,'read_initialization',read)
+    with pytest.raises(RuntimeError,match='rollout_failed'):mod.main()
+    state=json.loads((folder/'state.json').read_text())
+    assert len(state['observations'])==count==90
+    assert state['observations'][0]['initialization']['error_code']=='command_failed'
+    assert state['observations'][0]['initialization']['exit_code']==137
+    assert state['observations'][1]['initialization']['error_code']=='unclassified_error'
+    assert 'synthetic-private-value' not in json.dumps(state)
+
+
+def test_initialization_probe_preserves_projection_when_independent_writer_is_denied(monkeypatch,capsys):
+    from types import SimpleNamespace
+    mod=module()
+    class InsufficientPrivilegeError(Exception):pass
+    class Connection:
+        async def fetchrow(self,*args):
+            return {'ready':False,'allowed':False,'reasons':'["InsufficientPrivilegeError"]',
+                'updated_at':datetime.now(timezone.utc),'evidence_sha256':'a'*64}
+        async def close(self):pass
+    calls=0
+    async def connect(**kwargs):
+        nonlocal calls
+        calls+=1
+        if calls==2:raise InsufficientPrivilegeError('synthetic-private-value')
+        return Connection()
+    monkeypatch.setitem(sys.modules,'asyncpg',SimpleNamespace(connect=connect))
+    for key in ('DATABASE_HOST','DATABASE_NAME','DATABASE_USER','DATABASE_PASSWORD',
+                'AI_TUNER_SNAPSHOT_DB_USER','AI_TUNER_SNAPSHOT_DB_PASSWORD'):
+        monkeypatch.setenv(key,'synthetic-private-value')
+    exec(compile(mod.INITIALIZATION,'initialization-probe','exec'),{})
+    output=capsys.readouterr().out
+    data=json.loads(output.split('HRS_INITIALIZATION=',1)[1])
+    assert data['stage']=='writer_connect' and data['error_code']=='database_permission_denied'
+    assert data['gate']['ready'] is False
+    assert data['gate']['reasons']==['InsufficientPrivilegeError']
+    assert 'synthetic-private-value' not in output
+
+
+def test_failure_audit_write_error_cannot_prevent_target_rollback(tmp_path,monkeypatch):
+    mod,containers,calls,folder,pin=fake_rollout(tmp_path,monkeypatch,fail_hrs=True)
+    atomic=mod.atomic
+    def disk_error(path,value):
+        if Path(path).name=='state.json' and value.get('status')=='failing':
+            raise OSError('synthetic-private-value')
+        return atomic(path,value)
+    monkeypatch.setattr(mod,'atomic',disk_error)
+    with pytest.raises(RuntimeError,match='rollout_failed_rollback_complete'):mod.main()
+    assert containers['trading_system-market-cap']['Config']['Image']=='old-hub'
+    state=json.loads((folder/'state.json').read_text())
+    assert state['pre_rollback_audit_persisted'] is False
+    assert state['rollback']['status']=='complete'
+    assert 'synthetic-private-value' not in json.dumps(state)

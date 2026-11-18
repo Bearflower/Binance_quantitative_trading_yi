@@ -33,6 +33,80 @@ PUBLIC_FLAGS = {'HRS_EVIDENCE_CAPTURE_ENABLED','HRS_EQUITY_GATE_ENABLED',
 REPORTER = 'trading_system-hrs-acceptance'
 TARGETS = {'trading_system-hrs':'hrs-strategy',
            'trading_system-market-cap':'market-cap-service',REPORTER:'hrs-acceptance-reporter'}
+SAFE_ERRORS = frozenset({'candidate_process_failed','candidate_initialization_timeout',
+    'candidate_inspection_failed','candidate_image_mismatch','initialization_unproven',
+    'unrelated_container_changed','collector_projection_missing','initialization_response_invalid',
+    'database_permission_denied','database_authentication_failed','database_connection_failed',
+    'database_relation_missing','configuration_file_missing','configuration_invalid',
+    'initialization_probe_failed','command_failed','command_timeout','unclassified_error',
+    'timeout_recovery_pending','unsettled_entry_reservation','local_exchange_position_disagreement',
+    'hard_stop_not_proven','preflight_write_forbidden'})
+SAFE_STAGES = frozenset({'collector_connect','collector_projection_read','writer_connect',
+    'writer_evidence_read','loaded_configuration_read','complete'})
+SAFE_GATE_REASONS = frozenset({'daily_origin_missing','rolling_origin_missing',
+    'daily_loss_limit','rolling_loss_limit','inception_history_only','history_missing',
+    'source_observation_stale','source_collection_incomplete','projection_publication_failed',
+    'InsufficientPrivilegeError','UndefinedTableError','InvalidPasswordError','ConnectionDoesNotExistError',
+    'funding_schedule_coverage_gap','funding_settlement_pending','funding_eligibility_window_incomplete',
+    'funding_eligibility_inventory_ambiguous','inventory_owner_path_conflict',
+    'allocation_event_history_unrecorded_flow','entry_submission_requires_equity_refresh'})
+
+
+def safe_error(exc):
+    """Never persist arbitrary exception text, SQL, subprocess stderr or argv."""
+    types={'RuntimeError','ValueError','KeyError','TypeError','StopIteration',
+           'TimeoutExpired','KeyboardInterrupt','SystemExit','OSError'}
+    name=type(exc).__name__
+    code='unclassified_error'
+    if isinstance(exc,RuntimeError) and str(exc) in SAFE_ERRORS:code=str(exc)
+    elif isinstance(exc,subprocess.TimeoutExpired):code='command_timeout'
+    result=dict(error_type=name if name in types else 'Exception',error_code=code)
+    if isinstance(exc,RuntimeError):
+        match=re.fullmatch(r'(?:docker|psql) failed with exit (-?\d{1,5})',str(exc))
+        if match:result.update(error_code='command_failed',exit_code=int(match[1]))
+    return result
+
+
+def safe_gate(gate):
+    if not isinstance(gate,dict):return None
+    reasons=gate.get('reasons',[])
+    if not isinstance(reasons,list):reasons=[None]
+    known=[reason for reason in reasons if isinstance(reason,str) and reason in SAFE_GATE_REASONS]
+    omitted=gate.get('unknown_reason_count',0)
+    if type(omitted) is not int or not 0<=omitted<=10000:omitted=0
+    return dict(ready=gate.get('ready') if type(gate.get('ready')) is bool else None,
+        allowed=gate.get('allowed') if type(gate.get('allowed')) is bool else None,
+        reasons=known,unknown_reason_count=len(reasons)-len(known)+omitted)
+
+
+def safe_container(container):
+    state=container.get('State',{})
+    status=state.get('Status');health=state.get('Health',{}).get('Status')
+    result=dict(status=status if status in {'created','running','paused','restarting','removing','exited','dead'} else 'unknown',
+        health=health if health in {'starting','healthy','unhealthy'} else 'unknown')
+    if type(state.get('ExitCode')) is int:result['exit_code']=state['ExitCode']
+    return result
+
+
+def safe_initialization(data,started_at,release_sha,expected_config_hash):
+    if not isinstance(data,dict):return dict(status='unproven',error_code='initialization_response_invalid')
+    result=dict(status='error' if data.get('status')=='error' else 'observed')
+    if isinstance(data.get('stage'),str) and data['stage'] in SAFE_STAGES:result['stage']=data['stage']
+    if isinstance(data.get('error_code'),str) and data['error_code'] in SAFE_ERRORS:result['error_code']=data['error_code']
+    gate=safe_gate(data.get('gate'))
+    if gate is not None:result['gate']=gate
+    result['release_matches']=data.get('release_sha')==release_sha
+    loaded=data.get('loaded_config')
+    result['configuration_matches']=isinstance(loaded,dict) and loaded.get('strategy')=='hrs' and loaded.get('config_hash')==expected_config_hash
+    for key in ('configuration_fresh','collector_fresh','writer_fresh'):result[key]=False
+    try:
+        started=utc(started_at);checked=utc(data['checked_at'])
+        result['configuration_fresh']=datetime.fromtimestamp(data['config_mtime'],timezone.utc)>=started
+        for key,value in (('collector_fresh',data.get('gate',{}).get('updated_at')),('writer_fresh',data.get('writer_recorded_at'))):
+            try:result[key]=started<=utc(value)<=checked and (checked-utc(value)).total_seconds()<=120
+            except (ValueError,TypeError,OverflowError):pass
+    except (KeyError,ValueError,TypeError,OverflowError,AttributeError):pass
+    return result
 
 
 def actual_volumes(overlay, mounts):
@@ -121,7 +195,7 @@ def initialized_proof(data, started_at, release_sha, expected_config_hash):
             raise ValueError('source_identity_or_freshness')
         return dict(release_sha=release_sha,config_hash=expected_config_hash,
             collector_updated_at=updated.isoformat(),writer_recorded_at=written.isoformat(),
-            ready=gate['ready'],allowed=gate['allowed'],reasons=gate['reasons'])
+            **safe_gate(gate))
     except (KeyError,TypeError,ValueError,OverflowError) as exc:
         raise RuntimeError('initialization_unproven') from exc
 
@@ -205,30 +279,65 @@ def preflight():
     return json.loads(line.split('=',1)[1])
 
 
-INITIALIZATION = '''import asyncio,os,json,asyncpg
+INITIALIZATION = '''import asyncio,os,json,re,asyncpg
 from pathlib import Path
 from datetime import datetime,timezone
 async def main():
- host=os.environ['DATABASE_HOST'];port=int(os.getenv('DATABASE_PORT','5432'));database=os.environ['DATABASE_NAME']
- options=dict(host=host,port=port,database=database,server_settings={'default_transaction_read_only':'on'})
- c=await asyncpg.connect(user=os.environ['DATABASE_USER'],password=os.environ['DATABASE_PASSWORD'],**options)
- try: gate=await c.fetchrow("SELECT updated_at,ready,allowed,reasons,evidence_sha256 FROM trading.strategy_equity_gate WHERE account_id=$1 AND strategy_id='hrs'",os.getenv('TRADE_ACCOUNT_ID','default'))
- finally: await c.close()
- if gate is None: raise RuntimeError('collector_projection_missing')
- writer=await asyncpg.connect(user=os.environ['AI_TUNER_SNAPSHOT_DB_USER'],password=os.environ['AI_TUNER_SNAPSHOT_DB_PASSWORD'],**options)
- try: recorded=await writer.fetchval("SELECT max(recorded_at) FROM hrs.hrs_decision_evidence WHERE kind='equity_gate' AND payload->>'evidence_sha256'=$1",gate['evidence_sha256'])
- finally: await writer.close()
- loaded=Path('/app/logs/tuning-loaded.json')
- result=dict(release_sha=os.getenv('HRS_RELEASE_SHA'),loaded_config=json.loads(loaded.read_text()),config_mtime=loaded.stat().st_mtime,checked_at=datetime.now(timezone.utc).isoformat(),gate=dict(gate),writer_recorded_at=recorded)
- if isinstance(result['gate']['reasons'],str): result['gate']['reasons']=json.loads(result['gate']['reasons'])
+ stage='collector_connect';result={}
+ try:
+  host=os.environ['DATABASE_HOST'];port=int(os.getenv('DATABASE_PORT','5432'));database=os.environ['DATABASE_NAME']
+  options=dict(host=host,port=port,database=database,server_settings={'default_transaction_read_only':'on'})
+  c=await asyncpg.connect(user=os.environ['DATABASE_USER'],password=os.environ['DATABASE_PASSWORD'],**options)
+  try:
+   stage='collector_projection_read'
+   gate=await c.fetchrow("SELECT updated_at,ready,allowed,reasons,evidence_sha256 FROM trading.strategy_equity_gate WHERE account_id=$1 AND strategy_id='hrs'",os.getenv('TRADE_ACCOUNT_ID','default'))
+  finally: await c.close()
+  if gate is None:
+   result=dict(status='error',stage=stage,error_code='collector_projection_missing')
+  else:
+   result['gate']=dict(gate)
+   if isinstance(result['gate']['reasons'],str):result['gate']['reasons']=json.loads(result['gate']['reasons'])
+   stage='writer_connect'
+   writer=await asyncpg.connect(user=os.environ['AI_TUNER_SNAPSHOT_DB_USER'],password=os.environ['AI_TUNER_SNAPSHOT_DB_PASSWORD'],**options)
+   try:
+    stage='writer_evidence_read'
+    recorded=await writer.fetchval("SELECT max(recorded_at) FROM hrs.hrs_decision_evidence WHERE kind='equity_gate' AND payload->>'evidence_sha256'=$1",gate['evidence_sha256'])
+   finally: await writer.close()
+   stage='loaded_configuration_read';loaded=Path('/app/logs/tuning-loaded.json');configuration=json.loads(loaded.read_text())
+   result.update(status='observed',stage='complete',release_sha=os.getenv('HRS_RELEASE_SHA'),
+    loaded_config={key:configuration.get(key) for key in ('strategy','config_hash')},config_mtime=loaded.stat().st_mtime,
+    checked_at=datetime.now(timezone.utc).isoformat(),writer_recorded_at=recorded)
+ except Exception as error:
+  code={'InsufficientPrivilegeError':'database_permission_denied','InvalidPasswordError':'database_authentication_failed',
+   'InvalidAuthorizationSpecificationError':'database_authentication_failed','UndefinedTableError':'database_relation_missing',
+   'CannotConnectNowError':'database_connection_failed','ConnectionDoesNotExistError':'database_connection_failed',
+   'ConnectionRefusedError':'database_connection_failed','TimeoutError':'database_connection_failed',
+   'FileNotFoundError':'configuration_file_missing','JSONDecodeError':'configuration_invalid'}.get(type(error).__name__,'initialization_probe_failed')
+  result.update(status='error',stage=stage,error_code=code)
+ if 'gate' in result:
+  gate=result['gate'];reasons=gate.get('reasons',[])
+  if not isinstance(reasons,list):reasons=[None]
+  known=[reason for reason in reasons if isinstance(reason,str) and reason in __SAFE_GATE_REASONS__]
+  result['gate']={key:gate.get(key) for key in ('updated_at','ready','allowed')}
+  result['gate'].update(reasons=known,unknown_reason_count=len(reasons)-len(known))
+ if result.get('release_sha') is not None and not re.fullmatch('[0-9a-f]{40}',str(result['release_sha'])):result['release_sha']=None
+ if 'loaded_config' in result:
+  config=result['loaded_config']
+  if config.get('strategy')!='hrs':config['strategy']=None
+  if not re.fullmatch('[0-9a-f]{64}',str(config.get('config_hash'))):config['config_hash']=None
  print('HRS_INITIALIZATION='+json.dumps(result,default=lambda value:value.isoformat()))
-asyncio.run(main())'''
+asyncio.run(main())'''.replace('__SAFE_GATE_REASONS__',repr(sorted(SAFE_GATE_REASONS)))
 
 
 def read_initialization():
     output=run(['docker','exec','-i','trading_system-hrs','python','-'],input=INITIALIZATION)
-    line=next(line for line in output.splitlines() if line.startswith('HRS_INITIALIZATION='))
-    return json.loads(line.split('=',1)[1])
+    try:
+        line=next(line for line in output.splitlines() if line.startswith('HRS_INITIALIZATION='))
+        data=json.loads(line.split('=',1)[1])
+        if not isinstance(data,dict):raise ValueError()
+        return data
+    except (StopIteration,ValueError):
+        raise RuntimeError('initialization_response_invalid') from None
 
 
 def container_ids():
@@ -412,10 +521,11 @@ def main():
     sql=migration_sql(folder/'migrations',manifest['migration_hashes'],tail)
     candidate=compose(root,files+[newfile])
     wanted={'trading_system-hrs':args.hrs_image,'trading_system-market-cap':args.hub_image,REPORTER:args.hrs_image}
-    steps=[];phase='migrations';replacement_attempted=False
+    steps=[];observations=[];phase='migrations';replacement_attempted=False
     def audit(status,**extra):
         state=dict(status=status,sha=args.sha,phase=phase,completed_steps=list(steps),
             images=wanted,source_hashes=expected,migration_hashes=manifest['migration_hashes'],
+            observations=list(observations),
             economic_parameters_changed=False,performance_qualified=False,
             recorded_at=datetime.now(timezone.utc).isoformat(),**extra)
         atomic(folder/'state.json',state)
@@ -431,18 +541,35 @@ def main():
             steps.append(phase);audit('applying')
         phase='health_and_initialization';audit('applying')
         for attempt in range(90):
-            states={name:inspect(name) for name in wanted}
+            observation=dict(attempt=attempt+1,checked_at=datetime.now(timezone.utc).isoformat(),containers={},
+                initialization={'status':'not_checked'})
+            observations.append(observation);states={}
+            for name in wanted:
+                try:
+                    states[name]=inspect(name)
+                    observation['containers'][name]=safe_container(states[name])
+                except Exception as error:
+                    observation['containers'][name]=dict(status='inspection_failed',**safe_error(error))
+            audit('applying')
+            if len(states)!=len(wanted):raise RuntimeError('candidate_inspection_failed')
             if any(c['State']['Status'] in ('exited','dead') for c in states.values()):
                 raise RuntimeError('candidate_process_failed')
             healthy=all(c['State']['Status']=='running' and c['State'].get('Health',{}).get('Status')=='healthy' for c in states.values())
             if healthy:
                 try:
-                    initialized=initialized_proof(read_initialization(),
+                    data=read_initialization()
+                    observation['initialization']=safe_initialization(data,
                         states['trading_system-hrs']['State']['StartedAt'],args.sha,manifest['expected_config_hash'])
-                except (RuntimeError,ValueError,KeyError,StopIteration):
-                    pass  # A successful no-op Docker healthcheck is insufficient.
+                    initialized=initialized_proof(data,
+                        states['trading_system-hrs']['State']['StartedAt'],args.sha,manifest['expected_config_hash'])
+                except (RuntimeError,ValueError,KeyError,TypeError,StopIteration) as error:
+                    diagnostic=observation['initialization']
+                    if diagnostic['status']=='not_checked':diagnostic.update(status='error',**safe_error(error))
+                    elif diagnostic['status']!='error':diagnostic.update(status='unproven',**safe_error(error))
                 else:
+                    observation['initialization']['status']='proven';audit('applying')
                     break
+            audit('applying')
             time.sleep(2)
         else:raise RuntimeError('candidate_initialization_timeout')
         for name,image in wanted.items():
@@ -459,6 +586,12 @@ def main():
             migrated=list(MIGRATIONS),initialization=initialized,other_containers_unchanged=True)
         print(json.dumps(state))
     except BaseException as exc:
+        failure=safe_error(exc)
+        persisted=True
+        try:
+            audit('failing',**failure)  # Preserve observations BEFORE rollback changes them.
+        except OSError:
+            persisted=False  # A full/unwritable disk must never prevent target recovery.
         recovery=(rollback(root,folder,plan,args.hrs_image) if replacement_attempted else
             dict(status='not_needed',database_changes='additive_migrations_retained'))
         if recovery['status']=='not_needed':restore_pins(root,plan['pins'])
@@ -466,7 +599,10 @@ def main():
             # Do not leave a misleading active pointer after failed recovery.
             for filename,old in plan['pins'].items():
                 atomic(root/'.deploy_tmp'/filename,dict(old or {},status='rollback_failed',state=str(folder/'state.json')))
-        audit('failed',error_type=type(exc).__name__,rollback=recovery)
+        try:
+            audit('failed',**failure,rollback=recovery,pre_rollback_audit_persisted=persisted)
+        except OSError:
+            raise RuntimeError('rollout_failed_rollback_'+recovery['status']+'_audit_unavailable') from None
         raise RuntimeError('rollout_failed_rollback_'+recovery['status']) from None
 
 
