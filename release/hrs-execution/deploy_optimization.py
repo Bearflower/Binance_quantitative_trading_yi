@@ -40,9 +40,9 @@ SAFE_ERRORS = frozenset({'candidate_process_failed','candidate_initialization_ti
     'database_relation_missing','configuration_file_missing','configuration_invalid',
     'initialization_probe_failed','command_failed','command_timeout','unclassified_error',
     'timeout_recovery_pending','unsettled_entry_reservation','local_exchange_position_disagreement',
-    'hard_stop_not_proven','preflight_write_forbidden'})
+    'hard_stop_not_proven','preflight_write_forbidden','evidence_context_unserializable'})
 SAFE_STAGES = frozenset({'collector_connect','collector_projection_read','writer_connect',
-    'writer_evidence_read','loaded_configuration_read','complete'})
+    'writer_evidence_read','loaded_configuration_read','evidence_context_read','complete'})
 SAFE_GATE_REASONS = frozenset({'daily_origin_missing','rolling_origin_missing',
     'daily_loss_limit','rolling_loss_limit','inception_history_only','history_missing',
     'source_observation_stale','source_collection_incomplete','projection_publication_failed',
@@ -91,6 +91,7 @@ def safe_container(container):
 def safe_initialization(data,started_at,release_sha,expected_config_hash):
     if not isinstance(data,dict):return dict(status='unproven',error_code='initialization_response_invalid')
     result=dict(status='error' if data.get('status')=='error' else 'observed')
+    result['evidence_context_serializable']=data.get('evidence_context_serializable') is True
     if isinstance(data.get('stage'),str) and data['stage'] in SAFE_STAGES:result['stage']=data['stage']
     if isinstance(data.get('error_code'),str) and data['error_code'] in SAFE_ERRORS:result['error_code']=data['error_code']
     gate=safe_gate(data.get('gate'))
@@ -188,6 +189,7 @@ def initialized_proof(data, started_at, release_sha, expected_config_hash):
         started=utc(started_at);checked=utc(data['checked_at'])
         gate=data['gate'];updated=utc(gate['updated_at']);written=utc(data['writer_recorded_at'])
         if (data['release_sha']!=release_sha or data['loaded_config'].get('strategy')!='hrs'
+            or data.get('evidence_context_serializable') is not True
             or data['loaded_config']['config_hash']!=expected_config_hash
             or datetime.fromtimestamp(data['config_mtime'],timezone.utc)<started
             or not started<=updated<=checked or not started<=written<=checked
@@ -195,6 +197,7 @@ def initialized_proof(data, started_at, release_sha, expected_config_hash):
             raise ValueError('source_identity_or_freshness')
         return dict(release_sha=release_sha,config_hash=expected_config_hash,
             collector_updated_at=updated.isoformat(),writer_recorded_at=written.isoformat(),
+            evidence_context_serializable=True,
             **safe_gate(gate))
     except (KeyError,TypeError,ValueError,OverflowError) as exc:
         raise RuntimeError('initialization_unproven') from exc
@@ -282,8 +285,25 @@ def preflight():
 INITIALIZATION = '''import asyncio,os,json,re,asyncpg
 from pathlib import Path
 from datetime import datetime,timezone
+from types import SimpleNamespace
+async def check_evidence_context(connection,account):
+ from strategies.hrs.decision_context import _database_context,decode_claim_evidence
+ from strategies.hrs.decision_capture import canonical_payload
+ # _database_context owns its single read-only snapshot transaction. The lease
+ # borrows this already read-only connection and never opens a nested transaction.
+ class Lease:
+  async def __aenter__(self):return connection
+  async def __aexit__(self,*args):pass
+ class Pool:
+  def acquire(self):return Lease()
+ rows,coherent=await _database_context(SimpleNamespace(pool=Pool()),account)
+ if coherent is not True:raise RuntimeError('evidence_context_unserializable')
+ mapped=[[dict(row) for row in group] for group in rows]
+ mapped[6]=decode_claim_evidence(rows[6])
+ canonical_payload(mapped)
+ return True
 async def main():
- stage='collector_connect';result={}
+ stage='collector_connect';result={'evidence_context_serializable':False}
  try:
   host=os.environ['DATABASE_HOST'];port=int(os.getenv('DATABASE_PORT','5432'));database=os.environ['DATABASE_NAME']
   options=dict(host=host,port=port,database=database,server_settings={'default_transaction_read_only':'on'})
@@ -291,9 +311,14 @@ async def main():
   try:
    stage='collector_projection_read'
    gate=await c.fetchrow("SELECT updated_at,ready,allowed,reasons,evidence_sha256 FROM trading.strategy_equity_gate WHERE account_id=$1 AND strategy_id='hrs'",os.getenv('TRADE_ACCOUNT_ID','default'))
+   if gate is not None:
+    result['gate']=dict(gate)
+    if isinstance(result['gate']['reasons'],str):result['gate']['reasons']=json.loads(result['gate']['reasons'])
+    stage='evidence_context_read'
+    result['evidence_context_serializable']=await check_evidence_context(c,os.getenv('TRADE_ACCOUNT_ID','default'))
   finally: await c.close()
   if gate is None:
-   result=dict(status='error',stage=stage,error_code='collector_projection_missing')
+   result.update(status='error',stage=stage,error_code='collector_projection_missing')
   else:
    result['gate']=dict(gate)
    if isinstance(result['gate']['reasons'],str):result['gate']['reasons']=json.loads(result['gate']['reasons'])
@@ -312,7 +337,8 @@ async def main():
    'InvalidAuthorizationSpecificationError':'database_authentication_failed','UndefinedTableError':'database_relation_missing',
    'CannotConnectNowError':'database_connection_failed','ConnectionDoesNotExistError':'database_connection_failed',
    'ConnectionRefusedError':'database_connection_failed','TimeoutError':'database_connection_failed',
-   'FileNotFoundError':'configuration_file_missing','JSONDecodeError':'configuration_invalid'}.get(type(error).__name__,'initialization_probe_failed')
+   'FileNotFoundError':'configuration_file_missing','JSONDecodeError':'configuration_invalid'}.get(type(error).__name__,
+    'evidence_context_unserializable' if stage=='evidence_context_read' else 'initialization_probe_failed')
   result.update(status='error',stage=stage,error_code=code)
  if 'gate' in result:
   gate=result['gate'];reasons=gate.get('reasons',[])

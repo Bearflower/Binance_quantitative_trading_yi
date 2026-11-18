@@ -131,7 +131,65 @@ def initialization(now,sha,config):
         config_mtime=(now+timedelta(seconds=1)).timestamp(),checked_at=(now+timedelta(seconds=30)).isoformat(),
         gate={'updated_at':(now+timedelta(seconds=20)).isoformat(),'ready':False,'allowed':False,
               'reasons':['daily_origin_missing'],'evidence_sha256':'b'*64},
-        writer_recorded_at=(now+timedelta(seconds=21)).isoformat())
+        writer_recorded_at=(now+timedelta(seconds=21)).isoformat(),evidence_context_serializable=True)
+
+
+@pytest.mark.parametrize('serializable',[None,False,'true',1])
+def test_equity_heartbeat_without_serializable_scan_database_context_is_not_initialized(serializable):
+    mod=module();now=datetime.now(timezone.utc);sha='a'*40;config='c'*64
+    data=initialization(now,sha,config)
+    if serializable is None:data.pop('evidence_context_serializable')
+    else:data['evidence_context_serializable']=serializable
+    with pytest.raises(RuntimeError,match='initialization_unproven'):
+        mod.initialized_proof(data,now,sha,config)
+    diagnostic=mod.safe_initialization(data,now,sha,config)
+    assert diagnostic['evidence_context_serializable'] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv('HRS_TEST_POSTGRES_DSN'),reason='isolated PostgreSQL required')
+async def test_real_postgres_readonly_probe_serializes_legacy_claim_timestamps_and_infinity():
+    import asyncpg
+    mod=module();dsn=os.environ['HRS_TEST_POSTGRES_DSN']
+    control=await asyncpg.connect(dsn);name='hrs_probe_context_'+uuid.uuid4().hex
+    role='hrs_probe_reader_'+uuid.uuid4().hex
+    admin=app=None
+    try:
+        await control.execute(f'CREATE ROLE {role} NOLOGIN NOSUPERUSER')
+        await control.execute(f"CREATE DATABASE {name} TEMPLATE template0 ENCODING 'UTF8'")
+        admin=await asyncpg.connect(dsn,database=name)
+        await admin.execute('''CREATE SCHEMA trading; CREATE SCHEMA hrs;
+            CREATE TABLE trading.strategy_risk_policy(account_id text,strategy_id text,revision bigint);
+            CREATE TABLE trading.strategy_risk_active(account_id text,strategy_id text,revision bigint);
+            CREATE TABLE trading.hrs_loss_gate_state(account_id text);
+            CREATE TABLE hrs.hrs_positions(created_at timestamptz);
+            CREATE TABLE hrs.hrs_blacklist(symbol text);
+            CREATE TABLE hrs.hrs_active_symbols(symbol text);
+            CREATE TABLE trading.entry_risk_reservation(account_id text,strategy_id text);
+            CREATE TABLE trading.position_claims(claim_state text,created_at timestamp,updated_at timestamp,expires_at timestamp);
+            CREATE TABLE trading.hrs_equity_evidence(account_id text,evidence_sha256 text,segment_id text,as_of timestamptz,available_at timestamptz,payload jsonb);
+            INSERT INTO trading.position_claims VALUES('ACTIVE','2026-11-18 12:00:00','2026-11-18 12:01:00','infinity');
+            INSERT INTO hrs.hrs_positions VALUES('2026-11-18 12:00:00+08')''')
+        await admin.execute(f'GRANT USAGE ON SCHEMA trading,hrs TO {role}; GRANT SELECT ON ALL TABLES IN SCHEMA trading,hrs TO {role}')
+        app=await asyncpg.connect(dsn,database=name,server_settings={'default_transaction_read_only':'on'})
+        await app.execute(f'SET ROLE {role}')
+        assert not await app.fetchval('SELECT rolsuper FROM pg_roles WHERE rolname=current_user')
+        namespace={}
+        exec(compile(mod.INITIALIZATION.rsplit('asyncio.run(main())',1)[0],'initialization-probe','exec'),namespace)
+        assert await namespace['check_evidence_context'](app,'test') is True
+        # The probe may neither write nor silently accept other naive clocks.
+        with pytest.raises(asyncpg.ReadOnlySQLTransactionError):
+            await app.execute("INSERT INTO hrs.hrs_positions VALUES(now())")
+        await admin.execute('ALTER TABLE hrs.hrs_positions ALTER COLUMN created_at TYPE timestamp;')
+        await app.reload_schema_state()
+        with pytest.raises(ValueError,match='naive_evidence_timestamp'):
+            await namespace['check_evidence_context'](app,'test')
+    finally:
+        if app is not None:await app.close()
+        if admin is not None:await admin.close()
+        await control.execute(f'DROP DATABASE IF EXISTS {name} WITH (FORCE)')
+        await control.execute(f'DROP ROLE IF EXISTS {role}')
+        await control.close()
 
 
 @pytest.mark.parametrize('broken',['old_file','wrong_hash','old_gate','missing_writer','wrong_release'])
@@ -357,6 +415,12 @@ def test_initialization_probe_preserves_projection_when_independent_writer_is_de
     mod=module()
     class InsufficientPrivilegeError(Exception):pass
     class Connection:
+        def transaction(self,**kwargs):
+            class Transaction:
+                async def __aenter__(self):pass
+                async def __aexit__(self,*args):pass
+            return Transaction()
+        async def fetch(self,*args):return []
         async def fetchrow(self,*args):
             return {'ready':False,'allowed':False,'reasons':'["InsufficientPrivilegeError"]',
                 'updated_at':datetime.now(timezone.utc),'evidence_sha256':'a'*64}
