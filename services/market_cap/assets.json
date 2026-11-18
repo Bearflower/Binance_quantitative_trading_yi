@@ -1197,5 +1197,74 @@
       "reason": "provider_supply_comparison_required"
     },
     "identity_notes": "1000LUNC is the Binance quote-unit multiplier for LUNC. Use the whole Terra Luna Classic issuer market cap without multiplying by 1000; do not use terra-luna-2."
+  },
+  "ICNTUSDT": {
+    "symbol": "ICNT",
+    "cg_id": "impossible-cloud-network-token",
+    "cmc_id": null,
+    "name": "Impossible Cloud Network Token",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/baaa3a53a66840d087e845fb44872dc8",
+      "https://www.coingecko.com/en/coins/impossible-cloud-network-token",
+      "https://docs.icn.global/icn-protocol-smart-contracts",
+      "https://api.coingecko.com/api/v3/coins/impossible-cloud-network-token",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "contracts": {
+      "ethereum": "0xe5e0b73380181273abcfd88695f52c4d0c825661",
+      "base": "0xe0cd4cacddcbf4f36e845407ce53e87717b6601d"
+    }
+  },
+  "PIPPINUSDT": {
+    "symbol": "PIPPIN",
+    "cg_id": "pippin",
+    "cmc_id": null,
+    "name": "pippin",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/75d358bf598e4c8d9b841961d78c14c2",
+      "https://www.coingecko.com/en/coins/pippin",
+      "https://pippin.love/token.html",
+      "https://api.coingecko.com/api/v3/coins/pippin",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "contracts": {
+      "solana": "Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump"
+    }
+  },
+  "PIEVERSEUSDT": {
+    "symbol": "PIEVERSE",
+    "cg_id": "pieverse",
+    "cmc_id": null,
+    "name": "Pieverse",
+    "verified_at": "2026-11-18",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/9601f5b2dd9e4f33bf7361fa61368191",
+      "https://www.binance.com/en/support/announcement/detail/19c6b186757b489495d55611140135c2",
+      "https://www.coingecko.com/en/coins/pieverse",
+      "https://www.pieverse.io/MiCAR-White-paper-Pieverse.pdf",
+      "https://api.coingecko.com/api/v3/coins/pieverse",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "contracts": {
+      "ethereum": "0x0e63b9c287e32a05e6b9ab8ee8df88a2760225a9",
+      "binance-smart-chain": "0x0e63b9c287e32a05e6b9ab8ee8df88a2760225a9"
+    }
   }
 }
