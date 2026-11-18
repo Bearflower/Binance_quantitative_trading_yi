@@ -19,6 +19,17 @@ current code version. Old evidence without that declaration retains its old
 semantics. Counterfactual HRS holdings come from the virtual portfolio, while
 the real captured ownership proof identifies exogenous account holdings.
 
+The source is selected by its actual gate pointer, never by choosing a parent
+whose timestamp happens to pass. Successful and denied reservation receipts use
+the original locked SHA, database check clock and complete locked ownership
+claims; score-only inputs use the same repeatable-read financial gate row and
+active/unexpired full-account claims. Candidate-only claim queries remain entry
+checks and do not establish ownership of other account symbols. Missing gate
+identity/clock/full claims, or a pointed parent newer than the inventory
+observation, is explicitly unavailable and blocks the exported window. This
+bounded model does not yet replay a separately certified clock-denial event.
+Earlier v2 captures missing these facts are not silently upgraded.
+
 The implementation binds the new proof to the original scan/reservation-stage
 and claim receipts, the captured policy account, and the original hashed equity
 parent. The portal reproduces this proof before replay entry. Original full

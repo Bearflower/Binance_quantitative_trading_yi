@@ -471,7 +471,8 @@ def _bootstrap(snapshot,start,equities,checkpoints,records,execution_model,monit
 
 
 def _account_occupancy(inventory,snapshot,financial,observed,equities,*,slot_scope=None,
-        slot_inputs=None,checked_at=None,source_evidence_id=None,claims_evidence_id=None):
+        slot_inputs=None,checked_at=None,source_evidence_id=None,claims_evidence_id=None,
+        gate_context=None,gate_source_evidence_id=None,gate_source_kind='financial_equity_gate',captured_slot_proof=None):
     """Observed external holdings; HRS counterfactual holdings are modeled separately."""
     _require(isinstance(inventory,list),'account_occupancy_inventory_missing')
     if slot_scope is not None:
@@ -481,24 +482,39 @@ def _account_occupancy(inventory,snapshot,financial,observed,equities,*,slot_sco
             and _time(slot_inputs['observed_at'])==observed,'hrs_slot_inputs_missing_or_conflicting')
         _require(bool(source_evidence_id) and bool(claims_evidence_id),'hrs_slot_raw_source_missing')
         checked_at=checked_at or observed
-        sources=[e for e in _equity_rows(equities,checked_at-timedelta(seconds=120),observed)
-            if _time(e['payload']['available_at'])<=checked_at]
-        _require(sources,'hrs_slot_raw_parent_missing')
-        source=max(sources,key=lambda e:(_time(e['payload']['as_of']),e['sha256']))
         account=financial.get('entry_policy',{}).get('account_id')
+        context=gate_context if gate_context is not None else financial.get('equity_gate')
+        _require(isinstance(context,dict),'hrs_slot_current_gate_identity_missing')
+        _require(context.get('account_id')==account and context.get('strategy_id')=='hrs'
+            and context.get('policy_revision')==financial['entry_policy']['revision'],'hrs_slot_current_gate_identity_mismatch')
+        digest=context.get('evidence_sha256')
+        _require(isinstance(digest,str) and re.fullmatch('[0-9a-f]{64}',digest),'hrs_slot_current_gate_identity_missing')
+        _require(context.get('checked_at') is not None and context.get('as_of') is not None,'hrs_slot_current_gate_clock_missing')
+        gate_checked=_time(context['checked_at']);gate_as_of=_time(context['as_of'])
+        _require(gate_as_of<=gate_checked<=checked_at,'hrs_slot_current_gate_unavailable')
+        if isinstance(equities,_EquityView):source=equities.get(digest)
+        else:source=next((e for e in equities if e['sha256']==digest),None)
+        _require(source is not None,'hrs_slot_raw_parent_missing')
+        _require(_time(source['payload']['as_of'])==gate_as_of,'hrs_slot_current_gate_asof_mismatch')
+        _require(_time(source['payload']['available_at'])<=gate_checked,'hrs_slot_current_gate_parent_unavailable')
         _require(isinstance(account,str) and bool(account) and source['payload'].get('account_id')==account,
             'hrs_slot_account_mismatch')
         try:
             proof=prove_hrs_slot_ownership(account,
                 dict(evidence_sha256=source['sha256'],payload=source['payload']),slot_inputs,
-                financial['claims'],checked_at=checked_at)
+                financial['claims'],checked_at=gate_checked)
         except HrsOccupancyDenied as exc:raise DataBlocked([exc.reason_code]) from exc
+        if captured_slot_proof is not None:
+            _require(equity_canonical(proof)[1]==equity_canonical(captured_slot_proof)[1],'hrs_slot_captured_proof_mismatch')
         others=[dict(row,strategy_id=proof['owners'][row['symbol']],
             ownership_evidence_sha256=source['sha256'],owner_source_as_of=source['payload']['as_of'])
             for row in inventory if Decimal(str(row['positionAmt']))!=0 and proof['owners'][row['symbol']]!='hrs']
         return dict(version='hrs_account_occupancy_v2',observed_at=_iso(observed),other_positions=others,inventory=copy.deepcopy(inventory),
             slot_scope=SLOT_SCOPE,slot_ownership_proof=proof,slot_source_evidence_id=source_evidence_id,
-            claims_source_evidence_id=claims_evidence_id)
+            claims_source_evidence_id=claims_evidence_id,gate_reference=dict(
+                version='hrs-slot-gate-reference-v1',source_evidence_id=gate_source_evidence_id or source_evidence_id,
+                source_kind=gate_source_kind,evidence_sha256=digest,checked_at=_iso(gate_checked),as_of=_iso(gate_as_of),
+                account_id=account,strategy_id='hrs',policy_revision=context['policy_revision']))
     others=[p for p in inventory if Decimal(str(p['positionAmt']))!=0 and p['symbol'] not in snapshot.get('positions',{})]
     result=[]
     if others:
@@ -517,6 +533,33 @@ def _account_occupancy(inventory,snapshot,financial,observed,equities,*,slot_sco
             _require(len(choices)==1 and choices[0]!='hrs' and claims=={choices[0]},'hrs_exogenous_inventory_owner_unproven:'+row['symbol'])
             result.append(dict(row,strategy_id=choices[0],ownership_evidence_sha256=source['sha256'],owner_source_as_of=p['as_of']))
     return dict(version='hrs_account_occupancy_v1',observed_at=_iso(observed),other_positions=result)
+
+
+def _slot_gate_context(financial,stages,scan_start):
+    attempts=[row for row in stages if row['payload'].get('stage') in ('reservation_success','reservation_denial')]
+    _require(len(attempts)<=1,'hrs_slot_multiple_reservation_attempts_unsupported')
+    if not attempts:return financial.get('equity_gate'),scan_start['evidence_id'],'financial_equity_gate',None
+    row=attempts[0];payload=row['payload'];kind=payload['stage']
+    if kind=='reservation_denial':
+        _require(isinstance(payload.get('risk_context'),dict),'hrs_slot_current_gate_identity_missing')
+        return payload['risk_context'],row['evidence_id'],kind,None
+    proof=payload.get('slot_occupancy_proof');context=payload.get('slot_context')
+    _require(isinstance(proof,dict) and isinstance(context,dict)
+        and proof.get('equity_evidence_sha256')==context.get('evidence_sha256'),'hrs_slot_success_gate_identity_missing')
+    return context,row['evidence_id'],kind,proof
+
+
+def _slot_ownership_claims(financial,context,kind):
+    claims=(financial.get('ownership_claims') if kind=='financial_equity_gate'
+        else context.get('ownership_claims') if isinstance(context,dict) else None)
+    _require(isinstance(claims,list),'hrs_slot_full_ownership_claims_missing')
+    return claims
+
+
+def _slot_stages(records,run,symbol):
+    if isinstance(records,_ArchiveFamily):rows=records.select(kind='entry_stage_inputs',run_id=run,symbol=symbol)
+    else:rows=(row for row in records if row['kind']=='entry_stage_inputs' and row['run_id']==run and row.get('symbol')==symbol)
+    return sorted(rows,key=lambda row:(row['available_at'],row['event_time'],row['evidence_id']))
 
 
 def _raw_decision(sources,identity,checked_at):
@@ -548,16 +591,20 @@ def verify_runtime_slot_occupancy(portal,raw,checked_at):
     else:starts=[row for row in records if row['kind']=='scan_start' and row['run_id']==analysis['run_id']]
     _require(len(starts)==1,'hrs_slot_raw_cycle_mismatch')
     financial=starts[0]['payload']['financial_context']
+    stages=_slot_stages(records,analysis['run_id'],raw['symbol'])
+    expected_slot=next((row for row in reversed(stages) if row['payload'].get('stage')=='reservation_inventory'),starts[0])
+    context,gate_source,gate_kind,captured_proof=_slot_gate_context(financial,stages,starts[0])
+    _require(slot['evidence_id']==expected_slot['evidence_id'] and claim['evidence_id']==gate_source,
+        'hrs_slot_raw_stage_identity_mismatch')
+    _raw_decision(sources,gate_source,checked_at)
     if slot['kind']=='scan_start':
         scope=financial.get('runtime_slot_scope');inputs=financial.get('hrs_slot_inputs')
     else:
         _require(slot['kind']=='entry_stage_inputs' and slot['payload'].get('stage')=='reservation_inventory','hrs_slot_raw_source_kind_invalid')
         scope=slot['payload'].get('slot_scope');inputs=slot['payload'].get('slot_inputs')
-    if claim['kind']=='scan_start':claims=claim['payload']['financial_context']['claims']
-    else:
-        _require(claim['kind']=='entry_stage_inputs' and 'claims' in claim['payload'],'hrs_slot_claim_source_invalid')
-        claims=claim['payload']['claims']
-    digest=occupancy['slot_ownership_proof']['equity_evidence_sha256']
+    claims=_slot_ownership_claims(financial,context,gate_kind)
+    _require(isinstance(context,dict),'hrs_slot_current_gate_identity_missing')
+    digest=context.get('evidence_sha256')
     if isinstance(sources,_ArchiveSources):
         view=getattr(portal,'_hrs_slot_equity_view',None)
         if view is None or view.sources is not sources:portal._hrs_slot_equity_view=view=_EquityView(sources)
@@ -571,7 +618,8 @@ def verify_runtime_slot_occupancy(portal,raw,checked_at):
     _require(parent is not None,'hrs_slot_raw_parent_missing')
     expected=_account_occupancy(inputs['inventory'],{},dict(financial,claims=claims),_time(inputs['observed_at']),[parent],
         slot_scope=scope,slot_inputs=inputs,checked_at=checked_at,
-        source_evidence_id=slot['evidence_id'],claims_evidence_id=claim['evidence_id'])
+        source_evidence_id=slot['evidence_id'],claims_evidence_id=claim['evidence_id'],
+        gate_context=context,gate_source_evidence_id=gate_source,gate_source_kind=gate_kind,captured_slot_proof=captured_proof)
     _require(equity_canonical(expected)[1]==equity_canonical(occupancy)[1],'hrs_slot_raw_proof_mismatch')
 
 
@@ -739,12 +787,13 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
                 else:slot_inputs=financial.get('hrs_slot_inputs')
                 _require(isinstance(slot_inputs,dict),'hrs_slot_inputs_missing')
                 inventory=slot_inputs['inventory'];occupancy_at=_time(slot_inputs['observed_at'])
-                claim_stage=next((r for r in reversed(stages) if 'claims' in r['payload']),None)
-                claims=claim_stage['payload']['claims'] if claim_stage else financial['claims']
+                context,gate_source,gate_kind,captured_proof=_slot_gate_context(financial,stages,starts[0])
+                claims=_slot_ownership_claims(financial,context,gate_kind)
                 occupancy_financial=dict(financial,claims=claims)
                 risk['account_occupancy']=_account_occupancy(inventory,snapshot,occupancy_financial,occupancy_at,equities,
                     slot_scope=scope,slot_inputs=slot_inputs,checked_at=event_available,
-                    source_evidence_id=slot_source['evidence_id'],claims_evidence_id=(claim_stage or starts[0])['evidence_id'])
+                    source_evidence_id=slot_source['evidence_id'],claims_evidence_id=gate_source,
+                    gate_context=context,gate_source_evidence_id=gate_source,gate_source_kind=gate_kind,captured_slot_proof=captured_proof)
             else:risk['account_occupancy']=_account_occupancy(inventory,snapshot,financial,occupancy_at,equities)
             _require(event_available<=end,'decision_inputs_after_window:'+run+':'+symbol)
             history=(dict(analysis_evidence_id=analysis['evidence_id'],analysis_payload_sha256=analysis['payload_sha256'])
@@ -1160,6 +1209,8 @@ def _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs=Non
     financials=[payload.get('financial_context',{})]
     if row['kind']=='scan_end':financials.append(payload.get('state',{}).get('financial_context',{}))
     for financial in financials:
+        gate=financial.get('equity_gate')
+        if gate is not None and gate.get('evidence_sha256'):referenced.add(gate['evidence_sha256'])
         referenced.update(r['evidence_sha256'] for r in financial.get('equity_source_archives',[]))
         if forecast_cutoffs is not None:
             for parent in financial.get('equity_source_archives',[]):_source_forecast_ref(parent,forecast_cutoffs,account_id)
@@ -1174,6 +1225,10 @@ def _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs=Non
     if row['kind']=='entry_stage_inputs' and payload.get('stage')=='reservation_denial':
         context=payload.get('risk_context') or {}
         if context.get('evidence_sha256'):referenced.add(context['evidence_sha256'])
+    if row['kind']=='entry_stage_inputs' and payload.get('stage')=='reservation_success':
+        context=payload.get('slot_context') or {};proof=payload.get('slot_occupancy_proof') or {}
+        if context.get('evidence_sha256'):referenced.add(context['evidence_sha256'])
+        if proof.get('equity_evidence_sha256'):referenced.add(proof['equity_evidence_sha256'])
 
 
 def main(argv=None):

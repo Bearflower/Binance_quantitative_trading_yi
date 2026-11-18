@@ -39,7 +39,8 @@ def occupancy(at):
     from strategies.hrs.entry_occupancy import SLOT_SCOPE,capture_hrs_slot_inputs
     inventory,local,parent,claims=ownership(at)
     inputs=capture_hrs_slot_inputs(inventory=inventory,independent=inventory,local=local,observed_at=at)
-    return _account_occupancy(inventory,dict(positions=local),dict(claims=claims,entry_policy=dict(account_id='test')),at,[parent],
+    financial=dict(claims=claims,entry_policy=dict(account_id='test',revision=1),equity_gate=gate(parent,at))
+    return _account_occupancy(inventory,dict(positions=local),financial,at,[parent],
         slot_scope=SLOT_SCOPE,slot_inputs=inputs,checked_at=at,
         source_evidence_id='inventory-source',claims_evidence_id='claims-source')
 
@@ -100,7 +101,7 @@ def scoped_sources(tmp_path):
             {p['symbol']:D(p['positionAmt']) for p in inventory},fills,payload['order_owners'],coverage_complete=True)
         financial=row['payload']['financial_context']
         financial['entry_policy']['account_id']='test'
-        financial.update(runtime_slot_scope=SLOT_SCOPE,exchange_positions=inventory,independent_positions=inventory,claims=claims,
+        financial.update(runtime_slot_scope=SLOT_SCOPE,exchange_positions=inventory,independent_positions=inventory,claims=claims,ownership_claims=copy.deepcopy(claims),
             hrs_slot_inputs=capture_hrs_slot_inputs(inventory=inventory,independent=inventory,local=local,observed_at=at))
         # JSON receipts contain actual UTC text, not Python-only datetimes.
         financial['hrs_slot_inputs']=json.loads(canonical(financial['hrs_slot_inputs'])[0])
@@ -108,6 +109,7 @@ def scoped_sources(tmp_path):
         row['payload_sha256']=canonical_payload(row['payload'])[1]
         payload.update(income_report=dict(id_match_and_coverage_complete=True,events=[],coverage_gaps=[]),
             allocation_audit=dict(version=1,journal=[]),result=dict(ready=True))
+        financial['equity_gate']=gate(dict(payload=payload,sha256=canonical(payload)[1]),at)
         financial['equity_source_archives']=[dict(account_id='test',payload=copy.deepcopy(payload),evidence_sha256=canonical(payload)[1])]
         row['payload_sha256']=canonical_payload(row['payload'])[1]
         for old in sources['equity_evidence']:
@@ -151,12 +153,14 @@ def test_locked_reservation_and_denial_parent_references_are_exported():
     from ai_tuner.hrs_evidence_export import _source_references
     from strategies.hrs.decision_capture import canonical_payload
     referenced=set()
-    payload=dict(state=dict(financial_context=dict(reservations=[dict(geometry=json.dumps(
+    payload=dict(state=dict(financial_context=dict(equity_gate=dict(evidence_sha256='d'*64),reservations=[dict(geometry=json.dumps(
         dict(slot_occupancy_proof=dict(equity_evidence_sha256='b'*64))))])))
     _source_references(dict(kind='scan_end',payload=payload,payload_sha256=canonical_payload(payload)[1]),referenced,set(),set())
     denied=dict(stage='reservation_denial',risk_context=dict(evidence_sha256='c'*64))
     _source_references(dict(kind='entry_stage_inputs',payload=denied,payload_sha256=canonical_payload(denied)[1]),referenced,set(),set())
-    assert referenced=={'b'*64,'c'*64}
+    success=dict(stage='reservation_success',slot_context=dict(evidence_sha256='e'*64),slot_occupancy_proof=dict(equity_evidence_sha256='e'*64))
+    _source_references(dict(kind='entry_stage_inputs',payload=success,payload_sha256=canonical_payload(success)[1]),referenced,set(),set())
+    assert referenced=={'b'*64,'c'*64,'d'*64,'e'*64}
 
 
 def test_new_scope_cannot_certify_current_account_from_valid_foreign_parent():
@@ -172,7 +176,7 @@ def test_new_scope_cannot_certify_current_account_from_valid_foreign_parent():
     parent['sha256']=canonical(payload)[1]
     inputs=capture_hrs_slot_inputs(inventory=inventory,independent=inventory,local=local,observed_at=AT)
     with pytest.raises(DataBlocked,match='account_mismatch'):
-        _account_occupancy(inventory,dict(positions=local),dict(claims=claims,entry_policy=dict(account_id='test')),AT,[parent],
+        _account_occupancy(inventory,dict(positions=local),dict(claims=claims,entry_policy=dict(account_id='test',revision=1),equity_gate=gate(parent,AT)),AT,[parent],
             slot_scope=SLOT_SCOPE,slot_inputs=inputs,checked_at=AT,source_evidence_id='s',claims_evidence_id='c')
 
 
@@ -185,3 +189,86 @@ def test_new_scope_rejects_limits_outside_live_typed_one_to_three(tmp_path,maxim
     with pytest.raises(DataBlocked,match='hrs_slot_limit_invalid'):
         adapter._reservation_denial('NEW',D(1),D(100),SimpleNamespace(portfolio=b.view()),portal.as_of,
             dict(account_occupancy=occupancy(portal.as_of)),D(10000))
+
+
+def gate(parent,checked):
+    return dict(account_id='test',strategy_id='hrs',policy_revision=1,
+        evidence_sha256=parent['sha256'],as_of=parent['payload']['as_of'],checked_at=checked.isoformat())
+
+
+@pytest.mark.parametrize('selected',['new','old','missing','unknown'])
+def test_gate_identity_never_falls_back_to_an_older_passable_parent(selected):
+    from ai_tuner.hrs_evidence_export import _account_occupancy
+    from strategies.hrs.entry_occupancy import SLOT_SCOPE,capture_hrs_slot_inputs
+    inventory,local,old,claims=ownership(AT)
+    new=copy.deepcopy(old);new['payload'].update(as_of=(AT+timedelta(seconds=2)).isoformat(),available_at=(AT+timedelta(seconds=2)).isoformat())
+    new['sha256']=canonical(new['payload'])[1]
+    observed=AT+timedelta(seconds=1);checked=AT+timedelta(seconds=3)
+    financial=dict(claims=claims,entry_policy=dict(account_id='test',revision=1))
+    if selected!='missing':financial['equity_gate']=gate(new if selected=='new' else old,checked)
+    if selected=='unknown':financial['equity_gate']['evidence_sha256']='f'*64
+    inputs=capture_hrs_slot_inputs(inventory=inventory,independent=inventory,local=local,observed_at=observed)
+    def build():return _account_occupancy(inventory,dict(positions=local),financial,observed,[old,new],
+        slot_scope=SLOT_SCOPE,slot_inputs=inputs,checked_at=checked,source_evidence_id='scan',claims_evidence_id='scan')
+    if selected=='old':assert build()['slot_ownership_proof']['equity_evidence_sha256']==old['sha256']
+    else:
+        with pytest.raises(DataBlocked):build()
+
+
+def test_actual_locked_denial_identity_overrides_earlier_financial_gate(tmp_path):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    from tests.test_ai_tuner_mvp.test_hrs_evidence_export import envelope
+    from strategies.hrs.decision_capture import canonical_payload
+    from ai_tuner.replay.models import parse_utc
+    sources,bootstrap=scoped_sources(tmp_path)
+    first=next(row for row in sources['decision_evidence'] if row['run_id']=='cycle-0' and row['kind']=='scan_start')
+    at=parse_utc(first['event_time']);parent=copy.deepcopy(first['payload']['financial_context']['equity_source_archives'][0])
+    parent['payload'].update(as_of=(at+timedelta(seconds=2)).isoformat(),available_at=(at+timedelta(seconds=2)).isoformat())
+    parent['evidence_sha256']=canonical(parent['payload'])[1];sources['equity_evidence'].append(parent)
+    reference=gate(dict(payload=parent['payload'],sha256=parent['evidence_sha256']),at+timedelta(seconds=3))
+    reference['ownership_claims']=first['payload']['financial_context']['ownership_claims']
+    sources['decision_evidence'].append(envelope('cycle-0','entry_stage_inputs',
+        dict(stage='reservation_denial',risk_context=reference),at+timedelta(seconds=3),'A'))
+    result=export_evidence_bundle(sources,tmp_path/'out',window_start=AT,as_of=AT+timedelta(hours=3),
+        execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('decision')=='BLOCKED_DATA',result
+    assert any('hrs_slot_source_stale_or_future' in reason for reason in result['gaps'])
+
+
+def test_success_context_binds_full_locked_claims_and_original_gate(tmp_path):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    from tests.test_ai_tuner_mvp.test_hrs_evidence_export import envelope
+    from strategies.hrs.decision_capture import canonical_payload
+    from strategies.hrs.entry_occupancy import SLOT_SCOPE,capture_hrs_slot_inputs,prove_hrs_slot_ownership
+    from ai_tuner.replay.models import parse_utc
+    from ai_tuner.replay.data_portal import DataPortal
+    from ai_tuner.replay.adapters.hrs import HrsAdapter
+    from pathlib import Path
+    sources,bootstrap=scoped_sources(tmp_path)
+    first=next(row for row in sources['decision_evidence'] if row['run_id']=='cycle-0' and row['kind']=='scan_start')
+    at=parse_utc(first['event_time']);financial=first['payload']['financial_context']
+    parent=financial['equity_source_archives'][0];inventory=financial['exchange_positions']
+    inputs=capture_hrs_slot_inputs(inventory=inventory,independent=inventory,local={},observed_at=at+timedelta(seconds=1))
+    context=gate(dict(payload=parent['payload'],sha256=parent['evidence_sha256']),at+timedelta(seconds=2))
+    context['ownership_claims']=copy.deepcopy(financial['ownership_claims'])
+    proof=prove_hrs_slot_ownership('test',parent,inputs,context['ownership_claims'],checked_at=at+timedelta(seconds=2))
+    for row in sources['decision_evidence']:
+        if row['run_id']=='cycle-0' and row['kind']=='entry_stage_inputs':
+            row['payload']['claims']=[]  # Candidate-only query, not all account owners.
+            row['payload_sha256']=canonical_payload(row['payload'])[1]
+    sources['decision_evidence'] += [
+        envelope('cycle-0','entry_stage_inputs',dict(stage='reservation_inventory',slot_scope=SLOT_SCOPE,
+            slot_inputs=inputs,exchange_positions=inventory),at+timedelta(seconds=1),'A'),
+        envelope('cycle-0','entry_stage_inputs',dict(stage='reservation_success',client_order_id='test-success',
+            slot_context=context,slot_occupancy_proof=proof),at+timedelta(seconds=3),'A')]
+    result=export_evidence_bundle(sources,tmp_path/'out',window_start=AT,as_of=AT+timedelta(hours=3),
+        execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('status')=='SEALED',result.get('gaps',result)
+    root=Path(result['snapshot_dir']);rows=[json.loads(line) for line in (root/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    ref=rows[0]['risk']['account_occupancy']['gate_reference']
+    assert ref['source_kind']=='reservation_success' and ref['checked_at'].startswith((at+timedelta(seconds=2)).isoformat()[:19])
+    assert rows[0]['risk']['account_occupancy']['slot_ownership_proof']==proof
+    portal=DataPortal(root,'hrs',AT+timedelta(hours=3),AT)
+    states=json.loads((root/'hrs_state_tables.json').read_text())
+    replay=run_replay(portal,HrsAdapter(lambda at:states),broker())
+    assert replay.final_position is not None
