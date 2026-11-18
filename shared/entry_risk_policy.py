@@ -7,6 +7,7 @@ are proven. This deliberately overcounts partial/complete fills alongside holdin
 from contextlib import asynccontextmanager
 import asyncio
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 import hashlib
 import json
@@ -15,6 +16,21 @@ import os
 
 class EntryDenied(RuntimeError):
     """New risk could not be proven safe; monitoring must continue."""
+    def __init__(self,message,*,reason_code=None,context=None):
+        super().__init__(message)
+        self.reason_code=reason_code or (message if isinstance(message,str) and message.replace('_','').isalnum() and ' ' not in message else 'entry_denied')
+        self.context=dict(context or {})
+
+
+@dataclass(frozen=True)
+class ScopedRiskSnapshot:
+    """Opt-in HRS slots; account_margin still includes every account holding."""
+    account_margin: Decimal
+    equity: Decimal
+    allocation: Decimal
+    max_slots: int
+    slot_scope: str
+    slot_evidence: dict
 
 
 async def _finish_shielded(operation):
@@ -193,20 +209,68 @@ class RiskPolicyStore:
                 raise EntryDenied('intent already reserved; reconcile instead of resubmitting')
             if await conn.fetchval("SELECT 1 FROM trading.entry_risk_reservation WHERE account_id=$1 AND symbol=$2 AND state<>'released' LIMIT 1",self.account,symbol):
                 raise EntryDenied('symbol already has an unresolved entry intent')
-            holdings,equity,allocation = snapshot_values[:3]
+            context={}
+            scoped=isinstance(snapshot_values,ScopedRiskSnapshot)
+            saved_geometry=dict(geometry or {})
+            if scoped:
+                from strategies.hrs.entry_occupancy import SLOT_SCOPE,HrsOccupancyDenied,prove_hrs_slot_ownership
+                values=snapshot_values
+                if strategy!='hrs' or values.slot_scope!=SLOT_SCOPE:
+                    raise EntryDenied('unsupported strategy slot scope',reason_code='entry_slot_scope_invalid')
+                if type(values.max_slots) is not int or not 1<=values.max_slots<=3:
+                    raise EntryDenied('HRS slot limit must remain at most three',reason_code='hrs_slot_limit_invalid')
+                row=await conn.fetchrow('''SELECT g.*,clock_timestamp() AS checked_at,e.payload
+                    FROM trading.strategy_equity_gate g LEFT JOIN trading.hrs_equity_evidence e
+                    ON e.account_id=g.account_id AND e.evidence_sha256=g.evidence_sha256
+                    WHERE g.account_id=$1 AND g.strategy_id='hrs' ''',self.account)
+                if (row is None or row['ready'] is not True or row['allowed'] is not True
+                        or row['policy_revision']!=revision or row['payload'] is None
+                        or not row['as_of']<=row['checked_at']<row['valid_until']
+                        or not timedelta(0)<row['valid_until']-row['as_of']<=timedelta(seconds=120)):
+                    raise EntryDenied('current HRS equity ownership evidence unavailable',reason_code='hrs_slot_equity_unavailable')
+                pending_symbols=await conn.fetch("SELECT DISTINCT symbol FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs' AND state<>'released'",self.account)
+                reservations={r['symbol'] for r in pending_symbols}
+                context=dict(slot_scope=SLOT_SCOPE,account_id=self.account,account_symbols=None,hrs_symbols=None,
+                    reservation_symbols=sorted(reservations),occupied_symbols=None,observed_slots=None,requested_slots=None,
+                    max_slots=values.max_slots,evidence_sha256=row['evidence_sha256'])
+                claims=await conn.fetch("SELECT id,symbol,strategy,claim_state FROM trading.position_claims WHERE claim_state IN ('PENDING','ACTIVE') AND expires_at>clock_timestamp()")
+                try:
+                    proof=prove_hrs_slot_ownership(self.account,dict(account_id=self.account,evidence_sha256=row['evidence_sha256'],payload=row['payload']),values.slot_evidence,claims,checked_at=row['checked_at'])
+                except HrsOccupancyDenied as exc:
+                    raise EntryDenied('HRS slot ownership cannot be proven',reason_code=exc.reason_code,
+                        context=context) from exc
+                if proof['as_of']!=row['as_of'].isoformat():
+                    raise EntryDenied('HRS equity projection does not match parent',reason_code='hrs_slot_equity_mismatch')
+                holdings,equity,allocation=values.account_margin,values.equity,values.allocation
+                if number(holdings,zero=True)<number(proof['account_margin'],zero=True):
+                    raise EntryDenied('account margin omits verified inventory',reason_code='hrs_slot_account_margin_understated',
+                        context=dict(account_margin=str(holdings),inventory_margin=proof['account_margin'],account_symbols=proof['account_symbols'],hrs_symbols=proof['hrs_symbols'],max_slots=values.max_slots))
+                owned=set(proof['hrs_symbols'])
+                occupied=owned|reservations
+                context=dict(slot_scope=SLOT_SCOPE,account_id=self.account,account_symbols=proof['account_symbols'],hrs_symbols=proof['hrs_symbols'],
+                    reservation_symbols=sorted(reservations),occupied_symbols=sorted(occupied),observed_slots=len(occupied),
+                    requested_slots=len(occupied|{symbol}),max_slots=values.max_slots,
+                    evidence_sha256=row['evidence_sha256'],observed_at=proof['observed_at'],account_margin=str(holdings))
+                if symbol in proof['account_symbols']:
+                    raise EntryDenied('existing account holding forbids additions',reason_code='entry_no_additions',context=context)
+                if len(occupied|{symbol})>values.max_slots:
+                    raise EntryDenied('concurrent position slots include pending reservations',reason_code='entry_position_slots',context=context)
+                saved_geometry.update(slot_scope=SLOT_SCOPE,slot_occupancy_proof=proof,slot_context=context)
+            else:
+                holdings,equity,allocation = snapshot_values[:3]
             # Re-read under the policy lock so a smaller allocation cannot be missed.
             allocation = min(number(allocation), await current_allocation(conn,strategy))
-            if len(snapshot_values) == 5:
+            if not scoped and len(snapshot_values) == 5:
                 owned_symbols,max_slots = snapshot_values[3:]
                 pending_symbols = await conn.fetch("SELECT DISTINCT symbol FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id=$2 AND state<>'released'",self.account,strategy)
                 occupied_symbols = set(owned_symbols) | {r['symbol'] for r in pending_symbols}
                 if len(occupied_symbols | {symbol}) > max_slots:
-                    raise EntryDenied('concurrent position slots include pending reservations')
+                    raise EntryDenied('concurrent position slots include pending reservations',reason_code='entry_position_slots',context=dict(occupied_symbols=sorted(occupied_symbols),requested_slots=len(occupied_symbols|{symbol}),max_slots=max_slots))
             cap = min(number(allocation),number(equity)*number(policy['ratio_cap']),number(policy['entry_ceiling']))
             used = await conn.fetchval('''SELECT COALESCE(sum(margin),0) FROM trading.entry_risk_reservation
                 WHERE account_id=$1 AND strategy_id=$2 AND state <> 'released' ''',self.account,strategy)
             if number(holdings,zero=True)+used+sized.margin > cap:
-                raise EntryDenied('entry ceiling includes holdings and all durable reservations')
+                raise EntryDenied('entry ceiling includes holdings and all durable reservations',reason_code='entry_margin_ceiling',context=dict(context,account_margin=str(holdings),reserved_margin=str(used),entry_margin=str(sized.margin),margin_cap=str(cap)))
             # Existing symbol claim must already be acquired by the ordinary ownership protocol.
             claim = await conn.fetchrow('''UPDATE trading.position_claims SET expires_at='infinity'
                 WHERE symbol=$1 AND strategy=$2 AND claim_state IN ('PENDING','ACTIVE') RETURNING id''',symbol,strategy)
@@ -215,7 +279,7 @@ class RiskPolicyStore:
             await conn.execute('''INSERT INTO trading.entry_risk_reservation
                 (client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,geometry,pressure_risk,original_pressure_risk)
                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'reserved',$11::jsonb,$12,$13)''',client_id,self.account,strategy,revision,symbol,
-                sized.quantity,sized.original_quantity,sized.price,sized.leverage,sized.margin,json.dumps(geometry or {},sort_keys=True),sized.risk,sized.original_risk)
+                sized.quantity,sized.original_quantity,sized.price,sized.leverage,sized.margin,json.dumps(saved_geometry,sort_keys=True),sized.risk,sized.original_risk)
         return client_id
 
     async def _release_proven_unsent(self, conn, strategy, client_id, row, state):
