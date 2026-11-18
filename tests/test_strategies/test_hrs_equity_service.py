@@ -106,7 +106,9 @@ async def setup(monkeypatch):
     finally:
         await service.close()
         async with pool.acquire() as c:
-            for table in ('hrs_equity_evidence','hrs_equity_segment','strategy_equity_gate',
+            # Segment and reconciliation proofs are append-only. Keep their
+            # UUID-account rows rather than disabling their guards for teardown.
+            for table in ('hrs_equity_evidence','strategy_equity_gate',
                           'hrs_loss_gate_reset_audit','hrs_risk_ledger_events','hrs_risk_equity_checkpoints',
                           'hrs_loss_gate_state','execution_fact_income','execution_fact_fill',
                           'execution_fact_cursor','income_ingestion_attempt','trade_records',
@@ -347,10 +349,24 @@ async def test_allocation_trigger_records_inplace_activation_and_history_is_immu
 @pytest.mark.asyncio
 async def test_existing_segment_without_prospective_audit_origin_cannot_restart_clean(setup):
     service,account,pool,api,clock=setup
-    await service.refresh()
-    async with pool.acquire() as c:
-        await c.execute('UPDATE trading.hrs_equity_segment SET allocation_audit_event_id=NULL WHERE account_id=$1',account)
-        version=await c.fetchval('SELECT version FROM trading.hrs_loss_gate_state WHERE account_id=$1',account)
+    from strategies.hrs.equity_evidence import allocation_evidence,canonical
+    from strategies.hrs.risk_ledger import LedgerObservation,initialize_ledger
+    from strategies.hrs.loss_gate import GateHistory,evaluate_loss_gate
+    from strategies.hrs.loss_gate_repository import LossGateSession
+    # Seed a genuinely pre-audit format through INSERT. Current segments cannot
+    # be damaged via UPDATE, and the production immutable trigger stays enabled.
+    segment='legacy-'+uuid.uuid4().hex
+    observation=LedgerObservation(T,segment,(),(),(),T,T,True,True)
+    ledger=initialize_ledger(segment,D('1000'),observation)
+    gate=evaluate_loss_gate(None,ledger.checkpoint,GateHistory((ledger.checkpoint,),T,T,True),allow_inception_segment=True)
+    async with pool.acquire() as c,c.transaction():
+        row=await c.fetchrow("SELECT id,month,entries,created_at FROM public.capital_allocation WHERE status='active'")
+        allocation=allocation_evidence(dict(row),T)
+        evidence=dict(account_flat_anchor_certified=True,source_start_ms=int(T.astimezone(timezone(timedelta(hours=8))).replace(day=1,hour=0,minute=0,second=0,microsecond=0).timestamp()*1000))
+        await c.execute('''INSERT INTO trading.hrs_equity_segment(account_id,segment_id,inception,opening_cash,opening_allocation_sha256,opening_evidence)
+            VALUES($1,$2,$3,1000,$4,$5::jsonb)''',account,segment,T,allocation.identity,canonical(evidence)[0])
+        stored=await LossGateSession(c,account,segment).commit(ledger,gate.state,expected_version=None,checkpoint_id='legacy-origin')
+        version=stored.version
     clock[0]+=timedelta(seconds=30)
     result=await service.refresh()
     assert result['allowed'] is False
