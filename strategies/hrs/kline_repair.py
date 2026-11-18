@@ -45,6 +45,11 @@ def _fail(reason, receipt):
     raise KlineHistoryUnavailable(reason, receipt)
 
 
+def _check_deadline(deadline, receipt):
+    if time.monotonic() >= deadline:
+        _fail('kline_repair_budget_exceeded', receipt)
+
+
 def _normalized(rows, interval, decision_at, receipt):
     result = {}
     dropped = 0
@@ -138,8 +143,14 @@ async def prepare_klines(client, symbol, cached_1h, cached_4h, *, decision_at,
         hash_algorithm='decision_capture.canonical_payload/sha256',
         input_1h_sha256=canonical_payload(cached_1h)[1], input_4h_sha256=canonical_payload(cached_4h)[1],
         input_1h_count=len(cached_1h), input_4h_count=len(cached_4h), requests=[])
+    _check_deadline(deadline, receipt)
+    if (any(type(value) is not int or value <= 0
+            for value in (keep_count, four_hour_count, minimum, page_limit))
+            or minimum > keep_count):
+        _fail('kline_repair_config_invalid', receipt)
     hourly, dropped = _normalized(cached_1h, HOUR_MS, decision_at, receipt)
     derived, _ = _normalized(cached_4h, 4*HOUR_MS, decision_at, receipt)
+    _check_deadline(deadline, receipt)
     receipt['dropped_unclosed_count'] = dropped
     last = int(decision_at.timestamp()*1000)//HOUR_MS*HOUR_MS-HOUR_MS
     # Include enough raw children for normal 1h and 4h windows even on first use.
@@ -151,8 +162,9 @@ async def prepare_klines(client, symbol, cached_1h, cached_4h, *, decision_at,
     receipt.update(full_start_time=start, full_end_time=last, full_count=count)
     if count > MAX_HISTORY_HOURS:
         _fail('kline_repair_span_exceeded', receipt)
-    page_limit = max(1, min(int(page_limit), 100))
+    page_limit = min(page_limit, 100)
     missing = [t for t in range(start, last+1, HOUR_MS) if t not in hourly]
+    _check_deadline(deadline, receipt)
     while missing:
         if len(receipt['requests']) >= MAX_REQUESTS:
             _fail('kline_repair_request_limit', receipt)
@@ -177,28 +189,39 @@ async def prepare_klines(client, symbol, cached_1h, cached_4h, *, decision_at,
             _fail('kline_repair_budget_exceeded' if time.monotonic() >= deadline
                   else 'kline_repair_source_unavailable', receipt)
         request.update(available_at=datetime.now(timezone.utc), response_sha256=canonical_payload(raw)[1])
+        _check_deadline(deadline, receipt)
         decoded = _decode_response(raw, receipt)
+        _check_deadline(deadline, receipt)
         request['received_count'] = len(decoded)
         rows, _ = _normalized(decoded, HOUR_MS, decision_at, receipt)
+        _check_deadline(deadline, receipt)
         if any(t < begin or t > end for t in rows):
             _fail('kline_repair_response_out_of_bounds', receipt)
         if not rows or any(t not in rows for t in range(begin,end+1,HOUR_MS)):
             _fail('kline_repair_incomplete', receipt)
         hourly.update(rows)
         missing = [t for t in missing if t not in rows]
+    _check_deadline(deadline, receipt)
     full = [hourly[t] for t in range(start, last+1, HOUR_MS)]
     try:
         validate_klines(full, decision_at, minimum=minimum)
+        _check_deadline(deadline, receipt)
         four = complete_four_hour_bars(full)
+        _check_deadline(deadline, receipt)
         validate_klines(four, decision_at, interval_ms=4*HOUR_MS, minimum=1)
         one_window, four_window = full[-keep_count:], four[-four_hour_count:]
         validate_klines(one_window, decision_at, minimum=minimum)
     except DecisionInputsUnavailable as exc:
         _fail(str(exc), receipt)
-    available = datetime.now(timezone.utc)
+    _check_deadline(deadline, receipt)
     receipt.update(status='complete', elapsed_seconds=REPAIR_TIMEOUT_SECONDS-(deadline-time.monotonic()),
         full_1h_sha256=canonical_payload(full)[1],
         full_4h_sha256=canonical_payload(four)[1], full_4h_count=len(four),
         output_1h_sha256=canonical_payload(one_window)[1], output_4h_sha256=canonical_payload(four_window)[1],
-        output_1h_count=len(one_window), output_4h_count=len(four_window), available_at=available)
-    return PreparedKlines(one_window, four_window, available, receipt)
+        output_1h_count=len(one_window), output_4h_count=len(four_window))
+    _check_deadline(deadline, receipt)
+    available = datetime.now(timezone.utc)
+    receipt.update(available_at=available, elapsed_seconds=REPAIR_TIMEOUT_SECONDS-(deadline-time.monotonic()))
+    result = PreparedKlines(one_window, four_window, available, receipt)
+    _check_deadline(deadline, receipt)
+    return result

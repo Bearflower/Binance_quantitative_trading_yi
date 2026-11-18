@@ -186,3 +186,67 @@ async def test_total_wall_clock_budget_cancels_slow_public_repair(monkeypatch):
         await p.prepare_decision_klines('BTCUSDT',source,[],decision_at=AT)
     assert cancelled==[True]
     assert err.value.receipt['requests'][0]['error_type']=='TimeoutError'
+
+
+@pytest.mark.asyncio
+async def test_no_get_normalization_cannot_return_complete_after_total_budget(monkeypatch):
+    from strategies.hrs.kline_repair import KlineHistoryUnavailable
+    p=provider()
+    source=[bar(ms('2026-11-11T08:00')+i*HOUR) for i in range(168)]*100
+    monkeypatch.setattr('strategies.hrs.kline_repair.REPAIR_TIMEOUT_SECONDS',.001)
+    with pytest.raises(KlineHistoryUnavailable,match='kline_repair_budget_exceeded') as err:
+        await p.prepare_decision_klines('BTCUSDT',source,[],decision_at=AT)
+    assert err.value.receipt['status']=='unavailable'
+    p.binance_api._request.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase',['decode_response','synthesis','final_hash'])
+async def test_cpu_phase_expiry_after_last_get_never_returns_complete(phase,monkeypatch):
+    import strategies.hrs.kline_repair as repair
+    p=provider()
+    source=[bar(ms('2026-11-11T08:00')+i*HOUR) for i in range(168)]
+    clock=[0.0]
+    monkeypatch.setattr(repair.time,'monotonic',lambda:clock[0])
+    if phase=='decode_response':
+        source.pop(10)
+        original=repair._decode_response
+        def delayed(*args):
+            result=original(*args); clock[0]=31.0; return result
+        monkeypatch.setattr(repair,'_decode_response',delayed)
+    elif phase=='synthesis':
+        original=repair.complete_four_hour_bars
+        def delayed(*args):
+            result=original(*args); clock[0]=31.0; return result
+        monkeypatch.setattr(repair,'complete_four_hour_bars',delayed)
+    else:
+        original=repair.canonical_payload
+        calls=[0]
+        def delayed(*args):
+            result=original(*args); calls[0]+=1
+            if calls[0]==6: clock[0]=31.0  # final output4h hash, no GET path
+            return result
+        monkeypatch.setattr(repair,'canonical_payload',delayed)
+    with pytest.raises(repair.KlineHistoryUnavailable,match='kline_repair_budget_exceeded') as err:
+        await p.prepare_decision_klines('BTCUSDT',source,[],decision_at=AT)
+    assert err.value.receipt['status']=='unavailable'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field,value',[
+    ('keep_count',-1),('keep_count',0),('keep_count',True),
+    ('synthetic_4h_count',0),('synthetic_4h_count',-1),
+    ('min_klines_for_analysis',0),('min_klines_for_analysis',-1),
+    ('min_klines_for_analysis',169),('min_klines_for_analysis','24'),
+    ('max_api_limit',0),('max_api_limit',-1),('max_api_limit',1.5),('max_api_limit',None),
+])
+async def test_invalid_window_and_page_configuration_fails_closed(field,value):
+    from strategies.hrs.kline_repair import KlineHistoryUnavailable
+    p=provider()
+    if field=='max_api_limit':p.max_api_limit=value
+    else:p.config['kline'][field]=value
+    source=[bar(ms('2026-11-11T08:00')+i*HOUR) for i in range(168)]
+    with pytest.raises(KlineHistoryUnavailable,match='kline_repair_config_invalid') as err:
+        await p.prepare_decision_klines('BTCUSDT',source,[],decision_at=AT)
+    assert err.value.receipt['status']=='unavailable'
+    p.binance_api._request.assert_not_called()
