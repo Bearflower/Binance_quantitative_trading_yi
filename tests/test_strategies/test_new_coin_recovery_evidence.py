@@ -280,3 +280,27 @@ async def test_failed_exchange_rebuild_still_blocks_restored_time_exit():
     assert executor.position_tracking[SYMBOL]['time_exit_status'] == 'unknown'
     await executor._check_time_stop(SYMBOL, OPENED.replace(tzinfo=timezone.utc))
     executor._close_position.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_restart_waits_for_ownership_before_adopting_account_wide_short():
+    strategy, executor, _ = setup_recovery()
+    strategy.positions = {}
+    executor.position_tracking = {}
+    strategy.trading_executor = executor
+    strategy.binance_client = executor.binance_api
+    executor.binance_api.get_position = AsyncMock(return_value=[dict(
+        symbol=SYMBOL, positionAmt='-70', entryPrice='25', markPrice='24')])
+    executor.get_contract_size_map = AsyncMock(return_value={SYMBOL: 1})
+    executor.get_open_short_symbols = AsyncMock(side_effect=[None, set()])
+    executor._calculate_atr = AsyncMock(return_value=Decimal('2'))
+
+    await strategy._rebuild_position_baseline()
+    assert executor.baseline_ready is False
+    assert strategy.positions == executor.position_tracking == {}
+    executor._calculate_atr.assert_not_awaited()
+
+    await strategy._rebuild_position_baseline()
+    assert executor.baseline_ready is True
+    assert strategy.positions == executor.position_tracking == {}
+    executor._close_position.assert_not_awaited()

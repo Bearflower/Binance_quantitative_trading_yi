@@ -2405,6 +2405,8 @@ class NewCoinStrategy(BaseStrategy):
             return
 
         filtered_positions = await self._filter_own_positions(executor, result.positions)
+        if filtered_positions is None:
+            return
         rebuilt = self._merge_rebuilt_positions(filtered_positions)
         self._prune_missing_positions(executor, rebuilt)
 
@@ -2449,7 +2451,7 @@ class NewCoinStrategy(BaseStrategy):
 
     async def _filter_own_positions(
         self, executor: Any, positions: Dict[str, Any]
-    ) -> Dict[str, Any]:
+    ) -> Optional[Dict[str, Any]]:
         """
         过滤交易所持仓，仅保留本策略自有币种（R4 策略归属过滤）
 
@@ -2463,14 +2465,14 @@ class NewCoinStrategy(BaseStrategy):
             positions: rebuild_from_exchange 返回的交易所持仓
 
         Returns:
-            Dict[str, Any]: 仅含自有币种的持仓记录；无法判定归属时原样返回
+            Optional[Dict[str, Any]]: 已知自有持仓；无归属依据时返回 None
         """
         own_symbols = await executor.get_open_short_symbols()
         if own_symbols is None:
             local_symbols = set(self.positions.keys()) | set(executor.position_tracking.keys())
             if not local_symbols:
-                logger.warning("自有币种无法判定（DB 不可用且本地无记录），跳过策略归属过滤")
-                return positions
+                logger.warning("自有币种无法判定（DB 不可用且本地无记录），等待归属恢复后再重建基线")
+                return None
             logger.warning(
                 "自有币种降级为本地记录（DB 不可用）", symbols=sorted(local_symbols)
             )
