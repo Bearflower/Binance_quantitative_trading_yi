@@ -48,6 +48,10 @@ _EXIT_ORDER_TYPES = (
 )
 
 
+class ExecutionFactsPending(ValueError):
+    """Exchange evidence has not arrived within the collection interval yet."""
+
+
 class IncomeReconciler:
     """统一 PnL 校准器：从 Binance 拉取权威盈亏，补齐 trade_records 缺失的 realized_pnl"""
 
@@ -76,6 +80,9 @@ class IncomeReconciler:
         self.state_schema = self.cfg.get("state_schema", "public")
         self.state_table = self.cfg.get("state_table", "pnl_reconcile_state") + "_by_account"
         self.excluded_strategies = list(self.cfg.get("excluded_strategies", []))
+        self.fact_wait_minutes = int(self.cfg.get("fact_wait_minutes", 90))
+        if self.fact_wait_minutes <= 0:
+            raise ValueError("fact_wait_minutes must be positive")
         self.account_id = self.cfg.get("account_id") or os.environ.get("TRADE_ACCOUNT_ID", "default")
 
     async def run_once(self) -> None:
@@ -88,7 +95,11 @@ class IncomeReconciler:
             last_ts = await self._get_last_reconciled_ts()
             now_ms = _utc_now_ms()
             # 从上次进度继续，若无进度则从"最近 N 天"的偏移处开始（相对当前时间，非硬编码日期）
-            start_ms = last_ts if last_ts > 0 else now_ms - self.lookback_days * _DAY_MS
+            if last_ts > 0:
+                # Income can become visible after an earlier query covered its event time.
+                start_ms = max(0, last_ts - self.fact_wait_minutes * 60_000)
+            else:
+                start_ms = now_ms - self.lookback_days * _DAY_MS
             end_ms = now_ms
             logger.info("开始 PnL 校准", start_ms=start_ms, end_ms=end_ms, last_ts=last_ts)
 
@@ -107,6 +118,8 @@ class IncomeReconciler:
                 updated=updated,
                 total_pnl=str(total_pnl),
             )
+        except ExecutionFactsPending as e:
+            logger.warning("PnL 校准等待事实采集，保留游标", reason=str(e))
         except Exception as e:
             logger.error("PnL 校准任务失败", error=str(e), exc_info=True)
 
@@ -167,10 +180,10 @@ class IncomeReconciler:
         collected: list = []
         chunk_ms = self.chunk_days * _DAY_MS
         chunk_start = start_ms
-        while chunk_start < end_ms:
+        while chunk_start <= end_ms:
             chunk_end = min(chunk_start + chunk_ms, end_ms)
             await self._fetch_income_chunk(chunk_start, chunk_end, collected)
-            chunk_start = chunk_end
+            chunk_start = chunk_end + 1
         return self._dedupe_income(collected)
 
     async def _fetch_income_chunk(self, chunk_start: int, chunk_end: int, collected: list) -> None:
@@ -188,16 +201,16 @@ class IncomeReconciler:
         if len(batch) < self.batch_size:
             collected.extend(batch)
             return
-        if chunk_end - chunk_start <= 1:
+        if chunk_end == chunk_start:
             raise ValueError("income 同一毫秒达到单页上限，无法证明数据完整")
         midpoint = (chunk_start + chunk_end) // 2
         await self._fetch_income_chunk(chunk_start, midpoint, collected)
-        await self._fetch_income_chunk(midpoint, chunk_end, collected)
+        await self._fetch_income_chunk(midpoint + 1, chunk_end, collected)
 
     @staticmethod
     def _dedupe_income(records: list) -> list:
         """以交易所 tranId 去重；同毫秒、同金额的不同成交必须保留。"""
-        seen = set()
+        seen = {}
         result = []
         for rec in records:
             tran_id = rec.get("tranId")
@@ -205,9 +218,12 @@ class IncomeReconciler:
                 "legacy", rec.get("symbol", ""), rec.get("time", 0),
                 rec.get("income", "0"), rec.get("tradeId"),
             )
-            if key not in seen:
-                seen.add(key)
-                result.append(rec)
+            if key in seen:
+                if tran_id is not None and rec != seen[key]:
+                    raise ValueError(f"tranId={tran_id} 收入分页记录冲突")
+                continue
+            seen[key] = rec
+            result.append(rec)
         return result
 
     # ──────────────────────────────────────────────
@@ -241,6 +257,44 @@ class IncomeReconciler:
             args.extend(self.excluded_strategies)
         return await self.db.fetch_all(sql, *args)
 
+    def _require_arrived_facts(self, rows, symbol, identity, event_ms):
+        if rows:
+            return
+        age_ms = _utc_now_ms() - event_ms
+        detail = f"{symbol} {identity} 事实尚未采集，事件年龄 {age_ms // 60000} 分钟"
+        if 0 <= age_ms < self.fact_wait_minutes * 60000:
+            raise ExecutionFactsPending(detail)
+        raise ValueError(detail + f"，超过等待上限 {self.fact_wait_minutes} 分钟或事件时间无效")
+
+    async def _read_verified_fill(self, symbol, trade_id, tran_id, income, event_ms):
+        income_facts = await self.db.fetch_all(
+            "SELECT symbol, trade_id, income FROM trading.execution_fact_income "
+            "WHERE account_id = $1 AND tran_id = $2 "
+            "AND income_type = 'REALIZED_PNL'",
+            self.account_id, tran_id,
+        )
+        self._require_arrived_facts(income_facts, symbol, f"tranId={tran_id}", event_ms)
+        if (
+            len(income_facts) != 1
+            or income_facts[0]["symbol"] != symbol
+            or income_facts[0]["trade_id"] != trade_id
+            or Decimal(str(income_facts[0]["income"])) != income
+        ):
+            raise ValueError(f"{symbol} tranId={tran_id} 收入事实缺失或不一致")
+        fills = await self.db.fetch_all(
+            "SELECT account_id, order_id, side, realized_pnl "
+            "FROM trading.execution_fact_fill WHERE account_id = $1 "
+            "AND symbol = $2 AND trade_id = $3",
+            self.account_id, symbol, trade_id,
+        )
+        self._require_arrived_facts(fills, symbol, f"tradeId={trade_id}", event_ms)
+        if len(fills) != 1 or fills[0]["order_id"] is None:
+            raise ValueError(f"{symbol} tradeId={trade_id} 成交事实缺失或不唯一")
+        fill = fills[0]
+        if Decimal(str(fill["realized_pnl"])) != income:
+            raise ValueError(f"{symbol} tradeId={trade_id} 收入与成交盈亏不一致")
+        return fill
+
     async def _match_and_update(
         self, income_records: list, pending_records: Optional[list] = None,
         completed_through: Optional[int] = None,
@@ -251,6 +305,7 @@ class IncomeReconciler:
         queries = []
         resolved_gaps = []
         unresolved = False
+        first_pending = None
         total_pnl = Decimal("0")
 
         for inc in income_records:
@@ -264,26 +319,14 @@ class IncomeReconciler:
             tran_id = inc.get("tranId")
             if tran_id in (None, "", 0):
                 raise ValueError(f"{symbol} income 缺少 tranId，停止推游标")
-            income_facts = await self.db.fetch_all(
-                "SELECT account_id, trade_id, income FROM trading.execution_fact_income "
-                "WHERE account_id = $1 AND symbol = $2 AND tran_id = $3 "
-                "AND income_type = 'REALIZED_PNL'",
-                self.account_id, symbol, int(tran_id),
-            )
-            if len(income_facts) != 1 or int(income_facts[0]["trade_id"] or 0) != int(trade_id) \
-                    or Decimal(str(income_facts[0]["income"])) != Decimal(str(inc["income"])):
-                raise ValueError(f"{symbol} tranId={tran_id} 收入事实缺失或不一致")
-            fills = await self.db.fetch_all(
-                "SELECT account_id, order_id, side, realized_pnl "
-                "FROM trading.execution_fact_fill WHERE account_id = $1 "
-                "AND symbol = $2 AND trade_id = $3",
-                self.account_id, symbol, int(trade_id),
-            )
-            if len(fills) != 1 or fills[0]["order_id"] is None:
-                raise ValueError(f"{symbol} tradeId={trade_id} 成交事实缺失或不唯一")
-            fill = fills[0]
-            if Decimal(str(fill["realized_pnl"])) != Decimal(str(inc["income"])):
-                raise ValueError(f"{symbol} tradeId={trade_id} 收入与成交盈亏不一致")
+            try:
+                fill = await self._read_verified_fill(
+                    symbol, int(trade_id), int(tran_id), Decimal(str(inc["income"])), inc_time,
+                )
+            except ExecutionFactsPending as pending:
+                if first_pending is None:
+                    first_pending = pending
+                continue
             order_id = str(fill["order_id"])
             sql = f"""SELECT id, strategy, account_id, order_id, side, realized_pnl, pnl_source,
                     EXISTS (SELECT 1 FROM {self.state_schema}.{self.state_table}_gaps
@@ -337,6 +380,10 @@ class IncomeReconciler:
             ))
             total_pnl += pnl
 
+        if first_pending is not None:
+            # Holding the transaction also avoids saving a partial total for an order
+            # whose other fill is still being collected.
+            raise first_pending
         updated_count = len(queries)
         queries.extend(resolved_gaps)
         if queries:
