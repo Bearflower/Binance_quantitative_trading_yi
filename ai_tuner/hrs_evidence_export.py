@@ -77,13 +77,18 @@ class _ArchiveSources:
     def __init__(self,source):
         from .replay.hrs_evidence_archive import EvidenceArchive,ArchiveError
         _require(len(canonical_payload(source)[0].encode())<=MAX_BYTES,'archive_descriptor_byte_limit')
-        _require(not any(name in source for name in ('decision_evidence','equity_evidence','equity_checkpoints','funding_observations','market_bars','cash_flows')),
+        _require(not any(name in source for name in ('decision_evidence','equity_evidence','equity_checkpoints','funding_observations','hrs_funding_observations','market_bars','cash_flows')),
             'archive_uninventoried_source_family')
         self.metadata=dict(source);descriptor=source['evidence_archive']
         try:
             self.archive=EvidenceArchive.open(descriptor['path'],expected_manifest_sha256=descriptor.get('manifest_sha256'))
+            self.forecast_closure=verify_forecast_source_closure(self)
         except ArchiveError as exc:
+            if getattr(self,'archive',None) is not None:self.archive.close()
             raise DataBlocked(['evidence_archive_invalid:'+str(exc)]) from exc
+        except Exception:
+            if getattr(self,'archive',None) is not None:self.archive.close()
+            raise
     def __enter__(self):return self
     def __exit__(self,*args):self.archive.close()
     def get(self,key,default=None):
@@ -199,6 +204,34 @@ def _equity_rows(equities,after=None,before=None):
     if isinstance(equities,_EquityView):return equities.select(after,before)
     return (e for e in equities if (after is None or _time(e['payload']['as_of'])>=after)
         and (before is None or _time(e['payload']['as_of'])<=before))
+
+
+def verify_forecast_source_closure(sources,records=None):
+    from .hrs_forecast_sources import FAMILY,verify_parent_closure
+    def parents():
+        yield from sources.get('equity_evidence',())
+        decisions=records if records is not None else sources.get('decision_evidence',())
+        for row in _decision_rows(decisions,kind='scan_start'):
+            yield from row['payload'].get('financial_context',{}).get('equity_source_archives',())
+    if isinstance(sources,_ArchiveSources):
+        present=FAMILY in sources.archive.counts
+        metadata=sources.archive.source_metadata.get(FAMILY,{})
+        inventory=metadata.get('prefix_inventory')
+        if inventory is not None:
+            _require(inventory.get('account_id')==metadata.get('account_id'),'funding_forecasts_inventory_account_mismatch')
+        def count(cutoff):
+            if not present:return 0
+            return sources.archive.count_records(FAMILY,available_before=cutoff)
+        def rows(cutoff):
+            return sources.archive.iter_records(FAMILY,available_before=cutoff,order_by_available=True) if present else iter(())
+    else:
+        supplied=sources.get(FAMILY)
+        _require(supplied is None or isinstance(supplied,list),'funding_forecasts_source_shape_invalid')
+        retained=supplied or []
+        inventory=sources.get('hrs_funding_observations_inventory') if supplied is not None else None
+        def count(cutoff):return sum(1 for row in retained if cutoff is None or _time(row['available_at'])<=cutoff)
+        def rows(cutoff):return iter(sorted((row for row in retained if _time(row['available_at'])<=cutoff),key=lambda row:(_time(row['available_at']),row['evidence_sha256'])))
+    return verify_parent_closure(parents(),source_rows=rows,source_count=count,inventory=inventory)
 
 
 def _time(value):
@@ -662,6 +695,7 @@ def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_mo
             if not sources.get(name):missing.append(gap)
         if missing:raise DataBlocked(missing)
         records=_records(sources.get('decision_evidence'))
+        if not archived:verify_forecast_source_closure(sources,records)
         boundary=None
         end_boundary=None
         if end_policy is not None:
@@ -891,7 +925,7 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
         FROM public.ai_tuner_funding_schedule_observations WHERE received_at >= $1 AND received_at <= $2
         ORDER BY received_at,symbol LIMIT $3""",(start-timedelta(seconds=420),end,limit))]
     result={'source_query_version':VERSION,'source_account_id':account_id,'source_window_start':_iso(start),'source_as_of':_iso(end)}
-    estimated=0;referenced=set();ledger_points=set();scanned=set()
+    estimated=0;referenced=set();ledger_points=set();scanned=set();forecast_cutoffs={}
     with ExitStack() as cleanup:
         writer=None
         if archive_root is not None:
@@ -924,7 +958,9 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
                             row['payload']=_decoded(row['payload'])
                         writer.write_row(name,row)
                         if name=='decision_evidence':
-                            _source_references(row,referenced,ledger_points,scanned)
+                            _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs,account_id)
+                        elif name=='equity_evidence':
+                            _source_forecast_ref(row,forecast_cutoffs,account_id)
                     continue
                 rows=[dict(row) for row in await connection.fetch(query,*args)]
                 _require(len(rows)<=MAX_ROWS,'source_row_limit:'+name)
@@ -936,7 +972,27 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
                 result[name]=json.loads(encoded)
                 if name=='decision_evidence':
                     for row in rows:
-                        _source_references(row,referenced,ledger_points,scanned)
+                        _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs,account_id)
+                elif name=='equity_evidence':
+                    for row in rows:_source_forecast_ref(row,forecast_cutoffs,account_id)
+            if forecast_cutoffs:
+                from .hrs_forecast_sources import FAMILY,INVENTORY_VERSION
+                from strategies.hrs.funding_reference import ROWS_SQL
+                cutoff=forecast_cutoffs[account_id]
+                inventory=await connection.fetchrow('SELECT count(*) AS expected_count,min(available_at) AS first_event,max(available_at) AS last_event FROM ('+ROWS_SQL+') AS source_inventory',account_id,cutoff)
+                prefix=dict(version=INVENTORY_VERSION,account_id=account_id,available_through=cutoff.isoformat(),expected_count=inventory['expected_count'])
+                if writer is not None:
+                    writer.declare_source(FAMILY,dict(expected_count=inventory['expected_count'],
+                        account_id=account_id,query_scope=dict(sql=ROWS_SQL,arguments=[account_id,cutoff]),
+                        window_start=_iso(inventory['first_event'] or cutoff),window_end=_iso(inventory['last_event'] or cutoff),prefix_inventory=prefix))
+                    async for original in connection.cursor(ROWS_SQL,account_id,cutoff,prefetch=128):
+                        row=dict(original);row['payload']=_decoded(row['payload']);writer.write_row(FAMILY,row)
+                else:
+                    rows=[dict(row) for row in await connection.fetch(ROWS_SQL+' LIMIT $3',account_id,cutoff,limit)]
+                    _require(len(rows)<=MAX_ROWS,'source_row_limit:'+FAMILY)
+                    encoded=canonical_payload(rows)[0];estimated+=len(encoded.encode())
+                    _require(estimated<=MAX_BYTES,'source_byte_limit')
+                    result[FAMILY]=json.loads(encoded);result[FAMILY+'_inventory']=prefix
             if writer is not None:
                 if market_pairs is not None:
                     _require(raw_market_export is None,'archive_market_source_duplicate')
@@ -949,12 +1005,25 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
     return result
 
 
-def _source_references(row,referenced,ledger_points,scanned):
+def _source_forecast_ref(parent,cutoffs,account_id):
+    if 'payload' not in parent:return
+    from .hrs_forecast_sources import parent_reference
+    found=parent_reference(parent,account_id=account_id)
+    if found is not None:
+        account,cutoff,_ref=found;cutoffs[account]=max(cutoffs.get(account,cutoff),cutoff)
+
+
+def _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs=None,account_id=None):
     payload=_decoded(row['payload'])
     if row['kind'] in ('standard_scan_scope','lv_rm_scan_scope'):
         scanned.update(payload['symbols'])
     financial=payload.get('financial_context',{})
     referenced.update(r['evidence_sha256'] for r in financial.get('equity_source_archives',[]))
+    if forecast_cutoffs is not None:
+        parents=financial.get('equity_source_archives',[])
+        if any('payload' in parent for parent in parents):
+            _require(row.get('payload_sha256')==canonical_payload(payload)[1],'decision_payload_hash_mismatch')
+        for parent in parents:_source_forecast_ref(parent,forecast_cutoffs,account_id)
     component=financial.get('hrs_marked_equity_observation')
     if component:referenced.add(component['evidence_sha256'])
     raw=financial.get('ledger_state')

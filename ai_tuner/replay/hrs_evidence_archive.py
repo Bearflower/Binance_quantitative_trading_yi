@@ -170,10 +170,13 @@ def _metadata(family, row, source):
         _require(target is not None and isinstance(row['payload_sha256'], str)
                  and _HASH.fullmatch(row['payload_sha256']) and _digest(_bytes(target)) == row['payload_sha256'],
                  'original_payload_hash_mismatch')
-    if family == 'equity_evidence':
+    if family in ('equity_evidence','hrs_funding_observations'):
         _require(body is not None and isinstance(row.get('evidence_sha256'), str)
                  and _HASH.fullmatch(row['evidence_sha256'])
                  and _digest(_bytes(body, ascii=True)) == row['evidence_sha256'], 'original_equity_hash_mismatch')
+    if family=='hrs_funding_observations':
+        _require(set(row)=={'account_id','evidence_sha256','available_at','payload'} and
+            isinstance(source['account_id'],str) and row['account_id']==source['account_id'],'funding_source_account_or_shape_invalid')
     if row.get('account_id') is not None and source['account_id'] is not None:
         _require(row['account_id'] == source['account_id'], 'source_account_mismatch')
     event = row.get('event_time')
@@ -182,9 +185,9 @@ def _metadata(family, row, source):
         _require(all(row.get(key) for key in ('evidence_id', 'run_id', 'kind', 'event_time', 'available_at')),
                  'decision_receipt_identity_missing')
         identity = row['evidence_id']
-    elif family == 'equity_evidence':
+    elif family in ('equity_evidence','hrs_funding_observations'):
         identity = row['evidence_sha256']
-        event = row.get('as_of', body.get('as_of') if isinstance(body, dict) else None)
+        event = row.get('available_at') if family=='hrs_funding_observations' else row.get('as_of', body.get('as_of') if isinstance(body, dict) else None)
         available = row.get('available_at', body.get('available_at') if isinstance(body, dict) else None)
     elif family == 'equity_checkpoints':
         event = row.get('as_of')
@@ -211,7 +214,7 @@ def _metadata(family, row, source):
     _require(bool(identity), 'receipt_identity_missing')
     e = _micros(event) if event is not None else None
     a = _micros(available) if available is not None else None
-    if family in ('decision_evidence', 'equity_evidence', 'equity_checkpoints', 'funding_observations'):
+    if family in ('decision_evidence', 'equity_evidence', 'equity_checkpoints', 'funding_observations','hrs_funding_observations'):
         _require(e is not None, 'source_event_time_missing')
     if e is not None:
         _require(_micros(source['window_start']) <= e <= _micros(source['window_end']), 'source_time_scope_mismatch')
@@ -734,6 +737,12 @@ class EvidenceArchive:
         if found is None:return None
         row=self._decode(found[0]);_require(_digest(_bytes(row))==found[0],'archive_original_receipt_hash_mismatch')
         return row
+
+    def count_records(self,family,*,available_before=None):
+        _require(not self._closed and family in self._manifest['source_metadata'],'archive_reader_or_family_invalid')
+        query='SELECT count(*) FROM receipts WHERE family=?';args=[family]
+        if available_before is not None:query+=' AND available<=?';args.append(_micros(available_before))
+        return self._db.execute(query,args).fetchone()[0]
 
     def iter_runs(self):
         _require(not self._closed,'archive_reader_closed')
