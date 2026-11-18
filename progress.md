@@ -9,6 +9,10 @@
 
 # 进展
 
+2026-11-18 14:34 CST：3436656d热修已于13:07实际上线，13:21自然扫描complete且payload/envelope/财务上下文完整；配置、WLD28原始硬止损和无关容器保持。门禁仍仅daily_origin_missing拒新仓。离线17c3411a+fff8f040已416项领域测试、119项独立复审和真实只读PG COUNT/cursor探针通过；v3仍BLOCKED_DATA/0运行/无参数选择。九项市值身份0431f49c已核实，hotfix候选51803df6正在CI构建。另已确认equity每刷新累计复制forecast的O(n²)存储增长，正在最小引用化修复及export来源闭包；不删除或回写旧记录。
+
+2026-11-18 12:51 CST：首轮自然扫描发现claims.created_at/expires_at为生产legacy timestamp without timezone，begin记录因naive_evidence_timestamp拒绝；当前6bde权益门禁仍拒新仓、持仓维护与原硬SL保留。e2b6cdc1保留Postgres JSONB原始时间/infinity（不猜UTC），132321d4新增实际DB上下文就绪检查，36项独立PG检查通过；从6bde建隔离热修分支codex/hrs-capture-clock-20261118，候选3436656d CI44240820228成功，等待读取digest后受控替换。并行只离线补月窗容量：现870公开响应/26min已48.8MB decoded，旧64MB/50k不适用月度；risk_ledger_gate实现archive CAS/shards，replay_design集成streaming转换，asset_audit独立审查。不得将“已部署”说成实际扫描已验收通过。
+
 2026-11-18 12:00 CST：6bde184c实际发布成功，1150候选测试通过。配置hash/源采集/独立writer新鲜、三个pin active、WLD28两独立库存及原硬止损未变、无关容器未替换。非admin权限与回滚后重试SHA覆盖缺陷已修复。新仓仅daily_origin_missing拒绝；独立只读报告数据coherent、source_error空、财务reasons空，仍0完整小时/0闭合样本/PENDING。离线窗口精确午夜对齐的可用性新缺口正在单独修复，不改实盘经济参数。
 
 2026-11-18 最新状态：真实生产数据账本预检的来源/逐笔归属/资金费证明通过，剩余真实午夜原点缺失。候选 9204d908 云端 1133 测试通过；生产首次初始化因 trading_user 对权益段 SELECT FOR UPDATE 缺最小权限而失败并已回滚。正在用真实非管理员角色补全链路测试，并修复发布失败的脱敏诊断。完整 Aug/Sep 反事实绩效仍因历史输入不足受阻，SL/TP 不选新参数。

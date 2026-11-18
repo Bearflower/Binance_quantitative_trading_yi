@@ -1,11 +1,11 @@
 {
   "status": "deployed",
-  "release_sha": "6bde184ce57679ec0c475d93173ea17c58369e02",
-  "deployed_at": "2026-11-18T04:00:10.416023+00:00",
-  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44232907695",
-  "tests_passed": 1150,
+  "release_sha": "3436656d698f037fc51e4fa950bd02868e4079be",
+  "deployed_at": "2026-11-18T05:07:11.796544+00:00",
+  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44240820228",
+  "tests_passed": 1157,
   "images": {
-    "hrs": "ghcr.io/bearflower/trading-hrs@sha256:a67c0415e5b69e921cb099c1a8c80f6c357a0a56e802c631263d77f07a684f18",
+    "hrs": "ghcr.io/bearflower/trading-hrs@sha256:84fc109b554509c0c947585f2c2a7e4e34a3826ee9a10d16ab58b4098574e189",
     "hub": "ghcr.io/bearflower/trading-hrs@sha256:3b90bc1a5c5f7d5f560bd21e8dbe8856fc15d501508382ce6fc70fa7a461f930"
   },
   "configuration_hash": "39e90a4d1b1cc526f42d14fb3248a9b292c0aa500a36e4df76159efda25fbb5e",
@@ -19,7 +19,8 @@
     "reasons": [
       "daily_origin_missing"
     ],
-    "observed_at": "2026-11-18T04:01:20.441948+00:00",
+    "observed_as_of": "2026-11-18T05:21:47.139880+00:00",
+    "available_at": "2026-11-18T05:22:07.149901+00:00",
     "inception_protection_only": true,
     "qualified_full_30_days": false
   },
@@ -47,7 +48,73 @@
   "remaining": {
     "aug_sep_counterfactual": "BLOCKED_DATA",
     "sltp_parameter_selection": "BLOCKED_DATA",
-    "forward_window_boundary_tool": "in_progress",
-    "natural_24_hours_and_5_closed_lifecycles": "PENDING"
+    "forward_window_boundary_tool": "implemented_tested_not_performance_qualified",
+    "natural_24_hours_and_5_closed_lifecycles": "PENDING",
+    "monthly_evidence_capacity": "archive_implemented_independently_reviewed_actual_window_not_qualified",
+    "new_market_asset_identity_count": 9,
+    "funding_evidence_storage": "confirmed_quadratic_copy_fix_in_progress",
+    "new_market_asset_identity_status": "verified_tested_hub_deployment_pending"
+  },
+  "previous_release_sha": "6bde184ce57679ec0c475d93173ea17c58369e02",
+  "evidence_context_serializable": true,
+  "first_natural_scan": {
+    "checked_at": "2026-11-18T05:22:16.923590+00:00",
+    "source_release": "3436656d698f037fc51e4fa950bd02868e4079be",
+    "started_at": "2026-11-18T05:21:00.002304+00:00",
+    "status": "complete",
+    "integrity": true,
+    "financial_context_coherent": true,
+    "counts": {
+      "equity_gate": 97,
+      "scan_start": 1,
+      "market_cap_batch": 3,
+      "standard_scan_scope": 1,
+      "analysis": 2,
+      "standard_candidate_outcome": 2,
+      "lv_rm_scan_scope": 1,
+      "lv_rm_candidate_outcome": 29,
+      "lv_rm_analysis": 28,
+      "execution_batch": 1,
+      "scan_end": 1
+    },
+    "market_cap_batches": [
+      {
+        "requested_count": 36,
+        "quote_count": 36,
+        "raw_universe_count": 809,
+        "reasons": {
+          "present": 27,
+          "asset_identity_unverified": 9
+        }
+      },
+      {
+        "requested_count": 30,
+        "quote_count": 30,
+        "raw_universe_count": 809,
+        "reasons": {
+          "present": 26,
+          "asset_identity_unverified": 4
+        }
+      },
+      {
+        "requested_count": 29,
+        "quote_count": 29,
+        "raw_universe_count": 809,
+        "reasons": {
+          "present": 25,
+          "asset_identity_unverified": 4
+        }
+      }
+    ]
+  },
+  "offline_archive_validation": {
+    "implementation_commits": [
+      "17c3411a",
+      "fff8f040"
+    ],
+    "domain_tests_passed": 416,
+    "independent_tests_passed": 119,
+    "read_only_postgresql_count_cursor_probe": true,
+    "actual_financial_window_qualified": false
   }
 }

@@ -36,6 +36,16 @@
 - 独立报告账号真实 `build_report` 核对：数据库快照 coherent、无 source_error、财务 reasons 空，闭合样本 0、完整小时 0，因此仍 `PENDING/NOT_READY`，`performance_accepted=false`。不能用服务健康代替效果验收。
 - 公开脱敏状态见 `hrs-production-optimization-status-2026-11-18.json`；原始逐笔事实和凭据未加入仓库。
 
+## 首次自然扫描与热修核验
+
+- 12:21 起的首轮扫描暴露 legacy `position_claims.created_at/expires_at` 为无时区 PostgreSQL TIMESTAMP，不能当作 aware 时钟序列化。原硬止损和维护未停，新风险仍被门禁拒绝。
+- `e2b6cdc1` / `132321d4` 保留 `to_jsonb` 的数据库时间原文及 `infinity`，不猜 UTC；新增实际只读扫描上下文就绪检查。独立 36 项、联合 516 项通过。
+- 隔离热修生产 SHA **3436656d698f037fc51e4fa950bd02868e4079be**，2026-11-18 **13:07:11 CST** 发布通过；[候选 CI](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44240820228) **1157 passed**。HRS/reporter 镜像 `sha256:84fc109b554509c0c947585f2c2a7e4e34a3826ee9a10d16ab58b4098574e189`，hub 镜像和容器 ID 均未变。
+- 2026-11-18 **13:21:00.002304 CST** 首次真实自然扫描已完成：一个 `scan_start`、一个 `scan_end=complete`，2 个标准分析、28 个 LV-RM 分析、真实执行批次；所有记录 hash/时间 envelope 正确，财务上下文 coherent，实际 SHA/配置 hash 一致。
+- 3 个市值请求批次分别为 36/30/29 标的，可信返回 27/26/25；原始行情分母 809 保留。新出现的 9 个 crypto 身份缺口已排入公开核验，未伪称 95% 覆盖通过，未去掉未知标的凑比例。
+- 日初权益门禁仍为 `daily_origin_missing`；当前小时尚未闭合、自然闭合样本不足，持续效果不标通过。
+- 实测约 26 分钟的 870 条公开响应已有 48.8 MB 解码数据，已确认原单体 64MiB/50k 导出容量不适用月度；正在补完整 inventory、无损 CAS/流式分片和行情源逐表采集。
+
 ## 经济与数据验收边界
 
 - 1% 单笔风险预算按最大亏损计算；本轮不改变 SL/TP 的经济参数。已实现冻结每仓退出计划、共用实盘/离线计算和预登记实验 CLI，缺合格窗口时不能选新参数。
