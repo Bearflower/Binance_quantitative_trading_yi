@@ -4,10 +4,12 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import json
 import os
+from pathlib import Path
 from types import SimpleNamespace
 import uuid
 
 import pytest
+import pytest_asyncio
 
 from strategies.hrs.acceptance_report import (
     build_report, reconcile_lifecycles, summarize_evidence, write_report_atomic,
@@ -20,6 +22,47 @@ UTC = timezone.utc
 NOW = datetime(2026, 11, 18, 0, 30, tzinfo=UTC)
 START = NOW.replace(minute=0) - timedelta(hours=24)
 ACCOUNT = 'acceptance-test'
+
+
+@pytest_asyncio.fixture
+async def initialized_report_schema():
+    """Install this reader's dependencies without relying on other test modules."""
+    import asyncpg
+    connection = await asyncpg.connect(os.environ['HRS_TEST_POSTGRES_DSN'])
+    root = Path(__file__).resolve().parents[2]
+    try:
+        await connection.execute('CREATE SCHEMA IF NOT EXISTS trading; CREATE SCHEMA IF NOT EXISTS hrs')
+        # Match the base source-table columns used by the equity-service fixture.
+        # The facts themselves use their real initialization source, not a mock.
+        await connection.execute('''CREATE TABLE IF NOT EXISTS trading.trade_records
+            (id bigserial PRIMARY KEY,account_id text,symbol text,order_id text,strategy text,
+             side text,status text,order_type text,quantity numeric,realized_pnl numeric,
+             executed_at timestamp);
+            CREATE TABLE IF NOT EXISTS trading.income_ingestion_attempt
+            (attempt_id text PRIMARY KEY,account_id text,observations jsonb,state text DEFAULT 'pending',
+             created_at timestamptz DEFAULT now(),finished_at timestamptz);
+            CREATE TABLE IF NOT EXISTS public.capital_allocation
+            (id serial PRIMARY KEY,month text,entries jsonb,status text,created_at timestamp,total_capital numeric);
+            CREATE TABLE IF NOT EXISTS public.condition_orders (id bigserial PRIMARY KEY);
+            CREATE TABLE IF NOT EXISTS hrs.hrs_positions (id bigserial PRIMARY KEY)''')
+        for name in ('11-execution-facts.sql', '16-reviewed-income-attribution.sql'):
+            source = (root/'database/postgres/init-scripts'/name).read_text()
+            # Isolated clusters need not contain the deployment-only app role.
+            source = '\n'.join(line for line in source.splitlines()
+                               if not line.strip().startswith('GRANT '))
+            await connection.execute(source)
+        for name in ('2026-11-17-hrs-risk-ledger-loss-gates.sql',
+                     '2026-11-17-hrs-equity-service.sql',
+                     '2026-11-17-hrs-allocation-event-audit.sql',
+                     '2026-11-17-hrs-equity-reconciliation.sql',
+                     '2026-11-17-hrs-funding-publication.sql',
+                     '2026-11-17-hrs-decision-evidence.sql',
+                     '2026-11-17-hrs-frozen-exit-plan.sql',
+                     '2026-11-17-hrs-condition-account-scope.sql'):
+            await connection.execute((root/'database/postgres/migrations'/name).read_text())
+        yield
+    finally:
+        await connection.close()
 
 
 def event(run, kind, at, payload, symbol=None):
@@ -438,7 +481,7 @@ async def test_missing_pool_or_account_is_structured_not_ready(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not os.getenv('HRS_TEST_POSTGRES_DSN'), reason='isolated PostgreSQL required')
-async def test_real_postgres_reader_is_read_only_and_absent_samples_pending():
+async def test_real_postgres_reader_is_read_only_and_absent_samples_pending(initialized_report_schema):
     import asyncpg
     pool = await asyncpg.create_pool(os.environ['HRS_TEST_POSTGRES_DSN'], min_size=1, max_size=1)
     try:
@@ -454,7 +497,7 @@ async def test_real_postgres_reader_is_read_only_and_absent_samples_pending():
 
 @pytest.mark.asyncio
 @pytest.mark.skipif(not os.getenv('HRS_TEST_POSTGRES_DSN'), reason='isolated PostgreSQL required')
-async def test_real_postgres_full_financial_contract_and_integrity_latch():
+async def test_real_postgres_full_financial_contract_and_integrity_latch(initialized_report_schema):
     import asyncpg
     account = 'acceptance-positive-'+uuid.uuid4().hex
     pool = await asyncpg.create_pool(os.environ['HRS_TEST_POSTGRES_DSN'], min_size=1, max_size=1)
