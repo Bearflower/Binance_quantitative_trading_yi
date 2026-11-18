@@ -53,6 +53,7 @@ class LedgerMetadata(BaseModel):
     publication_status: Optional[str] = None
     refresh_error: Optional[str] = None
     report_version: Optional[str] = None
+    income_archive_end_ms: Optional[int] = None
     account_id: Optional[str] = None
     start_ms: Optional[int] = None
     end_ms: Optional[int] = None

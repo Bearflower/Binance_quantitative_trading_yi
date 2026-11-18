@@ -34,6 +34,8 @@ DASHBOARD_DEFAULT_MARKER = ".github/deploy-modes/dashboard-default-monthly-20261
 DASHBOARD_DEFAULT_BASE = "46f0c417591a8ed445d6576de6cf012574edb90c"
 CONSISTENCY_MARKER = ".github/deploy-modes/dashboard-consistency-20261113"
 CONSISTENCY_BASE = "4bdc1f6085c4c449ab175c31f6536eb0f6efc66d"
+ANNUAL_MARKER = ".github/deploy-modes/dashboard-annual-net-20261118"
+ANNUAL_BASE = "184f1488f06356d27bc94aa9999a01586830a374"
 DASHBOARD_CACHE_MARKER = ".github/deploy-modes/dashboard-cache-refresh-20261112"
 DASHBOARD_CACHE_BASE = "1d0a71a94f8ca1a4a9d77594899db0aa250d8fe1"
 GRID_DASHBOARD_MARKER = ".github/deploy-modes/grid-subaccount-dashboard-20261112"
@@ -68,13 +70,15 @@ def select_deploy_mode(
     if marker_changes in ([("A", ".github/deploy-modes/xau-review-20261113")],
                            [("A", ".github/deploy-modes/xau-review-20261113-retry1")]):
         return "xau-review"
-    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, HISTORICAL_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, GRID_DASHBOARD_MARKER}:
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, HISTORICAL_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, ANNUAL_MARKER, GRID_DASHBOARD_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
     if any(path == GRID_DASHBOARD_MARKER for _, path in marker_changes):
         if marker_changes != [("A", GRID_DASHBOARD_MARKER)]:
             raise DeployModeError("grid dashboard release requires one added marker")
         return "grid-subaccount-dashboard"
     if marker_changes == [("A", CONSISTENCY_MARKER)]:
+        return "dashboard-performance"
+    if marker_changes == [("A", ANNUAL_MARKER)]:
         return "dashboard-performance"
     if any(path == DASHBOARD_CACHE_MARKER for _, path in marker_changes):
         if marker_changes != [("A", DASHBOARD_CACHE_MARKER)]:
@@ -201,18 +205,20 @@ def _validate_income_scope(base: str, changes: list[tuple[str, str]]) -> None:
 
 
 def _validate_dashboard_scope(base: str, changes: list[tuple[str, str]]) -> None:
-    reviewed = ((base == CONSISTENCY_BASE and ("A", CONSISTENCY_MARKER) in changes)
+    reviewed = ((base == ANNUAL_BASE and ("A", ANNUAL_MARKER) in changes)
+                or (base == CONSISTENCY_BASE and ("A", CONSISTENCY_MARKER) in changes)
                 or (base == DASHBOARD_PERFORMANCE_BASE and ("A", DASHBOARD_PERFORMANCE_MARKER) in changes)
                 or (base == DASHBOARD_DEFAULT_BASE and ("A", DASHBOARD_DEFAULT_MARKER) in changes)
                 or (base == DASHBOARD_CACHE_BASE and ("A", DASHBOARD_CACHE_MARKER) in changes))
     if not reviewed:
         raise DeployModeError("dashboard performance release must start from reviewed main")
     allowed = {
-        DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER,
+        DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, ANNUAL_MARKER,
         ".github/workflows/deploy.yml",
         "dashboard/backend/services/exchange_ledger.py", "dashboard/backend/models/schemas.py",
         "dashboard/frontend/index.html", "dashboard/frontend/js/main.js",
-        "shared/accounting/dashboard_performance.py", "scripts/select_deploy_mode.py",
+        "shared/accounting/dashboard_performance.py", "shared/accounting/annual_income_archive.py",
+        "scripts/select_deploy_mode.py",
         "scripts/render_remote_deploy.py", "scripts/remote_deploy_runtime.sh",
         "scripts/package_dashboard_performance_release.py",
         "scripts/scoped_dashboard_performance_release.py",

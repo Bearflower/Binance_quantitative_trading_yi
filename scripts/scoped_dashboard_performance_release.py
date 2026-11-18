@@ -16,15 +16,19 @@ from scripts.scoped_stop_followup import (  # noqa: E402
     Runtime as BaseRuntime, CONTAINERS, STACK_FILES, atomic_json, image_only,
 )
 
-PREDECESSOR_SHA = "80a403c900b2679b697a52a033421b4a57082f7a"
-PREDECESSOR_OVERLAY_SHA256 = "a0922fc9acee0b1505258d2f460476b9d9a82c9e52b58b4fee751752cf12e554"
+PREDECESSOR_SHA = "c02b045654c73c8c5cb7e89c5735e9e72eb1b392"
+PREDECESSOR_OVERLAY_SHA256 = "d961341a4585454d2f8fd18a8c88c0522c30977d05333be329a1536fc8af1eee"
 SERVICE = "dashboard-api"
+ARCHIVE = Path(".releases/dashboard-audit-20261118/pm-income-2026-H1.zip")
+ARCHIVE_TARGET = "/app/annual-income/pm-income-2026-H1.zip"
+ARCHIVE_HASH = "618e581db1714f6d98b3641d67d68076c6b4dbb4381828f4a9519e38c3c01fdf"
 SOURCE_PATHS = (
     "dashboard/backend/services/exchange_ledger.py",
     "dashboard/backend/models/schemas.py",
     "dashboard/frontend/index.html",
     "dashboard/frontend/js/main.js",
     "shared/accounting/dashboard_performance.py",
+    "shared/accounting/annual_income_archive.py",
 )
 SCRIPT_PATHS = (
     "scripts/scoped_dashboard_performance_release.py",
@@ -41,13 +45,16 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def build_overlay(predecessor: dict, image: str) -> dict:
+def build_overlay(predecessor: dict, image: str, archive: Path | None = None) -> dict:
     if not re.fullmatch(r"ghcr\.io/bearflower/trading-dashboard-api@sha256:[0-9a-f]{64}", image):
         raise ReleaseBlocked("invalid immutable dashboard image")
     if set(predecessor) != {"services"} or SERVICE not in predecessor["services"]:
         raise ReleaseBlocked("predecessor overlay missing dashboard")
     result = json.loads(json.dumps(predecessor))
-    result["services"][SERVICE]["image"] = image
+    service = result["services"][SERVICE]
+    service["image"] = image
+    if archive is not None:
+        service.setdefault("volumes", []).append(f"{archive}:{ARCHIVE_TARGET}:ro")
     return result
 
 
@@ -144,13 +151,29 @@ class Runtime(BaseRuntime):
         self.pre = self.gate()
         self.release_dir.mkdir(parents=True, exist_ok=False)
         self.overlay.parent.mkdir(parents=True, exist_ok=True)
-        atomic_json(self.overlay, build_overlay(original, self.image))
+        archive = self.root / ARCHIVE
+        if sha256(archive.read_bytes()) != ARCHIVE_HASH:
+            raise ReleaseBlocked("annual income archive digest mismatch")
+        atomic_json(self.overlay, build_overlay(original, self.image, archive))
         old_config = json.loads(self.run(self.compose(SERVICE, overlay=self.previous_overlay) +
                                          ["config", "--format", "json"]))["services"][SERVICE]
         new_config = json.loads(self.run(self.compose(SERVICE, overlay=self.overlay) +
                                          ["config", "--format", "json"]))["services"][SERVICE]
+        old_volumes = old_config.get("volumes", [])
+        volumes = new_config.get("volumes", [])
+        expected_mount = {"type": "bind", "source": str(archive), "target": ARCHIVE_TARGET,
+                          "read_only": True}
+        archive_mounts = [v for v in volumes if v.get("target") == ARCHIVE_TARGET]
+        if (len(archive_mounts) != 1
+                or {k: v for k, v in archive_mounts[0].items() if k != "bind"} != expected_mount
+                or [v for v in volumes if v.get("target") != ARCHIVE_TARGET] != old_volumes):
+            raise ReleaseBlocked("unexpected annual archive mount configuration")
+        if "volumes" in old_config:
+            new_config["volumes"] = old_volumes
+        else:
+            new_config.pop("volumes")
         if not image_only(old_config, new_config):
-            raise ReleaseBlocked("effective dashboard Compose drift beyond image")
+            raise ReleaseBlocked("effective dashboard Compose drift beyond image and archive mount")
         atomic_json(self.release_dir / "exchange-before.json", self.pre)
         self.record("in_progress", "preflight")
 
@@ -191,8 +214,20 @@ class Runtime(BaseRuntime):
             for report_type in ("daily", "weekly", "yearly"):
                 with urlopen("http://127.0.0.1:8767/api/overview?type=" + report_type,
                              timeout=20) as response:
-                    if json.load(response).get("code") != 0:
+                    payload = json.load(response)
+                    if payload.get("code") != 0:
                         raise ReleaseBlocked("dashboard period API failed: " + report_type)
+                    if report_type == "yearly":
+                        year = payload.get("data") or {}
+                        if (year.get("publication_status") != "published"
+                                or year.get("income_archive_end_ms") != 1782835200000
+                                or year.get("report_version") != "exchange-income-v1-pm-archive-v1"
+                                or year.get("total_pnl") is None
+                                or year.get("strategy_attribution_complete") is not False):
+                            raise ReleaseBlocked("annual exchange income verification failed")
+                        atomic_json(self.release_dir / "annual-proof.json", {
+                            key: year[key] for key in ("report_id", "start_ms", "end_ms", "total_pnl",
+                                                       "income_archive_end_ms", "total_perf_reason")})
             if self.run(["systemctl", "is-active", "income-attribution.timer"]) != "active":
                 raise ReleaseBlocked("income attribution timer changed")
             for service, before in self.all_before.items():

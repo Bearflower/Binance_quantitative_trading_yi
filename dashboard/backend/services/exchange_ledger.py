@@ -5,8 +5,10 @@ No inferred symbol ownership, lifecycle win rate or legacy PNL fallback.
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import os
+import logging
 
 from shared.accounting.published_report import read_published_report
+from shared.accounting import annual_income_archive
 from shared.accounting.economic_ledger import INCOME_TYPES
 from shared.accounting.dashboard_performance import (
     realized_income_metrics, unavailable_lifecycle_stats, unavailable_realized_metrics,
@@ -131,6 +133,19 @@ class ExchangeLedgerDashboardMixin:
         account = os.environ.get('TRADE_ACCOUNT_ID', 'default')
         # A stable window key lets overview, cards and details share the active run.
         window_key = f'{report_type}:{_ms(start)}'
+        archive = annual_income_archive
+        if (report_type == "yearly" and account == archive.ACCOUNT
+                and _ms(start) == archive.START_MS and _ms(end) > archive.END_MS
+                and archive.ARCHIVE_PATH.is_file()):
+            try:
+                prefix = archive.load_archive()
+                suffix = await read_published_report(
+                    self._db_manager, account, archive.END_MS, _ms(end),
+                    f"annual-archive-tail:{archive.END_MS}", current=current,
+                    refresh_seconds=int(os.environ.get("LEDGER_REFRESH_SECONDS", "60")))
+                return archive.combine_archive(prefix, suffix)
+            except (ValueError, OSError) as exc:
+                logging.getLogger(__name__).warning("Annual income archive unavailable: %s", exc)
         return await read_published_report(
             self._db_manager, account, _ms(start), _ms(end), window_key,
             current=current, refresh_seconds=int(os.environ.get('LEDGER_REFRESH_SECONDS', '60')))
@@ -141,7 +156,7 @@ class ExchangeLedgerDashboardMixin:
             'report_id', 'report_version', 'account_id', 'start_ms', 'end_ms',
             'requested_end_ms', 'as_of', 'stale_seconds', 'account_coverage_complete',
             'strategy_attribution_complete', 'coverage_gaps', 'other_asset_totals',
-            'publication_status', 'refresh_error')}
+            'publication_status', 'refresh_error', 'income_archive_end_ms')}
 
     def _strategy_projection(self, report, strategy_id):
         complete = report['strategy_attribution_complete']
