@@ -377,12 +377,22 @@ async def test_existing_segment_without_prospective_audit_origin_cannot_restart_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('pre_anchor',[False,True])
-async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,pre_anchor):
+@pytest.mark.parametrize('damaged_history',[None,'parent_hash','source_closure'])
+async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,pre_anchor,damaged_history):
     from strategies.hrs.equity_reconciliation import effective_checkpoints
     service,account,pool,api,clock=setup
     await service.refresh()
     clock[0]=T+timedelta(seconds=30)
     await service.refresh()
+    if damaged_history:
+        from strategies.hrs.equity_evidence import canonical
+        async with pool.acquire() as c:
+            old=await c.fetchrow('SELECT evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1 ORDER BY available_at DESC LIMIT 1',account)
+            payload=json.loads(old['payload'])
+            payload['capture']['funding_publication']['forecasts_ref']['ordered_sha256']='0'*64
+            encoded,digest=canonical(payload)
+            await c.execute('UPDATE trading.hrs_equity_evidence SET payload=$1::jsonb,evidence_sha256=$2 WHERE account_id=$3 AND evidence_sha256=$4',
+                encoded,digest if damaged_history=='source_closure' else old['evidence_sha256'],account,old['evidence_sha256'])
     async with pool.acquire() as c:
         for order_id,side in ((71,'BUY'),(72,'SELL')):
             await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT',$2,'hrs',$3,'FILLED','LIMIT',$4)",account,str(order_id),side,T.replace(tzinfo=None))
@@ -395,6 +405,13 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
     api.get_income_history.side_effect=lambda **kw: ([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-1',asset='USDT',tranId=r['id'],tradeId=str(r['id']),time=r['time'],info='') for r in records] if kw['income_type']=='COMMISSION' else [])
     clock[0]=T+timedelta(seconds=60)
     result=await service.refresh()
+    if damaged_history:
+        assert not result['ready'] and not result['allowed']
+        assert result['reasons']==['funding_forecasts_ref_'+('parent_hash_mismatch' if damaged_history=='parent_hash' else 'closure_mismatch')]
+        async with pool.acquire() as c:
+            assert await c.fetchval('SELECT version FROM trading.hrs_loss_gate_state WHERE account_id=$1',account)==2
+            assert await c.fetchval('SELECT count(*) FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)==0
+        return
     assert 'late_income_requires_reconciliation' not in result['reasons']
     assert result.get('reconciliation_receipt_sha256')
     async with pool.acquire() as c:
@@ -688,3 +705,30 @@ async def test_preperiod_economic_entry_owner_must_agree_with_protection_manager
         async with pool.acquire() as c:
             await c.execute('DELETE FROM btc_eth.condition_orders WHERE id=$1',manager)
             await c.execute('DELETE FROM trading.trade_records WHERE id=$1',entry)
+
+
+@pytest.mark.asyncio
+async def test_referenced_forecasts_preserve_funding_deadline_expiry_and_raw_parent_hash(setup):
+    from strategies.hrs.equity_evidence import canonical
+    from strategies.hrs.funding_reference import read_forecasts_prefix,resolve_evidence_forecasts,COUNT_SQL,ROWS_SQL
+    service,account,pool,api,clock=setup
+    due=T+timedelta(seconds=20)
+    forecast=dict(symbol='BTCUSDT',source_time=T,received_at=T,next_funding_time=due,source='authenticated_premium_index')
+    encoded,digest=canonical(dict(forecasts=[forecast]))
+    async with pool.acquire() as c:
+        await c.execute('INSERT INTO trading.hrs_funding_observation VALUES($1,$2,$3,$4::jsonb)',account,digest,T,encoded)
+        ref,rows=await read_forecasts_prefix(c,account,T)
+        evidence=dict(account_id=account,as_of=T,available_at=T,capture=dict(local={'BTCUSDT':{}},
+            funding_publication=dict(forecasts=[forecast],forecasts_ref=ref)))
+        saved=await service._projection(c,1,dict(ready=True,allowed=True,reasons=[]),evidence)
+        assert saved['valid_until']==due
+        parent=dict(await c.fetchrow('SELECT account_id,evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1',account))
+        original=json.loads(parent['payload'])
+        assert 'forecasts' not in original['capture']['funding_publication']
+        assert canonical(original)[1]==parent['evidence_sha256']
+        assert len(resolve_evidence_forecasts(parent,await c.fetch(ROWS_SQL,account,T),account_id=account,
+            expected_count=await c.fetchval(COUNT_SQL,account,T)))==1
+        # A lost/changed runtime source cannot turn a held deadline into +120s.
+        evidence['capture']['funding_publication']['forecasts']=[]
+        with pytest.raises(Exception,match='runtime_mismatch'):
+            await service._projection(c,1,dict(ready=True,allowed=True,reasons=[]),evidence)

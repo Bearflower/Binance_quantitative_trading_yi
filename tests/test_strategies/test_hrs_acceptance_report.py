@@ -440,7 +440,7 @@ def test_budget_and_protection_requests_are_not_exchange_acknowledgment_proof(pr
     assert result['samples'][0]['engineering_status'] == 'PENDING'
 
 
-@pytest.mark.parametrize('problem', [None, 'tampered', 'late_fill'])
+@pytest.mark.parametrize('problem', [None, 'tampered', 'late_fill','missing_forecast_source','valid_forecast_reference'])
 def test_funding_uses_same_verified_inventory_interval_and_rejects_changed_facts(problem):
     from strategies.hrs.equity_evidence import canonical
     fills, owners, incomes, economic = lifecycle_sources()
@@ -456,6 +456,18 @@ def test_funding_uses_same_verified_inventory_interval_and_rejects_changed_facts
     payload = dict(account_id=ACCOUNT, segment_id='segment', as_of=NOW,
         capture=dict(captured_at=NOW, inventory=[], independent=[], local={}, marks={}),
         fills=copy.deepcopy(fills), result={'ledger_version': 1}, source_collection={'gaps': []})
+    reference_args={}
+    if problem in ('missing_forecast_source','valid_forecast_reference'):
+        from strategies.hrs.funding_reference import build_forecasts_ref
+        source_payload=dict(forecasts=[dict(symbol='S0USDT',source_time=START,received_at=START,
+            next_funding_time=NOW+timedelta(hours=1),source='authenticated_premium_index')])
+        encoded,source_digest=canonical(source_payload)
+        sources=[dict(account_id=ACCOUNT,evidence_sha256=source_digest,available_at=START,payload=json.loads(encoded))]
+        ref,_=build_forecasts_ref(ACCOUNT,NOW,sources,expected_count=1)
+        payload['available_at']=NOW
+        payload['capture']['funding_publication']=dict(forecasts_ref=ref)
+        if problem=='valid_forecast_reference':
+            reference_args=dict(funding_source_rows=sources,funding_source_count=1)
     archive = dict(payload=json.loads(canonical(payload)[0]), evidence_sha256=canonical(payload)[1])
     if problem == 'tampered':
         archive['payload']['capture']['inventory'] = [{'symbol': 'fake'}]
@@ -463,9 +475,9 @@ def test_funding_uses_same_verified_inventory_interval_and_rejects_changed_facts
         fills[0]['qty'] += Decimal(1)
     attributed = _apply_verified_funding(economic, archive, account_id=ACCOUNT,
         inception=START-timedelta(seconds=1), through=NOW, fills=fills, orders=owners,
-        opening_inventory=())
-    assert attributed['id_match_and_coverage_complete'] is (problem is None)
-    if problem is None:
+        opening_inventory=(),**reference_args)
+    assert attributed['id_match_and_coverage_complete'] is (problem in (None,'valid_forecast_reference'))
+    if problem in (None,'valid_forecast_reference'):
         result = reconcile_lifecycles(fills, owners, incomes, attributed, account_id=ACCOUNT,
             inception=START-timedelta(seconds=1), through=NOW, anchor_certified=True)
         assert result['samples'][0]['net_income_usdt'] == '9.2'

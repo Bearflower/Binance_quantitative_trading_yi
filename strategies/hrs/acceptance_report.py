@@ -31,6 +31,7 @@ from .decision_capture import canonical_payload
 from .equity_evidence import (
     attribute_funding_from_inventory, canonical, owned_fill_positions, prove_positions,
 )
+from .funding_reference import COUNT_SQL,ROWS_SQL,validate_forecasts_ref,resolve_evidence_forecasts
 
 UTC = timezone.utc
 CST = timezone(timedelta(hours=8))
@@ -366,7 +367,7 @@ def _actual_true(value):
 
 
 def _apply_verified_funding(economic, archive, *, account_id, inception, through,
-                            fills, orders, opening_inventory):
+                            fills, orders, opening_inventory,funding_source_rows=None,funding_source_count=None):
     """Reuse the actual service's inventory proof, rechecking current source facts.
 
     An archive hash alone cannot bless changed/late facts. Its exact post-anchor
@@ -383,6 +384,9 @@ def _apply_verified_funding(economic, archive, *, account_id, inception, through
                 or not payload.get('result', {}).get('ledger_version')
                 or payload.get('source_collection', {}).get('gaps') != []):
             return economic
+        if 'forecasts_ref' in payload.get('capture',{}).get('funding_publication',{}):
+            resolve_evidence_forecasts(archive,funding_source_rows if funding_source_rows is not None else (),
+                account_id=account_id,expected_count=funding_source_count,collect=False)
         fields = ('account_id','symbol','trade_id','order_id','side','qty','price',
                   'commission','commission_asset','realized_pnl')
         numeric = {'trade_id','order_id','qty','price','commission','realized_pnl'}
@@ -781,9 +785,22 @@ async def build_report(db, *, as_of=None, account_id=None):
                             WHERE account_id=$1 AND as_of=$2 AND available_at <= $3 ORDER BY available_at DESC''', account, through, now)
                         archive = next((r for r in archives
                             if _object(r['payload']).get('result', {}).get('ledger_version') == stored['version']), None)
+                        funding_rows=funding_count=None
+                        if archive:
+                            raw=_object(archive['payload'])
+                            if canonical(raw)[1]!=archive['evidence_sha256']:
+                                raise ValueError('equity_archive_parent_hash_mismatch')
+                            publication=raw.get('capture',{}).get('funding_publication',{})
+                            if 'forecasts_ref' in publication:
+                                cutoff=validate_forecasts_ref(publication['forecasts_ref'],account_id=account)
+                                funding_count=await connection.fetchval(COUNT_SQL,account,cutoff)
+                                funding_rows=await connection.fetch(ROWS_SQL,account,cutoff)
+                                resolve_evidence_forecasts(archive,funding_rows,account_id=account,
+                                    expected_count=funding_count,collect=False)
                         economic = _apply_verified_funding(economic, archive, account_id=account,
                             inception=inception, through=through, fills=fills, orders=owners,
-                            opening_inventory=proof.get('opening_inventory', ()))
+                            opening_inventory=proof.get('opening_inventory', ()),
+                            funding_source_rows=funding_rows,funding_source_count=funding_count)
                         financial = reconcile_lifecycles(fills, owners, incomes, economic,
                             account_id=account, inception=inception, through=through,
                             anchor_certified=proof.get('account_flat_anchor_certified') is True or proof.get('opening_inventory_certified') is True,

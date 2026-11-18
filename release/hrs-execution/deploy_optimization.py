@@ -18,7 +18,7 @@ import time
 from urllib.parse import quote, urlparse
 
 READER_TABLES = ('hrs.hrs_decision_evidence', 'trading.hrs_equity_segment',
-    'trading.hrs_loss_gate_state', 'trading.hrs_equity_evidence',
+    'trading.hrs_loss_gate_state', 'trading.hrs_equity_evidence', 'trading.hrs_funding_observation',
     'trading.execution_fact_fill', 'trading.execution_fact_income',
     'trading.execution_fact_cursor', 'trading.trade_records',
     'trading.reviewed_income_attribution', 'trading.income_ingestion_attempt')

@@ -55,6 +55,7 @@ from .equity_evidence import (
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
 from .equity_reconciliation import ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
+from .funding_reference import read_forecasts_prefix,load_forecasts_ref,verify_stored_evidence
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
 from .loss_gate_repository import LossGateSession, RepositoryConflict
 from .risk_ledger import CashFlow, LedgerNotReady, LedgerObservation, PositionMark, initialize_ledger, reconcile_ledger
@@ -84,6 +85,13 @@ class _SnapshotDB:
         if query==_OWNER_SQL:
             rows.extend(row for row in self.owners if row['account_id']==args[0] and str(row['order_id']) in args[1] and row['symbol'] in args[2])
         return rows
+
+
+def _runtime_forecasts(forecasts):
+    """Only an evaluated view is normalized; retained source payloads stay exact."""
+    unique={canonical(row)[1]:row for row in forecasts}
+    return [dict(row,**{key:datetime.fromisoformat(row[key]) if isinstance(row[key],str) else row[key]
+                       for key in ('source_time','received_at','next_funding_time')}) for row in unique.values()]
 
 
 class HrsEquityService:
@@ -203,12 +211,12 @@ class HrsEquityService:
                 payload,digest=canonical(dict(forecasts=[forecast]))
                 batch.append(dict(evidence_sha256=digest,payload=json.loads(payload)))
             await self.db.execute("INSERT INTO trading.hrs_funding_observation(account_id,evidence_sha256,available_at,payload) SELECT $1,x.evidence_sha256,$2,x.payload FROM jsonb_to_recordset($3::jsonb) AS x(evidence_sha256 text,payload jsonb) ON CONFLICT DO NOTHING",self.account,self._now(),json.dumps(batch))
-        archived=await self.db.fetch_all('SELECT payload FROM trading.hrs_funding_observation WHERE account_id=$1 AND available_at<=$2',self.account,self._now())
-        for row in archived:
-            payload=json.loads(row['payload']) if isinstance(row['payload'],str) else row['payload']
-            for item in payload['forecasts']:
-                forecasts.append(dict(item,**{key:datetime.fromisoformat(item[key]) for key in ('source_time','received_at','next_funding_time')}))
-        unique={canonical(row)[1]:row for row in forecasts}
+        # A durable exact prefix is the sole runtime/reference source. COUNT
+        # and rows share one snapshot, including real receipt availability.
+        async with self.db.pool.acquire() as connection:
+            async with connection.transaction(readonly=True,isolation='repeatable_read'):
+                forecasts_ref,archived=await read_forecasts_prefix(connection,self.account,self._now())
+        forecasts=_runtime_forecasts(archived)
         info=None
         if symbols:
             response=await self.api._request('GET','/fapi/v1/fundingInfo',params={},signed=False)
@@ -258,7 +266,7 @@ class HrsEquityService:
                     left=right+1
             published[symbol]=[rates[key] for key in sorted(rates)]
             published_coverage[symbol]=windows
-        snapshot['funding_publication']=dict(forecasts=list(unique.values()),published_rates=published,published_coverage=published_coverage,funding_info=info,available_at=self._now())
+        snapshot['funding_publication']=dict(forecasts=forecasts,forecasts_ref=forecasts_ref,published_rates=published,published_coverage=published_coverage,funding_info=info,available_at=self._now())
 
     async def _fill_rows(self,fetch,start_ms,end_ms,snapshot):
         rows=[dict(row) for row in await fetch('SELECT * FROM trading.execution_fact_fill WHERE account_id=$1 AND trade_time_utc>=$2 AND trade_time_utc<=$3',self.account,datetime.fromtimestamp(start_ms/1000,timezone.utc),datetime.fromtimestamp(end_ms/1000,timezone.utc))]
@@ -710,7 +718,17 @@ class HrsEquityService:
         return row['revision']
 
     async def _projection(self, connection, revision, result, evidence):
-        encoded, digest = canonical(evidence)
+        saved=evidence
+        publication=evidence.get('capture',{}).get('funding_publication',{})
+        if 'forecasts_ref' in publication:
+            # Recheck the exact source prefix on the existing locked lease.
+            # Runtime deadlines must use this same verified set, never an empty
+            # default introduced by changing the persisted representation.
+            verified=_runtime_forecasts(await load_forecasts_ref(connection,publication['forecasts_ref'],account_id=self.account))
+            if canonical(verified)[1]!=canonical(publication.get('forecasts'))[1]:
+                raise EvidenceBlocked('funding_forecasts_ref_runtime_mismatch')
+            saved=dict(evidence,capture=dict(evidence['capture'],funding_publication={key:value for key,value in publication.items() if key!='forecasts'}))
+        encoded, digest = canonical(saved)
         as_of, available = evidence['as_of'], evidence['available_at']
         await connection.execute('''INSERT INTO trading.hrs_equity_evidence
             (account_id,evidence_sha256,segment_id,as_of,available_at,payload) VALUES($1,$2,$3,$4,$5,$6::jsonb)
@@ -876,6 +894,7 @@ class HrsEquityService:
                 for archived in await connection.fetch('SELECT as_of,evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND segment_id=$2 AND as_of<=$3 ORDER BY available_at DESC',self.account,segment,as_of):
                     payload=json.loads(archived['payload']) if isinstance(archived['payload'],str) else archived['payload']
                     if 'capture' in payload and payload.get('result',{}).get('ledger_version') is not None:
+                        await verify_stored_evidence(connection,archived,account_id=self.account)
                         captures.append(dict(as_of=archived['as_of'],capture=payload['capture'],evidence_sha256=archived['evidence_sha256']))
                 source=ReconciliationSource(self.account,segment,state.inception,effective_opening_cash,
                     LedgerObservation(as_of,segment,events,(),marks,as_of,snapshot['captured_at'],True,True),

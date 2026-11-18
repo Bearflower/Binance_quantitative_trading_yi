@@ -458,3 +458,12 @@ def test_failure_audit_write_error_cannot_prevent_target_rollback(tmp_path,monke
     assert state['pre_rollback_audit_persisted'] is False
     assert state['rollback']['status']=='complete'
     assert 'synthetic-private-value' not in json.dumps(state)
+
+
+def test_reader_grants_cover_append_only_forecast_reference_sources():
+    mod=module()
+    assert 'trading.hrs_funding_observation' in mod.READER_TABLES
+    grants=mod.reader_grants('trading_platform')
+    assert 'trading.hrs_funding_observation' in grants
+    assert 'GRANT SELECT ON ' in grants
+    assert not any(action in grants for action in ('INSERT','UPDATE','DELETE','TRUNCATE'))

@@ -170,3 +170,89 @@ async def test_lock_column_grant_cannot_modify_or_reseed_segment(runtime):
     # added lock privilege is never an application-level mutation path.
     with pytest.raises(asyncpg.RaiseError,match='immutable'):
         await state.admin.execute('DELETE FROM trading.hrs_equity_segment WHERE account_id=$1',state.account)
+
+
+@pytest.mark.asyncio
+async def test_forecast_prefix_reference_refresh_restart_under_actual_nosuperuser(runtime):
+    import json
+    from strategies.hrs.equity_evidence import canonical
+    from strategies.hrs.funding_reference import resolve_evidence_forecasts,COUNT_SQL,ROWS_SQL
+    state=runtime
+    at=state.clock[0]
+    async def observe(instant):
+        payload=dict(forecasts=[dict(symbol='BTCUSDT',source_time=instant,received_at=instant,
+            next_funding_time=instant+timedelta(hours=1),source='authenticated_premium_index')])
+        encoded,digest=canonical(payload)
+        async with state.pool.acquire() as app:
+            assert not await app.fetchval('SELECT rolsuper FROM pg_roles WHERE rolname=current_user')
+            await app.execute('INSERT INTO trading.hrs_funding_observation VALUES($1,$2,$3,$4::jsonb)',state.account,digest,instant,encoded)
+    await observe(at)
+    first=await state.service.refresh()
+    assert first['ledger_version']==1 and first['reasons']==['daily_origin_missing']
+    async with state.pool.acquire() as app:
+        before=dict(await app.fetchrow('SELECT account_id,evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE evidence_sha256=$1',first['evidence_sha256']))
+        payload=json.loads(before['payload'])
+        publication=payload['capture']['funding_publication']
+        assert 'forecasts' not in publication
+        assert publication['forecasts_ref']['row_count']==1
+        cutoff=datetime.fromisoformat(publication['forecasts_ref']['available_through'])
+        rows=await app.fetch(ROWS_SQL,state.account,cutoff)
+        expected=await app.fetchval(COUNT_SQL,state.account,cutoff)
+        assert len(resolve_evidence_forecasts(before,rows,account_id=state.account,expected_count=expected))==1
+    state.clock[0]+=timedelta(seconds=30)
+    await observe(state.clock[0])
+    restarted=HrsEquityService(state.db,state.api,state.service.capital_mgr,state.service.position_manager)
+    restarted.clock=state.service.clock
+    second=await restarted.refresh()
+    assert second['ledger_version']==2 and second['reasons']==['daily_origin_missing']
+    async with state.pool.acquire() as app:
+        current=json.loads(await app.fetchval('SELECT payload FROM trading.hrs_equity_evidence WHERE evidence_sha256=$1',second['evidence_sha256']))
+        new_ref=current['capture']['funding_publication']['forecasts_ref']
+        old_ref=payload['capture']['funding_publication']['forecasts_ref']
+        assert new_ref['row_count']==new_ref['forecast_count']==2
+        assert len(canonical(new_ref)[0])<len(canonical(old_ref)[0])+20
+        assert await app.fetchval('SELECT payload FROM trading.hrs_equity_evidence WHERE evidence_sha256=$1',first['evidence_sha256'])==before['payload']
+        assert canonical(json.loads(before['payload']))[1]==before['evidence_sha256']
+        # This role still cannot discard the source rows referred to by evidence.
+        import asyncpg
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await app.execute('DELETE FROM trading.hrs_funding_observation WHERE account_id=$1',state.account)
+    await restarted.close()
+
+
+@pytest.mark.asyncio
+async def test_release_reader_has_only_select_access_to_forecast_reference_closure(runtime):
+    import importlib.util
+    import asyncpg
+    from strategies.hrs.equity_evidence import canonical
+    from strategies.hrs.funding_reference import read_forecasts_prefix
+    state=runtime
+    spec=importlib.util.spec_from_file_location('hrs_release_ref_acl',Path('release/hrs-execution/deploy_optimization.py'))
+    release=importlib.util.module_from_spec(spec);spec.loader.exec_module(release)
+    role='hrs_ref_reader_'+uuid.uuid4().hex
+    reader=None
+    await state.admin.execute(f'CREATE ROLE {role} NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE')
+    try:
+        for table in release.READER_TABLES:
+            await state.admin.execute(f'CREATE TABLE IF NOT EXISTS {table}(id integer)')
+        database=await state.admin.fetchval('SELECT current_database()')
+        await state.admin.execute(release.reader_grants(database).replace('hrs_acceptance_reader',role))
+        payload=dict(forecasts=[dict(symbol='BTCUSDT',source_time=state.clock[0],received_at=state.clock[0],
+            next_funding_time=state.clock[0]+timedelta(hours=1),source='authenticated_premium_index')])
+        encoded,digest=canonical(payload)
+        async with state.pool.acquire() as app:
+            await app.execute('INSERT INTO trading.hrs_funding_observation VALUES($1,$2,$3,$4::jsonb)',state.account,digest,state.clock[0],encoded)
+        reader=await asyncpg.connect(DSN,database=database)
+        await reader.execute(f'SET ROLE {role}')
+        assert not await reader.fetchval('SELECT rolsuper FROM pg_roles WHERE rolname=current_user')
+        for action in ('INSERT','UPDATE','DELETE','TRUNCATE'):
+            assert not await reader.fetchval('SELECT has_table_privilege(current_user,$1,$2)','trading.hrs_funding_observation',action)
+        async with reader.transaction(readonly=True,isolation='repeatable_read'):
+            ref,forecasts=await read_forecasts_prefix(reader,state.account,state.clock[0])
+            assert ref['row_count']==ref['forecast_count']==len(forecasts)==1
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await reader.execute('DELETE FROM trading.hrs_funding_observation WHERE account_id=$1',state.account)
+    finally:
+        if reader is not None:await reader.close()
+        await state.admin.execute(f'DROP OWNED BY {role}')
+        await state.admin.execute(f'DROP ROLE {role}')
