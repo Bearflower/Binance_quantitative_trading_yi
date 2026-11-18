@@ -582,6 +582,12 @@ class DataPortal:
             self.guard(parse_utc(row['available_at']),'hrs_inputs','analysis_available_at',cutoff)
             payload=row['payload'] if isinstance(row['payload'],dict) else json.loads(row['payload'])
             raw=dict(raw,analysis_klines_1h=payload['klines_1h'],analysis_klines_4h=payload['klines_4h'])
+        if raw.get('risk',{}).get('account_occupancy',{}).get('version')=='hrs_account_occupancy_v2':
+            from ai_tuner.hrs_evidence_export import verify_runtime_slot_occupancy
+            verify_runtime_slot_occupancy(self,raw,cutoff)
+        if raw.get('kline_repair_evidence_id') or ('raw_hrs_evidence.json' in self.manifest['files'] and raw.get('evidence_ids')):
+            from ai_tuner.hrs_evidence_export import verify_runtime_kline_repair
+            verify_runtime_kline_repair(self,raw,cutoff)
         return raw
 
     def hrs_cash_flows(self) -> Tuple[Dict[str, Any], ...]:

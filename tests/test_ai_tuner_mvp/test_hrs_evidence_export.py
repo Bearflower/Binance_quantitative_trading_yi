@@ -633,10 +633,12 @@ async def test_database_export_selects_referenced_equity_and_scanned_funding_onl
         async def fetch(self,query,*args):
             self.queries.append((query,args))
             if 'FROM hrs.hrs_decision_evidence' in query:
-                return [dict(kind='scan_start',payload=dict(financial_context=dict(available_at=AT.isoformat(),
+                rows=[dict(kind='scan_start',payload=dict(financial_context=dict(available_at=AT.isoformat(),
                     ledger_state=dict(segment_id='test',version=5,ledger_state=dict(as_of=AT.isoformat())),
                     equity_source_archives=[dict(evidence_sha256='a'*64)]))),
                     dict(kind='standard_scan_scope',payload=dict(symbols=['A']))]
+                for row in rows:row['payload_sha256']=canonical_payload(row['payload'])[1]
+                return rows
             return []
     db=DB();await read_evidence_sources(db,'test',window_start=AT,as_of=AT+timedelta(hours=3))
     equity=next(query for query,_ in db.queries if 'FROM trading.hrs_equity_evidence' in query)

@@ -156,6 +156,10 @@ class HrsAdapter:
             self._allocation = _positive(raw['allocation'])
             self._account_equity = _positive(raw['account_equity'])
             self._policy = raw['entry_policy']
+            self._runtime_slot_scope=raw.get('runtime_slot_scope')
+            if self._runtime_slot_scope is not None:
+                from strategies.hrs.entry_occupancy import SLOT_SCOPE
+                if self._runtime_slot_scope!=SLOT_SCOPE:raise DataBlocked(['hrs_slot_scope_unknown'])
             self._market_guard_config = raw['market_circuit_breaker_config']
             self._runtime = dict(raw['runtime'])
             for key in ('signal_timestamps','pending_timeout_entries','pause_until',
@@ -440,6 +444,8 @@ class HrsAdapter:
                 raise DataBlocked(['hrs_allocation_cut_liquidation_not_wired'])
         self._allocation=allocation
         self._policy=risk['entry_policy']
+        if risk.get('account_occupancy',{}).get('slot_scope')!=self._runtime_slot_scope:
+            raise DataBlocked(['hrs_slot_policy_change_requires_partition'])
         other_equity=Decimal(str(risk['account_equity_excluding_hrs']))
         if not other_equity.is_finite():
             raise DataBlocked(['hrs_other_account_equity_invalid'])
@@ -590,7 +596,7 @@ class HrsAdapter:
         try:
             occupancy=risk['account_occupancy']
             observed=parse_utc(occupancy['observed_at'])
-            if (occupancy.get('version')!='hrs_account_occupancy_v1'
+            if (occupancy.get('version') not in ('hrs_account_occupancy_v1','hrs_account_occupancy_v2')
                     or not timedelta(0)<=now-observed<=timedelta(seconds=120)
                     or not isinstance(occupancy['other_positions'],list)):
                 raise ValueError('missing_or_stale_inventory')
@@ -604,16 +610,32 @@ class HrsAdapter:
                     raise ValueError('owner_missing_or_duplicate')
                 other_symbols.add(row['symbol'])
                 other_margin+=abs(amount)*_positive(row['markPrice'])/_positive(row['leverage'])
+            scoped=occupancy['version']=='hrs_account_occupancy_v2'
+            if scoped:
+                from strategies.hrs.entry_occupancy import SLOT_SCOPE,validate_hrs_slot_proof,HrsOccupancyDenied
+                proof=occupancy['slot_ownership_proof']
+                try:validate_hrs_slot_proof(proof,inventory=occupancy['inventory'],account_id=proof['account_id'],observed_at=observed)
+                except HrsOccupancyDenied as exc:raise ValueError(exc.reason_code) from exc
+                owners=proof['owners']
+                if (occupancy['slot_scope']!=SLOT_SCOPE
+                        or other_symbols!={s for s,o in owners.items() if o!='hrs'}
+                        or not timedelta(0)<=now-parse_utc(proof['as_of'])<=timedelta(seconds=120)):
+                    raise ValueError('slot_ownership_proof_invalid')
+            elif 'slot_scope' in occupancy:
+                raise ValueError('slot_scope_without_version')
         except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
             raise DataBlocked(['hrs_account_occupancy_unproven:'+str(exc)]) from exc
         current_symbols={p.symbol for p in ctx.portfolio.positions if p.is_open()}
         if current_symbols & other_symbols:
             raise DataBlocked(['hrs_account_occupancy_owner_conflict'])
-        occupied=current_symbols|other_symbols|set(self._durable_margin_reservations)
+        if scoped and symbol in other_symbols:return 'account_position_already_exists'
+        occupied=current_symbols|set(self._durable_margin_reservations)
+        if not scoped:occupied|=other_symbols
         maximum=int(self.config.get('trading',{}).get('max_positions',3))
         if maximum<=0:raise DataBlocked(['hrs_max_positions_invalid'])
         if len(occupied|{symbol})>maximum:
-            return 'position_slots_include_account_and_reservations'
+            return ('hrs_position_slots_include_retained_reservations' if scoped
+                else 'position_slots_include_account_and_reservations')
         leverage=_positive(self.config.get('trading',{}).get('leverage',2))
         self._marked_equity(ctx.portfolio,as_of=now)  # Actual mark freshness, never now-stamped cache.
         hrs_margin=sum((p.current_quantity*ctx.portfolio.last_prices[p.symbol]/leverage for p in ctx.portfolio.positions if p.is_open()),ZERO)

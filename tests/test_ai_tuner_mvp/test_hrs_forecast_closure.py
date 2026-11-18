@@ -24,13 +24,17 @@ def observation(at,received=None,account='test'):
     return dict(account_id=account,evidence_sha256=canonical(payload)[1],available_at=at.isoformat(),payload=payload)
 
 
-def sources_with_ref(tmp_path):
-    sources,bootstrap=captured_sources(tmp_path)
+def sources_with_ref(tmp_path,scoped_slots=False):
+    if scoped_slots:
+        from tests.test_ai_tuner_mvp.replay.test_hrs_slot_scope import scoped_sources
+        sources,bootstrap=scoped_sources(tmp_path)
+    else:sources,bootstrap=captured_sources(tmp_path)
     end=AT+timedelta(hours=3)
     rows=[observation(AT-timedelta(seconds=40)+timedelta(microseconds=17)),observation(AT+timedelta(seconds=20,microseconds=59))]
     ref,_=build_forecasts_ref('test',end,rows,expected_count=2)
     parent=sources['equity_evidence'][0]
-    parent['payload'].update(account_id='test',capture=dict(funding_publication=dict(forecasts_ref=ref)))
+    parent['payload']['account_id']='test'
+    parent['payload'].setdefault('capture',{})['funding_publication']=dict(forecasts_ref=ref)
     parent['account_id']='test';parent['evidence_sha256']=canonical(parent['payload'])[1]
     sources['hrs_funding_observations']=rows
     sources['hrs_funding_observations_inventory']=dict(version='hrs-funding-observation-prefix-export-v1',
@@ -177,7 +181,8 @@ def test_source_family_hash_identity_and_prefix_counts_need_no_hrs_import(tmp_pa
 
 
 @pytest.mark.skipif(not os.environ.get('HRS_TEST_POSTGRES_DSN'),reason='isolated PostgreSQL administrator DSN required')
-async def test_real_readonly_postgres_reference_source_to_archive_and_cli(tmp_path):
+@pytest.mark.parametrize('scoped_slots',[False,True])
+async def test_real_readonly_postgres_reference_source_to_archive_and_cli(tmp_path,scoped_slots):
     """All SQL is real on an isolated local DB; market facts are engineering fixtures."""
     import asyncpg
     from ai_tuner.hrs_evidence_export import read_evidence_sources,_ArchiveSources
@@ -199,7 +204,7 @@ async def test_real_readonly_postgres_reference_source_to_archive_and_cli(tmp_pa
             CREATE TABLE trading.hrs_risk_equity_checkpoints(account_id text,segment_id text,as_of timestamptz,equity numeric,units numeric,nav numeric,created_at timestamptz);
             CREATE TABLE public.ai_tuner_funding_schedule_observations(symbol text,source_time timestamptz,received_at timestamptz,next_funding_time timestamptz,funding_interval_hours int,payload_hash text);
             CREATE TABLE trading.hrs_funding_observation(account_id text,evidence_sha256 text,available_at timestamptz,payload jsonb,PRIMARY KEY(account_id,evidence_sha256));''')
-        sources,bootstrap=sources_with_ref(tmp_path)
+        sources,bootstrap=sources_with_ref(tmp_path,scoped_slots=scoped_slots)
         instant=lambda value:datetime.fromisoformat(value.replace('Z','+00:00'))
         for row in sources['decision_evidence']:
             if row['kind']=='scan_start':row['payload']['financial_context']['entry_policy']['account_id']='test'
@@ -207,9 +212,9 @@ async def test_real_readonly_postgres_reference_source_to_archive_and_cli(tmp_pa
             row['payload_sha256']=canonical_payload(row['payload'])[1]
             await admin.execute('INSERT INTO hrs.hrs_decision_evidence VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)',
                 row['evidence_id'],row['run_id'],row['kind'],row['symbol'],instant(row['event_time']),instant(row['available_at']),row['payload_sha256'],json.dumps(row['payload']))
-        parent=sources['equity_evidence'][0]
-        await admin.execute('INSERT INTO trading.hrs_equity_evidence VALUES($1,$2,$3,$4,$5,$6::jsonb)',
-            'test',parent['evidence_sha256'],'test',instant(parent['payload']['as_of']),instant(parent['payload']['available_at']),json.dumps(parent['payload']))
+        for parent in sources['equity_evidence']:
+            await admin.execute('INSERT INTO trading.hrs_equity_evidence VALUES($1,$2,$3,$4,$5,$6::jsonb) ON CONFLICT DO NOTHING',
+                'test',parent['evidence_sha256'],'test',instant(parent['payload']['as_of']),instant(parent['payload']['available_at']),json.dumps(parent['payload']))
         for row in sources['equity_checkpoints']:
             await admin.execute('INSERT INTO trading.hrs_risk_equity_checkpoints VALUES($1,$2,$3,$4,$5,$6,$7)',
                 'test','test',instant(row['as_of']),Decimal(row['equity']),Decimal(row['units']),Decimal(row['nav']),instant(row['as_of']))
@@ -246,7 +251,7 @@ async def test_real_readonly_postgres_reference_source_to_archive_and_cli(tmp_pa
             assert view.archive.get_record('hrs_funding_observations',extras[0]['evidence_sha256']) is None
             assert view.archive.get_record('hrs_funding_observations',extras[1]['evidence_sha256']) is None
         result=run_export(archived,bootstrap,tmp_path)
-        assert result.get('status')=='SEALED',result
+        assert result.get('status')=='SEALED',result.get('gaps',result)
         reg=registration();reg['baseline'].update(config=bootstrap['config'],effective_config_sha256=experiment.fingerprint(bootstrap['config']))
         reg['windows'][0].update(start=AT.isoformat(),end=(AT+timedelta(hours=3)).isoformat(),snapshot_dir=result['snapshot_dir'])
         reg['windows'][1].update(start='2026-12-01T00:00:00+08:00',end='2027-01-01T00:00:00+08:00')

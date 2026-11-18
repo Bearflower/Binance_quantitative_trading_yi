@@ -463,12 +463,42 @@ def _bootstrap(snapshot,start,equities,checkpoints,records,execution_model,monit
     runtime['market_cooldowns']={symbol:_iso(datetime.fromisoformat(at).replace(tzinfo=timezone(offset))) for symbol,at in cooldown['cooldown_until_local'].items()}
     result=dict(as_of=_iso(start),complete=True,margin_reservations=financial.get('reservations',[]),config=config,config_hashes=hashes,allocation=financial['allocation'],account_equity=financial['account_equity'],entry_policy=financial['entry_policy'],market_circuit_breaker_config=snapshot['market_circuit_breaker_config'],runtime=runtime,
         ledger=dict(segment_id=ledger['segment_id'],units=ledger['units'],history_complete_from=ledger['inception'],history=history,allow_inception_segment=allow_inception,gate_state=gate),bootstrap_available_at=_iso(available),bootstrap_bridge=bridge,execution_model=execution_model,monitoring_model=monitoring_model)
+    if financial.get('runtime_slot_scope') is not None:
+        from strategies.hrs.entry_occupancy import SLOT_SCOPE
+        _require(financial['runtime_slot_scope']==SLOT_SCOPE,'hrs_slot_scope_unknown')
+        result['runtime_slot_scope']=SLOT_SCOPE
     return result,tables,available
 
 
-def _account_occupancy(inventory,snapshot,financial,observed,equities):
+def _account_occupancy(inventory,snapshot,financial,observed,equities,*,slot_scope=None,
+        slot_inputs=None,checked_at=None,source_evidence_id=None,claims_evidence_id=None):
     """Observed external holdings; HRS counterfactual holdings are modeled separately."""
     _require(isinstance(inventory,list),'account_occupancy_inventory_missing')
+    if slot_scope is not None:
+        from strategies.hrs.entry_occupancy import SLOT_SCOPE,prove_hrs_slot_ownership,HrsOccupancyDenied
+        _require(slot_scope==SLOT_SCOPE,'hrs_slot_scope_unknown')
+        _require(isinstance(slot_inputs,dict) and slot_inputs.get('inventory')==inventory
+            and _time(slot_inputs['observed_at'])==observed,'hrs_slot_inputs_missing_or_conflicting')
+        _require(bool(source_evidence_id) and bool(claims_evidence_id),'hrs_slot_raw_source_missing')
+        checked_at=checked_at or observed
+        sources=[e for e in _equity_rows(equities,checked_at-timedelta(seconds=120),observed)
+            if _time(e['payload']['available_at'])<=checked_at]
+        _require(sources,'hrs_slot_raw_parent_missing')
+        source=max(sources,key=lambda e:(_time(e['payload']['as_of']),e['sha256']))
+        account=financial.get('entry_policy',{}).get('account_id')
+        _require(isinstance(account,str) and bool(account) and source['payload'].get('account_id')==account,
+            'hrs_slot_account_mismatch')
+        try:
+            proof=prove_hrs_slot_ownership(account,
+                dict(evidence_sha256=source['sha256'],payload=source['payload']),slot_inputs,
+                financial['claims'],checked_at=checked_at)
+        except HrsOccupancyDenied as exc:raise DataBlocked([exc.reason_code]) from exc
+        others=[dict(row,strategy_id=proof['owners'][row['symbol']],
+            ownership_evidence_sha256=source['sha256'],owner_source_as_of=source['payload']['as_of'])
+            for row in inventory if Decimal(str(row['positionAmt']))!=0 and proof['owners'][row['symbol']]!='hrs']
+        return dict(version='hrs_account_occupancy_v2',observed_at=_iso(observed),other_positions=others,inventory=copy.deepcopy(inventory),
+            slot_scope=SLOT_SCOPE,slot_ownership_proof=proof,slot_source_evidence_id=source_evidence_id,
+            claims_source_evidence_id=claims_evidence_id)
     others=[p for p in inventory if Decimal(str(p['positionAmt']))!=0 and p['symbol'] not in snapshot.get('positions',{})]
     result=[]
     if others:
@@ -489,6 +519,84 @@ def _account_occupancy(inventory,snapshot,financial,observed,equities):
     return dict(version='hrs_account_occupancy_v1',observed_at=_iso(observed),other_positions=result)
 
 
+def _raw_decision(sources,identity,checked_at):
+    records=_records(sources.get('decision_evidence'))
+    if isinstance(records,_ArchiveFamily):
+        row=sources.archive.get_record('decision_evidence',identity)
+        rows=_records([row]) if row is not None else []
+    else:rows=[row for row in records if row['evidence_id']==identity]
+    _require(len(rows)==1,'hrs_raw_source_missing')
+    row=rows[0];_require(row['available_at']<=checked_at,'hrs_raw_source_unavailable')
+    return row
+
+
+def verify_runtime_slot_occupancy(portal,raw,checked_at):
+    """Reproduce new policy proof from original manifest-bound source receipts."""
+    occupancy=raw.get('risk',{}).get('account_occupancy',{})
+    if occupancy.get('version')=='hrs_account_occupancy_v1' and 'slot_scope' not in occupancy:return
+    _require(occupancy.get('version')=='hrs_account_occupancy_v2','hrs_slot_occupancy_version_unknown')
+    sources=snapshot_evidence_sources(portal);records=_records(sources.get('decision_evidence'))
+    slot=_raw_decision(sources,occupancy['slot_source_evidence_id'],checked_at)
+    claim=_raw_decision(sources,occupancy['claims_source_evidence_id'],checked_at)
+    analysis=_raw_decision(sources,raw['evidence_ids'][0],checked_at)
+    _require(analysis['kind'] in ('analysis','lv_rm_analysis') and analysis['symbol']==raw['symbol']
+        and analysis['event_time']==_time(raw['decision_at'])
+        and slot['run_id']==claim['run_id']==analysis['run_id']
+        and slot.get('symbol') in (None,raw['symbol']) and claim.get('symbol') in (None,raw['symbol']),
+        'hrs_slot_raw_cycle_mismatch')
+    if isinstance(records,_ArchiveFamily):starts=list(records.select(kind='scan_start',run_id=analysis['run_id']))
+    else:starts=[row for row in records if row['kind']=='scan_start' and row['run_id']==analysis['run_id']]
+    _require(len(starts)==1,'hrs_slot_raw_cycle_mismatch')
+    financial=starts[0]['payload']['financial_context']
+    if slot['kind']=='scan_start':
+        scope=financial.get('runtime_slot_scope');inputs=financial.get('hrs_slot_inputs')
+    else:
+        _require(slot['kind']=='entry_stage_inputs' and slot['payload'].get('stage')=='reservation_inventory','hrs_slot_raw_source_kind_invalid')
+        scope=slot['payload'].get('slot_scope');inputs=slot['payload'].get('slot_inputs')
+    if claim['kind']=='scan_start':claims=claim['payload']['financial_context']['claims']
+    else:
+        _require(claim['kind']=='entry_stage_inputs' and 'claims' in claim['payload'],'hrs_slot_claim_source_invalid')
+        claims=claim['payload']['claims']
+    digest=occupancy['slot_ownership_proof']['equity_evidence_sha256']
+    if isinstance(sources,_ArchiveSources):
+        view=getattr(portal,'_hrs_slot_equity_view',None)
+        if view is None or view.sources is not sources:portal._hrs_slot_equity_view=view=_EquityView(sources)
+        parent=view.get(digest)
+    else:
+        rows=list(sources.get('equity_evidence') or [])
+        rows.extend(parent for row in records if row['kind']=='scan_start'
+            for parent in row['payload'].get('financial_context',{}).get('equity_source_archives',[]))
+        parents=[row for row in _equity(rows) if row['sha256']==digest]
+        _require(bool(parents),'hrs_slot_raw_parent_missing');parent=parents[0]
+    _require(parent is not None,'hrs_slot_raw_parent_missing')
+    expected=_account_occupancy(inputs['inventory'],{},dict(financial,claims=claims),_time(inputs['observed_at']),[parent],
+        slot_scope=scope,slot_inputs=inputs,checked_at=checked_at,
+        source_evidence_id=slot['evidence_id'],claims_evidence_id=claim['evidence_id'])
+    _require(equity_canonical(expected)[1]==equity_canonical(occupancy)[1],'hrs_slot_raw_proof_mismatch')
+
+
+def verify_runtime_kline_repair(portal,raw,checked_at):
+    from .hrs_kline_sources import verify_kline_repair
+    sources=snapshot_evidence_sources(portal)
+    analysis=_raw_decision(sources,raw['evidence_ids'][0],checked_at)
+    records=_records(sources.get('decision_evidence'))
+    if isinstance(records,_ArchiveFamily):
+        repairs=list(records.select(kind='kline_repair',run_id=analysis['run_id'],symbol=raw['symbol'],available_before=analysis['available_at']))
+        public=records.select(kind='public_market_response',run_id=analysis['run_id'],symbol=raw['symbol'],available_before=checked_at)
+    else:
+        repairs=[row for row in records if row['kind']=='kline_repair' and row['run_id']==analysis['run_id']
+            and row.get('symbol')==raw['symbol'] and row['available_at']<=analysis['available_at']]
+        public=(row for row in records if row['kind']=='public_market_response' and row['run_id']==analysis['run_id'] and row.get('symbol')==raw['symbol'])
+    if not repairs:
+        _require(not raw.get('kline_repair_evidence_id'),'hrs_kline_repair_source_missing')
+        return
+    repair=max(repairs,key=lambda row:(row['available_at'],row['evidence_id']))
+    _require(repair['evidence_id']==raw.get('kline_repair_evidence_id')
+        and repair['payload_sha256']==raw.get('kline_repair_payload_sha256'),'hrs_kline_repair_identity_mismatch')
+    summary=verify_kline_repair(repair,analysis,public,portal.hrs_replay_state(portal.window_start)['config'])
+    _require(summary['request_source_ids']==raw['kline_repair_source_ids'],'hrs_kline_repair_source_inventory_mismatch')
+
+
 def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=None):
     if isinstance(records,_ArchiveFamily):groups=records.runs()
     else:
@@ -507,6 +615,8 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
         snapshot=starts[0]['payload'];final=ends[0]['payload']['state']
         config,hashes=_config(snapshot)
         _require(hashes==bootstrap['config_hashes'] and config==bootstrap['config'],'config_change_requires_partition:'+run)
+        _require(snapshot['financial_context'].get('runtime_slot_scope')==bootstrap.get('runtime_slot_scope'),
+            'slot_policy_change_requires_partition:'+run)
         scopes=sorted((r for kind in ('standard_scan_scope','lv_rm_scan_scope') for r in _run_rows(rows,kind=kind)),key=lambda r:(r['available_at'],r['event_time'],r['evidence_id']))
         symbols=list(dict.fromkeys(s for r in scopes for s in r['payload']['symbols']))
         if not symbols:
@@ -577,6 +687,15 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
             if cap['source'] not in ('coingecko','coinmarketcap','cache_hit'):
                 expiry=values[operations['cap']]['available_at']+timedelta(seconds=config.get('market_cap',{}).get('cache_ttl_seconds',3600))
             available=max(analysis['available_at'],*(r['available_at'] for r in values.values()),_time(financial['available_at']))
+            repair_refs={}
+            repairs=list(_run_rows(rows,kind='kline_repair',symbol=symbol,available_before=analysis['available_at']))
+            if repairs:
+                from .hrs_kline_sources import verify_kline_repair
+                repair=max(repairs,key=lambda row:(row['available_at'],row['evidence_id']))
+                proof=verify_kline_repair(repair,analysis,
+                    _run_rows(rows,kind='public_market_response',symbol=symbol,available_before=analysis['available_at']),config)
+                repair_refs=dict(kline_repair_evidence_id=repair['evidence_id'],kline_repair_payload_sha256=repair['payload_sha256'],
+                    kline_repair_source_ids=proof['request_source_ids'])
             market={key:values[op]['payload']['result'] for key,op in operations.items() if key!='cap'}
             market.update(entry_price=payload['klines_1h'][-1]['close'],market_cap=cap['value'],has_market_cap=cap.get('is_proxy') is False and cap['source'] in ('coingecko','coinmarketcap','cache_hit') and Decimal(str(cap['value']))>0,
                 market_cap_source=cap['source'],source_observed_at=_iso(max(r['available_at'] for r in values.values())),expires_at=_iso(expiry),provenance=cap)
@@ -605,12 +724,27 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
             inventory_stage=next((r for r in reversed(stages) if r['payload'].get('stage')=='reservation_inventory'),None)
             occupancy_at=inventory_stage['available_at'] if inventory_stage else _time(financial['available_at'])
             inventory=inventory_stage['payload']['exchange_positions'] if inventory_stage else financial['exchange_positions']
-            risk['account_occupancy']=_account_occupancy(inventory,snapshot,financial,occupancy_at,equities)
             event_available=max(available,released)
+            scope=financial.get('runtime_slot_scope')
+            if scope is not None:
+                slot_source=inventory_stage or starts[0]
+                if inventory_stage:
+                    _require(inventory_stage['payload'].get('slot_scope')==scope,'hrs_slot_stage_scope_mismatch')
+                    slot_inputs=inventory_stage['payload'].get('slot_inputs')
+                else:slot_inputs=financial.get('hrs_slot_inputs')
+                _require(isinstance(slot_inputs,dict),'hrs_slot_inputs_missing')
+                inventory=slot_inputs['inventory'];occupancy_at=_time(slot_inputs['observed_at'])
+                claim_stage=next((r for r in reversed(stages) if 'claims' in r['payload']),None)
+                claims=claim_stage['payload']['claims'] if claim_stage else financial['claims']
+                occupancy_financial=dict(financial,claims=claims)
+                risk['account_occupancy']=_account_occupancy(inventory,snapshot,occupancy_financial,occupancy_at,equities,
+                    slot_scope=scope,slot_inputs=slot_inputs,checked_at=event_available,
+                    source_evidence_id=slot_source['evidence_id'],claims_evidence_id=(claim_stage or starts[0])['evidence_id'])
+            else:risk['account_occupancy']=_account_occupancy(inventory,snapshot,financial,occupancy_at,equities)
             _require(event_available<=end,'decision_inputs_after_window:'+run+':'+symbol)
             history=(dict(analysis_evidence_id=analysis['evidence_id'],analysis_payload_sha256=analysis['payload_sha256'])
                 if isinstance(records,_ArchiveFamily) else dict(analysis_klines_1h=payload['klines_1h'],analysis_klines_4h=payload['klines_4h']))
-            inputs.append(dict(symbol=symbol,decision_at=_iso(decided),score_available_at=_iso(analysis['available_at']),observed_at=_iso(available),available_at=_iso(available),complete=True,candidate_scan=scan,market=market,risk=risk,config_hashes=hashes,**history,
+            inputs.append(dict(symbol=symbol,decision_at=_iso(decided),score_available_at=_iso(analysis['available_at']),observed_at=_iso(available),available_at=_iso(available),complete=True,candidate_scan=scan,market=market,risk=risk,config_hashes=hashes,**history,**repair_refs,
                 evidence_ids=[r['evidence_id'] for r in [analysis,*values.values(),*stages]]))
             calendar.append(dict(symbol=symbol,decision_at=_iso(decided),available_at=_iso(event_available),batch_available_at=_iso(released),batch_id=run,sequence=sequence))
             sequence+=1
@@ -1015,19 +1149,26 @@ def _source_forecast_ref(parent,cutoffs,account_id):
 
 def _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs=None,account_id=None):
     payload=_decoded(row['payload'])
+    _require(row.get('payload_sha256')==canonical_payload(payload)[1],'decision_payload_hash_mismatch')
     if row['kind'] in ('standard_scan_scope','lv_rm_scan_scope'):
         scanned.update(payload['symbols'])
-    financial=payload.get('financial_context',{})
-    referenced.update(r['evidence_sha256'] for r in financial.get('equity_source_archives',[]))
-    if forecast_cutoffs is not None:
-        parents=financial.get('equity_source_archives',[])
-        if any('payload' in parent for parent in parents):
-            _require(row.get('payload_sha256')==canonical_payload(payload)[1],'decision_payload_hash_mismatch')
-        for parent in parents:_source_forecast_ref(parent,forecast_cutoffs,account_id)
-    component=financial.get('hrs_marked_equity_observation')
-    if component:referenced.add(component['evidence_sha256'])
-    raw=financial.get('ledger_state')
-    if raw:ledger_points.add(_time(_decoded(raw['ledger_state'])['as_of']))
+    financials=[payload.get('financial_context',{})]
+    if row['kind']=='scan_end':financials.append(payload.get('state',{}).get('financial_context',{}))
+    for financial in financials:
+        referenced.update(r['evidence_sha256'] for r in financial.get('equity_source_archives',[]))
+        if forecast_cutoffs is not None:
+            for parent in financial.get('equity_source_archives',[]):_source_forecast_ref(parent,forecast_cutoffs,account_id)
+        component=financial.get('hrs_marked_equity_observation')
+        if component:referenced.add(component['evidence_sha256'])
+        raw=financial.get('ledger_state')
+        if raw:ledger_points.add(_time(_decoded(raw['ledger_state'])['as_of']))
+        for reservation in financial.get('reservations',[]):
+            geometry=_decoded(reservation.get('geometry') or {})
+            proof=geometry.get('slot_occupancy_proof')
+            if proof:referenced.add(proof['equity_evidence_sha256'])
+    if row['kind']=='entry_stage_inputs' and payload.get('stage')=='reservation_denial':
+        context=payload.get('risk_context') or {}
+        if context.get('evidence_sha256'):referenced.add(context['evidence_sha256'])
 
 
 def main(argv=None):
