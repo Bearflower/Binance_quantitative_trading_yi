@@ -239,6 +239,25 @@ async def test_feed_recovery_discards_old_window_and_waits_for_warmup(conn, cfg)
     assert "feed_interrupted" not in service._reasons("VALID")
 
 
+async def test_queue_checkpoint_excludes_feed_warmup(conn, cfg):
+    clock = [5_000_000]
+    service = _service(cfg, conn, lambda: clock[0])
+    await _fill_queue(service, [])
+    await service._on_feed_health(False, "WS 断线")
+    await service._on_feed_health(True, "")
+    await service.tick()
+    row = conn.execute(
+        "SELECT feed_healthy FROM queue_audit_checkpoint "
+        "ORDER BY observed_at_ms DESC LIMIT 1").fetchone()
+    assert row["feed_healthy"] == 0
+    clock[0] += max(cfg["features"]["windows_seconds"]) * 1000
+    await service.tick()
+    row = conn.execute(
+        "SELECT feed_healthy FROM queue_audit_checkpoint "
+        "ORDER BY observed_at_ms DESC LIMIT 1").fetchone()
+    assert row["feed_healthy"] == 1
+
+
 class _ListFeed:
     def __init__(self, trades):
         self._trades = trades
@@ -369,6 +388,65 @@ async def test_run_cancels_feed_task_on_error(conn, cfg):
         await service.run()
     await asyncio.sleep(0)  # 让 CancelledError 在 stream 内落地
     assert _SlowFeed.cancelled
+
+
+async def test_run_restarts_feed_task_after_unexpected_exit(conn, cfg):
+    class CrashOnceFeed:
+        attempts = 0
+
+        async def stream(self):
+            self.attempts += 1
+            if self.attempts == 1:
+                raise RuntimeError("WS 消费任务意外退出")
+            yield make_trade(10, 1_000_000, "2700")
+            await asyncio.sleep(100)
+
+    feed = CrashOnceFeed()
+    ticks = 0
+
+    async def stop_after_recovery(_seconds):
+        nonlocal ticks
+        ticks += 1
+        await asyncio.sleep(0)
+        if ticks >= 3:
+            raise RuntimeError("测试停止")
+
+    service = _service(cfg, conn, feed_mod.now_ms, trade_feed=feed,
+                       sleep=stop_after_recovery)
+    with pytest.raises(RuntimeError, match="测试停止"):
+        await service.run()
+    assert feed.attempts >= 2
+    assert service._feed_healthy is False
+
+
+async def test_run_restarts_feed_task_after_prolonged_unhealthy_state(conn, cfg):
+    class StalledFeed:
+        attempts = 0
+
+        async def stream(self):
+            self.attempts += 1
+            await asyncio.sleep(100)
+            yield make_trade(10, 1_000_000, "2700")
+
+    feed = StalledFeed()
+    clock = [1_000_000]
+    ticks = 0
+
+    async def advance_clock(_seconds):
+        nonlocal ticks
+        ticks += 1
+        clock[0] += 30_000
+        await asyncio.sleep(0)
+        if ticks >= 4:
+            raise RuntimeError("测试停止")
+
+    service = _service(cfg, conn, lambda: clock[0], trade_feed=feed,
+                       sleep=advance_clock)
+    await service._on_feed_health(False, "WS 连接关闭")
+    with pytest.raises(RuntimeError, match="测试停止"):
+        await service.run()
+    assert feed.attempts >= 2
+    assert service._feed_healthy is False
 
 
 # ───────────────────── 条件与锁存文案 ─────────────────────

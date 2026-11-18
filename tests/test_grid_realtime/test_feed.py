@@ -509,7 +509,7 @@ async def test_default_rest_fetch_200(cfg, monkeypatch):
     assert len(rows) == 1 and rows[0].agg_trade_id == 1
 
 
-def test_ws_connection_close_error_still_closes_session():
+async def test_ws_connection_close_error_still_closes_session():
     class BrokenWs:
         async def close(self):
             raise RuntimeError("ws close 失败")
@@ -524,6 +524,5 @@ def test_ws_connection_close_error_still_closes_session():
     session = Session()
     conn = feed_mod._WsConnection(BrokenWs(), session)
     with pytest.raises(RuntimeError):
-        import asyncio
-        asyncio.get_event_loop().run_until_complete(conn.close())
+        await conn.close()
     assert session.closed
