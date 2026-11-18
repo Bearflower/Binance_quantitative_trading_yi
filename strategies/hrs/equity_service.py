@@ -895,6 +895,8 @@ class HrsEquityService:
                 query='SELECT as_of,evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND segment_id=$2 AND as_of<=$3 ORDER BY available_at DESC'
                 async for archived in connection.cursor(query,self.account,segment,as_of,prefetch=10):
                     payload=json.loads(archived['payload']) if isinstance(archived['payload'],str) else archived['payload']
+                    if canonical(payload)[1]!=archived['evidence_sha256']:
+                        raise EvidenceBlocked('funding_forecasts_ref_parent_hash_mismatch')
                     if 'capture' in payload and payload.get('result',{}).get('ledger_version') is not None:
                         ref=evidence_forecasts_ref(archived,account_id=self.account)
                         if ref is not None:forecast_refs.append(ref)

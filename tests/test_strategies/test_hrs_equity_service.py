@@ -377,7 +377,7 @@ async def test_existing_segment_without_prospective_audit_origin_cannot_restart_
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('pre_anchor',[False,True])
-@pytest.mark.parametrize('damaged_history',[None,'parent_hash','source_closure'])
+@pytest.mark.parametrize('damaged_history',[None,'parent_hash','source_closure','missing_capture','missing_ledger_version','valid_denial'])
 async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,pre_anchor,damaged_history):
     from strategies.hrs.equity_reconciliation import effective_checkpoints
     service,account,pool,api,clock=setup
@@ -389,10 +389,15 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
         async with pool.acquire() as c:
             old=await c.fetchrow('SELECT evidence_sha256,payload FROM trading.hrs_equity_evidence WHERE account_id=$1 ORDER BY available_at LIMIT 1',account)
             payload=json.loads(old['payload'])
-            payload['capture']['funding_publication']['forecasts_ref']['ordered_sha256']='0'*64
+            if damaged_history=='valid_denial':
+                payload={key:payload[key] for key in ('account_id','segment_id','as_of','available_at')}
+                payload['result']=dict(ready=False,allowed=False,reasons=['source_collection_incomplete'])
+            elif damaged_history=='missing_capture':del payload['capture']
+            elif damaged_history=='missing_ledger_version':del payload['result']['ledger_version']
+            else:payload['capture']['funding_publication']['forecasts_ref']['ordered_sha256']='0'*64
             encoded,digest=canonical(payload)
             await c.execute('UPDATE trading.hrs_equity_evidence SET payload=$1::jsonb,evidence_sha256=$2 WHERE account_id=$3 AND evidence_sha256=$4',
-                encoded,digest if damaged_history=='source_closure' else old['evidence_sha256'],account,old['evidence_sha256'])
+                encoded,digest if damaged_history in ('source_closure','valid_denial') else old['evidence_sha256'],account,old['evidence_sha256'])
     async with pool.acquire() as c:
         for order_id,side in ((71,'BUY'),(72,'SELL')):
             await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT',$2,'hrs',$3,'FILLED','LIMIT',$4)",account,str(order_id),side,T.replace(tzinfo=None))
@@ -405,9 +410,9 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
     api.get_income_history.side_effect=lambda **kw: ([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-1',asset='USDT',tranId=r['id'],tradeId=str(r['id']),time=r['time'],info='') for r in records] if kw['income_type']=='COMMISSION' else [])
     clock[0]=T+timedelta(seconds=60)
     result=await service.refresh()
-    if damaged_history:
+    if damaged_history and damaged_history!='valid_denial':
         assert not result['ready'] and not result['allowed']
-        assert result['reasons']==['funding_forecasts_ref_'+('parent_hash_mismatch' if damaged_history=='parent_hash' else 'closure_mismatch')]
+        assert result['reasons']==['funding_forecasts_ref_'+('closure_mismatch' if damaged_history=='source_closure' else 'parent_hash_mismatch')]
         async with pool.acquire() as c:
             assert await c.fetchval('SELECT version FROM trading.hrs_loss_gate_state WHERE account_id=$1',account)==2
             assert await c.fetchval('SELECT count(*) FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)==0
@@ -771,7 +776,8 @@ async def test_late_reconciliation_reads_funding_source_prefix_once_not_per_pare
 
 
 @pytest.mark.asyncio
-async def test_all_reconciliation_raw_parents_are_checked_before_source_prefix_read(setup):
+@pytest.mark.parametrize('damage',['parent_hash','missing_capture','missing_ledger_version'])
+async def test_all_reconciliation_raw_parents_are_checked_before_source_prefix_read(setup,damage):
     from contextlib import asynccontextmanager
     from strategies.hrs.funding_reference import COUNT_SQL,ROWS_SQL
     service,*_=setup
@@ -792,5 +798,5 @@ async def test_all_reconciliation_raw_parents_are_checked_before_source_prefix_r
     service._locked=traced
     # The oldest parent has damage in an otherwise-unused funding field. A
     # newer valid parent is encountered first; neither may trigger prefix IO.
-    await test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,False,'parent_hash')
+    await test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,False,damage)
     assert calls[2]==[]
