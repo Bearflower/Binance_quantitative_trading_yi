@@ -54,3 +54,13 @@ id: Binance_quantitative_trading-20261111-dashboard-closure-gaps
 ## 关联
 
 [自动归属发布记录](https://github.com/Bearflower/Binance_quantitative_trading_yi/blob/main/docs/reports/exchange-auto-attribution-release-2026-11-10.md)、[收益看板适配器](https://github.com/Bearflower/Binance_quantitative_trading_yi/blob/main/dashboard/backend/services/exchange_ledger.py)、[自动归属对账器](https://github.com/Bearflower/Binance_quantitative_trading_yi/blob/main/scripts/reconcile_income_attribution.py)、[订单归属证据](https://github.com/Bearflower/Binance_quantitative_trading_yi/blob/main/shared/accounting/order_evidence.py)。
+
+## 2026-11-18 生产复查
+
+- 归属服务在 11 月 18 日仍显示每小时运行成功，但收入处理截止时间停在 11 月 13 日。历史补采为非活跃币种留下的游标被误纳入当月共同截止时间。修复用当月同账户的交易所收入和成交识别活跃币种，继续分别校验这些币种的完整成交覆盖。[发布记录](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44223485447)
+- 修复后的两次生产执行补写 36 笔归属，无冲突。月度待归属清零。日、周、月净收益均和同一窗口的交易所收入事实、策略归属加未归属之和对平。归属任务及定时器已恢复到正式发布版。
+- 网格子账户已通过真实成交和资金费对账。直接用子账户交易所接口核对 21 笔成交、1 笔资金费，已实现收益扣手续费为 +1.20760965 USDT，资金费 +0.00514133 USDT，空仓累计盈亏 +1.21275098 USDT。
+- 巡检按 HTTP 状态识别 Uvicorn 访问日志。11 月 18 日定时巡检记录 dashboard-api 日志无错误。
+- 11 月 17 日新增 152 笔历史资金费归属，净额 +1.25715011 USDT。剩余 1,155 笔净额 +13.91415692 USDT，绝对额合计 22.18487166 USDT。开仓订单缺归属 1,081 笔，平仓归属冲突 53 笔，多策略持仓 16 笔，缺更早空仓边界 5 笔。已导出按金额绝对值排序的人工复核清单。币安历史委托归档的委托号和客户端委托号比对未提供新的策略映射。
+- 年度数据证据已补采至生产受限归档目录。上半年币安 PM 历史收入文件有 3,095 行，其中已实现盈亏、手续费、资金费合计 −18.18688019 USDT。上半年成交文件有 1,341 笔，1–10 月普通委托文件有 2,616 行。与 7 月 1 日以来已覆盖的同口径数据库收入合并，截至北京时间 11 月 18 日 09:35 的年度离线净额为 −69.12639226 USDT。
+- 年视图仍待验收。归档时间精度为秒，收入文件缺成交 ID，须设计和验证归档收入与成交的匹配及发布口径。主账户最早权益快照为 9 月 1 日，全年夏普及最大回撤仍缺早期资金基数。
