@@ -631,7 +631,10 @@ class HrsAdapter:
         if scoped and symbol in other_symbols:return 'account_position_already_exists'
         occupied=current_symbols|set(self._durable_margin_reservations)
         if not scoped:occupied|=other_symbols
-        maximum=int(self.config.get('trading',{}).get('max_positions',3))
+        configured_maximum=self.config.get('trading',{}).get('max_positions',3)
+        if scoped and (type(configured_maximum) is not int or not 1<=configured_maximum<=3):
+            raise DataBlocked(['hrs_slot_limit_invalid'])
+        maximum=int(configured_maximum)
         if maximum<=0:raise DataBlocked(['hrs_max_positions_invalid'])
         if len(occupied|{symbol})>maximum:
             return ('hrs_position_slots_include_retained_reservations' if scoped

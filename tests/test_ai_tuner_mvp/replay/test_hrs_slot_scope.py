@@ -174,3 +174,14 @@ def test_new_scope_cannot_certify_current_account_from_valid_foreign_parent():
     with pytest.raises(DataBlocked,match='account_mismatch'):
         _account_occupancy(inventory,dict(positions=local),dict(claims=claims,entry_policy=dict(account_id='test')),AT,[parent],
             slot_scope=SLOT_SCOPE,slot_inputs=inputs,checked_at=AT,source_evidence_id='s',claims_evidence_id='c')
+
+
+@pytest.mark.parametrize('maximum',[4,True,'3',0])
+def test_new_scope_rejects_limits_outside_live_typed_one_to_three(tmp_path,maximum):
+    portal,adapter,_=_hrs_fixture(tmp_path,initial_position=True,entry_type='LIMIT',subbars=True)
+    b=broker();run_replay(portal,adapter,b)
+    adapter.config.setdefault('trading',{})['max_positions']=maximum
+    adapter._durable_margin_reservations.update(P1=dict(margin=D(1),terminal=False),P2=dict(margin=D(1),terminal=False))
+    with pytest.raises(DataBlocked,match='hrs_slot_limit_invalid'):
+        adapter._reservation_denial('NEW',D(1),D(100),SimpleNamespace(portfolio=b.view()),portal.as_of,
+            dict(account_occupancy=occupancy(portal.as_of)),D(10000))
