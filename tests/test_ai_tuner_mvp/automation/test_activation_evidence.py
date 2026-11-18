@@ -58,3 +58,46 @@ def test_activation_acknowledgement_must_match_current_attempt(identity):
     assert evaluate_receipt(identity, "request-2", replace(good, effective_params_hash="e" * 64)) == "restore_previous"
     assert evaluate_receipt(identity, "request-2", replace(good, manifest_schema_version="0")) == "restore_previous"
     assert evaluate_receipt(identity, "request-2", good, expired=True) == "restore_previous"
+
+
+def test_missing_receipt_restores_previous_temporary_overlay(tmp_path, identity, facts):
+    from ai_tuner.deploy.config_operator import ConfigOperator
+    from shared.config_loader import load_strategy_config_with_metadata
+
+    config = tmp_path / "config.yaml"
+    config.write_text("scoring: {min_score: 50}\n")
+    writer = ConfigOperator()
+    baseline = writer.publish_overrides(str(config), {"scoring.min_score": 55}, expected_version="base")
+    _, baseline_metadata = load_strategy_config_with_metadata(str(tmp_path))
+
+    candidate = writer.publish_overrides(str(config), {"scoring.min_score": 60}, expected_version=baseline)
+    _, candidate_metadata = load_strategy_config_with_metadata(str(tmp_path))
+    pending = replace(
+        identity, version=candidate, baseline_version=baseline,
+        effective_params_hash=candidate_metadata["config_hash"],
+    )
+    require_qualified_activation(pending, pending, facts)
+    assert evaluate_receipt(pending, "attempt-1", None, expired=True) == "restore_previous"
+    assert writer.rollback_overlay(str(config), baseline, expected_current=candidate) == baseline
+    restored, metadata = load_strategy_config_with_metadata(str(tmp_path))
+    assert restored["scoring"]["min_score"] == 55
+    assert metadata == baseline_metadata
+
+
+def test_stale_recovery_leaves_newer_pointer_in_temporary_overlay(tmp_path, identity):
+    from ai_tuner.deploy.config_operator import ConfigOperator
+    from shared.config_loader import load_strategy_config_with_metadata
+
+    config = tmp_path / "config.yaml"
+    config.write_text("scoring: {min_score: 50}\n")
+    writer = ConfigOperator()
+    baseline = writer.publish_overrides(str(config), {"scoring.min_score": 55}, expected_version="base")
+    candidate = writer.publish_overrides(str(config), {"scoring.min_score": 60}, expected_version=baseline)
+    newer = writer.publish_overrides(str(config), {"scoring.min_score": 65}, expected_version=candidate)
+    pending = replace(identity, version=candidate, baseline_version=baseline)
+    assert evaluate_receipt(pending, "attempt-1", None, expired=True) == "restore_previous"
+    with pytest.raises(ValueError, match="rollback baseline changed"):
+        writer.rollback_overlay(str(config), baseline, expected_current=candidate)
+    loaded, metadata = load_strategy_config_with_metadata(str(tmp_path))
+    assert metadata["applied_overrides_version"] == newer
+    assert loaded["scoring"]["min_score"] == 65
