@@ -1,9 +1,11 @@
 """AI Tuner evidence collection and shadow review; never activates allocations."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
+import tempfile
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -13,6 +15,7 @@ from ai_tuner.allocation.capital_evidence import read_capital_evidence
 from ai_tuner.allocation.shadow_allocation import preview_monthly_allocation
 from ai_tuner.monitor.account_risk import collect_account_risk
 from ai_tuner.monitor.reduced_trial import BEIJING, NotificationState
+from shared.accounting.pm_equity_bridge import observe_pm_equity
 from shared.accounting.published_report import read_published_report
 
 
@@ -99,6 +102,28 @@ class EvidenceJobs:
             state.mark_delivered(signature, datetime.now(BEIJING))
         return summary
 
+    async def sample_equity_valuation(self):
+        sampled_at = datetime.now(BEIJING)
+        try:
+            result = await asyncio.wait_for(observe_pm_equity(self.pm, self.wallet), timeout=5)
+        except Exception as exc:
+            result = {'status': 'BLOCKED_DATA',
+                      'reasons': ['valuation_request_failed:' + type(exc).__name__]}
+        sample = dict(result, method='pm-usdt-equity-bridge-v1', sampled_at=sampled_at.isoformat(),
+                      account_scope=self.budget['account_id'],
+                      account_identity=self.budget['account_identity'])
+        body = json.dumps(sample, sort_keys=True).encode()
+        directory = self.state_dir / 'pm-equity' / sampled_at.date().isoformat()
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        target = directory / f'{sampled_at:%H%M%S%f}-{hashlib.sha256(body).hexdigest()[:16]}.json'
+        # Readers see only complete records. A new observation never replaces a prior one.
+        with tempfile.NamedTemporaryFile(dir=directory) as temporary:
+            temporary.write(body)
+            temporary.flush()
+            os.fsync(temporary.fileno())
+            os.link(temporary.name, target)
+        return sample
+
     async def sample_activity(self):
         result = await collect_entry_activity(self.db, self.pm, self.budget['account_id'],
                                               max_requests=20)
@@ -161,6 +186,9 @@ def register_evidence_jobs(scheduler, jobs):
                            ('entry_activity', jobs.sample_activity)):
         scheduler.add_job(callback, 'interval', minutes=1, id=name, max_instances=1,
                           replace_existing=True, coalesce=True, misfire_grace_time=30)
+    scheduler.add_job(jobs.sample_equity_valuation, 'interval', minutes=5,
+                      id='pm_equity_valuation', max_instances=1, replace_existing=True,
+                      coalesce=True, misfire_grace_time=60, next_run_time=datetime.now(BEIJING))
     scheduler.add_job(jobs.run_allocation_shadow, 'cron', hour=10, minute=5,
                       timezone='Asia/Shanghai', id='allocation_shadow', max_instances=1,
                       replace_existing=True, coalesce=True, misfire_grace_time=3600)
