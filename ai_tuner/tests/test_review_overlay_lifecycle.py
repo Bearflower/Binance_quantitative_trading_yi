@@ -51,8 +51,9 @@ async def test_sunday_grid_excludes_in_progress_bar(monkeypatch):
 
     class Sunday(datetime):
         @classmethod
-        def now(cls):
-            return cls(2026, 11, 15, 23, 55)
+        def now(cls, tz=None):
+            assert tz is not None and tz.key == 'Asia/Shanghai'
+            return cls(2026, 11, 15, 23, 55, tzinfo=tz)
 
     monkeypatch.setattr("ai_tuner.adapters.grid_adapter.datetime", Sunday)
     adapter = GridAdapter(MagicMock())
