@@ -62,26 +62,42 @@ def test_activation_acknowledgement_must_match_current_attempt(identity):
 
 def test_missing_receipt_restores_previous_temporary_overlay(tmp_path, identity, facts):
     from ai_tuner.deploy.config_operator import ConfigOperator
+    from ai_tuner.mvp.activation_evidence import evaluate_recovery_receipt, validate_cycle_reload
     from shared.config_loader import load_strategy_config_with_metadata
 
     config = tmp_path / "config.yaml"
     config.write_text("scoring: {min_score: 50}\n")
     writer = ConfigOperator()
     baseline = writer.publish_overrides(str(config), {"scoring.min_score": 55}, expected_version="base")
-    _, baseline_metadata = load_strategy_config_with_metadata(str(tmp_path))
+    running, baseline_metadata = load_strategy_config_with_metadata(str(tmp_path))
 
     candidate = writer.publish_overrides(str(config), {"scoring.min_score": 60}, expected_version=baseline)
-    _, candidate_metadata = load_strategy_config_with_metadata(str(tmp_path))
+    proposed, candidate_metadata = load_strategy_config_with_metadata(str(tmp_path))
     pending = replace(
         identity, version=candidate, baseline_version=baseline,
         effective_params_hash=candidate_metadata["config_hash"],
     )
     require_qualified_activation(pending, pending, facts)
+    assert running["scoring"]["min_score"] == 55
+    assert validate_cycle_reload(
+        running, proposed, allowed_paths={"scoring.min_score"}, expected_hash=pending.effective_params_hash,
+    ) == ("scoring.min_score",)
+    running = proposed
+    assert running["scoring"]["min_score"] == 60
     assert evaluate_receipt(pending, "attempt-1", None, expired=True) == "restore_previous"
     assert writer.rollback_overlay(str(config), baseline, expected_current=candidate) == baseline
     restored, metadata = load_strategy_config_with_metadata(str(tmp_path))
     assert restored["scoring"]["min_score"] == 55
     assert metadata == baseline_metadata
+    baseline_hash = baseline_metadata["config_hash"]
+    assert validate_cycle_reload(
+        running, restored, allowed_paths={"scoring.min_score"}, expected_hash=baseline_hash,
+    ) == ("scoring.min_score",)
+    confirmed = RuntimeReceipt("rollback-1", identity.strategy_id, baseline, baseline, baseline_hash, "1")
+    kwargs = dict(activation_request_id="attempt-1", recovery_request_id="rollback-1",
+                  baseline_effective_hash=baseline_hash)
+    assert evaluate_recovery_receipt(pending, None, **kwargs) == "pending"
+    assert evaluate_recovery_receipt(pending, confirmed, **kwargs) == "restored"
 
 
 def test_stale_recovery_leaves_newer_pointer_in_temporary_overlay(tmp_path, identity):
@@ -101,3 +117,41 @@ def test_stale_recovery_leaves_newer_pointer_in_temporary_overlay(tmp_path, iden
     loaded, metadata = load_strategy_config_with_metadata(str(tmp_path))
     assert metadata["applied_overrides_version"] == newer
     assert loaded["scoring"]["min_score"] == 65
+
+
+def test_cycle_reload_only_differs_on_manifest_paths():
+    from ai_tuner.mvp.activation_evidence import validate_cycle_reload
+    from shared.config_loader import compute_config_hash
+
+    baseline = {"scoring": {"min_score": 50}, "risk": {"margin": 1}}
+    candidate = {"scoring": {"min_score": 51}, "risk": {"margin": 1}}
+    assert validate_cycle_reload(
+        baseline, candidate,
+        allowed_paths={"scoring.min_score"}, expected_hash=compute_config_hash(candidate),
+    ) == ("scoring.min_score",)
+
+    wrong_risk = {"scoring": {"min_score": 51}, "risk": {"margin": True}}
+    with pytest.raises(ValueError, match="risk.margin"):
+        validate_cycle_reload(baseline, wrong_risk, allowed_paths={"scoring.min_score"},
+                              expected_hash=compute_config_hash(wrong_risk))
+    with pytest.raises(ValueError, match="hash"):
+        validate_cycle_reload(baseline, candidate, allowed_paths={"scoring.min_score"},
+                              expected_hash=compute_config_hash(baseline))
+    removed = {"risk": {}}
+    with pytest.raises(ValueError, match="removed"):
+        validate_cycle_reload(baseline, removed, allowed_paths={"scoring.min_score", "risk.margin"},
+                              expected_hash=compute_config_hash(removed))
+
+
+def test_recovery_waits_for_distinct_baseline_receipt(identity):
+    from ai_tuner.mvp.activation_evidence import evaluate_recovery_receipt
+
+    args = dict(activation_request_id="attempt", recovery_request_id="recovery",
+                baseline_effective_hash="e" * 64)
+    baseline = RuntimeReceipt("recovery", identity.strategy_id, "V1", "V1", "e" * 64, "1")
+    assert evaluate_recovery_receipt(identity, baseline, **args) == "restored"
+    assert evaluate_recovery_receipt(identity, replace(baseline, request_id="attempt"), **args) == "pending"
+    assert evaluate_recovery_receipt(identity, replace(baseline, loaded_version="V2"), **args) == "recovery_unverified"
+    assert evaluate_recovery_receipt(identity, None, expired=True, **args) == "recovery_unverified"
+    with pytest.raises(ValueError, match="distinct"):
+        evaluate_recovery_receipt(identity, baseline, **{**args, "recovery_request_id": "attempt"})

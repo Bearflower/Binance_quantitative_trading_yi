@@ -77,3 +77,57 @@ def evaluate_receipt(
         requested.effective_params_hash, requested.manifest_schema_version,
     )
     return "verified" if receipt == expected else "restore_previous"
+
+
+def validate_cycle_reload(
+    current: Mapping[str, object], candidate: Mapping[str, object], *,
+    allowed_paths: set[str], expected_hash: str,
+) -> tuple[str, ...]:
+    """Validate an entire loaded config before applying it at a cycle boundary."""
+    from shared.config_loader import compute_config_hash
+
+    if compute_config_hash(dict(candidate)) != expected_hash:
+        raise ValueError("candidate effective config hash mismatch")
+    changed = []
+
+    def visit(before, after, prefix=""):
+        if set(before) - set(after):
+            raise ValueError(f"configuration keys removed at {prefix or 'root'}")
+        for key, value in after.items():
+            if not isinstance(key, str) or not key or "." in key:
+                raise ValueError("invalid configuration path")
+            path = f"{prefix}.{key}" if prefix else key
+            if key not in before:
+                raise ValueError(f"new runtime configuration key: {path}")
+            former = before[key]
+            if isinstance(former, Mapping) and isinstance(value, Mapping):
+                visit(former, value, path)
+            elif type(former) is not type(value) or former != value:
+                if path not in allowed_paths or type(former) is not type(value):
+                    raise ValueError(f"configuration change denied: {path}")
+                changed.append(path)
+
+    visit(current, candidate)
+    return tuple(sorted(changed))
+
+
+def evaluate_recovery_receipt(
+    requested: ActivationIdentity, receipt: RuntimeReceipt | None, *,
+    activation_request_id: str, recovery_request_id: str, baseline_effective_hash: str,
+    expired: bool = False,
+) -> Literal["pending", "restored", "recovery_unverified"]:
+    """Require an independent confirmation of the baseline after pointer recovery."""
+    if (not activation_request_id.strip() or not recovery_request_id.strip()
+            or activation_request_id == recovery_request_id):
+        raise ValueError("activation and recovery require distinct request ids")
+    if not re.fullmatch(r"[0-9a-f]{64}", baseline_effective_hash):
+        raise ValueError("invalid baseline config hash")
+    if expired:
+        return "recovery_unverified"
+    if receipt is None or receipt.request_id != recovery_request_id:
+        return "pending"
+    expected = RuntimeReceipt(
+        recovery_request_id, requested.strategy_id, requested.baseline_version,
+        requested.baseline_version, baseline_effective_hash, requested.manifest_schema_version,
+    )
+    return "restored" if receipt == expected else "recovery_unverified"
