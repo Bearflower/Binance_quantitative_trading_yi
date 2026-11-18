@@ -1,0 +1,319 @@
+{
+  "reviewed_at": "2026-11-18T13:25:30.802727+00:00",
+  "base_commit": "441559ae8d549c9d242dc79df0f945f8539fe6a9",
+  "source_commit": "dec6efbd29e97f20bfa7a5b60cea20af6a6422b9",
+  "mode": "open-code-review-delegate: OCR deterministic preview/rules, host semantic review, independent domain review",
+  "total_files": 45,
+  "reviewable_files": 19,
+  "reviewed_files": 19,
+  "skipped_files": 0,
+  "coverage_rate": 1.0,
+  "excluded_files": [
+    {
+      "path": "docs/reports/hrs-market-cap-nine-identities-2026-11-18.md",
+      "status": "modified",
+      "insertions": 1,
+      "deletions": 1,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/reports/hrs-offline-slot-and-daily-origin-audit-2026-11-18.md",
+      "status": "added",
+      "insertions": 104,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/reports/hrs-optimization-review-2026-11-18.md",
+      "status": "modified",
+      "insertions": 77,
+      "deletions": 49,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/reports/hrs-optimization-rollout-2026-11-18.md",
+      "status": "modified",
+      "insertions": 28,
+      "deletions": 1,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/superpowers/plans/2026-11-18-hrs-followup-admission-data.md",
+      "status": "added",
+      "insertions": 40,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "docs/superpowers/specs/2026-11-18-hrs-followup-admission-data-design.md",
+      "status": "added",
+      "insertions": 21,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "findings.md",
+      "status": "modified",
+      "insertions": 2,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "progress.md",
+      "status": "modified",
+      "insertions": 4,
+      "deletions": 0,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "strategies/hrs/tests/test_emm_input_contract.py",
+      "status": "modified",
+      "insertions": 15,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_lv_rm_empty_pool_execution.py",
+      "status": "modified",
+      "insertions": 9,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "strategies/hrs/tests/test_market_data.py",
+      "status": "modified",
+      "insertions": 5,
+      "deletions": 8,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "task_plan.md",
+      "status": "modified",
+      "insertions": 8,
+      "deletions": 5,
+      "exclude_reason": "unsupported_ext"
+    },
+    {
+      "path": "tests/test_ai_tuner_mvp/replay/test_hrs_slot_scope.py",
+      "status": "added",
+      "insertions": 274,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_ai_tuner_mvp/test_hrs_evidence_export.py",
+      "status": "modified",
+      "insertions": 3,
+      "deletions": 1,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_ai_tuner_mvp/test_hrs_exit_experiment.py",
+      "status": "modified",
+      "insertions": 59,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_ai_tuner_mvp/test_hrs_forecast_closure.py",
+      "status": "modified",
+      "insertions": 14,
+      "deletions": 9,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_ai_tuner_mvp/test_hrs_kline_sources.py",
+      "status": "added",
+      "insertions": 92,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_release/test_hrs_optimization_deploy.py",
+      "status": "modified",
+      "insertions": 19,
+      "deletions": 2,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_risk/test_hrs_scoped_slots.py",
+      "status": "added",
+      "insertions": 211,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_admission_wiring.py",
+      "status": "added",
+      "insertions": 86,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_decision_capture.py",
+      "status": "modified",
+      "insertions": 1,
+      "deletions": 1,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_decision_context.py",
+      "status": "modified",
+      "insertions": 37,
+      "deletions": 2,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_entry_occupancy.py",
+      "status": "added",
+      "insertions": 76,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_kline.py",
+      "status": "modified",
+      "insertions": 4,
+      "deletions": 1,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_kline_repair.py",
+      "status": "added",
+      "insertions": 299,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    },
+    {
+      "path": "tests/test_strategies/test_hrs_kline_wiring.py",
+      "status": "added",
+      "insertions": 122,
+      "deletions": 0,
+      "exclude_reason": "default_path"
+    }
+  ],
+  "checklist": [
+    {
+      "path": ".github/workflows/deploy.yml",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": ".github/workflows/hrs-optimization-candidate.yml",
+      "status": "added",
+      "review": "reviewed"
+    },
+    {
+      "path": "ai_tuner/hrs_evidence_export.py",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "ai_tuner/hrs_exit_experiment.py",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "ai_tuner/hrs_kline_sources.py",
+      "status": "added",
+      "review": "reviewed"
+    },
+    {
+      "path": "ai_tuner/replay/adapters/hrs.py",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "ai_tuner/replay/data_portal.py",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "docs/reports/hrs-exit-experiment-discovery-2026-11-18-final.json",
+      "status": "added",
+      "review": "reviewed"
+    },
+    {
+      "path": "docs/reports/hrs-exit-experiment-discovery-2026-11-18-followup-v4.json",
+      "status": "added",
+      "review": "reviewed"
+    },
+    {
+      "path": "docs/reports/hrs-exit-experiment-registration-2026-11-18-v4.json",
+      "status": "added",
+      "review": "reviewed"
+    },
+    {
+      "path": "docs/reports/hrs-production-optimization-status-2026-11-18.json",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "release/hrs-execution/deploy_optimization.py",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "shared/entry_risk_policy.py",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "strategies/hrs/decision_capture.py",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "strategies/hrs/decision_context.py",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "strategies/hrs/entry_occupancy.py",
+      "status": "added",
+      "review": "reviewed"
+    },
+    {
+      "path": "strategies/hrs/kline_repair.py",
+      "status": "added",
+      "review": "reviewed"
+    },
+    {
+      "path": "strategies/hrs/market_data.py",
+      "status": "modified",
+      "review": "reviewed"
+    },
+    {
+      "path": "strategies/hrs/strategy.py",
+      "status": "modified",
+      "review": "reviewed"
+    }
+  ],
+  "findings": [],
+  "resolved": [
+    "exact current gate SHA and real DB check time; older passable parent fallback removed",
+    "exact complete locked ownership claims, not candidate-only claims",
+    "strict v2 one-to-three typed slot ceiling",
+    "raw future/past repair response timestamps rejected before filtering",
+    "deterministic decimal volume aggregation with explicit contract across Python 3.11 and 3.12",
+    "actual consumed arrays bound on success and error paths; async cache mutation cannot replace scored inputs",
+    "inline derived arrays revalidated against raw analysis; canonical helper in engine identity",
+    "committed reservation receipt captured immediately; commit failure does not produce success audit",
+    "financial inventory GETs precede same-repeatable-read gate clock; full claims expiry uses that exact clock",
+    "release audit declares changed admission semantics separately from unchanged SL/TP and budget percentages"
+  ],
+  "verification": {
+    "candidate_suite": "1408 passed, 82.26s, local Python 3.12 isolated UTF8 PostgreSQL",
+    "independent_suite": "213 passed, 7.85s",
+    "actual_source_closure": "5 real symbols: full original span + raw GET bodies + 1h/4h outputs, production Python 3.11 to local Python 3.12",
+    "production_operations": "none during review; deployment pending immutable CI"
+  },
+  "known_data_limits": [
+    "missing preactivation midnight NAV cannot be fabricated",
+    "August-September decision/market snapshots unavailable",
+    "no SL/TP parameter winner accepted",
+    "24 complete consecutive hours and five eligible natural closed lifecycles still required",
+    "v2 exact gate identity/clock/full-claims missing blocks replay; no proven-clock-denial model",
+    "nonflat opening without complete original protection/cost/MAE/funding proof remains blocked"
+  ]
+}
