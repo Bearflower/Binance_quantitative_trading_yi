@@ -1,8 +1,61 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock
+import os
+from pathlib import Path
+import uuid
 
 import pytest
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv('HRS_TEST_POSTGRES_DSN'),reason='isolated PostgreSQL required')
+async def test_capture_migration_revokes_inherited_main_dml_and_preserves_independent_roles():
+    import asyncpg
+    connection=await asyncpg.connect(os.environ['HRS_TEST_POSTGRES_DSN'])
+    suffix=uuid.uuid4().hex
+    schema='capture_acl_'+suffix
+    roles={key:'capture_'+key+'_'+suffix for key in ('main','writer','owner','reader')}
+    migration=(Path(__file__).parents[2]/'database/postgres/migrations/2026-11-17-hrs-decision-evidence.sql').read_text()
+    migration=migration.replace('hrs.',schema+'.').replace('SCHEMA hrs TO','SCHEMA '+schema+' TO')
+    for original,key in (('trading_user','main'),('ai_tuner_snapshot_writer','writer'),('ai_tuner_snapshot_owner','owner')):
+        migration=migration.replace(original,roles[key])
+    table=schema+'.hrs_decision_evidence'
+    try:
+        for role in roles.values():await connection.execute(f'CREATE ROLE {role} NOLOGIN')
+        await connection.execute(f'CREATE SCHEMA {schema}')
+        await connection.execute(f'GRANT USAGE ON SCHEMA {schema} TO '+','.join(roles.values()))
+        # Reproduce production: the creating admin's defaults give main broad
+        # DML, which survives a later ALTER OWNER unless explicitly revoked.
+        await connection.execute(f'ALTER DEFAULT PRIVILEGES IN SCHEMA {schema} GRANT ALL ON TABLES TO {roles["main"]}')
+        await connection.execute(migration)
+        await connection.execute(f'GRANT SELECT ON {table} TO {roles["reader"]}')
+        await connection.execute(migration)  # Repair is idempotent and keeps reader grants.
+        await connection.execute(f'SET ROLE {roles["writer"]}')
+        now=datetime.now(timezone.utc)
+        await connection.execute(f'''INSERT INTO {table}
+            (evidence_id,run_id,kind,event_time,available_at,payload_sha256,payload)
+            VALUES('one','run','test',$1,$1,$2,'{{}}')''',now,'a'*64)
+        for role in ('main','writer','reader'):
+            await connection.execute('RESET ROLE')
+            await connection.execute(f'SET ROLE {roles[role]}')
+            assert await connection.fetchval(f'SELECT count(*) FROM {table}')==1
+            for privilege in ('TRIGGER','REFERENCES'):
+                assert await connection.fetchval('SELECT has_table_privilege(current_user,$1,$2)',table,privilege) is False
+            for sql in (f"UPDATE {table} SET payload='{{\"tampered\":true}}'",f'DELETE FROM {table}',f'TRUNCATE {table}'):
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):await connection.execute(sql)
+            if role!='writer':
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    await connection.execute(f'''INSERT INTO {table}
+                        (evidence_id,run_id,kind,event_time,available_at,payload_sha256,payload)
+                        VALUES('two','run','test',$1,$1,$2,'{{}}')''',now,'b'*64)
+        await connection.execute('RESET ROLE')
+        assert await connection.fetchval(f'SELECT payload FROM {table}')=='{}'
+    finally:
+        await connection.execute('RESET ROLE')
+        await connection.execute(f'DROP SCHEMA IF EXISTS {schema} CASCADE')
+        for role in roles.values():await connection.execute(f'DROP ROLE IF EXISTS {role}')
+        await connection.close()
 
 
 def test_capture_canonicalization_preserves_modes_and_redacts_credentials():

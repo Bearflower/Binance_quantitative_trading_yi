@@ -19,6 +19,9 @@ BEGIN
   REVOKE UPDATE,DELETE,TRUNCATE ON hrs.hrs_decision_evidence FROM ai_tuner_snapshot_writer;
  END IF;
  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname='trading_user') THEN
+  -- CREATE can inherit broad schema default ACLs before ALTER OWNER. A later
+  -- GRANT SELECT does not remove them; the trading process must remain read-only.
+  REVOKE INSERT,UPDATE,DELETE,TRUNCATE,REFERENCES,TRIGGER ON hrs.hrs_decision_evidence FROM trading_user;
   GRANT SELECT ON hrs.hrs_decision_evidence TO trading_user;
  END IF;
 END $$;
