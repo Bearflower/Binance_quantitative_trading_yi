@@ -1,0 +1,53 @@
+{
+  "status": "deployed",
+  "release_sha": "6bde184ce57679ec0c475d93173ea17c58369e02",
+  "deployed_at": "2026-11-18T04:00:10.416023+00:00",
+  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44232907695",
+  "tests_passed": 1150,
+  "images": {
+    "hrs": "ghcr.io/bearflower/trading-hrs@sha256:a67c0415e5b69e921cb099c1a8c80f6c357a0a56e802c631263d77f07a684f18",
+    "hub": "ghcr.io/bearflower/trading-hrs@sha256:3b90bc1a5c5f7d5f560bd21e8dbe8856fc15d501508382ce6fc70fa7a461f930"
+  },
+  "configuration_hash": "39e90a4d1b1cc526f42d14fb3248a9b292c0aa500a36e4df76159efda25fbb5e",
+  "configuration_mounts_read_only": true,
+  "other_containers_unchanged": true,
+  "economic_parameters_changed": false,
+  "collector_and_independent_writer_fresh": true,
+  "gate": {
+    "ready": false,
+    "allowed": false,
+    "reasons": [
+      "daily_origin_missing"
+    ],
+    "observed_at": "2026-11-18T04:01:20.441948+00:00",
+    "inception_protection_only": true,
+    "qualified_full_30_days": false
+  },
+  "existing_position_proof": {
+    "symbol": "WLDUSDT",
+    "quantity": "28.0",
+    "two_inventories_agree": true,
+    "original_hard_stop_unchanged": true
+  },
+  "runtime_permissions": {
+    "segment_account_id_lock_column_update": true,
+    "segment_opening_cash_update": false,
+    "decision_evidence_main_role_select_only": true
+  },
+  "continuous_acceptance": {
+    "database_snapshot_coherent": true,
+    "source_error_type": null,
+    "consecutive_complete_hours": 0,
+    "observed_closed_lifecycles": 0,
+    "financial_reasons": [],
+    "technical": "NOT_READY",
+    "financial": "PENDING",
+    "performance_accepted": false
+  },
+  "remaining": {
+    "aug_sep_counterfactual": "BLOCKED_DATA",
+    "sltp_parameter_selection": "BLOCKED_DATA",
+    "forward_window_boundary_tool": "in_progress",
+    "natural_24_hours_and_5_closed_lifecycles": "PENDING"
+  }
+}

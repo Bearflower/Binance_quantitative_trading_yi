@@ -26,6 +26,16 @@
 - 实际 apply 在替换容器和迁移前被 `existing_environment_drift_keys:HRS_RELEASE_SHA` 拦截。只读核对全部容器 ID 未变，原版仍健康。原因是第一次回滚留下 Compose 的 `HRS_RELEASE_SHA: null`，覆盖候选镜像的 ENV。
 - `1944bb4b` 修复：候选 overlay 显式绑定本次 SHA；None/旧 SHA 两种回滚后重试先红后绿，其他环境漂移检测不放宽，发布集 24 passed。源码修复由宿主独立复核。后续使用重新验证的候选，结果待记录。
 
+## 实际生产发布通过
+
+- 最终实盘源码 `6bde184ce57679ec0c475d93173ea17c58369e02`，[云端候选](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44232907695) **1150 passed**。
+- 2026-11-18 **12:00:10 北京时间**受控发布完成，发布状态 `complete`，三个相关活动 pin 均为该 SHA。只替换 HRS、市值服务并新增独立 DB-only 报告进程；无关容器 ID 全部不变。
+- HRS 镜像 `sha256:a67c0415e5b69e921cb099c1a8c80f6c357a0a56e802c631263d77f07a684f18`，市值镜像 `sha256:3b90bc1a5c5f7d5f560bd21e8dbe8856fc15d501508382ce6fc70fa7a461f930`。实际进程发布 SHA 和配置哈希一致，冻结配置/overlay 挂载保持只读。
+- 源采集和独立 writer 实际写入均新鲜，最新投影只剩 `daily_origin_missing`；不是权限、冷却或市值原因。缺真实当天午夜原点，新仓暂不放行；下一个 CST 午夜后仍需源数据和各门禁真实通过，不能保证到点必开仓。
+- 只读复核现存 WLDUSDT 28：两套独立库存一致，发布前硬止损 ID 和价格均未变。未人为下单或平仓。新角色实际权限符合最小授权，主交易账号对决策证据仅 SELECT。
+- 独立报告账号真实 `build_report` 核对：数据库快照 coherent、无 source_error、财务 reasons 空，闭合样本 0、完整小时 0，因此仍 `PENDING/NOT_READY`，`performance_accepted=false`。不能用服务健康代替效果验收。
+- 公开脱敏状态见 `hrs-production-optimization-status-2026-11-18.json`；原始逐笔事实和凭据未加入仓库。
+
 ## 经济与数据验收边界
 
 - 1% 单笔风险预算按最大亏损计算；本轮不改变 SL/TP 的经济参数。已实现冻结每仓退出计划、共用实盘/离线计算和预登记实验 CLI，缺合格窗口时不能选新参数。
@@ -35,4 +45,4 @@
 
 ## 当前结论
 
-首次候选未发布成功；原版本运行。后续权限修复、再次候选验证与实际发布结果将追加在本记录。
+本轮风险门禁、真实留证、市值范围修复和持续报告已于 2026-11-18 12:00 北京时间发布。SL/TP 参数未变；历史反事实和未来效果仍未通过。另发现未来实验窗口与实际第 21 分钟扫描的边界不匹配，离线工具正在补齐确定性边界解析，不以伪造午夜快照绕过。
