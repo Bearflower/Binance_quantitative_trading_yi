@@ -17,6 +17,15 @@
 - `2193272a`：HRS 只减仓退出不再被回放误报为低于最小名义额；入场与数量步长约束保留，374 项回放/实验定向测试通过。依据 [Binance PM 错误码 -4164](https://developers.binance.com/en/docs/products/derivatives-trading-portfolio-margin/error-code)，reduce-only 有该最小名义额豁免。
 - `8dd76700` / `56111762`：后台权益刷新和候选定时器的输入不再形成假扫描；真实缺起点/终点/上下文失败、篡改哈希和非因果时间仍阻止验收通过。报告原集 47 项通过，另外两项完整性用例通过；该修复已独立复审。
 
+## 第二次候选
+
+- 源码 `970e2e36545181045f25f3e344b2743555e7f6c6`，云端 Python 3.11 + 新 PostgreSQL 16 定向 **1148 passed**：[候选运行](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44231401156)。
+- `2a978586` 的真实非管理员刷新/重启/迁移重跑与不可变性修复已通过 102 项相关测试，独立复审通过。生产只读发布前预检通过，当前 WLDUSDT 28 与两套独立库存、原硬止损一致。
+- HRS 候选镜像：`ghcr.io/bearflower/trading-hrs@sha256:06744cb45259485b112eb81a36e4365e71545a69f699b17dca21cfb41d7d18c9`。
+- 市值候选镜像：`ghcr.io/bearflower/trading-hrs@sha256:4610af22d16bdc2e7b7e946e987f94cb9f6efcff7f183a766063724b0cdf02ab`。
+- 实际 apply 在替换容器和迁移前被 `existing_environment_drift_keys:HRS_RELEASE_SHA` 拦截。只读核对全部容器 ID 未变，原版仍健康。原因是第一次回滚留下 Compose 的 `HRS_RELEASE_SHA: null`，覆盖候选镜像的 ENV。
+- `1944bb4b` 修复：候选 overlay 显式绑定本次 SHA；None/旧 SHA 两种回滚后重试先红后绿，其他环境漂移检测不放宽，发布集 24 passed。源码修复由宿主独立复核。后续使用重新验证的候选，结果待记录。
+
 ## 经济与数据验收边界
 
 - 1% 单笔风险预算按最大亏损计算；本轮不改变 SL/TP 的经济参数。已实现冻结每仓退出计划、共用实盘/离线计算和预登记实验 CLI，缺合格窗口时不能选新参数。
