@@ -59,6 +59,17 @@ def test_signed_reduction_resolves_only_exact_fill_without_certifying_window(key
     assert row['coverage_complete'] is False
 
 
+@pytest.mark.parametrize('quantity,observed_qty,expected_gap', [
+    ('3', '2', False), ('4', '2', True), ('3', '1', True),
+])
+def test_other_strategy_order_requires_exact_execution_before_excluding_it(quantity, observed_qty, expected_gap):
+    row = project([reservation(strategy='btc_eth_aggressive', quantity=quantity)],
+                  [observation(executed=observed_qty)], [fill()])
+    assert ('unowned_fill_in_window' in row['reasons']) is expected_gap
+    assert 'missing_protocol_cutover' in row['reasons']
+    assert row['owned_entry_fills'] is None
+
+
 def test_missing_orders_are_unknown_even_for_released_reservations():
     row = project([reservation()])
     assert row['owned_entry_fills'] is None

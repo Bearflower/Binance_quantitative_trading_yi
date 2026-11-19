@@ -302,13 +302,11 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
         owners = {r.get('strategy_id') for r in claims}
         symbols = {r.get('symbol') for r in claims}
         selected = owners.intersection(ids)
-        if not selected:
-            continue
         if len(owners) != 1 or len(symbols) != 1:
             gap('intent_owner_conflict', selected)
             continue
         sid, symbol = next(iter(owners)), next(iter(symbols))
-        if client_id not in expected_clients:
+        if sid not in STRATEGIES or client_id not in expected_clients:
             continue
         rows = [o for o in observations if o.get('account_id') == account_id
                 and str(o.get('client_order_id')) == client_id]
@@ -319,16 +317,19 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
             gap('order_identity_conflict', (sid,))
             continue
         valid = []
+        uncertain_identity = False
         latest_success = max(((_ms(o['observed_at']), o.get('id', 0)) for o in rows
                               if o.get('outcome') == 'ok'), default=(-1, -1))
         for o in rows:
             if o.get('outcome') != 'ok':
                 if (_ms(o['observed_at']), o.get('id', 0)) >= latest_success:
+                    uncertain_identity = True
                     gap(str(o.get('outcome') or 'order_observation_unknown'), (sid,))
                 continue
             try:
                 valid.append((o, _valid_order(o)))
             except (ValueError, TypeError, KeyError, InvalidOperation):
+                uncertain_identity = True
                 gap('invalid_order_observation', (sid,))
         identities = {(raw['symbol'], str(raw['orderId'])) for _, raw in valid}
         if len(identities) != 1 or (identities and next(iter(identities))[0] != symbol):
@@ -341,10 +342,14 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
             continue
         if order_key in seen_orders and seen_orders[order_key] != sid:
             gap('order_owner_conflict', (sid, seen_orders[order_key]))
-            positive[sid].clear()
-            positive[seen_orders[order_key]].clear()
+            for owner in {sid, seen_orders[order_key]}.intersection(ids):
+                positive[owner].clear()
+                filled_orders[owner].clear()
             continue
-        seen_orders[order_key] = sid
+        if selected:
+            seen_orders[order_key] = sid
+        elif uncertain_identity:
+            continue
         if _ms(row['observed_at']) < end_ms and raw['status'] not in _TERMINAL:
             gap('entry_order_observation_stale', (sid,))
         if not _covered(cursors, account_id, symbol, start_ms, end_ms):
@@ -377,6 +382,10 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
                 continue
             if any(f.get('side') != raw['side'] or _number(f['qty']) <= 0 for f in matched):
                 gap('order_fill_direction_conflict', (sid,))
+                continue
+            if not selected:
+                # A fully matched order of another strategy is not unowned.
+                seen_orders[order_key] = sid
                 continue
             for f in matched:
                 if not start_ms <= _ms(f['trade_time_utc']) < end_ms:
