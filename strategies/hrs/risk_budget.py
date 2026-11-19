@@ -1,7 +1,7 @@
 """Pure, fail-closed sizing for HRS orders against HRS-allocated capital."""
 
 from dataclasses import dataclass, field, replace
-from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, localcontext
 import json
 from typing import Any, Literal, Mapping, Optional, Tuple
 
@@ -306,44 +306,55 @@ def assess_entry(
                 for price in tp_prices))):
         return invalid
     try:
-        adverse_stop = stop_price * (Decimal(1) + pressure_slippage if direction == "short"
-                                     else Decimal(1) - pressure_slippage)
-        per_unit_loss = abs(adverse_stop - entry_price) + fee_rate * (entry_price + adverse_stop)
-        required = max(min_qty, min_notional / entry_price, min_notional / tp_prices[0])
-        minimum = min_qty + ((required - min_qty) / qty_step).to_integral_value(
-            rounding=ROUND_CEILING) * qty_step
-        # Verify products as well as quotients at Decimal precision boundaries.
-        if minimum * min(entry_price, tp_prices[0]) < min_notional:
-            minimum += qty_step
-        minimum_risk = minimum * per_unit_loss
-        base_single = allocation * single_risk_ratio
-        base_portfolio = allocation * portfolio_risk_ratio
-        single = max(base_single, minimum_risk)
-        portfolio = max(base_portfolio, existing_open_risk + minimum_risk)
-        limit = min(single, portfolio - existing_open_risk)
-        metadata = dict(budget_version=FLOOR, minimum_quantity=minimum,
-                        minimum_risk=minimum_risk, base_single_limit=base_single,
-                        base_portfolio_limit=base_portfolio, effective_single_limit=single,
-                        effective_portfolio_limit=portfolio, risk_limit=limit,
-                        budget_inputs=inputs, risk_allocation=allocation)
-        if minimum * entry_price / leverage > remaining_margin:
-            return RiskDecision(False, "minimum_order_exceeds_margin", **metadata)
-        raw = min(limit / per_unit_loss, remaining_margin * leverage / entry_price)
-        quantity = max(minimum, min_qty + ((raw - min_qty) / qty_step).to_integral_value(
-            rounding=ROUND_FLOOR) * qty_step)
-        if quantity * entry_price / leverage > remaining_margin or quantity * per_unit_loss > limit:
-            quantity -= qty_step
-        if quantity < minimum:
-            return RiskDecision(False, "minimum_order_exceeds_margin", **metadata)
-        from shared.entry_risk_policy import EntryDenied, executable_exit_ratios
-        try:
-            exits = ratios if ratios == (Decimal(1), Decimal(0)) else executable_exit_ratios(
-                quantity, qty_step, min_qty, min_notional, [*tp_prices, adverse_stop], ratios)
-            if exits != ratios:
-                exits = (Decimal(1), Decimal(0))
-        except EntryDenied:
-            return RiskDecision(False, "take_profit_quantity_unavailable", **metadata)
-        return RiskDecision(True, "allowed", quantity=quantity,
-                            worst_loss=quantity * per_unit_loss, exit_ratios=exits, **metadata)
+        with localcontext() as context:
+            values = [inputs[key] for key in _NUMERIC_INPUTS] + list(ratios) + list(tp_prices)
+            if any(value.adjusted() > context.Emax for value in values):
+                return invalid
+            # Preserve the supplied decimal scales across fee/stop/quantity
+            # products and portfolio sums. Four input spans cover the product
+            # depth; guard digits keep divisions away from lattice boundaries.
+            span = max(value.adjusted() for value in values) - min(
+                value.as_tuple().exponent for value in values) + 1
+            context.prec = max(context.prec, 4 * span + 16)
+            adverse_stop = stop_price * (Decimal(1) + pressure_slippage if direction == "short"
+                                         else Decimal(1) - pressure_slippage)
+            per_unit_loss = abs(adverse_stop - entry_price) + fee_rate * (entry_price + adverse_stop)
+            required = max(min_qty, min_notional / entry_price, min_notional / tp_prices[0])
+            minimum = min_qty + ((required - min_qty) / qty_step).to_integral_value(
+                rounding=ROUND_CEILING) * qty_step
+            # Verify products as well as quotients at Decimal precision boundaries.
+            if minimum * min(entry_price, tp_prices[0]) < min_notional:
+                minimum += qty_step
+            minimum_risk = minimum * per_unit_loss
+            base_single = allocation * single_risk_ratio
+            base_portfolio = allocation * portfolio_risk_ratio
+            single = max(base_single, minimum_risk)
+            portfolio = max(base_portfolio, existing_open_risk + minimum_risk)
+            remaining_risk = max(base_portfolio - existing_open_risk, minimum_risk)
+            limit = min(single, remaining_risk)
+            metadata = dict(budget_version=FLOOR, minimum_quantity=minimum,
+                            minimum_risk=minimum_risk, base_single_limit=base_single,
+                            base_portfolio_limit=base_portfolio, effective_single_limit=single,
+                            effective_portfolio_limit=portfolio, risk_limit=limit,
+                            budget_inputs=inputs, risk_allocation=allocation)
+            if minimum * entry_price / leverage > remaining_margin:
+                return RiskDecision(False, "minimum_order_exceeds_margin", **metadata)
+            raw = min(limit / per_unit_loss, remaining_margin * leverage / entry_price)
+            quantity = max(minimum, min_qty + ((raw - min_qty) / qty_step).to_integral_value(
+                rounding=ROUND_FLOOR) * qty_step)
+            if quantity * entry_price / leverage > remaining_margin or quantity * per_unit_loss > limit:
+                quantity -= qty_step
+            if quantity < minimum:
+                return RiskDecision(False, "minimum_order_exceeds_margin", **metadata)
+            from shared.entry_risk_policy import EntryDenied, executable_exit_ratios
+            try:
+                exits = ratios if ratios == (Decimal(1), Decimal(0)) else executable_exit_ratios(
+                    quantity, qty_step, min_qty, min_notional, [*tp_prices, adverse_stop], ratios)
+                if exits != ratios:
+                    exits = (Decimal(1), Decimal(0))
+            except EntryDenied:
+                return RiskDecision(False, "take_profit_quantity_unavailable", **metadata)
+            return RiskDecision(True, "allowed", quantity=quantity,
+                                worst_loss=quantity * per_unit_loss, exit_ratios=exits, **metadata)
     except ArithmeticError:
         return invalid
