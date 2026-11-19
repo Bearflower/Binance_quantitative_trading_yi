@@ -37,3 +37,15 @@ def test_frozen_review_requires_a_full_month_and_enforces_exact_drawdown_boundar
     assert review_month(dict(evidence, closed_lots=19, turnover_usdt="6000"))["reasons"] == [
         "insufficient_closed_lots", "profit_gate_failed",
     ]
+
+
+def test_risk_budget_counts_verified_intact_lot_once_and_rejects_partial_position():
+    from ai_tuner.monitor.trial_risk_evidence import covered_reservation_budget
+
+    positions = [dict(symbol='BTCUSDT', positionSide='BOTH', positionAmt='1')]
+    intents = [dict(symbol='BTCUSDT', margin='20', quantity='1', orig_qty='1', side='BUY',
+                    executed_qty='1', fill_qty='1', cursor_complete=True)]
+    assert covered_reservation_budget(positions, {'BTCUSDT'}, intents) == Decimal('20')
+    assert covered_reservation_budget(positions, {'BTCUSDT'}, intents * 2) is None
+    assert covered_reservation_budget([dict(positions[0], positionAmt='0.5')], {'BTCUSDT'}, intents) is None
+    assert covered_reservation_budget(positions, {'BTCUSDT'}, [dict(intents[0], cursor_complete=False)]) is None

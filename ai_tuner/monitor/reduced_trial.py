@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from apscheduler.triggers.cron import CronTrigger
 from ai_tuner.allocation.activity_evidence import read_activity_evidence
 from ai_tuner.allocation.capital_evidence import read_capital_evidence
-from ai_tuner.monitor.trial_risk_evidence import mark_shock, review_criteria
+from ai_tuner.monitor.trial_risk_evidence import covered_reservation_budget, mark_shock, review_criteria
 from shared.accounting.income_integrity import income_account_lock, require_income_integrity
 from shared.accounting.published_report import REPORT_VERSIONS
 from shared.accounting.report_reader import read_monthly_economic_report
@@ -175,6 +175,34 @@ FROM trading.entry_risk_reservation
 WHERE account_id=$1 AND strategy_id=$2 AND state<>'released'"""
 _CLAIMS_SQL = """SELECT symbol,strategy FROM trading.position_claims
 WHERE claim_state IN ('PENDING','ACTIVE')"""
+_COVERED_RESERVATIONS_SQL = """
+SELECT r.symbol, r.margin, r.quantity, o.orig_qty, o.side, o.executed_qty,
+       CASE WHEN bool_and(COALESCE(f.order_id::text=o.order_id AND f.side=o.side AND f.qty>0, false))
+            THEN sum(f.qty) END AS fill_qty,
+       EXISTS (
+           SELECT 1 FROM trading.execution_fact_cursor c
+           WHERE c.account_id=r.account_id AND c.symbol=r.symbol AND c.source='userTrades'
+             AND c.page_complete AND c.request_status='ok'
+             AND c.window_start_ms <= floor(extract(epoch FROM r.created_at)*1000)
+             AND c.covered_until_ms >= $4
+       ) AS cursor_complete
+FROM trading.entry_risk_reservation r
+JOIN LATERAL (
+    SELECT * FROM trading.entry_order_observation a
+    WHERE a.account_id=r.account_id AND a.symbol=r.symbol AND a.client_order_id=r.client_order_id
+    ORDER BY a.observed_at DESC,a.id DESC LIMIT 1
+) o ON o.outcome='ok' AND o.source='signed_pm_get_order_v1' AND o.status='FILLED'
+   AND o.raw_payload->>'positionSide'='BOTH'
+   AND o.raw_payload->'reduceOnly'='false'::jsonb
+   AND COALESCE(o.raw_payload->'closePosition','false'::jsonb)='false'::jsonb
+JOIN trading.execution_fact_fill f ON f.account_id=r.account_id AND f.symbol=r.symbol
+   AND f.trade_time_utc >= r.created_at
+   AND f.trade_time_utc < to_timestamp($4::bigint / 1000.0)
+WHERE r.account_id=$1 AND r.strategy_id=$2 AND r.symbol=ANY($3::text[])
+  AND r.state='submitting'
+GROUP BY r.account_id,r.symbol,r.margin,r.quantity,r.created_at,r.client_order_id,
+         o.orig_qty,o.side,o.executed_qty,o.order_id
+"""
 # Closed legacy records can leave a zero-quantity placeholder. In that case
 # the exact reservation, signed order and its full fills can prove the identity.
 _AGGRESSIVE_SIGNALS_SQL = """SELECT count(*) AS real_signals,
@@ -305,6 +333,7 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             if account != "default":
                 raise ValueError("position_claims has no account identity")
             positions = await exchange.get_position()
+            position_as_of_ms = int(datetime.now(timezone.utc).timestamp() * 1000) + 1
             orders = await exchange.get_open_orders()
             algos = await exchange.get_open_algo_orders()
             all_claimed = {row["symbol"] for row in claims}
@@ -321,6 +350,19 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             evidence["exchange"] = result
         except Exception as exc:
             evidence["source_errors"].append("exchange:" + type(exc).__name__)
+        else:
+            result["intact_lot_reserved_budget_usdt"] = None
+            if result.get("ownership_complete") is True:
+                try:
+                    symbols = sorted(set(result["owned_positions"]))
+                    candidates = await db.fetch_all(
+                        _COVERED_RESERVATIONS_SQL, account, strategy, symbols, position_as_of_ms
+                    ) if symbols else []
+                    budget = covered_reservation_budget(positions, owned, candidates)
+                    result["intact_lot_reserved_budget_usdt"] = budget
+                    result["intact_lot_budget_as_of_ms"] = position_as_of_ms
+                except Exception as exc:
+                    evidence["source_errors"].append("reserved_lot_budget:" + type(exc).__name__)
     if has_window:
         try:
             start_ms, end_ms = int(_utc(start).timestamp() * 1000), int(_utc(end).timestamp() * 1000)
@@ -631,6 +673,7 @@ class ReducedTrialEvaluator:
                        f"{signals.get('shadow_signals', 'UNKNOWN')}；记录为已执行: "
                        f"{signals.get('executed_signals', 'UNKNOWN')}\n"
                        f"已核入场逐笔成交: {activity.get('owned_entry_fills', 'UNKNOWN')}；"
+                       f"已核有成交入场单: {activity.get('verified_filled_entry_orders', 'UNKNOWN')}；"
                        f"入场事实覆盖完整: {activity.get('coverage_complete', 'UNKNOWN')}\n"
                        f"未释放预留: {reservations.get('count', 'UNKNOWN')}；"
                        f"保证金: {reservations.get('margin', 'UNKNOWN')} USDT；"

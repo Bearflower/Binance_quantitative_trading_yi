@@ -66,6 +66,40 @@ def account_initial_margin(evidence, as_of_ms):
     return None
 
 
+def covered_reservation_budget(positions, owned_symbols, intents):
+    """Identify the part of the policy reservation already covering intact lots."""
+    live = {}
+    for pos in positions:
+        symbol = pos["symbol"]
+        amount = _decimal(pos.get("positionAmt"))
+        if amount is None:
+            return None
+        if symbol not in owned_symbols or not amount:
+            continue
+        if symbol in live or pos.get("positionSide") != "BOTH":
+            return None
+        live[symbol] = amount
+    rows = {}
+    for intent in intents:
+        symbol = intent["symbol"]
+        if symbol in rows or symbol not in live:
+            return None
+        rows[symbol] = intent
+    if rows.keys() != live.keys():
+        return None
+    total = Decimal(0)
+    for symbol, amount in live.items():
+        row = rows[symbol]
+        margin = _decimal(row.get("margin"))
+        quantities = [_decimal(row.get(key)) for key in ("quantity", "orig_qty", "executed_qty", "fill_qty")]
+        if (margin is None or margin <= 0 or row.get("cursor_complete") is not True
+                or row.get("side") != ("BUY" if amount > 0 else "SELL")
+                or any(value != abs(amount) for value in quantities)):
+            return None
+        total += margin
+    return total
+
+
 def review_criteria():
     return {
         "version": RULE_VERSION,
