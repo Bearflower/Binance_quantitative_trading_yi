@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import date
 import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -16,8 +18,8 @@ from scripts.scoped_stop_followup import (  # noqa: E402
     Runtime as BaseRuntime, CONTAINERS, STACK_FILES, atomic_json, image_only,
 )
 
-PREDECESSOR_SHA = "e8821fb61dc2fcbb62016b9a94a8079ad36c2fa6"
-PREDECESSOR_OVERLAY_SHA256 = "d00dc9834a3ec5ac3034795a75017d0e1d6f68d0042d6181c7859e864c610402"
+PREDECESSOR_SHA = "4316920f0de898e3367d351e90415e035851033c"
+PREDECESSOR_OVERLAY_SHA256 = "bb6e7ac2280f87fbe10a18af4ef7c5bd138b081865ef6d4024a37ad816abc7db"
 SERVICE = "dashboard-api"
 LIVE_GRID_REPAIR_REF = "local/grid-repair-dashboard-api:ab38fbc7"
 LIVE_GRID_REPAIR_IMAGE = "sha256:ba4fe00c485190b33dc29fb6c55b20c61023304b16fa19b859c013ab10b009a5"
@@ -80,6 +82,27 @@ def _overview_ready() -> dict:
         "total_perf_sample_count", "total_sharpe", "total_max_drawdown",
         "total_closed", "win_rate", "win_rate_reason",
     )}
+
+
+def verify_annual_period(year: dict) -> dict:
+    if year.get("total_sharpe") is not None or year.get("total_max_drawdown") is not None:
+        raise ReleaseBlocked("annual metrics must remain unavailable while opening equity is missing")
+    sample = year.get("total_verified_period")
+    if not isinstance(sample, dict):
+        raise ReleaseBlocked("verified annual period missing")
+    try:
+        first = date.fromisoformat(sample["window_start"])
+        last = date.fromisoformat(sample["window_end"])
+        day_count = (last - first).days + 1
+        if (day_count < 2 or sample["sample_count"] != day_count
+                or sample["missing_opening_days"] < 1
+                or sample["caliber"] != "exchange_income_realized_daily_v1"
+                or not math.isfinite(sample["sharpe"])
+                or not 0 <= sample["max_drawdown"] <= 1):
+            raise ValueError("invalid period evidence")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ReleaseBlocked("invalid verified annual period") from exc
+    return sample
 
 
 class Runtime(BaseRuntime):
@@ -174,26 +197,19 @@ class Runtime(BaseRuntime):
         archive = self.root / ARCHIVE
         if sha256(archive.read_bytes()) != ARCHIVE_HASH:
             raise ReleaseBlocked("annual income archive digest mismatch")
-        atomic_json(self.overlay, build_overlay(original, self.image, archive))
+        atomic_json(self.overlay, build_overlay(original, self.image))
         old_config = json.loads(self.run(self.compose(SERVICE, overlay=self.previous_overlay) +
                                          ["config", "--format", "json"]))["services"][SERVICE]
         new_config = json.loads(self.run(self.compose(SERVICE, overlay=self.overlay) +
                                          ["config", "--format", "json"]))["services"][SERVICE]
-        old_volumes = old_config.get("volumes", [])
-        volumes = new_config.get("volumes", [])
         expected_mount = {"type": "bind", "source": str(archive), "target": ARCHIVE_TARGET,
                           "read_only": True}
-        archive_mounts = [v for v in volumes if v.get("target") == ARCHIVE_TARGET]
-        if (len(archive_mounts) != 1
-                or {k: v for k, v in archive_mounts[0].items() if k != "bind"} != expected_mount
-                or [v for v in volumes if v.get("target") != ARCHIVE_TARGET] != old_volumes):
+        mounts = [v for v in new_config.get("volumes", []) if v.get("target") == ARCHIVE_TARGET]
+        if (len(mounts) != 1
+                or {k: v for k, v in mounts[0].items() if k != "bind"} != expected_mount):
             raise ReleaseBlocked("unexpected annual archive mount configuration")
-        if "volumes" in old_config:
-            new_config["volumes"] = old_volumes
-        else:
-            new_config.pop("volumes")
         if not image_only(old_config, new_config):
-            raise ReleaseBlocked("effective dashboard Compose drift beyond image and archive mount")
+            raise ReleaseBlocked("effective dashboard Compose drift beyond image")
         atomic_json(self.release_dir / "exchange-before.json", self.pre)
         self.record("in_progress", "preflight")
 
@@ -253,6 +269,8 @@ class Runtime(BaseRuntime):
                                 or year.get("win_rate_reason") != "annual_verified_sample_only"
                                 or year.get("strategy_attribution_complete") is not False):
                             raise ReleaseBlocked("annual exchange income verification failed")
+                        period = verify_annual_period(year)
+                        atomic_json(self.release_dir / "verified-period-proof.json", period)
                         atomic_json(self.release_dir / "annual-proof.json", {
                             key: year[key] for key in ("report_id", "start_ms", "end_ms", "total_pnl",
                                                        "income_archive_end_ms", "archive_attribution_count",

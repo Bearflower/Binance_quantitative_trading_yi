@@ -106,3 +106,23 @@ async def test_dashboard_exchange_snapshot_only_reads_inventory(monkeypatch):
     assert result['ok'] is True and result['read_only'] is True
     assert result['position_exposure'] == []
     client.close.assert_awaited_once()
+
+
+def test_verified_period_successor_requires_reviewed_base():
+    from scripts.select_deploy_mode import VERIFIED_PERIOD_BASE, VERIFIED_PERIOD_MARKER
+    changes = [('A', VERIFIED_PERIOD_MARKER), ('M', 'dashboard/frontend/js/main.js')]
+    assert select_deploy_mode('push', VERIFIED_PERIOD_BASE, changes) == 'dashboard-performance'
+    _validate_dashboard_scope(VERIFIED_PERIOD_BASE, changes)
+    with pytest.raises(DeployModeError):
+        _validate_dashboard_scope("a" * 40, changes)
+
+
+def test_annual_phase_gate_keeps_full_metrics_unknown():
+    from scripts.scoped_dashboard_performance_release import verify_annual_period
+    sample = dict(window_start="2026-09-29", window_end="2026-11-17", sample_count=50,
+                  missing_opening_days=252, sharpe=-1.53, max_drawdown=.1196,
+                  caliber="exchange_income_realized_daily_v1")
+    year = dict(total_sharpe=None, total_max_drawdown=None, total_verified_period=sample)
+    assert verify_annual_period(year) == sample
+    with pytest.raises(RuntimeError):
+        verify_annual_period(dict(year, total_sharpe=-1.53))
