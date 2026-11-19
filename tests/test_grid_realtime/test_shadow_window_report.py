@@ -2,7 +2,7 @@
 import json
 
 from services.aggtrade_collector import repository as repo
-from scripts.audit_grid_shadow_window import main, summarize_market_window
+from scripts.audit_grid_shadow_window import main, summarize_market_window, summarize_decision_window
 from strategies.grid.realtime.queue_audit import QueueAudit
 from strategies.grid.realtime.reference_store import connect, ensure_schema
 
@@ -130,3 +130,27 @@ def test_read_only_cli_reports_reference_gap_without_market_db(tmp_path, capsys)
     assert report["market"] is None
     assert report["evidence_complete"] is False
     assert report["formal_m3_eligible"] is False
+
+
+def test_decision_state_attribution_separates_pause_states(tmp_path):
+    import sqlite3
+
+    decision_path = tmp_path / "decisions.sqlite3"
+    conn = sqlite3.connect(decision_path)
+    conn.execute("CREATE TABLE decisions (calculated_at_ms INTEGER, payload_json TEXT)")
+    for at, state, numeric in ((1000, "OSCILLATION", True),
+                               (2000, "NORMAL_STRONG_TREND", False),
+                               (3000, "WEAK_TREND", True),
+                               (4000, "PRICE_EMERGENCY", False)):
+        conn.execute("INSERT INTO decisions VALUES (?,?)", (at, json.dumps({
+            "symbol": "ETHUSDT", "state": state, "executable": True,
+            "grid_params": {"grid_lower": "100"} if numeric else None,
+        })))
+    conn.commit()
+    report = summarize_decision_window(conn, 1000, 5000, "ETHUSDT")
+    assert report["decision_count"] == 4
+    assert report["numeric_decision_count"] == 2
+    assert report["non_numeric_decision_count"] == 2
+    assert report["states"]["PRICE_EMERGENCY"]["non_numeric_count"] == 1
+    assert report["numeric_decision_share"] == 0.5
+    conn.close()

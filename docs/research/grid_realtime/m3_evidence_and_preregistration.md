@@ -18,9 +18,11 @@ These observations are a dated snapshot, not a claim that the current production
 
 [Manual audit run 44484590546](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44484590546) inspected the completed Beijing calendar day 2026-11-18. Time-weighted numeric-reference availability was 58.32798148%, below the frozen 90% target. Queue evidence showed one continuity gap, 4,418 ms unobserved and zero recorded overflows. This run deliberately omitted the aggregate-trade database, so market continuity was unverified; `evidence_complete=false` and `formal_m3_eligible=false`. The workflow succeeded because the read-only diagnostic executed, not because M3 passed. No trading container was updated.
 
+Read-only attribution from the separate grid decision database: on 2026-11-18, 25 decisions contained 11 numeric grid proposals (8 `OSCILLATION`, 3 `WEAK_TREND`) and 14 deliberate nonnumeric trend-risk decisions (6 `NORMAL_STRONG_TREND`, 5 `EXTREME_STRONG_TREND`, 3 `TREND_ACCELERATING`). Across the seven completed Beijing days 2026-11-12 through 2026-11-18, 63 of 172 decisions contained numeric proposals. These are decision counts, not time-weighted reference coverage or proof of notification delivery. The current strategy intentionally does not calculate grid bounds in risk-pause states; improving all-state numeric availability to 90% would require changing that product meaning, not merely fixing the export path. The audit now accepts `--decision-db` and reports this state breakdown without changing the reference eligibility gate.
+
 ## Daily evidence report
 
-Run `scripts/audit_grid_shadow_window.py --grid-db GRID_DB --agg-db AGG_DB --start-ms START --end-ms END` against read-only copies or production databases opened in read-only mode. Use Beijing calendar-day boundaries. The report separates:
+Run `scripts/audit_grid_shadow_window.py --grid-db GRID_DB --agg-db AGG_DB --decision-db DECISION_DB --start-ms START --end-ms END` against read-only copies or production databases opened in read-only mode. `--decision-db` is optional and only attributes proposal counts by market state. Use Beijing calendar-day boundaries. The report separates:
 
 If the aggregate-trade database is unavailable, omit `--agg-db` for a queue and numeric-reference diagnostic only. In this mode market evidence is `null`, `evidence_complete=false`, and the report cannot pass M3. The report also exposes the frozen 90% numeric-reference target separately from full evidence coverage.
 
