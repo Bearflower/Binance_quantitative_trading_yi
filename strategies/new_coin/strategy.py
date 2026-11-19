@@ -784,10 +784,12 @@ class NewCoinStrategy(BaseStrategy):
             )
 
             if order:
-                # 记录持仓
+                # The executor uses the final filled average when available.
+                tracking = self.trading_executor.position_tracking
+                filled_price = tracking.get(symbol, {}).get('entry_price') if isinstance(tracking, dict) else None
                 self.positions[symbol] = {
                     'order_id': order.get('orderId'),
-                    'entry_price': current_price,
+                    'entry_price': filled_price if filled_price is not None else current_price,
                     'entry_time': datetime.now(timezone.utc).isoformat(),
                     'score': score_result_dict.get('total_score')
                 }
@@ -2611,8 +2613,17 @@ class NewCoinStrategy(BaseStrategy):
                    for value in (anchor, price, remaining, actual_price, local_price)):
                 raise ValueError('invalid position amount/price')
             tolerance = actual_price * Decimal('0.000001')
-            if remaining > anchor or abs(price - actual_price) > tolerance or abs(local_price - actual_price) > tolerance:
+            if remaining > anchor or abs(price - actual_price) > tolerance:
                 raise ValueError('open record differs from exchange position')
+            local_order = pos.get('order_id')
+            if metadata is not None and local_order is not None and str(local_order) != str(entry_order_id):
+                raise ValueError('local entry order differs from persisted batch')
+            if abs(local_price - actual_price) > tolerance:
+                # Old snapshots stored the signal price. Replace it only when the
+                # local and persisted identities agree and the DB price matches PM.
+                if metadata is None or str(local_order) != str(entry_order_id):
+                    raise ValueError('local price has no matching entry identity')
+                entry['entry_price'] = pos['entry_price'] = float(price)
         except Exception as exc:
             logger.warning('重启持仓时间退出证据不足，仅提醒不自动时间平仓', symbol=symbol,
                            reason=type(exc).__name__)

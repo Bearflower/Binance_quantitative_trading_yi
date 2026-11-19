@@ -13,11 +13,11 @@ ROOT = Path('/root/trading_system')
 PIN = ROOT / '.deploy_tmp/ledger-risk-active.json'
 SERVICE = 'new-coin-strategy'
 CONTAINER = 'trading_system-new_coin'
-BASE_TAG = 'local/new-coin-ownership:41d86ea15bb1509ee0178f09dde9b432b80202bc'
-BASE_ID = 'sha256:1cb0ec6d90d0f56ca33cbdb7b438e8abc081697d3919a3df0ec307be33cfce65'
+BASE_TAG = 'local/new-coin-ownership:1878e773988c54bebefc0f07e717a3f64b8a2c31'
+BASE_ID = 'sha256:2120f4e0111d1f4708f3df57c7b8aac2b4ad72ab0e3a7343c37f5b3b350c076b'
 SOURCES = {
-    'strategy.py': '821ec2cde04abf278a4f0547da30c6dac4d24fc0086b94ab01697f5110c4b2ee',
-    'recovery_evidence.py': '8473ff581dd15f519d5df8355cb4aeb4b1f499e7f083734c22ce582d72fa9a2b',
+    'strategy.py': '18623dc8a5270b40735eaa701ba32e731a5c4de747c06aef161f3ec16bd10724',
+    'recovery_evidence.py': '7ba574860da111c9e6006c2d382740ea49d2a3b274965c53f8ca364e3660d0af',
 }
 SOURCE_DIR = '/app/strategies/new_coin'
 
@@ -100,6 +100,7 @@ def main(revision, strategy_sha, evidence_sha, staging):
     prior_config = json.loads(run(*compose,'-f',str(old_overlay),'config','--format','json'))
     new_config = json.loads(run(*compose,'-f',str(overlay),'config','--format','json'))
     prior_config['services'][SERVICE]['image'] = image
+    run('python3','scripts/database_permissions.py','audit')
     if new_config != prior_config or not idle():
         raise RuntimeError('effective configuration or New Coin exposure changed')
     write(PIN, dict(pin,status='activating',successor_sha=revision))

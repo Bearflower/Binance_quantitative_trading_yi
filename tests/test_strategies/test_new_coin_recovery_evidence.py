@@ -304,3 +304,27 @@ async def test_restart_waits_for_ownership_before_adopting_account_wide_short():
     assert executor.baseline_ready is True
     assert strategy.positions == executor.position_tracking == {}
     executor._close_position.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('local_order,actual_price,accepted', [
+    (141970, '25', True), (141969, '25', False), (None, '25', False),
+    (141970, '25.50', False),
+])
+async def test_same_order_can_replace_stale_signal_price_in_recovery(
+        local_order, actual_price, accepted):
+    strategy, executor, rebuilt = setup_recovery(quantity=100)
+    row = executor.db.fetch_all.return_value[0]
+    row.update(position_id=f'{SYMBOL}_141970',
+               metadata={'entry_order_id': 141970, 'tp1_algo_id': 2000001554798281})
+    rebuilt[SYMBOL].update(entry_price=25.7, exchange_entry_price=actual_price,
+                           order_id=local_order)
+
+    await strategy._sync_baseline_to_tracking(executor, rebuilt)
+
+    entry = executor.position_tracking[SYMBOL]
+    assert (entry.get('recovery_entry_order_id') == 141970) is accepted
+    assert rebuilt[SYMBOL]['entry_price'] == (25 if accepted else 25.7)
+    if accepted:
+        assert entry['entry_price'] == 25
+        assert entry['time_exit_status'] == 'review_required'
