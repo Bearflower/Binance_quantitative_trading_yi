@@ -12,16 +12,16 @@ import time
 from datetime import datetime
 
 ROOT = Path('/root/trading_system')
-PIN_SHA = '4dff7e68'
-OVERLAY_SHA = '53e42bb32b6a740a7d4e9bd6ea7381fa46a4d4b2f66e53eeb14d14ff3aa578b2'
-BASE_IMAGE = 'sha256:b0ab683671e3b9caf1ad20d8d2f96516633ab1a8f73aeef6c34c8a8c61fa5b48'
+PIN_SHA = '0b7b7360e072051a298dfbe8bbbf8f8b4a2826e0'
+OVERLAY_SHA = '36a54c10d0824f1d2ce313e38c2827a6da54765cebc9e8192b63f1cf6e326490'
+BASE_IMAGE = 'sha256:26b7197d9464e7d0e3778ff24fc61d3c62745cfef997c95a096c11a806bce38f'
 MIGRATIONS = ()
 
 
 def run(args, *, input=None, timeout=180):
     result = subprocess.run(args, cwd=ROOT, text=True, input=input,
                             capture_output=True, timeout=timeout,
-                            env={k:v for k,v in os.environ.items() if k != 'COMPOSE_FILE'})
+                            env={k:v for k,v in os.environ.items() if k not in ('COMPOSE_FILE', 'COMPOSE_ENV_FILES', 'AI_TUNER_WRITE_TOKEN')})
     if result.returncode:
         # Docker inspect/compose outputs can contain credentials; never print them.
         raise RuntimeError('command failed: ' + ' '.join(args[:2]))
@@ -47,6 +47,15 @@ def inventory():
     return {r['Name'].lstrip('/'): (r['Id'],r['Image'],r['State']['StartedAt']) for r in rows}
 
 
+def audit_permissions(bundle):
+    output = run(['python3', str(bundle/'scripts/database_permissions.py'), 'audit',
+                  '--manifest', str(bundle/'database/postgres/permissions.json')])
+    audit = json.loads(output)
+    if audit.get('ok') is not True or audit.get('issues'):
+        raise RuntimeError('database permission audit failed')
+    return audit['manifest_sha256']
+
+
 def policy_hash():
     sql = "SELECT md5(jsonb_build_array((SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM trading.strategy_risk_policy t),(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM trading.strategy_risk_active t),(SELECT jsonb_agg(to_jsonb(t) ORDER BY to_jsonb(t)::text) FROM public.capital_allocation t))::text)"
     return run(['docker','exec','trading_system-postgres','psql','-X','-At','-v','ON_ERROR_STOP=1',
@@ -56,7 +65,15 @@ def policy_hash():
 def fresh_observation(observation, started_ms):
     risk = observation.get('account-risk-latest.json', {})
     activity = observation.get('entry-activity-latest.json', {})
-    return (risk.get('account_id') == 'default'
+    recovery = observation.get('new-coin-recovery-latest.json', {})
+    try:
+        recovery_ms = int(datetime.fromisoformat(recovery['as_of']).timestamp()*1000)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (recovery.get('account_id') == 'default'
+            and recovery.get('status') in ('WAIT_OPEN_POSITION','OBSERVED')
+            and recovery_ms >= started_ms
+            and risk.get('account_id') == 'default'
             and risk.get('budget_id') == 'default-pm-5pct-20261117-v1'
             and bool(risk.get('baseline')) and risk.get('as_of_ms', 0) >= started_ms
             and activity.get('account_id') == 'default'
@@ -115,6 +132,7 @@ def main(sha, image_digest, bundle):
     old['services']['ai-tuner']['image'] = image
     if old != new:
         raise RuntimeError('effective configuration drift beyond one image')
+    permission_manifest = audit_permissions(bundle)
     policies = policy_hash()
     atomic(release/'state.json',dict(status='preflight',sha=sha,image=image,source_proof=proof))
     # Each migration owns its transaction, verified as additive and idempotent.
@@ -142,7 +160,7 @@ def main(sha, image_digest, bundle):
             raise RuntimeError('running image mismatch')
         started_ms = int(datetime.fromisoformat(current['State']['StartedAt'].replace('Z','+00:00')).timestamp()*1000)
         # Wait for actual scheduler invocations, not merely Python imports.
-        code = "import json,pathlib; p=pathlib.Path('/app/logs/trial_evidence'); print(json.dumps({n:json.loads((p/n).read_text()) for n in ('account-risk-latest.json','entry-activity-latest.json')}))"
+        code = "import json,pathlib; p=pathlib.Path('/app/logs/trial_evidence'); print(json.dumps({n:json.loads((p/n).read_text()) for n in ('account-risk-latest.json','entry-activity-latest.json','new-coin-recovery-latest.json')}))"
         observation = None
         while time.monotonic()<deadline:
             try:
@@ -159,9 +177,11 @@ def main(sha, image_digest, bundle):
         if (set(before)!=set(after) or any(after[n]!=v for n,v in before.items() if n!='ai-tuner')
                 or policy_hash()!=policies):
             raise RuntimeError('excluded containers/policies/allocations changed')
+        if audit_permissions(bundle) != permission_manifest:
+            raise RuntimeError('database permission manifest changed')
         atomic(release/'observation.json',observation)
         atomic(release/'state.json',dict(sha=sha,status='complete',changed=['ai-tuner'],image=image,
-                    source_proof=proof,other_containers_unchanged=True,risk_policy_unchanged=True,
+                    source_proof=proof,other_containers_unchanged=True,risk_policy_unchanged=True, permission_manifest=permission_manifest,
                     migrations=list(MIGRATIONS),completed_at_ms=int(time.time()*1000)))
         atomic(pin_path,dict(pin,sha=sha,status='active',predecessor_sha=pin['sha'],
                             successor_sha=sha,overlay=str(target),state=str(release/'state.json')))
