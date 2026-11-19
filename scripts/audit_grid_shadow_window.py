@@ -83,6 +83,44 @@ def summarize_market_window(conn: sqlite3.Connection, start_ms: int,
     }
 
 
+def summarize_decision_window(conn: sqlite3.Connection, start_ms: int,
+                              end_ms: int, symbol: str) -> dict:
+    """按决策状态归因数值参数供给；次数不等于持续时间或发送成功。"""
+    states: dict[str, dict[str, int]] = {}
+    count = numeric_count = malformed_count = 0
+    rows = conn.execute(
+        "SELECT payload_json FROM decisions WHERE calculated_at_ms>=? "
+        "AND calculated_at_ms<? ORDER BY calculated_at_ms",
+        (start_ms, end_ms))
+    for (raw,) in rows:
+        try:
+            decision = json.loads(raw)
+            if decision.get("symbol") != symbol:
+                continue
+            state = decision["state"]
+            if not isinstance(state, str) or not state:
+                raise ValueError("missing state")
+        except (TypeError, ValueError, KeyError, AttributeError):
+            malformed_count += 1
+            continue
+        numeric = decision.get("grid_params") is not None
+        bucket = states.setdefault(state, {"count": 0, "numeric_count": 0,
+                                           "non_numeric_count": 0})
+        count += 1
+        bucket["count"] += 1
+        bucket["numeric_count" if numeric else "non_numeric_count"] += 1
+        numeric_count += numeric
+    return {
+        "start_ms": start_ms, "end_ms": end_ms,
+        "decision_count": count, "numeric_decision_count": numeric_count,
+        "non_numeric_decision_count": count - numeric_count,
+        "numeric_decision_share": numeric_count / count if count else None,
+        "malformed_decision_count": malformed_count,
+        "states": dict(sorted(states.items())),
+        "interpretation": "决策次数归因；不能推出数值参考持续时间、通知成功率或 M3 合格",
+    }
+
+
 def _read_only(path: str) -> sqlite3.Connection:
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
@@ -93,6 +131,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--grid-db", required=True)
     parser.add_argument("--agg-db", help="聚合成交库；缺省时仅报告队列和参考证据")
+    parser.add_argument("--decision-db", help="网格决策库；缺省时不做市场状态归因")
     parser.add_argument("--start-ms", required=True, type=int)
     parser.add_argument("--end-ms", required=True, type=int)
     parser.add_argument("--symbol", default="ETHUSDT")
@@ -100,6 +139,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     grid = _read_only(args.grid_db)
     agg = _read_only(args.agg_db) if args.agg_db else None
+    decisions = _read_only(args.decision_db) if args.decision_db else None
     try:
         queue = summarize_window(
             grid, start_ms=args.start_ms, end_ms=args.end_ms,
@@ -109,11 +149,17 @@ def main(argv=None) -> int:
             max_gap_ms=args.max_gap_ms)
         market = (summarize_market_window(
             agg, args.start_ms, args.end_ms, args.symbol) if agg else None)
+        decision_states = (summarize_decision_window(
+            decisions, args.start_ms, args.end_ms, args.symbol)
+            if decisions else None)
     finally:
         grid.close()
         if agg:
             agg.close()
-    result = {"queue": queue, "shadow": shadow, "market": market}
+        if decisions:
+            decisions.close()
+    result = {"queue": queue, "shadow": shadow, "market": market,
+              "decision_states": decision_states}
     result["reference_target"] = 0.9
     result["reference_target_met"] = (
         shadow["numeric_reference_availability"] >= result["reference_target"])
