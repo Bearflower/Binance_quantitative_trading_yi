@@ -235,7 +235,7 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
                 if f.get('account_id') == account_id and f.get('kind') == 'capture_boundary'}
     for sid in ids:
         windows = []
-        verified_intervals = []
+        required_cursors = []
         symbol_intervals = []
         for fact in facts:
             if fact.get('account_id') != account_id or fact.get('kind') != 'protocol_window':
@@ -255,8 +255,7 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
                 if (p.get('symbol_universe_complete') is True and isinstance(symbols, list)
                         and symbols and all(isinstance(symbol, str) and symbol.strip() for symbol in symbols)):
                     symbol_intervals.append((left, right))
-                    if all(_covered(cursors, account_id, symbol, left, right) for symbol in symbols):
-                        verified_intervals.append((left, right))
+                    required_cursors.extend((symbol, left, right) for symbol in symbols)
 
         def covers_window(intervals):
             covered = start_ms
@@ -270,7 +269,8 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
             gap('missing_protocol_cutover', (sid,))
         elif not covers_window(symbol_intervals):
             gap('entry_symbol_universe_missing', (sid,))
-        elif not covers_window(verified_intervals):
+        elif not all(_covered(cursors, account_id, symbol, left, right)
+                     for symbol, left, right in required_cursors):
             gap('user_trades_coverage_incomplete', (sid,))
     intents = defaultdict(list)
     for r in reservations:

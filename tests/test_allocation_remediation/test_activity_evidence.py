@@ -560,3 +560,12 @@ async def test_postgres_intact_budget_rejects_any_unmatched_fill(pg_activity):
     await conn.execute("""INSERT INTO trading.execution_fact_fill VALUES
         ('default','AAAUSDT',2,NULL,'BUY',1,to_timestamp(2.5))""")
     assert (await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args))['fill_qty'] is None
+
+
+def test_overlapping_protocol_declarations_require_coverage_for_both_universes():
+    boundary, first = protocol_facts()
+    second = dict(first, id=4, payload=dict(first['payload'], symbols=['BBBUSDT']))
+    row = project([], [], [], [boundary, first, second, batch([])], [cursor()])
+    assert not row['coverage_complete']
+    assert row['owned_entry_fills'] is None
+    assert 'user_trades_coverage_incomplete' in row['reasons']
