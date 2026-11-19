@@ -15,6 +15,7 @@ No schema installation, exchange calls, orders, or external messages occur here.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import asyncio
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
@@ -431,9 +432,10 @@ def _floor_budget_provenance(lifecycle, payload, decision, records, budget_at, a
     """Reproduce the committed lock decision from immutable source receipts."""
     from shared.entry_risk_policy import (EntryDenied, _hrs_budget_json,
         _validate_hrs_floor_decision, _validate_hrs_floor_context,
-        _bind_hrs_floor_local_to_parent, _bind_hrs_floor_pending_to_rows, _validate_hrs_floor_finance)
+        _bind_hrs_floor_local_to_parent, _bind_hrs_floor_pending_to_rows, _validate_hrs_floor_finance,
+        _validate_hrs_financial_receipt)
     from .risk_budget import FLOOR, policy_budget_version, calculate_open_position_risk
-    from .entry_occupancy import capture_hrs_slot_inputs, prove_hrs_slot_ownership, HrsOccupancyDenied
+    from .entry_occupancy import prove_hrs_slot_ownership, HrsOccupancyDenied
     try:
         client = decision['client_order_id']
         stages = [(p, at) for kind, p, at in records if kind == 'entry_stage_inputs'
@@ -472,11 +474,23 @@ def _floor_budget_provenance(lifecycle, payload, decision, records, budget_at, a
         if len(parents) != 1:
             raise ValueError('original raw equity parent missing or ambiguous')
         parent = _bind_hrs_floor_local_to_parent(parents[0]['payload'],context['local_positions'],account_id,context['evidence_sha256'])
-        capture = parent['capture']
+        receipt=context['financial_receipt']
+        expected_client='risk_'+hashlib.sha256(f"{account_id}:hrs:{context['signal_id']}".encode()).hexdigest()[:30]
+        if client!=expected_client or context['symbol']!=lifecycle['symbol']:
+            raise ValueError('original financial receipt intent mismatch')
+        financial_rows=[p for kind,p,_ in records if kind=='entry_stage_inputs'
+            and p.get('stage')=='reservation_inventory'
+            and p['_capture_envelope'].get('evidence_id')==receipt['evidence_id']]
+        if len(financial_rows)!=1 or receipt['run_id']!=payload['_capture_run_id']:
+            raise ValueError('original financial receipt missing or ambiguous')
+        source=financial_rows[0]
+        financial=_validate_hrs_financial_receipt(receipt,
+            dict(source['_capture_envelope'],payload={k:v for k,v in source.items() if not k.startswith('_capture_')}),
+            account=account_id,symbol=lifecycle['symbol'],signal_id=context['signal_id'],
+            checked_at=_time(context['checked_at']))
         reproduced = prove_hrs_slot_ownership(account_id,
             dict(payload=parent,evidence_sha256=context['evidence_sha256']),
-            capture_hrs_slot_inputs(inventory=capture['inventory'],independent=capture['independent'],
-                local=context['local_positions'],observed_at=_time(proof['observed_at'])),
+            financial['slot_inputs'],
             context['ownership_claims'],checked_at=_time(context['checked_at']))
         if reproduced != proof or any(slot[k] != proof[k] for k in ('account_symbols','hrs_symbols')):
             raise ValueError('original owner proof differs from committed reservation')
@@ -492,7 +506,7 @@ def _floor_budget_provenance(lifecycle, payload, decision, records, budget_at, a
                     or row['original_pressure_risk'] is not None and _number(row['original_pressure_risk']) < pressure):
                 raise ValueError('pending financial source invalid')
         local_risk = calculate_open_position_risk(context['local_positions'],fee_rate=inputs['fee_rate'],pressure_slippage=inputs['pressure_slippage'])
-        _validate_hrs_floor_finance(context,slot,parent,pending,_number(context['full_allocation']),policy,expected)
+        _validate_hrs_floor_finance(context,slot,financial,pending,_number(context['full_allocation']),policy,expected)
         if (local_risk is None or local_risk != _number(context['planned_budget_inputs']['existing_open_risk'])
                 or _number(context['account_margin']) != _number(proof['account_margin'])
                 or _number(decision['effective_allocation']) != _number(context['snapshot_effective_allocation'])
@@ -532,7 +546,10 @@ def _engineering_checks(lifecycle, evidence, through, account_id, *, budget_sour
             at, available = _time(raw['event_time']), _time(raw['available_at'])
             if canonical_payload(p)[1] != raw.get('payload_sha256') or not at <= available <= through:
                 raise ValueError('capture_integrity_unproven')
-            records.append((raw['kind'], dict(p,_capture_run_id=raw.get('run_id')), at))
+            envelope={key:raw.get(key) for key in ('evidence_id','run_id','kind','symbol','payload_sha256','recorded_at')}
+            envelope.update(event_time=at,available_at=available)
+            if envelope['recorded_at'] is not None:envelope['recorded_at']=_time(envelope['recorded_at'])
+            records.append((raw['kind'], dict(p,_capture_run_id=raw.get('run_id'),_capture_envelope=envelope), at))
         except (ValueError, TypeError, KeyError):
             invalid = True
     if invalid:
@@ -914,9 +931,9 @@ async def build_report(db, *, as_of=None, account_id=None):
                         if not inception <= through <= now or (now-through).total_seconds() > 120:
                             raise ValueError('reconciled_source_stale_or_noncausal')
                         proof = _object(anchor['opening_evidence'])
-                        lifecycle_evidence = await _read_evidence(connection, '''SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload
+                        lifecycle_evidence = await _read_evidence(connection, '''SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload,recorded_at
                             FROM hrs.hrs_decision_evidence WHERE event_time >= $1 AND available_at <= $2
-                            AND (kind=ANY($3::text[]) OR (kind='entry_stage_inputs' AND payload->>'stage'='reservation_success'))''', inception, through,
+                            AND (kind=ANY($3::text[]) OR (kind='entry_stage_inputs' AND payload->>'stage' IN ('reservation_success','reservation_inventory')))''', inception, through,
                             ['scan_start','entry_budget_reserved','order_execution_result','protection_order_ack'])
                         incomes = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,tran_id,income_type,income,asset,event_time_utc
                             FROM trading.execution_fact_income WHERE account_id=$1 AND event_time_utc > $2 AND event_time_utc <= $3
