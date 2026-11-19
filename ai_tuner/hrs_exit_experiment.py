@@ -58,6 +58,7 @@ ENGINE_MODULES = (
     'ai_tuner.hrs_evidence_export',
     'ai_tuner.hrs_forecast_sources','strategies.hrs.funding_reference','strategies.hrs.equity_evidence',
     'strategies.hrs.entry_occupancy',
+    'strategies.hrs.margin_budget',
     'ai_tuner.hrs_kline_sources','strategies.hrs.kline_repair','strategies.hrs.decision_capture',
     'ai_tuner.replay.hrs_evidence_archive','ai_tuner.replay.raw_export',
     'ai_tuner.replay.adapters.hrs', 'ai_tuner.replay.adapters.base',
@@ -188,6 +189,10 @@ def validate_registration(registration):
         from strategies.hrs.risk_budget import FLOOR, STRICT
         if registration['runtime_risk_budget_scope'] not in (FLOOR, STRICT):
             raise ValueError('registered_runtime_risk_budget_scope_unknown')
+    if 'runtime_margin_scope' in registration:
+        from strategies.hrs.margin_budget import ALL_ACCOUNT, HRS_OWNED
+        if registration['runtime_margin_scope'] not in (ALL_ACCOUNT,HRS_OWNED):
+            raise ValueError('registered_runtime_margin_scope_unknown')
     baseline = registration['baseline']
     if baseline.get('source') != 'production_effective' or not isinstance(baseline.get('config'), dict):
         raise ValueError('actual_baseline_required')
@@ -491,6 +496,41 @@ def _registered_budget_validation(registration,portal,bootstrap):
     return dict(status='VERIFIED',scope=scope,input_rows_checked=count)
 
 
+def _registered_margin_validation(registration,portal,bootstrap):
+    """Require the declared quota/cash model and its original observed sources."""
+    from strategies.hrs.margin_budget import HRS_OWNED,policy_margin_scope,validate_cash_fields,pending_margin
+    scope=registration.get('runtime_margin_scope')
+    if scope is None:return dict(status='NOT_REGISTERED',scope=None,input_rows_checked=0)
+    def require(financial,source):
+        try:
+            if not isinstance(financial,dict) or not isinstance(financial.get('entry_policy'),dict):
+                raise ValueError('policy_missing')
+            policy=financial['entry_policy']
+            if policy_margin_scope(policy)!=scope:raise ValueError('margin_scope_mismatch')
+            if scope==HRS_OWNED:
+                if financial.get('hrs_margin_scope')!=scope:raise ValueError('cash_scope_missing')
+                validate_cash_fields(financial)
+                _time(financial['account_cash_observed_at'])
+                rows=financial['account_pending_reservations']
+                if (not isinstance(rows,list) or not isinstance(policy.get('account_id'),str)
+                        or not policy['account_id'] or any(not isinstance(row,dict)
+                            or row.get('state') not in ('reserved','submitting','released') for row in rows)):
+                    raise ValueError('account_pending_sources_missing')
+                pending_margin([row for row in rows if row['state']!='released'],account=policy['account_id'])
+        except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
+            raise DataBlocked(['registered_runtime_margin_scope_mismatch:'+source]) from exc
+    require(bootstrap,'bootstrap')
+    count=0
+    with (portal.snapshot_dir/'hrs_decision_inputs.jsonl').open(encoding='utf-8') as handle:
+        for line in handle:
+            if not line.strip():continue
+            row=json.loads(line)
+            require(row.get('risk') if isinstance(row,dict) else None,'input')
+            count+=1
+    if not count:raise DataBlocked(['registered_runtime_margin_scope_inputs_missing'])
+    return dict(status='VERIFIED',scope=scope,input_rows_checked=count)
+
+
 def _run_candidate(registration, candidate, window, directory, on_engine_run=None, *, expected_engine_identity=None,source_cache=None):
     expected_engine_identity = expected_engine_identity or engine_identity()
     _require_runtime_identity(expected_engine_identity, 'engine_identity_changed_before_run')
@@ -506,6 +546,7 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
             raise DataBlocked(['registered_production_baseline_mismatch'])
         admission=_registered_admission_validation(registration,portal,raw)
         budget=_registered_budget_validation(registration,portal,raw)
+        margin=_registered_margin_validation(registration,portal,raw)
         states = raw.get('state_tables')
         if not isinstance(states, dict):
             # Exported opening state is an independent immutable dataset.
@@ -553,6 +594,7 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
         tiers[tier] = dict(source_manifest_sha256=replay.manifest_ref, nav=nav, lifecycles=lifecycles,
             runtime_admission_scope_validation=admission,
             runtime_risk_budget_scope_validation=budget,
+            runtime_margin_scope_validation=margin,
             portfolio_lifecycles=portfolio_lifecycles,
             score_events=sum(event['type'] == 'hrs_score' for event in replay.audit_events),
             audit_sha256=fingerprint(replay.audit_events),
@@ -623,6 +665,7 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
         report['registration_sha256'] = validate_registration(registration)
         report['runtime_admission_scope']=registration.get('runtime_admission_scope')
         report['runtime_risk_budget_scope']=registration.get('runtime_risk_budget_scope')
+        report['runtime_margin_scope']=registration.get('runtime_margin_scope')
         report['baseline_identity'] = {key: registration['baseline'][key] for key in
             ('effective_config_sha256', 'config_hashes', 'code_commit', 'source')}
         report['registered_candidates'] = [dict(candidate, candidate_sha256=fingerprint(candidate))
