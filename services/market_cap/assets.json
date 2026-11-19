@@ -1365,5 +1365,29 @@
       "ethereum": "0x000006c2a22ff4a44ff1f5d0f2ed65f781f55555",
       "binance-smart-chain": "0x15247e6e23d3923a853ccf15940a20ccdf16e94a"
     }
+  },
+  "IRYSUSDT": {
+    "symbol": "IRYS",
+    "cg_id": "irys",
+    "cmc_id": null,
+    "name": "Irys",
+    "verified_at": "2026-11-19",
+    "evidence": [
+      "https://www.binance.com/en/square/post/32909849744210",
+      "https://www.coingecko.com/en/coins/irys",
+      "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=irys",
+      "https://irys.xyz/assets/IrysWhitepaper.pdf",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "reason": "provider_supply_comparison_required"
+    },
+    "contracts": {
+      "binance-smart-chain": "0x91152b4ef635403efbae860edd0f8c321d7c035d",
+      "ethereum": "0x50f41f589afaca2ef41fdf590fe7b90cd26dee64"
+    },
+    "identity_notes": "Irys Layer-1 native IRYS issuer market cap. The Binance official futures announcement and CoinGecko API-ID page identify the same BSC contract; the project whitepaper section 8 confirms native IRYS. Contract representations do not multiply the issuer's circulating market cap."
   }
 }
