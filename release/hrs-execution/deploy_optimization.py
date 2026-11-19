@@ -123,16 +123,7 @@ def actual_volumes(overlay, mounts):
     return volumes
 
 
-def preserve_absent_environment_keys(manifest):
-    """Only this reviewed opt-in may mask a newly introduced env_file value."""
-    keys=manifest.get('preserve_absent_environment_keys',[])
-    if not isinstance(keys,list) or keys not in ([],['AI_TUNER_WRITE_TOKEN']):
-        raise ValueError('preserve_absent_environment_keys_invalid')
-    return tuple(keys)
-
-
-def release_overlay(previous, hrs_image, hub_image, mounts, release_sha,
-                    preserved_absent_keys=()):
+def release_overlay(previous, hrs_image, hub_image, mounts, release_sha):
     overlay = deepcopy(previous)
     services = overlay.setdefault('services', {})
     service = services.setdefault('hrs-strategy', {})
@@ -141,7 +132,6 @@ def release_overlay(previous, hrs_image, hub_image, mounts, release_sha,
         HRS_EQUITY_GATE_ENABLED='1', ENTRY_EQUITY_GATE_STRATEGIES='hrs',
         HRS_EQUITY_ALLOW_INCEPTION='true', HRS_EQUITY_REFRESH_SECONDS='30',
         HRS_ACCEPTANCE_REPORT_ENABLED='0',HRS_RELEASE_SHA=release_sha)
-    service['environment'].update({key:None for key in preserved_absent_keys})
     service['volumes'] = actual_volumes(overlay,mounts)
     services.setdefault('market-cap-service', {})['image'] = hub_image
     return overlay
@@ -507,10 +497,7 @@ def main():
     if (folder/'state.json').exists() and json.loads((folder/'state.json').read_text()).get('status')=='complete':
         raise RuntimeError('release_already_completed')
     manifest=json.loads(Path(args.manifest).read_text())
-    preserved_absent_keys=preserve_absent_environment_keys(manifest)
     change_metadata=admission_change_metadata(manifest)
-    if preserved_absent_keys:
-        change_metadata['preserve_absent_environment_keys']=list(preserved_absent_keys)
     expected=manifest['source_hashes']
     if not isinstance(expected,dict) or not expected:
         raise ValueError('source_hash_inventory_missing')
@@ -524,8 +511,6 @@ def main():
     all_before=container_ids()
     if REPORTER in all_before:before[REPORTER]=inspect(REPORTER)
     env=environment(before['trading_system-hrs'])
-    for key in preserved_absent_keys:
-        if key in env:raise RuntimeError('preserved_environment_key_present_in_actual:'+key)
     if not env.get('AI_TUNER_SNAPSHOT_DB_USER') or not env.get('AI_TUNER_SNAPSHOT_DB_PASSWORD'):
         raise RuntimeError('independent_snapshot_credentials_missing')
     facts=preflight();atomic(folder/'preflight.json',facts)
@@ -533,12 +518,6 @@ def main():
     planpath=folder/'rollback-plan.json'
     if planpath.exists():
         plan=json.loads(planpath.read_text());pin=plan['pins']['ledger-risk-active.json']
-        if preserved_absent_keys:
-            if not (folder/'rollback-images.json').is_file():
-                raise RuntimeError('preserved_environment_rollback_requires_fresh_release')
-            rollback_env=json.loads((folder/'rollback-images.json').read_text()).get('services',{}).get('hrs-strategy',{}).get('environment',{})
-            if any(key not in rollback_env or rollback_env[key] is not None for key in preserved_absent_keys):
-                raise RuntimeError('preserved_environment_rollback_requires_fresh_release')
         if not unchanged_others(plan['containers'],all_before):raise RuntimeError('unrelated_container_changed_since_prepare')
     else:
         pin=json.loads(pinpath.read_text())
@@ -559,14 +538,13 @@ def main():
             service['volumes']=actual_volumes(old_overlay,container.get('Mounts',[]))
         old_env=old_overlay['services']['hrs-strategy'].setdefault('environment',{})
         old_env.update({key:env.get(key) for key in PUBLIC_FLAGS|{'HRS_RELEASE_SHA'}})
-        old_env.update({key:None for key in preserved_absent_keys})
         atomic(folder/'rollback-images.json',old_overlay)
         plan=dict(containers=all_before,pins=pin_snapshots(root),
             compose_files=before['trading_system-hrs']['Config']['Labels']['com.docker.compose.project.config_files'].split(','),
             targets={name:dict(image=c['Config']['Image'],mounts=c.get('Mounts',[])) for name,c in before.items()})
         atomic(planpath,plan)
     previous=json.loads(Path(pin['overlay']).read_text())
-    overlay=release_overlay(previous,args.hrs_image,args.hub_image,plan['targets']['trading_system-hrs']['mounts'],args.sha,preserved_absent_keys)
+    overlay=release_overlay(previous,args.hrs_image,args.hub_image,plan['targets']['trading_system-hrs']['mounts'],args.sha)
     actual_networks=set(before['trading_system-hrs']['NetworkSettings']['Networks']) & set(inspect('trading_system-postgres')['NetworkSettings']['Networks'])
     if not actual_networks:raise RuntimeError('shared_database_network_missing')
     network=sorted(actual_networks)[0]
@@ -587,17 +565,13 @@ def main():
     probe="import hashlib;from pathlib import Path;expected="+repr(expected)+";assert all(hashlib.sha256((Path('/app')/p).read_bytes()).hexdigest()==h for p,h in expected.items());from strategies.hrs.main import main;print('CANDIDATE_SOURCES_OK')"
     run(['docker','run','--rm','--network','none','--entrypoint','python',args.hrs_image,'-c',probe])
     files=plan['compose_files']
-    # Preserve approved absence pins; the exact environment drift guard still applies.
+    # Only public new flags and actual mount restoration can change HRS geometry.
     check=deepcopy(overlay);check['services'].pop('hrs-acceptance-reporter')
     checkfile=folder/'checked-images.json';atomic(checkfile,check)
     rendered=json.loads(run(compose(root,files+[checkfile])+['config','--format','json']))['services']['hrs-strategy']
     proposed=rendered.get('environment',{})
     candidate_image=json.loads(run(['docker','image','inspect',args.hrs_image]))[0]
-    candidate_environment=environment(candidate_image)
-    for key in preserved_absent_keys:
-        if key in candidate_environment:
-            raise RuntimeError('preserved_environment_key_present_in_candidate_image:'+key)
-    drift=environment_drift(env,candidate_environment,proposed,args.sha)
+    drift=environment_drift(env,environment(candidate_image),proposed,args.sha)
     if drift:raise RuntimeError('existing_environment_drift_keys:'+','.join(sorted(drift)))
     database=env['DATABASE_NAME']
     floor_release=change_metadata['risk_budget_model_changed']
