@@ -334,7 +334,9 @@ class TradingExecutor:
         if decision is None or not decision.client_order_id:
             raise EntryDenied('HRS durable reservation missing')
         store = RiskPolicyStore(self.db)
-        async with store.submitting('hrs', decision.client_order_id) as row:
+        from .risk_budget import FLOOR
+        submission_kwargs = {'risk_decision': decision} if decision.budget_version == FLOOR else {}
+        async with store.submitting('hrs', decision.client_order_id, **submission_kwargs) as row:
             if (row['symbol'] != symbol or Decimal(str(row['quantity'])) != quantity
                     or Decimal(str(row['price'])) != price
                     or row['revision'] != decision.policy_revision):
