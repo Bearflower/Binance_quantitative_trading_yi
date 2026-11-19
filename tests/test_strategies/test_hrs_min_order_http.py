@@ -78,7 +78,7 @@ async def test_valid_floor_intent_reaches_real_post_boundary(runtime,monkeypatch
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize('change',['pressure_risk','quantity','margin','revision','released','new','allocation'])
+@pytest.mark.parametrize('change',['pressure_risk','quantity','margin','revision','released','new','allocation','receipt_payload','receipt_missing'])
 async def test_http_rejects_changed_pending_source_after_rate_wait_and_releases_unsent_intent(runtime,monkeypatch,change):
     r=runtime;snapshot=await enable(r);sized,geometry=proposal(plan())
     await r.admin.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,pressure_risk) VALUES('pending','test','hrs',2,'B',1,1,100,10,10,'reserved',28)")
@@ -90,7 +90,10 @@ async def test_http_rejects_changed_pending_source_after_rate_wait_and_releases_
     client.get_symbol_info=AsyncMock(return_value={'stepSize':'.1','tickSize':D('.01')})
     client.session.request.side_effect=AssertionError('POST must not run')
     async def rate_wait():
-        if change=='allocation':await r.admin.execute("UPDATE public.capital_allocation SET entries='[{\"strategy_id\":\"hrs\",\"allocated_amount\":900}]'")
+        if change=='receipt_payload':
+            await r.admin.execute("UPDATE hrs.hrs_decision_evidence SET payload=jsonb_set(payload,'{account_equity}',to_jsonb('99999'::text))")
+        elif change=='receipt_missing':await r.admin.execute('DELETE FROM hrs.hrs_decision_evidence')
+        elif change=='allocation':await r.admin.execute("UPDATE public.capital_allocation SET entries='[{\"strategy_id\":\"hrs\",\"allocated_amount\":900}]'")
         elif change=='quantity':await r.admin.execute("UPDATE trading.entry_risk_reservation SET quantity=quantity+1,original_quantity=original_quantity+1 WHERE client_order_id='pending'")
         elif change=='revision':await r.admin.execute("UPDATE trading.entry_risk_reservation SET revision=1 WHERE client_order_id='pending'")
         elif change in ('pressure_risk','margin'):

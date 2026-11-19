@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 import asyncio
 import copy
 from dataclasses import asdict, dataclass, replace
-from datetime import timedelta
+from datetime import timedelta, datetime
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 import hashlib
 import json
@@ -32,6 +32,7 @@ class ScopedRiskSnapshot:
     max_slots: int
     slot_scope: str
     slot_evidence: dict
+    financial_receipt: dict | None = None
 
 
 async def _finish_shielded(operation):
@@ -223,24 +224,61 @@ def _hrs_floor_parent_margin(payload):
         raise EntryDenied('HRS immutable parent margin unavailable',reason_code='hrs_budget_parent_margin_invalid') from exc
 
 
-def _validate_hrs_floor_finance(context, slot_context, parent, pending, allocation, policy, expected):
-    """Apply the actual allocation/policy/parent/pending ceiling to captured sizing.
-
-    Account equity is a retained tighter snapshot constraint, not an immutable
-    balance attestation. The independent ceiling is current monthly allocation
-    times the immutable policy multiplier, less verified physical/durable margin.
-    """
+def _validate_hrs_financial_receipt(receipt, row, *, account, symbol, signal_id, checked_at):
+    """Verify an actual independently written receipt before using its finances."""
+    from strategies.hrs.decision_capture import canonical_payload
+    from strategies.hrs.entry_occupancy import SLOT_SCOPE
     try:
-        parent_margin=_hrs_floor_parent_margin(parent)
+        if not isinstance(receipt,dict) or set(receipt) != {
+                'evidence_id','run_id','payload_sha256','event_time','available_at'} or not row:
+            raise ValueError('financial receipt missing')
+        if any(not isinstance(receipt[k],str) or not receipt[k] for k in receipt):
+            raise ValueError('financial receipt identity missing')
+        for key in ('evidence_id','run_id','payload_sha256'):
+            if row[key] != receipt[key]: raise ValueError('financial receipt identity mismatch')
+        event,available=(datetime.fromisoformat(receipt[k]) for k in ('event_time','available_at'))
+        payload=json.loads(row['payload']) if isinstance(row['payload'],str) else row['payload']
+        observed=datetime.fromisoformat(payload['slot_inputs']['observed_at'])
+        if (row['kind'] != 'entry_stage_inputs' or row['symbol'] != symbol
+                or row['event_time'] != event or row['available_at'] != available
+                or event.tzinfo is None or available.tzinfo is None or observed.tzinfo is None
+                or not observed <= event <= available <= checked_at
+                or checked_at-observed > timedelta(seconds=120)
+                or not available <= row['recorded_at'] <= checked_at
+                or canonical_payload(payload)[1] != receipt['payload_sha256']
+                or payload['stage'] != 'reservation_inventory'
+                or payload['account_id'] != account or payload['signal_id'] != str(signal_id)
+                or payload['slot_scope'] != SLOT_SCOPE
+                or datetime.fromisoformat(payload['observed_at']) != event
+                or canonical_payload(payload['exchange_positions'])[1] != canonical_payload(payload['slot_inputs']['inventory'])[1]):
+            raise ValueError('financial receipt source mismatch')
+        number(payload['account_equity']);number(payload['effective_allocation'])
+        return payload
+    except (KeyError,ValueError,TypeError,AttributeError,ArithmeticError,EntryDenied) as exc:
+        raise EntryDenied('HRS financial receipt unavailable or changed',reason_code='hrs_budget_financial_receipt_invalid') from exc
+
+
+def _hrs_floor_receipt_margin(payload):
+    # Receipt inventory has already passed the two-source ownership proof.
+    return _hrs_floor_parent_margin(dict(capture=dict(inventory=payload['slot_inputs']['inventory'])))
+
+
+def _validate_hrs_floor_finance(context, slot_context, financial, pending, allocation, policy, expected):
+    """Bind sizing to independent captured finances and current durable ceilings."""
+    try:
+        margin=_hrs_floor_receipt_margin(financial)
+        equity=number(financial['account_equity'])
+        effective=number(financial['effective_allocation'])
         reserved_margin=sum((number(row['margin']) for row in pending),Decimal(0))
         cap=min(allocation*number(policy['multiplier']),number(policy['entry_ceiling']),
-                number(context['snapshot_effective_allocation']),
-                number(context['snapshot_account_equity'])*number(policy['ratio_cap']))
-        remaining=cap-parent_margin-reserved_margin
+                effective,equity*number(policy['ratio_cap']))
+        remaining=cap-margin-reserved_margin
         if (number(context['full_allocation']) != allocation
                 or expected.budget_inputs['allocation'] != allocation
-                or number(context['account_margin'],zero=True) != parent_margin
-                or number(slot_context['account_margin'],zero=True) != parent_margin
+                or number(context['snapshot_account_equity']) != equity
+                or number(context['snapshot_effective_allocation']) != effective
+                or number(context['account_margin'],zero=True) != margin
+                or number(slot_context['account_margin'],zero=True) != margin
                 or number(context['reserved_margin'],zero=True) != reserved_margin
                 or number(context['margin_cap']) != cap
                 or number(context['remaining_margin']) != remaining
@@ -509,11 +547,17 @@ class RiskPolicyStore:
                 if floor:
                     parent = _bind_hrs_floor_local_to_parent(row['payload'],values.slot_evidence['local'],
                         self.account,row['evidence_sha256'])
-                    parent_margin = _hrs_floor_parent_margin(parent)
-                    if (number(holdings,zero=True) != parent_margin
-                            or number(proof['account_margin'],zero=True) != parent_margin):
-                        raise EntryDenied('HRS account margin differs from immutable parent',
-                            reason_code='hrs_budget_parent_margin_mismatch')
+                    receipt = values.financial_receipt
+                    financial = await self._financial_receipt(conn,receipt,symbol,identity,row['checked_at'])
+                    from strategies.hrs.decision_capture import canonical_payload
+                    if (canonical_payload(financial['slot_inputs'])[1] != canonical_payload(values.slot_evidence)[1]
+                            or number(holdings,zero=True) != _hrs_floor_receipt_margin(financial)
+                            or number(equity) != number(financial['account_equity'])
+                            or number(allocation) != number(financial['effective_allocation'])):
+                        raise EntryDenied('HRS snapshot differs from independent financial receipt',
+                            reason_code='hrs_budget_finance_source_mismatch')
+                    saved_geometry.update(hrs_financial_receipt=receipt,signal_id=str(identity))
+                    context.update(financial_receipt=receipt,symbol=symbol,signal_id=str(identity))
                 saved_geometry.update(slot_scope=SLOT_SCOPE,slot_occupancy_proof=proof,slot_context=context)
             else:
                 holdings,equity,allocation = snapshot_values[:3]
@@ -562,6 +606,14 @@ class RiskPolicyStore:
                     budget_decision=saved_geometry['hrs_budget_decision'], budget_context=budget_context)
         return client_id
 
+    async def _financial_receipt(self, conn, receipt, symbol, identity, checked_at):
+        if not isinstance(receipt,dict) or not receipt.get('evidence_id'):
+            raise EntryDenied('HRS financial receipt missing',reason_code='hrs_budget_financial_receipt_invalid')
+        row=await conn.fetchrow("""SELECT * FROM hrs.hrs_decision_evidence
+            WHERE evidence_id=$1""",receipt['evidence_id'])
+        return _validate_hrs_financial_receipt(receipt,row,account=self.account,symbol=symbol,
+            signal_id=identity,checked_at=checked_at)
+
     async def authorize_hrs_floor(self, conn, policy, client_id, decision, *, quantity=None, submitting=False):
         """Recheck current durable intent and immutable sources on this connection."""
         from strategies.hrs.risk_budget import FLOOR, policy_budget_version
@@ -582,6 +634,12 @@ class RiskPolicyStore:
         expected=_validate_hrs_floor_decision(geometry.get('hrs_budget_decision'),geometry.get('hrs_budget_inputs'))
         _validate_hrs_floor_context(geometry,expected,row)
         context=geometry['hrs_budget_context']
+        receipt_identity=geometry.get('signal_id')
+        expected_client='risk_' + hashlib.sha256(f'{self.account}:hrs:{receipt_identity}'.encode()).hexdigest()[:30]
+        if (not isinstance(receipt_identity,str) or not receipt_identity or expected_client != client_id
+                or context.get('signal_id') != receipt_identity or context.get('symbol') != row['symbol']
+                or context.get('financial_receipt') != geometry.get('hrs_financial_receipt')):
+            raise EntryDenied('HRS financial receipt intent changed',reason_code='hrs_budget_financial_receipt_invalid')
         pending=await conn.fetch(f"""SELECT {_HRS_PENDING_COLUMNS}
             FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs'
             AND state<>'released' AND client_order_id<>$2 ORDER BY client_order_id""",self.account,client_id)
@@ -603,8 +661,21 @@ class RiskPolicyStore:
             raise EntryDenied('HRS immutable equity parent missing')
         payload=_bind_hrs_floor_local_to_parent(parent['payload'],context['local_positions'],
                                                self.account,context['evidence_sha256'])
+        financial=await self._financial_receipt(conn,geometry.get('hrs_financial_receipt'),
+            row['symbol'],geometry.get('signal_id'),gate['checked_at'])
+        from strategies.hrs.entry_occupancy import prove_hrs_slot_ownership, HrsOccupancyDenied
+        claims=await conn.fetch("SELECT id,symbol,strategy,claim_state FROM trading.position_claims WHERE claim_state IN ('PENDING','ACTIVE') AND expires_at>clock_timestamp()")
+        try:
+            proof=prove_hrs_slot_ownership(self.account,dict(account_id=self.account,
+                evidence_sha256=gate['evidence_sha256'],payload=payload),financial['slot_inputs'],claims,
+                checked_at=gate['checked_at'])
+            _bind_hrs_floor_local_to_parent(payload,financial['slot_inputs']['local'],self.account,gate['evidence_sha256'])
+            if proof != geometry['slot_occupancy_proof']:
+                raise EntryDenied('HRS receipt ownership proof changed',reason_code='hrs_budget_financial_receipt_invalid')
+        except HrsOccupancyDenied as exc:
+            raise EntryDenied('HRS receipt ownership changed',reason_code=exc.reason_code) from exc
         allocation=await current_allocation(conn,'hrs')
-        _validate_hrs_floor_finance(context,geometry['slot_context'],payload,pending,
+        _validate_hrs_floor_finance(context,geometry['slot_context'],financial,pending,
                                    allocation,policy,expected)
         if not (geometry.get('hrs_risk_budget_version') == FLOOR
                 and geometry.get('hrs_budget_source') == 'hrs_live_assessor_v1'
