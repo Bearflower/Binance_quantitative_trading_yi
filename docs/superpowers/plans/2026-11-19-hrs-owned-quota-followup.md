@@ -1,0 +1,12 @@
+# HRS owned quota follow-up
+
+User-approved scope: HRS quota counts only positively attributed HRS holdings and retained HRS reservations; actual overall account available balance remains mandatory. No artificial production order, SL/TP parameter deployment, expiry extension, permission expansion, or foreign claim rewriting.
+
+1. Core: recursive original budget evidence; state-only release of exact never-sent intent under real immutable trigger; explicit owned quota + actual cash + cash observation clock; proof v2 permits proven foreign economic owner to outlive its entry claim. Implemented; SPEC passed; cash-clock quality finding under correction.
+2. Parity: original-source export, replay and acceptance reproduce scope, proof, actual cash/status/clock and all account retained margins. Fail closed on missing evidence; retain legacy global-scope interpretation. Pending core quality closure.
+3. Prospective exit experiments: v6 registration freezes the new economic admission scope before November20 research; candidate list, costs, samples and held-out boundaries unchanged. Runner guards/tests implemented; end-to-end integration pending parity and independent review. Missing source data remains BLOCKED_DATA.
+4. Release: policy7->8 exact prior-state CAS/audit, same caps/expiry; host inspector expected8; 41 runtime source hashes; restricted permissions audit only; immutable CI image. Policy/release helper SPEC+quality passed; final integrated CI/package pending.
+5. Operate: fresh read-only proof then atomic state-only release of two exact never-sent reserved rows; code rollout while policy7; audited activation8; update inspector. Preserve original WLD position/protection and unrelated containers. No successful production mutation yet; first old cleanup attempt rolled back on immutable trigger.
+6. Verify/report: actual source/VERSION, live gate and each budget/cash/ownership source, fresh natural scan if available; distinguish entry capability from filled order and performance qualification. Historical Aug–Sep source gaps, SL/TP winner, natural24h/5closed acceptance remain incomplete until actual evidence exists.
+
+Each implementation task requires independent SPEC then quality review. Final integration runs the full candidate workflow selection with real PostgreSQL before deployment. No shadow phase is required by the user.
