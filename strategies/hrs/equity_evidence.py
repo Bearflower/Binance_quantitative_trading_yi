@@ -7,7 +7,7 @@ signed exchange fills and durable order owners. Unsupported evidence stays block
 """
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
+from decimal import Context, Decimal, DecimalException, ROUND_HALF_UP, localcontext
 import hashlib
 import json
 
@@ -29,6 +29,37 @@ def number(value, name, *, positive=False):
         return result
     except Exception:
         raise EvidenceBlocked(name) from None
+
+
+def execution_basis_matches_reported(computed, reported):
+    """Match full-fill cost to authenticated entryPrice serialization only.
+
+    Exact positive finite values retain the existing equality path. Otherwise
+    round only the execution basis, HALF_UP, to the reported Decimal exponent,
+    capped at 1e-8 quote units. Coarse displays cannot enlarge this allowance;
+    trailing zeros can only narrow it. This is not an inventory-to-inventory or
+    local protection-price comparator and must not rewrite either source.
+
+    Nonexact inputs support at most 256 coefficient digits and exponents in
+    [-256, 256]. Bound work before quantizing and use a private context large
+    enough for all integer/fractional digits, independent of ambient precision.
+    """
+    try:
+        computed = number(computed, 'execution_basis_invalid', positive=True)
+        reported = number(reported, 'reported_basis_invalid', positive=True)
+        if computed == reported:
+            return True
+        for value in (computed, reported):
+            parts = value.as_tuple()
+            if len(parts.digits) > 256 or not -256 <= parts.exponent <= 256:
+                return False
+        exponent = min(reported.as_tuple().exponent, -8)
+        quantum = Decimal((0, (1,), exponent))
+        precision = max(len(computed.as_tuple().digits), computed.adjusted() - exponent + 1) + 2
+        with localcontext(Context(prec=precision, rounding=ROUND_HALF_UP, Emin=-1000, Emax=1000)):
+            return computed.quantize(quantum) == reported
+    except (EvidenceBlocked, DecimalException, ValueError, TypeError):
+        return False
 
 
 def canonical(value):
@@ -165,8 +196,8 @@ def _inventory(rows,*,basis_required=True):
 
 def _inventory_agrees(primary,independent):
     # PM account V2 provides a complete quantity inventory, not cost basis.
-    # No basis is synthesized. PositionRisk basis still needs exact full-fill
-    # proof; an independently supplied basis must also agree if present.
+    # No basis is synthesized. PositionRisk basis still needs full-fill proof;
+    # an independently supplied actual basis must agree exactly if present.
     return set(primary)==set(independent) and all(primary[symbol][0]==qty and
         (basis is None or primary[symbol][1]==basis) for symbol,(qty,basis) in independent.items())
 
@@ -192,7 +223,8 @@ def prove_positions(account, segment, as_of, inventory, account_inventory, local
     for symbol, (qty, entry) in actual.items():
         matches = [(strategy, held, basis) for (strategy, sym), (held, basis) in positions.items()
                    if sym == symbol and held != 0]
-        if len(matches) != 1 or matches[0][1:] != (qty, entry):
+        if (len(matches) != 1 or matches[0][1] != qty
+                or not execution_basis_matches_reported(matches[0][2], entry)):
             raise EvidenceBlocked('position_order_owner_unproven')
         owner = matches[0][0]
         if owner != 'hrs':
@@ -203,7 +235,7 @@ def prove_positions(account, segment, as_of, inventory, account_inventory, local
             raise EvidenceBlocked('bootstrap_hrs_not_flat')
         expected, basis = hrs_positions.get(('hrs', symbol), (Decimal(0), Decimal(0)))
         tracked = local.get(symbol)
-        if not tracked or expected != qty or basis != entry:
+        if not tracked or expected != qty or not execution_basis_matches_reported(basis, entry):
             raise EvidenceBlocked('position_quantity_or_basis_unproven')
         tracked_qty = number(tracked.get('remaining_quantity'), 'local_position_quantity_missing')
         sign = 1 if tracked.get('direction') == 'long' else -1 if tracked.get('direction') == 'short' else 0
@@ -364,7 +396,8 @@ def certify_opening_inventory(account,segment,as_of,inventory,independent,local,
     owners={}
     for symbol,(qty,basis) in actual.items():
         matches=[(owner,amount,entry) for (owner,sym),(amount,entry) in positions.items() if sym==symbol and amount!=0]
-        if len(matches)!=1 or matches[0][1:]!=(qty,basis):
+        if (len(matches)!=1 or matches[0][1]!=qty
+                or not execution_basis_matches_reported(matches[0][2],basis)):
             raise EvidenceBlocked('opening_position_order_fill_proof_missing')
         choices={row['strategy'] for row in claims if row.get('symbol')==symbol and row.get('id') is not None}
         if choices!={matches[0][0]}:
