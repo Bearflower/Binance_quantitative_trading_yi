@@ -1,0 +1,97 @@
+{
+  "status": "BLOCKED_CURRENT_ENTRY",
+  "observed_at": "2026-11-19T07:55:31.607187+00:00",
+  "release_sha": "f144eb073c14ae3fdeb7f2d4239eced97aec97e1",
+  "entry_policy_probe": {
+    "allowed": false,
+    "error_type": "EntryDenied",
+    "reason": "equity_gate_not_ready_or_latched"
+  },
+  "equity_gate": {
+    "account_id": "default",
+    "strategy_id": "hrs",
+    "policy_revision": 0,
+    "ready": false,
+    "allowed": false,
+    "as_of": "2026-11-19T07:55:14.198513+00:00",
+    "valid_until": "2026-11-19T07:55:14.198513+00:00",
+    "reasons": "[\"outstanding_hrs_reservation\"]",
+    "evidence_sha256": "d04705a8051d7e3ad1f0938c715d74978d3b1b957edfa25e74648bb0c06f6db4",
+    "updated_at": "2026-11-19T07:55:14.201133+00:00",
+    "checked_at": "2026-11-19T07:55:31.613078+00:00"
+  },
+  "reserved_symbols": [
+    "EVAAUSDT",
+    "PIPPINUSDT"
+  ],
+  "natural_budget_passed_but_no_order": [
+    "PIPPINUSDT",
+    "EVAAUSDT"
+  ],
+  "first_failure_utc": "2026-11-19T04:21:43.964761+00:00",
+  "root_cause": "nested raw RiskDecision serialized as repr string; final context rejects; denied precheck leaves never-submitted reservations retained",
+  "pure_source_checks": [
+    {
+      "symbol": "PIPPINUSDT",
+      "checks": {
+        "decision": {
+          "pass": true
+        },
+        "context": {
+          "passed": false,
+          "type": "EntryDenied",
+          "reason": "invalid HRS minimum-order budget evidence",
+          "cause": "decision does not reproduce assessor inputs"
+        },
+        "parent": {
+          "pass": true
+        },
+        "financial_receipt": {
+          "pass": true
+        },
+        "ownership": {
+          "passed": true
+        },
+        "finance": {
+          "pass": true
+        }
+      }
+    },
+    {
+      "symbol": "EVAAUSDT",
+      "checks": {
+        "decision": {
+          "pass": true
+        },
+        "context": {
+          "passed": false,
+          "type": "EntryDenied",
+          "reason": "invalid HRS minimum-order budget evidence",
+          "cause": "decision does not reproduce assessor inputs"
+        },
+        "parent": {
+          "pass": true
+        },
+        "financial_receipt": {
+          "pass": true
+        },
+        "ownership": {
+          "passed": true
+        },
+        "finance": {
+          "pass": true
+        }
+      }
+    }
+  ],
+  "all_account_margin_usdt": "64.85953804557",
+  "hrs_margin_ceiling_usdt": "26.18",
+  "etn_margin_usdt": "49.8626",
+  "account_available_usdt": "448.86029153",
+  "margin_policy_choice": "PENDING_USER_REPLY",
+  "legacy_pause_until": null,
+  "legacy_drawdown_pause_until": null,
+  "last_natural_batch_coverage": "9 of9 latest batches,100percent requested coverage",
+  "financial_optimization_status": "INCOMPLETE",
+  "previous_engineering_deployment_proof_does_not_establish_natural_fill": true
+}
