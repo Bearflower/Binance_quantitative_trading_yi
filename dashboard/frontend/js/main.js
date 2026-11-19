@@ -325,7 +325,9 @@ function updateOverview(data) {
     const winRateSub = document.querySelector('#win-rate-sub');
     if (winRateSub) winRateSub.textContent = data.win_rate == null
         ? metricReasonText(data.win_rate_reason)
-        : `${data.total_closed} 笔已核实${data.win_rate_reason === 'archive_verified_sample_only' ? ' · 上半年样本' : data.win_sample_partial ? ' · 非期间全量' : ''}`;
+        : data.win_rate_reason === 'annual_verified_sample_only'
+            ? `已核实样本 · 上半年 ${data.win_archive_sample_count} 笔 / 下半年 ${data.win_live_sample_count} 笔`
+            : `${data.total_closed} 笔已核实${data.win_rate_reason === 'archive_verified_sample_only' ? ' · 上半年样本' : data.win_sample_partial ? ' · 非期间全量' : ''}`;
 
     const realized = document.querySelector('#realized-pnl');
     if (realized) {
@@ -340,6 +342,11 @@ function updateOverview(data) {
     }
 
     // 绩效序列尚未按交易所口径核对时，明确说明原因，不把旧口径数值混入。
+    const period = data.total_verified_period;
+    const gap = period ? `缺 ${period.missing_opening_days} 天期初权益` : metricReasonText(data.total_perf_reason);
+    const windowLabel = period
+        ? `已核实区间 ${formatPerfWindow(period.window_start, period.window_end, period.sample_count)}`
+        : '';
     const sharpeEl = document.querySelector('#total-sharpe');
     if (sharpeEl) {
         const v = data.total_sharpe;
@@ -348,7 +355,7 @@ function updateOverview(data) {
     }
     const sharpeSub = document.querySelector('#sharpe-sub');
     if (sharpeSub) sharpeSub.textContent = data.total_sharpe == null
-        ? metricReasonText(data.total_perf_reason)
+        ? gap
         : formatPerfWindow(data.total_perf_window_start, data.total_perf_window_end,
                            data.total_perf_sample_count);
     // 最大回撤非 null 时显示负百分比。
@@ -363,9 +370,23 @@ function updateOverview(data) {
     const ddSub = document.querySelector('#drawdown-sub');
     if (ddSub) {
         ddSub.textContent = data.total_max_drawdown == null
-            ? metricReasonText(data.total_perf_reason)
+            ? gap
             : formatPerfWindow(data.total_perf_window_start, data.total_perf_window_end,
                                data.total_perf_sample_count);
+    }
+    const sharpePeriod = document.querySelector('#sharpe-verified-period');
+    const drawdownPeriod = document.querySelector('#drawdown-verified-period');
+    if (sharpePeriod) {
+        sharpePeriod.hidden = !period;
+        sharpePeriod.textContent = period
+            ? `${windowLabel} · ${period.sharpe == null ? metricReasonText(period.reason) : `夏普 ${Number(period.sharpe).toFixed(2)}`}`
+            : '';
+    }
+    if (drawdownPeriod) {
+        drawdownPeriod.hidden = !period;
+        drawdownPeriod.textContent = period
+            ? `${windowLabel} · 回撤 ${(Number(period.max_drawdown) * 100).toFixed(2)}%`
+            : '';
     }
 }
 

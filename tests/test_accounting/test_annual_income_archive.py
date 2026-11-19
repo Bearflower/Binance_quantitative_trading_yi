@@ -68,5 +68,13 @@ def test_proof_corrects_owner_totals_and_exposes_only_verified_sample():
     assert stats["account"]["win_rate"] == 0
     assert stats["account"]["reason"] == "archive_verified_sample_only"
     assert stats["strategies"]["new_coin"]["win_rate"] is None
+    live = dict(account=dict(stats["account"], win_count=1, loss_count=0,
+                             sample_start="2026-07-07T02:00:00+00:00"),
+                strategies=dict(btc_eth=stats["strategies"]["new_coin"], new_coin=stats["account"]))
+    combined = archive.combine_lifecycle_samples(stats, live, ["btc_eth", "new_coin"])
+    assert combined["account"]["win_rate"] == 50
+    assert combined["account"]["archive_count"] == combined["account"]["live_count"] == 1
+    assert combined["strategies"]["btc_eth"]["live_count"] == 0
+
     with pytest.raises(ValueError, match="does not match"):
         archive.apply_proof([income], dict(proof, attributions=[dict(row, income="0.35")]))

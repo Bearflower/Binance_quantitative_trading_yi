@@ -192,3 +192,45 @@ async def test_capital_query_failure_is_visible_without_hiding_exchange_pnl():
     assert result['total_pnl'] == '5.80965338'
     assert result['total_perf_reason'] == 'capital_source_unavailable'
     assert result['win_rate_reason'] == 'lifecycle_source_unavailable'
+
+
+def test_overview_schema_preserves_verified_period_separately():
+    from dashboard.backend.models.schemas import OverviewData
+
+    data = OverviewData(
+        total_pnl=None, total_orders=None, total_closed=None, total_wins=None,
+        win_rate=None, strategies=[], report_type="yearly", updated_at="now",
+        total_verified_period=dict(
+            window_start="2026-09-29", window_end="2026-11-17", sample_count=50,
+            missing_opening_days=252, sharpe=-1.53, max_drawdown=0.1196,
+            reason=None, caliber="exchange_income_realized_daily_v1",
+        ),
+    ).model_dump()
+    assert data["total_sharpe"] is None
+    assert data["total_max_drawdown"] is None
+    assert data["total_verified_period"]["sample_count"] == 50
+    assert data["total_verified_period"]["missing_opening_days"] == 252
+
+
+@pytest.mark.asyncio
+async def test_only_yearly_overview_shows_period_with_scheduled_snapshots():
+    from datetime import date
+
+    svc = Service()
+    svc._db_manager = type("DB", (), {"fetch_all": AsyncMock(return_value=[
+        {"snapshot_date": date(2026, 11, 1), "total_equity": Decimal("100"), "scheduled_utc": True},
+        {"snapshot_date": date(2026, 11, 2), "total_equity": Decimal("100"), "scheduled_utc": True},
+        {"snapshot_date": date(2026, 11, 3), "total_equity": Decimal("100"), "scheduled_utc": False},
+    ])})()
+    svc._ledger_report = AsyncMock(return_value=dict(
+        report(), start_ms=1793462400000,
+        end_ms=int(datetime(2026, 11, 5, tzinfo=timezone(timedelta(hours=8))).timestamp() * 1000),
+        publication_status="published",
+    ))
+    yearly = await svc.get_overview("yearly")
+    assert yearly["total_max_drawdown"] is None
+    assert yearly["total_verified_period"]["sample_count"] == 2
+    assert yearly["total_verified_period"]["window_start"] == "2026-11-02"
+    assert yearly["total_verified_period"]["window_end"] == "2026-11-03"
+    assert yearly["total_verified_period"]["missing_opening_days"] == 1
+    assert (await svc.get_overview("monthly"))["total_verified_period"] is None
