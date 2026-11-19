@@ -177,15 +177,25 @@ _CLAIMS_SQL = """SELECT symbol,strategy FROM trading.position_claims
 WHERE claim_state IN ('PENDING','ACTIVE')"""
 _COVERED_RESERVATIONS_SQL = """
 SELECT r.symbol, r.margin, r.quantity, o.orig_qty, o.side, o.executed_qty,
-       CASE WHEN bool_and(COALESCE(f.order_id::text=o.order_id AND f.side=o.side AND f.qty>0, false))
-            THEN sum(f.qty) END AS fill_qty,
-       EXISTS (
-           SELECT 1 FROM trading.execution_fact_cursor c
+       CASE WHEN bool_and(COALESCE(f.order_id>0 AND f.qty>0 AND
+                   ((f.order_id::text=o.order_id AND f.side=o.side)
+                    OR (f.order_id::text<>o.order_id AND f.side IN ('BUY','SELL') AND f.side<>o.side)),
+                   false))
+                 AND (count(*) FILTER (WHERE f.order_id::text<>o.order_id)=0 OR
+                      max(f.trade_time_utc) FILTER (WHERE f.order_id::text=o.order_id) <
+                      min(f.trade_time_utc) FILTER (WHERE f.order_id::text<>o.order_id))
+            THEN sum(f.qty) FILTER (WHERE f.order_id::text=o.order_id) END AS fill_qty,
+       COALESCE(sum(f.qty) FILTER (WHERE f.order_id::text<>o.order_id),0) AS exit_qty,
+       COALESCE((
+           SELECT range_agg(int8range(c.window_start_ms,c.covered_until_ms,'[)')) @>
+                  int8range(floor(extract(epoch FROM r.created_at)*1000)::bigint,$4,'[)')
+           FROM trading.execution_fact_cursor c
            WHERE c.account_id=r.account_id AND c.symbol=r.symbol AND c.source='userTrades'
              AND c.page_complete AND c.request_status='ok'
-             AND c.window_start_ms <= floor(extract(epoch FROM r.created_at)*1000)
-             AND c.covered_until_ms >= $4
-       ) AS cursor_complete
+             AND c.covered_until_ms > c.window_start_ms
+             AND c.window_start_ms < $4
+             AND c.covered_until_ms > floor(extract(epoch FROM r.created_at)*1000)
+       ),false) AS cursor_complete
 FROM trading.entry_risk_reservation r
 JOIN LATERAL (
     SELECT * FROM trading.entry_order_observation a
@@ -200,6 +210,11 @@ JOIN trading.execution_fact_fill f ON f.account_id=r.account_id AND f.symbol=r.s
    AND f.trade_time_utc < to_timestamp($4::bigint / 1000.0)
 WHERE r.account_id=$1 AND r.strategy_id=$2 AND r.symbol=ANY($3::text[])
   AND r.state='submitting'
+  AND NOT EXISTS (
+      SELECT 1 FROM trading.entry_order_observation bad
+      WHERE bad.account_id=r.account_id AND bad.client_order_id=r.client_order_id
+        AND bad.outcome='order_identity_conflict'
+  )
 GROUP BY r.account_id,r.symbol,r.margin,r.quantity,r.created_at,r.client_order_id,
          o.orig_qty,o.side,o.executed_qty,o.order_id
 """
@@ -352,6 +367,7 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             evidence["source_errors"].append("exchange:" + type(exc).__name__)
         else:
             result["intact_lot_reserved_budget_usdt"] = None
+            result["remaining_lot_allocated_reserve_usdt"] = None
             if result.get("ownership_complete") is True:
                 try:
                     symbols = sorted(set(result["owned_positions"]))
@@ -360,6 +376,8 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                     ) if symbols else []
                     budget = covered_reservation_budget(positions, owned, candidates)
                     result["intact_lot_reserved_budget_usdt"] = budget
+                    result["remaining_lot_allocated_reserve_usdt"] = covered_reservation_budget(
+                        positions, owned, candidates, allow_exits=True)
                     result["intact_lot_budget_as_of_ms"] = position_as_of_ms
                 except Exception as exc:
                     evidence["source_errors"].append("reserved_lot_budget:" + type(exc).__name__)
