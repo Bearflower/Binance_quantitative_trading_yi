@@ -231,3 +231,98 @@ def test_resealed_owned_quota_inputs_remain_bound_to_original_financial_sources(
     changed=reseal_dataset(portal,'hrs_replay_state.json' if target=='bootstrap' else 'hrs_decision_inputs.jsonl',mutate)
     with pytest.raises(DataBlocked,match='margin_raw_source'):
         run_replay(changed,type(adapter)(adapter._state_loader),broker())
+
+
+@pytest.mark.parametrize('identity_change',['keep','drop_bootstrap','wrong_bootstrap','drop_runtime','wrong_runtime'])
+def test_derived_legacy_downgrade_cannot_disable_original_owned_source_verification(tmp_path,identity_change):
+    from ai_tuner.replay.models import DataBlocked
+    portal,adapter=floor_fixture(tmp_path,margin_scope=HRS_OWNED,allocation='100',ceiling='1',cash='1',foreign_margin='64.86')
+    assert run_replay(portal,adapter,broker()).final_position is None
+    def bootstrap(value):
+        value['entry_policy']['reason']='legacy';value['entry_policy']['entry_ceiling']='100'
+        value.pop('runtime_slot_scope',None)
+        if identity_change=='drop_bootstrap':value.pop('bootstrap_source_evidence_id',None)
+        elif identity_change=='wrong_bootstrap':value['bootstrap_source_evidence_id']='not-original-opening'
+    portal=reseal_dataset(portal,'hrs_replay_state.json',bootstrap)
+    def risk(rows):
+        for row in rows:
+            row['risk']['entry_policy']['reason']='legacy';row['risk']['entry_policy']['entry_ceiling']='100'
+            observed=row['risk']['account_occupancy']['observed_at']
+            row['risk']['account_occupancy']=dict(version='hrs_account_occupancy_v1',observed_at=observed,other_positions=[])
+            if identity_change=='drop_runtime':row.pop('evidence_ids',None)
+            elif identity_change=='wrong_runtime':row['evidence_ids']=['not-original-analysis']
+    portal=reseal_dataset(portal,'hrs_decision_inputs.jsonl',risk)
+    with pytest.raises(DataBlocked,match='margin_raw_source'):
+        run_replay(portal,type(adapter)(adapter._state_loader),broker())
+
+
+@pytest.mark.parametrize('identity_change',['drop','wrong'])
+def test_runtime_original_scope_is_required_before_legacy_occupancy_branch(tmp_path,identity_change):
+    from datetime import timedelta
+    from .test_hrs_wiring import AT
+    from ai_tuner.replay.models import DataBlocked
+    portal,_=owned_fixture(tmp_path)
+    def risk(rows):
+        for row in rows:
+            row['risk']['entry_policy']['reason']='legacy'
+            observed=row['risk']['account_occupancy']['observed_at']
+            row['risk']['account_occupancy']=dict(version='hrs_account_occupancy_v1',observed_at=observed,other_positions=[])
+            if identity_change=='drop':row.pop('evidence_ids',None)
+            else:row['evidence_ids']=['not-original-analysis']
+    portal=reseal_dataset(portal,'hrs_decision_inputs.jsonl',risk)
+    with pytest.raises(DataBlocked,match='margin_raw_source'):
+        portal.hrs_inputs('A',AT+timedelta(hours=1),decision_at=AT+timedelta(hours=1))
+
+
+def test_formal_original_evidence_cannot_be_removed_to_gain_legacy_fallback(tmp_path):
+    import json
+    from ai_tuner.replay.data_portal import DataPortal,compute_manifest_envelope_sha256,compute_manifest_sha256
+    from ai_tuner.replay.models import DataBlocked
+    portal,adapter=owned_fixture(tmp_path)
+    def bootstrap(value):
+        value['entry_policy']['reason']='legacy';value.pop('runtime_slot_scope',None)
+        value.pop('bootstrap_source_evidence_id',None)
+    portal=reseal_dataset(portal,'hrs_replay_state.json',bootstrap)
+    path=portal.snapshot_dir/'manifest.json';manifest=json.loads(path.read_text())
+    manifest['files'].pop('raw_hrs_evidence.json')
+    manifest['sha256']=compute_manifest_sha256(manifest['files']);manifest['envelope_sha256']=compute_manifest_envelope_sha256(manifest)
+    path.write_text(json.dumps(manifest));portal=DataPortal(portal.snapshot_dir,'hrs',portal.as_of,portal.window_start)
+    with pytest.raises(DataBlocked,match='original_evidence_missing'):
+        run_replay(portal,type(adapter)(adapter._state_loader),broker())
+
+
+@pytest.mark.parametrize('target,change',[('bootstrap','drop'),('bootstrap','other_scan'),('risk','drop'),('risk','other_analysis')])
+def test_original_scope_resolution_does_not_trust_derived_source_identity(tmp_path,target,change):
+    import json
+    from datetime import timedelta
+    from .test_hrs_wiring import AT
+    from ai_tuner.replay.models import DataBlocked
+    portal,adapter=owned_fixture(tmp_path)
+    records=json.loads((portal.snapshot_dir/'raw_hrs_evidence.json').read_text())['decision_evidence']
+    other=next(row['evidence_id'] for row in records if row['run_id']=='cycle-2' and row['kind']==('scan_start' if target=='bootstrap' else 'analysis'))
+    def mutate(value):
+        if target=='bootstrap':
+            if change=='drop':value.pop('bootstrap_source_evidence_id')
+            else:value['bootstrap_source_evidence_id']=other
+        else:
+            for row in value:
+                if change=='drop':row.pop('evidence_ids')
+                else:row['evidence_ids']=[other]
+    portal=reseal_dataset(portal,'hrs_replay_state.json' if target=='bootstrap' else 'hrs_decision_inputs.jsonl',mutate)
+    with pytest.raises(DataBlocked,match='margin_raw_source'):
+        if target=='bootstrap':run_replay(portal,adapter,broker())
+        else:portal.hrs_inputs('A',AT+timedelta(hours=1),decision_at=AT+timedelta(hours=1))
+
+
+@pytest.mark.parametrize('field',['risk','account_occupancy'])
+def test_original_contract_malformed_derived_risk_is_data_blocked(tmp_path,field):
+    from datetime import timedelta
+    from .test_hrs_wiring import AT
+    from ai_tuner.replay.models import DataBlocked
+    portal,_=owned_fixture(tmp_path)
+    def corrupt(rows):
+        for row in rows:
+            if field=='risk':row['risk']=None
+            else:row['risk']['account_occupancy']=None
+    portal=reseal_dataset(portal,'hrs_decision_inputs.jsonl',corrupt)
+    with pytest.raises(DataBlocked):portal.hrs_inputs('A',AT+timedelta(hours=1),decision_at=AT+timedelta(hours=1))
