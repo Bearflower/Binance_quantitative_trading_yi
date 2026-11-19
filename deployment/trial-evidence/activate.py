@@ -12,9 +12,9 @@ import time
 from datetime import datetime
 
 ROOT = Path('/root/trading_system')
-PIN_SHA = 'f144eb073c14ae3fdeb7f2d4239eced97aec97e1'
-OVERLAY_SHA = 'ca34acdd360e6f9f30afdc0c00736557c0909b849d354f331400b46c348008c0'
-BASE_IMAGE = 'sha256:a6153a490ecd0c8c3aba409a8317c8304b3bfeef87326e45c88ba588b41e61cd'
+PIN_SHA = 'fa7f1567b398476d0f0027e051a60972150d46d9'
+OVERLAY_SHA = '0500e69ef027292a711e15a9563a56b326528f9f396b7a0843fbd1a115438b32'
+BASE_IMAGE = 'sha256:73f68d7b20d38f4a43f974bb4ed62895a8c19354621c5aed7dc3ef74cff8a85b'
 MIGRATIONS = ()
 
 
@@ -65,7 +65,15 @@ def policy_hash():
 def fresh_observation(observation, started_ms):
     risk = observation.get('account-risk-latest.json', {})
     activity = observation.get('entry-activity-latest.json', {})
-    return (risk.get('account_id') == 'default'
+    recovery = observation.get('new-coin-recovery-latest.json', {})
+    try:
+        recovery_ms = int(datetime.fromisoformat(recovery['as_of']).timestamp()*1000)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (recovery.get('account_id') == 'default'
+            and recovery.get('status') in ('WAIT_OPEN_POSITION','OBSERVED')
+            and recovery_ms >= started_ms
+            and risk.get('account_id') == 'default'
             and risk.get('budget_id') == 'default-pm-5pct-20261117-v1'
             and bool(risk.get('baseline')) and risk.get('as_of_ms', 0) >= started_ms
             and activity.get('account_id') == 'default'
@@ -152,7 +160,7 @@ def main(sha, image_digest, bundle):
             raise RuntimeError('running image mismatch')
         started_ms = int(datetime.fromisoformat(current['State']['StartedAt'].replace('Z','+00:00')).timestamp()*1000)
         # Wait for actual scheduler invocations, not merely Python imports.
-        code = "import json,pathlib; p=pathlib.Path('/app/logs/trial_evidence'); print(json.dumps({n:json.loads((p/n).read_text()) for n in ('account-risk-latest.json','entry-activity-latest.json')}))"
+        code = "import json,pathlib; p=pathlib.Path('/app/logs/trial_evidence'); print(json.dumps({n:json.loads((p/n).read_text()) for n in ('account-risk-latest.json','entry-activity-latest.json','new-coin-recovery-latest.json')}))"
         observation = None
         while time.monotonic()<deadline:
             try:

@@ -1,4 +1,3 @@
-FROM ghcr.io/bearflower/trading-ai-tuner@sha256:a6153a490ecd0c8c3aba409a8317c8304b3bfeef87326e45c88ba588b41e61cd
-COPY --chown=1000:1000 ai_tuner/allocation/activity_evidence.py /app/ai_tuner/allocation/activity_evidence.py
-COPY --chown=1000:1000 ai_tuner/monitor/reduced_trial.py ai_tuner/monitor/trial_risk_evidence.py /app/ai_tuner/monitor/
+FROM ghcr.io/bearflower/trading-ai-tuner@sha256:73f68d7b20d38f4a43f974bb4ed62895a8c19354621c5aed7dc3ef74cff8a85b
+COPY --chown=1000:1000 ai_tuner/monitor/evidence_jobs.py /app/ai_tuner/monitor/evidence_jobs.py
 COPY --chown=1000:1000 VERSION /app/VERSION
