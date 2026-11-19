@@ -76,7 +76,7 @@ async def test_repeated_risk_failure_notifies_only_once_and_omits_raw_evidence(t
 def test_scheduler_registers_independent_minute_collectors_and_daily_shadow(tmp_path):
     calls=[]
     m.register_evidence_jobs(SimpleNamespace(add_job=lambda *a,**kw:calls.append((a,kw))),job(tmp_path))
-    assert {kwargs['id'] for _,kwargs in calls}=={'account_risk','entry_activity','pm_equity_valuation','allocation_shadow'}
+    assert {kwargs['id'] for _,kwargs in calls}=={'account_risk','entry_activity','pm_equity_valuation','new_coin_recovery','allocation_shadow'}
     assert all(kwargs['max_instances']==1 for _,kwargs in calls)
 
 
@@ -137,4 +137,41 @@ async def test_valuation_observations_keep_valid_and_failed_evidence(tmp_path, m
     assert all(sample['method'] == 'pm-usdt-equity-bridge-v1' for sample in samples)
     assert all(p.stat().st_mode & 0o777 == 0o600
                for p in (tmp_path / 'pm-equity').rglob('*.json'))
+    obj.messenger.send_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    'algo_status, recovered, reduce_only, expected',
+    [('NEW', False, True, 'WAIT_TP1'),
+     ('FINISHED', False, True, 'WAIT_RECOVERY'),
+     ('FINISHED', True, True, 'RECOVERY_TAIL_VERIFIED'),
+     ('FINISHED', True, False, 'BLOCKED_DATA')],
+)
+async def test_new_coin_progress_requires_recovered_state_and_signed_tp1(
+        tmp_path, algo_status, recovered, reduce_only, expected):
+    obj = job(tmp_path)
+    row = dict(symbol='ETNUSDT', position_id='ETNUSDT_320067',
+               entry_order_id='320067', tp1_algo_id='4569',
+               recovered_position_id='ETNUSDT_320067' if recovered else None,
+               recovery_tp1_evidence='verified_tail' if recovered else None)
+    obj.db = SimpleNamespace(fetch_all=AsyncMock(return_value=[row]))
+    obj.pm = SimpleNamespace(
+        get_algo_order=AsyncMock(return_value=dict(
+            algoId=4569, symbol='ETNUSDT', algoStatus=algo_status,
+            orderType='TAKE_PROFIT', side='BUY', positionSide='BOTH',
+            reduceOnly=True, quantity='0.08',
+            actualOrderId='777' if algo_status == 'FINISHED' else '')),
+        get_order=AsyncMock(return_value=dict(
+            orderId=777, symbol='ETNUSDT', side='BUY', status='FILLED',
+            positionSide='BOTH', reduceOnly=reduce_only, executedQty='0.08')),
+    )
+
+    result = await obj.sample_new_coin_recovery()
+
+    assert result['positions'][0]['status'] == expected
+    assert json.loads((tmp_path/'new-coin-recovery-latest.json').read_text()) == result
+    assert len(list((tmp_path/'new-coin-recovery').glob('*.json'))) == 1
+    await obj.sample_new_coin_recovery()
+    assert len(list((tmp_path/'new-coin-recovery').glob('*.json'))) == 1
     obj.messenger.send_alert.assert_not_awaited()
