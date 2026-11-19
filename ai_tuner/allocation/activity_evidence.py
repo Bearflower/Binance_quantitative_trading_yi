@@ -314,13 +314,15 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
         if not rows:
             gap('order_observation_missing', (sid,))
             continue
+        if any(o.get('outcome') == 'order_identity_conflict' for o in rows):
+            gap('order_identity_conflict', (sid,))
+            continue
         valid = []
         latest_success = max(((_ms(o['observed_at']), o.get('id', 0)) for o in rows
                               if o.get('outcome') == 'ok'), default=(-1, -1))
         for o in rows:
             if o.get('outcome') != 'ok':
-                if (o.get('outcome') == 'order_identity_conflict'
-                        or (_ms(o['observed_at']), o.get('id', 0)) >= latest_success):
+                if (_ms(o['observed_at']), o.get('id', 0)) >= latest_success:
                     gap(str(o.get('outcome') or 'order_observation_unknown'), (sid,))
                 continue
             try:
