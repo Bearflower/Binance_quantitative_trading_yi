@@ -427,13 +427,90 @@ def _apply_verified_funding(economic, archive, *, account_id, inception, through
         return economic
 
 
-def _engineering_checks(lifecycle, evidence, through, account_id):
+def _floor_budget_provenance(lifecycle, payload, decision, records, budget_at, account_id, archives):
+    """Reproduce the committed lock decision from immutable source receipts."""
+    from shared.entry_risk_policy import (EntryDenied, _hrs_budget_json,
+        _validate_hrs_floor_decision, _validate_hrs_floor_context,
+        _bind_hrs_floor_local_to_parent, _bind_hrs_floor_pending_to_rows, _validate_hrs_floor_finance)
+    from .risk_budget import FLOOR, policy_budget_version, calculate_open_position_risk
+    from .entry_occupancy import capture_hrs_slot_inputs, prove_hrs_slot_ownership, HrsOccupancyDenied
+    try:
+        client = decision['client_order_id']
+        stages = [(p, at) for kind, p, at in records if kind == 'entry_stage_inputs'
+            and p.get('stage') == 'reservation_success' and p.get('client_order_id') == client
+            and p.get('_capture_run_id') == payload.get('_capture_run_id') and at <= budget_at]
+        if len(stages) != 1:
+            raise ValueError('committed reservation capture missing or ambiguous')
+        stage, at = stages[0]
+        context, slot, proof = (stage[k] for k in ('budget_context','slot_context','slot_occupancy_proof'))
+        expected = _validate_hrs_floor_decision(decision, decision['budget_inputs'])
+        captured = _hrs_budget_json(stage['budget_decision'])
+        if any(captured[k] != decision[k] for k in captured if k != 'client_order_id'):
+            raise ValueError('committed reservation differs from order budget')
+        geometry = dict(hrs_risk_budget_version=FLOOR,hrs_budget_source='hrs_live_assessor_v1',
+            hrs_budget_decision=captured,hrs_budget_inputs=decision['budget_inputs'],
+            hrs_budget_context=context,slot_context=slot,slot_occupancy_proof=proof)
+        _validate_hrs_floor_context(geometry,expected,dict(account_id=account_id,revision=decision['policy_revision']))
+        policy = context['locked_policy']
+        if (policy_budget_version(policy) != FLOOR or policy['account_id'] != account_id
+                or policy['strategy_id'] != 'hrs' or policy['revision'] != decision['policy_revision']
+                or policy['mode'] != 'reduced' or policy['allow_add'] is not False
+                or not _time(policy['effective_at']) <= _time(context['checked_at']) < _time(policy['expires_at'])
+                or not _time(context['checked_at']) <= at <= budget_at):
+            raise ValueError('locked policy does not authorize the captured mode')
+        inputs = expected.budget_inputs
+        if (inputs['entry_price'] != _number(payload['entry_price'])
+                or inputs['stop_price'] != _number(payload['stop_price'])
+                or inputs['take_profit_prices'] != tuple(_number(p) for p in payload['take_profit_prices'])
+                or inputs['direction'] != ('long' if lifecycle['fill_legs'][0]['side']=='BUY' else 'short')
+                or inputs['allocation'] != _number(decision['risk_allocation'])
+                or inputs['allocation'] != _number(context['full_allocation'])
+                or inputs['fee_rate'] < Decimal('.0005') or inputs['pressure_slippage'] < Decimal('.02')
+                or inputs['single_risk_ratio'] > Decimal('.01') or inputs['portfolio_risk_ratio'] > Decimal('.03')):
+            raise ValueError('order geometry differs from assessor contract')
+        parents = [a for a in archives if a.get('evidence_sha256') == context['evidence_sha256']]
+        if len(parents) != 1:
+            raise ValueError('original raw equity parent missing or ambiguous')
+        parent = _bind_hrs_floor_local_to_parent(parents[0]['payload'],context['local_positions'],account_id,context['evidence_sha256'])
+        capture = parent['capture']
+        reproduced = prove_hrs_slot_ownership(account_id,
+            dict(payload=parent,evidence_sha256=context['evidence_sha256']),
+            capture_hrs_slot_inputs(inventory=capture['inventory'],independent=capture['independent'],
+                local=context['local_positions'],observed_at=_time(proof['observed_at'])),
+            context['ownership_claims'],checked_at=_time(context['checked_at']))
+        if reproduced != proof or any(slot[k] != proof[k] for k in ('account_symbols','hrs_symbols')):
+            raise ValueError('original owner proof differs from committed reservation')
+        # The immutable reservation_success receipt is the historical pending source.
+        # No current database rows can replace that original account-lock inventory.
+        pending = context['pending_reservations']
+        _bind_hrs_floor_pending_to_rows(context,slot,pending,account=account_id,client_id=client)
+        for row in pending:
+            quantity, price, leverage = (_number(row[k]) for k in ('quantity','price','leverage'))
+            margin, pressure = (_number(row[k]) for k in ('margin','pressure_risk'))
+            if (quantity <= 0 or leverage <= 0 or price <= 0 or margin != quantity*price/leverage
+                    or pressure <= 0 or _number(row['original_quantity']) < quantity
+                    or row['original_pressure_risk'] is not None and _number(row['original_pressure_risk']) < pressure):
+                raise ValueError('pending financial source invalid')
+        local_risk = calculate_open_position_risk(context['local_positions'],fee_rate=inputs['fee_rate'],pressure_slippage=inputs['pressure_slippage'])
+        _validate_hrs_floor_finance(context,slot,parent,pending,_number(context['full_allocation']),policy,expected)
+        if (local_risk is None or local_risk != _number(context['planned_budget_inputs']['existing_open_risk'])
+                or _number(context['account_margin']) != _number(proof['account_margin'])
+                or _number(decision['effective_allocation']) != _number(context['snapshot_effective_allocation'])
+                or _number(decision['effective_allocation']) > _number(context['planned_budget_inputs']['allocation'])*_number(policy['multiplier'])):
+            raise ValueError('locked original risk or margin source invalid')
+        return expected
+    except (KeyError,ValueError,TypeError,AttributeError,ArithmeticError,EntryDenied,HrsOccupancyDenied) as exc:
+        raise ValueError('minimum_order_budget_provenance_unproven') from exc
+
+
+def _engineering_checks(lifecycle, evidence, through, account_id, *, budget_source_archives=()):
     """Join source identities; request fields never fill missing exchange fields."""
     checks = {'budget': {'status': 'NOT_CAPTURED'},
               'protection_quantity_and_price': {'status': 'NOT_CAPTURED'},
               'exit_role_reconciliation': {'status': 'NOT_CAPTURED'}}
     records, invalid = [], False
     contexts = defaultdict(set)
+    policies = defaultdict(list)
     for raw in evidence:
         if raw.get('kind') != 'scan_start':
             continue
@@ -442,6 +519,7 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
             valid = (canonical_payload(payload)[1] == raw.get('payload_sha256')
                      and _time(raw['event_time']) <= _time(raw['available_at']) <= through)
             contexts[raw.get('run_id')].add(payload.get('financial_context', {}).get('entry_policy', {}).get('account_id') if valid else None)
+            if valid:policies[raw.get('run_id')].append(payload.get('financial_context', {}).get('entry_policy', {}))
         except (ValueError, TypeError, KeyError):
             contexts[raw.get('run_id')].add(None)
     for raw in evidence:
@@ -454,7 +532,7 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
             at, available = _time(raw['event_time']), _time(raw['available_at'])
             if canonical_payload(p)[1] != raw.get('payload_sha256') or not at <= available <= through:
                 raise ValueError('capture_integrity_unproven')
-            records.append((raw['kind'], p, at))
+            records.append((raw['kind'], dict(p,_capture_run_id=raw.get('run_id')), at))
         except (ValueError, TypeError, KeyError):
             invalid = True
     if invalid:
@@ -498,9 +576,16 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
         stop, entry = _number(p['stop_price']), _number(p['entry_price'])
         ratios = tuple(_number(r) for r in d['exit_ratios'])
         targets = tuple(_number(r) for r in p['take_profit_prices'])
+        from .risk_budget import STRICT, FLOOR, policy_budget_version
+        version = d.get('budget_version', STRICT)
+        if (version not in (STRICT, FLOOR) or not policies[p['_capture_run_id']]
+                or any(policy_budget_version(policy) != version for policy in policies[p['_capture_run_id']])):
+            raise ValueError('unknown_budget_version')
+        if version == FLOOR:
+            _floor_budget_provenance(lifecycle,p,d,records,at,account_id,budget_source_archives)
         if not (d.get('allowed') is True and type(d.get('policy_revision')) is int and d['policy_revision'] > 0
             and allocation > 0 and risk_allocation > 0 and 0 < original <= planned
-            and 0 < loss <= limit <= risk_allocation*Decimal('.01')
+            and 0 < loss <= limit and (version == FLOOR or limit <= risk_allocation*Decimal('.01'))
             and entry > 0 and stop > 0 and (stop < entry if first_side == 'BUY' else stop > entry)
             and len(ratios) == len(targets) == 2 and ratios[0] > 0 and ratios[1] >= 0
             and (sum(ratios) < 1 or ratios == (Decimal(1), Decimal(0)))
@@ -510,7 +595,7 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
         checks['budget'] = dict(status='RECONCILED', client_order_id=client,
             policy_revision=d['policy_revision'], reserved_quantity=str(planned),
             actual_original_quantity=str(original), worst_loss=str(loss), risk_limit=str(limit),
-            effective_allocation=str(allocation), risk_allocation=str(risk_allocation), entry_mode=p.get('entry_mode'),
+            effective_allocation=str(allocation), risk_allocation=str(risk_allocation), budget_version=version, entry_mode=p.get('entry_mode'),
             entry_price=str(entry), stop_price=str(stop), exit_ratios=[str(r) for r in ratios])
     except (ValueError, KeyError, TypeError, ArithmeticError):
         checks['budget'] = dict(status='PENDING', reason='budget_or_fill_geometry_unproven')
@@ -578,7 +663,7 @@ def _engineering_checks(lifecycle, evidence, through, account_id):
 
 
 def reconcile_lifecycles(fills, orders, incomes, economic, *, account_id,
-        inception, through, anchor_certified=False, opening_inventory=(), decision_evidence=()):
+        inception, through, anchor_certified=False, opening_inventory=(), decision_evidence=(), budget_source_archives=()):
     """Observe actual signed fill legs, then attach uniquely reconciled incomes.
 
     Opening positions are tracked to flat but excluded: their entry predates this
@@ -692,7 +777,7 @@ def reconcile_lifecycles(fills, orders, incomes, economic, *, account_id,
                 totals[matches[0]][component] += _number(source['income'])
     samples = []
     for index, lifecycle in enumerate(closed[:5]):
-        checks = _engineering_checks(lifecycle, decision_evidence, through, account_id)
+        checks = _engineering_checks(lifecycle, decision_evidence, through, account_id, budget_source_archives=budget_source_archives)
         checks.update(exchange_fill_lifecycle={'status': 'RECONCILED' if not reasons else 'PENDING'},
                       fees_and_funding={'status': 'RECONCILED' if not reasons else 'PENDING'})
         engineering_ready = all(v['status'] == 'RECONCILED' for v in checks.values())
@@ -736,6 +821,63 @@ async def _read_evidence(connection, sql, *args):
     return [_compact_record(row) async for row in connection.cursor(sql, *args, prefetch=10)]
 
 
+async def _read_budget_sources(connection, financial, evidence, account_id, through):
+    """Fetch at most one immutable parent per reported lifecycle, in one query."""
+    from .risk_budget import FLOOR
+    valid = []
+    for raw in evidence:
+        try:
+            payload = _object(raw['payload'])
+            if canonical_payload(payload)[1] != raw['payload_sha256'] or not _time(raw['event_time']) <= _time(raw['available_at']) <= through:
+                continue
+            valid.append((raw,payload))
+        except (ValueError,KeyError,TypeError):
+            continue
+    digests = set()
+    for sample in financial['samples'][:5]:
+        if not sample.get('order_ids'):
+            continue
+        entries = [(r,p) for r,p in valid if r['kind']=='order_execution_result'
+            and r.get('symbol')==sample['symbol']
+            and str((p.get('outcome') or {}).get('order',{}).get('orderId'))==sample['order_ids'][0]]
+        clients = {(p.get('outcome') or {}).get('order',{}).get('clientOrderId') for r,p in entries}
+        if len(clients)!=1 or not next(iter(clients)):
+            continue
+        client = next(iter(clients))
+        budgets = [(r,p) for r,p in valid if r['kind']=='entry_budget_reserved'
+            and r.get('symbol')==sample['symbol'] and (p.get('decision') or {}).get('client_order_id')==client
+            and (p.get('decision') or {}).get('budget_version')==FLOOR]
+        if len(budgets)!=1:
+            continue
+        stages = [p for r,p in valid if r['kind']=='entry_stage_inputs'
+            and r.get('symbol')==sample['symbol'] and r['run_id']==budgets[0][0]['run_id']
+            and p.get('stage')=='reservation_success' and p.get('client_order_id')==client]
+        if len(stages)==1:
+            digest = (stages[0].get('budget_context') or {}).get('evidence_sha256')
+            if isinstance(digest,str) and len(digest)==64 and all(c in '0123456789abcdef' for c in digest):
+                digests.add(digest)
+    if not digests:
+        return []
+    return [dict(row) for row in await connection.fetch(
+        '''SELECT payload,evidence_sha256 FROM trading.hrs_equity_evidence
+        WHERE account_id=$1 AND evidence_sha256=ANY($2::text[]) AND available_at <= $3''',
+        account_id,sorted(digests),through)]
+
+
+def _refresh_sample_engineering(financial, evidence, through, account_id, archives):
+    """Attach source proofs without repeating any economic reconciliation."""
+    for sample in financial['samples']:
+        if 'engineering_checks' not in sample:
+            continue
+        previous = sample['engineering_checks']
+        checks = _engineering_checks(sample,evidence,through,account_id,budget_source_archives=archives)
+        checks.update({key:previous[key] for key in ('exchange_fill_lifecycle','fees_and_funding')})
+        sample.update(engineering_checks=checks,
+            engineering_status='READY' if all(v['status']=='RECONCILED' for v in checks.values()) else 'PENDING')
+    financial['engineering_status'] = ('READY' if financial['observed_closed_lifecycles']>=5
+        and all(sample.get('engineering_status')=='READY' for sample in financial['samples']) else 'PENDING')
+
+
 async def build_report(db, *, as_of=None, account_id=None):
     """One held connection/readonly RR snapshot after income's session lock.
 
@@ -774,7 +916,7 @@ async def build_report(db, *, as_of=None, account_id=None):
                         proof = _object(anchor['opening_evidence'])
                         lifecycle_evidence = await _read_evidence(connection, '''SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload
                             FROM hrs.hrs_decision_evidence WHERE event_time >= $1 AND available_at <= $2
-                            AND kind=ANY($3::text[])''', inception, through,
+                            AND (kind=ANY($3::text[]) OR (kind='entry_stage_inputs' AND payload->>'stage'='reservation_success'))''', inception, through,
                             ['scan_start','entry_budget_reserved','order_execution_result','protection_order_ack'])
                         incomes = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,tran_id,income_type,income,asset,event_time_utc
                             FROM trading.execution_fact_income WHERE account_id=$1 AND event_time_utc > $2 AND event_time_utc <= $3
@@ -805,6 +947,9 @@ async def build_report(db, *, as_of=None, account_id=None):
                             account_id=account, inception=inception, through=through,
                             anchor_certified=proof.get('account_flat_anchor_certified') is True or proof.get('opening_inventory_certified') is True,
                             opening_inventory=proof.get('opening_inventory', ()), decision_evidence=lifecycle_evidence)
+                        budget_archives = await _read_budget_sources(connection,financial,lifecycle_evidence,account,through)
+                        if budget_archives:
+                            _refresh_sample_engineering(financial,lifecycle_evidence,through,account,budget_archives)
                         financial['reconciled_through'] = through.isoformat()
                     result['database_snapshot_coherent'] = True
     except Exception as exc:

@@ -5,6 +5,7 @@ input. Entries use the manifest-bound execution model and its declared assumptio
 """
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime, timedelta
 from decimal import Decimal
 import re
@@ -14,7 +15,8 @@ from strategies.hrs import core_decision as core
 from strategies.hrs import exit_geometry as exits
 from strategies.hrs.scoring_engine import ScoringEngine
 from strategies.hrs.pattern import PatternRecognizer
-from strategies.hrs.risk_budget import assess_entry, calculate_open_position_risk
+from strategies.hrs.risk_budget import (FLOOR, STRICT, assess_entry, assess_budget_inputs,
+    calculate_open_position_risk, policy_budget_version)
 from strategies.hrs.loss_gate import GateHistory, LossGateState, evaluate_loss_gate
 from strategies.hrs.risk_ledger import (EquityCheckpoint, LedgerState, LedgerObservation,
     IncomeEvent, CashFlow, PositionMark, reconcile_ledger, LedgerNotReady)
@@ -156,10 +158,13 @@ class HrsAdapter:
             self._allocation = _positive(raw['allocation'])
             self._account_equity = _positive(raw['account_equity'])
             self._policy = raw['entry_policy']
+            self._budget_version = self._policy_budget_version(self._policy)
             self._runtime_slot_scope=raw.get('runtime_slot_scope')
             if self._runtime_slot_scope is not None:
                 from strategies.hrs.entry_occupancy import SLOT_SCOPE
                 if self._runtime_slot_scope!=SLOT_SCOPE:raise DataBlocked(['hrs_slot_scope_unknown'])
+            if self._budget_version == FLOOR and self._runtime_slot_scope is None:
+                raise DataBlocked(['hrs_budget_floor_requires_scoped_ownership'])
             self._market_guard_config = raw['market_circuit_breaker_config']
             self._runtime = dict(raw['runtime'])
             for key in ('signal_timestamps','pending_timeout_entries','pause_until',
@@ -195,7 +200,8 @@ class HrsAdapter:
                         or _positive(positions[0]['entry_quantity'])!=quantity):
                     raise DataBlocked(['hrs_initial_margin_reservation_unproven:'+symbol])
                 self._durable_margin_reservations[symbol]=dict(margin=_positive(reservation['margin']),
-                    terminal=True,position_id=positions[0]['position_id'])
+                    terminal=True,position_id=positions[0]['position_id'],
+                    **({'risk': _positive(reservation['pressure_risk'])} if self._budget_version == FLOOR else {}))
         except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
             raise DataBlocked(['hrs_bootstrap_invalid:'+str(exc)]) from exc
         self._runtime_ready = True
@@ -444,6 +450,9 @@ class HrsAdapter:
                 raise DataBlocked(['hrs_allocation_cut_liquidation_not_wired'])
         self._allocation=allocation
         self._policy=risk['entry_policy']
+        self._budget_version=self._policy_budget_version(self._policy)
+        if self._budget_version == FLOOR and self._runtime_slot_scope is None:
+            raise DataBlocked(['hrs_budget_floor_requires_scoped_ownership'])
         if risk.get('account_occupancy',{}).get('slot_scope')!=self._runtime_slot_scope:
             raise DataBlocked(['hrs_slot_policy_change_requires_partition'])
         other_equity=Decimal(str(risk['account_equity_excluding_hrs']))
@@ -544,14 +553,15 @@ class HrsAdapter:
             open_risk = calculate_open_position_risk(positions,fee_rate=fee,pressure_slippage=slip)
             if open_risk is None:
                 raise DataBlocked(['hrs_open_position_risk_unknown'])
-            open_risk += sum((item["risk"] for item in self._reservations.values()),ZERO)
+            if self._budget_version == STRICT:
+                open_risk += sum((item["risk"] for item in self._reservations.values()),ZERO)
             leverage = Decimal(str(self.config.get('trading',{}).get('leverage',2)))
             occupied = sum((p.current_quantity*p.entry_price/leverage for p in ctx.portfolio.positions if p.is_open()),ZERO)
             policy = self._policy
             effective = min(self._allocation*Decimal(str(policy['multiplier'])),
                 self._account_equity*Decimal(str(policy['ratio_cap'])),Decimal(str(policy['entry_ceiling'])))
             budget = self.config.get('trading',{}).get('risk_budget',{})
-            decision = assess_entry(allocation=self._allocation,entry_price=price,stop_price=stop,
+            decision = assess_entry(budget_version=self._budget_version,allocation=self._allocation,entry_price=price,stop_price=stop,
                 direction=signal['direction'],existing_open_risk=open_risk,leverage=leverage,
                 remaining_margin=effective-occupied,qty_step=filters['step_size'],min_qty=filters['min_qty'],
                 min_notional=filters['min_notional'],fee_rate=fee,pressure_slippage=slip,
@@ -559,17 +569,26 @@ class HrsAdapter:
                 portfolio_risk_ratio=min(Decimal('.03'),Decimal(str(budget.get('portfolio_loss_ratio','.03')))),
                 take_profit_ratios=tuple(Decimal(str(params[k])) for k in ('target1_close_percent','target2_close_percent')),
                 take_profit_prices=targets)
+            budget_details=asdict(decision)
             self._record(now,'hrs_budget',dict(symbol=symbol,direction=signal['direction'],entry_mode=mode,
                 experiment_id=self.experiment_id,allowed=decision.allowed,reason=decision.reason,
                 quantity=str(decision.quantity),worst_loss=str(decision.worst_loss),risk_limit=str(decision.risk_limit),
                 allocation=str(self._allocation),planned_stop=str(stop),geometry_reference_price=str(price),
-                pressure_fee_rate=str(fee),pressure_slippage=str(slip),exit_ratios=list(map(str,decision.exit_ratios))))
+                pressure_fee_rate=str(fee),pressure_slippage=str(slip),exit_ratios=list(map(str,decision.exit_ratios)),
+                **{key:budget_details[key] for key in ('budget_version','minimum_quantity','minimum_risk',
+                    'base_single_limit','base_portfolio_limit','effective_single_limit',
+                    'effective_portfolio_limit','budget_inputs')}))
             if not decision.allowed:
                 continue
-            reservation_denial=self._reservation_denial(symbol,decision.quantity,price,ctx,now,risk,effective)
+            refined=[]
+            reservation_denial=self._reservation_denial(symbol,decision.quantity,price,ctx,now,risk,effective,
+                decision=decision if self._budget_version == FLOOR else None, refined_decisions=refined)
             if reservation_denial:
                 self._record(now,'hrs_reject',dict(signal,reason=reservation_denial))
                 continue
+            if refined:
+                decision=refined[0]
+                self._record(now,'hrs_budget_committed',dict(symbol=symbol,**asdict(decision)))
             entry_type = self.config.get('trading',{}).get('order_type',{}).get('entry','LIMIT')
             extra = {}
             if entry_type == 'LIMIT':
@@ -585,14 +604,21 @@ class HrsAdapter:
                 raise DataBlocked(['hrs_entry_order_type_unsupported'])
             result.append(self._intent(symbol,signal['direction'],decision.quantity,'ENTRY',atr=Decimal(str(atr)),
                 entry_mode=mode,geometry_reference_price=price,exit_ratios=decision.exit_ratios,exit_parameters=params,**extra))
-            self._durable_margin_reservations[symbol]=dict(margin=decision.quantity*price/leverage,terminal=False,position_id=None)
+            self._durable_margin_reservations[symbol]=dict(margin=decision.quantity*price/leverage,risk=decision.worst_loss,terminal=False,position_id=None)
             self._pending.add(symbol)
             self._reservations[symbol]={'risk':decision.worst_loss,'margin':decision.quantity*price/leverage,
                                         'direction':signal['direction']}
         return tuple(result)
 
-    def _reservation_denial(self,symbol,quantity,price,ctx,now,risk,effective):
-        """The live final store rejects after sizing; it never shrinks the order."""
+    @staticmethod
+    def _policy_budget_version(policy):
+        try:
+            return policy_budget_version(policy)
+        except (ValueError, TypeError, AttributeError) as exc:
+            raise DataBlocked(['hrs_budget_version_invalid:'+str(exc)]) from exc
+
+    def _reservation_denial(self,symbol,quantity,price,ctx,now,risk,effective,*,decision=None,refined_decisions=None):
+        """Legacy rejects unchanged; explicit floor reproduces downward lock sizing."""
         try:
             occupancy=risk['account_occupancy']
             observed=parse_utc(occupancy['observed_at'])
@@ -644,6 +670,30 @@ class HrsAdapter:
         hrs_margin=sum((p.current_quantity*ctx.portfolio.last_prices[p.symbol]/leverage for p in ctx.portfolio.positions if p.is_open()),ZERO)
         retained=sum((r['margin'] for r in self._durable_margin_reservations.values()),ZERO)
         requested=quantity*price/leverage
+        if decision is not None:
+            if not scoped or decision.budget_version != FLOOR:
+                raise DataBlocked(['hrs_budget_floor_requires_scoped_ownership'])
+            fee,slip=self._pressure()
+            risk_by_symbol={}
+            for held,position in self._risk_positions(ctx.portfolio).items():
+                exposure=calculate_open_position_risk({held:position},fee_rate=fee,pressure_slippage=slip)
+                if exposure is None:raise DataBlocked(['hrs_open_position_risk_unknown'])
+                risk_by_symbol[held]=exposure
+            for held,reservation in self._durable_margin_reservations.items():
+                try:exposure=_positive(reservation['risk'])
+                except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
+                    raise DataBlocked(['hrs_retained_pressure_risk_unproven:'+held]) from exc
+                risk_by_symbol[held]=max(risk_by_symbol.get(held,ZERO),exposure)
+            remaining=effective-hrs_margin-other_margin-retained
+            if remaining<decision.minimum_quantity*price/leverage:
+                return 'minimum_order_exceeds_margin'
+            refined=assess_budget_inputs(dict(decision.budget_inputs,existing_open_risk=sum(risk_by_symbol.values(),ZERO),
+                allocation=self._allocation,remaining_margin=min(remaining,requested)))
+            if not refined.allowed:return refined.reason
+            if refined.quantity>quantity:raise DataBlocked(['hrs_budget_quantity_increased'])
+            quantity=refined.quantity
+            requested=quantity*price/leverage
+            if refined_decisions is not None:refined_decisions.append(refined)
         self._record(now,'hrs_account_reservation',dict(symbol=symbol,hrs_marked_margin=str(hrs_margin),
             other_margin=str(other_margin),retained_margin=str(retained),requested_margin=str(requested),
             effective_cap=str(effective),occupied_symbols=sorted(occupied),source_observed_at=observed.isoformat()))
