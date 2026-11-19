@@ -2,6 +2,8 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from collections.abc import Mapping
+import hashlib
+import json
 
 RULE_VERSION = "reduced-trial-review-v1"
 # The first full month can only start after this version has been recorded.
@@ -42,6 +44,33 @@ def mark_shock(positions, owned_symbols):
         seen.add(symbol)
         notional += abs(exposure)
     return notional * MARK_SHOCK_RATIO
+
+
+def marked_unrealized_snapshot(positions, owned_symbols, as_of_ms):
+    """Capture signed per-strategy UM unrealized PnL at the observed time."""
+    expected = set(owned_symbols)
+    if type(as_of_ms) is not int or as_of_ms <= 0 or not isinstance(positions, list):
+        return None
+    covered = {}
+    for row in positions:
+        if not isinstance(row, Mapping) or not isinstance(row.get('symbol'), str):
+            return None
+        symbol = row['symbol']
+        if symbol not in expected:
+            continue
+        quantity, mark, profit = (_decimal(row.get(name))
+                                 for name in ('positionAmt', 'markPrice', 'unRealizedProfit'))
+        if (quantity is None or not quantity or mark is None or mark <= 0 or profit is None
+                or symbol in covered or not symbol.endswith('USDT') or row.get('positionSide') != 'BOTH'
+                or type(row.get('updateTime')) is not int or not 0 < row['updateTime'] <= as_of_ms):
+            return None
+        covered[symbol] = profit
+    if covered.keys() != expected:
+        return None
+    digest = hashlib.sha256(json.dumps(positions, sort_keys=True, default=str).encode()).hexdigest()
+    return dict(scope='owned_um_mark_snapshot', source='signed:/papi/v1/um/positionRisk', as_of_ms=as_of_ms,
+                by_symbol_usdt={key: str(covered[key]) for key in sorted(covered)},
+                unrealized_usdt=str(sum(covered.values(), Decimal(0))), position_payload_sha256=digest)
 
 
 def stressed_net(net_usdt, commission_usdt, turnover_usdt):

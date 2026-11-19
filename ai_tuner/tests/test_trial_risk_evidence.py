@@ -63,3 +63,16 @@ def test_remaining_reserved_budget_requires_conserved_position_after_exits():
                                       allow_exits=True) is None
     assert covered_reservation_budget(positions, {'BTCUSDT'}, [dict(intent, fill_qty=None)],
                                       allow_exits=True) is None
+
+
+def test_signed_position_unrealized_is_a_point_and_blocks_ambiguous_inventory():
+    from ai_tuner.monitor.trial_risk_evidence import marked_unrealized_snapshot
+    pos = {'symbol':'SOLUSDT', 'positionSide':'BOTH', 'positionAmt':'-0.27',
+           'markPrice':'99', 'unRealizedProfit':'0.40', 'updateTime':900}
+    point = marked_unrealized_snapshot([pos], {'SOLUSDT'}, 1000)
+    assert point['unrealized_usdt'] == '0.40'
+    assert point['scope'] == 'owned_um_mark_snapshot'
+    assert point['as_of_ms'] == 1000
+    assert marked_unrealized_snapshot([pos, pos], {'SOLUSDT'}, 1000) is None
+    assert marked_unrealized_snapshot([dict(pos, unRealizedProfit='NaN')], {'SOLUSDT'}, 1000) is None
+    assert marked_unrealized_snapshot([], {'SOLUSDT'}, 1000) is None
