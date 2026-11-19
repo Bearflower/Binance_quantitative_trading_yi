@@ -796,12 +796,16 @@ class ReadinessAuditor:
                     f"historical_universe_missing_before={first_scan_at.isoformat()}"
                     if first_scan_at else "historical_universe_missing"
                 )
+                gaps = [missing_marker]
+                if expected:
+                    gaps.append(
+                        f"已观测区间的外部快照完整度 {complete}/{expected} "
+                        f"({format_ratio(complete / expected)})。完整窗口起点缺少历史币池。"
+                    )
+                else:
+                    gaps.append("无可用于计算覆盖率的历史外部快照与 HRS 币池记录")
                 return SnapshotCoverage(
-                    expected, complete, 0.0,
-                    (row or {}).get("evidence_start"), sources, [
-                        missing_marker,
-                        "无历史外部快照表或窗口内无历史 HRS universe 快照",
-                    ]
+                    expected, complete, 0.0, (row or {}).get("evidence_start"), sources, gaps,
                 )
             return SnapshotCoverage(
                 expected, complete, min(complete / expected, 1.0),

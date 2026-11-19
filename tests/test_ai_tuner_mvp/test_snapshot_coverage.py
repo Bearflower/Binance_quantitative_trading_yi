@@ -73,3 +73,4 @@ async def test_late_universe_history_is_fail_closed():
     assert result.expected == 12
     assert result.complete == 12
     assert any("historical_universe_missing_before=" in gap for gap in result.gaps)
+    assert any("12/12 (100.00%)" in gap for gap in result.gaps)

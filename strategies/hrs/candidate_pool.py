@@ -72,8 +72,10 @@ class DynamicThresholds:
         """
         if min_sample_size is None:
             min_sample_size = self.DEFAULT_MIN_SAMPLE_SIZE
-        if self.computed_at is None:
-            return False
+        return self.computed_at is not None and self.has_enough_samples(min_sample_size)
+
+    def has_enough_samples(self, min_sample_size: int) -> bool:
+        """Check cross-section coverage before calculating the percentiles."""
         # 兼容旧调用方（只设 sample_count 没设逐截面字段）
         if self.funding_sample_count == 0 and self.oi_market_cap_sample_count == 0:
             return self.sample_count >= min_sample_size
@@ -546,7 +548,7 @@ class CandidatePool:
         thresholds.ema_sample_count = len(ema_deviations)
 
         # R4: 逐截面整体门槛校验（任一截面不足 → is_valid() 返回 False，回退固定阈值）
-        if not thresholds.is_valid(min_sample_size=self.dynamic_min_sample_size):
+        if not thresholds.has_enough_samples(self.dynamic_min_sample_size):
             logger.warning(
                 "R4: 动态阈值逐截面样本不足（任一截面不足均整体判无效）",
                 funding_sample_count=thresholds.funding_sample_count,

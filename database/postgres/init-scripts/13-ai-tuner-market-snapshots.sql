@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS public.ai_tuner_universe_scan_runs (
     source_run_id VARCHAR(128) NOT NULL,
     config_hash CHAR(64) NOT NULL,
     symbol_count INTEGER NOT NULL CHECK (symbol_count >= 0),
+    dynamic_thresholds JSONB,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (strategy_id, observed_at),
     UNIQUE (strategy_id, source_run_id)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Sequence
 
@@ -35,6 +35,17 @@ def extract_features(
     if len(ordered) < min_segment_length:
         raise DataBlocked(["regime_closed_bars_insufficient"])
     segment = ordered[-min_segment_length:]
+    for previous, current in zip(segment, segment[1:]):
+        # Binance can represent the last instant of the interval with millisecond precision.
+        gap = current.open_time - previous.close_time
+        if gap not in (timedelta(0), timedelta(milliseconds=1)):
+            raise DataBlocked(["regime_discontinuous_bars"])
+    previous, latest = segment[-2:]
+    cadence = latest.open_time - previous.open_time
+    if cadence <= timedelta(0):
+        raise DataBlocked(["regime_invalid_bar_cadence"])
+    if as_of - latest.close_time >= cadence:
+        raise DataBlocked(["regime_stale_closed_bar"])
     first = segment[0].close
     last = segment[-1].close
     if first <= ZERO or last <= ZERO:
