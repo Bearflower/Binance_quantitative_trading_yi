@@ -14,6 +14,10 @@ Status: **draft, not frozen**. Production remains `shadow`; `shadow_research.ena
 
 These observations are a dated snapshot, not a claim that the current production state remains the same. The older schema did not save reference eligibility at each checkpoint. Its historical statuses must be reported as `UNKNOWN`. Schema v3 saves status and feed/storage health prospectively; `aggtrade_integrity_checkpoint` saves rolling aggregate-trade ID continuity prospectively. The first new checkpoint after deployment is the start of each new evidence stream. Historical gaps are not backfilled.
 
+## 2026-11-19 read-only update
+
+[Manual audit run 44484590546](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44484590546) inspected the completed Beijing calendar day 2026-11-18. Time-weighted numeric-reference availability was 58.32798148%, below the frozen 90% target. Queue evidence showed one continuity gap, 4,418 ms unobserved and zero recorded overflows. This run deliberately omitted the aggregate-trade database, so market continuity was unverified; `evidence_complete=false` and `formal_m3_eligible=false`. The workflow succeeded because the read-only diagnostic executed, not because M3 passed. No trading container was updated.
+
 ## Daily evidence report
 
 Run `scripts/audit_grid_shadow_window.py --grid-db GRID_DB --agg-db AGG_DB --start-ms START --end-ms END` against read-only copies or production databases opened in read-only mode. Use Beijing calendar-day boundaries. The report separates:
