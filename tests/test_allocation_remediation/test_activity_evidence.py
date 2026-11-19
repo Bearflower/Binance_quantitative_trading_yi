@@ -434,3 +434,138 @@ def test_protocol_without_symbol_universe_or_all_symbol_cursors_cannot_prove_zer
     assert not row['coverage_complete']
     assert row['owned_entry_fills'] is None
     assert 'user_trades_coverage_incomplete' in row['reasons']
+
+
+def test_protocol_incomplete_symbol_interval_cannot_borrow_adjacent_universe():
+    boundary, first = protocol_facts()
+    first['payload']['end_ms'] = 200
+    second = dict(first, id=4, payload=dict(first['payload'], start_ms=200, end_ms=300,
+                                             symbol_universe_complete=False))
+    row = project(facts=[boundary, first, second, batch([])], cursors=[cursor()])
+    assert not row['coverage_complete']
+    assert row['owned_entry_fills'] is None
+    assert 'entry_symbol_universe_missing' in row['reasons']
+
+
+def test_protocol_requires_cursors_only_during_each_certified_symbol_interval():
+    boundary, first = protocol_facts()
+    first['payload']['end_ms'] = 200
+    second = dict(first, id=4, payload=dict(first['payload'], start_ms=200, end_ms=300,
+                                             symbols=['BBBUSDT']))
+    cursors = [dict(cursor(), covered_until_ms=200),
+               dict(cursor(), symbol='BBBUSDT', window_start_ms=200)]
+    row = project(facts=[boundary, first, second, batch([])], cursors=cursors)
+    assert row['coverage_complete']
+    assert row['owned_entry_fills'] == 0
+
+
+def test_postgres_json_timestamp_with_trimmed_microseconds_keeps_positive_fill():
+    legacy = reservation()
+    legacy['created_at'] = '1970-01-01T00:00:00.00123+00:00'
+    fact = dict(id=9, account_id='default', kind='legacy_intent', payload=json.dumps(legacy))
+    row = project([], [observation()], [fill()], [fact])
+    assert row['owned_entry_fills'] == 1
+
+
+@pytest.mark.asyncio
+async def test_flat_anchor_collects_only_explicit_unique_zero_with_exchange_bounds():
+    from ai_tuner.allocation.activity_evidence import collect_flat_anchors
+
+    db, exchange = DB([]), client()
+    exchange._request = AsyncMock(side_effect=[{'serverTime': 100}, {'serverTime': 120}])
+    exchange.get_position = AsyncMock(return_value=[
+        {'symbol': 'AAAUSDT', 'positionSide': 'BOTH', 'positionAmt': '0'},
+        {'symbol': 'BBBUSDT', 'positionSide': 'BOTH', 'positionAmt': '0'},
+        {'symbol': 'BBBUSDT', 'positionSide': 'LONG', 'positionAmt': '1'},
+    ])
+    assert await collect_flat_anchors(db, exchange, 'default') == 1
+    fact = json.loads(db.execute.await_args.args[3])
+    assert (fact['symbol'], fact['at_ms'], fact['read_until_ms']) == ('AAAUSDT', 100, 120)
+
+
+def test_flat_observation_cannot_anchor_trade_during_signed_read():
+    raw = dict(symbol='AAAUSDT', positionSide='BOTH', positionAmt='0')
+    flat = dict(id=10, account_id='default', kind='flat_position', payload=dict(
+        symbol='AAAUSDT', at_ms=101, read_until_ms=210, source='signed_pm_position_risk_v1',
+        raw_payload=raw, credential_fingerprint='a'*64,
+        payload_sha256=hashlib.sha256(json.dumps(raw, sort_keys=True, separators=(',', ':')).encode()).hexdigest()))
+    obs = observation(position_side='BOTH')
+    assert project([reservation()], [obs], [fill()], [flat], [cursor()])['owned_entry_fills'] is None
+    flat['payload']['read_until_ms'] = 180
+    assert project([reservation()], [obs], [fill()], [flat], [cursor()])['owned_entry_fills'] == 1
+
+
+@pytest.mark.asyncio
+async def test_flat_absence_needs_both_signed_inventories_and_one_way_mode():
+    from ai_tuner.allocation.activity_evidence import collect_flat_anchors
+
+    db, exchange = DB([reservation()]), client()
+    exchange._request = AsyncMock(side_effect=[
+        {'serverTime': 100}, {'dualSidePosition': False}, {'serverTime': 120}])
+    exchange.get_position = AsyncMock(return_value=[])
+    exchange.get_um_account_positions = AsyncMock(return_value=[{'symbol': 'AAAUSDT'}])
+    assert await collect_flat_anchors(db, exchange, 'default') == 0
+
+    exchange._request.side_effect = [
+        {'serverTime': 130}, {'dualSidePosition': False}, {'serverTime': 150}]
+    exchange.get_um_account_positions.return_value = []
+    assert await collect_flat_anchors(db, exchange, 'default') == 1
+    assert json.loads(db.execute.await_args.args[3])['source'] == 'signed_pm_dual_inventory_v1'
+
+
+def test_reports_unique_filled_orders_separately_from_trade_fill_count():
+    obs = observation()
+    row = project([reservation()], [obs], [dict(fill(), qty='1'), dict(fill(trade_id=2), qty='1')])
+    assert row['owned_entry_fills'] == 2
+    assert row['verified_filled_entry_orders'] == 1
+
+
+def test_order_seen_under_another_strategy_cannot_verify_one_strategy_subset():
+    obs = observation()
+    conflicting = observation(client='other')
+    row = project([reservation(), reservation(client='other', strategy='btc_eth_aggressive')],
+                  [obs, conflicting], [fill()])
+    assert row['owned_entry_fills'] is None
+    assert 'order_owner_conflict' in row['reasons']
+
+
+@pytest.mark.asyncio
+async def test_postgres_intact_budget_rejects_any_unmatched_fill(pg_activity):
+    from ai_tuner.monitor.reduced_trial import _COVERED_RESERVATIONS_SQL
+
+    conn = pg_activity
+    await conn.execute('ALTER TABLE trading.entry_risk_reservation ADD COLUMN margin numeric')
+    await conn.execute(MIGRATION.read_text())
+    await conn.execute("""
+        INSERT INTO trading.entry_risk_reservation
+        (client_order_id,account_id,strategy_id,symbol,quantity,geometry,state,created_at,margin)
+        VALUES('live','default','hrs','AAAUSDT',2,'{}','submitting',to_timestamp(1),7);
+        INSERT INTO trading.execution_fact_fill VALUES
+        ('default','AAAUSDT',1,10,'BUY',2,to_timestamp(2));
+        INSERT INTO trading.execution_fact_cursor VALUES
+        ('default','userTrades','AAAUSDT',1000,3000,true,'ok');
+    """)
+    signed = dict(observation(client='live')['raw_payload'], status='FILLED',
+                  origQty='2', positionSide='BOTH')
+    # Insert the precise signed order observation without a network request.
+    await conn.execute('SET ROLE trading_user')
+    args = ('default', 'hrs', ['AAAUSDT'], 3000)
+    from ai_tuner.allocation.activity_evidence import _INSERT_ORDER, _digest
+    await conn.execute(_INSERT_ORDER, 'default', 'live', 'AAAUSDT', '10', 'BUY', 'FILLED',
+                       2, 2, 'ok', json.dumps(signed), _digest(signed),
+                       'a'*64, 'signed_pm_get_order_v1', 'budget-test-batch')
+    row = await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args)
+    assert row['cursor_complete'] and row['fill_qty'] == 2 and row['margin'] == 7
+    await conn.execute('RESET ROLE')
+    await conn.execute("""INSERT INTO trading.execution_fact_fill VALUES
+        ('default','AAAUSDT',2,NULL,'BUY',1,to_timestamp(2.5))""")
+    assert (await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args))['fill_qty'] is None
+
+
+def test_overlapping_protocol_declarations_require_coverage_for_both_universes():
+    boundary, first = protocol_facts()
+    second = dict(first, id=4, payload=dict(first['payload'], symbols=['BBBUSDT']))
+    row = project([], [], [], [boundary, first, second, batch([])], [cursor()])
+    assert not row['coverage_complete']
+    assert row['owned_entry_fills'] is None
+    assert 'user_trades_coverage_incomplete' in row['reasons']
