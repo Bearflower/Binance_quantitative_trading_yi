@@ -184,6 +184,10 @@ def validate_registration(registration):
         from strategies.hrs.entry_occupancy import SLOT_SCOPE
         if registration['runtime_admission_scope']!=SLOT_SCOPE:
             raise ValueError('registered_runtime_admission_scope_unknown')
+    if 'runtime_risk_budget_scope' in registration:
+        from strategies.hrs.risk_budget import FLOOR, STRICT
+        if registration['runtime_risk_budget_scope'] not in (FLOOR, STRICT):
+            raise ValueError('registered_runtime_risk_budget_scope_unknown')
     baseline = registration['baseline']
     if baseline.get('source') != 'production_effective' or not isinstance(baseline.get('config'), dict):
         raise ValueError('actual_baseline_required')
@@ -463,6 +467,30 @@ def _registered_admission_validation(registration,portal,bootstrap):
     return dict(status='VERIFIED',scope=scope,input_rows_checked=count)
 
 
+def _registered_budget_validation(registration,portal,bootstrap):
+    """Bind the preregistered risk model before any candidate engine runs."""
+    from strategies.hrs.risk_budget import policy_budget_version
+    scope=registration.get('runtime_risk_budget_scope')
+    if scope is None:return dict(status='NOT_REGISTERED',scope=None,input_rows_checked=0)
+    def require(policy,source):
+        try:
+            if not isinstance(policy,dict) or policy_budget_version(policy)!=scope:
+                raise ValueError('budget_scope_mismatch')
+        except (TypeError,ValueError) as exc:
+            raise DataBlocked(['registered_runtime_risk_budget_scope_mismatch:'+source]) from exc
+    require(bootstrap.get('entry_policy'),'bootstrap')
+    count=0
+    with (portal.snapshot_dir/'hrs_decision_inputs.jsonl').open(encoding='utf-8') as handle:
+        for line in handle:
+            if not line.strip():continue
+            row=json.loads(line)
+            risk=row.get('risk') if isinstance(row,dict) else None
+            require(risk.get('entry_policy') if isinstance(risk,dict) else None,'input')
+            count+=1
+    if not count:raise DataBlocked(['registered_runtime_risk_budget_scope_inputs_missing'])
+    return dict(status='VERIFIED',scope=scope,input_rows_checked=count)
+
+
 def _run_candidate(registration, candidate, window, directory, on_engine_run=None, *, expected_engine_identity=None,source_cache=None):
     expected_engine_identity = expected_engine_identity or engine_identity()
     _require_runtime_identity(expected_engine_identity, 'engine_identity_changed_before_run')
@@ -477,6 +505,7 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
         if raw['config'] != baseline['config'] or raw['config_hashes'] != baseline['config_hashes']:
             raise DataBlocked(['registered_production_baseline_mismatch'])
         admission=_registered_admission_validation(registration,portal,raw)
+        budget=_registered_budget_validation(registration,portal,raw)
         states = raw.get('state_tables')
         if not isinstance(states, dict):
             # Exported opening state is an independent immutable dataset.
@@ -523,6 +552,7 @@ def _run_candidate(registration, candidate, window, directory, on_engine_run=Non
         all_gaps.extend(tier+':'+value for value in gaps)
         tiers[tier] = dict(source_manifest_sha256=replay.manifest_ref, nav=nav, lifecycles=lifecycles,
             runtime_admission_scope_validation=admission,
+            runtime_risk_budget_scope_validation=budget,
             portfolio_lifecycles=portfolio_lifecycles,
             score_events=sum(event['type'] == 'hrs_score' for event in replay.audit_events),
             audit_sha256=fingerprint(replay.audit_events),
@@ -592,6 +622,7 @@ def run_experiment(registration, *, snapshot_roots=(), output=None, stage='resea
             raise DataBlocked(report['engine_identity']['blocked_reasons'] or ['engine_identity_unavailable'])
         report['registration_sha256'] = validate_registration(registration)
         report['runtime_admission_scope']=registration.get('runtime_admission_scope')
+        report['runtime_risk_budget_scope']=registration.get('runtime_risk_budget_scope')
         report['baseline_identity'] = {key: registration['baseline'][key] for key in
             ('effective_config_sha256', 'config_hashes', 'code_commit', 'source')}
         report['registered_candidates'] = [dict(candidate, candidate_sha256=fingerprint(candidate))
