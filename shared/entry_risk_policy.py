@@ -162,9 +162,11 @@ def size_reduced_entry(signal, filters, multiplier, stop_offset, tp_ratios, *, t
 def _hrs_budget_json(value):
     """Stable JSON contract shared by reservation evidence and final authorization."""
     from dataclasses import is_dataclass
-    if is_dataclass(value):
-        value = asdict(value)
-    return json.loads(json.dumps(value, default=str, sort_keys=True))
+    # Decisions also occur inside locked context dictionaries. JSON invokes this
+    # callback recursively; Decimal/datetime keep their existing string contract.
+    def normalize(item):
+        return asdict(item) if is_dataclass(item) else str(item)
+    return json.loads(json.dumps(value, default=normalize, sort_keys=True))
 
 
 def _validate_hrs_floor_decision(decision, inputs):
@@ -688,12 +690,40 @@ class RiskPolicyStore:
             raise EntryDenied('HRS durable order risk or geometry changed')
         return dict(row)
 
-    async def _release_proven_unsent(self, conn, strategy, client_id, row, state):
+    async def release_hrs_precheck_denial(self, symbol, decision, *, reason_code):
+        """Release this denied intent only while reserved proves no HTTP attempt.
+
+        Never infer safety from age or from a failed authorization. The exact
+        account/client/symbol/revision and reserved state must still match under
+        the same account lock used to enter submitting.
+        """
+        client_id=getattr(decision,'client_order_id',None)
+        revision=getattr(decision,'policy_revision',None)
+        if (not isinstance(client_id,str) or not client_id.startswith('risk_')
+                or not isinstance(revision,int) or isinstance(revision,bool)
+                or revision <= 0 or not isinstance(symbol,str) or not symbol):
+            return False
+        async with self.pool.acquire() as conn, conn.transaction():
+            await self.lock(conn,'hrs')
+            row=await conn.fetchrow("""SELECT * FROM trading.entry_risk_reservation
+                WHERE client_order_id=$1 AND account_id=$2 AND strategy_id='hrs'
+                  AND symbol=$3 AND revision=$4 AND state='reserved'""",
+                client_id,self.account,symbol,revision)
+            if row is None:
+                return False
+            await self._release_proven_unsent(conn,'hrs',client_id,row,'reserved',
+                denial=dict(stage='executor_precheck',reason_code=reason_code))
+            return True
+
+    async def _release_proven_unsent(self, conn, strategy, client_id, row, state, *, denial=None):
+        resolution={'submission_resolution':'denied_before_http'}
+        if denial is not None:
+            resolution['submission_denial']=denial
         await conn.execute("""UPDATE trading.entry_risk_reservation
             SET state='released',updated_at=clock_timestamp(),
-                geometry=COALESCE(geometry,'{}'::jsonb) || '{"submission_resolution":"denied_before_http"}'::jsonb
+                geometry=COALESCE(geometry,'{}'::jsonb) || $5::jsonb
             WHERE client_order_id=$1 AND account_id=$2 AND strategy_id=$3 AND state=$4""",
-            client_id, self.account, strategy, state)
+            client_id, self.account, strategy, state,json.dumps(resolution))
         await conn.execute("""UPDATE trading.position_claims
             SET claim_state='RELEASED',released_at=clock_timestamp(),reason='risk_denied_before_http'
             WHERE symbol=$1 AND strategy=$2 AND claim_state='PENDING'
@@ -863,20 +893,25 @@ async def allocation_frozen(db, account=None):
     return True
 
 
-async def entry_allowed(strategy, strategy_id, *, adding=False, stage='submit', risk_decision=None, quantity=None):
+async def entry_allowed(strategy, strategy_id, *, adding=False, stage='submit', risk_decision=None, quantity=None,
+                        denial=None):
+    def denied(reason_code):
+        if denial is not None:
+            denial.update(stage=stage,reason_code=reason_code)
+        return False
     try:
         store = RiskPolicyStore(getattr(strategy,'db_manager',None) or getattr(strategy,'db',None))
         policy = await store.policy(strategy_id)
         if policy['mode'] != 'reduced' or adding:
-            return False
+            return denied('entry_mode_not_authorized')
         if strategy_id == 'btc_eth_aggressive':
             return True
         if strategy_id != 'hrs' or stage not in ('analysis','submit'):
-            return False
+            return denied('entry_stage_not_authorized')
         if stage == 'analysis':
             return True
         if risk_decision is None or risk_decision.allowed is not True or quantity is None:
-            return False
+            return denied('entry_risk_decision_missing_or_denied')
         try:
             qty = number(quantity)
             limit = number(risk_decision.risk_limit)
@@ -887,21 +922,24 @@ async def entry_allowed(strategy, strategy_id, *, adding=False, stage='submit', 
                      and isinstance(risk_decision.client_order_id, str)
                      and risk_decision.client_order_id.startswith('risk_'))
             if not valid:
-                return False
+                return denied('entry_risk_decision_mismatch')
             from strategies.hrs.risk_budget import FLOOR, STRICT, policy_budget_version
             version = policy_budget_version(policy)
             if getattr(risk_decision, 'budget_version', STRICT) != version:
-                return False
+                return denied('hrs_budget_version_mismatch')
             if version != FLOOR:
                 return True
             async with store.pool.acquire() as conn:
                 await store.authorize_hrs_floor(conn,policy,risk_decision.client_order_id,
                                                 risk_decision,quantity=qty)
             return True
-        except EntryDenied:
-            return False
+        except EntryDenied as exc:
+            return denied(exc.reason_code)
+    except EntryDenied as exc:
+        return denied(exc.reason_code)
     except Exception:
-        return False
+        # Deliberately expose only a code, never exception text or raw evidence.
+        return denied('entry_authorization_error')
 
 
 async def current_allocation(connection, strategy):
