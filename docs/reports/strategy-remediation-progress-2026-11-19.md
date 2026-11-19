@@ -8,7 +8,7 @@
 
 根因路径已定位：`strategies/grid/signal_bot.py` 仅在弱趋势或震荡状态计算网格参数。其他市场状态发送不含数值边界的通知；发送成功后 `mark_non_numeric_sent` 将会话置为 `NO_ACTIVE_REFERENCE`。这不是队列溢出。本次约 72 小时样本远低于已定的独立验证段 ≥90% 数值参考可用率目标；未来验证段仍须独立取证。不能把无数值通知、未发送的计算或过期参考算作有效参考，也不能将过去的检查点间隔补成连续。
 
-`scripts/audit_grid_shadow_window.py` 已增加只读的无行情库诊断路径，并显式输出 90% 参考目标结果。缺少聚合成交库时 `market=null`、`evidence_complete=false`、`formal_m3_eligible=false`，不会把队列与参考检查误报为 M3 验收。此工具尚未合并或发布；现行通用部署在活动发布 pin 下会被拒绝，需要另行限定发布审查，或仅作为本地审计工具合入。
+`scripts/audit_grid_shadow_window.py` 已增加只读的无行情库诊断路径，并显式输出 90% 参考目标结果。缺少聚合成交库时 `market=null`、`evidence_complete=false`、`formal_m3_eligible=false`，不会把队列与参考检查误报为 M3 验收。工具已合入主线，按手动只读 CI 临时运行；未更新交易容器。
 
 ## 其余未结案条件
 
@@ -27,4 +27,6 @@
 
 本地审计脚本修改原会触发默认 `deploy.yml`，没有限定标记时选择 `full`。2026-11-19 生产只读核对确认活动发布 pin 存在，通用部署将在 `Block generic uploads when active release pins exist` 处被拒绝。该脚本本来就是离线审计入口，不在当前运行镜像中；直接合入并运行默认部署既不能安装它，也不能验收运行时行为。
 
-本分支新增手动触发的 `grid-shadow-audit.yml`：它使用已核对的固定服务器 Ed25519 主机密钥，仅复制审计脚本和队列汇总代码到服务器专用临时目录，以只读 SQLite 连接审计已完成的 1 或 3 个北京自然日；只上传无逐笔 ID 的汇总结果，退出时尽力清理临时文件。即使 M3 数据不完整，工作流成功仅表示审计执行成功，结果中的 `formal_m3_eligible` 仍固定为 `false`。默认交易部署工作流已精确排除该审计脚本和新工作流。由于本次同时修改 `deploy.yml` 本身，首次合入仍须使用 `[skip ci]` 的合并提交，随后手动运行新工作流验收；不能通过通用部署绕过活动 pin。新币恢复仓修复另受 ETN 活仓的空仓发布门禁约束，不与本审计工具一起部署。
+手动触发的 `grid-shadow-audit.yml` 使用已核对的固定服务器 Ed25519 主机密钥，仅复制审计脚本和队列汇总代码到服务器专用临时目录，以只读 SQLite 连接审计已完成的 1 或 3 个北京自然日；只上传无逐笔 ID 的汇总结果，退出时尽力清理临时文件。即使 M3 数据不完整，工作流成功仅表示审计执行成功，结果中的 `formal_m3_eligible` 仍固定为 `false`。默认交易部署工作流已精确排除该审计脚本和新工作流。首次合并 [PR #41](https://github.com/Bearflower/Binance_quantitative_trading_yi/pull/41) 使用 `[skip ci]`，核对无本次通用交易部署 Run。新币恢复仓修复另受 ETN 活仓的空仓发布门禁约束，不与本审计工具一起部署。
+
+2026-11-19 [只读 CI 44484590546](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44484590546) 成功运行。针对 11 月 18 日完整北京自然日，时间加权数值参考可用率为 58.32798148%，低于 90% 目标；队列连续性缺口 1 处、未观测 4,418 毫秒，溢出 0。未提供聚合成交库，本次 `market_evidence_available=false`、`evidence_complete=false`、`formal_m3_eligible=false`。运行后临时目录已核查删除，交易容器保持健康。
