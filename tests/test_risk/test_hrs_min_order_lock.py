@@ -262,3 +262,51 @@ async def test_floor_audit_records_exact_locked_policy_and_final_guard_checks_it
     monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
     await r.admin.execute("UPDATE trading.entry_risk_reservation SET geometry=jsonb_set(geometry,'{hrs_budget_context,locked_policy,reason}','\"legacy\"'::jsonb) WHERE client_order_id=$1",client)
     assert not await p.entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=decision,quantity=decision.quantity)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('tamper',['omit','understate','slot_symbols'])
+async def test_floor_final_authorization_binds_pending_sources_to_actual_rows(runtime,monkeypatch,tamper):
+    import shared.entry_risk_policy as p
+    from strategies.hrs.risk_budget import assess_budget_inputs
+    r=runtime;snapshot=await enable(r);sized,geometry=proposal(plan())
+    await r.admin.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,pressure_risk) VALUES('pending','test','hrs',2,'B',1,1,100,10,10,'reserved',28)")
+    client=await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    saved=json.loads(await r.admin.fetchval('SELECT geometry FROM trading.entry_risk_reservation WHERE client_order_id=$1',client))
+    context=saved['hrs_budget_context']
+    if tamper=='omit':
+        context['pending_reservations']=[];context['reservation_risk_by_symbol']={}
+        context['open_risk_by_symbol']=dict(context['local_risk_by_symbol'])
+        # Even a coherent alteration of both captured symbol lists cannot hide B.
+        context['reservation_symbols']=[];saved['slot_context']['reservation_symbols']=[]
+    elif tamper=='understate':
+        context['pending_reservations'][0]['pressure_risk']='1'
+        context['reservation_risk_by_symbol']={'B':'1'}
+        context['open_risk_by_symbol']=dict(context['local_risk_by_symbol'],B='1')
+    else:saved['slot_context']['reservation_symbols']=[]
+    risk=sum(map(D,context['open_risk_by_symbol'].values()))
+    context['existing_open_risk']=str(risk)
+    forged=replace(assess_budget_inputs(dict(saved['hrs_budget_inputs'],existing_open_risk=str(risk))),policy_revision=2,effective_allocation=D(1000),client_order_id=client)
+    saved['hrs_budget_inputs']=p._hrs_budget_json(forged.budget_inputs)
+    saved['hrs_budget_decision']=p._hrs_budget_json(forged)
+    saved['quantity']=str(forged.quantity);saved['exit_ratios']=[str(x) for x in forged.exit_ratios]
+    await r.admin.execute('UPDATE trading.entry_risk_reservation SET geometry=$1::jsonb,quantity=$2,original_quantity=$2,pressure_risk=$3,original_pressure_risk=$3,margin=$4 WHERE client_order_id=$5',json.dumps(saved),forged.quantity,forged.worst_loss,forged.quantity*10,client)
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
+    assert not await p.entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=forged,quantity=forged.quantity)
+
+
+@pytest.mark.asyncio
+async def test_pending_binding_normalizes_amounts_and_allows_only_forward_submission_state(runtime):
+    import copy
+    from shared.entry_risk_policy import _bind_hrs_floor_pending_to_rows
+    r=runtime;snapshot=await enable(r);sized,geometry=proposal(plan())
+    await r.admin.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,pressure_risk) VALUES('pending','test','hrs',2,'B',1,1,100,10,10,'reserved',28)")
+    client=await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    context=r.store.reservation_audit['budget_context'];slot=r.store.reservation_audit['slot_context']
+    rows=copy.deepcopy(context['pending_reservations'])
+    rows[0].update(state='submitting',quantity=D('1.000'),pressure_risk=D('28.000'))
+    _bind_hrs_floor_pending_to_rows(context,slot,rows,account='test',client_id=client)
+    reversed_context=copy.deepcopy(context);reversed_context['pending_reservations'][0]['state']='submitting'
+    rows[0]['state']='reserved'
+    with pytest.raises(EntryDenied,match='sources changed'):
+        _bind_hrs_floor_pending_to_rows(reversed_context,slot,rows,account='test',client_id=client)
