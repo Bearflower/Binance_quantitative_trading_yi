@@ -254,8 +254,70 @@ async def test_natural_scan_missing_assets_use_verified_original_cg_rows(tmp_pat
             assert result[symbol]['asset_id']==expected[symbol]['id']
             assert result[symbol]['value']==expected[symbol]['market_cap']>0
             assert result[symbol]['is_proxy'] is False
-            assert registry[symbol]['cmc_enabled'] is False and registry[symbol]['cmc_id'] is None
+            if registry[symbol]['cmc_enabled'] is True:
+                assert registry[symbol]['comparison']['status']=='qualified'
+                assert registry[symbol]['comparison']['relative_difference']<=.05
+                assert registry[symbol]['comparison']['supply_relative_difference']<=.05
+            else:
+                assert registry[symbol]['cmc_id'] is None
         assert result['UNKNOWNUSDT']['missing_reason']=='asset_identity_unverified'
         assert hub.stats['coingecko_calls']==1 and hub.stats['coinmarketcap_calls']==0
         assert set(session.get.call_args.kwargs['params']['ids'].split(','))=={row['id'] for row in body}
+    finally:hub.close()
+
+
+@pytest.mark.asyncio
+async def test_actual_cg_429_uses_only_identity_and_supply_qualified_cmc_assets(tmp_path,monkeypatch):
+    import hashlib
+    import json
+    from pathlib import Path
+    from datetime import datetime
+    from decimal import Decimal as D
+    from unittest.mock import Mock
+    captures=[]
+    for filename in ('cg_twelve_assets_20261119.json','cmc_twelve_assets_20261119.json'):
+        capture=json.loads((Path('tests/fixtures/market_cap')/filename).read_text())
+        assert hashlib.sha256(capture['body_utf8'].encode()).hexdigest()==capture['body_sha256']
+        assert capture['http_status']==200
+        captures.append(capture)
+    cg={r['symbol'].upper():r for r in json.loads(captures[0]['body_utf8'])}
+    cmc=json.loads(captures[1]['body_utf8'])
+    eligible=set();quotes={}
+    for row in cmc['data']:
+        q=next(q for q in row['quote'] if q['symbol']=='USD');g=cg[row['symbol']]
+        delta=lambda a,b:abs(D(str(a))-D(str(b)))/D(str(b))
+        if (delta(q['market_cap'],g['market_cap'])<=D('.05')
+                and delta(row['circulating_supply'],g['circulating_supply'])<=D('.05')):
+            eligible.add(row['symbol']+'USDT')
+        quotes[row['symbol']+'USDT']=(row,q)
+    assert eligible=={'AKEUSDT','LITUSDT','MMTUSDT','PIPPINUSDT'}
+    now=max(datetime.fromisoformat(c['available_at']).timestamp() for c in captures)
+    monkeypatch.setattr('services.market_cap.hub.time.time',lambda:now)
+    monkeypatch.setenv('COINMARKETCAP_API_KEY','synthetic-test-key')
+    monkeypatch.delenv('COINGECKO_API_KEY',raising=False)
+    registry=json.loads(Path('services/market_cap/assets.json').read_text())
+    class Response:
+        def __init__(self,status,body):self.status,self.body=status,body
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+        async def json(self):return self.body
+    session=Mock()
+    session.get.side_effect=lambda url,**kwargs:Response(429,{}) if 'api.coingecko.com' in url else Response(200,cmc)
+    hub=MarketCapHub(tmp_path/'cache.db',registry);hub.session=session
+    try:
+        result=await hub.collect(list(quotes)+['UNKNOWNUSDT'])
+        for symbol,(row,q) in quotes.items():
+            if symbol in eligible:
+                assert result[symbol]['provider']=='coinmarketcap',result[symbol]
+                assert result[symbol]['asset_id']==str(row['id'])
+                assert result[symbol]['value']==q['market_cap']>0
+                assert registry[symbol]['comparison']['max_relative_difference']==.05
+            else:
+                assert result[symbol]['source']=='missing'
+                assert registry[symbol]['cmc_enabled'] is False
+        assert result['UNKNOWNUSDT']['missing_reason']=='asset_identity_unverified'
+        assert hub.stats['coingecko_429']==1 and hub.stats['coinmarketcap_calls']==1
+        calls=[c for c in session.get.call_args_list if 'pro-api.coinmarketcap.com' in c.args[0]]
+        assert len(calls)==1
+        assert set(calls[0].kwargs['params']['id'].split(','))=={str(quotes[s][0]['id']) for s in eligible}
     finally:hub.close()
