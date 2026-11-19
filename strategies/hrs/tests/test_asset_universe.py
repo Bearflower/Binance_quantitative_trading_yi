@@ -58,13 +58,31 @@ async def test_market_data_fetches_metadata_once_and_fails_closed_on_missing_met
         await provider.close()
 
 
+def assert_observed_secondary_qualification(row,expected_id):
+    """An enabled secondary must have the original paired supply/cap proof."""
+    folder=Path(__file__).parents[3]/'tests/fixtures/market_cap'
+    captures=[json.loads((folder/name).read_text()) for name in (
+        'cg_twelve_assets_20261119.json','cmc_twelve_assets_20261119.json')]
+    comparison=row['comparison']
+    assert row['cmc_enabled'] is True and row['cmc_id']==expected_id
+    assert comparison['status']=='qualified' and comparison['max_relative_difference']==.05
+    assert 0<=comparison['relative_difference']<=.05
+    assert 0<=comparison['supply_relative_difference']<=.05
+    assert comparison['quote_timestamp_gap_seconds']<=comparison['max_quote_timestamp_gap_seconds']==300
+    assert comparison['cg_body_sha256']==captures[0]['body_sha256']
+    assert comparison['cmc_body_sha256']==captures[1]['body_sha256']
+
+
 def test_verified_six_crypto_mappings_do_not_silently_enable_cmc():
     registry = json.loads((Path(__file__).parents[3]/'services/market_cap/assets.json').read_text())
     expected = {'AKEUSDT': 'akedo', 'BLESSUSDT': 'bless-2', 'EVAAUSDT': 'evaa-protocol',
                 'JCTUSDT': 'janction', 'RAREUSDT': 'superrare', '龙虾USDT': 'lobster-2'}
     for symbol, cg_id in expected.items():
         assert registry[symbol]['cg_id'] == cg_id
-        assert registry[symbol]['cmc_enabled'] is False
+        if symbol=='AKEUSDT':
+            assert_observed_secondary_qualification(registry[symbol],38127)
+        else:
+            assert registry[symbol]['cmc_enabled'] is False
         assert registry[symbol]['evidence']
     assert 'XAUUSDT' not in registry
 
@@ -80,8 +98,12 @@ def test_natural_scan_missing_assets_use_verified_provider_identity_only(symbol,
     registry=json.loads((Path(__file__).parents[3]/'services/market_cap/assets.json').read_text())
     row=registry[symbol]
     assert row['cg_id']==cg_id and row['symbol']==provider_symbol
-    assert row['cmc_enabled'] is False and row['cmc_id'] is None
-    assert row['comparison']['reason']=='provider_supply_comparison_required'
+    qualified={'LITUSDT':39125,'MMTUSDT':38231}
+    if symbol in qualified:
+        assert_observed_secondary_qualification(row,qualified[symbol])
+    else:
+        assert row['cmc_enabled'] is False and row['cmc_id'] is None
+        assert row['comparison']['reason']=='provider_supply_comparison_required'
     assert any(url.startswith('https://www.binance.com/') for url in row['evidence'])
     assert any(url.startswith('https://www.coingecko.com/') for url in row['evidence'])
     # Quote-unit multipliers do not multiply the issuer's whole market cap.
