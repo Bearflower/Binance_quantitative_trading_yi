@@ -613,11 +613,70 @@ def _raw_decision(sources,identity,checked_at):
     return row
 
 
-def verify_bootstrap_margin_inputs(portal,raw):
+def _original_records(portal):
+    """Resolve verification requirements without consulting derived policy labels."""
+    files=portal.manifest['files']
+    if 'raw_hrs_evidence.json' not in files:
+        _require('hrs_export_receipt.json' not in files,'hrs_original_evidence_missing')
+        return None
+    sources=snapshot_evidence_sources(portal)
+    cached=getattr(portal,'_hrs_original_records',None)
+    if cached is None or cached[0] is not sources:
+        cached=(sources,_records(sources.get('decision_evidence')))
+        portal._hrs_original_records=cached
+    return cached[1]
+
+
+def _original_scope(financial):
+    from strategies.hrs.margin_budget import policy_margin_scope
+    try:return policy_margin_scope(financial['entry_policy'])
+    except (KeyError,ValueError,TypeError,AttributeError) as exc:
+        raise DataBlocked(['hrs_margin_raw_source_scope_or_budget_version_invalid']) from exc
+
+
+def _original_opening_scan(portal,records):
+    boundary=_time(portal.window_start)
+    candidates=list(_decision_rows(records,kind='scan_start',event_start=boundary,event_end=boundary))
+    _require(len(candidates)==1,'hrs_bootstrap_margin_raw_source_boundary_missing_or_ambiguous')
+    return candidates[0]
+
+
+def _original_analysis_scan(records,symbol,decision_at,checked_at):
+    candidates=[row for kind in ('analysis','lv_rm_analysis') for row in
+        _decision_rows(records,kind=kind,event_start=decision_at,event_end=decision_at)
+        if row.get('symbol')==symbol]
+    _require(len(candidates)==1 and candidates[0]['available_at']<=checked_at,
+        'hrs_margin_raw_source_analysis_missing_or_ambiguous')
+    analysis=candidates[0]
+    starts=(list(records.select(kind='scan_start',run_id=analysis['run_id'])) if isinstance(records,_ArchiveFamily)
+        else [row for row in records if row['kind']=='scan_start' and row['run_id']==analysis['run_id']])
+    _require(len(starts)==1 and starts[0]['available_at']<=checked_at,'hrs_margin_raw_source_cycle_missing_or_ambiguous')
+    return analysis,starts[0]
+
+
+def verify_bootstrap_source_contract(portal,raw):
+    """Original opening scan chooses the contract before any legacy branch."""
+    from strategies.hrs.margin_budget import ALL_ACCOUNT,HRS_OWNED
+    records=_original_records(portal)
+    if records is None:
+        _require(_original_scope(raw)==ALL_ACCOUNT and raw.get('hrs_margin_scope',ALL_ACCOUNT)==ALL_ACCOUNT,
+            'hrs_original_evidence_missing')
+        return
+    source=_original_opening_scan(portal,records)
+    financial=source['payload']['financial_context']
+    scope=_original_scope(financial)
+    _require(_original_scope(raw)==scope and raw.get('runtime_slot_scope')==financial.get('runtime_slot_scope'),
+        'hrs_bootstrap_margin_raw_source_scope_mismatch')
+    if scope==HRS_OWNED:verify_bootstrap_margin_inputs(portal,raw,source=source)
+
+
+def verify_bootstrap_margin_inputs(portal,raw,*,source=None):
     """Bind opening quota/cash and owner proof to the original opening scan."""
     sources=snapshot_evidence_sources(portal)
     checked=_time(raw['bootstrap_available_at'])
-    source=_raw_decision(sources,raw['bootstrap_source_evidence_id'],checked)
+    source=source or _original_opening_scan(portal,_original_records(portal))
+    _require(raw.get('bootstrap_source_evidence_id')==source['evidence_id'] and source['available_at']<=checked,
+        'hrs_bootstrap_margin_raw_source_identity_mismatch')
     _require(source['kind']=='scan_start','hrs_bootstrap_margin_raw_source_mismatch')
     financial=source['payload']['financial_context']
     projected=_margin_inputs(financial,financial,checked_at=checked,
@@ -636,13 +695,28 @@ def verify_bootstrap_margin_inputs(portal,raw):
 
 def verify_runtime_slot_occupancy(portal,raw,checked_at):
     """Reproduce new policy proof from original manifest-bound source receipts."""
-    occupancy=raw.get('risk',{}).get('account_occupancy',{})
-    if occupancy.get('version')=='hrs_account_occupancy_v1' and 'slot_scope' not in occupancy:return
-    _require(occupancy.get('version')=='hrs_account_occupancy_v2','hrs_slot_occupancy_version_unknown')
-    sources=snapshot_evidence_sources(portal);records=_records(sources.get('decision_evidence'))
+    from strategies.hrs.margin_budget import HRS_OWNED
+    risk=raw.get('risk')
+    _require(isinstance(risk,dict),'hrs_margin_raw_source_risk_invalid')
+    occupancy=risk.get('account_occupancy')
+    _require(isinstance(occupancy,dict),'hrs_margin_raw_source_occupancy_invalid')
+    records=_original_records(portal)
+    _require(records is not None,'hrs_original_evidence_missing')
+    analysis,start=_original_analysis_scan(records,raw['symbol'],_time(raw['decision_at']),checked_at)
+    financial=start['payload']['financial_context']
+    scope=_original_scope(financial)
+    _require(_original_scope(raw.get('risk',{}))==scope,'hrs_margin_raw_source_scope_mismatch')
+    required=scope==HRS_OWNED or financial.get('runtime_slot_scope') is not None
+    if not required and occupancy.get('version')=='hrs_account_occupancy_v1' and 'slot_scope' not in occupancy:return
+    _require(occupancy.get('version')=='hrs_account_occupancy_v2'
+        and occupancy.get('slot_scope')==financial.get('runtime_slot_scope'), 'hrs_margin_raw_source_slot_scope_mismatch')
+    ids=raw.get('evidence_ids')
+    _require(isinstance(ids,list) and ids and ids[0]==analysis['evidence_id'],'hrs_margin_raw_source_analysis_identity_mismatch')
+    _require(bool(occupancy.get('slot_source_evidence_id')) and bool(occupancy.get('claims_source_evidence_id')),
+        'hrs_margin_raw_source_slot_identity_missing')
+    sources=snapshot_evidence_sources(portal)
     slot=_raw_decision(sources,occupancy['slot_source_evidence_id'],checked_at)
     claim=_raw_decision(sources,occupancy['claims_source_evidence_id'],checked_at)
-    analysis=_raw_decision(sources,raw['evidence_ids'][0],checked_at)
     _require(analysis['kind'] in ('analysis','lv_rm_analysis') and analysis['symbol']==raw['symbol']
         and analysis['event_time']==_time(raw['decision_at'])
         and slot['run_id']==claim['run_id']==analysis['run_id']

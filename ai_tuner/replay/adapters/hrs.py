@@ -153,6 +153,8 @@ class HrsAdapter:
         if self._runtime_ready:
             return
         raw = self._portal.hrs_replay_state(self._start)
+        from ai_tuner.hrs_evidence_export import verify_bootstrap_source_contract
+        verify_bootstrap_source_contract(self._portal,raw)
         try:
             self.config = raw['config']
             if raw['config_hashes'] != ctx.config_hashes.as_dict():
@@ -163,8 +165,6 @@ class HrsAdapter:
             self._budget_version = self._policy_budget_version(self._policy)
             self._margin_scope = policy_margin_scope(self._policy)
             if self._margin_scope==HRS_OWNED:
-                from ai_tuner.hrs_evidence_export import verify_bootstrap_margin_inputs
-                verify_bootstrap_margin_inputs(self._portal,raw)
                 if raw.get('hrs_margin_scope')!=self._margin_scope:raise ValueError('hrs_margin_scope_mismatch')
                 validate_cash_fields(raw)
                 validate_cash_observation(raw,checked_at=parse_utc(raw['bootstrap_available_at']),
