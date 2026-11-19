@@ -18,6 +18,8 @@ from apscheduler.triggers.cron import CronTrigger
 from ai_tuner.allocation.activity_evidence import read_activity_evidence
 from ai_tuner.allocation.capital_evidence import read_capital_evidence
 from ai_tuner.monitor.live_position_ownership import resolve_unclaimed_positions
+from ai_tuner.monitor.protective_exit_evidence import read_protective_exits
+from ai_tuner.monitor.um_margin_evidence import SOURCE as UM_MARGIN_SOURCE, blocked_margin, read_um_margin
 from ai_tuner.monitor.trial_risk_evidence import covered_reservation_budget, mark_shock, review_criteria
 from shared.accounting.income_integrity import income_account_lock, require_income_integrity
 from shared.accounting.published_report import REPORT_VERSIONS
@@ -319,7 +321,7 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                            start: datetime, end: datetime,
                            *, trial_start: datetime | None = None,
                            income_reader=read_trial_income,
-                           activity_reader=None) -> dict:
+                           activity_reader=None, protective_exit_reader=None) -> dict:
     """Collect one fixed trial window. All database statements are SELECTs."""
     if strategy not in TRIAL_STRATEGIES or not account or _utc(start) >= _utc(end):
         raise ValueError("invalid trial identity or window")
@@ -327,7 +329,7 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
         "account_id": account, "strategy_id": strategy,
         "window_start": _utc(start).isoformat(), "window_end": _utc(end).isoformat(),
         "policy": None, "reservations": None, "exchange": {"verified": False},
-        "income": None, "signals": None, "entry_activity": None,
+        "income": None, "signals": None, "entry_activity": None, "protective_exits": None,
         "entry_activity_required": activity_reader is not None,
         "source_errors": [],
     }
@@ -388,7 +390,11 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
         else:
             result["intact_lot_reserved_budget_usdt"] = None
             result["remaining_lot_allocated_reserve_usdt"] = None
+            result["um_margin"] = blocked_margin("position_ownership_incomplete")
             if result.get("ownership_complete") is True:
+                result["um_margin"] = await read_um_margin(
+                    exchange, positions, result["owned_positions"], position_as_of_ms
+                )
                 try:
                     symbols = sorted(set(result["owned_positions"]))
                     candidates = await _read_lot_candidates(
@@ -418,9 +424,17 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             evidence["income"] = report
         except Exception as exc:
             evidence["source_errors"].append("income:" + type(exc).__name__)
+        activity_inputs = {}
+        if protective_exit_reader is not None:
+            try:
+                report, reductions = await protective_exit_reader(db, exchange, account, start_ms, end_ms)
+                evidence["protective_exits"] = report
+                activity_inputs["verified_reductions"] = reductions
+            except Exception as exc:
+                evidence["source_errors"].append("protective_exits:" + type(exc).__name__)
         if activity_reader is not None:
             try:
-                rows = await activity_reader(db, account, start_ms, end_ms, (strategy,))
+                rows = await activity_reader(db, account, start_ms, end_ms, (strategy,), **activity_inputs)
                 activity = rows.get(strategy) if isinstance(rows, Mapping) else None
                 if (not isinstance(activity, Mapping)
                         or activity.get("account_id") != account
@@ -527,10 +541,17 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
         if not isinstance(owned_positions, list):
             missing.append("owned_positions_unverified")
         elif owned_positions:
-            # PM positionRisk has no exchange-attested strategy margin. The
-            # reservation may already be the same live lot; adding its margin
-            # to notional/leverage would double count that exposure.
-            missing.append("holdings_margin_unverified")
+            evidence_margin = exchange.get("um_margin")
+            verified_margin = (
+                isinstance(evidence_margin, Mapping)
+                and evidence_margin.get("status") == "VERIFIED"
+                and evidence_margin.get("source") == UM_MARGIN_SOURCE
+                and isinstance(evidence_margin.get("owned_position_initial_margin_by_symbol_usdt"), Mapping)
+                and set(evidence_margin["owned_position_initial_margin_by_symbol_usdt"]) == set(owned_positions)
+                and (_amount(evidence_margin.get("owned_position_initial_margin_usdt")) or 0) > 0
+            )
+            if not verified_margin:
+                missing.append("holdings_margin_unverified")
 
     signals = evidence.get("signals")
     if evidence.get("entry_activity_required") is True:
@@ -648,6 +669,7 @@ class ReducedTrialEvaluator:
             "source_errors": evidence.get("source_errors", []),
             "account_risk": evidence.get("account_risk"),
             "entry_activity": evidence.get("entry_activity"),
+            "protective_exits": evidence.get("protective_exits"),
             "allocated_capital_evidence": evidence.get("allocated_capital_evidence"),
             "decision_scope": "evidence_only_no_policy_write",
         }
@@ -668,7 +690,8 @@ class ReducedTrialEvaluator:
             evidence = await collect_snapshot(self.db, self.exchange, self.account,
                                               strategy, start, end,
                                               trial_start=self.trial_starts.get(strategy),
-                                              activity_reader=read_activity_evidence)
+                                              activity_reader=read_activity_evidence,
+                                              protective_exit_reader=read_protective_exits)
             evidence["cohort_ceiling"] = self.cohort_ceilings.get(
                 strategy, evidence.get("cohort_ceiling")
             )
@@ -704,6 +727,12 @@ class ReducedTrialEvaluator:
             activity = evidence.get("entry_activity") or {}
             reservations = evidence.get("reservations") or {}
             exchange = evidence.get("exchange") or {}
+            um_margin = exchange.get("um_margin") or {}
+            exits = evidence.get("protective_exits") or {}
+            links = [row for row in exits.get("links", []) if row["strategy"] == strategy]
+            exit_summary = (f"{len(links)} 单；已绑定入场批次 "
+                            f"{sum(row['entry_order_id'] is not None for row in links)} 单"
+                            if exits.get("scope") and not exits.get("issues") else "UNKNOWN")
             content = (f"策略: {strategy}\n政策 revision: {assessment['policy_revision']}\n"
                        f"窗口: {evidence['window_start']} 至 {evidence['window_end']}\n"
                        f"结论: {assessment['status']}\n交易所净收入: {net} USDT\n"
@@ -714,10 +743,13 @@ class ReducedTrialEvaluator:
                        f"已核有成交入场单: {activity.get('verified_filled_entry_orders', 'UNKNOWN')}；"
                        f"入场事实覆盖完整: {activity.get('coverage_complete', 'UNKNOWN')}\n"
                        f"未释放预留: {reservations.get('count', 'UNKNOWN')}；"
-                       f"保证金: {reservations.get('margin', 'UNKNOWN')} USDT；"
+                       f"预留金额: {reservations.get('margin', 'UNKNOWN')} USDT；"
                        f"压力风险: {reservations.get('pressure_risk', 'UNKNOWN')}\n"
                        f"交易所已归属持仓: {exchange.get('owned_positions', 'UNKNOWN')}；"
                        f"无全量止损: {exchange.get('unprotected_symbols', 'UNKNOWN')}\n"
+                       f"策略持仓实际 UM 初始保证金: "
+                       f"{um_margin.get('owned_position_initial_margin_usdt') or 'UNKNOWN'} USDT\n"
+                       f"已核策略条件单退出（已知订单范围）: {exit_summary}\n"
                        f"报告 ID: {assessment['report_id'] or 'UNKNOWN'}\n"
                        f"证据/问题: {', '.join(assessment['reasons']) or '无'}\n"
                        f"主账户回撤考核: {(evidence.get('account_risk') or {}).get('status', 'UNKNOWN')}；"

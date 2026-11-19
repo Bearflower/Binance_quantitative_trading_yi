@@ -171,7 +171,8 @@ def _entry_role(raw, fill, fills, cursors, facts, account, end):
 
 
 def project_activity_evidence(reservations, observations, fills, cursors, facts,
-                              account_id, start_ms, end_ms, strategy_ids, *, audit_healthy=True):
+                              account_id, start_ms, end_ms, strategy_ids, *, audit_healthy=True,
+                              verified_reductions=()):
     """Project exact ownership and real fill timestamps into a positive subset.
 
     ``None`` means no provable count, including unknown inactivity. A positive
@@ -388,17 +389,21 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
                     gap('entry_role_unverified' if role is None else 'entry_direction_conflict', (sid,))
         except (ValueError, TypeError, KeyError, InvalidOperation):
             gap('invalid_fill_evidence', (sid,))
+    verified_reductions = frozenset(verified_reductions)
     for fill in fills:
-        if (start_ms <= _ms(fill['trade_time_utc']) < end_ms
-                and (fill['symbol'], str(fill.get('order_id'))) not in seen_orders):
-            # An unowned fill may close a known position, but only a fully covered
-            # flat replay can prove that it did not create exposure.
+        stamp = _ms(fill['trade_time_utc'])
+        order_id = str(fill.get('order_id'))
+        reduction = (account_id, fill['symbol'], str(fill['trade_id']), order_id, stamp)
+        if (start_ms <= stamp < end_ms and reduction not in verified_reductions
+                and (fill['symbol'], order_id) not in seen_orders):
+            # Without signed reduce-only proof, require a fully covered flat replay.
             raw = dict(side=fill.get('side'), positionSide='BOTH', reduceOnly=False)
             if _entry_role(raw, fill, fills, cursors, facts, account_id, end_ms) is not False:
                 gap('unowned_fill_in_window')
     # Zero is only available with complete protocol + observations + fill coverage.
     source_id = 'entry-activity:sha256:' + _digest([account_id, start_ms, end_ms, reservations,
-                                                 observations, fills, cursors, facts])
+                                                 observations, fills, cursors, facts,
+                                                 sorted(verified_reductions)])
     return {sid: dict(account_id=account_id, start_ms=start_ms, end_ms=end_ms,
                       owned_entry_fills=(len(positive[sid]) if positive[sid] or not reasons[sid] else None),
                       verified_filled_entry_orders=(len(filled_orders[sid]) if filled_orders[sid]
@@ -577,7 +582,8 @@ async def collect_entry_activity(db, exchange, account_id, *, max_requests=100):
     return summary
 
 
-async def read_activity_evidence(db, account_id, start_ms, end_ms, strategy_ids):
+async def read_activity_evidence(db, account_id, start_ms, end_ms, strategy_ids, *,
+                                 verified_reductions=()):
     """Read immutable evidence only; database failure cannot become zero activity."""
     strategy_ids = tuple(strategy_ids)
     try:
@@ -603,7 +609,8 @@ WHERE NOT tgisinternal AND tgenabled='A' AND n.nspname='trading' AND
  ('trading.entry_risk_reservation'::regclass,'entry_activity_capture_intent',31,'capture_entry_activity_intent'))""")
         healthy = bool(audit) and audit[0].get('healthy') is True
         return project_activity_evidence(reservations, observations, fills, cursors, facts,
-                                         account_id, start_ms, end_ms, strategy_ids, audit_healthy=healthy)
+                                         account_id, start_ms, end_ms, strategy_ids, audit_healthy=healthy,
+                                         verified_reductions=verified_reductions)
     except Exception:
         return {sid: dict(account_id=account_id, start_ms=start_ms, end_ms=end_ms,
                           owned_entry_fills=None, verified_filled_entry_orders=None, coverage_complete=False,
