@@ -28,6 +28,7 @@ COPY services/market_cap/ /app/services/market_cap/
 COPY tests/ /app/tests/
 COPY release/hrs-execution/deploy_optimization.py /app/release/hrs-execution/deploy_optimization.py
 COPY release/hrs-execution/activate_minimum_budget.py /app/release/hrs-execution/activate_minimum_budget.py
+COPY release/hrs-execution/activate_owned_margin.py /app/release/hrs-execution/activate_owned_margin.py
 COPY database/postgres/migrations/ /app/database/postgres/migrations/
 COPY database/postgres/init-scripts/ /app/database/postgres/init-scripts/
 COPY .gitignore /app/.gitignore

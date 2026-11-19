@@ -19,7 +19,7 @@ import urllib.request
 BEIJING = timezone(timedelta(hours=8))
 START = datetime(2026, 10, 30, tzinfo=BEIJING)
 POLICIES = {
-    "hrs": (7, "reduced"), "btc_eth": (5, "capped"),
+    "hrs": (8, "reduced"), "btc_eth": (5, "capped"),
     "btc_eth_aggressive": (5, "reduced"), "new_coin": (5, "capped"),
 }
 CONTAINERS = {s: f"trading_system-{s}" for s in POLICIES}
@@ -63,6 +63,13 @@ def evaluate_policies(rows, now):
                 budget_matches = False
             if not budget_matches:
                 issues.append(f"hrs r{row['revision']} 预算版本与已批准最小订单政策不符")
+            from strategies.hrs.margin_budget import HRS_OWNED, policy_margin_scope
+            try:
+                margin_matches = policy_margin_scope(row) == HRS_OWNED
+            except (ValueError, TypeError):
+                margin_matches = False
+            if not margin_matches:
+                issues.append(f"hrs r{row['revision']} 保证金口径与已批准自身额度及账户余额检查不符")
         expiry = row["expires_at"].astimezone(BEIJING)
         if expiry <= now + timedelta(hours=48):
             state = "已到期" if expiry <= now else "48 小时内到期"

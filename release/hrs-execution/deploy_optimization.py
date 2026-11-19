@@ -445,14 +445,20 @@ def admission_change_metadata(manifest):
     if scoped and scope != 'hrs_owned_and_unreleased_reservations_v2':
         raise ValueError('runtime_admission_scope_missing_or_invalid')
     budget_scope = manifest.get('runtime_risk_budget_scope')
+    margin_scope = manifest.get('runtime_margin_scope')
+    owned_quota = margin_scope == 'hrs_owned_quota_account_free_v1'
+    if margin_scope is not None and not owned_quota:
+        raise ValueError('runtime_margin_scope_missing_or_invalid')
     revision = manifest.get('target_hrs_policy_revision')
     floor = budget_scope == 'hrs_minimum_executable_v1'
-    if ((budget_scope is not None or revision is not None)
-            and (not floor or type(revision) is not int or revision != 7)):
+    if ((budget_scope is not None or revision is not None or margin_scope is not None)
+            and (not floor or type(revision) is not int or revision != (8 if owned_quota else 7))):
         raise ValueError('runtime_risk_budget_scope_missing_or_invalid')
     return dict(economic_parameters_changed=scoped or floor, admission_scope_changed=scoped,
                 sltp_parameters_changed=False, risk_budget_percentages_changed=False,
                 risk_budget_model_changed=floor, effective_risk_limits_changed=floor,
+                runtime_margin_scope=margin_scope, margin_scope_changed=owned_quota,
+                account_available_balance_required=owned_quota,
                 runtime_risk_budget_scope=budget_scope, target_hrs_policy_revision=revision,
                 runtime_admission_scope=scope if scoped else None)
 
