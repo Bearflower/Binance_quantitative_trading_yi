@@ -7,7 +7,7 @@ are proven. This deliberately overcounts partial/complete fills alongside holdin
 from contextlib import asynccontextmanager
 import asyncio
 import copy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import timedelta
 from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP
 import hashlib
@@ -158,6 +158,125 @@ def size_reduced_entry(signal, filters, multiplier, stop_offset, tp_ratios, *, t
                       quantity*per_unit,q0*per_unit,ratios)
 
 
+def _hrs_budget_json(value):
+    """Stable JSON contract shared by reservation evidence and final authorization."""
+    from dataclasses import is_dataclass
+    if is_dataclass(value):
+        value = asdict(value)
+    return json.loads(json.dumps(value, default=str, sort_keys=True))
+
+
+def _validate_hrs_floor_decision(decision, inputs):
+    from strategies.hrs.risk_budget import FLOOR, assess_budget_inputs
+    try:
+        expected = assess_budget_inputs(inputs)
+        captured = _hrs_budget_json(decision)
+        # Context is bound separately to the policy and durable reservation.
+        fields = set(asdict(expected)) - {'policy_revision', 'client_order_id', 'effective_allocation'}
+        normalized = _hrs_budget_json(expected)
+        if (not expected.allowed or expected.budget_version != FLOOR
+                or not isinstance(captured, dict) or set(captured) != set(normalized)
+                or captured.get('allowed') is not True
+                or any(captured.get(key) != normalized[key] for key in fields)):
+            raise ValueError('decision does not reproduce assessor inputs')
+        return expected
+    except (ValueError, TypeError, AttributeError, ArithmeticError) as exc:
+        raise EntryDenied('invalid HRS minimum-order budget evidence', reason_code='hrs_budget_evidence_invalid') from exc
+
+
+def _refine_hrs_floor(sized, geometry, values, pending, allocation, remaining, context):
+    from strategies.hrs.risk_budget import calculate_open_position_risk, assess_budget_inputs
+    initial = _validate_hrs_floor_decision(geometry.get('hrs_budget_decision'), geometry.get('hrs_budget_inputs'))
+    inputs = initial.budget_inputs
+    if (geometry.get('hrs_budget_source') != 'hrs_live_assessor_v1'
+            or sized.quantity != initial.quantity or sized.original_quantity != initial.quantity
+            or sized.risk != initial.worst_loss or sized.original_risk != initial.worst_loss
+            or sized.price != inputs['entry_price'] or sized.leverage != inputs['leverage']
+            or sized.margin != sized.quantity*sized.price/sized.leverage
+            or sized.exit_ratios != initial.exit_ratios
+            or inputs['fee_rate'] < Decimal('.0005')
+            or inputs['pressure_slippage'] < Decimal('.02')):
+        raise EntryDenied('HRS planned order differs from budget evidence', reason_code='hrs_budget_plan_mismatch')
+    local = values.slot_evidence['local']
+    by_symbol = {}
+    for symbol, position in local.items():
+        risk = calculate_open_position_risk({symbol: position}, fee_rate=inputs['fee_rate'], pressure_slippage=inputs['pressure_slippage'])
+        if risk is None:
+            raise EntryDenied('HRS local protection risk unavailable', reason_code='hrs_open_risk_unknown')
+        by_symbol[symbol] = risk
+    local_risk = dict(by_symbol)
+    # A retained intent may already be represented by a live protected position.
+    # Keep the larger exposure for that symbol, including every pending symbol.
+    reserved_risk = {}
+    for row in pending:
+        risk = number(row['pressure_risk'])
+        reserved_risk[row['symbol']] = reserved_risk.get(row['symbol'], Decimal(0)) + risk
+    for symbol, risk in reserved_risk.items():
+        by_symbol[symbol] = max(by_symbol.get(symbol, Decimal(0)), risk)
+    current_risk = sum(by_symbol.values(), Decimal(0))
+    if remaining < initial.minimum_quantity*sized.price/sized.leverage:
+        raise EntryDenied('minimum_order_exceeds_margin', reason_code='minimum_order_exceeds_margin',
+                          context=dict(context, remaining_margin=str(remaining), existing_open_risk=str(current_risk)))
+    locked_inputs = dict(inputs, allocation=allocation, existing_open_risk=current_risk,
+                         remaining_margin=min(remaining, sized.margin))
+    refined = assess_budget_inputs(locked_inputs)
+    if not refined.allowed:
+        raise EntryDenied(refined.reason, reason_code=refined.reason,
+                          context=dict(context, remaining_margin=str(remaining), existing_open_risk=str(current_risk)))
+    if refined.quantity > sized.quantity:
+        raise EntryDenied('HRS locked quantity cannot increase', reason_code='hrs_budget_quantity_increased')
+    budget_context = _hrs_budget_json(dict(context, source='hrs_account_lock_v1',
+        local_positions=local, pending_reservations=[dict(row) for row in pending],
+        local_risk_by_symbol=local_risk, reservation_risk_by_symbol=reserved_risk,
+        open_risk_by_symbol=by_symbol, existing_open_risk=current_risk,
+        full_allocation=allocation, remaining_margin=remaining,
+        planned_quantity=sized.quantity, planned_budget_inputs=inputs,
+        planned_budget_decision=geometry['hrs_budget_decision']))
+    refined = replace(refined, policy_revision=context['policy_revision'],
+                      effective_allocation=values.allocation)
+    geometry.update(hrs_budget_inputs=_hrs_budget_json(refined.budget_inputs),
+                    hrs_budget_decision=_hrs_budget_json(refined), hrs_budget_context=budget_context,
+                    quantity=str(refined.quantity), exit_ratios=[str(x) for x in refined.exit_ratios])
+    resized = replace(sized, quantity=refined.quantity, original_quantity=refined.quantity,
+        margin=refined.quantity*sized.price/sized.leverage, risk=refined.worst_loss,
+        original_risk=refined.worst_loss, exit_ratios=refined.exit_ratios)
+    return resized, refined, budget_context
+
+
+def _validate_hrs_floor_context(geometry, expected, row):
+    """Bind the recomputed result to the captured locked ownership/risk sources."""
+    context = geometry.get('hrs_budget_context')
+    slot = geometry.get('slot_context')
+    proof = geometry.get('slot_occupancy_proof')
+    if (not isinstance(context,dict) or not isinstance(slot,dict) or not isinstance(proof,dict)
+            or context.get('source') != 'hrs_account_lock_v1'
+            or context.get('account_id') != row['account_id']
+            or context.get('policy_revision') != row['revision']
+            or any(context.get(k) != slot.get(k) or not context.get(k)
+                   for k in ('checked_at','evidence_sha256','as_of','ownership_claims'))
+            or context.get('evidence_sha256') != proof.get('equity_evidence_sha256')):
+        raise EntryDenied('HRS locked risk context unavailable',reason_code='hrs_budget_context_invalid')
+    try:
+        initial = _validate_hrs_floor_decision(context['planned_budget_decision'],context['planned_budget_inputs'])
+        price,leverage=initial.budget_inputs['entry_price'],initial.budget_inputs['leverage']
+        sized=SizedEntry(initial.quantity,initial.quantity,price,leverage,
+            initial.quantity*price/leverage,initial.worst_loss,initial.worst_loss,initial.exit_ratios)
+        original_geometry=dict(hrs_budget_source='hrs_live_assessor_v1',
+            hrs_budget_inputs=context['planned_budget_inputs'],hrs_budget_decision=context['planned_budget_decision'])
+        values=ScopedRiskSnapshot(number(context['account_margin'],zero=True),Decimal(1),
+            number(geometry['hrs_budget_decision']['effective_allocation']),3,context['slot_scope'],
+            dict(local=context['local_positions']))
+        _, replayed, replayed_context = _refine_hrs_floor(sized,original_geometry,values,
+            context['pending_reservations'],number(context['full_allocation']),
+            number(context['remaining_margin']),slot)
+        if (_hrs_budget_json(replayed.budget_inputs) != _hrs_budget_json(expected.budget_inputs)
+                or any(context[k] != replayed_context[k] for k in (
+                    'local_risk_by_symbol','reservation_risk_by_symbol','open_risk_by_symbol','existing_open_risk','planned_quantity'))):
+            raise ValueError('locked inputs do not reproduce risk sources')
+    except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
+        raise EntryDenied('HRS locked risk context invalid',reason_code='hrs_budget_context_invalid') from exc
+
+
 def account_id():
     return os.environ.get('TRADE_ACCOUNT_ID', 'default')
 
@@ -215,6 +334,20 @@ class RiskPolicyStore:
             context={}
             scoped=isinstance(snapshot_values,ScopedRiskSnapshot)
             saved_geometry=dict(geometry or {})
+            floor = False
+            refined_decision = budget_context = None
+            if strategy == 'hrs':
+                from strategies.hrs.risk_budget import FLOOR, STRICT, policy_budget_version
+                try:
+                    active_version = policy_budget_version(policy)
+                except ValueError as exc:
+                    raise EntryDenied('invalid HRS policy budget version', reason_code='hrs_budget_version_invalid') from exc
+                proposed_version = saved_geometry.get('hrs_risk_budget_version', STRICT)
+                if proposed_version not in (STRICT, FLOOR) or proposed_version != active_version:
+                    raise EntryDenied('HRS policy budget version mismatch', reason_code='hrs_budget_version_mismatch')
+                floor = active_version == FLOOR
+                if floor and not scoped:
+                    raise EntryDenied('HRS minimum-order budget requires owned slots', reason_code='hrs_budget_scope_required')
             if scoped:
                 from strategies.hrs.entry_occupancy import SLOT_SCOPE,HrsOccupancyDenied,prove_hrs_slot_ownership
                 values=snapshot_values
@@ -266,7 +399,8 @@ class RiskPolicyStore:
             else:
                 holdings,equity,allocation = snapshot_values[:3]
             # Re-read under the policy lock so a smaller allocation cannot be missed.
-            allocation = min(number(allocation), await current_allocation(conn,strategy))
+            full_allocation = await current_allocation(conn,strategy)
+            allocation = min(number(allocation), full_allocation)
             if not scoped and len(snapshot_values) == 5:
                 owned_symbols,max_slots = snapshot_values[3:]
                 pending_symbols = await conn.fetch("SELECT DISTINCT symbol FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id=$2 AND state<>'released'",self.account,strategy)
@@ -276,6 +410,13 @@ class RiskPolicyStore:
             cap = min(number(allocation),number(equity)*number(policy['ratio_cap']),number(policy['entry_ceiling']))
             used = await conn.fetchval('''SELECT COALESCE(sum(margin),0) FROM trading.entry_risk_reservation
                 WHERE account_id=$1 AND strategy_id=$2 AND state <> 'released' ''',self.account,strategy)
+            if floor:
+                pending = await conn.fetch("""SELECT client_order_id,symbol,quantity,margin,pressure_risk,state,revision
+                    FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs'
+                    AND state<>'released' ORDER BY client_order_id""", self.account)
+                remaining = cap - number(holdings,zero=True) - number(used,zero=True)
+                sized, refined_decision, budget_context = _refine_hrs_floor(
+                    sized,saved_geometry,values,pending,full_allocation,remaining,context)
             if number(holdings,zero=True)+used+sized.margin > cap:
                 raise EntryDenied('entry ceiling includes holdings and all durable reservations',reason_code='entry_margin_ceiling',context=dict(context,account_margin=str(holdings),reserved_margin=str(used),entry_margin=str(sized.margin),margin_cap=str(cap)))
             # Existing symbol claim must already be acquired by the ordinary ownership protocol.
@@ -286,12 +427,15 @@ class RiskPolicyStore:
             await conn.execute('''INSERT INTO trading.entry_risk_reservation
                 (client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,geometry,pressure_risk,original_pressure_risk)
                 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'reserved',$11::jsonb,$12,$13)''',client_id,self.account,strategy,revision,symbol,
-                sized.quantity,sized.original_quantity,sized.price,sized.leverage,sized.margin,json.dumps(saved_geometry,sort_keys=True),sized.risk,sized.original_risk)
+                sized.quantity,sized.original_quantity,sized.price,sized.leverage,sized.margin,json.dumps(_hrs_budget_json(saved_geometry),sort_keys=True),sized.risk,sized.original_risk)
         if scoped:
             # Expose only a durably committed result to this call's HRS capture.
             # Live HRS owns one store instance per invocation, without reuse.
             self.reservation_audit=copy.deepcopy(dict(client_order_id=client_id,
                 slot_occupancy_proof=saved_geometry['slot_occupancy_proof'],slot_context=saved_geometry['slot_context']))
+            if floor:
+                self.reservation_audit.update(risk_decision=refined_decision,
+                    budget_decision=saved_geometry['hrs_budget_decision'], budget_context=budget_context)
         return client_id
 
     async def _release_proven_unsent(self, conn, strategy, client_id, row, state):
@@ -476,10 +620,37 @@ async def entry_allowed(strategy, strategy_id, *, adding=False, stage='submit', 
             limit = number(risk_decision.risk_limit)
             loss = number(risk_decision.worst_loss)
             planned = number(risk_decision.quantity)
-            return (qty == planned and loss <= limit and policy['allow_add'] is False
-                    and risk_decision.policy_revision == policy['revision']
-                    and isinstance(risk_decision.client_order_id, str)
-                    and risk_decision.client_order_id.startswith('risk_'))
+            valid = (qty == planned and loss <= limit and policy['allow_add'] is False
+                     and risk_decision.policy_revision == policy['revision']
+                     and isinstance(risk_decision.client_order_id, str)
+                     and risk_decision.client_order_id.startswith('risk_'))
+            if not valid:
+                return False
+            from strategies.hrs.risk_budget import FLOOR, STRICT, policy_budget_version
+            version = policy_budget_version(policy)
+            if getattr(risk_decision, 'budget_version', STRICT) != version:
+                return False
+            if version != FLOOR:
+                return True
+            _validate_hrs_floor_decision(risk_decision, risk_decision.budget_inputs)
+            async with store.pool.acquire() as conn:
+                row = await conn.fetchrow("""SELECT * FROM trading.entry_risk_reservation
+                    WHERE client_order_id=$1 AND account_id=$2 AND strategy_id='hrs'
+                    AND state IN ('reserved','submitting')""",risk_decision.client_order_id,store.account)
+            if not row or row['revision'] != policy['revision']:
+                return False
+            geometry = json.loads(row['geometry']) if isinstance(row['geometry'],str) else row['geometry']
+            expected = _validate_hrs_floor_decision(geometry.get('hrs_budget_decision'),geometry.get('hrs_budget_inputs'))
+            _validate_hrs_floor_context(geometry, expected, row)
+            return (geometry.get('hrs_risk_budget_version') == FLOOR
+                    and geometry.get('hrs_budget_source') == 'hrs_live_assessor_v1'
+                    and isinstance(geometry.get('hrs_budget_context'),dict)
+                    and _hrs_budget_json(expected.budget_inputs) == _hrs_budget_json(risk_decision.budget_inputs)
+                    and row['quantity'] == row['original_quantity'] == qty == expected.quantity
+                    and row['pressure_risk'] == row['original_pressure_risk'] == loss == expected.worst_loss
+                    and row['price'] == expected.budget_inputs['entry_price']
+                    and row['leverage'] == expected.budget_inputs['leverage']
+                    and row['margin'] == qty*row['price']/row['leverage'])
         except EntryDenied:
             return False
     except Exception:
