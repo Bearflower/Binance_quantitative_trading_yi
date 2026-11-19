@@ -107,10 +107,15 @@ async def capture_financial_context(strategy):
         ownership_claims = json.loads(ownership_claims)
     if ownership_claims is not None and not isinstance(ownership_claims, list):
         raise ValueError('ownership_claims_invalid')
-    from .margin_budget import policy_margin_scope,account_cash_fields
+    from .margin_budget import HRS_OWNED,policy_margin_scope,account_cash_fields,validate_cash_observation
     scope=policy_margin_scope(dict(policies[0]))
     cash=account_cash_fields(account,getattr(strategy.binance_client,'use_unified_account',False))
+    # started precedes the gather's actual account GET, retaining a conservative
+    # cash age even when inventories or the database become ready much later.
+    cash['account_cash_observed_at']=started
     available = datetime.now(timezone.utc)
+    if scope==HRS_OWNED:
+        validate_cash_observation(cash,checked_at=available,observed_at=observed)
     return dict(hrs_margin_scope=scope,**cash,runtime_slot_scope=SLOT_SCOPE, hrs_slot_inputs=slot_inputs, started_at=started, available_at=available, account_equity=str(equity),
         account_balances={key: account[key] for key in (
             ('totalMarginBalance', 'availableBalance', 'accountStatus') if getattr(strategy.binance_client, 'use_unified_account', False) is True

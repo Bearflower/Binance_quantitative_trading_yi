@@ -994,7 +994,7 @@ class HRSStrategy(BaseStrategy):
         try:
             await store.reconcile('hrs', self.binance_client)
             from .risk_budget import FLOOR
-            from .margin_budget import ALL_ACCOUNT,HRS_OWNED,policy_margin_scope,account_cash_fields,validate_cash_fields,exact
+            from .margin_budget import ALL_ACCOUNT,HRS_OWNED,policy_margin_scope,account_cash_fields,validate_cash_fields,validate_cash_observation,exact
             margin_scope=policy_margin_scope(await store.policy('hrs')) if decision.budget_version==FLOOR else ALL_ACCOUNT
             raw_claims = decode_claim_evidence(await self.db.fetch_all(
                 CLAIM_EVIDENCE_SELECT + ' WHERE c.symbol=$1', symbol))
@@ -1016,6 +1016,7 @@ class HRSStrategy(BaseStrategy):
                 async def snapshot():
                     # Fresh actual account GET is part of the independent receipt;
                     # the earlier planning equity never supplies free margin.
+                    cash_observed_at=datetime.now(timezone.utc) if margin_scope==HRS_OWNED else None
                     account = await self.binance_client.get_account_info() if margin_scope==HRS_OWNED else None
                     snapshot_equity=exact(account.get('totalMarginBalance')) if margin_scope==HRS_OWNED else Decimal(str(equity))
                     positions = await self.binance_client.get_position()
@@ -1033,9 +1034,11 @@ class HRSStrategy(BaseStrategy):
                         inventory_payload.update(account_id=store.account,signal_id=str(identity),
                             account_equity=snapshot_equity,effective_allocation=decision.effective_allocation)
                         if margin_scope==HRS_OWNED:
-                            inventory_payload.update(hrs_margin_scope=margin_scope,
+                            inventory_payload.update(hrs_margin_scope=margin_scope,account_cash_observed_at=cash_observed_at,
                                 **account_cash_fields(account,getattr(self.binance_client,'use_unified_account',False)))
                             validate_cash_fields(inventory_payload)
+                            validate_cash_observation(inventory_payload,checked_at=datetime.now(timezone.utc),
+                                observed_at=slot_inputs['observed_at'])
                         financial_receipt = await record_reservation_inventory(self,inventory_payload,symbol=symbol)
                     else:
                         await record_stage(self,'entry_stage_inputs',inventory_payload,symbol=symbol)

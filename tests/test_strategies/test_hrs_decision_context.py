@@ -193,6 +193,8 @@ async def test_prospective_context_preserves_real_cash_status_scope_and_all_acco
     assert result['hrs_margin_scope']==HRS_OWNED
     assert result['account_available_balance']=='448.86'
     assert result['account_status']=='NORMAL'
+    assert result['account_cash_observed_at']==result['started_at']
+    assert result['account_cash_observed_at']<=result['hrs_slot_inputs']['observed_at']
     assert result['account_available_balance_source']=='papi/v1/account.totalAvailableBalance'
     assert result['account_balances']['accountStatus']=='NORMAL'
     assert result['account_pending_reservations']==[own,foreign]

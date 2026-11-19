@@ -35,7 +35,8 @@ async def enable_owned(r, **fields):
     async def snapshot(symbol='A',signal_id='a'):
         base=replace(await r.snapshot(margin=D('68.55')),equity=D(500),allocation=D('26.18'))
         return await attach_financial_receipt(r,base,symbol=symbol,signal_id=signal_id,
-            hrs_margin_scope=HRS_OWNED,account_available_balance=fields.get('cash','448.86'),
+            hrs_margin_scope=HRS_OWNED,account_cash_observed_at=base.slot_evidence['observed_at'],
+            account_available_balance=fields.get('cash','448.86'),
             account_available_balance_source=fields.get('source','papi/v1/account.totalAvailableBalance'),
             account_status=fields.get('status','NORMAL'))
     return snapshot
@@ -147,6 +148,7 @@ async def test_new_scope_receipt_cannot_weaken_original_hrs_loss_fields(runtime,
         base=await original();local=copy.deepcopy(base.slot_evidence['local']);local['WLDUSDT'][field]=value
         inputs=capture_hrs_slot_inputs(inventory=base.slot_evidence['inventory'],independent=base.slot_evidence['independent'],local=local,observed_at=datetime.now(timezone.utc))
         return await attach_financial_receipt(r,replace(base,slot_evidence=inputs),hrs_margin_scope=HRS_OWNED,
+            account_cash_observed_at=base.slot_evidence['observed_at'],
             account_available_balance='448.86',account_available_balance_source='papi/v1/account.totalAvailableBalance',account_status='NORMAL')
     with pytest.raises(EntryDenied) as caught:await r.store.reserve('hrs','A','a',sized,3,snapshot,geometry=geometry)
     assert caught.value.reason_code=='hrs_budget_parent_risk_mismatch'

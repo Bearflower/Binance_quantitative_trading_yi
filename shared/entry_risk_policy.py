@@ -255,11 +255,13 @@ def _validate_hrs_financial_receipt(receipt, row, *, account, symbol, signal_id,
                 or canonical_payload(payload['exchange_positions'])[1] != canonical_payload(payload['slot_inputs']['inventory'])[1]):
             raise ValueError('financial receipt source mismatch')
         number(payload['account_equity']);number(payload['effective_allocation'])
-        from strategies.hrs.margin_budget import ALL_ACCOUNT,HRS_OWNED,validate_cash_fields
+        from strategies.hrs.margin_budget import ALL_ACCOUNT,HRS_OWNED,validate_cash_fields,validate_cash_observation
         scope=margin_scope or ALL_ACCOUNT
         if payload.get('hrs_margin_scope',ALL_ACCOUNT) != scope:
             raise ValueError('financial receipt margin scope mismatch')
-        if scope==HRS_OWNED:validate_cash_fields(payload)
+        if scope==HRS_OWNED:
+            validate_cash_fields(payload)
+            validate_cash_observation(payload,checked_at=checked_at,observed_at=observed)
         return payload
     except (KeyError,ValueError,TypeError,AttributeError,ArithmeticError,EntryDenied) as exc:
         raise EntryDenied('HRS financial receipt unavailable or changed',reason_code='hrs_budget_financial_receipt_invalid') from exc
@@ -280,7 +282,7 @@ def _validate_hrs_floor_finance(context, slot_context, financial, pending, alloc
                 if (source.get('hrs_margin_scope') != HRS_OWNED
                         or any(number(source[key],zero=True)!=value for key,value in limits.items())
                         or any(source.get(key)!=financial.get(key) for key in (
-                            'account_available_balance_source','account_status'))):
+                            'account_available_balance_source','account_status','account_cash_observed_at'))):
                     raise ValueError('owned quota or actual cash sources changed')
             if (number(context['full_allocation']) != allocation
                     or expected.budget_inputs['allocation'] != allocation
@@ -650,6 +652,7 @@ class RiskPolicyStore:
                     context.update(limits,hrs_margin_scope=margin_scope,
                         account_available_balance_source=financial['account_available_balance_source'],
                         account_status=financial['account_status'],
+                        account_cash_observed_at=financial['account_cash_observed_at'],
                         account_pending_reservations=[dict(row) for row in account_pending])
                 sized, refined_decision, budget_context = _refine_hrs_floor(
                     sized,saved_geometry,values,pending,full_allocation,remaining,

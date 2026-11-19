@@ -4,6 +4,7 @@ Callers must validate the immutable financial receipt and positive ownership
 proof first. No cash is inferred from equity, allocation or simulated releases.
 """
 import json
+from datetime import datetime,timedelta,timezone
 from decimal import Decimal, InvalidOperation, localcontext
 from .risk_budget import FLOOR, policy_budget_version
 
@@ -55,6 +56,24 @@ def validate_cash_fields(financial):
             or financial.get('account_status') != 'NORMAL'):
         raise ValueError('hrs_account_cash_source_invalid')
     return available
+
+
+def validate_cash_observation(financial, *, checked_at, observed_at):
+    """Bound actual cash age from the conservative account-GET request start.
+
+    Position completion cannot refresh the independently captured account cash.
+    Both live immutable receipts and prospective replay captures use this clock.
+    """
+    def aware(value):
+        if isinstance(value,str):value=datetime.fromisoformat(value.replace('Z','+00:00'))
+        if not isinstance(value,datetime) or value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError('hrs_account_cash_clock_invalid')
+        return value.astimezone(timezone.utc)
+    cash,observed,checked=(aware(value) for value in (
+        financial.get('account_cash_observed_at'),observed_at,checked_at))
+    if not cash<=observed<=checked or checked-cash>timedelta(seconds=120):
+        raise ValueError('hrs_account_cash_stale_or_future')
+    return cash
 
 
 def _precision(values):
