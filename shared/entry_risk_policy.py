@@ -184,6 +184,32 @@ def _validate_hrs_floor_decision(decision, inputs):
         raise EntryDenied('invalid HRS minimum-order budget evidence', reason_code='hrs_budget_evidence_invalid') from exc
 
 
+def _bind_hrs_floor_local_to_parent(parent, local, account, digest):
+    """Bind only loss-relevant local fields to the immutable authorized parent."""
+    from strategies.hrs.equity_evidence import canonical
+    try:
+        payload = json.loads(parent) if isinstance(parent,str) else parent
+        if canonical(payload)[1] != digest or payload['account_id'] != account:
+            raise ValueError('immutable parent hash or account mismatch')
+        raw_local = payload['capture']['local']
+        if not isinstance(local,dict) or not isinstance(raw_local,dict) or set(local) != set(raw_local):
+            raise ValueError('parent local inventory mismatch')
+        def identity(value):
+            if isinstance(value,bool) or not isinstance(value,(str,int)) or not str(value).strip():
+                raise ValueError('invalid protection identity')
+            value=str(value).strip()
+            return str(int(value)) if value.isdecimal() else value
+        def fields(row):
+            return (number(row['remaining_quantity']), number(row['entry_price']),
+                    number(row['risk_stop_price']), row['direction'],
+                    identity(row['position_id']), identity(row['algo_ids']['sl']))
+        if any(fields(local[symbol]) != fields(raw_local[symbol]) for symbol in local):
+            raise ValueError('risk fields differ from immutable parent')
+        return payload
+    except (KeyError,ValueError,TypeError,AttributeError,ArithmeticError,EntryDenied) as exc:
+        raise EntryDenied('HRS local risk differs from immutable parent', reason_code='hrs_budget_parent_risk_mismatch') from exc
+
+
 def _refine_hrs_floor(sized, geometry, values, pending, allocation, remaining, context):
     from strategies.hrs.risk_budget import calculate_open_position_risk, assess_budget_inputs
     initial = _validate_hrs_floor_decision(geometry.get('hrs_budget_decision'), geometry.get('hrs_budget_inputs'))
@@ -395,6 +421,9 @@ class RiskPolicyStore:
                     raise EntryDenied('existing account holding forbids additions',reason_code='entry_no_additions',context=context)
                 if len(occupied|{symbol})>values.max_slots:
                     raise EntryDenied('concurrent position slots include pending reservations',reason_code='entry_position_slots',context=context)
+                if floor:
+                    _bind_hrs_floor_local_to_parent(row['payload'],values.slot_evidence['local'],
+                        self.account,row['evidence_sha256'])
                 saved_geometry.update(slot_scope=SLOT_SCOPE,slot_occupancy_proof=proof,slot_context=context)
             else:
                 holdings,equity,allocation = snapshot_values[:3]
@@ -416,7 +445,8 @@ class RiskPolicyStore:
                     AND state<>'released' ORDER BY client_order_id""", self.account)
                 remaining = cap - number(holdings,zero=True) - number(used,zero=True)
                 sized, refined_decision, budget_context = _refine_hrs_floor(
-                    sized,saved_geometry,values,pending,full_allocation,remaining,context)
+                    sized,saved_geometry,values,pending,full_allocation,remaining,
+                    dict(context,locked_policy=_hrs_budget_json(policy)))
             if number(holdings,zero=True)+used+sized.margin > cap:
                 raise EntryDenied('entry ceiling includes holdings and all durable reservations',reason_code='entry_margin_ceiling',context=dict(context,account_margin=str(holdings),reserved_margin=str(used),entry_margin=str(sized.margin),margin_cap=str(cap)))
             # Existing symbol claim must already be acquired by the ordinary ownership protocol.
@@ -438,6 +468,45 @@ class RiskPolicyStore:
                     budget_decision=saved_geometry['hrs_budget_decision'], budget_context=budget_context)
         return client_id
 
+    async def authorize_hrs_floor(self, conn, policy, client_id, decision, *, quantity=None, submitting=False):
+        """Recheck current durable intent and immutable sources on this connection."""
+        from strategies.hrs.risk_budget import FLOOR, policy_budget_version
+        if (policy_budget_version(policy) != FLOOR or policy['mode'] != 'reduced'
+                or policy['allow_add'] is not False or decision is None
+                or decision.budget_version != FLOOR or decision.allowed is not True
+                or decision.client_order_id != client_id
+                or decision.policy_revision != policy['revision']):
+            raise EntryDenied('HRS minimum-order submission decision unavailable')
+        _validate_hrs_floor_decision(decision,decision.budget_inputs)
+        qty=number(decision.quantity if quantity is None else quantity)
+        row=await conn.fetchrow("""SELECT * FROM trading.entry_risk_reservation
+            WHERE client_order_id=$1 AND account_id=$2 AND strategy_id='hrs'
+            AND state IN ('reserved','submitting')""",client_id,self.account)
+        if not row or row['revision'] != policy['revision'] or (submitting and row['state'] != 'submitting'):
+            raise EntryDenied('HRS durable submission reservation changed')
+        geometry=json.loads(row['geometry']) if isinstance(row['geometry'],str) else row['geometry']
+        expected=_validate_hrs_floor_decision(geometry.get('hrs_budget_decision'),geometry.get('hrs_budget_inputs'))
+        _validate_hrs_floor_context(geometry,expected,row)
+        context=geometry['hrs_budget_context']
+        if context.get('locked_policy') != _hrs_budget_json(policy):
+            raise EntryDenied('HRS locked policy evidence changed')
+        parent=await conn.fetchrow("""SELECT payload FROM trading.hrs_equity_evidence
+            WHERE account_id=$1 AND evidence_sha256=$2""",self.account,context['evidence_sha256'])
+        if not parent:
+            raise EntryDenied('HRS immutable equity parent missing')
+        _bind_hrs_floor_local_to_parent(parent['payload'],context['local_positions'],
+                                       self.account,context['evidence_sha256'])
+        if not (geometry.get('hrs_risk_budget_version') == FLOOR
+                and geometry.get('hrs_budget_source') == 'hrs_live_assessor_v1'
+                and _hrs_budget_json(expected.budget_inputs) == _hrs_budget_json(decision.budget_inputs)
+                and row['quantity'] == row['original_quantity'] == qty == decision.quantity == expected.quantity
+                and row['pressure_risk'] == row['original_pressure_risk'] == decision.worst_loss == expected.worst_loss
+                and row['price'] == expected.budget_inputs['entry_price']
+                and row['leverage'] == expected.budget_inputs['leverage']
+                and row['margin'] == qty*row['price']/row['leverage']):
+            raise EntryDenied('HRS durable order risk or geometry changed')
+        return dict(row)
+
     async def _release_proven_unsent(self, conn, strategy, client_id, row, state):
         await conn.execute("""UPDATE trading.entry_risk_reservation
             SET state='released',updated_at=clock_timestamp(),
@@ -452,7 +521,7 @@ class RiskPolicyStore:
             row['symbol'], strategy, self.account)
 
     @asynccontextmanager
-    async def submitting(self, strategy, client_id):
+    async def submitting(self, strategy, client_id, *, risk_decision=None):
         # Persist submitting BEFORE network write; crash/timeout retains occupancy.
         early_error, row = None, None
         async with self.pool.acquire() as conn, conn.transaction():
@@ -496,10 +565,21 @@ class RiskPolicyStore:
             finished = False
             try:
                 await self.lock(conn,strategy)
+                async def validate_floor(current):
+                    if strategy != 'hrs':
+                        return
+                    from strategies.hrs.risk_budget import FLOOR, policy_budget_version
+                    try:
+                        floor = policy_budget_version(current) == FLOOR
+                    except ValueError as exc:
+                        raise EntryDenied('invalid HRS policy budget version') from exc
+                    if floor or getattr(risk_decision,'budget_version',None) == FLOOR:
+                        await self.authorize_hrs_floor(conn,current,client_id,risk_decision,submitting=True)
                 async def final_authorization():
                     current = await self.policy(strategy, conn, submitting_client_id=client_id)
                     if current['revision'] != row['revision'] or current['mode'] != 'reduced':
                         raise EntryDenied('policy changed at HTTP submission')
+                    await validate_floor(current)
                 from shared.order_submission_authorization import bind_submission_authorization
                 with bind_submission_authorization(final_authorization) as attempt:
                     body_started = False
@@ -507,6 +587,7 @@ class RiskPolicyStore:
                         policy = await self.policy(strategy,conn,submitting_client_id=client_id)
                         if policy['revision'] != row['revision'] or policy['mode'] != 'reduced':
                             raise EntryDenied('policy changed immediately before submission')
+                        await validate_floor(policy)
                         body_started = True
                         yield dict(row)
                     except BaseException as exc:
@@ -632,25 +713,10 @@ async def entry_allowed(strategy, strategy_id, *, adding=False, stage='submit', 
                 return False
             if version != FLOOR:
                 return True
-            _validate_hrs_floor_decision(risk_decision, risk_decision.budget_inputs)
             async with store.pool.acquire() as conn:
-                row = await conn.fetchrow("""SELECT * FROM trading.entry_risk_reservation
-                    WHERE client_order_id=$1 AND account_id=$2 AND strategy_id='hrs'
-                    AND state IN ('reserved','submitting')""",risk_decision.client_order_id,store.account)
-            if not row or row['revision'] != policy['revision']:
-                return False
-            geometry = json.loads(row['geometry']) if isinstance(row['geometry'],str) else row['geometry']
-            expected = _validate_hrs_floor_decision(geometry.get('hrs_budget_decision'),geometry.get('hrs_budget_inputs'))
-            _validate_hrs_floor_context(geometry, expected, row)
-            return (geometry.get('hrs_risk_budget_version') == FLOOR
-                    and geometry.get('hrs_budget_source') == 'hrs_live_assessor_v1'
-                    and isinstance(geometry.get('hrs_budget_context'),dict)
-                    and _hrs_budget_json(expected.budget_inputs) == _hrs_budget_json(risk_decision.budget_inputs)
-                    and row['quantity'] == row['original_quantity'] == qty == expected.quantity
-                    and row['pressure_risk'] == row['original_pressure_risk'] == loss == expected.worst_loss
-                    and row['price'] == expected.budget_inputs['entry_price']
-                    and row['leverage'] == expected.budget_inputs['leverage']
-                    and row['margin'] == qty*row['price']/row['leverage'])
+                await store.authorize_hrs_floor(conn,policy,risk_decision.client_order_id,
+                                                risk_decision,quantity=qty)
+            return True
         except EntryDenied:
             return False
     except Exception:

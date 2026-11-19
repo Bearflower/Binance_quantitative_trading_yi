@@ -199,3 +199,66 @@ async def test_floor_final_authorization_rejects_tampered_original_intent(runtim
     monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
     await r.admin.execute(f'UPDATE trading.entry_risk_reservation SET {column}={column}+1 WHERE client_order_id=$1',client)
     assert not await entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=decision,quantity=decision.quantity)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field,value',[('entry_price','0.1'),('risk_stop_price','0.099'),('sl',456)])
+async def test_floor_risk_fields_are_bound_to_immutable_equity_parent(runtime,field,value):
+    r=runtime;original=await enable(r);sized,geometry=proposal(plan())
+    async def snapshot():
+        base=await original()
+        local=base.slot_evidence['local']['WLDUSDT']
+        if field=='sl':local['algo_ids']['sl']=value
+        else:local[field]=value
+        return base
+    with pytest.raises(EntryDenied,match='parent'):
+        await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    assert r.store.reservation_audit is None
+
+
+@pytest.mark.asyncio
+async def test_floor_parent_binding_normalizes_risk_numbers_and_ignores_unrelated_local_fields(runtime):
+    r=runtime;original=await enable(r);sized,geometry=proposal(plan())
+    async def snapshot():
+        base=await original();local=base.slot_evidence['local']['WLDUSDT']
+        local.update(entry_price=D('10.0000'),risk_stop_price=D('9.90000'),peak_price=123)
+        local['algo_ids']['sl']='123'
+        return base
+    assert await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+
+
+@pytest.mark.asyncio
+async def test_floor_final_authorization_checks_raw_parent_after_self_consistent_geometry_tamper(runtime,monkeypatch):
+    import shared.entry_risk_policy as p
+    from strategies.hrs.risk_budget import assess_budget_inputs
+    r=runtime;snapshot=await enable(r);sized,geometry=proposal(plan())
+    client=await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    saved=json.loads(await r.admin.fetchval('SELECT geometry FROM trading.entry_risk_reservation WHERE client_order_id=$1',client))
+    context=saved['hrs_budget_context']
+    context['local_positions']['WLDUSDT'].update(entry_price='0.1',risk_stop_price='0.099')
+    from strategies.hrs.risk_budget import calculate_open_position_risk
+    value=calculate_open_position_risk(context['local_positions'],fee_rate=D('.0005'),pressure_slippage=D('.02'))
+    for key in ('local_risk_by_symbol','open_risk_by_symbol'):context[key]['WLDUSDT']=str(value)
+    context['existing_open_risk']=str(value)
+    inputs=dict(saved['hrs_budget_inputs'],existing_open_risk=str(value))
+    forged=assess_budget_inputs(inputs)
+    forged=replace(forged,policy_revision=2,effective_allocation=D(1000),client_order_id=client)
+    saved['hrs_budget_inputs']=p._hrs_budget_json(forged.budget_inputs)
+    saved['hrs_budget_decision']=p._hrs_budget_json(forged)
+    await r.admin.execute('UPDATE trading.entry_risk_reservation SET geometry=$1::jsonb WHERE client_order_id=$2',json.dumps(saved),client)
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
+    assert not await p.entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=forged,quantity=forged.quantity)
+
+
+@pytest.mark.asyncio
+async def test_floor_audit_records_exact_locked_policy_and_final_guard_checks_it(runtime,monkeypatch):
+    import shared.entry_risk_policy as p
+    r=runtime;snapshot=await enable(r);sized,geometry=proposal(plan())
+    client=await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    audit=r.store.reservation_audit
+    actual=dict(await r.admin.fetchrow("SELECT * FROM trading.strategy_risk_policy WHERE revision=2"))
+    assert audit['budget_context']['locked_policy']==p._hrs_budget_json(actual)
+    decision=replace(audit['risk_decision'],client_order_id=client)
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
+    await r.admin.execute("UPDATE trading.entry_risk_reservation SET geometry=jsonb_set(geometry,'{hrs_budget_context,locked_policy,reason}','\"legacy\"'::jsonb) WHERE client_order_id=$1",client)
+    assert not await p.entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=decision,quantity=decision.quantity)
