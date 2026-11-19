@@ -269,6 +269,50 @@ def _refine_hrs_floor(sized, geometry, values, pending, allocation, remaining, c
     return resized, refined, budget_context
 
 
+_HRS_PENDING_COLUMNS = ('client_order_id,account_id,strategy_id,symbol,revision,quantity,'
+                        'original_quantity,price,leverage,margin,pressure_risk,original_pressure_risk,state')
+
+
+def _bind_hrs_floor_pending_to_rows(context, slot_context, pending, *, account, client_id):
+    """Require the complete current durable sources, permitting only state progress."""
+    try:
+        captured=context['pending_reservations']
+        def normalized(rows):
+            if not isinstance(rows,(list,tuple)):
+                raise ValueError('pending sources must be a list')
+            result={}
+            for row in rows:
+                identity=row['client_order_id']
+                if (not isinstance(identity,str) or not identity or identity == client_id
+                        or identity in result or row['account_id'] != account
+                        or row['strategy_id'] != 'hrs'
+                        or not isinstance(row['symbol'],str) or not row['symbol']
+                        or row['state'] not in ('reserved','submitting')):
+                    raise ValueError('invalid pending source identity or scope')
+                revision=number(row['revision'])
+                if revision != revision.to_integral_value():
+                    raise ValueError('invalid pending policy revision')
+                amounts=tuple(number(row[key]) for key in (
+                    'quantity','original_quantity','price','leverage','margin','pressure_risk'))
+                original=row['original_pressure_risk']
+                original=None if original is None else number(original)
+                result[identity]=(row['symbol'],revision,amounts,original,row['state'])
+            return result
+        expected,actual=normalized(captured),normalized(pending)
+        if set(expected) != set(actual):
+            raise ValueError('pending source set changed')
+        for identity, old in expected.items():
+            current=actual[identity]
+            if old[:-1] != current[:-1] or (old[-1],current[-1]) not in (
+                    ('reserved','reserved'),('reserved','submitting'),('submitting','submitting')):
+                raise ValueError('pending source financial values changed')
+        symbols=sorted({values[0] for values in actual.values()})
+        if context['reservation_symbols'] != symbols or slot_context['reservation_symbols'] != symbols:
+            raise ValueError('pending slot symbol set changed')
+    except (KeyError,ValueError,TypeError,AttributeError,ArithmeticError,EntryDenied) as exc:
+        raise EntryDenied('HRS pending reservation sources changed',reason_code='hrs_budget_pending_source_mismatch') from exc
+
+
 def _validate_hrs_floor_context(geometry, expected, row):
     """Bind the recomputed result to the captured locked ownership/risk sources."""
     context = geometry.get('hrs_budget_context')
@@ -440,7 +484,7 @@ class RiskPolicyStore:
             used = await conn.fetchval('''SELECT COALESCE(sum(margin),0) FROM trading.entry_risk_reservation
                 WHERE account_id=$1 AND strategy_id=$2 AND state <> 'released' ''',self.account,strategy)
             if floor:
-                pending = await conn.fetch("""SELECT client_order_id,symbol,quantity,margin,pressure_risk,state,revision
+                pending = await conn.fetch(f"""SELECT {_HRS_PENDING_COLUMNS}
                     FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs'
                     AND state<>'released' ORDER BY client_order_id""", self.account)
                 remaining = cap - number(holdings,zero=True) - number(used,zero=True)
@@ -488,6 +532,11 @@ class RiskPolicyStore:
         expected=_validate_hrs_floor_decision(geometry.get('hrs_budget_decision'),geometry.get('hrs_budget_inputs'))
         _validate_hrs_floor_context(geometry,expected,row)
         context=geometry['hrs_budget_context']
+        pending=await conn.fetch(f"""SELECT {_HRS_PENDING_COLUMNS}
+            FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs'
+            AND state<>'released' AND client_order_id<>$2 ORDER BY client_order_id""",self.account,client_id)
+        _bind_hrs_floor_pending_to_rows(context,geometry['slot_context'],pending,
+                                       account=self.account,client_id=client_id)
         if context.get('locked_policy') != _hrs_budget_json(policy):
             raise EntryDenied('HRS locked policy evidence changed')
         parent=await conn.fetchrow("""SELECT payload FROM trading.hrs_equity_evidence

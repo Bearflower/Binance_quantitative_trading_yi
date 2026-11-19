@@ -75,3 +75,30 @@ async def test_valid_floor_intent_reaches_real_post_boundary(runtime,monkeypatch
     assert args.args[0]=='POST'
     assert D(args.kwargs['params']['quantity'])==decision.quantity
     assert args.kwargs['params']['newClientOrderId']==client_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('change',['pressure_risk','quantity','margin','revision','released','new'])
+async def test_http_rejects_changed_pending_source_after_rate_wait_and_releases_unsent_intent(runtime,monkeypatch,change):
+    r=runtime;snapshot=await enable(r);sized,geometry=proposal(plan())
+    await r.admin.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,pressure_risk) VALUES('pending','test','hrs',2,'B',1,1,100,10,10,'reserved',28)")
+    client_id=await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    decision=replace(r.store.reservation_audit['risk_decision'],client_order_id=client_id)
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
+    client=BinanceClient('test_api_key_12345','test_api_secret_67890')
+    client.use_unified_account=False;client._init_session=AsyncMock();client.session=MagicMock()
+    client.get_symbol_info=AsyncMock(return_value={'stepSize':'.1','tickSize':D('.01')})
+    client.session.request.side_effect=AssertionError('POST must not run')
+    async def rate_wait():
+        if change=='quantity':await r.admin.execute("UPDATE trading.entry_risk_reservation SET quantity=quantity+1,original_quantity=original_quantity+1 WHERE client_order_id='pending'")
+        elif change=='revision':await r.admin.execute("UPDATE trading.entry_risk_reservation SET revision=1 WHERE client_order_id='pending'")
+        elif change in ('pressure_risk','margin'):
+            await r.admin.execute(f"UPDATE trading.entry_risk_reservation SET {change}={change}+1 WHERE client_order_id='pending'")
+        elif change=='released':await r.admin.execute("UPDATE trading.entry_risk_reservation SET state='released' WHERE client_order_id='pending'")
+        else:await r.admin.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,pressure_risk) VALUES('new','test','hrs',2,'C',1,1,100,10,10,'reserved',1)")
+    client.rate_limiter.acquire=AsyncMock(side_effect=rate_wait)
+    executor=SimpleNamespace(db=SimpleNamespace(pool=r.pool),binance_api=client,order_type_entry='LIMIT')
+    with pytest.raises(EntryDenied):
+        await TradingExecutor._submit_reserved_hrs_entry(executor,'A','BUY',decision.quantity,sized.price,decision)
+    client.rate_limiter.acquire.assert_awaited_once();client.session.request.assert_not_called()
+    assert await r.admin.fetchval('SELECT state FROM trading.entry_risk_reservation WHERE client_order_id=$1',client_id)=='released'
