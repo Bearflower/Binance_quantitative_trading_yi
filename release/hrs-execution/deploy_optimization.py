@@ -458,6 +458,22 @@ def admission_change_metadata(manifest):
 
 
 
+def permission_audit(folder,manifest,database):
+    """Restricted rollout: exact released contract, audit only, never grant."""
+    for name,key in [('database_permissions.py','permission_tool_sha256'),
+                     ('permissions.json','permission_contract_sha256')]:
+        digest=manifest.get(key)
+        if (not isinstance(digest,str) or not re.fullmatch('[0-9a-f]{64}',digest)
+                or hashlib.sha256((Path(folder)/name).read_bytes()).hexdigest()!=digest):
+            raise ValueError('released_permission_contract_mismatch')
+    report=json.loads(run(['python3',str(Path(folder)/'database_permissions.py'),'audit',
+        '--manifest',str(Path(folder)/'permissions.json'),'--database',database],timeout=200))
+    if (report.get('ok') is not True or report.get('mode')!='audit'
+            or report.get('manifest_sha256')!=manifest['permission_contract_sha256']):
+        raise RuntimeError('released_permission_audit_failed')
+    return report
+
+
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--sha',required=True)
@@ -552,6 +568,9 @@ def main():
     drift=environment_drift(env,environment(candidate_image),proposed,args.sha)
     if drift:raise RuntimeError('existing_environment_drift_keys:'+','.join(sorted(drift)))
     database=env['DATABASE_NAME']
+    floor_release=change_metadata['risk_budget_model_changed']
+    if floor_release and not secret_file.exists():
+        raise RuntimeError('existing_reporter_credentials_required')
     password=None
     if secret_file.exists():
         values=dict(line.split('=',1) for line in secret_file.read_text().splitlines() if '=' in line)
@@ -579,8 +598,15 @@ def main():
         return state
     audit('applying')
     try:
-        run(['docker','exec','-i','trading_system-postgres','psql','-v','ON_ERROR_STOP=1','-U','trading_migration_admin','-d',database],input=sql)
-        steps.append('migrations_applied');audit('applying')
+        if floor_release:
+            # This revision adds no tables or privileges. Preserve immutable
+            # prior migrations and credentials, and audit the SHA-bound ACLs.
+            permission_audit(folder,manifest,database)
+            steps.append('existing_schema_and_permissions_audited')
+        else:
+            run(['docker','exec','-i','trading_system-postgres','psql','-v','ON_ERROR_STOP=1','-U','trading_migration_admin','-d',database],input=sql)
+            steps.append('migrations_applied')
+        audit('applying')
         preflight()  # No unresolved live entry may appear during preparation.
         for service in ('market-cap-service','hrs-strategy','hrs-acceptance-reporter'):
             phase='replace_'+service;replacement_attempted=True;audit('applying')
