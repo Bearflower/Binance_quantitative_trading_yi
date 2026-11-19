@@ -449,7 +449,8 @@ def _margin_inputs(financial, source, *, checked_at, observed_at, pending_contex
     _require(isinstance(rows,list) and all(row.get('state') in ('reserved','submitting','released') for row in rows),
         'hrs_account_pending_invalid')
     pending_margin([row for row in rows if row['state']!='released'],account=financial['entry_policy']['account_id'])
-    return dict(hrs_margin_scope=scope,account_pending_reservations=copy.deepcopy(rows),
+    return dict(hrs_margin_scope=scope,allocation=copy.deepcopy(financial['allocation']),
+        entry_policy=copy.deepcopy(financial['entry_policy']),account_pending_reservations=copy.deepcopy(rows),
         account_pending_source_evidence_id=pending_source_id,
         **{key:copy.deepcopy(source[key]) for key in ('account_available_balance',
             'account_available_balance_source','account_status','account_cash_observed_at')})
@@ -621,7 +622,8 @@ def verify_bootstrap_margin_inputs(portal,raw):
     financial=source['payload']['financial_context']
     projected=_margin_inputs(financial,financial,checked_at=checked,
         observed_at=_time(financial['hrs_slot_inputs']['observed_at']),pending_source_id=source['evidence_id'])
-    _require(projected and raw['entry_policy']==financial['entry_policy']
+    _require(projected and raw['account_equity']==financial['account_equity']
+        and raw['entry_policy']==financial['entry_policy']
         and all(raw.get(k)==v for k,v in projected.items()),'hrs_bootstrap_margin_raw_source_mismatch')
     equities=(_EquityView(sources) if isinstance(sources,_ArchiveSources)
         else _equity(list(sources.get('equity_evidence') or [])+financial.get('equity_source_archives',[])))
@@ -672,7 +674,8 @@ def verify_runtime_slot_occupancy(portal,raw,checked_at):
         rows=list(sources.get('equity_evidence') or [])
         rows.extend(parent for row in records if row['kind']=='scan_start'
             for parent in row['payload'].get('financial_context',{}).get('equity_source_archives',[]))
-        parents=[row for row in _equity(rows) if row['sha256']==digest]
+        view=_equity(rows)
+        parents=[row for row in view if row['sha256']==digest]
         _require(bool(parents),'hrs_slot_raw_parent_missing');parent=parents[0]
     _require(parent is not None,'hrs_slot_raw_parent_missing')
     expected=_account_occupancy(inputs['inventory'],{},dict(financial,claims=claims),_time(inputs['observed_at']),[parent],
@@ -683,6 +686,14 @@ def verify_runtime_slot_occupancy(portal,raw,checked_at):
         checked_at=checked_at,observed_at=_time(inputs['observed_at']),
         pending_context=context if gate_kind!='financial_equity_gate' else None,
         pending_source_id=gate_source,require_locked_pending=slot['kind']=='entry_stage_inputs')
+    if projected:
+        batches=(list(records.select(kind='execution_batch',run_id=analysis['run_id'])) if isinstance(records,_ArchiveFamily)
+            else [row for row in records if row['kind']=='execution_batch' and row['run_id']==analysis['run_id']])
+        _require(len(batches)==1 and batches[0]['available_at']<=checked_at,'hrs_margin_raw_source_mismatch')
+        hrs_equity,component_source=_financial_equity_component(starts[0]['payload'],financial,view,records,
+            batches[0]['available_at'],analysis['run_id'])
+        projected.update(account_equity_excluding_hrs=str(Decimal(str(financial['account_equity']))-hrs_equity),
+            account_equity_component_source=component_source)
     _require(all(raw['risk'].get(k)==v for k,v in projected.items()),'hrs_margin_raw_source_mismatch')
     _require(equity_canonical(expected)[1]==equity_canonical(occupancy)[1],'hrs_slot_raw_proof_mismatch')
 
@@ -712,6 +723,37 @@ def verify_runtime_kline_repair(portal,raw,checked_at):
         and repair['payload_sha256']==raw.get('kline_repair_payload_sha256'),'hrs_kline_repair_identity_mismatch')
     summary=verify_kline_repair(repair,analysis,public,portal.hrs_replay_state(portal.window_start)['config'])
     _require(summary['request_source_ids']==raw['kline_repair_source_ids'],'hrs_kline_repair_source_inventory_mismatch')
+
+
+def _financial_equity_component(snapshot,financial,equities,records,released,run):
+    """Reproduce the captured external-equity component and its original receipts."""
+    raw_ledger=_decoded(financial['ledger_state']['ledger_state'])
+    component=financial.get('hrs_marked_equity_observation')
+    component_source=None
+    if component is not None:
+        hrs_equity=Decimal(str(component['value']))
+        source=[equities.get(component['evidence_sha256'])] if isinstance(equities,_EquityView) else [e for e in equities if e['sha256']==component['evidence_sha256']]
+        source=[e for e in source if e is not None]
+        age=(_time(financial['available_at'])-_time(component['as_of'])).total_seconds()
+        _require(len(source)>=1 and component['ledger_version']==financial['ledger_state']['version']
+            and source[0]['payload'].get('result',{}).get('ledger_version')==component['ledger_version']
+            and _time(component['as_of'])==_time(raw_ledger['as_of'])==_time(source[0]['payload']['as_of'])
+            and hrs_equity==Decimal(str(raw_ledger['equity'])) and 0<=age<=120
+            and _time(component['available_at'])==_time(source[0]['payload']['available_at'])<=_time(financial['available_at']),
+            'account_equity_component_observation_unproven:'+run)
+        component_source=dict(component,model='ledger_sample_120s_v1',source_age_seconds=age,mark_synchrony=False)
+    elif 'hrs_marked_equity' in financial:
+        hrs_equity=Decimal(str(financial['hrs_marked_equity']))
+        component_source=dict(model='captured_component_v1',as_of=financial['available_at'],available_at=financial['available_at'],source_age_seconds=0,mark_synchrony=False)
+    else:
+        _require(not snapshot.get('positions') and not financial['state_tables']['hrs_positions']['rows'],'nonflat_account_equity_component_unproven:'+run)
+        ledger_at=_time(raw_ledger['as_of']);financial_at=_time(financial['available_at'])
+        _require(ledger_at<=financial_at,'financial_ledger_from_future:'+run)
+        if ledger_at<financial_at:
+            proof,_anchor=_flat_unchanged_proof(equities,ledger_at,financial_at,records)
+            _require(_time(proof['payload']['available_at'])<=released,'account_equity_component_proof_unavailable:'+run)
+        hrs_equity=Decimal(str(raw_ledger['equity']))
+    return hrs_equity,component_source
 
 
 def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=None):
@@ -766,32 +808,7 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
                 _require(any(r['payload'].get('decision',{}).get('client_order_id')==reservation.get('client_order_id') for r in _decision_rows(records,kind='entry_budget_reserved')),'hrs_retained_reservation_origin_unproven:'+run)
         policy=financial['entry_policy']
         _require(_time(policy['effective_at'])<_time(policy['expires_at']),'entry_policy_timebounds_invalid:'+run)
-        raw_ledger=_decoded(financial['ledger_state']['ledger_state'])
-        component=financial.get('hrs_marked_equity_observation')
-        component_source=None
-        if component is not None:
-            hrs_equity=Decimal(str(component['value']))
-            source=[equities.get(component['evidence_sha256'])] if isinstance(equities,_EquityView) else [e for e in equities if e['sha256']==component['evidence_sha256']]
-            source=[e for e in source if e is not None]
-            age=(_time(financial['available_at'])-_time(component['as_of'])).total_seconds()
-            _require(len(source)>=1 and component['ledger_version']==financial['ledger_state']['version']
-                and source[0]['payload'].get('result',{}).get('ledger_version')==component['ledger_version']
-                and _time(component['as_of'])==_time(raw_ledger['as_of'])==_time(source[0]['payload']['as_of'])
-                and hrs_equity==Decimal(str(raw_ledger['equity'])) and 0<=age<=120
-                and _time(component['available_at'])==_time(source[0]['payload']['available_at'])<=_time(financial['available_at']),
-                'account_equity_component_observation_unproven:'+run)
-            component_source=dict(component,model='ledger_sample_120s_v1',source_age_seconds=age,mark_synchrony=False)
-        elif 'hrs_marked_equity' in financial:
-            hrs_equity=Decimal(str(financial['hrs_marked_equity']))
-            component_source=dict(model='captured_component_v1',as_of=financial['available_at'],available_at=financial['available_at'],source_age_seconds=0,mark_synchrony=False)
-        else:
-            _require(not snapshot.get('positions') and not financial['state_tables']['hrs_positions']['rows'],'nonflat_account_equity_component_unproven:'+run)
-            ledger_at=_time(raw_ledger['as_of']);financial_at=_time(financial['available_at'])
-            _require(ledger_at<=financial_at,'financial_ledger_from_future:'+run)
-            if ledger_at<financial_at:
-                proof,_anchor=_flat_unchanged_proof(equities,ledger_at,financial_at,records)
-                _require(_time(proof['payload']['available_at'])<=released,'account_equity_component_proof_unavailable:'+run)
-            hrs_equity=Decimal(str(raw_ledger['equity']))
+        hrs_equity,component_source=_financial_equity_component(snapshot,financial,equities,records,released,run)
         for symbol in order:
             analyses=[r for kind in ('analysis','lv_rm_analysis') for r in _run_rows(rows,kind=kind,symbol=symbol)]
             _require(len(analyses)==1,'raw_analysis_missing_or_duplicate:'+run+':'+symbol)
