@@ -587,12 +587,15 @@ def main():
     sql=migration_sql(folder/'migrations',manifest['migration_hashes'],tail)
     candidate=compose(root,files+[newfile])
     wanted={'trading_system-hrs':args.hrs_image,'trading_system-market-cap':args.hub_image,REPORTER:args.hrs_image}
-    steps=[];observations=[];phase='migrations';replacement_attempted=False
+    steps=[];observations=[];phase='permission_audit' if floor_release else 'migrations';replacement_attempted=False
+    permission_report=None
     def audit(status,**extra):
         state=dict(status=status,sha=args.sha,phase=phase,completed_steps=list(steps),
             images=wanted,source_hashes=expected,migration_hashes=manifest['migration_hashes'],
             observations=list(observations),
             performance_qualified=False,**change_metadata,
+            database_changes='none_audit_only' if floor_release else 'additive_migrations_retained',
+            permission_audit=permission_report,
             recorded_at=datetime.now(timezone.utc).isoformat(),**extra)
         atomic(folder/'state.json',state)
         return state
@@ -601,7 +604,7 @@ def main():
         if floor_release:
             # This revision adds no tables or privileges. Preserve immutable
             # prior migrations and credentials, and audit the SHA-bound ACLs.
-            permission_audit(folder,manifest,database)
+            permission_report=permission_audit(folder,manifest,database)
             steps.append('existing_schema_and_permissions_audited')
         else:
             run(['docker','exec','-i','trading_system-postgres','psql','-v','ON_ERROR_STOP=1','-U','trading_migration_admin','-d',database],input=sql)
@@ -656,7 +659,7 @@ def main():
                 overlay=str(newfile),state=str(folder/'state.json'),status='active'))
         phase='complete'
         state=audit('complete',containers={name:c['Id'] for name,c in states.items()},
-            migrated=list(MIGRATIONS),initialization=initialized,other_containers_unchanged=True)
+            migrated=[] if floor_release else list(MIGRATIONS),initialization=initialized,other_containers_unchanged=True)
         print(json.dumps(state))
     except BaseException as exc:
         failure=safe_error(exc)
@@ -667,6 +670,7 @@ def main():
             persisted=False  # A full/unwritable disk must never prevent target recovery.
         recovery=(rollback(root,folder,plan,args.hrs_image) if replacement_attempted else
             dict(status='not_needed',database_changes='additive_migrations_retained'))
+        if floor_release:recovery['database_changes']='none_audit_only'
         if recovery['status']=='not_needed':restore_pins(root,plan['pins'])
         if recovery['status']=='incomplete':
             # Do not leave a misleading active pointer after failed recovery.
