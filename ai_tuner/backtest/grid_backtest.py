@@ -123,6 +123,10 @@ class GridBacktestEngine:
         Raises:
             BacktestDataError: K线数据不足
         """
+        import math
+        if not all(math.isfinite(float(v)) and v > 0 for v in
+                   (params.margin, params.leverage, params.single_position_margin, params.current_price)):
+            raise BacktestDataError("网格资金、杠杆及参考价格必须为正有限值")
         if not klines or len(klines) < self._min_kline_count:
             kline_count = len(klines) if klines else 0
             logger.warning("K线数据不足，无法执行回测", kline_count=kline_count)
@@ -155,7 +159,7 @@ class GridBacktestEngine:
         final_equity = state.cash + state.position * final_price
 
         # 7. 计算各项指标
-        initial_capital = params.margin * params.leverage
+        initial_capital = params.margin
         result = self._metrics_calc.calculate(
             fills=state.fills,
             equity_curve=state.equity_curve,
@@ -195,7 +199,7 @@ class GridBacktestEngine:
 
     def _init_state(self, params: GridParams) -> BacktestState:
         """初始化回测状态"""
-        initial_capital = params.margin * params.leverage
+        initial_capital = params.margin
         return BacktestState(
             cash=initial_capital,
             position=0.0,
@@ -288,6 +292,8 @@ class GridBacktestEngine:
         for buy_price in list(state.buy_orders.keys()):
             if low <= buy_price <= high:
                 qty = state.buy_orders[buy_price]
+                if not self._can_fill(state, qty, buy_price):
+                    continue
                 self._execute_buy(state, buy_price, qty, kline_index, open_time, current_regime)
                 filled_buy_prices.append(buy_price)
 
@@ -300,6 +306,8 @@ class GridBacktestEngine:
         for sell_price in list(state.sell_orders.keys()):
             if low <= sell_price <= high:
                 qty = state.sell_orders[sell_price]
+                if not self._can_fill(state, -qty, sell_price):
+                    continue
                 self._execute_sell(state, sell_price, qty, kline_index, open_time, current_regime)
                 filled_sell_prices.append(sell_price)
 
@@ -316,6 +324,15 @@ class GridBacktestEngine:
         equity = state.cash + state.position * close
         state.equity_curve.append(equity)
         state.peak_equity = max(state.peak_equity, equity)
+
+    def _can_fill(self, state, delta, price):
+        """Allow reductions, and fund increased exposure with current marked equity."""
+        after = state.position + delta
+        if abs(after) <= abs(state.position) and after * state.position >= 0:
+            return True
+        equity = state.cash + state.position * price
+        cost = abs(delta) * price * (self._maker_fee + self._slippage)
+        return equity > cost and abs(after) * price <= (equity - cost) * self._cached_params.leverage
 
     @staticmethod
     def _update_position(state: BacktestState, delta: float, price: float) -> None:
