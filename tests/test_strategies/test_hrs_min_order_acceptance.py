@@ -17,32 +17,47 @@ from tests.test_strategies.test_hrs_acceptance_report import ACCOUNT, START, NOW
 CLIENT='risk_'+hashlib.sha256(f'{ACCOUNT}:hrs:signal'.encode()).hexdigest()[:30]
 
 
-def floor_evidence(*, current_mark='.24'):
+def floor_evidence(*, current_mark='.24', margin_scope=None):
     at = START-timedelta(seconds=3)
     local = {'L':dict(position_id='local',direction='short',remaining_quantity='1',entry_price='.24',risk_stop_price='.25',algo_ids={'sl':'sl-local'})}
     inventory = [dict(symbol='L',positionAmt='-1',entryPrice='.24',markPrice='.24',leverage='2')]
     fills = [dict(account_id=ACCOUNT,symbol='L',trade_id=900,order_id=900,side='SELL',qty='1',price='.24',trade_time_utc=at)]
     owners = [dict(account_id=ACCOUNT,symbol='L',order_id='900',strategy='hrs')]
     claims = [dict(id=900,symbol='L',strategy='hrs',claim_state='ACTIVE')]
-    paths = certify_owned_inventory_paths(ACCOUNT,{'L':D(-1)},fills,owners,coverage_complete=True)
-    parent = _hrs_budget_json(dict(account_id=ACCOUNT,as_of=at,available_at=at,capture=dict(inventory=inventory,independent=inventory,local=local),fills=fills,order_owners=owners,inventory_owner_path_proofs=paths,source_collection=dict(complete=True,gaps=[],position_symbols_covered=['L'])))
+    if margin_scope:
+        inventory.append(dict(symbol='F',positionAmt='1',entryPrice='129.72',markPrice='129.72',leverage='2'))
+        fills.append(dict(account_id=ACCOUNT,symbol='F',trade_id=901,order_id=901,side='BUY',qty='1',price='129.72',trade_time_utc=at))
+        owners.append(dict(account_id=ACCOUNT,symbol='F',order_id='901',strategy='grid'))
+        claims.append(dict(id=901,symbol='F',strategy='grid',claim_state='ACTIVE',expires_at=(at-timedelta(seconds=1)).isoformat()))
+    paths = certify_owned_inventory_paths(ACCOUNT,{r['symbol']:D(r['positionAmt']) for r in inventory},fills,owners,coverage_complete=True)
+    parent = _hrs_budget_json(dict(account_id=ACCOUNT,as_of=at,available_at=at,capture=dict(inventory=inventory,independent=inventory,local=local),fills=fills,order_owners=owners,inventory_owner_path_proofs=paths,source_collection=dict(complete=True,gaps=[],position_symbols_covered=[r['symbol'] for r in inventory])))
     digest = canonical(parent)[1]
-    current_inventory = [dict(row,markPrice=current_mark) for row in inventory]
+    current_inventory = [dict(row,markPrice=current_mark if row['symbol']=='L' else row['markPrice']) for row in inventory]
     slot_inputs = _hrs_budget_json(capture_hrs_slot_inputs(inventory=current_inventory,independent=current_inventory,local=local,observed_at=at))
-    proof = prove_hrs_slot_ownership(ACCOUNT,dict(payload=parent,evidence_sha256=digest),slot_inputs,claims,checked_at=at)
-    margin = D(current_mark)/2
+    proof = prove_hrs_slot_ownership(ACCOUNT,dict(payload=parent,evidence_sha256=digest),slot_inputs,claims,checked_at=at,**({'margin_scope':margin_scope} if margin_scope else {}))
+    margin = D(current_mark)/2+(D('64.86') if margin_scope else 0)
     financial_row = event('r','entry_stage_inputs',at,dict(stage='reservation_inventory',account_id=ACCOUNT,signal_id='signal',exchange_positions=current_inventory,slot_scope=SLOT_SCOPE,slot_inputs=slot_inputs,account_equity='100',effective_allocation='5.6',observed_at=at.isoformat()),'S')
+    if margin_scope:
+        financial_row['payload'].update(hrs_margin_scope=margin_scope,account_available_balance='448.86',account_available_balance_source='papi/v1/account.totalAvailableBalance',account_status='NORMAL',account_cash_observed_at=at.isoformat())
+        from strategies.hrs.decision_capture import canonical_payload
+        financial_row['payload_sha256']=canonical_payload(financial_row['payload'])[1]
     financial_row['recorded_at'] = at
     receipt = {key: financial_row[key] for key in ('evidence_id','run_id','payload_sha256')}
     receipt.update(event_time=at.isoformat(),available_at=at.isoformat())
     policy = dict(account_id=ACCOUNT,strategy_id='hrs',revision=2,mode='reduced',allow_add=False,multiplier='1',ratio_cap='1',entry_ceiling='5.6',effective_at=(at-timedelta(hours=1)).isoformat(),expires_at=(at+timedelta(hours=1)).isoformat(),reason=json.dumps({'hrs_risk_budget_version':FLOOR}))
-    slot = dict(slot_scope=SLOT_SCOPE,account_id=ACCOUNT,policy_revision=2,strategy_id='hrs',checked_at=at.isoformat(),as_of=at.isoformat(),observed_at=at.isoformat(),evidence_sha256=digest,ownership_claims=claims,account_margin=str(margin),account_symbols=['L'],hrs_symbols=['L'],reservation_symbols=[],occupied_symbols=['L'],observed_slots=1,requested_slots=2,max_slots=3)
+    slot = dict(slot_scope=SLOT_SCOPE,account_id=ACCOUNT,policy_revision=2,strategy_id='hrs',checked_at=at.isoformat(),as_of=at.isoformat(),observed_at=at.isoformat(),evidence_sha256=digest,ownership_claims=claims,account_margin=str(margin),account_symbols=sorted(r['symbol'] for r in inventory),hrs_symbols=['L'],reservation_symbols=[],occupied_symbols=['L'],observed_slots=1,requested_slots=2,max_slots=3)
+    if margin_scope:
+        from strategies.hrs.margin_budget import margin_limits
+        policy['reason']=json.dumps({'hrs_risk_budget_version':FLOOR,'hrs_margin_scope':margin_scope})
+        limits=margin_limits(financial_row['payload'],proof,[],[],D('5.6'),policy)
+        slot.update(_hrs_budget_json(limits),hrs_margin_scope=margin_scope,account_pending_reservations=[],
+            **{k:financial_row['payload'][k] for k in ('account_available_balance_source','account_status','account_cash_observed_at')})
     initial = assess_entry(budget_version=FLOOR,allocation=D('5.6'),entry_price=D('.24'),stop_price=D('.25'),direction='short',existing_open_risk=calculate_open_position_risk(local,fee_rate=D('.0005'),pressure_slippage=D('.02')),leverage=D(2),remaining_margin=D('5.48'),qty_step=D(1),min_qty=D(1),min_notional=D(5),fee_rate=D('.0005'),pressure_slippage=D('.02'),take_profit_prices=(D('.225'),D('.22')))
     initial = replace(initial,policy_revision=2,effective_allocation=D('5.6'))
     assert initial.allowed and initial.quantity==D(23)
     size = SizedEntry(initial.quantity,initial.quantity,D('.24'),D(2),D('2.76'),initial.worst_loss,initial.worst_loss,initial.exit_ratios)
     geometry = dict(hrs_budget_source='hrs_live_assessor_v1',hrs_risk_budget_version=FLOOR,hrs_budget_inputs=_hrs_budget_json(initial.budget_inputs),hrs_budget_decision=_hrs_budget_json(initial))
-    _, committed, context = _refine_hrs_floor(size,geometry,ScopedRiskSnapshot(margin,D(100),D('5.6'),3,SLOT_SCOPE,dict(local=local)),[],D('5.6'),D('5.6')-margin,dict(slot,locked_policy=policy,snapshot_effective_allocation='5.6',snapshot_account_equity='100',margin_cap='5.6',reserved_margin='0',financial_receipt=receipt,symbol='S',signal_id='signal'))
+    _, committed, context = _refine_hrs_floor(size,geometry,ScopedRiskSnapshot(margin,D(100),D('5.6'),3,SLOT_SCOPE,dict(local=local)),[],D('5.6'),D('5.6')-D(current_mark)/2,dict(slot,locked_policy=policy,snapshot_effective_allocation='5.6',snapshot_account_equity='100',margin_cap='5.6',reserved_margin='0',financial_receipt=receipt,symbol='S',signal_id='signal'))
     decision = _hrs_budget_json(replace(committed,client_order_id=CLIENT))
     records = [event('r','scan_start',at,dict(financial_context=dict(entry_policy=policy))),financial_row,
         event('r','entry_stage_inputs',at,dict(stage='reservation_success',client_order_id=CLIENT,budget_decision=geometry['hrs_budget_decision'],budget_context=context,slot_context=slot,slot_occupancy_proof=proof),'S'),
@@ -154,6 +169,49 @@ def test_floor_receipt_protection_fields_must_match_immutable_equity_parent():
     source=next(r for r in rows if r['kind']=='entry_stage_inputs' and r['payload'].get('stage')=='reservation_inventory')
     stage=next(r for r in rows if r['kind']=='entry_stage_inputs' and r['payload'].get('stage')=='reservation_success')
     source['payload']['slot_inputs']['local']['L']['risk_stop_price']='.5'
+    source['payload_sha256']=canonical_payload(source['payload'])[1]
+    stage['payload']['budget_context']['financial_receipt']['payload_sha256']=source['payload_sha256']
+    stage['payload_sha256']=canonical_payload(stage['payload'])[1]
+    assert checks(life,rows,archives)['budget']['status']=='PENDING'
+
+
+def test_owned_floor_acceptance_reproduces_actual_cash_and_scope():
+    from strategies.hrs.margin_budget import HRS_OWNED
+    life,rows,archives=floor_evidence(margin_scope=HRS_OWNED)
+    assert checks(life,rows,archives)['budget']['status']=='RECONCILED'
+
+
+@pytest.mark.parametrize('target,field,value',[
+    ('receipt','account_available_balance','448.87'),('receipt','account_available_balance_source','inferred'),
+    ('receipt','account_status','MARGIN_CALL'),('receipt','account_cash_observed_at',None),
+    ('receipt','hrs_margin_scope',None),('context','hrs_margin_scope',None),
+    ('context','account_available_balance','448.87'),('context','account_pending_reservations',None),
+    ('slot','account_pending_reservations',[dict(state='reserved')]),
+    ('proof','claim_scope','old_claims'),
+])
+def test_owned_acceptance_cash_scope_pending_and_proof_tampering_stays_pending(target,field,value):
+    from strategies.hrs.margin_budget import HRS_OWNED
+    from strategies.hrs.decision_capture import canonical_payload
+    life,rows,archives=floor_evidence(margin_scope=HRS_OWNED)
+    source=next(r for r in rows if r['payload'].get('stage')=='reservation_inventory')
+    stage=next(r for r in rows if r['payload'].get('stage')=='reservation_success')
+    dst={'receipt':source['payload'],'context':stage['payload']['budget_context'],
+        'slot':stage['payload']['slot_context'],'proof':stage['payload']['slot_occupancy_proof']}[target]
+    dst[field]=value
+    # Preserve envelope validity for context tampering; independent receipt hashes
+    # remain the authority for the actual GET cash fields.
+    stage['payload_sha256']=canonical_payload(stage['payload'])[1]
+    assert checks(life,rows,archives)['budget']['status']=='PENDING'
+
+
+@pytest.mark.parametrize('field,value',[('account_available_balance','1'),('account_available_balance_source','inferred'),('account_status','MARGIN_CALL'),('account_cash_observed_at',None),('hrs_margin_scope','all_account_positions_v1')])
+def test_owned_acceptance_resealed_financial_receipt_still_requires_exact_contract(field,value):
+    from strategies.hrs.margin_budget import HRS_OWNED
+    from strategies.hrs.decision_capture import canonical_payload
+    life,rows,archives=floor_evidence(margin_scope=HRS_OWNED)
+    source=next(r for r in rows if r['payload'].get('stage')=='reservation_inventory')
+    stage=next(r for r in rows if r['payload'].get('stage')=='reservation_success')
+    source['payload'][field]=value
     source['payload_sha256']=canonical_payload(source['payload'])[1]
     stage['payload']['budget_context']['financial_receipt']['payload_sha256']=source['payload_sha256']
     stage['payload_sha256']=canonical_payload(stage['payload'])[1]

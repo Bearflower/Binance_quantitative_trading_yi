@@ -433,9 +433,10 @@ def _floor_budget_provenance(lifecycle, payload, decision, records, budget_at, a
     from shared.entry_risk_policy import (EntryDenied, _hrs_budget_json,
         _validate_hrs_floor_decision, _validate_hrs_floor_context,
         _bind_hrs_floor_local_to_parent, _bind_hrs_floor_pending_to_rows, _validate_hrs_floor_finance,
-        _validate_hrs_financial_receipt)
+        _validate_hrs_financial_receipt, _bind_hrs_account_pending)
     from .risk_budget import FLOOR, policy_budget_version, calculate_open_position_risk
     from .entry_occupancy import prove_hrs_slot_ownership, HrsOccupancyDenied
+    from .margin_budget import HRS_OWNED, policy_margin_scope
     try:
         client = decision['client_order_id']
         stages = [(p, at) for kind, p, at in records if kind == 'entry_stage_inputs'
@@ -454,6 +455,7 @@ def _floor_budget_provenance(lifecycle, payload, decision, records, budget_at, a
             hrs_budget_context=context,slot_context=slot,slot_occupancy_proof=proof)
         _validate_hrs_floor_context(geometry,expected,dict(account_id=account_id,revision=decision['policy_revision']))
         policy = context['locked_policy']
+        margin_scope=policy_margin_scope(policy)
         if (policy_budget_version(policy) != FLOOR or policy['account_id'] != account_id
                 or policy['strategy_id'] != 'hrs' or policy['revision'] != decision['policy_revision']
                 or policy['mode'] != 'reduced' or policy['allow_add'] is not False
@@ -487,13 +489,13 @@ def _floor_budget_provenance(lifecycle, payload, decision, records, budget_at, a
         financial=_validate_hrs_financial_receipt(receipt,
             dict(source['_capture_envelope'],payload={k:v for k,v in source.items() if not k.startswith('_capture_')}),
             account=account_id,symbol=lifecycle['symbol'],signal_id=context['signal_id'],
-            checked_at=_time(context['checked_at']))
+            checked_at=_time(context['checked_at']),margin_scope=margin_scope)
         _bind_hrs_floor_local_to_parent(parent,financial['slot_inputs']['local'],
                                        account_id,context['evidence_sha256'])
         reproduced = prove_hrs_slot_ownership(account_id,
             dict(payload=parent,evidence_sha256=context['evidence_sha256']),
             financial['slot_inputs'],
-            context['ownership_claims'],checked_at=_time(context['checked_at']))
+            context['ownership_claims'],checked_at=_time(context['checked_at']),margin_scope=margin_scope)
         if reproduced != proof or any(slot[k] != proof[k] for k in ('account_symbols','hrs_symbols')):
             raise ValueError('original owner proof differs from committed reservation')
         # The immutable reservation_success receipt is the historical pending source.
@@ -508,7 +510,12 @@ def _floor_budget_provenance(lifecycle, payload, decision, records, budget_at, a
                     or row['original_pressure_risk'] is not None and _number(row['original_pressure_risk']) < pressure):
                 raise ValueError('pending financial source invalid')
         local_risk = calculate_open_position_risk(context['local_positions'],fee_rate=inputs['fee_rate'],pressure_slippage=inputs['pressure_slippage'])
-        _validate_hrs_floor_finance(context,slot,financial,pending,_number(context['full_allocation']),policy,expected)
+        account_pending=None
+        if margin_scope==HRS_OWNED:
+            account_pending=context['account_pending_reservations']
+            _bind_hrs_account_pending(context,slot,account_pending,account=account_id,client_id=client)
+        _validate_hrs_floor_finance(context,slot,financial,pending,_number(context['full_allocation']),policy,expected,
+            proof=reproduced,account_pending=account_pending)
         if (local_risk is None or local_risk != _number(context['planned_budget_inputs']['existing_open_risk'])
                 or _number(context['account_margin']) != _number(proof['account_margin'])
                 or _number(decision['effective_allocation']) != _number(context['snapshot_effective_allocation'])

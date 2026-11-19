@@ -17,6 +17,8 @@ from strategies.hrs.scoring_engine import ScoringEngine
 from strategies.hrs.pattern import PatternRecognizer
 from strategies.hrs.risk_budget import (FLOOR, STRICT, assess_entry, assess_budget_inputs,
     calculate_open_position_risk, policy_budget_version)
+from strategies.hrs.margin_budget import (ALL_ACCOUNT, HRS_OWNED, policy_margin_scope,
+    validate_cash_fields, validate_cash_observation, pending_margin)
 from strategies.hrs.loss_gate import GateHistory, LossGateState, evaluate_loss_gate
 from strategies.hrs.risk_ledger import (EquityCheckpoint, LedgerState, LedgerObservation,
     IncomeEvent, CashFlow, PositionMark, reconcile_ledger, LedgerNotReady)
@@ -159,6 +161,14 @@ class HrsAdapter:
             self._account_equity = _positive(raw['account_equity'])
             self._policy = raw['entry_policy']
             self._budget_version = self._policy_budget_version(self._policy)
+            self._margin_scope = policy_margin_scope(self._policy)
+            if self._margin_scope==HRS_OWNED:
+                from ai_tuner.hrs_evidence_export import verify_bootstrap_margin_inputs
+                verify_bootstrap_margin_inputs(self._portal,raw)
+                if raw.get('hrs_margin_scope')!=self._margin_scope:raise ValueError('hrs_margin_scope_mismatch')
+                validate_cash_fields(raw)
+                validate_cash_observation(raw,checked_at=parse_utc(raw['bootstrap_available_at']),observed_at=self._start)
+                self._foreign_pending_margin(raw)
             self._runtime_slot_scope=raw.get('runtime_slot_scope')
             if self._runtime_slot_scope is not None:
                 from strategies.hrs.entry_occupancy import SLOT_SCOPE
@@ -451,6 +461,15 @@ class HrsAdapter:
         self._allocation=allocation
         self._policy=risk['entry_policy']
         self._budget_version=self._policy_budget_version(self._policy)
+        try:
+            if policy_margin_scope(self._policy)!=self._margin_scope:raise ValueError('margin_policy_change_requires_partition')
+            if self._margin_scope==HRS_OWNED:
+                if risk.get('hrs_margin_scope')!=self._margin_scope:raise ValueError('hrs_margin_scope_mismatch')
+                validate_cash_fields(risk)
+                validate_cash_observation(risk,checked_at=now,observed_at=risk['account_occupancy']['observed_at'])
+                self._foreign_pending_margin(risk)
+        except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
+            raise DataBlocked(['hrs_margin_inputs_invalid:'+str(exc)]) from exc
         if self._budget_version == FLOOR and self._runtime_slot_scope is None:
             raise DataBlocked(['hrs_budget_floor_requires_scoped_ownership'])
         if risk.get('account_occupancy',{}).get('slot_scope')!=self._runtime_slot_scope:
@@ -617,6 +636,17 @@ class HrsAdapter:
         except (ValueError, TypeError, AttributeError) as exc:
             raise DataBlocked(['hrs_budget_version_invalid:'+str(exc)]) from exc
 
+    @staticmethod
+    def _foreign_pending_margin(risk):
+        rows=risk['account_pending_reservations']
+        if not isinstance(rows,list) or any(row.get('state') not in ('reserved','submitting','released') for row in rows):
+            raise ValueError('hrs_account_pending_invalid')
+        active=[row for row in rows if row['state']!='released']
+        # Validate HRS rows too; their counterfactual replacements are modeled.
+        account=risk['entry_policy']['account_id']
+        pending_margin(active,account=account)
+        return pending_margin([row for row in active if row['strategy_id']!='hrs'],account=account)
+
     def _reservation_denial(self,symbol,quantity,price,ctx,now,risk,effective,*,decision=None,refined_decisions=None):
         """Legacy rejects unchanged; explicit floor reproduces downward lock sizing."""
         try:
@@ -640,7 +670,7 @@ class HrsAdapter:
             if scoped:
                 from strategies.hrs.entry_occupancy import SLOT_SCOPE,validate_hrs_slot_proof,HrsOccupancyDenied
                 proof=occupancy['slot_ownership_proof']
-                try:validate_hrs_slot_proof(proof,inventory=occupancy['inventory'],account_id=proof['account_id'],observed_at=observed)
+                try:validate_hrs_slot_proof(proof,inventory=occupancy['inventory'],account_id=proof['account_id'],observed_at=observed,margin_scope=getattr(self,'_margin_scope',ALL_ACCOUNT))
                 except HrsOccupancyDenied as exc:raise ValueError(exc.reason_code) from exc
                 owners=proof['owners']
                 if (occupancy['slot_scope']!=SLOT_SCOPE
@@ -670,6 +700,17 @@ class HrsAdapter:
         hrs_margin=sum((p.current_quantity*ctx.portfolio.last_prices[p.symbol]/leverage for p in ctx.portfolio.positions if p.is_open()),ZERO)
         retained=sum((r['margin'] for r in self._durable_margin_reservations.values()),ZERO)
         requested=quantity*price/leverage
+        owned=getattr(self,'_margin_scope',ALL_ACCOUNT)==HRS_OWNED
+        remaining=effective-hrs_margin-other_margin-retained
+        cash_remaining=None
+        if owned:
+            try:
+                if risk.get('hrs_margin_scope')!=HRS_OWNED:raise ValueError('hrs_margin_scope_mismatch')
+                validate_cash_observation(risk,checked_at=now,observed_at=observed)
+                cash_remaining=validate_cash_fields(risk)-retained-self._foreign_pending_margin(risk)
+                remaining=min(effective-hrs_margin-retained,cash_remaining)
+            except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
+                raise DataBlocked(['hrs_margin_inputs_invalid:'+str(exc)]) from exc
         if decision is not None:
             if not scoped or decision.budget_version != FLOOR:
                 raise DataBlocked(['hrs_budget_floor_requires_scoped_ownership'])
@@ -684,7 +725,6 @@ class HrsAdapter:
                 except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
                     raise DataBlocked(['hrs_retained_pressure_risk_unproven:'+held]) from exc
                 risk_by_symbol[held]=max(risk_by_symbol.get(held,ZERO),exposure)
-            remaining=effective-hrs_margin-other_margin-retained
             if remaining<decision.minimum_quantity*price/leverage:
                 return 'minimum_order_exceeds_margin'
             refined=assess_budget_inputs(dict(decision.budget_inputs,existing_open_risk=sum(risk_by_symbol.values(),ZERO),
@@ -696,8 +736,9 @@ class HrsAdapter:
             if refined_decisions is not None:refined_decisions.append(refined)
         self._record(now,'hrs_account_reservation',dict(symbol=symbol,hrs_marked_margin=str(hrs_margin),
             other_margin=str(other_margin),retained_margin=str(retained),requested_margin=str(requested),
-            effective_cap=str(effective),occupied_symbols=sorted(occupied),source_observed_at=observed.isoformat()))
-        if hrs_margin+other_margin+retained+requested>effective:
+            effective_cap=str(effective),remaining_margin=str(remaining),hrs_margin_scope=getattr(self,'_margin_scope',ALL_ACCOUNT),
+            account_remaining_margin=str(cash_remaining) if owned else None,occupied_symbols=sorted(occupied),source_observed_at=observed.isoformat()))
+        if requested>remaining:
             return 'entry_ceiling_includes_account_and_durable_reservations'
         return None
 

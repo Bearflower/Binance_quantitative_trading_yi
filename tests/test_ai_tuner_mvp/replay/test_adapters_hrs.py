@@ -321,7 +321,7 @@ def test_source_import_whitelist():
             or module == "ai_tuner.replay"
             or module.startswith("ai_tuner.replay.")
             or module in {"strategies.hrs", "strategies.hrs.scoring_engine",
-                          "strategies.hrs.pattern", "strategies.hrs.risk_budget",
+                          "strategies.hrs.pattern", "strategies.hrs.risk_budget", "strategies.hrs.margin_budget",
                           "strategies.hrs.loss_gate", "strategies.hrs.risk_ledger"}
         ), "非法绝对 import：{0}".format(module)
 
