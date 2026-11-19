@@ -17,3 +17,5 @@
 沿用 `reduced-trial-review-v1`。最早 2026-12-01 开始，仅统计试跑约束连续、证据完整且各达样本门槛的两个互不重叠自然月。月度验收尚未开始。
 
 源代码和 CI 见本次仓库审查及 [限定发布](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44478098245)。
+
+15:17 生产读回。`fa7f1567` 已激活，容器 healthy，CI 399 项通过，激活前后统一 PostgreSQL 权限审计通过，风险政策和资金分配摘要相同。发版后重新验证旧值、新值、无值的响应依次为 401、400、401。只读演练生成四份报告，来源错误为空。当前三份活仓尚无满足查询条件的完整批次预算，成交单数与逐笔成交也因证据缺口保留未知；四份报告均为 `BLOCKED_DATA`。发版前生产已有 199 条空仓观测，覆盖 11 个币种，管理员审定窗口仍为零。源码待合入主线，见 [PR #39](https://github.com/Bearflower/Binance_quantitative_trading_yi/pull/39)。
