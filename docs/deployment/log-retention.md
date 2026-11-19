@@ -52,16 +52,19 @@ python3 scripts/audit_grid_queue_window.py --db-path /root/trading_system/data/g
 
 | 容器 | Compose service | 当前驱动 |
 |---|---|---|
-| `trading_system-hrs-acceptance` | `hrs-acceptance-reporter` | json-file |
-| `trading_system-market-cap` | `market-cap-service` | json-file |
+| `trading_system-hrs-acceptance` | `hrs-acceptance-reporter` | journald（2026-11-19 21:25 切换） |
+| `trading_system-market-cap` | `market-cap-service` | journald（2026-11-19 21:25 切换） |
 
-切换步骤：
+切换步骤（2026-11-19 21:25 首次执行）：
 
 1. 读取容器实际使用的覆盖文件：
    `docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' trading_system-hrs-acceptance`
-2. 在**当前生效**的 `.releases/**/images.json` 对应 service 下加入 `"logging": {"driver": "journald"}`。
-3. 用创建时相同的 `config_files` 执行 `docker compose ... up -d --no-deps <service>`，只重建该服务。
-4. 校验 `HostConfig.LogConfig.Type == journald`、容器健康、`journalctl CONTAINER_NAME=<name>` 有新记录。
+2. 用创建时相同的 `config_files`，在**最后**追加一个只含这两个服务 `logging: journald` 的临时覆盖文件，执行 `docker compose ... up -d --no-deps <service>` 只重建该服务。
+3. 校验 `HostConfig.LogConfig.Type == journald`、容器健康、`journalctl CONTAINER_NAME=<name>` 有新记录。
+
+禁止把这两个服务写进 `docker-compose.logging.yml`：它们不在基础 Compose 中，只有 `logging` 字段会被判定为 `has neither an image nor a build context`，导致 `docker compose config` 与 07:34 巡检整体失败（2026-11-19 曾因此触发失败并已回退）。
+
+禁止手工编辑当前生效的 `.releases/**/images.json`：`deployment/trial-evidence/activate.py` 会校验前序 overlay 的 SHA-256，改动会让下一次限定发布在预检阶段失败。若要让切换在后续重建中保持，必须在生成该 overlay 的发布流程里带上 `logging`，随新一次限定发布落地。
 
 持久化约束：这两个服务不走 `docker-compose.logging.yml`，因此**每次受限发布都必须沿用同一覆盖文件**；若某次发布遗漏 `logging` 字段，容器会回落为 `json-file`，07:34 巡检将再次报「日志驱动 json-file」，14 天窗口也从回落时刻重新累计。`.releases/` 目录不在仓库中，变更只存在于服务器，必须在当次发布单中登记。
 

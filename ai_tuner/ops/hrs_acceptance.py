@@ -19,7 +19,10 @@ import urllib.request
 try:
     from ai_tuner.ops import digest_outbox
 except ImportError:  # 以脚本方式直接运行时，当前目录即 ai_tuner/ops
-    import digest_outbox
+    try:
+        import digest_outbox
+    except ImportError:  # 只读探针在策略容器内执行，容器内没有 outbox 模块
+        digest_outbox = None
 
 BEIJING = timezone(timedelta(hours=8))
 START = datetime(2026, 10, 30, tzinfo=BEIJING)
@@ -416,6 +419,17 @@ def report_conclusion(issue_count, candidate_count, monthly, shadow_status):
     return f"【结论】{'，'.join(findings)}。{allocation}，{shadow}。"
 
 
+def publish_or_send(webhook, report, *, status, summary):
+    """写入 07:35 汇总 outbox；outbox 不可用时回退直发，避免报告丢失。"""
+    if digest_outbox is not None:
+        try:
+            digest_outbox.publish("hrs", report, status=status, summary=summary)
+            return
+        except (OSError, ValueError):
+            pass
+    send_report(webhook, report)
+
+
 def run_daily(args):
     now = datetime.now(BEIJING)
     state = json.loads(args.state.read_text()) if args.state.exists() else {}
@@ -469,16 +483,9 @@ def run_daily(args):
     if getattr(args, "send", False):
         send_report(args.webhook, report)
     else:
-        try:
-            digest_outbox.publish(
-                "hrs",
-                report,
-                status="warn" if issues else "ok",
-                summary=f"{len(issues)} 项异常" if issues else "正常",
-            )
-        except (OSError, ValueError):
-            # outbox 不可写时回退直发，避免报告丢失
-            send_report(args.webhook, report)
+        publish_or_send(args.webhook, report,
+                        status="warn" if issues else "ok",
+                        summary=f"{len(issues)} 项异常" if issues else "正常")
     next_state = {
         "lookback": (now - timedelta(minutes=10)).isoformat(),
         "allocation_hash": data["allocation_hash"], "shadow_hash": shadow_signature,
@@ -516,7 +523,7 @@ def main():
                 if getattr(args, "send", False):
                     send_report(args.webhook, message)
                 else:
-                    digest_outbox.publish("hrs", message, status="error", summary="证据读取失败")
+                    publish_or_send(args.webhook, message, status="error", summary="证据读取失败")
             raise
 
 
