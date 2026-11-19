@@ -1,0 +1,81 @@
+name: Release scoped HRS entry hotfix
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  packages: write
+concurrency:
+  group: hrs-entry-hotfix-production
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 24
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: hrs-test-only
+          POSTGRES_DB: hrs_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      HRS_TEST_POSTGRES_DSN: postgresql://postgres:hrs-test-only@127.0.0.1/hrs_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Verify HRS entry and pre-HTTP denial with PostgreSQL
+        run: |
+          pip install -r strategies/hrs/requirements.txt pytest pytest-asyncio
+          PGPASSWORD=hrs-test-only psql -h 127.0.0.1 -U postgres -d hrs_test -v ON_ERROR_STOP=1 -c 'CREATE ROLE trading_user NOLOGIN'
+          python -m pytest -q tests/test_strategies/test_hrs_min_order_http.py tests/test_risk/test_hrs_min_order_lock.py tests/test_shared/test_hrs_final_submit_guard.py tests/test_strategies/test_hrs_safety_review_regressions.py tests/test_risk/test_hrs_scoped_slots.py
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Record immutable HRS revision
+        run: |
+          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\nCI_RUN_NUMBER=%s\nCI_RUN_ATTEMPT=%s\n' "$GITHUB_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" "$GITHUB_RUN_NUMBER" "$GITHUB_RUN_ATTEMPT" > VERSION
+      - uses: docker/build-push-action@v5
+        id: image
+        with:
+          context: .
+          file: deployment/hrs-entry-hotfix/Dockerfile
+          push: true
+          tags: ghcr.io/bearflower/trading-hrs:entry-hotfix-${{ github.sha }}
+      - name: Package reviewed HRS activation
+        run: |
+          python - <<'PY'
+          import hashlib,json,os,pathlib,shutil
+          root = pathlib.Path('.')
+          target = pathlib.Path(os.environ['RUNNER_TEMP'])/'hrs-entry-hotfix'
+          paths = ['deployment/hrs-entry-hotfix/activate.py', 'release/hrs-execution/deploy_optimization.py',
+                   'shared/entry_risk_policy.py', 'strategies/hrs/executor.py',
+                   'scripts/database_permissions.py', 'database/postgres/permissions.json', 'VERSION']
+          files = {}
+          for name in paths:
+              path = root/name
+              output = target/name
+              output.parent.mkdir(parents=True, exist_ok=True)
+              shutil.copyfile(path, output)
+              files[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+          (target/'manifest.json').write_text(json.dumps(dict(sha=os.environ['GITHUB_SHA'], files=files)))
+          PY
+      - name: Activate only the reviewed HRS image
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H 43.156.242.184 >> ~/.ssh/known_hosts
+          RELEASE_DIR="/root/trading_system/.deploy_tmp/hrs-entry-hotfix-$GITHUB_SHA"
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "mkdir -m 700 -p $RELEASE_DIR"
+          tar -C "$RUNNER_TEMP/hrs-entry-hotfix" -czf "$RUNNER_TEMP/hrs-entry-hotfix.tar.gz" .
+          scp -o ConnectTimeout=15 "$RUNNER_TEMP/hrs-entry-hotfix.tar.gz" "root@43.156.242.184:$RELEASE_DIR/bundle.tar.gz"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 "tar -xzf $RELEASE_DIR/bundle.tar.gz -C $RELEASE_DIR && PYTHONPATH=$RELEASE_DIR/release/hrs-execution python3 $RELEASE_DIR/deployment/hrs-entry-hotfix/activate.py $GITHUB_SHA $DIGEST $RELEASE_DIR"
