@@ -1,0 +1,155 @@
+{
+  "schema_version": 1,
+  "status": "deployed_and_policy_activated",
+  "optimization_status": "INCOMPLETE",
+  "release_sha": "f144eb073c14ae3fdeb7f2d4239eced97aec97e1",
+  "deploy_id": "0000DE01",
+  "code_deployed_at": "2026-11-19T03:30:39.359667+00:00",
+  "verified_at": "2026-11-19T03:34:03.807156+00:00",
+  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44450437765",
+  "ci_tests": {
+    "passed": 1652,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 118.45,
+    "postgres": "16",
+    "python": "3.11"
+  },
+  "local_tests": {
+    "passed": 1652,
+    "failed": 0,
+    "skipped": 0,
+    "seconds": 111.52
+  },
+  "budget": {
+    "version": "hrs_minimum_executable_v1",
+    "allocation": "52.36",
+    "base_single_ratio": ".01",
+    "base_portfolio_ratio": ".03",
+    "base_single_limit": "0.5236",
+    "base_portfolio_limit": "1.5708",
+    "effective_single_limit": "max(allocation*.01,minimum_executable_pressure_loss)",
+    "effective_portfolio_limit": "max(allocation*.03,existing_pressure_risk+minimum_executable_pressure_loss)",
+    "old_percentages_are_hard_limits": false,
+    "minimum_definition": "current HRS-supported entry quantity grid satisfying entry and full-TP1 minimums, not an exchange reduce-only exemption experiment",
+    "fees_and_slippage_included": true
+  },
+  "policy": {
+    "policy_revision": 7,
+    "budget_version": "hrs_minimum_executable_v1",
+    "policy_expiry": "2026-12-14T03:09:52.457088+00:00",
+    "allocation": "52.36",
+    "base_single_limit": "0.5236",
+    "base_portfolio_limit": "1.5708",
+    "entry_ceiling": "26.1800000000",
+    "allow_add": false,
+    "freeze_allocation": true,
+    "active_revisions": {
+      "hrs": 7,
+      "btc_eth_aggressive": 5,
+      "btc_eth": 5,
+      "new_coin": 5
+    },
+    "gate": {
+      "ready": true,
+      "allowed": true,
+      "revision": 7,
+      "as_of": "2026-11-19T03:33:15.457029+00:00",
+      "valid_until": "2026-11-19T03:35:15.457029+00:00"
+    },
+    "writer_recorded_at": "2026-11-19T03:33:38.179538+00:00",
+    "checked_at": "2026-11-19T03:34:03.807156+00:00"
+  },
+  "runtime": {
+    "trading_system-hrs": {
+      "source_count": 40,
+      "version": {
+        "GIT_SHA": "f144eb073c14ae3fdeb7f2d4239eced97aec97e1",
+        "DEPLOY_ID": "0000DE01",
+        "CI_RUN_NUMBER": "222",
+        "CI_RUN_ATTEMPT": "1"
+      }
+    },
+    "trading_system-hrs-acceptance": {
+      "source_count": 40,
+      "version": {
+        "GIT_SHA": "f144eb073c14ae3fdeb7f2d4239eced97aec97e1",
+        "DEPLOY_ID": "0000DE01",
+        "CI_RUN_NUMBER": "222",
+        "CI_RUN_ATTEMPT": "1"
+      }
+    }
+  },
+  "containers": {
+    "trading_system-hrs": {
+      "image": "ghcr.io/bearflower/trading-hrs@sha256:4d7cd6ad3fcd50d3ec2ed51936200c451a860da1a236c9da5e2a17eb4251df75",
+      "started_at": "2026-11-19T03:29:27.236346281Z",
+      "health": "healthy"
+    },
+    "trading_system-market-cap": {
+      "image": "ghcr.io/bearflower/trading-hrs@sha256:33f29af015334afb31e24ade9791fa6e8cecc2acc122e83490c5cb4908ee7953",
+      "started_at": "2026-11-19T01:46:19.671791596Z",
+      "health": "healthy"
+    },
+    "trading_system-hrs-acceptance": {
+      "image": "ghcr.io/bearflower/trading-hrs@sha256:4d7cd6ad3fcd50d3ec2ed51936200c451a860da1a236c9da5e2a17eb4251df75",
+      "started_at": "2026-11-19T03:29:39.19492279Z",
+      "health": "healthy"
+    }
+  },
+  "logs": {
+    "trading_system-hrs": {
+      "error_lines": 0,
+      "traceback_lines": 0
+    },
+    "trading_system-market-cap": {
+      "error_lines": 0,
+      "traceback_lines": 0
+    },
+    "trading_system-hrs-acceptance": {
+      "error_lines": 0,
+      "traceback_lines": 0
+    }
+  },
+  "other_containers_unchanged": true,
+  "unrelated_container_count": 27,
+  "configuration_hash": "39e90a4d1b1cc526f42d14fb3248a9b292c0aa500a36e4df76159efda25fbb5e",
+  "sltp_parameters_changed": false,
+  "account_margin_and_slot_caps_unchanged": true,
+  "max_hrs_slots": 3,
+  "existing_hrs_position": {
+    "symbol": "WLDUSDT",
+    "quantity": "28",
+    "original_hard_stop_preserved": true,
+    "trigger_price": ".2533",
+    "retained_filled_reservation_preserved": true
+  },
+  "permission_audit": {
+    "ok": true,
+    "mode": "audit",
+    "objects_checked": 1328,
+    "issues": [],
+    "contract_sha256": "57a484abe1826f408ccd3cfc73d134ed18d57c8709c4d3e57bdd2a9a158322fb",
+    "database_changes": "none_audit_only",
+    "migrations_executed": []
+  },
+  "host_inspector": {
+    "updated": true,
+    "sha256": "de2c9ba784507722f4d9e74b6a18a71f888509c5cb9fec027947744aa1af1362",
+    "dry_run": "门禁与风控核验通过；HRS7、其他策略5；月度分配记录无变化",
+    "notification_sent": false
+  },
+  "minimum_feasibility": {
+    "rows": 9,
+    "passed": 9,
+    "report": "docs/reports/hrs-minimum-order-feasibility-2026-11-19.json",
+    "qualification": "isolated execution feasibility, not historical return validation"
+  },
+  "remaining_financial_acceptance": [
+    "August–September original decision/market snapshots remain missing",
+    "No SL/TP parameter winner established",
+    "24-hour coverage and five eligible natural closed lifecycles remain open",
+    "Future risk-regime experiment v5 preregistered for November20CST00:00; no return improvement claim"
+  ],
+  "raw_postverification_sha256": "0a055d82406498b9e096e57a87dd35c8cdfd74240f20a3fabeb8c8b2a65c59f5"
+}

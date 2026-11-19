@@ -88,6 +88,7 @@
 ## 决策记录
 | ID | 标题 | 日期 | 状态 | 替代入口 |
 |----|------|------|------|----------|
+| [Binance_quantitative_trading-20261119-hrs-minimum-executable-risk-floor](./decisions/Binance_quantitative_trading-20261119-hrs-minimum-executable-risk-floor.md) | HRS 最小可执行订单风险下限与独立库存凭证，r7已部署 | 2026-11-19 | 已采纳 | 原1%/3%作为基础预算，非硬上限 |
 | Binance_quantitative_trading-20261102-untracked-position-safe-exit | 原始 ATR 丢失的未接管旧仓保留交易所保护并按真实成交时间退出 | 2026-11-02 | 已采纳 | — |
 | Binance_quantitative_trading-20261029-micro-leg-not-placeable-na-caliber | 微仓比例腿数量取整为 0 时按 N/A 处理，不补足最小下单量 | 2026-10-29 | 已采纳 | — |
 | Binance_quantitative_trading-20261028-journald-container-log-retention | 本项目容器 stdout 使用宿主机 journald 跨重建保留 | 2026-10-28 | 已采纳 | — |

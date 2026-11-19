@@ -24,8 +24,8 @@ Tech stack: Python3.11/Decimal, pytest, PostgreSQL16, immutable GHCR images and 
 ## 4. Controlled policy activation and rollout
 - [x] Build reviewable HRS6->7 CAS candidate preserving all financial/margin flags and expiry; verify exact policy reason, existing permissions contract, active claims/reservations and original protection.
 - [x] Add tested deployment metadata identifying the changed budget model. Check daily read-only inspector recognizes only the audited new revision. Reuse current immutable hub; no new exchange writes.
-- [ ] Full freshPG/Python3.11 CI, immutable image/source/registry/config checks, code deployment then policy activation; actual new gate/writer and protection checks, rollback on initialization failure.
-- [ ] Report actual offline minimum quantities/risks, deployment evidence and remaining natural/performance acceptance. Update knowledge/tracking; do not close financial optimization.
+- [x] Full freshPG/Python3.11 CI, immutable image/source/registry/config checks, code deployment then policy activation; actual new gate/writer and protection checks, rollback on initialization failure.
+- [x] Report actual offline minimum quantities/risks, deployment evidence and remaining natural/performance acceptance. Update knowledge/tracking; do not close financial optimization.
 
 ## Current execution status
 
@@ -38,3 +38,5 @@ Tech stack: Python3.11/Decimal, pytest, PostgreSQL16, immutable GHCR images and 
 - No minimum-order budget production activation or release has occurred yet.
 
 Full selected local and fresh PostgreSQL16/Python3.11 CI both1652/1652 passed. CI44450437765, releasef144eb07, deployment0000DE01. Actual production rollout and policy7 activation still await complete, hash-verified package delivery; no production activation yet.
+
+Final verification11:34CST: codef144eb07/DEPLOY_ID0000DE01 deployed, HRS7minimum-budgetactive; gate7ready/allowed, writerfresh, all40runtimehashes/versionsverified,27unrelatedcontainersunchanged, WLD28originalhardSLretained, noerror/Traceback. DailyinspectiondryrunPASS. Actualpolicyexpiryunchanged2026-12-14T03:09:52.457088Z. CompletefinancialoptimizationINCOMPLETE; nohistorical/performanceadmissionclaim.
