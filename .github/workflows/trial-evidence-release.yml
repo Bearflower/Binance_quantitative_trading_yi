@@ -59,7 +59,8 @@ jobs:
           import hashlib,json,os,pathlib,shutil
           root=pathlib.Path('.')
           target=pathlib.Path(os.environ['RUNNER_TEMP'])/'trial-evidence'
-          paths=[pathlib.Path(p) for p in ('ai_tuner/monitor/evidence_jobs.py',
+          paths=[pathlib.Path(p) for p in ('ai_tuner/allocation/activity_evidence.py',
+                 'ai_tuner/monitor/reduced_trial.py', 'ai_tuner/monitor/trial_risk_evidence.py',
                  'deployment/trial-evidence/activate.py', 'scripts/database_permissions.py',
                  'database/postgres/permissions.json', 'VERSION')]
           files={}
