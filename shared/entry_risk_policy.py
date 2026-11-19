@@ -690,7 +690,7 @@ class RiskPolicyStore:
             raise EntryDenied('HRS durable order risk or geometry changed')
         return dict(row)
 
-    async def release_hrs_precheck_denial(self, symbol, decision, *, reason_code):
+    async def release_hrs_precheck_denial(self, symbol, decision):
         """Release this denied intent only while reserved proves no HTTP attempt.
 
         Never infer safety from age or from a failed authorization. The exact
@@ -711,19 +711,16 @@ class RiskPolicyStore:
                 client_id,self.account,symbol,revision)
             if row is None:
                 return False
-            await self._release_proven_unsent(conn,'hrs',client_id,row,'reserved',
-                denial=dict(stage='executor_precheck',reason_code=reason_code))
+            await self._release_proven_unsent(conn,'hrs',client_id,row,'reserved')
             return True
 
-    async def _release_proven_unsent(self, conn, strategy, client_id, row, state, *, denial=None):
-        resolution={'submission_resolution':'denied_before_http'}
-        if denial is not None:
-            resolution['submission_denial']=denial
+    async def _release_proven_unsent(self, conn, strategy, client_id, row, state):
+        # The capture trigger preserves the original order identity and geometry.
+        # Only transition state here; the trigger archives the release lifecycle.
         await conn.execute("""UPDATE trading.entry_risk_reservation
-            SET state='released',updated_at=clock_timestamp(),
-                geometry=COALESCE(geometry,'{}'::jsonb) || $5::jsonb
+            SET state='released',updated_at=clock_timestamp()
             WHERE client_order_id=$1 AND account_id=$2 AND strategy_id=$3 AND state=$4""",
-            client_id, self.account, strategy, state,json.dumps(resolution))
+            client_id, self.account, strategy, state)
         await conn.execute("""UPDATE trading.position_claims
             SET claim_state='RELEASED',released_at=clock_timestamp(),reason='risk_denied_before_http'
             WHERE symbol=$1 AND strategy=$2 AND claim_state='PENDING'

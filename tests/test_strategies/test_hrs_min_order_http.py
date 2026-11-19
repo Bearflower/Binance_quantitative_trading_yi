@@ -28,6 +28,21 @@ async def test_executor_precheck_denial_releases_only_own_unsent_intent(runtime,
     # An unreadable historical repr must stay denied, never parsed as evidence.
     await r.admin.execute("UPDATE trading.entry_risk_reservation SET geometry=jsonb_set(geometry,'{hrs_budget_context,planned_budget_decision}',to_jsonb('RiskDecision(allowed=True)'::text)) WHERE client_order_id=$1",client)
     await r.admin.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state) VALUES('other','test','hrs',2,'B',1,1,100,10,10,'reserved')")
+    before = await r.admin.fetchval('SELECT geometry FROM trading.entry_risk_reservation WHERE client_order_id=$1', client)
+    await r.admin.execute("""
+      CREATE FUNCTION trading.require_immutable_entry_geometry() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF OLD.geometry IS DISTINCT FROM NEW.geometry THEN
+          RAISE EXCEPTION 'Captured entry intent identity is immutable';
+        END IF;
+        RETURN NEW;
+      END $$;
+      CREATE TRIGGER entry_activity_capture_geometry BEFORE UPDATE ON trading.entry_risk_reservation
+       FOR EACH ROW EXECUTE FUNCTION trading.require_immutable_entry_geometry();
+      ALTER TABLE trading.entry_risk_reservation ENABLE ALWAYS TRIGGER entry_activity_capture_geometry;
+    """)
+    warning = MagicMock()
+    monkeypatch.setattr('strategies.hrs.executor.logger.warning', warning)
     monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
     executor=denied_executor(r)
     result=await getattr(executor,'execute_'+direction)('A',100,1,decision.quantity,1,risk_decision=decision)
@@ -35,9 +50,10 @@ async def test_executor_precheck_denial_releases_only_own_unsent_intent(runtime,
     executor._set_leverage.assert_not_awaited();executor.binance_api.place_order.assert_not_awaited()
     row=await r.admin.fetchrow('SELECT state,geometry FROM trading.entry_risk_reservation WHERE client_order_id=$1',client)
     assert row['state']=='released'
-    import json
-    denial=json.loads(row['geometry'])['submission_denial']
-    assert denial==dict(stage='executor_precheck',reason_code='hrs_budget_evidence_invalid')
+    assert row['geometry'] == before
+    warning.assert_any_call('HRS entry denied before leverage', symbol='A',
+                            stage='executor_precheck', reason_code='hrs_budget_evidence_invalid',
+                            reservation_released=True)
     assert await r.admin.fetchval("SELECT claim_state FROM trading.position_claims WHERE symbol='A'")=='RELEASED'
     assert await r.admin.fetchval("SELECT state FROM trading.entry_risk_reservation WHERE client_order_id='other'")=='reserved'
     assert await r.admin.fetchval("SELECT claim_state FROM trading.position_claims WHERE symbol='B'")=='PENDING'
@@ -87,7 +103,7 @@ async def test_precheck_cleanup_rechecks_reserved_state_after_waiting_for_accoun
     task=None
     try:
         await r.admin.execute("SELECT pg_advisory_xact_lock(hashtextextended('test',7183))")
-        task=asyncio.create_task(r.store.release_hrs_precheck_denial('A',decision,reason_code='test_denial'))
+        task=asyncio.create_task(r.store.release_hrs_precheck_denial('A',decision))
         await asyncio.wait_for(attempted.wait(),2)
         assert not task.done()
         # A concurrent authorized path won the lock and entered transport state.

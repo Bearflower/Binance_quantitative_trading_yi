@@ -334,7 +334,7 @@ class TradingExecutor:
         reason_code=denial.get('reason_code','entry_authorization_error')
         try:
             released=await RiskPolicyStore(self.db).release_hrs_precheck_denial(
-                symbol,decision,reason_code=reason_code)
+                symbol,decision)
             logger.warning('HRS entry denied before leverage',symbol=symbol,
                            stage='executor_precheck',reason_code=reason_code,
                            reservation_released=released)
