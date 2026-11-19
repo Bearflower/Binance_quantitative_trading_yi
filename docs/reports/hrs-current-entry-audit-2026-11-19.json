@@ -88,10 +88,31 @@
   "hrs_margin_ceiling_usdt": "26.18",
   "etn_margin_usdt": "49.8626",
   "account_available_usdt": "448.86029153",
-  "margin_policy_choice": "PENDING_USER_REPLY",
+  "margin_policy_choice": "APPROVED_HRS_OWN_QUOTA_WITH_OVERALL_ACCOUNT_CHECK",
   "legacy_pause_until": null,
   "legacy_drawdown_pause_until": null,
   "last_natural_batch_coverage": "9 of9 latest batches,100percent requested coverage",
   "financial_optimization_status": "INCOMPLETE",
-  "previous_engineering_deployment_proof_does_not_establish_natural_fill": true
+  "previous_engineering_deployment_proof_does_not_establish_natural_fill": true,
+  "followup": {
+    "updated_at": "2026-11-19T09:03:56.281234+00:00",
+    "production_still_original_release": true,
+    "core_commits": [
+      "f3d2cd8b",
+      "ea6361e2",
+      "e3109695"
+    ],
+    "core_quality_status": "PASS",
+    "core_independent_tests": 195,
+    "core_full_tests": 1218,
+    "parity_status": "IN_PROGRESS",
+    "policy8_staged_not_activated": true,
+    "exact_never_sent_recovery_preview_at": "2026-11-19T09:02:27.938380+00:00",
+    "exact_never_sent_recovery_preview": "PASS_two_flat_inventories_no_orders_original_WLD_protection",
+    "recovery_applied": false,
+    "earlier_cleanup_attempt": "ROLLBACK_on_existing_immutable_geometry_trigger_no_changes",
+    "permissions_changed": false,
+    "experiment_registration": "docs/reports/hrs-exit-experiment-registration-2026-11-19-v6.json",
+    "performance_accepted": false
+  }
 }
