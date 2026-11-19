@@ -197,3 +197,26 @@ def test_audit_reconstruction_rejects_invalid_direction_without_type_error():
 def test_floor_fails_closed_on_finite_decimal_arithmetic_overflow(field):
     decision = floor(**{field: D('1e1000005')})
     assert not decision.allowed
+
+
+@pytest.mark.parametrize('open_risk,fee', [
+    ('9.000000000000000000000000001', '.0005'),
+    ('10', '.0005000000000000000000000001'),
+])
+def test_floor_preserves_minimum_risk_without_portfolio_decimal_cancellation(open_risk, fee):
+    from decimal import localcontext
+
+    decision = floor(existing_open_risk=D(open_risk), fee_rate=D(fee))
+    assert decision.allowed
+    assert decision.quantity == decision.minimum_quantity == D(23)
+    assert decision.worst_loss == decision.minimum_risk == decision.risk_limit
+    # Verify metadata against exact products/sums, independently of ambient
+    # precision; no epsilon may excuse an understated budget or pressure loss.
+    with localcontext() as context:
+        context.prec = 120
+        adverse_stop = D('.30') * D('1.02')
+        expected_loss = D(23) * (adverse_stop - D('.24') + D(fee) * (D('.24') + adverse_stop))
+        assert decision.minimum_risk == expected_loss
+        assert decision.effective_portfolio_limit == D(open_risk) + expected_loss
+        assert decision.effective_portfolio_limit - D(open_risk) == decision.risk_limit
+        assert decision.quantity * D('.24') / D(2) <= D(20)
