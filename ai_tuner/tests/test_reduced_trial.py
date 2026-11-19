@@ -710,3 +710,23 @@ async def test_aggressive_signed_fill_proves_signal_despite_closed_placeholder()
                 await tx.rollback()
     finally:
         await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_lot_query_retries_only_when_the_same_snapshot_cursor_is_lagging(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    import ai_tuner.monitor.reduced_trial as trial
+
+    pending = [{'symbol': 'AAAUSDT', 'cursor_complete': False, 'fill_qty': Decimal(1)}]
+    complete = [dict(pending[0], cursor_complete=True)]
+    db = type('DB', (), {'fetch_all': AsyncMock(side_effect=[pending, complete, []])})()
+    sleep = AsyncMock()
+    monkeypatch.setattr(trial.asyncio, 'sleep', sleep)
+
+    assert await trial._read_lot_candidates(db, 'default', 'hrs', ['AAAUSDT'], 123) == complete
+    assert db.fetch_all.await_args_list[0] == db.fetch_all.await_args_list[1]
+    sleep.assert_awaited_once()
+
+    assert await trial._read_lot_candidates(db, 'default', 'hrs', ['AAAUSDT'], 456) == []
+    assert sleep.await_count == 1

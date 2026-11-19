@@ -6,6 +6,7 @@ translate missing evidence into a zero-valued performance observation.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 import json
@@ -218,6 +219,21 @@ WHERE r.account_id=$1 AND r.strategy_id=$2 AND r.symbol=ANY($3::text[])
 GROUP BY r.account_id,r.symbol,r.margin,r.quantity,r.created_at,r.client_order_id,
          o.orig_qty,o.side,o.executed_qty,o.order_id
 """
+
+
+async def _read_lot_candidates(db, account, strategy, symbols, cutoff_ms):
+    args = (_COVERED_RESERVATIONS_SQL, account, strategy, symbols, cutoff_ms)
+    rows = await db.fetch_all(*args)
+    if (len(rows) == len(symbols) and {row["symbol"] for row in rows} == set(symbols)
+            and all(row["fill_qty"] is not None for row in rows)
+            and any(row["cursor_complete"] is False for row in rows)):
+        # The independent minute collector may trail the signed position
+        # response. Retry the fixed cutoff without reading a newer position.
+        await asyncio.sleep(55)
+        rows = await db.fetch_all(*args)
+    return rows
+
+
 # Closed legacy records can leave a zero-quantity placeholder. In that case
 # the exact reservation, signed order and its full fills can prove the identity.
 _AGGRESSIVE_SIGNALS_SQL = """SELECT count(*) AS real_signals,
@@ -371,8 +387,8 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             if result.get("ownership_complete") is True:
                 try:
                     symbols = sorted(set(result["owned_positions"]))
-                    candidates = await db.fetch_all(
-                        _COVERED_RESERVATIONS_SQL, account, strategy, symbols, position_as_of_ms
+                    candidates = await _read_lot_candidates(
+                        db, account, strategy, symbols, position_as_of_ms
                     ) if symbols else []
                     budget = covered_reservation_budget(positions, owned, candidates)
                     result["intact_lot_reserved_budget_usdt"] = budget
