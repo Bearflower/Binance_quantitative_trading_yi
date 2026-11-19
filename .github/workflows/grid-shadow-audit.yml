@@ -1,0 +1,104 @@
+name: Grid shadow read-only audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      days:
+        description: Completed Beijing calendar days to inspect
+        type: choice
+        options: ['1', '3']
+        default: '3'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Calculate completed Beijing window
+        id: window
+        env:
+          AUDIT_DAYS: ${{ inputs.days }}
+        run: |
+          python3 - <<'PY'
+          import os
+          from datetime import datetime, timedelta
+          from zoneinfo import ZoneInfo
+
+          days = int(os.environ["AUDIT_DAYS"])
+          if days not in (1, 3):
+              raise ValueError("audit days must be 1 or 3")
+          now = datetime.now(ZoneInfo("Asia/Shanghai"))
+          end = now.replace(hour=0, minute=0, second=0, microsecond=0)
+          start = end - timedelta(days=days)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"start_ms={int(start.timestamp() * 1000)}\n")
+              output.write(f"end_ms={int(end.timestamp() * 1000)}\n")
+          PY
+
+      - name: Inspect SQLite without touching trading services
+        env:
+          SERVER_SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+          START_MS: ${{ steps.window.outputs.start_ms }}
+          END_MS: ${{ steps.window.outputs.end_ms }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s' "$SERVER_SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          printf '%s\n' '43.156.242.184 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFNCPR4nqDmkewu2141YjcAEiP/PD+cBEXMZKWDcAlSu' > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<'SSH_CONFIG'
+          Host 43.156.242.184
+            StrictHostKeyChecking yes
+            HostKeyAlgorithms ssh-ed25519
+          SSH_CONFIG
+          chmod 600 ~/.ssh/known_hosts ~/.ssh/config
+          remote_dir="/root/trading_system/.deploy_tmp/grid-shadow-audit-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          cleanup() {
+            ssh -o BatchMode=yes root@43.156.242.184 "rm -rf -- '$remote_dir'" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          ssh -o BatchMode=yes root@43.156.242.184 "install -d -m 700 '$remote_dir/scripts' '$remote_dir/strategies/grid/realtime'"
+          scp scripts/audit_grid_shadow_window.py "root@43.156.242.184:$remote_dir/scripts/"
+          scp strategies/grid/realtime/queue_audit.py "root@43.156.242.184:$remote_dir/strategies/grid/realtime/"
+          set +e
+          ssh -o BatchMode=yes root@43.156.242.184 "python3 '$remote_dir/scripts/audit_grid_shadow_window.py' --grid-db /root/trading_system/data/grid/grid_realtime.sqlite3 --start-ms '$START_MS' --end-ms '$END_MS'" > raw-grid-shadow-report.json
+          audit_rc=$?
+          set -e
+          if [ "$audit_rc" -ne 0 ] && [ "$audit_rc" -ne 2 ]; then
+            exit "$audit_rc"
+          fi
+          python3 - <<'PY'
+          import json
+
+          report = json.load(open("raw-grid-shadow-report.json", encoding="utf-8"))
+          summary = {
+              "start_ms": report["shadow"]["start_ms"],
+              "end_ms": report["shadow"]["end_ms"],
+              "queue_window_eligible": report["queue"]["queue_window_eligible"],
+              "queue_gap_count": len(report["queue"]["gaps"]),
+              "overflow_count": report["queue"]["overflow_count"],
+              "numeric_reference_availability": report["shadow"]["numeric_reference_availability"],
+              "reference_target": report["reference_target"],
+              "reference_target_met": report["reference_target_met"],
+              "unobserved_ms": report["shadow"]["unobserved_ms"],
+              "market_evidence_available": report["market"] is not None,
+              "evidence_complete": report["evidence_complete"],
+              "formal_m3_eligible": report["formal_m3_eligible"],
+              "formal_m3_blockers": report["formal_m3_blockers"],
+          }
+          with open("grid-shadow-summary.json", "w", encoding="utf-8") as output:
+              json.dump(summary, output, ensure_ascii=False, indent=2)
+          print(json.dumps(summary, ensure_ascii=False))
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: grid-shadow-summary
+          path: grid-shadow-summary.json
+          if-no-files-found: error

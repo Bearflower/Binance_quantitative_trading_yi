@@ -92,14 +92,14 @@ def _read_only(path: str) -> sqlite3.Connection:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--grid-db", required=True)
-    parser.add_argument("--agg-db", required=True)
+    parser.add_argument("--agg-db", help="聚合成交库；缺省时仅报告队列和参考证据")
     parser.add_argument("--start-ms", required=True, type=int)
     parser.add_argument("--end-ms", required=True, type=int)
     parser.add_argument("--symbol", default="ETHUSDT")
     parser.add_argument("--max-gap-ms", type=int, default=5000)
     args = parser.parse_args(argv)
     grid = _read_only(args.grid_db)
-    agg = _read_only(args.agg_db)
+    agg = _read_only(args.agg_db) if args.agg_db else None
     try:
         queue = summarize_window(
             grid, start_ms=args.start_ms, end_ms=args.end_ms,
@@ -107,16 +107,20 @@ def main(argv=None) -> int:
         shadow = summarize_shadow_window(
             grid, start_ms=args.start_ms, end_ms=args.end_ms,
             max_gap_ms=args.max_gap_ms)
-        market = summarize_market_window(
-            agg, args.start_ms, args.end_ms, args.symbol)
+        market = (summarize_market_window(
+            agg, args.start_ms, args.end_ms, args.symbol) if agg else None)
     finally:
         grid.close()
-        agg.close()
+        if agg:
+            agg.close()
     result = {"queue": queue, "shadow": shadow, "market": market}
+    result["reference_target"] = 0.9
+    result["reference_target_met"] = (
+        shadow["numeric_reference_availability"] >= result["reference_target"])
     result["evidence_complete"] = (
         queue["queue_window_eligible"] and
         shadow["coverage_complete"] and
-        market["sample_coverage_complete"] and
+        market is not None and market["sample_coverage_complete"] and
         (market["raw_window_full"] or market["raw_history_attested"]))
     result["data_window_eligible"] = (
         result["evidence_complete"] and
@@ -124,6 +128,10 @@ def main(argv=None) -> int:
     result["formal_m3_eligible"] = False
     result["formal_m3_blockers"] = [
         "本报告不证明 shadow 边界审计、预注册目标冻结或独立验证段已通过"]
+    if market is None:
+        result["formal_m3_blockers"].append("缺少聚合成交库，行情和逐笔连续性未核")
+    if not result["reference_target_met"]:
+        result["formal_m3_blockers"].append("数值参考可用率低于 90% 产品目标")
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0 if result["evidence_complete"] else 2
 

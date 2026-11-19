@@ -22,6 +22,8 @@ on:
       - 'tests/**'
       - '.trae/**'
       - '*.md'
+      - 'scripts/audit_grid_shadow_window.py'
+      - '.github/workflows/grid-shadow-audit.yml'
   workflow_dispatch:
     inputs:
       deploy_mode:
