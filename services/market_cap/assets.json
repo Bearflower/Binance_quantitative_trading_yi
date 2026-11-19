@@ -941,10 +941,17 @@
       "https://www.coingecko.com/en/coins/akedo",
       "https://coinmarketcap.com/currencies/akedo/"
     ],
-    "cmc_enabled": false,
+    "cmc_enabled": true,
     "comparison": {
-      "status": "not_qualified",
-      "reason": "provider_supply_comparison_required"
+      "status": "qualified",
+      "at": "2026-11-19T00:39:28.132754Z",
+      "relative_difference": 0.001073903065380246,
+      "supply_relative_difference": 0.0,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 113,
+      "max_quote_timestamp_gap_seconds": 300,
+      "cg_body_sha256": "fe2a6ae7a30ed93ca6129e25bc7974902ab3b9c18fff564f6dfa50a5c588eb4c",
+      "cmc_body_sha256": "d818a5a29dc4bd0f499dd6ccaed016810c0fe3460be2d319038be2744ed5b7f1"
     }
   },
   "BLESSUSDT": {
@@ -1052,7 +1059,7 @@
   "LITUSDT": {
     "symbol": "LIT",
     "cg_id": "lighter",
-    "cmc_id": null,
+    "cmc_id": 39125,
     "name": "Lighter",
     "verified_at": "2026-11-18",
     "evidence": [
@@ -1060,30 +1067,46 @@
       "https://www.coingecko.com/en/coins/lighter",
       "https://api.coingecko.com/api/v3/coins/list",
       "https://fapi.binance.com/fapi/v1/exchangeInfo",
-      "https://www.binance.com/en-AE/support/announcement/detail/2a9feaa556f74dcdaa2192366f0e247c"
+      "https://www.binance.com/en-AE/support/announcement/detail/2a9feaa556f74dcdaa2192366f0e247c",
+      "https://coinmarketcap.com/currencies/lighter/"
     ],
-    "cmc_enabled": false,
+    "cmc_enabled": true,
     "comparison": {
-      "status": "not_qualified",
-      "reason": "provider_supply_comparison_required"
+      "status": "qualified",
+      "at": "2026-11-19T00:39:28.132754Z",
+      "relative_difference": 0.0010841586528880956,
+      "supply_relative_difference": 0.0,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 113,
+      "max_quote_timestamp_gap_seconds": 300,
+      "cg_body_sha256": "fe2a6ae7a30ed93ca6129e25bc7974902ab3b9c18fff564f6dfa50a5c588eb4c",
+      "cmc_body_sha256": "d818a5a29dc4bd0f499dd6ccaed016810c0fe3460be2d319038be2744ed5b7f1"
     }
   },
   "MMTUSDT": {
     "symbol": "MMT",
     "cg_id": "momentum-3",
-    "cmc_id": null,
+    "cmc_id": 38231,
     "name": "Momentum",
     "verified_at": "2026-11-18",
     "evidence": [
       "https://www.binance.com/en/support/announcement/detail/c18b1bfd706648189e9f7ac9097351cc",
       "https://www.coingecko.com/en/coins/momentum-2",
       "https://api.coingecko.com/api/v3/coins/list",
-      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://coinmarketcap.com/currencies/momentum-token/"
     ],
-    "cmc_enabled": false,
+    "cmc_enabled": true,
     "comparison": {
-      "status": "not_qualified",
-      "reason": "provider_supply_comparison_required"
+      "status": "qualified",
+      "at": "2026-11-19T00:39:28.132754Z",
+      "relative_difference": 1.1160015899867792e-05,
+      "supply_relative_difference": 0.0,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 113,
+      "max_quote_timestamp_gap_seconds": 300,
+      "cg_body_sha256": "fe2a6ae7a30ed93ca6129e25bc7974902ab3b9c18fff564f6dfa50a5c588eb4c",
+      "cmc_body_sha256": "d818a5a29dc4bd0f499dd6ccaed016810c0fe3460be2d319038be2744ed5b7f1"
     },
     "identity_notes": "CoinGecko web slug momentum-2 displays API ID momentum-3; API coins/list independently confirms id momentum-3, symbol mmt, name Momentum."
   },
@@ -1224,7 +1247,7 @@
   "PIPPINUSDT": {
     "symbol": "PIPPIN",
     "cg_id": "pippin",
-    "cmc_id": null,
+    "cmc_id": 35053,
     "name": "pippin",
     "verified_at": "2026-11-18",
     "evidence": [
@@ -1232,12 +1255,20 @@
       "https://www.coingecko.com/en/coins/pippin",
       "https://pippin.love/token.html",
       "https://api.coingecko.com/api/v3/coins/pippin",
-      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://coinmarketcap.com/currencies/pippin/"
     ],
-    "cmc_enabled": false,
+    "cmc_enabled": true,
     "comparison": {
-      "status": "not_qualified",
-      "reason": "provider_supply_comparison_required"
+      "status": "qualified",
+      "at": "2026-11-19T00:39:28.132754Z",
+      "relative_difference": 0.00041031711615087385,
+      "supply_relative_difference": 6.932873968272128e-05,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 113,
+      "max_quote_timestamp_gap_seconds": 300,
+      "cg_body_sha256": "fe2a6ae7a30ed93ca6129e25bc7974902ab3b9c18fff564f6dfa50a5c588eb4c",
+      "cmc_body_sha256": "d818a5a29dc4bd0f499dd6ccaed016810c0fe3460be2d319038be2744ed5b7f1"
     },
     "contracts": {
       "solana": "Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump"
