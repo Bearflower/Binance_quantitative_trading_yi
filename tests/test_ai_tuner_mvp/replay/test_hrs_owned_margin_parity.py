@@ -326,3 +326,81 @@ def test_original_contract_malformed_derived_risk_is_data_blocked(tmp_path,field
             else:row['risk']['account_occupancy']=None
     portal=reseal_dataset(portal,'hrs_decision_inputs.jsonl',corrupt)
     with pytest.raises(DataBlocked):portal.hrs_inputs('A',AT+timedelta(hours=1),decision_at=AT+timedelta(hours=1))
+
+
+def legacy_boundary_fixture(tmp_path):
+    import json
+    from .test_hrs_wiring import _hrs_fixture,AT
+    from .test_hrs_replay_review import refreeze
+    from tests.test_ai_tuner_mvp.test_hrs_evidence_export import envelope
+    from ai_tuner.hrs_evidence_export import resolve_scan_start
+    portal,adapter,_=_hrs_fixture(tmp_path)
+    records=[envelope('opening','scan_start',{'fixture':True},AT),envelope('opening','scan_end',{'status':'complete'},AT)]
+    boundary=resolve_scan_start(records,AT,portal.as_of,dict(version='first_scan_start_v1',max_delay_seconds=3600))
+    portal=refreeze(portal,{'raw_hrs_evidence.json':json.dumps(dict(decision_evidence=records)),
+        'hrs_export_receipt.json':json.dumps(dict(boundary_resolution=boundary))})
+    return portal,adapter
+
+
+def test_boundary_only_legacy_source_preserves_existing_raw_replay(tmp_path):
+    portal,adapter=legacy_boundary_fixture(tmp_path)
+    assert run_replay(portal,adapter,broker()).final_position is not None
+
+
+@pytest.mark.parametrize('target',['bootstrap','risk'])
+@pytest.mark.parametrize('contract',['owned_policy','owned_scope','floor_without_sources','slot_scope'])
+def test_boundary_only_legacy_source_cannot_authorize_a_new_financial_contract(tmp_path,target,contract):
+    import json
+    from datetime import timedelta
+    from .test_hrs_wiring import AT
+    from .test_hrs_replay_review import refreeze,jsonl
+    from ai_tuner.replay.models import DataBlocked
+    from strategies.hrs.risk_budget import FLOOR
+    from strategies.hrs.entry_occupancy import SLOT_SCOPE
+    portal,adapter=legacy_boundary_fixture(tmp_path)
+    name='hrs_replay_state.json' if target=='bootstrap' else 'hrs_decision_inputs.jsonl'
+    values=json.loads((portal.snapshot_dir/name).read_text()) if target=='bootstrap' else [json.loads(line) for line in (portal.snapshot_dir/name).read_text().splitlines()]
+    for obj in [values] if target=='bootstrap' else [row['risk'] for row in values]:
+        if contract=='owned_policy':obj['entry_policy']['reason']=json.dumps(dict(hrs_risk_budget_version=FLOOR,hrs_margin_scope=HRS_OWNED))
+        elif contract=='owned_scope':obj['hrs_margin_scope']=HRS_OWNED
+        elif contract=='floor_without_sources':obj['entry_policy']['reason']=json.dumps(dict(hrs_risk_budget_version=FLOOR))
+        elif target=='bootstrap':obj['runtime_slot_scope']=SLOT_SCOPE
+        else:obj['account_occupancy'].update(version='hrs_account_occupancy_v2',slot_scope=SLOT_SCOPE)
+    portal=refreeze(portal,{name:json.dumps(values) if target=='bootstrap' else jsonl(values)})
+    with pytest.raises(DataBlocked):
+        if target=='bootstrap':run_replay(portal,adapter,broker())
+        else:portal.hrs_inputs('A',AT+timedelta(hours=1),decision_at=AT+timedelta(hours=1))
+
+
+def test_formal_export_missing_original_finance_does_not_get_boundary_legacy_fallback(tmp_path):
+    import json
+    from .test_hrs_replay_review import refreeze
+    from ai_tuner.hrs_evidence_export import VERSION
+    from ai_tuner.replay.models import DataBlocked
+    portal,adapter=legacy_boundary_fixture(tmp_path)
+    receipt=json.loads((portal.snapshot_dir/'hrs_export_receipt.json').read_text());receipt['version']=VERSION
+    portal=refreeze(portal,{'hrs_export_receipt.json':json.dumps(receipt)})
+    with pytest.raises(DataBlocked):run_replay(portal,adapter,broker())
+
+
+@pytest.mark.parametrize('source_change',['direct_policy','end_finance','null_finance','missing_boundary_clock','unknown_version'])
+def test_boundary_legacy_fallback_rejects_financial_or_malformed_original_metadata(tmp_path,source_change):
+    import json
+    from .test_hrs_replay_review import refreeze
+    from strategies.hrs.decision_capture import canonical_payload
+    from strategies.hrs.risk_budget import FLOOR
+    from ai_tuner.replay.models import DataBlocked
+    portal,adapter=legacy_boundary_fixture(tmp_path)
+    raw=json.loads((portal.snapshot_dir/'raw_hrs_evidence.json').read_text())
+    receipt=json.loads((portal.snapshot_dir/'hrs_export_receipt.json').read_text())
+    policy=dict(reason=json.dumps(dict(hrs_risk_budget_version=FLOOR,hrs_margin_scope=HRS_OWNED)))
+    if source_change=='direct_policy':raw['decision_evidence'][0]['payload']['entry_policy']=policy
+    elif source_change=='end_finance':raw['decision_evidence'][1]['payload']['state']=dict(financial_context=dict(entry_policy=policy))
+    elif source_change=='null_finance':raw['decision_evidence'][0]['payload']['financial_context']=None
+    elif source_change=='missing_boundary_clock':receipt['boundary_resolution'].pop('actual_start')
+    elif source_change=='unknown_version':receipt['version']='future-finance'
+    for row in raw['decision_evidence']:row['payload_sha256']=canonical_payload(row['payload'])[1]
+    # Keep the boundary record identity coherent while testing the source shape.
+    receipt['boundary_resolution']['selected_payload_sha256']=raw['decision_evidence'][0]['payload_sha256']
+    portal=refreeze(portal,{'raw_hrs_evidence.json':json.dumps(raw),'hrs_export_receipt.json':json.dumps(receipt)})
+    with pytest.raises(DataBlocked):run_replay(portal,adapter,broker())

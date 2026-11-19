@@ -654,6 +654,44 @@ def _original_analysis_scan(records,symbol,decision_at,checked_at):
     return analysis,starts[0]
 
 
+def _legacy_boundary_only_source(portal,records):
+    """Recognize pre-finance boundary metadata, never a formal financial export."""
+    cached=getattr(portal,'_hrs_legacy_boundary_source',None)
+    if cached is not None and cached[0] is records:return cached[1]
+    result=False
+    if not isinstance(records,_ArchiveFamily) and 'hrs_export_receipt.json' in portal.manifest['files']:
+        receipt=portal._read_json('hrs_export_receipt.json')
+        financial_keys={'financial_context','entry_policy','hrs_margin_scope','runtime_slot_scope',
+            'slot_scope','slot_inputs','hrs_slot_inputs','account_available_balance','account_cash_observed_at'}
+        def boundary_record(row):
+            payload=row['payload']
+            if not isinstance(payload,dict):return False
+            if row['kind']=='scan_start':return not financial_keys.intersection(payload)
+            return row['kind']=='scan_end' and set(payload)=={'status'} and payload['status']=='complete'
+        if (isinstance(receipt,dict) and set(receipt)=={'boundary_resolution'}
+                and records and all(boundary_record(row) for row in records)):
+            opening=_original_opening_scan(portal,records)
+            boundary=receipt['boundary_resolution']
+            result=(isinstance(boundary,dict) and boundary.get('selected_evidence_id')==opening['evidence_id']
+                and boundary.get('selected_payload_sha256')==opening['payload_sha256']
+                and boundary.get('actual_start')==_iso(_time(portal.window_start)))
+    portal._hrs_legacy_boundary_source=(records,result)
+    return result
+
+
+def _require_legacy_boundary_contract(financial,*,occupancy=None):
+    from strategies.hrs.margin_budget import ALL_ACCOUNT
+    from strategies.hrs.risk_budget import STRICT,policy_budget_version
+    _require(_original_scope(financial)==ALL_ACCOUNT
+        and financial.get('hrs_margin_scope',ALL_ACCOUNT)==ALL_ACCOUNT
+        and financial.get('runtime_slot_scope') is None
+        and policy_budget_version(financial['entry_policy'])==STRICT,
+        'hrs_margin_raw_source_legacy_boundary_contract_invalid')
+    if occupancy is not None:
+        _require(occupancy.get('version')=='hrs_account_occupancy_v1' and 'slot_scope' not in occupancy,
+            'hrs_margin_raw_source_legacy_boundary_contract_invalid')
+
+
 def verify_bootstrap_source_contract(portal,raw):
     """Original opening scan chooses the contract before any legacy branch."""
     from strategies.hrs.margin_budget import ALL_ACCOUNT,HRS_OWNED
@@ -663,7 +701,11 @@ def verify_bootstrap_source_contract(portal,raw):
             'hrs_original_evidence_missing')
         return
     source=_original_opening_scan(portal,records)
-    financial=source['payload']['financial_context']
+    financial=source['payload'].get('financial_context')
+    if financial is None and _legacy_boundary_only_source(portal,records):
+        _require_legacy_boundary_contract(raw)
+        return
+    _require(isinstance(financial,dict),'hrs_bootstrap_margin_raw_source_financial_missing')
     scope=_original_scope(financial)
     _require(_original_scope(raw)==scope and raw.get('runtime_slot_scope')==financial.get('runtime_slot_scope'),
         'hrs_bootstrap_margin_raw_source_scope_mismatch')
@@ -702,8 +744,12 @@ def verify_runtime_slot_occupancy(portal,raw,checked_at):
     _require(isinstance(occupancy,dict),'hrs_margin_raw_source_occupancy_invalid')
     records=_original_records(portal)
     _require(records is not None,'hrs_original_evidence_missing')
+    if _legacy_boundary_only_source(portal,records):
+        _require_legacy_boundary_contract(risk,occupancy=occupancy)
+        return
     analysis,start=_original_analysis_scan(records,raw['symbol'],_time(raw['decision_at']),checked_at)
-    financial=start['payload']['financial_context']
+    financial=start['payload'].get('financial_context')
+    _require(isinstance(financial,dict),'hrs_margin_raw_source_financial_missing')
     scope=_original_scope(financial)
     _require(_original_scope(raw.get('risk',{}))==scope,'hrs_margin_raw_source_scope_mismatch')
     required=scope==HRS_OWNED or financial.get('runtime_slot_scope') is not None
