@@ -104,6 +104,51 @@ def pending_margin(rows, *, account=None):
         return sum(amounts,Decimal(0))
 
 
+def margin_component_limits(financial, allocation, policy, *, account_positions,
+        hrs_positions, hrs_pending, account_pending):
+    """Exact arithmetic after the caller establishes its inventory partition.
+
+    Live callers prove actual economic ownership first. Replay callers keep
+    the captured foreign partition and substitute their modeled HRS portfolio.
+    This function creates no ownership evidence and never changes cash for PnL.
+    """
+    if policy_margin_scope(policy)!=HRS_OWNED or financial.get('hrs_margin_scope')!=HRS_OWNED:
+        raise ValueError('hrs_margin_scope_mismatch')
+    values=[exact(allocation),validate_cash_fields(financial),exact(financial['account_equity']),
+        exact(financial['effective_allocation'])]+[exact(policy[k]) for k in ('multiplier','ratio_cap','entry_ceiling')]
+    def terms(rows, *, collect=False):
+        result=[]
+        for row in rows:
+            raw=row['positionAmt']
+            if isinstance(raw,bool) or not isinstance(raw,(str,int,Decimal)):
+                raise ValueError('hrs_margin_inventory_invalid')
+            qty=exact(Decimal(raw).copy_abs(),zero=True)
+            if collect:values.append(qty)
+            if qty:
+                term=(qty,exact(row['markPrice']),exact(row['leverage']))
+                if collect:values.extend(term[1:])
+                result.append(term)
+        return result
+    # Each actual/modelled account position contributes once to the precision
+    # basis, preserving the established live margin_limits rounding contract.
+    account_terms,owned_terms=terms(account_positions,collect=True),terms(hrs_positions)
+    values.extend(exact(row['margin']) for row in list(hrs_pending)+list(account_pending))
+    with localcontext() as context:
+        context.prec=_precision(values)
+        account_margin=sum((q*p/l for q,p,l in account_terms),Decimal(0))
+        owned_margin=sum((q*p/l for q,p,l in owned_terms),Decimal(0))
+        reserved=pending_margin(hrs_pending,account=financial.get('account_id'))
+        account_reserved=pending_margin(account_pending,account=financial.get('account_id'))
+        cap=min(exact(allocation)*exact(policy['multiplier']),exact(financial['effective_allocation']),
+            exact(financial['account_equity'])*exact(policy['ratio_cap']),exact(policy['entry_ceiling']))
+        quota_remaining=cap-owned_margin-reserved
+        cash_remaining=validate_cash_fields(financial)-account_reserved
+        return dict(account_margin=account_margin,hrs_owned_margin=owned_margin,
+            reserved_margin=reserved,margin_cap=cap,hrs_quota_remaining_margin=quota_remaining,
+            account_available_balance=validate_cash_fields(financial),account_reserved_margin=account_reserved,
+            account_remaining_margin=cash_remaining,remaining_margin=min(quota_remaining,cash_remaining))
+
+
 def _margin_limits(financial, proof, pending, account_pending, allocation, policy):
     """Named Decimal ceilings; remaining_margin is the shared assessor ceiling.
 
@@ -113,10 +158,10 @@ def _margin_limits(financial, proof, pending, account_pending, allocation, polic
     """
     if policy_margin_scope(policy) != HRS_OWNED or financial.get('hrs_margin_scope') != HRS_OWNED:
         raise ValueError('hrs_margin_scope_mismatch')
-    available = validate_cash_fields(financial)
+    validate_cash_fields(financial)
     inventory = financial['slot_inputs']['inventory']
     owners = proof['owners']
-    seen, account_margin, owned_margin = set(), Decimal(0), Decimal(0)
+    seen = set()
     for row in inventory:
         raw = row['positionAmt']
         if isinstance(raw, bool) or not isinstance(raw, (str, int, Decimal)):
@@ -128,29 +173,20 @@ def _margin_limits(financial, proof, pending, account_pending, allocation, polic
         if symbol in seen or not isinstance(owners.get(symbol), str) or not owners[symbol]:
             raise ValueError('hrs_margin_owner_unknown')
         seen.add(symbol)
-        margin = qty * exact(row['markPrice']) / exact(row['leverage'])
-        account_margin += margin
-        if owners[symbol] == 'hrs':
-            owned_margin += margin
     if (seen != set(owners) or proof['account_symbols'] != sorted(seen)
             or proof['hrs_symbols'] != sorted(s for s in seen if owners[s] == 'hrs')):
         raise ValueError('hrs_margin_owner_partition_invalid')
-    reserved = pending_margin(pending, account=financial.get('account_id'))
-    account_reserved = pending_margin(account_pending, account=financial.get('account_id'))
+    pending_margin(pending, account=financial.get('account_id'))
+    pending_margin(account_pending, account=financial.get('account_id'))
     if any(row['strategy_id'] != 'hrs' for row in pending):
         raise ValueError('hrs_margin_pending_scope_invalid')
     own = {row['client_order_id']:dict(row) for row in pending}
     all_own = {row['client_order_id']:dict(row) for row in account_pending if row['strategy_id']=='hrs'}
     if own != all_own:
         raise ValueError('hrs_margin_pending_sources_mismatch')
-    cap = min(exact(allocation)*exact(policy['multiplier']), exact(financial['effective_allocation']),
-              exact(financial['account_equity'])*exact(policy['ratio_cap']), exact(policy['entry_ceiling']))
-    quota_remaining = cap - owned_margin - reserved
-    cash_remaining = available - account_reserved
-    return dict(account_margin=account_margin, hrs_owned_margin=owned_margin,
-        reserved_margin=reserved, margin_cap=cap, hrs_quota_remaining_margin=quota_remaining,
-        account_available_balance=available, account_reserved_margin=account_reserved,
-        account_remaining_margin=cash_remaining, remaining_margin=min(quota_remaining, cash_remaining))
+    return margin_component_limits(financial,allocation,policy,account_positions=inventory,
+        hrs_positions=[row for row in inventory if owners.get(row['symbol'])=='hrs'],
+        hrs_pending=pending,account_pending=account_pending)
 
 
 def margin_limits(financial, proof, pending, account_pending, allocation, policy):

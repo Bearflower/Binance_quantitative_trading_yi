@@ -82,7 +82,8 @@ def test_owned_quota_retains_modeled_hrs_pending_margin(tmp_path):
     assert adapter._reservation_denial('A',decision.quantity,D(100),ctx,now,raw['risk'],D('26.18'),decision=decision)=='minimum_order_exceeds_margin'
 
 
-def test_independent_reservation_cash_overrides_scan_cash_and_raw_projection_is_verified(tmp_path):
+@pytest.mark.parametrize('locked_pending',[False,True])
+def test_independent_reservation_cash_overrides_scan_cash_and_raw_projection_is_verified(tmp_path,locked_pending):
     import copy,json
     from .test_hrs_replay_review import refreeze,jsonl
     from strategies.hrs.decision_capture import canonical_payload
@@ -94,12 +95,18 @@ def test_independent_reservation_cash_overrides_scan_cash_and_raw_projection_is_
             if stage is None:continue
             stage['payload'].update(stage='reservation_inventory',slot_scope=financial['runtime_slot_scope'],slot_inputs=copy.deepcopy(financial['hrs_slot_inputs']),
                 **{k:financial[k] for k in ('hrs_margin_scope','account_available_balance_source','account_status','account_cash_observed_at')})
-            stage['payload']['account_available_balance']='1'
+            stage['payload']['account_available_balance']='448.86' if locked_pending else '1'
             stage['payload_sha256']=canonical_payload(stage['payload'])[1]
+            locked=copy.deepcopy(stage)
+            locked['evidence_id']+='-lock'
+            pending=[dict(client_order_id='late-foreign',account_id='test',strategy_id='grid',state='reserved',margin='448')] if locked_pending else []
+            locked['payload']=dict(stage='reservation_denial',risk_context=dict(financial['equity_gate'],ownership_claims=copy.deepcopy(financial['ownership_claims']),account_pending_reservations=pending))
+            locked['payload_sha256']=canonical_payload(locked['payload'])[1]
+            sources['decision_evidence'].append(locked)
     portal,adapter=owned_fixture(tmp_path,source_transform=receipt)
     assert run_replay(portal,adapter,broker()).final_position is None
     inputs=[json.loads(line) for line in (portal.snapshot_dir/'hrs_decision_inputs.jsonl').read_text().splitlines()]
-    for row in inputs:row['risk']['account_available_balance']='448.86'
+    for row in inputs:row['risk']['account_available_balance']='999999'
     from ai_tuner.replay.data_portal import DataPortal,compute_manifest_envelope_sha256,compute_manifest_sha256,sha256_file
     path=portal.snapshot_dir/'hrs_decision_inputs.jsonl';path.write_text(jsonl(inputs))
     manifest_path=portal.snapshot_dir/'manifest.json';manifest=json.loads(manifest_path.read_text())
@@ -126,3 +133,71 @@ def test_bootstrap_margin_projection_requires_original_receipt(tmp_path,field,va
     changed=DataPortal(portal.snapshot_dir,'hrs',portal.as_of,portal.window_start)
     with pytest.raises(DataBlocked,match='bootstrap_margin_raw_source'):
         run_replay(changed,adapter,broker())
+
+
+def test_owned_cash_tiny_shortfall_is_not_rounded_up(tmp_path):
+    from copy import deepcopy
+    from datetime import timedelta
+    from .test_hrs_wiring import AT
+    portal,adapter=owned_fixture(tmp_path)
+    ctx=adapter.prepare(portal);ctx.portfolio=broker().view();adapter._bootstrap(ctx)
+    now=AT+timedelta(hours=1);risk=deepcopy(portal.hrs_inputs('A',now,decision_at=now)['risk'])
+    risk['account_available_balance']='1000000000000000000002.499999999999999999999999999999999999'
+    risk['account_pending_reservations']=[dict(client_order_id='foreign',account_id='test',strategy_id='grid',state='reserved',margin='1000000000000000000000')]
+    assert adapter._reservation_denial('A',D('.05'),D(100),ctx,now,risk,D('26.18'))=='entry_ceiling_includes_account_and_durable_reservations'
+
+
+def test_later_success_receipt_pending_supersedes_scan_pending(tmp_path):
+    import copy
+    from tests.test_ai_tuner_mvp.test_hrs_evidence_export import envelope
+    from strategies.hrs.entry_occupancy import prove_hrs_slot_ownership
+    from ai_tuner.replay.models import parse_utc
+    def locked(sources):
+        for row in list(sources['decision_evidence']):
+            if row['kind']!='scan_start' or row['run_id']=='bootstrap':continue
+            f=row['payload']['financial_context'];at=parse_utc(row['available_at'])
+            parent=next(p for p in sources['equity_evidence'] if p['evidence_sha256']==f['equity_gate']['evidence_sha256'])
+            proof=prove_hrs_slot_ownership('test',parent,f['hrs_slot_inputs'],f['ownership_claims'],checked_at=at,margin_scope=HRS_OWNED)
+            context=dict(f['equity_gate'],ownership_claims=f['ownership_claims'],account_pending_reservations=[dict(client_order_id='later-foreign',account_id='test',strategy_id='grid',state='reserved',margin='448.86')])
+            sources['decision_evidence'].append(envelope(row['run_id'],'entry_stage_inputs',dict(stage='reservation_success',slot_context=context,budget_context=copy.deepcopy(context),slot_occupancy_proof=proof),at,'A'))
+    portal,adapter=owned_fixture(tmp_path,source_transform=locked)
+    result=run_replay(portal,adapter,broker())
+    assert result.final_position is None
+    from .test_hrs_wiring import AT
+    from datetime import timedelta
+    risk=portal.hrs_inputs('A',AT+timedelta(hours=1),decision_at=AT+timedelta(hours=1))['risk']
+    assert risk['account_pending_reservations'][0]['client_order_id']=='later-foreign'
+    assert risk['account_pending_source_evidence_id']!=risk['account_occupancy']['slot_source_evidence_id']
+
+
+def test_new_inventory_cash_without_original_locked_pending_is_blocked(tmp_path):
+    import copy
+    from strategies.hrs.decision_capture import canonical_payload
+    def missing(sources):
+        for row in sources['decision_evidence']:
+            if row['kind']!='scan_start':continue
+            f=row['payload']['financial_context']
+            stage=next((s for s in sources['decision_evidence'] if s['run_id']==row['run_id'] and s['kind']=='entry_stage_inputs'),None)
+            if stage is None:continue
+            stage['payload'].update(stage='reservation_inventory',slot_scope=f['runtime_slot_scope'],slot_inputs=copy.deepcopy(f['hrs_slot_inputs']),
+                **{k:f[k] for k in ('hrs_margin_scope','account_available_balance','account_available_balance_source','account_status','account_cash_observed_at')})
+            stage['payload_sha256']=canonical_payload(stage['payload'])[1]
+    result=owned_fixture(tmp_path,source_transform=missing,export_result=True)
+    assert result.get('decision')=='BLOCKED_DATA'
+    assert 'hrs_account_pending_locked_source_missing' in result['gaps']
+
+
+def test_bootstrap_uses_original_cash_and_inventory_completion_clocks(tmp_path):
+    from datetime import timedelta
+    from .test_hrs_wiring import AT
+    from strategies.hrs.decision_capture import canonical_payload
+    def clocks(sources):
+        row=next(r for r in sources['decision_evidence'] if r['run_id']=='bootstrap' and r['kind']=='scan_start')
+        f=row['payload']['financial_context']
+        f['account_cash_observed_at']=(AT+timedelta(seconds=1)).isoformat()
+        f['hrs_slot_inputs']['observed_at']=(AT+timedelta(seconds=2)).isoformat()
+        f['available_at']=row['available_at']=(AT+timedelta(seconds=3)).isoformat()
+        f['equity_gate']['checked_at']=(AT+timedelta(seconds=3)).isoformat()
+        row['payload_sha256']=canonical_payload(row['payload'])[1]
+    portal,adapter=owned_fixture(tmp_path,source_transform=clocks)
+    assert run_replay(portal,adapter,broker()).final_position is not None

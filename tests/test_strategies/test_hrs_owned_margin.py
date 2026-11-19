@@ -72,3 +72,15 @@ def test_cash_subtraction_preserves_small_real_shortfall_without_decimal_cancell
     result=margin_limits(f,p,[],[foreign],D(60),policy)
     assert result['remaining_margin']<D(1)
     assert result['account_reserved_margin']==D(foreign['margin'])
+
+
+def test_shared_component_extraction_preserves_live_nonterminating_division_precision():
+    from strategies.hrs.margin_budget import margin_limits
+    f,p,policy=sources()
+    f.update(account_equity='100',effective_allocation='100',account_available_balance='100')
+    policy.update(multiplier='1',ratio_cap='1',entry_ceiling='100')
+    f['slot_inputs']['inventory']=[dict(symbol='OWN',positionAmt='1',markPrice='1',leverage='3')]
+    p.update(owners={'OWN':'hrs'},account_symbols=['OWN'],hrs_symbols=['OWN'])
+    result=margin_limits(f,p,[],[],D(100),policy)
+    assert result['account_margin']==result['hrs_owned_margin']==D('0.33333333333333333333333333333333333333')
+    assert result['remaining_margin']==D('99.666666666666666666666666666666666667')

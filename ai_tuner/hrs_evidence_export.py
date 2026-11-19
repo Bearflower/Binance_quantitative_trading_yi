@@ -434,7 +434,7 @@ def _flat_unchanged_proof(equities,state_at,boundary,records):
     return proof,anchors[0]
 
 
-def _margin_inputs(financial, source, *, checked_at, observed_at):
+def _margin_inputs(financial, source, *, checked_at, observed_at, pending_context=None, pending_source_id=None, require_locked_pending=False):
     """Project actual captured cash and the original all-account retained inventory."""
     from strategies.hrs.margin_budget import (HRS_OWNED, policy_margin_scope,
         validate_cash_fields, validate_cash_observation, pending_margin)
@@ -444,11 +444,13 @@ def _margin_inputs(financial, source, *, checked_at, observed_at):
         'hrs_margin_scope_mismatch')
     validate_cash_fields(source)
     validate_cash_observation(source,checked_at=checked_at,observed_at=observed_at)
-    rows=financial['account_pending_reservations']
+    _require(not require_locked_pending or pending_context is not None,'hrs_account_pending_locked_source_missing')
+    rows=(pending_context if pending_context is not None else financial)['account_pending_reservations']
     _require(isinstance(rows,list) and all(row.get('state') in ('reserved','submitting','released') for row in rows),
         'hrs_account_pending_invalid')
     pending_margin([row for row in rows if row['state']!='released'],account=financial['entry_policy']['account_id'])
     return dict(hrs_margin_scope=scope,account_pending_reservations=copy.deepcopy(rows),
+        account_pending_source_evidence_id=pending_source_id,
         **{key:copy.deepcopy(source[key]) for key in ('account_available_balance',
             'account_available_balance_source','account_status','account_cash_observed_at')})
 
@@ -486,7 +488,8 @@ def _bootstrap(snapshot,start,equities,checkpoints,records,execution_model,monit
         from strategies.hrs.entry_occupancy import SLOT_SCOPE
         _require(financial['runtime_slot_scope']==SLOT_SCOPE,'hrs_slot_scope_unknown')
         result['runtime_slot_scope']=SLOT_SCOPE
-    margin=_margin_inputs(financial,financial,checked_at=available,observed_at=_time(financial['hrs_slot_inputs']['observed_at']) if financial.get('hrs_slot_inputs') else available)
+    margin=_margin_inputs(financial,financial,checked_at=available,observed_at=_time(financial['hrs_slot_inputs']['observed_at']) if financial.get('hrs_slot_inputs') else available,
+        pending_source_id=snapshot['_source_evidence_id'])
     result.update(margin)
     if margin:
         result['bootstrap_source_evidence_id']=snapshot['_source_evidence_id']
@@ -576,6 +579,12 @@ def _slot_gate_context(financial,stages,scan_start):
     proof=payload.get('slot_occupancy_proof');context=payload.get('slot_context')
     _require(isinstance(proof,dict) and isinstance(context,dict)
         and proof.get('equity_evidence_sha256')==context.get('evidence_sha256'),'hrs_slot_success_gate_identity_missing')
+    from strategies.hrs.margin_budget import HRS_OWNED,policy_margin_scope
+    if policy_margin_scope(financial['entry_policy'])==HRS_OWNED:
+        budget=payload.get('budget_context')
+        _require(isinstance(budget,dict) and isinstance(context.get('account_pending_reservations'),list)
+            and context['account_pending_reservations']==budget.get('account_pending_reservations'),
+            'hrs_account_pending_locked_context_mismatch')
     return context,row['evidence_id'],kind,proof
 
 
@@ -611,7 +620,7 @@ def verify_bootstrap_margin_inputs(portal,raw):
     _require(source['kind']=='scan_start','hrs_bootstrap_margin_raw_source_mismatch')
     financial=source['payload']['financial_context']
     projected=_margin_inputs(financial,financial,checked_at=checked,
-        observed_at=_time(financial['hrs_slot_inputs']['observed_at']))
+        observed_at=_time(financial['hrs_slot_inputs']['observed_at']),pending_source_id=source['evidence_id'])
     _require(projected and raw['entry_policy']==financial['entry_policy']
         and all(raw.get(k)==v for k,v in projected.items()),'hrs_bootstrap_margin_raw_source_mismatch')
     equities=(_EquityView(sources) if isinstance(sources,_ArchiveSources)
@@ -671,7 +680,9 @@ def verify_runtime_slot_occupancy(portal,raw,checked_at):
         source_evidence_id=slot['evidence_id'],claims_evidence_id=claim['evidence_id'],
         gate_context=context,gate_source_evidence_id=gate_source,gate_source_kind=gate_kind,captured_slot_proof=captured_proof)
     projected=_margin_inputs(financial,slot['payload'] if slot['kind']=='entry_stage_inputs' else financial,
-        checked_at=checked_at,observed_at=_time(inputs['observed_at']))
+        checked_at=checked_at,observed_at=_time(inputs['observed_at']),
+        pending_context=context if gate_kind!='financial_equity_gate' else None,
+        pending_source_id=gate_source,require_locked_pending=slot['kind']=='entry_stage_inputs')
     _require(all(raw['risk'].get(k)==v for k,v in projected.items()),'hrs_margin_raw_source_mismatch')
     _require(equity_canonical(expected)[1]==equity_canonical(occupancy)[1],'hrs_slot_raw_proof_mismatch')
 
@@ -852,7 +863,10 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
                     gate_context=context,gate_source_evidence_id=gate_source,gate_source_kind=gate_kind,captured_slot_proof=captured_proof)
             else:risk['account_occupancy']=_account_occupancy(inventory,snapshot,financial,occupancy_at,equities)
             risk.update(_margin_inputs(financial,inventory_stage['payload'] if inventory_stage else financial,
-                checked_at=event_available,observed_at=occupancy_at))
+                checked_at=event_available,observed_at=occupancy_at,
+                pending_context=context if scope is not None and gate_kind!='financial_equity_gate' else None,
+                pending_source_id=gate_source if scope is not None else starts[0]['evidence_id'],
+                require_locked_pending=inventory_stage is not None))
             _require(event_available<=end,'decision_inputs_after_window:'+run+':'+symbol)
             history=(dict(analysis_evidence_id=analysis['evidence_id'],analysis_payload_sha256=analysis['payload_sha256'])
                 if isinstance(records,_ArchiveFamily) else dict(analysis_klines_1h=payload['klines_1h'],analysis_klines_4h=payload['klines_4h']))
