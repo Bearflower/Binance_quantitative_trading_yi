@@ -19,6 +19,22 @@ def proposal(decision):
     return SizedEntry(decision.quantity,decision.quantity,D(100),D(10),decision.quantity*10,decision.worst_loss,decision.worst_loss,decision.exit_ratios),dict(hrs_risk_budget_version=FLOOR,hrs_budget_inputs=json.loads(json.dumps(decision.budget_inputs,default=str)),hrs_budget_decision=json.loads(json.dumps(asdict(decision),default=str)),hrs_budget_source='hrs_live_assessor_v1')
 
 
+@pytest.mark.asyncio
+async def test_raw_live_dataclass_survives_pg_context_replay_and_authorization(runtime,monkeypatch):
+    from shared.entry_risk_policy import entry_allowed, _validate_hrs_floor_context
+    r=runtime;snapshot=await enable(r);initial=plan();sized,geometry=proposal(initial)
+    # strategy.py passes the assessor's raw decision, not a pre-serialized dict.
+    geometry.update(hrs_budget_decision=initial,hrs_budget_inputs=initial.budget_inputs)
+    client=await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    row=await r.admin.fetchrow('SELECT * FROM trading.entry_risk_reservation WHERE client_order_id=$1',client)
+    saved=json.loads(row['geometry'])
+    assert isinstance(saved['hrs_budget_context']['planned_budget_decision'],dict)
+    decision=replace(r.store.reservation_audit['risk_decision'],client_order_id=client)
+    _validate_hrs_floor_context(saved,decision,row)
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
+    assert await entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=decision,quantity=decision.quantity)
+
+
 async def enable(r):
     await r.admin.execute("""INSERT INTO trading.strategy_risk_policy(account_id,strategy_id,revision,effective_at,expires_at,mode,allow_add,multiplier,ratio_cap,entry_ceiling,reason,created_at) SELECT account_id,strategy_id,2,effective_at,expires_at,mode,allow_add,multiplier,ratio_cap,entry_ceiling,$1,created_at FROM trading.strategy_risk_policy WHERE revision=1""",json.dumps({'hrs_risk_budget_version':FLOOR}))
     await r.admin.execute("UPDATE trading.strategy_risk_active SET revision=2")

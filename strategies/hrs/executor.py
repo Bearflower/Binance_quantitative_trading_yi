@@ -328,6 +328,22 @@ class TradingExecutor:
         actual_qty = self._format_quantity(Decimal(str(filled_qty)), step_size)
         return actual_qty, filled_qty, avg_price
 
+    async def _release_denied_hrs_entry(self, symbol, decision, denial):
+        """Record the precheck denial and clean up only its proven-unsent intent."""
+        from shared.entry_risk_policy import RiskPolicyStore
+        reason_code=denial.get('reason_code','entry_authorization_error')
+        try:
+            released=await RiskPolicyStore(self.db).release_hrs_precheck_denial(
+                symbol,decision,reason_code=reason_code)
+            logger.warning('HRS entry denied before leverage',symbol=symbol,
+                           stage='executor_precheck',reason_code=reason_code,
+                           reservation_released=released)
+        except Exception as exc:
+            # Cleanup failure keeps occupancy and never permits a transport call.
+            logger.error('HRS denied entry cleanup failed',symbol=symbol,
+                         stage='executor_precheck',reason_code=reason_code,
+                         error_type=type(exc).__name__)
+
     async def _submit_reserved_hrs_entry(self, symbol, side, quantity, price, decision):
         """Persist submitting before the only HRS new-risk exchange write."""
         from shared.entry_risk_policy import EntryDenied, RiskPolicyStore
@@ -375,8 +391,10 @@ class TradingExecutor:
         Returns:
             开仓执行结果（OpenResult）
         """
+        denial={}
         if not await entry_allowed(self, 'hrs', adding=False, stage='submit',
-                                   risk_decision=risk_decision, quantity=quantity):
+                                   risk_decision=risk_decision, quantity=quantity,denial=denial):
+            await self._release_denied_hrs_entry(symbol,risk_decision,denial)
             return _empty_fill_result(None)
         try:
             logger.info(
@@ -489,8 +507,10 @@ class TradingExecutor:
         Returns:
             开仓执行结果（OpenResult）
         """
+        denial={}
         if not await entry_allowed(self, 'hrs', adding=False, stage='submit',
-                                   risk_decision=risk_decision, quantity=quantity):
+                                   risk_decision=risk_decision, quantity=quantity,denial=denial):
+            await self._release_denied_hrs_entry(symbol,risk_decision,denial)
             return _empty_fill_result(None)
         try:
             logger.info(
