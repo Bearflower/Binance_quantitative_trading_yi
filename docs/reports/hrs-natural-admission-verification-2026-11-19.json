@@ -1,0 +1,177 @@
+{
+  "analysis_errors": [],
+  "batches": [
+    {
+      "eligible_universe_count": 518,
+      "evidence_id": "ebbe9c87fa66c45a9167704a5de0d5bc6450af2740524636f65c453de9df4db4",
+      "fresh_real_fraction": 0.9696969696969697,
+      "fresh_real_provider_count": 32,
+      "full_requested_inventory": true,
+      "quote_count": 33,
+      "raw_universe_count": 814,
+      "reasons": {
+        "asset_identity_unverified": 1,
+        "present": 32
+      },
+      "requested_count": 33,
+      "scope": "requested_scan_batch",
+      "sources": {
+        "cache_hit": 32,
+        "missing": 1
+      },
+      "universe_counts": {
+        "crypto": 518,
+        "inapplicable_tradfi": 243,
+        "metadata_unverified": 53
+      }
+    },
+    {
+      "eligible_universe_count": 518,
+      "evidence_id": "1bdb4f48fcf54cbf5c3df75a66ddac8c1d0fcff5d6715c46fb05879650917c7b",
+      "fresh_real_fraction": 1.0,
+      "fresh_real_provider_count": 26,
+      "full_requested_inventory": true,
+      "quote_count": 26,
+      "raw_universe_count": 814,
+      "reasons": {
+        "present": 26
+      },
+      "requested_count": 26,
+      "scope": "requested_scan_batch",
+      "sources": {
+        "cache_hit": 26
+      },
+      "universe_counts": {
+        "crypto": 518,
+        "inapplicable_tradfi": 243,
+        "metadata_unverified": 53
+      }
+    },
+    {
+      "eligible_universe_count": 518,
+      "evidence_id": "4e3b2ace1b81749b0e634e28bd3eb706277a4071666fe0909a45e60c4b3d493b",
+      "fresh_real_fraction": 1.0,
+      "fresh_real_provider_count": 21,
+      "full_requested_inventory": true,
+      "quote_count": 21,
+      "raw_universe_count": 814,
+      "reasons": {
+        "present": 21
+      },
+      "requested_count": 21,
+      "scope": "requested_scan_batch",
+      "sources": {
+        "cache_hit": 21
+      },
+      "universe_counts": {
+        "crypto": 518,
+        "inapplicable_tradfi": 243,
+        "metadata_unverified": 53
+      }
+    }
+  ],
+  "budget_audit": "/tmp/hrs-release-facde710-natural-budget-audit.json",
+  "clock_order": true,
+  "config_hash": "39e90a4d1b1cc526f42d14fb3248a9b292c0aa500a36e4df76159efda25fbb5e",
+  "end": [
+    {
+      "at": "2026-11-19T01:21:47.377175+00:00",
+      "status": "complete"
+    }
+  ],
+  "exact_parent_count": 2,
+  "financial_available_at": "2026-11-19T01:21:00.335569+00:00",
+  "financial_coherent": true,
+  "full_claims": [
+    {
+      "claim_state": "PENDING",
+      "id": 157,
+      "strategy": "btc_eth_aggressive",
+      "symbol": "BNBUSDT"
+    },
+    {
+      "claim_state": "PENDING",
+      "id": 167,
+      "strategy": "hrs",
+      "symbol": "WLDUSDT"
+    },
+    {
+      "claim_state": "PENDING",
+      "id": 170,
+      "strategy": "btc_eth_aggressive",
+      "symbol": "ETHUSDT"
+    }
+  ],
+  "gate_checked_at": "2026-11-19T01:21:00.334956+00:00",
+  "inventory_count": 1189,
+  "kline_closures_verified": 26,
+  "observed_at": "2026-11-19T01:21:00.301598+00:00",
+  "owner_proof": {
+    "account_id": "default",
+    "account_margin": "14.79930867951",
+    "account_symbols": [
+      "BNBUSDT",
+      "ETHUSDT",
+      "WLDUSDT"
+    ],
+    "as_of": "2026-11-19T01:19:55.189147+00:00",
+    "equity_evidence_sha256": "69da055a0fea3c111ea82297f645f3b0c9d4ead2a9b114ae526279f3aef04b94",
+    "hrs_symbols": [
+      "WLDUSDT"
+    ],
+    "inventory_sha256": "556f3e6b6436bdd0fc6eb4c25cd87e11b5d69cc6e13488eeb5e5b3184600bd43",
+    "observed_at": "2026-11-19T01:21:00.301598+00:00",
+    "owners": {
+      "BNBUSDT": "btc_eth_aggressive",
+      "ETHUSDT": "btc_eth_aggressive",
+      "WLDUSDT": "hrs"
+    },
+    "slot_scope": "hrs_owned_and_unreleased_reservations_v2",
+    "version": "hrs-slot-ownership-v1"
+  },
+  "performance_accepted": false,
+  "raw_artifact": "/tmp/hrs-release-facde710-natural-raw.json.gz",
+  "raw_count": 362,
+  "raw_equity_parent_integrity": true,
+  "raw_payload_envelope_integrity": true,
+  "release_sha": "facde71034e9d8ce8803d98e34acfabb871f44eb",
+  "run_id": "980461e2f7f14ead909232ffe2196100",
+  "scope": "hrs_owned_and_unreleased_reservations_v2",
+  "start": "2026-11-19T01:21:00.001828+00:00",
+  "root_independent_validation": {
+    "necessary_raw_payloads_verified": 362,
+    "repair_closures_rebuilt_with_actual_config": 26,
+    "raw_hashes_match": true,
+    "exact_equity_parent_hashes_match": true,
+    "raw_gzip_sha256": "05f0e2c78fe01c11080176300bc4beb54d98f81effd468336960c4d56cfab9e9"
+  },
+  "not_claimed": [
+    "Complete coverage of all518crypto or all814tickers",
+    "All five original problem symbols occurred in this new scan; onlyEVAA/PUMP/MMT did, while allfive were proven in earlier natural runs",
+    "Actual new entry or successful reservation; allfour candidates failed actual minimum_order_exceeds_risk_budget",
+    "24 consecutive complete hours or five eligible naturally closed lifecycles",
+    "Historical Aug-Sep counterfactual or SLTP parameter winner"
+  ],
+  "observed_entry_budget_outcomes": {
+    "candidate_count": 4,
+    "symbols": [
+      "EVAAUSDT",
+      "PIPPINUSDT",
+      "BLESSUSDT",
+      "MMTUSDT"
+    ],
+    "denial": "minimum_order_exceeds_risk_budget",
+    "risk_limit_USDT": "0.5236",
+    "effective_margin_allocation_USDT": "26.180",
+    "quantity_each": "0",
+    "new_reservation_events": 0,
+    "orders_artificially_created": false
+  },
+  "new_identity_gap": {
+    "symbol": "IRYSUSDT",
+    "captured_original_reason": "asset_identity_unverified",
+    "later_identity_fix_commit": "2b213530",
+    "historical_event_rewritten": false,
+    "qualified_secondary_enabled": false
+  }
+}

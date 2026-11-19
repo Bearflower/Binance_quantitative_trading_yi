@@ -6,11 +6,26 @@ id: Binance_quantitative_trading-20261118-hrs-admission-and-candle-provenance
 日期: 2026-11-18
 标签: [hrs, 风险预算, 仓位归属, K线, 因果回放, 部署]
 任务标识: hrs-followup-admission-data_2026-11-18
-状态: 工程修复与真实午夜已验证；市值可用性和绩效未全验收
+状态: 工程、真实午夜及当前市值已验证；持续与绩效未全验收
 审查: 已审查
 ---
 
 # HRS 槽位与原始来源修复
+
+
+最近核验：2026-11-19 09:50 CST，实盘4316920f，完整CI1447项通过。
+
+| 项目 | 本轮结果 |
+| --- | --- |
+| HRS槽位与预期告警 | 独立归属槽位、全账户保证金约束、INFO业务否决已部署；外部监控脚本本身未改 |
+| K线缺口 | 真实补取与完整4h聚合上线，9:21自然26/26闭包通过；旧五标的此前均有自然来源证明 |
+| 日亏3%/回撤6% | 真实新日午夜原点已形成，门禁ready/allowed；仍不是完整30天历史验收 |
+| 市值与认证 | 74身份注册、DemoKey常驻加载、36/36当前真实CG通过；4合格CMC备用启用，8个口径不合格继续禁用 |
+| SL/TP | 冻结退出计划与24候选离线框架已落地，缺合格窗口与样本，原参数保留 |
+| 8–9月完整对照 | 缺原始决策/市场快照，BLOCKED_DATA，不能声称改善收益 |
+| 持续效果 | 报告正常；0/24连续完整小时、0/5合格自然闭合，绩效未验收 |
+
+9:21的4个真实候选均被最小交易压力亏损超单笔预算拒绝（risk_limit0.5236USDT），没有新预留；本次最终数据发布后的10:21自然扫描尚未发生。以下保留实施与历史观察。
 
 旧入场预留将全账户 BNB/SOL/WLD 三个持仓与 HRS 未释放预留合并，与 HRS 三槽位上限比较；HRS 实际只持有 WLD。用户批准改为仅已证明归属 HRS 的持仓与其未释放预留占用 HRS 槽位，外仓继续计入全账户保证金约束，归属不明时拒绝。单笔 1%、组合 3%、禁止加仓及原 SL/TP 数值保持。这是明确的准入行为变更，不能声称经济等价。
 
@@ -24,10 +39,18 @@ ARIA/BTW/PUMP/EVAA/MMT 的不连续小时数组改为有限 GET 补真实小时�
 
 2026-11-19 00:00 CST 原始检查点已真实重建，00:01:13创建：equity31.889305060、units32.043698480、NAV0.9951817852706246036303359948。随后实际门禁ready/allowed；这是初始段保护，不是完整30天验收。跨午夜的独立人工实时观察中断过，使用原始持久记录核验，不宣称连续人工监控。
 
-最新发布 facde71034e9d8ce8803d98e34acfabb871f44eb 于2026-11-19 09:01:51 CST完成，[候选CI](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44432307179)1412测试通过。39源码、原只读配置、真实collector/writer与门禁初始化通过。后续6个缺失身份补齐后registry73；服务器CG仍429。独立CG/CMC原始配对时间相隔113秒，只有AKE/LIT/MMT/PIPPIN的市值和流通量差异都<=5%，已启用相应CMC备用；另8个数值口径不合格继续禁用。未注入CG DemoKey，不能把身份核验等同取数完全恢复，不能降低95%覆盖、延长过期数据或回写旧小时。
+前一发布 facde71034e9d8ce8803d98e34acfabb871f44eb 于2026-11-19 09:01:51 CST完成，[候选CI](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44432307179)1412测试通过。39源码、原只读配置、真实collector/writer与门禁初始化通过。后续6个缺失身份补齐后registry73；服务器CG在00:33/00:44 UTC曾429，09:02 CST实际35symbol诊断已全部恢复新鲜CG，不能保证以后不再限流。独立CG/CMC原始配对时间相隔113秒，只有AKE/LIT/MMT/PIPPIN的市值和流通量差异都<=5%，已启用相应CMC备用；另8个数值口径不合格继续禁用。用户已申请CG DemoKey；09:20安全检查发现字段存在，09:24认证探测曾HTTP401/10002；解析与Compose一致，无占位或空白。09:33两种官方Demo认证均返回200，实际项目客户端AKE探测也200/真实报价，早先401原因未唯一确定。原CMC保留，最新09:47发布后常驻DemoKey与secret一致、真实CG请求成功；不能把身份核验或一次诊断恢复等同长期可用，不能降低95%覆盖、延长过期数据或回写旧小时。
 
 整体优化尚未完成：8–9月完整反事实缺历史决策和市场快照；v4的24个退出候选已事前登记但无赢出参数；连续24小时和五个合格自然闭合样本尚未达到。测试、组件诊断和成交对账不替代收益验收。
 
 证据见 [部署状态](../../reports/hrs-production-optimization-status-2026-11-18.json)、[逐文件审查](../../reports/hrs-followup-review-2026-11-18.md)、[v4 登记](../../reports/hrs-exit-experiment-registration-2026-11-18-v4.json) 及 [离线与日初来源审计](../../reports/hrs-offline-slot-and-daily-origin-audit-2026-11-18.md)。
 
 备用源原始配对、12项数值及逐文件复审见 [资格报告](../../reports/hrs-market-cap-secondary-qualification-2026-11-19.json)。
+
+
+09:21 facde首轮自然扫描complete，362条必要原payload和两个权益parent原hash通过，26/26真实K线闭包由根代理独立重建通过。三个原始请求批次32/33、26/26、21/21，原始814分母保留；仅IRYS身份未核，本轮缺失不回填。IRYS随后按官方Binance/CG/项目原生币证据补映射，保持CMC禁用、旧73条原字节前缀不变；独审3/3文件、74定向测试通过，已随最终发布上线。4个真实候选均因minimum_order_exceeds_risk_budget被拒（risk_limit0.5236USDT，quantity0），没有新预留或人工订单。
+
+Reporter无挂死证据：实际01:36:43 healthy/restarts0/无OOM，01:32:45生成的新报告于01:33:38原子替换，数据库idle/ClientRead；旧mtime读在构建期间，不需要另作重启修复。连续24h/五自然闭合仍未通过。
+
+
+最终4316920f0de898e3367d351e90415e035851033c于2026-11-19 09:47:33CST部署完成，[完整CI](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44438544547)1447测试通过。旧候选a396因云端清单漏收来源/IRYS测试未部署；9342acaf补齐而不删旧选择，产品deploy.yml保持基线。01:49独立源码39/74registry/原配置/27无关容器/原WLD保护与保留预留通过；DemoKey与CMC实际env仅boolean校验一致，新36symbol诊断36/36 fresh真实CG，包括新IRYS，一次CG请求、429=0、CMC=0。不是全518crypto覆盖、不是CMC生产失败路径触发，也不回写旧批次。本次新发布首轮10:21自然尚未发生，9:21来源证明属于同运行代码的前一发布。详见当前状态及自然来源报告，整体绩效仍未验收，不归档整体优化。

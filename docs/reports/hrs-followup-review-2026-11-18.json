@@ -393,7 +393,52 @@
       ],
       "unqualified_secondary_remain_disabled": 8,
       "report": "docs/reports/hrs-market-cap-secondary-qualification-2026-11-19.json"
+    },
+    {
+      "commit": "2b213530",
+      "files": 3,
+      "reviewed": 3,
+      "skipped": 0,
+      "independent_tests": 74,
+      "registry_from": 73,
+      "registry_to": 74,
+      "qualified_secondary_enabled": false,
+      "findings": [],
+      "raw_fixture_body_sha256": "d40906953c5a5db77a816d11e82f32d1d55aab22a251778b6691481e23e5911b",
+      "original73_objects_and_byte_prefix_unchanged": true,
+      "historical_missing_event_rewritten": false
     }
   ],
-  "asset_followup_contract": "Official asset IDs, original source hashes and receipt clocks retained. Four paired observations qualify CMC fallback; eight disagreements remain disabled. Actual CG429/recordedCMC integration red-green. Historical missing batches are never rewritten; no performance acceptance."
+  "asset_followup_contract": "Official asset IDs, original source hashes and receipt clocks retained. Four paired observations qualify CMC fallback; eight disagreements remain disabled. Actual CG429/recordedCMC integration red-green. Historical missing batches are never rewritten; no performance acceptance.",
+  "documentation_followup": {
+    "reviewed_files": 12,
+    "skipped": 0,
+    "confirmed_findings": 2,
+    "findings_resolved": [
+      "Mark old23/35 cap diagnostic as00:33/00:44UTC history; record latest35/35CG current diagnostic.",
+      "Distinguish old server429 observations from09:02CST recovered CG caps and future recurrence risk."
+    ],
+    "financial_limitations_preserved": true,
+    "latest_natural_scan_pending": false,
+    "new_runtime_code_changes": false
+  },
+  "ci_inventory_followup": {
+    "commit": "9342acaf",
+    "files_reviewed": 1,
+    "skipped": 0,
+    "old_selection_preserved": true,
+    "new_files_collected": [
+      "tests/test_shared/test_market_cap_provenance.py",
+      "tests/test_shared/test_irys_market_cap_identity.py"
+    ],
+    "three_cap_files_collect_only_count": 54,
+    "prior_incomplete_candidate_ci": "44437833049",
+    "prior_candidate_deployed": false,
+    "new_candidate_ci": "44438544547",
+    "product_deploy_yml_changed": false,
+    "new_candidate_ci_status": "success",
+    "new_candidate_tests_passed": 1447,
+    "new_candidate_duration_seconds": 97.4,
+    "new_deployed_sha": "4316920f0de898e3367d351e90415e035851033c"
+  }
 }

@@ -2,16 +2,16 @@
   "schema_version": 2,
   "status": "deployed",
   "optimization_status": "INCOMPLETE",
-  "release_sha": "facde71034e9d8ce8803d98e34acfabb871f44eb",
-  "deployed_at": "2026-11-19T01:01:51.034962+00:00",
-  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44432307179",
-  "tests_passed": 1412,
-  "ci_test_duration_seconds": 207.2,
-  "previous_release_sha": "6b3d14118dc2c3b2474769ff389c23c9abc7c17f",
+  "release_sha": "4316920f0de898e3367d351e90415e035851033c",
+  "deployed_at": "2026-11-19T01:47:33.644126+00:00",
+  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44438544547",
+  "tests_passed": 1447,
+  "ci_test_duration_seconds": 97.4,
+  "previous_release_sha": "facde71034e9d8ce8803d98e34acfabb871f44eb",
   "images": {
-    "hrs": "ghcr.io/bearflower/trading-hrs@sha256:6af532b5c6fbf8a3eb330e064b1effb5a887fea65df55c9fbea4fc63dbfd62c0",
-    "reporter": "ghcr.io/bearflower/trading-hrs@sha256:6af532b5c6fbf8a3eb330e064b1effb5a887fea65df55c9fbea4fc63dbfd62c0",
-    "hub": "ghcr.io/bearflower/trading-hrs@sha256:1549e2c1a5d074217cb5cf372ec704d25caa4ea06096a6263e9e40e52a921581"
+    "hrs": "ghcr.io/bearflower/trading-hrs@sha256:bd5b829c07e0adf74cdc24449a0832a647327b4785f53dc621790a0534ba157b",
+    "reporter": "ghcr.io/bearflower/trading-hrs@sha256:bd5b829c07e0adf74cdc24449a0832a647327b4785f53dc621790a0534ba157b",
+    "hub": "ghcr.io/bearflower/trading-hrs@sha256:33f29af015334afb31e24ade9791fa6e8cecc2acc122e83490c5cb4908ee7953"
   },
   "configuration_hash": "39e90a4d1b1cc526f42d14fb3248a9b292c0aa500a36e4df76159efda25fbb5e",
   "configuration_mounts_read_only": true,
@@ -28,7 +28,7 @@
     "ready": true,
     "allowed": true,
     "reasons": [],
-    "observed_at": "2026-11-19T01:04:40.141670+00:00",
+    "observed_at": "2026-11-19T01:50:25.553279+00:00",
     "inception_protection_only": true,
     "qualified_full_30_days": false,
     "midnight_checkpoint": {
@@ -41,8 +41,8 @@
       "created_at": "2026-11-18T16:01:13.115222+00:00"
     },
     "original_midnight_evidence_report": "docs/reports/hrs-midnight-and-natural-verification-2026-11-19.json",
-    "source_as_of": "2026-11-19T01:03:32.992155+00:00",
-    "source_updated_at": "2026-11-19T01:03:54.363324+00:00"
+    "source_as_of": "2026-11-19T01:49:15.888108+00:00",
+    "source_updated_at": "2026-11-19T01:49:37.821477+00:00"
   },
   "slot_diagnostic": {
     "status": "proven",
@@ -63,24 +63,24 @@
     "filled_retained_reservation_untouched": true
   },
   "continuous_acceptance": {
-    "observed_at": "2026-11-19T01:04:26.546516+00:00",
-    "generated_at": "2026-11-19T01:01:04.646243+00:00",
+    "observed_at": "2026-11-19T01:50:25.367721+00:00",
+    "generated_at": "2026-11-19T01:46:45.072960+00:00",
     "database_snapshot_coherent": true,
     "source_error_type": null,
     "consecutive_complete_hours": 0,
-    "complete_hours_in_last_24": 11,
     "observed_closed_lifecycles": 0,
     "technical": "NOT_READY",
     "financial": "PENDING",
     "performance_accepted": false,
     "aggregate_scan_counts_span_multiple_releases": true,
     "last_closed_hour": {
-      "start_cst": "2026-11-19T08:00:00+08:00",
       "end_cst": "2026-11-19T09:00:00+08:00",
-      "status": "INCOMPLETE",
       "reasons": [
         "fresh_coverage_below_95_percent"
-      ]
+      ],
+      "scan_count": 1,
+      "start_cst": "2026-11-19T08:00:00+08:00",
+      "status": "INCOMPLETE"
     },
     "last_closed_cap_batches": [
       {
@@ -101,15 +101,16 @@
           "providers_unavailable_or_invalid": 2
         }
       }
-    ]
+    ],
+    "file_mtime": "2026-11-19T01:47:37.882460+00:00"
   },
   "post_release_natural_scan": {
     "status": "PENDING",
-    "expected_next_scan": "2026-11-19T09:21:00+08:00",
-    "prior_same_runtime_source_natural_proofs": [
-      "docs/reports/hrs-followup-natural-scan-2026-11-18-2221.json",
-      "docs/reports/hrs-midnight-and-natural-verification-2026-11-19.json"
-    ]
+    "release_sha": "4316920f0de898e3367d351e90415e035851033c",
+    "expected_next_scan": "2026-11-19T10:21:00+08:00",
+    "same_runtime_source_prior_natural_report": "docs/reports/hrs-natural-admission-verification-2026-11-19.json",
+    "runtime_source_bytes_match_prior_natural": true,
+    "data_registry_and_authenticated_primary_changed": true
   },
   "remaining": {
     "aug_sep_counterfactual": "BLOCKED_DATA_missing_original_decision_market_snapshots",
@@ -120,10 +121,10 @@
     "risk_warning_alarm_classification": "expected_entry_denial_INFO_reason_context_deployed_external_monitor_itself_not_modified",
     "kline_history_continuity": "deployed_and_naturally_verified_29_of_29_repair_closures_including_five_prior_gap_symbols",
     "new_market_asset_identity_count": 6,
-    "new_market_asset_identity_status": "registry73_deployed; no unverified identity in exact 35-symbol diagnostic union; server429 and eight unqualified secondary providers remain independent data availability blockers",
+    "new_market_asset_identity_status": "registry74 deployed; IRYS identity source+fixture independently verified; prior73 entries unchanged; original09:21 missing event retained",
     "funding_evidence_storage": "constant_reference_and_original_receipt_closure_retained",
     "new_market_asset_identity_pending_deploy": [],
-    "market_cap_provider_availability": "CG429 observed00:44UTC; current09:02CST exact35-symbol diagnostic35/35 fresh true caps recovered from CG; four qualified CMC fallbacks deployed but no production fallback trigger claimed; DemoKey absent at last safe check; future429 risk remains",
+    "market_cap_provider_availability": "Verified resident Demo key loaded; actual36/36 fresh true caps includingIRYS; primarycalls1/4290, CMCpreserved. Four paired-qualified secondary assets remain enabled; eight disputed sources and IRYS secondary remain disabled. No claim of unlimited future coverage or live CMC failure-path trigger.",
     "market_cap_qualification_report": "docs/reports/hrs-market-cap-secondary-qualification-2026-11-19.json"
   },
   "review": {
@@ -134,13 +135,13 @@
     "asset_followup_reports": "docs/reports/hrs-followup-review-2026-11-18.json"
   },
   "performance_qualified": false,
-  "registry_asset_count": 73,
+  "registry_asset_count": 74,
   "latest_release_delta": {
     "runtime_source_bytes_changed": false,
     "configuration_changed": false,
     "sltp_changed": false,
     "risk_budget_percentages_changed": false,
-    "registry_asset_count_changed": false,
+    "registry_asset_count_changed": true,
     "secondary_provider_qualification_changed": true,
     "four_qualified_secondary_symbols": [
       "AKE",
@@ -149,36 +150,123 @@
       "PIPPIN"
     ],
     "eight_disputed_secondary_assets_remain_disabled": true,
-    "economic_admission_scope_unchanged_from_previous_v2": true
+    "economic_admission_scope_unchanged_from_previous_v2": true,
+    "irys_identity_added": true,
+    "coingecko_demo_env_file_loaded": true,
+    "ci_test_collection_completed": true
   },
-  "registry_sha256": "4c162a00ede2b9d16a850276d5e97f2559d8cc3780de0089f23de0279602dcc6",
+  "registry_sha256": "b384824305c567580cd7086913b3a73e38df697548107254de1192694b83f946",
   "post_deployment_source_protection": {
-    "checked_at": "2026-11-19T01:02:52.756808+00:00",
+    "checked_at": "2026-11-19T01:49:02.345796+00:00",
     "source_hashes": 39,
     "mismatches": [],
+    "registry_asset_count": 74,
     "other_containers_unchanged": 27,
     "original_WLD_28_and_hard_stop_unchanged": true,
-    "filled_retained_reservation_count": 1
+    "filled_retained_reservation_count": 1,
+    "actual_exchange_protection_proof": "current_release_actual_preflight_plus_current_readonly_DB",
+    "configuration_mounts_read_only": true
   },
   "market_cap_current_diagnostic": {
     "status": "PASS",
-    "purpose": "explicit_current_cache_diagnostic_not_natural_or_historical_repair",
-    "checked_at": "2026-11-19T01:02:52.860516+00:00",
-    "requested_count": 35,
-    "valid_count": 35,
+    "purpose": "manual_market_data_cache_diagnostic_not_natural_scan_not_backfill",
+    "checked_at": "2026-11-19T01:49:14.833471+00:00",
+    "requested_count": 36,
+    "valid_count": 36,
     "old_17_request_sets_with_current_coverage": 17,
     "all_current_set_coverage": 1.0,
     "identity_unverified_count": 0,
-    "live_secondary_trigger_proven": false,
+    "added_current_symbol": "IRYSUSDT",
     "all_current_quotes_provider": "coingecko",
+    "live_secondary_trigger_proven": false,
     "raw_universe_coverage_claimed": false,
-    "historical_batches_rewritten": false
+    "historical_batches_rewritten": false,
+    "resident_primary_key_loaded_and_request_received_real_data": true
   },
   "post_deployment_error_observation": {
-    "observed_at": "2026-11-19T01:04:40.141670+00:00",
+    "observed_at": "2026-11-19T01:50:25.367721+00:00",
     "new_release_hrs_errors": 0,
     "new_release_reporter_errors": 0,
     "new_release_capture_failures": 0,
     "new_release_tracebacks": 0
-  }
+  },
+  "coingecko_demo_key": {
+    "user_status": "verified_and_resident_loaded",
+    "user_confirmed_injected": true,
+    "last_safe_check_present": true,
+    "secret_path": "/root/trading_system/.secrets/market_cap.env",
+    "secret_values_exported": false,
+    "reload_verified": true,
+    "runtime_key_present": true,
+    "authentication_probe": {
+      "checked_at": "2026-11-19T01:33:57.900780+00:00",
+      "http_status": 200,
+      "asset_id": "akedo",
+      "valid_quote_received": true,
+      "actual_project_client_used": true,
+      "primary_rate_limited": false,
+      "existing_cmc_preserved": true,
+      "secret_values_exported": false
+    },
+    "user_confirmed_real_key": true,
+    "planned_dotenv_value_matches_probe_parser": true,
+    "placeholder_or_whitespace_detected": false,
+    "prior_probe_http_status": 401,
+    "prior_probe_error_code": 10002,
+    "prior_failure_cause": "not_uniquely_established_do_not_guess",
+    "demo_header_and_query_both_verified": true,
+    "reload_deployment_complete": true,
+    "resident_checked_at": "2026-11-19T01:49:02.345796+00:00",
+    "actual_demo_matches_current_secret": true,
+    "actual_cmc_matches_current_secret": true,
+    "resident_real_quote_validation": {
+      "checked_at": "2026-11-19T01:49:14.833471+00:00",
+      "requested_count": 36,
+      "valid_fresh_nonproxy_count": 36,
+      "new_IRYS_provider": "coingecko",
+      "primary_calls": 1,
+      "primary_429": 0,
+      "secondary_calls": 0
+    }
+  },
+  "acceptance_next_requirements": {
+    "aug_sep_counterfactual": "Actual original candidate/denial, OI/cap/source identity/availability, funding/allocation and runtime snapshots for complete fixed windows; absent evidence remains BLOCKED_DATA, without return scaling.",
+    "sltp_selection": "Complete preregistered research plus two held-out windows, minimum20 causal closed lifecycles, fees/slippage/funding and opening/closing provenance; no winner on partial data.",
+    "production_technical": "24 consecutive closed hourly slots with complete natural scans, authentic source closure and >=95% fresh coverage of original requested batches; do not drop missing symbols.",
+    "production_financial": "Five eligible naturally closed lifecycles with original entry/fill/protection/fee/funding/equity ownership proof; no artificial trades.",
+    "coingecko_demo": "Securely inject existing market_cap.env; verify actual hub environment presence and authorized authenticated request before reporting active. Key value never exported."
+  },
+  "last_natural_entry_budget_outcomes": {
+    "candidate_count": 4,
+    "symbols": [
+      "EVAAUSDT",
+      "PIPPINUSDT",
+      "BLESSUSDT",
+      "MMTUSDT"
+    ],
+    "denial": "minimum_order_exceeds_risk_budget",
+    "risk_limit_USDT": "0.5236",
+    "effective_margin_allocation_USDT": "26.180",
+    "quantity_each": "0",
+    "new_reservation_events": 0,
+    "orders_artificially_created": false
+  },
+  "latest_same_runtime_source_natural_scan": {
+    "status": "VERIFIED",
+    "run_id": "980461e2f7f14ead909232ffe2196100",
+    "release_sha": "facde71034e9d8ce8803d98e34acfabb871f44eb",
+    "start": "2026-11-19T01:21:00.001828+00:00",
+    "end": "2026-11-19T01:21:47.377175+00:00",
+    "actual_kline_closures_verified": 26,
+    "market_cap_batches": [
+      "32/33",
+      "26/26",
+      "21/21"
+    ],
+    "all_requested_batch_fresh_coverage_at_least_95_percent": true,
+    "one_original_identity_gap": "IRYSUSDT",
+    "report": "docs/reports/hrs-natural-admission-verification-2026-11-19.json",
+    "performance_accepted": false
+  },
+  "independent_final_verification_at": "2026-11-19T01:50:25.367721+00:00"
 }
