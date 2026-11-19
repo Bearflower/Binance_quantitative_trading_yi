@@ -15,6 +15,8 @@ from typing import Any, Mapping
 
 from apscheduler.triggers.cron import CronTrigger
 from ai_tuner.allocation.activity_evidence import read_activity_evidence
+from ai_tuner.allocation.capital_evidence import read_capital_evidence
+from ai_tuner.monitor.trial_risk_evidence import mark_shock, review_criteria
 from shared.accounting.income_integrity import income_account_lock, require_income_integrity
 from shared.accounting.published_report import REPORT_VERSIONS
 from shared.accounting.report_reader import read_monthly_economic_report
@@ -101,12 +103,12 @@ def inspect_exchange(positions: Any, orders: Any, algos: Any,
                      owned_symbols: set[str]) -> dict:
     """Check a strategy's claimed live positions against full adverse STOP size."""
     empty = {"verified": False, "owned_positions": [], "unprotected_symbols": [],
-             "owned_margin": None}
+             "owned_margin": None, "estimated_notional_over_leverage": None}
     if not all(isinstance(rows, list) for rows in (positions, orders, algos)):
         return empty
     owned: list[str] = []
     unprotected: list[str] = []
-    owned_margin: Decimal | None = Decimal(0)
+    estimated_margin: Decimal | None = Decimal(0)
     for position in positions:
         if not isinstance(position, Mapping):
             return empty
@@ -123,9 +125,9 @@ def inspect_exchange(positions: Any, orders: Any, algos: Any,
         leverage = _amount(position.get("leverage"))
         contract_size = _amount(position.get("contractSize"))
         if leverage is None or leverage <= 0 or contract_size is None or contract_size <= 0:
-            owned_margin = None
-        elif owned_margin is not None:
-            owned_margin += abs(amount) * mark * contract_size / leverage
+            estimated_margin = None
+        elif estimated_margin is not None:
+            estimated_margin += abs(amount) * mark * contract_size / leverage
         covered = Decimal(0)
         close_all = False
         seen: set[str] = set()
@@ -157,13 +159,16 @@ def inspect_exchange(positions: Any, orders: Any, algos: Any,
         if not close_all and covered < abs(amount):
             unprotected.append(symbol)
     return {"verified": True, "owned_positions": sorted(owned),
-            "unprotected_symbols": sorted(unprotected), "owned_margin": owned_margin}
+            "unprotected_symbols": sorted(unprotected), "owned_margin": None,
+            "estimated_notional_over_leverage": estimated_margin}
 
 
 _POLICY_SQL = """SELECT p.* FROM trading.strategy_risk_policy p
 JOIN trading.strategy_risk_active a USING(account_id,strategy_id,revision)
 WHERE p.account_id=$1 AND p.strategy_id=$2"""
 _RESERVATION_SQL = """SELECT count(*) AS count, COALESCE(sum(margin),0) AS margin,
+COALESCE(sum(margin) FILTER (WHERE state='reserved'),0) AS not_submitted_margin,
+COALESCE(sum(margin) FILTER (WHERE state='submitting'),0) AS submitted_intent_margin,
 count(*) FILTER (WHERE pressure_risk IS NULL) AS pressure_missing,
 sum(pressure_risk) AS pressure_risk
 FROM trading.entry_risk_reservation
@@ -306,9 +311,12 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             owned = {row["symbol"] for row in claims if row["strategy"] == strategy}
             result = inspect_exchange(positions, orders, algos, owned)
             if result["verified"]:
-                result["ownership_complete"] = all(
+                result["ownership_complete"] = len(claims) == len(all_claimed) and all(
                     _amount(row.get("positionAmt")) == 0 or row.get("symbol") in all_claimed
                     for row in positions
+                )
+                result["mark_shock_5pct_usdt"] = (
+                    mark_shock(positions, owned) if result["ownership_complete"] else None
                 )
             evidence["exchange"] = result
         except Exception as exc:
@@ -439,14 +447,10 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
         if not isinstance(owned_positions, list):
             missing.append("owned_positions_unverified")
         elif owned_positions:
-            holdings_margin = _amount(exchange.get("owned_margin"))
-            if holdings_margin is None or holdings_margin < 0:
-                missing.append("holdings_margin_unverified")
-            elif isinstance(reservations, Mapping) and isinstance(policy, Mapping):
-                reserved = _amount(reservations.get("margin"))
-                ceiling = _amount(policy.get("entry_ceiling"))
-                if reserved is not None and ceiling is not None and holdings_margin + reserved > ceiling:
-                    safety.append("exposure_exceeds_ceiling")
+            # PM positionRisk has no exchange-attested strategy margin. The
+            # reservation may already be the same live lot; adding its margin
+            # to notional/leverage would double count that exposure.
+            missing.append("holdings_margin_unverified")
 
     signals = evidence.get("signals")
     if evidence.get("entry_activity_required") is True:
@@ -501,10 +505,10 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
             missing.append("account_drawdown_unverified")
 
     if weekly:
-        # No verified per-strategy equity curve, cash-flow bridge, or frozen
-        # live-trial thresholds exists yet. These are mandatory for relaxation.
+        # The criteria are frozen. Neither a snapshot mark shock nor a policy
+        # reservation is a substitute for the audited monthly loss series.
         missing.extend(("drawdown_unavailable", "pressure_loss_unavailable",
-                        "thresholds_unfrozen", "two_holdout_months_unverified"))
+                        "two_holdout_months_unverified"))
 
     reasons = sorted(set(safety + missing))
     status = "SAFETY_REVIEW" if safety else ("BLOCKED_DATA" if missing else "KEEP_REDUCED")
@@ -518,6 +522,7 @@ def assess_snapshot(evidence: Mapping[str, Any], *, now: datetime, weekly: bool)
         "report_id": income.get("report_id") if isinstance(income, Mapping) else None,
         "signals": dict(signals) if isinstance(signals, Mapping) else None,
         "as_of": now.isoformat(),
+        "review_criteria": review_criteria() if weekly else None,
     }
 
 
@@ -563,6 +568,7 @@ class ReducedTrialEvaluator:
             "source_errors": evidence.get("source_errors", []),
             "account_risk": evidence.get("account_risk"),
             "entry_activity": evidence.get("entry_activity"),
+            "allocated_capital_evidence": evidence.get("allocated_capital_evidence"),
             "decision_scope": "evidence_only_no_policy_write",
         }
         try:
@@ -588,6 +594,14 @@ class ReducedTrialEvaluator:
             )
             if self.account_risk_provider is not None:
                 evidence["account_risk"] = self.account_risk_provider()
+            if period == "weekly":
+                left = datetime.fromisoformat(evidence["window_start"])
+                right = datetime.fromisoformat(evidence["window_end"])
+                capital = await read_capital_evidence(
+                    self.db, self.account, int(left.timestamp() * 1000),
+                    int(right.timestamp() * 1000), (strategy,),
+                )
+                evidence["allocated_capital_evidence"] = capital[strategy]
             assessment = assess_snapshot(evidence, now=now, weekly=period == "weekly")
             self._write_report(period, strategy, end, assessment, evidence)
             results.append(assessment)
