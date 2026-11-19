@@ -17,6 +17,7 @@ from typing import Any, Mapping
 from apscheduler.triggers.cron import CronTrigger
 from ai_tuner.allocation.activity_evidence import read_activity_evidence
 from ai_tuner.allocation.capital_evidence import read_capital_evidence
+from ai_tuner.monitor.live_position_ownership import resolve_unclaimed_positions
 from ai_tuner.monitor.trial_risk_evidence import covered_reservation_budget, mark_shock, review_criteria
 from shared.accounting.income_integrity import income_account_lock, require_income_integrity
 from shared.accounting.published_report import REPORT_VERSIONS
@@ -175,7 +176,7 @@ sum(pressure_risk) AS pressure_risk
 FROM trading.entry_risk_reservation
 WHERE account_id=$1 AND strategy_id=$2 AND state<>'released'"""
 _CLAIMS_SQL = """SELECT symbol,strategy FROM trading.position_claims
-WHERE claim_state IN ('PENDING','ACTIVE')"""
+WHERE claim_state IN ('PENDING','ACTIVE') AND expires_at > now()"""
 _COVERED_RESERVATIONS_SQL = """
 SELECT r.symbol, r.margin, r.quantity, o.orig_qty, o.side, o.executed_qty,
        CASE WHEN bool_and(COALESCE(f.order_id>0 AND f.qty>0 AND
@@ -368,13 +369,16 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             orders = await exchange.get_open_orders()
             algos = await exchange.get_open_algo_orders()
             all_claimed = {row["symbol"] for row in claims}
+            proofs, gaps = await resolve_unclaimed_positions(
+                db, exchange, account, positions, all_claimed
+            )
             owned = {row["symbol"] for row in claims if row["strategy"] == strategy}
+            owned.update(symbol for symbol, proof in proofs.items() if proof["strategy"] == strategy)
             result = inspect_exchange(positions, orders, algos, owned)
             if result["verified"]:
-                result["ownership_complete"] = len(claims) == len(all_claimed) and all(
-                    _amount(row.get("positionAmt")) == 0 or row.get("symbol") in all_claimed
-                    for row in positions
-                )
+                result["position_ownership_proofs"] = proofs
+                result["position_ownership_gaps"] = gaps
+                result["ownership_complete"] = len(claims) == len(all_claimed) and not gaps
                 result["mark_shock_5pct_usdt"] = (
                     mark_shock(positions, owned) if result["ownership_complete"] else None
                 )
