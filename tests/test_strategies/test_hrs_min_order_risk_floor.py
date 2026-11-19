@@ -220,3 +220,18 @@ def test_floor_preserves_minimum_risk_without_portfolio_decimal_cancellation(ope
         assert decision.effective_portfolio_limit == D(open_risk) + expected_loss
         assert decision.effective_portfolio_limit - D(open_risk) == decision.risk_limit
         assert decision.quantity * D('.24') / D(2) <= D(20)
+
+
+def test_floor_validates_exact_ratio_sum_independently_of_ambient_precision():
+    from decimal import localcontext
+
+    ratios = (D('.49999999999999999999999999999'),) * 2
+    decisions = []
+    for precision in (28, 100):
+        with localcontext() as context:
+            context.prec = precision
+            decisions.append(floor(take_profit_ratios=ratios))
+    assert all(decision.allowed for decision in decisions)
+    assert decisions[0] == decisions[1]
+    assert decisions[0].quantity == D(23)
+    assert decisions[0].exit_ratios == (D(1), D(0))
