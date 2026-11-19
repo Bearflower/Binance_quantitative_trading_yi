@@ -152,3 +152,22 @@ async def test_new_scope_receipt_cannot_weaken_original_hrs_loss_fields(runtime,
             account_available_balance='448.86',account_available_balance_source='papi/v1/account.totalAvailableBalance',account_status='NORMAL')
     with pytest.raises(EntryDenied) as caught:await r.store.reserve('hrs','A','a',sized,3,snapshot,geometry=geometry)
     assert caught.value.reason_code=='hrs_budget_parent_risk_mismatch'
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('denial',['slot','addition'])
+async def test_early_capacity_denial_captures_original_locked_account_pending(runtime,denial):
+    r=runtime;original=await enable_owned(r);sized,geometry=proposal(plan('60'));geometry['hrs_margin_scope']=HRS_OWNED
+    await foreign_pending(r,'448','late-foreign')
+    symbol='A' if denial=='slot' else 'WLDUSDT'
+    async def snapshot():return replace(await original(symbol,'a'),max_slots=1 if denial=='slot' else 3)
+    with pytest.raises(EntryDenied) as caught:
+        await r.store.reserve('hrs',symbol,'a',sized,3,snapshot,geometry=geometry)
+    assert caught.value.reason_code==('entry_position_slots' if denial=='slot' else 'entry_no_additions')
+    context=caught.value.context
+    assert context['hrs_margin_scope']==HRS_OWNED
+    pending=context['account_pending_reservations']
+    assert len(pending)==1 and pending[0]['client_order_id']=='late-foreign'
+    assert pending[0]['account_id']=='test' and pending[0]['strategy_id']=='new_coin'
+    assert pending[0]['state']=='submitting' and D(pending[0]['margin'])==D(448)
+    assert await r.admin.fetchval("SELECT count(*) FROM trading.entry_risk_reservation WHERE strategy_id='hrs'")==0

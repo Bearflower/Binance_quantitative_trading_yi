@@ -595,12 +595,26 @@ class RiskPolicyStore:
                 if number(holdings,zero=True)<number(proof['account_margin'],zero=True):
                     raise EntryDenied('account margin omits verified inventory',reason_code='hrs_slot_account_margin_understated',
                         context=dict(account_margin=str(holdings),inventory_margin=proof['account_margin'],account_symbols=proof['account_symbols'],hrs_symbols=proof['hrs_symbols'],max_slots=values.max_slots))
+                locked_pending_context={}
+                if margin_scope==HRS_OWNED:
+                    # Preserve actual account-lock sources even when a slot or
+                    # no-addition denial precedes final sizing/receipt validation.
+                    account_pending=await conn.fetch(f"""SELECT {_HRS_PENDING_COLUMNS}
+                        FROM trading.entry_risk_reservation WHERE account_id=$1 AND state<>'released'
+                        ORDER BY client_order_id""",self.account)
+                    from strategies.hrs.margin_budget import pending_margin
+                    try:pending_margin(account_pending,account=self.account)
+                    except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
+                        raise EntryDenied('account retained cash sources unavailable',
+                            reason_code='hrs_account_pending_source_mismatch',context=context) from exc
+                    locked_pending_context=dict(hrs_margin_scope=margin_scope,
+                        account_pending_reservations=[dict(item) for item in account_pending])
                 owned=set(proof['hrs_symbols'])
                 occupied=owned|reservations
                 context=dict(slot_scope=SLOT_SCOPE,account_id=self.account,account_symbols=proof['account_symbols'],hrs_symbols=proof['hrs_symbols'],
                     reservation_symbols=sorted(reservations),occupied_symbols=sorted(occupied),observed_slots=len(occupied),
                     requested_slots=len(occupied|{symbol}),max_slots=values.max_slots,
-                    evidence_sha256=row['evidence_sha256'],observed_at=proof['observed_at'],account_margin=str(holdings),ownership_claims=ownership_claims,**metadata)
+                    evidence_sha256=row['evidence_sha256'],observed_at=proof['observed_at'],account_margin=str(holdings),ownership_claims=ownership_claims,**metadata,**locked_pending_context)
                 if symbol in proof['account_symbols']:
                     raise EntryDenied('existing account holding forbids additions',reason_code='entry_no_additions',context=context)
                 if len(occupied|{symbol})>values.max_slots:

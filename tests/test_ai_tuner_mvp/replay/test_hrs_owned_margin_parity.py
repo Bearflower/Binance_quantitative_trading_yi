@@ -100,7 +100,7 @@ def test_independent_reservation_cash_overrides_scan_cash_and_raw_projection_is_
             locked=copy.deepcopy(stage)
             locked['evidence_id']+='-lock'
             pending=[dict(client_order_id='late-foreign',account_id='test',strategy_id='grid',state='reserved',margin='448')] if locked_pending else []
-            locked['payload']=dict(stage='reservation_denial',risk_context=dict(financial['equity_gate'],ownership_claims=copy.deepcopy(financial['ownership_claims']),account_pending_reservations=pending))
+            locked['payload']=dict(stage='reservation_denial',risk_context=dict(financial['equity_gate'],hrs_margin_scope=HRS_OWNED,ownership_claims=copy.deepcopy(financial['ownership_claims']),account_pending_reservations=pending))
             locked['payload_sha256']=canonical_payload(locked['payload'])[1]
             sources['decision_evidence'].append(locked)
     portal,adapter=owned_fixture(tmp_path,source_transform=receipt)
@@ -158,7 +158,7 @@ def test_later_success_receipt_pending_supersedes_scan_pending(tmp_path):
             f=row['payload']['financial_context'];at=parse_utc(row['available_at'])
             parent=next(p for p in sources['equity_evidence'] if p['evidence_sha256']==f['equity_gate']['evidence_sha256'])
             proof=prove_hrs_slot_ownership('test',parent,f['hrs_slot_inputs'],f['ownership_claims'],checked_at=at,margin_scope=HRS_OWNED)
-            context=dict(f['equity_gate'],ownership_claims=f['ownership_claims'],account_pending_reservations=[dict(client_order_id='later-foreign',account_id='test',strategy_id='grid',state='reserved',margin='448.86')])
+            context=dict(f['equity_gate'],hrs_margin_scope=HRS_OWNED,ownership_claims=f['ownership_claims'],account_pending_reservations=[dict(client_order_id='later-foreign',account_id='test',strategy_id='grid',state='reserved',margin='448.86')])
             sources['decision_evidence'].append(envelope(row['run_id'],'entry_stage_inputs',dict(stage='reservation_success',slot_context=context,budget_context=copy.deepcopy(context),slot_occupancy_proof=proof),at,'A'))
     portal,adapter=owned_fixture(tmp_path,source_transform=locked)
     result=run_replay(portal,adapter,broker())
@@ -201,3 +201,33 @@ def test_bootstrap_uses_original_cash_and_inventory_completion_clocks(tmp_path):
         row['payload_sha256']=canonical_payload(row['payload'])[1]
     portal,adapter=owned_fixture(tmp_path,source_transform=clocks)
     assert run_replay(portal,adapter,broker()).final_position is not None
+
+
+def reseal_dataset(portal,name,mutate):
+    """Change derived facts while retaining every original evidence source."""
+    import json
+    from ai_tuner.replay.data_portal import DataPortal,compute_manifest_envelope_sha256,compute_manifest_sha256,sha256_file
+    path=portal.snapshot_dir/name
+    value=([json.loads(line) for line in path.read_text().splitlines()] if name.endswith('.jsonl') else json.loads(path.read_text()))
+    mutate(value)
+    path.write_text(''.join(json.dumps(row)+'\n' for row in value) if name.endswith('.jsonl') else json.dumps(value))
+    manifest_path=portal.snapshot_dir/'manifest.json';manifest=json.loads(manifest_path.read_text())
+    manifest['files'][name]['sha256']=sha256_file(str(path));manifest['sha256']=compute_manifest_sha256(manifest['files'])
+    manifest['envelope_sha256']=compute_manifest_envelope_sha256(manifest);manifest_path.write_text(json.dumps(manifest))
+    return DataPortal(portal.snapshot_dir,'hrs',portal.as_of,portal.window_start)
+
+
+@pytest.mark.parametrize('target,field',[('bootstrap','allocation'),('bootstrap','account_equity'),('bootstrap','entry_policy'),('risk','allocation'),('risk','entry_policy'),('risk','account_equity_excluding_hrs'),('risk','account_equity_component_source')])
+def test_resealed_owned_quota_inputs_remain_bound_to_original_financial_sources(tmp_path,target,field):
+    from ai_tuner.replay.models import DataBlocked
+    portal,adapter=floor_fixture(tmp_path,margin_scope=HRS_OWNED,allocation='26.18',ceiling='1',foreign_margin='64.86')
+    assert run_replay(portal,adapter,broker()).final_position is None
+    def mutate(value):
+        objects=[value] if target=='bootstrap' else [row['risk'] for row in value]
+        for obj in objects:
+            if field=='entry_policy':obj[field]['entry_ceiling']='26.18'
+            elif field=='account_equity_component_source':obj[field]['model']='fabricated'
+            else:obj[field]='999999'
+    changed=reseal_dataset(portal,'hrs_replay_state.json' if target=='bootstrap' else 'hrs_decision_inputs.jsonl',mutate)
+    with pytest.raises(DataBlocked,match='margin_raw_source'):
+        run_replay(changed,type(adapter)(adapter._state_loader),broker())
