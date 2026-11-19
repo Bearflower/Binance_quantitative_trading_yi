@@ -13,7 +13,7 @@ from .test_hrs_wiring import _hrs_fixture, broker
 from .test_hrs_replay_review import refreeze, jsonl
 
 
-def floor_fixture(tmp_path, *, version=FLOOR, allocation='4', ceiling='4', foreign_margin='0'):
+def floor_fixture(tmp_path, *, version=FLOOR, allocation='4', ceiling='4', foreign_margin='0', margin_scope=None, cash='448.86', source_transform=None, export_result=False):
     from datetime import timedelta
     from pathlib import Path
     from ai_tuner.hrs_evidence_export import export_evidence_bundle
@@ -32,12 +32,15 @@ def floor_fixture(tmp_path, *, version=FLOOR, allocation='4', ceiling='4', forei
         inventory = [] if D(foreign_margin)==0 else [dict(symbol='F',positionAmt='1',entryPrice=str(D(foreign_margin)*2),markPrice=str(D(foreign_margin)*2),leverage='2')]
         fills = [] if not inventory else [dict(account_id='test',symbol='F',trade_id=1,order_id=1,side='BUY',qty='1',price=inventory[0]['entryPrice'],trade_time_utc=at)]
         owners = [] if not inventory else [dict(account_id='test',symbol='F',order_id='1',strategy='grid')]
-        claims = [] if not inventory else [dict(id=1,symbol='F',strategy='grid',claim_state='ACTIVE')]
+        claims = [] if not inventory else [dict(id=1,symbol='F',strategy='grid',claim_state='ACTIVE',**({'expires_at':(parse_utc(at)-timedelta(seconds=1)).isoformat()} if margin_scope else {}))]
         paths = certify_owned_inventory_paths('test',{p['symbol']:D(p['positionAmt']) for p in inventory},[dict(f,trade_time_utc=parse_utc(at)) for f in fills],owners,coverage_complete=True)
         parent = dict(account_id='test',as_of=at,available_at=at,capture=dict(inventory=inventory,independent=inventory,local={}),fills=fills,order_owners=owners,inventory_owner_path_proofs=paths,source_collection=dict(complete=True,gaps=[],position_symbols_covered=[p['symbol'] for p in inventory]),income_report=dict(id_match_and_coverage_complete=True,events=[],coverage_gaps=[]),allocation_audit=dict(version=1,journal=[]),result=dict(ready=True))
         finance = row['payload']['financial_context']
         finance['allocation'] = allocation
         finance['entry_policy'].update(account_id='test',reason=json.dumps({'hrs_risk_budget_version':version}) if version else '',entry_ceiling=ceiling)
+        if margin_scope:
+            finance['entry_policy']['reason']=json.dumps({'hrs_risk_budget_version':version,'hrs_margin_scope':margin_scope})
+            finance.update(hrs_margin_scope=margin_scope,account_available_balance=cash,account_available_balance_source='papi/v1/account.totalAvailableBalance',account_status='NORMAL',account_cash_observed_at=at,account_pending_reservations=[])
         finance.update(runtime_slot_scope=SLOT_SCOPE,exchange_positions=inventory,independent_positions=inventory,claims=claims,ownership_claims=claims,hrs_slot_inputs=json.loads(canonical(capture_hrs_slot_inputs(inventory=inventory,independent=inventory,local={},observed_at=parse_utc(at)))[0]),equity_gate=gate(dict(payload=parent,sha256=canonical(parent)[1]),parse_utc(at)))
         sources['equity_evidence'].append(dict(payload=parent,evidence_sha256=canonical(parent)[1]))
         row['payload_sha256'] = canonical_payload(row['payload'])[1]
@@ -45,7 +48,9 @@ def floor_fixture(tmp_path, *, version=FLOOR, allocation='4', ceiling='4', forei
             if stage['run_id']==row['run_id'] and stage['kind']=='entry_stage_inputs':
                 stage['payload'].update(claims=claims,exchange_positions=inventory)
                 stage['payload_sha256']=canonical_payload(stage['payload'])[1]
+    if source_transform:source_transform(sources)
     result = export_evidence_bundle(sources,tmp_path/'out',window_start=AT,as_of=AT+timedelta(hours=3),execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    if export_result:return result
     assert result.get('status')=='SEALED', result
     portal = DataPortal(result['snapshot_dir'],'hrs',AT+timedelta(hours=3),AT)
     states = json.loads((Path(result['snapshot_dir'])/'hrs_state_tables.json').read_text())
