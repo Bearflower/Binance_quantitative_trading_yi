@@ -44,7 +44,7 @@ async def test_strategy_uses_committed_refined_decision(monkeypatch):
     async def reserve(*args,**kwargs):
         geometry.update(kwargs['geometry'])
         return 'intent'
-    store=SimpleNamespace(reconcile=AsyncMock(),reserve=reserve,reservation_audit=dict(client_order_id='intent',risk_decision=refined,budget_context={'checked_at':'clock'}))
+    store=SimpleNamespace(policy=AsyncMock(return_value=dict(reason='{"hrs_risk_budget_version":"hrs_minimum_executable_v1"}')),reconcile=AsyncMock(),reserve=reserve,reservation_audit=dict(client_order_id='intent',risk_decision=refined,budget_context={'checked_at':'clock'}))
     monkeypatch.setattr(p,'RiskPolicyStore',lambda db:store)
     result=await obj._reserve_hrs_entry({'symbol':'SUIUSDT','signal_id':1},decision,100,10000)
     assert result.quantity==refined.quantity<decision.quantity
@@ -70,7 +70,7 @@ async def test_floor_strategy_requires_committed_refinement(monkeypatch):
     import shared.entry_risk_policy as p
     obj,_,_,_,_,_=prepared(monkeypatch)
     decision=replace(floor_decision(),policy_revision=6,effective_allocation=D(1000))
-    store=SimpleNamespace(reconcile=AsyncMock(),reserve=AsyncMock(return_value='intent'),reservation_audit={'client_order_id':'intent'})
+    store=SimpleNamespace(policy=AsyncMock(return_value=dict(reason='{"hrs_risk_budget_version":"hrs_minimum_executable_v1"}')),reconcile=AsyncMock(),reserve=AsyncMock(return_value='intent'),reservation_audit={'client_order_id':'intent'})
     monkeypatch.setattr(p,'RiskPolicyStore',lambda db:store)
     assert await obj._reserve_hrs_entry({'symbol':'SUIUSDT','signal_id':1},decision,100,10000) is None
 
@@ -87,7 +87,7 @@ async def test_floor_strategy_records_actual_finances_and_retains_writer_receipt
     decision=replace(floor_decision(),policy_revision=6,effective_allocation=D(1000))
     async def reserve(*args,**kwargs):
         seen.append(await args[5]());return 'intent'
-    store=SimpleNamespace(account='test',reconcile=AsyncMock(),reserve=reserve,reservation_audit=dict(client_order_id='intent',risk_decision=decision))
+    store=SimpleNamespace(account='test',policy=AsyncMock(return_value=dict(reason='{"hrs_risk_budget_version":"hrs_minimum_executable_v1"}')),reconcile=AsyncMock(),reserve=reserve,reservation_audit=dict(client_order_id='intent',risk_decision=decision))
     monkeypatch.setattr(p,'RiskPolicyStore',lambda db:store)
     assert await obj._reserve_hrs_entry({'symbol':'SUIUSDT','signal_id':1},decision,100,10000)
     assert seen[0].financial_receipt is not None
@@ -110,6 +110,36 @@ async def test_floor_strategy_denies_missing_or_failed_independent_receipt(monke
         obj.decision_recorder=SimpleNamespace(failed=writer=='failed',run_id='run',record=AsyncMock(side_effect=RuntimeError('writer failed')))
     async def reserve(*args,**kwargs):
         await args[5]();return 'intent'
-    store=SimpleNamespace(account='test',reconcile=AsyncMock(),reserve=reserve,reservation_audit=dict(client_order_id='intent',risk_decision=decision))
+    store=SimpleNamespace(account='test',policy=AsyncMock(return_value=dict(reason='{"hrs_risk_budget_version":"hrs_minimum_executable_v1"}')),reconcile=AsyncMock(),reserve=reserve,reservation_audit=dict(client_order_id='intent',risk_decision=decision))
     monkeypatch.setattr(p,'RiskPolicyStore',lambda db:store)
     assert await obj._reserve_hrs_entry({'symbol':'SUIUSDT','signal_id':1},decision,100,10000) is None
+
+
+@pytest.mark.asyncio
+async def test_owned_scope_snapshot_binds_fresh_account_get_not_earlier_equity(monkeypatch):
+    import json
+    import shared.entry_risk_policy as p
+    from strategies.hrs.margin_budget import HRS_OWNED
+    obj,_,seen,_,_,_=prepared(monkeypatch)
+    obj.binance_client.use_unified_account=True
+    obj.binance_client.get_account_info=AsyncMock(return_value=dict(totalMarginBalance='500',availableBalance='448.86',accountStatus='NORMAL'))
+    captured=[]
+    async def record(run,kind,payload,**envelope):captured.append(payload);return 'receipt'
+    obj.decision_recorder=SimpleNamespace(failed=False,run_id='r',record=record)
+    decision=replace(floor_decision(),policy_revision=6,effective_allocation=D('26.18'))
+    async def reserve(*args,**kwargs):
+        seen.append(await args[5]())
+        assert kwargs['geometry']['hrs_margin_scope']==HRS_OWNED
+        return 'intent'
+    store=SimpleNamespace(account='test',policy=AsyncMock(return_value=dict(reason=json.dumps(dict(hrs_risk_budget_version=FLOOR,hrs_margin_scope=HRS_OWNED)))),
+        reconcile=AsyncMock(),reserve=reserve,reservation_audit=dict(client_order_id='intent',risk_decision=decision))
+    monkeypatch.setattr(p,'RiskPolicyStore',lambda db:store)
+    assert await obj._reserve_hrs_entry({'symbol':'SUIUSDT','signal_id':1},decision,100,10000)
+    assert seen[0].equity==D(500)
+    assert captured[0]['account_equity']==D(500)
+    assert captured[0]['hrs_margin_scope']==HRS_OWNED
+    assert captured[0]['account_available_balance']=='448.86'
+    assert captured[0]['account_available_balance_source']=='papi/v1/account.totalAvailableBalance'
+    assert captured[0]['account_status']=='NORMAL'
+    assert captured[0]['effective_allocation']==D('26.18')
+    obj.binance_client.get_account_info.assert_awaited_once()

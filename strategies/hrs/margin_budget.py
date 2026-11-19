@@ -4,7 +4,7 @@ Callers must validate the immutable financial receipt and positive ownership
 proof first. No cash is inferred from equity, allocation or simulated releases.
 """
 import json
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from .risk_budget import FLOOR, policy_budget_version
 
 ALL_ACCOUNT = 'all_account_positions_v1'
@@ -57,11 +57,19 @@ def validate_cash_fields(financial):
     return available
 
 
+def _precision(values):
+    # Guard sums/subtractions against loss of small cash shortfalls at the
+    # ambient Decimal precision; retain supplied scales across products too.
+    if not values:return 28
+    span=max(v.adjusted() for v in values)-min(v.as_tuple().exponent for v in values)+1
+    return max(28,4*span+len(values)+16)
+
+
 def pending_margin(rows, *, account=None):
     """All retained margins, including submitting/filled ambiguous intents."""
     if not isinstance(rows, (list, tuple)):
         raise ValueError('hrs_account_pending_invalid')
-    total, identities = Decimal(0), set()
+    amounts, identities = [], set()
     for row in rows:
         identity = row['client_order_id']
         if (not isinstance(identity, str) or not identity or identity in identities
@@ -71,11 +79,13 @@ def pending_margin(rows, *, account=None):
                 or row['state'] not in ('reserved', 'submitting')):
             raise ValueError('hrs_account_pending_invalid')
         identities.add(identity)
-        total += exact(row['margin'])
-    return total
+        amounts.append(exact(row['margin']))
+    with localcontext() as context:
+        context.prec=_precision(amounts)
+        return sum(amounts,Decimal(0))
 
 
-def margin_limits(financial, proof, pending, account_pending, allocation, policy):
+def _margin_limits(financial, proof, pending, account_pending, allocation, policy):
     """Named Decimal ceilings; remaining_margin is the shared assessor ceiling.
 
     Physical HRS and retained HRS margins deliberately accumulate. Account cash
@@ -122,3 +132,24 @@ def margin_limits(financial, proof, pending, account_pending, allocation, policy
         reserved_margin=reserved, margin_cap=cap, hrs_quota_remaining_margin=quota_remaining,
         account_available_balance=available, account_reserved_margin=account_reserved,
         account_remaining_margin=cash_remaining, remaining_margin=min(quota_remaining, cash_remaining))
+
+
+def margin_limits(financial, proof, pending, account_pending, allocation, policy):
+    """Return named Decimal quota/cash limits with scale-preserving arithmetic.
+
+    remaining_margin is min(hrs_quota_remaining_margin,account_remaining_margin)
+    and is the direct shared risk-assessor margin ceiling.
+    """
+    values=[exact(allocation),validate_cash_fields(financial),exact(financial['account_equity']),
+        exact(financial['effective_allocation'])]+[exact(policy[k]) for k in ('multiplier','ratio_cap','entry_ceiling')]
+    for row in financial['slot_inputs']['inventory']:
+        raw=row['positionAmt']
+        if isinstance(raw,bool) or not isinstance(raw,(str,int,Decimal)):
+            raise ValueError('hrs_margin_inventory_invalid')
+        qty=exact(Decimal(raw).copy_abs(),zero=True)
+        values.append(qty)
+        if qty:values.extend((exact(row['markPrice']),exact(row['leverage'])))
+    values.extend(exact(row['margin']) for row in list(pending)+list(account_pending))
+    with localcontext() as context:
+        context.prec=_precision(values)
+        return _margin_limits(financial,proof,pending,account_pending,allocation,policy)

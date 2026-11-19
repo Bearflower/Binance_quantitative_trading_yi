@@ -30,7 +30,7 @@ async def _database_context(db, account):
         ("SELECT * FROM trading.hrs_loss_gate_state WHERE account_id=$1", (account,))]
     queries += [(f'SELECT * FROM hrs.{table}', ()) for table in TABLES]
     queries += [
-        ("SELECT * FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs'", (account,)),
+        ("SELECT * FROM trading.entry_risk_reservation WHERE account_id=$1", (account,)),
         (CLAIM_EVIDENCE_SELECT + " WHERE c.claim_state IN ('PENDING','ACTIVE')", ()),
         ('''SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
             FROM trading.hrs_equity_evidence WHERE account_id=$1 AND segment_id IS NOT NULL
@@ -107,15 +107,19 @@ async def capture_financial_context(strategy):
         ownership_claims = json.loads(ownership_claims)
     if ownership_claims is not None and not isinstance(ownership_claims, list):
         raise ValueError('ownership_claims_invalid')
+    from .margin_budget import policy_margin_scope,account_cash_fields
+    scope=policy_margin_scope(dict(policies[0]))
+    cash=account_cash_fields(account,getattr(strategy.binance_client,'use_unified_account',False))
     available = datetime.now(timezone.utc)
-    return dict(runtime_slot_scope=SLOT_SCOPE, hrs_slot_inputs=slot_inputs, started_at=started, available_at=available, account_equity=str(equity),
+    return dict(hrs_margin_scope=scope,**cash,runtime_slot_scope=SLOT_SCOPE, hrs_slot_inputs=slot_inputs, started_at=started, available_at=available, account_equity=str(equity),
         account_balances={key: account[key] for key in (
-            ('totalMarginBalance', 'availableBalance') if getattr(strategy.binance_client, 'use_unified_account', False) is True
-            else ('totalMarginBalance', 'totalWalletBalance', 'totalUnrealizedProfit', 'updateTime')) if key in account},
+            ('totalMarginBalance', 'availableBalance', 'accountStatus') if getattr(strategy.binance_client, 'use_unified_account', False) is True
+            else ('totalMarginBalance', 'totalWalletBalance', 'totalUnrealizedProfit', 'updateTime', 'availableBalance', 'accountStatus')) if key in account},
         account_equity_source=('papi/v1/account.accountEquity' if getattr(strategy.binance_client, 'use_unified_account', False) is True
                                else 'fapi/v2/account.totalMarginBalance'),
         exchange_positions=inventory, independent_positions=independent,
-        reservations=[dict(row) for row in reservations], claims=decode_claim_evidence(claims), claim_source_format='postgresql_to_jsonb_v1',
+        reservations=[dict(row) for row in reservations if row.get('strategy_id','hrs')=='hrs'],
+        account_pending_reservations=[dict(row) for row in reservations], claims=decode_claim_evidence(claims), claim_source_format='postgresql_to_jsonb_v1',
         equity_source_archives=[dict(row) for row in sources],
         equity_gate=gate, ownership_claims=ownership_claims,
         hrs_marked_equity_observation=ledger_equity_observation(dict(ledger[0]) if len(ledger)==1 else None, sources),

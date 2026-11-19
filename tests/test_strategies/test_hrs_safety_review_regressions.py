@@ -145,7 +145,7 @@ async def test_real_pg_revision_changed_before_submission_commits_only_proven_un
         async with pool.acquire() as connection:
             row = await connection.fetchrow(f"SELECT * FROM {schema}.entry_risk_reservation WHERE client_order_id='intent'")
             assert row['state'] == ('released' if released else state)
-            assert ('denied_before_http' in row['geometry']) is released
+            assert row['geometry']=='{}'
             claim = await connection.fetchval(f'SELECT claim_state FROM {schema}.position_claims')
             assert claim == ('RELEASED' if released and not other_uncertain else 'PENDING')
             if other_uncertain:

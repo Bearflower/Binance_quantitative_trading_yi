@@ -173,3 +173,27 @@ async def test_gate_snapshot_follows_inventory_observation_and_captures_exact_cl
     result=await module.capture_financial_context(strategy)
     assert result['hrs_slot_inputs']['observed_at']<=result['equity_gate']['checked_at']<=result['available_at']
     assert result['ownership_claims']==[{'id':1,'symbol':'OTHER','strategy':'foreign','claim_state':'ACTIVE'}]
+
+
+@pytest.mark.asyncio
+async def test_prospective_context_preserves_real_cash_status_scope_and_all_account_pending(monkeypatch):
+    import json
+    import strategies.hrs.decision_context as module
+    from strategies.hrs.margin_budget import HRS_OWNED
+    policy=dict(reason=json.dumps(dict(hrs_risk_budget_version='hrs_minimum_executable_v1',hrs_margin_scope=HRS_OWNED)))
+    own=dict(strategy_id='hrs',margin='2');foreign=dict(strategy_id='new_coin',margin='10')
+    async def database(db,account):return [[policy],[],[],[],[],[own,foreign],[],[],[]],True
+    monkeypatch.setattr(module,'_database_context',database)
+    strategy=SimpleNamespace(binance_client=SimpleNamespace(use_unified_account=True,
+        get_account_info=AsyncMock(return_value=dict(totalMarginBalance='500',availableBalance='448.86',accountStatus='NORMAL')),
+        get_position=AsyncMock(return_value=[]),get_um_account_positions=AsyncMock(return_value=[])),
+        position_manager=SimpleNamespace(get_all_positions=lambda:{}),capital_mgr=SimpleNamespace(get_effective_margin_limit=AsyncMock(return_value=(52,'db'))),
+        trading_executor=SimpleNamespace(timeout_recovery=SimpleNamespace(pending=AsyncMock(return_value=[]))),db=object())
+    result=await module.capture_financial_context(strategy)
+    assert result['hrs_margin_scope']==HRS_OWNED
+    assert result['account_available_balance']=='448.86'
+    assert result['account_status']=='NORMAL'
+    assert result['account_available_balance_source']=='papi/v1/account.totalAvailableBalance'
+    assert result['account_balances']['accountStatus']=='NORMAL'
+    assert result['account_pending_reservations']==[own,foreign]
+    assert result['reservations']==[own]

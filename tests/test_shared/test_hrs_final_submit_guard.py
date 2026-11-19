@@ -227,7 +227,7 @@ async def test_pre_http_denial_resolution_commits_in_real_postgres():
         async with pool.acquire() as conn:
             row = await conn.fetchrow(f'SELECT * FROM {schema}.entry_risk_reservation')
             assert row['state'] == 'released'
-            assert 'denied_before_http' in row['geometry']
+            assert row['geometry']=='{}'
             assert await conn.fetchval(f'SELECT claim_state FROM {schema}.position_claims') == 'RELEASED'
     finally:
         async with pool.acquire() as conn:
