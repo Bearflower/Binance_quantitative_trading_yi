@@ -127,3 +127,14 @@ def test_legacy_deployment_manifest_does_not_claim_floor_enabled():
     assert result['effective_risk_limits_changed'] is False
     assert result['runtime_risk_budget_scope'] is None
     assert result['target_hrs_policy_revision'] is None
+
+@pytest.mark.asyncio
+async def test_real_pg_missing_active_pointer_cannot_append_rollback_audit(policy_database):
+    import asyncpg
+    db,p,_,_=policy_database;m=module();c=m.prepare_candidate(p,'a'*40)
+    await db.execute(m.activation_sql(c))
+    await db.execute("DELETE FROM trading.strategy_risk_active WHERE strategy_id='hrs'")
+    with pytest.raises(asyncpg.RaiseError):await db.execute(m.activation_sql(c,rollback=True))
+    await db.execute('ROLLBACK')
+    assert await db.fetchval('SELECT count(*) FROM trading.strategy_risk_audit')==1
+    assert await db.fetchval("SELECT count(*) FROM trading.strategy_risk_active WHERE strategy_id='hrs'")==0

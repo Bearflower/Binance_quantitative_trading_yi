@@ -72,10 +72,11 @@ BEGIN
 """
     if rollback:
         body+=f"""
- IF active_revision<>7 OR max_revision<>7 OR NOT EXISTS(
+ IF active_revision IS DISTINCT FROM 7 OR max_revision IS DISTINCT FROM 7 OR NOT EXISTS(
   SELECT 1 FROM trading.strategy_risk_policy WHERE account_id='default' AND strategy_id='hrs'
   AND revision=7 AND reason={reason}) THEN RAISE EXCEPTION 'rollback_policy_changed'; END IF;
  UPDATE trading.strategy_risk_active SET revision=6 WHERE account_id='default' AND strategy_id='hrs' AND revision=7;
+ IF NOT FOUND THEN RAISE EXCEPTION 'rollback_policy_cas_failed'; END IF;
  INSERT INTO trading.strategy_risk_audit(account_id,strategy_id,previous_revision,revision,reason)
  VALUES('default','hrs',7,6,'rollback of minimum executable budget; original policy retained');
 """
@@ -83,7 +84,7 @@ BEGIN
         body+=f"""
  IF active_revision=7 AND max_revision=7 AND EXISTS(SELECT 1 FROM trading.strategy_risk_policy
   WHERE account_id='default' AND strategy_id='hrs' AND revision=7 AND reason={reason}) THEN RETURN; END IF;
- IF active_revision<>6 OR max_revision<>6 OR old_policy.expires_at<=clock_timestamp() THEN
+ IF active_revision IS DISTINCT FROM 6 OR max_revision IS DISTINCT FROM 6 OR old_policy.expires_at<=clock_timestamp() THEN
   RAISE EXCEPTION 'active_or_max_revision_changed_or_expired';
  END IF;
  INSERT INTO trading.strategy_risk_policy(account_id,strategy_id,revision,effective_at,expires_at,
