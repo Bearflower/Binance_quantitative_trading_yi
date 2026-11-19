@@ -8,6 +8,7 @@ import os
 import tempfile
 import time
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 
 from ai_tuner.allocation.activity_evidence import (
@@ -129,6 +130,73 @@ class EvidenceJobs:
             os.link(temporary.name, target)
         return sample
 
+    async def sample_new_coin_recovery(self):
+        observation = {'account_id': self.budget['account_id'],
+                       'as_of': datetime.now(BEIJING).isoformat(), 'positions': []}
+        try:
+            rows = await self.db.fetch_all(
+                """SELECT p.symbol, p.position_id,
+                          p.metadata->>'entry_order_id' AS entry_order_id,
+                          p.metadata->>'tp1_algo_id' AS tp1_algo_id,
+                          state_data::jsonb->'positions'->p.symbol->>'recovery_position_id'
+                            AS recovered_position_id,
+                          state_data::jsonb->'positions'->p.symbol->>'recovery_tp1_evidence'
+                            AS recovery_tp1_evidence
+                   FROM new_coin.short_positions p
+                   LEFT JOIN public.strategy_states s ON s.strategy_name='new_coin' AND s.state_key='main'
+                   WHERE p.status='open' ORDER BY p.symbol,p.position_id""")
+        except Exception as exc:
+            observation.update(status='BLOCKED_DATA', reason='position_query:' + type(exc).__name__)
+        else:
+            for row in rows:
+                detail = dict(symbol=row['symbol'], position_id=row['position_id'],
+                              tp1_algo_id=row['tp1_algo_id'], status='BLOCKED_DATA')
+                try:
+                    detail.update(await asyncio.wait_for(self._inspect_new_coin_tp1(row), timeout=5))
+                except Exception as exc:
+                    detail['reason'] = 'tp1_evidence:' + type(exc).__name__
+                observation['positions'].append(detail)
+            observation['status'] = 'OBSERVED' if rows else 'WAIT_OPEN_POSITION'
+
+        # Keep the first observation of each evidence state across process restarts.
+        material = {k: v for k, v in observation.items() if k != 'as_of'}
+        digest = hashlib.sha256(json.dumps(material, sort_keys=True).encode()).hexdigest()
+        archive = self.state_dir / 'new-coin-recovery' / (digest + '.json')
+        if not archive.exists():
+            atomic_report(archive, observation)
+        atomic_report(self.state_dir / 'new-coin-recovery-latest.json', observation)
+        return observation
+
+    async def _inspect_new_coin_tp1(self, row):
+        symbol, entry, tp1 = (row[k] for k in ('symbol', 'entry_order_id', 'tp1_algo_id'))
+        if (not entry or not tp1 or not entry.isascii() or not tp1.isascii()
+                or not entry.isdecimal() or not tp1.isdecimal()
+                or int(entry) <= 0 or int(tp1) <= 0 or row['position_id'] != f'{symbol}_{entry}'):
+            return {'status': 'BLOCKED_DATA', 'reason': 'position_identity_unverified'}
+        algo = await self.pm.get_algo_order(int(tp1))
+        if (str(algo.get('algoId')) != tp1 or algo.get('symbol') != symbol
+                or algo.get('orderType') != 'TAKE_PROFIT' or algo.get('side') != 'BUY'
+                or algo.get('positionSide') != 'BOTH' or algo.get('reduceOnly') is not True):
+            return {'status': 'BLOCKED_DATA', 'reason': 'algo_identity_unverified'}
+        state, actual = algo.get('algoStatus'), str(algo.get('actualOrderId', ''))
+        if state == 'NEW' and actual in ('', '0'):
+            return {'status': 'WAIT_TP1'}
+        if (state != 'FINISHED' or not actual.isascii() or not actual.isdecimal()
+                or int(actual) <= 0 or actual == entry):
+            return {'status': 'BLOCKED_DATA', 'reason': 'algo_not_confirmed_filled', 'algo_state': state}
+        order = await self.pm.get_order(symbol, int(actual))
+        executed = Decimal(str(order.get('executedQty')))
+        if (str(order.get('orderId')) != actual or order.get('symbol') != symbol
+                or order.get('side') != 'BUY' or order.get('positionSide') != 'BOTH'
+                or order.get('reduceOnly') is not True or order.get('status') != 'FILLED'
+                or not executed.is_finite() or executed <= 0
+                or executed != Decimal(str(algo.get('quantity')))):
+            return {'status': 'BLOCKED_DATA', 'reason': 'tp1_order_unverified'}
+        recovered = (row['recovered_position_id'] == row['position_id']
+                     and row['recovery_tp1_evidence'] == 'verified_tail')
+        return {'status': 'RECOVERY_TAIL_VERIFIED' if recovered else 'WAIT_RECOVERY',
+                'tp1_order_id': actual}
+
     async def sample_activity(self):
         result = await collect_entry_activity(self.db, self.pm, self.budget['account_id'],
                                               max_requests=20)
@@ -199,6 +267,9 @@ def register_evidence_jobs(scheduler, jobs):
                           replace_existing=True, coalesce=True, misfire_grace_time=30)
     scheduler.add_job(jobs.sample_equity_valuation, 'interval', minutes=5,
                       id='pm_equity_valuation', max_instances=1, replace_existing=True,
+                      coalesce=True, misfire_grace_time=60, next_run_time=datetime.now(BEIJING))
+    scheduler.add_job(jobs.sample_new_coin_recovery, 'interval', minutes=5,
+                      id='new_coin_recovery', max_instances=1, replace_existing=True,
                       coalesce=True, misfire_grace_time=60, next_run_time=datetime.now(BEIJING))
     scheduler.add_job(jobs.run_allocation_shadow, 'cron', hour=10, minute=5,
                       timezone='Asia/Shanghai', id='allocation_shadow', max_instances=1,
