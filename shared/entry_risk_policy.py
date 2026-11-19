@@ -210,6 +210,47 @@ def _bind_hrs_floor_local_to_parent(parent, local, account, digest):
         raise EntryDenied('HRS local risk differs from immutable parent', reason_code='hrs_budget_parent_risk_mismatch') from exc
 
 
+def _hrs_floor_parent_margin(payload):
+    """All-account margin from an already hash-verified immutable inventory."""
+    try:
+        result=Decimal(0)
+        for position in payload['capture']['inventory']:
+            quantity=number(abs(Decimal(str(position['positionAmt']))),zero=True)
+            if quantity:
+                result+=quantity*number(position['markPrice'])/number(position['leverage'])
+        return result
+    except (KeyError,ValueError,TypeError,AttributeError,ArithmeticError,EntryDenied) as exc:
+        raise EntryDenied('HRS immutable parent margin unavailable',reason_code='hrs_budget_parent_margin_invalid') from exc
+
+
+def _validate_hrs_floor_finance(context, slot_context, parent, pending, allocation, policy, expected):
+    """Apply the actual allocation/policy/parent/pending ceiling to captured sizing.
+
+    Account equity is a retained tighter snapshot constraint, not an immutable
+    balance attestation. The independent ceiling is current monthly allocation
+    times the immutable policy multiplier, less verified physical/durable margin.
+    """
+    try:
+        parent_margin=_hrs_floor_parent_margin(parent)
+        reserved_margin=sum((number(row['margin']) for row in pending),Decimal(0))
+        cap=min(allocation*number(policy['multiplier']),number(policy['entry_ceiling']),
+                number(context['snapshot_effective_allocation']),
+                number(context['snapshot_account_equity'])*number(policy['ratio_cap']))
+        remaining=cap-parent_margin-reserved_margin
+        if (number(context['full_allocation']) != allocation
+                or expected.budget_inputs['allocation'] != allocation
+                or number(context['account_margin'],zero=True) != parent_margin
+                or number(slot_context['account_margin'],zero=True) != parent_margin
+                or number(context['reserved_margin'],zero=True) != reserved_margin
+                or number(context['margin_cap']) != cap
+                or number(context['remaining_margin']) != remaining
+                or expected.quantity*expected.budget_inputs['entry_price']/expected.budget_inputs['leverage'] > remaining):
+            raise ValueError('captured sizing exceeds actual finance sources')
+        return cap,remaining
+    except (KeyError,ValueError,TypeError,AttributeError,ArithmeticError,EntryDenied) as exc:
+        raise EntryDenied('HRS allocation or physical margin sources changed',reason_code='hrs_budget_finance_source_mismatch') from exc
+
+
 def _refine_hrs_floor(sized, geometry, values, pending, allocation, remaining, context):
     from strategies.hrs.risk_budget import calculate_open_position_risk, assess_budget_inputs
     initial = _validate_hrs_floor_decision(geometry.get('hrs_budget_decision'), geometry.get('hrs_budget_inputs'))
@@ -466,8 +507,13 @@ class RiskPolicyStore:
                 if len(occupied|{symbol})>values.max_slots:
                     raise EntryDenied('concurrent position slots include pending reservations',reason_code='entry_position_slots',context=context)
                 if floor:
-                    _bind_hrs_floor_local_to_parent(row['payload'],values.slot_evidence['local'],
+                    parent = _bind_hrs_floor_local_to_parent(row['payload'],values.slot_evidence['local'],
                         self.account,row['evidence_sha256'])
+                    parent_margin = _hrs_floor_parent_margin(parent)
+                    if (number(holdings,zero=True) != parent_margin
+                            or number(proof['account_margin'],zero=True) != parent_margin):
+                        raise EntryDenied('HRS account margin differs from immutable parent',
+                            reason_code='hrs_budget_parent_margin_mismatch')
                 saved_geometry.update(slot_scope=SLOT_SCOPE,slot_occupancy_proof=proof,slot_context=context)
             else:
                 holdings,equity,allocation = snapshot_values[:3]
@@ -481,6 +527,8 @@ class RiskPolicyStore:
                 if len(occupied_symbols | {symbol}) > max_slots:
                     raise EntryDenied('concurrent position slots include pending reservations',reason_code='entry_position_slots',context=dict(occupied_symbols=sorted(occupied_symbols),requested_slots=len(occupied_symbols|{symbol}),max_slots=max_slots))
             cap = min(number(allocation),number(equity)*number(policy['ratio_cap']),number(policy['entry_ceiling']))
+            if floor:
+                cap = min(cap,full_allocation*number(policy['multiplier']))
             used = await conn.fetchval('''SELECT COALESCE(sum(margin),0) FROM trading.entry_risk_reservation
                 WHERE account_id=$1 AND strategy_id=$2 AND state <> 'released' ''',self.account,strategy)
             if floor:
@@ -490,7 +538,9 @@ class RiskPolicyStore:
                 remaining = cap - number(holdings,zero=True) - number(used,zero=True)
                 sized, refined_decision, budget_context = _refine_hrs_floor(
                     sized,saved_geometry,values,pending,full_allocation,remaining,
-                    dict(context,locked_policy=_hrs_budget_json(policy)))
+                    dict(context,locked_policy=_hrs_budget_json(policy),
+                         snapshot_effective_allocation=values.allocation,snapshot_account_equity=values.equity,
+                         margin_cap=cap,reserved_margin=used))
             if number(holdings,zero=True)+used+sized.margin > cap:
                 raise EntryDenied('entry ceiling includes holdings and all durable reservations',reason_code='entry_margin_ceiling',context=dict(context,account_margin=str(holdings),reserved_margin=str(used),entry_margin=str(sized.margin),margin_cap=str(cap)))
             # Existing symbol claim must already be acquired by the ordinary ownership protocol.
@@ -539,12 +589,23 @@ class RiskPolicyStore:
                                        account=self.account,client_id=client_id)
         if context.get('locked_policy') != _hrs_budget_json(policy):
             raise EntryDenied('HRS locked policy evidence changed')
+        gate=await conn.fetchrow('''SELECT *,clock_timestamp() AS checked_at
+            FROM trading.strategy_equity_gate WHERE account_id=$1 AND strategy_id='hrs' ''',self.account)
+        if (not gate or gate['evidence_sha256'] != context['evidence_sha256']
+                or gate['ready'] is not True or gate['allowed'] is not True
+                or gate['policy_revision'] != policy['revision']
+                or not gate['as_of'] <= gate['checked_at'] < gate['valid_until']
+                or not timedelta(0) < gate['valid_until']-gate['as_of'] <= timedelta(seconds=120)):
+            raise EntryDenied('HRS current equity parent changed',reason_code='hrs_budget_finance_parent_changed')
         parent=await conn.fetchrow("""SELECT payload FROM trading.hrs_equity_evidence
             WHERE account_id=$1 AND evidence_sha256=$2""",self.account,context['evidence_sha256'])
         if not parent:
             raise EntryDenied('HRS immutable equity parent missing')
-        _bind_hrs_floor_local_to_parent(parent['payload'],context['local_positions'],
-                                       self.account,context['evidence_sha256'])
+        payload=_bind_hrs_floor_local_to_parent(parent['payload'],context['local_positions'],
+                                               self.account,context['evidence_sha256'])
+        allocation=await current_allocation(conn,'hrs')
+        _validate_hrs_floor_finance(context,geometry['slot_context'],payload,pending,
+                                   allocation,policy,expected)
         if not (geometry.get('hrs_risk_budget_version') == FLOOR
                 and geometry.get('hrs_budget_source') == 'hrs_live_assessor_v1'
                 and _hrs_budget_json(expected.budget_inputs) == _hrs_budget_json(decision.budget_inputs)
