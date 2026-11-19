@@ -40,3 +40,26 @@ def test_margin_registration_counts_all_inputs_and_keeps_old_unregistered_behavi
 def test_engine_identity_contains_the_actual_margin_module():
     result=experiment.engine_identity()
     assert 'strategies/hrs/margin_budget.py' in result['source_files']
+
+@pytest.mark.parametrize('declared_scope,expected_runs',[(HRS_OWNED,6),(ALL_ACCOUNT,0)])
+def test_owned_registration_is_enforced_by_sealed_original_sources_and_real_runner(tmp_path,declared_scope,expected_runs):
+    from datetime import timedelta
+    from tests.test_ai_tuner_mvp.replay.test_hrs_owned_margin_parity import owned_fixture
+    from tests.test_ai_tuner_mvp.replay.test_hrs_wiring import AT
+    portal,_=owned_fixture(tmp_path)
+    raw=portal.hrs_replay_state(AT)
+    r=registration();r.update(runtime_margin_scope=declared_scope,
+        runtime_risk_budget_scope=FLOOR,runtime_admission_scope='hrs_owned_and_unreleased_reservations_v2')
+    r['baseline'].update(config=raw['config'],config_hashes=raw['config_hashes'],
+        effective_config_sha256=experiment.fingerprint(raw['config']))
+    r['windows'][0].update(start=AT.isoformat(),end=(AT+timedelta(hours=3)).isoformat(),snapshot_dir=str(portal.snapshot_dir))
+    r['windows'][1].update(start='2026-12-01T00:00:00+08:00',end='2027-01-01T00:00:00+08:00')
+    r['windows'][2].update(start='2027-01-01T00:00:00+08:00',end='2027-02-01T00:00:00+08:00')
+    report=experiment.run_experiment(r,snapshot_roots=[portal.snapshot_dir])
+    assert report['engine_runs']==expected_runs,report['blocked_reasons']
+    assert report['runtime_margin_scope']==declared_scope
+    if expected_runs:
+        assert report['evaluations'][0]['tiers']['baseline']['runtime_margin_scope_validation']==dict(status='VERIFIED',scope=HRS_OWNED,input_rows_checked=2)
+    else:
+        assert any('registered_runtime_margin_scope_mismatch' in reason for reason in report['blocked_reasons'])
+    assert report['performance_accepted'] is False
