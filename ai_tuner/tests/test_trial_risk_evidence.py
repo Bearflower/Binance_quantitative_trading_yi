@@ -49,3 +49,17 @@ def test_risk_budget_counts_verified_intact_lot_once_and_rejects_partial_positio
     assert covered_reservation_budget(positions, {'BTCUSDT'}, intents * 2) is None
     assert covered_reservation_budget([dict(positions[0], positionAmt='0.5')], {'BTCUSDT'}, intents) is None
     assert covered_reservation_budget(positions, {'BTCUSDT'}, [dict(intents[0], cursor_complete=False)]) is None
+
+
+def test_remaining_reserved_budget_requires_conserved_position_after_exits():
+    from ai_tuner.monitor.trial_risk_evidence import covered_reservation_budget
+
+    positions = [dict(symbol='BTCUSDT', positionSide='BOTH', positionAmt='0.5')]
+    intent = dict(symbol='BTCUSDT', margin='20', quantity='1', orig_qty='1', side='BUY',
+                  executed_qty='1', fill_qty='1', exit_qty='0.5', cursor_complete=True)
+    assert covered_reservation_budget(positions, {'BTCUSDT'}, [intent]) is None
+    assert covered_reservation_budget(positions, {'BTCUSDT'}, [intent], allow_exits=True) == Decimal('10')
+    assert covered_reservation_budget(positions, {'BTCUSDT'}, [dict(intent, exit_qty='0.4')],
+                                      allow_exits=True) is None
+    assert covered_reservation_budget(positions, {'BTCUSDT'}, [dict(intent, fill_qty=None)],
+                                      allow_exits=True) is None

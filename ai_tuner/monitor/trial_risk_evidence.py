@@ -66,8 +66,8 @@ def account_initial_margin(evidence, as_of_ms):
     return None
 
 
-def covered_reservation_budget(positions, owned_symbols, intents):
-    """Identify the part of the policy reservation already covering intact lots."""
+def covered_reservation_budget(positions, owned_symbols, intents, *, allow_exits=False):
+    """Attribute the reserved amount to a conserved single-intent position."""
     live = {}
     for pos in positions:
         symbol = pos["symbol"]
@@ -92,11 +92,15 @@ def covered_reservation_budget(positions, owned_symbols, intents):
         row = rows[symbol]
         margin = _decimal(row.get("margin"))
         quantities = [_decimal(row.get(key)) for key in ("quantity", "orig_qty", "executed_qty", "fill_qty")]
+        opened = quantities[0]
+        closed = _decimal(row["exit_qty"]) if "exit_qty" in row else Decimal(0)
         if (margin is None or margin <= 0 or row.get("cursor_complete") is not True
                 or row.get("side") != ("BUY" if amount > 0 else "SELL")
-                or any(value != abs(amount) for value in quantities)):
+                or opened is None or opened <= 0 or any(value != opened for value in quantities)
+                or closed is None or not 0 <= closed < opened
+                or (closed and not allow_exits) or opened - closed != abs(amount)):
             return None
-        total += margin
+        total += margin * abs(amount) / opened
     return total
 
 

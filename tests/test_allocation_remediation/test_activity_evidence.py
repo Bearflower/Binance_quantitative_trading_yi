@@ -530,7 +530,7 @@ def test_order_seen_under_another_strategy_cannot_verify_one_strategy_subset():
 
 
 @pytest.mark.asyncio
-async def test_postgres_intact_budget_rejects_any_unmatched_fill(pg_activity):
+async def test_postgres_lot_budget_accepts_only_contiguous_ordered_reductions(pg_activity):
     from ai_tuner.monitor.reduced_trial import _COVERED_RESERVATIONS_SQL
 
     conn = pg_activity
@@ -543,7 +543,8 @@ async def test_postgres_intact_budget_rejects_any_unmatched_fill(pg_activity):
         INSERT INTO trading.execution_fact_fill VALUES
         ('default','AAAUSDT',1,10,'BUY',2,to_timestamp(2));
         INSERT INTO trading.execution_fact_cursor VALUES
-        ('default','userTrades','AAAUSDT',1000,3000,true,'ok');
+        ('default','userTrades','AAAUSDT',1000,2100,true,'ok'),
+        ('default','userTrades','AAAUSDT',2100,3000,true,'ok');
     """)
     signed = dict(observation(client='live')['raw_payload'], status='FILLED',
                   origQty='2', positionSide='BOTH')
@@ -555,10 +556,18 @@ async def test_postgres_intact_budget_rejects_any_unmatched_fill(pg_activity):
                        2, 2, 'ok', json.dumps(signed), _digest(signed),
                        'a'*64, 'signed_pm_get_order_v1', 'budget-test-batch')
     row = await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args)
-    assert row['cursor_complete'] and row['fill_qty'] == 2 and row['margin'] == 7
+    assert row['cursor_complete'] and row['fill_qty'] == 2 and row['exit_qty'] == 0 and row['margin'] == 7
     await conn.execute('RESET ROLE')
     await conn.execute("""INSERT INTO trading.execution_fact_fill VALUES
-        ('default','AAAUSDT',2,NULL,'BUY',1,to_timestamp(2.5))""")
+        ('default','AAAUSDT',2,20,'SELL',1,to_timestamp(2.5))""")
+    reduced = await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args)
+    assert reduced['cursor_complete'] and reduced['fill_qty'] == 2 and reduced['exit_qty'] == 1
+    await conn.execute("UPDATE trading.execution_fact_cursor SET window_start_ms=2101 WHERE window_start_ms=2100")
+    assert not (await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args))['cursor_complete']
+    await conn.execute("UPDATE trading.execution_fact_fill SET trade_time_utc=to_timestamp(2) WHERE trade_id=2")
+    assert (await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args))['fill_qty'] is None
+    await conn.execute("""UPDATE trading.execution_fact_fill
+        SET trade_time_utc=to_timestamp(2.5), order_id=NULL WHERE trade_id=2""")
     assert (await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args))['fill_qty'] is None
 
 
@@ -569,3 +578,12 @@ def test_overlapping_protocol_declarations_require_coverage_for_both_universes()
     assert not row['coverage_complete']
     assert row['owned_entry_fills'] is None
     assert 'user_trades_coverage_incomplete' in row['reasons']
+
+
+def test_explicit_order_identity_conflict_excludes_old_positive_observation():
+    old = observation()
+    later = dict(old, id=2, outcome='order_identity_conflict', observed_at=stamp(450))
+    row = project([reservation()], [old, later], [fill()])
+    assert row['owned_entry_fills'] is None
+    assert row['verified_filled_entry_orders'] is None
+    assert 'order_identity_conflict' in row['reasons']
