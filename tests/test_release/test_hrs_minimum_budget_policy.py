@@ -96,3 +96,34 @@ async def test_real_pg_concurrent_same_candidate_commits_one_revision_and_audit(
     finally:await other.close()
     assert await db.fetchval("SELECT revision FROM trading.strategy_risk_active WHERE strategy_id='hrs'")==7
     assert await db.fetchval('SELECT count(*) FROM trading.strategy_risk_audit')==1
+
+def deploy_module():
+    path=PATH.with_name('deploy_optimization.py')
+    spec=importlib.util.spec_from_file_location('minimum_deploy_metadata',path)
+    result=importlib.util.module_from_spec(spec);spec.loader.exec_module(result);return result
+
+def test_deploy_metadata_declares_effective_budget_change_separately_from_base_ratios():
+    m=deploy_module()
+    manifest={'source_hashes':{'strategies/hrs/entry_occupancy.py':'a'*64},
+        'runtime_admission_scope':'hrs_owned_and_unreleased_reservations_v2',
+        'runtime_risk_budget_scope':'hrs_minimum_executable_v1','target_hrs_policy_revision':7}
+    actual=m.admission_change_metadata(manifest)
+    assert actual['risk_budget_model_changed'] is True
+    assert actual['effective_risk_limits_changed'] is True
+    assert actual['risk_budget_percentages_changed'] is False
+    assert actual['runtime_risk_budget_scope']=='hrs_minimum_executable_v1'
+    assert actual['target_hrs_policy_revision']==7
+    assert actual['sltp_parameters_changed'] is False
+
+@pytest.mark.parametrize('scope,revision',[('unknown',7),('hrs_minimum_executable_v1',6),(None,7)])
+def test_deploy_metadata_rejects_unrecognized_or_mismatched_budget_contract(scope,revision):
+    m=deploy_module()
+    manifest={'source_hashes':{},'runtime_risk_budget_scope':scope,'target_hrs_policy_revision':revision}
+    with pytest.raises(ValueError):m.admission_change_metadata(manifest)
+
+def test_legacy_deployment_manifest_does_not_claim_floor_enabled():
+    result=deploy_module().admission_change_metadata({'source_hashes':{}})
+    assert result['risk_budget_model_changed'] is False
+    assert result['effective_risk_limits_changed'] is False
+    assert result['runtime_risk_budget_scope'] is None
+    assert result['target_hrs_policy_revision'] is None
