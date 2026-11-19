@@ -5,6 +5,7 @@ from decimal import Decimal, InvalidOperation
 import json
 import re
 
+from ai_tuner.monitor.hrs_closed_lot import read_closed_lot
 from shared.entry_fill_evidence import verified_fill
 
 
@@ -120,13 +121,24 @@ async def read_protective_exits(db, exchange, account_id, start_ms, end_ms):
                 algo, order, trades = await asyncio.wait_for(asyncio.gather(
                     exchange.get_algo_order(int(algo_id)), exchange.get_order(row['symbol'], int(order_id)),
                     exchange.get_user_trades(row['symbol'], order_id=order_id, limit=1000)), 6)
-                return verify_protective_exit(row, algo, order, trades), None
+                link = verify_protective_exit(row, algo, order, trades)
             except (ValueError, TypeError, KeyError, AttributeError, InvalidOperation) as exc:
                 return None, dict(symbol=row['symbol'], order_id=str(row['order_id']), reason='proof_mismatch',
                                   detail=type(exc).__name__)
             except Exception as exc:
                 return None, dict(symbol=row['symbol'], order_id=str(row['order_id']),
                                   reason='protective_exit_lookup:' + type(exc).__name__)
+            if link['strategy'] == 'hrs' and link['kind'] not in _STOP_TYPES:
+                try:
+                    lot = await asyncio.wait_for(
+                        read_closed_lot(db, exchange, account_id, link, algo, trades), 8)
+                    link['entry_order_id'] = lot['entry_order_id']
+                    link['closed_lot'] = lot
+                except ValueError as exc:
+                    link['closed_lot_gap'] = str(exc)
+                except Exception as exc:
+                    link['closed_lot_gap'] = type(exc).__name__
+            return link, None
 
     keys = set()
     for link, issue in await asyncio.gather(*(verify(row) for row in rows[:_LIMIT])):

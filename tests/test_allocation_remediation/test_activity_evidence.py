@@ -70,6 +70,19 @@ def test_other_strategy_order_requires_exact_execution_before_excluding_it(quant
     assert row['owned_entry_fills'] is None
 
 
+@pytest.mark.parametrize('key,expected', [
+    (('default', 'hrs', 'AAAUSDT', '1', '10', 200), 1),
+    (('default', 'btc_eth_aggressive', 'AAAUSDT', '1', '10', 200), None),
+    (('default', 'hrs', 'AAAUSDT', '1', '10', 201), None),
+])
+def test_exact_closed_lot_proves_one_way_entry_without_certifying_window(key, expected):
+    row = project_activity_evidence([reservation()], [observation(position_side='BOTH')], [fill()],
+                                    [], [], 'default', 100, 300, ['hrs'], verified_openings={key})['hrs']
+    assert row['owned_entry_fills'] == expected
+    assert row['coverage_complete'] is False
+    assert 'missing_protocol_cutover' in row['reasons']
+
+
 def test_missing_orders_are_unknown_even_for_released_reservations():
     row = project([reservation()])
     assert row['owned_entry_fills'] is None
