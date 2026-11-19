@@ -43,6 +43,22 @@ def project(reservations=None, observations=None, fills=None, facts=(), cursors=
                                      cursors, facts, 'default', 100, 300, ['hrs'])['hrs']
 
 
+
+@pytest.mark.parametrize('key,expected_gap', [
+    (('default', 'AAAUSDT', '1', '10', 200), False),
+    (('grid', 'AAAUSDT', '1', '10', 200), True),
+    (('default', 'AAAUSDT', '1', '11', 200), True),
+    (('default', 'AAAUSDT', '1', '10', 201), True),
+])
+def test_signed_reduction_resolves_only_exact_fill_without_certifying_window(key, expected_gap):
+    row = project_activity_evidence([], [], [fill()], [], [], 'default', 100, 300, ['hrs'],
+                                    verified_reductions={key})['hrs']
+    assert ('unowned_fill_in_window' in row['reasons']) is expected_gap
+    assert 'missing_protocol_cutover' in row['reasons']
+    assert row['owned_entry_fills'] is None
+    assert row['coverage_complete'] is False
+
+
 def test_missing_orders_are_unknown_even_for_released_reservations():
     row = project([reservation()])
     assert row['owned_entry_fills'] is None
