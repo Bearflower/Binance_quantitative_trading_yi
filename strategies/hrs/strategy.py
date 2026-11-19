@@ -1036,19 +1036,27 @@ class HRSStrategy(BaseStrategy):
                         allocation=decision.effective_allocation,
                         max_slots=self.config.get('trading', {}).get('max_positions', 3),
                         slot_scope=SLOT_SCOPE, slot_evidence=slot_inputs)
+                geometry = {'signal_id': identity,
+                            'exit_ratios': [str(x) for x in decision.exit_ratios],
+                            'entry_price': str(price), 'quantity': str(quantity)}
+                from .risk_budget import FLOOR
+                if decision.budget_version == FLOOR:
+                    geometry.update(hrs_risk_budget_version=FLOOR,
+                        hrs_budget_inputs=dict(decision.budget_inputs),
+                        hrs_budget_decision=decision, hrs_budget_source='hrs_live_assessor_v1')
                 client_id = await store.reserve('hrs', symbol, str(identity), sized,
                                                 decision.policy_revision, snapshot,
-                                                geometry={'signal_id': identity,
-                                                          'exit_ratios':[str(x) for x in decision.exit_ratios],
-                                                          'entry_price':str(price),
-                                                          'quantity':str(quantity)})
+                                                geometry=geometry)
                 reserved = True
                 audit = getattr(store, 'reservation_audit', None)
                 if not isinstance(audit, dict) or audit.get('client_order_id') != client_id:
                     raise ValueError('reservation_audit_missing')
                 await record_stage(self, 'entry_stage_inputs',
                     dict(stage='reservation_success', **audit), symbol=symbol)
-                return replace(decision, client_order_id=client_id)
+                committed = audit.get('risk_decision') if decision.budget_version == FLOOR else decision
+                if decision.budget_version == FLOOR and not isinstance(committed, RiskDecision):
+                    raise ValueError('reservation_budget_decision_missing')
+                return replace(committed, client_order_id=client_id)
             finally:
                 if not reserved:
                     await release_claim(self.db, symbol, 'hrs', reason='reservation_failed')
@@ -1079,6 +1087,8 @@ class HRSStrategy(BaseStrategy):
         try:
             from shared.entry_risk_policy import RiskPolicyStore
             policy = await RiskPolicyStore(self.db).policy('hrs')
+            from .risk_budget import policy_budget_version
+            budget_version = policy_budget_version(policy)
             if policy['mode'] != 'reduced' or policy['allow_add']:
                 return RiskDecision(False, 'risk_policy_not_reduced')
             equity = Decimal(str(account_equity))
@@ -1110,6 +1120,7 @@ class HRSStrategy(BaseStrategy):
             if existing_open_risk is None:
                 return RiskDecision(False, "open_position_risk_unknown")
             decision = assess_entry(
+                budget_version=budget_version,
                 allocation=Decimal(str(allocation)),
                 entry_price=Decimal(str(entry_price)), stop_price=Decimal(str(stop_price)),
                 direction=direction, existing_open_risk=existing_open_risk,
