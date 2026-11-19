@@ -165,3 +165,21 @@ def test_risk_decision_reports_the_full_allocation_used_for_loss_budget():
     assert decision.risk_allocation==D('52.31')
     reduced=replace(decision,effective_allocation=D('26.155'))
     assert reduced.risk_allocation==D('52.31') and reduced.risk_limit==D('.5231')
+
+
+@pytest.mark.parametrize('mode,origin', [
+    ('emm', 'shadow_scoring'),
+    ('semi_emm', 'shadow_scoring'),
+    ('lv_rm', 'empty_pool'),
+])
+@pytest.mark.parametrize('configuration', [{}, {'execution_mode': None}, {'execution_mode': 'typo'}])
+def test_observation_modes_require_explicit_execution(mode, origin, configuration):
+    from strategies.hrs import core_decision as core
+    assert core.is_shadow_entry_mode({mode: configuration}, mode, origin)
+    assert not core.is_shadow_entry_mode({mode: {'execution_mode': 'execute'}}, mode, origin)
+
+
+def test_legacy_config_retains_standard_and_nonempty_lv_rm_execution():
+    from strategies.hrs import core_decision as core
+    assert not core.is_shadow_entry_mode({}, 'standard', 'standard')
+    assert not core.is_shadow_entry_mode({}, 'lv_rm', 'nonempty_pool')
