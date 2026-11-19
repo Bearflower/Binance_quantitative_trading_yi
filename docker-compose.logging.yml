@@ -41,6 +41,12 @@ services:
   hrs-strategy:
     logging: !override
       driver: journald
+  hrs-acceptance-reporter:
+    logging: !override
+      driver: journald
+  market-cap-service:
+    logging: !override
+      driver: journald
   btc-eth-strategy:
     logging: !override
       driver: journald
