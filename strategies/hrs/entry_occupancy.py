@@ -17,6 +17,9 @@ from .equity_evidence import (canonical,_inventory,_inventory_agrees,
 SLOT_SCOPE='hrs_owned_and_unreleased_reservations_v2'
 INPUT_VERSION='hrs-slot-inputs-v1'
 PROOF_VERSION='hrs-slot-ownership-v1'
+OWNED_PROOF_VERSION='hrs-slot-ownership-v2'
+OWNED_CLAIM_SCOPE='hrs_current_foreign_economic_owner_v1'
+from .margin_budget import ALL_ACCOUNT,HRS_OWNED
 _HASH=re.compile(r'[0-9a-f]{64}\Z')
 
 
@@ -66,9 +69,10 @@ def _account_margin(inventory):
     return result
 
 
-def prove_hrs_slot_ownership(account_id,parent,inputs,claims,*,checked_at):
+def prove_hrs_slot_ownership(account_id,parent,inputs,claims,*,checked_at,margin_scope=ALL_ACCOUNT):
     """Return a minimal audit proof, or deny every unknown/conflicting owner."""
     try:
+        _require(margin_scope in (ALL_ACCOUNT,HRS_OWNED),'hrs_slot_proof_scope_invalid')
         payload=json.loads(parent['payload']) if isinstance(parent['payload'],str) else parent['payload']
         _require(canonical(payload)[1]==parent['evidence_sha256'],'hrs_slot_parent_hash_mismatch')
         _require(parent.get('account_id',account_id)==payload.get('account_id')==account_id,'hrs_slot_account_mismatch')
@@ -94,23 +98,27 @@ def prove_hrs_slot_ownership(account_id,parent,inputs,claims,*,checked_at):
             matches=[owner for (owner,sym),(quantity,_) in positions.items() if sym==symbol and quantity!=0 and quantity==qty]
             _require(len(matches)==1 and isinstance(matches[0],str) and bool(matches[0]),'hrs_slot_owner_unknown')
             choices={row.get('strategy') for row in claims if row.get('symbol')==symbol and row.get('id') is not None and row.get('claim_state') in ('PENDING','ACTIVE')}
-            _require(choices=={matches[0]},'hrs_slot_claim_owner_conflict')
+            required = matches[0]=='hrs' or margin_scope==ALL_ACCOUNT
+            _require(choices=={matches[0]} if required else choices<={matches[0]},'hrs_slot_claim_owner_conflict')
             assigned[symbol]=matches[0]
         hrs={symbol for symbol,owner in assigned.items() if owner=='hrs'}
         local=_local(inputs['local'])
         _require(local==_local(capture['local']) and set(local)==hrs,'hrs_slot_local_owner_conflict')
         _require(all(local[symbol][0]==actual[symbol][0] for symbol in hrs),'hrs_slot_local_quantity_conflict')
-        return dict(version=PROOF_VERSION,slot_scope=SLOT_SCOPE,account_id=account_id,
+        proof=dict(version=PROOF_VERSION,slot_scope=SLOT_SCOPE,account_id=account_id,
             equity_evidence_sha256=parent['evidence_sha256'],as_of=as_of.isoformat(),observed_at=observed.isoformat(),
             account_symbols=sorted(actual),hrs_symbols=sorted(hrs),owners=assigned,
             inventory_sha256=canonical({symbol:[str(v) for v in values] for symbol,values in sorted(actual.items())})[1],
             account_margin=str(_account_margin(inputs['inventory'])))
+        if margin_scope==HRS_OWNED:
+            proof.update(version=OWNED_PROOF_VERSION,claim_scope=OWNED_CLAIM_SCOPE)
+        return proof
     except HrsOccupancyDenied:raise
     except Exception as exc:
         raise HrsOccupancyDenied('hrs_slot_ownership_unproven') from exc
 
 
-def validate_hrs_slot_proof(proof,*,inventory,account_id,observed_at):
+def validate_hrs_slot_proof(proof,*,inventory,account_id,observed_at,margin_scope=ALL_ACCOUNT):
     """Validate an already source/manifest-bound proof, not recertify ownership.
 
     Offline exporters must first call prove_hrs_slot_ownership against the raw
@@ -118,8 +126,13 @@ def validate_hrs_slot_proof(proof,*,inventory,account_id,observed_at):
     inventory, clocks and positive complete owner partition for replay use.
     """
     try:
-        _require(isinstance(proof,dict) and set(proof)=={'version','slot_scope','account_id','equity_evidence_sha256','as_of','observed_at','account_symbols','hrs_symbols','owners','inventory_sha256','account_margin'},'hrs_slot_proof_invalid')
-        _require(proof['version']==PROOF_VERSION and proof['slot_scope']==SLOT_SCOPE and proof['account_id']==account_id,'hrs_slot_proof_scope_invalid')
+        _require(margin_scope in (ALL_ACCOUNT,HRS_OWNED),'hrs_slot_proof_scope_invalid')
+        keys={'version','slot_scope','account_id','equity_evidence_sha256','as_of','observed_at','account_symbols','hrs_symbols','owners','inventory_sha256','account_margin'}
+        if margin_scope==HRS_OWNED:keys.add('claim_scope')
+        _require(isinstance(proof,dict) and set(proof)==keys,'hrs_slot_proof_invalid')
+        version=OWNED_PROOF_VERSION if margin_scope==HRS_OWNED else PROOF_VERSION
+        if margin_scope==HRS_OWNED:_require(proof['claim_scope']==OWNED_CLAIM_SCOPE,'hrs_slot_proof_scope_invalid')
+        _require(proof['version']==version and proof['slot_scope']==SLOT_SCOPE and proof['account_id']==account_id,'hrs_slot_proof_scope_invalid')
         _require(isinstance(proof['equity_evidence_sha256'],str) and _HASH.fullmatch(proof['equity_evidence_sha256']),'hrs_slot_proof_hash_invalid')
         observed,as_of=_time(observed_at),_time(proof['as_of'])
         _require(proof['observed_at']==observed.isoformat() and as_of<=observed<=as_of+timedelta(seconds=120),'hrs_slot_source_stale_or_future')
