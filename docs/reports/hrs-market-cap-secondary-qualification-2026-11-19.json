@@ -1,0 +1,459 @@
+{
+  "observed_at": "2026-11-19T00:44:22.201433+00:00",
+  "scope": "twelve_missing_assets_paired_provider_identity_and_numerical_qualification",
+  "threshold_relative_difference": "0.05",
+  "denominator": "CoinGecko corresponding positive field",
+  "quotes_source_time_difference_seconds": 113,
+  "notes": [
+    "CMC native ZIL platform=null; do not substitute historical ERC20 or BSC wrapped contract.",
+    "HYPE platform Hyperliquid token identifier is not an Ethereum ERC20 address.",
+    "LIT means Lighter CMC39125 not Litentry.",
+    "MMT means Momentum CMC38231 momentum-token not momentum/XMM7042.",
+    "The four numerical passes describe only this paired observation; eight disagreements must stay disabled."
+  ],
+  "sources": [
+    {
+      "path": "/tmp/hrs-cg-twelve-assets-20261119T003928132754Z.json",
+      "url": "https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=akedo%2Caria-ai%2Cbless-2%2Cevaa-protocol%2Chyperliquid%2Clighter%2Cmomentum-3%2Cpieverse%2Cpippin%2Czilliqa%2Cboundless%2Czkpass",
+      "started_at": "2026-11-19T00:39:26.919801Z",
+      "available_at": "2026-11-19T00:39:28.132754Z",
+      "http_status": 200,
+      "body_sha256": "fe2a6ae7a30ed93ca6129e25bc7974902ab3b9c18fff564f6dfa50a5c588eb4c",
+      "repository_fixture": "tests/fixtures/market_cap/cg_twelve_assets_20261119.json"
+    },
+    {
+      "path": "/tmp/hrs-cmc-quotes-missing12-20261119T003835Z.json",
+      "url": "https://pro-api.coinmarketcap.com/v3/cryptocurrency/quotes/latest?id=38127%2C38102%2C38466%2C38376%2C32196%2C39125%2C38231%2C38849%2C35053%2C2469%2C38371%2C39035&convert=USD",
+      "started_at": "2026-11-19T00:38:35.554691+00:00",
+      "available_at": "2026-11-19T00:38:36.089765+00:00",
+      "http_status": 200,
+      "body_sha256": "d818a5a29dc4bd0f499dd6ccaed016810c0fe3460be2d319038be2744ed5b7f1",
+      "repository_fixture": "tests/fixtures/market_cap/cmc_twelve_assets_20261119.json"
+    },
+    {
+      "path": "/tmp/hrs-cmc-map-missing12-20261119T003659Z.json",
+      "url": "https://pro-api.coinmarketcap.com/v1/cryptocurrency/map?symbol=AKE%2CARIA%2CBLESS%2CEVAA%2CHYPE%2CLIT%2CMMT%2CPIEVERSE%2CPIPPIN%2CZIL%2CZKC%2CZKP&aux=platform&listing_status=active",
+      "started_at": "2026-11-19T00:36:59.250145+00:00",
+      "available_at": "2026-11-19T00:36:59.498636+00:00",
+      "http_status": 200,
+      "body_sha256": "ea91fbb89768b42730b578607e3d9026fc6ff598ed2173cbee2c01b1f42df458"
+    }
+  ],
+  "rows": [
+    {
+      "symbol": "HYPE",
+      "cg_id": "hyperliquid",
+      "cmc_id": 32196,
+      "cmc_name": "Hyperliquid",
+      "cmc_slug": "hyperliquid",
+      "cmc_platform": {
+        "id": 236,
+        "name": "Hyperliquid",
+        "symbol": "HYPE",
+        "slug": "hyperliquid",
+        "token_address": "0x0d01dc56dcaaca66ad901c959b4011ec"
+      },
+      "cg_market_cap": "15926487001",
+      "cmc_market_cap": "16897291831.140092723495565081",
+      "market_cap_relative_difference": "0.06095536511467578244850162491",
+      "cg_circulating_supply": "237707638.52448022",
+      "cmc_circulating_supply": "252475553.86183711",
+      "circulating_supply_relative_difference": "0.06212638108318939243208074431",
+      "numerical_comparison_within_5_percent": false,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://www.coingecko.com/en/coins/hyperliquid",
+        "https://coinmarketcap.com/currencies/hyperliquid/",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://www.binance.com/en/support/announcement/detail/d49de208bb6d4a26b02677d7c3d89b5d"
+      ]
+    },
+    {
+      "symbol": "PIEVERSE",
+      "cg_id": "pieverse",
+      "cmc_id": 38849,
+      "cmc_name": "Pieverse",
+      "cmc_slug": "pieverse",
+      "cmc_platform": {
+        "id": 1,
+        "name": "Ethereum",
+        "symbol": "ETH",
+        "slug": "ethereum",
+        "token_address": "0x0e63b9c287e32a05e6b9ab8ee8df88a2760225a9"
+      },
+      "cg_market_cap": "962749727",
+      "cmc_market_cap": "1046358468.38430980359042",
+      "market_cap_relative_difference": "0.08684369264361245940963014160",
+      "cg_circulating_supply": "274750000.0",
+      "cmc_circulating_supply": "300352220",
+      "circulating_supply_relative_difference": "0.09318369426751592356687898089",
+      "numerical_comparison_within_5_percent": false,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://www.binance.com/en/support/announcement/detail/9601f5b2dd9e4f33bf7361fa61368191",
+        "https://www.binance.com/en/support/announcement/detail/19c6b186757b489495d55611140135c2",
+        "https://www.coingecko.com/en/coins/pieverse",
+        "https://www.pieverse.io/MiCAR-White-paper-Pieverse.pdf",
+        "https://api.coingecko.com/api/v3/coins/pieverse",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://coinmarketcap.com/currencies/pieverse/"
+      ]
+    },
+    {
+      "symbol": "LIT",
+      "cg_id": "lighter",
+      "cmc_id": 39125,
+      "cmc_name": "Lighter",
+      "cmc_slug": "lighter",
+      "cmc_platform": {
+        "id": 1,
+        "name": "Ethereum",
+        "symbol": "ETH",
+        "slug": "ethereum",
+        "token_address": "0x232ce3bd40fcd6f80f3d55a522d03f25df784ee2"
+      },
+      "cg_market_cap": "678719531",
+      "cmc_market_cap": "677983691.34758225",
+      "market_cap_relative_difference": "0.001084158652888021871290455026",
+      "cg_circulating_supply": "250000000.0",
+      "cmc_circulating_supply": "250000000",
+      "circulating_supply_relative_difference": "0",
+      "numerical_comparison_within_5_percent": true,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://www.binance.com/en/support/announcement/detail/6a33be00231c4539b3a4a625538e4d1e",
+        "https://www.coingecko.com/en/coins/lighter",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://www.binance.com/en-AE/support/announcement/detail/2a9feaa556f74dcdaa2192366f0e247c",
+        "https://coinmarketcap.com/currencies/lighter/"
+      ]
+    },
+    {
+      "symbol": "AKE",
+      "cg_id": "akedo",
+      "cmc_id": 38127,
+      "cmc_name": "AKEDO",
+      "cmc_slug": "akedo",
+      "cmc_platform": {
+        "id": 14,
+        "name": "BNB Smart Chain (BEP20)",
+        "symbol": "BNB",
+        "slug": "bnb",
+        "token_address": "0x2c3a8Ee94dDD97244a93Bc48298f97d2C412F7Db"
+      },
+      "cg_market_cap": "236819788",
+      "cmc_market_cap": "237074109.4962759017325",
+      "market_cap_relative_difference": "0.001073903065380253327901805233",
+      "cg_circulating_supply": "22796250000.0",
+      "cmc_circulating_supply": "22796250000",
+      "circulating_supply_relative_difference": "0",
+      "numerical_comparison_within_5_percent": true,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://www.coingecko.com/en/coins/akedo",
+        "https://coinmarketcap.com/currencies/akedo/",
+        "https://www.binance.com/en/support/announcement/detail/f7b86984a0d34f4fbfc3204fa93ae344"
+      ]
+    },
+    {
+      "symbol": "MMT",
+      "cg_id": "momentum-3",
+      "cmc_id": 38231,
+      "cmc_name": "Momentum",
+      "cmc_slug": "momentum-token",
+      "cmc_platform": {
+        "id": 176,
+        "name": "Sui Network",
+        "symbol": "SUI",
+        "slug": "sui",
+        "token_address": "0x35169bc93e1fddfcf3a82a9eae726d349689ed59e4b065369af8789fe59f8608::mmt::MMT"
+      },
+      "cg_market_cap": "45469246",
+      "cmc_market_cap": "45469753.43750831828184192",
+      "market_cap_relative_difference": "0.00001116001589993996913694148348",
+      "cg_circulating_supply": "204095424.0",
+      "cmc_circulating_supply": "204095424",
+      "circulating_supply_relative_difference": "0",
+      "numerical_comparison_within_5_percent": true,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://www.binance.com/en/support/announcement/detail/c18b1bfd706648189e9f7ac9097351cc",
+        "https://www.coingecko.com/en/coins/momentum-2",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://coinmarketcap.com/currencies/momentum-token/"
+      ]
+    },
+    {
+      "symbol": "ARIA",
+      "cg_id": "aria-ai",
+      "cmc_id": 38102,
+      "cmc_name": "AriaAI",
+      "cmc_slug": "aria-ai",
+      "cmc_platform": {
+        "id": 14,
+        "name": "BNB Smart Chain (BEP20)",
+        "symbol": "BNB",
+        "slug": "bnb",
+        "token_address": "0x5d3A12c42E5372B2CC3264AB3cdcF660a1555238"
+      },
+      "cg_market_cap": "43388493",
+      "cmc_market_cap": "104463641.8405437300557114",
+      "market_cap_relative_difference": "1.407634711824255570612037620",
+      "cg_circulating_supply": "183000000.0",
+      "cmc_circulating_supply": "439999667",
+      "circulating_supply_relative_difference": "1.404369765027322404371584699",
+      "numerical_comparison_within_5_percent": false,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://www.coingecko.com/en/coins/aria-ai",
+        "https://coinmarketcap.com/currencies/aria-ai/",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://www.binance.com/en/support/announcement/detail/a5db4c0a05bb4c80aa0591972c19defd"
+      ]
+    },
+    {
+      "symbol": "EVAA",
+      "cg_id": "evaa-protocol",
+      "cmc_id": 38376,
+      "cmc_name": "EVAA Protocol",
+      "cmc_slug": "evaa-protocol",
+      "cmc_platform": {
+        "id": 14,
+        "name": "BNB Smart Chain (BEP20)",
+        "symbol": "BNB",
+        "slug": "bnb",
+        "token_address": "0xaa036928c9c0Df07d525B55ea8EE690Bb5a628C1"
+      },
+      "cg_market_cap": "26913610",
+      "cmc_market_cap": "72671308.7412020806419546",
+      "market_cap_relative_difference": "1.700169495701322886151452741",
+      "cg_circulating_supply": "6617972.0",
+      "cmc_circulating_supply": "17854337.9",
+      "circulating_supply_relative_difference": "1.697856367479342614323542016",
+      "numerical_comparison_within_5_percent": false,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://www.coingecko.com/en/coins/evaa-protocol",
+        "https://coinmarketcap.com/currencies/evaa-protocol/",
+        "https://www.binance.com/en/support/announcement/detail/a77f1232bd7c446796d87a3047e71819"
+      ]
+    },
+    {
+      "symbol": "BLESS",
+      "cg_id": "bless-2",
+      "cmc_id": 38466,
+      "cmc_name": "Bless",
+      "cmc_slug": "bless",
+      "cmc_platform": {
+        "id": 14,
+        "name": "BNB Smart Chain (BEP20)",
+        "symbol": "BNB",
+        "slug": "bnb",
+        "token_address": "0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F"
+      },
+      "cg_market_cap": "20474717",
+      "cmc_market_cap": "29768679.669792179430653045",
+      "market_cap_relative_difference": "0.4539238647250743163215904278",
+      "cg_circulating_supply": "1841666667.0",
+      "cmc_circulating_supply": "2678381960.68555733",
+      "circulating_supply_relative_difference": "0.4543250462628682251107930814",
+      "numerical_comparison_within_5_percent": false,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://api.coingecko.com/api/v3/coins/list",
+        "https://www.coingecko.com/en/coins/bless",
+        "https://coinmarketcap.com/currencies/bless/",
+        "https://www.binance.com/en/support/announcement/detail/0927ee2f460a4041a5e6a871a4ad9d4b"
+      ]
+    },
+    {
+      "symbol": "ZIL",
+      "cg_id": "zilliqa",
+      "cmc_id": 2469,
+      "cmc_name": "Zilliqa",
+      "cmc_slug": "zilliqa",
+      "cmc_platform": null,
+      "cg_market_cap": "19549390",
+      "cmc_market_cap": "20720781.619972600988648942",
+      "market_cap_relative_difference": "0.05991959953597534187250558713",
+      "cg_circulating_supply": "19513551525.0",
+      "cmc_circulating_supply": "20650170473.50847",
+      "circulating_supply_relative_difference": "0.05824767198591595181185245570",
+      "numerical_comparison_within_5_percent": false,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://www.binance.com/en/support/announcement/detail/cb824f4cc2684487ac66fdcdd7ab3232",
+        "https://www.binance.com/en/support/announcement/detail/343ad3d991c64b27842482f1fb1fe11c",
+        "https://www.coingecko.com/en/coins/zilliqa",
+        "https://api.coingecko.com/api/v3/coins/zilliqa",
+        "https://www.zilliqa.com/zil.html",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://coinmarketcap.com/currencies/zilliqa/"
+      ]
+    },
+    {
+      "symbol": "PIPPIN",
+      "cg_id": "pippin",
+      "cmc_id": 35053,
+      "cmc_name": "pippin",
+      "cmc_slug": "pippin",
+      "cmc_platform": {
+        "id": 16,
+        "name": "Solana",
+        "symbol": "SOL",
+        "slug": "solana",
+        "token_address": "Dfh5DzRgSvvCFDoYc2ciTkMrbDfRKybA4SoFbPmApump"
+      },
+      "cg_market_cap": "18231546",
+      "cmc_market_cap": "18239026.71537769042103811",
+      "market_cap_relative_difference": "0.0004103171161507872693906484946",
+      "cg_circulating_supply": "999926929.326215",
+      "cmc_circulating_supply": "999996253",
+      "circulating_supply_relative_difference": "0.00006932873968272128131114776410",
+      "numerical_comparison_within_5_percent": true,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://www.binance.com/en/support/announcement/detail/75d358bf598e4c8d9b841961d78c14c2",
+        "https://www.coingecko.com/en/coins/pippin",
+        "https://pippin.love/token.html",
+        "https://api.coingecko.com/api/v3/coins/pippin",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://coinmarketcap.com/currencies/pippin/"
+      ]
+    },
+    {
+      "symbol": "ZKC",
+      "cg_id": "boundless",
+      "cmc_id": 38371,
+      "cmc_name": "Boundless",
+      "cmc_slug": "boundless",
+      "cmc_platform": {
+        "id": 1,
+        "name": "Ethereum",
+        "symbol": "ETH",
+        "slug": "ethereum",
+        "token_address": "0x000006c2a22ff4a44ff1f5d0f2ed65f781f55555"
+      },
+      "cg_market_cap": "9165494",
+      "cmc_market_cap": "18481241.916003390114995915",
+      "market_cap_relative_difference": "1.016393433458511905086175933",
+      "cg_circulating_supply": "290641046.0",
+      "cmc_circulating_supply": "586851503",
+      "circulating_supply_relative_difference": "1.019162506730037023056956656",
+      "numerical_comparison_within_5_percent": false,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://www.binance.com/en/support/announcement/detail/9392fb82cd584776aa673b8272da0d54",
+        "https://www.binance.com/en/support/announcement/detail/51d8b9b9675a4bbdb5f963a09accd9e6",
+        "https://www.coingecko.com/en/coins/boundless",
+        "https://api.coingecko.com/api/v3/coins/boundless",
+        "https://github.com/boundless-xyz/zkc",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://coinmarketcap.com/currencies/boundless/"
+      ]
+    },
+    {
+      "symbol": "ZKP",
+      "cg_id": "zkpass",
+      "cmc_id": 39035,
+      "cmc_name": "zkPass",
+      "cmc_slug": "zkpass",
+      "cmc_platform": {
+        "id": 1,
+        "name": "Ethereum",
+        "symbol": "ETH",
+        "slug": "ethereum",
+        "token_address": "0xe1be424f442d0687129128c6c38aace44f8c8dbc"
+      },
+      "cg_market_cap": "6782079",
+      "cmc_market_cap": "10268205.691852659786221525",
+      "market_cap_relative_difference": "0.5140203604016791585915653592",
+      "cg_circulating_supply": "201666667.0",
+      "cmc_circulating_supply": "308333333",
+      "circulating_supply_relative_difference": "0.5289256156546684038765811506",
+      "numerical_comparison_within_5_percent": false,
+      "cg_last_updated": "2026-11-19T00:38:54.000Z",
+      "cmc_quote_last_updated": "2026-11-19T00:37:01.000Z",
+      "primary_evidence_urls": [
+        "https://www.binance.com/en/support/announcement/detail/9e90affc1f364000b4ed299a64f3f5bc",
+        "https://www.coingecko.com/en/coins/zkpass",
+        "https://api.coingecko.com/api/v3/coins/zkpass",
+        "https://docs.zkpass.org/zkpass-dao/zkp",
+        "https://fapi.binance.com/fapi/v1/exchangeInfo",
+        "https://coinmarketcap.com/currencies/zkpass/"
+      ]
+    }
+  ],
+  "schema_version": 1,
+  "registry_count": 73,
+  "qualified_secondary_symbols": [
+    "AKE",
+    "LIT",
+    "MMT",
+    "PIPPIN"
+  ],
+  "unqualified_secondary_symbols": [
+    "ARIA",
+    "BLESS",
+    "EVAA",
+    "HYPE",
+    "PIEVERSE",
+    "ZIL",
+    "ZKC",
+    "ZKP"
+  ],
+  "source_commits": [
+    "a1a405f8",
+    "53907fd3"
+  ],
+  "candidate_release": "facde71034e9d8ce8803d98e34acfabb871f44eb",
+  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44432307179",
+  "ci_tests_passed": 1412,
+  "ci_test_duration_seconds": 207.2,
+  "independent_review": {
+    "files_reviewed": 5,
+    "skipped": 0,
+    "tests_passed": 72,
+    "findings": []
+  },
+  "performance_accepted": false,
+  "limitations": [
+    "Qualification applies to this recorded paired observation, not permanent future numerical equivalence.",
+    "Only independently identified IDs with both cap and supply relative difference <=5% and source timestamp gap <=300s are enabled.",
+    "Eight disagreements remain disabled; no OI-derived cap or stale quote substitution.",
+    "Server CoinGecko HTTP429 was still observed at 00:44 UTC; no Demo key was present at 00:42 UTC.",
+    "No historical failed coverage batch is rewritten; explicit cache diagnostics are not natural scans."
+  ],
+  "post_deploy_current_diagnostic": {
+    "status": "PASS",
+    "purpose": "explicit_current_cache_diagnostic_not_natural_or_historical_repair",
+    "checked_at": "2026-11-19T01:02:52.860516+00:00",
+    "requested_count": 35,
+    "valid_count": 35,
+    "old_17_request_sets_with_current_coverage": 17,
+    "all_current_set_coverage": 1.0,
+    "identity_unverified_count": 0,
+    "live_secondary_trigger_proven": false,
+    "all_current_quotes_provider": "coingecko",
+    "raw_universe_coverage_claimed": false,
+    "historical_batches_rewritten": false
+  }
+}

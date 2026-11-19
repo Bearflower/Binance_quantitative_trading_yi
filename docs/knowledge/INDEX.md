@@ -43,9 +43,8 @@
 | Binance_quantitative_trading-20261029-micro-leg-zero-protection-replenish-exhausted | 微仓比例腿取整为 0 致 TP1 始终挂不出，保护补挂耗尽并告警 missing=["TP1"] | bug,保护单,微仓,精度,btc_eth_aggressive,补挂,高优先级 | 2026-10-29 | 已解决 |
 | Binance_quantitative_trading-20261029-precision-key-camelcase-silent-fallback | 精度键名驼峰/下划线不一致致静默兜底，BNBUSDT 下单被交易所拒 -4003 | bug,精度,btc_eth,btc_eth_aggressive,保护单,静默失效,高优先级 | 2026-10-29 | 已解决 |
 | Binance_quantitative_trading-20261028-container-json-logs-lost-on-recreate | 容器重建后旧 json-file 日志无法查询 | 部署,Docker,日志,可观测性 | 2026-10-28 | 已解决 |
-| Binance_quantitative_trading-20261118-hrs-admission-and-candle-provenance | HRS 独立槽位、完整 K 线及实际门禁/归属来源闭包 | hrs,风险预算,K线,回放 | 2026-11-18 | 工程已部署；自然与收益验收待核 |
-| Binance_quantitative_trading-20261027-hrs-schema-bootstrap-single-try-skip | HRS 建表链路单 try 包裹致首条 DDL 失败跳过后续；universe 快照 SQL 注释被校验拦截 | bug,静默失效,hrs,数据库权限,DDL迁移,ai_tuner,SQL校验 | 2026-11-18 | 1 | HRS 独立槽位与真实 K 线修复 3aa32e9e 已部署，1408 云端测试及39源码哈希通过；保留日初权益、历史反事实、SL/TP选优及自然样本未完成状态，未归档整体优化。 |
-| 2026-10-27 | 待复查 |
+| Binance_quantitative_trading-20261118-hrs-admission-and-candle-provenance | HRS 独立槽位、完整 K 线及实际门禁/归属来源闭包 | hrs,风险预算,K线,回放 | 2026-11-19 | 工程/午夜已验证；市值可用性及绩效待验 |
+| Binance_quantitative_trading-20261027-hrs-schema-bootstrap-single-try-skip | HRS 建表链路单 try 包裹致首条 DDL 失败跳过后续；universe 快照 SQL 注释被校验拦截 | bug,静默失效,hrs,数据库权限,DDL迁移,ai_tuner,SQL校验 | 2026-10-27 | 待复查 |
 | Binance_quantitative_trading-20261026-bnb-false-mutex-terminal-mark-missing-realized-pnl | 终态标记 SQL 缺 realized_pnl IS NULL 致平仓单被标 CLOSED、入场记录残留 NEW | bug,持仓归属,互斥,trade_records,终态标记,全策略 | 2026-10-26 | 待复查 |
 | Binance_quantitative_trading-20261020-shadow-compose-bind-mount-masks-image-config | compose 宿主 bind mount 空目录遮蔽镜像内烘焙的影子 profile 配置致 crash-loop | bug,部署,docker-compose,bind-mount,mtcps-xau-shadow,影子,配置遮蔽,crash-loop | 2026-10-20 | 待复查 |
 | Binance_quantitative_trading-20261020-shadow-image-missing-aggr-copy-crashloop | 复用 btc-eth 镜像漏 COPY 兄弟包目录致影子容器 ModuleNotFoundError crash-loop | bug,部署,镜像,mtcps-xau-shadow,影子,依赖缺失,crash-loop | 2026-10-20 | 待复查 |

@@ -1,0 +1,422 @@
+{
+  "release_sha": "17660e0f43ad3949d8bf7f942f91d8a9ac346af5",
+  "purpose": "read_only_retrospective_original_evidence_verification_not_performance_acceptance",
+  "observation_gap": "No continuous independent observation between deployment notice and UTC23:47; facts below were recovered from immutable persisted original timestamps.",
+  "gate_last_observed": {
+    "account_id": "default",
+    "allowed": true,
+    "as_of": "2026-11-18T23:48:01.755963+00:00",
+    "evidence_sha256": "3804874cf993acf9cc0ad43115bf1ea09ef368daf9a01d2e29fbe93d546b458b",
+    "ready": true,
+    "reasons": "[]",
+    "strategy_id": "hrs",
+    "updated_at": "2026-11-18T23:48:23.464364+00:00",
+    "valid_until": "2026-11-18T23:50:01.755963+00:00"
+  },
+  "writer_last_observed": {
+    "count": 562,
+    "event_time": "2026-11-18T23:48:01.755963+00:00",
+    "recorded_at": "2026-11-18T23:48:23.469747+00:00"
+  },
+  "midnight_checkpoint": [
+    {
+      "segment_id": "hrs-d68a7c6a7302411287850e10ffb9e666",
+      "checkpoint_id": "hrs-d68a7c6a7302411287850e10ffb9e666:1795017600000",
+      "as_of": "2026-11-18T16:00:00+00:00",
+      "equity": "31.889305060",
+      "units": "32.043698480",
+      "nav": "0.9951817852706246036303359948",
+      "created_at": "2026-11-18T16:01:13.115222+00:00"
+    }
+  ],
+  "midnight_original_parent_evidence": [
+    {
+      "as_of": "2026-11-18T16:00:22.334145+00:00",
+      "available_at": "2026-11-18T16:00:22.334145+00:00",
+      "evidence_sha256": "74f592f7869d5140c8b5840aed20acfc0dff4a271d71224cb5a5f4b01ffe65f6",
+      "boundaries": [],
+      "result": {
+        "ready": false,
+        "allowed": false,
+        "reasons": [
+          "funding_eligibility_window_incomplete"
+        ]
+      }
+    },
+    {
+      "as_of": "2026-11-18T16:00:52.887971+00:00",
+      "available_at": "2026-11-18T16:01:13.968343+00:00",
+      "evidence_sha256": "f963f5607b461b0d76d9c2f1aaef6ebfd99cd7f003d01100e3a83d39fc6aaa97",
+      "boundaries": [
+        {
+          "source": "complete_fill_inventory_and_actual_mark_bar",
+          "available_at": "2026-11-18T16:01:13.984551+00:00",
+          "effective_at": "2026-11-19T00:00:00+08:00"
+        }
+      ],
+      "result": {
+        "ready": true,
+        "allowed": true,
+        "reasons": [],
+        "window_label": "inception_segment",
+        "ledger_version": 843,
+        "qualified_30_day": false
+      }
+    }
+  ],
+  "all_17_observed_batch_missing_union": {
+    "checked_at": "2026-11-18T23:58:18.828598+00:00",
+    "release_sha": "17660e0f43ad3949d8bf7f942f91d8a9ac346af5",
+    "batch_count": 17,
+    "missing": [
+      {
+        "symbol": "ZILUSDT",
+        "reason": "asset_identity_unverified",
+        "batch_count": 3,
+        "first_seen": "2026-11-18T16:21:01.403095+00:00",
+        "last_seen": "2026-11-18T23:23:04.003702+00:00"
+      },
+      {
+        "symbol": "ZKCUSDT",
+        "reason": "asset_identity_unverified",
+        "batch_count": 1,
+        "first_seen": "2026-11-18T16:21:01.403095+00:00",
+        "last_seen": "2026-11-18T16:21:01.403095+00:00"
+      },
+      {
+        "symbol": "ZKPUSDT",
+        "reason": "asset_identity_unverified",
+        "batch_count": 8,
+        "first_seen": "2026-11-18T17:21:50.795294+00:00",
+        "last_seen": "2026-11-18T23:23:04.003702+00:00"
+      }
+    ]
+  },
+  "reporter_generated_at": "2026-11-18T23:46:38.156192+00:00",
+  "consecutive_complete_hours": 6,
+  "first_00_to_01_slot": [
+    {
+      "start_cst": "2026-11-19T00:00:00+08:00",
+      "end_cst": "2026-11-19T01:00:00+08:00",
+      "status": "INCOMPLETE",
+      "reasons": [
+        "fresh_coverage_below_95_percent"
+      ],
+      "scan_count": 1,
+      "market_cap_batches": [
+        {
+          "coverage_scope": "requested_scan_batch",
+          "requested_count": 34,
+          "quote_inventory_complete": true,
+          "fresh_count": 32,
+          "fresh_coverage": 0.9411764705882353,
+          "failures": {
+            "asset_identity_unverified": 2
+          },
+          "raw_universe_count": 814,
+          "raw_universe_inventory_proven": true,
+          "metadata_eligible_count": 518,
+          "raw_classifications": {
+            "crypto": 518,
+            "inapplicable_tradfi": 243,
+            "metadata_unverified": 53
+          },
+          "raw_universe_observed_at": "2026-11-18T16:21:01.008472+00:00",
+          "full_ticker_cap_coverage": null,
+          "reasons": [
+            "fresh_coverage_below_95_percent"
+          ]
+        },
+        {
+          "coverage_scope": "requested_scan_batch",
+          "requested_count": 29,
+          "quote_inventory_complete": true,
+          "fresh_count": 29,
+          "fresh_coverage": 1.0,
+          "failures": {},
+          "raw_universe_count": 814,
+          "raw_universe_inventory_proven": true,
+          "metadata_eligible_count": 518,
+          "raw_classifications": {
+            "crypto": 518,
+            "inapplicable_tradfi": 243,
+            "metadata_unverified": 53
+          },
+          "raw_universe_observed_at": "2026-11-18T16:21:30.855182+00:00",
+          "full_ticker_cap_coverage": null,
+          "reasons": []
+        },
+        {
+          "coverage_scope": "requested_scan_batch",
+          "requested_count": 23,
+          "quote_inventory_complete": true,
+          "fresh_count": 23,
+          "fresh_coverage": 1.0,
+          "failures": {},
+          "raw_universe_count": 814,
+          "raw_universe_inventory_proven": true,
+          "metadata_eligible_count": 518,
+          "raw_classifications": {
+            "crypto": 518,
+            "inapplicable_tradfi": 243,
+            "metadata_unverified": 53
+          },
+          "raw_universe_observed_at": "2026-11-18T16:21:44.620605+00:00",
+          "full_ticker_cap_coverage": null,
+          "reasons": []
+        }
+      ],
+      "modes": {
+        "standard": {
+          "scanned_symbols": 11,
+          "evaluated_directions": 11,
+          "eligible": 2,
+          "eligibility_unknown": 0,
+          "shadow_evaluations": 0,
+          "trend_denials": 4,
+          "scoring_denials": 5,
+          "data_failures": 0,
+          "signals_reaching_execution": 0,
+          "budget_denials": 0,
+          "execution_denials": 0,
+          "submitted_orders": 0,
+          "exchange_fills": 0,
+          "denial_reasons": {}
+        },
+        "emm": {
+          "scanned_symbols": 0,
+          "evaluated_directions": 0,
+          "eligible": 0,
+          "eligibility_unknown": 0,
+          "shadow_evaluations": 0,
+          "trend_denials": 0,
+          "scoring_denials": 0,
+          "data_failures": 0,
+          "signals_reaching_execution": 0,
+          "budget_denials": 0,
+          "execution_denials": 0,
+          "submitted_orders": 0,
+          "exchange_fills": 0,
+          "denial_reasons": {}
+        },
+        "semi_emm": {
+          "scanned_symbols": 3,
+          "evaluated_directions": 0,
+          "eligible": 0,
+          "eligibility_unknown": 3,
+          "shadow_evaluations": 3,
+          "trend_denials": 0,
+          "scoring_denials": 0,
+          "data_failures": 0,
+          "signals_reaching_execution": 0,
+          "budget_denials": 0,
+          "execution_denials": 0,
+          "submitted_orders": 0,
+          "exchange_fills": 0,
+          "denial_reasons": {}
+        },
+        "lv_rm": {
+          "scanned_symbols": 23,
+          "evaluated_directions": 36,
+          "eligible": 0,
+          "eligibility_unknown": 0,
+          "shadow_evaluations": 0,
+          "trend_denials": 0,
+          "scoring_denials": 36,
+          "data_failures": 0,
+          "signals_reaching_execution": 0,
+          "budget_denials": 0,
+          "execution_denials": 0,
+          "submitted_orders": 0,
+          "exchange_fills": 0,
+          "denial_reasons": {
+            "standard_candidate_overlap": 5
+          }
+        },
+        "unknown": {
+          "scanned_symbols": 0,
+          "evaluated_directions": 0,
+          "eligible": 0,
+          "eligibility_unknown": 0,
+          "shadow_evaluations": 0,
+          "trend_denials": 0,
+          "scoring_denials": 0,
+          "data_failures": 0,
+          "signals_reaching_execution": 0,
+          "budget_denials": 0,
+          "execution_denials": 0,
+          "submitted_orders": 0,
+          "exchange_fills": 0,
+          "denial_reasons": {}
+        }
+      }
+    }
+  ],
+  "not_claimed": [
+    "continuous realtime observation",
+    "full518ticker marketcapcoverage",
+    "qualified30dayhistory",
+    "24completehours",
+    "5closedlifecycles",
+    "performance acceptance"
+  ],
+  "natural_scans": {
+    "first_0021": {
+      "run_id": "734030f3b4854514ac0bc2fd7c18f331",
+      "original_selected_payloads": 358,
+      "all_original_evidence_inventory": 1214,
+      "selected_payload_hash_and_envelope_integrity": true,
+      "original_parent_hash_integrity": true,
+      "analysis_count": 29,
+      "verified_repair_count": 29,
+      "raw_kline_get_count": 295,
+      "scope": "hrs_owned_and_unreleased_reservations_v2",
+      "financial_clock_order": true,
+      "fullclaim_count": 3,
+      "cap_batches": [
+        {
+          "evidence_id": "99931fd7342b905fda678887007d6269d6176aa104d7637e652a87695a0ffd85",
+          "scope": "requested_scan_batch",
+          "requested_count": 34,
+          "quote_count": 34,
+          "full_requested_inventory": true,
+          "fresh_real_provider_count": 32,
+          "fresh_real_fraction": 0.9411764705882353,
+          "raw_universe_count": 814,
+          "eligible_universe_count": 518,
+          "universe_counts": {
+            "crypto": 518,
+            "inapplicable_tradfi": 243,
+            "metadata_unverified": 53
+          },
+          "reasons": {
+            "present": 32,
+            "asset_identity_unverified": 2
+          },
+          "sources": {
+            "cache_hit": 32,
+            "missing": 2
+          }
+        },
+        {
+          "evidence_id": "88452ba510be80a2111a0fc0d6f0f3270de8c62baa2ddc10d4ba47228ba4be42",
+          "scope": "requested_scan_batch",
+          "requested_count": 29,
+          "quote_count": 29,
+          "full_requested_inventory": true,
+          "fresh_real_provider_count": 29,
+          "fresh_real_fraction": 1.0,
+          "raw_universe_count": 814,
+          "eligible_universe_count": 518,
+          "universe_counts": {
+            "crypto": 518,
+            "inapplicable_tradfi": 243,
+            "metadata_unverified": 53
+          },
+          "reasons": {
+            "present": 29
+          },
+          "sources": {
+            "cache_hit": 29
+          }
+        },
+        {
+          "evidence_id": "1148d19bae6a9a52156b20a8cdb4bf22cb5e9938f0c7a723aa00e430f3e88bbe",
+          "scope": "requested_scan_batch",
+          "requested_count": 23,
+          "quote_count": 23,
+          "full_requested_inventory": true,
+          "fresh_real_provider_count": 23,
+          "fresh_real_fraction": 1.0,
+          "raw_universe_count": 814,
+          "eligible_universe_count": 518,
+          "universe_counts": {
+            "crypto": 518,
+            "inapplicable_tradfi": 243,
+            "metadata_unverified": 53
+          },
+          "reasons": {
+            "present": 23
+          },
+          "sources": {
+            "cache_hit": 23
+          }
+        }
+      ]
+    },
+    "latest_0722": {
+      "run_id": "972362fa868442fe9d17332cb9c4c628",
+      "original_selected_payloads": 152,
+      "all_original_evidence_inventory": 418,
+      "selected_payload_hash_and_envelope_integrity": true,
+      "original_parent_hash_integrity": true,
+      "analysis_count": 28,
+      "verified_repair_count": 28,
+      "raw_kline_get_count": 67,
+      "scope": "hrs_owned_and_unreleased_reservations_v2",
+      "financial_clock_order": true,
+      "fullclaim_count": 3,
+      "cap_batches": [
+        {
+          "evidence_id": "3974410adde7745b2b352d58f912dfa7077e9a1ac73190c07c01e85fd9628d89",
+          "scope": "requested_scan_batch",
+          "requested_count": 28,
+          "quote_count": 28,
+          "full_requested_inventory": true,
+          "fresh_real_provider_count": 26,
+          "fresh_real_fraction": 0.9285714285714286,
+          "raw_universe_count": 814,
+          "eligible_universe_count": 518,
+          "universe_counts": {
+            "crypto": 518,
+            "inapplicable_tradfi": 243,
+            "metadata_unverified": 53
+          },
+          "reasons": {
+            "present": 26,
+            "asset_identity_unverified": 2
+          },
+          "sources": {
+            "cache_hit": 26,
+            "missing": 2
+          }
+        },
+        {
+          "evidence_id": "25123a9f96b01cfa924062646e739ba194a6f22edf6f653672271ac5998401b9",
+          "scope": "requested_scan_batch",
+          "requested_count": 20,
+          "quote_count": 20,
+          "full_requested_inventory": true,
+          "fresh_real_provider_count": 18,
+          "fresh_real_fraction": 0.9,
+          "raw_universe_count": 814,
+          "eligible_universe_count": 518,
+          "universe_counts": {
+            "crypto": 518,
+            "inapplicable_tradfi": 243,
+            "metadata_unverified": 53
+          },
+          "reasons": {
+            "asset_identity_unverified": 2,
+            "present": 18
+          },
+          "sources": {
+            "missing": 2,
+            "cache_hit": 18
+          }
+        }
+      ]
+    }
+  },
+  "source_protection_verified": {
+    "checked_at": "2026-11-18T23:53:08.612944+00:00",
+    "other_container_count": 27,
+    "changed_other_containers": [],
+    "hrs_mount_geometry_preserved": true,
+    "protection_unchanged": true
+  },
+  "historical_market_cap_gaps_unchanged": true,
+  "new_mapping_correction_commit": "bb55ed85",
+  "new_correction_release": "6b3d14118dc2c3b2474769ff389c23c9abc7c17f",
+  "performance_accepted": false
+}

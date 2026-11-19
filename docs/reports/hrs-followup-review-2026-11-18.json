@@ -346,5 +346,54 @@
     "new_ci_status": "success",
     "new_ci_tests": "1408 passed in 210.18s",
     "image": "ghcr.io/bearflower/trading-hrs@sha256:50ada1148dc0adab906d650a7337dcc97fce03e4cc858a0b68d633035826c550"
-  }
+  },
+  "asset_followups": [
+    {
+      "commit": "1cfd61f8",
+      "files": 3,
+      "reviewed": 3,
+      "skipped": 0,
+      "independent_tests": 49,
+      "ci": "44330844631",
+      "ci_tests_passed": 1409,
+      "registry_from": 67,
+      "registry_to": 70
+    },
+    {
+      "commit": "bb55ed85",
+      "files": 4,
+      "reviewed": 4,
+      "skipped": 0,
+      "independent_tests": 51,
+      "ci": "44425505039",
+      "ci_tests_passed": 1411,
+      "registry_from": 70,
+      "registry_to": 73
+    },
+    {
+      "commits": [
+        "a1a405f8",
+        "53907fd3"
+      ],
+      "files": 5,
+      "reviewed": 5,
+      "skipped": 0,
+      "independent_tests": 72,
+      "ci_failed_old_assertions": "44431833018",
+      "resolved": "Three tests assumed CMC unconditionally disabled for now-qualified AKE/LIT/MMT; require exact ID, both original provider hashes and bounded paired numerical proof instead. No runtime code or qualification thresholds relaxed.",
+      "ci": "44432307179",
+      "ci_tests_passed": 1412,
+      "registry_from": 73,
+      "registry_to": 73,
+      "qualified_secondary_assets": [
+        "AKE",
+        "LIT",
+        "MMT",
+        "PIPPIN"
+      ],
+      "unqualified_secondary_remain_disabled": 8,
+      "report": "docs/reports/hrs-market-cap-secondary-qualification-2026-11-19.json"
+    }
+  ],
+  "asset_followup_contract": "Official asset IDs, original source hashes and receipt clocks retained. Four paired observations qualify CMC fallback; eight disagreements remain disabled. Actual CG429/recordedCMC integration red-green. Historical missing batches are never rewritten; no performance acceptance."
 }

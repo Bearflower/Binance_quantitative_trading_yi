@@ -2,16 +2,16 @@
   "schema_version": 2,
   "status": "deployed",
   "optimization_status": "INCOMPLETE",
-  "release_sha": "3aa32e9e137eb6ae22c6809e567282bdee1fb0dc",
-  "deployed_at": "2026-11-18T13:38:05.028913+00:00",
-  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44314458303",
-  "tests_passed": 1408,
-  "ci_test_duration_seconds": 210.18,
-  "previous_release_sha": "441559ae8d549c9d242dc79df0f945f8539fe6a9",
+  "release_sha": "facde71034e9d8ce8803d98e34acfabb871f44eb",
+  "deployed_at": "2026-11-19T01:01:51.034962+00:00",
+  "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44432307179",
+  "tests_passed": 1412,
+  "ci_test_duration_seconds": 207.2,
+  "previous_release_sha": "6b3d14118dc2c3b2474769ff389c23c9abc7c17f",
   "images": {
-    "hrs": "ghcr.io/bearflower/trading-hrs@sha256:50ada1148dc0adab906d650a7337dcc97fce03e4cc858a0b68d633035826c550",
-    "reporter": "ghcr.io/bearflower/trading-hrs@sha256:50ada1148dc0adab906d650a7337dcc97fce03e4cc858a0b68d633035826c550",
-    "hub": "ghcr.io/bearflower/trading-hrs@sha256:e789a1699664c15a7b18273ff2bd867125b13e842d819a0dc6bb7eff141fb799"
+    "hrs": "ghcr.io/bearflower/trading-hrs@sha256:6af532b5c6fbf8a3eb330e064b1effb5a887fea65df55c9fbea4fc63dbfd62c0",
+    "reporter": "ghcr.io/bearflower/trading-hrs@sha256:6af532b5c6fbf8a3eb330e064b1effb5a887fea65df55c9fbea4fc63dbfd62c0",
+    "hub": "ghcr.io/bearflower/trading-hrs@sha256:1549e2c1a5d074217cb5cf372ec704d25caa4ea06096a6263e9e40e52a921581"
   },
   "configuration_hash": "39e90a4d1b1cc526f42d14fb3248a9b292c0aa500a36e4df76159efda25fbb5e",
   "configuration_mounts_read_only": true,
@@ -25,15 +25,24 @@
   "collector_and_independent_writer_fresh": true,
   "evidence_context_serializable": true,
   "gate": {
-    "ready": false,
-    "allowed": false,
-    "reasons": [
-      "daily_origin_missing"
-    ],
-    "observed_as_of": "2026-11-18 13:39:47.223257+00:00",
-    "checked_at": "2026-11-18 13:40:47.296444+00:00",
+    "ready": true,
+    "allowed": true,
+    "reasons": [],
+    "observed_at": "2026-11-19T01:04:40.141670+00:00",
     "inception_protection_only": true,
-    "qualified_full_30_days": false
+    "qualified_full_30_days": false,
+    "midnight_checkpoint": {
+      "segment_id": "hrs-d68a7c6a7302411287850e10ffb9e666",
+      "checkpoint_id": "hrs-d68a7c6a7302411287850e10ffb9e666:1795017600000",
+      "as_of": "2026-11-18T16:00:00+00:00",
+      "equity": "31.889305060",
+      "units": "32.043698480",
+      "nav": "0.9951817852706246036303359948",
+      "created_at": "2026-11-18T16:01:13.115222+00:00"
+    },
+    "original_midnight_evidence_report": "docs/reports/hrs-midnight-and-natural-verification-2026-11-19.json",
+    "source_as_of": "2026-11-19T01:03:32.992155+00:00",
+    "source_updated_at": "2026-11-19T01:03:54.363324+00:00"
   },
   "slot_diagnostic": {
     "status": "proven",
@@ -54,39 +63,122 @@
     "filled_retained_reservation_untouched": true
   },
   "continuous_acceptance": {
-    "observed_at": "2026-11-18T13:40:47.698052+00:00",
-    "generated_at": "2026-11-18T13:37:44.406063+00:00",
+    "observed_at": "2026-11-19T01:04:26.546516+00:00",
+    "generated_at": "2026-11-19T01:01:04.646243+00:00",
     "database_snapshot_coherent": true,
     "source_error_type": null,
     "consecutive_complete_hours": 0,
-    "complete_hours_in_last_24": 4,
+    "complete_hours_in_last_24": 11,
     "observed_closed_lifecycles": 0,
     "technical": "NOT_READY",
     "financial": "PENDING",
     "performance_accepted": false,
-    "aggregate_scan_counts_span_multiple_releases": true
+    "aggregate_scan_counts_span_multiple_releases": true,
+    "last_closed_hour": {
+      "start_cst": "2026-11-19T08:00:00+08:00",
+      "end_cst": "2026-11-19T09:00:00+08:00",
+      "status": "INCOMPLETE",
+      "reasons": [
+        "fresh_coverage_below_95_percent"
+      ]
+    },
+    "last_closed_cap_batches": [
+      {
+        "requested_count": 28,
+        "fresh_count": 19,
+        "fresh_coverage": 0.6785714285714286,
+        "failures": {
+          "providers_unavailable_or_invalid": 7,
+          "asset_identity_unverified": 2
+        }
+      },
+      {
+        "requested_count": 21,
+        "fresh_count": 17,
+        "fresh_coverage": 0.8095238095238095,
+        "failures": {
+          "asset_identity_unverified": 2,
+          "providers_unavailable_or_invalid": 2
+        }
+      }
+    ]
   },
   "post_release_natural_scan": {
     "status": "PENDING",
-    "expected_next_scan": "2026-11-18T22:21:00+08:00"
+    "expected_next_scan": "2026-11-19T09:21:00+08:00",
+    "prior_same_runtime_source_natural_proofs": [
+      "docs/reports/hrs-followup-natural-scan-2026-11-18-2221.json",
+      "docs/reports/hrs-midnight-and-natural-verification-2026-11-19.json"
+    ]
   },
   "remaining": {
     "aug_sep_counterfactual": "BLOCKED_DATA_missing_original_decision_market_snapshots",
     "sltp_parameter_selection": "v4_preregistered_24_candidates_no_winner_or_performance_acceptance",
-    "daily_origin": "missing_actual_preactivation_midnight_NAV_do_not_fabricate",
-    "natural_24_hours_and_5_closed_lifecycles": "PENDING",
+    "daily_origin": "resolved_actual_new_day_midnight_reconstruction; no_preactivation_history_fabricated",
+    "natural_24_hours_and_5_closed_lifecycles": "PENDING; prior_six_hour_streak_was_not_24h; original_low_coverage_hours_retained",
     "position_slot_scope": "deployed_v2_positive_ownership_and_retained_HRS_reservations_global_margin_unchanged",
     "risk_warning_alarm_classification": "expected_entry_denial_INFO_reason_context_deployed_external_monitor_itself_not_modified",
-    "kline_history_continuity": "deployed_full_span_repair_and_complete_4h_actual_five_raw_packages_verified_new_natural_scan_pending",
-    "new_market_asset_identity_count": 9,
-    "new_market_asset_identity_status": "prior_release_nine_of_nine_real_quotes_verified_new_release_natural_coverage_pending",
-    "funding_evidence_storage": "constant_reference_and_original_receipt_closure_retained"
+    "kline_history_continuity": "deployed_and_naturally_verified_29_of_29_repair_closures_including_five_prior_gap_symbols",
+    "new_market_asset_identity_count": 6,
+    "new_market_asset_identity_status": "registry73_deployed; no unverified identity in exact 35-symbol diagnostic union; server429 and eight unqualified secondary providers remain independent data availability blockers",
+    "funding_evidence_storage": "constant_reference_and_original_receipt_closure_retained",
+    "new_market_asset_identity_pending_deploy": [],
+    "market_cap_provider_availability": "CG429 observed00:44UTC; current09:02CST exact35-symbol diagnostic35/35 fresh true caps recovered from CG; four qualified CMC fallbacks deployed but no production fallback trigger claimed; DemoKey absent at last safe check; future429 risk remains",
+    "market_cap_qualification_report": "docs/reports/hrs-market-cap-secondary-qualification-2026-11-19.json"
   },
   "review": {
     "report": "docs/reports/hrs-followup-review-2026-11-18.json",
     "reviewed_files": 20,
     "skipped_files": 0,
-    "independent_combination_passed": 213
+    "independent_combination_passed": 213,
+    "asset_followup_reports": "docs/reports/hrs-followup-review-2026-11-18.json"
   },
-  "performance_qualified": false
+  "performance_qualified": false,
+  "registry_asset_count": 73,
+  "latest_release_delta": {
+    "runtime_source_bytes_changed": false,
+    "configuration_changed": false,
+    "sltp_changed": false,
+    "risk_budget_percentages_changed": false,
+    "registry_asset_count_changed": false,
+    "secondary_provider_qualification_changed": true,
+    "four_qualified_secondary_symbols": [
+      "AKE",
+      "LIT",
+      "MMT",
+      "PIPPIN"
+    ],
+    "eight_disputed_secondary_assets_remain_disabled": true,
+    "economic_admission_scope_unchanged_from_previous_v2": true
+  },
+  "registry_sha256": "4c162a00ede2b9d16a850276d5e97f2559d8cc3780de0089f23de0279602dcc6",
+  "post_deployment_source_protection": {
+    "checked_at": "2026-11-19T01:02:52.756808+00:00",
+    "source_hashes": 39,
+    "mismatches": [],
+    "other_containers_unchanged": 27,
+    "original_WLD_28_and_hard_stop_unchanged": true,
+    "filled_retained_reservation_count": 1
+  },
+  "market_cap_current_diagnostic": {
+    "status": "PASS",
+    "purpose": "explicit_current_cache_diagnostic_not_natural_or_historical_repair",
+    "checked_at": "2026-11-19T01:02:52.860516+00:00",
+    "requested_count": 35,
+    "valid_count": 35,
+    "old_17_request_sets_with_current_coverage": 17,
+    "all_current_set_coverage": 1.0,
+    "identity_unverified_count": 0,
+    "live_secondary_trigger_proven": false,
+    "all_current_quotes_provider": "coingecko",
+    "raw_universe_coverage_claimed": false,
+    "historical_batches_rewritten": false
+  },
+  "post_deployment_error_observation": {
+    "observed_at": "2026-11-19T01:04:40.141670+00:00",
+    "new_release_hrs_errors": 0,
+    "new_release_reporter_errors": 0,
+    "new_release_capture_failures": 0,
+    "new_release_tracebacks": 0
+  }
 }

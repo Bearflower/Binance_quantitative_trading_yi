@@ -1,5 +1,10 @@
 # 发现与约束
 
+- 2026-11-19当前发布facde7103（09:01 CST，1412云端测试）；实际午夜权益原点已形成，门禁ready/allowed，仍只是inception protection。原先daily_origin_missing为历史观察，已由真实新日边界解决。
+- 73身份注册并不能消除CG429：精确35symbol诊断23有值/12provider失败/0身份失败。双源原始批次相隔113秒，仅AKE/LIT/MMT/PIPPIN市值及供应量均<=5%；8个明显口径差异继续禁用。当前实际CGDemoKey不存在，不能假设免费CMC可替代所有市值。无历史回填、无代理估值、无放宽TTL/95%。
+- 自然K线完整来源验证已通过29/29、29/29、28/28，包含五个实际缺口标的。每一轮有效不能替代连续24h与五合格自然闭合，更不能替代缺失历史的跨月策略绩效。以下为原始调查时间序列。
+
+
 - 当前生产3aa32e9e（21:38 CST），云端1408测试通过。槽位v2是用户批准的准入行为变化，不能写成经济等价；单笔1%/组合3%、全账户保证金约束和SL/TP数字保持。成功预留仅事务commit后留本次audit，并即时捕获actualgate/fullclaims；score-only先完成双库存GET再读同RR gate DBclock，拒旧parent fallback和candidate-only归属替代。
 - 真实五标的完整rawGET来源包跨Python3.11/3.12闭包通过；float sum跨版本1ulp已由decimal128一次转换修复。未来/过去越界raw响应在过滤前拒绝；实际scorer输入在成功和异常时均独立于并发cache。新版本自然整轮仍待实际发生。
 - 云端基础镜像残留一份当前Git不存在的31行identity旧测试，导致第一次1408pass/1fail；test stage先清理继承测试再COPY完整当前测试，独审确认无skip/运行stage变化，第二轮1408pass。

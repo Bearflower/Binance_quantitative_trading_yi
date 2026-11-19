@@ -9,6 +9,9 @@
 
 # 进展
 
+2026-11-19 09:02 CST：facde7103已部署complete，云端1412/独立72项测试通过。实际CST午夜检查点创建于00:01:13，ready/allowed恢复，不能称完整30天。22:21/00:21/07:22自然repair闭包分别29/29、29/29、28/28通过。73身份及双源对照4个合格CMC备用已部署；其余8个市值/供应量偏差>5%仍拒绝，CG429仍发生，DemoKey安全注入待用户。39源码/原配置/新collector与writer通过，独立当前保护/覆盖/09:21自然扫描验收进行中。历史6小时连续记录不等于当前24h；8–9月反事实、SL/TP选优、五自然闭合尚未通过。以下时间序列保留原观察，不将旧状态视为当前。
+
+
 2026-11-18 21:38 CST：3aa32e9e实盘部署complete，云端1408测试通过。新增HRS独立槽位（最多3、外仓全margin保留）、预期风控INFO reason/context、完整真实K线补取与确定性4h聚合、成功/异常评分数组留证、actual gate SHA/DB clock/fullownerclaims闭包全部上线；独立213项组合通过。第一次云端1408pass+1 inherited stale test已定位并修复test stage inventory，未跳过tracked测试。39运行源码/配置/collector/writer/原保护/无关容器已核验；新自然扫描约22:21，仍待实际验证。daily_origin_missing仍拒新仓，收益/SLTP/24h与自然样本不宣称通过。
 
 2026-11-18 16:22 CST：最终441559ae首个自然扫描16:21完整结束，原hash/envelope、配置及财务context一致。三批市值35/35、31/31、27/27实际present，原分母809保留（批次间重复不能当93个独立标的）。权益门禁仍daily_origin_missing。十次实际parent的542条source批量闭包通过、ref均628B，无自然收入修订事件。24h/5自然闭合和历史收益仍未验收。
