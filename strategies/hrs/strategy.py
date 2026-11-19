@@ -993,6 +993,9 @@ class HRSStrategy(BaseStrategy):
         store = RiskPolicyStore(self.db)
         try:
             await store.reconcile('hrs', self.binance_client)
+            from .risk_budget import FLOOR
+            from .margin_budget import ALL_ACCOUNT,HRS_OWNED,policy_margin_scope,account_cash_fields,validate_cash_fields,exact
+            margin_scope=policy_margin_scope(await store.policy('hrs')) if decision.budget_version==FLOOR else ALL_ACCOUNT
             raw_claims = decode_claim_evidence(await self.db.fetch_all(
                 CLAIM_EVIDENCE_SELECT + ' WHERE c.symbol=$1', symbol))
             await record_stage(self, 'entry_stage_inputs', {'stage': 'claims', 'claims': raw_claims, 'claim_source_format': 'postgresql_to_jsonb_v1'}, symbol=symbol)
@@ -1011,6 +1014,10 @@ class HRSStrategy(BaseStrategy):
                                    decision.worst_loss, decision.worst_loss,
                                    decision.exit_ratios)
                 async def snapshot():
+                    # Fresh actual account GET is part of the independent receipt;
+                    # the earlier planning equity never supplies free margin.
+                    account = await self.binance_client.get_account_info() if margin_scope==HRS_OWNED else None
+                    snapshot_equity=exact(account.get('totalMarginBalance')) if margin_scope==HRS_OWNED else Decimal(str(equity))
                     positions = await self.binance_client.get_position()
                     if not isinstance(positions, list):
                         raise ValueError('exchange position inventory unavailable')
@@ -1024,7 +1031,11 @@ class HRSStrategy(BaseStrategy):
                     financial_receipt = None
                     if decision.budget_version == FLOOR:
                         inventory_payload.update(account_id=store.account,signal_id=str(identity),
-                            account_equity=Decimal(str(equity)),effective_allocation=decision.effective_allocation)
+                            account_equity=snapshot_equity,effective_allocation=decision.effective_allocation)
+                        if margin_scope==HRS_OWNED:
+                            inventory_payload.update(hrs_margin_scope=margin_scope,
+                                **account_cash_fields(account,getattr(self.binance_client,'use_unified_account',False)))
+                            validate_cash_fields(inventory_payload)
                         financial_receipt = await record_reservation_inventory(self,inventory_payload,symbol=symbol)
                     else:
                         await record_stage(self,'entry_stage_inputs',inventory_payload,symbol=symbol)
@@ -1038,7 +1049,7 @@ class HRSStrategy(BaseStrategy):
                         if not all(x.is_finite() and x > 0 for x in (abs(amount), mark, lev)):
                             raise ValueError('exchange position exposure invalid')
                         holdings += abs(amount) * mark / lev
-                    return ScopedRiskSnapshot(account_margin=holdings, equity=Decimal(str(equity)),
+                    return ScopedRiskSnapshot(account_margin=holdings, equity=snapshot_equity,
                         allocation=decision.effective_allocation,
                         max_slots=self.config.get('trading', {}).get('max_positions', 3),
                         slot_scope=SLOT_SCOPE, slot_evidence=slot_inputs, financial_receipt=financial_receipt)
@@ -1046,6 +1057,7 @@ class HRSStrategy(BaseStrategy):
                             'exit_ratios': [str(x) for x in decision.exit_ratios],
                             'entry_price': str(price), 'quantity': str(quantity)}
                 from .risk_budget import FLOOR
+                if margin_scope==HRS_OWNED:geometry['hrs_margin_scope']=margin_scope
                 if decision.budget_version == FLOOR:
                     geometry.update(hrs_risk_budget_version=FLOOR,
                         hrs_budget_inputs=dict(decision.budget_inputs),
@@ -1095,6 +1107,8 @@ class HRSStrategy(BaseStrategy):
             policy = await RiskPolicyStore(self.db).policy('hrs')
             from .risk_budget import policy_budget_version
             budget_version = policy_budget_version(policy)
+            from .margin_budget import policy_margin_scope
+            policy_margin_scope(policy)
             if policy['mode'] != 'reduced' or policy['allow_add']:
                 return RiskDecision(False, 'risk_policy_not_reduced')
             equity = Decimal(str(account_equity))

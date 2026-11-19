@@ -245,3 +245,41 @@ class TestAPIKeyMasking:
         
         # 刚好8位，应该全部用*代替
         assert client.api_key == "********"
+
+
+@pytest.mark.asyncio
+async def test_pm_account_info_preserves_actual_status_and_missing_cash():
+    from unittest.mock import AsyncMock
+    client=BinanceClient('test_api_key_12345','test_api_secret_67890')
+    client.use_unified_account=True
+    client._request=AsyncMock(return_value=dict(totalAvailableBalance='448.86',accountEquity='500',accountStatus='NORMAL'))
+    account=await client.get_account_info()
+    assert account['accountStatus']=='NORMAL'
+    assert account['availableBalance']==Decimal('448.86')
+    client._request.assert_awaited_once_with('GET','/papi/v1/account',signed=True)
+    client._request.return_value=dict(accountEquity='500',accountStatus='NORMAL')
+    assert (await client.get_account_info())['availableBalance'] is None
+
+
+@pytest.mark.asyncio
+async def test_standard_account_info_preserves_reported_status():
+    from unittest.mock import AsyncMock
+    client=BinanceClient('test_api_key_12345','test_api_secret_67890')
+    client.use_unified_account=False
+    client._request=AsyncMock(return_value=dict(availableBalance='448.86',totalMarginBalance='500',accountStatus='NORMAL'))
+    account=await client.get_account_info()
+    assert account['accountStatus']=='NORMAL'
+    assert account['availableBalance']==Decimal('448.86')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('unified',[False,True])
+@pytest.mark.parametrize('raw',[None,False,448.86])
+async def test_account_cash_normalization_does_not_hide_ambiguous_raw_types(unified,raw):
+    from unittest.mock import AsyncMock
+    from strategies.hrs.margin_budget import account_cash_fields,validate_cash_fields
+    client=BinanceClient('test_api_key_12345','test_api_secret_67890');client.use_unified_account=unified
+    client._request=AsyncMock(return_value=dict(accountEquity='500',totalMarginBalance='500',
+        totalAvailableBalance=raw,availableBalance=raw,accountStatus='NORMAL'))
+    account=await client.get_account_info()
+    with pytest.raises(ValueError):validate_cash_fields(account_cash_fields(account,unified))

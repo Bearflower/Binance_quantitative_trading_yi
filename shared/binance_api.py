@@ -494,8 +494,11 @@ class BinanceClient:
         
         data = await self._request("GET", endpoint, signed=True)
         
+        raw_available = data.get('totalAvailableBalance' if self.use_unified_account else 'availableBalance')
+        total_available = (Decimal(str(raw_available))
+                           if isinstance(raw_available,(str,int,Decimal)) and not isinstance(raw_available,bool)
+                           else raw_available)
         if self.use_unified_account:
-            total_available = Decimal(str(data.get('totalAvailableBalance', 0)))
             account_equity = Decimal(str(data.get('accountEquity', 0)))
             
             logger.info(
@@ -513,6 +516,7 @@ class BinanceClient:
                 'totalUnrealizedProfit': Decimal(0),
                 'totalWalletBalance': account_equity,
                 'availableBalance': total_available,
+                'accountStatus': data.get('accountStatus'),
                 'assets': [],
                 'positions': []
             }
@@ -521,7 +525,8 @@ class BinanceClient:
                 'totalMarginBalance': Decimal(data.get('totalMarginBalance', 0)),
                 'totalUnrealizedProfit': Decimal(data.get('totalUnrealizedProfit', 0)),
                 'totalWalletBalance': Decimal(data.get('totalWalletBalance', 0)),
-                'availableBalance': Decimal(data.get('availableBalance', 0)),
+                'availableBalance': total_available,
+                'accountStatus': data.get('accountStatus'),
                 'assets': data.get('assets', []),
                 'positions': data.get('positions', [])
             }

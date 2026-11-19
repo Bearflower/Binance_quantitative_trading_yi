@@ -63,3 +63,12 @@ def test_missing_scope_preserves_old_account_cap_and_owned_requires_floor():
     assert policy_margin_scope(dict(reason='legacy'))==ALL_ACCOUNT
     assert policy_margin_scope(dict(reason=json.dumps(dict(hrs_risk_budget_version=FLOOR))))==ALL_ACCOUNT
     with pytest.raises(ValueError):policy_margin_scope(dict(reason=json.dumps(dict(hrs_margin_scope=HRS_OWNED))))
+
+
+def test_cash_subtraction_preserves_small_real_shortfall_without_decimal_cancellation():
+    from strategies.hrs.margin_budget import margin_limits
+    f,p,policy=sources();f['account_available_balance']='2'
+    foreign=dict(client_order_id='f',account_id='test',strategy_id='new_coin',margin='1.000000000000000000000000000000000000000001',state='submitting')
+    result=margin_limits(f,p,[],[foreign],D(60),policy)
+    assert result['remaining_margin']<D(1)
+    assert result['account_reserved_margin']==D(foreign['margin'])

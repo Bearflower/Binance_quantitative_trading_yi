@@ -226,7 +226,7 @@ def _hrs_floor_parent_margin(payload):
         raise EntryDenied('HRS immutable parent margin unavailable',reason_code='hrs_budget_parent_margin_invalid') from exc
 
 
-def _validate_hrs_financial_receipt(receipt, row, *, account, symbol, signal_id, checked_at):
+def _validate_hrs_financial_receipt(receipt, row, *, account, symbol, signal_id, checked_at, margin_scope=None):
     """Verify an actual independently written receipt before using its finances."""
     from strategies.hrs.decision_capture import canonical_payload
     from strategies.hrs.entry_occupancy import SLOT_SCOPE
@@ -255,6 +255,11 @@ def _validate_hrs_financial_receipt(receipt, row, *, account, symbol, signal_id,
                 or canonical_payload(payload['exchange_positions'])[1] != canonical_payload(payload['slot_inputs']['inventory'])[1]):
             raise ValueError('financial receipt source mismatch')
         number(payload['account_equity']);number(payload['effective_allocation'])
+        from strategies.hrs.margin_budget import ALL_ACCOUNT,HRS_OWNED,validate_cash_fields
+        scope=margin_scope or ALL_ACCOUNT
+        if payload.get('hrs_margin_scope',ALL_ACCOUNT) != scope:
+            raise ValueError('financial receipt margin scope mismatch')
+        if scope==HRS_OWNED:validate_cash_fields(payload)
         return payload
     except (KeyError,ValueError,TypeError,AttributeError,ArithmeticError,EntryDenied) as exc:
         raise EntryDenied('HRS financial receipt unavailable or changed',reason_code='hrs_budget_financial_receipt_invalid') from exc
@@ -265,9 +270,25 @@ def _hrs_floor_receipt_margin(payload):
     return _hrs_floor_parent_margin(dict(capture=dict(inventory=payload['slot_inputs']['inventory'])))
 
 
-def _validate_hrs_floor_finance(context, slot_context, financial, pending, allocation, policy, expected):
+def _validate_hrs_floor_finance(context, slot_context, financial, pending, allocation, policy, expected, *, proof=None, account_pending=None):
     """Bind sizing to independent captured finances and current durable ceilings."""
     try:
+        from strategies.hrs.margin_budget import HRS_OWNED,policy_margin_scope,margin_limits
+        if policy_margin_scope(policy)==HRS_OWNED:
+            limits=margin_limits(financial,proof,pending,account_pending,allocation,policy)
+            for source in (context,slot_context):
+                if (source.get('hrs_margin_scope') != HRS_OWNED
+                        or any(number(source[key],zero=True)!=value for key,value in limits.items())
+                        or any(source.get(key)!=financial.get(key) for key in (
+                            'account_available_balance_source','account_status'))):
+                    raise ValueError('owned quota or actual cash sources changed')
+            if (number(context['full_allocation']) != allocation
+                    or expected.budget_inputs['allocation'] != allocation
+                    or number(context['snapshot_account_equity']) != number(financial['account_equity'])
+                    or number(context['snapshot_effective_allocation']) != number(financial['effective_allocation'])
+                    or expected.quantity*expected.budget_inputs['entry_price']/expected.budget_inputs['leverage'] > limits['remaining_margin']):
+                raise ValueError('captured sizing exceeds owned quota or actual cash')
+            return limits['margin_cap'],limits['remaining_margin']
         margin=_hrs_floor_receipt_margin(financial)
         equity=number(financial['account_equity'])
         effective=number(financial['effective_allocation'])
@@ -394,6 +415,30 @@ def _bind_hrs_floor_pending_to_rows(context, slot_context, pending, *, account, 
         raise EntryDenied('HRS pending reservation sources changed',reason_code='hrs_budget_pending_source_mismatch') from exc
 
 
+def _bind_hrs_account_pending(context, slot_context, pending, *, account, client_id):
+    from strategies.hrs.margin_budget import pending_margin
+    try:
+        captured=context['account_pending_reservations']
+        if captured != slot_context['account_pending_reservations']:
+            raise ValueError('account pending context changed')
+        def normalized(rows):
+            pending_margin(rows,account=account)
+            result={}
+            for row in rows:
+                if row['client_order_id']==client_id:raise ValueError('self pending source')
+                values=_hrs_budget_json(dict(row))
+                state=values.pop('state')
+                result[row['client_order_id']]=(values,state)
+            return result
+        old,current=normalized(captured),normalized(pending)
+        if set(old)!=set(current) or any(old[key][0]!=current[key][0] or
+                (old[key][1],current[key][1]) not in (('reserved','reserved'),
+                    ('reserved','submitting'),('submitting','submitting')) for key in old):
+            raise ValueError('account pending financial sources changed')
+    except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
+        raise EntryDenied('account retained cash sources changed',reason_code='hrs_account_pending_source_mismatch') from exc
+
+
 def _validate_hrs_floor_context(geometry, expected, row):
     """Bind the recomputed result to the captured locked ownership/risk sources."""
     context = geometry.get('hrs_budget_context')
@@ -454,6 +499,11 @@ class RiskPolicyStore:
                                          submitting_client_id=submitting_client_id)
             except EquityGateDenied as exc:
                 raise EntryDenied(str(exc)) from exc
+            if strategy=='hrs':
+                from strategies.hrs.margin_budget import policy_margin_scope
+                try:policy_margin_scope(row)
+                except ValueError as exc:
+                    raise EntryDenied('invalid HRS margin scope',reason_code='hrs_margin_scope_invalid') from exc
             return dict(row)
         if connection is not None:
             return await read(connection)
@@ -486,6 +536,8 @@ class RiskPolicyStore:
             scoped=isinstance(snapshot_values,ScopedRiskSnapshot)
             saved_geometry=dict(geometry or {})
             floor = False
+            from strategies.hrs.margin_budget import ALL_ACCOUNT,HRS_OWNED,policy_margin_scope,margin_limits
+            margin_scope = ALL_ACCOUNT
             refined_decision = budget_context = None
             if strategy == 'hrs':
                 from strategies.hrs.risk_budget import FLOOR, STRICT, policy_budget_version
@@ -496,6 +548,11 @@ class RiskPolicyStore:
                 proposed_version = saved_geometry.get('hrs_risk_budget_version', STRICT)
                 if proposed_version not in (STRICT, FLOOR) or proposed_version != active_version:
                     raise EntryDenied('HRS policy budget version mismatch', reason_code='hrs_budget_version_mismatch')
+                try:margin_scope=policy_margin_scope(policy)
+                except ValueError as exc:
+                    raise EntryDenied('invalid HRS margin scope',reason_code='hrs_margin_scope_invalid') from exc
+                if saved_geometry.get('hrs_margin_scope',ALL_ACCOUNT)!=margin_scope:
+                    raise EntryDenied('HRS planned margin scope changed',reason_code='hrs_margin_scope_mismatch')
                 floor = active_version == FLOOR
                 if floor and not scoped:
                     raise EntryDenied('HRS minimum-order budget requires owned slots', reason_code='hrs_budget_scope_required')
@@ -526,7 +583,7 @@ class RiskPolicyStore:
                 ownership_claims=[dict(row) for row in claims]
                 context['ownership_claims']=ownership_claims
                 try:
-                    proof=prove_hrs_slot_ownership(self.account,dict(account_id=self.account,evidence_sha256=row['evidence_sha256'],payload=row['payload']),values.slot_evidence,claims,checked_at=row['checked_at'])
+                    proof=prove_hrs_slot_ownership(self.account,dict(account_id=self.account,evidence_sha256=row['evidence_sha256'],payload=row['payload']),values.slot_evidence,claims,checked_at=row['checked_at'],margin_scope=margin_scope)
                 except HrsOccupancyDenied as exc:
                     raise EntryDenied('HRS slot ownership cannot be proven',reason_code=exc.reason_code,
                         context=context) from exc
@@ -550,7 +607,7 @@ class RiskPolicyStore:
                     parent = _bind_hrs_floor_local_to_parent(row['payload'],values.slot_evidence['local'],
                         self.account,row['evidence_sha256'])
                     receipt = values.financial_receipt
-                    financial = await self._financial_receipt(conn,receipt,symbol,identity,row['checked_at'])
+                    financial = await self._financial_receipt(conn,receipt,symbol,identity,row['checked_at'],margin_scope=margin_scope)
                     from strategies.hrs.decision_capture import canonical_payload
                     if (canonical_payload(financial['slot_inputs'])[1] != canonical_payload(values.slot_evidence)[1]
                             or number(holdings,zero=True) != _hrs_floor_receipt_margin(financial)
@@ -582,12 +639,25 @@ class RiskPolicyStore:
                     FROM trading.entry_risk_reservation WHERE account_id=$1 AND strategy_id='hrs'
                     AND state<>'released' ORDER BY client_order_id""", self.account)
                 remaining = cap - number(holdings,zero=True) - number(used,zero=True)
+                if margin_scope==HRS_OWNED:
+                    account_pending=await conn.fetch(f"""SELECT {_HRS_PENDING_COLUMNS}
+                        FROM trading.entry_risk_reservation WHERE account_id=$1 AND state<>'released'
+                        ORDER BY client_order_id""",self.account)
+                    try:limits=margin_limits(financial,proof,pending,account_pending,full_allocation,policy)
+                    except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
+                        raise EntryDenied('HRS quota or account cash unavailable',reason_code='hrs_budget_finance_source_mismatch') from exc
+                    cap,remaining=limits['margin_cap'],limits['remaining_margin']
+                    context.update(limits,hrs_margin_scope=margin_scope,
+                        account_available_balance_source=financial['account_available_balance_source'],
+                        account_status=financial['account_status'],
+                        account_pending_reservations=[dict(row) for row in account_pending])
                 sized, refined_decision, budget_context = _refine_hrs_floor(
                     sized,saved_geometry,values,pending,full_allocation,remaining,
                     dict(context,locked_policy=_hrs_budget_json(policy),
                          snapshot_effective_allocation=values.allocation,snapshot_account_equity=values.equity,
                          margin_cap=cap,reserved_margin=used))
-            if number(holdings,zero=True)+used+sized.margin > cap:
+            quota_holdings=context['hrs_owned_margin'] if margin_scope==HRS_OWNED else holdings
+            if number(quota_holdings,zero=True)+used+sized.margin > cap:
                 raise EntryDenied('entry ceiling includes holdings and all durable reservations',reason_code='entry_margin_ceiling',context=dict(context,account_margin=str(holdings),reserved_margin=str(used),entry_margin=str(sized.margin),margin_cap=str(cap)))
             # Existing symbol claim must already be acquired by the ordinary ownership protocol.
             claim = await conn.fetchrow('''UPDATE trading.position_claims SET expires_at='infinity'
@@ -608,13 +678,13 @@ class RiskPolicyStore:
                     budget_decision=saved_geometry['hrs_budget_decision'], budget_context=budget_context)
         return client_id
 
-    async def _financial_receipt(self, conn, receipt, symbol, identity, checked_at):
+    async def _financial_receipt(self, conn, receipt, symbol, identity, checked_at, *, margin_scope=None):
         if not isinstance(receipt,dict) or not receipt.get('evidence_id'):
             raise EntryDenied('HRS financial receipt missing',reason_code='hrs_budget_financial_receipt_invalid')
         row=await conn.fetchrow("""SELECT * FROM hrs.hrs_decision_evidence
             WHERE evidence_id=$1""",receipt['evidence_id'])
         return _validate_hrs_financial_receipt(receipt,row,account=self.account,symbol=symbol,
-            signal_id=identity,checked_at=checked_at)
+            signal_id=identity,checked_at=checked_at,margin_scope=margin_scope)
 
     async def authorize_hrs_floor(self, conn, policy, client_id, decision, *, quantity=None, submitting=False):
         """Recheck current durable intent and immutable sources on this connection."""
@@ -625,6 +695,8 @@ class RiskPolicyStore:
                 or decision.client_order_id != client_id
                 or decision.policy_revision != policy['revision']):
             raise EntryDenied('HRS minimum-order submission decision unavailable')
+        from strategies.hrs.margin_budget import ALL_ACCOUNT,HRS_OWNED,policy_margin_scope
+        margin_scope=policy_margin_scope(policy)
         _validate_hrs_floor_decision(decision,decision.budget_inputs)
         qty=number(decision.quantity if quantity is None else quantity)
         row=await conn.fetchrow("""SELECT * FROM trading.entry_risk_reservation
@@ -633,6 +705,8 @@ class RiskPolicyStore:
         if not row or row['revision'] != policy['revision'] or (submitting and row['state'] != 'submitting'):
             raise EntryDenied('HRS durable submission reservation changed')
         geometry=json.loads(row['geometry']) if isinstance(row['geometry'],str) else row['geometry']
+        if geometry.get('hrs_margin_scope',ALL_ACCOUNT)!=margin_scope:
+            raise EntryDenied('HRS durable margin scope changed',reason_code='hrs_margin_scope_mismatch')
         expected=_validate_hrs_floor_decision(geometry.get('hrs_budget_decision'),geometry.get('hrs_budget_inputs'))
         _validate_hrs_floor_context(geometry,expected,row)
         context=geometry['hrs_budget_context']
@@ -664,21 +738,27 @@ class RiskPolicyStore:
         payload=_bind_hrs_floor_local_to_parent(parent['payload'],context['local_positions'],
                                                self.account,context['evidence_sha256'])
         financial=await self._financial_receipt(conn,geometry.get('hrs_financial_receipt'),
-            row['symbol'],geometry.get('signal_id'),gate['checked_at'])
+            row['symbol'],geometry.get('signal_id'),gate['checked_at'],margin_scope=margin_scope)
         from strategies.hrs.entry_occupancy import prove_hrs_slot_ownership, HrsOccupancyDenied
         claims=await conn.fetch("SELECT id,symbol,strategy,claim_state FROM trading.position_claims WHERE claim_state IN ('PENDING','ACTIVE') AND expires_at>clock_timestamp()")
         try:
             proof=prove_hrs_slot_ownership(self.account,dict(account_id=self.account,
                 evidence_sha256=gate['evidence_sha256'],payload=payload),financial['slot_inputs'],claims,
-                checked_at=gate['checked_at'])
+                checked_at=gate['checked_at'],margin_scope=margin_scope)
             _bind_hrs_floor_local_to_parent(payload,financial['slot_inputs']['local'],self.account,gate['evidence_sha256'])
             if proof != geometry['slot_occupancy_proof']:
                 raise EntryDenied('HRS receipt ownership proof changed',reason_code='hrs_budget_financial_receipt_invalid')
         except HrsOccupancyDenied as exc:
             raise EntryDenied('HRS receipt ownership changed',reason_code=exc.reason_code) from exc
+        account_pending=None
+        if margin_scope==HRS_OWNED:
+            account_pending=await conn.fetch(f"""SELECT {_HRS_PENDING_COLUMNS}
+                FROM trading.entry_risk_reservation WHERE account_id=$1 AND state<>'released'
+                AND client_order_id<>$2 ORDER BY client_order_id""",self.account,client_id)
+            _bind_hrs_account_pending(context,geometry['slot_context'],account_pending,account=self.account,client_id=client_id)
         allocation=await current_allocation(conn,'hrs')
         _validate_hrs_floor_finance(context,geometry['slot_context'],financial,pending,
-                                   allocation,policy,expected)
+                                   allocation,policy,expected,proof=proof,account_pending=account_pending)
         if not (geometry.get('hrs_risk_budget_version') == FLOOR
                 and geometry.get('hrs_budget_source') == 'hrs_live_assessor_v1'
                 and _hrs_budget_json(expected.budget_inputs) == _hrs_budget_json(decision.budget_inputs)
@@ -716,14 +796,12 @@ class RiskPolicyStore:
             return True
 
     async def _release_proven_unsent(self, conn, strategy, client_id, row, state, *, denial=None):
-        resolution={'submission_resolution':'denied_before_http'}
-        if denial is not None:
-            resolution['submission_denial']=denial
+        # Captured intent geometry is immutable. The database capture trigger
+        # appends the state transition fact; executor logs retain denial reasons.
         await conn.execute("""UPDATE trading.entry_risk_reservation
-            SET state='released',updated_at=clock_timestamp(),
-                geometry=COALESCE(geometry,'{}'::jsonb) || $5::jsonb
+            SET state='released',updated_at=clock_timestamp()
             WHERE client_order_id=$1 AND account_id=$2 AND strategy_id=$3 AND state=$4""",
-            client_id, self.account, strategy, state,json.dumps(resolution))
+            client_id, self.account, strategy, state)
         await conn.execute("""UPDATE trading.position_claims
             SET claim_state='RELEASED',released_at=clock_timestamp(),reason='risk_denied_before_http'
             WHERE symbol=$1 AND strategy=$2 AND claim_state='PENDING'
