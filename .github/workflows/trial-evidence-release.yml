@@ -31,7 +31,7 @@ jobs:
         run: |
           pip install -r strategies/hrs/requirements.txt pytest pytest-asyncio
           PGPASSWORD=hrs-test-only psql -h 127.0.0.1 -U postgres -d hrs_test -v ON_ERROR_STOP=1 -c 'CREATE ROLE trading_user NOLOGIN'
-          python -m pytest -q tests/test_strategies/test_hrs_min_order_http.py tests/test_risk/test_hrs_min_order_lock.py tests/test_shared/test_hrs_final_submit_guard.py tests/test_strategies/test_hrs_safety_review_regressions.py tests/test_risk/test_hrs_scoped_slots.py
+          python -m pytest -q tests/test_strategies/test_hrs_min_order_http.py tests/test_risk/test_hrs_min_order_lock.py tests/test_shared/test_hrs_final_submit_guard.py tests/test_strategies/test_hrs_safety_review_regressions.py tests/test_risk/test_hrs_scoped_slots.py tests/test_strategies/test_hrs_replay_core.py strategies/hrs/tests/test_r1_r4_regressions.py strategies/hrs/tests/test_lv_rm_empty_pool_execution.py
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -54,7 +54,7 @@ jobs:
           root = pathlib.Path('.')
           target = pathlib.Path(os.environ['RUNNER_TEMP'])/'hrs-entry-hotfix'
           paths = ['deployment/hrs-entry-hotfix/activate.py', 'release/hrs-execution/deploy_optimization.py',
-                   'shared/entry_risk_policy.py', 'strategies/hrs/executor.py',
+                   'shared/entry_risk_policy.py', 'strategies/hrs/executor.py', 'strategies/hrs/core_decision.py',
                    'scripts/database_permissions.py', 'database/postgres/permissions.json', 'VERSION']
           files = {}
           for name in paths:

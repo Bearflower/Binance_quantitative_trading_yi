@@ -1,4 +1,4 @@
-"""Activate the two-file HRS entry hotfix, retaining the original release configuration."""
+"""Activate the HRS entry hotfix, retaining the original release configuration."""
 import fcntl
 import hashlib
 import json
@@ -19,7 +19,10 @@ PIN = '9bc1231cb50a7a49328fea7fec60d2a2ee5ba35d'
 OVERLAY = '2a2cd10322c3e6707306616d6571beee2cfc77f735c3c29a9eb7333d0e1aa076'
 PREDECESSOR_HRS = 'f144eb073c14ae3fdeb7f2d4239eced97aec97e1'
 BASE = 'sha256:4d7cd6ad3fcd50d3ec2ed51936200c451a860da1a236c9da5e2a17eb4251df75'
-SOURCES = ('shared/entry_risk_policy.py', 'strategies/hrs/executor.py')
+INTERRUPTED = 'a45e47758a7d895628481852871f4f0b8c68fdf7'
+INTERRUPTED_IMAGE = 'sha256:6f33f52ecb3e6bb9e3492c52a601e4610393049200617a9e22a411b827a2e38c'
+
+SOURCES = ('shared/entry_risk_policy.py', 'strategies/hrs/executor.py', 'strategies/hrs/core_decision.py')
 
 
 def sha256(path):
@@ -80,16 +83,35 @@ def main(sha, image_digest, bundle_name):
 
     pin_path = ROOT/'.deploy_tmp/ledger-risk-active.json'
     pin = json.loads(pin_path.read_text())
-    previous = Path(pin['overlay']).resolve()
-    if (pin['sha'] != PIN or pin['status'] != 'active'
-            or not previous.is_relative_to(ROOT/'.releases') or sha256(previous) != OVERLAY):
-        raise RuntimeError('reviewed active release changed')
-    predecessor = json.loads(Path(pin['state']).read_text())
-    if predecessor.get('sha') != PIN or predecessor.get('status') != 'complete':
-        raise RuntimeError('predecessor incomplete')
+    original = ROOT/'.releases/trial-evidence'/PIN
+    previous = original/'images.json'
+    predecessor = json.loads((original/'state.json').read_text())
+    if (sha256(previous) != OVERLAY or predecessor.get('sha') != PIN
+            or predecessor.get('status') != 'complete'):
+        raise RuntimeError('reviewed predecessor incomplete')
     old_image = inspect(CONTAINER)
-    if old_image['Image'] != BASE or environment(old_image).get('HRS_RELEASE_SHA') != PREDECESSOR_HRS:
-        raise RuntimeError('reviewed live HRS image or release changed')
+    previous_runtime = (old_image['Image'], environment(old_image).get('HRS_RELEASE_SHA'))
+    established = (pin['sha'] == PIN and pin['status'] == 'active'
+                   and Path(pin['overlay']) == previous and previous_runtime == (BASE, PREDECESSOR_HRS))
+    interrupted_dir = ROOT/'.releases/hrs-entry-hotfix'/INTERRUPTED
+    interrupted_runtime = previous_runtime == (INTERRUPTED_IMAGE, INTERRUPTED)
+    interrupted_pin = (pin['sha'] == PIN and pin['status'] == 'activating'
+                       and pin.get('successor_sha') == INTERRUPTED and Path(pin['overlay']) == previous)
+    finished_pin = (pin['sha'] == INTERRUPTED and pin['status'] == 'active'
+                    and pin.get('predecessor_sha') == PIN
+                    and Path(pin['overlay']) == interrupted_dir/'images.json')
+    if not established:
+        if not interrupted_runtime or not (interrupted_pin or finished_pin):
+            raise RuntimeError('reviewed live predecessor changed')
+        prior_overlay = json.loads(previous.read_text())
+        first_image = 'ghcr.io/bearflower/trading-hrs@' + INTERRUPTED_IMAGE
+        prior_overlay['services'][SERVICE]['image'] = first_image
+        prior_overlay['services'][SERVICE]['environment']['HRS_RELEASE_SHA'] = INTERRUPTED
+        if prior_overlay != json.loads((interrupted_dir/'images.json').read_text()):
+            raise RuntimeError('interrupted candidate changed configuration')
+    rollback_pin = dict(pin, sha=PIN, status='active', overlay=str(previous),
+                        state=str(original/'state.json'), successor_sha=PIN,
+                        predecessor_sha='d9c4e6c1b1dabe3594ef07150e2be46bc1018b3f')
     baseline = read_initialization()
     config_hash = baseline['loaded_config']['config_hash']
     if not config_hash or baseline.get('evidence_context_serializable') is not True:
@@ -149,7 +171,7 @@ def main(sha, image_digest, bundle_name):
         state = release/'state.json'
         atomic(state, dict(sha=sha, status='complete', changed=[CONTAINER], protection=fresh_protection,
                            permission_manifest=permission_manifest, source_proof=proof,
-                           initialization=initialized, image=image))
+                           initialization=initialized, image=image, superseded_interrupted_release=not established))
         atomic(pin_path, dict(pin, sha=sha, status='active', predecessor_sha=pin['sha'],
                               successor_sha=sha, overlay=str(target), state=str(state)))
         print(json.dumps(dict(sha=sha, status='complete', changed=[CONTAINER],
@@ -159,7 +181,7 @@ def main(sha, image_digest, bundle_name):
             run(original_command+['up', '-d', '--no-deps', '--pull', 'never', SERVICE])
             wait_ready(BASE, PREDECESSOR_HRS, config_hash)
             preflight()
-            atomic(pin_path, pin)
+            atomic(pin_path, rollback_pin)
             atomic(release/'state.json', dict(sha=sha, status='failed', rollback='restored'))
         except Exception:
             atomic(release/'state.json', dict(sha=sha, status='failed', rollback='unverified'))

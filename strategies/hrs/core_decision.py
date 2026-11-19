@@ -68,7 +68,9 @@ def is_shadow_entry_mode(config, entry_mode, signal_origin=None):
             return True
         if signal_origin == 'nonempty_pool':
             return False
-    return (config.get(entry_mode,{}) or {}).get('execution_mode') == 'shadow'
+    # Older production mounts may omit this key. Execute only on explicit opt-in.
+    settings = config.get(entry_mode)
+    return not isinstance(settings, dict) or settings.get('execution_mode') != 'execute'
 
 
 def analyze_standard(*, symbol, klines_1h, klines_4h, oi_market_cap_ratio,
