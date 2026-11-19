@@ -18,6 +18,8 @@ These observations are a dated snapshot, not a claim that the current production
 
 Run `scripts/audit_grid_shadow_window.py --grid-db GRID_DB --agg-db AGG_DB --start-ms START --end-ms END` against read-only copies or production databases opened in read-only mode. Use Beijing calendar-day boundaries. The report separates:
 
+If the aggregate-trade database is unavailable, omit `--agg-db` for a queue and numeric-reference diagnostic only. In this mode market evidence is `null`, `evidence_complete=false`, and the report cannot pass M3. The report also exposes the frozen 90% numeric-reference target separately from full evidence coverage.
+
 - `VALID`, `STALE`, `NO_ACTIVE_REFERENCE`, `SYNC_UNCERTAIN`, `MISSING`, `INVALID` and `UNKNOWN` observation intervals;
 - `status_observed_ms` and `numeric_reference_availability` use the full Beijing-day window as denominator; `unobserved_ms` remains separate. The last checkpoint state is carried forward only to the next checkpoint when the gap is at most `max_gap_ms` (default 5 seconds). Across a larger gap, at most the first second is attributed; the rest stays unobserved. This is an audit estimate with up to one checkpoint interval of transition uncertainty, not proof of an exact state change millisecond. `eligible_time_ms` additionally requires a healthy feed, normal storage and completed warm-up;
 - feed, storage, queue and warm-up exclusions, plus checkpoint gaps;

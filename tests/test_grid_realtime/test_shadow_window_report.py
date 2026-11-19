@@ -106,3 +106,27 @@ def test_read_only_cli_reports_data_gate_without_claiming_m3(tmp_path, capsys):
     report = json.loads(capsys.readouterr().out)
     assert report["data_window_eligible"] is True
     assert report["formal_m3_eligible"] is False
+
+
+def test_read_only_cli_reports_reference_gap_without_market_db(tmp_path, capsys):
+    grid_path = tmp_path / "grid.sqlite3"
+    grid = connect(str(grid_path), 1000)
+    ensure_schema(grid)
+    audit = QueueAudit(grid, "one", 1000)
+    for at, status in ((1000, "VALID"), (2000, "VALID"),
+                       (3000, "NO_ACTIVE_REFERENCE"),
+                       (4000, "NO_ACTIVE_REFERENCE"),
+                       (5000, "NO_ACTIVE_REFERENCE")):
+        audit.checkpoint(at, 0, reference_status=status, feed_healthy=True,
+                         storage_degraded=False)
+    grid.close()
+
+    assert main(["--grid-db", str(grid_path), "--start-ms", "1000",
+                 "--end-ms", "5000"]) == 2
+    report = json.loads(capsys.readouterr().out)
+    assert report["queue"]["queue_window_eligible"] is True
+    assert report["shadow"]["numeric_reference_availability"] == 0.5
+    assert report["reference_target_met"] is False
+    assert report["market"] is None
+    assert report["evidence_complete"] is False
+    assert report["formal_m3_eligible"] is False
