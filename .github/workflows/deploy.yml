@@ -17,7 +17,7 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build immutable candidate and offline tests
         run: |
-          docker build --build-arg RELEASE_SHA=${{ github.sha }} --target test -f release/hrs-execution/Optimization.Dockerfile -t hrs-optimization-test .
+          docker build --build-arg RELEASE_SHA=${{ github.sha }} --build-arg CI_RUN_NUMBER=${{ github.run_number }} --build-arg CI_RUN_ATTEMPT=${{ github.run_attempt }} --target test -f release/hrs-execution/Optimization.Dockerfile -t hrs-optimization-test .
           docker network create --internal hrs-test-net
           trap 'docker rm -f hrs-test-pg >/dev/null 2>&1 || true; docker network rm hrs-test-net >/dev/null 2>&1 || true' EXIT
           docker run -d --name hrs-test-pg --network hrs-test-net -e POSTGRES_PASSWORD=isolated-test-password -e POSTGRES_DB=hrs_test postgres:16
@@ -25,12 +25,12 @@ jobs:
             if docker exec hrs-test-pg pg_isready -U postgres -d hrs_test; then break; fi
             sleep 1
           done
-          docker run --rm --network hrs-test-net -e HRS_TEST_POSTGRES_DSN=postgresql://postgres:isolated-test-password@hrs-test-pg/hrs_test hrs-optimization-test python -m pytest -q strategies/hrs/tests tests/test_strategies/test_hrs_*.py tests/test_shared/test_equity_entry_gate.py tests/test_shared/test_hrs_final_submit_guard.py tests/test_shared/test_hrs_projection_submission.py tests/test_shared/test_market_cap_*.py tests/test_shared/test_irys_market_cap_identity.py tests/test_shared/test_entry_risk_reconcile_flat.py tests/test_risk/test_entry_policy.py tests/test_risk/test_hrs_scoped_slots.py tests/test_ai_tuner_mvp/replay tests/test_ai_tuner_mvp/test_hrs_exit_experiment.py tests/test_ai_tuner_mvp/test_hrs_evidence_export.py tests/test_ai_tuner_mvp/test_hrs_evidence_archive.py tests/test_ai_tuner_mvp/test_hrs_forecast_closure.py tests/test_ai_tuner_mvp/test_hrs_kline_sources.py tests/test_release/test_hrs_optimization_deploy.py tests/test_ai_tuner_mvp/test_snapshot_collector.py tests/test_ai_tuner_mvp/test_snapshot_repository.py
+          docker run --rm --network hrs-test-net -e HRS_TEST_POSTGRES_DSN=postgresql://postgres:isolated-test-password@hrs-test-pg/hrs_test hrs-optimization-test python -m pytest -q strategies/hrs/tests tests/test_strategies/test_hrs_*.py tests/test_shared/test_equity_entry_gate.py tests/test_shared/test_hrs_final_submit_guard.py tests/test_shared/test_hrs_projection_submission.py tests/test_shared/test_market_cap_*.py tests/test_shared/test_irys_market_cap_identity.py tests/test_shared/test_entry_risk_reconcile_flat.py tests/test_risk/test_entry_policy.py tests/test_risk/test_hrs_scoped_slots.py tests/test_risk/test_hrs_min_order_lock.py tests/test_ai_tuner_mvp/replay tests/test_ai_tuner_mvp/test_hrs_exit_experiment.py tests/test_ai_tuner_mvp/test_hrs_minimum_experiment.py tests/test_ai_tuner_mvp/test_hrs_evidence_export.py tests/test_ai_tuner_mvp/test_hrs_evidence_archive.py tests/test_ai_tuner_mvp/test_hrs_forecast_closure.py tests/test_ai_tuner_mvp/test_hrs_kline_sources.py tests/test_release/test_hrs_*.py tests/test_ai_tuner_mvp/test_hrs_minimum_policy_inspection.py tests/test_ai_tuner_mvp/test_snapshot_collector.py tests/test_ai_tuner_mvp/test_snapshot_repository.py
       - name: Publish immutable candidates
         run: |
           for target in hrs hub; do
             IMAGE=ghcr.io/bearflower/trading-hrs:optimization-${target}-${{ github.sha }}
-            docker build --build-arg RELEASE_SHA=${{ github.sha }} --target "$target" -f release/hrs-execution/Optimization.Dockerfile -t "$IMAGE" .
+            docker build --build-arg RELEASE_SHA=${{ github.sha }} --build-arg CI_RUN_NUMBER=${{ github.run_number }} --build-arg CI_RUN_ATTEMPT=${{ github.run_attempt }} --target "$target" -f release/hrs-execution/Optimization.Dockerfile -t "$IMAGE" .
             docker push "$IMAGE"
             docker inspect "$IMAGE" --format '{{json .RepoDigests}}' >> "$GITHUB_STEP_SUMMARY"
           done
