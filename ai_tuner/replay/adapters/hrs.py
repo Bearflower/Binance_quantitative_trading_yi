@@ -18,7 +18,7 @@ from strategies.hrs.pattern import PatternRecognizer
 from strategies.hrs.risk_budget import (FLOOR, STRICT, assess_entry, assess_budget_inputs,
     calculate_open_position_risk, policy_budget_version)
 from strategies.hrs.margin_budget import (ALL_ACCOUNT, HRS_OWNED, policy_margin_scope,
-    validate_cash_fields, validate_cash_observation, pending_margin)
+    validate_cash_fields, validate_cash_observation, pending_margin, margin_component_limits)
 from strategies.hrs.loss_gate import GateHistory, LossGateState, evaluate_loss_gate
 from strategies.hrs.risk_ledger import (EquityCheckpoint, LedgerState, LedgerObservation,
     IncomeEvent, CashFlow, PositionMark, reconcile_ledger, LedgerNotReady)
@@ -167,7 +167,8 @@ class HrsAdapter:
                 verify_bootstrap_margin_inputs(self._portal,raw)
                 if raw.get('hrs_margin_scope')!=self._margin_scope:raise ValueError('hrs_margin_scope_mismatch')
                 validate_cash_fields(raw)
-                validate_cash_observation(raw,checked_at=parse_utc(raw['bootstrap_available_at']),observed_at=self._start)
+                validate_cash_observation(raw,checked_at=parse_utc(raw['bootstrap_available_at']),
+                    observed_at=raw['bootstrap_account_occupancy']['observed_at'])
                 self._foreign_pending_margin(raw)
             self._runtime_slot_scope=raw.get('runtime_slot_scope')
             if self._runtime_slot_scope is not None:
@@ -647,6 +648,28 @@ class HrsAdapter:
         pending_margin(active,account=account)
         return pending_margin([row for row in active if row['strategy_id']!='hrs'],account=account)
 
+    def _owned_margin_limits(self,risk,ctx,effective,leverage):
+        """Apply shared exact accounting to the counterfactual HRS portfolio.
+
+        The original foreign economic partition remains untouched. Observed
+        external cash never receives simulated exit releases or profits.
+        """
+        self._foreign_pending_margin(risk)
+        account=self._policy['account_id']
+        foreign=[dict(row) for row in risk['account_occupancy']['other_positions']]
+        modeled=[dict(symbol=p.symbol,positionAmt=p.current_quantity,
+            markPrice=ctx.portfolio.last_prices[p.symbol],leverage=leverage)
+            for p in ctx.portfolio.positions if p.is_open()]
+        inventory=foreign+modeled
+        pending=[dict(client_order_id='replay:'+symbol,account_id=account,strategy_id='hrs',
+            state='reserved',margin=row['margin']) for symbol,row in self._durable_margin_reservations.items()]
+        account_pending=pending+[dict(row) for row in risk['account_pending_reservations']
+            if row['state']!='released' and row['strategy_id']!='hrs']
+        financial=dict(risk,account_id=account,
+            account_equity=self._account_equity,effective_allocation=effective)
+        return margin_component_limits(financial,self._allocation,self._policy,
+            account_positions=inventory,hrs_positions=modeled,hrs_pending=pending,account_pending=account_pending)
+
     def _reservation_denial(self,symbol,quantity,price,ctx,now,risk,effective,*,decision=None,refined_decisions=None):
         """Legacy rejects unchanged; explicit floor reproduces downward lock sizing."""
         try:
@@ -707,8 +730,9 @@ class HrsAdapter:
             try:
                 if risk.get('hrs_margin_scope')!=HRS_OWNED:raise ValueError('hrs_margin_scope_mismatch')
                 validate_cash_observation(risk,checked_at=now,observed_at=observed)
-                cash_remaining=validate_cash_fields(risk)-retained-self._foreign_pending_margin(risk)
-                remaining=min(effective-hrs_margin-retained,cash_remaining)
+                limits=self._owned_margin_limits(risk,ctx,effective,leverage)
+                cash_remaining=limits['account_remaining_margin']
+                remaining=limits['remaining_margin']
             except (KeyError,ValueError,TypeError,ArithmeticError) as exc:
                 raise DataBlocked(['hrs_margin_inputs_invalid:'+str(exc)]) from exc
         if decision is not None:
