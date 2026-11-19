@@ -268,5 +268,7 @@
     "report": "docs/reports/hrs-natural-admission-verification-2026-11-19.json",
     "performance_accepted": false
   },
-  "independent_final_verification_at": "2026-11-19T01:50:25.367721+00:00"
+  "independent_final_verification_at": "2026-11-19T01:50:25.367721+00:00",
+  "status_scope": "Historical release4316920f record; latest HRS minimum-order deployment is in current_release_status_report.",
+  "current_release_status_report": "docs/reports/hrs-minimum-order-risk-floor-deploy-2026-11-19.json"
 }
