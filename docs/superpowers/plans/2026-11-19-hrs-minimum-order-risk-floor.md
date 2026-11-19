@@ -12,14 +12,14 @@ Tech stack: Python3.11/Decimal, pytest, PostgreSQL16, immutable GHCR images and 
 - [x] Independent spec review then code review, resolve findings and commit only owned files.
 
 ## 2. Live and locked reservation
-- [ ] Add red real-PG and wiring tests for policy7 opt-in, conservative actual account margin, concurrent minimum entries, stale allocation/revision, missing exposure and exact refined submission quantity.
-- [ ] Wire strategy.py and shared/entry_risk_policy.py with mode/captured inputs, locked risk recomputation and downsize-only committed audit. Keep legacy path unchanged. Final authorization rejects forged/stale new decisions.
-- [ ] Independent spec/code review and combined regression.
+- [x] Add red real-PG and wiring tests for policy7 opt-in, conservative actual account margin, concurrent minimum entries, stale allocation/revision, missing exposure and exact refined submission quantity.
+- [x] Wire strategy.py and shared/entry_risk_policy.py with mode/captured inputs, locked risk recomputation and downsize-only committed audit. Keep legacy path unchanged. Final authorization rejects forged/stale new decisions.
+- [x] Independent spec/code review and combined regression.
 
 ## 3. Replay and acceptance
 - [x] Test captured policy version selection and shared assessor results against actual denied candidates; test unknown/tampered floor evidence rejection.
-- [ ] Wire ai_tuner/replay/adapters/hrs.py and strategies/hrs/acceptance_report.py. Preserve legacy interpretation and evidence closure; add future preregistration without rewriting old windows.
-- [ ] Run real-PG export/replay/CLI regression and independent review.
+- [x] Wire ai_tuner/replay/adapters/hrs.py and strategies/hrs/acceptance_report.py. Preserve legacy interpretation and evidence closure; add future preregistration without rewriting old windows.
+- [x] Run real-PG export/replay/CLI regression and independent review.
 
 ## 4. Controlled policy activation and rollout
 - [x] Build reviewable HRS6->7 CAS candidate preserving all financial/margin flags and expiry; verify exact policy reason, existing permissions contract, active claims/reservations and original protection.
@@ -36,3 +36,5 @@ Tech stack: Python3.11/Decimal, pytest, PostgreSQL16, immutable GHCR images and 
 - Nine authentic denied signal prices with captured current exchange filters now fit isolated floor sizing; these are feasibility checks, not historical returns.
 - Future v5 research is preregistered for November20CST00:00; old windows remain immutable.
 - No minimum-order budget production activation or release has occurred yet.
+
+Full selected local and fresh PostgreSQL16/Python3.11 CI both1652/1652 passed. CI44450437765, releasef144eb07, deployment0000DE01. Actual production rollout and policy7 activation still await complete, hash-verified package delivery; no production activation yet.
