@@ -12,9 +12,9 @@ import time
 from datetime import datetime
 
 ROOT = Path('/root/trading_system')
-PIN_SHA = 'ca7aa506f7920860f809a1c324dd0de4767e3cd6'
-OVERLAY_SHA = '3558e235679bdd37e580de767803984a3a06a1ab66088fa456bbe9e37ec912a8'
-BASE_IMAGE = 'sha256:d8275a1d7b44b3d2ad152549baa13a0e84a5dfd537b61dd925f75af94054f6da'
+PIN_SHA = 'f144eb073c14ae3fdeb7f2d4239eced97aec97e1'
+OVERLAY_SHA = '50678ba90cea22c270e0ae42e0c2d45dd3bb962b661bfbc1b3ba689aa3b75f4e'
+BASE_IMAGE = 'sha256:a6153a490ecd0c8c3aba409a8317c8304b3bfeef87326e45c88ba588b41e61cd'
 MIGRATIONS = ()
 
 
@@ -56,7 +56,15 @@ def policy_hash():
 def fresh_observation(observation, started_ms):
     risk = observation.get('account-risk-latest.json', {})
     activity = observation.get('entry-activity-latest.json', {})
-    return (risk.get('account_id') == 'default'
+    recovery = observation.get('new-coin-recovery-latest.json', {})
+    try:
+        recovery_ms = int(datetime.fromisoformat(recovery['as_of']).timestamp()*1000)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (recovery.get('account_id') == 'default'
+            and recovery.get('status') in ('WAIT_OPEN_POSITION','OBSERVED')
+            and recovery_ms >= started_ms
+            and risk.get('account_id') == 'default'
             and risk.get('budget_id') == 'default-pm-5pct-20261117-v1'
             and bool(risk.get('baseline')) and risk.get('as_of_ms', 0) >= started_ms
             and activity.get('account_id') == 'default'
@@ -122,6 +130,8 @@ def main(sha, image_digest, bundle):
         run(['docker','exec','-i','trading_system-postgres','psql','-X','-v','ON_ERROR_STOP=1',
              '-U','trading_migration_admin','-d','trading_platform'],
              input=(bundle/'database/postgres/migrations'/name).read_text())
+    # Restricted release may audit permissions. It may neither grant nor migrate.
+    run(['python3','scripts/database_permissions.py','audit'])
     if policy_hash() != policies or inventory() != before:
         raise RuntimeError('policies/allocations/containers changed before activation')
     atomic(pin_path,dict(pin,status='activating',successor_sha=sha))
@@ -142,7 +152,7 @@ def main(sha, image_digest, bundle):
             raise RuntimeError('running image mismatch')
         started_ms = int(datetime.fromisoformat(current['State']['StartedAt'].replace('Z','+00:00')).timestamp()*1000)
         # Wait for actual scheduler invocations, not merely Python imports.
-        code = "import json,pathlib; p=pathlib.Path('/app/logs/trial_evidence'); print(json.dumps({n:json.loads((p/n).read_text()) for n in ('account-risk-latest.json','entry-activity-latest.json')}))"
+        code = "import json,pathlib; p=pathlib.Path('/app/logs/trial_evidence'); print(json.dumps({n:json.loads((p/n).read_text()) for n in ('account-risk-latest.json','entry-activity-latest.json','new-coin-recovery-latest.json')}))"
         observation = None
         while time.monotonic()<deadline:
             try:

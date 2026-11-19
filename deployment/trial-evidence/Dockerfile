@@ -1,5 +1,5 @@
 # Preserve the exact live AI Tuner image, including the independently deployed review fixes.
-FROM ghcr.io/bearflower/trading-ai-tuner@sha256:d8275a1d7b44b3d2ad152549baa13a0e84a5dfd537b61dd925f75af94054f6da
+FROM ghcr.io/bearflower/trading-ai-tuner@sha256:a6153a490ecd0c8c3aba409a8317c8304b3bfeef87326e45c88ba588b41e61cd
 COPY --chown=1000:1000 ai_tuner/allocation/activity_evidence.py /app/ai_tuner/allocation/activity_evidence.py
 COPY --chown=1000:1000 ai_tuner/monitor/evidence_jobs.py ai_tuner/monitor/reduced_trial.py ai_tuner/monitor/trial_risk_evidence.py /app/ai_tuner/monitor/
 COPY --chown=1000:1000 shared/accounting/pm_equity_bridge.py /app/shared/accounting/pm_equity_bridge.py
