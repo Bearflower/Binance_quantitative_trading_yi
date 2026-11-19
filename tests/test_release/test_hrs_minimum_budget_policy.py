@@ -138,3 +138,27 @@ async def test_real_pg_missing_active_pointer_cannot_append_rollback_audit(polic
     await db.execute('ROLLBACK')
     assert await db.fetchval('SELECT count(*) FROM trading.strategy_risk_audit')==1
     assert await db.fetchval("SELECT count(*) FROM trading.strategy_risk_active WHERE strategy_id='hrs'")==0
+
+
+def test_floor_release_permission_audit_binds_uploaded_contract_and_never_applies(tmp_path,monkeypatch):
+    import hashlib
+    m=deploy_module();tool=tmp_path/'database_permissions.py';contract=tmp_path/'permissions.json'
+    tool.write_text('verified audit tool');contract.write_text('{}')
+    manifest={'permission_contract_sha256':hashlib.sha256(contract.read_bytes()).hexdigest(),
+        'permission_tool_sha256':hashlib.sha256(tool.read_bytes()).hexdigest()}
+    calls=[]
+    def run(args,**kw):calls.append(args);return json.dumps({'ok':True,'mode':'audit','manifest_sha256':manifest['permission_contract_sha256']})
+    monkeypatch.setattr(m,'run',run)
+    report=m.permission_audit(tmp_path,manifest,'trading_platform')
+    assert report['ok'] is True and calls[0][2]=='audit' and 'apply' not in calls[0]
+    contract.write_text('{"changed":true}')
+    with pytest.raises(ValueError):m.permission_audit(tmp_path,manifest,'trading_platform')
+    assert len(calls)==1
+
+
+def test_floor_release_permission_failure_blocks_activation(tmp_path,monkeypatch):
+    import hashlib
+    m=deploy_module();(tmp_path/'database_permissions.py').write_text('x');(tmp_path/'permissions.json').write_text('{}')
+    manifest={'permission_contract_sha256':hashlib.sha256(b'{}').hexdigest(),'permission_tool_sha256':hashlib.sha256(b'x').hexdigest()}
+    monkeypatch.setattr(m,'run',lambda *a,**kw:json.dumps({'ok':False,'mode':'audit','manifest_sha256':manifest['permission_contract_sha256']}))
+    with pytest.raises(RuntimeError):m.permission_audit(tmp_path,manifest,'trading_platform')
