@@ -67,7 +67,7 @@ jobs:
           scp scripts/audit_grid_shadow_window.py "root@43.156.242.184:$remote_dir/scripts/"
           scp strategies/grid/realtime/queue_audit.py "root@43.156.242.184:$remote_dir/strategies/grid/realtime/"
           set +e
-          ssh -o BatchMode=yes root@43.156.242.184 "python3 '$remote_dir/scripts/audit_grid_shadow_window.py' --grid-db /root/trading_system/data/grid/grid_realtime.sqlite3 --decision-db /root/trading_system/data/grid/grid_execution.sqlite3 --start-ms '$START_MS' --end-ms '$END_MS'" > raw-grid-shadow-report.json
+          ssh -o BatchMode=yes root@43.156.242.184 "python3 '$remote_dir/scripts/audit_grid_shadow_window.py' --grid-db /root/trading_system/data/grid/grid_realtime.sqlite3 --decision-db /root/trading_system/data/grid/grid_execution.sqlite3 --agg-db /var/lib/docker/volumes/trading_system_aggtrade-data/_data/aggtrades/ethusdt_aggtrades.sqlite --start-ms '$START_MS' --end-ms '$END_MS'" > raw-grid-shadow-report.json
           audit_rc=$?
           set -e
           if [ "$audit_rc" -ne 0 ] && [ "$audit_rc" -ne 2 ]; then
@@ -89,6 +89,10 @@ jobs:
               "reference_target_met": report["reference_target_met"],
               "unobserved_ms": report["shadow"]["unobserved_ms"],
               "market_evidence_available": report["market"] is not None,
+              "market_sample_coverage_complete": report["market"]["sample_coverage_complete"],
+              "market_invalid_sample_count": report["market"]["invalid_sample_count"],
+              "market_raw_window_full": report["market"]["raw_window_full"],
+              "market_raw_history_attested": report["market"]["raw_history_attested"],
               "evidence_complete": report["evidence_complete"],
               "formal_m3_eligible": report["formal_m3_eligible"],
               "formal_m3_blockers": report["formal_m3_blockers"],
