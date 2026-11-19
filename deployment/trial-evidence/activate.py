@@ -12,16 +12,16 @@ import time
 from datetime import datetime
 
 ROOT = Path('/root/trading_system')
-PIN_SHA = 'ca7aa506f7920860f809a1c324dd0de4767e3cd6'
-OVERLAY_SHA = '3558e235679bdd37e580de767803984a3a06a1ab66088fa456bbe9e37ec912a8'
-BASE_IMAGE = 'sha256:d8275a1d7b44b3d2ad152549baa13a0e84a5dfd537b61dd925f75af94054f6da'
+PIN_SHA = 'f144eb073c14ae3fdeb7f2d4239eced97aec97e1'
+OVERLAY_SHA = 'ca34acdd360e6f9f30afdc0c00736557c0909b849d354f331400b46c348008c0'
+BASE_IMAGE = 'sha256:a6153a490ecd0c8c3aba409a8317c8304b3bfeef87326e45c88ba588b41e61cd'
 MIGRATIONS = ()
 
 
 def run(args, *, input=None, timeout=180):
     result = subprocess.run(args, cwd=ROOT, text=True, input=input,
                             capture_output=True, timeout=timeout,
-                            env={k:v for k,v in os.environ.items() if k != 'COMPOSE_FILE'})
+                            env={k:v for k,v in os.environ.items() if k not in ('COMPOSE_FILE', 'COMPOSE_ENV_FILES', 'AI_TUNER_WRITE_TOKEN')})
     if result.returncode:
         # Docker inspect/compose outputs can contain credentials; never print them.
         raise RuntimeError('command failed: ' + ' '.join(args[:2]))
@@ -45,6 +45,15 @@ def inventory():
     ids = run(['docker','ps','-aq','--no-trunc']).splitlines()
     rows = json.loads(run(['docker','inspect',*ids]))
     return {r['Name'].lstrip('/'): (r['Id'],r['Image'],r['State']['StartedAt']) for r in rows}
+
+
+def audit_permissions(bundle):
+    output = run(['python3', str(bundle/'scripts/database_permissions.py'), 'audit',
+                  '--manifest', str(bundle/'database/postgres/permissions.json')])
+    audit = json.loads(output)
+    if audit.get('ok') is not True or audit.get('issues'):
+        raise RuntimeError('database permission audit failed')
+    return audit['manifest_sha256']
 
 
 def policy_hash():
@@ -115,6 +124,7 @@ def main(sha, image_digest, bundle):
     old['services']['ai-tuner']['image'] = image
     if old != new:
         raise RuntimeError('effective configuration drift beyond one image')
+    permission_manifest = audit_permissions(bundle)
     policies = policy_hash()
     atomic(release/'state.json',dict(status='preflight',sha=sha,image=image,source_proof=proof))
     # Each migration owns its transaction, verified as additive and idempotent.
@@ -159,9 +169,11 @@ def main(sha, image_digest, bundle):
         if (set(before)!=set(after) or any(after[n]!=v for n,v in before.items() if n!='ai-tuner')
                 or policy_hash()!=policies):
             raise RuntimeError('excluded containers/policies/allocations changed')
+        if audit_permissions(bundle) != permission_manifest:
+            raise RuntimeError('database permission manifest changed')
         atomic(release/'observation.json',observation)
         atomic(release/'state.json',dict(sha=sha,status='complete',changed=['ai-tuner'],image=image,
-                    source_proof=proof,other_containers_unchanged=True,risk_policy_unchanged=True,
+                    source_proof=proof,other_containers_unchanged=True,risk_policy_unchanged=True, permission_manifest=permission_manifest,
                     migrations=list(MIGRATIONS),completed_at_ms=int(time.time()*1000)))
         atomic(pin_path,dict(pin,sha=sha,status='active',predecessor_sha=pin['sha'],
                             successor_sha=sha,overlay=str(target),state=str(release/'state.json')))
