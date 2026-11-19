@@ -74,3 +74,20 @@ def test_manifest_bound_proof_validator_matches_inventory_clock_and_positive_own
     for field,value in [('hrs_symbols',[]),('inventory_sha256','0'*64),('account_margin','0'),('owners',{'WLDUSDT':'hrs'}),('observed_at',T.isoformat())]:
         damaged=dict(proof,**{field:value})
         with pytest.raises(HrsOccupancyDenied):validate_hrs_slot_proof(damaged,inventory=inventory,account_id='test',observed_at=observed)
+
+
+def test_explicit_owned_margin_scope_allows_proven_foreign_owner_without_active_claim():
+    from strategies.hrs.entry_occupancy import capture_hrs_slot_inputs,prove_hrs_slot_ownership,validate_hrs_slot_proof,HrsOccupancyDenied
+    inventory,local,parent,claims=fixture()
+    inputs=capture_hrs_slot_inputs(inventory=inventory,independent=inventory,local=local,observed_at=T+timedelta(seconds=1))
+    claims=claims[:1]
+    kwargs=dict(checked_at=T+timedelta(seconds=2),margin_scope='hrs_owned_quota_account_free_v1')
+    proof=prove_hrs_slot_ownership('test',parent,inputs,claims,**kwargs)
+    assert proof['version']=='hrs-slot-ownership-v2'
+    assert proof['claim_scope']=='hrs_current_foreign_economic_owner_v1'
+    assert validate_hrs_slot_proof(proof,inventory=inventory,account_id='test',observed_at=inputs['observed_at'],margin_scope=kwargs['margin_scope'])==proof
+    with pytest.raises(HrsOccupancyDenied):validate_hrs_slot_proof(proof,inventory=inventory,account_id='test',observed_at=inputs['observed_at'])
+    with pytest.raises(HrsOccupancyDenied):prove_hrs_slot_ownership('test',parent,inputs,claims,checked_at=kwargs['checked_at'])
+    with pytest.raises(HrsOccupancyDenied):prove_hrs_slot_ownership('test',parent,inputs,[],**kwargs)
+    claims.append(dict(id=999,symbol='SOLUSDT',strategy='hrs',claim_state='ACTIVE'))
+    with pytest.raises(HrsOccupancyDenied):prove_hrs_slot_ownership('test',parent,inputs,claims,**kwargs)
