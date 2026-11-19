@@ -511,3 +511,52 @@ async def test_flat_absence_needs_both_signed_inventories_and_one_way_mode():
     exchange.get_um_account_positions.return_value = []
     assert await collect_flat_anchors(db, exchange, 'default') == 1
     assert json.loads(db.execute.await_args.args[3])['source'] == 'signed_pm_dual_inventory_v1'
+
+
+def test_reports_unique_filled_orders_separately_from_trade_fill_count():
+    obs = observation()
+    row = project([reservation()], [obs], [dict(fill(), qty='1'), dict(fill(trade_id=2), qty='1')])
+    assert row['owned_entry_fills'] == 2
+    assert row['verified_filled_entry_orders'] == 1
+
+
+def test_order_seen_under_another_strategy_cannot_verify_one_strategy_subset():
+    obs = observation()
+    conflicting = observation(client='other')
+    row = project([reservation(), reservation(client='other', strategy='btc_eth_aggressive')],
+                  [obs, conflicting], [fill()])
+    assert row['owned_entry_fills'] is None
+    assert 'order_owner_conflict' in row['reasons']
+
+
+@pytest.mark.asyncio
+async def test_postgres_intact_budget_rejects_any_unmatched_fill(pg_activity):
+    from ai_tuner.monitor.reduced_trial import _COVERED_RESERVATIONS_SQL
+
+    conn = pg_activity
+    await conn.execute('ALTER TABLE trading.entry_risk_reservation ADD COLUMN margin numeric')
+    await conn.execute(MIGRATION.read_text())
+    await conn.execute("""
+        INSERT INTO trading.entry_risk_reservation
+        (client_order_id,account_id,strategy_id,symbol,quantity,geometry,state,created_at,margin)
+        VALUES('live','default','hrs','AAAUSDT',2,'{}','submitting',to_timestamp(1),7);
+        INSERT INTO trading.execution_fact_fill VALUES
+        ('default','AAAUSDT',1,10,'BUY',2,to_timestamp(2));
+        INSERT INTO trading.execution_fact_cursor VALUES
+        ('default','userTrades','AAAUSDT',1000,3000,true,'ok');
+    """)
+    signed = dict(observation(client='live')['raw_payload'], status='FILLED',
+                  origQty='2', positionSide='BOTH')
+    # Insert the precise signed order observation without a network request.
+    await conn.execute('SET ROLE trading_user')
+    args = ('default', 'hrs', ['AAAUSDT'], 3000)
+    from ai_tuner.allocation.activity_evidence import _INSERT_ORDER, _digest
+    await conn.execute(_INSERT_ORDER, 'default', 'live', 'AAAUSDT', '10', 'BUY', 'FILLED',
+                       2, 2, 'ok', json.dumps(signed), _digest(signed),
+                       'a'*64, 'signed_pm_get_order_v1', 'budget-test-batch')
+    row = await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args)
+    assert row['cursor_complete'] and row['fill_qty'] == 2 and row['margin'] == 7
+    await conn.execute('RESET ROLE')
+    await conn.execute("""INSERT INTO trading.execution_fact_fill VALUES
+        ('default','AAAUSDT',2,NULL,'BUY',1,to_timestamp(2.5))""")
+    assert (await conn.fetchrow(_COVERED_RESERVATIONS_SQL, *args))['fill_qty'] is None

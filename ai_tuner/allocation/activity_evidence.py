@@ -180,6 +180,7 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
     ids = tuple(dict.fromkeys(strategy_ids))
     reasons = {sid: [] for sid in ids}
     positive = {sid: set() for sid in ids}
+    filled_orders = {sid: set() for sid in ids}
 
     def gap(reason, owners=ids):
         for sid in owners:
@@ -196,7 +197,7 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
         gap('activity_audit_unhealthy')
     if any(reasons.values()):
         return {sid: dict(account_id=account_id, start_ms=start_ms, end_ms=end_ms,
-                          owned_entry_fills=None, coverage_complete=False,
+                          owned_entry_fills=None, verified_filled_entry_orders=None, coverage_complete=False,
                           source_id='entry-activity:unavailable', reasons=reasons[sid]) for sid in ids}
     reservations, observations, fills, cursors, facts = map(list, (reservations, observations, fills, cursors, facts))
     # Captured intent facts retain released/deleted intents. Legacy snapshots help
@@ -285,6 +286,16 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
             gap('fill_identity_conflict')
         unique_fills[key] = f
     fills = list(unique_fills.values())
+    clients_by_order = defaultdict(set)
+    for observation in observations:
+        client_id = str(observation.get('client_order_id'))
+        if observation.get('account_id') != account_id or client_id not in intents:
+            continue
+        try:
+            order = _valid_order(observation)
+        except (KeyError, TypeError, ValueError, InvalidOperation):
+            continue
+        clients_by_order[order['symbol'], str(order['orderId'])].add(client_id)
     seen_orders = {}
     for client_id, claims in intents.items():
         owners = {r.get('strategy_id') for r in claims}
@@ -322,6 +333,9 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
             continue
         row, raw = max(valid, key=lambda pair: (_ms(pair[0]['observed_at']), pair[0].get('id', 0)))
         order_key = (symbol, str(raw['orderId']))
+        if len(clients_by_order[order_key]) != 1:
+            gap('order_owner_conflict', (sid,))
+            continue
         if order_key in seen_orders and seen_orders[order_key] != sid:
             gap('order_owner_conflict', (sid, seen_orders[order_key]))
             positive[sid].clear()
@@ -367,6 +381,7 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
                 role = _entry_role(raw, f, fills, cursors, facts, account_id, end_ms)
                 if role is True:
                     positive[sid].add((account_id, symbol, str(f['trade_id'])))
+                    filled_orders[sid].add(order_key)
                 else:
                     gap('entry_role_unverified' if role is None else 'entry_direction_conflict', (sid,))
         except (ValueError, TypeError, KeyError, InvalidOperation):
@@ -384,6 +399,8 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
                                                  observations, fills, cursors, facts])
     return {sid: dict(account_id=account_id, start_ms=start_ms, end_ms=end_ms,
                       owned_entry_fills=(len(positive[sid]) if positive[sid] or not reasons[sid] else None),
+                      verified_filled_entry_orders=(len(filled_orders[sid]) if filled_orders[sid]
+                                                    or not reasons[sid] else None),
                       coverage_complete=not reasons[sid], source_id=source_id, reasons=reasons[sid]) for sid in ids}
 
 
@@ -587,5 +604,5 @@ WHERE NOT tgisinternal AND tgenabled='A' AND n.nspname='trading' AND
                                          account_id, start_ms, end_ms, strategy_ids, audit_healthy=healthy)
     except Exception:
         return {sid: dict(account_id=account_id, start_ms=start_ms, end_ms=end_ms,
-                          owned_entry_fills=None, coverage_complete=False,
+                          owned_entry_fills=None, verified_filled_entry_orders=None, coverage_complete=False,
                           source_id='entry-activity:unavailable', reasons=['activity_source_unavailable']) for sid in strategy_ids}
