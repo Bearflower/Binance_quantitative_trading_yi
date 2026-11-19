@@ -1,0 +1,11 @@
+[Unit]
+Description=Trading system log retention inspection and Feishu report
+After=docker.service systemd-journald.service
+Wants=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/trading_system
+ExecStart=/usr/bin/python3 /root/trading_system/ai_tuner/ops/log_retention_check.py
+TimeoutStartSec=180

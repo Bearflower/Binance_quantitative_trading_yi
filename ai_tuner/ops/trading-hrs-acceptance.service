@@ -1,0 +1,13 @@
+[Unit]
+Description=AI Tuner HRS production read-only acceptance and Feishu report
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/trading_system
+StateDirectory=trading-hrs-acceptance
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/python3 /root/trading_system/ai_tuner/ops/hrs_acceptance.py
+TimeoutStartSec=360

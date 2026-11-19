@@ -101,8 +101,8 @@ def main():
             "--output /root/trading_system/logs/ai_tuner/xau_runtime.json\n"
         ),
         "xau-runtime-evidence.timer": (
-            "[Unit]\nDescription=Capture XAU evidence before 07:45 patrol\n"
-            "[Timer]\nOnCalendar=*-*-* 07:40:00 Asia/Shanghai\nPersistent=true\n"
+            "[Unit]\nDescription=Capture XAU evidence before 07:33 patrol\n"
+            "[Timer]\nOnCalendar=*-*-* 07:30:00 Asia/Shanghai\nPersistent=true\n"
             "[Install]\nWantedBy=timers.target\n"
         ),
     }

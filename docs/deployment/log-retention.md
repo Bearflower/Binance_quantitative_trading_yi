@@ -18,14 +18,17 @@ journalctl -f CONTAINER_NAME=dashboard-api
 
 ## 容量与验证
 
-生产机使用 `/etc/systemd/journald.conf.d/30-trading-log-retention.conf`：持久化、全机 3 GB 上限、根分区保留 5 GB、最长 14 天。容量上限优先，14 天是目标而非保证。检查：
+生产机使用 `/etc/systemd/journald.conf.d/30-trading-log-retention.conf`：持久化、**目标**全机 3 GB 上限、根分区保留 5 GB、最长 14 天。容量上限优先，14 天是目标而非保证；实际生效值以 `systemd-analyze cat-config` 和巡检结果为准，不能只看 drop-in 文件内容。检查：
 
 ```bash
+systemd-analyze cat-config systemd/journald.conf | grep -E 'SystemMaxUse|MaxRetentionSec|Storage'
 journalctl --disk-usage
 df -h /
 docker inspect -f '{{.HostConfig.LogConfig.Type}}' dashboard-api
 journalctl -q --no-pager -n 1 CONTAINER_NAME=dashboard-api
 ```
+
+2026-11-19 的只读巡检发现当时实际生效的 `SystemMaxUse` 为 500 MB，journal 仅能回溯约 4 天（11-15 → 11-19），导致 18 个服务触发「可查窗口不足 14 天」；同次巡检还发现 `hrs-acceptance-reporter`、`market-cap-service` 仍为 `json-file`。容量与驱动的修复列入当日变更单（见下节），修复后须用上面的 `systemd-analyze` 与 `journalctl --disk-usage` 复核最终生效值，而不是只看 drop-in 文件内容。
 
 当前可恢复的旧 `json-file` 日志已导出到服务器 `/root/trading_system/log_archive/pre_journald_20261027_122204/`，目录权限 700，文件权限 600；`manifest.tsv` 含服务、容器 ID、时间范围、字节数和 SHA-256。这个快照只覆盖导出时仍可读取的日志。
 
@@ -39,10 +42,55 @@ python3 scripts/audit_grid_queue_window.py --db-path /root/trading_system/data/g
 
 实际数据库路径以 `strategies/grid/config.yaml` 的 `realtime_alert.storage.path` 为准。报告中 `queue_window_eligible=true` 只证明队列审计时间轴连续且无逐出；M3 研究仍须独立核对聚合成交完整性、参考同步、shadow 边界等。部署后须从首个审计 checkpoint 重新累计 72 小时。`unclean_instances`、`failed_checkpoints_ms`、`gaps` 或溢出 episode 均使相应窗口不可用于研究。
 
-2026-10-28 15:02（北京时间），全部 15 个服务已分批切换并通过健康、驱动、当前 journal 记录和旧日志归档检查；交易策略逐个切换，数据库最后切换。11:09 的一次业务部署已重建先行切换的 4 个服务，`dashboard-api` 等服务的 journal 仍可按容器名查到新旧两个容器 ID，证明跨重建查询有效。最终复核：15/15 健康、15/15 journald、86 份部署前归档文件的字节数和 SHA-256 均匹配；根分区剩余 25 GB，journal 占用约 637 MB。14 天实际留存窗口尚需运行满 14 天后验证，容量上限仍可能使窗口缩短。每日 09:00 的只读自动检查监控日志驱动、记录、journal 容量、磁盘余量和容器健康；正常状态保持安静。
+2026-10-28 15:02（北京时间），全部 15 个服务已分批切换并通过健康、驱动、当前 journal 记录和旧日志归档检查；交易策略逐个切换，数据库最后切换。11:09 的一次业务部署已重建先行切换的 4 个服务，`dashboard-api` 等服务的 journal 仍可按容器名查到新旧两个容器 ID，证明跨重建查询有效。最终复核：15/15 健康、15/15 journald、86 份部署前归档文件的字节数和 SHA-256 均匹配；根分区剩余 25 GB，journal 占用约 637 MB。14 天实际留存窗口尚需运行满 14 天后验证，容量上限仍可能使窗口缩短。每日 07:34 的只读自动检查监控日志驱动、记录、journal 容量、磁盘余量和容器健康，结果写入 outbox 并并入 07:35 的每日巡检汇总；正常状态保持安静。
 
 2026-10-29 09:25（北京时间），新加入的 `mtcps-xau-calibrated-shadow` 经提交 `74916f3`（`DEPLOY_ID=00007D01`）单独重建并切换到 journald。重建前手动归档于 `log_archive/pre_journald_calibrated_20261029_092137/`，CI 又将旧容器日志归档于 `log_archive/pre_up_20261029_092426_00007D01/`；后者的旧容器 ID、8,791 字节和 SHA-256 均已核对。新容器有 journal 记录且 `docker logs` 可读；最终复核 16/16 健康、16/16 journald、16/16 当前容器有 journal 记录。根分区剩余约 11 GB，journal 占用约 823 MB；新服务的 14 天实际留存窗口从本次切换起观察。
+
+## 附加服务切换 journald（2026-11-19 变更单）
+
+`docker-compose.logging.yml` 覆盖的 16 个服务之外，还有两个由受限发布覆盖文件直接创建、不受该 logging 覆盖文件管理的容器：
+
+| 容器 | Compose service | 当前驱动 |
+|---|---|---|
+| `trading_system-hrs-acceptance` | `hrs-acceptance-reporter` | json-file |
+| `trading_system-market-cap` | `market-cap-service` | json-file |
+
+切换步骤：
+
+1. 读取容器实际使用的覆盖文件：
+   `docker inspect -f '{{index .Config.Labels "com.docker.compose.project.config_files"}}' trading_system-hrs-acceptance`
+2. 在**当前生效**的 `.releases/**/images.json` 对应 service 下加入 `"logging": {"driver": "journald"}`。
+3. 用创建时相同的 `config_files` 执行 `docker compose ... up -d --no-deps <service>`，只重建该服务。
+4. 校验 `HostConfig.LogConfig.Type == journald`、容器健康、`journalctl CONTAINER_NAME=<name>` 有新记录。
+
+持久化约束：这两个服务不走 `docker-compose.logging.yml`，因此**每次受限发布都必须沿用同一覆盖文件**；若某次发布遗漏 `logging` 字段，容器会回落为 `json-file`，07:34 巡检将再次报「日志驱动 json-file」，14 天窗口也从回落时刻重新累计。`.releases/` 目录不在仓库中，变更只存在于服务器，必须在当次发布单中登记。
+
+## 每日巡检汇总（07:35）
+
+日志巡检不再单独发送飞书，而是把报告写入 outbox，由 `ai_tuner/ops/daily_digest.py` 在 07:35 汇总成一条消息发送。本段 key 为 `logs`，计划时间 07:34。
+
+- 宿主 outbox：`/var/lib/trading-digest/outbox`（systemd `StateDirectory=trading-digest`，0700）
+- 容器 outbox：`/app/logs/digest/outbox`，宿主机实际路径 `/root/trading_system/logs/ai_tuner/digest/outbox`
+- 汇总定时器：`trading-daily-digest.timer`（07:35 Asia/Shanghai）
+- `xau-runtime-evidence.timer` 仍在 07:30 采集证据，不直接发消息
+
+同一份报告里「可查窗口不足 14 天」已合并为一条全局异常（形如 `18 个服务可查窗口不足 14 天（最早 11-15 07:00，要求 ≥14 天）`），不再逐服务各占一行。
+
+手动干跑（不发送、不归档）：
+
+```bash
+python3 /root/trading_system/ai_tuner/ops/daily_digest.py --dry-run
+```
+
+排障与回退见 [daily-digest.md](./daily-digest.md)。
 
 ## 回退
 
 先导出受影响容器的当前日志。将对应服务从 `docker-compose.logging.yml` 移除并按项目部署流程发布；Compose 会重建该服务并恢复基础配置中的 `json-file`。已写入 journal 的日志不会因容器删除而消失。回退前后核对容器健康、驱动、日志和部署记录。
+
+### 每日巡检汇总回退
+
+1. `systemctl disable --now trading-daily-digest.timer`。
+2. 在 `trading-hrs-acceptance.service`、`trading-btc-xau-inspection.service`、`trading-log-retention.service`、`trading-grid-shadow.service` 的 `ExecStart` 追加 `--send`，`daemon-reload` 后重启对应 timer。
+3. 容器内的 XAU 与利润提取两段没有 `--send` 开关，恢复直发需回滚 ai-tuner 镜像（还原代码后重新发布）。
+4. 第 1、2 步应在同一维护窗口内完成，避免出现「已停止汇总、各段仍只写 outbox」的空档。outbox 文件可保留，恢复汇总后 07:35 会读取当日文件。

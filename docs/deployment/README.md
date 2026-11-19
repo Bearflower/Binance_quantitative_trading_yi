@@ -17,6 +17,8 @@
 | [部署指南.md](./部署指南.md) | 完整的部署流程指南 | 首次部署、日常运维 |
 | [Docker容器编排.md](./Docker容器编排.md) | Docker配置和管理 | 容器部署、容器管理 |
 | [环境变量配置.md](./环境变量配置.md) | 环境变量配置说明 | 配置管理、安全配置 |
+| [log-retention.md](./log-retention.md) | 容器日志跨部署保留与 journald 容量 | 日志排障、容量调整 |
+| [daily-digest.md](./daily-digest.md) | 每日 07:35 巡检汇总（outbox + 飞书单条） | 巡检汇总部署与回退 |
 
 ---
 

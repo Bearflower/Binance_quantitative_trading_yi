@@ -504,6 +504,7 @@ services:
       - BINANCE_API_KEY=${BINANCE_API_KEY}
       - BINANCE_API_SECRET=${BINANCE_API_SECRET}
       - KLINE_SERVICE_URL=${KLINE_SERVICE_URL}
+      - DIGEST_OUTBOX_DIR=/app/logs/digest/outbox
     volumes:
       - ./strategies:/app/strategies:rw
       - ./logs/ai_tuner:/app/logs

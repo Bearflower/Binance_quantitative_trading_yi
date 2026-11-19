@@ -1,0 +1,10 @@
+[Unit]
+Description=AI tuner grid shadow evidence inspection
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/trading_system
+EnvironmentFile=/root/trading_system/.secrets/grid-inspection.env
+ExecStart=/usr/bin/python3 /root/trading_system/ai_tuner/ops/grid_shadow_check.py
+TimeoutStartSec=240

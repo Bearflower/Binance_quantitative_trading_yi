@@ -1,0 +1,16 @@
+[Unit]
+Description=AI Tuner daily BTC-XAU shadow inspection and Feishu report
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/trading_system
+StateDirectory=trading-digest
+StateDirectoryMode=0700
+ExecStart=/usr/bin/python3 -B /root/trading_system/ai_tuner/ops/btc_xau_inspection.py
+TimeoutStartSec=30
+UMask=0077
+NoNewPrivileges=yes
+ProtectSystem=strict
+PrivateTmp=yes

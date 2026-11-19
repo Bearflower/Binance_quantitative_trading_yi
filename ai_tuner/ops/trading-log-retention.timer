@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily trading system log retention inspection at 07:34 CST
+
+[Timer]
+OnCalendar=*-*-* 07:34:00 Asia/Shanghai
+AccuracySec=1s
+Persistent=true
+Unit=trading-log-retention.service
+
+[Install]
+WantedBy=timers.target

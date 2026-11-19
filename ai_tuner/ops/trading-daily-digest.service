@@ -1,0 +1,14 @@
+[Unit]
+Description=Trading system daily inspection digest
+After=docker.service network-online.target
+Wants=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/trading_system
+StateDirectory=trading-digest
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/bin/python3 /root/trading_system/ai_tuner/ops/daily_digest.py
+TimeoutStartSec=600

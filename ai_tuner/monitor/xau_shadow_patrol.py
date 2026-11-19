@@ -13,6 +13,11 @@ from apscheduler.triggers.cron import CronTrigger
 
 from .xau_runtime import runtime_issues
 
+try:
+    from ai_tuner.ops import digest_outbox
+except ImportError:  # 旧镜像没有汇总模块时回退直发
+    digest_outbox = None
+
 
 UTC = timezone.utc
 PROFILES = ("xau_calibrated", "xau_original", "xau_aggressive")
@@ -21,8 +26,8 @@ OBSERVATION_END = datetime(2026, 12, 23, 9, tzinfo=UTC)
 
 
 def daily_patrol_trigger():
-    """Run once each day at 07:45 China time, after the HH:20 decision."""
-    return CronTrigger(hour=7, minute=45, timezone=ZoneInfo("Asia/Shanghai"))
+    """Run once each day at 07:33 China time, after the HH:20 decision."""
+    return CronTrigger(hour=7, minute=33, timezone=ZoneInfo("Asia/Shanghai"))
 
 
 class XAUShadowPatrol:
@@ -188,7 +193,21 @@ class XAUShadowPatrol:
 
         lines.append("结论: " + ("；".join(issues) if issues else "正常"))
         message = "\n".join(lines)
-        sent = await self.notifier.send(
-            message=message, level="warning" if issues else "info", project="xau_monitor"
-        )
-        return {"ok": not issues, "sent": bool(sent), "message": message}
+        published = False
+        if digest_outbox is not None:
+            try:
+                digest_outbox.publish(
+                    "xau",
+                    message,
+                    status="warn" if issues else "ok",
+                    summary=f"{len(issues)} 项异常" if issues else "正常",
+                )
+                published = True
+            except (OSError, ValueError) as exc:
+                print(f"XAU 巡检写入 outbox 失败，回退直发: {type(exc).__name__}: {exc}")
+        sent = False
+        if not published:
+            sent = await self.notifier.send(
+                message=message, level="warning" if issues else "info", project="xau_monitor"
+            )
+        return {"ok": not issues, "sent": bool(sent), "published": published, "message": message}

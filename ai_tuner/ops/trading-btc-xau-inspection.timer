@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily AI Tuner BTC-XAU inspection at 07:33 Beijing time
+
+[Timer]
+OnCalendar=*-*-* 07:33:00 Asia/Shanghai
+AccuracySec=1s
+Persistent=true
+
+[Install]
+WantedBy=timers.target

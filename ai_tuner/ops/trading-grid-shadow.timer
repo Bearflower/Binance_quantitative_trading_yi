@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily grid shadow inspection at 07:32 Asia/Shanghai
+
+[Timer]
+OnCalendar=*-*-* 07:32:00 Asia/Shanghai
+Persistent=true
+
+[Install]
+WantedBy=timers.target

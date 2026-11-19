@@ -82,13 +82,13 @@ async def test_missing_event_or_quality_degradation_is_reported():
     assert "missing_4h" in result["message"]
 
 
-def test_daily_patrol_fires_at_0745_beijing_only():
+def test_daily_patrol_fires_at_0733_beijing_only():
     cst = ZoneInfo("Asia/Shanghai")
     trigger = daily_patrol_trigger()
-    before = datetime(2026, 11, 13, 7, 44, tzinfo=cst)
-    after = datetime(2026, 11, 13, 7, 46, tzinfo=cst)
-    assert trigger.get_next_fire_time(None, before) == datetime(2026, 11, 13, 7, 45, tzinfo=cst)
-    assert trigger.get_next_fire_time(None, after) == datetime(2026, 11, 14, 7, 45, tzinfo=cst)
+    before = datetime(2026, 11, 13, 7, 32, tzinfo=cst)
+    after = datetime(2026, 11, 13, 7, 34, tzinfo=cst)
+    assert trigger.get_next_fire_time(None, before) == datetime(2026, 11, 13, 7, 33, tzinfo=cst)
+    assert trigger.get_next_fire_time(None, after) == datetime(2026, 11, 14, 7, 33, tzinfo=cst)
 
 
 @pytest.mark.asyncio

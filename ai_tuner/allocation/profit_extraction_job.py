@@ -1,8 +1,8 @@
 """
 利润提取提醒任务
 
-每天 07:35（北京时间）检查账户总权益是否创新高，
-若创新高则计算应提取盈利，通过飞书推送提醒。
+每天 07:34（北京时间）检查账户总权益是否创新高，
+若创新高则计算应提取盈利，通过飞书推送提醒（结果同时写入 07:35 汇总 outbox）。
 
 逻辑：
     - 获取币安账户总权益（totalWalletBalance）
@@ -23,10 +23,47 @@ from shared.binance_api import BinanceClient
 from shared.database import DatabaseManager
 from shared.notification import NotificationClient
 
+try:
+    from ai_tuner.ops import digest_outbox
+except ImportError:  # 旧镜像没有汇总模块时回退直发
+    digest_outbox = None
+
 logger = structlog.get_logger()
 
 # 系统状态表，存储所有系统级全局键值
 _SYSTEM_STATE_TABLE = "system_state"
+
+_SKIP_HINT = "（触发时的内容：当前权益 / 初始资金 / 累计盈利 / 建议提取金额及比例 / ATH 变更）"
+
+
+def _amount(value) -> str:
+    """把金额格式化为两位小数；缺失时返回「未知」。"""
+    return f"{float(value):.2f}" if value is not None else "未知"
+
+
+def render_skip(reason: str, *, equity=None, ath=None, initial_capital=None) -> str:
+    """渲染未触发时的段落正文（保留「本次未触发」状态行）。"""
+    if reason == "disabled":
+        detail = "利润提取提醒已在配置中关闭。"
+    elif reason == "zero_or_negative_equity":
+        detail = f"当前权益 {_amount(equity)} U，未转正，不发送提取建议。"
+    elif reason == "not_new_high":
+        detail = (
+            f"当前权益 {_amount(equity)} U 未超过历史最高 ATH {_amount(ath)} U，"
+            "未创新高，不发送提取建议。"
+        )
+    elif reason == "not_profitable":
+        detail = (
+            f"当前权益 {_amount(equity)} U，累计盈利未转正"
+            f"（初始资金 {_amount(initial_capital)} U），不发送提取建议。"
+        )
+    elif reason == "below_min_extract":
+        detail = f"当前权益 {_amount(equity)} U 创新高，但建议提取额低于最小提取额，本次不发送建议。"
+    elif reason == "already_notified_this_week":
+        detail = f"本周已发送过提取建议（ATH {_amount(ath)} U），本次不重复提醒。"
+    else:
+        detail = f"未触发（{reason or '未知原因'}）。"
+    return f"【利润提取提醒】本次未触发\n{detail}\n{_SKIP_HINT}"
 
 
 class ProfitExtractionJob:
@@ -71,6 +108,7 @@ class ProfitExtractionJob:
         """
         if not self.extraction_cfg.get("enabled", True):
             logger.info("利润提取提醒未启用，跳过")
+            await self._publish(render_skip("disabled"), "skip", "未触发")
             return {"action": "skip", "reason": "disabled"}
 
         try:
@@ -78,6 +116,10 @@ class ProfitExtractionJob:
             account_info = await self.binance.get_account_info()
             total_equity = Decimal(str(account_info.get("totalWalletBalance", 0)))
             if total_equity <= Decimal("0"):
+                await self._publish(
+                    render_skip("zero_or_negative_equity", equity=total_equity),
+                    "skip", "未触发",
+                )
                 return {"action": "skip", "reason": "zero_or_negative_equity"}
 
             # 2. 加载持久化 ATH
@@ -86,6 +128,10 @@ class ProfitExtractionJob:
             # 3. 检查是否创新高
             if total_equity <= self._ath_balance:
                 logger.debug("账户权益未创新高", equity=float(total_equity), ath=float(self._ath_balance))
+                await self._publish(
+                    render_skip("not_new_high", equity=total_equity, ath=self._ath_balance),
+                    "skip", "未触发",
+                )
                 return {"action": "skip", "reason": "not_new_high"}
 
             # 4. 创新高，更新持久化 ATH
@@ -95,6 +141,13 @@ class ProfitExtractionJob:
             initial_capital = Decimal(str(self.extraction_cfg.get("initial_capital_usdt", 500)))
             profit = total_equity - initial_capital
             if profit <= Decimal("0"):
+                await self._publish(
+                    render_skip(
+                        "not_profitable", equity=total_equity, ath=self._ath_balance,
+                        initial_capital=initial_capital,
+                    ),
+                    "skip", "未触发",
+                )
                 return {"action": "skip", "reason": "not_profitable"}
 
             # 6. 计算建议提取额
@@ -108,16 +161,24 @@ class ProfitExtractionJob:
                     extract_amount=float(extract_amount),
                     min_extract=float(min_extract),
                 )
+                await self._publish(
+                    render_skip("below_min_extract", equity=total_equity, ath=self._ath_balance),
+                    "skip", "未触发",
+                )
                 return {"action": "skip", "reason": "below_min_extract"}
 
             # 7. 每周最多推送一次
             current_week = datetime.now().strftime("%Y-W%W")
             if self._last_notified_week == current_week:
+                await self._publish(
+                    render_skip("already_notified_this_week", equity=total_equity, ath=self._ath_balance),
+                    "skip", "本周已提醒",
+                )
                 return {"action": "skip", "reason": "already_notified_this_week"}
 
 
-            # 8. 发送飞书通知
-            delivered = await self._send_notification(
+            # 8. 写入 07:35 汇总 outbox（不再单独直发，避免重复通知）
+            message = self._build_notification(
                 total_equity=total_equity,
                 initial_capital=initial_capital,
                 profit=profit,
@@ -125,9 +186,7 @@ class ProfitExtractionJob:
                 extract_ratio=extract_ratio,
                 old_ath=old_ath,
             )
-
-            if not delivered:
-                return {"action": "error", "reason": "notification_undelivered"}
+            await self._publish(message, "warn", f"已触发，建议提取 {float(extract_amount):.2f} U")
             self._last_notified_week = current_week
             self._ath_balance = total_equity
             await self._save_ath_balance(total_equity)
@@ -146,13 +205,14 @@ class ProfitExtractionJob:
 
         except Exception as e:
             logger.error("利润提取检查异常", error=str(e), exc_info=True)
+            await self._publish(f"【利润提取提醒】本次检查异常\n{type(e).__name__}: {e}", "error", "检查异常")
             return {"action": "error", "reason": str(e)}
 
     def get_cron_trigger(self) -> CronTrigger:
-        """返回每日 07:35 CST 的 cron trigger"""
+        """返回每日 07:34 CST 的 cron trigger（早于 07:35 汇总）"""
         return CronTrigger(
             hour=7,
-            minute=35,
+            minute=34,
             timezone="Asia/Shanghai",
         )
 
@@ -209,7 +269,18 @@ class ProfitExtractionJob:
     # 通知
     # ──────────────────────────────────────
 
-    async def _send_notification(
+    async def _publish(self, text: str, status: str, summary: str) -> None:
+        """写入 07:35 汇总 outbox；旧镜像缺少汇总模块时回退直发。"""
+        if digest_outbox is None:
+            if not await self._send_notification(text):
+                logger.warning("利润提取回退直发失败")
+            return
+        try:
+            digest_outbox.publish("profit", text, status=status, summary=summary)
+        except (OSError, ValueError) as e:
+            logger.warning("利润提取写入 outbox 失败", error=str(e))
+
+    def _build_notification(
         self,
         total_equity: Decimal,
         initial_capital: Decimal,
@@ -217,9 +288,9 @@ class ProfitExtractionJob:
         extract_amount: Decimal,
         extract_ratio: Decimal,
         old_ath: Decimal,
-    ) -> bool:
-        """发送利润提取通知"""
-        message = (
+    ) -> str:
+        """构造利润提取通知正文（直发与 outbox 共用）。"""
+        return (
             f"💰 利润提取提醒\n"
             f"账户权益创新高！\n\n"
             f"当前权益：{float(total_equity):.2f} U\n"
@@ -228,6 +299,9 @@ class ProfitExtractionJob:
             f"建议提取：{float(extract_amount):.2f} U（盈利的 {extract_ratio * 100:.0f}%）\n"
             f"上次最高：{float(old_ath):.2f} U → 当前：{float(total_equity):.2f} U"
         )
+
+    async def _send_notification(self, message: str) -> bool:
+        """发送利润提取通知"""
         try:
             return await self.notification_client.send(
                 message=message,
