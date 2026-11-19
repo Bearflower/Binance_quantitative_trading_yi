@@ -18,6 +18,7 @@ BASE_ID = 'sha256:2120f4e0111d1f4708f3df57c7b8aac2b4ad72ab0e3a7343c37f5b3b350c07
 SOURCES = {
     'strategy.py': '18623dc8a5270b40735eaa701ba32e731a5c4de747c06aef161f3ec16bd10724',
     'recovery_evidence.py': '7ba574860da111c9e6006c2d382740ea49d2a3b274965c53f8ca364e3660d0af',
+    'executor.py': '5e10db26cf1d7221ddc656601a1c51b1afba7fc75ee057b3833108535a39fac4',
 }
 SOURCE_DIR = '/app/strategies/new_coin'
 
@@ -53,15 +54,17 @@ def idle():
                '-U','trading_user','-d','trading_platform','-c',sql) == '0'
 
 
-def main(revision, strategy_sha, evidence_sha, staging):
-    checksums = dict(zip(SOURCES, (strategy_sha, evidence_sha)))
-    if not re.fullmatch(r'[0-9a-f]{40}', revision) or any(not re.fullmatch(r'[0-9a-f]{64}', checksum) for checksum in checksums.values()):
+def main(revision, strategy_sha, evidence_sha, executor_sha, audit_tool_sha, audit_manifest_sha, staging):
+    checksums = dict(zip(SOURCES, (strategy_sha, evidence_sha, executor_sha)))
+    audit_files = {'database_permissions.py': audit_tool_sha, 'permissions.json': audit_manifest_sha}
+    if not re.fullmatch(r'[0-9a-f]{40}', revision) or any(not re.fullmatch(r'[0-9a-f]{64}', checksum)
+                                                            for checksum in (checksums | audit_files).values()):
         raise ValueError('invalid release identity')
     staging = Path(staging).resolve()
     if staging != ROOT / '.deploy_tmp' / f'new-coin-ownership-{revision}':
         raise ValueError('invalid staging directory')
     if any(hashlib.sha256((staging/name).read_bytes()).hexdigest() != checksum
-           for name, checksum in checksums.items()):
+           for name, checksum in (checksums | audit_files).items()):
         raise ValueError('staged source checksum mismatch')
     pin = json.loads(PIN.read_text())
     old_overlay, old_state = (Path(pin[key]).resolve() for key in ('overlay','state'))
@@ -100,7 +103,10 @@ def main(revision, strategy_sha, evidence_sha, staging):
     prior_config = json.loads(run(*compose,'-f',str(old_overlay),'config','--format','json'))
     new_config = json.loads(run(*compose,'-f',str(overlay),'config','--format','json'))
     prior_config['services'][SERVICE]['image'] = image
-    run('python3','scripts/database_permissions.py','audit')
+    audit = json.loads(run('python3', str(staging/'database_permissions.py'), 'audit',
+                           '--manifest', str(staging/'permissions.json')))
+    if audit.get('ok') is not True or audit.get('manifest_sha256') != audit_manifest_sha:
+        raise RuntimeError('production database permission audit failed')
     if new_config != prior_config or not idle():
         raise RuntimeError('effective configuration or New Coin exposure changed')
     write(PIN, dict(pin,status='activating',successor_sha=revision))

@@ -1,6 +1,7 @@
 """A restarted new-coin lot needs a durable exchange entry identity."""
 import json
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -108,3 +109,35 @@ async def test_recovery_parses_jsonb_text_metadata_without_unlocking():
     tracking = executor.position_tracking["PFEUSDT"]
     assert tracking["recovery_entry_order_id"] == 141970
     assert tracking["time_exit_status"] == "review_required"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('fault', [None, 'wrong_order', 'unknown_price', 'partial', 'missing_account'])
+async def test_entry_writer_promotes_only_an_exact_terminal_fill(fault):
+    from shared.order_fill_waiter import OrderFillResult
+
+    _, executor, _ = setup_recovery()
+    fill = OrderFillResult(status='FILLED', order_id=320067, executed_qty=Decimal('0.29'),
+                           orig_qty=Decimal('0.29'), avg_price=Decimal('338.52275862'),
+                           raw={'symbol': 'ETNUSDT', 'status': 'FILLED', 'side': 'SELL',
+                                'orderId': 320067, 'type': 'MARKET'})
+    executor.binance_api.trade_logger = SimpleNamespace(account_id='default', strategy_name='new_coin')
+    executor.db.execute = AsyncMock(return_value='UPDATE 1')
+    if fault == 'wrong_order':
+        fill.raw['orderId'] = 320068
+    elif fault == 'unknown_price':
+        fill.avg_price = Decimal(0)
+    elif fault == 'partial':
+        fill.status = 'PARTIAL'
+    elif fault == 'missing_account':
+        executor.binance_api.trade_logger.account_id = None
+
+    await executor._promote_filled_entry('ETNUSDT', 320067, fill)
+
+    if fault is None:
+        sql, quantity, price, account, symbol, order_id, strategy = executor.db.execute.await_args.args
+        assert (quantity, price) == (Decimal('0.29'), Decimal('338.52275862'))
+        assert (account,symbol,order_id,strategy) == ('default','ETNUSDT','320067','new_coin')
+        assert "status='NEW'" in sql and "realized_pnl IS NULL" in sql
+    else:
+        executor.db.execute.assert_not_awaited()

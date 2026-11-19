@@ -659,6 +659,9 @@ class TradingExecutor:
                     tick_size
                 )
 
+            # Record the terminal fill after exchange-side protection was requested.
+            await self._promote_filled_entry(symbol, entry_order_id, fill)
+
             # 15. 发送通知（展示真实成交价而非计划价）
             await self._send_notification(
                 symbol, order, float(entry_price_decimal), score_result,
@@ -1653,6 +1656,39 @@ class TradingExecutor:
         except Exception as e:
             logger.error(f"开空仓失败: {e}")
             return None
+
+    async def _promote_filled_entry(
+        self, symbol: str, entry_order_id: Optional[int], fill: OrderFillResult,
+    ) -> None:
+        """Replace an exact order acknowledgment with the verified terminal values."""
+        trade_logger = getattr(self.binance_api, 'trade_logger', None)
+        account_id = getattr(trade_logger, 'account_id', None)
+        strategy = getattr(trade_logger, 'strategy_name', None)
+        raw = fill.raw
+        if (not isinstance(account_id, str) or not account_id or strategy != 'new_coin'
+                or type(entry_order_id) is not int or entry_order_id <= 0
+                or not fill.is_filled or not fill.avg_price.is_finite() or fill.avg_price <= 0
+                or str(fill.order_id) != str(entry_order_id)
+                or str(raw.get('orderId')) != str(entry_order_id) or raw.get('symbol') != symbol
+                or raw.get('side') != 'SELL' or raw.get('status') != 'FILLED'):
+            return
+        try:
+            await self.db.execute(
+                """UPDATE trading.trade_records t
+                     SET quantity=$1, price=$2, status='FILLED'
+                     WHERE t.account_id=$3 AND t.symbol=$4 AND t.order_id=$5 AND t.strategy=$6
+                       AND t.side='SELL' AND t.order_type IN ('MARKET','LIMIT')
+                       AND t.status='NEW' AND t.quantity=0 AND t.price=0 AND t.realized_pnl IS NULL
+                       AND NOT EXISTS (
+                         SELECT 1 FROM trading.trade_records d
+                         WHERE d.account_id=t.account_id AND d.symbol=t.symbol
+                           AND d.order_id=t.order_id AND d.id<>t.id
+                       )""",
+                fill.executed_qty, fill.avg_price, account_id, symbol, str(entry_order_id), strategy,
+            )
+        except Exception as exc:
+            logger.warning('入场成交回写待对账', symbol=symbol, order_id=entry_order_id,
+                           error_type=type(exc).__name__)
 
     async def _save_order(
         self,

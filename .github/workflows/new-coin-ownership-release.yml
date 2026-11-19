@@ -8,6 +8,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: bff04251bdbccba4bf7e02fa6ac3ddcbcd8da4bd
+          path: .permission-contract
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
@@ -26,6 +30,11 @@ jobs:
           staging="/root/trading_system/.deploy_tmp/new-coin-ownership-$GITHUB_SHA"
           checksum="$(sha256sum strategies/new_coin/strategy.py | cut -d ' ' -f 1)"
           evidence_checksum="$(sha256sum strategies/new_coin/recovery_evidence.py | cut -d ' ' -f 1)"
+          audit_tool=".permission-contract/scripts/database_permissions.py"
+          audit_manifest=".permission-contract/database/postgres/permissions.json"
+          audit_tool_sha="$(sha256sum "$audit_tool" | cut -d ' ' -f 1)"
+          audit_manifest_sha="$(sha256sum "$audit_manifest" | cut -d ' ' -f 1)"
+          executor_checksum="$(sha256sum strategies/new_coin/executor.py | cut -d ' ' -f 1)"
           ssh -o ConnectTimeout=15 root@43.156.242.184 "install -d -m 700 $staging"
-          scp -o ConnectTimeout=15 strategies/new_coin/{strategy.py,recovery_evidence.py} deployment/new-coin-ownership/Dockerfile "root@43.156.242.184:$staging/"
-          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 python3 - "$GITHUB_SHA" "$checksum" "$evidence_checksum" "$staging" < deployment/new-coin-ownership/activate.py
+          scp -o ConnectTimeout=15 strategies/new_coin/{strategy.py,recovery_evidence.py,executor.py} deployment/new-coin-ownership/Dockerfile "$audit_tool" "$audit_manifest" "root@43.156.242.184:$staging/"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 python3 - "$GITHUB_SHA" "$checksum" "$evidence_checksum" "$executor_checksum" "$audit_tool_sha" "$audit_manifest_sha" "$staging" < deployment/new-coin-ownership/activate.py
