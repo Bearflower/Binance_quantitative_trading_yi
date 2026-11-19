@@ -146,3 +146,15 @@ def test_floor_finance_receipt_payload_cannot_be_replaced(field,value):
     source=next(r for r in rows if r['kind']=='entry_stage_inputs' and r['payload'].get('stage')=='reservation_inventory')
     source['payload'][field]=value
     assert checks(life,rows,archives)['budget']['status']=='PENDING'
+
+
+def test_floor_receipt_protection_fields_must_match_immutable_equity_parent():
+    from strategies.hrs.decision_capture import canonical_payload
+    life,rows,archives=floor_evidence()
+    source=next(r for r in rows if r['kind']=='entry_stage_inputs' and r['payload'].get('stage')=='reservation_inventory')
+    stage=next(r for r in rows if r['kind']=='entry_stage_inputs' and r['payload'].get('stage')=='reservation_success')
+    source['payload']['slot_inputs']['local']['L']['risk_stop_price']='.5'
+    source['payload_sha256']=canonical_payload(source['payload'])[1]
+    stage['payload']['budget_context']['financial_receipt']['payload_sha256']=source['payload_sha256']
+    stage['payload_sha256']=canonical_payload(stage['payload'])[1]
+    assert checks(life,rows,archives)['budget']['status']=='PENDING'

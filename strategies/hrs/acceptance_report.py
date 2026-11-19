@@ -488,6 +488,8 @@ def _floor_budget_provenance(lifecycle, payload, decision, records, budget_at, a
             dict(source['_capture_envelope'],payload={k:v for k,v in source.items() if not k.startswith('_capture_')}),
             account=account_id,symbol=lifecycle['symbol'],signal_id=context['signal_id'],
             checked_at=_time(context['checked_at']))
+        _bind_hrs_floor_local_to_parent(parent,financial['slot_inputs']['local'],
+                                       account_id,context['evidence_sha256'])
         reproduced = prove_hrs_slot_ownership(account_id,
             dict(payload=parent,evidence_sha256=context['evidence_sha256']),
             financial['slot_inputs'],
