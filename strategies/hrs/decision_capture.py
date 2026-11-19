@@ -212,6 +212,22 @@ async def record_stage(strategy, kind, payload, *, symbol=None):
                           as_of=now, available_at=now, symbol=symbol)
 
 
+async def record_reservation_inventory(strategy, payload, *, symbol):
+    """FLOOR requires a durable receipt from the configured independent writer."""
+    recorder = getattr(strategy, 'decision_recorder', None)
+    if recorder is None or recorder.failed:
+        raise RuntimeError('hrs_decision_evidence_incomplete')
+    now = datetime.now(timezone.utc)
+    payload = dict(payload, stage='reservation_inventory', observed_at=now)
+    run_id = recorder.run_id
+    evidence_id = await recorder.record(run_id, 'entry_stage_inputs', payload,
+        as_of=now, available_at=now, symbol=symbol)
+    if recorder.failed or not isinstance(evidence_id,str) or not evidence_id:
+        raise RuntimeError('hrs_decision_evidence_incomplete')
+    return dict(evidence_id=evidence_id,run_id=run_id,payload_sha256=canonical_payload(payload)[1],
+        event_time=now.isoformat(),available_at=now.isoformat())
+
+
 def strategy_snapshot(strategy):
     pool = getattr(strategy, 'candidate_pool', None)
     positions = getattr(strategy, 'position_manager', None)

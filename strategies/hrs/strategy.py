@@ -40,7 +40,7 @@ from .position_manager import PositionManager
 from .risk_manager import RiskManager
 from .risk_budget import RiskDecision, assess_entry, calculate_open_position_risk
 from .scoring_engine import ScoringEngine, ScoringResult
-from .decision_capture import DecisionRecorder, capture_analysis, capture_cycle, capture_signal, safe_record, record_stage
+from .decision_capture import DecisionRecorder, capture_analysis, capture_cycle, capture_signal, safe_record, record_stage, record_reservation_inventory
 from .core_decision import analyze_standard, analyze_lv_rm, is_shadow_entry_mode
 from .kline_repair import KlineHistoryUnavailable
 
@@ -1018,10 +1018,16 @@ class HRSStrategy(BaseStrategy):
                     local = self.position_manager.get_all_positions()
                     slot_inputs = capture_hrs_slot_inputs(inventory=positions, independent=independent,
                         local=local, observed_at=datetime.now(timezone.utc))
-                    await record_stage(self, 'entry_stage_inputs', {
-                        'stage': 'reservation_inventory', 'exchange_positions': positions,
-                        'slot_scope': SLOT_SCOPE, 'slot_inputs': slot_inputs,
-                    }, symbol=symbol)
+                    inventory_payload = dict(stage='reservation_inventory', exchange_positions=positions,
+                        slot_scope=SLOT_SCOPE, slot_inputs=slot_inputs)
+                    from .risk_budget import FLOOR
+                    financial_receipt = None
+                    if decision.budget_version == FLOOR:
+                        inventory_payload.update(account_id=store.account,signal_id=str(identity),
+                            account_equity=Decimal(str(equity)),effective_allocation=decision.effective_allocation)
+                        financial_receipt = await record_reservation_inventory(self,inventory_payload,symbol=symbol)
+                    else:
+                        await record_stage(self,'entry_stage_inputs',inventory_payload,symbol=symbol)
                     holdings = Decimal(0)
                     for pos in positions:
                         amount = Decimal(str(pos['positionAmt']))
@@ -1035,7 +1041,7 @@ class HRSStrategy(BaseStrategy):
                     return ScopedRiskSnapshot(account_margin=holdings, equity=Decimal(str(equity)),
                         allocation=decision.effective_allocation,
                         max_slots=self.config.get('trading', {}).get('max_positions', 3),
-                        slot_scope=SLOT_SCOPE, slot_evidence=slot_inputs)
+                        slot_scope=SLOT_SCOPE, slot_evidence=slot_inputs, financial_receipt=financial_receipt)
                 geometry = {'signal_id': identity,
                             'exit_ratios': [str(x) for x in decision.exit_ratios],
                             'entry_price': str(price), 'quantity': str(quantity)}

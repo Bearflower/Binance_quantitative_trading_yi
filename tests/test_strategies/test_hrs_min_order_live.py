@@ -73,3 +73,43 @@ async def test_floor_strategy_requires_committed_refinement(monkeypatch):
     store=SimpleNamespace(reconcile=AsyncMock(),reserve=AsyncMock(return_value='intent'),reservation_audit={'client_order_id':'intent'})
     monkeypatch.setattr(p,'RiskPolicyStore',lambda db:store)
     assert await obj._reserve_hrs_entry({'symbol':'SUIUSDT','signal_id':1},decision,100,10000) is None
+
+
+@pytest.mark.asyncio
+async def test_floor_strategy_records_actual_finances_and_retains_writer_receipt(monkeypatch):
+    import shared.entry_risk_policy as p
+    from strategies.hrs.decision_capture import canonical_payload
+    obj,_,seen,stages,_,_=prepared(monkeypatch)
+    recorded=[]
+    async def record(run,kind,payload,**envelope):
+        recorded.append((run,kind,payload,envelope));return 'receipt-id'
+    obj.decision_recorder=SimpleNamespace(failed=False,run_id='run-id',record=record)
+    decision=replace(floor_decision(),policy_revision=6,effective_allocation=D(1000))
+    async def reserve(*args,**kwargs):
+        seen.append(await args[5]());return 'intent'
+    store=SimpleNamespace(account='test',reconcile=AsyncMock(),reserve=reserve,reservation_audit=dict(client_order_id='intent',risk_decision=decision))
+    monkeypatch.setattr(p,'RiskPolicyStore',lambda db:store)
+    assert await obj._reserve_hrs_entry({'symbol':'SUIUSDT','signal_id':1},decision,100,10000)
+    assert seen[0].financial_receipt is not None
+    run,kind,payload,envelope=recorded[0]
+    assert run=='run-id' and kind=='entry_stage_inputs' and envelope['symbol']=='SUIUSDT'
+    assert payload['stage']=='reservation_inventory' and payload['account_equity']==D(10000)
+    assert payload['effective_allocation']==D(1000) and payload['signal_id']=='1'
+    assert payload['slot_inputs']==seen[0].slot_evidence
+    assert seen[0].financial_receipt['payload_sha256']==canonical_payload(payload)[1]
+    assert seen[0].financial_receipt['event_time']==envelope['as_of'].isoformat()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('writer',['absent','failed','write_error'])
+async def test_floor_strategy_denies_missing_or_failed_independent_receipt(monkeypatch,writer):
+    import shared.entry_risk_policy as p
+    obj,_,_,_,_,_=prepared(monkeypatch)
+    decision=replace(floor_decision(),policy_revision=6,effective_allocation=D(1000))
+    if writer!='absent':
+        obj.decision_recorder=SimpleNamespace(failed=writer=='failed',run_id='run',record=AsyncMock(side_effect=RuntimeError('writer failed')))
+    async def reserve(*args,**kwargs):
+        await args[5]();return 'intent'
+    store=SimpleNamespace(account='test',reconcile=AsyncMock(),reserve=reserve,reservation_audit=dict(client_order_id='intent',risk_decision=decision))
+    monkeypatch.setattr(p,'RiskPolicyStore',lambda db:store)
+    assert await obj._reserve_hrs_entry({'symbol':'SUIUSDT','signal_id':1},decision,100,10000) is None

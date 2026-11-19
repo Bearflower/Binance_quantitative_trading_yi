@@ -1,7 +1,7 @@
 """Floor sizing is refined inside the existing real-PG account lock."""
 import asyncio,json
 from dataclasses import replace, asdict
-from datetime import timedelta
+from datetime import timedelta, datetime, timezone
 from decimal import Decimal as D
 from types import SimpleNamespace
 import pytest
@@ -22,6 +22,9 @@ def proposal(decision):
 async def enable(r):
     await r.admin.execute("""INSERT INTO trading.strategy_risk_policy(account_id,strategy_id,revision,effective_at,expires_at,mode,allow_add,multiplier,ratio_cap,entry_ceiling,reason,created_at) SELECT account_id,strategy_id,2,effective_at,expires_at,mode,allow_add,multiplier,ratio_cap,entry_ceiling,$1,created_at FROM trading.strategy_risk_policy WHERE revision=1""",json.dumps({'hrs_risk_budget_version':FLOOR}))
     await r.admin.execute("UPDATE trading.strategy_risk_active SET revision=2")
+    from pathlib import Path
+    await r.admin.execute('CREATE SCHEMA IF NOT EXISTS hrs; GRANT USAGE ON SCHEMA hrs TO trading_user')
+    await r.admin.execute(Path('database/postgres/migrations/2026-11-17-hrs-decision-evidence.sql').read_text())
     # Existing ownership fixture has deliberately minimal local state. Supply real
     # protection for the new risk proof in both the authorized parent and snapshot.
     r.payload['capture']['local']['WLDUSDT'].update(entry_price='10',risk_stop_price='9.9',algo_ids={'sl':123})
@@ -40,8 +43,47 @@ async def enable(r):
         await r.admin.execute('UPDATE trading.strategy_equity_gate SET evidence_sha256=$1',digest)
         base=await r.snapshot(margin=margin)
         base.slot_evidence['local'].update(r.payload['capture']['local'])
-        return base
+        return await attach_financial_receipt(r, base)
     return snapshot
+
+
+async def attach_financial_receipt(r, base, *, symbol='A', signal_id='a', **overrides):
+    from strategies.hrs.decision_capture import DecisionRecorder, canonical_payload
+    class FixtureWriter:
+        # Only test data uses the local administrator; runtime uses independent writer.
+        async def execute(self, *args): return await r.admin.execute(*args)
+        async def fetch_all(self, *args): return await r.admin.fetch(*args)
+    now=datetime.now(timezone.utc)
+    payload=dict(stage='reservation_inventory', account_id='test', signal_id=str(signal_id),
+        exchange_positions=base.slot_evidence['inventory'], slot_scope=base.slot_scope,
+        slot_inputs=base.slot_evidence, account_equity=base.equity,
+        effective_allocation=base.allocation, observed_at=now)
+    payload.update(overrides)
+    recorder=DecisionRecorder(FixtureWriter())
+    identity=await recorder.record(recorder.run_id,'entry_stage_inputs',payload,
+        as_of=now,available_at=now,symbol=symbol)
+    receipt=dict(evidence_id=identity,run_id=recorder.run_id,payload_sha256=canonical_payload(payload)[1],
+        event_time=now.isoformat(),available_at=now.isoformat())
+    return replace(base,financial_receipt=receipt)
+
+
+@pytest.mark.asyncio
+async def test_fresh_marks_with_unchanged_inventory_are_accepted_from_actual_receipt(runtime,monkeypatch):
+    from shared.entry_risk_policy import entry_allowed
+    from strategies.hrs.entry_occupancy import capture_hrs_slot_inputs
+    import copy
+    r=runtime;original=await enable(r);sized,geometry=proposal(plan())
+    async def snapshot():
+        base=await original()
+        current=copy.deepcopy(base.slot_evidence['inventory'])
+        current[0]['markPrice']='10.25'
+        inputs=capture_hrs_slot_inputs(inventory=current,independent=current,
+            local=base.slot_evidence['local'],observed_at=datetime.now(timezone.utc))
+        return await attach_financial_receipt(r,replace(base,account_margin=base.account_margin+D('.7'),slot_evidence=inputs))
+    client=await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    decision=replace(r.store.reservation_audit['risk_decision'],client_order_id=client)
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
+    assert await entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=decision,quantity=decision.quantity)
 
 
 @pytest.mark.asyncio
@@ -74,7 +116,7 @@ async def test_pending_pressure_deduplicates_live_symbol_and_concurrency_refines
     r=runtime;snapshot=await enable(r);sized,geometry=proposal(plan())
     await r.admin.execute("INSERT INTO trading.entry_risk_reservation(client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,pressure_risk,updated_at) VALUES('held','test','hrs',1,'WLDUSDT',28,28,10,10,28,'submitting',1,$1)",r.at-timedelta(seconds=1))
     stores=[RiskPolicyStore(SimpleNamespace(pool=r.pool),'test') for _ in range(3)]
-    captured=[await snapshot() for _ in stores]
+    captured=[await attach_financial_receipt(r,await snapshot(),symbol=sym,signal_id=sym) for sym in ('A','B','C')]
     async def fixed(i):return captured[i]
     results=await asyncio.gather(*(s.reserve('hrs',sym,sym,sized,2,lambda i=i:fixed(i),geometry=geometry) for i,(s,sym) in enumerate(zip(stores,['A','B','C']))),return_exceptions=True)
     assert sum(isinstance(x,str) for x in results)==2, [str(x) for x in results]
@@ -232,7 +274,7 @@ async def test_floor_parent_binding_normalizes_risk_numbers_and_ignores_unrelate
         base=await original();local=base.slot_evidence['local']['WLDUSDT']
         local.update(entry_price=D('10.0000'),risk_stop_price=D('9.90000'),peak_price=123)
         local['algo_ids']['sl']='123'
-        return base
+        return await attach_financial_receipt(r,base)
     assert await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
 
 
@@ -359,7 +401,7 @@ async def test_floor_margin_cap_uses_actual_monthly_multiplier(runtime):
 
 
 @pytest.mark.asyncio
-async def test_floor_margin_snapshot_must_equal_immutable_parent_inventory(runtime):
+async def test_floor_margin_snapshot_must_equal_actual_receipt_inventory(runtime):
     r=runtime;original=await enable(r);sized,geometry=proposal(plan())
     async def snapshot():return replace(await original(),account_margin=D(101))
     with pytest.raises(EntryDenied):await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
@@ -378,3 +420,76 @@ async def test_final_finance_refuses_parent_superseded_by_current_equity_observa
     await r.admin.execute('INSERT INTO trading.hrs_equity_evidence VALUES($1,$2,$3,$4,$4,$5::jsonb)','test',digest,'seg',r.at,encoded)
     await r.admin.execute('UPDATE trading.strategy_equity_gate SET evidence_sha256=$1',digest)
     assert not await entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=decision,quantity=decision.quantity)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('tamper',['missing','hash','run','event','available','account','symbol','signal','equity','allocation','inventory','independent'])
+async def test_floor_receipt_sources_cannot_be_substituted_or_finances_tampered(runtime,tamper):
+    import copy
+    r=runtime;original=await enable(r);sized,geometry=proposal(plan())
+    async def snapshot():
+        base=await original()
+        if tamper=='missing':return replace(base,financial_receipt=None)
+        if tamper in ('hash','run','event','available'):
+            receipt=dict(base.financial_receipt)
+            key=dict(hash='payload_sha256',run='run_id',event='event_time',available='available_at')[tamper]
+            receipt[key]='f'*64 if tamper=='hash' else 'wrong' if tamper=='run' else r.at.isoformat()
+            return replace(base,financial_receipt=receipt)
+        if tamper=='equity':return replace(base,equity=D(20000))
+        if tamper=='allocation':return replace(base,allocation=D(2000))
+        if tamper=='account':return await attach_financial_receipt(r,base,account_id='other-account')
+        if tamper=='symbol':return await attach_financial_receipt(r,base,symbol='B')
+        if tamper=='signal':return await attach_financial_receipt(r,base,signal_id='different-intent')
+        changed=copy.deepcopy(base.slot_evidence)
+        changed['inventory' if tamper=='inventory' else 'independent'][0]['positionAmt']='29'
+        return await attach_financial_receipt(r,replace(base,slot_evidence=changed))
+    with pytest.raises(EntryDenied):
+        await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    assert r.store.reservation_audit is None
+    assert await r.admin.fetchval('SELECT count(*) FROM trading.entry_risk_reservation')==0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('field',['snapshot_account_equity','snapshot_effective_allocation','account_margin'])
+async def test_final_finance_compares_geometry_to_actual_independent_receipt(runtime,monkeypatch,field):
+    import shared.entry_risk_policy as p
+    r=runtime;snapshot=await enable(r);sized,geometry=proposal(plan())
+    client=await r.store.reserve('hrs','A','a',sized,2,snapshot,geometry=geometry)
+    decision=replace(r.store.reservation_audit['risk_decision'],client_order_id=client)
+    await r.admin.execute('UPDATE trading.entry_risk_reservation SET geometry=jsonb_set(geometry,$1::text[],to_jsonb(99999::text)) WHERE client_order_id=$2',['hrs_budget_context',field],client)
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
+    assert not await p.entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=decision,quantity=decision.quantity)
+
+
+@pytest.mark.asyncio
+async def test_floor_uses_existing_read_only_decision_receipt_permission(runtime):
+    import asyncpg
+    r=runtime;snapshot=await enable(r)
+    await snapshot()
+    async with r.pool.acquire() as conn:
+        assert await conn.fetchval('SELECT count(*) FROM hrs.hrs_decision_evidence')==1
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await conn.execute("INSERT INTO hrs.hrs_decision_evidence SELECT * FROM hrs.hrs_decision_evidence LIMIT 1")
+        with pytest.raises(asyncpg.InsufficientPrivilegeError):
+            await conn.execute("UPDATE hrs.hrs_decision_evidence SET payload='{}'")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('tamper',['other_intent','context_receipt'])
+async def test_final_receipt_identity_remains_bound_to_durable_intent(runtime,monkeypatch,tamper):
+    import shared.entry_risk_policy as p
+    r=runtime;snapshot=await enable(r);sized,geometry=proposal(plan())
+    base=await snapshot()
+    async def fixed():return base
+    client=await r.store.reserve('hrs','A','a',sized,2,fixed,geometry=geometry)
+    decision=replace(r.store.reservation_audit['risk_decision'],client_order_id=client)
+    saved=json.loads(await r.admin.fetchval('SELECT geometry FROM trading.entry_risk_reservation WHERE client_order_id=$1',client))
+    if tamper=='other_intent':
+        other=await attach_financial_receipt(r,base,signal_id='other-intent')
+        saved['hrs_financial_receipt']=other.financial_receipt
+        saved['hrs_budget_context']['financial_receipt']=other.financial_receipt
+        saved['signal_id']=saved['hrs_budget_context']['signal_id']='other-intent'
+    else:saved['hrs_budget_context']['financial_receipt']['run_id']='forged-context-run'
+    await r.admin.execute('UPDATE trading.entry_risk_reservation SET geometry=$1::jsonb WHERE client_order_id=$2',json.dumps(saved),client)
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
+    assert not await p.entry_allowed(SimpleNamespace(db=SimpleNamespace(pool=r.pool)),'hrs',risk_decision=decision,quantity=decision.quantity)
