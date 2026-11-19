@@ -1,4 +1,5 @@
 """Activate the HRS entry hotfix, retaining the original release configuration."""
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import json
@@ -9,7 +10,7 @@ import time
 
 from deploy_optimization import (
     atomic, compose, environment, initialized_proof, inspect, preflight,
-    read_initialization, run,
+    read_initialization, run, utc,
 )
 
 ROOT = Path('/root/trading_system')
@@ -53,14 +54,55 @@ def policy_hash():
                 '-U', 'trading_user', '-d', 'trading_platform', '-c', sql])
 
 
-def wait_ready(image_id, sha, config_hash):
+def ownership_hold():
+    sql = """SELECT jsonb_build_object('updated_at',g.updated_at,'available_at',e.available_at,
+                        'as_of',g.as_of,'account_id',g.account_id)
+    FROM trading.strategy_equity_gate g
+    JOIN trading.hrs_equity_evidence e USING(account_id,evidence_sha256)
+    WHERE g.account_id='default' AND g.strategy_id='hrs' AND NOT g.ready AND NOT g.allowed
+      AND g.reasons='["position_order_owner_unproven"]'::jsonb
+      AND e.payload->'result' @> '{"ready": false, "allowed": false, "reasons": ["position_order_owner_unproven"]}'::jsonb
+    """
+    output = run(['docker','exec','trading_system-postgres','psql','-XAt','-v','ON_ERROR_STOP=1',
+                  '-U','trading_user','-d','trading_platform','-c',sql])
+    return json.loads(output) if output else None
+
+
+def held_initialization(data, held, started_at, sha, config_hash):
+    try:
+        started = utc(started_at)
+        checked = datetime.now(timezone.utc)
+        if (data['release_sha'] != sha or data['loaded_config'].get('strategy') != 'hrs'
+                or data['loaded_config'].get('config_hash') != config_hash
+                or data['evidence_context_serializable'] is not True
+                or datetime.fromtimestamp(data['config_mtime'], timezone.utc) < started
+                or data['gate']['ready'] is not False or data['gate']['allowed'] is not False
+                or held['account_id'] != 'default'):
+            raise ValueError('held startup source identity differs')
+        for key in ('updated_at', 'as_of', 'available_at'):
+            stamp = utc(held[key])
+            if not started <= stamp <= checked or (checked-stamp).total_seconds() > 120:
+                raise ValueError('held startup evidence is stale')
+        return dict(release_sha=sha, config_hash=config_hash, ready=False, allowed=False,
+                    reasons=['position_order_owner_unproven'], immutable_projection=held)
+    except (KeyError, ValueError, TypeError) as exc:
+        raise RuntimeError('fail-closed initialization unverified') from exc
+
+
+def wait_ready(image_id, sha, config_hash, existing_ownership_hold):
     deadline = time.monotonic() + 300
     while time.monotonic() < deadline:
         current = inspect(CONTAINER)
         if (current['Image'] == image_id
                 and current['State'].get('Health', {}).get('Status') == 'healthy'):
             try:
-                return initialized_proof(read_initialization(), current['State']['StartedAt'], sha, config_hash)
+                observed = read_initialization()
+                started = current['State']['StartedAt']
+                try:
+                    return initialized_proof(observed, started, sha, config_hash)
+                except RuntimeError:
+                    if existing_ownership_hold:
+                        return held_initialization(observed, ownership_hold(), started, sha, config_hash)
             except RuntimeError:
                 pass
         time.sleep(3)
@@ -101,7 +143,8 @@ def main(sha, image_digest, bundle_name):
                     and pin.get('predecessor_sha') == PIN
                     and Path(pin['overlay']) == interrupted_dir/'images.json')
     if not established:
-        if not interrupted_runtime or not (interrupted_pin or finished_pin):
+        restored_runtime = previous_runtime == (BASE, PREDECESSOR_HRS) and interrupted_pin
+        if not restored_runtime and not (interrupted_runtime and (interrupted_pin or finished_pin)):
             raise RuntimeError('reviewed live predecessor changed')
         prior_overlay = json.loads(previous.read_text())
         first_image = 'ghcr.io/bearflower/trading-hrs@' + INTERRUPTED_IMAGE
@@ -113,6 +156,7 @@ def main(sha, image_digest, bundle_name):
                         state=str(original/'state.json'), successor_sha=PIN,
                         predecessor_sha='d9c4e6c1b1dabe3594ef07150e2be46bc1018b3f')
     baseline = read_initialization()
+    existing_ownership_hold = ownership_hold()
     config_hash = baseline['loaded_config']['config_hash']
     if not config_hash or baseline.get('evidence_context_serializable') is not True:
         raise RuntimeError('old configuration or evidence context unverified')
@@ -160,7 +204,7 @@ def main(sha, image_digest, bundle_name):
     atomic(pin_path, dict(pin, status='activating', successor_sha=sha))
     try:
         run(candidate_command+['up', '-d', '--no-deps', '--pull', 'never', SERVICE])
-        initialized = wait_ready(checked_id, sha, config_hash)
+        initialized = wait_ready(checked_id, sha, config_hash, existing_ownership_hold)
         fresh_protection = preflight()
         after = inventory()
         if (fresh_protection != protection or policy_hash() != policies
@@ -179,7 +223,7 @@ def main(sha, image_digest, bundle_name):
     except Exception:
         try:
             run(original_command+['up', '-d', '--no-deps', '--pull', 'never', SERVICE])
-            wait_ready(BASE, PREDECESSOR_HRS, config_hash)
+            wait_ready(BASE, PREDECESSOR_HRS, config_hash, existing_ownership_hold)
             preflight()
             atomic(pin_path, rollback_pin)
             atomic(release/'state.json', dict(sha=sha, status='failed', rollback='restored'))
