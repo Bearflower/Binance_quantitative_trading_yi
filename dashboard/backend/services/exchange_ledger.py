@@ -110,21 +110,28 @@ class ExchangeLedgerDashboardMixin:
         except Exception:
             return unavailable_lifecycle_stats('lifecycle_source_unavailable', strategy_ids)
 
-    async def _realized_performance(self, report, strategy_ids):
+    async def _realized_performance(self, report, strategy_ids, *, yearly=False):
         """Attach only capital denominators to the immutable income publication."""
         start = datetime.fromtimestamp(report['start_ms'] / 1000, BEIJING).date()
         end = datetime.fromtimestamp(report['end_ms'] / 1000, BEIJING).date()
         account_capital = {}
         strategy_capital = {}
+        verified_capital = {}
         if (report.get('publication_status') == 'published'
                 and report.get('account_coverage_complete') and start < end):
             try:
                 equity_rows = await self._db_manager.fetch_all(
-                    'SELECT snapshot_date, total_equity FROM public.equity_snapshot '
+                    'SELECT snapshot_date, total_equity, '
+                    "(updated_at::date = snapshot_date AND updated_at::time >= TIME '15:30' "
+                    "AND updated_at::time < TIME '15:31') AS scheduled_utc "
+                    'FROM public.equity_snapshot '
                     'WHERE snapshot_date >= $1 AND snapshot_date < $2 ORDER BY snapshot_date',
                     start - timedelta(days=1), end - timedelta(days=1))
                 account_capital = {row['snapshot_date'] + timedelta(days=1): row['total_equity']
                                    for row in equity_rows}
+                if yearly:
+                    verified_capital = {row['snapshot_date'] + timedelta(days=1): row['total_equity']
+                                        for row in equity_rows if row.get('scheduled_utc')}
                 if report.get('strategy_attribution_complete'):
                     strategy_rows = await self._db_manager.fetch_all(
                         'SELECT strategy_id, snapshot_hour, allocated_amount '
@@ -140,7 +147,8 @@ class ExchangeLedgerDashboardMixin:
                             row['snapshot_hour'].date()] = row['allocated_amount']
             except Exception:
                 return unavailable_realized_metrics('capital_source_unavailable', report, strategy_ids)
-        return realized_income_metrics(report, account_capital, strategy_capital, strategy_ids)
+        return realized_income_metrics(report, account_capital, strategy_capital, strategy_ids,
+                                       verified_capital=verified_capital)
 
     async def _ledger_report(self, start, end, *, report_type='daily', current=True):
         await self._ensure_initialized()
@@ -193,7 +201,7 @@ class ExchangeLedgerDashboardMixin:
         positions = await self.get_open_positions_summary()
         strategy_ids = list(self._STRATEGY_NAME_MAP) + sorted(set(report['by_strategy']) - set(self._STRATEGY_NAME_MAP))
         strategies = [self._strategy_projection(report, sid) for sid in strategy_ids]
-        performance = await self._realized_performance(report, strategy_ids)
+        performance = await self._realized_performance(report, strategy_ids, yearly=report_type == "yearly")
         lifecycles = await self._verified_lifecycles(report, strategy_ids)
         for strategy in strategies:
             position = positions.get(strategy['id'], {})
@@ -236,6 +244,7 @@ class ExchangeLedgerDashboardMixin:
                     total_perf_sample_count=account_metric['sample_count'],
                     total_perf_window_start=account_metric['window_start'],
                     total_perf_window_end=account_metric['window_end'],
+                    total_verified_period=account_metric.get('verified_period'),
                     total_perf_reason=account_metric['reason'], total_perf_caliber=account_metric['caliber'],
                     strategies=strategies, report_type=report_type,
                     updated_at=datetime.now(BEIJING).isoformat(), **self._ledger_metadata(report))

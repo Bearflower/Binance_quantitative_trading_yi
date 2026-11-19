@@ -136,3 +136,24 @@ def test_lifecycle_rejects_income_mismatch_and_missing_fill_coverage():
                                     {"ETHUSDT"}, ["hrs"])["account"]["reason"] == "no_verified_closures"
     assert verified_lifecycle_stats(_report([]), baselines, fills, owners, wrong_income,
                                     set(), ["hrs"])["account"]["reason"] == "fill_coverage_incomplete"
+
+
+def test_verified_period_uses_longest_contiguous_run_and_keeps_full_window_missing():
+    end = datetime(2026, 11, 9, tzinfo=timezone(timedelta(hours=8)))
+    report = _report([_event(2, "10"), _event(3, "-20"), _event(6, "-80")],
+                     end_ms=int(end.timestamp() * 1000))
+    staged = {date(2026, 11, day): Decimal("100") for day in (2, 3, 4, 6, 7)}
+    staged[date(2026, 11, 8)] = Decimal("NaN")
+    result = realized_income_metrics(report, staged, {}, [], verified_capital=staged)["account"]
+    assert result["sharpe"] is None
+    assert result["reason"] == "opening_capital_missing"
+    period = result["verified_period"]
+    assert period["window_start"] == "2026-11-02"
+    assert period["window_end"] == "2026-11-04"
+    assert period["sample_count"] == 3
+    assert period["missing_opening_days"] == 3
+    assert period["max_drawdown"] == pytest.approx(0.2 / 1.1)
+
+    incomplete = dict(report, account_coverage_complete=False)
+    result = realized_income_metrics(incomplete, staged, {}, [], verified_capital=staged)["account"]
+    assert "verified_period" not in result

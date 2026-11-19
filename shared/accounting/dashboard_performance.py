@@ -58,7 +58,33 @@ def unavailable_realized_metrics(reason, report, strategy_ids):
             "strategies": {sid: _empty(reason, dates) for sid in strategy_ids}}
 
 
-def realized_income_metrics(report, account_capital, strategy_capital, strategy_ids):
+def _positive_capital(value):
+    if value is None:
+        return False
+    amount = Decimal(str(value))
+    return amount.is_finite() and amount > 0
+
+
+def _verified_period(dates, daily_amounts, capital, verified_capital):
+    longest = []
+    current = []
+    missing = 0
+    for day in dates:
+        if not _positive_capital(capital.get(day)):
+            missing += 1
+        if not _positive_capital(verified_capital.get(day)):
+            current = []
+            continue
+        current.append(day)
+        if len(current) >= len(longest):
+            longest = current
+    if len(longest) < 2:
+        return None
+    result = _metric(longest, daily_amounts, verified_capital)
+    return dict(result, missing_opening_days=missing)
+
+
+def realized_income_metrics(report, account_capital, strategy_capital, strategy_ids, *, verified_capital=None):
     """Compute daily realized-income return, Sharpe and drawdown for a report.
 
     The reported window is calendar aligned. Current partial days are excluded;
@@ -93,6 +119,10 @@ def realized_income_metrics(report, account_capital, strategy_capital, strategy_
         if event.get("strategy"):
             strategy_amounts[event["strategy"]][event_day] += amount
     account = _metric(dates, account_amounts, account_capital)
+    if verified_capital and account["reason"] in ("opening_capital_missing", "opening_capital_invalid"):
+        period = _verified_period(dates, account_amounts, account_capital, verified_capital)
+        if period is not None:
+            account["verified_period"] = period
     if report.get("strategy_attribution_complete"):
         strategies = {sid: _metric(dates, strategy_amounts[sid], strategy_capital.get(sid, {}))
                       for sid in strategy_ids}

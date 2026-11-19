@@ -169,6 +169,19 @@ class StrategyDetail(BaseResponse):
 # 总览相关模型
 # ========================================
 
+class VerifiedPerformancePeriod(BaseModel):
+    """Account performance for a continuous interval within an incomplete year."""
+
+    window_start: str
+    window_end: str
+    sample_count: int
+    missing_opening_days: int
+    sharpe: Optional[float] = None
+    max_drawdown: Optional[float] = None
+    reason: Optional[str] = None
+    caliber: str
+
+
 class OverviewData(LedgerMetadata):
     total_funding: Optional[str] = None
     unattributed_pnl: Optional[str] = None
@@ -195,6 +208,7 @@ class OverviewData(LedgerMetadata):
     total_perf_sample_count: Optional[int] = Field(None, description="账户级绩效样本数(天数)")
     total_perf_caliber: Optional[str] = Field(None, description="账户绩效计算口径")
     total_perf_reason: Optional[str] = Field(None, description="绩效不可计算原因")
+    total_verified_period: Optional[VerifiedPerformancePeriod] = Field(None, description="已核实区间的账户绩效")
     strategies: List[StrategySummary] = Field(
         ...,
         description="策略列表"
