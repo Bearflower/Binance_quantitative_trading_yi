@@ -141,5 +141,6 @@ async def test_owned_scope_snapshot_binds_fresh_account_get_not_earlier_equity(m
     assert captured[0]['account_available_balance']=='448.86'
     assert captured[0]['account_available_balance_source']=='papi/v1/account.totalAvailableBalance'
     assert captured[0]['account_status']=='NORMAL'
+    assert captured[0]['account_cash_observed_at']<=captured[0]['slot_inputs']['observed_at']
     assert captured[0]['effective_allocation']==D('26.18')
     obj.binance_client.get_account_info.assert_awaited_once()
