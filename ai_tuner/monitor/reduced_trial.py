@@ -430,6 +430,12 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                 report, reductions = await protective_exit_reader(db, exchange, account, start_ms, end_ms)
                 evidence["protective_exits"] = report
                 activity_inputs["verified_reductions"] = reductions
+                activity_inputs["verified_openings"] = {
+                    (account, link["strategy"], link["symbol"], trade_id, link["entry_order_id"], stamp)
+                    for link in report["links"] if link.get("closed_lot")
+                    for trade_id, stamp in link["closed_lot"]["entry_trade_times_ms"].items()
+                    if start_ms <= stamp < end_ms
+                }
             except Exception as exc:
                 evidence["source_errors"].append("protective_exits:" + type(exc).__name__)
         if activity_reader is not None:
