@@ -627,3 +627,40 @@ def test_explicit_order_identity_conflict_excludes_old_positive_observation():
     assert row['owned_entry_fills'] is None
     assert row['verified_filled_entry_orders'] is None
     assert 'order_identity_conflict' in row['reasons']
+
+
+@pytest.mark.parametrize('defect', [None, 'raw_negative_missing', 'submitting', 'legacy', 'no_protocol', 'wrong_id'])
+def test_released_without_submitting_has_a_separate_terminal_proof(defect):
+    r = dict(reservation(), quantity='3', created_at=stamp(110), revision=7)
+    state = dict(id=60, account_id='default', kind='intent', observed_at=stamp(120),
+                 created_by='trading_migration_admin', payload=dict(r, state='reserved'))
+    released = dict(state, id=61, kind='intent_state', observed_at=stamp(350), payload=r)
+    negative = dict(observation(), order_id=None, raw_payload={}, observed_at=stamp(370),
+                    payload_sha256=hashlib.sha256(b'{}').hexdigest(), outcome='order_not_found')
+    events, replies = [state, released], [negative]
+    facts = protocol_facts()
+    facts[-1]['payload']['policy_revision'] = 7
+    if defect == 'raw_negative_missing':
+        replies = []
+    elif defect == 'submitting':
+        events.insert(1, dict(state, kind='intent_state', observed_at=stamp(180),
+                              payload=dict(r, state='submitting')))
+    elif defect == 'legacy':
+        state['kind']='legacy_intent'
+    elif defect == 'no_protocol':
+        facts = facts[:1]
+    elif defect == 'wrong_id':
+        released['payload']=dict(r, revision=6)
+    row = project([r], replies, [], facts + events + [batch([])], [cursor()])
+    assert row['coverage_complete'] is (defect is None)
+    assert row['owned_entry_fills'] == (0 if defect is None else None)
+
+
+def test_signed_other_strategy_order_cannot_count_as_current_strategy_open():
+    key = ('default', 'AAAUSDT', '1', '10', 200)
+    rows = project_activity_evidence([], [], [fill()], [cursor()], protocol_facts()+[batch([])],
+                                     'default', 100, 300, ['hrs','new_coin'],
+                                     verified_execution_owners={(*key, 'new_coin')})
+    assert rows['hrs']['coverage_complete'] and rows['hrs']['owned_entry_fills']==0
+    assert rows['new_coin']['owned_entry_fills'] is None
+    assert 'owned_fill_without_entry_intent' in rows['new_coin']['reasons']

@@ -170,9 +170,74 @@ def _entry_role(raw, fill, fills, cursors, facts, account, end):
     return None
 
 
+def _approved_protocols(facts, account_id):
+    boundaries = {str(f['id']): f for f in facts
+                  if f.get('account_id') == account_id and f.get('kind') == 'capture_boundary'}
+    protocols = []
+    for fact in facts:
+        if fact.get('account_id') != account_id or fact.get('kind') != 'protocol_window':
+            continue
+        proof = _obj(fact['payload'])
+        boundary = boundaries.get(str(proof.get('capture_boundary_id')))
+        if (boundary and fact.get('created_by') not in (None, 'trading_user')
+                and proof.get('all_entry_paths_before_submit') is True
+                and proof.get('reviewed_by') and proof.get('source_id')
+                and type(proof.get('start_ms')) is int and type(proof.get('end_ms')) is int
+                and _ms(boundary['observed_at']) <= proof['start_ms'] < proof['end_ms']):
+            protocols.append(proof)
+    return protocols
+
+
+def _verified_never_submitted(current, facts, observations, protocols, account_id, end_ms):
+    candidates = {r['client_order_id']: r for r in current if r.get('account_id') == account_id
+                  and r.get('state') == 'released'}
+    archived, signed = defaultdict(list), defaultdict(list)
+    for fact in facts:
+        if fact.get('account_id') == account_id and fact.get('kind') in ('intent', 'intent_state', 'legacy_intent'):
+            payload = _obj(fact['payload'])
+            if payload.get('client_order_id') in candidates:
+                archived[payload['client_order_id']].append((fact, payload))
+    for observation in observations:
+        if observation.get('account_id') == account_id and observation.get('client_order_id') in candidates:
+            signed[observation['client_order_id']].append(observation)
+    verified = {}
+    for client, reservation in candidates.items():
+        try:
+            # The audited state transition precedes the only permitted exchange
+            # submission route. Both lifecycle events must be present and exact.
+            first, last = sorted(archived[client], key=lambda row: row[0]['id'])
+            identity = ('account_id', 'strategy_id', 'symbol', 'client_order_id', 'revision')
+            owner, symbol = reservation['strategy_id'], reservation['symbol']
+            created = _ms(reservation['created_at'])
+            if (first[0]['kind'] != 'intent' or first[1]['state'] != 'reserved'
+                    or last[0]['kind'] != 'intent_state' or last[1]['state'] != 'released'
+                    or not created <= _ms(first[0]['observed_at']) < _ms(last[0]['observed_at'])
+                    or not created < end_ms
+                    or any(f.get('created_by') in (None, 'trading_user') for f, _ in (first, last))
+                    or any(payload.get(k) != reservation.get(k) for _, payload in (first, last) for k in identity)
+                    or any(_number(payload['quantity']) != _number(reservation['quantity'])
+                           or _ms(payload['created_at']) != created for _, payload in (first, last))
+                    or not any(p['start_ms'] <= created < p['end_ms'] and owner in p.get('strategy_ids', [])
+                               and p.get('symbol_universe_complete') is True
+                               and p.get('policy_revision') == reservation['revision']
+                               and symbol in p.get('symbols', []) for p in protocols)):
+                continue
+            if any(o['outcome'] in ('ok', 'order_identity_conflict') for o in signed[client]):
+                continue
+            if any(o.get('source') == SOURCE and o.get('symbol') == symbol
+                   and o['outcome'] == 'order_not_found' and o.get('order_id') is None
+                   and _obj(o['raw_payload']) == {} and o.get('payload_sha256') == _digest({})
+                   and re.fullmatch(r'[0-9a-f]{64}', o.get('credential_fingerprint') or '')
+                   and _ms(o['observed_at']) >= _ms(last[0]['observed_at']) for o in signed[client]):
+                verified[client] = owner, symbol
+        except (ValueError, TypeError, KeyError, InvalidOperation):
+            continue
+    return verified
+
+
 def project_activity_evidence(reservations, observations, fills, cursors, facts,
                               account_id, start_ms, end_ms, strategy_ids, *, audit_healthy=True,
-                              verified_reductions=(), verified_openings=()):
+                              verified_reductions=(), verified_openings=(), verified_execution_owners=()):
     """Project exact ownership and real fill timestamps into a positive subset.
 
     ``None`` means no provable count, including unknown inactivity. A positive
@@ -201,12 +266,15 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
                           owned_entry_fills=None, verified_filled_entry_orders=None, coverage_complete=False,
                           source_id='entry-activity:unavailable', reasons=reasons[sid]) for sid in ids}
     reservations, observations, fills, cursors, facts = map(list, (reservations, observations, fills, cursors, facts))
+    protocols = _approved_protocols(facts, account_id)
+    unsubmitted = _verified_never_submitted(reservations, facts, observations, protocols, account_id, end_ms)
     # Captured intent facts retain released/deleted intents. Legacy snapshots help
     # exact positive attribution but do not establish historical protocol coverage.
     for fact in facts:
         if fact.get('account_id') == account_id and fact.get('kind') in ('intent', 'legacy_intent'):
             reservations.append(_obj(fact['payload']))
     expected_clients = {str(r['client_order_id']) for r in reservations if r.get('account_id') == account_id
+                        and r['client_order_id'] not in unsubmitted
                         and (r.get('created_at') is None or _ms(r['created_at']) < end_ms)}
     batches = []
     successful_clients = set()
@@ -232,22 +300,12 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
             pass
     if not batches or not expected_clients.issubset(successful_clients):
         gap('collection_watermark_missing')
-    boundary = {str(f['id']): f for f in facts
-                if f.get('account_id') == account_id and f.get('kind') == 'capture_boundary'}
     for sid in ids:
         windows = []
         required_cursors = []
         symbol_intervals = []
-        for fact in facts:
-            if fact.get('account_id') != account_id or fact.get('kind') != 'protocol_window':
-                continue
-            p = _obj(fact['payload'])
-            b = boundary.get(str(p.get('capture_boundary_id')))
-            if (b and fact.get('created_by') not in (None, 'trading_user')
-                    and p.get('all_entry_paths_before_submit') is True
-                    and sid in p.get('strategy_ids', []) and p.get('reviewed_by') and p.get('source_id')
-                    and type(p.get('start_ms')) is int and type(p.get('end_ms')) is int
-                    and _ms(b['observed_at']) <= p['start_ms'] < p['end_ms']):
+        for p in protocols:
+            if sid in p.get('strategy_ids', []):
                 left, right = max(start_ms, p['start_ms']), min(end_ms, p['end_ms'])
                 if left >= right:
                     continue
@@ -405,12 +463,20 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
         except (ValueError, TypeError, KeyError, InvalidOperation):
             gap('invalid_fill_evidence', (sid,))
     verified_reductions = frozenset(verified_reductions)
+    execution_owners = defaultdict(set)
+    for *key, owner in verified_execution_owners:
+        if owner in STRATEGIES:
+            execution_owners[tuple(key)].add(owner)
     for fill in fills:
         stamp = _ms(fill['trade_time_utc'])
         order_id = str(fill.get('order_id'))
         reduction = (account_id, fill['symbol'], str(fill['trade_id']), order_id, stamp)
         if (start_ms <= stamp < end_ms and reduction not in verified_reductions
                 and (fill['symbol'], order_id) not in seen_orders):
+            owners = execution_owners.get(reduction, set())
+            if len(owners) == 1:
+                gap('owned_fill_without_entry_intent', owners)
+                continue
             # Without signed reduce-only proof, require a fully covered flat replay.
             raw = dict(side=fill.get('side'), positionSide='BOTH', reduceOnly=False)
             if _entry_role(raw, fill, fills, cursors, facts, account_id, end_ms) is not False:
@@ -418,11 +484,13 @@ def project_activity_evidence(reservations, observations, fills, cursors, facts,
     # Zero is only available with complete protocol + observations + fill coverage.
     source_id = 'entry-activity:sha256:' + _digest([account_id, start_ms, end_ms, reservations,
                                                  observations, fills, cursors, facts,
-                                                 sorted(verified_reductions), sorted(verified_openings)])
+                                                 sorted(verified_reductions), sorted(verified_openings),
+                                                 sorted(verified_execution_owners)])
     return {sid: dict(account_id=account_id, start_ms=start_ms, end_ms=end_ms,
                       owned_entry_fills=(len(positive[sid]) if positive[sid] or not reasons[sid] else None),
                       verified_filled_entry_orders=(len(filled_orders[sid]) if filled_orders[sid]
                                                     or not reasons[sid] else None),
+                      verified_unsubmitted_symbols=sorted({symbol for owner, symbol in unsubmitted.values() if owner == sid}),
                       coverage_complete=not reasons[sid], source_id=source_id, reasons=reasons[sid]) for sid in ids}
 
 
@@ -598,7 +666,7 @@ async def collect_entry_activity(db, exchange, account_id, *, max_requests=100):
 
 
 async def read_activity_evidence(db, account_id, start_ms, end_ms, strategy_ids, *,
-                                 verified_reductions=(), verified_openings=()):
+                                 verified_reductions=(), verified_openings=(), verified_execution_owners=()):
     """Read immutable evidence only; database failure cannot become zero activity."""
     strategy_ids = tuple(strategy_ids)
     try:
@@ -625,7 +693,8 @@ WHERE NOT tgisinternal AND tgenabled='A' AND n.nspname='trading' AND
         healthy = bool(audit) and audit[0].get('healthy') is True
         return project_activity_evidence(reservations, observations, fills, cursors, facts,
                                          account_id, start_ms, end_ms, strategy_ids, audit_healthy=healthy,
-                                         verified_reductions=verified_reductions, verified_openings=verified_openings)
+                                         verified_reductions=verified_reductions, verified_openings=verified_openings,
+                                         verified_execution_owners=verified_execution_owners)
     except Exception:
         return {sid: dict(account_id=account_id, start_ms=start_ms, end_ms=end_ms,
                           owned_entry_fills=None, verified_filled_entry_orders=None, coverage_complete=False,

@@ -18,9 +18,10 @@ from apscheduler.triggers.cron import CronTrigger
 from ai_tuner.allocation.activity_evidence import read_activity_evidence
 from ai_tuner.allocation.capital_evidence import read_capital_evidence
 from ai_tuner.monitor.live_position_ownership import resolve_unclaimed_positions
+from ai_tuner.monitor.ordinary_execution_evidence import read_ordinary_executions
 from ai_tuner.monitor.protective_exit_evidence import read_protective_exits
 from ai_tuner.monitor.um_margin_evidence import SOURCE as UM_MARGIN_SOURCE, blocked_margin, read_um_margin
-from ai_tuner.monitor.trial_risk_evidence import covered_reservation_budget, mark_shock, review_criteria
+from ai_tuner.monitor.trial_risk_evidence import covered_reservation_budget, mark_shock, marked_unrealized_snapshot, review_criteria
 from shared.accounting.income_integrity import income_account_lock, require_income_integrity
 from shared.accounting.published_report import REPORT_VERSIONS
 from shared.accounting.report_reader import read_monthly_economic_report
@@ -321,7 +322,7 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                            start: datetime, end: datetime,
                            *, trial_start: datetime | None = None,
                            income_reader=read_trial_income,
-                           activity_reader=None, protective_exit_reader=None) -> dict:
+                           activity_reader=None, protective_exit_reader=None, ordinary_execution_reader=None) -> dict:
     """Collect one fixed trial window. All database statements are SELECTs."""
     if strategy not in TRIAL_STRATEGIES or not account or _utc(start) >= _utc(end):
         raise ValueError("invalid trial identity or window")
@@ -330,7 +331,7 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
         "window_start": _utc(start).isoformat(), "window_end": _utc(end).isoformat(),
         "policy": None, "reservations": None, "exchange": {"verified": False},
         "income": None, "signals": None, "entry_activity": None, "protective_exits": None,
-        "entry_activity_required": activity_reader is not None,
+        "ordinary_executions": None, "entry_activity_required": activity_reader is not None,
         "source_errors": [],
     }
     try:
@@ -392,6 +393,9 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
             result["remaining_lot_allocated_reserve_usdt"] = None
             result["um_margin"] = blocked_margin("position_ownership_incomplete")
             if result.get("ownership_complete") is True:
+                result["unrealized_position_evidence"] = marked_unrealized_snapshot(
+                    positions, result["owned_positions"], position_as_of_ms
+                )
                 result["um_margin"] = await read_um_margin(
                     exchange, positions, result["owned_positions"], position_as_of_ms
                 )
@@ -438,6 +442,18 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                 }
             except Exception as exc:
                 evidence["source_errors"].append("protective_exits:" + type(exc).__name__)
+        if ordinary_execution_reader is not None:
+            try:
+                report, reductions, owners = await ordinary_execution_reader(
+                    db, exchange, account, start_ms, end_ms
+                )
+                evidence["ordinary_executions"] = report
+                activity_inputs["verified_reductions"] = set(
+                    activity_inputs.get("verified_reductions", ())
+                ) | reductions
+                activity_inputs["verified_execution_owners"] = owners
+            except Exception as exc:
+                evidence["source_errors"].append("ordinary_executions:" + type(exc).__name__)
         if activity_reader is not None:
             try:
                 rows = await activity_reader(db, account, start_ms, end_ms, (strategy,), **activity_inputs)
@@ -676,6 +692,7 @@ class ReducedTrialEvaluator:
             "account_risk": evidence.get("account_risk"),
             "entry_activity": evidence.get("entry_activity"),
             "protective_exits": evidence.get("protective_exits"),
+            "ordinary_executions": evidence.get("ordinary_executions"),
             "allocated_capital_evidence": evidence.get("allocated_capital_evidence"),
             "decision_scope": "evidence_only_no_policy_write",
         }
@@ -697,20 +714,20 @@ class ReducedTrialEvaluator:
                                               strategy, start, end,
                                               trial_start=self.trial_starts.get(strategy),
                                               activity_reader=read_activity_evidence,
-                                              protective_exit_reader=read_protective_exits)
+                                              protective_exit_reader=read_protective_exits,
+                                              ordinary_execution_reader=read_ordinary_executions)
             evidence["cohort_ceiling"] = self.cohort_ceilings.get(
                 strategy, evidence.get("cohort_ceiling")
             )
             if self.account_risk_provider is not None:
                 evidence["account_risk"] = self.account_risk_provider()
-            if period == "weekly":
-                left = datetime.fromisoformat(evidence["window_start"])
-                right = datetime.fromisoformat(evidence["window_end"])
-                capital = await read_capital_evidence(
-                    self.db, self.account, int(left.timestamp() * 1000),
-                    int(right.timestamp() * 1000), (strategy,),
-                )
-                evidence["allocated_capital_evidence"] = capital[strategy]
+            left = datetime.fromisoformat(evidence["window_start"])
+            right = datetime.fromisoformat(evidence["window_end"])
+            capital = await read_capital_evidence(
+                self.db, self.account, int(left.timestamp() * 1000),
+                int(right.timestamp() * 1000), (strategy,),
+            )
+            evidence["allocated_capital_evidence"] = capital[strategy]
             assessment = assess_snapshot(evidence, now=now, weekly=period == "weekly")
             self._write_report(period, strategy, end, assessment, evidence)
             results.append(assessment)
