@@ -291,9 +291,6 @@ def assess_entry(
             or direction not in ("short", "long")):
         return invalid
     ratios = tuple(take_profit_ratios)
-    if not (ratios == (Decimal(1), Decimal(0)) or (
-            all(0 < ratio < 1 for ratio in ratios) and sum(ratios) < 1)):
-        return invalid
     if (direction == "short" and stop_price <= entry_price) or (
             direction == "long" and stop_price >= entry_price):
         return replace(invalid, reason="stop_not_protective", budget_inputs=inputs)
@@ -316,6 +313,9 @@ def assess_entry(
             span = max(value.adjusted() for value in values) - min(
                 value.as_tuple().exponent for value in values) + 1
             context.prec = max(context.prec, 4 * span + 16)
+            if not (ratios == (Decimal(1), Decimal(0)) or (
+                    all(0 < ratio < 1 for ratio in ratios) and sum(ratios) < 1)):
+                return invalid
             adverse_stop = stop_price * (Decimal(1) + pressure_slippage if direction == "short"
                                          else Decimal(1) - pressure_slippage)
             per_unit_loss = abs(adverse_stop - entry_price) + fee_rate * (entry_price + adverse_stop)
