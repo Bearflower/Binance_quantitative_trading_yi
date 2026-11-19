@@ -56,7 +56,9 @@ def test_shadow_audit_remote_step_has_valid_shell_structure():
     assert result.returncode == 0, result.stderr
     assert "root@43.156.242.184 +" not in script
     assert "--decision-db /root/trading_system/data/grid/grid_execution.sqlite3" in script
+    assert "--agg-db /var/lib/docker/volumes/trading_system_aggtrade-data/_data/aggtrades/ethusdt_aggtrades.sqlite" in script
     assert '"decision_states": report["decision_states"]' in script
+    assert '"market_sample_coverage_complete": report["market"]["sample_coverage_complete"]' in script
 
 
 def test_shadow_audit_changes_do_not_trigger_generic_trading_deployment():
