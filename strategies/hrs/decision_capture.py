@@ -280,10 +280,20 @@ def capture_cycle(function):
         previous_run = recorder.run_id
         now = datetime.now(timezone.utc)
         try:
-            snapshot = strategy_snapshot(strategy)
             provider = getattr(recorder, 'context_provider', None)
-            if callable(provider):
-                snapshot['financial_context'] = await provider()
+            financial = await provider() if callable(provider) else None
+            boundary = now
+            reconciled = isinstance(financial, dict) and 'scan_boundary' in financial
+            if reconciled:
+                from .decision_context import validate_scan_boundary
+                boundary = validate_scan_boundary(financial, requested_at=now,
+                    checked_at=datetime.now(timezone.utc))
+            snapshot = strategy_snapshot(strategy)
+            if financial is not None:
+                snapshot['financial_context'] = financial
+            if reconciled:
+                snapshot['requested_start_at'] = now
+                snapshot['snapshot_available_at'] = datetime.now(timezone.utc)
         except Exception as exc:
             failed_at = datetime.now(timezone.utc)
             await safe_record(recorder, 'context-' + uuid.uuid4().hex, 'scan_context_failure',
@@ -298,7 +308,7 @@ def capture_cycle(function):
                 recorder.run_id = previous_run
             raise
         try:
-            await recorder.begin(snapshot, now)
+            await recorder.begin(snapshot, boundary)
         except Exception:
             recorder.failed = True
             # A persistence outage cannot suppress existing position protection.

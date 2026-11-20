@@ -33,7 +33,7 @@ from ai_tuner.snapshots.repository import SnapshotRepository
 from .candidate_pool import CandidatePool
 from .executor import TradingExecutor, OpenResult, CloseOutcome
 from .position_exit_plan import validate_exit_plan
-from .decision_context import capture_financial_context, CLAIM_EVIDENCE_SELECT, decode_claim_evidence
+from .decision_context import capture_scan_financial_context, CLAIM_EVIDENCE_SELECT, decode_claim_evidence
 from .market_data import MarketDataProvider
 from .pattern import PatternRecognizer
 from .position_manager import PositionManager
@@ -309,7 +309,7 @@ class HRSStrategy(BaseStrategy):
         self.trading_executor.persist_fill = self._persist_entry_before_protection
         self.trading_executor.decision_recorder = getattr(self, 'decision_recorder', None)
         if getattr(self, 'decision_recorder', None) is not None:
-            self.decision_recorder.context_provider = lambda: capture_financial_context(self)
+            self.decision_recorder.context_provider = lambda: capture_scan_financial_context(self)
         # P1-8: 传入通知回调，使风控模块能在暂停/熔断时发送通知
         self.risk_manager = RiskManager(
             self.config,

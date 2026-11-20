@@ -175,3 +175,120 @@ def capture_configuration_identity(strategy_dir, config, metadata, *, params_pat
             metadata=dict(metadata), effective_config_hash=metadata['config_hash'])
     except (OSError, KeyError, TypeError, ValueError, yaml.YAMLError) as exc:
         raise ValueError('configuration_identity_unproven') from exc
+
+
+SCAN_BOUNDARY_VERSION = 'hrs_reconciled_scan_boundary_v1'
+
+
+def _scan_now():
+    return datetime.now(timezone.utc)
+
+
+def validate_scan_boundary(context, *, requested_at, checked_at):
+    """Bind a prospective scan boundary to its original committed parent.
+
+    Economic time may precede collection availability, but never the request
+    which started this prelude. Availability is retained and scoring waits for it.
+    """
+    from datetime import timedelta
+    from .equity_evidence import canonical
+    def aware(value):
+        if isinstance(value, str):
+            value = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError('scan_boundary_clock_unproven')
+        return value.astimezone(timezone.utc)
+    def obj(value):
+        return json.loads(value) if isinstance(value, str) else value
+    try:
+        marker = context['scan_boundary']
+        if not isinstance(marker, dict) or marker.get('version') != SCAN_BOUNDARY_VERSION:
+            raise ValueError('marker')
+        request, refresh_request, boundary, available, checked = map(aware, (
+            requested_at, marker['requested_at'], marker['as_of'], context['available_at'], checked_at))
+        parent_available = aware(marker['available_at'])
+        if (not request <= refresh_request <= boundary <= parent_available <= available <= checked
+                or checked-request > timedelta(seconds=120)
+                or checked-boundary > timedelta(seconds=120)
+                or context.get('database_snapshot_coherent') is not True
+                or context.get('replay_bootstrap_ready') is not True):
+            raise ValueError('clock_or_snapshot')
+        parents = [p for p in context['equity_source_archives']
+                   if p.get('evidence_sha256') == marker['evidence_sha256']]
+        if len(parents) != 1:
+            raise ValueError('parent_identity')
+        parent = parents[0]
+        raw = obj(parent['payload'])
+        ledger = context['ledger_state']
+        state = obj(ledger['ledger_state'])
+        policy, gate = context['entry_policy'], context['equity_gate']
+        if (canonical(raw)[1] != marker['evidence_sha256']
+                or parent['account_id'] != raw['account_id'] or raw['account_id'] != policy['account_id']
+                or policy['strategy_id'] != 'hrs'
+                or parent['segment_id'] != raw['segment_id'] or raw['segment_id'] != ledger['segment_id']
+                or state['segment_id'] != ledger['segment_id']
+                or any(aware(value) != boundary for value in (parent['as_of'], raw['as_of'], state['as_of'], gate['as_of']))
+                or aware(parent['available_at']) != parent_available or aware(raw['available_at']) != parent_available
+                or type(marker['ledger_version']) is not int or marker['ledger_version'] <= 0
+                or marker['ledger_version'] != ledger['version'] or ledger['version'] != raw['result']['ledger_version']
+                or type(marker['policy_revision']) is not int or marker['policy_revision'] <= 0
+                or marker['policy_revision'] != policy['revision'] or policy['revision'] != gate['policy_revision']
+                or gate['evidence_sha256'] != marker['evidence_sha256']
+                or not aware(policy['effective_at']) <= boundary <= available < aware(policy['expires_at'])
+                or raw['source_collection'].get('complete') is not True
+                or raw['source_collection'].get('gaps') != []
+                or raw['income_report'].get('id_match_and_coverage_complete') is not True
+                or raw['income_report'].get('coverage_gaps') != []):
+            raise ValueError('source_binding')
+        from .margin_budget import HRS_OWNED, policy_margin_scope, validate_cash_fields, validate_cash_observation
+        if policy_margin_scope(policy) == HRS_OWNED:
+            if context.get('hrs_margin_scope') != HRS_OWNED:
+                raise ValueError('cash_scope')
+            validate_cash_fields(context)
+            validate_cash_observation(context, checked_at=checked,
+                observed_at=context['hrs_slot_inputs']['observed_at'])
+        for field in ('ready', 'allowed', 'reasons'):
+            if field != 'reasons' and type(raw['result'][field]) is not bool:
+                raise ValueError('gate_type')
+            if obj(gate[field]) != raw['result'][field]:
+                raise ValueError('gate_binding')
+        return boundary
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ValueError('scan_boundary_unproven') from exc
+
+
+async def capture_scan_financial_context(strategy):
+    """Refresh the ordinary collector before the scan, then capture fresh cash.
+
+    No policy, gate, sizing or ledger semantics change. A failure blocks scoring
+    through capture_cycle's existing maintenance path; no cached receipt replaces
+    a failed or superseded refresh.
+    """
+    service = getattr(strategy, 'equity_service', None)
+    if service is None:
+        return await capture_financial_context(strategy)
+    requested = _scan_now()
+    async def collect():
+        result = await service.refresh()
+        context = await capture_financial_context(strategy)
+        try:
+            parents = [p for p in context['equity_source_archives']
+                       if p.get('evidence_sha256') == result['evidence_sha256']]
+            if len(parents) != 1:
+                raise ValueError('parent')
+            for field in ('ready', 'allowed', 'reasons'):
+                observed = context['equity_gate'][field]
+                observed = json.loads(observed) if isinstance(observed, str) else observed
+                if observed != result[field] or (field != 'reasons' and type(result[field]) is not bool):
+                    raise ValueError('refresh_gate')
+            stamp = lambda value: value.isoformat() if isinstance(value, datetime) else value
+            marker = dict(version=SCAN_BOUNDARY_VERSION, requested_at=requested.isoformat(),
+                as_of=stamp(result['as_of']), available_at=stamp(parents[0]['available_at']),
+                evidence_sha256=result['evidence_sha256'], ledger_version=result['ledger_version'],
+                policy_revision=result['policy_revision'])
+            context = dict(context, scan_boundary=marker)
+            validate_scan_boundary(context, requested_at=requested, checked_at=_scan_now())
+            return context
+        except (KeyError, TypeError, ValueError, AttributeError) as exc:
+            raise ValueError('scan_boundary_refresh_unproven') from exc
+    return await asyncio.wait_for(collect(), timeout=120)
