@@ -1,5 +1,6 @@
 """Prospective scan clocks require original reconciled receipts, never backdating."""
 import copy
+import os
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -244,6 +245,7 @@ from tests.test_strategies.test_hrs_equity_service import setup as equity_servic
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize('damage', [False, True])
+@pytest.mark.skipif(not os.getenv('HRS_TEST_POSTGRES_DSN'), reason='isolated PostgreSQL DSN required')
 async def test_real_postgres_collector_parent_is_bound_to_scan_context(equity_service_setup, monkeypatch, damage):
     """Real collector writes/hash/ledger and readonly SQL; stub exchange facts only."""
     import strategies.hrs.decision_context as module
