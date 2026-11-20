@@ -199,7 +199,7 @@ def snapshot_evidence_sources(portal):
     """Resolve only manifest-bound archive files; cache belongs to this portal."""
     existing=getattr(portal,'_hrs_archive_sources_cache',None)
     if existing is not None:
-        _verify_funding_inventory_scope(portal,existing.metadata)
+        _verify_funding_inventory_scope(portal,getattr(existing,'metadata',existing))
         return existing
     portal._require_dataset('raw_hrs_evidence.json')
     raw=portal._read_json('raw_hrs_evidence.json')
