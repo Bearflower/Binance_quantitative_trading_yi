@@ -1,11 +1,11 @@
-name: Release scoped HRS flat reconciliation
+name: Release scoped HRS pool-circuit denial evidence
 on:
   workflow_dispatch:
 permissions:
   contents: read
   packages: write
 concurrency:
-  group: hrs-flat-reconcile-production
+  group: hrs-pool-denial-production
   cancel-in-progress: false
 jobs:
   release:
@@ -21,18 +21,18 @@ jobs:
         options: >-
           --health-cmd pg_isready --health-interval 5s --health-timeout 3s --health-retries 10
     env:
-      RISK_TEST_DSN: postgresql://postgres:hrs-test-only@127.0.0.1/risk_tests
       HRS_TEST_POSTGRES_DSN: postgresql://postgres:hrs-test-only@127.0.0.1/hrs_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: Verify HRS reconciliation and inspection with PostgreSQL
+      - name: Verify HRS signal attribution and decision capture with PostgreSQL
         run: |
           pip install -r strategies/hrs/requirements.txt pytest pytest-asyncio apscheduler
-          PGPASSWORD=hrs-test-only psql -h 127.0.0.1 -U postgres -d hrs_test -v ON_ERROR_STOP=1 -c 'CREATE ROLE trading_user NOLOGIN' -c 'CREATE DATABASE risk_tests'
-          python -m pytest -q tests/test_risk/test_policy_postgres.py tests/test_risk/test_risk_branches.py tests/test_risk/test_entry_policy.py tests/test_shared/test_entry_risk_reconcile_flat.py tests/test_strategies/test_hrs_ghost_position_guard.py tests/test_strategies/test_hrs_admission_wiring.py tests/test_ai_tuner_mvp/test_hrs_minimum_policy_inspection.py
+          PGPASSWORD=hrs-test-only psql -h 127.0.0.1 -U postgres -d hrs_test -v ON_ERROR_STOP=1 -c 'CREATE ROLE trading_user NOLOGIN'
+          python -m pytest -q strategies/hrs/tests/test_r9_signal_attribution.py strategies/hrs/tests/test_rk1_signal_db_alert.py strategies/hrs/tests/test_lv_rm_empty_pool_execution.py tests/test_strategies/test_hrs_decision_capture.py tests/test_strategies/test_hrs_acceptance_report.py tests/test_shared/test_hrs_projection_submission.py tests/test_strategies/test_hrs_equity_runtime_permissions.py tests/test_strategies/test_hrs_ghost_position_guard.py
+          PYTHONPATH=. python deployment/hrs-pool-denial/replay.py
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -45,18 +45,17 @@ jobs:
         id: image
         with:
           context: .
-          file: deployment/hrs-flat-reconcile/Dockerfile
+          file: deployment/hrs-pool-denial/Dockerfile
           push: true
-          tags: ghcr.io/bearflower/trading-hrs:flat-reconcile-${{ github.sha }}
+          tags: ghcr.io/bearflower/trading-hrs:pool-denial-${{ github.sha }}
       - name: Package reviewed HRS activation
         run: |
           python - <<'PY'
           import hashlib,json,os,pathlib,shutil
           root = pathlib.Path('.')
-          target = pathlib.Path(os.environ['RUNNER_TEMP'])/'hrs-flat-reconcile'
-          paths = ['deployment/hrs-flat-reconcile/activate.py', 'release/hrs-execution/deploy_optimization.py',
-                   'shared/entry_risk_policy.py', 'shared/position_ownership.py', 'strategies/hrs/strategy.py',
-                   'ai_tuner/ops/hrs_acceptance.py',
+          target = pathlib.Path(os.environ['RUNNER_TEMP'])/'hrs-pool-denial'
+          paths = ['deployment/hrs-pool-denial/activate.py', 'release/hrs-execution/deploy_optimization.py',
+                   'deployment/hrs-pool-denial/replay.py', 'strategies/hrs/strategy.py',
                    'scripts/database_permissions.py', 'database/postgres/permissions.json', 'VERSION']
           files = {}
           for name in paths:
@@ -76,8 +75,8 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H 43.156.242.184 >> ~/.ssh/known_hosts
-          RELEASE_DIR="/root/trading_system/.deploy_tmp/hrs-flat-reconcile-$GITHUB_SHA"
+          RELEASE_DIR="/root/trading_system/.deploy_tmp/hrs-pool-denial-$GITHUB_SHA"
           ssh -o ConnectTimeout=15 root@43.156.242.184 "mkdir -m 700 -p $RELEASE_DIR"
-          tar -C "$RUNNER_TEMP/hrs-flat-reconcile" -czf "$RUNNER_TEMP/hrs-flat-reconcile.tar.gz" .
-          scp -o ConnectTimeout=15 "$RUNNER_TEMP/hrs-flat-reconcile.tar.gz" "root@43.156.242.184:$RELEASE_DIR/bundle.tar.gz"
-          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 "tar -xzf $RELEASE_DIR/bundle.tar.gz -C $RELEASE_DIR && PYTHONPATH=$RELEASE_DIR/release/hrs-execution python3 $RELEASE_DIR/deployment/hrs-flat-reconcile/activate.py $GITHUB_SHA $DIGEST $RELEASE_DIR"
+          tar -C "$RUNNER_TEMP/hrs-pool-denial" -czf "$RUNNER_TEMP/hrs-pool-denial.tar.gz" .
+          scp -o ConnectTimeout=15 "$RUNNER_TEMP/hrs-pool-denial.tar.gz" "root@43.156.242.184:$RELEASE_DIR/bundle.tar.gz"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 "tar -xzf $RELEASE_DIR/bundle.tar.gz -C $RELEASE_DIR && PYTHONPATH=$RELEASE_DIR/release/hrs-execution python3 $RELEASE_DIR/deployment/hrs-pool-denial/activate.py $GITHUB_SHA $DIGEST $RELEASE_DIR"
