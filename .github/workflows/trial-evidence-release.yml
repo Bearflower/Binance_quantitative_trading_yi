@@ -1,13 +1,12 @@
-name: Release AI Tuner evidence and 5 percent PM budget
+name: Release AI Tuner signed recovery tails and historical execution roles
 on:
   workflow_dispatch:
 permissions:
   contents: read
   packages: write
 concurrency:
-  group: deploy-${{ github.ref }}
+  group: trial-tail-proof-production
   cancel-in-progress: false
-  queue: max
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -36,30 +35,35 @@ jobs:
           PGPASSWORD=evidence-test-only psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE capital_history_tests'
           PGPASSWORD=evidence-test-only psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE account_risk_tests'
           PGPASSWORD=evidence-test-only psql -h 127.0.0.1 -U postgres -c 'CREATE DATABASE entry_activity_tests'
-          python -m pytest -q tests/test_allocation_remediation ai_tuner/allocation/tests/test_shadow_allocation.py ai_tuner/tests/test_account_risk.py ai_tuner/tests/test_evidence_jobs.py ai_tuner/tests/test_reduced_trial.py tests/test_accounting/test_ledger_publication.py ai_tuner/allocation/tests/test_monthly_job.py ai_tuner/tests/test_income_fact_lag.py ai_tuner/tests/test_income_reconciler.py ai_tuner/tests/test_auto_apply.py ai_tuner/tests/test_llm_client.py
+          python -m pytest -q tests/test_allocation_remediation ai_tuner/allocation/tests/test_shadow_allocation.py ai_tuner/tests/test_account_risk.py ai_tuner/tests/test_evidence_jobs.py ai_tuner/tests/test_live_position_ownership.py ai_tuner/tests/test_reduced_trial.py ai_tuner/tests/test_trial_risk_evidence.py ai_tuner/tests/test_um_margin_evidence.py ai_tuner/tests/test_protective_exit_evidence.py ai_tuner/tests/test_hrs_closed_lot.py ai_tuner/tests/test_ordinary_execution_evidence.py tests/test_accounting/test_ledger_publication.py ai_tuner/allocation/tests/test_monthly_job.py ai_tuner/tests/test_income_fact_lag.py ai_tuner/tests/test_income_reconciler.py ai_tuner/tests/test_auto_apply.py ai_tuner/tests/test_llm_client.py
+          python -m pytest -q tests/test_strategies/test_new_coin_recovery_evidence.py tests/test_strategies/test_new_coin_recovery_proof.py tests/test_strategies/test_new_coin_recovery_identity.py tests/test_strategies/test_new_coin_state_restore.py
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Record immutable release revision
-        run: echo "GIT_SHA=$GITHUB_SHA" >> VERSION
+        run: |
+          echo "GIT_SHA=$GITHUB_SHA" >> VERSION
+          printf 'DEPLOY_ID=%08X\n' "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" >> VERSION
       - uses: docker/build-push-action@v5
         id: image
         with:
           context: .
-          file: deployment/trial-evidence/Dockerfile
+          file: deployment/trial-tail-proof/Dockerfile
           push: true
-          tags: ghcr.io/bearflower/trading-ai-tuner:trial-evidence-${{ github.sha }}
+          tags: ghcr.io/bearflower/trading-ai-tuner:trial-tail-proof-${{ github.sha }}
       - name: Package source proofs and additive migrations
         run: |
           python - <<'PY'
           import hashlib,json,os,pathlib,shutil
           root=pathlib.Path('.')
-          target=pathlib.Path(os.environ['RUNNER_TEMP'])/'trial-evidence'
-          paths=[p for folder in ('ai_tuner','shared') for p in pathlib.Path(folder).rglob('*') if p.is_file() and p.suffix in ('.py','.yaml') and '__pycache__' not in p.parts]
-          paths+=list(pathlib.Path('database/postgres/migrations').glob('2026-11-17-*.sql'))
-          paths+=[pathlib.Path('deployment/trial-evidence/activate.py')]
+          target=pathlib.Path(os.environ['RUNNER_TEMP'])/'trial-tail-proof'
+          paths=[pathlib.Path(p) for p in ('ai_tuner/monitor/evidence_jobs.py', 'ai_tuner/monitor/hrs_closed_lot.py',
+                 'ai_tuner/monitor/protective_exit_evidence.py', 'ai_tuner/monitor/ordinary_execution_evidence.py',
+                 'strategies/new_coin/recovery_evidence.py',
+                 'deployment/trial-tail-proof/activate.py', 'scripts/database_permissions.py',
+                 'database/postgres/permissions.json', 'VERSION')]
           files={}
           for path in paths:
               dest=target/path
@@ -77,8 +81,8 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           ssh-keyscan -H 43.156.242.184 >> ~/.ssh/known_hosts
-          ssh -o ConnectTimeout=15 root@43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA"
-          tar -C "$RUNNER_TEMP/trial-evidence" -czf "$RUNNER_TEMP/trial-evidence.tar.gz" .
-          scp -o ConnectTimeout=15 "$RUNNER_TEMP/trial-evidence.tar.gz" "root@43.156.242.184:/root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA/bundle.tar.gz"
-          ssh -o ConnectTimeout=15 root@43.156.242.184 "tar -xzf /root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA/bundle.tar.gz -C /root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA"
-          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 python3 - "$GITHUB_SHA" "$DIGEST" "/root/trading_system/.deploy_tmp/trial-evidence-$GITHUB_SHA" < deployment/trial-evidence/activate.py
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "mkdir -p /root/trading_system/.deploy_tmp/trial-tail-proof-$GITHUB_SHA"
+          tar -C "$RUNNER_TEMP/trial-tail-proof" -czf "$RUNNER_TEMP/trial-tail-proof.tar.gz" .
+          scp -o ConnectTimeout=15 "$RUNNER_TEMP/trial-tail-proof.tar.gz" "root@43.156.242.184:/root/trading_system/.deploy_tmp/trial-tail-proof-$GITHUB_SHA/bundle.tar.gz"
+          ssh -o ConnectTimeout=15 root@43.156.242.184 "tar -xzf /root/trading_system/.deploy_tmp/trial-tail-proof-$GITHUB_SHA/bundle.tar.gz -C /root/trading_system/.deploy_tmp/trial-tail-proof-$GITHUB_SHA"
+          ssh -o ConnectTimeout=15 -o ServerAliveInterval=15 root@43.156.242.184 python3 - "$GITHUB_SHA" "$DIGEST" "/root/trading_system/.deploy_tmp/trial-tail-proof-$GITHUB_SHA" < deployment/trial-tail-proof/activate.py

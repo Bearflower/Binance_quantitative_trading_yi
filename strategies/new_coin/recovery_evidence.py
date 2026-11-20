@@ -182,12 +182,26 @@ def _fill_facts(rows, symbol):
     return facts
 
 
+async def owned_recovery_reduction_algos(db, account, symbol, tp1_algo_id, opened_at):
+    """Find at most the next attributed reduction after the recorded opening."""
+    rows = await db.fetch_all("""
+        SELECT o.evidence->>'algo_id' AS algo_id, min(f.trade_time_utc) AS first_fill
+        FROM trading.order_strategy_evidence o
+        JOIN trading.execution_fact_fill f USING (account_id,symbol,order_id)
+        WHERE o.account_id=$1 AND o.symbol=$2 AND o.strategy='new_coin'
+          AND o.source_kind='pm_algo_link' AND o.evidence->>'algo_id'<>$3
+          AND f.side='BUY' AND f.trade_time_utc>$4
+        GROUP BY 1 ORDER BY 2 LIMIT 2
+    """, account, symbol, str(tp1_algo_id), opened_at)
+    return tuple(_id(row['algo_id']) for row in rows)
+
+
 async def verify_tp1_tail(
     exchange: Any, *, symbol: str, entry_order_id: int, tp1_algo_id: int,
     opened_at: datetime, anchor: Decimal, entry_price: Decimal,
-    remaining: Decimal, now: datetime,
+    remaining: Decimal, now: datetime, additional_tp_algo_ids=(),
 ) -> bool:
-    """Prove one completed TP1 and an exchange-protected remaining short.
+    """Prove TP1 and an optional second attributed take-profit on one short.
 
     This is recovery evidence only. No order or exit state is modified.
     """
@@ -201,30 +215,48 @@ async def verify_tp1_tail(
         closed = anchor - remaining
         if closed <= 0 or _id(tp1_algo_id) != tp1_algo_id:
             return False
-        algo = await exchange.get_algo_order(tp1_algo_id)
-        if (algo.get('symbol') != symbol or _id(algo.get('algoId')) != tp1_algo_id
-                or algo.get('side') != 'BUY' or algo.get('positionSide') != 'BOTH'
-                or algo.get('orderType') != 'TAKE_PROFIT' or algo.get('algoStatus') != 'FINISHED'
-                or algo.get('reduceOnly') is not True or algo.get('closePosition') is True
-                or _positive(algo.get('quantity')) != closed):
-            return False
-        exit_id = _id(algo.get('actualOrderId'))
-        if exit_id == entry_order_id:
+        algo_ids = (tp1_algo_id, *additional_tp_algo_ids)
+        if len(algo_ids) > 2 or len(set(algo_ids)) != len(algo_ids):
             return False
         entry, entry_fills = await _filled_order(
             exchange, symbol, entry_order_id, 'SELL', False, anchor)
-        _, exit_fills = await _filled_order(exchange, symbol, exit_id, 'BUY', True, closed)
         first = min(fact[3] for fact in entry_fills.values())
         opened_ms = int(opened_at.timestamp() * 1000)
         now_ms = int(now.timestamp() * 1000)
-        if (abs(first - opened_ms) > 3_600_000 or entry_fills.keys() & exit_fills.keys()
-                or max(fact[3] for fact in entry_fills.values()) >= min(fact[3] for fact in exit_fills.values())
-                or max(fact[3] for fact in exit_fills.values()) > now_ms):
+        if abs(first - opened_ms) > 3_600_000:
+            return False
+        last = max(fact[3] for fact in entry_fills.values())
+        flow = dict(entry_fills)
+        total = Decimal(0)
+        used_orders = {entry_order_id}
+        for algo_id in algo_ids:
+            if _id(algo_id) != algo_id:
+                return False
+            algo = await exchange.get_algo_order(algo_id)
+            if (algo.get('symbol') != symbol or _id(algo.get('algoId')) != algo_id
+                    or algo.get('side') != 'BUY' or algo.get('positionSide') != 'BOTH'
+                    or algo.get('orderType') != 'TAKE_PROFIT' or algo.get('algoStatus') != 'FINISHED'
+                    or algo.get('reduceOnly') is not True or algo.get('closePosition') is True):
+                return False
+            exit_id = _id(algo.get('actualOrderId'))
+            if exit_id in used_orders:
+                return False
+            used_orders.add(exit_id)
+            quantity = _positive(algo.get('quantity'))
+            total += quantity
+            if total > closed:
+                return False
+            _, exit_fills = await _filled_order(exchange, symbol, exit_id, 'BUY', True, quantity)
+            if flow.keys() & exit_fills.keys() or last >= min(fact[3] for fact in exit_fills.values()):
+                return False
+            last = max(fact[3] for fact in exit_fills.values())
+            flow.update(exit_fills)
+        if total != closed or last > now_ms:
             return False
         all_fills = await exchange.get_user_trades(
             symbol, start_time=first, end_time=now_ms, limit=1000)
         if (not isinstance(all_fills, list) or len(all_fills) >= 1000
-                or _fill_facts(all_fills, symbol) != entry_fills | exit_fills):
+                or _fill_facts(all_fills, symbol) != flow):
             return False
         entry_price = _positive(entry_price)
         tolerance = entry_price * Decimal('0.000001')
@@ -250,7 +282,7 @@ async def verify_tp1_tail(
         if not isinstance(active, list):
             return False
         active_ids = {_id(order.get('algoId')) for order in active}
-        if tp1_algo_id in active_ids or len(active_ids) != len(active):
+        if active_ids.intersection(algo_ids) or len(active_ids) != len(active):
             return False
         return any(
             order.get('symbol') == symbol and order.get('side') == 'BUY'

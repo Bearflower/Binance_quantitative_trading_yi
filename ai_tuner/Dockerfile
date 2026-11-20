@@ -36,7 +36,7 @@ COPY strategies/btc_eth/config.yaml /app/strategies/btc_eth/config.yaml
 COPY strategies/btc_eth_aggressive/config.yaml /app/strategies/btc_eth_aggressive/config.yaml
 COPY strategies/grid/config.yaml /app/strategies/grid/config.yaml
 COPY strategies/hrs/config.yaml /app/strategies/hrs/config.yaml
-COPY strategies/new_coin/config.yaml /app/strategies/new_coin/config.yaml
+COPY strategies/new_coin/config.yaml strategies/new_coin/recovery_evidence.py /app/strategies/new_coin/
 
 # 构建期验证独立快照采集入口已打包；运行时由 ai-tuner-snapshot 服务调用
 RUN python -c "import ai_tuner.snapshots.cli; import ai_tuner.funding_schedule.cli"

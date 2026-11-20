@@ -183,3 +183,37 @@ async def test_recovered_tp1_requires_exact_filled_batch_and_tail_stop(gap):
     )
 
     assert result == (gap is None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('wrong', (None, 'foreign', 'protection', 'duplicate', 'chronology'))
+async def test_two_owned_take_profits_reconcile_the_actual_remaining_short(wrong):
+    from strategies.new_coin.recovery_evidence import verify_tp1_tail
+
+    api = exchange()
+    entry = {**ENTRY, 'positionSide':'BOTH', 'reduceOnly':False}
+    entry_fill = {**FILL, 'positionSide':'BOTH'}
+    closed = [{**entry, 'orderId':141975+i, 'side':'BUY', 'executedQty':q, 'reduceOnly':True}
+              for i,q in enumerate(('0.98','1.30'))]
+    closes = [{**entry_fill, 'id':9002+i, 'orderId':141975+i, 'side':'BUY','qty':q,
+               'time':FILL['time']+(i+1)*1000} for i,q in enumerate(('0.98','1.30'))]
+    algos = [{**TP1,'algoId':TP1['algoId']+2*i,'algoStatus':'FINISHED','actualOrderId':str(141975+i),
+              'quantity':q,'positionSide':'BOTH'} for i,q in enumerate(('0.98','1.30'))]
+    stop = {**STOP,'quantity':'1.00','positionSide':'BOTH'}
+    api.get_position.return_value[0].update(positionAmt='-1.00',positionSide='BOTH')
+    extras = []
+    extra_id = TP1['algoId']+2
+    if wrong=='foreign': extras=[{**closes[-1], 'id':9010,'orderId':141977}]
+    if wrong=='protection': stop['quantity']='0.99'
+    if wrong=='duplicate': extra_id=TP1['algoId']
+    if wrong=='chronology': closes[-1]['time']=closes[0]['time']
+    api.get_order.side_effect = lambda symbol, order_id: {row['orderId']:row for row in [entry,*closed]}[order_id]
+    def fills(symbol, *, order_id=None, **kwargs):
+        return [row for row in (entry_fill,*closes,*extras) if order_id is None or str(row['orderId'])==order_id]
+    api.get_user_trades.side_effect = fills
+    api.get_algo_order.side_effect = lambda identity: {row['algoId']:row for row in algos}[identity]
+    api.get_open_algo_orders.return_value = [stop]
+    proof = await verify_tp1_tail(api,symbol='PFEUSDT',entry_order_id=141970,tp1_algo_id=TP1['algoId'],
+        opened_at=OPENED,anchor=Decimal('3.28'),entry_price=Decimal('30.41271340'),remaining=Decimal('1.00'),now=NOW,
+        additional_tp_algo_ids=(extra_id,))
+    assert proof == (wrong is None)

@@ -7,7 +7,7 @@ import json
 import os
 import tempfile
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -21,6 +21,7 @@ from ai_tuner.monitor.account_risk import collect_account_risk
 from ai_tuner.monitor.reduced_trial import BEIJING, NotificationState
 from shared.accounting.pm_equity_bridge import observe_pm_equity
 from shared.accounting.published_report import read_published_report
+from strategies.new_coin.recovery_evidence import owned_recovery_reduction_algos, verify_tp1_tail
 
 
 def atomic_report(path: Path, value: dict):
@@ -135,7 +136,7 @@ class EvidenceJobs:
                        'as_of': datetime.now(BEIJING).isoformat(), 'positions': []}
         try:
             rows = await self.db.fetch_all(
-                """SELECT p.symbol, p.position_id,
+                """SELECT p.symbol, p.position_id, p.quantity, p.entry_price, p.opened_at,
                           p.metadata->>'entry_order_id' AS entry_order_id,
                           p.metadata->>'tp1_algo_id' AS tp1_algo_id,
                           state_data::jsonb->'positions'->p.symbol->>'recovery_position_id'
@@ -152,7 +153,7 @@ class EvidenceJobs:
                 detail = dict(symbol=row['symbol'], position_id=row['position_id'],
                               tp1_algo_id=row['tp1_algo_id'], status='BLOCKED_DATA')
                 try:
-                    detail.update(await asyncio.wait_for(self._inspect_new_coin_tp1(row), timeout=5))
+                    detail.update(await asyncio.wait_for(self._inspect_new_coin_tp1(row), timeout=18))
                 except Exception as exc:
                     detail['reason'] = 'tp1_evidence:' + type(exc).__name__
                 observation['positions'].append(detail)
@@ -194,8 +195,30 @@ class EvidenceJobs:
             return {'status': 'BLOCKED_DATA', 'reason': 'tp1_order_unverified'}
         recovered = (row['recovered_position_id'] == row['position_id']
                      and row['recovery_tp1_evidence'] == 'verified_tail')
-        return {'status': 'RECOVERY_TAIL_VERIFIED' if recovered else 'WAIT_RECOVERY',
-                'tp1_order_id': actual}
+        detail = {'tp1_order_id': actual}
+        opened = row['opened_at']
+        if not isinstance(opened, datetime):
+            return dict(detail, status='BLOCKED_DATA', reason='opening_time_unverified')
+        opened = opened if opened.tzinfo else opened.replace(tzinfo=timezone.utc)
+        account = self.budget['account_id']
+        live, account_positions = await asyncio.gather(
+            self.pm.get_position(symbol), self.pm.get_um_account_positions())
+        amounts = [[Decimal(str(p['positionAmt'])) for p in view if p['symbol']==symbol
+                    and Decimal(str(p['positionAmt'])) != 0 and p.get('positionSide')=='BOTH']
+                   for view in (live,account_positions)]
+        if len(amounts[0]) != 1 or amounts[0] != amounts[1] or amounts[0][0] >= 0:
+            return dict(detail, status='BLOCKED_DATA', reason='tail_inventory_unverified')
+        remaining = -amounts[0][0]
+        extra = await owned_recovery_reduction_algos(self.db,account,symbol,int(tp1),opened)
+        verified = await verify_tp1_tail(
+            self.pm, symbol=symbol, entry_order_id=int(entry), tp1_algo_id=int(tp1),
+            opened_at=opened, anchor=row['quantity'], entry_price=row['entry_price'], remaining=remaining,
+            now=datetime.now(timezone.utc), additional_tp_algo_ids=extra)
+        if not verified:
+            return dict(detail, status='BLOCKED_DATA', reason='signed_tail_or_protection_unverified')
+        return dict(detail, status='RECOVERY_TAIL_VERIFIED' if recovered else 'WAIT_RECOVERY',
+                    tail_signed_verified=True, remaining_quantity=str(remaining),
+                    additional_tp_algo_ids=list(extra))
 
     async def sample_activity(self):
         result = await collect_entry_activity(self.db, self.pm, self.budget['account_id'],

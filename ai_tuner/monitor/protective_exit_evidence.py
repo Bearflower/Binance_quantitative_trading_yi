@@ -128,7 +128,7 @@ async def read_protective_exits(db, exchange, account_id, start_ms, end_ms):
             except Exception as exc:
                 return None, dict(symbol=row['symbol'], order_id=str(row['order_id']),
                                   reason='protective_exit_lookup:' + type(exc).__name__)
-            if link['strategy'] == 'hrs' and link['kind'] not in _STOP_TYPES:
+            if link['strategy'] == 'hrs':
                 try:
                     lot = await asyncio.wait_for(
                         read_closed_lot(db, exchange, account_id, link, algo, trades), 8)

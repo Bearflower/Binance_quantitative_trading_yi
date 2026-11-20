@@ -28,7 +28,7 @@ from shared.utils import to_aware_utc
 from .scoring_engine import ScoringEngine, ScoringResult
 from .pattern import PatternRecognizer
 from .detector import ListingDetector
-from .recovery_evidence import verify_tp1_tail
+from .recovery_evidence import owned_recovery_reduction_algos, verify_tp1_tail
 from .executor import (
     TradingExecutor, derive_reached_targets, _PRICE_FRESH_DEFAULT_SECONDS,
 )
@@ -2714,6 +2714,9 @@ class NewCoinStrategy(BaseStrategy):
         if not all(tracking.get(key) for key in keys):
             return 'missing_batch_identity'
         try:
+            extra = await asyncio.wait_for(owned_recovery_reduction_algos(
+                executor.db, os.getenv('TRADE_ACCOUNT_ID', 'default'), symbol,
+                tracking['recovery_tp1_algo_id'], tracking['entry_time']), timeout=4)
             verified = await asyncio.wait_for(
                 verify_tp1_tail(
                     executor.binance_api, symbol=symbol,
@@ -2722,6 +2725,7 @@ class NewCoinStrategy(BaseStrategy):
                     opened_at=tracking['entry_time'], anchor=Decimal(str(anchor)),
                     entry_price=Decimal(str(tracking['entry_price'])),
                     remaining=Decimal(str(remaining)), now=datetime.now(timezone.utc),
+                    additional_tp_algo_ids=extra,
                 ),
                 timeout=8,
             )

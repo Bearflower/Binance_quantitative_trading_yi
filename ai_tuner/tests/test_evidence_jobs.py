@@ -149,14 +149,20 @@ async def test_valuation_observations_keep_valid_and_failed_evidence(tmp_path, m
      ('FINISHED', True, False, 'BLOCKED_DATA')],
 )
 async def test_new_coin_progress_requires_recovered_state_and_signed_tp1(
-        tmp_path, algo_status, recovered, reduce_only, expected):
+        tmp_path, monkeypatch, algo_status, recovered, reduce_only, expected):
     obj = job(tmp_path)
     row = dict(symbol='ETNUSDT', position_id='ETNUSDT_320067',
-               entry_order_id='320067', tp1_algo_id='4569',
+               entry_order_id='320067', tp1_algo_id='4569', quantity='0.29',
+               opened_at=datetime(2026,11,19,tzinfo=BEIJING), entry_price='338.52',
                recovered_position_id='ETNUSDT_320067' if recovered else None,
                recovery_tp1_evidence='verified_tail' if recovered else None)
     obj.db = SimpleNamespace(fetch_all=AsyncMock(return_value=[row]))
+    monkeypatch.setattr(m,'verify_tp1_tail',AsyncMock(return_value=True))
+    monkeypatch.setattr(m,'owned_recovery_reduction_algos',AsyncMock(return_value=(4572,)))
+    position = [dict(symbol='ETNUSDT',positionAmt='-0.21',positionSide='BOTH')]
     obj.pm = SimpleNamespace(
+        get_position=AsyncMock(return_value=position),
+        get_um_account_positions=AsyncMock(return_value=position),
         get_algo_order=AsyncMock(return_value=dict(
             algoId=4569, symbol='ETNUSDT', algoStatus=algo_status,
             orderType='TAKE_PROFIT', side='BUY', positionSide='BOTH',
@@ -170,6 +176,9 @@ async def test_new_coin_progress_requires_recovered_state_and_signed_tp1(
     result = await obj.sample_new_coin_recovery()
 
     assert result['positions'][0]['status'] == expected
+    if expected in ('WAIT_RECOVERY','RECOVERY_TAIL_VERIFIED'):
+        assert result['positions'][0]['tail_signed_verified'] is True
+        assert result['positions'][0]['additional_tp_algo_ids'] == [4572]
     assert json.loads((tmp_path/'new-coin-recovery-latest.json').read_text()) == result
     assert len(list((tmp_path/'new-coin-recovery').glob('*.json'))) == 1
     await obj.sample_new_coin_recovery()

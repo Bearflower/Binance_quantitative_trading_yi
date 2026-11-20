@@ -1,4 +1,4 @@
-"""Prove exact HRS take-profit lots from one-way executions and signed flat state."""
+"""Prove exact HRS protection exits from one-way executions and signed flat state."""
 
 from decimal import Decimal
 import hashlib
@@ -46,7 +46,7 @@ def _amount(value):
 
 
 def _history_sections(history, link, start_ms, flat_end_ms):
-    if (link['strategy'] != 'hrs' or link['kind'] not in ('TAKE_PROFIT', 'TAKE_PROFIT_MARKET')
+    if (link['strategy'] != 'hrs' or link['kind'] not in ('TAKE_PROFIT', 'TAKE_PROFIT_MARKET', 'STOP', 'STOP_MARKET')
             or not isinstance(history, list) or not 2 <= len(history) < 1000):
         raise ValueError('complete HRS history unavailable')
     seen = set()
@@ -150,5 +150,6 @@ async def read_closed_lot(db, exchange, account, link, algo, exit_trades):
     if not owners or owners[0]['owned'] is not True:
         raise ValueError('canonical HRS opening identity unavailable')
     lot.update(flat_fact_id=anchor['id'], signed_history_start_ms=start, signed_history_end_ms=right,
-               proof='hrs_tp_closed_lot_v1')
+               proof=('hrs_stop_closed_lot_v1' if link['kind'] in ('STOP', 'STOP_MARKET')
+                      else 'hrs_tp_closed_lot_v1'))
     return lot
