@@ -490,7 +490,9 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
                 return dict(symbol='BTCUSDT',markPrice='99',time=int(clock[0].timestamp()*1000),nextFundingTime=int((due if clock[0]<due else due+timedelta(days=1)).timestamp()*1000))
             if path in ('/fapi/v1/fundingInfo','/fapi/v1/exchangeInfo'):return funding_source_response(path)
             assert path=='/fapi/v1/markPriceKlines'
-            return [[at,'100','100','99','99','0',at+59999]
+            # 130.78 makes the original gap drawdown just below6%; two
+            # genuine late opening fees move its revalued path above6%.
+            return [[at,'100','130.78' if repair_damage=='late_income_latch' else '100','99','99','0',at+59999]
                 for at in range(params['startTime'],params['endTime']+1,60000)]
         api._request.side_effect=market_request
         api.get_order.return_value=dict(symbol='BTCUSDT',orderId=order_id,side='BUY',status='FILLED')
@@ -561,7 +563,7 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
                 assert first['history_complete'] is False and len(first['gap_endpoints'])==8
             clock[0]+=timedelta(seconds=30)
             repaired=await service.refresh()
-        if repair_damage and repair_damage not in ('many_gaps','late_income'):
+        if repair_damage and repair_damage not in ('many_gaps','late_income','late_income_latch'):
             assert not repaired['ready'] and not repaired['allowed'],repaired
             async with pool.acquire() as c:
                 assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM trading.hrs_equity_reconciliation WHERE account_id=$1 AND receipt->>'kind'='automatic_constant_mark_gap_v1')",account)
@@ -575,7 +577,7 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
             assert receipt['available_at']==clock[0].isoformat()
             assert len(receipt['http_receipts'])==1 and receipt['backfilled_points']>=2
             assert all([await c.fetchval('SELECT payload FROM trading.hrs_risk_equity_checkpoints WHERE account_id=$1 AND checkpoint_id=$2',account,row['checkpoint_id'])==row['payload'] for row in original_points])
-        if repair_damage=='late_income':
+        if repair_damage in ('late_income','late_income_latch'):
             old_receipt=revision['receipt'];old_units=receipt['conservative_bounds'][0]['source_units']
             original_records=list(api.get_user_trades.return_value)
             records=[dict(symbol='BTCUSDT',id=i,orderId=i,side=side,qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((entered+timedelta(hours=1,seconds=i)).timestamp()*1000)) for i,side in ((82,'BUY'),(83,'SELL'))]
@@ -587,12 +589,24 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
             api.get_order.side_effect=lambda symbol,identity:dict(symbol=symbol,orderId=identity,side='SELL' if identity==83 else 'BUY',status='FILLED')
             clock[0]+=timedelta(seconds=30)
             reconciled=await service.refresh()
-            assert reconciled['ready'] and reconciled['allowed'],reconciled
+            assert reconciled['ready'] and reconciled['allowed'] is (repair_damage!='late_income_latch'),reconciled
+            if repair_damage=='late_income_latch':
+                assert 'inception_segment_drawdown_latched' in reconciled['reasons']
             assert reconciled.get('reconciliation_receipt_sha256')
             async with pool.acquire() as c:
                 assert await c.fetchval('SELECT receipt FROM trading.hrs_equity_reconciliation WHERE account_id=$1 AND receipt_sha256=$2',account,revision['receipt_sha256'])==old_receipt
+                latest=await c.fetchrow('SELECT receipt,after_state FROM trading.hrs_equity_reconciliation WHERE account_id=$1 ORDER BY after_state_version DESC LIMIT 1',account)
+                from strategies.hrs.equity_evidence import canonical
+                final_receipt=json.loads(latest['receipt']);after=json.loads(latest['after_state'])
+                assert final_receipt['after_gate_sha256']==canonical(after['gate'])[1]
+                if repair_damage=='late_income_latch':
+                    assert after['gate']['rolling_latched'] is True
                 parent=json.loads(await c.fetchval('SELECT payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND evidence_sha256=$2',account,reconciled['evidence_sha256']))
                 active=parent['history_gap_bounds']
+                if repair_damage=='late_income_latch':
+                    assert final_receipt['gap_bounds_valuation_sha256']==active['valuation_sha256']
+                    assert final_receipt['gap_bounds_receipts']==sorted(item['receipt_sha256'] for item in active['receipts'])
+                    assert datetime.fromisoformat(final_receipt['gap_bounds_valuation_available_at'])<=datetime.fromisoformat(final_receipt['available_at'])
                 assert all(bound['source_units']!=old_units for bound in active['bounds'])
                 assert active['valuation']['ledger_state']['units']==active['bounds'][0]['source_units']
                 assert datetime.fromisoformat(active['bounds'][0]['valuation_available_at'])>datetime.fromisoformat(active['bounds'][0]['source_available_at'])
@@ -940,3 +954,8 @@ async def test_automatic_repair_batches_leave_gate_denied_until_all_owned_gaps_a
 @pytest.mark.asyncio
 async def test_late_opening_income_reconciliation_revalues_original_bounds_with_new_units(setup):
     await test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,False,False,repair_damage='late_income')
+
+
+@pytest.mark.asyncio
+async def test_late_income_bound_latch_receipt_matches_persisted_final_gate(setup):
+    await test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,False,False,repair_damage='late_income_latch')

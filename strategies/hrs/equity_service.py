@@ -1088,7 +1088,17 @@ class HrsEquityService:
                 if bound_state!=rebuilt.gate.state:
                     bound_gate=evaluate_loss_gate(bound_state,rebuilt.ledger.checkpoint,
                         self._gate_history(list(rebuilt.checkpoints),fills,orders,rebuilt.ledger.inception),allow_inception_segment=self.allow_inception)
-                    rebuilt=RebuiltHistory(rebuilt.ledger,bound_gate,rebuilt.checkpoints,rebuilt.receipt)
+                    bound_proof=evidence.get('history_gap_bounds')
+                    if bound_proof is None:
+                        raise EvidenceBlocked('reconciliation_gap_bounds_missing')
+                    # This receipt has not been appended yet. Bind its final
+                    # gate and the exact newly available conservative proof.
+                    final_receipt=dict(rebuilt.receipt,available_at=self._now(),
+                        after_gate_sha256=canonical(bound_gate.state.to_dict())[1],
+                        gap_bounds_receipts=sorted(item['receipt_sha256'] for item in bound_proof['receipts']),
+                        gap_bounds_valuation_sha256=bound_proof['valuation_sha256'],
+                        gap_bounds_valuation_available_at=bound_proof['valuation_available_at'])
+                    rebuilt=RebuiltHistory(rebuilt.ledger,bound_gate,rebuilt.checkpoints,final_receipt)
                 stored=await activate_reconciliation(connection,self.account,stored,rebuilt)
                 gate=rebuilt.gate
                 receipt_sha=canonical(rebuilt.receipt)[1]
