@@ -29,6 +29,7 @@ class GateHistory:
     complete_from: datetime
     complete_through: datetime
     complete: bool
+    daily_complete: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -146,7 +147,9 @@ def evaluate_loss_gate(previous: LossGateState | None, current: EquityCheckpoint
             return invalid("conflicting_daily_origin")
         origin_nav = state.day_origin_nav
     coverage_valid = (history.complete is True and history.complete_through == current.as_of)
-    daily_valid = (origin_nav is not None and coverage_valid and history.complete_from <= origin_at)
+    daily_coverage = history.complete if history.daily_complete is None else history.daily_complete
+    daily_valid = (origin_nav is not None and daily_coverage is True and history.complete_through == current.as_of
+                   and history.complete_from <= origin_at)
     reasons = []
     if not daily_valid:
         reasons.append("daily_origin_missing" if origin_nav is None else "daily_history_incomplete")

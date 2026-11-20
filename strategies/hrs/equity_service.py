@@ -39,6 +39,7 @@ from decimal import Decimal
 import hashlib
 import json
 import os
+from pathlib import Path
 import uuid
 
 import structlog
@@ -54,7 +55,8 @@ from .equity_evidence import (
     certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,certify_reduce_only_lifecycle,FUNDING_SOURCE_CONTRACT,certify_owned_inventory_paths,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
-from .equity_reconciliation import ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
+from .equity_history_gap import reconstruct_gaps, replay_inception_latches
+from .equity_reconciliation import RebuiltHistory, ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
 from .funding_reference import read_forecasts_prefix,load_forecasts_ref,evidence_forecasts_ref,verify_stored_prefixes
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
 from .loss_gate_repository import LossGateSession, RepositoryConflict
@@ -755,10 +757,13 @@ class HrsEquityService:
     def _history_start(self,inception,as_of):
         return max(inception,as_of-timedelta(days=30))
 
-    def _history_complete(self, checkpoints, fills, orders, inception):
+    def _history_complete(self, checkpoints, fills, orders, inception, *, since=None):
         if not checkpoints:
             return False
-        required=self._history_start(inception,checkpoints[-1].as_of)
+        required=max(self._history_start(inception,checkpoints[-1].as_of),since or inception)
+        if checkpoints[0].as_of > required:
+            return False
+        owners=order_owners(self.account, orders)
         for left, right in zip(checkpoints, checkpoints[1:]):
             if right.as_of<=required:
                 continue
@@ -768,11 +773,56 @@ class HrsEquityService:
             positions = owned_fill_positions(self.account, fills, orders, through=left_at, after=inception,opening_inventory=self._anchor_inventory)
             if any(owner == 'hrs' and qty != 0 for (owner, _), (qty, _) in positions.items()):
                 return False
-            owners = order_owners(self.account, orders)
             if any(left_at < row['trade_time_utc'] <= right.as_of
                    and 'hrs' in owners.get((row['symbol'], str(row['order_id'])), set()) for row in fills):
                 return False
         return True
+
+    def _gate_history(self, samples, fills, orders, inception):
+        as_of = samples[-1].as_of
+        midnight = datetime.combine(as_of.astimezone(SHANGHAI).date(), time.min, SHANGHAI)
+        return GateHistory(tuple(samples), self._history_start(inception,as_of), as_of,
+                           self._history_complete(samples,fills,orders,inception),
+                           self._history_complete(samples,fills,orders,inception,since=midnight))
+
+    async def _reviewed_history(self, connection, stored, state, checkpoints, samples, fills, orders, evidence):
+        manifest_path = Path(__file__).with_name('equity_history_gap_review.json')
+        if not manifest_path.is_file():
+            return None
+        plan = json.loads(manifest_path.read_text())
+        if (plan['account'] != self.account or plan['segment'] != state.segment_id
+                or not self.allow_inception or state.as_of - state.inception >= timedelta(days=30)):
+            return None
+        repair_id = canonical(plan)[1]
+        if await connection.fetchval("""SELECT EXISTS (SELECT 1 FROM trading.hrs_equity_reconciliation
+            WHERE account_id=$1 AND segment_id=$2 AND receipt->>'repair_id'=$3)""",
+            self.account,state.segment_id,repair_id):
+            return None
+        raw = await connection.fetchval("""SELECT payload FROM trading.hrs_equity_evidence
+            WHERE account_id=$1 AND segment_id=$2 AND evidence_sha256=$3""",
+            self.account,state.segment_id,plan['archive_sha256'])
+        if raw is None:
+            raise EvidenceBlocked('history_gap_archive_missing')
+        archive = json.loads(raw) if isinstance(raw,str) else raw
+        collection = archive['source_collection']
+        if (canonical(archive)[1] != plan['archive_sha256'] or collection.get('complete') is not True
+                or collection.get('gaps') or not archive['result'].get('ledger_version')):
+            raise EvidenceBlocked('history_gap_archive_invalid')
+        now = self._now()
+        added, bars = reconstruct_gaps(plan,self.account,state,checkpoints,fills,orders,self._anchor_inventory,now)
+        full_series = tuple(sorted((*samples,*added),key=lambda item:item.as_of))
+        history = self._gate_history(full_series,fills,orders,state.inception)
+        if not history.complete:
+            raise EvidenceBlocked('history_gap_remaining_exposure_unproven')
+        prior = replay_inception_latches(stored.gate,full_series)
+        gate = evaluate_loss_gate(prior,state.checkpoint,history,allow_inception_segment=self.allow_inception)
+        evidence['capture']['historical_mark_bars'].update(bars)
+        receipt = dict(kind='reviewed_historical_mark_gap_v1', repair_id=repair_id, available_at=now,
+                       as_of=state.as_of, source_evidence_sha256=plan['archive_sha256'],
+                       gap_endpoints=[{key:item[key] for key in ('left','right')} for item in plan['gaps']],
+                       backfilled_points=len(added), retained_mark_bars=len(bars),
+                       valued_series_sha256=canonical([asdict(point) for point in added])[1])
+        return RebuiltHistory(state,gate,full_series,receipt)
 
     async def _commit(self, connection, bootstrap, snapshot, collection, start_ms, end_ms):
         as_of = snapshot['captured_at']
@@ -930,8 +980,7 @@ class HrsEquityService:
                 boundary = LedgerObservation(boundary.as_of,segment,boundary.incomes,
                     tuple(flow for flow in events_flow if flow.occurred_at <= midnight),boundary.positions,midnight,midnight,True,True)
                 state = reconcile_ledger(state,boundary)
-                history = GateHistory(tuple(checkpoints+[state.checkpoint]),self._history_start(stored.ledger.inception,midnight),midnight,
-                                      self._history_complete(checkpoints+[state.checkpoint],fills,orders,state.inception))
+                history = self._gate_history(checkpoints+[state.checkpoint],fills,orders,state.inception)
                 boundary_gate = evaluate_loss_gate(stored.gate,state.checkpoint,history,allow_inception_segment=self.allow_inception)
                 stored = await session.commit(state,boundary_gate.state,expected_version=stored.version,
                                               checkpoint_id=f'{segment}:{int(midnight.timestamp()*1000)}')
@@ -956,9 +1005,19 @@ class HrsEquityService:
                     evidence['reconstructed_boundaries'].append(dict(effective_at=rolling_start,available_at=self._now(),source='complete_fill_inventory_and_actual_mark_bar' if historical.positions else 'complete_flat_fill_income_path'))
                 except EvidenceBlocked:
                     pass  # Full qualification stays false; no historical mark is invented.
-            history = GateHistory(tuple(samples),self._history_start(state.inception,as_of),as_of,self._history_complete(samples,fills,orders,state.inception))
-            gate = evaluate_loss_gate(stored.gate,state.checkpoint,history,allow_inception_segment=self.allow_inception)
-            stored=await session.commit(state,gate.state,expected_version=stored.version,checkpoint_id=f'{segment}:{end_ms}')
+            try:
+                backfill = await self._reviewed_history(connection,stored,state,checkpoints,samples,fills,orders,evidence)
+            except EvidenceBlocked as exc:
+                log.warning('hrs_history_gap_backfill_blocked', reason=str(exc))
+                backfill = None
+            if backfill is not None:
+                stored = await activate_reconciliation(connection,self.account,stored,backfill)
+                gate = backfill.gate
+                evidence['history_gap_receipt_sha256'] = canonical(backfill.receipt)[1]
+            else:
+                history = self._gate_history(samples,fills,orders,state.inception)
+                gate = evaluate_loss_gate(stored.gate,state.checkpoint,history,allow_inception_segment=self.allow_inception)
+                stored = await session.commit(state,gate.state,expected_version=stored.version,checkpoint_id=f'{segment}:{end_ms}')
         result=dict(ready=gate.ready,allowed=gate.allow_new_risk,reasons=list(gate.reasons),
                     window_label=gate.window_label,qualified_30_day=gate.qualified_30_day,ledger_version=stored.version)
         evidence['result']=result
