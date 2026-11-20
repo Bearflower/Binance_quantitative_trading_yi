@@ -112,7 +112,7 @@ def main(sha, image_digest, bundle):
     os.chmod(release,0o700)
     image = 'ghcr.io/bearflower/trading-ai-tuner@'+image_digest
     run(['docker','pull',image],timeout=600)
-    source_paths = [p for p in manifest['files'] if p.startswith(('ai_tuner/','strategies/new_coin/'))]
+    source_paths = [p for p in manifest['files'] if p.startswith(('ai_tuner/','shared/'))]
     code = "import hashlib,json,pathlib;print(json.dumps({p:hashlib.sha256(pathlib.Path('/app',p).read_bytes()).hexdigest() for p in "+repr(source_paths)+"}))"
     proof = json.loads(run(['docker','run','--rm','--network','none','--entrypoint','python',image,'-c',code]))
     if any(proof.get(p) != manifest['files'][p] for p in source_paths):

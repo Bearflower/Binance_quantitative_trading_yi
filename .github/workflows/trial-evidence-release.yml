@@ -53,6 +53,16 @@ jobs:
           file: deployment/trial-tail-proof/Dockerfile
           push: true
           tags: ghcr.io/bearflower/trading-ai-tuner:trial-tail-proof-${{ github.sha }}
+      - name: Test image with the production strategy config mount
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          image="ghcr.io/bearflower/trading-ai-tuner@$DIGEST"
+          docker pull "$image"
+          mkdir -p "$RUNNER_TEMP/strategy-config-only"
+          docker run --rm --network none --entrypoint python \
+            --mount "type=bind,source=$RUNNER_TEMP/strategy-config-only,target=/app/strategies,readonly" \
+            "$image" -c 'import ai_tuner.monitor.evidence_jobs; import shared.new_coin_recovery_evidence'
       - name: Package source proofs and additive migrations
         run: |
           python - <<'PY'
@@ -61,7 +71,7 @@ jobs:
           target=pathlib.Path(os.environ['RUNNER_TEMP'])/'trial-tail-proof'
           paths=[pathlib.Path(p) for p in ('ai_tuner/monitor/evidence_jobs.py', 'ai_tuner/monitor/hrs_closed_lot.py',
                  'ai_tuner/monitor/protective_exit_evidence.py', 'ai_tuner/monitor/ordinary_execution_evidence.py',
-                 'strategies/new_coin/recovery_evidence.py',
+                 'shared/new_coin_recovery_evidence.py',
                  'deployment/trial-tail-proof/activate.py', 'scripts/database_permissions.py',
                  'database/postgres/permissions.json', 'VERSION')]
           files={}

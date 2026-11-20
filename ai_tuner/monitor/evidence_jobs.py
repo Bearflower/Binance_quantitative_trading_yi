@@ -21,7 +21,7 @@ from ai_tuner.monitor.account_risk import collect_account_risk
 from ai_tuner.monitor.reduced_trial import BEIJING, NotificationState
 from shared.accounting.pm_equity_bridge import observe_pm_equity
 from shared.accounting.published_report import read_published_report
-from strategies.new_coin.recovery_evidence import owned_recovery_reduction_algos, verify_tp1_tail
+from shared.new_coin_recovery_evidence import owned_recovery_reduction_algos, verify_tp1_tail
 
 
 def atomic_report(path: Path, value: dict):
