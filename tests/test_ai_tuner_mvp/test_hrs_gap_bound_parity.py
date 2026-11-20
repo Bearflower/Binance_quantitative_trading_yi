@@ -30,6 +30,9 @@ def bound_sources(tmp_path,post=False):
         receipts=[dict(receipt_sha256=digest,available_at=received.isoformat(),receipt=receipt)],
         bounds=[dict(bound,receipt_sha256=digest,source_available_at=received.isoformat()) for bound in bounds])
     sources['equity_evidence'].append(dict(evidence_sha256=source_sha,payload=source))
+    sources['equity_reconciliations']=[dict(account_id=account,segment_id=segment,after_state_version=2,
+        as_of=receipt['as_of'],event_time=receipt['as_of'],available_at=receipt['available_at'],receipt_sha256=digest,
+        evidence_id=digest,receipt=copy.deepcopy(receipt),after_state=dict(ledger={},gate={}))]
     for row in sources['decision_evidence']:
         if row['kind'] not in ('scan_start','scan_end'):continue
         snapshot=row['payload'] if row['kind']=='scan_start' else row['payload']['state']
@@ -60,7 +63,7 @@ def test_original_receipt_bounds_project_with_hashes_and_actual_availability(tmp
     from ai_tuner.hrs_evidence_export import _equity,project_history_gap_bounds
     sources,_=bound_sources(tmp_path)
     financial=sources['decision_evidence'][0]['payload']['financial_context']
-    projection=project_history_gap_bounds(financial,_equity(sources['equity_evidence']),AT)
+    projection=project_history_gap_bounds(financial,_equity(sources['equity_evidence']),AT,sources['equity_reconciliations'])
     assert projection['bounds'][0]['high_nav']=='1.10'
     assert projection['parent_evidence_sha256']==financial['hrs_marked_equity_observation']['evidence_sha256']
 
@@ -123,7 +126,7 @@ def test_original_source_semantics_cannot_be_upgraded_by_new_hashes(tmp_path,dam
     financial=sources['decision_evidence'][0]['payload']['financial_context']
     financial['hrs_marked_equity_observation']['evidence_sha256']=changed[financial['hrs_marked_equity_observation']['evidence_sha256']]
     with pytest.raises(DataBlocked,match='history_gap'):
-        project_history_gap_bounds(financial,_equity(sources['equity_evidence']),AT)
+        project_history_gap_bounds(financial,_equity(sources['equity_evidence']),AT,sources['equity_reconciliations'])
 
 
 @pytest.mark.parametrize('damage',['hourly','missing_minute','missing_funding'])
@@ -164,3 +167,117 @@ def test_bound_projection_tampering_after_normal_reseal_is_denied(tmp_path):
     tables=json.loads((path/'hrs_state_tables.json').read_text())
     with pytest.raises(DataBlocked,match='history_gap_bounds'):
         run_replay(portal,HrsAdapter(lambda at:tables),broker())
+
+
+from tests.test_ai_tuner_mvp.test_hrs_equity_bridge_sources import source_database
+
+
+@pytest.mark.parametrize('archive',[False,True])
+@pytest.mark.parametrize('damage',[None,'missing','hash'])
+async def test_readonly_sql_retains_old_gap_receipt_parents_and_their_forecast_prefix(source_database,tmp_path,archive,damage):
+    from ai_tuner.hrs_evidence_export import read_evidence_sources,_ArchiveSources,_equity,project_history_gap_bounds,verify_forecast_source_closure,_records
+    from ai_tuner.replay.models import DataBlocked
+    from strategies.hrs.funding_reference import build_forecasts_ref
+    from tests.test_ai_tuner_mvp.test_hrs_forecast_closure import observation
+    sources,_=bound_sources(tmp_path);db=source_database
+    origin=sources['equity_evidence'][1];old_origin=origin['evidence_sha256']
+    cutoff=datetime.fromisoformat(origin['payload']['available_at'])
+    forecast=observation(cutoff-timedelta(seconds=1));ref,_=build_forecasts_ref('test',cutoff,[forecast],expected_count=1)
+    origin['payload'].setdefault('capture',{})['funding_publication']=dict(forecasts_ref=ref)
+    origin['evidence_sha256']=canonical(origin['payload'])[1];replaced={old_origin:origin['evidence_sha256']}
+    for row in sources['equity_evidence']:
+        top=row['payload'].get('history_gap_bounds')
+        if not top:continue
+        old=row['evidence_sha256'];r=top['receipts'][0]
+        r['receipt']['source_evidence_sha256']=origin['evidence_sha256'];r['receipt_sha256']=canonical(r['receipt'])[1]
+        for bound in top['bounds']:bound['receipt_sha256']=r['receipt_sha256']
+        row['evidence_sha256']=canonical(row['payload'])[1];replaced[old]=row['evidence_sha256']
+    independent=sources['equity_reconciliations'][0]
+    independent['receipt']['source_evidence_sha256']=origin['evidence_sha256']
+    independent['receipt_sha256']=independent['evidence_id']=canonical(independent['receipt'])[1]
+    await db.execute('INSERT INTO trading.hrs_equity_reconciliation VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb)',
+        independent['account_id'],independent['segment_id'],independent['after_state_version'],datetime.fromisoformat(independent['as_of']),datetime.fromisoformat(independent['available_at']),independent['receipt_sha256'],json.dumps(independent['receipt']),json.dumps(independent['after_state']))
+    for row in sources['decision_evidence']:
+        if row['kind'] in ('scan_start','scan_end'):
+            snapshot=row['payload'] if row['kind']=='scan_start' else row['payload']['state']
+            component=snapshot['financial_context']['hrs_marked_equity_observation']
+            component['evidence_sha256']=replaced[component['evidence_sha256']]
+            row['payload_sha256']=canonical(row['payload'])[1]
+        await db.execute('INSERT INTO hrs.hrs_decision_evidence VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)',
+            row['evidence_id'],row['run_id'],row['kind'],row['symbol'],datetime.fromisoformat(row['event_time']),datetime.fromisoformat(row['available_at']),row['payload_sha256'],json.dumps(row['payload']))
+    for row in sources['equity_evidence']:
+        if row is origin and damage=='missing':continue
+        payload=copy.deepcopy(row['payload'])
+        if row is origin and damage=='hash':payload['damaged']=True
+        await db.execute('INSERT INTO trading.hrs_equity_evidence VALUES($1,$2,$3,$4,$5,$6::jsonb)',
+            'test',row['evidence_sha256'],'test',datetime.fromisoformat(payload['as_of']),datetime.fromisoformat(payload['available_at']),json.dumps(payload))
+    await db.execute('INSERT INTO trading.hrs_funding_observation VALUES($1,$2,$3,$4::jsonb)',
+        'test',forecast['evidence_sha256'],datetime.fromisoformat(forecast['available_at']),json.dumps(forecast['payload']))
+    await db.execute('SET default_transaction_read_only=on')
+    if damage:
+        with pytest.raises(DataBlocked,match='history_gap_bounds_source_parent|equity_payload_hash_mismatch'):
+            await read_evidence_sources(db,'test',window_start=AT,as_of=AT+timedelta(hours=3),archive_root=tmp_path/'archive' if archive else None)
+        return
+    result=await read_evidence_sources(db,'test',window_start=AT,as_of=AT+timedelta(hours=3),archive_root=tmp_path/'archive' if archive else None)
+    if archive:
+        with _ArchiveSources(result) as retained:
+            rows=list(retained.archive.iter_records('equity_evidence'))
+            receipts=list(retained.archive.iter_records('equity_reconciliations'))
+            assert retained.archive.source_metadata['equity_evidence']['expected_count']==len(rows)
+            assert retained.forecast_closure['source_count']==1
+    else:
+        rows=result['equity_evidence'];receipts=result['equity_reconciliations']
+        assert verify_forecast_source_closure(result,_records(result['decision_evidence']))['source_count']==1
+    original=next(row for row in rows if row['evidence_sha256']==origin['evidence_sha256'])
+    assert (json.loads(original['payload']) if isinstance(original['payload'],str) else original['payload'])==origin['payload']
+    assert original['available_at']==origin['payload']['available_at']
+    financial=sources['decision_evidence'][0]['payload']['financial_context']
+    assert project_history_gap_bounds(financial,_equity(rows),AT,receipts)['bounds']
+
+
+@pytest.mark.parametrize('archived',[False,True])
+@pytest.mark.parametrize('omission',['one_bound','all_bounds','both','missing_inventory'])
+def test_independent_original_receipt_inventory_rejects_omitted_bounds(tmp_path,archived,omission):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    sources,bootstrap=bound_sources(tmp_path);changed={}
+    for row in sources['equity_evidence']:
+        top=row['payload'].get('history_gap_bounds')
+        if not top:continue
+        old=row['evidence_sha256']
+        if omission=='one_bound':top['bounds'].pop()
+        elif omission in ('all_bounds','both'):top['bounds']=[]
+        if omission=='both':top['receipts']=[]
+        row['evidence_sha256']=canonical(row['payload'])[1];changed[old]=row['evidence_sha256']
+    if omission=='missing_inventory':del sources['equity_reconciliations']
+    for row in sources['decision_evidence']:
+        if row['kind'] not in ('scan_start','scan_end'):continue
+        snapshot=row['payload'] if row['kind']=='scan_start' else row['payload']['state']
+        component=snapshot['financial_context']['hrs_marked_equity_observation']
+        component['evidence_sha256']=changed[component['evidence_sha256']]
+        row['payload_sha256']=canonical(row['payload'])[1]
+    if archived:
+        from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter
+        with EvidenceArchiveWriter(tmp_path/'archive',source_metadata={}) as writer:
+            for name,rows in sources.items():
+                writer.declare_source(name,dict(expected_count=len(rows),account_id='test',query_scope='original receipt inventory omission',window_start=(AT-timedelta(days=31)).isoformat(),window_end=(AT+timedelta(hours=3)).isoformat()))
+                for row in rows:writer.write_row(name,row)
+            descriptor=writer.finish()
+        sources=dict(evidence_archive=descriptor)
+    result=export_evidence_bundle(sources,tmp_path/'out',window_start=AT,as_of=AT+timedelta(hours=3),
+        execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('decision')=='BLOCKED_DATA',result
+    assert any('history_gap_bounds' in reason for reason in result['gaps'])
+    assert not list((tmp_path/'out').rglob('manifest.json'))
+
+
+def test_aged_out_independent_receipt_does_not_require_an_inactive_projection(tmp_path):
+    from ai_tuner.hrs_evidence_export import _equity,project_history_gap_bounds
+    sources,_=bound_sources(tmp_path)
+    financial=sources['decision_evidence'][0]['payload']['financial_context'];old=financial['hrs_marked_equity_observation']['evidence_sha256']
+    parent=next(row for row in sources['equity_evidence'] if row['evidence_sha256']==old)
+    later=AT+timedelta(days=32);parent['payload'].pop('history_gap_bounds')
+    parent['payload']['as_of']=parent['payload']['available_at']=later.isoformat()
+    parent['evidence_sha256']=canonical(parent['payload'])[1]
+    financial['available_at']=later.isoformat();financial['ledger_state']['ledger_state']['as_of']=later.isoformat()
+    financial['hrs_marked_equity_observation'].update(evidence_sha256=parent['evidence_sha256'],as_of=later.isoformat(),available_at=later.isoformat())
+    assert project_history_gap_bounds(financial,_equity(sources['equity_evidence']),later,sources['equity_reconciliations']) is None

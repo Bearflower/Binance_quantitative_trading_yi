@@ -311,6 +311,7 @@ async def test_readonly_database_extraction_bounds_rows_and_preserves_availabili
         async def __aenter__(self):return self
         async def __aexit__(self,*args):pass
     class DB:
+        async def fetchval(self,*args):return None
         queries=[]
         def transaction(self,**kwargs):
             assert kwargs=={'readonly':True,'isolation':'repeatable_read'}
@@ -331,6 +332,7 @@ async def test_archive_database_extraction_streams_beyond_legacy_whole_window_ca
         async def __aenter__(self):return self
         async def __aexit__(self,*args):pass
     class DB:
+        async def fetchval(self,*args):return None
         def transaction(self,**options):
             assert options==dict(readonly=True,isolation='repeatable_read')
             return Transaction()
@@ -412,6 +414,7 @@ async def test_market_cursor_supports_52_symbols_and_all_three_intervals_without
     names=('id','open_time','close_time','open_price','high_price','low_price','close_price','volume','quote_volume','trade_count')
     def size(query):return 1001 if '_1m' in query else 25 if '_1h' in query else 7
     class DB:
+        async def fetchval(self,*args):return None
         async def fetch(self,query,*args):
             assert 'information_schema.columns' in query
             return [dict(column_name=name,data_type='timestamp with time zone' if name.endswith('_time') else 'numeric') for name in names]
@@ -628,6 +631,7 @@ async def test_database_export_selects_referenced_equity_and_scanned_funding_onl
         async def __aenter__(self):return self
         async def __aexit__(self,*args):pass
     class DB:
+        async def fetchval(self,*args):return None
         queries=[]
         def transaction(self,**kwargs):return Transaction()
         async def fetch(self,query,*args):
@@ -635,7 +639,7 @@ async def test_database_export_selects_referenced_equity_and_scanned_funding_onl
             if 'FROM hrs.hrs_decision_evidence' in query:
                 rows=[dict(kind='scan_start',payload=dict(financial_context=dict(available_at=AT.isoformat(),
                     ledger_state=dict(segment_id='test',version=5,ledger_state=dict(as_of=AT.isoformat())),
-                    equity_source_archives=[dict(evidence_sha256='a'*64)]))),
+                    equity_source_archives=[dict(payload=dict(account_id='test'),evidence_sha256=canonical_payload(dict(account_id='test'))[1])]))),
                     dict(kind='standard_scan_scope',payload=dict(symbols=['A']))]
                 for row in rows:row['payload_sha256']=canonical_payload(row['payload'])[1]
                 return rows
@@ -708,6 +712,7 @@ async def test_inventory_sql_retains_only_original_account_bound_420_second_seed
         async def __aenter__(self):return self
         async def __aexit__(self,*args):pass
     class DB:
+        async def fetchval(self,*args):return None
         def __init__(self):self.queries=[]
         def transaction(self,**options):
             assert options==dict(readonly=True,isolation='repeatable_read')

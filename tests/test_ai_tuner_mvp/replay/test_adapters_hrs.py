@@ -44,6 +44,7 @@ PRICES_4H = [
 ALLOWED_ABSOLUTE = {
     "__future__",
     "typing",
+    "types",
     "dataclasses",
     "datetime",
     "decimal",
@@ -322,7 +323,7 @@ def test_source_import_whitelist():
             or module.startswith("ai_tuner.replay.")
             or module in {"strategies.hrs", "strategies.hrs.scoring_engine",
                           "strategies.hrs.pattern", "strategies.hrs.risk_budget", "strategies.hrs.margin_budget",
-                          "strategies.hrs.loss_gate", "strategies.hrs.risk_ledger"}
+                          "strategies.hrs.loss_gate", "strategies.hrs.risk_ledger", "strategies.hrs.equity_history_gap"}
         ), "非法绝对 import：{0}".format(module)
 
     for target in import_targets(path):

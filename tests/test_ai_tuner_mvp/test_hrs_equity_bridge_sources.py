@@ -26,6 +26,7 @@ async def source_database():
     try:
         await db.execute('''CREATE SCHEMA hrs; CREATE SCHEMA trading;
             CREATE TABLE hrs.hrs_decision_evidence(evidence_id text,run_id text,kind text,symbol text,event_time timestamptz,available_at timestamptz,payload_sha256 text,payload jsonb);
+            CREATE TABLE trading.hrs_equity_reconciliation(account_id text,segment_id text,after_state_version bigint,as_of timestamptz,available_at timestamptz,receipt_sha256 text,receipt jsonb,after_state jsonb);
             CREATE TABLE trading.hrs_equity_evidence(account_id text,evidence_sha256 text,segment_id text,as_of timestamptz,available_at timestamptz,payload jsonb);
             CREATE TABLE trading.hrs_risk_equity_checkpoints(account_id text,segment_id text,as_of timestamptz,equity numeric,units numeric,nav numeric,created_at timestamptz);
             CREATE TABLE public.ai_tuner_funding_schedule_observations(symbol text,source_time timestamptz,received_at timestamptz,next_funding_time timestamptz,funding_interval_hours int,payload_hash text);
