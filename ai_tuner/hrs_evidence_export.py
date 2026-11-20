@@ -1322,7 +1322,7 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
         FROM public.ai_tuner_funding_schedule_observations WHERE received_at >= $1 AND received_at <= $2
         ORDER BY received_at,symbol LIMIT $3""",(start-timedelta(seconds=420),end,limit))]
     result={'source_query_version':VERSION,'source_account_id':account_id,'source_window_start':_iso(start),'source_as_of':_iso(end)}
-    estimated=0;referenced=set();ledger_points=set();scanned=set();forecast_cutoffs={}
+    estimated=0;referenced=set();ledger_points=set();scanned=set();forecast_cutoffs={};bridge_boundaries={}
     with ExitStack() as cleanup:
         writer=None
         if archive_root is not None:
@@ -1334,8 +1334,23 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
                     query='''SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
                         FROM trading.hrs_equity_evidence WHERE account_id=$1 AND
                         (evidence_sha256=ANY($2::text[]) OR as_of=ANY($3::timestamptz[])
-                         OR (as_of >= $4 AND as_of <= $5)) ORDER BY available_at,evidence_sha256 LIMIT $6'''
-                    args=(account_id,sorted(referenced),sorted(ledger_points),nominal_end,end+timedelta(seconds=120),limit)
+                         OR (as_of >= $4 AND as_of <= $5)
+                         OR evidence_sha256 IN (
+                           SELECT nearest.evidence_sha256
+                           FROM unnest($6::timestamptz[],$7::timestamptz[]) AS boundary(at,deadline)
+                           CROSS JOIN LATERAL (
+                             SELECT e.evidence_sha256 FROM trading.hrs_equity_evidence e
+                             WHERE e.account_id=$1 AND e.as_of>=boundary.at AND e.as_of<=boundary.deadline
+                               AND e.available_at>=e.as_of AND e.available_at<=boundary.deadline
+                               AND e.payload->'capture'->'local'='{}'::jsonb
+                               AND e.payload->'source_collection'->>'complete'='true'
+                               AND e.payload->'source_collection'->'gaps'='[]'::jsonb
+                               AND e.payload->'income_report'->>'id_match_and_coverage_complete'='true'
+                               AND e.payload->'income_report'->'coverage_gaps'='[]'::jsonb
+                             ORDER BY e.available_at,e.as_of,e.evidence_sha256 LIMIT 1
+                           ) nearest)) ORDER BY available_at,evidence_sha256 LIMIT $8'''
+                    args=(account_id,sorted(referenced),sorted(ledger_points),nominal_end,end+timedelta(seconds=120),
+                        sorted(bridge_boundaries),[bridge_boundaries[at] for at in sorted(bridge_boundaries)],limit)
                 elif name=='funding_observations':
                     query='''SELECT symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash
                         FROM public.ai_tuner_funding_schedule_observations WHERE received_at >= $1 AND received_at <= $2
@@ -1355,7 +1370,7 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
                             row['payload']=_decoded(row['payload'])
                         writer.write_row(name,row)
                         if name=='decision_evidence':
-                            _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs,account_id)
+                            _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs,account_id,bridge_boundaries)
                         elif name=='equity_evidence':
                             _source_forecast_ref(row,forecast_cutoffs,account_id)
                     continue
@@ -1369,7 +1384,7 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
                 result[name]=json.loads(encoded)
                 if name=='decision_evidence':
                     for row in rows:
-                        _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs,account_id)
+                        _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs,account_id,bridge_boundaries)
                 elif name=='equity_evidence':
                     for row in rows:_source_forecast_ref(row,forecast_cutoffs,account_id)
             if forecast_cutoffs:
@@ -1410,12 +1425,27 @@ def _source_forecast_ref(parent,cutoffs,account_id):
         account,cutoff,_ref=found;cutoffs[account]=max(cutoffs.get(account,cutoff),cutoff)
 
 
-def _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs=None,account_id=None):
+def _source_references(row,referenced,ledger_points,scanned,forecast_cutoffs=None,account_id=None,bridge_boundaries=None):
     payload=_decoded(row['payload'])
     _require(row.get('payload_sha256')==canonical_payload(payload)[1],'decision_payload_hash_mismatch')
     if row['kind'] in ('standard_scan_scope','lv_rm_scan_scope'):
         scanned.update(payload['symbols'])
-    financials=[payload.get('financial_context',{})]
+    # A stale ledger at a flat scan needs an actual post-boundary parent.
+    # Keep its original availability; retaining it never authorizes an earlier
+    # decision. The normal bridge verifier still rejects changed economics.
+    financial=payload.get('financial_context',{})
+    if (bridge_boundaries is not None and row['kind']=='scan_start'
+            and row.get('event_time') is not None and not payload.get('positions')
+            and financial.get('replay_bootstrap_ready') is True
+            and financial.get('ledger_state')):
+        boundary=_time(row['event_time'])
+        state_at=_time(_decoded(financial['ledger_state']['ledger_state'])['as_of'])
+        if state_at<boundary:
+            deadline=boundary+timedelta(seconds=120)
+            if financial.get('account_cash_observed_at') is not None:
+                deadline=min(deadline,_time(financial['account_cash_observed_at'])+timedelta(seconds=120))
+            bridge_boundaries[boundary]=deadline
+    financials=[financial]
     if row['kind']=='scan_end':financials.append(payload.get('state',{}).get('financial_context',{}))
     for financial in financials:
         gate=financial.get('equity_gate')
