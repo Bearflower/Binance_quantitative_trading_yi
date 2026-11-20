@@ -257,6 +257,35 @@ def validate_scan_boundary(context, *, requested_at, checked_at):
         raise ValueError('scan_boundary_unproven') from exc
 
 
+async def capture_scan_market_guard(strategy):
+    """Retain the actual T-1 cache inputs before this scan can score symbols."""
+    breaker=getattr(strategy,'circuit_breaker',None)
+    config=getattr(strategy,'_market_guard_config',None)
+    if breaker is None and config is None:
+        return None
+    if breaker is None or not isinstance(config,dict) or config.get('enabled') is not True or getattr(breaker,'pool',None)!='hrs':
+        raise ValueError('market_guard_source_configuration_unproven')
+    from datetime import timedelta
+    from shared.circuit_breaker import floor_index_hour
+    from .decision_capture import canonical_payload
+    requested=_scan_now()
+    hour=floor_index_hour(requested)-timedelta(hours=1)
+    index=await breaker.load_index(hour)
+    index12=await breaker.load_index_12h(hour)
+    available=_scan_now()
+    cache=getattr(breaker,'_index_cache',{})
+    expected={hour.isoformat():index,hour.isoformat()+':12h':index12}
+    if not isinstance(cache,dict) or any(key not in cache or canonical_payload(cache[key])[1]!=canonical_payload(value)[1] for key,value in expected.items()):
+        raise ValueError('market_guard_source_cache_unproven')
+    if not requested<=available or available-requested>timedelta(seconds=120):
+        raise ValueError('market_guard_source_clock_unproven')
+    observation=dict(version='hrs_market_guard_observation_v1',account_id=os.getenv('TRADE_ACCOUNT_ID','default'),
+        pool='hrs',index_hour=hour.isoformat(),requested_at=requested.isoformat(),available_at=available.isoformat(),
+        pool_index=index,pool_index_12h=index12,config_sha256=canonical_payload(config)[1])
+    canonical_payload(observation)  # Invalid numeric source values cannot become an attestation.
+    return observation
+
+
 async def capture_scan_financial_context(strategy):
     """Refresh the ordinary collector before the scan, then capture fresh cash.
 
@@ -269,8 +298,11 @@ async def capture_scan_financial_context(strategy):
         return await capture_financial_context(strategy)
     requested = _scan_now()
     async def collect():
+        guard = await capture_scan_market_guard(strategy)
         result = await service.refresh()
         context = await capture_financial_context(strategy)
+        if guard is not None:
+            context = dict(context, market_guard_observation=guard)
         try:
             parents = [p for p in context['equity_source_archives']
                        if p.get('evidence_sha256') == result['evidence_sha256']]

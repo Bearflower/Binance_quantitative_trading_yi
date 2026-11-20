@@ -679,3 +679,12 @@ async def test_main_does_not_log_success_on_write_failure(monkeypatch, tmp_path,
 
     assert capsys.readouterr().out == ""
     pool.close.assert_awaited_once()
+
+
+def test_full_funding_inventory_heartbeats_do_not_create_spurious_scan_failures():
+    rows=evidence()
+    rows.append(event('funding-inventory-only','funding_schedule_inventory',START+timedelta(minutes=3),
+                      dict(account_id=ACCOUNT,source='prospective_exchange_forecast')))
+    report=summarize_evidence(rows,as_of=NOW,account_id=ACCOUNT)
+    baseline=summarize_evidence(evidence(),as_of=NOW,account_id=ACCOUNT)
+    assert report==baseline

@@ -60,7 +60,7 @@ ENGINE_MODULES = (
     'strategies.hrs.entry_occupancy',
     'strategies.hrs.margin_budget',
     'ai_tuner.hrs_kline_sources','strategies.hrs.kline_repair','strategies.hrs.decision_capture',
-    'strategies.hrs.decision_context',
+    'strategies.hrs.decision_context', 'strategies.hrs.funding_inventory',
     'ai_tuner.replay.hrs_evidence_archive','ai_tuner.replay.raw_export',
     'ai_tuner.replay.adapters.hrs', 'ai_tuner.replay.adapters.base',
     'ai_tuner.replay.engine', 'ai_tuner.replay.broker', 'ai_tuner.replay.models',

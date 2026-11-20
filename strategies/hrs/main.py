@@ -18,6 +18,7 @@ from shared import condition_orders
 from strategies.hrs.strategy import HRSStrategy
 from strategies.hrs.decision_context import capture_configuration_identity
 from strategies.hrs.equity_service import HrsEquityService
+from strategies.hrs.funding_inventory import FundingInventoryCollector
 from ai_tuner.snapshots.repository import SnapshotRepository
 
 
@@ -38,7 +39,7 @@ def validate_equity_gate_configuration():
 async def run_with_equity_service(strategy,db_manager,binance_client):
     """Refresh before entries; a denied projection keeps normal exit monitoring.
 
-    Fatal background termination is supervised. Shutdown joins both tasks before
+    Fatal background termination is supervised. Shutdown joins supervised tasks before
     the caller releases database/API resources, including cancellation paths.
     """
     if not validate_equity_gate_configuration():
@@ -46,30 +47,44 @@ async def run_with_equity_service(strategy,db_manager,binance_client):
     service=HrsEquityService(db_manager,binance_client,strategy.capital_mgr,
                              strategy.position_manager,recorder=getattr(strategy,'decision_recorder',None))
     strategy.equity_service=service
+    recorder=getattr(strategy,'decision_recorder',None)
+    funding=None
     tasks=[]
     try:
+        if recorder is not None:
+            funding=FundingInventoryCollector(binance_client,recorder,account_id=os.getenv('TRADE_ACCOUNT_ID','default'))
+            await funding.collect_once()
         result=await service.refresh()
         logger.info('HRS equity projection initialized',ready=result['ready'],allowed=result['allowed'],reasons=result['reasons'])
         collector=asyncio.create_task(service.run(),name='hrs-equity-collector')
         trading=asyncio.create_task(strategy.run(),name='hrs-strategy')
         tasks=[collector,trading]
+        supervised={collector:'equity collector'}
+        if funding is not None:
+            funding_task=asyncio.create_task(funding.run(),name='hrs-funding-inventory-collector')
+            tasks.append(funding_task)
+            supervised[funding_task]='funding inventory collector'
         done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
-        if collector in done:
-            if collector.cancelled():
-                raise RuntimeError('HRS equity collector stopped unexpectedly')
-            failure=collector.exception()
-            raise RuntimeError('HRS equity collector stopped unexpectedly') from failure
+        for background,label in supervised.items():
+            if background in done:
+                if background.cancelled():
+                    raise RuntimeError('HRS '+label+' stopped unexpectedly')
+                raise RuntimeError('HRS '+label+' stopped unexpectedly') from background.exception()
         return await trading
     finally:
         async def shutdown():
             try:
                 await service.close()
             finally:
-                for task in tasks:
-                    if not task.done():
-                        task.cancel()
-                await asyncio.gather(*tasks,return_exceptions=True)
-                strategy.equity_service=None
+                try:
+                    if funding is not None:
+                        await funding.close()
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks,return_exceptions=True)
+                    strategy.equity_service=None
         cleanup=asyncio.create_task(shutdown())
         try:
             await asyncio.shield(cleanup)

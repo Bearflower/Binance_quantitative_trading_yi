@@ -7,6 +7,13 @@ import pytest
 from strategies.hrs import main as hrs_main
 
 
+@pytest.fixture(autouse=True)
+def inert_funding_inventory(monkeypatch):
+    async def idle():await asyncio.Event().wait()
+    inventory=SimpleNamespace(collect_once=AsyncMock(),run=idle,close=AsyncMock())
+    monkeypatch.setattr(hrs_main,'FundingInventoryCollector',MagicMock(return_value=inventory),raising=False)
+
+
 def strategy(run):
     return SimpleNamespace(run=run,capital_mgr=object(),position_manager=object(),decision_recorder=object())
 
@@ -106,7 +113,7 @@ async def test_unexpected_collector_exit_is_supervised_and_strategy_is_cancelled
     service=SimpleNamespace(refresh=AsyncMock(return_value=dict(ready=False,allowed=False,reasons=[])),run=failed,close=AsyncMock())
     monkeypatch.setattr(hrs_main,'HrsEquityService',MagicMock(return_value=service),raising=False)
     with pytest.raises(RuntimeError,match='equity collector stopped'):
-        await hrs_main.run_with_equity_service(strategy(trading),object(),object())
+        await asyncio.wait_for(hrs_main.run_with_equity_service(strategy(trading),object(),object()),timeout=1)
     assert stopped.is_set()
     service.close.assert_awaited_once()
 
@@ -151,3 +158,72 @@ async def test_main_refreshes_then_closes_collector_before_database_disconnect(m
     await hrs_main.main()
     assert events.index('refresh')<events.index('strategy_run')
     assert events.index('collector_stopped')<events.index('db_disconnect')
+
+
+@pytest.mark.asyncio
+async def test_funding_inventory_receipt_precedes_scoring_and_background_is_joined(monkeypatch):
+    monkeypatch.setenv('HRS_EQUITY_GATE_ENABLED','1')
+    monkeypatch.setenv('ENTRY_EQUITY_GATE_STRATEGIES','hrs')
+    events=[]
+    async def idle(name):
+        try:
+            events.append(name+'_started')
+            await asyncio.Event().wait()
+        finally:events.append(name+'_stopped')
+    inventory=SimpleNamespace(collect_once=AsyncMock(side_effect=lambda:events.append('funding_receipt')),
+                              run=lambda:idle('funding'),close=AsyncMock())
+    factory=MagicMock(return_value=inventory)
+    monkeypatch.setattr(hrs_main,'FundingInventoryCollector',factory,raising=False)
+    service=SimpleNamespace(refresh=AsyncMock(side_effect=lambda:events.append('equity_refresh') or dict(ready=True,allowed=True,reasons=[])),
+                            run=lambda:idle('equity'),close=AsyncMock())
+    monkeypatch.setattr(hrs_main,'HrsEquityService',MagicMock(return_value=service))
+    async def trading():
+        assert events.index('funding_receipt')<events.index('equity_refresh')
+        await asyncio.sleep(0)
+        return 'natural_run'
+    item=strategy(trading);api=object()
+    assert await hrs_main.run_with_equity_service(item,object(),api)=='natural_run'
+    factory.assert_called_once_with(api,item.decision_recorder,account_id='default')
+    assert events.index('funding_stopped')<len(events)
+    assert events.index('equity_stopped')<len(events)
+
+
+@pytest.mark.asyncio
+async def test_unexpected_funding_inventory_exit_cancels_strategy_and_equity_collector(monkeypatch):
+    monkeypatch.setenv('HRS_EQUITY_GATE_ENABLED','1')
+    monkeypatch.setenv('ENTRY_EQUITY_GATE_STRATEGIES','hrs')
+    stopped=asyncio.Event()
+    async def idle():await asyncio.Event().wait()
+    async def failed():raise RuntimeError('unexpected funding collector exit')
+    inventory=SimpleNamespace(collect_once=AsyncMock(),run=failed,close=AsyncMock())
+    monkeypatch.setattr(hrs_main,'FundingInventoryCollector',MagicMock(return_value=inventory),raising=False)
+    service=SimpleNamespace(refresh=AsyncMock(return_value=dict(ready=True,allowed=True,reasons=[])),run=idle,close=AsyncMock())
+    monkeypatch.setattr(hrs_main,'HrsEquityService',MagicMock(return_value=service))
+    async def trading():
+        try:await idle()
+        finally:stopped.set()
+    with pytest.raises(RuntimeError,match='funding inventory collector stopped'):
+        await asyncio.wait_for(hrs_main.run_with_equity_service(strategy(trading),object(),object()),timeout=1)
+    assert stopped.is_set()
+    service.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_funding_shutdown_failure_still_joins_all_children(monkeypatch):
+    monkeypatch.setenv('HRS_EQUITY_GATE_ENABLED','1')
+    monkeypatch.setenv('ENTRY_EQUITY_GATE_STRATEGIES','hrs')
+    stopped=[]
+    async def idle(name):
+        try:await asyncio.Event().wait()
+        finally:stopped.append(name)
+    inventory=SimpleNamespace(collect_once=AsyncMock(),run=lambda:idle('funding'),
+                              close=AsyncMock(side_effect=RuntimeError('funding close failed')))
+    monkeypatch.setattr(hrs_main,'FundingInventoryCollector',MagicMock(return_value=inventory))
+    service=SimpleNamespace(refresh=AsyncMock(return_value=dict(ready=True,allowed=True,reasons=[])),
+                            run=lambda:idle('equity'),close=AsyncMock())
+    monkeypatch.setattr(hrs_main,'HrsEquityService',MagicMock(return_value=service))
+    item=strategy(AsyncMock(return_value='done'))
+    with pytest.raises(RuntimeError,match='funding close failed'):
+        await asyncio.wait_for(hrs_main.run_with_equity_service(item,object(),object()),timeout=1)
+    assert set(stopped)=={'funding','equity'}
+    assert item.equity_service is None

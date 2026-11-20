@@ -294,3 +294,68 @@ async def test_refresh_result_must_match_original_parent_and_policy(monkeypatch,
     strategy = SimpleNamespace(equity_service=SimpleNamespace(refresh=AsyncMock(return_value=refresh)))
     with pytest.raises(ValueError, match='scan_boundary'):
         await module.capture_scan_financial_context(strategy)
+
+
+@pytest.mark.asyncio
+async def test_scan_guard_captures_actual_t_minus_one_values_before_financial_refresh(monkeypatch):
+    import strategies.hrs.decision_context as module
+    from strategies.hrs.decision_capture import canonical_payload
+    at=AT+timedelta(minutes=21)
+    cfg={'enabled':True,'pool_level':{'threshold':.1}}
+    breaker=SimpleNamespace(pool='hrs',load_index=AsyncMock(return_value=-.04),load_index_12h=AsyncMock(return_value=None))
+    from shared.circuit_breaker import floor_index_hour
+    hour=floor_index_hour(at)-timedelta(hours=1)
+    breaker._index_cache={hour.isoformat():-.04,hour.isoformat()+':12h':None}
+    item=SimpleNamespace(circuit_breaker=breaker,_market_guard_config=cfg)
+    monkeypatch.setenv('TRADE_ACCOUNT_ID','test')
+    times=iter([at,at+timedelta(milliseconds=50)])
+    monkeypatch.setattr(module,'_scan_now',lambda:next(times))
+    result=await module.capture_scan_market_guard(item)
+    expected=at.astimezone(timezone(timedelta(hours=8))).replace(minute=0,second=0,microsecond=0)-timedelta(hours=1)
+    breaker.load_index.assert_awaited_once_with(expected)
+    breaker.load_index_12h.assert_awaited_once_with(expected)
+    assert result==dict(version='hrs_market_guard_observation_v1',account_id='test',pool='hrs',index_hour=expected.isoformat(),
+                        requested_at=at.isoformat(),available_at=(at+timedelta(milliseconds=50)).isoformat(),
+                        pool_index=-.04,pool_index_12h=None,config_sha256=canonical_payload(cfg)[1])
+
+
+@pytest.mark.asyncio
+async def test_guard_capture_is_included_in_the_same_original_scan_payload(monkeypatch):
+    import strategies.hrs.decision_context as module
+    context,refresh=boundary_context();events=[]
+    observed={'version':'hrs_market_guard_observation_v1','account_id':'test','pool':'hrs'}
+    async def guard(strategy):events.append('guard');return observed
+    async def collect():events.append('refresh');return refresh
+    monkeypatch.setattr(module,'capture_scan_market_guard',guard,raising=False)
+    monkeypatch.setattr(module,'capture_financial_context',AsyncMock(return_value=context))
+    times=iter([AT-timedelta(seconds=1),AT+timedelta(seconds=3)])
+    monkeypatch.setattr(module,'_scan_now',lambda:next(times))
+    result=await module.capture_scan_financial_context(SimpleNamespace(equity_service=SimpleNamespace(refresh=collect)))
+    assert events==['guard','refresh']
+    assert result['market_guard_observation']==observed
+
+
+@pytest.mark.asyncio
+async def test_disabled_guard_has_no_invented_index_observation(monkeypatch):
+    import strategies.hrs.decision_context as module
+    assert await module.capture_scan_market_guard(SimpleNamespace(circuit_breaker=None,_market_guard_config=None)) is None
+    with pytest.raises(ValueError,match='market_guard'):
+        await module.capture_scan_market_guard(SimpleNamespace(circuit_breaker=object(),_market_guard_config=None))
+
+
+@pytest.mark.asyncio
+async def test_transient_index_read_failure_cannot_attest_uncached_none(monkeypatch):
+    import strategies.hrs.decision_context as module
+    from shared.circuit_breaker import CircuitBreaker,floor_index_hour,load_circuit_breaker_config
+    at=AT+timedelta(minutes=21)
+    cfg=load_circuit_breaker_config()
+    db=SimpleNamespace(fetch_one=AsyncMock(side_effect=[RuntimeError('temporary read failure'),
+        {'equal_weight_12h':.01},{'equal_weight':.04}]))
+    breaker=CircuitBreaker(cfg,db,pool='hrs')
+    times=iter([at,at+timedelta(milliseconds=50)])
+    monkeypatch.setattr(module,'_scan_now',lambda:next(times))
+    with pytest.raises(ValueError,match='market_guard_source_cache_unproven'):
+        await module.capture_scan_market_guard(SimpleNamespace(circuit_breaker=breaker,_market_guard_config=cfg))
+    hour=floor_index_hour(at)-timedelta(hours=1)
+    assert hour.isoformat() not in breaker._index_cache
+    assert await breaker.load_index(hour)==.04

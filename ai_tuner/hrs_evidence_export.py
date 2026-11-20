@@ -73,13 +73,63 @@ def _run_rows(rows,*,kind=None,symbol=None,available_before=None):
         (symbol is None or row['symbol']==symbol) and (available_before is None or row['available_at']<=available_before))
 
 
+MERGED_FUNDING_FAMILY='funding_observations_inventory_merged'
+
+
+class _FundingInventoryView:
+    """Index only requested symbols once; original batch receipts stay immutable."""
+    _hrs_verified_archive_family=True
+    family='funding_observations'
+    def __init__(self,observations,records,scope):
+        self.temp=tempfile.TemporaryDirectory(prefix='hrs-funding-inventory-')
+        self.db=sqlite3.connect(str(Path(self.temp.name)/'observations.sqlite'))
+        self.db.execute('CREATE TABLE observations(symbol TEXT,source INTEGER,received INTEGER,body TEXT,PRIMARY KEY(symbol,source,received))')
+        self.symbols=set(scope['symbols']);self.start=_time(scope['window_start']);self.end=_time(scope['as_of'])
+        try:
+            for row in observations:self._insert(row)
+            from strategies.hrs.funding_inventory import KIND,inventory_observations
+            for parent in _decision_rows(records,kind=KIND):
+                rows=inventory_observations(parent,account_id=scope['account_id'])
+                available=_time(parent['available_at'])
+                # Never use a future publication as a historical boundary seed.
+                if available>self.end:continue
+                for row in rows:
+                    if _time(row['received_at'])<=self.start<available:continue
+                    self._insert(row)
+            self.db.commit()
+        except BaseException:
+            self.close();raise
+    def _insert(self,row):
+        if row['symbol'] not in self.symbols or _time(row['received_at'])>self.end:return
+        fields=('symbol','source_time','received_at','next_funding_time','funding_interval_hours','payload_hash')
+        body={key:row[key] for key in fields}
+        for key in ('source_time','received_at','next_funding_time'):body[key]=_time(body[key]).isoformat()
+        encoded=canonical_payload(body)[0]
+        key=(body['symbol'],self._micros(body['source_time']),self._micros(body['received_at']))
+        prior=self.db.execute('SELECT body FROM observations WHERE symbol=? AND source=? AND received=?',key).fetchone()
+        _require(prior is None or prior[0]==encoded,'funding_inventory_observation_conflict:'+body['symbol'])
+        if prior is None:self.db.execute('INSERT INTO observations VALUES(?,?,?,?)',(*key,encoded))
+    @staticmethod
+    def _micros(value):
+        delta=_time(value)-datetime(1970,1,1,tzinfo=timezone.utc)
+        return (delta.days*86400+delta.seconds)*1000000+delta.microseconds
+    def __iter__(self):
+        for row in self.db.execute('SELECT body FROM observations ORDER BY received,symbol,source'):yield json.loads(row[0])
+    def __len__(self):return self.db.execute('SELECT count(*) FROM observations').fetchone()[0]
+    def for_symbol(self,symbol,*,available_before=None,order_by_available=False):
+        before=self._micros(available_before or self.end)
+        for row in self.db.execute('SELECT body FROM observations WHERE symbol=? AND received<=? ORDER BY received,source',(symbol,before)):yield json.loads(row[0])
+    def close(self):
+        self.db.close();self.temp.cleanup()
+
+
 class _ArchiveSources:
     def __init__(self,source):
         from .replay.hrs_evidence_archive import EvidenceArchive,ArchiveError
         _require(len(canonical_payload(source)[0].encode())<=MAX_BYTES,'archive_descriptor_byte_limit')
         _require(not any(name in source for name in ('decision_evidence','equity_evidence','equity_checkpoints','funding_observations','hrs_funding_observations','market_bars','cash_flows')),
             'archive_uninventoried_source_family')
-        self.metadata=dict(source);descriptor=source['evidence_archive']
+        self.metadata=dict(source);self.inventory_views={};descriptor=source['evidence_archive']
         try:
             self.archive=EvidenceArchive.open(descriptor['path'],expected_manifest_sha256=descriptor.get('manifest_sha256'))
             self.forecast_closure=verify_forecast_source_closure(self)
@@ -90,8 +140,17 @@ class _ArchiveSources:
             if getattr(self,'archive',None) is not None:self.archive.close()
             raise
     def __enter__(self):return self
-    def __exit__(self,*args):self.archive.close()
+    def __exit__(self,*args):
+        for view in self.inventory_views.values():view.close()
+        self.inventory_views.clear();self.archive.close()
     def get(self,key,default=None):
+        if key==MERGED_FUNDING_FAMILY:
+            scope=self.metadata.get('funding_inventory_scope')
+            _require(isinstance(scope,dict),'funding_inventory_scope_missing')
+            identity=canonical_payload(scope)[1]
+            if identity not in self.inventory_views:
+                self.inventory_views[identity]=_FundingInventoryView(self.get('funding_observations',()),self.get('decision_evidence'),scope)
+            return self.inventory_views[identity]
         if key in self.archive.counts:return _ArchiveFamily(self,key)
         return self.metadata.get(key,default)
     def items(self):return self.metadata.items()
@@ -751,6 +810,10 @@ def verify_runtime_slot_occupancy(portal,raw,checked_at):
     financial=start['payload'].get('financial_context')
     _require(isinstance(financial,dict),'hrs_margin_raw_source_financial_missing')
     scope=_original_scope(financial)
+    if start['payload'].get('market_circuit_breaker_config') is not None:
+        guard=_market_guard_inputs(start,_time(raw['decision_at']),checked_at,
+            _slot_stages(records,analysis['run_id'],raw['symbol']))
+        _require(all(raw['risk'].get(key)==value for key,value in guard.items()),'market_guard_raw_source_mismatch')
     _require(_original_scope(raw.get('risk',{}))==scope,'hrs_margin_raw_source_scope_mismatch')
     required=scope==HRS_OWNED or financial.get('runtime_slot_scope') is not None
     if not required and occupancy.get('version')=='hrs_account_occupancy_v1' and 'slot_scope' not in occupancy:return
@@ -876,6 +939,54 @@ def _financial_equity_component(snapshot,financial,equities,records,released,run
     return hrs_equity,component_source
 
 
+def _market_guard_inputs(start,decision_at,checked_at,stages):
+    """Only original pre-boundary observations or exact later entry receipts qualify."""
+    from shared.circuit_breaker import floor_index_hour
+    snapshot=start['payload'];config=snapshot.get('market_circuit_breaker_config')
+    if config is None:return dict(pool_index=None,pool_index_12h=None)
+    financial=snapshot['financial_context'];observation=financial.get('market_guard_observation')
+    expected_hour=floor_index_hour(_time(decision_at))-timedelta(hours=1)
+    result=None
+    def values(payload):
+        projected={key:payload[key] for key in ('pool_index','pool_index_12h')}
+        for value in projected.values():
+            _require(value is None or not isinstance(value,bool),'market_guard_value_unproven')
+            if value is not None:
+                number=Decimal(str(value));_require(number.is_finite(),'market_guard_value_unproven')
+        return projected
+    try:
+        if observation is not None:
+            _require(isinstance(observation,dict) and observation.get('version')=='hrs_market_guard_observation_v1'
+                and observation.get('account_id')==financial['entry_policy']['account_id']
+                and observation.get('pool')=='hrs'
+                and observation.get('config_sha256')==canonical_payload(config)[1]
+                and _time(observation['index_hour'])==expected_hour
+                and _time(observation['requested_at'])<=_time(observation['available_at'])<=start['event_time']
+                and _time(observation['available_at'])<=_time(financial['available_at'])<=checked_at,
+                'market_guard_observation_unproven')
+            cache=snapshot['market_circuit_breaker_state']['index_cache']
+            key=expected_hour.isoformat()
+            _require(isinstance(cache,dict) and key in cache and key+':12h' in cache
+                and canonical_payload(cache[key])[1]==canonical_payload(observation['pool_index'])[1]
+                and canonical_payload(cache[key+':12h'])[1]==canonical_payload(observation['pool_index_12h'])[1],
+                'market_guard_snapshot_cache_unproven')
+            result=values(observation)
+            result['market_guard_evidence']=dict(source_kind='scan_start',source_evidence_id=start['evidence_id'],
+                source_payload_sha256=start['payload_sha256'],observation_sha256=canonical_payload(observation)[1])
+        for stage in stages:
+            payload=stage['payload']
+            if payload.get('stage')!='pool_circuit':continue
+            _require(stage['run_id']==start['run_id'] and stage['event_time']<=stage['available_at']<=checked_at
+                and _time(payload['index_hour'])==expected_hour,'market_guard_stage_unproven')
+            result=values(payload)
+            result['market_guard_evidence']=dict(source_kind='entry_stage_inputs',source_evidence_id=stage['evidence_id'],
+                source_payload_sha256=stage['payload_sha256'])
+        _require(result is not None,'market_guard_index_inputs_missing:'+str(start.get('run_id')))
+        return result
+    except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
+        raise DataBlocked(['market_guard_source_unproven']) from exc
+
+
 def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=None):
     if isinstance(records,_ArchiveFamily):groups=records.runs()
     else:
@@ -972,10 +1083,7 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
                 claims=facts['claims'];_require(isinstance(claims,list),'entry_claim_inventory_missing:'+symbol)
                 risk['claims_clear']=not any(c['symbol']==symbol and c.get('strategy')!='hrs' and c.get('claim_state') in ('ACTIVE','PENDING') and
                     (not c.get('expires_at') or _time(c['expires_at'])>available) for c in claims)
-            for key in ('pool_index','pool_index_12h'):
-                if key in facts:risk[key]=facts[key]
-                elif bootstrap['market_circuit_breaker_config'] is None:risk[key]=None
-                else:raise DataBlocked(['market_guard_index_inputs_missing:'+symbol])
+            risk.update(_market_guard_inputs(starts[0],decided,max(available,released),stages))
             for key in ('pre_entry_oi_usd','pre_entry_funding_rate'):
                 if key in facts:market[key]=facts[key]
             inventory_stage=next((r for r in reversed(stages) if r['payload'].get('stage')=='reservation_inventory'),None)
@@ -1018,8 +1126,27 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
 
 def _funding(records,source,symbols,start,end):
     observations=source.get('funding_observations',[])
-    if isinstance(observations,_ArchiveFamily):
-        evidence=dict(source='prospective_exchange_forecast',complete=True,observations_archive_family='funding_observations')
+    from strategies.hrs.funding_inventory import KIND
+    if next(_decision_rows(records,kind=KIND),None) is not None:
+        account=source.get('source_account_id')
+        if not account:
+            accounts={row['payload'].get('financial_context',{}).get('entry_policy',{}).get('account_id')
+                for row in _decision_rows(records,kind='scan_start')}
+            _require(len(accounts)==1 and None not in accounts,'funding_inventory_account_unproven')
+            account=next(iter(accounts))
+        scope=dict(version='hrs_inventory_schedule_projection_v1',account_id=account,
+            window_start=_iso(start),as_of=_iso(end),symbols=sorted(symbols))
+        if isinstance(source,_ArchiveSources):
+            source.metadata['funding_inventory_scope']=scope
+            observations=source.get(MERGED_FUNDING_FAMILY)
+        else:
+            view=_FundingInventoryView(observations,records,scope)
+            try:
+                _require(len(view)<=MAX_ROWS,'source_row_limit:derived_funding_observations')
+                observations=list(view)
+            finally:view.close()
+    if isinstance(observations,(_ArchiveFamily,_FundingInventoryView)):
+        evidence=dict(source='prospective_exchange_forecast',complete=True,observations_archive_family=MERGED_FUNDING_FAMILY if isinstance(observations,_FundingInventoryView) else 'funding_observations')
         schedule=attested_funding_schedule(dict(source='prospective_exchange_forecast',complete=True,observations=observations),symbols,start,end)
     else:
         evidence=dict(source='prospective_exchange_forecast',complete=True,observations=observations)
@@ -1089,7 +1216,10 @@ def export_evidence_bundle(sources,output_root,*,window_start,as_of,execution_mo
         if not archived:_require(len(canonical_payload(sources)[0].encode())<=MAX_BYTES,'source_byte_limit')
         missing=[]
         for name,gap in (('decision_evidence','decision_evidence_missing'),('funding_observations','funding_schedule_observations_missing'),('equity_checkpoints','bootstrap_checkpoint_history_missing')):
-            if not sources.get(name):missing.append(gap)
+            if not sources.get(name):
+                from strategies.hrs.funding_inventory import KIND
+                inventory=next(_decision_rows(sources.get('decision_evidence',()),kind=KIND),None) if name=='funding_observations' else None
+                if inventory is None:missing.append(gap)
         if missing:raise DataBlocked(missing)
         records=_records(sources.get('decision_evidence'))
         if not archived:verify_forecast_source_closure(sources,records)
@@ -1312,7 +1442,8 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
           AND event_time >= $1 AND event_time <= $2
           AND payload->'financial_context'->'entry_policy'->>'account_id'=$3)
         OR (kind='public_market_response' AND event_time >= $1 AND event_time <= $2)
-        ORDER BY available_at,evidence_id LIMIT $4""",(start,end,account_id,limit)),
+        OR (kind='funding_schedule_inventory' AND available_at >= $4 AND available_at <= $2 AND payload->>'account_id'=$3)
+        ORDER BY available_at,evidence_id LIMIT $5""",(start,end,account_id,start-timedelta(seconds=420),limit)),
         ('equity_evidence',"""SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
         FROM trading.hrs_equity_evidence WHERE account_id=$1 AND as_of >= $2 AND as_of <= $3
         ORDER BY available_at,evidence_sha256 LIMIT $4""",(account_id,start-timedelta(days=31),end,limit)),

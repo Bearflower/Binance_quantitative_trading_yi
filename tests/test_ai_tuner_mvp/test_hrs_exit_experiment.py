@@ -416,3 +416,15 @@ def test_engine_identity_binds_actual_scan_financial_context_code(monkeypatch):
     changed=m.engine_identity()
     assert changed['loaded_code_sha256']['strategies.hrs.decision_context'] != original['loaded_code_sha256']['strategies.hrs.decision_context']
     assert changed['sha256'] != original['sha256']
+
+
+def test_engine_identity_binds_funding_inventory_normalization_code(monkeypatch):
+    from strategies.hrs import funding_inventory
+    m=module();before=m.engine_identity()
+    assert 'strategies/hrs/funding_inventory.py' in before['source_files']
+    def different_inventory_source(*args,**kwargs):return []
+    monkeypatch.setattr(funding_inventory,'inventory_observations',different_inventory_source)
+    after=m.engine_identity()
+    assert before['source_files']==after['source_files']
+    assert before['loaded_code_sha256']!=after['loaded_code_sha256']
+    assert before['sha256']!=after['sha256']

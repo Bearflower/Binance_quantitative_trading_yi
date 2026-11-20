@@ -645,3 +645,182 @@ async def test_database_export_selects_referenced_equity_and_scanned_funding_onl
     funding=next(query for query,_ in db.queries if 'FROM public.ai_tuner_funding_schedule_observations' in query)
     assert 'evidence_sha256=ANY' in equity
     assert 'symbol=ANY' in funding
+
+
+@pytest.mark.parametrize('archived',[False,True])
+async def test_original_full_inventory_forecasts_fill_only_proven_missing_schedule_sources(tmp_path,archived):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from strategies.hrs.funding_inventory import FundingInventoryCollector
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter
+    from ai_tuner.replay.data_portal import DataPortal
+    from ai_tuner.replay.adapters.hrs import HrsAdapter
+    from ai_tuner.replay.engine import run_replay
+    from tests.test_ai_tuner_mvp.replay.test_hrs_wiring import broker
+    sources,bootstrap=captured_sources(tmp_path)
+    sources['source_account_id']='test';sources['funding_observations']=[]
+    for index in range(37):
+        requested=AT-timedelta(seconds=60)+timedelta(seconds=300*index)
+        premium=[dict(symbol=symbol,time=int(requested.timestamp()*1000),nextFundingTime=int((AT+timedelta(hours=8)).timestamp()*1000)) for symbol in ('A','UNUSED')]
+        api=SimpleNamespace(_request=AsyncMock(side_effect=[premium,[]]));recorder=SimpleNamespace(record=AsyncMock(),failed=False)
+        collector=FundingInventoryCollector(api,recorder,account_id='test');times=iter(requested+timedelta(seconds=i) for i in range(4));collector.clock=lambda:next(times)
+        await collector.collect_once();call=recorder.record.await_args
+        sources['decision_evidence'].append(envelope('inventory-'+str(index),call.args[1],call.args[2],call.kwargs['as_of']))
+        sources['decision_evidence'][-1]['available_at']=call.kwargs['available_at'].isoformat()
+    original=copy.deepcopy(sources)
+    if archived:
+        with EvidenceArchiveWriter(tmp_path/'archive',source_metadata={}) as writer:
+            for name,rows in sources.items():
+                if not isinstance(rows,list):continue
+                writer.declare_source(name,dict(expected_count=len(rows),query_scope='independent engineering inventory',account_id='test',window_start=(AT-timedelta(days=31)).isoformat(),window_end=(AT+timedelta(hours=3)).isoformat()))
+                for row in rows:writer.write_row(name,row)
+            descriptor=writer.finish()
+        sources=dict(source_account_id='test',evidence_archive=descriptor)
+    result=export_evidence_bundle(sources,tmp_path/'output',window_start=AT,as_of=AT+timedelta(hours=3),
+        execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('status')=='SEALED',result
+    path=Path(result['snapshot_dir']);portal=DataPortal(path,'hrs',AT+timedelta(hours=3),AT)
+    schedule=portal.funding_schedule_evidence()
+    if archived:
+        assert len(schedule['observations'])==37
+        assert {r['symbol'] for r in schedule['observations']}=={'A'}
+        from ai_tuner.hrs_evidence_export import snapshot_evidence_sources
+        stored=snapshot_evidence_sources(portal)
+        assert stored.archive.counts['funding_observations']==0
+        assert sum(1 for _ in stored.archive.iter_records('decision_evidence',kind='funding_schedule_inventory'))==37
+    if not archived:
+        assert sources==original
+        assert {r['symbol'] for r in schedule['observations']}=={'A'}
+    tables=json.loads((path/'hrs_state_tables.json').read_text())
+    assert any(e['type']=='hrs_score' for e in run_replay(portal,HrsAdapter(lambda at:tables),broker()).audit_events)
+    assert result['performance_qualified'] is False
+
+
+async def test_inventory_sql_retains_only_original_account_bound_420_second_seeds():
+    from ai_tuner.hrs_evidence_export import read_evidence_sources
+    class Transaction:
+        async def __aenter__(self):return self
+        async def __aexit__(self,*args):pass
+    class DB:
+        def __init__(self):self.queries=[]
+        def transaction(self,**options):
+            assert options==dict(readonly=True,isolation='repeatable_read')
+            return Transaction()
+        async def fetch(self,sql,*args):self.queries.append((sql,args));return []
+    db=DB();await read_evidence_sources(db,'test',window_start=AT,as_of=AT+timedelta(hours=3))
+    sql,args=db.queries[0]
+    assert "kind='funding_schedule_inventory'" in sql
+    assert "payload->>'account_id'=$3" in sql and 'available_at <= $2' in sql
+    assert args[3]==AT-timedelta(seconds=420)
+
+
+def _guarded_sources(tmp_path):
+    from shared.circuit_breaker import floor_index_hour
+    from datetime import datetime
+    sources,bootstrap=captured_sources(tmp_path)
+    from shared.circuit_breaker import load_circuit_breaker_config
+    config=load_circuit_breaker_config()
+    for row in sources['decision_evidence']:
+        if row['kind']!='scan_start':continue
+        at=datetime.fromisoformat(row['event_time'])
+        payload=row['payload'];payload['market_circuit_breaker_config']=dict(config)
+        financial=payload['financial_context'];financial['entry_policy']['account_id']='test'
+        financial['market_guard_observation']=dict(version='hrs_market_guard_observation_v1',account_id='test',pool='hrs',
+            index_hour=(floor_index_hour(at)-timedelta(hours=1)).isoformat(),
+            requested_at=(at-timedelta(seconds=2)).isoformat(),available_at=(at-timedelta(seconds=1)).isoformat(),
+            config_sha256=canonical_payload(config)[1],pool_index=.001,pool_index_12h=None)
+        key=financial['market_guard_observation']['index_hour']
+        payload['market_circuit_breaker_state']['index_cache']={key:.001,key+':12h':None}
+        row['payload_sha256']=canonical_payload(payload)[1]
+    return sources,bootstrap
+
+
+@pytest.mark.parametrize('problem',['account','config','pool','hour','future','bool','cache_missing','cache_mismatch'])
+def test_market_guard_observation_requires_original_account_config_hour_and_clocks(tmp_path,problem):
+    from ai_tuner.hrs_evidence_export import _market_guard_inputs,_records
+    from ai_tuner.replay.models import DataBlocked
+    sources,_=_guarded_sources(tmp_path)
+    row=next(r for r in sources['decision_evidence'] if r['kind']=='scan_start' and r['run_id']=='cycle-0')
+    observation=row['payload']['financial_context']['market_guard_observation']
+    if problem=='account':observation['account_id']='foreign'
+    elif problem=='config':observation['config_sha256']='0'*64
+    elif problem=='pool':observation['pool']='mtpcs'
+    elif problem=='hour':observation['index_hour']=row['event_time']
+    elif problem=='future':observation['available_at']= (AT+timedelta(hours=1,seconds=1)).isoformat()
+    elif problem=='cache_missing':row['payload']['market_circuit_breaker_state']['index_cache'].clear()
+    elif problem=='cache_mismatch':row['payload']['market_circuit_breaker_state']['index_cache'][observation['index_hour']]=.04
+    else:observation['pool_index']=True
+    row['payload_sha256']=canonical_payload(row['payload'])[1]
+    original=_records([row])[0]
+    with pytest.raises(DataBlocked,match='market_guard'):
+        _market_guard_inputs(original,original['event_time'],original['available_at'],[])
+
+
+def test_pre_boundary_market_guard_observation_seals_and_rechecks_original_risk_inputs(tmp_path):
+    from ai_tuner.hrs_evidence_export import export_evidence_bundle
+    from ai_tuner.replay.data_portal import DataPortal
+    from ai_tuner.replay.adapters.hrs import HrsAdapter
+    from ai_tuner.replay.engine import run_replay
+    from ai_tuner.replay.models import DataBlocked
+    from tests.test_ai_tuner_mvp.replay.test_hrs_wiring import broker
+    from tests.test_ai_tuner_mvp.replay.test_hrs_replay_review import refreeze,jsonl
+    sources,bootstrap=_guarded_sources(tmp_path)
+    result=export_evidence_bundle(sources,tmp_path/'output',window_start=AT,as_of=AT+timedelta(hours=3),
+        execution_model=bootstrap['execution_model'],monitoring_model=bootstrap['monitoring_model'],allow_inception_segment=True)
+    assert result.get('status')=='SEALED',result
+    path=Path(result['snapshot_dir']);portal=DataPortal(path,'hrs',AT+timedelta(hours=3),AT)
+    inputs=[json.loads(line) for line in (path/'hrs_decision_inputs.jsonl').read_text().splitlines()]
+    assert inputs[0]['risk']['pool_index']==.001
+    assert inputs[0]['risk']['pool_index_12h'] is None
+    tables=json.loads((path/'hrs_state_tables.json').read_text())
+    assert any(e['type']=='hrs_score' for e in run_replay(portal,HrsAdapter(lambda at:tables),broker()).audit_events)
+    inputs[0]['risk']['pool_index']=.5
+    from ai_tuner.replay.data_portal import compute_manifest_envelope_sha256,compute_manifest_sha256,sha256_file
+    target=path/'hrs_decision_inputs.jsonl';target.write_text(jsonl(inputs))
+    manifest_path=path/'manifest.json';manifest=json.loads(manifest_path.read_text())
+    manifest['files'][target.name]['sha256']=sha256_file(str(target))
+    manifest['sha256']=compute_manifest_sha256(manifest['files'])
+    manifest['envelope_sha256']=compute_manifest_envelope_sha256(manifest)
+    manifest_path.write_text(json.dumps(manifest));changed=DataPortal(path,'hrs',portal.as_of,portal.window_start)
+    with pytest.raises(DataBlocked,match='market_guard'):
+        run_replay(changed,HrsAdapter(lambda at:tables),broker())
+
+
+@pytest.mark.parametrize('problem',[None,'hour','future','run'])
+def test_original_per_entry_guard_receipt_overrides_only_its_proven_cycle_and_hour(tmp_path,problem):
+    from ai_tuner.hrs_evidence_export import _market_guard_inputs,_records
+    from ai_tuner.replay.models import DataBlocked
+    sources,_=_guarded_sources(tmp_path)
+    start=_records([next(r for r in sources['decision_evidence'] if r['kind']=='scan_start' and r['run_id']=='cycle-0')])[0]
+    observation=start['payload']['financial_context']['market_guard_observation'];at=start['event_time']
+    stage=envelope('cycle-0','entry_stage_inputs',dict(stage='pool_circuit',index_hour=observation['index_hour'],pool_index=None,pool_index_12h=.002),at+timedelta(seconds=1),'A')
+    if problem=='hour':stage['payload']['index_hour']=at.isoformat()
+    elif problem=='future':stage['event_time']=stage['available_at']=(at+timedelta(seconds=3)).isoformat()
+    elif problem=='run':stage['run_id']='foreign-run'
+    stage['payload_sha256']=canonical_payload(stage['payload'])[1];stage=_records([stage])[0]
+    if problem:
+        with pytest.raises(DataBlocked,match='market_guard'):_market_guard_inputs(start,at,at+timedelta(seconds=2),[stage])
+    else:
+        result=_market_guard_inputs(start,at,at+timedelta(seconds=2),[stage])
+        assert result['pool_index'] is None and result['pool_index_12h']==.002
+        assert result['market_guard_evidence']['source_evidence_id']==stage['evidence_id']
+
+
+from tests.test_ai_tuner_mvp.test_hrs_equity_bridge_sources import source_database as inventory_source_database
+
+
+async def test_readonly_inventory_seed_scope_uses_actual_availability_not_request_start(inventory_source_database):
+    from ai_tuner.hrs_evidence_export import read_evidence_sources
+    db=inventory_source_database
+    for identity,account,requested,available in [
+        ('eligible','test',AT-timedelta(seconds=450),AT-timedelta(seconds=399)),
+        ('stale','test',AT-timedelta(seconds=450),AT-timedelta(seconds=421)),
+        ('foreign','other',AT-timedelta(seconds=400),AT-timedelta(seconds=399)),
+        ('future','test',AT+timedelta(hours=3),AT+timedelta(hours=3,seconds=1))]:
+        payload=dict(account_id=account)
+        await db.execute('INSERT INTO hrs.hrs_decision_evidence VALUES($1,$2,$3,NULL,$4,$5,$6,$7::jsonb)',
+            identity,identity,'funding_schedule_inventory',requested,available,canonical_payload(payload)[1],json.dumps(payload))
+    await db.execute('SET default_transaction_read_only=on')
+    result=await read_evidence_sources(db,'test',window_start=AT,as_of=AT+timedelta(hours=3))
+    assert [r['evidence_id'] for r in result['decision_evidence']]==['eligible']

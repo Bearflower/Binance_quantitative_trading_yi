@@ -40,10 +40,10 @@ MODES = ('standard', 'emm', 'semi_emm', 'lv_rm')
 REAL_CAP_SOURCES = {'coingecko', 'coinmarketcap', 'cache_hit', 'coingecko_cache'}
 DEFAULT_OUTPUT = '/app/logs/hrs-acceptance.json'
 # Large public API bodies are unnecessary here; retain every decision/failure kind.
-EXCLUDED_KINDS = ['public_market_response', 'market_input']
+EXCLUDED_KINDS = ['public_market_response', 'market_input', 'funding_schedule_inventory']
 # Independent equity refresh and the daily candidate timer share startup run
 # context; their observations are inputs/heartbeats, not trading scan cycles.
-BACKGROUND_KINDS = frozenset({'equity_gate', 'market_cap_batch',
+BACKGROUND_KINDS = frozenset({'equity_gate', 'funding_schedule_inventory', 'market_cap_batch',
     'public_market_response', 'market_input', 'public_market_failure', 'market_input_failure'})
 
 
