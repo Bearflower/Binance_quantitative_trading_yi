@@ -79,6 +79,11 @@
     "spec_tests": 66,
     "quality_tests": 66,
     "production_deployed": false,
-    "reason": "preserve_live_214835f2_reviewed_history_repair"
+    "reason": "preserve_live_214835f2_reviewed_history_repair",
+    "ci_run": 44650959547,
+    "ci_tests_passed": 1947,
+    "ci_seconds": 198.76,
+    "ci_status": "success",
+    "ci_url": "https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/44650959547"
   }
 }
