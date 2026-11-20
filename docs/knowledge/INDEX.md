@@ -171,3 +171,5 @@
 
 ## 关联
 - [项目文档入口](../README.md)
+
+- 2026-11-20：[HRS 自身额度与账户真实可用保证金独立核算](decisions/Binance_quantitative_trading-20261120-hrs-owned-quota-account-free.md)；生产r8与剩余验收见关联实查。

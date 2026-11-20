@@ -1,0 +1,84 @@
+{
+  "kind": "hrs_readonly_current_entry_audit",
+  "checked_at": "2026-11-20T01:09:06.367550+00:00",
+  "live_release_sha": "214835f26d3a7e2d5fbaccbb2cd63d99ff455042",
+  "source_proof": {
+    "release_sha": "214835f26d3a7e2d5fbaccbb2cd63d99ff455042",
+    "source_files": 43,
+    "all_sources_match": true,
+    "mismatches": [],
+    "version": "GIT_SHA=214835f26d3a7e2d5fbaccbb2cd63d99ff455042\nDEPLOY_ID=00002401\nCI_RUN_NUMBER=36\nCI_RUN_ATTEMPT=1\n"
+  },
+  "policy_revision": 8,
+  "policy_expires_at": "2026-12-14T03:09:52.457088+00:00",
+  "margin_scope": "hrs_owned_quota_account_free_v1",
+  "risk_budget_scope": "hrs_minimum_executable_v1",
+  "gate": {
+    "ready": true,
+    "allowed": true,
+    "policy_revision": 8,
+    "as_of": "2026-11-20T01:07:50.150714+00:00",
+    "valid_until": "2026-11-20T01:09:50.150714+00:00",
+    "reasons": "[]",
+    "evidence_sha256": "bc43828640b2b77e74f3e4d405a67e9fd496e61b42c230e7312b79c7e81494e9"
+  },
+  "allocation": "52.36",
+  "limits": {
+    "account_margin": "54.6146621211",
+    "hrs_owned_margin": "0",
+    "reserved_margin": "0",
+    "margin_cap": "26.180",
+    "hrs_quota_remaining_margin": "26.180",
+    "account_available_balance": "463.88872834",
+    "account_reserved_margin": "5.31054",
+    "account_remaining_margin": "458.57818834",
+    "remaining_margin": "26.180"
+  },
+  "hrs_reservations": [],
+  "hrs_local_positions": 0,
+  "timeouts": 0,
+  "global_cooldown": false,
+  "consecutive_losses": 1,
+  "scope_exceptions": {
+    "symbol_stop_monitor": [
+      "WLDUSDT"
+    ],
+    "blacklist": [
+      "ADAUSDT",
+      "QUSDT",
+      "牛来USDT"
+    ]
+  },
+  "history_repair": {
+    "as_of": "2026-11-20T01:00:45.647917+00:00",
+    "marks": 634,
+    "ready": true,
+    "digest": "0e29f6ae16ac4e0bea4346df54c93d72b0921138ae3c73675a48ef33c84c1692",
+    "points": 640,
+    "window": "inception_segment",
+    "allowed": true,
+    "reasons": [],
+    "available_at": "2026-11-20T01:01:10.028789+00:00",
+    "qualified_30_day": false
+  },
+  "latest_completed_scan_at": "2026-11-20T00:23:51.327758+00:00",
+  "latest_scan_ordered_signals": 0,
+  "minimum_order_floor_enabled": true,
+  "actual_new_r8_order_observed": false,
+  "unfinished": [
+    "aug_sep_counterfactual_returns_acceptance_missing_original_inputs",
+    "sl_tp_parameter_experiment_no_winner",
+    "technical24h_and_financial5closed_natural_evidence",
+    "market_cap_identity_unverified_SKY_INIT_SENT_VELVET"
+  ],
+  "candidate_followup": {
+    "product_sha": "d1245de4c1ee3aad7e8268e2d62fe9795e83976b",
+    "ci_sha": "147b20594f55e819a7a23d8859c0a84b69261e75",
+    "local_tests_passed": 1947,
+    "local_seconds": 112.11,
+    "spec_tests": 66,
+    "quality_tests": 66,
+    "production_deployed": false,
+    "reason": "preserve_live_214835f2_reviewed_history_repair"
+  }
+}
