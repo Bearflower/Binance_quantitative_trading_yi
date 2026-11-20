@@ -428,3 +428,14 @@ def test_engine_identity_binds_funding_inventory_normalization_code(monkeypatch)
     assert before['source_files']==after['source_files']
     assert before['loaded_code_sha256']!=after['loaded_code_sha256']
     assert before['sha256']!=after['sha256']
+
+
+def test_engine_identity_binds_history_gap_risk_model(monkeypatch):
+    from strategies.hrs import equity_history_gap
+    m=module();before=m.engine_identity()
+    assert 'strategies/hrs/equity_history_gap.py' in before['source_files']
+    monkeypatch.setattr(equity_history_gap,'replay_inception_latches',lambda gate,samples:gate)
+    after=m.engine_identity()
+    assert before['source_files']==after['source_files']
+    assert before['loaded_code_sha256']!=after['loaded_code_sha256']
+    assert before['sha256']!=after['sha256']
