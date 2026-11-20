@@ -1389,5 +1389,151 @@
       "ethereum": "0x50f41f589afaca2ef41fdf590fe7b90cd26dee64"
     },
     "identity_notes": "Irys Layer-1 native IRYS issuer market cap. The Binance official futures announcement and CoinGecko API-ID page identify the same BSC contract; the project whitepaper section 8 confirms native IRYS. Contract representations do not multiply the issuer's circulating market cap."
+  },
+  "SKYUSDT": {
+    "symbol": "SKY",
+    "cg_id": "sky",
+    "cmc_id": 33038,
+    "name": "Sky",
+    "verified_at": "2026-11-20",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/4009f8bd8d85456189e9265d311b25de",
+      "https://www.coingecko.com/en/coins/sky",
+      "https://coinmarketcap.com/currencies/sky/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "contracts": {
+      "ethereum": "0x56072C95FAA701256059aa122697B133aDEd9279"
+    },
+    "identity_notes": "Binance SKYUSDT is the Sky governance token upgraded from Maker (MKR), not SKYAI or Skycoin. Binance futures announcement and provider Ethereum explorer links share the exact contract.",
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-20T01:33:28.502568+00:00",
+      "relative_difference": 0.0013616788780115192,
+      "max_relative_difference": 0.05,
+      "circulating_supply_relative_difference": 1.0127761323019731e-05,
+      "provider_time_skew_seconds": 3.0,
+      "max_provider_time_skew_seconds": 300,
+      "coingecko_market_cap": 1069882234,
+      "coinmarketcap_market_cap": 1071339070.0399976,
+      "coingecko_circulating_supply": 23408938193.328434,
+      "coinmarketcap_circulating_supply": 23408701113.189587,
+      "coingecko_observed_at": "2026-11-20T01:31:58.000Z",
+      "coinmarketcap_observed_at": "2026-11-20T01:32:01.000Z",
+      "evidence": [
+        "tests/fixtures/market_cap/cg_remaining_four_assets_20261120.json",
+        "tests/fixtures/market_cap/cmc_remaining_four_assets_20261120.json"
+      ]
+    }
+  },
+  "INITUSDT": {
+    "symbol": "INIT",
+    "cg_id": "initia",
+    "cmc_id": 33120,
+    "name": "Initia",
+    "verified_at": "2026-11-20",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/4e07a703c9da44709e22e79d0b4be452",
+      "https://www.coingecko.com/en/coins/initia",
+      "https://coinmarketcap.com/currencies/initia/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/en/support/announcement/detail/c288d0d677304b9e9246eceae0237ff3"
+    ],
+    "contracts": {
+      "initia": "uinit"
+    },
+    "identity_notes": "Native Initia L1 asset, denomination uinit; Binance Launchpool and both providers link initia.xyz and scan.initia.xyz. No EVM contract is asserted.",
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-20T01:33:28.502568+00:00",
+      "relative_difference": 0.0016747508994045086,
+      "max_relative_difference": 0.05,
+      "circulating_supply_relative_difference": 1.972656214943252e-06,
+      "provider_time_skew_seconds": 3.0,
+      "max_provider_time_skew_seconds": 300,
+      "coingecko_market_cap": 21874986,
+      "coinmarketcap_market_cap": 21838350.84752204,
+      "coingecko_circulating_supply": 219247914.43933702,
+      "coinmarketcap_circulating_supply": 219247481.93857598,
+      "coingecko_observed_at": "2026-11-20T01:31:58.000Z",
+      "coinmarketcap_observed_at": "2026-11-20T01:32:01.000Z",
+      "evidence": [
+        "tests/fixtures/market_cap/cg_remaining_four_assets_20261120.json",
+        "tests/fixtures/market_cap/cmc_remaining_four_assets_20261120.json"
+      ]
+    }
+  },
+  "SENTUSDT": {
+    "symbol": "SENT",
+    "cg_id": "sentient",
+    "cmc_id": 38868,
+    "name": "Sentient",
+    "verified_at": "2026-11-20",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/5fe5a15ee7cb403fb09f1e9f9b4cd80c",
+      "https://www.coingecko.com/en/coins/sentient",
+      "https://coinmarketcap.com/currencies/sentient/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/en/support/announcement/detail/85af9e52f60547dd8f7b67fd3dc2f7b4"
+    ],
+    "contracts": {
+      "ethereum": "0x56A3BA04E95d34268A19b2a4474DC979baBDaf76"
+    },
+    "identity_notes": "Binance Sentient listing publishes the Ethereum contract; both provider explorer links and the CMC quote platform match that contract.",
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-20T01:33:28.502568+00:00",
+      "relative_difference": 0.0015189797274141532,
+      "max_relative_difference": 0.05,
+      "circulating_supply_relative_difference": 4.3769710198738517e-07,
+      "provider_time_skew_seconds": 3.0,
+      "max_provider_time_skew_seconds": 300,
+      "coingecko_market_cap": 151267420,
+      "coinmarketcap_market_cap": 151037647.85560176,
+      "coingecko_circulating_supply": 7237882055.0,
+      "coinmarketcap_circulating_supply": 7237878887,
+      "coingecko_observed_at": "2026-11-20T01:31:58.000Z",
+      "coinmarketcap_observed_at": "2026-11-20T01:32:01.000Z",
+      "evidence": [
+        "tests/fixtures/market_cap/cg_remaining_four_assets_20261120.json",
+        "tests/fixtures/market_cap/cmc_remaining_four_assets_20261120.json"
+      ]
+    }
+  },
+  "VELVETUSDT": {
+    "symbol": "VELVET",
+    "cg_id": "velvet",
+    "cmc_id": 37298,
+    "name": "Velvet",
+    "verified_at": "2026-11-20",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/4f59bfc195ed4484ac810a9b8869fa86",
+      "https://www.coingecko.com/en/coins/velvet",
+      "https://coinmarketcap.com/currencies/velvet/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "contracts": {
+      "binance-smart-chain": "0x8b194370825E37b33373e74A41009161808C1488"
+    },
+    "identity_notes": "Binance futures listing publishes the Velvet BNB Chain contract; both provider explorer links and the CMC quote platform match that contract.",
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-20T01:33:28.502568+00:00",
+      "relative_difference": 0.005149702115933442,
+      "max_relative_difference": 0.05,
+      "circulating_supply_relative_difference": 0.0,
+      "provider_time_skew_seconds": 3.0,
+      "max_provider_time_skew_seconds": 300,
+      "coingecko_market_cap": 31976242,
+      "coinmarketcap_market_cap": 32140910.121087,
+      "coingecko_circulating_supply": 473856247.4718938,
+      "coinmarketcap_circulating_supply": 473856247.4718938,
+      "coingecko_observed_at": "2026-11-20T01:31:58.000Z",
+      "coinmarketcap_observed_at": "2026-11-20T01:32:01.000Z",
+      "evidence": [
+        "tests/fixtures/market_cap/cg_remaining_four_assets_20261120.json",
+        "tests/fixtures/market_cap/cmc_remaining_four_assets_20261120.json"
+      ]
+    }
   }
 }
