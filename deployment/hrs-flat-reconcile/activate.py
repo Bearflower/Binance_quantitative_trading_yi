@@ -95,7 +95,7 @@ def main(sha, image_digest, bundle_name):
 
     pin_path = ROOT/'.deploy_tmp/ledger-risk-active.json'
     pin = json.loads(pin_path.read_text())
-    original = ROOT/'.releases/hrs-optimization'/PIN
+    original = ROOT/'.releases/hrs-history-gap'/PIN
     previous = original/'images.json'
     predecessor = json.loads((original/'state.json').read_text())
     if (sha256(previous) != OVERLAY or predecessor.get('sha') != PIN
