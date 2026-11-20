@@ -94,6 +94,15 @@ class _FundingInventoryView:
                 # Never use a future publication as a historical boundary seed.
                 if available>self.end:continue
                 for row in rows:
+                    if row['symbol'] not in self.symbols:continue
+                    deadline=_time(row['next_funding_time'])
+                    if available>=deadline:
+                        # A timely transport receipt cannot stand in for its
+                        # later original publication. Dropping an in-window
+                        # deadline would silently omit a possible funding fee.
+                        _require(not self.start<deadline<=self.end,
+                            'funding_inventory_publication_not_before_settlement:'+row['symbol'])
+                        continue
                     if _time(row['received_at'])<=self.start<available:continue
                     self._insert(row)
             self.db.commit()

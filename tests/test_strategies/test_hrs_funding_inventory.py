@@ -135,3 +135,70 @@ async def test_bound_inventory_view_rejects_conflicting_original_observation_ide
     scope=dict(account_id='test',symbols=['A'],window_start=(AT+timedelta(seconds=3)).isoformat(),as_of=(AT+timedelta(seconds=4)).isoformat())
     with pytest.raises(DataBlocked,match='funding_inventory_observation_conflict'):
         _FundingInventoryView([conflict],[row],scope)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('publication_second',[59.5,60,61])
+@pytest.mark.parametrize('archived',[False,True])
+async def test_in_window_inventory_requires_publication_strictly_before_each_settlement(tmp_path,publication_second,archived):
+    """Run the real collector projection; no raw receipt clock is retimed."""
+    from strategies.hrs.funding_inventory import FundingInventoryCollector
+    from ai_tuner.hrs_evidence_export import _FundingInventoryView
+    from ai_tuner.replay.funding_history import attested_funding_schedule
+    from ai_tuner.replay.models import DataBlocked
+    originals=[]
+    for identity,request,premium_received,received,available,deadlines in [
+        ('seed',-10,-9,-8,-7,dict(A=3600,B=3600)),
+        ('current',50,58.9,59,publication_second,dict(A=60,B=80))]:
+        premiums=[dict(symbol=symbol,time=int((AT+timedelta(seconds=premium_received)).timestamp()*1000),
+            nextFundingTime=int((AT+timedelta(seconds=due)).timestamp()*1000)) for symbol,due in deadlines.items()]
+        api=SimpleNamespace(_request=AsyncMock(side_effect=[premiums,[]]));recorder=SimpleNamespace(record=AsyncMock(),failed=False)
+        collector=FundingInventoryCollector(api,recorder,account_id='test')
+        clocks=iter(AT+timedelta(seconds=value) for value in (request,premium_received,received,available))
+        collector.clock=lambda:next(clocks)
+        assert (await collector.collect_once())['status']=='complete'
+        call=recorder.record.await_args;encoded,digest=canonical_payload(call.args[2])
+        originals.append(dict(evidence_id=identity,run_id=identity,kind=call.args[1],symbol=None,
+            event_time=call.kwargs['as_of'],available_at=call.kwargs['available_at'],
+            payload=json.loads(encoded),payload_sha256=digest))
+    untouched=copy.deepcopy(originals)
+    archive=None;parents=originals
+    if archived:
+        from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter,EvidenceArchive
+        from ai_tuner.hrs_evidence_export import _ArchiveFamily
+        with EvidenceArchiveWriter(tmp_path/'archive',source_metadata={}) as writer:
+            writer.declare_source('decision_evidence',dict(expected_count=len(originals),account_id='test',
+                query_scope='bounded collector publication boundary',window_start=AT-timedelta(seconds=10),window_end=AT+timedelta(seconds=90)))
+            for parent in originals:writer.write_row('decision_evidence',parent)
+            descriptor=writer.finish()
+        archive=EvidenceArchive.open(descriptor['path'],expected_manifest_sha256=descriptor['manifest_sha256'])
+        parents=_ArchiveFamily(SimpleNamespace(archive=archive),'decision_evidence')
+        assert list(parents)==originals  # Includes original parent availability.
+    try:
+        scope=dict(account_id='test',symbols=['A','B'],window_start=AT.isoformat(),as_of=(AT+timedelta(seconds=90)).isoformat())
+        if publication_second>=60:
+            with pytest.raises(DataBlocked,match='funding_inventory_publication_not_before_settlement:A'):
+                _FundingInventoryView([],parents,scope)
+            # Unusable A evidence must not silently turn its actual settlement into
+            # an empty schedule. The independent, still prospective B remains usable.
+            scope['symbols']=['B']
+        view=_FundingInventoryView([],parents,scope)
+        try:
+            schedule=attested_funding_schedule(dict(source='prospective_exchange_forecast',complete=True,observations=view),tuple(scope['symbols']),AT,AT+timedelta(seconds=90))
+            if publication_second<60:assert schedule['A']==(AT+timedelta(seconds=60),)
+            assert schedule['B']==(AT+timedelta(seconds=80),)
+            assert originals==untouched
+        finally:view.close()
+        if publication_second>=60:
+            # A settlement already before this different window is outside its fee
+            # scope; keep the independently valid opening seed without retiming it.
+            later_start=AT+timedelta(seconds=65)
+            scope.update(symbols=['A','B'],window_start=later_start.isoformat())
+            view=_FundingInventoryView([],parents,scope)
+            try:
+                schedule=attested_funding_schedule(dict(source='prospective_exchange_forecast',complete=True,observations=view),('A','B'),later_start,AT+timedelta(seconds=90))
+                assert schedule==dict(A=(),B=(AT+timedelta(seconds=80),))
+                assert originals==untouched
+            finally:view.close()
+    finally:
+        if archive is not None:archive.close()
