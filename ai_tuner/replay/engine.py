@@ -92,11 +92,17 @@ def _run_replay(
     batch_bars = getattr(adapter, 'batch_bar_updates', False)
 
     bars_by_subject: Dict[str, List[Any]] = {}
+    decision_warmup: Dict[str, Any] = {}
     for symbol in ctx.universe.symbols:
         for interval in tuple(dict.fromkeys((*ctx.universe.intervals, *getattr(adapter, "extra_intervals", ())))):
             bars = portal.bars(symbol, interval)
             if not bars:
                 raise DataBlocked(["kline_empty:{0}:{1}".format(symbol, interval)])
+            if (ctx.strategy_id == 'hrs' and getattr(adapter, 'requires_decision_calendar', False)
+                    and interval == execution_interval == '1m'):
+                prior = next((bar for bar in reversed(bars) if bar.close_time <= portal.window_start), None)
+                if prior is not None:
+                    decision_warmup[symbol] = prior
             bars_by_subject["{0}|{1}".format(symbol, interval)] = [
                 bar for bar in bars if bar.close_time > portal.window_start
             ]
@@ -285,6 +291,8 @@ def _run_replay(
                     latest=next((candidate for candidate in reversed(bars_by_subject.get(event.subject+'|'+execution_interval,[]))
                                  if candidate.close_time<=event.time),None)
                     if latest is None:
+                        latest = decision_warmup.get(event.subject)
+                    if latest is None or latest.close_time > event.time:
                         raise DataBlocked(['hrs_decision_execution_bar_missing:'+event.subject])
                     broker.submit(intents,latest,event.time)
                 _require_funding_schedule(broker,expected)

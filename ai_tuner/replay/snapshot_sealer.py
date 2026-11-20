@@ -18,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, Optional
 
 from .data_portal import compute_manifest_envelope_sha256, compute_manifest_sha256, sha256_file
+from .models import to_utc_z
 
 
 _STRATEGIES = frozenset(("btc_eth_aggressive", "hrs"))
@@ -189,9 +190,9 @@ def seal_snapshot(
         manifest = {
             "manifest_version": 2,
             "strategy_id": strategy_id,
-            "as_of": times[0].strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "window_start": times[1].strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "window_end": times[2].strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "as_of": to_utc_z(times[0]),
+            "window_start": to_utc_z(times[1]),
+            "window_end": to_utc_z(times[2]),
             "source_provenance": "unverified",
             "files": files,
             "sha256": compute_manifest_sha256(files),

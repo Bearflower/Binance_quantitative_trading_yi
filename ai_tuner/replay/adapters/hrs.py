@@ -334,9 +334,15 @@ class HrsAdapter:
             for symbol in ctx.universe.symbols:
                 bars = self._portal.bars(symbol,'1m')
                 selected = [bar for bar in bars if self._start < bar.close_time <= self._portal.as_of]
-                expected = int((self._portal.as_of-self._start).total_seconds()/60)
-                if (len(selected)!=expected or not selected or selected[0].open_time!=self._start
-                        or selected[-1].close_time!=self._portal.as_of
+                first_minute = self._start.replace(second=0, microsecond=0)
+                last_minute = self._portal.as_of.replace(second=0, microsecond=0)
+                if first_minute < self._start and self._state['hrs_positions']['rows']:
+                    raise DataBlocked(['hrs_nonflat_partial_execution_bar_unproven:'+symbol])
+                expected = int((last_minute-first_minute).total_seconds()/60)
+                if (len(selected)!=expected or not selected or selected[0].open_time!=first_minute
+                        or selected[-1].close_time!=last_minute
+                        or any(bar.close_time-bar.open_time!=timedelta(minutes=1)
+                               or bar.open_time.second or bar.open_time.microsecond for bar in selected)
                         or any(right.open_time!=left.close_time for left,right in zip(selected,selected[1:]))):
                     raise DataBlocked(['hrs_execution_subbar_coverage_gap:'+symbol])
         elif entry_type != 'MARKET':

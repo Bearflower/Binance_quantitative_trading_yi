@@ -86,12 +86,12 @@ def test_prospective_funding_evidence_accepts_interval_change_and_blocks_hole():
         history.attested_funding_schedule(evidence,('A',),start,end)
 
 
-def _hrs_fixture(tmp_path, *, missing=None, entry_type='MARKET', subbars=False, subbar_volume='10000', config_patch=None, candidate_drop_after=None, initial_position=False, cash_flow=None, omit_preentry=False, market_patch=None):
+def _hrs_fixture(tmp_path, *, missing=None, entry_type='MARKET', subbars=False, subbar_volume='10000', config_patch=None, candidate_drop_after=None, initial_position=False, cash_flow=None, omit_preentry=False, market_patch=None, first_decision_seconds=None, execution_warmup=False, fractional_start_ms=0):
     import json
     from .conftest import make_bars,write_snapshot
     from ai_tuner.replay.data_portal import DataPortal
     from ai_tuner.replay.adapters.hrs import HrsAdapter
-    start=AT;end=start+timedelta(hours=3)
+    start=AT+timedelta(milliseconds=fractional_start_ms);end=start+timedelta(hours=3)
     config={'kline':{'min_klines_for_analysis':24},'scoring':{'entry_threshold':0,
         'technical':{'min_total_score':0,'min_primary_pattern_score':0}},
         'lv_rm':{'enabled':False},'circuit_breaker':{'enabled':False},
@@ -104,19 +104,21 @@ def _hrs_fixture(tmp_path, *, missing=None, entry_type='MARKET', subbars=False, 
             'ratio_cap':'1','entry_ceiling':'10000','revision':1,'allow_add':False,'effective_at':(start-timedelta(days=1)).isoformat(),'expires_at':(end+timedelta(days=1)).isoformat()},
         'ledger':{'segment_id':'test','units':'10000','history_complete_from':(AT-timedelta(hours=8)).isoformat(),
                   'history':[{'as_of':(AT-timedelta(hours=8)).isoformat(),'equity':'10000','units':'10000','nav':'1'},
-                             {'as_of':AT.isoformat(),'equity':'10000','units':'10000','nav':'1'}],
+                             {'as_of':start.isoformat(),'equity':'10000','units':'10000','nav':'1'}],
                   'allow_inception_segment':True,'gate_state':None},
         'runtime':{'signal_timestamps':{},'pending_timeout_entries':[],'pause_until':None,
                    'circuit_breakers':{},'daily_open_count':{'short':0,'long':0},
                    'daily_reset_date':AT.date().isoformat(),'consecutive_losses':0,
                    'drawdown_pause_until':None,'stop_loss_monitor':{},'market_cooldowns':{},'total_pnl':'0'}}
     bootstrap['monitoring_model']={'version':'hrs_cycle_monitor_v1',
-        'cadence_seconds':config.get('cycle',{}).get('check_interval_seconds',3600),'anchor_at':start.isoformat()}
+        'cadence_seconds':config.get('cycle',{}).get('check_interval_seconds',3600),'anchor_at':start.replace(second=0,microsecond=0).isoformat()}
     if subbars:
         bootstrap['execution_model']={'version':'hrs_1m_volume_v1','participation_rate':'.01','timeout_minutes':15}
     inputs=[]
     for i in range(1,4):
         decision=start+timedelta(hours=i)
+        if i==1 and first_decision_seconds is not None:
+            decision=start+timedelta(seconds=first_decision_seconds)
         row={'symbol':'A','decision_at':decision.isoformat(),'observed_at':decision.isoformat(),'complete':True,
              'candidate_scan':{'as_of':start.isoformat(),'complete':True,'short_candidates':[],
                                'long_candidates':(['A'] if candidate_drop_after is None or i<candidate_drop_after else []),
@@ -155,7 +157,8 @@ def _hrs_fixture(tmp_path, *, missing=None, entry_type='MARKET', subbars=False, 
     directory=str(tmp_path/'hrs')
     all_bars={'A|1h':bars1,'A|4h':bars4}
     if subbars:
-        rows=make_bars('A','1m',start,[('100','101','99','100')]*180,1)
+        rows=make_bars('A','1m',start.replace(second=0,microsecond=0)-timedelta(minutes=1) if execution_warmup else start.replace(second=0,microsecond=0),
+                       [('100','101','99','100')]*(181 if execution_warmup else 180),1)
         for row in rows:
             row['volume']=subbar_volume
         all_bars['A|1m']=rows
@@ -448,3 +451,40 @@ def test_nonfinite_raw_market_inputs_are_structured_data_blocks(tmp_path,field):
     adapter.on_bar(portal.bars('A','1h')[-3],ctx)
     with pytest.raises(DataBlocked):
         adapter.intents(ctx)
+
+
+def test_first_hrs_decision_uses_real_closed_execution_warmup_without_early_fill(tmp_path):
+    from ai_tuner.replay.engine import run_replay
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True,first_decision_seconds=5,execution_warmup=True)
+    result=run_replay(portal,adapter,broker(),include_snapshots=True)
+    fills=[r for r in result.audit_events if r['type']=='fill' and r['payload']['side']=='OPEN_LONG']
+    assert fills
+    assert all(datetime.fromisoformat(r['ts'].replace('Z','+00:00'))>AT+timedelta(seconds=5) for r in fills)
+    assert not result.invariant_violations
+
+
+def test_first_hrs_decision_cannot_borrow_future_execution_bar(tmp_path):
+    from ai_tuner.replay.engine import run_replay
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True,first_decision_seconds=5)
+    with pytest.raises(DataBlocked,match='hrs_decision_execution_bar_missing'):
+        run_replay(portal,adapter,broker(),include_snapshots=True)
+
+
+def test_actual_fractional_scan_boundary_keeps_original_utc_minute_bars(tmp_path):
+    from ai_tuner.replay.engine import run_replay
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True,
+        first_decision_seconds=5,execution_warmup=True,fractional_start_ms=250)
+    result=run_replay(portal,adapter,broker(),include_snapshots=True)
+    fills=[r for r in result.audit_events if r['type']=='fill' and r['payload']['side']=='OPEN_LONG']
+    assert fills
+    assert all(datetime.fromisoformat(r['ts'].replace('Z','+00:00'))>portal.window_start+timedelta(seconds=5) for r in fills)
+    assert portal.window_start.microsecond==250000
+    assert all(bar.open_time.second==bar.open_time.microsecond==0 for bar in portal.bars('A','1m'))
+
+
+def test_partial_first_minute_cannot_execute_unproven_opening_position(tmp_path):
+    from ai_tuner.replay.engine import run_replay
+    portal,adapter,_=_hrs_fixture(tmp_path,entry_type='LIMIT',subbars=True,
+        execution_warmup=True,fractional_start_ms=250,initial_position=True)
+    with pytest.raises(DataBlocked,match='hrs_nonflat_partial_execution_bar_unproven'):
+        run_replay(portal,adapter,broker(),include_snapshots=True)
