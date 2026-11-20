@@ -18,14 +18,17 @@ from scripts.scoped_stop_followup import (  # noqa: E402
     Runtime as BaseRuntime, CONTAINERS, STACK_FILES, atomic_json, image_only,
 )
 
-PREDECESSOR_SHA = "4316920f0de898e3367d351e90415e035851033c"
-PREDECESSOR_OVERLAY_SHA256 = "bb6e7ac2280f87fbe10a18af4ef7c5bd138b081865ef6d4024a37ad816abc7db"
+PREDECESSOR_SHA = "476da205e000ed161499cfaaed3883d5d99cd799"
+PREDECESSOR_OVERLAY_SHA256 = "7377908b253a662bdce5b2e1efc0b3363919e746a427cbf2050e661735d312af"
 SERVICE = "dashboard-api"
 LIVE_GRID_REPAIR_REF = "local/grid-repair-dashboard-api:ab38fbc7"
 LIVE_GRID_REPAIR_IMAGE = "sha256:ba4fe00c485190b33dc29fb6c55b20c61023304b16fa19b859c013ab10b009a5"
 ARCHIVE = Path(".releases/dashboard-audit-20261118/pm-h1-strategy-proof-v2.json")
 ARCHIVE_TARGET = "/app/annual-income/pm-h1-strategy-proof-v2.json"
 ARCHIVE_HASH = "e26e26d769d6a8f472ea7a63fe2c8c29604bd21616246d626f5c65c8e5770686"
+MANUAL_FILE = Path(".releases/dashboard-audit-20261118/pm-manual-history-20261120.json")
+MANUAL_TARGET = "/app/annual-income/pm-manual-history-20261120.json"
+MANUAL_HASH = "a27bb649af97c12a8fe683fbda46fa5885dbaa73e4df143522fa8874cdf53553"
 SOURCE_PATHS = (
     "dashboard/backend/services/exchange_ledger.py",
     "dashboard/backend/services/grid_subaccount.py",
@@ -197,7 +200,12 @@ class Runtime(BaseRuntime):
         archive = self.root / ARCHIVE
         if sha256(archive.read_bytes()) != ARCHIVE_HASH:
             raise ReleaseBlocked("annual income archive digest mismatch")
-        atomic_json(self.overlay, build_overlay(original, self.image))
+        manual = self.root / MANUAL_FILE
+        if sha256(manual.read_bytes()) != MANUAL_HASH:
+            raise ReleaseBlocked("manual income history digest mismatch")
+        overlay = build_overlay(original, self.image)
+        overlay["services"][SERVICE].setdefault("volumes", []).append(f"{manual}:{MANUAL_TARGET}:ro")
+        atomic_json(self.overlay, overlay)
         old_config = json.loads(self.run(self.compose(SERVICE, overlay=self.previous_overlay) +
                                          ["config", "--format", "json"]))["services"][SERVICE]
         new_config = json.loads(self.run(self.compose(SERVICE, overlay=self.overlay) +
@@ -208,8 +216,15 @@ class Runtime(BaseRuntime):
         if (len(mounts) != 1
                 or {k: v for k, v in mounts[0].items() if k != "bind"} != expected_mount):
             raise ReleaseBlocked("unexpected annual archive mount configuration")
+        volumes = new_config.get("volumes", [])
+        manual_mounts = [v for v in volumes if v.get("target") == MANUAL_TARGET]
+        if (len(manual_mounts) != 1
+                or {k: v for k, v in manual_mounts[0].items() if k != "bind"}
+                != {"type": "bind", "source": str(manual), "target": MANUAL_TARGET, "read_only": True}):
+            raise ReleaseBlocked("unexpected manual history mount configuration")
+        new_config["volumes"] = [v for v in volumes if v.get("target") != MANUAL_TARGET]
         if not image_only(old_config, new_config):
-            raise ReleaseBlocked("effective dashboard Compose drift beyond image")
+            raise ReleaseBlocked("effective dashboard Compose drift beyond image and manual archive")
         atomic_json(self.release_dir / "exchange-before.json", self.pre)
         self.record("in_progress", "preflight")
 
@@ -264,7 +279,9 @@ class Runtime(BaseRuntime):
                                 or year.get("report_version") != "exchange-income-v1-pm-archive-v3"
                                 or year.get("total_pnl") is None
                                 or year.get("archive_attribution_count") != 435
-                                or year.get("win_archive_sample_count") != 1
+                                or (year.get("win_archive_sample_count") or 0) < 2
+                                or year.get("manual_attribution_count") != 1017
+                                or year.get("manual_closure_count") != 75
                                 or (year.get("win_live_sample_count") or 0) < 1
                                 or year.get("win_rate_reason") != "annual_verified_sample_only"
                                 or year.get("strategy_attribution_complete") is not False):

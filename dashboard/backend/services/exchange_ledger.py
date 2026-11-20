@@ -43,8 +43,19 @@ class ExchangeLedgerDashboardMixin:
     async def _verified_lifecycles(self, report, strategy_ids):
         if "archive_closures" in report and report.get("publication_status") == "published":
             archive_stats = annual_income_archive.archive_lifecycle_stats(report, strategy_ids)
-            live_window = dict(report, start_ms=annual_income_archive.END_MS)
+            live_window = dict(report, start_ms=annual_income_archive.END_MS,
+                               events=report.get("automatic_events", report["events"]))
             live_stats = await self._verified_live_lifecycles(live_window, strategy_ids, verified_sample=True)
+            manual = report.get("manual_closures", [])
+            if manual:
+                before = [row for row in manual
+                          if _ms(datetime.fromisoformat(row["end"])) < annual_income_archive.END_MS]
+                after = [row for row in manual if row not in before]
+                archive_stats = annual_income_archive.archive_lifecycle_stats(
+                    dict(report, archive_closures=report["archive_closures"] + before), strategy_ids)
+                manual_live = annual_income_archive.archive_lifecycle_stats(
+                    dict(report, archive_closures=after), strategy_ids)
+                live_stats = annual_income_archive.combine_lifecycle_samples(manual_live, live_stats, strategy_ids)
             return annual_income_archive.combine_lifecycle_samples(archive_stats, live_stats, strategy_ids)
         return await self._verified_live_lifecycles(report, strategy_ids)
 
@@ -165,7 +176,8 @@ class ExchangeLedgerDashboardMixin:
                     self._db_manager, account, archive.END_MS, _ms(end),
                     f"annual-archive-tail:{archive.END_MS}", current=current,
                     refresh_seconds=int(os.environ.get("LEDGER_REFRESH_SECONDS", "60")))
-                return archive.combine_archive(prefix, suffix)
+                combined = archive.combine_archive(prefix, suffix)
+                return archive.apply_manual_history(combined, archive.load_manual_history())
             except (ValueError, OSError) as exc:
                 logging.getLogger(__name__).warning("Annual income archive unavailable: %s", exc)
         return await read_published_report(
@@ -178,7 +190,8 @@ class ExchangeLedgerDashboardMixin:
             'report_id', 'report_version', 'account_id', 'start_ms', 'end_ms',
             'requested_end_ms', 'as_of', 'stale_seconds', 'account_coverage_complete',
             'strategy_attribution_complete', 'coverage_gaps', 'other_asset_totals',
-            'publication_status', 'refresh_error', 'income_archive_end_ms', 'archive_attribution_count')}
+            'publication_status', 'refresh_error', 'income_archive_end_ms', 'archive_attribution_count',
+            'manual_attribution_count', 'manual_closure_count')}
 
     def _strategy_projection(self, report, strategy_id):
         complete = report['strategy_attribution_complete']

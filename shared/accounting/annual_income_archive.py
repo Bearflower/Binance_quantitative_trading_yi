@@ -1,7 +1,7 @@
 """Publish a verified archive prefix with the contiguous live income report."""
 
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from functools import lru_cache
 import hashlib
@@ -22,6 +22,12 @@ ARCHIVE_VERSION = "exchange-income-v1-pm-archive-v1"
 PROOF_VERSION = "exchange-income-v1-pm-archive-v3"
 PROOF_PATH = Path("/app/annual-income/pm-h1-strategy-proof-v2.json")
 PROOF_SHA256 = "e26e26d769d6a8f472ea7a63fe2c8c29604bd21616246d626f5c65c8e5770686"
+MANUAL_PATH = Path("/app/annual-income/pm-manual-history-20261120.json")
+MANUAL_SHA256 = "a27bb649af97c12a8fe683fbda46fa5885dbaa73e4df143522fa8874cdf53553"
+MANUAL_SYMBOLS = frozenset(("BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "TRXUSDT", "BNBUSDT"))
+BEIJING = timezone(timedelta(hours=8))
+MARCH = datetime(2026, 3, 1, tzinfo=BEIJING)
+SEPTEMBER = datetime(2026, 9, 1, tzinfo=BEIJING)
 STRATEGIES = frozenset(("btc_eth", "btc_eth_aggressive", "hrs", "new_coin"))
 
 
@@ -158,6 +164,90 @@ def combine_archive(prefix, suffix):
         raise ValueError("annual income attribution does not balance")
     result["report_id"] = hashlib.sha256(
         f"{result['report_version']}:{ARCHIVE_SHA256}:{PROOF_SHA256}:{suffix['report_id']}".encode()).hexdigest()
+    return result
+
+
+@lru_cache(maxsize=1)
+def load_manual_history():
+    if not MANUAL_PATH.is_file():
+        return None
+    payload = MANUAL_PATH.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != MANUAL_SHA256:
+        raise ValueError("manual history digest mismatch")
+    return json.loads(payload)
+
+
+def _income_key(row):
+    return row["income_type"], str(row["tran_id"])
+
+
+def apply_manual_history(report, supplement):
+    """Apply the user's opening-date rule only to formerly unassigned income."""
+    if supplement is None or report["end_ms"] < supplement["cutoff_ms"]:
+        return report
+    if supplement["version"] != 1 or supplement["account_id"] != ACCOUNT:
+        raise ValueError("manual history account or schema mismatch")
+    original = {_income_key(row): row for row in report["events"]}
+    reviewed = {}
+    for row in supplement["attributions"]:
+        key = _income_key(row)
+        at = datetime.fromisoformat(row["event_time_utc"])
+        opened = datetime.fromisoformat(row["opening_time_utc"]) if row["opening_time_utc"] else None
+        owner = row["strategy"]
+        if owner == "non_strategy":
+            eligible = (opened or at) < MARCH
+        else:
+            eligible = (owner == "btc_eth_aggressive" and row["symbol"] in MANUAL_SYMBOLS
+                        and opened is not None and MARCH <= opened < SEPTEMBER)
+        fact = original.get(key)
+        if (not eligible or (opened is not None and opened > at) or key in reviewed
+                or not fact or fact["symbol"] != row["symbol"] or fact["asset"] != "USDT"
+                or Decimal(fact["amount"]) != Decimal(row["amount"])
+                or datetime.fromisoformat(fact["event_time_utc"]) != at):
+            raise ValueError("manual history does not match original trade and income scope")
+        reviewed[key] = owner
+
+    decisions = {key: owner for key, owner in reviewed.items() if not original[key]["strategy"]}
+    changes = [dict(original[key], strategy=owner, reason=None, attribution_source="owner_rule")
+               for key, owner in decisions.items()]
+    if not changes:
+        return report
+    updated = dict(original)
+    updated.update((_income_key(row), row) for row in changes)
+
+    facts = [dict(row, income=row["amount"], event_time_utc=datetime.fromisoformat(row["event_time_utc"]))
+             for row in updated.values()]
+    assignments = [dict(row, algorithm_version=1, method="annual_attribution_overlay",
+                        evidence={"source": "owner_rule" if _income_key(row) in decisions else "published_attribution"})
+                   for row in facts if row["strategy"]]
+    recomputed = build_economic_report([], facts, [], derived_attributions=assignments)
+    recomputed.pop("attribution_conflicts")
+    result = dict(report, **recomputed)
+    if (result["account_components"] != report["account_components"]
+            or result["account_usdt_total"] != report["account_usdt_total"]):
+        raise ValueError("manual history changed exchange totals")
+
+    candidates = []
+    used_fills = set()
+    for row in report["archive_closures"]:
+        used_fills.update((row["symbol"], str(fill)) for fill in row["fill_ids"])
+    for row in supplement["closures"]:
+        keys = [tuple(key) for key in row["event_keys"]]
+        if (not any(k in decisions and k[0] in ("COMMISSION", "REALIZED_PNL") for k in keys)
+                or any(k not in updated or updated[k]["strategy"] != row["strategy"] for k in keys)):
+            continue
+        fill_keys = {(row["symbol"], str(fill)) for fill in row["fill_ids"]}
+        if (len(row["fill_ids"]) < 2 or fill_keys & used_fills or len(fill_keys) != len(row["fill_ids"])
+                or len(set(keys)) != len(keys)
+                or sum((Decimal(updated[k]["amount"]) for k in keys), Decimal(0)) != Decimal(row["pnl"])):
+            raise ValueError("manual closure proof overlaps or does not balance")
+        used_fills.update(fill_keys)
+        candidates.append(row)
+    result.update(events=list(updated.values()),
+                  unattributed=[row for row in report["unattributed"] if _income_key(row) not in decisions],
+                  automatic_events=report["events"], manual_closures=candidates,
+                  manual_attribution_count=len(changes), manual_closure_count=len(candidates),
+                  report_id=hashlib.sha256(f"{report['report_id']}:{MANUAL_SHA256}".encode()).hexdigest())
     return result
 
 

@@ -49,6 +49,8 @@ class ErrorResponse(BaseModel):
 # ========================================
 
 class LedgerMetadata(BaseModel):
+    manual_attribution_count: Optional[int] = None
+    manual_closure_count: Optional[int] = None
     report_id: Optional[str] = None
     publication_status: Optional[str] = None
     refresh_error: Optional[str] = None

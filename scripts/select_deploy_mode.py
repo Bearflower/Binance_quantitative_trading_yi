@@ -36,6 +36,8 @@ CONSISTENCY_MARKER = ".github/deploy-modes/dashboard-consistency-20261113"
 CONSISTENCY_BASE = "4bdc1f6085c4c449ab175c31f6536eb0f6efc66d"
 ANNUAL_MARKER = ".github/deploy-modes/dashboard-annual-closure-sample-20261118"
 ANNUAL_BASE = "f85f32c68c3e00c3429866df69c84790f3dabd07"
+MANUAL_HISTORY_MARKER = ".github/deploy-modes/dashboard-manual-history-20261120"
+MANUAL_HISTORY_BASE = "ae684d6d411ec4aa16c0cb93bf339927f5575da9"
 VERIFIED_PERIOD_MARKER = ".github/deploy-modes/dashboard-verified-period-20261119"
 VERIFIED_PERIOD_BASE = "5c24cc5a20ddd8cce124daed7ea529cbe0e7188b"
 DASHBOARD_CACHE_MARKER = ".github/deploy-modes/dashboard-cache-refresh-20261112"
@@ -72,7 +74,7 @@ def select_deploy_mode(
     if marker_changes in ([("A", ".github/deploy-modes/xau-review-20261113")],
                            [("A", ".github/deploy-modes/xau-review-20261113-retry1")]):
         return "xau-review"
-    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, HISTORICAL_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, ANNUAL_MARKER, VERIFIED_PERIOD_MARKER, GRID_DASHBOARD_MARKER}:
+    if marker_changes and marker_changes[0][1] not in MARKERS | {EXECUTION_FACTS_MARKER, ALLOCATION_RECONCILE_MARKER, ALLOCATION_RECONCILE_RETRY_MARKER, REMEDIATION_MARKER, SUCCESSOR_MARKER, SUCCESSOR_RECOVERY_MARKER, RISK_FOLLOWUP_MARKER, AI_TUNER_TRIAL_MARKER, INCOME_ATTRIBUTION_MARKER, INCOME_ATTRIBUTION_REFRESH_MARKER, HISTORICAL_MARKER, GRID_PM_MARKER, SEVEN_GAPS_MARKER, DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, ANNUAL_MARKER, VERIFIED_PERIOD_MARKER, MANUAL_HISTORY_MARKER, GRID_DASHBOARD_MARKER}:
         raise DeployModeError("unrecognized deployment marker")
     if any(path == GRID_DASHBOARD_MARKER for _, path in marker_changes):
         if marker_changes != [("A", GRID_DASHBOARD_MARKER)]:
@@ -80,7 +82,7 @@ def select_deploy_mode(
         return "grid-subaccount-dashboard"
     if marker_changes == [("A", CONSISTENCY_MARKER)]:
         return "dashboard-performance"
-    if marker_changes in ([("A", ANNUAL_MARKER)], [("A", VERIFIED_PERIOD_MARKER)]):
+    if marker_changes in ([("A", ANNUAL_MARKER)], [("A", VERIFIED_PERIOD_MARKER)], [("A", MANUAL_HISTORY_MARKER)]):
         return "dashboard-performance"
     if any(path == DASHBOARD_CACHE_MARKER for _, path in marker_changes):
         if marker_changes != [("A", DASHBOARD_CACHE_MARKER)]:
@@ -207,7 +209,8 @@ def _validate_income_scope(base: str, changes: list[tuple[str, str]]) -> None:
 
 
 def _validate_dashboard_scope(base: str, changes: list[tuple[str, str]]) -> None:
-    reviewed = ((base == VERIFIED_PERIOD_BASE and ("A", VERIFIED_PERIOD_MARKER) in changes)
+    reviewed = ((base == MANUAL_HISTORY_BASE and ("A", MANUAL_HISTORY_MARKER) in changes)
+                or (base == VERIFIED_PERIOD_BASE and ("A", VERIFIED_PERIOD_MARKER) in changes)
                 or (base == ANNUAL_BASE and ("A", ANNUAL_MARKER) in changes)
                 or (base == CONSISTENCY_BASE and ("A", CONSISTENCY_MARKER) in changes)
                 or (base == DASHBOARD_PERFORMANCE_BASE and ("A", DASHBOARD_PERFORMANCE_MARKER) in changes)
@@ -216,7 +219,7 @@ def _validate_dashboard_scope(base: str, changes: list[tuple[str, str]]) -> None
     if not reviewed:
         raise DeployModeError("dashboard performance release must start from reviewed main")
     allowed = {
-        DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, ANNUAL_MARKER, VERIFIED_PERIOD_MARKER,
+        DASHBOARD_PERFORMANCE_MARKER, DASHBOARD_DEFAULT_MARKER, DASHBOARD_CACHE_MARKER, CONSISTENCY_MARKER, ANNUAL_MARKER, VERIFIED_PERIOD_MARKER, MANUAL_HISTORY_MARKER,
         ".github/workflows/deploy.yml",
         "dashboard/backend/services/exchange_ledger.py", "dashboard/backend/models/schemas.py",
         "dashboard/frontend/index.html", "dashboard/frontend/js/main.js",

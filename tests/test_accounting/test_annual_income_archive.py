@@ -78,3 +78,29 @@ def test_proof_corrects_owner_totals_and_exposes_only_verified_sample():
 
     with pytest.raises(ValueError, match="does not match"):
         archive.apply_proof([income], dict(proof, attributions=[dict(row, income="0.35")]))
+
+
+def test_manual_history_keeps_proven_owner_and_exchange_totals():
+    opened = datetime(2026, 3, 3, tzinfo=timezone.utc)
+    rows = [dict(account_id="default", income_type="COMMISSION", tran_id=str(n),
+                 symbol="BTCUSDT", asset="USDT", income=Decimal("-1"),
+                 event_time_utc=opened) for n in (1, 2)]
+    original = build_economic_report([], rows, [], derived_attributions=[
+        dict(rows[0], strategy="btc_eth", method="verified", evidence={"order": "proof"}, algorithm_version=1)
+    ])
+    original.update(end_ms=archive.END_MS, report_id="year", archive_closures=[])
+    decisions = [dict(row, amount="-1", strategy="btc_eth_aggressive",
+                      event_time_utc=opened.isoformat(), opening_time_utc=opened.isoformat()) for row in rows]
+    supplement = dict(account_id="default", version=1, cutoff_ms=archive.END_MS,
+                      attributions=decisions, closures=[])
+    updated = archive.apply_manual_history(original, supplement)
+    assert updated["manual_attribution_count"] == 1
+    assert updated["account_usdt_total"] == original["account_usdt_total"]
+    assert {row["tran_id"]: row["strategy"] for row in updated["events"]} == {
+        "1": "btc_eth", "2": "btc_eth_aggressive",
+    }
+    assert updated["automatic_events"][1]["strategy"] is None
+
+    changed = dict(decisions[1], amount="-1.01")
+    with pytest.raises(ValueError, match="does not match"):
+        archive.apply_manual_history(original, dict(supplement, attributions=[changed]))

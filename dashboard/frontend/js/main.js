@@ -311,6 +311,7 @@ function updateOverview(data) {
         data.account_coverage_complete ? '交易所 USDT 收入已核对' : '覆盖不完整，期间收益待核对',
         `未归属 ${data.unattributed_count ?? "—"} 笔 · 净额 ${formatNumber(data.unattributed_pnl, 8)} / 绝对额 ${formatNumber(data.unattributed_absolute, 8)} USDT`,
         data.income_archive_end_ms ? '含币安历史收入归档，部分归属已核对' : '',
+        data.manual_attribution_count ? `含人工规则归属 ${data.manual_attribution_count} 条` : '',
         data.strategy_attribution_complete ? '' : '策略归属待核对',
         data.as_of ? `数据截至 ${formatEquityTime(data.as_of)}` : '',
         data.publication_status === 'stale' ? '刷新失败，显示上次核实报告' : '',
@@ -326,7 +327,7 @@ function updateOverview(data) {
     if (winRateSub) winRateSub.textContent = data.win_rate == null
         ? metricReasonText(data.win_rate_reason)
         : data.win_rate_reason === 'annual_verified_sample_only'
-            ? `已核实样本 · 上半年 ${data.win_archive_sample_count} 笔 / 下半年 ${data.win_live_sample_count} 笔`
+            ? `已核实样本 · 上半年 ${data.win_archive_sample_count} 笔 / 下半年 ${data.win_live_sample_count} 笔${data.manual_closure_count ? ` · 人工归属 ${data.manual_closure_count} 笔` : ''}`
             : `${data.total_closed} 笔已核实${data.win_rate_reason === 'archive_verified_sample_only' ? ' · 上半年样本' : data.win_sample_partial ? ' · 非期间全量' : ''}`;
 
     const realized = document.querySelector('#realized-pnl');
