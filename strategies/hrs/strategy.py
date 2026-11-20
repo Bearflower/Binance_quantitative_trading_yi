@@ -1694,14 +1694,25 @@ class HRSStrategy(BaseStrategy):
             pool_index = await circuit_breaker.load_index(index_hour)
             pool_index_12h = await circuit_breaker.load_index_12h(index_hour)
             if pool_index is not None:
-                short_signals = [
-                    s for s in short_signals
-                    if not circuit_breaker.combined_blocked("short", pool_index, pool_index_12h)
-                ]
-                long_signals = [
-                    s for s in long_signals
-                    if not circuit_breaker.combined_blocked("long", pool_index, pool_index_12h)
-                ]
+                passing = {"short": short_signals, "long": long_signals}
+                for direction, signals in passing.items():
+                    if not signals or not circuit_breaker.combined_blocked(direction, pool_index, pool_index_12h):
+                        continue
+                    for signal in signals:
+                        entry_mode = signal.get("entry_mode", "standard")
+                        origin = signal.get("signal_origin")
+                        proof = dict(
+                            signal_id=signal.get("signal_id"), direction=direction,
+                            entry_mode=entry_mode, signal_origin=origin,
+                            is_shadow=self._is_shadow_entry_mode(entry_mode, origin),
+                            reason="pool_circuit_breaker", index_hour=index_hour,
+                            pool_index=pool_index, pool_index_12h=pool_index_12h,
+                        )
+                        await record_stage(self, 'pool_circuit_preflight_denial', proof, symbol=signal["symbol"])
+                        await self._update_signal_resolution(proof["signal_id"], proof["reason"])
+                        logger.info("HRS 信号在预留前被组合熔断拦截", symbol=signal["symbol"], **proof)
+                    passing[direction] = []
+                short_signals, long_signals = passing["short"], passing["long"]
 
         # ===== R1+R9: 单次遍历分桶 production / shadow，方向分离 =====
         # 只产出 prod_short/prod_long/shadow_short/shadow_long 四个列表，
@@ -4451,7 +4462,7 @@ class HRSStrategy(BaseStrategy):
             signal_id: 由 _log_signal_to_db INSERT RETURNING 取回的唯一主键；
                        None 时跳过更新并 warning（fail-safe，不回退宽范围 WHERE）
             resolution: 结果状态 ('executed', 'abandoned', 'timeout', 'conflict',
-                        'shadow')。'shadow' 表示影子模式：决策链跑完但未真实下单，
+                        'pool_circuit_breaker', 'shadow')。'shadow' 表示影子模式：决策链跑完但未真实下单，
                         严禁与 'executed' 混用（防把未发生的成交写成事实证据）。
         """
         if signal_id is None:
