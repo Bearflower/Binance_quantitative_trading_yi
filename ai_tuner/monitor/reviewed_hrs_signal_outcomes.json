@@ -1,0 +1,87 @@
+{
+  "account_id": "default",
+  "start": "2026-11-18T16:00:00+00:00",
+  "end": "2026-11-19T16:00:00+00:00",
+  "decisions": [
+    {
+      "signal_id": 5748,
+      "symbol": "PIPPINUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-18 16:21:48.762763+00:00",
+      "reason": "legacy_pool_circuit_breaker",
+      "batch_receipt": "f7f26191d79f62e05503051aaeca2e398a7e274c46bb91a1bf1fb0f14400d5ca"
+    },
+    {
+      "signal_id": 5750,
+      "symbol": "MMTUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-18 16:21:48.800022+00:00",
+      "reason": "legacy_pool_circuit_breaker",
+      "batch_receipt": "f7f26191d79f62e05503051aaeca2e398a7e274c46bb91a1bf1fb0f14400d5ca"
+    },
+    {
+      "signal_id": 5766,
+      "symbol": "PIPPINUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-18 20:22:31.537508+00:00",
+      "reason": "legacy_pool_circuit_breaker",
+      "batch_receipt": "147be6636d01cb3907d27512875798efd9b9783e5cef23d3266d5492ad843d0e"
+    },
+    {
+      "signal_id": 5775,
+      "symbol": "MMTUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-18 21:22:42.009254+00:00",
+      "reason": "legacy_shadow_displaced_standard",
+      "batch_receipt": "44df9720685c90b16a6505dbc09585d981212d8442cc7d0f823b129f892d893b"
+    },
+    {
+      "signal_id": 5782,
+      "symbol": "MMTUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-18 22:22:54.288207+00:00",
+      "reason": "legacy_shadow_displaced_standard",
+      "batch_receipt": "9b9f43811b94b19e5d6f15cab7028f94ee7c9fb45aa62df7a92c6ff0f8276067"
+    },
+    {
+      "signal_id": 5787,
+      "symbol": "MMTUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-18 23:23:06.883311+00:00",
+      "reason": "legacy_shadow_displaced_standard",
+      "batch_receipt": "df8176d30d5b558734a0401246c434c03a2428ab344787efe081a0c76a8e5fa5"
+    },
+    {
+      "signal_id": 5794,
+      "symbol": "MMTUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-19 01:21:43.014705+00:00",
+      "reason": "legacy_shadow_displaced_standard",
+      "batch_receipt": "fc73b25ff82d856c4c9d1054a3c4ebeed8c7bf4fb712e32f27cf7b8c64154553"
+    },
+    {
+      "signal_id": 5796,
+      "symbol": "EVAAUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-19 02:21:44.549553+00:00",
+      "reason": "legacy_shadow_displaced_standard",
+      "batch_receipt": "08e47b32a791b5c3a1a89da12e21bc3d6f18892f84f2ee6d13d989c151551f04"
+    },
+    {
+      "signal_id": 5798,
+      "symbol": "MMTUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-19 02:21:44.561173+00:00",
+      "reason": "legacy_shadow_displaced_standard",
+      "batch_receipt": "08e47b32a791b5c3a1a89da12e21bc3d6f18892f84f2ee6d13d989c151551f04"
+    },
+    {
+      "signal_id": 5800,
+      "symbol": "PIPPINUSDT",
+      "direction": "short",
+      "signal_at": "2026-11-19 02:21:44.564018+00:00",
+      "reason": "legacy_shadow_displaced_standard",
+      "batch_receipt": "08e47b32a791b5c3a1a89da12e21bc3d6f18892f84f2ee6d13d989c151551f04"
+    }
+  ]
+}

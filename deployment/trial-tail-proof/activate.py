@@ -12,9 +12,9 @@ import time
 from datetime import datetime
 
 ROOT = Path('/root/trading_system')
-PIN_SHA = 'd69940298a834924c6e3e2557605c5cf96b514ea'
-OVERLAY_SHA = '507a26c5fa6115dc0f05d89256493d633fac5a315b00f4676cfc49ba9f908272'
-BASE_IMAGE = 'sha256:88d9f9d35075e86a9eea1200717f5a2baf89a58e0b59f686e0b56ba7a49360ee'
+PIN_SHA = '11fe040cd2504641c2fbeb8957f2c0152ae9431c'
+OVERLAY_SHA = '5ce852e55489f8c4c7ce793dda4eb4433f93b20a53b2e6a2d2e095b36712281a'
+BASE_IMAGE = 'sha256:3fca26d440586afafbce164a0ce1f6781d1bc114256b729478897476521ddd91'
 MIGRATIONS = ()
 
 
@@ -142,11 +142,17 @@ def main(sha, image_digest, bundle):
              input=(bundle/'database/postgres/migrations'/name).read_text())
     if policy_hash() != policies or inventory() != before:
         raise RuntimeError('policies/allocations/containers changed before activation')
+    risk_path = '/app/logs/trial_evidence/account-risk-latest.json'
+    sample = json.loads(run(['docker','exec','ai-tuner','cat',risk_path]))
+    age_ms = int(time.time()*1000) - sample.get('as_of_ms', 0)
+    if (sample.get('account_id') != 'default' or sample.get('budget_id') != 'default-pm-5pct-20261117-v1'
+            or not 0 <= age_ms <= 90_000):
+        raise RuntimeError('pre-activation PM equity sampling is stale')
     atomic(pin_path,dict(pin,status='activating',successor_sha=sha))
     run(['docker','tag',BASE_IMAGE,'trial-evidence-rollback:'+sha])
     try:
         run(compose+['-f',str(target),'up','-d','--no-deps','--pull','never','ai-tuner'])
-        deadline = time.monotonic()+300
+        deadline = time.monotonic()+120
         while time.monotonic()<deadline:
             rows = json.loads(run(['docker','inspect','ai-tuner']))
             current = rows[0]
@@ -159,6 +165,16 @@ def main(sha, image_digest, bundle):
         if current['Image'] != run(['docker','image','inspect','-f','{{.Id}}',image]):
             raise RuntimeError('running image mismatch')
         started_ms = int(datetime.fromisoformat(current['State']['StartedAt'].replace('Z','+00:00')).timestamp()*1000)
+        # Require an early handoff of signed equity before waiting for other evidence jobs.
+        while time.monotonic()<deadline:
+            sample = json.loads(run(['docker','exec','ai-tuner','cat',risk_path]))
+            if (sample.get('account_id') == 'default' and sample.get('budget_id') == 'default-pm-5pct-20261117-v1'
+                    and sample.get('as_of_ms', 0) >= started_ms):
+                break
+            time.sleep(3)
+        else:
+            raise RuntimeError('AI Tuner PM equity sampling did not resume before deadline')
+        deadline = time.monotonic()+180
         # Wait for actual scheduler invocations, not merely Python imports.
         code = "import json,pathlib; p=pathlib.Path('/app/logs/trial_evidence'); print(json.dumps({n:json.loads((p/n).read_text()) for n in ('account-risk-latest.json','entry-activity-latest.json','new-coin-recovery-latest.json')}))"
         observation = None

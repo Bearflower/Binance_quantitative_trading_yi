@@ -16,6 +16,7 @@ from typing import Any, Mapping
 
 from apscheduler.triggers.cron import CronTrigger
 from ai_tuner.allocation.activity_evidence import read_activity_evidence
+from ai_tuner.monitor.signal_execution_evidence import read_signal_execution
 from ai_tuner.allocation.capital_evidence import read_capital_evidence
 from ai_tuner.monitor.live_position_ownership import resolve_unclaimed_positions
 from ai_tuner.monitor.ordinary_execution_evidence import read_ordinary_executions
@@ -322,7 +323,8 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                            start: datetime, end: datetime,
                            *, trial_start: datetime | None = None,
                            income_reader=read_trial_income,
-                           activity_reader=None, protective_exit_reader=None, ordinary_execution_reader=None) -> dict:
+                           activity_reader=None, protective_exit_reader=None, ordinary_execution_reader=None,
+                           signal_execution_reader=None) -> dict:
     """Collect one fixed trial window. All database statements are SELECTs."""
     if strategy not in TRIAL_STRATEGIES or not account or _utc(start) >= _utc(end):
         raise ValueError("invalid trial identity or window")
@@ -362,6 +364,18 @@ async def collect_snapshot(db: Any, exchange: Any, account: str, strategy: str,
                 evidence["signals"] = await db.fetch_one(_AGGRESSIVE_SIGNALS_SQL, left, right, account)
         except Exception as exc:
             evidence["source_errors"].append("signals:" + type(exc).__name__)
+    if has_window and signal_execution_reader is not None and evidence["signals"] is not None:
+        try:
+            execution = await signal_execution_reader(db, exchange, account, strategy, _utc(start), _utc(end))
+            evidence["signal_execution"] = execution
+            evidence["execution_funnel_verified"] = (
+                execution["verified"] is True
+                and len(execution["signals"]) == evidence["signals"]["real_signals"]
+                and sum(row["outcome"] == "filled" for row in execution["signals"])
+                    == evidence["signals"]["executed_signals"]
+            )
+        except Exception as exc:
+            evidence["source_errors"].append("signal_execution:" + type(exc).__name__)
     if exchange is not None:
         try:
             claims = await db.fetch_all(_CLAIMS_SQL)
@@ -691,6 +705,7 @@ class ReducedTrialEvaluator:
             "source_errors": evidence.get("source_errors", []),
             "account_risk": evidence.get("account_risk"),
             "entry_activity": evidence.get("entry_activity"),
+            "signal_execution": evidence.get("signal_execution"),
             "protective_exits": evidence.get("protective_exits"),
             "ordinary_executions": evidence.get("ordinary_executions"),
             "allocated_capital_evidence": evidence.get("allocated_capital_evidence"),
@@ -715,7 +730,8 @@ class ReducedTrialEvaluator:
                                               trial_start=self.trial_starts.get(strategy),
                                               activity_reader=read_activity_evidence,
                                               protective_exit_reader=read_protective_exits,
-                                              ordinary_execution_reader=read_ordinary_executions)
+                                              ordinary_execution_reader=read_ordinary_executions,
+                                              signal_execution_reader=read_signal_execution)
             evidence["cohort_ceiling"] = self.cohort_ceilings.get(
                 strategy, evidence.get("cohort_ceiling")
             )
