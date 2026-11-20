@@ -608,6 +608,8 @@ async def release_claim(
     symbol: str,
     my_record_name: str,
     reason: str = "released",
+    *,
+    release_occupancy: bool = True,
 ) -> bool:
     """
     释放本策略对某 symbol 的占用（开仓失败/放弃/平仓归零时调用，R07-F4）
@@ -628,6 +630,7 @@ async def release_claim(
         symbol: 交易对
         my_record_name: 本策略归属名
         reason: 释放原因（写入 reason 字段，如 'open_failed'/'position_closed'）
+        release_occupancy: False 时仅回写入场记录终态，由调用方负责占用对账
 
     Returns:
         True 表示本策略确有占用被释放（或开关关闭/能力不足视为无需释放）；
@@ -653,6 +656,8 @@ async def release_claim(
             )
 
     # 以下为 R07 占用表释放逻辑（原有行为不变）
+    if not release_occupancy:
+        return False
     if db_manager is None or not _supports_claims(db_manager):
         return True  # 未启用占用互斥时释放视为幂等成功
     try:

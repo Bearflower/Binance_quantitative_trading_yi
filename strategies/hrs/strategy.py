@@ -14,7 +14,7 @@ from typing import Dict, Any, Optional, List, Set, Tuple
 
 import structlog
 
-from shared.entry_risk_policy import entry_allowed
+from shared.entry_risk_policy import RiskPolicyStore, entry_allowed
 from shared.base_strategy import BaseStrategy
 from shared.capital_manager import CapitalManager
 from shared.circuit_breaker import (
@@ -1694,14 +1694,25 @@ class HRSStrategy(BaseStrategy):
             pool_index = await circuit_breaker.load_index(index_hour)
             pool_index_12h = await circuit_breaker.load_index_12h(index_hour)
             if pool_index is not None:
-                short_signals = [
-                    s for s in short_signals
-                    if not circuit_breaker.combined_blocked("short", pool_index, pool_index_12h)
-                ]
-                long_signals = [
-                    s for s in long_signals
-                    if not circuit_breaker.combined_blocked("long", pool_index, pool_index_12h)
-                ]
+                passing = {"short": short_signals, "long": long_signals}
+                for direction, signals in passing.items():
+                    if not signals or not circuit_breaker.combined_blocked(direction, pool_index, pool_index_12h):
+                        continue
+                    for signal in signals:
+                        entry_mode = signal.get("entry_mode", "standard")
+                        origin = signal.get("signal_origin")
+                        proof = dict(
+                            signal_id=signal.get("signal_id"), direction=direction,
+                            entry_mode=entry_mode, signal_origin=origin,
+                            is_shadow=self._is_shadow_entry_mode(entry_mode, origin),
+                            reason="pool_circuit_breaker", index_hour=index_hour,
+                            pool_index=pool_index, pool_index_12h=pool_index_12h,
+                        )
+                        await record_stage(self, 'pool_circuit_preflight_denial', proof, symbol=signal["symbol"])
+                        await self._update_signal_resolution(proof["signal_id"], proof["reason"])
+                        logger.info("HRS 信号在预留前被组合熔断拦截", symbol=signal["symbol"], **proof)
+                    passing[direction] = []
+                short_signals, long_signals = passing["short"], passing["long"]
 
         # ===== R1+R9: 单次遍历分桶 production / shadow，方向分离 =====
         # 只产出 prod_short/prod_long/shadow_short/shadow_long 四个列表，
@@ -1743,6 +1754,53 @@ class HRSStrategy(BaseStrategy):
             list(self.candidate_pool.get_long_candidates()),
         )
 
+    async def _attempt_close_reconciliation(self, store, symbol: str, trigger: str) -> str:
+        try:
+            outcome = await store.reconcile_hrs_flat(symbol, self.binance_client)
+        except Exception as exc:
+            outcome = "reconciliation_failed"
+            logger.warning("hrs_close_reconciliation", symbol=symbol, trigger=trigger,
+                           outcome=outcome, error_type=type(exc).__name__)
+            return outcome
+        if outcome != "no_reservation":
+            log = logger.info if outcome == "released" else logger.warning
+            log("hrs_close_reconciliation", symbol=symbol, trigger=trigger, outcome=outcome)
+        return outcome
+
+    async def _reconcile_closed_position(self, symbol: str, trigger: str = "full_close") -> None:
+        db = getattr(self, "db", None)
+        strategy = getattr(self, "strategy_name", "hrs")
+        if db is None:
+            await release_claim(db, symbol, strategy, reason="position_closed")
+            return
+        try:
+            store = RiskPolicyStore(db)
+        except Exception as exc:
+            outcome = "reconciliation_failed"
+            logger.warning("hrs_close_reconciliation", symbol=symbol, trigger=trigger,
+                           outcome=outcome, error_type=type(exc).__name__)
+        else:
+            outcome = await self._attempt_close_reconciliation(store, symbol, trigger)
+        # Preserve trade-record terminalization for all closes. For a durable
+        # reservation, the exact claim is released only by the account transaction.
+        kwargs = {} if outcome == "no_reservation" else {"release_occupancy": False}
+        await release_claim(db, symbol, strategy, reason="position_closed", **kwargs)
+
+    async def _retry_closed_reservations(self, tracked_symbols) -> None:
+        db = getattr(self, "db", None)
+        if db is None:
+            return
+        try:
+            store = RiskPolicyStore(db)
+            pending = await store.pending_hrs_symbols()
+        except Exception as exc:
+            logger.warning("hrs_close_reconciliation", symbol="*", trigger="position_sync",
+                           outcome="reservation_scan_failed", error_type=type(exc).__name__)
+            return
+        for symbol in pending:
+            if symbol not in tracked_symbols:
+                await self._attempt_close_reconciliation(store, symbol, "position_sync")
+
     async def _report_positions_to_dashboard(self) -> None:
         """上报当前持仓与策略状态到看板聚合表（strategy_states / strategy_open_positions）
 
@@ -1776,6 +1834,7 @@ class HRSStrategy(BaseStrategy):
         await save_strategy_state(self.db, "hrs", positions)
         # 同步当前持仓到看板聚合表（口径由策略侧计算，工具内部容错）
         await sync_open_positions(self.db, "hrs", margin_dict, qty_dict)
+        await self._retry_closed_reservations(positions)
 
     async def _check_candidate_update(self, now: datetime) -> None:
         """
@@ -2899,7 +2958,7 @@ class HRSStrategy(BaseStrategy):
                         )
                         await self.position_manager.cancel_all_orders(symbol)
                         self.position_manager.remove_position(symbol)
-                        await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
+                        await self._reconcile_closed_position(symbol)
 
                         # B6a: 按真实已实现盈亏符号计数，不再假设"全平=止盈"
                         await self._record_outcome_by_pnl(
@@ -3979,7 +4038,7 @@ class HRSStrategy(BaseStrategy):
                         direction=local_positions[symbol].get("direction"),
                     )
                     self.position_manager.remove_position(symbol)
-                    await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
+                    await self._reconcile_closed_position(symbol, "position_sync")
                     # 清理K线服务
                     if self._should_unregister(symbol):
                         await self._unregister_single_symbol(symbol)
@@ -4403,7 +4462,7 @@ class HRSStrategy(BaseStrategy):
             signal_id: 由 _log_signal_to_db INSERT RETURNING 取回的唯一主键；
                        None 时跳过更新并 warning（fail-safe，不回退宽范围 WHERE）
             resolution: 结果状态 ('executed', 'abandoned', 'timeout', 'conflict',
-                        'shadow')。'shadow' 表示影子模式：决策链跑完但未真实下单，
+                        'pool_circuit_breaker', 'shadow')。'shadow' 表示影子模式：决策链跑完但未真实下单，
                         严禁与 'executed' 混用（防把未发生的成交写成事实证据）。
         """
         if signal_id is None:
@@ -4671,7 +4730,7 @@ class HRSStrategy(BaseStrategy):
                 )
                 await self.position_manager.cancel_all_orders(symbol)
                 self.position_manager.remove_position(symbol)
-                await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
+                await self._reconcile_closed_position(symbol)
                 await self._save_state()
                 return
 
@@ -5067,7 +5126,7 @@ class HRSStrategy(BaseStrategy):
 
             await self.position_manager.cancel_all_orders(symbol)
             self.position_manager.remove_position(symbol)
-            await release_claim(getattr(self, "db", None), symbol, getattr(self, "strategy_name", "hrs"), reason="position_closed")
+            await self._reconcile_closed_position(symbol)
             return True
 
         await self._handle_incomplete_close(symbol, direction, result, close_reason)

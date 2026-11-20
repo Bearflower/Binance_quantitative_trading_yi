@@ -133,7 +133,9 @@ def release_overlay(previous, hrs_image, hub_image, mounts, release_sha):
         HRS_EQUITY_ALLOW_INCEPTION='true', HRS_EQUITY_REFRESH_SECONDS='30',
         HRS_ACCEPTANCE_REPORT_ENABLED='0',HRS_RELEASE_SHA=release_sha)
     service['volumes'] = actual_volumes(overlay,mounts)
-    services.setdefault('market-cap-service', {})['image'] = hub_image
+    market_cap = services.setdefault('market-cap-service', {})
+    market_cap['image'] = hub_image
+    market_cap['logging'] = {'driver': 'journald'}
     return overlay
 
 
@@ -397,6 +399,18 @@ def restore_pins(root,snapshots):
             atomic(path,value)
 
 
+def target_matches(container, original):
+    return (
+        container is not None
+        and container['Config']['Image'] == original['image']
+        and mount_identity(container.get('Mounts', [])) == mount_identity(original['mounts'])
+        and (
+            'logging' not in original
+            or container.get('HostConfig', {}).get('LogConfig') == original['logging']
+        )
+    )
+
+
 def rollback(root,folder,plan,candidate_image):
     """Restore only the originally observed target geometry; never project down."""
     errors=[];restored=[]
@@ -405,8 +419,7 @@ def rollback(root,folder,plan,candidate_image):
         try:
             try: current=inspect(name)
             except RuntimeError: current=None
-            if (current is None or current['Config']['Image']!=original['image']
-                    or mount_identity(current.get('Mounts',[]))!=mount_identity(original['mounts'])):
+            if not target_matches(current, original):
                 run(old+['up','-d','--no-deps','--pull','never',TARGETS[name]])
             restored.append(name)
         except Exception:
@@ -427,8 +440,7 @@ def rollback(root,folder,plan,candidate_image):
     try:
         for name,original in plan['targets'].items():
             current=inspect(name)
-            if (current['Config']['Image']!=original['image']
-                    or mount_identity(current.get('Mounts',[]))!=mount_identity(original['mounts'])):
+            if not target_matches(current, original):
                 errors.append(name)
         if not unchanged_others(plan['containers'],container_ids()):errors.append('unrelated_container_changed')
         if not errors:restore_pins(root,plan['pins'])
@@ -532,16 +544,23 @@ def main():
             atomic(folder/'before.json',dict(pin=pin,containers=all_before,
                 images={name:c['Config']['Image'] for name,c in before.items()}))
         old_overlay=deepcopy(previous)
+        rollback_targets = {}
         for name,container in before.items():
             service=old_overlay.setdefault('services',{}).setdefault(TARGETS[name],{})
             service['image']=container['Config']['Image']
             service['volumes']=actual_volumes(old_overlay,container.get('Mounts',[]))
+            target = rollback_targets[name] = dict(image=service['image'], mounts=container.get('Mounts', []))
+            if name in ('trading_system-market-cap', REPORTER):
+                logging = container.get('HostConfig', {}).get('LogConfig')
+                if logging:
+                    target['logging'] = logging
+                    service['logging'] = {'driver': logging['Type'], 'options': logging['Config']}
         old_env=old_overlay['services']['hrs-strategy'].setdefault('environment',{})
         old_env.update({key:env.get(key) for key in PUBLIC_FLAGS|{'HRS_RELEASE_SHA'}})
         atomic(folder/'rollback-images.json',old_overlay)
         plan=dict(containers=all_before,pins=pin_snapshots(root),
             compose_files=before['trading_system-hrs']['Config']['Labels']['com.docker.compose.project.config_files'].split(','),
-            targets={name:dict(image=c['Config']['Image'],mounts=c.get('Mounts',[])) for name,c in before.items()})
+            targets=rollback_targets)
         atomic(planpath,plan)
     previous=json.loads(Path(pin['overlay']).read_text())
     overlay=release_overlay(previous,args.hrs_image,args.hub_image,plan['targets']['trading_system-hrs']['mounts'],args.sha)
@@ -556,7 +575,7 @@ def main():
         volumes=[str(report_folder)+':/app/logs'],networks=['hrs-acceptance-network'],read_only=True,tmpfs=['/tmp'],mem_limit='256m',cpus=.3,
         healthcheck={'test':['CMD','python','-c',"import json,datetime,pathlib;d=json.loads(pathlib.Path('/app/logs/hrs-acceptance.json').read_text());assert(datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(d['generated_at'])).total_seconds()<1800"],
                      'interval':'60s','timeout':'10s','retries':3,'start_period':'120s'},
-        logging={'driver':'json-file','options':{'max-size':'10m','max-file':'3'}})
+        logging={'driver':'journald'})
     newfile=folder/'images.json';atomic(newfile,overlay)
     if not args.apply:
         print(json.dumps(dict(status='prepared',overlay=str(newfile),preflight=facts,**change_metadata)))

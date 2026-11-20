@@ -25,7 +25,7 @@ def test_unchanged_shadow_still_exposes_window_and_exact_pending_evidence(monkey
     shadow = blocked()
     state = tmp_path/'state.json'
     state.write_text(json.dumps(dict(shadow_hash=inspector.digest({k:v for k,v in shadow.items() if k!='as_of'}))))
-    monkeypatch.setattr(inspector,'read_journal',lambda since:([],[],[]))
+    monkeypatch.setattr(inspector,'read_journal',lambda since,*args:([],[],[],[],True))
     monkeypatch.setattr(inspector,'read_shadow',lambda:shadow)
     result=dict(issues=[],samples=[],positions=[],reservations=0,policies=['hrs r8 reduced'],
                 monthly=None,allocation_hash='same')
@@ -112,7 +112,7 @@ def test_missing_stale_or_incoherent_hrs_report_is_not_a_zero_trade_proof():
 
 def test_daily_report_shows_hrs_evidence_independently_of_preview(monkeypatch,tmp_path,capsys):
     now=datetime.now(timezone.utc)
-    monkeypatch.setattr(inspector,'read_journal',lambda since:([],[],[]))
+    monkeypatch.setattr(inspector,'read_journal',lambda since,*args:([],[],[],[],True))
     monkeypatch.setattr(inspector,'read_shadow',blocked)
     monkeypatch.setattr(inspector,'read_hrs_evidence',lambda:hrs_report(now))
     result=dict(issues=[],samples=[],positions=[],reservations=0,policies=[],monthly=None,allocation_hash='same')
@@ -139,7 +139,7 @@ def test_report_updated_during_slow_probe_uses_read_time(monkeypatch,tmp_path,ca
         def now(cls,tz=None):
             return next(times).astimezone(tz)
     monkeypatch.setattr(inspector,'datetime',Clock)
-    monkeypatch.setattr(inspector,'read_journal',lambda since:([],[],[]))
+    monkeypatch.setattr(inspector,'read_journal',lambda since,*args:([],[],[],[],True))
     monkeypatch.setattr(inspector,'read_shadow',blocked)
     monkeypatch.setattr(inspector,'read_hrs_evidence',lambda:hrs_report(start+timedelta(minutes=1)))
     result=dict(issues=[],samples=[],positions=[],reservations=0,policies=[],monthly=None,allocation_hash='same')

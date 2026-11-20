@@ -619,3 +619,63 @@ async def test_real_postgres_full_financial_contract_and_integrity_latch(initial
                 await c.execute(f'DELETE FROM trading.{table} WHERE account_id=$1', account)
             await c.execute('DELETE FROM hrs.hrs_decision_evidence WHERE evidence_id=ANY($1::text[])', [r['evidence_id'] for r in captures])
         await pool.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interval, cycles", [(0, 1), (900, 2)])
+async def test_main_logs_each_successful_report(monkeypatch, tmp_path, capsys, interval, cycles):
+    import asyncpg
+    from unittest.mock import AsyncMock
+
+    from strategies.hrs import acceptance_report as reporter
+
+    output = tmp_path / "report.json"
+    pool = SimpleNamespace(close=AsyncMock())
+    monkeypatch.setenv("DATABASE_URL", "unused")
+    monkeypatch.setattr(asyncpg, "create_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(reporter, "build_report", AsyncMock(return_value={
+        "status": "PENDING",
+        "private_detail": "not-for-stdout",
+    }))
+
+    sleeps = 0
+
+    async def sleep(seconds):
+        nonlocal sleeps
+        assert seconds == interval
+        sleeps += 1
+        if sleeps == cycles:
+            raise reporter.asyncio.CancelledError
+
+    monkeypatch.setattr(reporter.asyncio, "sleep", sleep)
+    args = SimpleNamespace(output=output, interval=interval)
+    if interval:
+        with pytest.raises(reporter.asyncio.CancelledError):
+            await reporter._main(args)
+    else:
+        await reporter._main(args)
+
+    assert json.loads(output.read_text())["status"] == "PENDING"
+    assert capsys.readouterr().out.splitlines() == [
+        "event=hrs_acceptance_report_written status=PENDING",
+    ] * cycles
+    pool.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_main_does_not_log_success_on_write_failure(monkeypatch, tmp_path, capsys):
+    import asyncpg
+    from unittest.mock import AsyncMock
+
+    from strategies.hrs import acceptance_report as reporter
+
+    pool = SimpleNamespace(close=AsyncMock())
+    monkeypatch.setenv("DATABASE_URL", "unused")
+    monkeypatch.setattr(asyncpg, "create_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(reporter, "build_report", AsyncMock(return_value={"status": "PENDING"}))
+
+    with pytest.raises(OSError):
+        await reporter._main(SimpleNamespace(output=tmp_path, interval=0))
+
+    assert capsys.readouterr().out == ""
+    pool.close.assert_awaited_once()

@@ -1014,7 +1014,9 @@ async def _main(args):
     pool = await asyncpg.create_pool(os.environ['DATABASE_URL'], min_size=1, max_size=1)
     try:
         while True:
-            write_report_atomic(await build_report(SimpleNamespace(pool=pool)), args.output)
+            report = await build_report(SimpleNamespace(pool=pool))
+            write_report_atomic(report, args.output)
+            print(f"event=hrs_acceptance_report_written status={report['status']}", flush=True)
             if not args.interval:
                 return
             await asyncio.sleep(args.interval)

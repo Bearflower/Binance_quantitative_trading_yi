@@ -229,15 +229,73 @@ def hrs_evidence_lines(report, now):
         return [pending]
 
 
-def read_journal(since):
-    samples, allocation, unavailable = {}, [], []
+def previous_trading_day(now):
+    today = now.astimezone(BEIJING).replace(hour=0, minute=0, second=0, microsecond=0)
+    return today - timedelta(days=1), today
+
+
+def summarize_hrs_reconciliation(now, events, *, journal_has_entries=True):
+    start, end = previous_trading_day(now)
+    heading = f"HRS 主动对账（{start:%Y-%m-%d} 北京时间）"
+    if not journal_has_entries:
+        return f"{heading}：上一交易日日志未取到。", True
+    scoped = []
+    for when, symbol, trigger, outcome in events:
+        timestamp = datetime.fromisoformat(when)
+        if start <= timestamp < end:
+            scoped.append((timestamp, symbol, trigger, outcome))
+    if not scoped:
+        return f"{heading}：未记录主动对账。", False
+
+    attempts = [event for event in scoped if event[1] != "*"]
+    close_count = sum(trigger == "full_close" for _, _, trigger, _ in attempts)
+    released = sum(outcome == "released" for _, _, _, outcome in attempts)
+    latest = {}
+    for _, symbol, _, outcome in sorted(attempts):
+        latest[symbol] = outcome
+    pending = {symbol: outcome for symbol, outcome in latest.items() if outcome != "released"}
+    scan_failures = len(scoped) - len(attempts)
+    line = (f"{heading}：{len(attempts)} 次（平仓 {close_count}，持仓同步 {len(attempts) - close_count}），"
+            f"释放 {released} 笔，最后一次对账仍待重试 {len(pending)} 个品种。")
+    if scan_failures:
+        line += f" 预留扫描失败 {scan_failures} 次。"
+    if pending:
+        labels = {
+            "exchange_query_failed": "币安查询失败",
+            "entry_order_unverified": "入场订单未核实",
+            "entry_order_not_terminal": "入场订单未终态",
+            "position_unverified": "持仓未核实",
+            "position_open": "仍有持仓",
+            "orders_unverified": "挂单未核实",
+            "ordinary_orders_open": "仍有普通挂单",
+            "algo_orders_open": "仍有条件挂单",
+            "claim_identity_missing": "缺少占位关联",
+            "claim_not_released": "占位更新未生效",
+            "multiple_reservations": "存在多笔未释放预留",
+            "reservation_not_released": "预留更新未生效",
+            "reconciliation_failed": "对账执行失败",
+        }
+        examples = [f"{symbol} {labels.get(reason, reason)}" for symbol, reason in sorted(pending.items())[:5]]
+        line += " " + "；".join(examples) + (" 等。" if len(pending) > 5 else "。")
+    return line, bool(pending or scan_failures)
+
+
+def read_journal(since, reconciliation_window):
+    samples, allocation, unavailable, reconciliations = {}, [], [], []
+    hrs_journal_has_entries = False
+    reconcile_start, reconcile_end = reconciliation_window
     sources = dict(CONTAINERS, tuner="ai-tuner")
     for strategy, container in sources.items():
-        result = subprocess.run(
-            ["journalctl", f"CONTAINER_NAME={container}", "--since", f"@{int(since.timestamp())}",
-             "--no-pager", "-o", "json", "--output-fields=MESSAGE"],
-            capture_output=True, text=True, timeout=35, check=False,
-        )
+        source_start = min(since, reconcile_start) if strategy == "hrs" else since
+        try:
+            result = subprocess.run(
+                ["journalctl", f"CONTAINER_NAME={container}", "--since", f"@{int(source_start.timestamp())}",
+                 "--no-pager", "-o", "json", "--output-fields=MESSAGE"],
+                capture_output=True, text=True, timeout=35, check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            unavailable.append(strategy)
+            continue
         lines = result.stdout.splitlines()
         if result.returncode or not lines:
             unavailable.append(strategy)
@@ -249,6 +307,18 @@ def read_journal(since):
             if not isinstance(message, str):
                 continue
             message = re.sub(r"\x1b\[[0-9;]*m", "", message)
+            if strategy == "hrs" and reconcile_start <= when < reconcile_end:
+                hrs_journal_has_entries = True
+                try:
+                    event = json.loads(message)
+                except ValueError:
+                    event = None
+                if isinstance(event, dict) and event.get("event") == "hrs_close_reconciliation":
+                    fields = tuple(event.get(key) for key in ("symbol", "trigger", "outcome"))
+                    if all(isinstance(value, str) for value in fields):
+                        reconciliations.append((when.isoformat(), *fields))
+            if when < since:
+                continue
             identity = event_identity(message)
             message = UNICODE_ESCAPE.sub(lambda match: chr(int(match[1], 16)), message)
             if strategy == "tuner":
@@ -258,7 +328,8 @@ def read_journal(since):
             else:
                 for candidate in sample_candidates([(strategy, when.isoformat(), message)]):
                     samples[candidate] = identity
-    return [(*candidate, identity) for candidate, identity in samples.items()], allocation, unavailable
+    return ([(*candidate, identity) for candidate, identity in samples.items()],
+            allocation, unavailable, reconciliations, hrs_journal_has_entries)
 
 
 def digest(item):
@@ -521,7 +592,12 @@ def run_daily(args):
     state = json.loads(args.state.read_text()) if args.state.exists() else {}
     since = max(START, datetime.fromisoformat(state["lookback"]) if "lookback" in state
                 else now - timedelta(hours=48))
-    samples, allocation_logs, unavailable = read_journal(since)
+    samples, allocation_logs, unavailable, reconciliations, hrs_journal = read_journal(
+        since, previous_trading_day(now)
+    )
+    reconciliation_line, reconciliation_warning = summarize_hrs_reconciliation(
+        now, reconciliations, journal_has_entries=hrs_journal
+    )
     shadow = read_shadow()
     inputs = {"since": since.isoformat(), "samples": samples, "shadow": shadow,
               "allocation_hash": state.get("allocation_hash")}
@@ -534,8 +610,11 @@ def run_daily(args):
         raise RuntimeError(f"read-only probe failed (exit={result.returncode})")
     data = json.loads(result.stdout.splitlines()[-1])
     issues = data["issues"] + ([f"本窗口日志未取到：{', '.join(unavailable)}"] if unavailable else [])
+    if reconciliation_warning:
+        issues.append("上一交易日主动对账有待重试、扫描失败或日志缺失，见对账小节")
     lines = [f"【HRS 生产只读巡检】{now:%Y-%m-%d %H:%M} 北京时间",
              f"交易所实仓 {len(data['positions'])} 个，未释放预留 {data['reservations']} 条。",
+             reconciliation_line,
              "风控：" + "；".join(data["policies"]),
              data["monthly"] or "月度分配记录无变化。"]
     if shadow:

@@ -208,7 +208,7 @@ def test_application_proof_never_accepts_always_successful_healthcheck(broken):
     assert proof['allowed'] is False and proof['reasons']==['daily_origin_missing']
 
 
-def fake_rollout(tmp_path,monkeypatch,*,fail_hrs=False,proof_ok=True,existing_reporter=False):
+def fake_rollout(tmp_path,monkeypatch,*,fail_hrs=False,proof_ok=True,existing_reporter=False,reuse_hub_image=False):
     mod=module();root=tmp_path;sha='a'*40;folder=root/'.releases/hrs-optimization'/sha
     hashes=migration_files(mod,folder/'migrations')
     hrs='ghcr.io/bearflower/trading-hrs@sha256:'+'1'*64
@@ -216,6 +216,9 @@ def fake_rollout(tmp_path,monkeypatch,*,fail_hrs=False,proof_ok=True,existing_re
     env=dict(DATABASE_HOST='postgres',DATABASE_NAME='synthetic',AI_TUNER_SNAPSHOT_DB_USER='fake',
              AI_TUNER_SNAPSHOT_DB_PASSWORD='synthetic-only',PATH='/usr/bin')
     old_overlay={'services':{'hrs-strategy':{'image':'old-hrs'},'market-cap-service':{'image':'old-hub'}}}
+    old_hub_image = hub if reuse_hub_image else 'old-hub'
+    old_hub_logging = {'driver': 'json-file', 'options': {'max-file': '3', 'max-size': '10m'}}
+    old_overlay['services']['market-cap-service'].update(image=old_hub_image, logging=old_hub_logging)
     if existing_reporter:
         old_overlay['services']['hrs-acceptance-reporter']={'image':'old-reporter'}
     old=root/'old.json';old.write_text(json.dumps(old_overlay))
@@ -225,10 +228,13 @@ def fake_rollout(tmp_path,monkeypatch,*,fail_hrs=False,proof_ok=True,existing_re
         migration_hashes=hashes,expected_config_hash='c'*64)))
     started=datetime.now(timezone.utc)-timedelta(seconds=60)
     containers={}
-    for name,image in [('trading_system-hrs','old-hrs'),('trading_system-market-cap','old-hub')]:
+    for name,image in [('trading_system-hrs','old-hrs'),('trading_system-market-cap',old_hub_image)]:
         containers[name]=dict(Id='old-'+name,Config=dict(Image=image,Env=[k+'='+v for k,v in env.items()],
             Labels={'com.docker.compose.project.config_files':str(root/'compose.yml')}),Mounts=[],
             NetworkSettings={'Networks':{'shared':{}}},State={'Status':'running','Health':{'Status':'healthy'},'StartedAt':started.isoformat()})
+    containers['trading_system-market-cap']['HostConfig'] = {
+        'LogConfig': {'Type': old_hub_logging['driver'], 'Config': old_hub_logging['options']},
+    }
     containers['trading_system-postgres']=dict(Id='old-db',NetworkSettings={'Networks':{'shared':{}}})
     if existing_reporter:
         containers['trading_system-hrs-acceptance']=dict(Id='old-reporter',Config={'Image':'old-reporter'},Mounts=[],
@@ -248,10 +254,13 @@ def fake_rollout(tmp_path,monkeypatch,*,fail_hrs=False,proof_ok=True,existing_re
         if 'up' in args:
             service=args[-1];file=Path(args[max(i for i,a in enumerate(args) if a=='-f')+1])
             overlay=json.loads(file.read_text());image=overlay['services'][service]['image']
+            logging = overlay['services'][service].get('logging', {})
             if service=='hrs-strategy' and fail_hrs and image==hrs:raise RuntimeError('synthetic_recreate_failure')
             name={'hrs-strategy':'trading_system-hrs','market-cap-service':'trading_system-market-cap',
                   'hrs-acceptance-reporter':'trading_system-hrs-acceptance'}[service]
-            containers[name]=dict(Id='new-'+name,Config={'Image':image,'Labels':{
+            containers[name]=dict(Id='new-'+name,HostConfig={
+                'LogConfig': {'Type': logging.get('driver'), 'Config': logging.get('options', {})},
+            },Config={'Image':image,'Labels':{
                 'com.docker.compose.project':'trading_system','com.docker.compose.service':service}},Mounts=[],
                 State={'Status':'running','Health':{'Status':'healthy'},'StartedAt':started.isoformat()})
         if args[:3]==['docker','rm','-f']:containers.pop(args[-1],None)
@@ -484,3 +493,28 @@ def test_scoped_admission_release_audit_does_not_claim_economic_equivalence():
         with pytest.raises(ValueError,match='runtime_admission_scope_missing_or_invalid'):
             mod.admission_change_metadata(dict(manifest,runtime_admission_scope=scope))
     assert mod.admission_change_metadata({'source_hashes':{'legacy.py':'b'*64}})['economic_parameters_changed'] is False
+
+
+def test_release_candidate_sets_both_log_drivers(tmp_path, monkeypatch):
+    mod, _, _, folder, _ = fake_rollout(tmp_path, monkeypatch, existing_reporter=True)
+    monkeypatch.setattr(sys, "argv", [arg for arg in sys.argv if arg != "--apply"])
+    mod.main()
+
+    services = json.loads((folder / "images.json").read_text())["services"]
+    for service in ("hrs-acceptance-reporter", "market-cap-service"):
+        assert services[service]["logging"] == {"driver": "journald"}
+
+
+
+def test_rollback_restores_hub_log_driver_when_image_is_reused(tmp_path, monkeypatch):
+    mod, containers, _, folder, _ = fake_rollout(
+        tmp_path, monkeypatch, fail_hrs=True, reuse_hub_image=True,
+    )
+
+    with pytest.raises(RuntimeError, match="rollout_failed"):
+        mod.main()
+
+    assert containers["trading_system-market-cap"]["HostConfig"]["LogConfig"] == {
+        "Type": "json-file", "Config": {"max-file": "3", "max-size": "10m"},
+    }
+    assert json.loads((folder / "state.json").read_text())["rollback"]["status"] == "complete"

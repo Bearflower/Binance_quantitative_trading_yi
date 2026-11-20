@@ -50,7 +50,7 @@ def candidate(**changes):
     {'ratios':[]},{'ratios':['.5','.5']},{'tp_offset':'1'},
     {'tp1_price':'99'},{'direction':'SHORT','initial_stop_loss':'105','tp1_price':'101'},
     {'direction':'OTHER'},{'direction':'SHORT','initial_stop_loss':'99'},
-    {'minNotional':'1000'},{'stepSize':'0'},{'minQty':'NaN'},
+    {'minNotional':'1001'},{'stepSize':'0'},{'minQty':'NaN'},
     {'quantity':'Infinity'},{'quantity':'-1'},{'leverage':'bad'},
 ])
 def test_sizing_rejects_invalid_risk_geometry(change):
@@ -61,6 +61,14 @@ def test_sizing_rejects_invalid_risk_geometry(change):
         if key in filters:filters[key]=value
     with pytest.raises((EntryDenied,KeyError)):
         size_reduced_entry(data,filters,multiplier,offset,change.get('ratios',['.3','.3']),tp_offset=change.get('tp_offset','.0015'))
+
+
+def test_minimum_order_can_equal_original_size_with_full_margin_accounting():
+    result = size_reduced_entry(signal(), dict(FILTERS, minNotional='1000'), '.5', '.002',
+                                ['.3', '.3'], tp_offset='.0015')
+    assert result.quantity == result.original_quantity == D(10)
+    assert result.margin == D(100)
+    assert result.risk == result.original_risk
 
 
 def test_short_geometry_and_zero_offset():
@@ -113,7 +121,7 @@ async def test_reservation_refuses_changed_policy_duplicate_intent_and_missing_c
 
 @PG
 @pytest.mark.asyncio
-async def test_final_policy_revision_race_retains_submitting_reservation():
+async def test_final_policy_revision_race_releases_proven_unsent_reservation():
     pool=await setup()
     try:
         store=RiskPolicyStore(NS(pool=pool))
@@ -128,7 +136,9 @@ async def test_final_policy_revision_race_retains_submitting_reservation():
         with pytest.raises(EntryDenied,match='immediately'):
             async with RacingStore(NS(pool=pool)).submitting('btc_eth_aggressive',cid):pytest.fail('writer ran')
         async with pool.acquire() as conn:
-            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation')=='submitting'
+            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation WHERE client_order_id=$1', cid) == 'released'
+            claim = await conn.fetchrow("SELECT claim_state,reason FROM trading.position_claims WHERE symbol='AAA'")
+            assert tuple(claim) == ('RELEASED', 'risk_denied_before_http')
     finally:await pool.close()
 
 

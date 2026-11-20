@@ -919,55 +919,114 @@ class RiskPolicyStore:
         if pending_error is not None:
             raise pending_error
 
+    async def pending_hrs_symbols(self):
+        """Recover retry candidates from durable state, including after a restart."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch("""SELECT DISTINCT symbol FROM trading.entry_risk_reservation
+                WHERE account_id=$1 AND strategy_id='hrs' AND state<>'released' ORDER BY symbol""", self.account)
+        return [row['symbol'] for row in rows]
+
+    async def reconcile_hrs_flat(self, symbol, exchange):
+        async with self.pool.acquire() as conn, conn.transaction():
+            await self.lock(conn, 'hrs')
+            rows = await conn.fetch("""SELECT * FROM trading.entry_risk_reservation
+                WHERE account_id=$1 AND strategy_id='hrs' AND symbol=$2 AND state<>'released'""",
+                self.account, symbol)
+            return await self._reconcile_hrs_reservation(conn, symbol, rows, exchange)
+
+    async def _reconcile_hrs_reservation(self, conn, symbol, rows, exchange):
+        if not rows:
+            return 'no_reservation'
+        if len(rows) != 1:
+            return 'multiple_reservations'
+        row = rows[0]
+        geometry = row['geometry']
+        if isinstance(geometry, str):
+            geometry = json.loads(geometry)
+        signal_id = geometry.get('signal_id') if isinstance(geometry, dict) else None
+        if not isinstance(signal_id, (str, int)) or not str(signal_id).isdecimal() or int(signal_id) <= 0:
+            return 'claim_identity_missing'
+        try:
+            reason = await asyncio.wait_for(self._flat_reservation_blocker(row, exchange), timeout=15)
+        except Exception:
+            return 'exchange_query_failed'
+        if reason:
+            return reason
+
+        # Keep both changes atomic, even when the pre-entry caller is reconciling
+        # other symbols in an outer transaction. RETURNING detects a trigger veto.
+        try:
+            async with conn.transaction():
+                updated = await conn.fetchval("""UPDATE trading.entry_risk_reservation
+                    SET state='released',updated_at=clock_timestamp()
+                    WHERE client_order_id=$1 AND state=$2 RETURNING state""", row['client_order_id'], row['state'])
+                if updated != 'released':
+                    raise EntryDenied('reservation_not_released')
+                claims = await conn.fetch("""UPDATE trading.position_claims
+                    SET claim_state='RELEASED',released_at=clock_timestamp(),reason='risk_reconciled_flat'
+                    WHERE symbol=$1 AND strategy='hrs' AND trade_intent_id=$2 AND claim_state IN ('PENDING','ACTIVE')
+                    RETURNING claim_state""", symbol, f'hrs:{signal_id}')
+                if len(claims) != 1 or claims[0]['claim_state'] != 'RELEASED':
+                    raise EntryDenied('claim_not_released')
+        except EntryDenied as exc:
+            return exc.reason_code
+        return 'released'
+
+    @staticmethod
+    async def _flat_reservation_blocker(row, exchange):
+        symbol, client_id = row['symbol'], row['client_order_id']
+        order = await exchange.get_order_by_client_id(symbol, client_id)
+        if (not isinstance(order, dict) or order.get('symbol') != symbol
+                or order.get('clientOrderId') != client_id):
+            return 'entry_order_unverified'
+        if order.get('status') not in ('FILLED','CANCELED','EXPIRED','REJECTED','EXPIRED_IN_MATCH'):
+            return 'entry_order_not_terminal'
+        number(order['executedQty'], zero=True)
+
+        positions = await exchange.get_position(symbol)
+        if not isinstance(positions, list) or any(p['symbol'] != symbol for p in positions):
+            return 'position_unverified'
+        if any(number(abs(Decimal(str(p['positionAmt']))), zero=True) != 0 for p in positions):
+            return 'position_open'
+        # PM may omit flat symbols. Require both full inventories to agree.
+        for inventory in (await exchange.get_um_account_positions(), await exchange.get_position()):
+            if not isinstance(inventory, list):
+                return 'position_unverified'
+            if any(p['symbol'] == symbol and number(abs(Decimal(str(p['positionAmt']))), zero=True) != 0
+                   for p in inventory):
+                return 'position_open'
+
+        ordinary = await exchange.get_open_orders(symbol)
+        algos = await exchange.get_open_algo_orders(symbol)
+        if not isinstance(ordinary, list) or not isinstance(algos, list):
+            return 'orders_unverified'
+        if ordinary:
+            return 'ordinary_orders_open'
+        if algos:
+            return 'algo_orders_open'
+        return None
+
     async def reconcile(self, strategy, exchange):
-        """Read only exchange reconciliation; no cancels, closes, or TTL releases."""
+        """Reconcile before entry; never cancel orders, close positions, or release by TTL."""
         async with self.pool.acquire() as conn, conn.transaction():
             await self.lock(conn,strategy)
-            rows = await conn.fetch('''SELECT * FROM trading.entry_risk_reservation
-                WHERE account_id=$1 AND strategy_id=$2 AND state <> 'released' ''',self.account,strategy)
-            for row in rows:
-                try:
-                    order = await exchange.get_order_by_client_id(row['symbol'],row['client_order_id'])
-                    positions = await exchange.get_position(row['symbol'])
-                    if not isinstance(order,dict) or not isinstance(positions,list):
-                        continue
-                    if order.get('symbol') != row['symbol'] or order.get('clientOrderId') != row['client_order_id']:
-                        continue
-                    terminal = order.get('status') in ('FILLED','CANCELED','EXPIRED','REJECTED','EXPIRED_IN_MATCH')
-                    if any(p.get('symbol') != row['symbol'] for p in positions):
-                        continue
-                    matching = [p for p in positions if p.get('symbol') == row['symbol']]
-                    zero = bool(matching) and all(number(abs(Decimal(str(p['positionAmt']))),zero=True)==0 for p in matching)
-                    if terminal and (positions == [] or zero):
-                        # PM positionRisk can omit a flat symbol. An empty filtered
-                        # response alone is not proof; require the independent UM
-                        # account inventory and unfiltered risk inventory to agree,
-                        # with no orders left that could create/reduce a position.
-                        account_positions = await exchange.get_um_account_positions()
-                        all_positions = await exchange.get_position()
-                        ordinary = await exchange.get_open_orders(row['symbol'])
-                        algos = await exchange.get_open_algo_orders(row['symbol'])
-                        zero = False
-                        if all(isinstance(value,list) for value in
-                               (account_positions,all_positions,ordinary,algos)):
-                            flat_inventories = all(
-                                not any(p.get('symbol') == row['symbol'] and
-                                        number(abs(Decimal(str(p['positionAmt']))),zero=True) != 0
-                                        for p in inventory)
-                                for inventory in (account_positions,all_positions)
-                            )
-                            # Both calls are symbol-scoped. Even an order lacking a
-                            # symbol field must block release rather than be ignored.
-                            no_orders = not ordinary and not algos
-                            zero = flat_inventories and no_orders
-                    executed = number(order['executedQty'],zero=True)
-                    # Filled orders only release after position is proven flat. Until then
-                    # reserve full margin plus actual holdings (conservative double count).
-                    if terminal and zero:
+            rows = await conn.fetch("""SELECT * FROM trading.entry_risk_reservation
+                WHERE account_id=$1 AND strategy_id=$2 AND state<>'released'""", self.account, strategy)
+            if strategy == 'hrs':
+                by_symbol = {}
+                for row in rows:
+                    by_symbol.setdefault(row['symbol'], []).append(row)
+                for symbol, reservations in by_symbol.items():
+                    await self._reconcile_hrs_reservation(conn, symbol, reservations, exchange)
+            else:
+                for row in rows:
+                    try:
+                        if await self._flat_reservation_blocker(row, exchange):
+                            continue
                         await conn.execute("UPDATE trading.entry_risk_reservation SET state='released', updated_at=now() WHERE client_order_id=$1",row['client_order_id'])
                         await conn.execute("UPDATE trading.position_claims SET claim_state='RELEASED',released_at=now(),reason='risk_reconciled_flat' WHERE symbol=$1 AND strategy=$2 AND claim_state IN ('PENDING','ACTIVE')",row['symbol'],strategy)
-                except Exception:
-                    continue  # Unknown order/transport/cancel result stays occupied indefinitely.
+                    except Exception:
+                        continue  # Unknown order/transport/cancel result stays occupied indefinitely.
             known = {r['client_order_id'] for r in rows}
             orders = await exchange.get_open_orders()
             if not isinstance(orders,list):
