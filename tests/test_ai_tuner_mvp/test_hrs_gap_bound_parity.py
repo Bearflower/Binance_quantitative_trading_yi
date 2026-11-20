@@ -281,3 +281,21 @@ def test_aged_out_independent_receipt_does_not_require_an_inactive_projection(tm
     financial['available_at']=later.isoformat();financial['ledger_state']['ledger_state']['as_of']=later.isoformat()
     financial['hrs_marked_equity_observation'].update(evidence_sha256=parent['evidence_sha256'],as_of=later.isoformat(),available_at=later.isoformat())
     assert project_history_gap_bounds(financial,_equity(sources['equity_evidence']),later,sources['equity_reconciliations']) is None
+
+
+@pytest.mark.parametrize('damage',['version','clock','account','after_gate'])
+def test_independent_receipt_metadata_cannot_hide_known_bounds(tmp_path,damage):
+    from ai_tuner.hrs_evidence_export import _equity,project_history_gap_bounds
+    from ai_tuner.replay.models import DataBlocked
+    sources,_=bound_sources(tmp_path);financial=sources['decision_evidence'][0]['payload']['financial_context']
+    parent=next(row for row in sources['equity_evidence'] if row['evidence_sha256']==financial['hrs_marked_equity_observation']['evidence_sha256'])
+    parent['payload'].pop('history_gap_bounds');parent['evidence_sha256']=canonical(parent['payload'])[1]
+    financial['hrs_marked_equity_observation']['evidence_sha256']=parent['evidence_sha256']
+    row=sources['equity_reconciliations'][0]
+    if damage=='version':row['after_state_version']=999
+    elif damage=='clock':row['available_at']=(AT+timedelta(seconds=1)).isoformat()
+    elif damage=='account':row['account_id']='foreign'
+    else:
+        row['receipt']['after_gate_sha256']='0'*64;row['receipt_sha256']=canonical(row['receipt'])[1]
+    with pytest.raises(DataBlocked,match='history_gap_bounds'):
+        project_history_gap_bounds(financial,_equity(sources['equity_evidence']),AT,sources['equity_reconciliations'])

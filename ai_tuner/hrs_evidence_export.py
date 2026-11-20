@@ -142,6 +142,9 @@ class _ArchiveSources:
         try:
             self.archive=EvidenceArchive.open(descriptor['path'],expected_manifest_sha256=descriptor.get('manifest_sha256'))
             self.forecast_closure=verify_forecast_source_closure(self)
+            if 'equity_reconciliations' in self.archive.counts:
+                account=self.archive.source_metadata['equity_reconciliations']['account_id']
+                for row in self.archive.iter_records('equity_reconciliations'):_reconciliation_source_reference(row,account)
         except ArchiveError as exc:
             if getattr(self,'archive',None) is not None:self.archive.close()
             raise DataBlocked(['evidence_archive_invalid:'+str(exc)]) from exc
@@ -564,6 +567,7 @@ def project_history_gap_bounds(financial,equities,checked_at,receipt_sources=())
     originals={}
     rows=receipt_sources.select(available_before=_time(payload['available_at'])) if isinstance(receipt_sources,_ArchiveFamily) else receipt_sources
     for record in rows:
+        _reconciliation_source_reference(record,financial['entry_policy'].get('account_id'))
         if (record.get('account_id')!=financial['entry_policy'].get('account_id') or record.get('segment_id')!=ledger['segment_id']
                 or record['after_state_version']>financial['ledger_state']['version'] or _time(record['available_at'])>_time(payload['available_at'])):continue
         receipt=_decoded(record['receipt']);sha=record['receipt_sha256']
@@ -1778,13 +1782,25 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
 
 
 def _reconciliation_source_reference(row,account_id):
-    receipt=_decoded(row['receipt'])
-    _require(row['account_id']==account_id and equity_canonical(receipt)[1]==row['receipt_sha256']
-        and receipt.get('account_id')==account_id and receipt.get('segment_id')==row['segment_id']
-        and _time(receipt['available_at'])==_time(row['available_at']),'history_gap_bounds_independent_receipt_hash')
-    source=receipt.get('source_evidence_sha256')
-    _require(isinstance(source,str) and re.fullmatch('[0-9a-f]{64}',source),'history_gap_bounds_dependency_shape')
-    return source
+    try:
+        receipt=_decoded(row['receipt'])
+        _require(isinstance(receipt,dict),'history_gap_bounds_independent_receipt_shape')
+        _require(row['account_id']==account_id and equity_canonical(receipt)[1]==row['receipt_sha256']
+            and receipt.get('account_id')==account_id and receipt.get('segment_id')==row['segment_id']
+            and receipt.get('kind')=='automatic_constant_mark_gap_v1'
+            and _time(receipt['as_of'])==_time(row['as_of'])<=_time(row['available_at'])==_time(receipt['available_at'])
+            and type(receipt['source_ledger_version']) is int and type(row['after_state_version']) is int
+            and receipt['source_ledger_version']+1==row['after_state_version'],
+            'history_gap_bounds_independent_receipt_hash')
+        after=_decoded(row['after_state'])
+        for field,key in (('after_gate_sha256','gate'),('after_ledger_sha256','ledger')):
+            _require(field not in receipt or receipt[field]==equity_canonical(after[key])[1],
+                'history_gap_bounds_independent_after_state_hash')
+        source=receipt.get('source_evidence_sha256')
+        _require(isinstance(source,str) and re.fullmatch('[0-9a-f]{64}',source),'history_gap_bounds_dependency_shape')
+        return source
+    except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
+        raise DataBlocked(['history_gap_bounds_independent_receipt_shape:'+str(exc)]) from exc
 
 
 def _source_forecast_ref(parent,cutoffs,account_id):
