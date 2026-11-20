@@ -2,15 +2,16 @@
 
 Historical checkpoints and event rows remain immutable. Rebuilt valuations are a
 new version with a receipt, never an earlier availability claim. Flat points are
-proved from complete signed fills; nonflat points need their real saved capture.
-No current mark is borrowed for a historical point.
+proved from complete signed fills; nonflat points need their real saved capture
+or an explicitly retained, validated closed historical mark bar. No current mark
+is borrowed for a historical point.
 """
 from dataclasses import asdict,dataclass,replace
 from datetime import datetime,timedelta,time
 from decimal import Decimal
 import json
 
-from .equity_evidence import EvidenceBlocked,canonical,owned_fill_positions,prove_positions,historical_boundary_observation
+from .equity_evidence import EvidenceBlocked,canonical,owned_fill_positions,prove_positions,historical_boundary_observation,order_owners,number
 from .loss_gate import GateHistory,GateEvaluation,SHANGHAI,evaluate_loss_gate
 from .loss_gate_repository import StoredRiskState,RepositoryConflict,ledger_to_dict,ledger_from_dict
 from .risk_ledger import LedgerObservation,CashFlow,EquityCheckpoint,initialize_ledger,reconcile_ledger,decimal_value
@@ -33,6 +34,7 @@ class ReconciliationSource:
     opening_positions:tuple=()
     opening_inventory:tuple=()
     opening_revision:object=None
+    historical_mark_bars:tuple=()
 
 
 @dataclass(frozen=True)
@@ -43,7 +45,88 @@ class RebuiltHistory:
     receipt:dict
 
 
-def _positions_at(source,at):
+MAX_GAP_MARK_BARS=10000
+MARK_BAR_ENDPOINT='/fapi/v1/markPriceKlines'
+
+
+def historical_mark_gap_requests(account,checkpoints,fills,orders,inception,through,*,opening_inventory=()):
+    """Bound actual held episodes inside missing risk-cadence intervals.
+
+    One preceding closed minute supports an exact fill/boundary observation; it
+    is market evidence, never a claim of an original account capture.
+    """
+    owners=order_owners(account,orders)
+    required=max(inception,through-timedelta(days=30))
+    times=sorted({cp.as_of for cp in checkpoints}|{through})
+    windows={}
+    def retain(symbol,left,right):
+        start=int(left.timestamp()*1000)//60000*60000-60000
+        end=int(right.timestamp()*1000)//60000*60000-1
+        if end>=start:windows.setdefault(symbol,[]).append((start,end))
+    for left,right in zip(times,times[1:]):
+        left=max(left,required)
+        if right-left<=timedelta(seconds=120):continue
+        relevant=[row for row in fills if left<row['trade_time_utc']<=right and owners.get((row['symbol'],str(row['order_id'])))=={'hrs'}]
+        held=owned_fill_positions(account,fills,orders,through=left,after=inception,opening_inventory=opening_inventory)
+        cursor=left
+        for point in sorted({row['trade_time_utc'] for row in relevant}|{right}):
+            for (owner,symbol),(qty,_) in held.items():
+                if owner=='hrs' and qty!=0:retain(symbol,cursor,point)
+            for row in relevant:
+                if row['trade_time_utc']==point:retain(row['symbol'],point,point)
+            held=owned_fill_positions(account,fills,orders,through=point,after=inception,opening_inventory=opening_inventory)
+            cursor=point
+    requests=[]
+    for symbol,ranges in sorted(windows.items()):
+        merged=[]
+        for start,end in sorted(ranges):
+            if merged and start<=merged[-1][1]+1:merged[-1]=(merged[-1][0],max(end,merged[-1][1]))
+            else:merged.append((start,end))
+        requests.extend(dict(symbol=symbol,start_ms=start,end_ms=end) for start,end in merged)
+    if sum((row['end_ms']+1-row['start_ms'])//60000 for row in requests)>MAX_GAP_MARK_BARS:
+        raise EvidenceBlocked('reconciliation_mark_gap_limit')
+    return tuple(requests)
+
+
+def validate_historical_mark_pages(pages,*,inception,through,available_at):
+    result={}
+    count=0
+    earliest_ms=int(inception.timestamp()*1000)//60000*60000-60000
+    for page in pages:
+        try:
+            request=page['request'];bars=page['bars'];symbol=page['symbol']
+            received=page['available_at']
+            received=datetime.fromisoformat(received) if isinstance(received,str) else received
+            start=request['startTime'];end=request['endTime'];limit=request['limit']
+            if (page['source']!=MARK_BAR_ENDPOINT or request['symbol']!=symbol or not isinstance(symbol,str) or not symbol or ':' in symbol
+                    or request['interval']!='1m' or type(start) is not int or type(end) is not int
+                    or start%60000 or (end+1)%60000 or start<earliest_ms
+                    or type(limit) is not int or not 1<=limit<=1500 or end<start
+                    or (end+1-start)//60000>limit
+                    or not isinstance(bars,list) or not bars or len(bars)>limit
+                    or received>available_at
+                    or canonical(bars)[1]!=page['response_sha256']):
+                raise EvidenceBlocked('reconciliation_gap_bar_invalid')
+            expected=list(range(start,end+1,60000))
+            if [int(bar[0]) for bar in bars]!=expected:
+                raise EvidenceBlocked('reconciliation_gap_bar_coverage_invalid')
+            page_sha=canonical(page)[1]
+            for bar in bars:
+                count+=1
+                if count>MAX_GAP_MARK_BARS:raise EvidenceBlocked('reconciliation_mark_gap_limit')
+                point=int(bar[0])+60000
+                at=datetime.fromtimestamp(point/1000,inception.tzinfo)
+                key=f'{symbol}:{point}'
+                if (len(bar)<7 or int(bar[6])+1!=point or at>through or at>received or key in result):
+                    raise EvidenceBlocked('reconciliation_gap_bar_invalid')
+                number(bar[4],'historical_mark_price',positive=True)
+                result[key]=dict(bar=bar,available_at=received,source=MARK_BAR_ENDPOINT,evidence_sha256=page_sha)
+        except (KeyError,TypeError,ValueError,IndexError,OverflowError) as exc:
+            raise EvidenceBlocked('reconciliation_gap_bar_invalid') from exc
+    return result
+
+
+def _positions_at(source,at,gap_bars=None):
     positions=owned_fill_positions(source.account,source.fills,source.orders,through=at,after=source.inception,opening_inventory=source.opening_inventory)
     if at==source.inception:
         return source.opening_positions,'certified_opening',None
@@ -61,16 +144,24 @@ def _positions_at(source,at):
         except Exception:
             continue
         return marks,'saved_capture',archived['evidence_sha256']
-    bars={}
+    bars=dict(gap_bars or {})
     for archived in source.captures:
         bars.update(archived['capture'].get('historical_mark_bars',{}))
+    references=[]
+    for (owner,symbol),(qty,_) in positions.items():
+        if owner!='hrs' or qty==0:continue
+        minute=int(at.timestamp()*1000)//60000*60000
+        evidence=(gap_bars or {}).get(f'{symbol}:{minute}')
+        if evidence:
+            bars[f'{symbol}:{int(at.timestamp()*1000)}']=evidence
+            references.append(evidence['evidence_sha256'])
     if bars:
         initial=LedgerObservation(source.inception,source.segment_id,(),(),source.opening_positions,source.inception,source.inception,True,True)
         base=initialize_ledger(source.segment_id,source.opening_cash,initial)
         try:
             observed=historical_boundary_observation(base,at,source.available_at,source.fills,source.orders,source.current.incomes,
                 coverage_complete=True,opening_inventory=source.opening_inventory,historical_bars=bars,account=source.account)
-            return observed.positions,'saved_historical_mark_bar',None
+            return observed.positions,'closed_mark_gap_bar' if references else 'saved_historical_mark_bar',canonical(sorted(references))[1] if references else None
         except EvidenceBlocked:
             pass
     raise EvidenceBlocked('reconciliation_historical_mark_missing')
@@ -110,7 +201,22 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
         other=flows.get(flow.event_id)
         if other is None or (other.amount,other.occurred_at,other.segment_id)!=(flow.amount,flow.occurred_at,flow.segment_id):
             raise EvidenceBlocked('reconciliation_cashflow_source_conflict')
+    gap_bars=validate_historical_mark_pages(source.historical_mark_bars,inception=source.inception,through=source.current.as_of,available_at=source.available_at)
+    seen_pages=set()
+    for archived in source.captures:
+        pages=archived['capture'].get('historical_mark_gap_pages',())
+        if not pages:continue
+        digest=canonical(pages)[1]
+        if digest in seen_pages:continue
+        seen_pages.add(digest)
+        retained=validate_historical_mark_pages(pages,inception=source.inception,through=source.current.as_of,available_at=source.available_at)
+        for key,evidence in retained.items():
+            if key in gap_bars and gap_bars[key]['bar']!=evidence['bar']:
+                raise EvidenceBlocked('reconciliation_historical_mark_conflict')
+            gap_bars.setdefault(key,evidence)
     times={cp.as_of for cp in source.checkpoints}|{source.inception,source.current.as_of}|{flow.occurred_at for flow in flows.values()}
+    times.update(datetime.fromtimestamp(int(key.rsplit(':',1)[1])/1000,source.inception.tzinfo) for key in gap_bars
+                 if int(key.rsplit(':',1)[1])>=int(source.inception.timestamp()*1000))
     boundary=datetime.combine(source.inception.astimezone(SHANGHAI).date()+timedelta(days=1),time.min,SHANGHAI)
     while boundary<=source.current.as_of:
         times.add(boundary)
@@ -120,6 +226,15 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
         positions=owned_fill_positions(source.account,source.fills,source.orders,through=event.occurred_at,after=source.inception,opening_inventory=source.opening_inventory)
         if not any(owner=='hrs' and qty!=0 for (owner,_),(qty,_) in positions.items()):
             times.add(event.occurred_at)
+    # Exact authenticated closing fills keep a now-flat tail from concealing a
+    # held episode. Nonflat fill points require their genuine supporting bar.
+    owners=order_owners(source.account,source.orders)
+    for row in source.fills:
+        at=row['trade_time_utc']
+        if not source.inception<at<=source.current.as_of or owners.get((row['symbol'],str(row['order_id'])))!={'hrs'}:continue
+        positions=owned_fill_positions(source.account,source.fills,source.orders,through=at,after=source.inception,opening_inventory=source.opening_inventory)
+        if not any(owner=='hrs' and qty!=0 for (owner,_),(qty,_) in positions.items()):times.add(at)
+        elif gap_bars and all(f'{symbol}:{int(at.timestamp()*1000)//60000*60000}' in gap_bars for (owner,symbol),(qty,_) in positions.items() if owner=='hrs' and qty!=0):times.add(at)
     times=sorted(times)
     if times[0]!=source.inception or times[-1]!=source.current.as_of:
         raise EvidenceBlocked('reconciliation_checkpoint_range_invalid')
@@ -131,7 +246,7 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
     valuations=[]
     proof=[]
     for at in times[1:]:
-        marks,kind,reference=_positions_at(source,at)
+        marks,kind,reference=_positions_at(source,at,gap_bars)
         required=max(source.inception,source.current.as_of-timedelta(days=30))
         left_at=max(state.as_of,required)
         if at>required and at-left_at>timedelta(seconds=120):
@@ -175,6 +290,11 @@ def rebuild_history(previous,source,*,allow_inception_segment=False):
     if source.opening_revision is not None:
         receipt['opening_anchor_revision']=source.opening_revision
         receipt['kind']='opening_anchor_and_late_income_reconciliation_v1'
+    if source.historical_mark_bars:
+        receipt['kind']='historical_mark_gap_reconciliation_v1'
+        receipt['historical_mark_pages_sha256']=canonical(source.historical_mark_bars)[1]
+        receipt['historical_mark_pages']=[dict(source=page['source'],symbol=page['symbol'],request=page['request'],available_at=page['available_at'],response_sha256=page['response_sha256'],evidence_sha256=canonical(page)[1]) for page in source.historical_mark_bars]
+        receipt['historical_mark_observations']=len(gap_bars)
     return RebuiltHistory(state,gate,tuple(samples),receipt)
 
 

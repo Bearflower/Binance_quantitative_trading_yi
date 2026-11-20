@@ -54,7 +54,8 @@ from .equity_evidence import (
     certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,certify_reduce_only_lifecycle,FUNDING_SOURCE_CONTRACT,certify_owned_inventory_paths,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
-from .equity_reconciliation import ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
+from .equity_reconciliation import (ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints,
+    historical_mark_gap_requests,validate_historical_mark_pages,MARK_BAR_ENDPOINT)
 from .funding_reference import read_forecasts_prefix,load_forecasts_ref,evidence_forecasts_ref,verify_stored_prefixes
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
 from .loss_gate_repository import LossGateSession, RepositoryConflict
@@ -549,6 +550,31 @@ class HrsEquityService:
                     self._mark_bar_cache[key]=dict(bar=bars[0],available_at=self._now(),source='/fapi/v1/markPriceKlines')
                 snapshot['historical_mark_bars'][key]=self._mark_bar_cache[key]
 
+    async def _historical_gap_marks(self,bootstrap,snapshot,start_ms,end_ms):
+        """Collect bounded genuine missing observations before taking write locks."""
+        snapshot['historical_mark_gap_pages']=[]
+        if bootstrap is None:return
+        async with self.db.pool.acquire() as connection:
+            async with connection.transaction(readonly=True,isolation='repeatable_read'):
+                checkpoints=await effective_checkpoints(connection,self.account,bootstrap['segment_id'])
+                points=sorted({cp.as_of for cp in checkpoints}|{snapshot['captured_at']})
+                if not any(right-left>timedelta(seconds=120) for left,right in zip(points,points[1:])):return
+                report,fills,orders,_=await self._read_source(connection,start_ms,end_ms,snapshot)
+                if report.get('coverage_gaps') or report.get('missing_income_fills') or report.get('account_coverage_complete') is not True:
+                    raise EvidenceBlocked('reconciliation_source_coverage_missing')
+                anchor=json.loads(bootstrap['opening_evidence']) if isinstance(bootstrap['opening_evidence'],str) else bootstrap['opening_evidence']
+                requests=historical_mark_gap_requests(self.account,checkpoints,fills,orders,bootstrap['inception'],snapshot['captured_at'],opening_inventory=anchor.get('opening_inventory',()))
+        for window in requests:
+            start=window['start_ms']
+            while start<=window['end_ms']:
+                end=min(window['end_ms'],start+1500*60000-1)
+                request=dict(symbol=window['symbol'],interval='1m',startTime=start,endTime=end,limit=1500)
+                bars=await self.api._request('GET',MARK_BAR_ENDPOINT,params=request,signed=False)
+                snapshot['historical_mark_gap_pages'].append(dict(source=MARK_BAR_ENDPOINT,symbol=window['symbol'],request=request,
+                    available_at=self._now(),bars=bars,response_sha256=canonical(bars)[1]))
+                start=end+1
+        validate_historical_mark_pages(snapshot['historical_mark_gap_pages'],inception=bootstrap['inception'],through=snapshot['captured_at'],available_at=self._now())
+
     @asynccontextmanager
     async def _locked(self):
         async with self.db.pool.acquire() as connection:
@@ -717,7 +743,7 @@ class HrsEquityService:
             raise EvidenceBlocked('missing_active_equity_policy')
         return row['revision']
 
-    async def _projection(self, connection, revision, result, evidence):
+    async def _save_evidence(self,connection,evidence):
         saved=evidence
         publication=evidence.get('capture',{}).get('funding_publication',{})
         if 'forecasts_ref' in publication:
@@ -734,6 +760,11 @@ class HrsEquityService:
             (account_id,evidence_sha256,segment_id,as_of,available_at,payload) VALUES($1,$2,$3,$4,$5,$6::jsonb)
             ON CONFLICT(account_id,evidence_sha256) DO NOTHING''', self.account, digest,
             evidence.get('segment_id'), as_of, available, encoded)
+        return digest
+
+    async def _projection(self, connection, revision, result, evidence):
+        digest=await self._save_evidence(connection,evidence)
+        as_of=evidence['as_of']
         expiry = as_of + timedelta(seconds=120) if result['ready'] else as_of
         if result['ready']:
             capture=evidence.get('capture',{})
@@ -886,7 +917,9 @@ class HrsEquityService:
                 raise EvidenceBlocked('allocation_event_history_amount_mismatch')
             known={event.event_id for event in state.incomes}
             late=[event for event in events if event.event_id not in known and event.occurred_at<=state.as_of]
-            if late or opening_revision is not None:
+            checkpoints=await effective_checkpoints(connection,self.account,segment)
+            history_gap=bool(historical_mark_gap_requests(self.account,checkpoints,fills,orders,state.inception,as_of,opening_inventory=self._anchor_inventory))
+            if late or opening_revision is not None or history_gap:
                 existing_flows={flow.event_id for flow in state.cash_flows}
                 if any('allocation:'+change.event_id not in existing_flows for change in audit['changes']):
                     raise EvidenceBlocked('reconciliation_allocation_changes_unsettled')
@@ -903,14 +936,21 @@ class HrsEquityService:
                         # Rebuild uses only these captured inventories/marks.
                         # Hash the entire original parent before retaining this
                         # smaller evaluated view; the stored parent is untouched.
-                        retained={key:payload['capture'][key] for key in ('inventory','independent','local','marks','historical_mark_bars') if key in payload['capture']}
+                        retained={key:payload['capture'][key] for key in ('inventory','independent','local','marks','historical_mark_bars','historical_mark_gap_pages') if key in payload['capture']}
+                        if not retained.get('historical_mark_gap_pages'):retained.pop('historical_mark_gap_pages',None)
                         captures.append(dict(as_of=archived['as_of'],capture=retained,evidence_sha256=archived['evidence_sha256']))
                 await verify_stored_prefixes(connection,forecast_refs,account_id=self.account)
+                # This exact input parent is independently persisted. The final
+                # projection adds result/receipt fields and has a different hash.
+                source_sha=await self._save_evidence(connection,evidence)
                 source=ReconciliationSource(self.account,segment,state.inception,effective_opening_cash,
                     LedgerObservation(as_of,segment,events,(),marks,as_of,snapshot['captured_at'],True,True),
-                    state.cash_flows,await effective_checkpoints(connection,self.account,segment),tuple(captures),
-                    tuple(fills),tuple(orders),self._now(),canonical(evidence)[1],opening_positions=self._opening_marks(anchor),opening_inventory=self._anchor_inventory,opening_revision=opening_revision)
+                    state.cash_flows,checkpoints,tuple(captures),
+                    tuple(fills),tuple(orders),self._now(),source_sha,opening_positions=self._opening_marks(anchor),opening_inventory=self._anchor_inventory,opening_revision=opening_revision,
+                    historical_mark_bars=tuple(snapshot.get('historical_mark_gap_pages',())))
                 rebuilt=rebuild_history(stored,source,allow_inception_segment=self.allow_inception)
+                if not timedelta(0)<=self._now()-as_of<timedelta(seconds=120):
+                    raise EvidenceBlocked('source_observation_stale')
                 stored=await activate_reconciliation(connection,self.account,stored,rebuilt)
                 gate=rebuilt.gate
                 receipt_sha=canonical(rebuilt.receipt)[1]
@@ -919,6 +959,7 @@ class HrsEquityService:
                     reconciliation_receipt_sha256=receipt_sha)
                 evidence['result']=result
                 evidence['reconciliation_receipt_sha256']=receipt_sha
+                evidence['reconciliation_source_sha256']=source_sha
                 return await self._projection(connection,revision,result,evidence)
             events_flow=self._allocation_flows(state,audit['changes'],events,fills,orders,as_of)
             if state.cash_allocation+sum((flow.amount for flow in events_flow),Decimal(0))!=effective_opening_cash+sum((change.delta for change in audit['changes']),Decimal(0)):
@@ -1005,6 +1046,21 @@ class HrsEquityService:
                 await self._authenticate_order_owners(snapshot,start_ms,end_ms)
                 await self._funding_publication_evidence(snapshot,snapshot['income_start_ms'],end_ms)
                 await self._historical_marks(bootstrap,snapshot)
+                await self._historical_gap_marks(bootstrap,snapshot,start_ms,end_ms)
+                if snapshot['historical_mark_gap_pages']:
+                    # Historical GET latency must not age the final live financial
+                    # observation. Recollect the ordinary complete source after a
+                    # fresh account capture; retain the actual earlier bar receipts.
+                    pages=snapshot['historical_mark_gap_pages']
+                    snapshot=await self._capture()
+                    end_ms=int(snapshot['captured_at'].timestamp()*1000)
+                    snapshot['income_start_ms']=int(credit_period.timestamp()*1000)
+                    collection=await self._collect(start_ms,end_ms,snapshot)
+                    await self._opening_fill_prefixes(snapshot,start_ms,end_ms)
+                    await self._authenticate_order_owners(snapshot,start_ms,end_ms)
+                    await self._funding_publication_evidence(snapshot,snapshot['income_start_ms'],end_ms)
+                    await self._historical_marks(bootstrap,snapshot)
+                    snapshot['historical_mark_gap_pages']=pages
                 async with self._locked() as connection:
                     result=await self._commit(connection,bootstrap,snapshot,collection,start_ms,end_ms)
                 if self.recorder is not None:
