@@ -1,5 +1,6 @@
 """The allocation preview has its own window and cannot stand for HRS acceptance."""
 import json
+import pytest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -146,3 +147,43 @@ def test_report_updated_during_slow_probe_uses_read_time(monkeypatch,tmp_path,ca
     monkeypatch.setattr(inspector.subprocess,'run',lambda *a,**k:SimpleNamespace(returncode=0,stdout=json.dumps(result)))
     inspector.run_daily(SimpleNamespace(state=tmp_path/'state',dry_run=True,send=False,webhook=tmp_path/'unused'))
     assert '自然闭合仓位 0/5' in capsys.readouterr().out
+
+
+def gate_evidence(now,**changes):
+    from datetime import timedelta
+    value=dict(account_id='default',strategy_id='hrs',ready=True,allowed=True,policy_revision=8,active_revision=8,
+               as_of=(now-timedelta(seconds=5)).isoformat(),checked_at=now.isoformat(),
+               valid_until=(now+timedelta(seconds=100)).isoformat(),reasons=[])
+    return dict(value,**changes)
+
+
+def test_real_equity_denial_is_visible_independently_of_allocation_preview():
+    now=datetime(2026,11,20,9,tzinfo=timezone.utc)
+    gate=gate_evidence(now,ready=False,allowed=False,reasons=['daily_history_incomplete','rolling_30_day_history_incomplete'])
+    assert inspector.entry_gate_status(gate,now)=='PAUSED'
+    text='\n'.join(inspector.hrs_entry_gate_lines(gate,now))
+    assert '暂停新增风险' in text
+    assert all(reason in text for reason in gate['reasons'])
+    headline=inspector.report_conclusion(0,0,None,'BLOCKED_DATA','PAUSED')
+    assert 'HRS 权益门禁暂停新增风险' in headline and '门禁与风控核验通过' not in headline
+
+
+def test_fresh_matching_gate_reports_its_actual_authorization():
+    now=datetime(2026,11,20,9,tzinfo=timezone.utc)
+    assert inspector.entry_gate_status(gate_evidence(now),now)=='ALLOWED'
+    assert '允许新增风险' in '\n'.join(inspector.hrs_entry_gate_lines(gate_evidence(now),now))
+
+
+@pytest.mark.parametrize('damage',[dict(account_id='foreign'),dict(strategy_id='new_coin'),dict(active_revision=9),
+    dict(valid_until='2026-11-19T00:00:00+00:00'),dict(ready=False,allowed=True),dict(allowed='true')])
+def test_wrong_stale_or_incoherent_gate_cannot_be_reported_as_allowed(damage):
+    now=datetime(2026,11,20,9,tzinfo=timezone.utc)
+    gate=gate_evidence(now,**damage)
+    assert inspector.entry_gate_status(gate,now)=='UNVERIFIED'
+    assert '允许新增风险' not in '\n'.join(inspector.hrs_entry_gate_lines(gate,now))
+
+
+def test_missing_gate_is_explicitly_unverified():
+    now=datetime(2026,11,20,9,tzinfo=timezone.utc)
+    assert inspector.entry_gate_status(None,now)=='UNVERIFIED'
+    assert '门禁证据未核实' in '\n'.join(inspector.hrs_entry_gate_lines(None,now))

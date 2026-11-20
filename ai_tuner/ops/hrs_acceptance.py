@@ -499,12 +499,23 @@ async def probe(inputs):
                                 f"{status}，等级记录 {grade_count}，交易记录 {trade_count}；{verdict}")
         for row in summaries:
             issues.append(f"HRS {row['symbol']} 平仓汇总 id={row['id']} 采用理论盈亏 {row['realized_pnl']} USDT")
+        # Read after the potentially slow exchange probe, in a new snapshot.
+        async with db.transaction(isolation="repeatable_read", readonly=True):
+            gate = await db.fetchrow("""
+                SELECT g.account_id,g.strategy_id,g.ready,g.allowed,g.policy_revision,
+                       g.as_of::text,g.valid_until::text,g.reasons,
+                       clock_timestamp()::text AS checked_at,a.revision AS active_revision
+                FROM trading.strategy_equity_gate g
+                LEFT JOIN trading.strategy_risk_active a USING(account_id,strategy_id)
+                WHERE g.account_id='default' AND g.strategy_id='hrs'
+            """)
         return {
             "issues": issues, "samples": sample_lines,
             "positions": visible_positions, "reservations": len(reservations),
             "policies": [f"{r['strategy_id']} r{r['revision']} {r['mode']} "
                          f"{r['expires_at'].astimezone(BEIJING):%m-%d %H:%M}" for r in policies],
             "allocation_hash": allocation_hash, "monthly": monthly,
+            "equity_gate": dict(gate) if gate else None,
         }
     finally:
         if client is not None:
@@ -532,8 +543,50 @@ def send_report(path, report):
     print("Feishu accepted report (code=0)")
 
 
-def report_conclusion(issue_count, candidate_count, monthly, shadow_status):
+def entry_gate_status(gate, now):
+    """Validate current authorization without interpreting a missing row as approval."""
+    try:
+        if (not isinstance(gate, dict) or gate.get("account_id") != "default"
+                or gate.get("strategy_id") != "hrs"
+                or type(gate.get("ready")) is not bool or type(gate.get("allowed")) is not bool
+                or (gate["allowed"] and not gate["ready"])
+                or type(gate.get("policy_revision")) is not int or gate["policy_revision"] <= 0
+                or type(gate.get("active_revision")) is not int
+                or gate["active_revision"] != gate["policy_revision"]):
+            return "UNVERIFIED"
+        as_of, checked, valid = (datetime.fromisoformat(gate[key])
+                                for key in ("as_of", "checked_at", "valid_until"))
+        if not (as_of <= checked <= now < valid):
+            return "UNVERIFIED"
+        return "ALLOWED" if gate["allowed"] else "PAUSED"
+    except (KeyError, TypeError, ValueError):
+        return "UNVERIFIED"
+
+
+def hrs_entry_gate_lines(gate, now):
+    status = entry_gate_status(gate, now)
+    if status == "UNVERIFIED":
+        return ["HRS 权益门禁：门禁证据未核实；不能确认开仓授权。"]
+    if status == "ALLOWED":
+        return ["HRS 权益门禁：允许新增风险；实际开仓仍须通过评分、预算、保证金及保护单检查。"]
+    reasons = gate.get("reasons")
+    if isinstance(reasons, str):
+        try:
+            reasons = json.loads(reasons)
+        except ValueError:
+            reasons = None
+    detail = "；".join(reasons) if isinstance(reasons, list) and reasons and all(
+        isinstance(item, str) for item in reasons) else "原因待核实"
+    return ["HRS 权益门禁：暂停新增风险；" + detail + "。"]
+
+
+def report_conclusion(issue_count, candidate_count, monthly, shadow_status, entry_status=None):
     findings = [f"{issue_count} 项异常待核对"] if issue_count else ["本次门禁与风控核验通过"]
+    if entry_status in {"PAUSED", "UNVERIFIED"}:
+        if not issue_count:
+            findings = []
+        findings.append("HRS 权益门禁暂停新增风险" if entry_status == "PAUSED"
+                        else "HRS 权益门禁证据未核实")
     if candidate_count:
         findings.append(f"{candidate_count} 个新增实盘候选待核验")
     allocation = "月度分配有核验结果，见下文" if monthly else "月度分配记录无变化"
@@ -623,7 +676,10 @@ def run_daily(args):
     else:
         shadow_signature = None
         issues.append("未读到 AI Tuner 月度影子核验证据")
-    lines.extend(hrs_evidence_lines(read_hrs_evidence(), datetime.now(BEIJING)))
+    evidence_now = datetime.now(BEIJING)
+    entry_status = entry_gate_status(data.get("equity_gate"), evidence_now)
+    lines.extend(hrs_entry_gate_lines(data.get("equity_gate"), evidence_now))
+    lines.extend(hrs_evidence_lines(read_hrs_evidence(), evidence_now))
     last_log = allocation_logs[-1] if allocation_logs else None
     if last_log and list(last_log) != state.get("allocation_log"):
         lines.append(f"月度作业日志 {last_log[0][5:16]} {last_log[1]}")
@@ -638,7 +694,8 @@ def run_daily(args):
     new_samples = [sample for sample in data["samples"] if digest(sample) not in previous_samples]
     lines.extend(new_samples[:8] or ["未发现新增指定场景候选。"])
     lines.insert(1, report_conclusion(
-        len(issues), len(new_samples), data["monthly"], shadow.get("status") if shadow else None
+        len(issues), len(new_samples), data["monthly"], shadow.get("status") if shadow else None,
+        entry_status
     ))
     report = "\n".join(lines)
     print(report)
@@ -648,8 +705,8 @@ def run_daily(args):
         send_report(args.webhook, report)
     else:
         publish_or_send(args.webhook, report,
-                        status="warn" if issues else "ok",
-                        summary=f"{len(issues)} 项异常" if issues else "正常")
+                        status="warn" if issues or entry_status != "ALLOWED" else "ok",
+                        summary=f"{len(issues)} 项异常；HRS 权益门禁 {entry_status}")
     next_state = {
         "lookback": (now - timedelta(minutes=10)).isoformat(),
         "allocation_hash": data["allocation_hash"], "shadow_hash": shadow_signature,
