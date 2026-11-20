@@ -274,7 +274,7 @@ async def test_single_connection_snapshot_cannot_deadlock():
 @pytest.mark.asyncio
 async def test_production_runtime_grants_nosuperuser():
     initial=await setup();await initial.close()
-    admin=await asyncpg.connect(DSN.replace('/postgres','/risk_tests'))
+    admin=await asyncpg.connect(DSN)
     await admin.execute("DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='trading_user') THEN CREATE ROLE trading_user LOGIN NOSUPERUSER; END IF; END $$")
     assert not await admin.fetchval("SELECT rolsuper FROM pg_roles WHERE rolname='trading_user'")
     await admin.execute('REVOKE ALL ON trading.strategy_risk_policy,trading.strategy_risk_active,trading.strategy_risk_audit,trading.entry_risk_reservation FROM trading_user')
@@ -285,7 +285,7 @@ async def test_production_runtime_grants_nosuperuser():
     await admin.close()
     async def runtime_role(connection):
         await connection.execute('SET ROLE trading_user')
-    pool=await asyncpg.create_pool(DSN.replace('/postgres','/risk_tests'),min_size=1,max_size=2,setup=runtime_role)
+    pool=await asyncpg.create_pool(DSN,min_size=1,max_size=2,setup=runtime_role)
     try:
         store=RiskPolicyStore(SimpleNamespace(pool=pool))
         assert (await store.policy('btc_eth_aggressive'))['revision']==1
@@ -308,7 +308,7 @@ async def test_reduced_prepare_retry_and_final_submit_uses_exact_reserved_quanti
     from unittest.mock import AsyncMock
     from shared.entry_risk_policy import prepare_aggressive_entry,submit_aggressive_entry
     pool=await setup()
-    admin=await asyncpg.connect(DSN.replace('/postgres','/risk_tests'))
+    admin=await asyncpg.connect(DSN)
     await admin.execute('CREATE TABLE IF NOT EXISTS public.capital_allocation(month date,status text,entries jsonb,created_at timestamptz default now())')
     await admin.execute('TRUNCATE public.capital_allocation')
     month=datetime.now(ZoneInfo('Asia/Shanghai')).date().replace(day=1)
@@ -351,7 +351,7 @@ async def test_same_symbol_concurrent_intents_cannot_add():
 @pytest.mark.asyncio
 async def test_versioned_policy_and_audit_are_immutable_even_for_administrator():
     pool=await setup();await pool.close()
-    admin=await asyncpg.connect(DSN.replace('/postgres','/risk_tests'))
+    admin=await asyncpg.connect(DSN)
     try:
         with pytest.raises(Exception) as immutable:
             await admin.execute("UPDATE trading.strategy_risk_policy SET entry_ceiling=999")
