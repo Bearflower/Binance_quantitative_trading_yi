@@ -159,6 +159,71 @@ async def test_midnight_flat_reconstruction_has_real_available_at_and_fresh_proj
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize('missing_bars',[False,True])
+async def test_missing_held_mark_history_is_recovered_append_only_once(setup,missing_bars):
+    from strategies.hrs.equity_evidence import canonical
+    from strategies.hrs.equity_reconciliation import effective_checkpoints
+    service,account,pool,api,clock=setup
+    first=await service.refresh()
+    entered=T+timedelta(seconds=10)
+    closed=T+timedelta(hours=1,minutes=7,seconds=10)
+    records=[dict(symbol='BTCUSDT',id=i,orderId=i,side=side,qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int(at.timestamp()*1000)) for i,side,at in ((91,'BUY',entered),(92,'SELL',closed))]
+    async with pool.acquire() as c:
+        for row in records:
+            await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES($1,'BTCUSDT',$2,'hrs',$3,'FILLED','LIMIT',$4)",account,str(row['id']),row['side'],T.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+        schedule_id=uuid.uuid4();service._test_schedule_ids.append(schedule_id)
+        await c.execute("INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,funding_interval_hours,payload_hash,raw_payload) VALUES($1,'BTCUSDT',$2,$2,$3,24,'test','{}')",schedule_id,T-timedelta(minutes=1),T+timedelta(days=1))
+        original=dict(await c.fetchrow('SELECT * FROM trading.hrs_risk_equity_checkpoints WHERE account_id=$1',account))
+    api.get_user_trades.return_value=records
+    api.get_income_history.side_effect=lambda **kw: ([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-1',asset='USDT',tranId=r['id'],tradeId=str(r['id']),time=r['time'],info='') for r in records] if kw['income_type']=='COMMISSION' else [])
+    requests=[]
+    history_received=[]
+    def market(method,path,params=None,**kwargs):
+        assert method=='GET'
+        if path!='/fapi/v1/markPriceKlines':return funding_source_response(path)
+        requests.append(dict(params))
+        if missing_bars:return []
+        if params['limit']==1500 and not history_received:
+            clock[0]+=timedelta(seconds=99)
+            history_received.append(clock[0])
+        return [[ms,'100','100','100','100','0',ms+59999] for ms in range(params['startTime'],params['endTime']+1,60000)]
+    api._request.side_effect=market
+    clock[0]=T+timedelta(hours=1,minutes=10)
+    result=await service.refresh()
+    if missing_bars:
+        assert not result['ready'] and not result['allowed']
+        async with pool.acquire() as c:
+            assert await c.fetchval('SELECT version FROM trading.hrs_loss_gate_state WHERE account_id=$1',account)==1
+        return
+    assert result['ready'] and result['allowed']
+    assert result['window_label']=='inception_segment' and not result['qualified_30_day']
+    assert result['reconciliation_receipt_sha256']
+    assert history_received and result['as_of']>=history_received[-1]
+    assert requests and all(p['symbol']=='BTCUSDT' and p['interval']=='1m' for p in requests)
+    async with pool.acquire() as c:
+        assert dict(await c.fetchrow('SELECT * FROM trading.hrs_risk_equity_checkpoints WHERE account_id=$1 AND as_of=$2',account,T))==original
+        row=await c.fetchrow('SELECT * FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)
+        receipt=json.loads(row['receipt'])
+        assert receipt['kind']=='historical_mark_gap_reconciliation_v1'
+        source=await c.fetchrow('SELECT * FROM trading.hrs_equity_evidence WHERE account_id=$1 AND evidence_sha256=$2',account,receipt['source_evidence_sha256'])
+        assert source and canonical(json.loads(source['payload']))[1]==receipt['source_evidence_sha256']
+        assert json.loads(source['payload'])['capture']['historical_mark_gap_pages']
+        segment=original['segment_id']
+        early=await effective_checkpoints(c,account,segment,known_at=T+timedelta(minutes=1))
+        assert T+timedelta(hours=1) not in {cp.as_of for cp in early}
+        assert {cp.as_of:cp.nav for cp in early}[T]==D('1')
+        effective=await effective_checkpoints(c,account,segment)
+        assert T+timedelta(hours=1) in {cp.as_of for cp in effective}
+        with pytest.raises(Exception,match='immutable'):
+            await c.execute('DELETE FROM trading.hrs_equity_reconciliation WHERE account_id=$1',account)
+    before=len(requests)
+    clock[0]+=timedelta(seconds=30)
+    again=await service.refresh()
+    assert again['allowed'] and again['ledger_version']==3
+    assert 'reconciliation_receipt_sha256' not in again and len(requests)==before
+
+
+@pytest.mark.asyncio
 async def test_pending_or_unknown_entry_prevents_bootstrap_without_resetting_later(setup):
     service, account, pool, api, clock = setup
     api.get_open_orders.return_value = [dict(symbol='BTCUSDT',orderId=9,reduceOnly=False)]
@@ -770,9 +835,10 @@ async def test_late_reconciliation_reads_funding_source_prefix_once_not_per_pare
     service._locked=traced
     await test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,False,None)
     # Two saved parents are both checked, but read only one maximum prefix.
-    # One additional read validates the new single projection, as before.
-    assert calls[2].count(COUNT_SQL)==2
-    assert calls[2].count(ROWS_SQL)==2
+    # Two additional constant reads validate the independently persisted source
+    # input and the final projection; neither scales with historical parents.
+    assert calls[2].count(COUNT_SQL)==3
+    assert calls[2].count(ROWS_SQL)==3
 
 
 @pytest.mark.asyncio

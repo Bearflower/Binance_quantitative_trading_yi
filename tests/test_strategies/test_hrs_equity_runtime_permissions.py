@@ -150,6 +150,56 @@ async def test_restricted_collector_initializes_and_restarts_after_idempotent_mi
 
 
 @pytest.mark.asyncio
+async def test_restricted_role_recovers_mark_history_with_append_only_receipt_and_cas(runtime):
+    import json
+    from strategies.hrs.equity_evidence import canonical
+    from strategies.hrs.equity_reconciliation import activate_reconciliation
+    from strategies.hrs.loss_gate_repository import _stored,RepositoryConflict,ledger_from_dict
+    state=runtime
+    first=await state.service.refresh()
+    origin=state.clock[0]
+    async with state.pool.acquire() as app:
+        assert await app.fetchval('SELECT current_user')=='trading_user'
+        previous=_stored(await app.fetchrow('SELECT * FROM trading.hrs_loss_gate_state WHERE account_id=$1',state.account))
+        original=await app.fetchval('SELECT payload FROM trading.hrs_risk_equity_checkpoints WHERE account_id=$1',state.account)
+    moments=[origin-timedelta(hours=1),origin-timedelta(minutes=30),origin+timedelta(seconds=10),origin+timedelta(hours=1,minutes=7,seconds=10)]
+    records=[dict(symbol='BTCUSDT',id=i,orderId=i,side='BUY' if i in (1,3) else 'SELL',qty='1',price='100',quoteQty='100',commission='0' if i==2 else '.1',commissionAsset='USDT',realizedPnl='0',time=int(at.timestamp()*1000)) for i,at in enumerate(moments,1)]
+    for i in (3,4):
+        row=records[i-1]
+        await state.admin.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES($1,'BTCUSDT',$2,'hrs',$3,'FILLED','LIMIT',$4)",state.account,str(i),row['side'],moments[i-1].astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+    await state.admin.execute("INSERT INTO public.ai_tuner_funding_schedule_observations(attempt_id,symbol,source_time,received_at,next_funding_time,payload_hash,raw_payload) VALUES($1,'BTCUSDT',$2,$2,$3,'test','{}')",uuid.uuid4(),origin-timedelta(minutes=1),origin+timedelta(days=1))
+    state.api.get_user_trades.side_effect=lambda symbol,**kw:[r for r in records if (kw.get('start_time') is None or kw['start_time']<=r['time']) and (kw.get('end_time') is None or r['time']<=kw['end_time'])]
+    state.api.get_income_history.side_effect=lambda **kw:([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-.1',asset='USDT',tranId=100 if r['id']==1 else 100+r['id'],tradeId=str(r['id']),time=r['time'],info='') for r in records if r['id']!=2 and kw['start_time']<=r['time']<=kw['end_time']] if kw['income_type']=='COMMISSION' else [])
+    def market(method,path,params=None,**kwargs):
+        assert method=='GET'
+        if path=='/fapi/v1/markPriceKlines':return [[ms,'100','100','100','100','0',ms+59999] for ms in range(params['startTime'],params['endTime']+1,60000)]
+        if path=='/fapi/v1/fundingInfo':return []
+        if path=='/fapi/v1/exchangeInfo':return dict(symbols=[dict(symbol='BTCUSDT',underlyingType='COIN',contractType='PERPETUAL',quoteAsset='USDT',marginAsset='USDT')])
+        raise AssertionError(path)
+    state.api._request.side_effect=market
+    state.clock[0]=origin+timedelta(hours=1,minutes=10)
+    result=await state.service.refresh()
+    assert result['allowed'] and result['ledger_version']==2
+    async with state.pool.acquire() as app:
+        assert await app.fetchval('SELECT payload FROM trading.hrs_risk_equity_checkpoints WHERE account_id=$1 AND as_of=$2',state.account,origin)==original
+        row=await app.fetchrow('SELECT receipt,after_state FROM trading.hrs_equity_reconciliation WHERE account_id=$1',state.account)
+        receipt=json.loads(row['receipt'])
+        assert receipt['kind']=='historical_mark_gap_reconciliation_v1'
+        source=await app.fetchval('SELECT payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND evidence_sha256=$2',state.account,receipt['source_evidence_sha256'])
+        assert canonical(json.loads(source))[1]==receipt['source_evidence_sha256']
+        with pytest.raises(Exception,match='permission denied|immutable'):
+            await app.execute('DELETE FROM trading.hrs_equity_reconciliation WHERE account_id=$1',state.account)
+        after=ledger_from_dict(json.loads(row['after_state'])['ledger'])
+    async with state.service._locked() as app:
+        with pytest.raises(RepositoryConflict,match='version_conflict'):
+            await activate_reconciliation(app,state.account,previous,SimpleNamespace(ledger=after))
+    state.clock[0]+=timedelta(seconds=30)
+    again=await state.service.refresh()
+    assert again['allowed'] and again['ledger_version']==3
+    assert 'reconciliation_receipt_sha256' not in again
+
+
+@pytest.mark.asyncio
 async def test_lock_column_grant_cannot_modify_or_reseed_segment(runtime):
     import asyncpg
     state=runtime
