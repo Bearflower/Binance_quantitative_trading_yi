@@ -403,3 +403,16 @@ def test_unreadable_runtime_source_blocks_traceability_and_engine_execution(monk
     assert report['status']=='BLOCKED_DATA' and report['engine_runs']==0
     assert report['engine_identity']['status']=='UNAVAILABLE'
     assert any('engine_source_unavailable:ai_tuner.replay.broker' in gap for gap in report['blocked_reasons'])
+
+
+def test_engine_identity_binds_actual_scan_financial_context_code(monkeypatch):
+    from strategies.hrs import decision_context
+    m=module();original=m.engine_identity()
+    assert 'strategies/hrs/decision_context.py' in original['source_files']
+    assert 'strategies.hrs.decision_context' in original['loaded_code_sha256']
+    async def changed_context(strategy):
+        return {'different_financial_capture_contract': True}
+    monkeypatch.setattr(decision_context,'capture_financial_context',changed_context)
+    changed=m.engine_identity()
+    assert changed['loaded_code_sha256']['strategies.hrs.decision_context'] != original['loaded_code_sha256']['strategies.hrs.decision_context']
+    assert changed['sha256'] != original['sha256']

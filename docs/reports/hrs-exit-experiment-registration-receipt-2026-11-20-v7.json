@@ -1,0 +1,18 @@
+{
+  "experiment_id": "hrs-exits-production-20261120-v7",
+  "registered_at": "2026-11-20T01:36:44.570477+00:00",
+  "registered_before_inputs": true,
+  "runtime_admission_scope": "hrs_owned_and_unreleased_reservations_v2",
+  "runtime_risk_budget_scope": "hrs_minimum_executable_v1",
+  "runtime_margin_scope": "hrs_owned_quota_account_free_v1",
+  "minimum_closed_lifecycles": 20,
+  "kind": "private_registration_integrity_receipt_not_executable_registration",
+  "registration_file_sha256": "857c7771e184dd71450eca0ac0310e41922d6fd9636a93dac1e1a74c25ad133d",
+  "candidate_inventory_sha256": "021139e496c630ced8468122281a12ce5f1dd3d90db2903724ad35cd60f0a1e1",
+  "research_start": "2026-11-21T00:00:00+08:00",
+  "research_end": "2026-12-01T00:00:00+08:00",
+  "previous_registration_sha256": "46b5f5def1ecf64f7263527bc0475da2a6eff7c4a3ade2d59379765c8edcf4de",
+  "full_registration_location": "private ignored local HRS acceptance workspace",
+  "performance_accepted": false,
+  "production_parameters_changed": false
+}

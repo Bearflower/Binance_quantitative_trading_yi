@@ -185,9 +185,48 @@ def read_shadow():
                                 text=True, capture_output=True, timeout=20)
         data = json.loads(result.stdout)
         return {k: data.get(k) for k in
-                ("status", "mode", "allocation", "reasons", "report_id", "start_ms", "end_ms", "as_of")}
+                ("account_id", "status", "mode", "allocation", "reasons", "report_id",
+                 "start_ms", "end_ms", "as_of", "activation_blocks") if k in data}
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
+
+
+def read_hrs_evidence():
+    """Read the existing DB-only reporter; never run an experiment or send."""
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "trading_system-hrs-acceptance", "cat", "/app/logs/hrs-acceptance.json"],
+            check=True, text=True, capture_output=True, timeout=20)
+        return json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def hrs_evidence_lines(report, now):
+    pending = "HRS 独立运行验收：证据待核实；收益验收未通过。"
+    try:
+        if (not isinstance(report, dict) or report.get("report_version") != "hrs-continuous-acceptance-v1"
+                or report.get("account_id") != "default"
+                or report.get("database_snapshot_coherent") is not True):
+            raise ValueError("unverified reporter identity")
+        generated = datetime.fromisoformat(report["generated_at"])
+        if generated.utcoffset() is None or not 0 <= (now-generated).total_seconds() <= 1800:
+            raise ValueError("stale or future reporter")
+        technical, financial = report["technical"], report["financial"]
+        hours, closed = technical["consecutive_complete_hours"], financial["observed_closed_lifecycles"]
+        if (type(hours) is not int or not 0 <= hours <= 24 or type(closed) is not int or closed < 0
+                or technical.get("required_complete_hours") != 24
+                or financial.get("required_lifecycles") != 5
+                or technical.get("coverage_threshold") != .95):
+            raise ValueError("unverified acceptance criteria")
+        lines = [f"HRS 独立运行验收：连续完整小时 {hours}/24，"
+                 f"自然闭合仓位 {closed}/5；工程状态 {financial.get('engineering_status', '待核实')}；"
+                 f"证据时间 {generated.astimezone(BEIJING):%m-%d %H:%M}。"]
+        lines.append("HRS 收益验收未通过：运行留证与收益改善分别验收；SL/TP 实验仍需"
+                     "每方案至少20个合格闭合样本及两个月独立留出验证。")
+        return lines
+    except (KeyError, ValueError, TypeError, OverflowError):
+        return [pending]
 
 
 def read_journal(since):
@@ -428,10 +467,42 @@ def report_conclusion(issue_count, candidate_count, monthly, shadow_status):
         findings.append(f"{candidate_count} 个新增实盘候选待核验")
     allocation = "月度分配有核验结果，见下文" if monthly else "月度分配记录无变化"
     shadow = {
-        "BLOCKED_DATA": "影子核验仍受阻",
-        "PREVIEW": "影子核验已有分配预览",
-    }.get(shadow_status, "影子核验状态待确认")
+        "BLOCKED_DATA": "全账户自动分配预览受阻",
+        "PREVIEW": "全账户自动分配预览已生成",
+    }.get(shadow_status, "全账户自动分配预览状态待确认")
     return f"【结论】{'，'.join(findings)}。{allocation}，{shadow}。"
+
+
+def allocation_shadow_lines(shadow):
+    """Expose the original allocation scope/window; never certify HRS returns."""
+    if not isinstance(shadow, dict):
+        return ["全账户自动分配预览：状态待确认；HRS 收益验收另行核验。"]
+    status = shadow.get("status")
+    status = status if status in {"BLOCKED_DATA", "PREVIEW"} else "状态待确认"
+    window = "窗口未核实"
+    try:
+        left, right = shadow["start_ms"], shadow["end_ms"]
+        if type(left) is not int or type(right) is not int or not 0 <= left < right:
+            raise ValueError("invalid allocation window")
+        start = datetime.fromtimestamp(left / 1000, BEIJING)
+        end = datetime.fromtimestamp(right / 1000, BEIJING)
+        window = f"{start:%Y-%m-%d %H:%M} 至 {end:%Y-%m-%d %H:%M}（北京时间，右端不含）"
+    except (KeyError, ValueError, TypeError, OverflowError, OSError):
+        pass
+    lines = [f"全账户自动分配预览：{status}；收入窗口：{window}。"]
+    reasons = shadow.get("reasons")
+    if isinstance(reasons, list) and all(isinstance(item, str) for item in reasons):
+        if reasons:
+            lines.append("分配预览缺项：" + "；".join(reasons) + "。")
+        elif status == "BLOCKED_DATA":
+            lines.append("分配预览缺项原因未提供，仍保留 BLOCKED_DATA。")
+    elif status == "BLOCKED_DATA":
+        lines.append("分配预览缺项格式未核实，仍保留 BLOCKED_DATA。")
+    blocks = shadow.get("activation_blocks")
+    if isinstance(blocks, list) and blocks and all(isinstance(item, str) for item in blocks):
+        lines.append("实盘分配保持冻结；独立启用条件：" + "；".join(blocks) + "。")
+    lines.append("HRS 收益验收另行核验；本段只报告全账户分配预览证据。")
+    return lines
 
 
 def publish_or_send(webhook, report, *, status, summary):
@@ -469,12 +540,11 @@ def run_daily(args):
              data["monthly"] or "月度分配记录无变化。"]
     if shadow:
         shadow_signature = digest({k: v for k, v in shadow.items() if k != "as_of"})
-        if shadow_signature != state.get("shadow_hash"):
-            lines.append(f"月度影子核验 {shadow['status']}，"
-                         f"生成分配预览：{'有' if shadow['allocation'] else '无'}。")
+        lines.extend(allocation_shadow_lines(shadow))
     else:
         shadow_signature = None
         issues.append("未读到 AI Tuner 月度影子核验证据")
+    lines.extend(hrs_evidence_lines(read_hrs_evidence(), datetime.now(BEIJING)))
     last_log = allocation_logs[-1] if allocation_logs else None
     if last_log and list(last_log) != state.get("allocation_log"):
         lines.append(f"月度作业日志 {last_log[0][5:16]} {last_log[1]}")
