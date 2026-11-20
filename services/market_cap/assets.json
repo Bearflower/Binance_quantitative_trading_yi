@@ -1535,5 +1535,121 @@
         "tests/fixtures/market_cap/cmc_remaining_four_assets_20261120.json"
       ]
     }
+  },
+  "YBUSDT": {
+    "symbol": "YB",
+    "cg_id": "yield-basis",
+    "cmc_id": 38651,
+    "name": "Yield Basis",
+    "verified_at": "2026-11-20",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/b9993dfcc8a04aa5932d1b87f2c06f87",
+      "https://www.binance.com/en/support/announcement/detail/8b48c0db0eeb472ab0314377938af2dc",
+      "https://www.coingecko.com/en/coins/yield-basis",
+      "https://coinmarketcap.com/currencies/yieldbasis/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "contracts": {
+      "ethereum": "0x01791f726b4103694969820be083196cc7c045ff",
+      "binance-smart-chain": "0xfb93ee8152dd0a0e6f4b49c66c06d800cf1db72d"
+    },
+    "identity_notes": "Binance YBUSDT is Yield Basis (YB), whose Ethereum and BNB Chain contracts are published by the official HODLer announcement and match both provider identities. CoinGecko and CMC spell the same project Yield Basis and YieldBasis; identity is bound by contract, not typography.",
+    "cmc_enabled": false,
+    "comparison": {
+      "at": "2026-11-20T03:29:00.346068+00:00",
+      "relative_difference": 0.21965190020150913,
+      "max_relative_difference": 0.05,
+      "circulating_supply_relative_difference": 0.2175567913048259,
+      "provider_time_skew_seconds": 5.0,
+      "max_provider_time_skew_seconds": 300,
+      "coingecko_market_cap": 16006516,
+      "coinmarketcap_market_cap": 12490654.34499414,
+      "coingecko_circulating_supply": 294956590.57849467,
+      "coinmarketcap_circulating_supply": 230786781.15802613,
+      "coingecko_observed_at": "2026-11-20T03:27:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-20T03:28:01.000Z",
+      "evidence": [
+        "tests/fixtures/market_cap/cg_natural_three_assets_20261120.json",
+        "tests/fixtures/market_cap/cmc_natural_three_assets_20261120.json"
+      ]
+    },
+    "fallback_disabled_reason": "Paired provider market-cap and circulating-supply differences exceed 5%; verified identity permits CoinGecko primary only."
+  },
+  "STRKUSDT": {
+    "symbol": "STRK",
+    "cg_id": "starknet",
+    "cmc_id": 22691,
+    "name": "Starknet",
+    "verified_at": "2026-11-20",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/2bfb6f8dccf447ada57165b7e6a4cf1b",
+      "https://www.binance.com/en/support/announcement/detail/cb15311b17c440d0b0cf077a9b9979a3",
+      "https://www.coingecko.com/en/coins/starknet",
+      "https://coinmarketcap.com/currencies/starknet-token/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "contracts": {
+      "ethereum": "0xca14007eff0db1f8135f4c25b34de49ab0d42766",
+      "starknet": "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d"
+    },
+    "identity_notes": "Binance STRKUSDT is Starknet (STRK), the Ethereum validity-rollup token. Both provider identities link starknet.io and the same Ethereum contract; CoinGecko also identifies its Starknet token contract. Multiple network representations do not multiply issuer market cap.",
+    "cmc_enabled": true,
+    "comparison": {
+      "at": "2026-11-20T03:29:00.346068+00:00",
+      "relative_difference": 0.0006155708022031607,
+      "max_relative_difference": 0.05,
+      "circulating_supply_relative_difference": 0.0,
+      "provider_time_skew_seconds": 5.0,
+      "max_provider_time_skew_seconds": 300,
+      "coingecko_market_cap": 245323344,
+      "coinmarketcap_market_cap": 245172330.11233476,
+      "coingecko_circulating_supply": 7834119533.212142,
+      "coinmarketcap_circulating_supply": 7834119533.212142,
+      "coingecko_observed_at": "2026-11-20T03:27:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-20T03:28:01.000Z",
+      "evidence": [
+        "tests/fixtures/market_cap/cg_natural_three_assets_20261120.json",
+        "tests/fixtures/market_cap/cmc_natural_three_assets_20261120.json"
+      ]
+    }
+  },
+  "NAORISUSDT": {
+    "symbol": "NAORIS",
+    "cg_id": "naoris",
+    "cmc_id": 35114,
+    "name": "NaoX Protocol",
+    "verified_at": "2026-11-20",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/5283c247c18640228013647ae95333a4",
+      "https://www.coingecko.com/en/coins/naox-protocol",
+      "https://coinmarketcap.com/currencies/naoris-protocol/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    ],
+    "contracts": {
+      "ethereum": "0x1b379a79c91a540b2bcd612b4d713f31de1b80cc",
+      "binance-smart-chain": "0x1b379a79c91a540b2bcd612b4d713f31de1b80cc"
+    },
+    "identity_notes": "Binance NAORISUSDT was listed as Naoris Protocol (NAORIS), rebranded to NaoX Protocol without changing ticker. CoinGecko API ID remains naoris although the page redirects to naox-protocol; CMC UCID remains 35114. Binance Alpha official token list and both providers share the exact Ethereum/BNB Chain token address. No ticker-only or page-slug API guess is used.",
+    "cmc_enabled": false,
+    "comparison": {
+      "at": "2026-11-20T03:29:00.346068+00:00",
+      "relative_difference": 0.09147446247312736,
+      "max_relative_difference": 0.05,
+      "circulating_supply_relative_difference": 0.09516544855321571,
+      "provider_time_skew_seconds": 5.0,
+      "max_provider_time_skew_seconds": 300,
+      "coingecko_market_cap": 16844575,
+      "coinmarketcap_market_cap": 15303726.55628672,
+      "coingecko_circulating_supply": 599260000.0,
+      "coinmarketcap_circulating_supply": 542231153.3,
+      "coingecko_observed_at": "2026-11-20T03:27:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-20T03:28:01.000Z",
+      "evidence": [
+        "tests/fixtures/market_cap/cg_natural_three_assets_20261120.json",
+        "tests/fixtures/market_cap/cmc_natural_three_assets_20261120.json"
+      ]
+    },
+    "fallback_disabled_reason": "Paired provider market-cap and circulating-supply differences exceed 5%; verified identity permits CoinGecko primary only."
   }
 }
