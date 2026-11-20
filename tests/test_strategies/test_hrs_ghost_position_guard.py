@@ -411,3 +411,37 @@ class TestSyncTrackedQty:
         pm.sync_tracked_qty(SYMBOL, 48.0)
 
         assert pm._last_tracked_qty[SYMBOL] == pytest.approx(48.0)
+
+
+@pytest.mark.asyncio
+async def test_full_close_reconciles_after_cancel_and_position_sync_retries():
+    from types import SimpleNamespace
+
+    strategy = _make_strategy()
+    strategy.db = SimpleNamespace(pool=object())
+    strategy.binance_client.get_position = AsyncMock(return_value=[])
+    strategy.position_manager.detect_take_profit_fills.return_value = 0
+    strategy.position_manager.remove_position.side_effect = (
+        lambda symbol: setattr(strategy.position_manager.get_all_positions, 'return_value', {})
+    )
+    strategy._record_outcome_by_pnl = AsyncMock()
+
+    async def reconcile(symbol, exchange):
+        strategy.position_manager.cancel_all_orders.assert_awaited_once_with(SYMBOL)
+        assert symbol == SYMBOL and exchange is strategy.binance_client
+        return 'algo_orders_open' if store.reconcile_hrs_flat.await_count == 1 else 'released'
+
+    store = SimpleNamespace(reconcile_hrs_flat=AsyncMock(side_effect=reconcile),
+                            pending_hrs_symbols=AsyncMock(return_value=[SYMBOL]))
+    with patch("strategies.hrs.strategy.RiskPolicyStore", return_value=store), \
+         patch("strategies.hrs.strategy.release_claim", new_callable=AsyncMock) as release, \
+         patch("strategies.hrs.strategy.save_strategy_state", new_callable=AsyncMock), \
+         patch("strategies.hrs.strategy.sync_open_positions", new_callable=AsyncMock):
+        await strategy._monitor_positions()
+        store.reconcile_hrs_flat.assert_awaited_once()
+        release.assert_awaited_once_with(strategy.db, SYMBOL, strategy.strategy_name,
+                                         reason="position_closed", release_occupancy=False)
+        await strategy._report_positions_to_dashboard()
+
+    store.pending_hrs_symbols.assert_awaited_once()
+    assert store.reconcile_hrs_flat.await_count == 2

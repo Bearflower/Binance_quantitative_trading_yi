@@ -27,6 +27,7 @@ async def setup():
     await admin.execute('CREATE SCHEMA IF NOT EXISTS trading')
     await admin.execute('''CREATE TABLE IF NOT EXISTS trading.position_claims(id bigserial primary key,
         symbol text,strategy text,claim_state text,expires_at timestamptz,released_at timestamptz,reason text)''')
+    await admin.execute('ALTER TABLE trading.position_claims ADD COLUMN IF NOT EXISTS trade_intent_id text')
     await admin.execute('''DO $$ BEGIN IF NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname='risk_runtime') THEN CREATE ROLE risk_runtime LOGIN NOSUPERUSER; END IF; END $$''')
     # Rebuild only dedicated risk test tables: exercise the current migration, not
     # stale constraints left by an earlier uncommitted migration draft.
@@ -399,3 +400,84 @@ async def test_policy_expiry_while_waiting_account_lock_rejects_submission():
         with pytest.raises(EntryDenied,match='expired'):
             await task
     finally:await admin.close();await pool.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blocked_by", [None, "query", "algo", "ordinary", "position", "entry", "claim", "claim_trigger"])
+async def test_hrs_flat_reconciliation_preserves_geometry_and_retries(blocked_by):
+    pool = await setup()
+    symbol = "WLDUSDT"
+    client_id = "risk_wld"
+    geometry = '{"signal_id":5738,"quantity":"28","entry_price":"0.2666"}'
+
+    class ExchangeSnapshot:
+        recovered = False
+        status = 'NEW' if blocked_by == "entry" else 'FILLED'
+        account_positions = [dict(symbol=symbol, positionAmt='28')] if blocked_by == "position" else []
+        algo_orders = [{"algoId": 123}] if blocked_by == "algo" else []
+
+        async def get_position(self, symbol=None):
+            return []
+
+        async def get_um_account_positions(self):
+            return self.account_positions
+
+        async def get_open_orders(self, symbol):
+            return [{"clientOrderId": "pending"}] if blocked_by == "ordinary" and not self.recovered else []
+
+        async def get_open_algo_orders(self, symbol):
+            return self.algo_orders
+
+        async def get_order_by_client_id(self, symbol, client_id):
+            if blocked_by == "query" and not self.recovered:
+                raise TimeoutError
+            return dict(symbol=symbol, clientOrderId=client_id, status=self.status, executedQty="28")
+
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute("""INSERT INTO trading.strategy_risk_policy
+                (account_id,strategy_id,revision,effective_at,expires_at,mode,allow_add,multiplier,ratio_cap,entry_ceiling,reason)
+                SELECT account_id,'hrs',revision,effective_at,expires_at,mode,allow_add,multiplier,
+                    ratio_cap,entry_ceiling,reason FROM trading.strategy_risk_policy WHERE strategy_id='btc_eth_aggressive'""")
+            await conn.execute("""INSERT INTO trading.entry_risk_reservation
+                (client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,geometry)
+                VALUES($1,'default','hrs',1,$2,28,28,.2666,2,3.7324,'submitting',$3)""", client_id,symbol,geometry)
+            await conn.execute("""INSERT INTO trading.position_claims
+                (symbol,strategy,claim_state,expires_at,trade_intent_id)
+                VALUES($1,'hrs','PENDING','infinity',$2),('OTHER','hrs','PENDING','infinity','hrs:1')""",
+                               symbol, 'hrs:wrong' if blocked_by == 'claim' else 'hrs:5738')
+            if blocked_by == "claim_trigger":
+                await conn.execute("""INSERT INTO trading.strategy_risk_policy
+                    SELECT 'other',strategy_id,revision,effective_at,expires_at,mode,allow_add,multiplier,
+                           ratio_cap,entry_ceiling,freeze_allocation,reason,created_at
+                    FROM trading.strategy_risk_policy WHERE account_id='default' AND strategy_id='hrs'""")
+                await conn.execute("""INSERT INTO trading.entry_risk_reservation
+                    (client_order_id,account_id,strategy_id,revision,symbol,quantity,original_quantity,price,leverage,margin,state,geometry)
+                    VALUES('risk_other','other','hrs',1,$1,28,28,.2666,2,3.7324,'submitting',$2)""", symbol, geometry)
+        store = RiskPolicyStore(SimpleNamespace(pool=pool), 'default')
+        exchange = ExchangeSnapshot()
+        expected = {None: "released", "query": "exchange_query_failed", "algo": "algo_orders_open",
+                    "ordinary": "ordinary_orders_open", "position": "position_open", "entry": "entry_order_not_terminal",
+                    "claim": "claim_not_released", "claim_trigger": "claim_not_released"}
+        result = await store.reconcile_hrs_flat(symbol, exchange)
+        assert result == expected[blocked_by]
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT state FROM trading.entry_risk_reservation WHERE client_order_id=$1", client_id) == (
+                "submitting" if blocked_by else "released")
+            assert await conn.fetchval("SELECT claim_state FROM trading.position_claims WHERE symbol=$1", symbol) == (
+                "PENDING" if blocked_by else "RELEASED")
+            if blocked_by == "claim":
+                await conn.execute("UPDATE trading.position_claims SET trade_intent_id='hrs:5738' WHERE symbol=$1", symbol)
+            if blocked_by == "claim_trigger":
+                assert await conn.fetchval("SELECT state FROM trading.entry_risk_reservation WHERE client_order_id='risk_other'") == "submitting"
+                await conn.execute("UPDATE trading.entry_risk_reservation SET state='released' WHERE client_order_id='risk_other'")
+        exchange.recovered = True
+        exchange.algo_orders = exchange.account_positions = []
+        exchange.status = 'FILLED'
+        assert await store.reconcile_hrs_flat(symbol, exchange) == ("released" if blocked_by else "no_reservation")
+        async with pool.acquire() as conn:
+            assert await conn.fetchval("SELECT geometry=$2::jsonb FROM trading.entry_risk_reservation WHERE client_order_id=$1", client_id, geometry)
+            assert await conn.fetchval("SELECT claim_state FROM trading.position_claims WHERE symbol=$1", symbol) == "RELEASED"
+            assert await conn.fetchval("SELECT claim_state FROM trading.position_claims WHERE symbol='OTHER'") == "PENDING"
+    finally:
+        await pool.close()

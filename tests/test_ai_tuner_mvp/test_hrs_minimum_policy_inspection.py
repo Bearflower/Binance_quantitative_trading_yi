@@ -47,7 +47,7 @@ def test_owned_quota_policy_requires_explicit_verified_margin_contract():
 def daily_report(monkeypatch, tmp_path):
     data = dict(issues=[], samples=[], positions=[], reservations=0,
                 policies=['hrs r8 reduced'], monthly=None, allocation_hash='allocation')
-    monkeypatch.setattr(inspector, 'read_journal', lambda since: ([], [], []))
+    monkeypatch.setattr(inspector, 'read_journal', lambda since, window: ([], [], [], [], True))
     monkeypatch.setattr(inspector, 'read_shadow', lambda: {'status': 'PREVIEW', 'allocation': {}})
     monkeypatch.setattr(inspector.subprocess, 'run',
                         lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout=json.dumps(data)))
@@ -85,6 +85,7 @@ def test_daily_cli_defaults_to_outbox_and_send_explicitly_selects_direct_deliver
         }
         report = publish.call_args.args[1]
     assert '【HRS 生产只读巡检】' in report and 'hrs r8 reduced' in report
+    assert 'HRS 主动对账' in report and '未记录主动对账' in report
 
 
 @pytest.mark.parametrize('direct', [False, True])
@@ -156,3 +157,69 @@ def test_probe_read_failure_uses_selected_notification_route(monkeypatch, flags)
         assert publish.call_args.args[0] == 'hrs'
         assert '本次证据读取失败' in publish.call_args.args[1]
         assert publish.call_args.kwargs == {'status': 'error', 'summary': '证据读取失败'}
+
+
+def test_daily_reconciliation_uses_previous_beijing_day_and_latest_symbol_status():
+    from datetime import datetime
+    from ai_tuner.ops import hrs_acceptance as inspector
+
+    now = datetime.fromisoformat("2026-11-20T07:31:00+08:00")
+    journal = [
+        ("2026-11-18T23:59:59+08:00", "OLD", "position_sync", "released"),
+        ("2026-11-19T00:00:00+08:00", "WLDUSDT", "full_close", "algo_orders_open"),
+        ("2026-11-19T04:00:00+08:00", "WLDUSDT", "position_sync", "released"),
+        ("2026-11-19T05:00:00+08:00", "SOLUSDT", "full_close", "exchange_query_failed"),
+        ("2026-11-20T00:00:00+08:00", "SOLUSDT", "position_sync", "released"),
+    ]
+    line, warning = inspector.summarize_hrs_reconciliation(now, journal)
+    assert "2026-11-19" in line
+    assert "3 次" in line and "释放 1" in line and "待重试 1" in line
+    assert "SOLUSDT" in line and "币安查询失败" in line
+    assert "WLDUSDT" not in line and "OLD" not in line
+    assert warning
+
+
+def test_journal_reads_previous_day_even_when_incremental_bookmark_is_later(monkeypatch):
+    now = datetime(2026, 11, 20, 7, 31, tzinfo=inspector.BEIJING)
+    start, end = inspector.previous_trading_day(now)
+    event = json.dumps(dict(event="hrs_close_reconciliation", symbol="WLDUSDT",
+                            trigger="full_close", outcome="released"))
+    entries = [
+        json.dumps(dict(__REALTIME_TIMESTAMP=str(int(when.timestamp() * 1_000_000)), MESSAGE=event))
+        for when in (start - timedelta(seconds=1), start, end)
+    ]
+
+    def journal(command, **kwargs):
+        if command[1] == "CONTAINER_NAME=trading_system-hrs":
+            assert command[3] == f"@{int(start.timestamp())}"
+            return SimpleNamespace(returncode=0, stdout="\n".join(entries))
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(inspector.subprocess, "run", journal)
+    _, _, _, evidence, available = inspector.read_journal(end + timedelta(hours=7), (start, end))
+    assert available
+    assert evidence == [(start.isoformat(), "WLDUSDT", "full_close", "released")]
+
+
+def test_daily_reconciliation_warns_when_prior_day_journal_missing():
+    line, warning = inspector.summarize_hrs_reconciliation(
+        datetime(2026, 11, 20, 7, 31, tzinfo=inspector.BEIJING), [], journal_has_entries=False
+    )
+    assert warning and "日志未取到" in line
+
+
+def test_pending_reconciliation_is_in_0735_outbox_and_raises_warning(monkeypatch, daily_report):
+    _, publish, sender, state, webhook = daily_report
+
+    def journal(since, window):
+        start, _ = window
+        event = (start.isoformat(), "WLDUSDT", "full_close", "algo_orders_open")
+        return [], [], [], [event], True
+
+    monkeypatch.setattr(inspector, "read_journal", journal)
+    inspector.run_daily(SimpleNamespace(state=state, webhook=webhook, dry_run=False))
+    sender.assert_not_called()
+    section, report = publish.call_args.args
+    assert section == "hrs"
+    assert "HRS 主动对账" in report and "WLDUSDT 仍有条件挂单" in report
+    assert publish.call_args.kwargs == {"status": "warn", "summary": "1 项异常"}
