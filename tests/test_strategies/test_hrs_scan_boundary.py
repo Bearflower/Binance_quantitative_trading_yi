@@ -107,7 +107,8 @@ async def test_unproven_scan_provider_blocks_scoring_and_still_maintains_positio
 
 
 @pytest.mark.asyncio
-async def test_refreshed_first_scoring_cycle_seals_and_runs_actual_owned_margin_engine(tmp_path, monkeypatch):
+@pytest.mark.parametrize('fraction', [0, .25])
+async def test_refreshed_first_scoring_cycle_seals_and_runs_actual_owned_margin_engine(tmp_path, monkeypatch, fraction):
     """Synthetic clock/order facts prove the causal contract, never performance."""
     import strategies.hrs.decision_capture as capture
     import strategies.hrs.decision_context as context_module
@@ -122,14 +123,14 @@ async def test_refreshed_first_scoring_cycle_seals_and_runs_actual_owned_margin_
     held = {}
     owned_fixture(tmp_path/'fixture', source_transform=lambda sources: held.update(sources=copy.deepcopy(sources)))
     sources = held['sources']
-    boundary = origin+timedelta(hours=1)
+    boundary = origin+timedelta(hours=1, seconds=fraction)
     start = next(r for r in sources['decision_evidence'] if r['kind']=='scan_start' and r['run_id']=='cycle-0')
     financial = copy.deepcopy(start['payload']['financial_context'])
     parent = copy.deepcopy(next(p for p in sources['equity_evidence']
         if p['evidence_sha256']==financial['equity_gate']['evidence_sha256']))
     old_digest = parent['evidence_sha256']
     raw = parent['payload']
-    raw.update(segment_id='test', available_at=(boundary+timedelta(seconds=1)).isoformat(),
+    raw.update(segment_id='test', as_of=boundary.isoformat(), available_at=(boundary+timedelta(seconds=1)).isoformat(),
         result=dict(ready=True, allowed=True, reasons=[], ledger_version=7))
     parent.update(account_id='test', segment_id='test', as_of=boundary,
         available_at=boundary+timedelta(seconds=1), evidence_sha256=canonical(raw)[1])
@@ -192,13 +193,14 @@ async def test_refreshed_first_scoring_cycle_seals_and_runs_actual_owned_margin_
     sources['decision_evidence'] = [r for r in sources['decision_evidence'] if r['run_id'] not in ('bootstrap','cycle-0') or (r['run_id']=='bootstrap' and r['kind']=='public_market_response')]+observed
     result = export_evidence_bundle(sources, tmp_path/'output', window_start=boundary, as_of=origin+timedelta(hours=3),
         execution_model=dict(version='hrs_1m_volume_v1', participation_rate='.01', timeout_minutes=15),
-        monitoring_model=dict(version='hrs_cycle_monitor_v1', cadence_seconds=3600, anchor_at=boundary.isoformat()),
+        monitoring_model=dict(version='hrs_cycle_monitor_v1', cadence_seconds=3600,
+            anchor_at=origin.isoformat()),
         allow_inception_segment=True)
     assert result.get('status') == 'SEALED', result
     path = Path(result['snapshot_dir'])
     state = json.loads((path/'hrs_replay_state.json').read_text())
     assert state['bootstrap_bridge'] is None
-    assert state['bootstrap_available_at'] == (boundary+timedelta(seconds=2)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    assert state['bootstrap_available_at'] == (boundary+timedelta(seconds=2)).isoformat().replace('+00:00','Z')
     tables = json.loads((path/'hrs_state_tables.json').read_text())
     replay = run_replay(DataPortal(path, 'hrs', origin+timedelta(hours=3), boundary), HrsAdapter(lambda at: tables), broker())
     assert any(e['type']=='hrs_score' for e in replay.audit_events)
