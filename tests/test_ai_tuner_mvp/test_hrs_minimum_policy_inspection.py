@@ -45,8 +45,13 @@ def test_owned_quota_policy_requires_explicit_verified_margin_contract():
 
 @pytest.fixture
 def daily_report(monkeypatch, tmp_path):
+    now = datetime.now(timezone.utc)
     data = dict(issues=[], samples=[], positions=[], reservations=0,
-                policies=['hrs r8 reduced'], monthly=None, allocation_hash='allocation')
+                policies=['hrs r8 reduced'], monthly=None, allocation_hash='allocation',
+                equity_gate=dict(account_id='default', strategy_id='hrs', ready=True, allowed=True,
+                                 policy_revision=8, active_revision=8, as_of=now.isoformat(),
+                                 checked_at=now.isoformat(), valid_until=(now+timedelta(seconds=120)).isoformat(),
+                                 reasons=[]))
     monkeypatch.setattr(inspector, 'read_journal', lambda since, window: ([], [], [], [], True))
     monkeypatch.setattr(inspector, 'read_shadow', lambda: {'status': 'PREVIEW', 'allocation': {}})
     monkeypatch.setattr(inspector.subprocess, 'run',
@@ -223,3 +228,18 @@ def test_pending_reconciliation_is_in_0735_outbox_and_raises_warning(monkeypatch
     assert section == "hrs"
     assert "HRS 主动对账" in report and "WLDUSDT 仍有条件挂单" in report
     assert publish.call_args.kwargs == {"status": "warn", "summary": "1 项异常"}
+
+
+@pytest.mark.parametrize('denied', [False, True])
+def test_entry_gate_warning_is_published_without_inventory_anomalies(daily_report, denied):
+    data, publish, sender, state, webhook = daily_report
+    if denied:
+        data['equity_gate'].update(ready=False, allowed=False, reasons=['daily_history_incomplete'])
+        data['equity_gate']['valid_until'] = data['equity_gate']['as_of']
+    else:
+        data.pop('equity_gate')
+    inspector.run_daily(SimpleNamespace(state=state, webhook=webhook, dry_run=False))
+    sender.assert_not_called()
+    assert publish.call_args.kwargs == dict(status='warn', summary=(
+        'HRS 权益门禁暂停' if denied else 'HRS 权益门禁证据未核实'))
+    assert '本次门禁与风控核验通过' not in publish.call_args.args[1]

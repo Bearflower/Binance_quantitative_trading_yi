@@ -709,7 +709,9 @@ def run_daily(args):
     else:
         publish_or_send(args.webhook, report,
                         status="warn" if issues or entry_status != "ALLOWED" else "ok",
-                        summary=f"{len(issues)} 项异常；HRS 权益门禁 {entry_status}")
+                        summary=(f"{len(issues)} 项异常" if issues else "正常" if entry_status == "ALLOWED"
+                                 else "HRS 权益门禁暂停" if entry_status == "PAUSED"
+                                 else "HRS 权益门禁证据未核实"))
     next_state = {
         "lookback": (now - timedelta(minutes=10)).isoformat(),
         "allocation_hash": data["allocation_hash"], "shadow_hash": shadow_signature,
