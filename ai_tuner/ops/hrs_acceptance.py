@@ -556,7 +556,10 @@ def entry_gate_status(gate, now):
             return "UNVERIFIED"
         as_of, checked, valid = (datetime.fromisoformat(gate[key])
                                 for key in ("as_of", "checked_at", "valid_until"))
-        if not (as_of <= checked <= now < valid):
+        if not (as_of <= checked <= now and now - as_of <= timedelta(seconds=120)
+                and as_of <= valid <= as_of + timedelta(seconds=120)):
+            return "UNVERIFIED"
+        if gate["allowed"] and now >= valid:
             return "UNVERIFIED"
         return "ALLOWED" if gate["allowed"] else "PAUSED"
     except (KeyError, TypeError, ValueError):

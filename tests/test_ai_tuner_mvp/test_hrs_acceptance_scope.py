@@ -187,3 +187,17 @@ def test_missing_gate_is_explicitly_unverified():
     now=datetime(2026,11,20,9,tzinfo=timezone.utc)
     assert inspector.entry_gate_status(None,now)=='UNVERIFIED'
     assert '门禁证据未核实' in '\n'.join(inspector.hrs_entry_gate_lines(None,now))
+
+
+def test_actual_denied_gate_uses_zero_authorization_lifetime():
+    now=datetime(2026,11,20,9,tzinfo=timezone.utc)
+    value=gate_evidence(now,ready=False,allowed=False,reasons=['daily_history_incomplete'])
+    value['valid_until']=value['as_of']
+    assert inspector.entry_gate_status(value,now)=='PAUSED'
+
+
+def test_old_denial_does_not_claim_a_current_gate_read():
+    now=datetime(2026,11,20,9,tzinfo=timezone.utc)
+    value=gate_evidence(now,ready=False,allowed=False,as_of='2026-11-20T08:57:00+00:00',
+                        valid_until='2026-11-20T08:57:00+00:00')
+    assert inspector.entry_gate_status(value,now)=='UNVERIFIED'
