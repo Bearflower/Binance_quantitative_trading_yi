@@ -660,6 +660,11 @@ async def test_original_full_inventory_forecasts_fill_only_proven_missing_schedu
     from tests.test_ai_tuner_mvp.replay.test_hrs_wiring import broker
     sources,bootstrap=captured_sources(tmp_path)
     sources['source_account_id']='test';sources['funding_observations']=[]
+    for row in sources['decision_evidence']:
+        if row['kind'] not in ('scan_start','scan_end'):continue
+        snapshot=row['payload'] if row['kind']=='scan_start' else row['payload']['state']
+        snapshot['financial_context']['entry_policy']['account_id']='test'
+        row['payload_sha256']=canonical_payload(row['payload'])[1]
     for index in range(37):
         requested=AT-timedelta(seconds=60)+timedelta(seconds=300*index)
         premium=[dict(symbol=symbol,time=int(requested.timestamp()*1000),nextFundingTime=int((AT+timedelta(hours=8)).timestamp()*1000)) for symbol in ('A','UNUSED')]
@@ -824,3 +829,43 @@ async def test_readonly_inventory_seed_scope_uses_actual_availability_not_reques
     await db.execute('SET default_transaction_read_only=on')
     result=await read_evidence_sources(db,'test',window_start=AT,as_of=AT+timedelta(hours=3))
     assert [r['evidence_id'] for r in result['decision_evidence']]==['eligible']
+
+
+@pytest.mark.parametrize('problem',['window_start','as_of','symbols','account_id','source_account','version','cached'])
+async def test_archived_inventory_projection_scope_is_bound_to_sealed_portal_identity(tmp_path,problem):
+    from ai_tuner.hrs_evidence_export import snapshot_evidence_sources
+    from ai_tuner.replay.data_portal import DataPortal,compute_manifest_envelope_sha256,compute_manifest_sha256,sha256_file
+    from ai_tuner.replay.adapters.hrs import HrsAdapter
+    from ai_tuner.replay.engine import run_replay
+    from ai_tuner.replay.models import DataBlocked
+    # This exercises the actual exporter/archive reader/engine before damage.
+    # There is no settlement in this fixture; scope drift alone is the defect.
+    await test_original_full_inventory_forecasts_fill_only_proven_missing_schedule_sources(tmp_path,True)
+    path=next((tmp_path/'output').rglob('raw_hrs_evidence.json')).parent
+    portal=DataPortal(path,'hrs',AT+timedelta(hours=3),AT)
+    if problem=='cached':
+        sources=snapshot_evidence_sources(portal)
+        sources.metadata['funding_inventory_scope']['window_start']=(AT+timedelta(seconds=70)).isoformat()
+        try:
+            with pytest.raises(DataBlocked,match='funding_inventory_scope'):
+                snapshot_evidence_sources(portal)
+        finally:
+            from ai_tuner.hrs_evidence_export import close_portal_indexes
+            close_portal_indexes(portal)
+        return
+    target=path/'raw_hrs_evidence.json';raw=json.loads(target.read_text())
+    replacements=dict(window_start=(AT+timedelta(seconds=70)).isoformat(),
+        as_of=(portal.as_of+timedelta(seconds=1)).isoformat(),symbols=['A','UNUSED'],
+        account_id='foreign',version='unrecognized')
+    if problem=='source_account':raw['source_account_id']='foreign'
+    else:raw['funding_inventory_scope'][problem]=replacements[problem]
+    target.write_text(json.dumps(raw))
+    manifest_path=path/'manifest.json';manifest=json.loads(manifest_path.read_text())
+    manifest['files'][target.name]['sha256']=sha256_file(str(target))
+    manifest['sha256']=compute_manifest_sha256(manifest['files'])
+    manifest['envelope_sha256']=compute_manifest_envelope_sha256(manifest)
+    manifest_path.write_text(json.dumps(manifest))
+    changed=DataPortal(path,'hrs',portal.as_of,portal.window_start)
+    tables=json.loads((path/'hrs_state_tables.json').read_text())
+    with pytest.raises(DataBlocked,match='funding_inventory_scope'):
+        run_replay(changed,HrsAdapter(lambda at:tables),broker())

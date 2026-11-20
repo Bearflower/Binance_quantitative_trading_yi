@@ -174,12 +174,36 @@ class _ArchiveSources:
         return dict(self.metadata,version='hrs-archive-sources-v2',evidence_archive=descriptor)
 
 
+def _verify_funding_inventory_scope(portal,metadata):
+    scope=metadata.get('funding_inventory_scope')
+    if scope is None:return
+    _require(isinstance(scope,dict) and scope.get('version')=='hrs_inventory_schedule_projection_v1',
+        'funding_inventory_scope_version_mismatch')
+    try:
+        clocks=(_time(scope['window_start']),_time(scope['as_of']))
+    except (KeyError,ValueError,TypeError,AttributeError,OverflowError) as exc:
+        raise DataBlocked(['funding_inventory_scope_clocks_invalid']) from exc
+    _require(clocks==(_time(portal.window_start),_time(portal.as_of)),'funding_inventory_scope_window_mismatch')
+    symbols=scope.get('symbols')
+    _require(isinstance(symbols,list) and all(isinstance(symbol,str) for symbol in symbols)
+        and len(symbols)==len(set(symbols)) and set(symbols)==set(portal.universe().symbols),
+        'funding_inventory_scope_symbols_mismatch')
+    portal._require_dataset('hrs_replay_state.json')
+    account=portal._read_json('hrs_replay_state.json').get('entry_policy',{}).get('account_id')
+    _require(isinstance(account,str) and bool(account) and scope.get('account_id')==account
+        and ('source_account_id' not in metadata or metadata['source_account_id']==account),
+        'funding_inventory_scope_account_mismatch')
+
+
 def snapshot_evidence_sources(portal):
     """Resolve only manifest-bound archive files; cache belongs to this portal."""
     existing=getattr(portal,'_hrs_archive_sources_cache',None)
-    if existing is not None:return existing
+    if existing is not None:
+        _verify_funding_inventory_scope(portal,existing.metadata)
+        return existing
     portal._require_dataset('raw_hrs_evidence.json')
     raw=portal._read_json('raw_hrs_evidence.json')
+    _verify_funding_inventory_scope(portal,raw)
     if not raw.get('evidence_archive'):return raw
     descriptor=dict(raw['evidence_archive']);relative=Path(descriptor['path'])
     _require(not relative.is_absolute() and '..' not in relative.parts,'archive_descriptor_path_escape')
