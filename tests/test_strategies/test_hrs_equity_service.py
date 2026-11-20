@@ -464,7 +464,7 @@ async def test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_
 @pytest.mark.asyncio
 @pytest.mark.parametrize('legacy_owner',[False,True])
 @pytest.mark.parametrize('funding_pending',[False,True])
-async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,legacy_owner,funding_pending):
+async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,legacy_owner,funding_pending,repair_damage=None):
     service,account,pool,api,clock=setup
     entered=T-timedelta(days=1)
     clock[0]=T+timedelta(minutes=59,seconds=30)
@@ -490,7 +490,8 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
                 return dict(symbol='BTCUSDT',markPrice='99',time=int(clock[0].timestamp()*1000),nextFundingTime=int((due if clock[0]<due else due+timedelta(days=1)).timestamp()*1000))
             if path in ('/fapi/v1/fundingInfo','/fapi/v1/exchangeInfo'):return funding_source_response(path)
             assert path=='/fapi/v1/markPriceKlines'
-            return [[params['startTime'],'100','100','99','99','0',params['endTime']]]
+            return [[at,'100','100','99','99','0',at+59999]
+                for at in range(params['startTime'],params['endTime']+1,60000)]
         api._request.side_effect=market_request
         api.get_order.return_value=dict(symbol='BTCUSDT',orderId=order_id,side='BUY',status='FILLED')
         api.get_order_by_client_id.return_value=dict(symbol='BTCUSDT',orderId=order_id,clientOrderId=client,status='FILLED',executedQty='2',origQty='2',side='BUY')
@@ -522,6 +523,80 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
         async with pool.acquire() as c:
             ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
             assert D(ledger['nav'])==1
+        # Persist the genuine delayed observation first. The next normal refresh
+        # can recover it using original closed marks and exact economic proof.
+        clock[0]+=timedelta(seconds=123)
+        assert not (await service.refresh())['allowed']
+        async with pool.acquire() as c:
+            original_points=[dict(row) for row in await c.fetch('SELECT checkpoint_id,payload FROM trading.hrs_risk_equity_checkpoints WHERE account_id=$1 ORDER BY as_of',account)]
+        if repair_damage=='many_gaps':
+            prepare=service._prepare_automatic_history
+            service._prepare_automatic_history=AsyncMock()
+            for _ in range(8):
+                clock[0]+=timedelta(seconds=123)
+                assert not (await service.refresh())['allowed']
+            service._prepare_automatic_history=prepare
+        if repair_damage=='parent_hash':
+            async with pool.acquire() as c:
+                await c.execute("UPDATE trading.hrs_equity_evidence SET payload=payload||'{\"damaged\":true}'::jsonb WHERE account_id=$1 AND as_of=$2",account,clock[0])
+        elif repair_damage=='missing_marks':
+            api._request.side_effect=lambda method,path,**kw: ([] if path=='/fapi/v1/markPriceKlines' else market_request(method,path,**kw))
+        elif repair_damage in ('parent_version','receipt_hash'):
+            prepare=service._prepare_automatic_history
+            async def changed_plan(*args):
+                await prepare(*args)
+                plan=args[1].get('automatic_history_gap',{})
+                if plan.get('status')=='complete':
+                    if repair_damage=='parent_version':plan['parent_ledger_version']-=1
+                    else:
+                        bar=plan['gaps'][0]['bars']['BTCUSDT'][0]
+                        bar[3]=bar[4]='98'  # Raw response digest is deliberately unchanged.
+            service._prepare_automatic_history=changed_plan
+        clock[0]+=timedelta(seconds=30)
+        repaired=await service.refresh()
+        if repair_damage=='many_gaps':
+            assert not repaired['ready'] and not repaired['allowed']
+            async with pool.acquire() as c:
+                first=json.loads(await c.fetchval('SELECT receipt FROM trading.hrs_equity_reconciliation WHERE account_id=$1 ORDER BY after_state_version DESC LIMIT 1',account))
+                assert first['history_complete'] is False and len(first['gap_endpoints'])==8
+            clock[0]+=timedelta(seconds=30)
+            repaired=await service.refresh()
+        if repair_damage and repair_damage not in ('many_gaps','late_income'):
+            assert not repaired['ready'] and not repaired['allowed'],repaired
+            async with pool.acquire() as c:
+                assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM trading.hrs_equity_reconciliation WHERE account_id=$1 AND receipt->>'kind'='automatic_constant_mark_gap_v1')",account)
+            return
+        assert repaired['ready'] and repaired['allowed'],repaired
+        assert repaired['window_label']=='inception_segment' and not repaired['qualified_30_day']
+        async with pool.acquire() as c:
+            revision=await c.fetchrow('SELECT * FROM trading.hrs_equity_reconciliation WHERE account_id=$1 ORDER BY after_state_version DESC LIMIT 1',account)
+            receipt=json.loads(revision['receipt'])
+            assert receipt['kind']=='automatic_constant_mark_gap_v1'
+            assert receipt['available_at']==clock[0].isoformat()
+            assert len(receipt['http_receipts'])==1 and receipt['backfilled_points']>=2
+            assert all([await c.fetchval('SELECT payload FROM trading.hrs_risk_equity_checkpoints WHERE account_id=$1 AND checkpoint_id=$2',account,row['checkpoint_id'])==row['payload'] for row in original_points])
+        if repair_damage=='late_income':
+            old_receipt=revision['receipt'];old_units=receipt['conservative_bounds'][0]['source_units']
+            original_records=list(api.get_user_trades.return_value)
+            records=[dict(symbol='BTCUSDT',id=i,orderId=i,side=side,qty='1',price='100',quoteQty='100',commission='1',commissionAsset='USDT',realizedPnl='0',time=int((entered+timedelta(hours=1,seconds=i)).timestamp()*1000)) for i,side in ((82,'BUY'),(83,'SELL'))]
+            async with pool.acquire() as c:
+                for row in records:
+                    await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT',$2,'hrs',$3,'FILLED','LIMIT',$4)",account,str(row['orderId']),row['side'],entered.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+            api.get_user_trades.return_value=original_records+records
+            api.get_income_history.side_effect=lambda **kw:([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-1',asset='USDT',tranId=row['id'],tradeId=str(row['id']),time=row['time'],info='') for row in original_records+records] if kw['income_type']=='COMMISSION' else [])
+            api.get_order.side_effect=lambda symbol,identity:dict(symbol=symbol,orderId=identity,side='SELL' if identity==83 else 'BUY',status='FILLED')
+            clock[0]+=timedelta(seconds=30)
+            reconciled=await service.refresh()
+            assert reconciled['ready'] and reconciled['allowed'],reconciled
+            assert reconciled.get('reconciliation_receipt_sha256')
+            async with pool.acquire() as c:
+                assert await c.fetchval('SELECT receipt FROM trading.hrs_equity_reconciliation WHERE account_id=$1 AND receipt_sha256=$2',account,revision['receipt_sha256'])==old_receipt
+                parent=json.loads(await c.fetchval('SELECT payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND evidence_sha256=$2',account,reconciled['evidence_sha256']))
+                active=parent['history_gap_bounds']
+                assert all(bound['source_units']!=old_units for bound in active['bounds'])
+                assert active['valuation']['ledger_state']['units']==active['bounds'][0]['source_units']
+                assert datetime.fromisoformat(active['bounds'][0]['valuation_available_at'])>datetime.fromisoformat(active['bounds'][0]['source_available_at'])
+            return
         api.get_order_by_client_id.return_value=dict(symbol='BTCUSDT',orderId=81,clientOrderId=client,status='NEW',executedQty='0',origQty='2',side='BUY')
         clock[0]+=timedelta(seconds=30)
         assert (await service.refresh())['allowed'] is False
@@ -800,3 +875,68 @@ async def test_all_reconciliation_raw_parents_are_checked_before_source_prefix_r
     # newer valid parent is encountered first; neither may trigger prefix IO.
     await test_late_proven_roundtrip_is_reconciled_append_only_and_next_refresh_is_normal(setup,False,damage)
     assert calls[2]==[]
+
+
+@pytest.mark.asyncio
+async def test_refresh_loop_uses_start_cadence_when_collection_takes_95_seconds(monkeypatch):
+    import strategies.hrs.equity_service as module
+    service=HrsEquityService(None,None,None,None)
+    elapsed=[0.0];starts=[]
+    monkeypatch.setattr(module,'monotonic',lambda:elapsed[0],raising=False)
+    async def refresh():
+        starts.append(elapsed[0]);elapsed[0]+=95
+        if len(starts)==2:await service.close()
+    async def wait_for(waiter,timeout):
+        waiter.close();elapsed[0]+=timeout
+        raise asyncio.TimeoutError
+    service.refresh=refresh
+    monkeypatch.setattr(module.asyncio,'wait_for',wait_for)
+    await service.run()
+    assert starts==[0,95]  # A fixed post-refresh30s wait would make125s.
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('cancel_scan',[False,True])
+async def test_start_cadence_yields_to_queued_scan_and_preserves_lock_cancellation(monkeypatch,cancel_scan):
+    import strategies.hrs.equity_service as module
+    service=HrsEquityService(None,None,None,None)
+    elapsed=[0.0];order=[];first=asyncio.Event();release=asyncio.Event()
+    monkeypatch.setattr(module,'monotonic',lambda:elapsed[0])
+    async def refresh():
+        async with service._refresh_lock:
+            who=asyncio.current_task().get_name();order.append(who)
+            if len(order)==1:
+                first.set();await release.wait();elapsed[0]+=95
+            elif who=='scan':
+                elapsed[0]+=24;await asyncio.sleep(0)
+            else:await service.close()
+    service.refresh=refresh
+    background=asyncio.create_task(service.run(),name='background')
+    await first.wait()
+    scan=asyncio.create_task(service.refresh(),name='scan')
+    await asyncio.sleep(0)
+    assert not scan.done()
+    if cancel_scan:
+        scan.cancel()
+        with pytest.raises(asyncio.CancelledError):await scan
+    release.set()
+    if not cancel_scan:await asyncio.wait_for(scan,timeout=120)
+    await asyncio.wait_for(background,timeout=1)
+    assert order==(['background','background'] if cancel_scan else ['background','scan','background'])
+    assert not service._refresh_lock.locked()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('damage',['parent_hash','missing_marks','parent_version','receipt_hash'])
+async def test_automatic_repair_never_authorizes_damaged_original_sources(setup,damage):
+    await test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,False,False,repair_damage=damage)
+
+
+@pytest.mark.asyncio
+async def test_automatic_repair_batches_leave_gate_denied_until_all_owned_gaps_are_proven(setup):
+    await test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,False,False,repair_damage='many_gaps')
+
+
+@pytest.mark.asyncio
+async def test_late_opening_income_reconciliation_revalues_original_bounds_with_new_units(setup):
+    await test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,False,False,repair_damage='late_income')

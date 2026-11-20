@@ -253,6 +253,7 @@ def close_portal_indexes(portal):
     source=getattr(portal,'_hrs_archive_sources_cache',None)
     if source is not None and not getattr(portal,'_hrs_archive_shared',False):
         source.__exit__(None,None,None);portal._hrs_archive_sources_cache=None
+        portal._hrs_gap_equities=None
 
 
 class _EquityView:
@@ -548,6 +549,94 @@ def _margin_inputs(financial, source, *, checked_at, observed_at, pending_contex
             'account_available_balance_source','account_status','account_cash_observed_at')})
 
 
+def project_history_gap_bounds(financial,equities,checked_at):
+    """Project only complete original parents and immutable, causally known receipts."""
+    component=financial.get('hrs_marked_equity_observation') or financial.get('equity_gate') or {}
+    digest=component.get('evidence_sha256')
+    def source(sha):
+        if isinstance(equities,_EquityView):return equities.get(sha)
+        return next((row for row in equities if row['sha256']==sha),None)
+    parent=source(digest) if digest else None
+    if parent is None:return None
+    payload=parent['payload'];top=payload.get('history_gap_bounds')
+    if top is None:return None
+    from strategies.hrs.equity_history_gap import verify_mark_receipts,revalue_gap_bounds
+    from strategies.hrs.loss_gate_repository import ledger_from_dict
+    from strategies.hrs.risk_ledger import EquityCheckpoint
+    try:
+        ledger=_decoded(financial['ledger_state']['ledger_state'])
+        account=financial['entry_policy']['account_id'];segment=ledger['segment_id']
+        _require(top.get('version')=='hrs_conservative_gap_bounds_v1' and top.get('account_id')==account==payload.get('account_id')
+            and top.get('segment_id')==segment==payload.get('segment_id'),'history_gap_bounds_identity')
+        _require(_time(top['available_at'])<=_time(payload['available_at'])<=_time(financial['available_at'])<=_time(checked_at)
+            and _time(payload['as_of'])==_time(ledger['as_of'])
+            and payload['result']['ledger_version']==financial['ledger_state']['version'], 'history_gap_bounds_parent_clock')
+        valuation=top['valuation'];valuation_sha=equity_canonical(valuation)[1]
+        _require(valuation_sha==top['valuation_sha256']
+            and equity_canonical(valuation['ledger_state'])[1]==equity_canonical(ledger)[1]
+            and _time(top['valuation_available_at'])<=_time(top['available_at']), 'history_gap_bounds_valuation_identity')
+        current=ledger_from_dict(valuation['ledger_state'])
+        points=[EquityCheckpoint(segment,_time(row['as_of']),*(Decimal(str(row[key])) for key in ('equity','units','nav')))
+            for row in valuation['checkpoint_endpoints']]
+        _require(all(point.equity>0 and point.units>0 and point.equity/point.units==point.nav and point.as_of<=current.as_of for point in points),
+            'history_gap_bounds_valuation_endpoints')
+        fills=[dict(row,trade_time_utc=_time(row['trade_time_utc'])) for row in payload['fills']]
+        receipts={};revalued={}
+        for ref in top['receipts']:
+            receipt=ref['receipt'];sha=ref['receipt_sha256']
+            _require(sha not in receipts and equity_canonical(receipt)[1]==sha and receipt.get('kind')=='automatic_constant_mark_gap_v1'
+                and receipt.get('account_id')==account and receipt.get('segment_id')==segment,'history_gap_bounds_receipt_hash')
+            _require(_time(receipt['available_at'])==_time(ref['available_at'])<=_time(top['available_at'])
+                and _time(receipt['as_of'])<=_time(payload['as_of']),'history_gap_bounds_receipt_clock')
+            origin=source(receipt['source_evidence_sha256'])
+            _require(origin is not None and origin['payload'].get('account_id')==account
+                and origin['payload'].get('segment_id')==segment
+                and origin['payload'].get('source_collection',{}).get('complete') is True
+                and origin['payload'].get('result',{}).get('ledger_version')==receipt['source_ledger_version'],
+                'history_gap_bounds_source_parent')
+            _require(all(_time(origin['payload']['available_at'])<=_time(row['requested_at']) for row in receipt['http_receipts'])
+                and all(_time(gap['right'])<=_time(origin['payload']['as_of']) for gap in receipt['mark_gaps']),
+                'history_gap_bounds_source_clock')
+            verify_mark_receipts(dict(available_at=receipt['available_at'],gaps=receipt['mark_gaps'],http_receipts=receipt['http_receipts']),_time(checked_at))
+            receipts[sha]=receipt
+            revalued[sha]=revalue_gap_bounds(receipt,current,points,fills,payload['order_owners'],valuation['opening_inventory'])
+        seen=set()
+        for bound in top['bounds']:
+            sha=bound['receipt_sha256'];receipt=receipts[sha]
+            _require(_time(bound['source_available_at'])==_time(receipt['available_at'])
+                and bound['valuation_sha256']==valuation_sha and _time(bound['valuation_available_at'])==_time(top['valuation_available_at'])
+                and max(_time(ledger['inception']),_time(ledger['as_of'])-timedelta(days=30))<=_time(bound['as_of'])<=_time(receipt['as_of']),
+                'history_gap_bounds_source_clock')
+            core={key:bound[key] for key in ('as_of','low_nav','high_nav','source_units')}
+            values=[Decimal(str(core[key])) for key in ('low_nav','high_nav','source_units')]
+            _require(all(value.is_finite() and value>0 for value in values) and values[0]<=values[1]
+                and any(_time(core['as_of'])==_time(row['as_of']) and all(Decimal(str(core[key]))==Decimal(str(row[key])) for key in ('low_nav','high_nav','source_units')) for row in revalued[sha]),
+                'history_gap_bounds_value')
+            identity=(sha,bound['as_of']);_require(identity not in seen,'history_gap_bounds_duplicate');seen.add(identity)
+        return dict(top,parent_evidence_sha256=digest,parent_as_of=payload['as_of'],parent_available_at=payload['available_at'])
+    except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
+        raise DataBlocked(['history_gap_bounds_invalid:'+str(exc)]) from exc
+
+
+def _portal_gap_projection(portal,financial,checked_at):
+    component=financial.get('hrs_marked_equity_observation') or financial.get('equity_gate') or {}
+    if not component.get('evidence_sha256'):return None
+    return project_history_gap_bounds(financial,_portal_gap_equities(portal),checked_at)
+
+
+def _portal_gap_equities(portal):
+    cached=getattr(portal,'_hrs_gap_equities',None)
+    if cached is not None:return cached
+    sources=snapshot_evidence_sources(portal)
+    if isinstance(sources,_ArchiveSources):cached=_EquityView(sources)
+    else:
+        embedded=[parent for row in _original_records(portal) if row['kind']=='scan_start'
+            for parent in row['payload'].get('financial_context',{}).get('equity_source_archives',[])]
+        cached=_equity(list(sources.get('equity_evidence') or [])+embedded)
+    portal._hrs_gap_equities=cached
+    return cached
+
+
 def _bootstrap(snapshot,start,equities,checkpoints,records,execution_model,monitoring_model,allow_inception):
     config,hashes=_config(snapshot)
     financial=snapshot['financial_context']
@@ -590,6 +679,8 @@ def _bootstrap(snapshot,start,equities,checkpoints,records,execution_model,monit
             dict(financial,claims=financial['ownership_claims']),_time(financial['hrs_slot_inputs']['observed_at']),equities,
             slot_scope=financial.get('runtime_slot_scope'),slot_inputs=financial['hrs_slot_inputs'],checked_at=available,
             source_evidence_id=snapshot['_source_evidence_id'],claims_evidence_id=snapshot['_source_evidence_id'])
+    bounds=project_history_gap_bounds(financial,equities,available)
+    if bounds is not None:result['history_gap_bounds']=bounds
     return result,tables,available
 
 
@@ -789,15 +880,19 @@ def verify_bootstrap_source_contract(portal,raw):
     from strategies.hrs.margin_budget import ALL_ACCOUNT,HRS_OWNED
     records=_original_records(portal)
     if records is None:
+        _require(not raw.get('history_gap_bounds'),'history_gap_bounds_original_evidence_missing')
         _require(_original_scope(raw)==ALL_ACCOUNT and raw.get('hrs_margin_scope',ALL_ACCOUNT)==ALL_ACCOUNT,
             'hrs_original_evidence_missing')
         return
     source=_original_opening_scan(portal,records)
     financial=source['payload'].get('financial_context')
     if financial is None and _legacy_boundary_only_source(portal,records):
+        _require(not raw.get('history_gap_bounds'),'history_gap_bounds_original_evidence_missing')
         _require_legacy_boundary_contract(raw)
         return
     _require(isinstance(financial,dict),'hrs_bootstrap_margin_raw_source_financial_missing')
+    expected=_portal_gap_projection(portal,financial,_time(raw['bootstrap_available_at']))
+    _require(raw.get('history_gap_bounds')==expected,'history_gap_bounds_bootstrap_projection_mismatch')
     scope=_original_scope(financial)
     _require(_original_scope(raw)==scope and raw.get('runtime_slot_scope')==financial.get('runtime_slot_scope'),
         'hrs_bootstrap_margin_raw_source_scope_mismatch')
@@ -837,11 +932,14 @@ def verify_runtime_slot_occupancy(portal,raw,checked_at):
     records=_original_records(portal)
     _require(records is not None,'hrs_original_evidence_missing')
     if _legacy_boundary_only_source(portal,records):
+        _require(not risk.get('history_gap_bounds'),'history_gap_bounds_original_evidence_missing')
         _require_legacy_boundary_contract(risk,occupancy=occupancy)
         return
     analysis,start=_original_analysis_scan(records,raw['symbol'],_time(raw['decision_at']),checked_at)
     financial=start['payload'].get('financial_context')
     _require(isinstance(financial,dict),'hrs_margin_raw_source_financial_missing')
+    expected=_portal_gap_projection(portal,financial,checked_at)
+    _require(risk.get('history_gap_bounds')==expected,'history_gap_bounds_runtime_projection_mismatch')
     scope=_original_scope(financial)
     if start['payload'].get('market_circuit_breaker_config') is not None:
         guard=_market_guard_inputs(start,_time(raw['decision_at']),checked_at,
@@ -1103,6 +1201,8 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
             if market['has_market_cap']:
                 _require(cap.get('provider') and cap.get('provider_asset_id'),'market_cap_provider_identity_missing:'+symbol)
             risk=dict(allocation=financial['allocation'],entry_policy=financial['entry_policy'],account_equity_excluding_hrs=str(Decimal(str(financial['account_equity']))-hrs_equity),account_equity_component_source=component_source,baseline_margin_reservations=financial['reservations'])
+            bounds=project_history_gap_bounds(financial,equities,max(available,released))
+            if bounds is not None:risk['history_gap_bounds']=bounds
             stages=sorted(_run_rows(rows,kind='entry_stage_inputs',symbol=symbol),key=lambda r:(r['available_at'],r['event_time'],r['evidence_id']))
             facts={}
             for stage in stages:

@@ -6,6 +6,7 @@ input. Entries use the manifest-bound execution model and its declared assumptio
 from __future__ import annotations
 
 from dataclasses import asdict
+from types import SimpleNamespace
 from datetime import datetime, timedelta
 from decimal import Decimal
 import re
@@ -19,7 +20,8 @@ from strategies.hrs.risk_budget import (FLOOR, STRICT, assess_entry, assess_budg
     calculate_open_position_risk, policy_budget_version)
 from strategies.hrs.margin_budget import (ALL_ACCOUNT, HRS_OWNED, policy_margin_scope,
     validate_cash_fields, validate_cash_observation, pending_margin, margin_component_limits)
-from strategies.hrs.loss_gate import GateHistory, LossGateState, evaluate_loss_gate
+from strategies.hrs.loss_gate import GateHistory, LossGateState, evaluate_loss_gate,SHANGHAI
+from strategies.hrs.equity_history_gap import apply_conservative_bounds
 from strategies.hrs.risk_ledger import (EquityCheckpoint, LedgerState, LedgerObservation,
     IncomeEvent, CashFlow, PositionMark, reconcile_ledger, LedgerNotReady)
 
@@ -195,6 +197,10 @@ class HrsAdapter:
             self._allow_inception = ledger.get('allow_inception_segment') is True
             self._gate = (LossGateState.from_dict(ledger['gate_state'])
                           if ledger['gate_state'] is not None else None)
+            projection=raw.get('history_gap_bounds')
+            self._prefix_gap_bounds=list(projection['bounds']) if projection else []
+            self._bootstrap_known_at=parse_utc(raw.get('bootstrap_available_at',self._start.isoformat()))
+            self._ignored_gap_bound_ids=set();self._strict_minute_gap_model=False
             self._scorer = ScoringEngine(self.config)
             self._recognizer = PatternRecognizer(self.config)
             reservations=raw['margin_reservations']
@@ -345,6 +351,7 @@ class HrsAdapter:
                                or bar.open_time.second or bar.open_time.microsecond for bar in selected)
                         or any(right.open_time!=left.close_time for left,right in zip(selected,selected[1:]))):
                     raise DataBlocked(['hrs_execution_subbar_coverage_gap:'+symbol])
+            self._strict_minute_gap_model=True
         elif entry_type != 'MARKET':
             raise DataBlocked(['hrs_entry_order_type_unsupported'])
         model=self._portal.hrs_replay_state(self._start).get('monitoring_model')
@@ -457,6 +464,7 @@ class HrsAdapter:
                     raise DataBlocked(['hrs_risk_inputs_missing:'+key])
         except (KeyError,TypeError,ValueError) as exc:
             raise DataBlocked(['hrs_decision_inputs_invalid:'+str(exc)]) from exc
+        self._accept_gap_bounds(risk.get('history_gap_bounds'),now,ctx)
         allocation=Decimal(str(risk['allocation']))
         if not allocation.is_finite() or allocation<0:
             raise DataBlocked(['hrs_allocation_invalid'])
@@ -908,11 +916,44 @@ class HrsAdapter:
             return 'daily_position_limit'
         return None
 
+    def _accept_gap_bounds(self,projection,now,ctx):
+        if not projection:return
+        common={(row['receipt_sha256'],parse_utc(row['as_of'])):row for row in self._prefix_gap_bounds}
+        ignored=[]
+        for row in projection['bounds']:
+            available=max(parse_utc(row['source_available_at']),parse_utc(row['valuation_available_at']))
+            if available>now:raise DataBlocked(['history_gap_bounds_future_valuation'])
+            key=(row['receipt_sha256'],parse_utc(row['as_of']))
+            if key in common:
+                if any(Decimal(str(row[field]))!=Decimal(str(common[key][field])) for field in ('low_nav','high_nav','source_units')):
+                    raise DataBlocked(['history_gap_bounds_common_prefix_revalued'])
+                continue
+            if key[1]<=self._start:raise DataBlocked(['history_gap_bounds_late_common_prefix'])
+            if not self._strict_minute_gap_model:raise DataBlocked(['history_gap_bounds_counterfactual_coverage_unproven'])
+            if not getattr(self,'_gap_funding_proven',False):
+                from ..funding_history import attested_funding_schedule
+                schedule=attested_funding_schedule(self._portal.funding_schedule_evidence(),ctx.universe.symbols,self._start,self._portal.as_of)
+                for symbol in ctx.universe.symbols:
+                    times=[at for at,_ in self._portal.funding_rates(symbol,self._start,self._portal.as_of)]
+                    if len(times)!=len(set(times)) or set(times)!=set(schedule[symbol]):
+                        raise DataBlocked(['history_gap_bounds_counterfactual_funding_unproven'])
+                self._gap_funding_proven=True
+            if key not in self._ignored_gap_bound_ids:
+                self._ignored_gap_bound_ids.add(key);ignored.append(dict(receipt_sha256=key[0],as_of=key[1].isoformat()))
+        if ignored:self._record(now,'hrs_actual_gap_bounds_ignored',dict(sources=ignored,
+            model='independent_complete_1m_candidate_nav',exact_exchange_parity=False))
+
+    def _gap_bound_state(self,at):
+        bounds=[row for row in self._prefix_gap_bounds if max(parse_utc(row['source_available_at']),parse_utc(row['valuation_available_at']))<=at]
+        if not bounds:return self._gate
+        prior=self._gate or LossGateState(self._segment,at.astimezone(SHANGHAI).date())
+        return apply_conservative_bounds(prior,SimpleNamespace(as_of=at,inception=self._history_from),self._history,bounds)
+
     def _loss_gate_denial(self,now,ctx):
         equity=self._marked_equity(ctx.portfolio,as_of=now)
         current=EquityCheckpoint(self._segment,now,equity,self._units,equity/self._units)
         self._history=[p for p in self._history if p.as_of!=now]+[current]
-        gate=evaluate_loss_gate(self._gate,current,GateHistory(tuple(self._history),self._history_from,now,True),
+        gate=evaluate_loss_gate(self._gap_bound_state(now),current,GateHistory(tuple(self._history),self._history_from,now,True),
                                 allow_inception_segment=self._allow_inception)
         self._gate=gate.state
         if not gate.allow_new_risk:
@@ -1160,7 +1201,7 @@ class HrsAdapter:
     def _append_checkpoint(self,at,equity,units):
         current=EquityCheckpoint(self._segment,at,equity,units,equity/units)
         self._history=[sample for sample in self._history if sample.as_of!=at]+[current]
-        evaluation=evaluate_loss_gate(self._gate,current,
+        evaluation=evaluate_loss_gate(self._gap_bound_state(at),current,
             GateHistory(tuple(self._history),self._history_from,at,True),allow_inception_segment=self._allow_inception)
         self._gate=evaluation.state
 

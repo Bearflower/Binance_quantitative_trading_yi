@@ -41,6 +41,7 @@ import json
 import os
 from pathlib import Path
 import uuid
+from time import monotonic
 
 import structlog
 
@@ -55,11 +56,11 @@ from .equity_evidence import (
     certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,certify_reduce_only_lifecycle,FUNDING_SOURCE_CONTRACT,certify_owned_inventory_paths,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
-from .equity_history_gap import reconstruct_gaps, replay_inception_latches
+from .equity_history_gap import BAR_SOURCE, reconstruct_gaps, replay_inception_latches, plan_constant_gaps, gap_nav_envelopes, apply_conservative_bounds, verify_mark_receipts, revalue_gap_bounds
 from .equity_reconciliation import RebuiltHistory, ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
 from .funding_reference import read_forecasts_prefix,load_forecasts_ref,evidence_forecasts_ref,verify_stored_prefixes
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
-from .loss_gate_repository import LossGateSession, RepositoryConflict
+from .loss_gate_repository import LossGateSession, RepositoryConflict, ledger_from_dict, ledger_to_dict
 from .risk_ledger import CashFlow, LedgerNotReady, LedgerObservation, PositionMark, initialize_ledger, reconcile_ledger
 
 log = structlog.get_logger()
@@ -123,9 +124,10 @@ class HrsEquityService:
 
     async def run(self):
         while not self._closed.is_set():
+            started=monotonic()
             await self.refresh()
             try:
-                await asyncio.wait_for(self._closed.wait(), timeout=self.refresh_seconds)
+                await asyncio.wait_for(self._closed.wait(), timeout=max(0,self.refresh_seconds-(monotonic()-started)))
             except asyncio.TimeoutError:
                 pass
 
@@ -551,6 +553,59 @@ class HrsEquityService:
                     self._mark_bar_cache[key]=dict(bar=bars[0],available_at=self._now(),source='/fapi/v1/markPriceKlines')
                 snapshot['historical_mark_bars'][key]=self._mark_bar_cache[key]
 
+        try:
+            await asyncio.wait_for(self._prepare_automatic_history(bootstrap,snapshot),timeout=30)
+        except (EvidenceBlocked,asyncio.TimeoutError) as exc:
+            snapshot['automatic_history_gap']=dict(status='blocked',reason=str(exc) or type(exc).__name__)
+
+    async def _prepare_automatic_history(self,bootstrap,snapshot):
+        if not self.allow_inception:return
+        async with self.db.pool.acquire() as connection:
+            async with connection.transaction(isolation='repeatable_read',readonly=True):
+                projection=await connection.fetchrow("SELECT ready FROM trading.strategy_equity_gate WHERE account_id=$1 AND strategy_id='hrs'",self.account)
+                if projection is None or projection['ready']:return
+                stored=await connection.fetchrow('SELECT version,ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',self.account)
+                ledger=ledger_from_dict(json.loads(stored['ledger_state']) if isinstance(stored['ledger_state'],str) else stored['ledger_state'])
+                if snapshot['captured_at']-ledger.inception>=timedelta(days=30):return
+                points=await effective_checkpoints(connection,self.account,ledger.segment_id)
+                parent=await connection.fetchrow("""SELECT evidence_sha256,as_of,available_at,payload FROM trading.hrs_equity_evidence
+                    WHERE account_id=$1 AND segment_id=$2 AND as_of=$3 AND payload->'result'->>'ledger_version'=$4
+                    ORDER BY available_at DESC LIMIT 1""",self.account,ledger.segment_id,ledger.as_of,str(stored['version']))
+                if parent is None:raise EvidenceBlocked('history_gap_automatic_parent_missing')
+                payload=json.loads(parent['payload']) if isinstance(parent['payload'],str) else parent['payload']
+                if (canonical(payload)[1]!=parent['evidence_sha256'] or payload.get('account_id')!=self.account
+                        or payload.get('source_collection',{}).get('complete') is not True
+                        or payload.get('source_collection',{}).get('gaps')
+                        or payload.get('income_report',{}).get('id_match_and_coverage_complete') is not True
+                        or parent['available_at']>self._now()):
+                    raise EvidenceBlocked('history_gap_automatic_parent_invalid')
+                fills=copy.deepcopy(payload['fills'])
+                for fill in fills:fill['trade_time_utc']=datetime.fromisoformat(fill['trade_time_utc'])
+                anchor=json.loads(bootstrap['opening_evidence']) if isinstance(bootstrap['opening_evidence'],str) else bootstrap['opening_evidence']
+                gaps=plan_constant_gaps(self.account,ledger,points,fills,payload['order_owners'],anchor.get('opening_inventory',()))
+        if not gaps:return
+        receipts=[];items=[]
+        for gap in gaps:
+            start=int(datetime.fromisoformat(gap['left']).replace(second=0,microsecond=0).timestamp())*1000
+            end=int(datetime.fromisoformat(gap['right']).replace(second=0,microsecond=0).timestamp())*1000
+            bars={}
+            for symbol in gap['symbols']:
+                params=dict(symbol=symbol,interval='1m',startTime=start,endTime=end-1,limit=128)
+                requested=self._now()
+                response=await self.api._request('GET',BAR_SOURCE,params=params,signed=False)
+                received=self._now()
+                if (not isinstance(response,list) or len(response)!=(end-start)//60000
+                        or any(not isinstance(bar,list) or len(bar)<7 or bar[0]!=start+i*60000 or bar[6]!=start+(i+1)*60000-1
+                            or bar[6]>=int(requested.timestamp()*1000) for i,bar in enumerate(response))):
+                    raise EvidenceBlocked('history_gap_automatic_mark_response_invalid')
+                bars[symbol]=response
+                receipts.append(dict(source=BAR_SOURCE,params=params,requested_at=requested,received_at=received,
+                    response_sha256=canonical(response)[1]))
+            items.append(dict(left=gap['left'],right=gap['right'],bars=bars))
+        snapshot['automatic_history_gap']=dict(status='complete',parent_ledger_version=stored['version'],
+            parent_evidence_sha256=parent['evidence_sha256'],parent_available_at=parent['available_at'],
+            account=self.account,segment=ledger.segment_id,available_at=self._now().isoformat(),gaps=items,http_receipts=receipts)
+
     @asynccontextmanager
     async def _locked(self):
         async with self.db.pool.acquire() as connection:
@@ -815,6 +870,7 @@ class HrsEquityService:
         if not history.complete:
             raise EvidenceBlocked('history_gap_remaining_exposure_unproven')
         prior = replay_inception_latches(stored.gate,full_series)
+        prior=await self._saved_gap_latches(connection,prior,state,full_series,evidence)
         gate = evaluate_loss_gate(prior,state.checkpoint,history,allow_inception_segment=self.allow_inception)
         evidence['capture']['historical_mark_bars'].update(bars)
         receipt = dict(kind='reviewed_historical_mark_gap_v1', repair_id=repair_id, available_at=now,
@@ -823,6 +879,73 @@ class HrsEquityService:
                        backfilled_points=len(added), retained_mark_bars=len(bars),
                        valued_series_sha256=canonical([asdict(point) for point in added])[1])
         return RebuiltHistory(state,gate,full_series,receipt)
+
+    async def _saved_gap_latches(self,connection,prior,state,samples,evidence,extra=()):
+        rows=await connection.fetch("""SELECT receipt_sha256,available_at,receipt FROM trading.hrs_equity_reconciliation
+            WHERE account_id=$1 AND segment_id=$2 AND receipt->>'kind'='automatic_constant_mark_gap_v1'
+            ORDER BY after_state_version LIMIT 4097""",self.account,state.segment_id)
+        if len(rows)>4096:raise EvidenceBlocked('history_gap_automatic_receipt_budget')
+        bounds=[];refs=[];endpoints={}
+        for row in rows:
+            receipt=json.loads(row['receipt']) if isinstance(row['receipt'],str) else row['receipt']
+            if canonical(receipt)[1]!=row['receipt_sha256'] or row['available_at']>self._now():
+                raise EvidenceBlocked('history_gap_automatic_receipt_invalid')
+            if not any(datetime.fromisoformat(bound['as_of'])>=max(state.inception,state.as_of-timedelta(days=30))
+                    for bound in receipt.get('conservative_bounds',())):continue
+            active=[bound for bound in revalue_gap_bounds(receipt,state,samples,evidence['fills'],evidence['order_owners'],self._anchor_inventory)
+                if datetime.fromisoformat(bound['as_of'])>=max(state.inception,state.as_of-timedelta(days=30))]
+            for gap in receipt['mark_gaps']:
+                for key in ('left','right'):
+                    at=datetime.fromisoformat(gap[key]);endpoints[at]=next(point for point in samples if point.as_of==at)
+            if receipt.get('account_id')!=self.account or receipt.get('segment_id')!=state.segment_id:
+                raise EvidenceBlocked('history_gap_automatic_receipt_identity')
+            verify_mark_receipts(dict(available_at=receipt['available_at'],gaps=receipt['mark_gaps'],http_receipts=receipt['http_receipts']),self._now())
+            refs.append(dict(receipt_sha256=row['receipt_sha256'],available_at=row['available_at'],receipt=receipt))
+            bounds.extend(dict(bound,receipt_sha256=row['receipt_sha256'],source_available_at=row['available_at']) for bound in active)
+            if len(bounds)>65536:raise EvidenceBlocked('history_gap_automatic_bound_budget')
+        if bounds:
+            valuation=dict(ledger_state=ledger_to_dict(state),checkpoint_endpoints=[asdict(endpoints[key]) for key in sorted(endpoints)],
+                opening_inventory=copy.deepcopy(self._anchor_inventory))
+            valuation_sha=canonical(valuation)[1];valuation_available=self._now()
+            bounds=[dict(bound,valuation_sha256=valuation_sha,valuation_available_at=valuation_available) for bound in bounds]
+            evidence['history_gap_bounds']=dict(version='hrs_conservative_gap_bounds_v1',account_id=self.account,
+                segment_id=state.segment_id,available_at=valuation_available,receipts=refs,bounds=bounds,
+                valuation=valuation,valuation_sha256=valuation_sha,valuation_available_at=valuation_available)
+        return apply_conservative_bounds(prior,state,samples,[*bounds,*extra]) if bounds or extra else prior
+
+    async def _automatic_history(self,connection,stored,state,checkpoints,samples,fills,orders,evidence):
+        plan=evidence['capture'].get('automatic_history_gap',{})
+        if plan.get('status')!='complete':return None
+        if plan.get('parent_ledger_version')!=stored.version:
+            raise EvidenceBlocked('history_gap_automatic_parent_changed')
+        parent=await connection.fetchrow('SELECT payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND evidence_sha256=$2',self.account,plan['parent_evidence_sha256'])
+        payload=json.loads(parent['payload']) if parent is not None and isinstance(parent['payload'],str) else (parent['payload'] if parent else None)
+        if payload is None or canonical(payload)[1]!=plan['parent_evidence_sha256']:
+            raise EvidenceBlocked('history_gap_automatic_parent_invalid')
+        if (payload.get('account_id')!=self.account or payload.get('segment_id')!=state.segment_id
+                or payload.get('result',{}).get('ledger_version')!=stored.version
+                or datetime.fromisoformat(payload['as_of'])!=stored.ledger.as_of
+                or payload.get('source_collection',{}).get('complete') is not True):
+            raise EvidenceBlocked('history_gap_automatic_parent_invalid')
+        verify_mark_receipts(plan,self._now())
+        expected=plan_constant_gaps(self.account,state,checkpoints,fills,orders,self._anchor_inventory)
+        actual=[dict(left=item['left'],right=item['right'],symbols=sorted(item['bars'])) for item in plan['gaps']]
+        if actual!=expected:raise EvidenceBlocked('history_gap_automatic_path_changed')
+        added,bars=reconstruct_gaps(plan,self.account,state,checkpoints,fills,orders,self._anchor_inventory,self._now())
+        full=tuple(sorted((*samples,*added),key=lambda point:point.as_of))
+        bounds=gap_nav_envelopes(plan,state,full,fills,orders,self._anchor_inventory)
+        bounds=[dict(bound,source_units=str(max((point for point in checkpoints if point.as_of<=datetime.fromisoformat(bound['as_of'])),key=lambda point:point.as_of).units)) for bound in bounds]
+        prior=replay_inception_latches(stored.gate,full)
+        prior=await self._saved_gap_latches(connection,prior,state,full,evidence,bounds)
+        history=self._gate_history(full,fills,orders,state.inception)
+        gate=evaluate_loss_gate(prior,state.checkpoint,history,allow_inception_segment=self.allow_inception)
+        receipt=dict(kind='automatic_constant_mark_gap_v1',available_at=self._now(),as_of=state.as_of,
+            source_evidence_sha256=plan['parent_evidence_sha256'],source_ledger_version=stored.version,account_id=self.account,segment_id=state.segment_id,mark_gaps=plan['gaps'],
+            gap_endpoints=[{key:item[key] for key in ('left','right')} for item in plan['gaps']],
+            http_receipts=plan['http_receipts'],conservative_bounds=bounds,history_complete=history.complete,
+            backfilled_points=len(added),retained_mark_bars=len(bars),valued_series_sha256=canonical([asdict(point) for point in added])[1])
+        evidence['capture']['historical_mark_bars'].update(bars)
+        return RebuiltHistory(state,gate,full,receipt)
 
     async def _commit(self, connection, bootstrap, snapshot, collection, start_ms, end_ms):
         as_of = snapshot['captured_at']
@@ -961,6 +1084,11 @@ class HrsEquityService:
                     state.cash_flows,await effective_checkpoints(connection,self.account,segment),tuple(captures),
                     tuple(fills),tuple(orders),self._now(),canonical(evidence)[1],opening_positions=self._opening_marks(anchor),opening_inventory=self._anchor_inventory,opening_revision=opening_revision)
                 rebuilt=rebuild_history(stored,source,allow_inception_segment=self.allow_inception)
+                bound_state=await self._saved_gap_latches(connection,rebuilt.gate.state,rebuilt.ledger,rebuilt.checkpoints,evidence)
+                if bound_state!=rebuilt.gate.state:
+                    bound_gate=evaluate_loss_gate(bound_state,rebuilt.ledger.checkpoint,
+                        self._gate_history(list(rebuilt.checkpoints),fills,orders,rebuilt.ledger.inception),allow_inception_segment=self.allow_inception)
+                    rebuilt=RebuiltHistory(rebuilt.ledger,bound_gate,rebuilt.checkpoints,rebuilt.receipt)
                 stored=await activate_reconciliation(connection,self.account,stored,rebuilt)
                 gate=rebuilt.gate
                 receipt_sha=canonical(rebuilt.receipt)[1]
@@ -969,6 +1097,7 @@ class HrsEquityService:
                     reconciliation_receipt_sha256=receipt_sha)
                 evidence['result']=result
                 evidence['reconciliation_receipt_sha256']=receipt_sha
+                evidence['available_at']=self._now()
                 return await self._projection(connection,revision,result,evidence)
             events_flow=self._allocation_flows(state,audit['changes'],events,fills,orders,as_of)
             if state.cash_allocation+sum((flow.amount for flow in events_flow),Decimal(0))!=effective_opening_cash+sum((change.delta for change in audit['changes']),Decimal(0)):
@@ -1010,17 +1139,26 @@ class HrsEquityService:
             except EvidenceBlocked as exc:
                 log.warning('hrs_history_gap_backfill_blocked', reason=str(exc))
                 backfill = None
+            if backfill is None:
+                try:
+                    backfill=await self._automatic_history(connection,stored,state,checkpoints,samples,fills,orders,evidence)
+                except EvidenceBlocked as exc:
+                    evidence['automatic_history_gap_blocked']=str(exc)
+                    log.warning('hrs_automatic_history_gap_blocked',reason=str(exc))
             if backfill is not None:
                 stored = await activate_reconciliation(connection,self.account,stored,backfill)
                 gate = backfill.gate
                 evidence['history_gap_receipt_sha256'] = canonical(backfill.receipt)[1]
             else:
                 history = self._gate_history(samples,fills,orders,state.inception)
-                gate = evaluate_loss_gate(stored.gate,state.checkpoint,history,allow_inception_segment=self.allow_inception)
+                prior=await self._saved_gap_latches(connection,stored.gate,state,samples,evidence)
+                gate = evaluate_loss_gate(prior,state.checkpoint,history,allow_inception_segment=self.allow_inception)
                 stored = await session.commit(state,gate.state,expected_version=stored.version,checkpoint_id=f'{segment}:{end_ms}')
         result=dict(ready=gate.ready,allowed=gate.allow_new_risk,reasons=list(gate.reasons),
                     window_label=gate.window_label,qualified_30_day=gate.qualified_30_day,ledger_version=stored.version)
         evidence['result']=result
+        await self._saved_gap_latches(connection,gate.state,state,tuple(await effective_checkpoints(connection,self.account,segment)),evidence)
+        evidence['available_at']=self._now()
         return await self._projection(connection,revision,result,evidence)
 
     async def _deny(self, reason):
