@@ -4,16 +4,17 @@
 
 网格策略特点：
 - 半自动信号灯模式，非全自动交易
-- 交易记录存储在 grid.grid_trades 表（按次填充记录）
+- 按笔读取网格独立账户的交易所成交事实
 - 没有传统"开仓-平仓"的交易对，而是连续填充的网格订单
 
 方案C（混合模式）：
-- 真实数据（grid_trades）：本周实际成交的利润、笔数、胜率
+- 真实数据（execution_fact_fill）：本周实际成交的利润、笔数、胜率
 - 模拟推演（K线 + 参数场景）：用本周历史K线模拟不同参数组合下的预期表现
 - AI 调优时同时参考真实表现和模拟对比，做出更合理的参数调整建议
 """
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, List, Optional
 
 import structlog
@@ -30,6 +31,7 @@ from ai_tuner.adapters.base_adapter import (
 from shared.utils import resolve_env_var
 
 logger = structlog.get_logger()
+BEIJING = ZoneInfo("Asia/Shanghai")
 
 # 模拟推演置信度：从配置读取，提供默认值兜底
 # 配置路径：ai_tuner/config.yaml -> simulation.fill_efficiency_factor
@@ -50,7 +52,7 @@ class GridAdapter(BaseAdapter):
         采集网格策略表现数据
 
         数据来源：
-        1. grid.grid_trades 表：真实成交记录
+        1. execution_fact_fill：网格独立账户的真实成交记录
         2. K线服务：本周1h K线，用于模拟推演
         3. strategies/grid/config.yaml：策略配置
         支持 week_offset 参数，用于查询历史周数据（EffectTracker 回填使用）。
@@ -63,7 +65,7 @@ class GridAdapter(BaseAdapter):
         Returns:
             StrategyReport: 标准化策略周度体检报告（含 simulation 字段）
         """
-        now = datetime.now()
+        now = datetime.now(BEIJING).replace(tzinfo=None)
         this_monday = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
         # 周日定时调度时，本周已基本结束，取本周一（刚结束的周期）
         # 其他天（含周一手动触发）都取上周一
@@ -129,26 +131,37 @@ class GridAdapter(BaseAdapter):
     async def _query_weekly_trades(
         self, week_start: datetime, week_end: datetime
     ) -> List[Dict[str, Any]]:
-        """
-        查询本周网格成交记录
-
-        Args:
-            week_start: 本周起始时间
-            week_end: 本周结束时间
-
-        Returns:
-            网格成交记录列表
-        """
-        query = """
-            SELECT t.*, c.symbol
-            FROM grid.grid_trades t
-            LEFT JOIN grid.grid_config c ON t.config_id = c.id
-            WHERE t.executed_at >= $1
-              AND t.executed_at < $2
-              AND t.profit IS NOT NULL
-            ORDER BY t.executed_at ASC
-        """
-        return await self.db_manager.fetch_all(query, week_start, week_end)
+        """读取网格独立账户逐笔成交。周界线使用北京时间，净额扣除 USDT 手续费。"""
+        start, end = (
+            (bound.replace(tzinfo=BEIJING) if bound.tzinfo is None else bound).astimezone(timezone.utc)
+            for bound in (week_start, week_end)
+        )
+        account = os.environ.get("GRID_ACCOUNT_ID", "grid_pm_ethusdt_01").strip()
+        if not account:
+            raise ValueError("网格独立成交账户为空")
+        rows = await self.db_manager.fetch_all("""
+            SELECT f.symbol, f.side, f.qty AS quantity, f.price,
+                   f.realized_pnl - f.commission AS profit,
+                   f.trade_time_utc AT TIME ZONE 'Asia/Shanghai' AS executed_at,
+                   owners.total = 1 AND owners.grid = 1
+                       AND f.commission_asset = 'USDT' AND f.commission >= 0
+                       AND f.realized_pnl IS NOT NULL AS verified
+            FROM trading.execution_fact_fill f
+            CROSS JOIN LATERAL (
+                SELECT COUNT(*) AS total, COUNT(*) FILTER (
+                    WHERE o.strategy = 'grid' AND o.pnl_source = 'PM_USER_TRADES'
+                ) AS grid
+                FROM trading.trade_records o
+                WHERE o.account_id = f.account_id AND o.symbol = f.symbol
+                  AND o.order_id = f.order_id::text
+            ) owners
+            WHERE f.account_id = $1 AND f.symbol = 'ETHUSDT'
+              AND f.trade_time_utc >= $2 AND f.trade_time_utc < $3
+            ORDER BY f.trade_time_utc, f.trade_id
+        """, account, start, end)
+        if any(row["verified"] is not True for row in rows):
+            raise ValueError("网格成交事实未通过核验")
+        return rows
 
     # ============================================================
     # 真实绩效指标计算
@@ -165,11 +178,6 @@ class GridAdapter(BaseAdapter):
         for t in trades:
             profit = float(t.get("profit", 0) or 0)
             profit_values.append(profit)
-
-            symbol = t.get("symbol", "") or ""
-            if symbol:
-                sym_dist = metrics.symbol_distribution
-                sym_dist[symbol] = sym_dist.get(symbol, 0) + 1
 
         metrics.total_pnl = sum(profit_values)
         win_trades = [p for p in profit_values if p > 0]
