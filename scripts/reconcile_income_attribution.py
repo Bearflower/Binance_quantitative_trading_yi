@@ -21,6 +21,7 @@ import time
 
 from shared.accounting.derived_attribution import derive_income
 from shared.accounting.economic_ledger import INCOME_TYPES, coverage_gaps
+from shared.accounting.historical_funding import recover_from_checkpoint
 from shared.accounting.order_evidence import resolve_order_owner
 from shared.accounting.position_replay import replay_position
 from scripts.audit_algo_attribution import _fetch_links
@@ -459,7 +460,7 @@ async def _run(month, account_id, apply, requested_end_ms=None):
             links = await _fetch_links(client, symbols, earliest_ms, end_ms)
             links = [{**row, "account_id": account_id} for row in links]
         gaps = coverage_gaps(cursors, account_id, start_ms, end_ms, set(symbols))
-        position_qty, position_rejections, new_baselines = {}, {}, []
+        position_qty, position_proofs, position_rejections, new_baselines = {}, {}, {}, []
         if client is not None:
             for symbol in symbols:
                 qty, reason, proof = await verified_position_at_cutoff(client, symbol, end_ms)
@@ -467,6 +468,7 @@ async def _run(month, account_id, apply, requested_end_ms=None):
                     position_rejections[symbol] = reason
                     continue
                 position_qty[symbol] = qty
+                position_proofs[symbol] = proof
                 if qty == 0 and symbol not in baselines and not gaps:
                     new_baselines.append({"account_id": account_id, "symbol": symbol,
                                           "flat_at": end, "exchange_qty": Decimal(0),
@@ -488,6 +490,21 @@ async def _run(month, account_id, apply, requested_end_ms=None):
             async with connection.transaction(isolation="repeatable_read", readonly=True):
                 historical, pending = await historical_funding(connection, account_id, end)
         known = {_key(r): r for r in plan["derived_rows"]}
+        resolved = set(known) | {_key(row) for row in historical + manual + existing}
+        for event in incomes:
+            symbol = event["symbol"]
+            if (event["income_type"] != "FUNDING_FEE" or _key(event) in resolved
+                    or not position_qty.get(symbol) or symbol in replay_baselines):
+                continue
+            scoped = [f for f in fills if f["symbol"] == symbol]
+            _, owners = _order_map(account_id, symbol, scoped, trades, links, conditions)
+            row, _ = recover_from_checkpoint(event, end, position_qty[symbol],
+                                             position_proofs[symbol], scoped, owners, cursors)
+            if row:
+                historical.append(row)
+                resolved.add(_key(row))
+        recovered_ids = {_key(row) for row in historical}
+        pending = [r for r in pending if (account_id, "FUNDING_FEE", r["tran_id"]) not in recovered_ids]
         for row in historical:
             previous = known.get(_key(row))
             if previous is None:

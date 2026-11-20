@@ -28,3 +28,26 @@ def test_handover_isolated_by_account_and_time():
     del owners['2']
     del owners['1']
     assert check(2)[0] is None
+
+
+def test_funding_recovers_before_open_position_reaches_flat():
+    from shared.accounting.historical_funding import recover_from_checkpoint
+    start = datetime(2026, 11, 19, tzinfo=timezone.utc)
+    at = lambda n: start + timedelta(minutes=n)
+    scope = dict(account_id='default', symbol='ETNUSDT')
+    event = dict(scope, income_type='FUNDING_FEE', asset='USDT', income=D('-.03'),
+                 tran_id=3, event_time_utc=at(2))
+    fills = [dict(scope, order_id=1, trade_id=1, trade_time_utc=at(1), side='SELL', qty=D('.29')),
+             dict(scope, order_id=2, trade_id=2, trade_time_utc=at(3), side='BUY', qty=D('.08'))]
+    owners = {str(f['order_id']): dict(f, strategy='new_coin') for f in fills}
+    cursors = [dict(scope, source='userTrades', income_type=None, page_complete=True,
+                    request_status='ok', window_start_ms=int(at(0).timestamp()*1000),
+                    covered_until_ms=int(at(4).timestamp()*1000))]
+    proof = {"position_side": "BOTH", "cutoff_ms": int(at(4).timestamp()*1000),
+             "snapshot_observed_ms": int(at(5).timestamp()*1000),
+             "position_payload_sha256": "a"*64, "gap_trade_count": 0}
+    row, reason = recover_from_checkpoint(event, at(4), D('-.21'), proof, fills, owners, cursors)
+    assert reason is None and row['strategy'] == 'new_coin'
+    assert recover_from_checkpoint(event, at(4), D('-.22'), proof, fills, owners, cursors)[0] is None
+    assert recover_from_checkpoint(event, at(4), D('-.21'), proof, fills, owners, [])[0] is None
+    assert recover_from_checkpoint(event, at(4), D('-.21'), dict(proof, gap_trade_count=1), fills, owners, cursors)[0] is None
