@@ -1,0 +1,8 @@
+# Layer after the active HRS release files for a logging-only rollout.
+services:
+  hrs-acceptance-reporter:
+    logging: !override
+      driver: journald
+  market-cap-service:
+    logging: !override
+      driver: journald
