@@ -51,7 +51,8 @@ class ReportEvidenceLimitExceeded(ValueError):
     """A complete verified report cannot fit the reporter's memory budget."""
 
 # Large public API bodies are unnecessary here; retain every decision/failure kind.
-EXCLUDED_KINDS = ['public_market_response', 'market_input', 'funding_schedule_inventory']
+EXCLUDED_KINDS = ['public_market_response', 'market_input', 'funding_schedule_inventory',
+                  'protection_order_observation']
 # Independent equity refresh and the daily candidate timer share startup run
 # context; their observations are inputs/heartbeats, not trading scan cycles.
 BACKGROUND_KINDS = frozenset({'equity_gate', 'funding_schedule_inventory', 'market_cap_batch',
@@ -545,6 +546,7 @@ def _engineering_checks(lifecycle, evidence, through, account_id, *, budget_sour
     records, invalid = [], False
     contexts = defaultdict(set)
     policies = defaultdict(list)
+    scan_sources = defaultdict(list)
     for raw in evidence:
         if raw.get('kind') != 'scan_start':
             continue
@@ -553,7 +555,9 @@ def _engineering_checks(lifecycle, evidence, through, account_id, *, budget_sour
             valid = (canonical_payload(payload)[1] == raw.get('payload_sha256')
                      and _time(raw['event_time']) <= _time(raw['available_at']) <= through)
             contexts[raw.get('run_id')].add(payload.get('financial_context', {}).get('entry_policy', {}).get('account_id') if valid else None)
-            if valid:policies[raw.get('run_id')].append(payload.get('financial_context', {}).get('entry_policy', {}))
+            if valid:
+                policies[raw.get('run_id')].append(payload.get('financial_context', {}).get('entry_policy', {}))
+                scan_sources[raw.get('run_id')].append(raw)
         except (ValueError, TypeError, KeyError):
             contexts[raw.get('run_id')].add(None)
     for raw in evidence:
@@ -641,6 +645,8 @@ def _engineering_checks(lifecycle, evidence, through, account_id, *, budget_sour
     if ratios[1] > 0:
         required['tp2'] = (original*ratios[1], targets[1])
     proven = {}
+    late_links = defaultdict(set)
+    invalid_direct_roles = set()
     position = f"hrs:{lifecycle['symbol']}:{first_order}"
     for kind, payload, at in records:
         if kind != 'protection_order_ack' or payload.get('position_id') != position or not _time(lifecycle['opened_at']) <= at < first_exit:
@@ -672,10 +678,37 @@ def _engineering_checks(lifecycle, evidence, through, account_id, *, budget_sour
             child = response.get('actualOrderId')
             if child is None and response.get('algoId') is None:
                 child = response.get('orderId')
-            if child is not None and _number(child) > 0:
-                proven[role]['actual_fill_order_id'] = str(child)
+            from .protection_observer import identifier, validate_observation
+            try:
+                if isinstance(child, bool) or child not in (None, '', 0, '0'):
+                    proven[role]['actual_fill_order_id'] = identifier(child)
+                    late_links[role].add(identifier(child))
+            except (ValueError, TypeError, ArithmeticError):
+                invalid_direct_roles.add(role)
+            ack_row = next((raw for raw in evidence if raw.get('kind') == 'protection_order_ack'
+                and raw.get('evidence_id') == payload['_capture_envelope']['evidence_id']), None)
+            starts = scan_sources.get(payload['_capture_run_id'], [])
+            if ack_row is not None and len(starts) == 1:
+                for observed in evidence:
+                    if (observed.get('kind') != 'protection_order_observation'
+                            or _object(observed['payload']).get('ack_evidence_id') != ack_row['evidence_id']):
+                        continue
+                    try:
+                        linked, _ = validate_observation(observed, ack_row, starts[0], account_id, through)
+                        late_links[role].add(linked)
+                    except (ValueError, KeyError, TypeError, AttributeError, ArithmeticError):
+                        continue
         except (ValueError, KeyError, TypeError, ArithmeticError):
             continue
+    for role, children in late_links.items():
+        direct = proven.get(role, {}).get('actual_fill_order_id')
+        if direct is not None:
+            children.add(direct)
+        if role in proven:
+            if len(children) == 1 and role not in invalid_direct_roles:
+                proven[role]['actual_fill_order_id'] = next(iter(children))
+            else:
+                proven[role].pop('actual_fill_order_id', None)
     checks['protection_quantity_and_price'] = dict(
         status='RECONCILED' if set(proven) == set(required) else 'PENDING',
         required_roles=sorted(required), actual_acknowledgments=proven,
@@ -899,7 +932,7 @@ def _compact_record(raw):
             compact = {'financial_context': {'entry_policy': financial.get('entry_policy', {})}}
     elif row.get('kind') == 'scan_end':
         compact = {'status': payload.get('status')}
-    elif row.get('kind') == 'entry_stage_inputs':
+    elif row.get('kind') in ('entry_stage_inputs', 'protection_order_ack', 'protection_order_observation'):
         # This original hash is bound into the committed financial receipt.
         compact = payload
     elif row.get('kind') in ('kline_repair', 'execution_batch'):
@@ -1039,7 +1072,8 @@ async def build_report(db, *, as_of=None, account_id=None):
                     lifecycle_evidence = await _read_evidence(connection, '''SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload,recorded_at
                         FROM hrs.hrs_decision_evidence WHERE event_time >= $1 AND available_at <= $2
                         AND (kind=ANY($3::text[]) OR (kind='entry_stage_inputs' AND payload->>'stage' IN ('reservation_success','reservation_inventory')))''', inception, through,
-                        ['scan_start','entry_budget_reserved','order_execution_result','protection_order_ack'])
+                        ['scan_start','entry_budget_reserved','order_execution_result','protection_order_ack',
+                         'protection_order_observation'])
                     incomes = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,tran_id,income_type,income,asset,event_time_utc
                         FROM trading.execution_fact_income WHERE account_id=$1 AND event_time_utc > $2 AND event_time_utc <= $3
                         AND income_type=ANY($4::text[])''', account, inception, through, ['COMMISSION','REALIZED_PNL','FUNDING_FEE'])]

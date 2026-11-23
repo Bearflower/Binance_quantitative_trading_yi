@@ -19,6 +19,7 @@ from strategies.hrs.strategy import HRSStrategy
 from strategies.hrs.decision_context import capture_configuration_identity
 from strategies.hrs.equity_service import HrsEquityService
 from strategies.hrs.funding_inventory import FundingInventoryCollector
+from strategies.hrs.protection_observer import ProtectionObserver
 from ai_tuner.snapshots.repository import SnapshotRepository
 
 
@@ -91,6 +92,29 @@ async def run_with_equity_service(strategy,db_manager,binance_client):
         except asyncio.CancelledError:
             await cleanup
             raise
+
+
+async def run_with_protection_observer(strategy, db_manager, binance_client):
+    recorder = getattr(strategy, 'decision_recorder', None)
+    task = None
+    if recorder is not None:
+        try:
+            observer = ProtectionObserver(db_manager, binance_client, recorder,
+                                          account_id=os.getenv('TRADE_ACCOUNT_ID', 'default'))
+            task = asyncio.create_task(observer.run(), name='hrs-protection-observer')
+        except Exception as exc:
+            logger.warning('hrs_protection_observer_unavailable', error_type=type(exc).__name__)
+    try:
+        return await run_with_equity_service(strategy, db_manager, binance_client)
+    finally:
+        if task is not None:
+            task.cancel()
+            cleanup = asyncio.gather(task, return_exceptions=True)
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+                raise
 
 
 async def main():
@@ -200,7 +224,7 @@ async def main():
             logger.info("交易记录器初始化完成", strategy="HRS策略")
 
             try:
-                await run_with_equity_service(strategy,db_manager,binance_client)
+                await run_with_protection_observer(strategy,db_manager,binance_client)
             finally:
                 if snapshot_db_manager is not None:
                     await snapshot_db_manager.disconnect()

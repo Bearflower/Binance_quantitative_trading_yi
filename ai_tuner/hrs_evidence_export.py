@@ -1150,7 +1150,10 @@ def _cycles(records,bootstrap,bootstrap_available,start,end,equities,*,spools=No
     for run,rows in groups:
         starts=list(_run_rows(rows,kind='scan_start'));ends=list(_run_rows(rows,kind='scan_end'))
         if not starts:continue
-        if all(r['available_at']<=start for r in (*starts,*ends)) and max(r['available_at'] for r in rows)<=start:continue
+        # A late read-only parent/child observation is retained as raw evidence;
+        # it cannot reopen a trading cycle that ended before this export window.
+        activity=(r for r in rows if r['kind']!='protection_order_observation')
+        if all(r['available_at']<=start for r in (*starts,*ends)) and max(r['available_at'] for r in activity)<=start:continue
         if min(r['event_time'] for r in starts)>=end:continue
         _require(len(starts)==1 and len(ends)==1 and ends[0]['payload'].get('status')=='complete','scan_incomplete:'+run)
         if starts[0]['event_time']>end:continue
