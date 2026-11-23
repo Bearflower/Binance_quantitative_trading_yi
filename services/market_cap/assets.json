@@ -1651,5 +1651,296 @@
       ]
     },
     "fallback_disabled_reason": "Paired provider market-cap and circulating-supply differences exceed 5%; verified identity permits CoinGecko primary only."
+  },
+  "ACEUSDT": {
+    "symbol": "ACE",
+    "cg_id": "endurance",
+    "cmc_id": 28674,
+    "name": "Fusionist",
+    "verified_at": "2026-11-23",
+    "evidence": [
+      "https://www.binance.com/en-BH/support/announcement/detail/2cb7b8a617b548e5b765bcb0f3beb680",
+      "https://api.coingecko.com/api/v3/coins/endurance",
+      "https://www.coingecko.com/en/coins/fusionist",
+      "https://coinmarketcap.com/currencies/fusionist/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "contracts": {
+      "binance-smart-chain": "0xc27a719105a987b4c34116223cae8bd8f4b5def4"
+    },
+    "identity_notes": "Binance ACE is Fusionist/Endurance, not Ace Data Cloud. The current CoinGecko API ID is endurance although its public page is fusionist; both providers bind the same BNB Chain contract.",
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "at": "2026-11-23T04:35:32.324685+00:00",
+      "relative_difference": 0.0712563806889744,
+      "supply_relative_difference": 0.0,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 51.0,
+      "max_quote_timestamp_gap_seconds": 300,
+      "max_receipt_age_seconds": 300,
+      "coingecko_observed_at": "2026-11-23T04:34:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-23T04:34:05.000Z",
+      "cg_available_at": "2026-11-23T04:35:32.324685+00:00",
+      "cmc_available_at": "2026-11-23T04:35:32.245519+00:00",
+      "cg_body_sha256": "1a1c5ca0da88d4ebabae57c8e5cc41548619a9ca45835c2028738fdb795058ea",
+      "cmc_body_sha256": "861ef1ca5a4286f51b8ea5e17f71edd73851d9938f7f306c357b45fc8fea5c52"
+    },
+    "fallback_disabled_reason": "Paired market-cap difference exceeds 5% despite matching circulating supply; only CoinGecko primary is enabled."
+  },
+  "AIGENSYNUSDT": {
+    "symbol": "AI",
+    "cg_id": "gensyn",
+    "cmc_id": 39883,
+    "name": "Gensyn",
+    "verified_at": "2026-11-23",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/524345e64dd14a23989bfe1e547760b5",
+      "https://api.coingecko.com/api/v3/coins/gensyn",
+      "https://www.coingecko.com/en/coins/gensyn",
+      "https://coinmarketcap.com/currencies/gensyn/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    ],
+    "contracts": {
+      "ethereum": "0x4d7078ddd6ccfed2f85db5b7d3ff16828d378d48"
+    },
+    "identity_notes": "Binance AIGENSYN is Gensyn. Both providers use symbol AI and the Ethereum contract confirmed by Binance Alpha. Artificial Inu also uses AI on Alpha but has a different contract; provider symbol AI is an explicit issuer alias, never a ticker-only match.",
+    "cmc_enabled": true,
+    "comparison": {
+      "status": "qualified",
+      "at": "2026-11-23T04:35:32.324685+00:00",
+      "relative_difference": 0.007033617092367553,
+      "supply_relative_difference": 0.0,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 51.0,
+      "max_quote_timestamp_gap_seconds": 300,
+      "max_receipt_age_seconds": 300,
+      "coingecko_observed_at": "2026-11-23T04:34:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-23T04:34:05.000Z",
+      "cg_available_at": "2026-11-23T04:35:32.324685+00:00",
+      "cmc_available_at": "2026-11-23T04:35:32.245519+00:00",
+      "cg_body_sha256": "1a1c5ca0da88d4ebabae57c8e5cc41548619a9ca45835c2028738fdb795058ea",
+      "cmc_body_sha256": "861ef1ca5a4286f51b8ea5e17f71edd73851d9938f7f306c357b45fc8fea5c52"
+    }
+  },
+  "ELSAUSDT": {
+    "symbol": "ELSA",
+    "cg_id": "elsa",
+    "cmc_id": 39387,
+    "name": "HeyElsa",
+    "verified_at": "2026-11-23",
+    "evidence": [
+      "https://www.binance.com/zh-CN/support/announcement/detail/4afa6aa807234762b141920847b4fe0b",
+      "https://api.coingecko.com/api/v3/coins/elsa",
+      "https://www.coingecko.com/en/coins/elsa",
+      "https://coinmarketcap.com/currencies/heyelsa/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    ],
+    "contracts": {
+      "base": "0x29cc30f9d113b356ce408667aa6433589cecbdca",
+      "mantle": "0x29cc30f9d113b356ce408667aa6433589cecbdca"
+    },
+    "identity_notes": "Binance ELSA is HeyElsa. Binance Alpha binds its Base token; both providers identify the same issuer and the same contract address on Base/Mantle. Network representations do not multiply issuer market cap.",
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "at": "2026-11-23T04:35:32.324685+00:00",
+      "relative_difference": 0.16183345604182164,
+      "supply_relative_difference": 0.16641524434479804,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 51.0,
+      "max_quote_timestamp_gap_seconds": 300,
+      "max_receipt_age_seconds": 300,
+      "coingecko_observed_at": "2026-11-23T04:34:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-23T04:34:05.000Z",
+      "cg_available_at": "2026-11-23T04:35:32.324685+00:00",
+      "cmc_available_at": "2026-11-23T04:35:32.245519+00:00",
+      "cg_body_sha256": "1a1c5ca0da88d4ebabae57c8e5cc41548619a9ca45835c2028738fdb795058ea",
+      "cmc_body_sha256": "861ef1ca5a4286f51b8ea5e17f71edd73851d9938f7f306c357b45fc8fea5c52"
+    },
+    "fallback_disabled_reason": "Paired market-cap difference exceeds 5%; circulating-supply difference also exceeds 5%."
+  },
+  "ENSOUSDT": {
+    "symbol": "ENSO",
+    "cg_id": "enso",
+    "cmc_id": 38668,
+    "name": "Enso",
+    "verified_at": "2026-11-23",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/79ea046281db4d478a5f95049bd6546b",
+      "https://api.coingecko.com/api/v3/coins/enso",
+      "https://www.coingecko.com/en/coins/enso",
+      "https://coinmarketcap.com/currencies/enso/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    ],
+    "contracts": {
+      "ethereum": "0x699f088b5dddcafb7c4824db5b10b57b37cb0c66",
+      "binance-smart-chain": "0xfeb339236d25d3e415f280189bc7c2fbab6ae9ef"
+    },
+    "identity_notes": "Binance ENSO is Enso. Its official listing and Alpha metadata publish the BNB Chain contract; CoinGecko links this and the Ethereum representation used by CMC to the same issuer.",
+    "cmc_enabled": true,
+    "comparison": {
+      "status": "qualified",
+      "at": "2026-11-23T04:35:32.324685+00:00",
+      "relative_difference": 0.0006945820113673938,
+      "supply_relative_difference": 0.0,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 51.0,
+      "max_quote_timestamp_gap_seconds": 300,
+      "max_receipt_age_seconds": 300,
+      "coingecko_observed_at": "2026-11-23T04:34:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-23T04:34:05.000Z",
+      "cg_available_at": "2026-11-23T04:35:32.324685+00:00",
+      "cmc_available_at": "2026-11-23T04:35:32.245519+00:00",
+      "cg_body_sha256": "1a1c5ca0da88d4ebabae57c8e5cc41548619a9ca45835c2028738fdb795058ea",
+      "cmc_body_sha256": "861ef1ca5a4286f51b8ea5e17f71edd73851d9938f7f306c357b45fc8fea5c52"
+    }
+  },
+  "IDOLUSDT": {
+    "symbol": "IDOL",
+    "cg_id": "meet48",
+    "cmc_id": 36775,
+    "name": "MEET48",
+    "verified_at": "2026-11-23",
+    "evidence": [
+      "https://www.binance.com/en/how-to-buy/meet48",
+      "https://api.coingecko.com/api/v3/coins/meet48",
+      "https://www.coingecko.com/en/coins/meet48",
+      "https://coinmarketcap.com/currencies/meet48/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    ],
+    "contracts": {
+      "binance-smart-chain": "0x3b4de3c7855c03bb9f50ea252cd2c9fa1125ab07"
+    },
+    "identity_notes": "Binance IDOL is MEET48 Token, not an unrelated idol-named asset. Binance Alpha and both providers share its exact BNB Chain contract. Proven identity does not resolve the providers circulating-supply disagreement.",
+    "cmc_enabled": false,
+    "comparison": {
+      "status": "not_qualified",
+      "at": "2026-11-23T04:35:32.324685+00:00",
+      "relative_difference": 0.5395864467763585,
+      "supply_relative_difference": 0.5403731543737001,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 51.0,
+      "max_quote_timestamp_gap_seconds": 300,
+      "max_receipt_age_seconds": 300,
+      "coingecko_observed_at": "2026-11-23T04:34:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-23T04:34:05.000Z",
+      "cg_available_at": "2026-11-23T04:35:32.324685+00:00",
+      "cmc_available_at": "2026-11-23T04:35:32.245519+00:00",
+      "cg_body_sha256": "1a1c5ca0da88d4ebabae57c8e5cc41548619a9ca45835c2028738fdb795058ea",
+      "cmc_body_sha256": "861ef1ca5a4286f51b8ea5e17f71edd73851d9938f7f306c357b45fc8fea5c52"
+    },
+    "fallback_disabled_reason": "Paired market-cap difference exceeds 5%; circulating-supply difference also exceeds 5%."
+  },
+  "PROMUSDT": {
+    "symbol": "PROM",
+    "cg_id": "prometeus",
+    "cmc_id": 4120,
+    "name": "Prom",
+    "verified_at": "2026-11-23",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/cdaaf231d42d4946a755b31a85019526",
+      "https://api.coingecko.com/api/v3/coins/prometeus",
+      "https://www.coingecko.com/en/coins/prometeus",
+      "https://coinmarketcap.com/currencies/prom/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo"
+    ],
+    "contracts": {
+      "ethereum": "0xfc82bb4ba86045af6f327323a46e80412b91b27d"
+    },
+    "identity_notes": "Binance PROM is Prom, formerly Prometeus. CoinGecko API ID remains prometeus and CMC UCID is 4120; both identify prom.io and the same Ethereum token contract. No webpage-slug or ticker-only API inference is used.",
+    "cmc_enabled": true,
+    "comparison": {
+      "status": "qualified",
+      "at": "2026-11-23T04:35:32.324685+00:00",
+      "relative_difference": 0.0036801980928109937,
+      "supply_relative_difference": 0.0,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 51.0,
+      "max_quote_timestamp_gap_seconds": 300,
+      "max_receipt_age_seconds": 300,
+      "coingecko_observed_at": "2026-11-23T04:34:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-23T04:34:05.000Z",
+      "cg_available_at": "2026-11-23T04:35:32.324685+00:00",
+      "cmc_available_at": "2026-11-23T04:35:32.245519+00:00",
+      "cg_body_sha256": "1a1c5ca0da88d4ebabae57c8e5cc41548619a9ca45835c2028738fdb795058ea",
+      "cmc_body_sha256": "861ef1ca5a4286f51b8ea5e17f71edd73851d9938f7f306c357b45fc8fea5c52"
+    }
+  },
+  "SKYAIUSDT": {
+    "symbol": "SKYAI",
+    "cg_id": "skyai",
+    "cmc_id": 36300,
+    "name": "SkyAI",
+    "verified_at": "2026-11-23",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/21868e668aec4f359abcd3bf581330b6",
+      "https://api.coingecko.com/api/v3/coins/skyai",
+      "https://www.coingecko.com/en/coins/skyai",
+      "https://coinmarketcap.com/currencies/skyai/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    ],
+    "contracts": {
+      "binance-smart-chain": "0x92aa03137385f18539301349dcfc9ebc923ffb10"
+    },
+    "identity_notes": "Binance SKYAI is SKYAI/SkyAI, distinct from Sky/Maker and Skycoin. The official futures announcement, Binance Alpha and both providers identify the same BNB Chain contract.",
+    "cmc_enabled": true,
+    "comparison": {
+      "status": "qualified",
+      "at": "2026-11-23T04:35:32.324685+00:00",
+      "relative_difference": 0.003394912135568015,
+      "supply_relative_difference": 0.0016185130145498522,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 51.0,
+      "max_quote_timestamp_gap_seconds": 300,
+      "max_receipt_age_seconds": 300,
+      "coingecko_observed_at": "2026-11-23T04:34:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-23T04:34:05.000Z",
+      "cg_available_at": "2026-11-23T04:35:32.324685+00:00",
+      "cmc_available_at": "2026-11-23T04:35:32.245519+00:00",
+      "cg_body_sha256": "1a1c5ca0da88d4ebabae57c8e5cc41548619a9ca45835c2028738fdb795058ea",
+      "cmc_body_sha256": "861ef1ca5a4286f51b8ea5e17f71edd73851d9938f7f306c357b45fc8fea5c52"
+    }
+  },
+  "VVVUSDT": {
+    "symbol": "VVV",
+    "cg_id": "venice-token",
+    "cmc_id": 35509,
+    "name": "Venice Token",
+    "verified_at": "2026-11-23",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/d07c58c0c6c6475f891161e77b4e6153",
+      "https://api.coingecko.com/api/v3/coins/venice-token",
+      "https://www.coingecko.com/en/coins/venice-token",
+      "https://coinmarketcap.com/currencies/venice-token/",
+      "https://fapi.binance.com/fapi/v1/exchangeInfo",
+      "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list"
+    ],
+    "contracts": {
+      "base": "0xacfe6019ed1a7dc6f7b508c02d1b04ec88cc21bf"
+    },
+    "identity_notes": "Binance VVV is Venice Token. The official futures announcement, Binance Alpha and both providers publish its exact Base contract; no ticker-only project inference is used.",
+    "cmc_enabled": true,
+    "comparison": {
+      "status": "qualified",
+      "at": "2026-11-23T04:35:32.324685+00:00",
+      "relative_difference": 0.005685707297480861,
+      "supply_relative_difference": 0.005341086955345356,
+      "max_relative_difference": 0.05,
+      "quote_timestamp_gap_seconds": 51.0,
+      "max_quote_timestamp_gap_seconds": 300,
+      "max_receipt_age_seconds": 300,
+      "coingecko_observed_at": "2026-11-23T04:34:56.000Z",
+      "coinmarketcap_observed_at": "2026-11-23T04:34:05.000Z",
+      "cg_available_at": "2026-11-23T04:35:32.324685+00:00",
+      "cmc_available_at": "2026-11-23T04:35:32.245519+00:00",
+      "cg_body_sha256": "1a1c5ca0da88d4ebabae57c8e5cc41548619a9ca45835c2028738fdb795058ea",
+      "cmc_body_sha256": "861ef1ca5a4286f51b8ea5e17f71edd73851d9938f7f306c357b45fc8fea5c52"
+    }
   }
 }
