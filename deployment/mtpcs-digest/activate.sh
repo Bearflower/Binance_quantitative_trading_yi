@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 umask 077
 root=/root/trading_system
 revision=$1
@@ -87,7 +87,10 @@ for name in "${files[@]}"; do
 done
 python3 "$target/daily_digest.py" --dry-run > "$release/installed-preview.txt"
 grep -Fq '7/7 MTPCS 开仓归因与影子观察' "$release/installed-preview.txt"
-! grep -Fq '读取告警 ·' "$release/installed-preview.txt"
+if grep -Fq '读取告警 ·' "$release/installed-preview.txt"; then
+    echo 'MTPCS real-path preview returned a read warning' >&2
+    false
+fi
 [[ $(docker inspect -f '{{.Id}} {{.Image}}' ai-tuner) == "$tuner_before" ]]
 [[ $(systemctl show trading-daily-digest.timer -p ActiveState --value) == active ]]
 printf '%s\n' "$revision active server_preview_ok" > "$release/verified"
