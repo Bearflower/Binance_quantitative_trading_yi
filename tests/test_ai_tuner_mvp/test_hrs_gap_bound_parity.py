@@ -173,7 +173,7 @@ from tests.test_ai_tuner_mvp.test_hrs_equity_bridge_sources import source_databa
 
 
 @pytest.mark.parametrize('archive',[False,True])
-@pytest.mark.parametrize('damage',[None,'missing','hash'])
+@pytest.mark.parametrize('damage',[None,'missing','hash','version','missing_projection'])
 async def test_readonly_sql_retains_old_gap_receipt_parents_and_their_forecast_prefix(source_database,tmp_path,archive,damage):
     from ai_tuner.hrs_evidence_export import read_evidence_sources,_ArchiveSources,_equity,project_history_gap_bounds,verify_forecast_source_closure,_records
     from ai_tuner.replay.models import DataBlocked
@@ -191,9 +191,12 @@ async def test_readonly_sql_retains_old_gap_receipt_parents_and_their_forecast_p
         old=row['evidence_sha256'];r=top['receipts'][0]
         r['receipt']['source_evidence_sha256']=origin['evidence_sha256'];r['receipt_sha256']=canonical(r['receipt'])[1]
         for bound in top['bounds']:bound['receipt_sha256']=r['receipt_sha256']
+        if damage=='missing_projection':row['payload'].pop('history_gap_bounds')
         row['evidence_sha256']=canonical(row['payload'])[1];replaced[old]=row['evidence_sha256']
     independent=sources['equity_reconciliations'][0]
     independent['receipt']['source_evidence_sha256']=origin['evidence_sha256']
+    if damage=='version':
+        independent['receipt']['source_ledger_version']=998;independent['after_state_version']=999
     independent['receipt_sha256']=independent['evidence_id']=canonical(independent['receipt'])[1]
     await db.execute('INSERT INTO trading.hrs_equity_reconciliation VALUES($1,$2,$3,$4,$5,$6,$7::jsonb,$8::jsonb)',
         independent['account_id'],independent['segment_id'],independent['after_state_version'],datetime.fromisoformat(independent['as_of']),datetime.fromisoformat(independent['available_at']),independent['receipt_sha256'],json.dumps(independent['receipt']),json.dumps(independent['after_state']))
@@ -206,7 +209,7 @@ async def test_readonly_sql_retains_old_gap_receipt_parents_and_their_forecast_p
         await db.execute('INSERT INTO hrs.hrs_decision_evidence VALUES($1,$2,$3,$4,$5,$6,$7,$8::jsonb)',
             row['evidence_id'],row['run_id'],row['kind'],row['symbol'],datetime.fromisoformat(row['event_time']),datetime.fromisoformat(row['available_at']),row['payload_sha256'],json.dumps(row['payload']))
     for row in sources['equity_evidence']:
-        if row is origin and damage=='missing':continue
+        if row is origin and damage in ('missing','missing_projection'):continue
         payload=copy.deepcopy(row['payload'])
         if row is origin and damage=='hash':payload['damaged']=True
         await db.execute('INSERT INTO trading.hrs_equity_evidence VALUES($1,$2,$3,$4,$5,$6::jsonb)',
@@ -236,7 +239,7 @@ async def test_readonly_sql_retains_old_gap_receipt_parents_and_their_forecast_p
 
 
 @pytest.mark.parametrize('archived',[False,True])
-@pytest.mark.parametrize('omission',['one_bound','all_bounds','both','missing_inventory'])
+@pytest.mark.parametrize('omission',['one_bound','all_bounds','both','missing_inventory','projection_paired_version'])
 def test_independent_original_receipt_inventory_rejects_omitted_bounds(tmp_path,archived,omission):
     from ai_tuner.hrs_evidence_export import export_evidence_bundle
     sources,bootstrap=bound_sources(tmp_path);changed={}
@@ -247,8 +250,13 @@ def test_independent_original_receipt_inventory_rejects_omitted_bounds(tmp_path,
         if omission=='one_bound':top['bounds'].pop()
         elif omission in ('all_bounds','both'):top['bounds']=[]
         if omission=='both':top['receipts']=[]
+        if omission=='projection_paired_version':row['payload'].pop('history_gap_bounds')
         row['evidence_sha256']=canonical(row['payload'])[1];changed[old]=row['evidence_sha256']
     if omission=='missing_inventory':del sources['equity_reconciliations']
+    elif omission=='projection_paired_version':
+        independent=sources['equity_reconciliations'][0]
+        independent['receipt']['source_ledger_version']=998;independent['after_state_version']=999
+        independent['receipt_sha256']=independent['evidence_id']=canonical(independent['receipt'])[1]
     for row in sources['decision_evidence']:
         if row['kind'] not in ('scan_start','scan_end'):continue
         snapshot=row['payload'] if row['kind']=='scan_start' else row['payload']['state']
@@ -299,3 +307,83 @@ def test_independent_receipt_metadata_cannot_hide_known_bounds(tmp_path,damage):
         row['receipt']['after_gate_sha256']='0'*64;row['receipt_sha256']=canonical(row['receipt'])[1]
     with pytest.raises(DataBlocked,match='history_gap_bounds'):
         project_history_gap_bounds(financial,_equity(sources['equity_evidence']),AT,sources['equity_reconciliations'])
+
+
+@pytest.mark.parametrize('archived',[False,True])
+@pytest.mark.parametrize('damage',['version','source_clock','missing_parent'])
+def test_original_parent_binding_precedes_independent_receipt_causal_filter(tmp_path,archived,damage):
+    from ai_tuner.hrs_evidence_export import _ArchiveSources,_EquityView,_equity,project_history_gap_bounds
+    from ai_tuner.replay.models import DataBlocked
+    sources,_=bound_sources(tmp_path)
+    financial=sources['decision_evidence'][0]['payload']['financial_context']
+    parent=next(row for row in sources['equity_evidence'] if row['evidence_sha256']==financial['hrs_marked_equity_observation']['evidence_sha256'])
+    parent['payload'].pop('history_gap_bounds');parent['evidence_sha256']=canonical(parent['payload'])[1]
+    financial['hrs_marked_equity_observation']['evidence_sha256']=parent['evidence_sha256']
+    row=sources['equity_reconciliations'][0];receipt=row['receipt']
+    origin=next(item for item in sources['equity_evidence'] if item['evidence_sha256']==receipt['source_evidence_sha256'])
+    if damage=='version':
+        receipt['source_ledger_version']=998;row['after_state_version']=999
+    else:
+        row['available_at']=receipt['available_at']=(AT+timedelta(seconds=1)).isoformat()
+        if damage=='source_clock':receipt['http_receipts'][0]['requested_at']=(datetime.fromisoformat(origin['payload']['available_at'])-timedelta(seconds=1)).isoformat()
+        else:sources['equity_evidence'].remove(origin)
+    row['receipt_sha256']=row['evidence_id']=canonical(receipt)[1]
+    sources['decision_evidence'][0]['payload_sha256']=canonical(sources['decision_evidence'][0]['payload'])[1]
+    with pytest.raises(DataBlocked,match='history_gap_bounds_source_|equity_payload_hash_mismatch'):
+        if archived:
+            from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter
+            with EvidenceArchiveWriter(tmp_path/'archive',source_metadata={}) as writer:
+                for name,rows in sources.items():
+                    writer.declare_source(name,dict(expected_count=len(rows),account_id='test',query_scope='engineering receipt parent binding',window_start=(AT-timedelta(days=31)).isoformat(),window_end=(AT+timedelta(hours=3)).isoformat()))
+                    for item in rows:writer.write_row(name,item)
+                descriptor=writer.finish()
+            with _ArchiveSources(dict(evidence_archive=descriptor)) as retained:
+                project_history_gap_bounds(financial,_EquityView(retained),AT,retained.get('equity_reconciliations'))
+        else:
+            project_history_gap_bounds(financial,_equity(sources['equity_evidence']),AT,sources['equity_reconciliations'])
+
+
+@pytest.mark.parametrize('archived',[False,True])
+@pytest.mark.parametrize('case',['future_version','future_available','different_segment','legacy'])
+def test_consistent_irrelevant_receipts_preserve_no_gap_projection(tmp_path,case,archived):
+    from ai_tuner.hrs_evidence_export import _ArchiveSources,_EquityView,_equity,project_history_gap_bounds
+    sources,_=bound_sources(tmp_path)
+    financial=sources['decision_evidence'][0]['payload']['financial_context']
+    parent=next(row for row in sources['equity_evidence'] if row['evidence_sha256']==financial['hrs_marked_equity_observation']['evidence_sha256'])
+    parent['payload'].pop('history_gap_bounds');parent['evidence_sha256']=canonical(parent['payload'])[1]
+    financial['hrs_marked_equity_observation']['evidence_sha256']=parent['evidence_sha256']
+    row=sources['equity_reconciliations'][0];receipt=row['receipt']
+    origin=next(item for item in sources['equity_evidence'] if item['evidence_sha256']==receipt['source_evidence_sha256'])
+    if case=='future_version':
+        receipt['source_ledger_version']=origin['payload']['result']['ledger_version']=998;row['after_state_version']=999
+    elif case=='future_available':row['available_at']=receipt['available_at']=(AT+timedelta(seconds=1)).isoformat()
+    elif case=='different_segment':row['segment_id']=receipt['segment_id']=origin['payload']['segment_id']='another'
+    else:sources['equity_reconciliations']=[]
+    origin['evidence_sha256']=canonical(origin['payload'])[1];receipt['source_evidence_sha256']=origin['evidence_sha256']
+    row['receipt_sha256']=row['evidence_id']=canonical(receipt)[1]
+    if archived:
+        from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter
+        sources['decision_evidence'][0]['payload_sha256']=canonical(sources['decision_evidence'][0]['payload'])[1]
+        with EvidenceArchiveWriter(tmp_path/'archive',source_metadata={}) as writer:
+            for name,rows in sources.items():
+                writer.declare_source(name,dict(expected_count=len(rows),account_id='test',query_scope='engineering irrelevant receipt',window_start=(AT-timedelta(days=31)).isoformat(),window_end=(AT+timedelta(hours=3)).isoformat()))
+                for item in rows:writer.write_row(name,item)
+            descriptor=writer.finish()
+        with _ArchiveSources(dict(evidence_archive=descriptor)) as retained:
+            assert project_history_gap_bounds(financial,_EquityView(retained),AT,retained.get('equity_reconciliations')) is None
+    else:assert project_history_gap_bounds(financial,_equity(sources['equity_evidence']),AT,sources['equity_reconciliations']) is None
+
+
+@pytest.mark.parametrize('empty',[False,True])
+def test_original_receipt_archive_binding_does_not_require_decision_family(tmp_path,empty):
+    from ai_tuner.hrs_evidence_export import _ArchiveSources
+    from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter
+    sources,_=bound_sources(tmp_path)
+    with EvidenceArchiveWriter(tmp_path/'archive',source_metadata={}) as writer:
+        for name in ('equity_evidence','equity_reconciliations'):
+            rows=[] if empty else sources[name]
+            writer.declare_source(name,dict(expected_count=len(rows),account_id='test',query_scope='engineering receipt closure without decisions',window_start=(AT-timedelta(days=31)).isoformat(),window_end=(AT+timedelta(hours=3)).isoformat()))
+            for row in rows:writer.write_row(name,row)
+        descriptor=writer.finish()
+    with _ArchiveSources(dict(evidence_archive=descriptor)) as retained:
+        assert len(retained.get('equity_reconciliations'))==(0 if empty else 1)

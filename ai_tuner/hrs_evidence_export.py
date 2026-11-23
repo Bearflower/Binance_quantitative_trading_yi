@@ -144,7 +144,10 @@ class _ArchiveSources:
             self.forecast_closure=verify_forecast_source_closure(self)
             if 'equity_reconciliations' in self.archive.counts:
                 account=self.archive.source_metadata['equity_reconciliations']['account_id']
-                for row in self.archive.iter_records('equity_reconciliations'):_reconciliation_source_reference(row,account)
+                equities=_EquityView(self)
+                for row in self.archive.iter_records('equity_reconciliations'):
+                    reference=_reconciliation_source_reference(row,account)
+                    _verify_gap_receipt_source_parent(_gap_receipt_source_binding(_decoded(row['receipt'])),equities.get(reference))
         except ArchiveError as exc:
             if getattr(self,'archive',None) is not None:self.archive.close()
             raise DataBlocked(['evidence_archive_invalid:'+str(exc)]) from exc
@@ -262,7 +265,7 @@ def close_portal_indexes(portal):
 class _EquityView:
     def __init__(self,sources):
         self.sources=sources;self.embedded={}
-        for row in sources.get('decision_evidence').select(kind='scan_start'):
+        for row in _decision_rows(sources.get('decision_evidence',()),kind='scan_start'):
             for index,archive in enumerate(row['payload'].get('financial_context',{}).get('equity_source_archives',[])):
                 payload=_decoded(archive['payload'])
                 self.embedded.setdefault(archive['evidence_sha256'],(row['evidence_id'],index,_time(payload['as_of'])))
@@ -565,9 +568,12 @@ def project_history_gap_bounds(financial,equities,checked_at,receipt_sources=())
     ledger=_decoded(financial['ledger_state']['ledger_state'])
     cutoff=max(_time(ledger['inception']),_time(ledger['as_of'])-timedelta(days=30))
     originals={}
+    # Archive opening binds every receipt, including unavailable rows, to its
+    # original parent. Keep the indexed causal window for repeated projections.
     rows=receipt_sources.select(available_before=_time(payload['available_at'])) if isinstance(receipt_sources,_ArchiveFamily) else receipt_sources
     for record in rows:
-        _reconciliation_source_reference(record,financial['entry_policy'].get('account_id'))
+        reference=_reconciliation_source_reference(record,financial['entry_policy'].get('account_id'))
+        _verify_gap_receipt_source_parent(_gap_receipt_source_binding(_decoded(record['receipt'])),source(reference))
         if (record.get('account_id')!=financial['entry_policy'].get('account_id') or record.get('segment_id')!=ledger['segment_id']
                 or record['after_state_version']>financial['ledger_state']['version'] or _time(record['available_at'])>_time(payload['available_at'])):continue
         receipt=_decoded(record['receipt']);sha=record['receipt_sha256']
@@ -608,15 +614,7 @@ def project_history_gap_bounds(financial,equities,checked_at,receipt_sources=())
                 and receipt.get('account_id')==account and receipt.get('segment_id')==segment,'history_gap_bounds_receipt_hash')
             _require(_time(receipt['available_at'])==_time(ref['available_at'])<=_time(top['available_at'])
                 and _time(receipt['as_of'])<=_time(payload['as_of']),'history_gap_bounds_receipt_clock')
-            origin=source(receipt['source_evidence_sha256'])
-            _require(origin is not None and origin['payload'].get('account_id')==account
-                and origin['payload'].get('segment_id')==segment
-                and origin['payload'].get('source_collection',{}).get('complete') is True
-                and origin['payload'].get('result',{}).get('ledger_version')==receipt['source_ledger_version'],
-                'history_gap_bounds_source_parent')
-            _require(all(_time(origin['payload']['available_at'])<=_time(row['requested_at']) for row in receipt['http_receipts'])
-                and all(_time(gap['right'])<=_time(origin['payload']['as_of']) for gap in receipt['mark_gaps']),
-                'history_gap_bounds_source_clock')
+            _verify_gap_receipt_source_parent(_gap_receipt_source_binding(receipt),source(receipt['source_evidence_sha256']))
             verify_mark_receipts(dict(available_at=receipt['available_at'],gaps=receipt['mark_gaps'],http_receipts=receipt['http_receipts']),_time(checked_at))
             receipts[sha]=receipt
             revalued[sha]=revalue_gap_bounds(receipt,current,points,fills,payload['order_owners'],valuation['opening_inventory'])
@@ -1599,12 +1597,13 @@ def _gap_source_dependencies(parent,account_id):
     except (KeyError,TypeError) as exc:raise DataBlocked(['history_gap_bounds_dependency_shape']) from exc
 
 
-async def _equity_source_closure(connection,query,args,account_id,forecast_cutoffs,*,archived,receipt_inventory_available=True):
+async def _equity_source_closure(connection,query,args,account_id,forecast_cutoffs,*,archived,receipt_inventory_available=True,receipt_bindings=None):
     """Retain only needed ancestors; payloads are streamed and immediately released."""
-    graph={};needed=set();discovered=set();edge_count=0
+    graph={};needed=set(receipt_bindings or {});discovered=set(needed);edge_count=0
     def visit(row):
         nonlocal edge_count
         sha=row['evidence_sha256'];refs=_gap_source_dependencies(row,account_id)
+        for binding in (receipt_bindings or {}).get(sha,()):_verify_gap_receipt_source_parent(binding,row)
         _require(receipt_inventory_available or 'history_gap_bounds' not in _decoded(row['payload']),
             'history_gap_bounds_receipt_inventory_missing')
         if sha not in graph:edge_count+=len(refs)
@@ -1672,7 +1671,15 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
         FROM public.ai_tuner_funding_schedule_observations WHERE received_at >= $1 AND received_at <= $2
         ORDER BY received_at,symbol LIMIT $3""",(start-timedelta(seconds=420),end,limit))]
     result={'source_query_version':VERSION,'source_account_id':account_id,'source_window_start':_iso(start),'source_as_of':_iso(end)}
-    estimated=0;referenced=set();ledger_points=set();scanned=set();forecast_cutoffs={};bridge_boundaries={}
+    estimated=0;referenced=set();ledger_points=set();scanned=set();forecast_cutoffs={};bridge_boundaries={};receipt_bindings={};receipt_binding_count=0
+    def retain_receipt(row):
+        nonlocal receipt_binding_count
+        reference=_reconciliation_source_reference(row,account_id)
+        referenced.add(reference)
+        bindings=receipt_bindings.setdefault(reference,set());binding=_gap_receipt_source_binding(_decoded(row['receipt']))
+        if binding not in bindings:receipt_binding_count+=1;bindings.add(binding)
+        _require(len(receipt_bindings)<=MAX_GAP_SOURCE_PARENTS and receipt_binding_count<=MAX_GAP_SOURCE_EDGES,
+            'history_gap_bounds_dependency_budget')
     with ExitStack() as cleanup:
         writer=None
         if archive_root is not None:
@@ -1711,7 +1718,7 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
                 if name=='equity_evidence':
                     root_query=re.sub(r'\s+LIMIT\s+\$\d+\s*$','',query,flags=re.IGNORECASE) if writer is not None else query
                     root_args=args[:-1] if writer is not None else args
-                    ancestors=await _equity_source_closure(connection,root_query,root_args,account_id,forecast_cutoffs,archived=writer is not None,receipt_inventory_available=receipt_table is not None)
+                    ancestors=await _equity_source_closure(connection,root_query,root_args,account_id,forecast_cutoffs,archived=writer is not None,receipt_inventory_available=receipt_table is not None,receipt_bindings=receipt_bindings)
                     query='''SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
                         FROM trading.hrs_equity_evidence WHERE account_id=$1 AND evidence_sha256=ANY($2::text[])
                         ORDER BY available_at,evidence_sha256 LIMIT $3'''
@@ -1734,7 +1741,7 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
                         elif name=='equity_evidence':
                             _source_forecast_ref(row,forecast_cutoffs,account_id)
                         elif name=='equity_reconciliations':
-                            referenced.add(_reconciliation_source_reference(row,account_id))
+                            retain_receipt(row)
                     continue
                 rows=[dict(row) for row in await connection.fetch(query,*args)]
                 _require(len(rows)<=MAX_ROWS,'source_row_limit:'+name)
@@ -1750,7 +1757,7 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
                 elif name=='equity_evidence':
                     for row in rows:_source_forecast_ref(row,forecast_cutoffs,account_id)
                 elif name=='equity_reconciliations':
-                    for row in rows:referenced.add(_reconciliation_source_reference(row,account_id))
+                    for row in rows:retain_receipt(row)
             if forecast_cutoffs:
                 from .hrs_forecast_sources import FAMILY,INVENTORY_VERSION
                 from strategies.hrs.funding_reference import ROWS_SQL
@@ -1779,6 +1786,31 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
             result['evidence_archive']=writer.finish()
         elif raw_market_export is not None:result['market_bars']=read_market_export(raw_market_export)
     return result
+
+
+def _gap_receipt_source_binding(receipt):
+    # Keep only parent constraints during SQL streaming, never whole bar receipts.
+    try:
+        return (receipt['source_evidence_sha256'],receipt['account_id'],receipt['segment_id'],receipt['source_ledger_version'],
+            min(_time(row['requested_at']) for row in receipt['http_receipts']),
+            max(_time(gap['right']) for gap in receipt['mark_gaps']))
+    except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
+        raise DataBlocked(['history_gap_bounds_source_parent_shape:'+str(exc)]) from exc
+
+
+def _verify_gap_receipt_source_parent(binding,origin):
+    reference,account,segment,version,requested_at,right=binding
+    _require(origin is not None,'history_gap_bounds_source_parent')
+    try:
+        payload=_decoded(origin['payload'])
+        _require(equity_canonical(payload)[1]==reference,'equity_payload_hash_mismatch')
+        _require(payload.get('account_id')==account and payload.get('segment_id')==segment
+            and payload.get('source_collection',{}).get('complete') is True
+            and payload.get('result',{}).get('ledger_version')==version,'history_gap_bounds_source_parent')
+        _require(_time(payload['available_at'])<=requested_at and right<=_time(payload['as_of']),
+            'history_gap_bounds_source_clock')
+    except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
+        raise DataBlocked(['history_gap_bounds_source_parent_shape:'+str(exc)]) from exc
 
 
 def _reconciliation_source_reference(row,account_id):
