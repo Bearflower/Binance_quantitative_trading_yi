@@ -1,8 +1,9 @@
 """Prepare the MTPCS section for the existing 07:35 daily digest."""
 
 import argparse
-from datetime import datetime
+from datetime import date, datetime, timezone
 import json
+from math import ceil
 from pathlib import Path
 import subprocess
 import sys
@@ -33,7 +34,6 @@ CHECKS = {
 def beijing(stamp):
     if not stamp:
         return "暂无"
-    from datetime import timezone
     parsed = datetime.fromisoformat(stamp)
     return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(
         digest_outbox.TZ).strftime("%m-%d %H:%M")
@@ -104,6 +104,58 @@ def arm_line(row):
     return text
 
 
+# The first look is descriptive. Scheduled evaluation has a separate time window.
+FIRST_LOOK = 30
+MIN_RATE_DAYS = 3
+EARLIEST_REVIEW = date(2027, 2, 1)
+REPLAY_DAYS = 33
+REPLAY_REVERSION_COUNTS = {"btc_eth": (11, 4), "btc_eth_aggressive": (104, 103)}
+
+
+def eta(row, shadow):
+    remaining = FIRST_LOOK - row["closed"]
+    if remaining <= 0:
+        return "已达初看样本"
+    prefix = f"剩{remaining}笔"
+    if row["arm"].startswith("trend") and not row.get("candidates"):
+        return f"{prefix}，估时待候选"
+    days = shadow.get("recent_complete_days", 0)
+    if days >= MIN_RATE_DAYS:
+        closes = row.get("recent_closed", 0)
+        return (f"{prefix}，约{ceil(remaining * days / closes)}天"
+                if closes else f"{prefix}，估时待结算")
+    if row["arm"] == "mean_reversion":
+        fastest, slowest = REPLAY_REVERSION_COUNTS[row["variant"]]
+        low, high = (ceil(remaining * REPLAY_DAYS / n) for n in (fastest, slowest))
+        span = f"{low}" if low == high else f"{low}–{high}"
+        return f"{prefix}，历史回放约{span}天"
+    return f"{prefix}，估时待完整观察日"
+
+
+def daily_lines(entries, shadow):
+    verified = sum(row is not None and row["state"] == "verified" for row in entries.values())
+    lines = [f"当日日报结论 · 两版首笔实盘归因已验收 {verified}/2"]
+    day = shadow.get("daily")
+    if day is None:
+        return lines
+    if not day["covered_hours"]:
+        return lines + [f"{day['date'][5:]} 无可用观察小时，当日结论待数据。"]
+    lines.append(f"{day['date'][5:]} 采集 {day['covered_hours']}/24 小时，趋势候选 {day['trend_candidates']}，"
+                 f"斐波那契/普通回调 {day['bands'][0]}/{day['bands'][1]}，回归结算 {day['reversion_closed']}。")
+    if day["reversion_closed"]:
+        items = [f"{STRATEGIES[k]} {v['net_r']:+.2f}R" for k, v in day.get("reversion_by_variant", {}).items()
+                 if v["closed"]]
+        if items:
+            lines.append("当日回归结算净 R · " + "｜".join(items))
+    lines.append(f"方向一致性通过 {day['alignment_passed']}、拦截 {day['alignment_blocked']}"
+                 + ("，暂未观察到筛选差异。" if day["alignment_blocked"] == 0 else "。"))
+    if not day["trend_candidates"]:
+        lines.append("趋势组当日暂无候选，回调比例继续观察。")
+    if any(row["closed"] < FIRST_LOOK for row in shadow["arms"]):
+        lines.append("样本仍在积累，尚未形成分支优劣结论。")
+    return lines
+
+
 def render(entries, shadow, errors):
     lines = ["首笔实盘入场", *first_lines(entries), "", "影子账"]
     if shadow:
@@ -116,6 +168,20 @@ def render(entries, shadow, errors):
         aligned = shadow["alignment"]
         allowed = aligned.get("allowed", 0)
         lines.append(f"激进版方向一致性 · 通过 {allowed}，拦截 {sum(aligned.values()) - allowed}")
+        lines.extend(("", f"还要等多久 · 各组以 {FIRST_LOOK} 笔结算作初看，"
+                      f"近7天有 {shadow.get('recent_complete_days', 0)} 个完整观察日"))
+        for variant, name in STRATEGIES.items():
+            items = [(ARMS[row["arm"]] + " " + eta(row, shadow))
+                     for row in shadow["arms"] if row["variant"] == variant]
+            if items:
+                lines.append(name + " · " + "｜".join(items))
+        if shadow.get("as_of_day"):
+            remaining = (EARLIEST_REVIEW - date.fromisoformat(shadow["as_of_day"])).days
+            if remaining > 0:
+                lines.append(f"正式比较 · 距最早复评日 {remaining} 天，须有两个完整留出月和可比样本。")
+            else:
+                lines.append("正式比较 · 核对两个完整留出月及可比样本。")
+        lines.extend(("", *daily_lines(entries, shadow)))
         if not all(row["closed"] for row in shadow["arms"]):
             lines.append("样本继续积累，未结算组暂无收益。")
     else:
