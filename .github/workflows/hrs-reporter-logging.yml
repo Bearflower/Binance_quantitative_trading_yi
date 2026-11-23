@@ -1,0 +1,33 @@
+name: Build HRS reporter logging candidate
+on:
+  push:
+    branches: ['codex/production-container-logging-*']
+    paths:
+      - '.github/workflows/hrs-reporter-logging.yml'
+      - 'release/hrs-execution/ReporterLogging.Dockerfile'
+      - 'strategies/hrs/acceptance_report.py'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  reporter:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and publish only the reporter
+        run: |
+          set -euo pipefail
+          image="ghcr.io/bearflower/trading-hrs:reporter-logging-${GITHUB_SHA}"
+          docker build -f release/hrs-execution/ReporterLogging.Dockerfile \
+            --build-arg RELEASE_SHA="$GITHUB_SHA" --build-arg CI_RUN_NUMBER="$GITHUB_RUN_NUMBER" \
+            --build-arg CI_RUN_ATTEMPT="$GITHUB_RUN_ATTEMPT" -t "$image" .
+          docker push "$image"
+          docker image inspect --format '{{index .RepoDigests 0}}' "$image" | tee -a "$GITHUB_STEP_SUMMARY"
