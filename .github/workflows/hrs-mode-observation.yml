@@ -1,0 +1,68 @@
+name: HRS mode accounting and LV-RM observer
+on:
+  pull_request:
+    branches: [codex/hrs-acceptance-closure-20261120]
+    paths:
+      - 'strategies/hrs/*research*.py'
+      - 'strategies/hrs/mode_report.py'
+      - 'backtest/hrs/lv_rm_retracement.py'
+      - 'release/hrs-observer/**'
+      - '.github/workflows/hrs-mode-observation.yml'
+  push:
+    tags: ['hrs-mode-observer-v1-*']
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: hrs_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready --health-interval 5s --health-timeout 3s --health-retries 10
+    env:
+      HRS_TEST_POSTGRES_DSN: postgresql://postgres:test@127.0.0.1:5432/hrs_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: pip install -r strategies/hrs/requirements.txt pytest pytest-asyncio
+      - run: PGPASSWORD=test psql -h 127.0.0.1 -U postgres -d hrs_test -v ON_ERROR_STOP=1 -c 'CREATE ROLE trading_user NOLOGIN'
+      - run: >-
+          python -m pytest -q
+          strategies/hrs/tests/test_research_liquidity.py strategies/hrs/tests/test_research_export.py
+          tests/test_strategies/test_hrs_mode_report.py tests/test_strategies/test_hrs_lv_rm_retracement.py
+          tests/test_strategies/test_hrs_acceptance_report.py
+  activate-observer:
+    needs: verify
+    if: startsWith(github.ref, 'refs/tags/hrs-mode-observer-v1-')
+    runs-on: ubuntu-latest
+    concurrency: hrs-mode-observer-activation
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Activate read-only observer at reviewed HRS release
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/codex/hrs-acceptance-closure-20261120
+          mkdir -m 700 -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          cp release/hrs-observer/known_hosts ~/.ssh/known_hosts
+          folder="/root/trading_system/.deploy_tmp/hrs-mode-observer-$GITHUB_SHA"
+          git archive --format=tar.gz -o "$RUNNER_TEMP/bundle.tgz" HEAD \
+            release/hrs-observer/activate.py scripts/database_permissions.py database/postgres/permissions.json \
+            strategies/hrs/{research_export,research_liquidity,mode_report,acceptance_report}.py
+          digest=$(sha256sum "$RUNNER_TEMP/bundle.tgz" | cut -d ' ' -f 1)
+          target=root@43.156.242.184
+          ssh -o ConnectTimeout=20 "$target" "mkdir -m 700 -p $folder"
+          scp -o ConnectTimeout=20 "$RUNNER_TEMP/bundle.tgz" "$target:$folder/release.tgz"
+          ssh -o ServerAliveInterval=10 "$target" "cd $folder && echo '$digest  release.tgz' | sha256sum -c - && tar -xzf release.tgz && python3 release/hrs-observer/activate.py $folder $GITHUB_SHA"
