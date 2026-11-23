@@ -44,13 +44,22 @@ WITH preflight AS (
     FROM hrs.hrs_decision_evidence e WHERE e.kind='signal_execution_outcome'
       AND e.event_time >= $1 AND e.available_at < $2 AND e.recorded_at < $2
     GROUP BY 1,2,3,4
+), live_batch AS (
+    SELECT sig->>'signal_id' AS signal_id, sig->>'symbol' AS symbol,
+           sig->>'direction' AS direction, sig->>'entry_mode' AS mode,
+           min(e.run_id) AS first_run, max(e.run_id) AS last_run
+    FROM hrs.hrs_decision_evidence e
+    CROSS JOIN LATERAL jsonb_array_elements(e.payload->'ordered_signals') AS sig
+    WHERE e.kind='execution_batch' AND e.event_time >= $1
+      AND e.available_at < $2 AND e.recorded_at < $2
+    GROUP BY 1,2,3,4
 ), signal_rows AS (
     SELECT s.id, s.symbol, s.triggered_at, s.direction, s.entry_mode, s.signal_origin,
-           CASE WHEN least(p.first_run,d.first_run)=greatest(p.last_run,d.last_run)
-                THEN least(p.first_run,d.first_run) END AS run_id,
+           CASE WHEN least(p.first_run,d.first_run,b.first_run)=greatest(p.last_run,d.last_run,b.last_run)
+                THEN least(p.first_run,d.first_run,b.first_run) END AS run_id,
            COALESCE(CASE WHEN s.resolved_at < $2 THEN s.resolution END,
                     CASE WHEN d.denied THEN 'execution_declined' WHEN d.shadowed THEN 'shadow' END) AS outcome,
-           (p.all_shadow OR d.shadowed) AS all_shadow,p.all_live AS all_live,
+           (p.all_shadow OR d.shadowed) AS all_shadow,(p.all_live OR b.signal_id IS NOT NULL) AS all_live,
            EXISTS (SELECT 1 FROM trading.entry_risk_reservation r
                    WHERE r.account_id=$3 AND r.strategy_id='hrs' AND r.symbol=s.symbol
                      AND r.geometry->>'signal_id'=s.id::text AND r.created_at < $2) AS reserved
@@ -58,6 +67,8 @@ WITH preflight AS (
         AND p.symbol=s.symbol AND p.direction=s.direction AND p.mode=s.entry_mode
     LEFT JOIN decisions d ON d.signal_id=s.id::text AND d.symbol=s.symbol
         AND d.direction=s.direction AND d.mode=s.entry_mode
+    LEFT JOIN live_batch b ON b.signal_id=s.id::text AND b.symbol=s.symbol
+        AND b.direction=s.direction AND b.mode=s.entry_mode
     WHERE s.triggered_at >= $1 AND s.triggered_at < $2
 )
 SELECT id, run_id, symbol, triggered_at, direction, entry_mode, signal_origin, COALESCE(outcome,'unresolved') AS outcome,

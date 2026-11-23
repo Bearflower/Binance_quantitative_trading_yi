@@ -8,7 +8,7 @@ import pytest
 
 from strategies.hrs.acceptance_report import MODES, reconcile_lifecycles
 from strategies.hrs.decision_capture import canonical_payload
-from strategies.hrs.mode_report import ENTRY_SOURCES, SIGNALS, entry_sources, summarize
+from strategies.hrs.mode_report import ENTRY_SOURCES, SIGNALS, entry_sources, summarize, trend_label
 from .test_hrs_acceptance_report import ACCOUNT, NOW, START, lifecycle_sources
 
 
@@ -60,7 +60,7 @@ def test_unknown_net_excluded_from_every_performance_denominator(issue):
     assert live['net_wins'] == live['known_r_count'] == 0
 
 
-@pytest.mark.parametrize('issue', ['hash', 'wrong_account', 'wrong_client', 'shadow', 'ambiguous'])
+@pytest.mark.parametrize('issue', ['hash', 'wrong_account', 'wrong_client', 'shadow', 'ambiguous', 'budget_mode_conflict'])
 def test_entry_attribution_requires_unique_account_order_signal_evidence(issue):
     row = receipt()
     account = ACCOUNT
@@ -72,6 +72,9 @@ def test_entry_attribution_requires_unique_account_order_signal_evidence(issue):
         row['client_order_id'] = 'wrong'
     elif issue == 'shadow':
         row['resolution'] = 'shadow'
+    elif issue == 'budget_mode_conflict':
+        row['budget']['entry_mode'] = 'emm'
+        row['budget_hash'] = canonical_payload(row['budget'])[1]
     rows = [row, receipt(mode='emm')] if issue == 'ambiguous' else [row]
     live = summarize([], all_closed(), entry_sources(rows, account))['unknown']['live']
     assert live['verified_net_count'] == 1 and live['known_r_count'] == 0
@@ -104,7 +107,7 @@ async def test_signal_sql_historical_routes_cutoff_and_no_fill_inference():
             CREATE TEMP TABLE hrs_signals (id bigint, symbol text, direction text, entry_mode text,
               signal_origin text, triggered_at timestamptz, resolved_at timestamptz, resolution text);
             CREATE TEMP TABLE hrs_decision_evidence (kind text, symbol text, run_id text, event_time timestamptz,
-              available_at timestamptz, payload jsonb, payload_sha256 text);
+              available_at timestamptz, payload jsonb, payload_sha256 text, recorded_at timestamptz);
             CREATE TEMP TABLE entry_risk_reservation (account_id text, strategy_id text, symbol text,
               client_order_id text, created_at timestamptz, geometry jsonb);""")
         for id_, mode, origin, resolution, when in [
@@ -120,8 +123,18 @@ async def test_signal_sql_historical_routes_cutoff_and_no_fill_inference():
                 reason='pool_circuit_breaker', entry_mode='lv_rm', is_shadow=True)),
                 ('signal_execution_outcome', dict(result=False, signal=dict(signal_id=13,
                 direction='long', entry_mode='standard', skip_reason='entry risk policy')))]:
-            await connection.execute('INSERT INTO hrs_decision_evidence VALUES($1,$2,$3,$4,$4,$5,$6)',
+            await connection.execute('INSERT INTO hrs_decision_evidence VALUES($1,$2,$3,$4,$4,$5,$6,$4)',
                 kind, 'X', 'run', START, json.dumps(data), canonical_payload(data)[1])
+        for id_, resolution in ((16,'shadow'),(17,None)):
+            await connection.execute('INSERT INTO hrs_signals VALUES($1,$2,$3,$4,NULL,$5,$5,$6)',
+                id_, 'X', 'long', 'lv_rm', START, resolution)
+        for id_, shadow, recorded in ((16,True,START),(16,False,START),(17,True,NOW)):
+            data = dict(signal_id=id_, direction='long', reason='pool_circuit_breaker', entry_mode='lv_rm', is_shadow=shadow)
+            await connection.execute('INSERT INTO hrs_decision_evidence VALUES($1,$2,$3,$4,$4,$5,$6,$7)',
+                'pool_circuit_preflight_denial', 'X', 'run', START, json.dumps(data), canonical_payload(data)[1], recorded)
+        data = dict(ordered_signals=[dict(signal_id=13, symbol='X', direction='long', entry_mode='standard')])
+        await connection.execute('INSERT INTO hrs_decision_evidence VALUES($1,NULL,$2,$3,$3,$4,$5,$3)',
+            'execution_batch', 'run', START, json.dumps(data), canonical_payload(data)[1])
         rows = await connection.fetch(SIGNALS.replace('hrs.hrs_', 'hrs_').replace('trading.entry_', 'entry_'),
                                       START, NOW, ACCOUNT)
         modes = summarize(rows, [], {})
@@ -129,6 +142,7 @@ async def test_signal_sql_historical_routes_cutoff_and_no_fill_inference():
         assert modes['emm']['signals']['shadow']['outcomes'] == {'shadow': 1}
         assert modes['lv_rm']['signals']['shadow']['outcomes'] == {'pool_circuit_breaker': 1}
         assert modes['standard']['signals']['live']['outcomes'] == {'execution_declined': 1}
+        assert modes['lv_rm']['signals']['unknown']['outcomes'] == {'shadow': 1, 'unresolved': 1}
         assert modes['unknown']['signals']['unknown']['outcomes'] == {'unresolved': 1}
         assert modes['semi_emm']['signals']['unknown']['outcomes'] == {'unresolved': 1}
         assert modes['emm']['live']['verified_net_count'] == 0
@@ -140,10 +154,22 @@ async def test_signal_sql_historical_routes_cutoff_and_no_fill_inference():
             ACCOUNT, 'hrs', row['symbol'], row['client_order_id'], START, json.dumps({'signal_id':100}))
         for kind, data, at in [('order_execution_result', row['execution'], row['observed_at']),
                 ('entry_budget_reserved', row['budget'], row['budget_at'])]:
-            await connection.execute('INSERT INTO hrs_decision_evidence VALUES($1,$2,$3,$4,$4,$5,$6)',
+            await connection.execute('INSERT INTO hrs_decision_evidence VALUES($1,$2,$3,$4,$4,$5,$6,$4)',
                 kind, row['symbol'], 'trade', at, json.dumps(data), canonical_payload(data)[1])
         query = ENTRY_SOURCES.replace('hrs.hrs_', 'hrs_').replace('trading.entry_', 'entry_')
         sources = entry_sources(await connection.fetch(query, ACCOUNT, NOW, ['1']), ACCOUNT)
         assert summarize([], all_closed(), sources)['lv_rm']['live']['known_r_count'] == 1
     finally:
         await connection.close()
+
+def test_four_hour_trend_observed_closed_series_only():
+    interval = 4*3600*1000
+    end = int(START.timestamp()*1000) // interval * interval
+    at = START
+    bars = [dict(open_time=end-(20-n)*interval, open=n+1, high=n+1, low=n+1, close=n+1) for n in range(20)]
+    assert trend_label(bars, at, 'long') == 'aligned'
+    assert trend_label(bars, at, 'short') == 'opposed'
+    assert trend_label(bars[1:], at, 'long') == 'unknown'
+    assert trend_label(bars, at+timedelta(hours=4), 'long') == 'unknown'
+    assert trend_label(bars, at-timedelta(hours=4), 'long') == 'unknown'
+    assert trend_label([dict(b, close=1, open=1, high=1, low=1) for b in bars], at, 'long') == 'unknown'
