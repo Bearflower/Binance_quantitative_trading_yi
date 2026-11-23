@@ -30,7 +30,7 @@ def test_default_0735_preview_merges_mtpcs_without_sending(monkeypatch, capsys):
     assert daily_digest.main() == 0
     message = capsys.readouterr().out
     assert calls == [True]
-    assert "7/7 MTPCS 开仓归因与影子观察" in message
+    assert "7/8 MTPCS 开仓归因与影子观察" in message
     assert "只加方向一致性 2候选/0结算/1在途" in message
     assert "暂无收益" in message
     assert "净 +0" not in message
