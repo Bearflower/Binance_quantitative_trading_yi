@@ -42,7 +42,7 @@ DEFAULT_OUTPUT = '/app/logs/hrs-acceptance.json'
 # Reporter has a 256 MiB container. Reject oversized sources before JSON decode;
 # these are availability limits, never permission to omit a source and qualify.
 MAX_SOURCE_PAYLOAD_BYTES = 4 * 1024 * 1024
-MAX_RETAINED_EVIDENCE_BYTES = 4 * 1024 * 1024
+MAX_RETAINED_EVIDENCE_BYTES = 8 * 1024 * 1024
 MAX_PARENT_PAYLOAD_BYTES = 8 * 1024 * 1024
 MAX_SOURCE_ROWS = 20000
 

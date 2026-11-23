@@ -419,6 +419,38 @@ def test_unused_operational_payload_is_hash_verified_then_compacted_without_chan
     assert changed['status'] == 'NOT_READY'
     assert 'payload_hash_mismatch' in changed['hourly_slots'][0]['reasons']
 
+
+@pytest.mark.asyncio
+async def test_normal_full_day_market_cap_sources_fit_retained_report_budget_without_field_loss():
+    from strategies.hrs import acceptance_report as reporter
+    requested = [f'COIN{index:04}USDT' for index in range(1000)]
+    def sources():
+        for hour in range(24):
+            at = START+timedelta(hours=hour, minutes=5)
+            payload = dict(requested_symbols=requested, coverage_scope='requested_scan_batch', captured_at=at,
+                universe_audit=dict(raw_count=1000, eligible_count=1000, counts={'crypto': 1000},
+                    rows={symbol: 'crypto' for symbol in requested}, observed_at=at),
+                quotes={symbol: dict(value=100, source='coingecko', provider='coingecko',
+                    provider_asset_id=f'asset-{index:04}', as_of=at.timestamp()-30,
+                    available_at=at.timestamp(), is_proxy=False, missing_reason=None)
+                    for index, symbol in enumerate(requested)})
+            row = event(str(hour), 'market_cap_batch', at, payload)
+            row['payload'] = json.dumps(row['payload'])
+            row['source_payload_bytes'] = len(row['payload'].encode('utf-8'))
+            assert row['source_payload_bytes'] < reporter.MAX_SOURCE_PAYLOAD_BYTES
+            yield row
+    rows = await reporter._read_evidence(EvidenceCursorConnection(sources()), 'SELECT source')
+    assert len(rows) == 24
+    retained = sum(row['report_payload_bytes']+512 for row in rows)
+    assert 5 * 1024 * 1024 < retained < 7 * 1024 * 1024
+    for row in rows:
+        assert row['payload_sha256'] == row['source_payload_sha256']
+        assert row['payload_sha256'] == canonical_payload(row['payload'])[1]
+        assert row['payload']['requested_symbols'] == requested
+        assert set(row['payload']['quotes']) == set(requested)
+        assert set(row['payload']['universe_audit']['rows']) == set(requested)
+        assert reporter._batch(row['payload'], row['event_time'])['reasons'] == []
+
 def test_explicit_other_account_runs_are_excluded_without_mixing_counters():
     rows = evidence()
     at = START+timedelta(minutes=5)
