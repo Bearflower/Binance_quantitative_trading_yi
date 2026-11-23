@@ -69,3 +69,74 @@ def test_successful_observation_publishes_section_and_keeps_evidence(tmp_path, m
     entry = json.loads((tmp_path / "outbox/mtpcs.json").read_text())
     assert entry["status"] == "ok"
     assert "等待发布后首笔真实入场成交" in entry["text"]
+
+
+def test_eta_reports_remaining_days_and_handles_zero_rate():
+    report = shadow()
+    report["recent_complete_days"] = 5
+    report["arms"][0]["closed"] = 10
+    report["arms"][0]["recent_closed"] = 5
+    assert mtpcs.eta(report["arms"][0], report) == "剩20笔，约20天"
+    report["arms"][0]["recent_closed"] = 0
+    assert mtpcs.eta(report["arms"][0], report) == "剩20笔，估时待结算"
+    report["arms"][0]["closed"] = 30
+    assert mtpcs.eta(report["arms"][0], report) == "已达初看样本"
+
+
+def test_eta_shows_replay_reference_only_when_observed_days_are_insufficient():
+    report = shadow()
+    report["recent_complete_days"] = 1
+    baseline = dict(variant="btc_eth_aggressive", arm="mean_reversion", closed=3)
+    assert mtpcs.eta(baseline, report) == "剩27笔，历史回放约9天"
+    trend = dict(variant="btc_eth_aggressive", arm="trend_fibonacci", closed=0)
+    assert mtpcs.eta(trend, report) == "剩30笔，估时待候选"
+
+
+def test_daily_conclusion_uses_yesterday_and_reports_partial_coverage():
+    report = shadow()
+    report.update(recent_complete_days=0, as_of_day="2026-11-24", daily={
+        "date": "2026-11-23", "covered_hours": 10,
+        "trend_candidates": 0, "reversion_closed": 0,
+        "alignment_passed": 6, "alignment_blocked": 0, "bands": [0, 0],
+    })
+    text = mtpcs.render(deals(), report, [])
+    assert "还要等多久" in text
+    assert "11-23 采集 10/24 小时" in text
+    assert "方向一致性通过 6、拦截 0" in text
+    assert "趋势候选 0" in text and "回归结算 0" in text
+    assert "距最早复评日 69 天" in text
+
+
+def test_shadow_rollup_uses_only_complete_previous_days_for_daily_rate():
+    from datetime import datetime, timedelta, timezone
+    from ai_tuner.ops.mtpcs_shadow_summary import summarize
+
+    origin = datetime(2026, 11, 23, 16)
+    rows = []
+    for offset in range(25):
+        at = origin + timedelta(hours=offset)
+        records = [
+            dict(variant=variant, symbol=symbol, candidate={"market_state": "RANGING"},
+                 arms=[], exits={})
+            for variant in mtpcs.STRATEGIES
+            for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT")
+        ]
+        records[-1].update(arms=["mean_reversion"], alignment_passed=False,
+                           alignment_reason="方向一致性拒绝",
+                           exits={"mean_reversion": {"net_r": 0.25 if offset < 24 else 3.0}})
+        rows.append((at.isoformat(), '{"positions":{}}', json.dumps(records)))
+
+    report = summarize(rows, datetime(2026, 11, 24, 17, 5, tzinfo=timezone.utc))
+    assert report["daily"]["date"] == "2026-11-24"
+    assert report["daily"]["covered_hours"] == 24
+    assert report["daily"]["alignment_blocked"] == 24
+    assert report["daily"]["reversion_by_variant"]["btc_eth_aggressive"]["net_r"] == 6.0
+    assert report["recent_complete_days"] == 1
+    item = next(r for r in report["arms"]
+                if (r["variant"], r["arm"]) == ("btc_eth_aggressive", "mean_reversion"))
+    assert item["closed"] == 25 and item["recent_closed"] == 24
+
+    # One missing hour takes the day out of the rate, retaining its actual tally.
+    incomplete = summarize(rows[1:], datetime(2026, 11, 24, 17, 5, tzinfo=timezone.utc))
+    assert incomplete["daily"]["covered_hours"] == 23
+    assert incomplete["recent_complete_days"] == 0

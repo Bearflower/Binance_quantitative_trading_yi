@@ -7,7 +7,7 @@ revision=$1
 bundle="$root/.deploy_tmp/mtpcs-digest-$revision"
 target="$root/ai_tuner/ops"
 release="$root/.releases/mtpcs-digest/$revision"
-files=(mtpcs_entry_probe.py mtpcs_shadow_summary.py mtpcs_observation.py digest_outbox.py daily_digest.py)
+files=(mtpcs_shadow_summary.py mtpcs_observation.py)
 exec 9>"$root/.deploy_tmp/compose_deploy.lock"
 flock -x 9
 
@@ -23,8 +23,10 @@ if systemctl is-active --quiet trading-daily-digest.service; then
     exit 1
 fi
 printf '%s  %s\n' \
- 'c8bb0455ede1ecace3b4d20cbe8a6c90cde22d10374fbf6f6383708827363d33' "$target/daily_digest.py" \
- '39fb18fb318fa84359333b22ed8c5386af9ffdef52adde82b8812aa2fac2bf49' "$target/digest_outbox.py" \
+ '07e4af929a3372732508493c4e0455fbc37aec4502fcbc09afa2dcd4ca75eb64' "$target/daily_digest.py" \
+ 'b27b8231f09c1220086b46c367e6942c02c0a65efc6dcda621e3773546369989' "$target/digest_outbox.py" \
+ '0620b514d41fe04dbfa126d1bbc1705183a590d222275e6d0cba8dc472fdc058' "$target/mtpcs_observation.py" \
+ '486c7f6d6abbacda482bce2f7c12a2c56e19def1de3424f4b4534566a69c72dc' "$target/mtpcs_shadow_summary.py" \
  '30d6adb838d9f1574d9eda394d386f15be11b877afa0c8c282d978cd6b5584c8' /etc/systemd/system/trading-daily-digest.service \
  | sha256sum -c
 actual=$(systemctl show trading-daily-digest.timer -p ActiveState --value)
@@ -60,7 +62,7 @@ preview=Path(sys.argv[2]).read_text()
 assert entry['status'] == 'ok',entry['summary']
 assert preview.count('【交易系统每日巡检汇总】') == 1 and len(preview.encode()) < 24000
 assert preview.count('7/7 MTPCS 开仓归因与影子观察') == 1
-assert all(s in preview for s in ('首笔实盘入场','影子账','斐波那契','只加方向一致性'))
+assert all(s in preview for s in ('首笔实盘入场','影子账','斐波那契','只加方向一致性','还要等多久','当日日报结论'))
 PY
 for name in "${files[@]}"; do
     if [[ -e "$target/$name" ]]; then
@@ -87,6 +89,8 @@ for name in "${files[@]}"; do
 done
 python3 "$target/daily_digest.py" --dry-run > "$release/installed-preview.txt"
 grep -Fq '7/7 MTPCS 开仓归因与影子观察' "$release/installed-preview.txt"
+grep -Fq '还要等多久' "$release/installed-preview.txt"
+grep -Fq '当日日报结论' "$release/installed-preview.txt"
 if grep -Fq '读取告警 ·' "$release/installed-preview.txt"; then
     echo 'MTPCS real-path preview returned a read warning' >&2
     false
