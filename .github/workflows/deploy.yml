@@ -1,24 +1,18 @@
-name: Scoped MTPCS entry-intent release
+name: Scoped MTPCS read-only collector release
 on:
   workflow_dispatch:
 permissions:
   contents: read
-  packages: write
 concurrency:
   group: mtpcs-entry-intent-production
   cancel-in-progress: false
 jobs:
-  publish-and-activate:
+  activate:
     runs-on: ubuntu-latest
-    timeout-minutes: 32
+    timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Restore reviewed predecessor images and publish candidates
+      - name: Install and verify the single collector
         env:
           SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
         run: |
@@ -27,20 +21,11 @@ jobs:
           printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
           printf '%s\n' '43.156.242.184 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFNCPR4nqDmkewu2141YjcAEiP/PD+cBEXMZKWDcAlSu' > ~/.ssh/known_hosts
-          for identity in sha256:d37823f72d56112fe80ff025009ca5585452d42d71816578dc5ceae98c081576 sha256:97b1a37f23c4ec622bd7e11aa7dd8fbd7d6520f24aa568b481f5438f064473a0; do
-            ssh -o BatchMode=yes -o ConnectTimeout=20 root@43.156.242.184 "docker image save '$identity' | gzip -1" | docker load
-            docker image inspect "$identity" >/dev/null
-          done
-          marker=$(printf '%08X' "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))")
-          original=$(bash release/mtpcs-entry-intent/build.sh original sha256:d37823f72d56112fe80ff025009ca5585452d42d71816578dc5ceae98c081576 ghcr.io/bearflower/trading-btc-eth "$GITHUB_SHA" "$marker")
-          aggressive=$(bash release/mtpcs-entry-intent/build.sh aggressive sha256:97b1a37f23c4ec622bd7e11aa7dd8fbd7d6520f24aa568b481f5438f064473a0 ghcr.io/bearflower/trading-btc-eth-aggr "$GITHUB_SHA" "$marker")
-          jq -n --arg original "$original" --arg aggressive "$aggressive" '{original:$original,aggressive:$aggressive}' > images.json
-          cat images.json >> "$GITHUB_STEP_SUMMARY"
-      - name: Audit and activate both strategy images
-        run: |
-          set -euo pipefail
+          localdir=$(mktemp -d)
+          cp strategies/btc_eth/shadow/{entry_study,entry_ledger}.py release/mtpcs-shadow/start.sh "$localdir/"
+          (cd "$localdir"; sha256sum entry_study.py entry_ledger.py start.sh > files.sha256)
           remote=root@43.156.242.184
-          folder="/root/trading_system/.deploy_tmp/mtpcs-entry-intent-$GITHUB_SHA"
+          folder="/root/trading_system/.releases/mtpcs-shadow/$GITHUB_SHA"
           ssh "$remote" "install -d -m 700 '$folder'"
-          scp release/mtpcs-entry-intent/{activate.py,exchange.py,sources.json} images.json "$remote:$folder/"
-          ssh "$remote" "python3 '$folder/activate.py' '$GITHUB_SHA' '$folder' '$folder/images.json'"
+          scp "$localdir"/* "$remote:$folder/"
+          ssh "$remote" "bash '$folder/start.sh' '$GITHUB_SHA'"

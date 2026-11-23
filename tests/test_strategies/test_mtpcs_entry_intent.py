@@ -59,7 +59,7 @@ async def test_original_acknowledged_order_is_linked_even_without_fill():
 
 
 def test_retracement_has_symmetric_directions_and_no_same_bar_order():
-    from backtest.btc_eth.replay.entry_research import retracement
+    from strategies.btc_eth.shadow.entry_study import retracement
 
     first = {"high": 106, "low": 100}
     second = {"high": 120, "low": 111}
@@ -92,7 +92,7 @@ def test_decision_evidence_uses_actual_intent_on_fallback():
 
 def test_replay_snapshot_uses_closed_candles_and_rejects_a_gap():
     from datetime import datetime, timedelta
-    from backtest.btc_eth.replay.entry_research import FRAMES, snapshot
+    from strategies.btc_eth.shadow.entry_study import FRAMES, snapshot
 
     at = datetime(2026, 11, 1)
     series = {}
