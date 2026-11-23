@@ -396,6 +396,29 @@ def test_entry_stage_receipt_preserves_all_original_payload_fields():
     assert compact['payload'] == row['payload']
     assert compact['payload_sha256'] == row['payload_sha256']
 
+
+@pytest.mark.parametrize('kind', ['kline_repair', 'execution_batch'])
+def test_unused_operational_payload_is_hash_verified_then_compacted_without_changing_summary(kind):
+    rows = evidence()
+    source = event('0', kind, START+timedelta(minutes=5), {
+        'nested': {'history': ['x' * 1024] * 2048}, 'status': 'actual_source'})
+    rows.append(source)
+    baseline = technical(rows)
+    assert baseline['status'] == 'PASS'
+    compact = _compact_record(source)
+    assert compact['payload'] == {}
+    assert compact['source_payload_sha256'] == source['payload_sha256']
+    assert compact['payload_sha256'] == canonical_payload({})[1]
+    assert compact['report_payload_bytes'] == 2
+    assert {k: compact[k] for k in ('evidence_id', 'run_id', 'kind', 'symbol', 'event_time', 'available_at')} == {
+        k: source[k] for k in ('evidence_id', 'run_id', 'kind', 'symbol', 'event_time', 'available_at')}
+    assert technical([_compact_record(row) for row in rows]) == baseline
+    assert len(source['payload']['nested']['history']) == 2048
+    source['payload']['nested']['history'][0] = 'tampered'
+    changed = technical([_compact_record(row) for row in rows])
+    assert changed['status'] == 'NOT_READY'
+    assert 'payload_hash_mismatch' in changed['hourly_slots'][0]['reasons']
+
 def test_explicit_other_account_runs_are_excluded_without_mixing_counters():
     rows = evidence()
     at = START+timedelta(minutes=5)

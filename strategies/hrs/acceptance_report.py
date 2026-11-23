@@ -902,6 +902,10 @@ def _compact_record(raw):
     elif row.get('kind') == 'entry_stage_inputs':
         # This original hash is bound into the committed financial receipt.
         compact = payload
+    elif row.get('kind') in ('kline_repair', 'execution_batch'):
+        # Consumers use these operational events only through their envelope.
+        # Keep the kind/run/time and the full-source verification above.
+        compact = {}
     else:
         compact = {k: v for k, v in payload.items() if k not in ('klines_1h', 'klines_4h')}
     encoded, digest = canonical_payload(compact)

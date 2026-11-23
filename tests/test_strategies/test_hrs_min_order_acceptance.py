@@ -124,10 +124,12 @@ async def test_reader_fetches_raw_parents_only_for_first_five_samples():
     from strategies.hrs.acceptance_report import _read_budget_sources
     life, rows, archives = floor_evidence()
     class Connection:
-        async def fetch(self, sql, account, digests, through):
+        async def cursor(self, sql, account, digests, through, *, prefetch):
             self.digests=digests
             assert account==ACCOUNT and len(digests)<=5
-            return archives
+            assert prefetch==1 and 'CASE WHEN' in sql
+            for archive in archives:
+                yield archive
     connection=Connection()
     result=await _read_budget_sources(connection,dict(samples=[life]*5),rows,ACCOUNT,NOW)
     assert result==archives
