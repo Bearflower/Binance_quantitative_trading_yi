@@ -115,19 +115,30 @@ def candidate_probe(image, revision, source):
 
 
 def started(container):
-    message = '策略服务运行中'.encode()
+    message = '策略服务运行中'
+    markers = (message.encode(), json.dumps(message)[1:-1].encode())
     for _ in range(60):
         row = inspect(container)
         if row['RestartCount'] != 0:
             raise RuntimeError('strategy restarted after replacement')
         result = subprocess.run(['docker', 'logs', '--since', row['State']['StartedAt'], container],
                                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10, check=True)
-        if message in result.stdout:
+        if any(marker in result.stdout for marker in markers):
             return
         if b'Traceback (most recent call last)' in result.stdout:
             raise RuntimeError('strategy reported a startup exception')
         time.sleep(3)
     raise RuntimeError('strategy scheduler initialization was not observed')
+
+
+def verify_protection(market):
+    for symbol, _, qty in market['positions']:
+        amount = Decimal(qty)
+        protected = sum(Decimal(x[4]) for x in market['algos']
+                        if x[0] == symbol and x[2] == ('SELL' if amount > 0 else 'BUY')
+                        and x[3] in ('STOP', 'STOP_MARKET') and x[5] in (True, 'true'))
+        if protected < abs(amount):
+            raise RuntimeError('position protection incomplete: ' + symbol)
 
 
 def main(revision, bundle, images):
@@ -192,13 +203,7 @@ def main(revision, bundle, images):
     market = signed_snapshot(bundle)
     if market['orders']:
         raise RuntimeError('working ordinary orders on MTPCS symbols')
-    for symbol, _, qty in market['positions']:
-        amount = Decimal(qty)
-        protected = sum(Decimal(x[4]) for x in market['algos']
-                        if x[0] == symbol and x[2] == ('SELL' if amount > 0 else 'BUY')
-                        and x[3] in ('STOP', 'STOP_MARKET') and x[5] in (True, 'true'))
-        if protected < abs(amount):
-            raise RuntimeError('position protection incomplete: ' + symbol)
+    verify_protection(market)
     state = release / 'state.json'
     atomic(state, dict(sha=revision, status='activating', before=market))
     atomic(PIN, dict(pin, status='activating', successor_sha=revision))
@@ -214,6 +219,7 @@ def main(revision, bundle, images):
             fingerprints(container, hashes[variant])
             started(container)
         after = signed_snapshot(bundle)
+        verify_protection(after)
         if unrelated() != before or policy_fingerprint() != policy:
             raise RuntimeError('market state or excluded containers changed during rollout')
         atomic(state, dict(sha=revision, status='complete', images=images, before=market, after=after))
