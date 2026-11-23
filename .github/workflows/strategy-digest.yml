@@ -1,0 +1,39 @@
+name: AI Tuner 07:35 strategy observation digest
+on:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: mtpcs-daily-digest-production
+  cancel-in-progress: false
+jobs:
+  scoped-host-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test digest composition and read-only reporting
+        run: |
+          pip install pytest==8.0.0 pytest-asyncio==0.23.8 PyYAML==6.0.1
+          python -m pytest -q tests/test_ai_tuner_mvp/test_daily_digest.py tests/test_ai_tuner_mvp/test_digest_outbox.py tests/test_ai_tuner_mvp/test_mtpcs_observation.py tests/test_ai_tuner_mvp/test_hrs_daily_observation.py
+          bash -n deployment/mtpcs-digest/activate.sh
+      - name: Audit and activate the host digest section
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          printf '%s\n' '43.156.242.184 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFNCPR4nqDmkewu2141YjcAEiP/PD+cBEXMZKWDcAlSu' > ~/.ssh/known_hosts
+          localdir=$(mktemp -d)
+          cp ai_tuner/ops/{daily_digest,digest_outbox,hrs_observation,mtpcs_observation,mtpcs_entry_probe,mtpcs_shadow_summary}.py deployment/mtpcs-digest/activate.sh "$localdir/"
+          (cd "$localdir"; sha256sum *.py activate.sh > manifest.sha256)
+          remote=root@43.156.242.184
+          stage="/root/trading_system/.deploy_tmp/mtpcs-digest-$GITHUB_SHA"
+          ssh "$remote" "install -d -m 700 '$stage'"
+          scp "$localdir"/* "$remote:$stage/"
+          ssh "$remote" "bash '$stage/activate.sh' '$GITHUB_SHA'"

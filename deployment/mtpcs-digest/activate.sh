@@ -7,7 +7,7 @@ revision=$1
 bundle="$root/.deploy_tmp/mtpcs-digest-$revision"
 target="$root/ai_tuner/ops"
 release="$root/.releases/mtpcs-digest/$revision"
-files=(mtpcs_shadow_summary.py mtpcs_observation.py)
+files=(hrs_observation.py digest_outbox.py daily_digest.py)
 exec 9>"$root/.deploy_tmp/compose_deploy.lock"
 flock -x 9
 
@@ -25,10 +25,9 @@ fi
 printf '%s  %s\n' \
  '07e4af929a3372732508493c4e0455fbc37aec4502fcbc09afa2dcd4ca75eb64' "$target/daily_digest.py" \
  'b27b8231f09c1220086b46c367e6942c02c0a65efc6dcda621e3773546369989' "$target/digest_outbox.py" \
- '0620b514d41fe04dbfa126d1bbc1705183a590d222275e6d0cba8dc472fdc058' "$target/mtpcs_observation.py" \
- '486c7f6d6abbacda482bce2f7c12a2c56e19def1de3424f4b4534566a69c72dc' "$target/mtpcs_shadow_summary.py" \
  '30d6adb838d9f1574d9eda394d386f15be11b877afa0c8c282d978cd6b5584c8' /etc/systemd/system/trading-daily-digest.service \
  | sha256sum -c
+for name in mtpcs_observation.py mtpcs_shadow_summary.py mtpcs_entry_probe.py; do cmp "$bundle/$name" "$target/$name"; done
 actual=$(systemctl show trading-daily-digest.timer -p ActiveState --value)
 [[ "$actual" == active ]]
 systemctl cat trading-daily-digest.timer | grep -Fx 'OnCalendar=*-*-* 07:35:00 Asia/Shanghai'
@@ -47,6 +46,7 @@ PY
 tuner_before=$(docker inspect -f '{{.Id}} {{.Image}}' ai-tuner)
 mkdir -p "$release/preview/outbox" "$release/backup"
 day=$(TZ=Asia/Shanghai date +%F)
+DIGEST_OUTBOX_DIR="$release/preview/outbox" python3 -c 'import hrs_observation; hrs_observation.prepare_digest(dry_run=False)'
 DIGEST_OUTBOX_DIR="$release/preview/outbox" python3 "$bundle/mtpcs_observation.py" --state-dir "$release/preview/state"
 python3 "$bundle/daily_digest.py" --dry-run \
   --outbox-dir "$release/preview/outbox" \
@@ -61,7 +61,8 @@ entry=json.loads(Path(sys.argv[1]).read_text())
 preview=Path(sys.argv[2]).read_text()
 assert entry['status'] == 'ok',entry['summary']
 assert preview.count('【交易系统每日巡检汇总】') == 1 and len(preview.encode()) < 24000
-assert preview.count('7/7 MTPCS 开仓归因与影子观察') == 1
+assert preview.count('7/8 MTPCS 开仓归因与影子观察') == 1
+assert '8/8 HRS 四模式与影子验收' in preview and '同信号双侧齐全' in preview and '近七日实盘' in preview
 assert all(s in preview for s in ('首笔实盘入场','影子账','斐波那契','只加方向一致性','还要等多久','当日日报结论'))
 PY
 for name in "${files[@]}"; do
@@ -88,11 +89,15 @@ for name in "${files[@]}"; do
     cmp "$target/$name" "$bundle/$name"
 done
 python3 "$target/daily_digest.py" --dry-run > "$release/installed-preview.txt"
-grep -Fq '7/7 MTPCS 开仓归因与影子观察' "$release/installed-preview.txt"
-grep -Fq '还要等多久' "$release/installed-preview.txt"
+grep -Fq '7/8 MTPCS 开仓归因与影子观察' "$release/installed-preview.txt"
 grep -Fq '当日日报结论' "$release/installed-preview.txt"
+grep -Fq '还要等多久' "$release/installed-preview.txt"
+grep -Fq '8/8 HRS 四模式与影子验收' "$release/installed-preview.txt"
+grep -Fq '完整对账闭仓' "$release/installed-preview.txt"
+grep -Fq '同信号双侧齐全' "$release/installed-preview.txt"
+grep -Fq '近七日实盘' "$release/installed-preview.txt"
 if grep -Fq '读取告警 ·' "$release/installed-preview.txt"; then
-    echo 'MTPCS real-path preview returned a read warning' >&2
+    echo 'Production observation preview returned a read warning' >&2
     false
 fi
 [[ $(docker inspect -f '{{.Id}} {{.Image}}' ai-tuner) == "$tuner_before" ]]
