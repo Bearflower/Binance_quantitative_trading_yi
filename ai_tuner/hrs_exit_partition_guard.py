@@ -6,9 +6,9 @@ No exchange, database, deployment, publication or trading access is performed.
 CHECKED_LOCAL/AVAILABLE describe local integrity/simulation only. Source
 authenticity, deployment continuity and production admission remain unverified.
 
-Holdout is deliberately unsupported until independent selection-freeze
-provenance can be verified before holdout data access. A caller timestamp or
-self-hashed report cannot supply that authority. No boundary is moved.
+Holdout requires a pre-pinned Ed25519 local authority and authenticated research
+selection before any holdout file access. A caller timestamp or self-hashed
+report cannot supply that authority. No boundary is moved.
 """
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ import hashlib
 import importlib
 import inspect
 import json
+import os
 from pathlib import Path, PurePosixPath
 import re
 
@@ -261,10 +262,11 @@ def _research_gaps(registration, selection, report, engine):
         return ['research_evaluations_incomplete']
 
 
-def run_guard(registration_path, *, expected_registration_sha256, source_root=None,
+def _run_guard(registration_path, *, expected_registration_sha256, source_root=None,
               execute=False, stage='research', selection=None, research_report=None,
               deployment_facts=None, expected_deployment_facts_sha256=None,
-              expected_snapshot_manifest_sha256=None, output=None):
+              expected_snapshot_manifest_sha256=None, output=None,
+              expected_snapshot_manifest_sha256_by_window=None, _verified=None, _authority_gaps=None):
     """Check or execute research. External pins are supplied out of band.
 
     Optional deployment facts are retained with an external RAW-file hash;
@@ -281,6 +283,8 @@ def run_guard(registration_path, *, expected_registration_sha256, source_root=No
         qualification='local integrity and original experiment criteria; no source or production approval')
     registration = None
     try:
+        if _authority_gaps:
+            raise DataBlocked(_authority_gaps)
         _require(isinstance(expected_registration_sha256, str) and _HASH.fullmatch(expected_registration_sha256),
             'external_registration_pin_required')
         registration = _read_json(registration_path)
@@ -302,13 +306,23 @@ def run_guard(registration_path, *, expected_registration_sha256, source_root=No
             report['deployment_facts_status'] = 'BOUND_OBSERVATION_UNVERIFIED_CONTINUITY'
         _require(stage in ('research','holdout'), 'unknown_stage')
         if stage=='holdout':
-            report['blocked_reasons'].extend(_research_gaps(registration, selection, research_report, engine))
-            raise DataBlocked(['independent_selection_freeze_provenance_unsupported'])
-        windows = [w for w in registration['windows'] if w['role']=='research']
-        _require(all(experiment._time(w['end'])<=observed for w in windows), 'research_window_not_elapsed')
+            if _verified is None:
+                report['blocked_reasons'].extend(_research_gaps(registration, selection, research_report, engine))
+                raise DataBlocked(_authority_gaps or ['authenticated_selection_authority_required'])
+            selection, research_report = _verified['selection'], _verified['research_report']
+            candidates = experiment._selection_candidates(registration, selection, research_report, current_engine_identity=engine)
+            report['selected_candidates'] = selection['candidate_by_mode']
+            report['freeze_raw_sha256'] = _verified['freeze_raw_sha256']
+        else:
+            candidates = registration['candidates']
+        windows = [w for w in registration['windows'] if w['role']==stage]
+        _require(all(experiment._time(w['end'])<=observed for w in windows), stage+'_window_not_elapsed')
+        def manifest_pin(window):
+            return ((expected_snapshot_manifest_sha256_by_window or {}).get(window['window_id'])
+                if stage=='holdout' else expected_snapshot_manifest_sha256)
         stamps = {}
         for window in windows:
-            facts, current_stamps = _window_source(window, partition, observed, expected_snapshot_manifest_sha256)
+            facts, current_stamps = _window_source(window, partition, observed, manifest_pin(window))
             report['window_sources'][window['window_id']] = facts
             stamps.update(current_stamps)
 
@@ -320,7 +334,7 @@ def run_guard(registration_path, *, expected_registration_sha256, source_root=No
             for name, stamp in stamps.items():
                 _require(_stat_identity(Path(name))==stamp, 'snapshot_changed_after_check:'+name)
             for window in windows:
-                _require(sha256_file(str(Path(window['snapshot_dir'])/'manifest.json'))==expected_snapshot_manifest_sha256,
+                _require(sha256_file(str(Path(window['snapshot_dir'])/'manifest.json'))==manifest_pin(window),
                     'snapshot_external_pin_mismatch')
             if deployment_facts is not None:
                 _require(sha256_file(str(deployment_facts))==expected_deployment_facts_sha256, 'deployment_facts_changed_after_check')
@@ -340,7 +354,7 @@ def run_guard(registration_path, *, expected_registration_sha256, source_root=No
             for key in ('runtime_admission_scope','runtime_risk_budget_scope','runtime_margin_scope'):
                 report[key]=registration.get(key)
             for window in windows:
-                for candidate in registration['candidates']:
+                for candidate in candidates:
                     unchanged()
                     def counted_run():
                         unchanged()
@@ -355,13 +369,21 @@ def run_guard(registration_path, *, expected_registration_sha256, source_root=No
                         for sources in source_cache.values():
                             sources.__exit__(None, None, None)
                     unchanged()
-                    facts, _ = _window_source(window, partition, _observed_now(), expected_snapshot_manifest_sha256)
+                    facts, _ = _window_source(window, partition, _observed_now(), manifest_pin(window))
                     _require(facts==report['window_sources'][window['window_id']], 'source_identity_changed_during_run')
                     report['evaluations'].append(evaluation)
-                    report['window_boundaries'][window['window_id']] = evaluation['window_boundary']
+                    previous=report['window_boundaries'].setdefault(window['window_id'],evaluation['window_boundary'])
+                    _require(previous==evaluation['window_boundary'], 'candidate_window_boundary_changed')
                     report['blocked_reasons'].extend(window['window_id']+':'+candidate['candidate_id']+':'+gap for gap in evaluation['blocked_reasons'])
+            if stage=='holdout':
+                report['blocked_reasons'].extend(experiment._shared_boundary_gaps(registration,report['window_boundaries'],research_report))
             if report['evaluations'] and not report['blocked_reasons']:
                 report['status'] = 'AVAILABLE'
+                if stage=='holdout':
+                    report['frozen_selection']=selection
+                    report['comparison']=experiment.compare_holdouts(report['evaluations'],selection['candidate_by_mode'])
+                    report['holdout_comparison_passed']=all(row['stable_improvement'] for row in report['comparison'])
+                    report['formal_qualification_required']=True
         unchanged()
     except DataBlocked as error:
         report['blocked_reasons'].extend(error.gaps)
@@ -384,6 +406,63 @@ def run_guard(registration_path, *, expected_registration_sha256, source_root=No
     return report
 
 
+
+def run_guard(registration_path, *, expected_registration_sha256, source_root=None,
+              execute=False, stage='research', selection=None, research_report=None,
+              deployment_facts=None, expected_deployment_facts_sha256=None,
+              expected_snapshot_manifest_sha256=None, output=None,
+              authority_dir=None, expected_anchor_sha256=None,
+              expected_snapshot_manifest_sha256_by_window=None):
+    """Public entry: authenticate under the shared lock before holdout access."""
+    options=dict(expected_registration_sha256=expected_registration_sha256,source_root=source_root,
+        execute=execute,stage=stage,selection=selection,research_report=research_report,
+        deployment_facts=deployment_facts,expected_deployment_facts_sha256=expected_deployment_facts_sha256,
+        expected_snapshot_manifest_sha256=expected_snapshot_manifest_sha256,output=output,
+        expected_snapshot_manifest_sha256_by_window=expected_snapshot_manifest_sha256_by_window)
+    def output_collision(*, resolve_targets):
+        if output is None or authority_dir is None:
+            return False
+        # Check both reports and the temporary paths used by write_report.
+        # Lexical checks never stat an unauthenticated holdout output path.
+        targets=[Path(output),Path(str(output)+'.partition.json')]
+        targets += [target.with_suffix(target.suffix+'.tmp') for target in targets]
+        states={Path(os.path.abspath(authority_dir)),Path(authority_dir).resolve()}
+        for target in targets:
+            paths={Path(os.path.abspath(target))}
+            if resolve_targets:
+                paths.add(target.resolve())
+            if any(path==state or state in path.parents for path in paths for state in states):
+                return True
+        return False
+
+    def collision_report():
+        options['output']=None
+        return _run_guard(registration_path,**options,_authority_gaps=['authority_output_collision'])
+
+    if output_collision(resolve_targets=False):
+        return collision_report()
+    if stage!='holdout':
+        if output_collision(resolve_targets=True):
+            return collision_report()
+        return _run_guard(registration_path,**options)
+    if authority_dir is None:
+        options['output']=None
+        return _run_guard(registration_path,**options,_authority_gaps=['authenticated_selection_authority_required'])
+    from ai_tuner.hrs_exit_selection_freeze import authenticated_holdout
+    try:
+        with authenticated_holdout(registration_path,authority_dir,expected_anchor_sha256=expected_anchor_sha256,
+                expected_registration_sha256=expected_registration_sha256,
+                expected_holdout_manifest_sha256=expected_snapshot_manifest_sha256_by_window) as verified:
+            if output_collision(resolve_targets=True):
+                return collision_report()
+            return _run_guard(registration_path,**options,_verified=verified)
+    except DataBlocked as error:
+        # An unauthenticated caller cannot use output aliases to overwrite the
+        # authority. Return the blocked report without touching output paths.
+        options['output']=None
+        return _run_guard(registration_path,**options,_authority_gaps=list(error.gaps))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--registration', required=True)
@@ -392,6 +471,9 @@ def main(argv=None):
     parser.add_argument('--source-root')
     parser.add_argument('--execute-research', action='store_true')
     parser.add_argument('--stage', choices=('research','holdout'), default='research')
+    parser.add_argument('--authority-dir')
+    parser.add_argument('--expected-anchor-sha256')
+    parser.add_argument('--expected-snapshot-manifest-sha256-by-window', type=json.loads, help='explicit JSON window-ID to external raw manifest SHA mapping')
     parser.add_argument('--selection')
     parser.add_argument('--research-report')
     parser.add_argument('--deployment-facts')
@@ -400,11 +482,12 @@ def main(argv=None):
     args = parser.parse_args(argv)
     result = run_guard(args.registration, expected_registration_sha256=args.expected_registration_sha256,
         source_root=args.source_root, execute=args.execute_research, stage=args.stage,
-        selection=_read_json(args.selection) if args.selection else None,
-        research_report=_read_json(args.research_report) if args.research_report else None,
+        selection=_read_json(args.selection) if args.selection and args.stage!='holdout' else None,
+        research_report=_read_json(args.research_report) if args.research_report and args.stage!='holdout' else None,
         deployment_facts=args.deployment_facts, expected_deployment_facts_sha256=args.expected_deployment_facts_sha256,
         expected_snapshot_manifest_sha256=args.expected_snapshot_manifest_sha256,
-        output=args.output)
+        output=args.output,authority_dir=args.authority_dir,expected_anchor_sha256=args.expected_anchor_sha256,
+        expected_snapshot_manifest_sha256_by_window=args.expected_snapshot_manifest_sha256_by_window)
     print(json.dumps(dict(status=result['status'], engine_runs=result['engine_runs'], blocked_reasons=result['blocked_reasons'])))
     return 0 if result['status'] in ('CHECKED_LOCAL','AVAILABLE') else 2
 

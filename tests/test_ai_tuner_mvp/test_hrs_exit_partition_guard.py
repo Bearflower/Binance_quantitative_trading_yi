@@ -243,8 +243,8 @@ def test_tiny_available_research_and_caller_freeze_never_access_holdout(tmp_path
     monkeypatch.setattr(guard(), '_window_source', forbidden)
     result = check(path, r, stage='holdout', research_report=research,selection=selection)
     assert result['engine_runs']==0 and result['status']=='BLOCKED_DATA'
-    assert 'independent_selection_freeze_provenance_unsupported' in result['blocked_reasons']
-    assert any('research_evaluations_incomplete' in reason for reason in result['blocked_reasons'])
+    assert 'authenticated_selection_authority_required' in result['blocked_reasons']
+    assert result['blocked_reasons']==['authenticated_selection_authority_required']
 
 
 def test_guarded_research_keeps_original_all_cost_tiers_and_minimum_samples(tmp_path):

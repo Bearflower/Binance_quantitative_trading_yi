@@ -23,7 +23,7 @@ FROM hrs AS test
 # Base images may retain tests removed from the current tracked checkout.
 RUN rm -rf /app/tests /app/strategies/hrs/tests
 COPY strategies/hrs/tests/ /app/strategies/hrs/tests/
-RUN pip install --no-cache-dir pytest pytest-asyncio APScheduler==3.10.4
+RUN pip install --no-cache-dir pytest pytest-asyncio APScheduler==3.10.4 cryptography==48.0.0
 COPY services/market_cap/ /app/services/market_cap/
 COPY tests/ /app/tests/
 COPY release/hrs-execution/deploy_optimization.py /app/release/hrs-execution/deploy_optimization.py
