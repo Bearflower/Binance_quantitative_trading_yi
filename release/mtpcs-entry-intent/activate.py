@@ -1,6 +1,7 @@
 """Activate two reviewed images against the pinned runtime, with rollback."""
 import fcntl
 import hashlib
+from decimal import Decimal
 import json
 from pathlib import Path
 import re
@@ -100,6 +101,35 @@ def policy_fingerprint():
                ")::text)")
 
 
+def candidate_probe(image, revision, source):
+    code = ("import hashlib,json,pathlib,sys; root=pathlib.Path('/app');"
+            "print(json.dumps([(root/'VERSION').read_text(),"
+            "{p:hashlib.sha256((root/p).read_bytes()).hexdigest() for p in sys.argv[1:]}]))")
+    version, checksums = json.loads(run('docker', 'run', '--rm', '--network', 'none',
+                                       '--entrypoint', 'python', image, '-c', code, *source))
+    if 'GIT_SHA=' + revision not in version.splitlines() or not re.search(r'^DEPLOY_ID=[A-F0-9]{8}$', version, re.M):
+        raise RuntimeError('candidate runtime marker mismatch')
+    if checksums != {path: proof['after'] for path, proof in source.items()}:
+        raise RuntimeError('candidate source checksum mismatch')
+    return version
+
+
+def started(container):
+    message = '策略服务运行中'.encode()
+    for _ in range(60):
+        row = inspect(container)
+        if row['RestartCount'] != 0:
+            raise RuntimeError('strategy restarted after replacement')
+        result = subprocess.run(['docker', 'logs', '--since', row['State']['StartedAt'], container],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=10, check=True)
+        if message in result.stdout:
+            return
+        if b'Traceback (most recent call last)' in result.stdout:
+            raise RuntimeError('strategy reported a startup exception')
+        time.sleep(3)
+    raise RuntimeError('strategy scheduler initialization was not observed')
+
+
 def main(revision, bundle, images):
     if not re.fullmatch('[0-9a-f]{40}', revision):
         raise ValueError('invalid revision')
@@ -124,7 +154,7 @@ def main(revision, bundle, images):
     old_overlay = Path(pin['overlay'])
     overlay = read(old_overlay)
     new_overlay = release / 'images.json'
-    old_commands, new_commands, expected = {}, {}, {}
+    old_commands, new_commands, expected, versions = {}, {}, {}, {}
     before = unrelated()
     for variant, (service, container, base) in TARGETS.items():
         if inspect(container)['Image'] != base:
@@ -135,6 +165,7 @@ def main(revision, bundle, images):
             raise ValueError('candidate digest is not pinned')
         run('docker', 'pull', image, timeout=450)
         expected[variant] = run('docker', 'image', 'inspect', '-f', '{{.Id}}', image).decode()
+        versions[variant] = candidate_probe(image, revision, hashes[variant])
         overlay['services'][service]['image'] = image
         compose = ['docker', 'compose', '--project-directory', str(ROOT), '-p', 'trading_system']
         for name in pin['stacks'][service]:
@@ -147,6 +178,9 @@ def main(revision, bundle, images):
     for variant, (service, _, _) in TARGETS.items():
         old = json.loads(run(*old_commands[variant], 'config', '--format', 'json'))['services'][service]
         new = json.loads(run(*new_commands[variant], 'config', '--format', 'json'))['services'][service]
+        old_image = run('docker', 'image', 'inspect', '-f', '{{.Id}}', old['image']).decode()
+        if old_image != TARGETS[variant][2]:
+            raise RuntimeError('predecessor image does not resolve for rollback')
         old['image'] = images[variant]
         if old != new:
             raise RuntimeError('unexpected compose change: ' + service)
@@ -159,8 +193,8 @@ def main(revision, bundle, images):
     if market['orders']:
         raise RuntimeError('working ordinary orders on MTPCS symbols')
     for symbol, _, qty in market['positions']:
-        amount = float(qty)
-        protected = sum(float(x[4]) for x in market['algos']
+        amount = Decimal(qty)
+        protected = sum(Decimal(x[4]) for x in market['algos']
                         if x[0] == symbol and x[2] == ('SELL' if amount > 0 else 'BUY')
                         and x[3] in ('STOP', 'STOP_MARKET') and x[5] in (True, 'true'))
         if protected < abs(amount):
@@ -174,13 +208,15 @@ def main(revision, bundle, images):
             changed.append(variant)
             run(*new_commands[variant], 'up', '-d', '--no-deps', '--pull', 'never', service)
             healthy(container, expected[variant])
-            version = run('docker', 'exec', container, 'cat', '/app/VERSION').decode().splitlines()
-            if 'GIT_SHA=' + revision not in version:
+            version = run('docker', 'exec', container, 'cat', '/app/VERSION').decode()
+            if versions[variant].strip() != version:
                 raise RuntimeError('runtime revision mismatch')
             fingerprints(container, hashes[variant])
-        if unrelated() != before or signed_snapshot(bundle) != market or policy_fingerprint() != policy:
+            started(container)
+        after = signed_snapshot(bundle)
+        if unrelated() != before or policy_fingerprint() != policy:
             raise RuntimeError('market state or excluded containers changed during rollout')
-        atomic(state, dict(sha=revision, status='complete', images=images))
+        atomic(state, dict(sha=revision, status='complete', images=images, before=market, after=after))
         atomic(PIN, dict(pin, sha=revision, predecessor_sha=pin['sha'], status='active',
                          state=str(state), overlay=str(new_overlay)))
     except BaseException:
