@@ -76,3 +76,24 @@ def test_diagnostics_do_not_persist_signed_urls_or_cause_objects():
     assert 'SENSITIVE' not in json.dumps(detail)
     assert detail['error_type'] == 'ContentTypeError'
     assert detail['exception_frames']
+
+
+@pytest.mark.asyncio
+async def test_real_collector_programming_failure_denial_still_emits_error(monkeypatch):
+    from types import SimpleNamespace
+    from strategies.hrs.equity_service import HrsEquityService
+    from strategies.hrs import decision_context
+    db = SimpleNamespace(pool=object(), fetch_one=AsyncMock(return_value=None))
+    service = HrsEquityService(db, None, None, None)
+    service._capture = AsyncMock(side_effect=TypeError('synthetic collector defect'))
+    async def persisted_denial(reason):
+        return dict(ready=False, allowed=False, policy_revision=0, reasons=[reason])
+    service._deny = AsyncMock(side_effect=persisted_denial)
+    with pytest.raises(decision_context.ScanContextUnavailable) as error:
+        await decision_context.capture_scan_financial_context(SimpleNamespace(equity_service=service))
+    service._deny.assert_awaited_once_with('TypeError')
+    item, logger = loop_with_exception(monkeypatch, error.value)
+    await item.run()
+    logger.warning.assert_not_called()
+    logger.error.assert_called_once()
+    assert logger.error.call_args.kwargs['reason_codes'] == ['TypeError']

@@ -181,6 +181,10 @@ def capture_configuration_identity(strategy_dir, config, metadata, *, params_pat
 
 SCAN_BOUNDARY_VERSION = 'hrs_reconciled_scan_boundary_v1'
 SCAN_CONTEXT_TIMEOUT_SECONDS = 120
+EXPECTED_SOURCE_DENIALS = frozenset({
+    'local_position_inventory_conflict', 'source_collection_incomplete', 'source_observation_stale',
+    'funding_settlement_pending', 'funding_schedule_coverage_gap',
+})
 
 
 class ScanContextUnavailable(ValueError):
@@ -191,6 +195,12 @@ class ScanContextUnavailable(ValueError):
         self.reason_codes = list(reason_codes)
         self.elapsed_seconds = round(elapsed_seconds, 3)
         self.budget_seconds = SCAN_CONTEXT_TIMEOUT_SECONDS
+
+    @property
+    def expected_source_failure(self):
+        return (str(self) in {'scan_boundary_timeout', 'scan_boundary_source_timeout'}
+                or bool(self.reason_codes) and all(reason in EXPECTED_SOURCE_DENIALS
+                                                   for reason in self.reason_codes))
 
 
 def cycle_failure_diagnostics(exc):
@@ -208,7 +218,8 @@ def cycle_failure_diagnostics(exc):
                   exception_frames=frames)
     if isinstance(exc, ScanContextUnavailable):
         detail.update(phase=exc.phase, reason_codes=exc.reason_codes,
-                      elapsed_seconds=exc.elapsed_seconds, budget_seconds=exc.budget_seconds)
+                      elapsed_seconds=exc.elapsed_seconds, budget_seconds=exc.budget_seconds,
+                      expected_source_failure=exc.expected_source_failure)
     status = getattr(exc, 'status_code', getattr(exc, 'status', None))
     if type(status) is int and 100 <= status <= 599:
         detail['http_status'] = status
