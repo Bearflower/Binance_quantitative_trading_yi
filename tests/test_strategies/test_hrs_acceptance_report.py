@@ -1,4 +1,5 @@
 """Acceptance is evidence quality, never invented trading performance."""
+import asyncio
 import copy
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -547,6 +548,58 @@ async def test_real_postgres_reader_is_read_only_and_absent_samples_pending(init
         assert all(s['net_income_usdt'] is None for s in report['financial']['samples'])
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv('HRS_TEST_POSTGRES_DSN'), reason='isolated PostgreSQL required')
+async def test_acceptance_snapshot_does_not_block_income_ingestion(initialized_report_schema, monkeypatch):
+    import asyncpg
+    from shared.accounting.income_integrity import income_account_lock, require_income_integrity
+    from strategies.hrs import acceptance_report as reporter
+
+    account = 'acceptance-concurrent-' + uuid.uuid4().hex
+    opened = asyncio.Event()
+    resume = asyncio.Event()
+    read_evidence = reporter._read_evidence
+
+    async def pause_snapshot(connection, sql, *args):
+        assert await connection.fetchval('SHOW transaction_isolation') == 'repeatable read'
+        assert await connection.fetchval('SHOW transaction_read_only') == 'on'
+        opened.set()
+        await resume.wait()
+        await require_income_integrity(connection, account)
+        return await read_evidence(connection, sql, *args)
+
+    monkeypatch.setattr(reporter, '_read_evidence', pause_snapshot)
+    dsn = os.environ['HRS_TEST_POSTGRES_DSN']
+    pool = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
+    writer = await asyncpg.connect(dsn)
+    running = asyncio.create_task(build_report(SimpleNamespace(pool=pool), as_of=NOW, account_id=account))
+    try:
+        await asyncio.wait_for(opened.wait(), timeout=5)
+        # Bound the writer only in the test so a regression cannot hang it.
+        await writer.execute("SET lock_timeout = '100ms'")
+        async with income_account_lock(writer, account):
+            await writer.execute('INSERT INTO trading.income_ingestion_attempt(attempt_id,account_id) VALUES($1,$2)',
+                                 account, account)
+            resume.set()
+            prior = await asyncio.wait_for(running, timeout=5)
+            assert prior['database_snapshot_coherent'] is True
+            # The earlier snapshot stays coherent. A fresh read sees the durable
+            # pending row even while the writer still owns its session lock.
+            blocked = await asyncio.wait_for(
+                build_report(SimpleNamespace(pool=pool), as_of=NOW, account_id=account), timeout=5,
+            )
+            assert blocked['database_snapshot_coherent'] is False
+            assert blocked['source_error_type'] == 'IncomeIntegrityBlocked'
+    finally:
+        resume.set()
+        await asyncio.gather(running, return_exceptions=True)
+        try:
+            await writer.execute('DELETE FROM trading.income_ingestion_attempt WHERE attempt_id=$1', account)
+        finally:
+            await writer.close()
+            await pool.close()
 
 
 @pytest.mark.asyncio

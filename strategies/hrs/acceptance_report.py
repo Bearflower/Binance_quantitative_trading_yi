@@ -26,7 +26,7 @@ from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 
-from shared.accounting.income_integrity import income_account_lock, require_income_integrity
+from shared.accounting.income_integrity import require_income_integrity
 from shared.accounting.report_reader import read_monthly_economic_report
 from .decision_capture import canonical_payload
 from .equity_evidence import (
@@ -905,7 +905,7 @@ def _refresh_sample_engineering(financial, evidence, through, account_id, archiv
 
 
 async def build_report(db, *, as_of=None, account_id=None):
-    """One held connection/readonly RR snapshot after income's session lock.
+    """Read acceptance evidence from a single repeatable-read snapshot.
 
     Source failure returns NOT_READY/PENDING, with only the exception *type*.
     This report cannot authorize orders and never changes risk or source tables.
@@ -921,63 +921,66 @@ async def build_report(db, *, as_of=None, account_id=None):
         if not account or getattr(db, 'pool', None) is None:
             raise ValueError('account_or_database_pool_unavailable')
         async with db.pool.acquire() as connection:
-            async with income_account_lock(connection, account):
-                async with connection.transaction(isolation='repeatable_read', readonly=True):
-                    await require_income_integrity(connection, account)
-                    start = now.replace(minute=0, second=0, microsecond=0)-timedelta(hours=24)
-                    rows = await _read_evidence(connection, '''SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload
-                        FROM hrs.hrs_decision_evidence WHERE event_time >= $1 AND event_time <= $2
-                        AND available_at <= $2 AND NOT(kind=ANY($3::text[])) ORDER BY event_time,evidence_id''', start, now, EXCLUDED_KINDS)
-                    anchor = await connection.fetchrow('SELECT inception,opening_evidence FROM trading.hrs_equity_segment WHERE account_id=$1', account)
-                    stored = await connection.fetchrow('SELECT ledger_state,version FROM trading.hrs_loss_gate_state WHERE account_id=$1', account)
-                    inception = _time(anchor['inception']) if anchor else start
-                    query_start = min(start, inception)
-                    fills = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,order_id,side,qty,price,commission,commission_asset,realized_pnl,trade_time_utc
-                        FROM trading.execution_fact_fill WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc <= $3''', account, query_start, now)]
-                    owners = [dict(r) for r in await connection.fetch('SELECT account_id,symbol,order_id,strategy FROM trading.trade_records WHERE account_id=$1 AND order_id=ANY($2::text[])', account, sorted({str(f['order_id']) for f in fills}))]
-                    if anchor and stored:
-                        through = _time(_object(stored['ledger_state'])['as_of'])
-                        if not inception <= through <= now or (now-through).total_seconds() > 120:
-                            raise ValueError('reconciled_source_stale_or_noncausal')
-                        proof = _object(anchor['opening_evidence'])
-                        lifecycle_evidence = await _read_evidence(connection, '''SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload,recorded_at
-                            FROM hrs.hrs_decision_evidence WHERE event_time >= $1 AND available_at <= $2
-                            AND (kind=ANY($3::text[]) OR (kind='entry_stage_inputs' AND payload->>'stage' IN ('reservation_success','reservation_inventory')))''', inception, through,
-                            ['scan_start','entry_budget_reserved','order_execution_result','protection_order_ack'])
-                        incomes = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,tran_id,income_type,income,asset,event_time_utc
-                            FROM trading.execution_fact_income WHERE account_id=$1 AND event_time_utc > $2 AND event_time_utc <= $3
-                            AND income_type=ANY($4::text[])''', account, inception, through, ['COMMISSION','REALIZED_PNL','FUNDING_FEE'])]
-                        economic = await read_monthly_economic_report(_Reader(connection), account,
-                            int(inception.timestamp()*1000)+1, int(through.timestamp()*1000)+1, include_reviewed_overrides=True)
-                        archives = await connection.fetch('''SELECT payload,evidence_sha256 FROM trading.hrs_equity_evidence
-                            WHERE account_id=$1 AND as_of=$2 AND available_at <= $3 ORDER BY available_at DESC''', account, through, now)
-                        archive = next((r for r in archives
-                            if _object(r['payload']).get('result', {}).get('ledger_version') == stored['version']), None)
-                        funding_rows=funding_count=None
-                        if archive:
-                            raw=_object(archive['payload'])
-                            if canonical(raw)[1]!=archive['evidence_sha256']:
-                                raise ValueError('equity_archive_parent_hash_mismatch')
-                            publication=raw.get('capture',{}).get('funding_publication',{})
-                            if 'forecasts_ref' in publication:
-                                cutoff=validate_forecasts_ref(publication['forecasts_ref'],account_id=account)
-                                funding_count=await connection.fetchval(COUNT_SQL,account,cutoff)
-                                funding_rows=await connection.fetch(ROWS_SQL,account,cutoff)
-                                resolve_evidence_forecasts(archive,funding_rows,account_id=account,
-                                    expected_count=funding_count,collect=False)
-                        economic = _apply_verified_funding(economic, archive, account_id=account,
-                            inception=inception, through=through, fills=fills, orders=owners,
-                            opening_inventory=proof.get('opening_inventory', ()),
-                            funding_source_rows=funding_rows,funding_source_count=funding_count)
-                        financial = reconcile_lifecycles(fills, owners, incomes, economic,
-                            account_id=account, inception=inception, through=through,
-                            anchor_certified=proof.get('account_flat_anchor_certified') is True or proof.get('opening_inventory_certified') is True,
-                            opening_inventory=proof.get('opening_inventory', ()), decision_evidence=lifecycle_evidence)
-                        budget_archives = await _read_budget_sources(connection,financial,lifecycle_evidence,account,through)
-                        if budget_archives:
-                            _refresh_sample_engineering(financial,lifecycle_evidence,through,account,budget_archives)
-                        financial['reconciled_through'] = through.isoformat()
-                    result['database_snapshot_coherent'] = True
+            async with connection.transaction(isolation='repeatable_read', readonly=True):
+                # The first read fixes the snapshot and checks the durable latch.
+                # Ingestion commits pending before touching facts and commits
+                # the facts and completion together. A concurrent write is
+                # therefore either invisible, blocked, or fully visible here.
+                await require_income_integrity(connection, account)
+                start = now.replace(minute=0, second=0, microsecond=0)-timedelta(hours=24)
+                rows = await _read_evidence(connection, '''SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload
+                    FROM hrs.hrs_decision_evidence WHERE event_time >= $1 AND event_time <= $2
+                    AND available_at <= $2 AND NOT(kind=ANY($3::text[])) ORDER BY event_time,evidence_id''', start, now, EXCLUDED_KINDS)
+                anchor = await connection.fetchrow('SELECT inception,opening_evidence FROM trading.hrs_equity_segment WHERE account_id=$1', account)
+                stored = await connection.fetchrow('SELECT ledger_state,version FROM trading.hrs_loss_gate_state WHERE account_id=$1', account)
+                inception = _time(anchor['inception']) if anchor else start
+                query_start = min(start, inception)
+                fills = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,order_id,side,qty,price,commission,commission_asset,realized_pnl,trade_time_utc
+                    FROM trading.execution_fact_fill WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc <= $3''', account, query_start, now)]
+                owners = [dict(r) for r in await connection.fetch('SELECT account_id,symbol,order_id,strategy FROM trading.trade_records WHERE account_id=$1 AND order_id=ANY($2::text[])', account, sorted({str(f['order_id']) for f in fills}))]
+                if anchor and stored:
+                    through = _time(_object(stored['ledger_state'])['as_of'])
+                    if not inception <= through <= now or (now-through).total_seconds() > 120:
+                        raise ValueError('reconciled_source_stale_or_noncausal')
+                    proof = _object(anchor['opening_evidence'])
+                    lifecycle_evidence = await _read_evidence(connection, '''SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload,recorded_at
+                        FROM hrs.hrs_decision_evidence WHERE event_time >= $1 AND available_at <= $2
+                        AND (kind=ANY($3::text[]) OR (kind='entry_stage_inputs' AND payload->>'stage' IN ('reservation_success','reservation_inventory')))''', inception, through,
+                        ['scan_start','entry_budget_reserved','order_execution_result','protection_order_ack'])
+                    incomes = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,tran_id,income_type,income,asset,event_time_utc
+                        FROM trading.execution_fact_income WHERE account_id=$1 AND event_time_utc > $2 AND event_time_utc <= $3
+                        AND income_type=ANY($4::text[])''', account, inception, through, ['COMMISSION','REALIZED_PNL','FUNDING_FEE'])]
+                    economic = await read_monthly_economic_report(_Reader(connection), account,
+                        int(inception.timestamp()*1000)+1, int(through.timestamp()*1000)+1, include_reviewed_overrides=True)
+                    archives = await connection.fetch('''SELECT payload,evidence_sha256 FROM trading.hrs_equity_evidence
+                        WHERE account_id=$1 AND as_of=$2 AND available_at <= $3 ORDER BY available_at DESC''', account, through, now)
+                    archive = next((r for r in archives
+                        if _object(r['payload']).get('result', {}).get('ledger_version') == stored['version']), None)
+                    funding_rows=funding_count=None
+                    if archive:
+                        raw=_object(archive['payload'])
+                        if canonical(raw)[1]!=archive['evidence_sha256']:
+                            raise ValueError('equity_archive_parent_hash_mismatch')
+                        publication=raw.get('capture',{}).get('funding_publication',{})
+                        if 'forecasts_ref' in publication:
+                            cutoff=validate_forecasts_ref(publication['forecasts_ref'],account_id=account)
+                            funding_count=await connection.fetchval(COUNT_SQL,account,cutoff)
+                            funding_rows=await connection.fetch(ROWS_SQL,account,cutoff)
+                            resolve_evidence_forecasts(archive,funding_rows,account_id=account,
+                                expected_count=funding_count,collect=False)
+                    economic = _apply_verified_funding(economic, archive, account_id=account,
+                        inception=inception, through=through, fills=fills, orders=owners,
+                        opening_inventory=proof.get('opening_inventory', ()),
+                        funding_source_rows=funding_rows,funding_source_count=funding_count)
+                    financial = reconcile_lifecycles(fills, owners, incomes, economic,
+                        account_id=account, inception=inception, through=through,
+                        anchor_certified=proof.get('account_flat_anchor_certified') is True or proof.get('opening_inventory_certified') is True,
+                        opening_inventory=proof.get('opening_inventory', ()), decision_evidence=lifecycle_evidence)
+                    budget_archives = await _read_budget_sources(connection,financial,lifecycle_evidence,account,through)
+                    if budget_archives:
+                        _refresh_sample_engineering(financial,lifecycle_evidence,through,account,budget_archives)
+                    financial['reconciled_through'] = through.isoformat()
+                result['database_snapshot_coherent'] = True
     except Exception as exc:
         result['source_error_type'] = type(exc).__name__
         # Never retain stale passing financial evidence after a failed snapshot.
