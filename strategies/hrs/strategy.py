@@ -33,7 +33,8 @@ from ai_tuner.snapshots.repository import SnapshotRepository
 from .candidate_pool import CandidatePool
 from .executor import TradingExecutor, OpenResult, CloseOutcome
 from .position_exit_plan import validate_exit_plan
-from .decision_context import capture_scan_financial_context, CLAIM_EVIDENCE_SELECT, decode_claim_evidence
+from .decision_context import (capture_scan_financial_context, CLAIM_EVIDENCE_SELECT, decode_claim_evidence,
+                               ScanContextUnavailable, cycle_failure_diagnostics)
 from .market_data import MarketDataProvider
 from .pattern import PatternRecognizer
 from .position_manager import PositionManager
@@ -1257,12 +1258,15 @@ class HRSStrategy(BaseStrategy):
 
                     await self._execute_cycle()
                     await self._wait_with_timeout_recovery(self.check_interval)
+                except ScanContextUnavailable as exc:
+                    logger.warning("HRS 扫描数据未就绪，本轮不评分", **cycle_failure_diagnostics(exc))
+                    await asyncio.sleep(self.retry_delay)
                 except Exception as e:
-                    logger.error("执行周期异常", error=str(e))
+                    logger.error("执行周期异常", **cycle_failure_diagnostics(e))
                     await asyncio.sleep(self.retry_delay)
 
         except Exception as e:
-            logger.error("策略运行异常", error=str(e))
+            logger.error("策略运行异常", **cycle_failure_diagnostics(e))
             raise
 
     async def stop(self) -> None:

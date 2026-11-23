@@ -296,8 +296,9 @@ def capture_cycle(function):
                 snapshot['snapshot_available_at'] = datetime.now(timezone.utc)
         except Exception as exc:
             failed_at = datetime.now(timezone.utc)
+            from .decision_context import cycle_failure_diagnostics
             await safe_record(recorder, 'context-' + uuid.uuid4().hex, 'scan_context_failure',
-                {'parent_run': previous_run, 'cycle': function.__name__, 'error_type': type(exc).__name__},
+                {'parent_run': previous_run, 'cycle': function.__name__, **cycle_failure_diagnostics(exc)},
                 as_of=now, available_at=failed_at)
             incomplete = getattr(recorder, 'incomplete_runs', None)
             if isinstance(incomplete, set):

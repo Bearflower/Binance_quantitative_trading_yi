@@ -4,6 +4,8 @@ from datetime import datetime, timezone
 from decimal import Decimal
 import os
 import json
+from time import monotonic
+import traceback
 
 TABLES = ('hrs_positions', 'hrs_blacklist', 'hrs_active_symbols')
 # JSON is rendered by PostgreSQL before asyncpg converts a naive timestamp or
@@ -178,6 +180,50 @@ def capture_configuration_identity(strategy_dir, config, metadata, *, params_pat
 
 
 SCAN_BOUNDARY_VERSION = 'hrs_reconciled_scan_boundary_v1'
+SCAN_CONTEXT_TIMEOUT_SECONDS = 120
+
+
+class ScanContextUnavailable(ValueError):
+    """A bounded source failure skips scoring while the caller maintains exits."""
+    def __init__(self, reason, *, phase, reason_codes=(), elapsed_seconds=0):
+        super().__init__(reason)
+        self.phase = phase
+        self.reason_codes = list(reason_codes)
+        self.elapsed_seconds = round(elapsed_seconds, 3)
+        self.budget_seconds = SCAN_CONTEXT_TIMEOUT_SECONDS
+
+
+def cycle_failure_diagnostics(exc):
+    # Frame locations give a useful traceback without dumping aiohttp request
+    # objects, signed URLs, headers, response bodies or arbitrary cause reprs.
+    frames = [dict(file=os.path.basename(frame.filename), line=frame.lineno, function=frame.name)
+              for frame in traceback.extract_tb(exc.__traceback__)]
+    text = str(exc)
+    # Only our fixed boundary codes are safe messages. aiohttp's ordinary
+    # exception string can contain the full signed URL even without repr().
+    safe_message = (isinstance(exc, ValueError) and text in {
+        'scan_boundary_timeout', 'scan_boundary_source_denied',
+        'scan_boundary_refresh_unproven', 'scan_boundary_unproven', 'scan_boundary_clock_unproven'})
+    detail = dict(error=text if safe_message else type(exc).__name__, error_type=type(exc).__name__,
+                  exception_frames=frames)
+    if isinstance(exc, ScanContextUnavailable):
+        detail.update(phase=exc.phase, reason_codes=exc.reason_codes,
+                      elapsed_seconds=exc.elapsed_seconds, budget_seconds=exc.budget_seconds)
+    status = getattr(exc, 'status_code', getattr(exc, 'status', None))
+    if type(status) is int and 100 <= status <= 599:
+        detail['http_status'] = status
+    causes = []
+    cause_frames = []
+    cause = exc.__cause__
+    while cause is not None and len(causes) < 5:
+        causes.append(type(cause).__name__)
+        cause_frames.append([dict(file=os.path.basename(frame.filename), line=frame.lineno, function=frame.name)
+                             for frame in traceback.extract_tb(cause.__traceback__)])
+        cause = cause.__cause__
+    if causes:
+        detail['cause_types'] = causes
+        detail['cause_frames'] = cause_frames
+    return detail
 
 
 def _scan_now():
@@ -297,13 +343,24 @@ async def capture_scan_financial_context(strategy):
     if service is None:
         return await capture_financial_context(strategy)
     requested = _scan_now()
+    started = monotonic()
+    phase = 'market_guard'
     async def collect():
+        nonlocal phase
         guard = await capture_scan_market_guard(strategy)
+        phase = 'equity_refresh'
         result = await service.refresh()
+        if (isinstance(result, dict) and result.get('ready') is False
+                and result.get('allowed') is False and result.get('policy_revision') == 0
+                and not result.get('ledger_version')):
+            raise ScanContextUnavailable('scan_boundary_source_denied', phase=phase,
+                reason_codes=result.get('reasons', ()), elapsed_seconds=monotonic()-started)
+        phase = 'financial_context'
         context = await capture_financial_context(strategy)
         if guard is not None:
             context = dict(context, market_guard_observation=guard)
         try:
+            phase = 'boundary_validation'
             parents = [p for p in context['equity_source_archives']
                        if p.get('evidence_sha256') == result['evidence_sha256']]
             if len(parents) != 1:
@@ -323,4 +380,8 @@ async def capture_scan_financial_context(strategy):
             return context
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise ValueError('scan_boundary_refresh_unproven') from exc
-    return await asyncio.wait_for(collect(), timeout=120)
+    try:
+        return await asyncio.wait_for(collect(), timeout=SCAN_CONTEXT_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError as exc:
+        raise ScanContextUnavailable('scan_boundary_timeout', phase=phase,
+            elapsed_seconds=monotonic()-started) from exc
