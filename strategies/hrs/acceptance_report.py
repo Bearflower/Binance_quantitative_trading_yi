@@ -733,7 +733,7 @@ def _engineering_checks(lifecycle, evidence, through, account_id, *, budget_sour
 
 
 def reconcile_lifecycles(fills, orders, incomes, economic, *, account_id,
-        inception, through, anchor_certified=False, opening_inventory=(), decision_evidence=(), budget_source_archives=()):
+        inception, through, anchor_certified=False, opening_inventory=(), decision_evidence=(), budget_source_archives=(), acceptance_samples=True):
     """Observe actual signed fill legs, then attach uniquely reconciled incomes.
 
     Opening positions are tracked to flat but excluded: their entry predates this
@@ -846,16 +846,21 @@ def reconcile_lifecycles(fills, orders, incomes, economic, *, account_id,
             else:
                 totals[matches[0]][component] += _number(source['income'])
     samples = []
-    for index, lifecycle in enumerate(closed[:5]):
-        checks = _engineering_checks(lifecycle, decision_evidence, through, account_id, budget_source_archives=budget_source_archives)
-        checks.update(exchange_fill_lifecycle={'status': 'RECONCILED' if not reasons else 'PENDING'},
-                      fees_and_funding={'status': 'RECONCILED' if not reasons else 'PENDING'})
-        engineering_ready = all(v['status'] == 'RECONCILED' for v in checks.values())
-        samples.append(dict(**lifecycle, status='RECONCILED' if not reasons else 'PENDING',
+    selected = closed[:5] if acceptance_samples else closed
+    for index, lifecycle in enumerate(selected):
+        sample = dict(**lifecycle, status='RECONCILED' if not reasons else 'PENDING',
             net_income_usdt=str(sum(totals[index].values())) if not reasons else None,
             **{k: str(v) if not reasons else None for k, v in totals[index].items()},
-            engineering_status='READY' if engineering_ready else 'PENDING', engineering_checks=checks,
-            income_report_id=economic.get('report_id')))
+            income_report_id=economic.get('report_id'))
+        if acceptance_samples:
+            checks = _engineering_checks(lifecycle, decision_evidence, through, account_id, budget_source_archives=budget_source_archives)
+            checks.update(exchange_fill_lifecycle={'status': sample['status']},
+                          fees_and_funding={'status': sample['status']})
+            sample.update(engineering_checks=checks, engineering_status=(
+                'READY' if all(v['status'] == 'RECONCILED' for v in checks.values()) else 'PENDING'))
+        samples.append(sample)
+    if not acceptance_samples:
+        return dict(samples=samples, reasons=sorted(reasons), income_report_id=economic.get('report_id'))
     while len(samples) < 5:
         samples.append(dict(status='PENDING', reason='awaiting_natural_closed_lifecycle', net_income_usdt=None))
     return dict(status='READY' if len(closed) >= 5 and not reasons else 'PENDING',
@@ -1030,6 +1035,42 @@ def _refresh_sample_engineering(financial, evidence, through, account_id, archiv
         and all(sample.get('engineering_status')=='READY' for sample in financial['samples']) else 'PENDING')
 
 
+async def read_lifecycle_income(connection, account, inception, through, now, ledger_version, proof, fills, owners):
+    """Read attributed, coverage-checked income and the matching equity watermark."""
+    incomes = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,tran_id,income_type,income,asset,event_time_utc
+        FROM trading.execution_fact_income WHERE account_id=$1 AND event_time_utc > $2 AND event_time_utc <= $3
+        AND income_type=ANY($4::text[])''', account, inception, through, ['COMMISSION','REALIZED_PNL','FUNDING_FEE'])]
+    economic = await read_monthly_economic_report(_Reader(connection), account,
+        int(inception.timestamp()*1000)+1, int(through.timestamp()*1000)+1, include_reviewed_overrides=True)
+    archive = None
+    async for candidate in _bounded_source_rows(connection,
+        '''SELECT payload,evidence_sha256,available_at FROM trading.hrs_equity_evidence
+        WHERE account_id=$1 AND as_of=$2 AND available_at <= $3 ORDER BY available_at DESC''',
+        account,through,now,columns=('evidence_sha256',),
+        order_by='report_source.available_at DESC'):
+        decoded = _object(candidate['payload'])
+        if decoded.get('result', {}).get('ledger_version') == ledger_version:
+            archive = dict(candidate, payload=decoded)
+            break
+    funding_rows=funding_count=None
+    if archive:
+        raw=_object(archive['payload'])
+        if canonical(raw)[1]!=archive['evidence_sha256']:
+            raise ValueError('equity_archive_parent_hash_mismatch')
+        publication=raw.get('capture',{}).get('funding_publication',{})
+        if 'forecasts_ref' in publication:
+            cutoff=validate_forecasts_ref(publication['forecasts_ref'],account_id=account)
+            funding_count=await connection.fetchval(COUNT_SQL,account,cutoff)
+            funding_rows=await connection.fetch(ROWS_SQL,account,cutoff)
+            resolve_evidence_forecasts(archive,funding_rows,account_id=account,
+                expected_count=funding_count,collect=False)
+    economic = _apply_verified_funding(economic, archive, account_id=account,
+        inception=inception, through=through, fills=fills, orders=owners,
+        opening_inventory=proof.get('opening_inventory', ()),
+        funding_source_rows=funding_rows,funding_source_count=funding_count)
+    return incomes, economic
+
+
 async def build_report(db, *, as_of=None, account_id=None):
     """Read acceptance evidence from a single repeatable-read snapshot.
 
@@ -1074,37 +1115,8 @@ async def build_report(db, *, as_of=None, account_id=None):
                         AND (kind=ANY($3::text[]) OR (kind='entry_stage_inputs' AND payload->>'stage' IN ('reservation_success','reservation_inventory')))''', inception, through,
                         ['scan_start','entry_budget_reserved','order_execution_result','protection_order_ack',
                          'protection_order_observation'])
-                    incomes = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,tran_id,income_type,income,asset,event_time_utc
-                        FROM trading.execution_fact_income WHERE account_id=$1 AND event_time_utc > $2 AND event_time_utc <= $3
-                        AND income_type=ANY($4::text[])''', account, inception, through, ['COMMISSION','REALIZED_PNL','FUNDING_FEE'])]
-                    economic = await read_monthly_economic_report(_Reader(connection), account,
-                        int(inception.timestamp()*1000)+1, int(through.timestamp()*1000)+1, include_reviewed_overrides=True)
-                    archive = None
-                    async for candidate in _bounded_source_rows(connection,
-                        '''SELECT payload,evidence_sha256,available_at FROM trading.hrs_equity_evidence
-                        WHERE account_id=$1 AND as_of=$2 AND available_at <= $3 ORDER BY available_at DESC''',
-                        account,through,now,columns=('evidence_sha256',),
-                        order_by='report_source.available_at DESC'):
-                        decoded = _object(candidate['payload'])
-                        if decoded.get('result', {}).get('ledger_version') == stored['version']:
-                            archive = dict(candidate, payload=decoded)
-                            break
-                    funding_rows=funding_count=None
-                    if archive:
-                        raw=_object(archive['payload'])
-                        if canonical(raw)[1]!=archive['evidence_sha256']:
-                            raise ValueError('equity_archive_parent_hash_mismatch')
-                        publication=raw.get('capture',{}).get('funding_publication',{})
-                        if 'forecasts_ref' in publication:
-                            cutoff=validate_forecasts_ref(publication['forecasts_ref'],account_id=account)
-                            funding_count=await connection.fetchval(COUNT_SQL,account,cutoff)
-                            funding_rows=await connection.fetch(ROWS_SQL,account,cutoff)
-                            resolve_evidence_forecasts(archive,funding_rows,account_id=account,
-                                expected_count=funding_count,collect=False)
-                    economic = _apply_verified_funding(economic, archive, account_id=account,
-                        inception=inception, through=through, fills=fills, orders=owners,
-                        opening_inventory=proof.get('opening_inventory', ()),
-                        funding_source_rows=funding_rows,funding_source_count=funding_count)
+                    incomes, economic = await read_lifecycle_income(connection, account, inception, through, now,
+                        stored['version'], proof, fills, owners)
                     financial = reconcile_lifecycles(fills, owners, incomes, economic,
                         account_id=account, inception=inception, through=through,
                         anchor_certified=proof.get('account_flat_anchor_certified') is True or proof.get('opening_inventory_certified') is True,
