@@ -579,6 +579,7 @@ async def place_and_wait_entry_order(strategy, symbol: str, signal: Dict) -> Opt
     )
     if aggressive:
         from shared.entry_risk_policy import submit_aggressive_entry
+        signal['entry_client_order_id'] = signal['_risk_client_id']
         entry_order = await submit_aggressive_entry(strategy, symbol, signal)
     else:
         entry_order = await strategy.binance.place_order(
@@ -589,6 +590,10 @@ async def place_and_wait_entry_order(strategy, symbol: str, signal: Dict) -> Opt
             order_type="LIMIT"
         )
     entry_order_id = entry_order.get('orderId')
+    if entry_order_id is not None:
+        signal['entry_order_id'] = entry_order_id
+    if entry_order.get('clientOrderId'):
+        signal['entry_client_order_id'] = entry_order['clientOrderId']
     logger.info(
         f"{symbol} 开仓订单已下单",
         order_id=entry_order_id,

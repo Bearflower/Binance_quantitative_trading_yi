@@ -427,7 +427,12 @@ async def submit_aggressive_entry(strategy,symbol,signal):
 
 
 def entry_geometry(signal,filters,risk_config,partial):
-    return {"signal": {key:str(signal[key]) for key in ('direction','initial_stop_loss','tp1_price','tp2_price','leverage','grade')},
+    entry_signal = {key: str(signal[key]) for key in (
+        'direction', 'initial_stop_loss', 'tp1_price', 'tp2_price', 'leverage', 'grade'
+    )}
+    if signal.get('entry_intent') in ('trend', 'mean_reversion'):
+        entry_signal['entry_intent'] = signal['entry_intent']
+    return {"signal": entry_signal,
             "partial_take_profit": {key:str(partial[key]) for key in ("tp1_close_ratio","tp2_close_ratio")},
             "exit_ratios": [str(value) for value in signal.get('_risk_exit_ratios',
                 (partial['tp1_close_ratio'],partial['tp2_close_ratio']))],

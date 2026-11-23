@@ -1117,6 +1117,8 @@ class BTCEthStrategy:
                 'position_ratio': self.binance_config['position_ratio'][grade],
                 'timestamp': current_time,
                 'market_state': market_state_name,  # v6.21：记录市场状态用于频率控制
+                'entry_intent': 'mean_reversion' if strategy_mode == 'ranging' else 'trend',
+                'entry_route_fallback': 'strategy_mode' not in market_behavior,
                 'price_change_1h': compute_1h_return(klines['1h']),  # 组合级熔断单币轨：目标币自身 1h 涨幅
                 'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1, grade),
                 'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2, grade),
@@ -1402,6 +1404,8 @@ class BTCEthStrategy:
             'initial_stop_loss': initial_stop_loss,
             'atr': atr,
             'market_state': market_state_name,
+            'entry_intent': 'mean_reversion' if strategy_mode == 'ranging' else 'trend',
+            'entry_route_fallback': 'strategy_mode' not in market_behavior,
             'price_change_1h': compute_1h_return(klines['1h']),
             'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1, grade),
             'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2, grade),

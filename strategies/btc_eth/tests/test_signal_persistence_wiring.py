@@ -122,7 +122,7 @@ def patched_deps(monkeypatch):
     config_holder: Dict[str, Any] = {}
     strategy_holder: Dict[str, Any] = {}
 
-    monkeypatch.setattr(main_mod, "load_strategy_config", lambda _dir: config_holder["config"])
+    monkeypatch.setattr(main_mod, "load_strategy_config_with_metadata", lambda _dir: (config_holder["config"], {}))
 
     fake_db_instance = MagicMock(name="db_instance")
     fake_db_instance.connect = AsyncMock()

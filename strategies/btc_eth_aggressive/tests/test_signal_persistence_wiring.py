@@ -57,6 +57,7 @@ class FakeStrategy:
         self.symbols = ["BTCUSDT"]
         self.instance_id = "btc_eth_aggressive"
         self.state_reporting_enabled = False
+        self._verified_legacy_positions = {}
         self.db_manager = SimpleNamespace()
         self.frequency_controller = SimpleNamespace(
             ensure_table_exists=AsyncMock(),
@@ -115,7 +116,7 @@ def patched_deps(monkeypatch):
     config_holder: Dict[str, Any] = {}
     strategy_holder: Dict[str, Any] = {}
 
-    monkeypatch.setattr(main_mod, "load_strategy_config", lambda _dir: config_holder["config"])
+    monkeypatch.setattr(main_mod, "load_strategy_config_with_metadata", lambda _dir: (config_holder["config"], {}))
 
     fake_db_instance = MagicMock(name="db_instance")
     fake_db_instance.connect = AsyncMock()
@@ -174,7 +175,7 @@ def _setup_run_globals(monkeypatch, strategy: FakeStrategy, notification: FakeNo
         lambda cfg: {"my_record_name": "test"},
     )
     monkeypatch.setattr(
-        main_mod, "filter_owned_positions", AsyncMock(return_value=({}, {})),
+        main_mod, "filter_report_owned", AsyncMock(return_value=({}, {})),
     )
     monkeypatch.setattr(main_mod, "save_strategy_state", AsyncMock())
     monkeypatch.setattr(main_mod, "sync_open_positions", AsyncMock())
