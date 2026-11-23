@@ -39,6 +39,17 @@ CST = timezone(timedelta(hours=8))
 MODES = ('standard', 'emm', 'semi_emm', 'lv_rm')
 REAL_CAP_SOURCES = {'coingecko', 'coinmarketcap', 'cache_hit', 'coingecko_cache'}
 DEFAULT_OUTPUT = '/app/logs/hrs-acceptance.json'
+# Reporter has a 256 MiB container. Reject oversized sources before JSON decode;
+# these are availability limits, never permission to omit a source and qualify.
+MAX_SOURCE_PAYLOAD_BYTES = 4 * 1024 * 1024
+MAX_RETAINED_EVIDENCE_BYTES = 4 * 1024 * 1024
+MAX_PARENT_PAYLOAD_BYTES = 8 * 1024 * 1024
+MAX_SOURCE_ROWS = 20000
+
+
+class ReportEvidenceLimitExceeded(ValueError):
+    """A complete verified report cannot fit the reporter's memory budget."""
+
 # Large public API bodies are unnecessary here; retain every decision/failure kind.
 EXCLUDED_KINDS = ['public_market_response', 'market_input', 'funding_schedule_inventory']
 # Independent equity refresh and the daily candidate timer share startup run
@@ -830,21 +841,92 @@ class _Reader:
         return await self.connection.fetch(sql, *args)
 
 
+def _source_payload_bytes(row):
+    size = row.get('source_payload_bytes')
+    if type(size) is int:
+        if size < 0 or size > MAX_SOURCE_PAYLOAD_BYTES:
+            raise ReportEvidenceLimitExceeded('report_source_payload_budget_exceeded')
+        return size
+    payload = row['payload']
+    if isinstance(payload, str):
+        # A cheap character check precedes UTF-8 encoding of unexpected adapters.
+        if len(payload) > MAX_SOURCE_PAYLOAD_BYTES:
+            raise ReportEvidenceLimitExceeded('report_source_payload_budget_exceeded')
+        size = len(payload.encode('utf-8'))
+    else:
+        size = len(canonical_payload(payload)[0].encode('utf-8'))
+    if size > MAX_SOURCE_PAYLOAD_BYTES:
+        raise ReportEvidenceLimitExceeded('report_source_payload_budget_exceeded')
+    return size
+
+
+async def _bounded_source_rows(connection, sql, *args, columns, recorded_at=False, order_by=''):
+    # PostgreSQL must withhold an oversized body: checking after asyncpg decoded
+    # or prefetched it would already be too late for the container's memory cap.
+    fields = list(columns)
+    if recorded_at:
+        fields.append('recorded_at')
+    selection = ','.join('report_source.' + field for field in fields)
+    size = 'octet_length(report_source.payload::text)'
+    bounded = f"""SELECT {selection},
+        CASE WHEN {size} <= {MAX_SOURCE_PAYLOAD_BYTES} THEN report_source.payload ELSE NULL END AS payload,
+        {size} AS source_payload_bytes FROM ({sql}) AS report_source"""
+    if order_by:
+        bounded += ' ORDER BY ' + order_by
+    count = 0
+    async for source in connection.cursor(bounded, *args, prefetch=1):
+        count += 1
+        if count > MAX_SOURCE_ROWS:
+            raise ReportEvidenceLimitExceeded('report_source_row_budget_exceeded')
+        row = dict(source)
+        _source_payload_bytes(row)
+        yield row
+
+
 def _compact_record(raw):
-    """Validate the entire immutable source before discarding bulky raw bars."""
+    """Validate the entire immutable source before retaining consumer fields."""
     row = dict(raw)
+    _source_payload_bytes(row)
     payload = _object(row['payload'])
     valid = canonical_payload(payload)[1] == row['payload_sha256']
     row['source_payload_sha256'] = row['payload_sha256']
-    row['payload'] = {k: v for k, v in payload.items() if k not in ('klines_1h', 'klines_4h')}
-    row['payload_sha256'] = canonical_payload(row['payload'])[1] if valid else 'source_payload_hash_mismatch'
+    if row.get('kind') == 'scan_start':
+        # Both technical and lifecycle consumers use the complete entry policy;
+        # neither consumes the archived equity history or strategy state here.
+        financial = payload.get('financial_context')
+        compact = {'financial_context': financial}
+        if isinstance(financial, dict):
+            compact = {'financial_context': {'entry_policy': financial.get('entry_policy', {})}}
+    elif row.get('kind') == 'scan_end':
+        compact = {'status': payload.get('status')}
+    elif row.get('kind') == 'entry_stage_inputs':
+        # This original hash is bound into the committed financial receipt.
+        compact = payload
+    else:
+        compact = {k: v for k, v in payload.items() if k not in ('klines_1h', 'klines_4h')}
+    encoded, digest = canonical_payload(compact)
+    row['payload'] = compact
+    row['payload_sha256'] = digest if valid else 'source_payload_hash_mismatch'
+    row['report_payload_bytes'] = len(encoded.encode('utf-8'))
     return row
 
 
 async def _read_evidence(connection, sql, *args):
-    # Holding every raw analysis row at once can retain millions of candles.
-    # The cursor lives inside the caller's coherent read-only transaction.
-    return [_compact_record(row) async for row in connection.cursor(sql, *args, prefetch=10)]
+    # Retain small verified observations rather than repeated scan snapshots.
+    # Both calls remain inside the caller's one coherent read-only transaction.
+    rows, retained = [], 0
+    columns = ('evidence_id','run_id','kind','symbol','event_time','available_at','payload_sha256')
+    async for source in _bounded_source_rows(connection, sql, *args, columns=columns,
+                                             recorded_at='recorded_at' in sql,
+                                             order_by='report_source.event_time,report_source.evidence_id'):
+        row = _compact_record(source)
+        # Include a conservative envelope allowance so tiny rows cannot grow an
+        # unbounded list even when their compact payload is nearly empty.
+        retained += row['report_payload_bytes'] + 512
+        if retained > MAX_RETAINED_EVIDENCE_BYTES:
+            raise ReportEvidenceLimitExceeded('report_retained_evidence_budget_exceeded')
+        rows.append(row)
+    return rows
 
 
 async def _read_budget_sources(connection, financial, evidence, account_id, through):
@@ -884,10 +966,17 @@ async def _read_budget_sources(connection, financial, evidence, account_id, thro
                 digests.add(digest)
     if not digests:
         return []
-    return [dict(row) for row in await connection.fetch(
+    rows, retained = [], 0
+    async for row in _bounded_source_rows(connection,
         '''SELECT payload,evidence_sha256 FROM trading.hrs_equity_evidence
         WHERE account_id=$1 AND evidence_sha256=ANY($2::text[]) AND available_at <= $3''',
-        account_id,sorted(digests),through)]
+        account_id,sorted(digests),through,columns=('evidence_sha256',)):
+        retained += _source_payload_bytes(row)
+        if retained > MAX_PARENT_PAYLOAD_BYTES:
+            raise ReportEvidenceLimitExceeded('report_parent_payload_budget_exceeded')
+        row.pop('source_payload_bytes', None)
+        rows.append(row)
+    return rows
 
 
 def _refresh_sample_engineering(financial, evidence, through, account_id, archives):
@@ -952,10 +1041,16 @@ async def build_report(db, *, as_of=None, account_id=None):
                         AND income_type=ANY($4::text[])''', account, inception, through, ['COMMISSION','REALIZED_PNL','FUNDING_FEE'])]
                     economic = await read_monthly_economic_report(_Reader(connection), account,
                         int(inception.timestamp()*1000)+1, int(through.timestamp()*1000)+1, include_reviewed_overrides=True)
-                    archives = await connection.fetch('''SELECT payload,evidence_sha256 FROM trading.hrs_equity_evidence
-                        WHERE account_id=$1 AND as_of=$2 AND available_at <= $3 ORDER BY available_at DESC''', account, through, now)
-                    archive = next((r for r in archives
-                        if _object(r['payload']).get('result', {}).get('ledger_version') == stored['version']), None)
+                    archive = None
+                    async for candidate in _bounded_source_rows(connection,
+                        '''SELECT payload,evidence_sha256,available_at FROM trading.hrs_equity_evidence
+                        WHERE account_id=$1 AND as_of=$2 AND available_at <= $3 ORDER BY available_at DESC''',
+                        account,through,now,columns=('evidence_sha256',),
+                        order_by='report_source.available_at DESC'):
+                        decoded = _object(candidate['payload'])
+                        if decoded.get('result', {}).get('ledger_version') == stored['version']:
+                            archive = dict(candidate, payload=decoded)
+                            break
                     funding_rows=funding_count=None
                     if archive:
                         raw=_object(archive['payload'])

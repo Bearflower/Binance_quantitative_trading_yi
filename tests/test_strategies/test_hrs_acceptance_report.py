@@ -246,6 +246,156 @@ def test_raw_bars_are_hash_verified_before_compacting_without_changing_source():
     assert _compact_record(row)['payload_sha256'] != canonical_payload(compact['payload'])[1]
 
 
+
+@pytest.mark.parametrize('kind', ['scan_start', 'scan_end'])
+def test_scan_snapshot_compaction_verifies_discarded_history_and_preserves_consumers(kind):
+    rows = evidence()
+    for row in rows:
+        if row['kind'] == kind:
+            bulky = {'equity_source_archives': [{'payload': {'history': ['x' * 1024] * 100}}]}
+            if kind == 'scan_start':
+                row['payload']['financial_context'].update(bulky)
+                row['payload']['candidate_scan'] = bulky
+            else:
+                row['payload']['state'] = bulky
+            row['payload_sha256'] = canonical_payload(row['payload'])[1]
+    compact = [_compact_record(row) for row in rows]
+    assert technical(compact) == technical(rows)
+    selected = next(row for row in compact if row['kind'] == kind)
+    assert len(json.dumps(selected['payload'])) < 1024
+    assert selected['source_payload_sha256'] == next(row for row in rows if row['kind'] == kind)['payload_sha256']
+    source = next(row for row in rows if row['kind'] == kind)
+    container = source['payload']['financial_context'] if kind == 'scan_start' else source['payload']['state']
+    container['equity_source_archives'][0]['payload']['history'][0] = 'tampered'
+    assert technical([_compact_record(row) for row in rows])['status'] == 'NOT_READY'
+
+
+def test_compact_scan_start_preserves_full_policy_for_engineering_checks():
+    captures = engineering_evidence(5)
+    baseline = financial(5, decision_evidence=captures)
+    for row in captures:
+        if row['kind'] == 'scan_start':
+            row['payload']['financial_context']['equity_source_archives'] = [{'unused': 'x' * 10000}]
+            row['payload_sha256'] = canonical_payload(row['payload'])[1]
+    assert financial(5, decision_evidence=[_compact_record(row) for row in captures]) == baseline
+
+
+class EvidenceCursorConnection:
+    def __init__(self, rows):
+        self.rows, self.prefetches, self.queries, self.fetches = rows, [], [], 0
+
+    def cursor(self, sql, *args, prefetch):
+        self.prefetches.append(prefetch)
+        self.queries.append(sql)
+        async def values():
+            for row in self.rows:
+                yield row
+        return values()
+
+    async def fetch(self, sql, *args):
+        self.fetches += 1
+        return self.rows
+
+
+@pytest.mark.asyncio
+async def test_evidence_cursor_uses_single_raw_row_and_rejects_oversize_before_decode(monkeypatch):
+    from strategies.hrs import acceptance_report as reporter
+    row = event('0', 'scan_start', START, {'financial_context': {'entry_policy': {'account_id': ACCOUNT}}})
+    row.update(payload=None, source_payload_bytes=129)
+    connection = EvidenceCursorConnection([row])
+    monkeypatch.setattr(reporter, 'MAX_SOURCE_PAYLOAD_BYTES', 128, raising=False)
+    with pytest.raises(ValueError, match='report_source_payload_budget_exceeded'):
+        await reporter._read_evidence(connection, 'SELECT source')
+    assert connection.prefetches == [1]
+    assert 'octet_length' in connection.queries[0] and 'CASE WHEN' in connection.queries[0]
+
+
+@pytest.mark.asyncio
+async def test_evidence_retained_budget_overflow_is_fail_closed(monkeypatch):
+    from strategies.hrs import acceptance_report as reporter
+    connection = EvidenceCursorConnection(evidence())
+    monkeypatch.setattr(reporter, 'MAX_RETAINED_EVIDENCE_BYTES', 1, raising=False)
+    with pytest.raises(ValueError, match='report_retained_evidence_budget_exceeded'):
+        await reporter._read_evidence(connection, 'SELECT source')
+
+
+@pytest.mark.asyncio
+async def test_budget_parent_sources_use_bounded_cursor_without_compacting_hash_bound_payload():
+    from strategies.hrs import acceptance_report as reporter
+    from strategies.hrs.risk_budget import FLOOR
+    client, digest = 'client', 'a' * 64
+    captures = [event('0', 'order_execution_result', START, {'outcome': {'order': {'orderId': 1, 'clientOrderId': client}}}, 'S0USDT'),
+                event('0', 'entry_budget_reserved', START, {'decision': {'client_order_id': client, 'budget_version': FLOOR}}, 'S0USDT'),
+                event('0', 'entry_stage_inputs', START, {'stage': 'reservation_success', 'client_order_id': client, 'budget_context': {'evidence_sha256': digest}}, 'S0USDT')]
+    parent = {'payload': json.dumps({'capture': {'local': {}}, 'history': ['original']}), 'evidence_sha256': digest}
+    connection = EvidenceCursorConnection([parent])
+    rows = await reporter._read_budget_sources(connection, {'samples': [{'symbol': 'S0USDT', 'order_ids': ['1']}]}, captures, ACCOUNT, NOW)
+    assert rows == [parent]
+    assert connection.fetches == 0
+    assert connection.prefetches == [1]
+    assert 'octet_length' in connection.queries[0] and 'CASE WHEN' in connection.queries[0]
+
+
+@pytest.mark.asyncio
+async def test_many_large_scan_sources_are_compacted_with_bounded_peak_memory():
+    import tracemalloc
+    from strategies.hrs import acceptance_report as reporter
+    body = 'x' * 1_700_000
+    def sources():
+        for index in range(40):
+            row = event(str(index), 'scan_start', START, {
+                'financial_context': {'entry_policy': {'account_id': ACCOUNT},
+                                      'equity_source_archives': [{'history': body}]}})
+            row['payload'] = json.dumps(row['payload'])
+            row['source_payload_bytes'] = len(row['payload'].encode('utf-8'))
+            yield row
+    connection = EvidenceCursorConnection(sources())
+    tracemalloc.start()
+    try:
+        rows = await reporter._read_evidence(connection, 'SELECT source')
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert len(rows) == 40
+    assert sum(len(json.dumps(row['payload'])) for row in rows) < 4096
+    assert peak < 32 * 1024 * 1024
+
+
+@pytest.mark.asyncio
+async def test_oversized_report_source_returns_explicit_pending_without_coherent_snapshot(monkeypatch):
+    from contextlib import asynccontextmanager
+    from strategies.hrs import acceptance_report as reporter
+    row = event('0', 'scan_start', START, {})
+    row.update(payload=None, source_payload_bytes=129)
+    connection = EvidenceCursorConnection([row])
+    @asynccontextmanager
+    async def transaction(**kwargs):
+        assert kwargs == {'isolation': 'repeatable_read', 'readonly': True}
+        yield
+    @asynccontextmanager
+    async def acquire():
+        yield connection
+    async def integrity(*args):
+        return 0
+    connection.transaction = transaction
+    connection.fetchval = integrity
+    monkeypatch.setattr(reporter, 'MAX_SOURCE_PAYLOAD_BYTES', 128)
+    report = await build_report(SimpleNamespace(pool=SimpleNamespace(acquire=acquire)), as_of=NOW, account_id=ACCOUNT)
+    assert report['source_error_type'] == 'ReportEvidenceLimitExceeded'
+    assert report['database_snapshot_coherent'] is False
+    assert report['status'] == 'PENDING'
+    assert report['technical']['status'] == 'NOT_READY'
+    assert report['financial']['status'] == 'PENDING'
+    assert report['performance_accepted'] is False
+
+
+def test_entry_stage_receipt_preserves_all_original_payload_fields():
+    row = event('0', 'entry_stage_inputs', START, {'stage': 'reservation_inventory',
+        'slot_inputs': {'local': {}}, 'klines_1h': ['unexpected but hash-bound']})
+    compact = _compact_record(row)
+    assert compact['payload'] == row['payload']
+    assert compact['payload_sha256'] == row['payload_sha256']
+
 def test_explicit_other_account_runs_are_excluded_without_mixing_counters():
     rows = evidence()
     at = START+timedelta(minutes=5)
