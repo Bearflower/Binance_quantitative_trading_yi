@@ -9,7 +9,7 @@ from tests.test_ai_tuner_mvp.replay.test_hrs_wiring import AT,broker
 from tests.test_ai_tuner_mvp.test_hrs_evidence_export import captured_sources
 
 
-def bound_sources(tmp_path,post=False):
+def bound_sources(tmp_path,post=False,*,event_aware=False):
     sources,bootstrap=captured_sources(tmp_path)
     segment='test';account='test'
     left=AT+timedelta(minutes=2) if post else AT-timedelta(minutes=4)
@@ -19,12 +19,27 @@ def bound_sources(tmp_path,post=False):
         for i,at,side in [(1,left-timedelta(seconds=10),'BUY'),(2,right+timedelta(seconds=5),'SELL')]]
     owners=[dict(account_id=account,symbol='A',order_id=str(i),strategy='hrs') for i in (1,2)]
     source=copy.deepcopy(sources['equity_evidence'][0]['payload']);source.update(account_id=account,segment_id=segment,as_of=right.isoformat(),available_at=right.isoformat(),result=dict(ledger_version=1),fills=fills[:1],order_owners=owners)
+    if event_aware:
+        source['income_report']=dict(id_match_and_coverage_complete=True)
+        source['source_collection']=dict(complete=True,gaps=[])
     source_sha=canonical(source)[1]
     bounds=[dict(as_of=(left+timedelta(minutes=i)).isoformat(),low_nav='1.05',high_nav='1.10',source_units='10000') for i in (1,2)]
     receipt=dict(kind='automatic_constant_mark_gap_v1',account_id=account,segment_id=segment,
         as_of=(received-timedelta(seconds=1)).isoformat(),available_at=received.isoformat(),source_evidence_sha256=source_sha,source_ledger_version=1,
         mark_gaps=[dict(left=left.isoformat(),right=right.isoformat(),bars={'A':bars})],
         http_receipts=[dict(source='/fapi/v1/markPriceKlines',params=dict(symbol='A',interval='1m',startTime=bars[0][0],endTime=bars[-1][6],limit=128),requested_at=(received-timedelta(seconds=1)).isoformat(),received_at=received.isoformat(),response_sha256=canonical(bars)[1])],conservative_bounds=bounds)
+    if event_aware:
+        from strategies.hrs.equity_history_gap import EVENT_GAP_KIND,BOUND_QUANTUM
+        receipt['kind']=EVENT_GAP_KIND
+        receipt['after_gate_sha256']=canonical({})[1]
+        receipt['after_ledger_sha256']=canonical({})[1]
+        at=left+timedelta(minutes=2)
+        bars.append([int(at.timestamp()*1000),'105','111','104','105','0',int((at+timedelta(minutes=1)).timestamp()*1000)-1])
+        receipt['http_receipts'][0].update(params=dict(symbol='A',interval='1m',startTime=bars[0][0],endTime=bars[-1][6],limit=128),requested_at=(left+timedelta(minutes=3,seconds=1)).isoformat(),received_at=(left+timedelta(minutes=3,seconds=2)).isoformat(),response_sha256=canonical(bars)[1])
+        received=left+timedelta(minutes=3,seconds=2)
+        receipt.update(as_of=(received-timedelta(seconds=1)).isoformat(),available_at=received.isoformat())
+        for bound in bounds:bound['as_of']=(datetime.fromisoformat(bound['as_of'])-BOUND_QUANTUM).isoformat()
+        bounds.append(dict(as_of=(right-BOUND_QUANTUM).isoformat(),low_nav='1.04',high_nav='1.11',source_units='10000'))
     digest=canonical(receipt)[1]
     top=dict(version='hrs_conservative_gap_bounds_v1',account_id=account,segment_id=segment,available_at=received.isoformat(),
         receipts=[dict(receipt_sha256=digest,available_at=received.isoformat(),receipt=receipt)],
@@ -70,12 +85,13 @@ def test_original_receipt_bounds_project_with_hashes_and_actual_availability(tmp
 
 @pytest.mark.parametrize('post',[False,True])
 @pytest.mark.parametrize('archived',[False,True])
-def test_original_bounds_roundtrip_actual_exporter_and_counterfactual_engine(tmp_path,post,archived):
+@pytest.mark.parametrize('event_aware',[False,True])
+def test_original_bounds_roundtrip_actual_exporter_and_counterfactual_engine(tmp_path,post,archived,event_aware):
     from ai_tuner.hrs_evidence_export import export_evidence_bundle
     from ai_tuner.replay.data_portal import DataPortal
     from ai_tuner.replay.adapters.hrs import HrsAdapter
     from ai_tuner.replay.engine import run_replay
-    sources,bootstrap=bound_sources(tmp_path,post)
+    sources,bootstrap=bound_sources(tmp_path,post,event_aware=event_aware)
     if archived:
         from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter
         with EvidenceArchiveWriter(tmp_path/'archive',source_metadata={}) as writer:
@@ -101,10 +117,11 @@ def test_original_bounds_roundtrip_actual_exporter_and_counterfactual_engine(tmp
 
 
 @pytest.mark.parametrize('damage',['receipt','valuation_ledger','endpoint_units','late_valuation','account','source_clock'])
-def test_original_source_semantics_cannot_be_upgraded_by_new_hashes(tmp_path,damage):
+@pytest.mark.parametrize('event_aware',[False,True])
+def test_original_source_semantics_cannot_be_upgraded_by_new_hashes(tmp_path,damage,event_aware):
     from ai_tuner.hrs_evidence_export import _equity,project_history_gap_bounds
     from ai_tuner.replay.models import DataBlocked
-    sources,_=bound_sources(tmp_path);changed={}
+    sources,_=bound_sources(tmp_path,event_aware=event_aware);changed={}
     for row in sources['equity_evidence']:
         parent=row['payload'];top=parent.get('history_gap_bounds')
         if not top:continue
@@ -174,12 +191,13 @@ from tests.test_ai_tuner_mvp.test_hrs_equity_bridge_sources import source_databa
 
 @pytest.mark.parametrize('archive',[False,True])
 @pytest.mark.parametrize('damage',[None,'missing','hash','version','missing_projection'])
-async def test_readonly_sql_retains_old_gap_receipt_parents_and_their_forecast_prefix(source_database,tmp_path,archive,damage):
+@pytest.mark.parametrize('event_aware',[False,True])
+async def test_readonly_sql_retains_old_gap_receipt_parents_and_their_forecast_prefix(source_database,tmp_path,archive,damage,event_aware):
     from ai_tuner.hrs_evidence_export import read_evidence_sources,_ArchiveSources,_equity,project_history_gap_bounds,verify_forecast_source_closure,_records
     from ai_tuner.replay.models import DataBlocked
     from strategies.hrs.funding_reference import build_forecasts_ref
     from tests.test_ai_tuner_mvp.test_hrs_forecast_closure import observation
-    sources,_=bound_sources(tmp_path);db=source_database
+    sources,_=bound_sources(tmp_path,event_aware=event_aware);db=source_database
     origin=sources['equity_evidence'][1];old_origin=origin['evidence_sha256']
     cutoff=datetime.fromisoformat(origin['payload']['available_at'])
     forecast=observation(cutoff-timedelta(seconds=1));ref,_=build_forecasts_ref('test',cutoff,[forecast],expected_count=1)
@@ -240,9 +258,10 @@ async def test_readonly_sql_retains_old_gap_receipt_parents_and_their_forecast_p
 
 @pytest.mark.parametrize('archived',[False,True])
 @pytest.mark.parametrize('omission',['one_bound','all_bounds','both','missing_inventory','projection_paired_version'])
-def test_independent_original_receipt_inventory_rejects_omitted_bounds(tmp_path,archived,omission):
+@pytest.mark.parametrize('event_aware',[False,True])
+def test_independent_original_receipt_inventory_rejects_omitted_bounds(tmp_path,archived,omission,event_aware):
     from ai_tuner.hrs_evidence_export import export_evidence_bundle
-    sources,bootstrap=bound_sources(tmp_path);changed={}
+    sources,bootstrap=bound_sources(tmp_path,event_aware=event_aware);changed={}
     for row in sources['equity_evidence']:
         top=row['payload'].get('history_gap_bounds')
         if not top:continue
@@ -292,10 +311,11 @@ def test_aged_out_independent_receipt_does_not_require_an_inactive_projection(tm
 
 
 @pytest.mark.parametrize('damage',['version','clock','account','after_gate'])
-def test_independent_receipt_metadata_cannot_hide_known_bounds(tmp_path,damage):
+@pytest.mark.parametrize('event_aware',[False,True])
+def test_independent_receipt_metadata_cannot_hide_known_bounds(tmp_path,damage,event_aware):
     from ai_tuner.hrs_evidence_export import _equity,project_history_gap_bounds
     from ai_tuner.replay.models import DataBlocked
-    sources,_=bound_sources(tmp_path);financial=sources['decision_evidence'][0]['payload']['financial_context']
+    sources,_=bound_sources(tmp_path,event_aware=event_aware);financial=sources['decision_evidence'][0]['payload']['financial_context']
     parent=next(row for row in sources['equity_evidence'] if row['evidence_sha256']==financial['hrs_marked_equity_observation']['evidence_sha256'])
     parent['payload'].pop('history_gap_bounds');parent['evidence_sha256']=canonical(parent['payload'])[1]
     financial['hrs_marked_equity_observation']['evidence_sha256']=parent['evidence_sha256']
@@ -311,10 +331,11 @@ def test_independent_receipt_metadata_cannot_hide_known_bounds(tmp_path,damage):
 
 @pytest.mark.parametrize('archived',[False,True])
 @pytest.mark.parametrize('damage',['version','source_clock','missing_parent'])
-def test_original_parent_binding_precedes_independent_receipt_causal_filter(tmp_path,archived,damage):
+@pytest.mark.parametrize('event_aware',[False,True])
+def test_original_parent_binding_precedes_independent_receipt_causal_filter(tmp_path,archived,damage,event_aware):
     from ai_tuner.hrs_evidence_export import _ArchiveSources,_EquityView,_equity,project_history_gap_bounds
     from ai_tuner.replay.models import DataBlocked
-    sources,_=bound_sources(tmp_path)
+    sources,_=bound_sources(tmp_path,event_aware=event_aware)
     financial=sources['decision_evidence'][0]['payload']['financial_context']
     parent=next(row for row in sources['equity_evidence'] if row['evidence_sha256']==financial['hrs_marked_equity_observation']['evidence_sha256'])
     parent['payload'].pop('history_gap_bounds');parent['evidence_sha256']=canonical(parent['payload'])[1]
@@ -387,3 +408,32 @@ def test_original_receipt_archive_binding_does_not_require_decision_family(tmp_p
         descriptor=writer.finish()
     with _ArchiveSources(dict(evidence_archive=descriptor)) as retained:
         assert len(retained.get('equity_reconciliations'))==(0 if empty else 1)
+
+
+@pytest.mark.parametrize('archived',[False,True])
+def test_event_v2_independent_receipt_projection_and_export(tmp_path,archived):
+    from ai_tuner.hrs_evidence_export import _ArchiveSources,_EquityView,_equity,project_history_gap_bounds
+    sources,_=bound_sources(tmp_path,event_aware=True)
+    financial=sources['decision_evidence'][0]['payload']['financial_context']
+    if archived:
+        from ai_tuner.replay.hrs_evidence_archive import EvidenceArchiveWriter
+        with EvidenceArchiveWriter(tmp_path/'v2-archive',source_metadata={}) as writer:
+            for name,rows in sources.items():
+                writer.declare_source(name,dict(expected_count=len(rows),account_id='test',query_scope='synthetic v2 original receipts',window_start=(AT-timedelta(days=31)).isoformat(),window_end=(AT+timedelta(hours=3)).isoformat()))
+                for row in rows:writer.write_row(name,row)
+            descriptor=writer.finish()
+        with _ArchiveSources(dict(evidence_archive=descriptor)) as retained:
+            result=project_history_gap_bounds(financial,_EquityView(retained),AT,retained.get('equity_reconciliations'))
+    else:result=project_history_gap_bounds(financial,_equity(sources['equity_evidence']),AT,sources['equity_reconciliations'])
+    assert len(result['bounds'])==3 and D(result['bounds'][-1]['high_nav'])==D('1.11')
+
+
+@pytest.mark.parametrize('field',['after_gate_sha256','after_ledger_sha256'])
+def test_event_v2_requires_both_exact_paired_after_state_headers(tmp_path,field):
+    from ai_tuner.hrs_evidence_export import _reconciliation_source_reference
+    from ai_tuner.replay.models import DataBlocked
+    sources,_=bound_sources(tmp_path,event_aware=True)
+    row=sources['equity_reconciliations'][0]
+    row['receipt'].pop(field);row['receipt_sha256']=canonical(row['receipt'])[1]
+    with pytest.raises(DataBlocked,match='independent_after_state_hash'):
+        _reconciliation_source_reference(row,'test')

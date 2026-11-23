@@ -22,6 +22,7 @@ import shutil
 from strategies.hrs.decision_capture import canonical_payload
 from strategies.hrs.equity_evidence import canonical as equity_canonical, prove_positions, owned_fill_positions
 from strategies.hrs.risk_ledger import LedgerNotReady
+from strategies.hrs.equity_history_gap import GAP_RECEIPT_KINDS, EVENT_GAP_KIND, gap_receipt_active
 from shared.config_loader import compute_config_hash
 from .replay.data_portal import DataPortal, sha256_file
 from .replay.funding_history import attested_funding_schedule
@@ -578,8 +579,8 @@ def project_history_gap_bounds(financial,equities,checked_at,receipt_sources=())
                 or record['after_state_version']>financial['ledger_state']['version'] or _time(record['available_at'])>_time(payload['available_at'])):continue
         receipt=_decoded(record['receipt']);sha=record['receipt_sha256']
         _require(equity_canonical(receipt)[1]==sha,'history_gap_bounds_independent_receipt_hash')
-        if receipt.get('kind')!='automatic_constant_mark_gap_v1':continue
-        if any(cutoff<=_time(bound['as_of'])<=_time(ledger['as_of']) for bound in receipt.get('conservative_bounds',())):
+        if receipt.get('kind') not in GAP_RECEIPT_KINDS:continue
+        if gap_receipt_active(receipt,cutoff,_time(ledger['as_of'])):
             _require(sha not in originals,'history_gap_bounds_independent_receipt_duplicate');originals[sha]=receipt
     if top is None:
         _require(not originals,'history_gap_bounds_receipt_inventory_missing')
@@ -610,12 +611,12 @@ def project_history_gap_bounds(financial,equities,checked_at,receipt_sources=())
         receipts={};revalued={}
         for ref in top['receipts']:
             receipt=ref['receipt'];sha=ref['receipt_sha256']
-            _require(sha not in receipts and equity_canonical(receipt)[1]==sha and equity_canonical(receipt)[1]==equity_canonical(originals[sha])[1] and receipt.get('kind')=='automatic_constant_mark_gap_v1'
+            _require(sha not in receipts and equity_canonical(receipt)[1]==sha and equity_canonical(receipt)[1]==equity_canonical(originals[sha])[1] and receipt.get('kind') in GAP_RECEIPT_KINDS
                 and receipt.get('account_id')==account and receipt.get('segment_id')==segment,'history_gap_bounds_receipt_hash')
             _require(_time(receipt['available_at'])==_time(ref['available_at'])<=_time(top['available_at'])
                 and _time(receipt['as_of'])<=_time(payload['as_of']),'history_gap_bounds_receipt_clock')
             _verify_gap_receipt_source_parent(_gap_receipt_source_binding(receipt),source(receipt['source_evidence_sha256']))
-            verify_mark_receipts(dict(available_at=receipt['available_at'],gaps=receipt['mark_gaps'],http_receipts=receipt['http_receipts']),_time(checked_at))
+            verify_mark_receipts(dict(profile=receipt.get('kind'),available_at=receipt['available_at'],gaps=receipt['mark_gaps'],http_receipts=receipt['http_receipts']),_time(checked_at))
             receipts[sha]=receipt
             revalued[sha]=revalue_gap_bounds(receipt,current,points,fills,payload['order_owners'],valuation['opening_inventory'])
         seen=set()
@@ -1660,7 +1661,7 @@ async def read_evidence_sources(connection,account_id,*,window_start,as_of,end_p
         ('equity_reconciliations',"""SELECT account_id,segment_id,after_state_version,as_of,as_of AS event_time,
           available_at,receipt_sha256,receipt_sha256 AS evidence_id,receipt,after_state
           FROM trading.hrs_equity_reconciliation WHERE account_id=$1 AND as_of >= $2 AND available_at <= $3
-          AND receipt->>'kind'='automatic_constant_mark_gap_v1' ORDER BY available_at,after_state_version LIMIT $4""",
+          AND receipt->>'kind' IN ('automatic_constant_mark_gap_v1','automatic_event_mark_gap_v2') ORDER BY available_at,after_state_version LIMIT $4""",
           (account_id,start-timedelta(days=31),end+timedelta(seconds=120),limit)),
         ('equity_evidence',"""SELECT account_id,evidence_sha256,segment_id,as_of,available_at,payload
         FROM trading.hrs_equity_evidence WHERE account_id=$1 AND as_of >= $2 AND as_of <= $3
@@ -1793,13 +1794,13 @@ def _gap_receipt_source_binding(receipt):
     try:
         return (receipt['source_evidence_sha256'],receipt['account_id'],receipt['segment_id'],receipt['source_ledger_version'],
             min(_time(row['requested_at']) for row in receipt['http_receipts']),
-            max(_time(gap['right']) for gap in receipt['mark_gaps']))
+            max(_time(gap['right']) for gap in receipt['mark_gaps']),receipt.get('kind'))
     except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
         raise DataBlocked(['history_gap_bounds_source_parent_shape:'+str(exc)]) from exc
 
 
 def _verify_gap_receipt_source_parent(binding,origin):
-    reference,account,segment,version,requested_at,right=binding
+    reference,account,segment,version,requested_at,right,kind=binding
     _require(origin is not None,'history_gap_bounds_source_parent')
     try:
         payload=_decoded(origin['payload'])
@@ -1807,6 +1808,9 @@ def _verify_gap_receipt_source_parent(binding,origin):
         _require(payload.get('account_id')==account and payload.get('segment_id')==segment
             and payload.get('source_collection',{}).get('complete') is True
             and payload.get('result',{}).get('ledger_version')==version,'history_gap_bounds_source_parent')
+        if kind==EVENT_GAP_KIND:
+            _require(payload.get('income_report',{}).get('id_match_and_coverage_complete') is True
+                and not payload.get('source_collection',{}).get('gaps'),'history_gap_bounds_source_economics')
         _require(_time(payload['available_at'])<=requested_at and right<=_time(payload['as_of']),
             'history_gap_bounds_source_clock')
     except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
@@ -1819,14 +1823,14 @@ def _reconciliation_source_reference(row,account_id):
         _require(isinstance(receipt,dict),'history_gap_bounds_independent_receipt_shape')
         _require(row['account_id']==account_id and equity_canonical(receipt)[1]==row['receipt_sha256']
             and receipt.get('account_id')==account_id and receipt.get('segment_id')==row['segment_id']
-            and receipt.get('kind')=='automatic_constant_mark_gap_v1'
+            and receipt.get('kind') in GAP_RECEIPT_KINDS
             and _time(receipt['as_of'])==_time(row['as_of'])<=_time(row['available_at'])==_time(receipt['available_at'])
             and type(receipt['source_ledger_version']) is int and type(row['after_state_version']) is int
             and receipt['source_ledger_version']+1==row['after_state_version'],
             'history_gap_bounds_independent_receipt_hash')
         after=_decoded(row['after_state'])
         for field,key in (('after_gate_sha256','gate'),('after_ledger_sha256','ledger')):
-            _require(field not in receipt or receipt[field]==equity_canonical(after[key])[1],
+            _require((receipt.get('kind')!=EVENT_GAP_KIND and field not in receipt) or receipt.get(field)==equity_canonical(after[key])[1],
                 'history_gap_bounds_independent_after_state_hash')
         source=receipt.get('source_evidence_sha256')
         _require(isinstance(source,str) and re.fullmatch('[0-9a-f]{64}',source),'history_gap_bounds_dependency_shape')

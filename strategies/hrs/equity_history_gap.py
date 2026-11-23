@@ -9,6 +9,17 @@ from .risk_ledger import EquityCheckpoint
 
 MINUTE = timedelta(minutes=1)
 BAR_SOURCE = '/fapi/v1/markPriceKlines'
+EVENT_GAP_KIND = 'automatic_event_mark_gap_v2'
+GAP_RECEIPT_KINDS = ('automatic_constant_mark_gap_v1', EVENT_GAP_KIND)
+BOUND_QUANTUM = timedelta(microseconds=1)
+
+
+def mark_scope(left, right, *, event_aware=False):
+    start = left.replace(second=0, microsecond=0)
+    end = right.replace(second=0, microsecond=0)
+    if event_aware and end < right:
+        end += MINUTE
+    return start, end
 
 
 def _require(condition, reason):
@@ -16,9 +27,8 @@ def _require(condition, reason):
         raise EvidenceBlocked('history_gap_' + reason)
 
 
-def _bars_by_close(bars, left, right):
-    start = left.replace(second=0, microsecond=0)
-    end = right.replace(second=0, microsecond=0)
+def _bars_by_close(bars, left, right, *, event_aware=False):
+    start, end = mark_scope(left, right, event_aware=event_aware)
     expected_count = (end - start) // MINUTE
     _require(0 < expected_count <= 1000 and len(bars) == expected_count, 'bar_coverage')
     result = {}
@@ -68,7 +78,7 @@ def reconstruct_gaps(manifest, account, ledger, checkpoints, fills, orders, open
             qty, _ = held.get(exit_fill['symbol'], (Decimal(0), None))
             _require(qty != 0 and exit_fill['side'] == ('SELL' if qty > 0 else 'BUY')
                      and number(exit_fill['qty'], 'history_gap_exit_quantity', positive=True) == abs(qty), 'position_path')
-        bars = {symbol: _bars_by_close(value, left, right) for symbol, value in item['bars'].items()}
+        bars = {symbol: _bars_by_close(value, left, right, event_aware=manifest.get('profile') == EVENT_GAP_KIND) for symbol, value in item['bars'].items()}
         cursor = left.replace(second=0, microsecond=0) + MINUTE
         while cursor < right:
             post_exit = changes and changes[0]['trade_time_utc'] <= cursor
@@ -139,8 +149,137 @@ def plan_constant_gaps(account, ledger, checkpoints, fills, orders, opening, *, 
     return plan
 
 
+def _event_path(account, ledger, left, right, fills, orders, opening):
+    """Prove constant inventory or exactly one unique, complete exit to flat.
+
+    Completeness of the independent fill/income inventory is certified by the
+    caller's immutable source parent. Never infer realized income from a fill.
+    """
+    inventory=owned_fill_positions(account,fills,orders,through=left,after=ledger.inception,opening_inventory=opening)
+    held={symbol:value for (owner,symbol),value in inventory.items() if owner=='hrs' and value[0]}
+    owned_fill_positions(account,fills,orders,through=right,after=ledger.inception,opening_inventory=opening)
+    owners=order_owners(account,orders)
+    changes={}
+    for row in fills:
+        if left<row['trade_time_utc']<=right and 'hrs' in owners.get((row['symbol'],str(row['order_id'])),set()):
+            _require(owners[(row['symbol'],str(row['order_id']))]=={'hrs'},'automatic_position_owner')
+            identity=(row['symbol'],str(row['trade_id']))
+            _require(identity not in changes or changes[identity]==row,'automatic_position_identity')
+            changes[identity]=row
+    _require(len(changes)<=1,'automatic_position_change')
+    exit_fill=next(iter(changes.values()),None)
+    if exit_fill:
+        qty,_=held.get(exit_fill['symbol'],(Decimal(0),None))
+        _require(qty and exit_fill['side']==('SELL' if qty>0 else 'BUY')
+            and number(exit_fill['qty'],'history_gap_exit_quantity',positive=True)==abs(qty),'automatic_position_change')
+    for event in ledger.incomes:
+        _require(event.verified is True and event.segment_id==ledger.segment_id
+            and event.kind in {'funding','fee','realized_pnl'} and event.amount.is_finite()
+            and (event.kind!='fee' or event.amount<=0)
+            and event.occurred_at.utcoffset() is not None,'automatic_income_unproven')
+    _require(not any(left<event.occurred_at<=right for event in ledger.cash_flows),'automatic_economic_change')
+    return held,exit_fill
+
+
+def plan_event_gaps(account,ledger,checkpoints,fills,orders,opening,*,inception_only=True):
+    """Bound event-aware repair collection to 8 gaps and 128 actual returned bars."""
+    _require(not inception_only or ledger.as_of-ledger.inception<timedelta(days=30),'automatic_inception_only')
+    plan=[];total=0
+    for left,right in zip(checkpoints,checkpoints[1:]):
+        if right.as_of-left.as_of<=2*MINUTE:continue
+        held,_=_event_path(account,ledger,left.as_of,right.as_of,fills,orders,opening)
+        if not held:continue
+        _require(ledger.inception<=left.as_of<right.as_of<=ledger.as_of,'automatic_boundary')
+        _require(left.units==right.units,'automatic_units_change')
+        start,end=mark_scope(left.as_of,right.as_of,event_aware=True)
+        count=(end-start)//MINUTE*len(held)
+        _require(0<count<=128,'automatic_source_budget')
+        if len(plan)>=8 or total+count>128:break
+        total+=count
+        plan.append(dict(left=left.as_of.isoformat(),right=right.as_of.isoformat(),symbols=sorted(held)))
+    return plan
+
+
+def _event_gap_envelopes(manifest,ledger,samples,fills,orders,opening):
+    """Union independent income ordering and pre/post exit inventory.
+
+    Price extrema cover whole intersecting exchange bars; economic state changes
+    cover only the clipped half-open gap interval. The 1us endpoint quantum keeps
+    a pre-midnight low on its actual economic day and never puts a tail in future.
+    """
+    by_time={point.as_of:point for point in samples};bounds=[]
+    for item in manifest['gaps']:
+        left,right=(datetime.fromisoformat(item[key]) for key in ('left','right'))
+        held,exit_fill=_event_path(manifest['account'],ledger,left,right,fills,orders,opening)
+        _require(held and set(held)==set(item['bars']),'automatic_envelope_symbols')
+        bars={symbol:_bars_by_close(rows,left,right,event_aware=True) for symbol,rows in item['bars'].items()}
+        for close_at in sorted(next(iter(bars.values()))):
+            lo,hi=max(left,close_at-MINUTE),min(right,close_at)
+            _require(lo<hi<=ledger.as_of,'automatic_envelope_clock')
+            cash=ledger.cash_allocation-sum(event.amount for event in ledger.cash_flows if event.occurred_at>lo)
+            prior=sum(event.amount for event in ledger.incomes if event.occurred_at<=lo)
+            during=[event.amount for event in ledger.incomes if lo<event.occurred_at<hi]
+            low=cash+prior+sum(min(amount,Decimal(0)) for amount in during)
+            high=cash+prior+sum(max(amount,Decimal(0)) for amount in during)
+            for symbol,(qty,basis) in held.items():
+                if exit_fill and symbol==exit_fill['symbol'] and exit_fill['trade_time_utc']<=lo:continue
+                bar,_=bars[symbol][close_at]
+                upper,lower=(number(bar[key],'automatic_envelope_price',positive=True) for key in (2,3))
+                bottom=qty*((lower if qty>0 else upper)-basis)
+                top=qty*((upper if qty>0 else lower)-basis)
+                if exit_fill and symbol==exit_fill['symbol'] and lo<exit_fill['trade_time_utc']<hi:
+                    bottom=min(bottom,Decimal(0));top=max(top,Decimal(0))
+                low+=bottom;high+=top
+            units=by_time[left].units
+            bounds.append(dict(as_of=(hi-BOUND_QUANTUM).isoformat(),source_units=str(units),
+                low_nav=str(number(low,'automatic_envelope_equity',positive=True)/units),
+                high_nav=str(number(high,'automatic_envelope_equity',positive=True)/units)))
+        boundaries={event.occurred_at for event in ledger.incomes if left<event.occurred_at<=right
+            and (event.occurred_at==right or event.occurred_at==event.occurred_at.replace(second=0,microsecond=0))}
+        if exit_fill:
+            at=exit_fill['trade_time_utc']
+            if at==right or at==at.replace(second=0,microsecond=0):boundaries.add(at)
+        for at in sorted(boundaries):
+            # A boundary has its own economic day. Independent simultaneous
+            # incomes and pre/post exit states must not collapse into the net
+            # state observed at the following interval's left endpoint.
+            amounts=[event.amount for event in ledger.incomes if event.occurred_at==at]
+            cash=ledger.cash_allocation-sum(event.amount for event in ledger.cash_flows if event.occurred_at>at)
+            income=sum(event.amount for event in ledger.incomes if event.occurred_at<at)
+            low=cash+income+sum(min(amount,Decimal(0)) for amount in amounts)
+            high=cash+income+sum(max(amount,Decimal(0)) for amount in amounts)
+            exact_minute=at==at.replace(second=0,microsecond=0)
+            if exact_minute:
+                for symbol,(qty,basis) in held.items():
+                    if exit_fill and symbol==exit_fill['symbol'] and exit_fill['trade_time_utc']<at:continue
+                    _,close=bars[symbol][at]
+                    unrealized=qty*(close-basis)
+                    exits=exit_fill and symbol==exit_fill['symbol'] and exit_fill['trade_time_utc']==at
+                    low+=min(unrealized,Decimal(0)) if exits else unrealized
+                    high+=max(unrealized,Decimal(0)) if exits else unrealized
+            else:
+                # Fractional right endpoints have an actual portfolio value.
+                # It proves remaining unrealized exactly; an exit's unknown
+                # pre-exit mark remains bounded by its intersecting OHLC.
+                unrealized=by_time[right].equity-cash-income-sum(amounts)
+                low+=unrealized;high+=unrealized
+                if exit_fill and exit_fill['trade_time_utc']==at:
+                    symbol=exit_fill['symbol'];qty,basis=held[symbol]
+                    bar,_=bars[symbol][max(bars[symbol])]
+                    upper,lower=(number(bar[key],'automatic_envelope_price',positive=True) for key in (2,3))
+                    low+=min(qty*((lower if qty>0 else upper)-basis),Decimal(0))
+                    high+=max(qty*((upper if qty>0 else lower)-basis),Decimal(0))
+            units=by_time[left].units
+            bounds.append(dict(as_of=at.isoformat(),source_units=str(units),
+                low_nav=str(number(low,'automatic_envelope_equity',positive=True)/units),
+                high_nav=str(number(high,'automatic_envelope_equity',positive=True)/units)))
+    return sorted(bounds,key=lambda bound:datetime.fromisoformat(bound['as_of']))
+
+
 def gap_nav_envelopes(manifest, ledger, samples, fills, orders, opening):
     """Genuine bar-derived portfolio bounds, distinct from observed checkpoints."""
+    if manifest.get('profile')==EVENT_GAP_KIND:
+        return _event_gap_envelopes(manifest,ledger,samples,fills,orders,opening)
     by_time={point.as_of:point for point in samples};bounds=[]
     for item in manifest['gaps']:
         left,right=(datetime.fromisoformat(item[key]) for key in ('left','right'))
@@ -207,19 +346,40 @@ def verify_mark_receipts(plan,known_at):
     receipts=plan['http_receipts'];used=set()
     for item in plan['gaps']:
         left,right=(datetime.fromisoformat(item[key]) for key in ('left','right'))
-        start=int(left.replace(second=0,microsecond=0).timestamp())*1000
-        end=int(right.replace(second=0,microsecond=0).timestamp())*1000-1
+        first,last=mark_scope(left,right,event_aware=plan.get('profile')==EVENT_GAP_KIND)
+        start=int(first.timestamp())*1000
+        end=int(last.timestamp())*1000-1
         for symbol,bars in item['bars'].items():
-            matches=[(index,row) for index,row in enumerate(receipts) if row.get('params',{}).get('symbol')==symbol
-                and row['params'].get('startTime')==start and row['params'].get('endTime')==end]
-            _require(len(matches)==1,'automatic_source_scope')
-            index,row=matches[0];params=row['params'];requested=clock(row['requested_at']);received=clock(row['received_at'])
-            _require(index not in used and row.get('source')==BAR_SOURCE and params.get('interval')=='1m'
-                and type(params.get('limit')) is int and len(bars)<=params['limit']<=128
-                and requested<=received<=available and canonical(bars)[1]==row.get('response_sha256')
-                and all(bar[6]<int(requested.timestamp()*1000) for bar in bars),'automatic_source_receipt_invalid')
-            _bars_by_close(bars,left,right);used.add(index)
+            event_aware=plan.get('profile')==EVENT_GAP_KIND
+            _bars_by_close(bars,left,right,event_aware=event_aware)
+            cursor=start
+            while cursor<=end:
+                matches=[(index,row) for index,row in enumerate(receipts) if index not in used
+                    and row.get('params',{}).get('symbol')==symbol
+                    and row['params'].get('startTime')==cursor
+                    and type(row['params'].get('endTime')) is int
+                    and cursor<=row['params']['endTime']<=end
+                    and (event_aware or row['params']['endTime']==end)]
+                _require(len(matches)==1,'automatic_source_scope')
+                index,row=matches[0];params=row['params'];requested=clock(row['requested_at']);received=clock(row['received_at'])
+                stop=params['endTime']+1
+                _require((stop-cursor)%60000==0,'automatic_source_scope')
+                original=bars[(cursor-start)//60000:(stop-start)//60000]
+                _require(row.get('source')==BAR_SOURCE and params.get('interval')=='1m'
+                    and type(params.get('limit')) is int and len(original)<=params['limit']<=128
+                    and requested<=received<=available and canonical(original)[1]==row.get('response_sha256')
+                    and ('response' not in row or canonical(row['response'])[1]==row['response_sha256'])
+                    and all(bar[6]<int(requested.timestamp()*1000) for bar in original),'automatic_source_receipt_invalid')
+                used.add(index);cursor=stop
     _require(len(used)==len(receipts),'automatic_source_extra_receipt')
+
+
+def gap_receipt_active(receipt,cutoff,as_of):
+    # Late independently certified endpoint income can add a right-time bound
+    # during revaluation. Keep the original receipt through that endpoint.
+    if receipt.get('kind')==EVENT_GAP_KIND:
+        return any(cutoff<=datetime.fromisoformat(gap['right'])<=as_of for gap in receipt['mark_gaps'])
+    return any(cutoff<=datetime.fromisoformat(bound['as_of'])<=as_of for bound in receipt.get('conservative_bounds',()))
 
 
 def revalue_gap_bounds(receipt,ledger,samples,fills,orders,opening):
@@ -233,7 +393,8 @@ def revalue_gap_bounds(receipt,ledger,samples,fills,orders,opening):
             _require(all(flow.nav_before is not None for flow in later),'automatic_valuation_unitization')
             units=ledger.units-sum((flow.amount/flow.nav_before for flow in later),Decimal(0))
             _require(by_time[at].units==units,'automatic_valuation_units')
-        expected=plan_constant_gaps(receipt['account_id'],ledger,(by_time[left],by_time[right]),fills,orders,opening,inception_only=False)
+        planner=plan_event_gaps if receipt.get('kind')==EVENT_GAP_KIND else plan_constant_gaps
+        expected=planner(receipt['account_id'],ledger,(by_time[left],by_time[right]),fills,orders,opening,inception_only=False)
         _require(expected==[dict(left=gap['left'],right=gap['right'],symbols=sorted(gap['bars']))],
             'automatic_valuation_path')
-    return gap_nav_envelopes(dict(account=receipt['account_id'],gaps=receipt['mark_gaps']),ledger,samples,fills,orders,opening)
+    return gap_nav_envelopes(dict(account=receipt['account_id'],gaps=receipt['mark_gaps'],profile=receipt.get('kind')),ledger,samples,fills,orders,opening)

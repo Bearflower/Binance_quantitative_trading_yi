@@ -525,6 +525,23 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
         async with pool.acquire() as c:
             ledger=json.loads(await c.fetchval('SELECT ledger_state FROM trading.hrs_loss_gate_state WHERE account_id=$1',account))
             assert D(ledger['nav'])==1
+        if repair_damage in ('funding_gap','funding_exit_gap'):
+            event_at=clock[0]+timedelta(seconds=30)
+            close=dict(symbol='BTCUSDT',id=82,orderId=82,side='SELL',qty='2',price='101',quoteQty='202',commission='0.2',commissionAsset='USDT',realizedPnl='2',time=int((event_at+timedelta(seconds=30)).timestamp()*1000))
+            def gap_income(**kw):
+                if kw['income_type']=='COMMISSION':
+                    return [dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-1',asset='USDT',tranId=81,tradeId='81',time=int(entered.timestamp()*1000),info='')]+([dict(symbol='BTCUSDT',incomeType='COMMISSION',income='-0.2',asset='USDT',tranId=82,tradeId='82',time=close['time'],info='')] if repair_damage=='funding_exit_gap' else [])
+                if kw['income_type']=='FUNDING_FEE':return [dict(symbol='BTCUSDT',incomeType='FUNDING_FEE',income='-1',asset='USDT',tranId=900,tradeId='',time=int(event_at.timestamp()*1000),info='')]
+                if kw['income_type']=='REALIZED_PNL' and repair_damage=='funding_exit_gap':return [dict(symbol='BTCUSDT',incomeType='REALIZED_PNL',income='2',asset='USDT',tranId=82,tradeId='82',time=close['time'],info='')]
+                return []
+            api.get_income_history.side_effect=gap_income
+            if repair_damage=='funding_exit_gap':
+                async with pool.acquire() as c:
+                    await c.execute("INSERT INTO trading.trade_records(account_id,symbol,order_id,strategy,side,status,order_type,executed_at) VALUES ($1,'BTCUSDT','82','hrs','SELL','FILLED','MARKET',$2)",account,event_at.astimezone(timezone(timedelta(hours=8))).replace(tzinfo=None))
+                api.get_user_trades.return_value=[*api.get_user_trades.return_value,close]
+                api.get_order.side_effect=lambda symbol,identity:dict(symbol=symbol,orderId=identity,side='SELL' if str(identity)=='82' else 'BUY',status='FILLED')
+                api.get_position.return_value=[];api.get_um_account_positions.return_value=[]
+                service.position_manager=SimpleNamespace(get_all_positions=lambda:{})
         # Persist the genuine delayed observation first. The next normal refresh
         # can recover it using original closed marks and exact economic proof.
         clock[0]+=timedelta(seconds=123)
@@ -563,17 +580,26 @@ async def test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill
                 assert first['history_complete'] is False and len(first['gap_endpoints'])==8
             clock[0]+=timedelta(seconds=30)
             repaired=await service.refresh()
-        if repair_damage and repair_damage not in ('many_gaps','late_income','late_income_latch'):
+        if repair_damage and repair_damage not in ('many_gaps','late_income','late_income_latch','funding_gap','funding_exit_gap'):
             assert not repaired['ready'] and not repaired['allowed'],repaired
             async with pool.acquire() as c:
-                assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM trading.hrs_equity_reconciliation WHERE account_id=$1 AND receipt->>'kind'='automatic_constant_mark_gap_v1')",account)
+                assert not await c.fetchval("SELECT EXISTS(SELECT 1 FROM trading.hrs_equity_reconciliation WHERE account_id=$1 AND receipt->>'kind' IN ('automatic_constant_mark_gap_v1','automatic_event_mark_gap_v2'))",account)
             return
         assert repaired['ready'] and repaired['allowed'],repaired
         assert repaired['window_label']=='inception_segment' and not repaired['qualified_30_day']
         async with pool.acquire() as c:
             revision=await c.fetchrow('SELECT * FROM trading.hrs_equity_reconciliation WHERE account_id=$1 ORDER BY after_state_version DESC LIMIT 1',account)
             receipt=json.loads(revision['receipt'])
-            assert receipt['kind']=='automatic_constant_mark_gap_v1'
+            assert receipt['kind']=='automatic_event_mark_gap_v2'
+            from strategies.hrs.equity_evidence import canonical
+            after_state=json.loads(revision['after_state'])
+            assert receipt['after_gate_sha256']==canonical(after_state['gate'])[1]
+            assert receipt['after_ledger_sha256']==canonical(after_state['ledger'])[1]
+            assert all(datetime.fromisoformat(bound['as_of'])<=datetime.fromisoformat(receipt['as_of']) for bound in receipt['conservative_bounds'])
+            for source in receipt['http_receipts']:
+                rows=receipt['mark_gaps'][0]['bars'][source['params']['symbol']]
+                assert source['response_sha256']==canonical(rows)[1]
+                assert rows[-1][6]<int(datetime.fromisoformat(source['requested_at']).timestamp()*1000)
             assert receipt['available_at']==clock[0].isoformat()
             assert len(receipt['http_receipts'])==1 and receipt['backfilled_points']>=2
             assert all([await c.fetchval('SELECT payload FROM trading.hrs_risk_equity_checkpoints WHERE account_id=$1 AND checkpoint_id=$2',account,row['checkpoint_id'])==row['payload'] for row in original_points])
@@ -959,3 +985,9 @@ async def test_late_opening_income_reconciliation_revalues_original_bounds_with_
 @pytest.mark.asyncio
 async def test_late_income_bound_latch_receipt_matches_persisted_final_gate(setup):
     await test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,False,False,repair_damage='late_income_latch')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('case',['funding_gap','funding_exit_gap'])
+async def test_event_v2_recovers_exact_independent_income_and_full_exit_end_to_end(setup,case):
+    await test_existing_hrs_position_has_economic_opening_cash_and_terminal_fill_proof(setup,False,False,repair_damage=case)

@@ -56,7 +56,7 @@ from .equity_evidence import (
     certify_opening_inventory,attribute_funding_from_inventory,historical_boundary_observation,require_funding_publication,certify_reduce_only_lifecycle,FUNDING_SOURCE_CONTRACT,certify_owned_inventory_paths,
     flat_boundary_observation, number, order_owners, owned_fill_positions, prove_positions,
 )
-from .equity_history_gap import BAR_SOURCE, reconstruct_gaps, replay_inception_latches, plan_constant_gaps, gap_nav_envelopes, apply_conservative_bounds, verify_mark_receipts, revalue_gap_bounds
+from .equity_history_gap import BAR_SOURCE, reconstruct_gaps, replay_inception_latches, gap_nav_envelopes, apply_conservative_bounds, verify_mark_receipts, revalue_gap_bounds, plan_event_gaps, EVENT_GAP_KIND, mark_scope, gap_receipt_active
 from .equity_reconciliation import RebuiltHistory, ReconciliationSource,rebuild_history,activate_reconciliation,effective_checkpoints
 from .funding_reference import read_forecasts_prefix,load_forecasts_ref,evidence_forecasts_ref,verify_stored_prefixes
 from .loss_gate import GateHistory, SHANGHAI, evaluate_loss_gate
@@ -582,12 +582,13 @@ class HrsEquityService:
                 fills=copy.deepcopy(payload['fills'])
                 for fill in fills:fill['trade_time_utc']=datetime.fromisoformat(fill['trade_time_utc'])
                 anchor=json.loads(bootstrap['opening_evidence']) if isinstance(bootstrap['opening_evidence'],str) else bootstrap['opening_evidence']
-                gaps=plan_constant_gaps(self.account,ledger,points,fills,payload['order_owners'],anchor.get('opening_inventory',()))
+                gaps=plan_event_gaps(self.account,ledger,points,fills,payload['order_owners'],anchor.get('opening_inventory',()))
         if not gaps:return
         receipts=[];items=[]
         for gap in gaps:
-            start=int(datetime.fromisoformat(gap['left']).replace(second=0,microsecond=0).timestamp())*1000
-            end=int(datetime.fromisoformat(gap['right']).replace(second=0,microsecond=0).timestamp())*1000
+            first,last=mark_scope(datetime.fromisoformat(gap['left']),datetime.fromisoformat(gap['right']),event_aware=True)
+            start=int(first.timestamp())*1000
+            end=int(last.timestamp())*1000
             bars={}
             for symbol in gap['symbols']:
                 params=dict(symbol=symbol,interval='1m',startTime=start,endTime=end-1,limit=128)
@@ -602,7 +603,7 @@ class HrsEquityService:
                 receipts.append(dict(source=BAR_SOURCE,params=params,requested_at=requested,received_at=received,
                     response_sha256=canonical(response)[1]))
             items.append(dict(left=gap['left'],right=gap['right'],bars=bars))
-        snapshot['automatic_history_gap']=dict(status='complete',parent_ledger_version=stored['version'],
+        snapshot['automatic_history_gap']=dict(status='complete',profile=EVENT_GAP_KIND,parent_ledger_version=stored['version'],
             parent_evidence_sha256=parent['evidence_sha256'],parent_available_at=parent['available_at'],
             account=self.account,segment=ledger.segment_id,available_at=self._now().isoformat(),gaps=items,http_receipts=receipts)
 
@@ -882,7 +883,7 @@ class HrsEquityService:
 
     async def _saved_gap_latches(self,connection,prior,state,samples,evidence,extra=()):
         rows=await connection.fetch("""SELECT receipt_sha256,available_at,receipt FROM trading.hrs_equity_reconciliation
-            WHERE account_id=$1 AND segment_id=$2 AND receipt->>'kind'='automatic_constant_mark_gap_v1'
+            WHERE account_id=$1 AND segment_id=$2 AND receipt->>'kind' IN ('automatic_constant_mark_gap_v1','automatic_event_mark_gap_v2')
             ORDER BY after_state_version LIMIT 4097""",self.account,state.segment_id)
         if len(rows)>4096:raise EvidenceBlocked('history_gap_automatic_receipt_budget')
         bounds=[];refs=[];endpoints={}
@@ -890,8 +891,7 @@ class HrsEquityService:
             receipt=json.loads(row['receipt']) if isinstance(row['receipt'],str) else row['receipt']
             if canonical(receipt)[1]!=row['receipt_sha256'] or row['available_at']>self._now():
                 raise EvidenceBlocked('history_gap_automatic_receipt_invalid')
-            if not any(datetime.fromisoformat(bound['as_of'])>=max(state.inception,state.as_of-timedelta(days=30))
-                    for bound in receipt.get('conservative_bounds',())):continue
+            if not gap_receipt_active(receipt,max(state.inception,state.as_of-timedelta(days=30)),state.as_of):continue
             active=[bound for bound in revalue_gap_bounds(receipt,state,samples,evidence['fills'],evidence['order_owners'],self._anchor_inventory)
                 if datetime.fromisoformat(bound['as_of'])>=max(state.inception,state.as_of-timedelta(days=30))]
             for gap in receipt['mark_gaps']:
@@ -899,11 +899,11 @@ class HrsEquityService:
                     at=datetime.fromisoformat(gap[key]);endpoints[at]=next(point for point in samples if point.as_of==at)
             if receipt.get('account_id')!=self.account or receipt.get('segment_id')!=state.segment_id:
                 raise EvidenceBlocked('history_gap_automatic_receipt_identity')
-            verify_mark_receipts(dict(available_at=receipt['available_at'],gaps=receipt['mark_gaps'],http_receipts=receipt['http_receipts']),self._now())
+            verify_mark_receipts(dict(profile=receipt.get('kind'),available_at=receipt['available_at'],gaps=receipt['mark_gaps'],http_receipts=receipt['http_receipts']),self._now())
             refs.append(dict(receipt_sha256=row['receipt_sha256'],available_at=row['available_at'],receipt=receipt))
             bounds.extend(dict(bound,receipt_sha256=row['receipt_sha256'],source_available_at=row['available_at']) for bound in active)
             if len(bounds)>65536:raise EvidenceBlocked('history_gap_automatic_bound_budget')
-        if bounds:
+        if refs:
             valuation=dict(ledger_state=ledger_to_dict(state),checkpoint_endpoints=[asdict(endpoints[key]) for key in sorted(endpoints)],
                 opening_inventory=copy.deepcopy(self._anchor_inventory))
             valuation_sha=canonical(valuation)[1];valuation_available=self._now()
@@ -916,6 +916,8 @@ class HrsEquityService:
     async def _automatic_history(self,connection,stored,state,checkpoints,samples,fills,orders,evidence):
         plan=evidence['capture'].get('automatic_history_gap',{})
         if plan.get('status')!='complete':return None
+        if plan.get('profile')!=EVENT_GAP_KIND:
+            raise EvidenceBlocked('history_gap_automatic_profile')
         if plan.get('parent_ledger_version')!=stored.version:
             raise EvidenceBlocked('history_gap_automatic_parent_changed')
         parent=await connection.fetchrow('SELECT payload FROM trading.hrs_equity_evidence WHERE account_id=$1 AND evidence_sha256=$2',self.account,plan['parent_evidence_sha256'])
@@ -925,10 +927,12 @@ class HrsEquityService:
         if (payload.get('account_id')!=self.account or payload.get('segment_id')!=state.segment_id
                 or payload.get('result',{}).get('ledger_version')!=stored.version
                 or datetime.fromisoformat(payload['as_of'])!=stored.ledger.as_of
-                or payload.get('source_collection',{}).get('complete') is not True):
+                or payload.get('source_collection',{}).get('complete') is not True
+                or payload.get('source_collection',{}).get('gaps')
+                or payload.get('income_report',{}).get('id_match_and_coverage_complete') is not True):
             raise EvidenceBlocked('history_gap_automatic_parent_invalid')
         verify_mark_receipts(plan,self._now())
-        expected=plan_constant_gaps(self.account,state,checkpoints,fills,orders,self._anchor_inventory)
+        expected=plan_event_gaps(self.account,state,checkpoints,fills,orders,self._anchor_inventory)
         actual=[dict(left=item['left'],right=item['right'],symbols=sorted(item['bars'])) for item in plan['gaps']]
         if actual!=expected:raise EvidenceBlocked('history_gap_automatic_path_changed')
         added,bars=reconstruct_gaps(plan,self.account,state,checkpoints,fills,orders,self._anchor_inventory,self._now())
@@ -939,7 +943,8 @@ class HrsEquityService:
         prior=await self._saved_gap_latches(connection,prior,state,full,evidence,bounds)
         history=self._gate_history(full,fills,orders,state.inception)
         gate=evaluate_loss_gate(prior,state.checkpoint,history,allow_inception_segment=self.allow_inception)
-        receipt=dict(kind='automatic_constant_mark_gap_v1',available_at=self._now(),as_of=state.as_of,
+        receipt=dict(kind=EVENT_GAP_KIND,available_at=self._now(),as_of=state.as_of,
+            after_ledger_sha256=canonical(ledger_to_dict(state))[1],after_gate_sha256=canonical(gate.state.to_dict())[1],
             source_evidence_sha256=plan['parent_evidence_sha256'],source_ledger_version=stored.version,account_id=self.account,segment_id=state.segment_id,mark_gaps=plan['gaps'],
             gap_endpoints=[{key:item[key] for key in ('left','right')} for item in plan['gaps']],
             http_receipts=plan['http_receipts'],conservative_bounds=bounds,history_complete=history.complete,
