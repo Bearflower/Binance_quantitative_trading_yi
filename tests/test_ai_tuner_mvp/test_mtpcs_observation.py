@@ -9,6 +9,11 @@ def deals():
     return {"btc_eth": None, "btc_eth_aggressive": None}
 
 
+def empty_archive():
+    return dict(matched={"btc_eth": 0, "btc_eth_aggressive": 0}, written=0,
+                persisted=0, covered_until_ms=1795439500000, up_to_date=True)
+
+
 def shadow():
     return dict(first_utc="2026-11-23T06:00:00", last_utc="2026-11-23T07:00:00",
                 hours=2, missing_count=0, incomplete_hours_utc=[], alignment={"allowed": 2},
@@ -47,6 +52,8 @@ def test_first_verified_entry_retained_on_source_failure(tmp_path, monkeypatch):
     p.write_text(json.dumps(cached))
 
     def read(command, **kwargs):
+        if command[:4] == ["docker", "exec", "-i", "ai-tuner"]:
+            return empty_archive()
         if command[0] == "docker":
             raise subprocess.TimeoutExpired(command, 1)
         return shadow()
@@ -62,8 +69,12 @@ def test_first_verified_entry_retained_on_source_failure(tmp_path, monkeypatch):
 def test_successful_observation_publishes_section_and_keeps_evidence(tmp_path, monkeypatch):
     monkeypatch.setattr(mtpcs, "STATE", tmp_path / "state")
     monkeypatch.setenv("DIGEST_OUTBOX_DIR", str(tmp_path / "outbox"))
-    monkeypatch.setattr(mtpcs, "read_json", lambda command, **kw:
-                        {"strategies": deals()} if command[0] == "docker" else shadow())
+    def run(command, **kwargs):
+        if command[:4] == ["docker", "exec", "-i", "ai-tuner"]:
+            return empty_archive()
+        return {"strategies": deals()} if command[0] == "docker" else shadow()
+
+    monkeypatch.setattr(mtpcs, "read_json", run)
     assert mtpcs.prepare_digest(dry_run=False) is None
     assert json.loads((tmp_path / "state/first_entries.json").read_text()) == deals()
     entry = json.loads((tmp_path / "outbox/mtpcs.json").read_text())
@@ -140,3 +151,51 @@ def test_shadow_rollup_uses_only_complete_previous_days_for_daily_rate():
     incomplete = summarize(rows[1:], datetime(2026, 11, 24, 17, 5, tzinfo=timezone.utc))
     assert incomplete["daily"]["covered_hours"] == 23
     assert incomplete["recent_complete_days"] == 0
+
+
+def test_order_archive_runs_after_both_first_entries_are_cached(tmp_path, monkeypatch):
+    cached = {
+        key: dict(state="verified", intent="trend", direction="LONG", order_id=str(i + 1),
+                  filled_at_utc="2026-11-23T07:11:00+00:00", symbol="ETHUSDT", filled_qty="1")
+        for i, key in enumerate(mtpcs.STRATEGIES)
+    }
+    (tmp_path / "first_entries.json").write_text(json.dumps(cached))
+    archive_calls = []
+
+    def run(command, **kwargs):
+        if command[0] == "docker":
+            assert command[3] == "ai-tuner"
+            archive_calls.append(command[-2:])
+            return dict(matched={"btc_eth": 1, "btc_eth_aggressive": 1}, written=0,
+                        persisted=2, covered_until_ms=1795439500000, up_to_date=True)
+        return shadow()
+
+    monkeypatch.setattr(mtpcs, "read_json", run)
+    text, errors = mtpcs.prepare(tmp_path, tmp_path / "ledger", persist=False)
+    assert errors == [] and "订单归档" in text
+    assert archive_calls == [["", "preview"]]
+    checkpoint = tmp_path / "order_archive_checkpoint.json"
+    assert not checkpoint.exists()
+
+    mtpcs.prepare(tmp_path, tmp_path / "ledger", persist=True)
+    assert json.loads(checkpoint.read_text()) == {"covered_until_ms": 1795439500000}
+    mtpcs.prepare(tmp_path, tmp_path / "ledger", persist=True)
+    assert archive_calls[-2:] == [["", "persist"], ["1795439500000", "persist"]]
+
+
+def test_archive_failure_retains_only_last_successful_checkpoint(tmp_path, monkeypatch):
+    (tmp_path / "order_archive_checkpoint.json").write_text('{"covered_until_ms": 1795439500000}')
+    checkpoint = tmp_path / "order_archive_checkpoint.json"
+
+    def run(command, **kwargs):
+        if command[:4] == ["docker", "exec", "-i", "ai-tuner"]:
+            raise subprocess.TimeoutExpired(command, 1)
+        if command[0] == "docker":
+            return {"strategies": deals()}
+        return shadow()
+
+    monkeypatch.setattr(mtpcs, "read_json", run)
+    text, errors = mtpcs.prepare(tmp_path, tmp_path / "ledger", persist=True)
+    assert errors == ["订单归档（TimeoutExpired）"]
+    assert "订单归档（TimeoutExpired）" in text
+    assert json.loads(checkpoint.read_text()) == {"covered_until_ms": 1795439500000}

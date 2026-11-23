@@ -7,7 +7,7 @@ revision=$1
 bundle="$root/.deploy_tmp/mtpcs-digest-$revision"
 target="$root/ai_tuner/ops"
 release="$root/.releases/mtpcs-digest/$revision"
-files=(hrs_observation.py digest_outbox.py daily_digest.py)
+files=(mtpcs_order_archive.py mtpcs_observation.py)
 exec 9>"$root/.deploy_tmp/compose_deploy.lock"
 flock -x 9
 
@@ -23,11 +23,13 @@ if systemctl is-active --quiet trading-daily-digest.service; then
     exit 1
 fi
 printf '%s  %s\n' \
- '07e4af929a3372732508493c4e0455fbc37aec4502fcbc09afa2dcd4ca75eb64' "$target/daily_digest.py" \
- 'b27b8231f09c1220086b46c367e6942c02c0a65efc6dcda621e3773546369989' "$target/digest_outbox.py" \
+ '704294a93814cecc2daac0903f771c45f686477ae44faf33da31651ae1e5c6e4' "$target/daily_digest.py" \
+ '372e0d90a76a66f96649b8c900b4edfa6b615f62e636385be37b4cfe26392cd9' "$target/digest_outbox.py" \
+ '9394a838e5833b17f3d55c0c945036416465f9cc38091dc1778034279651d0a5' "$target/mtpcs_observation.py" \
+ '03cf09bc8dbe806234bbd61bfbfb11696bab7a7069c6de772a49d055b967b0fd' "$target/hrs_observation.py" \
  '30d6adb838d9f1574d9eda394d386f15be11b877afa0c8c282d978cd6b5584c8' /etc/systemd/system/trading-daily-digest.service \
  | sha256sum -c
-for name in mtpcs_observation.py mtpcs_shadow_summary.py mtpcs_entry_probe.py; do cmp "$bundle/$name" "$target/$name"; done
+for name in digest_outbox.py mtpcs_shadow_summary.py mtpcs_entry_probe.py; do cmp "$bundle/$name" "$target/$name"; done
 actual=$(systemctl show trading-daily-digest.timer -p ActiveState --value)
 [[ "$actual" == active ]]
 systemctl cat trading-daily-digest.timer | grep -Fx 'OnCalendar=*-*-* 07:35:00 Asia/Shanghai'
@@ -43,28 +45,15 @@ import json,sys
 assert json.load(open(sys.argv[1]))['ok'] is True
 PY
 
-tuner_before=$(docker inspect -f '{{.Id}} {{.Image}}' ai-tuner)
+snapshot() {
+    docker inspect -f '{{.Name}} {{.Id}} {{.Image}} {{.State.StartedAt}}' \
+        ai-tuner trading_system-btc_eth trading_system-btc_eth_aggressive trading_system-postgres
+}
+runtime_before=$(snapshot)
 mkdir -p "$release/preview/outbox" "$release/backup"
-day=$(TZ=Asia/Shanghai date +%F)
-DIGEST_OUTBOX_DIR="$release/preview/outbox" python3 -c 'import hrs_observation; hrs_observation.prepare_digest(dry_run=False)'
-DIGEST_OUTBOX_DIR="$release/preview/outbox" python3 "$bundle/mtpcs_observation.py" --state-dir "$release/preview/state"
-python3 "$bundle/daily_digest.py" --dry-run \
-  --outbox-dir "$release/preview/outbox" \
-  --outbox-dir /var/lib/trading-digest/outbox \
-  --outbox-dir "/var/lib/trading-digest/outbox/archive/$day" \
-  --outbox-dir "$root/logs/ai_tuner/digest/outbox" \
-  --outbox-dir "$root/logs/ai_tuner/digest/outbox/archive/$day" > "$release/combined-preview.txt"
-python3 - "$release/preview/outbox/mtpcs.json" "$release/combined-preview.txt" <<'PY'
-import json,sys
-from pathlib import Path
-entry=json.loads(Path(sys.argv[1]).read_text())
-preview=Path(sys.argv[2]).read_text()
-assert entry['status'] == 'ok',entry['summary']
-assert preview.count('【交易系统每日巡检汇总】') == 1 and len(preview.encode()) < 24000
-assert preview.count('7/8 MTPCS 开仓归因与影子观察') == 1
-assert '8/8 HRS 四模式与影子验收' in preview and '同信号双侧齐全' in preview and '近七日实盘' in preview
-assert all(s in preview for s in ('首笔实盘入场','影子账','斐波那契','只加方向一致性','还要等多久','当日日报结论'))
-PY
+python3 "$bundle/mtpcs_observation.py" --dry-run > "$release/section-preview.txt"
+grep -Fq '订单归档 · 扫描至' "$release/section-preview.txt"
+
 for name in "${files[@]}"; do
     if [[ -e "$target/$name" ]]; then
         cp -p "$target/$name" "$release/backup/$name"
@@ -88,19 +77,31 @@ for name in "${files[@]}"; do
     installed+=("$name")
     cmp "$target/$name" "$bundle/$name"
 done
+# Run the ordinary write path once without sending or writing the live outbox.
+DIGEST_OUTBOX_DIR="$release/preview/outbox" python3 "$target/mtpcs_observation.py"
+python3 - "$release/preview/outbox/mtpcs.json" /var/lib/trading-digest/mtpcs/order_archive_checkpoint.json <<'PYRUN'
+import json,sys
+from pathlib import Path
+entry=json.loads(Path(sys.argv[1]).read_text())
+state=json.loads(Path(sys.argv[2]).read_text())
+assert '订单归档 · 扫描至' in entry['text'],entry['summary']
+assert type(state['covered_until_ms']) is int
+print(next(line for line in entry['text'].splitlines() if line.startswith('订单归档')))
+PYRUN
 python3 "$target/daily_digest.py" --dry-run > "$release/installed-preview.txt"
 grep -Fq '7/8 MTPCS 开仓归因与影子观察' "$release/installed-preview.txt"
 grep -Fq '当日日报结论' "$release/installed-preview.txt"
+grep -Fq '订单归档 · 扫描至' "$release/installed-preview.txt"
 grep -Fq '还要等多久' "$release/installed-preview.txt"
 grep -Fq '8/8 HRS 四模式与影子验收' "$release/installed-preview.txt"
 grep -Fq '完整对账闭仓' "$release/installed-preview.txt"
 grep -Fq '同信号双侧齐全' "$release/installed-preview.txt"
 grep -Fq '近七日实盘' "$release/installed-preview.txt"
-if grep -Fq '读取告警 ·' "$release/installed-preview.txt"; then
+if grep -Fq '订单归档（' "$release/installed-preview.txt"; then
     echo 'Production observation preview returned a read warning' >&2
     false
 fi
-[[ $(docker inspect -f '{{.Id}} {{.Image}}' ai-tuner) == "$tuner_before" ]]
+[[ $(snapshot) == "$runtime_before" ]]
 [[ $(systemctl show trading-daily-digest.timer -p ActiveState --value) == active ]]
 printf '%s\n' "$revision active server_preview_ok" > "$release/verified"
 trap - ERR

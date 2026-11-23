@@ -156,8 +156,14 @@ def daily_lines(entries, shadow):
     return lines
 
 
-def render(entries, shadow, errors):
-    lines = ["首笔实盘入场", *first_lines(entries), "", "影子账"]
+def render(entries, shadow, errors, archive=None):
+    lines = ["首笔实盘入场", *first_lines(entries)]
+    if archive:
+        cut = datetime.fromtimestamp(archive["covered_until_ms"] / 1000, timezone.utc)
+        matches = archive["matched"]
+        lines.append(f"订单归档 · 扫描至 {beijing(cut.isoformat())}，本轮原版 {matches['btc_eth']} 笔、"
+                     f"激进版 {matches['btc_eth_aggressive']} 笔，已入库 {archive['persisted']} 笔。")
+    lines.extend(("", "影子账"))
     if shadow:
         lines.append(f"{beijing(shadow['first_utc'])} 至 {beijing(shadow['last_utc'])}，"
                      f"{shadow['hours']} 个小时，缺 {shadow['missing_count']} 小时，"
@@ -194,7 +200,7 @@ def render(entries, shadow, errors):
 def prepare(state_dir, ledger, *, persist):
     state_file = state_dir / "first_entries.json"
     cached = {}
-    entries, shadow, errors = {}, None, []
+    entries, shadow, archive, errors = {}, None, None, []
     try:
         if state_file.exists():
             cached = json.loads(state_file.read_text())
@@ -211,6 +217,21 @@ def prepare(state_dir, ledger, *, persist):
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         errors.append(f"成交与归因（{type(exc).__name__}）")
     try:
+        checkpoint = state_dir / "order_archive_checkpoint.json"
+        cursor = json.loads(checkpoint.read_text())["covered_until_ms"] if checkpoint.exists() else ""
+        archive = read_json(
+            ["docker", "exec", "-i", "ai-tuner", "python", "-", str(cursor),
+             "persist" if persist else "preview"],
+            source=(OPS / "mtpcs_order_archive.py").read_bytes(), timeout=100,
+        )
+        if persist:
+            write_evidence(checkpoint, {"covered_until_ms": archive["covered_until_ms"]})
+        if not archive["up_to_date"]:
+            errors.append("订单归档仍在追补")
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        archive = None
+        errors.append(f"订单归档（{type(exc).__name__}）")
+    try:
         shadow = read_json([sys.executable, str(OPS / "mtpcs_shadow_summary.py"), str(ledger)], timeout=24)
         if shadow["missing_count"] or shadow["incomplete_hours_utc"]:
             errors.append("影子数据有缺口")
@@ -218,7 +239,7 @@ def prepare(state_dir, ledger, *, persist):
         errors.append(f"影子账（{type(exc).__name__}）")
     if any(row and row["state"] != "verified" for row in entries.values()):
         errors.append("已有成交待对账")
-    return render(entries, shadow, errors), errors
+    return render(entries, shadow, errors, archive), errors
 
 
 def prepare_digest(*, dry_run):

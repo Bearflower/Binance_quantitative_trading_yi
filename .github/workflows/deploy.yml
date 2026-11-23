@@ -55,7 +55,7 @@ jobs:
   # Job 0: 路径过滤（纯诊断，不参与矩阵展开）
   # ============================================
   daily-inspection:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/mtpcs-daily-digest-20261123'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/codex/mtpcs-order-evidence-20261123'
     permissions:
       contents: read
     uses: ./.github/workflows/strategy-digest.yml
