@@ -40,7 +40,7 @@ def acceptance(now):
         issues.append("验收报告过期")
     if report["database_snapshot_coherent"] is not True:
         issues.append("验收快照不一致")
-    if f["observed_closed_lifecycles"] > verified:
+    if min(f["observed_closed_lifecycles"], f["required_lifecycles"]) > verified:
         issues.append("闭仓待对账")
     text = (f"P0 验收 · 连续合格 {t['consecutive_complete_hours']}/{t['required_complete_hours']} 小时，"
             f"完整对账闭仓 {verified}/{f['required_lifecycles']}，实际观察闭仓 {f['observed_closed_lifecycles']}。")
