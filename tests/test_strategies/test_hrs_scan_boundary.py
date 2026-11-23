@@ -232,8 +232,9 @@ async def test_scan_refresh_timeout_cancels_prelude_and_runs_exit_maintenance(mo
     body = AsyncMock()
     @capture_cycle
     async def cycle(self): await body()
-    with pytest.raises(asyncio.TimeoutError):
+    with pytest.raises(module.ScanContextUnavailable, match='scan_boundary_timeout') as error:
         await cycle(strategy)
+    assert isinstance(error.value.__cause__, asyncio.TimeoutError)
     assert budgets == [120] and cancelled == [True]
     body.assert_not_awaited()
     strategy._monitor_positions.assert_awaited_once()
@@ -359,3 +360,56 @@ async def test_transient_index_read_failure_cannot_attest_uncached_none(monkeypa
     hour=floor_index_hour(at)-timedelta(hours=1)
     assert hour.isoformat() not in breaker._index_cache
     assert await breaker.load_index(hour)==.04
+
+
+@pytest.mark.asyncio
+async def test_scan_timeout_identifies_stage_joins_cancelled_collection_and_never_uses_cached_context(monkeypatch):
+    import asyncio
+    import strategies.hrs.decision_context as module
+    cancelled = asyncio.Event()
+    async def refresh():
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+    capture = AsyncMock()
+    monkeypatch.setattr(module, 'capture_financial_context', capture)
+    original = asyncio.wait_for
+    async def bounded(task, timeout):
+        assert timeout == 120
+        return await original(task, timeout=.01)
+    monkeypatch.setattr(module.asyncio, 'wait_for', bounded)
+    with pytest.raises(ValueError, match='scan_boundary_timeout') as error:
+        await module.capture_scan_financial_context(SimpleNamespace(equity_service=SimpleNamespace(refresh=refresh)))
+    assert error.value.phase == 'equity_refresh'
+    assert error.value.budget_seconds == 120
+    assert error.value.elapsed_seconds >= .01
+    assert cancelled.is_set()
+    capture.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_source_denial_preserves_real_reason_skips_scoring_and_maintains_positions(monkeypatch):
+    import strategies.hrs.decision_context as module
+    from strategies.hrs.decision_capture import DecisionRecorder, capture_cycle
+    capture = AsyncMock()
+    monkeypatch.setattr(module, 'capture_financial_context', capture)
+    recorder = DecisionRecorder(AsyncMock());recorder.record = AsyncMock()
+    denied = dict(ready=False, allowed=False, policy_revision=0,
+                  reasons=['local_position_inventory_conflict'], as_of=AT, evidence_sha256='denied')
+    strategy = SimpleNamespace(equity_service=SimpleNamespace(refresh=AsyncMock(return_value=denied)),
+                               decision_recorder=recorder, _monitor_positions=AsyncMock())
+    recorder.context_provider = lambda: module.capture_scan_financial_context(strategy)
+    body = AsyncMock()
+    @capture_cycle
+    async def cycle(self):
+        await body()
+    with pytest.raises(ValueError, match='scan_boundary_source_denied') as error:
+        await cycle(strategy)
+    assert error.value.phase == 'equity_refresh'
+    assert error.value.reason_codes == ['local_position_inventory_conflict']
+    capture.assert_not_awaited()
+    body.assert_not_awaited()
+    strategy._monitor_positions.assert_awaited_once()
+    assert recorder.record.await_args.args[2]['phase'] == 'equity_refresh'
+    assert recorder.record.await_args.args[2]['reason_codes'] == ['local_position_inventory_conflict']

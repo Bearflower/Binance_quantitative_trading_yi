@@ -7,7 +7,7 @@ import os
 from datetime import datetime
 import structlog
 
-from shared.binance_api import BinanceClient
+from strategies.hrs.api_client import HrsBinanceClient as BinanceClient
 from shared.config_loader import load_strategy_config_with_metadata, record_loaded_version
 from shared.database import DatabaseManager
 from shared.kline_service import KLineService
