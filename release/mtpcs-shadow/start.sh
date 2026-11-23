@@ -42,9 +42,16 @@ import structlog
 structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL))
 from shared.config_loader import load_strategy_config_with_metadata
 config, meta = load_strategy_config_with_metadata('/app/strategies/' + sys.argv[1])
-if not config or meta.get('load_error'):
+if not config:
     raise RuntimeError('effective production profile could not be exported')
+reviewed = {
+    'btc_eth': '309a888ad1a520e0ad3ba2001ba36c290d10c4c38ca4725838ffcfa18b92a564',
+    'btc_eth_aggressive': 'fb9dacefcceed189e7e8aea1338e3e2295173ea1a535e6019f425d7552d6f14d',
+}
+if meta['config_hash'] != reviewed[sys.argv[1]]:
+    raise RuntimeError('effective production profile changed during rollout')
 profile = {key: config[key] for key in ('strategy', 'instance')}
+profile['research_source'] = meta
 profile['binance'] = {key: config['binance'][key] for key in ('leverage', 'position_ratio', 'order_optimization')}
 print(json.dumps(profile, default=str, ensure_ascii=False))
 PY
