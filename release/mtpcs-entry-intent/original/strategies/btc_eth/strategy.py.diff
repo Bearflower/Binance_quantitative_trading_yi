@@ -1,0 +1,5 @@
+--- a/strategies/btc_eth/strategy.py
++++ b/strategies/btc_eth/strategy.py
+@@ -1191,0 +1192,2 @@
++            'entry_intent': 'mean_reversion' if strategy_mode == 'ranging' else 'trend',
++            'entry_route_fallback': 'strategy_mode' not in market_behavior,

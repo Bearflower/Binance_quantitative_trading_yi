@@ -1,0 +1,30 @@
+{
+  "original": {
+    "shared/protection_retry.py": {
+      "before": "5d283dd95f758e0154823d1cc40967e67c1a0e0d540ae85ca329dfec9dab40d9",
+      "after": "f56479537fc127297d3603fb4679a3f7a3f649f0955e6502c8c65d064285f5a5"
+    },
+    "strategies/btc_eth/strategy.py": {
+      "before": "8ab1d8f65fafced9933e30e5c4b0523c4476b6e385c745952df09f231c000216",
+      "after": "5d6cdc6df37fb6c8a808ad277d05952233ac14d9b6d0f8553a990d2cb2deeea1"
+    },
+    "strategies/btc_eth/evidence_recorder.py": {
+      "before": "22f6159421de1f6a1d8d739109ba276a28664dbf39e21582cdd044578fd81e73",
+      "after": "54d2d483987826d67dbcebb56d97ddbe9b490cfaf303fb26a72ae524ba3d42ac"
+    }
+  },
+  "aggressive": {
+    "shared/protection_retry.py": {
+      "before": "982537ebcf51dff708d5547e58ba3186ad20758536eb546201b3385567c76c75",
+      "after": "2f2c406a4e6162b0883bff3fb76d7c0570517d8497701f7820671c9debb79ef0"
+    },
+    "shared/entry_risk_policy.py": {
+      "before": "cdbdc28a2ae01b168e1f285f42f6f2c15aa4e23c433742af9734dcb09a076319",
+      "after": "3b5ce18477e00e2be7d0f125389d08c2057c2dcdad38ed44f6054c25926e0b63"
+    },
+    "strategies/btc_eth_aggressive/strategy.py": {
+      "before": "24f9dcce5e36d115e75eade1b016b01896f9f6034c03b0827c102ddb6c2129f1",
+      "after": "e4bc94ced034bfb09f635515f5993d44d770e5111c75495252797441fd830d9f"
+    }
+  }
+}

@@ -1,0 +1,23 @@
+--- a/shared/protection_retry.py
++++ b/shared/protection_retry.py
+@@ -28,0 +29 @@
++import uuid
+@@ -571,0 +573 @@
++        signal['entry_client_order_id'] = signal['_risk_client_id']
+@@ -573,0 +576,7 @@
++        entry_kwargs = {}
++        intent_code = {'trend': 't', 'mean_reversion': 'r'}.get(signal.get('entry_intent'))
++        if getattr(strategy, 'my_record_name', None) == 'btc_eth' and intent_code:
++            # Binance retains the intent even if the process dies before saving the ACK.
++            client_id = f"mt1{intent_code}{uuid.uuid4().hex}"
++            signal['entry_client_order_id'] = client_id
++            entry_kwargs['client_order_id'] = client_id
+@@ -579 +588,2 @@
+-            order_type="LIMIT"
++            order_type="LIMIT",
++            **entry_kwargs,
+@@ -581,0 +592,4 @@
++    if entry_order_id is not None:
++        signal['entry_order_id'] = entry_order_id
++    if entry_order.get('clientOrderId'):
++        signal['entry_client_order_id'] = entry_order['clientOrderId']

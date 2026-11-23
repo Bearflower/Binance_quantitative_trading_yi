@@ -1,0 +1,14 @@
+--- a/strategies/btc_eth/evidence_recorder.py
++++ b/strategies/btc_eth/evidence_recorder.py
+@@ -59 +59 @@
+-    "price_change_1h", "tp1_price", "tp2_price",
++    "price_change_1h", "tp1_price", "tp2_price", "entry_intent", "entry_route_fallback",
+@@ -105 +105 @@
+-    """accepted 时由 market_state 映射；rejected 用 'unknown'。"""
++    """优先记录实际入场路径，兼容旧版分析结果。"""
+@@ -107,0 +108,5 @@
++    intent = result.get("entry_intent")
++    if intent == "trend":
++        return "trend"
++    if intent == "mean_reversion":
++        return "ranging"

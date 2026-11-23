@@ -1,0 +1,10 @@
+--- a/shared/entry_risk_policy.py
++++ b/shared/entry_risk_policy.py
+@@ -438 +438,6 @@
+-    return {"signal": {key:str(signal[key]) for key in ('direction','initial_stop_loss','tp1_price','tp2_price','leverage','grade','entry_decision_identity')},
++    entry_signal = {key: str(signal[key]) for key in (
++        'direction', 'initial_stop_loss', 'tp1_price', 'tp2_price', 'leverage', 'grade', 'entry_decision_identity'
++    )}
++    if signal.get('entry_intent') in ('trend', 'mean_reversion'):
++        entry_signal['entry_intent'] = signal['entry_intent']
++    return {"signal": entry_signal,
