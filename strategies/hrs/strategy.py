@@ -1259,7 +1259,8 @@ class HRSStrategy(BaseStrategy):
                     await self._execute_cycle()
                     await self._wait_with_timeout_recovery(self.check_interval)
                 except ScanContextUnavailable as exc:
-                    logger.warning("HRS 扫描数据未就绪，本轮不评分", **cycle_failure_diagnostics(exc))
+                    report = logger.warning if exc.expected_source_failure else logger.error
+                    report("HRS 扫描数据未就绪，本轮不评分", **cycle_failure_diagnostics(exc))
                     await asyncio.sleep(self.retry_delay)
                 except Exception as e:
                     logger.error("执行周期异常", **cycle_failure_diagnostics(e))
