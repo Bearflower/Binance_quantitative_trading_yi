@@ -29,10 +29,11 @@ def test_render_keeps_section_order_and_headers():
 
     assert message.startswith("【交易系统每日巡检汇总】2026-11-19 07:35（北京时间）")
     assert "异常概览：全部正常" in message
-    positions = [message.index(f"{index}/6 ") for index in range(1, 7)]
+    positions = [message.index(f"{index}/7 ") for index in range(1, 8)]
     assert positions == sorted(positions)
-    assert "1/6 HRS 生产只读巡检（07:31）" in message
-    assert "6/6 生产容器日志巡检（07:34）" in message
+    assert "1/7 HRS 生产只读巡检（07:31）" in message
+    assert "6/7 生产容器日志巡检（07:34）" in message
+    assert "7/7 MTPCS 开仓归因与影子观察（07:35）" in message
 
 
 def test_missing_section_is_reported_in_body_and_overview():
@@ -63,7 +64,7 @@ def test_oversized_digest_splits_into_two_messages():
     assert len(messages) == 2
     assert daily_digest.payload_bytes(messages[0]) <= daily_digest.MAX_PAYLOAD_BYTES
     assert "续 2/2" in messages[1]
-    assert "6/6 生产容器日志巡检（07:34）" in messages[1]
+    assert "6/7 生产容器日志巡检（07:34）" in messages[1]
 
 
 def _prepare_outbox(monkeypatch, tmp_path):

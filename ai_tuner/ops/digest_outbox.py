@@ -26,6 +26,7 @@ SECTIONS = [
     ("xau", "XAU 影子巡检", "07:33", "XAU 影子"),
     ("profit", "利润提取提醒", "07:34", "利润提取"),
     ("logs", "生产容器日志巡检", "07:34", "生产容器日志"),
+    ("mtpcs", "MTPCS 开仓归因与影子观察", "07:35", "MTPCS 观察"),
 ]
 SECTION_KEYS = tuple(key for key, _, _, _ in SECTIONS)
 SECTION_BY_KEY = {key: (label, slot, short) for key, label, slot, short in SECTIONS}
