@@ -56,7 +56,9 @@ profile['binance'] = {key: config['binance'][key] for key in ('leverage', 'posit
 print(json.dumps(profile, default=str, ensure_ascii=False))
 PY
 done
-docker cp "$aggressive:/app/strategies/btc_eth_aggressive/strategy.py" "$bundle/aggressive_strategy.py"
+docker cp "$aggressive:/app/strategies/btc_eth_aggressive" "$bundle/btc_eth_aggressive"
+docker cp "$aggressive:/app/shared" "$bundle/shared"
+chmod -R a+rX "$bundle/btc_eth_aggressive" "$bundle/shared"
 chmod 755 "$bundle"
 chmod 644 ./*.py ./*.json
 common=(--network "$network" --user 65534:65534 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=32m
@@ -65,7 +67,8 @@ common=(--network "$network" --user 65534:65534 --read-only --tmpfs /tmp:rw,noex
         --env OMP_NUM_THREADS=1
         --mount "type=bind,src=$bundle/entry_study.py,dst=/app/strategies/btc_eth/shadow/entry_study.py,readonly"
         --mount "type=bind,src=$bundle/entry_ledger.py,dst=/app/strategies/btc_eth/shadow/entry_ledger.py,readonly"
-        --mount "type=bind,src=$bundle/aggressive_strategy.py,dst=/app/strategies/btc_eth_aggressive/strategy.py,readonly"
+        --mount "type=bind,src=$bundle/btc_eth_aggressive,dst=/app/strategies/btc_eth_aggressive,readonly"
+        --mount "type=bind,src=$bundle/shared,dst=/app/shared,readonly"
         --mount "type=bind,src=$bundle,dst=/research,readonly"
         --mount "type=bind,src=$data,dst=/ledger")
 command=(python -m strategies.btc_eth.shadow.entry_ledger --kline-url "$url"
