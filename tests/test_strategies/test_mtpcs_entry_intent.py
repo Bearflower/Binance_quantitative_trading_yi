@@ -109,3 +109,18 @@ def test_replay_snapshot_uses_closed_candles_and_rejects_a_gap():
     del closes[41]
     del bars[41]
     assert snapshot(series, "BTCUSDT", at) is None
+
+
+@pytest.mark.asyncio
+async def test_original_carries_intent_in_exchange_id_before_acknowledgement():
+    send = AsyncMock(side_effect=TimeoutError)
+    strategy = SimpleNamespace(
+        my_record_name="btc_eth", binance=SimpleNamespace(place_order=send), risk_config={},
+    )
+    signal = {"direction": "LONG", "quantity": 1, "entry_price": 100, "entry_intent": "trend"}
+    with pytest.raises(TimeoutError):
+        await place_and_wait_entry_order(strategy, "BTCUSDT", signal)
+    client_id = send.call_args.kwargs["client_order_id"]
+    assert client_id.startswith("mt1t")
+    assert len(client_id) == 36
+    assert signal["entry_client_order_id"] == client_id

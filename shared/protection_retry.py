@@ -26,6 +26,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
@@ -582,12 +583,20 @@ async def place_and_wait_entry_order(strategy, symbol: str, signal: Dict) -> Opt
         signal['entry_client_order_id'] = signal['_risk_client_id']
         entry_order = await submit_aggressive_entry(strategy, symbol, signal)
     else:
+        entry_kwargs = {}
+        intent_code = {'trend': 't', 'mean_reversion': 'r'}.get(signal.get('entry_intent'))
+        if getattr(strategy, 'my_record_name', None) == 'btc_eth' and intent_code:
+            # Binance retains the intent even if the process dies before saving the ACK.
+            client_id = f"mt1{intent_code}{uuid.uuid4().hex}"
+            signal['entry_client_order_id'] = client_id
+            entry_kwargs['client_order_id'] = client_id
         entry_order = await strategy.binance.place_order(
             symbol=symbol,
             side=entry_side,
             quantity=signal['quantity'],
             price=signal['entry_price'],
-            order_type="LIMIT"
+            order_type="LIMIT",
+            **entry_kwargs,
         )
     entry_order_id = entry_order.get('orderId')
     if entry_order_id is not None:
