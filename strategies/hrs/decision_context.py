@@ -202,7 +202,7 @@ def cycle_failure_diagnostics(exc):
     # Only our fixed boundary codes are safe messages. aiohttp's ordinary
     # exception string can contain the full signed URL even without repr().
     safe_message = (isinstance(exc, ValueError) and text in {
-        'scan_boundary_timeout', 'scan_boundary_source_denied',
+        'scan_boundary_timeout', 'scan_boundary_source_timeout', 'scan_boundary_source_denied',
         'scan_boundary_refresh_unproven', 'scan_boundary_unproven', 'scan_boundary_clock_unproven'})
     detail = dict(error=text if safe_message else type(exc).__name__, error_type=type(exc).__name__,
                   exception_frames=frames)
@@ -345,6 +345,7 @@ async def capture_scan_financial_context(strategy):
     requested = _scan_now()
     started = monotonic()
     phase = 'market_guard'
+    source_timeout = False
     async def collect():
         nonlocal phase
         guard = await capture_scan_market_guard(strategy)
@@ -380,8 +381,16 @@ async def capture_scan_financial_context(strategy):
             return context
         except (KeyError, TypeError, ValueError, AttributeError) as exc:
             raise ValueError('scan_boundary_refresh_unproven') from exc
+    async def timed_source():
+        nonlocal source_timeout
+        try:
+            return await collect()
+        except asyncio.TimeoutError:
+            source_timeout = True
+            raise
     try:
-        return await asyncio.wait_for(collect(), timeout=SCAN_CONTEXT_TIMEOUT_SECONDS)
+        return await asyncio.wait_for(timed_source(), timeout=SCAN_CONTEXT_TIMEOUT_SECONDS)
     except asyncio.TimeoutError as exc:
-        raise ScanContextUnavailable('scan_boundary_timeout', phase=phase,
+        reason = 'scan_boundary_source_timeout' if source_timeout else 'scan_boundary_timeout'
+        raise ScanContextUnavailable(reason, phase=phase,
             elapsed_seconds=monotonic()-started) from exc

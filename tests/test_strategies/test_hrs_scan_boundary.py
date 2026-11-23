@@ -413,3 +413,22 @@ async def test_source_denial_preserves_real_reason_skips_scoring_and_maintains_p
     strategy._monitor_positions.assert_awaited_once()
     assert recorder.record.await_args.args[2]['phase'] == 'equity_refresh'
     assert recorder.record.await_args.args[2]['reason_codes'] == ['local_position_inventory_conflict']
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('phase', ['market_guard', 'equity_refresh', 'financial_context'])
+async def test_source_timeout_is_not_reported_as_expired_scan_deadline(monkeypatch, phase):
+    import strategies.hrs.decision_context as module
+    context, refresh = boundary_context()
+    guard = AsyncMock(return_value=None)
+    collect = AsyncMock(return_value=refresh)
+    capture = AsyncMock(return_value=context)
+    {'market_guard': guard, 'equity_refresh': collect, 'financial_context': capture}[phase].side_effect = TimeoutError()
+    monkeypatch.setattr(module, 'capture_scan_market_guard', guard)
+    monkeypatch.setattr(module, 'capture_financial_context', capture)
+    strategy = SimpleNamespace(equity_service=SimpleNamespace(refresh=collect))
+    with pytest.raises(module.ScanContextUnavailable, match='scan_boundary_source_timeout') as error:
+        await module.capture_scan_financial_context(strategy)
+    assert error.value.phase == phase
+    assert error.value.elapsed_seconds < 1
+    assert isinstance(error.value.__cause__, TimeoutError)
