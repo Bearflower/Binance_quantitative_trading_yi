@@ -987,10 +987,14 @@ async def _read_budget_sources(connection, financial, evidence, account_id, thro
     for sample in financial['samples'][:5]:
         if not sample.get('order_ids'):
             continue
-        entries = [(r,p) for r,p in valid if r['kind']=='order_execution_result'
-            and r.get('symbol')==sample['symbol']
-            and str((p.get('outcome') or {}).get('order',{}).get('orderId'))==sample['order_ids'][0]]
-        clients = {(p.get('outcome') or {}).get('order',{}).get('clientOrderId') for r,p in entries}
+        clients = set()
+        for row, payload in valid:
+            if row['kind'] != 'order_execution_result' or row.get('symbol') != sample['symbol']:
+                continue
+            outcome = payload.get('outcome')
+            order = outcome.get('order') if isinstance(outcome, dict) else None
+            if isinstance(order, dict) and str(order.get('orderId')) == sample['order_ids'][0]:
+                clients.add(order.get('clientOrderId'))
         if len(clients)!=1 or not next(iter(clients)):
             continue
         client = next(iter(clients))

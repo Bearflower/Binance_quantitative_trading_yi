@@ -327,6 +327,8 @@ async def test_budget_parent_sources_use_bounded_cursor_without_compacting_hash_
     captures = [event('0', 'order_execution_result', START, {'outcome': {'order': {'orderId': 1, 'clientOrderId': client}}}, 'S0USDT'),
                 event('0', 'entry_budget_reserved', START, {'decision': {'client_order_id': client, 'budget_version': FLOOR}}, 'S0USDT'),
                 event('0', 'entry_stage_inputs', START, {'stage': 'reservation_success', 'client_order_id': client, 'budget_context': {'evidence_sha256': digest}}, 'S0USDT')]
+    captures.insert(0, event('1', 'order_execution_result', START,
+                             {'outcome': {'order_filled': False, 'order': None}}, 'S0USDT'))
     parent = {'payload': json.dumps({'capture': {'local': {}}, 'history': ['original']}), 'evidence_sha256': digest}
     connection = EvidenceCursorConnection([parent])
     rows = await reporter._read_budget_sources(connection, {'samples': [{'symbol': 'S0USDT', 'order_ids': ['1']}]}, captures, ACCOUNT, NOW)
