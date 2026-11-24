@@ -63,15 +63,17 @@ class TestTaskScheduler:
         scheduler.add_job("BTCUSDT", "1h")
 
         task = scheduler.tasks["BTCUSDT_1h"]
-        assert task["cron"] == "1 * * * *"
+        assert task["cron"] == "0 * * * *"
         assert task["minutes"] == 120
+        trigger = scheduler.scheduler.get_job("BTCUSDT_1h").trigger
+        assert trigger.get_next_fire_time(None, datetime.now(trigger.timezone)).second == 10
 
     def test_add_job_4h(self, scheduler):
         """测试添加 4h 周期任务"""
         scheduler.add_job("BTCUSDT", "4h")
 
         task = scheduler.tasks["BTCUSDT_4h"]
-        assert task["cron"] == "1 0,4,8,12,16,20 * * *"
+        assert task["cron"] == "0 0,4,8,12,16,20 * * *"
         assert task["minutes"] == 480
 
     def test_add_job_1d(self, scheduler):
@@ -79,7 +81,7 @@ class TestTaskScheduler:
         scheduler.add_job("BTCUSDT", "1d")
 
         task = scheduler.tasks["BTCUSDT_1d"]
-        assert task["cron"] == "1 0 * * *"
+        assert task["cron"] == "0 0 * * *"
         assert task["minutes"] == 2880
 
     def test_add_job_custom_cron(self, scheduler):
@@ -136,7 +138,8 @@ class TestTaskScheduler:
 
     # ==================== start ====================
 
-    def test_start_adds_cleanup_and_validate_jobs(self, scheduler):
+    @pytest.mark.asyncio
+    async def test_start_adds_cleanup_and_validate_jobs(self, scheduler):
         """测试 start 添加清理任务和验证任务"""
         with patch("services.kline_service.core.scheduler.registry") as mock_registry:
             mock_registry.get_active_symbols.return_value = []
@@ -147,7 +150,8 @@ class TestTaskScheduler:
             assert scheduler.scheduler.get_job("cleanup_expired_symbols") is not None
             assert scheduler.scheduler.get_job("validate_registered_symbols") is not None
 
-    def test_start_loads_from_registry(self, scheduler, mock_registered_symbol_config):
+    @pytest.mark.asyncio
+    async def test_start_loads_from_registry(self, scheduler, mock_registered_symbol_config):
         """测试 start 从注册表加载活跃标的"""
         with patch("services.kline_service.core.scheduler.registry") as mock_registry:
             mock_registry.get_active_symbols.return_value = [mock_registered_symbol_config]
@@ -159,7 +163,8 @@ class TestTaskScheduler:
             assert "BTCUSDT_1h" in scheduler.tasks
             assert "BTCUSDT_4h" in scheduler.tasks
 
-    def test_start_triggers_initial_collection(self, scheduler):
+    @pytest.mark.asyncio
+    async def test_start_triggers_initial_collection(self, scheduler):
         """测试 start 触发首次采集"""
         with patch("services.kline_service.core.scheduler.registry") as mock_registry:
             mock_registry.get_active_symbols.return_value = []
@@ -271,7 +276,8 @@ class TestTaskScheduler:
         assert "BTCUSDT_15m" in tasks
         assert "ETHUSDT_1h" in tasks
 
-    def test_get_next_run_time(self, scheduler):
+    @pytest.mark.asyncio
+    async def test_get_next_run_time(self, scheduler):
         """测试获取任务下次运行时间"""
         scheduler.add_job("BTCUSDT", "15m")
 
@@ -395,7 +401,8 @@ class TestTaskScheduler:
         monkeypatch.setattr(self._settings(), "REGISTRY_CACHE_REFRESH_SECONDS", 0)
         assert scheduler._registry_refresh_seconds() == 0
 
-    def test_start_registers_refresh_job_when_enabled(self, scheduler):
+    @pytest.mark.asyncio
+    async def test_start_registers_refresh_job_when_enabled(self, scheduler):
         """刷新间隔 > 0 → start 注册 id='refresh_registry_cache' 的 interval 任务。"""
         with patch("services.kline_service.core.scheduler.registry") as mock_registry:
             mock_registry.get_active_symbols.return_value = []
@@ -404,7 +411,8 @@ class TestTaskScheduler:
 
         assert scheduler.scheduler.get_job("refresh_registry_cache") is not None
 
-    def test_start_skips_refresh_job_when_disabled(self, scheduler):
+    @pytest.mark.asyncio
+    async def test_start_skips_refresh_job_when_disabled(self, scheduler):
         """刷新间隔 = 0 → start 不注册刷新任务（保持现状）。"""
         with patch("services.kline_service.core.scheduler.registry") as mock_registry:
             mock_registry.get_active_symbols.return_value = []

@@ -54,6 +54,7 @@ class KlineCollector:
         self.stats = {
             "total_collected": 0,
             "total_stored": 0,
+            "total_corrected": 0,
             "total_errors": 0,
             "last_collect_time": None,
         }
@@ -80,6 +81,7 @@ class KlineCollector:
             KlineData 列表
         """
         try:
+            requested_at_ms = int(datetime.now().timestamp() * 1000)
             raw_data = await self.binance_client.get_klines(
                 symbol=symbol,
                 interval=interval,
@@ -106,7 +108,8 @@ class KlineCollector:
             for data in raw_data:
                 try:
                     kline = KlineData.from_binance_data(symbol, interval, data)
-                    klines.append(kline)
+                    if kline.close_time < requested_at_ms:
+                        klines.append(kline)
                 except Exception as e:
                     logger.error(f"解析 K 线数据失败：{e}")
                     self.stats["total_errors"] += 1
@@ -137,7 +140,7 @@ class KlineCollector:
             klines: KlineData 列表
 
         Returns:
-            实际新增条数（ON CONFLICT DO NOTHING 下冲突行不计入）
+            实际新增条数，已有行的修正单独计数
         """
         if not klines:
             return 0
@@ -191,8 +194,7 @@ class KlineCollector:
             data_list: 数据列表
 
         Returns:
-            实际新增条数（解析 ON CONFLICT DO NOTHING 的影响行数，
-                          冲突行计 0，不被虚增）
+            实际新增条数，终值修正计入 total_corrected
         """
         try:
             async with self.db.get_connection() as conn:
@@ -208,7 +210,7 @@ class KlineCollector:
                 inserted = 0
                 for data in data_list:
                     query = f"""
-                        INSERT INTO {table_name} (
+                        INSERT INTO {table_name} AS existing (
                             open_time, open_price, high_price, low_price, close_price,
                             volume, close_time, quote_volume, trade_count,
                             taker_buy_volume, taker_buy_quote_volume
@@ -217,8 +219,22 @@ class KlineCollector:
                             :volume, :close_time, :quote_volume, :trade_count,
                             :taker_buy_volume, :taker_buy_quote_volume
                         )
-                        ON CONFLICT (open_time) DO NOTHING
-                        RETURNING open_time
+                        ON CONFLICT (open_time) DO UPDATE SET
+                            open_price = EXCLUDED.open_price,
+                            high_price = EXCLUDED.high_price,
+                            low_price = EXCLUDED.low_price,
+                            close_price = EXCLUDED.close_price,
+                            volume = EXCLUDED.volume,
+                            quote_volume = EXCLUDED.quote_volume,
+                            trade_count = EXCLUDED.trade_count,
+                            taker_buy_volume = EXCLUDED.taker_buy_volume,
+                            taker_buy_quote_volume = EXCLUDED.taker_buy_quote_volume
+                        WHERE existing.close_time = EXCLUDED.close_time
+                          AND EXCLUDED.trade_count >= existing.trade_count
+                          AND EXCLUDED.volume >= existing.volume
+                          AND (EXCLUDED.trade_count > existing.trade_count
+                               OR EXCLUDED.volume > existing.volume)
+                        RETURNING (xmax = 0) AS inserted
                     """
                     values = {
                         'open_time': data['open_time'],
@@ -234,7 +250,11 @@ class KlineCollector:
                         'taker_buy_quote_volume': data['taker_buy_quote_volume']
                     }
                     rows = await conn.fetch_all(query, values)
-                    inserted += len(rows)
+                    if rows:
+                        if rows[0]["inserted"]:
+                            inserted += 1
+                        else:
+                            self.stats["total_corrected"] += 1
                 
                 logger.info(f"成功插入 {inserted} 条数据到 {table_name}")
                 return inserted

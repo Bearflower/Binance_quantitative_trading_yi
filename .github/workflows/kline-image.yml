@@ -1,0 +1,31 @@
+name: Publish reviewed K-line collector
+on: workflow_dispatch
+permissions:
+  contents: read
+  packages: write
+jobs:
+  publish:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stamp release
+        run: |
+          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$GITHUB_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v5
+        id: build
+        with:
+          context: .
+          file: services/kline_service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ghcr.io/bearflower/trading-kline-service:sha-${{ github.sha }}-r${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Record digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: echo "Collector image digest $DIGEST" >> "$GITHUB_STEP_SUMMARY"

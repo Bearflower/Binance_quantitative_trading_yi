@@ -58,6 +58,16 @@ class TestKlineCollector:
         )
 
     @pytest.mark.asyncio
+    async def test_request_started_before_close_skips_provisional_bar(self, collector, mock_kline_data):
+        row = mock_kline_data[0]
+        before_close = datetime.fromtimestamp((row[6] - 1) / 1000)
+        after_close = datetime.fromtimestamp((row[6] + 1000) / 1000)
+        collector.binance_client.get_klines.return_value = [row]
+        with patch("services.kline_service.core.collector.datetime") as clock:
+            clock.now.side_effect = [before_close, after_close]
+            assert await collector.collect_klines("BTCUSDT", "15m") == []
+
+    @pytest.mark.asyncio
     async def test_collect_klines_empty_data(self, collector):
         """测试 collect_klines 币安API返回空数据"""
         collector.binance_client.get_klines.return_value = []
@@ -338,8 +348,8 @@ class TestBatchInsertCounting:
         collector, mock_conn = collector_with_mock_conn
         # RETURNING open_time：新增时返回含 open_time 的行列表，冲突时返回空列表
         mock_conn.fetch_all.side_effect = [
-            [{"open_time": 0}],      # 第一次：新增 1 条
-            [],                      # 第二次：冲突 DO NOTHING
+            [{"inserted": True}],      # 第一次：新增 1 条
+            [{"inserted": False}],   # 第二次：修正已有行
             [],                      # 第三次：冲突 DO NOTHING
             [],                      # 第四次：冲突 DO NOTHING
         ]
@@ -347,6 +357,7 @@ class TestBatchInsertCounting:
         data_list = self._data_list(4)
         inserted = await collector._batch_insert("kline_btcusdt_15m", data_list)
         assert inserted == 1  # 只算真正新增的
+        assert collector.stats["total_corrected"] == 1
 
     @pytest.mark.asyncio
     async def test_batch_insert_all_conflicts_return_zero(self, collector_with_mock_conn):
