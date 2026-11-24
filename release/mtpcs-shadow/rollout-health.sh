@@ -78,12 +78,17 @@ assert old["Config"]["Labels"] == {
 assert set(old["NetworkSettings"]["Networks"]) == set(new["NetworkSettings"]["Networks"])
 for block, ignored in (
     # Docker create records attachment defaults until detached start.
-    ("Config", {"Hostname", "Healthcheck", "Labels", "AttachStdout", "AttachStderr"}),
+    ("Config", {"Hostname", "Healthcheck", "Labels", "AttachStdout", "AttachStderr", "Env"}),
     ("HostConfig", {"Mounts", "OomKillDisable"}),
 ):
-    assert {k:v for k,v in old[block].items() if k not in ignored} == {
-        k:v for k,v in new[block].items() if k not in ignored
-    }, block
+    keys = (old[block].keys() | new[block].keys()) - ignored
+    absent = object()
+    differences = sorted(k for k in keys if old[block].get(k, absent) != new[block].get(k, absent))
+    assert not differences, (block, differences)
+# Docker can emit the same environment in a different enumeration order.
+for env in (old["Config"]["Env"], new["Config"]["Env"]):
+    assert len({item.split("=", 1)[0] for item in env}) == len(env)
+assert sorted(old["Config"]["Env"]) == sorted(new["Config"]["Env"])
 # Docker represents the enabled-by-default OOM killer as absent or false.
 assert bool(old["HostConfig"].get("OomKillDisable")) == bool(new["HostConfig"].get("OomKillDisable"))
 assert old["HostConfig"]["Mounts"] == [m for m in new["HostConfig"]["Mounts"] if m["Target"] != probe]
