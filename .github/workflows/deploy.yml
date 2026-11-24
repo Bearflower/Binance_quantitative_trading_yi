@@ -17,7 +17,7 @@ jobs:
           python-version: '3.11'
       - name: Test the paired shadow study and health probe
         run: |
-          python -m pip install pytest==8.0.0 pytest-asyncio==0.23.8 pandas==2.2.1 PyYAML==6.0.1 aiohttp==3.9.1 structlog==24.1.0
+          python -m pip install -r requirements.txt
           python -m pytest -q tests/test_strategies/test_mtpcs_{overheat_study,overheat_report,shadow_ledger,shadow_health}.py
           for script in release/mtpcs-shadow/*.sh; do bash -n "$script"; done
       - name: Install and verify the paired shadow study and digest
