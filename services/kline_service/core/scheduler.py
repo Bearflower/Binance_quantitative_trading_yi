@@ -45,8 +45,9 @@ class TaskScheduler:
             minutes: 采集最近 N 分钟的数据（可选，默认根据周期自动计算）
         """
         # 根据时间间隔设置采集频率和采集窗口
+        scheduled_second = 10 if cron_expression is None else 0
         if cron_expression is None:
-            # 默认策略：在每个周期结束后 1-2 分钟采集
+            # 默认策略：在每个周期结束后 10 秒采集
             # ⚠️ 注意：minutes 必须 > 周期长度，否则 start_time 会落在目标蜡烛 open_time 之后，
             # 导致上一个已收盘的 K 线被遗漏。使用 2 倍周期长度确保可靠性。
             if interval == "1m":
@@ -91,6 +92,8 @@ class TaskScheduler:
         if len(parts) == 5:
             minute, hour, day, month, day_of_week = parts
             trigger = CronTrigger(
+                # 给交易所留出发布收盘终值的时间，下一周期的重叠窗口再次核对。
+                second=scheduled_second,
                 minute=minute,
                 hour=hour,
                 day=day,
