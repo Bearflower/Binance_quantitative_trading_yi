@@ -1,4 +1,4 @@
-name: Scoped MTPCS read-only collector release
+name: Scoped MTPCS shadow Docker healthcheck
 on:
   workflow_dispatch:
 permissions:
@@ -12,7 +12,15 @@ jobs:
     timeout-minutes: 8
     steps:
       - uses: actions/checkout@v4
-      - name: Install and verify the single collector
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Test the shadow health probe
+        run: |
+          python -m pip install pytest==8.0.0
+          python -m pytest -q tests/test_strategies/test_mtpcs_shadow_health.py
+          for script in release/mtpcs-shadow/*.sh; do bash -n "$script"; done
+      - name: Install and verify the shadow healthcheck
         env:
           SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
         run: |
@@ -22,10 +30,18 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           printf '%s\n' '43.156.242.184 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFNCPR4nqDmkewu2141YjcAEiP/PD+cBEXMZKWDcAlSu' > ~/.ssh/known_hosts
           localdir=$(mktemp -d)
-          cp strategies/btc_eth/shadow/{entry_study,entry_ledger}.py release/mtpcs-shadow/start.sh "$localdir/"
-          (cd "$localdir"; sha256sum entry_study.py entry_ledger.py start.sh > files.sha256)
+          cp release/mtpcs-shadow/{rollout-health.sh,runtime.sh,healthcheck.py} "$localdir/"
+          contract=97955adb74d53700fe6cc000e1584be374c1c3f6
+          git fetch --depth=1 origin "$contract"
+          git show "$contract:scripts/database_permissions.py" > "$localdir/database_permissions.py"
+          git show "$contract:database/postgres/permissions.json" > "$localdir/permissions.json"
+          (cd "$localdir"; printf '%s  %s\n' \
+            edae14be4ca16b43e5cd481f96f0a5b1ebcebc29b436d8485284c208a2622d60 database_permissions.py \
+            57a484abe1826f408ccd3cfc73d134ed18d57c8709c4d3e57bdd2a9a158322fb permissions.json \
+            | sha256sum -c)
+          (cd "$localdir"; sha256sum *.py *.sh permissions.json > files.sha256)
           remote=root@43.156.242.184
           folder="/root/trading_system/.releases/mtpcs-shadow/$GITHUB_SHA"
           ssh "$remote" "install -d -m 700 '$folder'"
           scp "$localdir"/* "$remote:$folder/"
-          ssh "$remote" "bash '$folder/start.sh' '$GITHUB_SHA'"
+          ssh "$remote" "bash '$folder/rollout-health.sh' '$GITHUB_SHA'"

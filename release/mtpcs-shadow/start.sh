@@ -6,8 +6,6 @@ revision=$1
 bundle="$root/.releases/mtpcs-shadow/$revision"
 data="$root/data/mtpcs-direction-shadow"
 name=trading_system-mtpcs-direction-shadow
-url=http://trading_system-kline:8000/api/v1
-network=trading-network-v2
 original=trading_system-btc_eth
 aggressive=trading_system-btc_eth_aggressive
 anchor=72579274e86337787d8b43e9763ba750d9e57442
@@ -61,21 +59,11 @@ docker cp "$aggressive:/app/shared" "$bundle/shared"
 chmod -R a+rX "$bundle/btc_eth_aggressive" "$bundle/shared"
 chmod 755 "$bundle"
 chmod 644 ./*.py ./*.json
-common=(--network "$network" --user 65534:65534 --read-only --tmpfs /tmp:rw,noexec,nosuid,size=32m
-        --cap-drop ALL --security-opt no-new-privileges --pids-limit 128
-        --cpus 0.5 --memory 512m --env PYTHONDONTWRITEBYTECODE=1 --env OPENBLAS_NUM_THREADS=1
-        --env OMP_NUM_THREADS=1
-        --mount "type=bind,src=$bundle/entry_study.py,dst=/app/strategies/btc_eth/shadow/entry_study.py,readonly"
-        --mount "type=bind,src=$bundle/entry_ledger.py,dst=/app/strategies/btc_eth/shadow/entry_ledger.py,readonly"
-        --mount "type=bind,src=$bundle/btc_eth_aggressive,dst=/app/strategies/btc_eth_aggressive,readonly"
-        --mount "type=bind,src=$bundle/shared,dst=/app/shared,readonly"
-        --mount "type=bind,src=$bundle,dst=/research,readonly"
-        --mount "type=bind,src=$data,dst=/ledger")
-command=(python -m strategies.btc_eth.shadow.entry_ledger --kline-url "$url"
-         --original-config /research/btc_eth.json --aggressive-config /research/btc_eth_aggressive.json)
+probe="$bundle/healthcheck.py"
+source "$bundle/runtime.sh"
 docker run --rm "${common[@]}" "$image" "${command[@]}" --ledger /tmp/smoke.sqlite3 --once
 docker run -d --name "$name" --label "mtpcs.revision=$revision" --restart unless-stopped \
-  "${common[@]}" "$image" "${command[@]}" --ledger /ledger/entries.sqlite3
+  "${common[@]}" "${health[@]}" "$image" "${command[@]}" --ledger /ledger/entries.sqlite3
 for i in {1..20}; do
   if docker exec "$name" python -c 'import sqlite3; c=sqlite3.connect("file:/ledger/entries.sqlite3?mode=ro",uri=True); print(c.execute("SELECT at, json_array_length(records) FROM hours ORDER BY at DESC LIMIT 1").fetchone()); assert c.execute("SELECT count(*) FROM hours").fetchone()[0]>0' 2>/dev/null; then
     exit 0
