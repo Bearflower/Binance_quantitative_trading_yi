@@ -159,6 +159,16 @@ async def test_signal_sql_historical_routes_cutoff_and_no_fill_inference():
         query = ENTRY_SOURCES.replace('hrs.hrs_', 'hrs_').replace('trading.entry_', 'entry_')
         sources = entry_sources(await connection.fetch(query, ACCOUNT, NOW, ['1']), ACCOUNT)
         assert summarize([], all_closed(), sources)['lv_rm']['live']['known_r_count'] == 1
+        order = dict(row['execution']['outcome']['order'], orderId=2, side='BUY',
+                     status='FILLED', reduceOnly=False, executedQty='2')
+        received = dict(version='hrs_exchange_entry_v1', account_id=ACCOUNT, signal_id=100, order=order)
+        await connection.execute('INSERT INTO hrs_decision_evidence VALUES($1,$2,$3,$4,$5,$6,$7,$5)',
+                                 'exchange_entry_reconciliation', row['symbol'], 'trade',
+                                 row['observed_at'], NOW, json.dumps(received), canonical_payload(received)[1])
+        assert not await connection.fetch(query, ACCOUNT, NOW, ['2'])
+        later = await connection.fetch(query, ACCOUNT, NOW + timedelta(seconds=1), ['2'])
+        recovered = entry_sources(later, ACCOUNT)[(row['symbol'], '2')]
+        assert [match[:3] for match in recovered] == [('lv_rm', 'long', 100)]
     finally:
         await connection.close()
 
@@ -173,3 +183,34 @@ def test_four_hour_trend_observed_closed_series_only():
     assert trend_label(bars, at+timedelta(hours=4), 'long') == 'unknown'
     assert trend_label(bars, at-timedelta(hours=4), 'long') == 'unknown'
     assert trend_label([dict(b, close=1, open=1, high=1, low=1) for b in bars], at, 'long') == 'unknown'
+
+
+def test_exchange_reconciliation_moves_an_owned_closed_cycle_without_changing_pnl():
+    original = receipt(mode='standard')
+    order = dict(original['execution']['outcome']['order'], side='BUY', status='FILLED',
+                 reduceOnly=False, executedQty='2')
+    recovery = dict(version='hrs_exchange_entry_v1', account_id=ACCOUNT, signal_id=100, order=order)
+    recovered = dict(original, evidence_kind='exchange_entry_reconciliation', execution=recovery,
+                     execution_hash=canonical_payload(recovery)[1], budget=None)
+    samples = all_closed()
+    baseline = summarize([], samples, {})
+    after = summarize([], samples, entry_sources([recovered, recovered], ACCOUNT))
+    assert after['standard']['live']['observed_closed'] == 1
+    assert after['standard']['live']['net_usdt'] == baseline['unknown']['live']['net_usdt']
+    assert after['standard']['live']['known_r_count'] == 0
+    assert after['unknown']['live']['observed_closed'] == 0
+    with_live = summarize([], samples, entry_sources([original, recovered], ACCOUNT))
+    assert with_live['standard']['live']['known_r_count'] == 1
+
+
+@pytest.mark.parametrize('name,value', [('side', 'SELL'), ('reduceOnly', True), ('executedQty', '0')])
+def test_exchange_reconciliation_rejects_incompatible_entry_response(name, value):
+    row = receipt(mode='standard')
+    order = dict(row['execution']['outcome']['order'], side='BUY', status='FILLED',
+                 reduceOnly=False, executedQty='2')
+    order[name] = value
+    recovery = dict(version='hrs_exchange_entry_v1', account_id=ACCOUNT, signal_id=100, order=order)
+    row.update(evidence_kind='exchange_entry_reconciliation', execution=recovery,
+               execution_hash=canonical_payload(recovery)[1], budget=None)
+    actual = summarize([], all_closed(), entry_sources([row], ACCOUNT))
+    assert actual['unknown']['live']['observed_closed'] == 1

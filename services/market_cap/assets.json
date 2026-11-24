@@ -1942,5 +1942,31 @@
       "cg_body_sha256": "1a1c5ca0da88d4ebabae57c8e5cc41548619a9ca45835c2028738fdb795058ea",
       "cmc_body_sha256": "861ef1ca5a4286f51b8ea5e17f71edd73851d9938f7f306c357b45fc8fea5c52"
     }
+  },
+  "QNTUSDT": {
+    "symbol": "QNT",
+    "cg_id": "quant-network",
+    "cmc_id": null,
+    "name": "Quant",
+    "verified_at": "2026-11-24",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/f9df5bba5e1c4f1e9289240d0f9344e2",
+      "https://www.coingecko.com/en/coins/quant"
+    ],
+    "cmc_enabled": false,
+    "fallback_disabled_reason": "A paired CoinMarketCap quote has not been qualified."
+  },
+  "XPLUSDT": {
+    "symbol": "XPL",
+    "cg_id": "plasma",
+    "cmc_id": null,
+    "name": "Plasma",
+    "verified_at": "2026-11-24",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/14f17e59b77049d9be23e8dea3f184a8",
+      "https://www.coingecko.com/en/coins/plasma"
+    ],
+    "cmc_enabled": false,
+    "fallback_disabled_reason": "A paired CoinMarketCap quote has not been qualified."
   }
 }
