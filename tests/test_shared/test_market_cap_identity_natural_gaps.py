@@ -41,7 +41,7 @@ def test_existing_78_assets_and_disabled_fallbacks_are_unchanged():
     assets = registry()
     # Later additions have their own original-81 byte/canonical guard.
     later = {'ACEUSDT', 'AIGENSYNUSDT', 'ELSAUSDT', 'ENSOUSDT',
-             'IDOLUSDT', 'PROMUSDT', 'SKYAIUSDT', 'VVVUSDT'}
+             'IDOLUSDT', 'PROMUSDT', 'SKYAIUSDT', 'VVVUSDT', 'QNTUSDT', 'XPLUSDT'}
     old = {key:value for key,value in assets.items() if key not in EXPECTED and key not in later}
     assert len(old) == 78
     assert hashlib.sha256(json.dumps(old, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == 'aaf5cf903dbd150a830856d89ac7aad2fda2082a1bf2bdd8c478a3e6a14716a6'
@@ -151,3 +151,15 @@ async def test_real_quote_replay_resolves_primary_and_refuses_discrepant_seconda
         assert len(calls) == 1
     finally:
         hub.close()
+
+
+@pytest.mark.parametrize('pair,token,provider_id', [
+    ('QNTUSDT', 'QNT', 'quant-network'),
+    ('XPLUSDT', 'XPL', 'plasma'),
+])
+def test_quant_and_plasma_use_verified_primary_only(pair, token, provider_id):
+    asset = registry()[pair]
+    assert (asset['symbol'], asset['cg_id']) == (token, provider_id)
+    assert asset['cmc_enabled'] is False and asset['cmc_id'] is None
+    assert any(source.startswith('https://www.binance.com/') for source in asset['evidence'])
+    assert any(source.startswith('https://www.coingecko.com/') for source in asset['evidence'])

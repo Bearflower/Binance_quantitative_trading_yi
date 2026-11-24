@@ -83,20 +83,27 @@ SELECT id, run_id, symbol, triggered_at, direction, entry_mode, signal_origin, C
 # via its account-scoped reservation client ID. A symbol/time join alone would
 # misattribute parallel modes and consecutive positions in the same symbol.
 ENTRY_SOURCES = """
+WITH entry_evidence AS (
+    SELECT *, CASE WHEN kind='exchange_entry_reconciliation' THEN payload->'order'
+                 ELSE payload->'outcome'->'order' END AS exchange_order
+    FROM hrs.hrs_decision_evidence
+    WHERE kind IN ('order_execution_result','exchange_entry_reconciliation')
+      AND available_at < $2 AND recorded_at < $2
+)
 SELECT e.run_id, e.symbol, s.id AS signal_id, s.entry_mode, s.direction, s.resolution,
-       s.triggered_at, e.event_time AS observed_at, e.payload AS execution,
-       e.payload_sha256 AS execution_hash, r.client_order_id,
+       s.triggered_at, e.available_at AS observed_at, e.payload AS execution,
+       e.payload_sha256 AS execution_hash, r.client_order_id, e.kind AS evidence_kind,
        b.event_time AS budget_at, b.payload AS budget, b.payload_sha256 AS budget_hash
-FROM hrs.hrs_decision_evidence e
+FROM entry_evidence e
 JOIN trading.entry_risk_reservation r
-  ON r.client_order_id=e.payload->'outcome'->'order'->>'clientOrderId'
+  ON r.client_order_id=e.exchange_order->>'clientOrderId'
  AND r.account_id=$1 AND r.strategy_id='hrs' AND r.symbol=e.symbol
 JOIN hrs.hrs_signals s ON s.id::text=r.geometry->>'signal_id' AND s.symbol=r.symbol
-LEFT JOIN hrs.hrs_decision_evidence b ON b.run_id=e.run_id AND b.symbol=e.symbol
+LEFT JOIN hrs.hrs_decision_evidence b ON e.kind='order_execution_result'
+ AND b.run_id=e.run_id AND b.symbol=e.symbol
  AND b.kind='entry_budget_reserved' AND b.available_at < $2 AND b.recorded_at < $2
  AND b.payload->'decision'->>'client_order_id'=r.client_order_id
-WHERE e.kind='order_execution_result' AND e.available_at < $2 AND e.recorded_at < $2
-  AND e.payload->'outcome'->'order'->>'orderId'=ANY($3::text[])
+WHERE e.exchange_order->>'orderId'=ANY($3::text[])
 """
 
 
@@ -162,20 +169,28 @@ async def read_trends(connection, signals, entries, end):
 
 
 def entry_sources(rows, account):
-    sources = defaultdict(set)
+    sources, reconciled = defaultdict(set), defaultdict(set)
     for row in rows:
         payload = _object(row['execution'])
-        order = payload['outcome']['order']
+        recovered = row.get('evidence_kind') == 'exchange_entry_reconciliation'
+        outcome = payload if recovered else payload['outcome']
+        order = outcome['order']
+        target = reconciled if recovered else sources
         key = (row['symbol'], str(order['orderId']))
         direction = row['direction']
         client = 'risk_' + hashlib.sha256(f"{account}:hrs:{row['signal_id']}".encode()).hexdigest()[:30]
         if (canonical_payload(payload)[1] != row['execution_hash']
-                or payload['outcome'].get('order_filled') is not True
-                or payload.get('operation') != f'execute_{direction}'
                 or order.get('symbol') != row['symbol']
                 or client != row['client_order_id'] or order.get('clientOrderId') != client
                 or row['resolution'] == 'shadow' or row['entry_mode'] not in MODES):
-            sources[key].add(None)
+            target[key].add(None)
+            continue
+        if recovered:
+            if not verified_recovered_order(payload, account, row['signal_id'], direction):
+                target[key].add(None)
+                continue
+        elif outcome.get('order_filled') is not True or payload.get('operation') != f'execute_{direction}':
+            target[key].add(None)
             continue
         stop = budget_at = None
         if row['budget'] is not None:
@@ -189,9 +204,29 @@ def entry_sources(rows, account):
                     and budget['decision'].get('allowed') is True):
                 stop = budget.get('stop_price')
                 budget_at = row['budget_at']
-        sources[key].add((row['entry_mode'], direction, row['signal_id'],
-                          row['triggered_at'], row['observed_at'], stop, budget_at))
+        target[key].add((row['entry_mode'], direction, row['signal_id'],
+                         row['triggered_at'], row['observed_at'], stop, budget_at))
+    for key, matches in reconciled.items():
+        if key not in sources:
+            sources[key] = matches
+        elif {m[:3] for m in matches if m} != {m[:3] for m in sources[key] if m} or None in matches:
+            sources[key].add(None)
     return sources
+
+
+def verified_recovered_order(payload, account, signal_id, direction):
+    order = payload['order']
+    if (payload.get('version') != 'hrs_exchange_entry_v1' or payload.get('account_id') != account
+            or payload.get('signal_id') != signal_id or direction not in ('long', 'short')
+            or order.get('side') != ('BUY' if direction == 'long' else 'SELL')
+            or order.get('reduceOnly') not in (False, 'false')
+            or order.get('status') not in ('FILLED', 'CANCELED', 'EXPIRED', 'EXPIRED_IN_MATCH')):
+        return False
+    try:
+        quantity = Decimal(str(order.get('executedQty')))
+        return quantity.is_finite() and quantity > 0
+    except ArithmeticError:
+        return False
 
 
 def lifecycle_mode_and_risk(sample, sources):

@@ -69,7 +69,8 @@ def test_previous_81_entries_remain_byte_identical_and_semantically_unchanged():
     raw = (ROOT / 'services/market_cap/assets.json').read_bytes()
     old_bytes = raw.split(b',\n  "ACEUSDT":', 1)[0] + b'\n}\n' if b',\n  "ACEUSDT":' in raw else raw
     assert hashlib.sha256(old_bytes).hexdigest() == 'cc836a85e184c1b3134e85abd1df79cf8064b0d3d37915b518291324a64b4be1'
-    old = {key: value for key, value in registry().items() if key not in EXPECTED}
+    later = {'QNTUSDT', 'XPLUSDT'}
+    old = {key: value for key, value in registry().items() if key not in EXPECTED and key not in later}
     assert len(old) == 81
     assert hashlib.sha256(json.dumps(old, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == '46724ec00fca2331378842a9afc9a42fb15d9a7cdee8e53cd9a8a213a6ea3916'
 
