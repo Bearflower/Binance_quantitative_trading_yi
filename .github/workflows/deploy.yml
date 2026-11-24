@@ -1,4 +1,4 @@
-name: Scoped MTPCS shadow Docker healthcheck
+name: Scoped MTPCS overheat shadow comparison
 on:
   workflow_dispatch:
 permissions:
@@ -15,12 +15,12 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - name: Test the shadow health probe
+      - name: Test the paired shadow study and health probe
         run: |
-          python -m pip install pytest==8.0.0
-          python -m pytest -q tests/test_strategies/test_mtpcs_shadow_health.py
+          python -m pip install pytest==8.0.0 pytest-asyncio==0.23.8 pandas==2.2.1 PyYAML==6.0.1 aiohttp==3.9.1 structlog==24.1.0
+          python -m pytest -q tests/test_strategies/test_mtpcs_{overheat_study,overheat_report,shadow_ledger,shadow_health}.py
           for script in release/mtpcs-shadow/*.sh; do bash -n "$script"; done
-      - name: Install and verify the shadow healthcheck
+      - name: Install and verify the paired shadow study and digest
         env:
           SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
         run: |
@@ -30,7 +30,7 @@ jobs:
           chmod 600 ~/.ssh/id_rsa
           printf '%s\n' '43.156.242.184 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFNCPR4nqDmkewu2141YjcAEiP/PD+cBEXMZKWDcAlSu' > ~/.ssh/known_hosts
           localdir=$(mktemp -d)
-          cp release/mtpcs-shadow/{rollout-health.sh,runtime.sh,healthcheck.py} "$localdir/"
+          cp release/mtpcs-shadow/{rollout-overheat.sh,runtime.sh} strategies/btc_eth/shadow/entry_ledger.py ai_tuner/ops/{mtpcs_observation,mtpcs_shadow_summary}.py "$localdir/"
           contract=97955adb74d53700fe6cc000e1584be374c1c3f6
           git fetch --depth=1 origin "$contract"
           git show "$contract:scripts/database_permissions.py" > "$localdir/database_permissions.py"
@@ -44,4 +44,4 @@ jobs:
           folder="/root/trading_system/.releases/mtpcs-shadow/$GITHUB_SHA"
           ssh "$remote" "install -d -m 700 '$folder'"
           scp "$localdir"/* "$remote:$folder/"
-          ssh "$remote" "bash '$folder/rollout-health.sh' '$GITHUB_SHA'"
+          ssh "$remote" "bash '$folder/rollout-overheat.sh' '$GITHUB_SHA'"

@@ -7,7 +7,7 @@ common=(--network "$network" --user 65534:65534 --read-only --tmpfs /tmp:rw,noex
         --cpus 0.5 --memory 512m --env PYTHONDONTWRITEBYTECODE=1 --env OPENBLAS_NUM_THREADS=1
         --env OMP_NUM_THREADS=1
         --mount "type=bind,src=$bundle/entry_study.py,dst=/app/strategies/btc_eth/shadow/entry_study.py,readonly"
-        --mount "type=bind,src=$bundle/entry_ledger.py,dst=/app/strategies/btc_eth/shadow/entry_ledger.py,readonly"
+        --mount "type=bind,src=${ledger_source:-$bundle/entry_ledger.py},dst=/app/strategies/btc_eth/shadow/entry_ledger.py,readonly"
         --mount "type=bind,src=$bundle/btc_eth_aggressive,dst=/app/strategies/btc_eth_aggressive,readonly"
         --mount "type=bind,src=$bundle/shared,dst=/app/shared,readonly"
         --mount "type=bind,src=$bundle,dst=/research,readonly"

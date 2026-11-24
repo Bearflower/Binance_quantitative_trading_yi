@@ -33,7 +33,7 @@ def arms_for(variant, signal, alignment_direction=None):
     return ()
 
 
-def advance(state, signal, bar, fee_rate):
+def advance(state, signal, bar, fee_rate, *, overheat_blocked=None):
     """Risk-normalized one-lot model. Next bar open activates a pending signal."""
     position = state.get("position")
     event = None
@@ -64,11 +64,28 @@ def advance(state, signal, bar, fee_rate):
     if position:
         return {"position": position}, event
     if signal:
-        return {"pending": {
+        pending = {
             "side": 1 if signal["direction"] == "LONG" else -1,
             "stop": float(signal["initial_stop_loss"]), "target": float(signal["tp1_price"]),
-        }}, event
+        }
+        if overheat_blocked is not None:
+            pending["overheat_blocked"] = overheat_blocked
+        return {"pending": pending}, event
     return {}, event
+
+
+def advance_overheat_study(positions, symbol, record, bar, fee_rate, start, *, blocked):
+    record["overheat_study"] = {"start_utc": start, "blocked": blocked}
+    candidate = record["candidate"] if blocked is not None else None
+    for arm, signal in (("overheat_baseline", candidate),
+                        ("overheat_filter", candidate if blocked is False else None)):
+        key = f"btc_eth_aggressive:{symbol}:{arm}"
+        positions[key], event = advance(
+            positions.get(key, {}), signal, bar, fee_rate,
+            overheat_blocked=blocked if arm == "overheat_baseline" else None,
+        )
+        if event:
+            record["exits"][arm] = event
 
 
 def utc_ms(raw):
@@ -113,15 +130,19 @@ def restore_filters(strategies, filters):
         }
 
 
-async def collect_cycle(db, client, strategies, market, symbols, cutoff, fee_rate):
+async def collect_cycle(db, client, strategies, market, symbols, cutoff, fee_rate, overheat_start=None):
     previous = db.execute("SELECT at, state FROM hours ORDER BY at DESC LIMIT 1").fetchone()
     at = datetime.fromisoformat(previous[0]) + HOUR if previous else cutoff
     if at > cutoff:
         return
     lines = await collect(client, symbols)
     progress = json.loads(previous[1]) if previous else {"positions": {}, "filters": save_filters(strategies)}
+    start = overheat_start.isoformat() if overheat_start else None
+    if "overheat_study_start" in progress and progress["overheat_study_start"] != start:
+        raise RuntimeError("overheat study start changed")
     restore_filters(strategies, progress["filters"])
     state = progress["positions"]
+    original = strategies[0][1]
     while at <= cutoff:
         contexts = {symbol: snapshot(lines, symbol, at) for symbol in symbols}
         if any(bars is None for bars in contexts.values()):
@@ -133,12 +154,18 @@ async def collect_cycle(db, client, strategies, market, symbols, cutoff, fee_rat
             for variant, (module, strategy) in zip(VARIANTS, strategies):
                 candidate = await evaluate(module, strategy, symbol, bars, at)
                 original_direction = candidate.get("direction")
-                aligned, alignment_reason = False, None
+                aligned, alignment_reason, blocked = False, None, None
+                study_active = variant == "btc_eth_aggressive" and overheat_start is not None and at >= overheat_start
                 if variant == "btc_eth_aggressive" and candidate.get("entry_intent") == "mean_reversion":
+                    indicators = strategy._build_indicators(bars)
                     aligned, alignment_reason = strategy._check_direction_alignment(
-                        original_direction, strategy._build_indicators(bars),
-                        strategy.risk_config["ranging_strategy"],
+                        original_direction, indicators, strategy.risk_config["ranging_strategy"],
                     )
+                    if study_active:
+                        passed, _ = original._check_overheat_ban(
+                            original_direction, indicators, bars, original.risk_config["ranging_strategy"],
+                        )
+                        blocked = not passed
                 active_arms = arms_for(variant, candidate, original_direction if aligned else None)
                 record = {"variant": variant, "symbol": symbol, "candidate": candidate,
                           "arms": active_arms, "alignment_passed": aligned,
@@ -149,13 +176,21 @@ async def collect_cycle(db, client, strategies, market, symbols, cutoff, fee_rat
                     state[key], event = advance(state.get(key, {}), order, hourly[-1], fee_rate)
                     if event:
                         record["exits"][arm] = event
+                if study_active:
+                    advance_overheat_study(state, symbol, record, hourly[-1], fee_rate, start, blocked=blocked)
                 records.append(record)
+        progress = {"positions": state, "filters": save_filters(strategies)}
+        if start:
+            progress["overheat_study_start"] = start
         with db:
             db.execute("INSERT INTO hours VALUES (?, ?, ?)",
-                       (at.isoformat(), json.dumps({"positions": state, "filters": save_filters(strategies)}), json.dumps(records, default=str, ensure_ascii=False)))
-        print(json.dumps({"at_utc": at.isoformat(), "observations": len(records),
-                          "candidates": sum(bool(r["arms"]) for r in records),
-                          "closed": sum(len(r["exits"]) for r in records)}), flush=True)
+                       (at.isoformat(), json.dumps(progress), json.dumps(records, default=str, ensure_ascii=False)))
+        print(json.dumps({
+            "at_utc": at.isoformat(), "observations": len(records),
+            "candidates": sum(bool(r["arms"]) for r in records),
+            "closed": sum(len(r["exits"]) for r in records),
+            "overheat_observations": sum("overheat_study" in r for r in records),
+        }), flush=True)
         at += HOUR
 
 
@@ -187,7 +222,7 @@ async def run(args):
                     minute=0, second=0, microsecond=0, tzinfo=None,
                 )
                 try:
-                    await collect_cycle(db, client, strategies, market, symbols, cutoff, args.fee_rate)
+                    await collect_cycle(db, client, strategies, market, symbols, cutoff, args.fee_rate, args.overheat_study_from)
                 except Exception as error:
                     if args.once:
                         raise
@@ -204,8 +239,12 @@ def main():
     parser.add_argument("--original-config", type=Path, required=True)
     parser.add_argument("--aggressive-config", type=Path, required=True)
     parser.add_argument("--fee-rate", type=float, default=0.0005)
+    parser.add_argument("--overheat-study-from", type=datetime.fromisoformat, metavar="UTC_HOUR")
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+    start = args.overheat_study_from
+    if start is not None and (start.tzinfo is not None or start != start.replace(minute=0, second=0, microsecond=0)):
+        parser.error("--overheat-study-from requires a naive UTC hour")
     if not 0 <= args.fee_rate < .01:
         parser.error("fee rate per side must be within [0, .01)")
     structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.ERROR))
