@@ -74,7 +74,9 @@ def modes(now):
                        OBSERVER]).strip()
     if not re.fullmatch("[0-9a-f]{40}", revision):
         raise ValueError("invalid observer revision")
-    folder = ROOT / ".deploy_tmp" / ("hrs-mode-observer-" + revision)
+    folder = ROOT / ".releases" / "hrs-mode-report" / revision
+    if not folder.is_dir():
+        folder = ROOT / ".deploy_tmp" / ("hrs-mode-observer-" + revision)
     report = json.loads(output([sys.executable, str(folder / "release/hrs-observer/activate.py"), str(folder),
                                 revision, "--report-start", (now-dt.timedelta(days=7)).isoformat(),
                                 "--report-end", now.isoformat()], timeout=55))

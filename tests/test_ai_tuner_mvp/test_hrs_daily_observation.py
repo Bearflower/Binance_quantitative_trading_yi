@@ -60,3 +60,22 @@ def test_scan_boundary_displays_only_due_windows(monkeypatch):
     text, warnings = hrs.boundary_scans(now)
     assert "00:01:04（scan-a）" in text
     assert warnings == ["2026-12-01 容差内缺首扫描"]
+
+
+def test_mode_report_can_use_a_separately_released_reader(tmp_path, monkeypatch):
+    revision = "a" * 40
+    release = tmp_path / ".releases/hrs-mode-report" / revision
+    release.mkdir(parents=True)
+    monkeypatch.setattr(hrs, "ROOT", tmp_path)
+
+    def output(args, timeout=20):
+        if args[0] == "docker":
+            return revision
+        assert args[1] == str(release / "release/hrs-observer/activate.py")
+        live = {"verified_net_count": 0, "observed_closed": 0}
+        return json.dumps({"full_window_financial_coverage": False,
+                           "modes": {key: {"live": live} for key in
+                                     ("standard", "emm", "semi_emm", "lv_rm", "unknown")}})
+
+    monkeypatch.setattr(hrs, "output", output)
+    assert "近七日实盘" in hrs.modes(dt.datetime.now(hrs.digest_outbox.TZ))[0]
