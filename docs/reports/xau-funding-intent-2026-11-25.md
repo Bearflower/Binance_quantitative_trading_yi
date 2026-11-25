@@ -1,6 +1,6 @@
 # XAU 资金费边界与入场分类验证（2026-11-25）
 
-状态：代码实现与本地验证完成，独立规格/质量复核通过；未部署。分支 `codex/xau-funding-intent-20261125`，基线 `b3a32cd2`。本次没有修改数据库、运行实例或冻结参数。
+状态：已合并并完成受限部署。PR #56，发布 commit `03774607ef47cb5e25f9afd5b4b49f2970bd8ee3`，DEPLOY_ID `00000101`。北京时间 2026-11-25 17:25:58 验证完成；冻结参数与生产交易业务表未改动。
 
 ## 交付
 
@@ -22,7 +22,7 @@
 
 ## 上线边界与后续验收
 
-尚需定向构建并发布资金费采集器及两个 XAU 影子容器；现有旧 xau-review 发布模式额外更新 ai-tuner/定时器，不适合直接复用。须先固定三个目标当前镜像并检查差异，保留其他服务与冻结配置，选择不会产生同小时跨 run 冲突的切换窗口。
+已通过新的专用 workflow 定向构建并发布资金费采集器及两个 XAU 影子容器；没有调用会额外更新 ai-tuner/定时器的旧 xau-review 发布模式。现役镜像、环境及冻结配置已固定，启动首轮采集延后至正常 cron，避免同小时跨 run 冲突。
 
 上线验收必须再读取真实后续采集/决策证据，确认新字段、健康、版本与生产表零写入。新产生的有效资金费窗口才能证明线上修复；本地测试不等于上线通过。
 
@@ -40,3 +40,12 @@
 - 现役 Compose 与根环境文件因账户迁移出现环境变量漂移：发布冻结各目标实际 Env 的完整映射（移除根文件后来新增的键），保留原账户连接/配置；其余运行参数严格比对。镜像 VERSION 同时写 GIT_COMMIT/GIT_SHA，避免新代码误归入旧 run；切换默认等待 cron，既有数据不删改。
 
 - 17:18 CST 上线前重新查询发现：校准版历史小时缺口为 6（原 11/02 04–07 UTC 四小时，加 11/23 11:00、15:00 UTC 两小时），跨 run 重复 6 小时；原版/激进版各缺口 0、历史重复 12 小时。此为部署前事实，旧窗口至 11/18 的“四小时”报告仍正确，但不能再当作当前全窗口基线。新发现缺口不回填、不放松准入，仍为 insufficient_data。四张生产交易表均 0，各周期行情 100/100，注册有效至 12/30 16:00 UTC。
+
+## 正式发布结果
+
+- PR：https://github.com/Bearflower/Binance_quantitative_trading_yi/pull/56 。Actions：https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/45584791299 ，结论 success，CI 发布回归 118 passed。
+- 三容器 running/healthy、RestartCount=0，VERSION 的 GIT_COMMIT/GIT_SHA 均为 `03774607ef47cb5e25f9afd5b4b49f2970bd8ee3`。两 shadow 镜像 digest `ff80ae9d956017c52ebcf04199bdaef288e99c835c80e4963e6c35aae6362ead`；funding digest `8d315174782e0de9390153ab25240353064b842dbff71f1d799185aed9696aa9`。
+- 激活记录位于服务器 `.releases/xau-attribution/03774607ef47cb5e25f9afd5b4b49f2970bd8ee3`：result.json=verified，audit 1343/0 issues，文件哈希/运行配置/启动日志全部验证。77 个非目标容器的身份、镜像、运行/健康/重启状态保持一致。
+- 新 active run：原版/激进版 `xau-shadow-20261125092503-0be2071a10cedc86`；校准版 `xau-calibrated-shadow-20261125092524-b98c115f3a43de86`。三个 config_hash 与发布前完全相等，旧 run 已关闭，观察期不重置。
+- 17:26 CST 核验：最新已到决策为 09:00 UTC，三版数据质量均正常；校准 ATR history_count=86，final_threshold=0.3912430811527793。四张 trading 生产表仍 0，各周期100根，注册覆盖12/30。历史重复/缺口未增加。
+- 当前已完成部署与运行态验收；新 shadow run 的首次正常周期为 18:15/18:20 CST。发布时尚未到期，不将旧 run 的09:00事件冒称为新代码写入成功。趋势/价值回归实际候选标签须在新候选出现后按数据库证据核对；本轮持久化路径已通过真实 PostgreSQL 集成与停启测试。结算边界修复仍需后续真实边界证据，不能用普通槽位或单元测试替代。
