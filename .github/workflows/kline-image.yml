@@ -10,9 +10,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: btc-eth-aggr, base: ghcr.io/bearflower/trading-btc-eth-aggr@sha256:860f8ac815a9c3b76bdc4eda8e64226498977fd5eb9b17fb932368cc025ea2b7}
+          - {name: btc-eth, base: ghcr.io/bearflower/trading-btc-eth@sha256:0709b21f66f494411f926f71d7383abe452355630b4580d021158fe1711b06a8}
+          - {name: new-coin, base: ghcr.io/bearflower/trading-new-coin@sha256:d1a2e1c7c2f21853ef6de4f1bb34ec857eda8336a1dca192731d5ef140443f18}
+          - {name: ai-tuner, base: ghcr.io/bearflower/trading-ai-tuner@sha256:a96e63fa7f7187504f3fd9a6d0a1922afccf80c2456858efe5d6877aabfec8af}
     env:
-      SOURCE_SHA: a54b348b5de56518e2a06ad33e4f51d17c84c68f
+      SOURCE_SHA: 6308a1873da3ede998a3b526abfdf66554401a17
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,9 +26,9 @@ jobs:
       - name: Prepare runtime overlay on reviewed production image
         run: |
           git fetch -q --depth=1 origin c30a0bd73e54121e0c85b6a9a88b5849be962af9
-          test -z "$(git diff --diff-filter=D --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- strategies/btc_eth_aggressive)"
+          test -z "$(git diff --diff-filter=D --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- strategies/btc_eth/Dockerfile strategies/new_coin/Dockerfile ai_tuner/Dockerfile)"
           mkdir -p runtime-layer/overlay
-          git diff --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- strategies/btc_eth_aggressive | while IFS= read -r file; do cp --parents "$file" runtime-layer/overlay/; done
+          git diff --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- strategies/btc_eth/Dockerfile strategies/new_coin/Dockerfile ai_tuner/Dockerfile | while IFS= read -r file; do cp --parents "$file" runtime-layer/overlay/; done
           mkdir -p runtime-layer/overlay/strategies
           cp -a strategies/hrs runtime-layer/overlay/strategies/
           cp VERSION runtime-layer/overlay/
