@@ -1155,7 +1155,7 @@ def _resolve_window(args: argparse.Namespace) -> Tuple[int, int, List[str]]:
     return start_ms, end_ms, symbols
 
 
-def _build_client_from_env():
+def _build_client_from_env(*, read_only=False):
     """从环境变量构造 BinanceClient；密钥缺失时打印中文报错并返回 (None, exit_code=2)。
 
     返回值二选一：
@@ -1177,7 +1177,11 @@ def _build_client_from_env():
         )
         return None, 2
 
-    client = BinanceClient(api_key=api_key, api_secret=api_secret)
+    if read_only:
+        from shared.readonly_client import ReadOnlyBinanceClient
+        client = ReadOnlyBinanceClient(api_key=api_key, api_secret=api_secret, instance_id="execution-facts-collector")
+    else:
+        client = BinanceClient(api_key=api_key, api_secret=api_secret)
     return client, 0
 
 

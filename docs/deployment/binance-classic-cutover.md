@@ -109,6 +109,47 @@ docker compose run --rm --no-deps execution-facts-collector python -m scripts.re
 
 6. 任一账户身份、保护单、流水、权限、行情或权益校验失败时暂停增加敞口，保留已有保护并处理实际成交。若尚未切账号，可继续使用已验证的 PM 版本。切换成功后的第一处置是留在经典账户接管现仓；需要回到 PM 时重新执行交易所空仓清单和双段核算，禁止只改路由或删除游标。
 
+### 漏采 PM 期末权益时单独恢复主账户事实采集
+
+交易写入者继续冻结。对已停止 PM 且两侧权益锚点都没有入库的账户，只有 `scripts.collect_execution_facts` 支持独立凭据。它按 T 限定经典采集窗口，使用仅放行 GET 的币安客户端，并在每轮采集前重新签名查询现货 UID。收益换算、利润提取和交易启动仍要求原有双侧权益记录。该流程不创建权益锚点或运行状态标记。
+
+保存三份完整 JSON 原件，以各自文件的 SHA256（64 位小写十六进制）加 `.json` 为文件名，和 `collector-recovery.json` 放在同一目录。沿用冻结交接与账户复核脚本的回执格式。三份原件分别是：
+
+- PM 冻结交接的 `handoff-confirm-main.json`，含签名 UID 摘要、采样起止毫秒、两份 UM 仓位、普通和 Algo 单清单。
+- 平仓核对的 `rotated-result.json`，含交易写入者冻结清单、缺失的 PM 期末采样、已撤保护单数、平仓成交及收入核对数、经典账户资产和敞口。
+- 经典签名复核的 `rotated-proof-main.json`，含同账户 UID 摘要、PM 模式已关闭的账户信息、单向单资产配置、账户权益、独立仓位与两类挂单、每个旧仓位的 reduce-only 平仓回执和逐笔成交、费用及已实现盈亏，以及旧保护单的终态。
+
+清单字段如下，时间使用实际 UTC Unix 毫秒。下列尖括号字段应替换为对应回执的值，时间字段以 JSON 整数写入。
+
+```json
+{
+  "version": 1,
+  "scope": "execution_facts_collector",
+  "reason": "missing_pm_final",
+  "account_id": "<TRADE_ACCOUNT_ID>",
+  "cutover_ms": "<T>",
+  "pm": {
+    "uid_sha256": "<PM 回执 uid_hash>",
+    "identity_observed_ms": "<PM 回执 end_ms>",
+    "identity_evidence_sha256": "<PM 冻结交接文件 SHA256>",
+    "closure_evidence_sha256": "<平仓核对文件 SHA256>",
+    "closure_reconciled": true,
+    "writers_frozen": true
+  },
+  "classic": {
+    "uid_sha256": "<经典回执 queries.uid.data>",
+    "observed_ms": "<经典回执 end_ms>",
+    "total_margin_balance": "<经典签名账户 totalMarginBalance>",
+    "open_symbols": [],
+    "ordinary_count": 0,
+    "algo_count": 0,
+    "snapshot_evidence_sha256": "<经典签名复核文件 SHA256>"
+  }
+}
+```
+
+将该目录以只读方式挂入专用采集容器，例如 `/run/classic-collector`。仅为该容器设置 `CLASSIC_COLLECTOR_RECOVERY_MANIFEST=/run/classic-collector/collector-recovery.json` 和 `CLASSIC_COLLECTOR_RECOVERY_SHA256`（已审核清单原始字节的 SHA256），并配置同一 `TRADE_ACCOUNT_ID`、经典模式及 T。先执行一次 `python -m scripts.collect_execution_facts --days 2`；确认报告的账户、模式、T、`collector_recovery_sha256`、采集起点和 `complete=true` 后，才以同一配置恢复该采集服务的轮询。任一凭据不符或数据库出现任一权益锚点，采集轮次将失败。保持 PM 期末净值缺口和原 PM 游标，单独归档已知的历史覆盖缺口。
+
 ## 三套策略的数据核对
 
 | 策略 | 信号 / 生命周期 | 成交及收益 |

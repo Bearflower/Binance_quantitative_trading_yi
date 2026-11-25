@@ -13,6 +13,7 @@ import json
 import os
 
 from shared.accounting.account_cutover import account_cutover_ms, collection_window
+from shared.accounting.collector_recovery import verify_collector_ledger
 from scripts.export_execution_facts import (
     ExecutionFactExporter, _build_client_from_env, _maybe_open_sink,
     _maybe_close_sink,
@@ -120,7 +121,7 @@ async def _run(args) -> int:
     sink, db = await _maybe_open_sink()
     client = None
     try:
-        client, code = _build_client_from_env()
+        client, code = _build_client_from_env(read_only=True)
         if client is None:
             raise RuntimeError(f"币安客户端初始化失败，exit={code}")
         exporter = ExecutionFactExporter(
@@ -130,10 +131,8 @@ async def _run(args) -> int:
         expected_account = os.environ.get("TRADE_ACCOUNT_ID", "default")
         if not expected_account.strip() or args.account_id != expected_account:
             raise ValueError("采集账户必须与签名配置 TRADE_ACCOUNT_ID 一致")
-        if not client.use_unified_account:
-            from shared.binance_account_mode import verify_cutover_ledger
-            await verify_cutover_ledger(client, db)
         cutover = account_cutover_ms(args.account_id)
+        recovery_pin = await verify_collector_ledger(client, db, args.account_id, cutover, now_ms)
         requested = (start_ms, end_ms)
         start_ms, end_ms = collection_window(start_ms, end_ms, client.use_unified_account, cutover)
         if requested != (start_ms, end_ms) and args.start_ms is not None:
@@ -142,6 +141,8 @@ async def _run(args) -> int:
             exporter, db, start_ms, end_ms, pause_seconds=args.pause_seconds,
         )
         report.update(account_mode="pm" if client.use_unified_account else "classic", cutover_ms=cutover)
+        if recovery_pin:
+            report["collector_recovery_sha256"] = recovery_pin
         print(json.dumps(report, ensure_ascii=False))
         return 0 if report["complete"] else 2
     finally:
