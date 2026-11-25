@@ -165,6 +165,14 @@ async def _build_collector_and_run_once(
         )
 
 
+async def _collect_on_startup(collector: ShadowCollector) -> None:
+    """A scoped release can defer to cron to avoid a duplicate cross-run hour."""
+    if os.getenv("SHADOW_SKIP_INITIAL_COLLECTION") == "1":
+        logger.info("发布切换：首轮采集等待正常 cron", run_id=collector.run_id)
+        return
+    await _build_collector_and_run_once(collector)
+
+
 async def _prepare_shadow_run(
     repo: ShadowRepository,
     shadow_cfg: ShadowInstanceConfig,
@@ -285,8 +293,7 @@ async def run_forever() -> None:
     )
 
     # ---- 6. 启动前先跑一次（让初始 active run 有首批事件） ----
-    logger.info("启动即执行首轮采集", run_id=run_id)
-    await _build_collector_and_run_once(collector)
+    await _collect_on_startup(collector)
 
     # ---- 7. cron 调度 ----
     scheduler = AsyncIOScheduler(timezone="UTC")
@@ -307,6 +314,7 @@ async def run_forever() -> None:
         month=month,
         day_of_week=day_of_week,
         args=[collector],
+        misfire_grace_time=int(os.getenv("SHADOW_MISFIRE_GRACE_SECONDS", "60")),
         id=f"shadow-{run_id}",
         replace_existing=True,
     )

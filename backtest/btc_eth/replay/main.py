@@ -275,6 +275,7 @@ def main(argv=None) -> int:
         "data_completeness": data_completeness,
         "md_report": outputs["md_path"],
         "json_report": outputs["json_path"],
+        "trade_ledger": outputs["trade_ledger"],
         "replay_run_id": engine_result["engine_metadata"]["replay_run_id"],
         "invariant_violations": len(engine_result["engine_metadata"]["invariant_violations"]),
     }, indent=2, ensure_ascii=False))
