@@ -32,4 +32,4 @@ ENV PYTHONUNBUFFERED=1
 RUN mkdir -p /app/logs/grid /app/data/grid
 
 # 运行策略
-CMD ["python", "-m", "strategies.grid.main"]
+CMD ["python", "-m", "strategies.grid"]

@@ -26,6 +26,7 @@ import signal
 import sys
 from datetime import datetime
 from decimal import Decimal
+from functools import partial
 from pathlib import Path
 
 import structlog
@@ -101,6 +102,7 @@ class StratTuneAI:
         self.config: dict = {}
         self.db_manager: DatabaseManager = None
         self.notification_client: NotificationClient = None
+        self.binance_client: BinanceClient = None
         self.scheduler: AsyncIOScheduler = None
         self.llm_client: LLMClient = None
         self.cost_tracker: CostTracker = None
@@ -118,6 +120,7 @@ class StratTuneAI:
         self.xau_patrol: XAUShadowPatrol = None
         self.reconciler: IncomeReconciler = None
         self._running = False
+        self._job_tasks = set()
         self.app: web.Application = None
         self.runner: web.AppRunner = None
 
@@ -278,7 +281,7 @@ class StratTuneAI:
         binance_testnet = os.getenv("BINANCE_TESTNET", "false").lower() == "true"
         binance_client = None
         if binance_api_key and binance_api_secret:
-            binance_client = BinanceClient(
+            self.binance_client = binance_client = BinanceClient(
                 api_key=binance_api_key,
                 api_secret=binance_api_secret,
                 testnet=binance_testnet,
@@ -602,6 +605,15 @@ class StratTuneAI:
 
         logger.info("StratTuneAI 系统初始化完成")
 
+    async def _run_scheduled_job(self, func, *args, **kwargs):
+        """跟踪本应用任务，关闭共享连接前等待任务取消收尾。"""
+        task = asyncio.current_task()
+        self._job_tasks.add(task)
+        try:
+            return await func(*args, **kwargs)
+        finally:
+            self._job_tasks.discard(task)
+
     async def start(self) -> None:
         """启动调度器和 HTTP 服务器"""
         # 启动 HTTP 服务器
@@ -613,6 +625,8 @@ class StratTuneAI:
             logger.info("HTTP 服务器已启动", port=port)
 
         if self.scheduler:
+            for job in self.scheduler.get_jobs():
+                job.modify(func=partial(self._run_scheduled_job, job.func))
             self.scheduler.start()
             self._running = True
             logger.info("调度器已启动")
@@ -634,10 +648,20 @@ class StratTuneAI:
             await self.runner.cleanup()
             logger.info("HTTP 服务器已关闭")
 
-        # 关闭调度器
-        if self.scheduler:
+        # APScheduler 的异步执行器只请求取消；显式等待任务收尾后才关闭连接。
+        if self.scheduler and self.scheduler.running:
+            self.scheduler.pause()
+            await asyncio.sleep(0)  # 让已提交的任务进入跟踪集合
+            job_tasks = list(self._job_tasks)
             self.scheduler.shutdown(wait=False)
+            await asyncio.sleep(0)  # 让调度器投递的关闭回调先执行
+            await asyncio.gather(*job_tasks, return_exceptions=True)
             logger.info("调度器已关闭")
+
+        # 共享币安客户端由应用持有，借用它的任务不负责关闭。
+        if self.binance_client:
+            await self.binance_client.close()
+            self.binance_client = None
 
         # 关闭通知客户端
         if self.notification_client:
@@ -1133,21 +1157,35 @@ async def main():
     """主函数"""
     app = StratTuneAI()
 
-    # 注册信号处理
+    # 信号只请求退出；主协程统一等待清理，避免独立清理任务被事件循环取消。
     loop = asyncio.get_running_loop()
+    main_task = asyncio.current_task()
+    shutdown_requested = False
+
+    def request_shutdown():
+        nonlocal shutdown_requested
+        if not shutdown_requested:
+            shutdown_requested = True
+            main_task.cancel()
+
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(
-            sig,
-            lambda: asyncio.create_task(app.shutdown())
-        )
+        loop.add_signal_handler(sig, request_shutdown)
 
     try:
         await app.initialize()
         await app.start()
+    except asyncio.CancelledError:
+        pass
     except Exception as e:
         logger.error("系统运行异常", error=str(e))
-        await app.shutdown()
         sys.exit(1)
+    finally:
+        shutdown_requested = True
+        try:
+            await app.shutdown()
+        finally:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.remove_signal_handler(sig)
 
 
 if __name__ == "__main__":

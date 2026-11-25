@@ -30,4 +30,4 @@ ENV STRATEGY_NAME=btc_eth_aggressive
 ENV PYTHONUNBUFFERED=1
 
 # 运行策略
-CMD ["python", "-m", "strategies.btc_eth_aggressive.main"]
+CMD ["python", "-m", "strategies.btc_eth_aggressive"]
