@@ -41,7 +41,7 @@ def test_existing_78_assets_and_disabled_fallbacks_are_unchanged():
     assets = registry()
     # Later additions have their own original-81 byte/canonical guard.
     later = {'ACEUSDT', 'AIGENSYNUSDT', 'ELSAUSDT', 'ENSOUSDT',
-             'IDOLUSDT', 'PROMUSDT', 'SKYAIUSDT', 'VVVUSDT', 'QNTUSDT', 'XPLUSDT'}
+             'IDOLUSDT', 'PROMUSDT', 'SKYAIUSDT', 'VVVUSDT', 'QNTUSDT', 'XPLUSDT', 'SAHARAUSDT', 'MONUSDT', 'ONUSDT'}
     old = {key:value for key,value in assets.items() if key not in EXPECTED and key not in later}
     assert len(old) == 78
     assert hashlib.sha256(json.dumps(old, sort_keys=True, separators=(',', ':')).encode()).hexdigest() == 'aaf5cf903dbd150a830856d89ac7aad2fda2082a1bf2bdd8c478a3e6a14716a6'
@@ -156,8 +156,11 @@ async def test_real_quote_replay_resolves_primary_and_refuses_discrepant_seconda
 @pytest.mark.parametrize('pair,token,provider_id', [
     ('QNTUSDT', 'QNT', 'quant-network'),
     ('XPLUSDT', 'XPL', 'plasma'),
+    ('SAHARAUSDT', 'SAHARA', 'sahara-ai'),
+    ('MONUSDT', 'MON', 'monad'),
+    ('ONUSDT', 'ON', 'orochi-network'),
 ])
-def test_quant_and_plasma_use_verified_primary_only(pair, token, provider_id):
+def test_primary_only_registry_entries_use_verified_provider_ids(pair, token, provider_id):
     asset = registry()[pair]
     assert (asset['symbol'], asset['cg_id']) == (token, provider_id)
     assert asset['cmc_enabled'] is False and asset['cmc_id'] is None

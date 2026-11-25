@@ -1968,5 +1968,44 @@
     ],
     "cmc_enabled": false,
     "fallback_disabled_reason": "A paired CoinMarketCap quote has not been qualified."
+  },
+  "SAHARAUSDT": {
+    "symbol": "SAHARA",
+    "cg_id": "sahara-ai",
+    "cmc_id": null,
+    "name": "Sahara AI",
+    "verified_at": "2026-11-25",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/3417fdb6e4cc498bbcb21f612ae9bd9b",
+      "https://www.coingecko.com/en/coins/sahara-ai"
+    ],
+    "cmc_enabled": false,
+    "fallback_disabled_reason": "A paired CoinMarketCap quote has not been qualified."
+  },
+  "MONUSDT": {
+    "symbol": "MON",
+    "cg_id": "monad",
+    "cmc_id": null,
+    "name": "Monad",
+    "verified_at": "2026-11-25",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/746d4c61e34e467b9d6b1fae02300360",
+      "https://www.coingecko.com/en/coins/monad"
+    ],
+    "cmc_enabled": false,
+    "fallback_disabled_reason": "A paired CoinMarketCap quote has not been qualified."
+  },
+  "ONUSDT": {
+    "symbol": "ON",
+    "cg_id": "orochi-network",
+    "cmc_id": null,
+    "name": "Orochi Network",
+    "verified_at": "2026-11-25",
+    "evidence": [
+      "https://www.binance.com/en/support/announcement/detail/cb2091cbc3da4259972827293f8ed33d",
+      "https://www.coingecko.com/en/coins/orochi-network"
+    ],
+    "cmc_enabled": false,
+    "fallback_disabled_reason": "A paired CoinMarketCap quote has not been qualified."
   }
 }

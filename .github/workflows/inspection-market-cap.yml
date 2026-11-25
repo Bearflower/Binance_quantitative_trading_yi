@@ -1,0 +1,37 @@
+name: Verified market cap identities
+on:
+  push:
+    tags: ['inspection-market-cap-20261125-*']
+permissions:
+  contents: read
+concurrency: market-cap-identity-release
+jobs:
+  verify-and-activate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify market cap identities
+        run: |
+          pip install -r requirements.txt
+          pip install pytest-asyncio==0.23.8
+          python -m pytest -q tests/test_shared/test_market_cap_identity_* tests/test_shared/test_market_cap_hub.py
+      - name: Activate and verify shared market cap quotes
+        env:
+          SSH_KEY: ${{ secrets.SERVER_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          cp release/hrs-observer/known_hosts ~/.ssh/known_hosts
+          stage="/root/trading_system/.releases/inspection-market-cap-$GITHUB_SHA"
+          target=root@43.156.242.184
+          git archive -o "$RUNNER_TEMP/inspection.tar.gz" HEAD release/market-cap-inspection/activate.py services/market_cap/assets.json scripts/database_permissions.py database/postgres/permissions.json
+          sha=$(sha256sum "$RUNNER_TEMP/inspection.tar.gz" | cut -d' ' -f1)
+          ssh "$target" "umask 077; mkdir -p '$stage'"
+          scp "$RUNNER_TEMP/inspection.tar.gz" "$target:$stage/source.tar.gz"
+          ssh "$target" "cd '$stage' && echo '$sha  source.tar.gz' | sha256sum -c - && tar xzf source.tar.gz && python3 release/market-cap-inspection/activate.py '$stage'"
