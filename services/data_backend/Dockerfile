@@ -20,6 +20,7 @@ RUN pip install --no-cache-dir ${PIP_INDEX_URL:+--index-url $PIP_INDEX_URL} -r r
 COPY shared/ ./shared/
 COPY dashboard/backend/core/ ./dashboard/backend/core/
 COPY dashboard/backend/config/ ./dashboard/backend/config/
+COPY dashboard/backend/config.yaml ./dashboard/backend/config.yaml
 COPY dashboard/backend/services/ ./dashboard/backend/services/
 COPY services/data_backend/src/ ./src/
 
