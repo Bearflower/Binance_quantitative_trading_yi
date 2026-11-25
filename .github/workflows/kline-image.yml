@@ -1,17 +1,24 @@
-name: Publish reviewed K-line collector
+name: Build New Coin classic close fix
 on: workflow_dispatch
 permissions:
   contents: read
   packages: write
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/codex/newcoin-live-close-build-20261125'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: 134e5fbf0147a1522a8e9731b3e6546943c669e9
       - name: Stamp release
         run: |
-          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$GITHUB_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
+          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' 134e5fbf0147a1522a8e9731b3e6546943c669e9 "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
+          mkdir -p layer/shared layer/strategies/new_coin
+          cp shared/reduce_only_close.py layer/shared/
+          cp strategies/new_coin/executor.py layer/strategies/new_coin/
+          cp VERSION layer/
+          printf '%s\n' 'FROM ghcr.io/bearflower/trading-new-coin@sha256:cc3b5c011dae5795e21f0a5fbf582dbf4df0ad231bc6aaaf6c15147bed72b619' 'COPY shared/ /app/shared/' 'COPY strategies/ /app/strategies/' 'COPY VERSION /app/VERSION' > layer/Dockerfile
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -20,12 +27,13 @@ jobs:
       - uses: docker/build-push-action@v5
         id: build
         with:
-          context: .
-          file: services/kline_service/Dockerfile
+          context: layer
+          file: layer/Dockerfile
+          labels: org.opencontainers.image.revision=134e5fbf0147a1522a8e9731b3e6546943c669e9
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/bearflower/trading-kline-service:sha-${{ github.sha }}-r${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ghcr.io/bearflower/trading-new-coin:close-${{ github.sha }}-r${{ github.run_id }}-${{ github.run_attempt }}
       - name: Record digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: echo "Collector image digest $DIGEST" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "New Coin image digest $DIGEST" >> "$GITHUB_STEP_SUMMARY"
