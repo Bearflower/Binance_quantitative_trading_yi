@@ -10,12 +10,11 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: data-backend, base: ghcr.io/bearflower/trading-data-backend@sha256:7c316109ee522b91626c19920e2d121ea968b2efee47d7acbec2cbe874e86841}
-          - {name: dashboard-api, base: ghcr.io/bearflower/trading-dashboard-api@sha256:ad5ea2bc8ca85be4e22e1497232804208bee27ee84172d09602034a1a8a3e8c3}
-          - {name: ai-tuner, base: ghcr.io/bearflower/trading-ai-tuner@sha256:fdbb239a2e6696904a10dc25d9e008fd6d65a7c37086c451da8b71496b42c48e}
-          - {name: kline-service, base: ghcr.io/bearflower/trading-kline-service@sha256:8fe70abbfdd327d01d5c8a457d91ca6e165ce0df534338223a4c621852fffea2}
+          - {name: data-backend, base: ghcr.io/bearflower/trading-data-backend@sha256:e1d8a85f05c9b322c5c3c5fb8245b5e60a5abbcfc4f4dac56dd80ae4f1afdae8}
+          - {name: dashboard-api, base: ghcr.io/bearflower/trading-dashboard-api@sha256:197e99457a25f96c0dfc5e2ac1c1f53a774b436971d3bdd171f0c1261b16c262}
+          - {name: hrs, base: ghcr.io/bearflower/trading-hrs@sha256:81df50a123b526a82cb691e82de2dcb30ed796171b28c7d9ec162bf69cf7ef0c}
     env:
-      SOURCE_SHA: be7484a7f9ef484a79187b801f0a37a6a2bdbe78
+      SOURCE_SHA: 532321e65da07d8ced5b26097f7d5ae10e4ea215
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,18 +27,14 @@ jobs:
         run: |
           mkdir -p runtime-layer/overlay
           case '${{ matrix.name }}' in
-            data-backend|dashboard-api)
-              for file in shared/accounting/collector_recovery.py shared/accounting/equity_bridge.py shared/accounting/runtime_cutover.py shared/binance_account_mode.py shared/config_loader.py dashboard/backend/services/data_service_docker.py; do
-                cp --parents "$file" runtime-layer/overlay/
-              done
-              ;;
-            ai-tuner) cp --parents shared/config_loader.py runtime-layer/overlay/ ;;
-            kline-service)
-              mkdir -p runtime-layer/overlay/shared/core
-              cp services/kline_service/shared/core/config.py runtime-layer/overlay/shared/core/config.py ;;
+            data-backend)
+              for file in dashboard/backend/core/config.py dashboard/backend/config.yaml; do cp --parents "$file" runtime-layer/overlay/; done ;;
+            dashboard-api) cp --parents dashboard/backend/core/config.py runtime-layer/overlay/ ;;
+            hrs)
+              for file in shared/config_loader.py strategies/hrs/decision_context.py; do cp --parents "$file" runtime-layer/overlay/; done ;;
           esac
           cp VERSION runtime-layer/overlay/
-          printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
+          printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'ARG HRS_IMAGE_REVISION' 'ENV HRS_IMAGE_REVISION=${HRS_IMAGE_REVISION}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
