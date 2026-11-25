@@ -1,17 +1,22 @@
-name: Publish reviewed K-line collector
+name: Build classic facts collector
 on: workflow_dispatch
 permissions:
   contents: read
   packages: write
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/codex/classic-collector-build'
     runs-on: ubuntu-latest
+    env:
+      SOURCE_SHA: f13b97dc9203175f926b3f41245dade5184c8da9
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
       - name: Stamp release
         run: |
-          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$GITHUB_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -21,10 +26,12 @@ jobs:
         id: build
         with:
           context: .
-          file: services/kline_service/Dockerfile
+          file: strategies/hrs/Dockerfile
+          build-args: HRS_IMAGE_REVISION=${{ env.SOURCE_SHA }}
+          labels: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/bearflower/trading-kline-service:sha-${{ github.sha }}-r${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ghcr.io/bearflower/trading-hrs:classic-collector-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
       - name: Record digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
