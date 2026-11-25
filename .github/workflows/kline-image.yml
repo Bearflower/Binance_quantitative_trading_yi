@@ -10,11 +10,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: data-backend, base: ghcr.io/bearflower/trading-data-backend@sha256:e1d8a85f05c9b322c5c3c5fb8245b5e60a5abbcfc4f4dac56dd80ae4f1afdae8}
-          - {name: dashboard-api, base: ghcr.io/bearflower/trading-dashboard-api@sha256:197e99457a25f96c0dfc5e2ac1c1f53a774b436971d3bdd171f0c1261b16c262}
-          - {name: hrs, base: ghcr.io/bearflower/trading-hrs@sha256:81df50a123b526a82cb691e82de2dcb30ed796171b28c7d9ec162bf69cf7ef0c}
+          - {name: btc-eth-aggr, base: ghcr.io/bearflower/trading-btc-eth-aggr@sha256:e0596f41f15377456552dc94df70545bdf25b16ba118e8249553ada5bcce6eba}
+          - {name: grid, base: ghcr.io/bearflower/trading-grid@sha256:473b2fb38d0e3c1017f8e6ab68f1ffda9f3e5c852ee473c99b9c3af8315aa213}
     env:
-      SOURCE_SHA: 532321e65da07d8ced5b26097f7d5ae10e4ea215
+      SOURCE_SHA: ca19a098e267192aa955400c3fd78f80dc286325
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,15 +25,9 @@ jobs:
       - name: Prepare runtime overlay on reviewed production image
         run: |
           mkdir -p runtime-layer/overlay
-          case '${{ matrix.name }}' in
-            data-backend)
-              for file in dashboard/backend/core/config.py dashboard/backend/config.yaml; do cp --parents "$file" runtime-layer/overlay/; done ;;
-            dashboard-api) cp --parents dashboard/backend/core/config.py runtime-layer/overlay/ ;;
-            hrs)
-              for file in shared/config_loader.py strategies/hrs/decision_context.py; do cp --parents "$file" runtime-layer/overlay/; done ;;
-          esac
+          cp --parents shared/binance_account_mode.py runtime-layer/overlay/
           cp VERSION runtime-layer/overlay/
-          printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'ARG HRS_IMAGE_REVISION' 'ENV HRS_IMAGE_REVISION=${HRS_IMAGE_REVISION}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
+          printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -45,9 +38,7 @@ jobs:
         with:
           context: runtime-layer
           file: runtime-layer/Dockerfile
-          build-args: |
-            BASE=${{ matrix.base }}
-            HRS_IMAGE_REVISION=${{ env.SOURCE_SHA }}
+          build-args: BASE=${{ matrix.base }}
           labels: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
           platforms: linux/amd64
           push: true
