@@ -16,8 +16,9 @@ import structlog
 sys.path.insert(0, os.getenv("APP_ROOT", "/app"))
 
 from shared.database import DatabaseManager
-from shared.binance_api import BinanceClient
-from shared.binance_account_mode import verify_cutover_ledger
+from shared.readonly_client import ReadOnlyBinanceClient as BinanceClient
+from shared.binance_account_mode import verify_trading_mode
+from shared.accounting.collector_recovery import verify_collector_ledger, collector_flat_observation
 from shared.accounting.account_cutover import classic_cutover_ms
 from shared.accounting.equity_bridge import classic_daily_equity, classic_position_owner, money, read_anchors
 from shared.trade_logger import TradeLogger
@@ -185,7 +186,13 @@ class DataService(ExchangeLedgerDashboardMixin):
                     api_secret=os.getenv("BINANCE_API_SECRET", ""),
                     testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
                 )
-                await verify_cutover_ledger(self._binance_client, self._db_manager)
+                await verify_trading_mode(self._binance_client)
+                pin = await verify_collector_ledger(
+                    self._binance_client, self._db_manager,
+                    os.environ.get("TRADE_ACCOUNT_ID", "default"), classic_cutover_ms(),
+                    int(datetime.now(timezone.utc).timestamp() * 1000),
+                )
+                self._classic_flat_observation = collector_flat_observation(pin) if pin else None
             except Exception:
                 if self._binance_client is not None:
                     await self._binance_client.close()
@@ -1240,7 +1247,8 @@ class DataService(ExchangeLedgerDashboardMixin):
             strategy_id = None
             reported_margin = 0.0
             if getattr(self._binance_client, "use_unified_account", True) is False:
-                strategy_id = await classic_position_owner(self._db_manager, pos, classic_cutover_ms()) or "unattributed"
+                strategy_id = await classic_position_owner(self._db_manager, pos, classic_cutover_ms(),
+                    verified_flat_at=getattr(self, "_classic_flat_observation", None)) or "unattributed"
             elif sym in reported_conflict:
                 # 同 symbol 多策略上报冲突：以 trade_records 最近成交策略为准
                 strategy_id = last_trade_strategy.get(sym)

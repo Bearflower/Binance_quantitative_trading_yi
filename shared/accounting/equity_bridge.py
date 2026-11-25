@@ -106,7 +106,7 @@ async def classic_daily_equity(db, cutover, start, end):
     )
 
 
-async def classic_position_owner(db, position, cutover):
+async def classic_position_owner(db, position, cutover, *, verified_flat_at=None):
     """从已证实空仓锚点重放当前净仓；有缺口、错量或多策略冲突即保留未归属。"""
     from datetime import datetime
     from .account_cutover import FILL_SOURCES, coverage_watermark
@@ -125,9 +125,15 @@ async def classic_position_owner(db, position, cutover):
         "WHERE account_id=$1 AND symbol=$3 AND exchange_qty=0 AND flat_at >= to_timestamp($2::bigint/1000.0) "
         "AND flat_at < $4)) AS flat_at", account, cutover, symbol, end,
     )
-    if not anchor or not anchor["flat_at"]:
+    start = anchor["flat_at"] if anchor else None
+    if verified_flat_at is not None:
+        if (verified_flat_at.tzinfo is None
+                or int(verified_flat_at.timestamp() * 1000) < cutover
+                or verified_flat_at >= end):
+            return None
+        start = max(start, verified_flat_at) if start else verified_flat_at
+    if start is None:
         return None
-    start = anchor["flat_at"]
     start_ms = int(start.timestamp() * 1000)
     cursors = await db.fetch_all(_CURSOR_SQL, account, start_ms, end_ms)
     if coverage_watermark(cursors, account, start_ms, end_ms, FILL_SOURCES, None, symbol) < end_ms:

@@ -203,3 +203,10 @@ async def _verify_recovery(client, fetch, account, cutover, now_ms, path_env, pi
         "WHERE account_id=$1 AND cutover_ms=$2 AND snapshot_date IS NULL", account, cutover)
     _require(anchors == [], "账本中已有切换锚点，请按双锚点流程核对")
     return pin
+
+
+def collector_flat_observation(pin):
+    """Read the pinned flat observation after verify_collector_ledger succeeds."""
+    from datetime import datetime, timezone
+    manifest = _load(Path(os.environ[_MANIFEST]), pin)
+    return datetime.fromtimestamp(manifest["classic"]["observed_ms"] / 1000, timezone.utc)
