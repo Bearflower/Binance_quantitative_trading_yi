@@ -153,3 +153,21 @@ async def test_before_close_retains_second_signed_position_inventory_for_subacco
     exchange.get_open_orders.return_value = exchange.get_open_algo_orders.return_value = []
     proof = await before_close(exchange, True)
     assert proof["positions"] == [] and proof["account_positions"] == [row]
+
+
+@pytest.mark.asyncio
+async def test_claim_cutover_uses_utc_database_clock():
+    from shared.binance_account_mode import check_pm_claims
+    from datetime import datetime
+    cutover = 1795582464000
+    classic_created = datetime(2026, 11, 25, 8, 32, 49)
+    pm_created = datetime(2026, 11, 25, 4, 50)
+    async def query(sql, account, stamp):
+        assert "timezone('UTC', to_timestamp" in sql
+        boundary = datetime.fromtimestamp(stamp / 1000, timezone.utc).replace(tzinfo=None)
+        return dict(reservations=False, claims=created < boundary)
+    created = classic_created
+    await check_pm_claims(query, "default", cutover)
+    created = pm_created
+    with pytest.raises(RuntimeError, match="认领"):
+        await check_pm_claims(query, "default", cutover)

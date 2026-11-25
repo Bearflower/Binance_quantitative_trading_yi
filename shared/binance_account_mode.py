@@ -68,7 +68,7 @@ async def check_pm_claims(fetch_one, account, cutover):
               AND created_at < to_timestamp($2::double precision / 1000)) AS reservations,
             EXISTS(SELECT 1 FROM trading.position_claims
             WHERE claim_state IN ('PENDING','ACTIVE')
-              AND created_at < timezone('Asia/Shanghai', to_timestamp($2::double precision / 1000)))
+              AND created_at < timezone('UTC', to_timestamp($2::double precision / 1000)))
             AS claims
     """, account, cutover)
     if not pending or pending["reservations"] or pending["claims"]:
