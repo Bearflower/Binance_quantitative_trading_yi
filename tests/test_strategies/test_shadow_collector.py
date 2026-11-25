@@ -691,6 +691,7 @@ class TestShadowRuntimeAssembly:
 
         await shadow_main.run_forever()
 
+        assert scheduler.add_job.call_args.kwargs["misfire_grace_time"] == 60
         assert events == ["clear", "scheduler-start", "ready", "clear"]
 
 

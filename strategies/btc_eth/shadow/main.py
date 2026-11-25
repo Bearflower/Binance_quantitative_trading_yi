@@ -307,6 +307,7 @@ async def run_forever() -> None:
         month=month,
         day_of_week=day_of_week,
         args=[collector],
+        misfire_grace_time=int(os.getenv("SHADOW_MISFIRE_GRACE_SECONDS", "60")),
         id=f"shadow-{run_id}",
         replace_existing=True,
     )

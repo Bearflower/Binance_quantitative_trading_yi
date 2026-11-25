@@ -194,13 +194,12 @@ def test_journal_reads_previous_day_even_when_incremental_bookmark_is_later(monk
         for when in (start - timedelta(seconds=1), start, end)
     ]
 
-    def journal(command, **kwargs):
-        if command[1] == "CONTAINER_NAME=trading_system-hrs":
-            assert command[3] == f"@{int(start.timestamp())}"
-            return SimpleNamespace(returncode=0, stdout="\n".join(entries))
-        return SimpleNamespace(returncode=0, stdout="")
+    def journal(container, since, until):
+        if container == "trading_system-hrs":
+            assert since == start
+            yield from entries
 
-    monkeypatch.setattr(inspector.subprocess, "run", journal)
+    monkeypatch.setattr(inspector, "journal_lines", journal)
     _, _, _, evidence, available = inspector.read_journal(end + timedelta(hours=7), (start, end))
     assert available
     assert evidence == [(start.isoformat(), "WLDUSDT", "full_close", "released")]
@@ -243,3 +242,17 @@ def test_entry_gate_warning_is_published_without_inventory_anomalies(daily_repor
     assert publish.call_args.kwargs == dict(status='warn', summary=(
         'HRS 权益门禁暂停' if denied else 'HRS 权益门禁证据未核实'))
     assert '本次门禁与风控核验通过' not in publish.call_args.args[1]
+
+
+
+def test_journal_chunks_do_not_overlap(monkeypatch):
+    start = datetime(2026, 11, 24, tzinfo=inspector.BEIJING)
+    commands = []
+    def run(command, **options):
+        commands.append(command)
+        return SimpleNamespace(stdout="{}\n")
+    monkeypatch.setattr(inspector.subprocess, "run", run)
+    assert list(inspector.journal_lines("hrs", start, start + timedelta(hours=3))) == ["{}", "{}"]
+    boundary = int((start + timedelta(hours=2)).timestamp())
+    assert commands[0][5] == f"@{boundary-1}.999999"
+    assert commands[1][3] == f"@{boundary}"

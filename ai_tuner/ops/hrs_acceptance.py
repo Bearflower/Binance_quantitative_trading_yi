@@ -280,54 +280,65 @@ def summarize_hrs_reconciliation(now, events, *, journal_has_entries=True):
     return line, bool(pending or scan_failures)
 
 
+def journal_lines(container, start, end):
+    # 边界按 journal 的微秒精度分割，逐段处理以限制内存与单次查询耗时。
+    while start < end:
+        stop = min(start + timedelta(hours=2), end)
+        result = subprocess.run(
+            ["journalctl", f"CONTAINER_NAME={container}", "--since", f"@{int(start.timestamp())}",
+             "--until", f"@{int(stop.timestamp()) - 1}.999999", "--no-pager", "-o", "json",
+             "--output-fields=MESSAGE"], capture_output=True, text=True, timeout=35, check=True,
+        )
+        yield from result.stdout.splitlines()
+        start = stop
+
+
 def read_journal(since, reconciliation_window):
+    read_until = datetime.now(BEIJING)
     samples, allocation, unavailable, reconciliations = {}, [], [], []
     hrs_journal_has_entries = False
     reconcile_start, reconcile_end = reconciliation_window
     sources = dict(CONTAINERS, tuner="ai-tuner")
     for strategy, container in sources.items():
         source_start = min(since, reconcile_start) if strategy == "hrs" else since
+        any_rows = False
         try:
-            result = subprocess.run(
-                ["journalctl", f"CONTAINER_NAME={container}", "--since", f"@{int(source_start.timestamp())}",
-                 "--no-pager", "-o", "json", "--output-fields=MESSAGE"],
-                capture_output=True, text=True, timeout=35, check=False,
-            )
-        except (OSError, subprocess.SubprocessError):
+            for raw in journal_lines(container, source_start, read_until):
+                any_rows = True
+                row = json.loads(raw)
+                when = datetime.fromtimestamp(int(row["__REALTIME_TIMESTAMP"]) / 1e6, BEIJING)
+                message = row.get("MESSAGE")
+                if not isinstance(message, str):
+                    continue
+                message = re.sub(r"\x1b\[[0-9;]*m", "", message)
+                if strategy == "hrs" and reconcile_start <= when < reconcile_end:
+                    hrs_journal_has_entries = True
+                    try:
+                        event = json.loads(message)
+                    except ValueError:
+                        event = None
+                    if isinstance(event, dict) and event.get("event") == "hrs_close_reconciliation":
+                        fields = tuple(event.get(key) for key in ("symbol", "trigger", "outcome"))
+                        if all(isinstance(value, str) for value in fields):
+                            reconciliations.append((when.isoformat(), *fields))
+                if when < since:
+                    continue
+                identity = event_identity(message)
+                message = UNICODE_ESCAPE.sub(lambda match: chr(int(match[1], 16)), message)
+                if strategy == "tuner":
+                    hit = ALLOCATION_LOGS.search(message)
+                    if hit:
+                        allocation.append((when.isoformat(), hit[0]))
+                else:
+                    for candidate in sample_candidates([(strategy, when.isoformat(), message)]):
+                        samples[candidate] = identity
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+            if strategy == "hrs":
+                hrs_journal_has_entries = False
             unavailable.append(strategy)
             continue
-        lines = result.stdout.splitlines()
-        if result.returncode or not lines:
+        if not any_rows:
             unavailable.append(strategy)
-            continue
-        for raw in lines:
-            row = json.loads(raw)
-            when = datetime.fromtimestamp(int(row["__REALTIME_TIMESTAMP"]) / 1e6, BEIJING)
-            message = row.get("MESSAGE")
-            if not isinstance(message, str):
-                continue
-            message = re.sub(r"\x1b\[[0-9;]*m", "", message)
-            if strategy == "hrs" and reconcile_start <= when < reconcile_end:
-                hrs_journal_has_entries = True
-                try:
-                    event = json.loads(message)
-                except ValueError:
-                    event = None
-                if isinstance(event, dict) and event.get("event") == "hrs_close_reconciliation":
-                    fields = tuple(event.get(key) for key in ("symbol", "trigger", "outcome"))
-                    if all(isinstance(value, str) for value in fields):
-                        reconciliations.append((when.isoformat(), *fields))
-            if when < since:
-                continue
-            identity = event_identity(message)
-            message = UNICODE_ESCAPE.sub(lambda match: chr(int(match[1], 16)), message)
-            if strategy == "tuner":
-                hit = ALLOCATION_LOGS.search(message)
-                if hit:
-                    allocation.append((when.isoformat(), hit[0]))
-            else:
-                for candidate in sample_candidates([(strategy, when.isoformat(), message)]):
-                    samples[candidate] = identity
     return ([(*candidate, identity) for candidate, identity in samples.items()],
             allocation, unavailable, reconciliations, hrs_journal_has_entries)
 
@@ -692,7 +703,7 @@ def run_daily(args):
     if additions:
         lines.extend(f"新增异常：{item}" for item in additions[:12])
     if issues and len(issues) > len(additions):
-        lines.append(f"另有 {len(issues) - len(additions)} 项仍待处理。")
+        lines.extend(f"持续异常：{issue}" for issue in issues if digest(issue) in seen)
     previous_samples = set(state.get("samples", []))
     new_samples = [sample for sample in data["samples"] if digest(sample) not in previous_samples]
     lines.extend(new_samples[:8] or ["未发现新增指定场景候选。"])
