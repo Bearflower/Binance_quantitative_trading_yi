@@ -32,14 +32,17 @@ def fresh(stamp, now, max_age):
 def acceptance(now):
     report = json.loads(output(["docker", "exec", "trading_system-hrs-acceptance",
                                 "cat", "/app/logs/hrs-acceptance.json"]))
-    t, f = report["technical"], report["financial"]
-    verified = sum(s.get("status") == "RECONCILED" and s.get("engineering_status") == "READY"
-                   for s in f["samples"])
     issues = []
     if not fresh(report["generated_at"], now, 45 * 60):
         issues.append("验收报告过期")
     if report["database_snapshot_coherent"] is not True:
         issues.append("验收快照不一致")
+    if issues:
+        reason = report.get("source_error_type") or "、".join(issues)
+        return f"P0 验收 · 本期进度未知（{reason}）。", issues
+    t, f = report["technical"], report["financial"]
+    verified = sum(s.get("status") == "RECONCILED" and s.get("engineering_status") == "READY"
+                   for s in f["samples"])
     if min(f["observed_closed_lifecycles"], f["required_lifecycles"]) > verified:
         issues.append("闭仓待对账")
     text = (f"P0 验收 · 连续合格 {t['consecutive_complete_hours']}/{t['required_complete_hours']} 小时，"

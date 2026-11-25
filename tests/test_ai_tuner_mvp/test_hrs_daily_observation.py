@@ -79,3 +79,15 @@ def test_mode_report_can_use_a_separately_released_reader(tmp_path, monkeypatch)
 
     monkeypatch.setattr(hrs, "output", output)
     assert "近七日实盘" in hrs.modes(dt.datetime.now(hrs.digest_outbox.TZ))[0]
+
+
+def test_incoherent_snapshot_has_unknown_progress_and_source_error(monkeypatch):
+    now = dt.datetime.now(digest_outbox.TZ)
+    report = {"generated_at": now.isoformat(), "database_snapshot_coherent": False,
+              "source_error_type": "ReportEvidenceLimitExceeded",
+              "technical": {"consecutive_complete_hours": 0, "required_complete_hours": 24},
+              "financial": {"samples": [], "required_lifecycles": 5, "observed_closed_lifecycles": 0}}
+    monkeypatch.setattr(hrs, "output", lambda args: json.dumps(report))
+    text, warnings = hrs.acceptance(now)
+    assert "进度未知" in text and "ReportEvidenceLimitExceeded" in text
+    assert "0/5" not in text and "0/24" not in text and warnings
