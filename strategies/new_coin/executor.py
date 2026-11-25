@@ -2529,7 +2529,8 @@ class TradingExecutor:
                 )
                 
                 # 立即平仓
-                await self._close_position(symbol, self.close_percent, "紧急止损")
+                if not await self._close_position(symbol, self.close_percent, "紧急止损"):
+                    return
                 
                 # 取消该合约剩余条件单
                 await self.cancel_all_algo_orders(symbol)
@@ -3261,18 +3262,28 @@ class TradingExecutor:
             # 2. 阶段一：限价平仓（订单簿买一价优先，取不到回退最新价）
             limit_price = await self._resolve_close_limit_price(symbol, tick_size)
             outcome: Optional[CloseOutcome] = None
-            if limit_price > 0:
-                outcome = await self._close_with_reduce_only(
-                    symbol, target_qty, order_type="LIMIT",
-                    step_size=step_size, cfg=cfg, price=limit_price,
-                )
-
-            # 3. 阶段二：限价未成功 → 市价兜底（同样带 reduceOnly）
-            if outcome is None or not outcome.success:
-                outcome = await self._close_with_reduce_only(
-                    symbol, target_qty, order_type="MARKET",
-                    step_size=step_size, cfg=cfg,
-                )
+            full_exit = close_percent >= 1
+            for attempt in range(2):
+                try:
+                    if limit_price > 0:
+                        outcome = await self._close_with_reduce_only(
+                            symbol, target_qty, order_type="LIMIT",
+                            step_size=step_size, cfg=cfg, price=limit_price,
+                            propagate_reduce_only_conflict=full_exit,
+                        )
+                    if outcome is None or not outcome.success:
+                        outcome = await self._close_with_reduce_only(
+                            symbol, target_qty, order_type="MARKET",
+                            step_size=step_size, cfg=cfg,
+                            propagate_reduce_only_conflict=full_exit,
+                        )
+                    break
+                except BinanceAPIError as exc:
+                    if not full_exit or attempt or exc.code not in (-4118, -2022):
+                        raise
+                    logger.warning("全量平仓遇到减仓冲突，核对止盈子单", symbol=symbol, code=exc.code)
+                    await self._cancel_conflicting_tp_children(symbol)
+                    # close_remaining 重新读取实际持仓，覆盖撤单期间的部分成交。
 
             # 4. 结果判定：任一阶段达标即视为平仓成功
             if outcome.success:
@@ -3289,6 +3300,58 @@ class TradingExecutor:
             logger.error("平仓失败", symbol=symbol, reason=reason, error=str(e), exc_info=True)
             await self._notify_close_failure(symbol, reason, f"平仓异常：{e}")
             return False
+
+    async def _cancel_conflicting_tp_children(self, symbol: str) -> None:
+        """按策略归属和母子单关系识别普通挂单，逐笔撤销并复核终态。"""
+        from shared.condition_orders import strategy_owned_algos
+
+        pending = {
+            str(order["orderId"]) for order in await self.binance_api.get_open_orders(symbol)
+            if order.get("symbol") == symbol and order.get("side") == "BUY"
+            and order.get("type") == "LIMIT" and str(order.get("reduceOnly")).lower() == "true"
+        }
+        if not pending:
+            return
+
+        # 已触发的母单可能已离开 OPEN 状态，重启后也可能不在内存中。
+        rows = await self.db.fetch_all(
+            "SELECT algo_id FROM condition_orders WHERE strategy_name='new_coin' "
+            "AND symbol=$1 AND order_type='TAKE_PROFIT' AND algo_id IS NOT NULL "
+            "AND (account_id IS NULL OR account_id=$2) ORDER BY id DESC",
+            symbol, (os.getenv("TRADE_ACCOUNT_ID") or "").strip() or None,
+        )
+        tracking = self.position_tracking.get(symbol, {}).get("algo_ids", {})
+        parents = [tracking.get("tp1"), tracking.get("tp2"), *(r["algo_id"] for r in rows)]
+        for parent_id in dict.fromkeys(parents):
+            if parent_id is None:
+                continue
+            try:
+                parent = await self.binance_api.get_algo_order(int(parent_id))
+            except BinanceAPIError as exc:
+                if exc.code in (-2011, -2013):
+                    continue
+                raise
+            child = str(parent.get("actualOrderId"))
+            if (child not in pending or parent.get("symbol") != symbol
+                    or parent.get("side") != "BUY" or parent.get("orderType") != "TAKE_PROFIT"):
+                continue
+            if not await strategy_owned_algos(self.binance_api, symbol=symbol, orders=[parent]):
+                continue
+            try:
+                await self.binance_api.cancel_order(symbol, child)
+            except BinanceAPIError as exc:
+                if exc.code != self._ORDER_NOT_FOUND_CODE:
+                    raise
+            final = await self.binance_api.get_order(symbol, int(child))
+            if (not final or final.get("symbol") != symbol or str(final.get("orderId")) != child
+                    or final.get("status") not in {"CANCELED", "EXPIRED", "EXPIRED_IN_MATCH", "FILLED"}):
+                raise RuntimeError(f"{symbol} 止盈子单 {child} 撤单后终态未确认")
+            logger.info("全量平仓前已确认止盈子单终态", symbol=symbol, algo_id=parent_id,
+                        order_id=child, status=final["status"])
+            pending.remove(child)
+            if not pending:
+                return
+        raise RuntimeError(f"{symbol} 存在无法确认止盈归属的减仓挂单 {sorted(pending)}")
 
     async def _read_short_target(
         self,
@@ -3337,12 +3400,14 @@ class TradingExecutor:
         step_size: Decimal,
         cfg: Dict[str, Any],
         price: Optional[Decimal] = None,
+        propagate_reduce_only_conflict: bool = False,
     ) -> CloseOutcome:
         """单阶段减仓：展开配置后委托 shared.close_remaining（限价/市价共用）"""
         return await close_remaining(
             self.binance_api,
             symbol,
             target_qty,
+            propagate_reduce_only_conflict=propagate_reduce_only_conflict,
             side="BUY",  # 新币做空策略固定平空
             order_type=order_type,
             price=price,
