@@ -10,14 +10,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: btc-eth, base: ghcr.io/bearflower/trading-btc-eth@sha256:c3c87e772d3c48bc2b1f549b6418fe1aaf47c0877705573f2fbf93a189cc7820}
-          - {name: btc-eth-aggr, base: ghcr.io/bearflower/trading-btc-eth-aggr@sha256:953fe23debc920006296c721a7ac4154afe606b638f5527d719f52dddf741277}
-          - {name: hrs, base: ghcr.io/bearflower/trading-hrs@sha256:28b2f716162c82d5547949666a6eff545a07c88ce7c89d05abd4d4c0db98a3bb}
-          - {name: new-coin, base: ghcr.io/bearflower/trading-new-coin@sha256:8191c042a14c363da9e0b9907fb8c70a8b29c5cf82a4976d75b26a3bc402c9d7}
-          - {name: grid, base: ghcr.io/bearflower/trading-grid@sha256:0a6ddf5f6be5735929c0fe575028429482603d1933090fac2e559f1b947c0eff}
-          - {name: ai-tuner, base: ghcr.io/bearflower/trading-ai-tuner@sha256:96df9620d1beee3661dd2f4963d2f14d9f9bd3857fff6baab64115cb7af25271}
+          - {name: btc-eth-aggr, base: ghcr.io/bearflower/trading-btc-eth-aggr@sha256:860f8ac815a9c3b76bdc4eda8e64226498977fd5eb9b17fb932368cc025ea2b7}
     env:
-      SOURCE_SHA: c30a0bd73e54121e0c85b6a9a88b5849be962af9
+      SOURCE_SHA: 97b88261e1dc43cb58b336dde51d48fd2db15ccf
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,10 +23,10 @@ jobs:
           printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
       - name: Prepare runtime overlay on reviewed production image
         run: |
-          git fetch -q --depth=1 origin 89160896bf9cef194adefe74ed2383a47bc77aa6
-          test -z "$(git diff --diff-filter=D --name-only 89160896bf9cef194adefe74ed2383a47bc77aa6 HEAD -- shared scripts strategies ai_tuner)"
+          git fetch -q --depth=1 origin c30a0bd73e54121e0c85b6a9a88b5849be962af9
+          test -z "$(git diff --diff-filter=D --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- strategies/btc_eth_aggressive)"
           mkdir -p runtime-layer/overlay
-          git diff --name-only 89160896bf9cef194adefe74ed2383a47bc77aa6 HEAD -- shared scripts strategies ai_tuner | while IFS= read -r file; do cp --parents "$file" runtime-layer/overlay/; done
+          git diff --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- strategies/btc_eth_aggressive | while IFS= read -r file; do cp --parents "$file" runtime-layer/overlay/; done
           cp VERSION runtime-layer/overlay/
           printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'ARG HRS_IMAGE_REVISION' 'ENV HRS_IMAGE_REVISION=${HRS_IMAGE_REVISION}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
       - uses: docker/login-action@v3
