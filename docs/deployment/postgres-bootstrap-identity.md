@@ -40,6 +40,8 @@ Preparation inventories every connectable database and emits `plan.json`, `gate.
 
 Before execution require a verified restorable backup and a business-safe point. Pause new-entry writers/DDL creators and retain exchange-side protective orders. A long logical dump can hold ACCESS SHARE locks and block application initialization DDL; the root incident used a separately verified physical backup instead. Do not launch another long full logical dump as part of this sequence.
 
+Select consumers by the affected database identity and active transactions, not by a whole-project container-name prefix. In particular, `ai-tuner-funding-schedule` connects as the separate `ai_tuner_funding_writer`; the application OID split does not require pausing it. The first production window unnecessarily stopped it from 13:24:10 to 13:26:45 UTC and lost the 13:25 prospective observation slot. Keep independently authenticated prospective collectors running unless a concrete dependency requires quiescence. If they must stop, record the actual window and audit closed collection slots after recovery, alongside process health. Do not suppress genuine gap alerts or backdate later observations to make the historical window appear complete.
+
 ## Controlled production sequence
 
 Only the coordinator executes the following after the backup, plan and business safe point are accepted. Use the existing local-container migration administrator connection; no password is passed as an argument.
