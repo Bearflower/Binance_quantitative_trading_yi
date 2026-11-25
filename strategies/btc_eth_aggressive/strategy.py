@@ -3,6 +3,7 @@ BTC/ETH策略逻辑
 基于评分引擎的趋势跟踪策略
 """
 from shared.entry_risk_policy import entry_allowed, prepare_aggressive_entry, recover_reserved_protection
+from strategies.btc_eth_aggressive.cooldown_reset import stop_cooldown_reset
 import asyncio
 import json
 import math
@@ -2566,6 +2567,12 @@ class BTCEthStrategy:
             clock = FrequencyController.utc_time(now or datetime.now(timezone.utc))
             last = datetime.fromtimestamp(last_ms / 1000, timezone.utc)
             if clock < last + timedelta(hours=hours):
+                if stop_cooldown_reset(
+                    account_id, self.strategy_name, symbol, last_ms,
+                    int(clock.timestamp() * 1000), int(hours * 3600000),
+                ):
+                    logger.info("已应用历史止损冷却重置", symbol=symbol, last_fill_time_ms=last_ms)
+                    return True, ""
                 return False, f"verified STOP cooldown ({hours:g}h)"
             return True, ""
         except Exception as exc:
