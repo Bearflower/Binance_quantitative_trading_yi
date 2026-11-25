@@ -15,6 +15,7 @@ import numpy as np
 import structlog
 
 from shared.binance_api import (
+    symbol_is_confirmed_flat,
     BinanceClient, BinanceAPIError, LocalOrderValidationError, PreSubmissionError,
 )
 from shared.circuit_breaker import (
@@ -27,22 +28,24 @@ from shared.kline_service import KLineService
 from shared.notification import NotificationClient
 from shared.indicators import TechnicalIndicators
 from shared.dynamic_atr_filter import DynamicATRFilter
-from shared.condition_orders import record_condition_order, get_open_orders
+from strategies.btc_eth_aggressive.close_evidence import confirmed_close_order, record_close_fills, remaining_protection
+from shared.condition_orders import cancel_strategy_algos, strategy_owned_algos, confirm_classic_algo_fill, record_condition_order
 from shared.accounting.stop_binding import record_stop_binding
 from shared.accounting.stop_exit_audit import (
     audit_due_stop_bindings, unresolved_stop_binding_exists,
 )
 from shared.accounting.stop_exit_ledger import latest_verified_stop_time_ms
 from shared.accounting.stop_intent_journal import StopIntentJournal
+from shared.accounting.account_cutover import account_cutover_ms
+from shared.accounting.runtime_cutover import runtime_start_ms, stop_journal_path
 from shared.accounting.stop_intent_recovery import reconcile_stop_intents
 from shared.strategy_state import load_matching_position_entry_time, save_strategy_state
 from shared.position_entry_recovery import fetch_lot_fills, verified_anchored_lot
-from shared.trade_logger import TradeLogger
 from shared.capital_manager import CapitalManager
 from shared.position_ownership import (
     load_ownership_config,
     resolve_position_owner,
-    _open_entry_sql,
+    _open_entry_sql, entry_scope_args,
     is_symbol_owned_by_other,
     try_claim_symbol,
     release_claim,
@@ -696,9 +699,9 @@ class BTCEthStrategy:
         # 持仓状态管理
         self.positions: Dict[str, PositionState] = {}
         self._unbound_stop_algo_ids: Dict[str, Set[str]] = {}
-        self._stop_journal = StopIntentJournal(os.environ.get(
+        self._stop_journal = StopIntentJournal(stop_journal_path(self.binance, os.environ.get(
             "AGGRESSIVE_STOP_JOURNAL_PATH", "/app/data/aggressive_stop_intents.jsonl"
-        ))
+        )))
         self._verified_legacy_positions: Dict[str, Dict] = {}
         self._legacy_verification_ok = True
         # 入场时间无法核实时不接管；缺硬止损时另行重试，保留旧快照供核对。
@@ -1117,6 +1120,8 @@ class BTCEthStrategy:
                 'position_ratio': self.binance_config['position_ratio'][grade],
                 'timestamp': current_time,
                 'market_state': market_state_name,  # v6.21：记录市场状态用于频率控制
+                'entry_intent': 'mean_reversion' if strategy_mode == 'ranging' else 'trend',
+                'entry_route_fallback': 'strategy_mode' not in market_behavior,
                 'price_change_1h': compute_1h_return(klines['1h']),  # 组合级熔断单币轨：目标币自身 1h 涨幅
                 'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1, grade),
                 'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2, grade),
@@ -1402,6 +1407,8 @@ class BTCEthStrategy:
             'initial_stop_loss': initial_stop_loss,
             'atr': atr,
             'market_state': market_state_name,
+            'entry_intent': 'mean_reversion' if strategy_mode == 'ranging' else 'trend',
+            'entry_route_fallback': 'strategy_mode' not in market_behavior,
             'price_change_1h': compute_1h_return(klines['1h']),
             'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1, grade),
             'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2, grade),
@@ -2536,14 +2543,16 @@ class BTCEthStrategy:
                     return False, "STOP binding missing"
                 bound = await self.db_manager.fetch_one(
                     "SELECT EXISTS(SELECT 1 FROM trading.aggressive_stop_bindings "
-                    "WHERE account_id=$1 AND strategy=$2 AND symbol=$3 AND algo_id=$4) AS bound",
-                    account_id, self.strategy_name, symbol, int(flag),
+                    "WHERE account_id=$1 AND strategy=$2 AND symbol=$3 AND algo_id=$4 "
+                    "AND ($5::bigint IS NULL OR bound_at>=to_timestamp($5::double precision/1000))) AS bound",
+                    account_id, self.strategy_name, symbol, int(flag), runtime_start_ms(getattr(self, "binance", None)),
                 )
                 if not bound or bound.get("bound") is not True:
                     return False, "STOP binding missing"
                 local_flags.discard(flag)
             if await unresolved_stop_binding_exists(
                 self.db_manager, account_id, self.strategy_name, symbol,
+                since_ms=runtime_start_ms(getattr(self, "binance", None)),
             ):
                 return False, "STOP evidence pending review"
             last_ms = await latest_verified_stop_time_ms(
@@ -2584,21 +2593,10 @@ class BTCEthStrategy:
                 or Decimal(str(algo['actualQty'])) != 0
                 or int(algo['triggerTime']) != 0):
             return False
-        positions = await self.binance.get_position(symbol)
-        all_positions = await self.binance.get_position()
-        account_positions = await self.binance.get_um_account_positions()
-        orders = await self.binance.get_open_orders(symbol)
-        algos = await self.binance.get_open_algo_orders(symbol)
-        if not all(isinstance(rows, list) for rows in
-                   (positions, all_positions, account_positions, orders, algos)):
+        try:
+            return await symbol_is_confirmed_flat(self.binance, symbol)
+        except ValueError:
             return False
-        if any(pos.get('symbol') != symbol for pos in positions):
-            return False
-        return (not orders and not algos and all(
-            Decimal(str(pos['positionAmt'])) == 0
-            for inventory in (positions, all_positions, account_positions)
-            for pos in inventory if pos.get('symbol') == symbol
-        ))
 
     async def _open_new_position(self, signal: Dict) -> bool:
         """新开仓主流程（R05/R06/R07 加固；实现在 shared.protection_retry.open_new_position）"""
@@ -2922,7 +2920,7 @@ class BTCEthStrategy:
         tp_level: Optional[int] = None,
         *, stop_slot: str = "hard",
     ) -> Optional[str]:
-        """统一封装条件单下单+落库：统一账户 algoId、普通账户 orderId，失败返回 None（v6.28）"""
+        """统一封装条件单下单+落库：按交易所 algoId 记录，失败返回 None（v6.28）"""
         client_algo_id = None
         try:
             if order_kind == "STOP_LOSS":
@@ -2947,7 +2945,7 @@ class BTCEthStrategy:
                 reduce_only=True,
                 **({"clientAlgoId": client_algo_id} if client_algo_id else {}),
             )
-            order_id = order.get('algoId') or order.get('orderId')
+            order_id = order.get('algoId')
             logger.info(
                 f"{symbol} 条件单已下单",
                 order_type=order_kind,
@@ -2957,14 +2955,10 @@ class BTCEthStrategy:
                 quantity=float(quantity)
             )
             if order_id and self.db_manager:
-                record_kwargs = (
-                    {'algo_id': order['algoId']} if order.get('algoId')
-                    else {'order_id': order_id}
-                )
                 try:
                     await record_condition_order(
                         self.db_manager, strategy_name, symbol,
-                        order_type=order_kind, tp_level=tp_level, **record_kwargs
+                        order_type=order_kind, tp_level=tp_level, algo_id=order_id
                     )
                 except Exception as exc:
                     logger.warning("条件单已挂出，条件单记录失败", symbol=symbol,
@@ -3046,7 +3040,7 @@ class BTCEthStrategy:
                 account_id=os.environ.get("TRADE_ACCOUNT_ID"),
                 strategy=self.strategy_name, symbol=symbol,
                 episode_entry_order_id=entry_id, algo_id=algo_id,
-                stop_side=stop_side, stop_quantity=quantity,
+                stop_side=stop_side, stop_quantity=quantity, since_ms=runtime_start_ms(getattr(self, "binance", None)),
             )
             if not bound:
                 self._unbound_stop_algo_ids.setdefault(symbol, set()).add(str(algo_id))
@@ -3366,8 +3360,7 @@ class BTCEthStrategy:
     async def _rebuild_remaining_protection(self, symbol: str, position: PositionState) -> None:
         """平尾仓后补挂剩余保护单：硬止损（全量剩余）+ TP2（initial×tp2_ratio，v6.28）
 
-        _close_position 平仓前会取消交易所全部条件单（含 TP2/硬止损），
-        平尾仓后剩余仓位需重新补挂保护，防止裸仓。
+        先核对同一策略的在挂保护单，仅补挂已确认缺失的档位。
 
         Args:
             symbol: 交易对
@@ -3379,15 +3372,19 @@ class BTCEthStrategy:
         (step_size, tick_size, stop_side, partial_cfg,
          stop_offset, tp_offset) = await self._load_order_rebuild_params(symbol, position)
 
+        has_stop, has_tp2 = await remaining_protection(self.binance, symbol, position, stop_side)
         # 1. 补挂硬止损：数量=剩余持仓量，触发价=_calculate_stop_price
         stop_qty = self._adjust_quantity_precision(position.current_quantity, step_size)
-        if stop_qty > 0:
+        if stop_qty > 0 and not has_stop:
             stop_id = await self._place_stop_loss_order(
                 symbol, position, stop_qty, tick_size, stop_side, stop_offset)
             if stop_id:
                 position.stop_loss_order_id = stop_id
-        else:
+        elif stop_qty <= 0:
             logger.warning(f"{symbol} 平尾仓补挂：剩余持仓量精度调整后为0，跳过硬止损补挂")
+
+        if has_tp2:
+            return
 
         # 2. 补挂 TP2：数量=initial×tp2_ratio，触发价=_calculate_tp_price(...,2,grade)
         tp2_price = self._calculate_tp_price(
@@ -3533,7 +3530,7 @@ class BTCEthStrategy:
         except Exception as exc:
             self._close_definitely_rejected_stop_intent(client_algo_id, exc)
             raise
-        position.stop_loss_order_id = new_stop_order.get('algoId') or new_stop_order.get('orderId')
+        position.stop_loss_order_id = new_stop_order.get('algoId')
         if new_stop_order.get('algoId'):
             try:
                 if client_algo_id and new_stop_order.get('clientAlgoId') != client_algo_id:
@@ -3718,6 +3715,8 @@ class BTCEthStrategy:
             position = self.positions.get(symbol)
             unadopted = position is None
             if unadopted:
+                if getattr(self.binance, "use_unified_account", True) is False:
+                    return False
                 anchor_ms = _LEGACY_ENTRY_ANCHORS.get(symbol)
                 if anchor_ms is None:
                     logger.error("月度额度未接管仓位无可信入场锚点，拒绝自动减仓", symbol=symbol)
@@ -3749,26 +3748,6 @@ class BTCEthStrategy:
             )
             if not confirmation.get("closed"):
                 return False
-            if unadopted:
-                # The temporary state has no order IDs. Clear any remaining
-                # exchange protection before retiring its DB records.
-                canceled = await self._cancel_symbol_conditional_orders(
-                    symbol, "ALLOCATION_LIMIT"
-                )
-                if canceled:
-                    try:
-                        await self.db_manager.execute(
-                            "UPDATE condition_orders SET status='CANCELED', updated_at=NOW() "
-                            "WHERE strategy_name=$1 AND symbol=$2 AND status='OPEN'",
-                            self.strategy_name, symbol,
-                        )
-                    except Exception as exc:
-                        logger.warning("月度额度平仓后条件单记录更新失败", symbol=symbol, error=str(exc))
-                else:
-                    logger.error("月度额度平仓后残余条件单取消失败", symbol=symbol)
-                await release_claim(
-                    self.db_manager, symbol, self.my_record_name, reason="position_closed"
-                )
             return True
 
         return await self.capital_mgr.enforce_existing_positions(margins, close)
@@ -3825,21 +3804,15 @@ class BTCEthStrategy:
         if not confirmation.get("closed"):
             return False
         canceled = await self._cancel_symbol_conditional_orders(symbol, reason)
-        if canceled:
-            try:
-                await self.db_manager.execute(
-                    "UPDATE condition_orders SET status='CANCELED', updated_at=NOW() "
-                    "WHERE strategy_name=$1 AND symbol=$2 AND status='OPEN'",
-                    self.strategy_name, symbol,
-                )
-            except Exception as exc:
-                logger.warning("旧仓平仓后条件单记录更新失败", symbol=symbol, error=str(exc))
-        else:
-            logger.error("旧仓平仓后残余条件单取消失败", symbol=symbol)
+        if not canceled:
+            return False
         await release_claim(
             self.db_manager, symbol, self.my_record_name, reason="position_closed"
         )
         return True
+
+    async def _owned_open_protection(self, symbol):
+        return await strategy_owned_algos(self.binance, symbol=symbol)
 
     @staticmethod
     def _hard_stop_covered_qty(orders, symbol: str, side: str) -> Decimal:
@@ -3882,10 +3855,12 @@ class BTCEthStrategy:
             # errors. Recheck with the shared SQL so an error cannot authorize
             # the historical fallback over a competing live entry.
             active = await self.db_manager.fetch_one(
-                _open_entry_sql(False), symbol
+                _open_entry_sql(False), symbol, *entry_scope_args()
             )
             if active is not None:
                 return active.get("strategy") == self.my_record_name
+            if getattr(self.binance, "use_unified_account", True) is False:
+                return None
             anchor_ms = _LEGACY_ENTRY_ANCHORS.get(symbol)
             if anchor_ms is None:
                 return None
@@ -3897,10 +3872,13 @@ class BTCEthStrategy:
             first_order_id = fills[0].get("orderId")
             if first_order_id is None:
                 return None
+            account_id, _ = entry_scope_args()
             row = await self.db_manager.fetch_one(
-                "SELECT strategy, order_type, side FROM trading.trade_records "
-                "WHERE symbol=$1 AND order_id=$2 ORDER BY id DESC LIMIT 1",
-                symbol, str(first_order_id),
+                "SELECT min(strategy) AS strategy, min(order_type) AS order_type, min(side) AS side "
+                "FROM trading.trade_records WHERE symbol=$1 AND order_id=$2 AND account_id=$3 "
+                "AND ($4::bigint IS NULL OR executed_at < timezone('Asia/Shanghai', "
+                "to_timestamp($4::double precision / 1000))) HAVING count(*)=1",
+                symbol, str(first_order_id), account_id, account_cutover_ms(account_id),
             )
             expected_side = "BUY" if amount > 0 else "SELL"
             owned = bool(
@@ -3923,6 +3901,9 @@ class BTCEthStrategy:
         TP uses unknown historical ATR/grade and is deliberately not rebuilt.
         """
         previous_report = getattr(self, "_verified_legacy_positions", {})
+        if getattr(self.binance, "use_unified_account", True) is False:
+            self._legacy_verification_ok = True
+            return True
         self._legacy_verification_ok = False
         next_report = {}
         try:
@@ -3949,7 +3930,7 @@ class BTCEthStrategy:
                 ):
                     logger.error("旧仓入场时间无法核实，暂停时间退出", symbol=symbol)
                     return False
-                orders = await self.binance.get_open_algo_orders(symbol)
+                orders = await self._owned_open_protection(symbol)
                 close_side = "SELL" if amount > 0 else "BUY"
                 hard_stop = self._hard_stop_covers(orders, symbol, close_side, abs(amount))
                 if not hard_stop:
@@ -4139,6 +4120,8 @@ class BTCEthStrategy:
             matched_pos = next((p for p in exchange_positions if p.get('symbol') == symbol), None)
 
             if matched_pos is None:
+                if getattr(self.binance, "use_unified_account", True) is False:
+                    raise ValueError("经典账户仓位快照缺少本币行")
                 # Binance PM 对已平仓 symbol 返回空列表
                 return self._mark_position_flat(
                     symbol, position, close_reason, prev_quantity, "交易所返回空持仓列表，视为已平仓")
@@ -4146,7 +4129,7 @@ class BTCEthStrategy:
             # 保留正负号，用符号判断方向
             pos_amt_signed = float(matched_pos.get('positionAmt', 0))
 
-            if abs(pos_amt_signed) < 0.0001:
+            if pos_amt_signed == 0:
                 # 显式返回 posAmt=0 的边缘情况
                 return self._mark_position_flat(
                     symbol, position, close_reason, prev_quantity, "交易所 posAmt≈0")
@@ -4248,17 +4231,17 @@ class BTCEthStrategy:
             True = 成功取消或确认无挂单；False = 取消失败但不阻断主流程
         """
         try:
-            await self.binance.cancel_all_algo_orders(symbol)
+            position = self.positions.get(symbol)
+            tracked = [getattr(position, key, None) for key in (
+                "stop_loss_order_id", "tp1_order_id", "tp2_order_id", "trailing_stop_order_id"
+            )]
+            await cancel_strategy_algos(self.binance, symbol, tracked_ids=tracked)
             logger.info(
                 f"{symbol} 交易所条件单已全部取消",
                 close_reason=close_reason
             )
             return True
         except BinanceAPIError as e:
-            if e.code == -4046:
-                # 没有挂着的条件单，正常情况
-                logger.debug(f"{symbol} 无挂着的条件单，无需取消")
-                return True
             logger.warning(
                 f"{symbol} 取消交易所条件单失败（{e.code}），继续尝试平仓",
                 close_reason=close_reason,
@@ -4296,26 +4279,19 @@ class BTCEthStrategy:
         """
         try:
             # 确定平仓方向（与持仓方向相反）
-            entry_direction = position.direction
             close_side = "SELL" if position.direction == "LONG" else "BUY"
 
             # 入口持仓同步：先查交易所实际持仓量（条件单可能已部分成交）
             sync_result = await self._sync_position_with_exchange(symbol, position, close_reason)
+            if sync_result.get('actual_quantity') is None:
+                return False
             if sync_result['closed']:
                 # 交易所已无持仓，说明已被条件单平仓，视为平仓成功
                 logger.info(
                     f"{symbol} 平仓前同步发现交易所已无持仓，跳过下单",
                     close_reason=close_reason
                 )
-                # 条件单已平仓，用当前价估算并回写盈亏（无 order_result，走模式二降级匹配）
-                pnl = await self._write_close_pnl(
-                    symbol, position, close_side, close_reason,
-                    current_price=current_price, close_quantity=close_quantity
-                )
-                # 止损打标：本次平仓若为止损（非止盈）且由条件单促成，记录止损供看板统计
-                await self._mark_stop_loss_if_needed(
-                    symbol, position, close_reason, pnl, side_override=close_side
-                )
+                # 仓位变化只能证明余量；条件单收益由真实子单成交对账。
                 return True
 
             # 先确认精度，避免失败时先撤掉仍有效的保护单。
@@ -4420,6 +4396,7 @@ class BTCEthStrategy:
             last_error = None
 
             for retry_attempt in range(max_retries + 1):
+                order_result = None
                 try:
                     # 获取订单簿最优价
                     orderbook = await self.binance.get_orderbook(symbol, limit=5)
@@ -4476,7 +4453,12 @@ class BTCEthStrategy:
 
                     # 超时未成交，撤销后重试（用新最优价）
                     try:
-                        await self.binance.cancel_order(symbol, order_id=str(order_result['orderId']))
+                        canceled = await self.binance.cancel_order(symbol, order_id=str(order_result['orderId']))
+                        if (canceled.get("status") != "CANCELED"
+                                or str(canceled.get("orderId")) != str(order_result["orderId"])
+                                or Decimal(str(canceled.get("executedQty"))) != 0):
+                            logger.warning("撤单存在成交或状态未明，等待持仓核对", symbol=symbol)
+                            return False
                         logger.info(
                             f"{symbol} 限价平仓超时，撤销后重试（第{retry_attempt + 1}/{max_retries}次）",
                             close_reason=close_reason,
@@ -4501,6 +4483,10 @@ class BTCEthStrategy:
                         await asyncio.sleep(retry_interval)
 
                 except Exception as e:
+                    if (order_result is not None or not isinstance(e, BinanceAPIError)
+                            or e.code not in (-2022, -4118)):
+                        logger.warning("平仓委托结果未确认，暂停本轮重试", symbol=symbol, error=str(e))
+                        return False
                     last_error = e
                     logger.warning(
                         f"{symbol} 限价平仓异常（第{retry_attempt + 1}次）",
@@ -4533,15 +4519,7 @@ class BTCEthStrategy:
                                 close_reason=close_reason,
                                 error_code=error_code
                             )
-                            # 条件单已平仓，用当前价估算并回写盈亏（无 order_result，走模式二降级匹配）
-                            pnl = await self._write_close_pnl(
-                                symbol, position, close_side, close_reason,
-                                current_price=current_price, close_quantity=close_quantity
-                            )
-                            # 止损打标：与入口 closed 分支保持一致
-                            await self._mark_stop_loss_if_needed(
-                                symbol, position, close_reason, pnl, side_override=close_side
-                            )
+                            # 仓位变化只能证明余量；条件单收益由真实子单成交对账。
                             return True
                         elif sync_result['partially_closed']:
                             # 交易所持仓量 < 本地记录，调整平仓量后继续重试
@@ -4586,6 +4564,13 @@ class BTCEthStrategy:
                 )
                 return False
 
+            order_result = await confirmed_close_order(
+                self.binance, symbol, close_side, order_result["orderId"], actual_close_quantity
+            )
+            if order_result is None:
+                logger.warning("平仓委托终态或数量未确认，保留仓位等待核对", symbol=symbol)
+                return False
+
             if preserve_protection:
                 confirmation = await self._sync_position_with_exchange(
                     symbol, position, close_reason
@@ -4612,37 +4597,12 @@ class BTCEthStrategy:
                 Decimal('0'), position.current_quantity - actual_close_quantity
             )
             
-            # 计算平仓盈亏并回写 trade_records.realized_pnl
-            # 注意：回写失败不影响平仓主流程，异常被内部捕获仅记日志
             try:
-                # 从 order_result 获取成交均价，可能为 "0"（限价单刚成交时 API 不返回）
-                exit_price = Decimal(str(order_result.get('avgPrice', '0')))
-                if exit_price <= 0:
-                    exit_price = current_price or Decimal('0')
-
-                if exit_price > 0 and position.entry_price and position.entry_price > 0:
-                    # 使用集中管理的公式计算平仓盈亏
-                    pnl = TradeLogger.calculate_pnl(
-                        direction=entry_direction,
-                        entry_price=position.entry_price,
-                        exit_price=exit_price,
-                        quantity=actual_close_quantity
-                    )
-
-                    # 通过 getattr 获取 trade_logger 实例，避免直接依赖
-                    trade_logger = getattr(self.binance, 'trade_logger', None)
-                    if trade_logger:
-                        await trade_logger.update_realized_pnl(
-                            order_id=str(order_result.get('orderId', '')),
-                            realized_pnl=pnl,
-                            side=close_side,
-                            symbol=symbol,
-                            executed_at=datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
-                        )
-                        # 止损打标：平仓成交后，若本次为止损（非止盈）则记录止损供看板统计
-                        await self._mark_stop_loss_if_needed(
-                            symbol, position, close_reason, pnl, side_override=close_side
-                        )
+                if not await record_close_fills(
+                    self.binance, order_result, close_reason not in _TAKE_PROFIT_CLOSE_REASONS
+                ):
+                    logger.warning("平仓单缺少唯一归属回执，收益待核对", symbol=symbol,
+                                   order_id=order_result["orderId"])
             except Exception as pnl_error:
                 logger.warning(
                     f"{symbol} 回写平仓盈亏失败，不影响平仓流程",
@@ -4715,86 +4675,6 @@ class BTCEthStrategy:
             
             return False
 
-    async def _write_close_pnl(
-        self,
-        symbol: str,
-        position: PositionState,
-        close_side: str,
-        close_reason: str,
-        current_price: Optional[Decimal] = None,
-        close_quantity: Optional[Decimal] = None,
-    ) -> Optional[Decimal]:
-        """条件单已平仓场景的盈亏回写（order_result 为 None，用当前价估算）。"""
-        try:
-            pnl_direction = "LONG" if close_side == "SELL" else "SHORT"
-            # closed 时 current_quantity 已置 0，数量必须来自 close_quantity 参数；无效则跳过回写
-            quantity = close_quantity if close_quantity is not None else Decimal('0')
-            exit_price = current_price or Decimal('0')
-            if exit_price <= 0 or not position.entry_price or position.entry_price <= 0 or quantity <= 0:
-                logger.debug(f"{symbol} 条件单平仓参数无效，跳过盈亏回写", close_reason=close_reason)
-                return None
-            pnl = TradeLogger.calculate_pnl(
-                direction=pnl_direction,
-                entry_price=position.entry_price,
-                exit_price=exit_price,
-                quantity=quantity,
-            )
-            trade_logger = getattr(self.binance, 'trade_logger', None)
-            if trade_logger is None:
-                return None
-            executed_at = datetime.now(timezone(timedelta(hours=8))).replace(tzinfo=None)
-            # order_id 传空串，走模式二降级匹配（strategy+symbol+side+±300秒 且 realized_pnl IS NULL）
-            updated = await trade_logger.update_realized_pnl(
-                order_id='',
-                realized_pnl=pnl,
-                side=close_side,
-                symbol=symbol,
-                executed_at=executed_at,
-            )
-            if not updated and close_reason in _TAKE_PROFIT_CLOSE_REASONS:
-                # 止盈类无 trade_records 可 UPDATE 时插入 PnL 汇总兜底；止损类由内部 log_stop_loss 兜底
-                await trade_logger.insert_pnl_summary(
-                    realized_pnl=pnl,
-                    symbol=symbol,
-                    side=close_side,
-                    strategy=trade_logger.strategy_name,
-                    executed_at=executed_at,
-                    close_reason=close_reason,
-                )
-            logger.info(f"{symbol} 条件单平仓盈亏回写完成", close_reason=close_reason, realized_pnl=str(pnl))
-            return pnl
-        except Exception as e:
-            logger.warning(f"{symbol} 条件单平仓盈亏回写异常，不影响平仓流程", close_reason=close_reason, error=str(e), exc_info=True)
-            return None
-
-    async def _mark_stop_loss_if_needed(self, symbol: str, position: PositionState,
-                                        close_reason: str,
-                                        realized_pnl: Optional[Decimal] = None,
-                                        side_override: Optional[str] = None) -> None:
-        """止损打标（供风控看板"最近止损次数"统计）。
-
-        仅非止盈平仓（时间止损 / 条件单止损 / 强平预警 / 极端行情等保护性平仓）才打
-        STOP_LOSS 标记；止盈（TP1/TP2/移动止盈）不打标记，避免误伤风控统计。
-        通过 getattr 探测 trade_logger，缺失或调用异常时静默跳过，不影响平仓主流程。
-        """
-        if close_reason in _TAKE_PROFIT_CLOSE_REASONS:
-            return
-        trade_logger = getattr(self.binance, 'trade_logger', None)
-        if trade_logger is None or not hasattr(trade_logger, 'log_stop_loss'):
-            return
-        try:
-            await trade_logger.log_stop_loss(
-                symbol=symbol,
-                side=side_override or ("SELL" if position.direction == "LONG" else "BUY"),
-                realized_pnl=realized_pnl,
-            )
-        except Exception as e:
-            logger.warning(
-                f"{symbol} 打标止损记录失败",
-                close_reason=close_reason,
-                error=str(e)
-            )
-    
     async def _check_partial_take_profit(
         self,
         symbol: str,
@@ -4816,23 +4696,26 @@ class BTCEthStrategy:
 
         # 先同步交易所仓位，检测交易所条件单是否已部分平仓（防内存重复平仓）
         synced = await self._sync_position_with_exchange(symbol, position, close_reason="PARTIAL_TP")
-        if synced.get('closed'):
-            position.tp1_hit = True
-            position.tp2_hit = True
+        if synced.get('closed') or synced.get('actual_quantity') is None:
             return
-        # 推断已触发的 TP 级别：用 current_quantity 相对 initial_quantity 的缺口
         if position.initial_quantity and position.initial_quantity > 0:
             remaining_after_tp2 = position.initial_quantity * remaining_ratio
             remaining_after_tp1 = position.initial_quantity * (Decimal('1') - tp1_ratio)
-            # 容差：避免浮点/精度误差（步长级误差），比例从配置读取
             eps_ratio = Decimal(str(self.risk_config.get('quantity_inference_eps_ratio', 0.005)))
             eps = position.initial_quantity * eps_ratio
-            if position.current_quantity <= remaining_after_tp2 + eps:
-                position.tp1_hit = True
-                position.tp2_hit = True
-            elif position.current_quantity <= remaining_after_tp1 + eps:
-                position.tp1_hit = True
-        
+            for level, threshold in ((1, remaining_after_tp1), (2, remaining_after_tp2)):
+                if position.current_quantity > threshold + eps or getattr(position, f"tp{level}_hit"):
+                    continue
+                if Decimal(str(partial_config[f"tp{level}_close_ratio"])) <= 0:
+                    continue
+                algo_id = getattr(position, f"tp{level}_order_id")
+                if not algo_id or not await confirm_classic_algo_fill(
+                    self.binance, symbol, algo_id, role="TAKE_PROFIT", tp_level=level,
+                ):
+                    logger.warning("仓位已减少，止盈成交未确认，暂停重复平仓", symbol=symbol, tp_level=level)
+                    return
+                setattr(position, f"tp{level}_hit", True)
+
         # 检查TP1
         if not position.tp1_hit:
             tp1_price = self._calculate_tp_price(
@@ -4921,26 +4804,13 @@ class BTCEthStrategy:
                 else:
                     logger.error(f"{symbol} TP2平仓失败，保持持仓状态")
     
-    async def _cancel_trailing_order(self, symbol: str, position: PositionState) -> None:
-        """平仓前取消交易所上的移动止损条件单（v6.28 拆分 _check_dynamic_trailing）"""
+    async def _cancel_trailing_order(self, symbol: str, position: PositionState) -> bool:
+        """只有确认旧单已结束，才允许建立替代保护或发起尾仓平仓。"""
         if position.trailing_stop_order_id is None:
-            return
-        try:
-            await self.binance.cancel_algo_order(symbol, position.trailing_stop_order_id)
-        except BinanceAPIError as e:
-            if e.code not in self.risk_config['cleanup_silent_error_codes']:
-                logger.warning(
-                    f"{symbol} 取消移动止损条件单失败",
-                    algo_id=position.trailing_stop_order_id,
-                    error_code=e.code
-                )
-        except Exception as e:
-            logger.warning(
-                f"{symbol} 取消移动止损条件单异常",
-                algo_id=position.trailing_stop_order_id,
-                error=str(e)
-            )
-        position.trailing_stop_order_id = None
+            return True
+        return await self._cancel_single_order_with_retry(
+            symbol, position, "trailing_stop", position.trailing_stop_order_id,
+        )
 
     async def _handle_trailing_trigger(
         self,
@@ -4951,7 +4821,8 @@ class BTCEthStrategy:
     ) -> None:
         """峰值回落触发保护：取消移动止损单 + 平尾仓 + 补挂剩余保护（v6.28 拆分）"""
         step_size, _tick_size = await self._get_precision_params(symbol)
-        await self._cancel_trailing_order(symbol, position)
+        if not await self._cancel_trailing_order(symbol, position):
+            return
 
         # 平仓量 = initial_quantity × remaining_ratio（尾仓，v6.28）
         # 修复：原逻辑用 current_quantity 全平剩余，TP1 触发后价格回落即全平跳过 TP2
@@ -4975,7 +4846,7 @@ class BTCEthStrategy:
             close_quantity=float(close_quantity)
         )
 
-        await self._close_position(
+        closed = await self._close_position(
             symbol=symbol,
             position=position,
             close_quantity=close_quantity,
@@ -4984,7 +4855,8 @@ class BTCEthStrategy:
         )
 
         # 平尾仓后补挂剩余保护单（硬止损 + TP2），防止剩余仓位裸仓
-        await self._rebuild_remaining_protection(symbol, position)
+        if closed:
+            await self._rebuild_remaining_protection(symbol, position)
 
     async def _check_dynamic_trailing(
         self,
@@ -5275,40 +5147,12 @@ class BTCEthStrategy:
         """
         stop_side = 'SELL' if position.direction == 'LONG' else 'BUY'
         stop_offset_pct = Decimal(str(self.risk_config.get('stop_limit_order', {}).get('offset_pct', 0.002)))
-        silent_error_codes = set(self.risk_config['cleanup_silent_error_codes'])
         # 先确认精度，避免撤旧移动止损后才发现无法重挂。
         step_size, tick_size = await self._get_precision_params(symbol)
         
-        # 1. 取消旧移动止损条件单（如果存在）
-        if position.trailing_stop_order_id is not None:
-            try:
-                await self.binance.cancel_algo_order(symbol, position.trailing_stop_order_id)
-                logger.info(
-                    f"{symbol} 旧移动止损条件单已取消",
-                    algo_id=position.trailing_stop_order_id
-                )
-            except BinanceAPIError as e:
-                if e.code in silent_error_codes:
-                    logger.debug(
-                        f"{symbol} 旧移动止损条件单取消失败（可能已成交）",
-                        algo_id=position.trailing_stop_order_id,
-                        error_code=e.code
-                    )
-                else:
-                    logger.warning(
-                        f"{symbol} 取消旧移动止损条件单异常",
-                        algo_id=position.trailing_stop_order_id,
-                        error_code=e.code,
-                        error_msg=e.message
-                    )
-            except Exception as e:
-                logger.warning(
-                    f"{symbol} 取消旧移动止损条件单异常",
-                    algo_id=position.trailing_stop_order_id,
-                    error=str(e)
-                )
-            position.trailing_stop_order_id = None
-        
+        if not await self._cancel_trailing_order(symbol, position):
+            return
+
         # 3. 计算止损限价（触发价向不利方向偏移，确保成交）
         if position.direction == 'LONG':
             stop_limit_price = trailing_stop * (Decimal('1') - stop_offset_pct)
@@ -5527,15 +5371,27 @@ class BTCEthStrategy:
                 self._clear_order_slot(position, order_type)
                 return True
             except BinanceAPIError as e:
-                if e.code in silent_error_codes:
-                    # 订单不存在或已取消，视为已处理
+                if is_algo and (e.code in silent_error_codes or e.code == -2021):
+                    position.cancel_retry_count.setdefault(order_type, 1)
+                    from shared.condition_orders import classic_algo_is_terminal
+                    try:
+                        if not await classic_algo_is_terminal(self.binance, symbol, order_id):
+                            return False
+                    except Exception as exc:
+                        logger.warning("条件单终态待核对，保留订单槽位", symbol=symbol, algo_id=order_id, error=str(exc))
+                        return False
                     self._clear_order_slot(position, order_type)
                     return True
-                if e.code == -2021:
-                    # 条件单已执行（触发后成交）
-                    self._clear_order_slot(position, order_type)
-                    await self._record_executed_conditional_order(symbol, order_type, order_id)
-                    return True
+                if not is_algo and e.code in silent_error_codes:
+                    try:
+                        order = await self.binance.get_order(symbol, int(order_id))
+                        if (order and order.get("symbol") == symbol
+                                and str(order.get("orderId")) == str(order_id)
+                                and order.get("status") in ("CANCELED", "EXPIRED", "FILLED")):
+                            self._clear_order_slot(position, order_type)
+                            return True
+                    except Exception as exc:
+                        logger.warning("普通委托终态未确认", symbol=symbol, order_id=order_id, error=str(exc))
                 # 可重试错误
                 return await self._handle_cancel_retry(
                     symbol, position, order_type, order_id, max_retry, False, e.code)
@@ -5554,7 +5410,7 @@ class BTCEthStrategy:
         self, symbol: str, position: PositionState, order_type: str,
         order_id: Optional[int], max_retry: int, unknown: bool, err_detail: object,
     ) -> bool:
-        """可重试取消错误统一处理：递增重试计数，达上限通知后放弃（v6.28 拆分子函数）
+        """可重试取消错误统一处理：递增计数，达到阈值时通知并继续核对。
 
         Args:
             unknown: True=未知异常（日志带"未知异常"且用 error 字段）；False=BinanceAPIError（error_code）
@@ -5562,10 +5418,8 @@ class BTCEthStrategy:
         """
         current = position.cancel_retry_count.get(order_type, 0) + 1
         position.cancel_retry_count[order_type] = current
-        if current >= max_retry:
-            self._clear_order_slot(position, order_type)
+        if current == max_retry:
             await self._notify_cancel_timeout(symbol, order_type, order_id)
-            return True
         if unknown:
             logger.warning(
                 f"{symbol} {order_type}取消失败（未知异常），将重试",
@@ -5632,10 +5486,9 @@ class BTCEthStrategy:
         
         v6.23.1 新增：
         - 重试间隔控制：仅当 current_cycle - last_retry_cycle >= retry_interval_cycles 时执行
-        - 强制清理超时：首次重试时间超过 max_cleanup_hours 时放弃重试
+        - 超过重试告警阈值仍保留订单，直至交易所确认终态
         """
         retry_interval = self._get_cancel_retry_config('retry_interval_cycles', 1)
-        max_cleanup_hours = self._get_cancel_retry_config('max_cleanup_hours', 48)
         current_cycle = self._cycle_count
         now = datetime.now()
         
@@ -5648,20 +5501,6 @@ class BTCEthStrategy:
             # 检查重试间隔
             if current_cycle - position.last_retry_cycle < retry_interval:
                 continue
-            
-            # 检查强制清理超时：首次重试时间超过 max_cleanup_hours 则放弃
-            if position.first_retry_time is not None:
-                elapsed_hours = (now - position.first_retry_time).total_seconds() / 3600
-                if elapsed_hours > max_cleanup_hours:
-                    logger.warning(
-                        f"{symbol} 条件单重试超时（超过{max_cleanup_hours}小时），强制放弃重试",
-                        first_retry_time=str(position.first_retry_time),
-                        elapsed_hours=round(elapsed_hours, 1),
-                        retry_count=position.cancel_retry_count
-                    )
-                    position.cancel_retry_count.clear()
-                    position.cancel_pending = False
-                    continue
             
             logger.info(
                 f"{symbol} 检测到待重试条件单，执行重试",
@@ -5764,8 +5603,13 @@ class BTCEthStrategy:
             return
         
         try:
+            if getattr(self.binance, "use_unified_account", True) is False:
+                from shared.condition_orders import confirm_classic_algo_fill
+                await confirm_classic_algo_fill(self.binance, symbol, algo_id)
+                return
             from shared.condition_orders import mark_order_executed
-            await mark_order_executed(self.db_manager, algo_id=algo_id)
+            await mark_order_executed(self.db_manager, algo_id=algo_id,
+                                      strategy_name=self.strategy_name, symbol=symbol)
             logger.info(
                 f"{symbol} 条件单已执行，状态已更新",
                 algo_id=algo_id,
@@ -5824,7 +5668,7 @@ class BTCEthStrategy:
             f"{symbol} 条件单取消超时",
             algo_id=algo_id,
             order_type=order_type,
-            message="已达最大重试次数，放弃取消，孤儿条件单将在交易所存活"
+            message="已达重试告警阈值，保留原订单继续核对"
         )
         
         # v6.23.1：根据配置决定是否发送通知
@@ -5926,8 +5770,7 @@ class BTCEthStrategy:
         """
         try:
             # 1. 查询 OPEN 条件单
-            from shared.condition_orders import get_open_orders, mark_order_canceled
-            open_orders = await get_open_orders(self.db_manager, "btc_eth_aggressive")
+            open_orders = await strategy_owned_algos(self.binance, managed_symbols=set(self.symbols))
             if not open_orders:
                 logger.info("启动时孤儿条件单检测：无 OPEN 条件单，跳过")
                 return
@@ -5939,7 +5782,7 @@ class BTCEthStrategy:
             held_symbols = set()
             for pos in exchange_positions:
                 amt = float(pos.get('positionAmt', 0))
-                if abs(amt) > self.min_position_amt:
+                if amt != 0:
                     held_symbols.add(pos.get('symbol', ''))
             
             # 3. 识别孤儿条件单
@@ -5975,54 +5818,13 @@ class BTCEthStrategy:
             
             for symbol in orphan_symbols:
                 try:
-                    await self.binance.cancel_all_algo_orders(symbol)
+                    await cancel_strategy_algos(self.binance, symbol)
                     logger.info(f"{symbol} 孤儿条件单批量取消成功")
                     cancel_success += 1
                 except Exception as e:
-                    logger.warning(f"{symbol} 孤儿条件单批量取消失败，回退到逐个取消", error=str(e))
-                    # v6.23.1：降级兜底，逐个取消该 symbol 下的孤儿条件单
-                    fallback_success = 0
-                    fallback_fail = 0
-                    for order in orphan_orders:
-                        if order.get('symbol') != symbol:
-                            continue
-                        algo_id = order.get('algo_id')
-                        if algo_id:
-                            try:
-                                await self.binance.cancel_algo_order(symbol, algo_id)
-                                fallback_success += 1
-                            except Exception as e2:
-                                logger.debug(f"逐个取消孤儿条件单失败", algo_id=algo_id, error=str(e2))
-                                fallback_fail += 1
-                    if fallback_success > 0:
-                        logger.info(f"{symbol} 逐个取消孤儿条件单完成", success=fallback_success, fail=fallback_fail)
-                        cancel_success += 1
-                    else:
-                        cancel_fail += 1
-            
-            # 5. 批量更新 condition_orders 表状态（v6.23.1：一条 SQL 批量更新）
-            orphan_algo_ids = [o.get('algo_id') for o in orphan_orders if o.get('algo_id')]
-            if orphan_algo_ids:
-                try:
-                    # 使用参数化查询批量更新
-                    placeholders = ",".join([f"${i+1}" for i in range(len(orphan_algo_ids))])
-                    await self.db_manager.execute(
-                        "UPDATE condition_orders SET status='CANCELED', updated_at=NOW() "
-                        f"WHERE algo_id IN ({placeholders}) AND status='OPEN'",
-                        *orphan_algo_ids
-                    )
-                    logger.info("批量更新孤儿条件单状态完成", count=len(orphan_algo_ids))
-                except Exception as e:
-                    logger.warning(f"批量更新条件单状态失败，回退到逐个更新", error=str(e))
-                    # 回退：逐个更新
-                    for order in orphan_orders:
-                        try:
-                            algo_id = order.get('algo_id')
-                            if algo_id:
-                                await mark_order_canceled(self.db_manager, algo_id=algo_id)
-                        except Exception as e2:
-                            logger.debug(f"更新条件单状态失败: {e2}")
-            
+                    cancel_fail += 1
+                    logger.warning(f"{symbol} 孤儿条件单撤销未确认，保留记录", error=str(e))
+
             # 6. 发送飞书通知（v6.23.1：改用 notification.send 避免 ValueError）
             try:
                 message = (
@@ -6063,7 +5865,7 @@ class BTCEthStrategy:
 
         # OPEN 保护单按 symbol/order_type 归集（get_open_orders 已按 created_at 升序）
         try:
-            open_orders = await get_open_orders(self.db_manager, self.strategy_name)
+            open_orders = await strategy_owned_algos(self.binance, managed_symbols=set(self.symbols))
         except Exception as e:
             logger.warning("接管持仓：查询 OPEN 条件单失败，跳过", error=str(e))
             return
@@ -6082,7 +5884,7 @@ class BTCEthStrategy:
                 continue
             if symbol in self.positions:
                 continue  # 已跟踪，幂等跳过
-            if symbol in _LEGACY_ENTRY_ANCHORS:
+            if symbol in _LEGACY_ENTRY_ANCHORS and getattr(self.binance, "use_unified_account", True) is not False:
                 try:
                     anchor_ms = _LEGACY_ENTRY_ANCHORS[symbol]
                     fills = await fetch_lot_fills(self.binance, symbol, anchor_ms)
@@ -6160,7 +5962,7 @@ class BTCEthStrategy:
                 fills, amount, anchor_ms, page_limit=max(1000, len(fills) + 1)
             ):
                 return None
-            orders = await self.binance.get_open_algo_orders(symbol)
+            orders = await self._owned_open_protection(symbol)
             close_side = "SELL" if amount > 0 else "BUY"
             live = {
                 int(order["algoId"]): order for order in orders
@@ -6463,7 +6265,7 @@ class BTCEthStrategy:
         if not self.db_manager:
             return existing_open_orders
         try:
-            orders = await get_open_orders(self.db_manager, self.strategy_name)
+            orders = await strategy_owned_algos(self.binance, managed_symbols=set(self.symbols))
             for o in orders:
                 sym = o.get('symbol')
                 order_type = o.get('order_type')
@@ -6474,7 +6276,8 @@ class BTCEthStrategy:
             if existing_open_orders:
                 logger.info("检测到已有OPEN条件单，跳过重复创建", symbols=list(existing_open_orders.keys()))
         except Exception as e:
-            logger.warning("查询 condition_orders 表失败，不影响后续创建", error=str(e))
+            logger.warning("策略保护单归属核对失败，暂停补单", error=str(e))
+            raise
         return existing_open_orders
 
     def _calc_protection_params(self) -> Tuple[Decimal, Decimal, Decimal]:
@@ -6491,7 +6294,7 @@ class BTCEthStrategy:
         """Repair exchange hard stop without constructing a software exit state."""
         side = "SELL" if Decimal(str(pos_data["positionAmt"])) > 0 else "BUY"
         try:
-            orders = await self.binance.get_open_algo_orders(symbol)
+            orders = await self._owned_open_protection(symbol)
             if self._hard_stop_covers(orders, symbol, side, quantity):
                 self._untracked_stop_retry_symbols.discard(symbol)
                 return True
@@ -6517,7 +6320,7 @@ class BTCEthStrategy:
             )
             if not order_id:
                 raise ValueError("hard stop placement failed")
-            orders = await self.binance.get_open_algo_orders(symbol)
+            orders = await self._owned_open_protection(symbol)
             if not self._hard_stop_covers(orders, symbol, side, quantity):
                 raise ValueError("hard stop still does not cover exchange quantity")
             self._untracked_stop_retry_symbols.discard(symbol)
@@ -6953,7 +6756,7 @@ class BTCEthStrategy:
             tp_quantity: 止盈数量
 
         Returns:
-            条件单ID（algoId 或 orderId），下单失败返回 None
+            条件单ID（algoId），下单失败返回 None
         """
         tp_side = 'SELL' if direction == 'LONG' else 'BUY'
         algo_id = await self._place_conditional_order_and_record(

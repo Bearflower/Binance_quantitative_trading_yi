@@ -117,3 +117,26 @@ def test_cron_runs_before_digest():
     trigger = job.get_cron_trigger()
     assert "hour='7'" in str(trigger)
     assert "minute='34'" in str(trigger)
+
+
+def test_classic_opening_wallet_change_does_not_trigger_profit_or_overwrite_pm_peak(tmp_path, monkeypatch):
+    from decimal import Decimal
+    from unittest.mock import AsyncMock
+    monkeypatch.setenv("BINANCE_CLASSIC_CUTOVER_MS", "1000")
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", "main")
+    job = _job(tmp_path, monkeypatch)
+    job.binance.use_unified_account = False
+    job.binance.get_account_info = AsyncMock(return_value={"totalMarginBalance": "2000", "totalWalletBalance": "3000"})
+    async def fetch(_sql, key):
+        return {"value": "1000"} if key == "ath_balance" else None
+    job.db_manager.fetch_one = fetch
+    job.db_manager.execute = AsyncMock()
+    monkeypatch.setattr("shared.accounting.equity_bridge.read_anchors",
+                        AsyncMock(return_value=(Decimal("1000"), Decimal("2000"))))
+    monkeypatch.setattr("shared.accounting.equity_bridge.signed_spot_uid_sha256", AsyncMock(return_value="signed"))
+    assert asyncio.run(job.run_daily_check()) == {"action": "skip", "reason": "not_new_high"}
+    job.db_manager.execute.assert_not_awaited()
+    job.binance.get_account_info.return_value["totalMarginBalance"] = "2100"
+    result = asyncio.run(job.run_daily_check())
+    assert result["profit"] == 1100 and result["extract_amount"] == 550
+    assert job.db_manager.execute.await_args.args[1].startswith("ath_balance:classic:")

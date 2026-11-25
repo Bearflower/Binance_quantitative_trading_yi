@@ -40,7 +40,8 @@ def _make_klines(
     for i, c in enumerate(closes):
         klines.append({
             "open_time": base_open_time_ms + i * interval_ms,
-            "close": float(c),
+            "open": float(c), "high": float(c)*1.01, "low": float(c)*.99,
+            "close": float(c), "volume": 100.0,
         })
     return klines
 
@@ -215,6 +216,11 @@ class TestAnalyzePassesPriceChange24h:
         # mock 其他 analyze 依赖
         strategy._warmup_klines = AsyncMock(return_value=klines)
         strategy.market_data = MagicMock()
+        # Factor-contract tests mock the asynchronous history boundary; repair
+        # continuity and availability are checked by dedicated source tests.
+        from strategies.hrs.kline_repair import PreparedKlines
+        strategy.market_data.prepare_decision_klines = AsyncMock(side_effect=lambda symbol,one,four,**kw:
+            PreparedKlines(one,four,datetime.now(timezone.utc),{'status':'complete','requests':[]}))
         strategy.market_data.get_oi_usd = AsyncMock(return_value=1000.0)
         strategy.market_data.get_funding_rate = AsyncMock(return_value=0.0001)
         strategy.market_data.get_24h_volume = AsyncMock(return_value=50000.0)
@@ -231,7 +237,7 @@ class TestAnalyzePassesPriceChange24h:
             "volume_pattern": {"score": 0.5},
         }
         strategy.pattern_recognizer.detect_long_patterns.return_value = {}
-        strategy._klines_4h_cache["TESTUSDT"] = []
+        strategy._klines_4h_cache["TESTUSDT"] = _make_klines([100.0], _utc_now_ms()-4*3600000, interval_ms=4*3600000)
         strategy._check_pattern_expiry = MagicMock(return_value=False)
 
         # 执行 analyze
@@ -273,6 +279,11 @@ class TestAnalyzePassesPriceChange24h:
 
         strategy._warmup_klines = AsyncMock(return_value=klines)
         strategy.market_data = MagicMock()
+        # Factor-contract tests mock the asynchronous history boundary; repair
+        # continuity and availability are checked by dedicated source tests.
+        from strategies.hrs.kline_repair import PreparedKlines
+        strategy.market_data.prepare_decision_klines = AsyncMock(side_effect=lambda symbol,one,four,**kw:
+            PreparedKlines(one,four,datetime.now(timezone.utc),{'status':'complete','requests':[]}))
         strategy.market_data.get_oi_usd = AsyncMock(return_value=800.0)
         strategy.market_data.get_funding_rate = AsyncMock(return_value=-0.0002)
         strategy.market_data.get_24h_volume = AsyncMock(return_value=40000.0)
@@ -287,7 +298,7 @@ class TestAnalyzePassesPriceChange24h:
         strategy.pattern_recognizer.detect_long_patterns.return_value = {
             "primary_pattern": {"score": 3.5},
         }
-        strategy._klines_4h_cache["TESTUSDT"] = []
+        strategy._klines_4h_cache["TESTUSDT"] = _make_klines([100.0], _utc_now_ms()-4*3600000, interval_ms=4*3600000)
         strategy._check_pattern_expiry = MagicMock(return_value=False)
 
         result = await strategy.analyze("TESTUSDT")
@@ -327,6 +338,11 @@ class TestAnalyzePassesPriceChange24h:
 
         strategy._warmup_klines = AsyncMock(return_value=klines)
         strategy.market_data = MagicMock()
+        # Factor-contract tests mock the asynchronous history boundary; repair
+        # continuity and availability are checked by dedicated source tests.
+        from strategies.hrs.kline_repair import PreparedKlines
+        strategy.market_data.prepare_decision_klines = AsyncMock(side_effect=lambda symbol,one,four,**kw:
+            PreparedKlines(one,four,datetime.now(timezone.utc),{'status':'complete','requests':[]}))
         strategy.market_data.get_oi_usd = AsyncMock(return_value=1000.0)
         strategy.market_data.get_funding_rate = AsyncMock(return_value=0.0001)
         strategy.market_data.get_24h_volume = AsyncMock(return_value=50000.0)
@@ -338,7 +354,7 @@ class TestAnalyzePassesPriceChange24h:
         strategy.candidate_pool.get_long_candidates.return_value = set()
         strategy.pattern_recognizer = MagicMock()
         strategy.pattern_recognizer.detect_short_patterns.return_value = {}
-        strategy._klines_4h_cache["TESTUSDT"] = []
+        strategy._klines_4h_cache["TESTUSDT"] = _make_klines([100.0], _utc_now_ms()-4*3600000, interval_ms=4*3600000)
         strategy._check_pattern_expiry = MagicMock(return_value=False)
 
         await strategy.analyze("TESTUSDT")

@@ -98,6 +98,51 @@ services:
     logging:
       driver: journald
 
+  market-cap-service:
+    image: ghcr.io/bearflower/trading-hrs:latest
+    container_name: trading_system-market-cap
+    command: ["python", "-m", "services.market_cap.main"]
+    restart: unless-stopped
+    environment:
+      - COINGECKO_API_KEY=${COINGECKO_API_KEY:-}
+      - COINMARKETCAP_API_KEY=${COINMARKETCAP_API_KEY:-}
+    volumes:
+      - ./data/market-cap-cache:/data
+    networks: [trading-network]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8080/health', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    logging:
+      driver: journald
+
+  hrs-acceptance-reporter:
+    image: ghcr.io/bearflower/trading-hrs:latest
+    container_name: trading_system-hrs-acceptance
+    command: ["python", "-m", "strategies.hrs.acceptance_report", "--interval", "900"]
+    restart: unless-stopped
+    profiles: [hrs-acceptance]
+    env_file: [.secrets/hrs-acceptance.env]
+    environment:
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
+      - BINANCE_CLASSIC_CUTOVER_MS=${BINANCE_CLASSIC_CUTOVER_MS:-}
+    volumes:
+      - ./logs/hrs-acceptance:/app/logs
+    networks: [trading-network]
+    read_only: true
+    tmpfs: [/tmp]
+    mem_limit: 256m
+    cpus: 0.3
+    healthcheck:
+      test: ["CMD", "python", "-c", "import datetime,json,pathlib; t=json.loads(pathlib.Path('/app/logs/hrs-acceptance.json').read_text())['generated_at']; assert 0 <= (datetime.datetime.now(datetime.timezone.utc)-datetime.datetime.fromisoformat(t)).total_seconds() < 1800"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 120s
+    logging:
+      driver: journald
+
   hrs-strategy:
     image: ghcr.io/bearflower/trading-hrs:latest
     container_name: trading_system-hrs
@@ -107,6 +152,14 @@ services:
       - .secrets/ai_tuner_snapshot.env
     environment:
       - STRATEGY_NAME=hrs
+      - HRS_EVIDENCE_CAPTURE_ENABLED=${HRS_EVIDENCE_CAPTURE_ENABLED:-1}
+      - HRS_EQUITY_GATE_ENABLED=${HRS_EQUITY_GATE_ENABLED:-1}
+      - ENTRY_EQUITY_GATE_STRATEGIES=${ENTRY_EQUITY_GATE_STRATEGIES:-hrs}
+      - HRS_EQUITY_ALLOW_INCEPTION=${HRS_EQUITY_ALLOW_INCEPTION:-true}
+      - HRS_EQUITY_REFRESH_SECONDS=${HRS_EQUITY_REFRESH_SECONDS:-30}
+      - HRS_ACCEPTANCE_REPORT_ENABLED=${HRS_ACCEPTANCE_REPORT_ENABLED:-0}
+      - HRS_RELEASE_SHA=${HRS_RELEASE_SHA:-}
+      - MARKET_CAP_SERVICE_URL=${MARKET_CAP_SERVICE_URL:-http://market-cap-service:8080}
       - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=hrs
       - FEISHU_WEBHOOK_HRS=${FEISHU_WEBHOOK_HRS:-}
@@ -118,6 +171,8 @@ services:
     networks:
       - trading-network
     depends_on:
+      market-cap-service:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       kline-service:
@@ -352,7 +407,7 @@ services:
     environment:
       - STRATEGY_NAME=grid
       - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
-      - GRID_EXECUTION_HANDOFF_DB=/app/data/grid_execution.sqlite3
+      - GRID_EXECUTION_HANDOFF_DB=${GRID_EXECUTION_DB:-/app/data/grid_execution.sqlite3}
       - DATABASE_URL=postgresql://trading_user:${DATABASE_PASSWORD:-trading_password_2024}@postgres:5432/trading_platform?schema=grid
     volumes:
       - ./logs/grid:/app/logs
@@ -420,17 +475,19 @@ services:
     command: ["python", "-m", "strategies.grid.execution.main"]
     environment:
       - GRID_EXECUTION_MODE=${GRID_EXECUTION_MODE:-off}
+      - GRID_SUBACCOUNT_MODE=${GRID_SUBACCOUNT_MODE:-pm}
       - GRID_SUBACCOUNT_API_KEY=${GRID_SUBACCOUNT_API_KEY:-}
       - GRID_SUBACCOUNT_API_SECRET=${GRID_SUBACCOUNT_API_SECRET:-}
       - GRID_MAX_MARGIN_USDT=${GRID_MAX_MARGIN_USDT:-}
       - GRID_MAX_NOTIONAL_USDT=${GRID_MAX_NOTIONAL_USDT:-}
       - GRID_MAX_DAILY_LOSS_USDT=${GRID_MAX_DAILY_LOSS_USDT:-}
       - GRID_MAX_DRAWDOWN_USDT=${GRID_MAX_DRAWDOWN_USDT:-}
+      - GRID_TRAILING_ENABLED=${GRID_TRAILING_ENABLED:-false}
       - GRID_MAX_OPEN_ORDERS=${GRID_MAX_OPEN_ORDERS:-}
       - GRID_EXPECTED_LEVERAGE=${GRID_EXPECTED_LEVERAGE:-}
       - GRID_TESTNET_WS_BASE=${GRID_TESTNET_WS_BASE:-}
       - FEISHU_WEBHOOK_GRID=${FEISHU_WEBHOOK_GRID:-}
-      - GRID_EXECUTION_DB=/app/data/grid_execution.sqlite3
+      - GRID_EXECUTION_DB=${GRID_EXECUTION_DB:-/app/data/grid_execution.sqlite3}
       - GRID_EXECUTION_LOCK=/app/data/grid_execution.lock
       - GRID_EXECUTION_HEARTBEAT=/app/data/grid_execution_heartbeat.json
       - TZ=Asia/Shanghai
@@ -450,6 +507,88 @@ services:
       timeout: 10s
       retries: 3
       start_period: 90s
+
+  grid-notifier:
+    profiles: ["grid-observers"]
+    container_name: trading_system-grid-notifier
+    image: ghcr.io/bearflower/trading-grid:latest
+    restart: unless-stopped
+    command: ["python", "-m", "strategies.grid.execution.notification_worker"]
+    environment:
+      - GRID_SUBACCOUNT_MODE=${GRID_SUBACCOUNT_MODE:-pm}
+      - GRID_SUBACCOUNT_API_KEY=${GRID_SUBACCOUNT_API_KEY:-}
+      - GRID_SUBACCOUNT_API_SECRET=${GRID_SUBACCOUNT_API_SECRET:-}
+      - GRID_EXECUTION_DB=${GRID_EXECUTION_DB:-/app/data/grid_execution.sqlite3}
+      - GRID_NOTIFICATION_DB=${GRID_NOTIFICATION_DB:-}
+      - FEISHU_WEBHOOK_GRID=${FEISHU_WEBHOOK_GRID:-}
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data/grid:/app/data
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD", "python", "-m", "strategies.grid.execution.notification_worker", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  grid-pg-projector:
+    profiles: ["grid-observers"]
+    container_name: trading_system-grid-pg-projector
+    image: ghcr.io/bearflower/trading-grid:latest
+    restart: unless-stopped
+    command: ["python", "-m", "strategies.grid.execution.pg_projection"]
+    environment:
+      - GRID_SUBACCOUNT_MODE=${GRID_SUBACCOUNT_MODE:-pm}
+      - GRID_SUBACCOUNT_API_KEY=${GRID_SUBACCOUNT_API_KEY:-}
+      - GRID_SUBACCOUNT_API_SECRET=${GRID_SUBACCOUNT_API_SECRET:-}
+      - GRID_EXECUTION_DB=${GRID_EXECUTION_DB:-/app/data/grid_execution.sqlite3}
+      - GRID_NOTIFICATION_DB=${GRID_NOTIFICATION_DB:-}
+      - GRID_ACCOUNT_ID=${GRID_ACCOUNT_ID:-grid_pm_ethusdt_01}
+      - DATABASE_HOST=postgres
+      - DATABASE_NAME=${DB_NAME:-trading_platform}
+      - DATABASE_PORT=${DB_PORT:-5432}
+      - DATABASE_USER=trading_user
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-trading_password_2024}
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data/grid:/app/data
+    networks:
+      - trading-network
+    depends_on:
+      postgres:
+        condition: service_healthy
+      grid-notifier:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-m", "strategies.grid.execution.pg_projection", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  grid-dashboard-exporter:
+    container_name: trading_system-grid-dashboard-exporter
+    profiles: ["grid-dashboard"]
+    image: ghcr.io/bearflower/trading-grid:latest
+    restart: unless-stopped
+    command: ["python", "-m", "strategies.grid.execution.dashboard_snapshot"]
+    environment:
+      - GRID_SUBACCOUNT_MODE=${GRID_SUBACCOUNT_MODE:-pm}
+      - GRID_SUBACCOUNT_API_KEY=${GRID_SUBACCOUNT_API_KEY:-}
+      - GRID_SUBACCOUNT_API_SECRET=${GRID_SUBACCOUNT_API_SECRET:-}
+      - GRID_EXECUTION_DB=${GRID_EXECUTION_DB:-/app/data/grid_execution.sqlite3}
+      - TZ=Asia/Shanghai
+    volumes:
+      - ./data/grid:/app/data:ro
+      - ./data/grid-dashboard:/app/output
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD", "python", "-m", "strategies.grid.execution.dashboard_snapshot", "--healthcheck"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   # ============================================
   # aggTrades 常驻落库器（grid V2.5.4 轨道B：攒 30 天统计样本，2026-10-08 起算）
@@ -501,6 +640,10 @@ services:
       - DB_USER=${DB_USER}
       - DB_PASSWORD=${DB_PASSWORD}
       - FEISHU_WEBHOOK_TUNER=${FEISHU_WEBHOOK_TUNER}
+      - BINANCE_ACCOUNT_MODE=${BINANCE_ACCOUNT_MODE:-}
+      - BINANCE_USE_PM=${BINANCE_USE_PM:-}
+      - USE_UNIFIED_ACCOUNT=${USE_UNIFIED_ACCOUNT:-}
+      - BINANCE_CLASSIC_CUTOVER_MS=${BINANCE_CLASSIC_CUTOVER_MS:-}
       - BINANCE_API_KEY=${BINANCE_API_KEY}
       - BINANCE_API_SECRET=${BINANCE_API_SECRET}
       - KLINE_SERVICE_URL=${KLINE_SERVICE_URL}
@@ -701,10 +844,14 @@ services:
     container_name: data-backend
     restart: unless-stopped
     environment:
+      - BINANCE_ACCOUNT_MODE=${BINANCE_ACCOUNT_MODE:-}
+      - BINANCE_USE_PM=${BINANCE_USE_PM:-}
+      - USE_UNIFIED_ACCOUNT=${USE_UNIFIED_ACCOUNT:-}
+      - BINANCE_CLASSIC_CUTOVER_MS=${BINANCE_CLASSIC_CUTOVER_MS:-}
       - BINANCE_API_KEY=${BINANCE_API_KEY}
       - BINANCE_API_SECRET=${BINANCE_API_SECRET}
       - BINANCE_TESTNET=false
-      - USE_UNIFIED_ACCOUNT=true
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
       - APP_ROOT=/app
       # 数据库连接配置（与 dashboard-api 对齐，值从服务器 .env 的 DB_* 插值）
       - DATABASE_HOST=${DB_HOST:-postgres}
@@ -737,14 +884,20 @@ services:
   dashboard-api:
     image: ghcr.io/bearflower/trading-dashboard-api:latest
     container_name: dashboard-api
+    volumes:
+      - ./data/grid-dashboard:/app/grid-dashboard:ro
     restart: unless-stopped
     ports:
       - "8767:8767"
     environment:
+      - BINANCE_ACCOUNT_MODE=${BINANCE_ACCOUNT_MODE:-}
+      - BINANCE_USE_PM=${BINANCE_USE_PM:-}
+      - USE_UNIFIED_ACCOUNT=${USE_UNIFIED_ACCOUNT:-}
+      - BINANCE_CLASSIC_CUTOVER_MS=${BINANCE_CLASSIC_CUTOVER_MS:-}
       - BINANCE_API_KEY=${BINANCE_API_KEY}
       - BINANCE_API_SECRET=${BINANCE_API_SECRET}
       - BINANCE_TESTNET=false
-      - USE_UNIFIED_ACCOUNT=true
+      - TRADE_ACCOUNT_ID=${TRADE_ACCOUNT_ID:-default}
       - DB_HOST=${DB_HOST:-postgres}
       - DB_PORT=${DB_PORT:-5432}
       - DB_NAME=${DB_NAME:-trading_platform}

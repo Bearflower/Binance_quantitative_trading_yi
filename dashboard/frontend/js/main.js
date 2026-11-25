@@ -427,7 +427,8 @@ async function loadGridSubaccount() {
         const state = data.engine_state === 'FLAT' ? '空仓待机'
             : data.engine_state === 'ACTIVE' ? '网格运行中' : data.engine_state;
         set('grid-live-state', `${state} · 风控 ${data.risk_status}`);
-        set('grid-live-time', `PM 快照 ${formatEquityTime(new Date(data.as_of_ms).toISOString())}`);
+        const accountMode = data.account_scope === 'grid_subaccount_classic' ? '经典合约' : 'PM';
+        set('grid-live-time', `${accountMode} 快照 ${formatEquityTime(new Date(data.as_of_ms).toISOString())}`);
         const qty = Number(data.net_qty);
         set('grid-live-position', qty === 0 ? '空仓' : `${qty > 0 ? '多' : '空'} ${Math.abs(qty)} ETH`);
         set('grid-live-orders', String(data.open_order_count));

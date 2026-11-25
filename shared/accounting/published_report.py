@@ -11,6 +11,7 @@ import os
 
 from .income_integrity import income_account_lock, require_income_integrity
 from .economic_ledger import INCOME_TYPES
+from .account_cutover import INCOME_SOURCES, account_cutover_ms, coverage_watermark
 from .report_reader import read_monthly_economic_report, _CURSOR_SQL
 
 REPORT_VERSION = 'exchange-income-v1'
@@ -31,18 +32,8 @@ WHERE trading.ledger_report_active.end_ms <= EXCLUDED.end_ms'''
 
 
 def coverage_cutoff(rows, account_id, start, end):
-    cutoffs = []
-    for kind in INCOME_TYPES:
-        cursor = start
-        intervals = sorted((r['window_start_ms'], r['covered_until_ms']) for r in rows
-                           if r['account_id'] == account_id and r['source'] == 'um/income'
-                           and r['income_type'] == kind and r.get('symbol') is None
-                           and r['page_complete'] is True and r['request_status'] == 'ok'
-                           and r.get('covered_until_ms') is not None)
-        for left, right in intervals:
-            if left <= cursor: cursor = max(cursor, right)
-        cutoffs.append(min(cursor, end))
-    return min(cutoffs)
+    return min(coverage_watermark(rows, account_id, start, end, INCOME_SOURCES, kind, None)
+               for kind in INCOME_TYPES)
 
 
 class _SnapshotDB:
@@ -86,6 +77,7 @@ async def read_published_report(db, account_id, start_ms, end_ms, window_key,
                         # Reject corrupted/mismatched cached bodies rather than treating them as evidence.
                         if (previous.get('account_id') != account_id or previous.get('start_ms') != start_ms
                                 or previous.get('report_version') != version
+                                or previous.get('classic_cutover_ms') != account_cutover_ms(account_id)
                                 or not previous.get('account_coverage_complete')
                                 or previous.get('end_ms', end_ms+1) > end_ms
                                 or (not current and previous.get('end_ms') != end_ms)):
@@ -120,6 +112,8 @@ async def read_published_report(db, account_id, start_ms, end_ms, window_key,
                         winner = await connection.fetchrow(_ACTIVE_SQL, account_id, window_key, version)
                         body = winner['report']
                         if isinstance(body,str): body=json.loads(body)
+                        if body.get('classic_cutover_ms') != account_cutover_ms(account_id):
+                            return _served(report, end_ms, 'unverified', 'account_mode_window_mismatch')
                         return _served(body,end_ms,'published')
                     return _served(report, end_ms, 'published')
     except Exception as exc:

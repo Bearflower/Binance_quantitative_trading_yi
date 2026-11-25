@@ -92,15 +92,17 @@ def reconcile_um_margin(positions, detail, owned_symbols):
 
 
 async def read_um_margin(exchange, positions, owned_symbols, position_as_of_ms):
+    path = '/papi/v1/um/account' if getattr(exchange, 'use_unified_account', True) else '/fapi/v2/account'
     try:
         detail = await asyncio.wait_for(
-            exchange._request('GET', '/papi/v1/um/account', signed=True), timeout=5)
+            exchange._request('GET', path, signed=True), timeout=5)
     except Exception as exc:
         return blocked_margin('um_margin_request:' + type(exc).__name__)
     observed = time.time_ns() // 1_000_000
     if not 0 <= observed - position_as_of_ms <= 15_000:
         return blocked_margin('signed_position_snapshot_stale')
     result = reconcile_um_margin(positions, detail, owned_symbols)
+    result['source'] = 'signed:' + path
     if result['status'] == 'VERIFIED':
         result.update(as_of_ms=observed,
                       account_detail_sha256=hashlib.sha256(

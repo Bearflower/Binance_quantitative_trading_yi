@@ -85,42 +85,60 @@ class FillCoordinator:
             if intent["exchange_order_id"] not in (None, event.exchange_order_id):
                 raise ValueError("exchange order ID changed")
             previous = Decimal(intent["executed_qty"])
-            if event.cumulative_quantity < previous:
-                raise ValueError("cumulative fill regressed")
+            duplicate = None
+            if event.execution_type == "TRADE":
+                duplicate = conn.execute("SELECT quantity,price,client_order_id FROM fill WHERE exchange_order_id=? AND trade_id=?",
+                    (event.exchange_order_id, event.trade_id)).fetchone()
+                if duplicate and (Decimal(duplicate["quantity"]) != event.quantity
+                                  or Decimal(duplicate["price"]) != event.price
+                                  or duplicate["client_order_id"] != event.client_order_id):
+                    raise ValueError("conflicting duplicate trade ID")
+                if duplicate and event.cumulative_quantity <= previous:
+                    conn.execute("COMMIT")
+                    return False
             if event.cumulative_quantity > Decimal(intent["quantity"]):
                 raise ValueError("cumulative fill exceeds intended quantity")
             previous_status = intent["status"]
+            if (event.execution_type != "TRADE"
+                    and event.cumulative_quantity <= previous
+                    and event.order_status != "FILLED"
+                    and (previous_status in TERMINAL_ORDER_STATUSES
+                         or (event.order_status in ("NEW", "PARTIALLY_FILLED")
+                             and event.cumulative_quantity < previous))):
+                # REST and the serialized user stream can report the same order
+                # in a different sequence. Ignore stale status, never new trades.
+                conn.execute("COMMIT")
+                return False
+            delayed = event.cumulative_quantity < previous
+            if delayed and (event.execution_type != "TRADE"
+                            or event.order_status != "PARTIALLY_FILLED"
+                            or event.quantity > event.cumulative_quantity):
+                raise ValueError("cumulative fill regressed")
             if (previous_status in TERMINAL_ORDER_STATUSES
                     and event.order_status in TERMINAL_ORDER_STATUSES
                     and previous_status != event.order_status):
                 raise ValueError("conflicting terminal order status")
 
             inserted = False
-            if event.execution_type == "TRADE":
-                prior = conn.execute("""SELECT client_order_id,quantity,price
-                    FROM fill WHERE exchange_order_id=? AND trade_id=?""",
-                    (event.exchange_order_id, event.trade_id)).fetchone()
-                if prior:
-                    if (prior["client_order_id"] != event.client_order_id
-                            or Decimal(prior["quantity"]) != event.quantity
-                            or Decimal(prior["price"]) != event.price):
-                        raise ValueError("conflicting duplicate trade ID")
-                else:
-                    inserted = self.store.record_fill(
-                        event.client_order_id, event.exchange_order_id,
-                        event.trade_id, event.quantity, event.price)
+            if event.execution_type == "TRADE" and duplicate is None:
+                inserted = self.store.record_fill(
+                    event.client_order_id, event.exchange_order_id,
+                    event.trade_id, event.quantity, event.price)
 
+            # The event's cumulative quantity describes its own time. A REST
+            # RESULT or a later stream fill may already include this trade.
+            cumulative = max(previous, event.cumulative_quantity)
             filled = sum((Decimal(row["quantity"]) for row in self.store.fills(
                 event.client_order_id)), Decimal(0))
-            if filled > event.cumulative_quantity:
+            if filled > cumulative:
                 raise ValueError("trade facts exceed cumulative quantity")
             status = event.order_status
-            if (previous_status in TERMINAL_ORDER_STATUSES
+            if (delayed or previous_status in TERMINAL_ORDER_STATUSES
                     or previous_status == "PARTIALLY_FILLED" and status == "NEW"):
                 status = previous_status
             self.store.record_order(event.client_order_id,
                                     event.exchange_order_id, status,
-                                    event.cumulative_quantity)
+                                    cumulative)
             conn.execute("COMMIT")
             return inserted
         except Exception:
@@ -144,24 +162,31 @@ class FillCoordinator:
             source = self.store.get_order(source_client_order_id)
             if source is None:
                 raise ValueError("unknown source order")
+            epoch = self.store.epoch(source["epoch_id"])
+            if source["role"] not in ("ENTRY", "REVERSE") or epoch["status"] != "ACTIVE":
+                raise ValueError("source order cannot create a reverse obligation")
             if source["side"] == "BUY":
                 reverse_level, reverse_side = source["level_index"] + 1, "SELL"
             elif source["side"] == "SELL":
                 reverse_level, reverse_side = source["level_index"] - 1, "BUY"
             else:
                 raise ValueError("invalid source side")
-            if not 0 <= reverse_level < len(levels):
-                raise ValueError("source order lacks adjacent reverse level")
-            reverse_price = Decimal(levels[reverse_level])
+            adjacent = self.store.adjacent_level(source, levels)
+            if adjacent is None:
+                conn.execute("COMMIT")
+                return PairPreparation("RETIRED")
+            reverse_level, reverse_price = adjacent
             if reverse_price <= 0:
                 raise ValueError("invalid reverse price")
             facts = sum((Decimal(row["quantity"]) for row in self.store.fills(
                 source_client_order_id)), Decimal(0))
             if facts != Decimal(source["executed_qty"]):
                 raise ValueError("missing trade facts; reconcile before pairing")
-            allocated = conn.execute("""SELECT quantity FROM pair
-                WHERE source_client_order_id=?""", (source_client_order_id,)).fetchall()
-            residual = facts - sum((Decimal(row[0]) for row in allocated), Decimal(0))
+            allocated = conn.execute("""SELECT p.quantity,o.executed_qty,o.status FROM pair p
+                JOIN order_intent o ON o.client_order_id=p.reverse_client_order_id
+                WHERE p.source_client_order_id=?""", (source_client_order_id,)).fetchall()
+            residual = facts - sum((Decimal(row[1]) if row[2] in TERMINAL_ORDER_STATUSES
+                                    else Decimal(row[0]) for row in allocated), Decimal(0))
             if residual < 0:
                 raise ValueError("pair allocations exceed fills")
             quantity = (residual / step_size).to_integral_value(rounding=ROUND_FLOOR) * step_size
@@ -223,10 +248,17 @@ class ProtectionCoordinator:
                     await self.exchange.cancel_stop(client_id)
                     self.store.conn.execute("""UPDATE protection SET status='CANCELED'
                         WHERE client_algo_id=?""", (client_id,))
-                if any(row["client_algo_id"] not in
-                       {item["clientAlgoId"] for item in open_rows}
-                       for row in known.values()):
-                    return self._exit("unresolved stop intent while flat")
+                open_ids = {item["clientAlgoId"] for item in open_rows}
+                for row in known.values():
+                    if row["client_algo_id"] in open_ids:
+                        continue
+                    found = await self.exchange.query_stop(row["client_algo_id"])
+                    if (not found or found.get("clientAlgoId") != row["client_algo_id"]
+                            or found.get("algoStatus") not in ("CANCELED", "EXPIRED", "REJECTED")
+                            or found.get("actualOrderId")):
+                        return self._exit("unresolved stop intent while flat")
+                    self.store.record_protection(row["client_algo_id"], "CANCELED",
+                                                 str(found.get("algoId") or row["exchange_algo_id"]))
             except Exception:
                 return self._exit("flat stop cleanup uncertain")
             return True

@@ -43,6 +43,22 @@ def test_duplicate_fill_is_idempotent_and_older_status_does_not_regress(tmp_path
     store.close()
 
 
+def test_late_partial_trade_fills_gap_after_final_order_snapshot(tmp_path):
+    store, _ = _store(tmp_path)
+    store.record_order("eg-entry", "42", "FILLED", Decimal("0.02"))
+    coordinator = FillCoordinator(store)
+    final = _event(qty="0.019", cumulative="0.02", status="FILLED", trade="12")
+    assert coordinator.record(final)
+
+    delayed = _event(qty="0.001", cumulative="0.001")
+    assert coordinator.record(delayed)
+    assert not coordinator.record(delayed)
+    assert store.get_order("eg-entry")["status"] == "FILLED"
+    assert sum(Decimal(row["quantity"]) for row in store.fills("eg-entry")) == Decimal("0.02")
+    assert store.get_order("eg-entry")["executed_qty"] == "0.02"
+    store.close()
+
+
 def test_partial_fills_create_one_reverse_slot_and_remainder(tmp_path):
     store, epoch = _store(tmp_path)
     coordinator = FillCoordinator(store)

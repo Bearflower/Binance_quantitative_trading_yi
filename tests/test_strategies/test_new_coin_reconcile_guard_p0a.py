@@ -245,13 +245,14 @@ class TestProtectionGuard:
         """真实敞口缺保护单 → 清完成标记并按 DB 入场价增量补挂（strict 核验 + 传 missing）。"""
         strategy = _build_strategy()
         _setup_guard(strategy, ['AAAUSDT'], [{'symbol': 'AAAUSDT', 'entry_price': 100.0, 'opened_at': None}])
+        strategy.trading_executor.position_tracking = {}
         strategy.trading_executor.find_missing_protection = AsyncMock(return_value=['止损单'])
 
         await strategy._guard_protection_orders()
 
         # P0-D：核验用 strict=True（不可判定时返回 None），补挂时把权威 missing 传入
         strategy.trading_executor.find_missing_protection.assert_awaited_once_with(
-            'AAAUSDT', strict=True
+            'AAAUSDT', strict=True, target1_reached=None, target2_reached=None
         )
         strategy.trading_executor.reset_replenish_flag.assert_called_once_with('AAAUSDT')
         strategy.trading_executor.replenish_conditional_orders.assert_awaited_once()

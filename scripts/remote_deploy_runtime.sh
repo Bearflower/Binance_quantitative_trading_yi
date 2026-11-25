@@ -17,6 +17,50 @@ DEPLOY_ID="__DEPLOY_ID__"
 echo "模式: ${DEPLOY_MODE}"
 echo "========================================"
 
+# 同账户迁移只有在宿主配置了明确切点后才生效。受限发布只能审计。
+ACCOUNT_MODE_DIR="/root/trading_system/.deploy_tmp/account-mode-${COMMIT_SHA}"
+CUTOVER_ENABLED=0
+CUTOVER_CLASSIC_ACTIVE=0
+# First classic full deployment follows the per-strategy restart and fill checks.
+# A stopped writer must never be implicitly started by a blanket compose up in this window.
+check_staged_classic_writers() {
+  local service cutoff actual
+  cutoff=$(sed -n 's/^BINANCE_CLASSIC_CUTOVER_MS=//p' .env)
+  [[ "$cutoff" =~ ^[1-9][0-9]*$ ]] || return 1
+  CLASSIC_ROLLOUT_DONE=".deploy_tmp/classic-rollout-${cutoff}.complete"
+  if [ -f "$CLASSIC_ROLLOUT_DONE" ]; then return 0; fi
+  for service in trading_system-btc_eth trading_system-btc_eth_aggressive trading_system-hrs trading_system-new_coin trading_system-grid ai-tuner; do
+    actual=$(docker exec "$service" printenv BINANCE_ACCOUNT_MODE BINANCE_CLASSIC_CUTOVER_MS) || return 1
+    [ "$actual" = "$(printf 'classic\n%s' "$cutoff")" ] || return 1
+  done
+  if grep -Eq '^GRID_EXECUTOR_DEPLOY_ENABLED=(true|1)$' .env; then
+    [ "$(docker exec trading_system-grid-executor printenv GRID_SUBACCOUNT_MODE)" = classic ] || return 1
+  fi
+}
+if grep -Eq '^BINANCE_CLASSIC_CUTOVER_MS=[1-9][0-9]*$' .env; then
+  CUTOVER_ENABLED=1
+  export HRS_RELEASE_SHA="$COMMIT_SHA"
+  if grep -Eq '^BINANCE_ACCOUNT_MODE=classic$|^(BINANCE_USE_PM|USE_UNIFIED_ACCOUNT)=false$' .env; then
+    CUTOVER_CLASSIC_ACTIVE=1
+    if [ "$DEPLOY_MODE" = "full" ]; then
+      check_staged_classic_writers || {
+        echo "经典交易实例尚未逐个恢复到本切点，请先完成分批验收再运行完整发布"
+        exit 1
+      }
+      python3 "$ACCOUNT_MODE_DIR/cutover_income_timer.py" pause --sha "$COMMIT_SHA"
+    fi
+  fi
+  if [ "$DEPLOY_MODE" = "full" ]; then
+    python3 "$ACCOUNT_MODE_DIR/cutover-host-watchers.pyz" --scope all --check
+  fi
+  if [ "$DEPLOY_MODE" != "full" ]; then
+    python3 "$ACCOUNT_MODE_DIR/database_permissions.py" audit --manifest "$ACCOUNT_MODE_DIR/permissions.json"
+  fi
+elif grep -Eq '^BINANCE_ACCOUNT_MODE=classic$|^(BINANCE_USE_PM|USE_UNIFIED_ACCOUNT)=false$' .env; then
+  echo "经典合约发布缺少有效的 BINANCE_CLASSIC_CUTOVER_MS"
+  exit 1
+fi
+
 if [ "$DEPLOY_MODE" = "xau-review" ]; then
   [ "$FUNDING_DEPLOY_ACTION" = "keep" ] || exit 2
   unset COMPOSE_FILE
@@ -502,9 +546,9 @@ docker compose run -T --rm --no-deps grid-realtime \
 # path is configured. Initialize it before any grid container is recreated.
 echo "🗄️  grid_execution schema 迁移（一次性）..."
 docker compose run -T --rm --no-deps grid-strategy \
-  python -m strategies.grid.execution.store \
-  --db-path /app/data/grid_execution.sqlite3
+  sh -ec 'exec python -m strategies.grid.execution.store --db-path "$GRID_EXECUTION_HANDOFF_DB"'
 
+activate_full_services() {
 # 4. 只更新镜像变了的容器（compose up -d 自动检测）
 # Docker Compose 重建失败可能留下形如「旧容器 ID_服务名」的 Created 容器。
 # 仅在正式容器仍运行且健康、残留已超过 5 分钟时清理；否则停止部署。
@@ -516,6 +560,9 @@ GRID_EXTRA_HEALTH=""
 if grep -Eq '^GRID_EXECUTOR_DEPLOY_ENABLED=(true|1)$' .env; then
   GRID_COMPOSE_PROFILE=(--profile grid-executor)
   GRID_EXTRA_HEALTH="trading_system-grid-executor"
+fi
+if [ "$CUTOVER_ENABLED" = 1 ]; then
+  GRID_COMPOSE_PROFILE+=(--profile hrs-acceptance)
 fi
 if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then
   # Keep the database container stable too. A floating postgres:15-alpine
@@ -539,6 +586,15 @@ if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then
   docker compose "${GRID_COMPOSE_PROFILE[@]}" --parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"
 else
   docker compose "${GRID_COMPOSE_PROFILE[@]}" --parallel 1 up -d --remove-orphans
+fi
+}
+if [ "$CUTOVER_ENABLED" = 1 ]; then
+  # 先启动数据库，业务容器等迁移与权限审计通过后再更新。
+  if [ "$FUNDING_DEPLOY_ACTION" != "keep" ]; then
+    docker compose up -d --no-deps postgres
+  fi
+else
+  activate_full_services
 fi
 
 # ========== step 4.5：执行数据库 init-scripts（幂等）==========
@@ -775,6 +831,25 @@ if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then
   stop_funding_collector_if_running
   false
 fi
+if [ "$CUTOVER_ENABLED" = 1 ]; then
+  for hrs_migration in risk-ledger-loss-gates equity-service equity-reconciliation funding-publication decision-evidence allocation-event-audit frozen-exit-plan condition-account-scope; do
+    docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+      -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-17-hrs-${hrs_migration}.sql"
+  done
+  docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+    -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-25-account-mode-equity.sql"
+  docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+    -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-25-classic-entry-observation.sql"
+  docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+    -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-25-account-fact-provenance.sql"
+  if [ "$CUTOVER_CLASSIC_ACTIVE" = 1 ]; then
+    docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+      -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-25-scoped-open-condition-ids.sql"
+  fi
+  python3 "$ACCOUNT_MODE_DIR/database_permissions.py" apply --manifest "$ACCOUNT_MODE_DIR/permissions.json"
+  python3 "$ACCOUNT_MODE_DIR/database_permissions.py" audit --manifest "$ACCOUNT_MODE_DIR/permissions.json"
+  activate_full_services
+fi
 docker compose restart ai-tuner-snapshot >/dev/null
 # Only now may the profiled service start. --no-deps avoids touching postgres.
 if [ "$FUNDING_DEPLOY_ACTION" = "rotate" ]; then
@@ -857,6 +932,14 @@ for service in $JOURNAL_SERVICES; do
   fi
   echo "✅ journald $service container=$cid"
 done
+
+if [ "$CUTOVER_ENABLED" = 1 ] && [ "$DEPLOY_MODE" = full ]; then
+  python3 "$ACCOUNT_MODE_DIR/cutover-host-watchers.pyz" --scope all --apply
+  if [ "$CUTOVER_CLASSIC_ACTIVE" = 1 ]; then
+    python3 "$ACCOUNT_MODE_DIR/cutover_income_timer.py" resume --sha "$COMMIT_SHA"
+    printf '%s\n' "$COMMIT_SHA" > "$CLASSIC_ROLLOUT_DONE"
+  fi
+fi
 
 # 7. 写部署日志
 mkdir -p deploy_logs

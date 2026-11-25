@@ -215,14 +215,11 @@ class TestSynthesize4hKlines:
 
     @pytest.mark.asyncio
     async def test_无open_time字段(self, mdp):
-        """没有 open_time 字段的K线，open_time 默认为0，仍会被合成"""
-        klines_1h = [
-            {"open": 100, "high": 105, "low": 95, "close": 102, "volume": 1000},
-        ]
-        result = await mdp.synthesize_4h_klines(klines_1h)
-        # open_time 默认为 0，仍可被分组合成
-        assert len(result) == 1
-        assert result[0]["open"] == 100
+        """A missing clock cannot create a synthetic 1970 candle."""
+        from strategies.hrs.core_decision import DecisionInputsUnavailable
+        klines_1h = [{"open":100,"high":105,"low":95,"close":102,"volume":1000}]
+        with pytest.raises(DecisionInputsUnavailable, match='kline_timestamp_invalid'):
+            await mdp.synthesize_4h_klines(klines_1h)
 
 
 class TestEMA20:

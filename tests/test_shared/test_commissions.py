@@ -75,15 +75,14 @@ class TestGetUserTrades:
             await client.get_user_trades("   ")
 
     @pytest.mark.asyncio
-    async def test_non_list_response_returns_empty(self):
-        """非列表响应应回退为空列表，不抛异常"""
+    async def test_non_list_response_raises(self):
+        """非列表响应不能证明没有成交"""
 
         client = _make_client(use_unified_account=True)
         client._request = AsyncMock(return_value={"error": "bad"})
 
-        trades = await client.get_user_trades("BTCUSDT")
-
-        assert trades == []
+        with pytest.raises(TypeError, match="userTrades"):
+            await client.get_user_trades("BTCUSDT")
 
 
 class TestReconcileCommissions:
@@ -95,7 +94,7 @@ class TestReconcileCommissions:
         db = MagicMock()
         db.fetch_all = AsyncMock(return_value=[])
         db.execute = AsyncMock(return_value="UPDATE 0")
-        return TradeLogger(db, "测试策略"), db
+        return TradeLogger(db, "测试策略", account_id="default"), db
 
     @pytest.mark.asyncio
     async def test_normal_backfill(self):
@@ -106,9 +105,13 @@ class TestReconcileCommissions:
         ))
         binance_client = MagicMock()
         binance_client.get_user_trades = AsyncMock(return_value=[
-            {"commission": "0.5"}, {"commission": "0.3"},
+            {"symbol": "BTCUSDT", "orderId": 100, "commissionAsset": "USDT", "commission": fee,
+             "id": i, "side": "SELL", "qty": "1"}
+            for i, fee in enumerate(("0.5", "0.3"))
         ])
 
+        binance_client.get_order = AsyncMock(return_value=dict(symbol="BTCUSDT", orderId=100,
+                                                              side="SELL", status="FILLED", executedQty="2"))
         result = await trade_logger.reconcile_commissions(binance_client, lookback_hours=24)
 
         assert result["queried_orders"] == 1
@@ -124,7 +127,9 @@ class TestReconcileCommissions:
             [{"symbol": "BTCUSDT", "order_id": "100"}]
         ))
         binance_client = MagicMock()
-        binance_client.get_user_trades = AsyncMock(return_value=[{"commission": "0.2"}])
+        binance_client.get_user_trades = AsyncMock(return_value=[{"symbol": "BTCUSDT", "orderId": 100, "commissionAsset": "USDT", "commission": "0.2", "qty": "1", "side": "SELL", "id": 2}])
+        binance_client.get_order = AsyncMock(return_value=dict(symbol="BTCUSDT", orderId=100,
+                                                              side="SELL", status="FILLED", executedQty="1"))
 
         await trade_logger.reconcile_commissions(binance_client, lookback_hours=24)
 
@@ -205,11 +210,24 @@ class TestReconcileCommissions:
         db = MagicMock()
         db.fetch_all = AsyncMock(return_value=[])
         db.execute = AsyncMock(return_value="UPDATE 0")
-        return TradeLogger(db, "测试策略"), db
+        return TradeLogger(db, "测试策略", account_id="default"), db
 
     def _build_logger_with_pending(self, rows):
         """返回 (TradeLogger, mocked db)，fetch_all 返回指定待回填记录"""
         db = MagicMock()
         db.fetch_all = AsyncMock(return_value=rows)
         db.execute = AsyncMock(return_value="UPDATE 1")
-        return TradeLogger(db, "测试策略"), db
+        return TradeLogger(db, "测试策略", account_id="default"), db
+
+@pytest.mark.parametrize("status,executed,ids", [("PARTIALLY_FILLED", "2", [1, 2]),
+                                               ("FILLED", "3", [1, 2]),
+                                               ("FILLED", "2", [1, "1"])])
+async def test_open_missing_or_duplicate_fills_leave_commission_pending(status, executed, ids):
+    log, db = TestReconcileCommissions()._build_logger_with_pending([dict(symbol="BTCUSDT", order_id="100")])
+    client = MagicMock()
+    client.get_order = AsyncMock(return_value=dict(symbol="BTCUSDT", orderId=100, side="SELL",
+                                                   status=status, executedQty=executed))
+    client.get_user_trades = AsyncMock(return_value=[dict(symbol="BTCUSDT", orderId=100, side="SELL",
+        qty="1", commission=".1", commissionAsset="USDT", id=i) for i in ids])
+    assert (await log.reconcile_commissions(client))["matched_orders"] == 0
+    db.execute.assert_not_awaited()

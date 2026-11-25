@@ -363,3 +363,32 @@ class TestR9TimeoutAfterPersist:
 
         # 断言 3：超时信号被过滤，不应进入 execute_signal
         assert executed == [], "超时信号被过滤后不应执行 execute_signal"
+
+
+@pytest.mark.asyncio
+async def test_pool_prefilter_records_production_denial_and_keeps_other_direction():
+    from shared.circuit_breaker import CircuitBreaker, load_circuit_breaker_config
+    from strategies.hrs.decision_capture import DecisionRecorder
+
+    db = TightSignalDB()
+    strategy = _make_strategy(db)
+    strategy.decision_recorder = DecisionRecorder(AsyncMock())
+    strategy.decision_recorder.record = AsyncMock()
+    strategy.circuit_breaker = CircuitBreaker(load_circuit_breaker_config(), None, pool='hrs')
+    strategy.circuit_breaker.load_index = AsyncMock(return_value=0.0004178555095485919)
+    strategy.circuit_breaker.load_index_12h = AsyncMock(return_value=0.026569169188703893)
+    strategy.execute_signal = AsyncMock(return_value=True)
+    short = [dict(symbol='MMTUSDT', direction='short', score=6.55, entry_mode='standard', current_price=1),
+             dict(symbol='MMTUSDT', direction='short', score=7.23, entry_mode='semi_emm',
+                  signal_origin='shadow_scoring', current_price=1)]
+    long = [dict(symbol='TESTUSDT', direction='long', score=7, entry_mode='standard', current_price=1)]
+    await strategy._finalize_and_execute_signals(short, long, source_symbols=['MMTUSDT', 'TESTUSDT'])
+
+    assert [(row['status'],row['resolution']) for row in db.rows] == [
+        ('resolved','pool_circuit_breaker'), ('resolved','pool_circuit_breaker'), ('resolved','executed')]
+    signals = [call.args[2] for call in strategy.decision_recorder.record.await_args_list
+               if call.args[1]=='pool_circuit_preflight_denial']
+    assert [signal['signal_id'] for signal in signals] == [row['id'] for row in db.rows[:2]]
+    assert [signal['is_shadow'] for signal in signals] == [False, True]
+    assert all(signal['pool_index_12h']==0.026569169188703893 for signal in signals)
+    strategy.execute_signal.assert_awaited_once_with(long[0])

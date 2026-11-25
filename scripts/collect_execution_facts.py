@@ -1,4 +1,4 @@
-"""采集 PM 账户近期成交、已实现盈亏、手续费和资金费原始事实。
+"""采集合约账户近期成交、已实现盈亏、手续费和资金费原始事实。
 
 按最多七天分窗；先读账户收入中的币种，再合并本地订单币种采集成交。
 只写 execution_fact_*，不修改策略交易记录或资金分配。
@@ -12,6 +12,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 
+from shared.accounting.account_cutover import account_cutover_ms, collection_window
 from scripts.export_execution_facts import (
     ExecutionFactExporter, _build_client_from_env, _maybe_open_sink,
     _maybe_close_sink,
@@ -23,7 +24,8 @@ INCOME_TYPES = ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE")
 BEIJING = timezone(timedelta(hours=8))
 _SYMBOL_SQL = (
     "SELECT DISTINCT symbol FROM trading.trade_records "
-    "WHERE executed_at >= $1 AND executed_at < $2 AND symbol IS NOT NULL"
+    "WHERE executed_at >= $1 AND executed_at < $2 AND symbol IS NOT NULL "
+    "AND (account_id = $3 OR account_id IS NULL)"
 )
 _INCOME_SYMBOL_SQL = (
     "SELECT DISTINCT symbol FROM trading.execution_fact_income "
@@ -33,8 +35,11 @@ _INCOME_SYMBOL_SQL = (
 
 
 def _windows(start_ms: int, end_ms: int):
-    if start_ms < 0 or start_ms >= end_ms:
+    if start_ms < 0 or start_ms > end_ms:
         raise ValueError("采集窗口无效")
+    if start_ms == end_ms:
+        yield start_ms, end_ms
+        return
     left = start_ms
     while left < end_ms:
         right = min(left + MAX_CHUNK_MS, end_ms)
@@ -45,13 +50,13 @@ def _windows(start_ms: int, end_ms: int):
 async def collect_window(
     exporter, db, start_ms: int, end_ms: int, *, pause_seconds: float = 0.5,
 ) -> dict:
-    """按币安 PM 的七天成交查询上限分窗，返回明确的覆盖状态。"""
+    """按币安合约的七天成交查询上限分窗，返回明确的覆盖状态。"""
     if pause_seconds < 0:
         raise ValueError("pause_seconds 不能为负数")
     windows = list(_windows(start_ms, end_ms))
     start_local = datetime.fromtimestamp(start_ms / 1000, BEIJING).replace(tzinfo=None)
-    end_local = datetime.fromtimestamp(end_ms / 1000, BEIJING).replace(tzinfo=None)
-    rows = await db.fetch_all(_SYMBOL_SQL, start_local, end_local)
+    end_local = datetime.fromtimestamp((end_ms + 1) / 1000, BEIJING).replace(tzinfo=None)
+    rows = await db.fetch_all(_SYMBOL_SQL, start_local, end_local, exporter.account_id)
     symbols = {str(row["symbol"]) for row in rows if row.get("symbol")}
     gaps: list[str] = []
     income_count = 0
@@ -72,7 +77,7 @@ async def collect_window(
     stored_income_symbols = await db.fetch_all(
         _INCOME_SYMBOL_SQL, exporter.account_id,
         datetime.fromtimestamp(start_ms / 1000, timezone.utc),
-        datetime.fromtimestamp(end_ms / 1000, timezone.utc),
+        datetime.fromtimestamp((end_ms + 1) / 1000, timezone.utc),
     )
     symbols.update(str(row["symbol"]) for row in stored_income_symbols if row.get("symbol"))
 
@@ -120,11 +125,23 @@ async def _run(args) -> int:
             raise RuntimeError(f"币安客户端初始化失败，exit={code}")
         exporter = ExecutionFactExporter(
             account_id=args.account_id, api_client=client, sink=sink,
-            page_limit=args.page_limit,
+            page_limit=args.page_limit, refresh_completed=True,
         )
+        expected_account = os.environ.get("TRADE_ACCOUNT_ID", "default")
+        if not expected_account.strip() or args.account_id != expected_account:
+            raise ValueError("采集账户必须与签名配置 TRADE_ACCOUNT_ID 一致")
+        if not client.use_unified_account:
+            from shared.binance_account_mode import verify_cutover_ledger
+            await verify_cutover_ledger(client, db)
+        cutover = account_cutover_ms(args.account_id)
+        requested = (start_ms, end_ms)
+        start_ms, end_ms = collection_window(start_ms, end_ms, client.use_unified_account, cutover)
+        if requested != (start_ms, end_ms) and args.start_ms is not None:
+            raise ValueError("显式采集窗口跨越账户模式切点，请分两段采集")
         report = await collect_window(
             exporter, db, start_ms, end_ms, pause_seconds=args.pause_seconds,
         )
+        report.update(account_mode="pm" if client.use_unified_account else "classic", cutover_ms=cutover)
         print(json.dumps(report, ensure_ascii=False))
         return 0 if report["complete"] else 2
     finally:
@@ -134,7 +151,7 @@ async def _run(args) -> int:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="采集 PM 账户收入和成交事实，不改策略交易记录")
+    parser = argparse.ArgumentParser(description="采集合约账户收入和成交事实，不改策略交易记录")
     parser.add_argument("--start-ms", type=int)
     parser.add_argument("--end-ms", type=int)
     parser.add_argument("--days", type=int, default=2)

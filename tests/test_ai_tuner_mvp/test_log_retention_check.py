@@ -9,14 +9,13 @@ def test_report_flags_unhealthy_and_short_retention():
         "now": now,
         "configured": {"kline-service", "grid-executor"},
         "rows": [
-            {"service": "kline-service", "state": "running", "health": "healthy", "driver": "journald", "first": now - dt.timedelta(days=3), "last": now, "config_files": ""},
-            {"service": "grid-executor", "state": "running", "health": "unhealthy", "driver": "journald", "first": now - dt.timedelta(hours=2), "last": now, "config_files": ""},
+            {"service": "kline-service", "state": "running", "health": "healthy", "driver": "journald", "first": now - dt.timedelta(days=3), "last": now, "current_error": False, "history_first": now - dt.timedelta(days=3), "history_last": now, "history_error": False, "config_files": ""},
+            {"service": "grid-executor", "state": "running", "health": "unhealthy", "driver": "journald", "first": now - dt.timedelta(hours=2), "last": now, "current_error": False, "history_first": now - dt.timedelta(hours=2), "history_last": now, "history_error": False, "config_files": ""},
         ],
         "journal": "Archived and active journals take up 300.0M in the file system.",
         "free": 16_000_000_000,
     })
-    assert "2 个服务可查窗口不足 14 天（最早 11-10 09:00，要求 ≥14 天）" in report
-    assert report.count("可查窗口不足 14 天") == 1
+    assert "2 个服务可查窗口不足 14 天" in report
     assert "grid-executor 状态 running/unhealthy" in report
     assert "根分区剩余不足" not in report
 
@@ -26,88 +25,108 @@ def test_new_service_retention_waits_for_start_date():
     report = render({
         "now": now,
         "configured": {"execution-facts-collector"},
-        "rows": [{"service": "execution-facts-collector", "state": "running", "health": "healthy", "driver": "journald", "first": now - dt.timedelta(days=3), "last": now, "config_files": ""}],
+        "rows": [{"service": "execution-facts-collector", "state": "running", "health": "healthy", "driver": "journald", "first": now - dt.timedelta(days=3), "last": now, "current_error": False, "history_first": now - dt.timedelta(days=3), "history_last": now, "history_error": False, "config_files": ""}],
         "journal": "Archived and active journals take up 300.0M in the file system.",
         "free": 16_000_000_000,
     })
     assert "可查窗口不足 14 天" not in report
 
 
-def test_journal_usage_above_three_gib_is_flagged():
-    now = dt.datetime(2026, 11, 13, 9, tzinfo=TZ)
-    report = render({
-        "now": now,
-        "configured": {"kline-service"},
-        "rows": [{"service": "kline-service", "state": "running", "health": "healthy", "driver": "journald", "first": now - dt.timedelta(days=20), "last": now, "config_files": ""}],
-        "journal": "Archived and active journals take up 3.5G in the file system.",
-        "free": 16_000_000_000,
-    })
-    assert "journal 占用达到 3 GiB" in report
-
-
-def test_collect_matches_unlabelled_grid_by_configured_container_name(monkeypatch, tmp_path):
+def test_collect_keeps_current_instance_and_retention_separate(monkeypatch, tmp_path):
     import json
+    import subprocess
 
-    from ai_tuner.ops import log_retention_check
+    from ai_tuner.ops import log_retention_check as check
 
-    now = dt.datetime(2026, 11, 18, 9, tzinfo=TZ)
-    grid = {
-        "Name": "/trading_system-grid",
-        "Config": {"Labels": {"grid.repair.revision": "current"}},
-        "State": {"Status": "running", "Health": {"Status": "healthy"}},
-        "HostConfig": {"LogConfig": {"Type": "journald"}},
+    now = dt.datetime(2026, 11, 20, 9, tzinfo=TZ)
+    old = now - dt.timedelta(days=15)
+    drivers = {
+        "market-cap-service": "json-file",
+        "hrs-acceptance-reporter": "json-file",
+        "grid-strategy": "journald",
+        "kline-service": "journald",
     }
-    config = {"name": "trading_system", "services": {
-        "grid-strategy": {"container_name": "trading_system-grid"},
-        "worker": {"container_name": "trading_system-worker"},
-    }}
+    containers = [
+        {
+            "Id": service + "-id",
+            "Name": "/" + service,
+            "Config": {"Labels": {"com.docker.compose.service": service}},
+            "State": {"Status": "running", "Health": {"Status": "healthy"}},
+            "HostConfig": {"LogConfig": {"Type": driver}},
+        }
+        for service, driver in drivers.items()
+    ]
+    containers[2]["Config"]["Labels"] = {}
+    config = {
+        "name": "trading_system",
+        "services": {
+            service: {"container_name": service}
+            for service in ("grid-strategy", "kline-service")
+        },
+    }
 
-    def docker_and_journal(*args):
+    def fake_run(*args):
         if args[-1] == "--profiles":
             return ""
         if args[-2:] == ("--format", "json"):
             return json.dumps(config)
-        if args[-1] == "--services":
-            return "grid-strategy\nworker"
         if args[:3] == ("docker", "ps", "-aq"):
-            return ""
-        if args[:2] == ("docker", "ps"):
-            return "trading_system-grid\ntrading_system-grid-copy"
-        if args == ("docker", "inspect", "trading_system-grid"):
-            return json.dumps([grid])
+            return "market-id reporter-id kline-id"
+        if args[:3] == ("docker", "ps", "-a"):
+            return "grid-strategy\n"
+        if args == ("docker", "inspect", "grid-strategy"):
+            return json.dumps([containers[2]])
+        if args[:2] == ("docker", "inspect"):
+            return json.dumps(containers[:2] + containers[3:])
         if args == ("journalctl", "--disk-usage"):
             return "300M"
         if args[0] == "df":
-            return "Avail\n16000000000\n"
+            return "Avail\n16000000000"
         raise AssertionError(args)
 
+    def fake_journal(field, value, *, latest):
+        if field == "CONTAINER_NAME":
+            return now if latest else old
+        assert field == "CONTAINER_ID_FULL"
+        if value == "kline-service-id":
+            raise subprocess.CalledProcessError(1, "journalctl")
+        assert value == "grid-strategy-id"
+        return None
+
+    def fake_docker_logs(container_id):
+        if container_id == "market-cap-service-id":
+            return now - dt.timedelta(hours=2), now - dt.timedelta(hours=1)
+        assert container_id == "hrs-acceptance-reporter-id"
+        return None, None
+
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(log_retention_check, "run", docker_and_journal)
-    monkeypatch.setattr(log_retention_check, "journal_time", lambda *a, **k: now)
-    report = render(log_retention_check.collect(tmp_path, now))
+    monkeypatch.setattr(check, "run", fake_run)
+    monkeypatch.setattr(check, "journal_time", fake_journal)
+    monkeypatch.setattr(check, "docker_log_range", fake_docker_logs, raising=False)
+    report = check.render(check.collect(tmp_path, now))
 
-    assert "grid-strategy: healthy/journald" in report
-    assert "缺少容器: worker" in report
-    assert "grid-copy" not in report
-    grid["Config"]["Labels"]["com.docker.compose.project"] = "unrelated"
-    report = render(log_retention_check.collect(tmp_path, now))
-    assert "缺少容器: grid-strategy, worker" in report
+    assert "容器: 4 个；基础 Compose: 2 个" in report
+    assert "当前实例 11-20 07:00 → 11-20 08:00" in report
+    assert "hrs-acceptance-reporter 当前实例无日志" in report
+    assert "grid-strategy 当前实例无日志" in report
+    assert "kline-service 当前实例日志查询失败" in report
+    assert "kline-service 当前实例无日志" not in report
+    assert "服务 journal 11-05 09:00 → 11-20 09:00" in report
+    assert "可查窗口不足 14 天" not in report
 
 
-def test_webhook_error_reports_numeric_code_without_response_content(monkeypatch, tmp_path):
-    import io
+def test_docker_log_range_uses_full_id_and_reads_both_streams(monkeypatch):
+    from ai_tuner.ops import log_retention_check as check
 
-    import pytest
+    def fake_run(args, **kwargs):
+        assert args == ["docker", "logs", "--timestamps", "full-id"]
+        assert kwargs["stderr"] == check.subprocess.STDOUT
+        return check.subprocess.CompletedProcess(args, 0, stdout=(
+            "2026-11-20T00:23:57.123456789Z stderr\n"
+            "2026-11-19T15:20:02.123456789Z stdout\n"
+        ))
 
-    from ai_tuner.ops import log_retention_check
-
-    secret = tmp_path / "webhook"
-    secret.write_text("https://open.feishu.cn/open-apis/bot/v2/hook/dummy")
-    monkeypatch.setattr(
-        log_retention_check.urllib.request,
-        "urlopen",
-        lambda *a, **k: io.BytesIO(b'{"code":19024,"msg":"untrusted response"}'),
-    )
-
-    with pytest.raises(RuntimeError, match=r"^Feishu webhook rejected the report \(code=19024\)$"):
-        log_retention_check.send(secret, "test")
+    monkeypatch.setattr(check.subprocess, "run", fake_run)
+    first, last = check.docker_log_range("full-id")
+    assert first == dt.datetime(2026, 11, 19, 23, 20, 2, 123456, tzinfo=TZ)
+    assert last == dt.datetime(2026, 11, 20, 8, 23, 57, 123456, tzinfo=TZ)

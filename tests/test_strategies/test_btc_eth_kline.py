@@ -998,8 +998,9 @@ class TestDynamicTrailingStop:
         strategy = strategy_with_config
         position_long.trailing_activated = True
         position_long.trailing_stop_price = Decimal('60600')
-        # 价格跌破止损价
-        with patch.object(strategy, '_close_position', AsyncMock()) as mock_close:
+        # 提供真实格式的交易所精度；此用例只核对触发的平仓请求。
+        strategy._get_precision_params = AsyncMock(return_value=('0.001', Decimal('0.01')))
+        with patch.object(strategy, '_close_position', AsyncMock(return_value=False)) as mock_close:
             await strategy._check_dynamic_trailing("BTCUSDT", position_long, Decimal('60500'))
             mock_close.assert_called_once()
             args, kwargs = mock_close.call_args

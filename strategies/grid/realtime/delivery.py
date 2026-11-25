@@ -50,10 +50,12 @@ class Delivery:
     def record(self, event: AlertEvent, payload: str, now_ms: int,
                config_hash: Optional[str] = None) -> bool:
         """落 event（幂等）+ outbox；返回是否新增（重复 event_id 返回 False）。"""
-        inserted_event = self._insert_event(event, payload, config_hash)
-        if not inserted_event:
-            return False
-        self._insert_outbox(event, payload, now_ms)
+        with self._conn:
+            inserted_event = self._insert_event(event, payload, config_hash)
+            if not inserted_event and self._conn.execute(
+                    "SELECT 1 FROM outbox WHERE event_id=?", (event.event_id,)).fetchone():
+                return False
+            self._insert_outbox(event, payload, now_ms)
         return True
 
     def record_research(self, event: AlertEvent, payload: str,
@@ -113,7 +115,6 @@ class Delivery:
                  event.direction, event.level, event.first_held_ms,
                  event.decision_ms,
                  config_hash, payload))
-            self._conn.commit()
             return True
         except sqlite3.IntegrityError:
             return False
@@ -127,19 +128,19 @@ class Delivery:
             "INSERT INTO outbox(event_id, kind, status, locked_at_ms, "
             "ttl_deadline_ms, payload) VALUES(?,?,?,?,?,?)",
             (event.event_id, event.level, status, now_ms, ttl, payload))
-        self._conn.commit()
 
     def _insert_research(self, event: AlertEvent, payload: str,
                          now_ms: int) -> bool:
-        inserted = self._insert_event(event, payload, None)
-        if not inserted:
-            return False
-        ttl = None if event.level in LATCH_KINDS else self._ttl(now_ms)
-        self._conn.execute(
-            "INSERT INTO outbox(event_id, kind, status, locked_at_ms, "
-            "ttl_deadline_ms, payload) VALUES(?,?,?,?,?,?)",
-            (event.event_id, RESEARCH, PENDING, now_ms, ttl, payload))
-        self._conn.commit()
+        with self._conn:
+            inserted = self._insert_event(event, payload, None)
+            if not inserted and self._conn.execute(
+                    "SELECT 1 FROM outbox WHERE event_id=?", (event.event_id,)).fetchone():
+                return False
+            ttl = None if event.level in LATCH_KINDS else self._ttl(now_ms)
+            self._conn.execute(
+                "INSERT INTO outbox(event_id, kind, status, locked_at_ms, "
+                "ttl_deadline_ms, payload) VALUES(?,?,?,?,?,?)",
+                (event.event_id, RESEARCH, PENDING, now_ms, ttl, payload))
         return True
 
     def _research_blocked(self, event: AlertEvent, now_ms: int,

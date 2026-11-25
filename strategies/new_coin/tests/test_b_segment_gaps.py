@@ -387,87 +387,18 @@ class TestSyncTrailingStopMarkCanceled:
         ex.binance_api.place_conditional_order.assert_awaited_once()
 
 
-# =============================================================================
-# 缺口 #5：cancel_all_algo_orders 的 mark_open_orders_canceled（executor.py L3246-3250）
-# =============================================================================
-
-
-class TestCancelAllAlgoMarkOpenCanceled:
-    """全量撤单后 cancelled>0 → mark_open_orders_canceled 被调；异常吞掉。"""
-
-    @pytest.mark.asyncio
-    async def test_cancel_all_with_success_calls_mark_open_canceled(self):
-        """至少一张条件单撤单成功 → result['cancelled']>0 → mark_open_orders_canceled 被调。"""
-        ex = _make_executor()
-        symbol = 'TESTUSDT'
-        tracking = _make_tracking(
-            algo_ids={'tp1': 'TP1_001', 'tp2': 'TP2_002'},
-        )
-        ex.position_tracking[symbol] = tracking
-
-        ex.binance_api.cancel_algo_order = AsyncMock()  # 全部成功
-
-        with patch(
-            'strategies.new_coin.executor.mark_open_orders_canceled',
-            new=AsyncMock(),
-        ) as mock_mark:
-            result = await ex.cancel_all_algo_orders(symbol)
-
-        assert result['cancelled'] == 2
-        assert result['failed'] == 0
-        # algo_ids 被清空
-        assert tracking['algo_ids'] == {}
-        # mark_open_orders_canceled 被调
-        mock_mark.assert_awaited_once_with(ex.db, 'new_coin', symbol)
-
-    @pytest.mark.asyncio
-    async def test_cancel_all_mark_open_canceled_exception_swallowed(self):
-        """mark_open_orders_canceled 抛异常 → except 吞掉，函数仍返回正常 result。"""
-        ex = _make_executor()
-        symbol = 'TESTUSDT'
-        tracking = _make_tracking(
-            algo_ids={'tp1': 'TP1_001'},
-        )
-        ex.position_tracking[symbol] = tracking
-
-        ex.binance_api.cancel_algo_order = AsyncMock()
-
-        with patch(
-            'strategies.new_coin.executor.mark_open_orders_canceled',
-            new=AsyncMock(side_effect=Exception("DB write failed")),
-        ):
-            # 不应崩溃
-            result = await ex.cancel_all_algo_orders(symbol)
-
-        assert result['cancelled'] == 1
-        assert tracking['algo_ids'] == {}
-
-    @pytest.mark.asyncio
-    async def test_cancel_all_zero_cancelled_skips_mark_open(self):
-        """所有撤单失败（cancelled=0）→ mark_open_orders_canceled 不被调。"""
-        from shared.binance_api import BinanceAPIError
-
-        ex = _make_executor()
-        symbol = 'TESTUSDT'
-        tracking = _make_tracking(
-            algo_ids={'tp1': 'TP1_001'},
-        )
-        ex.position_tracking[symbol] = tracking
-
-        # cancel_algo_order 抛非 ORDER_NOT_FOUND 异常 → failed 增加
-        error = BinanceAPIError(code=-2010, message="No need to change margin type.")
-        ex.binance_api.cancel_algo_order = AsyncMock(side_effect=error)
-
-        with patch(
-            'strategies.new_coin.executor.mark_open_orders_canceled',
-            new=AsyncMock(),
-        ) as mock_mark:
-            result = await ex.cancel_all_algo_orders(symbol)
-
-        assert result['cancelled'] == 0
-        assert result['failed'] == 1
-        # cancelled=0 → mark_open_orders_canceled 不被调
-        mock_mark.assert_not_awaited()
+@pytest.mark.asyncio
+async def test_partial_cancel_keeps_unconfirmed_protection():
+    from shared.condition_orders import IncompleteAlgoCancellation
+    ex = _make_executor()
+    tracked = {"tp1": 1, "tp2": 2, "sl": 3}
+    ex.position_tracking["TESTUSDT"] = _make_tracking(algo_ids=tracked)
+    with patch("shared.condition_orders.cancel_strategy_algos",
+               new=AsyncMock(side_effect=IncompleteAlgoCancellation("TESTUSDT", [1], [2, 3]))) as cancel:
+        result = await ex.cancel_all_algo_orders("TESTUSDT")
+    assert result["algo_ids"] == [1] and result["failed"] == 2
+    assert tracked == {"tp2": 2, "sl": 3}
+    assert cancel.await_args.args == (ex.binance_api, "TESTUSDT")
 
 
 # =============================================================================

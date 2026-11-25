@@ -12,9 +12,11 @@ import urllib.request
 from pathlib import Path
 
 try:
-    from ai_tuner.ops import digest_outbox
+    from ai_tuner.ops import digest_outbox, hrs_observation, mtpcs_observation
 except ImportError:  # 以脚本方式直接运行时，当前目录即 ai_tuner/ops
     import digest_outbox
+    import hrs_observation
+    import mtpcs_observation
 
 TZ = digest_outbox.TZ
 MAX_PAYLOAD_BYTES = 24000
@@ -158,9 +160,18 @@ def main() -> int:
     args = parser.parse_args()
 
     dirs = tuple(args.outbox_dir) if args.outbox_dir else DEFAULT_DIRS
+    hrs_preview = None
+    mtpcs_preview = None
+    if args.outbox_dir is None:
+        hrs_preview = hrs_observation.prepare_digest(dry_run=args.dry_run)
+        mtpcs_preview = mtpcs_observation.prepare_digest(dry_run=args.dry_run)
     now = dt.datetime.now(TZ)
     if args.dry_run:
         entries, warnings = collect(dirs, now.date())
+        if hrs_preview is not None:
+            entries["hrs_observation"] = hrs_preview
+        if mtpcs_preview is not None:
+            entries["mtpcs"] = mtpcs_preview
     else:
         entries, warnings = wait_for_sections(dirs, now.date(), args.wait_seconds)
     for warning in warnings:

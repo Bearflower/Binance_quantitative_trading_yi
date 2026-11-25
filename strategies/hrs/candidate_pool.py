@@ -497,7 +497,7 @@ class CandidatePool:
                 cap_prov = await self.market_data.get_market_cap_provenance(
                     symbol, oi_usd, volume_24h,
                 )
-                if cap_prov.source in ("coingecko", "cache_hit") and cap_prov.value > 0 and oi_usd > 0:
+                if cap_prov.source in ("coingecko", "coinmarketcap", "cache_hit") and cap_prov.value > 0 and oi_usd > 0:
                     # 只有真实、未过期市值才进入 OI/市值 真实截面
                     oi_market_caps.append(oi_usd / cap_prov.value)
                     true_market_cap_samples += 1
@@ -818,7 +818,7 @@ class CandidatePool:
             cap_prov = await self.market_data.get_market_cap_provenance(
                 symbol, oi_usd, volume_24h,
             )
-            if cap_prov.source in ("coingecko", "cache_hit") and cap_prov.value > 0:
+            if cap_prov.source in ("coingecko", "coinmarketcap", "cache_hit") and cap_prov.value > 0:
                 oi_market_cap_ratio = oi_usd / cap_prov.value
                 if use_dynamic:
                     # V2.5: 动态阈值（50分位）
@@ -912,7 +912,7 @@ class CandidatePool:
             cap_prov = await self.market_data.get_market_cap_provenance(
                 symbol, oi_usd, volume_24h,
             )
-            if cap_prov.source in ("coingecko", "cache_hit") and cap_prov.value > 0:
+            if cap_prov.source in ("coingecko", "coinmarketcap", "cache_hit") and cap_prov.value > 0:
                 oi_market_cap_ratio = oi_usd / cap_prov.value
                 if use_dynamic:
                     # V2.5: 动态阈值（50分位）

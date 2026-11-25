@@ -1,4 +1,4 @@
-"""Prove exact HRS take-profit lots from one-way executions and signed flat state."""
+"""Prove exact HRS protection exits from one-way executions and signed flat state."""
 
 from decimal import Decimal
 import hashlib
@@ -13,6 +13,7 @@ _ANCHOR = """
 SELECT id,payload FROM trading.entry_activity_source_fact
 WHERE account_id=$1 AND kind='flat_position' AND payload->>'symbol'=$2
   AND (payload->>'at_ms')::bigint>$3 AND (payload->>'at_ms')::bigint<=$4
+  AND payload->>'source'=ANY($5::text[])
 ORDER BY (payload->>'at_ms')::bigint,id LIMIT 1
 """
 _OWNER = """
@@ -46,7 +47,7 @@ def _amount(value):
 
 
 def _history_sections(history, link, start_ms, flat_end_ms):
-    if (link['strategy'] != 'hrs' or link['kind'] not in ('TAKE_PROFIT', 'TAKE_PROFIT_MARKET')
+    if (link['strategy'] != 'hrs' or link['kind'] not in ('TAKE_PROFIT', 'TAKE_PROFIT_MARKET', 'STOP', 'STOP_MARKET')
             or not isinstance(history, list) or not 2 <= len(history) < 1000):
         raise ValueError('complete HRS history unavailable')
     seen = set()
@@ -105,7 +106,7 @@ def verify_closed_lot(history, link, order, algo_created_ms, start_ms, flat_end_
                 economics_scope='closed_lot_execution_before_funding')
 
 
-def _flat_bounds(payload, symbol, after_ms, limit_ms):
+def _flat_bounds(payload, symbol, after_ms, limit_ms, *, classic):
     raw = payload['raw_payload']
     left, right = payload['at_ms'], payload['read_until_ms']
     source = payload['source']
@@ -114,9 +115,10 @@ def _flat_bounds(payload, symbol, after_ms, limit_ms):
             or not after_ms < left <= limit_ms or not 0 < right-left <= 10_000
             or payload['payload_sha256'] != digest or len(payload['credential_fingerprint']) != 64):
         raise ValueError('flat anchor provenance differs')
-    explicit = (source == 'signed_pm_position_risk_v1' and raw.get('symbol') == symbol
+    explicit_source = 'signed_classic_position_risk_v1' if classic else 'signed_pm_position_risk_v1'
+    explicit = (source == explicit_source and raw.get('symbol') == symbol
                 and raw.get('positionSide') == 'BOTH' and _amount(raw['positionAmt']) == 0)
-    absent = (source == 'signed_pm_dual_inventory_v1' and
+    absent = (not classic and source == 'signed_pm_dual_inventory_v1' and
               raw == {'position_risk': [], 'um_account_positions': [], 'dual_side_position': False})
     if not (explicit or absent):
         raise ValueError('signed flat anchor unavailable')
@@ -127,17 +129,20 @@ async def read_closed_lot(db, exchange, account, link, algo, exit_trades):
     """Use an append-only flat anchor and a complete signed page ending at that anchor."""
     latest_exit = max(link['trade_times_ms'].values())
     anchor_limit = latest_exit + _DAY_MS
-    anchors = await db.fetch_all(_ANCHOR, account, link['symbol'], latest_exit, anchor_limit)
+    classic = getattr(exchange, 'use_unified_account', True) is False
+    sources = (['signed_classic_position_risk_v1'] if classic else
+               ['signed_pm_position_risk_v1', 'signed_pm_dual_inventory_v1'])
+    anchors = await db.fetch_all(_ANCHOR, account, link['symbol'], latest_exit, anchor_limit, sources)
     if not anchors:
         raise ValueError('no signed flat anchor within a day after exit')
     anchor = anchors[0]
     payload = anchor['payload']
     if isinstance(payload, str):
         payload = json.loads(payload)
-    right = _flat_bounds(payload, link['symbol'], latest_exit, anchor_limit)
+    right = _flat_bounds(payload, link['symbol'], latest_exit, anchor_limit, classic=classic)
     start = min(link['trade_times_ms'].values()) - 4*_DAY_MS
     # Use the raw signed response so a malformed page never appears as an empty one.
-    history = await exchange._request('GET', '/papi/v1/um/userTrades', {
+    history = await exchange._request('GET', '/fapi/v1/userTrades', {
         'symbol': link['symbol'], 'startTime': start, 'endTime': right, 'limit': 1000,
     }, signed=True)
     opening, exits = _history_sections(history, link, start, right)
@@ -150,5 +155,6 @@ async def read_closed_lot(db, exchange, account, link, algo, exit_trades):
     if not owners or owners[0]['owned'] is not True:
         raise ValueError('canonical HRS opening identity unavailable')
     lot.update(flat_fact_id=anchor['id'], signed_history_start_ms=start, signed_history_end_ms=right,
-               proof='hrs_tp_closed_lot_v1')
+               proof=('hrs_stop_closed_lot_v1' if link['kind'] in ('STOP', 'STOP_MARKET')
+                      else 'hrs_tp_closed_lot_v1'))
     return lot

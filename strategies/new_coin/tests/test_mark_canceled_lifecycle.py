@@ -66,7 +66,7 @@ async def test_cancel_trailing_stop_marks_canceled_success():
     ) as mock_mark:
         await ex._cancel_trailing_stop_order('TESTUSDT')
 
-    mock_mark.assert_awaited_once_with(ex.db, algo_id='TRAIL_001')
+    mock_mark.assert_awaited_once_with(ex.db, algo_id='TRAIL_001', strategy_name='new_coin', symbol='TESTUSDT')
     ex.binance_api.cancel_algo_order.assert_awaited_once_with('TESTUSDT', 'TRAIL_001')
 
 
@@ -186,39 +186,27 @@ async def test_sync_trailing_mark_exception_swallowed():
 
 
 @pytest.mark.asyncio
-async def test_cancel_all_marks_open_orders_canceled_success():
-    """algo_ids 内有 tp1/tp2 → 都成功撤单 → mark_open_orders_canceled 被调。"""
+async def test_cancel_all_clears_roles_after_all_owned_orders_are_confirmed():
     ex = _make_self()
-    ex.position_tracking['TESTUSDT'] = {
-        'algo_ids': {'tp1': 'A', 'tp2': 'B'},
-    }
-    ex.binance_api.cancel_algo_order.reset_mock()
-
-    with patch(
-        'strategies.new_coin.executor.mark_open_orders_canceled',
-        new=AsyncMock(),
-    ) as mock_mark_all:
-        result = await ex.cancel_all_algo_orders('TESTUSDT')
-
-    assert result['cancelled'] == 2, f"期望 cancelled=2，实际 {result}"
-    mock_mark_all.assert_awaited_once_with(ex.db, 'new_coin', 'TESTUSDT')
+    tracked = {"tp1": 1, "tp2": 2}
+    ex.position_tracking["TESTUSDT"] = {"algo_ids": tracked}
+    async def confirmed(client, symbol, *, tracked_ids):
+        assert (client, symbol, list(tracked_ids)) == (ex.binance_api, "TESTUSDT", [1, 2])
+        return {"complete": True, "cancelled": 2, "failed": 0, "algo_ids": [1, 2]}
+    with patch("shared.condition_orders.cancel_strategy_algos", new=confirmed):
+        assert (await ex.cancel_all_algo_orders("TESTUSDT"))["cancelled"] == 2
+    assert tracked == {}
 
 
 @pytest.mark.asyncio
-async def test_cancel_all_mark_exception_swallowed():
-    """mark_open_orders_canceled 抛异常 → except 吞掉，cancelled 仍被正确统计。"""
+async def test_cancel_all_keeps_roles_on_query_failure():
     ex = _make_self()
-    ex.position_tracking['TESTUSDT'] = {
-        'algo_ids': {'tp1': 'A'},
-    }
+    tracked = {"tp1": 1}
+    ex.position_tracking["TESTUSDT"] = {"algo_ids": tracked}
+    with patch("shared.condition_orders.cancel_strategy_algos", new=AsyncMock(side_effect=ValueError("unknown"))):
+        assert (await ex.cancel_all_algo_orders("TESTUSDT"))["failed"] == 1
+    assert tracked == {"tp1": 1}
 
-    with patch(
-        'strategies.new_coin.executor.mark_open_orders_canceled',
-        new=AsyncMock(side_effect=Exception("DB write failed")),
-    ):
-        result = await ex.cancel_all_algo_orders('TESTUSDT')
-
-    assert result['cancelled'] == 1
 
 @pytest.mark.asyncio
 async def test_sync_trailing_mark_exception_on_trailing_swallowed():

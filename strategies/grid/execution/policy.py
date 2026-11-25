@@ -29,6 +29,20 @@ PAUSE_EXPOSURE_STATES = {
 TRADABLE_STATES = {MarketState.OSCILLATION.name, MarketState.WEAK_TREND.name}
 
 
+def grid_signal_usable(decision: Mapping, now_ms: int) -> bool:
+    return (decision["state"] in TRADABLE_STATES
+            and decision.get("executable") is True
+            and (decision.get("feasibility") or {}).get("feasible") is True
+            and 0 <= now_ms - decision["calculated_at_ms"] <= 90 * 60_000)
+
+
+def grid_candles_current(decision: Mapping, now_ms: int) -> bool:
+    ages = {"15m": 30 * 60_000, "1h": 90 * 60_000, "4h": 5 * 60 * 60_000}
+    times = decision.get("last_closed_kline_ms") or {}
+    return all(isinstance(times.get(tf), int) and 0 < now_ms - times[tf] <= max_age
+               for tf, max_age in ages.items())
+
+
 def decide(decision: Mapping, account: Mapping, risk: Mapping) -> Action:
     if risk.get("locked") or not account.get("clean", False):
         return Action.LOCKED

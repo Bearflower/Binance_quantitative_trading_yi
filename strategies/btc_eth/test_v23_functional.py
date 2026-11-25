@@ -22,6 +22,8 @@ from unittest.mock import MagicMock, AsyncMock, patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
 import yaml
+from pathlib import Path
+from ai_tuner.allocation.profit_extraction_job import ProfitExtractionJob
 
 
 # ============================================================================
@@ -50,6 +52,8 @@ class TestConfigContractCompliance(unittest.TestCase):
         cls.config = load_config()
         cls.risk_config = cls.config['strategy']['risk']
         cls.freq_config = cls.risk_config['frequency_control']
+        with (Path(__file__).resolve().parents[2] / "ai_tuner/config.yaml").open() as source:
+            cls.extraction_config = yaml.safe_load(source)['profit_extraction']
 
     def test_weekly_loss_pause_config_exists(self):
         """测试：单周亏损暂停相关配置项存在且类型正确"""
@@ -78,9 +82,7 @@ class TestConfigContractCompliance(unittest.TestCase):
 
     def test_profit_extraction_config_exists(self):
         """测试：利润提取配置项存在且类型正确"""
-        self.assertIn('profit_extraction', self.risk_config,
-                      "缺少 profit_extraction 配置项")
-        pe = self.risk_config['profit_extraction']
+        pe = self.extraction_config
 
         self.assertIn('enabled', pe, "缺少 profit_extraction.enabled")
         self.assertIsInstance(pe['enabled'], bool,
@@ -154,7 +156,6 @@ class TestConfigContractCompliance(unittest.TestCase):
         """测试：频率控制基础配置项完整性"""
         fc = self.freq_config
         required_fields = [
-            'max_daily_total_trades',
             'max_daily_symbol_trades',
             'symbol_cooldown_hours',
             'consecutive_loss_pause',
@@ -169,13 +170,15 @@ class TestConfigContractCompliance(unittest.TestCase):
         """测试：配置值不应为 0 或负值（数据完整性检查）"""
         # 频率控制
         fc = self.freq_config
-        self.assertGreater(fc['max_daily_total_trades'], 0)
+        regimes = self.risk_config['market_state']['behaviors']
+        for regime in ('STRONG_TREND', 'RANGING'):
+            self.assertGreater(regimes[regime]['max_daily_trades'], 0)
         self.assertGreater(fc['max_daily_symbol_trades'], 0)
         self.assertGreater(fc['initial_capital_usdt'], 0)
         self.assertGreater(fc['max_daily_loss_usdt'], 0)
 
         # 利润提取
-        pe = self.risk_config['profit_extraction']
+        pe = self.extraction_config
         self.assertGreater(pe['extract_ratio'], 0)
         self.assertGreater(pe['min_extract_usdt'], 0)
 
@@ -627,224 +630,52 @@ class TestEconomicCalendar(unittest.TestCase):
 # 第四部分：利润提取逻辑测试
 # ============================================================================
 
-class TestProfitExtraction(unittest.TestCase):
-    """测试 BTCEthStrategy._check_profit_extraction() 方法的逻辑"""
+class TestProfitExtraction(unittest.IsolatedAsyncioTestCase):
+    """从中央每日任务入口验证提取提醒，MTPCS 实例不执行资金划拨。"""
 
     def setUp(self):
-        """创建模拟的策略实例"""
-        self.config = load_config()
-        self.risk_config = self.config['strategy']['risk']
-
-        # 创建 mock 客户端
-        self.mock_binance = MagicMock()
-        self.mock_binance.get_account_info = AsyncMock()
-        self.mock_kline = MagicMock()
-        self.mock_notification = MagicMock()
-        self.mock_notification.send = AsyncMock()
-        self.mock_notification.send_error_notification = AsyncMock()
-        self.mock_notification.send_trade_notification = AsyncMock()
-        self.mock_db = None
-
-        from strategies.btc_eth.strategy import BTCEthStrategy
-
-        self.strategy = BTCEthStrategy(
-            config=self.config,
-            binance_client=self.mock_binance,
-            kline_service=self.mock_kline,
-            notification_client=self.mock_notification,
-            db_manager=self.mock_db
-        )
-
-        # 重置 ATH 追踪
-        self.strategy._highest_equity = Decimal('0')
-        self.strategy._ath_balance = Decimal('0')
-        self.strategy._profit_extraction_last_notified = None
-
-        self.initial_capital = Decimal('500')
-        self.extract_ratio = Decimal('0.50')
-        self.min_extract = Decimal('10')
-
-    async def _setup_account_mock(self, total_equity: Decimal):
-        """设置 mock 账户信息"""
-        self.mock_binance.get_account_info = AsyncMock(return_value={
-            'totalWalletBalance': float(total_equity),
-            'availableBalance': float(total_equity),
+        self.db = AsyncMock()
+        self.exchange = AsyncMock()
+        self.job = ProfitExtractionJob(self.db, AsyncMock(), self.exchange, {
+            "profit_extraction": dict(enabled=True, initial_capital_usdt=500,
+                                      extract_ratio=0.5, min_extract_usdt=10)
         })
+        self.job._publish = AsyncMock()
 
-    # ---------- 开关控制 ----------
+    async def check(self, balance, ath=500):
+        self.db.fetch_one.return_value = {"value": str(ath)}
+        self.exchange.get_account_info.return_value = {"totalWalletBalance": str(balance)}
+        return await self.job.run_daily_check()
 
-    def test_profit_extraction_disabled(self):
-        """测试：当 profit_extraction.enabled=False 时，不执行任何操作"""
-        async def _run():
-            self.strategy.risk_config['profit_extraction']['enabled'] = False
-            await self._setup_account_mock(Decimal('600'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_not_called()
-            self.assertEqual(self.strategy._highest_equity, Decimal('0'))
-        asyncio.run(_run())
+    async def test_new_high_persists_and_publishes_exact_amount(self):
+        result = await self.check(600)
+        self.assertEqual(result["action"], "notified")
+        self.assertEqual(result["extract_amount"], 50)
+        self.assertEqual(self.job._ath_balance, 600)
+        self.assertGreater(self.db.execute.await_count, 0)
+        self.job._publish.assert_awaited_once()
 
-    # ---------- 无操作场景 ----------
+    async def test_thresholds_and_existing_high(self):
+        for balance, ath, reason in [(0, 500, "zero_or_negative_equity"),
+                                    (500, 500, "not_new_high"), (490, 600, "not_new_high"),
+                                    (510, 500, "below_min_extract"), (490, 480, "not_profitable")]:
+            with self.subTest(balance=balance, ath=ath):
+                self.job._ath_balance = Decimal(str(ath))
+                result = await self.check(balance, ath)
+                self.assertEqual(result["reason"], reason)
 
-    def test_no_equity(self):
-        """测试：账户权益为 0 时，不执行任何操作"""
-        async def _run():
-            await self._setup_account_mock(Decimal('0'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_not_called()
-        asyncio.run(_run())
+    async def test_disabled_does_not_read_account(self):
+        self.job.extraction_cfg["enabled"] = False
+        result = await self.job.run_daily_check()
+        self.assertEqual(result["reason"], "disabled")
+        self.exchange.get_account_info.assert_not_awaited()
 
-    def test_not_new_ath(self):
-        """测试：当前权益未超过历史最高，不触发提取"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('600')
-            await self._setup_account_mock(Decimal('550'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_not_called()
-            self.assertEqual(self.strategy._highest_equity, Decimal('600'))
-        asyncio.run(_run())
+    async def test_weekly_dedup_and_next_week(self):
+        self.job._last_notified_week = datetime.now().strftime("%Y-W%W")
+        self.assertEqual((await self.check(600))["reason"], "already_notified_this_week")
+        self.job._last_notified_week = "2020-W01"
+        self.assertEqual((await self.check(600))["action"], "notified")
 
-    def test_not_profitable(self):
-        """测试：权益高于初始资金但未超过 ATH，不触发"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('600')
-            await self._setup_account_mock(Decimal('580'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_not_called()
-        asyncio.run(_run())
-
-    # ---------- 触发提取场景 ----------
-
-    def test_new_ath_triggers_notification(self):
-        """测试：权益创新高时，发送推送通知"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('500')
-            await self._setup_account_mock(Decimal('600'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_called_once()
-            call_args = self.mock_notification.send.call_args
-            self.assertIn("利润提取", str(call_args))
-        asyncio.run(_run())
-
-    def test_ath_updated_after_new_high(self):
-        """测试：权益创新高后，ATH 余额应更新"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('500')
-            await self._setup_account_mock(Decimal('620'))
-            await self.strategy._check_profit_extraction()
-            self.assertEqual(self.strategy._highest_equity, Decimal('620'))
-        asyncio.run(_run())
-
-    def test_extract_amount_calculation(self):
-        """测试：提取金额计算正确（盈利的 50%）"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('500')
-            await self._setup_account_mock(Decimal('700'))
-            await self.strategy._check_profit_extraction()
-            call_args = self.mock_notification.send.call_args
-            message = str(call_args)
-            self.assertIn("100", message, "通知中应包含提取金额 100U")
-        asyncio.run(_run())
-
-    # ---------- 最小提取金额 ----------
-
-    def test_below_min_extract(self):
-        """测试：提取金额低于最小提取额时，不发送通知"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('500')
-            self.strategy.risk_config['profit_extraction']['min_extract_usdt'] = 50
-            await self._setup_account_mock(Decimal('520'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_not_called()
-        asyncio.run(_run())
-
-    def test_above_min_extract(self):
-        """测试：提取金额高于最小提取额时，发送通知"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('500')
-            self.strategy.risk_config['profit_extraction']['min_extract_usdt'] = 10
-            await self._setup_account_mock(Decimal('530'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_called_once()
-        asyncio.run(_run())
-
-    # ---------- 每周最多一次 ----------
-
-    def test_weekly_dedup(self):
-        """测试：同一周内多次触发，只发送一次通知"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('500')
-            self.strategy._profit_extraction_last_notified = datetime.now().strftime("%Y-W%W")
-            await self._setup_account_mock(Decimal('700'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_not_called()
-        asyncio.run(_run())
-
-    def test_new_week_allows_new_notification(self):
-        """测试：新的一周，允许再次发送通知"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('500')
-            # 代码使用 %W 格式（非ISO），设为上周"2026-W24"避免与当前周冲突
-            self.strategy._profit_extraction_last_notified = "2026-W24"
-            await self._setup_account_mock(Decimal('650'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_called_once()
-        asyncio.run(_run())
-
-    # ---------- 边界条件 ----------
-
-    def test_exact_same_as_ath(self):
-        """测试：权益恰好等于 ATH，不触发"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('600')
-            await self._setup_account_mock(Decimal('600'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_not_called()
-        asyncio.run(_run())
-
-    def test_just_above_ath(self):
-        """测试：权益略高于 ATH，触发通知"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('600')
-            await self._setup_account_mock(Decimal('600.01'))
-            await self.strategy._check_profit_extraction()
-            self.assertEqual(self.strategy._highest_equity, Decimal('600.01'))
-        asyncio.run(_run())
-
-    def test_large_profit(self):
-        """测试：大幅盈利场景（翻倍）"""
-        async def _run():
-            self.strategy._highest_equity = Decimal('500')
-            await self._setup_account_mock(Decimal('1000'))
-            await self.strategy._check_profit_extraction()
-            call_args = self.mock_notification.send.call_args
-            message = str(call_args)
-            self.assertIn("250", message, "通知中应包含提取金额 250U")
-        asyncio.run(_run())
-
-    def test_ath_from_db_persistence(self):
-        """测试：从数据库加载的 ATH 余额生效"""
-        async def _run():
-            self.strategy._ath_balance = Decimal('550')
-            self.strategy._highest_equity = Decimal('0')
-            await self._setup_account_mock(Decimal('560'))
-            await self.strategy._check_profit_extraction()
-            self.assertEqual(self.strategy._highest_equity, Decimal('560'))
-        asyncio.run(_run())
-
-    def test_ath_from_db_higher_than_memory(self):
-        """测试：数据库 ATH 高于内存 ATH，取最大值"""
-        async def _run():
-            self.strategy._ath_balance = Decimal('700')
-            self.strategy._highest_equity = Decimal('600')
-            await self._setup_account_mock(Decimal('650'))
-            await self.strategy._check_profit_extraction()
-            self.mock_notification.send.assert_not_called()
-        asyncio.run(_run())
-
-
-# ============================================================================
-# 第五部分：性能基准测试
-# ============================================================================
 
 class TestPerformanceBenchmark(unittest.TestCase):
     """验证新功能不会显著增加策略执行时间"""
@@ -965,49 +796,6 @@ class TestPerformanceBenchmark(unittest.TestCase):
         print(f"  can_trade 完整流程: {iterations} 次, 平均 {avg_ms:.4f}ms/次")
         self.assertLess(avg_ms, 1.0,
                         f"can_trade 过慢: {avg_ms:.4f}ms/次 (目标 < 1ms)")
-
-    def test_profit_extraction_logic_only(self):
-        """测试：利润提取纯逻辑（不含 API 调用）耗时"""
-        from strategies.btc_eth.strategy import BTCEthStrategy
-
-        mock_binance = MagicMock()
-        mock_binance.get_account_info = AsyncMock(return_value={
-            'totalWalletBalance': 600.0,
-            'availableBalance': 600.0,
-        })
-        mock_kline = MagicMock()
-        mock_notification = MagicMock()
-        mock_notification.send_error_notification = AsyncMock()
-        mock_notification.send_trade_notification = AsyncMock()
-
-        strategy = BTCEthStrategy(
-            config=self.config,
-            binance_client=mock_binance,
-            kline_service=mock_kline,
-            notification_client=mock_notification,
-            db_manager=None
-        )
-        strategy._highest_equity = Decimal('500')
-
-        # 注意：这是 async 方法，这里只测纯逻辑的计算部分
-        # 通过直接调用内部逻辑来测量
-        import asyncio
-
-        async def _run():
-            start = time.perf_counter()
-            for _ in range(100):
-                strategy._highest_equity = Decimal('500')
-                strategy._profit_extraction_last_notified = None
-                await strategy._check_profit_extraction()
-            return time.perf_counter() - start
-
-        elapsed = asyncio.run(_run())
-        avg_ms = (elapsed / 100) * 1000
-        print(f"  利润提取逻辑: 100 次, 平均 {avg_ms:.4f}ms/次")
-        # 利润提取包含 API 调用（mock），所以阈值宽松一些
-        self.assertLess(avg_ms, 5.0,
-                        f"利润提取逻辑过慢: {avg_ms:.4f}ms/次 (目标 < 5ms)")
-
 
 # ============================================================================
 # 第六部分：集成测试

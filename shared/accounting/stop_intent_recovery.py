@@ -3,6 +3,7 @@
 from decimal import Decimal, InvalidOperation
 
 from shared.accounting.stop_binding import record_stop_binding
+from shared.accounting.runtime_cutover import runtime_start_ms
 from shared.accounting.stop_intent_journal import StopJournalError
 
 
@@ -66,7 +67,7 @@ async def reconcile_stop_intents(journal, db, client, account_id, strategy, *, l
             symbol=row["symbol"],
             episode_entry_order_id=row["episode_entry_order_id"],
             algo_id=algo_id, stop_side=row["stop_side"],
-            stop_quantity=actual_qty,
+            stop_quantity=actual_qty, since_ms=runtime_start_ms(client),
         ):
             if on_resolved is not None:
                 await on_resolved(row, algo)

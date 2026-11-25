@@ -324,10 +324,10 @@ class TestCancelRetryMechanism(unittest.TestCase):
 
             await self.strategy._cleanup_position_orders("BTCUSDT", pos)
 
-            # 验证 order_id 被清除（放弃重试）
-            self.assertIsNone(pos.stop_loss_order_id)
-            # 验证重试计数被清除
-            self.assertNotIn("stop_loss", pos.cancel_retry_count)
+            # 验证 order_id 保留（放弃重试）
+            self.assertEqual(pos.stop_loss_order_id, 12345)
+            # 验证仍记录重试次数
+            self.assertIn("stop_loss", pos.cancel_retry_count)
             # 验证通知发送
             self.mock_notification.send_error_notification.assert_called_once()
 
@@ -352,15 +352,11 @@ class TestCancelRetryMechanism(unittest.TestCase):
 
             await self.strategy._cleanup_position_orders("BTCUSDT", pos)
 
-            # 验证 order_id 被清除
-            self.assertIsNone(pos.stop_loss_order_id)
+            # 错误码没有证明撤销或成交，继续跟踪。
+            self.assertEqual(pos.stop_loss_order_id, 12345)
             # 验证重试计数被清除
-            self.assertNotIn("stop_loss", pos.cancel_retry_count)
-            # 验证 _record_executed_conditional_order 被调用
-            self.mock_db.execute.assert_any_call(
-                unittest.mock.ANY,
-                unittest.mock.ANY
-            )
+            self.assertIn("stop_loss", pos.cancel_retry_count)
+            self.mock_db.execute.assert_not_called()
 
         asyncio.run(_run())
 
@@ -383,10 +379,10 @@ class TestCancelRetryMechanism(unittest.TestCase):
 
             await self.strategy._cleanup_position_orders("BTCUSDT", pos)
 
-            # 验证 order_id 被清除
-            self.assertIsNone(pos.stop_loss_order_id)
+            # 错误码没有证明撤销或成交，继续跟踪。
+            self.assertEqual(pos.stop_loss_order_id, 12345)
             # 验证重试计数被清除
-            self.assertNotIn("stop_loss", pos.cancel_retry_count)
+            self.assertIn("stop_loss", pos.cancel_retry_count)
 
         asyncio.run(_run())
 
@@ -409,10 +405,10 @@ class TestCancelRetryMechanism(unittest.TestCase):
 
             await self.strategy._cleanup_position_orders("BTCUSDT", pos)
 
-            # 验证 order_id 被清除
-            self.assertIsNone(pos.stop_loss_order_id)
+            # 错误码没有证明撤销或成交，继续跟踪。
+            self.assertEqual(pos.stop_loss_order_id, 12345)
             # 验证重试计数被清除
-            self.assertNotIn("stop_loss", pos.cancel_retry_count)
+            self.assertIn("stop_loss", pos.cancel_retry_count)
 
         asyncio.run(_run())
 
@@ -465,7 +461,7 @@ class TestCancelRetryMechanism(unittest.TestCase):
     # ---------- 强制清理超时 ----------
 
     def test_force_cleanup_timeout(self):
-        """测试：超过 max_cleanup_hours 强制放弃重试"""
+        """测试：长时间未确认的旧单仍然核对撤销"""
         async def _run():
             pos = self._create_position(
                 stop_loss_order_id=12345,
@@ -481,8 +477,8 @@ class TestCancelRetryMechanism(unittest.TestCase):
 
             await self.strategy._retry_pending_cancellations()
 
-            # 验证未执行取消（已超时）
-            self.mock_binance.cancel_algo_order.assert_not_called()
+            # 验证继续取消并收到确认
+            self.mock_binance.cancel_algo_order.assert_awaited_once_with("BTCUSDT", 12345)
             # 验证重试计数被清除
             self.assertFalse(pos.cancel_retry_count)
             # 验证 cancel_pending 被置为 False
@@ -577,6 +573,9 @@ class TestStartupOrphanCleanup(unittest.TestCase):
         self.mock_db.execute = AsyncMock()
         self.mock_db.execute_ddl = AsyncMock()
 
+        cancel_patch = patch("strategies.btc_eth.strategy.cancel_strategy_algos", new_callable=AsyncMock)
+        self.cancel_owned = cancel_patch.start()
+        self.addCleanup(cancel_patch.stop)
         from strategies.btc_eth.strategy import BTCEthStrategy
 
         self.strategy = BTCEthStrategy(
@@ -610,7 +609,7 @@ class TestStartupOrphanCleanup(unittest.TestCase):
     def test_no_open_orders(self):
         """测试：无 OPEN 条件单时跳过"""
         async def _run():
-            get_open_orders_path = "shared.condition_orders.get_open_orders"
+            get_open_orders_path = "strategies.btc_eth.strategy.strategy_owned_algos"
             with patch(get_open_orders_path, AsyncMock(return_value=[])):
                 await self.strategy._do_startup_orphan_cleanup()
                 # 不应查询交易所持仓
@@ -635,13 +634,13 @@ class TestStartupOrphanCleanup(unittest.TestCase):
             ]
             self.mock_binance.get_position = AsyncMock(return_value=exchange_positions)
 
-            get_open_orders_path = "shared.condition_orders.get_open_orders"
+            get_open_orders_path = "strategies.btc_eth.strategy.strategy_owned_algos"
             with patch(get_open_orders_path, AsyncMock(return_value=open_orders)):
                 await self.strategy._do_startup_orphan_cleanup()
 
                 # 验证批量取消被调用（BTCUSDT 和 ETHUSDT）
                 self.assertEqual(
-                    self.mock_binance.cancel_all_algo_orders.call_count, 2
+                    self.cancel_owned.call_count, 2
                 )
                 # 验证通知发送
                 self.mock_notification.send.assert_called_once()
@@ -664,7 +663,7 @@ class TestStartupOrphanCleanup(unittest.TestCase):
             ]
             self.mock_binance.get_position = AsyncMock(return_value=exchange_positions)
 
-            get_open_orders_path = "shared.condition_orders.get_open_orders"
+            get_open_orders_path = "strategies.btc_eth.strategy.strategy_owned_algos"
             with patch(get_open_orders_path, AsyncMock(return_value=open_orders)):
                 await self.strategy._do_startup_orphan_cleanup()
 
@@ -689,19 +688,17 @@ class TestStartupOrphanCleanup(unittest.TestCase):
             ]
             self.mock_binance.get_position = AsyncMock(return_value=exchange_positions)
             # 批量取消抛出异常
-            self.mock_binance.cancel_all_algo_orders = AsyncMock(
-                side_effect=Exception("Batch cancel failed")
-            )
+            self.cancel_owned.side_effect = RuntimeError("未知订单归属")
             # 逐个取消成功
             self.mock_binance.cancel_algo_order = AsyncMock()
 
-            get_open_orders_path = "shared.condition_orders.get_open_orders"
+            get_open_orders_path = "strategies.btc_eth.strategy.strategy_owned_algos"
             with patch(get_open_orders_path, AsyncMock(return_value=open_orders)):
                 await self.strategy._do_startup_orphan_cleanup()
 
                 # 验证逐个取消被调用（每个孤儿条件单）
                 self.assertEqual(
-                    self.mock_binance.cancel_algo_order.call_count, 2
+                    self.mock_binance.cancel_algo_order.call_count, 0
                 )
                 # 验证通知发送
                 self.mock_notification.send.assert_called_once()
@@ -722,12 +719,12 @@ class TestStartupOrphanCleanup(unittest.TestCase):
             ]
             self.mock_binance.get_position = AsyncMock(return_value=exchange_positions)
 
-            get_open_orders_path = "shared.condition_orders.get_open_orders"
+            get_open_orders_path = "strategies.btc_eth.strategy.strategy_owned_algos"
             with patch(get_open_orders_path, AsyncMock(return_value=open_orders)):
                 await self.strategy._do_startup_orphan_cleanup()
 
                 # 验证孤儿条件单被取消（微尘持仓被忽略）
-                self.mock_binance.cancel_all_algo_orders.assert_called_once_with("BTCUSDT")
+                self.cancel_owned.assert_not_called()
 
         asyncio.run(_run())
 
@@ -745,7 +742,7 @@ class TestStartupOrphanCleanup(unittest.TestCase):
             self.mock_binance.get_position = AsyncMock(return_value=exchange_positions)
             self.mock_binance.cancel_all_algo_orders = AsyncMock()
 
-            get_open_orders_path = "shared.condition_orders.get_open_orders"
+            get_open_orders_path = "strategies.btc_eth.strategy.strategy_owned_algos"
             with patch(get_open_orders_path, AsyncMock(return_value=open_orders)):
                 await self.strategy._do_startup_orphan_cleanup()
 
@@ -846,7 +843,7 @@ class TestExecutedConditionalOrder(unittest.TestCase):
 
                 # 验证 mark_order_executed 被调用
                 mock_mark.assert_called_once_with(
-                    self.mock_db, algo_id=12345
+                    self.mock_db, algo_id=12345, strategy_name=self.strategy.strategy_name, symbol="BTCUSDT"
                 )
 
         asyncio.run(_run())
@@ -1014,14 +1011,14 @@ class TestIntegration(unittest.TestCase):
 
             # 验证发送了超时通知
             self.mock_notification.send_error_notification.assert_called_once()
-            # 验证 order_id 被清除
-            self.assertIsNone(pos.stop_loss_order_id)
-            # 验证重试计数被清除
-            self.assertNotIn("stop_loss", pos.cancel_retry_count)
+            # 验证 order_id 保留
+            self.assertEqual(pos.stop_loss_order_id, 12345)
+            # 验证仍记录重试次数
+            self.assertIn("stop_loss", pos.cancel_retry_count)
 
-            # 残余清理应删除持仓
+            # 终态未确认时保留跟踪
             await self.strategy._cleanup_residual_orders()
-            self.assertNotIn("BTCUSDT", self.strategy.positions)
+            self.assertIn("BTCUSDT", self.strategy.positions)
 
         asyncio.run(_run())
 
@@ -1032,7 +1029,7 @@ class TestIntegration(unittest.TestCase):
         """
         async def _run():
             # 启动时：无 OPEN 条件单，跳过
-            get_open_orders_path = "shared.condition_orders.get_open_orders"
+            get_open_orders_path = "strategies.btc_eth.strategy.strategy_owned_algos"
             with patch(get_open_orders_path, AsyncMock(return_value=[])):
                 await self.strategy._do_startup_orphan_cleanup()
                 self.mock_binance.get_position.assert_not_called()

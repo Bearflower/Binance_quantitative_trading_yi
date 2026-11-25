@@ -4,7 +4,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from functools import partial
+from shared.position_entry_recovery import fetch_lot_fills
 from strategies.btc_eth_aggressive.strategy import BTCEthStrategy
+
+@pytest.fixture(autouse=True)
+def observation_time(monkeypatch):
+    # 此组回放覆盖截至 11 月 2 日的成交，固定分页截止时间。
+    monkeypatch.setattr("strategies.btc_eth_aggressive.strategy.fetch_lot_fills",
+                        partial(fetch_lot_fills, now_ms=1793577600000))
+
 
 
 ANCHOR = 1793409086845
@@ -32,7 +41,7 @@ def make_strategy(order_id=101):
         {"id": 1, "time": ANCHOR, "side": "BUY", "qty": "0.03"},
         {"id": 2, "time": ANCHOR + 1000, "side": "SELL", "qty": "0.007"},
     ], []])
-    strategy.binance.get_open_algo_orders = AsyncMock(return_value=[
+    strategy._owned_open_protection = AsyncMock(return_value=[
         {"algoId": order_id, "symbol": "ETHUSDT", "side": "SELL", "orderType": "STOP", "reduceOnly": True, "quantity": "0.023"},
         {"algoId": 102, "symbol": "ETHUSDT", "side": "SELL", "orderType": "TAKE_PROFIT", "reduceOnly": True, "quantity": "0.006"},
         {"algoId": 103, "symbol": "ETHUSDT", "side": "SELL", "orderType": "TAKE_PROFIT", "reduceOnly": True, "quantity": "0.009"},
@@ -71,7 +80,7 @@ async def test_restores_single_tp_exit_plan_without_requiring_tp2():
     s.db_manager.fetch_one.return_value = {'state_data': json.dumps(state)}
     s.binance.get_user_trades.side_effect = [[
         {'id':1,'time':ANCHOR,'side':'BUY','qty':'0.02'}], []]
-    s.binance.get_open_algo_orders.return_value = [
+    s._owned_open_protection.return_value = [
         {'algoId':101,'symbol':'ETHUSDT','side':'SELL','orderType':'STOP','reduceOnly':True,'quantity':'0.02'},
         {'algoId':102,'symbol':'ETHUSDT','side':'SELL','orderType':'TAKE_PROFIT','reduceOnly':True,'quantity':'0.01'},
     ]
@@ -96,7 +105,7 @@ async def test_restores_finished_tp1_after_restart_before_snapshot_update():
         {'id':1,'time':ANCHOR,'side':'BUY','qty':'0.02','orderId':100},
         {'id':2,'time':ANCHOR+1000,'side':'SELL','qty':'0.01','orderId':222},
     ],[]]
-    s.binance.get_open_algo_orders.return_value = [
+    s._owned_open_protection.return_value = [
         {'algoId':101,'symbol':'ETHUSDT','side':'SELL','orderType':'STOP',
          'reduceOnly':True,'quantity':'0.02'}]
     s.binance.get_algo_order = AsyncMock(return_value={

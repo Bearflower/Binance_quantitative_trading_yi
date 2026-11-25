@@ -794,6 +794,7 @@ class TestExchangeOrderSync:
         position_long.trailing_stop_price = Decimal('60600')
         position_long.trailing_stop_order_id = 11111  # 有移动止损单
         position_long.stop_loss_order_id = None
+        strategy.binance.get_open_algo_orders = AsyncMock(return_value=[])
 
         # 价格已跌破止损价
         current_price = Decimal('60500')

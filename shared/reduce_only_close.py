@@ -25,6 +25,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import structlog
 
+from .condition_orders import cancel_strategy_algos
 from .api_retry_config import get_order_fill
 from .binance_api import BinanceAPIError, BinanceClient, UnknownOrderResultError
 from .order_fill_waiter import STATUS_UNKNOWN, OrderFillResult, wait_order_final_state
@@ -272,8 +273,8 @@ async def _handle_reduce_only_rejection(client: BinanceClient, p: _CloseParams) 
     if not p.cancel_conditional_on_reject:
         return
     try:
-        await client.cancel_all_algo_orders(p.symbol)
-        logger.warning("已撤该币种全部条件单以解除减仓冲突", symbol=p.symbol)
+        await cancel_strategy_algos(client, p.symbol)
+        logger.warning("已核对并撤销本策略在该币种的条件单", symbol=p.symbol)
     except Exception as e:
         # 撤单失败不阻塞减仓重试（条件单仅影响 -4118/-4130，非致命）
         logger.warning("撤同向条件单失败（继续重试减仓单）", symbol=p.symbol, error=str(e))

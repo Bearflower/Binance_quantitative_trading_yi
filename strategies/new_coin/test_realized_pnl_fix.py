@@ -494,7 +494,7 @@ class TestUpdateRealizedPnlEnhanced:
         - order_id IS NULL
         - realized_pnl IS NULL
         - order_type NOT LIKE 'STOP%'
-        - ORDER BY executed_at DESC LIMIT 1
+        - 当前账户模式下只允许唯一候选
         """
         executed_at = datetime(2026, 7, 27, 10, 0, 0)
         trade_logger.db.execute = AsyncMock(side_effect=["UPDATE 0", "UPDATE 1"])
@@ -514,7 +514,7 @@ class TestUpdateRealizedPnlEnhanced:
         assert "UPDATE trading.trade_records" in fallback_sql
         assert "SET realized_pnl = $1" in fallback_sql
         assert "WHERE id = (" in fallback_sql
-        assert "SELECT tr.id FROM trading.trade_records tr" in fallback_sql
+        assert "SELECT min(tr.id) FROM trading.trade_records tr" in fallback_sql
         assert "tr.order_type NOT IN ('LIMIT', 'CONDITIONAL_ORDER')" in fallback_sql
         assert "symbol = $3" in fallback_sql
         assert "side = $4" in fallback_sql
@@ -522,8 +522,8 @@ class TestUpdateRealizedPnlEnhanced:
         assert "order_id IS NULL" in fallback_sql
         assert "realized_pnl IS NULL" in fallback_sql
         assert "tr.order_type NOT IN ('LIMIT', 'CONDITIONAL_ORDER')" in fallback_sql
-        assert "ORDER BY tr.executed_at DESC" in fallback_sql
-        assert "LIMIT 1" in fallback_sql
+        assert "HAVING count(*) = 1" in fallback_sql
+        assert "tr.account_id = $7 AND tr.executed_at <@ $8::tsrange" in fallback_sql
 
         # 验证降级匹配参数：pnl, strategy, symbol, match_side, start_time, end_time
         assert fallback_args[1] == Decimal("50.25")

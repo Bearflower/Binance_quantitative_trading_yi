@@ -29,6 +29,15 @@ def signal():
         grade='A',timestamp=datetime(2026,11,4))
 
 
+def test_entry_geometry_requires_stable_signal_identity():
+    data = signal()
+    with pytest.raises(EntryDenied, match='signal identity'):
+        entry_geometry(data, FILTERS, {}, PARTIAL)
+    data['entry_decision_identity'] = 'AAA:LONG:2026-11-04 00:00:00'
+    geometry = entry_geometry(data, FILTERS, {}, PARTIAL)
+    assert geometry['signal']['entry_decision_identity'] == data['entry_decision_identity']
+
+
 def strategy(pool):
     return NS(frequency_controller=NS(state_ready=True),db_manager=NS(pool=pool),positions={},risk_config={},
         binance=NS(get_position=AsyncMock(return_value=[]),get_open_orders=AsyncMock(return_value=[]),place_order=AsyncMock(return_value={'orderId':123})),
@@ -113,7 +122,7 @@ async def test_reservation_refuses_changed_policy_duplicate_intent_and_missing_c
 
 @PG
 @pytest.mark.asyncio
-async def test_final_policy_revision_race_retains_submitting_reservation():
+async def test_final_policy_revision_race_releases_proven_unsent_reservation():
     pool=await setup()
     try:
         store=RiskPolicyStore(NS(pool=pool))
@@ -128,7 +137,9 @@ async def test_final_policy_revision_race_retains_submitting_reservation():
         with pytest.raises(EntryDenied,match='immediately'):
             async with RacingStore(NS(pool=pool)).submitting('btc_eth_aggressive',cid):pytest.fail('writer ran')
         async with pool.acquire() as conn:
-            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation')=='submitting'
+            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation WHERE client_order_id=$1', cid) == 'released'
+            claim = await conn.fetchrow("SELECT claim_state,reason FROM trading.position_claims WHERE symbol='AAA'")
+            assert tuple(claim) == ('RELEASED', 'risk_denied_before_http')
     finally:await pool.close()
 
 
@@ -193,6 +204,14 @@ async def test_final_submission_identity_and_geometry(change):
         obj=strategy(pool);data=signal()
         if change=='short':data.update(direction='SHORT',initial_stop_loss=105,tp1_price=90,tp2_price=80)
         assert await prepare_aggressive_entry(obj,'AAA',data)
+        async with pool.acquire() as conn:
+            saved = await conn.fetchval('SELECT geometry FROM trading.entry_risk_reservation WHERE client_order_id=$1', data['_risk_client_id'])
+        if isinstance(saved, str):
+            saved = json.loads(saved)
+        from shared.mtpc_signal_persistence import _build_signal_row
+        terminal = _build_signal_row({**data, 'trade_success': True}, 'executed')
+        assert saved['signal']['entry_decision_identity'] == data['entry_decision_identity']
+        assert json.loads(terminal['metadata'])['entry_decision_identity'] == data['entry_decision_identity']
         symbol='AAA'
         if change=='missing':data.pop('_risk_client_id')
         if change=='stop':data['initial_stop_loss']=94

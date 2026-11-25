@@ -19,7 +19,7 @@ WITH orders AS (
            e.evidence->>'actual_order_id' AS actual_order_id,
            e.evidence->>'payload_sha256' AS payload_sha256
     FROM trading.order_strategy_evidence e
-    WHERE e.account_id=$1 AND e.source_kind='pm_algo_link'
+    WHERE e.account_id=$1 AND e.source_kind=$5
       AND EXISTS (
           SELECT 1 FROM trading.execution_fact_fill f
           WHERE (f.account_id,f.symbol,f.order_id)=(e.account_id,e.symbol,e.order_id)
@@ -99,12 +99,13 @@ def verify_protective_exit(row, algo, order, trades):
 
 
 async def read_protective_exits(db, exchange, account_id, start_ms, end_ms):
-    report = dict(scope='known_pm_protective_orders', account_id=account_id,
+    mode = "classic" if getattr(exchange, "use_unified_account", True) is False else "pm"
+    report = dict(scope=f'known_{mode}_protective_orders', account_id=account_id,
                   start_ms=start_ms, end_ms=end_ms, links=[], issues=[])
     if not account_id or type(start_ms) is not int or type(end_ms) is not int or not 0 <= start_ms < end_ms:
         raise ValueError('invalid protection evidence window')
     try:
-        rows = await asyncio.wait_for(db.fetch_all(_CANDIDATES, account_id, start_ms, end_ms, _LIMIT + 1), 6)
+        rows = await asyncio.wait_for(db.fetch_all(_CANDIDATES, account_id, start_ms, end_ms, _LIMIT + 1, mode + "_algo_link"), 6)
     except Exception as exc:
         report['issues'].append(dict(reason='protective_exit_candidates:' + type(exc).__name__))
         return report, set()
@@ -128,7 +129,7 @@ async def read_protective_exits(db, exchange, account_id, start_ms, end_ms):
             except Exception as exc:
                 return None, dict(symbol=row['symbol'], order_id=str(row['order_id']),
                                   reason='protective_exit_lookup:' + type(exc).__name__)
-            if link['strategy'] == 'hrs' and link['kind'] not in _STOP_TYPES:
+            if link['strategy'] == 'hrs':
                 try:
                     lot = await asyncio.wait_for(
                         read_closed_lot(db, exchange, account_id, link, algo, trades), 8)

@@ -54,6 +54,8 @@ class FakeExchange:
 
     async def place_stop(self, side, trigger, client_id):
         row = {"symbol": "ETHUSDT", "clientAlgoId": client_id,
+               "closePosition": True, "workingType": "MARK_PRICE",
+               "orderType": "STOP_MARKET", "positionSide": "BOTH",
                "algoId": self.next_stop_id, "side": side,
                "triggerPrice": str(trigger), "algoStatus": "NEW"}
         self.next_stop_id += 1

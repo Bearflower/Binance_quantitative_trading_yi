@@ -24,7 +24,6 @@ async def main():
         api_key=os.getenv("BINANCE_API_KEY"),
         api_secret=os.getenv("BINANCE_API_SECRET"),
         testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
-        use_unified_account=os.getenv("BINANCE_USE_PM", "true").lower() == "true"
     )
     await client._init_session()
     try:

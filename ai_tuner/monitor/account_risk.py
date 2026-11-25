@@ -25,6 +25,7 @@ from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from typing import Any, Mapping
 
+from shared.binance_account_mode import verify_trading_mode
 from shared.readonly_client import ReadOnlyBinanceClient
 
 
@@ -315,8 +316,39 @@ def assess_account_risk(evidence: Mapping, budget: Mapping) -> dict:
     return result
 
 
+def classic_budget_block(account_id: str) -> dict:
+    """经典预算须独立批准，固定切点和期初 USDT 权益，并验证划转覆盖与事件前后权益。"""
+    reasons = ['classic_drawdown_budget_not_approved',
+               'classic_usdt_baseline_and_cashflow_coverage_required']
+    return {'status': 'BLOCKED_DATA', 'account_id': account_id, 'account_mode': 'classic',
+            'budget_id': None, 'limit_ratio': None, 'baseline': None, 'as_of_ms': None,
+            'current_equity_usd': None, 'current_drawdown_ratio': None,
+            'max_drawdown_ratio': None, 'known_breach': None,
+            'source_gaps': reasons, 'reasons': reasons}
+
+
+async def observe_classic_equity(client: ReadOnlyBinanceClient) -> dict:
+    """独立记录单资产钱包的签名快照；这是 USDT 计价采样，不含回撤预算。"""
+    if (not isinstance(client, ReadOnlyBinanceClient) or client.use_unified_account
+            or client.base_url.rstrip('/') != 'https://fapi.binance.com' or client.testnet):
+        raise ValueError('invalid classic production observation route')
+    await verify_trading_mode(client)
+    account = await client.get_account_info()
+    margin = account['totalMarginBalance']
+    wallet = account['totalWalletBalance']
+    pnl = account['totalUnrealizedProfit']
+    if wallet + pnl != margin:
+        raise ValueError('classic wallet and margin balance disagree')
+    return {'status': 'VERIFIED_POINT', 'source': 'signed:GET /fapi/v3/account',
+            'credential_fingerprint': hashlib.sha256(client._api_key.encode()).hexdigest(),
+            'margin_balance_usdt': str(margin), 'wallet_balance_usdt': str(wallet),
+            'unrealized_pnl_usdt': str(pnl), 'available_balance_usdt': str(account['availableBalance'])}
+
+
 async def collect_account_risk(db, pm_client, wallet_client, budget: Mapping) -> dict:
     """Collect GET-only exchange facts and atomically append them to PostgreSQL."""
+    if isinstance(pm_client, ReadOnlyBinanceClient) and pm_client.use_unified_account is False:
+        return classic_budget_block(budget.get('account_id'))
     evidence = {'account_id': budget.get('account_id'),
                 'account_identity': budget.get('account_identity'),
                 'baseline': None, 'equity_points': [], 'cashflows': [], 'coverage': [],

@@ -132,3 +132,14 @@ async def test_全部平仓PnL回写失败_不影响主流程():
         pos={'opened_at': datetime.now(timezone.utc)},
     )
     strategy.binance_client.trade_logger.log_stop_loss.assert_not_awaited()
+
+
+async def test_live_summary_stays_pending_without_exchange_income():
+    strategy = make_strategy()
+    strategy.binance_client.testnet = False
+    strategy._get_actual_pnl_from_binance.return_value = None
+    strategy._calculate_theoretical_total_pnl = AsyncMock(return_value=Decimal('12.34'))
+    assert await strategy._writeback_pnl_for_full_close('ABCUSDT','long',10,1,1,25,
+        {'opened_at':datetime.now(timezone.utc)}) is None
+    strategy._calculate_theoretical_total_pnl.assert_not_awaited()
+    strategy.binance_client.trade_logger.insert_pnl_summary.assert_not_awaited()

@@ -27,7 +27,7 @@ except ImportError:  # 以脚本方式直接运行时，当前目录即 ai_tuner
 BEIJING = timezone(timedelta(hours=8))
 START = datetime(2026, 10, 30, tzinfo=BEIJING)
 POLICIES = {
-    "hrs": (6, "reduced"), "btc_eth": (5, "capped"),
+    "hrs": (8, "reduced"), "btc_eth": (5, "capped"),
     "btc_eth_aggressive": (5, "reduced"), "new_coin": (5, "capped"),
 }
 CONTAINERS = {s: f"trading_system-{s}" for s in POLICIES}
@@ -63,6 +63,21 @@ def evaluate_policies(rows, now):
                 or not row["audited"] or row["effective_at"] > now
                 or (strategy == "hrs" and decimal(row["entry_ceiling"]) != Decimal("26.18"))):
             issues.append(f"{strategy} r{row['revision']} 政策或审计漂移，需核对受控变更")
+        if strategy == "hrs":
+            from strategies.hrs.risk_budget import FLOOR, policy_budget_version
+            try:
+                budget_matches = policy_budget_version(row) == FLOOR
+            except (ValueError, TypeError):
+                budget_matches = False
+            if not budget_matches:
+                issues.append(f"hrs r{row['revision']} 预算版本与已批准最小订单政策不符")
+            from strategies.hrs.margin_budget import HRS_OWNED, policy_margin_scope
+            try:
+                margin_matches = policy_margin_scope(row) == HRS_OWNED
+            except (ValueError, TypeError):
+                margin_matches = False
+            if not margin_matches:
+                issues.append(f"hrs r{row['revision']} 保证金口径与已批准自身额度及账户余额检查不符")
         expiry = row["expires_at"].astimezone(BEIJING)
         if expiry <= now + timedelta(hours=48):
             state = "已到期" if expiry <= now else "48 小时内到期"
@@ -164,47 +179,170 @@ def month_window(month):
 
 
 def read_shadow():
-    path = "/app/logs/trial_evidence/allocation-shadow-latest.json"
     try:
-        result = subprocess.run(["docker", "exec", "ai-tuner", "cat", path], check=True,
+        read = ("from pathlib import Path; from shared.binance_account_mode import configured_pm; "
+                "root=Path('/app/logs/trial_evidence'); "
+                "print(((root if configured_pm() else root/'classic')/'allocation-shadow-latest.json').read_text())")
+        result = subprocess.run(["docker", "exec", "ai-tuner", "python", "-c", read], check=True,
                                 text=True, capture_output=True, timeout=20)
         data = json.loads(result.stdout)
         return {k: data.get(k) for k in
-                ("status", "mode", "allocation", "reasons", "report_id", "start_ms", "end_ms", "as_of")}
+                ("account_id", "status", "mode", "allocation", "reasons", "report_id",
+                 "start_ms", "end_ms", "as_of", "activation_blocks") if k in data}
     except (OSError, ValueError, subprocess.SubprocessError):
         return None
 
 
-def read_journal(since):
-    samples, allocation, unavailable = {}, [], []
+def read_hrs_evidence():
+    """Read the existing DB-only reporter; never run an experiment or send."""
+    try:
+        result = subprocess.run(
+            ["docker", "exec", "trading_system-hrs-acceptance", "cat", "/app/logs/hrs-acceptance.json"],
+            check=True, text=True, capture_output=True, timeout=20)
+        return json.loads(result.stdout)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def hrs_evidence_lines(report, now):
+    pending = "HRS 独立运行验收：证据待核实；收益验收未通过。"
+    try:
+        if (not isinstance(report, dict) or report.get("report_version") != "hrs-continuous-acceptance-v1"
+                or report.get("account_id") != "default"
+                or report.get("database_snapshot_coherent") is not True):
+            raise ValueError("unverified reporter identity")
+        generated = datetime.fromisoformat(report["generated_at"])
+        if generated.utcoffset() is None or not 0 <= (now-generated).total_seconds() <= 1800:
+            raise ValueError("stale or future reporter")
+        technical, financial = report["technical"], report["financial"]
+        hours, closed = technical["consecutive_complete_hours"], financial["observed_closed_lifecycles"]
+        if (type(hours) is not int or not 0 <= hours <= 24 or type(closed) is not int or closed < 0
+                or technical.get("required_complete_hours") != 24
+                or financial.get("required_lifecycles") != 5
+                or technical.get("coverage_threshold") != .95):
+            raise ValueError("unverified acceptance criteria")
+        lines = [f"HRS 独立运行验收：连续完整小时 {hours}/24，"
+                 f"自然闭合仓位 {closed}/5；工程状态 {financial.get('engineering_status', '待核实')}；"
+                 f"证据时间 {generated.astimezone(BEIJING):%m-%d %H:%M}。"]
+        lines.append("HRS 收益验收未通过：运行留证与收益改善分别验收；SL/TP 实验仍需"
+                     "每方案至少20个合格闭合样本及两个月独立留出验证。")
+        return lines
+    except (KeyError, ValueError, TypeError, OverflowError):
+        return [pending]
+
+
+def previous_trading_day(now):
+    today = now.astimezone(BEIJING).replace(hour=0, minute=0, second=0, microsecond=0)
+    return today - timedelta(days=1), today
+
+
+def summarize_hrs_reconciliation(now, events, *, journal_has_entries=True):
+    start, end = previous_trading_day(now)
+    heading = f"HRS 主动对账（{start:%Y-%m-%d} 北京时间）"
+    if not journal_has_entries:
+        return f"{heading}：上一交易日日志未取到。", True
+    scoped = []
+    for when, symbol, trigger, outcome in events:
+        timestamp = datetime.fromisoformat(when)
+        if start <= timestamp < end:
+            scoped.append((timestamp, symbol, trigger, outcome))
+    if not scoped:
+        return f"{heading}：未记录主动对账。", False
+
+    attempts = [event for event in scoped if event[1] != "*"]
+    close_count = sum(trigger == "full_close" for _, _, trigger, _ in attempts)
+    released = sum(outcome == "released" for _, _, _, outcome in attempts)
+    latest = {}
+    for _, symbol, _, outcome in sorted(attempts):
+        latest[symbol] = outcome
+    pending = {symbol: outcome for symbol, outcome in latest.items() if outcome != "released"}
+    scan_failures = len(scoped) - len(attempts)
+    line = (f"{heading}：{len(attempts)} 次（平仓 {close_count}，持仓同步 {len(attempts) - close_count}），"
+            f"释放 {released} 笔，最后一次对账仍待重试 {len(pending)} 个品种。")
+    if scan_failures:
+        line += f" 预留扫描失败 {scan_failures} 次。"
+    if pending:
+        labels = {
+            "exchange_query_failed": "币安查询失败",
+            "entry_order_unverified": "入场订单未核实",
+            "entry_order_not_terminal": "入场订单未终态",
+            "position_unverified": "持仓未核实",
+            "position_open": "仍有持仓",
+            "orders_unverified": "挂单未核实",
+            "ordinary_orders_open": "仍有普通挂单",
+            "algo_orders_open": "仍有条件挂单",
+            "claim_identity_missing": "缺少占位关联",
+            "claim_not_released": "占位更新未生效",
+            "multiple_reservations": "存在多笔未释放预留",
+            "reservation_not_released": "预留更新未生效",
+            "reconciliation_failed": "对账执行失败",
+        }
+        examples = [f"{symbol} {labels.get(reason, reason)}" for symbol, reason in sorted(pending.items())[:5]]
+        line += " " + "；".join(examples) + (" 等。" if len(pending) > 5 else "。")
+    return line, bool(pending or scan_failures)
+
+
+def journal_lines(container, start, end):
+    # 边界按 journal 的微秒精度分割，逐段处理以限制内存与单次查询耗时。
+    while start < end:
+        stop = min(start + timedelta(hours=2), end)
+        result = subprocess.run(
+            ["journalctl", f"CONTAINER_NAME={container}", "--since", f"@{int(start.timestamp())}",
+             "--until", f"@{int(stop.timestamp()) - 1}.999999", "--no-pager", "-o", "json",
+             "--output-fields=MESSAGE"], capture_output=True, text=True, timeout=35, check=True,
+        )
+        yield from result.stdout.splitlines()
+        start = stop
+
+
+def read_journal(since, reconciliation_window):
+    read_until = datetime.now(BEIJING)
+    samples, allocation, unavailable, reconciliations = {}, [], [], []
+    hrs_journal_has_entries = False
+    reconcile_start, reconcile_end = reconciliation_window
     sources = dict(CONTAINERS, tuner="ai-tuner")
     for strategy, container in sources.items():
-        result = subprocess.run(
-            ["journalctl", f"CONTAINER_NAME={container}", "--since", f"@{int(since.timestamp())}",
-             "--no-pager", "-o", "json", "--output-fields=MESSAGE"],
-            capture_output=True, text=True, timeout=35, check=False,
-        )
-        lines = result.stdout.splitlines()
-        if result.returncode or not lines:
+        source_start = min(since, reconcile_start) if strategy == "hrs" else since
+        any_rows = False
+        try:
+            for raw in journal_lines(container, source_start, read_until):
+                any_rows = True
+                row = json.loads(raw)
+                when = datetime.fromtimestamp(int(row["__REALTIME_TIMESTAMP"]) / 1e6, BEIJING)
+                message = row.get("MESSAGE")
+                if not isinstance(message, str):
+                    continue
+                message = re.sub(r"\x1b\[[0-9;]*m", "", message)
+                if strategy == "hrs" and reconcile_start <= when < reconcile_end:
+                    hrs_journal_has_entries = True
+                    try:
+                        event = json.loads(message)
+                    except ValueError:
+                        event = None
+                    if isinstance(event, dict) and event.get("event") == "hrs_close_reconciliation":
+                        fields = tuple(event.get(key) for key in ("symbol", "trigger", "outcome"))
+                        if all(isinstance(value, str) for value in fields):
+                            reconciliations.append((when.isoformat(), *fields))
+                if when < since:
+                    continue
+                identity = event_identity(message)
+                message = UNICODE_ESCAPE.sub(lambda match: chr(int(match[1], 16)), message)
+                if strategy == "tuner":
+                    hit = ALLOCATION_LOGS.search(message)
+                    if hit:
+                        allocation.append((when.isoformat(), hit[0]))
+                else:
+                    for candidate in sample_candidates([(strategy, when.isoformat(), message)]):
+                        samples[candidate] = identity
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError):
+            if strategy == "hrs":
+                hrs_journal_has_entries = False
             unavailable.append(strategy)
             continue
-        for raw in lines:
-            row = json.loads(raw)
-            when = datetime.fromtimestamp(int(row["__REALTIME_TIMESTAMP"]) / 1e6, BEIJING)
-            message = row.get("MESSAGE")
-            if not isinstance(message, str):
-                continue
-            message = re.sub(r"\x1b\[[0-9;]*m", "", message)
-            identity = event_identity(message)
-            message = UNICODE_ESCAPE.sub(lambda match: chr(int(match[1], 16)), message)
-            if strategy == "tuner":
-                hit = ALLOCATION_LOGS.search(message)
-                if hit:
-                    allocation.append((when.isoformat(), hit[0]))
-            else:
-                for candidate in sample_candidates([(strategy, when.isoformat(), message)]):
-                    samples[candidate] = identity
-    return [(*candidate, identity) for candidate, identity in samples.items()], allocation, unavailable
+        if not any_rows:
+            unavailable.append(strategy)
+    return ([(*candidate, identity) for candidate, identity in samples.items()],
+            allocation, unavailable, reconciliations, hrs_journal_has_entries)
 
 
 def digest(item):
@@ -334,7 +472,7 @@ async def probe(inputs):
         if not integrity:
             issues.append("收入完整性门禁未通过")
         client = ReadOnlyBinanceClient(os.environ["BINANCE_API_KEY"], os.environ["BINANCE_API_SECRET"],
-                                     instance_id="hrs-acceptance", use_unified_account=True)
+                                     instance_id="hrs-acceptance")
         positions = await client.get_position()
         orders = await client.get_open_orders()
         algos = await client.get_open_algo_orders()
@@ -374,12 +512,23 @@ async def probe(inputs):
                                 f"{status}，等级记录 {grade_count}，交易记录 {trade_count}；{verdict}")
         for row in summaries:
             issues.append(f"HRS {row['symbol']} 平仓汇总 id={row['id']} 采用理论盈亏 {row['realized_pnl']} USDT")
+        # Read after the potentially slow exchange probe, in a new snapshot.
+        async with db.transaction(isolation="repeatable_read", readonly=True):
+            gate = await db.fetchrow("""
+                SELECT g.account_id,g.strategy_id,g.ready,g.allowed,g.policy_revision,
+                       g.as_of::text,g.valid_until::text,g.reasons,
+                       clock_timestamp()::text AS checked_at,a.revision AS active_revision
+                FROM trading.strategy_equity_gate g
+                LEFT JOIN trading.strategy_risk_active a USING(account_id,strategy_id)
+                WHERE g.account_id='default' AND g.strategy_id='hrs'
+            """)
         return {
             "issues": issues, "samples": sample_lines,
             "positions": visible_positions, "reservations": len(reservations),
             "policies": [f"{r['strategy_id']} r{r['revision']} {r['mode']} "
                          f"{r['expires_at'].astimezone(BEIJING):%m-%d %H:%M}" for r in policies],
             "allocation_hash": allocation_hash, "monthly": monthly,
+            "equity_gate": dict(gate) if gate else None,
         }
     finally:
         if client is not None:
@@ -407,16 +556,93 @@ def send_report(path, report):
     print("Feishu accepted report (code=0)")
 
 
-def report_conclusion(issue_count, candidate_count, monthly, shadow_status):
+def entry_gate_status(gate, now):
+    """Validate current authorization without interpreting a missing row as approval."""
+    try:
+        if (not isinstance(gate, dict) or gate.get("account_id") != "default"
+                or gate.get("strategy_id") != "hrs"
+                or type(gate.get("ready")) is not bool or type(gate.get("allowed")) is not bool
+                or (gate["allowed"] and not gate["ready"])
+                or type(gate.get("policy_revision")) is not int or gate["policy_revision"] <= 0
+                or type(gate.get("active_revision")) is not int
+                or gate["active_revision"] != gate["policy_revision"]):
+            return "UNVERIFIED"
+        as_of, checked, valid = (datetime.fromisoformat(gate[key])
+                                for key in ("as_of", "checked_at", "valid_until"))
+        if not (as_of <= checked <= now and now - as_of <= timedelta(seconds=120)
+                and as_of <= valid <= as_of + timedelta(seconds=120)):
+            return "UNVERIFIED"
+        if gate["allowed"] and now >= valid:
+            return "UNVERIFIED"
+        return "ALLOWED" if gate["allowed"] else "PAUSED"
+    except (KeyError, TypeError, ValueError):
+        return "UNVERIFIED"
+
+
+def hrs_entry_gate_lines(gate, now):
+    status = entry_gate_status(gate, now)
+    if status == "UNVERIFIED":
+        return ["HRS 权益门禁：门禁证据未核实；不能确认开仓授权。"]
+    if status == "ALLOWED":
+        return ["HRS 权益门禁：允许新增风险；实际开仓仍须通过评分、预算、保证金及保护单检查。"]
+    reasons = gate.get("reasons")
+    if isinstance(reasons, str):
+        try:
+            reasons = json.loads(reasons)
+        except ValueError:
+            reasons = None
+    detail = "；".join(reasons) if isinstance(reasons, list) and reasons and all(
+        isinstance(item, str) for item in reasons) else "原因待核实"
+    return ["HRS 权益门禁：暂停新增风险；" + detail + "。"]
+
+
+def report_conclusion(issue_count, candidate_count, monthly, shadow_status, entry_status=None):
     findings = [f"{issue_count} 项异常待核对"] if issue_count else ["本次门禁与风控核验通过"]
+    if entry_status in {"PAUSED", "UNVERIFIED"}:
+        if not issue_count:
+            findings = []
+        findings.append("HRS 权益门禁暂停新增风险" if entry_status == "PAUSED"
+                        else "HRS 权益门禁证据未核实")
     if candidate_count:
         findings.append(f"{candidate_count} 个新增实盘候选待核验")
     allocation = "月度分配有核验结果，见下文" if monthly else "月度分配记录无变化"
     shadow = {
-        "BLOCKED_DATA": "影子核验仍受阻",
-        "PREVIEW": "影子核验已有分配预览",
-    }.get(shadow_status, "影子核验状态待确认")
+        "BLOCKED_DATA": "全账户自动分配预览受阻",
+        "PREVIEW": "全账户自动分配预览已生成",
+    }.get(shadow_status, "全账户自动分配预览状态待确认")
     return f"【结论】{'，'.join(findings)}。{allocation}，{shadow}。"
+
+
+def allocation_shadow_lines(shadow):
+    """Expose the original allocation scope/window; never certify HRS returns."""
+    if not isinstance(shadow, dict):
+        return ["全账户自动分配预览：状态待确认；HRS 收益验收另行核验。"]
+    status = shadow.get("status")
+    status = status if status in {"BLOCKED_DATA", "PREVIEW"} else "状态待确认"
+    window = "窗口未核实"
+    try:
+        left, right = shadow["start_ms"], shadow["end_ms"]
+        if type(left) is not int or type(right) is not int or not 0 <= left < right:
+            raise ValueError("invalid allocation window")
+        start = datetime.fromtimestamp(left / 1000, BEIJING)
+        end = datetime.fromtimestamp(right / 1000, BEIJING)
+        window = f"{start:%Y-%m-%d %H:%M} 至 {end:%Y-%m-%d %H:%M}（北京时间，右端不含）"
+    except (KeyError, ValueError, TypeError, OverflowError, OSError):
+        pass
+    lines = [f"全账户自动分配预览：{status}；收入窗口：{window}。"]
+    reasons = shadow.get("reasons")
+    if isinstance(reasons, list) and all(isinstance(item, str) for item in reasons):
+        if reasons:
+            lines.append("分配预览缺项：" + "；".join(reasons) + "。")
+        elif status == "BLOCKED_DATA":
+            lines.append("分配预览缺项原因未提供，仍保留 BLOCKED_DATA。")
+    elif status == "BLOCKED_DATA":
+        lines.append("分配预览缺项格式未核实，仍保留 BLOCKED_DATA。")
+    blocks = shadow.get("activation_blocks")
+    if isinstance(blocks, list) and blocks and all(isinstance(item, str) for item in blocks):
+        lines.append("实盘分配保持冻结；独立启用条件：" + "；".join(blocks) + "。")
+    lines.append("HRS 收益验收另行核验；本段只报告全账户分配预览证据。")
+    return lines
 
 
 def publish_or_send(webhook, report, *, status, summary):
@@ -435,7 +661,12 @@ def run_daily(args):
     state = json.loads(args.state.read_text()) if args.state.exists() else {}
     since = max(START, datetime.fromisoformat(state["lookback"]) if "lookback" in state
                 else now - timedelta(hours=48))
-    samples, allocation_logs, unavailable = read_journal(since)
+    samples, allocation_logs, unavailable, reconciliations, hrs_journal = read_journal(
+        since, previous_trading_day(now)
+    )
+    reconciliation_line, reconciliation_warning = summarize_hrs_reconciliation(
+        now, reconciliations, journal_has_entries=hrs_journal
+    )
     shadow = read_shadow()
     inputs = {"since": since.isoformat(), "samples": samples, "shadow": shadow,
               "allocation_hash": state.get("allocation_hash")}
@@ -448,18 +679,23 @@ def run_daily(args):
         raise RuntimeError(f"read-only probe failed (exit={result.returncode})")
     data = json.loads(result.stdout.splitlines()[-1])
     issues = data["issues"] + ([f"本窗口日志未取到：{', '.join(unavailable)}"] if unavailable else [])
+    if reconciliation_warning:
+        issues.append("上一交易日主动对账有待重试、扫描失败或日志缺失，见对账小节")
     lines = [f"【HRS 生产只读巡检】{now:%Y-%m-%d %H:%M} 北京时间",
              f"交易所实仓 {len(data['positions'])} 个，未释放预留 {data['reservations']} 条。",
+             reconciliation_line,
              "风控：" + "；".join(data["policies"]),
              data["monthly"] or "月度分配记录无变化。"]
     if shadow:
         shadow_signature = digest({k: v for k, v in shadow.items() if k != "as_of"})
-        if shadow_signature != state.get("shadow_hash"):
-            lines.append(f"月度影子核验 {shadow['status']}，"
-                         f"生成分配预览：{'有' if shadow['allocation'] else '无'}。")
+        lines.extend(allocation_shadow_lines(shadow))
     else:
         shadow_signature = None
         issues.append("未读到 AI Tuner 月度影子核验证据")
+    evidence_now = datetime.now(BEIJING)
+    entry_status = entry_gate_status(data.get("equity_gate"), evidence_now)
+    lines.extend(hrs_entry_gate_lines(data.get("equity_gate"), evidence_now))
+    lines.extend(hrs_evidence_lines(read_hrs_evidence(), evidence_now))
     last_log = allocation_logs[-1] if allocation_logs else None
     if last_log and list(last_log) != state.get("allocation_log"):
         lines.append(f"月度作业日志 {last_log[0][5:16]} {last_log[1]}")
@@ -469,12 +705,13 @@ def run_daily(args):
     if additions:
         lines.extend(f"新增异常：{item}" for item in additions[:12])
     if issues and len(issues) > len(additions):
-        lines.append(f"另有 {len(issues) - len(additions)} 项仍待处理。")
+        lines.extend(f"持续异常：{issue}" for issue in issues if digest(issue) in seen)
     previous_samples = set(state.get("samples", []))
     new_samples = [sample for sample in data["samples"] if digest(sample) not in previous_samples]
     lines.extend(new_samples[:8] or ["未发现新增指定场景候选。"])
     lines.insert(1, report_conclusion(
-        len(issues), len(new_samples), data["monthly"], shadow.get("status") if shadow else None
+        len(issues), len(new_samples), data["monthly"], shadow.get("status") if shadow else None,
+        entry_status
     ))
     report = "\n".join(lines)
     print(report)
@@ -484,8 +721,10 @@ def run_daily(args):
         send_report(args.webhook, report)
     else:
         publish_or_send(args.webhook, report,
-                        status="warn" if issues else "ok",
-                        summary=f"{len(issues)} 项异常" if issues else "正常")
+                        status="warn" if issues or entry_status != "ALLOWED" else "ok",
+                        summary=(f"{len(issues)} 项异常" if issues else "正常" if entry_status == "ALLOWED"
+                                 else "HRS 权益门禁暂停" if entry_status == "PAUSED"
+                                 else "HRS 权益门禁证据未核实"))
     next_state = {
         "lookback": (now - timedelta(minutes=10)).isoformat(),
         "allocation_hash": data["allocation_hash"], "shadow_hash": shadow_signature,

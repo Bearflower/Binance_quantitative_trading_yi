@@ -103,3 +103,47 @@ async def test_unsettled_extra_fill_prevents_partial_actual_pnl(monkeypatch):
         "ABCUSDT", datetime.now(timezone.utc) - timedelta(days=1)
     )
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_classic_fill_cannot_inherit_pm_order_id_or_duplicate_income(monkeypatch):
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", "main")
+    monkeypatch.setenv("BINANCE_CLASSIC_CUTOVER_MS", "1000")
+    strategy = object.__new__(HRSStrategy)
+    strategy.binance_client = MagicMock(use_unified_account=False)
+    at = datetime.fromtimestamp(1, timezone.utc)
+    income = dict(symbol="XUSDT", tranId=7, incomeType="REALIZED_PNL", income="3", asset="USDT", tradeId=8,time=1000)
+    strategy.binance_client.get_income_history = AsyncMock(return_value=[income])
+    strategy.binance_client.get_user_trades = AsyncMock(return_value=[
+        dict(symbol="XUSDT", id=8,orderId=9,realizedPnl="3",time=1000)])
+    historical = dict(account_id="main",order_id="9",strategy="hrs",executed_at=at-timedelta(milliseconds=1))
+    strategy.db = MagicMock()
+    order_rows = [historical]
+    strategy.db.fetch_all = AsyncMock(side_effect=lambda sql,*args: [] if "order_strategy_evidence" in sql else order_rows)
+    assert await strategy._get_actual_pnl_from_binance("XUSDT", at) is None
+    order_rows[:] = [dict(historical,strategy="btc_eth"),dict(historical,executed_at=at)]
+    assert await strategy._get_actual_pnl_from_binance("XUSDT", at) == Decimal(3)
+    strategy.binance_client.get_income_history.return_value.append(dict(income,tranId=10))
+    assert await strategy._get_actual_pnl_from_binance("XUSDT", at) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fill_time, fill_qty, expected", [(100, "2", Decimal("-7.25")), (99, "2", None), (100, "1", None)])
+async def test_live_close_detail_uses_terminal_fills_in_current_epoch(monkeypatch, fill_time, fill_qty, expected):
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", "main")
+    monkeypatch.setenv("BINANCE_CLASSIC_CUTOVER_MS", "100")
+    strategy = object.__new__(HRSStrategy)
+    api = strategy.binance_client = MagicMock(testnet=False, use_unified_account=False)
+    api.trade_logger.update_realized_pnl = AsyncMock()
+    order = dict(symbol="ABCUSDT", side="SELL", orderId=9, status="FILLED", origQty="2", executedQty="2", time=100)
+    api.get_order = AsyncMock(return_value=order)
+    api.get_user_trades = AsyncMock(return_value=[
+        dict(symbol="ABCUSDT", side="SELL", orderId=9, id=7, qty=fill_qty, price="15", realizedPnl="-7.25", time=fill_time)
+    ])
+    await strategy._writeback_pnl("ABCUSDT", "long", 10, 15, 2, {"orderId": 9})
+    if expected is None:
+        api.trade_logger.update_realized_pnl.assert_not_awaited()
+    else:
+        api.trade_logger.update_realized_pnl.assert_awaited_once_with(
+            order_id="9", realized_pnl=expected, side="SELL", symbol="ABCUSDT", executed_at=None
+        )

@@ -46,7 +46,7 @@ def test_keep_and_rotate_compose_commands_are_disjoint_and_ordered():
         "docker compose pull\n"
     )
     normal_up = RUNTIME.split('echo "🔄 docker compose up -d..."', 1)[1].split(
-        "# ========== step 4.5", 1
+        "\n}\n", 1
     )[0]
     assert 'if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then' in normal_up
     assert '--parallel 1 up -d --no-deps "${KEEP_SERVICES[@]}"' in normal_up
@@ -68,7 +68,7 @@ def test_workflow_passes_validated_action_to_renderer():
 @pytest.mark.parametrize("grid_enabled", [False, True])
 def test_compose_update_excludes_database_and_collector_on_keep(tmp_path, grid_enabled):
     block = RUNTIME.split('echo "🔄 docker compose up -d..."', 1)[1].split(
-        "# ========== step 4.5", 1
+        "\n}\n", 1
     )[0]
     (tmp_path / ".env").write_text(f"GRID_EXECUTOR_DEPLOY_ENABLED={str(grid_enabled).lower()}\n")
     stub = """docker() {
@@ -113,3 +113,19 @@ def test_acl_failure_stops_exact_collector_and_postflight_rejects_change():
                              capture_output=True, text=True)
     assert changed.returncode != 0
     assert "身份或健康变化" in changed.stdout
+
+
+@pytest.mark.parametrize("unready,returncode", [("", 0), ("trading_system-hrs", 1),
+                                                ("trading_system-grid-executor", 1)])
+def test_first_classic_full_requires_staged_writers(tmp_path, unready, returncode):
+    check = RUNTIME.split("check_staged_classic_writers() {", 1)[1].split("\n}\n", 1)[0]
+    (tmp_path / ".env").write_text("BINANCE_CLASSIC_CUTOVER_MS=1000\nGRID_EXECUTOR_DEPLOY_ENABLED=true\n")
+    stub = """docker() {
+      [ "$2" != "$UNREADY" ] || return 3
+      if [ "$2" = trading_system-grid-executor ]; then echo classic
+      else printf 'classic\\n1000\\n'; fi
+    }"""
+    run = subprocess.run(["bash", "-c", "UNREADY=" + unready + "\n" + stub
+                          + "\ncheck_staged_classic_writers() {" + check + "\n}\ncheck_staged_classic_writers"],
+                         cwd=tmp_path, capture_output=True)
+    assert run.returncode == returncode

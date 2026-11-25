@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 import structlog
 
+from shared.binance_account_mode import verify_cutover_ledger, verify_trading_mode
 from shared.binance_api import BinanceClient
 from shared.config_loader import load_strategy_config_with_metadata, record_loaded_version
 from shared.database import DatabaseManager
@@ -57,6 +58,7 @@ async def main():
             api_secret=os.getenv("BINANCE_API_SECRET"),
             testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true"
         )
+        await verify_trading_mode(binance_client)
 
         kline_service = KLineService(
             service_url=os.getenv("KLINE_SERVICE_URL"),
@@ -87,6 +89,7 @@ async def main():
             binance_client.set_trade_logger(trade_logger)
             logger.info("交易记录器初始化完成", strategy="网格交易策略")
 
+        await verify_cutover_ledger(binance_client, db_client, trading_writer=True)
         logger.info("客户端初始化完成")
 
         # 创建策略实例

@@ -30,6 +30,7 @@ from .realtime.reference_store import (ExportStore, SessionState, check_schema,
                                         connect, make_reference_id)
 from .realtime.rules import ReferenceSnapshot
 from .execution.store import DecisionStore
+from .execution.policy import EXIT_STATES, PAUSE_EXPOSURE_STATES
 
 
 logger = structlog.get_logger()
@@ -453,7 +454,8 @@ class GridSignalBot:
         self._start_export()
         try:
             # 首次执行：等待到下一个固定分钟节点
-            await self._wait_until_next_run()
+            if os.environ.get("GRID_SIGNAL_RUN_ON_START") != "true":
+                await self._wait_until_next_run()
 
             while True:
                 try:
@@ -768,8 +770,15 @@ class GridSignalBot:
             是否发送成功
         """
         try:
+            message = signal.message
+            if signal.symbol == "ETHUSDT":
+                state = signal.market_analysis.state.name
+                if state in PAUSE_EXPOSURE_STATES or state == MarketState.VOLATILITY_ABNORMAL.name:
+                    message += "\n\n实盘规则：暂停补单，撤普通挂单；已有净仓保留止损保护。"
+                elif state in EXIT_STATES:
+                    message += "\n\n实盘规则：结束活动网格，有净仓时执行平仓。"
             success = await self.notification_client.send(
-                message=signal.message,
+                message=message,
                 level="info",
                 project="grid"
             )
@@ -848,6 +857,14 @@ class GridSignalBot:
             sent = await self._send_notification(signal)
             if sent and self.export_store is not None and self._state is not None:
                 try:
+                    from .execution.policy import EXIT_STATES
+                    analysis = getattr(signal, "market_analysis", None)
+                    state = getattr(analysis, "state", None)
+                    if (getattr(state, "name", None) in EXIT_STATES
+                            and self._state.current_reference_id is not None):
+                        self.export_store.close_session(_now_ms())
+                        sid = self.export_store.begin_session(_now_ms())
+                        self._state = SessionState(sid, 0, None, None)
                     self.export_store.mark_non_numeric_sent(self._state, _now_ms())
                 except sqlite3.Error as exc:
                     # 通知已成功，不得因本地确认失败而重复发送。

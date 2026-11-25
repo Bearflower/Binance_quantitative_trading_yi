@@ -40,3 +40,14 @@ def test_disagreement_with_collected_trade_remains_unknown():
     trades[0]['time'] += 1
     with pytest.raises(ValueError):
         verify_ordinary_execution(row, order, trades)
+
+
+def test_legacy_unowned_fill_only_proves_that_signed_reduce_only_is_a_reduction():
+    row, order, trades = evidence()
+    row.update(strategy=None, ownership_verified=False)
+    with pytest.raises(ValueError):
+        verify_ordinary_execution(row, order, trades)
+    result = verify_ordinary_execution(row, dict(order, reduceOnly=True), trades)
+    assert result['classification'] == 'ordinary_reduce_only'
+    assert result['strategy'] is None
+    assert 'execution_net_usdt' not in result

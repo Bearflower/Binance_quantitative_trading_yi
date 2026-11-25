@@ -15,10 +15,10 @@ def verified_fill(record, order, trades):
         for key, source in [('symbol', 'symbol'), ('side', 'side'), ('order_id', 'orderId')]:
             if str(record[key]) != str(trade.get(source)):
                 raise ValueError('trade identity mismatch')
-        identity = trade.get('id')
-        if identity is None or identity in seen:
+        identity = str(trade.get('id'))
+        if not identity.isascii() or not identity.isdecimal() or int(identity) in seen:
             raise ValueError('missing or duplicate trade')
-        seen.add(identity)
+        seen.add(int(identity))
         qty, price = Decimal(str(trade['qty'])), Decimal(str(trade['price']))
         if not qty.is_finite() or not price.is_finite() or qty <= 0 or price <= 0:
             raise ValueError('invalid fill amount')

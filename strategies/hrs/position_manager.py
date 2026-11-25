@@ -12,6 +12,7 @@ import structlog
 from shared.binance_api import BinanceClient
 from shared.config_loader import compute_config_hash
 from shared.utils import to_aware_utc
+from .position_exit_plan import validate_exit_plan
 
 
 logger = structlog.get_logger()
@@ -128,6 +129,7 @@ class PositionManager:
         opened_at: Optional[datetime] = None,
         risk_stop_price: Optional[float] = None,
         exit_ratios: Optional[Tuple[Decimal, Decimal]] = None,
+        exit_plan: Optional[Dict[str, Any]] = None,
     ) -> None:
         """
         添加持仓跟踪
@@ -142,7 +144,10 @@ class PositionManager:
                 （不编造模式，时间止损按标准时限复核）
             opened_at: 真实开仓时刻（tz-aware UTC）；未提供则取当前时刻
         """
+        frozen = validate_exit_plan(exit_plan) if exit_plan is not None else None
         lifecycle = self._build_lifecycle_metadata(symbol, direction, entry_mode, opened_at)
+        if frozen is not None:
+            lifecycle['next_review_at'] = lifecycle['opened_at'] + timedelta(hours=frozen['params']['max_holding_hours'])
         self._positions[symbol] = {
             "direction": direction,
             "entry_price": entry_price,
@@ -153,6 +158,7 @@ class PositionManager:
             "best_price": entry_price,  # 做空记录最低价，做多记录最高价
             "remaining_quantity": quantity,
             "risk_stop_price": risk_stop_price,
+            "exit_plan": frozen,
             "exit_ratios": ([str(value) for value in exit_ratios]
                             if exit_ratios is not None else None),
             # FR-01: 合并开仓阶段暂存的 pending algoId（保护单创建早于 add_position）
@@ -171,6 +177,11 @@ class PositionManager:
             entry_mode=lifecycle["entry_mode"],
             position_id=lifecycle["position_id"],
         )
+
+    def _position_holding_hours(self, pos):
+        frozen = pos.get('exit_plan')
+        return (validate_exit_plan(frozen)['params']['max_holding_hours'] if frozen is not None
+                else self._resolve_holding_hours(pos.get('entry_mode')))
 
     def _resolve_holding_hours(self, entry_mode: Optional[str]) -> float:
         """按入场模式解析持仓时限（小时）：仅 lv_rm 用独立时限，其余（含未知）用标准时限。"""
@@ -294,11 +305,17 @@ class PositionManager:
         if not pos or not pos["target2_reached"]:
             return False
 
+        frozen = pos.get('exit_plan')
         atr = pos.get("atr", 0)
-        if atr <= 0:
+        if frozen is None and atr <= 0:
             return False
 
-        threshold = atr * self.trailing_stop_atr_multiplier
+        frozen = pos.get('exit_plan')
+        if frozen is not None:
+            frozen = validate_exit_plan(frozen)
+            atr = frozen['atr']
+        multiplier = frozen['params']['trailing_atr_multiplier'] if frozen else self.trailing_stop_atr_multiplier
+        threshold = atr * multiplier
 
         if pos["direction"] == "short":
             # 做空：从最低价反弹超过阈值
@@ -314,7 +331,7 @@ class PositionManager:
         opened = to_aware_utc(pos.get("opened_at"))
         if opened is None:
             return None
-        return opened + timedelta(hours=self._resolve_holding_hours(pos.get("entry_mode")))
+        return opened + timedelta(hours=self._position_holding_hours(pos))
 
     def check_time_stop(self, symbol: str) -> bool:
         """
@@ -353,7 +370,7 @@ class PositionManager:
         pos = self._positions.get(symbol)
         if not pos:
             return
-        hours = self._resolve_holding_hours(pos.get("entry_mode"))
+        hours = self._position_holding_hours(pos)
         pos["next_review_at"] = datetime.now(timezone.utc) + timedelta(hours=hours)
         logger.info(
             "时间止损已重置",
@@ -424,36 +441,11 @@ class PositionManager:
             order_type_map = {"sl": "STOP_LOSS", "tp1": "TAKE_PROFIT", "tp2": "TAKE_PROFIT"}
             order_type = order_type_map.get(role, "STOP_LOSS")
             await record_condition_order(
-                self.db, _STRATEGY_NAME, symbol, algo_id=algo_id, order_type=order_type
+                self.db, _STRATEGY_NAME, symbol, algo_id=algo_id, order_type=order_type,
+                tp_level={"tp1": 1, "tp2": 2}.get(role),
             )
         except Exception as e:
             logger.warning("异步记录条件单失败", symbol=symbol, role=role, algo_id=algo_id, error=str(e))
-
-    async def _sync_db_canceled(self, symbol: str) -> None:
-        """
-        将 DB 中该 symbol 上本策略的所有 OPEN 条件单同步为 CANCELED（2026-10-09 修复）
-
-        背景：条件单只在「创建成功」时写入 condition_orders（status=OPEN），而撤单
-        （补单清场 / 平仓清场 / 批量撤单）此前只清本地内存 algo_ids、不回写数据库，
-        导致交易所上早已不存在的旧单在 DB 里长期保留 OPEN，沉积成「假孤儿单」，
-        并被孤儿清理任务反复「取消」（-2011 被当作取消成功）。
-
-        仅在交易所确已撤单成功时调用；失败只告警，不阻断主流程。
-
-        Args:
-            symbol: 交易对
-        """
-        if self.db is None:
-            return
-        try:
-            from shared.condition_orders import mark_open_orders_canceled
-            await mark_open_orders_canceled(self.db, _STRATEGY_NAME, symbol)
-        except Exception as e:
-            logger.warning(
-                "同步条件单取消状态失败（不阻断主流程）",
-                symbol=symbol,
-                error=str(e),
-            )
 
     def get_algo_ids(self, symbol: str) -> List[int]:
         """
@@ -529,160 +521,18 @@ class PositionManager:
             pos["algo_ids"] = {}
 
     async def cancel_all_orders(self, symbol: str) -> Dict[str, Any]:
-        """
-        取消该交易对所有 OPEN 条件单（FR-07）
-
-        - 优先调用 binance_api.cancel_all_algo_orders(symbol)（批量，仅统一账户）
-        - 批量不可用/失败 → 回退按本地 algo_ids 逐个取消，记录 warning
-        - 任一方式成功 → 清空本地 algo_ids
-
-        Args:
-            symbol: 交易对
-
-        Returns:
-            取消结果统计 {"total": int, "cancelled": int, "failed": int, "method": "batch"|"individual"}
-        """
-        # 1. 优先批量取消（仅统一账户）
-        # F1 修复：Binance 批量成功返回 {"complete": true}（无 code 字段），
-        # 之前判断 batch_result.get("code") == 200 永远是 None != 200，
-        # 导致批量取消每次都被当作失败跳过 → 旧单累积成孤儿
-        if getattr(self.binance_api, "use_unified_account", False):
-            try:
-                batch_result = await self.binance_api.cancel_all_algo_orders(symbol)
-                # 兼容两种格式：Binance 成功返回 {"complete": true}，
-                # 错误返回 {"code": -xxxx, "msg": "..."}
-                is_batch_success = (
-                    batch_result.get("complete") is True
-                    or batch_result.get("code") == 200
-                )
-                if is_batch_success:
-                    self.clear_algo_ids(symbol)
-                    # 2026-10-09 修复：交易所已批量撤单（该币种全部条件单），
-                    # 必须同步 DB 状态，否则 condition_orders 残留 OPEN 行沉积为「假孤儿单」
-                    await self._sync_db_canceled(symbol)
-                    logger.info(
-                        "批量取消条件单成功",
-                        symbol=symbol,
-                        result=batch_result,
-                    )
-                    return {
-                        "total": batch_result.get("total", 0),
-                        "cancelled": batch_result.get("cancelled", 0),
-                        "failed": batch_result.get("failed", 0),
-                        "method": "batch",
-                    }
-                logger.warning(
-                    "批量取消条件单返回异常结果",
-                    symbol=symbol,
-                    result=batch_result,
-                )
-            except Exception as e:
-                logger.warning(
-                    "批量取消条件单失败，回退到逐个取消",
-                    symbol=symbol,
-                    error=str(e),
-                )
-
-        # 2. 回退：按本地 algo_ids 逐个取消
-        return await self._cancel_individual_orders(symbol)
-
-    async def _cancel_individual_orders(self, symbol: str) -> Dict[str, Any]:
-        """
-        按本地 algo_ids 逐个取消条件单（批量接口不可用/失败时的回退路径，FR-07）
-
-        F2 修复：先按本地 algo_ids 取消，再从 DB condition_orders 查
-        strategy_name='hrs' AND symbol=X AND status='OPEN' 的所有 algo_id
-        逐个取消。这样即使批量 API 再次失败，也能清理所有孤儿单
-        （比如 V2.11 每次 replenish 新增一个旧单但批量 API 又返回失败）。
-        """
-        from shared.condition_orders import mark_order_canceled
-
-        result = {"total": 0, "cancelled": 0, "failed": 0, "method": "individual"}
-
-        # Step 1: 先按本地 algo_ids 取消
-        local_algo_ids = self.get_algo_ids(symbol)
-        already_cancelled: set = set()
-        for algo_id in local_algo_ids:
-            result["total"] += 1
-            try:
-                await self.binance_api.cancel_algo_order(symbol, algo_id)
-                result["cancelled"] += 1
-                already_cancelled.add(algo_id)
-            except Exception as cancel_err:
-                result["failed"] += 1
-                logger.debug(
-                    "取消本地记录条件单失败",
-                    symbol=symbol,
-                    algo_id=algo_id,
-                    error=str(cancel_err),
-                )
-
-        # Step 2: DB 兜底 — 查 condition_orders 所有 OPEN 单
-        # 过滤条件：strategy_name='hrs'（不碰其他策略）+ symbol 精确匹配
-        if getattr(self, "db", None) is not None:
-            try:
-                db_rows = await self.db.fetch_all(
-                    """
-                    SELECT DISTINCT algo_id
-                    FROM btc_eth.condition_orders
-                    WHERE strategy_name = 'hrs'
-                      AND symbol = $1
-                      AND status = 'OPEN'
-                      AND algo_id IS NOT NULL
-                    """,
-                    symbol,
-                )
-                orphan_ids = [
-                    r["algo_id"] for r in db_rows
-                    if int(r["algo_id"]) not in already_cancelled
-                ]
-                if orphan_ids:
-                    logger.info(
-                        "DB 兜底发现孤儿条件单，逐个取消",
-                        symbol=symbol,
-                        orphan_count=len(orphan_ids),
-                    )
-                    for algo_id in orphan_ids:
-                        result["total"] += 1
-                        try:
-                            await self.binance_api.cancel_algo_order(symbol, int(algo_id))
-                            result["cancelled"] += 1
-                            # 同步更新 DB 状态为 CANCELED（复用共享助手，避免重复 SQL）
-                            await mark_order_canceled(self.db, algo_id=int(algo_id))
-                            already_cancelled.add(int(algo_id))
-                        except Exception as db_cancel_err:
-                            result["failed"] += 1
-                            logger.debug(
-                                "取消 DB 记录条件单失败",
-                                symbol=symbol,
-                                algo_id=algo_id,
-                                error=str(db_cancel_err),
-                            )
-            except Exception as db_err:
-                logger.warning(
-                    "DB 兜底查询/取消失败（不阻断主流程）",
-                    symbol=symbol,
-                    error=str(db_err),
-                )
-
-        # 全部取消成功才清空本地（部分失败则保留记录，下一轮补单重试仍可取消，FR-07）
-        if local_algo_ids and result["failed"] == 0:
-            self.clear_algo_ids(symbol)
-
-        # 2026-10-09 修复：逐个撤单全部成功 → 同步 DB 状态为 CANCELED，防「假孤儿单」沉积；
-        # 部分失败时保守保留 OPEN（由下一轮补单/孤儿清理任务继续兜底），不误标
-        if result["failed"] == 0:
-            await self._sync_db_canceled(symbol)
-
-        logger.info(
-            "取消条件单完成",
-            symbol=symbol,
-            total=result["total"],
-            cancelled=result["cancelled"],
-            failed=result["failed"],
-            method=result["method"],
-        )
-        return result
+        """按签名委托和本策略创建回执逐单清理，包括重启后丢失的本地角色。"""
+        from shared.condition_orders import IncompleteAlgoCancellation, cancel_strategy_algos
+        try:
+            result = await cancel_strategy_algos(self.binance_api, symbol, tracked_ids=self.get_algo_ids(symbol))
+        except IncompleteAlgoCancellation as exc:
+            logger.warning("部分保护单撤单结果待核对", symbol=symbol, error=str(exc))
+            return {**exc.result, "method": "individual"}
+        except Exception as exc:
+            logger.warning("保护单撤单待核对，保留追踪", symbol=symbol, error=str(exc))
+            return {"total": 0, "cancelled": 0, "failed": 1, "method": "individual"}
+        self.clear_algo_ids(symbol)
+        return {**result, "method": "individual"}
 
     def detect_take_profit_fills(
         self,
@@ -805,7 +655,7 @@ class PositionManager:
             p["opened_at"] = opened
             p["next_review_at"] = (
                 to_aware_utc(p.get("next_review_at"))
-                or opened + timedelta(hours=self._resolve_holding_hours(p.get("entry_mode")))
+                or opened + timedelta(hours=self._position_holding_hours(p))
             )
             p.setdefault("position_id", self._build_position_id(
                 symbol, p.get("direction", ""), opened))

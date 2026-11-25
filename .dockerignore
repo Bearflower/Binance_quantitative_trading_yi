@@ -15,6 +15,7 @@
 # 敏感文件（严禁进入镜像）
 .env
 .env.local
+.secrets/
 .env.*.local
 *.pem
 *.key

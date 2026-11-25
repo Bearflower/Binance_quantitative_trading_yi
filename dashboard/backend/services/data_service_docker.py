@@ -17,6 +17,9 @@ sys.path.insert(0, os.getenv("APP_ROOT", "/app"))
 
 from shared.database import DatabaseManager
 from shared.binance_api import BinanceClient
+from shared.binance_account_mode import verify_cutover_ledger
+from shared.accounting.account_cutover import classic_cutover_ms
+from shared.accounting.equity_bridge import classic_daily_equity, classic_position_owner, money, read_anchors
 from shared.trade_logger import TradeLogger
 from shared.performance_metrics import annualized_sharpe, max_drawdown_ratio
 from shared.strategy_ids import PERFORMANCE_STRATEGY_IDS
@@ -175,14 +178,21 @@ class DataService(ExchangeLedgerDashboardMixin):
                 min_pool_size=int(os.getenv("DB_MIN_POOL_SIZE", "1")),
                 max_pool_size=int(os.getenv("DB_MAX_POOL_SIZE", "5")),
             )
-            await self._db_manager.connect()
-
-            self._binance_client = BinanceClient(
-                api_key=os.getenv("BINANCE_API_KEY", ""),
-                api_secret=os.getenv("BINANCE_API_SECRET", ""),
-                testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
-                use_unified_account=os.getenv("USE_UNIFIED_ACCOUNT", "true").lower() == "true",
-            )
+            try:
+                await self._db_manager.connect()
+                self._binance_client = BinanceClient(
+                    api_key=os.getenv("BINANCE_API_KEY", ""),
+                    api_secret=os.getenv("BINANCE_API_SECRET", ""),
+                    testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
+                )
+                await verify_cutover_ledger(self._binance_client, self._db_manager)
+            except Exception:
+                if self._binance_client is not None:
+                    await self._binance_client.close()
+                    self._binance_client = None
+                await self._db_manager.disconnect()
+                self._db_manager = None
+                raise
 
             self._trade_logger = TradeLogger(self._db_manager, "Dashboard采集器")
             self._initialized = True
@@ -325,28 +335,17 @@ class DataService(ExchangeLedgerDashboardMixin):
             }
         """
         await self._ensure_initialized()
-        try:
-            account_info = await self._binance_client.get_account_info()
-            eq = float(account_info.get("totalMarginBalance", account_info.get("totalWalletBalance", 0)))
-            avail = float(account_info.get("availableBalance", 0))
-        except Exception as e:
-            logger.warning("获取账户净资产失败", error=str(e)[:80])
-            eq = 0.0
-            avail = 0.0
-
-        # 当前非零持仓数（通过持仓风险接口统计）
-        open_positions = 0
-        try:
-            positions = await self._binance_client.get_position()
-            open_positions = sum(
-                1 for p in positions if abs(float(p.get("positionAmt", 0.0))) > 1e-8
-            )
-        except Exception as e:
-            logger.warning("获取当前持仓数失败", error=str(e)[:80])
-
+        account_info = await self._binance_client.get_account_info()
+        eq = money(account_info["totalMarginBalance"])
+        avail = money(account_info["availableBalance"])
+        positions = await self._binance_client.get_position()
+        if not isinstance(positions, list):
+            raise ValueError("合约持仓数据不可用")
+        open_positions = sum(1 for p in positions if money(p["positionAmt"]) != 0)
         return {
-            "total_equity": f"{eq:.2f}",
-            "available_balance": f"{avail:.2f}",
+            "total_equity": str(eq),
+            "account_mode": "pm" if self._binance_client.use_unified_account else "classic",
+            "available_balance": str(avail),
             "open_positions": open_positions,
             "updated_at": datetime.now(BEIJING_TZ).isoformat(),
         }
@@ -928,12 +927,16 @@ class DataService(ExchangeLedgerDashboardMixin):
         await self._ensure_initialized()
 
         # 1. 今日净资产
-        equity_float = 0.0
         try:
-            equity_str = (await self.get_account_equity()).get("total_equity", "0")
+            snapshot = await self.get_account_equity()
+            equity_str = snapshot["total_equity"]
             equity_float = float(equity_str)
-        except (TypeError, ValueError):
-            logger.warning("净资产解析失败，收益率标记为不可用")
+        except Exception:
+            return self._build_returns_unavailable(period, "--", "实时净值不可用")
+        cutover = classic_cutover_ms() if snapshot.get("account_mode") == "classic" else None
+        if snapshot.get("account_mode") == "classic" and cutover is None:
+            return self._build_returns_unavailable(period, equity_str, "缺少账户模式切换时间")
+        cut_date = datetime.fromtimestamp(cutover / 1000, BEIJING_TZ).date() if cutover else None
 
         # 2. 期初快照（严格取周期起点日对应净资产快照）
         # 严格匹配：日=昨日，周=本周一，月=本月1号，年=本年1/1。周期起点无快照
@@ -941,11 +944,14 @@ class DataService(ExchangeLedgerDashboardMixin):
         period_start_equity = None
         start_date = self._get_period_start_date(period)
         try:
-            row = await self._db_manager.fetch_one(
-                "SELECT total_equity, snapshot_date FROM public.equity_snapshot "
-                "WHERE snapshot_date = $1",
-                start_date,
-            )
+            if cut_date and start_date >= cut_date:
+                rows = await classic_daily_equity(self._db_manager, cutover, start_date, start_date)
+                row = rows[0] if rows else None
+            else:
+                row = await self._db_manager.fetch_one(
+                    "SELECT total_equity, snapshot_date FROM public.equity_snapshot WHERE snapshot_date = $1",
+                    start_date,
+                )
             if row and row.get("total_equity") is not None:
                 period_start_equity = float(row["total_equity"])
         except Exception as e:
@@ -974,7 +980,16 @@ class DataService(ExchangeLedgerDashboardMixin):
             return self._build_returns_unavailable(period, equity_str, "实时净值不可用")
 
         # 4. 收益率计算
-        payout = (equity_float - period_start_equity) / period_start_equity * 100
+        pnl = f"{equity_float - period_start_equity:.2f}"
+        if cut_date and start_date < cut_date:
+            try:
+                pm_final, classic_open = await read_anchors(self._db_manager, cutover)
+            except Exception:
+                return self._build_returns_unavailable(period, equity_str, "缺少已核对的账户切换权益锚点")
+            payout = (float(pm_final) / period_start_equity * equity_float / float(classic_open) - 1) * 100
+            pnl = None  # 旧账户权益以 USD 计，经典钱包以 USDT 计，绝对差额不能直接合计。
+        else:
+            payout = (equity_float - period_start_equity) / period_start_equity * 100
         payout_round = round(payout, 1)
         text = f"+{payout_round:.1f}%" if payout_round > 0 else f"{payout_round:.1f}%"
 
@@ -985,7 +1000,7 @@ class DataService(ExchangeLedgerDashboardMixin):
             "yield_text": text,
             "yield_unavailable": False,
             "period_start_equity": f"{period_start_equity:.2f}",
-            "period_pnl": f"{equity_float - period_start_equity:.2f}",
+            "period_pnl": pnl,
             "snapshot_date": datetime.now(BEIJING_TZ).date().isoformat(),
         }
 
@@ -1224,7 +1239,9 @@ class DataService(ExchangeLedgerDashboardMixin):
                 continue
             strategy_id = None
             reported_margin = 0.0
-            if sym in reported_conflict:
+            if getattr(self._binance_client, "use_unified_account", True) is False:
+                strategy_id = await classic_position_owner(self._db_manager, pos, classic_cutover_ms()) or "unattributed"
+            elif sym in reported_conflict:
                 # 同 symbol 多策略上报冲突：以 trade_records 最近成交策略为准
                 strategy_id = last_trade_strategy.get(sym)
                 reported_margin = reported[sym][1]
@@ -1266,12 +1283,15 @@ class DataService(ExchangeLedgerDashboardMixin):
 
         # 5) 汇总所有已知策略名称，落库（含无持仓策略，便于占用比/名称为0兜底）
         all_ids = set(count_by_strategy) | set(allocated_by_strategy)
+        if getattr(self._binance_client, "use_unified_account", True) is False:
+            all_ids.add("unattributed")  # 清零上次快照遗留的未归属仓位。
         name_map = {**self._STRATEGY_NAME_MAP}
         name_map["btc_eth"] = name_map.get("btc_eth", "MTPCS策略")
         name_map["btc_eth_aggressive"] = name_map.get("btc_eth_aggressive", "MTPCS激进版")
         name_map["hrs"] = name_map.get("hrs", "HRS策略")
         name_map["new_coin"] = name_map.get("new_coin", "新币做空策略")
         name_map["grid"] = name_map.get("grid", "网格策略")
+        name_map["unattributed"] = "待核对仓位"
         now = datetime.now(BEIJING_TZ).replace(tzinfo=None)
         snapshot_hour = now.replace(minute=0, second=0, microsecond=0)
         rows_written = 0
@@ -1921,13 +1941,7 @@ class DataService(ExchangeLedgerDashboardMixin):
         """
         try:
             since = datetime.now(BEIJING_TZ).replace(tzinfo=None) - timedelta(days=days)
-            rows = await self._db_manager.fetch_all(
-                "SELECT snapshot_date, total_equity "
-                "FROM public.equity_snapshot "
-                "WHERE snapshot_date >= $1 "
-                "ORDER BY snapshot_date ASC",
-                since,
-            )
+            rows = await self._account_equity_series(since.date(), datetime.now(BEIJING_TZ).date())
         except Exception as e:
             logger.warning("查询净资产快照失败（表可能未初始化）", error=str(e)[:80])
             return 0, None
@@ -2695,6 +2709,33 @@ class DataService(ExchangeLedgerDashboardMixin):
         return (granularity, scope, strategy_id, bucket_key, sample_count,
                 sharpe, max_dd, window_start, window_end)
 
+    async def _account_equity_series(self, start, end):
+        # 切换日缺少经典日终快照时留空，不用旧账户快照充当新钱包净值。
+        classic = getattr(self._binance_client, "use_unified_account", True) is False
+        cutover = classic_cutover_ms() if classic else None
+        if classic and cutover is None:
+            return []
+        cut_day = datetime.fromtimestamp(cutover / 1000, BEIJING_TZ).date() if cutover else None
+        old_end = min(end, cut_day - timedelta(days=1)) if cut_day else end
+        pm = await self._db_manager.fetch_all(
+            "SELECT snapshot_date,total_equity FROM public.equity_snapshot "
+            "WHERE snapshot_date >= $1 AND snapshot_date <= $2 ORDER BY snapshot_date",
+            start, old_end,
+        ) if start <= old_end else []
+        if cut_day is None or end < cut_day:
+            return pm
+        recent = await classic_daily_equity(self._db_manager, cutover, max(start, cut_day), end)
+        if not pm:
+            return recent
+        if not recent:
+            return []
+        try:
+            pm_final, classic_open = await read_anchors(self._db_manager, cutover)
+        except ValueError:
+            return recent
+        return [dict(row, total_equity=money(row["total_equity"]) * classic_open / pm_final)
+                for row in pm] + list(recent)
+
     async def _build_account_daily_returns(
         self, start_date, end_date,
     ) -> tuple:
@@ -2714,12 +2755,7 @@ class DataService(ExchangeLedgerDashboardMixin):
             三个序列**等长对齐**：第 i 项对应窗口内第 i 个有效交易日，
             net_values[i] 为该日收盘后的净值（基准 1.0，账户权益恒为正 → 回撤 ≤100%）。
         """
-        rows = await self._db_manager.fetch_all(
-            "SELECT snapshot_date, total_equity FROM public.equity_snapshot "
-            "WHERE snapshot_date >= $1 AND snapshot_date <= $2 "
-            "ORDER BY snapshot_date ASC",
-            start_date, end_date,
-        )
+        rows = await self._account_equity_series(start_date, end_date)
 
         daily_returns: List[float] = []
         net_values: List[float] = []

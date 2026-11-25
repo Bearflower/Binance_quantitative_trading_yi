@@ -46,7 +46,7 @@ def mark_shock(positions, owned_symbols):
     return notional * MARK_SHOCK_RATIO
 
 
-def marked_unrealized_snapshot(positions, owned_symbols, as_of_ms):
+def marked_unrealized_snapshot(positions, owned_symbols, as_of_ms, *, unified=True):
     """Capture signed per-strategy UM unrealized PnL at the observed time."""
     expected = set(owned_symbols)
     if type(as_of_ms) is not int or as_of_ms <= 0 or not isinstance(positions, list):
@@ -68,7 +68,7 @@ def marked_unrealized_snapshot(positions, owned_symbols, as_of_ms):
     if covered.keys() != expected:
         return None
     digest = hashlib.sha256(json.dumps(positions, sort_keys=True, default=str).encode()).hexdigest()
-    return dict(scope='owned_um_mark_snapshot', source='signed:/papi/v1/um/positionRisk', as_of_ms=as_of_ms,
+    return dict(scope='owned_um_mark_snapshot', source=('signed:/papi/v1/um/positionRisk' if unified else 'signed:/fapi/v2/positionRisk'), as_of_ms=as_of_ms,
                 by_symbol_usdt={key: str(covered[key]) for key in sorted(covered)},
                 unrealized_usdt=str(sum(covered.values(), Decimal(0))), position_payload_sha256=digest)
 

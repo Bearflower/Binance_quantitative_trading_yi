@@ -282,7 +282,6 @@ class StratTuneAI:
                 api_key=binance_api_key,
                 api_secret=binance_api_secret,
                 testnet=binance_testnet,
-                use_unified_account=True,
             )
             logger.info("币安客户端已初始化")
         else:
@@ -361,10 +360,10 @@ class StratTuneAI:
         risk_cfg = self.config.get("account_risk", {})
         if risk_cfg.get("enabled") is True:
             if os.getenv("TRADE_ACCOUNT_ID", "default") != "default":
-                raise ValueError("account risk budget is bound to default PM")
+                raise ValueError("account risk evidence requires the reviewed main account identity")
             if binance_api_key and binance_api_secret and not binance_testnet:
                 self.reduced_trial_exchange = ReadOnlyBinanceClient(
-                    binance_api_key, binance_api_secret, instance_id="ai-tuner-evidence-pm")
+                    binance_api_key, binance_api_secret, instance_id="ai-tuner-evidence-main")
                 self.reduced_trial_exchange.entry_activity_account_id = "default"
                 self.evidence_wallet = ReadOnlyBinanceClient(
                     binance_api_key, binance_api_secret, base_url="https://api.binance.com",

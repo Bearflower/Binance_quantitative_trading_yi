@@ -1,0 +1,185 @@
+[
+  {
+    "payload": {
+      "calculated_at_ms": 1794978300105,
+      "executable": true,
+      "feasibility": {
+        "binding": "STRUCT",
+        "feasible": true,
+        "grid_count": 12,
+        "qty_per_grid": "0.2851080268306523012884849627",
+        "required_leverage": null,
+        "required_margin": null
+      },
+      "grid_params": {
+        "grid_count": 12,
+        "grid_mode": "ARITHMETIC",
+        "grid_spacing": "22.152426531994160",
+        "lower_boundary": "1670.495440808035040",
+        "profit_rate": "0.01228363296865058971614885134",
+        "stop_loss_high": "1980.629412255953280",
+        "stop_loss_low": "1626.190587744046720",
+        "stop_move_down_price": "1648.343014276040880",
+        "stop_move_up_price": "1958.476985723959120",
+        "upper_boundary": "1936.324559191964960"
+      },
+      "last_closed_kline_ms": {
+        "15m": 1794977999999,
+        "1h": 1794977999999,
+        "4h": 1794974399999
+      },
+      "margin_used": "617",
+      "market_analysis": {
+        "adx_15m": "34.85998900797754",
+        "adx_1h": "28.888880223970983",
+        "adx_4h": "25.426374374995156",
+        "adx_prev_1h": "31.154330180274904",
+        "atr_2h_ago": "22.159745704410568",
+        "atr_abnormal_count": 0,
+        "atr_peak": "0",
+        "atr_smooth": "22.15242653199416",
+        "confidence": "0.5",
+        "current_price": "1803.41",
+        "ema20_1h": "1807.3834114666495",
+        "ema20_4h": "1831.9643603206152",
+        "ema50_1h": "1814.1186844898325",
+        "ema50_4h": "1922.5707250646192",
+        "is_volatility_alarm_active": false,
+        "last_closed_kline_ms": {
+          "15m": 1794977999999,
+          "1h": 1794977999999,
+          "4h": 1794974399999
+        },
+        "price_change_15m": "0.002507101601543173846093980177",
+        "price_change_1h": "0.0006317364439888060735363386994",
+        "state": "OSCILLATION",
+        "trend_strength": "0.1296293407990327666666666667"
+      },
+      "state": "OSCILLATION",
+      "symbol": "ETHUSDT"
+    },
+    "config_hash": "623ba3ec08e04946f29fc58d9718f3affc5dbb5cbdebd1cff993bff654f15efa"
+  },
+  {
+    "payload": {
+      "calculated_at_ms": 1794981900176,
+      "executable": true,
+      "feasibility": {
+        "binding": "STRUCT",
+        "feasible": true,
+        "grid_count": 12,
+        "qty_per_grid": "0.2903728737434815661543955366",
+        "required_leverage": null,
+        "required_margin": null
+      },
+      "grid_params": {
+        "grid_count": 12,
+        "grid_mode": "ARITHMETIC",
+        "grid_spacing": "21.6043963023882630",
+        "lower_boundary": "1681.2636221856704220",
+        "profit_rate": "0.01193026429125361728210990176",
+        "stop_loss_high": "1983.7251704191061040",
+        "stop_loss_low": "1638.0548295808938960",
+        "stop_move_down_price": "1659.6592258832821590",
+        "stop_move_up_price": "1962.1207741167178410",
+        "upper_boundary": "1940.5163778143295780"
+      },
+      "last_closed_kline_ms": {
+        "15m": 1794981599999,
+        "1h": 1794981599999,
+        "4h": 1794974399999
+      },
+      "margin_used": "631",
+      "market_analysis": {
+        "adx_15m": "21.656464519089536",
+        "adx_1h": "27.909938946561027",
+        "adx_4h": "25.426374374995156",
+        "adx_prev_1h": "28.888880223970983",
+        "atr_2h_ago": "22.159745704410568",
+        "atr_abnormal_count": 0,
+        "atr_peak": "0",
+        "atr_smooth": "21.604396302388263",
+        "confidence": "0.5",
+        "current_price": "1810.89",
+        "ema20_1h": "1807.7166379606579",
+        "ema20_4h": "1831.9643603206152",
+        "ema50_1h": "1813.6935006589117",
+        "ema50_4h": "1922.5707250646192",
+        "is_volatility_alarm_active": false,
+        "last_closed_kline_ms": {
+          "15m": 1794981599999,
+          "1h": 1794981599999,
+          "4h": 1794974399999
+        },
+        "price_change_15m": "0.0007669896483987021872999757212",
+        "price_change_1h": "0.004147697972174935261532319328",
+        "state": "OSCILLATION",
+        "trend_strength": "0.09699796488536756666666666667"
+      },
+      "state": "OSCILLATION",
+      "symbol": "ETHUSDT"
+    },
+    "config_hash": "623ba3ec08e04946f29fc58d9718f3affc5dbb5cbdebd1cff993bff654f15efa"
+  },
+  {
+    "payload": {
+      "calculated_at_ms": 1794985500167,
+      "executable": true,
+      "feasibility": {
+        "binding": "STRUCT",
+        "feasible": true,
+        "grid_count": 12,
+        "qty_per_grid": "0.2888687402558630679242362255",
+        "required_leverage": null,
+        "required_margin": null
+      },
+      "grid_params": {
+        "grid_count": 12,
+        "grid_mode": "ARITHMETIC",
+        "grid_spacing": "20.903994545075520",
+        "lower_boundary": "1683.356032729546880",
+        "profit_rate": "0.01155695802976344276252501686",
+        "stop_loss_high": "1976.011956360604160",
+        "stop_loss_low": "1641.548043639395840",
+        "stop_move_down_price": "1662.452038184471360",
+        "stop_move_up_price": "1955.107961815528640",
+        "upper_boundary": "1934.203967270453120"
+      },
+      "last_closed_kline_ms": {
+        "15m": 1794985199999,
+        "1h": 1794985199999,
+        "4h": 1794974399999
+      },
+      "margin_used": "627",
+      "market_analysis": {
+        "adx_15m": "18.648917958263027",
+        "adx_1h": "28.221857055036548",
+        "adx_4h": "25.426374374995156",
+        "adx_prev_1h": "27.909938946561027",
+        "atr_2h_ago": "22.228540636362677",
+        "atr_abnormal_count": 0,
+        "atr_peak": "0",
+        "atr_smooth": "20.90399454507552",
+        "confidence": "0.5",
+        "current_price": "1808.78",
+        "ema20_1h": "1807.8166219888715",
+        "ema20_4h": "1831.9643603206152",
+        "ema50_1h": "1812.97690033602",
+        "ema50_4h": "1922.5707250646192",
+        "is_volatility_alarm_active": false,
+        "last_closed_kline_ms": {
+          "15m": 1794985199999,
+          "1h": 1794985199999,
+          "4h": 1794974399999
+        },
+        "price_change_15m": "0.001639299020284255554022354078",
+        "price_change_1h": "0.001165172926019802417595767827",
+        "state": "OSCILLATION",
+        "trend_strength": "0.1073952351678849333333333333"
+      },
+      "state": "OSCILLATION",
+      "symbol": "ETHUSDT"
+    },
+    "config_hash": "623ba3ec08e04946f29fc58d9718f3affc5dbb5cbdebd1cff993bff654f15efa"
+  }
+]

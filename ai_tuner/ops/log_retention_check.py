@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 import re
+import select
 import subprocess
 import sys
 import urllib.request
@@ -31,24 +32,67 @@ def run(*args: str) -> str:
     return subprocess.run(args, check=True, text=True, capture_output=True, timeout=60).stdout
 
 
-def journal_time(name: str, *, latest: bool) -> dt.datetime | None:
-    args = ["journalctl", f"CONTAINER_NAME={name}", "-o", "json", "--no-pager"]
+def journal_time(field: str, value: str, *, latest: bool) -> dt.datetime | None:
+    args = [
+        "journalctl", f"{field}={value}", "-q", "--no-pager", "-o", "json",
+        "--output-fields=__REALTIME_TIMESTAMP",
+    ]
     if latest:
-        args += ["--reverse", "-n", "1"]
-    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-    try:
-        assert proc.stdout is not None
-        line = proc.stdout.readline()
-    finally:
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            proc.wait()
+        line = run(*args, "--reverse", "-n", "1").strip()
+    else:
+        # Read one record without loading the whole history into memory.
+        with subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL) as proc:
+            assert proc.stdout is not None
+            try:
+                if not select.select([proc.stdout], [], [], 60)[0]:
+                    raise subprocess.TimeoutExpired(args, 60)
+                line = proc.stdout.readline()
+                if not line and (status := proc.wait(timeout=3)):
+                    raise subprocess.CalledProcessError(status, args)
+            finally:
+                if proc.poll() is None:
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        proc.kill()
+                        proc.wait()
     if not line:
         return None
     return dt.datetime.fromtimestamp(int(json.loads(line)["__REALTIME_TIMESTAMP"]) / 1e6, TZ)
+
+
+def journal_range(field: str, value: str) -> tuple[dt.datetime | None, dt.datetime | None]:
+    first = journal_time(field, value, latest=False)
+    if first is None:
+        return None, None
+    return first, journal_time(field, value, latest=True)
+
+
+def docker_log_range(container_id: str) -> tuple[dt.datetime | None, dt.datetime | None]:
+    output = subprocess.run(
+        ["docker", "logs", "--timestamps", container_id],
+        check=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, errors="replace", timeout=60,
+    ).stdout
+    first = last = None
+    for line in output.splitlines():
+        prefix = line.partition(" ")[0]
+        try:
+            timestamp = dt.datetime.fromisoformat(prefix.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if timestamp.tzinfo is None:
+            continue
+        timestamp = timestamp.astimezone(TZ)
+        first = timestamp if first is None else min(first, timestamp)
+        last = timestamp if last is None else max(last, timestamp)
+    if first is None and output.strip():
+        raise ValueError("Docker log timestamps missing")
+    return first, last
+
+
+LOG_QUERY_ERRORS = (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError)
 
 
 def collect(project_dir: Path, now: dt.datetime) -> dict:
@@ -86,15 +130,32 @@ def collect(project_dir: Path, now: dt.datetime) -> dict:
         labels = container["Config"].get("Labels") or {}
         name = container["Name"].lstrip("/")
         health = container["State"].get("Health")
-        first = journal_time(name, latest=False)
-        last = journal_time(name, latest=True)
+        driver = container["HostConfig"]["LogConfig"]["Type"]
+        container_id = container["Id"]
+        first = last = history_first = history_last = None
+        current_error = history_error = False
+        try:
+            if driver == "journald":
+                first, last = journal_range("CONTAINER_ID_FULL", container_id)
+            else:
+                first, last = docker_log_range(container_id)
+        except LOG_QUERY_ERRORS:
+            current_error = True
+        try:
+            history_first, history_last = journal_range("CONTAINER_NAME", name)
+        except LOG_QUERY_ERRORS:
+            history_error = True
         rows.append({
             "service": labels.get("com.docker.compose.service") or expected_names.get(name, "?"),
             "state": container["State"]["Status"],
             "health": health["Status"] if health else "no-healthcheck",
-            "driver": container["HostConfig"]["LogConfig"]["Type"],
+            "driver": driver,
             "first": first,
             "last": last,
+            "current_error": current_error,
+            "history_first": history_first,
+            "history_last": history_last,
+            "history_error": history_error,
             "config_files": labels.get("com.docker.compose.project.config_files", ""),
         })
     return {
@@ -106,34 +167,44 @@ def collect(project_dir: Path, now: dt.datetime) -> dict:
     }
 
 
+def format_window(first: dt.datetime | None, last: dt.datetime | None, failed: bool) -> str:
+    if failed:
+        return "查询失败"
+    start = first.strftime("%m-%d %H:%M") if first else "无"
+    end = last.strftime("%m-%d %H:%M") if last else "无"
+    return f"{start} → {end}"
+
+
 def evaluate(data: dict) -> list[str]:
-    """返回巡检异常清单；窗口不足合并为一条全局异常。"""
     now = data["now"]
     rows = data["rows"]
     actual = {row["service"] for row in rows}
     missing = sorted(data["configured"] - actual)
     issues = []
+    short_windows = []
     if missing:
         issues.append("缺少容器: " + ", ".join(missing))
-    short_windows = []
     for row in rows:
         service = row["service"]
         if row["state"] != "running" or row["health"] != "healthy":
             issues.append(f"{service} 状态 {row['state']}/{row['health']}")
         if row["driver"] != "journald":
             issues.append(f"{service} 日志驱动 {row['driver']}")
-        if row["last"] is None:
-            issues.append(f"{service} 无可查日志")
+        if row["current_error"]:
+            issues.append(f"{service} 当前实例日志查询失败")
+        elif row["last"] is None:
+            issues.append(f"{service} 当前实例无日志")
         elif now - row["last"] > dt.timedelta(days=1) and service != "dashboard-api":
-            issues.append(f"{service} 超过 24 小时无新日志")
+            issues.append(f"{service} 当前实例超过 24 小时无新日志")
         start = LATER.get(service, BASELINE)
-        if now.date() >= start and row["first"] and now - row["first"] < dt.timedelta(days=14):
-            short_windows.append(row["first"])
+        if row["history_error"]:
+            issues.append(f"{service} 服务 journal 查询失败")
+        elif row["history_first"] and now.date() >= start and now - row["history_first"] < dt.timedelta(days=14):
+            short_windows.append(row["history_first"])
     if short_windows:
-        earliest = min(short_windows)
         issues.append(
             f"{len(short_windows)} 个服务可查窗口不足 14 天"
-            f"（最早 {earliest:%m-%d %H:%M}，要求 ≥14 天）"
+            f"（最早 {min(short_windows):%m-%d %H:%M}，要求 ≥14 天）"
         )
     if data["free"] < 5_000_000_000:
         issues.append("根分区剩余不足 5 GB")
@@ -146,8 +217,7 @@ def evaluate(data: dict) -> list[str]:
 def render(data: dict) -> str:
     now = data["now"]
     rows = data["rows"]
-    actual = {row["service"] for row in rows}
-    extra = sorted(actual - data["configured"])
+    extra = sorted({row["service"] for row in rows} - data["configured"])
     issues = evaluate(data)
     head = f"生产容器日志巡检 {now:%Y-%m-%d %H:%M} 北京时间"
     lines = [head, f"结论: {'异常 ' + str(len(issues)) + ' 项' if issues else '正常'}", f"容器: {len(rows)} 个；基础 Compose: {len(data['configured'])} 个", f"journal: {data['journal']}；根分区剩余: {data['free']/1e9:.2f} GB"]
@@ -157,9 +227,9 @@ def render(data: dict) -> str:
         lines += ["异常:"] + ["- " + issue for issue in issues]
     lines.append("服务明细（最早 → 最近，北京时间）:")
     for row in rows:
-        first = row["first"].strftime("%m-%d %H:%M") if row["first"] else "无"
-        last = row["last"].strftime("%m-%d %H:%M") if row["last"] else "无"
-        lines.append(f"{row['service']}: {row['health']}/{row['driver']} {first} → {last}")
+        current = format_window(row["first"], row["last"], row["current_error"])
+        history = format_window(row["history_first"], row["history_last"], row["history_error"])
+        lines.append(f"{row['service']}: {row['health']}/{row['driver']} 当前实例 {current}；服务 journal {history}")
     return "\n".join(lines)
 
 

@@ -1,93 +1,76 @@
-"""
-测试 MTPCS 策略止损打标（_mark_stop_loss_if_needed）。
-
-覆盖范围：
-1. 止盈平仓（TP1/TP2/TRAILING_STOP）不打 STOP_LOSS 标记。
-2. 止损/保护性平仓（TIME_STOP/EXTREME/LIQUIDATION）打 STOP_LOSS 标记。
-3. 平仓方向映射：LONG→SELL，SHORT→BUY。
-4. trade_logger 缺失时静默跳过，不抛错。
-5. realized_pnl 透传给 log_stop_loss。
-
-对应需求：把"止损打标"机制接入 btc_eth 策略止损平仓点，供风控看板
-"最近止损次数"统计（不做止盈误标）。
-"""
+"""逐笔核对两套 MTPCS 的真实平仓与止损归属。"""
 from decimal import Decimal
-from types import SimpleNamespace
-
-from strategies.btc_eth.strategy import BTCEthStrategy
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+from asyncpg import Range
 
-def make_strategy() -> BTCEthStrategy:
-    """构造绕过 __init__ 的策略实例，注入被测方法所需 mock 属性。"""
-    strategy = object.__new__(BTCEthStrategy)
-    return strategy
-
-
-def make_position(direction: str = "LONG"):
-    """构造仅含 direction 的最小持仓桩。"""
-    return SimpleNamespace(direction=direction)
+from strategies.btc_eth_aggressive.close_evidence import confirmed_close_order, record_close_fills
+from shared.trade_logger import TradeLogger
 
 
-def install_trade_logger(strategy: BTCEthStrategy, trade_logger=None):
-    """注入 binance.trade_logger；默认注入 AsyncMock。"""
-    strategy.binance = MagicMock()
-    strategy.binance.trade_logger = trade_logger if trade_logger is not None else AsyncMock()
-    return strategy.binance.trade_logger
+@pytest.fixture
+def exchange():
+    client = MagicMock()
+    owner = TradeLogger(AsyncMock(), "btc_eth", account_id="main")
+    client.trade_logger = owner
+    owner._record_epoch = MagicMock(return_value=Range())
+    owner.db.execute.return_value = "UPDATE 1"
+    client.get_order = AsyncMock(return_value=dict(
+        symbol="BTCUSDT", side="SELL", orderId=42, status="FILLED", reduceOnly=True,
+        executedQty="2", origQty="2",
+    ))
+    client.get_user_trades = AsyncMock(return_value=[
+        dict(symbol="BTCUSDT", side="SELL", orderId=42, id=number,
+             qty="1", price="10", realizedPnl=pnl)
+        for number, pnl in [(70, "-0.151"), (71, "0.021")]
+    ])
+    return client
 
 
-async def test_止损打标_止盈不打标():
-    """止盈 close_reason（TP1/TP2/TRAILING_STOP）应跳过打标。"""
-    for reason in ("TP1", "TP2", "TRAILING_STOP"):
-        strategy = make_strategy()
-        tl = install_trade_logger(strategy)
-        await strategy._mark_stop_loss_if_needed("BTCUSDT", make_position("LONG"), reason)
-        tl.log_stop_loss.assert_not_awaited()
+@pytest.mark.parametrize("is_stop,reason", [(True, "STOP_LOSS"), (False, None)])
+async def test_records_exact_signed_close(exchange, is_stop, reason):
+    order = await confirmed_close_order(exchange, "BTCUSDT", "SELL", 42, Decimal("2"))
+    assert await record_close_fills(exchange, order, is_stop)
+    sql, pnl, tag, quantity, price, strategy, side, account, symbol, order_id, _ = (
+        exchange.trade_logger.db.execute.await_args.args)
+    assert (pnl, tag, quantity, price) == (Decimal("-0.130"), reason, 2, 10)
+    assert (strategy, side, account, symbol, order_id) == ("btc_eth", "SELL", "main", "BTCUSDT", "42")
+    assert "HAVING count(*)=1" in sql
 
 
-async def test_止损打标_止损类必打标():
-    """止损类 close_reason 应打 STOP_LOSS 标记且方向映射正确。"""
-    for reason in ("TIME_STOP", "TIME_STOP_REVIEW", "EXTREME", "LIQUIDATION"):
-        strategy = make_strategy()
-        tl = install_trade_logger(strategy)
-        await strategy._mark_stop_loss_if_needed("BTCUSDT", make_position("LONG"), reason)
-        tl.log_stop_loss.assert_awaited_once()
-        kwargs = tl.log_stop_loss.await_args.kwargs
-        assert kwargs["symbol"] == "BTCUSDT"
-        assert kwargs["side"] == "SELL"  # LONG 平仓方向 SELL
+@pytest.mark.parametrize("field,value", [
+    ("symbol", "ETHUSDT"), ("orderId", 41), ("reduceOnly", False),
+    ("executedQty", "1"), ("side", "BUY"), ("status", "CANCELED"),
+])
+async def test_unconfirmed_close_keeps_position(exchange, field, value):
+    exchange.get_order.return_value[field] = value
+    assert await confirmed_close_order(exchange, "BTCUSDT", "SELL", 42, 2) is None
 
 
-async def test_止损打标_平仓方向映射():
-    """SHORT 平仓方向为 BUY。"""
-    strategy = make_strategy()
-    tl = install_trade_logger(strategy)
-    await strategy._mark_stop_loss_if_needed("ETHUSDT", make_position("SHORT"), "TIME_STOP")
-    tl.log_stop_loss.assert_awaited_once()
-    assert tl.log_stop_loss.await_args.kwargs["side"] == "BUY"
+@pytest.mark.parametrize("field,value", [
+    ("symbol", "ETHUSDT"), ("id", 70), ("qty", "0.1"), ("realizedPnl", "NaN")
+])
+async def test_invalid_fill_never_books_pnl(exchange, field, value):
+    exchange.get_user_trades.return_value[-1][field] = value
+    with pytest.raises(ValueError):
+        await record_close_fills(exchange, exchange.get_order.return_value, True)
+    exchange.trade_logger.db.execute.assert_not_awaited()
 
 
-async def test_止损打标_realized_pnl_透传():
-    """已实现盈亏应透传给 log_stop_loss。"""
-    strategy = make_strategy()
-    tl = install_trade_logger(strategy)
-    await strategy._mark_stop_loss_if_needed(
-        "BTCUSDT", make_position("LONG"), "TIME_STOP", Decimal("-10.5")
-    )
-    tl.log_stop_loss.assert_awaited_once()
-    assert tl.log_stop_loss.await_args.kwargs["realized_pnl"] == Decimal("-10.5")
+async def test_partial_close_retains_live_protection_without_duplicate(monkeypatch):
+    from types import SimpleNamespace
+    from strategies.btc_eth_aggressive.close_evidence import remaining_protection
 
-
-async def test_止损打标_trade_logger缺失_静默跳过():
-    """无 trade_logger 时应静默跳过，不抛错。"""
-    strategy = make_strategy()
-    install_trade_logger(strategy, trade_logger=None)
-    await strategy._mark_stop_loss_if_needed("BTCUSDT", make_position("LONG"), "TIME_STOP")
-
-
-async def test_止损打标_trade_logger缺log_stop_loss_静默跳过():
-    """trade_logger 无 log_stop_loss 属性时应静默跳过。"""
-    strategy = make_strategy()
-    install_trade_logger(strategy, trade_logger=MagicMock())
-    # 移除 log_stop_loss 属性模拟旧版本
-    del strategy.binance.trade_logger.log_stop_loss
-    await strategy._mark_stop_loss_if_needed("BTCUSDT", make_position("LONG"), "TIME_STOP")
+    position = SimpleNamespace(stop_loss_order_id=11, tp2_order_id=12)
+    owned = AsyncMock(return_value=[
+        dict(order_type="STOP_LOSS", side="SELL", reduceOnly=True, algo_id=11),
+        dict(order_type="TAKE_PROFIT", tp_level=2, side="SELL", reduceOnly=True, algo_id=12),
+    ])
+    monkeypatch.setattr("shared.condition_orders.strategy_owned_algos", owned)
+    assert await remaining_protection(object(), "BTCUSDT", position, "SELL") == [True, True]
+    owned.return_value = []
+    monkeypatch.setattr("shared.condition_orders.classic_algo_is_terminal", AsyncMock(return_value=False))
+    with pytest.raises(ValueError, match="状态未确认"):
+        await remaining_protection(object(), "BTCUSDT", position, "SELL")
+    assert (position.stop_loss_order_id, position.tp2_order_id) == (11, 12)

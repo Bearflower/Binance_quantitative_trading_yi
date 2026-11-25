@@ -1416,9 +1416,12 @@ class NewCoinStrategy(BaseStrategy):
     async def _fetch_exchange_short_symbols(self) -> Optional[set]:
         """获取交易所实际空头币种集合（positionAmt < 0）；接口异常返回 None。"""
         try:
-            positions = await self.binance_client._request(
-                "GET", "/papi/v1/um/positionRisk", signed=True
-            )
+            if getattr(self.binance_client, "use_unified_account", True) is False:
+                positions = await self.binance_client.get_position()
+            else:
+                positions = await self.binance_client._request(
+                    "GET", "/fapi/v2/positionRisk", signed=True
+                )
         except Exception as e:
             logger.warning("获取交易所持仓失败（对账跳过）", error=str(e))
             return None
@@ -1440,10 +1443,15 @@ class NewCoinStrategy(BaseStrategy):
             f"清理 {len(stale_symbols)} 个已平仓持仓记录（含完整盈亏回写）",
             symbols=stale_symbols,
         )
+        closed = False
         for symbol in stale_symbols:
+            if getattr(getattr(self, "binance_client", None), "use_unified_account", True) is False:
+                if await self._reconfirm_symbol_absent(symbol) is not True:
+                    continue
             await self._handle_position_closed(symbol, self.positions.get(symbol, {}))
             del self.positions[symbol]
-        return True
+            closed = True
+        return closed
 
     async def _reconcile_zombies(self, own_open: set, exchange_short: set) -> bool:
         """僵尸对账：DB open 但交易所无仓 → 连续 N 周期确认后关闭；返回是否关闭。"""
@@ -1490,9 +1498,13 @@ class NewCoinStrategy(BaseStrategy):
             Optional[bool]: True=确认无仓；False=有仓；None=回查失败（fail-closed）
         """
         try:
-            positions = await self.binance_client._request(
-                "GET", "/papi/v1/um/positionRisk", signed=True
-            )
+            if getattr(self.binance_client, "use_unified_account", True) is False:
+                positions = await self.binance_client.get_position(symbol)
+                return all(Decimal(str(row["positionAmt"])) == 0 for row in positions)
+            else:
+                positions = await self.binance_client._request(
+                    "GET", "/fapi/v2/positionRisk", signed=True
+                )
         except Exception as e:
             logger.warning("僵尸回查交易所持仓异常", symbol=symbol, error=str(e))
             return None
@@ -2315,7 +2327,12 @@ class NewCoinStrategy(BaseStrategy):
                 # 从 condition_orders 表恢复条件单 algoId 到 position_tracking
                 # 解决容器重启后 position_tracking 丢失，导致平仓时无法取消条件单的问题
                 try:
-                    open_orders = await get_open_orders(self.db, self.strategy_name)
+                    if getattr(self.binance_client, 'use_unified_account', True) is False:
+                        from shared.condition_orders import classic_owned_algos
+                        open_orders = await classic_owned_algos(self.binance_client,
+                                                               managed_symbols=set(self.positions))
+                    else:
+                        open_orders = await get_open_orders(self.db, self.strategy_name)
                     restored_count = 0
                     for order in open_orders:
                         symbol = order.get('symbol')

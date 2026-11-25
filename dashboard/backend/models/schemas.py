@@ -49,6 +49,8 @@ class ErrorResponse(BaseModel):
 # ========================================
 
 class LedgerMetadata(BaseModel):
+    classic_cutover_ms: Optional[int] = None
+    mode_segments: Optional[list] = None
     manual_attribution_count: Optional[int] = None
     manual_closure_count: Optional[int] = None
     report_id: Optional[str] = None
@@ -267,6 +269,7 @@ class SymbolsResponse(BaseResponse):
 class EquityData(BaseModel):
     """合约账户净资产数据"""
 
+    account_mode: Optional[str] = None
     total_equity: str = Field(..., description="合约账户净资产（含未实现盈亏）")
     available_balance: str = Field("0", description="可用余额")
     open_positions: int = Field(0, description="当前持仓数（非零持仓）")

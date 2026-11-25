@@ -9,6 +9,8 @@ from decimal import Decimal, InvalidOperation
 
 from shared.accounting.stop_exit_evidence import fetch_verified_stop_execution
 from shared.position_entry_recovery import fetch_lot_fills
+from shared.accounting.runtime_cutover import runtime_start_ms
+from shared.binance_api import symbol_is_confirmed_flat
 
 
 def _positive_id(value):
@@ -60,7 +62,7 @@ def verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fi
     entry_qty = _positive_qty(entry_order.get("executedQty"))
     if entry_qty is None:
         return None
-    entry_trade_ids = set()
+    entry_by_trade = {}
     entry_sum = Decimal(0)
     anchor = None
     for fill in entry_fills:
@@ -69,11 +71,11 @@ def verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fi
         trade_id = _positive_id(fill.get("id"))
         time_ms = _positive_id(fill.get("time"))
         qty = _positive_qty(fill.get("qty"))
-        if (trade_id is None or trade_id in entry_trade_ids or time_ms is None
+        if (trade_id is None or trade_id in entry_by_trade or time_ms is None
                 or qty is None or _positive_id(fill.get("orderId")) != entry_id
                 or fill.get("symbol") != symbol or fill.get("side") != entry_order["side"]):
             return None
-        entry_trade_ids.add(trade_id)
+        entry_by_trade[trade_id] = (time_ms, qty)
         entry_sum += qty
         anchor = min(anchor, time_ms) if anchor is not None else time_ms
     if entry_sum != entry_qty or anchor is None or anchor >= stop_time:
@@ -90,14 +92,14 @@ def verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fi
         return None
     if (_positive_id(rows[0].get("orderId")) != entry_id
             or _positive_id(rows[0].get("time")) != anchor
-            or _positive_id(rows[-1].get("orderId")) != order_id
-            or _positive_id(rows[-1].get("time")) != stop_time):
+            or (_positive_id(rows[-1].get("time")) or 0) < stop_time):
         return None
     net = Decimal(0)
     seen = set()
     seen_entry = set()
     seen_stop = set()
     stop_sum = Decimal(0)
+    stop_last = 0
     direction = Decimal(1) if entry_order["side"] == "BUY" else Decimal(-1)
     for index, row in enumerate(rows):
         if not isinstance(row, dict):
@@ -108,23 +110,28 @@ def verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fi
         row_side = row.get("side")
         row_order = _positive_id(row.get("orderId"))
         if (trade_id is None or trade_id in seen or time_ms is None
-                or time_ms < anchor or time_ms > stop_time or qty is None
+                or time_ms < anchor or qty is None
+                or (row_side == entry_order["side"] and row_order != entry_id)
+                or (time_ms > stop_time and row_side != side)
                 or row.get("symbol") != symbol or row_side not in ("BUY", "SELL")
                 or row_order is None):
             return None
         seen.add(trade_id)
         if row_order == entry_id:
+            if row_side != entry_order["side"] or entry_by_trade.get(trade_id) != (time_ms, qty):
+                return None
             seen_entry.add(trade_id)
         if row_order == order_id:
             seen_stop.add(trade_id)
             stop_sum += qty
-            if row_side != side:
+            stop_last = max(stop_last, time_ms)
+            if row_side != side or time_ms > stop_time:
                 return None
         net += qty if row_side == "BUY" else -qty
         if index < len(rows) - 1 and net * direction <= 0:
             return None
-    if (net != 0 or seen_entry != entry_trade_ids
-            or seen_stop != expected_stop_ids or stop_sum != stop_qty):
+    if (net != 0 or seen_entry != set(entry_by_trade)
+            or seen_stop != expected_stop_ids or stop_sum != stop_qty or stop_last != stop_time):
         return None
     try:
         realized = Decimal(str(stop["realized_pnl"]))
@@ -163,9 +170,19 @@ async def fetch_verified_closed_stop_episode(client, binding):
         anchor = min(_positive_id(fill.get("time")) or 0 for fill in entry_fills)
     except AttributeError:
         return None
-    if anchor <= 0 or anchor >= stop["last_fill_time_ms"]:
+    cutover = runtime_start_ms(client)
+    if anchor <= 0 or anchor >= stop["last_fill_time_ms"] or (cutover is not None and anchor < cutover):
         return None
     lot_fills = await fetch_lot_fills(
         client, symbol, anchor, now_ms=stop["last_fill_time_ms"],
     )
-    return verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fills)
+    proof = verified_closed_stop_episode(binding, stop, entry_order, entry_fills, lot_fills)
+    if proof is not None:
+        return proof
+    # A partial STOP can leave a remainder closed later by the strategy. Require
+    # two independent flat inventories and no outstanding orders before fetching
+    # the extended episode. The validator rejects intervening flats and adds.
+    if not await symbol_is_confirmed_flat(client, symbol):
+        return None
+    extended = await fetch_lot_fills(client, symbol, anchor)
+    return verified_closed_stop_episode(binding, stop, entry_order, entry_fills, extended)

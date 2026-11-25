@@ -25,6 +25,8 @@ class FillExchange:
 
     async def place_stop(self, side, trigger, client_id):
         row = {"symbol": "ETHUSDT", "clientAlgoId": client_id,
+               "closePosition": True, "workingType": "MARK_PRICE",
+               "orderType": "STOP_MARKET", "positionSide": "BOTH",
                "algoId": 9, "algoStatus": "NEW", "side": side,
                "triggerPrice": str(trigger)}
         self.algo.append(row)
@@ -39,6 +41,31 @@ class FillExchange:
                "side": side, "price": str(price), "origQty": str(qty)}
         self.ordinary.append(row)
         return row
+
+
+@pytest.mark.asyncio
+async def test_partial_market_exit_event_after_rest_result_does_not_lock(tmp_path):
+    path = tmp_path / "fill.sqlite3"
+    migrate(path)
+    store = DecisionStore(path)
+    epoch = store.create_epoch("decision-1")
+    store.prepare_order(epoch, -1, "EXIT", "SELL", Decimal("1"),
+                        Decimal("0.056"), "eg-exit")
+    store.record_order("eg-exit", "42", "FILLED", Decimal("0.056"))
+    store.set_engine_state("EXITING", "awaiting stop terminal confirmation")
+    engine = GridEngine(store, FillExchange())
+    partial = {"e": "ORDER_TRADE_UPDATE", "o": {
+        "s": "ETHUSDT", "c": "eg-exit", "i": 42, "S": "SELL", "x": "TRADE",
+        "X": "PARTIALLY_FILLED", "l": "0.001", "z": "0.001", "L": "1626.21", "t": 11}}
+    final = dict(partial, o=dict(partial["o"], X="FILLED", l="0.055", z="0.056", t=12))
+    for event in (partial, final, partial):
+        assert await engine.on_order_update(
+            event, epoch_id=epoch, levels=(), filters=None,
+            stop_loss_low=Decimal("1460.09"), stop_loss_high=Decimal("2100"))
+    assert store.engine_state()["state"] == "EXITING"
+    assert store.get_order("eg-exit")["status"] == "FILLED"
+    assert len(store.fills("eg-exit")) == 2
+    store.close()
 
 
 @pytest.mark.asyncio
