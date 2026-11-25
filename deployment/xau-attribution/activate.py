@@ -70,6 +70,20 @@ def escape_compose(value):
     return value
 
 
+def single_service_config(original, service, config):
+    frozen = copy.deepcopy(original)
+    frozen['services'] = {service: copy.deepcopy(config)}
+    frozen['services'][service].pop('depends_on', None)
+    # Compose prunes unused named-volume definitions on rendering a reduced stack.
+    used = {mount['source'] for mount in config.get('volumes', []) if mount.get('type') == 'volume'}
+    volumes = {name: value for name, value in frozen.get('volumes', {}).items() if name in used}
+    if volumes:
+        frozen['volumes'] = volumes
+    else:
+        frozen.pop('volumes', None)
+    return frozen
+
+
 def freeze_compose(path, config):
     save(path, escape_compose(config))
     reparsed = json.loads(run(*compose_command(path), 'config', '--format', 'json'))
@@ -331,8 +345,7 @@ def activate(package):
         freeze_compose(baseline_path, original)
         command = compose_command(baseline_path)
         # Pin rollback to the exact local image ID, regardless of mutable original tags.
-        rollback = copy.deepcopy(original)
-        rollback['services'] = {service: copy.deepcopy(baseline)}
+        rollback = single_service_config(original, service, baseline)
         rollback['services'][service]['image'] = info['Image']
         rollback['services'][service].pop('depends_on', None)
         old_path = release / f'{service}.rollback.json'
@@ -365,9 +378,7 @@ def activate(package):
         for other in original['services']:
             if other != service:
                 require(original['services'][other] == resolved['services'][other], 'overlay changed another service')
-        frozen = copy.deepcopy(resolved)
-        frozen['services'] = {service: copy.deepcopy(after)}
-        frozen['services'][service].pop('depends_on', None)
+        frozen = single_service_config(resolved, service, after)
         new_path = release / f'{service}.activate.json'
         freeze_compose(new_path, frozen)
         plans.append((service, name, group, old_path, new_path, info['Image'], new_image['Id']))

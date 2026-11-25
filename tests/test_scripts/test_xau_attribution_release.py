@@ -156,3 +156,13 @@ def test_baseline_pins_exact_live_environment_without_current_env_additions():
     assert pinned['environment'] == {'CHANGED': 'original', 'INHERITED': 'original'}
     assert current['environment']['CHANGED'] == 'new'
     assert pinned['command'] == ['python']
+
+
+def test_single_service_snapshot_omits_unused_named_volume_definitions():
+    original = {'services': {'one': {'volumes': [{'type': 'bind', 'source': '/logs', 'target': '/logs'}], 'depends_on': {'db': {}}}, 'db': {}},
+                'volumes': {'db-data': {}}, 'networks': {'trading': {}}}
+    frozen = release.single_service_config(original, 'one', original['services']['one'])
+    assert set(frozen['services']) == {'one'}
+    assert 'depends_on' not in frozen['services']['one']
+    assert 'volumes' not in frozen
+    assert frozen['networks'] == original['networks']
