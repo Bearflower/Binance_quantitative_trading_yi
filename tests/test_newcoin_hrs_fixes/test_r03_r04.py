@@ -77,6 +77,7 @@ class FakeExchange:
         self.fills = list(fills or [])
         self.ticker = ticker
         self.bids = bids if bids is not None else [["99.9", "1"]]
+        self.get_open_orders = AsyncMock(return_value=[])
         self.orders = {}
         self.submissions = []
         self.cancel_all_calls = 0
@@ -274,16 +275,63 @@ class TestNewCoinClosePosition:
         assert client.submissions[0]["qty"] == Decimal("0.3")
         assert client.position == Decimal("0")
 
-    async def test_ac6_minus_2022_cancel_conditional_then_retry(self):
-        """AC6：-2022 被拒 → 先撤同向条件单再重试成功"""
+    async def test_ac6_minus_2022_reconciles_without_canceling_stop(self):
+        """全量平仓遇到短暂拒单，对账后重试并保留硬止损。"""
         client = FakeExchange(position=-1, step="0.001", reject_reduce_only_times=1,
                               fills=[{"executed": "1", "status": "FILLED"}])
         ex = _newcoin_executor(client)
 
         assert await ex._close_position("BTCUSDT", Decimal("1.0"), "止盈") is True
-        assert client.cancel_all_calls == 1
+        assert client.cancel_all_calls == 0
         assert client.position == Decimal("0")
         assert len(client.submissions) == 1  # 被拒的一笔不计入提交记录
+
+    @pytest.mark.parametrize("terminal", ["CANCELED", "NEW"])
+    async def test_triggered_tp_child_on_full_exit(self, terminal):
+        client = FakeExchange(position="-0.37", place_error=BinanceAPIError(-4118, "冲突"))
+        ex = _newcoin_executor(client)
+        ex.position_tracking = {}
+        ex.db.fetch_all = AsyncMock(return_value=[{"algo_id": 100}])
+        client.get_open_orders = AsyncMock(return_value=[{
+            "symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT", "reduceOnly": True,
+            "orderId": 467821, "status": "NEW",
+        }])
+        client.get_algo_order = AsyncMock(return_value={
+            "algoId": 100, "symbol": "BTCUSDT", "orderType": "TAKE_PROFIT",
+            "side": "BUY", "actualOrderId": "467821",
+        })
+
+        async def cancel(symbol, order_id):
+            client.position += Decimal("0.04")
+            client.orders[467821] = {"symbol": symbol, "orderId": 467821, "status": terminal}
+            client._place_error = None
+
+        client.cancel_order = AsyncMock(side_effect=cancel)
+        ok = await ex._close_position("BTCUSDT", Decimal("1"), "时间止损")
+        client.cancel_order.assert_awaited_once_with("BTCUSDT", "467821")
+        assert client.cancel_all_calls == 0
+        assert ok == (terminal == "CANCELED")
+        assert [s["qty"] for s in client.submissions] == (
+            [Decimal("0.33")] if ok else []
+        )
+
+    @pytest.mark.parametrize("unknown_order", [True, False])
+    async def test_unresolved_conflict_stops_submissions(self, unknown_order):
+        client = FakeExchange(position="-0.37", place_error=BinanceAPIError(-4118, "冲突"))
+        client.place_order = AsyncMock(wraps=client.place_order)
+        ex = _newcoin_executor(client)
+        if unknown_order:
+            client.get_open_orders.return_value = [{
+                "symbol": "BTCUSDT", "side": "BUY", "type": "LIMIT",
+                "reduceOnly": True, "orderId": 123,
+            }]
+            ex.position_tracking = {}
+            ex.db.fetch_all = AsyncMock(return_value=[])
+        assert not await ex._close_position("BTCUSDT", Decimal("1"), "时间止损")
+        assert client.place_order.await_count == (1 if unknown_order else 2)
+        assert client.cancel_order_calls == client.cancel_all_calls == 0
+        ex._update_short_position_closed.assert_not_awaited()
+        ex.notification.send.assert_awaited_once()
 
     async def test_market_fallback_submits_only_remaining(self):
         """限价阶段仅成交 0.3 → 市价兜底只提交剩余 0.7"""
