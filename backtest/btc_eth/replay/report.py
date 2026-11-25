@@ -17,6 +17,7 @@ import yaml
 
 from .counterfactual import pressure_test_final_equity
 from .entry_intent import INTENTS, normalize_intent
+from .ledger import write_trade_ledger
 
 logger = logging.getLogger(__name__)
 
@@ -569,10 +570,12 @@ def write_reports(
     except Exception as e:
         logger.warning("回放 config 加载失败（使用空 dict）：%s", e)
 
+    trade_ledger = write_trade_ledger(engine_result, run_manifest, output_dir)
+
     if set(run_manifest.get("config_hashes", {})) == {"xau_calibrated"}:
         return _write_calibrated_report(
             engine_result, run_manifest, output_dir, replay_cfg,
-            data_completeness or {},
+            data_completeness or {}, trade_ledger,
         )
 
     metrics_orig = compute_metrics(
@@ -607,6 +610,7 @@ def write_reports(
     json_report = {
         "run_id": run_id,
         "replay_run_id": replay_run_id,
+        "trade_ledger": trade_ledger,
         "engine_version": engine_meta["engine_version"],
         "manifest_sha256": engine_meta["manifest_sha256"],
         "input_cutoff_at": engine_meta["input_cutoff_at"],
@@ -636,12 +640,12 @@ def write_reports(
         f.write(md)
 
     logger.info("报告已写入：%s, %s", md_path, json_path)
-    return {"md_path": md_path, "json_path": json_path, "admission": admission_result["admission"]}
+    return {"md_path": md_path, "json_path": json_path, "admission": admission_result["admission"], "trade_ledger": trade_ledger}
 
 
 def _write_calibrated_report(
     engine_result: Dict[str, Any], run_manifest: Dict[str, Any], output_dir: str,
-    replay_cfg: Dict[str, Any], data_completeness: Dict[str, Any],
+    replay_cfg: Dict[str, Any], data_completeness: Dict[str, Any], trade_ledger: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Calibrated profile has its own admission; never compare it with ETH baselines."""
     import os
@@ -664,6 +668,7 @@ def _write_calibrated_report(
     result = {
         "run_id": run_manifest.get("run_id", "unknown"),
         "replay_run_id": meta["replay_run_id"],
+        "trade_ledger": trade_ledger,
         "engine_version": meta["engine_version"],
         "manifest_sha256": meta["manifest_sha256"],
         "input_cutoff_at": meta["input_cutoff_at"],
@@ -687,6 +692,7 @@ def _write_calibrated_report(
         stream.write("# XAUUSDT MTCPS 黄金校准版影子回放报告\n\n")
         stream.write(f"- run_id: `{result['run_id']}`\n")
         stream.write(f"- replay_run_id: `{result['replay_run_id']}`\n")
+        stream.write(_ledger_markdown(trade_ledger) + "\n")
         stream.write(f"- 准入结论: **{admission}**\n")
         stream.write(f"- 决策小时缺口: {len(data_completeness.get('decision_missing_hours', []))}\n")
         audit = data_completeness.get("funding_schedule_audit")
@@ -702,7 +708,7 @@ def _write_calibrated_report(
         stream.write("## 准入门槛\n\n")
         for name, check in metrics["admission_checks"].items():
             stream.write(f"- {name}: {'通过' if check['pass'] else '未通过'}\n")
-    return {"md_path": md_path, "json_path": json_path, "admission": admission}
+    return {"md_path": md_path, "json_path": json_path, "admission": admission, "trade_ledger": trade_ledger}
 
 
 def _build_markdown(report: Dict[str, Any]) -> str:
@@ -713,6 +719,8 @@ def _build_markdown(report: Dict[str, Any]) -> str:
     lines.append("")
     lines.append(f"- **run_id**: `{report['run_id']}`")
     lines.append(f"- **replay_run_id**: `{report['replay_run_id']}`")
+    if report.get("trade_ledger"):
+        lines.append(_ledger_markdown(report["trade_ledger"]))
     lines.append(f"- **engine_version**: {report['engine_version']}")
     lines.append(f"- **manifest_sha256**: `{report['manifest_sha256']}`")
     lines.append(f"- **input_cutoff_at**: {report['input_cutoff_at']}")
@@ -918,3 +926,10 @@ def _intent_markdown(metrics):
                   group["net_pnl"], group["fee_paid"], group["funding_fee"], group["slippage_cost"]]
         lines.append("| " + " | ".join(str(value) for value in values) + " |")
     return lines + [""]
+
+
+def _ledger_markdown(reference):
+    from pathlib import Path
+    name = Path(reference["path"]).name
+    return (f"- 交易明细账本: [{name}]({name})（{reference['record_count']} 条）；"
+            f"SHA-256: `{reference['sha256']}`")
