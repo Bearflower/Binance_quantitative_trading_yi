@@ -19,6 +19,9 @@ COPY shared/ /app/shared/
 # 复制策略代码（激进版独立实现，main.py 从本目录导入 strategy，不依赖原版目录）
 COPY strategies/btc_eth_aggressive/ /app/strategies/btc_eth_aggressive/
 
+# Shared entry risk policy imports the HRS budget and ownership modules.
+COPY strategies/hrs/ /app/strategies/hrs/
+
 # 复制版本标记文件
 COPY VERSION /app/VERSION
 
