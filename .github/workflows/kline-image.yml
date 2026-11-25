@@ -1,17 +1,39 @@
-name: Publish reviewed K-line collector
+name: Build audited classic trading images
 on: workflow_dispatch
 permissions:
   contents: read
   packages: write
 jobs:
   publish:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/codex/classic-trading-build'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: btc-eth, base: ghcr.io/bearflower/trading-btc-eth@sha256:c3c87e772d3c48bc2b1f549b6418fe1aaf47c0877705573f2fbf93a189cc7820}
+          - {name: btc-eth-aggr, base: ghcr.io/bearflower/trading-btc-eth-aggr@sha256:953fe23debc920006296c721a7ac4154afe606b638f5527d719f52dddf741277}
+          - {name: hrs, base: ghcr.io/bearflower/trading-hrs@sha256:28b2f716162c82d5547949666a6eff545a07c88ce7c89d05abd4d4c0db98a3bb}
+          - {name: new-coin, base: ghcr.io/bearflower/trading-new-coin@sha256:8191c042a14c363da9e0b9907fb8c70a8b29c5cf82a4976d75b26a3bc402c9d7}
+          - {name: grid, base: ghcr.io/bearflower/trading-grid@sha256:0a6ddf5f6be5735929c0fe575028429482603d1933090fac2e559f1b947c0eff}
+          - {name: ai-tuner, base: ghcr.io/bearflower/trading-ai-tuner@sha256:96df9620d1beee3661dd2f4963d2f14d9f9bd3857fff6baab64115cb7af25271}
+    env:
+      SOURCE_SHA: c30a0bd73e54121e0c85b6a9a88b5849be962af9
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.SOURCE_SHA }}
       - name: Stamp release
         run: |
-          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$GITHUB_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
+          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
+      - name: Prepare runtime overlay on reviewed production image
+        run: |
+          git fetch -q --depth=1 origin 89160896bf9cef194adefe74ed2383a47bc77aa6
+          test -z "$(git diff --diff-filter=D --name-only 89160896bf9cef194adefe74ed2383a47bc77aa6 HEAD -- shared scripts strategies ai_tuner)"
+          mkdir -p runtime-layer/overlay
+          git diff --name-only 89160896bf9cef194adefe74ed2383a47bc77aa6 HEAD -- shared scripts strategies ai_tuner | while IFS= read -r file; do cp --parents "$file" runtime-layer/overlay/; done
+          cp VERSION runtime-layer/overlay/
+          printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'ARG HRS_IMAGE_REVISION' 'ENV HRS_IMAGE_REVISION=${HRS_IMAGE_REVISION}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -20,12 +42,16 @@ jobs:
       - uses: docker/build-push-action@v5
         id: build
         with:
-          context: .
-          file: services/kline_service/Dockerfile
+          context: runtime-layer
+          file: runtime-layer/Dockerfile
+          build-args: |
+            BASE=${{ matrix.base }}
+            HRS_IMAGE_REVISION=${{ env.SOURCE_SHA }}
+          labels: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/bearflower/trading-kline-service:sha-${{ github.sha }}-r${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ghcr.io/bearflower/trading-${{ matrix.name }}:classic-live-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
       - name: Record digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: echo "Collector image digest $DIGEST" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "PM image digest $DIGEST" >> "$GITHUB_STEP_SUMMARY"
