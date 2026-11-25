@@ -53,6 +53,12 @@ def validate(manifest):
         identifier(role)
         if not set(config.get('allowed_flags', [])) <= FLAGS:
             raise ValueError('invalid role flags')
+        if 'database' in config:
+            database=config['database']
+            if (set(database) != {'required','allowed'}
+                    or not set(database['required']) <= set(database['allowed'])
+                    or not set(database['allowed']) <= {'CONNECT','TEMPORARY'}):
+                raise ValueError('invalid database privileges')
         for schema, privs in config['schemas'].items():
             if schema not in schemas or not set(privs) <= {'USAGE','CREATE'}:
                 raise ValueError('invalid schema permission')
@@ -96,6 +102,15 @@ def validate(manifest):
                 raise ValueError('trigger function must be schema qualified')
             for part in lock['function'].split('.'):
                 identifier(part)
+    if 'bootstrap_identity' in manifest:
+        bootstrap=manifest['bootstrap_identity']
+        if (bootstrap.get('bootstrap_role') != 'trading_bootstrap_admin'
+                or bootstrap.get('application_role') != 'trading_user'
+                or bootstrap.get('oid') != 10
+                or not isinstance(bootstrap.get('allow_legacy_demoted'),bool)):
+            raise ValueError('invalid bootstrap identity contract')
+        if bootstrap['bootstrap_role'] in roles:
+            raise ValueError('bootstrap administrator must not be a runtime role')
     return manifest
 
 
@@ -111,6 +126,18 @@ DECLARE
  object_kind text; object_name text; actual boolean; wanted boolean; lock_rule jsonb;
  mutation_rejected boolean;
 BEGIN
+ IF doc ? 'bootstrap_identity' THEN
+  IF EXISTS(SELECT 1 FROM pg_roles WHERE rolname=doc->'bootstrap_identity'->>'bootstrap_role') THEN
+   IF NOT EXISTS(SELECT 1 FROM pg_authid WHERE oid=10 AND rolname=doc->'bootstrap_identity'->>'bootstrap_role' AND rolsuper AND NOT rolcanlogin AND rolpassword IS NULL)
+      OR EXISTS(SELECT 1 FROM pg_auth_members WHERE roleid=10 OR member=10)
+      OR NOT EXISTS(SELECT 1 FROM pg_roles WHERE rolname=doc->'bootstrap_identity'->>'application_role' AND oid<>10) THEN
+    issues := issues || jsonb_build_array(jsonb_build_object('code','bootstrap_identity_mismatch'));
+   END IF;
+  ELSIF NOT (coalesce((doc->'bootstrap_identity'->>'allow_legacy_demoted')::boolean,false)
+        AND EXISTS(SELECT 1 FROM pg_roles WHERE oid=10 AND rolname=doc->'bootstrap_identity'->>'application_role' AND NOT rolsuper)) THEN
+   issues := issues || jsonb_build_array(jsonb_build_object('code','bootstrap_identity_missing'));
+  END IF;
+ END IF;
  FOR role_name,role_config IN SELECT * FROM jsonb_each(doc->'roles') LOOP
   SELECT * INTO role_row FROM pg_roles WHERE rolname=role_name;
   IF NOT FOUND THEN
@@ -136,6 +163,23 @@ BEGIN
   END IF;
   IF EXISTS(SELECT 1 FROM jsonb_array_elements(doc->'objects') r JOIN pg_roles p ON p.rolname=r->>'owner' WHERE p.rolname<>role_name AND NOT doc->'roles' ? p.rolname AND pg_has_role(role_name,p.oid,'MEMBER')) THEN
    issues := issues || jsonb_build_array(jsonb_build_object('code','owner_role_membership','role',role_name));
+  END IF;
+  IF role_config ? 'database' THEN
+   FOREACH priv IN ARRAY ARRAY['CONNECT','TEMPORARY'] LOOP
+    actual := has_database_privilege(role_name,current_database(),priv);
+    wanted := role_config->'database'->'required' ? priv;
+    permitted := role_config->'database'->'allowed';
+    IF actual AND NOT permitted ? priv THEN
+     issues := issues || jsonb_build_array(jsonb_build_object('code','unexpected_database_privilege','role',role_name,'privilege',priv));
+    END IF;
+    IF has_database_privilege(role_name,current_database(),priv||' WITH GRANT OPTION') THEN
+     issues := issues || jsonb_build_array(jsonb_build_object('code','unexpected_database_grant_option','role',role_name,'privilege',priv));
+    END IF;
+    IF wanted AND NOT actual THEN
+     IF repair THEN EXECUTE format('GRANT %s ON DATABASE %I TO %I',priv,current_database(),role_name);
+     ELSE issues := issues || jsonb_build_array(jsonb_build_object('code','missing_privilege','role',role_name,'object',current_database(),'privilege',priv)); END IF;
+    END IF;
+   END LOOP;
   END IF;
   FOR schema_name IN SELECT jsonb_array_elements_text(doc->'schemas') LOOP
    permitted := coalesce(role_config->'schemas'->schema_name,'[]');

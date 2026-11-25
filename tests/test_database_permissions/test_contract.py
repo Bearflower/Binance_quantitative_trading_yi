@@ -190,6 +190,8 @@ def test_cutover_equity_anchor_is_account_scoped_and_append_only(pg):
             result = sql('SET ROLE trading_migration_admin;\n' + migration.read_text())
             assert result.returncode == 0, result.stderr
         contract = json.loads((ROOT/'database/postgres/permissions.json').read_text())
+        # This fixture tests one table, not the production cluster identity.
+        contract.pop('bootstrap_identity', None)
         contract['objects'] = [o for o in contract['objects'] if o.get('name') == 'account_mode_equity']
         contract['schemas'] = ['trading']
         contract['roles'] = {'trading_user': {'required': True, 'schemas': {'trading': ['USAGE']}}}

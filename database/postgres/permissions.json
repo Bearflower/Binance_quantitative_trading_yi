@@ -51,6 +51,16 @@
           "USAGE",
           "CREATE"
         ]
+      },
+      "database": {
+        "required": [
+          "CONNECT",
+          "TEMPORARY"
+        ],
+        "allowed": [
+          "CONNECT",
+          "TEMPORARY"
+        ]
       }
     },
     "ai_tuner_snapshot_writer": {
@@ -1745,6 +1755,102 @@
         "trading_user": "legacy_sequence"
       },
       "note": "Explicit existing Unicode asset table or reviewed replay read exception; exact name takes precedence over dynamic naming rule."
+    },
+    {
+      "schema": "trading",
+      "name": "bootstrap_autovacuum_probe",
+      "kind": "table",
+      "owner": "trading_migration_admin",
+      "required": false,
+      "grants": {},
+      "note": "Optional short-lived native-autovacuum proof table. Admin-only synthetic rows; never business data. Created and removed only by the controlled bootstrap repair runbook."
     }
-  ]
+  ],
+  "bootstrap_identity": {
+    "bootstrap_role": "trading_bootstrap_admin",
+    "application_role": "trading_user",
+    "oid": 10,
+    "allow_legacy_demoted": true,
+    "database": "trading_platform",
+    "owned_schemas": [
+      "btc_eth",
+      "btc_eth_aggressive",
+      "grid",
+      "hrs",
+      "new_coin",
+      "research",
+      "trading"
+    ],
+    "owned_routines": [],
+    "owned_types": [],
+    "default_privileges": [
+      {
+        "creator": "trading_user",
+        "schema": "research",
+        "kind": "TABLES",
+        "grantee": "trading_user",
+        "privileges": [
+          "DELETE",
+          "INSERT",
+          "SELECT",
+          "UPDATE"
+        ]
+      },
+      {
+        "creator": "trading_user",
+        "schema": "research",
+        "kind": "SEQUENCES",
+        "grantee": "trading_user",
+        "privileges": [
+          "SELECT",
+          "USAGE"
+        ]
+      },
+      {
+        "creator": "trading_migration_admin",
+        "schema": "research",
+        "kind": "TABLES",
+        "grantee": "trading_user",
+        "privileges": [
+          "DELETE",
+          "INSERT",
+          "SELECT",
+          "UPDATE"
+        ]
+      },
+      {
+        "creator": "trading_migration_admin",
+        "schema": "research",
+        "kind": "SEQUENCES",
+        "grantee": "trading_user",
+        "privileges": [
+          "SELECT",
+          "USAGE"
+        ]
+      },
+      {
+        "creator": "trading_migration_admin",
+        "schema": "hrs",
+        "kind": "TABLES",
+        "grantee": "trading_user",
+        "privileges": [
+          "DELETE",
+          "INSERT",
+          "SELECT",
+          "UPDATE"
+        ]
+      },
+      {
+        "creator": "trading_migration_admin",
+        "schema": "hrs",
+        "kind": "SEQUENCES",
+        "grantee": "trading_user",
+        "privileges": [
+          "SELECT",
+          "USAGE"
+        ]
+      }
+    ],
+    "note": "Controlled OID10 split: legacy demoted state is allowed for preflight/rollback only. The separated bootstrap is SUPERUSER NOLOGIN with no password/memberships; application role remains subject to the unchanged runtime contract."
+  }
 }
