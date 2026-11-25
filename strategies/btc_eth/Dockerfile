@@ -31,3 +31,6 @@ ENV PYTHONUNBUFFERED=1
 
 # 运行策略
 CMD ["python", "-m", "strategies.btc_eth.main"]
+
+# Shared entry risk policy requires the HRS budget and ownership modules.
+COPY strategies/hrs/ /app/strategies/hrs/

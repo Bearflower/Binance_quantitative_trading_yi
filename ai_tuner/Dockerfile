@@ -54,3 +54,6 @@ USER 1000:1000
 
 # 启动命令
 CMD ["python", "/app/ai_tuner/main.py"]
+
+# Shared entry risk policy requires the HRS budget and ownership modules.
+COPY strategies/hrs/ /app/strategies/hrs/
