@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -17,6 +18,8 @@ from .repository import FundingScheduleAttempt, MissingHistoricalUniverse
 logger = logging.getLogger(__name__)
 _REQUIRED_MTPCS_SYMBOLS = frozenset({"BTCUSDT", "ETHUSDT"})
 _XAU_SYMBOL = "XAUUSDT"
+_XAU_REFRESH_ATTEMPTS = 3
+_XAU_REFRESH_TIMEOUT_SECONDS = 10
 
 
 @dataclass(frozen=True)
@@ -107,18 +110,44 @@ class FundingScheduleCollector:
                     premium_rows=premium_rows,
                     funding_info_rows=funding_info_rows,
                 )
+                xau = next(item for item in observations if item.symbol == _XAU_SYMBOL)
+                if xau.next_funding_time <= received_at:
+                    raise FundingScheduleDataError(
+                        "INVALID_NEXT_FUNDING_TIME",
+                        "XAUUSDT forecast expired before receipt",
+                        symbol=_XAU_SYMBOL,
+                    )
             except FundingScheduleDataError as error:
-                if error.symbol != _XAU_SYMBOL or _XAU_SYMBOL in required_symbols:
+                if error.symbol != _XAU_SYMBOL:
                     raise
-                logger.warning("XAUUSDT funding schedule unavailable for %s: %s",
-                               scheduled_at.isoformat(), error.code)
-                payload_hash, observations = normalize_observations(
-                    scheduled_at=scheduled_at,
-                    received_at=received_at,
-                    required_symbols=required_symbols,
-                    premium_rows=premium_rows,
-                    funding_info_rows=funding_info_rows,
-                )
+                refreshed = None
+                if error.code == "INVALID_NEXT_FUNDING_TIME":
+                    # This error follows numeric timestamp and source freshness
+                    # validation: target <= source <= receipt is also expired.
+                    # Validate all other required symbols before trying a new
+                    # batch, including symbols sorted after XAUUSDT.
+                    normalize_observations(
+                        scheduled_at=scheduled_at,
+                        received_at=received_at,
+                        required_symbols=required_symbols - {_XAU_SYMBOL},
+                        premium_rows=premium_rows,
+                        funding_info_rows=funding_info_rows,
+                    )
+                    refreshed = await self._refresh_xau(scheduled_at, required_symbols)
+                if refreshed is not None:
+                    request_started_at, received_at, payload_hash, observations = refreshed
+                else:
+                    if _XAU_SYMBOL in required_symbols:
+                        raise
+                    logger.warning("XAUUSDT funding schedule unavailable for %s: %s",
+                                   scheduled_at.isoformat(), error.code)
+                    payload_hash, observations = normalize_observations(
+                        scheduled_at=scheduled_at,
+                        received_at=received_at,
+                        required_symbols=required_symbols,
+                        premium_rows=premium_rows,
+                        funding_info_rows=funding_info_rows,
+                    )
         except FundingScheduleDataError as error:
             return await self._failed(
                 scheduled_at, attempt_id, request_started_at, received_at,
@@ -136,6 +165,51 @@ class FundingScheduleCollector:
         )
         await self.repository.store_attempt(attempt, observations)
         return CollectionResult("success", None, len(observations))
+
+    async def _refresh_xau(self, scheduled_at: datetime, required_symbols):
+        """Replace a boundary batch only with a complete, current public capture.
+
+        Failed refreshes never change the initial batch's evidence or timing.
+        No historical request, guessed interval, or previously saved row can
+        supply a replacement forecast.
+        """
+        deadline = scheduled_at + timedelta(seconds=120)
+
+        async def fetch_batch():
+            premiums = await self.binance._request("GET", "/fapi/v1/premiumIndex", signed=False)
+            if not _current_slot(scheduled_at, self.clock()):
+                raise asyncio.TimeoutError("funding refresh slot expired")
+            intervals = await self.binance._request("GET", "/fapi/v1/fundingInfo", signed=False)
+            return premiums, intervals
+
+        for _ in range(_XAU_REFRESH_ATTEMPTS):
+            now = self.clock()
+            if not _current_slot(scheduled_at, now) or (deadline - now).total_seconds() <= 1:
+                break
+            await asyncio.sleep(1)
+            started = self.clock()
+            if not _current_slot(scheduled_at, started) or started >= deadline:
+                break
+            timeout = min(_XAU_REFRESH_TIMEOUT_SECONDS, (deadline - started).total_seconds())
+            try:
+                premiums, intervals = await asyncio.wait_for(fetch_batch(), timeout=timeout)
+                received = self.clock()
+                if not _current_slot(scheduled_at, received):
+                    break
+                payload_hash, observations = normalize_observations(
+                    scheduled_at=scheduled_at,
+                    received_at=received,
+                    required_symbols=required_symbols | {_XAU_SYMBOL},
+                    premium_rows=premiums,
+                    funding_info_rows=intervals,
+                )
+                xau = next(item for item in observations if item.symbol == _XAU_SYMBOL)
+                if xau.next_funding_time > received:
+                    return started, received, payload_hash, observations
+            except Exception as error:
+                logger.warning("XAUUSDT funding refresh unavailable for %s: %s",
+                               scheduled_at.isoformat(), type(error).__name__)
+        return None
 
     async def _failed(
         self, scheduled_at: datetime, attempt_id: UUID,

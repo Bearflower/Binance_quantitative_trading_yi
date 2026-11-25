@@ -16,6 +16,7 @@ from typing import Dict, List, Optional, Any
 import yaml
 
 from .counterfactual import pressure_test_final_equity
+from .entry_intent import INTENTS, normalize_intent
 
 logger = logging.getLogger(__name__)
 
@@ -86,6 +87,9 @@ def _aggregate_positions(trades: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         result.append({
             "position_id": pid,
+            "entry_intent": (normalize_intent(first.get("entry_intent"))
+                             if len({normalize_intent(t.get("entry_intent")) for t in exits_sorted}) == 1
+                             else "unknown"),
             "entry_time": entry_time,
             "entry_price": first.get("entry_price"),
             "exit_time": exit_time,
@@ -319,6 +323,7 @@ def compute_metrics(
     )
 
     return {
+        "entry_intent_breakdown": _intent_breakdown(trades, closed_trades, decision_stats),
         "n_closed_trades": n_closed,
         "n_unfilled": n_unfilled,
         # P2 增强：虚拟订单总数 / 成交率 / 截止未到期挂单数
@@ -693,6 +698,7 @@ def _write_calibrated_report(
         stream.write(f"- 已结虚拟交易: {metrics['n_closed_trades']}\n")
         stream.write(f"- 净盈亏: {metrics['net_pnl']} USDT\n")
         stream.write(f"- 最大回撤: {metrics['max_drawdown_pct']:.2f}%\n\n")
+        stream.write("\n".join(_intent_markdown(metrics)) + "\n\n")
         stream.write("## 准入门槛\n\n")
         for name, check in metrics["admission_checks"].items():
             stream.write(f"- {name}: {'通过' if check['pass'] else '未通过'}\n")
@@ -735,6 +741,7 @@ def _build_markdown(report: Dict[str, Any]) -> str:
         m = report[pid]
         lines.append(f"## {label} 指标")
         lines.append("")
+        lines.extend(_intent_markdown(m))
         lines.append(f"| 指标 | 值 |")
         lines.append(f"|------|----|")
         lines.append(f"| 有效已结交易 | {m['n_closed_trades']} |")
@@ -863,3 +870,51 @@ def _build_markdown(report: Dict[str, Any]) -> str:
         lines.append("")
 
     return "\n".join(lines)
+
+
+def _intent_breakdown(trades, closed_trades, decision_stats):
+    """Partition the existing ledger, not independent accounts or admission runs."""
+    stats = decision_stats or {}
+    candidates = stats.get("entry_intent_candidates")
+    if not isinstance(candidates, dict):
+        candidates = {"unknown": stats.get("candidate", 0)}
+    result = {}
+    for intent in INTENTS:
+        closed = [row for row in closed_trades if normalize_intent(row.get("entry_intent")) == intent]
+        unfilled = [row for row in trades if not row.get("filled")
+                    and normalize_intent(row.get("entry_intent")) == intent]
+        rejected = sum(str(row.get("unfilled_reason", "")).startswith("rejected:") for row in unfilled)
+        total = len(closed) + len(unfilled) - rejected
+        result[intent] = {
+            "n_candidates": candidates.get(intent, 0),
+            "n_rejected_candidates": rejected,
+            "n_total_virtual_orders": total,
+            "n_filled_orders": len(closed),
+            "n_closed_trades": len(closed),
+            "n_pending_at_cutoff": sum(row.get("unfilled_reason") == "pending_at_cutoff" for row in unfilled),
+            "fill_rate": len(closed) / total if total else None,
+            "net_pnl": str(sum((_d(row.get("net_pnl")) for row in closed), Decimal("0"))),
+            "fee_paid": str(sum((max(-_d(row.get("fee")), Decimal("0")) for row in closed), Decimal("0"))),
+            "funding_fee": str(sum((_d(row.get("funding_fee")) for row in closed), Decimal("0"))),
+            "slippage_cost": str(sum((max(-_d(row.get("slippage")), Decimal("0")) for row in closed), Decimal("0"))),
+        }
+    return result
+
+
+def _intent_markdown(metrics):
+    groups = metrics.get("entry_intent_breakdown", {})
+    lines = ["### 入场类型（仅分组统计，共享本版本权益和风控）", "",
+             "历史无明确路由标记的事件计为未知；分组不单独判定准入。手续费与滑点为正成本，资金费正值为收入。", "",
+             "| 类型 | 信号数 | 风控拒绝 | 订单数 | 成交数 | 截止挂单 | 成交率 | 已结仓位 | 净盈亏 | 手续费 | 资金费 | 滑点 |",
+             "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|"]
+    for intent, label in (("trend", "趋势"), ("mean_reversion", "价值回归"), ("unknown", "未知")):
+        group = groups.get(intent)
+        if group is None:
+            continue
+        rate = "不可计算" if group["fill_rate"] is None else f"{group['fill_rate']:.1%}"
+        values = [label, group["n_candidates"], group["n_rejected_candidates"],
+                  group["n_total_virtual_orders"], group["n_filled_orders"],
+                  group["n_pending_at_cutoff"], rate, group["n_closed_trades"],
+                  group["net_pnl"], group["fee_paid"], group["funding_fee"], group["slippage_cost"]]
+        lines.append("| " + " | ".join(str(value) for value in values) + " |")
+    return lines + [""]

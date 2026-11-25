@@ -1291,13 +1291,16 @@ class BTCEthStrategy:
         # 4. 入场检查（v6.22：根据市场状态分流）
         atr = Decimal(str(indicators['1h']['ATR'].iloc[-1]))
         strategy_mode = market_behavior.get('strategy_mode', 'trend')
+        entry_route_fallback = 'strategy_mode' not in market_behavior
         if strategy_mode == 'ranging':
+            entry_intent = 'mean_reversion'
             entry_pass, entry_result = self._check_ranging_entry(symbol, indicators, klines)
             if not entry_pass:
                 logger.info(f"{symbol} 震荡入场未通过: {entry_result}")
                 return None, f"震荡入场: {entry_result}"
             direction = entry_result
         else:
+            entry_intent = 'trend'
             trend_pass, trend_result = self._check_trend_filter(symbol, indicators, klines)
             if not trend_pass:
                 logger.info(f"{symbol} 趋势过滤未通过: {trend_result}")
@@ -1402,6 +1405,8 @@ class BTCEthStrategy:
             'initial_stop_loss': initial_stop_loss,
             'atr': atr,
             'market_state': market_state_name,
+            'entry_intent': entry_intent,
+            'entry_route_fallback': entry_route_fallback,
             'price_change_1h': compute_1h_return(klines['1h']),
             'tp1_price': self._calculate_tp_price(current_price, atr, direction, 1, grade),
             'tp2_price': self._calculate_tp_price(current_price, atr, direction, 2, grade),

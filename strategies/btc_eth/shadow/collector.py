@@ -884,8 +884,14 @@ class ShadowCollector:
         tp1_mult = risk_cfg.get("partial_take_profit", {}).get("tp1_atr_multiplier") if atr else None
         tp2_mult = risk_cfg.get("partial_take_profit", {}).get("tp2_atr_multiplier") if atr else None
 
+        # Record only explicit route evidence; market_state does not identify entry intent.
+        entry_intent = signal_components.get("entry_intent")
+        if not isinstance(entry_intent, str) or entry_intent not in ("trend", "mean_reversion"):
+            entry_intent = "unknown"
         feature_snapshot = {
             "market_state": signal_components.get("market_state"),
+            "entry_intent": entry_intent,
+            "entry_route_fallback": signal_components.get("entry_route_fallback"),
             "atr": float(atr) if atr is not None else None,
             "price_change_1h": float(signal_components.get("price_change_1h", 0)),
         }

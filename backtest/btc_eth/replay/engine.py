@@ -29,6 +29,7 @@ import yaml
 from shared.config_loader import compute_config_hash
 
 from . import ENGINE_VERSION
+from .entry_intent import INTENTS, event_intent, normalize_intent
 from .matching import (
     round_price, round_quantity, clamp_notional,
     market_fill_price, parse_symbol_filters, find_first_crossing_index,
@@ -377,6 +378,7 @@ class ReplayEngine:
             per_profile[pid] = {
                 "scheduled_runs": 0,
                 "candidate": 0,
+                "entry_intent_candidates": dict.fromkeys(INTENTS, 0),
                 "no_signal": 0,
                 "analysis_error": 0,
                 "no_signal_reasons": {},  # reason_code -> count
@@ -394,6 +396,7 @@ class ReplayEngine:
             per_profile[pid]["scheduled_runs"] += 1
             if decision == "candidate":
                 per_profile[pid]["candidate"] += 1
+                per_profile[pid]["entry_intent_candidates"][event_intent(ev)] += 1
             elif decision == "analysis_error":
                 per_profile[pid]["analysis_error"] += 1
             else:
@@ -431,6 +434,7 @@ class ReplayEngine:
             per_profile_out[pid] = {
                 "scheduled_runs": total,
                 "candidate": d["candidate"],
+                "entry_intent_candidates": d["entry_intent_candidates"],
                 "no_signal": d["no_signal"],
                 "analysis_error": d["analysis_error"],
                 "analysis_success_rate": success_rate,
@@ -735,6 +739,7 @@ class ReplayEngine:
         self.replay_trades[profile_id].append({
             # 阻断 #5：未成交明细也带 position_id（报告聚合时 position_id is None 的不算）
             "position_id": order.get("position_id"),
+            "entry_intent": event_intent(order.get("source_event") or {}),
             "entry_time": _parse_ts(order["opened_at"]).isoformat(),
             "entry_price": str(order["limit_price"]),
             "direction": order["direction"],
@@ -1277,6 +1282,7 @@ class ReplayEngine:
         position_id = pos.get("position_id")
         self.replay_trades[profile_id].append({
             "position_id": position_id,
+            "entry_intent": normalize_intent(pos.get("entry_intent")),
             "entry_time": _parse_ts(pos["opened_at"]).isoformat(),
             "entry_price": str(entry_price),
             "exit_time": at.isoformat(),
@@ -1465,6 +1471,7 @@ class ReplayEngine:
                 "symbol": symbol,
                 "filled": False,
                 "unfilled_reason": f"rejected:{gate['rejection_reasons']}",
+                "entry_intent": event_intent(event),
                 "exit_reason": None,
                 "net_pnl": "0",
                 "fee": "0",
@@ -1674,6 +1681,7 @@ class ReplayEngine:
         # （state.on_entry_approved 不存 _stop_loss_atr_multiplier，由引擎直接写入 pos 字典）
         if state.open_position is not None:
             state.open_position["position_id"] = position_id
+            state.open_position["entry_intent"] = event_intent(event)
             if stop_loss_atr_multiplier is not None:
                 state.open_position["_stop_loss_atr_multiplier"] = stop_loss_atr_multiplier
 
