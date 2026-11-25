@@ -163,9 +163,9 @@ def capture_configuration_identity(strategy_dir, config, metadata, *, params_pat
         overlay_raw = (folder/'tuning_overrides'/f'{requested}.yaml').read_bytes() if requested else b''
         overlay = yaml.safe_load(overlay_raw) if overlay_raw else None
         applied = metadata.get('applied_overrides_version')
-        effective = deep_merge(base, overlay) if applied else base
-        if applied and (applied != requested or not isinstance(overlay, dict) or not overlay):
+        if applied and (applied != requested or not isinstance(overlay, dict)):
             raise ValueError()
+        effective = deep_merge(base, overlay) if applied else base
         if compute_config_hash(effective) != metadata['config_hash'] or compute_config_hash(config) != metadata['config_hash']:
             raise ValueError()
         digest = lambda raw: hashlib.sha256(raw).hexdigest()

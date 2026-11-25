@@ -119,13 +119,17 @@ async def test_unexpected_collector_exit_is_supervised_and_strategy_is_cancelled
 
 
 @pytest.mark.asyncio
-async def test_main_refreshes_then_closes_collector_before_database_disconnect(monkeypatch):
+@pytest.mark.parametrize('evidence_enabled', [False, True])
+async def test_main_refreshes_then_closes_collector_before_database_disconnect(monkeypatch, tmp_path, evidence_enabled):
     for name in ('BINANCE_API_KEY','BINANCE_API_SECRET','KLINE_SERVICE_URL','NOTIFICATION_SERVICE_URL',
                  'DATABASE_HOST','DATABASE_PORT','DATABASE_NAME','DATABASE_USER','DATABASE_PASSWORD'):
         monkeypatch.setenv(name,'5432' if name=='DATABASE_PORT' else 'test')
     monkeypatch.delenv('AI_TUNER_SNAPSHOT_DB_USER',raising=False)
     monkeypatch.setenv('HRS_EQUITY_GATE_ENABLED','1')
     monkeypatch.setenv('ENTRY_EQUITY_GATE_STRATEGIES','hrs')
+    monkeypatch.setenv('HRS_EVIDENCE_CAPTURE_ENABLED', '1' if evidence_enabled else '0')
+    monkeypatch.setenv('HRS_IMAGE_REVISION', 'a'*40)
+    monkeypatch.setenv('HRS_RELEASE_SHA', 'a'*40)
     events=[]
     def client():
         obj=MagicMock()
@@ -152,12 +156,27 @@ async def test_main_refreshes_then_closes_collector_before_database_disconnect(m
     monkeypatch.setattr(hrs_main,'HrsEquityService',MagicMock(return_value=service),raising=False)
     monkeypatch.setattr(hrs_main,'TradeLogger',MagicMock(return_value=SimpleNamespace(ensure_table_exists=AsyncMock())))
     monkeypatch.setattr(hrs_main.condition_orders,'ensure_table',AsyncMock())
-    monkeypatch.setattr(hrs_main,'load_strategy_config_with_metadata',lambda _:({'notification':{'enabled':False}},{}))
-    monkeypatch.setattr(hrs_main,'record_loaded_version',lambda *a:None)
+    if evidence_enabled:
+        (tmp_path/'config.yaml').write_text('notification:\n  enabled: false\n')
+        (tmp_path/'tuning_overrides').mkdir()
+        (tmp_path/'tuning_overrides/.active').write_text('V1')
+        (tmp_path/'tuning_overrides/V1.yaml').write_text('{}\n')
+        monkeypatch.setattr(hrs_main, '__file__', str(tmp_path/'main.py'))
+    else:
+        monkeypatch.setattr(hrs_main,'load_strategy_config_with_metadata',lambda _:({'notification':{'enabled':False}},{}))
+    receipt = MagicMock()
+    monkeypatch.setattr(hrs_main,'record_loaded_version',receipt)
     monkeypatch.setattr(hrs_main,'setup_logging',lambda **kw:None)
     await hrs_main.main()
     assert events.index('refresh')<events.index('strategy_run')
     assert events.index('collector_stopped')<events.index('db_disconnect')
+    if evidence_enabled:
+        assert item.release_sha == 'a'*40
+        assert item.configuration_evidence['overlay_applied'] is True
+        assert item.loaded_config_metadata['applied_overrides_version'] == 'V1'
+        assert item.loaded_config_metadata['load_error'] is None
+        assert item.configuration_evidence['effective_config_hash'] == item.loaded_config_metadata['config_hash']
+        receipt.assert_called_once_with('hrs', item.loaded_config_metadata)
 
 
 @pytest.mark.asyncio

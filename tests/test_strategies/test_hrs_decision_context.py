@@ -78,6 +78,48 @@ def test_configuration_capture_never_exports_opaque_yaml_secrets(tmp_path):
     assert 'live-secret-value' not in str(result)
 
 
+def _empty_overlay_identity_inputs(tmp_path):
+    from shared.config_loader import load_strategy_config_with_metadata
+    folder = tmp_path/'hrs'; (folder/'tuning_overrides').mkdir(parents=True)
+    (folder/'config.yaml').write_text('trading:\n  leverage: 2\n')
+    (folder/'tuning_overrides/.active').write_text('V1')
+    (folder/'tuning_overrides/V1.yaml').write_text('# approved no-op\n{}\n')
+    manifest = tmp_path/'params.yaml'; manifest.write_text('strategy: hrs\n')
+    config, metadata = load_strategy_config_with_metadata(str(folder))
+    return folder, manifest, config, metadata
+
+
+def test_configuration_identity_accepts_loaded_explicit_empty_mapping(tmp_path):
+    from strategies.hrs.decision_context import capture_configuration_identity
+    folder, manifest, config, metadata = _empty_overlay_identity_inputs(tmp_path)
+    result = capture_configuration_identity(folder, config, metadata, params_path=manifest)
+    assert result['overlay_applied'] is True
+    assert result['overlay_requested'] == metadata['applied_overrides_version'] == 'V1'
+    assert result['documents']['overlay'] == {}
+    assert result['effective_config_hash'] == metadata['config_hash']
+    assert result['metadata']['load_error'] is None
+
+
+@pytest.mark.parametrize('corruption', ['missing', 'comment', 'null', 'list', 'scalar',
+                                       'malformed', 'version', 'hash', 'changed'])
+def test_applied_empty_overlay_identity_rejects_corruption(tmp_path, corruption):
+    from strategies.hrs.decision_context import capture_configuration_identity
+    folder, manifest, config, metadata = _empty_overlay_identity_inputs(tmp_path)
+    overlay = folder/'tuning_overrides/V1.yaml'
+    if corruption == 'missing':
+        overlay.unlink()
+    elif corruption == 'version':
+        metadata['applied_overrides_version'] = 'V2'
+    elif corruption == 'hash':
+        metadata['config_hash'] = '0'*64
+    else:
+        overlay.write_text({'comment': '# no mapping\n', 'null': 'null\n',
+                           'list': '[]\n', 'scalar': '42\n', 'malformed': 'a: [',
+                           'changed': 'trading:\n  leverage: 3\n'}[corruption])
+    with pytest.raises(ValueError, match='configuration_identity_unproven'):
+        capture_configuration_identity(folder, config, metadata, params_path=manifest)
+
+
 def test_hrs_marked_component_retains_source_time_instead_of_receipt_time():
     from strategies.hrs.decision_context import ledger_equity_observation
     from strategies.hrs.equity_evidence import canonical
