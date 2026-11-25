@@ -1,0 +1,16 @@
+[Unit]
+Description=Bounded protected-table PostgreSQL maintenance compensation
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/trading_system/.ops/postgres-maintenance
+ExecStart=/usr/bin/python3 /root/trading_system/.ops/postgres-maintenance/scripts/database_maintenance.py --execute
+TimeoutStartSec=600
+Nice=10
+IOSchedulingClass=idle
+UMask=0077
+StandardOutput=journal
+StandardError=journal
