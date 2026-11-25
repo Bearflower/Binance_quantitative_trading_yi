@@ -1,5 +1,6 @@
 """将已审核的 systemd 收益归属任务绑定到经典 HRS 镜像。暂停后出错保持暂停。"""
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -54,16 +55,29 @@ def write_atomic(path, text):
 
 def paused_state(folder):
     verify_units()
-    marker = folder / "income-timer-previous-state"
-    if not marker.exists():
-        state = setting(TIMER, "ActiveState")
-        if state not in {"active", "inactive"}:
-            raise ValueError("归属定时器正在切换状态")
-        write_atomic(marker, state)
+    pending = folder.parent / "income-attribution-pending.json"
+    legacy = folder / "income-timer-previous-state"
+    if pending.exists():
+        original = json.loads(pending.read_text())
+    else:
+        original = {
+            "active": legacy.read_text().strip() if legacy.exists() else setting(TIMER, "ActiveState"),
+            "enabled": setting(TIMER, "UnitFileState"),
+        }
+    if original["active"] not in {"active", "inactive"} or original["enabled"] not in {"enabled", "disabled"}:
+        raise ValueError("无法确定归属定时器原运行或开机状态")
+    if not pending.exists():
+        write_atomic(pending, json.dumps(original))
+    if legacy.exists():
+        legacy.replace(folder / "income-timer-previous-state.migrated")
+    if setting(TIMER, "UnitFileState") == "enabled":
+        run("systemctl", "disable", TIMER)
     run("systemctl", "stop", TIMER)
+    if setting(TIMER, "UnitFileState") != "disabled" or setting(TIMER, "ActiveState") != "inactive":
+        raise RuntimeError("收益归属暂停未生效")
     if setting(SERVICE, "ActiveState") not in {"inactive", "failed"}:
         raise ValueError("已有归属核对正在运行，等待完成后重试")
-    return marker.read_text()
+    return original["active"]
 
 
 def resume(folder, revision):
@@ -90,12 +104,19 @@ def resume(folder, revision):
     verify_units()
     if f"ATTRIBUTION_IMAGE={image}" not in setting(SERVICE, "Environment").split():
         raise ValueError("systemd 未加载已核对的 HRS 镜像摘要")
+    pending = folder.parent / "income-attribution-pending.json"
+    enabled = json.loads(pending.read_text())["enabled"]
+    if enabled == "enabled":
+        run("systemctl", "enable", TIMER)
+    if setting(TIMER, "UnitFileState") != enabled:
+        raise RuntimeError("归属定时器开机状态恢复失败")
     if state == "active":
         run("systemctl", "start", TIMER)
         if setting(TIMER, "ActiveState") != "active":
             raise RuntimeError("归属定时器恢复失败")
     elif state != "inactive":
         raise ValueError("归属定时器原状态无效")
+    pending.unlink()
 
 
 if __name__ == "__main__":
@@ -106,7 +127,9 @@ if __name__ == "__main__":
     if not re.fullmatch(r"[a-f0-9]{40}", args.sha):
         cli.error("需要完整 Git 版本")
     folder = ROOT / ".deploy_tmp" / ("account-mode-" + args.sha)
-    if args.action == "pause":
-        paused_state(folder)
-    else:
-        resume(folder, args.sha)
+    with (folder.parent / "income-attribution-timer.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if args.action == "pause":
+            paused_state(folder)
+        else:
+            resume(folder, args.sha)

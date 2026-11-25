@@ -12,10 +12,20 @@ def host(tmp_path, monkeypatch):
     monkeypatch.setattr(timer, "OVERRIDE", override)
     monkeypatch.setattr(timer, "verify_units", lambda: None)
     calls = []
+    folder = tmp_path / "release"
+    folder.mkdir()
+    timer_state = {"ActiveState": "active", "UnitFileState": "enabled"}
     def mock_run(*args):
         calls.append(args)
         if args[:3] == ("systemctl","show",timer.TIMER):
-            return "inactive" if ("systemctl","stop",timer.TIMER) in calls and ("systemctl","start",timer.TIMER) not in calls else "active"
+            return timer_state[args[4]]
+        if len(args) == 3 and args[0] == "systemctl" and args[2] == timer.TIMER:
+            action = args[1]
+            if action in {"start", "stop"}:
+                timer_state["ActiveState"] = "active" if action == "start" else "inactive"
+            elif action in {"enable", "disable"}:
+                timer_state["UnitFileState"] = "enabled" if action == "enable" else "disabled"
+            return ""
         if args[:3] == ("systemctl","show",timer.SERVICE):
             return "inactive" if args[4]=="ActiveState" else "ATTRIBUTION_IMAGE="+digest
         if args[:3] == ("docker","image","inspect"):
@@ -29,9 +39,9 @@ def host(tmp_path, monkeypatch):
     def shadow(args, *, env, check):
         assert args[-1]=="--current-month" and "--apply" not in args
         assert env["ATTRIBUTION_IMAGE"]==digest
-        (tmp_path/"income-attribution-shadow.json").write_text(json.dumps(proof))
+        (timer.Path(env["ATTRIBUTION_OUTPUT"])).write_text(json.dumps(proof))
     monkeypatch.setattr(timer.subprocess,"run",shadow)
-    return SimpleNamespace(digest=digest,revision=revision,folder=tmp_path,override=override,calls=calls,proof=proof)
+    return SimpleNamespace(digest=digest,revision=revision,folder=folder,timer_state=timer_state,override=override,calls=calls,proof=proof)
 
 
 def test_verified_immutable_writer_restores_previously_active_timer(host):
@@ -48,3 +58,19 @@ def test_wrong_mode_or_account_keeps_old_writer_paused(host,field,value):
         timer.resume(host.folder,host.revision)
     assert not host.override.exists()
     assert ("systemctl","start",timer.TIMER) not in host.calls
+
+def test_pause_survives_reboot_and_revision_change(host):
+    (host.folder / "income-timer-previous-state").write_text("active")
+    host.timer_state["ActiveState"] = "inactive"
+    timer.paused_state(host.folder)
+    assert host.timer_state == {"ActiveState": "inactive", "UnitFileState": "disabled"}
+    other_release = host.folder.parent / "next-release"
+    other_release.mkdir()
+    timer.resume(other_release, host.revision)
+    assert host.timer_state == {"ActiveState": "active", "UnitFileState": "enabled"}
+
+
+def test_originally_disabled_timer_stays_disabled(host):
+    host.timer_state.update(ActiveState="inactive", UnitFileState="disabled")
+    timer.resume(host.folder, host.revision)
+    assert host.timer_state == {"ActiveState": "inactive", "UnitFileState": "disabled"}
