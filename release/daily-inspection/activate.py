@@ -68,7 +68,16 @@ def main():
     for file in labels['com.docker.compose.project.config_files'].split(','):
         compose += ['-f', file]
     # 复用实际运行镜像，明确保留校准影子没有写入凭据的边界。
-    base = {'image': original['Config']['Image'], 'environment': {'AI_TUNER_WRITE_TOKEN': None}}
+    model = ['config', '--format', 'json']
+    declared = json.loads(output(*compose, *model, '--no-env-resolution', SERVICE))['services'][SERVICE]
+    effective = json.loads(output(*compose, *model, SERVICE))['services'][SERVICE]
+    inherited = sorted(effective['environment'].keys() - declared['environment'].keys() - {'AI_TUNER_WRITE_TOKEN'})
+    # 只引用已有项目变量名。之后 compose 复用同一 .env，不复制凭据。
+    filtered = STAGE / 'shadow-environment.yml'
+    filtered.write_text('services:\n  ' + SERVICE + ':\n    env_file: !reset []\n    environment:\n' +
+                        ''.join('      ' + key + ': "${' + key + '?}"\n' for key in inherited))
+    compose += ['-f', str(filtered)]
+    base = {'image': original['Config']['Image']}
     rollback = compose + ['-f', compose_file('rollback.json', base)]
     new_file = STAGE/'strategies/btc_eth/shadow/main.py'
     new = dict(base, volumes=[dict(type='bind', source=str(new_file), target=ENTRY, read_only=True)])
