@@ -10,12 +10,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: btc-eth, base: ghcr.io/bearflower/trading-btc-eth@sha256:0709b21f66f494411f926f71d7383abe452355630b4580d021158fe1711b06a8}
-          - {name: hrs, base: ghcr.io/bearflower/trading-hrs@sha256:2139d33bcd9240caa4bc88fd099340dced1af1e8e980e1ae643126738f49378c}
-          - {name: new-coin, base: ghcr.io/bearflower/trading-new-coin@sha256:d1a2e1c7c2f21853ef6de4f1bb34ec857eda8336a1dca192731d5ef140443f18}
-          - {name: ai-tuner, base: ghcr.io/bearflower/trading-ai-tuner@sha256:a96e63fa7f7187504f3fd9a6d0a1922afccf80c2456858efe5d6877aabfec8af}
+          - {name: data-backend, base: ghcr.io/bearflower/trading-data-backend@sha256:7c316109ee522b91626c19920e2d121ea968b2efee47d7acbec2cbe874e86841}
+          - {name: dashboard-api, base: ghcr.io/bearflower/trading-dashboard-api@sha256:ad5ea2bc8ca85be4e22e1497232804208bee27ee84172d09602034a1a8a3e8c3}
+          - {name: ai-tuner, base: ghcr.io/bearflower/trading-ai-tuner@sha256:fdbb239a2e6696904a10dc25d9e008fd6d65a7c37086c451da8b71496b42c48e}
+          - {name: kline-service, base: ghcr.io/bearflower/trading-kline-service@sha256:8fe70abbfdd327d01d5c8a457d91ca6e165ce0df534338223a4c621852fffea2}
     env:
-      SOURCE_SHA: 153809d12124c91f9921d82de82f7a70695acfd9
+      SOURCE_SHA: be7484a7f9ef484a79187b801f0a37a6a2bdbe78
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -26,14 +26,20 @@ jobs:
           printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
       - name: Prepare runtime overlay on reviewed production image
         run: |
-          git fetch -q --depth=1 origin c30a0bd73e54121e0c85b6a9a88b5849be962af9
-          test -z "$(git diff --diff-filter=D --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- shared/binance_account_mode.py scripts/cutover_income_timer.py strategies/btc_eth/Dockerfile strategies/new_coin/Dockerfile ai_tuner/Dockerfile)"
           mkdir -p runtime-layer/overlay
-          git diff --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- shared/binance_account_mode.py scripts/cutover_income_timer.py strategies/btc_eth/Dockerfile strategies/new_coin/Dockerfile ai_tuner/Dockerfile | while IFS= read -r file; do cp --parents "$file" runtime-layer/overlay/; done
-          mkdir -p runtime-layer/overlay/strategies
-          cp -a strategies/hrs runtime-layer/overlay/strategies/
+          case '${{ matrix.name }}' in
+            data-backend|dashboard-api)
+              for file in shared/accounting/collector_recovery.py shared/accounting/equity_bridge.py shared/accounting/runtime_cutover.py shared/binance_account_mode.py shared/config_loader.py dashboard/backend/services/data_service_docker.py; do
+                cp --parents "$file" runtime-layer/overlay/
+              done
+              ;;
+            ai-tuner) cp --parents shared/config_loader.py runtime-layer/overlay/ ;;
+            kline-service)
+              mkdir -p runtime-layer/overlay/shared/core
+              cp services/kline_service/shared/core/config.py runtime-layer/overlay/shared/core/config.py ;;
+          esac
           cp VERSION runtime-layer/overlay/
-          printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'ARG HRS_IMAGE_REVISION' 'ENV HRS_IMAGE_REVISION=${HRS_IMAGE_REVISION}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
+          printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
