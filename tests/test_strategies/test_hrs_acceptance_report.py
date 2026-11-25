@@ -379,6 +379,9 @@ async def test_oversized_report_source_returns_explicit_pending_without_coherent
         yield connection
     async def integrity(*args):
         return 0
+    async def inventory(*args):
+        return [dict(run_id="0", rows=1, anchor=START)]
+    connection.fetch = inventory
     connection.transaction = transaction
     connection.fetchval = integrity
     monkeypatch.setattr(reporter, 'MAX_SOURCE_PAYLOAD_BYTES', 128)
@@ -767,7 +770,7 @@ async def test_acceptance_snapshot_does_not_block_income_ingestion(initialized_r
     account = 'acceptance-concurrent-' + uuid.uuid4().hex
     opened = asyncio.Event()
     resume = asyncio.Event()
-    read_evidence = reporter._read_evidence
+    read_evidence = reporter._read_technical_slots
 
     async def pause_snapshot(connection, sql, *args):
         assert await connection.fetchval('SHOW transaction_isolation') == 'repeatable read'
@@ -777,7 +780,7 @@ async def test_acceptance_snapshot_does_not_block_income_ingestion(initialized_r
         await require_income_integrity(connection, account)
         return await read_evidence(connection, sql, *args)
 
-    monkeypatch.setattr(reporter, '_read_evidence', pause_snapshot)
+    monkeypatch.setattr(reporter, '_read_technical_slots', pause_snapshot)
     dsn = os.environ['HRS_TEST_POSTGRES_DSN']
     pool = await asyncpg.create_pool(dsn, min_size=1, max_size=1)
     writer = await asyncpg.connect(dsn)
@@ -948,3 +951,45 @@ def test_full_funding_inventory_heartbeats_do_not_create_spurious_scan_failures(
     report=summarize_evidence(rows,as_of=NOW,account_id=ACCOUNT)
     baseline=summarize_evidence(evidence(),as_of=NOW,account_id=ACCOUNT)
     assert report==baseline
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(not os.getenv('HRS_TEST_POSTGRES_DSN'), reason='isolated PostgreSQL required')
+async def test_report_batches_whole_runs_and_preserves_cross_hour_errors(initialized_report_schema, monkeypatch):
+    """One slot fits the budget, the day does not. Later corrupt evidence stays in its actual hour."""
+    import asyncpg
+    from strategies.hrs import acceptance_report as reporter
+
+    rows = evidence()
+    for hour in range(24):
+        rows.append(event(str(hour), 'scan_denial', START + timedelta(hours=hour, minutes=3),
+                          {'reason': 'no_entry', 'detail': 'x' * 370_000}))
+    at = START + timedelta(hours=3, minutes=8)
+    rows.extend([event('2', 'signal_pre_execution', at, {'entry_mode': 'standard'}, 'BTCUSDT'),
+                 event('2', 'scan_denial', at, {'reason': 'late'}),
+                 event('2', 'order_execution_result', at, {'outcome': {'order': {'orderId': 17}}}, 'BTCUSDT')])
+    rows[-2]['payload_sha256'] = 'invalid'
+    pool = await asyncpg.create_pool(os.environ['HRS_TEST_POSTGRES_DSN'], min_size=1, max_size=1)
+    fill = dict(account_id=ACCOUNT, symbol='BTCUSDT', trade_id=17, order_id=17,
+                trade_time_utc=START + timedelta(hours=4), side='BUY', qty=1, price=1,
+                commission=0, commission_asset='USDT', realized_pnl=0)
+    try:
+        await pool.executemany('''INSERT INTO hrs.hrs_decision_evidence
+            (evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8)''',
+            [(r['evidence_id'],r['run_id'],r['kind'],r['symbol'],r['event_time'],
+              r['available_at'],r['payload_sha256'],json.dumps(r['payload'])) for r in rows])
+        await pool.execute('''INSERT INTO trading.execution_fact_fill
+            (account_id,symbol,trade_id,order_id,trade_time_utc,side,qty,price,commission,commission_asset,realized_pnl)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)''', *fill.values())
+        report = await build_report(SimpleNamespace(pool=pool), as_of=NOW, account_id=ACCOUNT)
+        assert report['database_snapshot_coherent'], report.get('source_error_type')
+        assert report['technical'] == summarize_evidence(sorted(rows, key=lambda r: (r['event_time'], r['evidence_id'])),
+            as_of=NOW, account_id=ACCOUNT, fills=[fill])
+        assert report['technical']['hourly_slots'][4]['modes']['standard']['exchange_fills'] == 1
+    finally:
+        await pool.execute('DELETE FROM hrs.hrs_decision_evidence WHERE evidence_id=ANY($1::text[])',
+                           [r['evidence_id'] for r in rows])
+        await pool.execute('DELETE FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=$2 AND trade_id=$3',
+                           ACCOUNT, 'BTCUSDT', 17)
+        await pool.close()

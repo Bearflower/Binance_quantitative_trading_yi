@@ -180,7 +180,18 @@ def _summarize_evidence(rows, *, as_of, account_id, fills=(), orders=()):
     now = _time(as_of)
     end = now.replace(minute=0, second=0, microsecond=0)
     start = end-timedelta(hours=24)
-    runs, seen, bad_hours = defaultdict(list), {}, defaultdict(set)
+    bad_hours = defaultdict(set)
+    groups = _group_runs(rows, start, end, now, account_id, bad_hours)
+    order_modes = {}
+    slots = []
+    for index in range(24):
+        hour = start + timedelta(hours=index)
+        slots.append(_hour_slot(hour, groups[hour], account_id, order_modes))
+    return _finish_technical(slots, start, end, account_id, fills, orders, order_modes, bad_hours)
+
+
+def _group_runs(rows, start, end, now, account_id, bad_hours):
+    runs, seen = defaultdict(list), {}
     for raw in rows:
         try:
             row = dict(raw)
@@ -207,7 +218,7 @@ def _summarize_evidence(rows, *, as_of, account_id, fills=(), orders=()):
             # An unplaceable record cannot improve any slot's evidence quality.
             for i in range(24):
                 bad_hours[start+timedelta(hours=i)].add('invalid_evidence_envelope')
-    slots, slot_runs = [], defaultdict(list)
+    slot_runs = defaultdict(list)
     for run, records in runs.items():
         starts = [r for r in records if r['kind'] == 'scan_start']
         if not starts and all(r['kind'] in BACKGROUND_KINDS for r in records):
@@ -223,120 +234,128 @@ def _summarize_evidence(rows, *, as_of, account_id, fills=(), orders=()):
         else:
             hour = starts[0]['event_time'].replace(minute=0, second=0, microsecond=0)
         slot_runs[hour].append(records)
-    order_modes = {}
+    return slot_runs
+
+
+def _hour_slot(hour, grouped, account_id, order_modes):
+    reasons = set()
+    batches, counts = [], {m: _funnel() for m in (*MODES, 'unknown')}
+    scanned = {m: set() for m in counts}
+    submitted = {m: set() for m in counts}
+    if not grouped:
+        reasons.add('hour_has_no_complete_scan')
+    for records in grouped:
+        records.sort(key=lambda r: (r['event_time'], r['kind'] != 'signal_pre_execution'))
+        starts = [r for r in records if r['kind'] == 'scan_start']
+        ends = [r for r in records if r['kind'] == 'scan_end']
+        if len(starts) != 1 or len(ends) != 1 or ends[0]['payload'].get('status') != 'complete':
+            reasons.add('scan_incomplete')
+        elif not (hour <= starts[0]['event_time'] <= ends[0]['event_time'] < hour+timedelta(hours=1)):
+            reasons.add('scan_crosses_hour_or_noncausal')
+        if len(starts) != 1 or starts[0]['payload'].get('financial_context', {}).get('entry_policy', {}).get('account_id') != account_id:
+            reasons.add('scan_account_unproven')
+        scopes, outcomes, analyzed, scored = (defaultdict(set) for _ in range(4))
+        latest_signal = {}
+        has_denial = any(r['kind'] == 'scan_denial' for r in records)
+        for row in records:
+            kind, p, symbol = row['kind'], row['payload'], row.get('symbol')
+            if kind == 'market_cap_batch':
+                batch = _batch(p, row['event_time'])
+                batches.append(batch)
+                reasons.update(batch['reasons'])
+            elif kind in ('standard_scan_scope', 'lv_rm_scan_scope'):
+                mode = 'lv_rm' if kind.startswith('lv_rm') else 'standard'
+                symbols = p.get('symbols')
+                if not isinstance(symbols, list) or len(set(symbols)) != len(symbols):
+                    reasons.add('scan_scope_unproven')
+                else:
+                    scopes[mode].update(symbols)
+                    scanned[mode].update(symbols)
+            elif kind.endswith('_candidate_outcome'):
+                mode = 'lv_rm' if kind.startswith('lv_rm') else 'standard'
+                outcomes[mode].add(symbol)
+                reason = p.get('reason')
+                if not reason:
+                    reasons.add('candidate_terminal_reason_unproven')
+                if reason != 'scored':
+                    bucket = counts[mode]
+                    bucket['denial_reasons'][reason or 'unknown'] = bucket['denial_reasons'].get(reason or 'unknown', 0)+1
+                    if any(s in str(reason) for s in ('insufficient', 'missing', 'error', 'unavailable', 'skip')):
+                        bucket['data_failures'] += 1
+                else:
+                    scored[mode].add(symbol)
+            elif kind in ('analysis', 'lv_rm_analysis'):
+                analyzed['lv_rm' if kind == 'lv_rm_analysis' else 'standard'].add(symbol)
+                directions = ([(p.get('result') or {}).get(d) for d in ('short', 'long')]
+                              if kind == 'analysis' else
+                              [dict(score_result=p.get(d+'_score'), should_entry=p.get(d+'_should_entry')) for d in ('short', 'long')])
+                for data in directions:
+                    if not isinstance(data, dict):
+                        continue
+                    score = data.get('score_result') or data.get('_scoring_result') or {}
+                    mode = 'lv_rm' if kind == 'lv_rm_analysis' else _mode(score)
+                    bucket = counts[mode]
+                    scanned[mode].add(symbol)
+                    bucket['evaluated_directions'] += 1
+                    if type(data.get('should_entry')) is bool:
+                        bucket['eligible'] += int(data['should_entry'])
+                    else:
+                        bucket['eligibility_unknown'] += 1
+                    bucket['trend_denials'] += int(score.get('trend_filter_passed') is False)
+                    bucket['scoring_denials'] += int(data.get('should_entry') is False and score.get('trend_filter_passed') is not False)
+                    for shadow in score.get('shadows', []):
+                        shadow_mode = _mode(shadow)
+                        counts[shadow_mode]['shadow_evaluations'] += 1
+                        counts[shadow_mode]['eligibility_unknown'] += 1
+                        scanned[shadow_mode].add(symbol)
+            elif kind == 'signal_pre_execution':
+                latest_signal[symbol] = _mode(p)
+                counts[_mode(p)]['signals_reaching_execution'] += 1
+            elif kind == 'signal_execution_outcome' and p.get('result') is False:
+                signal = p.get('signal') or {}
+                bucket = counts[_mode(signal)]
+                reason = signal.get('_audit_denial') or signal.get('_audit_stage') or 'execution_denial_unclassified'
+                bucket['execution_denials'] += 1
+                bucket['budget_denials'] += int(signal.get('_audit_stage') == 'entry_risk_budget' and bool(signal.get('_audit_denial')))
+                bucket['denial_reasons'][reason] = bucket['denial_reasons'].get(reason, 0)+1
+            elif kind == 'order_execution_result':
+                order = (p.get('outcome') or {}).get('order') or {}
+                if order.get('orderId') is not None:
+                    mode = latest_signal.get(symbol, 'unknown')
+                    key = (symbol, str(order['orderId']))
+                    submitted[mode].add(key)
+                    prior = order_modes.get(key)
+                    order_modes[key] = mode if prior in (None, mode) else 'unknown'
+            elif kind in ('market_input_failure', 'public_market_failure'):
+                counts['unknown']['data_failures'] += 1
+            elif kind == 'scan_denial':
+                reason = p.get('reason') or 'unclassified_scan_denial'
+                counts['unknown']['denial_reasons'][reason] = counts['unknown']['denial_reasons'].get(reason, 0)+1
+        if not scopes and not has_denial:
+            reasons.add('scan_scope_missing')
+        for mode, symbols in scopes.items():
+            if symbols != outcomes[mode]:
+                reasons.add('candidate_terminal_inventory_incomplete')
+            if not scored[mode] <= analyzed[mode]:
+                reasons.add('scored_analysis_missing')
+    if not batches:
+        reasons.add('market_cap_batch_missing')
+    for mode in counts:
+        counts[mode]['scanned_symbols'] = len(scanned[mode])
+        counts[mode]['submitted_orders'] = len(submitted[mode])
+    return dict(start_cst=hour.astimezone(CST).isoformat(),
+        end_cst=(hour+timedelta(hours=1)).astimezone(CST).isoformat(),
+        status='COMPLETE' if not reasons else 'INCOMPLETE', reasons=sorted(reasons),
+        scan_count=len(grouped), market_cap_batches=batches, modes=counts)
+
+
+def _finish_technical(slots, start, end, account_id, fills, orders, order_modes, bad_hours):
+    for index, slot in enumerate(slots):
+        errors = bad_hours.get(start + timedelta(hours=index))
+        if errors:
+            slot['status'] = 'INCOMPLETE'
+            slot['reasons'] = sorted(errors.union(slot['reasons']))
     fill_seen = set()
-    for index in range(24):
-        hour = start+timedelta(hours=index)
-        reasons = set(bad_hours[hour])
-        grouped = slot_runs[hour]
-        batches, counts = [], {m: _funnel() for m in (*MODES, 'unknown')}
-        scanned = {m: set() for m in counts}
-        submitted = {m: set() for m in counts}
-        if not grouped:
-            reasons.add('hour_has_no_complete_scan')
-        for records in grouped:
-            records.sort(key=lambda r: (r['event_time'], r['kind'] != 'signal_pre_execution'))
-            starts = [r for r in records if r['kind'] == 'scan_start']
-            ends = [r for r in records if r['kind'] == 'scan_end']
-            if len(starts) != 1 or len(ends) != 1 or ends[0]['payload'].get('status') != 'complete':
-                reasons.add('scan_incomplete')
-            elif not (hour <= starts[0]['event_time'] <= ends[0]['event_time'] < hour+timedelta(hours=1)):
-                reasons.add('scan_crosses_hour_or_noncausal')
-            if len(starts) != 1 or starts[0]['payload'].get('financial_context', {}).get('entry_policy', {}).get('account_id') != account_id:
-                reasons.add('scan_account_unproven')
-            scopes, outcomes, analyzed, scored = (defaultdict(set) for _ in range(4))
-            latest_signal = {}
-            has_denial = any(r['kind'] == 'scan_denial' for r in records)
-            for row in records:
-                kind, p, symbol = row['kind'], row['payload'], row.get('symbol')
-                if kind == 'market_cap_batch':
-                    batch = _batch(p, row['event_time'])
-                    batches.append(batch)
-                    reasons.update(batch['reasons'])
-                elif kind in ('standard_scan_scope', 'lv_rm_scan_scope'):
-                    mode = 'lv_rm' if kind.startswith('lv_rm') else 'standard'
-                    symbols = p.get('symbols')
-                    if not isinstance(symbols, list) or len(set(symbols)) != len(symbols):
-                        reasons.add('scan_scope_unproven')
-                    else:
-                        scopes[mode].update(symbols)
-                        scanned[mode].update(symbols)
-                elif kind.endswith('_candidate_outcome'):
-                    mode = 'lv_rm' if kind.startswith('lv_rm') else 'standard'
-                    outcomes[mode].add(symbol)
-                    reason = p.get('reason')
-                    if not reason:
-                        reasons.add('candidate_terminal_reason_unproven')
-                    if reason != 'scored':
-                        bucket = counts[mode]
-                        bucket['denial_reasons'][reason or 'unknown'] = bucket['denial_reasons'].get(reason or 'unknown', 0)+1
-                        if any(s in str(reason) for s in ('insufficient', 'missing', 'error', 'unavailable', 'skip')):
-                            bucket['data_failures'] += 1
-                    else:
-                        scored[mode].add(symbol)
-                elif kind in ('analysis', 'lv_rm_analysis'):
-                    analyzed['lv_rm' if kind == 'lv_rm_analysis' else 'standard'].add(symbol)
-                    directions = ([(p.get('result') or {}).get(d) for d in ('short', 'long')]
-                                  if kind == 'analysis' else
-                                  [dict(score_result=p.get(d+'_score'), should_entry=p.get(d+'_should_entry')) for d in ('short', 'long')])
-                    for data in directions:
-                        if not isinstance(data, dict):
-                            continue
-                        score = data.get('score_result') or data.get('_scoring_result') or {}
-                        mode = 'lv_rm' if kind == 'lv_rm_analysis' else _mode(score)
-                        bucket = counts[mode]
-                        scanned[mode].add(symbol)
-                        bucket['evaluated_directions'] += 1
-                        if type(data.get('should_entry')) is bool:
-                            bucket['eligible'] += int(data['should_entry'])
-                        else:
-                            bucket['eligibility_unknown'] += 1
-                        bucket['trend_denials'] += int(score.get('trend_filter_passed') is False)
-                        bucket['scoring_denials'] += int(data.get('should_entry') is False and score.get('trend_filter_passed') is not False)
-                        for shadow in score.get('shadows', []):
-                            shadow_mode = _mode(shadow)
-                            counts[shadow_mode]['shadow_evaluations'] += 1
-                            counts[shadow_mode]['eligibility_unknown'] += 1
-                            scanned[shadow_mode].add(symbol)
-                elif kind == 'signal_pre_execution':
-                    latest_signal[symbol] = _mode(p)
-                    counts[_mode(p)]['signals_reaching_execution'] += 1
-                elif kind == 'signal_execution_outcome' and p.get('result') is False:
-                    signal = p.get('signal') or {}
-                    bucket = counts[_mode(signal)]
-                    reason = signal.get('_audit_denial') or signal.get('_audit_stage') or 'execution_denial_unclassified'
-                    bucket['execution_denials'] += 1
-                    bucket['budget_denials'] += int(signal.get('_audit_stage') == 'entry_risk_budget' and bool(signal.get('_audit_denial')))
-                    bucket['denial_reasons'][reason] = bucket['denial_reasons'].get(reason, 0)+1
-                elif kind == 'order_execution_result':
-                    order = (p.get('outcome') or {}).get('order') or {}
-                    if order.get('orderId') is not None:
-                        mode = latest_signal.get(symbol, 'unknown')
-                        key = (symbol, str(order['orderId']))
-                        submitted[mode].add(key)
-                        prior = order_modes.get(key)
-                        order_modes[key] = mode if prior in (None, mode) else 'unknown'
-                elif kind in ('market_input_failure', 'public_market_failure'):
-                    counts['unknown']['data_failures'] += 1
-                elif kind == 'scan_denial':
-                    reason = p.get('reason') or 'unclassified_scan_denial'
-                    counts['unknown']['denial_reasons'][reason] = counts['unknown']['denial_reasons'].get(reason, 0)+1
-            if not scopes and not has_denial:
-                reasons.add('scan_scope_missing')
-            for mode, symbols in scopes.items():
-                if symbols != outcomes[mode]:
-                    reasons.add('candidate_terminal_inventory_incomplete')
-                if not scored[mode] <= analyzed[mode]:
-                    reasons.add('scored_analysis_missing')
-        if not batches:
-            reasons.add('market_cap_batch_missing')
-        for mode in counts:
-            counts[mode]['scanned_symbols'] = len(scanned[mode])
-            counts[mode]['submitted_orders'] = len(submitted[mode])
-        slots.append(dict(start_cst=hour.astimezone(CST).isoformat(),
-            end_cst=(hour+timedelta(hours=1)).astimezone(CST).isoformat(),
-            status='COMPLETE' if not reasons else 'INCOMPLETE', reasons=sorted(reasons),
-            scan_count=len(grouped), market_cap_batches=batches, modes=counts))
     owner_map = _owners(orders, account_id)
     for raw in fills:
         fill = dict(raw)
@@ -971,6 +990,40 @@ async def _read_evidence(connection, sql, *args):
     return rows
 
 
+async def _read_technical_slots(connection, start, now, account):
+    """Read whole runs in hourly batches. Only metadata and final slots span batches."""
+    end = start + timedelta(hours=24)
+    window = """FROM hrs.hrs_decision_evidence WHERE event_time >= $1 AND event_time < $2
+                AND available_at <= $3 AND NOT(kind=ANY($4::text[]))"""
+    args = (start, end, now, EXCLUDED_KINDS)
+    # Limit the inventory itself. The run index and source batches see the same
+    # repeatable-read snapshot, and evidence_id is the table's primary key.
+    index = await connection.fetch(f"""SELECT run_id, count(*) AS rows,
+        CASE WHEN count(*) FILTER (WHERE kind='scan_start')=1
+             THEN min(event_time) FILTER (WHERE kind='scan_start')
+             ELSE min(event_time) END AS anchor
+        FROM (SELECT run_id,kind,event_time {window} LIMIT $5) AS events
+        GROUP BY run_id""", *args, MAX_SOURCE_ROWS + 1)
+    if sum(run['rows'] for run in index) > MAX_SOURCE_ROWS:
+        raise ReportEvidenceLimitExceeded('report_source_row_budget_exceeded')
+    by_hour = defaultdict(list)
+    for run in index:
+        by_hour[_time(run['anchor']).replace(minute=0, second=0, microsecond=0)].append(run['run_id'])
+    slots, order_modes, bad_hours = [], {}, defaultdict(set)
+    for offset in range(24):
+        hour = start + timedelta(hours=offset)
+        grouped = []
+        if hour in by_hour:
+            rows = await _read_evidence(connection, f"""SELECT evidence_id,run_id,kind,symbol,
+                event_time,available_at,payload_sha256,payload {window}
+                AND run_id=ANY($5::text[])""", *args, by_hour[hour])
+            grouped = _group_runs(rows, start, end, now, account, bad_hours)[hour]
+            del rows
+        slots.append(_hour_slot(hour, grouped, account, order_modes))
+        del grouped
+    return slots, order_modes, bad_hours
+
+
 async def _read_budget_sources(connection, financial, evidence, account_id, through):
     """Fetch at most one immutable parent per reported lifecycle, in one query."""
     from .risk_budget import FLOOR
@@ -1085,7 +1138,7 @@ async def build_report(db, *, as_of=None, account_id=None):
     account = account_id or os.getenv('TRADE_ACCOUNT_ID')
     result = dict(report_version='hrs-continuous-acceptance-v1', generated_at=now.isoformat(),
                   account_id=account, database_snapshot_coherent=False, performance_accepted=False)
-    rows, fills, owners = [], [], []
+    technical = None
     financial = reconcile_lifecycles([], [], [], {}, account_id=account,
                                     inception=now, through=now)
     try:
@@ -1099,9 +1152,7 @@ async def build_report(db, *, as_of=None, account_id=None):
                 # therefore either invisible, blocked, or fully visible here.
                 await require_income_integrity(connection, account)
                 start = now.replace(minute=0, second=0, microsecond=0)-timedelta(hours=24)
-                rows = await _read_evidence(connection, '''SELECT evidence_id,run_id,kind,symbol,event_time,available_at,payload_sha256,payload
-                    FROM hrs.hrs_decision_evidence WHERE event_time >= $1 AND event_time <= $2
-                    AND available_at <= $2 AND NOT(kind=ANY($3::text[])) ORDER BY event_time,evidence_id''', start, now, EXCLUDED_KINDS)
+                slots, order_modes, bad_hours = await _read_technical_slots(connection, start, now, account)
                 anchor = await connection.fetchrow('SELECT inception,opening_evidence FROM trading.hrs_equity_segment WHERE account_id=$1', account)
                 stored = await connection.fetchrow('SELECT ledger_state,version FROM trading.hrs_loss_gate_state WHERE account_id=$1', account)
                 inception = _time(anchor['inception']) if anchor else start
@@ -1109,6 +1160,8 @@ async def build_report(db, *, as_of=None, account_id=None):
                 fills = [dict(r) for r in await connection.fetch('''SELECT account_id,symbol,trade_id,order_id,side,qty,price,commission,commission_asset,realized_pnl,trade_time_utc
                     FROM trading.execution_fact_fill WHERE account_id=$1 AND trade_time_utc >= $2 AND trade_time_utc <= $3''', account, query_start, now)]
                 owners = [dict(r) for r in await connection.fetch('SELECT account_id,symbol,order_id,strategy FROM trading.trade_records WHERE account_id=$1 AND order_id=ANY($2::text[])', account, sorted({str(f['order_id']) for f in fills}))]
+                technical = _finish_technical(slots, start, start + timedelta(hours=24), account,
+                                              fills, owners, order_modes, bad_hours)
                 if anchor and stored:
                     through = _time(_object(stored['ledger_state'])['as_of'])
                     if not inception <= through <= now or (now-through).total_seconds() > 120:
@@ -1134,7 +1187,8 @@ async def build_report(db, *, as_of=None, account_id=None):
         result['source_error_type'] = type(exc).__name__
         # Never retain stale passing financial evidence after a failed snapshot.
         financial = reconcile_lifecycles([], [], [], {}, account_id=account, inception=now, through=now)
-    technical = summarize_evidence(rows, as_of=now, account_id=account, fills=fills, orders=owners)
+    if technical is None:
+        technical = summarize_evidence([], as_of=now, account_id=account)
     if not result['database_snapshot_coherent']:
         technical['status'] = 'NOT_READY'
     result.update(technical=technical, financial=financial,

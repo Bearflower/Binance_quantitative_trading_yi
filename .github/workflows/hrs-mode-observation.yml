@@ -5,6 +5,8 @@ on:
     paths:
       - 'strategies/hrs/*research*.py'
       - 'strategies/hrs/mode_report.py'
+      - 'strategies/hrs/acceptance_report.py'
+      - 'tests/test_strategies/test_hrs_acceptance_report.py'
       - 'backtest/hrs/lv_rm_retracement.py'
       - 'release/hrs-observer/**'
       - '.github/workflows/hrs-mode-observation.yml'
