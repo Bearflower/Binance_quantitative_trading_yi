@@ -45,3 +45,16 @@
 生产版本基线为执行器 `fc8fd997`、实时监听 `c6315a04`、信号与通知 `ac33f8d6`、看板采集 `af8ee812` 和 PostgreSQL 投影 `ab38fbc7`。复制运行实例实际的 `GRID_TRAILING_ENABLED` 和限额，新建实例默认关闭追踪。完整报告链使用 `grid-observers`（通知与投影）和 `grid-dashboard`（只读快照）两个可选 Compose profile。旧独立容器与新服务同名，交接须按新审查的发布方案完成。
 
 投影启动前核查现有 `trading.trade_records.algo_id` 以及 `2026-11-12-grid-pm-order-projection.sql` 中的两列及唯一索引，执行数据库权限审计。迁移由迁移角色操作，投影运行角色为 `trading_user`。既有 PM 限定发布脚本固定旧账本、镜像或环境，不能用于经典切换。
+
+
+### 经典网格的保证金与回撤结转
+
+保留冻结期间的独立 PM 执行库备份、签名 PM 空仓钱包、签名经典空仓入金快照、主账户对该子账户的双向划转查询和子账户保证金转现货回执。核对同一 UID、划转编号、币种、金额、方向、日期和切点。旧账本须为 FLAT 且无未结轮次、订单、保护或风险锁。将材料打包为只读的摘要文件集，单独核准 manifest 的 SHA256。
+
+在切换的北京时间当天，为新的经典执行库和通知库绑定真实钱包身份，保持执行器冻结。以候选网格镜像及同一子账户的经典只读客户端运行下列命令。提供该子账户的 GRID_ACCOUNT_ID、新 GRID_EXECUTION_DB、与实盘相同的 GRID_EXECUTION_LOCK，以及经核对的证据目录。
+
+```sh
+python -m strategies.grid.execution.classic_continuity --manifest /evidence/manifest.json --sha256 "$GRID_CLASSIC_RISK_CONTINUITY_SHA256"
+```
+
+导入程序查询真实权益、资金流水、挂单、仓位和切点后的 ETHUSDT 委托与成交。首次执行要求经典账本没有任何执行或权益历史。通过后仅在该账本登记结转依据。日内基线与历史峰值均按旧绝对损失和旧损失比例中较严格的一项换算，日内风险按原北京时间规则换日，历史峰值跨日保留。新权益检查点由执行器在实际取样时生成。将同一摘要固定在执行器的 GRID_CLASSIC_RISK_CONTINUITY_SHA256 环境变量中。切换当日的两笔指定划转必须与全部实际划转逐条相符，后续新增、缺失或被修改的划转仍会锁定新增敞口。

@@ -1,8 +1,10 @@
 """Build complete PM account evidence for the pure risk guard."""
 
 import json
+import os
 from decimal import Decimal
 
+from .classic_continuity import KEY, accounted_transfers
 from .risk import (RiskAssessment, RiskEvidence, RiskStatus, assess_risk,
                    beijing_day, beijing_day_start_ms)
 
@@ -27,7 +29,21 @@ class RiskTracker:
                    for row in income):
                 raise ValueError("invalid income evidence")
             transfers = [row for row in income if row.get("incomeType") == "TRANSFER"]
+            continuity = None
             if getattr(self.exchange, "pm", True) is False:
+                row = self.store.conn.execute("SELECT value FROM schema_meta WHERE key=?", (KEY,)).fetchone()
+                required_pin = os.getenv("GRID_CLASSIC_RISK_CONTINUITY_SHA256")
+                if required_pin and not row:
+                    raise ValueError("required classic continuity is missing")
+                if row:
+                    continuity = json.loads(row[0])
+                    if required_pin and continuity["manifest_sha256"] != required_pin:
+                        raise ValueError("wrong classic continuity manifest")
+                    identity = self.store.conn.execute(
+                        "SELECT value FROM schema_meta WHERE key='account_identity'").fetchone()
+                    if not identity or identity[0] != continuity["identity"]:
+                        raise ValueError("classic continuity belongs to another wallet")
+                    transfers = accounted_transfers(continuity, day, transfers)
                 # 只有明确的交易盈亏或成本可计入回撤。其它资金变动需人工核对。
                 for row in income:
                     amount = Decimal(str(row["income"]))
@@ -62,7 +78,11 @@ class RiskTracker:
                                      "counterparty":confirmation},sort_keys=True), now_ms))
                 transfers = unverified
             checkpoint = self.store.latest_equity_checkpoint(day)
-            if checkpoint is None:
+            if checkpoint is None and continuity and day == continuity["day"]:
+                verified = True
+                baseline = Decimal(continuity["baseline"])
+                peak = Decimal(continuity["peak"])
+            elif checkpoint is None:
                 positions = await self.exchange.position()
                 flat = (len(positions) == 1 and
                         Decimal(str(positions[0]["positionAmt"])) == 0)
@@ -87,6 +107,8 @@ class RiskTracker:
                     self._historical_peak = Decimal(historical_peak[0])
             if peak is not None and self._historical_peak is not None:
                 peak = max(peak, self._historical_peak)
+            if peak is not None and continuity:
+                peak = max(peak, Decimal(continuity["peak"]))
             evidence = RiskEvidence(
                 observed_at_ms=now_ms, baseline_day=day,
                 baseline_equity_usdt=baseline, peak_equity_usdt=peak,
@@ -98,7 +120,7 @@ class RiskTracker:
             if result.status != RiskStatus.UNKNOWN_LOCKED:
                 self.store.record_equity_checkpoint(
                     day, baseline, equity, result.next_peak_equity_usdt,
-                    now_ms, verified=True, transfer_fingerprint="none")
+                    now_ms, verified=True, transfer_fingerprint=(continuity["manifest_sha256"] if continuity and day == continuity["day"] else "none"))
                 self._historical_peak = result.next_peak_equity_usdt
             return result
         except Exception:
