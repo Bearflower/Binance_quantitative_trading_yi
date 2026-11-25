@@ -53,10 +53,10 @@ HRS 原权益段 `hrs-d68a7c6a7302411287850e10ffb9e666` 保留，起点 11 月 1
 
 前三笔与数据库原有 `account_risk_transfer` 一致。切换时 FAPI 已记录的 388.94441069 自动转入没有出现在上述 SAPI 结果，因此不能把“四路查询完成”提升为“所有钱包现金流完成”。这些流水也没有事件前后权益。接口与保留期见[币安官方通用划转历史文档](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/asset#query-user-universal-transfer-history)。
 
-本轮本地只读原件：
+本轮本地只读原件保存在私有目录（目录权限 `0700`、文件权限 `0600`），同目录 `SHA256SUMS` 保存校验清单：
 
-- `/private/tmp/ledger-remainder-20261125/transfer-evidence.json`，SHA256 `17ed48eb06aeb9e2aebe7299146d60852d08f61826ad4e3cd3388881f70fab88`，包含四个查询的分页原始响应和真实采集起止时间。
-- `/private/tmp/ledger-remainder-20261125/database-evidence.json`，SHA256 `029c1f756b3108fda4d3e0217845f757b04335f5b6c9552aab40fb51fce013ff`，包含固定窗口报告、门禁、权益段、检查点摘要和游标。两个文件均未包含凭据。
+- `/Users/yl/.codex/pm-cutover/20261125-89160896/ledger-remainder/transfer-evidence.json`，SHA256 `17ed48eb06aeb9e2aebe7299146d60852d08f61826ad4e3cd3388881f70fab88`，包含四个查询的分页原始响应和真实采集起止时间。
+- `/Users/yl/.codex/pm-cutover/20261125-89160896/ledger-remainder/database-evidence.json`，SHA256 `029c1f756b3108fda4d3e0217845f757b04335f5b6c9552aab40fb51fce013ff`，包含固定窗口报告、门禁、权益段、检查点摘要和游标。两个文件均未包含凭据。
 
 ## 下一步所需的最小输入与现有入口
 
