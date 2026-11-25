@@ -167,7 +167,8 @@ def _load_components(strategy_dir: str) -> Dict[str, Any]:
 
     override_path = os.path.join(override_dir, f"{active_version}.yaml")
     override_config = _read_yaml(override_path)
-    if not override_config:
+    # 显式 {} 是合法的无调整版本；只有缺失、空文档或无效 YAML 才降级。
+    if override_config is None:
         logger.warning(
             "覆盖层文件不存在或为空，降级为基础配置",
             override_path=override_path,
@@ -274,7 +275,7 @@ def _read_yaml(file_path: str) -> Optional[Dict[str, Any]]:
 
     降级策略：
     - 文件不存在 → 返回 None
-    - 文件为空 → 返回空字典
+    - 文件为空或不是字典 → 返回 None（显式 {} 是合法空字典）
     - 解析失败 → 记录警告日志，返回 None
 
     Args:
@@ -289,14 +290,14 @@ def _read_yaml(file_path: str) -> Optional[Dict[str, Any]]:
         with open(file_path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f)
             if data is None:
-                return {}
+                return None
             if not isinstance(data, dict):
                 logger.warning(
                     "YAML 文件顶层不是字典，跳过",
                     file_path=file_path,
                     actual_type=type(data).__name__,
                 )
-                return {}
+                return None
             return data
     except yaml.YAMLError as e:
         logger.warning("YAML 解析失败", file_path=file_path, error=str(e))
