@@ -12,7 +12,7 @@ jobs:
         include:
           - {name: btc-eth-aggr, base: ghcr.io/bearflower/trading-btc-eth-aggr@sha256:860f8ac815a9c3b76bdc4eda8e64226498977fd5eb9b17fb932368cc025ea2b7}
     env:
-      SOURCE_SHA: 97b88261e1dc43cb58b336dde51d48fd2db15ccf
+      SOURCE_SHA: a54b348b5de56518e2a06ad33e4f51d17c84c68f
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,6 +27,8 @@ jobs:
           test -z "$(git diff --diff-filter=D --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- strategies/btc_eth_aggressive)"
           mkdir -p runtime-layer/overlay
           git diff --name-only c30a0bd73e54121e0c85b6a9a88b5849be962af9 HEAD -- strategies/btc_eth_aggressive | while IFS= read -r file; do cp --parents "$file" runtime-layer/overlay/; done
+          mkdir -p runtime-layer/overlay/strategies
+          cp -a strategies/hrs runtime-layer/overlay/strategies/
           cp VERSION runtime-layer/overlay/
           printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'ARG HRS_IMAGE_REVISION' 'ENV HRS_IMAGE_REVISION=${HRS_IMAGE_REVISION}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
       - uses: docker/login-action@v3
