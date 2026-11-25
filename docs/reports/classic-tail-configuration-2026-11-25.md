@@ -2,8 +2,9 @@
 
 This report records completed configuration fixes, an isolated physical restore,
 and a read-only account snapshot. It does **not** declare all cutover tail items
-complete. Off-host archive hashes remain a separate acceptance gate owned by the
-root task; bootstrap-role migration and account-ledger work have their own gates.
+complete. Subsequent off-host checks, bootstrap repair and the two remaining UTC
+image fixes passed; see the [final acceptance report](classic-tail-final-2026-11-25.md).
+The PM equity evidence gap remains open.
 
 `rd` below means the private server directory
 `/root/trading_system/.releases/pm-window-89160896`.
@@ -143,5 +144,5 @@ using their real execution evidence; do not reset PnL, edit snapshots, or recrea
 orders merely to make the two files match.
 
 The isolated restore proves these source archives can recover on the matching
-platform. **Off-host archive transfer/hash acceptance remains with the root
-task and is not asserted by this report.**
+platform. The later independent off-host SHA256 verification passed for all three
+files; its evidence and the production acceptance are recorded in the final report.

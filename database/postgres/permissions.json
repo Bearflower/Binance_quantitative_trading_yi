@@ -1770,7 +1770,7 @@
     "bootstrap_role": "trading_bootstrap_admin",
     "application_role": "trading_user",
     "oid": 10,
-    "allow_legacy_demoted": true,
+    "allow_legacy_demoted": false,
     "database": "trading_platform",
     "owned_schemas": [
       "btc_eth",
@@ -1851,6 +1851,6 @@
         ]
       }
     ],
-    "note": "Controlled OID10 split: legacy demoted state is allowed for preflight/rollback only. The separated bootstrap is SUPERUSER NOLOGIN with no password/memberships; application role remains subject to the unchanged runtime contract."
+    "note": "Production split accepted 2026-11-25 after native autovacuum/autoanalyze proof. Legacy demoted bootstrap is rejected. Explicit rollback requires the archived transitional contract; the separated bootstrap is SUPERUSER NOLOGIN with no password/memberships and the application remains subject to the runtime contract."
   }
 }
