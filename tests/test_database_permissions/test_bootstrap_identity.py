@@ -181,3 +181,27 @@ def test_role_setting_drift_blocks_before_rename(cluster):
     assert sql("ALTER ROLE trading_user SET search_path TO public,app; ALTER ROLE trading_user NOLOGIN;").returncode==0
     assert sql(m.render(manifest,plan,'forward')).returncode!=0
     assert sql("SELECT to_regrole('trading_bootstrap_admin') IS NULL;").stdout.strip()=='t'
+
+
+def test_strict_contract_rejects_legacy_oid10_but_accepts_separated_identity(cluster):
+    import copy
+    m=module();sql,transitional,_,_=cluster
+    strict=copy.deepcopy(transitional)
+    strict['bootstrap_identity']['allow_legacy_demoted']=False
+
+    rejected=sql(m.permissions.render_sql(strict,'audit'))
+    assert rejected.returncode==0,rejected.stderr
+    report=json.loads(rejected.stdout)
+    assert report['ok'] is False
+    assert any(issue['code']=='bootstrap_identity_missing' for issue in report['issues'])
+
+    plan=json.loads(sql(m.inventory_sql()).stdout)
+    assert sql('ALTER ROLE trading_user NOLOGIN;').returncode==0
+    migrated=sql(m.render(transitional,plan,'forward'))
+    assert migrated.returncode==0,migrated.stderr
+
+    accepted=sql(m.permissions.render_sql(strict,'audit'))
+    assert accepted.returncode==0,accepted.stderr
+    report=json.loads(accepted.stdout)
+    assert report['ok'] is True
+    assert report['issues']==[]
