@@ -78,6 +78,7 @@ class _CloseParams:
     reduce_only: bool
     sync_before_reduce_only: bool
     cancel_conditional_on_reject: bool
+    propagate_reduce_only_conflict: bool
     zero_micro_position: bool
     max_retries: int
     retry_interval: float
@@ -106,6 +107,7 @@ async def close_remaining(
     position_confirm_interval: float = 1.0,
     zero_micro_position: bool = True,
     cancel_conditional_on_reject: bool = True,
+    propagate_reduce_only_conflict: bool = False,
 ) -> CloseOutcome:
     """按「剩余待平量」带减仓约束（reduceOnly）平仓，直到达标或耗尽重试
 
@@ -128,6 +130,8 @@ async def close_remaining(
         position_confirm_interval: 持仓对账间隔（秒）
         zero_micro_position: 剩余量精度截断为 0 时是否减仓清零（D3，默认 True）
         cancel_conditional_on_reject: -2022 时是否撤该币种条件单以解除冲突
+
+        propagate_reduce_only_conflict: 将减仓冲突交给持有订单归属信息的调用方。
 
     Returns:
         CloseOutcome（status/closed_qty/target_qty/success/reason/raw）
@@ -156,6 +160,7 @@ async def close_remaining(
         reduce_only=reduce_only,
         sync_before_reduce_only=sync_before_reduce_only,
         cancel_conditional_on_reject=cancel_conditional_on_reject,
+        propagate_reduce_only_conflict=propagate_reduce_only_conflict,
         zero_micro_position=zero_micro_position,
         max_retries=max(int(max_retries), 0),
         retry_interval=float(retry_interval),
@@ -259,6 +264,8 @@ async def _submit_reduce_only(
             order_type=p.order_type, reduce_only=p.reduce_only,
         )
     except BinanceAPIError as e:
+        if p.propagate_reduce_only_conflict and e.code in (-4118, -2022):
+            raise
         if e.code in _REDUCE_ONLY_REJECT_CODES and p.sync_before_reduce_only and not retried:
             await _handle_reduce_only_rejection(client, p)
             return await _submit_reduce_only(client, p, qty, retried=True)
