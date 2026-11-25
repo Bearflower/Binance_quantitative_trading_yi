@@ -1161,6 +1161,7 @@
     {
       "schema": "trading",
       "name": "hrs_equity_evidence",
+      "note": "Immutable evidence. The concurrent hrs_equity_pm_lookup_idx access-path migration changes no owner or ACL and requires no application DDL privileges.",
       "kind": "table",
       "owner": "trading_migration_admin",
       "grants": {
