@@ -4,6 +4,7 @@ import json
 import os
 
 from scripts.export_execution_facts import _maybe_open_sink
+from shared.accounting.collector_recovery import trading_recovery_configured
 from shared.accounting.runtime_cutover import classic_epoch, initialize_classic_runtime
 from shared.binance_account_mode import require_no_pm_claims, verify_cutover_ledger, verify_trading_mode
 from shared.readonly_client import ReadOnlyBinanceClient
@@ -20,9 +21,10 @@ async def main():
         _, db = await _maybe_open_sink()
         if db is None:
             raise RuntimeError("归档运行状态需要数据库写入权限")
-        await verify_trading_mode(client)
-        await verify_cutover_ledger(client, db)
-        await require_no_pm_claims(db, *epoch)
+        if not trading_recovery_configured():
+            await verify_trading_mode(client)
+            await verify_cutover_ledger(client, db)
+            await require_no_pm_claims(db, *epoch)
         await initialize_classic_runtime(client, db)
         print(json.dumps({"account_id": epoch[0], "cutover_ms": epoch[1], "runtime_ready": True}))
     finally:

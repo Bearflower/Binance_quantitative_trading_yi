@@ -111,7 +111,7 @@ docker compose run --rm --no-deps execution-facts-collector python -m scripts.re
 
 ### 漏采 PM 期末权益时单独恢复主账户事实采集
 
-交易写入者继续冻结。对已停止 PM 且两侧权益锚点都没有入库的账户，只有 `scripts.collect_execution_facts` 支持独立凭据。它按 T 限定经典采集窗口，使用仅放行 GET 的币安客户端，并在每轮采集前重新签名查询现货 UID。收益换算、利润提取和交易启动仍要求原有双侧权益记录。该流程不创建权益锚点或运行状态标记。
+交易写入者继续冻结。对已停止 PM 且两侧权益锚点都没有入库的账户，`scripts.collect_execution_facts` 接受采集专用凭据。它按 T 限定经典采集窗口，使用仅放行 GET 的币安客户端，并在每轮采集前重新签名查询现货 UID。收益换算及利润提取继续要求双侧权益记录；单独配置采集清单时交易写入者继续冻结。该流程不创建权益锚点或运行状态标记。
 
 保存三份完整 JSON 原件，以各自文件的 SHA256（64 位小写十六进制）加 `.json` 为文件名，和 `collector-recovery.json` 放在同一目录。沿用冻结交接与账户复核脚本的回执格式。三份原件分别是：
 
@@ -149,6 +149,19 @@ docker compose run --rm --no-deps execution-facts-collector python -m scripts.re
 ```
 
 将该目录以只读方式挂入专用采集容器，例如 `/run/classic-collector`。仅为该容器设置 `CLASSIC_COLLECTOR_RECOVERY_MANIFEST=/run/classic-collector/collector-recovery.json` 和 `CLASSIC_COLLECTOR_RECOVERY_SHA256`（已审核清单原始字节的 SHA256），并配置同一 `TRADE_ACCOUNT_ID`、经典模式及 T。先执行一次 `python -m scripts.collect_execution_facts --days 2`；确认报告的账户、模式、T、`collector_recovery_sha256`、采集起点和 `complete=true` 后，才以同一配置恢复该采集服务的轮询。任一凭据不符或数据库出现任一权益锚点，采集轮次将失败。保持 PM 期末净值缺口和原 PM 游标，单独归档已知的历史覆盖缺口。
+
+### 已批准解冻主账户交易，PM 期末权益仍然缺失
+
+在账户持有人单独确认恢复交易后，为已批准的主账户写入者准备交易专用清单。复用上述三份原始回执和同一个 T，将清单的 `scope` 改为 `classic_trading_runtime`，另存为 `trading-recovery.json`。对最终文件重新计算 SHA256。把清单与三个以摘要命名的回执一起只读挂载到 `/run/classic-trading`。向初始化容器和该批已批准的主账户策略容器提供两项独立配置：
+
+```sh
+export CLASSIC_TRADING_RECOVERY_MANIFEST=/run/classic-trading/trading-recovery.json
+export CLASSIC_TRADING_RECOVERY_SHA256="${REVIEWED_TRADING_MANIFEST_SHA256:?缺少已审核摘要}"
+```
+
+1. 保持所有交易写入者冻结，使用已审核镜像、原账户 ID、原 T、经典模式、数据库写入角色和真实凭据，执行 `python -m scripts.initialize_classic_runtime`。该命令在原归档事务取得账户锁后复核清单和三份原件，重新查询签名 UID、现时 PM 状态、密钥合约权限和单向单资产配置，并确认切点前风险预留及认领已结清。发现任一已入库的权益锚点时，须核对双侧证据。
+2. 首次初始化需要正的经典合约权益，同时核对两份实时签名仓位和两类挂单。V3 positionRisk 返回空列表时，独立的 V3 account 仍须返回有效余额和明确的仓位列表。原有切点后交易、未归属运行记录检查及旧状态原子归档继续执行。成功标记保存交易专用清单摘要，历史权益表保持原始记录。[币安 USDⓈ-M 接口变更说明](https://developers.binance.com/zh-CN/docs/products/derivatives-trading-coin-futures/change-log) · [币安 API Key 权限接口](https://developers.binance.com/en/docs/catalog/core-trading-wallet/api/rest-api/account)
+3. 分批启动已批准的写入者。每次重启都重新验证本账户签名身份、交易权限、清单、原始证据、旧风险预留及标记的摘要；允许接管已在经典阶段建立的仓位。HRS 继续独立检查持仓表、备份和超时恢复任务。出现摘要、配置、身份或持仓归属冲突时，先核对对应证据。跨 PM 与经典的收益率和利润提取继续保留缺失状态。
 
 ## 三套策略的数据核对
 

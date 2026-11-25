@@ -126,3 +126,27 @@ async def test_real_postgres_first_start_archives_three_strategies_once(monkeypa
                                             since_ms=2000000000000)
     finally:
         await pool.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("risk,wallet,ordinary,algo", [
+    ({}, dict(totalMarginBalance="1", positions=[]), [], []),
+    ([], dict(totalMarginBalance="1"), [], []),
+    ([], dict(totalMarginBalance="NaN", positions=[]), [], []),
+    ([], dict(totalMarginBalance="0", positions=[]), [], []),
+    ([], dict(totalMarginBalance="1", positions=[dict(symbol="A", positionSide="BOTH", positionAmt="2")]), [], []),
+    ([dict(symbol="A", positionSide="LONG", positionAmt="0")], dict(totalMarginBalance="1", positions=[]), [], []),
+    ([], dict(totalMarginBalance="1", positions=[]), None, []),
+    ([], dict(totalMarginBalance="1", positions=[]), [], [dict(algoId=8)]),
+])
+async def test_unfreeze_refuses_incomplete_or_exposed_v3_signed_snapshots(risk, wallet, ordinary, algo):
+    from shared.accounting.runtime_cutover import require_signed_classic_flat
+
+    api = client()
+    api._request = AsyncMock(return_value=risk)
+    api.get_account_info = AsyncMock(return_value=wallet)
+    api.get_open_orders.return_value = ordinary
+    api.get_open_algo_orders.return_value = algo
+    with pytest.raises((ValueError, RuntimeError)):
+        await require_signed_classic_flat(api)
+    api._request.assert_awaited_once_with("GET", "/fapi/v3/positionRisk", signed=True)

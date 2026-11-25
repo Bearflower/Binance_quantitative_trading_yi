@@ -1,21 +1,24 @@
-"""仅为经典成交/收入采集核验封存证据，不生成权益锚点或交易运行标记。"""
+"""核验可复查的账户切换凭据，采集与交易使用独立的清单用途和配置。"""
 from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import time
 
 from shared.accounting.equity_bridge import signed_spot_uid_sha256
-from shared.binance_account_mode import verify_cutover_ledger
+from shared.binance_account_mode import verify_cutover_ledger, verify_trading_mode
 
 _MANIFEST = "CLASSIC_COLLECTOR_RECOVERY_MANIFEST"
 _PIN = "CLASSIC_COLLECTOR_RECOVERY_SHA256"
+_TRADING_MANIFEST = "CLASSIC_TRADING_RECOVERY_MANIFEST"
+_TRADING_PIN = "CLASSIC_TRADING_RECOVERY_SHA256"
 
 
 def _require(condition, label):
     if not condition:
-        raise ValueError(f"经典采集恢复证据校验失败：{label}")
+        raise ValueError(f"经典恢复证据校验失败：{label}")
 
 
 def _unique_fields(items):
@@ -117,10 +120,10 @@ def _verify_closures(pm, summary, queries, cutover):
              and summary["cancelled_previous_algos"] == len(cancelled), "旧保护单计数")
 
 
-def _verify_bundle(path, pin, account, cutover, now_ms, uid):
+def _verify_bundle(path, pin, account, cutover, now_ms, uid, *, scope):
     manifest = _load(path, pin)
     _require(type(manifest["version"]) is int and manifest["version"] == 1
-             and manifest["scope"] == "execution_facts_collector" and manifest["reason"] == "missing_pm_final"
+             and manifest["scope"] == scope and manifest["reason"] == "missing_pm_final"
              and manifest["account_id"] == account and _ms(manifest["cutover_ms"]) == cutover, "用途、账户或切点")
     old, new = manifest["pm"], manifest["classic"]
 
@@ -165,17 +168,37 @@ async def verify_collector_ledger(client, db, account, cutover, now_ms):
         if not client.use_unified_account:
             await verify_cutover_ledger(client, db)
         return None
-    path = Path(os.environ.get(_MANIFEST, ""))
-    pin = _digest(os.environ.get(_PIN))
+    _require(db is not None, "经典采集恢复需要核实数据库锚点")
+    return await _verify_recovery(client, db.fetch_all, account, cutover, now_ms,
+                                  _MANIFEST, _PIN, scope="execution_facts_collector")
+
+
+def trading_recovery_configured():
+    return _TRADING_MANIFEST in os.environ or _TRADING_PIN in os.environ
+
+
+async def verify_trading_recovery(client, fetch, account, cutover):
+    """每次初始化或启动交易进程都以当前签名身份重验交易专用清单。"""
+    await verify_trading_mode(client)
+    return await _verify_recovery(client, fetch, account, cutover, time.time_ns() // 1_000_000,
+                                  _TRADING_MANIFEST, _TRADING_PIN, scope="classic_trading_runtime")
+
+
+async def _verify_recovery(client, fetch, account, cutover, now_ms, path_env, pin_env, *, scope):
+    path = Path(os.environ.get(path_env, ""))
+    pin = _digest(os.environ.get(pin_env))
     _require(path.is_absolute() and client.use_unified_account is False and client.testnet is False
-             and account == os.environ.get("TRADE_ACCOUNT_ID") and account.strip() and cutover
-             and db is not None, "恢复配置只限经典实盘指定账户")
-    uid = await signed_spot_uid_sha256(client)
+             and account == os.environ.get("TRADE_ACCOUNT_ID") and account.strip() and cutover,
+             "恢复配置只限经典实盘指定账户")
+    if scope == "classic_trading_runtime":
+        uid = await signed_spot_uid_sha256(client, require_classic_trading=True)
+    else:
+        uid = await signed_spot_uid_sha256(client)
     try:
-        _verify_bundle(path, pin, account, cutover, now_ms, uid)
+        _verify_bundle(path, pin, account, cutover, now_ms, uid, scope=scope)
     except (OSError, KeyError, TypeError, InvalidOperation) as exc:
-        raise ValueError("经典采集恢复凭据无法读取或字段无效") from exc
-    anchors = await db.fetch_all(
+        raise ValueError("经典恢复凭据无法读取或字段无效") from exc
+    anchors = await fetch(
         "SELECT observation FROM trading.account_mode_equity "
         "WHERE account_id=$1 AND cutover_ms=$2 AND snapshot_date IS NULL", account, cutover)
     _require(anchors == [], "账本中已有切换锚点，请按双锚点流程核对")

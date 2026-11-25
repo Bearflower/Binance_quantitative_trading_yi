@@ -33,23 +33,36 @@ async def verify_trading_mode(client):
 
 
 async def verify_cutover_ledger(client, db, *, trading_writer=False):
-    """实盘策略启动前核实同一账户、同一切点的两份不可变权益记录。"""
+    """经典实盘启动核验；交易专用清单仅限已经归档的交易写入者。"""
+    from shared.accounting.collector_recovery import trading_recovery_configured, verify_trading_recovery
+    recovery = trading_writer and trading_recovery_configured()
     if client.use_unified_account or client.testnet:
+        if recovery:
+            raise RuntimeError("交易恢复凭据仅限经典实盘账户")
         return
     from shared.accounting.account_cutover import classic_cutover_ms
     from shared.accounting.equity_bridge import read_anchors, signed_spot_uid_sha256
     cutover = classic_cutover_ms()
-    if not os.environ.get("TRADE_ACCOUNT_ID", "").strip() or cutover is None or db is None:
+    account = os.environ.get("TRADE_ACCOUNT_ID", "")
+    if not account.strip() or cutover is None or db is None:
         raise RuntimeError("经典实盘交易缺少账户身份、切点或数据库")
-    await read_anchors(db, cutover, expected_uid=await signed_spot_uid_sha256(client))
+    pin = None
+    if recovery:
+        pin = await verify_trading_recovery(client, db.fetch_all, account, cutover)
+    else:
+        await read_anchors(db, cutover, expected_uid=await signed_spot_uid_sha256(client))
     if trading_writer:
         from shared.accounting.runtime_cutover import require_runtime_marker
-        await require_no_pm_claims(db, os.environ["TRADE_ACCOUNT_ID"], cutover)
-        await require_runtime_marker(client, db)
+        await require_no_pm_claims(db, account, cutover)
+        await require_runtime_marker(client, db, recovery_pin=pin)
 
 
 async def require_no_pm_claims(db, account, cutover):
-    pending = await db.fetch_one("""
+    await check_pm_claims(db.fetch_one, account, cutover)
+
+
+async def check_pm_claims(fetch_one, account, cutover):
+    pending = await fetch_one("""
         SELECT EXISTS(SELECT 1 FROM trading.entry_risk_reservation
             WHERE account_id=$1 AND state IN ('reserved','submitting')
               AND created_at < to_timestamp($2::double precision / 1000)) AS reservations,

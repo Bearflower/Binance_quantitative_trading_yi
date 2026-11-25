@@ -34,7 +34,7 @@ def money(value):
     return amount
 
 
-async def signed_spot_uid_sha256(client):
+async def signed_spot_uid_sha256(client, *, require_classic_trading=False):
     """复用当前签名凭据查询 Binance 账户 UID；只保存域分隔的摘要。"""
     from shared.readonly_client import ReadOnlyBinanceClient
     if client.testnet:
@@ -42,6 +42,13 @@ async def signed_spot_uid_sha256(client):
     async with ReadOnlyBinanceClient(client._api_key, client._api_secret, use_unified_account=False,
                                      base_url="https://api.binance.com", instance_id="account-identity") as spot:
         result = await spot._request("GET", "/api/v3/account", {"omitZeroBalances": "true"}, signed=True)
+        if require_classic_trading:
+            account = await spot._request("GET", "/sapi/v1/account/info", signed=True)
+            permissions = await spot._request("GET", "/sapi/v1/account/apiRestrictions", signed=True)
+            if (not isinstance(account, dict) or account.get("isPortfolioMarginRetailEnabled") is not False
+                    or not isinstance(permissions, dict) or permissions.get("enableFutures") is not True
+                    or permissions.get("enableReading") is not True):
+                raise ValueError("当前币安账户模式或 API Key 的经典合约读写权限不符")
     uid = result.get("uid") if isinstance(result, dict) else None
     if type(uid) is not int or uid <= 0:
         raise ValueError("签名现货账户响应缺少有效 Binance UID")
