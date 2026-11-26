@@ -109,7 +109,8 @@ def render_receipt(report, decision_id, *, now_ms=None):
         lines.append(f"- 可用余额: {Decimal(account['available']):.4f} USDT")
         for label, key in [('持仓初始保证金', 'position_margin'), ('挂单初始保证金', 'order_margin')]:
             value = account.get(key)
-            lines.append(f'- {label}: {value + " USDT" if value is not None else "待确认"}')
+            amount = f'{Decimal(value):.4f} USDT' if value is not None else '待确认'
+            lines.append(f'- {label}: {amount}')
         lines.append(f"- 实际净仓: {account['position']} ETH；普通挂单 {account['open_orders']}，条件单 {account['open_stops']}")
     else:
         lines.append('- 实际账户余额、保证金与持仓: 待确认（读取失败）')

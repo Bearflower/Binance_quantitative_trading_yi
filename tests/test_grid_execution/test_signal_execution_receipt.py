@@ -67,8 +67,8 @@ async def test_passed_plan_receipt_uses_exact_submitted_quantity_and_order_count
 def test_live_message_omits_config_margin_and_advisory_execution_claims():
     from strategies.grid.execution.signal_receipt import render_receipt
     r = dict(decision_id='d1', updated_at_ms=1795694705000, state='FLAT',
-        processed=True, account=dict(available='286.49879946', position_margin='0',
-            order_margin='0', position='0', open_orders=0, open_stops=0),
+        processed=True, account=dict(available='286.49879946', position_margin='0E-8',
+            order_margin='0E-8', position='0', open_orders=0, open_stops=0),
         sizing=dict(status='REJECTED', reason='order notional below minimum',
                     budget='17', leverage=5, max_margin='240', min_notional='20'),
         reduction=None, risk='ALLOW')
@@ -76,6 +76,7 @@ def test_live_message_omits_config_margin_and_advisory_execution_claims():
     for expected in ('286.4988', '持仓初始保证金: 0', '5x', '17 USDT', '20 USDT', '未通过'):
         assert expected in text
     assert '500' not in text and '上次减码' not in text and '剩余 4.0h' not in text
+    assert '0E-8' not in text
 
 
 @pytest.mark.parametrize('mismatch,age', [(True, 1000), (False, 60001), (False, -1)])
