@@ -1,4 +1,4 @@
-name: Build audited grid execution receipts
+name: Build audited grid sizing and rate recovery
 on: workflow_dispatch
 permissions:
   contents: read
@@ -12,11 +12,16 @@ jobs:
       matrix:
         service:
           - role: signal
-            base: ghcr.io/bearflower/trading-grid@sha256:b573fd409967fd9d6d068b331b42f75b963b65a0c2eb3d201f892aa6094597f2
+            image: trading-grid
+            base: ghcr.io/bearflower/trading-grid@sha256:1e36b058152ae2bcdb0b1db07ceb5937921dbfc998d3f95244464e1612c16dfe
           - role: executor
-            base: ghcr.io/bearflower/trading-grid@sha256:541921fbcaaa7026a18feaff9631355f24dae555d4a1be7fe64ef1b2586d6e03
+            image: trading-grid
+            base: ghcr.io/bearflower/trading-grid@sha256:557a3f0a68a26ef635eb51e38725b2d80a8152bbe953bde57dfef92167dc997a
+          - role: hrs
+            image: trading-hrs
+            base: ghcr.io/bearflower/trading-hrs@sha256:8a245cfa1f92e799ec56986ae8d1c13556fcb9e1cf2a97b7fb07ca3b5c20f399
     env:
-      SOURCE_SHA: b315ea77c86bfec0b5885eb3a8286a43d196131d
+      SOURCE_SHA: 30ab34fdbd71dd59029f6e85bf367506f92c0df8
     steps:
       - uses: actions/checkout@v4
         with:
@@ -24,9 +29,12 @@ jobs:
       - name: Prepare exact reviewed overlay
         run: |
           mkdir -p runtime-layer/overlay
-          cp --parents strategies/grid/signal_bot.py strategies/grid/margin_advisor.py strategies/grid/execution/main.py strategies/grid/execution/exchange.py strategies/grid/execution/planner.py strategies/grid/execution/signal_receipt.py runtime-layer/overlay/
+          cp --parents strategies/grid/execution/engine.py strategies/grid/execution/exchange.py strategies/grid/execution/main.py strategies/grid/execution/planner.py strategies/grid/execution/position_recovery.py strategies/grid/execution/request_budget.py strategies/grid/execution/signal_receipt.py strategies/grid/execution/sizing.py strategies/grid/execution/store.py strategies/grid/execution/trailing.py strategies/grid/execution/trailing_store.py strategies/grid/signal_bot.py runtime-layer/overlay/
           printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > runtime-layer/overlay/VERSION
           printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
+          if [ '${{ matrix.service.role }}' = 'hrs' ]; then
+            printf 'ENV HRS_IMAGE_REVISION=%s\n' "$SOURCE_SHA" >> runtime-layer/Dockerfile
+          fi
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -41,7 +49,7 @@ jobs:
           labels: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/bearflower/trading-grid:receipt-${{ matrix.service.role }}-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ghcr.io/bearflower/${{ matrix.service.image }}:joint-${{ matrix.service.role }}-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
       - name: Record digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
