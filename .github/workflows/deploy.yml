@@ -18,8 +18,8 @@ jobs:
           python-version: '3.11'
       - name: Test the MTPCS report
         run: |
-          python -m pip install pytest==8.0.0
-          python -m pytest -q tests/test_ai_tuner_mvp/test_mtpcs_digest_windows.py
+          python -m pip install pytest==8.0.0 PyYAML==6.0.1
+          python -m pytest -q tests/test_ai_tuner_mvp/test_{mtpcs_digest_windows,daily_digest,digest_outbox}.py
           bash -n deployment/mtpcs-digest-windows/activate.sh
       - name: Deploy and verify the MTPCS section
         env:
