@@ -512,7 +512,8 @@ class GridSignalBot:
                 except (sqlite3.Error, ValueError, TypeError):
                     break
                 if (report and report.get('decision_id') == decision_id
-                        and 0 <= _now_ms() - report.get('updated_at_ms', 0) <= 60_000):
+                        and 0 <= _now_ms() - report.get('updated_at_ms', 0) <= 60_000
+                        and (report.get('processed') or report.get('state') == 'LOCKED')):
                     break
                 await asyncio.sleep(.25)
         signal.message = signal.message.replace(PENDING_TEXT, '').strip()

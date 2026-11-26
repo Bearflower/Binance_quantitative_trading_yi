@@ -197,3 +197,21 @@ async def test_actual_message_replaces_legacy_calculation_after_matching_receipt
     assert '5x' in signal.message and '未通过' in signal.message
     assert PENDING_TEXT not in signal.message
     bot._decision_store.close()
+
+
+@pytest.mark.asyncio
+async def test_push_waits_for_completion_when_first_receipt_is_pending(monkeypatch):
+    from strategies.grid.signal_bot import GridSignalBot
+    from unittest.mock import Mock
+    bot = GridSignalBot.__new__(GridSignalBot)
+    bot._decision_store = object()
+    pending = dict(decision_id='d1', updated_at_ms=100000, state='FLAT', processed=False)
+    completed = {**pending, 'processed': True}
+    reader = Mock(side_effect=[pending, completed])
+    monkeypatch.setattr('strategies.grid.signal_bot.read_receipt', reader)
+    monkeypatch.setattr('strategies.grid.signal_bot._now_ms', lambda: 100001)
+    monkeypatch.setattr('strategies.grid.signal_bot.asyncio.sleep', AsyncMock())
+    signal = SimpleNamespace(message='signal')
+    await bot._attach_execution_receipt(signal, 'd1')
+    assert '本次决策已处理' in signal.message
+    assert reader.call_count == 2
