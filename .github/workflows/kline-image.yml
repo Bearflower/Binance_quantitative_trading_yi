@@ -16,7 +16,7 @@ jobs:
           - role: executor
             base: ghcr.io/bearflower/trading-grid@sha256:541921fbcaaa7026a18feaff9631355f24dae555d4a1be7fe64ef1b2586d6e03
     env:
-      SOURCE_SHA: b7718323a7ce0dfdd2d389c51e0d4a126a6273ae
+      SOURCE_SHA: a23377aaaa0ce0653b48d8eaf4f62d5db0a5da42
     steps:
       - uses: actions/checkout@v4
         with:
