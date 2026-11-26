@@ -5,8 +5,8 @@
   "scope": "Final production candidate delta against latest authorized production grid/classic baseline 8dd906c9, not a new full-history audit",
   "snapshot": {
     "base": "8dd906c914c5c07e4ba63bd81b778ff1e213ed25",
-    "snapshot": "2e4b5b88b9b994546ba42fd57e6260c9f4c14c3f",
-    "tree": "64a7dc109fba7078d44efd76629c37b3979eb3ce",
+    "snapshot": "88d95204b4d1ffc91ea8471f3741fe070df2e02f",
+    "tree": "143c326908f83c5a0df3cb464e6f62222e854d30",
     "repository": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
     "output_exclusions": [
       "docs/reviews/2026-11-26-production-regression/ocr-review.json",
@@ -14,9 +14,9 @@
     ]
   },
   "ocr": {
-    "preview": "/tmp/binance-final-ocr/stage-runtime-fix/full-preview.json",
-    "preview_sha256": "5b29e2b197ec899556a1c1701664cccbe85037ce912dfd8214326649cf918163",
-    "rules": "/tmp/binance-final-ocr/stage-runtime-fix/full-rules.json",
+    "preview": "/tmp/binance-final-ocr/stage-hrs-metadata-fix/full-preview.json",
+    "preview_sha256": "23693250e436f0e32e923f112e539ea8d105e9983944ea204d178561bdeeca12",
+    "rules": "/tmp/binance-final-ocr/stage-hrs-metadata-fix/full-rules.json",
     "rules_sha256": "6e871049c5d490ceefe71db316873cdd99ea912e54eabba6826693119cfb4a09",
     "rule_groups": [
       {
@@ -147,8 +147,8 @@
       "binary": 3
     },
     "current_hash_verified_entries": 73,
-    "carried_forward_hash_matched": 69,
-    "supplementally_reviewed": 4,
+    "carried_forward_hash_matched": 70,
+    "supplementally_reviewed": 3,
     "open_findings": 0
   },
   "coverage": [
@@ -721,7 +721,7 @@
     {
       "path": "docs/reviews/2026-11-26-production-regression/per-file-results.json",
       "status": "added",
-      "sha256": "80aad88e4efa8c893c7ced5f017411d4052423a0539cc56bf5626b9de82642e6",
+      "sha256": "62fa072ef44e66932c369e4c2cab3df46d2c873ebc974c534b90062f84f52441",
       "review_status": "reviewed",
       "rule_group": 5,
       "evidence": [
@@ -734,6 +734,28 @@
             "537 unique discovered paths equal manifest and per-file result paths.",
             "All 537 recorded SHA256 values match current test files; totals reconcile to 9172 passed with zero failures/errors/skips.",
             "Release adaptation records exact current runner/test hashes and remains pending fresh commit/CI, without claiming production readiness."
+          ]
+        },
+        {
+          "report": "stage-oci-fix",
+          "sha256": "1d313c96d2b814b16b5b956fa35731747e4e78a5fac04f2ac5d33f008a02fdb0",
+          "depth": "generated evidence schema and full cross-file consistency",
+          "checks": [
+            "Parsed JSON and reviewed keys against resolved JSON rule.",
+            "537 unique discovered paths match manifest and per-file rows.",
+            "All 537 recorded test SHA256 values match current files; 9175 tests pass with zero failures/errors/skips.",
+            "Current runner/test hashes and release adaptation remain pending a new committed-source build and activation."
+          ]
+        },
+        {
+          "report": "stage-hrs-metadata-fix",
+          "sha256": "62fa072ef44e66932c369e4c2cab3df46d2c873ebc974c534b90062f84f52441",
+          "depth": "generated evidence schema and full cross-file consistency",
+          "checks": [
+            "Parsed JSON and reviewed keys against resolved JSON rule.",
+            "537 unique discovered paths match manifest and per-file rows.",
+            "All 537 recorded test SHA256 values match current files; 9186 tests pass with zero failures/errors/skips.",
+            "Current runner/test hashes and release adaptation remain pending a new committed-source build and activation."
           ]
         }
       ]
@@ -756,7 +778,7 @@
     {
       "path": "docs/reviews/2026-11-26-production-regression/validation-results.json",
       "status": "added",
-      "sha256": "f3b85f3f64d292f6cdff7a8ab2d3d243cfeb618f389a01aa9d343aeb33404e1f",
+      "sha256": "36f4e08d351f74889a35c9fbc08e8472e177b95cb064670cc0eda9ae9baefe36",
       "review_status": "reviewed",
       "rule_group": 5,
       "evidence": [
@@ -769,6 +791,28 @@
             "537 unique discovered paths equal manifest and per-file result paths.",
             "All 537 recorded SHA256 values match current test files; totals reconcile to 9172 passed with zero failures/errors/skips.",
             "Release adaptation records exact current runner/test hashes and remains pending fresh commit/CI, without claiming production readiness."
+          ]
+        },
+        {
+          "report": "stage-oci-fix",
+          "sha256": "9b7a2b01efcccdf6443606892b7ed2ef757e4b01f9162200124473e76645929d",
+          "depth": "generated evidence schema and full cross-file consistency",
+          "checks": [
+            "Parsed JSON and reviewed keys against resolved JSON rule.",
+            "537 unique discovered paths match manifest and per-file rows.",
+            "All 537 recorded test SHA256 values match current files; 9175 tests pass with zero failures/errors/skips.",
+            "Current runner/test hashes and release adaptation remain pending a new committed-source build and activation."
+          ]
+        },
+        {
+          "report": "stage-hrs-metadata-fix",
+          "sha256": "36f4e08d351f74889a35c9fbc08e8472e177b95cb064670cc0eda9ae9baefe36",
+          "depth": "generated evidence schema and full cross-file consistency",
+          "checks": [
+            "Parsed JSON and reviewed keys against resolved JSON rule.",
+            "537 unique discovered paths match manifest and per-file rows.",
+            "All 537 recorded test SHA256 values match current files; 9186 tests pass with zero failures/errors/skips.",
+            "Current runner/test hashes and release adaptation remain pending a new committed-source build and activation."
           ]
         }
       ]
@@ -806,7 +850,7 @@
     {
       "path": "scripts/deploy_full_regression.py",
       "status": "added",
-      "sha256": "b037cce05eef31948fb01d7bea0f585582574a622c97e468d3d38aad68373e6b",
+      "sha256": "4c43c5e7b8b4f59a16590b183ba9c66a7748e13160b99ddb913c58879f05b508",
       "review_status": "reviewed",
       "rule_group": 3,
       "evidence": [
@@ -842,6 +886,33 @@
             "validate_staged_runtime AST is identical to committed 9243f52; exact Config/HostConfig checks remain, with existing network set/alias/custom addressing checks unchanged.",
             "Independent tampering checks reject account/risk Env, command, entrypoint, user, healthcheck, binds, structured mounts, privilege, ports, restart, OOM policy and network drift.",
             "Prior state remains untouched via deep copy; staged candidate is created/stopped and old grid healthy; no activation or remote mutation in this review."
+          ]
+        },
+        {
+          "report": "stage-oci-fix",
+          "sha256": "839e8f0b717b43314eeb45ccd688e3e514eee66907b4d6f5e98e8460b491bf48",
+          "depth": "deep delta and surrounding runtime validation",
+          "checks": [
+            "Real second-stage evidence shows only the missing OCI image revision label inherited from the verified candidate; Env, HostConfig and networks unchanged.",
+            "stage verifies image revision==selected source, repository digest, linux/amd64 and source code proof before build_container_body.",
+            "Builder writes org.opencontainers.image.revision and codex.full_regression.source to candidate SHA, preserving every other predecessor label and the original object.",
+            "validate_staged_runtime AST is unchanged from committed 8042ba7; explicit metadata changes are in the expected request, not comparison exceptions.",
+            "Independent boundaries reject changed/removed candidate revision, changed release source, unrelated label drift, unexpected extra labels, account/risk Env, mounts, user, healthcheck and networking drift.",
+            "The recorded created shadow matches the corrected body; prior created grid/BTC differ only in intentionally refreshed revision metadata and must not be silently reused with new release source."
+          ]
+        },
+        {
+          "report": "stage-hrs-metadata-fix",
+          "sha256": "4c43c5e7b8b4f59a16590b183ba9c66a7748e13160b99ddb913c58879f05b508",
+          "depth": "deep delta and surrounding runtime validation",
+          "checks": [
+            "Completed actual 8042 image-default scan covers all 11 image families and 23 target containers; only already-reviewed OOM/OCI and HRS_IMAGE_REVISION gaps were observed.",
+            "Four explicit target names exactly equal build-plan hrs image containers; only these receive HRS_IMAGE_REVISION=verified candidate source SHA.",
+            "HRS_RELEASE_SHA continues to update only for trading_system-hrs; absent and existing values in other containers are preserved.",
+            "All other environment values, including account/risk configuration and values containing equals signs, remain unchanged; predecessor object is not mutated.",
+            "HRS_IMAGE_REVISION consumers are primary HRS source consistency/evidence and operational build verification; auxiliary acceptance/execution-facts/market-cap entries do not activate the trading entrypoint.",
+            "validate_staged_runtime AST remains unchanged from 8042; independent label, environment, mount, user, healthcheck, restart and network drift cases still reject.",
+            "Image source labels, immutable digest/platform and source code proof remain verified before creating a body; no comparison skip or blanket image-default merge was introduced."
           ]
         }
       ]
@@ -1542,7 +1613,7 @@
     {
       "path": "docs/reviews/2026-11-26-production-regression/README.md",
       "status": "added",
-      "insertions": 34,
+      "insertions": 48,
       "deletions": 0,
       "exclude_reason": "unsupported_ext"
     },
@@ -1906,7 +1977,7 @@
     {
       "path": "tests/test_scripts/test_full_regression_deploy.py",
       "status": "added",
-      "insertions": 612,
+      "insertions": 687,
       "deletions": 0,
       "exclude_reason": "default_path"
     },
@@ -2378,6 +2449,32 @@
         "owner_red_failed": 1,
         "owner_red_passed": 2
       }
+    },
+    {
+      "name": "stage-oci-fix",
+      "path": "/tmp/binance-final-ocr/stage-oci-fix/review.json",
+      "sha256": "be977c12a9989a8bbdbd2372d464263aa285fa4e8a47f6e0ee8ddf9c89aac284",
+      "summary": "Explicit verified candidate revision metadata; unchanged strict runtime comparison; generated regression artifacts refreshed.",
+      "tests": {
+        "independent_module_passed": 71,
+        "independent_boundaries": 23,
+        "owner_release_suite_passed": 116,
+        "owner_red_failed": 2,
+        "owner_red_passed": 1
+      }
+    },
+    {
+      "name": "stage-hrs-metadata-fix",
+      "path": "/tmp/binance-final-ocr/stage-hrs-metadata-fix/review.json",
+      "sha256": "94869908173d955e32cb3312818db710cbdbef54bcd2b2bdb8136fa27507e18c",
+      "summary": "HRS image metadata bound for four plan targets only; unrelated env and strict runtime comparison preserved; complete test artifacts refreshed.",
+      "tests": {
+        "independent_module_passed": 82,
+        "independent_boundaries": 57,
+        "owner_release_suite_passed": 127,
+        "owner_red_failed": 6,
+        "owner_red_passed": 5
+      }
     }
   ],
   "resolved_findings": [
@@ -2491,6 +2588,42 @@
         "actual_created_container_strict_comparison": true
       },
       "production_activation_performed": false
+    },
+    {
+      "path": "scripts/deploy_full_regression.py",
+      "start_line": 110,
+      "end_line": 113,
+      "category": "bug",
+      "severity": "medium",
+      "status": "fixed",
+      "source_report": "stage-oci-fix",
+      "content": "Confirmed second-stage blocker: legacy XAU shadow lacked org.opencontainers.image.revision, so Docker inherited the verified image label absent from the expected body. Existing labeled containers also retained stale revision metadata. Explicitly bind candidate revision alongside release source while preserving every other label and exact runtime checks.",
+      "validation": {
+        "independent_module_passed": 71,
+        "independent_boundaries": 23,
+        "owner_release_suite_passed": 116,
+        "owner_red_failed": 2,
+        "owner_red_passed": 1
+      },
+      "production_activation_performed": false
+    },
+    {
+      "path": "scripts/deploy_full_regression.py",
+      "start_line": 114,
+      "end_line": 120,
+      "category": "bug",
+      "severity": "medium",
+      "status": "fixed",
+      "source_report": "stage-hrs-metadata-fix",
+      "content": "Verified image-default compatibility gap: hrs-acceptance and market-cap predecessor environments lack HRS_IMAGE_REVISION declared by the candidate HRS image, so Docker create would add an unexpected environment entry. Bind verified image revision explicitly for exactly the four HRS-image targets; preserve main-only release SHA behavior, all other env values and exact runtime comparison.",
+      "validation": {
+        "independent_module_passed": 82,
+        "independent_boundaries": 57,
+        "owner_release_suite_passed": 127,
+        "owner_red_failed": 6,
+        "owner_red_passed": 5
+      },
+      "production_activation_performed": false
     }
   ],
   "findings": [],
@@ -2510,6 +2643,30 @@
         "errors": 0,
         "skipped": 0
       }
+    },
+    {
+      "name": "OCI source metadata and refreshed full regression artifacts",
+      "report": "/tmp/binance-final-ocr/stage-oci-fix/review.json",
+      "summary": {
+        "unique_files": 537,
+        "current_test_hashes_verified": 537,
+        "passed": 9175,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
+    },
+    {
+      "name": "HRS metadata whitelist and refreshed full regression artifacts",
+      "report": "/tmp/binance-final-ocr/stage-hrs-metadata-fix/review.json",
+      "summary": {
+        "unique_files": 537,
+        "current_test_hashes_verified": 537,
+        "passed": 9186,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0
+      }
     }
   ],
   "limitations": [
@@ -2518,13 +2675,35 @@
     "Coverage describes changed source against 8dd906c9; inherited code is not represented as newly reviewed line by line.",
     "Local offline tests and exact COPY-tree imports do not replace successful real CI builds, immutable digest verification, fresh account gates or production acceptance.",
     "No deployment success is claimed by this report.",
-    "The Docker create default correction was reviewed and verified against a stopped created candidate without activation. Refreshed snapshot includes final generated regression JSON; new source commit, CI and postdeployment acceptance remain separate requirements."
+    "The Docker create default correction was reviewed and verified against a stopped created candidate without activation. Refreshed snapshot includes final generated regression JSON; new source commit, CI and postdeployment acceptance remain separate requirements.",
+    "Second-stage OCI metadata correction was verified against recorded stopped candidates. The recorded stage had zero activations and 23 healthy predecessors; these historical observations do not replace fresh future account or activation gates.",
+    "Completed default scan covers the previously built 8042 images, not future image artifacts. Current metadata fixes require a fresh committed-source build, strict staging and live activation gates; no remote mutation was performed by this independent reviewer."
   ],
   "snapshot_history": [
     {
       "base": "8dd906c914c5c07e4ba63bd81b778ff1e213ed25",
       "snapshot": "377276d63824a7d4b021e34ac446b548485099ae",
       "tree": "0fa356382b256905df393f677888d941afa87a5f",
+      "repository": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
+      "output_exclusions": [
+        "docs/reviews/2026-11-26-production-regression/ocr-review.json",
+        "docs/reviews/2026-11-26-production-regression/ocr-review.md"
+      ]
+    },
+    {
+      "base": "8dd906c914c5c07e4ba63bd81b778ff1e213ed25",
+      "snapshot": "2e4b5b88b9b994546ba42fd57e6260c9f4c14c3f",
+      "tree": "64a7dc109fba7078d44efd76629c37b3979eb3ce",
+      "repository": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
+      "output_exclusions": [
+        "docs/reviews/2026-11-26-production-regression/ocr-review.json",
+        "docs/reviews/2026-11-26-production-regression/ocr-review.md"
+      ]
+    },
+    {
+      "base": "8dd906c914c5c07e4ba63bd81b778ff1e213ed25",
+      "snapshot": "c2f0a55b9a45e3a59efeaa024ba61b08475d7b96",
+      "tree": "a34faaa870e77bdf0d83a7a28b7499e9659d1658",
       "repository": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
       "output_exclusions": [
         "docs/reviews/2026-11-26-production-regression/ocr-review.json",

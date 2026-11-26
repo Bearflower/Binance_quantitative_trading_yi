@@ -610,3 +610,78 @@ def test_missing_oom_flag_is_not_invented():
     assert 'OomKillDisable' not in old['HostConfig']
     body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
     assert 'OomKillDisable' not in body['HostConfig']
+
+
+def test_legacy_missing_oci_revision_matches_verified_image_label_merge():
+    old = running('trading_system-mtcps-xau-shadow')
+    assert 'org.opencontainers.image.revision' not in old['Config']['Labels']
+    body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+    config = copy.deepcopy({key:value for key,value in body.items() if key not in ('HostConfig','NetworkingConfig')})
+    # Docker inherits this verified candidate image label when the old runtime
+    # did not explicitly configure it (captured from the first shadow stage).
+    config['Labels']['org.opencontainers.image.revision'] = SHA
+    new = dict(Config=config, HostConfig=copy.deepcopy(body['HostConfig']),
+               NetworkSettings=dict(Networks=copy.deepcopy(body['NetworkingConfig']['EndpointsConfig'])))
+    release_mod.validate_staged_runtime(new, body)
+    assert body['Labels']['org.opencontainers.image.revision'] == body['Labels']['codex.full_regression.source'] == SHA
+
+
+def test_candidate_revision_replaces_stale_source_metadata_without_changing_other_labels():
+    old = running('trading_system-grid-executor')
+    old['Config']['Labels'].update({'org.opencontainers.image.revision':'e' * 40,
+                                  'runtime.security.boundary':'dedicated-grid',
+                                  'org.opencontainers.image.source':'https://example.invalid/repository'})
+    before = copy.deepcopy(old)
+    body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+    assert body['Labels']['org.opencontainers.image.revision'] == SHA
+    assert body['Labels']['codex.full_regression.source'] == SHA
+    for key in ('runtime.security.boundary','org.opencontainers.image.source','com.docker.compose.project'):
+        assert body['Labels'][key] == old['Config']['Labels'][key]
+    assert old == before
+
+
+def test_sensitive_runtime_label_drift_remains_a_strict_staging_failure():
+    old = running('trading_system-mtcps-xau-shadow')
+    old['Config']['Labels']['runtime.security.boundary'] = 'isolated-shadow'
+    body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+    config = copy.deepcopy({key:value for key,value in body.items() if key not in ('HostConfig','NetworkingConfig')})
+    config['Labels']['runtime.security.boundary'] = 'changed'
+    new = dict(Config=config, HostConfig=copy.deepcopy(body['HostConfig']),
+               NetworkSettings=dict(Networks=copy.deepcopy(body['NetworkingConfig']['EndpointsConfig'])))
+    with pytest.raises(ReleaseError, match='configuration'):
+        release_mod.validate_staged_runtime(new, body)
+
+
+@pytest.mark.parametrize('target', ['trading_system-hrs','trading_system-hrs-acceptance',
+                                    'trading_system-execution-facts','trading_system-market-cap'])
+@pytest.mark.parametrize('prior_revision', [None, 'e' * 40])
+def test_hrs_image_family_declares_verified_revision_without_changing_risk_env(target, prior_revision):
+    old = running(target)
+    old['Config']['Env'] += ['RISK_LIMIT=42', 'TRADE_ACCOUNT_ID=default', 'HRS_RELEASE_SHA=existing-release']
+    if prior_revision is not None:
+        old['Config']['Env'].append('HRS_IMAGE_REVISION=' + prior_revision)
+    before = copy.deepcopy(old)
+    body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+    env = dict(value.split('=', 1) for value in body['Env'])
+    assert env['HRS_IMAGE_REVISION'] == SHA
+    assert env['HRS_RELEASE_SHA'] == (SHA if target == 'trading_system-hrs' else 'existing-release')
+    for value in before['Config']['Env']:
+        key, expected = value.split('=', 1)
+        if key not in ('HRS_IMAGE_REVISION', 'HRS_RELEASE_SHA'):
+            assert env[key] == expected
+    assert old == before
+    actual = copy.deepcopy({key:value for key,value in body.items() if key not in ('HostConfig','NetworkingConfig')})
+    # The newly built HRS image declares this exact default at Docker create.
+    actual_env = dict(value.split('=', 1) for value in actual['Env'])
+    actual_env.setdefault('HRS_IMAGE_REVISION', SHA)
+    actual['Env'] = [key + '=' + value for key,value in actual_env.items()]
+    release_mod.validate_staged_runtime(dict(Config=actual, HostConfig=copy.deepcopy(body['HostConfig']),
+        NetworkSettings=dict(Networks=copy.deepcopy(body['NetworkingConfig']['EndpointsConfig']))), body)
+
+
+@pytest.mark.parametrize('target', ['trading_system-grid-executor','trading_system-btc_eth','ai-tuner-snapshot'])
+def test_other_image_families_do_not_gain_hrs_revision_environment(target):
+    old = running(target)
+    body = build_container_body(old, 'sha256:' + 'c' * 64, SHA)
+    assert body['Env'] == old['Config']['Env']
+    assert not any(value.startswith('HRS_IMAGE_REVISION=') for value in body['Env'])

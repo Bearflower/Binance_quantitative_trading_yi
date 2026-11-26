@@ -107,10 +107,16 @@ def build_container_body(old, image_id, sha, *, source_removals=()):
     host['RestartPolicy'] = {'Name': 'no', 'MaximumRetryCount': 0}
     body.update(Image=image_id, HostConfig=host,
                 NetworkingConfig={'EndpointsConfig': network_config(old)})
-    body['Labels'] = dict(body.get('Labels') or {}, **{'codex.full_regression.source': sha})
-    if old['Name'] == '/trading_system-hrs':
+    # The candidate image's revision was verified before constructing this
+    # clone. Declare it explicitly instead of inheriting or retaining old metadata.
+    body['Labels'] = dict(body.get('Labels') or {}, **{
+        'codex.full_regression.source': sha, 'org.opencontainers.image.revision': sha})
+    if old['Name'] in ('/trading_system-hrs', '/trading_system-hrs-acceptance',
+                       '/trading_system-execution-facts', '/trading_system-market-cap'):
         env = dict(value.split('=', 1) for value in body.get('Env') or [])
-        env.update(HRS_IMAGE_REVISION=sha, HRS_RELEASE_SHA=sha)
+        env['HRS_IMAGE_REVISION'] = sha
+        if old['Name'] == '/trading_system-hrs':
+            env['HRS_RELEASE_SHA'] = sha
         body['Env'] = [key + '=' + value for key, value in env.items()]
     return body
 
