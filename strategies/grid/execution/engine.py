@@ -139,7 +139,7 @@ class GridEngine:
         try:
             raw_event = await self.normalize_order_event(raw_event)
             update = TradeUpdate.parse(raw_event)
-            FillCoordinator(self.store).record(raw_event)
+            inserted_fill = FillCoordinator(self.store).record(raw_event)
             source = self.store.get_order(update.client_order_id)
             if source["role"] == "STOP" and source["epoch_id"] == epoch_id:
                 self.store.settle_stop(epoch_id)
@@ -148,7 +148,10 @@ class GridEngine:
                     or self.store.epoch(source["epoch_id"])["status"] != "ACTIVE"):
                 return True
             if self.store.engine_state()["state"] in ("LOCKED", "EXITING"):
-                await self.exit_all(epoch_id)
+                # Queued order acknowledgements can arrive after the exit
+                # attempt. Only new evidence of execution needs prompt cleanup.
+                if inserted_fill or (update.execution_type != "TRADE" and update.cumulative_quantity > 0):
+                    await self.exit_all(epoch_id)
                 return False
             # Ownership/status validation above still runs for every ACK. An
             # accepted NEW carries no fill and creates no protection obligation.
@@ -891,21 +894,37 @@ class GridEngine:
                 continue
             try:
                 resolved_by = "cancel_response"
-                response = await self.exchange.cancel_order(client_id)
-                # The cancellation response can race with a fill. It is a fact,
-                # never proof of an empty position.
-                status = response.get("status")
-                if status not in ("CANCELED", "EXPIRED", "FILLED"):
+                try:
+                    response = await self.exchange.cancel_order(client_id)
+                except BinanceAPIError as exc:
+                    if exc.code != -2011:
+                        raise
+                    # A filled order is no longer cancellable. Resolve it by
+                    # client ID while the later reconciliation checks fills.
+                    response = None
+                terminal = ("CANCELED", "EXPIRED", "FILLED")
+                if not response or response.get("status") not in terminal:
                     resolved_by = "status_query"
                     response = await self.exchange.query_order(client_id)
-                if not response or response.get("status") not in ("CANCELED", "EXPIRED", "FILLED"):
-                    unresolved = True
-                    continue
-                self.store.record_order(client_id, str(response["orderId"]),
-                                        response["status"],
-                                        Decimal(str(response.get("executedQty", "0"))))
+                if not response or response.get("status") not in terminal:
+                    raise ValueError("exit cancellation is not terminal")
+                venue_id = str(response["orderId"])
+                executed = Decimal(str(response["executedQty"]))
+                if (response.get("clientOrderId") != client_id
+                        or response.get("symbol", "ETHUSDT") != "ETHUSDT"
+                        or response.get("side", intent["side"]) != intent["side"]
+                        or not venue_id.isdigit() or int(venue_id) <= 0
+                        or (intent["exchange_order_id"] and venue_id != intent["exchange_order_id"])
+                        or not Decimal(intent["executed_qty"]) <= executed <= Decimal(intent["quantity"])
+                        or (response["status"] == "FILLED" and executed != Decimal(intent["quantity"]))):
+                    raise ValueError("exit cancellation differs from order intent")
+                self.store.record_order(client_id, venue_id, response["status"], executed)
                 log_cancel_result(intent, response, trigger=trigger, resolved_by=resolved_by)
-            except Exception:
+            except Exception as exc:
+                logger.warning("grid exit cancel unconfirmed: epoch=%s trigger=%s client_order_id=%s "
+                               "exchange_order_id=%s resolved_by=%s type=%s api_code=%s",
+                               epoch_id, trigger, client_id, intent["exchange_order_id"], resolved_by,
+                               type(exc).__name__, exc.code if isinstance(exc, BinanceAPIError) else None)
                 unresolved = True
         previous_closes = sum(1 for row in self.store.all_orders()
                               if row["epoch_id"] == epoch_id and row["role"] == "EXIT")
