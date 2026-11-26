@@ -443,7 +443,7 @@ class TestReconcilePositionsNoTakeover:
         # 本地持仓应仍为空
         assert pm.get_all_positions() == {}
 
-    def test_本地有持仓但交易所无_清理本地记录(self, mock_api, mock_db, mock_notification, pm):
+    def test_本地有持仓但交易所无_盈亏待证据时保留(self, mock_api, mock_db, mock_notification, pm):
         """
         模拟本地有持仓且交易所也有持仓（但币种不同），验证本地持仓被清理
 
@@ -468,12 +468,13 @@ class TestReconcilePositionsNoTakeover:
         pm.add_position("BTCUSDT", "short", 50000.0, 1.0, 1000.0)
         assert pm.has_position("BTCUSDT") is True
 
+        strategy._writeback_pnl_for_full_close = AsyncMock(return_value=None)
         # 执行对账
         asyncio.run(strategy._reconcile_positions())
 
-        # BTCUSDT 本地持仓应被清理（因为交易所没有 BTCUSDT）
-        assert pm.has_position("BTCUSDT") is False, (
-            "交易所无 BTCUSDT 持仓时，本地 BTCUSDT 记录应被清理"
+        # 盈亏缺乏证据时必须留下持仓生命周期供下次重试。
+        assert pm.has_position("BTCUSDT") is True, (
+            "交易所无 BTCUSDT 持仓但盈亏待证据时，本地记录必须保留"
         )
 
 
