@@ -1,4 +1,4 @@
-name: Build audited HRS scan data fix
+name: Build audited grid execution receipts
 on: workflow_dispatch
 permissions:
   contents: read
@@ -7,9 +7,16 @@ jobs:
   publish:
     if: github.ref == 'refs/heads/codex/classic-trading-build'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service:
+          - role: signal
+            base: ghcr.io/bearflower/trading-grid@sha256:b573fd409967fd9d6d068b331b42f75b963b65a0c2eb3d201f892aa6094597f2
+          - role: executor
+            base: ghcr.io/bearflower/trading-grid@sha256:541921fbcaaa7026a18feaff9631355f24dae555d4a1be7fe64ef1b2586d6e03
     env:
-      SOURCE_SHA: 72cb3f735979495eae580fe454a2b53dabab249a
-      BASE: ghcr.io/bearflower/trading-hrs@sha256:bae2f3ec77e119935d1f6ed9e1e93ecda0eec1f478149c57b79278980f220426
+      SOURCE_SHA: b7718323a7ce0dfdd2d389c51e0d4a126a6273ae
     steps:
       - uses: actions/checkout@v4
         with:
@@ -17,10 +24,9 @@ jobs:
       - name: Prepare exact reviewed overlay
         run: |
           mkdir -p runtime-layer/overlay
-          cp --parents strategies/hrs/candidate_pool.py strategies/hrs/market_data.py runtime-layer/overlay/
+          cp --parents strategies/grid/signal_bot.py strategies/grid/margin_advisor.py strategies/grid/execution/main.py strategies/grid/execution/exchange.py strategies/grid/execution/planner.py strategies/grid/execution/signal_receipt.py runtime-layer/overlay/
           printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > runtime-layer/overlay/VERSION
           printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
-          printf 'ENV HRS_IMAGE_REVISION=%s\n' "$SOURCE_SHA" >> runtime-layer/Dockerfile
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -31,12 +37,15 @@ jobs:
         with:
           context: runtime-layer
           file: runtime-layer/Dockerfile
-          build-args: BASE=${{ env.BASE }}
+          build-args: BASE=${{ matrix.service.base }}
           labels: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/bearflower/trading-hrs:classic-scan-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ghcr.io/bearflower/trading-grid:receipt-${{ matrix.service.role }}-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
       - name: Record digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: echo "hrs image digest $DIGEST" >> "$GITHUB_STEP_SUMMARY"
+          ROLE: ${{ matrix.service.role }}
+        run: |
+          echo "grid-$ROLE image digest $DIGEST"
+          echo "grid-$ROLE image digest $DIGEST" >> "$GITHUB_STEP_SUMMARY"
