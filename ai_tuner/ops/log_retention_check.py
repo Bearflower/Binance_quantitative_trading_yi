@@ -14,9 +14,10 @@ import urllib.request
 from pathlib import Path
 
 try:
-    from ai_tuner.ops import digest_outbox
+    from ai_tuner.ops import digest_outbox, container_inventory
 except ImportError:  # 以脚本方式直接运行时，当前目录即 ai_tuner/ops
     import digest_outbox
+    import container_inventory
 
 
 TZ = dt.timezone(dt.timedelta(hours=8))
@@ -95,7 +96,7 @@ def docker_log_range(container_id: str) -> tuple[dt.datetime | None, dt.datetime
 LOG_QUERY_ERRORS = (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError)
 
 
-def collect(project_dir: Path, now: dt.datetime) -> dict:
+def collect(project_dir: Path, now: dt.datetime, registry_path: Path | None = None) -> dict:
     os.chdir(project_dir)
     profiles = run("docker", "compose", "-f", "docker-compose.yml", "-f", "docker-compose.logging.yml", "config", "--profiles").split()
     cmd = ["docker", "compose"]
@@ -107,24 +108,22 @@ def collect(project_dir: Path, now: dt.datetime) -> dict:
     configured = config["services"]
     ids = run("docker", "ps", "-aq", "--filter", f"label=com.docker.compose.project={project}").split()
     containers = json.loads(run("docker", "inspect", *ids)) if ids else []
-    labelled = {
-        (container["Config"].get("Labels") or {}).get("com.docker.compose.service")
-        for container in containers
-    }
     expected_names = {
         settings["container_name"]: service
         for service, settings in configured.items()
-        if service not in labelled and settings.get("container_name")
+        if settings.get("container_name")
     }
     # Restricted releases may replace a Compose container directly through Docker.
     if expected_names:
         actual_names = run("docker", "ps", "-a", "--format", "{{.Names}}").splitlines()
-        candidates = sorted(expected_names.keys() & set(actual_names))
+        present_names = {c["Name"].lstrip("/") for c in containers}
+        candidates = sorted((expected_names.keys() & set(actual_names)) - present_names)
         if candidates:
             for container in json.loads(run("docker", "inspect", *candidates)):
-                labels = container["Config"].get("Labels") or {}
-                if not (labels.get("com.docker.compose.project") or labels.get("com.docker.compose.service")):
-                    containers.append(container)
+                containers.append(container)
+    containers, retired, inventory_issues = container_inventory.partition(
+        containers, container_inventory.read_registry(registry_path or project_dir / ".ops/container_retirements.json")
+    )
     rows = []
     for container in containers:
         labels = container["Config"].get("Labels") or {}
@@ -162,6 +161,8 @@ def collect(project_dir: Path, now: dt.datetime) -> dict:
         "now": now,
         "configured": set(configured),
         "rows": sorted(rows, key=lambda row: row["service"]),
+        "retired": sorted(c["Name"].lstrip("/") for c in retired),
+        "inventory_issues": inventory_issues,
         "journal": run("journalctl", "--disk-usage").strip(),
         "free": int(run("df", "-B1", "--output=avail", "/").splitlines()[-1]),
     }
@@ -180,7 +181,7 @@ def evaluate(data: dict) -> list[str]:
     rows = data["rows"]
     actual = {row["service"] for row in rows}
     missing = sorted(data["configured"] - actual)
-    issues = []
+    issues = list(data.get("inventory_issues", []))
     short_windows = []
     if missing:
         issues.append("缺少容器: " + ", ".join(missing))
@@ -223,6 +224,8 @@ def render(data: dict) -> str:
     lines = [head, f"结论: {'异常 ' + str(len(issues)) + ' 项' if issues else '正常'}", f"容器: {len(rows)} 个；基础 Compose: {len(data['configured'])} 个", f"journal: {data['journal']}；根分区剩余: {data['free']/1e9:.2f} GB"]
     if extra:
         lines.append("附加部署服务: " + ", ".join(extra))
+    if data.get("retired"):
+        lines.append(f"已核验退役实例: {len(data['retired'])} 个（停止且关闭自动重启，历史证据保留）")
     if issues:
         lines += ["异常:"] + ["- " + issue for issue in issues]
     lines.append("服务明细（最早 → 最近，北京时间）:")
@@ -254,9 +257,10 @@ def main() -> int:
     parser.add_argument("--project-dir", type=Path, default=Path("/root/trading_system"))
     parser.add_argument("--webhook-file", type=Path, default=Path("/root/trading_system/.secrets/log_retention_webhook"))
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--retirement-registry", type=Path)
     parser.add_argument("--send", action="store_true", help="直接发送飞书，默认只写入 07:35 汇总 outbox")
     args = parser.parse_args()
-    data = collect(args.project_dir, dt.datetime.now(TZ))
+    data = collect(args.project_dir, dt.datetime.now(TZ), args.retirement_registry)
     report = render(data)
     print(report)
     if args.dry_run:

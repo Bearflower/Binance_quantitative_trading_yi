@@ -130,3 +130,49 @@ def test_docker_log_range_uses_full_id_and_reads_both_streams(monkeypatch):
     first, last = check.docker_log_range("full-id")
     assert first == dt.datetime(2026, 11, 19, 23, 20, 2, 123456, tzinfo=TZ)
     assert last == dt.datetime(2026, 11, 20, 8, 23, 57, 123456, tzinfo=TZ)
+
+
+def test_collect_replaced_label_does_not_hide_unlabelled_live_instance(monkeypatch, tmp_path):
+    import json
+    from ai_tuner.ops import log_retention_check as check
+
+    now = dt.datetime(2026, 11, 26, 9, tzinfo=TZ)
+    old = {"Id": "a" * 64, "Name": "/hrs-before-release",
+           "Config": {"Labels": {"com.docker.compose.service": "hrs"}},
+           "State": {"Status": "exited", "Health": {"Status": "unhealthy"}},
+           "HostConfig": {"LogConfig": {"Type": "journald"}, "RestartPolicy": {"Name": "no"}}}
+    live = {**old, "Id": "b" * 64, "Name": "/hrs", "Config": {"Labels": {}},
+            "State": {"Status": "running", "Health": {"Status": "healthy"}}}
+    (tmp_path / '.ops').mkdir()
+    (tmp_path / '.ops/container_retirements.json').write_text(json.dumps({"version": 1, "entries": [
+        {"id": old["Id"], "name": "hrs-before-release", "successor": "hrs", "reason": "已替换"}]}))
+
+    def fake_run(*args):
+        if args[-1] == '--profiles': return ''
+        if args[-2:] == ('--format', 'json'):
+            return json.dumps({"name": "trading_system", "services": {"hrs": {"container_name": "hrs"}}})
+        if args[:3] == ('docker', 'ps', '-aq'): return old['Id']
+        if args[:3] == ('docker', 'ps', '-a'): return 'hrs\nhrs-before-release'
+        if args == ('docker', 'inspect', 'hrs'): return json.dumps([live])
+        if args[:2] == ('docker', 'inspect'): return json.dumps([old])
+        if args[0] == 'journalctl': return '300M'
+        if args[0] == 'df': return 'Avail\n16000000000'
+        raise AssertionError(args)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(check, 'run', fake_run)
+    monkeypatch.setattr(check, 'journal_range', lambda *args: (now-dt.timedelta(days=15), now))
+    data = check.collect(tmp_path, now)
+    assert len(data['rows']) == 1
+    assert data['rows'][0]['state'] == 'running'
+    assert data['retired'] == ['hrs-before-release']
+    assert check.evaluate(data) == []
+    assert '退役实例: 1' in check.render(data)
+
+
+def test_inventory_drift_is_reported():
+    from ai_tuner.ops.log_retention_check import evaluate
+    data = {'now': dt.datetime.now(TZ), 'rows': [], 'configured': {'hrs'},
+            'free': 16_000_000_000, 'journal': '300M',
+            'inventory_issues': ['退役登记状态漂移或接替实例缺失: hrs-before-release']}
+    assert '退役登记状态漂移或接替实例缺失: hrs-before-release' in evaluate(data)
+    assert '缺少容器: hrs' in evaluate(data)
