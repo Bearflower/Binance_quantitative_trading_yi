@@ -1,4 +1,4 @@
-name: Build audited classic trading images
+name: Build audited HRS scan data fix
 on: workflow_dispatch
 permissions:
   contents: read
@@ -6,50 +6,21 @@ permissions:
 jobs:
   publish:
     if: github.ref == 'refs/heads/codex/classic-trading-build'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - {name: btc-eth, base: ghcr.io/bearflower/trading-btc-eth@sha256:8fbbff2a2b83418990d264c8f630905918af6e6bb0047c6ef80fc6f021eabae5}
-          - {name: btc-eth-aggr, base: ghcr.io/bearflower/trading-btc-eth-aggr@sha256:b3860372c73fd699a3d322928155680af7e1f2e059fa244fb4cbb560a1b75872}
-          - {name: new-coin, base: ghcr.io/bearflower/trading-new-coin@sha256:e8967f31dc7463f7029f09549c8f44cc457c8cf069c160ce505c1cd4ece7227b}
-          - {name: grid, base: ghcr.io/bearflower/trading-grid@sha256:33402d8098d1d847e66c1e2ac4f71f8cd4bb14768f9349495afe8c244a40d403}
-          - {name: hrs, base: ghcr.io/bearflower/trading-hrs@sha256:835a1a2c2e27bde2f8fad405673fe02ff8cffe4d069adc401d7ab24506027cee}
-          - {name: ai-tuner, base: ghcr.io/bearflower/trading-ai-tuner@sha256:4054408dfc4b28769aef0a433fba2316d0448e0c76883fd148e79b603760fac2}
-          - {name: data-backend, base: ghcr.io/bearflower/trading-data-backend@sha256:39dce4c41ae2dde7c1c7ad142769472fe2136883bc1dfebd41514614f96a2ff1}
-    env:
-      SOURCE_SHA: a8647e43ac0d7159a25c987ee811a653c4866a5e
     runs-on: ubuntu-latest
+    env:
+      SOURCE_SHA: 72cb3f735979495eae580fe454a2b53dabab249a
+      BASE: ghcr.io/bearflower/trading-hrs@sha256:bae2f3ec77e119935d1f6ed9e1e93ecda0eec1f478149c57b79278980f220426
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ env.SOURCE_SHA }}
-      - name: Stamp release
-        run: |
-          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > VERSION
-      - name: Prepare reviewed runtime fixes
+      - name: Prepare exact reviewed overlay
         run: |
           mkdir -p runtime-layer/overlay
-          cp --parents shared/config_loader.py runtime-layer/overlay/
-          case '${{ matrix.name }}' in
-            btc-eth) cp --parents strategies/btc_eth/__main__.py runtime-layer/overlay/ ;;
-            btc-eth-aggr) cp --parents strategies/btc_eth_aggressive/__main__.py runtime-layer/overlay/ ;;
-            new-coin) cp --parents strategies/new_coin/__main__.py runtime-layer/overlay/ ;;
-            grid) cp --parents strategies/grid/__main__.py runtime-layer/overlay/ ;;
-            ai-tuner) cp --parents ai_tuner/main.py runtime-layer/overlay/ ;;
-            data-backend)
-              mkdir -p runtime-layer/overlay/src
-              cp services/data_backend/src/main.py runtime-layer/overlay/src/main.py ;;
-          esac
-          cp VERSION runtime-layer/overlay/
+          cp --parents strategies/hrs/candidate_pool.py strategies/hrs/market_data.py runtime-layer/overlay/
+          printf 'GIT_SHA=%s\nDEPLOY_ID=%08X\n' "$SOURCE_SHA" "$(( (GITHUB_RUN_NUMBER << 8) | GITHUB_RUN_ATTEMPT ))" > runtime-layer/overlay/VERSION
           printf '%s\n' 'ARG BASE' 'FROM ${BASE}' 'COPY overlay/ /app/' > runtime-layer/Dockerfile
-          case '${{ matrix.name }}' in
-            hrs) printf 'ENV HRS_IMAGE_REVISION=%s\n' "$SOURCE_SHA" >> runtime-layer/Dockerfile ;;
-            btc-eth) printf '%s\n' 'CMD ["python", "-m", "strategies.btc_eth"]' >> runtime-layer/Dockerfile ;;
-            btc-eth-aggr) printf '%s\n' 'CMD ["python", "-m", "strategies.btc_eth_aggressive"]' >> runtime-layer/Dockerfile ;;
-            new-coin) printf '%s\n' 'CMD ["python", "-m", "strategies.new_coin"]' >> runtime-layer/Dockerfile ;;
-            grid) printf '%s\n' 'CMD ["python", "-m", "strategies.grid"]' >> runtime-layer/Dockerfile ;;
-          esac
+          printf 'ENV HRS_IMAGE_REVISION=%s\n' "$SOURCE_SHA" >> runtime-layer/Dockerfile
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -60,12 +31,12 @@ jobs:
         with:
           context: runtime-layer
           file: runtime-layer/Dockerfile
-          build-args: BASE=${{ matrix.base }}
+          build-args: BASE=${{ env.BASE }}
           labels: org.opencontainers.image.revision=${{ env.SOURCE_SHA }}
           platforms: linux/amd64
           push: true
-          tags: ghcr.io/bearflower/trading-${{ matrix.name }}:classic-live-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
+          tags: ghcr.io/bearflower/trading-hrs:classic-scan-${{ env.SOURCE_SHA }}-r${{ github.run_id }}-${{ github.run_attempt }}
       - name: Record digest
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-        run: echo "${{ matrix.name }} image digest $DIGEST" >> "$GITHUB_STEP_SUMMARY"
+        run: echo "hrs image digest $DIGEST" >> "$GITHUB_STEP_SUMMARY"
