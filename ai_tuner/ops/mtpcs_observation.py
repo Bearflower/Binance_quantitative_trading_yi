@@ -31,12 +31,12 @@ CHECKS = {
 }
 
 
-def beijing(stamp):
+def beijing(stamp, fmt="%m-%d %H:%M"):
     if not stamp:
         return "暂无"
     parsed = datetime.fromisoformat(stamp)
     return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).astimezone(
-        digest_outbox.TZ).strftime("%m-%d %H:%M")
+        digest_outbox.TZ).strftime(fmt)
 
 
 def read_json(command, *, source=None, timeout=60):
@@ -92,15 +92,28 @@ def first_lines(entries):
     return lines
 
 
+def observation_period(start, cutoff):
+    fmt = "%Y-%m-%d %H:%M"
+    return f"北京时间 {beijing(start, fmt)} 至 {beijing(cutoff, fmt)}"
+
+
+def win_rate(row):
+    closed = row["closed"]
+    if not closed:
+        return "胜率暂无"
+    wins = row["wins"]
+    return f"胜率 {wins / closed:.1%}（{wins}/{closed}）"
+
+
 def arm_line(row):
     label = ARMS[row["arm"]]
     closed = row["closed"]
     text = f"{label} {row['candidates']}候选/{closed}结算"
     if holding := row["open"] + row["pending"]:
         text += f"/{holding}在途"
+    text += f"，{win_rate(row)}"
     if closed:
-        text += (f"，净 {row['net_r']:+.2f}R，胜 {row['wins']}/{closed}，"
-                 f"结算回撤 {row['closed_sequence_drawdown_r']:.2f}R")
+        text += f"，净 {row['net_r']:+.2f}R，结算回撤 {row['closed_sequence_drawdown_r']:.2f}R"
     return text
 
 
@@ -159,9 +172,11 @@ def daily_lines(entries, shadow):
 def overheat_lines(study):
     if not study:
         return ["过热单项对照 · 等待首个完整采集小时"]
+    window = observation_period(study["start_utc"], study["cutoff_utc"])
     lines = [
-        f"过热单项对照 · {beijing(study['start_utc'])} 起 {study['observed_hours']} 小时，"
-        f"{study['candidates']} 候选，原版重度过热阈值拦截 {study['blocked']} 个。",
+        f"过热同期对照 · {window}（两组共同截止）",
+        f"{study['observed_hours']} 小时，{study['candidates']} 候选，"
+        f"原版重度过热阈值拦截 {study['blocked']} 个。",
     ]
     blocked = study["blocked_net_r"]
     if blocked is not None:
@@ -171,7 +186,7 @@ def overheat_lines(study):
     parts = []
     for key, label in (("baseline", "同期激进基线"), ("filter", "只加过热禁开")):
         arm = study[key]
-        part = f"{label} {arm['closed']} 笔结算"
+        part = f"{label} {arm['closed']} 笔结算，{win_rate(arm)}"
         if arm["closed"]:
             part += f"，净 {arm['net_r']:+.2f}R、结算回撤 {arm['closed_sequence_drawdown_r']:.2f}R"
         parts.append(part)
@@ -185,10 +200,11 @@ def render(entries, shadow, errors, archive=None):
         matches = archive["matched"]
         lines.append(f"订单归档 · 扫描至 {beijing(cut.isoformat())}，本轮原版 {matches['btc_eth']} 笔、"
                      f"激进版 {matches['btc_eth_aggressive']} 笔，已入库 {archive['persisted']} 笔。")
-    lines.extend(("", "影子账"))
+    lines.append("")
     if shadow:
-        lines.append(f"{beijing(shadow['first_utc'])} 至 {beijing(shadow['last_utc'])}，"
-                     f"{shadow['hours']} 个小时，缺 {shadow['missing_count']} 小时，"
+        window = shadow["full_window"]
+        lines.append(f"全量影子账 · {observation_period(window['start_utc'], window['cutoff_utc'])}")
+        lines.append(f"采集 {shadow['hours']} 小时，缺 {shadow['missing_count']} 小时，"
                      f"不完整 {len(shadow['incomplete_hours_utc'])} 小时")
         for variant, name in STRATEGIES.items():
             items = [arm_line(row) for row in shadow["arms"] if row["variant"] == variant]

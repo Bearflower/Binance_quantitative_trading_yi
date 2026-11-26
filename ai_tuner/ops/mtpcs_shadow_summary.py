@@ -9,6 +9,7 @@ from pathlib import Path
 
 VARIANTS = ("btc_eth", "btc_eth_aggressive")
 BASE_ARMS = ("trend", "mean_reversion", "trend_fibonacci", "trend_ordinary")
+OVERHEAT_ARMS = ("overheat_baseline", "overheat_filter")
 START = datetime(2026, 11, 23, 6)
 HOUR = timedelta(hours=1)
 
@@ -34,6 +35,7 @@ def summarize(rows, checked_at):
         minute=0, second=0, microsecond=0, tzinfo=None,
     )
     slots = []
+    complete_slots = []
     states = Counter()
     rejects = Counter()
     candidates = Counter()
@@ -57,6 +59,7 @@ def summarize(rows, checked_at):
         if len(records) != 10 or len({(r["variant"], r["symbol"]) for r in records}) != 10:
             incomplete.append(stamp)
             continue
+        complete_slots.append(at)
         day_hours[day].add(at)
         aggressive = [r for r in records if r["variant"] == VARIANTS[1]]
         study = [r["overheat_study"] for r in aggressive if "overheat_study" in r]
@@ -92,6 +95,9 @@ def summarize(rows, checked_at):
                     if day == yesterday:
                         daily["alignment_blocked"] += 1
             for arm, exit in record["exits"].items():
+                # Both arms use the same set of complete hours from the study.
+                if arm in OVERHEAT_ARMS and (not study or variant != VARIANTS[1]):
+                    continue
                 if exit["net_r"] is None:
                     entry_gaps[variant, arm] += 1
                 elif math.isfinite(exit["net_r"]):
@@ -139,7 +145,8 @@ def summarize(rows, checked_at):
 
     overheat = None
     if overheat_start:
-        overheat = dict(start_utc=overheat_start, observed_hours=len(overheat_hours),
+        overheat = dict(start_utc=overheat_start, cutoff_utc=max(overheat_hours).isoformat(),
+                        observed_hours=len(overheat_hours),
                         candidates=sum(overheat_decisions.values()), blocked=overheat_decisions[True],
                         blocked_closes=len(overheat_blocked_returns),
                         blocked_net_r=settlements(overheat_blocked_returns)["net_r"],
@@ -147,6 +154,8 @@ def summarize(rows, checked_at):
                         filter=settlements(returns[VARIANTS[1], "overheat_filter"]))
     return dict(
         overheat_study=overheat, as_of_day=today.isoformat(), daily=daily, recent_complete_days=len(recent_days),
+        full_window=dict(start_utc=complete_slots[0].isoformat() if complete_slots else None,
+                         cutoff_utc=complete_slots[-1].isoformat() if complete_slots else None),
         checked_at_utc=checked_at.isoformat(), first_utc=slots[0].isoformat() if slots else None,
         last_utc=slots[-1].isoformat() if slots else None, expected_latest_utc=expected.isoformat(),
         hours=len(slots), missing_count=len(missing), missing_hours_utc=missing[-48:],
