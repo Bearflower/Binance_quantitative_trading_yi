@@ -31,6 +31,13 @@ class RequestBudget:
         self.cooldown_until = 0.0
         self.guard = asyncio.Lock()
 
+    def has_capacity(self, weight):
+        now = self.clock()
+        while self.used and self.used[0][0] <= now - 60:
+            self.used.popleft()
+        return (0 < weight <= self.limit and now >= self.cooldown_until
+                and sum(w for _, w in self.used) + weight <= self.limit)
+
     async def acquire(self, weight):
         if not 0 < weight <= self.limit:
             raise ValueError('invalid request weight')

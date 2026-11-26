@@ -473,6 +473,14 @@ class ExecutorService:
                 if holding:
                     self.filters = await self.exchange.verify_account(self.settings.expected_leverage)
                     trailing.ensure_epoch(epoch, self.filters)
+                if (tradable and not holding and epoch is None
+                        and isinstance(getattr(self, "exchange", None), GridExchange)
+                        and not self.exchange.can_start_batch(min(
+                            int(params['grid_count']) + 1, self.settings.max_open_orders))):
+                    # Do not consume the decision or create a partial grid while
+                    # waiting for request headroom. The next tick refreshes risk.
+                    self._write_heartbeat(int(time.time() * 1000))
+                    return
                 plan = await self._plan(decision) if tradable and not holding else None
                 await self.engine.apply_decision(
                     decision, plan, risk,

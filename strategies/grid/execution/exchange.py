@@ -1,6 +1,7 @@
 """One-way PM and classic USD-M adapter for the ETHUSDT order grid."""
 
 import asyncio
+import time
 from decimal import Decimal
 from typing import Any, Dict
 
@@ -44,6 +45,7 @@ class GridExchange:
         self.client = client
         self.wallet_client = wallet_client
         self._listen_key = None
+        self._one_way_checked_at = None
 
     @staticmethod
     def from_settings(settings: ExecutionSettings) -> "GridExchange":
@@ -224,10 +226,13 @@ class GridExchange:
         except (KeyError, TypeError, ValueError) as exc:
             raise AccountModeError("malformed account position") from exc
         if not own:
-            mode = await self.client._request(
-                "GET", self.mode_path)
-            if not isinstance(mode, dict) or mode.get("dualSidePosition") is not False:
-                raise AccountModeError("one-way mode required for flat position")
+            if (self._one_way_checked_at is None
+                    or time.monotonic() - self._one_way_checked_at >= 30):
+                mode = await self.client._request("GET", self.mode_path)
+                if not isinstance(mode, dict) or mode.get("dualSidePosition") is not False:
+                    self._one_way_checked_at = None
+                    raise AccountModeError("one-way mode required for flat position")
+                self._one_way_checked_at = time.monotonic()
             return [{"symbol": "ETHUSDT", "positionSide": "BOTH",
                      "positionAmt": "0"}]
         if len(own) != 1 or own[0].get("positionSide") != "BOTH":
@@ -329,10 +334,19 @@ class GridExchange:
             raise AccountModeError("PM account cannot trade")
         return result
 
+    def can_start_batch(self, order_count, *, planning=True):
+        budget = getattr(self.client, 'request_budget', None)
+        # Admission is checked before planning, fresh account verification and
+        # any exchange writes. Pending decisions remain pending while throttled.
+        required = 300 + 60 * order_count if planning else 220 + 52 * order_count
+        return budget is None or budget.has_capacity(required)
+
     async def verify_account(self, leverage: int) -> ExchangeFilters:
+        self._one_way_checked_at = None
         mode = await self.client._request("GET", self.mode_path)
         if not isinstance(mode, dict) or mode.get("dualSidePosition") is not False:
             raise AccountModeError("one-way mode required")
+        self._one_way_checked_at = time.monotonic()
         configurations = await self.client._request(
             "GET", self.config_path, {"symbol": "ETHUSDT"})
         if not isinstance(configurations, list):

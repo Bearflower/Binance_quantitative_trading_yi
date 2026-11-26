@@ -470,6 +470,10 @@ class GridEngine:
             return False
         if not plan.orders or len({o.price for o in plan.orders}) != len(plan.orders):
             return False
+        from .exchange import GridExchange
+        if (isinstance(self.exchange, GridExchange)
+                and not self.exchange.can_start_batch(len(plan.orders), planning=False)):
+            return False
         try:
             verified_filters = await self.exchange.verify_account(leverage)
             account = await self.exchange.account_info()
