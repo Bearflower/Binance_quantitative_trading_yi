@@ -1,6 +1,6 @@
 # XAU 资金费恢复与归因状态修复（2026-11-26）
 
-状态：实现、本地验证和独立规格/质量复核通过，准备受限发布。工作分支 `codex/xau-runtime-repair-20261126`。
+状态：已完成实现、独立复核、测试与受限部署。发布commit `603a2a4e2cceac83ceee1328dfc14f78ddd33ad5`，DEPLOY_ID `00000201`。工作分支 `codex/xau-runtime-repair-20261126`。
 
 ## 事实与根因
 
@@ -27,4 +27,10 @@
 
 ## 上线结果
 
-待记录。历史两个资金费缺口与校准版六小时缺口不会由本轮修复消失，准入继续按真实证据判断。
+- PR #58：https://github.com/Bearflower/Binance_quantitative_trading_yi/pull/58 。Actions：https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/45737322534 ，success，CI 306 passed、1 skipped（数据库集成已在本地单独通过）。北京时间11/26 09:43:16激活验证完成。
+- 两shadow及funding均healthy、RestartCount=0，VERSION与代码哈希匹配；49个非目标容器完整状态未变化。数据库权限审计1347对象/0issues，四张生产交易表仍为0，冻结配置哈希不变。
+- 两个线上shadow容器分别执行只读事件序列化探针：各18项candidate/no_candidate/data_unavailable/analysis_error/unknown检查通过。未构造策略行情信号、未调用交易所、未写生产事件；此探针不算真实候选或真实收益样本。
+- 正常cron仍为每小时15/20分；本轮09:43发布后首轮自然事件预期10:15/10:20 CST。发布时尚未到期，不能把前一版本事件当作新版本归因状态落库证据。真实candidate分类仍等待自然信号；不降低门槛或伪造样本。
+- 发布证据保留于服务器 `.releases/xau-attribution/603a2a4e2cceac83ceee1328dfc14f78ddd33ad5/`，本地证据在 `data/research/xau-runtime-repair-20261126/`。
+
+历史两个资金费缺口与校准版六小时缺口不会由本轮修复消失，准入继续按真实证据判断。
