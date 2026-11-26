@@ -213,7 +213,8 @@ async def test_startup_failure_cooldown_is_not_cleared_until_monitor_query_recov
 
     state = tmp_path / "alerts.json"
     monkeypatch.setattr(cli, "ALERT_STATE_PATH", state)
-    repo = SimpleNamespace(recent_failed_streak=AsyncMock(side_effect=RuntimeError("db secret")))
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()),
+                           recent_failed_streak=AsyncMock(side_effect=RuntimeError("db secret")))
     collector = SimpleNamespace(repository=repo)
     notifier = SimpleNamespace(send=AsyncMock(return_value=True))
     for _ in range(2):
@@ -633,9 +634,10 @@ async def test_daemon_restores_failed_slots_before_next_collection(tmp_path, mon
 async def test_failed_streak_restore_sends_sanitized_startup_alert(tmp_path, monkeypatch):
     from ai_tuner.funding_schedule import cli
 
-    repo = SimpleNamespace(recent_failed_streak=AsyncMock(
-        side_effect=RuntimeError("password=do-not-log"),
-    ))
+    repo = SimpleNamespace(slots_with_runs=AsyncMock(return_value=set()),
+                           recent_failed_streak=AsyncMock(
+                               side_effect=RuntimeError("password=do-not-log"),
+                           ))
     collector = SimpleNamespace(repository=repo)
     notifier = SimpleNamespace(send=AsyncMock(return_value=True))
     monkeypatch.setattr(cli, "ALERT_STATE_PATH", tmp_path / "alerts.json")
@@ -680,3 +682,128 @@ def test_health_requires_fresh_successful_monitor_heartbeat(tmp_path):
     assert not is_monitor_fresh(now=1100, path=heartbeat, max_age_seconds=180)
     heartbeat.write_text("not-a-timestamp", encoding="ascii")
     assert not is_monitor_fresh(now=1000, path=heartbeat)
+
+
+class _ScheduledSleepReached(RuntimeError):
+    """Stop a real daemon once it waits for its next future slot."""
+
+
+async def _run_startup_capture(monkeypatch, tmp_path, *, age=104, persisted=False,
+                               query_error=None, query_delay=0, request_delay=1):
+    from ai_tuner.funding_schedule import cli
+    from ai_tuner.funding_schedule.collector import FundingScheduleCollector
+
+    clock = [SLOT + timedelta(seconds=age)]
+    queries, attempts, requests, sleeps = [], [], [], []
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return clock[0]
+
+    class Repository:
+        async def slots_with_runs(self, first, last):
+            queries.append((first, last))
+            clock[0] += timedelta(seconds=query_delay)
+            if query_error:
+                raise query_error
+            return {SLOT} if persisted else set()
+
+        async def recent_failed_streak(self, first, *, limit):
+            return 0
+
+        async def latest_run_slot(self):
+            return SLOT if persisted else None
+
+        async def latest_universe(self, strategy_id, at):
+            assert strategy_id == "hrs" and at == SLOT
+            return ("SOLUSDT",)
+
+        async def store_attempt(self, attempt, observations):
+            attempts.append((attempt, observations))
+
+    class Client:
+        async def _request(self, method, endpoint, *, signed):
+            requests.append((method, endpoint, signed))
+            clock[0] += timedelta(seconds=request_delay)
+            if endpoint.endswith("fundingInfo"):
+                return [{"symbol": "XAUUSDT", "fundingIntervalHours": 4}]
+            return [{"symbol": symbol, "time": int(clock[0].timestamp() * 1000),
+                     "nextFundingTime": int((clock[0] + timedelta(hours=4)).timestamp() * 1000)}
+                    for symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT", "XAUUSDT")]
+
+    async def wait_for_future_slot(seconds):
+        sleeps.append(seconds)
+        if seconds > 0:
+            raise _ScheduledSleepReached()
+
+    async def idle_monitor(*args, **kwargs):
+        await asyncio.Future()
+
+    monkeypatch.setattr(cli, "datetime", Clock)
+    monkeypatch.setattr(cli, "ALERT_STATE_PATH", tmp_path / "alerts.json")
+    monkeypatch.setattr(cli, "_monitor_loop", idle_monitor)
+    monkeypatch.setattr(cli.asyncio, "sleep", wait_for_future_slot)
+    collector = FundingScheduleCollector(Repository(), Client(), clock=lambda: clock[0])
+    notifier = SimpleNamespace(send=AsyncMock(return_value=True))
+    with pytest.raises(RuntimeError) as raised:
+        await cli.run_daemon(collector, notifier)
+    return SimpleNamespace(queries=queries, attempts=attempts, requests=requests,
+                           sleeps=sleeps, error=raised.value, notifier=notifier)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age,request_delay", [(104, 1), (120, 0)])
+async def test_daemon_startup_captures_unattempted_current_slot_with_actual_timestamps(
+        monkeypatch, tmp_path, age, request_delay):
+    result = await _run_startup_capture(monkeypatch, tmp_path, age=age, request_delay=request_delay)
+    assert result.queries == [(SLOT, SLOT)]
+    assert len(result.attempts) == 1
+    attempt, observations = result.attempts[0]
+    assert attempt.status == "success" and len(observations) == 4
+    assert attempt.scheduled_at == SLOT
+    assert attempt.request_started_at == SLOT + timedelta(seconds=age)
+    assert attempt.received_at == SLOT + timedelta(seconds=age + 2 * request_delay)
+    assert result.requests == [("GET", "/fapi/v1/premiumIndex", False),
+                               ("GET", "/fapi/v1/fundingInfo", False)]
+    assert result.sleeps[-1] == 300 - age - 2 * request_delay
+    assert isinstance(result.error, _ScheduledSleepReached)
+    result.notifier.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("age", [0, 104])
+async def test_daemon_startup_skips_current_slot_with_any_persisted_run(monkeypatch, tmp_path, age):
+    result = await _run_startup_capture(monkeypatch, tmp_path, age=age, persisted=True)
+    assert result.queries == [(SLOT, SLOT)]
+    assert result.attempts == [] and result.requests == []
+    assert result.sleeps == [300 - age]
+    assert isinstance(result.error, _ScheduledSleepReached)
+
+
+@pytest.mark.asyncio
+async def test_daemon_startup_never_backfills_expired_slot(monkeypatch, tmp_path):
+    result = await _run_startup_capture(monkeypatch, tmp_path, age=121)
+    assert result.queries == [] and result.attempts == [] and result.requests == []
+    assert result.sleeps == [179]
+    assert isinstance(result.error, _ScheduledSleepReached)
+
+
+@pytest.mark.asyncio
+async def test_daemon_startup_rechecks_window_after_persisted_run_query(monkeypatch, tmp_path):
+    result = await _run_startup_capture(monkeypatch, tmp_path, query_delay=17)
+    assert result.queries == [(SLOT, SLOT)]
+    assert result.attempts == [] and result.requests == []
+    assert result.sleeps == [179]
+    assert isinstance(result.error, _ScheduledSleepReached)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [RuntimeError("password=secret"), asyncio.TimeoutError()])
+async def test_daemon_startup_run_query_failure_is_closed_and_alerted(monkeypatch, tmp_path, error):
+    result = await _run_startup_capture(monkeypatch, tmp_path, query_error=error)
+    assert result.queries == [(SLOT, SLOT)]
+    assert result.attempts == [] and result.requests == [] and result.sleeps == []
+    assert str(result.error) == "funding schedule startup state unavailable"
+    result.notifier.send.assert_awaited_once()
+    assert "secret" not in result.notifier.send.await_args.args[0]

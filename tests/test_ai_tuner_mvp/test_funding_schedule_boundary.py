@@ -237,7 +237,7 @@ def test_refresh_timeout_cancels_request_and_preserves_original_evidence(monkeyp
 
     clock = Clock()
     monkeypatch.setattr(asyncio, "sleep", clock.sleep)
-    monkeypatch.setattr(collector_module, "_XAU_REFRESH_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr(collector_module, "_BOUNDARY_REFRESH_TIMEOUT_SECONDS", 0.001)
     repo, client = Repository(), HangingClient(clock)
     result = asyncio.run(FundingScheduleCollector(repo, client, clock=clock).collect_once(SLOT, uuid4()))
     assert result.symbol_count == 3
@@ -334,3 +334,111 @@ def test_xau_normalization_error_cannot_mask_later_required_symbol_failure(monke
     assert result.status == "failed" and result.failure_code == "MISSING_SYMBOL"
     assert repo.attempts[0][1] == ()
     assert client.batches == 1 and clock.sleeps == []
+
+
+@pytest.mark.parametrize("symbol", ["SOLUSDT", "ZECUSDT"])
+@pytest.mark.parametrize("source_offset_ms", [-2000, 0, 100])
+@pytest.mark.parametrize("xau_expired", [False, True])
+def test_expired_required_symbol_refreshes_whole_batch(monkeypatch, symbol, source_offset_ms, xau_expired):
+    clock = Clock()
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    repo = Repository()
+    repo.universe.add(symbol)
+    first = rows(target=SLOT if xau_expired else None)
+    if symbol == "ZECUSDT":
+        first.append({"symbol": symbol, "time": ms(SLOT), "nextFundingTime": ms(SLOT)})
+    next(item for item in first if item["symbol"] == symbol).update(
+        time=ms(SLOT + timedelta(milliseconds=source_offset_ms)), nextFundingTime=ms(SLOT))
+    frozen = copy.deepcopy(first)
+
+    def refresh(client):
+        return [{"symbol": item, "time": ms(client.clock.now),
+                 "nextFundingTime": ms(SLOT + timedelta(hours=4))}
+                for item in sorted(repo.universe | {"XAUUSDT"})]
+
+    client = Client(clock, refresh, first)
+    result = asyncio.run(FundingScheduleCollector(repo, client, clock=clock).collect_once(SLOT, uuid4()))
+    assert result.status == "success"
+    attempt, observations = repo.attempts[0]
+    assert {item.symbol for item in observations} == repo.universe | {"XAUUSDT"}
+    assert client.batches == 2 and clock.sleeps == [1]
+    assert all(item.source_time == attempt.request_started_at for item in observations)
+    assert all(item.next_funding_time > item.received_at for item in observations)
+    assert attempt.payload_hash == digest(attempt.raw_payload)
+    assert first == frozen
+
+
+def test_required_boundary_failure_retains_initial_timing_and_symbol(monkeypatch):
+    first = rows()
+    next(item for item in first if item["symbol"] == "SOLUSDT").update(
+        time=ms(SLOT), nextFundingTime=ms(SLOT))
+    result, (attempt, observations), client, clock = collect(monkeypatch, lambda _: first, first=first)
+    assert result.failure_code == "INVALID_NEXT_FUNDING_TIME" and observations == ()
+    assert client.batches == 4 and clock.sleeps == [1, 1, 1]
+    assert attempt.request_started_at == SLOT and attempt.received_at == INITIAL_RECEIVED
+    assert attempt.raw_payload == {"failure_code": "INVALID_NEXT_FUNDING_TIME",
+                                   "http_attempted": True, "symbol": "SOLUSDT"}
+    assert attempt.payload_hash == digest(attempt.raw_payload)
+
+
+def test_required_boundary_cannot_mask_other_required_failure(monkeypatch):
+    clock = Clock()
+    monkeypatch.setattr(asyncio, "sleep", clock.sleep)
+    repo = Repository()
+    repo.universe.add("ZECUSDT")
+    first = rows()
+    next(item for item in first if item["symbol"] == "SOLUSDT").update(
+        time=ms(SLOT), nextFundingTime=ms(SLOT))
+    client = Client(clock, first=first)
+    result = asyncio.run(FundingScheduleCollector(repo, client, clock=clock).collect_once(SLOT, uuid4()))
+    assert result.failure_code == "MISSING_SYMBOL"
+    assert repo.attempts[0][0].raw_payload["symbol"] == "ZECUSDT"
+    assert client.batches == 1 and clock.sleeps == []
+
+
+def test_required_refresh_accepts_valid_required_batch_when_optional_xau_unavailable(monkeypatch):
+    first = rows()
+    next(item for item in first if item["symbol"] == "SOLUSDT").update(
+        time=ms(SLOT), nextFundingTime=ms(SLOT))
+
+    def refresh(client):
+        return [item for item in rows(source=client.clock.now) if item["symbol"] != "XAUUSDT"]
+
+    result, (attempt, observations), client, clock = collect(monkeypatch, refresh, first=first)
+    assert result.status == "success" and result.symbol_count == 3
+    assert {item.symbol for item in observations} == SYMBOLS
+    assert all(item.source_time == attempt.request_started_at for item in observations)
+    assert attempt.received_at > INITIAL_RECEIVED
+    assert client.batches <= 4 and len(clock.sleeps) <= 3
+
+
+@pytest.mark.parametrize("failure", ["missing_required", "future_source", "malformed", "network"])
+def test_invalid_required_refresh_fails_closed_with_original_failure_evidence(monkeypatch, failure):
+    first = rows()
+    next(item for item in first if item["symbol"] == "SOLUSDT").update(
+        time=ms(SLOT), nextFundingTime=ms(SLOT))
+
+    def refresh(client):
+        if failure == "network":
+            raise ConnectionError("unavailable")
+        if failure == "malformed":
+            return {"unexpected": "object"}
+        if failure == "future_source":
+            return rows(source=client.clock.now + timedelta(seconds=10))
+        return [item for item in rows(source=client.clock.now) if item["symbol"] != "BTCUSDT"]
+
+    result, (attempt, observations), client, clock = collect(monkeypatch, refresh, first=first)
+    assert result.status == "failed" and observations == ()
+    assert attempt.request_started_at == SLOT and attempt.received_at == INITIAL_RECEIVED
+    assert attempt.raw_payload["symbol"] == "SOLUSDT"
+    assert client.batches == 4 and clock.sleeps == [1, 1, 1]
+
+
+def test_multiple_expired_required_symbols_share_one_refresh_budget(monkeypatch):
+    first = rows(target=SLOT)
+    for item in first:
+        item.update(time=ms(SLOT), nextFundingTime=ms(SLOT))
+    result, (attempt, observations), client, clock = collect(monkeypatch, lambda _: first, first=first)
+    assert result.status == "failed" and observations == ()
+    assert attempt.raw_payload["symbol"] == "BTCUSDT"
+    assert client.batches == 4 and clock.sleeps == [1, 1, 1]

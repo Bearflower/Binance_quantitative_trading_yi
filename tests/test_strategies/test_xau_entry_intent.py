@@ -143,3 +143,35 @@ def test_collector_preserves_intent_metadata_and_input(
     assert event["score"] == 88.5
     assert event["decision"] == "candidate"
     assert signal == original_signal
+
+@pytest.mark.parametrize('decision,quality,status', [
+    ('no_signal', None, 'no_candidate'),
+    ('no_signal', 'missing_klines', 'data_unavailable'),
+    ('analysis_error', None, 'analysis_error'),
+])
+def test_every_non_candidate_persists_explicit_attribution_state(collector_and_profile, decision, quality, status):
+    collector, profile = collector_and_profile
+    snapshot = {'atr_filter': {'history_count': 86}}
+    before = deepcopy(snapshot)
+    now = datetime(2026, 11, 26, tzinfo=timezone.utc)
+    event = collector._make_event(profile_id=profile, scheduled_at=now, evaluated_at=now,
+        decision=decision, data_quality_reason=quality, feature_snapshot=snapshot)
+    assert event['feature_snapshot']['entry_attribution'] == {
+        'schema_version': 1, 'status': status, 'intent': None,
+        'producer_git_commit': collector.git_commit,
+    }
+    assert snapshot == before
+    assert event['feature_snapshot']['atr_filter'] == before['atr_filter']
+    assert event['decision'] == decision
+    assert event['intended_order_type'] is None
+
+@pytest.mark.parametrize('intent,status', [('trend','recorded'), ('mean_reversion','recorded'), (None,'unknown')])
+def test_candidate_attribution_state_matches_actual_signal(collector_and_profile, intent, status):
+    collector, profile = collector_and_profile
+    now = datetime(2026, 11, 26, tzinfo=timezone.utc)
+    event = collector._make_event_from_signal(profile_id=profile, scheduled_at=now,
+        evaluated_at=now, signal_components={'entry_intent':intent,'entry_price':4000},close_times={})
+    assert event['feature_snapshot']['entry_attribution'] == {
+        'schema_version':1, 'status':status, 'intent':intent if intent else 'unknown',
+        'producer_git_commit':collector.git_commit,
+    }

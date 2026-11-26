@@ -20,10 +20,10 @@ import time
 
 ROOT = Path('/root/trading_system')
 MAIN_TARGET = '/app/strategies/btc_eth/shadow/main.py'
-CALIBRATED_MAIN = '/root/trading_system/.releases/daily-inspection-af66da56a1f6d795b04e40fa12619cc60e4643d3/strategies/btc_eth/shadow/main.py'
+CALIBRATED_MAIN = '/root/trading_system/.releases/xau-attribution/03774607ef47cb5e25f9afd5b4b49f2970bd8ee3/main.py'
 BASES = {
-    'shadow': 'ghcr.io/bearflower/trading-btc-eth@sha256:3402a1ee3f2617fb2a115b2bf6ca316eb75798b494317ee698d2c9a7d76e180a',
-    'funding': 'ghcr.io/bearflower/trading-ai-tuner@sha256:2a918828dcc712b4e2522361ece28f4e61d185f25ee3fd2758418129648372d9',
+    'shadow': 'ghcr.io/bearflower/trading-xau-attribution-shadow@sha256:ff80ae9d956017c52ebcf04199bdaef288e99c835c80e4963e6c35aae6362ead',
+    'funding': 'ghcr.io/bearflower/trading-xau-attribution-funding@sha256:8d315174782e0de9390153ab25240353064b842dbff71f1d799185aed9696aa9',
 }
 TARGETS = {
     'mtcps-xau-shadow': ('trading_system-mtcps-xau-shadow', 'shadow'),
@@ -33,7 +33,7 @@ TARGETS = {
 FILES = {
     'shadow': ['strategies/btc_eth/strategy.py', 'strategies/btc_eth_aggressive/strategy.py',
                'strategies/btc_eth/shadow/collector.py', 'strategies/btc_eth/shadow/main.py', 'VERSION'],
-    'funding': ['ai_tuner/funding_schedule/collector.py', 'VERSION'],
+    'funding': ['ai_tuner/funding_schedule/collector.py', 'ai_tuner/funding_schedule/cli.py', 'VERSION'],
 }
 
 
