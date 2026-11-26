@@ -395,7 +395,15 @@ class ClassicGridExchange(GridExchange):
         available = Decimal(str(account["availableBalance"]))
         if not equity.is_finite() or not available.is_finite():
             raise AccountModeError("invalid classic account balances")
-        return {"accountEquity": equity, "totalAvailableBalance": available}
+        result = {"accountEquity": equity, "totalAvailableBalance": available}
+        for source, target in (("totalPositionInitialMargin", "positionInitialMargin"),
+                               ("totalOpenOrderInitialMargin", "openOrderInitialMargin")):
+            if source in account:
+                value = Decimal(str(account[source]))
+                if not value.is_finite() or value < 0:
+                    raise AccountModeError("invalid classic margin balances")
+                result[target] = value
+        return result
 
     async def journal_identity(self) -> str:
         rows = await self.client._request("GET", "/fapi/v3/balance")

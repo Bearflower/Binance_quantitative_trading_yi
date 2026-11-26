@@ -44,6 +44,10 @@ class GridPlan:
 class PlanLimitExceeded(ValueError):
     """A valid grid signal cannot fit the configured execution budget."""
 
+    def __init__(self, message, **evidence):
+        super().__init__(message)
+        self.evidence = {key: str(value) for key, value in evidence.items()}
+
 
 def _round(value: Decimal, step: Decimal, rounding) -> Decimal:
     return (value / step).to_integral_value(rounding=rounding) * step
@@ -114,7 +118,8 @@ def build_plan(params: DynamicGridParams, feasibility: CapitalFeasibility,
             continue
         side = "BUY" if price < market_price else "SELL"
         if price * qty < exchange_filters.min_notional:
-            raise PlanLimitExceeded("order notional below minimum")
+            raise PlanLimitExceeded("order notional below minimum", quantity=qty,
+                                    order_price=price, order_notional=price * qty)
         orders.append(PlannedOrder(index, side, price, qty))
     if not orders or len(orders) > hard_limits.max_open_orders:
         raise PlanLimitExceeded("open order count exceeds limit")

@@ -31,6 +31,7 @@ from .realtime.reference_store import (ExportStore, SessionState, check_schema,
 from .realtime.rules import ReferenceSnapshot
 from .execution.store import DecisionStore
 from .execution.policy import EXIT_STATES, PAUSE_EXPOSURE_STATES
+from .execution.signal_receipt import PENDING_TEXT, read_receipt, render_receipt
 
 
 logger = structlog.get_logger()
@@ -230,6 +231,7 @@ class GridSignalBot:
         if decision_db:
             # A configured handoff is a safety dependency. Migration must run first.
             self._decision_store = DecisionStore(decision_db)
+            self.margin_advisor.live_reporting = True
 
         logger.info(
             "网格信号灯机器人初始化完成",
@@ -463,8 +465,9 @@ class GridSignalBot:
                     for symbol in self.symbols:
                         try:
                             signal = await self.run_once(symbol)
+                            decision_id = None
                             try:
-                                self._publish_decision(signal)
+                                decision_id = self._publish_decision(signal)
                             except (sqlite3.Error, RuntimeError, ValueError) as exc:
                                 # A failed handoff makes execution stale, but
                                 # must not suppress the existing human alert.
@@ -472,6 +475,8 @@ class GridSignalBot:
 
                             # 检查是否需要推送
                             if self._should_notify(signal):
+                                if self._decision_store is not None:
+                                    await self._attach_execution_receipt(signal, decision_id)
                                 await self._send_with_export(signal)
                                 self.last_signals[symbol] = signal
 
@@ -496,6 +501,22 @@ class GridSignalBot:
             self._shutdown_export()
             if self._decision_store is not None:
                 self._decision_store.close()
+
+    async def _attach_execution_receipt(self, signal, decision_id):
+        report = None
+        if decision_id:
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                try:
+                    report = read_receipt(self._decision_store)
+                except (sqlite3.Error, ValueError, TypeError):
+                    break
+                if (report and report.get('decision_id') == decision_id
+                        and 0 <= _now_ms() - report.get('updated_at_ms', 0) <= 60_000):
+                    break
+                await asyncio.sleep(.25)
+        signal.message = signal.message.replace(PENDING_TEXT, '').strip()
+        signal.message += '\n\n' + render_receipt(report, decision_id, now_ms=_now_ms())
 
     def _publish_decision(self, signal: GridSignal) -> Optional[str]:
         """Persist every structured decision before notification/cooldown logic."""
@@ -1116,7 +1137,10 @@ class GridSignalBot:
 """
 
         # 资金可行性板块（V2.5.5 方案B；开关关闭时整体回退 V2.5 文案）
-        if self.capital_constraint_enabled:
+        if getattr(self, '_decision_store', None) is not None:
+            # The executor's actual plan result replaces advisory feasibility.
+            funding_text = PENDING_TEXT
+        elif self.capital_constraint_enabled:
             funding_text = self._build_funding_text(
                 market_analysis, grid_params, capital_feasibility, margin_used
             )

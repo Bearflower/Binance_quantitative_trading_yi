@@ -25,6 +25,7 @@ from .position_recovery import PositionLockRecovery
 from .risk import RiskLimits, RiskStatus
 from .risk_tracker import RiskTracker
 from .store import DecisionStore, ExecutionLock
+from .signal_receipt import SignalReceiptWriter
 from .stream import UserStream
 from .stream_recovery import HANDOFF_PAUSE, RECOVERABLE_PAUSES, STREAM_PAUSE, StreamRecovery
 from strategies.grid.realtime.delivery import WebhookSingleSender
@@ -71,6 +72,7 @@ class ExecutorService:
         self._last_alert_token = None
         self._last_alert_at = 0.0
         self._next_alert_attempt = 0.0
+        self.signal_receipts = SignalReceiptWriter()
 
     async def _on_reconnect(self):
         async with self.guard:
@@ -174,6 +176,7 @@ class ExecutorService:
         return self._risk_result
 
     async def _plan(self, decision: dict):
+        self._plan_receipt = None
         params = decode_grid_params(decision["grid_params"])
         feasibility = decode_feasibility(decision["feasibility"])
         self.filters = await self.exchange.verify_account(
@@ -189,8 +192,20 @@ class ExecutorService:
         if not signal_margin.is_finite() or signal_margin <= 0 or not available.is_finite():
             raise ValueError("invalid execution margin evidence")
         budget = min(self.settings.max_margin_usdt, available, signal_margin)
-        plan = build_plan(params, feasibility, price, self.filters, limits,
-                          margin_budget_usdt=budget)
+        self._plan_receipt = dict(decision_id=decision.get('decision_id'),
+            checked_at_ms=int(time.time() * 1000),
+            budget=str(budget), leverage=self.settings.expected_leverage,
+            max_margin=str(self.settings.max_margin_usdt),
+            min_notional=str(self.filters.min_notional), status='CHECKING')
+        try:
+            plan = build_plan(params, feasibility, price, self.filters, limits,
+                              margin_budget_usdt=budget)
+        except ValueError as exc:
+            self._plan_receipt.update(status='REJECTED', reason=str(exc))
+            self._plan_receipt.update(getattr(exc, 'evidence', {}))
+            raise
+        self._plan_receipt.update(status='PASSED', quantity=str(plan.orders[0].quantity),
+                                  order_count=len(plan.orders))
         logger.info("grid execution sized: margin_budget=%s leverage=%s quantity=%s",
                     budget, self.settings.expected_leverage, plan.orders[0].quantity)
         return plan
@@ -346,6 +361,17 @@ class ExecutorService:
         self.store.acknowledge_after_action(decision["decision_id"], epoch)
 
     async def tick(self):
+        try:
+            await self._tick()
+        finally:
+            writer = getattr(self, 'signal_receipts', None)
+            if writer is not None:
+                try:
+                    await asyncio.wait_for(writer.capture(self), timeout=8)
+                except Exception as exc:
+                    logger.warning('grid signal receipt unavailable: %s', type(exc).__name__)
+
+    async def _tick(self):
         now_ms = int(time.time() * 1000)
         trailing = getattr(self, 'trailing', None)
         async with self.guard:
