@@ -73,20 +73,29 @@ def test_manifests_require_exact_scope_and_digest_pins():
         release.validate_manifests(hashes, digests)
 
 
-def test_runtime_comparison_preserves_credentials_resources_and_mounts():
+@pytest.mark.parametrize('skip_already_set', [False, True])
+def test_runtime_comparison_preserves_credentials_resources_and_mounts(skip_already_set):
     before = {'Config': {'Image': 'old', 'Hostname': 'oldid', 'Env': ['TOKEN=secret'],
                          'Labels': {'com.docker.compose.config-hash': 'old', 'custom': 'same'}},
               'HostConfig': {'Memory': 123, 'Binds': [release.CALIBRATED_MAIN + ':' + release.MAIN_TARGET + ':ro']},
               'Mounts': [{'Type': 'bind', 'Source': release.CALIBRATED_MAIN, 'Destination': release.MAIN_TARGET, 'RW': False}],
               'NetworkSettings': {'Networks': {'trading': {'IPAMConfig': None}}}}
+    if skip_already_set:
+        before['Config']['Env'].append('SHADOW_SKIP_INITIAL_COLLECTION=1')
     after = copy.deepcopy(before)
     after['Config']['Image'] = 'new'
     after['Config']['Hostname'] = 'newid'
-    after['Config']['Env'].append('SHADOW_SKIP_INITIAL_COLLECTION=1')
+    if not skip_already_set:
+        after['Config']['Env'].append('SHADOW_SKIP_INITIAL_COLLECTION=1')
     after['Config']['Labels']['com.docker.compose.config-hash'] = 'new'
     after['HostConfig']['Binds'][0] = '/release/main.py:' + release.MAIN_TARGET + ':ro'
     after['Mounts'][0]['Source'] = '/release/main.py'
     release.validate_runtime(before, after, 'mtcps-xau-calibrated-shadow', '/release/main.py')
+    release.validate_runtime(before, copy.deepcopy(before), 'mtcps-xau-calibrated-shadow', '/release/main.py', rollback=True)
+    changed_env = copy.deepcopy(after)
+    changed_env['Config']['Env'][0] = 'TOKEN=changed'
+    with pytest.raises(ValueError, match='runtime configuration'):
+        release.validate_runtime(before, changed_env, 'mtcps-xau-calibrated-shadow', '/release/main.py')
     after['HostConfig']['Memory'] = 0
     with pytest.raises(ValueError, match='runtime configuration'):
         release.validate_runtime(before, after, 'mtcps-xau-calibrated-shadow', '/release/main.py')
@@ -96,6 +105,11 @@ def test_release_workflow_and_dockerfiles_have_narrow_scope():
     import yaml
     workflow = yaml.safe_load((ROOT / '.github/workflows/xau-attribution-release.yml').read_text())
     assert workflow['jobs']['release']['if'] == "github.ref == 'refs/heads/main'"
+    gate = next(step['run'] for step in workflow['jobs']['release']['steps']
+                if step.get('name') == 'Focused regression gate')
+    assert 'tests/test_ai_tuner_mvp/test_funding_schedule*.py' in gate
+    assert 'tests/test_strategies/test_xau_entry_intent.py' in gate
+    assert 'ai_tuner/funding_schedule/cli.py' in release.FILES['funding']
     for group, paths in release.FILES.items():
         lines = (ROOT / f'deployment/xau-attribution/Dockerfile.{group}').read_text().splitlines()
         assert f'FROM {release.BASES[group]}' in lines

@@ -805,6 +805,24 @@ class ShadowCollector:
         return snapshot
 
     # ------------------------------------------------------------------ 事件组装辅助
+    def _attribution_snapshot(self, snapshot, decision, data_quality_reason=None):
+        """Persist pipeline state separately from an actual candidate's intent."""
+        snapshot = dict(snapshot or {})
+        intent = snapshot.get("entry_intent") if decision == "candidate" else None
+        if decision == "candidate":
+            status = "recorded" if intent in ("trend", "mean_reversion") else "unknown"
+        elif data_quality_reason:
+            status = "data_unavailable"
+        elif decision == "analysis_error":
+            status = "analysis_error"
+        else:
+            status = "no_candidate"
+        snapshot["entry_attribution"] = {
+            "schema_version": 1, "status": status, "intent": intent,
+            "producer_git_commit": self.git_commit,
+        }
+        return snapshot
+
     def _make_event(
         self,
         *,
@@ -840,7 +858,7 @@ class ShadowCollector:
             "tp2_rule": None,
             "trailing_rule": None,
             "time_stop_rule": None,
-            "feature_snapshot": feature_snapshot,
+            "feature_snapshot": self._attribution_snapshot(feature_snapshot, decision, data_quality_reason),
             "reason_codes": reason_codes or [],
             "data_quality_reason": data_quality_reason,
             "config_hash": self.config_hashes.get(profile_id, ""),
@@ -916,7 +934,7 @@ class ShadowCollector:
             "tp2_rule": _rule_dict("tp2", atr, tp2_mult),
             "trailing_rule": risk_cfg.get("dynamic_trailing"),
             "time_stop_rule": risk_cfg.get("time_stop"),
-            "feature_snapshot": feature_snapshot,
+            "feature_snapshot": self._attribution_snapshot(feature_snapshot, "candidate"),
             "reason_codes": [],
             "data_quality_reason": None,
             "config_hash": self.config_hashes.get(profile_id, ""),

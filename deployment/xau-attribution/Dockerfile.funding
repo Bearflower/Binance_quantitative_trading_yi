@@ -1,4 +1,5 @@
 # Funding scheduler only; other ai-tuner consumers remain on the current base.
-FROM ghcr.io/bearflower/trading-ai-tuner@sha256:2a918828dcc712b4e2522361ece28f4e61d185f25ee3fd2758418129648372d9
+FROM ghcr.io/bearflower/trading-xau-attribution-funding@sha256:8d315174782e0de9390153ab25240353064b842dbff71f1d799185aed9696aa9
 COPY ai_tuner/funding_schedule/collector.py /app/ai_tuner/funding_schedule/collector.py
+COPY ai_tuner/funding_schedule/cli.py /app/ai_tuner/funding_schedule/cli.py
 COPY VERSION /app/VERSION

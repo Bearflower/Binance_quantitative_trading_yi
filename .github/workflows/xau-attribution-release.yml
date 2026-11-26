@@ -24,7 +24,7 @@ jobs:
       - name: Focused regression gate
         run: |
           python -m pip install -r requirements.txt
-          python -m pytest -q tests/test_scripts/test_xau_attribution_release.py tests/test_ai_tuner_mvp/test_funding_schedule_collector.py tests/test_strategies/test_shadow_collector.py tests/test_strategies/test_shadow_no_trading_write.py tests/test_strategies/test_shadow_image_dependencies.py tests/test_shadow_replay/test_entry_intent.py tests/test_shadow_replay/test_durable_ledger.py tests/test_strategies/test_xau_startup_cutover.py
+          python -m pytest -q tests/test_scripts/test_xau_attribution_release.py tests/test_ai_tuner_mvp/test_funding_schedule*.py tests/test_strategies/test_shadow_collector.py tests/test_strategies/test_shadow_no_trading_write.py tests/test_strategies/test_shadow_image_dependencies.py tests/test_shadow_replay/test_entry_intent.py tests/test_shadow_replay/test_durable_ledger.py tests/test_strategies/test_xau_startup_cutover.py tests/test_strategies/test_xau_entry_intent.py
       - name: Stamp build provenance and file manifest
         env:
           RELEASE_SHA: ${{ github.sha }}

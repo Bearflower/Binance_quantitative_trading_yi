@@ -107,6 +107,9 @@ def _events(run_id, repo):
             )
             assert signal == original_signal
             events.append(event)
+        scheduled = START + timedelta(hours=4)
+        events.append(collector._make_event(profile_id=profile, scheduled_at=scheduled,
+            evaluated_at=scheduled + timedelta(seconds=1), decision="no_signal"))
     return events
 
 
@@ -123,13 +126,13 @@ async def _child(mode, run_id, output_dir):
                 git_commit="attribution-persistence-test", git_sha="a" * 40,
                 config_hashes={event["profile_id"]: event["config_hash"] for event in events},
             )
-            assert await repo.insert_decision_events_batch(events) == 12
+            assert await repo.insert_decision_events_batch(events) == 15
             assert await repo.insert_decision_events_batch(events) == 0
             # Every INSERT above commits normally, outside any rollback transaction.
         else:
             assert mode == "export"
             result = await export_run(db=db, run_id=run_id, output_dir=output_dir)
-            assert result["events_exported"] == 12
+            assert result["events_exported"] == 15
     finally:
         await connection.close()
 
@@ -163,12 +166,22 @@ def test_xau_jsonb_attribution_survives_writer_exit_and_export(tmp_path):
         connection = await asyncpg.connect(dsn)
         try:
             rows = await ShadowRepository(_Database(connection)).find_events_by_run(run_id=run_id)
-            assert len(rows) == 12
+            assert len(rows) == 15
             for row in rows:
                 index = int((row["scheduled_at"] - START).total_seconds() // 3600)
+                if index == 4:
+                    assert row["decision"] == "no_signal"
+                    assert json.loads(row["feature_snapshot"]) == {"entry_attribution": {
+                        "schema_version": 1, "status": "no_candidate", "intent": None,
+                        "producer_git_commit": "attribution-persistence-test",
+                    }}
+                    continue
                 intent, fallback = CASES[index]
                 snapshot = json.loads(row["feature_snapshot"])
                 assert snapshot == {
+                    "entry_attribution": {"schema_version": 1,
+                        "status": "unknown" if intent == "unknown" else "recorded",
+                        "intent": intent, "producer_git_commit": "attribution-persistence-test"},
                     "entry_intent": intent, "entry_route_fallback": fallback,
                     "market_state": "RANGING", "atr": 10.0, "price_change_1h": 0.01,
                     "atr_filter": {"history_count": 40, "effective_atr_pct": 0.25},
@@ -199,7 +212,7 @@ def test_xau_jsonb_attribution_survives_writer_exit_and_export(tmp_path):
 
         exported = [json.loads(line) for line in (tmp_path / "decision_events.jsonl").read_text().splitlines()]
         manifest = json.loads((tmp_path / "run_manifest.json").read_text())
-        assert len(exported) == 12
+        assert len(exported) == 15
         assert manifest["run_id"] == run_id
         assert manifest["initial_virtual_equity_usdt"] == 300
         assert manifest["git_sha"] == "a" * 40
@@ -210,8 +223,11 @@ def test_xau_jsonb_attribution_survives_writer_exit_and_export(tmp_path):
                 assert event[field] == row[field].isoformat()
             for field in ("feature_snapshot", "source_kline_close_times"):
                 assert event[field] == json.loads(row[field])
-            assert event["reference_price"] == event["intended_entry_price"] == 4000
-            assert event["score"] == 88.5
+            if event["decision"] == "candidate":
+                assert event["reference_price"] == event["intended_entry_price"] == 4000
+                assert event["score"] == 88.5
+            else:
+                assert event["reference_price"] is event["intended_entry_price"] is None
             assert event["config_hash"] == manifest["config_hashes"][event["profile_id"]]
     finally:
         asyncio.run(cleanup())

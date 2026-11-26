@@ -24,6 +24,7 @@ from .repository import FundingScheduleRepository
 
 logger = structlog.get_logger()
 _PERIOD = timedelta(minutes=5)
+_CURRENT_SLOT_WINDOW = timedelta(seconds=120)
 _COLLECTION_TIMEOUT_SECONDS = 90
 _DB_TIMEOUT_SECONDS = 15
 _NOTIFICATION_TIMEOUT_SECONDS = 10
@@ -205,10 +206,18 @@ async def _send_limited_alert(notifier: NotificationClient, state: PersistentAle
 
 
 async def _collection_loop(collector: FundingScheduleCollector, notifier: NotificationClient,
-                           tracker: FailureTracker) -> None:
+                           tracker: FailureTracker, *, first_slot: datetime | None = None) -> None:
     last_slot = None
     while True:
-        slot = next_slot_after(datetime.now(timezone.utc), last_slot=last_slot)
+        now = datetime.now(timezone.utc)
+        if first_slot is not None:
+            slot, first_slot = first_slot, None
+            # Startup DB reads/alerts may consume the remaining capture window.
+            # An expired startup candidate must never become a historical run.
+            if now > slot + _CURRENT_SLOT_WINDOW:
+                slot = next_slot_after(now, last_slot=slot)
+        else:
+            slot = next_slot_after(now, last_slot=last_slot)
         await asyncio.sleep(max(0.0, (slot - datetime.now(timezone.utc)).total_seconds()))
         last_slot = slot
         result = await run_once(collector, notifier, scheduled_at=slot)
@@ -225,8 +234,19 @@ async def _monitor_loop(monitor: MissingSlotMonitor, *, heartbeat_path: Path | N
 
 async def run_daemon(collector: FundingScheduleCollector, notifier: NotificationClient) -> None:
     tracker = FailureTracker(notifier)
-    first_slot = next_slot_after(datetime.now(timezone.utc))
+    now = datetime.now(timezone.utc)
+    candidate = current_slot(now)
+    first_slot = candidate + _PERIOD
     try:
+        # This is a fresh public request for a still-open slot, not a replay.
+        # Any persisted attempt (including failure) prevents startup duplication.
+        if now <= candidate + _CURRENT_SLOT_WINDOW:
+            persisted = await asyncio.wait_for(
+                collector.repository.slots_with_runs(candidate, candidate),
+                timeout=_DB_TIMEOUT_SECONDS,
+            )
+            if candidate not in persisted:
+                first_slot = candidate
         tracker.consecutive = await asyncio.wait_for(
             collector.repository.recent_failed_streak(first_slot, limit=tracker.threshold),
             timeout=_DB_TIMEOUT_SECONDS,
@@ -244,7 +264,7 @@ async def run_daemon(collector: FundingScheduleCollector, notifier: Notification
     monitor_start = monitor_start_slot(first_slot, last_persisted, datetime.now(timezone.utc))
     monitor = MissingSlotMonitor(collector.repository, notifier, start_slot=monitor_start)
     tasks = [
-        asyncio.create_task(_collection_loop(collector, notifier, tracker)),
+        asyncio.create_task(_collection_loop(collector, notifier, tracker, first_slot=first_slot)),
         asyncio.create_task(_monitor_loop(monitor)),
     ]
     try:
