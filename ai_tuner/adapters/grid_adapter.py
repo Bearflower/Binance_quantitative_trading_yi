@@ -13,6 +13,7 @@
 - AI 调优时同时参考真实表现和模拟对比，做出更合理的参数调整建议
 """
 import os
+import math
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -519,6 +520,7 @@ class GridAdapter(BaseAdapter):
             price_range_low=round(price_range_low, 2),
             price_range_high=round(price_range_high, 2),
             profit_rate_per_fill=round(profit_rate * 100, 2),
+            score_version=result.get("score_version", ""),
             composite_score=result.get("composite_score", 0.0),
             max_drawdown_pct=result.get("max_drawdown_pct", 0.0),
             sharpe_ratio=result.get("sharpe_ratio", 0.0),
@@ -697,6 +699,14 @@ class GridAdapter(BaseAdapter):
             old_score = old_result.get("composite_score", 0)
             new_score = new_result.get("composite_score", 0)
 
+            cap = float(self._system_config.get("backtest", {}).get("drawdown_cap", 0.20))
+            drawdown = float(new_result["max_drawdown_pct"])
+            if not all(math.isfinite(v) for v in (old_score, new_score, cap, drawdown)) or cap <= 0 or drawdown < 0:
+                raise ValueError("invalid grid score or drawdown evidence")
+            if drawdown >= cap:
+                return {"passed": False, "status": "rejected",
+                        "reason": f"候选回撤 {drawdown:.4%} 达到或超过上限 {cap:.4%}",
+                        "old_score": old_score, "new_score": new_score}
             if new_score > old_score:
                 return {
                     "passed": True,
