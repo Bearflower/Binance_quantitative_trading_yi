@@ -81,14 +81,16 @@ class TestMarkEntryCanceled:
         """有 NEW 记录命中 → 返回 True，执行 UPDATE"""
         db = MagicMock()
         db.execute = AsyncMock(return_value="UPDATE 1")
-        tl = TradeLogger(db, "new_coin")
+        tl = TradeLogger(db, "new_coin", account_id="main")
         ok = await tl.mark_entry_canceled("12345", "BTCUSDT")
         assert ok is True
         db.execute.assert_awaited_once()
         args = db.execute.call_args[0]
         assert "status = 'CANCELED'" in args[0]
         assert "status = 'NEW'" in args[0]
-        assert args[1:] == ("12345", "BTCUSDT")
+        assert "account_id = $3 AND strategy = $4" in args[0]
+        assert args[1:5] == ("12345", "BTCUSDT", "main", "new_coin")
+        assert args[5].lower is None and args[5].upper is None
 
     async def test_already_canceled_noop(self):
         """已是 CANCELED → WHERE 条件不命中 → 返回 False，不抛异常"""
@@ -173,12 +175,22 @@ class TestAC3CancelOrderMarksEntry:
         result = await client.cancel_order("BTCUSDT", order_id="12345")
         assert result["status"] == "CANCELED"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("qty", ["0.25", None])
+    async def test_missing_cancel_lookup_keeps_partial_or_unknown_quantity(self, client, fake_trade_logger, qty):
+        client._request = AsyncMock(side_effect=BinanceAPIError(-2011, "Order does not exist"))
+        client.get_order = AsyncMock(return_value={"orderId":12345, "symbol":"BTCUSDT",
+                                                    "status":"EXPIRED", "executedQty":qty})
+        with pytest.raises(BinanceAPIError):
+            await client.cancel_order("BTCUSDT", order_id="12345")
+        fake_trade_logger.mark_entry_canceled.assert_not_awaited()
+
     # ---------- -2011 分支 ----------
 
     async def test_minus_2011_get_order_canceled_marks(self, client, fake_trade_logger):
         """cancel -2011 → get_order 显示 CANCELED → 标记"""
         client._request = AsyncMock(side_effect=BinanceAPIError(-2011, "Order does not exist"))
-        client.get_order = AsyncMock(return_value={"status": "CANCELED", "orderId": 12345})
+        client.get_order = AsyncMock(return_value={"status": "CANCELED", "orderId": 12345, "symbol": "BTCUSDT", "executedQty": "0"})
         with pytest.raises(BinanceAPIError) as exc_info:
             await client.cancel_order("BTCUSDT", order_id="12345")
         assert exc_info.value.code == -2011  # 异常仍向上传播
@@ -874,7 +886,8 @@ class TestBNBFixAC2ReleaseClaimUsesRealizedPnlFilter:
         await release_claim(db, "BNBUSDT", "btc_eth", reason="position_closed")
         # 只调了一次 execute（claims 不支持，走早退）；即 _MARK_ENTRY_CLOSED_SQL
         db.execute.assert_awaited_once()
-        sql, symbol_arg, strategy_arg = db.execute.call_args.args
+        sql, symbol_arg, strategy_arg, account, since = db.execute.call_args.args
+        assert (account, since) == ("default", None)
         assert "realized_pnl IS NULL" in sql
         assert "status = 'CLOSED'" in sql
         assert symbol_arg == "BNBUSDT"

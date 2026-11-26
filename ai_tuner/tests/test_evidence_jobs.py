@@ -149,14 +149,20 @@ async def test_valuation_observations_keep_valid_and_failed_evidence(tmp_path, m
      ('FINISHED', True, False, 'BLOCKED_DATA')],
 )
 async def test_new_coin_progress_requires_recovered_state_and_signed_tp1(
-        tmp_path, algo_status, recovered, reduce_only, expected):
+        tmp_path, monkeypatch, algo_status, recovered, reduce_only, expected):
     obj = job(tmp_path)
     row = dict(symbol='ETNUSDT', position_id='ETNUSDT_320067',
-               entry_order_id='320067', tp1_algo_id='4569',
+               entry_order_id='320067', tp1_algo_id='4569', quantity='0.29',
+               opened_at=datetime(2026,11,19,tzinfo=BEIJING), entry_price='338.52',
                recovered_position_id='ETNUSDT_320067' if recovered else None,
                recovery_tp1_evidence='verified_tail' if recovered else None)
     obj.db = SimpleNamespace(fetch_all=AsyncMock(return_value=[row]))
+    monkeypatch.setattr(m,'verify_tp1_tail',AsyncMock(return_value=True))
+    monkeypatch.setattr(m,'owned_recovery_reduction_algos',AsyncMock(return_value=(4572,)))
+    position = [dict(symbol='ETNUSDT',positionAmt='-0.21',positionSide='BOTH')]
     obj.pm = SimpleNamespace(
+        get_position=AsyncMock(return_value=position),
+        get_um_account_positions=AsyncMock(return_value=position),
         get_algo_order=AsyncMock(return_value=dict(
             algoId=4569, symbol='ETNUSDT', algoStatus=algo_status,
             orderType='TAKE_PROFIT', side='BUY', positionSide='BOTH',
@@ -170,8 +176,45 @@ async def test_new_coin_progress_requires_recovered_state_and_signed_tp1(
     result = await obj.sample_new_coin_recovery()
 
     assert result['positions'][0]['status'] == expected
+    if expected in ('WAIT_RECOVERY','RECOVERY_TAIL_VERIFIED'):
+        assert result['positions'][0]['tail_signed_verified'] is True
+        assert result['positions'][0]['additional_tp_algo_ids'] == [4572]
     assert json.loads((tmp_path/'new-coin-recovery-latest.json').read_text()) == result
     assert len(list((tmp_path/'new-coin-recovery').glob('*.json'))) == 1
     await obj.sample_new_coin_recovery()
     assert len(list((tmp_path/'new-coin-recovery').glob('*.json'))) == 1
     obj.messenger.send_alert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_classic_observations_do_not_overwrite_or_reuse_reviewed_pm_budget(tmp_path, monkeypatch):
+    from shared.readonly_client import ReadOnlyBinanceClient
+    from ai_tuner.monitor.account_risk import collect_account_risk
+
+    classic = ReadOnlyBinanceClient('classic-key', 'classic-secret', use_unified_account=False)
+    get = AsyncMock(side_effect=[
+        {'canTrade': True, 'dualSidePosition': False, 'multiAssetsMargin': False},
+        {'totalMarginBalance': '302.5', 'totalWalletBalance': '300',
+         'totalUnrealizedProfit': '2.5', 'availableBalance': '291'}])
+    monkeypatch.setattr(classic, '_request', get)
+    pm_bridge = AsyncMock()
+    monkeypatch.setattr(m, 'observe_pm_equity', pm_bridge)
+    jobs = m.EvidenceJobs(None, classic, None, SimpleNamespace(send_alert=AsyncMock()), config(), tmp_path)
+    pm_latest = tmp_path / 'account-risk-latest.json'
+    old = json.dumps({'status': 'VERIFIED', 'account_id': 'default', 'budget_id': 'budget',
+                      'as_of_ms': int(time.time()*1000)})
+    pm_latest.write_text(old)
+    assert jobs.latest_risk()['status'] == 'BLOCKED_DATA'
+    report = await jobs.sample_risk()
+    assert report['budget_id'] is None and report['current_drawdown_ratio'] is None
+    assert report['account_mode'] == 'classic' and report['current_equity_usd'] is None
+    assert (tmp_path / 'classic' / 'account-risk-latest.json').is_file()
+    assert pm_latest.read_text() == old
+    assert (await collect_account_risk(None, classic, None, config()['account_risk']['budget']))['status'] == 'BLOCKED_DATA'
+    get.assert_not_awaited()
+    point = await jobs.sample_equity_valuation()
+    assert point['margin_balance_usdt'] == '302.5' and point['status'] == 'VERIFIED_POINT'
+    assert point['method'] == 'classic-usdt-margin-balance-v1'
+    assert not (tmp_path / 'pm-equity').exists()
+    assert [call.args[1] for call in get.await_args_list] == ['/fapi/v1/accountConfig', '/fapi/v3/account']
+    pm_bridge.assert_not_awaited()

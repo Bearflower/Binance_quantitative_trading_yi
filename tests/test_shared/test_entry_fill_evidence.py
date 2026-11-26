@@ -12,10 +12,11 @@ def evidence():
 def test_partial_fills_combine_to_terminal_quantity():
     assert verified_fill(*evidence()) == (Decimal(39), Decimal('0.1715'))
 
-@pytest.mark.parametrize('defect', ['duplicate','other_order','missing_fill','pending','nan'])
+@pytest.mark.parametrize('defect', ['duplicate','numeric_string_duplicate','other_order','missing_fill','pending','nan'])
 def test_incomplete_or_mismatched_evidence_is_rejected(defect):
     r,o,t=evidence()
     if defect=='duplicate': t[1]['id']=1
+    if defect=='numeric_string_duplicate': t[1]['id']='1'
     if defect=='other_order': t[1]['orderId']=43
     if defect=='missing_fill': t.pop()
     if defect=='pending': o['status']='NEW'
@@ -80,10 +81,11 @@ async def test_backfill_continues_after_page_of_open_orders_and_targets_old_reco
     client.get_order.return_value = order
     client.get_user_trades.return_value = trades
     await logger.reconcile_entry_fills(client)
-    assert db.fetch_all.await_args.args[-1] == 100
+    assert db.fetch_all.await_args.args[-2] == 100
     db.execute.assert_awaited_once()
     preview = await logger.reconcile_entry_fills(client, record_ids=[101], dry_run=True)
-    query, account, ids = db.fetch_all.await_args.args
-    assert "executed_at" not in query and account == "pm" and ids == [101]
+    query, account, ids, epoch = db.fetch_all.await_args.args
+    assert "executed_at <@ $3::tsrange" in query and account == "pm" and ids == [101]
+    assert epoch.lower is None and epoch.upper is None
     assert preview[0]["quantity"] == Decimal(39)
     db.execute.assert_awaited_once()

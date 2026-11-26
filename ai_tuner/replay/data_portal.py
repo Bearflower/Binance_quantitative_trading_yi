@@ -365,6 +365,7 @@ class DataPortal:
                 continue
             if row.get("symbol") != symbol:
                 continue
+            self.guard(parse_utc(row["observed_at"]), "external_snapshot", "observed_at", cutoff)
             source_observed_at = parse_utc(
                 row.get("source_observed_at") or row.get("observed_at") or bucket_end
             )
@@ -412,6 +413,45 @@ class DataPortal:
         result.sort(key=lambda item: item[0])
         return tuple(result)
 
+    def funding_receipt_time(self, symbol: str, funding_time: datetime) -> datetime:
+        """Scheduling metadata only; no settlement value is exposed before receipt."""
+        rows=[row for row in self._read_jsonl('funding_rates.jsonl')
+              if row.get('symbol')==symbol and parse_utc(row['funding_time'])==funding_time]
+        if len(rows)!=1:
+            raise DataBlocked(['funding_mark_missing_or_duplicate:'+symbol])
+        try:
+            return parse_utc(rows[0].get('mark_available_at',funding_time))
+        except (ValueError,TypeError) as exc:
+            raise DataBlocked(['funding_mark_invalid:'+symbol]) from exc
+
+    def funding_mark_at(self, symbol: str, funding_time: datetime, *, as_of=None) -> Dict[str, Any]:
+        """HRS requires the recorded settlement mark, not an entry-price proxy."""
+        cutoff=self.cutoff(as_of or funding_time,'funding_mark')
+        self.guard(funding_time,'funding_mark','funding_time',cutoff)
+        self._require_dataset('funding_rates.jsonl')
+        rows=[row for row in self._read_jsonl('funding_rates.jsonl')
+              if row.get('symbol')==symbol and parse_utc(row['funding_time'])==funding_time]
+        if len(rows)!=1:
+            raise DataBlocked(['funding_mark_missing_or_duplicate:'+symbol])
+        row=rows[0]
+        try:
+            price=dec(row['mark_price'])
+            marked_at=parse_utc(row['mark_time'])
+            available_at=parse_utc(row['mark_available_at'])
+            if (not price.is_finite() or price<=ZERO or marked_at!=funding_time
+                    or available_at>cutoff or available_at<marked_at
+                    or row['mark_source'] not in ('binance_um_funding_rate','binance_um_mark_price')):
+                raise ValueError('invalid_source_time_price_or_availability')
+            selected=dict(symbol=symbol,funding_time=row['funding_time'],mark_price=str(row['mark_price']),
+                          mark_time=row['mark_time'],mark_source=row['mark_source'])
+            digest=hashlib.sha256(json.dumps(selected,sort_keys=True,separators=(',',':')).encode()).hexdigest()
+            if row['mark_payload_hash']!=digest:
+                raise ValueError('payload_hash_mismatch')
+        except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
+            raise DataBlocked(['funding_mark_invalid:'+symbol+':'+str(exc)]) from exc
+        return dict(price=price,marked_at=marked_at,available_at=available_at,
+                    source=row['mark_source'],payload_hash=digest)
+
     def trade_signals(self, as_of: Optional[datetime] = None) -> Tuple[Dict[str, Any], ...]:
         """返回 ``signal_time <= as_of`` 的有效历史信号（样本量与金样对账用）。"""
         cutoff = self.cutoff(as_of, "trade_signals")
@@ -447,6 +487,150 @@ class DataPortal:
             overlay_hash=raw["overlay_hash"],
         )
 
+    def hrs_replay_state(self, as_of: datetime) -> Dict[str, Any]:
+        """Manifest-bound bootstrap facts; never substitute terminal/current state."""
+        cutoff = self.cutoff(as_of, "hrs_replay_state")
+        self._require_dataset("hrs_replay_state.json")
+        raw = self._read_json("hrs_replay_state.json")
+        if not isinstance(raw, dict) or raw.get("complete") is not True:
+            raise DataBlocked(["hrs_bootstrap_incomplete"])
+        if parse_utc(raw["as_of"]) != cutoff:
+            raise DataBlocked(["hrs_bootstrap_as_of_mismatch"])
+        return raw
+
+    def hrs_decision_calendar(self, symbols: Iterable[str]) -> Tuple[Dict[str, Any], ...]:
+        """Manifest-bound batch release and actual controller order, not bar time.
+
+        Every scanned/vetoed input needs an entry. Batch release follows score
+        completion; consumption also waits for later entry-stage inputs. Explicit
+        sequence preserves the live shorts-then-longs control flow at equal times.
+        """
+        self._require_dataset('hrs_decision_calendar.jsonl')
+        self._require_dataset('hrs_decision_inputs.jsonl')
+        allowed=set(symbols)
+        def timestamp(value):
+            parsed=datetime.fromisoformat(value.replace('Z','+00:00'))
+            if parsed.tzinfo is None:
+                raise ValueError('timezone_missing')
+            return parse_utc(parsed)
+        try:
+            raw_by_key={}
+            from ai_tuner.hrs_evidence_export import indexed_hrs_inputs
+            for raw in indexed_hrs_inputs(self):
+                decided=timestamp(raw['decision_at'])
+                observed=timestamp(raw['observed_at'])
+                supplied=timestamp(raw.get('available_at',raw['observed_at']))
+                scored=timestamp(raw.get('score_available_at',raw['decision_at']))
+                if supplied<observed or scored<decided:
+                    raise ValueError('input_availability_before_observation')
+                available=max(decided,supplied)
+                key=(raw['symbol'],decided)
+                if key in raw_by_key or raw['symbol'] not in allowed:
+                    raise ValueError('duplicate_or_unknown_input')
+                self.guard(available,'hrs_decision_calendar','available_at',self.as_of)
+                raw_by_key[key]=(available,scored)
+            rows=[]
+            seen=set()
+            sequences=set()
+            batches={}
+            all_rows=[]
+            for row in self._read_jsonl('hrs_decision_calendar.jsonl'):
+                decided=timestamp(row['decision_at'])
+                available=timestamp(row['available_at'])
+                released=timestamp(row['batch_available_at'])
+                sequence=row['sequence']
+                key=(row['symbol'],decided)
+                if type(sequence) is not int or sequence<0 or sequence in sequences:
+                    raise ValueError('sequence_missing_or_duplicate')
+                if key in seen or key not in raw_by_key:
+                    raise ValueError('duplicate_or_missing_input')
+                input_available,score_available=raw_by_key[key]
+                if released<score_available or available!=max(input_available,released):
+                    raise ValueError('batch_or_input_availability_mismatch')
+                batch_id=row.get('batch_id',released.isoformat())
+                if not isinstance(batch_id,str) or not batch_id or batches.setdefault(batch_id,released)!=released:
+                    raise ValueError('batch_identity_conflict')
+                self.guard(available,'hrs_decision_calendar','available_at',self.as_of)
+                seen.add(key)
+                sequences.add(sequence)
+                normalized=dict(symbol=row['symbol'],decision_at=decided,available_at=available,
+                                batch_available_at=released,batch_id=batch_id,sequence=sequence)
+                all_rows.append(normalized)
+                if self.window_start<available<=self.as_of:
+                    rows.append(normalized)
+            if seen!=set(raw_by_key):
+                raise ValueError('input_calendar_inventory_mismatch')
+            by_sequence=sorted(all_rows,key=lambda row:row['sequence'])
+            if any(left['available_at']>right['available_at'] for left,right in zip(by_sequence,by_sequence[1:])):
+                raise ValueError('sequence_availability_conflict')
+        except (KeyError,TypeError,ValueError) as exc:
+            raise DataBlocked(['hrs_decision_calendar_invalid:'+str(exc)]) from exc
+        if not rows:
+            raise DataBlocked(['hrs_decision_calendar_empty'])
+        return tuple(sorted(rows,key=lambda row:(row['available_at'],row['sequence'])))
+
+    def hrs_inputs(self, symbol: str, as_of: datetime, *, decision_at: Optional[datetime] = None) -> Dict[str, Any]:
+        """Return one complete raw-input envelope available at this decision."""
+        cutoff = self.cutoff(as_of, "hrs_inputs")
+        identity=parse_utc(decision_at) if decision_at is not None else cutoff
+        self.guard(identity,"hrs_inputs","decision_at",cutoff)
+        self._require_dataset("hrs_decision_inputs.jsonl")
+        from ai_tuner.hrs_evidence_export import indexed_hrs_inputs,snapshot_evidence_sources
+        raw=indexed_hrs_inputs(self).get(symbol,identity)
+        if raw is None:
+            raise DataBlocked(["hrs_decision_inputs_missing_or_duplicate:"+symbol])
+        self.guard(parse_utc(raw["observed_at"]), "hrs_inputs", "observed_at", cutoff)
+        if "available_at" in raw:
+            self.guard(parse_utc(raw["available_at"]),"hrs_inputs","available_at",cutoff)
+        if raw.get("complete") is not True:
+            raise DataBlocked(["hrs_decision_inputs_incomplete:"+symbol])
+        if raw.get('analysis_evidence_id'):
+            sources=snapshot_evidence_sources(self)
+            row=sources.archive.get_record('decision_evidence',raw['analysis_evidence_id'])
+            if (row is None or row['payload_sha256']!=raw['analysis_payload_sha256'] or row['symbol']!=symbol
+                    or row['kind'] not in ('analysis','lv_rm_analysis')
+                    or parse_utc(row['event_time'])!=identity
+                    or parse_utc(row['available_at'])!=parse_utc(raw['score_available_at'])):
+                raise DataBlocked(['hrs_analysis_archive_identity_mismatch'])
+            self.guard(parse_utc(row['available_at']),'hrs_inputs','analysis_available_at',cutoff)
+            payload=row['payload'] if isinstance(row['payload'],dict) else json.loads(row['payload'])
+            raw=dict(raw,analysis_klines_1h=payload['klines_1h'],analysis_klines_4h=payload['klines_4h'])
+        if ('raw_hrs_evidence.json' in self.manifest['files'] or 'hrs_export_receipt.json' in self.manifest['files']
+                or raw.get('risk',{}).get('account_occupancy',{}).get('version')=='hrs_account_occupancy_v2'):
+            from ai_tuner.hrs_evidence_export import verify_runtime_slot_occupancy
+            verify_runtime_slot_occupancy(self,raw,cutoff)
+        if raw.get('kline_repair_evidence_id') or ('raw_hrs_evidence.json' in self.manifest['files'] and raw.get('evidence_ids')):
+            from ai_tuner.hrs_evidence_export import verify_runtime_kline_repair
+            verify_runtime_kline_repair(self,raw,cutoff)
+        return raw
+
+    def hrs_cash_flows(self) -> Tuple[Dict[str, Any], ...]:
+        """Explicit complete external cashflow inventory, including certified empty."""
+        self._require_dataset('hrs_cash_flows.jsonl')
+        result=[]
+        seen=set()
+        for row in self._read_jsonl('hrs_cash_flows.jsonl'):
+            at=parse_utc(row['occurred_at'])
+            observed=parse_utc(row['observed_at'])
+            if row.get('verified') is not True or not row.get('event_id') or row['event_id'] in seen:
+                raise DataBlocked(['hrs_cashflow_unverified_or_duplicate'])
+            if observed>at:
+                raise DataBlocked(['hrs_cashflow_not_available_at_event'])
+            self.guard(at,'hrs_cash_flows','occurred_at',self.as_of)
+            seen.add(row['event_id'])
+            if self.window_start<at<=self.as_of:
+                result.append(dict(row))
+        return tuple(sorted(result,key=lambda row:(parse_utc(row['occurred_at']),row['event_id'])))
+
+    def funding_schedule_evidence(self) -> Dict[str, Any]:
+        self._require_dataset("funding_schedule_evidence.json")
+        raw=self._read_json("funding_schedule_evidence.json")
+        if raw.get('observations_archive_family'):
+            from ai_tuner.hrs_evidence_export import snapshot_evidence_sources
+            sources=snapshot_evidence_sources(self)
+            raw=dict(raw,observations=sources.get(raw['observations_archive_family']))
+        return raw
+
     def symbol_filters(self, symbol: str) -> Dict[str, Decimal]:
         """返回 ``{tick_size, step_size, min_notional}``（来自 exchangeInfo 快照）。"""
         raw = self._read_json("exchange_info.json")
@@ -465,7 +649,7 @@ class DataPortal:
                         raise ValueError
                 except (ValueError, ArithmeticError):
                     raise DataBlocked(["exchange_info_filters_invalid:" + symbol])
-                return dict(zip(("tick_size", "step_size", "min_notional"), values))
+                return dict(zip(("tick_size", "step_size", "min_notional"), values), min_qty=_optional_dec(lot_size.get("minQty")))
         raise DataBlocked(["exchange_info_symbol_missing:{0}".format(symbol)])
 
     # ------------------------------------------------------------------

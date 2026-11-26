@@ -240,11 +240,6 @@ class BacktestEngine:
             # 动态计算当前K线的上线时长
             listing_hours = (current_time - listing_datetime).total_seconds() / 3600
             
-            # 检查上线时间是否超过窗口
-            if listing_hours > max_listing_hours:
-                logger.debug(f"跳过K线（上线时间过长）: {symbol}, K线索引={i}, 上线时长={listing_hours:.1f}小时")
-                continue
-            
             # 检查是否在回测时间范围内
             if current_time < datetime.fromisoformat(self.start_date):
                 logger.debug(f"跳过K线（早于回测开始时间）: {symbol}, K线索引={i}, K线时间={current_time}")
@@ -263,6 +258,11 @@ class BacktestEngine:
                 )
                 continue
             
+            # 上线窗口仅限制新开仓，已有仓位必须持续执行止损止盈和时间退出。
+            if listing_hours > max_listing_hours:
+                logger.debug(f"跳过新入场（上线时间过长）: {symbol}, K线索引={i}, 上线时长={listing_hours:.1f}小时")
+                continue
+
             # 计算OI/总交易量比率（模拟数据）
             # 注意：回测时需要从数据文件读取真实的OI和交易量数据
             oi_volume_ratio = self._calculate_oi_volume_ratio(symbol, klines[:i+1])
@@ -599,8 +599,11 @@ class BacktestEngine:
         if not position:
             return
         
-        # 计算平仓数量（统一转为Decimal避免类型混用）
-        quantity = position['quantity'] * Decimal(str(close_percent))
+        # 分批比例按初始量计算，但后续全平只能结算真实剩余量。
+        remaining = Decimal(str(position['remaining_quantity']))
+        quantity = min(Decimal(str(position['quantity'])) * Decimal(str(close_percent)), remaining)
+        if quantity <= 0:
+            return
         
         # 执行平仓（模拟）
         exit_result = self.order_executor.close_position(
@@ -649,7 +652,7 @@ class BacktestEngine:
                 self.consecutive_losses = 0
             
             # 关闭持仓
-            if close_percent >= 1.0:
+            if quantity >= remaining:
                 self.position_manager.close_position(symbol)
             else:
                 self.position_manager.update_remaining_quantity(symbol, quantity)

@@ -456,3 +456,16 @@ async def test_sender_bad_json_body(monkeypatch):
     _patch_session(monkeypatch, FakePostSession(
         response=BadTextResponse(200, {})))
     assert await WebhookSingleSender()("text") is False
+
+@pytest.mark.parametrize('research', [False, True])
+def test_event_and_outbox_rollback_together(conn, cfg, research):
+    delivery = Delivery(conn, cfg)
+    event = make_event()
+    conn.execute("CREATE TRIGGER broken BEFORE INSERT ON outbox BEGIN SELECT RAISE(ABORT,'failure'); END")
+    record = delivery._insert_research if research else delivery.record
+    with pytest.raises(Exception, match='failure'):
+        record(event, 'payload', 1000)
+    assert conn.execute('SELECT count(*) FROM event').fetchone()[0] == 0
+    conn.execute('DROP TRIGGER broken')
+    assert record(event, 'payload', 1000)
+    assert conn.execute('SELECT count(*) FROM outbox').fetchone()[0] == 1

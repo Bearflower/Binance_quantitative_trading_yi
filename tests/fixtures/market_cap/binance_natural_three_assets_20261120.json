@@ -1,0 +1,265 @@
+{
+  "source": "https://fapi.binance.com/fapi/v1/exchangeInfo",
+  "captured_at": "2026-11-20T03:29:00.465878+00:00",
+  "symbols": [
+    {
+      "symbol": "STRKUSDT",
+      "pair": "STRKUSDT",
+      "contractType": "PERPETUAL",
+      "deliveryDate": 4133404800000,
+      "onboardDate": 1708448400000,
+      "status": "TRADING",
+      "maintMarginPercent": "2.5000",
+      "requiredMarginPercent": "5.0000",
+      "baseAsset": "STRK",
+      "quoteAsset": "USDT",
+      "marginAsset": "USDT",
+      "pricePrecision": 7,
+      "quantityPrecision": 1,
+      "baseAssetPrecision": 8,
+      "quotePrecision": 8,
+      "underlyingType": "COIN",
+      "underlyingSubType": [
+        "Layer-1",
+        "Crypto"
+      ],
+      "triggerProtect": "0.1500",
+      "liquidationFee": "0.015000",
+      "marketTakeBound": "0.15",
+      "maxMoveOrderLimit": 10000,
+      "filters": [
+        {
+          "filterType": "PRICE_FILTER",
+          "minPrice": "0.0000100",
+          "tickSize": "0.0000100",
+          "maxPrice": "20"
+        },
+        {
+          "filterType": "LOT_SIZE",
+          "stepSize": "0.1",
+          "minQty": "0.1",
+          "maxQty": "40000000"
+        },
+        {
+          "minQty": "0.1",
+          "maxQty": "4000000",
+          "stepSize": "0.1",
+          "filterType": "MARKET_LOT_SIZE"
+        },
+        {
+          "limit": 200,
+          "filterType": "MAX_NUM_ORDERS"
+        },
+        {
+          "notional": "5",
+          "filterType": "MIN_NOTIONAL"
+        },
+        {
+          "multiplierUp": "1.1500",
+          "multiplierDecimal": "4",
+          "filterType": "PERCENT_PRICE",
+          "multiplierDown": "0.8500"
+        },
+        {
+          "positionControlSide": "NONE",
+          "filterType": "POSITION_RISK_CONTROL"
+        }
+      ],
+      "orderTypes": [
+        "LIMIT",
+        "MARKET",
+        "STOP",
+        "STOP_MARKET",
+        "TAKE_PROFIT",
+        "TAKE_PROFIT_MARKET",
+        "TRAILING_STOP_MARKET"
+      ],
+      "timeInForce": [
+        "GTC",
+        "IOC",
+        "FOK",
+        "GTX",
+        "GTD"
+      ],
+      "permissionSets": [
+        "GRID",
+        "COPY",
+        "DCA",
+        "PSB"
+      ]
+    },
+    {
+      "symbol": "NAORISUSDT",
+      "pair": "NAORISUSDT",
+      "contractType": "PERPETUAL",
+      "deliveryDate": 4133404800000,
+      "onboardDate": 1753965000000,
+      "status": "TRADING",
+      "maintMarginPercent": "2.5000",
+      "requiredMarginPercent": "5.0000",
+      "baseAsset": "NAORIS",
+      "quoteAsset": "USDT",
+      "marginAsset": "USDT",
+      "pricePrecision": 7,
+      "quantityPrecision": 0,
+      "baseAssetPrecision": 8,
+      "quotePrecision": 8,
+      "underlyingType": "COIN",
+      "underlyingSubType": [
+        "Infrastructure",
+        "Crypto",
+        "Alpha"
+      ],
+      "triggerProtect": "0.1500",
+      "liquidationFee": "0.020000",
+      "marketTakeBound": "0.15",
+      "maxMoveOrderLimit": 10000,
+      "filters": [
+        {
+          "maxPrice": "200",
+          "minPrice": "0.0001000",
+          "filterType": "PRICE_FILTER",
+          "tickSize": "0.0000100"
+        },
+        {
+          "maxQty": "30000000",
+          "filterType": "LOT_SIZE",
+          "stepSize": "1",
+          "minQty": "1"
+        },
+        {
+          "stepSize": "1",
+          "minQty": "1",
+          "filterType": "MARKET_LOT_SIZE",
+          "maxQty": "3000000"
+        },
+        {
+          "filterType": "MAX_NUM_ORDERS",
+          "limit": 200
+        },
+        {
+          "filterType": "MIN_NOTIONAL",
+          "notional": "5"
+        },
+        {
+          "multiplierDown": "0.8500",
+          "filterType": "PERCENT_PRICE",
+          "multiplierUp": "1.1500",
+          "multiplierDecimal": "4"
+        },
+        {
+          "filterType": "POSITION_RISK_CONTROL",
+          "positionControlSide": "NONE"
+        }
+      ],
+      "orderTypes": [
+        "LIMIT",
+        "MARKET",
+        "STOP",
+        "STOP_MARKET",
+        "TAKE_PROFIT",
+        "TAKE_PROFIT_MARKET",
+        "TRAILING_STOP_MARKET"
+      ],
+      "timeInForce": [
+        "GTC",
+        "IOC",
+        "FOK",
+        "GTX",
+        "GTD"
+      ],
+      "permissionSets": [
+        "GRID",
+        "COPY",
+        "DCA",
+        "PSB"
+      ]
+    },
+    {
+      "symbol": "YBUSDT",
+      "pair": "YBUSDT",
+      "contractType": "PERPETUAL",
+      "deliveryDate": 4133404800000,
+      "onboardDate": 1760107500000,
+      "status": "TRADING",
+      "maintMarginPercent": "2.5000",
+      "requiredMarginPercent": "5.0000",
+      "baseAsset": "YB",
+      "quoteAsset": "USDT",
+      "marginAsset": "USDT",
+      "pricePrecision": 7,
+      "quantityPrecision": 0,
+      "baseAssetPrecision": 8,
+      "quotePrecision": 8,
+      "underlyingType": "COIN",
+      "underlyingSubType": [
+        "DeFi",
+        "Crypto"
+      ],
+      "triggerProtect": "0.1500",
+      "liquidationFee": "0.015000",
+      "marketTakeBound": "0.15",
+      "maxMoveOrderLimit": 10000,
+      "filters": [
+        {
+          "filterType": "PRICE_FILTER",
+          "maxPrice": "200",
+          "minPrice": "0.0000100",
+          "tickSize": "0.0000100"
+        },
+        {
+          "stepSize": "1",
+          "maxQty": "8000000",
+          "filterType": "LOT_SIZE",
+          "minQty": "1"
+        },
+        {
+          "filterType": "MARKET_LOT_SIZE",
+          "stepSize": "1",
+          "minQty": "1",
+          "maxQty": "800000"
+        },
+        {
+          "filterType": "MAX_NUM_ORDERS",
+          "limit": 200
+        },
+        {
+          "filterType": "MIN_NOTIONAL",
+          "notional": "5"
+        },
+        {
+          "filterType": "PERCENT_PRICE",
+          "multiplierDown": "0.8500",
+          "multiplierUp": "1.1500",
+          "multiplierDecimal": "4"
+        },
+        {
+          "filterType": "POSITION_RISK_CONTROL",
+          "positionControlSide": "NONE"
+        }
+      ],
+      "orderTypes": [
+        "LIMIT",
+        "MARKET",
+        "STOP",
+        "STOP_MARKET",
+        "TAKE_PROFIT",
+        "TAKE_PROFIT_MARKET",
+        "TRAILING_STOP_MARKET"
+      ],
+      "timeInForce": [
+        "GTC",
+        "IOC",
+        "FOK",
+        "GTX",
+        "GTD"
+      ],
+      "permissionSets": [
+        "GRID",
+        "COPY",
+        "DCA",
+        "PSB"
+      ]
+    }
+  ]
+}

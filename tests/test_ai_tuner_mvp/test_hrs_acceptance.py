@@ -1,4 +1,8 @@
 from datetime import datetime
+import json
+
+from strategies.hrs.margin_budget import HRS_OWNED
+from strategies.hrs.risk_budget import FLOOR
 
 from ai_tuner.ops.hrs_acceptance import (
     BEIJING, evaluate_policies, monthly_result, sample_candidates, verify_reservation,
@@ -10,15 +14,16 @@ def test_mixed_policy_revisions_and_expiry_are_checked_individually():
     rows = [
         dict(strategy_id=s, revision=r, mode=m, freeze_allocation=True, allow_add=False,
              effective_at=now, expires_at=datetime(2026, 12, 14, 11, tzinfo=BEIJING),
-             audited=True, entry_ceiling="26.18")
+            audited=True, entry_ceiling="26.18",
+            reason=json.dumps({"hrs_risk_budget_version": FLOOR, "hrs_margin_scope": HRS_OWNED}) if s == "hrs" else "")
         for s, r, m in [
-            ("hrs", 6, "reduced"), ("btc_eth", 5, "capped"),
+            ("hrs", 8, "reduced"), ("btc_eth", 5, "capped"),
             ("btc_eth_aggressive", 5, "reduced"), ("new_coin", 5, "capped"),
         ]
     ]
     assert evaluate_policies(rows, now) == []
     rows[0]["expires_at"] = now
-    assert evaluate_policies(rows, now) == ["hrs r6 已到期 2026-11-18T07:33:00+08:00"]
+    assert evaluate_policies(rows, now) == ["hrs r8 已到期 2026-11-18T07:33:00+08:00"]
 
 
 def test_live_hrs_reservation_requires_exact_exchange_order_and_position():
@@ -58,9 +63,9 @@ def test_report_conclusion_keeps_shadow_block_visible_without_daily_anomalies():
     from ai_tuner.ops.hrs_acceptance import report_conclusion
 
     assert report_conclusion(0, 0, None, "BLOCKED_DATA") == (
-        "【结论】本次门禁与风控核验通过。月度分配记录无变化，影子核验仍受阻。"
+        "【结论】本次门禁与风控核验通过。月度分配记录无变化，全账户自动分配预览受阻。"
     )
     assert report_conclusion(1, 2, None, "BLOCKED_DATA") == (
         "【结论】1 项异常待核对，2 个新增实盘候选待核验。"
-        "月度分配记录无变化，影子核验仍受阻。"
+        "月度分配记录无变化，全账户自动分配预览受阻。"
     )

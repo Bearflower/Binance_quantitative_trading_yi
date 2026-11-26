@@ -366,7 +366,10 @@ class TestGetKlines:
         strategy.candidate_pool.get_long_candidates = MagicMock(return_value=set())
 
         # Mock market_data（analyze中会用到）
+        from strategies.hrs.kline_repair import KlineHistoryUnavailable
         strategy.market_data = MagicMock()
+        strategy.market_data.prepare_decision_klines = AsyncMock(side_effect=KlineHistoryUnavailable(
+            'kline_warmup_insufficient', {'status':'unavailable','reason':'kline_warmup_insufficient'}))
         strategy.market_data.get_oi_usd = AsyncMock(return_value=1000000)
         strategy.market_data.get_funding_rate = AsyncMock(return_value=0.0001)
         strategy.market_data.get_24h_volume = AsyncMock(return_value=10000000)
@@ -375,7 +378,7 @@ class TestGetKlines:
         result = await strategy.analyze("BTCUSDT")
 
         assert result.get("skip") is True
-        assert "K线数据不足" in result.get("reason", "")
+        assert result.get('reason') == 'kline_warmup_insufficient'
 
 
 # ==================== 4. 合成4h K线数据 ====================

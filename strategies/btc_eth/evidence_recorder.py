@@ -56,7 +56,7 @@ _ENTRY_MODE_MAP = {
 _FEATURE_KEYS = [
     "score", "grade", "market_state", "entry_price", "initial_stop_loss",
     "atr", "leverage", "position_size_usdt", "quantity", "position_ratio",
-    "price_change_1h", "tp1_price", "tp2_price",
+    "price_change_1h", "tp1_price", "tp2_price", "entry_intent", "entry_route_fallback",
 ]
 
 
@@ -102,9 +102,14 @@ def _safe_float(val: Any) -> Optional[float]:
 
 
 def _build_entry_mode(result: Dict[str, Any], accepted: bool) -> str:
-    """accepted 时由 market_state 映射；rejected 用 'unknown'。"""
+    """优先记录实际入场路径，兼容旧版分析结果。"""
     if not accepted:
         return "unknown"
+    intent = result.get("entry_intent")
+    if intent == "trend":
+        return "trend"
+    if intent == "mean_reversion":
+        return "ranging"
     ms = result.get("market_state")
     if not ms:
         return "unknown"

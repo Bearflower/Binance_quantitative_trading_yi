@@ -719,3 +719,50 @@ def test_main_research_sender_built(monkeypatch, cfg, conn):
     monkeypatch.setattr(main_mod, "WebhookSingleSender", lambda: marker)
     main_mod.main([])
     assert captured["sender"] is marker
+
+
+async def test_restart_audits_abandoned_trades_before_next_tick(conn, cfg):
+    from strategies.grid.realtime.queue_audit import summarize_window
+    now = 50_000
+    feed = _ListFeed([make_trade(i, now, "2700") for i in (10, 12)])
+    service = _service(cfg, conn, lambda: now, trade_feed=feed)
+    task = await service._start_feed()
+    await task
+    replacement = await service._ensure_feed_task(task)
+    try:
+        report = summarize_window(conn, start_ms=now - 1, end_ms=now + 1)
+        episode, = report["episodes"]
+        assert report["overflow_count"] == service._queue_dropped_total == 2
+        assert (episode["first_dropped_id"], episode["last_dropped_id"]) == (10, 12)
+        assert episode["recovery_until_ms"] > now
+        assert not report["queue_window_eligible"]
+    finally:
+        replacement.cancel()
+        await asyncio.gather(replacement, return_exceptions=True)
+
+
+
+async def test_stalled_feed_restart_flushes_merged_loss_episode(conn, cfg):
+    from strategies.grid.realtime.queue_audit import summarize_window
+    now = 1_000_000
+    service = _service(cfg, conn, lambda: now, trade_feed=_SlowFeed())
+    task = await service._start_feed()
+    await asyncio.sleep(0)
+    service._feed_healthy = False
+    service._feed_unhealthy_since_ms = 0
+    service._record_queue_loss(now, 10)
+    for trade_id in (11, 12):
+        service._trade_queue.put_nowait(make_trade(trade_id, now, "2700"))
+    replacement = await service._ensure_feed_task(task)
+    try:
+        assert task.cancelled()
+        report = summarize_window(conn, start_ms=now - 1, end_ms=now + 1)
+        episode, = report["episodes"]
+        assert report["overflow_count"] == 3
+        assert episode["first_dropped_id"] == 10
+        assert episode["last_dropped_id"] == 12
+        assert service._queue_dropped_total == 3
+        assert not report["queue_window_eligible"]
+    finally:
+        replacement.cancel()
+        await asyncio.gather(replacement, return_exceptions=True)

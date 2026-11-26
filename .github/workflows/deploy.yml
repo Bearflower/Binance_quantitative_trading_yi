@@ -430,6 +430,7 @@ jobs:
         with:
           context: .
           file: ${{ matrix.service.dockerfile }}
+          build-args: HRS_IMAGE_REVISION=${{ github.sha }}
           platforms: linux/amd64
           push: true
           tags: |
@@ -554,6 +555,22 @@ jobs:
           retry_connect ssh 43.156.242.184 "mkdir -p /root/trading_system/scripts"
           retry_connect scp scripts/archive_container_logs.sh 43.156.242.184:/root/trading_system/scripts/archive_container_logs.sh
           retry_connect scp scripts/cleanup_compose_created.py 43.156.242.184:/root/trading_system/scripts/cleanup_compose_created.py
+
+      - name: 同步账户切换迁移及权限契约
+        run: |
+          source /tmp/ci_retry.sh
+          DEST="/root/trading_system/.deploy_tmp/account-mode-${{ github.sha }}"
+          retry_connect ssh 43.156.242.184 "mkdir -p '$DEST'"
+          retry_connect scp scripts/cutover_income_timer.py scripts/database_permissions.py database/postgres/permissions.json database/postgres/migrations/2026-11-17-hrs-*.sql database/postgres/migrations/2026-11-25-account-mode-equity.sql database/postgres/migrations/2026-11-25-classic-entry-observation.sql database/postgres/migrations/2026-11-25-account-fact-provenance.sql database/postgres/migrations/2026-11-25-scoped-open-condition-ids.sql "43.156.242.184:$DEST/"
+
+      - name: 暂存账户切换宿主定时任务制品
+        if: needs.detect.outputs.mode == 'full'
+        run: |
+          source /tmp/ci_retry.sh
+          BUNDLE="${RUNNER_TEMP}/cutover-host-watchers.pyz"
+          python3 scripts/cutover_host_watchers.py --package "$BUNDLE"
+          DEST="/root/trading_system/.deploy_tmp/account-mode-${{ github.sha }}"
+          retry_connect scp "$BUNDLE" "43.156.242.184:$DEST/cutover-host-watchers.pyz"
 
       - name: 📦 同步数据库 init-scripts
         if: needs.detect.outputs.mode == 'full'

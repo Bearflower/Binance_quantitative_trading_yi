@@ -1,19 +1,5 @@
-"""
-btc_eth 策略平仓盈亏回写测试
-
-测试目标：验证 BTCEthStrategy._close_position 方法中平仓盈亏
-回写 trade_records.realized_pnl 的逻辑正确性。
-
-覆盖场景：
-1. 平仓后调用 update_realized_pnl 回写盈亏
-2. LONG 方向盈亏计算正确
-3. SHORT 方向盈亏计算正确
-4. avgPrice 为 0 时回退到 current_price
-5. 回写失败不阻断平仓流程
-
-关键代码位置：
-- strategies/btc_eth/strategy.py 的 _close_position: 第2698-2726行
-"""
+"""MTPCS 平仓只按已核实的普通订单记账，另保留理论收益公式的单测。"""
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 from decimal import Decimal
 from datetime import datetime
@@ -127,392 +113,63 @@ def make_position(
 # ---------------------------------------------------------------------------
 
 
-class TestBtcEthRealizedPnlWriteback:
-    """btc_eth 策略平仓盈亏回写测试"""
-
-    # ==================== 平仓后调用 update_realized_pnl ====================
-
-    async def test_close_position_calls_update_realized_pnl(self, btc_strategy):
-        """平仓后调用 update_realized_pnl 回写盈亏
-
-        验证：
-        - 平仓成功后调用了 trade_logger.update_realized_pnl
-        - 传入的 order_id 来自平仓单
-        - 传入的 realized_pnl 为 Decimal 类型
-        """
-        strategy = btc_strategy
-        symbol = "BTCUSDT"
-        position = make_position(
-            direction="LONG",
-            entry_price=Decimal("100"),
-            current_quantity=Decimal("1.0"),
-        )
-
-        # 设置 trade_logger
-        mock_trade_logger = MagicMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
-        strategy.binance.trade_logger = mock_trade_logger
-
-        # 设置平仓返回结果（avgPrice 有值，触发 pnl 计算）
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 999888,
-            "avgPrice": "110",
-            "status": "FILLED",
-        })
-
-        result = await strategy._close_position(
-            symbol=symbol,
-            position=position,
-            close_quantity=Decimal("1.0"),
-            close_reason="TP1",
-            current_price=Decimal("110"),
-        )
-
-        assert result is True
-        # 验证 update_realized_pnl 被调用
-        mock_trade_logger.update_realized_pnl.assert_called_once()
-        call_kwargs = mock_trade_logger.update_realized_pnl.call_args.kwargs
-        assert call_kwargs["order_id"] == "999888"
-        assert isinstance(call_kwargs["realized_pnl"], Decimal)
-        assert call_kwargs["side"] == "SELL"  # 做多平仓方向为 SELL
-        assert call_kwargs["symbol"] == symbol
-        assert "executed_at" in call_kwargs
-
-    # ==================== LONG 方向 pnl 计算 ====================
-
-    async def test_close_position_long_pnl_calculation(self, btc_strategy):
-        """LONG 方向：entry_price=100, exit_price=110, quantity=1 => pnl=10
-
-        验证：做多平仓盈亏 = (出场价 - 入场价) * 数量
-        """
-        strategy = btc_strategy
-        position = make_position(
-            direction="LONG",
-            entry_price=Decimal("100"),
-            current_quantity=Decimal("1.0"),
-        )
-
-        mock_trade_logger = MagicMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
-        strategy.binance.trade_logger = mock_trade_logger
-
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 1,
-            "avgPrice": "110",
-            "status": "FILLED",
-        })
-
-        await strategy._close_position(
-            symbol="BTCUSDT",
-            position=position,
-            close_quantity=Decimal("1.0"),
-            close_reason="TP1",
-            current_price=Decimal("110"),
-        )
-
-        call_kwargs = mock_trade_logger.update_realized_pnl.call_args.kwargs
-        pnl = call_kwargs["realized_pnl"]
-        assert pnl == Decimal("10"), f"LONG pnl 应为 10，实际为 {pnl}"
-        assert call_kwargs["side"] == "SELL", "LONG 平仓方向应为 SELL"
-
-    async def test_close_position_long_loss(self, btc_strategy):
-        """LONG 方向亏损：entry_price=100, exit_price=90, quantity=1 => pnl=-10"""
-        strategy = btc_strategy
-        position = make_position(
-            direction="LONG",
-            entry_price=Decimal("100"),
-            current_quantity=Decimal("1.0"),
-        )
-
-        mock_trade_logger = MagicMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
-        strategy.binance.trade_logger = mock_trade_logger
-
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 1,
-            "avgPrice": "90",
-            "status": "FILLED",
-        })
-
-        await strategy._close_position(
-            symbol="BTCUSDT",
-            position=position,
-            close_quantity=Decimal("1.0"),
-            close_reason="STOP_LOSS",
-            current_price=Decimal("90"),
-        )
-
-        call_kwargs = mock_trade_logger.update_realized_pnl.call_args.kwargs
-        pnl = call_kwargs["realized_pnl"]
-        assert pnl == Decimal("-10"), f"LONG 亏损 pnl 应为 -10，实际为 {pnl}"
-
-    # ==================== SHORT 方向 pnl 计算 ====================
-
-    async def test_close_position_short_pnl_calculation(self, btc_strategy):
-        """SHORT 方向：entry_price=110, exit_price=100, quantity=1 => pnl=10
-
-        验证：做空平仓盈亏 = (入场价 - 出场价) * 数量
-        """
-        strategy = btc_strategy
-        position = make_position(
-            direction="SHORT",
-            entry_price=Decimal("110"),
-            current_quantity=Decimal("1.0"),
-        )
-
-        mock_trade_logger = MagicMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
-        strategy.binance.trade_logger = mock_trade_logger
-
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 1,
-            "avgPrice": "100",
-            "status": "FILLED",
-        })
-
-        await strategy._close_position(
-            symbol="BTCUSDT",
-            position=position,
-            close_quantity=Decimal("1.0"),
-            close_reason="TP1",
-            current_price=Decimal("100"),
-        )
-
-        call_kwargs = mock_trade_logger.update_realized_pnl.call_args.kwargs
-        pnl = call_kwargs["realized_pnl"]
-        assert pnl == Decimal("10"), f"SHORT pnl 应为 10，实际为 {pnl}"
-        assert call_kwargs["side"] == "BUY", "SHORT 平仓方向应为 BUY"
-
-    async def test_close_position_short_loss(self, btc_strategy):
-        """SHORT 方向亏损：entry_price=90, exit_price=100, quantity=1 => pnl=-10"""
-        strategy = btc_strategy
-        position = make_position(
-            direction="SHORT",
-            entry_price=Decimal("90"),
-            current_quantity=Decimal("1.0"),
-        )
-
-        mock_trade_logger = MagicMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
-        strategy.binance.trade_logger = mock_trade_logger
-
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 1,
-            "avgPrice": "100",
-            "status": "FILLED",
-        })
-
-        await strategy._close_position(
-            symbol="BTCUSDT",
-            position=position,
-            close_quantity=Decimal("1.0"),
-            close_reason="STOP_LOSS",
-            current_price=Decimal("100"),
-        )
-
-        call_kwargs = mock_trade_logger.update_realized_pnl.call_args.kwargs
-        pnl = call_kwargs["realized_pnl"]
-        assert pnl == Decimal("-10"), f"SHORT 亏损 pnl 应为 -10，实际为 {pnl}"
-
-    # ==================== avgPrice 为 0 时回退到 current_price ====================
-
-    async def test_close_position_avg_price_zero_fallback(self, btc_strategy):
-        """avgPrice 为 0 时回退到 current_price 计算 pnl
-
-        验证：avgPrice="0" 时，使用 current_price（110）计算 pnl
-        LONG: (110 - 100) * 1 = 10
-        """
-        strategy = btc_strategy
-        position = make_position(
-            direction="LONG",
-            entry_price=Decimal("100"),
-            current_quantity=Decimal("1.0"),
-        )
-
-        mock_trade_logger = MagicMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
-        strategy.binance.trade_logger = mock_trade_logger
-
-        # avgPrice 返回 "0"
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 1,
-            "avgPrice": "0",
-            "status": "FILLED",
-        })
-
-        await strategy._close_position(
-            symbol="BTCUSDT",
-            position=position,
-            close_quantity=Decimal("1.0"),
-            close_reason="TP1",
-            current_price=Decimal("110"),
-        )
-
-        call_kwargs = mock_trade_logger.update_realized_pnl.call_args.kwargs
-        pnl = call_kwargs["realized_pnl"]
-        assert pnl == Decimal("10"), f"avgPrice 回退后 pnl 应为 10，实际为 {pnl}"
-
-    async def test_close_position_avg_price_zero_no_current_price(self, btc_strategy):
-        """avgPrice 和 current_price 都为 0 时跳过 pnl 计算
-
-        验证：avgPrice="0" 且 current_price=None 时，不调用 update_realized_pnl
-        """
-        strategy = btc_strategy
-        position = make_position(
-            direction="LONG",
-            entry_price=Decimal("100"),
-            current_quantity=Decimal("1.0"),
-        )
-
-        mock_trade_logger = MagicMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
-        strategy.binance.trade_logger = mock_trade_logger
-
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 1,
-            "avgPrice": "0",
-            "status": "FILLED",
-        })
-
-        # 不传 current_price，且 get_ticker_price 返回 "0"
-        strategy.binance.get_ticker_price = AsyncMock(return_value="0")
-        strategy.binance.get_orderbook = AsyncMock(return_value={
-            "bids": [["0", "0"]],
-            "asks": [["0", "0"]],
-        })
-
-        # 由于 orderbook 返回 0 价格，limit_price 会是 0，需要特殊处理
-        # 这里直接测试 avgPrice 为 0 且 current_price 为 0 的情况
-        # 实际上 _close_position 会先获取 orderbook 价格...
-        # 简化测试：直接 mock get_ticker_price 返回 50000
-
-        # 重置：让 get_ticker_price 返回 50000，但 avgPrice 为 0
-        # 在 _close_position 中，current_price 由参数传入
-        result = await strategy._close_position(
-            symbol="BTCUSDT",
-            position=position,
-            close_quantity=Decimal("1.0"),
-            close_reason="TP1",
-            current_price=Decimal("0"),  # 传入 0
-        )
-
-        # 由于 avgPrice="0" 且 current_price=Decimal("0")，
-        # exit_price = Decimal("0") 或 Decimal("0")，均为 0
-        # 所以 exit_price <= 0，跳过 pnl 计算
-        # 但平仓成功
-        assert result is True
-        mock_trade_logger.update_realized_pnl.assert_not_called()
-
-    # ==================== 回写失败不阻断平仓流程 ====================
-
-    async def test_close_position_writeback_fail_not_blocking(self, btc_strategy):
-        """回写失败不阻断平仓流程
-
-        验证：update_realized_pnl 抛出异常时，平仓流程继续，返回 True
-        """
-        strategy = btc_strategy
-        position = make_position(
-            direction="LONG",
-            entry_price=Decimal("100"),
-            current_quantity=Decimal("1.0"),
-        )
-
-        mock_trade_logger = MagicMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(
-            side_effect=Exception("回写失败")
-        )
-        strategy.binance.trade_logger = mock_trade_logger
-
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 1,
-            "avgPrice": "110",
-            "status": "FILLED",
-        })
-
-        # 不应抛出异常，平仓应成功
-        result = await strategy._close_position(
-            symbol="BTCUSDT",
-            position=position,
-            close_quantity=Decimal("1.0"),
-            close_reason="TP1",
-            current_price=Decimal("110"),
-        )
-
-        assert result is True, "回写失败不应影响平仓结果"
-
-    async def test_close_position_no_trade_logger(self, btc_strategy):
-        """trade_logger 为 None 时跳过回写，不抛异常
-
-        验证：binance.trade_logger 为 None 时，平仓流程正常完成
-        """
-        strategy = btc_strategy
-        position = make_position(
-            direction="LONG",
-            entry_price=Decimal("100"),
-            current_quantity=Decimal("1.0"),
-        )
-
-        # trade_logger 为 None
-        strategy.binance.trade_logger = None
-
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 1,
-            "avgPrice": "110",
-            "status": "FILLED",
-        })
-
-        # 不应抛出异常
-        result = await strategy._close_position(
-            symbol="BTCUSDT",
-            position=position,
-            close_quantity=Decimal("1.0"),
-            close_reason="TP1",
-            current_price=Decimal("110"),
-        )
-
-        assert result is True
-
-    # ==================== 部分平仓场景 ====================
-
-    async def test_close_position_partial_close(self, btc_strategy):
-        """部分平仓时 pnl 按实际平仓数量计算
-
-        验证：平仓数量为 0.5，pnl = (110 - 100) * 0.5 = 5
-        """
-        strategy = btc_strategy
-        position = make_position(
-            direction="LONG",
-            entry_price=Decimal("100"),
-            current_quantity=Decimal("1.0"),
-            initial_quantity=Decimal("1.0"),
-        )
-
-        mock_trade_logger = MagicMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(return_value=True)
-        strategy.binance.trade_logger = mock_trade_logger
-
-        strategy.binance.place_order = AsyncMock(return_value={
-            "orderId": 1,
-            "avgPrice": "110",
-            "status": "FILLED",
-        })
-
-        await strategy._close_position(
-            symbol="BTCUSDT",
-            position=position,
-            close_quantity=Decimal("0.5"),
-            close_reason="TP1",
-            current_price=Decimal("110"),
-        )
-
-        call_kwargs = mock_trade_logger.update_realized_pnl.call_args.kwargs
-        pnl = call_kwargs["realized_pnl"]
-        assert pnl == Decimal("5"), f"部分平仓 pnl 应为 5，实际为 {pnl}"
-
-
-# ===========================================================================
-# F4: calculate_pnl 静态方法测试
-# ===========================================================================
+@pytest.mark.parametrize("side,reason", [
+    ("SELL", "TIME_STOP"), ("BUY", "TP1"), ("SELL", "TRAILING_STOP"),
+])
+async def test_records_confirmed_close_at_strategy_entry(btc_strategy, monkeypatch, side, reason):
+    strategy = btc_strategy
+    amount = Decimal("0.5")
+    position = make_position(direction="LONG" if side == "SELL" else "SHORT")
+    order = dict(orderId=123456, symbol="BTCUSDT", side=side, status="FILLED",
+                 reduceOnly=True, origQty="0.5", executedQty="0.5", avgPrice="200")
+    strategy.binance.get_position.return_value = [dict(symbol="BTCUSDT",
+        positionAmt="1" if side == "SELL" else "-1")]
+    strategy.binance.get_order.return_value = order
+    monkeypatch.setenv('TRADE_ACCOUNT_ID', 'test')
+    monkeypatch.delenv('BINANCE_CLASSIC_CUTOVER_MS', raising=False)
+    strategy.binance.use_unified_account = True
+    ledger = MagicMock(account_id='test', strategy_name='btc_eth')
+    ledger._record_epoch.return_value = 'epoch'
+    ledger._receipt_in_epoch.return_value = True
+    ledger._epoch_trades.side_effect = lambda fills, epoch: fills
+    ledger.db.execute = AsyncMock(return_value='UPDATE 1')
+    strategy.binance.trade_logger = ledger
+    strategy.binance.get_user_trades.return_value = [dict(
+        symbol='BTCUSDT', side=side, orderId=123456, id=9, qty='0.5',
+        price='200', realizedPnl='42')]
+    strategy.db_manager.execute.return_value = 'INSERT 0 1'
+    strategy.db_manager.fetch_one.return_value = None
+    with patch("strategies.btc_eth.strategy.cancel_strategy_algos", new_callable=AsyncMock), patch(
+        "asyncio.sleep", new_callable=AsyncMock):
+        assert await strategy._close_position("BTCUSDT", position, amount, reason, Decimal("200"))
+    strategy.binance.get_user_trades.assert_awaited_once_with('BTCUSDT', order_id='123456', limit=1000)
+    ledger.db.execute.assert_awaited_once()
+    args = ledger.db.execute.await_args.args
+    assert args[1:5] == (Decimal('42'), 'STOP_LOSS' if reason == 'TIME_STOP' else None,
+                         amount, Decimal('200'))
+    assert args[6:10] == (side, 'test', 'BTCUSDT', '123456')
+    queued = [json.loads(call.args[3]) for call in strategy.db_manager.execute.await_args_list
+              if str(call.args[2]).startswith('close-pnl:')]
+    assert [item['status'] for item in queued] == ['awaiting_terminal', 'pending', 'done']
+    assert all(item['order']['orderId'] == 123456 and item['context']['account_id'] == 'test'
+               for item in queued)
+    assert Decimal(queued[0]['order']['origQty']) == amount
+    assert 'executedQty' not in queued[0]['order']  # Acceptance does not invent a fill.
+    assert position.current_quantity == amount
+
+
+async def test_disappeared_canceled_order_keeps_position(btc_strategy):
+    strategy = btc_strategy
+    position = make_position()
+    strategy.binance.get_position.return_value = [dict(symbol="BTCUSDT", positionAmt="1")]
+    strategy.binance.get_order.return_value = dict(orderId=123456, symbol="BTCUSDT",
+        side="SELL", reduceOnly=True, status="CANCELED")
+    with patch("strategies.btc_eth.strategy.cancel_strategy_algos", new_callable=AsyncMock), patch(
+        "asyncio.sleep", new_callable=AsyncMock
+    ):
+        assert not await strategy._close_position("BTCUSDT", position, Decimal("1"), "TP1", Decimal("200"))
+    assert position.current_quantity == Decimal("1")
+    strategy.binance.get_user_trades.assert_not_awaited()
 
 
 class TestCalculatePnl:

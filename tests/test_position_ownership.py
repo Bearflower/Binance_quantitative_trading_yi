@@ -286,10 +286,12 @@ class TestOrphanGuard:
         s.binance = MagicMock()
         s.binance.get_position = AsyncMock(return_value=[{"symbol": "SOLUSDT", "positionAmt": "0"}])
         s.binance.cancel_all_algo_orders = AsyncMock(return_value=True)
+        s.symbols = ["SOLUSDT"]
+        s.notification = AsyncMock()
         s.min_position_amt = 0.00001
 
-        with patch(
-            "shared.condition_orders.get_open_orders",
+        with patch("strategies.btc_eth.strategy.cancel_strategy_algos", new_callable=AsyncMock) as cancel_owned, patch(
+            "strategies.btc_eth.strategy.strategy_owned_algos",
             new=AsyncMock(
                 return_value=[
                     {"symbol": "SOLUSDT", "algo_id": "x", "order_type": "STOP_LOSS"}
@@ -301,6 +303,7 @@ class TestOrphanGuard:
         ):
             await s._do_startup_orphan_cleanup()
         # 归属存在 => 跳过清理，不批量取消该 symbol
+        cancel_owned.assert_not_awaited()
         s.binance.cancel_all_algo_orders.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -313,10 +316,12 @@ class TestOrphanGuard:
         s.binance = MagicMock()
         s.binance.get_position = AsyncMock(return_value=[{"symbol": "SOLUSDT", "positionAmt": "0"}])
         s.binance.cancel_all_algo_orders = AsyncMock(return_value=True)
+        s.symbols = ["SOLUSDT"]
+        s.notification = AsyncMock()
         s.min_position_amt = 0.00001
 
-        with patch(
-            "shared.condition_orders.get_open_orders",
+        with patch("strategies.btc_eth.strategy.cancel_strategy_algos", new_callable=AsyncMock) as cancel_owned, patch(
+            "strategies.btc_eth.strategy.strategy_owned_algos",
             new=AsyncMock(
                 return_value=[
                     {"symbol": "SOLUSDT", "algo_id": "x", "order_type": "STOP_LOSS"}
@@ -327,7 +332,8 @@ class TestOrphanGuard:
             new=AsyncMock(return_value=None),
         ):
             await s._do_startup_orphan_cleanup()
-        s.binance.cancel_all_algo_orders.assert_awaited_once_with("SOLUSDT")
+        cancel_owned.assert_awaited_once_with(s.binance, "SOLUSDT")
+        s.binance.cancel_all_algo_orders.assert_not_awaited()
 
 
 # ============================================================
@@ -417,7 +423,10 @@ def make_agg_strategy():
     s._competing_record_names = ["MTPCS策略"]
     s.strategy_name = "btc_eth_aggressive"
     s.min_position_amt = 0.00001
-    s.positions = {}
+    from strategies.btc_eth_aggressive.strategy import PositionState
+    s.positions = {'SOLUSDT': PositionState()}
+    s._untracked_stop_retry_symbols = set()
+    s._check_existing_protection = MagicMock(return_value=(False, False, False))
     return s
 
 
@@ -428,6 +437,8 @@ class TestAggressiveSymmetry:
     async def test_aggressive_owner_is_self_proceeds(self):
         """aggressive：归属==本策略 => 进入补单逻辑，不告警"""
         s = make_agg_strategy()
+        s.positions["SOLUSDT"] = MagicMock()
+        s._check_existing_protection = MagicMock(return_value=(False, False, False))
         pos_data = {"symbol": "SOLUSDT", "positionAmt": "1.2"}
         with patch(
             "strategies.btc_eth_aggressive.strategy.resolve_position_owner",
@@ -447,6 +458,8 @@ class TestAggressiveSymmetry:
     async def test_aggressive_owner_is_other_skip_and_notify(self):
         """aggressive：归属为对家(原版) => 不补挂保护单 + 告警"""
         s = make_agg_strategy()
+        s.positions["SOLUSDT"] = MagicMock()
+        s._check_existing_protection = MagicMock(return_value=(False, False, False))
         pos_data = {"symbol": "SOLUSDT", "positionAmt": "1.2"}
         with patch(
             "strategies.btc_eth_aggressive.strategy.resolve_position_owner",
@@ -488,9 +501,11 @@ class TestAggressiveSymmetry:
         s.binance = MagicMock()
         s.binance.get_position = AsyncMock(return_value=[{"symbol": "SOLUSDT", "positionAmt": "0"}])
         s.binance.cancel_all_algo_orders = AsyncMock(return_value=True)
+        s.symbols = ["SOLUSDT"]
+        s.notification = AsyncMock()
         s.min_position_amt = 0.00001
-        with patch(
-            "shared.condition_orders.get_open_orders",
+        with patch("strategies.btc_eth_aggressive.strategy.cancel_strategy_algos", new_callable=AsyncMock) as cancel_owned, patch(
+            "strategies.btc_eth_aggressive.strategy.strategy_owned_algos",
             new=AsyncMock(
                 return_value=[{"symbol": "SOLUSDT", "algo_id": "x", "order_type": "STOP_LOSS"}]
             ),
@@ -499,6 +514,7 @@ class TestAggressiveSymmetry:
             new=AsyncMock(return_value="MTPCS策略"),
         ):
             await s._do_startup_orphan_cleanup()
+        cancel_owned.assert_not_awaited()
         s.binance.cancel_all_algo_orders.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -511,9 +527,11 @@ class TestAggressiveSymmetry:
         s.binance = MagicMock()
         s.binance.get_position = AsyncMock(return_value=[{"symbol": "SOLUSDT", "positionAmt": "0"}])
         s.binance.cancel_all_algo_orders = AsyncMock(return_value=True)
+        s.symbols = ["SOLUSDT"]
+        s.notification = AsyncMock()
         s.min_position_amt = 0.00001
-        with patch(
-            "shared.condition_orders.get_open_orders",
+        with patch("strategies.btc_eth_aggressive.strategy.cancel_strategy_algos", new_callable=AsyncMock) as cancel_owned, patch(
+            "strategies.btc_eth_aggressive.strategy.strategy_owned_algos",
             new=AsyncMock(
                 return_value=[{"symbol": "SOLUSDT", "algo_id": "x", "order_type": "STOP_LOSS"}]
             ),
@@ -522,7 +540,8 @@ class TestAggressiveSymmetry:
             new=AsyncMock(return_value=None),
         ):
             await s._do_startup_orphan_cleanup()
-        s.binance.cancel_all_algo_orders.assert_awaited_once_with("SOLUSDT")
+        cancel_owned.assert_awaited_once_with(s.binance, "SOLUSDT")
+        s.binance.cancel_all_algo_orders.assert_not_awaited()
 
 
 class TestOwnershipConfigBoundary:
@@ -580,7 +599,7 @@ class TestFilterOwnedPositions:
         """混合：本策略 ETH 保留、对家 SOL 剔除"""
         db = make_db(fetch_one_result={"strategy": "MTPCS激进策略"})
 
-        async def _fetch_one(sql, sym):
+        async def _fetch_one(sql, sym, account, since):
             return {"strategy": "MTPCS策略"} if sym == "ETHUSDT" else {"strategy": "MTPCS激进策略"}
 
         db.fetch_one = AsyncMock(side_effect=_fetch_one)
@@ -662,7 +681,7 @@ class TestSolCrossStrategyLifecycle:
         ]
         db = make_db()
 
-        async def fetch_owner(query, symbol):
+        async def fetch_owner(query, symbol, account, since):
             assert symbol == "SOLUSDT"
             open_rows = [
                 row for row in rows
@@ -673,7 +692,7 @@ class TestSolCrossStrategyLifecycle:
                 open_rows = [row for row in open_rows if row["status"] == "FILLED"]
             return max(open_rows, key=lambda row: row["id"]) if open_rows else None
 
-        async def execute(sql, symbol, strategy):
+        async def execute(sql, symbol, strategy, account, since):
             assert symbol == "SOLUSDT"
             assert "SET status = 'CLOSED'" in sql
             changed = 0
@@ -684,8 +703,8 @@ class TestSolCrossStrategyLifecycle:
             return f"UPDATE {changed}"
 
         db.fetch_one = AsyncMock(side_effect=fetch_owner)
-        async def advisory_fetch(_lock_key, query, symbol):
-            return await fetch_owner(query, symbol)
+        async def advisory_fetch(_lock_key, query, symbol, account, since):
+            return await fetch_owner(query, symbol, account, since)
 
         db.fetch_one_advisory_lock = AsyncMock(side_effect=advisory_fetch)
         db.execute = AsyncMock(side_effect=execute)

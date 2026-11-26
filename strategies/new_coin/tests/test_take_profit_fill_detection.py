@@ -324,21 +324,16 @@ class TestFillSourceClassification:
         # exchange 从 0.6 降到 0.55（SL 部分成交），但价格越过 SL 触发价
         # tol=max(0.6*0.01, 0.0001)=0.0061, exchange=0.55 < 0.6-0.0061 → 触发减仓检测
 
-        with patch(
-            'strategies.new_coin.executor.mark_open_orders_canceled',
-            new=AsyncMock(),
-        ) as mock_mark_open:
-            # 触发 detect（SL 部分成交场景）
-            r = ex.detect_take_profit_fills(
-                'TESTUSDT', 0.55, current_price=Decimal('106')
-            )
+        # 触发 detect（SL 部分成交场景）
+        r = ex.detect_take_profit_fills(
+            'TESTUSDT', 0.55, current_price=Decimal('106')
+        )
 
         assert r is None
         assert tracking['target1_reached'] is False
         assert tracking['target2_reached'] is False
         # SL 分支推进了 last
         assert ex._last_tracked_qty['TESTUSDT'] == 0.55
-        # mark_open_orders_canceled 被调用（在异步 create_task 里，此处只是验证不崩）
 
     def test_unknown_reduction_keeps_last(self):
         """UNKNOWN 减仓不推进 _last_tracked_qty（方案乙要点，防永久漏检）。"""
@@ -504,19 +499,16 @@ async def test_sl_reduction_async_cancel_path():
     ex.db.fetch_all = AsyncMock(return_value=[])
     ex.db.execute = AsyncMock()
 
-    with patch(
-        'strategies.new_coin.executor.mark_open_orders_canceled',
-        new=AsyncMock(),
-    ) as mock_mark:
-        # SL 部分成交场景（价格越过 SL 触发价 105）
-        r = ex.detect_take_profit_fills('TESTUSDT', 0.55, current_price=Decimal('106'))
-        # 等一下让 create_task 完成
-        await asyncio.sleep(0.05)
+    # SL 部分成交场景（价格越过 SL 触发价 105）
+    r = ex.detect_take_profit_fills('TESTUSDT', 0.55, current_price=Decimal('106'))
+    # 等一下让 create_task 完成
+    await asyncio.sleep(0.05)
 
     # SL 分支推进了 last
     assert ex._last_tracked_qty['TESTUSDT'] == 0.55
-    # 异步撤单被触发（至少调了 mark_open_orders_canceled 一次）
-    assert mock_mark.called
+    # 只触碰 TP1 与 TP2。
+    assert [call.args for call in ex.binance_api.cancel_algo_order.await_args_list] == [
+        ("TESTUSDT", "TP1_ALGO"), ("TESTUSDT", "TP2_ALGO")]
 
 
 @pytest.mark.asyncio
@@ -570,12 +562,8 @@ async def test_sl_reduction_cancel_algo_exception_path():
         side_effect=Exception("API down")
     )
 
-    with patch(
-        'strategies.new_coin.executor.mark_open_orders_canceled',
-        new=AsyncMock(),
-    ):
-        r = ex.detect_take_profit_fills('TESTUSDT', 0.55, current_price=Decimal('106'))
-        await asyncio.sleep(0.05)
+    r = ex.detect_take_profit_fills('TESTUSDT', 0.55, current_price=Decimal('106'))
+    await asyncio.sleep(0.05)
 
     assert ex._last_tracked_qty['TESTUSDT'] == 0.55
 
@@ -594,15 +582,11 @@ async def test_sl_mark_canceled_exception_handler():
     ex.position_tracking['TESTUSDT'] = tracking
     _prime_last_qty(ex, 'TESTUSDT', 0.6)
     # cancel_algo_order 正常，mark_open_orders_canceled 抛异常 → 内层 except
-    ex.binance_api.cancel_algo_order = AsyncMock()
+    ex.binance_api.cancel_algo_order = AsyncMock(side_effect=RuntimeError("DB write failed"))
     ex.db.execute = AsyncMock()
 
-    with patch(
-        'strategies.new_coin.executor.mark_open_orders_canceled',
-        new=AsyncMock(side_effect=Exception("DB write failed")),
-    ):
-        r = ex.detect_take_profit_fills('TESTUSDT', 0.55, current_price=Decimal('106'))
-        await asyncio.sleep(0.05)
+    r = ex.detect_take_profit_fills('TESTUSDT', 0.55, current_price=Decimal('106'))
+    await asyncio.sleep(0.05)
 
     # 主流程不受影响
     assert ex._last_tracked_qty['TESTUSDT'] == 0.55

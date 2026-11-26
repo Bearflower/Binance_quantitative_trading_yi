@@ -2,6 +2,7 @@
 
 from shared.accounting.stop_episode_evidence import fetch_verified_closed_stop_episode
 from shared.accounting.stop_exit_ledger import persist_verified_stop_exit
+from shared.accounting.runtime_cutover import runtime_start_ms
 
 
 async def audit_due_stop_bindings(db, client, account_id, strategy, *, limit=5):
@@ -13,8 +14,9 @@ async def audit_due_stop_bindings(db, client, account_id, strategy, *, limit=5):
         "stop_side,stop_quantity,last_observed_status,terminal_observations "
         "FROM trading.aggressive_stop_bindings "
         "WHERE account_id=$1 AND strategy=$2 AND audit_state IN ('pending','review') "
+        "AND ($4::bigint IS NULL OR bound_at>=to_timestamp($4::double precision/1000)) "
         "AND next_audit_at<=now() ORDER BY next_audit_at, bound_at LIMIT $3",
-        account_id, strategy, limit,
+        account_id, strategy, limit, runtime_start_ms(client),
     )
     results = {"verified": 0, "no_fill": 0, "review": 0, "pending": 0}
     for raw in rows:
@@ -67,15 +69,16 @@ async def audit_due_stop_bindings(db, client, account_id, strategy, *, limit=5):
     return results
 
 
-async def unresolved_stop_binding_exists(db, account_id, strategy, symbol):
+async def unresolved_stop_binding_exists(db, account_id, strategy, symbol, *, since_ms=None):
     """Any pending or review STOP for a flat symbol blocks a fresh entry."""
     if not db or not account_id or not strategy or not symbol:
         raise ValueError("STOP gate identity missing")
     row = await db.fetch_one(
         "SELECT EXISTS(SELECT 1 FROM trading.aggressive_stop_bindings "
         "WHERE account_id=$1 AND strategy=$2 AND symbol=$3 "
+        "AND ($4::bigint IS NULL OR bound_at>=to_timestamp($4::double precision/1000)) "
         "AND audit_state IN ('pending','review')) AS unresolved",
-        account_id, strategy, symbol,
+        account_id, strategy, symbol, since_ms,
     )
     if row is None or not isinstance(row.get("unresolved"), bool):
         raise ValueError("STOP gate read unavailable")

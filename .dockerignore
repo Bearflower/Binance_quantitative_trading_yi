@@ -15,6 +15,7 @@
 # 敏感文件（严禁进入镜像）
 .env
 .env.local
+.secrets/
 .env.*.local
 *.pem
 *.key
@@ -32,6 +33,8 @@ backtest/
 
 # 测试代码
 tests/
+# 固定历史行情资产，仅用于离线回归
+tests/fixtures/
 
 # 文档
 docs/

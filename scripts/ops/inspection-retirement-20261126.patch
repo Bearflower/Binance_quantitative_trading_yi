@@ -1,0 +1,47 @@
+--- a/server_check.sh
++++ b/server_check.sh
+@@ -58,4 +58,7 @@
+-        if [[ -z "$DOCKER_CONTAINER_PATTERN" ]]; then
+-            CONTAINERS=$(docker ps -a --format "{{.Names}}" 2>/dev/null)
+-        else
+-            CONTAINERS=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -i "$DOCKER_CONTAINER_PATTERN")
++        # 仅排除完整身份和停止状态均已核验的退役实例；失败时明确告警。
++        if ! CONTAINERS=$(python3 /root/trading_system/ai_tuner/ops/container_inventory.py --names); then
++            record_result "ERROR" "容器清单核验失败，不能确认当前服务状态"
++            return 1
++        fi
++        if [[ -n "$DOCKER_CONTAINER_PATTERN" ]]; then
++            CONTAINERS=$(printf '%s\n' "$CONTAINERS" | grep -i "$DOCKER_CONTAINER_PATTERN")
+@@ -73 +76 @@
+-                CONTAINER_STATUS=$(docker ps -a --filter "name=$CONTAINER_NAME" --format "{{.Status}}" 2>/dev/null)
++                CONTAINER_STATUS=$(docker inspect --format '{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null)
+@@ -76 +79 @@
+-                if [[ "$CONTAINER_STATUS" == *"Up"* ]]; then
++                if [[ "$CONTAINER_STATUS" == "running" ]]; then
+@@ -448,4 +451,7 @@
+-        if [[ -z "$DOCKER_CONTAINER_PATTERN" ]]; then
+-            CONTAINERS=$(docker ps -a --format "{{.Names}}" 2>/dev/null)
+-        else
+-            CONTAINERS=$(docker ps -a --format "{{.Names}}" 2>/dev/null | grep -i "$DOCKER_CONTAINER_PATTERN")
++        # 仅排除完整身份和停止状态均已核验的退役实例；失败时明确告警。
++        if ! CONTAINERS=$(python3 /root/trading_system/ai_tuner/ops/container_inventory.py --names); then
++            record_result "ERROR" "容器清单核验失败，不能确认当前服务状态"
++            return 1
++        fi
++        if [[ -n "$DOCKER_CONTAINER_PATTERN" ]]; then
++            CONTAINERS=$(printf '%s\n' "$CONTAINERS" | grep -i "$DOCKER_CONTAINER_PATTERN")
+@@ -520,0 +527,11 @@
++                        # 警告保留为提醒；异常类名中的 Error 不提升事件级别。
++                        local classified_errors classified_warnings
++                        if classified_errors=$(printf '%s\n' "$RELEVANT_ERRORS" | python3 /root/trading_system/ai_tuner/ops/inspection_log_severity.py --level error) &&
++                           classified_warnings=$(printf '%s\n' "$RELEVANT_ERRORS" | python3 /root/trading_system/ai_tuner/ops/inspection_log_severity.py --level warning); then
++                            RELEVANT_ERRORS="$classified_errors"
++                            if [[ -n "$classified_warnings" ]]; then
++                                record_result "WARN" "容器 $CONTAINER_NAME 近24小时有 $(printf '%s\n' "$classified_warnings" | grep -c .) 条警告（与错误分列）：$(printf '%s\n' "$classified_warnings" | tail -3 | tr '\n' ';')"
++                            fi
++                        else
++                            record_result "ERROR" "容器 $CONTAINER_NAME 日志级别解析失败，保留原始错误候选"
++                        fi
+@@ -547 +564 @@
+-                            record_result "OK" "容器 $CONTAINER_NAME 日志中仅有已知无害错误（含手工 psql 会话，${ALL_ERROR_COUNT}条，已忽略）"
++                            record_result "OK" "容器 $CONTAINER_NAME 日志候选 ${ALL_ERROR_COUNT} 条；无 ERROR 级事件，警告已单独列出"

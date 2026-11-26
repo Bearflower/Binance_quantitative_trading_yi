@@ -11,7 +11,7 @@ import time
 from dataclasses import asdict, dataclass
 from enum import Enum
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Dict, Optional
 import structlog
 
@@ -30,6 +30,8 @@ from .realtime.reference_store import (ExportStore, SessionState, check_schema,
                                         connect, make_reference_id)
 from .realtime.rules import ReferenceSnapshot
 from .execution.store import DecisionStore
+from .execution.policy import EXIT_STATES, PAUSE_EXPOSURE_STATES
+from .execution.signal_receipt import PENDING_TEXT, read_receipt, render_receipt
 
 
 logger = structlog.get_logger()
@@ -229,6 +231,7 @@ class GridSignalBot:
         if decision_db:
             # A configured handoff is a safety dependency. Migration must run first.
             self._decision_store = DecisionStore(decision_db)
+            self.margin_advisor.live_reporting = True
 
         logger.info(
             "网格信号灯机器人初始化完成",
@@ -453,7 +456,8 @@ class GridSignalBot:
         self._start_export()
         try:
             # 首次执行：等待到下一个固定分钟节点
-            await self._wait_until_next_run()
+            if os.environ.get("GRID_SIGNAL_RUN_ON_START") != "true":
+                await self._wait_until_next_run()
 
             while True:
                 try:
@@ -461,8 +465,9 @@ class GridSignalBot:
                     for symbol in self.symbols:
                         try:
                             signal = await self.run_once(symbol)
+                            decision_id = None
                             try:
-                                self._publish_decision(signal)
+                                decision_id = self._publish_decision(signal)
                             except (sqlite3.Error, RuntimeError, ValueError) as exc:
                                 # A failed handoff makes execution stale, but
                                 # must not suppress the existing human alert.
@@ -470,6 +475,8 @@ class GridSignalBot:
 
                             # 检查是否需要推送
                             if self._should_notify(signal):
+                                if self._decision_store is not None:
+                                    await self._attach_execution_receipt(signal, decision_id)
                                 await self._send_with_export(signal)
                                 self.last_signals[symbol] = signal
 
@@ -494,6 +501,23 @@ class GridSignalBot:
             self._shutdown_export()
             if self._decision_store is not None:
                 self._decision_store.close()
+
+    async def _attach_execution_receipt(self, signal, decision_id):
+        report = None
+        if decision_id:
+            deadline = time.monotonic() + 12
+            while time.monotonic() < deadline:
+                try:
+                    report = read_receipt(self._decision_store)
+                except (sqlite3.Error, ValueError, TypeError):
+                    break
+                if (report and report.get('decision_id') == decision_id
+                        and 0 <= _now_ms() - report.get('updated_at_ms', 0) <= 60_000
+                        and (report.get('processed') or report.get('state') == 'LOCKED')):
+                    break
+                await asyncio.sleep(.25)
+        signal.message = signal.message.replace(PENDING_TEXT, '').strip()
+        signal.message += '\n\n' + render_receipt(report, decision_id, now_ms=_now_ms())
 
     def _publish_decision(self, signal: GridSignal) -> Optional[str]:
         """Persist every structured decision before notification/cooldown logic."""
@@ -530,6 +554,9 @@ class GridSignalBot:
             "feasibility": encode(asdict(signal.capital_feasibility)) if signal.capital_feasibility else None,
             "margin_used": str(signal.margin_used) if signal.margin_used is not None else None,
         }
+        payload['sizing_version'] = 2
+        payload['execution_constraints'] = {
+            'min_grid_count': self._state_grid_bounds(signal.market_analysis.state)[0]}
         config_hash = self._metadata.get("config_hash") or hashlib.sha256(
             json.dumps(self.config, sort_keys=True, default=str).encode()).hexdigest()
         return self._decision_store.publish(payload, config_hash)
@@ -538,14 +565,18 @@ class GridSignalBot:
         """
         选择资金可行性检查使用的保证金口径（FR-01）
 
-        - 方案B 启用：advice.suggested_margin>0 时用建议保证金，否则回退 trading.margin
+        - 方案B 启用：仅使用有限的正建议保证金；零预算或建议不可用时禁止开仓
         - 方案B 关闭（整体回退）：恒用固定 trading.margin（V2.5 已知行为）
         """
-        if not self.capital_constraint_enabled:
+        if not self.capital_constraint_enabled and getattr(self, '_decision_store', None) is None:
             return self.default_margin
-        if advice is not None and advice.suggested_margin > 0:
-            return advice.suggested_margin
-        return self.default_margin
+        if advice is None:
+            return Decimal('0')
+        try:
+            margin = Decimal(str(advice.suggested_margin))
+        except (InvalidOperation, TypeError, ValueError):
+            return Decimal('0')
+        return margin if margin.is_finite() and margin > 0 else Decimal('0')
 
     def _state_grid_bounds(self, state: MarketState) -> tuple:
         """按市场状态取网格数 (N_min, N_max)：震荡读 min/max_grid_count，弱趋势读 weak_trend_*"""
@@ -622,6 +653,18 @@ class GridSignalBot:
             trend_strength=market_analysis.trend_strength
         )
         n_min, _ = self._state_grid_bounds(market_analysis.state)
+
+        if getattr(self, '_decision_store', None) is not None:
+            # Only structural/profit constraints belong to the producer. Actual
+            # capital, leverage and exchange filters belong to the executor.
+            count = min(params.grid_count, self._resolve_profit_cap(params, n_min))
+            valid = count >= n_min and margin is not None and margin.is_finite() and margin > 0
+            if count >= n_min:
+                params.grid_count = count
+                params.profit_rate, params.grid_spacing = self.grid_calculator._calculate_profit_rate(
+                    params.lower_boundary, params.upper_boundary, count, params.grid_mode,
+                    market_analysis.current_price)
+            return params, CapitalFeasibility(valid, params.grid_count, Decimal(0), 'EXECUTION')
 
         if not self.capital_constraint_enabled:
             return self._legacy_grid_params(
@@ -768,8 +811,15 @@ class GridSignalBot:
             是否发送成功
         """
         try:
+            message = signal.message
+            if signal.symbol == "ETHUSDT":
+                state = signal.market_analysis.state.name
+                if state in PAUSE_EXPOSURE_STATES or state == MarketState.VOLATILITY_ABNORMAL.name:
+                    message += "\n\n实盘规则：暂停补单，撤普通挂单；已有净仓保留止损保护。"
+                elif state in EXIT_STATES:
+                    message += "\n\n实盘规则：结束活动网格，有净仓时执行平仓。"
             success = await self.notification_client.send(
-                message=signal.message,
+                message=message,
                 level="info",
                 project="grid"
             )
@@ -848,6 +898,14 @@ class GridSignalBot:
             sent = await self._send_notification(signal)
             if sent and self.export_store is not None and self._state is not None:
                 try:
+                    from .execution.policy import EXIT_STATES
+                    analysis = getattr(signal, "market_analysis", None)
+                    state = getattr(analysis, "state", None)
+                    if (getattr(state, "name", None) in EXIT_STATES
+                            and self._state.current_reference_id is not None):
+                        self.export_store.close_session(_now_ms())
+                        sid = self.export_store.begin_session(_now_ms())
+                        self._state = SessionState(sid, 0, None, None)
                     self.export_store.mark_non_numeric_sent(self._state, _now_ms())
                 except sqlite3.Error as exc:
                     # 通知已成功，不得因本地确认失败而重复发送。
@@ -1099,7 +1157,11 @@ class GridSignalBot:
 """
 
         # 资金可行性板块（V2.5.5 方案B；开关关闭时整体回退 V2.5 文案）
-        if self.capital_constraint_enabled:
+        if getattr(self, '_decision_store', None) is not None:
+            # The executor's actual plan result replaces advisory feasibility.
+            funding_text = PENDING_TEXT
+            grid_params_text = grid_params_text.replace('📐 建议网格参数', '📐 结构参数（实盘格数以执行回执为准）').replace('- 网格数量:', '- 结构格数上限:')
+        elif self.capital_constraint_enabled:
             funding_text = self._build_funding_text(
                 market_analysis, grid_params, capital_feasibility, margin_used
             )

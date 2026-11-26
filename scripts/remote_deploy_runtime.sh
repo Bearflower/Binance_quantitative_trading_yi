@@ -17,6 +17,55 @@ DEPLOY_ID="__DEPLOY_ID__"
 echo "模式: ${DEPLOY_MODE}"
 echo "========================================"
 
+# 同账户迁移只有在宿主配置了明确切点后才生效。受限发布只能审计。
+ACCOUNT_MODE_DIR="/root/trading_system/.deploy_tmp/account-mode-${COMMIT_SHA}"
+# 每种模式均使用本次提交暂存的权限工具和唯一契约，不能退回宿主旧清单。
+export DB_PERMISSION_ROOT="$ACCOUNT_MODE_DIR"
+test -f "$DB_PERMISSION_ROOT/database_permissions.py"
+test -f "$DB_PERMISSION_ROOT/permissions.json"
+# 受限发布只审计，不重放全量迁移、不自动补权。
+if [ "$DEPLOY_MODE" != "full" ]; then
+  python3 "$DB_PERMISSION_ROOT/database_permissions.py" audit --manifest "$DB_PERMISSION_ROOT/permissions.json"
+fi
+CUTOVER_ENABLED=0
+CUTOVER_CLASSIC_ACTIVE=0
+# First classic full deployment follows the per-strategy restart and fill checks.
+# A stopped writer must never be implicitly started by a blanket compose up in this window.
+check_staged_classic_writers() {
+  local service cutoff actual
+  cutoff=$(sed -n 's/^BINANCE_CLASSIC_CUTOVER_MS=//p' .env)
+  [[ "$cutoff" =~ ^[1-9][0-9]*$ ]] || return 1
+  CLASSIC_ROLLOUT_DONE=".deploy_tmp/classic-rollout-${cutoff}.complete"
+  if [ -f "$CLASSIC_ROLLOUT_DONE" ]; then return 0; fi
+  for service in trading_system-btc_eth trading_system-btc_eth_aggressive trading_system-hrs trading_system-new_coin trading_system-grid ai-tuner; do
+    actual=$(docker exec "$service" printenv BINANCE_ACCOUNT_MODE BINANCE_CLASSIC_CUTOVER_MS) || return 1
+    [ "$actual" = "$(printf 'classic\n%s' "$cutoff")" ] || return 1
+  done
+  if grep -Eq '^GRID_EXECUTOR_DEPLOY_ENABLED=(true|1)$' .env; then
+    [ "$(docker exec trading_system-grid-executor printenv GRID_SUBACCOUNT_MODE)" = classic ] || return 1
+  fi
+}
+if grep -Eq '^BINANCE_CLASSIC_CUTOVER_MS=[1-9][0-9]*$' .env; then
+  CUTOVER_ENABLED=1
+  export HRS_RELEASE_SHA="$COMMIT_SHA"
+  if grep -Eq '^BINANCE_ACCOUNT_MODE=classic$|^(BINANCE_USE_PM|USE_UNIFIED_ACCOUNT)=false$' .env; then
+    CUTOVER_CLASSIC_ACTIVE=1
+    if [ "$DEPLOY_MODE" = "full" ]; then
+      check_staged_classic_writers || {
+        echo "经典交易实例尚未逐个恢复到本切点，请先完成分批验收再运行完整发布"
+        exit 1
+      }
+      python3 "$ACCOUNT_MODE_DIR/cutover_income_timer.py" pause --sha "$COMMIT_SHA"
+    fi
+  fi
+  if [ "$DEPLOY_MODE" = "full" ]; then
+    python3 "$ACCOUNT_MODE_DIR/cutover-host-watchers.pyz" --scope all --check
+  fi
+elif grep -Eq '^BINANCE_ACCOUNT_MODE=classic$|^(BINANCE_USE_PM|USE_UNIFIED_ACCOUNT)=false$' .env; then
+  echo "经典合约发布缺少有效的 BINANCE_CLASSIC_CUTOVER_MS"
+  exit 1
+fi
+
 if [ "$DEPLOY_MODE" = "xau-review" ]; then
   [ "$FUNDING_DEPLOY_ACTION" = "keep" ] || exit 2
   unset COMPOSE_FILE
@@ -502,9 +551,9 @@ docker compose run -T --rm --no-deps grid-realtime \
 # path is configured. Initialize it before any grid container is recreated.
 echo "🗄️  grid_execution schema 迁移（一次性）..."
 docker compose run -T --rm --no-deps grid-strategy \
-  python -m strategies.grid.execution.store \
-  --db-path /app/data/grid_execution.sqlite3
+  sh -ec 'exec python -m strategies.grid.execution.store --db-path "$GRID_EXECUTION_HANDOFF_DB"'
 
+activate_full_services() {
 # 4. 只更新镜像变了的容器（compose up -d 自动检测）
 # Docker Compose 重建失败可能留下形如「旧容器 ID_服务名」的 Created 容器。
 # 仅在正式容器仍运行且健康、残留已超过 5 分钟时清理；否则停止部署。
@@ -516,6 +565,9 @@ GRID_EXTRA_HEALTH=""
 if grep -Eq '^GRID_EXECUTOR_DEPLOY_ENABLED=(true|1)$' .env; then
   GRID_COMPOSE_PROFILE=(--profile grid-executor)
   GRID_EXTRA_HEALTH="trading_system-grid-executor"
+fi
+if [ "$CUTOVER_ENABLED" = 1 ]; then
+  GRID_COMPOSE_PROFILE+=(--profile hrs-acceptance)
 fi
 if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then
   # Keep the database container stable too. A floating postgres:15-alpine
@@ -540,12 +592,18 @@ if [ "$FUNDING_DEPLOY_ACTION" = "keep" ]; then
 else
   docker compose "${GRID_COMPOSE_PROFILE[@]}" --parallel 1 up -d --remove-orphans
 fi
+}
+# 所有 full 发布均先准备数据库；业务容器必须等待全部迁移及权限门禁通过。
+# keep 路径保持数据库和资金费采集器身份不变。
+if [ "$FUNDING_DEPLOY_ACTION" != "keep" ]; then
+  docker compose up -d --no-deps postgres
+fi
 
 # ========== step 4.5：执行数据库 init-scripts（幂等）==========
 # 背景：postgres 官方镜像 entrypoint 仅在 PGDATA 首次为空时自动执行
 #       /docker-entrypoint-initdb.d/ 脚本。生产 volume 已持久化，
 #       entrypoint 不会再触发 → 新增 SQL 脚本无法自动生效。
-#       解决：compose up -d 后显式 exec 跑一遍（脚本全 IF NOT EXISTS 幂等）。
+#       解决：数据库就绪后、业务服务激活前显式 exec 跑一遍（脚本幂等）。
 # 前置：init-scripts 已由 deploy job 上一个 scp step 上传到
 #       /root/trading_system/database/postgres/init-scripts/，
 #       compose volume 自动挂载到容器内 /docker-entrypoint-initdb.d/
@@ -775,6 +833,26 @@ if [ "$FUNDING_PERMISSION_BOUNDARY_OK" != "1" ]; then
   stop_funding_collector_if_running
   false
 fi
+if [ "$CUTOVER_ENABLED" = 1 ]; then
+  for hrs_migration in risk-ledger-loss-gates equity-service equity-reconciliation funding-publication decision-evidence allocation-event-audit frozen-exit-plan condition-account-scope; do
+    docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+      -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-17-hrs-${hrs_migration}.sql"
+  done
+  docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+    -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-25-account-mode-equity.sql"
+  docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+    -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-25-classic-entry-observation.sql"
+  docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+    -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-25-account-fact-provenance.sql"
+  if [ "$CUTOVER_CLASSIC_ACTIVE" = 1 ]; then
+    docker exec -i trading_system-postgres psql -X -v ON_ERROR_STOP=1 \
+      -U trading_migration_admin -d trading_platform < "$ACCOUNT_MODE_DIR/2026-11-25-scoped-open-condition-ids.sql"
+  fi
+fi
+# init SQL、运行角色边界及可选账户切换迁移全部完成，统一补权/审计后才激活。
+python3 "$DB_PERMISSION_ROOT/database_permissions.py" apply --manifest "$DB_PERMISSION_ROOT/permissions.json"
+python3 "$DB_PERMISSION_ROOT/database_permissions.py" audit --manifest "$DB_PERMISSION_ROOT/permissions.json"
+activate_full_services
 docker compose restart ai-tuner-snapshot >/dev/null
 # Only now may the profiled service start. --no-deps avoids touching postgres.
 if [ "$FUNDING_DEPLOY_ACTION" = "rotate" ]; then
@@ -857,6 +935,14 @@ for service in $JOURNAL_SERVICES; do
   fi
   echo "✅ journald $service container=$cid"
 done
+
+if [ "$CUTOVER_ENABLED" = 1 ] && [ "$DEPLOY_MODE" = full ]; then
+  python3 "$ACCOUNT_MODE_DIR/cutover-host-watchers.pyz" --scope all --apply
+  if [ "$CUTOVER_CLASSIC_ACTIVE" = 1 ]; then
+    python3 "$ACCOUNT_MODE_DIR/cutover_income_timer.py" resume --sha "$COMMIT_SHA"
+    printf '%s\n' "$COMMIT_SHA" > "$CLASSIC_ROLLOUT_DONE"
+  fi
+fi
 
 # 7. 写部署日志
 mkdir -p deploy_logs

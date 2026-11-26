@@ -8,6 +8,13 @@ from strategies.grid.grid_calculator import (CapitalFeasibility, DynamicGridPara
                                              GridMode)
 
 
+def subaccount_pm(env: Mapping[str, str]) -> bool:
+    mode = env.get("GRID_SUBACCOUNT_MODE", "pm").strip().lower()
+    if mode not in ("pm", "classic"):
+        raise ValueError("GRID_SUBACCOUNT_MODE must be pm or classic")
+    return mode == "pm"
+
+
 @dataclass(frozen=True)
 class ExecutionSettings:
     mode: str = "off"
@@ -26,7 +33,7 @@ class ExecutionSettings:
     def from_env(cls, env: Mapping[str, str]) -> "ExecutionSettings":
         mode = env.get("GRID_EXECUTION_MODE", "off").strip().lower()
         if mode not in ("off", "live"):
-            raise ValueError("GRID_EXECUTION_MODE must be off or live for PM")
+            raise ValueError("GRID_EXECUTION_MODE must be off or live")
         symbol = env.get("GRID_SYMBOL", "ETHUSDT").strip().upper()
         if symbol != "ETHUSDT":
             raise ValueError("GRID_SYMBOL must be ETHUSDT")
@@ -49,6 +56,7 @@ class ExecutionSettings:
                 raise ValueError("%s must be positive" % name)
             return value
 
+        pm = subaccount_pm(env)
         key = required("GRID_SUBACCOUNT_API_KEY")
         secret = required("GRID_SUBACCOUNT_API_SECRET")
         margin = positive_decimal("GRID_MAX_MARGIN_USDT")
@@ -69,7 +77,7 @@ class ExecutionSettings:
             raise ValueError("GRID_EXPECTED_LEVERAGE must be positive") from exc
         if leverage <= 0:
             raise ValueError("GRID_EXPECTED_LEVERAGE must be positive")
-        return cls(mode, symbol, True, key, secret, margin, notional,
+        return cls(mode, symbol, pm, key, secret, margin, notional,
                    daily_loss, drawdown, orders, leverage)
 
 

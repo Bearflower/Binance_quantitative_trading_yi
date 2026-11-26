@@ -12,6 +12,8 @@ public.equity_snapshot 表（同日 UPSERT 幂等），供收益模块与风控�
 """
 from datetime import datetime, timedelta, timezone
 
+from shared.accounting.equity_bridge import save_observation
+
 import structlog
 
 logger = structlog.get_logger()
@@ -58,17 +60,19 @@ async def run_snapshot(data_service) -> dict:
 
     try:
         equity = await data_service.get_account_equity()
-        total_equity = equity.get("total_equity", "0")
-        available_balance = equity.get("available_balance", "0")
-        open_positions = int(equity.get("open_positions", 0))
-
-        await data_service._db_manager.execute(
-            _SNAPSHOT_UPSERT_SQL,
-            snapshot_date,
-            str(total_equity),
-            str(available_balance),
-            open_positions,
-        )
+        total_equity = equity["total_equity"]
+        available_balance = equity["available_balance"]
+        open_positions = int(equity["open_positions"])
+        if equity.get("account_mode") == "classic":
+            saved = await save_observation(data_service._db_manager, "classic_daily",
+                                          datetime.fromisoformat(equity["updated_at"]),
+                                          total_equity, available_balance, open_positions)
+            total_equity, available_balance, open_positions = (
+                str(saved["total_equity"]), str(saved["available_balance"]), saved["open_positions"])
+        else:
+            await data_service._db_manager.execute(
+                _SNAPSHOT_UPSERT_SQL, snapshot_date, str(total_equity), str(available_balance), open_positions,
+            )
 
         logger.info(
             "净资产快照已落库",

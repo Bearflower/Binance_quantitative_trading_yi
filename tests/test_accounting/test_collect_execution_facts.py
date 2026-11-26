@@ -71,3 +71,12 @@ async def test_collect_window_retries_fills_for_persisted_income_symbol():
     await collect_window(exporter, db, 1000, 2000, pause_seconds=0)
     assert {symbol for symbol, _, _ in exporter.fill_calls} == {"BTCUSDT", "RETRYUSDT"}
     assert db.queries[1][1][0] == "default"
+
+
+@pytest.mark.asyncio
+async def test_single_cutover_millisecond_includes_symbol_discovery():
+    exporter, db = FakeExporter(), FakeDb()
+    summary = await collect_window(exporter, db, 1000, 1000, pause_seconds=0)
+    assert summary["complete"] and exporter.fill_calls
+    assert all(begin == end == 1000 for _, begin, end in exporter.fill_calls)
+    assert (db.queries[0][1][1] - db.queries[0][1][0]).total_seconds() == .001

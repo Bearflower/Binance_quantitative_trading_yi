@@ -15,7 +15,7 @@ class RegisteredSymbolConfig(BaseModel):
     intervals: List[str] = Field(..., description="采集周期列表，如 ['1m', '5m', '15m', '1h']")
     registered_at: datetime = Field(default_factory=datetime.now, description="注册时间")
     expires_at: datetime = Field(..., description="过期时间")
-    duration_days: int = Field(..., ge=1, le=30, description="采集持续天数（1-30 天）")
+    duration_days: int = Field(..., ge=1, le=30, description="最近一次注册或续期天数（1-30 天）")
     priority: str = Field(default="normal", description="优先级：high, normal, low")
     status: str = Field(default="active", description="状态：active, expired, cancelled")
     created_by: str = Field(default="system", description="注册方标识")
@@ -63,9 +63,10 @@ class RegisteredSymbolConfig(BaseModel):
         )
     
     def renew(self, additional_days: int) -> None:
-        """续期"""
+        """延长到期时间；duration_days 记录单次期限，不累加历史天数。"""
+        additional_days = RenewRequest(symbol=self.symbol, additional_days=additional_days).additional_days
         self.expires_at += timedelta(days=additional_days)
-        self.duration_days += additional_days
+        self.duration_days = additional_days
         self.updated_at = datetime.now()
     
     def cancel(self) -> None:

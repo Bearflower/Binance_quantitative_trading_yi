@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import random
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from fastapi.middleware.gzip import GZipMiddleware
@@ -15,6 +15,7 @@ from starlette.responses import FileResponse
 import structlog
 
 from api.routes_docker import router as api_router
+from services.data_service_docker import DataService
 
 
 logger = structlog.get_logger()
@@ -169,12 +170,10 @@ async def lifespan(app: FastAPI):
     """
     应用生命周期管理
 
-    启动时：仅记录启动日志。数据维护定时任务（净资产快照 / 指标预计算 /
+    启动时：创建应用共享的数据服务（首次查询时建连）。数据维护定时任务（净资产快照 / 指标预计算 /
     持仓对账 / 佣金回填）已迁至独立数据后台容器 services/data_backend，
     dashboard 退化为纯 API 展示，可随时重建而不影响数据连续性。
-    关闭时：记录关闭日志。
-    说明：生产实际数据走 routes_docker 的 DataService；此处仅保留
-    MockDataService 本机演示，不改其 data_service 逻辑。
+    关闭时：释放共享客户端和数据库连接池。
     """
     logger.info(
         "Dashboard API 启动中",
@@ -182,9 +181,12 @@ async def lifespan(app: FastAPI):
         environment="production",
     )
 
-    yield
-
-    logger.info("Dashboard API 关闭中")
+    app.state.data_service = DataService()
+    try:
+        yield
+    finally:
+        await app.state.data_service.close()
+        logger.info("Dashboard API 关闭中")
 
 
 # ========================================
@@ -280,7 +282,12 @@ async def serve_static_or_spa(full_path: str):
     2. 以上中间件
     3. 本 catch-all：先检查是否为真实静态文件，否则回退 index.html
     """
-    file_path = FRONTEND_DIR / full_path
+    root = FRONTEND_DIR.resolve()
+    file_path = (root / full_path).resolve()
+    try:
+        file_path.relative_to(root)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found")
     if file_path.is_file():
         return FileResponse(file_path)
     return FileResponse(FRONTEND_DIR / "index.html")

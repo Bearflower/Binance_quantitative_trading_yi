@@ -7,7 +7,7 @@ import json
 from typing import Any, Dict, Optional, Tuple
 
 
-_REAL_MARKET_CAP_SOURCES = frozenset({"coingecko", "cache_hit", "coingecko_cache"})
+_REAL_MARKET_CAP_SOURCES = frozenset({"coingecko", "coinmarketcap", "cache_hit", "coingecko_cache"})
 _SENTIMENT_FORMULA_VERSION = "funding_annual_pct_v1"
 _ANNUALIZED_RATE_FACTOR = 3 * 365 * 100   # funding_rate → 年化百分比乘数
 _REL_TOLERANCE = 1e-9
@@ -75,7 +75,7 @@ class MarketSnapshot:
 
     @property
     def quality_rank(self) -> int:
-        direct_source = self.market_cap_source == "coingecko"
+        direct_source = self.market_cap_source in {"coingecko", "coinmarketcap"}
         cached_source = self.market_cap_source in {"cache_hit", "coingecko_cache"}
         if self.is_complete and direct_source:
             return 5

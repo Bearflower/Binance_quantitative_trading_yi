@@ -28,7 +28,7 @@ C. _close_position except 三分支（L3406，平仓单抛 -4118 / -2022）：
 import sys
 import os
 from decimal import Decimal
-from unittest.mock import ANY, AsyncMock
+from unittest.mock import AsyncMock
 
 PROJECT_ROOT = os.path.join(os.path.dirname(__file__), '..', '..')
 sys.path.insert(0, os.path.abspath(PROJECT_ROOT))
@@ -82,7 +82,6 @@ def strategy(config):
         db_manager=None,
     )
     # 屏蔽与本次修复无关的辅助方法
-    s._mark_stop_loss_if_needed = AsyncMock()
     s._cleanup_position_orders = AsyncMock()
     # 预置精度缓存，避免真实查询交易所
     s.symbol_precision['BTCUSDT'] = {
@@ -97,6 +96,7 @@ def strategy(config):
         'asks': [['60000.0', '1.0']],
     })
     s.binance.get_open_orders = AsyncMock(return_value=[])
+    s.binance.get_open_algo_orders = AsyncMock(return_value=[])
     # 取消条件单默认成功
     s.binance.cancel_all_algo_orders = AsyncMock(return_value={'code': 200})
     return s
@@ -113,25 +113,25 @@ class TestCancelSymbolConditionalOrders:
         """用例1：cancel_all_algo_orders 正常返回 → True"""
         result = await strategy._cancel_symbol_conditional_orders('BTCUSDT', 'TP1')
         assert result is True
-        strategy.binance.cancel_all_algo_orders.assert_awaited_once_with('BTCUSDT')
+        strategy.binance.get_open_algo_orders.assert_awaited_once_with('BTCUSDT')
 
-    async def test_4046_no_pending_returns_true(self, strategy):
+    async def test_4046_cannot_prove_no_orders(self, strategy):
         """用例2：抛 BinanceAPIError(-4046) 无挂单 → True（静默跳过）"""
-        strategy.binance.cancel_all_algo_orders = AsyncMock(
+        strategy.binance.get_open_algo_orders = AsyncMock(
             side_effect=BinanceAPIError(-4046, 'no existing algo order'))
         result = await strategy._cancel_symbol_conditional_orders('BTCUSDT', 'TP1')
-        assert result is True
+        assert result is False
 
     async def test_other_api_error_returns_false(self, strategy):
         """用例3：抛 BinanceAPIError(其他 code) → False（不阻断主流程）"""
-        strategy.binance.cancel_all_algo_orders = AsyncMock(
+        strategy.binance.get_open_algo_orders = AsyncMock(
             side_effect=BinanceAPIError(-2011, 'unknown order'))
         result = await strategy._cancel_symbol_conditional_orders('BTCUSDT', 'TP1')
         assert result is False
 
     async def test_generic_exception_returns_false(self, strategy):
         """用例4：抛普通 Exception → False"""
-        strategy.binance.cancel_all_algo_orders = AsyncMock(
+        strategy.binance.get_open_algo_orders = AsyncMock(
             side_effect=RuntimeError('connection lost'))
         result = await strategy._cancel_symbol_conditional_orders('BTCUSDT', 'TP1')
         assert result is False
@@ -155,9 +155,8 @@ class TestClosePositionEntrySyncClosed:
         strategy.binance.cancel_all_algo_orders.assert_not_awaited()
         # 本地持仓已同步为 0（防双重平仓）
         assert pos.current_quantity == Decimal('0')
-        # 条件单已平仓：用当前价估算盈亏并回写，止损打标透传估算的 pnl
-        strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
-            'BTCUSDT', pos, 'TP1', Decimal('0.0'), side_override='SELL')
+        # 仓位变化不提供成交价格，不能产生平仓收益。
+        strategy.binance.trade_logger.db.execute.assert_not_awaited()
 
 
 # ============================================================================
@@ -187,9 +186,8 @@ class TestClosePositionReduceOnlyExcept:
         # 拒单后仍保留条件单保护
         assert strategy.binance.cancel_all_algo_orders.await_count == 0
         strategy.binance.cancel_all_algo_orders.assert_not_awaited()
-        # 止损打标被调用一次（与入口 closed 分支一致），透传估算的 pnl
-        strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
-            'BTCUSDT', pos, 'TP1', Decimal('0.0'), side_override='SELL')
+        # 无真实成交证据，拒绝止损打标。
+        strategy.binance.trade_logger.db.execute.assert_not_awaited()
         # 不应再触发"平仓失败"错误通知（原缺陷：order_result 空引用）
         assert strategy.notification.send_error_notification.await_count == 0
 
@@ -207,11 +205,10 @@ class TestClosePositionReduceOnlyExcept:
 
         assert result is True
         assert strategy.binance.cancel_all_algo_orders.await_count == 0
-        strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
-            'BTCUSDT', pos, 'TP1', Decimal('0.0'), side_override='SELL')
+        strategy.binance.trade_logger.db.execute.assert_not_awaited()
         assert strategy.notification.send_error_notification.await_count == 0
 
-    async def test_closed_take_profit_fallback_insert_pnl_summary(self, strategy):
+    async def test_flat_position_skips_estimated_pnl_summary(self, strategy):
         """用例11：closed 分支 update_realized_pnl 未命中 + 止盈原因 → insert_pnl_summary 兜底"""
         # 注入受控 trade_logger：模式二降级匹配未命中，触发 PnL 汇总兜底
         mock_trade_logger = AsyncMock()
@@ -231,20 +228,8 @@ class TestClosePositionReduceOnlyExcept:
             'BTCUSDT', pos, Decimal('0.1'), 'TP1', Decimal('60000'))
 
         assert result is True
-        # 模式二降级匹配未命中
-        mock_trade_logger.update_realized_pnl.assert_awaited_once()
-        # 止盈类原因（TP1）触发 PnL 汇总兜底插入
-        mock_trade_logger.insert_pnl_summary.assert_awaited_once_with(
-            realized_pnl=Decimal('0.0'),
-            symbol='BTCUSDT',
-            side='SELL',
-            strategy='测试策略',
-            executed_at=ANY,
-            close_reason='TP1',
-        )
-        # 止损打标：closed 分支透传估算 pnl
-        strategy._mark_stop_loss_if_needed.assert_awaited_once_with(
-            'BTCUSDT', pos, 'TP1', Decimal('0.0'), side_override='SELL')
+        mock_trade_logger.update_realized_pnl.assert_not_awaited()
+        mock_trade_logger.insert_pnl_summary.assert_not_awaited()
 
     async def test_partially_closed_retry_success(self, strategy):
         """用例8：-4118 → 同步 partially_closed(0.05) → 缩量 0.05 后重试成功 → True"""
@@ -254,8 +239,10 @@ class TestClosePositionReduceOnlyExcept:
             call_count['n'] += 1
             if call_count['n'] == 1:
                 raise BinanceAPIError(-4118, 'ReduceOnly Order Failed')
-            return {'orderId': 888, 'avgPrice': '60000'}
+            return {'orderId': 888, 'avgPrice': '60000', 'status': 'FILLED', 'executedQty': '0.05'}
 
+        strategy.binance.get_order = AsyncMock(return_value=dict(orderId=888, symbol="BTCUSDT",
+            side="SELL", status="FILLED", reduceOnly=True, executedQty="0.05", origQty="0.05"))
         strategy.binance.place_order = AsyncMock(side_effect=place_order_with_retry)
         strategy.binance.get_position = make_get_position_side_effect(
             [{'symbol': 'BTCUSDT', 'positionAmt': '0.1'}],
@@ -310,59 +297,3 @@ class TestClosePositionReduceOnlyExcept:
         assert strategy.binance.place_order.await_count == 1
         # 本地持仓未被错误扣减
         assert pos.current_quantity == Decimal('0.1')
-
-
-# ============================================================================
-# D. _write_close_pnl helper 分支（用例 12-14，单测 helper 本身）
-# ============================================================================
-
-class TestWriteClosePnl:
-    """_write_close_pnl 盈亏回写 helper 的三个独立分支
-
-    直接单测 helper，不依赖 _close_position 上下文，与既有用例 5/6/7 的
-    closed 分支回写断言解耦。closed 场景持仓为：direction=FLAT、
-    current_quantity=0、entry_price 保留（供估算盈亏）。
-    """
-
-    async def test_update_pnl_exception_returns_none(self, strategy):
-        """用例12：update_realized_pnl 抛异常 → helper 返回 None，异常不外泄"""
-        mock_trade_logger = AsyncMock()
-        mock_trade_logger.update_realized_pnl = AsyncMock(
-            side_effect=RuntimeError('db connection lost'))
-        strategy.binance.trade_logger = mock_trade_logger
-
-        # closed 分支已同步后的持仓：方向 FLAT、数量 0、入场价保留
-        pos = make_position(direction='FLAT', quantity=Decimal('0'))
-        # 参数有效（数量/价格/入场价均 > 0），可走到 update_realized_pnl 调用处
-        result = await strategy._write_close_pnl(
-            'BTCUSDT', pos, 'SELL', 'TP1',
-            current_price=Decimal('100'), close_quantity=Decimal('0.1'),
-        )
-        # 异常被 helper 内部 except 捕获，返回 None 且不向外传播
-        assert result is None
-
-    async def test_close_quantity_none_skips_write(self, strategy):
-        """用例13：close_quantity=None → 数量无效跳过回写，update_realized_pnl 未被调用"""
-        mock_trade_logger = AsyncMock()
-        strategy.binance.trade_logger = mock_trade_logger
-
-        pos = make_position(direction='FLAT', quantity=Decimal('0'))
-        result = await strategy._write_close_pnl(
-            'BTCUSDT', pos, 'SELL', 'TP1',
-            current_price=Decimal('100'), close_quantity=None,
-        )
-        assert result is None
-        # 数量无效提前 return，未触达回写调用
-        mock_trade_logger.update_realized_pnl.assert_not_awaited()
-
-    async def test_trade_logger_none_returns_none(self, strategy):
-        """用例14：trade_logger 为 None → helper 返回 None，不抛异常"""
-        # 显式覆盖 AsyncMock 自动创建的 magic attribute，模拟未注入交易记录器
-        strategy.binance.trade_logger = None
-
-        pos = make_position(direction='FLAT', quantity=Decimal('0'))
-        result = await strategy._write_close_pnl(
-            'BTCUSDT', pos, 'SELL', 'TP1',
-            current_price=Decimal('100'), close_quantity=Decimal('0.1'),
-        )
-        assert result is None

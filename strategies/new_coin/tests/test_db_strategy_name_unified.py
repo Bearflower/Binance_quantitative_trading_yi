@@ -119,8 +119,8 @@ async def test_ac4_周报查询绑定1为my_record_name且有记录时发送周�
     assert '【新币做空策略周报】' in strategy.notification_client.send.await_args.kwargs['message']
 
 
-async def test_ac3_补正止损打标分支_查询绑定1为my_record_name且SQL含LIMIT1():
-    """pnl=None 走补正打标路径：fetch_one 的 $1 == my_record_name，SQL 保持 LIMIT 1。"""
+async def test_ac3_完整盈亏未知时不能查最后一单猜测整仓结果():
+    """pnl=None 保留待结算，不使用最后一单结果更新整仓风控。"""
     strategy = make_strategy_shell()
     wire_monitor_deps(strategy)
     strategy.db.fetch_one = AsyncMock(
@@ -132,14 +132,10 @@ async def test_ac3_补正止损打标分支_查询绑定1为my_record_name且SQL
 
     await strategy._monitor_positions()
 
-    strategy.db.fetch_one.assert_awaited_once()
-    sql, bind_value = strategy.db.fetch_one.await_args.args[0], strategy.db.fetch_one.await_args.args[1]
-    assert bind_value == MY_RECORD_NAME  # SQL 的第一个位置参数（$1）
-    assert 'WHERE strategy = $1' in sql
-    assert 'LIMIT 1' in sql
-    # 分支真实执行到底的证据：亏损记录触发补正打标并累加连续亏损计数
-    strategy.binance_client.trade_logger.log_stop_loss.assert_awaited_once()
-    assert strategy.consecutive_losses == 1
+    strategy.db.fetch_one.assert_not_awaited()
+    strategy.binance_client.trade_logger.log_stop_loss.assert_not_awaited()
+    assert strategy.consecutive_losses == 0
+    assert strategy.positions[symbol]['settlement_pending']
 
 
 async def test_ac3_平仓回写分支_查询绑定1为my_record_name且SQL含LIMIT1():

@@ -19,7 +19,9 @@ MTPCS v6.28 加仓统一托管 + 移动止损尾仓修复功能测试
 import importlib
 import os
 import sys
+from datetime import datetime, timezone
 from decimal import Decimal
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 # 确保项目根目录在 path 中
@@ -46,7 +48,7 @@ def make_signal(**overrides) -> dict:
         'direction': 'LONG',
         'grade': 'A',
         'score': 80,
-        'timestamp': 1700000000,
+        'timestamp': datetime.fromtimestamp(1700000000, timezone.utc),
         'quantity': Decimal('0.1'),
         'entry_price': Decimal('60000'),
         'leverage': 5,
@@ -54,6 +56,7 @@ def make_signal(**overrides) -> dict:
         'initial_stop_loss': Decimal('58500'),
         'tp1_price': Decimal('64000'),
         'tp2_price': Decimal('66000'),
+        '_risk_client_id': 'test-reservation',
     }
     signal.update(overrides)
     return signal
@@ -113,7 +116,7 @@ def strategy_builder(request):
 
 
 @pytest.fixture
-def strategy(strategy_builder):
+def strategy(strategy_builder, monkeypatch):
     """构造策略实例并注入测试 mock（不触碰真实交易所/数据库）"""
     strategy_cls, _, config = strategy_builder
     s = strategy_cls(
@@ -123,6 +126,26 @@ def strategy(strategy_builder):
         notification_client=AsyncMock(),
         db_manager=None,
     )
+    if strategy_cls.__module__ == 'strategies.btc_eth_aggressive.strategy':
+        # 本套用例只验证风控已放行后的托管流程；实盘 reduced 禁加仓另有独立拒绝测试。
+        module = importlib.import_module(strategy_cls.__module__)
+        s.frequency_controller.state_ready = True
+        s._stop_entry_gate = AsyncMock(return_value=(True, ""))
+        monkeypatch.setattr(module, 'entry_allowed', AsyncMock(return_value=True))
+        async def reserve(_strategy, _symbol, signal):
+            signal['_risk_client_id'] = 'risk_test_mtpcs'
+            return True
+
+        monkeypatch.setattr(module, 'prepare_aggressive_entry', reserve)
+        monkeypatch.setattr('shared.entry_risk_policy.submit_aggressive_entry', AsyncMock(return_value={
+            'orderId': 100, 'status': 'FILLED', 'executedQty': '0.1', 'origQty': '0.1',
+            'avgPrice': '60000', 'clientOrderId': 'risk_test_mtpcs',
+        }))
+        s.binance.get_order.return_value = {
+            'orderId': 100, 'status': 'FILLED', 'executedQty': '0.1', 'origQty': '0.1',
+            'avgPrice': '60000', 'clientOrderId': 'risk_test_mtpcs',
+        }
+        s.binance.get_position.return_value = []
     # 预置精度缓存，避免真实查询交易所
     s.symbol_precision['BTCUSDT'] = {
         'stepSize': '0.001',
@@ -137,6 +160,22 @@ def strategy(strategy_builder):
     s._wait_for_order_fill = AsyncMock(return_value=make_fill())
     s.frequency_controller.record_trade = AsyncMock()
     s._send_signal_error_notification = AsyncMock()
+    if 'aggressive' in strategy_cls.__module__:
+        # 本组验证开仓/合仓编排；政策与持久预留由独立风险契约测试覆盖。
+        module = importlib.import_module(strategy_cls.__module__)
+        monkeypatch.setattr(module, 'entry_allowed', AsyncMock(return_value=True))
+        monkeypatch.setattr(module, 'prepare_aggressive_entry', AsyncMock(return_value=True))
+        s.frequency_controller.state_ready = True
+        s._stop_entry_gate = AsyncMock(return_value=(True, ''))
+        s._persist_position_metadata = AsyncMock()
+        s.binance.get_position = AsyncMock(return_value=[])
+        async def reserved_submit(strategy, symbol, signal):
+            return await strategy.binance.place_order(symbol=symbol, side='BUY',
+                quantity=signal['quantity'], price=signal['entry_price'], order_type='LIMIT')
+        async def wait_reserved(*args, **kwargs):
+            return await s._wait_for_order_fill(args[1], kwargs['order_id'], kwargs['timeout_seconds'])
+        monkeypatch.setattr('shared.entry_risk_policy.submit_aggressive_entry', reserved_submit)
+        monkeypatch.setattr('shared.order_fill_waiter.wait_order_final_state', wait_reserved)
     return s
 
 
@@ -708,7 +747,7 @@ class TestSyncPositionWithExchange:
         s = strategy
         pos = make_position(position_cls)
         s.binance.get_position = AsyncMock(
-            return_value=[{'symbol': 'BTCUSDT', 'positionAmt': '0.0000001'}])
+            return_value=[{'symbol': 'BTCUSDT', 'positionAmt': '0'}])
         result = await s._sync_position_with_exchange('BTCUSDT', pos, '')
         assert result['closed'] is True
         assert pos.current_quantity == Decimal('0')

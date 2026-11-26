@@ -13,10 +13,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import ROUND_DOWN, ROUND_HALF_UP, ROUND_UP, Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from shared.trade_logger import TradeLogger
 
@@ -27,6 +27,7 @@ from .models import (
     Fill,
     Order,
     OrderIntent,
+    DataBlocked,
     Position,
     ZERO,
 )
@@ -181,6 +182,9 @@ class PortfolioView:
     positions: Tuple[Position, ...]
     last_prices: Dict[str, Decimal]
     realized_equity: Decimal
+    last_price_times: Dict[str, datetime] = field(default_factory=dict)
+    pending_entry_symbols: frozenset[str] = frozenset()
+    working_exit_symbols: frozenset[str] = frozenset()
 
 
 class VirtualBroker:
@@ -209,6 +213,7 @@ class VirtualBroker:
         self.realized_equity = initial_equity
         self.positions: Dict[str, Position] = {}
         self.last_prices: Dict[str, Decimal] = {}
+        self.last_price_times: Dict[str, datetime] = {}
         self._pending_entries: Dict[str, List[Order]] = {}
         self._working_exits: Dict[str, List[Order]] = {}
 
@@ -220,14 +225,32 @@ class VirtualBroker:
         self._entry_fee: Dict[str, Decimal] = {}
         self._entry_slip: Dict[str, Decimal] = {}
         self._funding_acc: Dict[str, Decimal] = {}
+        self._funding_exposures: Dict[str, dict] = {}
         self._mae: Dict[str, Decimal] = {}
         self._mfe: Dict[str, Decimal] = {}
         self._order_seq = 0
         self._trade_seq = 0
+        self._partial_entries: Dict[str, str] = {}
 
     # ------------------------------------------------------------------
     # 对外：提交意图 / 推进 K 线 / 资金费 / 盯市
     # ------------------------------------------------------------------
+    def restore_initial_positions(self, restorations) -> None:
+        """Restore attested opening inventory and unallocated lifecycle costs."""
+        if self.positions or self.fills or self._pending_entries:
+            raise DataBlocked(['initial_broker_state_not_empty'])
+        for item in restorations:
+            position=item['position']
+            if position.symbol in self.positions or not position.is_open():
+                raise DataBlocked(['initial_position_duplicate_or_closed:'+position.symbol])
+            self.positions[position.symbol]=position
+            self.set_mark_price(position.symbol,item['mark_price'],item['mark_observed_at'])
+            self._entry_fee[position.position_id]=item['entry_fee_remaining']
+            self._entry_slip[position.position_id]=item['entry_slippage_remaining']
+            self._funding_acc[position.position_id]=item['funding_accrued']
+            self._mae[position.position_id]=item['mae']
+            self._mfe[position.position_id]=item['mfe']
+
     def submit(self, intents: Tuple[OrderIntent, ...], bar: Any, ts: datetime) -> None:
         """接收适配器意图。
 
@@ -249,21 +272,72 @@ class VirtualBroker:
                 else:
                     self._pending_entries.setdefault(intent.symbol, []).append(order)
 
-    def on_bar(self, symbol: str, bar: Any, ts: datetime) -> None:
+    def on_bar(self, symbol: str, bar: Any, ts: datetime, *,
+               after_entries: Optional[Callable[[], None]] = None,
+               entry_ts: Optional[datetime] = None) -> None:
         """推进一根 K 线：先按开盘价执行待成交入场，再按固定优先级处理退出。"""
         self.last_prices[symbol] = bar.open
-        self._execute_pending_entries(symbol, bar, ts)
-        self.last_prices[symbol] = bar.close
+        self._execute_pending_entries(symbol, bar, entry_ts or ts)
+        if after_entries is not None:
+            after_entries()
+        self.set_mark_price(symbol,bar.close,bar.close_time)
         self._evaluate_exits(symbol, bar, ts)
         self._update_mae_mfe(symbol, bar)
 
-    def settle_funding(self, symbol: str, rate: Decimal, ts: datetime) -> None:
+    def set_mark_price(self, symbol: str, price: Decimal, observed_at: datetime) -> None:
+        """Retain the actual source time; viewing/valuing never refreshes it."""
+        if not price.is_finite() or price <= ZERO or observed_at.tzinfo is None:
+            raise DataBlocked(['position_mark_invalid:'+symbol])
+        previous=self.last_price_times.get(symbol)
+        if previous is None or observed_at>=previous:
+            self.last_prices[symbol]=price
+            self.last_price_times[symbol]=observed_at
+
+    def begin_funding(self, symbol: str, economic_time: datetime) -> Optional[str]:
+        """Freeze the position actually exposed at settlement, before any same-time fill."""
+        position=self.positions.get(symbol)
+        if position is None or not position.is_open() or position.entry_time>=economic_time:
+            return None
+        key=symbol+'|'+economic_time.isoformat()
+        if key in self._funding_exposures:
+            raise DataBlocked(['funding_exposure_duplicate:'+key])
+        self._funding_exposures[key]=dict(symbol=symbol,position_id=position.position_id,
+            quantity=position.current_quantity,remaining_quantity=position.current_quantity,closed_quantities={},
+            direction=position.direction,economic_time=economic_time)
+        return key
+
+    def receive_funding(self, key: str, rate: Decimal, received_at: datetime, mark: dict) -> dict:
+        exposure=self._funding_exposures.pop(key)
+        quantity=exposure['quantity']; position_id=exposure['position_id']
+        contribution=sum_funding_fee(quantity,mark['price'],exposure['direction'],(rate,))
+        closed_quantity=ZERO; closed_contribution=ZERO
+        for index,trade in enumerate(self.closed_trades):
+            if trade.trade_id not in exposure['closed_quantities']:
+                continue
+            exposed_quantity=exposure['closed_quantities'][trade.trade_id]
+            share=contribution*exposed_quantity/quantity
+            closed_quantity+=exposed_quantity; closed_contribution+=share
+            self.closed_trades[index]=replace(trade,funding_fee=trade.funding_fee+share,net_pnl=trade.net_pnl+share)
+        if closed_quantity+exposure['remaining_quantity']!=quantity:
+            raise DataBlocked(['funding_exposure_quantity_changed:'+key])
+        self._funding_acc[position_id]=self._funding_acc.get(position_id,ZERO)+contribution-closed_contribution
+        self.realized_equity+=contribution
+        payload=dict(symbol=exposure['symbol'],position_id=position_id,funding_rate=str(rate),
+            contribution=str(contribution),closed_contribution=str(closed_contribution),
+            quantity_at_settlement=str(quantity),exposure_allocation_model='blended_position_pro_rata_v1',economic_time=exposure['economic_time'].isoformat().replace('+00:00','Z'),
+            mark_price=str(mark['price']),mark_provenance={k:str(v) for k,v in mark.items() if k!='price'})
+        self._event(received_at,'funding_settlement',payload)
+        return payload
+
+    def settle_funding(self, symbol: str, rate: Decimal, ts: datetime, *,
+                       mark_price: Optional[Decimal] = None,
+                       mark_provenance: Optional[dict] = None) -> None:
         """计提一次资金费结算（mark_price 用 entry_price 近似）。"""
         position = self.positions.get(symbol)
         if position is None or not position.is_open():
             return
         contribution = sum_funding_fee(
-            position.current_quantity, position.entry_price, position.direction, (rate,)
+            position.current_quantity, mark_price if mark_price is not None else position.entry_price, position.direction, (rate,)
         )
         self._funding_acc[position.position_id] = (
             self._funding_acc.get(position.position_id, ZERO) + contribution
@@ -277,8 +351,16 @@ class VirtualBroker:
                 "position_id": position.position_id,
                 "funding_rate": str(rate),
                 "contribution": str(contribution),
+                **({"mark_price":str(mark_price),"mark_provenance":mark_provenance}
+                   if mark_price is not None else {}),
             },
         )
+
+    def apply_cash_flow(self, amount: Decimal, ts: datetime, event_id: str) -> None:
+        if not amount.is_finite() or self.realized_equity+amount<=ZERO:
+            raise DataBlocked(['cashflow_invalid'])
+        self.realized_equity+=amount
+        self._event(ts,'cash_flow',dict(event_id=event_id,amount=str(amount)))
 
     def mark(self, ts: datetime) -> EquityPoint:
         """生成盯市权益点。"""
@@ -305,6 +387,9 @@ class VirtualBroker:
             positions=tuple(self.positions[symbol] for symbol in sorted(self.positions)),
             last_prices=dict(self.last_prices),
             realized_equity=self.realized_equity,
+            last_price_times=dict(self.last_price_times),
+            pending_entry_symbols=frozenset(symbol for symbol,orders in self._pending_entries.items() if orders),
+            working_exit_symbols=frozenset(symbol for symbol,orders in self._working_exits.items() if orders),
         )
 
     def final_position(self) -> Optional[Position]:
@@ -341,6 +426,11 @@ class VirtualBroker:
             trailing_activated=position.trailing_activated,
             tp1_hit=position.tp1_hit,
             tp2_hit=position.tp2_hit,
+            entry_mode=position.entry_mode,
+            geometry_reference_price=position.geometry_reference_price,
+            exit_ratios=position.exit_ratios,
+            exit_parameters=position.exit_parameters,
+            entry_complete=position.entry_complete,
         )
 
     # ------------------------------------------------------------------
@@ -366,7 +456,9 @@ class VirtualBroker:
             if bar.open_time < order.created_at:
                 self._pending_entries.setdefault(symbol, []).append(order)
                 continue
-            if intent.order_type == "MARKET":
+            if intent.execution_model is not None:
+                self._execute_hrs_limit_entry(order, bar, ts)
+            elif intent.order_type == "MARKET":
                 self._open_market_position(order, bar.open, ts, activated_at=bar.open_time)
             elif intent.order_type in ("LIMIT", "STOP"):
                 trigger = intent.limit_price if intent.order_type == "LIMIT" else intent.trigger_price
@@ -383,8 +475,78 @@ class VirtualBroker:
             else:
                 self._reject(order, ts, "ENTRY_ORDER_TYPE_UNSUPPORTED")
 
-    def _open_market_position(self, order: Order, reference_price: Decimal, ts: datetime,
-                              activated_at: Optional[datetime] = None) -> None:
+    def _execute_hrs_limit_entry(self, order: Order, bar: Any, ts: datetime) -> None:
+        """Declared conservative 1m participation model, not an exchange fill claim."""
+        intent, model = order.intent, order.intent.execution_model
+        try:
+            participation = Decimal(str(model['participation_rate']))
+            timeout = model['timeout_minutes']
+            if (model['version'] != 'hrs_1m_volume_v1' or not participation.is_finite()
+                    or not ZERO < participation <= Decimal('1') or type(timeout) is not int or timeout <= 0
+                    or bar.interval != '1m' or intent.order_type != 'LIMIT' or intent.expires_at is None):
+                raise ValueError('invalid_execution_model')
+            if (intent.expires_at-order.created_at).total_seconds() != timeout*60:
+                raise ValueError('execution_timeout_mismatch')
+            if not bar.volume.is_finite() or bar.volume < ZERO:
+                raise ValueError('execution_volume_invalid')
+        except (KeyError,TypeError,ValueError,ArithmeticError) as exc:
+            raise DataBlocked(['hrs_execution_model_invalid:'+str(exc)]) from exc
+        symbol = intent.symbol
+        if bar.open_time < order.created_at:
+            self._pending_entries.setdefault(symbol,[]).append(order)
+            return
+        filters = self.filters[symbol]
+        existing = self.positions.get(symbol)
+        owned = self._partial_entries.get(order.order_id)
+        if existing is not None and existing.is_open() and owned != existing.position_id:
+            self._reject(order,ts,'POSITION_EXISTS')
+            return
+        filled = ZERO
+        if bar.open_time < intent.expires_at and price_crosses_limit(intent.limit_price,bar.high,bar.low,intent.side):
+            filled = min(intent.quantity,round_quantity(bar.volume*participation,filters.step_size))
+        remaining = intent.quantity-filled
+        if filled > ZERO:
+            fill_intent=replace(intent,quantity=filled)
+            fill_order=replace(order,intent=fill_intent)
+            if owned is None:
+                self._open_market_position(fill_order,intent.limit_price,ts,complete=remaining<=ZERO)
+                position=self.positions.get(symbol)
+                if position is None or not position.is_open():
+                    return
+                self._partial_entries[order.order_id]=position.position_id
+            else:
+                position=self.positions[symbol]
+                fill_price=round_price(intent.limit_price,filters.tick_size)
+                notional=filled*fill_price
+                fee,slip=taker_fee_notional(notional,self.fee_bps),slippage_cost(notional,self.slippage_bps)
+                self.realized_equity += fee+slip
+                total=position.entry_quantity+filled
+                average=(position.entry_price*position.entry_quantity+fill_price*filled)/total
+                self.positions[symbol]=replace(position,entry_price=average,entry_quantity=total,
+                    current_quantity=position.current_quantity+filled,entry_complete=remaining<=ZERO)
+                self._entry_fee[position.position_id]+=fee
+                self._entry_slip[position.position_id]+=slip
+                self.fills.append(Fill(order.order_id,fill_price,filled,fee,slip,ts))
+                self._event(ts,'fill',dict(order_id=order.order_id,symbol=symbol,side='OPEN_'+intent.side,
+                    price=str(fill_price),quantity=str(filled),fee=str(fee),slippage=str(slip),reason=intent.reason))
+        if remaining<=ZERO:
+            self._partial_entries.pop(order.order_id,None)
+            self._event(ts,'entry_complete',dict(symbol=symbol,order_id=order.order_id,
+                execution_model=model['version']))
+            return
+        if bar.close_time>=intent.expires_at:
+            position=self.positions.get(symbol)
+            if position is not None and position.is_open() and self._partial_entries.get(order.order_id)==position.position_id:
+                close_intent=replace(intent,quantity=position.current_quantity,reason='ENTRY_TIMEOUT',order_type='MARKET',
+                    reduce_only=True,close_quantity=position.current_quantity,execution_model=None)
+                self._close_position(replace(order,intent=close_intent),bar.close,ts)
+            self._partial_entries.pop(order.order_id,None)
+            self._event(ts,'entry_timeout',dict(symbol=symbol,order_id=order.order_id,remaining=str(remaining),
+                execution_model=model['version']))
+            return
+        self._pending_entries.setdefault(symbol,[]).append(replace(order,intent=replace(intent,quantity=remaining)))
+
+    def _open_market_position(self, order: Order, reference_price: Decimal, ts: datetime, activated_at: Optional[datetime] = None, *, complete: bool = True) -> None:
         intent = order.intent
         symbol = intent.symbol
         if symbol in self.positions and self.positions[symbol].is_open():
@@ -398,7 +560,7 @@ class VirtualBroker:
 
         fill_price = round_price(reference_price, symbol_filters.tick_size)
         quantity = round_quantity(
-            clamp_notional(round_quantity(intent.quantity, symbol_filters.step_size), fill_price,
+            intent.quantity if intent.execution_model is not None or intent.strategy_id == "hrs" else clamp_notional(round_quantity(intent.quantity, symbol_filters.step_size), fill_price,
                            symbol_filters.min_notional, symbol_filters.step_size),
             symbol_filters.step_size,
         )
@@ -407,6 +569,9 @@ class VirtualBroker:
             return
 
         notional = quantity * fill_price
+        if intent.strategy_id=='hrs' and intent.execution_model is None and notional<symbol_filters.min_notional:
+            self._reject(order,ts,'MIN_NOTIONAL')
+            return
         exposure = sum((p.current_quantity * self.last_prices.get(p.symbol, p.entry_price)
                         for p in self.positions.values() if p.is_open()), ZERO)
         if self.max_leverage > ZERO and exposure + notional > self.mark(ts).marked_equity * self.max_leverage:
@@ -424,9 +589,14 @@ class VirtualBroker:
             entry_price=fill_price,
             entry_quantity=quantity,
             current_quantity=quantity,
-            atr=intent.protection.atr if intent.protection else ZERO,
+            atr=intent.protection.atr if intent.protection else intent.atr,
             grade=intent.grade or "",
             entry_time=ts,
+            entry_mode=intent.entry_mode,
+            geometry_reference_price=intent.geometry_reference_price,
+            exit_ratios=intent.exit_ratios,
+            exit_parameters=dict(intent.exit_parameters) if intent.exit_parameters is not None else None,
+            entry_complete=complete,
         )
         self.positions[symbol] = position
         protection = intent.protection
@@ -462,7 +632,8 @@ class VirtualBroker:
                 ts=ts,
             )
         )
-        self._check_invariants(quantity, fill_price, symbol_filters, "open")
+        if complete:
+            self._check_invariants(quantity, fill_price, symbol_filters, "open")
         self._event(
             ts,
             "fill",
@@ -501,11 +672,20 @@ class VirtualBroker:
             trigger = order.intent.trigger_price
             if trigger is None:
                 continue
+            if (order.intent.strategy_id=='hrs' and order.intent.reason in ('TP1','TP2')
+                    and order.created_at>=bar.close_time):
+                # The bracket became available at this close. The earlier high/
+                # low cannot prove a favorable post-fill path. Adverse stops
+                # retain the conservative same-bar priority.
+                continue
             if not self._trigger_crossed(order.intent, trigger, bar):
                 continue
             if order.intent.reason in ("TP1", "TP2") and self._tp_already_hit(current, order.intent.reason):
                 continue
-            fill_price = self._exit_fill_price(order.intent, trigger)
+            reference = trigger
+            if order.intent.strategy_id == 'hrs' and order.intent.reason == 'STOP_LOSS':
+                reference = min(trigger,bar.open) if order.intent.side == 'LONG' else max(trigger,bar.open)
+            fill_price = self._exit_fill_price(order.intent, reference)
             self._close_position(order, fill_price, ts)
 
     def _trigger_crossed(self, intent: OrderIntent, trigger: Decimal, bar: Any) -> bool:
@@ -532,6 +712,10 @@ class VirtualBroker:
             if intent.side == "LONG":
                 return trigger * (Decimal("1") - self.stop_offset_pct)
             return trigger * (Decimal("1") + self.stop_offset_pct)
+        if intent.strategy_id == 'hrs':
+            # HRS sell limit is below trigger; buy-to-close limit is above it.
+            return trigger * (Decimal('1')-self.tp_offset_pct if intent.side == 'LONG'
+                              else Decimal('1')+self.tp_offset_pct)
         if intent.side == "LONG":
             return trigger * (Decimal("1") + self.tp_offset_pct)
         return trigger * (Decimal("1") - self.tp_offset_pct)
@@ -556,10 +740,10 @@ class VirtualBroker:
 
         exit_price = round_price(reference_price, symbol_filters.tick_size)
         ratio = intent.close_ratio
-        if intent.reason == "TP1" and not intent.fraction_of_entry and intent.close_ratio == Decimal("1"):
+        if intent.close_quantity is None and intent.reason == "TP1" and not intent.fraction_of_entry and intent.close_ratio == Decimal("1"):
             ratio = self.tp1_close_ratio
         base_quantity = position.entry_quantity if intent.fraction_of_entry else position.current_quantity
-        close_qty = round_quantity(base_quantity * ratio, symbol_filters.step_size)
+        close_qty = round_quantity(intent.close_quantity if intent.close_quantity is not None else base_quantity * ratio, symbol_filters.step_size)
         if close_qty <= ZERO:
             self._event(
                 ts,
@@ -620,6 +804,11 @@ class VirtualBroker:
             trailing_activated=position.trailing_activated,
             tp1_hit=position.tp1_hit or intent.reason == "TP1",
             tp2_hit=position.tp2_hit or intent.reason == "TP2",
+            entry_mode=position.entry_mode,
+            geometry_reference_price=position.geometry_reference_price,
+            exit_ratios=position.exit_ratios,
+            exit_parameters=position.exit_parameters,
+            entry_complete=position.entry_complete,
         )
 
         self._trade_seq += 1
@@ -644,6 +833,11 @@ class VirtualBroker:
                 mfe=self._mfe.get(position.position_id, ZERO),
             )
         )
+        for exposure in self._funding_exposures.values():
+            if exposure['position_id']==position.position_id:
+                exposed_closed=exposure['remaining_quantity']*share
+                exposure['remaining_quantity']-=exposed_closed
+                exposure['closed_quantities'][self.closed_trades[-1].trade_id]=exposed_closed
         self.fills.append(
             Fill(
                 order_id=order.order_id,
@@ -654,7 +848,8 @@ class VirtualBroker:
                 ts=ts,
             )
         )
-        self._check_invariants(close_qty, exit_price, symbol_filters, "close")
+        self._check_invariants(close_qty, exit_price, symbol_filters, "close",
+                               enforce_min_notional=not (intent.strategy_id == 'hrs' and intent.reduce_only))
         self._event(
             ts,
             "fill",
@@ -668,6 +863,7 @@ class VirtualBroker:
                 "slippage": str(slip),
                 "reason": intent.reason,
                 "net_pnl": str(net_pnl),
+                "realized_pnl": str(realized_pnl),
             },
         )
         if remaining <= ZERO:
@@ -686,10 +882,14 @@ class VirtualBroker:
         price: Decimal,
         symbol_filters: SymbolFilters,
         label: str,
+        *,
+        enforce_min_notional: bool = True,
     ) -> None:
         for message in (
             check_quantity_in_range(quantity, symbol_filters.step_size),
-            check_notional_above_min(quantity, price, symbol_filters.min_notional),
+            # Binance UM -4164 exempts reduce-only closes from MIN_NOTIONAL;
+            # quantity precision still applies, including small partial fills.
+            check_notional_above_min(quantity, price, symbol_filters.min_notional) if enforce_min_notional else None,
         ):
             if message:
                 self.invariant_violations.append("[{0}] {1}".format(label, message))

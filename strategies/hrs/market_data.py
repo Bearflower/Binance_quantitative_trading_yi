@@ -6,10 +6,12 @@ V2: B4 —— 新增市值 Provenance 接口（get_market_cap_provenance），
 """
 from typing import Dict, Any, Optional, List, Set
 from datetime import datetime, timedelta, timezone
+import time
 import structlog
 
 from shared.binance_api import BinanceClient
 from shared.market_cap import MarketCapService, MarketCapProvenance
+from shared.market_cap_client import market_cap_from_env
 from shared.kline_service import KLineService
 
 
@@ -51,7 +53,7 @@ class MarketDataProvider:
         # B4 (D4): fallback_ratio —— OI×市值代理系数；历史硬编码 20.0，现从配置读取
         # 与 candidate_pool.long.oi_market_cap_max=0.05 是同一件事的倒数（1/0.05=20）
         fallback_ratio = market_cap_config.get("fallback_ratio", 20.0)
-        self.market_cap_service = MarketCapService(
+        self.market_cap_service = market_cap_from_env(
             timeout=market_cap_config.get("timeout", 10),
             retry_count=market_cap_config.get("retry_count", 2),
             retry_interval=market_cap_config.get("retry_interval", 1.0),
@@ -70,6 +72,9 @@ class MarketDataProvider:
         self._funding_rate_cache: Dict[str, Dict[int, float]] = {}
         # 无效合约缓存（-4108 交割/结算/盘前、-9999 未知端点），避免重复请求产生告警日志
         self._invalid_contracts: Set[str] = set()
+        self._exchange_metadata_at = 0
+        self._exchange_metadata = []
+        self.universe_audit = {}
         # 从配置读取缓存TTL
         funding_config = config.get("funding_rate", {})
         self._funding_rate_cache_ttl = funding_config.get("cache_ttl_seconds", 28800)
@@ -94,11 +99,31 @@ class MarketDataProvider:
         Returns:
             所有交易对的24h统计列表
         """
+        tickers = None
         try:
             tickers = await self.binance_api.get_all_tickers()
-            logger.info("获取所有交易对行情", count=len(tickers))
-            return tickers
+            from .asset_universe import filter_crypto_tickers
+            refresh = time.time() - self._exchange_metadata_at >= 3600
+            metadata_rows = self._exchange_metadata
+            if refresh:
+                metadata = await self.binance_api.get_exchange_info()
+                if not isinstance(metadata, dict) or not isinstance(metadata.get('symbols'), list):
+                    raise ValueError('exchange metadata unavailable')
+                metadata_rows = metadata['symbols']
+            eligible, self.universe_audit = filter_crypto_tickers(tickers, metadata_rows)
+            if refresh:
+                self._exchange_metadata = metadata_rows
+                self._exchange_metadata_at = time.time()
+            self.universe_audit['observed_at'] = time.time()
+            logger.info("HRS 交易范围元数据核验", raw_count=len(tickers), eligible_count=len(eligible),
+                        classifications=self.universe_audit['counts'])
+            return eligible
         except Exception as e:
+            # Failure auditing must itself accept malformed/duplicate source rows.
+            raw_count = len(tickers) if isinstance(tickers, list) else None
+            self.universe_audit = dict(raw_count=raw_count, eligible_count=0,
+                                       counts={'metadata_unverified': raw_count} if raw_count is not None else {}, rows={})
+            self.universe_audit.update(observed_at=time.time(), error_type=type(e).__name__)
             logger.error("获取所有交易对行情失败", error=str(e))
             return []
 
@@ -248,13 +273,14 @@ class MarketDataProvider:
         Returns:
             MarketCapProvenance
         """
-        return await self.market_cap_service.get_market_cap_with_provenance(
-            symbol=symbol,
-            oi_usd=oi_usd,
-            _volume_24h_usd=volume_24h_usd,
+        cap = await self.market_cap_service.get_market_cap_with_provenance(
+            symbol=symbol, oi_usd=oi_usd, _volume_24h_usd=volume_24h_usd,
         )
+        if cap.source == "missing":
+            logger.info("真实市值缺失原因", symbol=symbol, reason=cap.missing_reason)
+        return cap
 
-    async def preload_market_caps(self, symbols: List[str]) -> None:
+    async def preload_market_caps(self, symbols: List[str]) -> Dict:
         """
         批量预加载市值缓存（推荐在候选池扫描开始时调用一次）
 
@@ -266,8 +292,8 @@ class MarketDataProvider:
             symbols: 需要预加载市值的交易对列表
         """
         if not symbols:
-            return
-        await self.market_cap_service.get_batch_market_caps(symbols)
+            return {}
+        return await self.market_cap_service.get_batch_market_caps_with_provenance(symbols)
 
     def _get_4h_slot(self, timestamp_ms: int) -> int:
         """
@@ -388,33 +414,17 @@ class MarketDataProvider:
         Returns:
             4h K线数据列表，每个元素包含 open_time, open, high, low, close, volume
         """
-        from collections import defaultdict
+        from .kline_repair import complete_four_hour_bars
+        return complete_four_hour_bars(klines_1h)
 
-        groups = defaultdict(list)
-        for k in klines_1h:
-            ot = k.get("open_time", 0)
-            if isinstance(ot, (int, float)):
-                slot = self._get_4h_slot(int(ot))
-                groups[slot].append(k)
-
-        klines_4h = []
-        for slot in sorted(groups.keys()):
-            group = groups[slot]
-            open_price = float(group[0].get("open", 0))
-            close_price = float(group[-1].get("close", 0))
-            high_price = max(float(k.get("high", 0)) for k in group)
-            low_price = min(float(k.get("low", 0)) for k in group)
-            volume = sum(float(k.get("volume", 0)) for k in group)
-            klines_4h.append({
-                "open_time": slot,
-                "open": open_price,
-                "high": high_price,
-                "low": low_price,
-                "close": close_price,
-                "volume": volume,
-            })
-
-        return klines_4h
+    async def prepare_decision_klines(self, symbol, cached_1h, cached_4h, *, decision_at):
+        """Repair full original history before selecting normal scoring windows."""
+        from .kline_repair import prepare_klines
+        config = self.config.get('kline', {})
+        return await prepare_klines(self.binance_api, symbol, cached_1h, cached_4h,
+            decision_at=decision_at, keep_count=config.get('keep_count', 168),
+            four_hour_count=config.get('synthetic_4h_count', 50),
+            minimum=config.get('min_klines_for_analysis', 24), page_limit=self.max_api_limit)
 
     async def get_klines_1h(
         self,
@@ -451,17 +461,24 @@ class MarketDataProvider:
                         interval="1h",
                         limit=limit,
                     )
-                    if klines:
+                    if klines and len(klines) >= min(limit, self.max_api_limit):
                         return klines
-                    logger.warning("K线服务返回空数据，回退到币安API", symbol=symbol)
                 except Exception as e:
                     logger.warning("K线服务获取失败，回退到币安API", symbol=symbol, error=str(e))
 
-                return await self.binance_api.get_klines(
+                klines = await self.binance_api.get_klines(
                     symbol=symbol,
                     interval="1h",
                     limit=min(limit, self.max_api_limit)
                 )
+                minimum = self.config.get("kline", {}).get("min_klines_for_analysis", 24)
+                if klines and len(klines) >= min(limit, self.max_api_limit):
+                    logger.info("K线服务数据不足，币安API补取成功", symbol=symbol, count=len(klines))
+                else:
+                    logger.warning("K线API补取后数据仍不足", symbol=symbol,
+                                   count=len(klines or []), min_required=minimum,
+                                   requested_count=min(limit, self.max_api_limit))
+                return klines
         except Exception as e:
             logger.error("获取K线失败", symbol=symbol, error=str(e))
             return []

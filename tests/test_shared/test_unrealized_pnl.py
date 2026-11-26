@@ -71,6 +71,7 @@ class TestOverviewMetricPathUnrealized:
     @staticmethod
     def _report(net):
         return {
+            "account_id": "default", "start_ms": 1000, "end_ms": 2000,
             "account_components": {"net_usdt": net, "realized_pnl_usdt": net,
                                    "commission_usdt": "0", "funding_usdt": "0"},
             "account_usdt_total": net, "unattributed_usdt_total": "0",

@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+from .account_cutover import FILL_SOURCES, INCOME_SOURCES, coverage_watermark, order_epoch
+
 from collections import defaultdict
 from decimal import Decimal
 from typing import Any, Iterable
@@ -30,7 +32,7 @@ def _id(value: Any) -> str | None:
 def build_economic_report(
     fills: Iterable[dict], incomes: Iterable[dict], trade_records: Iterable[dict],
     reviewed_overrides: Iterable[dict] = (),
-    derived_attributions: Iterable[dict] = (),
+    derived_attributions: Iterable[dict] = (), *, cutover: int | None = None,
 ) -> dict:
     """用唯一成交和订单标识归属；收入事件是金额唯一来源。"""
     fill_by_id: dict[tuple[str, str, str], dict] = {}
@@ -40,13 +42,14 @@ def build_economic_report(
             raise ValueError(f"冲突的 fill trade_id: {key}")
         fill_by_id[key] = fill
 
-    order_owners: dict[tuple[str, str, str], set[str]] = defaultdict(set)
+    order_owners: dict[tuple[str, str, str, str], set[str]] = defaultdict(set)
     for trade in trade_records:
         order_id = _id(trade.get("order_id"))
         strategy = trade.get("strategy")
         account_id = _id(trade.get("account_id"))
-        if account_id and order_id and strategy:
-            order_owners[(account_id, str(trade["symbol"]), order_id)].add(str(strategy))
+        epoch = order_epoch(trade.get("executed_at"), cutover)
+        if account_id and order_id and strategy and epoch:
+            order_owners[(account_id, str(trade["symbol"]), order_id, epoch)].add(str(strategy))
 
     income_by_id: dict[tuple[str, str, str], dict] = {}
     for income in incomes:
@@ -118,10 +121,12 @@ def build_economic_report(
                 fill = fill_by_id.get((str(income["account_id"]), symbol, trade_id))
                 if fill is None:
                     reason = "fill_not_found"
+                elif order_epoch(income.get("event_time_utc"), cutover) != order_epoch(fill.get("trade_time_utc"), cutover):
+                    reason = "fill_mode_mismatch"
                 else:
                     order_id = _id(fill.get("order_id"))
                     owners = order_owners.get(
-                        (str(income["account_id"]), symbol, order_id), set()
+                        (str(income["account_id"]), symbol, order_id, order_epoch(fill.get("trade_time_utc"), cutover)), set()
                     ) if order_id else set()
                     if len(owners) > 1:
                         reason = "order_owner_ambiguous"
@@ -243,27 +248,52 @@ def coverage_gaps(
         raise ValueError("时间窗口无效")
     rows = list(cursors)
     required = [
-        ("um/income", kind, None, f"income:{kind}") for kind in INCOME_TYPES
-    ] + [("userTrades", None, sym, f"fills:{sym}") for sym in sorted(symbols)]
-    gaps = []
-    for source, kind, symbol, label in required:
-        intervals = sorted(
-            (int(row["window_start_ms"]), int(row["covered_until_ms"]))
-            for row in rows
-            if row.get("account_id") == account_id
-            and row.get("source") == source
-            and row.get("income_type") == kind
-            and row.get("symbol") == symbol
-            and row.get("page_complete") is True
-            and row.get("request_status") == "ok"
-            and row.get("covered_until_ms") is not None
-        )
-        covered = start_ms
-        for left, right in intervals:
-            if left <= covered:
-                covered = max(covered, right)
-            if covered >= end_ms:
-                break
-        if covered < end_ms:
-            gaps.append(label)
-    return gaps
+        (INCOME_SOURCES, kind, None, f"income:{kind}") for kind in INCOME_TYPES
+    ] + [(FILL_SOURCES, None, sym, f"fills:{sym}") for sym in sorted(symbols)]
+    return [
+        label for sources, kind, symbol, label in required
+        if coverage_watermark(rows, account_id, start_ms, end_ms, sources, kind, symbol) < end_ms
+    ]
+
+
+def add_mode_segments(report, cutover):
+    """用最终已核对的逐笔归属切分模式，包括归档事实及人工复核后的结果。"""
+    from datetime import datetime, timezone
+    if cutover is None:
+        return
+    report["classic_cutover_ms"] = cutover
+    segments = []
+    fields = {"REALIZED_PNL": "realized_pnl_usdt", "COMMISSION": "commission_usdt",
+              "FUNDING_FEE": "funding_usdt"}
+    def empty():
+        return dict.fromkeys((*fields.values(), "net_usdt"), Decimal("0"))
+    for mode, left, right in (("pm", report["start_ms"], min(report["end_ms"], cutover)),
+                              ("classic", max(report["start_ms"], cutover), report["end_ms"])):
+        if left >= right:
+            continue
+        start = datetime.fromtimestamp(left / 1000, timezone.utc)
+        end = datetime.fromtimestamp(right / 1000, timezone.utc)
+        components, by_strategy = empty(), defaultdict(empty)
+        count, unattributed = 0, Decimal("0")
+        for row in report["events"]:
+            if not start <= datetime.fromisoformat(row["event_time_utc"]) < end:
+                continue
+            count += 1
+            if row["asset"] != "USDT":
+                continue
+            amount = _decimal(row["amount"])
+            field = fields[row["income_type"]]
+            components[field] += amount
+            components["net_usdt"] += amount
+            if row["strategy"]:
+                bucket = by_strategy[row["strategy"]]
+                bucket[field] += amount
+                bucket["net_usdt"] += amount
+            else:
+                unattributed += amount
+        segments.append(dict(account_mode=mode, start_ms=left, end_ms=right, income_count=count,
+                             unattributed_usdt_total=str(unattributed),
+                             account_components={k: str(v) for k, v in components.items()},
+                             by_strategy={s: {k: str(v) for k, v in bucket.items()}
+                                          for s, bucket in by_strategy.items()}))
+    report["mode_segments"] = segments

@@ -19,6 +19,10 @@ from strategies.grid.market_state import MarketState
 SCHEMA_VERSION = 5
 
 
+POSITION_MISMATCH_LOCK = "position does not match journal fills"
+FILL_HANDLING_LOCK = "fill handling uncertain"
+
+
 def _connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path), timeout=10, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -161,6 +165,37 @@ class DecisionStore:
     def close(self):
         self.conn.close()
 
+    def bind_account(self, identity: str) -> None:
+        """在订单恢复前核对账本归属；无标记的旧执行数据来自 PM。"""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.conn.execute(
+                "SELECT value FROM schema_meta WHERE key='account_identity'").fetchone()
+            if row is not None:
+                if row[0] != identity:
+                    raise RuntimeError("grid journal belongs to another account")
+            else:
+                if identity != "pm":
+                    has_history = self.conn.execute("""SELECT
+                        EXISTS(SELECT 1 FROM grid_epoch) OR
+                        EXISTS(SELECT 1 FROM equity_checkpoint) OR
+                        EXISTS(SELECT 1 FROM execution_cursor WHERE decision_id IS NOT NULL) OR
+                        EXISTS(SELECT 1 FROM engine_state WHERE state != 'FLAT')
+                    """).fetchone()[0]
+                    if has_history:
+                        raise RuntimeError("classic account requires a fresh grid journal")
+                    # 首次绑定后只处理后续信号，防止重放切换前的旧决策。
+                    self.conn.execute("""UPDATE execution_cursor SET decision_id=
+                        (SELECT decision_id FROM decisions ORDER BY rowid DESC LIMIT 1)
+                        WHERE id=1""")
+                self.conn.execute(
+                    "INSERT INTO schema_meta(key,value) VALUES('account_identity',?)",
+                    (identity,))
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+
     def publish(self, payload: Mapping, config_hash: str) -> str:
         _validate(payload)
         if not config_hash:
@@ -208,7 +243,10 @@ class DecisionStore:
             if current is None:
                 raise RuntimeError("execution cursor has no decision")
             cursor_rowid = current[0]
-        sql = "SELECT * FROM decisions WHERE rowid>? ORDER BY rowid"
+        # A producer can publish an already calculated signal after stop settlement.
+        sql = """SELECT * FROM decisions WHERE rowid>? AND calculated_at_ms >
+            COALESCE((SELECT MAX(CAST(value AS INTEGER)) FROM schema_meta
+                      WHERE key IN ('stop_signal_cutoff_ms','position_recovery_cutoff_ms')),0) ORDER BY rowid"""
         if limit is not None:
             return self.conn.execute(sql + " LIMIT ?", (cursor_rowid, limit)).fetchall()
         return self.conn.execute(sql, (cursor_rowid,)).fetchall()
@@ -237,6 +275,11 @@ class DecisionStore:
             raise ValueError("decision is not next")
         self.conn.execute("UPDATE execution_cursor SET decision_id=? WHERE id=1", (decision_id,))
 
+    def acknowledge_after_action(self, decision_id, epoch_id):
+        # Stop settlement supersedes the in-flight decision during reconciliation.
+        if epoch_id is None or not self.stopped_epoch(epoch_id):
+            self.acknowledge(decision_id)
+
     def create_epoch(self, decision_id: str, plan_digest: str = "", *,
                      levels=None, stop_loss_low=None, stop_loss_high=None) -> int:
         if not decision_id:
@@ -264,6 +307,22 @@ class DecisionStore:
         if row.rowcount != 1:
             raise ValueError("epoch not active")
 
+    def retire_flat_handoff(self, epoch_id: int, reason: str) -> None:
+        """Close the old epoch after its resting orders and protections settled."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            state = self.engine_state()
+            if (state["state"] != "PAUSED" or state["lock_reason"] != reason
+                    or self.active_epoch_id() != epoch_id or self.stopped_epoch(epoch_id)
+                    or self.active_orders() or self.active_protections()):
+                raise RuntimeError("grid handoff is not settled")
+            self.close_epoch(epoch_id)
+            self.set_engine_state("FLAT")
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+
     def epoch(self, epoch_id: int) -> Optional[dict]:
         row = self.conn.execute("SELECT * FROM grid_epoch WHERE id=?", (epoch_id,)).fetchone()
         return dict(row) if row else None
@@ -284,10 +343,64 @@ class DecisionStore:
             raise ValueError("duplicate active order intent") from exc
         return self.get_order(client_order_id)
 
+    def discard_prepared_reverse(self, client_id):
+        """Release a draft pair that has never been sent to the exchange."""
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            order = self.get_order(client_id)
+            if (order is None or order["role"] != "REVERSE"
+                    or order["status"] != "PREPARED" or order["exchange_order_id"] is not None
+                    or Decimal(order["executed_qty"]) != 0):
+                raise ValueError("reverse draft cannot be discarded")
+            self.conn.execute("DELETE FROM pair WHERE reverse_client_order_id=?", (client_id,))
+            self.conn.execute("DELETE FROM order_intent WHERE client_order_id=?", (client_id,))
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+
+    def record_event_failure(self, event, error):
+        payload = json.dumps({key: event[key] for key in ("e", "E", "T", "o") if key in event},
+                             sort_keys=True)
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS order_event_failure(
+            event_hash TEXT PRIMARY KEY, observed_ms INTEGER NOT NULL,
+            payload_json TEXT NOT NULL, error TEXT NOT NULL)""")
+        self.conn.execute("INSERT OR IGNORE INTO order_event_failure VALUES(?,?,?,?)",
+            (hashlib.sha256(payload.encode()).hexdigest(), int(time.time()*1000),
+             payload, type(error).__name__ + ": " + str(error)))
+
     def get_order(self, client_order_id: str) -> Optional[dict]:
         row = self.conn.execute("SELECT * FROM order_intent WHERE client_order_id=?",
                                 (client_order_id,)).fetchone()
         return dict(row) if row else None
+
+    def adjacent_level(self, source, levels):
+        target = source['level_index'] + (1 if source['side'] == 'BUY' else -1)
+        exists = self.conn.execute("SELECT 1 FROM sqlite_master WHERE name='grid_trailing'").fetchone()
+        window = (self.conn.execute('SELECT * FROM grid_trailing WHERE epoch_id=?',
+                                   (source['epoch_id'],)).fetchone() if exists else None)
+        if window:
+            if self.conn.execute('SELECT 1 FROM grid_retired_obligation WHERE client_order_id=?',
+                                 (source['client_order_id'],)).fetchone():
+                return None
+            lower, upper = window['lower_index'], window['upper_index']
+            pending = self.conn.execute("SELECT payload_json FROM grid_move WHERE epoch_id=? AND stage!='DONE'",
+                                        (source['epoch_id'],)).fetchone()
+            if pending:
+                proposed = json.loads(pending[0])
+                if proposed.get('outcome') != 'ABORTED':
+                    lower, upper = proposed['lower_index'], proposed['upper_index']
+            if source['role'] == 'REVERSE' and not lower <= target <= upper:
+                return None
+            from .trailing_store import TrailingStore
+            return target, TrailingStore(self).level(source['epoch_id'], target)
+        return (target, Decimal(levels[target])) if 0 <= target < len(levels) else None
+
+    def unsubmitted_move_draft(self, client_id):
+        if not self.conn.execute("SELECT 1 FROM sqlite_master WHERE name='grid_move'").fetchone():
+            return False
+        return bool(self.conn.execute("SELECT 1 FROM grid_move WHERE add_client_id=? AND stage IN ('ADD_READY','RESTORE_READY')",
+                                      (client_id,)).fetchone())
 
     def active_orders(self) -> list:
         rows = self.conn.execute("""SELECT * FROM order_intent
@@ -343,10 +456,64 @@ class DecisionStore:
         self.conn.execute("""UPDATE engine_state SET state=?,lock_reason=?,updated_at_ms=?
             WHERE id=1""", (state, reason, int(time.time() * 1000)))
 
+    def latest_epoch(self) -> Optional[dict]:
+        row = self.conn.execute("SELECT * FROM grid_epoch ORDER BY id DESC LIMIT 1").fetchone()
+        return dict(row) if row else None
+
+    def finish_position_recovery(self, locked_at_ms: int, epoch_id: int, checked_trades: int,
+                                 recovered_at_ms: int, *, reason=POSITION_MISMATCH_LOCK) -> bool:
+        """Commit the scoped unlock and the fresh-signal barrier together."""
+        if reason not in (POSITION_MISMATCH_LOCK, FILL_HANDLING_LOCK, "position unavailable while exiting"):
+            return False
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            state = self.engine_state()
+            epoch = self.latest_epoch()
+            recovered = (
+                state["state"] == "LOCKED" and state["lock_reason"] == reason
+                and state["updated_at_ms"] == locked_at_ms < recovered_at_ms
+                and epoch is not None and epoch["id"] == epoch_id and epoch["status"] == "CLOSED"
+                and self.active_epoch_id() is None and not self.active_orders()
+                and not self.active_protections()
+            )
+            if recovered:
+                self.conn.execute("UPDATE engine_state SET state='FLAT',lock_reason=NULL,updated_at_ms=? WHERE id=1",
+                                  (recovered_at_ms,))
+                self.conn.executemany("INSERT OR REPLACE INTO schema_meta VALUES(?,?)", (
+                    ("position_recovery_cutoff_ms", str(recovered_at_ms)),
+                    ("last_position_recovery", json.dumps({
+                        "epoch_id": epoch_id, "locked_at_ms": locked_at_ms,
+                        "recovered_at_ms": recovered_at_ms, "checked_trades": checked_trades,
+                        "reason": reason,
+                    })),
+                ))
+            self.conn.execute("COMMIT")
+            return recovered
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+
     def active_protections(self) -> list:
         rows = self.conn.execute("""SELECT * FROM protection
             WHERE status IN ('PREPARED','NEW','UNKNOWN')""").fetchall()
         return [dict(row) for row in rows]
+
+    def prepare_stop_cleanup(self, client_algo_id: str) -> tuple:
+        """Durably fence a cancellation before sending it, including on restart."""
+        self.conn.execute("""CREATE TABLE IF NOT EXISTS protection_cleanup (
+            client_algo_id TEXT PRIMARY KEY REFERENCES protection(client_algo_id),
+            started_at_ms INTEGER NOT NULL, last_error TEXT
+        )""")
+        inserted = self.conn.execute("""INSERT OR IGNORE INTO protection_cleanup
+            (client_algo_id,started_at_ms) VALUES(?,?)""",
+            (client_algo_id, int(time.time() * 1000))).rowcount == 1
+        row = self.conn.execute("SELECT * FROM protection_cleanup WHERE client_algo_id=?",
+                                (client_algo_id,)).fetchone()
+        return dict(row), inserted
+
+    def record_stop_cleanup_failure(self, client_algo_id: str, error: Exception) -> None:
+        self.conn.execute("UPDATE protection_cleanup SET last_error=? WHERE client_algo_id=?",
+                          (repr(error), client_algo_id))
 
     def record_protection(self, client_algo_id: str, status: str,
                           exchange_algo_id: Optional[str] = None) -> None:
@@ -356,6 +523,44 @@ class DecisionStore:
             WHERE client_algo_id=?""", (status, exchange_algo_id, client_algo_id))
         if row.rowcount != 1:
             raise ValueError("unknown protection intent")
+
+    def stopped_epoch(self, epoch_id: int) -> bool:
+        row = self.conn.execute(
+            "SELECT value FROM schema_meta WHERE key='last_stopped_epoch'").fetchone()
+        return row is not None and int(row[0]) == epoch_id
+
+    def settle_stop(self, epoch_id: int, client_algo_id=None, *, status="TRIGGERED") -> None:
+        """Persist the stop, exit state and signal barrier as one journal fact."""
+        if status not in ("TRIGGERED", "CANCELED"):
+            raise ValueError("invalid terminal stop status")
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            if client_algo_id is not None:
+                self.conn.execute("""UPDATE protection SET status=?
+                    WHERE epoch_id=? AND client_algo_id=?""", (status, epoch_id, client_algo_id))
+            if self.active_epoch_id() == epoch_id:
+                if not self.stopped_epoch(epoch_id):
+                    now_ms = int(time.time() * 1000)
+                    self.conn.execute("""UPDATE execution_cursor SET decision_id=(
+                        SELECT decision_id FROM decisions ORDER BY rowid DESC LIMIT 1)
+                        WHERE id=1""")
+                    self.conn.executemany("INSERT OR REPLACE INTO schema_meta VALUES(?,?)", (
+                        ("last_stopped_epoch", str(epoch_id)),
+                        ("stop_signal_cutoff_ms", str(now_ms))))
+                if self.engine_state()["state"] not in ("LOCKED", "EXITING"):
+                    self.set_engine_state("EXITING")
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+
+    def recover_legacy_stop(self) -> None:
+        row = self.conn.execute("""SELECT p.epoch_id FROM protection p
+            JOIN grid_epoch e ON e.id=p.epoch_id
+            WHERE p.status='TRIGGERED' AND e.status='ACTIVE' LIMIT 1""").fetchone()
+        if row and (not self.stopped_epoch(row[0]) or
+                    self.engine_state()["state"] not in ("LOCKED", "EXITING")):
+            self.settle_stop(row[0])
 
     def latest_equity_checkpoint(self, day_beijing: str) -> Optional[dict]:
         row = self.conn.execute("""SELECT * FROM equity_checkpoint

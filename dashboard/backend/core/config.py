@@ -315,7 +315,7 @@ def init_settings_from_config():
         if "host" in db_config and not os.getenv("DB_HOST"):
             settings.db_host = db_config["host"]
         if "port" in db_config and not os.getenv("DB_PORT"):
-            settings.db_port = db_config["port"]
+            settings.db_port = int(db_config["port"])
         if "database" in db_config and not os.getenv("DB_NAME"):
             settings.db_name = db_config["database"]
         if "user" in db_config and not os.getenv("DB_USER"):

@@ -209,8 +209,8 @@ class TestCheckPartialTakeProfit:
         return pos
 
     @pytest.mark.asyncio
-    async def test_exchange_already_closed_marks_both_tp(self, strategy, position_long):
-        """B1：交易所已平仓（closed=True）→ tp1_hit=tp2_hit=True，且不再平仓"""
+    async def test_flat_position_does_not_prove_take_profit(self, strategy, position_long):
+        """B1：交易所已平仓（closed=True）→ tp1_hit=tp2_hit=False，且不再平仓"""
         with patch.object(
             strategy, '_sync_position_with_exchange',
             AsyncMock(return_value={'closed': True})
@@ -219,8 +219,8 @@ class TestCheckPartialTakeProfit:
                 "BTCUSDT", position_long, Decimal('50000')
             )
 
-        assert position_long.tp1_hit is True
-        assert position_long.tp2_hit is True
+        assert position_long.tp1_hit is False
+        assert position_long.tp2_hit is False
         mock_close.assert_not_called()
 
     @pytest.mark.asyncio
@@ -228,9 +228,11 @@ class TestCheckPartialTakeProfit:
         """B2：current 已到 30% 尾仓 → tp1_hit=tp2_hit=True，且不再计算 TP 价格"""
         position_long.current_quantity = Decimal('0.03')  # = initial * 30%
 
-        with patch.object(
+        position_long.tp1_order_id = 10
+        position_long.tp2_order_id = 11
+        with patch("strategies.btc_eth.strategy.confirm_classic_algo_fill", AsyncMock(return_value=True)), patch.object(
             strategy, '_sync_position_with_exchange',
-            AsyncMock(return_value={'closed': False})
+            AsyncMock(return_value={'closed': False, 'actual_quantity': position_long.current_quantity})
         ), patch.object(strategy, '_close_position', AsyncMock()) as mock_close, \
              patch.object(strategy, '_calculate_tp_price', MagicMock()) as mock_tp:
             await strategy._check_partial_take_profit(
@@ -250,9 +252,11 @@ class TestCheckPartialTakeProfit:
         position_long.current_quantity = Decimal('0.07')  # = initial * (1 - 30%)
 
         # TP2 价格 mock 得极高，做多不触发，仅验证推断分支，不触发后续平仓
-        with patch.object(
+        position_long.tp1_order_id = 10
+        position_long.tp2_order_id = 11
+        with patch("strategies.btc_eth.strategy.confirm_classic_algo_fill", AsyncMock(return_value=True)), patch.object(
             strategy, '_sync_position_with_exchange',
-            AsyncMock(return_value={'closed': False})
+            AsyncMock(return_value={'closed': False, 'actual_quantity': position_long.current_quantity})
         ), patch.object(strategy, '_close_position', AsyncMock()) as mock_close, \
              patch.object(
                  strategy, '_calculate_tp_price',

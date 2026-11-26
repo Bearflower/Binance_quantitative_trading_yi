@@ -255,7 +255,7 @@ async def test_original_profile_does_not_use_deterministic_bootstrap(monkeypatch
     )
 
     initialize.assert_not_called()
-    assert events[0]["feature_snapshot"] is None
+    assert events[0]["feature_snapshot"]["entry_attribution"]["status"] == "no_candidate"
 
 
 @pytest.mark.asyncio

@@ -79,7 +79,7 @@ async def test_real_reader_current_watermark_funding_and_unknown_historical_owne
                     PRIMARY KEY(account_id,income_type,tran_id));
                 CREATE TABLE trading.execution_fact_fill(account_id text,symbol text,trade_id bigint,
                     order_id bigint,commission numeric,commission_asset text,realized_pnl numeric,trade_time_utc timestamptz);
-                CREATE TABLE trading.trade_records(account_id text,symbol text,order_id text,strategy text);
+                CREATE TABLE trading.trade_records(account_id text,symbol text,order_id text,strategy text,executed_at timestamp);
                 CREATE TABLE trading.reviewed_income_attribution(account_id text,tran_id bigint,strategy text,symbol text,
                     income_type text,income numeric,asset text,event_time_utc timestamptz,evidence text,reviewed_by text);
                 INSERT INTO trading.reviewed_income_attribution VALUES ('main',1,'hrs','ETHUSDT','FUNDING_FEE',

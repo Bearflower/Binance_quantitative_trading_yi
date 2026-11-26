@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, InvalidOperation
+from decimal import Decimal, ROUND_DOWN, ROUND_HALF_UP, ROUND_UP, InvalidOperation
 from typing import Optional, Dict, Any, List
 
 
@@ -38,19 +38,22 @@ def round_quantity(quantity: Decimal, step_size: Decimal) -> Decimal:
     return q_round(quantity, step_size, rounding=ROUND_DOWN)
 
 
-def clamp_notional(quantity: Decimal, price: Decimal, min_notional: Decimal) -> Decimal:
+def clamp_notional(quantity: Decimal, price: Decimal, min_notional: Decimal,
+                   step_size: Optional[Decimal] = None) -> Decimal:
     """若 quantity * price 低于 minNotional，返回使 notional 恰等于 minNotional
     的最小 quantity（向上）。
-    否则原样返回。用于撮合前的最小名义价值检查。
+    提供 step_size 时按数量步长向上补足；未提供时返回精确最小数量。
+    先按步长向下对齐原数量，避免后续舍入再次跌破名义价值下限。
     """
+    if step_size is not None:
+        quantity = round_quantity(quantity, step_size)
     notional = quantity * price
     if notional >= min_notional or min_notional <= 0:
         return quantity
-    # 向上取整到 min_notional / price
-    # 先不考虑 stepSize 舍入——由调用方随后再 round_quantity。
-    from decimal import ROUND_UP
-    min_qty = (min_notional / price).to_integral_value(rounding=ROUND_UP)
-    return min_qty
+    if price <= 0:
+        raise ValueError("名义价值检查要求价格大于零")
+    min_qty = min_notional / price
+    return q_round(min_qty, step_size, ROUND_UP) if step_size is not None else min_qty
 
 
 def price_crosses_limit(

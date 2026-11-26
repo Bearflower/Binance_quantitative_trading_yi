@@ -21,7 +21,7 @@ async def test_hrs_reservation_records_durable_signal_identity():
         worst_loss=Decimal("0.1"), exit_ratios=(Decimal("0.5"), Decimal("0")),
         policy_revision=4, effective_allocation=Decimal("30"),
     )
-    store = SimpleNamespace(reconcile=AsyncMock(), reserve=AsyncMock(return_value="risk_5682"))
+    store = SimpleNamespace(reservation_audit={"client_order_id":"risk_5682"}, reconcile=AsyncMock(), reserve=AsyncMock(return_value="risk_5682"))
     with patch("shared.entry_risk_policy.RiskPolicyStore", return_value=store), \
          patch("strategies.hrs.strategy.try_claim_symbol",
                new=AsyncMock(return_value={"claimed": True, "claim_id": 1})):

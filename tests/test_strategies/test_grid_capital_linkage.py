@@ -499,14 +499,14 @@ class TestRunOnceMarginCaliber:
         assert signal.margin_used == M_ADVISED
 
     @pytest.mark.asyncio
-    async def test_fallback_when_advice_none(self):
-        """advice 不可得：回退 trading.margin=500"""
+    async def test_missing_advice_keeps_zero_budget(self):
+        """资本约束开启且 advice 不可得时保持零预算，不回退静态保证金"""
         bot = make_bot()
         spy = MagicMock(wraps=bot.grid_calculator.resolve_capital_feasibility)
         bot.grid_calculator.resolve_capital_feasibility = spy
         signal = await self._run_once(bot, advice=None)
-        assert spy.call_args.kwargs['margin'] == Decimal('500')
-        assert signal.margin_used == Decimal('500')
+        assert spy.call_args.kwargs['margin'] == Decimal('0')
+        assert signal.margin_used == Decimal('0')
 
     @pytest.mark.asyncio
     async def test_ac06_message_self_consistency(self):
@@ -868,3 +868,23 @@ class TestGridPushMessageStructure:
         assert '操作指令' not in msg
         # PROFIT 不可行不应出现资本口径首行
         assert '无法支撑' not in msg
+
+
+@pytest.mark.parametrize('amount', ['0', '-1', 'NaN'])
+def test_live_budget_never_falls_back_to_config_capital(amount):
+    bot=make_bot();bot._decision_store=MagicMock()
+    assert bot._select_margin_for_feasibility(make_advice(Decimal(amount)))==0
+    assert bot._select_margin_for_feasibility(None)==0
+
+
+@pytest.mark.asyncio
+async def test_live_producer_leaves_capital_to_actual_executor():
+    bot=make_bot();bot._decision_store=MagicMock()
+    bot.grid_calculator.resolve_capital_feasibility=MagicMock(side_effect=AssertionError('legacy capital called'))
+    params, feasible=await bot._calculate_grid_params('ETHUSDT',make_analysis(MarketState.WEAK_TREND),
+                                                    margin=Decimal(17),atr_baseline=Decimal(15))
+    assert feasible.feasible and feasible.qty_per_grid==0
+    assert feasible.grid_count==params.grid_count
+    params, feasible=await bot._calculate_grid_params('ETHUSDT',make_analysis(MarketState.WEAK_TREND),
+                                                    margin=Decimal(0),atr_baseline=Decimal(15))
+    assert not feasible.feasible

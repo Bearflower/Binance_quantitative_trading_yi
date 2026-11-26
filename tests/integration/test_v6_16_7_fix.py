@@ -414,28 +414,30 @@ class TestPriceFetchFailureAlert:
 class TestConfigurationLoading:
     """测试配置项读取（v6.16.7新增）"""
 
-    def test_trigger_price_adjustment_ratio_config(self):
-        """测试触发价调整比例配置项读取"""
+    @pytest.mark.parametrize("grade", ["S", "A", "B", "C"])
+    def test_signal_level_config_drives_trigger_prices(self, grade):
+        """当前触发价按信号等级ATR倍数读取，覆盖已替代的全局调整比例。"""
         import yaml
-        with open('strategies/btc_eth/config.yaml', 'r', encoding='utf-8') as f:
+        with open('strategies/btc_eth/config.yaml', encoding='utf-8') as f:
             config = yaml.safe_load(f)
+        strategy = BTCEthStrategy(config, MagicMock(), MagicMock(), MagicMock())
+        risk = config['strategy']['risk']['signal_levels'][grade]
+        assert Decimal(str(risk['stop_loss_atr_multiplier'])) > 0
+        for level in (1, 2):
+            multiple = Decimal(str(risk['partial_take_profit'][f'tp{level}_atr_multiplier']))
+            assert multiple > 0
+            assert strategy._calculate_tp_price(Decimal('100'), Decimal('2'), 'LONG', level, grade) == Decimal('100') + Decimal('2') * multiple
+            assert strategy._calculate_tp_price(Decimal('100'), Decimal('2'), 'SHORT', level, grade) == Decimal('100') - Decimal('2') * multiple
 
-        # 验证配置项存在
-        assert 'risk' in config['strategy']
-        assert 'trigger_price_adjustment_ratio' in config['strategy']['risk']
-
-        # 验证配置值
-        adjustment_ratio = config['strategy']['risk']['trigger_price_adjustment_ratio']
-        assert adjustment_ratio == 0.02
-
-    def test_version_update(self):
-        """测试版本号更新"""
+    def test_config_version_is_valid_release_version(self):
+        """固定历史版本不应阻止后续发布；配置版本必须仍是有效语义版本。"""
         import yaml
-        with open('strategies/btc_eth/config.yaml', 'r', encoding='utf-8') as f:
+        from packaging.version import Version
+        with open('strategies/btc_eth/config.yaml', encoding='utf-8') as f:
             config = yaml.safe_load(f)
-
-        # 验证版本号
-        assert config['strategy']['version'] == '6.16.7'
+        version = Version(config['strategy']['version'])
+        assert len(version.release) == 3
+        assert not version.is_prerelease
 
 
 class TestPerformance:

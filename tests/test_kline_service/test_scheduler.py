@@ -351,7 +351,10 @@ class TestTaskScheduler:
 
             mock_loop_instance.create_task.assert_called_once()
             args, _ = mock_loop_instance.create_task.call_args
-            assert args[0] is not None  # 验证传入了 coroutine
+            try:
+                assert args[0] is not None  # 验证传入了 coroutine
+            finally:
+                args[0].close()  # 模拟调度器不会执行协程，由测试关闭其生命周期。
 
     @pytest.mark.asyncio
     async def test_do_initial_collection(self, scheduler):

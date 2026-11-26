@@ -52,9 +52,9 @@ BEIJING_TZ = timezone(timedelta(hours=settings.timezone_offset))
 # 数据服务依赖注入
 # ========================================
 
-def get_data_service() -> DataService:
+def get_data_service(request: Request) -> DataService:
     """获取数据服务实例"""
-    return DataService()
+    return request.app.state.data_service
 
 def get_cache_service() -> CacheService:
     """获取缓存服务实例"""

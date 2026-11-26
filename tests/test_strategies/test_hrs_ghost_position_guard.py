@@ -23,6 +23,7 @@ import sys
 import pytest
 import yaml
 from datetime import datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -66,7 +67,7 @@ def _make_strategy(**pm_overrides) -> HRSStrategy:
     strategy = HRSStrategy(CONFIG)
     # 测试中关闭重试等待，避免拖慢用例
     strategy._position_query_retry_delay = 0.0
-    strategy._writeback_pnl_for_full_close = AsyncMock()
+    strategy._writeback_pnl_for_full_close = AsyncMock(return_value=Decimal('0'))
 
     mock_pm = MagicMock()
     mock_pm.zero_qty_threshold = 0.0001
@@ -75,7 +76,7 @@ def _make_strategy(**pm_overrides) -> HRSStrategy:
     mock_pm.get_all_positions.return_value = {SYMBOL: _make_position()}
     mock_pm.detect_take_profit_fills.return_value = None
     mock_pm.check_time_stop.return_value = False
-    mock_pm.cancel_all_orders = AsyncMock()
+    mock_pm.cancel_all_orders = AsyncMock(return_value={"failed": 0})
     for key, value in pm_overrides.items():
         setattr(mock_pm, key, value)
 
@@ -298,7 +299,7 @@ class TestGetExchangePositionQty:
 # ============================================================================
 
 class TestReplenishTp1Mark:
-    """TP1 标记必须走 mark_target_reached，不得直接置 pos['target1_reached']"""
+    """补单与监控共用按累计批次数量判断的止盈检测器。"""
 
     @pytest.mark.asyncio
     async def test_tp1_detected_routes_through_mark_target_reached(self):
@@ -328,12 +329,8 @@ class TestReplenishTp1Mark:
 
         await strategy._replenish_single_position(SYMBOL)
 
-        strategy.position_manager.mark_target_reached.assert_called_once_with(
-            SYMBOL, 1, actual_remaining_quantity=70.0
-        )
-        strategy.position_manager.sync_tracked_qty.assert_called_once_with(
-            SYMBOL, pytest.approx(70.0)
-        )
+        strategy.position_manager.detect_take_profit_fills.assert_called_once_with(SYMBOL, 70.0, quantity_step=None)
+        strategy.position_manager.mark_target_reached.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_tp1_mark_syncs_to_remaining_not_exchange(self):
@@ -360,9 +357,8 @@ class TestReplenishTp1Mark:
 
         await strategy._replenish_single_position(SYMBOL)
 
-        strategy.position_manager.sync_tracked_qty.assert_called_once_with(
-            SYMBOL, pytest.approx(70.0)
-        )
+        strategy.position_manager.detect_take_profit_fills.assert_called_once_with(SYMBOL, 30.0, quantity_step=None)
+        strategy.position_manager.sync_tracked_qty.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_tp1_no_qty_sync(self):
@@ -411,3 +407,37 @@ class TestSyncTrackedQty:
         pm.sync_tracked_qty(SYMBOL, 48.0)
 
         assert pm._last_tracked_qty[SYMBOL] == pytest.approx(48.0)
+
+
+@pytest.mark.asyncio
+async def test_full_close_reconciles_after_cancel_and_position_sync_retries():
+    from types import SimpleNamespace
+
+    strategy = _make_strategy()
+    strategy.db = SimpleNamespace(pool=object())
+    strategy.binance_client.get_position = AsyncMock(return_value=[])
+    strategy.position_manager.detect_take_profit_fills.return_value = 0
+    strategy.position_manager.remove_position.side_effect = (
+        lambda symbol: setattr(strategy.position_manager.get_all_positions, 'return_value', {})
+    )
+    strategy._record_outcome_by_pnl = AsyncMock()
+
+    async def reconcile(symbol, exchange):
+        strategy.position_manager.cancel_all_orders.assert_awaited_once_with(SYMBOL)
+        assert symbol == SYMBOL and exchange is strategy.binance_client
+        return 'algo_orders_open' if store.reconcile_hrs_flat.await_count == 1 else 'released'
+
+    store = SimpleNamespace(reconcile_hrs_flat=AsyncMock(side_effect=reconcile),
+                            pending_hrs_symbols=AsyncMock(return_value=[SYMBOL]))
+    with patch("strategies.hrs.strategy.RiskPolicyStore", return_value=store), \
+         patch("strategies.hrs.strategy.release_claim", new_callable=AsyncMock) as release, \
+         patch("strategies.hrs.strategy.save_strategy_state", new_callable=AsyncMock), \
+         patch("strategies.hrs.strategy.sync_open_positions", new_callable=AsyncMock):
+        await strategy._monitor_positions()
+        store.reconcile_hrs_flat.assert_awaited_once()
+        release.assert_awaited_once_with(strategy.db, SYMBOL, strategy.strategy_name,
+                                         reason="position_closed", release_occupancy=False)
+        await strategy._report_positions_to_dashboard()
+
+    store.pending_hrs_symbols.assert_awaited_once()
+    assert store.reconcile_hrs_flat.await_count == 2

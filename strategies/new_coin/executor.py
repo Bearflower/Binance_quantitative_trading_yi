@@ -21,7 +21,6 @@ from shared.condition_orders import (
     record_condition_order,
     mark_order_canceled,
     mark_order_executed,
-    mark_open_orders_canceled,
 )
 # R5 单一默认值来源（executor 和 strategy 共享，避免双份漂移）
 # 注：strategy.py 有顶层 from .executor import ...（TradingExecutor/derive_reached_targets），
@@ -1303,15 +1302,20 @@ class TradingExecutor:
         if effective_require_tp:
             missing.append(_MISSING_TP)
 
+        classic = getattr(getattr(self, "binance_api", None), "use_unified_account", True) is False
         try:
-            rows = await self.db.fetch_all(
-                """
-                SELECT DISTINCT order_type FROM condition_orders
-                WHERE strategy_name = $1 AND symbol = $2 AND status = 'OPEN'
-                """,
-                "new_coin",
-                symbol,
-            )
+            if classic:
+                from shared.condition_orders import classic_owned_algos
+                rows = await classic_owned_algos(self.binance_api, symbol=symbol)
+            else:
+                rows = await self.db.fetch_all(
+                    """
+                    SELECT DISTINCT order_type FROM condition_orders
+                    WHERE strategy_name = $1 AND symbol = $2 AND status = 'OPEN'
+                    """,
+                    "new_coin",
+                    symbol,
+                )
         except Exception as e:
             logger.warning(
                 "查询条件单保护缺口失败（保守返回全部应存在类型）",
@@ -1319,7 +1323,7 @@ class TradingExecutor:
                 strict=strict,
                 error=str(e),
             )
-            return None if strict else missing
+            return None if strict or classic else missing
 
         open_types = {str(r.get('order_type', '')).upper() for r in (rows or [])}
         result: List[str] = []
@@ -1327,8 +1331,21 @@ class TradingExecutor:
         # 止损类：STOP_LOSS / TRAILING_STOP / MANUAL_STOP 任一即视为已保护
         if not (open_types & _SL_TYPES):
             result.append(_MISSING_SL)
-        # 止盈类：effective_require_tp 为真时才核验
-        if effective_require_tp and "TAKE_PROFIT" not in open_types:
+        if classic and effective_require_tp and self.batch_take_profit_enabled:
+            active_levels = [row["tp_level"] for row in rows if row["order_type"] == "TAKE_PROFIT"]
+            if any(level not in (1, 2) for level in active_levels) or len(set(active_levels)) != len(active_levels):
+                # 固定全仓止盈、未标档位或重复的 TP 均不能猜测成某一档。
+                return result if result else None
+            for level in ((2,) if target1_reached else (1, 2)):
+                if level in active_levels:
+                    continue
+                tracked = self.position_tracking.get(symbol, {}).get("algo_ids", {}).get(f"tp{level}")
+                if tracked:
+                    previous = await self.binance_api.get_algo_order(int(tracked))
+                    if previous.get("algoStatus") not in ("CANCELED", "EXPIRED", "REJECTED"):
+                        continue
+                result.append(f"TP{level}")
+        elif effective_require_tp and "TAKE_PROFIT" not in open_types:
             result.append(_MISSING_TP)
         return result
 
@@ -1921,7 +1938,8 @@ class TradingExecutor:
                 order_type='TAKE_PROFIT',
                 stop_price=take_profit_price,
                 price=tp_limit_price,
-                closePosition=True
+                **({"closePosition": True} if self.binance_api.use_unified_account
+                   else {"quantity": quantity, "reduce_only": True})
             )
 
             # 保存止盈单 algoId
@@ -2348,7 +2366,7 @@ class TradingExecutor:
                         await record_condition_order(
                             self.db, "new_coin", symbol,
                             algo_id=tp2_result['algoId'],
-                            order_type="TAKE_PROFIT"
+                            order_type="TAKE_PROFIT", tp_level=2
                         )
                     
                     logger.info(
@@ -2396,9 +2414,12 @@ class TradingExecutor:
             # 1. 检测止盈目标成交（持仓数量对比，激活移动止损）
             exchange_qty = await self._get_exchange_position_qty(symbol)
             if exchange_qty is not None:
-                fill_level = self.detect_take_profit_fills(
-                    symbol, exchange_qty, current_price=current_price
-                )
+                if getattr(self.binance_api, "use_unified_account", True) is False:
+                    fill_level = await self._check_classic_tp_fills(symbol, tracking, exchange_qty)
+                else:
+                    fill_level = self.detect_take_profit_fills(
+                        symbol, exchange_qty, current_price=current_price
+                    )
                 if fill_level == 0:
                     # 全部平仓：交由 _monitor_positions 完成清理
                     return
@@ -2920,7 +2941,8 @@ class TradingExecutor:
             algo_ids['trailing_stop'] = None
             # AC-D2：平仓触发撤移动止损 → mark_order_canceled
             try:
-                await mark_order_canceled(self.db, algo_id=old_id)
+                if getattr(self.binance_api, "use_unified_account", True) is not False:
+                    await mark_order_canceled(self.db, algo_id=old_id, strategy_name="new_coin", symbol=symbol)
             except Exception as e:
                 logger.warning(
                     "平仓触发撤移动止损后的 DB mark 同步失败",
@@ -2979,7 +3001,8 @@ class TradingExecutor:
             algo_ids['trailing_stop'] = None
             # AC-D2：撤旧移动止损单 → mark_order_canceled 同步 DB 状态
             try:
-                await mark_order_canceled(self.db, algo_id=old_trailing_id)
+                if getattr(self.binance_api, "use_unified_account", True) is not False:
+                    await mark_order_canceled(self.db, algo_id=old_trailing_id, strategy_name="new_coin", symbol=symbol)
             except Exception as e:
                 logger.warning(
                     "撤旧移动止损单后的 DB mark 同步失败",
@@ -3014,7 +3037,8 @@ class TradingExecutor:
             algo_ids['sl'] = None
             # AC-D2：撤旧硬止损单 → mark_order_canceled
             try:
-                await mark_order_canceled(self.db, algo_id=old_sl_id)
+                if getattr(self.binance_api, "use_unified_account", True) is not False:
+                    await mark_order_canceled(self.db, algo_id=old_sl_id, strategy_name="new_coin", symbol=symbol)
             except Exception as e:
                 logger.warning(
                     "撤旧硬止损单后的 DB mark 同步失败",
@@ -3055,7 +3079,7 @@ class TradingExecutor:
                 reduce_only=True
             )
 
-            new_order_id = new_order.get('algoId') or new_order.get('orderId')
+            new_order_id = new_order.get('algoId')
             algo_ids['trailing_stop'] = new_order_id
 
             logger.info(
@@ -3237,6 +3261,7 @@ class TradingExecutor:
             # 2. 阶段一：限价平仓（订单簿买一价优先，取不到回退最新价）
             limit_price = await self._resolve_close_limit_price(symbol, tick_size)
             outcome: Optional[CloseOutcome] = None
+            full_exit = close_percent >= 1
             if limit_price > 0:
                 outcome = await self._close_with_reduce_only(
                     symbol, target_qty, order_type="LIMIT",
@@ -3245,10 +3270,15 @@ class TradingExecutor:
 
             # 3. 阶段二：限价未成功 → 市价兜底（同样带 reduceOnly）
             if outcome is None or not outcome.success:
-                outcome = await self._close_with_reduce_only(
-                    symbol, target_qty, order_type="MARKET",
-                    step_size=step_size, cfg=cfg,
+                remaining_target = max(
+                    Decimal('0'), target_qty - (outcome.closed_qty if outcome else Decimal('0'))
                 )
+                # 数量已成交但持仓对账未完成时，不得再提交相同减仓目标。
+                if remaining_target > 0:
+                    outcome = await self._close_with_reduce_only(
+                        symbol, remaining_target, order_type="MARKET",
+                        step_size=step_size, cfg=cfg,
+                    )
 
             # 4. 结果判定：任一阶段达标即视为平仓成功
             if outcome.success:
@@ -3256,7 +3286,8 @@ class TradingExecutor:
                     "平仓成功", symbol=symbol, reason=reason,
                     status=outcome.status, closed_qty=str(outcome.closed_qty),
                 )
-                await self._update_short_position_closed(symbol=symbol)
+                if full_exit:
+                    await self._update_short_position_closed(symbol=symbol)
                 return True
 
             await self._alert_close_failure(symbol, reason, outcome)
@@ -3364,157 +3395,24 @@ class TradingExecutor:
 
     
     async def cancel_all_algo_orders(self, symbol: str) -> Dict[str, Any]:
-        """
-        取消指定合约上所有未触发的条件单（止盈止损单）
-
-        在完全平仓后调用，清理孤儿条件单，防止后续价格波动触发非预期交易。
-        使用本地存储的 algoId 直接取消，不再依赖已废弃的查询 API。
-
-        Args:
-            symbol: 交易对名称
-
-        Returns:
-            取消结果统计字典：
-            - total: 查询到的条件单总数
-            - cancelled: 本次成功取消数量
-            - failed: 本次取消失败数量
-            - algo_ids: 已取消的条件单 ID 列表
-        """
-        result = {
-            'total': 0,
-            'cancelled': 0,
-            'failed': 0,
-            'algo_ids': [],
-        }
-
-        # 1. 从 position_tracking 获取本地存储的 algoId
-        tracking = self.position_tracking.get(symbol, {})
-        algo_ids = tracking.get('algo_ids', {})
-
-        # 2. 如果本地无 algoId，尝试从 condition_orders 表回退查询
-        #    解决容器重启后 position_tracking 丢失导致无法清理条件单的问题
-        if not algo_ids:
-            logger.info(
-                "无本地存储的条件单 algoId，尝试从数据库回退查询",
-                symbol=symbol,
-            )
-            try:
-                db_orders = await self.db.fetch_all(
-                    "SELECT algo_id, order_type FROM condition_orders WHERE strategy_name='new_coin' AND status='OPEN' AND symbol=$1",
-                    symbol
-                )
-                if db_orders:
-                    for i, order in enumerate(db_orders):
-                        algo_id = order.get('algo_id')
-                        if algo_id is not None:
-                            algo_ids[f'db_{i}'] = algo_id
-                    logger.info(
-                        "从数据库回退查询到条件单",
-                        symbol=symbol,
-                        count=len(db_orders),
-                    )
-                else:
-                    logger.info(
-                        "数据库中无 OPEN 条件单",
-                        symbol=symbol,
-                    )
-            except Exception as e:
-                logger.warning(
-                    "从数据库查询条件单失败",
-                    symbol=symbol,
-                    error=str(e),
-                )
-
-        if not algo_ids:
-            logger.info(
-                "无待取消的条件单",
-                symbol=symbol,
-            )
-            return result
-
-        result['total'] = len(algo_ids)
-
-        logger.info(
-            "开始取消孤儿条件单",
-            symbol=symbol,
-            total=len(algo_ids),
-            source='position_tracking' if tracking.get('algo_ids') else 'condition_orders_db',
-        )
-
-        # 2. 遍历取消每个条件单
-        for role, algo_id in algo_ids.items():
-            if algo_id is None:
-                result['failed'] += 1
-                logger.warning("条件单algoId为空，跳过", symbol=symbol, role=role)
-                continue
-
-            try:
-                await self.binance_api.cancel_algo_order(symbol, algo_id)
-                result['cancelled'] += 1
-                result['algo_ids'].append(algo_id)
-                logger.info(
-                    "取消条件单成功",
-                    symbol=symbol,
-                    algo_id=algo_id,
-                    role=role,
-                )
-            except BinanceAPIError as e:
-                # -2011 错误码（Order was not found）视为成功（幂等）
-                if e.code == self._ORDER_NOT_FOUND_CODE:
-                    result['cancelled'] += 1
-                    result['algo_ids'].append(algo_id)
-                    logger.info(
-                        "条件单已不存在（可能已触发）",
-                        symbol=symbol,
-                        algo_id=algo_id,
-                        role=role,
-                    )
-                else:
-                    result['failed'] += 1
-                    logger.warning(
-                        "取消条件单失败",
-                        symbol=symbol,
-                        algo_id=algo_id,
-                        role=role,
-                        error_code=e.code,
-                        error=str(e.message),
-                    )
-            except Exception as e:
-                result['failed'] += 1
-                logger.warning(
-                    "取消条件单失败",
-                    symbol=symbol,
-                    algo_id=algo_id,
-                    role=role,
-                    error=str(e),
-                )
-
-        # 3. 清理已取消的 algo_ids
-        if symbol in self.position_tracking and 'algo_ids' in self.position_tracking[symbol]:
-            self.position_tracking[symbol]['algo_ids'] = {}
-
-        # AC-D2：全量撤单成功（至少撤了一张）后，mark_open_orders_canceled 同步 DB
-        if result['cancelled'] > 0:
-            try:
-                await mark_open_orders_canceled(self.db, "new_coin", symbol)
-            except Exception as e:
-                logger.warning(
-                    "全量撤单后的 DB mark_open_orders_canceled 同步失败",
-                    symbol=symbol, strategy="new_coin", cancelled=result['cancelled'],
-                    error=str(e),
-                )
-
-        # 4. 记录汇总日志
-        logger.info(
-            "孤儿条件单清理完成",
-            symbol=symbol,
-            total=result['total'],
-            cancelled=result['cancelled'],
-            failed=result['failed'],
-        )
-
+        """按创建回执逐笔撤销本策略的保护单，保留结果未知的角色。"""
+        from shared.condition_orders import IncompleteAlgoCancellation, cancel_strategy_algos
+        tracked = self.position_tracking.get(symbol, {}).get("algo_ids", {})
+        try:
+            result = await cancel_strategy_algos(self.binance_api, symbol, tracked_ids=tracked.values())
+        except IncompleteAlgoCancellation as exc:
+            result = exc.result
+            confirmed = {str(value) for value in result["algo_ids"]}
+            for role, value in list(tracked.items()):
+                if str(value) in confirmed:
+                    del tracked[role]
+        except Exception as exc:
+            logger.warning("保护撤单待核对，保留追踪", symbol=symbol, error=str(exc))
+            return {"complete": False, "total": len(tracked), "cancelled": 0, "failed": 1, "algo_ids": []}
+        else:
+            tracked.clear()
         return result
-    
+
     async def _get_exchange_position_qty(self, symbol: str) -> Optional[float]:
         """
         获取交易所实际做空持仓数量
@@ -3528,10 +3426,13 @@ class TradingExecutor:
             做空持仓数量（绝对值）；查询失败返回 None
         """
         try:
-            positions = await self.binance_api._request(
-                "GET", "/papi/v1/um/positionRisk",
-                params={'symbol': symbol}, signed=True
-            )
+            if getattr(self.binance_api, "use_unified_account", True) is False:
+                positions = await self.binance_api.get_position(symbol)
+            else:
+                positions = await self.binance_api._request(
+                    "GET", "/fapi/v2/positionRisk",
+                    params={'symbol': symbol}, signed=True
+                )
             for pos in positions:
                 if float(pos.get('positionAmt', 0)) < 0:
                     return abs(float(pos['positionAmt']))
@@ -3624,7 +3525,7 @@ class TradingExecutor:
     ) -> Optional[int]:
         """非 TP 减仓处置（§3.5.2）。
 
-        SL：SL 部分成交 → 异步撤除剩余 OPEN TAKE_PROFIT + mark_open_orders_canceled，
+        SL：SL 部分成交 → 异步撤除剩余 OPEN TAKE_PROFIT，
           剩余仓位由既有止损逻辑接管。
         UNKNOWN：不推进 _last_tracked_qty（方案乙要点，防永久漏检）、告警保留重判；
           连续超 _zombie_confirm_cycles 次后强制推进 exchange_qty 并升级为 critical 告警，
@@ -3668,7 +3569,6 @@ class TradingExecutor:
                                     symbol=symbol, tp_role=tp_role,
                                     algo_id=tp_id, error=str(e),
                                 )
-                    await mark_open_orders_canceled(self.db, "new_coin", symbol)
                 except Exception as e:
                     logger.warning(
                         "SL 部分成交后置撤 TP 条件单异常（不阻断主流程）",
@@ -3758,6 +3658,31 @@ class TradingExecutor:
             return True, None
 
         return False, {'last_qty': last_qty, 'tracking': tracking, 'anchor': anchor}
+
+    async def _check_classic_tp_fills(self, symbol, tracking, exchange_qty):
+        from shared.condition_orders import confirm_classic_algo_fill
+
+        if exchange_qty <= 0:
+            return 0
+        anchor = tracking.get("tp_anchor_quantity")
+        if anchor is not None and exchange_qty >= float(anchor):
+            return None
+        reached = None
+        for level in (1, 2):
+            algo_id = tracking.get("algo_ids", {}).get(f"tp{level}")
+            if not algo_id or tracking.get(f"target{level}_reached"):
+                continue
+            try:
+                filled = await confirm_classic_algo_fill(
+                    self.binance_api, symbol, algo_id, role="TAKE_PROFIT", tp_level=level,
+                )
+            except Exception as exc:
+                logger.warning("经典合约止盈成交待核对", symbol=symbol, algo_id=algo_id, error=str(exc))
+                continue
+            if filled:
+                self.update_target_status(symbol, level, exchange_qty=exchange_qty)
+                reached = level
+        return reached
 
     def detect_take_profit_fills(
         self,
@@ -3868,7 +3793,7 @@ class TradingExecutor:
             tp1_algo_id = tracking.get('algo_ids', {}).get('tp1')
             if tp1_algo_id is not None:
                 asyncio.create_task(
-                    mark_order_executed(self.db, algo_id=tp1_algo_id)
+                    mark_order_executed(self.db, algo_id=tp1_algo_id, strategy_name="new_coin", symbol=symbol)
                 )
 
         if hit2 and not tracking.get('target2_reached'):
@@ -3882,7 +3807,7 @@ class TradingExecutor:
             tp2_algo_id = tracking.get('algo_ids', {}).get('tp2')
             if tp2_algo_id is not None:
                 asyncio.create_task(
-                    mark_order_executed(self.db, algo_id=tp2_algo_id)
+                    mark_order_executed(self.db, algo_id=tp2_algo_id, strategy_name="new_coin", symbol=symbol)
                 )
 
         return reached
@@ -4172,9 +4097,12 @@ class TradingExecutor:
 
     async def _resolve_short_quantity(self, symbol: str) -> Decimal:
         """读取该标的的未平空头持仓数量（无持仓返回 0）。"""
-        positions = await self.binance_api._request(
-            "GET", "/papi/v1/um/positionRisk", signed=True
-        )
+        if getattr(self.binance_api, "use_unified_account", True) is False:
+            positions = await self.binance_api.get_position(symbol)
+        else:
+            positions = await self.binance_api._request(
+                "GET", "/fapi/v2/positionRisk", signed=True
+            )
         matched = self._match_exchange_short_qty(symbol, positions)
         return Decimal(str(matched)) if matched else Decimal('0')
 
@@ -4364,11 +4292,15 @@ class TradingExecutor:
         if not isinstance(algo_ids, dict):
             return
         try:
-            rows = await self.db.fetch_all(
-                "SELECT algo_id, order_type FROM condition_orders "
-                "WHERE strategy_name='new_coin' AND status='OPEN' AND symbol=$1",
-                symbol,
-            )
+            if getattr(self.binance_api, "use_unified_account", True) is False:
+                from shared.condition_orders import classic_owned_algos
+                rows = await classic_owned_algos(self.binance_api, symbol=symbol)
+            else:
+                rows = await self.db.fetch_all(
+                    "SELECT algo_id, order_type FROM condition_orders "
+                    "WHERE strategy_name='new_coin' AND status='OPEN' AND symbol=$1",
+                    symbol,
+                )
         except Exception as e:
             logger.warning(
                 "回填条件单 algoId 失败（忽略，不阻断补挂）", symbol=symbol, error=str(e)
@@ -4383,9 +4315,13 @@ class TradingExecutor:
             order_type = str(row.get('order_type', '')).upper()
             if order_type == 'STOP_LOSS':
                 algo_ids.setdefault('sl', algo_id)
-            elif order_type == 'TAKE_PROFIT' and tp_index < len(tp_slots):
-                algo_ids.setdefault(tp_slots[tp_index], algo_id)
-                tp_index += 1
+            elif order_type == 'TAKE_PROFIT':
+                if getattr(self.binance_api, "use_unified_account", True) is False:
+                    if row.get("tp_level") in (1, 2):
+                        algo_ids.setdefault(f'tp{row["tp_level"]}', algo_id)
+                elif tp_index < len(tp_slots):
+                    algo_ids.setdefault(tp_slots[tp_index], algo_id)
+                    tp_index += 1
 
     async def _place_protection_orders(
         self, symbol: str, plans: Dict[str, Any], *, place_sl: bool, place_tp: bool
@@ -4451,6 +4387,10 @@ class TradingExecutor:
             symbol, plans,
             place_sl=_MISSING_SL in missing, place_tp=_MISSING_TP in missing,
         )
+        for level in (1, 2):
+            if f"TP{level}" in missing:
+                ok = await self._apply_take_profit(symbol, plans[f"tp{level}"], level)
+                all_success = all_success and ok
         self._finalize_replenish(symbol, all_success, label="增量补全")
         return all_success
 
@@ -4533,7 +4473,8 @@ class TradingExecutor:
             self.position_tracking[symbol]['algo_ids'][algo_key] = result['algoId']
             await record_condition_order(
                 self.db, "new_coin", symbol,
-                algo_id=result['algoId'], order_type=record_type
+                algo_id=result['algoId'], order_type=record_type,
+                **({"tp_level": int(algo_key[-1])} if algo_key in ("tp1", "tp2") else {}),
             )
         algo_id = result.get('algoId', 'N/A') if result else 'N/A'
         logger.info(

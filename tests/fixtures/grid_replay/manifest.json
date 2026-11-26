@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "sample_name": "ethusdt_aggtrades_20261007_0950_1010.json",
+  "source_commit": "1c142231b2f578b259f15a98d3fb5e0f47433e7c",
+  "source_git_blob": "c69ff6c1dfd0d49715cdded9e0b7c55d1dbde0d2",
+  "raw_sha256": "63e375fb1cb7586c03c303682cab6fde389c94165cbbb67735f05064a04ec2fc",
+  "raw_bytes": 43898864,
+  "compressed_sha256": "b8d07ce567febee148fa7f5bc4f88fe043ff978d8d24fefbd6c9ebf0cfebc98c",
+  "compressed_bytes": 2769920,
+  "compression": "gzip level9 mtime0",
+  "rows": 164071,
+  "time_range_ms": {
+    "start": 1791337800290,
+    "end": 1791338999910
+  },
+  "classification": "历史开发选参段，不能称为样本外验证",
+  "recovery": "从仓库已有历史Git blob逐字节恢复，未由SQLite重建，未更改原审计指纹。"
+}

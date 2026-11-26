@@ -1,5 +1,6 @@
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -126,13 +127,15 @@ def test_first_create_mode_is_selected_by_one_time_changed_file_signal():
     assert str(FIRST_CREATE_MARKER.relative_to(ROOT)) in MODE_SELECTOR
     assert 'return "calibrated-first-create"' in MODE_SELECTOR
     assert "scripts/select_deploy_mode.py" in WORKFLOW
-    selection = re.search(
-        r"(?P<body>.*scripts/select_deploy_mode.py.*?)\n  build-all:",
-        WORKFLOW, re.DOTALL,
-    )
-    assert selection is not None
-    assert "docker inspect" not in selection.group("body")
-    assert '--event-name "${{ github.event_name }}"' in selection.group("body")
+    # detect 作业只选择一次模式，构建和发布均消费同一输出。
+    jobs = yaml.safe_load(WORKFLOW)["jobs"]
+    selection = next(step for step in jobs["detect"]["steps"] if step.get("id") == "selection")
+    assert "scripts/select_deploy_mode.py" in selection["run"]
+    assert "docker inspect" not in selection["run"]
+    assert '--event-name "${{ github.event_name }}"' in selection["run"]
+    assert jobs["detect"]["outputs"]["mode"] == "${{ steps.selection.outputs.mode }}"
+    assert "detect" in jobs["build-all"]["needs"]
+    assert "detect" in jobs["deploy"]["needs"]
 
 
 def test_retry_marker_exists_for_run_120_parse_failure():
@@ -179,7 +182,7 @@ def test_extracted_runtime_preserves_logging_overlay_and_pre_up_archive():
 
 
 def _assert_calibrated_build_override(block):
-    selector_at = block.index("DEPLOY_MODE=")
+    selector_at = block.index('DEPLOY_MODE="${{ needs.detect.outputs.mode }}"')
     ordinary_at = block.index("shared/ 或 docker-compose.yml / VERSION")
     assert selector_at < ordinary_at
     assert 'if [ "$DEPLOY_MODE" = "calibrated-first-create" ]' in block
@@ -202,13 +205,17 @@ def test_calibrated_build_override_guard_detects_missing_btc_eth_binding():
 
 
 def _run_build_decision(block, service_name, repo, base, tmp_path):
+    # 执行真实 detect 选择器，再渲染跨作业输出；不能把未替换的表达式传给 Bash。
+    mode = subprocess.check_output(
+        [sys.executable, "scripts/select_deploy_mode.py", "--event-name", "push",
+         "--base", base, "--head", "HEAD", "--manual-mode", "auto"],
+        cwd=repo, text=True,
+    ).strip()
     rendered = (
         block.replace("${{ github.event.before }}", base)
         .replace("${{ github.event_name }}", "push")
-        .replace("${{ needs.detect.outputs.mode }}", subprocess.check_output(
-            ["python3", "scripts/select_deploy_mode.py", "--event-name", "push", "--base", base],
-            cwd=repo, text=True).strip())
         .replace("${{ matrix.service.name }}", service_name)
+        .replace("${{ needs.detect.outputs.mode }}", mode)
     )
     output = tmp_path / f"{service_name}.out"
     result = subprocess.run(

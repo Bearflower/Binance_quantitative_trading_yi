@@ -7,7 +7,8 @@ import os
 from datetime import datetime
 import structlog
 
-from shared.binance_api import BinanceClient
+from shared.binance_account_mode import verify_cutover_ledger, verify_trading_mode
+from strategies.hrs.api_client import HrsBinanceClient as BinanceClient
 from shared.config_loader import load_strategy_config_with_metadata, record_loaded_version
 from shared.database import DatabaseManager
 from shared.kline_service import KLineService
@@ -16,10 +17,106 @@ from shared.trade_logger import TradeLogger
 from shared.utils import setup_logging
 from shared import condition_orders
 from strategies.hrs.strategy import HRSStrategy
+from strategies.hrs.decision_context import capture_configuration_identity
+from strategies.hrs.equity_service import HrsEquityService
+from strategies.hrs.funding_inventory import FundingInventoryCollector
+from strategies.hrs.protection_observer import ProtectionObserver
+from strategies.hrs.cutover_state import verify_classic_restore
 from ai_tuner.snapshots.repository import SnapshotRepository
 
 
 logger = structlog.get_logger()
+
+
+def validate_equity_gate_configuration():
+    value=os.getenv('HRS_EQUITY_GATE_ENABLED','').strip().lower()
+    if value not in ('','0','false','no','off','1','true','yes','on'):
+        raise ValueError('invalid HRS_EQUITY_GATE_ENABLED')
+    enabled=value in ('1','true','yes','on')
+    guarded={item.strip() for item in os.getenv('ENTRY_EQUITY_GATE_STRATEGIES','').split(',') if item.strip()}
+    if enabled and 'hrs' not in guarded:
+        raise ValueError('HRS_EQUITY_GATE_ENABLED requires hrs in ENTRY_EQUITY_GATE_STRATEGIES')
+    return enabled
+
+
+async def run_with_equity_service(strategy,db_manager,binance_client):
+    """Refresh before entries; a denied projection keeps normal exit monitoring.
+
+    Fatal background termination is supervised. Shutdown joins supervised tasks before
+    the caller releases database/API resources, including cancellation paths.
+    """
+    if not validate_equity_gate_configuration():
+        return await strategy.run()
+    service=HrsEquityService(db_manager,binance_client,strategy.capital_mgr,
+                             strategy.position_manager,recorder=getattr(strategy,'decision_recorder',None))
+    strategy.equity_service=service
+    recorder=getattr(strategy,'decision_recorder',None)
+    funding=None
+    tasks=[]
+    try:
+        if recorder is not None:
+            funding=FundingInventoryCollector(binance_client,recorder,account_id=os.getenv('TRADE_ACCOUNT_ID','default'))
+            await funding.collect_once()
+        result=await service.refresh()
+        logger.info('HRS equity projection initialized',ready=result['ready'],allowed=result['allowed'],reasons=result['reasons'])
+        collector=asyncio.create_task(service.run(),name='hrs-equity-collector')
+        trading=asyncio.create_task(strategy.run(),name='hrs-strategy')
+        tasks=[collector,trading]
+        supervised={collector:'equity collector'}
+        if funding is not None:
+            funding_task=asyncio.create_task(funding.run(),name='hrs-funding-inventory-collector')
+            tasks.append(funding_task)
+            supervised[funding_task]='funding inventory collector'
+        done,_=await asyncio.wait(tasks,return_when=asyncio.FIRST_COMPLETED)
+        for background,label in supervised.items():
+            if background in done:
+                if background.cancelled():
+                    raise RuntimeError('HRS '+label+' stopped unexpectedly')
+                raise RuntimeError('HRS '+label+' stopped unexpectedly') from background.exception()
+        return await trading
+    finally:
+        async def shutdown():
+            try:
+                await service.close()
+            finally:
+                try:
+                    if funding is not None:
+                        await funding.close()
+                finally:
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks,return_exceptions=True)
+                    strategy.equity_service=None
+        cleanup=asyncio.create_task(shutdown())
+        try:
+            await asyncio.shield(cleanup)
+        except asyncio.CancelledError:
+            await cleanup
+            raise
+
+
+async def run_with_protection_observer(strategy, db_manager, binance_client):
+    recorder = getattr(strategy, 'decision_recorder', None)
+    task = None
+    if recorder is not None:
+        try:
+            observer = ProtectionObserver(db_manager, binance_client, recorder,
+                                          account_id=os.getenv('TRADE_ACCOUNT_ID', 'default'))
+            task = asyncio.create_task(observer.run(), name='hrs-protection-observer')
+        except Exception as exc:
+            logger.warning('hrs_protection_observer_unavailable', error_type=type(exc).__name__)
+    try:
+        return await run_with_equity_service(strategy, db_manager, binance_client)
+    finally:
+        if task is not None:
+            task.cancel()
+            cleanup = asyncio.gather(task, return_exceptions=True)
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                await cleanup
+                raise
 
 
 async def main():
@@ -31,6 +128,7 @@ async def main():
     logger.info("HRS策略启动", timestamp=datetime.now().isoformat())
 
     try:
+        validate_equity_gate_configuration()
         # 加载配置（合并基础配置 + AI 调优覆盖层）
         config, tuner_metadata = load_strategy_config_with_metadata(os.path.dirname(__file__))
         logger.info("配置加载成功（含覆盖层合并）", strategy_dir=os.path.dirname(__file__))
@@ -58,6 +156,7 @@ async def main():
             api_secret=os.getenv("BINANCE_API_SECRET"),
             testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
         )
+        await verify_trading_mode(binance_client)
 
         kline_service = KLineService(
             service_url=os.getenv("KLINE_SERVICE_URL"),
@@ -99,6 +198,16 @@ async def main():
 
         # 创建策略实例
         strategy = HRSStrategy(config=config)
+        strategy.loaded_config_metadata = tuner_metadata
+        image_revision = os.getenv('HRS_IMAGE_REVISION')
+        release_revision = os.getenv('HRS_RELEASE_SHA')
+        if image_revision and release_revision and image_revision != release_revision:
+            raise ValueError('HRS image and release revision differ')
+        strategy.release_sha = image_revision or release_revision
+        if os.getenv('HRS_EVIDENCE_CAPTURE_ENABLED') == '1':
+            identity = capture_configuration_identity(os.path.dirname(__file__), config, tuner_metadata)
+            strategy.configuration_evidence = identity
+            strategy.config_hashes = identity['config_hashes']
         record_loaded_version("hrs", tuner_metadata)
 
         await strategy.set_binance_client(binance_client)
@@ -108,11 +217,10 @@ async def main():
         if snapshot_db_manager is not None:
             strategy.snapshot_repository = SnapshotRepository(snapshot_db_manager)
 
-        await strategy.initialize()
-        logger.info("策略初始化完成，开始运行")
-
         async with binance_client, kline_service, notification_client:
             await db_manager.connect()
+            await verify_cutover_ledger(binance_client, db_manager, trading_writer=True)
+            await verify_classic_restore(db_manager, binance_client)
 
             trade_logger = TradeLogger(db_manager, "hrs")
             await trade_logger.ensure_table_exists()
@@ -122,7 +230,9 @@ async def main():
             logger.info("交易记录器初始化完成", strategy="HRS策略")
 
             try:
-                await strategy.run()
+                await strategy.initialize()
+                logger.info("策略初始化完成，开始运行")
+                await run_with_protection_observer(strategy,db_manager,binance_client)
             finally:
                 if snapshot_db_manager is not None:
                     await snapshot_db_manager.disconnect()

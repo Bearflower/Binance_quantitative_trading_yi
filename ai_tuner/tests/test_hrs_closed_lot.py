@@ -51,3 +51,14 @@ def test_ambiguous_closure_stays_unverified(sample, failure):
         order['reduceOnly'] = True
     with pytest.raises(ValueError):
         verify_closed_lot(history, link, order, created, left, flat)
+
+
+def test_hard_stop_closes_same_proven_lot_and_prices_losses(sample):
+    history, link, order, created, left, flat = deepcopy(sample)
+    link['kind'] = 'STOP'
+    history[1]['price'] = '0.9'
+    history[1]['realizedPnl'] = '-0.2'
+    lot = verify_closed_lot(history, link, order, created, left, flat)
+    assert lot['entry_order_id'] == '17'
+    assert lot['execution_net_usdt'] == '-0.22'
+    assert lot['execution_stressed_net_usdt'] == '-0.2376'

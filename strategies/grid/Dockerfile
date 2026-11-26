@@ -21,6 +21,9 @@ COPY shared/ /app/shared/
 # 复制策略代码
 COPY strategies/grid/ /app/strategies/grid/
 
+# 仅包含经过审查的发布证据和受限维护工具。
+COPY scripts/grid_release_guard.py scripts/full_regression_live_gate.py /app/scripts/
+
 # 复制版本标记（部署验证用）
 COPY VERSION /app/VERSION
 
@@ -32,4 +35,4 @@ ENV PYTHONUNBUFFERED=1
 RUN mkdir -p /app/logs/grid /app/data/grid
 
 # 运行策略
-CMD ["python", "-m", "strategies.grid.main"]
+CMD ["python", "-m", "strategies.grid"]

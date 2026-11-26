@@ -132,7 +132,8 @@ class TradeFeed:
                     asyncio.TimeoutError) as exc:
                 reason = str(exc)
             await self._set_health(False, reason)
-            await self._sleep(self._backoff)
+            # Parsed backoff is Decimal; asyncio schedules on a float clock.
+            await self._sleep(float(self._backoff))
             try:
                 async for trade in self._refill():
                     yield trade

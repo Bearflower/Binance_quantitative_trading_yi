@@ -15,6 +15,7 @@ import asyncio
 import os
 import signal
 import sys
+from functools import partial
 
 # 将项目根与 dashboard 包加入导入路径（须置于最前，避免与项目根 services/ 命名空间包冲突）
 APP_ROOT = os.getenv("APP_ROOT", "/app")
@@ -27,7 +28,6 @@ from shared.scheduler import (
     add_cron_job,
     add_interval_job,
     build_scheduler,
-    schedule_startup_run,
     shutdown_scheduler,
 )
 from services.commission_reconcile_job import run_reconcile
@@ -120,37 +120,80 @@ def _register_jobs(scheduler, data_service: DataService) -> None:
     )
 
 
-def _schedule_startup_warmup(loop, data_service: DataService) -> None:
-    """启动预热：延迟至依赖就绪后各执行一次，避免重启后下游读库为空"""
-    schedule_startup_run(loop, lambda: run_precompute(data_service))
-    schedule_startup_run(loop, lambda: data_service.compute_and_store_positions())
-    schedule_startup_run(loop, lambda: run_reconcile(data_service))
+def _schedule_startup_warmup(loop, data_service: DataService) -> list:
+    """启动预热：保留原延迟与执行次数，并返回本服务持有的任务。"""
+    tasks = []
+    delay = float(os.getenv("STARTUP_READY_DELAY_SECONDS", "30"))
+
+    async def run_after_ready(coro_factory):
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await coro_factory()
+
+    def schedule(coro_factory):
+        tasks.append(loop.create_task(run_after_ready(coro_factory)))
+
+    schedule(lambda: run_precompute(data_service))
+    schedule(lambda: data_service.compute_and_store_positions())
+    schedule(lambda: run_reconcile(data_service))
     # 熔断开关开启时预热一次指数，保证首小时策略开仓即可读到指数
     if load_circuit_breaker_config().get("enabled"):
-        schedule_startup_run(loop, lambda: run_breaker_index(data_service))
+        schedule(lambda: run_breaker_index(data_service))
     # 每日净资产快照自愈：容器一启动立即补今日快照（UPSERT 幂等，不会重复）
     # 防 23:30 容器重启/时区错位导致当日快照永久缺失 → 次日 daily 期初空
-    schedule_startup_run(loop, lambda: run_snapshot(data_service))
+    schedule(lambda: run_snapshot(data_service))
     # 绩效指标预热：启动即计算一次，避免看板刚上线时绩效字段为空
-    schedule_startup_run(loop, lambda: run_performance_metrics(data_service))
+    schedule(lambda: run_performance_metrics(data_service))
+    return tasks
+
+
+async def _run_scheduled_job(tasks, func, *args, **kwargs):
+    """跟踪调度器正在执行的任务，退出时等待它们释放借用的连接。"""
+    task = asyncio.current_task()
+    tasks.add(task)
+    try:
+        return await func(*args, **kwargs)
+    finally:
+        tasks.discard(task)
 
 
 async def main() -> None:
     """主流程：注册并启动调度器，等待退出信号，优雅关闭"""
     # 单 DataService 实例，4 个 job 共用连接池与 Binance 客户端
     data_service = DataService()
-    scheduler = build_scheduler()
-    _register_jobs(scheduler, data_service)
+    scheduler = None
+    startup_tasks = []
+    job_tasks = set()
     try:
+        scheduler = build_scheduler()
+        _register_jobs(scheduler, data_service)
+        for job in scheduler.get_jobs():
+            job.modify(func=partial(_run_scheduled_job, job_tasks, job.func))
         scheduler.start()
         logger.info("数据后台调度器已启动", jobs=_JOBS)
-        _schedule_startup_warmup(asyncio.get_running_loop(), data_service)
+        startup_tasks = _schedule_startup_warmup(asyncio.get_running_loop(), data_service)
         await _stop.wait()
     finally:
-        shutdown_scheduler(scheduler)
-        db = getattr(data_service, "_db_manager", None)
-        if db is not None:
-            await db.disconnect()
+        for task in startup_tasks:
+            task.cancel()
+        if scheduler is not None and scheduler.running:
+            scheduler.pause()
+            await asyncio.sleep(0)  # 让已提交的任务进入跟踪集合
+            running_jobs = list(job_tasks)
+            shutdown_scheduler(scheduler)
+        else:
+            running_jobs = list(job_tasks)
+        await asyncio.sleep(0)  # 让调度器投递取消，再等待所有任务的 finally 完成
+        await asyncio.gather(*startup_tasks, *running_jobs, return_exceptions=True)
+        # 币安客户端与数据库都归本服务持有，任务仅借用它们。
+        try:
+            client = getattr(data_service, "_binance_client", None)
+            if client is not None:
+                await client.close()
+        finally:
+            db = getattr(data_service, "_db_manager", None)
+            if db is not None:
+                await db.disconnect()
         logger.info("数据后台已关闭")
 
 

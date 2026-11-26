@@ -7,9 +7,8 @@ from pathlib import Path
 import pytest
 
 from services.aggtrade_collector.cli import main
+from tests.fixtures.grid_replay import materialize_grid_sample
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-SAMPLE = PROJECT_ROOT / "ethusdt_aggtrades_20261007_0950_1010.json"
 SAMPLE_SHA = "63e375fb1cb7586c03c303682cab6fde389c94165cbbb67735f05064a04ec2fc"
 TZ = timezone(timedelta(hours=8))
 
@@ -18,11 +17,11 @@ def _point(h, m, s):
     return int(datetime(2026, 10, 7, h, m, s, tzinfo=TZ).timestamp() * 1000)
 
 
-@pytest.mark.skipif(not SAMPLE.exists(), reason="固定样本文件不在仓库中")
 def test_import_sample_end_to_end(tmp_path):
+    sample = materialize_grid_sample(tmp_path / 'source')
     db_path = tmp_path / "data/aggtrades/ethusdt_aggtrades.sqlite"
     main(["--base-dir", str(tmp_path), "init-db"])
-    main(["--base-dir", str(tmp_path), "import-sample", "--sample", str(SAMPLE)])
+    main(["--base-dir", str(tmp_path), "import-sample", "--sample", str(sample)])
 
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -46,7 +45,7 @@ def test_import_sample_end_to_end(tmp_path):
     conn.close()
 
     # 幂等：二次导入零新增
-    main(["--base-dir", str(tmp_path), "import-sample", "--sample", str(SAMPLE)])
+    main(["--base-dir", str(tmp_path), "import-sample", "--sample", str(sample)])
     conn = sqlite3.connect(db_path)
     assert conn.execute("SELECT COUNT(*) FROM agg_trades").fetchone()[0] == 164071
     conn.close()

@@ -53,6 +53,8 @@ _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
+from shared.accounting.account_cutover import classic_cutover_ms, order_epoch
+from shared.binance_account_mode import configured_pm
 from shared.binance_api import BinanceClient  # noqa: E402
 
 logger = structlog.get_logger()
@@ -182,11 +184,14 @@ async def fetch_income_sharded(cfg: HRSReconcileConfig) -> IncomeFetchResult:
     start_ms = _bj_naive_to_utc_ms(start_bj)
     end_ms = _bj_naive_to_utc_ms(end_bj)
 
+    cutover = classic_cutover_ms()
+    if not configured_pm() or (cutover is not None and end_ms > cutover):
+        raise ValueError("此历史 PM 诊断工具需要 PM 采集窗口；经典或跨模式对账使用 scripts.report_economic_ledger")
+
     client = BinanceClient(
         api_key=api_key,
         api_secret=api_secret,
         testnet=False,
-        use_unified_account=True,
     )
 
     collected: List[Dict] = []
@@ -197,7 +202,7 @@ async def fetch_income_sharded(cfg: HRSReconcileConfig) -> IncomeFetchResult:
     chunk_ms = cfg.chunk_days * _DAY_MS
     chunk_start = start_ms
     while chunk_start < end_ms:
-        chunk_end = min(chunk_start + chunk_ms, end_ms)
+        chunk_end = min(chunk_start + chunk_ms, end_ms) - 1
         chunk_label = f"{_utc_ms_to_bj_naive(chunk_start).strftime('%Y-%m-%d')}~{_utc_ms_to_bj_naive(chunk_end).strftime('%Y-%m-%d')}"
         chunk_count += 1
 
@@ -235,7 +240,7 @@ async def fetch_income_sharded(cfg: HRSReconcileConfig) -> IncomeFetchResult:
             truncated_chunks.append(chunk_label)
 
         # 分片边界提前（避免下一分片漏边界）
-        chunk_start = chunk_end
+        chunk_start = chunk_end + 1
         logger.info("income 分片完成", chunk=chunk_label, count=total_raw, truncated=chunk_has_truncation_risk)
 
     await client.close()
@@ -493,8 +498,13 @@ def match_income_to_trades(
         (所有匹配结果列表, 汇总统计)
     """
     # 按 symbol 建立 trade_records 索引
+    cutover = classic_cutover_ms()
+    if cutover and any(int(row.get("time") or 0) >= cutover for row in income_records):
+        raise ValueError("经典收入必须通过成交和同账户真实订单归属，使用 scripts.report_economic_ledger")
     records_by_symbol: Dict[str, List[Dict]] = {}
     for rec in trade_records:
+        if cutover and order_epoch(rec.get("executed_at"), cutover) != "pm":
+            continue
         records_by_symbol.setdefault(rec["symbol"], []).append(rec)
 
     # 标记已使用的 trade_records id（一笔明细不被多次匹配）
@@ -1044,8 +1054,14 @@ def load_income_from_json(path: str) -> IncomeFetchResult:
 async def run_reconcile(cfg: HRSReconcileConfig) -> str:
     """执行完整对账流程：拉 income → 导 trade_records → 匹配 → 生成报告"""
 
+    start_ms, _ = _bj_date_to_utc_ms_range(cfg.start_date)
+    _, end_ms = _bj_date_to_utc_ms_range(cfg.end_date or datetime.now(_CST).date().isoformat())
+    cutover = classic_cutover_ms()
+    if cutover and end_ms > cutover:
+        raise ValueError("经典或跨模式对账需要完整双段事实，使用 scripts.report_economic_ledger")
+
     # ── 1. Income：API 拉取 或 本地 JSON 加载 ──────────────────────────────────────
-    if cfg.income_cache and Path(cfg.income_cache).exists():
+    if not cfg.force_refresh and cfg.income_cache and Path(cfg.income_cache).exists():
         logger.info("=== Step 1: 从本地 JSON 加载 income ===")
         income_result = load_income_from_json(cfg.income_cache)
     else:
@@ -1056,6 +1072,9 @@ async def run_reconcile(cfg: HRSReconcileConfig) -> str:
     logger.info("=== Step 2: 加载 trade_records ===")
     csv_path = export_trade_records_via_ssh(cfg) if cfg.force_refresh or not Path(cfg.records_cache).exists() else cfg.records_cache
     trade_records = load_trade_records_csv(csv_path)
+    trade_records = [row for row in trade_records if start_ms <= _bj_naive_to_utc_ms(row["executed_at"]) < end_ms]
+    income_result.records = _dedupe_income([row for row in income_result.records
+                                           if start_ms <= int(row["time"]) < end_ms])
 
     # ── 3. 逐笔匹配 ─────────────────────────────────────────────────────────────────
     logger.info("=== Step 3: 逐笔匹配 ===")

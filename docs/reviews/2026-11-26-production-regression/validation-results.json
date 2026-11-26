@@ -1,0 +1,81 @@
+{
+  "generated_at_utc": "2026-11-26T14:38:51.400581+00:00",
+  "root": "/Users/yl/.codex/worktrees/full-regression-production-20261126",
+  "discovery_command": "rg --files --hidden -g test_*.py -g *_test.py",
+  "discovery_uses_repository_ignore_rules": true,
+  "summary": {
+    "discovered_files": 537,
+    "unique_test_files": 537,
+    "covered_files": 537,
+    "coverage_rate": 1.0,
+    "tests": 9165,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "sha256_mismatches": [],
+    "missing_files": [],
+    "extra_files": [],
+    "artifact_errors": [],
+    "nonpassing_files": [],
+    "passed": 9165
+  },
+  "groups_before_deduplication": [
+    {
+      "group": "final2-pure",
+      "files": 431,
+      "tests": 7438,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "group": "final2-pg",
+      "files": 33,
+      "tests": 671,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "group": "final-grid",
+      "files": 70,
+      "tests": 972,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    {
+      "group": "final-release",
+      "files": 4,
+      "tests": 106,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    }
+  ],
+  "duplicates": [
+    {
+      "path": "tests/test_scripts/test_grid_release_guard.py",
+      "groups": [
+        "final-grid",
+        "final-release"
+      ],
+      "selected_group": "final-release",
+      "selection": "latest final-release row supersedes final-grid row"
+    }
+  ],
+  "refreshed_files": [
+    "tests/test_scripts/test_full_regression_build.py"
+  ],
+  "refresh_command": "docs/reviews/2026-11-26-production-regression/run_matrix.py --manifest /tmp/binance-production-readiness/final-release-refresh-tests.json --out /tmp/binance-production-readiness/final-release-refresh --jobs 1 --timeout 900",
+  "runtime_environment": {
+    "python": "/tmp/binance-candidate-venv/bin/python",
+    "variables_file": "/tmp/binance-production-readiness/final-env.json",
+    "network_guard": "docs/reviews/2026-11-26-production-regression/localguard/sitecustomize.py",
+    "postgres": "local disposable test databases; serial PG suite",
+    "kline": "authorized read-only local SSH tunnel; no exchange trading"
+  },
+  "deployment_status": "not_deployed",
+  "production_readiness_claimed": false,
+  "detailed_report": "/tmp/binance-production-readiness/final-consolidated.json"
+}

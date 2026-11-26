@@ -274,14 +274,18 @@ class TestNewCoinClosePosition:
         assert client.submissions[0]["qty"] == Decimal("0.3")
         assert client.position == Decimal("0")
 
-    async def test_ac6_minus_2022_cancel_conditional_then_retry(self):
+    async def test_ac6_minus_2022_cancel_conditional_then_retry(self, monkeypatch):
         """AC6：-2022 被拒 → 先撤同向条件单再重试成功"""
+        from unittest.mock import AsyncMock
+        cancel_owned = AsyncMock()
+        monkeypatch.setattr("shared.reduce_only_close.cancel_strategy_algos", cancel_owned)
         client = FakeExchange(position=-1, step="0.001", reject_reduce_only_times=1,
                               fills=[{"executed": "1", "status": "FILLED"}])
         ex = _newcoin_executor(client)
 
         assert await ex._close_position("BTCUSDT", Decimal("1.0"), "止盈") is True
-        assert client.cancel_all_calls == 1
+        assert client.cancel_all_calls == 0
+        cancel_owned.assert_awaited_once_with(client, "BTCUSDT")
         assert client.position == Decimal("0")
         assert len(client.submissions) == 1  # 被拒的一笔不计入提交记录
 
@@ -409,7 +413,7 @@ def _hrs_guard(notify=True, keep_protection=True):
         "keep_protection_on_partial": keep_protection}}}
     guard._writeback_pnl = AsyncMock()
     guard.position_manager = MagicMock()
-    guard.position_manager.cancel_all_orders = AsyncMock()
+    guard.position_manager.cancel_all_orders = AsyncMock(return_value={"failed": 0})
     guard.position_manager.remove_position = MagicMock()
     guard._replenish_single_position = AsyncMock()
     guard.notification_client = MagicMock()

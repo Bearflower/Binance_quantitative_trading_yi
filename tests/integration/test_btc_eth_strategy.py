@@ -7,6 +7,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+from decimal import Decimal
 
 from strategies.btc_eth.strategy import BTCEthStrategy
 from shared.binance_api import BinanceClient
@@ -230,6 +231,8 @@ def mock_binance_client():
         'positions': [],
     })
     client.get_ticker_price = AsyncMock(return_value='50000')
+    client.get_position = AsyncMock(return_value=[])
+    client.set_leverage = AsyncMock(return_value={'leverage': 4})
     client.get_symbol_info = AsyncMock(return_value={
         'quantityPrecision': 3,
         'pricePrecision': 2,
@@ -326,6 +329,8 @@ async def test_strategy_analyze(config, mock_binance_client, mock_kline_service,
         notification_client=mock_notification_client
     )
     
+    # 正常分析用例显式提供已核验的分配额；缺失授权的拒绝路径另测。
+    strategy.capital_mgr.get_effective_margin_limit = AsyncMock(return_value=(Decimal('500'), 'test'))
     signal = await strategy.analyze('BTCUSDT')
     
     # 验证信号格式
@@ -350,7 +355,7 @@ async def test_strategy_analyze(config, mock_binance_client, mock_kline_service,
 
 
 @pytest.mark.asyncio
-async def test_strategy_execute_signal(config, mock_binance_client, mock_kline_service, mock_notification_client):
+async def test_strategy_execute_signal_requires_verified_risk_budget(config, mock_binance_client, mock_kline_service, mock_notification_client):
     """测试策略执行信号"""
     strategy = BTCEthStrategy(
         config=config,
@@ -378,8 +383,9 @@ async def test_strategy_execute_signal(config, mock_binance_client, mock_kline_s
     # 执行信号
     success = await strategy.execute_signal(signal)
     
-    # 验证执行成功（交易通知已禁用，不再检查）
-    assert success is True
+    # 当前安全契约：没有数据库可验证风险政策时必须拒绝，不能让旧测试绕过。
+    assert success is False
+    mock_binance_client.place_order.assert_not_awaited()
 
 
 @pytest.mark.asyncio

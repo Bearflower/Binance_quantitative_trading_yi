@@ -100,8 +100,8 @@ async def test_做空平仓方向映射为BUY():
     assert strategy.binance_client.trade_logger.insert_pnl_summary.await_args.kwargs['side'] == 'BUY'
 
 
-async def test_无opened_at时since为空且不报错():
-    """持仓缺少 opened_at（或类型异常）时 since 传 None，不做去重但不应报错。"""
+async def test_无opened_at时保留结算且不写理论盈亏():
+    """缺少仓位时间边界时无法取得归属明确的实际盈亏，不用估值结算。"""
     strategy = make_strategy()
     # pos 无 opened_at → 跳过币安 API 路径，降级到理论 PnL 计算
     strategy._calculate_theoretical_total_pnl = AsyncMock(return_value=Decimal('-30'))
@@ -114,7 +114,8 @@ async def test_无opened_at时since为空且不报错():
         current_price=0.98,
         pos={},
     )
-    assert strategy.binance_client.trade_logger.insert_pnl_summary.await_args.kwargs['since'] is None
+    strategy.binance_client.trade_logger.insert_pnl_summary.assert_not_awaited()
+    strategy._calculate_theoretical_total_pnl.assert_not_awaited()
 
 
 async def test_全部平仓PnL回写失败_不影响主流程():
@@ -132,3 +133,14 @@ async def test_全部平仓PnL回写失败_不影响主流程():
         pos={'opened_at': datetime.now(timezone.utc)},
     )
     strategy.binance_client.trade_logger.log_stop_loss.assert_not_awaited()
+
+
+async def test_live_summary_stays_pending_without_exchange_income():
+    strategy = make_strategy()
+    strategy.binance_client.testnet = False
+    strategy._get_actual_pnl_from_binance.return_value = None
+    strategy._calculate_theoretical_total_pnl = AsyncMock(return_value=Decimal('12.34'))
+    assert await strategy._writeback_pnl_for_full_close('ABCUSDT','long',10,1,1,25,
+        {'opened_at':datetime.now(timezone.utc)}) is None
+    strategy._calculate_theoretical_total_pnl.assert_not_awaited()
+    strategy.binance_client.trade_logger.insert_pnl_summary.assert_not_awaited()

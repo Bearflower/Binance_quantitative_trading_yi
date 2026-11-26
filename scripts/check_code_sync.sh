@@ -17,7 +17,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # 项目根目录
-PROJECT_ROOT="/Users/yl/vscode/Binance_quantitative_trading"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # 回测代码目录
 BACKTEST_DIR="$PROJECT_ROOT/backtest/btc_eth/scripts"

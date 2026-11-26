@@ -19,7 +19,7 @@ def _positive_integer(value):
 
 async def record_stop_binding(
     db, *, account_id, strategy, symbol, episode_entry_order_id,
-    algo_id, stop_side, stop_quantity,
+    algo_id, stop_side, stop_quantity, since_ms=None,
 ):
     """Insert once and confirm the stored identity; conflicting evidence fails closed."""
     entry_id = _positive_integer(episode_entry_order_id)
@@ -41,8 +41,9 @@ async def record_stop_binding(
     row = await db.fetch_one(
         "SELECT strategy, episode_entry_order_id, stop_side, stop_quantity "
         "FROM trading.aggressive_stop_bindings "
-        "WHERE account_id=$1 AND symbol=$2 AND algo_id=$3",
-        account_id, symbol, stop_id,
+        "WHERE account_id=$1 AND symbol=$2 AND algo_id=$3 "
+        "AND ($4::bigint IS NULL OR bound_at>=to_timestamp($4::double precision/1000))",
+        account_id, symbol, stop_id, since_ms,
     )
     return bool(row and row["strategy"] == strategy
                 and int(row["episode_entry_order_id"]) == entry_id

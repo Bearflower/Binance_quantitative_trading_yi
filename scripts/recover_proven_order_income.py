@@ -7,6 +7,8 @@ Closed-position mode requires a fixed signed flat anchor and complete fills.
 """
 from __future__ import annotations
 
+from shared.accounting.account_cutover import FILL_SOURCES, account_cutover_ms, order_epoch
+
 import argparse
 import asyncio
 from collections import defaultdict
@@ -45,6 +47,7 @@ def verified_owners(account, fills, owners, trades):
     for trade in trades:
         trades_by_order[(trade['symbol'], str(trade.get('order_id')))].append(trade)
     accepted = {}
+    cutover = account_cutover_ms(account)
     for owner in owners:
         identity = (owner['symbol'], str(owner['order_id']))
         if owner['account_id'] != account or owner['source_kind'] != 'trade_record':
@@ -67,6 +70,10 @@ def verified_owners(account, fills, owners, trades):
             continue
         verified = True
         for source in sources:
+            epoch = order_epoch(source.get('executed_at'), cutover)
+            if not epoch or any(order_epoch(fill.get('trade_time_utc'), cutover) != epoch for fill in fills_by_order[identity]):
+                verified = False
+                break
             if source['account_id'] == account:
                 continue
             recorded = source['executed_at']
@@ -131,6 +138,9 @@ def archive_order_plan(account, archive, archive_sha256, download_id, fills, tra
         if len(strategies) != 1 or any(t['account_id'] not in (None, account) for t in related):
             continue
         created = datetime.strptime(row['Time(UTC)'], '%Y-%m-%d %H:%M:%S').replace(tzinfo=timezone.utc)
+        epoch = order_epoch(created, account_cutover_ms(account))
+        if any(order_epoch(f.get('trade_time_utc'), account_cutover_ms(account)) != epoch for f in scoped_fills):
+            continue
         sources = [t for t in related if str(t['side']).upper() == row['Side'].upper()
                    and t['executed_at'].tzinfo is None
                    and abs((t['executed_at'].replace(tzinfo=ZoneInfo('Asia/Shanghai')) - created).total_seconds()) <= 10]
@@ -221,7 +231,7 @@ def validate_closed_lot_anchors(anchors, account, symbols, anchor_at):
             raise ValueError('signed zero-position checkpoint invalid')
 
 
-def closed_lot_plan(account, incomes, fills, owners, anchors, cursors, reviewed, existing):
+def closed_lot_plan(account, incomes, fills, owners, anchors, cursors, reviewed, existing, *, trades=()):
     """Attribute only fully verified closed lots ending before a signed flat anchor."""
     manual = {_key(row): row for row in reviewed}
     prior = {_key(row): row for row in existing}
@@ -233,13 +243,20 @@ def closed_lot_plan(account, incomes, fills, owners, anchors, cursors, reviewed,
         stop = anchor['flat_at']
         if anchor['account_id'] != account or Decimal(str(anchor['exchange_qty'])) != 0 or not anchor['evidence']:
             raise ValueError('unverified flat anchor')
-        scoped = [dict(f) for f in fills if f['account_id'] == account and f['symbol'] == symbol]
+        cutover = account_cutover_ms(account)
+        epoch = order_epoch(stop, cutover)
+        scoped = [dict(f) for f in fills if f['account_id'] == account and f['symbol'] == symbol
+                  and order_epoch(f['trade_time_utc'], cutover) == epoch]
         if any(f['trade_time_utc'] == stop for f in scoped):
             raise ValueError('flat anchor collides with a fill')
         scoped = sorted((f for f in scoped if f['trade_time_utc'] < stop),
                         key=lambda f: (f['trade_time_utc'], int(f['trade_id'])), reverse=True)
         owner_map = {str(row['order_id']): row for row in owners
                      if row['account_id'] == account and row['symbol'] == symbol}
+        if cutover is not None:
+            direct = verified_owners(account, scoped, owner_map.values(), trades)
+            owner_map = {key: row for key, row in owner_map.items()
+                         if (symbol, key) in direct or row['source_kind'] == epoch + '_algo_link'}
         qty = Decimal(0)
         window = []
         suffix = []
@@ -389,9 +406,9 @@ async def run(args):
                 anchors = await connection.fetch('SELECT * FROM trading.position_flat_baseline WHERE account_id=$1 AND symbol=ANY($2::text[]) AND flat_at=$3', account, symbols, anchor_at)
                 validate_closed_lot_anchors(anchors, account, symbols, anchor_at)
                 lot_fills = await connection.fetch('SELECT * FROM trading.execution_fact_fill WHERE account_id=$1 AND symbol=ANY($2::text[]) AND trade_time_utc <= $3 ORDER BY trade_time_utc,trade_id', account, symbols, anchor_at)
-                cursors = await connection.fetch('SELECT * FROM trading.execution_fact_cursor WHERE account_id=$1 AND source=$2 AND symbol=ANY($3::text[])', account, 'userTrades', symbols)
+                cursors = await connection.fetch('SELECT * FROM trading.execution_fact_cursor WHERE account_id=$1 AND source=ANY($2::text[]) AND symbol=ANY($3::text[])', account, list(FILL_SOURCES), symbols)
                 plan, digest, lot_rejections = closed_lot_plan(account, incomes, lot_fills, owners,
-                    anchors, cursors, reviewed, existing)
+                    anchors, cursors, reviewed, existing, trades=trades)
             if args.apply:
                 if args.expected_plan_sha256 != digest:
                     raise ValueError('reviewed plan checksum changed')

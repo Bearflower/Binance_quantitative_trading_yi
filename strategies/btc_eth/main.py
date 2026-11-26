@@ -11,6 +11,7 @@ import structlog
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
+from shared.binance_account_mode import verify_cutover_ledger, verify_trading_mode
 from shared.binance_api import BinanceClient
 from shared.database import DatabaseManager
 from shared.kline_service import KLineService
@@ -81,8 +82,8 @@ async def initialize():
         api_key=os.getenv("BINANCE_API_KEY"),
         api_secret=os.getenv("BINANCE_API_SECRET"),
         testnet=os.getenv("BINANCE_TESTNET", "false").lower() == "true",
-        use_unified_account=os.getenv("BINANCE_USE_PM", "true").lower() == "true"  # 默认使用PM账户
     )
+    await verify_trading_mode(binance_client)
     
     # 初始化数据库和交易记录器（自动记录所有下单到 trading.trade_records）
     db_manager = DatabaseManager(
@@ -93,6 +94,7 @@ async def initialize():
         password=os.getenv("DATABASE_PASSWORD", "trading_password_2024")
     )
     await db_manager.connect()
+    await verify_cutover_ledger(binance_client, db_manager, trading_writer=True)
     
     _own = load_ownership_config(config)
     trade_logger = TradeLogger(db_manager, _own['my_record_name'])

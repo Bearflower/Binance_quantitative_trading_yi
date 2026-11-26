@@ -8,6 +8,8 @@ import asyncio
 import aiohttp
 import structlog
 
+from shared.notification_time import beijing_time
+
 
 logger = structlog.get_logger()
 
@@ -165,6 +167,8 @@ class NotificationClient:
             raise ValueError("项目名称不能为空")
         
         project = project.strip()
+        if project == "grid":
+            message += f"\n推送时间（北京时间） {beijing_time()}"
         
         if self.use_direct_webhook and project in self._webhook_mapping:
             return await self._send_to_feishu_webhook(

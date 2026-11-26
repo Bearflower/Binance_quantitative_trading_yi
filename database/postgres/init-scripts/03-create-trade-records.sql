@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS trading.trade_records (
     strategy VARCHAR(50) NOT NULL,
     symbol VARCHAR(20) NOT NULL,
     order_id VARCHAR(100),
+    algo_id VARCHAR(100),
     side VARCHAR(10) NOT NULL,
     order_type VARCHAR(20) NOT NULL,
     quantity DECIMAL(20,8) NOT NULL DEFAULT 0,

@@ -15,7 +15,7 @@ from shared.entry_risk_policy import (
     prepare_aggressive_entry,recover_reserved_protection,size_reduced_entry,
     submit_aggressive_entry,
 )
-from test_policy_postgres import DSN,setup
+from test_policy_postgres import DSN,setup_risk_pool
 
 PG=pytest.mark.skipif(not DSN,reason='RISK_TEST_DSN must explicitly select local risk_tests')
 FILTERS=dict(stepSize='.1',tickSize='.05',minQty='.1',minNotional='5')
@@ -27,6 +27,15 @@ def signal():
     return dict(symbol='AAA',quantity=D(10),entry_price=D(100),leverage=10,
         initial_stop_loss=95,direction='LONG',tp1_price=110,tp2_price=120,
         grade='A',timestamp=datetime(2026,11,4))
+
+
+def test_entry_geometry_requires_stable_signal_identity():
+    data = signal()
+    with pytest.raises(EntryDenied, match='signal identity'):
+        entry_geometry(data, FILTERS, {}, PARTIAL)
+    data['entry_decision_identity'] = 'AAA:LONG:2026-11-04 00:00:00'
+    geometry = entry_geometry(data, FILTERS, {}, PARTIAL)
+    assert geometry['signal']['entry_decision_identity'] == data['entry_decision_identity']
 
 
 def strategy(pool):
@@ -69,6 +78,14 @@ def test_short_geometry_and_zero_offset():
     assert result.quantity==D(5) and result.risk==result.original_risk/2
 
 
+def test_minimum_notional_fallback_stays_within_original_signal():
+    data=signal();filters=copy.deepcopy(FILTERS);filters['minNotional']='1000'
+    result=size_reduced_entry(data,filters,'.5','.002',['.3','.3'],tp_offset='.0015')
+    assert result.quantity==result.original_quantity==D(10)
+    assert result.margin==D(100) and result.risk==result.original_risk
+    assert result.exit_ratios==(D(1),D(0))
+
+
 @pytest.mark.asyncio
 async def test_allocator_freezes_even_without_database():
     assert await allocation_frozen(None)
@@ -77,7 +94,7 @@ async def test_allocator_freezes_even_without_database():
 @PG
 @pytest.mark.asyncio
 async def test_policy_modes_missing_database_and_expiry():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         obj=strategy(pool)
         assert await entry_allowed(obj,'btc_eth_aggressive')
@@ -97,7 +114,7 @@ async def test_policy_modes_missing_database_and_expiry():
 @PG
 @pytest.mark.asyncio
 async def test_reservation_refuses_changed_policy_duplicate_intent_and_missing_claim():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(NS(pool=pool))
         async def snapshot():return 0,1000,100
@@ -113,8 +130,8 @@ async def test_reservation_refuses_changed_policy_duplicate_intent_and_missing_c
 
 @PG
 @pytest.mark.asyncio
-async def test_final_policy_revision_race_retains_submitting_reservation():
-    pool=await setup()
+async def test_final_policy_revision_race_releases_proven_unsent_reservation():
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(NS(pool=pool))
         async def snapshot():return 0,1000,100
@@ -128,14 +145,16 @@ async def test_final_policy_revision_race_retains_submitting_reservation():
         with pytest.raises(EntryDenied,match='immediately'):
             async with RacingStore(NS(pool=pool)).submitting('btc_eth_aggressive',cid):pytest.fail('writer ran')
         async with pool.acquire() as conn:
-            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation')=='submitting'
+            assert await conn.fetchval('SELECT state FROM trading.entry_risk_reservation WHERE client_order_id=$1', cid) == 'released'
+            claim = await conn.fetchrow("SELECT claim_state,reason FROM trading.position_claims WHERE symbol='AAA'")
+            assert tuple(claim) == ('RELEASED', 'risk_denied_before_http')
     finally:await pool.close()
 
 
 @PG
 @pytest.mark.asyncio
 async def test_reconcile_malformed_exchange_and_legacy_orders():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(NS(pool=pool))
         async def snapshot():return 0,1000,100
@@ -163,7 +182,7 @@ async def test_allocation_decoded_json_missing_duplicate_and_invalid():
 @pytest.mark.asyncio
 @pytest.mark.parametrize('scenario',['adding','monitor','stale_retry','missing_identity','bad_positions','unknown_owner','owned','other_owner','zero_position','no_slots','db_error'])
 async def test_prepare_snapshot_risk_decisions(scenario):
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         obj=strategy(pool);data=signal()
         expected=False
@@ -188,11 +207,19 @@ async def test_prepare_snapshot_risk_decisions(scenario):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('change',['missing','stop','geometry','symbol','short'])
 async def test_final_submission_identity_and_geometry(change):
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         obj=strategy(pool);data=signal()
         if change=='short':data.update(direction='SHORT',initial_stop_loss=105,tp1_price=90,tp2_price=80)
         assert await prepare_aggressive_entry(obj,'AAA',data)
+        async with pool.acquire() as conn:
+            saved = await conn.fetchval('SELECT geometry FROM trading.entry_risk_reservation WHERE client_order_id=$1', data['_risk_client_id'])
+        if isinstance(saved, str):
+            saved = json.loads(saved)
+        from shared.mtpc_signal_persistence import _build_signal_row
+        terminal = _build_signal_row({**data, 'trade_success': True}, 'executed')
+        assert saved['signal']['entry_decision_identity'] == data['entry_decision_identity']
+        assert json.loads(terminal['metadata'])['entry_decision_identity'] == data['entry_decision_identity']
         symbol='AAA'
         if change=='missing':data.pop('_risk_client_id')
         if change=='stop':data['initial_stop_loss']=94
@@ -211,7 +238,7 @@ async def test_final_submission_identity_and_geometry(change):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('case',['bad_order','zero_fill','wrong_side','bad_positions','missing_symbol','zero_qty','qty_exceeds_fill','fill_exceeds_reservation','wrong_direction','bad_algos','already_covered','stop_failure','transport_error','short'])
 async def test_recovery_requires_proof_and_preserves_reservation_on_every_error(case):
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         store=RiskPolicyStore(NS(pool=pool))
         async def snapshot():return 0,1000,100
@@ -251,7 +278,7 @@ async def test_recovery_database_failure_leaves_monitor_alive():
 @PG
 @pytest.mark.asyncio
 async def test_decoded_json_geometry_supported_by_submission_and_recovery():
-    pool=await setup()
+    pool=await setup_risk_pool()
     obj=strategy(pool);data=signal()
     assert await prepare_aggressive_entry(obj,'AAA',data)
     cid=data['_risk_client_id']
@@ -277,7 +304,7 @@ async def test_decoded_json_geometry_supported_by_submission_and_recovery():
 @PG
 @pytest.mark.asyncio
 async def test_activation_input_validation_and_allocation_cas():
-    pool=await setup()
+    pool=await setup_risk_pool()
     try:
         for candidates,hours in [([],1),([candidate()],0),([candidate()],745),([candidate(),candidate()],1),([candidate(),candidate(account_id='other',strategy_id='hrs')],1)]:
             with pytest.raises(EntryDenied):await activate_policies(pool,candidates,expected_revision=1,valid_hours=hours)
@@ -292,7 +319,7 @@ async def test_activation_input_validation_and_allocation_cas():
 @pytest.mark.asyncio
 async def test_cli_dry_run_then_atomic_four_candidate_activation(monkeypatch):
     from scripts.activate_entry_risk_policy import parser,run
-    pool=await setup();await pool.close()
+    pool=await setup_risk_pool();await pool.close()
     admin=await asyncpg.connect(DSN)
     try:
         await admin.execute('TRUNCATE trading.entry_risk_reservation,trading.strategy_risk_active,trading.strategy_risk_policy,trading.strategy_risk_audit CASCADE')

@@ -212,7 +212,7 @@ class TestMultiTimeframeData:
 
     @pytest.mark.asyncio
     async def test_multi_timeframe_data_consistency(self, kline_service):
-        """测试：多时间框架数据时间一致性（1h最新K线时间 ≈ 4h最新K线时间）"""
+        """各周期只使用已收盘数据，比较收盘边界而非不同长度的开盘时间。"""
         symbol = "BTCUSDT"
         data = await kline_service.get_multi_timeframe_data(
             symbol, intervals=TEST_TIMEFRAMES
@@ -221,13 +221,14 @@ class TestMultiTimeframeData:
         latest_times = {}
         for tf in TEST_TIMEFRAMES:
             if data.get(tf):
-                latest_times[tf] = data[tf][-1]['open_time']
+                latest_times[tf] = data[tf][-1]['close_time']
 
-        # 1h 和 4h 最新K线时间应该在1小时内
+        # 在 4h 周期末，最新已收盘 1h 和 4h 的开盘时间可相差 6h；
+        # 它们的收盘时间差必须小于一个 4h 周期。
         if '1h' in latest_times and '4h' in latest_times:
             time_diff = abs(latest_times['1h'] - latest_times['4h'])
-            assert time_diff <= 4 * 3600000, \
-                f"1h({latest_times['1h']})和4h({latest_times['4h']})最新K线时间差 {time_diff}ms > 4h"
+            assert time_diff < 4 * 3600000, \
+                f"1h({latest_times['1h']})和4h({latest_times['4h']})最新收盘时间差 {time_diff}ms >= 4h"
 
 
 # ============================================================================

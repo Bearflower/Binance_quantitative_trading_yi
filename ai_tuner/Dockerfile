@@ -38,8 +38,12 @@ COPY strategies/grid/config.yaml /app/strategies/grid/config.yaml
 COPY strategies/hrs/config.yaml /app/strategies/hrs/config.yaml
 COPY strategies/new_coin/config.yaml /app/strategies/new_coin/config.yaml
 
-# 构建期验证独立快照采集入口已打包；运行时由 ai-tuner-snapshot 服务调用
-RUN python -c "import ai_tuner.snapshots.cli; import ai_tuner.funding_schedule.cli"
+# 调优/资格回放直接复用实盘纯计算核心，不能依赖宿主代码目录挂载补齐。
+COPY strategies/hrs/ /app/strategies/hrs/
+COPY strategies/btc_eth_aggressive/ /app/strategies/btc_eth_aggressive/
+
+# 构建期验证实际入口及两套回放适配器；仅导入，不连接账户或启动任务。
+RUN python -c "import ai_tuner.main; import ai_tuner.snapshots.cli; import ai_tuner.funding_schedule.cli; import ai_tuner.replay.adapters.hrs; import ai_tuner.replay.adapters.mtpcs_aggressive"
 
 # 创建日志目录
 RUN mkdir -p /app/logs

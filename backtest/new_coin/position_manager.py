@@ -328,12 +328,11 @@ class PositionManager:
         
         if target_level == 1:
             position['target1_reached'] = True
-            position['remaining_quantity'] *= Decimal('0.7')
             logger.info(f"第一目标已达成: {symbol}")
         elif target_level == 2:
             position['target2_reached'] = True
-            position['remaining_quantity'] *= Decimal('0.6')
             logger.info(f"第二目标已达成: {symbol}")
+        # 数量只在确认成交后由 update_remaining_quantity 扣减，阶段标志不得重复扣量。
     
     def update_lowest_price(self, symbol: str, price: float) -> None:
         """

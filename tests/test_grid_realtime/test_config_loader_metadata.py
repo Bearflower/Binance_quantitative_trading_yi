@@ -1,6 +1,8 @@
 """config_loader metadata 路径测试：同源元数据、降级口径、config_hash 脱敏。"""
 import os
 
+import pytest
+from structlog.testing import capture_logs
 import yaml
 
 from shared.config_loader import (compute_config_hash, load_strategy_config,
@@ -99,6 +101,34 @@ def test_override_empty_file(tmp_path):
     assert config == {"a": 1}
     assert metadata["applied_overrides_version"] is None
     assert metadata["requested_overrides_version"] == "V20260101"
+
+
+def test_explicit_empty_mapping_is_valid_noop_overlay(tmp_path):
+    strategy_dir = _make_strategy(
+        tmp_path, base="nested:\n  value: 1\n", active="V20260101",
+        override="# Approved version intentionally makes no adjustments.\n{}\n")
+    with capture_logs() as logs:
+        config, metadata = load_strategy_config_with_metadata(strategy_dir)
+    assert config == {"nested": {"value": 1}}
+    assert metadata["requested_overrides_version"] == "V20260101"
+    assert metadata["applied_overrides_version"] == "V20260101"
+    assert metadata["load_error"] is None
+    assert metadata["config_hash"] == compute_config_hash(config)
+    assert not [entry for entry in logs if entry["log_level"] == "warning"]
+
+
+@pytest.mark.parametrize("override", [None, "", "# comment only\n", "null\n",
+                                      "a: [", "[]", "- 1\n", "false", "42"])
+def test_unusable_overlays_still_warn_and_fall_back(tmp_path, override):
+    strategy_dir = _make_strategy(
+        tmp_path, base="a: 1\n", active="V20260101", override=override)
+    with capture_logs() as logs:
+        config, metadata = load_strategy_config_with_metadata(strategy_dir)
+    assert config == {"a": 1}
+    assert metadata["requested_overrides_version"] == "V20260101"
+    assert metadata["applied_overrides_version"] is None
+    assert metadata["load_error"] is not None
+    assert any(entry["log_level"] == "warning" for entry in logs)
 
 
 def test_override_top_level_not_dict(tmp_path):

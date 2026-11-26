@@ -409,6 +409,7 @@ class RiskManager:
             "drawdown_pause_until": self.drawdown_pause_until.isoformat() if self.drawdown_pause_until else None,
             "blacklist": list(self.blacklist),
             "daily_open_count": self.daily_open_count,
+            "daily_reset_date": self._daily_reset_date.isoformat() if self._daily_reset_date else None,
             "stop_loss_monitor": self._stop_loss_monitor,
             # P2-6: 持久化熔断状态
             "circuit_breakers": {
@@ -439,6 +440,11 @@ class RiskManager:
         self.drawdown_pause_until = datetime.fromisoformat(dpu) if dpu else None
         self.blacklist = set(data.get("blacklist", []))
         self.daily_open_count = data.get("daily_open_count", {"short": 0, "long": 0})
+        reset_date = data.get("daily_reset_date")
+        # 旧状态没有日期时保守保留当日计数，避免重启绕过限制。
+        self._daily_reset_date = (datetime.fromisoformat(reset_date) if reset_date
+                                  else datetime.now(timezone.utc) if any(self.daily_open_count.values())
+                                  else None)
 
         # P2-7: 恢复止损监控列表，重新计算过期时间并设置定时器
         raw_monitor = data.get("stop_loss_monitor", {})

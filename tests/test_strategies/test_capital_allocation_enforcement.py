@@ -1077,7 +1077,7 @@ class TestBaselineRebuild:
     """R4：启动时从交易所重建持仓基线（AC-3）"""
 
     @pytest.mark.asyncio
-    async def test_empty_exchange_positions_clears_local_record(self):
+    async def test_empty_exchange_positions_keeps_pending_settlement(self):
         """PM 空列表 = 本策略零持仓 → 清空本地残留并允许开仓"""
         strategy = _build_new_coin_strategy()
         strategy.positions = {'HUTUSDT': {'order_id': '1', 'entry_price': 10.0}}
@@ -1087,9 +1087,9 @@ class TestBaselineRebuild:
 
         await strategy._rebuild_position_baseline()
 
-        assert strategy.positions == {}
+        assert strategy.positions['HUTUSDT']['settlement_pending'] is True
         assert strategy.trading_executor.baseline_ready is True
-        strategy.trading_executor.clear_position_tracking.assert_called_once_with('HUTUSDT')
+        strategy.trading_executor.clear_position_tracking.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_quantity_from_exchange_and_local_entry_price_kept(self):
@@ -1189,8 +1189,8 @@ class TestOwnPositionFilter:
         assert list(strategy.positions.keys()) == ['HUTUSDT']
 
     @pytest.mark.asyncio
-    async def test_db_unavailable_without_local_records_skips_filter(self):
-        """DB 与本地均无法判定归属 → 跳过过滤（宁可保留，不丢自有持仓）"""
+    async def test_db_unavailable_without_local_records_rejects_unknown_ownership(self):
+        """DB 与本地均无法判定归属时，不接管未知持仓。"""
         strategy = _build_new_coin_strategy()
         strategy.positions = {}
         strategy.trading_executor = _build_baseline_executor()
@@ -1203,7 +1203,8 @@ class TestOwnPositionFilter:
 
         await strategy._rebuild_position_baseline()
 
-        assert list(strategy.positions.keys()) == ['HUTUSDT']
+        assert not strategy.positions
+        assert not strategy.trading_executor.position_tracking
 
     @pytest.mark.asyncio
     async def test_db_empty_set_clears_all_positions(self):
@@ -1743,6 +1744,7 @@ class TestBaselineTrackingSync:
         executor.binance_api.get_position = AsyncMock(return_value=exchange_positions)
         executor.position_tracking = {}
         executor.baseline_ready = False
+        executor.get_open_short_symbols = AsyncMock(return_value={'PATHUSDT'})
 
         strategy = _build_new_coin_strategy()
         strategy.positions = {}

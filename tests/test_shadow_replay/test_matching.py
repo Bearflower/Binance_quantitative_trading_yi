@@ -41,8 +41,8 @@ def test_clamp_notional_boost():
     price = Decimal("100")
     # notional = 1 < minNotional 5 → 需要向上到 0.05
     boosted = clamp_notional(qty, price, Decimal("5"))
-    # 向上整 → 最小 notional/price = 5/100 = 0.05 向上取整还是 Decimal 整数
-    expected = (Decimal("5") / Decimal("100")).to_integral_value(rounding="ROUND_UP")
+    # 无步长参数时返回精确最小数量，不能放大到整币。
+    expected = Decimal("0.05")
     assert boosted == expected
     assert boosted * price >= Decimal("5")
 

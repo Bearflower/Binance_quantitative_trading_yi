@@ -34,6 +34,24 @@ def test_four_hour_series_preserves_millisecond_settlement_time():
     assert result["decision"] == "BLOCKED_DATA"
 
 
+def test_legacy_attested_funding_validation_has_no_hrs_runtime_dependency(monkeypatch):
+    import builtins
+    from ai_tuner.replay.funding_history import attested_funding_schedule
+    original=builtins.__import__
+    def guarded(name,*args,**kwargs):
+        if name.startswith('strategies.hrs') or name=='ai_tuner.hrs_evidence_export':
+            raise ModuleNotFoundError('HRS modules are absent from generic ai-tuner image')
+        return original(name,*args,**kwargs)
+    monkeypatch.setattr(builtins,'__import__',guarded)
+    selected=dict(symbol='BTCUSDT',time=int(START.timestamp()*1000),
+        nextFundingTime=int((START+timedelta(hours=8)).timestamp()*1000),fundingIntervalHours=8)
+    row=dict(symbol='BTCUSDT',source_time=START.isoformat(),received_at=START.isoformat(),
+        next_funding_time=(START+timedelta(hours=8)).isoformat(),funding_interval_hours=8,
+        payload_hash=hashlib.sha256(json.dumps(selected,sort_keys=True,separators=(',',':')).encode()).hexdigest())
+    assert attested_funding_schedule(dict(source='prospective_exchange_forecast',complete=True,observations=[row]),
+        ('BTCUSDT',),START,START+timedelta(minutes=1))=={'BTCUSDT':()}
+
+
 def test_eight_hour_series_is_not_forced_into_four_hour_schedule():
     result = assess_funding_rows(
         "BTCUSDT", _rows("BTCUSDT", (0, 8, 16, 24)),

@@ -288,7 +288,9 @@ class TestRunOnce:
         queries = mock_db.execute_transaction.await_args.args[0]
         assert len(queries) == 2
         assert "UPDATE trading.trade_records SET realized_pnl" in queries[0][0]
-        assert queries[0][1] == (Decimal("-1.72949999"), 4672, "678821", "pm")
+        assert queries[0][1][:4] == (Decimal("-1.72949999"), 4672, "678821", "pm")
+        assert queries[0][1][4].lower is None and queries[0][1][4].upper is None
+        assert queries[0][1][5] == "PFEUSDT"
         assert "last_reconciled_ts" in queries[1][0]
         assert queries[1][1] == (fixed_now, "pm")
 

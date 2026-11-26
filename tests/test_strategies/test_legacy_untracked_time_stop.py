@@ -4,7 +4,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from functools import partial
+from shared.position_entry_recovery import fetch_lot_fills
 from strategies.btc_eth_aggressive.strategy import BTCEthStrategy
+
+@pytest.fixture(autouse=True)
+def observation_time(monkeypatch):
+    # 此组回放覆盖截至 11 月 2 日的成交，固定分页截止时间。
+    monkeypatch.setattr("strategies.btc_eth_aggressive.strategy.fetch_lot_fills",
+                        partial(fetch_lot_fills, now_ms=1793577600000))
+
 
 
 def strategy_with_exchange(amount="1"):
@@ -20,7 +29,7 @@ def strategy_with_exchange(amount="1"):
     strategy.binance.get_position = AsyncMock(return_value=[
         {"symbol": "ETHUSDT", "positionAmt": amount, "entryPrice": "100"}
     ])
-    strategy.binance.get_open_algo_orders = AsyncMock(return_value=[
+    strategy._owned_open_protection = AsyncMock(return_value=[
         {"symbol": "ETHUSDT", "side": "SELL", "orderType": "STOP",
          "reduceOnly": True, "quantity": amount, "triggerPrice": "90"}
     ])
@@ -129,11 +138,13 @@ async def test_legacy_expiry_full_close_path_confirms_flat_then_cleans_protectio
                 )
     strategy._sync_position_with_exchange.assert_awaited_once()
     strategy._cancel_symbol_conditional_orders.assert_awaited_once()
-    strategy.db_manager.execute.assert_awaited_once()
+    strategy.db_manager.execute.assert_not_awaited()
     release.assert_awaited_once()
 
 @pytest.mark.asyncio
-async def test_partially_closed_sol_legacy_lot_recovers_owner_from_first_fill_order():
+async def test_partially_closed_sol_legacy_lot_recovers_owner_from_first_fill_order(monkeypatch):
+    monkeypatch.setenv("BINANCE_USE_PM", "true")
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", "legacy_pm")
     strategy = strategy_with_exchange("0.47")
     strategy.binance.get_user_trades = AsyncMock(return_value=[
         {"id": 1, "time": 1793347876165, "side": "BUY", "qty": "0.47",
@@ -153,7 +164,7 @@ async def test_partially_closed_sol_legacy_lot_recovers_owner_from_first_fill_or
             "SOLUSDT", Decimal("0.47")
         )
     assert strategy.db_manager.fetch_one.await_args.args[1:] == (
-        "SOLUSDT", "253886663232"
+        "SOLUSDT", "253886663232", "legacy_pm", None
     )
 
 
@@ -178,3 +189,28 @@ async def test_legacy_owner_fallback_rejects_competing_owner_or_unmatched_lot():
             "SOLUSDT", Decimal("0.48")
         ) is None
     strategy.db_manager.fetch_one.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_classic_skips_pm_legacy_positions_without_blocking_snapshots():
+    strategy = strategy_with_exchange()
+    strategy.binance.use_unified_account = False
+    strategy._unverified_entry_time_symbols = set()
+    assert await strategy._check_legacy_untracked_time_stop()
+    assert strategy.state_snapshot_safe_to_write
+    strategy.binance.get_position.assert_not_awaited()
+
+
+@pytest.fixture(autouse=True)
+def historical_lot_clock(monkeypatch):
+    """历史成交样本固定在当时观测窗，避免随机器日期跨页重复或耗尽假数据。"""
+    from datetime import datetime, timezone
+    import shared.position_entry_recovery as recovery
+    import strategies.btc_eth_aggressive.strategy as strategy_module
+    class HistoricalDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = datetime(2026, 11, 2, tzinfo=timezone.utc)
+            return value.astimezone(tz) if tz else value.replace(tzinfo=None)
+    monkeypatch.setattr(recovery, 'datetime', HistoricalDatetime)
+    monkeypatch.setattr(strategy_module, 'datetime', HistoricalDatetime)

@@ -17,6 +17,7 @@ import os
 import sys
 import time
 
+from shared.accounting.account_cutover import classic_cutover_ms, order_epoch
 from scripts.export_execution_facts import _build_client_from_env
 from scripts.report_economic_ledger import month_window_ms
 
@@ -24,8 +25,8 @@ from scripts.report_economic_ledger import month_window_ms
 MAX_ALGO_WINDOW_MS = 6 * 24 * 60 * 60 * 1000
 _EVENT_SQL = (
     "SELECT i.account_id, i.symbol, i.trade_id, i.tran_id, i.income_type, "
-    "i.income, i.asset, i.event_time_utc, f.order_id, f.realized_pnl, "
-    "f.commission, f.commission_asset FROM trading.execution_fact_income i "
+    "i.income, i.asset, i.event_time_utc, f.order_id, f.trade_time_utc, f.realized_pnl, "
+    "f.commission, f.commission_asset, f.side AS fill_side FROM trading.execution_fact_income i "
     "JOIN trading.execution_fact_fill f ON f.account_id=i.account_id "
     "AND f.symbol=i.symbol AND f.trade_id=i.trade_id "
     "WHERE i.account_id=$1 AND i.event_time_utc >= $2 AND i.event_time_utc < $3 "
@@ -33,42 +34,59 @@ _EVENT_SQL = (
 )
 _CONDITION_SQL = (
     "SELECT symbol, algo_id, strategy_name FROM btc_eth.condition_orders "
-    "WHERE algo_id IS NOT NULL AND symbol=ANY($1::text[])"
+    "WHERE algo_id IS NOT NULL AND symbol=ANY($1::text[]) AND account_id=$2 "
+    "AND ($3::bigint IS NULL OR created_at < to_timestamp($3::double precision / 1000)::timestamp)"
+)
+_CLASSIC_CONDITIONS = (
+    "SELECT account_id,symbol,algo_id,strategy AS strategy_name,side,'classic' AS account_mode "
+    "FROM trading.trade_records WHERE account_id=$1 AND symbol=ANY($2::text[]) "
+    "AND order_type='CONDITIONAL_ORDER' AND algo_id IS NOT NULL "
+    "AND executed_at >= timezone('Asia/Shanghai',to_timestamp($3::bigint/1000.0))"
 )
 _OWNER_SQL = (
-    "SELECT symbol, order_id, strategy FROM trading.trade_records "
+    "SELECT symbol, order_id, strategy, executed_at FROM trading.trade_records "
     "WHERE account_id=$1 AND symbol=ANY($2::text[]) AND order_id IS NOT NULL"
 )
 
 
-def assemble_candidates(events, links, condition_owners, existing_owners):
+def assemble_candidates(events, links, condition_owners, existing_owners, cutover=None):
     """Require a unique exchange algo link, unique local strategy and exact amount."""
     by_order = defaultdict(dict)
     for link in links:
-        key = (str(link["symbol"]), str(link["actual_order_id"]))
+        key = (str(link["symbol"]), str(link["actual_order_id"]), link.get("account_mode", "pm"))
         by_order[key][str(link["algo_id"])] = link
     by_algo = defaultdict(set)
     for row in condition_owners:
-        by_algo[(str(row["symbol"]), str(row["algo_id"]))].add(str(row["strategy_name"]))
+        mode = row.get("account_mode", "pm")
+        side = row.get("side") if mode == "classic" else None
+        if mode == "classic" and side not in ("BUY", "SELL"):
+            continue
+        by_algo[(str(row["symbol"]), str(row["algo_id"]), mode, side)].add(str(row["strategy_name"]))
     existing = defaultdict(set)
     for row in existing_owners:
-        existing[(str(row["symbol"]), str(row["order_id"]))].add(str(row["strategy"]))
+        existing[(str(row["symbol"]), str(row["order_id"]), order_epoch(row.get("executed_at"), cutover))].add(str(row["strategy"]))
 
     candidates, rejected = [], []
     for row in events:
         symbol, order_id = str(row["symbol"]), str(row["order_id"])
         identity = {"account_id": str(row["account_id"]), "symbol": symbol,
                     "income_type": str(row["income_type"]), "tran_id": str(row["tran_id"])}
-        order_key = (symbol, order_id)
+        epoch = order_epoch(row.get("trade_time_utc", row["event_time_utc"]), cutover)
+        order_key = (symbol, order_id, epoch)
         linked = by_order.get(order_key, {})
-        if len(linked) > 1:
+        if epoch != order_epoch(row["event_time_utc"], cutover):
+            reason = "fill_mode_mismatch"
+        elif len(linked) > 1:
             reason = "ambiguous_algo_link"
         elif not linked:
             reason = "already_owned" if existing.get(order_key) else "no_algo_link"
         else:
             algo_id, link = next(iter(linked.items()))
-            strategies = by_algo.get((symbol, algo_id), set())
-            if len(strategies) != 1:
+            side = link.get("side") if epoch == "classic" else None
+            strategies = by_algo.get((symbol, algo_id, epoch, side), set())
+            if epoch == "classic" and side != row.get("fill_side"):
+                reason = "algo_fill_side_mismatch"
+            elif len(strategies) != 1:
                 reason = "missing_or_ambiguous_strategy"
             elif existing.get(order_key) and existing[order_key] != strategies:
                 reason = "existing_owner_conflict"
@@ -100,12 +118,22 @@ def assemble_candidates(events, links, condition_owners, existing_owners):
 
 
 async def _fetch_links(client, symbols, start_ms, end_ms):
+    pm = getattr(client, "use_unified_account", True) is not False
+    cutover = classic_cutover_ms()
+    if not pm and cutover is None:
+        raise ValueError("经典账户条件单核对需要切点")
+    if cutover is not None:
+        if pm:
+            end_ms = min(end_ms, cutover)
+        else:
+            start_ms = max(start_ms, cutover)
+    endpoint = "/papi/v1/um/algo/allAlgoOrders" if pm else "/fapi/v1/allAlgoOrders"
     links = []
     for symbol in symbols:
         left = start_ms
         while left < end_ms:
             right = min(left + MAX_ALGO_WINDOW_MS, end_ms)
-            rows = await client._request("GET", "/papi/v1/um/algo/allAlgoOrders", {
+            rows = await client._request("GET", endpoint, {
                 "symbol": symbol, "startTime": left, "endTime": right - 1,
                 "limit": 1000,
             }, signed=True)
@@ -120,10 +148,13 @@ async def _fetch_links(client, symbols, start_ms, end_ms):
                 algo_id, order_id = int(row["algoId"]), int(actual)
                 if algo_id <= 0 or order_id <= 0:
                     raise RuntimeError(f"条件单标识无效: {symbol}")
+                if not pm and (int(row.get("createTime") or 0) < cutover or row.get("side") not in ("BUY", "SELL")):
+                    raise ValueError("经典条件单缺少切换后创建时间或方向")
                 digest = hashlib.sha256(json.dumps(row, sort_keys=True,
                     separators=(",", ":"), default=str).encode()).hexdigest()
                 links.append({"symbol": symbol, "algo_id": algo_id,
-                              "actual_order_id": order_id,
+                              "actual_order_id": order_id, "account_mode": "pm" if pm else "classic",
+                              "side": row.get("side"),
                               "payload_sha256": digest,
                               "algo_status": row.get("algoStatus"),
                               "create_time_ms": row.get("createTime"),
@@ -135,6 +166,8 @@ async def _fetch_links(client, symbols, start_ms, end_ms):
 async def _run(month, account_id):
     from shared.database import DatabaseManager
 
+    if account_id != os.environ.get("TRADE_ACCOUNT_ID", "default") or not account_id.strip():
+        raise ValueError("核对账户必须与签名账户配置一致")
     start_ms, end_ms = month_window_ms(month)
     end_ms = min(end_ms, int(time.time() * 1000) - 1000)
     if start_ms >= end_ms:
@@ -156,15 +189,15 @@ async def _run(month, account_id):
         symbols = sorted({str(row["symbol"]) for row in events})
         if not symbols:
             return {"account_id": account_id, "month": month, "candidates": [], "rejected": []}
-        conditions = [dict(row) for row in await db.fetch_all(_CONDITION_SQL, symbols)]
+        conditions = [dict(row) for row in await db.fetch_all(_CONDITION_SQL, symbols, account_id, classic_cutover_ms())]
         existing = [dict(row) for row in await db.fetch_all(_OWNER_SQL, account_id, symbols)]
         client, code = _build_client_from_env()
         if client is None:
             raise RuntimeError(f"币安客户端初始化失败: {code}")
         if not client.use_unified_account:
-            raise RuntimeError("仅支持币安 PM 账户")
+            conditions = await db.fetch_all(_CLASSIC_CONDITIONS, account_id, symbols, classic_cutover_ms())
         links = await _fetch_links(client, symbols, start_ms, end_ms)
-        result = assemble_candidates(events, links, conditions, existing)
+        result = assemble_candidates(events, links, conditions, existing, classic_cutover_ms())
         return {"account_id": account_id, "month": month,
                 "start_ms": start_ms, "end_ms": end_ms,
                 "algo_links_observed": len(links), "income_events_examined": len(events),

@@ -1,0 +1,115 @@
+{
+  "capture_format": "Selected public identity fields from original HTTP JSON; quote bodies are separately retained byte-for-byte.",
+  "binance_alpha": {
+    "url": "https://www.binance.com/bapi/defi/v1/public/wallet-direct/buw/wallet/cex/alpha/all/token/list",
+    "status": 200,
+    "available_at": "2026-11-20T03:29:38.030864+00:00",
+    "data": [
+      {
+        "tokenId": "5CF59CEAC1F6728AD35EC4E40A7C5C1D",
+        "chainId": "56",
+        "chainName": "BSC",
+        "contractAddress": "0x1b379a79c91a540b2bcd612b4d713f31de1b80cc",
+        "name": "Naoris Protocol",
+        "symbol": "NAORIS",
+        "decimals": 18,
+        "alphaId": "ALPHA_301"
+      },
+      {
+        "tokenId": "7819247E697FACBB24C9EB00A72944EA",
+        "chainId": "56",
+        "chainName": "BSC",
+        "contractAddress": "0xfb93ee8152dd0a0e6f4b49c66c06d800cf1db72d",
+        "name": "Yield Basis",
+        "symbol": "YB",
+        "decimals": 18,
+        "alphaId": "ALPHA_430"
+      }
+    ]
+  },
+  "coingecko": {
+    "yield-basis": {
+      "url": "https://api.coingecko.com/api/v3/coins/yield-basis?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false",
+      "status": 200,
+      "available_at": "2026-11-20T03:29:38.455587+00:00",
+      "data": {
+        "id": "yield-basis",
+        "symbol": "yb",
+        "name": "Yield Basis",
+        "platforms": {
+          "ethereum": "0x01791f726b4103694969820be083196cc7c045ff",
+          "binance-smart-chain": "0xfb93ee8152dd0a0e6f4b49c66c06d800cf1db72d"
+        },
+        "links": {
+          "homepage": [
+            "https://yieldbasis.com/"
+          ],
+          "blockchain_site": [
+            "https://etherscan.io/token/0x01791F726B4103694969820be083196cC7c045fF",
+            "https://intel.arkm.com/explorer/token/yield-basis",
+            "https://ethplorer.io/address/0x01791F726B4103694969820be083196cC7c045fF",
+            "https://bscscan.com/token/0xfb93ee8152dd0a0e6f4b49c66c06d800cf1db72d",
+            "https://binplorer.com/address/0xfb93ee8152dd0a0e6f4b49c66c06d800cf1db72d"
+          ]
+        }
+      }
+    },
+    "starknet": {
+      "url": "https://api.coingecko.com/api/v3/coins/starknet?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false",
+      "status": 200,
+      "available_at": "2026-11-20T03:29:38.787470+00:00",
+      "data": {
+        "id": "starknet",
+        "symbol": "strk",
+        "name": "Starknet",
+        "platforms": {
+          "ethereum": "0xca14007eff0db1f8135f4c25b34de49ab0d42766",
+          "starknet": "0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+          "solana": "HsRpHQn6VbyMs5b5j5SV6xQ2VvpvvCCzu19GjytVSCoz"
+        },
+        "links": {
+          "homepage": [
+            "https://starknet.io/"
+          ],
+          "blockchain_site": [
+            "https://starkscan.co/",
+            "https://intel.arkm.com/explorer/token/starknet",
+            "https://voyager.online/",
+            "https://etherscan.io/token/0xca14007eff0db1f8135f4c25b34de49ab0d42766",
+            "https://ethplorer.io/address/0xca14007eff0db1f8135f4c25b34de49ab0d42766",
+            "https://starkscan.co/token/0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+            "https://voyager.online/token/0x04718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+            "https://voyager.online/token/0x4718f5a0fc34cc1af16a1cdee98ffb20c31f5cd61d6ab07201858f4287c938d",
+            "https://solscan.io/token/HsRpHQn6VbyMs5b5j5SV6xQ2VvpvvCCzu19GjytVSCoz"
+          ]
+        }
+      }
+    },
+    "naoris": {
+      "url": "https://api.coingecko.com/api/v3/coins/naoris?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false",
+      "status": 200,
+      "available_at": "2026-11-20T03:30:20.633598+00:00",
+      "data": {
+        "id": "naoris",
+        "symbol": "naoris",
+        "name": "NaoX Protocol",
+        "platforms": {
+          "ethereum": "0x1b379a79c91a540b2bcd612b4d713f31de1b80cc",
+          "binance-smart-chain": "0x1b379a79c91a540b2bcd612b4d713f31de1b80cc"
+        },
+        "links": {
+          "homepage": [
+            "https://www.naorisprotocol.com/"
+          ],
+          "blockchain_site": [
+            "https://etherscan.io/token/0x1b379a79c91a540b2bcd612b4d713f31de1b80cc",
+            "https://intel.arkm.com/explorer/token/naoris",
+            "https://ethplorer.io/address/0x1b379A79c91a540b2bcd612b4d713f31De1b80cc",
+            "https://bscscan.com/token/0x1b379A79c91a540b2bcd612b4d713f31De1b80cc",
+            "https://binplorer.com/address/0x1b379A79c91a540b2bcd612b4d713f31De1b80cc"
+          ]
+        }
+      }
+    }
+  }
+}

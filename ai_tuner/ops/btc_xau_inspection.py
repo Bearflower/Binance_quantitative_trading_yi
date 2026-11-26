@@ -71,6 +71,42 @@ def collection(state, rules, now):
             f"近24h有效 {len(seen.intersection(eligible))}/{len(eligible)}｜重试/异常 {errors} 次")
 
 
+def next_step(report, health, now, start, end, pending, errors, max_error_rate):
+    collection_status = health.split("｜", 1)[0]
+    if collection_status.startswith("异常，"):
+        reason = collection_status.removeprefix("异常，")
+        return f"检查采集服务和日志（{reason}），恢复后复核报价覆盖。"
+    if collection_status.startswith("待核验"):
+        return "检查采集日志和首笔有效报价。"
+    if now >= end:
+        if report["status"] == "观察中":
+            return "先刷新窗口结束后的报告，再按最终数据验收。"
+        if pending:
+            return f"核对未结周期（{pending} 笔）的平仓和资金费，处理后复核验收。"
+        return {
+            "证据不足": "复核覆盖、执行和样本缺口，再决定是否另立扩窗实验。",
+            "未通过研究门槛": "复盘未达标项，维持影子研究。",
+            "通过研究门槛": "归档验收并安排人工复核，维持影子运行。",
+        }[report["status"]]
+    if report["late_exit"] or errors > report["expected_slots"] * max_error_rate:
+        return "核对延迟退出或异常决策对应时段的日志与账本。"
+    if now < start:
+        return f"维持预热，{local_time(start)} 正式开始后复核首批采集与决策。"
+    # 冻结方案规定第 1、4 周只复核数据质量、方向和样本数。
+    for week in (1, 4):
+        checkpoint = start + week * 7 * 86400
+        if now <= checkpoint < end:
+            action = "复核采集、方向分布和样本数。"
+            break
+    else:
+        checkpoint = end
+        action = "窗口结束后做最终验收。"
+    checkpoint_local = datetime.fromtimestamp(checkpoint, CST)
+    if checkpoint_local.date() == datetime.fromtimestamp(now, CST).date():
+        return f"继续影子观察，今天 {checkpoint_local:%H:%M} {action}"
+    return f"继续影子观察，今天无需操作。{local_time(checkpoint)} {action}"
+
+
 def format_report(report, rules, health, now, test=False):
     start = datetime.fromisoformat(report["start"]).timestamp()
     end = datetime.fromisoformat(report["end"]).timestamp()
@@ -83,6 +119,7 @@ def format_report(report, rules, health, now, test=False):
     wins = sum(w[0] > max(w[1:]) for w in weeks)
     target_wins = rules["weeks"] // 2 + 1
     errors = sum(report["decisions"].get(k, 0) for k in ("expired", "data_error"))
+    max_error_rate = 1 - rules["coverage"]
     pending = report["opened"] - report["settled"]
     remaining = max(0, end - max(now, start))
     settled = report["settled"]
@@ -94,12 +131,13 @@ def format_report(report, rules, health, now, test=False):
     return "\n".join([
         title,
         f"北京时间 {local_time(now)}｜{report['status']}｜{'预热' if now < start else '正式窗口'}",
+        f"下一步｜{next_step(report, health, now, start, end, pending, errors, max_error_rate)}",
         f"采集 {health}",
         f"累计已结净收益 USDT｜双腿 {pnl['relative']:+.4f}｜仅 BTC {pnl['btc_only']:+.4f}｜仅黄金 {pnl['gold_only']:+.4f}",
         *(["目前没有已结周期，以下收益指标等待样本。"] if not settled else []),
         f"离验收｜观察至 {datetime.fromtimestamp(end, CST):%Y-%m-%d %H:%M}，观察时长还差 {remaining / 86400:.1f} 天",
         f"决策覆盖 {coverage(report['coverage'], rules['coverage'])}｜行情覆盖 {coverage(report['spot_coverage'], rules['min_spot_coverage'])}",
-        f"执行｜待结 {pending}，延迟退出 {report['late_exit']}（最终均须为 0）；异常决策 {errors}/{report['expected_slots']}，占比须 ≤{1-rules['coverage']:.0%}",
+        f"执行｜待结 {pending}，延迟退出 {report['late_exit']}（最终均须为 0）；异常决策 {errors}/{report['expected_slots']}，占比须 ≤{max_error_rate:.0%}",
         f"样本｜已结 {count(settled,rules['min_trades'])}｜多BTC {count(report['long_btc'],rules['min_each_side'])}｜空BTC {count(report['short_btc'],rules['min_each_side'])}",
         f"周度｜活跃周 {count(len(weeks),rules['min_active_weeks'])}｜双腿胜两对照 {count(wins,target_wins)}",
         *( [f"净收益须 >0，当前 {positive(pnl['relative'])}",
@@ -136,7 +174,8 @@ def main():
         message = format_report(report, rules, health, now, args.test_send)
         status, summary = report_status(message)
     except (OSError, ValueError, KeyError, sqlite3.Error, subprocess.TimeoutExpired) as exc:
-        message = f"BTC–XAU 影子巡检｜异常\n{local_time(time.time())} 无法核对实验报告（{type(exc).__name__}），请检查采集服务与账本。"
+        message = (f"BTC–XAU 影子巡检｜异常\n{local_time(time.time())} 无法核对实验报告（{type(exc).__name__}）"
+                   "\n下一步｜检查采集服务日志和影子账本，确认报告能正常更新。")
         status, summary = "error", "报告读取失败"
     if args.dry_run:
         print(message)

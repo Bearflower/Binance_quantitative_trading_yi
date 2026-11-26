@@ -855,39 +855,29 @@ async def test_api_user_trades_empty_symbol_raises(monkeypatch):
     assert capture.calls == []
 
 
-async def test_api_user_trades_non_list_response_falls_back_empty(monkeypatch):
-    """get_user_trades：响应非 list（如错误 dict）→ 回退空列表（L1673-1674 分支）。"""
+async def test_api_user_trades_non_list_response_raises(monkeypatch):
+    """get_user_trades：响应非列表不能当作事实页末。"""
     client = _make_offline_client()
     capture = _CaptureRequest({"code": -1121, "msg": "Invalid symbol."})
     monkeypatch.setattr(client, "_request", capture)
 
-    rows = await client.get_user_trades("BTCUSDT", start_time=1, end_time=2, limit=10)
-    assert rows == []
+    with pytest.raises(TypeError, match="userTrades"):
+        await client.get_user_trades("BTCUSDT", start_time=1, end_time=2, limit=10)
 
 
-async def test_api_income_history_non_unified_raises_without_request(monkeypatch):
-    """非统一账户收入查询必须明确失败，且不发请求。"""
+async def test_classic_income_uses_separate_cursor_and_source(monkeypatch):
     client = _make_offline_client(use_unified_account=False)
     capture = _CaptureRequest([])
     monkeypatch.setattr(client, "_request", capture)
-
-    with pytest.raises(ValueError, match="统一账户"):
-        await client.get_income_history(start_time=1, end_time=2, limit=1000)
-    assert capture.calls == []                    # 未发起任何请求
-
-
-async def test_export_income_rejects_non_unified_client_before_cursor_write(monkeypatch):
-    """采集端必须把账户模式不支持与真正的空收入区分开。"""
-    client = _make_offline_client(use_unified_account=False)
-    capture = _CaptureRequest([])
-    monkeypatch.setattr(client, "_request", capture)
+    monkeypatch.setenv("TRADE_ACCOUNT_ID", _ACCOUNT)
+    monkeypatch.setenv("BINANCE_CLASSIC_CUTOVER_MS", "2")
     exporter = ExecutionFactExporter(account_id=_ACCOUNT, api_client=client)
-
-    with pytest.raises(ValueError, match="统一账户"):
-        await exporter.export_income(1, 2)
-
-    assert capture.calls == []
-    assert exporter._cursor_store == {}
+    with pytest.raises(ValueError, match="切点"):
+        await exporter.export_income(1, 9)
+    assert not capture.calls and not exporter._cursor_store
+    result = await exporter.export_income(2, 9)
+    assert capture.calls[0]["endpoint"] == "/fapi/v1/income"
+    assert result.page_complete and result.cursor.source == "fapi/income"
 
 
 async def test_api_income_history_forwards_params_and_rejects_non_list(monkeypatch):

@@ -105,7 +105,7 @@ def patch_env(module: str, orders: list, owner, owner_mock=None):
         owner_mock = AsyncMock(return_value=owner)
     stack = ExitStack()
     stack.enter_context(patch(
-        f'{module}.get_open_orders', new=AsyncMock(return_value=orders)))
+        f'{module}.strategy_owned_algos', new=AsyncMock(return_value=orders)))
     stack.enter_context(patch(
         f'{module}.resolve_position_owner', new=owner_mock))
     return stack

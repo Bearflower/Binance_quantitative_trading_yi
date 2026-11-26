@@ -77,6 +77,29 @@ def strategy(strategy_config):
     return s
 
 
+@pytest.fixture
+def actual_close(strategy, monkeypatch):
+    """提供同账户持久入场、终态退出及完整实际成交，不用价格估算盈亏。"""
+    monkeypatch.setenv('TRADE_ACCOUNT_ID', 'test')
+    monkeypatch.delenv('BINANCE_CLASSIC_CUTOVER_MS', raising=False)
+    opened = datetime.now(timezone.utc) - timedelta(hours=1)
+    strategy.positions = {'BTCUSDT': {'order_id': 100, 'entry_time': opened.isoformat()}}
+    strategy.binance_client.use_unified_account = True
+    entry = dict(position_id='BTCUSDT_100', quantity='2', metadata={'entry_order_id': 100},
+                 account_id='test', strategy='new_coin', side='SELL', symbol='BTCUSDT',
+                 order_id='100', executed_at=opened)
+    strategy.db.fetch_all = AsyncMock(side_effect=lambda sql, *args:
+        [entry] if 'short_positions' in sql else [{'order_id': '101'}])
+    strategy.binance_client.get_order = AsyncMock(side_effect=lambda symbol, oid:
+        dict(symbol=symbol, orderId=oid, side='SELL' if oid == 100 else 'BUY',
+             status='FILLED', origQty='2', executedQty='2'))
+    def set_pnl(value):
+        strategy.binance_client.get_user_trades = AsyncMock(return_value=[dict(
+            symbol='BTCUSDT', side='BUY', orderId=101, id=999, qty='2', price='101',
+            realizedPnl=str(value))])
+    return set_pnl
+
+
 # ---------------------------------------------------------------------------
 # 测试套件
 # ---------------------------------------------------------------------------
@@ -276,32 +299,19 @@ class TestDrawdownFix:
 
         assert result is None  # 必须是 None，不能是 0.0
 
-    async def test_get_position_pnl_normal_returns_pnl(self, strategy):
-        """验证: 正常情况返回盈亏金额
+    async def test_get_position_pnl_normal_returns_pnl(self, strategy, actual_close):
+        """完整成交返回真实盈利，即使价格公式算出的值不同。"""
+        actual_close('40')
+        assert await strategy._get_position_pnl("BTCUSDT", 100.0) == Decimal('40')
+        strategy.binance_client.get_user_trades.assert_awaited_once_with(
+            'BTCUSDT', order_id='101', limit=1000)
+        assert strategy._verified_close_pnl_by_order['BTCUSDT'] == {'101': Decimal('40')}
 
-        做空盈亏 = (入场价 - 出场价) * 数量
-        入场价 100，出场价 80，数量 2 → (100-80)*2 = 40
-        """
-        strategy.db.fetch_one = AsyncMock(
-            return_value={"quantity": 2, "price": 80, "side": "BUY"}
-        )
-
-        result = await strategy._get_position_pnl("BTCUSDT", 100.0)
-
-        assert result == 40.0
-
-    async def test_get_position_pnl_loss_returns_negative(self, strategy):
-        """补充: 亏损情况返回负数盈亏
-
-        入场价 100，出场价 110，数量 2 → (100-110)*2 = -20
-        """
-        strategy.db.fetch_one = AsyncMock(
-            return_value={"quantity": 2, "price": 110, "side": "BUY"}
-        )
-
-        result = await strategy._get_position_pnl("BTCUSDT", 100.0)
-
-        assert result == -20.0
+    async def test_get_position_pnl_loss_returns_negative(self, strategy, actual_close):
+        """完整成交返回实际亏损，不从成交价格补算。"""
+        actual_close('-20')
+        assert await strategy._get_position_pnl("BTCUSDT", 100.0) == Decimal('-20')
+        assert strategy._verified_close_pnl_by_order['BTCUSDT'] == {'101': Decimal('-20')}
 
     async def test_get_position_pnl_exception_returns_none(self, strategy):
         """验证: 异常情况返回 None
@@ -348,8 +358,10 @@ class TestDrawdownFix:
         assert strategy.consecutive_losses == 0
         # cumulative_pnl 不变
         assert strategy.cumulative_pnl == Decimal("0")
-        # 持仓应被删除
-        assert "BTCUSDT" not in strategy.positions
+        # 未知盈亏保留结算身份并持久化，不能当零盈亏移除。
+        assert strategy.positions["BTCUSDT"]["settlement_pending"] is True
+        strategy._save_state.assert_awaited_once()
+        strategy.trading_executor.clear_position_tracking.assert_not_called()
 
     async def test_post_close_consecutive_losses_not_increment_when_pnl_none(
         self, strategy
@@ -447,7 +459,7 @@ class TestDrawdownFix:
             "peak_equity": "200",  # 旧字段名（基于错误公式）
             # 无 state_version 字段 → 默认为 1
         }
-        strategy.db.fetch_one = AsyncMock(return_value=old_state)
+        strategy.db.fetch_one = AsyncMock(return_value={'state_data': old_state})
 
         await strategy._restore_state()
 
@@ -466,7 +478,7 @@ class TestDrawdownFix:
             "peak_pnl": "150",
             "state_version": 2,
         }
-        strategy.db.fetch_one = AsyncMock(return_value=new_state)
+        strategy.db.fetch_one = AsyncMock(return_value={'state_data': new_state})
 
         await strategy._restore_state()
 
@@ -487,7 +499,7 @@ class TestDrawdownFix:
             "peak_equity": "300",  # 旧字段名
             "state_version": 1,  # 显式旧版本
         }
-        strategy.db.fetch_one = AsyncMock(return_value=old_state)
+        strategy.db.fetch_one = AsyncMock(return_value={'state_data': old_state})
 
         # 不应抛出异常（兼容旧字段名）
         await strategy._restore_state()
@@ -506,7 +518,7 @@ class TestDrawdownFix:
             "peak_pnl": None,
             "state_version": 2,
         }
-        strategy.db.fetch_one = AsyncMock(return_value=new_state)
+        strategy.db.fetch_one = AsyncMock(return_value={'state_data': new_state})
 
         await strategy._restore_state()
 
@@ -525,7 +537,7 @@ class TestDrawdownFix:
             "state_version": 2,
             "drawdown_pause_until": pause_time.isoformat(),
         }
-        strategy.db.fetch_one = AsyncMock(return_value=new_state)
+        strategy.db.fetch_one = AsyncMock(return_value={'state_data': new_state})
 
         await strategy._restore_state()
 

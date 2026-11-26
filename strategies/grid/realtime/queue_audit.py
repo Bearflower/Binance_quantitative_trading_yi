@@ -26,7 +26,8 @@ class QueueAudit:
             (instance_id, started_at_ms))
         conn.commit()
 
-    def drop(self, now_ms: int, trade_id: int, recovery_until_ms: int) -> None:
+    def drop(self, now_ms: int, trade_id: int, recovery_until_ms: int, *,
+             count: int = 1, last_id: Optional[int] = None) -> None:
         """首笔立即落库；后续逐出按拍合并，未封闭行表示重启前可能少计。"""
         if self._episode_id is None or now_ms >= self._recovery_until:
             if self._episode_id is not None:
@@ -36,17 +37,19 @@ class QueueAudit:
                 "instance_id, first_dropped_ms, last_dropped_ms, "
                 "first_dropped_id, last_dropped_id, dropped_count, "
                 "recovery_until_ms, status) VALUES(?,?,?,?,?,?,?,'OPEN')",
-                (self.instance_id, now_ms, now_ms, trade_id, trade_id, 1,
+                (self.instance_id, now_ms, now_ms, trade_id, last_id if last_id is not None else trade_id, count,
                  recovery_until_ms))
             self._episode_id = cursor.lastrowid
-            self._episode_count = 1
+            self._episode_count = count
             self.conn.commit()
         else:
-            self._episode_count += 1
-        self.dropped_total += 1
-        self._last_id = trade_id
+            self._episode_count += count
+        self.dropped_total += count
+        self._last_id = last_id if last_id is not None else trade_id
         self._last_ms = now_ms
         self._recovery_until = recovery_until_ms
+        if last_id is not None:
+            self._flush("OPEN")
 
     def checkpoint(self, now_ms: int, recovery_until_ms: int,
                    audit_ok: bool = True, reference_status: str = "UNKNOWN",
