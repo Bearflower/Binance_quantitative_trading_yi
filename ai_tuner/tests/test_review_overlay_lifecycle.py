@@ -51,8 +51,9 @@ async def test_sunday_grid_excludes_in_progress_bar(monkeypatch):
 
     class Sunday(datetime):
         @classmethod
-        def now(cls):
-            return cls(2026, 11, 15, 23, 55)
+        def now(cls, tz=None):
+            assert tz is not None and tz.key == 'Asia/Shanghai'
+            return cls(2026, 11, 15, 23, 55, tzinfo=tz)
 
     monkeypatch.setattr("ai_tuner.adapters.grid_adapter.datetime", Sunday)
     adapter = GridAdapter(MagicMock())
@@ -83,3 +84,18 @@ async def test_http_rollback_retry_preserves_prior_version(tmp_path):
     assert (await service._handle_rollback(request)).status == 409
     assert (config.parent / "tuning_overrides" / ".active").read_text().strip() == first
     service.db_handler.record_overlay_rollback.assert_awaited_once()
+
+
+async def test_grid_approval_cannot_write_execution_configuration():
+    from unittest.mock import AsyncMock, Mock
+    from ai_tuner.main import StratTuneAI
+
+    app = StratTuneAI.__new__(StratTuneAI)
+    app.config = {"strategies": [{"strategy_id": "grid", "config_path": "grid.yaml"}]}
+    app._find_pending_approval = AsyncMock(return_value=None)
+    app.config_operator = Mock()
+    request = Mock(json=AsyncMock(return_value={"strategy_id": "grid", "action": "confirm"}))
+    response = await app._handle_approval(request)
+    assert response.status == 409
+    app.config_operator.publish_overrides.assert_not_called()
+    app._find_pending_approval.assert_not_awaited()

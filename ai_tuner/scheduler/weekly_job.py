@@ -582,6 +582,10 @@ class WeeklyTuningJob:
             memory_id=memory_id,
         )
 
+        if strategy_id == "grid":
+            logger.info("网格调优建议已保存并推送", strategy_id=strategy_id, memory_id=memory_id)
+            return "success"
+
         # 步骤12：自动应用配置（MVP 审计模式下拦截写入）
         auto_apply_cfg = self.config.get("approval", {}).get("auto_apply", {})
         if strategy_id in candidates and not is_mvp_blocked and auto_apply_cfg.get("enabled", False):
