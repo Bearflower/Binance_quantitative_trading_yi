@@ -22,4 +22,17 @@
 
 仅更新网格信号生产者及网格执行器，从各自当前固定 digest 基础镜像叠加本次六个文件和 VERSION。旧运行环境、配置挂载、网络、账号与经典风险连续性凭据不变；不重签历史凭据。上线前后保留账户、SQLite 备份、运行实例及权限审计证据。
 
-发布验收结果待制品构建和生产只读核验后补记。
+## 发布验收
+
+- 已于北京时间 **20:50** 完成新实例、代码和首条信号回执验收。生产源码 `b315ea77c86bfec0b5885eb3a8286a43d196131d`，分支 `codex/classic-account-cutover`。
+- [最终构建 45822470091](https://github.com/Bearflower/Binance_quantitative_trading_yi/actions/runs/45822470091) 成功，构建工作流提交 `b01d3b9b15b1dde2913ffb8649a5674f454110b0`，`DEPLOY_ID=00001301`。
+- 推送镜像 `sha256:1e36b058152ae2bcdb0b1db07ceb5937921dbfc998d3f95244464e1612c16dfe`；执行器镜像 `sha256:557a3f0a68a26ef635eb51e38725b2d80a8152bbe953bde57dfef92167dc997a`。基础层连续、六个代码文件 SHA256、VERSION、启动命令、环境、挂载和网络均已核验。
+- 两个新实例 healthy、重启次数 0、启动结构化错误 0；另外 **30 个运行容器** ID、镜像、启动时间、重启次数均不变。没有改动共享代码或其他策略运行镜像。
+- 激活前 PostgreSQL 权限审计 **1,351 对象、0 issues**；未迁移或修改 PostgreSQL 权限。
+- 20:49:02 新推送进程按原 `GRID_SIGNAL_RUN_ON_START=true` 配置生成信号；20:49:06 执行器形成匹配回执，20:49:06.961 日志确认飞书 webhook 发送成功。
+- 实际生产回执：decision `grid-6c3ee022319a4b30a9ad9f5415857851`，processed=true，stream_ready=true，risk=ALLOW，state=FLAT；17 USDT、5 倍、0.004 ETH、6.38020 USDT，建单校验因最低 20 USDT 被拒绝。
+- 只读账户核验：可用余额 286.49879946 USDT；持仓初始保证金、挂单初始保证金、净仓、普通挂单和条件单均为 0。执行库中网格轮次、订单意图和成交均为 0。本次没有测试下单或制造减仓成交。
+- 旧实例已停止、关闭自动重启，并按完整 ID 登记退役；当前退役清单共 23 条。回滚实例名称分别为 `trading_system-grid-before-runtime-b315ea77`、`trading_system-grid-executor-before-runtime-b315ea77`。
+- 私有发布证据：`/root/trading_system/.releases/pm-window-89160896/grid-receipt-fix-20261126/`；含 SQLite 一致性备份、发布计划、账户只读预检、权限审计、实例前后快照、首条回执及发送日志。
+
+验证限制：七个依赖缺失历史行情文件的回放测试仍不能完成；752 项可独立运行的相关测试通过。未将本次线上只读预检当作历史回测，也未通过改变真实交易来验证成功下单。
