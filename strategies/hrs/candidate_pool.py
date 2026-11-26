@@ -4,6 +4,7 @@
 V2.5：OR-2 逻辑 + 空池退避 + LV-RM 独立扫描范围
 """
 import asyncio
+from contextvars import ContextVar
 from typing import Dict, List, Set, Optional, Any, Tuple
 from datetime import datetime, timezone
 import structlog
@@ -70,10 +71,14 @@ class DynamicThresholds:
                              调用方（candidate_pool._compute_dynamic_thresholds）
                              通常显式传 self.dynamic_min_sample_size。
         """
-        if min_sample_size is None:
-            min_sample_size = self.DEFAULT_MIN_SAMPLE_SIZE
         if self.computed_at is None:
             return False
+        return self.has_sufficient_samples(min_sample_size)
+
+    def has_sufficient_samples(self, min_sample_size: Optional[int] = None) -> bool:
+        """计算前仅校验逐截面样本；完成时间由计算成功后写入。"""
+        if min_sample_size is None:
+            min_sample_size = self.DEFAULT_MIN_SAMPLE_SIZE
         # 兼容旧调用方（只设 sample_count 没设逐截面字段）
         if self.funding_sample_count == 0 and self.oi_market_cap_sample_count == 0:
             return self.sample_count >= min_sample_size
@@ -176,6 +181,10 @@ class CandidatePool:
 
         # V2.3 动态阈值（每次扫描时计算）
         self._dynamic_thresholds = DynamicThresholds()
+        # 仅在候选扫描期间共享已成功读取的 K 线，扫描结束即丢弃。
+        self._scan_klines_1h_cache: ContextVar[Optional[Dict[str, List[Dict]]]] = ContextVar(
+            "hrs_scan_klines_1h", default=None
+        )
 
         # 做空候选条件
         short_config = pool_config.get("short", {})
@@ -512,7 +521,7 @@ class CandidatePool:
                         klines_4h = self._klines_4h_cache[symbol]
                         ema20_4h = self.market_data.get_ema20_from_4h_cache(symbol, klines_4h)
                     else:
-                        klines_1h = await self.market_data.get_klines_1h(symbol, limit=self.keep_count)
+                        klines_1h = await self._get_scan_klines_1h(symbol)
                         if klines_1h:
                             ema20_4h = await self.market_data.get_ema20_4h(symbol, klines_1h)
                         else:
@@ -546,11 +555,12 @@ class CandidatePool:
         thresholds.ema_sample_count = len(ema_deviations)
 
         # R4: 逐截面整体门槛校验（任一截面不足 → is_valid() 返回 False，回退固定阈值）
-        if not thresholds.is_valid(min_sample_size=self.dynamic_min_sample_size):
+        if not thresholds.has_sufficient_samples(min_sample_size=self.dynamic_min_sample_size):
             logger.warning(
                 "R4: 动态阈值逐截面样本不足（任一截面不足均整体判无效）",
                 funding_sample_count=thresholds.funding_sample_count,
                 oi_market_cap_sample_count=thresholds.oi_market_cap_sample_count,
+                ema_sample_count=thresholds.ema_sample_count,
                 min_required=self.dynamic_min_sample_size,
             )
             return thresholds  # is_valid() 返回 False，调用方回退固定阈值
@@ -663,6 +673,7 @@ class CandidatePool:
             return {"short": [], "long": []}
 
         logger.info("开始每日候选池扫描")
+        cache_token = self._scan_klines_1h_cache.set({})
 
         try:
             # 每日扫描前加载新币做空当前开仓币种
@@ -770,6 +781,18 @@ class CandidatePool:
         except Exception as e:
             logger.error("候选池扫描失败", error=str(e))
             return {"short": [], "long": []}
+        finally:
+            self._scan_klines_1h_cache.reset(cache_token)
+
+    async def _get_scan_klines_1h(self, symbol: str) -> List[Dict]:
+        """同次扫描复用成功读取；空结果允许重试，跨轮次重新取数。"""
+        cache = self._scan_klines_1h_cache.get()
+        if cache is not None and symbol in cache:
+            return cache[symbol]
+        klines = await self.market_data.get_klines_1h(symbol, limit=self.keep_count)
+        if cache is not None and klines:
+            cache[symbol] = klines
+        return klines
 
     async def _count_short_conditions(self, symbol: str, ticker: Dict[str, Any]) -> int:
         """
@@ -841,7 +864,7 @@ class CandidatePool:
                     klines_4h = self._klines_4h_cache[symbol]
                     ema20_4h = self.market_data.get_ema20_from_4h_cache(symbol, klines_4h)
                 else:
-                    klines_1h = await self.market_data.get_klines_1h(symbol, limit=self.keep_count)
+                    klines_1h = await self._get_scan_klines_1h(symbol)
                     if klines_1h:
                         ema20_4h = await self.market_data.get_ema20_4h(symbol, klines_1h)
                     else:
@@ -935,7 +958,7 @@ class CandidatePool:
                     klines_4h = self._klines_4h_cache[symbol]
                     ema20_4h = self.market_data.get_ema20_from_4h_cache(symbol, klines_4h)
                 else:
-                    klines_1h = await self.market_data.get_klines_1h(symbol, limit=self.keep_count)
+                    klines_1h = await self._get_scan_klines_1h(symbol)
                     if klines_1h:
                         ema20_4h = await self.market_data.get_ema20_4h(symbol, klines_1h)
                     else:

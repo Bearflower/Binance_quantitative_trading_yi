@@ -15,3 +15,11 @@ from ai_tuner.ops.inspection_log_severity import severity
 ])
 def test_levels_are_not_exception_name_keywords(line, expected):
     assert severity(line) == expected
+
+@pytest.mark.parametrize('line,expected', [
+    ('Funding schedule refresh unavailable for 2026-11-26T04:00:00+00:00: FundingScheduleDataError', 'warning'),
+    ('ERROR: Funding schedule refresh unavailable for 2026-11-26T04:00:00+00:00: FundingScheduleDataError', 'error'),
+    ('Funding schedule collection failed for 2026-11-26T04:00:00+00:00: FundingScheduleDataError', 'error'),
+])
+def test_current_funding_refresh_message(line, expected):
+    assert severity(line) == expected

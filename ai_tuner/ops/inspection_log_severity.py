@@ -34,7 +34,7 @@ def severity(line: str) -> str:
         if level in {"info", "debug"}:
             return level
     # 该采集器使用 logging 的裸消息渲染；只识别已核实的精确重试事件。
-    if re.fullmatch(r"XAUUSDT funding refresh unavailable for \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00: \w+", line):
+    if re.fullmatch(r"(?:XAUUSDT funding|Funding schedule) refresh unavailable for \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\+00:00: \w+", line):
         return "warning"
     return "error"  # 无级别的异常、未知格式保持可见。
 

@@ -461,17 +461,24 @@ class MarketDataProvider:
                         interval="1h",
                         limit=limit,
                     )
-                    if klines:
+                    if klines and len(klines) >= min(limit, self.max_api_limit):
                         return klines
-                    logger.warning("K线服务返回空数据，回退到币安API", symbol=symbol)
                 except Exception as e:
                     logger.warning("K线服务获取失败，回退到币安API", symbol=symbol, error=str(e))
 
-                return await self.binance_api.get_klines(
+                klines = await self.binance_api.get_klines(
                     symbol=symbol,
                     interval="1h",
                     limit=min(limit, self.max_api_limit)
                 )
+                minimum = self.config.get("kline", {}).get("min_klines_for_analysis", 24)
+                if klines and len(klines) >= min(limit, self.max_api_limit):
+                    logger.info("K线服务数据不足，币安API补取成功", symbol=symbol, count=len(klines))
+                else:
+                    logger.warning("K线API补取后数据仍不足", symbol=symbol,
+                                   count=len(klines or []), min_required=minimum,
+                                   requested_count=min(limit, self.max_api_limit))
+                return klines
         except Exception as e:
             logger.error("获取K线失败", symbol=symbol, error=str(e))
             return []
