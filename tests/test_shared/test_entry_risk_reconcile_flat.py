@@ -99,3 +99,36 @@ async def test_reservation_stays_occupied_until_terminal_and_flat(positions, sta
 
 async def _noop():
     return None
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('reconcile_error', [False, True])
+async def test_periodic_protection_runs_flat_reconciliation_without_entry_signal(reconcile_error):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, patch
+    from shared.entry_risk_policy import recover_reserved_protection
+
+    connection = Connection()
+    connection.fetch = AsyncMock(return_value=[])
+    db = SimpleNamespace(pool=Pool(connection))
+    exchange = Exchange([])
+    reconcile = AsyncMock(side_effect=RuntimeError('exchange unavailable') if reconcile_error else None)
+    with patch.object(RiskPolicyStore, 'reconcile', reconcile):
+        await recover_reserved_protection(SimpleNamespace(db_manager=db, binance=exchange))
+    reconcile.assert_awaited_once_with('btc_eth_aggressive', exchange)
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('positions,expected_releases', [
+    ([], ['risk_test']),
+    ([dict(symbol='SOLUSDT', positionAmt='0.34')], []),
+])
+async def test_periodic_cycle_preserves_live_reservation_and_releases_flat(positions, expected_releases):
+    from types import SimpleNamespace
+    from unittest.mock import patch
+    from shared.entry_risk_policy import recover_reserved_protection
+
+    connection = Connection()
+    exchange = Exchange(positions)
+    strategy = SimpleNamespace(db_manager=SimpleNamespace(pool=Pool(connection)), binance=exchange)
+    with patch.object(RiskPolicyStore, 'lock', new=lambda *args: _noop()):
+        await recover_reserved_protection(strategy)
+    assert connection.released == expected_releases
